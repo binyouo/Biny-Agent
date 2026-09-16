@@ -80,11 +80,16 @@ try {
   assert.equal(tasks.transition(task.taskRunId, "completed", { attemptId: attempt.attemptId }).attempts.length, 1);
   assert.deepEqual(tasks.transition(task.taskRunId, "completed", { attemptId: attempt.attemptId, artifacts: { output: "done" } }).attempts[0]?.artifacts, { output: "done" });
   assert.throws(
+    () => tasks.transition(task.taskRunId, "completed", { attemptId: attempt.attemptId, artifacts: { output: "late overwrite" } }),
+    /cannot be overwritten/
+  );
+  assert.throws(
     () => tasks.transition(task.taskRunId, "cancelled", { attemptId: attempt.attemptId }),
     /already terminal/
   );
   assert.equal(tasks.get(task.taskRunId)?.status, "completed");
-  assert.equal(tasks.events(task.taskRunId).length, 2);
+  assert.equal(tasks.events(task.taskRunId).length, 3);
+  assert.equal(tasks.events(task.taskRunId).at(-1)?.eventType, "task.attempt.updated");
 
   const recoveringTask = tasks.create({ taskRunId: "task-recovering", task: { prompt: "recover" }, sessionId: "session-1" });
   const recoveringAttempt = tasks.createAttempt(recoveringTask.taskRunId, { runId: "recover-run-1", turnId: "recover-turn-1" });

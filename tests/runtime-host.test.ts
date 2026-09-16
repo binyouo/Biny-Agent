@@ -176,6 +176,22 @@ async function main(): Promise<void> {
   const recoveredTask = taskRuns.create({ taskRunId: "task-host-recovered", task: { title: "recover me" }, sessionId: snapshot.info.sessionId });
   const recoveredAttempt = taskRuns.createAttempt(recoveredTask.taskRunId, { runId: "task-host-recovery-run", turnId: "task-host-recovery-turn" });
   taskRuns.transition(recoveredTask.taskRunId, "running", { attemptId: recoveredAttempt.attemptId });
+  const unsafeRecoveredTask = taskRuns.create({
+    taskRunId: "task-host-verification-running",
+    task: {
+      prompt: "do not replay after restart",
+      verification: {
+        version: 1,
+        objective: "prove the candidate",
+        checks: [{ command: "true" }],
+        artifactPaths: ["artifact.txt"],
+        maxAttempts: 2
+      }
+    },
+    sessionId: snapshot.info.sessionId
+  });
+  const unsafeRecoveredAttempt = taskRuns.createAttempt(unsafeRecoveredTask.taskRunId, { runId: "task-host-unsafe-run", turnId: "task-host-unsafe-turn" });
+  taskRuns.transition(unsafeRecoveredTask.taskRunId, "running", { attemptId: unsafeRecoveredAttempt.attemptId });
   const startSubagentTask = (task: string, options?: { taskId?: string; parentRunId?: string }) => {
     const taskId = options?.taskId ?? `task-host-generated-${String(taskStarts + 1)}`;
     taskStarts += 1;
@@ -293,6 +309,8 @@ async function main(): Promise<void> {
   assert.ok(client);
   const recovered = await client.taskGet("task-host-recovered") as { status?: string };
   assert.equal(recovered.status, "queued", "Host 启动时必须把遗留中的 TaskRun 重新排队");
+  const unsafeRecovered = await client.taskGet("task-host-verification-running") as { status?: string };
+  assert.equal(unsafeRecovered.status, "blocked", "启用验收的 running Attempt 在重启后不得无证据重放 Worker");
 
   const createdTask = await client.taskCreate({ taskRunId: "task-host-success", task: { title: "complete me", description: "a bounded task" } });
   assert.equal(createdTask.accepted, true);
