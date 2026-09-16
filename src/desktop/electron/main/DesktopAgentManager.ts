@@ -150,6 +150,8 @@ import { DesktopProjectService } from "./DesktopProjectService.js";
 import { DesktopModelLoginService, type AuthenticatedModelLogin } from "./DesktopModelLoginService.js";
 import { DesktopStateStore } from "./DesktopStateStore.js";
 import { perfNow, recordPerfPhase } from "../../../observability/perfTiming.js";
+import { runTaskClosure } from "../../../runtime/TaskClosure.js";
+import { readTaskDefinition } from "../../../runtime/taskVerification.js";
 
 interface ManagedRuntime {
   runtime: InteractiveRuntimeHandle;
@@ -221,6 +223,7 @@ export class DesktopAgentManager {
   private readonly idempotentPromptRequests = new Map<string, Promise<DesktopRunReceipt>>();
   /** fallback runtime 没有 RuntimeHostServer 的 task promise 表时，由 Desktop 自己保证幂等派发。 */
   private readonly taskPromises = new Map<string, Promise<unknown>>();
+  private readonly taskControllers = new Map<string, AbortController>();
   private idleRuntimeRebuildTail: Promise<void> = Promise.resolve();
   private readonly pendingSessionReads = new Map<string, {
     initialRevision: string | undefined;
@@ -2247,7 +2250,10 @@ export class DesktopAgentManager {
     if (operation === "worktree.merge" || operation === "worktree.remove") {
       throw new Error("工作树操作需要 Runtime Host；当前项目正在使用同进程 fallback。请重启 Biny 后重试。");
     }
-    if (operation === "task.create") return commands.taskRuns.create({ task: payload.task, sessionId: optionalPayloadString(payload.sessionId), parentRunId: optionalPayloadString(payload.parentRunId) });
+    if (operation === "task.create") {
+      readTaskDefinition(payload.task);
+      return commands.taskRuns.create({ task: payload.task, sessionId: optionalPayloadString(payload.sessionId), parentRunId: optionalPayloadString(payload.parentRunId) });
+    }
     if (operation === "task.start") {
       const started = await this.startFallbackTaskRun(commands, requiredPayloadString(payload.taskRunId, "taskRunId"), optionalTaskRetrySafety(payload.retrySafety));
       return commands.taskRuns.get(started.task.taskRunId);
@@ -2262,9 +2268,14 @@ export class DesktopAgentManager {
       const taskRunId = requiredPayloadString(payload.taskRunId, "taskRunId");
       const reason = optionalPayloadString(payload.reason) ?? "TaskRun cancelled.";
       const task = commands.taskRuns.get(taskRunId);
-      const subagent = commands.subagents?.getSnapshot(taskRunId);
-      const cancelledSubagent = commands.subagents?.cancelTask(taskRunId, reason) ?? false;
-      const runId = task?.attempts.at(-1)?.runId;
+      const latestAttempt = task?.attempts.at(-1);
+      const subagentId = latestAttempt && commands.subagents?.getSnapshot(latestAttempt.attemptId)
+        ? latestAttempt.attemptId
+        : taskRunId;
+      const subagent = commands.subagents?.getSnapshot(subagentId);
+      const cancelledSubagent = commands.subagents?.cancelTask(subagentId, reason) ?? false;
+      this.taskControllers.get(taskRunId)?.abort(new Error(reason));
+      const runId = latestAttempt?.runId;
       if (runId !== undefined) runtime.cancelRun(runId);
       const subagentActive = subagent?.status === "queued" || subagent?.status === "running";
       if (subagentActive && !cancelledSubagent && !isTaskRunTerminal(task?.status ?? "created")) {
@@ -3072,46 +3083,67 @@ export class DesktopAgentManager {
     if (isTaskRunTerminal(task.status)) return { task, completion: Promise.resolve(task) };
 
     let current = task;
-    if (current.status === "running" || current.status === "verifying") current = commands.taskRuns.requeue(taskRunId);
-    if (current.status === "created") commands.taskRuns.transition(taskRunId, "queued");
-    const attempt = commands.taskRuns.createAttempt(taskRunId, {
-      parentRunId: current.parentRunId,
-      retrySafety: retrySafety ?? "unknown"
-    });
+    const verificationEnabled = readTaskDefinition(task.task).verification !== undefined;
+    if (current.status === "running") {
+      if (verificationEnabled) {
+        current = commands.taskRuns.transition(taskRunId, "blocked", {
+          attemptId: current.attempts.at(-1)?.attemptId,
+          failure: {
+            failureClass: "unsafe_recovery",
+            message: "A verification-enabled TaskRun cannot replay an unproven running Attempt."
+          }
+        });
+        return { task: current, completion: Promise.resolve(current) };
+      }
+      current = commands.taskRuns.requeue(taskRunId);
+    }
+    if (current.status === "created") current = commands.taskRuns.transition(taskRunId, "queued");
     const latest = commands.taskRuns.get(taskRunId);
     if (!latest) throw new Error(`TaskRun ${taskRunId} disappeared before execution.`);
-
-    let submitted;
-    try {
-      submitted = commands.startSubagentTask(taskPrompt(latest.task), {
-        taskId: taskRunId,
-        parentRunId: latest.parentRunId,
-        accessMode: "workspace"
-      });
-    } catch (error) {
-      const failure = error instanceof Error ? error : new Error(String(error));
-      this.finishFallbackTaskRun(commands, taskRunId, attempt.attemptId, "failed", { message: failure.message, failureClass: "dispatch_failed" });
-      throw failure;
-    }
-
-    const completion = submitted.completion.then(
-      (output) => {
-        this.finishFallbackTaskRun(commands, taskRunId, attempt.attemptId, "completed", undefined, { output });
-        return output;
-      },
-      (error: unknown) => {
-        const failure = error instanceof Error ? error : new Error(String(error));
-        const status = failure.name === "SubagentTaskAbortedError" || failure.name === "AbortError" ? "aborted"
-          : failure instanceof SubagentTaskIncompleteError ? "incomplete" : "failed";
-        this.finishFallbackTaskRun(commands, taskRunId, attempt.attemptId, status, {
-          message: failure.message,
-          failureClass: failure instanceof SubagentTaskIncompleteError ? failure.stopReason
-            : status === "failed" ? "execution_failed" : "cancelled"
-        }, failure instanceof SubagentTaskIncompleteError ? { output: failure.output } : undefined);
-        throw failure;
+    const controller = new AbortController();
+    this.taskControllers.set(taskRunId, controller);
+    const completion = runTaskClosure({
+      taskRuns: commands.taskRuns,
+      taskRunId,
+      workspaceRoot: commands.workspaceRoot,
+      ignore: commands.config.workspace.ignore,
+      executor: commands,
+      retrySafety,
+      signal: controller.signal,
+      executeAttempt: async (prompt, attempt) => {
+        let submitted;
+        try {
+          submitted = commands.startSubagentTask(prompt, {
+            taskId: verificationEnabled ? attempt.attemptId : taskRunId,
+            taskRunId,
+            attemptId: attempt.attemptId,
+            completedStatus: verificationEnabled ? "verifying" : "completed",
+            parentRunId: latest.parentRunId,
+            signal: controller.signal,
+            accessMode: "workspace"
+          });
+        } catch (error) {
+          const failure = error instanceof Error ? error : new Error(String(error));
+          this.finishFallbackTaskRun(commands, taskRunId, attempt.attemptId, "failed", { message: failure.message, failureClass: "dispatch_failed" });
+          throw failure;
+        }
+        try {
+          return await submitted.completion;
+        } catch (error) {
+          const failure = error instanceof Error ? error : new Error(String(error));
+          const status = failure.name === "SubagentTaskAbortedError" || failure.name === "AbortError" ? "aborted"
+            : failure instanceof SubagentTaskIncompleteError ? "incomplete" : "failed";
+          this.finishFallbackTaskRun(commands, taskRunId, attempt.attemptId, status, {
+            message: failure.message,
+            failureClass: failure instanceof SubagentTaskIncompleteError ? failure.stopReason
+              : status === "failed" ? "execution_failed" : "cancelled"
+          }, failure instanceof SubagentTaskIncompleteError ? { output: failure.output } : undefined);
+          throw failure;
+        }
       }
-    ).finally(() => {
+    }).finally(() => {
       if (this.taskPromises.get(taskRunId) === completion) this.taskPromises.delete(taskRunId);
+      if (this.taskControllers.get(taskRunId) === controller) this.taskControllers.delete(taskRunId);
     });
     this.taskPromises.set(taskRunId, completion);
     void completion.catch(() => undefined);
@@ -3149,18 +3181,6 @@ export class DesktopAgentManager {
 
 function sessionReadKey(projectId: string, sessionId: string): string {
   return `${projectId}\u0000${sessionId}`;
-}
-
-function taskPrompt(task: unknown): string {
-  if (typeof task === "string" && task.trim()) return task.trim();
-  if (typeof task === "object" && task !== null) {
-    const record = task as Record<string, unknown>;
-    const title = typeof record.title === "string" ? record.title.trim() : "";
-    const description = typeof record.description === "string" ? record.description.trim() : "";
-    if (title || description) return [title, description].filter(Boolean).join("\n\n");
-  }
-  const serialized = JSON.stringify(task);
-  return serialized === undefined ? String(task) : serialized;
 }
 
 function optionalTaskRetrySafety(value: unknown): TaskRetrySafety | undefined {

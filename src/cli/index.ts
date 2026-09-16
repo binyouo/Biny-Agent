@@ -154,8 +154,9 @@ task
   .argument("<task...>", "task text")
   .option("--session <id>", "session id")
   .option("--parent-run <id>", "parent AgentRun id")
+  .option("--verification <json>", "deterministic verification contract JSON")
   .option("--json", "print JSON")
-  .action((input: string[], options: { session?: string; parentRun?: string; json?: boolean }) => wrap(() => taskCreateCommand(workspaceRoot, input.join(" "), { json: options.json, sessionId: options.session, parentRunId: options.parentRun }))());
+  .action((input: string[], options: { session?: string; parentRun?: string; verification?: string; json?: boolean }) => wrap(() => taskCreateCommand(workspaceRoot, input.join(" "), { json: options.json, sessionId: options.session, parentRunId: options.parentRun, verification: options.verification }))());
 for (const [name, action] of [["start", "start"], ["cancel", "cancel"], ["approve", "approve"], ["resume", "resume"], ["retry", "retry"]] as const) {
   task
     .command(name)

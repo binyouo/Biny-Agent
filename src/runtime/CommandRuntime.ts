@@ -13,6 +13,7 @@ import { ModelManager } from "../llm/ModelManager.js";
 import { resolveToolModel } from "../llm/toolModel.js";
 import { preselectCapabilities } from "../agent/capabilityPreselection.js";
 import { SessionRecorder } from "../session/recorder.js";
+import { readSessionEvents } from "../session/events.js";
 import { ensureAgentDirs } from "../session/store.js";
 import { createToolRegistry } from "../tools/registry.js";
 import { createTodoTool } from "../tools/todo.js";
@@ -58,6 +59,9 @@ import { globalPluginRoot } from "../config/paths.js";
 import { DailyDiaryScheduler } from "../agent/context/chatDiary.js";
 import { HeartbeatScheduler } from "../agent/context/heartbeat.js";
 import { createBrowserTools, type BrowserAutomationEndpoint } from "../tools/browser.js";
+import { ToolExecutionCoordinator } from "../agent/toolExecutionCoordinator.js";
+import type { AgentSessionEvent, AgentToolEvent } from "../agent/types.js";
+import { recoverTaskCheckExecution, taskCheckToolCallId, type TaskCommandExecution } from "./taskVerification.js";
 
 export interface CommandRuntime {
   workspaceRoot: string;
@@ -94,6 +98,17 @@ export interface CommandRuntime {
   /** 实时重新扫描具名子代理定义（会话期间可编辑生效）。 */
   listSubagentAgents(): Promise<SubagentDefinition[]>;
   startSubagentTask(task: string, options?: SubagentTaskRunOptions): SubmittedSubagentTask;
+  /** Task 验收只允许通过与 Agent 相同的 Bash 权限、调度、审计和取消链执行。 */
+  executeTaskCheck(input: {
+    command: string;
+    checkId: string;
+    contractFingerprint: string;
+    cwd?: string;
+    timeoutMs?: number;
+    taskRunId: string;
+    attemptId: string;
+    signal?: AbortSignal;
+  }): Promise<TaskCommandExecution>;
   refreshDailyDiary(dateKey: string, options?: { force?: boolean }): Promise<unknown>;
   setSubagentParentRunId(parentRunId?: string): void;
   close(): Promise<void>;
@@ -177,6 +192,12 @@ export async function createCommandRuntime(workspaceRoot: string, options: Comma
   let subagentParentRunId: string | undefined;
   let subagentDefinitions: SubagentDefinition[] = [];
   let registeredMcpTools: string[] = [];
+  const durableSubagentBindings = new Map<string, {
+    taskRunId: string;
+    attemptId: string;
+    completedStatus: "completed" | "verifying";
+  }>();
+  const taskCheckPromises = new Map<string, Promise<TaskCommandExecution>>();
   const refreshExtensionTools = (): void => {
     for (const name of registeredMcpTools) toolRegistry.unregister(name);
     registeredMcpTools = [];
@@ -225,7 +246,7 @@ export async function createCommandRuntime(workspaceRoot: string, options: Comma
       maxPendingSubagents: config.extensions.subagent.maxPendingSubagents,
       timeoutMs: config.extensions.subagent.timeoutMs,
       onSnapshot: (snapshot) => {
-        taskRuns.syncSubagentSnapshot(snapshot);
+        taskRuns.syncSubagentSnapshot(snapshot, durableSubagentBindings.get(snapshot.taskId));
       },
       execute: async (task, context) => await executeSubagentTask(subagentOptions, task, context.signal, context.accessMode, context.agent)
     })
@@ -432,6 +453,13 @@ export async function createCommandRuntime(workspaceRoot: string, options: Comma
     let submitted: SubmittedSubagentTask;
     try {
       taskOptions?.signal?.throwIfAborted();
+      if (taskOptions?.taskRunId && taskOptions.attemptId) {
+        durableSubagentBindings.set(taskId, {
+          taskRunId: taskOptions.taskRunId,
+          attemptId: taskOptions.attemptId,
+          completedStatus: taskOptions.completedStatus ?? "completed"
+        });
+      }
       submitted = subagentTaskManager.submit(task, {
         taskId,
         parentRunId: taskOptions?.parentRunId,
@@ -441,6 +469,7 @@ export async function createCommandRuntime(workspaceRoot: string, options: Comma
         agent: taskOptions?.agent
       });
     } catch (error) {
+      durableSubagentBindings.delete(taskId);
       const failure = error instanceof Error ? error : new Error(String(error));
       agent.recordHostedToolResult("Task", { error: failure.message }, taskId, sequence);
       throw failure;
@@ -457,12 +486,80 @@ export async function createCommandRuntime(workspaceRoot: string, options: Comma
         agent.recordHostedToolResult("Task", { error: failure.message }, taskId, sequence);
         throw failure;
       }
-    );
+    ).finally(() => {
+      durableSubagentBindings.delete(taskId);
+    });
     // Background CLI starts intentionally do not await completion. Attaching a
     // rejection observer keeps cancellation/failure from becoming unhandled;
     // foreground callers can still await the original completion promise.
     void completion.catch(() => undefined);
     return { ...submitted, completion };
+  };
+
+  const executeTaskCheckOnce = async (input: {
+    command: string;
+    checkId: string;
+    contractFingerprint: string;
+    cwd?: string;
+    timeoutMs?: number;
+    taskRunId: string;
+    attemptId: string;
+    signal?: AbortSignal;
+  }): Promise<TaskCommandExecution> => {
+    await recorder.flush();
+    const recovery = recoverTaskCheckExecution(await readSessionEvents(recorder.filePath), recorder.sessionId, input);
+    if (recovery.action !== "execute") return recovery.execution;
+    const toolCallId = recovery.toolCallId;
+    const events: Array<AgentToolEvent | Extract<AgentSessionEvent, { type: "error" }>> = [];
+    const coordinator = new ToolExecutionCoordinator(
+      {
+        workspaceRoot,
+        config,
+        recorder,
+        toolRegistry,
+        permissionManager,
+        // 后台验收不能弹出隐藏的交互确认；未预授权时保留拒绝证据并阻塞 TaskRun。
+        confirmPermission: async () => ({ approved: false, message: "Task verification requires explicit permission for this command." }),
+        createCheckpoint: checkpoints ? async (label) => await checkpoints.create(label) : undefined,
+        capabilities,
+        runId: input.taskRunId,
+        turnId: input.attemptId
+      },
+      permissionManager,
+      (event) => events.push(event),
+      () => ({}),
+      new Set(["Bash"]),
+      { maxToolCalls: 1, maxRepeatedActions: 1 }
+    );
+    const bash = coordinator.createAgentTools().find((tool) => tool.name === "Bash");
+    if (!bash) throw new Error("Bash verification tool is unavailable.");
+    const response = await bash.execute(toolCallId, {
+      command: input.command,
+      cwd: input.cwd ?? ".",
+      timeoutMs: input.timeoutMs ?? 120_000
+    }, input.signal);
+    await coordinator.waitForIdle();
+    const lifecycle = [...events].reverse().find((event) =>
+      (event.type === "tool.completed" || event.type === "tool.failed") && event.toolCallId === toolCallId
+    );
+    return {
+      result: response.details ?? response,
+      toolCallId,
+      operationId: lifecycle && "operationId" in lifecycle ? lifecycle.operationId : undefined,
+      eventReferences: [toolCallId, lifecycle && "operationId" in lifecycle ? lifecycle.operationId : undefined]
+        .filter((reference): reference is string => reference !== undefined)
+    };
+  };
+
+  const executeTaskCheck = (input: Parameters<CommandRuntime["executeTaskCheck"]>[0]): Promise<TaskCommandExecution> => {
+    const key = taskCheckToolCallId(input);
+    const existing = taskCheckPromises.get(key);
+    if (existing) return existing;
+    const completion = executeTaskCheckOnce(input).finally(() => {
+      if (taskCheckPromises.get(key) === completion) taskCheckPromises.delete(key);
+    });
+    taskCheckPromises.set(key, completion);
+    return completion;
   };
 
   const runtime: CommandRuntime = {
@@ -512,6 +609,7 @@ export async function createCommandRuntime(workspaceRoot: string, options: Comma
       return [...subagentDefinitions];
     },
     startSubagentTask,
+    executeTaskCheck,
     refreshDailyDiary: async (dateKey: string, refreshOptions: { force?: boolean } = {}): Promise<unknown> => await agent.refreshDailyDiary(dateKey, refreshOptions),
     setSubagentParentRunId: (parentRunId?: string): void => {
       subagentParentRunId = parentRunId;

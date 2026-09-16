@@ -224,9 +224,30 @@ export class DurableTaskRunStore {
     if (input.attemptId !== undefined && (!attempt || attempt.taskRunId !== taskRunId)) {
       throw new Error(`TaskAttempt ${input.attemptId} does not belong to TaskRun ${taskRunId}.`);
     }
+    if (attempt && this.latestAttempt(taskRunId)?.attemptId !== attempt.attemptId) {
+      throw new Error(`TaskAttempt ${attempt.attemptId} is stale for TaskRun ${taskRunId}.`);
+    }
     if (task.status === status) {
-      if (attempt && (input.verification !== undefined || input.artifacts !== undefined || input.failure !== undefined || input.highWaterSequence !== undefined)) {
-        const now = new Date().toISOString();
+      if (!attempt || (input.verification === undefined && input.artifacts === undefined && input.failure === undefined && input.highWaterSequence === undefined)) {
+        return this.requireWithAttempts(taskRunId);
+      }
+      if (isTaskRunTerminal(status)) assertCompatibleTerminalEvidence(attempt, input);
+      const now = new Date().toISOString();
+      return this.authority.runEventTransaction({
+        eventId: `task:${taskRunId}:revision:${String(task.revision + 1)}`,
+        sessionId: task.sessionId ?? `task:${taskRunId}`,
+        invocationId: attempt.runId,
+        runId: attempt.runId,
+        turnId: attempt.turnId,
+        eventType: "task.attempt.updated",
+        payload: { taskRunId, attemptId: attempt.attemptId, status, ...input },
+        createdAt: now
+      }, () => {
+        const update = this.database.prepare(`
+          UPDATE task_runs SET updated_at = ?, revision = revision + 1
+          WHERE task_run_id = ? AND status = ? AND revision = ?
+        `).run(now, taskRunId, status, task.revision);
+        if (update.changes !== 1) throw new Error(`TaskRun ${taskRunId} changed while persisting Attempt evidence.`);
         this.database.prepare(`
           UPDATE task_attempts SET high_water_sequence = COALESCE(?, high_water_sequence), verification_json = COALESCE(?, verification_json),
             artifacts_json = COALESCE(?, artifacts_json), failure_json = COALESCE(?, failure_json), updated_at = ? WHERE attempt_id = ?
@@ -238,8 +259,18 @@ export class DurableTaskRunStore {
           now,
           attempt.attemptId
         );
-      }
-      return this.requireWithAttempts(taskRunId);
+        this.database.prepare(`
+          INSERT INTO task_events (event_id, task_run_id, attempt_id, event_type, payload_json, created_at)
+          VALUES (?, ?, ?, 'task.attempt.updated', ?, ?)
+        `).run(
+          `task:${taskRunId}:revision:${String(task.revision + 1)}`,
+          taskRunId,
+          attempt.attemptId,
+          stringify({ status, ...input }),
+          now
+        );
+        return this.requireWithAttempts(taskRunId);
+      });
     }
     if (isTaskRunTerminal(task.status)) {
       throw new Error(`TaskRun ${taskRunId} is already terminal (${task.status}) and cannot transition to ${status}.`);
@@ -261,9 +292,10 @@ export class DurableTaskRunStore {
       createdAt: now
     }, () => {
       const eventId = `task:${taskRunId}:revision:${String(task.revision + 1)}`;
-      this.database.prepare(`
+      const update = this.database.prepare(`
         UPDATE task_runs SET status = ?, terminal_event_id = ?, updated_at = ?, revision = revision + 1 WHERE task_run_id = ? AND status = ?
       `).run(status, isTaskRunTerminal(status) ? eventId : task.terminalEventId ?? null, now, taskRunId, task.status);
+      if (update.changes !== 1) throw new Error(`TaskRun ${taskRunId} changed while transitioning to ${status}.`);
       this.database.prepare(`
         INSERT OR IGNORE INTO task_events (event_id, task_run_id, attempt_id, event_type, payload_json, created_at)
         VALUES (?, ?, ?, 'task.status', ?, ?)
@@ -300,6 +332,56 @@ export class DurableTaskRunStore {
     return this.transition(taskRunId, "queued", { failure: { message: reason } });
   }
 
+  /**
+   * 验收失败只结束当前 Attempt，TaskRun 回到队列等待同一闭环的定向修复。
+   * 旧 Attempt 的失败证据必须保留，不能被下一次 Attempt 的 queued 状态覆盖。
+   */
+  prepareVerificationRepair(
+    taskRunId: string,
+    attemptId: string,
+    input: { verification: unknown; artifacts: unknown; failure: unknown }
+  ): TaskRunWithAttempts {
+    this.assertOpen();
+    const task = this.require(taskRunId);
+    const attempt = this.readAttempt(attemptId);
+    if (task.status !== "verifying") throw new Error(`TaskRun ${taskRunId} is not verifying.`);
+    if (!attempt || attempt.taskRunId !== taskRunId || this.latestAttempt(taskRunId)?.attemptId !== attemptId) {
+      throw new Error(`TaskAttempt ${attemptId} is not the current Attempt for TaskRun ${taskRunId}.`);
+    }
+    const now = new Date().toISOString();
+    return this.authority.runEventTransaction({
+      eventId: `task:${taskRunId}:repair:${String(task.revision + 1)}`,
+      sessionId: task.sessionId ?? `task:${taskRunId}`,
+      invocationId: attempt.runId,
+      runId: attempt.runId,
+      turnId: attempt.turnId,
+      eventType: "task.verification.repair",
+      payload: { taskRunId, attemptId, ...input },
+      createdAt: now
+    }, () => {
+      const update = this.database.prepare(`
+        UPDATE task_runs SET status = 'queued', updated_at = ?, revision = revision + 1
+        WHERE task_run_id = ? AND status = 'verifying' AND revision = ?
+      `).run(now, taskRunId, task.revision);
+      if (update.changes !== 1) throw new Error(`TaskRun ${taskRunId} changed while scheduling verification repair.`);
+      this.database.prepare(`
+        UPDATE task_attempts SET status = 'failed', verification_json = ?, artifacts_json = ?, failure_json = ?, updated_at = ?
+        WHERE attempt_id = ? AND task_run_id = ?
+      `).run(stringify(input.verification), stringify(input.artifacts), stringify(input.failure), now, attemptId, taskRunId);
+      this.database.prepare(`
+        INSERT OR IGNORE INTO task_events (event_id, task_run_id, attempt_id, event_type, payload_json, created_at)
+        VALUES (?, ?, ?, 'task.verification.repair', ?, ?)
+      `).run(
+        `task:${taskRunId}:repair:${String(task.revision + 1)}`,
+        taskRunId,
+        attemptId,
+        stringify(input),
+        now
+      );
+      return this.requireWithAttempts(taskRunId);
+    });
+  }
+
   /** 只有失败任务可以显式重试；新 attempt 会在执行入口创建。 */
   retry(taskRunId: string): TaskRunWithAttempts {
     const task = this.require(taskRunId);
@@ -321,18 +403,31 @@ export class DurableTaskRunStore {
     });
   }
 
-  syncSubagentSnapshot(snapshot: SubagentTaskSnapshot): TaskRunWithAttempts {
-    const existing = this.read(snapshot.taskId);
-    if (!existing) this.create({ taskRunId: snapshot.taskId, parentRunId: snapshot.parentRunId, task: snapshot.task });
-    this.require(snapshot.taskId);
-    const attempt = this.latestAttempt(snapshot.taskId) ?? this.createAttempt(snapshot.taskId, {
+  syncSubagentSnapshot(
+    snapshot: SubagentTaskSnapshot,
+    binding: { taskRunId?: string; attemptId?: string; completedStatus?: "completed" | "verifying" } = {}
+  ): TaskRunWithAttempts {
+    const taskRunId = binding.taskRunId ?? snapshot.taskId;
+    const existing = this.read(taskRunId);
+    if (!existing) this.create({ taskRunId, parentRunId: snapshot.parentRunId, task: snapshot.task });
+    const task = this.require(taskRunId);
+    const boundAttempt = binding.attemptId === undefined ? undefined : this.readAttempt(binding.attemptId);
+    const attempt = boundAttempt ?? this.latestAttempt(taskRunId) ?? this.createAttempt(taskRunId, {
       runId: `task-run:${snapshot.taskId}`,
       turnId: `task-turn:${snapshot.taskId}`,
       parentRunId: snapshot.parentRunId,
       retrySafety: "unknown"
     });
-    const status = snapshot.status === "timed_out" ? "failed" : snapshot.status;
-    return this.transition(snapshot.taskId, status, {
+    if (attempt.taskRunId !== taskRunId) throw new Error(`TaskAttempt ${attempt.attemptId} does not belong to TaskRun ${taskRunId}.`);
+    if (isTaskRunTerminal(task.status) || this.latestAttempt(taskRunId)?.attemptId !== attempt.attemptId) {
+      return this.requireWithAttempts(taskRunId);
+    }
+    const status = snapshot.status === "timed_out"
+      ? "failed"
+      : snapshot.status === "completed"
+        ? binding.completedStatus ?? "completed"
+        : snapshot.status;
+    return this.transition(taskRunId, status, {
       attemptId: attempt.attemptId,
       failure: snapshot.error === undefined ? undefined : { message: snapshot.error }
     });
@@ -520,6 +615,26 @@ function isAllowedTaskTransition(from: TaskRunStatus, to: TaskRunStatus): boolea
 
 function stringify(value: unknown): string {
   return JSON.stringify(value === undefined ? null : value);
+}
+
+function assertCompatibleTerminalEvidence(
+  attempt: TaskAttemptRecord,
+  input: { verification?: unknown; artifacts?: unknown; failure?: unknown; highWaterSequence?: number }
+): void {
+  if (attempt.highWaterSequence !== undefined
+    && input.highWaterSequence !== undefined
+    && attempt.highWaterSequence !== input.highWaterSequence) {
+    throw new Error(`Terminal TaskAttempt ${attempt.attemptId} high-water sequence cannot be overwritten.`);
+  }
+  for (const [label, current, next] of [
+    ["verification", attempt.verification, input.verification],
+    ["artifacts", attempt.artifacts, input.artifacts],
+    ["failure", attempt.failure, input.failure]
+  ] as const) {
+    if (current !== undefined && next !== undefined && JSON.stringify(current) !== JSON.stringify(next)) {
+      throw new Error(`Terminal TaskAttempt ${attempt.attemptId} ${label} cannot be overwritten.`);
+    }
+  }
 }
 
 function stringifyOptional(value: unknown): string | null {

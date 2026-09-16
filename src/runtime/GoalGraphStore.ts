@@ -9,6 +9,8 @@ import { DatabaseSync } from "node:sqlite";
 import type { InteractiveRuntimeHandle } from "./InteractiveAgentRuntime.js";
 import type { RuntimeEventAuthority, RuntimeRunStatus } from "./RuntimeAuthority.js";
 import { isTaskRunTerminal, type DurableTaskRunStore, type TaskAttemptRecord, type TaskRunStatus } from "./TaskRunStore.js";
+import { runTaskClosure } from "./TaskClosure.js";
+import { readTaskDefinition, type TaskCommandExecutor } from "./taskVerification.js";
 
 export type GoalStatus = "active" | "paused" | "completed" | "failed" | "blocked" | "cancelled";
 export type GraphStatus = "draft" | "running" | "paused" | "completed" | "failed" | "blocked" | "cancelled";
@@ -30,6 +32,7 @@ export interface GraphNodeInput {
   prompt: string;
   dependencies?: string[];
   intent?: unknown;
+  verification?: unknown;
 }
 
 export interface GraphNodeRecord {
@@ -185,7 +188,15 @@ export class GoalGraphStore {
       const insert = this.database.prepare("INSERT INTO graph_nodes (node_id, graph_id, node_key, status, dependencies_json, intent_json, revision) VALUES (?, ?, ?, 'pending', ?, ?, 0)");
       for (const node of nodes) {
         if (!node.nodeKey.trim() || !node.prompt.trim()) throw new Error("Graph node key and prompt cannot be empty.");
-        insert.run(randomUUID(), graphId, node.nodeKey, stringify(node.dependencies ?? []), stringify(node.intent ?? { prompt: node.prompt }));
+        const intent = node.intent ?? { prompt: node.prompt, verification: node.verification };
+        readTaskDefinition(intent);
+        insert.run(
+          randomUUID(),
+          graphId,
+          node.nodeKey,
+          stringify(node.dependencies ?? []),
+          stringify(intent)
+        );
       }
       return this.requireGraph(graphId);
     });
@@ -314,6 +325,18 @@ export class GoalGraphStore {
         const attempt = task?.attempts.at(-1);
         const runtimeRun = attempt === undefined ? undefined : this.authority.getRun(attempt.runId);
         const terminalStatus = runtimeRun?.terminalStatus ?? (task !== undefined && isTaskRunTerminal(task.status) ? task.status : undefined);
+        const verificationEnabled = task === undefined ? false : readTaskDefinition(task.task).verification !== undefined;
+        if (task?.status === "verifying") {
+          // 候选产物已经落盘，退回 ready 后由同一闭环只恢复验收；不得把模型完成事件当作验收通过。
+          this.recoverNode(graphId, node.nodeId, "ready", "Resuming persisted candidate verification after Host restart.", node.taskRunId);
+          continue;
+        }
+        if (verificationEnabled && terminalStatus === "completed") {
+          // TaskRun 可能已经持久化了完整通过证据，只是进程在 Graph 投影前退出。
+          // 先退回 ready，由共享闭环重新核对契约、定义输入和产物指纹后再补投影。
+          this.recoverNode(graphId, node.nodeId, "ready", "Reconciling persisted TaskRun verification after Host restart.", node.taskRunId);
+          continue;
+        }
         if (terminalStatus !== undefined) {
           if (taskRuns && task && !isTaskRunTerminal(task.status)) {
             try {
@@ -513,6 +536,9 @@ export interface GraphSupervisorOptions {
   getRuntime?: () => InteractiveRuntimeHandle;
   taskRuns?: DurableTaskRunStore;
   getTaskRuns?: () => DurableTaskRunStore | undefined;
+  getTaskCommandExecutor?: () => TaskCommandExecutor | undefined;
+  getWorkspaceRoot?: () => string;
+  getWorkspaceIgnore?: () => readonly string[];
   tickMs?: number;
   concurrency?: number;
 }
@@ -581,18 +607,49 @@ export class GraphSupervisor {
       const parentRunId = "graph:" + graphId;
       const task = taskRuns?.create({ taskRunId: "graph:" + graphId + ":" + node.nodeId, task: node.intent, parentRunId });
       taskRunId = task?.taskRunId;
-      const runId = randomUUID();
-      const turnId = randomUUID();
-      attempt = task ? taskRuns?.createAttempt(task.taskRunId, { runId, turnId, parentRunId, retrySafety: "unknown" }) : undefined;
-      const submitted = runtime.submitPrompt(String((node.intent as { prompt?: unknown })?.prompt ?? node.nodeKey), [], { runId, turnId, parentRunId, continuationSource: "graph:" + graphId + ":intent:" + claim.claimId });
-      if (task && attempt) taskRuns?.transition(task.taskRunId, "running", { attemptId: attempt.attemptId });
-      const outcome = await submitted.completion;
-      if (outcome.status === "completed") {
-        this.transitionTask(taskRuns, task?.taskRunId, "completed", attempt?.attemptId);
+      if (!task || !taskRuns) {
+        const runId = randomUUID();
+        const turnId = randomUUID();
+        const submitted = runtime.submitPrompt(String((node.intent as { prompt?: unknown })?.prompt ?? node.nodeKey), [], {
+          runId,
+          turnId,
+          parentRunId,
+          continuationSource: "graph:" + graphId + ":intent:" + claim.claimId
+        });
+        const outcome = await submitted.completion;
+        if (outcome.status !== "completed") throw new Error(outcome.error ?? `Graph worker stopped with ${outcome.status}.`);
         store.completeNode(graphId, node.nodeId, "completed", { output: outcome.output }, taskRunId);
+        return;
+      }
+      const executor = this.options.getTaskCommandExecutor?.() ?? {
+        executeTaskCheck: async () => { throw new Error("Graph task verification runtime is unavailable."); }
+      };
+      const workspaceRoot = this.options.getWorkspaceRoot?.() ?? process.cwd();
+      const result = await runTaskClosure({
+        taskRuns,
+        taskRunId: task.taskRunId,
+        workspaceRoot,
+        ignore: this.options.getWorkspaceIgnore?.() ?? [],
+        executor,
+        executeAttempt: async (prompt, currentAttempt) => {
+          attempt = currentAttempt;
+          const submitted = runtime.submitPrompt(prompt, [], {
+            runId: currentAttempt.runId,
+            turnId: currentAttempt.turnId,
+            parentRunId,
+            continuationSource: "graph:" + graphId + ":intent:" + claim.claimId
+          });
+          const outcome = await submitted.completion;
+          if (outcome.status !== "completed") throw new Error(outcome.error ?? `Graph worker stopped with ${outcome.status}.`);
+          return outcome.output;
+        }
+      });
+      if (result.status === "completed") {
+        store.completeNode(graphId, node.nodeId, "completed", { output: result.output, verification: result.evidence }, taskRunId);
+      } else if (result.status === "blocked" || result.status === "cancelled") {
+        store.completeNode(graphId, node.nodeId, "blocked", { error: result.reason, verification: result.evidence }, taskRunId);
       } else {
-        this.transitionTask(taskRuns, task?.taskRunId, "failed", attempt?.attemptId, { error: outcome.error });
-        store.completeNode(graphId, node.nodeId, "failed", { error: outcome.error }, taskRunId);
+        store.completeNode(graphId, node.nodeId, "failed", { error: result.reason, verification: result.evidence }, taskRunId);
       }
     } catch (error) {
       // 空闲检查之后仍可能撞上 busy 竞态（本地 submit 同步抛错、Host 经 completion 异步拒绝）；

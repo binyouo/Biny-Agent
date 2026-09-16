@@ -259,7 +259,8 @@ export function readGraphNodes(value: unknown): GraphNodeInput[] {
       nodeKey: requiredString(node.nodeKey, `nodes[${String(index)}].nodeKey`),
       prompt: requiredString(node.prompt, `nodes[${String(index)}].prompt`),
       dependencies: dependencies as string[] | undefined,
-      intent: node.intent
+      intent: node.intent,
+      verification: node.verification
     };
   });
 }

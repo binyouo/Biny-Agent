@@ -105,8 +105,14 @@ export async function automationDeleteCommand(workspaceRoot: string, automationI
   await hostAction(workspaceRoot, options, async (client) => await client.automationDelete(automationId));
 }
 
-export async function taskCreateCommand(workspaceRoot: string, task: string, options: JsonOption & { sessionId?: string; parentRunId?: string } = {}): Promise<void> {
-  await hostAction(workspaceRoot, options, async (client) => await client.taskCreate({ task, sessionId: options.sessionId, parentRunId: options.parentRunId }));
+export async function taskCreateCommand(
+  workspaceRoot: string,
+  task: string,
+  options: JsonOption & { sessionId?: string; parentRunId?: string; verification?: string } = {}
+): Promise<void> {
+  const verification = options.verification === undefined ? undefined : JSON.parse(options.verification) as unknown;
+  const payload = verification === undefined ? task : { prompt: task, verification };
+  await hostAction(workspaceRoot, options, async (client) => await client.taskCreate({ task: payload, sessionId: options.sessionId, parentRunId: options.parentRunId }));
 }
 
 export async function taskActionCommand(workspaceRoot: string, action: "start" | "run" | "cancel" | "approve" | "resume" | "retry", taskRunId: string, options: JsonOption & { reason?: string; retrySafety?: string } = {}): Promise<void> {

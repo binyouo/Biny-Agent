@@ -20,6 +20,10 @@ export interface SubagentTaskSnapshot {
 
 export interface SubagentTaskRunOptions {
   taskId?: string;
+  /** Host 将一次子代理执行绑定回既有 TaskRun / Attempt；内存调度器本身不解释这些字段。 */
+  taskRunId?: string;
+  attemptId?: string;
+  completedStatus?: "completed" | "verifying";
   parentRunId?: string;
   signal?: AbortSignal;
   timeoutMs?: number;

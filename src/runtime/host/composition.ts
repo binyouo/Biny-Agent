@@ -66,7 +66,10 @@ export function createRuntimeHostBusinessComposition(
       ? new GraphSupervisor({
         getStore: () => options.getCommands().graphs,
         getRuntime: options.getRuntime,
-        getTaskRuns: () => options.getCommands().taskRuns
+        getTaskRuns: () => options.getCommands().taskRuns,
+        getTaskCommandExecutor: () => options.getCommands(),
+        getWorkspaceRoot: () => options.getCommands().workspaceRoot,
+        getWorkspaceIgnore: () => options.getCommands().config.workspace.ignore
       })
       : undefined;
   };
