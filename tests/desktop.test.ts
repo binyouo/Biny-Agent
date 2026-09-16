@@ -62,11 +62,10 @@ import {
   pushNavigation,
   replaceNavigation
 } from "../src/desktop/renderer/src/navigationHistory.js";
-import { activeTimelineTool, buildSessionTimeline, listChangedFiles, listTimelineFiles, liveTimelineEvents, timelineToolEntries, type TimelineTurn } from "../src/desktop/renderer/src/sessionTimeline.js";
-import { formatContextUsage, formatTurnCost, formatUsageCost, summarizeTimelineUsage } from "../src/desktop/renderer/src/usagePresentation.js";
+import { buildSessionTimeline, listChangedFiles, liveTimelineEvents } from "../src/desktop/renderer/src/sessionTimeline.js";
+import { formatContextUsage, formatUsageCost } from "../src/desktop/renderer/src/usagePresentation.js";
 import { reasoningDetailText } from "../src/desktop/renderer/src/reasoningPresentation.js";
 import { projectWebSearchView } from "../src/desktop/renderer/src/webSearchPresentation.js";
-import type { TimelineTool } from "../src/desktop/renderer/src/sessionTimeline.js";
 import { catalogForConnection, customCatalogEntry, providerCatalog } from "../src/desktop/renderer/src/providerCatalog.js";
 import { connectionLabel, stagedModelChoices } from "../src/desktop/renderer/src/components/settings/providerModelProjection.js";
 import { thinkingLabel as composerThinkingLabel } from "../src/desktop/renderer/src/components/composer/composerLabels.js";
@@ -78,7 +77,6 @@ import { workspaceFileMarker } from "../src/desktop/renderer/src/workspaceFileMa
 import { filterPickerModelChoices, listConfiguredModelChoices, listModelChoices, listPickerModelChoices, ModelManager } from "../src/llm/ModelManager.js";
 import { FileModelsStore } from "../src/llm/ModelsStore.js";
 import type { SessionEvent } from "../src/session/recorder.js";
-import type { SessionUsage } from "../src/session/metadata.js";
 import { SessionRecorder } from "../src/session/recorder.js";
 import { listSessionSummaries, readStoredSessionEvents } from "../src/session/events.js";
 import { agentDir, ensureAgentDirs, resolveSessionFile, sessionFilePath } from "../src/session/store.js";
@@ -179,7 +177,6 @@ testTerminalRunEventClassification();
 testLiveReasoningAndSkillProjection();
 testReasoningDetailDoesNotUseCompletionStatusAsContent();
 testDesktopNavigationHistory();
-testPendingPermissionToolSelection();
 testDesktopRendererStateProjection();
 testDesktopRendererSidebarProjection();
 testDesktopRendererRootRefreshDropsDeletedSession();
@@ -609,37 +606,6 @@ async function testPermissionRequiredToolResultIsFailed(): Promise<void> {
   assert.equal(events.some((event) => event.type === "tool.failed" && /target changed/i.test(event.error)), true);
   assert.equal(events.some((event) => event.type === "tool.completed"), false);
   await runtime.close();
-}
-
-function testPendingPermissionToolSelection(): void {
-  const tools: TimelineTool[] = [
-    { id: "write-1", tool: "Write", args: {}, status: "success", updates: [] },
-    {
-      id: "write-2",
-      tool: "Write",
-      args: {},
-      status: "running",
-      updates: [],
-      permission: {
-        requestId: "permission-2",
-        resolved: false,
-        request: {
-          toolCallId: "write-2",
-          tool: "Write",
-          title: "Allow write",
-          details: "Write another file",
-          requireFullYes: true,
-          actionType: "write",
-          riskLevel: "critical"
-        }
-      }
-    }
-  ];
-  assert.equal(activeTimelineTool(tools)?.id, "write-2");
-  assert.deepEqual(timelineToolEntries(tools).map((entry) => [entry.key, entry.label]), [
-    ["write-1", "Write 1"],
-    ["write-2", "Write 2 · 待授权"]
-  ]);
 }
 
 async function testInteractiveRuntimeAbort(): Promise<void> {
@@ -3733,40 +3699,9 @@ function testLiveRetryReplacesTargetTurn(): void {
 }
 
 function testDesktopUsagePresentation(): void {
-  const pricedUsage: SessionUsage = {
-    operation: "agent",
-    modelAlias: "primary",
-    provider: "openai",
-    model: "gpt-test",
-    inputTokens: 100,
-    outputTokens: 20,
-    totalTokens: 120,
-    costUsd: 0.000002,
-    pricingKnown: true
-  };
-  const unpricedUsage: SessionUsage = { ...pricedUsage, costUsd: undefined, pricingKnown: false };
-  const toTurn = (id: string, usage: SessionUsage): TimelineTurn => ({
-    id,
-    user: "hello",
-    assistant: "hi",
-    reasoning: "",
-    skills: [],
-    status: "completed",
-    tools: [],
-    steps: [],
-    usage
-  });
-
-  const pricedSummary = summarizeTimelineUsage([toTurn("priced", pricedUsage)]);
-  assert.equal(formatUsageCost(pricedSummary), "$0.000002");
-  assert.equal(formatTurnCost(pricedUsage), "$0.000002");
-
-  const mixedSummary = summarizeTimelineUsage([toTurn("priced", pricedUsage), toTurn("unknown", unpricedUsage)]);
-  assert.equal(mixedSummary.calls, 2);
-  assert.equal(mixedSummary.pricedCalls, 1);
-  assert.equal(mixedSummary.unpricedCalls, 1);
-  assert.equal(formatUsageCost(mixedSummary), "未知");
-  assert.equal(formatTurnCost(unpricedUsage), "费用未知");
+  assert.equal(formatUsageCost({ calls: 1, costUsd: 0.000002, pricingKnown: true }), "$0.000002");
+  assert.equal(formatUsageCost({ calls: 2, costUsd: 0.000002, pricingKnown: false }), "未知");
+  assert.equal(formatUsageCost({ calls: 0, costUsd: undefined, pricingKnown: false }), "—");
 
   const context = formatContextUsage({ usedTokens: 109_000, contextWindow: 1_000_000, source: "provider" });
   assert.equal(context?.percent, 10.9);
@@ -3774,14 +3709,6 @@ function testDesktopUsagePresentation(): void {
   assert.equal(context?.compactUsed, "10.9万");
   assert.equal(context?.estimated, false);
 
-  const replayedTurnUsage: SessionUsage = {
-    ...unpricedUsage,
-    inputTokens: 300,
-    cacheReadTokens: 200,
-    latestRequestInputTokens: 200,
-    latestRequestCacheReadTokens: 200
-  };
-  assert.equal(summarizeTimelineUsage([toTurn("replayed", replayedTurnUsage)]).latestCacheHitRate, 1);
 }
 
 function testHistoricalToolProjection(): void {
@@ -4006,7 +3933,7 @@ function testChangedFileProjection(): void {
     { ...base, runId: "edit-run", type: "tool.change_committed", toolCallId: "edit-tool", tool: "Edit", operationId: "op-edit", change: { operation: "update", path: "hello.py", committed: true, diff: "" } },
     { ...base, runId: "edit-run", type: "tool.completed", toolCallId: "edit-tool", tool: "Edit", result: { path: "hello.py" }, durationMs: 10 }
   ]);
-  assert.deepEqual(listTimelineFiles([completed[0]!, edited[0]!]), [{ path: "hello.py", operation: "edit", status: "completed" }]);
+  assert.deepEqual(listChangedFiles(edited[0]!), [{ path: "hello.py", operation: "edit", status: "completed" }]);
 }
 
 function testLiveTimelineProjection(): void {

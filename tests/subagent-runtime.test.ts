@@ -22,7 +22,6 @@ import type { CommandRuntime } from "../src/runtime/CommandRuntime.js";
 import { PermissionManager } from "../src/permission/PermissionManager.js";
 import { InteractiveAgentRuntime } from "../src/runtime/InteractiveAgentRuntime.js";
 import { executeRuntimeCommand } from "../src/runtime/commands.js";
-import { AsyncEventQueue } from "../src/runtime/AsyncEventQueue.js";
 import {
   SubagentTaskAbortedError,
   SubagentTaskManager,
@@ -65,7 +64,6 @@ await testRuntimeCloseDefersCleanupForNonCooperativeMaintenance();
 await testMaintenanceGateIsAtomic();
 await testPermissionGateIsAtomic();
 await testEmptyPromptIsRejected();
-await testAsyncEventQueueAcknowledgesAndFailsClosed();
 await testConcurrentRootRunIsRejected();
 await testActiveRunAcceptsSteeringAndFollowUp();
 await testRuntimeUpdatesCarryCanonicalState();
@@ -777,28 +775,6 @@ async function testEmptyPromptIsRejected(): Promise<void> {
   const runtime = new InteractiveAgentRuntime(fakeCommandRuntime());
   assert.throws(() => runtime.submitPrompt(" \n\t"), /prompt cannot be empty/i);
   await runtime.close();
-}
-
-async function testAsyncEventQueueAcknowledgesAndFailsClosed(): Promise<void> {
-  const queue = new AsyncEventQueue<string>();
-  const iterator = queue[Symbol.asyncIterator]();
-  const progress = queue.waitForProgress();
-  queue.push("first");
-  assert.deepEqual(await iterator.next(), { value: "first", done: false });
-  assert.equal(queue.pushedCount, 1);
-  assert.equal(queue.consumedCount, 0);
-  queue.ackConsumed();
-  await progress;
-  assert.equal(queue.consumedCount, 1);
-  await iterator.return?.();
-  queue.push("late");
-  assert.equal(queue.consumerDetached, true);
-  assert.equal(queue.pushedCount, 1);
-
-  const errored = new AsyncEventQueue<string>();
-  const pending = errored[Symbol.asyncIterator]().next();
-  errored.error(new Error("stream failed"));
-  await assert.rejects(pending, /stream failed/);
 }
 
 async function testConcurrentRootRunIsRejected(): Promise<void> {

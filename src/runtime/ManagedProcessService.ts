@@ -273,11 +273,6 @@ export class ManagedProcessService {
     return snapshots.sort((left, right) => left.startedAt.localeCompare(right.startedAt));
   }
 
-  /** Compatibility surface consumed by AcceptanceVerifier's process inspector. */
-  async listProcesses(): Promise<ManagedProcessSnapshot[]> {
-    return await this.list();
-  }
-
   async readOutput(processId: string, options: ReadManagedProcessOutputOptions = {}): Promise<ManagedProcessOutput> {
     const record = this.requireRecord(processId);
     const maxBytes = options.maxBytes ?? 64 * 1024;

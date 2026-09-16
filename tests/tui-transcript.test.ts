@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { CombinedAutocompleteProvider, TUI, visibleWidth } from "@earendil-works/pi-tui";
 import { createInitialTuiState, tuiReducer, type TuiAction } from "../src/tui/reducer.js";
 import { sessionEventsToTranscript } from "../src/tui/sessionTranscript.js";
-import { diffLineStyle } from "../src/tui/diffLines.js";
 import { formatSessionAge, formatToolDuration } from "../src/tui/transcriptText.js";
 import { TranscriptView } from "../src/tui/components/transcriptView.js";
 import { ActivitySummaryComponent, ThinkingComponent, ToolExecutionComponent, splitToolTitle } from "../src/tui/components/messages.js";
@@ -161,7 +160,6 @@ async function main(): Promise<void> {
   testModelThinkingOptionsUseModelCapabilities();
   testDialogsRenderAndHandleKeys();
   testPermissionDialogRequiresFullYes();
-  testDiffStylesUseThemeTokens();
   testTranscriptTextHelpers();
 }
 
@@ -1547,12 +1545,6 @@ function testPermissionDialogRequiresFullYes(): void {
   fileDialog.handleInput("\u000F");
   fileDialog.setDetailsExpanded(true);
   assert.match(plainLines(fileDialog.render(80)).join("\n"), /secret implementation detail/u);
-}
-
-function testDiffStylesUseThemeTokens(): void {
-  assert.deepEqual(diffLineStyle("+new code"), { color: "toolDiffAdded" });
-  assert.deepEqual(diffLineStyle("-old code"), { color: "toolDiffRemoved" });
-  assert.deepEqual(diffLineStyle("@@ -1 +1 @@"), { color: "toolDiffContext", dim: true });
 }
 
 function testTranscriptTextHelpers(): void {

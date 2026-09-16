@@ -96,7 +96,7 @@ async function testManagedCwdRejectsSymlinkEscape(workspaceRoot: string): Promis
       service.start({ command: `${JSON.stringify(process.execPath)} -e "process.exit(0)"`, cwd: "escaped-cwd" }),
       /must not escape the workspace through a symbolic link/i
     );
-    assert.deepEqual(await service.listProcesses(), []);
+    assert.deepEqual(await service.list(), []);
   } finally {
     await service.close();
     await rm(linkPath, { force: true });

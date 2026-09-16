@@ -1,152 +1,21 @@
 /**
  * 聊天行的纯函数模型。
  *
- * 把工具名分类成视觉变体、派生行标题与状态语义；以及消息时钟的时间/指标格式化
- * （日期感知时钟、用时、首 token 延迟、解码吞吐）。全部为纯函数，不依赖 React，便于单测。
+ * 派生活动相位、工具摘要与消息指标。全部为纯函数，不依赖 React，便于单测。
  */
-import type { TimelineReasoningStep, TimelineRunStatus, TimelineTool, TimelineToolStep, TimelineTurn } from "./sessionTimeline.js";
-import { executionToolLabel } from "./sessionTimeline.js";
+import type { TimelineReasoningStep, TimelineTool, TimelineToolStep, TimelineTurn } from "./sessionTimeline.js";
 import type { SessionUsage } from "../../../session/metadata.js";
-import type { IconName } from "./components/Icon.js";
 import { countDiffStats } from "./sessionChanges.js";
-
-/** 工具行视觉变体（标题字面量来自 DSH figma 设计）。 */
-export type ToolRowVariant = "search" | "read" | "bash" | "write" | "edit" | "git" | "process" | "skill" | "others";
-
-/** 行状态语义；驱动工具行图标芯片的着色与呼吸光环。 */
-export type ToolRowState = "running" | "ok" | "error" | "stopped";
-
-/** 变体 leading 图标名（Biny Icon 名；对齐 alma/lucide 的语义：read=带正文的文件、bash=终端、write/edit=笔）。 */
-export const VARIANT_ICON_NAMES: Record<ToolRowVariant, IconName> = {
-  search: "search",
-  read: "file-text",
-  bash: "terminal",
-  write: "edit",
-  edit: "edit",
-  git: "branch",
-  process: "activity",
-  skill: "wand",
-  others: "wrench",
-};
-
-/** 变体行标题（DSH figma 字面量，非翻译文案）。 */
-export const VARIANT_TITLES: Record<ToolRowVariant, string> = {
-  search: "Search",
-  read: "Read",
-  bash: "Bash",
-  write: "Write",
-  edit: "Edit",
-  git: "Git",
-  process: "Process",
-  skill: "Skill",
-  others: "Tool call",
-};
-
-/** 已知工具名 → 变体；未知工具落到通用 `others`，行标题回退显示原始工具名。 */
-const TOOL_VARIANTS: Record<string, ToolRowVariant> = {
-  Bash: "bash",
-  Read: "read",
-  WebFetch: "read",
-  WebSearch: "search",
-  Grep: "search",
-  Write: "write",
-  Edit: "edit",
-  BashOutput: "process",
-  KillShell: "process",
-  Glob: "read",
-  read_tool_result: "read",
-  TodoWrite: "edit",
-  Skill: "skill",
-  skill_call: "skill",
-  read_skill_resource: "read",
-  activity_search: "search",
-  activity_search_semantic: "search",
-  activity_sessions: "read",
-  activity_session_show: "read",
-  activity_report: "read",
-  activity_digest: "read",
-  mcp_list_resources: "search",
-  mcp_read_resource: "read",
-};
-
-/** 把工具名分类成行变体。 */
-export function classifyTool(toolName: string): ToolRowVariant {
-  if (/(?:^|_)zvec_grep_search$/u.test(toolName)) return "search";
-  return TOOL_VARIANTS[toolName] ?? "others";
-}
-
-/** 从时间线工具状态派生行状态语义。 */
-export function toolRowState(tool: TimelineTool): ToolRowState {
-  if (tool.status === "running" || tool.status === "waiting") return "running";
-  if (tool.status === "failed" || tool.status === "denied" || tool.status === "unknown") return "error";
-  if (tool.status === "cancelled" || tool.status === "aborted") return "stopped";
-  return "ok";
-}
 
 /** 实时与历史消息共用同一身份判断，已接收的消息不再保留发送占位或驱动忙碌状态。 */
 export function hasSubmittedUserMessage(turns: TimelineTurn[], messageId: string | undefined, content: string): boolean {
   return turns.some((turn) => messageId !== undefined ? turn.userMessageId === messageId : turn.user === content);
 }
 
-/** 从运行事实派生的状态行文案。 */
-export interface TurnActivity {
-  label: string;
-}
-
-const THINKING_ACTIVITY: TurnActivity = { label: "思考中" };
-
-/**
- * 从运行中的轮次派生当前真实活动，驱动聊天底部的状态行（Alma 式）。
- * 优先级：等待授权 > 正在运行的工具/技能 > 思考；轮次不存在或已落定时回到「思考中」。
- */
-export function currentTurnActivity(turn: TimelineTurn | undefined): TurnActivity {
-  if (!turn || (turn.status !== "running" && turn.status !== "waiting_permission")) return THINKING_ACTIVITY;
-  if (turn.status === "waiting_permission") {
-    const pending = [...turn.tools].reverse().find((tool) => tool.permission && !tool.permission.resolved);
-    return {
-      label: pending ? `等待授权：${executionToolLabel(pending.tool)}` : "等待授权"
-    };
-  }
-  const active = [...turn.tools].reverse().find((tool) => tool.status === "running" || tool.status === "waiting");
-  if (active) return toolCallActivity(active);
-  return turn.memoryInjectedCount && turn.steps.length === 0
-    ? { label: `已注入 ${String(turn.memoryInjectedCount)} 条记忆，思考中` }
-    : THINKING_ACTIVITY;
-}
-
-/** 运行中工具的状态行文案，显示正在执行的工具或技能名称。 */
-function toolCallActivity(tool: TimelineTool): TurnActivity {
-  if (tool.tool === "Skill" || tool.tool === "skill_call") {
-    const args = typeof tool.args === "object" && tool.args !== null ? tool.args as Record<string, unknown> : undefined;
-    const skill = typeof args?.skill === "string" ? args.skill.trim() : "";
-    return { label: skill ? `正在使用技能 ${skill}` : "正在使用技能" };
-  }
-  if (tool.tool === "WebSearch") return { label: "正在搜索网页" };
-  const display = tool.display;
-  if (display?.kind === "command") return { label: `正在运行 ${executionToolLabel(tool.tool)}` };
-  if (display?.kind === "file_io") {
-    if (display.operation === "read") return { label: `正在读取文件 · ${executionToolLabel(tool.tool)}` };
-    if (["write", "update", "delete", "move"].includes(display.operation)) return { label: `正在修改文件 · ${executionToolLabel(tool.tool)}` };
-    if (display.operation === "search" || display.operation === "grep") return { label: `正在搜索项目 · ${executionToolLabel(tool.tool)}` };
-    if (display.operation === "git") return { label: "正在检查 Git 状态" };
-  }
-  if (tool.description) return { label: tool.description };
-  return { label: `正在执行 ${executionToolLabel(tool.tool)}` };
-}
-
 /** 错误行的折叠摘要 = 失败文本首行（DSH：错误摘要替换摘要槽）。 */
 export function firstLine(text: string): string {
   const newline = text.indexOf("\n");
   return newline === -1 ? text : text.slice(0, newline);
-}
-
-/** 需要在对应消息旁呈现原因或重试入口的非成功终态；取消使用中性提示。 */
-export function isRunErrorStatus(status: TimelineRunStatus): boolean {
-  return status === "failed"
-    || status === "blocked"
-    || status === "incomplete"
-    || status === "cancelled"
-    || status === "aborted";
 }
 
 /** 折叠的 token 计数：517 / 12.2K / 517K / 1.2M（一位小数仅在三位数以下）。 */
@@ -369,20 +238,6 @@ export function phaseThinkingSeconds(phase: ActivityPhase): number | undefined {
     }
   }
   return found ? Math.max(1, Math.round(ms / 1000)) : undefined;
-}
-
-/** 活动单元数 = 每个思考相位算 1，工具逐个计数；驱动「用了 N 个工具」。 */
-export function countActivityUnits(phases: ActivityPhase[]): number {
-  return phases.reduce((sum, phase) => sum + (phase.kind === "thinking" ? 1 : phase.items.length), 0);
-}
-
-/** 相位是否整体落定（思考完成、工具离开运行态）；活体 shimmer 只给最后一个未落定相位。 */
-export function phaseSettled(phase: ActivityPhase): boolean {
-  return phase.items.every(({ step }) => {
-    if (step.kind === "reasoning") return Boolean(step.completed);
-    const status = step.tool.status;
-    return status !== "running" && status !== "waiting";
-  });
 }
 
 /** 相位摘要的动宾结构：verb 是加重前景词，rest 是弱化补语（数量/对象）。 */

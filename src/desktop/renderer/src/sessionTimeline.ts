@@ -73,12 +73,6 @@ export interface TimelineTool {
   fileChange?: CommittedFileChange;
 }
 
-export interface TimelineToolEntry {
-  key: string;
-  label: string;
-  toolId?: string;
-}
-
 export interface TimelineReasoningStep {
   kind: "reasoning";
   id: string;
@@ -115,28 +109,6 @@ export interface TimelineUserStep {
 }
 
 export type TimelineStep = TimelineReasoningStep | TimelineAssistantStep | TimelineToolStep | TimelineUserStep;
-
-export function activeTimelineTool(tools: TimelineTool[], selectedToolId?: string): TimelineTool | undefined {
-  return [...tools].reverse().find((tool) => tool.permission && !tool.permission.resolved)
-    ?? tools.find((tool) => tool.id === selectedToolId);
-}
-
-export function timelineToolEntries(tools: TimelineTool[]): TimelineToolEntry[] {
-  const totals = new Map<string, number>();
-  const seen = new Map<string, number>();
-  for (const tool of tools) totals.set(tool.tool, (totals.get(tool.tool) ?? 0) + 1);
-  return tools.map((tool) => {
-    const occurrence = (seen.get(tool.tool) ?? 0) + 1;
-    seen.set(tool.tool, occurrence);
-    const duplicateLabel = (totals.get(tool.tool) ?? 0) > 1 ? ` ${String(occurrence)}` : "";
-    const permissionLabel = tool.permission && !tool.permission.resolved ? " · 待授权" : "";
-    return {
-      key: tool.id,
-      label: `${executionToolLabel(tool.tool)}${duplicateLabel}${permissionLabel}`,
-      toolId: tool.id
-    };
-  });
-}
 
 export function executionToolLabel(tool: string): string {
   if (tool === "Bash") return "Bash";
@@ -1310,18 +1282,6 @@ export function listChangedFiles(turn: TimelineTurn): TimelineChangedFile[] {
     });
   }
   return [...files.values()];
-}
-
-export function listTimelineFiles(turns: TimelineTurn[]): TimelineChangedFile[] {
-  const files = new Map<string, TimelineChangedFile>();
-  for (const turn of turns) {
-    for (const file of listChangedFiles(turn)) {
-      if (file.status !== "completed") continue;
-      files.delete(file.path);
-      files.set(file.path, file);
-    }
-  }
-  return [...files.values()].reverse();
 }
 
 function changedFileOperation(tool: TimelineTool): TimelineChangedFile["operation"] | undefined {

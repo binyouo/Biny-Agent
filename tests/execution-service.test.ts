@@ -253,7 +253,6 @@ function fakeRuntime(
     config: defaultConfig,
     agent,
     managedProcesses: {
-      listProcesses: async () => [],
       close: async () => []
     },
     extensionReport: () => "",
