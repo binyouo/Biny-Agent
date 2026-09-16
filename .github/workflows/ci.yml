@@ -83,7 +83,29 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Test
-        run: pnpm test
+        run: pnpm test:standard
+
+  e2e:
+    name: Runtime E2E
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.6.5
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Test built runtime end to end
+        run: pnpm test:e2e
 
   build:
     name: Build
@@ -113,7 +135,7 @@ jobs:
   validate:
     name: Validate
     if: ${{ always() }}
-    needs: [static, test, build]
+    needs: [static, test, e2e, build]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -121,12 +143,14 @@ jobs:
         env:
           STATIC_RESULT: ${{ needs.static.result }}
           TEST_RESULT: ${{ needs.test.result }}
+          E2E_RESULT: ${{ needs.e2e.result }}
           BUILD_RESULT: ${{ needs.build.result }}
         run: |
-          if [[ "$STATIC_RESULT" != "success" || "$TEST_RESULT" != "success" || "$BUILD_RESULT" != "success" ]]; then
+          if [[ "$STATIC_RESULT" != "success" || "$TEST_RESULT" != "success" || "$E2E_RESULT" != "success" || "$BUILD_RESULT" != "success" ]]; then
             echo "Static checks: $STATIC_RESULT"
             echo "Tests: $TEST_RESULT"
+            echo "Runtime E2E: $E2E_RESULT"
             echo "Build: $BUILD_RESULT"
             exit 1
           fi
-          echo "Static checks, tests, and builds all passed."
+          echo "Static checks, tests, runtime E2E, and builds all passed."

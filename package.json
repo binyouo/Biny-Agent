@@ -41,7 +41,9 @@
     "lint": "eslint electron.vite.config.ts scripts src tests",
     "test:models": "node --test scripts/sync-model-metadata.test.mjs",
     "test:runtime-host": "node scripts/run-tests.mjs runtime-host",
-    "test": "pnpm test:models && node scripts/run-tests.mjs",
+    "test:standard": "pnpm test:models && node scripts/run-tests.mjs --standard",
+    "test:e2e": "pnpm build:cli && node scripts/run-tests.mjs --e2e",
+    "test": "pnpm test:standard && pnpm test:e2e",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.desktop.json",
     "start": "node dist/cli/index.js",
     "prepack": "pnpm build:cli"

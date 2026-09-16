@@ -6,11 +6,19 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
-const prefix = process.argv[2] ?? "";
+const args = process.argv.slice(2);
+const modes = args.filter((arg) => arg === "--standard" || arg === "--e2e");
+if (modes.length > 1) throw new Error("Choose either --standard or --e2e.");
+const mode = modes[0];
+const prefixes = args.filter((arg) => !arg.startsWith("--"));
+if (prefixes.length > 1) throw new Error("Only one test file prefix is supported.");
+const prefix = prefixes[0] ?? "";
 const suites = (await readdir(path.join(root, "tests")))
   .filter((name) => name.endsWith(".test.ts") && name.startsWith(prefix))
+  .filter((name) => mode !== "--standard" || !name.endsWith("-e2e.test.ts"))
+  .filter((name) => mode !== "--e2e" || name.endsWith("-e2e.test.ts"))
   .sort();
-if (!suites.length) throw new Error(`No test files match ${prefix}`);
+if (!suites.length) throw new Error(`No test files match ${[mode, prefix].filter(Boolean).join(" ") || "the request"}.`);
 for (const [index, suite] of suites.entries()) {
   const agentDir = await mkdtemp(path.join(os.tmpdir(), "biny-test-suite-"));
   console.log(`[${index + 1}/${suites.length}] ${suite}`);
