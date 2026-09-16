@@ -20,10 +20,86 @@ import { ToolRegistry } from "../src/tools/registry.js";
 
 const execFile = promisify(execFileCallback);
 
+await testBuiltCliCompletesToolTask();
 await testProviderTransportCrash();
 await testRuntimeHostProviderCrash();
 await testTuiThroughPty();
 console.log("runtime e2e tests passed");
+
+/** 从构建产物启动真实 CLI，覆盖配置加载、模型流、工具执行、落盘与机器输出。 */
+async function testBuiltCliCompletesToolTask(): Promise<void> {
+  const root = await mkdtemp(path.join(os.tmpdir(), "biny-e2e-built-cli-"));
+  const agentDir = path.join(root, "agent");
+  const agentRequestBodies: Record<string, unknown>[] = [];
+  const server = await startProviderServer(async (request, response) => {
+    const body = await readRequestJson(request);
+    if (Array.isArray(body.tools)) {
+      agentRequestBodies.push(body);
+    } else {
+      const system = JSON.stringify(body.messages);
+      sendProviderText(response, system.includes("skillIds") ? '{"skillIds":[]}' : system.includes('工具名称') ? '{"tools":[]}' : "[]");
+      return;
+    }
+    if (agentRequestBodies.length === 1) {
+      sendProviderParts(response, [
+        {
+          choices: [{
+            index: 0,
+            delta: {
+              tool_calls: [{
+                index: 0,
+                id: "write-e2e",
+                type: "function",
+                function: { name: "Write", arguments: JSON.stringify({ path: "result.txt", content: "e2e-ok\n" }) }
+              }]
+            },
+            finish_reason: null
+          }]
+        },
+        { choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }] },
+        "[DONE]"
+      ]);
+      return;
+    }
+    sendProviderText(response, "tool-task-complete");
+  });
+  try {
+    await saveConfigFile(agentDir, testConfig(server.endpoint));
+    const cli = path.resolve("dist/cli/index.js");
+    const result = await execFile(process.execPath, [cli, "run", "--headless", "--json", "Create result.txt with the requested content."], {
+      cwd: root,
+      env: { ...process.env, BINY_AGENT_DIR: agentDir },
+      timeout: 30_000,
+      maxBuffer: 2 * 1024 * 1024
+    });
+    const output = result.stdout.trim().split(/\r?\n/u).at(-1);
+    assert.ok(output, `Built CLI did not return JSON. stderr: ${result.stderr}`);
+    const machine = JSON.parse(output) as { status?: unknown; sessionFile?: unknown; steps?: unknown };
+    assert.equal(machine.status, "completed", JSON.stringify(machine));
+    assert.equal(machine.steps, 2);
+    assert.equal(agentRequestBodies.length, 2);
+    assert.equal(Array.isArray(agentRequestBodies[0]?.messages), true);
+    assert.ok(
+      agentRequestBodies.some((body) => JSON.stringify(body.messages).includes("write-e2e")),
+      JSON.stringify(agentRequestBodies)
+    );
+    assert.equal(typeof machine.sessionFile, "string");
+    const events = await readSessionEvents(machine.sessionFile as string);
+    assert.equal(
+      await readFile(path.join(root, "result.txt"), "utf8").catch(() => undefined),
+      "e2e-ok\n",
+      JSON.stringify(events.filter((event) => event.type === "tool_call" || event.type === "tool_result"))
+    );
+    for (const type of ["user_message", "assistant_message", "tool_call", "tool_result", "turn_status"] as const) {
+      assert.ok(events.some((event) => event.type === type), `Session is missing ${type}.`);
+    }
+    assert.ok(events.some((event) => event.type === "tool_call" && event.tool === "Write" && event.toolCallId === "write-e2e"));
+    assert.ok(events.some((event) => event.type === "turn_status" && event.status === "completed"));
+  } finally {
+    await server.close();
+    await rm(root, { recursive: true, force: true });
+  }
+}
 
 async function testProviderTransportCrash(): Promise<void> {
   const root = await mkdtemp(path.join(os.tmpdir(), "biny-e2e-provider-crash-"));
@@ -192,9 +268,14 @@ function testConfig(endpoint: string): AgentConfig {
 }
 
 async function startProviderServer(
-  handler: (request: import("node:http").IncomingMessage, response: import("node:http").ServerResponse) => void
+  handler: (request: import("node:http").IncomingMessage, response: import("node:http").ServerResponse) => void | Promise<void>
 ): Promise<{ endpoint: string; close(): Promise<void> }> {
-  const server = createServer((request, response) => handler(request, response));
+  const server = createServer((request, response) => {
+    void Promise.resolve(handler(request, response)).catch((error: unknown) => {
+      if (!response.headersSent) response.writeHead(500, { "content-type": "text/plain" });
+      response.end(error instanceof Error ? error.message : String(error));
+    });
+  });
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject);
     server.listen(0, "127.0.0.1", () => {
@@ -213,13 +294,26 @@ async function startProviderServer(
   };
 }
 
-function sendProviderText(response: import("node:http").ServerResponse, text: string): void {
+async function readRequestJson(request: import("node:http").IncomingMessage): Promise<Record<string, unknown>> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of request) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  return JSON.parse(Buffer.concat(chunks).toString("utf8")) as Record<string, unknown>;
+}
+
+function sendProviderParts(
+  response: import("node:http").ServerResponse,
+  parts: Array<Record<string, unknown> | "[DONE]">
+): void {
   response.writeHead(200, { "content-type": "text/event-stream" });
-  response.end([
-    `data: ${JSON.stringify({ choices: [{ index: 0, delta: { content: text }, finish_reason: null }] })}\n\n`,
-    `data: ${JSON.stringify({ choices: [{ index: 0, delta: {}, finish_reason: "stop" }] })}\n\n`,
-    "data: [DONE]\n\n"
-  ].join(""));
+  response.end(parts.map((part) => `data: ${typeof part === "string" ? part : JSON.stringify(part)}\n\n`).join(""));
+}
+
+function sendProviderText(response: import("node:http").ServerResponse, text: string): void {
+  sendProviderParts(response, [
+    { choices: [{ index: 0, delta: { content: text }, finish_reason: null }] },
+    { choices: [{ index: 0, delta: {}, finish_reason: "stop" }] },
+    "[DONE]"
+  ]);
 }
 
 async function waitFor(predicate: () => boolean, timeoutMs: number, terminal: IPty, getOutput: () => string): Promise<void> {
