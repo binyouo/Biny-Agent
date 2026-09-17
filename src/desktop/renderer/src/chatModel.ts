@@ -12,6 +12,16 @@ export function hasSubmittedUserMessage(turns: TimelineTurn[], messageId: string
   return turns.some((turn) => messageId !== undefined ? turn.userMessageId === messageId : turn.user === content);
 }
 
+/**
+ * 运行中可以展示正在使用的上下文；结束后只保留成功轮次里有实际产出的清单。
+ * 这样失败或空回复不会因为预选能力、预先检索记忆而留下误导性的标识。
+ */
+export function shouldShowResponseContext(turn: Pick<TimelineTurn, "assistant" | "skills" | "status" | "tools">): boolean {
+  if (turn.status === "running" || turn.status === "waiting_permission") return true;
+  if (turn.status !== "completed") return false;
+  return Boolean(turn.assistant.trim() || turn.tools.length || turn.skills.length);
+}
+
 /** 错误行的折叠摘要 = 失败文本首行（DSH：错误摘要替换摘要槽）。 */
 export function firstLine(text: string): string {
   const newline = text.indexOf("\n");

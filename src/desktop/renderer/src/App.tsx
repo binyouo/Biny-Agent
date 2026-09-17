@@ -337,19 +337,31 @@ function DesktopApp(): React.JSX.Element {
     void loadProjectBranches(projectId);
   }, [composerProject?.id, loadProjectBranches]);
 
+  const [planProjection, setPlanProjection] = useState<import("../../protocol.js").DesktopPlanProjection>();
+  const projectionRequest = useRef(0);
+  const refreshPlans = useCallback(async (): Promise<void> => {
+    const projectId = projectRef.current;
+    const sessionId = selectedRef.current;
+    if (!projectId || !sessionId) return;
+    const request = ++projectionRequest.current;
+    const projection = await window.biny.planProjection(projectId, sessionId);
+    if (request !== projectionRequest.current || selectedRef.current !== sessionId || projectRef.current !== projectId) return;
+    setPlanProjection(projection);
+  }, []);
+
   const refreshRuntimeProjection = useCallback(async (): Promise<void> => {
     const projectId = projectRef.current;
     if (!projectId) return;
     const runtimeProjection = await window.biny.runtimeProjection(projectId);
     setWorkspace((current) => current?.project.id === projectId ? { ...current, runtimeProjection } : current);
   }, []);
-
   const mutateRuntime = useCallback(async (operation: DesktopRuntimeMutation, payload: Record<string, unknown>): Promise<void> => {
     const projectId = projectRef.current;
     if (!projectId) throw new Error("当前没有打开的项目。");
     await window.biny.runtimeMutation(projectId, operation, payload);
-    await refreshRuntimeProjection();
-  }, [refreshRuntimeProjection]);
+    if (operation.startsWith("plan.")) await refreshPlans();
+    else await refreshRuntimeProjection();
+  }, [refreshRuntimeProjection, refreshPlans]);
 
   const reportRuntimeError = useCallback((error: unknown): void => {
     setWarning(errorMessage(error));
@@ -640,7 +652,10 @@ function DesktopApp(): React.JSX.Element {
   const [generationError, setGenerationError] = useState<string>();
   const clearGenerationError = useCallback((): void => setGenerationError(undefined), []);
 
+  useEffect(() => { void refreshPlans().catch(reportEventError); }, [selectedSessionId, workspace?.project.id, refreshPlans, reportEventError]);
+
   useDesktopEventBridge({
+    onRuntimeProjectionChanged: refreshPlans,
     activeProjectIdRef: projectRef,
     selectedSessionIdRef: selectedRef,
     mergeProjectSnapshot,
@@ -877,7 +892,7 @@ function DesktopApp(): React.JSX.Element {
     };
   }, [newTask, openProject, openSearch, openSettings, toggleSidebar]);
 
-  const sendPrompt = useCallback(async (input: string, attachments: DesktopAttachment[], delivery?: "steer" | "followUp", idempotencyKey?: string, capabilitySelection?: AgentCapabilitySelection): Promise<DesktopRunReceipt> => {
+  const sendPrompt = useCallback(async (input: string, attachments: DesktopAttachment[], delivery?: "steer" | "queue", idempotencyKey?: string, capabilitySelection?: AgentCapabilitySelection): Promise<DesktopRunReceipt> => {
     const activeProjectId = projectRef.current;
     const projectId = selectedRef.current === undefined
       ? draftProjectId ?? activeProjectId
@@ -901,7 +916,8 @@ function DesktopApp(): React.JSX.Element {
       previousSessionId === undefined && draftMemoryOverride !== undefined ? draftPersonalization : undefined,
       idempotencyKey,
       undefined,
-      capabilitySelection
+      capabilitySelection,
+      undefined
     );
     if (switchingDraftProject) {
       // 消息已在目标项目创建后再切换界面；这样切换前不会重绘左侧栏，也不会丢掉目标运行产生的首批事件。
@@ -947,7 +963,7 @@ function DesktopApp(): React.JSX.Element {
   }, [openSession]);
 
   // 发送直接进入聊天布局；临时用户消息覆盖 IPC/事件桥的空窗，真实事件到达后自动替换。
-  const sendPromptWithTransition = useCallback(async (input: string, attachments: DesktopAttachment[], delivery?: "steer" | "followUp", idempotencyKey?: string, capabilitySelection?: AgentCapabilitySelection): Promise<void> => {
+  const sendPromptWithTransition = useCallback(async (input: string, attachments: DesktopAttachment[], delivery?: "steer" | "queue", idempotencyKey?: string, capabilitySelection?: AgentCapabilitySelection): Promise<void> => {
     setGenerationError(undefined);
     const pendingProjectId = selectedRef.current === undefined ? draftProjectId ?? projectRef.current : undefined;
     const pendingId = idempotencyKey ?? globalThis.crypto.randomUUID();
@@ -1395,6 +1411,7 @@ function DesktopApp(): React.JSX.Element {
   const selectedRunId = selectedActiveRun?.runId ?? selectedPendingPermission?.runId;
   const selectedRunning = Boolean(activeSessionId && activeSessionId === selectedSessionId);
   const selectedThinking = selectedActiveRun?.status === "thinking";
+  const queuedMessages = selectedRuntimeSnapshot?.queuedMessages ?? [];
   // 全局忙 = 任一 runtime 非空闲（配置/模型/权限等全局操作仍需等全部静下来）。
   const runtimeBusy = Boolean(
     (workspace?.runtime && workspace.runtime.state.kind !== "idle")
@@ -1505,6 +1522,15 @@ function DesktopApp(): React.JSX.Element {
     }
     setToast("提取指令已填入输入框 — 确认后发送");
   }, [prefillComposer]);
+  const mutateQueuedMessage = useCallback(async (
+    action: "update" | "remove" | "move" | "steer" | "send-all",
+    mutation?: { messageId?: string; input?: string; targetMessageId?: string; placeAfter?: boolean }
+  ): Promise<void> => {
+    const projectId = projectRef.current;
+    const sessionId = selectedRef.current;
+    if (!projectId || !sessionId) throw new Error("当前没有可操作的会话队列。");
+    await window.biny.mutateQueuedMessage(projectId, sessionId, action, mutation);
+  }, []);
   // 顶栏的项目/分支选择器胶囊：会话内外常驻；未进入会话时切换项目只影响草稿归属。
   const workspaceContext = composerProject ? (
     <WorkspaceContextBar
@@ -1520,6 +1546,7 @@ function DesktopApp(): React.JSX.Element {
     />
   ) : undefined;
   const composer = (
+    <>
     <Composer
       ref={composerRef}
       sessionWriterConflict={writerConflict !== undefined}
@@ -1539,6 +1566,7 @@ function DesktopApp(): React.JSX.Element {
       models={workspace?.pickerModels ?? workspace?.models ?? []}
       onSaveAttachment={saveAttachment}
       onSend={sendPromptWithTransition}
+      onMutateQueuedMessage={mutateQueuedMessage}
       onSubmitError={setGenerationError}
       editingMessage={composerEditingMessage}
       onSubmitEdit={submitEditedMessage}
@@ -1559,11 +1587,13 @@ function DesktopApp(): React.JSX.Element {
       project={workspace?.project}
       running={selectedRunning}
       runtimeBusy={runtimeBusy}
+      queuedMessages={queuedMessages}
       resourceState={selectedRuntimeSnapshot?.resourceReadiness?.state}
       resourceRevision={selectedRuntimeSnapshot?.resourceReadiness?.revision}
       skillWarnings={composerSkillWarnings}
       runtimeInfo={workspace?.runtime?.info}
     />
+    </>
   );
 
   return (
@@ -1721,6 +1751,7 @@ function DesktopApp(): React.JSX.Element {
         runtimeError={document === undefined && selectedSessionId === undefined ? workspace?.runtimeError : undefined}
         runtimePanelOpen={runtimePanelOpen}
         runtimeProjection={workspace?.runtimeProjection}
+        planProjection={planProjection}
         sessionId={selectedSessionId}
         sessionIsolation={sessionSummary?.isolation}
         sessionLimits={document?.limits}
@@ -1730,6 +1761,7 @@ function DesktopApp(): React.JSX.Element {
         onExtractRecipe={extractRecipe}
         thinking={selectedThinking}
         running={selectedRunning}
+        planning={selectedRuntimeSnapshot?.info.planning === true}
         turns={visibleTurns}
         writerConflict={writerConflict}
         onRuntimeError={reportRuntimeError}

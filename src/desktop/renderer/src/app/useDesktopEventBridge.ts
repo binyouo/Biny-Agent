@@ -24,6 +24,7 @@ export interface RecipeNotice extends DesktopRecipeSuggestion {
 }
 
 interface DesktopEventBridgeOptions {
+  onRuntimeProjectionChanged?(): Promise<void>;
   activeProjectIdRef: { current: string | undefined };
   selectedSessionIdRef: { current: string | undefined };
   mergeProjectSnapshot(snapshot: DesktopWorkspaceSnapshot): void;
@@ -42,6 +43,7 @@ interface DesktopEventBridgeOptions {
 }
 
 export function useDesktopEventBridge({
+  onRuntimeProjectionChanged,
   activeProjectIdRef,
   selectedSessionIdRef,
   mergeProjectSnapshot,
@@ -89,6 +91,9 @@ export function useDesktopEventBridge({
         ? batch.filter((envelope) => envelope.projectId === activeProjectId)
         : [];
       if (projectBatch.length) {
+        if (projectBatch.some(({ event }) => !event || event.type === "tool.completed" || event.type === "tool.failed" || isTerminalRunEvent(event))) {
+          void onRuntimeProjectionChanged?.().catch(onError);
+        }
         setWorkspace((current) => current && current.project.id === activeProjectId
           ? applyUpdatesToWorkspace(current, projectBatch)
           : current);
@@ -149,5 +154,5 @@ export function useDesktopEventBridge({
       for (const timer of refreshTimers.values()) clearTimeout(timer);
       refreshTimers.clear();
     };
-  }, [activeProjectIdRef, mergeProjectSnapshot, onError, selectedSessionIdRef, setContextBudget, setDocument, setRecipeNotices, setSidebarSessions, setWorkspace, setWriterConflict, onGenerationError, onGenerationStarted]);
+  }, [activeProjectIdRef, mergeProjectSnapshot, onError, selectedSessionIdRef, setContextBudget, setDocument, setRecipeNotices, setSidebarSessions, setWorkspace, setWriterConflict, onGenerationError, onGenerationStarted, onRuntimeProjectionChanged]);
 }

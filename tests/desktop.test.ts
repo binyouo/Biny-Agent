@@ -123,6 +123,7 @@ testSidebarLayoutState();
 await testDesktopThemePreference();
 await testDesktopActiveViewPersistence();
 await testDesktopDragRegionStyles();
+await testDesktopUserMessageEnterDoesNotShadowFullRow();
 await testDesktopMemoryV3CasAndOriginFilters();
 await testDesktopSettingsTransaction();
 await testDesktopSetDefaultModelImmediate();
@@ -191,6 +192,21 @@ async function testDesktopDragRegionStyles(): Promise<void> {
   assert.match(toolbar, /-webkit-app-region:\s*drag;/, "聊天工具栏必须保留原生窗口拖动区");
   assert.ok(scroll, "聊天滚动层样式必须存在");
   assert.doesNotMatch(scroll, /(?:-webkit-)?app-region:\s*no-drag;/, "全高滚动层不能覆盖顶部窗口拖动区");
+}
+
+async function testDesktopUserMessageEnterDoesNotShadowFullRow(): Promise<void> {
+  const css = await readFile(new URL("../src/desktop/renderer/src/styles/chat.css", import.meta.url), "utf8");
+  const animationStart = css.indexOf("@keyframes chat-user-message-enter");
+  const animationEnd = css.indexOf("@keyframes chat-user-sheen", animationStart);
+
+  assert.ok(animationStart >= 0 && animationEnd > animationStart, "用户消息入场动画必须存在");
+  // 复刻参考应用 userMessageFloatIn（含阴影帧）：阴影只允许出现在气泡动画里，
+  // 通栏消息行选择器不得携带该动画，否则发送首帧会在整个聊天区闪出横向暗带。
+  assert.match(css.slice(animationStart, animationEnd), /box-shadow\s*:/, "气泡入场动画应包含原文阴影帧");
+  const bubbleRule = /\.biny-chat-scroll \.user-message\.is-pending-entry \.user-bubble,/.exec(css);
+  assert.ok(bubbleRule, "入场动画必须挂在 .user-bubble 上");
+  const rowRule = css.match(/\.biny-chat-scroll \.user-message\.is-pending-entry,\s*\n\.biny-chat-scroll \.timeline-turn\.is-running > \.user-message,/);
+  assert.equal(rowRule, null, "通栏用户消息行不得携带入场动画");
 }
 
 async function testInteractiveRuntimeProtocol(): Promise<void> {
@@ -2978,6 +2994,8 @@ async function testDesktopConnectionMetadata(): Promise<void> {
         reasoningEfforts: []
       }]
     });
+    const settingsSnapshot = await agents.settingsConfigSnapshot(project.id);
+    assert.deepEqual(settingsSnapshot.models.catalogs?.deepseek?.map((model) => model.id), ["cached-deepseek-model"]);
     await assert.rejects(
       agents.fetchModelCatalog(project.id, "deepseek"),
       /无法从服务商获取模型列表/u

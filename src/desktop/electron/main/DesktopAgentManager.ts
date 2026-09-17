@@ -15,6 +15,8 @@
  * 模型配置的保存与连通性测试也在这里：写入前先用候选配置实际发一次请求，避免存下一份用不了的配置。
  */
 import type { AgentAttachment } from "../../../agent/AgentSession.js";
+import { planStatus } from "../../../extensions/plan.js";
+import { assertPlanningOperationAllowed } from "../../../agent/planningPolicy.js";
 import type { AgentCapabilitySelection } from "../../../agent/capabilitySelection.js";
 import type {
   MemoryEntriesResult,
@@ -58,7 +60,7 @@ import {
   type InteractiveRuntimeHandle
 } from "../../../runtime/InteractiveAgentRuntime.js";
 import type { CommandRuntime } from "../../../runtime/CommandRuntime.js";
-import { SubagentTaskIncompleteError, SubagentTaskManager } from "../../../runtime/SubagentTaskManager.js";
+import { SubagentTaskManager } from "../../../runtime/SubagentTaskManager.js";
 import { buildInspectorTask, type InspectorMessage } from "../../inspectorTask.js";
 import {
   connectOrSpawnRuntimeHostWithOwnership,
@@ -150,7 +152,7 @@ import { DesktopProjectService } from "./DesktopProjectService.js";
 import { DesktopModelLoginService, type AuthenticatedModelLogin } from "./DesktopModelLoginService.js";
 import { DesktopStateStore } from "./DesktopStateStore.js";
 import { perfNow, recordPerfPhase } from "../../../observability/perfTiming.js";
-import { runTaskClosure } from "../../../runtime/TaskClosure.js";
+import { approveTaskVerification, type TaskClosureResult } from "../../../runtime/TaskClosure.js";
 import { readTaskDefinition } from "../../../runtime/taskVerification.js";
 
 interface ManagedRuntime {
@@ -221,9 +223,6 @@ export class DesktopAgentManager {
   private readonly inspectorSessions = new Map<string, Promise<string>>();
   /** 同一发送/编辑操作键复用 Promise，避免 IPC 重入再次产生用户消息或分叉会话。 */
   private readonly idempotentPromptRequests = new Map<string, Promise<DesktopRunReceipt>>();
-  /** fallback runtime 没有 RuntimeHostServer 的 task promise 表时，由 Desktop 自己保证幂等派发。 */
-  private readonly taskPromises = new Map<string, Promise<unknown>>();
-  private readonly taskControllers = new Map<string, AbortController>();
   private idleRuntimeRebuildTail: Promise<void> = Promise.resolve();
   private readonly pendingSessionReads = new Map<string, {
     initialRevision: string | undefined;
@@ -396,7 +395,17 @@ export class DesktopAgentManager {
     if (!(managed.runtime instanceof RuntimeHostClient) && runtimeIsBusy(managed.runtime.getSnapshot())) {
       throw new Error("当前项目仍有任务运行。请先停止它，或稍后再开始新任务。");
     }
+    const previousSessionId = managed.runtime instanceof RuntimeHostClient
+      ? managed.runtime.getFocusedSessionId()
+      : undefined;
+    const previousSnapshot = previousSessionId === undefined || !(managed.runtime instanceof RuntimeHostClient)
+      ? undefined
+      : managed.runtime.getSnapshot(previousSessionId);
     const info = await managed.runtime.startDraft();
+    if (managed.runtime instanceof RuntimeHostClient && previousSessionId !== undefined
+      && previousSessionId !== info.sessionId && previousSnapshot?.state.kind === "idle") {
+      await managed.runtime.releaseSessionClaim(previousSessionId);
+    }
     this.draftSessionIds.set(projectId, info.sessionId);
   }
 
@@ -437,6 +446,9 @@ export class DesktopAgentManager {
         }
         if (isTerminalRunEvent(event) && this.state.selectedSessionId(projectId) !== event.sessionId) {
           void this.projects.updateSessionMetadata(this.projects.requireProject(projectId), event.sessionId, { unread: true }).catch(() => undefined);
+          if (runtime instanceof RuntimeHostClient && update.snapshot.state.kind === "idle") {
+            void runtime.releaseSessionClaim(event.sessionId).catch(() => undefined);
+          }
         }
       }
       const sessionId = event?.sessionId ?? update.snapshot.info.sessionId;
@@ -488,7 +500,12 @@ export class DesktopAgentManager {
       managed = await this.ensureRuntime(projectId);
       const remote = managed.runtime instanceof RuntimeHostClient ? managed.runtime : undefined;
       if (remote) {
+        const previousSessionId = remote.getFocusedSessionId();
+        const previousSnapshot = previousSessionId === undefined ? undefined : remote.getSnapshot(previousSessionId);
         runtimeSnapshot = await remote.focusSession(sessionId);
+        if (previousSessionId !== undefined && previousSessionId !== sessionId && previousSnapshot?.state.kind === "idle") {
+          await remote.releaseSessionClaim(previousSessionId);
+        }
       } else if (managed.runtime.getSnapshot().info.sessionId !== sessionId) {
         if (runtimeIsBusy(managed.runtime.getSnapshot())) {
           // 同进程 fallback 没有 Host 注册表，忙时只能阅读历史，不能偷偷切换 owner。
@@ -593,11 +610,12 @@ export class DesktopAgentManager {
     sessionId: string | undefined,
     input: string,
     attachments: DesktopAttachment[],
-    delivery?: "steer" | "followUp",
+    delivery?: "steer" | "queue",
     personalization?: DesktopChatPersonalizationOverride,
     idempotencyKey?: string,
     promptContext?: string,
-    capabilitySelection?: AgentCapabilitySelection
+    capabilitySelection?: AgentCapabilitySelection,
+    draftPlanning?: boolean
   ): Promise<DesktopRunReceipt> {
     return await this.runIdempotently(projectId, "send", idempotencyKey, async () => await this.sendPromptOnce(
       projectId,
@@ -607,7 +625,8 @@ export class DesktopAgentManager {
       delivery,
       personalization,
       promptContext,
-      capabilitySelection
+      capabilitySelection,
+      draftPlanning
     ));
   }
 
@@ -616,10 +635,11 @@ export class DesktopAgentManager {
     sessionId: string | undefined,
     input: string,
     attachments: DesktopAttachment[],
-    delivery?: "steer" | "followUp",
+    delivery?: "steer" | "queue",
     personalization?: DesktopChatPersonalizationOverride,
     promptContext?: string,
-    capabilitySelection?: AgentCapabilitySelection
+    capabilitySelection?: AgentCapabilitySelection,
+    draftPlanning?: boolean
   ): Promise<DesktopRunReceipt> {
     const sendPerfStartedAt = perfNow();
     const selectedBeforeSend = this.state.selectedSessionId(projectId);
@@ -628,6 +648,10 @@ export class DesktopAgentManager {
     const { managed, snapshot } = await this.runtimeForPrompt(projectId, requestedSessionId, personalization);
     const runtime = managed.runtime;
     const targetSessionId = snapshot.info.sessionId;
+    if (sessionId === undefined && draftPlanning !== undefined) {
+      if (runtime instanceof RuntimeHostClient) await runtime.setPlanning(targetSessionId, draftPlanning);
+      else await runtime.runExclusiveOperation("planning", async () => await managed.commands!.agent.setPlanning(draftPlanning));
+    }
     const project = this.projects.requireProject(projectId);
     recordPerfPhase("desktop.runtimeForPrompt", runtimeForPromptPerfStartedAt, { projectId }, project.path);
     const prompt = withAttachmentReferences(input, attachments);
@@ -636,11 +660,11 @@ export class DesktopAgentManager {
     recordPerfPhase("desktop.loadAttachments", attachmentsPerfStartedAt, { count: attachments.length }, project.path);
     if (runtimeIsBusy(snapshot)) {
       const queued: HostOperationResult<import("../../../runtime/InteractiveAgentRuntime.js").QueuedAgentMessage> = runtime instanceof RuntimeHostClient
-        ? await runtime.queueRunMessageForSession(targetSessionId, prompt, delivery === "steer" ? "steer" : "followUp", nativeAttachments)
+        ? await runtime.queueRunMessageForSession(targetSessionId, prompt, delivery === "steer" ? "steer" : "queue", nativeAttachments)
         : {
             accepted: true,
             revision: snapshot.revision,
-            result: delivery === "steer" ? await runtime.steer(prompt, nativeAttachments) : await runtime.followUp(prompt, nativeAttachments)
+            result: delivery === "steer" ? await runtime.steer(prompt, nativeAttachments) : await runtime.enqueue(prompt, nativeAttachments)
           };
       if (!queued.accepted || queued.result === undefined) {
         throw new Error(queued.reason ?? "Runtime Host did not accept the queued message.");
@@ -684,6 +708,44 @@ export class DesktopAgentManager {
       runId: submitted.runId,
       messageId: submitted.messageId
     };
+  }
+
+  async mutateQueuedMessage(
+    projectId: string,
+    sessionId: string,
+    action: import("../../protocol.js").DesktopQueuedMessageAction,
+    mutation: import("../../protocol.js").DesktopQueuedMessageMutation = {}
+  ): Promise<void> {
+    const managed = await this.resolveSessionRuntime(projectId, sessionId);
+    if (managed.runtime instanceof RuntimeHostClient) {
+      await managed.runtime.mutateQueuedRunMessageForSession(sessionId, action, mutation);
+      return;
+    }
+    const runtime = managed.runtime;
+    if (action === "send-all") {
+      if (!runtime.sendQueuedRunMessagesNow) throw new Error("追加消息控制不可用。");
+      await runtime.sendQueuedRunMessagesNow();
+      return;
+    }
+    const messageId = mutation.messageId;
+    if (!messageId) throw new Error("缺少待发送消息 ID。");
+    if (action === "update" && runtime.updateQueuedRunMessage && mutation.input !== undefined) {
+      await runtime.updateQueuedRunMessage(messageId, mutation.input);
+      return;
+    }
+    if (action === "remove" && runtime.removeQueuedRunMessage) {
+      await runtime.removeQueuedRunMessage(messageId);
+      return;
+    }
+    if (action === "move" && runtime.moveQueuedRunMessage && mutation.targetMessageId) {
+      await runtime.moveQueuedRunMessage(messageId, mutation.targetMessageId, mutation.placeAfter === true);
+      return;
+    }
+    if (action === "steer" && runtime.steerQueuedRunMessage) {
+      await runtime.steerQueuedRunMessage(messageId);
+      return;
+    }
+    throw new Error("追加消息操作参数不完整。");
   }
 
   /**
@@ -2200,9 +2262,13 @@ export class DesktopAgentManager {
     }
     const sessionId = await session;
     const task = buildInspectorTask(kind, input, history, SubagentTaskManager.maxTaskCharacters);
-    const result = await runtime.executeCommand(`/inspect ${task}`, "desktop", sessionId);
-    if (!result) throw new Error("侧栏检查命令不可用。");
-    return { ...result, title: kind === "review" ? "审阅结果" : "Biny" };
+    try {
+      const result = await runtime.executeCommand(`/inspect ${task}`, "desktop", sessionId);
+      if (!result) throw new Error("侧栏检查命令不可用。");
+      return { ...result, title: kind === "review" ? "审阅结果" : "Biny" };
+    } finally {
+      await runtime.releaseSessionClaim(sessionId).catch(() => undefined);
+    }
   }
 
   async expandSkillCommand(projectId: string, input: string): Promise<string> {
@@ -2210,6 +2276,14 @@ export class DesktopAgentManager {
     return commands
       ? await commands.expandSkillCommand(input)
       : await requireRemoteRuntime(runtime).expandSkillCommand(input);
+  }
+
+  async planProjection(projectId: string, sessionId: string): Promise<import("../../protocol.js").DesktopPlanProjection> {
+    const { runtime, commands } = await this.ensureRuntime(projectId);
+    const plans = commands
+      ? commands.graphs.listGraphs().filter((graph) => graph.mode === "supervised" && graph.supervisorSessionId === sessionId).map((graph) => planStatus(commands, graph.graphId, sessionId))
+      : await requireRemoteRuntime(runtime).planList(sessionId);
+    return { sessionId, plans };
   }
 
   async runtimeProjection(projectId: string): Promise<DesktopRuntimeProjection> {
@@ -2247,6 +2321,20 @@ export class DesktopAgentManager {
   async runtimeMutation(projectId: string, operation: DesktopRuntimeMutation, payload: Record<string, unknown> = {}): Promise<unknown> {
     const { runtime, commands, host } = await this.ensureRuntime(projectId);
     if (!commands) return await executeRemoteRuntimeMutation(requireRemoteRuntime(runtime), operation, payload);
+    assertPlanningOperationAllowed(runtime.getSnapshot().info.planning, operation);
+    if (operation === "plan.mode" || operation === "plan.start") {
+      if (payload.sessionId !== runtime.getSnapshot().info.sessionId) throw new Error("计划操作必须在原会话执行。");
+      return await runtime.runExclusiveOperation("planning", async (signal) => {
+        if (operation === "plan.start") {
+          if (!Number.isSafeInteger(payload.revision)) throw new Error("缺少草稿版本。");
+          return await commands.startPlanDraft(requiredPayloadString(payload.graphId, "graphId"), payload.revision as number, signal);
+        }
+        if (typeof payload.planning !== "boolean") throw new Error("缺少规划模式。");
+        if (payload.planning && commands.graphs.listGraphs().some((graph) => graph.supervisorSessionId === payload.sessionId && graph.status === "running")) throw new Error("请先停止正在执行的计划。");
+        await commands.agent.setPlanning(payload.planning);
+        return runtime.getSnapshot().info;
+      });
+    }
     if (operation === "worktree.merge" || operation === "worktree.remove") {
       throw new Error("工作树操作需要 Runtime Host；当前项目正在使用同进程 fallback。请重启 Biny 后重试。");
     }
@@ -2267,29 +2355,22 @@ export class DesktopAgentManager {
     if (operation === "task.cancel") {
       const taskRunId = requiredPayloadString(payload.taskRunId, "taskRunId");
       const reason = optionalPayloadString(payload.reason) ?? "TaskRun cancelled.";
-      const task = commands.taskRuns.get(taskRunId);
-      const latestAttempt = task?.attempts.at(-1);
-      const subagentId = latestAttempt && commands.subagents?.getSnapshot(latestAttempt.attemptId)
-        ? latestAttempt.attemptId
-        : taskRunId;
-      const subagent = commands.subagents?.getSnapshot(subagentId);
-      const cancelledSubagent = commands.subagents?.cancelTask(subagentId, reason) ?? false;
-      this.taskControllers.get(taskRunId)?.abort(new Error(reason));
-      const runId = latestAttempt?.runId;
-      if (runId !== undefined) runtime.cancelRun(runId);
-      const subagentActive = subagent?.status === "queued" || subagent?.status === "running";
-      if (subagentActive && !cancelledSubagent && !isTaskRunTerminal(task?.status ?? "created")) {
-        throw new Error(`Unable to cancel active subagent task ${taskRunId}.`);
-      }
-      if (task !== undefined) {
-        const current = commands.taskRuns.get(taskRunId);
-        if (!current) throw new Error(`TaskRun ${taskRunId} does not exist.`);
-        if (isTaskRunTerminal(current.status)) return current;
-        return commands.taskRuns.transition(taskRunId, "cancelled");
-      }
-      throw new Error(`TaskRun ${taskRunId} does not exist.`);
+      return commands.cancelTaskRun(taskRunId, reason);
     }
-    if (operation === "task.approve") throw new Error("TaskRun approval cannot start execution without an attached TaskRun execution adapter.");
+    if (operation === "task.approve") {
+      const taskRunId = requiredPayloadString(payload.taskRunId, "taskRunId");
+      await approveTaskVerification({
+        taskRuns: commands.taskRuns,
+        taskRunId,
+        approvalId: requiredPayloadString(payload.approvalId, "approvalId"),
+        workspaceRoot: commands.workspaceRoot,
+        ignore: commands.config.workspace.ignore
+      });
+      const started = await this.startFallbackTaskRun(commands, taskRunId, undefined);
+      const result = await started.completion;
+      commands.graphs.projectTaskClosure(taskRunId, result);
+      return commands.taskRuns.get(taskRunId);
+    }
     if (operation === "task.retry") {
       const taskRunId = requiredPayloadString(payload.taskRunId, "taskRunId");
       const decision = evaluateTaskRetry(commands.taskRuns.get(taskRunId));
@@ -2316,7 +2397,9 @@ export class DesktopAgentManager {
     if (operation === "goal.cancel") return commands.graphs.updateGoal(requiredPayloadString(payload.goalId, "goalId"), "cancelled");
     if (operation === "graph.create") return commands.graphs.createGraph(optionalPayloadString(payload.goalId), (payload.nodes ?? []) as GraphNodeInput[], payload.payload, optionalPayloadString(payload.graphId));
     if (operation === "graph.start") {
-      const graph = commands.graphs.startGraph(requiredPayloadString(payload.graphId, "graphId"));
+      const graphId = requiredPayloadString(payload.graphId, "graphId");
+      if (commands.graphs.inspectGraph(graphId).mode === "supervised") throw new Error("请通过计划卡片确认当前草稿版本。");
+      const graph = commands.graphs.startGraph(graphId);
       commands.graphs.createWake(graph.graphId, "graph_started");
       return graph;
     }
@@ -3075,99 +3158,8 @@ export class DesktopAgentManager {
     commands: CommandRuntime,
     taskRunId: string,
     retrySafety: TaskRetrySafety | undefined
-  ): Promise<{ task: TaskRunWithAttempts; completion: Promise<unknown> }> {
-    const task = commands.taskRuns.get(taskRunId);
-    if (!task) throw new Error(`TaskRun ${taskRunId} does not exist.`);
-    const existingPromise = this.taskPromises.get(taskRunId);
-    if (existingPromise) return { task, completion: existingPromise };
-    if (isTaskRunTerminal(task.status)) return { task, completion: Promise.resolve(task) };
-
-    let current = task;
-    const verificationEnabled = readTaskDefinition(task.task).verification !== undefined;
-    if (current.status === "running") {
-      if (verificationEnabled) {
-        current = commands.taskRuns.transition(taskRunId, "blocked", {
-          attemptId: current.attempts.at(-1)?.attemptId,
-          failure: {
-            failureClass: "unsafe_recovery",
-            message: "A verification-enabled TaskRun cannot replay an unproven running Attempt."
-          }
-        });
-        return { task: current, completion: Promise.resolve(current) };
-      }
-      current = commands.taskRuns.requeue(taskRunId);
-    }
-    if (current.status === "created") current = commands.taskRuns.transition(taskRunId, "queued");
-    const latest = commands.taskRuns.get(taskRunId);
-    if (!latest) throw new Error(`TaskRun ${taskRunId} disappeared before execution.`);
-    const controller = new AbortController();
-    this.taskControllers.set(taskRunId, controller);
-    const completion = runTaskClosure({
-      taskRuns: commands.taskRuns,
-      taskRunId,
-      workspaceRoot: commands.workspaceRoot,
-      ignore: commands.config.workspace.ignore,
-      executor: commands,
-      retrySafety,
-      signal: controller.signal,
-      executeAttempt: async (prompt, attempt) => {
-        let submitted;
-        try {
-          submitted = commands.startSubagentTask(prompt, {
-            taskId: verificationEnabled ? attempt.attemptId : taskRunId,
-            taskRunId,
-            attemptId: attempt.attemptId,
-            completedStatus: verificationEnabled ? "verifying" : "completed",
-            parentRunId: latest.parentRunId,
-            signal: controller.signal,
-            accessMode: "workspace"
-          });
-        } catch (error) {
-          const failure = error instanceof Error ? error : new Error(String(error));
-          this.finishFallbackTaskRun(commands, taskRunId, attempt.attemptId, "failed", { message: failure.message, failureClass: "dispatch_failed" });
-          throw failure;
-        }
-        try {
-          return await submitted.completion;
-        } catch (error) {
-          const failure = error instanceof Error ? error : new Error(String(error));
-          const status = failure.name === "SubagentTaskAbortedError" || failure.name === "AbortError" ? "aborted"
-            : failure instanceof SubagentTaskIncompleteError ? "incomplete" : "failed";
-          this.finishFallbackTaskRun(commands, taskRunId, attempt.attemptId, status, {
-            message: failure.message,
-            failureClass: failure instanceof SubagentTaskIncompleteError ? failure.stopReason
-              : status === "failed" ? "execution_failed" : "cancelled"
-          }, failure instanceof SubagentTaskIncompleteError ? { output: failure.output } : undefined);
-          throw failure;
-        }
-      }
-    }).finally(() => {
-      if (this.taskPromises.get(taskRunId) === completion) this.taskPromises.delete(taskRunId);
-      if (this.taskControllers.get(taskRunId) === controller) this.taskControllers.delete(taskRunId);
-    });
-    this.taskPromises.set(taskRunId, completion);
-    void completion.catch(() => undefined);
-    return { task: latest, completion };
-  }
-
-  private finishFallbackTaskRun(
-    commands: CommandRuntime,
-    taskRunId: string,
-    attemptId: string,
-    status: "completed" | "incomplete" | "failed" | "aborted",
-    failure?: unknown,
-    artifacts?: unknown
-  ): void {
-    try {
-      const current = commands.taskRuns.get(taskRunId);
-      if (current && !isTaskRunTerminal(current.status)) {
-        commands.taskRuns.transition(taskRunId, status, { attemptId, failure, artifacts });
-      } else if (current?.status === status) {
-        commands.taskRuns.transition(taskRunId, status, { attemptId, failure, artifacts });
-      }
-    } catch {
-      // 子代理最终结果已通过 session 事件记录；投影失败不能制造第二个终态。
-    }
+  ): Promise<{ task: TaskRunWithAttempts; completion: Promise<TaskClosureResult> }> {
+    return await commands.startTaskRun(taskRunId, { retrySafety });
   }
 
   private projectEvents(projectId: string): Map<string, AgentHostEvent[]> {
@@ -3251,6 +3243,10 @@ function describeSettingsConfigSnapshot(
     models: {
       configured: listConfiguredModelChoices(config, catalogs),
       connections: describeModelConnections(config),
+      catalogs: Object.fromEntries(catalogs.map(([providerAlias, models]) => [
+        providerAlias,
+        structuredClone(models)
+      ])),
       embeddingModels: describeEmbeddingModels(config),
       defaultModel: config.defaultModel,
       toolModel: config.toolModel,
@@ -3403,6 +3399,14 @@ async function terminateOwnedHost(host: ChildProcess | undefined): Promise<void>
 }
 
 async function executeRemoteRuntimeMutation(runtime: RuntimeHostClient, operation: DesktopRuntimeMutation, payload: Record<string, unknown>): Promise<unknown> {
+  if (operation === "plan.mode") {
+    if (typeof payload.planning !== "boolean") throw new Error("缺少规划模式。");
+    return await runtime.setPlanning(requiredPayloadString(payload.sessionId, "sessionId"), payload.planning);
+  }
+  if (operation === "plan.start") {
+    if (!Number.isSafeInteger(payload.revision)) throw new Error("缺少草稿版本。");
+    return await runtime.startPlanDraft(requiredPayloadString(payload.sessionId, "sessionId"), requiredPayloadString(payload.graphId, "graphId"), payload.revision as number);
+  }
   if (operation === "worktree.merge") {
     return await runtime.worktreeMerge(requiredPayloadString(payload.sessionId, "sessionId"), {
       strategy: payload.strategy === "squash" ? "squash" : "merge",
@@ -3417,7 +3421,10 @@ async function executeRemoteRuntimeMutation(runtime: RuntimeHostClient, operatio
   if (operation === "task.start") return await unwrapHostOperationResult(runtime.taskStart(requiredPayloadString(payload.taskRunId, "taskRunId"), { attemptId: optionalPayloadString(payload.attemptId), runId: optionalPayloadString(payload.runId), turnId: optionalPayloadString(payload.turnId), retrySafety: optionalPayloadString(payload.retrySafety) }));
   if (operation === "task.run") return await unwrapHostOperationResult(runtime.taskRun(requiredPayloadString(payload.taskRunId, "taskRunId"), { retrySafety: optionalPayloadString(payload.retrySafety) }));
   if (operation === "task.cancel") return await unwrapHostOperationResult(runtime.taskCancel(requiredPayloadString(payload.taskRunId, "taskRunId"), optionalPayloadString(payload.reason)));
-  if (operation === "task.approve") return await unwrapHostOperationResult(runtime.taskApprove(requiredPayloadString(payload.taskRunId, "taskRunId")));
+  if (operation === "task.approve") return await unwrapHostOperationResult(runtime.taskApprove(
+    requiredPayloadString(payload.taskRunId, "taskRunId"),
+    requiredPayloadString(payload.approvalId, "approvalId")
+  ));
   if (operation === "task.resume") return await unwrapHostOperationResult(runtime.taskResume(requiredPayloadString(payload.taskRunId, "taskRunId"), { runId: optionalPayloadString(payload.runId), turnId: optionalPayloadString(payload.turnId), retrySafety: optionalPayloadString(payload.retrySafety) }));
   if (operation === "task.retry") return await unwrapHostOperationResult(runtime.taskRetry(requiredPayloadString(payload.taskRunId, "taskRunId")));
   if (operation === "automation.create") return await unwrapHostOperationResult(runtime.automationCreate(payload as unknown as AutomationCreateInput));

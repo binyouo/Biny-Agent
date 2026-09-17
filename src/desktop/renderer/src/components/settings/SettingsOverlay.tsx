@@ -321,6 +321,7 @@ function SettingsOverlayContent({
             loading={!settingsDraft.snapshot && !settingsDraft.loadError}
             models={settingsModels}
             connections={settingsDraft.snapshot?.models.connections ?? workspace?.connections ?? []}
+            catalogs={settingsDraft.snapshot?.models.catalogs ?? {}}
             defaultModelAlias={defaultModelAlias}
             projectId={workspace?.project.id}
             onFetchCatalog={onFetchModelCatalog}

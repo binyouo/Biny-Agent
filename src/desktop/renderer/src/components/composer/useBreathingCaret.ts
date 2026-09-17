@@ -2,12 +2,15 @@ import { useEffect } from "react";
 import type { RefObject } from "react";
 
 /**
- * 呼吸灯光标。
+ * 呼吸灯光标 + 移动拖尾（参考应用自绘 caret 系统）。
  *
  * contenteditable 的原生 caret 只会机械闪烁，而且样式由系统接管、无法加
  * 辉光。这里在编辑器容器上叠加一个自绘 caret：通过 Selection 拿到光标的
  * 屏幕矩形，把自定义元素定位过去；原生 caret 用 CSS（caret-color:
  * transparent）在自绘 caret 可见时隐藏。
+ *
+ * 光标水平移动（打字、拼音上屏）时在旧位置铺一条渐变拖尾（prompt-caret-trail），
+ * .18s 内收束消失；拖尾宽度按位移钳制（最大 28px），方向决定渐变朝向。
  *
  * 可见性通过容器上的 data-breathing-caret="on|off" 表达，CSS 负责动画，
  * 因此输入过程中动画相位不会因为重定位而重置。
@@ -15,20 +18,26 @@ import type { RefObject } from "react";
 export function useBreathingCaret(
   editorRef: RefObject<HTMLDivElement | null>,
   caretRef: RefObject<HTMLDivElement | null>,
+  trailRef?: RefObject<HTMLDivElement | null>
 ): void {
   useEffect(() => {
     const editor = editorRef.current;
     const caret = caretRef.current;
+    const trail = trailRef?.current ?? null;
     if (!editor || !caret) return;
 
-    // 上一帧光标的 y 坐标：判断是否为换行跳变；隐藏后重置
+    // 上一帧光标位置：判断换行跳变与水平位移；隐藏后重置
+    let lastX: number | null = null;
     let lastY: number | null = null;
+    let trailTimer: number | undefined;
 
     const getEditable = () =>
       editor.querySelector<HTMLElement>('[contenteditable="true"]');
 
     const hide = () => {
+      lastX = null;
       lastY = null;
+      if (trail) trail.style.opacity = "0";
       if (editor.dataset.breathingCaret !== "off") {
         editor.dataset.breathingCaret = "off";
       }
@@ -60,6 +69,31 @@ export function useBreathingCaret(
         // 外部（如受控重渲染）已重建 DOM 时放弃恢复，下一次 selectionchange 会纠正
       }
       return rect;
+    };
+
+    // 水平移动拖尾：在旧位置铺 [min(|dx|, 28)] 宽的渐变条并重启动画。
+    const spawnTrail = (fromX: number, toX: number, y: number, height: number): void => {
+      if (!trail) return;
+      const delta = Math.abs(toX - fromX);
+      if (delta < 1.5) return;
+      const width = Math.min(delta, 28);
+      const left = Math.min(fromX, toX);
+      const direction = toX > fromX ? "right" : "left";
+      trail.style.opacity = "1";
+      trail.style.left = `${String(left)}px`;
+      trail.style.top = `${String(y)}px`;
+      trail.style.height = `${String(height)}px`;
+      trail.style.width = `${String(width)}px`;
+      trail.style.transform = "scaleX(1)";
+      if (trail.dataset.direction !== direction) trail.dataset.direction = direction;
+      // 重启动画：先置 none 并强制 reflow，再清空让 CSS 类声明接管。
+      trail.style.animation = "none";
+      void trail.offsetHeight;
+      trail.style.animation = "";
+      if (trailTimer !== undefined) window.clearTimeout(trailTimer);
+      trailTimer = window.setTimeout(() => {
+        trail.style.opacity = "0";
+      }, 200);
     };
 
     const update = () => {
@@ -106,16 +140,18 @@ export function useBreathingCaret(
       const x = Math.round(rect.left - host.left);
       const y = Math.round(rect.top - host.top + (rect.height - caretHeight) / 2);
       // 换行（y 跳变）或隐藏后重新出现时瞬移，避免光标斜滑过去；
-      // 同行的水平移动（打字、拼音上屏）交给 CSS transition 滑行过去。
+      // 同行的水平移动（打字、拼音上屏）交给 CSS transition 滑行过去，并铺一条拖尾。
       const snap = lastY === null || Math.abs(y - lastY) > rect.height * 0.6;
       if (snap) caret.classList.add("is-snapping");
-      caret.style.height = `${caretHeight}px`;
-      caret.style.transform = `translate3d(${x}px, ${y}px, 0)`;
+      else if (lastX !== null) spawnTrail(lastX, x, y, caretHeight);
+      caret.style.height = `${String(caretHeight)}px`;
+      caret.style.transform = `translate3d(${String(x)}px, ${String(y)}px, 0)`;
       if (snap) {
         // 强制 reflow，让本次位移在 transition: none 下立即生效
         void caret.offsetHeight;
         caret.classList.remove("is-snapping");
       }
+      lastX = x;
       lastY = y;
       if (editor.dataset.breathingCaret !== "on") {
         editor.dataset.breathingCaret = "on";
@@ -152,6 +188,7 @@ export function useBreathingCaret(
 
     return () => {
       cancelAnimationFrame(frame);
+      if (trailTimer !== undefined) window.clearTimeout(trailTimer);
       document.removeEventListener("selectionchange", schedule);
       window.removeEventListener("resize", schedule);
       window.removeEventListener("blur", hide);
@@ -164,5 +201,5 @@ export function useBreathingCaret(
       editor.removeEventListener("compositionend", onCompositionEnd, true);
       observer.disconnect();
     };
-  }, [editorRef, caretRef]);
+  }, [editorRef, caretRef, trailRef]);
 }

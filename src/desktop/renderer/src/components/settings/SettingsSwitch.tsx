@@ -2,7 +2,8 @@
  * 设置内统一的布尔开关行：左侧标题与说明、右侧滑动开关。
  *
  * 开关几何与状态色按设计规范固定：轨道 1.5rem×2.75rem、圆头 1.25rem、
- * 选中位移 1.25rem，颜色走 --accent / --surface-hover 两个主题 token。
+ * 选中位移 1.25rem；选中轨道用 --accent 蓝（状态指示，不跟随黑白操作主色），
+ * 未选中为文字色的半透明灰。
  */
 interface SettingsSwitchProps {
   checked: boolean;

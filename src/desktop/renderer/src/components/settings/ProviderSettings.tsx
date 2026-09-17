@@ -10,6 +10,7 @@
  * 分页的草稿互不影响）；运行中的会话会让主进程拒绝事务，此时变更留在草稿里，等会话
  * 结束由页脚保存兜底。模型选项对话框是例外：编辑只进本地缓冲，关闭时一次落盘。
  */
+import { Tooltip } from "@astryxdesign/core/Tooltip";
 import { NativeSelect } from "../NativeSelect.js";
 import { createContext, useContext, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ModelProfile, ThinkingLevelMap } from "../../../../../config/schema.js";
@@ -82,6 +83,7 @@ export interface ProviderSettingsProps {
   loading: boolean;
   models: ModelChoice[];
   connections: DesktopModelConnection[];
+  catalogs: Record<string, DesktopModelCatalogResult["models"]>;
   defaultModelAlias?: string;
   projectId?: string;
   onDefaultModel(alias: string, thinking: ThinkingSelection): void;
@@ -101,6 +103,7 @@ export function ProviderSettings({
   loading,
   models,
   connections: connectionInfos,
+  catalogs: cachedCatalogs,
   defaultModelAlias,
   projectId,
   onDefaultModel,
@@ -311,14 +314,6 @@ export function ProviderSettings({
 
   // ── 当前面板的派生数据 ──
   const group = activeEntry?.group;
-  const requestedCatalogsRef = useRef(new Set<string>());
-  useEffect(() => {
-    const alias = group?.provider;
-    if (!active || !alias || requestedCatalogsRef.current.has(alias)) return;
-    // 设置重开后恢复完整目录，而非只显示已配置模型；失败不循环请求。
-    requestedCatalogsRef.current.add(alias);
-    void refreshCatalog(alias);
-  }, [active, group?.provider, refreshCatalog]);
   const providerAlias = group?.provider ?? (activeEntry?.catalog ? providerAliasFor(activeEntry.catalog, activeEntry.catalog.baseUrl) : undefined);
   const connection = activeEntry?.connection ?? (providerAlias ? infoFor(providerAlias) : undefined);
   const catalog = activeEntry?.catalog;
@@ -354,8 +349,9 @@ export function ProviderSettings({
   }, [catalog, connection, group]);
   const availableModels = useMemo(() => {
     if (!group || !catalog) return [];
-    return mergeAvailableModels(catalog.models, group.models, liveCatalog[group.provider]?.models ?? []);
-  }, [catalog, group, liveCatalog]);
+    const cached = (cachedCatalogs[group.provider] ?? []).map(catalogModelFromEntry);
+    return mergeAvailableModels(catalog.models, group.models, liveCatalog[group.provider]?.models ?? cached);
+  }, [cachedCatalogs, catalog, group, liveCatalog]);
   const cancelLoginRef = useRef<() => void>(() => undefined);
   useEffect(() => {
     // 设置面板整体关闭时放弃未完成的登录请求。
@@ -413,6 +409,7 @@ export function ProviderSettings({
   const [keyDraft, setKeyDraft] = useState("");
   const [keySaveState, setKeySaveState] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [keyLoading, setKeyLoading] = useState(false);
+  const [keyLoaded, setKeyLoaded] = useState(false);
   const [baseUrlDraft, setBaseUrlDraft] = useState("");
   const [deleteArmed, setDeleteArmed] = useState(false);
   const keyTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -427,6 +424,10 @@ export function ProviderSettings({
     setTestResult(undefined);
     setTestMenuOpen(false);
     setDeleteArmed(false);
+    setKeyDraft("");
+    setKeySaveState("idle");
+    setKeyLoading(false);
+    setKeyLoaded(false);
     baseUrlDirtyRef.current = false;
     if (keyTimerRef.current) clearTimeout(keyTimerRef.current);
     if (baseUrlTimerRef.current) clearTimeout(baseUrlTimerRef.current);
@@ -436,26 +437,21 @@ export function ProviderSettings({
     };
   }, [providerAlias]);
 
-  useEffect(() => {
-    let cancelled = false;
-    setKeyDraft("");
-    setKeySaveState("idle");
-    setKeyLoading(false);
-    if (!active || !providerAlias || !connection?.hasCredential || connection.authMode === "oauth-bearer") return;
+  const loadKey = useCallback(async (): Promise<void> => {
+    if (!active || !providerAlias || !connection?.hasCredential || connection.authMode === "oauth-bearer" || keyLoaded || keyLoading) return;
     setKeyLoading(true);
-    void onReadModelApiKey(providerAlias)
-      .then((value) => {
-        if (cancelled) return;
+    try {
+      const value = await onReadModelApiKey(providerAlias);
+      if (activeProviderRef.current === providerAlias) {
         setKeyDraft(value ?? "");
+        setKeyLoaded(true);
+      }
+    } finally {
+      if (activeProviderRef.current === providerAlias) {
         setKeyLoading(false);
-      })
-      .catch(() => {
-        if (!cancelled) setKeyLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [active, connection?.authMode, connection?.hasCredential, onReadModelApiKey, providerAlias]);
+      }
+    }
+  }, [active, connection?.authMode, connection?.hasCredential, keyLoaded, keyLoading, onReadModelApiKey, providerAlias]);
 
   const activeModel = group
     ? group.models.find((model) => model.alias === defaultModelAlias) ?? group.defaultModel ?? group.models[0]
@@ -481,6 +477,7 @@ export function ProviderSettings({
 
   const onKeyDraftChange = (value: string): void => {
     setKeyDraft(value);
+    setKeyLoaded(true);
     setKeySaveState("idle");
     setTestResult(undefined);
     if (keyTimerRef.current) clearTimeout(keyTimerRef.current);
@@ -557,20 +554,19 @@ export function ProviderSettings({
   }, [toggleModels]);
 
   // ── 连接默认格式：直接更新连接，保留各模型的单独覆盖 ──
-  const changeApiFormat = useCallback(async (id: ConnectionApiFormat): Promise<void> => {
+  const changeApiFormat = useCallback(async (id: ConnectionApiFormat): Promise<boolean> => {
     const draft = settingsDraft.draft;
-    if (!group || !draft) return;
-    if ((connection?.apiBackend ?? "auto") === id) return;
-    setSaving(true);
+    if (!group || !draft) return false;
+    if ((connection?.apiBackend ?? "auto") === id) return true;
     try {
-      await settingsDraft.saveModels({
+      const result = await settingsDraft.saveModels({
         ...draft.models,
         providerApiFormats: { [group.provider]: id }
       });
+      return result?.status === "committed";
     } catch (error) {
       onNotify(error instanceof Error ? error.message : String(error));
-    } finally {
-      setSaving(false);
+      return false;
     }
   }, [connection?.apiBackend, group, onNotify, settingsDraft]);
 
@@ -951,11 +947,14 @@ export function ProviderSettings({
                   <strong>{row.label}</strong>
                   {row.badge ? <small>{row.badge}</small> : null}
                 </span>
-                <span
-                  aria-hidden="true"
-                  className={`provider-status-dot${healthy ? " is-ok" : rowEnabled && rowStatus ? ` is-${rowStatus.tone}` : ""}`}
-                  title={rowEnabled ? rowStatus?.label ?? "已启用" : "未启用"}
-                />
+                <Tooltip
+                  content={rowEnabled ? rowStatus?.label ?? "已启用" : "未启用"}
+                >
+                  <span
+                    aria-hidden="true"
+                    className={`provider-status-dot${healthy ? " is-ok" : rowEnabled && rowStatus ? ` is-${rowStatus.tone}` : ""}`}
+                  />
+                </Tooltip>
               </button>
             );
           })}
@@ -1019,6 +1018,7 @@ export function ProviderSettings({
             keyDraft={keyDraft}
             keySaveState={keySaveState}
             keyLoading={keyLoading}
+            keyLoaded={keyLoaded}
             baseUrlDraft={baseUrlDraft}
             savedBaseUrl={savedBaseUrl}
             fetchingCatalog={fetchingAlias === group.provider}
@@ -1031,9 +1031,10 @@ export function ProviderSettings({
             usesOAuth={usesOAuth}
             onApiKeyChange={onKeyDraftChange}
             onApiKeyBlur={flushKeyDraft}
+            onLoadApiKey={loadKey}
             onBaseUrlChange={onBaseUrlDraftChange}
             onBaseUrlBlur={flushBaseUrlDraft}
-            onChangeApiFormat={(id) => void changeApiFormat(id)}
+            onChangeApiFormat={changeApiFormat}
             onOpenExternal={onOpenExternal}
             onRefreshCatalog={() => void refreshCatalog(group.provider, { force: true, announce: true })}
             onToggleModel={toggleModel}
@@ -1282,6 +1283,7 @@ function ConnectedProviderPanel({
   keyDraft,
   keySaveState,
   keyLoading,
+  keyLoaded,
   baseUrlDraft,
   savedBaseUrl,
   fetchingCatalog,
@@ -1294,6 +1296,7 @@ function ConnectedProviderPanel({
   usesOAuth,
   onApiKeyChange,
   onApiKeyBlur,
+  onLoadApiKey,
   onBaseUrlChange,
   onBaseUrlBlur,
   onChangeApiFormat,
@@ -1320,6 +1323,7 @@ function ConnectedProviderPanel({
   keyDraft: string;
   keySaveState: "idle" | "saving" | "saved" | "error";
   keyLoading: boolean;
+  keyLoaded: boolean;
   baseUrlDraft: string;
   savedBaseUrl: string;
   fetchingCatalog: boolean;
@@ -1332,9 +1336,10 @@ function ConnectedProviderPanel({
   usesOAuth: boolean;
   onApiKeyChange(value: string): void;
   onApiKeyBlur(): void;
+  onLoadApiKey(): Promise<void>;
   onBaseUrlChange(value: string): void;
   onBaseUrlBlur(): void;
-  onChangeApiFormat(id: ConnectionApiFormat): void;
+  onChangeApiFormat(id: ConnectionApiFormat): Promise<boolean>;
   onOpenExternal(url: string): Promise<void>;
   onRefreshCatalog(): void;
   onToggleModel(model: CatalogModel, enabled: boolean): Promise<void>;
@@ -1358,7 +1363,15 @@ function ConnectedProviderPanel({
   const isCustomEndpoint = catalog.id === "custom" || !catalog.baseUrl;
   const [showKey, setShowKey] = useState(false);
   const automaticFormat = recommendedApiFormat(catalog.value, connection?.protocol ?? catalog.protocol);
-  const apiFormat = connection?.apiBackend ? apiFormatForConnection(connection.protocol, connection.apiBackend) : isCustomEndpoint ? automaticFormat : "auto";
+  const persistedApiFormat = connection?.apiBackend ? apiFormatForConnection(connection.protocol, connection.apiBackend) : isCustomEndpoint ? automaticFormat : "auto";
+  const [apiFormat, setApiFormat] = useState<ConnectionApiFormat>(persistedApiFormat);
+  const pendingApiFormatRef = useRef<ConnectionApiFormat | undefined>(undefined);
+  useEffect(() => {
+    const pending = pendingApiFormatRef.current;
+    if (pending !== undefined && persistedApiFormat !== pending) return;
+    pendingApiFormatRef.current = undefined;
+    setApiFormat(persistedApiFormat);
+  }, [persistedApiFormat]);
   const formatOptions = catalog.id === "custom"
     ? apiFormatOptions
     : apiFormatOptionsForConnection(
@@ -1396,7 +1409,17 @@ function ConnectedProviderPanel({
           <NativeSelect
             className="connection-select"
             id={`${fieldPrefix}-api-format`}
-            onChange={(event) => onChangeApiFormat(event.target.value as ConnectionApiFormat)}
+            onChange={(event) => {
+              const next = event.target.value as ConnectionApiFormat;
+              pendingApiFormatRef.current = next;
+              setApiFormat(next);
+              void onChangeApiFormat(next).then((saved) => {
+                if (!saved && pendingApiFormatRef.current === next) {
+                  pendingApiFormatRef.current = undefined;
+                  setApiFormat(persistedApiFormat);
+                }
+              });
+            }}
             value={apiFormat}
           >
             {!isCustomEndpoint ? <option value="auto">自动（厂商推荐）</option> : null}
@@ -1461,11 +1484,26 @@ function ConnectedProviderPanel({
                 onBlur={onApiKeyBlur}
                 onChange={(event) => onApiKeyChange(event.target.value)}
                 onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); onApiKeyBlur(); } }}
-                placeholder={keyLoading ? "正在读取…" : connection?.requiresApiKey === false ? "可选" : "粘贴 API Key，自动保存"}
+                placeholder={keyLoading
+                  ? "正在读取…"
+                  : connection?.hasCredential && !keyLoaded
+                    ? "已保存；点按右侧图标查看"
+                    : connection?.requiresApiKey === false ? "可选" : "粘贴 API Key，自动保存"}
                 type={showKey ? "text" : "password"}
                 value={keyDraft}
               />
-              <button className="icon-button" type="button" aria-label={showKey ? "隐藏密钥" : "显示密钥"} onClick={() => setShowKey((value) => !value)}><Icon name={showKey ? "eye-off" : "eye"} size={16} /></button>
+              <button
+                className="icon-button"
+                type="button"
+                aria-label={showKey ? "隐藏密钥" : "显示密钥"}
+                onClick={() => {
+                  if (showKey) {
+                    setShowKey(false);
+                    return;
+                  }
+                  void onLoadApiKey().then(() => setShowKey(true)).catch(() => undefined);
+                }}
+              ><Icon name={showKey ? "eye-off" : "eye"} size={16} /></button>
             </div>
             <div className="provider-row-hint">
               {keySaveState === "saving" ? <span className="provider-key-state is-busy">正在保存密钥…</span>
@@ -1640,7 +1678,11 @@ function CustomProviderPanel({
                 <span className={`check-dot${checked ? " is-on" : ""}`}><Icon name="check" size={11} /></span>
                 <span className="provider-model-copy">
                   <span className="provider-model-name">{model.displayName}</span>
-                  {model.id !== model.displayName ? <span className="provider-model-id" title={model.id}>{model.id}</span> : null}
+                  {model.id !== model.displayName ? (
+                    <Tooltip content={model.id}>
+                      <span className="provider-model-id">{model.id}</span>
+                    </Tooltip>
+                  ) : null}
                 </span>
               </button>
             );
@@ -1691,16 +1733,17 @@ function TestConnectionButton({
   const target = models.find((model) => model.alias === defaultModelAlias) ?? models[0];
   return (
     <div className="provider-test-split" ref={menuRef}>
-      <button
-        className="ghost-button provider-test-button"
-        disabled={testing || !target || !testConfiguration(target)}
-        onClick={() => target && void onTest(target)}
-        title="测试连接"
-        type="button"
-      >
-        <Icon name={testing ? "refresh" : "spark"} size={13} />
-        测试
-      </button>
+      <Tooltip content="测试连接">
+        <button
+          className="ghost-button provider-test-button"
+          disabled={testing || !target || !testConfiguration(target)}
+          onClick={() => target && void onTest(target)}
+          type="button"
+        >
+          <Icon name={testing ? "refresh" : "spark"} size={13} />
+          测试
+        </button>
+      </Tooltip>
       {models.length > 1 ? (
         <button aria-label="选择要测试的模型" className="ghost-button provider-test-caret" disabled={testing} onClick={() => onOpen(!open)} type="button">
           <Icon name="chevron" size={12} />
@@ -1820,11 +1863,20 @@ function ModelsSection({
 
             >
               <div className="provider-model-copy">
-                <span className="provider-model-name" title={model.displayName}>{model.displayName}</span>
+                <span className="provider-model-name">{model.displayName}</span>
                 <span className="provider-model-meta" id={`${model.id.replace(/[^a-z0-9_-]/gi, "-")}-meta`}>
                   <CapabilityBadges model={model} />
-                  {model.contextWindow && !model.contextWindowIsFallback ? <span title={`${String(model.contextWindow)} token 上下文窗口`}>{formatContextWindow(model.contextWindow)}</span> : null}
-                  {model.id !== model.displayName ? <span className="provider-model-id" title={model.id}>{model.id}</span> : null}
+                  {model.contextWindow && !model.contextWindowIsFallback ? (
+                    // 徽标只显示 1M/128K 一类缩写；悬停补全精确容量，数字按千分位便于确认量级。
+                    <Tooltip content={`${model.contextWindow.toLocaleString()} token 上下文窗口`}>
+                      <span>{formatContextWindow(model.contextWindow)}</span>
+                    </Tooltip>
+                  ) : null}
+                  {model.id !== model.displayName ? (
+                    <Tooltip content={model.id}>
+                      <span className="provider-model-id">{model.id}</span>
+                    </Tooltip>
+                  ) : null}
                 </span>
               </div>
               <div className="provider-model-actions">
@@ -1837,15 +1889,16 @@ function ModelsSection({
                 ) : null}
                 {isDefault ? <span className="default-pill">默认</span> : null}
                 {choice ? (
-                  <button
-                    aria-label={`${model.displayName} 模型选项`}
-                    className="icon-button"
-                    title="模型选项"
-                    onClick={(event) => { event.stopPropagation(); onOpenModelOptions(choice); }}
-                    type="button"
-                  >
-                    <Icon name="sliders" size={13} />
-                  </button>
+                  <Tooltip content="模型选项">
+                    <button
+                      aria-label={`${model.displayName} 模型选项`}
+                      className="icon-button"
+                      onClick={(event) => { event.stopPropagation(); onOpenModelOptions(choice); }}
+                      type="button"
+                    >
+                      <Icon name="sliders" size={13} />
+                    </button>
+                  </Tooltip>
                 ) : null}
                 <button
                   aria-checked={enabled}
@@ -1892,15 +1945,18 @@ function ModelsSection({
 }
 
 function CapabilityBadges({ model }: { model: CatalogModel }): React.JSX.Element {
-  const badges: Array<{ icon: "brain-spark" | "eye"; label: string }> = [];
-  if (model.supportsThinking) badges.push({ icon: "brain-spark", label: "推理" });
-  if (model.supportsVision) badges.push({ icon: "eye", label: "视觉" });
+  // 图标语义不直观，悬停时用一句能力描述代替只重复图标名的短语。
+  const badges: Array<{ icon: "brain-spark" | "eye"; tooltip: string }> = [];
+  if (model.supportsThinking) badges.push({ icon: "brain-spark", tooltip: "支持扩展思考/推理" });
+  if (model.supportsVision) badges.push({ icon: "eye", tooltip: "支持图片输入" });
   return (
     <>
       {badges.map((badge) => (
-        <span className="provider-model-cap" key={badge.icon} title={badge.label}>
-          <Icon name={badge.icon} size={11} />
-        </span>
+        <Tooltip content={badge.tooltip} key={badge.icon}>
+          <span className="provider-model-cap">
+            <Icon name={badge.icon} size={11} />
+          </span>
+        </Tooltip>
       ))}
     </>
   );

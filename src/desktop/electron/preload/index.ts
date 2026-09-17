@@ -42,7 +42,7 @@ const api: DesktopApi = {
   deleteSession: async (projectId, sessionId) => await ipcRenderer.invoke(desktopIpc.deleteSession, projectId, sessionId),
   exportSession: async (projectId, sessionId, format) => await ipcRenderer.invoke(desktopIpc.exportSession, projectId, sessionId, format),
   importSession: async (projectId) => await ipcRenderer.invoke(desktopIpc.importSession, projectId),
-  sendPrompt: async (projectId, sessionId, input, attachments, delivery, personalization, idempotencyKey, promptContext, capabilitySelection) => await ipcRenderer.invoke(
+  sendPrompt: async (projectId, sessionId, input, attachments, delivery, personalization, idempotencyKey, promptContext, capabilitySelection, draftPlanning) => await ipcRenderer.invoke(
     desktopIpc.sendPrompt,
     projectId,
     sessionId,
@@ -52,7 +52,15 @@ const api: DesktopApi = {
     personalization,
     idempotencyKey,
     promptContext,
-    capabilitySelection
+    capabilitySelection,
+    draftPlanning
+  ),
+  mutateQueuedMessage: async (projectId, sessionId, action, mutation) => await ipcRenderer.invoke(
+    desktopIpc.mutateQueuedMessage,
+    projectId,
+    sessionId,
+    action,
+    mutation
   ),
   toolCatalog: async (projectId) => await ipcRenderer.invoke(desktopIpc.toolCatalog, projectId),
   resumeInterruptedTurn: async (projectId, sessionId) => await ipcRenderer.invoke(desktopIpc.resumeInterruptedTurn, projectId, sessionId),
@@ -76,6 +84,7 @@ const api: DesktopApi = {
   cancelModelLogin: async (projectId, provider, authRequestId) => await ipcRenderer.invoke(desktopIpc.cancelModelLogin, projectId, provider, authRequestId),
   compact: async (projectId, hint) => await ipcRenderer.invoke(desktopIpc.compact, projectId, hint),
   runtimeProjection: async (projectId) => await ipcRenderer.invoke(desktopIpc.runtimeProjection, projectId),
+  planProjection: async (projectId, sessionId) => await ipcRenderer.invoke(desktopIpc.planProjection, projectId, sessionId),
   runtimeMutation: async (projectId, operation, payload) => await ipcRenderer.invoke(desktopIpc.runtimeMutation, projectId, operation, payload),
   runtimeEvents: async (projectId, afterSequence, limit) => await ipcRenderer.invoke(desktopIpc.runtimeEvents, projectId, afterSequence, limit),
   openBrowser: async (url) => await ipcRenderer.invoke(desktopIpc.openBrowser, url),

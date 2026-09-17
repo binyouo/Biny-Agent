@@ -1,18 +1,10 @@
 /** 准备及步骤间空档的反馈；已有实时阶段或正文时隐藏，保留高度避免跳动。 */
-import React, { memo, useEffect, useState } from "react";
+import React, { memo } from "react";
 import { ThinkingOrb, type OrbState } from "thinking-orbs";
 import { activityToolRow } from "../../chatModel.js";
 import type { TimelineTurn } from "../../sessionTimeline.js";
 
 export const RunStatus = memo(function RunStatus({ turn }: { turn?: TimelineTurn }): React.JSX.Element {
-  const [mountedAt] = useState(Date.now);
-  const [now, setNow] = useState(mountedAt);
-  useEffect(() => {
-    const timer = window.setInterval(() => setNow(Date.now()), 1_000);
-    return () => window.clearInterval(timer);
-  }, []);
-  const start = Date.parse(turn?.startedAt ?? turn?.timestamp ?? "");
-  const seconds = Math.max(0, Math.floor((now - (Number.isFinite(start) ? start : mountedAt)) / 1_000));
   const waiting = turn?.status === "waiting_permission" || turn?.tools.some((tool) => tool.permission && !tool.permission.resolved);
   const activeTool = turn?.tools.findLast((tool) => tool.status === "running" || tool.status === "waiting");
   const lastStep = turn?.steps.at(-1);
@@ -45,7 +37,6 @@ export const RunStatus = memo(function RunStatus({ turn }: { turn?: TimelineTurn
     <div aria-hidden={suppressed || undefined} className={`chat-run-status${waiting ? " is-waiting" : ""}${following ? " is-following" : ""}${suppressed ? " is-suppressed" : ""}`}>
       <ThinkingOrb aria-hidden="true" className="chat-run-status-orb" paused={Boolean(waiting) || suppressed} size={20} state={orb} style={following ? undefined : { width: 16, height: 16 }} />
       <span className={`chat-run-status-label${waiting || suppressed ? "" : " chat-shimmer-text"}`} role={suppressed ? undefined : "status"} title={label}>{label}</span>
-      <span className="chat-run-status-time" aria-hidden="true">{seconds < 60 ? `${seconds} 秒` : `${Math.floor(seconds / 60)} 分 ${seconds % 60} 秒`}</span>
     </div>
   );
 });

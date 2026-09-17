@@ -12,7 +12,7 @@ import { splitAttachmentReferences, type AttachmentReference } from "../../../at
 import { copyToClipboard } from "../copyToClipboard.js";
 import { useInlineImage } from "../inlineImage.js";
 import { listChangedFiles, type TimelineStep, type TimelineTurn } from "../sessionTimeline.js";
-import { hasSubmittedUserMessage, buildUsageDetailRows, finishReasonTone, formatDuration, formatMessageClock, parseCompactionNotice, turnMetrics, type TurnMetrics } from "../chatModel.js";
+import { hasSubmittedUserMessage, buildUsageDetailRows, finishReasonTone, formatDuration, formatMessageClock, parseCompactionNotice, shouldShowResponseContext, turnMetrics, type TurnMetrics } from "../chatModel.js";
 import { speak, speechSupported } from "../speech.js";
 import { CopyButton } from "./CopyButton.js";
 import { Icon } from "./Icon.js";
@@ -30,6 +30,8 @@ interface MessageTimelineProps {
   turns: TimelineTurn[];
   skillNames?: ReadonlyMap<string, string>;
   pendingUserMessage?: PendingUserMessage;
+  /** 首条提交自空态切入：pending 气泡以上浮 FLIP 进入（submittedPreview 原文参数）。 */
+  pendingFloatFromComposer?: boolean;
   onPreviewFile(path: string): void;
   onOpenExternal(url: string): void;
   onResolvePermission(requestId: string, result: PermissionResult): Promise<void>;
@@ -60,7 +62,7 @@ interface OptimisticRewrite {
   settled: boolean;
 }
 
-export const MessageTimeline = memo(function MessageTimeline({ projectId, turns, skillNames, pendingUserMessage, onPreviewFile, onOpenExternal, onResolvePermission, thinking, onRetry, onSwitchVersion, onEditRequest, editInFlight, onCreateBranch, onRollbackFiles, onDeleteUserMessage }: MessageTimelineProps): React.JSX.Element {
+export const MessageTimeline = memo(function MessageTimeline({ projectId, turns, skillNames, pendingUserMessage, pendingFloatFromComposer, onPreviewFile, onOpenExternal, onResolvePermission, thinking, onRetry, onSwitchVersion, onEditRequest, editInFlight, onCreateBranch, onRollbackFiles, onDeleteUserMessage }: MessageTimelineProps): React.JSX.Element {
   // 重试会先把目标之后的消息从视图中撤掉，再等待新回合流入；这里保留同样的乐观投影。
   // 编辑的重写投影来自 App（editInFlight），提交入口在底部输入框，不经过本组件状态。
   const [optimisticRewrite, setOptimisticRewrite] = useState<OptimisticRewrite>();
@@ -105,6 +107,22 @@ export const MessageTimeline = memo(function MessageTimeline({ projectId, turns,
 
   const hasRealPendingMessage = pendingUserMessage !== undefined
     && hasSubmittedUserMessage(turns, pendingUserMessage.messageId, pendingUserMessage.content);
+  // FLIP 落定标记：pending 以 FLIP 进入后，被真实回合接管的首条用户消息只播扫光
+  // （原文 animateUserEntry "sheen-only"），避免「上浮完又浮入」的二次入场。
+  const [flipArrived, setFlipArrived] = useState(false);
+  useEffect(() => {
+    if (pendingFloatFromComposer) setFlipArrived(true);
+  }, [pendingFloatFromComposer]);
+  // 切换项目时清除标记（跳过首挂载，否则会把同批置位的标记清掉），避免误伤新会话的首条消息。
+  const mountedForProjectRef = useRef(false);
+  useEffect(() => {
+    if (!mountedForProjectRef.current) {
+      mountedForProjectRef.current = true;
+      return;
+    }
+    setFlipArrived(false);
+  }, [projectId]);
+  const firstTurnSheenOnly = flipArrived && pendingUserMessage === undefined;
   const displayedTurns = useMemo(() => {
     const pending = rewrite;
     if (!pending) return turns;
@@ -160,15 +178,17 @@ export const MessageTimeline = memo(function MessageTimeline({ projectId, turns,
       {pendingUserMessage && !hasRealPendingMessage ? (
         <PendingUserMessage
           content={pendingUserMessage.content}
+          floatFromComposer={pendingFloatFromComposer === true}
           id={pendingUserMessage.id}
           onOpenExternal={onOpenExternal}
           onPreviewFile={onPreviewFile}
           projectId={projectId}
         />
       ) : null}
-      {displayedTurns.map((turn) => (
+      {displayedTurns.map((turn, index) => (
         <Turn
           busy={busy}
+          entrySheenOnly={firstTurnSheenOnly && index === 0}
           skillNames={skillNames}
           key={turn.id}
           onCreateBranch={onCreateBranch}
@@ -191,17 +211,49 @@ export const MessageTimeline = memo(function MessageTimeline({ projectId, turns,
   );
 });
 
-const PendingUserMessage = memo(function PendingUserMessage({ content, id, onOpenExternal, onPreviewFile, projectId }: {
+const PendingUserMessage = memo(function PendingUserMessage({ content, floatFromComposer, id, onOpenExternal, onPreviewFile, projectId }: {
   content: string;
+  /** 首条提交自空态切入：气泡自输入框位置上浮到时间线槽位（submittedPreview 原文参数）。 */
+  floatFromComposer: boolean;
   id: string;
   onOpenExternal(url: string): void;
   onPreviewFile(path: string): void;
   projectId: string;
 }): React.JSX.Element {
   const message = splitAttachmentReferences(content);
+  const bubbleRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!floatFromComposer) return;
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    const bubble = bubbleRef.current;
+    if (!bubble) return;
+    // 起点 = 底部输入框顶缘；终点 = 气泡自然槽位；
+    // 运动 = y(delta→0) + 淡入，0.5s cubic-bezier(.32,.72,0,1)（原文 motion 参数）。
+    const bubbleTop = bubble.getBoundingClientRect().top;
+    const startY = document.querySelector(".biny-chat-composer .biny-composer-frame")?.getBoundingClientRect().top
+      ?? window.innerHeight - 160;
+    const delta = startY - bubbleTop;
+    if (delta <= 8) return;
+    // FLIP 期间压掉 CSS 入场（浮入/扫光由落定后的 sheen-only 接管）。
+    bubble.classList.add("is-flip-enter");
+    const animation = bubble.animate(
+      [
+        { opacity: 0, transform: `translateY(${String(delta)}px)` },
+        { opacity: 1, transform: "translateY(0)" }
+      ],
+      { duration: 500, easing: "cubic-bezier(0.32, 0.72, 0, 1)" }
+    );
+    const settle = (): void => bubble.classList.remove("is-flip-enter");
+    animation.onfinish = settle;
+    animation.oncancel = settle;
+    return () => {
+      animation.cancel();
+      settle();
+    };
+  }, [floatFromComposer]);
   return (
     <article className="chat-message user-message is-pending-entry" data-message-id={id} data-sender="user">
-      <div className="user-bubble">
+      <div className="user-bubble" ref={bubbleRef}>
         {message.text ? <MarkdownContent content={message.text} onOpenExternal={onOpenExternal} onPreviewFile={onPreviewFile} projectId={projectId} /> : null}
         {message.attachments.length ? <MessageAttachments attachments={message.attachments} projectId={projectId} /> : null}
       </div>
@@ -220,6 +272,7 @@ function optimisticRewriteTurn(turn: TimelineTurn, user: string): TimelineTurn {
     reasoningStartedAt: undefined,
     skills: [],
     memoryInjectedCount: undefined,
+    memoryInjectedSummaries: undefined,
     preparationStage: undefined,
     capabilitySelection: undefined,
     status: "running",
@@ -241,6 +294,7 @@ function optimisticRewriteTurn(turn: TimelineTurn, user: string): TimelineTurn {
 
 const Turn = memo(function Turn({
   busy,
+  entrySheenOnly,
   skillNames,
   projectId,
   turn,
@@ -257,6 +311,8 @@ const Turn = memo(function Turn({
   onDeleteUserMessage
 }: {
   busy: boolean;
+  /** FLIP 落定后的首条用户消息只播扫光（原文 animateUserEntry "sheen-only"）。 */
+  entrySheenOnly?: boolean;
   skillNames?: ReadonlyMap<string, string>;
   projectId: string;
   turn: TimelineTurn;
@@ -316,6 +372,7 @@ const Turn = memo(function Turn({
       {turn.user ? (
         <UserMessage
           content={turn.user}
+          entrySheenOnly={entrySheenOnly === true}
           hasChangedFiles={listChangedFiles(turn).length > 0}
           onCreateBranch={onCreateBranch}
           onDelete={() => onDeleteUserMessage(turn.id)}
@@ -329,10 +386,10 @@ const Turn = memo(function Turn({
         />
       ) : null}
       {/* 运行中保留状态反馈；结束后不凭空补出助手内容。 */}
-      {running || executionSteps.length > 0 || turn.assistant.trim() || turn.capabilitySelection || completedChangedFiles.length > 0 ? (
+      {running || executionSteps.length > 0 || turn.assistant.trim() || completedChangedFiles.length > 0 ? (
       <article className="chat-message desktop-assistant-message" data-sender="assistant">
         <div className="agent-response">
-        <SkillsIndicator skillNames={skillNames} memoryInjectedCount={turn.memoryInjectedCount} selection={turn.capabilitySelection} skills={turn.skills} tools={turn.tools} />
+        {shouldShowResponseContext(turn) ? <SkillsIndicator skillNames={skillNames} memoryInjectedSummaries={turn.memoryInjectedSummaries} selection={turn.capabilitySelection} /> : null}
         {executionSteps.length ? (
           <ExecutionTimeline
             onPreviewFile={onPreviewFile}
@@ -481,7 +538,7 @@ function ExecutionTimeline({
  *
  * 思考不把工具组切断：reasoning 步骤与相邻 tool 步骤进同一个活动段。压缩标记
  * （notice === "compaction"）、assistant 正文/摘要、用户插话仍然是分组断点。
- * 与 alma 不同：这里单步骤也成段（一枚头像 + 一行摘要），保持视觉节奏一致。
+ * 单个步骤也保留为活动段，使思考或工具调用与多步骤活动使用同一套展开行为。
  */
 function groupExecutionSteps(steps: TimelineStep[]): Array<TimelineStep | ActivitySegmentStep[]> {
   const grouped: Array<TimelineStep | ActivitySegmentStep[]> = [];
@@ -517,6 +574,7 @@ function ActivitySummaryStep({ content, onOpenExternal, onPreviewFile, projectId
 
 function UserMessage({
   content,
+  entrySheenOnly,
   hasChangedFiles,
   onCreateBranch,
   onDelete,
@@ -529,6 +587,8 @@ function UserMessage({
   time
 }: {
   content: string;
+  /** 只播高光扫光、跳过浮入（FLIP 落定后的首条消息）。 */
+  entrySheenOnly?: boolean;
   hasChangedFiles: boolean;
   onCreateBranch(): void;
   onDelete(): void;
@@ -543,11 +603,22 @@ function UserMessage({
 }): React.JSX.Element {
   // 更多菜单走 portal fixed 定位（与助手菜单共用 hook），内联渲染会把消息列表往下挤。
   const { open: menuOpen, position: menuPosition, anchorRef: moreAnchorRef, menuRef, toggle, close: closeMenu } = useAnchoredMenu({ width: 208, estimatedHeight: 180 });
+  // 删除烟化（message-smoke-out 原文）：先播 .6s 烟化动画，750ms 后再真正删除。
+  const [smokingOut, setSmokingOut] = useState(false);
+  const smokeTimerRef = useRef<number | undefined>(undefined);
+  useEffect(() => () => {
+    if (smokeTimerRef.current !== undefined) window.clearTimeout(smokeTimerRef.current);
+  }, []);
+  const requestDelete = (): void => {
+    if (smokingOut) return;
+    setSmokingOut(true);
+    smokeTimerRef.current = window.setTimeout(onDelete, 750);
+  };
   // 发送时追加给模型的附件清单不该原样显示，拆出来渲染成附件卡片。
   const message = useMemo(() => splitAttachmentReferences(content), [content]);
   const clock = time ? <MessageClock time={Date.parse(time)} /> : null;
   return (
-    <article className="chat-message user-message" data-sender="user">
+    <article className={`chat-message user-message${entrySheenOnly ? " is-sheen-only" : ""}${smokingOut ? " message-smoke-out" : ""}`} data-sender="user">
       <div className="user-bubble">
         {message.text ? <MarkdownContent content={message.text} onOpenExternal={onOpenExternal} onPreviewFile={onPreviewFile} projectId={projectId} /> : null}
         {message.attachments.length ? <MessageAttachments attachments={message.attachments} projectId={projectId} /> : null}
@@ -566,7 +637,7 @@ function UserMessage({
           <button className="message-menu-item" onClick={() => { onCreateBranch(); closeMenu(); }} role="menuitem" type="button"><Icon name="branch" size={14} /><span>创建分支</span></button>
           <button className="message-menu-item" disabled={!hasChangedFiles} onClick={() => { onRollbackFiles(); closeMenu(); }} role="menuitem" title={hasChangedFiles ? "回滚本条消息产生的文件修改" : "当前消息没有可回滚的文件修改"} type="button"><Icon name="arrow-left" size={14} /><span>回滚文件</span></button>
           <div className="message-menu-separator" />
-          <button className="message-menu-item is-danger" onClick={() => { onDelete(); closeMenu(); }} role="menuitem" type="button"><Icon name="trash" size={14} /><span>删除消息</span></button>
+          <button className="message-menu-item is-danger" onClick={() => { closeMenu(); requestDelete(); }} role="menuitem" type="button"><Icon name="trash" size={14} /><span>删除消息</span></button>
         </div>,
         document.body
       ) : null}

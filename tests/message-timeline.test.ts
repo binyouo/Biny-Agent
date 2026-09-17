@@ -37,12 +37,18 @@ function renderTurns(turns: TimelineTurn[], thinking = false): string {
 test("模型尚未输出就失败：只保留用户消息，不生成助手错误回复", () => {
   const turns = buildSessionTimeline([], [...start, failure]);
   assert.equal(turns[0]?.reasoningDurationMs, 12_000, "展示筛选不改写真实计时记录");
-  const markup = renderTurns(turns);
+  const markup = renderTurns(turns.map((turn) => ({
+    ...turn,
+    capabilitySelection: { tools: ["Read"], skills: ["browser"] },
+    memoryInjectedCount: 1,
+    memoryInjectedSummaries: ["失败轮次不应展示这条记忆"]
+  })));
   assert.match(markup, /检查项目/u);
   assert.doesNotMatch(markup, /Connection timed out|chat-run-notice/u);
   assert.match(markup, /aria-label="重新生成"/u);
   assert.doesNotMatch(markup, /data-sender="assistant"|技术详情/u);
   assert.doesNotMatch(markup, /已思考|chat-activity|Worked for|assistant-actions|复制回复|更多回复操作/u);
+  assert.doesNotMatch(markup, /chat-meta-indicator|1 条记忆|1 个工具|1 个技能/u);
 });
 
 test("历史失败只有请求耗时：不能用总耗时生成思考步骤", () => {
@@ -64,13 +70,19 @@ test("部分回复后失败：保留已收到的正文、真实思考和工具�
     { ...base, type: "assistant.delta", content: "已读取项目配置。" },
     failure
   ]);
-  const markup = renderTurns(turns);
+  const markup = renderTurns(turns.map((turn) => ({
+    ...turn,
+    capabilitySelection: { tools: ["Read"], skills: ["browser"] },
+    memoryInjectedCount: 1,
+    memoryInjectedSummaries: ["失败轮次不应展示这条记忆"]
+  })));
   assert.match(markup, /已读取项目配置。/u);
   assert.match(markup, /chat-activity/u);
   assert.equal(turns[0]?.tools[0]?.status, "success");
   assert.equal(turns[0]?.reasoning, "先检查项目入口。");
   assert.doesNotMatch(markup, /Connection timed out|chat-run-notice/u);
   assert.match(markup, /复制回复/u);
+  assert.doesNotMatch(markup, /chat-meta-indicator|1 条记忆|1 个工具|1 个技能/u);
 });
 
 test("仅有工具结果的失败不会补出思考或空助手操作栏", () => {
@@ -83,6 +95,19 @@ test("仅有工具结果的失败不会补出思考或空助手操作栏", () =>
   assert.match(markup, /chat-activity/u);
   assert.doesNotMatch(markup, /Connection timed out|chat-run-notice/u);
   assert.doesNotMatch(markup, /已思考|Worked for|assistant-actions/u);
+});
+
+test("只有工具产出的成功轮次保留活动记录，不重复补能力清单", () => {
+  const markup = renderTurns(buildSessionTimeline([], [
+    ...start,
+    { ...base, type: "tool.started", toolCallId: "read", tool: "Read", args: { path: "package.json" } },
+    { ...base, type: "tool.completed", toolCallId: "read", tool: "Read", result: { content: "{}" } },
+    { ...base, type: "run.completed", durationMs: 20 }
+  ]));
+  assert.doesNotMatch(markup, /chat-meta-indicator/u);
+  assert.match(markup, /chat-activity/u);
+  assert.match(markup, /工具调用 1 次/u);
+  assert.doesNotMatch(markup, /条记忆|个技能/u);
 });
 
 test("成功回复没有思考内容：展示正文但不凭总耗时补出思考", () => {
@@ -117,8 +142,16 @@ test("停止后不补错误回复，保留真实压缩通知", () => {
 });
 
 test("运行中保留活动反馈，并禁止重试旧失败消息", () => {
-  const running = renderTurns(buildSessionTimeline([], start), true);
+  const running = renderTurns(buildSessionTimeline([], start).map((turn) => ({
+    ...turn,
+    capabilitySelection: { tools: ["Read"], skills: ["browser"] },
+    memoryInjectedCount: 1,
+    memoryInjectedSummaries: ["运行中的记忆摘要"]
+  })), true);
   assert.match(running, /正在等待模型响应/u);
+  assert.match(running, /chat-meta-indicator/u);
+  assert.match(running, /1 条记忆.*1 个工具.*1 个技能/u);
+  assert.doesNotMatch(running, /chat-run-status-time/u);
   assert.doesNotMatch(running, /chat-activity/u);
   assert.doesNotMatch(running, /回复生成失败|assistant-actions/u);
   const busy = renderTurns(buildSessionTimeline([], [...start, failure]), true);

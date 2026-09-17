@@ -6,7 +6,7 @@
  * 但拦截激活事件，让键盘用户也能知道按钮为什么不可用。
  */
 import { useTooltip } from "@astryxdesign/core/Tooltip";
-import { forwardRef, useCallback } from "react";
+import React, { forwardRef, useCallback } from "react";
 import type { ButtonHTMLAttributes, ReactNode } from "react";
 
 interface ComposerActionButtonProps extends Omit<ButtonHTMLAttributes<HTMLButtonElement>, "children" | "disabled" | "title"> {

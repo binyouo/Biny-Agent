@@ -23,6 +23,7 @@ import {
   type TimelineTool,
 } from "../src/desktop/renderer/src/sessionTimeline.js";
 import { MarkdownContent } from "../src/desktop/renderer/src/components/MarkdownContent.js";
+import { QueuedMessages } from "../src/desktop/renderer/src/components/composer/QueuedMessages.js";
 
 test("sessionTimeline 保留历史工具的原始名称", () => {
   const timeline = buildSessionTimeline([
@@ -32,6 +33,35 @@ test("sessionTimeline 保留历史工具的原始名称", () => {
   ] as never[], []);
   assert.equal(timeline[0]?.tools[0]?.tool, "multi_edit");
   assert.equal(timeline[0]?.tools[0]?.display, undefined);
+});
+
+test("sessionTimeline 从落盘事件补算各思考段时长，头部能显示「已思考 N 秒」", () => {
+  const timeline = buildSessionTimeline([
+    { type: "user_message", content: "查一下", messageId: "u1", time: "2026-09-10T10:00:00.000Z" },
+    // 第一段思考：随 tool_call 落盘，窗口 = user_message → tool_call = 9s。
+    {
+      type: "tool_call",
+      tool: "Read",
+      toolCallId: "t1",
+      args: { path: "a.ts" },
+      reasoningContent: "先读文件。",
+      time: "2026-09-10T10:00:09.000Z"
+    },
+    { type: "tool_result", tool: "Read", toolCallId: "t1", result: { path: "a.ts", status: "completed" }, time: "2026-09-10T10:00:10.000Z" },
+    // 第二段思考：窗口 = tool_result → assistant_message = 4s。
+    {
+      type: "assistant_message",
+      content: "读完了。",
+      reasoningContent: "文件内容不多，直接总结。",
+      messageId: "a1",
+      time: "2026-09-10T10:00:14.000Z"
+    }
+  ] as never[], []);
+  const reasoningSteps = timeline[0]?.steps.filter((step) => step.kind === "reasoning") ?? [];
+  assert.equal(reasoningSteps.length, 2);
+  assert.equal(reasoningSteps[0]?.durationMs, 9000);
+  assert.equal(reasoningSteps[1]?.durationMs, 4000);
+  assert.equal(timeline[0]?.reasoningDurationMs, 13000);
 });
 test("行内路径保持灰色代码样式且不触发文件预览", () => {
   let previews = 0;
@@ -45,6 +75,26 @@ test("行内路径保持灰色代码样式且不触发文件预览", () => {
   assert.match(markup, /<code>\.agent\/skills<\/code>/u);
   assert.doesNotMatch(markup, /inline-path|在右侧预览/u);
   assert.equal(previews, 0);
+});
+
+test("追加消息队列展示数量并提供编辑、插话和删除入口", () => {
+  const markup = renderToStaticMarkup(createElement(QueuedMessages, {
+    messages: [{ messageId: "queued-1", content: "补充背景", attachmentCount: 0 }],
+    running: true,
+    onRemove: async () => undefined,
+    onMove: async () => undefined,
+    onSteer: async () => undefined,
+    onSendNow: async () => undefined,
+    onUpdate: async () => undefined,
+    onError: () => undefined,
+  }));
+
+  assert.match(markup, /1 条待发送消息/u);
+  assert.match(markup, /补充背景/u);
+  assert.match(markup, /插话/u);
+  assert.match(markup, /立即发送待发送消息/u);
+  assert.match(markup, /拖动以重新排序/u);
+  assert.match(markup, /aria-label="删除"/u);
 });
 
 test("formatTokens 紧凑计数", () => {
@@ -496,10 +546,10 @@ test("ActivitySegment 多相位段提供时间线视图且思考相位独立展�
 });
 
 test("SkillsIndicator 渲染技能数与悬停清单", () => {
-  const markup = renderToStaticMarkup(createElement(SkillsIndicator, { skills: ["write-tui", "simplify-audit", "write-tui"], tools: [toolStep("t1", "Read", "success").tool, toolStep("t2", "Read", "success").tool] }));
+  const markup = renderToStaticMarkup(createElement(SkillsIndicator, { selection: { tools: ["Read", "Read"], skills: ["write-tui", "simplify-audit", "write-tui"] } }));
   assert.match(markup, /2 个技能/u);
   assert.match(markup, /1 个工具/u);
-  assert.equal(renderToStaticMarkup(createElement(SkillsIndicator, { skills: [], tools: [] })), "");
+  assert.equal(renderToStaticMarkup(createElement(SkillsIndicator, {})), "");
 });
 
 test("CompactionDivider 渲染压缩药丸并省略缺失段", () => {
@@ -526,7 +576,8 @@ test("ActivitySegment 运行时只展开最新阶段，锁定阶段切换并保�
     onResolvePermission: noopAsync,
   }));
   assert.match(running, /role="status">探索中/u);
-  assert.match(running, /disabled="" class="chat-phase-avatar is-active"/u);
+  // 最新执行相位头像挂活相标记（呼吸光环动画的稳定钩子）。
+  assert.match(running, /disabled="" class="chat-phase-avatar is-active is-alive"/u);
   assert.match(running, /biny-collapse is-open chat-activity-collapse/u);
   assert.match(running, /class="chat-tool-row" data-activity-toggle/u);
   assert.doesNotMatch(running, /chat-activity-chevron|chat-activity-mode|分析中/u);
@@ -585,19 +636,38 @@ test("RecipeReadyBanner 渲染提取横幅（标题、槽位、提取与忽略�
 });
 
 
-test("记忆注入指示器只展示本轮真实的正计数", () => {
-  const markup = renderToStaticMarkup(createElement(SkillsIndicator, { skills: [], tools: [], memoryInjectedCount: 2 }));
-  assert.match(markup, /已注入 2 条记忆/u);
-  assert.equal(renderToStaticMarkup(createElement(SkillsIndicator, { skills: [], tools: [], memoryInjectedCount: 0 })), "");
+test("记忆指示器只展示本轮有内容的真实记忆", () => {
+  const markup = renderToStaticMarkup(createElement(SkillsIndicator, {
+    memoryInjectedSummaries: ["偏好使用中文回复", "发布前运行完整测试"]
+  }));
+  assert.match(markup, /chat-meta-trigger/u);
+  assert.match(markup, /2 条记忆/u);
+  assert.doesNotMatch(markup, /已注入/u);
+  assert.equal(renderToStaticMarkup(createElement(SkillsIndicator, {})), "");
 });
 
+test("回复上下文按记忆、工具、技能顺序并列组合", () => {
+  const markup = renderToStaticMarkup(createElement(SkillsIndicator, {
+    memoryInjectedSummaries: ["使用浏览器核验当前网页"],
+    selection: { tools: ["Read"], skills: ["browser"] },
+    skillNames: new Map([["browser", "浏览器"]])
+  }));
+  const memoryAt = markup.indexOf("1 条记忆");
+  const toolsAt = markup.indexOf("1 个工具");
+  const skillsAt = markup.indexOf("1 个技能");
+  assert.ok(memoryAt >= 0);
+  assert.ok(toolsAt > memoryAt);
+  assert.ok(skillsAt > toolsAt);
+  assert.equal((markup.match(/chat-meta-separator/gu) ?? []).length, 2);
+});
 
 test("历史回复保留本轮实际注入数量，旧会话不推测命中", () => {
   const history = [
     { type: "user_message" as const, content: "继续", time: "2026-09-12T00:00:00Z" },
-    { type: "assistant_message" as const, content: "好的", metadata: { memoryInjectedCount: 2 } }
+    { type: "assistant_message" as const, content: "好的", metadata: { memoryInjectedCount: 2, memoryInjectedSummaries: ["第一条", "第二条"] } }
   ];
   assert.equal(buildSessionTimeline(history, [])[0]?.memoryInjectedCount, 2);
+  assert.deepEqual(buildSessionTimeline(history, [])[0]?.memoryInjectedSummaries, ["第一条", "第二条"]);
   assert.equal(buildSessionTimeline([{ type: "user_message", content: "旧会话" }, { type: "assistant_message", content: "好的" }], [])[0]?.memoryInjectedCount, undefined);
 });
 
@@ -621,7 +691,7 @@ test("顶部清单展示消息预选的 Skill，而不要求先发生 Skill 工�
     { type: "assistant_message", content: "开始检查" }
   ], []);
   assert.deepEqual(turns[0]?.capabilitySelection, { tools: ["Read", "WebSearch"], skills: ["browser", "web-fetch"] });
-  const markup = renderToStaticMarkup(createElement(SkillsIndicator, { selection: turns[0]?.capabilitySelection, skills: [], tools: [] }));
+  const markup = renderToStaticMarkup(createElement(SkillsIndicator, { selection: turns[0]?.capabilitySelection }));
   assert.match(markup, /2 个工具/u);
   assert.match(markup, /2 个技能/u);
 });

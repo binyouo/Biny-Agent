@@ -1898,7 +1898,9 @@ select option:disabled {
   line-height: 1.4;
 }
 
-/* 滑动开关：轨道 1.5rem×2.75rem、圆头 1.25rem、选中位移 1.25rem。 */
+/* 滑动开关：轨道 1.5rem×2.75rem、圆头 1.25rem、选中位移 1.25rem。
+   选中态用 --accent 蓝而非 --st-primary：开关是状态指示不是操作按钮，
+   与 Provider 设置里的迷你开关、alma 的 Switch 选中蓝保持一致。 */
 .desktop-settings-dialog .settings-modal .settings-switch {
   display: inline-flex;
   width: calc(2.75 * var(--st-rem));
@@ -1912,7 +1914,7 @@ select option:disabled {
 }
 
 .desktop-settings-dialog .settings-modal .settings-switch-row.is-checked .settings-switch {
-  background: var(--st-primary);
+  background: var(--accent);
 }
 
 .desktop-settings-dialog .settings-modal .settings-switch-row:focus-visible {
@@ -2021,10 +2023,6 @@ select option:disabled {
 .desktop-settings-dialog .activity-permission-copy { flex: 1 1 220px; }
 .desktop-settings-dialog .activity-memory-heading-row { flex-wrap: wrap; gap: 8px 16px; }
 .desktop-settings-dialog .activity-memory-heading-row span { white-space: normal; }
-
-@container settings (max-width: 420px) {
-  .agent-permission-options { grid-template-columns: 1fr; }
-}
 
 .appearance-settings .appearance-card {
   margin: 0;
@@ -3345,7 +3343,6 @@ select option:disabled {
 }
 
 /* —— 选项卡片（单选组）圆角与选中环 —— */
-.desktop-settings-dialog .settings-modal .agent-permission-option,
 .desktop-settings-dialog .settings-modal .capability-default-option,
 .desktop-settings-dialog .settings-modal .personality-option {
   border-radius: var(--st-radius);
@@ -3362,8 +3359,7 @@ select option:disabled {
 .desktop-settings-dialog .settings-modal .login-code-panel,
 .desktop-settings-dialog .settings-modal .memory-stat-card,
 .desktop-settings-dialog .settings-modal .memory-entry,
-.desktop-settings-dialog .settings-modal .memory-index-summary > span,
-.desktop-settings-dialog .settings-modal .permission-scope-summary > span,
+  .desktop-settings-dialog .settings-modal .memory-index-summary > span,
 .desktop-settings-dialog .settings-modal .chat-personalization-section,
 .desktop-settings-dialog .settings-modal .activity-permission-row,
 .desktop-settings-dialog .settings-modal .memory-embedding-maintenance,
@@ -4689,7 +4685,6 @@ select option:disabled {
 .model-picker-primary,
 .model-options-scroll,
 .desktop-settings-dialog .settings-modal .settings-model-picker-options,
-.agent-permission-options,
 .capabilities-scroll {
   position: relative;
 }
@@ -4697,4 +4692,74 @@ select option:disabled {
 .menu-option[data-fluid-hover-active],
 .model-option[data-fluid-hover-active] {
   color: var(--text);
+}
+
+/* 计划卡片的间距按 13px 基准等比缩放；局部配色不改动整个应用主题。 */
+.biny-plan-panel {
+  --plan-unit: calc(13px * var(--font-scale, 1));
+  --plan-text: light-dark(#1a1a1a, #dcdfe4);
+  --plan-muted-text: light-dark(#64748b, #8b92a4);
+  --plan-muted: light-dark(#f1f5f9, #3b404c);
+  --plan-border: light-dark(#e2e8f0, #3e4451);
+  --plan-primary: light-dark(#7299a0, #61afef);
+  --plan-warning: light-dark(oklch(66.6% .179 58.318), oklch(82.8% .189 84.429 / .9));
+  --plan-warning-icon: light-dark(oklch(76.9% .188 70.08 / .8), oklch(82.8% .189 84.429 / .7));
+  --plan-warning-bg: oklch(76.9% .188 70.08 / .1);
+  --plan-error: light-dark(oklch(63.7% .237 25.331 / .8), oklch(70.4% .191 22.216 / .7));
+  color: var(--plan-text);
+  margin-bottom: calc(var(--plan-unit) * .5);
+  font-size: calc(var(--plan-unit) * .875);
+  line-height: calc(var(--plan-unit) * 1.25);
+}
+.biny-plan-card { border: 1px solid color-mix(in srgb, var(--plan-border) 50%, transparent); border-radius: calc(var(--plan-unit) * .625); background: color-mix(in srgb, var(--plan-muted) 30%, transparent); overflow: hidden; }
+.biny-plan-card svg { width: var(--plan-unit); height: var(--plan-unit); flex-shrink: 0; }
+.biny-plan-heading { all: unset; box-sizing: border-box; display: flex; align-items: center; justify-content: space-between; width: 100%; padding: calc(var(--plan-unit) * .75) var(--plan-unit); cursor: pointer; transition: background-color 150ms cubic-bezier(.4, 0, .2, 1); }
+.biny-plan-heading:hover { background: color-mix(in srgb, var(--plan-muted) 50%, transparent); }
+.biny-plan-heading:focus-visible { outline: 2px solid var(--plan-primary); outline-offset: -2px; }
+.biny-plan-heading-main { display: flex; align-items: center; gap: calc(var(--plan-unit) * .625); min-width: 0; }
+.biny-plan-heading-main > svg, .biny-plan-chevron, .biny-plan-progress { color: var(--plan-muted-text); }
+.biny-plan-title { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-weight: 500; }
+.biny-plan-title.is-current { font-weight: 400; }
+.biny-plan-progress { flex-shrink: 0; }
+.biny-plan-chevron { transition: transform 200ms cubic-bezier(.4, 0, .2, 1); }
+.biny-plan-chevron.is-collapsed { transform: rotate(180deg); }
+.biny-plan-feedback { display: flex; align-items: center; gap: calc(var(--plan-unit) * .5); padding: calc(var(--plan-unit) * .375) var(--plan-unit); color: var(--plan-warning); background: var(--plan-warning-bg); border-top: 1px solid color-mix(in srgb, var(--plan-border) 30%, transparent); font-size: calc(var(--plan-unit) * .75); line-height: var(--plan-unit); }
+.biny-plan-feedback > svg { width: calc(var(--plan-unit) * .875); height: calc(var(--plan-unit) * .875); }
+.biny-plan-feedback > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.biny-plan-reveal { overflow: hidden; }
+.biny-plan-content { padding: calc(var(--plan-unit) * .25) var(--plan-unit) calc(var(--plan-unit) * .75); }
+.biny-plan-task + .biny-plan-task { margin-top: calc(var(--plan-unit) * .75); }
+.biny-plan-task-heading { display: flex; align-items: center; gap: calc(var(--plan-unit) * .5); margin-bottom: calc(var(--plan-unit) * .375); }
+.biny-plan-task-dot { width: calc(var(--plan-unit) * .375); height: calc(var(--plan-unit) * .375); border-radius: 50%; flex-shrink: 0; background: color-mix(in srgb, var(--plan-muted-text) 25%, transparent); }
+.biny-plan-task-dot.is-done { background: var(--plan-primary); }
+.biny-plan-task-dot.is-in_progress { background: oklch(76.9% .188 70.08 / .8); animation: biny-plan-pulse 2s cubic-bezier(.4, 0, .6, 1) infinite; }
+.biny-plan-task-dot.is-ready { background: color-mix(in srgb, var(--plan-muted-text) 60%, transparent); }
+.biny-plan-task-title { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-weight: 500; }
+.biny-plan-task-heading.is-pending { color: var(--plan-muted-text); }
+.biny-plan-deps { flex-shrink: 0; font-size: calc(var(--plan-unit) * .75); color: color-mix(in srgb, var(--plan-muted-text) 60%, transparent); }
+.biny-plan-blocks { padding-left: calc(var(--plan-unit) * .875); }
+.biny-plan-block { display: flex; align-items: flex-start; gap: calc(var(--plan-unit) * .5); color: var(--plan-muted-text); }
+.biny-plan-block + .biny-plan-block { margin-top: calc(var(--plan-unit) * .375); }
+.biny-plan-block-title { flex: 1; min-width: 0; text-align: left; line-height: 1.25; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.biny-plan-block.is-done > svg { color: var(--plan-primary); }
+.biny-plan-block.is-done > .biny-plan-block-title { text-decoration: line-through; }
+.biny-plan-block.is-in_progress > .biny-plan-block-title { color: var(--plan-text); }
+.biny-plan-block.is-blocked { color: var(--plan-error); }
+.biny-plan-block.is-exhausted > svg { color: var(--plan-warning-icon); }
+.biny-plan-block.is-ready > svg { opacity: .7; }
+.biny-plan-block.is-pending > svg { opacity: .3; }
+.biny-plan-review { display: inline-flex; align-items: center; flex-shrink: 0; gap: calc(var(--plan-unit) * .25); font-size: calc(var(--plan-unit) * .75); line-height: var(--plan-unit); color: color-mix(in srgb, var(--plan-muted-text) 60%, transparent); }
+.biny-plan-review > svg { width: calc(var(--plan-unit) * .75); height: calc(var(--plan-unit) * .75); }
+.biny-plan-block > .is-spinning { animation: biny-plan-spin 1s linear infinite; }
+.biny-plan-actions { display: flex; gap: 8px; margin-top: 6px; }
+.biny-plan-actions button { font-size: inherit; }
+.biny-plan-approval { margin-top: 6px; font-size: calc(var(--plan-unit) * .75); color: var(--text-secondary); }
+.biny-plan-approval summary { cursor: pointer; }
+.biny-plan-approval p { margin: 6px 0; }
+.biny-plan-approval pre, .biny-plan-approval code { white-space: pre-wrap; overflow-wrap: anywhere; font-size: inherit; }
+@keyframes biny-plan-spin { to { transform: rotate(360deg); } }
+@keyframes biny-plan-pulse { 50% { opacity: .5; } }
+@media (prefers-reduced-motion: reduce) {
+  .biny-plan-heading, .biny-plan-chevron { transition: none; }
+  .biny-plan-task-dot.is-in_progress, .biny-plan-block > .is-spinning { animation: none; }
 }

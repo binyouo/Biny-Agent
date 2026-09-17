@@ -17,6 +17,7 @@ import { useFluidHoverItems } from "../../useFluidHoverItems.js";
 import { FluidHoverHighlight } from "../FluidHoverHighlight.js";
 import { Icon, type IconName } from "../Icon.js";
 import { ComposerPopover } from "./ComposerPopover.js";
+import { applyCapabilityNames, toggleCapabilityName } from "./capabilitySelectionLogic.js";
 
 type CapabilityTab = "tools" | "skills";
 
@@ -197,12 +198,12 @@ export function CapabilitiesMenu({ anchorRef, onOpenMcpSettings, onRefreshCatalo
     onChange({ ...selection, [tab]: next });
   };
   const toggleEntry = (name: string): void => {
-    onChange({ ...selection, [tab]: toggleName(value, name, allNames) });
+    onChange({ ...selection, [tab]: toggleCapabilityName(value, name, allNames) });
   };
   const toggleGroupEntries = (group: ToolGroup): void => {
     const keys = group.entries.map((entry) => entry.name);
     const allSelected = groupSelectionState(value, keys) === "all";
-    onChange({ ...selection, [tab]: applyNames(value, keys, allNames, !allSelected) });
+    onChange({ ...selection, [tab]: applyCapabilityNames(value, keys, allNames, !allSelected) });
   };
 
   return (
@@ -264,8 +265,8 @@ export function CapabilitiesMenu({ anchorRef, onOpenMcpSettings, onRefreshCatalo
                 ) : (
                   <>
                     <div className="capabilities-mcp-quick">
-                      <button disabled={mcpServerSelection.selected === mcpServers.length} onClick={() => onChange({ ...selection, tools: applyNames(value, allMcpToolNames, allToolNames, true) })} type="button">全选</button>
-                      <button disabled={mcpServerSelection.selected === 0} onClick={() => onChange({ ...selection, tools: applyNames(value, allMcpToolNames, allToolNames, false) })} type="button">全不选</button>
+                      <button disabled={mcpServerSelection.selected === mcpServers.length} onClick={() => onChange({ ...selection, tools: applyCapabilityNames(value, allMcpToolNames, allToolNames, true) })} type="button">全选</button>
+                      <button disabled={mcpServerSelection.selected === 0} onClick={() => onChange({ ...selection, tools: applyCapabilityNames(value, allMcpToolNames, allToolNames, false) })} type="button">全不选</button>
                     </div>
                     <div className="capabilities-mcp-rows">
                       {mcpServers.map((server) => {
@@ -276,7 +277,7 @@ export function CapabilitiesMenu({ anchorRef, onOpenMcpSettings, onRefreshCatalo
                             <button disabled={!server.toolNames.length || server.state !== "connected"} aria-checked={checked} aria-label={`${checked ? "停用" : "启用"} ${server.name}`} className="capability-check" onClick={() => {
                               const serverTools = tools.filter((tool) => tool.source === "mcp" && mcpServerOf(tool) === server.name).map((tool) => tool.name);
                               if (serverTools.length === 0) return;
-                              onChange({ ...selection, tools: applyNames(value, serverTools, allToolNames, !checked) });
+                              onChange({ ...selection, tools: applyCapabilityNames(value, serverTools, allToolNames, !checked) });
                             }} role="switch" type="button"><Icon name="check" size={12} /></button>
                             {connecting ? <span aria-label="连接中" role="status" className="capabilities-spinner" /> : <span aria-label={server.state === "connected" ? "已连接" : "未连接"} role="img" className={`capabilities-mcp-state is-${server.state}`} />}
                             <span className="capabilities-mcp-name" title={server.description ?? server.name}>{server.name}</span>
@@ -442,24 +443,6 @@ function groupSelectionState(value: CapabilitySelectionValue, names: string[]): 
 function explicitNames(value: CapabilitySelectionValue): string[] | undefined {
   if (value === "auto" || value === "all") return undefined;
   return value === "none" ? [] : value;
-}
-
-/**
- * 以 allNames 的目录顺序返回应用了 add / remove 之后的数组。
- * auto 模式从空数组起步（勾选一项即进入「只选这项」）；all 模式从全集中摘除。
- */
-function applyNames(value: CapabilitySelectionValue, names: string[], allNames: string[], add: boolean): string[] {
-  const base = value === "all" ? allNames : value === "auto" ? [] : value === "none" ? [] : value;
-  const next = new Set(base);
-  for (const name of names) {
-    if (add) next.add(name);
-    else next.delete(name);
-  }
-  return allNames.filter((candidate) => next.has(candidate));
-}
-
-function toggleName(value: CapabilitySelectionValue, name: string, allNames: string[]): string[] {
-  return applyNames(value, [name], allNames, !isNameSelected(value, name));
 }
 
 function mcpServerOf(tool: DesktopToolCatalogEntry): string | undefined {

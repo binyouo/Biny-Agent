@@ -28,11 +28,12 @@
   to { opacity: 1; transform: translateY(0); }
 }
 
-/* 用户消息入场：alma userMessageFloatIn（18px 浮入 + 2% 回弹），随后的扫光高亮划过气泡。 */
+/* 用户消息入场（userMessageFloatIn 原文，含阴影帧）：动画作用在气泡上，
+ * 通栏消息行不参与，首帧阴影不会横向铺开。 */
 @keyframes chat-user-message-enter {
-  0% { opacity: 0; transform: translate3d(0, 18px, 0) scale(0.95); box-shadow: 0 24px 36px rgb(0 0 0 / 15%); }
-  70% { opacity: 1; transform: translate3d(0, -4px, 0) scale(1.02); box-shadow: 0 16px 24px rgb(0 0 0 / 10%); }
-  100% { opacity: 1; transform: translate3d(0, 0, 0) scale(1); }
+  0% { opacity: 0; transform: translate3d(0, 18px, 0) scale(0.95); box-shadow: 0 24px 36px #00000026; }
+  70% { opacity: 1; transform: translate3d(0, -4px, 0) scale(1.02); box-shadow: 0 16px 24px #0000001a; }
+  100% { opacity: 1; transform: translate3d(0, 0, 0) scale(1); box-shadow: 0 1px 2px rgb(0 0 0 / 5%); }
 }
 
 @keyframes chat-user-sheen {
@@ -213,6 +214,24 @@
   color: var(--biny-text);
 }
 
+/* 执行中相位的呼吸光环（alma activity-avatar-alive 原文时序）：
+   1.6s ease-in-out 无限，光环从贴身扩到 4px 并淡出，叠加原有的背景隔离环。 */
+.chat-phase-avatar.is-alive {
+  animation: 1.6s ease-in-out infinite chat-phase-avatar-breathe;
+}
+
+@keyframes chat-phase-avatar-breathe {
+  0%, 100% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--biny-text-tertiary) 35%, transparent),
+      0 0 0 2px var(--bg, var(--biny-surface));
+  }
+
+  50% {
+    box-shadow: 0 0 0 4px color-mix(in srgb, var(--biny-text-tertiary) 12%, transparent),
+      0 0 0 2px var(--bg, var(--biny-surface));
+  }
+}
+
 /* 超过 8 个相位时的「+N」溢出徽标（椭圆胶囊）。 */
 .chat-phase-avatar.is-overflow {
   width: auto;
@@ -247,14 +266,6 @@
   white-space: nowrap;
   font-weight: 500;
   color: var(--biny-text);
-}
-
-.biny-chat-scroll .chat-activity:not([data-running]) .chat-activity-summary {
-  font-size: calc(12px * var(--font-scale, 1));
-}
-
-.biny-chat-scroll .chat-activity:not([data-running]) .chat-activity-verb {
-  color: var(--biny-text-secondary);
 }
 
 /* 运行中的实时摘要（非按钮）：与 .chat-activity-summary 同一套排版规格。 */
@@ -555,22 +566,27 @@
   text-align: left;
 }
 
-/* ============ 实际调用的工具和技能清单 ============ */
+/* ============ 回复实际使用的记忆、工具和技能清单 ============ */
 
 .biny-chat-scroll .chat-meta-indicator {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
-  margin-bottom: 2px;
+  column-gap: 7px;
+  row-gap: 4px;
+  margin-bottom: 7px;
   color: color-mix(in srgb, var(--biny-text-tertiary) 70%, transparent);
-  font-size: calc(12px * var(--font-scale, 1));
+  font-size: calc(10.5px * var(--font-scale, 1));
+  line-height: 15px;
 }
 
 .biny-chat-scroll .chat-meta-trigger {
   position: relative;
   display: inline-flex;
+  flex: 0 0 auto;
   align-items: center;
-  gap: 4px;
+  gap: 3.5px;
+  white-space: nowrap;
   padding: 0;
   border: 0;
   background: transparent;
@@ -578,6 +594,14 @@
   font: inherit;
   cursor: pointer;
   transition: color 150ms ease;
+}
+
+.biny-chat-scroll .chat-meta-trigger > svg {
+  flex: 0 0 auto;
+}
+
+.biny-chat-scroll .chat-meta-separator {
+  color: var(--biny-border);
 }
 
 .biny-chat-scroll .chat-meta-trigger:hover,
@@ -623,6 +647,19 @@
 }
 
 .chat-meta-tooltip-list > li { margin: 2px 0; }
+
+.chat-meta-tooltip .chat-meta-tooltip-list.is-memory {
+  padding-left: 0;
+  list-style: none;
+}
+
+.chat-meta-tooltip-list.is-memory > li {
+  display: -webkit-box;
+  overflow: hidden;
+  color: var(--biny-text-tertiary);
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
 
 .tool-details {
   display: flex;
@@ -1909,10 +1946,10 @@
 
 /* 首条消息先以临时投影进入时间线，真实事件接管后保持同一段轻量入场；
    气泡上再划过一道高光扫光（alma userMessageSheen）。 */
-.biny-chat-scroll .user-message.is-pending-entry,
-.biny-chat-scroll .timeline-turn.is-running > .user-message,
-.biny-chat-scroll .timeline-turn.is-waiting_permission > .user-message {
-  animation: chat-user-message-enter 450ms cubic-bezier(0.22, 1, 0.36, 1) both;
+.biny-chat-scroll .user-message.is-pending-entry .user-bubble,
+.biny-chat-scroll .timeline-turn.is-running > .user-message .user-bubble,
+.biny-chat-scroll .timeline-turn.is-waiting_permission > .user-message .user-bubble {
+  animation: chat-user-message-enter var(--user-message-entry-duration, 450ms) cubic-bezier(0.22, 1, 0.36, 1) both;
   will-change: transform, opacity;
 }
 
@@ -1938,6 +1975,21 @@
 
 .biny-chat-scroll .user-message.is-editing {
   align-items: stretch;
+}
+
+/* FLIP 上浮期间（submittedPreview 原文参数的 WAAPI 实现接管 transform/opacity）压掉 CSS 入场。 */
+.biny-chat-scroll .user-bubble.is-flip-enter {
+  animation: none !important;
+}
+
+.biny-chat-scroll .user-bubble.is-flip-enter::after {
+  animation: none !important;
+  opacity: 0;
+}
+
+/* FLIP 落定后的首条真实消息：跳过浮入，只保留高光扫光（原文 sheen-only）。 */
+.biny-chat-scroll .user-message.is-sheen-only .user-bubble {
+  animation: none;
 }
 
 /* 用户气泡：非对称圆角 24px/4px、85% 宽、
@@ -2531,22 +2583,54 @@
 }
 
 
-/* 流式正文末尾的呼吸光标。 */
+/* 流式正文末尾的脉冲光标（with-streaming-cursor 原文：▎ + streamingCursorPulse
+   opacity .4↔.9、scaleY 1↔1.05，1.2s ease-in-out infinite）。 */
 .with-streaming-cursor .markdown-body > :last-child::after {
-  content: "▍";
+  content: "▎";
   color: var(--biny-focus);
+  font-weight: 400;
   animation: chat-caret-pulse 1.2s ease-in-out infinite;
 }
 
 @keyframes chat-caret-pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.25; }
+  0%, 100% { opacity: 0.4; transform: scaleY(1); }
+  50% { opacity: 0.9; transform: scaleY(1.05); }
+}
+
+/* 流式段落阶梯显影（streaming-response 原文）：正文块 streamingTextReveal
+   （y 4px→0，.5s ease(.22,1,.36,1) backwards），列表纯 opacity；越新的块延迟越大：
+   倒数第二块 80ms、第三块 150ms、第四块 200ms。 */
+.with-streaming-cursor .markdown-body > *:not(ul):not(ol) {
+  animation: streaming-text-reveal var(--streaming-fade-duration, 0.5s) var(--streaming-fade-curve, cubic-bezier(0.22, 1, 0.36, 1)) backwards;
+}
+
+.with-streaming-cursor .markdown-body > ul,
+.with-streaming-cursor .markdown-body > ol {
+  animation: streaming-list-reveal var(--streaming-fade-duration, 0.5s) var(--streaming-fade-curve, cubic-bezier(0.22, 1, 0.36, 1)) backwards;
+}
+
+.with-streaming-cursor .markdown-body > :last-child { animation-delay: 0s; }
+.with-streaming-cursor .markdown-body > :nth-last-child(2) { animation-delay: 80ms; }
+.with-streaming-cursor .markdown-body > :nth-last-child(3) { animation-delay: 0.15s; }
+.with-streaming-cursor .markdown-body > :nth-last-child(4) { animation-delay: 0.2s; }
+
+@keyframes streaming-text-reveal {
+  0% { opacity: 0; transform: translateY(4px); }
+  100% { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes streaming-list-reveal {
+  0% { opacity: 0; }
+  100% { opacity: 1; }
 }
 
 @media (prefers-reduced-motion: reduce) {
   .with-streaming-cursor .markdown-body > :last-child::after {
     animation: none;
+    opacity: 0.6;
   }
+  .with-streaming-cursor .markdown-body > * { animation: none !important; }
+  .chat-phase-avatar.is-alive { animation: none; }
 }
 
 /* ============ 消息"更多"菜单与用量悬浮卡（portal 到 body） ============ */
@@ -2567,25 +2651,37 @@
   color: var(--biny-text-secondary);
   font-size: calc(12.5px * var(--font-scale, 1));
   user-select: none;
-  animation: message-menu-in 140ms ease;
+  /* messageMenuReveal 原文：offset 10px→-2.5px→0、scale .94→1.03→1、blur 6px→0，
+     .32s cubic-bezier(.22,1,.36,1)；向上弹时 offset 取 -12px、原点换底。 */
+  animation: message-menu-reveal var(--message-menu-pop-duration, 0.32s) var(--message-menu-pop-curve, cubic-bezier(0.22, 1, 0.36, 1)) both;
+  will-change: transform, opacity, filter;
 }
 
 .message-menu[data-direction="down"] {
+  --message-menu-offset: 12px;
   transform-origin: top left;
 }
 
 .message-menu[data-direction="up"] {
+  --message-menu-offset: -12px;
   transform-origin: bottom left;
 }
 
-@keyframes message-menu-in {
-  from {
+@keyframes message-menu-reveal {
+  0% {
     opacity: 0;
-    transform: scale(0.96);
+    transform: translate3d(0, var(--message-menu-offset, 10px), 0) scale(0.94);
+    filter: blur(6px);
   }
-  to {
+  65% {
     opacity: 1;
-    transform: scale(1);
+    transform: translate3d(0, calc(var(--message-menu-offset, 10px) * -0.25), 0) scale(1.03);
+    filter: blur(0);
+  }
+  100% {
+    opacity: 1;
+    filter: blur(0);
+    transform: translate3d(0, 0, 0) scale(1);
   }
 }
 
@@ -2675,7 +2771,13 @@
   box-shadow: 0 1px 2px var(--biny-shadow-soft), 0 6px 16px var(--biny-shadow-soft);
   transform: translateY(-50%);
   user-select: none;
-  animation: message-menu-in 140ms ease;
+  /* memoryPopoverIn 原文（translateY(-50%) 的弹层）：scale .98→1，.16s ease(.22,1,.36,1)。 */
+  animation: usage-popover-in 0.16s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@keyframes usage-popover-in {
+  0% { opacity: 0; transform: translateY(-50%) scale(0.98); }
+  100% { opacity: 1; transform: translateY(-50%) scale(1); }
 }
 
 .usage-detail-title {
@@ -2717,7 +2819,7 @@
   }
 }
 
-/* 状态与计时不依赖文本增量；长工具参数只占一行。 */
+/* 状态反馈保持单行；长工具参数只占一行。 */
 .chat-run-status {
   display: flex;
   align-items: center;
@@ -2731,10 +2833,113 @@
 }
 .chat-run-status.is-suppressed { opacity: 0; pointer-events: none; }
 .chat-run-status-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
-.chat-run-status-time { flex-shrink: 0; color: var(--biny-text-tertiary); font-size: calc(12px * var(--font-scale, 1)); font-variant-numeric: tabular-nums; }
 .chat-run-status-orb { flex-shrink: 0; opacity: 0.8; }
 .chat-run-status.is-following { gap: 10px; }
 .chat-run-status.is-following .chat-run-status-label { font-weight: 500; }
 @media (prefers-reduced-motion: reduce) {
   .chat-run-status { transition: none; }
+}
+
+
+/* ============ 保留的复刻动画（标题打字机/工作点阵/删除烟化） ============ */
+
+:root {
+  --message-smoke-duration: 0.6s;
+  --message-smoke-lift: 20px;
+  --message-menu-pop-duration: 0.32s;
+  --message-menu-pop-curve: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@keyframes threadTitleThinking { 0%, 100% { opacity: 1; } 50% { opacity: 0.55; } }
+@keyframes threadCaretBlink { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+@keyframes threadTrailShrink { 0% { opacity: 0.8; transform: scaleX(1); } 100% { opacity: 0; transform: scaleX(0); } }
+@keyframes threadTrailGrow { 0% { opacity: 0.7; transform: scaleX(1); } 100% { opacity: 0; transform: scaleX(0); } }
+@keyframes workingDotBlink { 0%, 12.5%, 100% { opacity: 0.9; } 6% { opacity: 0.12; } }
+@keyframes messageSmokeLift {
+  0% { opacity: 1; transform: translate3d(0, 0, 0) scale(1); }
+  100% { opacity: 0; transform: translate3d(0, calc(-1 * var(--message-smoke-lift)), 0) scale(1.1); filter: blur(8px); }
+}
+
+/* 生成中标题呼吸 */
+.thread-title-thinking { animation: 1.6s ease-in-out infinite threadTitleThinking; }
+
+/* 标题打字机光标 + 拖尾 */
+.thread-title-caret {
+  background-color: var(--biny-focus);
+  width: 2px;
+  height: 1.1em;
+  box-shadow: 0 0 6px color-mix(in oklch, var(--biny-focus) 50%, transparent);
+  border-radius: 1px;
+  margin-top: -0.55em;
+  animation: 1s ease-in-out infinite threadCaretBlink;
+  position: absolute;
+  top: 50%;
+  left: 0;
+  will-change: transform, opacity;
+  transition: transform 0.1s cubic-bezier(0.22, 1, 0.36, 1);
+  display: inline-block;
+  vertical-align: middle;
+}
+
+.thread-title-caret.trail-shrink::before,
+.thread-title-caret.trail-grow::before {
+  content: "";
+  background: linear-gradient(to right, transparent 0%, color-mix(in srgb, var(--biny-focus) 70%, transparent) 100%);
+  transform-origin: 100%;
+  pointer-events: none;
+  will-change: transform, opacity;
+  border-radius: 1px;
+  height: 100%;
+  position: absolute;
+  top: 0;
+  right: 100%;
+}
+
+.thread-title-caret.trail-shrink::before {
+  width: 24px;
+  animation: 0.16s cubic-bezier(0.22, 1, 0.36, 1) forwards threadTrailShrink;
+}
+
+.thread-title-caret.trail-grow::before {
+  width: 20px;
+  animation: 0.14s cubic-bezier(0.22, 1, 0.36, 1) forwards threadTrailGrow;
+}
+
+/* 2×2 工作点阵（错相闪烁） */
+.working-dot-grid {
+  vertical-align: middle;
+  grid-template-columns: repeat(2, 2px);
+  grid-auto-rows: 2px;
+  gap: 1.5px;
+  display: inline-grid;
+}
+
+.working-dot-grid > span {
+  opacity: 0.9;
+  will-change: opacity;
+  background-color: currentColor;
+  border-radius: 0.5px;
+  width: 2px;
+  height: 2px;
+  animation: 2s ease-in-out infinite workingDotBlink;
+}
+
+.working-dot-grid > span:nth-child(2) { animation-delay: 0.5s; }
+.working-dot-grid > span:nth-child(3) { animation-delay: 1s; }
+.working-dot-grid > span:nth-child(4) { animation-delay: 1.5s; }
+
+/* 消息删除烟化 */
+.message-smoke-out {
+  pointer-events: none;
+  animation: messageSmokeLift var(--message-smoke-duration) cubic-bezier(0.25, 0.1, 0.25, 1) forwards;
+  will-change: transform, opacity, filter;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .thread-title-caret,
+  .thread-title-caret.trail-shrink::before,
+  .thread-title-caret.trail-grow::before,
+  .working-dot-grid > span { animation: none !important; }
+  .working-dot-grid > span { opacity: 0.55; }
+  .message-smoke-out { animation: none !important; opacity: 0; }
 }

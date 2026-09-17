@@ -4,8 +4,9 @@
  * 一级菜单只包含两个稳定的入口；二级菜单通过 portal 独立定位，避免模型列表长度或推理
  * 档位数量改变时撑大一级菜单，进而让锚点发生位移。二级菜单的碰撞处理也只作用于自己。
  */
-import { createPortal } from "react-dom";
+import { autoUpdate } from "@floating-ui/dom";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import type { CSSProperties, RefObject } from "react";
 import type { ModelChoice } from "../../../../../llm/ModelManager.js";
 import type { ThinkingSelection } from "../../../../../llm/modelThinking.js";
@@ -115,7 +116,6 @@ export function ModelPickerMenu({
       return;
     }
 
-    let frame: number | undefined;
     const measurePosition = (): void => {
       const anchor = anchorRef.current;
       const surface = parentSurfaceRef.current;
@@ -141,29 +141,17 @@ export function ModelPickerMenu({
       };
       setParentPosition((current) => current?.left === next.left && current.origin === next.origin && current.top === next.top ? current : next);
     };
-    const updatePosition = (): void => {
-      if (frame !== undefined) return;
-      frame = window.requestAnimationFrame(() => {
-        frame = undefined;
-        measurePosition();
-      });
-    };
-
-    measurePosition();
-    updatePosition();
-    window.addEventListener("resize", updatePosition);
-    window.addEventListener("scroll", updatePosition, true);
-    const resizeObserver = typeof ResizeObserver === "undefined" ? undefined : new ResizeObserver(updatePosition);
-    const observedAnchor = anchorRef.current;
-    const observedSurface = parentSurfaceRef.current;
-    if (observedAnchor) resizeObserver?.observe(observedAnchor);
-    if (observedSurface) resizeObserver?.observe(observedSurface);
-    return () => {
-      if (frame !== undefined) window.cancelAnimationFrame(frame);
-      window.removeEventListener("resize", updatePosition);
-      window.removeEventListener("scroll", updatePosition, true);
-      resizeObserver?.disconnect();
-    };
+    const anchor = anchorRef.current;
+    const surface = parentSurfaceRef.current;
+    if (!anchor || !surface) return;
+    // 队列、附件和状态区的高度变化只会移动按钮，不一定触发 ResizeObserver。
+    // layoutShift 让一级菜单在这类纯位移中也持续跟随 Composer 锚点。
+    return autoUpdate(anchor, surface, measurePosition, {
+      ancestorResize: true,
+      ancestorScroll: true,
+      elementResize: true,
+      layoutShift: true
+    });
   }, [anchorRef, open, portalTarget, presence.present, thinkingLevels.length]);
 
   useLayoutEffect(() => {
@@ -174,7 +162,6 @@ export function ModelPickerMenu({
       return;
     }
 
-    let frame: number | undefined;
     const measurePosition = (): void => {
       const primary = primaryRef.current;
       const submenu = submenuRef.current;
@@ -204,28 +191,15 @@ export function ModelPickerMenu({
         return current?.left === next.left && current.top === next.top ? current : next;
       });
     };
-    const updatePosition = (): void => {
-      if (frame !== undefined) return;
-      frame = window.requestAnimationFrame(() => {
-        frame = undefined;
-        measurePosition();
-      });
-    };
-
-    updatePosition();
-    window.addEventListener("resize", updatePosition);
-    window.addEventListener("scroll", updatePosition, true);
-    const resizeObserver = typeof ResizeObserver === "undefined" ? undefined : new ResizeObserver(updatePosition);
-    const observedPrimary = primaryRef.current;
-    const observedSubmenu = submenuRef.current;
-    if (observedPrimary) resizeObserver?.observe(observedPrimary);
-    if (observedSubmenu) resizeObserver?.observe(observedSubmenu);
-    return () => {
-      if (frame !== undefined) window.cancelAnimationFrame(frame);
-      window.removeEventListener("resize", updatePosition);
-      window.removeEventListener("scroll", updatePosition, true);
-      resizeObserver?.disconnect();
-    };
+    const primary = primaryRef.current;
+    const submenu = submenuRef.current;
+    if (!primary || !submenu) return;
+    return autoUpdate(primary, submenu, measurePosition, {
+      ancestorResize: true,
+      ancestorScroll: true,
+      elementResize: true,
+      layoutShift: true
+    });
   }, [activeSection, models, open, parentPosition, portalTarget, presence.present, thinkingLevels]);
 
   if (typeof document === "undefined" || !presence.present) return null;

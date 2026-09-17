@@ -30,6 +30,8 @@ import { SendOrStopButton } from "./composer/SendOrStopButton.js";
 import { useBreathingCaret } from "./composer/useBreathingCaret.js";
 import { isSkillSlashCommand, normalizeSkillSlashCommand } from "./composer/desktopSlashCommands.js";
 import { createDesktopSlashTrigger } from "./composer/desktopSlashTrigger.js";
+import type { QueuedRunMessageSnapshot } from "../../../../runtime/agentEvents.js";
+import { QueuedMessages } from "./composer/QueuedMessages.js";
 
 export type ComposerMemoryState = "unknown" | "enabled" | "disabled";
 
@@ -50,6 +52,7 @@ interface ComposerProps {
   memoryToggleDisabledReason?: string;
   running: boolean;
   runtimeBusy: boolean;
+  queuedMessages: readonly QueuedRunMessageSnapshot[];
   resourceState?: "loading" | "ready" | "degraded";
   resourceRevision?: number;
   skillWarnings?: string[];
@@ -60,8 +63,9 @@ interface ComposerProps {
   capabilityDefaults: DesktopCapabilityDefaults;
   skills: DesktopSkillCatalogEntry[];
   toolCatalog: DesktopToolCatalogEntry[];
-  onSend(input: string, attachments: DesktopAttachment[], delivery?: "steer" | "followUp", idempotencyKey?: string, capabilitySelection?: AgentCapabilitySelection): Promise<void>;
-  /** 正在编辑的历史消息；nonce 变化时把 value 回填进输入框并聚焦（Alma 式编辑）。 */
+  onSend(input: string, attachments: DesktopAttachment[], delivery?: "steer" | "queue", idempotencyKey?: string, capabilitySelection?: AgentCapabilitySelection): Promise<void>;
+  onMutateQueuedMessage(action: "update" | "remove" | "move" | "steer" | "send-all", mutation?: { messageId?: string; input?: string; targetMessageId?: string; placeAfter?: boolean }): Promise<void>;
+  /** 正在编辑的历史消息；nonce 变化时把 value 回填进输入框并聚焦。 */
   editingMessage?: { nonce: number; value: string };
   /** 提交编辑：原位替换该消息并重新生成回复。 */
   onSubmitEdit(input: string): Promise<void>;
@@ -106,6 +110,7 @@ export const Composer = memo(function Composer({
   memoryToggleDisabledReason,
   running,
   runtimeBusy,
+  queuedMessages,
   resourceState,
   resourceRevision,
   skillWarnings,
@@ -117,6 +122,7 @@ export const Composer = memo(function Composer({
   skills,
   toolCatalog,
   onSend,
+  onMutateQueuedMessage,
   editingMessage,
   onSubmitEdit,
   onCancelEdit,
@@ -149,7 +155,8 @@ export const Composer = memo(function Composer({
   }), []);
   const editorWrapRef = useRef<HTMLDivElement>(null);
   const breathingCaretRef = useRef<HTMLDivElement>(null);
-  useBreathingCaret(editorWrapRef, breathingCaretRef);
+  const breathingCaretTrailRef = useRef<HTMLDivElement>(null);
+  useBreathingCaret(editorWrapRef, breathingCaretRef, breathingCaretTrailRef);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const capabilityAnchorRef = useRef<HTMLDivElement>(null);
   const modelAnchorRef = useRef<HTMLDivElement>(null);
@@ -236,7 +243,7 @@ export const Composer = memo(function Composer({
     }
   };
 
-  const submit = async (delivery?: "steer" | "followUp", submittedInput = input): Promise<void> => {
+  const submit = async (delivery?: "steer" | "queue", submittedInput = input): Promise<void> => {
     const value = submittedInput.trim() || (attachments.length ? "请分析这些附件。" : "");
     if (!project || !value || busy || submitFlightRef.current || sessionWriterConflict) return;
     // 编辑模式：提交直接走「替换原消息并重新生成」，不携带附件，也不走模型切换/斜杠命令链路。
@@ -252,6 +259,9 @@ export const Composer = memo(function Composer({
       } finally {
         setBusy(false);
         submitFlightRef.current = false;
+        // 提交期间 Composer 会短暂禁用并让 contenteditable 失焦；恢复后主动把
+        // 光标交还输入框，用户可以在 Agent 运行时直接继续输入补充要求。
+        window.requestAnimationFrame(() => inputRef.current?.focus());
       }
       return;
     }
@@ -296,6 +306,8 @@ export const Composer = memo(function Composer({
       }
     } finally {
       submitFlightRef.current = false;
+      // 等 busy 状态提交到 DOM 后再聚焦，避免 focus 落在仍被禁用的编辑器上。
+      window.requestAnimationFrame(() => inputRef.current?.focus());
     }
   };
 
@@ -421,10 +433,9 @@ export const Composer = memo(function Composer({
   });
   const inputDisabled = sessionWriterConflict || busy;
   const attachmentCount = attachments.length + pendingAttachments.length;
-  const sendDisabled = memoryToggleBusy || (running
-    ? false
-    : resourceState === "loading"
-      || (!input.trim() && !attachments.length) || !project || sessionWriterConflict || modelSetupRequired || busy || pendingAttachments.length > 0);
+  const hasDraft = Boolean(input.trim() || attachments.length);
+  const sendDisabled = memoryToggleBusy || resourceState === "loading"
+    || !hasDraft || !project || sessionWriterConflict || modelSetupRequired || busy || pendingAttachments.length > 0;
   const sendDisabledReason = !project
     ? "请先打开一个项目。"
       : modelSetupRequired
@@ -498,6 +509,16 @@ export const Composer = memo(function Composer({
           </button>
         </div>
       ) : null}
+      <QueuedMessages
+        messages={queuedMessages}
+        running={running}
+        onError={onSubmitError}
+        onMove={async (messageId, targetMessageId, placeAfter) => await onMutateQueuedMessage("move", { messageId, targetMessageId, placeAfter })}
+        onRemove={async (messageId) => await onMutateQueuedMessage("remove", { messageId })}
+        onSteer={async (messageId) => await onMutateQueuedMessage("steer", { messageId })}
+        onSendNow={async () => await onMutateQueuedMessage("send-all")}
+        onUpdate={async (messageId, input) => await onMutateQueuedMessage("update", { messageId, input })}
+      />
       <ChatComposer
         className={`biny-composer${running ? " is-running" : ""}`}
         density="compact"
@@ -630,6 +651,7 @@ export const Composer = memo(function Composer({
               }}
               triggers={desktopSlashTriggers}
             />
+            <div ref={breathingCaretTrailRef} className="biny-breathing-caret-trail" aria-hidden="true" />
             <div ref={breathingCaretRef} className="biny-breathing-caret" aria-hidden="true" />
           </div>
         )}
@@ -712,6 +734,7 @@ export const Composer = memo(function Composer({
           <SendOrStopButton
             disabled={sendDisabled}
             disabledReason={sendDisabledReason}
+            hasDraft={hasDraft}
             onSend={() => void submit()}
             onStop={() => void requestStop()}
             running={running}

@@ -49,7 +49,9 @@ const inspectorViewMetadata: Record<InspectorView, { icon: IconName; label: stri
 /** 所有面板入口只切换视图，模型任务由面板中的明确操作触发。 */
 type RailAction = InspectorView | "browser";
 
-/** 面板宽度低于该值时 tab 收成纯图标（对齐 alma dock 的 compact tabs）。 */
+/** rail 滑出动画（x→88 + blur5，.3s）结束后再挂 40ms 卸载，合计 340ms。 */
+const RAIL_EXIT_MS = 340;
+
 const inspectorViews = Object.keys(inspectorViewMetadata) as InspectorView[];
 
 export function useWorkspaceInspector({
@@ -343,16 +345,29 @@ export function useWorkspaceInspector({
     </div>
   ) : undefined;
 
+  // rail 可见性：dock 打开时滑出（x→88 + blur，.3s），340ms 后卸载；dock 收起时以
+  // .78s 的签名缓动滑回。dock 打开期间 rail 不接指针（参考应用 railHidden 语义）。
+  // is-visible 只在 open 相位挂载后下一帧加上（opening 相位保持隐藏初态），
+  // 否则元素带着终态样式挂载，浏览器不会插值滑入过渡。
+  const railVisible = Boolean(projectId) && !inspectorOpen;
+  const railPresence = useClosingPresence(railVisible, RAIL_EXIT_MS);
+
   return {
     dock: inspector,
-    rail: projectId && !inspectorOpen ? (
-      <div aria-label="工作区工具" className="biny-inspector-rail" role="toolbar">
+    rail: railPresence.present && projectId ? (
+      <div
+        aria-hidden={!railVisible}
+        aria-label="工作区工具"
+        className={`biny-inspector-rail${railPresence.phase === "open" ? " is-visible" : ""}`}
+        role="toolbar"
+      >
         {inspectorViews.map((view) => (
           <button
             aria-label={inspectorViewMetadata[view].label}
             className="biny-inspector-rail-btn"
             key={view}
             onClick={() => openRailAction(view)}
+            tabIndex={railVisible ? 0 : -1}
             title={inspectorViewMetadata[view].label}
             type="button"
           >

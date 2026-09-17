@@ -145,15 +145,17 @@ export const ActivitySegment = memo(function ActivitySegment({
           {phases.slice(hiddenCount).map((phase, visibleIndex) => {
             const index = hiddenCount + visibleIndex;
             const isOpen = selectedPhase === index;
+            // 执行中的最新相位头像带呼吸光环（alma activity-avatar-alive），空档一眼可辨。
+            const isAlive = running && index === phases.length - 1 && isLive(phase);
             return (
               <button
                 aria-label={labelFor(phase).verb}
                 data-activity-toggle=""
                 disabled={running}
-                className={`chat-phase-avatar${isOpen ? " is-active" : ""}`}
+                className={`chat-phase-avatar${isOpen ? " is-active" : ""}${isAlive ? " is-alive" : ""}`}
                 key={`${segmentKey}-avatar-${String(index)}`}
                 onClick={() => openPhase(index)}
-                style={phases.length > 1 ? { marginLeft: visibleIndex === 0 && hiddenCount === 0 ? 0 : -7, zIndex: isOpen ? 50 : visibleIndex + 1 } : undefined}
+                style={phases.length > 1 ? { marginLeft: visibleIndex === 0 && hiddenCount === 0 ? 0 : -7, zIndex: isOpen || isAlive ? 50 : visibleIndex + 1 } : undefined}
                 type="button"
               >
                 <Icon name={PHASE_ICONS[phase.kind]} size={12} />

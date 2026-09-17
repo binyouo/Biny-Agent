@@ -646,7 +646,44 @@
   background: var(--biny-surface-soft);
   -webkit-app-region: no-drag;
   app-region: no-drag;
-  transition: right var(--biny-sidebar-transition);
+  /* 滑出态（hidden）：x→88 + blur5，.3s ease(.4,0,1,1)（opacity/filter .22s），
+     结束 visibility hidden；JS 侧 340ms 后卸载。 */
+  opacity: 0;
+  transform: translateX(88px);
+  filter: blur(5px);
+  visibility: hidden;
+  pointer-events: none;
+  transition:
+    transform 0.3s cubic-bezier(0.4, 0, 1, 1),
+    opacity 0.22s cubic-bezier(0.4, 0, 1, 1),
+    filter 0.22s cubic-bezier(0.4, 0, 1, 1),
+    right var(--biny-sidebar-transition),
+    visibility 0s linear 0.3s;
+}
+
+.biny-inspector-rail.is-visible {
+  pointer-events: auto;
+  visibility: visible;
+  opacity: 1;
+  transform: translateX(0);
+  filter: blur(0);
+  /* 滑入态（visible）：x 88→0 + blur 5→0 .78s ease(.22,1,.36,1)；
+     opacity .36s、filter .52s，各自独立插值（ease(.16,1,.3,1)）。 */
+  transition:
+    transform 0.78s cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 0.36s cubic-bezier(0.16, 1, 0.3, 1),
+    filter 0.52s cubic-bezier(0.16, 1, 0.3, 1),
+    right var(--biny-sidebar-transition),
+    visibility 0s;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .biny-inspector-rail,
+  .biny-inspector-rail.is-visible {
+    transition: opacity 0.15s ease, right var(--biny-sidebar-transition), visibility 0s;
+    transform: none;
+    filter: none;
+  }
 }
 
 .biny-inspector-rail-btn {
@@ -1491,6 +1528,12 @@
 .biny-send-button-anchor {
   -webkit-app-region: no-drag;
   app-region: no-drag;
+}
+
+.biny-send-button-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
 }
 
 .biny-composer-action {
@@ -3967,22 +4010,22 @@ button.capability-check[aria-checked="true"] {
 /* 呼吸灯光标：隐藏原生 caret，用自绘元素做 opacity + 辉光的呼吸动画。
  * data-breathing-caret 由 useBreathingCaret 维护，仅在 caret 定位成功、
  * 编辑器聚焦且选区折叠时为 "on"，因此原生 caret 永远有兜底。 */
+/* 自绘光标（prompt-custom-caret 原文）：2.5px 发光竖线，1.2s 闪烁（opacity 1↔.3），
+ * 位移用 .12s ease(.22,1,.36,1) 滑行；位置由 useBreathingCaret 通过 transform 写入。 */
 .biny-breathing-caret {
   position: absolute;
   top: 0;
   left: 0;
   z-index: 3;
-  width: 2px;
-  height: 20px;
+  width: 2.5px;
   border-radius: 1px;
   background: var(--biny-focus);
+  box-shadow: 0 0 4px color-mix(in srgb, var(--biny-focus) 40%, transparent);
   pointer-events: none;
   visibility: hidden;
   will-change: transform;
-  /* 位置变化的滑行过渡：拼音上屏、正常打字时光标平滑滑过去而不是瞬移。
-   * 换行/重新出现时由 JS 加 .is-snapping 关掉过渡，避免斜向滑行。 */
-  transition: transform 0.12s cubic-bezier(0.2, 0, 0, 1),
-    height 0.12s cubic-bezier(0.2, 0, 0, 1);
+  transition: transform 0.12s cubic-bezier(0.22, 1, 0.36, 1),
+    height 0.12s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .biny-breathing-caret.is-snapping {
@@ -3991,24 +4034,53 @@ button.capability-check[aria-checked="true"] {
 
 .biny-composer-editor[data-breathing-caret="on"] > .biny-breathing-caret {
   visibility: visible;
-  animation: biny-caret-breathe 1.7s ease-in-out infinite;
+  animation: biny-caret-blink 1.2s ease-in-out infinite;
 }
 
 .biny-composer-editor[data-breathing-caret="on"] .biny-composer-input [contenteditable="true"] {
   caret-color: transparent !important;
 }
 
-@keyframes biny-caret-breathe {
-  /* 最低相位也要保持可读：光标是空输入框的定位锚点，太暗会让用户以为焦点丢了。 */
+@keyframes biny-caret-blink {
   0%,
   100% {
-    opacity: 0.5;
-    box-shadow: 0 0 0 0 color-mix(in srgb, var(--biny-focus) 0%, transparent);
+    opacity: 1;
   }
   50% {
-    opacity: 1;
-    box-shadow: 0 0 7px 1px color-mix(in srgb, var(--biny-focus) 60%, transparent);
+    opacity: 0.3;
   }
+}
+
+/* 光标移动拖尾（prompt-caret-trail 原文）：水平移动时在旧位置铺一条渐变条，
+ * .18s 内 scaleX(1→0) 收束消失；方向决定渐变朝向与缩放原点。 */
+.biny-breathing-caret-trail {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 2;
+  height: 20px;
+  border-radius: 1px;
+  pointer-events: none;
+  opacity: 0;
+  will-change: transform, opacity;
+  contain: paint;
+}
+
+.biny-breathing-caret-trail[data-direction="right"] {
+  background: linear-gradient(to right, transparent 0%, var(--biny-focus) 100%);
+  transform-origin: 100% 50%;
+  animation: biny-caret-trail 0.18s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+.biny-breathing-caret-trail[data-direction="left"] {
+  background: linear-gradient(to left, transparent 0%, var(--biny-focus) 100%);
+  transform-origin: 0 50%;
+  animation: biny-caret-trail 0.18s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+@keyframes biny-caret-trail {
+  0% { opacity: 0.6; transform: scaleX(1); }
+  100% { opacity: 0; transform: scaleX(0); }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -4016,6 +4088,11 @@ button.capability-check[aria-checked="true"] {
     animation: none;
     opacity: 1;
   }
+  .biny-breathing-caret,
+  .biny-breathing-caret-trail {
+    transition: none;
+  }
+  .biny-breathing-caret-trail { display: none !important; }
 }
 
 /*
@@ -4311,18 +4388,22 @@ div:has(> .astryx-trigger-menu) {
   min-height: 48px;
   align-items: center;
   gap: 14px;
-  /* 上下各留 10px：内容与红绿灯（中心 y=24）和侧栏 chrome 按钮（28px 高贴卡片顶线）共线，
-     侧栏收起后按钮和标题/胶囊仍在同一行；总高 48 是为了让下缘线落到
-     侧栏顶栏分割线的高度（卡片缝隙 10px + 顶栏 38px），两条线平行衔接。 */
+  /* 上下各留 10px：内容与红绿灯（中心 y=24）和侧栏 chrome 按钮共线；总高 48 让
+     下缘线与侧栏顶栏分割线（卡片缝隙 10px + 顶栏 38px）平行衔接。 */
   padding: 10px var(--biny-chat-toolbar-inline-padding) 10px;
-  /* 下缘横线（对齐 alma）：与侧栏顶栏的发丝线同高同色。 */
-  border-bottom: 1px solid color-mix(in srgb, var(--biny-border) 70%, transparent);
-  /* 工具栏属于主区，显式铺主体色，避免透明时露出窗口底板。 */
+  /* 聊天区离开顶部时叠加阴影 + 发丝线。 */
+  border-bottom: 1px solid transparent;
   background: var(--biny-surface);
-  transition: padding-left var(--biny-sidebar-transition), opacity var(--biny-sidebar-content-fade);
+  transition: padding-left var(--biny-sidebar-transition), opacity var(--biny-sidebar-content-fade),
+    box-shadow 0.2s ease-out, border-color 0.2s ease-out;
   /* 整条顶部默认用于拖动；右侧操作容器单独退出拖动区。 */
   -webkit-app-region: drag;
   app-region: drag;
+}
+
+.biny-chat-toolbar.is-scrolled {
+  border-bottom-color: color-mix(in srgb, var(--biny-border) 50%, transparent);
+  box-shadow: 0 2px 8px rgb(0 0 0 / 15%);
 }
 
 .biny-chat-navigation {
@@ -4381,6 +4462,21 @@ div:has(> .astryx-trigger-menu) {
   color: var(--biny-text-secondary);
   font-size: 12px;
 }
+
+/* 标题打字机（ThreadTitleText）：字号对齐标题 strong 的原规格。 */
+.biny-thread-title {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--biny-text);
+  position: relative;
+}
+
+.biny-thread-title-text { display: inline; }
 
 .biny-worktree-indicator {
   display: inline-flex;
@@ -5015,27 +5111,30 @@ div:has(> .astryx-trigger-menu) {
   background-clip: padding-box;
 }
 
-/* 回到底部按钮：浮在滚动区底部居中；任务运行时箭头换成思考球。 */
+/* 回到底部按钮（scroll-to-bottom-button 原文）：w-10 h-10 圆形，bg-background/70 +
+   backdrop-blur-lg，border-border/60，shadow-2xl，hover:scale-110；任务运行时箭头换思考球。 */
 .biny-jump-bottom {
   position: absolute;
   bottom: 14px;
   left: 50%;
   z-index: 30;
   display: flex;
-  width: 36px;
-  height: 36px;
+  width: 40px;
+  height: 40px;
   align-items: center;
   justify-content: center;
   padding: 0;
-  border: 1px solid var(--biny-border);
+  border: 1px solid color-mix(in srgb, var(--biny-border) 60%, transparent);
   border-radius: 999px;
-  background: var(--biny-surface-elevated);
-  box-shadow: 0 1px 2px var(--biny-shadow-color), 0 4px 12px var(--biny-shadow-color);
-  color: var(--biny-text-secondary);
+  background: color-mix(in srgb, var(--biny-surface) 70%, transparent);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  box-shadow: 0 4px 24px var(--biny-shadow-heavy);
+  color: color-mix(in srgb, var(--biny-text) 80%, transparent);
   cursor: pointer;
   opacity: 0;
   transform: translate(-50%, 6px) scale(0.92);
-  transition: border-color 160ms ease, color 160ms ease, opacity 160ms ease, transform 160ms ease, visibility 160ms;
+  transition: border-color 200ms ease, color 200ms ease, opacity 200ms ease, transform 200ms ease, visibility 200ms;
   visibility: hidden;
 }
 
@@ -5045,8 +5144,8 @@ div:has(> .astryx-trigger-menu) {
   visibility: visible;
 }
 
-.biny-jump-bottom:hover {
-  border-color: var(--biny-border-strong);
+.biny-jump-bottom.is-visible:hover {
+  transform: translate(-50%, 0) scale(1.1);
   color: var(--biny-text);
 }
 
@@ -5094,6 +5193,182 @@ div:has(> .astryx-trigger-menu) {
   padding: 0 0 12px;
   -webkit-app-region: no-drag;
   app-region: no-drag;
+}
+
+/* 待发送消息完整复用 Composer 上方的紧凑卡片布局。 */
+.biny-queued-messages {
+  margin: 0 0 8px;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--biny-border) 50%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--biny-surface-soft) 30%, transparent);
+  color: var(--biny-text);
+}
+
+.biny-queued-messages button {
+  border: 0;
+  color: inherit;
+  background: transparent;
+  font: inherit;
+}
+
+.biny-queued-messages-header {
+  display: flex;
+  min-height: 40px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  border-bottom: 1px solid color-mix(in srgb, var(--biny-border) 30%, transparent);
+  color: var(--biny-text-secondary);
+  font-size: calc(14px * var(--font-scale));
+}
+
+.biny-queued-messages-header > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.biny-queued-messages-header > button {
+  display: inline-flex;
+  width: 28px;
+  height: 28px;
+  flex: 0 0 28px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.biny-queued-messages-header > button:hover {
+  color: var(--biny-text);
+  background: color-mix(in srgb, var(--biny-surface-hover) 50%, transparent);
+}
+
+.biny-queued-message-list {
+  max-height: 160px;
+  overflow-y: auto;
+}
+
+.biny-queued-message-row {
+  display: flex;
+  min-width: 0;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 12px;
+  cursor: grab;
+  transition: color 120ms ease, background-color 120ms ease, border-color 120ms ease, opacity 120ms ease;
+}
+
+.biny-queued-message-row:active {
+  cursor: grabbing;
+}
+
+.biny-queued-message-row + .biny-queued-message-row {
+  border-top: 1px solid color-mix(in srgb, var(--biny-border) 20%, transparent);
+}
+
+.biny-queued-message-row.is-drag-preview {
+  border-radius: 8px;
+  background: var(--biny-surface-elevated);
+  box-shadow: 0 8px 24px color-mix(in srgb, var(--shadow) 18%, transparent);
+}
+
+.biny-queued-message-row.is-dragging {
+  border: 1px dashed color-mix(in srgb, var(--biny-focus) 40%, transparent);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--biny-focus) 5%, transparent);
+  opacity: .5;
+}
+
+.biny-queued-message-grip {
+  display: inline-flex;
+  flex: 0 0 auto;
+  margin-top: 2px;
+  padding: 2px;
+  border-radius: 4px;
+  color: color-mix(in srgb, var(--biny-text-secondary) 50%, transparent);
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.biny-queued-message-row:hover .biny-queued-message-grip {
+  opacity: 1;
+}
+
+.biny-queued-message-content {
+  display: -webkit-box;
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  padding: 0;
+  cursor: text;
+  text-align: left;
+  color: var(--biny-text);
+  font-size: calc(14px * var(--font-scale));
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.biny-queued-message-row > textarea {
+  min-width: 0;
+  min-height: 32px;
+  flex: 1 1 auto;
+  resize: none;
+  box-sizing: border-box;
+  padding: 4px 8px;
+  border: 1px solid color-mix(in srgb, var(--biny-border) 50%, transparent);
+  border-radius: 6px;
+  outline: 0;
+  color: var(--biny-text);
+  background: var(--biny-surface);
+  font: inherit;
+  font-size: calc(14px * var(--font-scale));
+}
+
+.biny-queued-message-row > textarea:focus {
+  border-color: color-mix(in srgb, var(--biny-focus) 50%, transparent);
+}
+
+.biny-queued-messages .biny-queued-message-steer {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  color: var(--biny-text-secondary);
+  cursor: pointer;
+  font-size: calc(12px * var(--font-scale));
+  transition: color 120ms ease, background-color 120ms ease;
+}
+
+.biny-queued-messages .biny-queued-message-steer:hover {
+  color: var(--biny-text);
+  background: color-mix(in srgb, var(--biny-surface-hover) 60%, transparent);
+}
+
+.biny-queued-message-delete {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  padding: 4px;
+  border-radius: 999px;
+  color: var(--biny-text-secondary);
+  cursor: pointer;
+  transition: color 120ms ease, background-color 120ms ease;
+}
+
+.biny-queued-message-delete:hover {
+  color: var(--biny-danger);
+  background: color-mix(in srgb, var(--biny-danger) 10%, transparent);
+}
+
+.biny-queued-messages button:disabled {
+  cursor: default;
+  opacity: .45;
 }
 
 .biny-session-writer-conflict {

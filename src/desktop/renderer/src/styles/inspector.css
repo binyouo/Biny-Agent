@@ -95,14 +95,16 @@
 .inspector-commit-message { display: flex; flex-direction: column; gap: 8px; margin: 16px 0; font-size: 12px; }
 .inspector-commit-message textarea { resize: vertical; min-height: 64px; }
 
+
 /* 三列共享真实布局轨道，详情栏不得通过定位或最小内容宽度盖住聊天。 */
 .biny-root .biny-app-shell { display: grid; grid-template-columns: var(--biny-sidebar-animated-flow-width, 0px) minmax(0, 1fr) var(--biny-inspector-animated-flow-width, 0px); }
 .biny-root .biny-sidebar-block { grid-column: 1; grid-row: 1; }
 .biny-root .biny-content-shell { grid-column: 2; grid-row: 1; min-width: 0; width: auto; }
 .biny-root .biny-app-shell > .desktop-inspector-wrap { grid-column: 3; grid-row: 1; position: relative; inset: auto; width: 100%; max-width: none; min-width: 0; transform: none; }
 .biny-root .biny-workspace-chat .biny-workspace-main { --biny-chat-content-width: calc(100% - 32px); width: 100%; min-width: 0; flex: 1 1 auto; }
-/* 收起态工具条占用独立的右侧留白，不覆盖右对齐消息；输入框仍使用完整宽度。 */
-.biny-root .biny-workspace-main:has(> .biny-inspector-rail) .biny-chat-scroll { padding-right: 48px; }
+/* 收起态工具条占用独立的右侧留白，不覆盖右对齐消息；输入框仍使用完整宽度。
+   rail 滑出退场期间（is-visible 已移除）立即收回留白。 */
+.biny-root .biny-workspace-main:has(> .biny-inspector-rail.is-visible) .biny-chat-scroll { padding-right: 48px; }
 .biny-root .biny-chat-scroll-content, .biny-root .message-timeline, .biny-root .assistant-message { min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
 
 /* 产出菜单是临时顶层浮层，不参与详情栏的宽度与打开状态。 */

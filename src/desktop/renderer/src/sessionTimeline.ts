@@ -105,7 +105,7 @@ export interface TimelineUserStep {
   kind: "user";
   id: string;
   content: string;
-  delivery: "steer" | "followUp";
+  delivery: "steer" | "queue";
 }
 
 export type TimelineStep = TimelineReasoningStep | TimelineAssistantStep | TimelineToolStep | TimelineUserStep;
@@ -138,6 +138,7 @@ export interface TimelineTurn {
   skills: string[];
   capabilitySelection?: AgentCapabilitySelection;
   memoryInjectedCount?: number;
+  memoryInjectedSummaries?: string[];
   status: TimelineRunStatus;
   model?: AgentRunModel;
   tools: TimelineTool[];
@@ -269,10 +270,15 @@ function buildHistoricalTurns(events: SessionEvent[]): TimelineTurn[] {
     return current;
   };
 
+  let priorEventAt: string | undefined;
+
   for (const event of events) {
+    const reasoningStartedAt = priorEventAt;
+    priorEventAt = event.time ?? priorEventAt;
     if (event.type === "tool_result" && event.auditOnly && event.recovered && resultString(event.result, "status") !== "skipped") continue;
     if (event.type === "user_message") {
       if (event.auditOnly) continue;
+      priorEventAt = undefined;
       anonymousIndex += 1;
       current = emptyTurn(`history-${String(anonymousIndex)}`, event.time);
       current.user = publicUserMessage(event.content);
@@ -289,7 +295,9 @@ function buildHistoricalTurns(events: SessionEvent[]): TimelineTurn[] {
       turn.assistant = event.content || turn.assistant;
       const memoryCount = event.metadata?.memoryInjectedCount;
       if (typeof memoryCount === "number" && Number.isInteger(memoryCount) && memoryCount >= 0) turn.memoryInjectedCount = memoryCount;
-      appendHistoricalReasoning(turn, event.reasoningContent);
+      const memorySummaries = injectedMemorySummaries(event.metadata?.memoryInjectedSummaries);
+      if (memorySummaries) turn.memoryInjectedSummaries = memorySummaries;
+      appendHistoricalReasoning(turn, event.reasoningContent, reasoningStartedAt, event.time);
       appendHistoricalAssistant(turn, event.content);
       turn.durationMs = elapsedMs(turn.timestamp, event.time) ?? turn.durationMs;
       turn.timestamp = event.time ?? turn.timestamp;
@@ -327,7 +335,7 @@ function buildHistoricalTurns(events: SessionEvent[]): TimelineTurn[] {
       const toolName = event.tool;
       appendInvokedSkill(turn, toolName, event.args);
       const projection = historicalToolProjection(toolName, event.args);
-      appendHistoricalReasoning(turn, event.reasoningContent);
+      appendHistoricalReasoning(turn, event.reasoningContent, reasoningStartedAt, event.time);
       appendHistoricalAssistant(turn, event.assistantContent, true);
       const tool: TimelineTool = {
         id: event.toolCallId ?? `history-tool-${String(turn.tools.length)}`,
@@ -448,10 +456,15 @@ function buildVersionedHistoricalTurns(events: SessionEvent[]): TimelineTurn[] {
     return ensureTurn(timestamp);
   };
 
+  let priorEventAt: string | undefined;
+
   for (const event of activeEvents) {
+    const reasoningStartedAt = priorEventAt;
+    priorEventAt = event.time ?? priorEventAt;
     if (event.type === "tool_result" && event.auditOnly && event.recovered && resultString(event.result, "status") !== "skipped") continue;
     if (event.type === "user_message") {
       if (event.auditOnly) continue;
+      priorEventAt = undefined;
       anonymousIndex += 1;
       current = emptyTurn(`history-${String(anonymousIndex)}`, event.time);
       current.user = publicUserMessage(event.content);
@@ -471,7 +484,9 @@ function buildVersionedHistoricalTurns(events: SessionEvent[]): TimelineTurn[] {
       turn.assistant = event.content || turn.assistant;
       const memoryCount = event.metadata?.memoryInjectedCount;
       if (typeof memoryCount === "number" && Number.isInteger(memoryCount) && memoryCount >= 0) turn.memoryInjectedCount = memoryCount;
-      appendHistoricalReasoning(turn, event.reasoningContent);
+      const memorySummaries = injectedMemorySummaries(event.metadata?.memoryInjectedSummaries);
+      if (memorySummaries) turn.memoryInjectedSummaries = memorySummaries;
+      appendHistoricalReasoning(turn, event.reasoningContent, reasoningStartedAt, event.time);
       appendHistoricalAssistant(turn, event.content);
       turn.durationMs = elapsedMs(turn.timestamp, event.time) ?? turn.durationMs;
       turn.timestamp = event.time ?? turn.timestamp;
@@ -507,7 +522,7 @@ function buildVersionedHistoricalTurns(events: SessionEvent[]): TimelineTurn[] {
       const toolName = event.tool;
       appendInvokedSkill(turn, toolName, event.args);
       const projection = historicalToolProjection(toolName, event.args);
-      appendHistoricalReasoning(turn, event.reasoningContent);
+      appendHistoricalReasoning(turn, event.reasoningContent, reasoningStartedAt, event.time);
       appendHistoricalAssistant(turn, event.assistantContent, true);
       const tool: TimelineTool = {
         id: event.toolCallId ?? `history-tool-${String(turn.tools.length)}`,
@@ -752,6 +767,7 @@ function createLiveTimelineFold(initialUserMessageIndex: number): LiveTimelineFo
       turn.preparationStage = event.stage === "ready" ? undefined : event.stage;
     } else if (event.type === "context.updated") {
       turn.memoryInjectedCount = event.context.memoryInjectedCount;
+      turn.memoryInjectedSummaries = event.context.memoryInjectedSummaries.length ? [...event.context.memoryInjectedSummaries] : undefined;
       if (event.context.capabilitySelection) turn.capabilitySelection = event.context.capabilitySelection;
     } else if (event.type === "context.retrying") {
       turn.steps.push({
@@ -1101,15 +1117,27 @@ function historicalTurnStatusSummary(event: Extract<SessionEvent, { type: "turn_
   return event.requiredAction ? `${summary}\nRequired action: ${event.requiredAction}` : summary;
 }
 
-function appendHistoricalReasoning(turn: TimelineTurn, content: string | undefined): void {
+/** 落盘事件没有独立的思考区间，用「上一条事件时间 → 携带该思考的事件时间」补算时长；
+ * 事件缺失时间戳时保持 undefined，头部退化为不带秒数的「已思考」。 */
+function appendHistoricalReasoning(turn: TimelineTurn, content: string | undefined, startedAt?: string, finishedAt?: string): void {
   if (!content || turn.reasoning.endsWith(content)) return;
   turn.reasoning = appendReasoning(turn.reasoning, content);
+  const windowMs = elapsedMs(startedAt ?? turn.timestamp, finishedAt);
   const previous = turn.steps.at(-1);
   if (previous?.kind === "reasoning") {
     previous.content = appendReasoning(previous.content, content);
-    return;
+    previous.durationMs = elapsedMs(previous.startedAt ?? startedAt ?? turn.timestamp, finishedAt) ?? previous.durationMs;
+  } else {
+    turn.steps.push({
+      kind: "reasoning",
+      id: `${turn.id}:reasoning:${String(turn.steps.filter((step) => step.kind === "reasoning").length)}`,
+      content,
+      completed: true,
+      startedAt: startedAt ?? turn.timestamp,
+      durationMs: windowMs
+    });
   }
-  turn.steps.push({ kind: "reasoning", id: `${turn.id}:reasoning:${String(turn.steps.filter((step) => step.kind === "reasoning").length)}`, content, completed: true });
+  if (windowMs !== undefined) turn.reasoningDurationMs = (turn.reasoningDurationMs ?? 0) + windowMs;
 }
 
 function appendHistoricalAssistant(turn: TimelineTurn, content: string | undefined, summary = false): void {
@@ -1299,4 +1327,11 @@ function selectedCapabilities(events: SessionEvent[], messageId?: string): Agent
   if (!messageId) return undefined;
   const selected = agentCapabilitySelectionSchema.safeParse(sessionMessageMetadata(events, messageId).capabilitySelection);
   return selected.success ? selected.data : undefined;
+}
+
+/** Session 元数据可能来自旧版本或手工编辑文件，只接受非空字符串摘要。 */
+function injectedMemorySummaries(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const summaries = value.filter((item): item is string => typeof item === "string" && Boolean(item.trim()));
+  return summaries.length ? summaries : undefined;
 }

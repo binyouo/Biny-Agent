@@ -5,8 +5,9 @@
  * 这里把菜单放到 document.body，并根据触发器和浮层实际尺寸计算 fixed 坐标；滚动、缩放
  * 和内容尺寸变化都会重新定位，且会把坐标限制在窗口边界内。
  */
-import { createPortal } from "react-dom";
+import { autoUpdate } from "@floating-ui/dom";
 import { useLayoutEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import type { CSSProperties, PointerEventHandler, ReactNode, RefObject } from "react";
 import type { PresencePhase } from "../../useClosingPresence.js";
 
@@ -52,7 +53,6 @@ export function ComposerPopover({
     const surface = surfaceRef.current;
     if (!anchor || !surface) return;
 
-    let frame: number | undefined;
     const measurePosition = (): void => {
       const anchorRect = anchor.getBoundingClientRect();
       const surfaceRect = surface.getBoundingClientRect();
@@ -74,28 +74,16 @@ export function ComposerPopover({
         ? current
         : { left, origin, top });
     };
-    const updatePosition = (): void => {
-      if (frame !== undefined) return;
-      frame = window.requestAnimationFrame(() => {
-        frame = undefined;
-        measurePosition();
-      });
-    };
-
-    updatePosition();
-    window.addEventListener("resize", updatePosition);
-    window.addEventListener("scroll", updatePosition, true);
-    const resizeObserver = typeof ResizeObserver === "undefined" ? undefined : new ResizeObserver(updatePosition);
-    resizeObserver?.observe(anchor);
-    resizeObserver?.observe(surface);
-    return () => {
-      if (frame !== undefined) window.cancelAnimationFrame(frame);
-      window.removeEventListener("resize", updatePosition);
-      window.removeEventListener("scroll", updatePosition, true);
-      resizeObserver?.disconnect();
-    };
-    // portal 目标解析后 surface 会换一个 DOM 节点（重新挂载进 <dialog>），必须重新测量，
-    // 否则后续滚动/缩放重算时拿到的还是已脱离文档的旧节点。
+    // ResizeObserver 只能发现尺寸变化，队列增减等兄弟布局变化会让锚点移动却不改变
+    // 按钮大小；layout shift 监听确保弹层在纯位移时仍持续贴住锚点。
+    // portal 目标解析后 surface 会换一个 DOM 节点（重新挂载进 <dialog>），effect 会随
+    // portalTarget 重建监听，避免后续重算仍引用已脱离文档的旧节点。
+    return autoUpdate(anchor, surface, measurePosition, {
+      ancestorResize: true,
+      ancestorScroll: true,
+      elementResize: true,
+      layoutShift: true
+    });
   }, [align, anchorRef, portalTarget]);
 
   if (typeof document === "undefined") return null;

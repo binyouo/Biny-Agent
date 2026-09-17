@@ -176,6 +176,7 @@ const memoryEntryPatchSchema = z.object({
   userEvidence: memoryUserEvidenceSchema
 }).strict();
 const runtimeMutationSchema = z.enum([
+  "plan.mode", "plan.start",
   "task.create", "task.start", "task.run", "task.cancel", "task.approve", "task.resume", "task.retry",
   "automation.create", "automation.pause", "automation.resume", "automation.run", "automation.delete",
   "goal.create", "goal.pause", "goal.resume", "goal.cancel",
@@ -506,17 +507,33 @@ export function registerDesktopIpc(context: IpcContext): void {
     return await context.agents.importSession(parsedProjectId, sourcePath);
   });
 
-  handleRecoveryGated(desktopIpc.sendPrompt, async (_event, projectId: unknown, sessionId: unknown, input: unknown, attachments: unknown, delivery: unknown, personalization: unknown, idempotencyKey: unknown, promptContext: unknown, capabilitySelection: unknown) => {
+  handleRecoveryGated(desktopIpc.sendPrompt, async (_event, projectId: unknown, sessionId: unknown, input: unknown, attachments: unknown, delivery: unknown, personalization: unknown, idempotencyKey: unknown, promptContext: unknown, capabilitySelection: unknown, draftPlanning: unknown) => {
     return await context.agents.sendPrompt(
       idSchema.parse(projectId),
       sessionId === undefined ? undefined : idSchema.parse(sessionId),
       promptSchema.parse(input),
       z.array(attachmentSchema).max(20).parse(attachments),
-      z.enum(["steer", "followUp"]).optional().parse(delivery),
+      z.enum(["steer", "queue"]).optional().parse(delivery),
       chatPersonalizationSchema.optional().parse(personalization),
       idempotencyKeySchema.parse(idempotencyKey),
       promptContextSchema.parse(promptContext),
-      capabilitySelection === undefined ? undefined : agentCapabilitySelectionSchema.parse(capabilitySelection)
+      capabilitySelection === undefined ? undefined : agentCapabilitySelectionSchema.parse(capabilitySelection),
+      z.boolean().optional().parse(draftPlanning)
+    );
+  });
+
+  handleRecoveryGated(desktopIpc.mutateQueuedMessage, async (_event, projectId: unknown, sessionId: unknown, action: unknown, mutation: unknown) => {
+    const parsedMutation = z.object({
+      messageId: idSchema.optional(),
+      input: promptSchema.optional(),
+      targetMessageId: idSchema.optional(),
+      placeAfter: z.boolean().optional()
+    }).optional().parse(mutation);
+    await context.agents.mutateQueuedMessage(
+      idSchema.parse(projectId),
+      idSchema.parse(sessionId),
+      z.enum(["update", "remove", "move", "steer", "send-all"]).parse(action),
+      parsedMutation
     );
   });
 
@@ -642,6 +659,10 @@ export function registerDesktopIpc(context: IpcContext): void {
 
   handleRecoveryGated(desktopIpc.runtimeProjection, async (_event, projectId: unknown) => {
     return await context.agents.runtimeProjection(idSchema.parse(projectId));
+  });
+
+  handleRecoveryGated(desktopIpc.planProjection, async (_event, projectId: unknown, sessionId: unknown) => {
+    return await context.agents.planProjection(idSchema.parse(projectId), idSchema.parse(sessionId));
   });
 
   handle(desktopIpc.runtimeMutation, async (_event, projectId: unknown, operation: unknown, payload: unknown) => {

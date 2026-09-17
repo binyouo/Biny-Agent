@@ -8,6 +8,7 @@
  * 通道名统一用 `desktop:<领域>:<动作>` 的形式，便于排查。
  */
 import type { DesktopCrystalRequest, DesktopCrystalSnapshot } from "./crystalProtocol.js";
+import type { planStatus } from "../extensions/plan.js";
 import type { AgentCapabilitySelection, CapabilitySelectionMode } from "../agent/capabilitySelection.js";
 import type { ActivitySettings, ActivitySettingsInput, ActivitySettingsPatch } from "../activity/settings.js";
 import type { ActivityRuntimeSnapshot } from "../activity/types.js";
@@ -95,6 +96,7 @@ export const desktopIpc = {
   exportSession: "desktop:session:export",
   importSession: "desktop:session:import",
   sendPrompt: "desktop:agent:send",
+  mutateQueuedMessage: "desktop:agent:queue:mutate",
   toolCatalog: "desktop:agent:tool-catalog",
   resumeInterruptedTurn: "desktop:agent:resume-interrupted",
   editPrompt: "desktop:agent:edit",
@@ -115,6 +117,7 @@ export const desktopIpc = {
   cancelModelLogin: "desktop:model:login:cancel",
   compact: "desktop:agent:compact",
   runtimeProjection: "desktop:runtime:projection",
+  planProjection: "desktop:runtime:plans",
   runtimeMutation: "desktop:runtime:mutation",
   runtimeEvents: "desktop:runtime:events",
   openBrowser: "desktop:browser:open",
@@ -1214,6 +1217,8 @@ export interface DesktopMemorySettingsInput {
 export interface DesktopSettingsModelsSnapshot {
   configured: ModelChoice[];
   connections: DesktopModelConnection[];
+  /** 已验证的本地目录缓存；设置页首屏直接使用，不因打开详情自动访问服务商网络。 */
+  catalogs?: Record<string, ModelCatalogEntry[]>;
   /** 脱敏的独立 embedding 目录；不含 provider headers 或凭据。 */
   embeddingModels: DesktopEmbeddingModelDescriptor[];
   defaultModel: string;
@@ -1405,6 +1410,11 @@ export interface DesktopRuntimeProjection {
   worktrees: DesktopWorktreeStatus[];
 }
 
+export interface DesktopPlanProjection {
+  sessionId: string;
+  plans: Array<ReturnType<typeof planStatus>>;
+}
+
 export type DesktopWorktreeLifecycleStatus = "active" | "merged" | "conflicted" | "orphaned" | "kept";
 
 export interface DesktopWorktreeStatus {
@@ -1416,6 +1426,8 @@ export interface DesktopWorktreeStatus {
 }
 
 export type DesktopRuntimeMutation =
+  | "plan.mode"
+  | "plan.start"
   | "task.create"
   | "task.start"
   | "task.run"
@@ -1468,6 +1480,15 @@ export interface DesktopTerminalTab {
   slotId: string;
 }
 
+export type DesktopQueuedMessageAction = "update" | "remove" | "move" | "steer" | "send-all";
+
+export interface DesktopQueuedMessageMutation {
+  messageId?: string;
+  input?: string;
+  targetMessageId?: string;
+  placeAfter?: boolean;
+}
+
 export type DesktopTerminalEvent =
   | { terminalId: string; type: "data"; data: string; sequence: number }
   | { terminalId: string; type: "exit"; exitCode: number; sequence: number };
@@ -1515,12 +1536,19 @@ export interface DesktopApi {
     sessionId: string | undefined,
     input: string,
     attachments: DesktopAttachment[],
-    delivery?: "steer" | "followUp",
+    delivery?: "steer" | "queue",
     personalization?: DesktopChatPersonalizationOverride,
     idempotencyKey?: string,
     promptContext?: string,
-    capabilitySelection?: AgentCapabilitySelection
+    capabilitySelection?: AgentCapabilitySelection,
+    draftPlanning?: boolean
   ): Promise<DesktopRunReceipt>;
+  mutateQueuedMessage(
+    projectId: string,
+    sessionId: string,
+    action: DesktopQueuedMessageAction,
+    mutation?: DesktopQueuedMessageMutation
+  ): Promise<void>;
   toolCatalog(projectId: string): Promise<DesktopToolCatalogEntry[]>;
   resumeInterruptedTurn(projectId: string, sessionId: string): Promise<DesktopRunReceipt | undefined>;
   editPrompt(projectId: string, sessionId: string, userMessageIndex: number, input: string, attachments: DesktopAttachment[], idempotencyKey?: string): Promise<DesktopRunReceipt>;
@@ -1546,6 +1574,7 @@ export interface DesktopApi {
   cancelModelLogin(projectId: string, provider: DesktopModelLoginProvider, authRequestId: string): Promise<void>;
   compact(projectId: string, hint?: string): Promise<string>;
   runtimeProjection(projectId: string): Promise<DesktopRuntimeProjection>;
+  planProjection(projectId: string, sessionId: string): Promise<DesktopPlanProjection>;
   runtimeMutation(projectId: string, operation: DesktopRuntimeMutation, payload?: Record<string, unknown>): Promise<unknown>;
   runtimeEvents(projectId: string, afterSequence?: number, limit?: number): Promise<unknown>;
   /** 打开内嵌浏览器窗口；`url` 省略时打开首页。登录态由浏览器 partition 保存并同步给 agent 工具。 */

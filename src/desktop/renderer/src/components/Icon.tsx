@@ -31,7 +31,9 @@ export type IconName =
   | "code"
   | "compose"
   | "commit"
+  | "corner-down-right"
   | "globe"
+  | "grip-vertical"
   | "copy"
   | "cube"
   | "cpu"
@@ -151,7 +153,9 @@ function pathFor(name: IconName): React.JSX.Element {
     case "code": return <path {...common} d="m8.5 8-4 4 4 4M15.5 8l4 4-4 4M14 5l-4 14" />;
     case "compose": return <><path {...common} d="M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" /><path {...common} d="M18.375 2.625a1 1 0 0 1 3 3l-9.013 9.014a2 2 0 0 1-.853.505l-2.873.84a.5.5 0 0 1-.62-.62l.84-2.873a2 2 0 0 1 .506-.852z" /></>;
     case "commit": return <><circle {...common} cx="12" cy="12" r="4" /><path {...common} d="M3 12h5m8 0h5" /></>;
+    case "corner-down-right": return <path {...common} d="M15 10l5 5-5 5M4 4v7a4 4 0 0 0 4 4h12" />;
     case "globe": return <><circle {...common} cx="12" cy="12" r="9" /><ellipse {...common} cx="12" cy="12" rx="4" ry="9" /><path {...common} d="M3 12h18" /></>;
+    case "grip-vertical": return <><circle cx="9" cy="5" fill="currentColor" r="1" /><circle cx="15" cy="5" fill="currentColor" r="1" /><circle cx="9" cy="12" fill="currentColor" r="1" /><circle cx="15" cy="12" fill="currentColor" r="1" /><circle cx="9" cy="19" fill="currentColor" r="1" /><circle cx="15" cy="19" fill="currentColor" r="1" /></>;
     case "copy": return <><rect {...common} height="12" rx="2" width="12" x="8" y="8" /><path {...common} d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2" /></>;
     case "cube": return <><path {...common} d="m12 3 8 4.5v9L12 21l-8-4.5v-9z" /><path {...common} d="m4 7.5 8 4.5 8-4.5M12 12v9" /></>;
     case "cpu": return <><rect {...common} height="12" rx="2" width="12" x="6" y="6" /><path {...common} d="M9 2v4M15 2v4M9 18v4M15 18v4M2 9h4M2 15h4M18 9h4M18 15h4M10 10h4v4h-4z" /></>;
