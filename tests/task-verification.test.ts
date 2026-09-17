@@ -8,21 +8,28 @@ import { fileURLToPath } from "node:url";
 import { ToolExecutionCoordinator } from "../src/agent/toolExecutionCoordinator.js";
 import type { AgentSessionEvent, AgentToolEvent } from "../src/agent/types.js";
 import { defaultConfig, type AgentConfig } from "../src/config/schema.js";
+import { saveConfig } from "../src/config/loader.js";
 import { PermissionManager, type PermissionMode } from "../src/permission/PermissionManager.js";
 import { SessionRecorder } from "../src/session/recorder.js";
-import { readSessionEvents } from "../src/session/events.js";
+import { readSessionEvents, type SessionEvent } from "../src/session/events.js";
 import { ensureAgentDirs } from "../src/session/store.js";
 import { GoalGraphStore, GraphSupervisor } from "../src/runtime/GoalGraphStore.js";
 import type { InteractiveRuntimeHandle } from "../src/runtime/InteractiveAgentRuntime.js";
 import { RuntimeEventAuthority } from "../src/runtime/RuntimeAuthority.js";
-import { runTaskClosure } from "../src/runtime/TaskClosure.js";
+import { runtimeHostPaths, spawnRuntimeHost, type RuntimeHostClient } from "../src/runtime/RuntimeHost.js";
+import { approveTaskVerification, runTaskClosure } from "../src/runtime/TaskClosure.js";
 import { DurableTaskRunStore } from "../src/runtime/TaskRunStore.js";
 import {
   fingerprintTaskVerificationDefinitions,
+  isTaskVerificationPermissionResult,
+  isTaskVerificationApproval,
+  matchingTaskVerificationApproval,
+  pendingTaskVerificationApproval,
   readTaskDefinition,
   readTaskVerificationContract,
   recoverTaskCheckExecution,
   taskCheckToolCallId,
+  taskVerificationPermissionRequiredReason,
   taskVerificationFingerprint,
   verifyTaskCandidate,
   type TaskCandidateArtifacts,
@@ -40,6 +47,7 @@ interface Fixture {
   tasks: DurableTaskRunStore;
   graphs: GoalGraphStore;
   executor: TaskCommandExecutor;
+  setPermissionMode(mode: PermissionMode): void;
   close(): Promise<void>;
 }
 
@@ -63,8 +71,14 @@ async function main(): Promise<void> {
   await testDuplicateSubagentCompletionIsIdempotent();
   await testPersistedPassedEvidenceRepairsStatusWithoutCommand();
   await testAttemptLimitSurvivesStoreReopen();
+  await testApprovalCannotOverrideUnknownOperation();
   await testProcessBoundaryReusesDurableToolResult();
   await testProcessBoundaryBlocksUnknownToolOutcome();
+  await testPermissionApprovalResumesSameAttempt();
+  await testExactApprovalCannotBypassHardPolicy();
+  await testSequentialCheckApprovalsReuseCompletedChecks();
+  await testCancellationRejectsWaitingApproval();
+  await testHostRestartApprovalResumesVerificationAndUnlocksGraph();
   await testLegacyTaskCompatibility();
   console.log("task verification tests passed");
 }
@@ -703,6 +717,92 @@ async function testAttemptLimitSurvivesStoreReopen(): Promise<void> {
   }
 }
 
+async function testApprovalCannotOverrideUnknownOperation(): Promise<void> {
+  const input = {
+    taskRunId: "unknown-approval-task",
+    attemptId: "unknown-approval-attempt",
+    checkId: "check",
+    contractFingerprint: "contract"
+  };
+  const sessionId = "unknown-approval-session";
+  const toolCallId = taskCheckToolCallId(input);
+  const operationId = createToolOperationId(sessionId, toolCallId);
+  const events: SessionEvent[] = [
+    {
+      type: "tool_result",
+      tool: "Bash",
+      toolCallId,
+      operationId,
+      result: { status: "denied", reason: taskVerificationPermissionRequiredReason },
+      runtime: { eventId: "denied-event", workspaceId: "workspace", sessionId, invocationId: input.taskRunId, runId: input.taskRunId, turnId: input.attemptId, eventType: "session.tool_result", sequence: 1, createdAt: new Date().toISOString() }
+    },
+    {
+      type: "tool_execution",
+      tool: "Bash",
+      toolCallId,
+      operationId,
+      sequence: 1,
+      state: "admitted",
+      retrySafety: "unknown"
+    }
+  ];
+  const decision = recoverTaskCheckExecution(events, sessionId, {
+    ...input,
+    approval: {
+      ...input,
+      toolCallId,
+      deniedResultEventId: "denied-event",
+      artifactFingerprint: "artifact",
+      definitionFingerprint: "definition",
+      approvedAt: new Date().toISOString()
+    }
+  });
+  assert.equal(decision.action, "block");
+  if (decision.action === "block") assert.match(JSON.stringify(decision.execution.result), /may have been dispatched/u);
+
+  const approval = {
+    ...input,
+    toolCallId,
+    deniedResultEventId: "denied-event",
+    artifactFingerprint: "artifact",
+    definitionFingerprint: "definition",
+    approvedAt: new Date().toISOString()
+  };
+  const approvedDispatch = recoverTaskCheckExecution([events[0]!], sessionId, { ...input, approval });
+  assert.equal(approvedDispatch.action, "execute");
+  assert.ok(approvedDispatch.action === "execute");
+  const approvedOperationId = createToolOperationId(sessionId, approvedDispatch.toolCallId);
+  const approvedUnknown = recoverTaskCheckExecution([
+    events[0]!,
+    {
+      type: "tool_execution",
+      tool: "Bash",
+      toolCallId: approvedDispatch.toolCallId,
+      operationId: approvedOperationId,
+      sequence: 2,
+      state: "admitted",
+      retrySafety: "unknown"
+    }
+  ], sessionId, { ...input, approval });
+  assert.equal(approvedUnknown.action, "block");
+  const approvedCompleted = recoverTaskCheckExecution([
+    events[0]!,
+    {
+      type: "tool_result",
+      tool: "Bash",
+      toolCallId: approvedDispatch.toolCallId,
+      operationId: approvedOperationId,
+      result: { exitCode: 0, stdout: "", stderr: "" },
+      runtime: { eventId: "approved-result", workspaceId: "workspace", sessionId, invocationId: input.taskRunId, runId: input.taskRunId, turnId: input.attemptId, eventType: "session.tool_result", sequence: 2, createdAt: new Date().toISOString() }
+    }
+  ], sessionId, { ...input, approval });
+  assert.equal(approvedCompleted.action, "reuse");
+  if (approvedCompleted.action === "reuse") assert.equal((approvedCompleted.execution.result as { exitCode?: unknown }).exitCode, 0);
+  const missingDenial = recoverTaskCheckExecution([], sessionId, { ...input, approval });
+  assert.equal(missingDenial.action, "block");
+  if (missingDenial.action === "block") assert.match(JSON.stringify(missingDenial.execution.result), /cannot be matched/u);
+}
+
 async function testProcessBoundaryReusesDurableToolResult(): Promise<void> {
   const root = await prepareProcessBoundaryTask("process-reuse");
   try {
@@ -743,6 +843,376 @@ async function testProcessBoundaryBlocksUnknownToolOutcome(): Promise<void> {
     await assert.rejects(readFile(path.join(root, ".verification-state", "verification-count"), "utf8"), /ENOENT/u);
   } finally {
     await rm(root, { recursive: true, force: true });
+  }
+}
+
+async function testPermissionApprovalResumesSameAttempt(): Promise<void> {
+  const fixture = await createFixture("ask");
+  try {
+    await writeFile(path.join(fixture.root, "artifact.txt"), "good\n", "utf8");
+    const contract = verificationContract(1);
+    const task = fixture.tasks.create({ task: { prompt: "produce once, then wait for check approval", verification: contract } });
+    let workerCalls = 0;
+    const waiting = await runTaskClosure({
+      taskRuns: fixture.tasks,
+      taskRunId: task.taskRunId,
+      workspaceRoot: fixture.root,
+      ignore: verificationIgnore,
+      executor: fixture.executor,
+      executeAttempt: async () => {
+        workerCalls += 1;
+        return "candidate";
+      }
+    });
+    assert.equal(waiting.status, "needs_approval");
+    assert.equal(fixture.tasks.get(task.taskRunId)?.status, "needs_approval");
+
+    await approveTaskVerification({
+      taskRuns: fixture.tasks,
+      taskRunId: task.taskRunId,
+      approvalId: requireTaskApprovalId(fixture.tasks.get(task.taskRunId)),
+      workspaceRoot: fixture.root,
+      ignore: verificationIgnore
+    });
+    const approved = fixture.tasks.get(task.taskRunId);
+    const approvedAttempt = approved?.attempts.at(-1);
+    const approvedArtifacts = approvedAttempt?.artifacts as Record<string, unknown> | undefined;
+    const approval = Array.isArray(approvedArtifacts?.verificationApprovals)
+      ? approvedArtifacts.verificationApprovals[0]
+      : undefined;
+    assert.equal(approved?.status, "verifying");
+    assert.ok(isTaskVerificationApproval(approval));
+    assert.ok(waiting.evidence);
+    assert.equal(matchingTaskVerificationApproval(approval, {
+      taskRunId: task.taskRunId,
+      attemptId: approvedAttempt.attemptId,
+      checkId: "content",
+      toolCallId: waiting.evidence.checks[0]!.toolCallId,
+      contractFingerprint: waiting.evidence.contractFingerprint,
+      artifactFingerprint: waiting.evidence.artifactFingerprint,
+      definitionFingerprint: waiting.evidence.definitionFingerprint
+    }), true);
+    const completed = await runTaskClosure({
+      taskRuns: fixture.tasks,
+      taskRunId: task.taskRunId,
+      workspaceRoot: fixture.root,
+      ignore: verificationIgnore,
+      executor: fixture.executor,
+      executeAttempt: async () => {
+        workerCalls += 1;
+        return "must not rerun";
+      }
+    });
+    assert.equal(completed.status, "completed", JSON.stringify(completed));
+    assert.equal(workerCalls, 1);
+    assert.equal(fixture.tasks.get(task.taskRunId)?.attempts.length, 1);
+  } finally {
+    await fixture.close();
+  }
+}
+
+async function testCancellationRejectsWaitingApproval(): Promise<void> {
+  const fixture = await createFixture("ask");
+  try {
+    await writeFile(path.join(fixture.root, "artifact.txt"), "good\n", "utf8");
+    const contract = verificationContract(1);
+    const task = fixture.tasks.create({ task: { prompt: "wait for approval, then cancel", verification: contract } });
+    const waiting = await runTaskClosure({
+      taskRuns: fixture.tasks,
+      taskRunId: task.taskRunId,
+      workspaceRoot: fixture.root,
+      ignore: verificationIgnore,
+      executor: fixture.executor,
+      executeAttempt: async () => "candidate"
+    });
+    assert.equal(waiting.status, "needs_approval");
+    const approvalId = requireTaskApprovalId(fixture.tasks.get(task.taskRunId));
+    fixture.tasks.transition(task.taskRunId, "cancelled", { attemptId: fixture.tasks.get(task.taskRunId)?.attempts.at(-1)?.attemptId });
+    await assert.rejects(approveTaskVerification({
+      taskRuns: fixture.tasks,
+      taskRunId: task.taskRunId,
+      approvalId,
+      workspaceRoot: fixture.root,
+      ignore: verificationIgnore
+    }), /not waiting for verification approval/u);
+    assert.equal(fixture.tasks.get(task.taskRunId)?.status, "cancelled");
+  } finally {
+    await fixture.close();
+  }
+}
+
+async function testExactApprovalCannotBypassHardPolicy(): Promise<void> {
+  const fixture = await createFixture("ask");
+  try {
+    await writeFile(path.join(fixture.root, "artifact.txt"), "good\n", "utf8");
+    const task = fixture.tasks.create({ task: { prompt: "wait, then hard deny", verification: verificationContract(1) } });
+    const waiting = await runTaskClosure({
+      taskRuns: fixture.tasks,
+      taskRunId: task.taskRunId,
+      workspaceRoot: fixture.root,
+      ignore: verificationIgnore,
+      executor: fixture.executor,
+      executeAttempt: async () => "candidate"
+    });
+    assert.equal(waiting.status, "needs_approval");
+    await approveTaskVerification({
+      taskRuns: fixture.tasks,
+      taskRunId: task.taskRunId,
+      approvalId: requireTaskApprovalId(fixture.tasks.get(task.taskRunId)),
+      workspaceRoot: fixture.root,
+      ignore: verificationIgnore
+    });
+    fixture.setPermissionMode("read-only");
+    const resumed = await runTaskClosure({
+      taskRuns: fixture.tasks,
+      taskRunId: task.taskRunId,
+      workspaceRoot: fixture.root,
+      ignore: verificationIgnore,
+      executor: fixture.executor,
+      executeAttempt: async () => { throw new Error("Worker must not rerun after approval."); }
+    });
+    assert.equal(resumed.status, "blocked");
+    const evidence = fixture.tasks.get(task.taskRunId)?.attempts.at(-1)?.verification as { checks?: Array<{ approvalRequired?: boolean; toolCallId?: string }> };
+    assert.equal(evidence.checks?.[0]?.approvalRequired, false, "hard policy denial must not be converted into another approvable prompt");
+    assert.match(evidence.checks?.[0]?.toolCallId ?? "", /:approved:/u);
+  } finally {
+    await fixture.close();
+  }
+}
+
+async function testSequentialCheckApprovalsReuseCompletedChecks(): Promise<void> {
+  const fixture = await createFixture("ask");
+  try {
+    await writeFile(path.join(fixture.root, "artifact.txt"), "good\n", "utf8");
+    const base = verificationContract(1);
+    const contract = readTaskVerificationContract({
+      ...base,
+      checks: ["one", "two"].map((name) => ({
+        id: name,
+        command: `node -e "const fs=require('node:fs');const p='.verification-state/${name}';const n=Number(fs.existsSync(p)?fs.readFileSync(p,'utf8'):0)+1;fs.writeFileSync(p,String(n));process.exit(fs.readFileSync('artifact.txt','utf8').trim()==='good'?0:1)"`,
+        definitionPaths: []
+      }))
+    });
+    await mkdir(path.join(fixture.root, ".verification-state"), { recursive: true });
+    const task = fixture.tasks.create({ task: { prompt: "run each approved check once", verification: contract } });
+    let workerCalls = 0;
+    const run = async () => await runTaskClosure({
+      taskRuns: fixture.tasks,
+      taskRunId: task.taskRunId,
+      workspaceRoot: fixture.root,
+      ignore: verificationIgnore,
+      executor: fixture.executor,
+      executeAttempt: async () => {
+        workerCalls += 1;
+        return "candidate";
+      }
+    });
+
+    assert.equal((await run()).status, "needs_approval");
+    const firstApprovalId = requireTaskApprovalId(fixture.tasks.get(task.taskRunId));
+    await approveTaskVerification({ taskRuns: fixture.tasks, taskRunId: task.taskRunId, approvalId: firstApprovalId, workspaceRoot: fixture.root, ignore: verificationIgnore });
+    assert.equal((await run()).status, "needs_approval");
+    const secondApprovalId = requireTaskApprovalId(fixture.tasks.get(task.taskRunId));
+    assert.notEqual(secondApprovalId, firstApprovalId, "each sequential check must expose a distinct approval identity");
+    await assert.rejects(approveTaskVerification({
+      taskRuns: fixture.tasks,
+      taskRunId: task.taskRunId,
+      approvalId: firstApprovalId,
+      workspaceRoot: fixture.root,
+      ignore: verificationIgnore
+    }), /stale or belongs to another check/u);
+    await approveTaskVerification({ taskRuns: fixture.tasks, taskRunId: task.taskRunId, approvalId: secondApprovalId, workspaceRoot: fixture.root, ignore: verificationIgnore });
+    assert.equal((await run()).status, "completed");
+    assert.equal(await readFile(path.join(fixture.root, ".verification-state", "one"), "utf8"), "1");
+    assert.equal(await readFile(path.join(fixture.root, ".verification-state", "two"), "utf8"), "1");
+    assert.equal(workerCalls, 1);
+    assert.equal(fixture.tasks.get(task.taskRunId)?.attempts.length, 1);
+  } finally {
+    await fixture.close();
+  }
+}
+
+async function testHostRestartApprovalResumesVerificationAndUnlocksGraph(): Promise<void> {
+  const root = await mkdtemp(path.join(os.tmpdir(), "biny-task-approval-host-"));
+  const configDir = path.join(root, "config");
+  const previousAgentDir = process.env.BINY_AGENT_DIR;
+  process.env.BINY_AGENT_DIR = path.join(root, "agent");
+  let client: RuntimeHostClient | undefined;
+  try {
+    await ensureAgentDirs(root);
+    await mkdir(path.join(root, ".verification-state"), { recursive: true });
+    await writeFile(path.join(root, "artifact.txt"), "good\n", "utf8");
+    const contract = hostApprovalContract();
+    const authority = await RuntimeEventAuthority.open(root, { backfillLegacySessions: false });
+    const tasks = await DurableTaskRunStore.open(root, authority);
+    const graphs = await GoalGraphStore.open(root, authority);
+    let graphId: string;
+    let taskRunId: string;
+    try {
+      const graph = graphs.createGraph(undefined, [
+        { nodeKey: "build", prompt: "persisted candidate", verification: contract },
+        { nodeKey: "publish", prompt: "consume verified candidate", dependencies: ["build"] }
+      ]);
+      graphId = graph.graphId;
+      graphs.startGraph(graphId);
+      const build = graphs.inspectGraph(graphId).nodes.find((node) => node.nodeKey === "build");
+      assert.ok(build);
+      taskRunId = `graph:${graphId}:${build.nodeId}`;
+      assert.ok(graphs.claimIntent(graphId, build.nodeId, "host-restart-approval", taskRunId));
+      // 暂停调度只用于让测试稳定观察“依赖已解锁但尚未派发”的边界；TaskRun 验收仍由 Host 恢复。
+      graphs.pauseGraph(graphId);
+      const task = tasks.create({ taskRunId, task: build.intent, parentRunId: `graph:${graphId}` });
+      const attempt = tasks.createAttempt(task.taskRunId, { attemptId: `${taskRunId}:attempt` });
+      tasks.transition(task.taskRunId, "running", { attemptId: attempt.attemptId });
+      tasks.transition(task.taskRunId, "verifying", {
+        attemptId: attempt.attemptId,
+        artifacts: await persistedCandidate(root, contract, "persisted candidate")
+      });
+    } finally {
+      graphs.close();
+      tasks.close();
+      authority.close();
+    }
+
+    await saveConfig(root, hostApprovalConfig(), { globalDir: configDir });
+    const spawned = await spawnRuntimeHost(root, {
+      workspaceRoot: root,
+      configDir,
+      resumeInterrupted: false,
+      clientId: "verification-approval-process",
+      surface: "cli"
+    });
+    client = spawned.client;
+    const waiting = await waitForHostTaskStatus(client, taskRunId!, "needs_approval");
+    assert.equal((waiting.attempts as unknown[]).length, 1);
+    await assert.rejects(readFile(path.join(root, ".verification-state", "count"), "utf8"), /ENOENT/u);
+
+    const firstEpoch = client.hostInfo?.hostEpoch;
+    assert.ok(firstEpoch);
+    await killRegisteredHost(root, "SIGKILL");
+    await waitForHostEpochChange(client, firstEpoch);
+    const recoveredWaiting = await waitForHostTaskStatus(client, taskRunId!, "needs_approval");
+    assert.equal((recoveredWaiting.attempts as unknown[]).length, 1);
+
+    const approvalId = requireTaskApprovalId(recoveredWaiting);
+    const approvals = await Promise.all([client.taskApprove(taskRunId!, approvalId), client.taskApprove(taskRunId!, approvalId)]);
+    assert.ok(approvals.some((result) => result.accepted), JSON.stringify(approvals));
+    const completed = await waitForHostTaskStatus(client, taskRunId!, "completed");
+    assert.equal((completed.attempts as unknown[]).length, 1);
+    assert.equal(await readFile(path.join(root, ".verification-state", "count"), "utf8"), "1");
+
+    const projected = await client.graphInspect(graphId!);
+    assert.equal(typeof projected, "object");
+    const projectedNodes = (projected as { nodes?: Array<{ nodeKey?: string; status?: string }> }).nodes ?? [];
+    assert.equal(projectedNodes.find((node) => node.nodeKey === "build")?.status, "completed");
+    assert.equal(projectedNodes.find((node) => node.nodeKey === "publish")?.status, "pending");
+
+    await client.close();
+    client = undefined;
+    await killRegisteredHost(root, "SIGKILL");
+    const reopenedAuthority = await RuntimeEventAuthority.open(root, { backfillLegacySessions: false });
+    const reopenedGraphs = await GoalGraphStore.open(root, reopenedAuthority);
+    try {
+      reopenedGraphs.resumeGraph(graphId!);
+      assert.deepEqual(reopenedGraphs.readyNodes(graphId!).map((node) => node.nodeKey), ["publish"]);
+    } finally {
+      reopenedGraphs.close();
+      reopenedAuthority.close();
+    }
+  } finally {
+    await client?.close().catch(() => undefined);
+    await killRegisteredHost(root, "SIGKILL").catch(() => undefined);
+    if (previousAgentDir === undefined) delete process.env.BINY_AGENT_DIR;
+    else process.env.BINY_AGENT_DIR = previousAgentDir;
+    await rm(root, { recursive: true, force: true });
+  }
+}
+
+function hostApprovalContract(): TaskVerificationContract {
+  return readTaskVerificationContract({
+    version: 1,
+    objective: "artifact.txt must contain good",
+    artifactPaths: ["artifact.txt"],
+    allowedRepairPaths: ["artifact.txt"],
+    maxAttempts: 1,
+    checks: [{
+      id: "content-with-count",
+      command: "node -e \"const fs=require('node:fs');const p='.verification-state/count';const n=Number(fs.existsSync(p)?fs.readFileSync(p,'utf8'):0)+1;fs.writeFileSync(p,String(n));process.exit(fs.readFileSync('artifact.txt','utf8').trim()==='good'?0:1)\"",
+      definitionPaths: []
+    }]
+  });
+}
+
+function requireTaskApprovalId(task: unknown): string {
+  if (typeof task !== "object" || task === null) throw new Error("TaskRun approval fixture is missing.");
+  const attempts = (task as { attempts?: unknown }).attempts;
+  const attempt = Array.isArray(attempts) ? attempts.at(-1) as { verification?: unknown } | undefined : undefined;
+  const approval = pendingTaskVerificationApproval(attempt?.verification);
+  if (!approval) throw new Error(`TaskRun has no pending approval: ${JSON.stringify(task)}`);
+  return approval.approvalId;
+}
+
+function hostApprovalConfig(): AgentConfig {
+  return {
+    ...defaultConfig,
+    defaultModel: "host-verification-test",
+    providers: {
+      host: { type: "ollama", baseUrl: "http://127.0.0.1:11434/v1", requiresApiKey: false }
+    },
+    models: {
+      "host-verification-test": {
+        ...defaultConfig.models["deepseek-v4-flash"],
+        provider: "host",
+        model: "host-verification-test",
+        displayName: "Host Verification Test"
+      }
+    },
+    permission: { ...defaultConfig.permission, mode: "ask", criticalAlwaysAsk: true },
+    workspace: { ...defaultConfig.workspace, ignore: [...defaultConfig.workspace.ignore, ".verification-state", "agent"] },
+    context: {
+      ...defaultConfig.context,
+      memory: { ...defaultConfig.context.memory, useMemories: false, generateMemories: false }
+    }
+  };
+}
+
+async function waitForHostTaskStatus(
+  client: RuntimeHostClient,
+  taskRunId: string,
+  status: string,
+  timeoutMs = 10_000
+): Promise<Record<string, unknown>> {
+  const deadline = Date.now() + timeoutMs;
+  let task: unknown;
+  while (Date.now() < deadline) {
+    task = await client.taskGet(taskRunId).catch(() => undefined);
+    if (typeof task === "object" && task !== null && (task as { status?: unknown }).status === status) {
+      return task as Record<string, unknown>;
+    }
+    await new Promise<void>((resolve) => setTimeout(resolve, 50));
+  }
+  assert.fail(`Timed out waiting for Host TaskRun ${status}: ${JSON.stringify(task)}`);
+}
+
+async function waitForHostEpochChange(client: RuntimeHostClient, previousEpoch: string): Promise<void> {
+  const deadline = Date.now() + 10_000;
+  while (Date.now() < deadline) {
+    await client.taskList({ limit: 1 }).catch(() => undefined);
+    if (client.hostInfo?.hostEpoch && client.hostInfo.hostEpoch !== previousEpoch) return;
+    await new Promise<void>((resolve) => setTimeout(resolve, 50));
+  }
+  assert.fail("Timed out waiting for Runtime Host takeover after SIGKILL.");
+}
+
+async function killRegisteredHost(root: string, signal: NodeJS.Signals): Promise<void> {
+  const registration = await readFile(runtimeHostPaths(root).registrationPath, "utf8").catch(() => undefined);
+  if (registration === undefined) return;
+  const pid = (JSON.parse(registration) as { pid?: unknown }).pid;
+  if (typeof pid !== "number" || pid <= 1 || pid === process.pid) return;
+  try {
+    process.kill(pid, signal);
+  } catch (error) {
+    if (!(error instanceof Error && "code" in error && error.code === "ESRCH")) throw error;
   }
 }
 
@@ -918,6 +1388,7 @@ async function createFixture(mode: PermissionMode): Promise<Fixture> {
     tasks,
     graphs,
     executor,
+    setPermissionMode: (nextMode) => realExecutor.permission.setMode(nextMode),
     close: async () => {
       await recorder.close();
       graphs.close();
@@ -933,7 +1404,7 @@ function createRealTaskExecutor(
   mode: PermissionMode,
   authority: RuntimeEventAuthority,
   sessionId: string
-): { executor: TaskCommandExecutor; recorder: SessionRecorder } {
+): { executor: TaskCommandExecutor; recorder: SessionRecorder; permission: PermissionManager } {
   const config = structuredClone(defaultConfig) as AgentConfig;
   config.permission.mode = mode;
   config.sandbox.mode = "off";
@@ -947,6 +1418,12 @@ function createRealTaskExecutor(
     await recorder.flush();
     const recovery = recoverTaskCheckExecution(await readSessionEvents(recorder.filePath), recorder.sessionId, input);
     if (recovery.action !== "execute") return recovery.execution;
+    const approvalMatches = input.approval?.taskRunId === input.taskRunId
+      && input.approval.attemptId === input.attemptId
+      && input.approval.checkId === input.checkId
+      && input.approval.contractFingerprint === input.contractFingerprint
+      && input.approval.toolCallId === taskCheckToolCallId(input);
+    let approvalRequired = false;
     const events: Array<AgentToolEvent | Extract<AgentSessionEvent, { type: "error" }>> = [];
     const coordinator = new ToolExecutionCoordinator(
       {
@@ -954,7 +1431,13 @@ function createRealTaskExecutor(
         config,
         recorder,
         toolRegistry: registry,
-        confirmPermission: async () => ({ approved: false, message: "test did not grant permission" }),
+        confirmPermission: async (request) => {
+          if (approvalMatches) {
+            return { approved: true, action: "allow_once", scope: "once", confirmation: request.requireFullYes ? "yes" : undefined };
+          }
+          approvalRequired = true;
+          return { approved: false, message: taskVerificationPermissionRequiredReason };
+        },
         runId: input.taskRunId,
         turnId: input.attemptId
       },
@@ -973,6 +1456,16 @@ function createRealTaskExecutor(
       timeoutMs: input.timeoutMs ?? 120_000
     }, input.signal);
     await coordinator.waitForIdle();
+    await recorder.flush();
+    const persisted = await readSessionEvents(recorder.filePath);
+    let resultEventId: string | undefined;
+    for (let index = persisted.length - 1; index >= 0; index -= 1) {
+      const candidate = persisted[index];
+      if (candidate?.type === "tool_result" && candidate.toolCallId === toolCallId) {
+        resultEventId = candidate.runtime?.eventId;
+        break;
+      }
+    }
     const event = [...events].reverse().find((candidate) =>
       (candidate.type === "tool.completed" || candidate.type === "tool.failed") && candidate.toolCallId === toolCallId
     );
@@ -981,7 +1474,9 @@ function createRealTaskExecutor(
       result: result.details ?? result,
       toolCallId,
       operationId,
-      eventReferences: [toolCallId, operationId].filter((reference): reference is string => reference !== undefined)
+      resultEventId,
+      eventReferences: [toolCallId, operationId, resultEventId].filter((reference): reference is string => reference !== undefined),
+      approvalRequired: approvalRequired || isTaskVerificationPermissionResult(result.details ?? result)
     };
   };
   const executor: TaskCommandExecutor = {
@@ -996,12 +1491,12 @@ function createRealTaskExecutor(
       return completion;
     }
   };
-  return { executor, recorder };
+  return { executor, recorder, permission };
 }
 
 function graphRuntime(run: (prompt: string) => Promise<string>): InteractiveRuntimeHandle {
   return {
-    getSnapshot: () => ({ revision: 0, state: { kind: "idle" } }),
+    getSnapshot: () => ({ revision: 0, state: { kind: "idle" }, info: { sessionId: "verification-test", planning: false } }),
     submitPrompt: (prompt, _attachments, ids) => ({
       runId: ids?.runId ?? randomUUID(),
       messageId: randomUUID(),
@@ -1024,8 +1519,7 @@ function graphSupervisor(fixture: Fixture, runtime: InteractiveRuntimeHandle): G
     taskRuns: fixture.tasks,
     getTaskCommandExecutor: () => fixture.executor,
     getWorkspaceRoot: () => fixture.root,
-    getWorkspaceIgnore: () => verificationIgnore,
-    tickMs: 100
+    getWorkspaceIgnore: () => verificationIgnore
   });
 }
 

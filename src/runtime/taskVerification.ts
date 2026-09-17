@@ -8,6 +8,7 @@ import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { lstat, readdir, readlink } from "node:fs/promises";
 import path from "node:path";
+import type { PlanReviewCandidate } from "./planWork.js";
 import type { SessionEvent } from "../session/recorder.js";
 import { createToolOperationId } from "../tools/types.js";
 import { isIgnoredPath } from "../workspace/ignore.js";
@@ -15,6 +16,7 @@ import { resolveWorkspaceDirectory, resolveWorkspacePath } from "../workspace/re
 
 export const taskVerificationContractVersion = 1;
 export const defaultTaskVerificationMaxAttempts = 2;
+export const taskVerificationPermissionRequiredReason = "Task verification requires explicit permission for this command.";
 
 export interface TaskCommandCheck {
   id: string;
@@ -43,8 +45,23 @@ export interface TaskCommandExecution {
   result: unknown;
   toolCallId: string;
   operationId?: string;
+  resultEventId?: string;
   eventReferences: string[];
   recovered?: boolean;
+  approvalRequired?: boolean;
+}
+
+export interface TaskVerificationApproval {
+  approvalId: string;
+  taskRunId: string;
+  attemptId: string;
+  checkId: string;
+  toolCallId: string;
+  deniedResultEventId: string;
+  contractFingerprint: string;
+  artifactFingerprint: string;
+  definitionFingerprint: string;
+  approvedAt: string;
 }
 
 export interface TaskCommandExecutor {
@@ -56,6 +73,7 @@ export interface TaskCommandExecutor {
     timeoutMs?: number;
     taskRunId: string;
     attemptId: string;
+    approval?: TaskVerificationApproval;
     signal?: AbortSignal;
   }): Promise<TaskCommandExecution>;
 }
@@ -73,8 +91,10 @@ export interface TaskCheckEvidence {
   reason?: string;
   toolCallId: string;
   operationId?: string;
+  resultEventId?: string;
   eventReferences: string[];
   recovered?: boolean;
+  approvalRequired?: boolean;
 }
 
 export interface TaskRepairScopeEvidence {
@@ -102,13 +122,19 @@ export interface TaskCandidateArtifacts {
   definitionFingerprint: string;
   repairScope: TaskRepairScopeEvidence;
   artifactFingerprint?: string;
+  verificationApprovals?: TaskVerificationApproval[];
 }
 
 export type TaskWorkspaceSnapshot = Record<string, string>;
 
 export interface TaskDefinition {
   prompt: string;
+  constraints?: string[];
+  agent?: string;
   verification?: TaskVerificationContract;
+  review?: PlanReviewCandidate;
+  /** 无命令验收的计划节点只能产出只读报告，不授予工作区写权限。 */
+  reportOnly?: boolean;
 }
 
 export function readTaskDefinition(task: unknown): TaskDefinition {
@@ -123,10 +149,26 @@ export function readTaskDefinition(task: unknown): TaskDefinition {
     .join("\n\n");
   const prompt = firstText(value.prompt) ?? (titledPrompt || JSON.stringify(task));
   if (!prompt?.trim()) throw new Error("Task prompt cannot be empty.");
+  const reportOnly = typeof value.planBlock === "object" && value.planBlock !== null && (value.planBlock as { kind?: unknown }).kind === "report";
+  if (reportOnly && (value.verification !== undefined || value.review !== undefined)) throw new Error("Read-only report nodes cannot replace verified-candidate contracts.");
   return {
     prompt: prompt.trim(),
+    constraints: value.constraints === undefined ? undefined : readStringList(value.constraints, "constraints", false),
+    agent: optionalText(value.agent, "task.agent"),
+    reportOnly: reportOnly ? true : undefined,
+    review: value.review === undefined ? undefined : readReviewCandidate(value.review),
     verification: value.verification === undefined ? undefined : readTaskVerificationContract(value.verification)
   };
+}
+
+function readReviewCandidate(value: unknown): PlanReviewCandidate {
+  if (typeof value !== "object" || value === null) throw new Error("Invalid review candidate.");
+  const record = value as Record<string, unknown>;
+  if (!isTaskVerificationEvidence(record.evidence) || record.evidence.status !== "passed") throw new Error("Review requires passed candidate evidence.");
+  const taskRunId = requiredText(record.taskRunId, "review.taskRunId");
+  const attemptId = requiredText(record.attemptId, "review.attemptId");
+  if (record.evidence.taskRunId !== taskRunId || record.evidence.attemptId !== attemptId) throw new Error("Review evidence identity mismatch.");
+  return { taskRunId, attemptId, evidence: record.evidence, contract: readTaskVerificationContract(record.contract) };
 }
 
 export function readTaskVerificationContract(value: unknown): TaskVerificationContract {
@@ -229,6 +271,8 @@ export async function verifyTaskCandidate(input: {
   attemptId: string;
   contract: TaskVerificationContract;
   definitionFingerprint: string;
+  expectedArtifactFingerprint?: string;
+  approvals?: readonly TaskVerificationApproval[];
   repairScope?: TaskRepairScopeEvidence;
   executor: TaskCommandExecutor;
   signal?: AbortSignal;
@@ -265,6 +309,18 @@ export async function verifyTaskCandidate(input: {
   } catch (error) {
     return emptyEvidence(input, contractFingerprint, input.definitionFingerprint, "blocked", `Cannot fingerprint candidate artifacts: ${errorMessage(error)}`, input.repairScope);
   }
+  if (input.expectedArtifactFingerprint !== undefined && input.expectedArtifactFingerprint !== artifactFingerprint) {
+    return evidence(
+      input,
+      contractFingerprint,
+      artifactFingerprint,
+      input.definitionFingerprint,
+      [],
+      "blocked",
+      "Candidate artifacts changed after verification paused; the previous approval or evidence cannot be reused.",
+      input.repairScope
+    );
+  }
   const verificationWorkspace = await captureTaskWorkspaceSnapshot(input.workspaceRoot, input.ignore).catch(() => undefined);
   if (verificationWorkspace === undefined) {
     return emptyEvidence(
@@ -291,6 +347,15 @@ export async function verifyTaskCandidate(input: {
         timeoutMs: check.timeoutMs,
         taskRunId: input.taskRunId,
         attemptId: input.attemptId,
+        approval: input.approvals?.find((approval) => matchingTaskVerificationApproval(approval, {
+          taskRunId: input.taskRunId,
+          attemptId: input.attemptId,
+          checkId: check.id,
+          toolCallId: taskCheckToolCallId({ attemptId: input.attemptId, checkId: check.id, contractFingerprint }),
+          contractFingerprint,
+          artifactFingerprint,
+          definitionFingerprint: input.definitionFingerprint
+        })),
         signal: input.signal
       });
     } catch (error) {
@@ -321,8 +386,10 @@ export async function verifyTaskCandidate(input: {
       reason: classified.reason,
       toolCallId: execution.toolCallId,
       operationId: execution.operationId,
+      resultEventId: execution.resultEventId,
       eventReferences: execution.eventReferences,
-      recovered: execution.recovered
+      recovered: execution.recovered,
+      approvalRequired: execution.approvalRequired
     });
     if (classified.status === "blocked" || classified.status === "cancelled") {
       return evidence(input, contractFingerprint, artifactFingerprint, input.definitionFingerprint, checks, classified.status, classified.reason, input.repairScope);
@@ -416,6 +483,69 @@ export function isTaskVerificationEvidence(value: unknown): value is TaskVerific
     && Array.isArray(record.checks);
 }
 
+export function pendingTaskVerificationApproval(evidence: unknown): Omit<TaskVerificationApproval, "approvedAt"> | undefined {
+  if (!isTaskVerificationEvidence(evidence) || evidence.status !== "blocked") return undefined;
+  const check = evidence.checks.find((candidate) => candidate.status === "blocked" && candidate.approvalRequired === true);
+  if (!check?.resultEventId) return undefined;
+  const approval = {
+    taskRunId: evidence.taskRunId,
+    attemptId: evidence.attemptId,
+    checkId: check.checkId,
+    toolCallId: check.toolCallId,
+    deniedResultEventId: check.resultEventId,
+    contractFingerprint: evidence.contractFingerprint,
+    artifactFingerprint: evidence.artifactFingerprint,
+    definitionFingerprint: evidence.definitionFingerprint
+  };
+  return { approvalId: taskVerificationApprovalId(approval), ...approval };
+}
+
+/** 用户批准的是这一份持久化等待事实，而不是“当前碰巧排在前面的检查”。 */
+export function taskVerificationApprovalId(
+  approval: Omit<TaskVerificationApproval, "approvalId" | "approvedAt">
+): string {
+  return `task-approval:${createHash("sha256").update(stableJson(approval)).digest("hex")}`;
+}
+
+export function isTaskVerificationApproval(value: unknown): value is TaskVerificationApproval {
+  if (typeof value !== "object" || value === null) return false;
+  const record = value as Partial<TaskVerificationApproval>;
+  return typeof record.approvalId === "string"
+    && typeof record.taskRunId === "string"
+    && typeof record.attemptId === "string"
+    && typeof record.checkId === "string"
+    && typeof record.toolCallId === "string"
+    && typeof record.deniedResultEventId === "string"
+    && typeof record.contractFingerprint === "string"
+    && typeof record.artifactFingerprint === "string"
+    && typeof record.definitionFingerprint === "string"
+    && typeof record.approvedAt === "string";
+}
+
+export function matchingTaskVerificationApproval(
+  approval: TaskVerificationApproval | undefined,
+  expected: Omit<TaskVerificationApproval, "approvalId" | "deniedResultEventId" | "approvedAt">
+): boolean {
+  return approval !== undefined
+    && approval.approvalId === taskVerificationApprovalId({
+      taskRunId: expected.taskRunId,
+      attemptId: expected.attemptId,
+      checkId: expected.checkId,
+      toolCallId: expected.toolCallId,
+      deniedResultEventId: approval.deniedResultEventId,
+      contractFingerprint: expected.contractFingerprint,
+      artifactFingerprint: expected.artifactFingerprint,
+      definitionFingerprint: expected.definitionFingerprint
+    })
+    && approval.taskRunId === expected.taskRunId
+    && approval.attemptId === expected.attemptId
+    && approval.checkId === expected.checkId
+    && approval.toolCallId === expected.toolCallId
+    && approval.contractFingerprint === expected.contractFingerprint
+    && approval.artifactFingerprint === expected.artifactFingerprint
+    && approval.definitionFingerprint === expected.definitionFingerprint;
+}
+
 function readCommandCheck(value: unknown, index: number): TaskCommandCheck {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     throw new Error(`Task verification check ${String(index)} must be an object.`);
@@ -452,6 +582,18 @@ export function taskCheckToolCallId(input: { attemptId: string; checkId: string;
   return `task-verification:${input.attemptId}:${checkFingerprint}`;
 }
 
+export function taskCheckRecoveryToolCallIds(input: {
+  attemptId: string;
+  checkId: string;
+  contractFingerprint: string;
+  approval?: TaskVerificationApproval;
+}): string[] {
+  const toolCallId = taskCheckToolCallId(input);
+  return input.approval
+    ? [toolCallId, approvedTaskCheckToolCallId(toolCallId, input.approval.deniedResultEventId)]
+    : [toolCallId];
+}
+
 export type TaskCheckRecoveryDecision =
   | { action: "execute"; toolCallId: string }
   | { action: "reuse"; execution: TaskCommandExecution }
@@ -460,18 +602,108 @@ export type TaskCheckRecoveryDecision =
 export function recoverTaskCheckExecution(
   events: readonly SessionEvent[],
   sessionId: string,
-  input: { attemptId: string; checkId: string; contractFingerprint: string }
+  input: { attemptId: string; checkId: string; contractFingerprint: string; approval?: TaskVerificationApproval }
 ): TaskCheckRecoveryDecision {
-  const toolCallId = taskCheckToolCallId(input);
-  const operationId = createToolOperationId(sessionId, toolCallId);
+  const [toolCallId] = taskCheckRecoveryToolCallIds(input);
+  if (!toolCallId) throw new Error("Task verification recovery has no tool call identity.");
+  const original = taskCheckOperationFacts(events, sessionId, toolCallId);
+  const approval = input.approval;
+  const approvedDeniedResult = approval !== undefined
+    && original.result !== undefined
+    && original.result.runtime?.eventId === approval.deniedResultEventId
+    && approval.toolCallId === toolCallId
+    && isTaskVerificationPermissionResult(original.result.result)
+    && !original.possiblyDispatched;
+  if (approval && approvedDeniedResult) {
+    return recoverTaskCheckOperation(
+      events,
+      sessionId,
+      approvedTaskCheckToolCallId(toolCallId, approval.deniedResultEventId)
+    );
+  }
+  if (approval) {
+    const originalRecovery = recoverTaskCheckOperation(events, sessionId, toolCallId);
+    if (originalRecovery.action === "reuse"
+      && !isTaskVerificationPermissionResult(originalRecovery.execution.result)) return originalRecovery;
+    if (originalRecovery.action === "block") return originalRecovery;
+    const reason = "The approved verification denial cannot be matched to the current durable tool log; the check will not be replayed.";
+    return {
+      action: "block",
+      execution: {
+        result: { status: "unknown", error: reason },
+        toolCallId,
+        operationId: original.operationId,
+        resultEventId: original.result?.runtime?.eventId,
+        eventReferences: original.references,
+        recovered: true
+      }
+    };
+  }
+  return recoverTaskCheckOperation(events, sessionId, toolCallId);
+}
+
+function approvedTaskCheckToolCallId(toolCallId: string, deniedResultEventId: string): string {
+  const approvalFingerprint = createHash("sha256").update(deniedResultEventId).digest("hex").slice(0, 16);
+  return `${toolCallId}:approved:${approvalFingerprint}`;
+}
+
+function recoverTaskCheckOperation(
+  events: readonly SessionEvent[],
+  sessionId: string,
+  toolCallId: string
+): TaskCheckRecoveryDecision {
+  const facts = taskCheckOperationFacts(events, sessionId, toolCallId);
+  if (facts.result && !facts.possiblyDispatchedAfterResult) {
+    const recovered = recoveredCommandResult(facts.result);
+    return {
+      action: "reuse",
+      execution: {
+        result: recovered,
+        toolCallId,
+        operationId: facts.operationId,
+        resultEventId: facts.result.runtime?.eventId,
+        eventReferences: facts.references,
+        recovered: true,
+        approvalRequired: isTaskVerificationPermissionResult(recovered)
+      }
+    };
+  }
+  if (!facts.possiblyDispatched) return { action: "execute", toolCallId };
+  const reason = `Verification operation ${facts.operationId} may have been dispatched, but no durable tool result proves its outcome.`;
+  return {
+    action: "block",
+    execution: {
+      result: { status: "unknown", error: reason },
+      toolCallId,
+      operationId: facts.operationId,
+      resultEventId: facts.result?.runtime?.eventId,
+      eventReferences: facts.references,
+      recovered: true
+    }
+  };
+}
+
+function taskCheckOperationFacts(events: readonly SessionEvent[], sessionId: string, toolCallId: string): {
+  operationId: string;
+  result: Extract<SessionEvent, { type: "tool_result" }> | undefined;
+  references: string[];
+  possiblyDispatched: boolean;
+  possiblyDispatchedAfterResult: boolean;
+} {
   const matching = events.filter((event) =>
     (event.type === "tool_execution" || event.type === "tool_result" || event.type === "tool_call")
     && event.toolCallId === toolCallId
   );
+  const persistedOperation = [...matching].reverse().find((event) =>
+    (event.type === "tool_execution" || event.type === "tool_result") && event.operationId !== undefined
+  );
+  const operationId = persistedOperation && "operationId" in persistedOperation && persistedOperation.operationId
+    ? persistedOperation.operationId
+    : createToolOperationId(sessionId, toolCallId);
   let resultIndex = -1;
   for (let index = matching.length - 1; index >= 0; index -= 1) {
     const event = matching[index];
-    if (event?.type === "tool_result" && (event.operationId === undefined || event.operationId === operationId)) {
+    if (event?.type === "tool_result") {
       resultIndex = index;
       break;
     }
@@ -484,31 +716,20 @@ export function recoverTaskCheckExecution(
   const possiblyDispatchedAfterResult = matching.slice(resultIndex + 1).some((event) =>
     event.type === "tool_execution" && operationMayHaveDispatched(event.state)
   );
-  if (result && !possiblyDispatchedAfterResult) {
-    return {
-      action: "reuse",
-      execution: {
-        result: recoveredCommandResult(result),
-        toolCallId,
-        operationId,
-        eventReferences: [...new Set(references)],
-        recovered: true
-      }
-    };
-  }
   const possiblyDispatched = executions.some((event) => operationMayHaveDispatched(event.state));
-  if (!possiblyDispatched) return { action: "execute", toolCallId };
-  const reason = `Verification operation ${operationId} may have been dispatched, but no durable tool result proves its outcome.`;
   return {
-    action: "block",
-    execution: {
-      result: { status: "unknown", error: reason },
-      toolCallId,
-      operationId,
-      eventReferences: [...new Set(references)],
-      recovered: true
-    }
+    operationId,
+    result,
+    references: [...new Set(references)],
+    possiblyDispatched,
+    possiblyDispatchedAfterResult
   };
+}
+
+export function isTaskVerificationPermissionResult(value: unknown): boolean {
+  if (typeof value !== "object" || value === null) return false;
+  const record = value as Record<string, unknown>;
+  return record.status === "denied" && record.reason === taskVerificationPermissionRequiredReason;
 }
 
 function operationMayHaveDispatched(state: Extract<SessionEvent, { type: "tool_execution" }>["state"]): boolean {

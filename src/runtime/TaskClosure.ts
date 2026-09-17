@@ -5,23 +5,32 @@
  * 验收完成权，避免不同入口各自实现一套重试状态机。
  */
 import type { DurableTaskRunStore, TaskAttemptRecord, TaskRetrySafety, TaskRunStatus } from "./TaskRunStore.js";
+import { planReviewResultSchema, type PlanReviewResult } from "./planWork.js";
 import {
   captureTaskWorkspaceSnapshot,
   canReuseTaskVerification,
   compareTaskWorkspaceSnapshots,
+  fingerprintTaskArtifacts,
   fingerprintTaskVerificationDefinitions,
+  isTaskVerificationApproval,
+  isTaskVerificationEvidence,
+  matchingTaskVerificationApproval,
+  pendingTaskVerificationApproval,
   readTaskDefinition,
+  taskVerificationFingerprint,
   verifyTaskCandidate,
   type TaskCandidateArtifacts,
   type TaskCommandExecutor,
+  type TaskVerificationApproval,
   type TaskVerificationEvidence
 } from "./taskVerification.js";
 
 export interface TaskClosureResult {
-  status: "completed" | "incomplete" | "blocked" | "cancelled";
+  status: "completed" | "incomplete" | "blocked" | "needs_approval" | "cancelled";
   output?: string;
   evidence?: TaskVerificationEvidence;
   reason?: string;
+  review?: PlanReviewResult;
 }
 
 export async function runTaskClosure(input: {
@@ -36,8 +45,38 @@ export async function runTaskClosure(input: {
 }): Promise<TaskClosureResult> {
   const initial = input.taskRuns.get(input.taskRunId);
   if (!initial) throw new Error(`TaskRun ${input.taskRunId} does not exist.`);
+  if (initial.status === "cancelled" || input.signal?.aborted) return { status: "cancelled", reason: "Task was cancelled." };
   const definition = readTaskDefinition(initial.task);
   const contract = definition.verification;
+  const reviewCandidate = definition.review;
+  if (definition.reportOnly && initial.status === "completed") {
+    const output = (initial.attempts.at(-1)?.artifacts as { output?: unknown } | undefined)?.output;
+    return typeof output === "string" && output.trim()
+      ? { status: "completed", output }
+      : { status: "blocked", reason: "Completed report has no persisted output." };
+  }
+  const reviewCurrent = async (): Promise<boolean> => {
+    if (!reviewCandidate) return false;
+    const source = input.taskRuns.get(reviewCandidate.taskRunId);
+    const attempt = source?.attempts.at(-1);
+    if (source?.status !== "completed" || attempt?.attemptId !== reviewCandidate.attemptId
+      || JSON.stringify(attempt.verification) !== JSON.stringify(reviewCandidate.evidence)) return false;
+    return await canReuseTaskVerification({
+      evidence: reviewCandidate.evidence, contract: reviewCandidate.contract,
+      definitionFingerprint: reviewCandidate.evidence.definitionFingerprint,
+      workspaceRoot: input.workspaceRoot, ignore: input.ignore
+    });
+  };
+  if (reviewCandidate && !await reviewCurrent()) {
+    const reason = "Review candidate evidence is stale or missing.";
+    if (!isTerminalForClosure(initial.status) && initial.status !== "completed") input.taskRuns.transition(input.taskRunId, "blocked", { attemptId: initial.attempts.at(-1)?.attemptId, failure: { failureClass: "stale_review_candidate", message: reason } });
+    return { status: "blocked", reason };
+  }
+  if (reviewCandidate && initial.status === "completed") {
+    const artifacts = initial.attempts.at(-1)?.artifacts as { output?: string; review?: unknown } | undefined;
+    const parsed = planReviewResultSchema.safeParse(artifacts?.review);
+    return parsed.success ? { status: "completed", output: artifacts?.output, review: parsed.data } : { status: "blocked", reason: "Persisted review evidence is missing." };
+  }
   if (initial.status === "completed" && contract) {
     const attempt = initial.attempts.at(-1);
     if (!attempt) return { status: "blocked", reason: "Completed TaskRun has no Attempt evidence." };
@@ -58,6 +97,28 @@ export async function runTaskClosure(input: {
   let repairEvidence: TaskVerificationEvidence | undefined;
   let definitionFingerprint = persistedDefinitionFingerprint(initial.attempts);
 
+  // 报告完成只证明有可读取的产出，不创建 passed 验收证据；内容判断留给监督回合。
+  const completeReport = (output: unknown, attempt: TaskAttemptRecord): TaskClosureResult => {
+    if (!isCurrentAttempt(input.taskRuns, input.taskRunId, attempt.attemptId)) return { status: "cancelled", reason: "A stale report result was ignored." };
+    if (typeof output !== "string" || !output.trim()) return blockUnsafeRecovery(input.taskRuns, input.taskRunId, attempt.attemptId, "Read-only report output is empty or missing.");
+    input.taskRuns.transition(input.taskRunId, "completed", { attemptId: attempt.attemptId, artifacts: { output } });
+    return { status: "completed", output };
+  };
+
+  const completeReview = async (output: string, attempt: TaskAttemptRecord): Promise<TaskClosureResult> => {
+    try {
+      const review = planReviewResultSchema.parse(JSON.parse(output));
+      if (!await reviewCurrent()) throw new Error("Review candidate changed during review.");
+      const references = new Set([reviewCandidate!.taskRunId, reviewCandidate!.attemptId, ...reviewCandidate!.contract.artifactPaths]);
+      if (review.evidenceReferences.some((reference) => !references.has(reference))) throw new Error("Review refers to evidence outside the candidate.");
+      if (!isLatestNonCancelledAttempt(input.taskRuns, input.taskRunId, attempt.attemptId)) return { status: "cancelled", reason: "A stale review result was ignored." };
+      input.taskRuns.transition(input.taskRunId, "completed", { attemptId: attempt.attemptId, artifacts: { output, review, candidate: reviewCandidate } });
+      return { status: "completed", output, review };
+    } catch (error) {
+      return blockUnsafeRecovery(input.taskRuns, input.taskRunId, attempt.attemptId, error instanceof Error ? error.message : String(error));
+    }
+  };
+
   for (;;) {
     if (input.signal?.aborted || input.taskRuns.get(input.taskRunId)?.status === "cancelled") {
       return { status: "cancelled", reason: "Task was cancelled." };
@@ -73,6 +134,12 @@ export async function runTaskClosure(input: {
     let output: string;
     let candidateArtifacts: TaskCandidateArtifacts;
     if (resumeAttempt) {
+      if (definition.reportOnly) return completeReport((attempt.artifacts as { output?: unknown } | undefined)?.output, attempt);
+      if (reviewCandidate) {
+        const output = (attempt.artifacts as { output?: unknown } | undefined)?.output;
+        if (typeof output !== "string") return blockUnsafeRecovery(input.taskRuns, input.taskRunId, attempt.attemptId, "Missing persisted review output.");
+        return await completeReview(output, attempt);
+      }
       try {
         candidateArtifacts = requireCandidateArtifacts(attempt.artifacts);
         output = candidateArtifacts.output;
@@ -109,15 +176,22 @@ export async function runTaskClosure(input: {
       definitionFingerprint ??= contract
         ? await fingerprintTaskVerificationDefinitions(input.workspaceRoot, contract, input.ignore)
         : undefined;
+      const basePrompt = definition.constraints?.length
+        ? `${definition.prompt}\n\n用户约束：\n${definition.constraints.map((constraint) => `- ${constraint}`).join("\n")}`
+        : definition.prompt;
       const prompt = repairEvidence === undefined
-        ? definition.prompt
-        : repairPrompt(definition.prompt, contract!, repairEvidence, current.attempts.length);
+        ? basePrompt
+        : repairPrompt(basePrompt, contract!, repairEvidence, current.attempts.length);
       input.taskRuns.transition(input.taskRunId, "running", { attemptId: attempt.attemptId });
       output = await input.executeAttempt(prompt, attempt);
       if (!isLatestNonCancelledAttempt(input.taskRuns, input.taskRunId, attempt.attemptId)) {
         return { status: "cancelled", reason: "A stale Attempt result was ignored." };
       }
+      if (definition.reportOnly) return completeReport(output, attempt);
       if (!contract) {
+        if (reviewCandidate) {
+          return await completeReview(output, attempt);
+        }
         input.taskRuns.transition(input.taskRunId, "completed", { attemptId: attempt.attemptId, artifacts: { output } });
         return { status: "completed", output };
       }
@@ -137,6 +211,8 @@ export async function runTaskClosure(input: {
       attemptId: attempt.attemptId,
       contract,
       definitionFingerprint: candidateArtifacts.definitionFingerprint,
+      expectedArtifactFingerprint: candidateArtifacts.artifactFingerprint,
+      approvals: candidateArtifacts.verificationApprovals,
       repairScope: candidateArtifacts.repairScope,
       executor: input.executor,
       signal: input.signal
@@ -160,6 +236,16 @@ export async function runTaskClosure(input: {
       return { status: "cancelled", output, evidence, reason: evidence.reason };
     }
     if (evidence.status === "blocked") {
+      const approvalRequest = pendingTaskVerificationApproval(evidence);
+      if (approvalRequest) {
+        input.taskRuns.transition(input.taskRunId, "needs_approval", {
+          attemptId: attempt.attemptId,
+          verification: evidence,
+          artifacts,
+          failure: { failureClass: "verification_permission_required", message: evidence.reason }
+        });
+        return { status: "needs_approval", output, evidence, reason: evidence.reason };
+      }
       input.taskRuns.transition(input.taskRunId, "blocked", {
         attemptId: attempt.attemptId,
         verification: evidence,
@@ -186,6 +272,64 @@ export async function runTaskClosure(input: {
     });
     repairEvidence = evidence;
   }
+}
+
+/**
+ * 只批准当前 Attempt 已经持久化的那一个验收检查。
+ * 批准同时绑定契约、定义输入、候选产物和被拒绝的 tool_result，不能变成通用 Bash 授权。
+ */
+export async function approveTaskVerification(input: {
+  taskRuns: DurableTaskRunStore;
+  taskRunId: string;
+  approvalId: string;
+  workspaceRoot: string;
+  ignore: readonly string[];
+}): Promise<void> {
+  const task = input.taskRuns.get(input.taskRunId);
+  if (!task) throw new Error(`TaskRun ${input.taskRunId} does not exist.`);
+  const attempt = task.attempts.at(-1);
+  if (!attempt) throw new Error(`TaskRun ${input.taskRunId} has no Attempt to approve.`);
+  const existingArtifacts = readCandidateArtifacts(attempt.artifacts);
+  if ((task.status !== "needs_approval" && task.status !== "verifying")
+    || (attempt.status !== "needs_approval" && attempt.status !== "verifying")) {
+    throw new Error(`TaskRun ${input.taskRunId} is not waiting for verification approval.`);
+  }
+  const contract = readTaskDefinition(task.task).verification;
+  if (!contract || !existingArtifacts || !isTaskVerificationEvidence(attempt.verification)) {
+    throw new Error("TaskRun approval requires persisted verification contract, candidate metadata, and evidence.");
+  }
+  const pending = pendingTaskVerificationApproval(attempt.verification);
+  if (!pending || pending.taskRunId !== task.taskRunId || pending.attemptId !== attempt.attemptId) {
+    throw new Error("TaskRun has no current verification permission request to approve.");
+  }
+  if (pending.approvalId !== input.approvalId) {
+    throw new Error("TaskRun verification approval is stale or belongs to another check.");
+  }
+  if (pending.contractFingerprint !== taskVerificationFingerprint(contract)
+    || pending.definitionFingerprint !== existingArtifacts.definitionFingerprint
+    || pending.artifactFingerprint !== existingArtifacts.artifactFingerprint) {
+    throw new Error("TaskRun verification approval no longer matches its persisted contract or candidate.");
+  }
+  const [definitionFingerprint, artifactFingerprint] = await Promise.all([
+    fingerprintTaskVerificationDefinitions(input.workspaceRoot, contract, input.ignore),
+    fingerprintTaskArtifacts(input.workspaceRoot, contract.artifactPaths, input.ignore)
+  ]);
+  if (definitionFingerprint !== pending.definitionFingerprint || artifactFingerprint !== pending.artifactFingerprint) {
+    throw new Error("TaskRun verification inputs changed while waiting for approval.");
+  }
+  const existingApproval = existingArtifacts.verificationApprovals?.find((approval) => matchingTaskVerificationApproval(approval, pending));
+  if (task.status === "verifying" && existingApproval) return;
+  const approval: TaskVerificationApproval = { ...pending, approvedAt: new Date().toISOString() };
+  input.taskRuns.transition(input.taskRunId, "verifying", {
+    attemptId: attempt.attemptId,
+    verification: attempt.verification,
+    artifacts: {
+      ...existingArtifacts,
+      verificationApprovals: existingApproval
+        ? existingArtifacts.verificationApprovals
+        : [...(existingArtifacts.verificationApprovals ?? []), approval]
+    }
+  });
 }
 
 function repairPrompt(
@@ -242,7 +386,11 @@ function readCandidateArtifacts(artifacts: unknown): TaskCandidateArtifacts | un
       changedPaths: repairScope.changedPaths,
       violationPaths: repairScope.violationPaths
     },
-    artifactFingerprint: typeof record.artifactFingerprint === "string" ? record.artifactFingerprint : undefined
+    artifactFingerprint: typeof record.artifactFingerprint === "string" ? record.artifactFingerprint : undefined,
+    verificationApprovals: Array.isArray(record.verificationApprovals)
+      && record.verificationApprovals.every(isTaskVerificationApproval)
+      ? record.verificationApprovals
+      : undefined
   };
 }
 
@@ -298,6 +446,7 @@ function isTerminalForClosure(status: TaskRunStatus): boolean {
 function terminalResult(status: TaskRunStatus): TaskClosureResult {
   if (status === "completed") return { status: "completed" };
   if (status === "cancelled" || status === "aborted") return { status: "cancelled" };
-  if (status === "blocked" || status === "needs_approval" || status === "policy_denied") return { status: "blocked" };
+  if (status === "needs_approval") return { status: "needs_approval" };
+  if (status === "blocked" || status === "policy_denied") return { status: "blocked" };
   return { status: "incomplete" };
 }
