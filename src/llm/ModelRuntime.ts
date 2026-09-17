@@ -4,11 +4,10 @@
  * ProviderRegistry 是模型与服务商行为的来源；ModelRegistry 只负责面向 UI/CLI 的查找和展示。
  */
 import type { ModelCatalogEntry } from "../ai/types.js";
-import type { ModelStreamContext, ModelStreamEvent, ModelStreamOptions } from "../agent/core/types.js";
 import type { AgentConfig, ProviderConfig } from "../config/schema.js";
 import { ModelRegistry, type ModelChoice, type RegisteredModel } from "./ModelRegistry.js";
 import { ModelResolver } from "./ModelResolver.js";
-import { ProviderRegistry, type NativeModelSettings } from "./ProviderRuntime.js";
+import { ProviderRegistry, type ModelSettings } from "./ProviderRuntime.js";
 import { AiRegistry } from "./AiRegistry.js";
 import type { ModelsStore } from "./ModelsStore.js";
 import { createProxyAwareFetch } from "../network/proxyFetch.js";
@@ -39,7 +38,7 @@ export class ModelRuntime {
     return new ModelResolver(this.models).resolve(reference, options);
   }
 
-  createModelSettings(alias = this.config.defaultModel): NativeModelSettings {
+  createModelSettings(alias = this.config.defaultModel): ModelSettings {
     return this.providers.createModelSettings(alias);
   }
 
@@ -56,15 +55,6 @@ export class ModelRuntime {
   async refreshActiveCredential(signal?: AbortSignal): Promise<ProviderConfig | undefined> {
     const resolved = this.resolve(this.config.defaultModel);
     return await this.providers.require(resolved.providerAlias).refreshCredential(signal);
-  }
-
-  async streamSimple(
-    alias: string,
-    context: ModelStreamContext,
-    options?: ModelStreamOptions
-  ): Promise<AsyncIterable<ModelStreamEvent>> {
-    const resolved = this.resolve(alias);
-    return await this.providers.require(resolved.providerAlias).streamSimple(this.config, resolved.model, context, options);
   }
 
   catalogsSnapshot(): Array<[string, ModelCatalogEntry[]]> {

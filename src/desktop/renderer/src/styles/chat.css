@@ -42,7 +42,7 @@
   100% { opacity: 0; transform: translateX(140%) skewX(-12deg); }
 }
 
-/* 微光文字：流式进行中的标题（「思考中」「探索中」等）。高亮带扫过整段文字（alma 签名动效）。 */
+/* 微光文字：流式进行中的标题（「思考中」「探索中」等）。高亮带扫过整段文字。 */
 .biny-chat-scroll .chat-shimmer-text {
   --shimmer-base: color-mix(in oklch, var(--biny-text) 45%, transparent);
   --shimmer-highlight: color-mix(in oklch, var(--biny-text) 90%, transparent);
@@ -140,11 +140,11 @@
 }
 
 /* ============ 活动段（相位头像 + 摘要行 + 左导轨展开体） ============
-   对齐 alma ActivitySegment：头部 32px 行 = 相位头像串 + 摘要 + 展开控件；
+   头部 32px 行 = 相位头像串 + 摘要 + 展开控件；
    落定后 hover 整行出现弱底色；展开体是左导轨分相列表，工具行是动宾紧凑行。 */
 
 .biny-chat-scroll {
-  /* 相位头像 hover / 头部 hover 的底色（alma --activity-hover-bg 的 Biny token 等价物）。 */
+  /* 相位头像 hover / 头部 hover 的底色（Biny token 等价物）。 */
   --activity-hover-bg: var(--biny-surface-hover);
 }
 
@@ -214,7 +214,7 @@
   color: var(--biny-text);
 }
 
-/* 执行中相位的呼吸光环（alma activity-avatar-alive 原文时序）：
+/* 执行中相位的呼吸光环：
    1.6s ease-in-out 无限，光环从贴身扩到 4px 并淡出，叠加原有的背景隔离环。 */
 .chat-phase-avatar.is-alive {
   animation: 1.6s ease-in-out infinite chat-phase-avatar-breathe;
@@ -446,7 +446,7 @@
   color: var(--biny-text-tertiary);
 }
 
-/* ± 行数：等宽、表格数字；绿增红删（alma 的 60% 透明度语义色）。 */
+/* ± 行数：等宽、表格数字；绿增红删。 */
 .chat-tool-row-diff {
   flex: none;
   align-self: center;
@@ -1930,7 +1930,7 @@
   min-width: 0;
 }
 
-/* 助手正文步骤：上下各留呼吸（对齐 alma 文本 part 的 py-2，扣除容器 gap）。 */
+/* 助手正文步骤：上下各留呼吸（扣除容器 gap）。 */
 .biny-chat-scroll .execution-assistant-step {
   padding-block: 4px;
 }
@@ -1945,7 +1945,7 @@
 }
 
 /* 首条消息先以临时投影进入时间线，真实事件接管后保持同一段轻量入场；
-   气泡上再划过一道高光扫光（alma userMessageSheen）。 */
+   气泡上再划过一道高光扫光。 */
 .biny-chat-scroll .user-message.is-pending-entry .user-bubble,
 .biny-chat-scroll .timeline-turn.is-running > .user-message .user-bubble,
 .biny-chat-scroll .timeline-turn.is-waiting_permission > .user-message .user-bubble {
@@ -2470,7 +2470,7 @@
 }
 
 /* ============ 文件链接卡片（消息内指向本地路径的 Markdown 链接） ============ */
-/* 对齐 alma 的资源卡：类型角标方块 + 文件名 + 目录副标题 + 右上箭头；hover 提亮。 */
+/* 对齐 ；hover 提亮。 */
 
 .markdown-file-link {
   display: inline-flex;

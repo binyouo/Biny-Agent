@@ -131,7 +131,7 @@ export type CrystalSettings = z.infer<typeof crystalSettingsSchema>;
 
 /**
  * 心跳(Heartbeat)后台巡检的开关与节奏。默认关闭,由用户显式开启;默认节奏与
- * Alma 对齐(30 分钟间隔、8–23 点活动时段)。未知键直接剥离,旧配置里的遗留
+ * 默认(30 分钟间隔、8–23 点活动时段)。未知键直接剥离,旧配置里的遗留
  * heartbeat 对象可以安全落入新结构。
  */
 export const heartbeatConfigSchema = z.object({

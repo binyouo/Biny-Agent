@@ -15,6 +15,8 @@
  * 模型配置的保存与连通性测试也在这里：写入前先用候选配置实际发一次请求，避免存下一份用不了的配置。
  */
 import type { AgentAttachment } from "../../../agent/AgentSession.js";
+import { generateText } from "ai";
+import type { LanguageModelV4CallOptions } from "@ai-sdk/provider";
 import { planStatus } from "../../../extensions/plan.js";
 import { assertPlanningOperationAllowed } from "../../../agent/planningPolicy.js";
 import type { AgentCapabilitySelection } from "../../../agent/capabilitySelection.js";
@@ -42,7 +44,7 @@ import { synchronizeCredentialRevisions, type DeferredCredentialTransactionStatu
 import { configSchema, type AgentConfig, type ProviderConfig } from "../../../config/schema.js";
 import { updateConfig, type AgentConfigStore } from "../../../config/store.js";
 import { ConfigRevisionConflictError, configDocumentRevision } from "../../../config/versioned.js";
-import { createNativeModelSettings, validateModelConfiguration } from "../../../llm/nativeFactory.js";
+import { createModelSettings, validateModelConfiguration } from "../../../llm/modelFactory.js";
 import { ModelRuntime } from "../../../llm/ModelRuntime.js";
 import { LocalEmbeddingManager, listLocalEmbeddingModels } from "../../../llm/embedding/LocalEmbeddingRuntime.js";
 import { listProviderEmbeddingModels } from "../../../llm/embedding/ProviderEmbeddingRuntime.js";
@@ -2057,20 +2059,25 @@ export class DesktopAgentManager {
     }
     const started = Date.now();
     try {
-      const settings = createNativeModelSettings(candidate, alias, this.fetcher);
-      let providerError: string | undefined;
-      for await (const event of await settings.model.stream({
-        messages: [{ role: "user", content: "ping" }],
-        tools: []
-      }, {
-        maxOutputTokens: 16,
-        reasoning: settings.reasoning,
-        providerOptions: settings.providerOptions,
-        timeoutMs: settings.timeoutMs
-      })) {
-        if (event.type === "error") providerError = event.error instanceof Error ? event.error.message : String(event.error);
+      const settings = createModelSettings(candidate, alias, this.fetcher);
+      if (!settings.vercelModel) throw new Error("Vercel model is unavailable.");
+      const timeout = settings.timeoutMs === undefined ? undefined : new AbortController();
+      const timer = timeout === undefined ? undefined : setTimeout(
+        () => timeout.abort(new DOMException("Model connection test timed out.", "TimeoutError")),
+        settings.timeoutMs
+      );
+      try {
+        await generateText({
+          model: settings.vercelModel,
+          messages: [{ role: "user", content: "ping" }],
+          maxOutputTokens: 16,
+          providerOptions: settings.providerOptions as LanguageModelV4CallOptions["providerOptions"],
+          maxRetries: settings.maxRetries ?? 0,
+          abortSignal: timeout?.signal
+        });
+      } finally {
+        if (timer !== undefined) clearTimeout(timer);
       }
-      if (providerError) throw new Error(providerError);
       const latencyMs = Date.now() - started;
       return {
         ok: true,

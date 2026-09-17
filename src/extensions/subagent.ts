@@ -3,7 +3,7 @@ import { z } from "zod";
 import type { AgentConfig } from "../config/schema.js";
 import { vercelAgentLoopContinue } from "../agent/core/vercelAgentLoop.js";
 import type { AgentAssistantMessage, AgentTool, AgentUsage } from "../agent/core/types.js";
-import type { NativeModelSettings } from "../llm/nativeFactory.js";
+import type { ModelSettings } from "../llm/modelFactory.js";
 import { calculateUsageCost, type ModelUsageObserver } from "../observability/usage.js";
 import { SubagentTaskIncompleteError, type SubagentTaskManager } from "../runtime/SubagentTaskManager.js";
 import type { SubagentAccessMode } from "../runtime/SubagentTaskManager.js";
@@ -126,7 +126,7 @@ export interface SubagentOptions {
   workspaceRoot: string;
   config: AgentConfig;
   /** 不带别名时返回 subagent 默认模型设置；带别名时返回该模型别名的设置。 */
-  getModelSettings: (modelAlias?: string) => NativeModelSettings;
+  getModelSettings: (modelAlias?: string) => ModelSettings;
   getAccessMode: () => SubagentAccessMode;
   getParentRunId?: () => string | undefined;
   /** 每次委派时重新读取具名定义，允许会话期间编辑生效。 */
@@ -241,7 +241,7 @@ export async function runSubagentTask(
 async function runNativeSubagentTask(
   options: SubagentOptions,
   task: string,
-  modelSettings: NativeModelSettings,
+  modelSettings: ModelSettings,
   modelAlias: string,
   definition: SubagentDefinition | undefined,
   signal: AbortSignal | undefined,
@@ -316,7 +316,7 @@ async function runNativeSubagentTask(
   return redactSecrets(output);
 }
 
-/** Alma 式的子代理工作协议：子代理是有边界的执行工，不继承主 Agent 的全部身份和权限。 */
+/** 子代理工作协议：子代理是有边界的执行工，不继承主 Agent 的全部身份和权限。 */
 export function buildSubagentSystemPrompt(
   accessMode: SubagentAccessMode,
   definition?: SubagentDefinition

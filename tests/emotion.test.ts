@@ -433,7 +433,7 @@ async function testAgentSessionFatigue(): Promise<void> {
 function testBuiltInEmotionConfig(): void {
   const parsed = configSchema.parse(defaultConfig);
   assert.equal("emotion" in parsed.context, false);
-  // heartbeat 回归用户配置，默认关闭（与 Alma 默认行为对齐）。
+  // heartbeat 回归用户配置，默认关闭（稳定的默认行为）。
   assert.equal(parsed.heartbeat.enabled, false);
 }
 

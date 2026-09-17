@@ -38,7 +38,7 @@ interface MessageTimelineProps {
   thinking: boolean;
   onRetry(targetMessageId: string, input: string, idempotencyKey: string): Promise<void>;
   onSwitchVersion(messageId: string, direction: "prev" | "next"): Promise<void>;
-  /** 点「编辑」：把消息文本交给底部输入框（Alma 式编辑），提交由 Composer 走 App 回调。 */
+  /** 点「编辑」：把消息文本交给底部输入框，提交由 Composer 走 App 回调。 */
   onEditRequest(turn: TimelineTurn): void;
   /** 进行中的编辑重写：App 提交时置位，替换回合出现后由 App 清除。 */
   editInFlight?: { turnId: string; user: string; userMessageIndex?: number };

@@ -1053,7 +1053,7 @@ function DesktopApp(): React.JSX.Element {
     await editPrompt(input, [], sessionId, userMessageIndex, idempotencyKey);
   }, [editPrompt]);
 
-  // 编辑历史消息（Alma 式）：点「编辑」把文本回填到底部输入框，提交后原位替换并重新生成。
+  // 编辑历史消息：点「编辑」把文本回填到底部输入框，提交后原位替换并重新生成。
   // editingMessage 是编辑态的唯一事实源；editInFlight 只驱动时间线的乐观投影，
   // 在替换回合真正出现在时间线里之前保持置位，避免旧消息闪回。
   const [editingMessage, setEditingMessage] = useState<{ turnId: string; userMessageIndex: number; value: string; nonce: number }>();

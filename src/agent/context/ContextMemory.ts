@@ -1294,7 +1294,7 @@ function assembleContext(
   }
 
   // 每轮上下文必须先于 recalled memory，且不能挤掉用户原文；超长的日报/Activity
-  // 只在本轮截断，不写回 history。这样模型能看到 Alma 式的动态顺序，历史仍保持干净。
+  // 只在本轮截断，不写回 history。这样模型能看到交错的动态顺序，历史仍保持干净。
   let includedTurnContext = "";
   if (turnContext) {
     const requestedTurnContextTokens = estimateTokens(turnContext) + 4;

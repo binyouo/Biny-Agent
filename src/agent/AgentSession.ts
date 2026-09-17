@@ -112,12 +112,12 @@ import { createSessionUsage, formatUsageSummary, sumSessionUsage, summarizeUsage
 import type { SessionContextCheckpoint, SessionUsage, UsageOperation, UsageSummary } from "../session/metadata.js";
 import { defaultModelContextWindow } from "../ai/capabilities.js";
 import { modelCapabilities } from "../ai/capabilities.js";
-import { createNativeModelForConfig } from "../llm/nativeFactory.js";
+import { createModelForConfig } from "../llm/modelFactory.js";
 import { resolveEditingMode } from "../tools/file/editingMode.js";
 import { resolveMemoryModelAlias, resolveToolModelAlias, type MemoryModelField } from "../llm/toolModel.js";
 import { generateSessionTitle } from "../session/title.js";
-import type { NativeModelSettings } from "../llm/nativeFactory.js";
-import { isModelContextOverflowError } from "../llm/nativeModel.js";
+import type { ModelSettings } from "../llm/modelFactory.js";
+import { isModelContextOverflowError } from "../llm/modelErrors.js";
 import { generateNativeText } from "../llm/nativeJson.js";
 import { ProviderRegistry } from "../llm/ProviderRuntime.js";
 import { LocalEmbeddingManager } from "../llm/embedding/LocalEmbeddingRuntime.js";
@@ -170,7 +170,7 @@ export interface AgentSessionOptions {
   permissionManager: PermissionManager;
   recorder: SessionRecorder;
   modelManager?: ModelManager;
-  skillPrompt?: string | ((selection?: AgentCapabilitySelection["skills"]) => string | undefined);
+  skillPrompt?: string | ((selection?: AgentCapabilitySelection["skills"]) => string | undefined | Promise<string | undefined>);
   /** 具名子代理定义元数据段（Task 可用的 agent 列表）。 */
   subagentPrompt?: string;
   skillPaths?: string[] | ((selection?: AgentCapabilitySelection["skills"]) => string[]);
@@ -280,7 +280,7 @@ export interface ResumedAgentSession extends SessionReplay {
   sessionId: string;
 }
 
-interface NativeTurnArgs {
+interface TurnArgs {
   input: string;
   systemPrompt?: string;
   messages: AgentMessage[];
@@ -346,6 +346,8 @@ export class AgentSession {
   private readonly pendingCrystalTasks = new Set<Promise<void>>();
   private readonly queuedCrystalThreads = new Set<string>();
   private readonly pendingMemoryTasks = new Set<Promise<unknown>>();
+  /** Runtime 已接纳的普通发送；让 canonical user_message 先于前台 generating 状态落盘。 */
+  private readonly admittedUserMessages = new Map<string, { input: string; reference: SessionMessageReference }>();
   private closed = false;
   /** 与 ContextMemory history 一一对应；内部 steering 消息没有持久化引用。 */
   private contextMessageReferences: Array<SessionMessageReference | undefined> = [];
@@ -383,7 +385,7 @@ export class AgentSession {
     const auxiliaryModel = (alias: string | undefined): AgentModel | undefined => {
       if (!alias) return undefined;
       const activeAlias = options.modelManager?.getInfo().modelAlias ?? this.activeConfig.defaultModel;
-      return alias === activeAlias ? getModel() : createNativeModelForConfig(this.activeConfig, alias);
+      return alias === activeAlias ? getModel() : createModelForConfig(this.activeConfig, alias);
     };
     this.toolModel = () => {
       const alias = resolveToolModelAlias(this.activeConfig);
@@ -520,7 +522,7 @@ export class AgentSession {
       const cached = summaryModels.get(alias);
       if (cached) return cached;
       try {
-        const created = createNativeModelForConfig(this.activeConfig, alias);
+        const created = createModelForConfig(this.activeConfig, alias);
         summaryModels.set(alias, created);
         return created;
       } catch (error) {
@@ -564,10 +566,11 @@ export class AgentSession {
   }
 
   /** 技能元数据、具名子代理清单与 MCP instructions 共同构成 system prompt 的扩展段。 */
-  private extensionPrompt(capabilitySelection?: AgentCapabilitySelection): string | undefined {
+  private async extensionPrompt(capabilitySelection?: AgentCapabilitySelection): Promise<string | undefined> {
+    const selectedSkillPrompt = await this.skillPrompt(capabilitySelection?.skills);
     const sections = [
       this.planning ? "Planning mode is enabled. Investigate with read-only tools and save a durable PlanDraft for user confirmation. Do not execute commands, modify workspace files, delegate, or start/update running plans. A draft is not executed work. Each task needs acceptance criteria and deterministic verification; add a read-only review block only when it adds useful independent scrutiny." : undefined,
-      this.skillPrompt(capabilitySelection?.skills)?.trim(),
+      selectedSkillPrompt?.trim(),
       this.options.subagentPrompt?.trim(),
       this.options.mcpPrompt?.().trim(),
       (this.options.todoStore?.promptSection() ?? this.options.todoPrompt?.())?.trim()
@@ -575,8 +578,8 @@ export class AgentSession {
     return sections.length ? sections.join("\n\n") : undefined;
   }
 
-  private skillPrompt(selection?: AgentCapabilitySelection["skills"]): string | undefined {
-    return typeof this.options.skillPrompt === "function" ? this.options.skillPrompt(selection) : this.options.skillPrompt;
+  private async skillPrompt(selection?: AgentCapabilitySelection["skills"]): Promise<string | undefined> {
+    return typeof this.options.skillPrompt === "function" ? await this.options.skillPrompt(selection) : this.options.skillPrompt;
   }
 
   private skillPaths(selection?: AgentCapabilitySelection["skills"]): string[] {
@@ -670,7 +673,7 @@ export class AgentSession {
     }
     return buildPromptBundle({
       permissionMode,
-      extensionPrompt: this.extensionPrompt(selection),
+      extensionPrompt: await this.extensionPrompt(selection),
       tools: initialTools,
       soulPrompt,
       personalization,
@@ -692,7 +695,11 @@ export class AgentSession {
     try {
       let next = await progress.next();
       while (!next.done) {
-        yield { type: "preparation.updated", stage: next.value };
+        // workspace/memory 的内部进度仍供 ContextMemory 直接调用者观察；AgentSession
+        // 对外使用统一的优先级阶段，避免同一轮重复刷出旧阶段。
+        if (next.value !== "workspace" && next.value !== "memory") {
+          yield { type: "preparation.updated", stage: next.value };
+        }
         next = await progress.next();
       }
       return next.value;
@@ -1350,16 +1357,20 @@ export class AgentSession {
     const originalActiveIds = activeSessionMessageIds(recordedEvents);
     const referenceHistory = nodes.filter((node) => originalActiveIds.has(node.id)
       && node.eventIndex < (replacingUser ? userNode.eventIndex : target.eventIndex)).map((node) => node.message);
-    if (this.options.selectCapabilities && ((options.capabilitySelection?.tools ?? this.activeConfig.chat.defaultToolSelection) === "auto"
-      || (options.capabilitySelection?.skills ?? this.activeConfig.chat.defaultSkillSelection) === "auto")) {
-      yield { type: "preparation.updated", stage: "capabilities" };
-    }
     const selection = this.prepareCapabilities({
       input: sourceInput, selection: options.capabilitySelection, signal: options.abortSignal,
       messageId: replacingUser ? undefined : userNode.id, reuse: !replacingUser, history: referenceHistory, events: recordedEvents
     });
+    if (personalization.useMemories) yield { type: "preparation.updated", stage: "memory" };
+    if (this.options.selectCapabilities && (options.capabilitySelection?.skills ?? this.activeConfig.chat.defaultSkillSelection) === "auto") {
+      yield { type: "preparation.updated", stage: "skills" };
+    }
+    if (this.options.selectCapabilities && (options.capabilitySelection?.tools ?? this.activeConfig.chat.defaultToolSelection) === "auto") {
+      yield { type: "preparation.updated", stage: "tools" };
+    }
     const basePrompt = this.baseSystemPrompt(sourceInput, permissionMode, personalization, selection, options.abortSignal, referenceHistory)
       .then((prompt) => appendExternalTurnContext(prompt, options.promptContext));
+    yield { type: "preparation.updated", stage: "workspace" };
     const prepared = yield* this.prepareContext(
       sourceInput,
       basePrompt,
@@ -1368,6 +1379,7 @@ export class AgentSession {
       personalization.useMemories
     );
     options.capabilitySelection = await selection;
+    yield { type: "preparation.updated", stage: "waiting" };
     const preparedHistoryCount = Math.max(0, prepared.messages.length - 1);
     const preparedHistoryReferences = this.contextMessageReferences.slice(-preparedHistoryCount);
     const continuationMessages = targetIsAssistant ? prepared.messages.slice(0, -1) : prepared.messages;
@@ -1460,6 +1472,55 @@ export class AgentSession {
 
   async queueMessage(messageId: string, input: string, attachments: AgentAttachment[] = []): Promise<void> {
     await this.queueRunMessage(messageId, input, attachments, "queue");
+  }
+
+  /**
+   * 在 Host 发布 run.started 前持久化普通用户消息。
+   *
+   * 这一步只负责 durable admission，不读取 workspace、记忆或模型；真正的上下文准备仍由
+   * runTurn 统一完成。runTurn 会复用这里产生的 reference，避免重复写入 user_message。
+   */
+  async admitUserMessage(input: string, options: {
+    runId: string;
+    turnId: string;
+    messageId: string;
+    attachments?: AgentAttachment[];
+    replaceUserMessageId?: string;
+    replacementUserMessageId?: string;
+  }): Promise<void> {
+    if (!input.trim() && !(options.attachments?.length)) throw new Error("Agent prompt cannot be empty.");
+    if (this.admittedUserMessages.has(options.runId)) return;
+    let replacement: { messageId: string; parentMessageId?: string; slotId?: string } | undefined;
+    if (options.replaceUserMessageId !== undefined) {
+      await this.recorder.flush();
+      const events = await readSessionEvents(this.recorder.filePath);
+      const source = sessionMessageTree(events).find((node) => node.id === options.replaceUserMessageId);
+      if (!source || source.message.role !== "user") throw new Error("Edit target user message is not on the active conversation path.");
+      replacement = {
+        messageId: options.replacementUserMessageId ?? options.messageId,
+        parentMessageId: source.parentId,
+        slotId: source.slotId ?? source.id
+      };
+    }
+    const previousContext = this.recorder.runtimeContextSnapshot();
+    this.recorder.setRuntimeContext({ runId: options.runId, turnId: options.turnId });
+    try {
+      const reference = this.recordCanonicalMessage({
+        type: "user_message",
+        content: input,
+        attachments: sessionAttachments(options.attachments),
+        messageId: replacement?.messageId ?? options.messageId,
+        parentMessageId: replacement?.parentMessageId,
+        slotId: replacement?.slotId,
+        skills: this.skillPaths(),
+        contextUsage: this.contextMemory.getBudget(),
+        contextState: this.contextMemory.persistedState()
+      });
+      await this.recorder.flush();
+      this.admittedUserMessages.set(options.runId, { input, reference });
+    } finally {
+      this.recorder.setRuntimeContext(previousContext);
+    }
   }
 
   queuedRunMessages(): import("../runtime/agentEvents.js").QueuedRunMessageSnapshot[] {
@@ -1622,6 +1683,12 @@ export class AgentSession {
     const usageBeforePreparation = this.usageRecords.length;
     let userMessageRecorded = false;
     let userMessageReference: SessionMessageReference | undefined;
+    const admitted = this.admittedUserMessages.get(runtimeRunId);
+    if (admitted?.input === input) {
+      userMessageRecorded = true;
+      userMessageReference = admitted.reference;
+      this.admittedUserMessages.delete(runtimeRunId);
+    }
     const recordUserMessage = (): SessionMessageReference | undefined => {
       if (userMessageRecorded) return userMessageReference;
       userMessageRecorded = true;
@@ -1686,7 +1753,7 @@ export class AgentSession {
     const model = this.options.modelManager?.getModel() ?? this.options.model;
     if (!model) {
       recordUserMessage();
-      const outcome = failedTurn("Native model runtime is not configured.", completedStepsBeforeRun);
+      const outcome = failedTurn("Model runtime is not configured.", completedStepsBeforeRun);
       this.recordError(outcome.error);
       await this.recordTurnOutcome(outcome);
       yield { type: "error", message: outcome.error ?? "Agent run failed." };
@@ -1706,7 +1773,6 @@ export class AgentSession {
       if (runOptions.replacementUserMessage !== undefined) {
         // 编辑版本的 context 最后一条已经是新用户输入；把它的 reference 从旧版本替换成
         // 刚写入的 canonical user message，后续 assistant 才能挂到新的父节点上。
-        userMessageRecorded = false;
         const replacementReference = recordUserMessage();
         if (replacementReference) {
           messageReferences = [
@@ -1719,15 +1785,19 @@ export class AgentSession {
       }
       let userIndex = messages.length - 1;
       while (userIndex >= 0 && messages[userIndex]?.role !== "user") userIndex -= 1;
-      if (this.options.selectCapabilities && ((runOptions.capabilitySelection?.tools ?? this.activeConfig.chat.defaultToolSelection) === "auto"
-        || (runOptions.capabilitySelection?.skills ?? this.activeConfig.chat.defaultSkillSelection) === "auto")) {
-        yield { type: "preparation.updated", stage: "capabilities" };
-      }
-      runOptions.capabilitySelection = await this.prepareCapabilities({
+      const selection = this.prepareCapabilities({
         input, selection: runOptions.capabilitySelection, signal: abortSignal,
         messageId: messageReferences[userIndex]?.id, reuse: true, history: messages
       });
-      yield { type: "preparation.updated", stage: "ready" };
+      if (this.activePersonalization.useMemories) yield { type: "preparation.updated", stage: "memory" };
+      if (this.options.selectCapabilities && (runOptions.capabilitySelection?.skills ?? this.activeConfig.chat.defaultSkillSelection) === "auto") {
+        yield { type: "preparation.updated", stage: "skills" };
+      }
+      if (this.options.selectCapabilities && (runOptions.capabilitySelection?.tools ?? this.activeConfig.chat.defaultToolSelection) === "auto") {
+        yield { type: "preparation.updated", stage: "tools" };
+      }
+      runOptions.capabilitySelection = await selection;
+      yield { type: "preparation.updated", stage: "waiting" };
     } else {
     // 先把用户原始输入（以及附件引用）写进 JSONL，再组装上下文或检查模型能力。
     // 这样即使模型不支持图片、上下文构建失败或进程随后中断，恢复会话时仍能看到这次输入。
@@ -1751,14 +1821,17 @@ export class AgentSession {
       const referenceHistory = nodes.length
         ? nodes.filter((node) => activeIds.has(node.id)).map((node) => node.message)
         : this.contextMemory.getHistory();
-      if (this.options.selectCapabilities && ((runOptions.capabilitySelection?.tools ?? this.activeConfig.chat.defaultToolSelection) === "auto"
-        || (runOptions.capabilitySelection?.skills ?? this.activeConfig.chat.defaultSkillSelection) === "auto")) {
-        yield { type: "preparation.updated", stage: "capabilities" };
-      }
       const selection = this.prepareCapabilities({
         input, selection: runOptions.capabilitySelection, signal: abortSignal, messageId: userMessageReference?.id, events,
         history: nodes.filter((node) => activeIds.has(node.id) && node.id !== userMessageReference?.id).map((node) => node.message)
       });
+      if (turnPersonalization.useMemories) yield { type: "preparation.updated", stage: "memory" };
+      if (this.options.selectCapabilities && (runOptions.capabilitySelection?.skills ?? this.activeConfig.chat.defaultSkillSelection) === "auto") {
+        yield { type: "preparation.updated", stage: "skills" };
+      }
+      if (this.options.selectCapabilities && (runOptions.capabilitySelection?.tools ?? this.activeConfig.chat.defaultToolSelection) === "auto") {
+        yield { type: "preparation.updated", stage: "tools" };
+      }
       const systemPromptPerfStartedAt = perfNow();
       const basePrompt = this.baseSystemPrompt(input, permissionMode, turnPersonalization, selection, abortSignal, referenceHistory)
         .then((prompt) => {
@@ -1766,6 +1839,7 @@ export class AgentSession {
           return appendExternalTurnContext(prompt, runOptions.promptContext);
         });
       const prepareTurnPerfStartedAt = perfNow();
+      yield { type: "preparation.updated", stage: "workspace" };
       const prepared = yield* this.prepareContext(
         input,
         basePrompt,
@@ -1775,6 +1849,7 @@ export class AgentSession {
       );
       runOptions.capabilitySelection = await selection;
       recordPerfPhase("turn.prepareTurn", prepareTurnPerfStartedAt, { runId: runtimeRunId, compacted: prepared.compaction !== undefined });
+      yield { type: "preparation.updated", stage: "waiting" };
       // 在模型开始输出前发布实际注入结果，界面不把记忆开关误报为记忆命中。
       yield { type: "context.updated", context: { ...await this.contextStatus(), capabilitySelection: runOptions.capabilitySelection } };
       if (prepared.compaction) {
@@ -1855,7 +1930,7 @@ export class AgentSession {
       hardStepLimit: completedStepsBeforeRun + requestedSteps
     };
     recordPerfPhase("turn.prepareTotal", turnPerfStartedAt, { runId: runtimeRunId });
-    yield* this.runNativeTurn({
+    yield* this.runTurnLoop({
       input,
       systemPrompt,
       messages,
@@ -1891,12 +1966,12 @@ export class AgentSession {
   }
 
   /**
-   * Native Biny runtime path.
+   * Biny Agent runtime path.
    *
    * The session boundary uses the same native message protocol as the loop,
    * provider transport and persisted turn state.
    */
-  private async *runNativeTurn(args: NativeTurnArgs): AsyncGenerator<AgentSessionEvent> {
+  private async *runTurnLoop(args: TurnArgs): AsyncGenerator<AgentSessionEvent> {
     const {
       input,
       systemPrompt: initialSystemPrompt,
@@ -1913,19 +1988,27 @@ export class AgentSession {
       && runOptions.recordSessionUserMessage !== false
       && runOptions.emotionAnalysis !== false;
     let systemPrompt = initialSystemPrompt;
-    const nativeModel = this.options.modelManager?.getModel() ?? this.options.model;
-    const nativeSettings: NativeModelSettings | undefined = this.options.modelManager?.getModelSettings()
-      ?? (nativeModel ? { model: nativeModel, contextWindow: undefined } : undefined);
-    if (!nativeSettings) {
-      const outcome = failedTurn("Native model runtime is not configured.", completedStepsBeforeRun);
+    const activeModel = this.options.modelManager?.getModel() ?? this.options.model;
+    const modelSettings: ModelSettings | undefined = this.options.modelManager?.getModelSettings()
+      ?? (activeModel ? {
+        model: activeModel,
+        vercelModel: activeModel.vercelModel,
+        providerOptions: activeModel.vercelOptions?.providerOptions,
+        maxOutputTokens: activeModel.vercelOptions?.maxOutputTokens,
+        timeoutMs: activeModel.vercelOptions?.timeoutMs,
+        maxRetries: activeModel.vercelOptions?.maxRetries,
+        contextWindow: undefined
+      } : undefined);
+    if (!modelSettings) {
+      const outcome = failedTurn("Model runtime is not configured.", completedStepsBeforeRun);
       this.recordError(outcome.error);
       await this.recordTurnOutcome(outcome);
-      yield { type: "error", message: outcome.error ?? "Native model runtime is not configured." };
+      yield { type: "error", message: outcome.error ?? "Model runtime is not configured." };
       yield { type: "status", status: "error" };
       yield doneEvent(outcome);
       return;
     }
-    let activeModelSettings = nativeSettings;
+    let activeModelSettings = modelSettings;
     this.contextMemory.observePromptModel(activeModelSettings.model.provider, activeModelSettings.model.modelId);
     let relatedToolCallIds: string[] = [];
     const modelRequestContext = (step: number): ModelRequestContext => ({
@@ -2008,15 +2091,15 @@ export class AgentSession {
     }
 
     const hashlineEdit = this.activeConfig.chat.hashlineEdit;
-    const editingTools = (settings: NativeModelSettings) => settings.model.supportsTools === false ? [] : coordinator.createAgentTools({ mode: resolveEditingMode(hashlineEdit, settings.applyPatchProtocol), attachmentRoot: this.options.attachmentRoot });
+    const editingTools = (settings: ModelSettings) => settings.model.supportsTools === false ? [] : coordinator.createAgentTools({ mode: resolveEditingMode(hashlineEdit, settings.applyPatchProtocol), attachmentRoot: this.options.attachmentRoot });
     const initialTools = editingTools(activeModelSettings);
     systemPrompt = refreshRuntimeSystemPrompt(
       systemPrompt,
       initialTools
     );
     refreshRuntimeTurnContext(messages, await this.currentEmotionPrompt());
-    const nativeContext: AgentContext = { systemPrompt, messages: [...messages], tools: initialTools };
-    this.contextMemory.recordToolSchema(nativeContext.tools);
+    const loopContext: AgentContext = { systemPrompt, messages: [...messages], tools: initialTools };
+    this.contextMemory.recordToolSchema(loopContext.tools);
     let lastAssistant: AgentAssistantMessage | undefined;
     let finalAssistantReference: SessionMessageReference | undefined;
     let newMessages: AgentMessage[] = [];
@@ -2028,7 +2111,7 @@ export class AgentSession {
     }
     const lastUserMessage = [...messages].reverse().find((message) => message.role === "user");
     const lastUserMessageReference = lastUserMessage === undefined ? undefined : referenceByMessage.get(lastUserMessage);
-    const nativeLoopPerfStartedAt = perfNow();
+    const loopPerfStartedAt = perfNow();
     let reasoningActive = false;
     let lastStepReasoningOutput = "";
     const stepUsageRecords: SessionUsage[] = [];
@@ -2038,7 +2121,7 @@ export class AgentSession {
     let softLimitWarningInjected = completedStepsBeforeRun >= runBudget.softStepLimit;
     let contextRecoveryAttempts = 0;
 
-    recordPerfPhase("turn.nativeLoopPre", nativeLoopPerfStartedAt, { runId: runOptions.runId });
+    recordPerfPhase("turn.loopPre", loopPerfStartedAt, { runId: runOptions.runId });
     yield { type: "status", status: "thinking" };
     await recordNativeTelemetry(this.options.config, this.options.workspaceRoot, {
       type: "start",
@@ -2047,11 +2130,11 @@ export class AgentSession {
       input: { systemPrompt: systemPromptForTelemetry(systemPrompt), messages: messagesForTelemetry(messages) }
     });
     try {
-      const loop = vercelAgentLoopContinue(nativeContext, {
+      const loop = vercelAgentLoopContinue(loopContext, {
         model: activeModelSettings.model,
         vercelModel: activeModelSettings.vercelModel,
         maxRetries: activeModelSettings.maxRetries,
-        tools: nativeContext.tools,
+        tools: loopContext.tools,
         modelOptions: {
           // 与 prepareNextTurn 对齐：全局聊天参数显式配置时覆盖模型别名默认；未配置则不下发温度。
           // 首个请求也必须带，否则纯单步问答永远用不上用户配置。
@@ -2127,7 +2210,7 @@ export class AgentSession {
           this.contextMemory.recordRequest({
             ...context,
             toolSources: new Map(this.options.toolRegistry.listEntries().map(({ tool, source }) => [tool.name, source])),
-            skillPrompt: this.skillPrompt(runOptions.capabilitySelection?.skills)?.trim()
+            skillPrompt: (await this.skillPrompt(runOptions.capabilitySelection?.skills))?.trim()
           });
           emitUpdate({ type: "context.updated", context: await this.contextStatus() });
         },
@@ -3252,7 +3335,7 @@ export class AgentSession {
 
   private runtimeContext(runOptions: AgentRunOptions): AgentRuntimeContext {
     const model = this.options.modelManager?.getModel() ?? this.options.model;
-    if (!model) throw new Error("Native model runtime is not configured.");
+    if (!model) throw new Error("Model runtime is not configured.");
     return {
       planning: this.planning,
       workspaceRoot: this.options.workspaceRoot,

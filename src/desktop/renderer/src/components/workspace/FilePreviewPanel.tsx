@@ -33,7 +33,7 @@ export interface FileDirectoryState {
   error?: string;
 }
 
-/** 文件树宽度约束（对齐 alma explorer 的 120–400、默认 200）；预览区最小保留宽度。 */
+/** 文件树宽度约束（120–400、默认 200）；预览区最小保留宽度。 */
 const MIN_TREE_WIDTH = 120;
 const MAX_TREE_WIDTH = 400;
 const DEFAULT_TREE_WIDTH = 200;

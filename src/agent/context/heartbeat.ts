@@ -14,7 +14,7 @@ export interface HeartbeatSchedule {
   activeHoursEnd: number;
 }
 
-/** 默认值与 Alma 对齐；开关与节奏由全局配置 `heartbeat` 提供，未配置时走这里。 */
+/** 开关与节奏由全局配置 `heartbeat` 提供，未配置时走这里。 */
 export const defaultHeartbeatSchedule: HeartbeatSchedule = Object.freeze({
   intervalMinutes: 30,
   activeHoursStart: 8,
@@ -32,7 +32,7 @@ export interface HeartbeatStatus {
 
 export interface HeartbeatSchedulerOptions {
   run: (prompt: string, signal: AbortSignal) => void | Promise<void>;
-  /** 全局配置的开关；缺省关闭，与 Alma 默认行为一致。 */
+  /** 全局配置的开关；缺省关闭，保持稳定的默认行为。 */
   enabled?: boolean;
   /** 全局配置的节奏；缺省走 defaultHeartbeatSchedule。 */
   schedule?: HeartbeatSchedule;

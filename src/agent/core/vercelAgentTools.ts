@@ -5,13 +5,18 @@ import type { JSONSchema7 } from "@ai-sdk/provider";
 import type { VercelLoopState } from "./vercelAgentLoop.js";
 import type { AgentToolResult } from "./types.js";
 import { errorMessage, isRecord } from "./vercelAgentUtils.js";
+import { normalizeToolParameters } from "../../tools/schema.js";
 
 export function createVercelTools(state: VercelLoopState): ToolSet {
-  const entries = state.tools.map((agentTool) => [
+  const entries = state.tools.map((agentTool) => {
+    // AI SDK 的 schema 也属于 provider 出站边界；不能只在 prompt-cache 投影时修正。
+    // 这里提前校验，首轮失败会在任何 tool.started 之前变成带工具名和路径的本地错误。
+    const parameters = normalizeToolParameters(agentTool.name, agentTool.parameters);
+    return [
     agentTool.name,
     tool({
       description: agentTool.description,
-      inputSchema: jsonSchema(agentTool.parameters as unknown as JSONSchema7),
+      inputSchema: jsonSchema(parameters as unknown as JSONSchema7),
       execute: async (input: unknown, options: { toolCallId: string; abortSignal?: AbortSignal }) => {
         const execute = async (): Promise<AgentToolResult> => {
           const args = isRecord(input) ? input : {};
@@ -72,7 +77,8 @@ export function createVercelTools(state: VercelLoopState): ToolSet {
         }
       }
     })
-  ] as const);
+    ] as const;
+  });
   const tools = Object.fromEntries(entries) as ToolSet;
   for (const agentTool of state.tools) {
     if (agentTool.providerTool !== "openai-apply-patch") continue;

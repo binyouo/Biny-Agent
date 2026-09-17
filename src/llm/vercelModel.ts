@@ -26,13 +26,14 @@ export interface VercelModelInput {
 }
 
 export function createVercelLanguageModel(input: VercelModelInput): LanguageModelV4 {
+  const fetcher = input.fetcher;
   if (input.api === "anthropic_messages" || input.providerType === "anthropic" || input.providerType === "claude-subscription") {
     const provider = createAnthropic({
       baseURL: input.baseUrl,
       apiKey: input.authMode === "oauth-bearer" ? undefined : input.apiKey,
       authToken: input.authMode === "oauth-bearer" ? input.apiKey : undefined,
       headers: input.headers,
-      fetch: input.fetcher,
+      fetch: fetcher,
       name: input.providerAlias
     });
     return provider(input.modelId);
@@ -43,7 +44,7 @@ export function createVercelLanguageModel(input: VercelModelInput): LanguageMode
       baseURL: input.baseUrl,
       apiKey: input.apiKey,
       headers: input.headers,
-      fetch: input.fetcher,
+      fetch: fetcher,
       name: input.providerAlias
     });
     return provider(input.modelId);
@@ -56,7 +57,7 @@ export function createVercelLanguageModel(input: VercelModelInput): LanguageMode
       baseURL: input.baseUrl,
       apiKey: input.apiKey,
       headers: input.headers,
-      fetch: input.fetcher,
+      fetch: fetcher,
       name: input.providerAlias
     });
     return input.api === "responses" ? provider.responses(input.modelId) : provider.chat(input.modelId);
@@ -67,7 +68,7 @@ export function createVercelLanguageModel(input: VercelModelInput): LanguageMode
     name: input.providerAlias,
     apiKey: input.apiKey,
     headers: input.headers,
-    fetch: input.fetcher,
+    fetch: fetcher,
     includeUsage: true,
     // SDK 已提供请求体变换入口；显式兼容配置必须覆盖 SDK 的默认字段和角色。
     transformRequestBody: (body) => {

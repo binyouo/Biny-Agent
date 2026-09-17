@@ -2,7 +2,7 @@
  * 把 Biny 仍在使用的 AgentModel 协议适配成 Vercel LanguageModelV4。
  *
  * 主 Agent 的 provider runtime 直接提供 Vercel model 时不会经过这里；这个边界
- * 只服务显式注入 AgentModel 的测试、后台和本地兼容调用，避免把旧 loop 再带回来。
+ * 只服务显式注入的测试/本地模型，避免把旧 provider 协议带回正常链路。
  */
 import {
   type LanguageModelCallEndEvent,
@@ -17,7 +17,7 @@ import type {
   LanguageModelV4StreamPart
 } from "@ai-sdk/provider";
 import { stableSystemPromptForCache } from "../prompts.js";
-import { classifyModelRequestError } from "../../llm/nativeModel.js";
+import { classifyModelRequestError } from "../../llm/modelErrors.js";
 import {
   computePromptShapeDiagnostic,
   promptShapeBudgetMs,
@@ -203,7 +203,8 @@ async function* streamModel(
       const messages = state.config.transformContext
         ? await state.config.transformContext(state.context.messages, signal)
         : state.context.messages;
-      const streamModel = state.model.streamSimple?.bind(state.model) ?? state.model.stream.bind(state.model);
+      if (!state.model.stream) throw new Error("Vercel model is unavailable for the injected AgentModel.");
+      const streamModel = state.model.stream.bind(state.model);
       const streamOptions: ModelStreamOptions = {
         ...state.modelOptions,
         signal,

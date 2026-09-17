@@ -530,7 +530,7 @@
   transition: background-color 140ms ease;
 }
 
-/* 拖拽热区中央的 grip 圆点：hover 才浮现（alma 同款），提示这条边可以拖。 */
+/* 拖拽热区中央的 grip 圆点：hover 才浮现，提示这条边可以拖。 */
 .desktop-inspector-resizer::before {
   content: "";
   position: absolute;
@@ -578,7 +578,7 @@
   transition: none;
 }
 
-/* dock 头部：tab 行与关闭按钮合并成一行（alma dock-tab-bar 式），头部即拖动区。 */
+/* dock 头部：tab 行与关闭按钮合并成一行，头部即拖动区。 */
 .biny-root .desktop-inspector-header {
   display: flex;
   min-height: 38px;
@@ -1893,7 +1893,7 @@
 }
 
 /* 高度折叠容器（chat 行折叠与侧栏分区/项目/子会话树共用）。
-   时序对齐 alma CollapseRegion：高度 240ms cubic-bezier(0.22,1,0.36,1)，
+   时序：高度 240ms cubic-bezier(0.22,1,0.36,1)，
    透明度 180ms；内容做 ±2px 纵向位移，展开有「落定」手感。 */
 .biny-collapse {
   display: grid;
@@ -3855,7 +3855,7 @@ button.capability-check[aria-checked="true"] {
   color: var(--biny-text);
 }
 
-/* 生成错误横幅（Alma 同款）：输入框上方的危险色描边卡，标题 + 错误文本 + 关闭；
+/* 生成错误横幅：输入框上方的危险色描边卡，标题 + 错误文本 + 关闭；
    失败不在消息流里展示，重试入口在消息操作条的「重新生成」。 */
 .biny-generation-error {
   display: flex;
@@ -5444,7 +5444,7 @@ div:has(> .astryx-trigger-menu) {
   font-variant-numeric: tabular-nums;
 }
 
-/* 思考等待行（Alma 式）：消息流末尾、最后一条消息下方，作为助手回复的首行占位；
+/* 思考等待行：消息流末尾、最后一条消息下方，作为助手回复的首行占位；
    只在回合还没有任何输出时出现，回合内容开始流式渲染后由回合内思考块接管。 */
 .biny-composer-status-actions {
   display: inline-flex;

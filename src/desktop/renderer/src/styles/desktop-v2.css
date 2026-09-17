@@ -1900,7 +1900,7 @@ select option:disabled {
 
 /* 滑动开关：轨道 1.5rem×2.75rem、圆头 1.25rem、选中位移 1.25rem。
    选中态用 --accent 蓝而非 --st-primary：开关是状态指示不是操作按钮，
-   与 Provider 设置里的迷你开关、alma 的 Switch 选中蓝保持一致。 */
+   与 Provider 设置里的迷你开关、。 */
 .desktop-settings-dialog .settings-modal .settings-switch {
   display: inline-flex;
   width: calc(2.75 * var(--st-rem));
@@ -2976,7 +2976,7 @@ select option:disabled {
   }
 }
 
-/* 记忆设置沿用 Alma 的分组卡片与控件密度；索引状态只在必要的操作反馈中出现。 */
+/* 记忆设置沿用 ；索引状态只在必要的操作反馈中出现。 */
 .activity-memory-group { display: flex; flex-direction: column; gap: 13px; padding: 16px 18px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); }
 .activity-memory-entries { display: flex; flex-direction: column; gap: 8px; }
 .activity-memory-entry { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 12px; border: 1px solid var(--border); border-radius: 9px; background: var(--surface-soft); }
@@ -2985,13 +2985,13 @@ select option:disabled {
 .activity-memory-entry-content small { display: block; margin-top: 7px; color: var(--text-tertiary); font-size: calc(10px * var(--font-scale, 1)); }
 .activity-memory-entry-actions { display: flex; gap: 3px; flex: 0 0 auto; }
 .activity-memory-empty { padding: 26px 8px; color: var(--text-tertiary); text-align: center; font-size: calc(12px * var(--font-scale, 1)); }
-/* 进度、错误和高级参数由当前 Alma 对齐版结构继续复用。 */
+/* 进度、错误和高级参数由当前 。 */
 .activity-memory-embedding-progress,
 .activity-memory-embedding-hint { color: var(--text-tertiary); font-size: 10px; line-height: 1.45; }
 .activity-memory-embedding-error { display: flex; align-items: center; justify-content: space-between; gap: 12px; color: var(--red); font-size: 11px; line-height: 1.45; }
 .activity-memory-advanced-content { display: flex; flex-direction: column; gap: 13px; margin-top: 13px; }
 
-/* 记忆设置与 Alma 的卡片结构保持一致：只保留用户需要的开关、滑块和操作，
+/* 记忆设置与 ，
    状态与索引细节留在后端，不把实现信息变成设置页的主视觉。 */
 .activity-memory-settings { gap: 24px; }
 .activity-memory-settings > .activity-memory-group { gap: 16px; padding: 20px 22px; border-radius: 12px; }

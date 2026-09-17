@@ -256,7 +256,7 @@ export interface ActivityPhaseLabel {
   rest: string;
 }
 
-/** 相位的摘要文案（对齐 alma activity.phase.* 中文语料）。 */
+/** 相位的摘要文案（相位摘要中文语料）。 */
 export function phaseLabel(phase: ActivityPhase, live: boolean, thinkingSeconds?: number): ActivityPhaseLabel {
   const n = phase.items.length;
   switch (phase.kind) {
@@ -305,7 +305,7 @@ export interface ActivityToolRowModel {
   error: boolean;
 }
 
-/** 路径收窄：超过 3 段只保留最后 3 段（对齐 alma shortenPath）。 */
+/** 路径收窄：超过 3 段只保留最后 3 段（shortenPath 惯例）。 */
 function shortenPath(path: string): string {
   const parts = path.split("/").filter(Boolean);
   return parts.length <= 3 ? path.replace(/^\//, "") : parts.slice(-3).join("/");
@@ -322,7 +322,7 @@ function stringArg(tool: TimelineTool, key: string): string | undefined {
   return typeof value === "string" && value ? value : undefined;
 }
 
-/** 工具的动宾行模型；措辞对齐 alma activity.verb.* 中文语料，未识别工具回退工具名。 */
+/** 工具的动宾行模型；措辞取工具动宾中文语料，未识别工具回退工具名。 */
 export function activityToolRow(tool: TimelineTool): ActivityToolRowModel {
   const display = tool.display?.kind === "file_io" ? tool.display : undefined;
   const args = typeof tool.args === "object" && tool.args !== null ? tool.args as Record<string, unknown> : undefined;

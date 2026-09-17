@@ -37,4 +37,4 @@ docs/TUI_INTERACTION_REQUIREMENTS.md
 **pycache**/
 *.pyc
 .*-snapshots/
-.alma-snapshots
+.

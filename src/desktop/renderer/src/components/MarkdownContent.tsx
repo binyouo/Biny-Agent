@@ -50,7 +50,7 @@ export const MarkdownContent = memo(function MarkdownContent({
           a({ node: _node, children, ...props }) {
             const href = props.href;
             const path = localPathFromHref(href);
-            // 本地路径收成文件卡片（alma 式资源卡），不再渲染普通 <a>；
+            // 本地路径收成文件卡片（资源卡样式），不再渲染普通 <a>；
             // 外链必须显式走 openExternal（主进程 deny 了所有新窗口导航）；
             // 页内锚点（如脚注）保留默认跳转，不能带 target=_blank 否则点击被吞。
             if (path) return <FileLinkCard onPreviewFile={onPreviewFile} path={path} />;
@@ -64,7 +64,7 @@ export const MarkdownContent = memo(function MarkdownContent({
           code({ className, children }) {
             // 围栏代码块由下面的 pre 接管，这里只剩行内代码。
             if (className) return <code className={className}>{children}</code>;
-            // Codex 风格的行内路径只是灰色代码标记；不根据文本外观暗中添加文件跳转。
+            // 行内代码样式的路径只是灰色代码标记；不根据文本外观暗中添加文件跳转。
             return <code>{children}</code>;
           },
           img({ alt, src, title }) {

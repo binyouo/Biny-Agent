@@ -12,7 +12,6 @@ import { createSkillResourceTool, createSkillTool, expandSkillCommand, loadSkill
 import { calculateUsageCost, sumSessionUsage, summarizeUsage } from "../src/observability/usage.js";
 import { buildSystemPrompt, stableSystemPromptForCache } from "../src/agent/prompts.js";
 import { canonicalToolSchemaHash, computePromptShapeDiagnostic, LocalPromptProjectionCache, promptCacheCapability } from "../src/llm/promptCache.js";
-import { mapOpenAiUsage } from "../src/llm/apiAdapters/shared.js";
 import { PermissionManager } from "../src/permission/PermissionManager.js";
 import { analyzePermissionRequest } from "../src/permission/policy.js";
 import { ToolRegistry } from "../src/tools/registry.js";
@@ -191,34 +190,6 @@ function testUsageCostAccounting(): void {
 }
 
 function testPromptCacheAccounting(): void {
-  const deepseek = mapOpenAiUsage({
-    prompt_tokens: 120,
-    prompt_cache_hit_tokens: 80,
-    prompt_cache_miss_tokens: 40,
-    completion_tokens: 5,
-    total_tokens: 125
-  }, promptCacheCapability({ provider: "deepseek", modelId: "deepseek-chat", api: "chat_completions" }));
-  assert.equal(deepseek.cacheReadTokens, 80);
-  assert.equal(deepseek.cacheMissTokens, 40);
-
-  const glm = mapOpenAiUsage({
-    prompt_tokens: 100,
-    prompt_tokens_details: { cached_tokens: 60 },
-    completion_tokens: 4,
-    total_tokens: 104
-  }, promptCacheCapability({ provider: "zai", modelId: "glm-5", api: "chat_completions" }));
-  assert.equal(glm.cacheReadTokens, 60);
-  assert.equal(glm.cacheMissTokens, 40);
-
-  const kimi = mapOpenAiUsage({
-    prompt_tokens: 90,
-    cached_tokens: 50,
-    completion_tokens: 3,
-    total_tokens: 93
-  }, promptCacheCapability({ provider: "kimi", modelId: "kimi-k2", reasoningProtocol: "moonshotai", api: "chat_completions" }));
-  assert.equal(kimi.cacheReadTokens, 50);
-  assert.equal(kimi.cacheMissTokens, 40);
-
   const weighted = summarizeUsage([
     { operation: "agent", modelAlias: "test", provider: "deepseek", model: "deepseek", inputTokens: 100, cacheReadTokens: 25, cacheMissTokens: 75, promptEpochId: "epoch-0", pricingKnown: false },
     { operation: "agent", modelAlias: "test", provider: "deepseek", model: "deepseek", inputTokens: 300, cacheReadTokens: 150, cacheMissTokens: 150, promptEpochId: "epoch-1", pricingKnown: false }
@@ -245,10 +216,6 @@ function testPromptCacheAccounting(): void {
   assert.equal(promptCacheCapability({ provider: "openai", modelId: "gpt-5", api: "responses" }).supportsPromptCacheKey, true);
   assert.equal(promptCacheCapability({ provider: "openai-compatible", providerAlias: "relay", modelId: "gpt-5", api: "chat_completions" }).supportsPromptCacheKey, false);
   assert.equal(promptCacheCapability({ provider: "google-native", modelId: "gemini-2.5-pro", api: "google_generative_ai" }).cacheReadFields[0], "usageMetadata.total_cached_tokens");
-
-  const unknownCacheUsage = mapOpenAiUsage({ prompt_tokens: 100, prompt_tokens_details: { cached_tokens: 60 } });
-  assert.equal(unknownCacheUsage.cacheReadTokens, 60);
-  assert.equal(unknownCacheUsage.cacheMissTokens, undefined);
 
   const toolA = { name: "alpha", description: "Alpha", parameters: { type: "object" as const } };
   const toolB = { name: "beta", description: "Beta", parameters: { type: "object" as const } };
@@ -310,7 +277,7 @@ async function testSkillsAndPlugins(workspaceRoot: string): Promise<void> {
   await testProgressiveSkills(workspaceRoot);
 
   const pluginPath = path.join(workspaceRoot, "plugin.mjs");
-  await writeFile(pluginPath, `export default ({ config, registerTool, registerProvider, registerApiAdapter, registerCredentialHandler }) => {
+  await writeFile(pluginPath, `export default ({ config, registerTool, registerProvider, registerCredentialHandler }) => {
   registerProvider({
     type: "plugin-provider",
     protocol: "openai-compatible",
@@ -320,13 +287,6 @@ async function testSkillsAndPlugins(workspaceRoot: string): Promise<void> {
     authModes: ["api-key"],
     filterModels: (models) => models.filter((model) => model.id !== "hidden")
   }, [{ id: "plugin-model", displayName: "Plugin Model", provider: "", contextWindow: 8192, maxOutputTokens: 1024, capabilities: { tools: true }, reasoningEfforts: [] }]);
-  registerApiAdapter({
-    id: "plugin-api",
-    stream: async function* () {
-      yield { type: "start" };
-      yield { type: "finish", reason: "stop" };
-    }
-  });
   registerCredentialHandler("plugin-oauth", async (provider) => provider);
   registerTool({
     name: "plugin_secret_probe",
@@ -381,7 +341,6 @@ async function testSkillsAndPlugins(workspaceRoot: string): Promise<void> {
   assert.deepEqual(config.extensions.mcp.secret?.env, { TEST_ONLY_TOKEN: "test-only-mcp-token" });
   assert.deepEqual(config.extensions.mcp.remote?.headers, { Authorization: "Bearer test-only-http-token" });
   assert.equal(ai.providers.get("plugin-provider")?.models[0]?.id, "plugin-model");
-  assert.equal(ai.adapters.get("plugin-api")?.id, "plugin-api");
   assert.equal(typeof ai.credentialHandler("plugin-oauth"), "function");
 
   const commonJsPath = path.join(workspaceRoot, "plugin.cjs");

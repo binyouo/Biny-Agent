@@ -28,11 +28,11 @@ const parameters = {
 } as unknown as JsonObjectSchema;
 
 const normalized = normalizeToolParameters("nested", parameters) as unknown as Record<string, unknown>;
-assert.deepEqual(normalized.required, []);
+assert.equal("required" in normalized, false);
 const properties = normalized.properties as Record<string, Record<string, unknown>>;
-assert.deepEqual(properties.optionalObject?.required, []);
+assert.equal("required" in (properties.optionalObject ?? {}), false);
 assert.deepEqual((properties.list?.items as Record<string, unknown>).required, ["value"]);
-assert.deepEqual(((properties.choice?.oneOf as Array<Record<string, unknown>>)[0]?.required), []);
+assert.equal("required" in ((properties.choice?.oneOf as Array<Record<string, unknown>>)[0] ?? {}), false);
 assert.deepEqual(((properties.choice?.oneOf as Array<Record<string, unknown>>)[1]?.required), ["right"]);
 assert.equal("required" in (parameters.properties?.optionalObject as unknown as Record<string, unknown>), false, "normalization must not mutate registered tools");
 

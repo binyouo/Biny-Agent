@@ -38,7 +38,7 @@ import { createActivityDigestTool } from "../tools/activity/digest.js";
 import { createActivitySearchTool } from "../tools/activity/search.js";
 import { createActivitySessionsTool } from "../tools/activity/sessions.js";
 import { createToolCounts, formatExtensionReport, type ExtensionSection, type ExtensionStatus } from "../extensions/report.js";
-import { createNativeModelSettings, type NativeModelSettings } from "../llm/nativeFactory.js";
+import { createModelSettings, type ModelSettings } from "../llm/modelFactory.js";
 import {
   SubagentTaskIncompleteError,
   SubagentTaskManager,
@@ -1006,7 +1006,7 @@ function taskFailureReason(value: unknown): string | undefined {
   return typeof message === "string" ? message : undefined;
 }
 
-function subagentModelSettings(config: AgentConfig, modelManager: ModelManager, modelAlias?: string): NativeModelSettings {
+function subagentModelSettings(config: AgentConfig, modelManager: ModelManager, modelAlias?: string): ModelSettings {
   // 具名定义的 model 覆盖优先于全局 subagent model；两者都未配置时沿用当前会话模型。
   const alias = modelAlias ?? config.extensions.subagent.model;
   if (!alias) return modelManager.getModelSettings();
@@ -1021,7 +1021,7 @@ function subagentModelSettings(config: AgentConfig, modelManager: ModelManager, 
       ? { enabled: true, effort: reasoning.defaultEffort }
       : { enabled: false, effort: "high" as const }
   };
-  return createNativeModelSettings(modelConfig, alias);
+  return createModelSettings(modelConfig, alias);
 }
 
 function requireModelManager(modelManager: ModelManager | undefined): ModelManager {

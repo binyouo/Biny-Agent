@@ -11,7 +11,7 @@ import { z } from "zod";
 import { AgentSession } from "../src/agent/AgentSession.js";
 import type { AgentTurnOutcome } from "../src/agent/types.js";
 import { configSchema, defaultConfig } from "../src/config/schema.js";
-import { createNativeModelForConfig } from "../src/llm/nativeFactory.js";
+import { createModelForConfig } from "../src/llm/modelFactory.js";
 import { PermissionManager } from "../src/permission/PermissionManager.js";
 import { RuntimeEventAuthority } from "../src/runtime/RuntimeAuthority.js";
 import { SessionRecorder } from "../src/session/recorder.js";
@@ -501,7 +501,7 @@ async function runAgentWorker(options: WorkerOptions): Promise<void> {
   const agent = new AgentSession({
     workspaceRoot: options.workspaceRoot,
     config,
-    model: createNativeModelForConfig(config),
+    model: createModelForConfig(config),
     toolRegistry: registry,
     permissionManager: new PermissionManager(config.permission),
     recorder,

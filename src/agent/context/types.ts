@@ -64,7 +64,7 @@ export interface CompactionResult {
 }
 
 /** 仅用于实时准备进度，不作为持久化上下文事实。 */
-export type PreparationStage = "capabilities" | "workspace" | "memory" | "compacting" | "ready";
+export type PreparationStage = "memory" | "skills" | "tools" | "workspace" | "compacting" | "waiting" | "ready";
 
 export interface ContextStatus {
   /** 当前轮次已完成的能力预选结果。 */

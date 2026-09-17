@@ -14,7 +14,7 @@ import {
 } from "../src/extensions/skillDiscovery.js";
 import { readManagedSkillVersion, rollbackSkillVersion } from "../src/extensions/skillVersions.js";
 import { scanSkillCatalog } from "../src/extensions/skillCatalog.js";
-import { loadSkills } from "../src/extensions/skills.js";
+import { loadSkills, skillPromptForSelection } from "../src/extensions/skills.js";
 import { writeFile } from "node:fs/promises";
 
 async function main(): Promise<void> {
@@ -66,6 +66,9 @@ async function main(): Promise<void> {
     assert.equal((await scanSkillCatalog({ homeDir })).skills.some((skill) => skill.name === "demo-skill"), true);
     const runtime = await loadSkills({ workspaceRoot: root, projectPaths: [], globalRoot: managedRoot });
     assert.equal(runtime.skills.some((skill) => skill.name === "demo-skill"), true, "受管版本必须被实际 runtime 发现");
+    const selectedPrompt = await skillPromptForSelection(runtime, ["demo-skill"]);
+    assert.match(selectedPrompt, /# Demo/u, "首轮提示词必须包含选中 Skill 正文");
+    assert.match(selectedPrompt, /metadata only/u, "首轮提示词仍应保留 Skill 元数据声明");
     const unchanged = await updateDiscoveredSkill({ name: "demo-skill", expectedVersion: installed.version.id, homeDir, fetcher });
     assert.equal(unchanged.version.id, installed.version.id, "未改变的版本不增加历史");
     revision = "b".repeat(40); guide = "# Updated\n";

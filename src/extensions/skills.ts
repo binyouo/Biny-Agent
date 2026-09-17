@@ -295,9 +295,42 @@ function buildSkillPrompt(skills: SkillDefinition[]): string {
   return render(80, visible);
 }
 
-/** 按当前回合的 Skill 选择裁剪渐进式披露元数据；正文仍由 Skill 按需读取。 */
-export function skillPromptForSelection(bundle: SkillBundle, selection?: CapabilitySelectionValue): string {
-  return buildSkillPrompt(selectSkills(bundle, selection));
+/**
+ * 按当前回合的 Skill 选择组装首轮提示词。
+ *
+ * 目录分析阶段只读取元数据；选择完成后才读取命中的正文和声明信息，避免把整个
+ * Skill 目录误当成「已使用」能力，也让首轮模型请求拿到与选择结果一致的上下文。
+ */
+export async function skillPromptForSelection(bundle: SkillBundle, selection?: CapabilitySelectionValue): Promise<string> {
+  const selected = selectSkills(bundle, selection);
+  if (!selected.length) return "";
+  const metadata = buildSkillPrompt(selected);
+  const loaded = await Promise.all(selected.map(async (skill) => await readSkillPrompt(skill)));
+  return [metadata, "Selected Skill instructions (already loaded for this turn):", ...loaded].filter(Boolean).join("\n\n");
+}
+
+async function readSkillPrompt(skill: SkillDefinition): Promise<string> {
+  const content = await readSkillFileFresh(skill.rootPath, skill.filePath, maxSkillInstructionBytes);
+  let body = content;
+  let metadata: SkillMetadata | undefined;
+  try {
+    const parsed = splitFrontmatter(content);
+    metadata = parsed.frontmatter;
+    if (path.basename(skill.filePath) === "SKILL.md" || parsed.frontmatter.name || parsed.frontmatter.description) {
+      body = parsed.body;
+    }
+  } catch (error) {
+    if (path.basename(skill.filePath) === "SKILL.md") throw error;
+  }
+  return [
+    `<skill name="${skill.name}" location="${skill.filePath}">`,
+    `References are relative to ${path.dirname(skill.filePath)}.`,
+    metadata?.compatibility ? `Compatibility notes (not automatically verified): ${metadata.compatibility}` : undefined,
+    metadata?.allowedTools?.length ? `Declared tools (normal permissions still apply): ${metadata.allowedTools.join(" ")}` : undefined,
+    "",
+    body.trim(),
+    "</skill>"
+  ].filter((line): line is string => line !== undefined).join("\n");
 }
 
 export function skillPathsForSelection(bundle: SkillBundle, selection?: CapabilitySelectionValue): string[] {
