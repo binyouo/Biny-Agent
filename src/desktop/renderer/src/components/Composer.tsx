@@ -243,7 +243,7 @@ export const Composer = memo(function Composer({
     }
   };
 
-  const submit = async (delivery?: "steer" | "queue", submittedInput = input): Promise<void> => {
+  const submit = async (submittedInput = input): Promise<void> => {
     const value = submittedInput.trim() || (attachments.length ? "请分析这些附件。" : "");
     if (!project || !value || busy || submitFlightRef.current || sessionWriterConflict) return;
     // 编辑模式：提交直接走「替换原消息并重新生成」，不携带附件，也不走模型切换/斜杠命令链路。
@@ -296,7 +296,7 @@ export const Composer = memo(function Composer({
         // 否则用户紧接着按 Enter 时可能把消息发给旧模型。
         setInput("");
         setAttachments([]);
-        await onSend(sendValue, sentAttachments, delivery, globalThis.crypto.randomUUID(), capabilitySelection);
+        await onSend(sendValue, sentAttachments, undefined, globalThis.crypto.randomUUID(), capabilitySelection);
       } catch (submitError) {
         setInput(value);
         setAttachments(sentAttachments);
@@ -640,15 +640,6 @@ export const Composer = memo(function Composer({
               label="任务输入"
               maxRows={6}
               onFiles={(files) => void addFiles(files)}
-              onKeyDown={(event) => {
-                // trigger 菜单会先消费 ↑↓/Enter/Tab/Escape；这里只接管运行中的
-                // Cmd/Ctrl+Enter，其余 Enter 交给 ChatComposerInput 的提交逻辑。
-                if (event.key !== "Enter" || event.shiftKey || event.altKey || event.nativeEvent.isComposing) return;
-                if (running && (event.metaKey || event.ctrlKey)) {
-                  event.preventDefault();
-                  void submit("steer");
-                }
-              }}
               triggers={desktopSlashTriggers}
             />
             <div ref={breathingCaretTrailRef} className="biny-breathing-caret-trail" aria-hidden="true" />
@@ -657,12 +648,8 @@ export const Composer = memo(function Composer({
         )}
         isDisabled={inputDisabled}
         onChange={setInput}
-        onSubmit={(value) => void submit(undefined, value)}
+        onSubmit={(value) => void submit(value)}
         placeholder={placeholder}
-        status={running && input.trim()
-          ? { message: "Enter 排队发送 · ⌘ Enter 立即转向", type: "warning" }
-          : undefined}
-        statusPosition="bottom"
         sendActions={(
           <div className="biny-composer-footer-end">
             <div className="composer-menu-anchor">

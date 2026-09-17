@@ -690,8 +690,10 @@ function SessionList({ flat = false, projectId, sessions, selectedSessionId, onS
   const hover = useFluidHover(listRef, {
     isItemDisabled: (element) => element.closest("[inert]") !== null
   });
+  // 子会话仍通过折叠容器表达从属关系，但标题列保持统一，避免同一列表中
+  // 仅因父子关系让可用宽度忽长忽短。
   let rowIndex = 0;
-  const renderNode = (session: DesktopSessionSummary, depth: number, ancestors: Set<string>): React.JSX.Element[] => {
+  const renderNode = (session: DesktopSessionSummary, ancestors: Set<string>): React.JSX.Element[] => {
     if (ancestors.has(session.id)) return [];
     const nextAncestors = new Set(ancestors).add(session.id);
     const expandable = !flat && Boolean(session.hasChildren);
@@ -699,11 +701,10 @@ function SessionList({ flat = false, projectId, sessions, selectedSessionId, onS
     const loading = expandable && loadingSessionIds.has(session.id);
     // 子树常驻挂在 Collapse 里，收起是收放高度而不是卸载；未懒加载过的父节点
     // 没有子行，首次展开时 Collapse 已在（open 从一开始就过渡），内容随数据到位撑开。
-    const children = (byParent.get(session.id) ?? []).flatMap((child) => renderNode(child, depth + 1, nextAncestors));
+    const children = (byParent.get(session.id) ?? []).flatMap((child) => renderNode(child, nextAncestors));
     const nextCursor = sessionNextCursors.get(session.id);
     return [
       <SessionTreeRow
-        depth={depth}
         expandable={expandable}
         expanded={expanded}
         index={rowIndex++}
@@ -732,7 +733,7 @@ function SessionList({ flat = false, projectId, sessions, selectedSessionId, onS
   return (
     <div ref={listRef} className={`biny-sidebar-session-list${projectId ? " is-indented" : ""}`} {...hover.handlers}>
       <FluidHoverHighlight hover={hover} className="has-row-radius" />
-      {(byParent.get(undefined) ?? []).flatMap((session) => renderNode(session, 0, new Set()))}
+      {(byParent.get(undefined) ?? []).flatMap((session) => renderNode(session, new Set()))}
     </div>
   );
 }
@@ -741,7 +742,6 @@ function SessionList({ flat = false, projectId, sessions, selectedSessionId, onS
 // 内联 ref 回调会在每次渲染时先注销再注册，hook 的“高亮行被注销”分支会把
 // 点亮状态立刻清掉，高亮永远出不来，因此行拆成独立组件。
 function SessionTreeRow({
-  depth,
   expandable,
   expanded,
   index,
@@ -754,7 +754,6 @@ function SessionTreeRow({
   onSelect,
   onToggle
 }: {
-  depth: number;
   expandable: boolean;
   expanded: boolean;
   index: number;
@@ -786,7 +785,6 @@ function SessionTreeRow({
         className={`biny-sidebar-session-toggle${expandable ? "" : " is-empty"}`}
         disabled={!expandable || loading}
         onClick={() => onToggle(session)}
-        style={{ marginLeft: `${depth * 16}px` }}
         type="button"
       >
         {loading ? "…" : expandable ? <Icon name="chevron" size={12} /> : null}

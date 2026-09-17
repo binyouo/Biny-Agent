@@ -189,7 +189,7 @@ async function testSessionPersistence(): Promise<void> {
         }
       }
     }
-    assert.deepEqual(preparation, ["workspace", "ready", "workspace", "ready"], "关闭记忆时不发送检索进度，准备完成必须清除状态");
+    assert.deepEqual(preparation, ["workspace", "ready", "waiting", "workspace", "ready", "waiting"], "关闭记忆时不发送检索进度，准备完成后显示等待模型");
     assert.equal(calls, 2);
     assert.equal(updates, 6, "each request emits prepared context, request estimate and provider correction");
     const budget = (await agent.contextStatus()).budget;

@@ -97,14 +97,15 @@ test("仅有工具结果的失败不会补出思考或空助手操作栏", () =>
   assert.doesNotMatch(markup, /已思考|Worked for|assistant-actions/u);
 });
 
-test("只有工具产出的成功轮次保留活动记录，不重复补能力清单", () => {
+test("只有工具产出的成功轮次保留活动记录，并展示真实工具清单", () => {
   const markup = renderTurns(buildSessionTimeline([], [
     ...start,
     { ...base, type: "tool.started", toolCallId: "read", tool: "Read", args: { path: "package.json" } },
     { ...base, type: "tool.completed", toolCallId: "read", tool: "Read", result: { content: "{}" } },
     { ...base, type: "run.completed", durationMs: 20 }
   ]));
-  assert.doesNotMatch(markup, /chat-meta-indicator/u);
+  assert.match(markup, /chat-meta-indicator/u);
+  assert.match(markup, /1 个工具/u);
   assert.match(markup, /chat-activity/u);
   assert.match(markup, /工具调用 1 次/u);
   assert.doesNotMatch(markup, /条记忆|个技能/u);
@@ -150,7 +151,8 @@ test("运行中保留活动反馈，并禁止重试旧失败消息", () => {
   })), true);
   assert.match(running, /正在等待模型响应/u);
   assert.match(running, /chat-meta-indicator/u);
-  assert.match(running, /1 条记忆.*1 个工具.*1 个技能/u);
+  assert.match(running, /1 条记忆/u);
+  assert.doesNotMatch(running, /个工具|个技能/u);
   assert.doesNotMatch(running, /chat-run-status-time/u);
   assert.doesNotMatch(running, /chat-activity/u);
   assert.doesNotMatch(running, /回复生成失败|assistant-actions/u);
@@ -198,7 +200,7 @@ test("失败后正常再发一条消息：保留两条用户消息，不插入�
   assert.equal(markup.match(/data-sender="assistant"/gu)?.length, 1, "仅新一轮活动占用助手区域");
 });
 
-for (const [stage, label] of [["capabilities", "正在分析相关工具和技能"], ["workspace", "正在读取工作区上下文"], ["memory", "正在检索相关记忆"], ["compacting", "正在压缩对话上下文"]] as const) {
+for (const [stage, label] of [["skills", "正在分析 Skill"], ["tools", "正在分析工具"], ["workspace", "正在准备 workspace"], ["memory", "正在检索相关记忆"], ["compacting", "正在压缩对话上下文"]] as const) {
   test(`准备阶段实时显示并在完成或失败时清除：${stage}`, () => {
     const events: AgentHostEvent[] = [start[0]!, { ...base, type: "preparation.updated", stage }];
     assert.match(renderTurns(buildSessionTimeline([], events), true), new RegExp(label));

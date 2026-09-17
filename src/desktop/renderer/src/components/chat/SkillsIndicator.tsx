@@ -5,22 +5,26 @@ import { executionToolLabel } from "../../sessionTimeline.js";
 import { Icon, type IconName } from "../Icon.js";
 import { ComposerPopover } from "../composer/ComposerPopover.js";
 
-export const SkillsIndicator = memo(function SkillsIndicator({ memoryInjectedSummaries, selection, skillNames }: {
+export const SkillsIndicator = memo(function SkillsIndicator({ memoryInjectedSummaries, selection: _selection, skillNames, skills, tools }: {
   memoryInjectedSummaries?: string[];
+  /** 保留旧调用面的兼容字段；预选结果不是实际使用记录。 */
   selection?: AgentCapabilitySelection;
   skillNames?: ReadonlyMap<string, string>;
+  skills?: readonly string[];
+  tools?: readonly string[];
 }): React.JSX.Element | null {
-  const selectedTools = Array.isArray(selection?.tools) ? selection.tools : selection?.tools === "none" ? [] : undefined;
-  const selectedSkills = Array.isArray(selection?.skills) ? selection.skills : selection?.skills === "none" ? [] : undefined;
+  void _selection;
+  const invokedTools = [...new Set(tools ?? [])];
+  const invokedSkills = [...new Set(skills ?? [])];
   const items = [
     memoryInjectedSummaries?.length
       ? { kind: "memory", icon: "brain" as const, names: memoryInjectedSummaries, text: `${String(memoryInjectedSummaries.length)} 条记忆`, title: "检索到的记忆", memory: true }
       : undefined,
-    selectedTools?.length
-      ? { kind: "tools", icon: "wrench" as const, names: [...new Set(selectedTools)].map(executionToolLabel), text: `${String(new Set(selectedTools).size)} 个工具`, title: "本轮选择的工具", memory: false }
+    invokedTools.length
+      ? { kind: "tools", icon: "wrench" as const, names: invokedTools.map(executionToolLabel), text: `${String(invokedTools.length)} 个工具`, title: "本轮实际调用的工具", memory: false }
       : undefined,
-    selectedSkills?.length
-      ? { kind: "skills", icon: "wand" as const, names: [...new Set(selectedSkills)].map((name) => skillNames?.get(name) ?? name), text: `${String(new Set(selectedSkills).size)} 个技能`, title: "本轮选择的技能", memory: false }
+    invokedSkills.length
+      ? { kind: "skills", icon: "wand" as const, names: invokedSkills.map((name) => skillNames?.get(name) ?? name), text: `${String(invokedSkills.length)} 个技能`, title: "本轮实际调用的 Skill", memory: false }
       : undefined
   ].filter((item) => item !== undefined);
   if (items.length === 0) return null;

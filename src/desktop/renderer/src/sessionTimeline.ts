@@ -331,6 +331,7 @@ function buildHistoricalTurns(events: SessionEvent[]): TimelineTurn[] {
       continue;
     }
     if (event.type === "tool_call") {
+      if (event.auditOnly) continue;
       const turn = ensureTurn(event.time);
       const toolName = event.tool;
       appendInvokedSkill(turn, toolName, event.args);
@@ -518,6 +519,7 @@ function buildVersionedHistoricalTurns(events: SessionEvent[]): TimelineTurn[] {
       continue;
     }
     if (event.type === "tool_call") {
+      if (event.auditOnly) continue;
       const turn = turnForEvent(event, event.time);
       const toolName = event.tool;
       appendInvokedSkill(turn, toolName, event.args);
