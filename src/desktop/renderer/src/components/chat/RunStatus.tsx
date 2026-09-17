@@ -18,8 +18,8 @@ export const RunStatus = memo(function RunStatus({ turn }: { turn?: TimelineTurn
   let orb: OrbState = "working";
   if (waiting) label = "等待你的确认…";
   else if (turn?.preparationStage && turn.preparationStage !== "ready") {
-    label = { capabilities: "正在分析相关工具和技能…", workspace: "正在读取工作区上下文…", memory: "正在检索相关记忆…", compacting: "正在压缩对话上下文…" }[turn.preparationStage];
-    orb = ({ capabilities: "shaping", workspace: "searching", memory: "searching", compacting: "weaving" } as const)[turn.preparationStage];
+    label = { memory: "正在检索相关记忆…", skills: "正在分析 Skill…", tools: "正在分析工具…", workspace: "正在准备 workspace…", compacting: "正在压缩对话上下文…", waiting: "正在等待模型…" }[turn.preparationStage];
+    orb = ({ memory: "searching", skills: "shaping", tools: "shaping", workspace: "searching", compacting: "weaving", waiting: "solving" } as const)[turn.preparationStage];
   } else if (activeTool) {
     const row = activityToolRow(activeTool);
     label = `正在${row.verb} ${row.object}`;

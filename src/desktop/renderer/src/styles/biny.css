@@ -2113,11 +2113,12 @@
   display: flex;
   flex-direction: column;
   gap: 2px;
-  padding: 2px 8px 2px 28px;
+  /* 展开箭头占 16px、行内边距占 8px，列表本身只需补齐项目行的 16px 图标内边距。 */
+  padding: 2px 8px 2px 16px;
 }
 
 .biny-sidebar-session-list.is-indented {
-  padding-left: 28px;
+  padding-left: 16px;
 }
 
 /* 子会话树的收放容器把原本并列的行包进一层。容器两侧 margin -1px 抵消父级
@@ -2337,8 +2338,8 @@
 .biny-sidebar-session-expand {
   display: block;
   min-height: 27px;
-  /* 列表外的“显示更多”文字与一级会话标题对齐（28 列表缩进 + 16 展开箭头 + 8 行内边距）。 */
-  margin: 1px 8px 2px 44px;
+  /* 列表外的“显示更多”文字与一级会话标题对齐（16 列表缩进 + 16 展开箭头 + 8 行内边距）。 */
+  margin: 1px 8px 2px 32px;
   padding: 3px 8px;
   border: 0;
   border-radius: 13px;

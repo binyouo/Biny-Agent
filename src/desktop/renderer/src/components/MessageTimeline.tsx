@@ -389,7 +389,7 @@ const Turn = memo(function Turn({
       {running || executionSteps.length > 0 || turn.assistant.trim() || completedChangedFiles.length > 0 ? (
       <article className="chat-message desktop-assistant-message" data-sender="assistant">
         <div className="agent-response">
-        {shouldShowResponseContext(turn) ? <SkillsIndicator skillNames={skillNames} memoryInjectedSummaries={turn.memoryInjectedSummaries} selection={turn.capabilitySelection} /> : null}
+        {shouldShowResponseContext(turn) ? <SkillsIndicator skillNames={skillNames} memoryInjectedSummaries={turn.memoryInjectedSummaries} skills={turn.skills} tools={turn.tools.map((tool) => tool.tool)} /> : null}
         {executionSteps.length ? (
           <ExecutionTimeline
             onPreviewFile={onPreviewFile}
