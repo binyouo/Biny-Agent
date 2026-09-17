@@ -11,7 +11,7 @@ import { vercelAgentLoopContinue } from "../src/agent/core/vercelAgentLoop.js";
 import type { AgentEvent, AgentModel, ModelRequestMetrics, ModelStreamEvent } from "../src/agent/core/types.js";
 import { configSchema, defaultConfig } from "../src/config/schema.js";
 import { runSubagentTask } from "../src/extensions/subagent.js";
-import { createNativeModelSettings } from "../src/llm/nativeFactory.js";
+import { createModelSettings } from "../src/llm/modelFactory.js";
 import { PermissionManager } from "../src/permission/PermissionManager.js";
 import { RuntimeEventAuthority } from "../src/runtime/RuntimeAuthority.js";
 import { DurableTaskRunStore } from "../src/runtime/TaskRunStore.js";
@@ -70,25 +70,22 @@ async function testWireCompatibility(): Promise<void> {
           status: 400, headers: { "content-type": "application/json" }
         });
       };
-      const settings = createNativeModelSettings(selected, "audit", fetcher);
-      await assert.rejects(async () => {
-        for await (const _event of await settings.model.stream({ systemPrompt: "audit", messages: [{ role: "user", content: "hello" }], tools: [] }, { maxOutputTokens: 123 })) { /* 消费请求。 */ }
-      }, /synthetic request captured/u);
+      const settings = createModelSettings(selected, "audit", fetcher);
       const metrics: ModelRequestMetrics[] = [];
       for await (const _event of vercelAgentLoopContinue({ systemPrompt: "audit", messages: [{ role: "user", content: "hello" }], tools: [] }, {
         model: settings.model, vercelModel: settings.vercelModel, maxRetries: 0, tools: [], maxSteps: 1,
         modelOptions: { maxOutputTokens: 123, onRequestMetrics: (value) => { metrics.push(value); } }
       })) { /* 真正经过主 Agent 的 SDK 调用入口。 */ }
-      assert.equal(bodies.length, 2);
+      assert.equal(bodies.length, 1);
       assert.deepEqual(bodies.map((body) => ({
         max_tokens: body.max_tokens,
         max_completion_tokens: body.max_completion_tokens,
         firstRole: body.messages[0].role
-      })), [0, 1].map(() => ({
+      })), [{
         max_tokens: developerRole ? undefined : 123,
         max_completion_tokens: developerRole ? 123 : undefined,
         firstRole: developerRole ? "developer" : "system"
-      })));
+      }]);
       assert.equal(metrics.length, 1);
       assert.ok(metrics[0]?.error);
       assert.equal(metrics[0]?.errorCode, "http_error");

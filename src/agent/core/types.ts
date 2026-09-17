@@ -188,17 +188,22 @@ export interface AgentModel {
   provider: string;
   providerAlias?: string;
   modelId: string;
+  /** ProviderRuntime 创建的模型同时保留 Vercel 实例，辅助文本调用也复用同一条 provider 链路。 */
+  vercelModel?: LanguageModelV4;
+  /** 与 Vercel 实例配套的模型级默认参数；调用方显式传入的辅助参数优先。 */
+  vercelOptions?: {
+    providerOptions?: Record<string, unknown>;
+    maxOutputTokens?: number;
+    timeoutMs?: number;
+    maxRetries?: number;
+  };
   /** 只有 builtin-llama.cpp 才能在 v1 作为 Activity 的可信本地 runtime。 */
   runtime?: ActivityModelRuntime;
   /** 这是显式元数据，不是由 provider 名称或 URL 推导出的结论。 */
   dataResidency?: ActivityDataResidency;
   supportsTools?: boolean;
-  stream(
-    context: ModelStreamContext,
-    options?: ModelStreamOptions
-  ): Promise<AsyncIterable<ModelStreamEvent>>;
-  /** 将通用推理档位转换成当前 Provider 的请求参数后再流式调用。 */
-  streamSimple?(
+  /** 显式注入的本地/测试模型可以提供的最小兼容流；配置 Provider 统一使用 vercelModel。 */
+  stream?(
     context: ModelStreamContext,
     options?: ModelStreamOptions
   ): Promise<AsyncIterable<ModelStreamEvent>>;

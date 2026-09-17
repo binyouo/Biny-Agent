@@ -15,7 +15,7 @@ import {
 } from "../src/extensions/agents.js";
 import { createMemoryTools } from "../src/extensions/memory.js";
 import { runSubagentTask, type SubagentOptions } from "../src/extensions/subagent.js";
-import { createNativeModelSettings } from "../src/llm/nativeFactory.js";
+import { createModelSettings } from "../src/llm/modelFactory.js";
 import { ensureAgentDirs } from "../src/session/store.js";
 import { ToolRegistry } from "../src/tools/registry.js";
 import type { Tool } from "../src/tools/types.js";
@@ -200,7 +200,7 @@ async function testSubagentBudgetExhaustionRejectsWithPartialFindings(): Promise
     const options: SubagentOptions = {
       workspaceRoot,
       config,
-      getModelSettings: () => createNativeModelSettings(config),
+      getModelSettings: () => createModelSettings(config),
       getAccessMode: () => "read-only",
       toolRegistry: registry
     };

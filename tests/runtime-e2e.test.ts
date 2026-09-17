@@ -10,7 +10,7 @@ import { AgentSession } from "../src/agent/AgentSession.js";
 import { defaultConfig, configSchema, type AgentConfig } from "../src/config/schema.js";
 import { globalConfigDir } from "../src/config/paths.js";
 import { loadConfig, saveConfig, saveConfigFile } from "../src/config/loader.js";
-import { createNativeModelForConfig } from "../src/llm/nativeFactory.js";
+import { createModelForConfig } from "../src/llm/modelFactory.js";
 import { PermissionManager } from "../src/permission/PermissionManager.js";
 import { RuntimeEventAuthority } from "../src/runtime/RuntimeAuthority.js";
 import { runtimeHostPaths, spawnRuntimeHost, type SpawnedRuntimeHost } from "../src/runtime/RuntimeHost.js";
@@ -117,7 +117,7 @@ async function testProviderTransportCrash(): Promise<void> {
     const agent = new AgentSession({
       workspaceRoot: root,
       config,
-      model: createNativeModelForConfig(config),
+      model: createModelForConfig(config),
       toolRegistry: new ToolRegistry(),
       permissionManager: new PermissionManager(config.permission),
       recorder,

@@ -16,7 +16,7 @@ import {
 } from "./ModelRegistry.js";
 import type { AgentModel } from "../agent/core/types.js";
 import { ModelRuntime } from "./ModelRuntime.js";
-import type { NativeModelSettings } from "./ProviderRuntime.js";
+import type { ModelSettings } from "./ProviderRuntime.js";
 import { AiRegistry } from "./AiRegistry.js";
 import { FileModelsStore, restoreProviderCatalogs, type ModelsStore } from "./ModelsStore.js";
 import type { ThinkingSelection } from "./modelThinking.js";
@@ -43,7 +43,7 @@ export interface ModelRuntimeInfo {
 
 /** Keeps one validated native Biny model while the selected provider changes. */
 export class ModelManager {
-  private activeSettings: NativeModelSettings;
+  private activeSettings: ModelSettings;
   private runtime: ModelRuntime;
   private observedConfigRevision: number | undefined;
 
@@ -83,7 +83,7 @@ export class ModelManager {
     return this.activeSettings.model;
   }
 
-  getModelSettings(): NativeModelSettings {
+  getModelSettings(): ModelSettings {
     return this.activeSettings;
   }
 
@@ -137,7 +137,7 @@ export class ModelManager {
     const catalogs = this.runtime.catalogsSnapshot();
     const effective = await updateConfig(this.configStore, this.workspaceRoot, (persisted) => {
       const persistedRuntime = new ModelRuntime(persisted, catalogs, this.ai, this.modelsStore);
-      // 解析允许先找到模型，再由原生模型工厂给出具体的 endpoint/credential 错误；
+      // 解析允许先找到模型，再由 Provider 工厂给出具体的 endpoint/credential 错误；
       // 这样 CLI/TUI 不会把缺少哪个环境变量的信息吞掉。
       const resolved = persistedRuntime.resolve(alias);
       const modelAlias = resolved.alias;

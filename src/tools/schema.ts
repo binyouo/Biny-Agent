@@ -54,7 +54,7 @@ export interface JsonSchemaValidationResult {
 
 /**
  * Provider 只应看到结构稳定的工具 Schema。部分 OpenAI-compatible 网关会把缺失或畸形的
- * `required` 当成协议错误，因此这里参考成熟实现递归补齐空数组，并在本地指出具体工具与路径。
+ * `required` 当成协议错误；没有必填字段时直接省略该属性，避免部分网关把空数组错误转换成对象。
  */
 export function normalizeToolParameters(toolName: string, parameters: JsonSchema): JsonObjectSchema {
   if (typeof parameters !== "object" || parameters === null || Array.isArray(parameters) || parameters.type !== "object") {
@@ -73,12 +73,12 @@ function normalizeSchemaNode(value: unknown, toolName: string, path: string, anc
     const normalized: Record<string, unknown> = { ...source };
     if (source.type === "object") {
       const required = source.required;
-      if (required === undefined) {
-        normalized.required = [];
-      } else if (!Array.isArray(required) || required.some((item) => typeof item !== "string")) {
+      if (required !== undefined && (!Array.isArray(required) || required.some((item) => typeof item !== "string"))) {
         throw new Error(`Tool ${toolName} has invalid JSON Schema at ${path}.required: expected string[].`);
-      } else {
+      } else if (Array.isArray(required) && required.length > 0) {
         normalized.required = [...required];
+      } else {
+        delete normalized.required;
       }
     }
     if (typeof source.properties === "object" && source.properties !== null && !Array.isArray(source.properties)) {

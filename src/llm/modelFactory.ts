@@ -1,24 +1,25 @@
 /**
- * Provider Runtime 的兼容入口。
+ * Provider 模型工厂。
  *
- * 调用方仍通过这里创建 AgentModel，具体鉴权、目录和请求准备已经归属 ProviderRuntime。
+ * 配置模型统一由 ProviderRuntime 解析成 Vercel AI SDK model；这里仅保留
+ * 需要独立配置快照时的装配入口，不实现任何 provider 协议。
  */
 import type { AgentModel } from "../agent/core/types.js";
 import type { AgentConfig } from "../config/schema.js";
 import { createProxyAwareFetch } from "../network/proxyFetch.js";
-import { ProviderRegistry, type NativeModelSettings } from "./ProviderRuntime.js";
+import { ProviderRegistry, type ModelSettings } from "./ProviderRuntime.js";
 
-export type { NativeModelSettings } from "./ProviderRuntime.js";
+export type { ModelSettings } from "./ProviderRuntime.js";
 
-export function createNativeModelForConfig(config: AgentConfig, alias = config.defaultModel): AgentModel {
-  return createNativeModelSettings(config, alias).model;
+export function createModelForConfig(config: AgentConfig, alias = config.defaultModel): AgentModel {
+  return createModelSettings(config, alias).model;
 }
 
-export function createNativeModelSettings(
+export function createModelSettings(
   config: AgentConfig,
   alias = config.defaultModel,
   fetcher: typeof globalThis.fetch = createProxyAwareFetch()
-): NativeModelSettings {
+): ModelSettings {
   return new ProviderRegistry(config, [], undefined, undefined, fetcher).createModelSettings(alias);
 }
 

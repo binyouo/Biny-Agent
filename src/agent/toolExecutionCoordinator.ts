@@ -215,7 +215,7 @@ export class ToolExecutionCoordinator {
     return added;
   }
 
-  /** Native model-facing tool envelope. */
+  /** Model-facing tool envelope. */
   createAgentTools(editing?: { mode: EditingMode; attachmentRoot?: string }): AgentTool[] {
     let entries = this.context.toolRegistry.listEntries()
       .filter(({ tool, source }) => !this.context.planning || planningToolAllowed(tool, source))

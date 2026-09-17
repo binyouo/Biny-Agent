@@ -545,11 +545,11 @@ test("ActivitySegment 多相位段提供时间线视图且思考相位独立展�
   assert.match(markup, /chat-activity-collapse/u);
 });
 
-test("SkillsIndicator 渲染技能数与悬停清单", () => {
-  const markup = renderToStaticMarkup(createElement(SkillsIndicator, { selection: { tools: ["Read", "Read"], skills: ["write-tui", "simplify-audit", "write-tui"] } }));
+test("SkillsIndicator 只渲染真实工具和 Skill 调用", () => {
+  const markup = renderToStaticMarkup(createElement(SkillsIndicator, { selection: { tools: ["Read"], skills: ["write-tui"] }, tools: ["Read", "Read"], skills: ["write-tui", "write-tui", "simplify-audit"] }));
   assert.match(markup, /2 个技能/u);
   assert.match(markup, /1 个工具/u);
-  assert.equal(renderToStaticMarkup(createElement(SkillsIndicator, {})), "");
+  assert.equal(renderToStaticMarkup(createElement(SkillsIndicator, { selection: { tools: ["Read"], skills: ["write-tui"] } })), "");
 });
 
 test("CompactionDivider 渲染压缩药丸并省略缺失段", () => {
@@ -650,7 +650,9 @@ test("回复上下文按记忆、工具、技能顺序并列组合", () => {
   const markup = renderToStaticMarkup(createElement(SkillsIndicator, {
     memoryInjectedSummaries: ["使用浏览器核验当前网页"],
     selection: { tools: ["Read"], skills: ["browser"] },
-    skillNames: new Map([["browser", "浏览器"]])
+    skillNames: new Map([["browser", "浏览器"]]),
+    tools: ["Read"],
+    skills: ["browser"]
   }));
   const memoryAt = markup.indexOf("1 条记忆");
   const toolsAt = markup.indexOf("1 个工具");
@@ -684,7 +686,7 @@ test("发送占位与忙碌状态在对应用户消息落盘后一起退场，�
 });
 
 
-test("顶部清单展示消息预选的 Skill，而不要求先发生 Skill 工具调用", () => {
+test("顶部清单不展示只有预选结果的工具和 Skill", () => {
   const turns = buildSessionTimeline([
     { type: "user_message", content: "检查网页", messageId: "u" },
     { type: "message_metadata", messageId: "u", metadata: { capabilitySelection: { tools: ["Read", "WebSearch"], skills: ["browser", "web-fetch"] } } },
@@ -692,6 +694,5 @@ test("顶部清单展示消息预选的 Skill，而不要求先发生 Skill 工�
   ], []);
   assert.deepEqual(turns[0]?.capabilitySelection, { tools: ["Read", "WebSearch"], skills: ["browser", "web-fetch"] });
   const markup = renderToStaticMarkup(createElement(SkillsIndicator, { selection: turns[0]?.capabilitySelection }));
-  assert.match(markup, /2 个工具/u);
-  assert.match(markup, /2 个技能/u);
+  assert.equal(markup, "");
 });

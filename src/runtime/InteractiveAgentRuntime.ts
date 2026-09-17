@@ -1099,6 +1099,19 @@ export class InteractiveAgentRuntime {
         content: run.input
       });
     }
+    // Durable user admission 必须先于前台 generating 状态；这样取消、准备失败或 provider
+    // 错误都不会留下只有 UI 占位而没有 canonical user_message 的回合。
+    const replacingUserMessage = run.replaceUserMessageId !== undefined && run.replacementUserMessageId !== undefined;
+    if (!run.continuation && !run.supervision && (run.retryOfMessageId === undefined || replacingUserMessage) && typeof agent.admitUserMessage === "function") {
+      await agent.admitUserMessage(run.input, {
+        runId: run.runId,
+        turnId: run.turnId,
+        messageId: replacingUserMessage ? run.replacementUserMessageId ?? run.messageId : run.messageId,
+        attachments: run.attachments,
+        replaceUserMessageId: replacingUserMessage ? run.replaceUserMessageId : undefined,
+        replacementUserMessageId: replacingUserMessage ? run.replacementUserMessageId : undefined
+      });
+    }
     this.emit({
       ...this.eventBase(run),
       type: "run.started",

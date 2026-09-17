@@ -2,9 +2,9 @@
  * Provider 运行时。
  *
  * 每个配置别名对应一个实例，统一持有服务商默认值、鉴权、模型目录和请求准备逻辑。
- * API 协议的 HTTP/SSE 实现由 ApiAdapterRegistry 负责，两层不互相冒充。
+ * Provider 只负责把配置解析成 Vercel AI SDK 的 LanguageModel；请求协议由 SDK 统一处理。
  */
-import type { AgentModel, ModelStreamContext, ModelStreamEvent, ModelStreamOptions } from "../agent/core/types.js";
+import type { AgentModel } from "../agent/core/types.js";
 import type { LanguageModelV4 } from "@ai-sdk/provider";
 import { completeThinkingLevelMap, effectiveThinkingSelection, isKimiAlwaysThinkingModel, isKimiK3Model, modelCapabilities, modelReasoningConfig, modelThinkingLevelMap, nativeReasoningEffort, normalizeModelMetadata, reasoningBudgetTokens, thinkingLevelMapForModel } from "../ai/capabilities.js";
 import { fetchModelCatalogSnapshot } from "../ai/modelCatalog.js";
@@ -12,7 +12,6 @@ import { accessPathThinkingLevelMap, generatedProviderModels, inferThinkingLevel
 import { providerDefinition } from "../ai/provider.js";
 import type { ModelCatalogEntry, ProviderDefinition } from "../ai/types.js";
 import type { AgentConfig, ModelAliasConfig, ModelApiBackend, ModelCompatibility, ModelProfile, ProviderConfig, ThinkingLevelMap } from "../config/schema.js";
-import { createNativeModel } from "./nativeModel.js";
 import { resolveNativePatchProtocol } from "../tools/file/editingMode.js";
 import { createVercelLanguageModel } from "./vercelModel.js";
 import { resolveProviderRequestRoute } from "./providerRequest.js";
@@ -30,10 +29,10 @@ import {
 
 const oauthRefreshWindowMs = 5 * 60 * 1_000;
 
-export interface NativeModelSettings {
+export interface ModelSettings {
   applyPatchProtocol?: "openai-structured";
   model: AgentModel;
-  /** 主 Agent 的直连 Vercel model；后台模型调用仍使用上面的 AgentModel。 */
+  /** 主 Agent 与辅助文本调用共用的 Vercel model；显式注入的测试模型可以没有它。 */
   vercelModel?: LanguageModelV4;
   maxRetries?: number;
   providerOptions?: Record<string, unknown>;
@@ -53,13 +52,7 @@ export interface ProviderRuntime {
   refreshModels(signal?: AbortSignal, force?: boolean): Promise<ModelCatalogEntry[]>;
   isConfigured(model?: ModelAliasConfig): boolean;
   validate(model?: ModelAliasConfig): void;
-  createModelSettings(agentConfig: AgentConfig, model: ModelAliasConfig): NativeModelSettings;
-  streamSimple(
-    agentConfig: AgentConfig,
-    model: ModelAliasConfig,
-    context: ModelStreamContext,
-    options?: ModelStreamOptions
-  ): Promise<AsyncIterable<ModelStreamEvent>>;
+  createModelSettings(agentConfig: AgentConfig, model: ModelAliasConfig): ModelSettings;
   refreshCredential(signal?: AbortSignal): Promise<ProviderConfig | undefined>;
   listEmbeddingModels(): EmbeddingModelDescriptor[];
   createEmbeddingRuntime(modelId: string): EmbeddingModelRuntime;
@@ -227,7 +220,7 @@ export class ConfiguredProviderRuntime implements ProviderRuntime {
     }
   }
 
-  createModelSettings(agentConfig: AgentConfig, model: ModelAliasConfig): NativeModelSettings {
+  createModelSettings(agentConfig: AgentConfig, model: ModelAliasConfig): ModelSettings {
     const normalizedModel = this.resolveModel(model);
     this.validate(normalizedModel);
     const apiKey = this.resolveApiKey();
@@ -252,46 +245,38 @@ export class ConfiguredProviderRuntime implements ProviderRuntime {
       ...normalizedModel.headers
     };
 
-    const transport = createNativeModel({
+    const vercelModel = createVercelLanguageModel({
+      providerAlias: this.id,
+      providerType: this.config.type,
+      authMode: this.config.authMode,
+      api,
+      modelId: normalizedModel.model,
+      supportsReasoning: capabilities.reasoning,
+      compatibility,
+      baseUrl,
+      apiKey,
+      headers,
+      fetcher: this.fetcher
+    });
+    const executable: AgentModel = {
       provider: this.config.type,
       providerAlias: this.id,
       modelId: normalizedModel.model,
       runtime: "provider",
       dataResidency: normalizedModel.dataResidency ?? this.config.dataResidency,
-      api,
-      baseUrl,
-      apiKey,
-      headers,
-      fetch: this.fetcher,
-      retry,
-      maxTokensField: compatibility?.maxTokensField === "max_completion_tokens" ? "max_completion_tokens" : "max_tokens",
-      supportsDeveloperRole: compatibility?.supportsDeveloperRole === true,
       supportsTools: capabilities.tools,
-      anthropicAuthMode: this.config.type === "anthropic" && this.config.authMode !== "oauth-bearer" ? "api-key" : "bearer",
-      reasoningProtocol,
-      providerOptions,
-      apiAdapters: this.ai.adapters
-    });
-    const executable: AgentModel = {
-      ...transport,
-      streamSimple: async (context, options) => await this.streamSimple(agentConfig, model, context, options)
+      vercelModel,
+      vercelOptions: {
+        providerOptions,
+        maxOutputTokens: normalizedModel.maxOutputTokens,
+        timeoutMs: this.config.timeoutMs,
+        maxRetries: Math.max(0, retry.maxAttempts - 1)
+      }
     };
     return {
       model: executable,
       applyPatchProtocol: resolveNativePatchProtocol(api, baseUrl, normalizedModel.model, this.config.applyPatchProtocol),
-      vercelModel: createVercelLanguageModel({
-        providerAlias: this.id,
-        providerType: this.config.type,
-        authMode: this.config.authMode,
-        api,
-        modelId: normalizedModel.model,
-        supportsReasoning: capabilities.reasoning,
-        compatibility,
-        baseUrl,
-        apiKey,
-        headers,
-        fetcher: this.fetcher
-      }),
+      vercelModel,
       maxRetries: Math.max(0, retry.maxAttempts - 1),
       providerOptions,
       reasoning: selection,
@@ -299,27 +284,6 @@ export class ConfiguredProviderRuntime implements ProviderRuntime {
       maxOutputTokens: normalizedModel.maxOutputTokens,
       contextWindow: normalizedModel.contextWindow
     };
-  }
-
-  async streamSimple(
-    agentConfig: AgentConfig,
-    model: ModelAliasConfig,
-    context: ModelStreamContext,
-    options: ModelStreamOptions = {}
-  ): Promise<AsyncIterable<ModelStreamEvent>> {
-    const normalizedModel = this.resolveModel(model);
-    const thinking = resolveSimpleThinking(agentConfig, normalizedModel, options.reasoning);
-    const settings = this.createModelSettings({ ...agentConfig, thinking }, normalizedModel);
-    return await settings.model.stream(context, {
-      signal: options.signal,
-      maxOutputTokens: options.maxOutputTokens ?? settings.maxOutputTokens,
-      temperature: options.temperature,
-      reasoning: settings.reasoning,
-      providerOptions: options.providerOptions ?? settings.providerOptions,
-      timeoutMs: options.timeoutMs ?? settings.timeoutMs,
-      onRequestMetrics: options.onRequestMetrics,
-      requestContext: options.requestContext
-    });
   }
 
   async refreshCredential(signal?: AbortSignal): Promise<ProviderConfig | undefined> {
@@ -435,7 +399,7 @@ export class ProviderRegistry {
     return { provider, model: provider.resolveModel(model) };
   }
 
-  createModelSettings(alias = this.config.defaultModel): NativeModelSettings {
+  createModelSettings(alias = this.config.defaultModel): ModelSettings {
     const { provider, model } = this.forModel(alias);
     return provider.createModelSettings(this.config, model);
   }
@@ -526,25 +490,6 @@ function isHttpEndpoint(value: string): boolean {
   }
 }
 
-function resolveSimpleThinking(
-  config: AgentConfig,
-  model: ModelAliasConfig,
-  requested: ModelStreamOptions["reasoning"]
-): AgentConfig["thinking"] {
-  if (requested === undefined) return config.thinking;
-  if (requested === "off") {
-    const off = modelThinkingLevelMap(model).off;
-    if (modelCapabilities(model).reasoning && (off === undefined || off === null)) {
-      throw new Error(`Model ${model.model} does not support disabling thinking.`);
-    }
-    return { enabled: false, effort: config.thinking.effort };
-  }
-  const native = modelThinkingLevelMap(model)[requested];
-  if (native === undefined || native === null || !modelReasoningConfig(model)?.efforts.includes(requested)) {
-    throw new Error(`Model ${model.model} does not support ${requested} thinking effort.`);
-  }
-  return { enabled: true, effort: requested };
-}
 
 /**
  * 恢复「其实是推理家族、但目录没给出任何推理信息」的模型的 canonical 档位。
