@@ -48,7 +48,9 @@ jobs:
             else
               git diff-tree --check --no-commit-id -r HEAD
             fi
-          elif [[ "$BEFORE_SHA" =~ ^0+$ ]]; then
+          elif [[ "$BEFORE_SHA" =~ ^0+$ ]] || ! git cat-file -e "$BEFORE_SHA^{commit}" 2>/dev/null; then
+            # 强制 push 或分支重建后，before SHA 可能不在当前 checkout 的历史里。
+            # 此时至少检查本次提交自身，避免因无法解析旧 SHA 让 CI 提前失败。
             git diff-tree --check --no-commit-id -r "$CURRENT_SHA"
           else
             git diff --check "$BEFORE_SHA" "$CURRENT_SHA"
