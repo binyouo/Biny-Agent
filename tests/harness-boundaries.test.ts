@@ -229,16 +229,27 @@ async function testQueuedMessageCancellationAndRecovery(): Promise<void> {
   try {
     const run = agent.runTask("first", { abortSignal: abort.signal, emotionAnalysis: false });
     await firstRequest;
-    await agent.queueFollowUp("queued-followup", "second, must not be lost");
-    await agent.queueSteering("queued-steer", "correction, must not be lost");
+    await agent.queueMessage("queued-message", "second draft");
+    await agent.queueMessage("queued-remove", "remove this draft");
+    await agent.queueMessage("queued-steer", "correction, must not be lost");
+    await agent.updateQueuedRunMessage("queued-message", "second, edited and must not be lost");
+    await agent.moveQueuedRunMessage("queued-steer", "queued-message", false);
+    assert.deepEqual(agent.queuedRunMessages().map((message) => message.messageId), ["queued-steer", "queued-message", "queued-remove"]);
+    await agent.removeQueuedRunMessage("queued-remove");
+    await agent.steerQueuedRunMessage("queued-steer");
+    assert.deepEqual(agent.queuedRunMessages(), [{ messageId: "queued-message", content: "second, edited and must not be lost", attachmentCount: 0 }]);
+    await agent.steerAllQueuedRunMessages();
+    assert.deepEqual(agent.queuedRunMessages(), []);
     const accepted = await readSessionEvents(recorder.filePath);
-    assert.equal(accepted.filter((event) => event.type === "user_message" && event.auditOnly).length, 2);
+    assert.equal(accepted.filter((event) => event.type === "user_message" && event.auditOnly).length, 3);
     abort.abort(new Error("synthetic stop"));
     release();
     await run;
     const saved = await readSessionEvents(recorder.filePath);
     assert.equal(saved.filter((event) => event.type === "error" && event.message.includes("不会自动执行")).length, 2);
     assert.ok(JSON.stringify(sessionEventsToTranscript(saved)).includes("must not be lost"), "undelivered input must remain visible in the transcript");
+    assert.equal(JSON.stringify(sessionEventsToTranscript(saved)).includes("remove this draft"), false, "removed queued input must stay removed");
+    assert.ok(JSON.stringify(sessionEventsToTranscript(saved)).includes("second, edited and must not be lost"), "edited queued input must use its latest content");
     assert.equal(undeliveredMessageNotices(saved).length, 0);
     assert.equal(JSON.stringify(replaySessionEvents(saved).messages).includes("must not be lost"), false);
   } finally {
@@ -288,7 +299,7 @@ async function queueCrashWorker(): Promise<void> {
   await agent.initialize();
   void agent.runTask("original", { emotionAnalysis: false }).catch(() => { clearTimeout(watchdog); process.exit(1); });
   await requestStarted;
-  await agent.queueFollowUp("pending", "recoverable draft");
+  await agent.queueMessage("pending", "recoverable draft");
   process.send?.({ accepted: true });
 }
 
@@ -303,7 +314,7 @@ async function testRecoveryOnlyBlocksRelatedOperations(): Promise<void> {
     recorder.setRuntimeContext({ runId: "current-run", turnId: "current-turn" });
     recorder.record({ type: "user_message", content: "new explicit task" });
     await recorder.flush();
-    await new TurnStore(root, sessionId).save("new explicit task", "audit", [{ role: "user", content: "new explicit task" }], 0, undefined, undefined, undefined, undefined, recorder.runtimeHighWater());
+    await new TurnStore(root, sessionId).save("new explicit task", "audit", [{ role: "user", content: "new explicit task" }], 0, undefined, undefined, undefined, recorder.runtimeHighWater());
     await recorder.close();
     let requests = 0;
     const agent = makeAgent(new SessionRecorder(root), textModel(() => { requests += 1; }));

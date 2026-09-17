@@ -5,6 +5,7 @@
  * Provider 的缓存字段和真正发出的请求形状归一化，方便 Agent Runtime 判断前缀变化原因。
  */
 import { createHash } from "node:crypto";
+import { normalizeToolParameters } from "../tools/schema.js";
 import type { AgentMessage, AgentTool } from "../agent/core/types.js";
 import type { ModelApiBackend } from "../config/schema.js";
 
@@ -349,7 +350,10 @@ function getToolSchemaCache(
     toolSchemaCache.set(tools, entry);
     return entry;
   }
-  const sorted = [...tools].sort((left, right) => {
+  const sorted = tools.map((tool) => ({
+    ...tool,
+    parameters: normalizeToolParameters(tool.name, tool.parameters)
+  })).sort((left, right) => {
     const nameOrder = stableCompare(left.name, right.name);
     if (nameOrder !== 0) return nameOrder;
     return stableCompare(stableStringify({

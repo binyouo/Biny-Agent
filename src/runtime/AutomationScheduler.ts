@@ -76,6 +76,8 @@ export class AutomationTargetBusyError extends Error {
   }
 }
 
+class AutomationClaimRejectedError extends Error {}
+
 interface AutomationRow {
   automation_id: unknown;
   workspace_id: unknown;
@@ -274,10 +276,28 @@ export class AutomationStore {
     const pending = this.requireFire(fireId);
     if (pending.status !== "pending" && pending.status !== "deferred") return undefined;
     const automation = this.require(pending.automationId);
-    const result = this.withAutomationEvent(automation, "automation.fire.claimed", { fireId, claimToken }, now, () =>
-      this.database.prepare("UPDATE automation_pending_fires SET status = 'running', claim_token = ?, claimed_at = ? WHERE fire_id = ? AND status IN ('pending', 'deferred')").run(claimToken, now, fireId)
-    );
-    if (result.changes === 0) return undefined;
+    try {
+      this.withAutomationEvent(automation, "automation.fire.claimed", { fireId, claimToken }, now, () => {
+        const result = this.database.prepare(`
+          UPDATE automation_pending_fires
+          SET status = 'running', claim_token = ?, claimed_at = ?
+          WHERE fire_id = ?
+            AND status IN ('pending', 'deferred')
+            AND EXISTS (
+              SELECT 1 FROM automations
+              WHERE automation_id = automation_pending_fires.automation_id
+                AND workspace_id = ?
+                AND status = 'active'
+                AND (max_fires IS NULL OR fire_count < max_fires)
+            )
+        `).run(claimToken, now, fireId, this.authority.workspaceId);
+        // 抛错会回滚同一事务里刚写入的 claimed 事件，避免留下并未取得执行权的假事实。
+        if (result.changes === 0) throw new AutomationClaimRejectedError();
+      });
+    } catch (error) {
+      if (error instanceof AutomationClaimRejectedError) return undefined;
+      throw error;
+    }
     return this.requireFire(fireId);
   }
 
@@ -304,7 +324,8 @@ export class AutomationStore {
     const status = failures >= pauseAfter ? "failed" : "active";
     return this.withAutomationEvent(automation, "automation.fire.failed", { fireId, error, failures }, now, () => {
       this.database.prepare("UPDATE automation_pending_fires SET status = 'failed', error = ? WHERE fire_id = ?").run(error, fireId);
-      this.database.prepare("UPDATE automations SET status = ?, consecutive_failures = ?, last_fire_at = ?, updated_at = ?, revision = revision + 1 WHERE automation_id = ?").run(status, failures, now, now, automation.automationId);
+      // 用户可能在本次执行期间手动暂停；失败回调只推动仍为 active 的任务，不能覆盖人工或终态状态。
+      this.database.prepare("UPDATE automations SET status = CASE WHEN status = 'active' THEN ? ELSE status END, consecutive_failures = ?, last_fire_at = ?, updated_at = ?, revision = revision + 1 WHERE automation_id = ?").run(status, failures, now, now, automation.automationId);
       return this.requireFire(fireId);
     });
   }
@@ -504,6 +525,10 @@ export class AutomationScheduler {
         // 没有 Host registry 的同进程 fallback 仍允许复用单 runtime；正常 Host 会在
         // createFreshRuntime(sessionId) 中直接创建/取得目标条目，不会在这里改写 session。
         await target.resumeSession(targetSessionId);
+      }
+      if (target.getSnapshot().info.planning) {
+        store.deferFire(claimed.fireId, new Date(Date.now() + deferDelay(automation)), "Target session is in planning mode; fire deferred.");
+        return;
       }
       const submitted = target.submitPrompt(
         automation.executionTemplate.prompt,

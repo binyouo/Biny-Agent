@@ -419,7 +419,7 @@ export class DurableTaskRunStore {
       retrySafety: "unknown"
     });
     if (attempt.taskRunId !== taskRunId) throw new Error(`TaskAttempt ${attempt.attemptId} does not belong to TaskRun ${taskRunId}.`);
-    if (isTaskRunTerminal(task.status) || this.latestAttempt(taskRunId)?.attemptId !== attempt.attemptId) {
+    if (isTaskRunTerminal(task.status) || task.status === "needs_approval" || this.latestAttempt(taskRunId)?.attemptId !== attempt.attemptId) {
       return this.requireWithAttempts(taskRunId);
     }
     const status = snapshot.status === "timed_out"
@@ -589,7 +589,6 @@ export function isTaskRunTerminal(status: TaskRunStatus): boolean {
     || status === "blocked"
     || status === "policy_denied"
     || status === "budget_exhausted"
-    || status === "needs_approval"
     || status === "aborted"
     || status === "cancelled";
 }
@@ -606,7 +605,7 @@ function isAllowedTaskTransition(from: TaskRunStatus, to: TaskRunStatus): boolea
     blocked: [],
     policy_denied: [],
     budget_exhausted: [],
-    needs_approval: [],
+    needs_approval: ["verifying", "blocked", "cancelled"],
     aborted: [],
     cancelled: []
   };

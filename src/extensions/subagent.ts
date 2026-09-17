@@ -7,12 +7,13 @@ import type { NativeModelSettings } from "../llm/nativeFactory.js";
 import { calculateUsageCost, type ModelUsageObserver } from "../observability/usage.js";
 import { SubagentTaskIncompleteError, type SubagentTaskManager } from "../runtime/SubagentTaskManager.js";
 import type { SubagentAccessMode } from "../runtime/SubagentTaskManager.js";
+import type { TaskVerificationContract } from "../runtime/taskVerification.js";
 import { usageSnapshot } from "../session/metadata.js";
 import { ToolAccesses } from "../tools/access.js";
 import type { ToolRegistry } from "../tools/registry.js";
 import { ToolScheduler } from "../tools/scheduler.js";
 import { resolveEditingMode, routeEditingTools, type EditingMode } from "../tools/file/editingMode.js";
-import type { ToolContext } from "../tools/types.js";
+import type { ToolContext, ToolExecutionContext } from "../tools/types.js";
 import { createToolOperationId, type RunnableToolExecution, type Tool } from "../tools/types.js";
 import { isProtectedCredentialPath, redactSecrets } from "../utils/secrets.js";
 import { findSubagentDefinition, type SubagentDefinition } from "./agents.js";
@@ -21,11 +22,89 @@ const subagentParameters = {
   type: "object" as const,
   properties: {
     task: { type: "string" as const, description: "A focused repository task for the subagent, including implementation and finite validation when needed." },
-    agent: { type: "string" as const, description: "Optional named subagent definition to run this task with (see the named subagents list). Omit for the default bounded subagent." }
+    agent: { type: "string" as const, description: "Optional named subagent definition to run this task with (see the named subagents list). Omit for the default bounded subagent." },
+    constraints: {
+      type: "array" as const,
+      items: { type: "string" as const },
+      description: "User constraints that the worker must preserve. Keep explicit user requirements separate from inferred checks."
+    },
+    verification: {
+      type: "object" as const,
+      description: "Use only when this delegated task must not be reported complete until deterministic checks pass.",
+      properties: {
+        objective: { type: "string" as const },
+        context: { type: "string" as const },
+        checks: {
+          type: "array" as const,
+          items: {
+            type: "object" as const,
+            properties: {
+              id: { type: "string" as const },
+              command: { type: "string" as const },
+              cwd: { type: "string" as const },
+              timeoutMs: { type: "number" as const },
+              definitionPaths: { type: "array" as const, items: { type: "string" as const } }
+            },
+            required: ["command"],
+            additionalProperties: false
+          }
+        },
+        artifactPaths: { type: "array" as const, items: { type: "string" as const } },
+        allowedRepairPaths: { type: "array" as const, items: { type: "string" as const } },
+        maxAttempts: { type: "number" as const }
+      },
+      required: ["objective", "checks", "artifactPaths"],
+      additionalProperties: false
+    }
   },
   required: ["task"],
   additionalProperties: false
 };
+
+export const taskVerificationSchema = z.object({
+  objective: z.string().trim().min(1),
+  context: z.string().trim().min(1).optional(),
+  checks: z.array(z.object({
+    id: z.string().trim().min(1).optional(),
+    command: z.string().trim().min(1),
+    cwd: z.string().trim().min(1).optional(),
+    timeoutMs: z.number().int().min(1).max(600_000).optional(),
+    definitionPaths: z.array(z.string().trim().min(1)).optional()
+  }).strict()).min(1),
+  artifactPaths: z.array(z.string().trim().min(1)).min(1),
+  allowedRepairPaths: z.array(z.string().trim().min(1)).min(1).optional(),
+  maxAttempts: z.number().int().min(1).max(10).optional()
+}).strict().transform((value): TaskVerificationContract => ({
+  version: 1,
+  objective: value.objective,
+  context: value.context,
+  checks: value.checks.map((check, index) => ({
+    id: check.id ?? `check-${String(index + 1)}`,
+    command: check.command,
+    cwd: check.cwd,
+    timeoutMs: check.timeoutMs,
+    definitionPaths: check.definitionPaths ?? []
+  })),
+  artifactPaths: value.artifactPaths,
+  allowedRepairPaths: value.allowedRepairPaths ?? value.artifactPaths,
+  maxAttempts: value.maxAttempts ?? 2
+}));
+
+const subagentSchema = z.object({
+  task: z.string().min(1).max(20_000),
+  agent: z.string().trim().min(1).max(64).optional(),
+  constraints: z.array(z.string().trim().min(1)).max(100).optional(),
+  verification: taskVerificationSchema.optional()
+}).strict();
+
+export type SubagentToolInput = z.infer<typeof subagentSchema>;
+
+export interface VerifiedSubagentTaskInput {
+  task: string;
+  agent?: string;
+  constraints?: string[];
+  verification: TaskVerificationContract;
+}
 
 const safeBuiltinCapabilities = new Set([
   "filesystem.read",
@@ -54,19 +133,23 @@ export interface SubagentOptions {
   loadAgentDefinitions?: () => Promise<SubagentDefinition[]>;
   toolRegistry: ToolRegistry;
   onUsage?: ModelUsageObserver;
+  runVerifiedTask?: (input: VerifiedSubagentTaskInput, context: ToolExecutionContext) => Promise<unknown>;
+  readTaskResult?: (taskRunId: string, context: ToolExecutionContext) => Promise<unknown>;
 }
 
-export function createSubagentTool(options: SubagentOptions, taskManager: SubagentTaskManager): Tool<{ task: string; agent?: string }, string> {
+export function createSubagentTool(options: SubagentOptions, taskManager: SubagentTaskManager): Tool<SubagentToolInput, unknown> {
   return {
     name: "Task",
-    description: "Launch a focused, bounded worker for repository investigation, implementation, repair, or finite validation. Pass agent to use a named specialist definition.",
+    description: "Launch a focused, bounded worker. Add verification only when the delegated work has explicit deterministic acceptance checks; a normal Worker return then remains a candidate until those checks pass.",
     promptSnippet: "Delegate complex or isolated work to a focused, bounded worker",
     promptGuidelines: [
       "Keep simple one-step requests in the current run; delegate when isolation, specialist focus, or independent execution will help.",
-      "Give the worker a concrete goal, relevant constraints, and a finite deliverable; summarize its result to the user when it returns."
+      "Give the worker a concrete goal, relevant constraints, and a finite deliverable; summarize its result to the user when it returns.",
+      "Preserve user-specified acceptance conditions exactly. Put them in verification.checks; do not replace them with easier inferred checks.",
+      "If a verified task returns needs_approval, report the exact approvalId, command, cwd, and reason. Do not claim completion or approve it yourself."
     ],
     parameters: subagentParameters,
-    schema: z.object({ task: z.string().min(1).max(20_000), agent: z.string().trim().min(1).max(64).optional() }),
+    schema: subagentSchema,
     source: "subagent",
     capability: "subagent.workspace",
     risk: "execute",
@@ -80,13 +163,56 @@ export function createSubagentTool(options: SubagentOptions, taskManager: Subage
         },
         description: "Runs a bounded workspace subagent with an explicit local-tool allowlist and restricted validation commands.",
         approvalRule: "Task",
-        async execute(context): Promise<string> {
+        async execute(context): Promise<unknown> {
+          if (args.verification) {
+            if (!options.runVerifiedTask) throw new Error("Verified TaskRun execution is unavailable in this runtime.");
+            return await options.runVerifiedTask({
+              task: args.task,
+              agent: args.agent,
+              constraints: args.constraints,
+              verification: args.verification
+            }, context);
+          }
           return await taskManager.run(args.task, {
             parentRunId: options.getParentRunId?.() ?? context.toolCallId,
             signal: context.signal,
             accessMode: options.getAccessMode(),
             agent: args.agent
           });
+        }
+      };
+    }
+  };
+}
+
+export function createTaskStatusTool(options: SubagentOptions): Tool<{ taskRunId: string }, unknown> {
+  return {
+    name: "TaskStatus",
+    description: "Read the durable status and verification evidence for a TaskRun created by this session. This never resumes, retries, approves, or creates work.",
+    promptSnippet: "Read a previously delegated verified task result",
+    promptGuidelines: [
+      "Use TaskStatus when a previous verified Task call returned needs_approval or another non-terminal status.",
+      "Report completed only when the returned status is completed and verification evidence is passed."
+    ],
+    parameters: {
+      type: "object",
+      properties: { taskRunId: { type: "string", description: "The TaskRun id returned by Task." } },
+      required: ["taskRunId"],
+      additionalProperties: false
+    },
+    schema: z.object({ taskRunId: z.string().trim().min(1) }).strict(),
+    source: "subagent",
+    capability: "subagent.workspace",
+    risk: "read",
+    resolveExecution(args) {
+      return {
+        accesses: ToolAccesses.none(),
+        display: { kind: "generic", summary: "Read verified task status", detail: args.taskRunId },
+        description: "Reads persisted TaskRun status and evidence without changing execution state.",
+        approvalRule: "TaskStatus",
+        async execute(context): Promise<unknown> {
+          if (!options.readTaskResult) throw new Error("TaskRun status is unavailable in this runtime.");
+          return await options.readTaskResult(args.taskRunId, context);
         }
       };
     }

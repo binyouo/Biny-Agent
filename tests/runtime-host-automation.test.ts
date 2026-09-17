@@ -39,7 +39,7 @@ function runtime(sessionId: string, busy = false): InteractiveRuntimeHandle {
       return submitted;
     },
     steer: () => { throw new Error("not used"); },
-    followUp: () => { throw new Error("not used"); },
+    enqueue: () => { throw new Error("not used"); },
     continueInterruptedTurn: async () => undefined,
     startInterruptedTurn: async () => undefined,
     waitForIdle: async () => undefined,

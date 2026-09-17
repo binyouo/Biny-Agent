@@ -26,6 +26,7 @@ export interface RuntimeHostBusinessComposition {
   cancelMemorySleep(): boolean;
   runAutomation(automationId: string): Promise<unknown>;
   recoverGraphs(): void;
+  scheduleGraphs(): void;
 }
 
 export interface RuntimeHostBusinessCompositionOptions {
@@ -34,8 +35,12 @@ export interface RuntimeHostBusinessCompositionOptions {
   isBusy?: () => boolean;
   createRuntime?: RuntimeHostFactory;
   createFreshRuntime?: (sessionId?: string) => Promise<InteractiveRuntimeHandle>;
+  resolveSessionRuntime?: (sessionId: string) => Promise<InteractiveRuntimeHandle>;
+  resolveSessionCommands?: (sessionId: string) => Promise<CommandRuntime>;
+  sessionExists?: (sessionId: string) => Promise<boolean>;
   canStartAutomationRun?: () => boolean;
   restartRuntime(): Promise<void>;
+  onGraphChange?(): void;
 }
 
 export function createRuntimeHostBusinessComposition(
@@ -49,9 +54,12 @@ export function createRuntimeHostBusinessComposition(
     isBusy: options.isBusy
   });
   let stopped = false;
+  let unsubscribeGraphs: (() => void) | undefined;
 
   const createSchedulers = (): void => {
     const commands = options.getCommands();
+    unsubscribeGraphs?.();
+    unsubscribeGraphs = commands.graphs?.subscribe(() => { if (!stopped) options.onGraphChange?.(); });
     automationScheduler = commands.automationStore
       ? new AutomationScheduler({
         getRuntime: options.getRuntime,
@@ -69,7 +77,10 @@ export function createRuntimeHostBusinessComposition(
         getTaskRuns: () => options.getCommands().taskRuns,
         getTaskCommandExecutor: () => options.getCommands(),
         getWorkspaceRoot: () => options.getCommands().workspaceRoot,
-        getWorkspaceIgnore: () => options.getCommands().config.workspace.ignore
+        getWorkspaceIgnore: () => options.getCommands().config.workspace.ignore,
+        resolveSupervisorRuntime: options.resolveSessionRuntime,
+        resolveSupervisorCommands: options.resolveSessionCommands,
+        supervisorSessionExists: options.sessionExists
       })
       : undefined;
   };
@@ -90,9 +101,13 @@ export function createRuntimeHostBusinessComposition(
       graphSupervisor?.stop();
       memoryMaintenance.stop();
       stopped = true;
+      unsubscribeGraphs?.();
     },
     handleRuntimeUpdate(update: AgentRuntimeUpdate): void {
       memoryMaintenance.handleRuntimeUpdate(update);
+      if (update.snapshot.state.kind === "idle" || update.event?.type === "tool.completed") {
+        graphSupervisor?.requestTick();
+      }
     },
     scheduleMemoryEmbeddingRebuild(): void {
       memoryMaintenance.scheduleEmbeddingRebuild();
@@ -113,6 +128,10 @@ export function createRuntimeHostBusinessComposition(
     recoverGraphs(): void {
       const commands = options.getCommands();
       if (graphSupervisor && commands.graphs) commands.graphs.recoverRunningNodes(commands.taskRuns);
+      graphSupervisor?.requestTick();
+    },
+    scheduleGraphs(): void {
+      graphSupervisor?.requestTick();
     }
   };
 }

@@ -15,7 +15,6 @@ import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import type { AgentMessage } from "../agent/core/types.js";
-import type { ToolExecutionState, ToolRetrySafety } from "../tools/types.js";
 import type { RuntimeHighWater } from "./runtimeEvent.js";
 import { agentDir, ensureAgentDirs } from "./store.js";
 
@@ -37,22 +36,9 @@ export interface InterruptedTurn {
   terminal?: InterruptedTurnTerminal;
   /** 同一 Turn 续跑前已经发生的终态；新预算窗口不能覆盖原终态。 */
   previousTerminals?: InterruptedTurnTerminal[];
-  /** 只记录恢复审计需要的工具断点，不作为会话事实的替代。 */
-  lastToolSequence?: number;
-  pendingToolExecutions?: InterruptedToolExecutionCheckpoint[];
   /** 最后一个已写入 session JSONL 的 runtime event 高水位。 */
   runtimeHighWater?: RuntimeHighWater;
   updatedAt: string;
-}
-
-export interface InterruptedToolExecutionCheckpoint {
-  tool: string;
-  toolCallId: string;
-  sequence: number;
-  operationId: string;
-  state: ToolExecutionState;
-  evidence?: string;
-  retrySafety?: ToolRetrySafety;
 }
 
 export interface InterruptedTurnTerminal {
@@ -74,7 +60,6 @@ export class TurnStore {
     facts?: unknown,
     terminal?: InterruptedTurnTerminal,
     previousTerminals?: readonly InterruptedTurnTerminal[],
-    pendingToolExecutions?: readonly InterruptedToolExecutionCheckpoint[],
     runtimeHighWater?: RuntimeHighWater
   ): Promise<void> {
     await ensureAgentDirs(this.persistenceRoot);
@@ -88,8 +73,6 @@ export class TurnStore {
       facts,
       terminal,
       previousTerminals: previousTerminals ? [...previousTerminals] : undefined,
-      lastToolSequence: pendingToolExecutions?.reduce((maximum, checkpoint) => Math.max(maximum, checkpoint.sequence), 0) || undefined,
-      pendingToolExecutions: pendingToolExecutions?.length ? [...pendingToolExecutions] : undefined,
       runtimeHighWater,
       updatedAt: new Date().toISOString()
     };
@@ -117,11 +100,7 @@ export class TurnStore {
       if (version !== turnStateVersion && version !== 3 && version !== 2) return undefined;
       const turn = (parsed as { turn?: unknown }).turn;
       if (!isInterruptedTurn(turn)) return undefined;
-      return {
-        ...turn,
-        messages: turn.messages,
-        pendingToolExecutions: turn.pendingToolExecutions
-      };
+      return turn;
     } catch {
       return undefined;
     }
@@ -157,10 +136,6 @@ function isInterruptedTurn(value: unknown): value is InterruptedTurn {
     && (candidate.previousTerminals === undefined
       || Array.isArray(candidate.previousTerminals)
       && candidate.previousTerminals.every(isInterruptedTurnTerminal))
-    && (candidate.lastToolSequence === undefined || Number.isSafeInteger(candidate.lastToolSequence) && candidate.lastToolSequence >= 0)
-    && (candidate.pendingToolExecutions === undefined
-      || Array.isArray(candidate.pendingToolExecutions)
-      && candidate.pendingToolExecutions.every(isInterruptedToolExecutionCheckpoint))
     && (candidate.runtimeHighWater === undefined || isRuntimeHighWater(candidate.runtimeHighWater))
     && typeof candidate.updatedAt === "string";
 }
@@ -174,31 +149,6 @@ function isRuntimeHighWater(value: unknown): value is RuntimeHighWater {
     && (candidate.eventSeq ?? 0) > 0
     && (candidate.runId === undefined || typeof candidate.runId === "string" && candidate.runId.length > 0)
     && (candidate.turnId === undefined || typeof candidate.turnId === "string" && candidate.turnId.length > 0);
-}
-
-function isInterruptedToolExecutionCheckpoint(value: unknown): value is InterruptedToolExecutionCheckpoint {
-  if (typeof value !== "object" || value === null) return false;
-  const candidate = value as Partial<InterruptedToolExecutionCheckpoint>;
-  return typeof candidate.tool === "string"
-    && typeof candidate.toolCallId === "string"
-    && Number.isSafeInteger(candidate.sequence)
-    && (candidate.sequence ?? -1) >= 0
-    && typeof candidate.operationId === "string"
-    && (candidate.state === "not_started"
-      || candidate.state === "running"
-      || candidate.state === "admitted"
-      || candidate.state === "side_effect_committed"
-      || candidate.state === "cancel_requested"
-      || candidate.state === "cancelled"
-      || candidate.state === "succeeded"
-      || candidate.state === "failed"
-      || candidate.state === "unknown")
-    && (candidate.evidence === undefined || typeof candidate.evidence === "string")
-    && (candidate.retrySafety === undefined
-      || candidate.retrySafety === "safe"
-      || candidate.retrySafety === "idempotent"
-      || candidate.retrySafety === "unsafe"
-      || candidate.retrySafety === "unknown");
 }
 
 function isAgentMessage(value: unknown): value is AgentMessage {

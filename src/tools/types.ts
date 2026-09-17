@@ -30,11 +30,6 @@ export type ToolExecutionState =
 export type ToolRetrySafety = "safe" | "idempotent" | "unsafe" | "unknown";
 export type ToolExecutionResultStatus = "cancelled" | "succeeded" | "failed" | "unknown";
 
-export interface ToolExecutionQueryResult {
-  state: ToolExecutionState;
-  evidence?: string;
-}
-
 /** sessionId + toolCallId 的稳定标识，不把调用参数或敏感内容放进审计事件。 */
 export function createToolOperationId(sessionId: string, toolCallId: string): string {
   return `op_${createHash("sha256").update(`${sessionId}\0${toolCallId}`).digest("hex")}`;
@@ -82,8 +77,6 @@ export interface RunnableToolExecution<TResult = unknown> {
   description?: string;
   retrySafety?: ToolRetrySafety;
   approvalRule: string;
-  /** 只能查询 operationId 的真实状态，不能触发一次新的工具执行。 */
-  queryStatus?: (operationId: string, signal?: AbortSignal) => Promise<ToolExecutionQueryResult>;
   execute(context: ToolExecutionContext): Promise<TResult>;
 }
 

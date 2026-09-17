@@ -55,6 +55,16 @@ class BinyAgent(BaseAgent):
     ) -> None:
         self._validate_model_binding()
         command = self._run_command(instruction)
+        # Harbor 在外层 deadline 到达时会取消整个 run；先记录启动事实，避免超时样例只剩
+        # 一个空 AgentContext。若 BINY_AGENT_DIR 位于 /logs/agent 下，对应 session 也会随
+        # Harbor agent logs 一起持久化，便于区分慢模型、循环执行和工具阻塞。
+        existing_metadata = dict(context.metadata or {})
+        existing_metadata["biny"] = {
+            "status": "running",
+            "modelAlias": self._env("BINY_MODEL_ALIAS"),
+            "stateDir": self._env("BINY_AGENT_DIR"),
+        }
+        context.metadata = existing_metadata
         result = await environment.exec(
             command,
             env=self._agent_env(),
@@ -154,7 +164,23 @@ class BinyAgent(BaseAgent):
                 "BINY_PERMISSION_MODE must be one of ask, read-only, auto, full-access."
             )
         args.extend(["--permission-mode", permission_mode, "--", instruction])
-        return shlex.join(args)
+        command = shlex.join(args)
+        log_dir = self._env("BINY_RUN_LOG_DIR")
+        if log_dir is None:
+            return command
+        if not log_dir.startswith("/"):
+            raise RuntimeError("BINY_RUN_LOG_DIR must be an absolute path.")
+        stdout_path = shlex.quote(f"{log_dir.rstrip('/')}/biny.stdout")
+        stderr_path = shlex.quote(f"{log_dir.rstrip('/')}/biny.stderr")
+        # environment.exec 会缓存子进程输出；Harbor 外层超时取消 exec 时，缓存内容无法返回。
+        # 先写到持久日志目录，正常结束后再回放，既保留原有 JSON 解析，也让超时样例留下诊断。
+        return (
+            f"mkdir -p {shlex.quote(log_dir)} && "
+            f"{command} > {stdout_path} 2> {stderr_path}; "
+            "biny_status=$?; "
+            f"cat {stdout_path}; cat {stderr_path} >&2; "
+            "exit $biny_status"
+        )
 
     def _positive_env_int(self, name: str) -> int | None:
         value = self._env(name)

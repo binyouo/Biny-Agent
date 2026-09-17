@@ -271,9 +271,9 @@ export async function* vercelAgentLoopContinue(
       continue;
     }
 
-    const followUpMessages = await config.getFollowUpMessages?.() ?? [];
-    if (!followUpMessages.length) break;
-    await appendQueuedMessages(state, followUpMessages);
+    const queuedMessages = await config.getQueuedMessages?.() ?? [];
+    if (!queuedMessages.length) break;
+    await appendQueuedMessages(state, queuedMessages);
     while (state.pendingEvents.length) {
       const event = state.pendingEvents.shift();
       if (event) yield event;

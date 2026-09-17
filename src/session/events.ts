@@ -318,7 +318,7 @@ export function summarizeSessionEvents(
   stat: Pick<Stats, "birthtime" | "mtime">
 ): SessionSummary | undefined {
   const firstUser = events.find((event): event is Extract<SessionEvent, { type: "user_message" }> => event.type === "user_message"
-    && !(event.auditOnly && (event.metadata?.queuedDelivery === "steer" || event.metadata?.queuedDelivery === "followUp")));
+    && !(event.auditOnly && (event.metadata?.queuedDelivery === "steer" || event.metadata?.queuedDelivery === "queue")));
   if (!firstUser) return undefined;
   const firstUserMessage = publicUserMessage(firstUser.content);
   const lastAssistant = [...events].reverse().find((event): event is Extract<SessionEvent, { type: "assistant_message" }> => event.type === "assistant_message" && Boolean(event.content));

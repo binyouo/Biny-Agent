@@ -35,6 +35,7 @@ export type SessionBranchPoint =
 export type SessionIsolation = "shared" | "worktree";
 
 export interface SessionCatalogRecord {
+  planning?: boolean;
   version: typeof catalogVersion;
   sessionId: string;
   rootSessionId: string;
@@ -95,6 +96,7 @@ export interface SessionTreeNode {
 }
 
 export interface SessionCatalogMetadataPatch {
+  planning?: boolean;
   title?: string;
   pinned?: boolean;
   archived?: boolean;
@@ -152,6 +154,7 @@ export async function registerSessionBranch(
       ? undefined
       : cloneChatPersonalizationOverride(parent.personalization),
     isolation: parent?.isolation,
+    planning: parent?.planning,
     createdAt: now,
     updatedAt: now
   });
@@ -217,6 +220,7 @@ export async function updateSessionCatalogMetadata(
         ? base.unread
         : patch.unread,
       labels: patch.labels === undefined ? base.labels : [...patch.labels],
+      planning: patch.planning ?? base.planning,
       personalization: patch.personalization === undefined
         ? base.personalization
         : cloneChatPersonalizationOverride(patch.personalization),
@@ -565,6 +569,7 @@ function catalogMetadataEquals(left: SessionCatalogRecord, right: SessionCatalog
     && left.pinned === right.pinned
     && left.archived === right.archived
     && left.unread === right.unread
+    && left.planning === right.planning
     && optionalStringArraysEqual(left.labels, right.labels)
     && JSON.stringify(left.personalization) === JSON.stringify(right.personalization)
     && left.isolation === right.isolation;

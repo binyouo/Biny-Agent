@@ -19,6 +19,7 @@ export type AgentBlockedReason = BlockedReason;
 export type RuntimeOperation =
   | "resume"
   | "draft"
+  | "planning"
   | "compact"
   | "switch_model"
   | "refresh_model"
@@ -57,7 +58,7 @@ export interface AgentRunModel {
 export type AgentHostEvent =
   | RunStartedEvent
   | (AgentEventBase & { type: "session.title"; title: string })
-  | (AgentEventBase & { type: "message.user"; messageId: string; content: string; delivery?: "steer" | "followUp" })
+  | (AgentEventBase & { type: "message.user"; messageId: string; content: string; delivery?: "steer" | "queue" })
   | (AgentEventBase & AgentSessionUpdate)
   | (AgentEventBase & { type: "permission.requested"; requestId: string; toolCallId: string; request: AgentPermissionEventRequest })
   | (AgentEventBase & { type: "permission.resolved"; requestId: string; toolCallId: string; tool: string; approved: boolean; action?: PermissionAction; scope?: PermissionGrantScope; message?: string })
@@ -157,8 +158,16 @@ export interface InteractiveRuntimeSnapshot {
   info: AgentSessionInfo;
   permissionMode: PermissionMode;
   state: InteractiveRunState;
+  /** 当前回合结束后待发送的消息；排序即实际发送顺序。 */
+  queuedMessages?: QueuedRunMessageSnapshot[];
   /** Host 级 MCP/Skill 基线；旧客户端缺省时按未知处理。 */
   resourceReadiness?: RuntimeResourceReadiness;
+}
+
+export interface QueuedRunMessageSnapshot {
+  messageId: string;
+  content: string;
+  attachmentCount: number;
 }
 
 /** Runtime 发布的唯一实时信封；没有 event 时表示维护操作等纯状态变化。 */

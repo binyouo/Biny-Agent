@@ -61,11 +61,13 @@ export function operationLane(operation: string): OperationLane {
     || operation === "run.continue"
     || operation === "queue"
     || operation === "run.queue"
+    || operation === "run.queue.mutate"
   ) return "run";
   if (operation === "task.start" || operation === "task.run" || operation === "task.retry") return "admission";
   if (operation === "diary.refresh" || operation === "reflection.run" || operation === "heartbeat.run") return "admission";
   if (
     operation === "snapshot"
+    || operation === "plan.list"
     || operation === "session.list"
     || operation === "worktree.list"
     || operation === "worktree.status"

@@ -4,6 +4,8 @@
  * 生命周期由 lifecycle/bootstrap 负责，业务调度器由 composition 负责，线协议由 protocol 负责。
  */
 import { randomUUID } from "node:crypto";
+import { planStatus } from "../../extensions/plan.js";
+import { assertPlanningOperationAllowed } from "../../agent/planningPolicy.js";
 import { promises as fs } from "node:fs";
 import type { FileHandle } from "node:fs/promises";
 import net from "node:net";
@@ -21,9 +23,8 @@ import type {
   SubmittedAgentRun
 } from "../InteractiveAgentRuntime.js";
 import { runtimeIsBusy, type AgentRuntimeUpdate, type InteractiveRuntimeSnapshot } from "../agentEvents.js";
-import { isTaskRunTerminal, type TaskRetrySafety, type TaskRunWithAttempts } from "../TaskRunStore.js";
+import type { TaskRetrySafety, TaskRunWithAttempts } from "../TaskRunStore.js";
 import { evaluateTaskRetry } from "../TaskRetryPolicy.js";
-import { SubagentTaskIncompleteError } from "../SubagentTaskManager.js";
 import type {
   CapabilityRegistrationInput,
   CapabilityStore
@@ -93,7 +94,7 @@ import { listSessionFiles, sessionIdFromFile } from "../../session/store.js";
 import { readSessionCatalogRecord, writeSessionCatalogRecord } from "../../session/catalog.js";
 import { WorktreeDirtyError, WorktreeManager } from "./worktree.js";
 import { RuntimeHostFrameDecoder } from "./framing.js";
-import { runTaskClosure } from "../TaskClosure.js";
+import { approveTaskVerification, type TaskClosureResult } from "../TaskClosure.js";
 import { readTaskDefinition } from "../taskVerification.js";
 
 interface HostConnection {
@@ -137,8 +138,6 @@ export class RuntimeHostServer {
   private closePromise: Promise<void> | undefined;
   /** 重建只锁定目标 session，不能让一个 session 的配置刷新挡住其它 session。 */
   private readonly runtimeRestartPromises = new Map<string, Promise<{ snapshot: InteractiveRuntimeSnapshot; sequence: number }>>();
-  private readonly taskPromises = new Map<string, Promise<unknown>>();
-  private readonly taskControllers = new Map<string, AbortController>();
   private listening = false;
   private initialized = false;
 
@@ -175,6 +174,7 @@ export class RuntimeHostServer {
       onUpdate: (update, managed) => this.handleRuntimeUpdate(update, managed)
     });
     this.businessComposition = createRuntimeHostBusinessComposition({
+      onGraphChange: () => this.publishSnapshot(),
       getRuntime: () => this.runtime,
       getCommands: () => this.commands,
       createRuntime,
@@ -191,6 +191,30 @@ export class RuntimeHostServer {
           }
           return (await this.registry.createFresh({ isolation: "shared", resourceRegistry: this.resourceRegistry })).runtime;
         },
+      resolveSessionRuntime: createRuntime === undefined
+        ? async (sessionId) => {
+          const existing = this.registry.get(sessionId);
+          if (!existing) throw new Error(`Supervisor session runtime ${sessionId} is unavailable.`);
+          return existing.runtime;
+        }
+        : async (sessionId) => {
+          const existing = this.registry.get(sessionId);
+          if (existing) return existing.runtime;
+          return (await this.registry.ensure(sessionId, await this.factoryOptionsForSession(sessionId))).runtime;
+        },
+      resolveSessionCommands: createRuntime === undefined
+        ? async (sessionId) => {
+          const existing = this.registry.get(sessionId);
+          if (!existing) throw new Error(`Supervisor session commands ${sessionId} are unavailable.`);
+          return existing.commands;
+        }
+        : async (sessionId) => {
+          const existing = this.registry.get(sessionId);
+          if (existing) return existing.commands;
+          return (await this.registry.ensure(sessionId, await this.factoryOptionsForSession(sessionId))).commands;
+        },
+      sessionExists: async (sessionId) => this.registry.get(sessionId) !== undefined
+        || (await listSessionFiles(this.registration.persistenceRoot)).includes(`${sessionId}.jsonl`),
       isBusy: () => this.registry.list().some((entry) => runtimeIsBusy(entry.runtime.getSnapshot())),
       canStartAutomationRun: () => this.quota.canStartRun(this.registry),
       restartRuntime: async () => {
@@ -277,22 +301,28 @@ export class RuntimeHostServer {
       for (const task of page.tasks) {
         if (task.status !== "running" && task.status !== "verifying") continue;
         try {
+          const owner = this.createRuntime === undefined
+            || task.sessionId === undefined
+            || task.sessionId === this.runtime.getSnapshot().info.sessionId
+            ? this.commands
+            : (await this.registry.ensure(task.sessionId, await this.factoryOptionsForSession(task.sessionId))).commands;
           if (task.status === "running") {
-            if (readTaskDefinition(task.task).verification) {
-              this.commands.taskRuns.transition(task.taskRunId, "blocked", {
+            const definition = readTaskDefinition(task.task);
+            if (definition.verification || definition.review || definition.reportOnly) {
+              owner.taskRuns.transition(task.taskRunId, "blocked", {
                 attemptId: task.attempts.at(-1)?.attemptId,
                 failure: {
                   failureClass: "unsafe_recovery",
-                  message: "Host restarted before a verification-enabled Worker persisted its candidate outcome."
+                  message: "Host restarted before a Worker with required closure persisted its outcome."
                 }
               });
             } else {
-              this.commands.taskRuns.requeue(task.taskRunId);
+              owner.taskRuns.requeue(task.taskRunId);
             }
             continue;
           }
           // verifying 已有候选产物；恢复只能继续验收或因证据不足阻塞，不能重跑整个 Worker。
-          const started = await this.startTaskRun(task.taskRunId, this.commands);
+          const started = await this.startTaskRun(task.taskRunId, owner);
           void started.completion.catch(() => undefined);
         } catch {
           // 并发恢复或已完成的任务以数据库当前终态为准，不能阻止 Host 启动。
@@ -411,9 +441,26 @@ export class RuntimeHostServer {
     });
   }
 
-  private handleRuntimeUpdate(update: AgentRuntimeUpdate, _managed?: ManagedSessionRuntime): void {
+  private handleRuntimeUpdate(update: AgentRuntimeUpdate, managed?: ManagedSessionRuntime): void {
     this.businessComposition.handleRuntimeUpdate(update);
+    if (managed && update.snapshot.state.kind === "idle") {
+      this.releaseIdleSessionWriter(update.snapshot.info.sessionId, managed);
+    }
     this.publish(update);
+  }
+
+  /**
+   * writer claim 只保护实际写入和运行窗口。Runtime 回到 idle 后继续长期持有 claim，
+   * 会让已经结束的会话无法被 LRU 回收，最终把内部缓存上限错误暴露成用户会话上限。
+   */
+  private releaseIdleSessionWriter(sessionId: string, managed: ManagedSessionRuntime): void {
+    const owner = this.sessionWriterOwners.get(sessionId);
+    if (!owner) return;
+    this.sessionWriterOwners.delete(sessionId);
+    void managed.runtime.releaseSessionClaim(sessionId).catch(() => {
+      // 释放失败时恢复所有权，避免另一 surface 在底层 lease 仍存在时被误判为可写。
+      if (!this.sessionWriterOwners.has(sessionId)) this.sessionWriterOwners.set(sessionId, owner);
+    });
   }
 
   private read(connection: HostConnection, chunk: string): void {
@@ -503,6 +550,12 @@ export class RuntimeHostServer {
         errorCode: publicErrorCode(error),
         errorData: publicErrorData(error)
       });
+    } finally {
+      // CLI 的 Graph/审批操作也可能改变 readiness；查询本身不触发调度扫描。
+      if ((frame.operation.startsWith("graph.") || frame.operation.startsWith("task.") || frame.operation.startsWith("plan."))
+        && operationLane(frame.operation) !== "query") {
+        this.businessComposition.scheduleGraphs();
+      }
     }
   }
 
@@ -621,7 +674,30 @@ export class RuntimeHostServer {
     const managed = await this.runtimeEntry(frame.operation, payload);
     const runtime = managed.runtime;
     const commands = managed.commands;
+    assertPlanningOperationAllowed(runtime.getSnapshot().info.planning, frame.operation);
     switch (frame.operation) {
+      case "plan.list": {
+        const sessionId = runtime.getSnapshot().info.sessionId;
+        return commands.graphs.listGraphs().filter((graph) => graph.mode === "supervised" && graph.supervisorSessionId === sessionId)
+          .map((graph) => planStatus(commands, graph.graphId, sessionId));
+      }
+      case "plan.mode":
+        if (typeof payload.planning !== "boolean") throw new Error("planning must be boolean.");
+        await this.ensureSessionWriter(connection, runtime);
+        await runtime.runExclusiveOperation("planning", async () => {
+          if (payload.planning && commands.graphs.listGraphs().some((graph) => graph.mode === "supervised" && graph.supervisorSessionId === runtime.getSnapshot().info.sessionId && graph.status === "running")) {
+            throw new Error("Stop the running plan before enabling planning mode.");
+          }
+          await commands.agent.setPlanning(payload.planning as boolean);
+        });
+        return runtime.getSnapshot().info;
+      case "plan.start":
+        await this.ensureSessionWriter(connection, runtime);
+        return await runtime.runExclusiveOperation("planning", async (signal) => {
+          const revision = optionalSafeInteger(payload.revision);
+          if (revision === undefined) throw new Error("Draft revision is required.");
+          return await commands.startPlanDraft(requiredString(payload.graphId, "graphId"), revision, signal);
+        });
       case "subscribe":
         return this.subscribeConnection(
           connection,
@@ -670,10 +746,10 @@ export class RuntimeHostServer {
         const ids = readRequestIds(payload);
         const input = requiredString(payload.input, "input");
         const attachments = readAttachments(payload.attachments);
-        const delivery = payload.delivery === "steer" ? "steer" : "followUp";
+        const delivery = payload.delivery === "steer" ? "steer" : "queue";
         const queued = delivery === "steer"
           ? runtime.steer(input, attachments, ids)
-          : runtime.followUp(input, attachments, ids);
+          : runtime.enqueue(input, attachments, ids);
         return queued;
       }
       case "run.queue":
@@ -684,11 +760,47 @@ export class RuntimeHostServer {
           const ids = readRequestIds(payload);
           const input = requiredString(payload.input, "input");
           const attachments = readAttachments(payload.attachments);
-          const delivery = payload.delivery === "steer" ? "steer" : "followUp";
+          const delivery = payload.delivery === "steer" ? "steer" : "queue";
           return delivery === "steer"
             ? runtime.steer(input, attachments, ids)
-            : runtime.followUp(input, attachments, ids);
+            : runtime.enqueue(input, attachments, ids);
         }, runtime);
+      case "run.queue.mutate": {
+        this.assertRevision(payload, runtime);
+        if (payload.writeIntent === true) await this.ensureSessionWriter(connection, runtime);
+        const action = requiredString(payload.action, "action");
+        if (action === "send-all") {
+          if (!runtime.sendQueuedRunMessagesNow) throw new Error("Queued message controls are unavailable.");
+          await runtime.sendQueuedRunMessagesNow();
+          return undefined;
+        }
+        const messageId = requiredString(payload.messageId, "messageId");
+        if (action === "update") {
+          if (!runtime.updateQueuedRunMessage) throw new Error("Queued message controls are unavailable.");
+          await runtime.updateQueuedRunMessage(messageId, requiredString(payload.input, "input"));
+          return undefined;
+        }
+        if (action === "remove") {
+          if (!runtime.removeQueuedRunMessage) throw new Error("Queued message controls are unavailable.");
+          await runtime.removeQueuedRunMessage(messageId);
+          return undefined;
+        }
+        if (action === "move") {
+          if (!runtime.moveQueuedRunMessage) throw new Error("Queued message controls are unavailable.");
+          await runtime.moveQueuedRunMessage(
+            messageId,
+            requiredString(payload.targetMessageId, "targetMessageId"),
+            payload.placeAfter === true
+          );
+          return undefined;
+        }
+        if (action === "steer") {
+          if (!runtime.steerQueuedRunMessage) throw new Error("Queued message controls are unavailable.");
+          await runtime.steerQueuedRunMessage(messageId);
+          return undefined;
+        }
+        throw new Error(`Unknown queued message action: ${action}.`);
+      }
       case "session.claim":
         await this.claimSessionWriter(connection, requiredString(payload.session, "session"));
         return undefined;
@@ -813,30 +925,23 @@ export class RuntimeHostServer {
         return await this.executeControl(async () => {
           const taskRunId = requiredString(payload.taskRunId, "taskRunId");
           const reason = optionalString(payload.reason) ?? "TaskRun cancelled.";
-          const task = commands.taskRuns.get(taskRunId);
-          const latestAttempt = task?.attempts.at(-1);
-          const subagentId = latestAttempt && commands.subagents?.getSnapshot(latestAttempt.attemptId)
-            ? latestAttempt.attemptId
-            : taskRunId;
-          const subagent = commands.subagents?.getSnapshot(subagentId);
-          const cancelledSubagent = commands.subagents?.cancelTask(subagentId, reason) ?? false;
-          this.taskControllers.get(taskRunId)?.abort(new Error(reason));
-          const runId = latestAttempt?.runId;
-          if (runId !== undefined) runtime.cancelRun(runId);
-          const subagentActive = subagent?.status === "queued" || subagent?.status === "running";
-          if (subagentActive && !cancelledSubagent && !isTaskRunTerminal(task?.status ?? "created")) {
-            throw new Error(`Unable to cancel active subagent task ${taskRunId}.`);
-          }
-          if (task === undefined) throw new Error(`TaskRun ${taskRunId} does not exist.`);
-          const current = commands.taskRuns.get(taskRunId);
-          if (!current) throw new Error(`TaskRun ${taskRunId} does not exist.`);
-          if (isTaskRunTerminal(current.status)) return current;
-          return commands.taskRuns.transition(taskRunId, "cancelled");
+          return commands.cancelTaskRun(taskRunId, reason);
         }, runtime);
       case "task.approve":
-        return await this.executeAdmission(async () => {
-          throw new Error("TaskRun approval cannot start execution without an attached TaskRun execution adapter.");
-        }, runtime);
+        return await this.executeAdmission(async () => await runtime.runExclusiveOperation("subagent", async () => {
+          const taskRunId = requiredString(payload.taskRunId, "taskRunId");
+          await approveTaskVerification({
+            taskRuns: commands.taskRuns,
+            taskRunId,
+            approvalId: requiredString(payload.approvalId, "approvalId"),
+            workspaceRoot: commands.workspaceRoot || this.registration.persistenceRoot,
+            ignore: commands.config?.workspace.ignore ?? []
+          });
+          const started = await this.startTaskRun(taskRunId, commands);
+          const result = await started.completion;
+          commands.graphs.projectTaskClosure(taskRunId, result);
+          return commands.taskRuns.get(taskRunId);
+        }), runtime);
       case "task.resume":
         return await this.executeAdmission(async () => {
           throw new Error("TaskRun resume requires an explicit safe-boundary continuation admission; it cannot be inferred from a TaskRun status.");
@@ -904,7 +1009,9 @@ export class RuntimeHostServer {
         ), runtime);
       case "graph.start":
         return await this.executeAdmission(async () => {
-          const graph = commands.graphs.startGraph(requiredString(payload.graphId, "graphId"));
+          const graphId = requiredString(payload.graphId, "graphId");
+          if (commands.graphs.inspectGraph(graphId).mode === "supervised") throw new Error("Supervised drafts require plan.start with the reviewed revision.");
+          const graph = commands.graphs.startGraph(graphId);
           commands.graphs.createWake(graph.graphId, "graph_started");
           return graph;
         }, runtime);
@@ -1216,104 +1323,8 @@ export class RuntimeHostServer {
     taskRunId: string,
     commands: CommandRuntime,
     options: { retrySafety?: TaskRetrySafety } = {}
-  ): Promise<{ task: TaskRunWithAttempts; completion: Promise<unknown> }> {
-    const task = commands.taskRuns.get(taskRunId);
-    if (!task) throw new Error(`TaskRun ${taskRunId} does not exist.`);
-    const existingPromise = this.taskPromises.get(taskRunId);
-    if (existingPromise) return { task, completion: existingPromise };
-    if (isTaskRunTerminal(task.status)) return { task, completion: Promise.resolve(task) };
-
-    let current = task;
-    const verificationEnabled = readTaskDefinition(task.task).verification !== undefined;
-    if (current.status === "running") {
-      if (verificationEnabled) {
-        current = commands.taskRuns.transition(taskRunId, "blocked", {
-          attemptId: current.attempts.at(-1)?.attemptId,
-          failure: {
-            failureClass: "unsafe_recovery",
-            message: "A verification-enabled TaskRun cannot replay an unproven running Attempt."
-          }
-        });
-        return { task: current, completion: Promise.resolve(current) };
-      }
-      current = commands.taskRuns.requeue(taskRunId);
-    }
-    if (current.status === "created") current = commands.taskRuns.transition(taskRunId, "queued");
-    const latest = commands.taskRuns.get(taskRunId);
-    if (!latest) throw new Error(`TaskRun ${taskRunId} disappeared before execution.`);
-    const controller = new AbortController();
-    this.taskControllers.set(taskRunId, controller);
-    const completion = runTaskClosure({
-      taskRuns: commands.taskRuns,
-      taskRunId,
-      workspaceRoot: commands.workspaceRoot || this.registration.persistenceRoot,
-      ignore: commands.config?.workspace.ignore ?? [],
-      executor: commands.executeTaskCheck === undefined
-        ? { executeTaskCheck: async () => { throw new Error("Task verification runtime is unavailable."); } }
-        : commands,
-      retrySafety: options.retrySafety,
-      signal: controller.signal,
-      executeAttempt: async (prompt, attempt) => {
-        let submitted;
-        try {
-          submitted = commands.startSubagentTask(prompt, {
-            taskId: verificationEnabled ? attempt.attemptId : taskRunId,
-            taskRunId,
-            attemptId: attempt.attemptId,
-            completedStatus: verificationEnabled ? "verifying" : "completed",
-            parentRunId: latest.parentRunId,
-            signal: controller.signal,
-            accessMode: "workspace"
-          });
-        } catch (error) {
-          const failure = error instanceof Error ? error : new Error(String(error));
-          this.finishTaskAttempt(commands, taskRunId, attempt.attemptId, "failed", { failure: { message: failure.message, failureClass: "dispatch_failed" } });
-          throw failure;
-        }
-        try {
-          return await submitted.completion;
-        } catch (error) {
-          const failure = error instanceof Error ? error : new Error(String(error));
-          const status = failure.name === "SubagentTaskAbortedError" || failure.name === "AbortError" ? "aborted"
-            : failure instanceof SubagentTaskIncompleteError ? "incomplete" : "failed";
-          this.finishTaskAttempt(commands, taskRunId, attempt.attemptId, status, {
-            artifacts: failure instanceof SubagentTaskIncompleteError ? { output: failure.output } : undefined,
-            failure: {
-              message: failure.message,
-              failureClass: failure instanceof SubagentTaskIncompleteError ? failure.stopReason
-                : status === "failed" ? "execution_failed" : "cancelled"
-            }
-          });
-          throw failure;
-        }
-      }
-    }).finally(() => {
-      if (this.taskPromises.get(taskRunId) === completion) this.taskPromises.delete(taskRunId);
-      if (this.taskControllers.get(taskRunId) === controller) this.taskControllers.delete(taskRunId);
-    });
-    this.taskPromises.set(taskRunId, completion);
-    // task.start 是异步派发；即使调用方不再请求 task.run，失败也不能变成未处理 Promise。
-    void completion.catch(() => undefined);
-    return { task: latest, completion };
-  }
-
-  private finishTaskAttempt(
-    commands: CommandRuntime,
-    taskRunId: string,
-    attemptId: string,
-    status: "completed" | "incomplete" | "failed" | "aborted",
-    input: { artifacts?: unknown; failure?: unknown }
-  ): void {
-    try {
-      const current = commands.taskRuns.get(taskRunId);
-      if (current && !isTaskRunTerminal(current.status)) {
-        commands.taskRuns.transition(taskRunId, status, { attemptId, ...input });
-      } else if (current?.status === status) {
-        commands.taskRuns.transition(taskRunId, status, { attemptId, ...input });
-      }
-    } catch {
-      // Subagent 的最终结果已经由 session 事件记录；投影失败不能制造第二个终态。
-    }
+  ): Promise<{ task: TaskRunWithAttempts; completion: Promise<TaskClosureResult> }> {
+    return await commands.startTaskRun(taskRunId, options);
   }
 
   private async executeControl<T>(execute: () => Promise<T>, runtime = this.runtime): Promise<HostOperationResult<T>> {
@@ -1407,6 +1418,8 @@ export class RuntimeHostServer {
     const taskRunId = operation.startsWith("task.") ? optionalString(payload.taskRunId) : undefined;
     const task = taskRunId === undefined ? undefined : this.registry.primary().commands.taskRuns.get(taskRunId);
     const taskSessionId = task?.sessionId;
+    const graphId = operation.startsWith("graph.") || operation.startsWith("plan.") ? optionalString(payload.graphId) : undefined;
+    const graphSessionId = graphId === undefined ? undefined : this.registry.primary().commands.graphs.getGraph(graphId)?.supervisorSessionId;
     const sourceRunId = operation === "run.continue"
       ? optionalString(payload.sourceRunId)
       : operation === "cancel" || operation === "run.cancel" || operation === "run.inspect"
@@ -1418,13 +1431,16 @@ export class RuntimeHostServer {
     const sourceRun = sourceRunId === undefined || authority === undefined ? undefined : authority.getRun(sourceRunId);
     const sourceSessionId = sourceRun?.sessionId;
     const requestedSessionId = explicitSessionId ?? sessionFromFile;
+    if (requestedSessionId !== undefined && graphSessionId !== undefined && requestedSessionId !== graphSessionId) {
+      throw new Error(`Plan ${graphId} belongs to another session.`);
+    }
     if (requestedSessionId !== undefined && taskSessionId !== undefined && requestedSessionId !== taskSessionId) {
       throw new Error(`TaskRun ${taskRunId} belongs to session ${taskSessionId}, not ${requestedSessionId}.`);
     }
     if (requestedSessionId !== undefined && sourceSessionId !== undefined && requestedSessionId !== sourceSessionId) {
       throw new Error(`Run ${sourceRunId} belongs to session ${sourceSessionId}, not ${requestedSessionId}.`);
     }
-    const sessionId = requestedSessionId ?? taskSessionId ?? sourceSessionId;
+    const sessionId = requestedSessionId ?? taskSessionId ?? sourceSessionId ?? graphSessionId;
     if (sessionId === undefined) return this.registry.primary();
     return await this.registry.ensure(sessionId, await this.factoryOptionsForSession(sessionId));
   }

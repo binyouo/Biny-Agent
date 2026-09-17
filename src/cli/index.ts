@@ -163,8 +163,9 @@ for (const [name, action] of [["start", "start"], ["cancel", "cancel"], ["approv
     .argument("<taskRunId>", "TaskRun id")
     .option("--reason <text>", "cancellation reason")
     .option("--retry-safety <safety>", "safe, idempotent, unsafe, or unknown")
+    .option("--approval-id <id>", "exact approval id shown by the current needs_approval result")
     .option("--json", "print JSON")
-    .action((taskRunId: string, options: { reason?: string; retrySafety?: string; json?: boolean }) => wrap(() => taskActionCommand(workspaceRoot, action, taskRunId, options))());
+    .action((taskRunId: string, options: { reason?: string; retrySafety?: string; approvalId?: string; json?: boolean }) => wrap(() => taskActionCommand(workspaceRoot, action, taskRunId, options))());
 }
 task.command("run").argument("<taskRunId>", "TaskRun id").option("--retry-safety <safety>", "safe, idempotent, unsafe, or unknown").option("--json", "print JSON").action((taskRunId: string, options: { retrySafety?: string; json?: boolean }) => wrap(() => taskActionCommand(workspaceRoot, "run", taskRunId, options))());
 task.command("get").argument("<taskRunId>", "TaskRun id").option("--json", "print JSON").action((taskRunId: string, options: { json?: boolean }) => wrap(() => taskGetCommand(workspaceRoot, taskRunId, options))());

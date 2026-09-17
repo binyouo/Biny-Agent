@@ -61,6 +61,7 @@ export class ContextMemory {
   private lastBudget: ContextBudgetStatus;
   private memoryUseEnabled = false;
   private memoryRecall: MemoryRecallReport = emptyMemoryRecallReport();
+  private memoryInjectedSummaries: string[] = [];
   private personalization: PersonalizationMetadata | undefined;
   private promptEpoch = 0;
   private promptEpochReason: PromptEpochReason = "initial";
@@ -148,6 +149,7 @@ export class ContextMemory {
     try {
       this.memoryUseEnabled = useMemories;
       this.memoryRecall = emptyMemoryRecallReport();
+      this.memoryInjectedSummaries = [];
       signal?.throwIfAborted();
       yield "workspace";
       const workspacePerfStartedAt = perfNow();
@@ -221,6 +223,9 @@ export class ContextMemory {
         }
       }
       this.memoryRecall = memoryRecallForAssembly(recalled.report, recalled.entries, assembly.budget.components);
+      this.memoryInjectedSummaries = assembly.budget.components?.some((component) => component.id === "stable memory" && component.disposition === "included")
+        ? memoryMatches.map((match) => redactSecrets(match.excerpt))
+        : [];
       this.lastBudget = {
         ...assembly.budget,
         cacheHitRate: this.lastBudget.cacheHitRate,
@@ -410,6 +415,7 @@ export class ContextMemory {
 
   restore(messages: AgentMessage[], state?: ContextBudgetStatus | SessionContextState): void {
     this.memoryRecall = emptyMemoryRecallReport();
+    this.memoryInjectedSummaries = [];
     this.replaceHistory(messages);
     const contextState = isContextState(state) ? state : undefined;
     const budget: ContextBudgetStatus | undefined = contextState?.budget ?? (isContextState(state) ? undefined : state);
@@ -459,7 +465,8 @@ export class ContextMemory {
       compaction: this.compactionStatus(),
       budget: cloneBudget(this.lastBudget),
       memoryEnabled: this.memoryUseEnabled,
-      memoryInjectedCount: Object.values(this.memoryRecall.origins.included).reduce((sum, count) => sum + count, 0)
+      memoryInjectedCount: Object.values(this.memoryRecall.origins.included).reduce((sum, count) => sum + count, 0),
+      memoryInjectedSummaries: [...this.memoryInjectedSummaries]
     };
   }
 

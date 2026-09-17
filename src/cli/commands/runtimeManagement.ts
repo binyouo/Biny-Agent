@@ -115,12 +115,15 @@ export async function taskCreateCommand(
   await hostAction(workspaceRoot, options, async (client) => await client.taskCreate({ task: payload, sessionId: options.sessionId, parentRunId: options.parentRunId }));
 }
 
-export async function taskActionCommand(workspaceRoot: string, action: "start" | "run" | "cancel" | "approve" | "resume" | "retry", taskRunId: string, options: JsonOption & { reason?: string; retrySafety?: string } = {}): Promise<void> {
+export async function taskActionCommand(workspaceRoot: string, action: "start" | "run" | "cancel" | "approve" | "resume" | "retry", taskRunId: string, options: JsonOption & { reason?: string; retrySafety?: string; approvalId?: string } = {}): Promise<void> {
   await hostAction(workspaceRoot, options, async (client) => {
     if (action === "start") return await client.taskStart(taskRunId, { retrySafety: options.retrySafety });
     if (action === "run") return await client.taskRun(taskRunId, { retrySafety: options.retrySafety });
     if (action === "cancel") return await client.taskCancel(taskRunId, options.reason);
-    if (action === "approve") return await client.taskApprove(taskRunId);
+    if (action === "approve") {
+      if (!options.approvalId) throw new Error("task approve requires --approval-id from the current needs_approval result.");
+      return await client.taskApprove(taskRunId, options.approvalId);
+    }
     if (action === "resume") return await client.taskResume(taskRunId);
     return await client.taskRetry(taskRunId);
   });

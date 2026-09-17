@@ -17,6 +17,7 @@
  * 兼容负担：旧版平铺 bundle（顶层直接带 `events`，没有 `manifest`）只在本仓库短暂存在过、
  * 从未发布；导入端顺手认一下（便宜），导出端一律只产新格式。
  */
+import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { attachmentFilePath, attachmentRoot, saveAttachment } from "../attachments/store.js";
@@ -29,7 +30,7 @@ import { refreshSessionIndex } from "./catalog.js";
 
 /** bundle 的格式标识与版本号；导入时据此拒绝不兼容的文件。 */
 export const BINY_BUNDLE_FORMAT = "biny-session-bundle" as const;
-export const BINY_BUNDLE_VERSION = 1 as const;
+export const BINY_BUNDLE_VERSION = 2 as const;
 export type SessionTransferFormat = "biny" | "claude" | "codex";
 
 /** 单个附件超过这个体积就不内嵌进 bundle，导入时记为 skipped（不阻塞整体导入）。 */
@@ -56,6 +57,8 @@ export interface BinySessionBundleAttachment {
   size: number;
   /** base64 编码的附件字节。 */
   data: string;
+  /** 原始字节的 SHA-256，用于区分“可解码”和“内容完整”。 */
+  sha256: string;
 }
 
 export interface BinySessionBundle {
@@ -168,7 +171,8 @@ async function collectBundleAttachments(
         mimeType: typeof reference.mimeType === "string" ? reference.mimeType : "application/octet-stream",
         sourcePath: reference.path,
         size: bytes.byteLength,
-        data: bytes.toString("base64")
+        data: bytes.toString("base64"),
+        sha256: createHash("sha256").update(bytes).digest("hex")
       });
     }
   }
@@ -304,8 +308,9 @@ function parseBinyBundleAttachments(raw: string): BinySessionBundleAttachment[] 
       name: entry.name,
       mimeType: typeof entry.mimeType === "string" ? entry.mimeType : "application/octet-stream",
       sourcePath: entry.sourcePath,
-      size: typeof entry.size === "number" ? entry.size : 0,
-      data: entry.data
+      size: typeof entry.size === "number" ? entry.size : -1,
+      data: entry.data,
+      sha256: typeof entry.sha256 === "string" ? entry.sha256 : ""
     });
   }
   return result;
@@ -329,15 +334,22 @@ async function restoreBundleAttachments(
 ): Promise<RestoredAttachments> {
   const result: RestoredAttachments = { restored: 0, renamed: 0, skipped: [], pathBySource: new Map() };
   for (const attachment of attachments) {
-    let bytes: Buffer;
-    try {
-      bytes = Buffer.from(attachment.data, "base64");
-    } catch {
+    if (!Number.isSafeInteger(attachment.size) || attachment.size < 0) {
       result.skipped.push({ name: attachment.name, reason: "invalid" });
       continue;
     }
-    if (bytes.byteLength > BINY_BUNDLE_ATTACHMENT_LIMIT) {
+    if (attachment.size > BINY_BUNDLE_ATTACHMENT_LIMIT || attachment.data.length > Math.ceil(BINY_BUNDLE_ATTACHMENT_LIMIT / 3) * 4) {
       result.skipped.push({ name: attachment.name, reason: "too-large" });
+      continue;
+    }
+    if (!isStrictBase64(attachment.data) || !/^[0-9a-f]{64}$/u.test(attachment.sha256)) {
+      result.skipped.push({ name: attachment.name, reason: "invalid" });
+      continue;
+    }
+    const bytes = Buffer.from(attachment.data, "base64");
+    const checksum = createHash("sha256").update(bytes).digest("hex");
+    if (bytes.byteLength !== attachment.size || checksum !== attachment.sha256) {
+      result.skipped.push({ name: attachment.name, reason: "invalid" });
       continue;
     }
     const saved = await saveAttachment(workspaceRoot, attachment.name, attachment.mimeType, bytes);
@@ -346,6 +358,11 @@ async function restoreBundleAttachments(
     result.pathBySource.set(attachment.sourcePath, saved.path);
   }
   return result;
+}
+
+function isStrictBase64(value: string): boolean {
+  if (value.length % 4 !== 0) return false;
+  return /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u.test(value);
 }
 
 /** 撞名后附件实际路径变了，把事件里的引用从旧 sourcePath 回填到新路径。 */

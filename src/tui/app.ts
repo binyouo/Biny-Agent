@@ -599,10 +599,10 @@ export class BinyTui {
         await this.ensureSessionWriteAccess(sessionId);
         if (runtimeIsBusy(runtime instanceof RuntimeHostClient ? runtime.getSnapshot(sessionId) : runtime.getSnapshot())) {
           if (runtime instanceof RuntimeHostClient) {
-            const queued = await runtime.queueRunMessageForSession(sessionId, input, "followUp", attachments);
+            const queued = await runtime.queueRunMessageForSession(sessionId, input, "queue", attachments);
             if (!queued.accepted) throw new Error(queued.reason);
-          } else await runtime.followUp(input, attachments);
-          this.notify("Skill 消息已加入 follow-up 队列，将在当前任务准备结束时继续处理。");
+          } else await runtime.enqueue(input, attachments);
+          this.notify("Skill 消息已加入待发送队列，将在当前任务结束后继续处理。");
           return;
         }
         await (runtime instanceof RuntimeHostClient
@@ -637,10 +637,10 @@ export class BinyTui {
       await this.ensureSessionWriteAccess(sessionId);
       if (runtimeIsBusy(runtime instanceof RuntimeHostClient ? runtime.getSnapshot(sessionId) : runtime.getSnapshot())) {
         if (runtime instanceof RuntimeHostClient) {
-          const queued = await runtime.queueRunMessageForSession(sessionId, withAttachmentReferences(prompt, attachments), "followUp", attachments);
+          const queued = await runtime.queueRunMessageForSession(sessionId, withAttachmentReferences(prompt, attachments), "queue", attachments);
           if (!queued.accepted) throw new Error(queued.reason);
-        } else await runtime.followUp(withAttachmentReferences(prompt, attachments), attachments);
-        this.notify("消息已加入 follow-up 队列，将在当前任务准备结束时继续处理。");
+        } else await runtime.enqueue(withAttachmentReferences(prompt, attachments), attachments);
+        this.notify("消息已加入待发送队列，将在当前任务结束后继续处理。");
         return;
       }
       await (runtime instanceof RuntimeHostClient

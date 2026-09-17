@@ -84,6 +84,8 @@ export interface ContextStatus {
   memoryEnabled: boolean;
   /** 本轮经过上下文预算筛选后实际注入的记忆条数。 */
   memoryInjectedCount?: number;
+  /** 本轮实际注入模型上下文的记忆摘要；用于本地界面解释召回结果。 */
+  memoryInjectedSummaries: string[];
   memoryOverviewChars?: number;
 }
 

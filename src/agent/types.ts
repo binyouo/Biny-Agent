@@ -60,7 +60,7 @@ export interface AgentTurnOutcome {
 export type AgentSessionUpdate =
   | { type: "preparation.updated"; stage: import("./context/types.js").PreparationStage }
   | { type: "context.updated"; context: ContextStatus }
-  | { type: "message.user"; messageId: string; content: string; delivery: "steer" | "followUp" }
+  | { type: "message.user"; messageId: string; content: string; delivery: "steer" | "queue" }
   | { type: "context.retrying"; reason: "context_overflow"; attempt: number; compactedMessages: number }
   | { type: "assistant.delta"; content: string }
   | { type: "assistant.completed"; content: string }
@@ -84,6 +84,8 @@ export type AgentSessionEvent =
   | { type: "done"; content: string; usage?: SessionUsage; outcome: AgentTurnOutcome };
 
 export interface AgentRuntimeContext {
+  /** 宿主控制的只读规划模式，工具搜索和恢复也必须遵守。 */
+  planning?: boolean;
   // Agent loop 的所有外部依赖都由 runtime 注入，方便 CLI 和 TUI 复用同一套执行逻辑。
   workspaceRoot: string;
   config: AgentConfig;

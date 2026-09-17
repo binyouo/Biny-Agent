@@ -159,6 +159,42 @@ try {
   assert.equal(automations.completeFire(fires[0]!.fireId, "run-1").status, "completed");
   assert.equal(automations.get(automation.automationId)?.status, "completed");
 
+  const capped = automations.create({
+    automationId: "automation-capped",
+    name: "capped",
+    triggerType: "interval",
+    schedule: { intervalMs: 100 },
+    executionTemplate: { prompt: "run once only" },
+    maxFires: 1
+  });
+  const cappedAt = Date.now();
+  const firstCappedFire = automations.forceFire(capped.automationId, new Date(cappedAt).toISOString());
+  const queuedCappedFire = automations.forceFire(capped.automationId, new Date(cappedAt + 1).toISOString());
+  assert.ok(automations.claimFire(firstCappedFire.fireId));
+  automations.completeFire(firstCappedFire.fireId, "run-capped-1");
+  assert.equal(
+    automations.claimFire(queuedCappedFire.fireId),
+    undefined,
+    "领取已排队 fire 时必须重新检查父任务状态和最大执行次数"
+  );
+
+  const pausedFailure = automations.create({
+    automationId: "automation-paused-failure",
+    name: "paused failure",
+    triggerType: "interval",
+    schedule: { intervalMs: 100 },
+    executionTemplate: { prompt: "fail after pause" }
+  });
+  const pausedFire = automations.forceFire(pausedFailure.automationId);
+  assert.ok(automations.claimFire(pausedFire.fireId));
+  automations.pause(pausedFailure.automationId);
+  automations.failFire(pausedFire.fireId, "expected failure");
+  assert.equal(
+    automations.get(pausedFailure.automationId)?.status,
+    "paused",
+    "执行失败不能覆盖用户在执行期间设置的暂停状态"
+  );
+
   assert.throws(
     () => automations.create({
       automationId: "automation-unsupported-template",
@@ -393,7 +429,7 @@ async function testGraphSupervisorDefersOnBusyRuntime(): Promise<void> {
   const isolatedGraphs = await GoalGraphStore.open(workspace, isolatedAuthority);
   try {
     const busySnapshot = { revision: 0, state: { kind: "runs" } } as unknown as ReturnType<InteractiveRuntimeHandle["getSnapshot"]>;
-    const idleSnapshot = { revision: 0, state: { kind: "idle" } } as unknown as ReturnType<InteractiveRuntimeHandle["getSnapshot"]>;
+    const idleSnapshot = { revision: 0, state: { kind: "idle" }, info: { sessionId: "graph-test", planning: false } } as unknown as ReturnType<InteractiveRuntimeHandle["getSnapshot"]>;
     let behavior: "busy_snapshot" | "busy_throw" | "explode" = "busy_snapshot";
     const runtime = {
       getSnapshot: () => behavior === "busy_snapshot" ? busySnapshot : idleSnapshot,
@@ -402,18 +438,19 @@ async function testGraphSupervisorDefersOnBusyRuntime(): Promise<void> {
         throw new Error("Cannot submit a prompt while the runtime is busy.");
       }
     } as unknown as InteractiveRuntimeHandle;
-    const supervisor = new GraphSupervisor({ store: isolatedGraphs, runtime, tickMs: 100 });
+    const supervisor = new GraphSupervisor({ store: isolatedGraphs, runtime });
     const tickAndSettle = async (): Promise<void> => {
       await supervisor.tick();
       // executeNode 归还串行槽位的 finally 在微任务里跑；等一个 macrotask 让下一次 tick 不被占住。
       await new Promise<void>((resolve) => setTimeout(resolve, 0));
     };
     try {
-      // 快照已 busy：节点退回 ready 等下一轮 tick，不得把 graph 判成 failed。
+      // 快照已 busy：不认领、不反复改写 revision，后续空闲通知再推进。
       const prechecked = isolatedGraphs.createGraph(undefined, [{ nodeKey: "prechecked", prompt: "prechecked" }]);
-      isolatedGraphs.startGraph(prechecked.graphId);
+      const started = isolatedGraphs.startGraph(prechecked.graphId);
       await tickAndSettle();
-      assert.equal(isolatedGraphs.inspectGraph(prechecked.graphId).nodes[0]!.status, "ready", "runtime busy 时节点应退回 ready 等待重试");
+      assert.equal(isolatedGraphs.inspectGraph(prechecked.graphId).nodes[0]!.status, "pending");
+      assert.equal(isolatedGraphs.inspectGraph(prechecked.graphId).revision, started.revision);
       assert.equal(isolatedGraphs.inspectGraph(prechecked.graphId).status, "running", "runtime busy 不得终结整个 graph");
 
       // 空闲检查后的 busy 竞态（submit 同步抛错/Host 异步拒绝）同样退回 ready。

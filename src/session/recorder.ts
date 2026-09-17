@@ -197,8 +197,11 @@ export class SessionRecorder {
   }
 
   /** 关键协议事件使用有序屏障，确保 JSONL 已交给文件系统后再推进执行状态。 */
-  recordAndFlush(event: SessionEvent): Promise<SessionEvent> {
-    const runtimeContext = this.runtimeContextSnapshot();
+  recordAndFlush(
+    event: SessionEvent,
+    /** 并发后台操作显式传自己的身份，避免临时改写 recorder 的共享上下文。 */
+    runtimeContext: RuntimeEventContext | undefined = this.runtimeContextSnapshot()
+  ): Promise<SessionEvent> {
     let recorded: SessionEvent;
     const current = this.persistenceBarrier.then(async () => {
       recorded = this.recordInternal(event, runtimeContext, false);

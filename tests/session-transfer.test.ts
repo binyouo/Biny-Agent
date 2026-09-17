@@ -129,7 +129,7 @@ try {
     assert.equal(exported.extension, "json");
     const bundle = JSON.parse(exported.content) as {
       format: string; version: number; manifest: { sessionId: string; eventCount: number; attachmentCount: number };
-      events: unknown[]; attachments: Array<{ name: string; sourcePath: string; data: string }>;
+      events: unknown[]; attachments: Array<{ name: string; sourcePath: string; size: number; data: string; sha256: string }>;
     };
     assert.equal(bundle.format, BINY_BUNDLE_FORMAT);
     assert.equal(bundle.version, BINY_BUNDLE_VERSION);
@@ -138,6 +138,7 @@ try {
     assert.equal(bundle.attachments.length, 1);
     assert.equal(bundle.attachments[0]?.name, "note.txt");
     assert.equal(Buffer.from(bundle.attachments[0]?.data ?? "", "base64").toString(), "hello attachment");
+    assert.match(bundle.attachments[0]?.sha256 ?? "", /^[0-9a-f]{64}$/u);
 
     const bundlePath = path.join(target, "import.biny.json");
     await writeFile(bundlePath, exported.content);
@@ -169,6 +170,22 @@ try {
     assert.notEqual(importedAgainEvents[0]?.runtime?.eventId, events[0]?.runtime?.eventId);
     const reopenedAuthority = await RuntimeEventAuthority.open(target);
     reopenedAuthority.close();
+
+    const damagedBundles = [
+      { label: "base64", mutate: (attachment: typeof bundle.attachments[number]) => { attachment.data = "!!!!"; } },
+      { label: "size", mutate: (attachment: typeof bundle.attachments[number]) => { attachment.size += 1; } },
+      { label: "checksum", mutate: (attachment: typeof bundle.attachments[number]) => { attachment.sha256 = "0".repeat(64); } }
+    ];
+    for (const damaged of damagedBundles) {
+      const corrupted = structuredClone(bundle);
+      damaged.mutate(corrupted.attachments[0]!);
+      const corruptedPath = path.join(target, `import-damaged-${damaged.label}.biny.json`);
+      await writeFile(corruptedPath, `${JSON.stringify(corrupted)}\n`);
+      const corruptedImport = await importSessionFile(target, corruptedPath);
+      assert.equal(corruptedImport.attachmentsRestored, 0);
+      assert.equal(corruptedImport.attachmentsSkipped, 1);
+      assert.deepEqual(corruptedImport.skippedAttachmentIssues, [{ name: "note.txt", reason: "invalid" }]);
+    }
   }
 
   // ── Claude Code：导出 .jsonl 再导入，对话事实保持 ──────────────────────────

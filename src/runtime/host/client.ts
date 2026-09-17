@@ -4,6 +4,7 @@
  * 连接发现、候选启动和文件生命周期由独立模块提供；这里仅维护请求、事件和 completion 状态。
  */
 import { randomUUID } from "node:crypto";
+import type { planStatus } from "../../extensions/plan.js";
 import net from "node:net";
 import type { AgentAttachment, AgentSessionInfo, ResumedAgentSession } from "../../agent/AgentSession.js";
 import type { AgentCapabilitySelection } from "../../agent/capabilitySelection.js";
@@ -76,7 +77,7 @@ import type {
   RuntimeHostSessionSummary,
   RuntimeIsolation
 } from "./types.js";
-import type { WorktreeRecord, WorktreeStatusView } from "./worktree.js";
+import type { WorktreeMergeResult, WorktreeRecord, WorktreeStatusView } from "./worktree.js";
 import { RuntimeResourceBaselinePendingError } from "./resources.js";
 import { RuntimeHostFrameDecoder } from "./framing.js";
 
@@ -236,7 +237,7 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
 
   async queueRunMessage(
     input: string,
-    delivery: "steer" | "followUp",
+    delivery: "steer" | "queue",
     attachments: AgentAttachment[] = [],
     requestIds?: RuntimeRequestIds
   ): Promise<HostOperationResult<QueuedAgentMessage>> {
@@ -246,7 +247,7 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
   async queueRunMessageForSession(
     sessionId: string | undefined,
     input: string,
-    delivery: "steer" | "followUp",
+    delivery: "steer" | "queue",
     attachments: AgentAttachment[] = [],
     requestIds?: RuntimeRequestIds
   ): Promise<HostOperationResult<QueuedAgentMessage>> {
@@ -260,6 +261,22 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
       writeIntent: true,
       expectedRevision: this.currentRevision(sessionId)
     });
+  }
+
+  async mutateQueuedRunMessageForSession(
+    sessionId: string,
+    action: "update" | "remove" | "move" | "steer" | "send-all",
+    payload: { messageId?: string; input?: string; targetMessageId?: string; placeAfter?: boolean } = {}
+  ): Promise<void> {
+    await this.requestWithRuntimeRevision("run.queue.mutate", {
+      sessionId,
+      action,
+      messageId: payload.messageId,
+      input: payload.input,
+      targetMessageId: payload.targetMessageId,
+      placeAfter: payload.placeAfter,
+      writeIntent: true
+    }, sessionId);
   }
 
   async cancelRunRequest(runId: string, sessionId?: string): Promise<HostOperationResult<{ runId: string }>> {
@@ -327,8 +344,8 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
     return await this.request("task.cancel", { taskRunId, reason });
   }
 
-  async taskApprove(taskRunId: string): Promise<HostOperationResult<unknown>> {
-    return await this.request("task.approve", { taskRunId });
+  async taskApprove(taskRunId: string, approvalId: string): Promise<HostOperationResult<unknown>> {
+    return await this.request("task.approve", { taskRunId, approvalId });
   }
 
   async taskResume(taskRunId: string, input: { runId?: string; turnId?: string; retrySafety?: string } = {}): Promise<HostOperationResult<unknown>> {
@@ -510,13 +527,13 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
     });
   }
 
-  async followUp(input: string, attachments: AgentAttachment[] = [], requestIds?: RuntimeRequestIds): Promise<QueuedAgentMessage> {
+  async enqueue(input: string, attachments: AgentAttachment[] = [], requestIds?: RuntimeRequestIds): Promise<QueuedAgentMessage> {
     this.assertQueueable(input, attachments);
     const ids = normalizeRequestIds(requestIds);
     return await this.request<QueuedAgentMessage>("queue", {
       input,
       attachments,
-      delivery: "followUp",
+      delivery: "queue",
       messageId: ids.messageId,
       sessionId: this.focusedSessionId,
       writeIntent: true,
@@ -696,8 +713,8 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
   async worktreeMerge(
     sessionId: string,
     options: { strategy?: "merge" | "squash"; deleteAfter?: boolean } = {}
-  ): Promise<WorktreeRecord> {
-    const result = await this.request<WorktreeRecord>("worktree.merge", {
+  ): Promise<WorktreeMergeResult> {
+    const result = await this.request<WorktreeMergeResult>("worktree.merge", {
       sessionId,
       strategy: options.strategy,
       deleteAfter: options.deleteAfter
@@ -816,6 +833,18 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
       this.snapshots.set(next.info.sessionId, next);
       if (this.focusedSessionId === next.info.sessionId) this.snapshot = next;
     }
+  }
+
+  async setPlanning(sessionId: string, planning: boolean): Promise<AgentSessionInfo> {
+    return await this.request("plan.mode", { sessionId, planning });
+  }
+
+  async startPlanDraft(sessionId: string, graphId: string, revision: number): Promise<unknown> {
+    return await this.request("plan.start", { sessionId, graphId, revision });
+  }
+
+  async planList(sessionId: string): Promise<Array<ReturnType<typeof planStatus>>> {
+    return await this.request("plan.list", { sessionId });
   }
 
   async runPermissionCommand(args: string[]): Promise<string> {

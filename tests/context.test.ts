@@ -592,6 +592,7 @@ async function testRecallCountsBeforeBudget(): Promise<void> {
       assert.equal((await local.listMemoryEntries({ origins: ["current_workspace"] })).entries.find((entry) => entry.id === written.entry!.id)?.accessCount, 1);
       assert.notEqual((await context.status()).budget.components?.find((item) => item.id === "stable memory")?.disposition, "included");
       assert.equal((await context.status()).memoryInjectedCount, 0, "被预算排除的命中不能报成已注入");
+      assert.deepEqual((await context.status()).memoryInjectedSummaries, [], "被预算排除的记忆不能暴露在界面摘要中");
       const roomy = new ContextMemory(
         () => new ContextTestModel().model, new WorkspaceContext(workspaceRoot, [], 32 * 1024),
         local, 100_000, 32 * 1024, undefined, undefined, {}, undefined, undefined, retriever
@@ -602,8 +603,10 @@ async function testRecallCountsBeforeBudget(): Promise<void> {
       assert.equal(calls, 1, "记忆检索开始前即发布进度，不等检索结束再补发");
       assert.equal((await progress.next()).done, true);
       assert.equal((await roomy.status()).memoryInjectedCount, 1);
+      assert.deepEqual((await roomy.status()).memoryInjectedSummaries, result.matches.map((match) => match.excerpt));
       await roomy.prepareTurn("no memory", "system", undefined, [], false);
       assert.equal((await roomy.status()).memoryInjectedCount, 0);
+      assert.deepEqual((await roomy.status()).memoryInjectedSummaries, []);
       await context.prepareTurn("no memory", "system", undefined, [], false);
       assert.equal(calls, 2);
     } finally {

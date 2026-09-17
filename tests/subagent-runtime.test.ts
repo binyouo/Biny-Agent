@@ -65,7 +65,9 @@ await testMaintenanceGateIsAtomic();
 await testPermissionGateIsAtomic();
 await testEmptyPromptIsRejected();
 await testConcurrentRootRunIsRejected();
-await testActiveRunAcceptsSteeringAndFollowUp();
+await testActiveRunAcceptsSteeringAndQueuedMessages();
+await testQueuedMessageControlsUseRuntimeMemory();
+await testQueuedMessagesCanBeSentImmediately();
 await testRuntimeUpdatesCarryCanonicalState();
 await testContinueRequiresIdleRuntime();
 await testRuntimeSetupFailureSettlesRun();
@@ -789,18 +791,67 @@ async function testConcurrentRootRunIsRejected(): Promise<void> {
   await runtime.close();
 }
 
-async function testActiveRunAcceptsSteeringAndFollowUp(): Promise<void> {
+async function testActiveRunAcceptsSteeringAndQueuedMessages(): Promise<void> {
+  const firstGate = deferred<void>();
+  const queued: string[] = [];
+  const runInputs: string[] = [];
+  const runtime = new InteractiveAgentRuntime(fakeCommandRuntime({ firstGate, queued, runInputs }));
+  const run = runtime.submitPrompt("hold");
+  await waitUntil(() => activeRun(runtime.getSnapshot())?.runId === run.runId);
+
+  const steering = await runtime.steer("correct course");
+  const firstQueued = await runtime.enqueue("then explain the result", [], { messageId: "queued-1" });
+  const secondQueued = await runtime.enqueue("include the edge cases", [], { messageId: "queued-2" });
+  assert.equal(steering.delivery, "steer");
+  assert.equal(firstQueued.delivery, "queue");
+  assert.equal(secondQueued.delivery, "queue");
+  assert.deepEqual(queued, ["steer:correct course"]);
+  assert.deepEqual(runtime.getSnapshot().queuedMessages, [
+    { messageId: "queued-1", content: "then explain the result", attachmentCount: 0 },
+    { messageId: "queued-2", content: "include the edge cases", attachmentCount: 0 }
+  ]);
+
+  firstGate.resolve();
+  assert.equal((await run.completion).status, "completed");
+  await runtime.waitForIdle();
+  assert.deepEqual(runInputs, ["hold", "then explain the result\n\ninclude the edge cases"]);
+  assert.deepEqual(runtime.getSnapshot().queuedMessages, []);
+  await runtime.close();
+}
+
+async function testQueuedMessagesCanBeSentImmediately(): Promise<void> {
+  const firstGate = deferred<void>();
+  const runInputs: string[] = [];
+  const runtime = new InteractiveAgentRuntime(fakeCommandRuntime({ firstGate, runInputs }));
+  const run = runtime.submitPrompt("hold");
+  await waitUntil(() => activeRun(runtime.getSnapshot())?.runId === run.runId);
+  await runtime.enqueue("send this next", [], { messageId: "send-next" });
+
+  await runtime.sendQueuedRunMessagesNow();
+  const firstOutcome = await run.completion;
+  assert.notEqual(firstOutcome.status, "completed");
+  await runtime.waitForIdle();
+  assert.deepEqual(runInputs, ["hold", "send this next"]);
+  assert.deepEqual(runtime.getSnapshot().queuedMessages, []);
+  await runtime.close();
+}
+
+async function testQueuedMessageControlsUseRuntimeMemory(): Promise<void> {
   const firstGate = deferred<void>();
   const queued: string[] = [];
   const runtime = new InteractiveAgentRuntime(fakeCommandRuntime({ firstGate, queued }));
   const run = runtime.submitPrompt("hold");
   await waitUntil(() => activeRun(runtime.getSnapshot())?.runId === run.runId);
+  await runtime.enqueue("first", [], { messageId: "first" });
+  await runtime.enqueue("second", [], { messageId: "second" });
 
-  const steering = await runtime.steer("correct course");
-  const followUp = await runtime.followUp("then explain the result");
-  assert.equal(steering.delivery, "steer");
-  assert.equal(followUp.delivery, "followUp");
-  assert.deepEqual(queued, ["steer:correct course", "followUp:then explain the result"]);
+  await runtime.updateQueuedRunMessage("first", "first edited");
+  await runtime.moveQueuedRunMessage("second", "first", false);
+  assert.deepEqual(runtime.getSnapshot().queuedMessages.map((message) => message.messageId), ["second", "first"]);
+  await runtime.steerQueuedRunMessage("first");
+  assert.deepEqual(queued, ["steer:first edited"]);
+  await runtime.removeQueuedRunMessage("second");
+  assert.deepEqual(runtime.getSnapshot().queuedMessages, []);
 
   firstGate.resolve();
   assert.equal((await run.completion).status, "completed");
@@ -1230,6 +1281,7 @@ interface FakeRuntimeOptions {
   subagentTasks?: SubagentTaskSnapshot[];
   cancelSubagentTask?: (taskId: string, reason?: string) => boolean;
   queued?: string[];
+  runInputs?: string[];
 }
 
 function fakeCommandRuntime(options: FakeRuntimeOptions = {}): CommandRuntime {
@@ -1260,6 +1312,7 @@ function fakeCommandRuntime(options: FakeRuntimeOptions = {}): CommandRuntime {
     memoryTopics: []
   };
   const defaultRun = async function* (input: string, runOptions: AgentRunOptions): AsyncGenerator<AgentSessionEvent> {
+    options.runInputs?.push(input);
     if (input === "hold") {
       await Promise.race([
         options.firstGate?.promise,
@@ -1302,8 +1355,8 @@ function fakeCommandRuntime(options: FakeRuntimeOptions = {}): CommandRuntime {
     queueSteering: (_messageId: string, input: string) => {
       options.queued?.push(`steer:${input}`);
     },
-    queueFollowUp: (_messageId: string, input: string) => {
-      options.queued?.push(`followUp:${input}`);
+    queueMessage: (_messageId: string, input: string) => {
+      options.queued?.push(`queue:${input}`);
     },
     recordHostedUserMessage: (content: string) => {
       options.audit?.push(`user:${content}`);

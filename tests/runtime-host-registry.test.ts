@@ -30,7 +30,7 @@ function fakeRuntime(sessionId: string, state: "idle" | "runs" = "idle"): Intera
   return {
     submitPrompt: () => { throw new Error("not used"); },
     steer: () => { throw new Error("not used"); },
-    followUp: () => { throw new Error("not used"); },
+    enqueue: () => { throw new Error("not used"); },
     continueInterruptedTurn: async () => undefined,
     startInterruptedTurn: async () => undefined,
     waitForIdle: async () => undefined,

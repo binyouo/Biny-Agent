@@ -28,7 +28,7 @@ function fakeRuntime(sessionId: string, workspaceRoot: string, permissionMode: "
   return {
     submitPrompt: () => { throw new Error("not used"); },
     steer: () => { throw new Error("not used"); },
-    followUp: () => { throw new Error("not used"); },
+    enqueue: () => { throw new Error("not used"); },
     continueInterruptedTurn: async () => undefined,
     startInterruptedTurn: async () => undefined,
     waitForIdle: async () => undefined,
@@ -94,6 +94,7 @@ await run("git", ["commit", "--quiet", "-m", "initial"], { cwd: workspaceRoot })
 const commands = {} as CommandRuntime;
 const primary = fakeRuntime("primary", workspaceRoot, "full-access");
 const createdFactoryOptions: Array<{ isolation?: string; workspaceRoot?: string; resourceRegistry?: unknown }> = [];
+const createdRuntimes = new Map<string, ReturnType<typeof fakeRuntime>>();
 let hostResourceRegistry: unknown;
 const host = await startRuntimeHost(workspaceRoot, async (resourceRegistry) => {
   hostResourceRegistry = resourceRegistry;
@@ -102,8 +103,10 @@ const host = await startRuntimeHost(workspaceRoot, async (resourceRegistry) => {
   workspaceRoot,
   createRuntime: async (sessionId, options) => {
     createdFactoryOptions.push(options ?? {});
+    const runtime = fakeRuntime(sessionId ?? `replacement-${String(++draftCounter)}`, options?.workspaceRoot ?? workspaceRoot);
+    createdRuntimes.set(runtime.getSnapshot().info.sessionId, runtime);
     return {
-      runtime: fakeRuntime(sessionId ?? `replacement-${String(++draftCounter)}`, options?.workspaceRoot ?? workspaceRoot),
+      runtime,
       commands
     };
   }
@@ -127,6 +130,12 @@ try {
     const writeSession = await client.ensureSession({ writeIntent: true });
     writeSessionId = writeSession.sessionId;
     assert.equal(owners.get(writeSession.sessionId)?.clientId, client.clientId, "writeIntent 必须登记连接级 session owner");
+    const writeRuntime = createdRuntimes.get(writeSession.sessionId);
+    assert.ok(writeRuntime);
+    writeRuntime.setState("runs");
+    assert.equal(owners.get(writeSession.sessionId)?.clientId, client.clientId, "运行期间必须保留 writer owner");
+    writeRuntime.setState("idle");
+    assert.equal(owners.has(writeSession.sessionId), false, "Runtime 回到 idle 后必须释放 writer owner，允许 LRU 回收空闲会话");
 
     await client.focusSession(created.sessionId);
     primary.setState("runs");
@@ -175,6 +184,41 @@ try {
 } finally {
   await host.close();
   await rm(workspaceRoot, { recursive: true, force: true });
+}
+
+// resident 上限只保护内存缓存：旧会话完成后必须能被透明淘汰，不能把缓存槽变成用户会话上限。
+const capacityWorkspace = await mkdtemp(path.join(os.tmpdir(), "biny-runtime-host-capacity-"));
+await run("git", ["init", "--quiet", "-b", "main"], { cwd: capacityWorkspace });
+const capacityPrimary = fakeRuntime("capacity-primary", capacityWorkspace);
+const capacityRuntimes = new Map<string, ReturnType<typeof fakeRuntime>>();
+const capacityHost = await startRuntimeHost(capacityWorkspace, async () => ({ runtime: capacityPrimary, commands }), {
+  workspaceRoot: capacityWorkspace,
+  maxSessionRuntimes: 2,
+  createRuntime: async (sessionId) => {
+    const runtime = fakeRuntime(sessionId ?? `capacity-${String(++draftCounter)}`, capacityWorkspace);
+    capacityRuntimes.set(runtime.getSnapshot().info.sessionId, runtime);
+    return { runtime, commands };
+  }
+});
+try {
+  const client = await connectRuntimeHost(capacityWorkspace, { clientId: "capacity-client", surface: "desktop" });
+  assert.ok(client);
+  try {
+    const first = await client.ensureSession({ writeIntent: true, focus: false });
+    const firstRuntime = capacityRuntimes.get(first.sessionId);
+    assert.ok(firstRuntime);
+    firstRuntime.setState("runs");
+    firstRuntime.setState("idle");
+
+    const second = await client.ensureSession({ writeIntent: true, focus: false });
+    assert.equal(client.runtimeSnapshots().some((entry) => entry.sessionId === first.sessionId), false);
+    assert.equal(client.runtimeSnapshots().some((entry) => entry.sessionId === second.sessionId), true);
+  } finally {
+    await client.close();
+  }
+} finally {
+  await capacityHost.close();
+  await rm(capacityWorkspace, { recursive: true, force: true });
 }
 
 console.log("runtime-host client tests passed");

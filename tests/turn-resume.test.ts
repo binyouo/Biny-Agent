@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
 import { appendFileSync } from "node:fs";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import os from "node:os";
 import path from "node:path";
@@ -38,6 +38,7 @@ async function main(): Promise<void> {
     await testRoundTripKeepsToolResults(root);
     await testClearedTurnIsNotResumable(root);
     await testCorruptStateIsIgnored(root);
+    await testLegacyTurnIgnoresDeprecatedToolSnapshot(root);
     await testIsolatedPerSession(root);
     await testAgentSessionResumesAfterCrashDuringToolB();
     await testAgentSessionResumesAfterCrashAfterSideEffectB();
@@ -111,6 +112,34 @@ async function testCorruptStateIsIgnored(root: string): Promise<void> {
   // 空 messages 不构成可续跑的状态。
   await (await import("node:fs/promises")).writeFile(target, JSON.stringify({ turn: { sessionId: "session-c", prompt: "p", messages: [], completedSteps: 1 } }));
   assert.equal(await store.load(), undefined);
+}
+
+/** 旧 TurnStore 文件中的重复工具快照已停用，但不能因此让整个在途回合失效。 */
+async function testLegacyTurnIgnoresDeprecatedToolSnapshot(root: string): Promise<void> {
+  const sessionId = "legacy-session";
+  const target = path.join(agentDir(root), "turns", `${sessionId}.json`);
+  await writeFile(target, JSON.stringify({
+    version: 3,
+    turn: {
+      sessionId,
+      prompt: "continue legacy work",
+      messages: [{ role: "user", content: "continue legacy work" }],
+      completedSteps: 1,
+      lastToolSequence: 1,
+      pendingToolExecutions: [{
+        tool: "Write",
+        toolCallId: "legacy-call",
+        sequence: 1,
+        operationId: "legacy-operation",
+        state: "unknown",
+        retrySafety: "unsafe"
+      }],
+      updatedAt: "2026-09-15T00:00:00.000Z"
+    }
+  }));
+  const loaded = await new TurnStore(root, sessionId).load();
+  assert.equal(loaded?.prompt, "continue legacy work");
+  assert.equal(loaded?.completedSteps, 1);
 }
 
 async function testIsolatedPerSession(root: string): Promise<void> {

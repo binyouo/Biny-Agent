@@ -4,7 +4,13 @@ import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
-import { WorktreeDirtyError, WorktreeManager, WorktreeUnavailableError, WorktreeUnmergedError } from "../src/runtime/host/worktree.js";
+import {
+  WorktreeBaseBranchMismatchError,
+  WorktreeDirtyError,
+  WorktreeManager,
+  WorktreeUnavailableError,
+  WorktreeUnmergedError
+} from "../src/runtime/host/worktree.js";
 
 const run = promisify(execFile);
 let nonGit: string | undefined;
@@ -34,7 +40,8 @@ try {
   await run("git", ["add", "README.md"], { cwd: first.worktreePath });
   await run("git", ["commit", "--quiet", "-m", "session change"], { cwd: first.worktreePath });
   const merged = await manager.merge("session-a", { deleteAfter: true });
-  assert.equal(merged.status, "merged");
+  assert.equal(merged.record.status, "merged");
+  assert.equal(merged.cleanup.status, "completed");
   assert.equal(await readFile(path.join(repository, "README.md"), "utf8"), "merged\n");
   assert.equal(await manager.get("session-a"), undefined, "deleteAfter 应删除注册表记录");
 
@@ -47,6 +54,31 @@ try {
   assert.equal(await fsPathExists(unmerged.worktreePath), true, "未合并分支拒绝删除时必须保留 worktree");
   await manager.remove("session-b", false);
   assert.equal(await manager.get("session-b"), undefined, "明确不删分支时可以只移除干净 worktree");
+
+  const wrongBranch = await manager.ensure("session-wrong-branch");
+  await writeFile(path.join(wrongBranch.worktreePath, "wrong-branch.txt"), "must stay isolated\n");
+  await run("git", ["add", "wrong-branch.txt"], { cwd: wrongBranch.worktreePath });
+  await run("git", ["commit", "--quiet", "-m", "wrong branch change"], { cwd: wrongBranch.worktreePath });
+  await run("git", ["switch", "--quiet", "-c", "other"], { cwd: repository });
+  await assert.rejects(
+    manager.merge("session-wrong-branch"),
+    (error: unknown) => error instanceof WorktreeBaseBranchMismatchError
+  );
+  assert.equal((await manager.get("session-wrong-branch"))?.status, "active");
+  assert.equal(await fsPathExists(path.join(repository, "wrong-branch.txt")), false);
+  await run("git", ["switch", "--quiet", "main"], { cwd: repository });
+  await manager.remove("session-wrong-branch", false);
+
+  const squash = await manager.ensure("session-squash");
+  await writeFile(path.join(squash.worktreePath, "squash.txt"), "squashed\n");
+  await run("git", ["add", "squash.txt"], { cwd: squash.worktreePath });
+  await run("git", ["commit", "--quiet", "-m", "squash change"], { cwd: squash.worktreePath });
+  const squashResult = await manager.merge("session-squash", { strategy: "squash", deleteAfter: true });
+  assert.equal(squashResult.record.mergeStrategy, "squash");
+  assert.match(squashResult.record.mergedCommit ?? "", /^[0-9a-f]{40}$/u);
+  assert.equal(squashResult.cleanup.status, "completed");
+  assert.equal(await manager.get("session-squash"), undefined);
+  assert.equal(await readFile(path.join(repository, "squash.txt"), "utf8"), "squashed\n");
 
   nonGit = await mkdtemp(path.join(os.tmpdir(), "biny-non-git-"));
   const unavailable = new WorktreeManager(nonGit, repository);

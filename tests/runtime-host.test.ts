@@ -11,6 +11,7 @@ import { saveConfig } from "../src/config/loader.js";
 import { runtimeHostPaths, startRuntimeHost, connectRuntimeHost, spawnRuntimeHost } from "../src/runtime/RuntimeHost.js";
 import { RuntimeEventAuthority } from "../src/runtime/RuntimeAuthority.js";
 import { DurableTaskRunStore } from "../src/runtime/TaskRunStore.js";
+import { runTaskClosure, type TaskClosureResult } from "../src/runtime/TaskClosure.js";
 import { SubagentTaskIncompleteError } from "../src/runtime/SubagentTaskManager.js";
 import type { InteractiveRuntimeHandle } from "../src/runtime/InteractiveAgentRuntime.js";
 import { defaultChatPersonalizationOverride, resolveChatPersonalization } from "../src/personalization/index.js";
@@ -141,7 +142,7 @@ async function main(): Promise<void> {
       };
     },
     steer: () => { throw new Error("not used"); },
-    followUp: () => { throw new Error("not used"); },
+    enqueue: () => { throw new Error("not used"); },
     continueInterruptedTurn: async () => undefined,
     startInterruptedTurn: async () => {
       interruptedStarts += 1;
@@ -208,6 +209,42 @@ async function main(): Promise<void> {
       deadline: new Date(Date.now() + 10_000).toISOString(),
       completion
     };
+  };
+  const taskPromises = new Map<string, Promise<TaskClosureResult>>();
+  const startTaskRun: CommandRuntime["startTaskRun"] = async (taskRunId, options = {}) => {
+    const task = taskRuns.get(taskRunId);
+    if (!task) throw new Error(`TaskRun ${taskRunId} does not exist.`);
+    const existing = taskPromises.get(taskRunId);
+    if (existing) return { task, completion: existing };
+    if (task.status === "completed" || task.status === "failed" || task.status === "incomplete" || task.status === "cancelled" || task.status === "blocked") {
+      return { task, completion: Promise.resolve({ status: task.status === "completed" ? "completed" : task.status === "cancelled" ? "cancelled" : "blocked" }) };
+    }
+    if (task.status === "created") taskRuns.transition(taskRunId, "queued");
+    const completion = runTaskClosure({
+      taskRuns,
+      taskRunId,
+      workspaceRoot: workspace,
+      ignore: [],
+      executor: { executeTaskCheck: async () => { throw new Error("not used"); } },
+      retrySafety: options.retrySafety,
+      executeAttempt: async (prompt, attempt) => {
+        try {
+          return await startSubagentTask(prompt, { taskId: taskRunId, parentRunId: attempt.parentRunId }).completion;
+        } catch (error) {
+          const failure = error instanceof Error ? error : new Error(String(error));
+          const status = failure instanceof SubagentTaskIncompleteError ? "incomplete" : "failed";
+          taskRuns.transition(taskRunId, status, {
+            attemptId: attempt.attemptId,
+            artifacts: failure instanceof SubagentTaskIncompleteError ? { output: failure.output } : undefined,
+            failure: { message: failure.message, failureClass: failure instanceof SubagentTaskIncompleteError ? failure.stopReason : "execution_failed" }
+          });
+          throw failure;
+        }
+      }
+    }).finally(() => taskPromises.delete(taskRunId));
+    taskPromises.set(taskRunId, completion);
+    void completion.catch(() => undefined);
+    return { task: taskRuns.get(taskRunId)!, completion };
   };
   const commands = {
     agent: {
@@ -288,7 +325,15 @@ async function main(): Promise<void> {
     },
     runtimeAuthority: taskAuthority,
     taskRuns,
-    startSubagentTask
+    startSubagentTask,
+    startTaskRun,
+    cancelTaskRun: (taskRunId, reason = "TaskRun cancelled.") => {
+      const task = taskRuns.get(taskRunId);
+      if (!task) throw new Error(`TaskRun ${taskRunId} does not exist.`);
+      if (["completed", "failed", "incomplete", "cancelled", "blocked"].includes(task.status)) return task;
+      taskCompletions.get(taskRunId)?.reject(new Error(reason));
+      return taskRuns.transition(taskRunId, "cancelled", { attemptId: task.attempts.at(-1)?.attemptId, failure: { message: reason } });
+    }
   } as unknown as CommandRuntime;
   const hostPaths = runtimeHostPaths(workspace);
   const attackerRegistration = path.join(workspace, "attacker-registration.json");

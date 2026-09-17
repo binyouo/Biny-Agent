@@ -264,7 +264,8 @@ function isAllowedBySession(
   if (tools.has(request.toolName)) return true;
   if (commands.has(requestKey(request))) return true;
   if (actions.has(actionKey(request))) return true;
-  return request.targetPath ? matchingPathRule(request.targetPath, [...paths]) !== undefined : false;
+  // 会话里的具体文件授权是一次用户选择，必须精确匹配；只有项目配置规则才支持 basename/目录模式。
+  return request.targetPath ? paths.has(normalizeRulePath(request.targetPath)) : false;
 }
 
 function requestKey(request: PermissionRequestContext): string {

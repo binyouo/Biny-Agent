@@ -256,7 +256,7 @@ export interface AgentLoopConfig {
   onRequestContext?: (context: ModelStreamContext) => Promise<void> | void;
   transformContext?: (messages: AgentMessage[], signal?: AbortSignal) => Promise<AgentMessage[]>;
   getSteeringMessages?: () => Promise<AgentMessage[]>;
-  getFollowUpMessages?: () => Promise<AgentMessage[]>;
+  getQueuedMessages?: () => Promise<AgentMessage[]>;
   shouldStopAfterTurn?: (context: AgentLoopTurnContext) => boolean | Promise<boolean>;
   prepareNextTurn?: (context: AgentLoopTurnContext) => Promise<AgentLoopNextTurnSnapshot | undefined>;
   recoverFromModelError?: (

@@ -72,6 +72,7 @@
     "@astryxdesign/core": "0.2.0",
     "@astryxdesign/theme-neutral": "0.2.0",
     "@earendil-works/pi-tui": "0.82.1",
+    "@floating-ui/dom": "1.8.0",
     "@huggingface/transformers": "4.2.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@openai/agents-core": "0.3.9",

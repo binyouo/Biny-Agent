@@ -5,44 +5,24 @@
  * AgentSession 只能执行计划，不能再自行推断工具副作用、用户输入边界或剩余步数。
  */
 import type { BlockedReason } from "../agent/types.js";
-import type { ToolExecutionResultStatus } from "../tools/types.js";
 import type { SessionEvent } from "./recorder.js";
 import type { SessionReplay } from "./replay.js";
-import type { RuntimeHighWater } from "./runtimeEvent.js";
 import type { InterruptedTurn } from "./turnStore.js";
 
-export type OperationRecoveryAction = "preserve-result" | "discard-not-started" | "park";
-
-export interface OperationRecoveryDecision {
-  tool: string;
-  toolCallId?: string;
-  /** 旧 session 的工具结果可能没有 operationId，归属判断仍必须 fail-closed。 */
-  operationId?: string;
-  executionStatus?: ToolExecutionResultStatus;
-  action: OperationRecoveryAction;
-  evidence?: string;
-}
-
-interface ContinuationPlanBase {
-  turnId?: string;
-  sessionHighWater?: RuntimeHighWater;
-  operations: OperationRecoveryDecision[];
-}
-
 export type ContinuationPlan =
-  | ContinuationPlanBase & { action: "continue"; remainingSteps: number }
-  | ContinuationPlanBase & {
+  | { action: "continue"; remainingSteps: number }
+  | {
     action: "block";
     message: string;
     blockedReason: BlockedReason;
     requiredAction: string;
   }
-  | ContinuationPlanBase & { action: "require-user-input"; message: string }
-  | ContinuationPlanBase & { action: "exhausted"; message: string };
+  | { action: "require-user-input"; message: string }
+  | { action: "exhausted"; message: string };
 
 type RecoveryEvidence = Pick<
   SessionReplay,
-  "events" | "recoveredToolResults" | "discardedToolCalls" | "runtimeHighWater"
+  "events" | "recoveredToolResults"
 >;
 
 export function resolveContinuationPlan(
@@ -52,11 +32,9 @@ export function resolveContinuationPlan(
 ): ContinuationPlan {
   const turnId = turn.turnId ?? turn.runtimeHighWater?.turnId;
   const operationTurnIds = toolOperationTurnIds(replay.events);
-  const operations = operationRecoveryDecisions(replay);
   const unsafeTools = new Set<string>();
 
-  for (const operation of operations) {
-    if (operation.action !== "park") continue;
+  for (const operation of unknownToolOperations(replay)) {
     const operationTurnId = operation.toolCallId
       ? operationTurnIds.get(operation.toolCallId)
       : undefined;
@@ -64,14 +42,8 @@ export function resolveContinuationPlan(
     if (!turnId || !operationTurnId || operationTurnId === turnId) unsafeTools.add(operation.tool);
   }
 
-  const base: ContinuationPlanBase = {
-    turnId,
-    sessionHighWater: replay.runtimeHighWater,
-    operations
-  };
   if (unsafeTools.size > 0) {
     return {
-      ...base,
       action: "block",
       message: `${[...unsafeTools].join("、")} 可能产生了未确认的副作用，恢复已阻塞。`,
       blockedReason: "unsafe_action_required",
@@ -84,7 +56,6 @@ export function resolveContinuationPlan(
       || turn.terminal.blockedReason === "unsafe_action_required")
   ) {
     return {
-      ...base,
       action: "require-user-input",
       message: turn.terminal.requiredAction
         ? `This blocked turn requires a new user message: ${turn.terminal.requiredAction}`
@@ -94,12 +65,11 @@ export function resolveContinuationPlan(
   const remainingSteps = turnLimit - turn.completedSteps;
   if (remainingSteps < 1) {
     return {
-      ...base,
       action: "exhausted",
       message: `The interrupted turn already reached its ${String(turnLimit)}-step limit. Send a new user message to start another turn.`
     };
   }
-  return { ...base, action: "continue", remainingSteps };
+  return { action: "continue", remainingSteps };
 }
 
 function toolOperationTurnIds(events: readonly SessionEvent[]): Map<string, string> {
@@ -119,29 +89,16 @@ function toolOperationTurnIds(events: readonly SessionEvent[]): Map<string, stri
   return result;
 }
 
-function operationRecoveryDecisions(replay: RecoveryEvidence): OperationRecoveryDecision[] {
-  const decisions = new Map<string, OperationRecoveryDecision>();
-  for (const call of replay.discardedToolCalls) {
-    decisions.set(call.operationId, {
-      tool: call.tool,
-      toolCallId: call.toolCallId,
-      operationId: call.operationId,
-      executionStatus: "cancelled",
-      action: "discard-not-started"
-    });
-  }
+function unknownToolOperations(replay: RecoveryEvidence): Array<{ tool: string; toolCallId?: string }> {
+  const operations = new Map<string, { tool: string; toolCallId?: string }>();
   for (const [index, event] of [...replay.events, ...replay.recoveredToolResults].entries()) {
-    if (event.type !== "tool_result" || event.executionStatus === undefined) continue;
-    if (event.recovered !== true && event.executionStatus !== "unknown") continue;
-    const decisionKey = event.operationId ?? event.toolCallId ?? `legacy-tool-result-${String(index)}`;
-    decisions.set(decisionKey, {
+    if (event.type !== "tool_result" || event.executionStatus !== "unknown") continue;
+    // 旧 session 可能没有 operationId，仍要用 toolCallId 或事件位置稳定去重并保守阻塞。
+    const key = event.operationId ?? event.toolCallId ?? `legacy-tool-result-${String(index)}`;
+    operations.set(key, {
       tool: event.tool,
-      toolCallId: event.toolCallId,
-      operationId: event.operationId,
-      executionStatus: event.executionStatus,
-      action: event.executionStatus === "unknown" ? "park" : "preserve-result",
-      evidence: event.evidence
+      toolCallId: event.toolCallId
     });
   }
-  return [...decisions.values()];
+  return [...operations.values()];
 }

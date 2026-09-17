@@ -185,6 +185,7 @@ async function testSessionPersistence(): Promise<void> {
         if (event.type === "context.updated") {
           updates++;
           assert.equal(event.context.memoryInjectedCount, 0, "关闭记忆时仍发布明确的零注入结果");
+          assert.deepEqual(event.context.memoryInjectedSummaries, [], "关闭记忆时不发布记忆摘要");
         }
       }
     }
@@ -201,6 +202,7 @@ async function testSessionPersistence(): Promise<void> {
     const replies = storedEvents.filter((event) => event.type === "assistant_message" && !event.auditOnly);
     assert.ok(replies.length > 0);
     assert.ok(replies.every((event) => event.metadata?.memoryInjectedCount === 0), "回复持久化真实的零注入结果");
+    assert.ok(replies.every((event) => Array.isArray(event.metadata?.memoryInjectedSummaries) && event.metadata.memoryInjectedSummaries.length === 0), "回复持久化空的记忆摘要清单");
     const replay = replaySessionEvents(storedEvents);
     assert.deepEqual(replay.contextState?.budget.breakdown, budget.breakdown);
     assert.equal(replay.contextState?.budget.cacheHitRate, 0.9);

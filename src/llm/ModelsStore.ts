@@ -22,6 +22,7 @@ export interface ModelsStoreEntry {
 
 export interface ModelsStore {
   read(providerId: string): Promise<ModelsStoreEntry | undefined>;
+  readMany?(providerIds: readonly string[]): Promise<Map<string, ModelsStoreEntry>>;
   write(providerId: string, entry: ModelsStoreEntry): Promise<void>;
   delete(providerId: string): Promise<void>;
 }
@@ -114,6 +115,13 @@ export class InMemoryModelsStore implements ModelsStore {
     return entry ? structuredClone(entry) : undefined;
   }
 
+  async readMany(providerIds: readonly string[]): Promise<Map<string, ModelsStoreEntry>> {
+    return new Map(providerIds.flatMap((providerId) => {
+      const entry = this.entries.get(providerId);
+      return entry ? [[providerId, structuredClone(entry)] as const] : [];
+    }));
+  }
+
   async write(providerId: string, entry: ModelsStoreEntry): Promise<void> {
     this.entries.set(providerId, sanitizeEntry(entry));
   }
@@ -138,6 +146,16 @@ export class FileModelsStore implements ModelsStore {
     const data = await readStoreFile(this.filePath);
     const entry = data.providers[providerId];
     return entry ? structuredClone(entry) as ModelsStoreEntry : undefined;
+  }
+
+  async readMany(providerIds: readonly string[]): Promise<Map<string, ModelsStoreEntry>> {
+    await this.migrateIfDefault();
+    // 一个设置快照会读取所有 provider；批量读避免对同一文件重复 JSON.parse + Zod 校验。
+    const data = await readStoreFile(this.filePath);
+    return new Map(providerIds.flatMap((providerId) => {
+      const entry = data.providers[providerId];
+      return entry ? [[providerId, structuredClone(entry) as ModelsStoreEntry] as const] : [];
+    }));
   }
 
   async write(providerId: string, entry: ModelsStoreEntry): Promise<void> {
@@ -178,6 +196,20 @@ export async function restoreProviderCatalogs(
   store: ModelsStore,
   providers?: Readonly<Record<string, ProviderConfig>>
 ): Promise<Array<[string, ModelCatalogEntry[]]>> {
+  if (store.readMany) {
+    const cacheKeys = providerIds.flatMap((providerId) => {
+      const provider = providers?.[providerId];
+      const scoped = provider ? modelCatalogCacheKey(providerId, provider) : providerId;
+      return scoped === providerId ? [providerId] : [scoped, providerId];
+    });
+    const entries = await store.readMany([...new Set(cacheKeys)]).catch(() => new Map<string, ModelsStoreEntry>());
+    return providerIds.flatMap((providerId) => {
+      const provider = providers?.[providerId];
+      const scoped = provider ? modelCatalogCacheKey(providerId, provider) : providerId;
+      const entry = entries.get(scoped) ?? entries.get(providerId);
+      return entry?.models.length ? [[providerId, entry.models] as [string, ModelCatalogEntry[]]] : [];
+    });
+  }
   const restored = await Promise.all(providerIds.map(async (providerId) => {
     const provider = providers?.[providerId];
     const entry = provider

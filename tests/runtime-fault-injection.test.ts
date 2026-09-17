@@ -205,7 +205,6 @@ async function testCanonicalFaultBoundaries(): Promise<void> {
       undefined,
       undefined,
       undefined,
-      [{ tool: "Write", toolCallId: "call-write", sequence: 1, operationId: "operation-write", state: "side_effect_committed", retrySafety: "unsafe" }],
       execution.runtime
     );
     await recorder.close();

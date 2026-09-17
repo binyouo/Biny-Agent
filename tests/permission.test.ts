@@ -13,7 +13,6 @@ import { subagentAccessMode } from "../src/runtime/subagentAccess.js";
 import { SessionRecorder } from "../src/session/recorder.js";
 import { ensureAgentDirs } from "../src/session/store.js";
 import { ToolRegistry } from "../src/tools/registry.js";
-import { permissionIcon, permissionLabel, permissionOptions } from "../src/desktop/renderer/src/components/composer/composerLabels.js";
 
 const baseRequest: PermissionRequestContext = {
   toolName: "Write",
@@ -31,7 +30,6 @@ async function main(): Promise<void> {
   testPathRulesMatchAnyDepth();
   testSubagentAccessInheritsMode();
   testDefaultPermissionMode();
-  testDesktopPermissionOptions();
   await testPermissionModeWriteKeepsOtherSettings();
   await testModelSwitchKeepsPermissionMode();
   await testCredentialRefreshKeepsConcurrentPermissionMode();
@@ -105,6 +103,16 @@ function testScopedGrants(): void {
   actionManager.applyResult(baseRequest, { approved: true, action: "allow_always", scope: undefined });
   assert.equal(actionManager.evaluate(baseRequest).decision, "allow");
   assert.equal(actionManager.evaluate({ ...baseRequest, targetPath: "src/other.ts" }).decision, "ask");
+
+  const basenameManager = new PermissionManager({ mode: "ask", allowTools: [], denyPaths: [] });
+  const rootConfig = { ...baseRequest, targetPath: "config.json" };
+  basenameManager.applyResult(rootConfig, { approved: true, action: "allow_always", scope: undefined });
+  assert.equal(basenameManager.evaluate(rootConfig).decision, "allow");
+  assert.equal(
+    basenameManager.evaluate({ ...rootConfig, targetPath: "packages/api/config.json" }).decision,
+    "ask",
+    "具体文件授权不能沿用配置规则的 basename 匹配语义"
+  );
 }
 
 function testMoveChangeEvaluatesBothPaths(): void {
@@ -174,15 +182,6 @@ function testDefaultPermissionMode(): void {
   const legacy = structuredClone(defaultConfig) as Record<string, unknown>;
   delete legacy.permission;
   assert.equal(configSchema.parse(legacy).permission.mode, "full-access");
-}
-
-function testDesktopPermissionOptions(): void {
-  assert.deepEqual(permissionOptions.map((option) => option.mode), ["ask", "auto", "full-access"]);
-  assert.equal(permissionLabel("read-only"), "只读");
-  assert.equal(permissionIcon("ask"), "shield");
-  assert.equal(permissionIcon("auto"), "wand");
-  assert.equal(permissionIcon("full-access"), "warning");
-  assert.equal(permissionIcon("read-only"), "eye");
 }
 
 /**

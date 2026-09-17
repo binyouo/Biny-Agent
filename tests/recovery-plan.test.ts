@@ -52,7 +52,6 @@ const unknownResult: Extract<SessionEvent, { type: "tool_result" }> = {
     unknownResult
   ]), 10);
   assert.equal(plan.action, "block");
-  assert.equal(plan.operations[0]?.action, "park");
   if (plan.action === "block") assert.equal(plan.blockedReason, "unsafe_action_required");
 }
 
@@ -81,7 +80,6 @@ const unknownResult: Extract<SessionEvent, { type: "tool_result" }> = {
     recoveredSuccess
   ]), 10);
   assert.equal(plan.action, "continue");
-  assert.equal(plan.operations[0]?.action, "preserve-result");
   if (plan.action === "continue") assert.equal(plan.remainingSteps, 8);
 }
 
@@ -96,7 +94,6 @@ const unknownResult: Extract<SessionEvent, { type: "tool_result" }> = {
     }]
   }), 10);
   assert.equal(plan.action, "continue");
-  assert.equal(plan.operations[0]?.action, "discard-not-started");
 }
 
 {

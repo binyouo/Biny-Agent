@@ -13,7 +13,7 @@ import { ApiAdapterRegistry } from "../src/llm/ApiAdapterRegistry.js";
 import { ProviderRegistry } from "../src/llm/ProviderRuntime.js";
 import { AiRegistry } from "../src/llm/AiRegistry.js";
 import { ModelRuntime } from "../src/llm/ModelRuntime.js";
-import { FileModelsStore, restoreProviderCatalogs } from "../src/llm/ModelsStore.js";
+import { FileModelsStore, restoreProviderCatalogs, type ModelsStore } from "../src/llm/ModelsStore.js";
 import { PermissionManager } from "../src/permission/PermissionManager.js";
 import { SessionRecorder } from "../src/session/recorder.js";
 import { replaySession } from "../src/session/replay.js";
@@ -50,7 +50,7 @@ async function main(): Promise<void> {
   await testOpenAiToolCallsRequireFunctionNames();
   await testGoogleGenerativeAiTransport();
   await testAudioPayloads();
-  await testQueuedFollowUp();
+  await testQueuedMessage();
   const originalFetch = globalThis.fetch;
   const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "biny-native-agent-"));
   await ensureAgentDirs(workspaceRoot);
@@ -904,7 +904,28 @@ async function testPersistedProviderCatalog(): Promise<void> {
     assert.equal(restored?.models[0]?.capabilities.reasoningSummary, true);
     assert.equal(restored?.models[0]?.reasoningEffortsSource, "inferred");
     assert.equal((await secondStore.read("other"))?.models[0]?.id, "other-model");
+    const batch = await new FileModelsStore(filePath).readMany(["catalog", "other", "missing"]);
+    assert.deepEqual([...batch.keys()], ["catalog", "other"]);
     if (process.platform !== "win32") assert.equal((await stat(filePath)).mode & 0o777, 0o600);
+
+    let singleReads = 0;
+    let batchReads = 0;
+    const batchStore: ModelsStore = {
+      read: async () => {
+        singleReads += 1;
+        return undefined;
+      },
+      readMany: async (providerIds) => {
+        batchReads += 1;
+        return new Map(providerIds.map((providerId) => [providerId, { models: [{ ...model, provider: providerId }] }]));
+      },
+      write: async () => undefined,
+      delete: async () => undefined
+    };
+    const batchCatalogs = await restoreProviderCatalogs(["first", "second"], batchStore);
+    assert.equal(batchReads, 1);
+    assert.equal(singleReads, 0);
+    assert.deepEqual(batchCatalogs.map(([providerId]) => providerId), ["first", "second"]);
 
     const config = configSchema.parse({
       ...defaultConfig,
@@ -958,8 +979,8 @@ async function testPersistedProviderCatalog(): Promise<void> {
   }
 }
 
-async function testQueuedFollowUp(): Promise<void> {
-  const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "biny-native-follow-up-"));
+async function testQueuedMessage(): Promise<void> {
+  const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "biny-native-queued-message-"));
   await ensureAgentDirs(workspaceRoot);
   const firstRequestStarted = deferred<void>();
   const releaseFirstRequest = deferred<void>();
@@ -976,7 +997,7 @@ async function testQueuedFollowUp(): Promise<void> {
       }
       return (async function* () {
         yield { type: "start" as const };
-        yield { type: "text-delta" as const, text: request === 1 ? "first answer" : "follow-up answer" };
+        yield { type: "text-delta" as const, text: request === 1 ? "first answer" : "queued answer" };
         yield { type: "finish" as const, reason: "stop" as const };
       })();
     }
@@ -1007,7 +1028,7 @@ async function testQueuedFollowUp(): Promise<void> {
       for await (const event of agent.prompt("first question")) events.push(event);
     })();
     await firstRequestStarted.promise;
-    await agent.queueFollowUp("queued-message", "second question");
+    await agent.queueMessage("queued-message", "second question");
     releaseFirstRequest.resolve();
     await run;
 
@@ -1015,8 +1036,8 @@ async function testQueuedFollowUp(): Promise<void> {
     assert.deepEqual(contexts[1]?.messages.at(-1), { role: "user", content: "second question" });
     assert.equal(events.some((event) => event.type === "message.user"
       && event.messageId === "queued-message"
-      && event.delivery === "followUp"), true);
-    assert.equal(events.find((event) => event.type === "done")?.content, "follow-up answer");
+      && event.delivery === "queue"), true);
+    assert.equal(events.find((event) => event.type === "done")?.content, "queued answer");
     await recorder.flush();
     const stored = (await readFile(recorder.filePath, "utf8")).trim().split("\n")
       .map((line) => JSON.parse(line) as { type: string; auditOnly?: boolean; content?: string; message?: { role: string; content: Array<{ type: string; text?: string }> } });
@@ -1025,7 +1046,7 @@ async function testQueuedFollowUp(): Promise<void> {
       && event.message.content.some((part) => part.type === "text" && part.text === "first answer"));
     const queuedUserIndex = stored.findIndex((event) => event.type === "user_message" && !event.auditOnly && event.content === "second question");
     assert.ok(firstAssistantIndex >= 0);
-    assert.ok(queuedUserIndex > firstAssistantIndex, "queued follow-up must be persisted after the completed assistant turn");
+    assert.ok(queuedUserIndex > firstAssistantIndex, "queued message must be persisted after the completed assistant turn");
   } finally {
     await agent.close();
     await rm(workspaceRoot, { recursive: true, force: true });

@@ -52,6 +52,54 @@ export interface JsonSchemaValidationResult {
   errors: string[];
 }
 
+/**
+ * Provider 只应看到结构稳定的工具 Schema。部分 OpenAI-compatible 网关会把缺失或畸形的
+ * `required` 当成协议错误，因此这里参考成熟实现递归补齐空数组，并在本地指出具体工具与路径。
+ */
+export function normalizeToolParameters(toolName: string, parameters: JsonSchema): JsonObjectSchema {
+  if (typeof parameters !== "object" || parameters === null || Array.isArray(parameters) || parameters.type !== "object") {
+    throw new Error(`Tool ${toolName} has invalid JSON Schema at parameters.type: expected object.`);
+  }
+  return normalizeSchemaNode(parameters, toolName, "parameters", new WeakSet<object>()) as JsonObjectSchema;
+}
+
+function normalizeSchemaNode(value: unknown, toolName: string, path: string, ancestors: WeakSet<object>): unknown {
+  if (typeof value !== "object" || value === null) return value;
+  if (ancestors.has(value)) throw new Error(`Tool ${toolName} has a cyclic JSON Schema at ${path}.`);
+
+  ancestors.add(value);
+  try {
+    const source = value as Record<string, unknown>;
+    const normalized: Record<string, unknown> = { ...source };
+    if (source.type === "object") {
+      const required = source.required;
+      if (required === undefined) {
+        normalized.required = [];
+      } else if (!Array.isArray(required) || required.some((item) => typeof item !== "string")) {
+        throw new Error(`Tool ${toolName} has invalid JSON Schema at ${path}.required: expected string[].`);
+      } else {
+        normalized.required = [...required];
+      }
+    }
+    if (typeof source.properties === "object" && source.properties !== null && !Array.isArray(source.properties)) {
+      normalized.properties = Object.fromEntries(Object.entries(source.properties)
+        .map(([key, schema]) => [key, normalizeSchemaNode(schema, toolName, `${path}.properties.${key}`, ancestors)]));
+    }
+    if (source.items !== undefined) {
+      normalized.items = normalizeSchemaNode(source.items, toolName, `${path}.items`, ancestors);
+    }
+    for (const key of ["anyOf", "oneOf", "allOf"] as const) {
+      const alternatives = source[key];
+      if (Array.isArray(alternatives)) {
+        normalized[key] = alternatives.map((schema, index) => normalizeSchemaNode(schema, toolName, `${path}.${key}[${String(index)}]`, ancestors));
+      }
+    }
+    return normalized;
+  } finally {
+    ancestors.delete(value);
+  }
+}
+
 export function validateJsonSchema(schema: JsonSchema, value: unknown, path = "arguments"): JsonSchemaValidationResult {
   const errors: string[] = [];
   validateValue(schema, value, path, errors);

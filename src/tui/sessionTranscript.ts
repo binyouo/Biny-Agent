@@ -21,7 +21,7 @@ export function sessionEventsToTranscript(events: SessionEvent[]): TranscriptIte
   for (const [index, event] of events.entries()) {
     if (event.type === "tool_result" && event.auditOnly && event.recovered && resultStatus(event.result) !== "skipped") continue;
     if (event.type === "user_message") {
-      if (event.auditOnly && (event.metadata?.queuedDelivery === "steer" || event.metadata?.queuedDelivery === "followUp")) continue;
+      if (event.auditOnly && (event.metadata?.queuedDelivery === "steer" || event.metadata?.queuedDelivery === "queue")) continue;
       items.push({ id: replayId("user", index), kind: "user", content: publicUserMessage(event.content) });
       continue;
     }

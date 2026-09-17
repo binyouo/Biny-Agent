@@ -6,6 +6,7 @@
  */
 import { createHash } from "node:crypto";
 import { ZodError } from "zod";
+import { planningToolAllowed } from "./planningPolicy.js";
 import { routeEditingTools, type EditingMode } from "../tools/file/editingMode.js";
 import { confirmPermissionRequest } from "../permission/confirm.js";
 import { isFullYesConfirmation } from "../permission/confirmation.js";
@@ -39,7 +40,7 @@ import type {
 } from "../tools/types.js";
 import { createToolOperationId } from "../tools/types.js";
 import { resolveWorkspacePath, toWorkspaceRelative } from "../workspace/resolvePath.js";
-import type { ReasoningBlock } from "../session/recorder.js";
+import type { ReasoningBlock, SessionEvent } from "../session/recorder.js";
 import { archiveToolResult, serializeToolResult, toolResultPreview } from "../session/toolResultArchive.js";
 import { projectSingleToolResultForModel } from "./toolResultProjection.js";
 import type {
@@ -57,16 +58,6 @@ interface ToolExecutionOutcome {
   permissionRequest?: AgentPermissionRequest;
   executionStatus?: ToolExecutionResultStatus;
   evidence?: string;
-}
-
-export interface ToolExecutionCheckpoint {
-  tool: string;
-  toolCallId: string;
-  sequence: number;
-  operationId: string;
-  state: ToolExecutionState;
-  evidence?: string;
-  retrySafety?: ToolRetrySafety;
 }
 
 interface FilePermissionBaseline {
@@ -169,7 +160,7 @@ export class ToolExecutionCoordinator {
   private accountedToolCallCount = 0;
   private restoredMaxRepeatedActionCount = 0;
   private readonly accountedActionCounts = new Map<string, number>();
-  private readonly executionCheckpoints = new Map<string, ToolExecutionCheckpoint>();
+  private readonly uncertainExecutions = new Map<string, string>();
 
   constructor(
     private readonly context: AgentRuntimeContext,
@@ -227,6 +218,7 @@ export class ToolExecutionCoordinator {
   /** Native model-facing tool envelope. */
   createAgentTools(editing?: { mode: EditingMode; attachmentRoot?: string }): AgentTool[] {
     let entries = this.context.toolRegistry.listEntries()
+      .filter(({ tool, source }) => !this.context.planning || planningToolAllowed(tool, source))
       .filter(({ tool: registered }) => !this.allowedToolNames || this.allowedToolNames.has(registered.name));
     if (editing) {
       entries = routeEditingTools(entries, { workspaceRoot: this.context.workspaceRoot, ignore: this.context.config.workspace.ignore, attachmentRoot: editing.attachmentRoot }, editing.mode);
@@ -264,6 +256,13 @@ export class ToolExecutionCoordinator {
     }
   }
 
+  private recordAndFlush(event: SessionEvent): Promise<SessionEvent> {
+    const runtimeContext = this.context.runId !== undefined && this.context.turnId !== undefined
+      ? { runId: this.context.runId, turnId: this.context.turnId }
+      : this.context.recorder.runtimeContextSnapshot();
+    return this.context.recorder.recordAndFlush(event, runtimeContext);
+  }
+
   getExecutionBudgetSnapshot(): ToolExecutionBudgetSnapshot {
     return {
       accountedToolCalls: this.accountedToolCallCount,
@@ -275,13 +274,11 @@ export class ToolExecutionCoordinator {
     };
   }
 
-  getExecutionCheckpoints(): ToolExecutionCheckpoint[] {
-    return [...this.executionCheckpoints.values()].map((checkpoint) => ({ ...checkpoint }));
-  }
-
   assertCanContinue(): void {
-    const unknown = [...this.executionCheckpoints.values()].find((checkpoint) => checkpoint.state === "unknown");
-    if (unknown) throw new Error(`Cannot continue: tool ${unknown.tool} (${unknown.operationId}) has an unknown side effect. Inspect its outcome before retrying.`);
+    const unknown = this.uncertainExecutions.entries().next().value;
+    if (!unknown) return;
+    const [operationId, tool] = unknown;
+    throw new Error(`Cannot continue: tool ${tool} (${operationId}) has an unknown side effect. Inspect its outcome before retrying.`);
   }
 
   observeToolCall(toolCallId: string): string | undefined {
@@ -299,7 +296,7 @@ export class ToolExecutionCoordinator {
       const operationId = createToolOperationId(this.context.recorder.sessionId, toolCallId);
       const errorMessage = `Tool ${toolName} is not available in the current mode.`;
       const stepContext = this.getStepContext();
-      await this.context.recorder.recordAndFlush({
+      await this.recordAndFlush({
         type: "tool_call",
         tool: toolName,
         args: input,
@@ -310,8 +307,8 @@ export class ToolExecutionCoordinator {
         reasoningProviderOptions: stepContext.reasoningProviderOptions,
         reasoningBlocks: stepContext.reasoningBlocks
       });
-      await this.context.recorder.recordAndFlush({ type: "tool_execution", tool: toolName, toolCallId, sequence, operationId, state: "not_started", retrySafety: "unknown" });
-      await this.context.recorder.recordAndFlush({ type: "tool_execution", tool: toolName, toolCallId, sequence, operationId, state: "failed", evidence: errorMessage, retrySafety: "unknown" });
+      await this.recordAndFlush({ type: "tool_execution", tool: toolName, toolCallId, sequence, operationId, state: "not_started", retrySafety: "unknown" });
+      await this.recordAndFlush({ type: "tool_execution", tool: toolName, toolCallId, sequence, operationId, state: "failed", evidence: errorMessage, retrySafety: "unknown" });
       this.emit({ type: "tool.started", toolCallId, tool: toolName, args: input, operationId });
       return await this.finishSyntheticCall(call, sequence, { error: errorMessage }, errorMessage, { executionStatus: "failed", operationId });
     }
@@ -322,7 +319,7 @@ export class ToolExecutionCoordinator {
       const result = { error: `Unknown tool: ${toolName}` };
       const sequence = this.nextSequence();
       const operationId = createToolOperationId(this.context.recorder.sessionId, toolCallId);
-      await this.context.recorder.recordAndFlush({
+      await this.recordAndFlush({
         type: "tool_call",
         tool: toolName,
         args: input,
@@ -333,8 +330,8 @@ export class ToolExecutionCoordinator {
         reasoningProviderOptions: this.getStepContext().reasoningProviderOptions,
         reasoningBlocks: this.getStepContext().reasoningBlocks
       });
-      await this.context.recorder.recordAndFlush({ type: "tool_execution", tool: toolName, toolCallId, sequence, operationId, state: "not_started", retrySafety: "unknown" });
-      await this.context.recorder.recordAndFlush({ type: "tool_execution", tool: toolName, toolCallId, sequence, operationId, state: "failed", evidence: result.error, retrySafety: "unknown" });
+      await this.recordAndFlush({ type: "tool_execution", tool: toolName, toolCallId, sequence, operationId, state: "not_started", retrySafety: "unknown" });
+      await this.recordAndFlush({ type: "tool_execution", tool: toolName, toolCallId, sequence, operationId, state: "failed", evidence: result.error, retrySafety: "unknown" });
       this.emit({ type: "tool.started", toolCallId, tool: toolName, args: input, operationId });
       return await this.finishSyntheticCall(
         { id: toolCallId, name: toolName, args: input },
@@ -363,7 +360,7 @@ export class ToolExecutionCoordinator {
     const signal = options.abortSignal;
     const stepContext = this.getStepContext();
     const operationId = createToolOperationId(this.context.recorder.sessionId, call.id);
-    await this.context.recorder.recordAndFlush({
+    await this.recordAndFlush({
       type: "tool_call",
       tool: call.name,
       args: call.args,
@@ -380,22 +377,15 @@ export class ToolExecutionCoordinator {
     let executionStarted = false;
     let finishPromise: Promise<unknown> | undefined;
     let committedChange: CommittedFileChange | undefined;
-    const updateCheckpoint = (state: ToolExecutionState, evidence?: string): void => {
+    const updateState = (state: ToolExecutionState, evidence?: string): void => {
       latestState = state;
       latestEvidence = evidence ?? latestEvidence;
-      this.executionCheckpoints.set(operationId, {
-        tool: call.name,
-        toolCallId: call.id,
-        sequence,
-        operationId,
-        state,
-        evidence: latestEvidence,
-        retrySafety
-      });
+      if (state === "unknown") this.uncertainExecutions.set(operationId, call.name);
+      else this.uncertainExecutions.delete(operationId);
     };
     const persistState = async (state: ToolExecutionState, evidence?: string): Promise<void> => {
-      updateCheckpoint(state, evidence);
-      await this.context.recorder.recordAndFlush({
+      updateState(state, evidence);
+      await this.recordAndFlush({
         type: "tool_execution",
         tool: call.name,
         toolCallId: call.id,
@@ -407,8 +397,8 @@ export class ToolExecutionCoordinator {
       });
     };
     const recordState = (state: ToolExecutionState, evidence?: string): void => {
-      updateCheckpoint(state, evidence);
-      void this.context.recorder.recordAndFlush({
+      updateState(state, evidence);
+      void this.recordAndFlush({
         type: "tool_execution",
         tool: call.name,
         toolCallId: call.id,
@@ -463,6 +453,10 @@ export class ToolExecutionCoordinator {
         // call auditable through its tool_result without duplicating UI errors.
         return await finish({ error: message, duplicateToolCallId: true }, message, "failed");
       }
+      if (this.context.planning && !planningToolAllowed(toolDefinition, source)) {
+        const message = "Planning mode forbids execution and workspace mutation. Ask the user to start the plan.";
+        return await finish({ error: message }, message, "failed");
+      }
       if (signal?.aborted) {
         this.emit({ type: "tool.started", toolCallId: call.id, tool: call.name, args: call.args, operationId });
         const message = abortedToolMessage(call.name, signal.reason);
@@ -486,7 +480,7 @@ export class ToolExecutionCoordinator {
             return await finish(prepared.result, prepared.errorMessage, prepared.executionStatus ?? "failed");
           }
           retrySafety = prepared.execution.retrySafety ?? (toolDefinition.risk === "read" ? "safe" : "unknown");
-          updateCheckpoint(latestState, latestEvidence);
+          updateState(latestState, latestEvidence);
 
           this.emit({
             type: "tool.started",
@@ -597,19 +591,19 @@ export class ToolExecutionCoordinator {
                       if (stableJson(committedChange) !== stableJson(change)) throw new Error("Conflicting file commit evidence.");
                       return;
                     }
-                    const event = await this.context.recorder.recordAndFlush({
+                    const event = await this.recordAndFlush({
                       type: "tool_execution", tool: call.name, toolCallId: call.id, sequence, operationId,
                       state: "side_effect_committed", change, fileChangeIsResult: prepared.execution.fileChangeIsResult === true,
                       retrySafety
                     });
                     committedChange = change;
-                    updateCheckpoint("side_effect_committed");
+                    updateState("side_effect_committed");
                     // 广播使用落盘后的脱敏记录，不能把原始文件内容绕过 recorder 发给界面。
                     if (event.type === "tool_execution" && event.change) {
                       this.emit({ type: "tool.change_committed", tool: call.name, toolCallId: call.id, operationId, change: event.change });
                     }
                   } catch (error) {
-                    updateCheckpoint("unknown", "File commit evidence could not be persisted.");
+                    updateState("unknown", "File commit evidence could not be persisted.");
                     throw new FileChangeUncertainError(`File side effect occurred, but commit evidence could not be recorded: ${formatToolError(call.name, error)}`);
                   }
                 }
@@ -658,7 +652,7 @@ export class ToolExecutionCoordinator {
     // 模型侧预算只改变返回值；session、实时界面和归档都以工具实际产出的结果为事实。
     // 否则一次预算溢出会把“模型看见的引用”误当成工具真正返回的内容，后续恢复只能看到二次包装。
     const persistedResult = await this.outlineToolResultForPersistence(call, sequence, result);
-    await this.context.recorder.recordAndFlush({
+    await this.recordAndFlush({
       type: "tool_result",
       tool: call.name,
       result: persistedResult,
@@ -870,7 +864,7 @@ export class ToolExecutionCoordinator {
    * 需要知道为什么被拦，否则只会原样重试。
    */
   private async runBeforeToolHooks(tool: string, args: unknown, signal?: AbortSignal): Promise<ToolExecutionOutcome | undefined> {
-    if (!this.hooks.hasHooks("beforeTool")) return undefined;
+    if (this.context.planning || !this.hooks.hasHooks("beforeTool")) return undefined;
     const outcomes = await this.hooks.run("beforeTool", { tool, path: mutatedFilePath(args) ?? "" }, signal);
     const failed = outcomes.find((outcome) => outcome.exitCode !== 0);
     if (!failed) return undefined;
@@ -880,7 +874,7 @@ export class ToolExecutionCoordinator {
 
   /** 执行后钩子的输出只作为附加信息；它的退出码不改变这次调用的成败。 */
   private async attachAfterToolHooks(tool: string, args: unknown, result: unknown, signal?: AbortSignal): Promise<unknown> {
-    if (!this.hooks.hasHooks("afterTool")) return result;
+    if (this.context.planning || !this.hooks.hasHooks("afterTool")) return result;
     try {
       const outcomes = await this.hooks.run("afterTool", { tool, path: mutatedFilePath(args) ?? "" }, signal);
       if (!outcomes.length) return result;
@@ -899,7 +893,7 @@ export class ToolExecutionCoordinator {
    * 建快照失败不能挡住工具执行 —— 没有 git 仓库是常态，为此拒绝干活是本末倒置。
    */
   private async ensureCheckpoint(risk: ToolRisk | undefined, toolName: string): Promise<void> {
-    if (this.checkpointTaken || risk !== "write" || !this.context.createCheckpoint) return;
+    if (this.context.planning || this.checkpointTaken || risk !== "write" || !this.context.createCheckpoint) return;
     this.checkpointTaken = true;
     try {
       await this.context.createCheckpoint(`before ${toolName}`);
@@ -921,7 +915,7 @@ export class ToolExecutionCoordinator {
     errorMessage: string | undefined,
     signal?: AbortSignal
   ): Promise<unknown> {
-    if (!this.diagnostics || errorMessage || risk !== "write") return result;
+    if (this.context.planning || !this.diagnostics || errorMessage || risk !== "write") return result;
     const targetPath = mutatedFilePath(args);
     if (!targetPath) return result;
     try {

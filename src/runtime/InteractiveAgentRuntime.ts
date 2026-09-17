@@ -21,6 +21,7 @@ import type {
   InteractiveRunState,
   InteractiveRuntimeSnapshot,
   PendingPermissionSnapshot,
+  QueuedRunMessageSnapshot,
   RuntimeOperation
 } from "./agentEvents.js";
 import { reduceInteractiveRunState } from "./agentEvents.js";
@@ -50,7 +51,7 @@ export interface RuntimeRequestIds {
 export interface QueuedAgentMessage {
   runId: string;
   messageId: string;
-  delivery: "steer" | "followUp";
+  delivery: "steer" | "queue";
 }
 
 export interface AgentRunOutcome extends AgentTurnOutcome {
@@ -76,8 +77,15 @@ export interface InteractiveAgentHost {
 /** Desktop、TUI 和 Unix socket 客户端共享的最小交互运行时形状。 */
 export interface InteractiveRuntimeHandle {
   submitPrompt(input: string, attachments?: AgentAttachment[], requestIds?: RuntimeRequestIds, promptContext?: string, capabilitySelection?: AgentCapabilitySelection): SubmittedAgentRun;
+  /** Host 内部监督回合：输入只进入本轮上下文，不写成新的 user_message。 */
+  submitSupervisionTurn?(input: string, requestIds: RuntimeRequestIds, promptContext?: string): SubmittedAgentRun;
   steer(input: string, attachments?: AgentAttachment[], requestIds?: RuntimeRequestIds): Promise<QueuedAgentMessage>;
-  followUp(input: string, attachments?: AgentAttachment[], requestIds?: RuntimeRequestIds): Promise<QueuedAgentMessage>;
+  enqueue(input: string, attachments?: AgentAttachment[], requestIds?: RuntimeRequestIds): Promise<QueuedAgentMessage>;
+  updateQueuedRunMessage?(messageId: string, input: string): Promise<void>;
+  removeQueuedRunMessage?(messageId: string): Promise<void>;
+  moveQueuedRunMessage?(messageId: string, targetMessageId: string, placeAfter: boolean): Promise<void>;
+  steerQueuedRunMessage?(messageId: string): Promise<void>;
+  sendQueuedRunMessagesNow?(): Promise<void>;
   continueInterruptedTurn(): Promise<AgentRunOutcome | undefined>;
   startInterruptedTurn(requestIds?: RuntimeRequestIds): Promise<SubmittedAgentRun | undefined>;
   waitForIdle(): Promise<void>;
@@ -118,6 +126,7 @@ interface AgentRun extends ActiveRunSnapshot {
   retryOfMessageId?: string;
   replaceUserMessageId?: string;
   replacementUserMessageId?: string;
+  supervision: boolean;
 }
 
 interface PendingPermission extends PendingPermissionSnapshot {
@@ -126,6 +135,12 @@ interface PendingPermission extends PendingPermissionSnapshot {
 
 interface ActiveTool {
   startedAtMs: number;
+}
+
+interface RuntimeQueuedMessage {
+  messageId: string;
+  input: string;
+  attachments: AgentAttachment[];
 }
 
 interface SessionLeaseState {
@@ -156,6 +171,10 @@ export class InteractiveAgentRuntime {
   private activeRun: AgentRun | undefined;
   private activeRunController: AbortController | undefined;
   private activeRunCompletion: Promise<AgentRunOutcome> | undefined;
+  /** 待发送消息只属于当前 Runtime；退出应用或重建 Runtime 后不恢复。 */
+  private queuedMessages: RuntimeQueuedMessage[] = [];
+  private queuedMessageStartCompletion: Promise<void> | undefined;
+  private sendQueuedMessagesWithoutDelay = false;
   private abortController: AbortController | undefined;
   private activeOperationCompletion: Promise<void> | undefined;
   private closePromise: Promise<void> | undefined;
@@ -211,18 +230,31 @@ export class InteractiveAgentRuntime {
     return this.startRun(input, attachments, false, requestIds, undefined, promptContext, capabilitySelection);
   }
 
+  submitSupervisionTurn(input: string, requestIds: RuntimeRequestIds, promptContext?: string): SubmittedAgentRun {
+    return this.startRun(
+      input,
+      [],
+      false,
+      requestIds,
+      undefined,
+      promptContext,
+      { tools: ["PlanStatus", "PlanUpdate", "TaskStatus"], skills: "none" },
+      true
+    );
+  }
+
   async steer(input: string, attachments: AgentAttachment[] = [], requestIds?: RuntimeRequestIds): Promise<QueuedAgentMessage> {
     return await this.queueMessage(input, attachments, "steer", requestIds);
   }
 
-  async followUp(input: string, attachments: AgentAttachment[] = [], requestIds?: RuntimeRequestIds): Promise<QueuedAgentMessage> {
-    return await this.queueMessage(input, attachments, "followUp", requestIds);
+  async enqueue(input: string, attachments: AgentAttachment[] = [], requestIds?: RuntimeRequestIds): Promise<QueuedAgentMessage> {
+    return await this.queueMessage(input, attachments, "queue", requestIds);
   }
 
   private async queueMessage(
     input: string,
     attachments: AgentAttachment[],
-    delivery: "steer" | "followUp",
+    delivery: "steer" | "queue",
     requestIds?: RuntimeRequestIds
   ): Promise<QueuedAgentMessage> {
     if (this.closed) throw new Error("Agent runtime is closed.");
@@ -230,9 +262,124 @@ export class InteractiveAgentRuntime {
     if (!run || this.state.kind !== "runs") throw new Error("There is no active run to receive a queued message.");
     if (!input.trim() && !attachments.length) throw new Error("Queued message cannot be empty.");
     const messageId = requestIds?.messageId ?? randomUUID();
-    if (delivery === "steer") await this.commandRuntime.agent.queueSteering(messageId, input, attachments);
-    else await this.commandRuntime.agent.queueFollowUp(messageId, input, attachments);
+    if (delivery === "steer") {
+      await this.commandRuntime.agent.queueSteering(messageId, input, attachments);
+    } else {
+      this.queuedMessages.push({
+        messageId,
+        input,
+        attachments: attachments.map((attachment) => ({ ...attachment }))
+      });
+    }
+    this.publishSnapshot();
     return { runId: run.runId, messageId, delivery };
+  }
+
+  async updateQueuedRunMessage(messageId: string, input: string): Promise<void> {
+    const item = this.requireQueuedMessage(messageId);
+    const content = input.trim();
+    if (!content && !item.attachments.length) throw new Error("Queued message cannot be empty.");
+    item.input = content;
+    this.publishSnapshot();
+  }
+
+  async removeQueuedRunMessage(messageId: string): Promise<void> {
+    const index = this.queuedMessages.findIndex((item) => item.messageId === messageId);
+    if (index < 0) throw new Error("Queued message is no longer pending.");
+    this.queuedMessages.splice(index, 1);
+    this.publishSnapshot();
+  }
+
+  async moveQueuedRunMessage(messageId: string, targetMessageId: string, placeAfter: boolean): Promise<void> {
+    const from = this.queuedMessages.findIndex((item) => item.messageId === messageId);
+    const over = this.queuedMessages.findIndex((item) => item.messageId === targetMessageId);
+    if (from < 0 || over < 0) throw new Error("Queued message is no longer pending.");
+    let target = placeAfter ? over + 1 : over;
+    if (from < target) target -= 1;
+    if (target === from) return;
+    const [item] = this.queuedMessages.splice(from, 1);
+    if (!item) return;
+    this.queuedMessages.splice(target, 0, item);
+    this.publishSnapshot();
+  }
+
+  async steerQueuedRunMessage(messageId: string): Promise<void> {
+    const index = this.queuedMessages.findIndex((item) => item.messageId === messageId);
+    const item = this.queuedMessages[index];
+    if (!item || index < 0) throw new Error("Queued message is no longer pending.");
+    this.queuedMessages.splice(index, 1);
+    try {
+      await this.commandRuntime.agent.queueSteering(item.messageId, item.input, item.attachments);
+    } catch (error) {
+      this.queuedMessages.splice(Math.min(index, this.queuedMessages.length), 0, item);
+      throw error;
+    } finally {
+      this.publishSnapshot();
+    }
+  }
+
+  async sendQueuedRunMessagesNow(): Promise<void> {
+    if (!this.queuedMessages.length) return;
+    const run = this.activeRun;
+    const completion = this.activeRunCompletion;
+    this.sendQueuedMessagesWithoutDelay = true;
+    if (!run || !completion || !this.cancelRun(run.runId)) {
+      this.sendQueuedMessagesWithoutDelay = false;
+      throw new Error("There is no active run to stop before sending queued messages.");
+    }
+    await completion.then(() => undefined, () => undefined);
+  }
+
+  private requireQueuedMessage(messageId: string): RuntimeQueuedMessage {
+    const item = this.queuedMessages.find((candidate) => candidate.messageId === messageId);
+    if (!item) throw new Error("Queued message is no longer pending.");
+    return item;
+  }
+
+  private queuedMessageSnapshots(): QueuedRunMessageSnapshot[] {
+    return this.queuedMessages.map((item) => ({
+      messageId: item.messageId,
+      content: item.input,
+      attachmentCount: item.attachments.length
+    }));
+  }
+
+  private scheduleQueuedMessageRun(previousRun: AgentRun): void {
+    if (this.closed || !this.queuedMessages.length) return;
+    if (this.sendQueuedMessagesWithoutDelay) {
+      this.sendQueuedMessagesWithoutDelay = false;
+      this.startQueuedMessageRun(previousRun);
+      return;
+    }
+    const completion: Promise<void> = new Promise<void>((resolve) => setTimeout(resolve, 100)).then(() => {
+      if (this.queuedMessageStartCompletion === completion) this.queuedMessageStartCompletion = undefined;
+      this.startQueuedMessageRun(previousRun);
+    });
+    this.queuedMessageStartCompletion = completion;
+  }
+
+  private startQueuedMessageRun(previousRun: AgentRun): void {
+    if (this.closed || !this.queuedMessages.length) return;
+    const queued = this.queuedMessages;
+    this.queuedMessages = [];
+    const input = queued.map((item) => item.input).filter((content) => content.trim()).join("\n\n");
+    const attachments = queued.flatMap((item) => item.attachments);
+    try {
+      this.startRun(
+        input || "请分析这些附件。",
+        attachments,
+        false,
+        { parentRunId: previousRun.runId, continuationSource: "message_queue" },
+        undefined,
+        undefined,
+        previousRun.capabilitySelection
+      );
+    } catch (error) {
+      // 新一轮尚未成功受理时保留队列，避免资源未就绪等同步失败直接吞掉用户输入。
+      this.queuedMessages = [...queued, ...this.queuedMessages];
+      this.commandRuntime.agent.recordError(error);
+    }
+    this.publishSnapshot();
   }
 
   async continueInterruptedTurn(): Promise<AgentRunOutcome | undefined> {
@@ -257,7 +404,8 @@ export class InteractiveAgentRuntime {
     requestIds?: RuntimeRequestIds,
     continuationTurnId?: string,
     promptContext?: string,
-    capabilitySelection?: AgentCapabilitySelection
+    capabilitySelection?: AgentCapabilitySelection,
+    supervision = false
   ): SubmittedAgentRun {
     if (this.closed) throw new Error("Agent runtime is closed.");
     if (this.state.kind === "maintenance") {
@@ -291,14 +439,16 @@ export class InteractiveAgentRuntime {
       startedAt: new Date(startedAtMs).toISOString(),
       startedAtMs,
       continuation,
-      emotionAnalysis: !continuation
+      emotionAnalysis: !supervision
+        && !continuation
         && requestIds?.retryOfMessageId === undefined
         && requestIds?.continuationSource === undefined,
       promptContext,
       capabilitySelection,
       retryOfMessageId: requestIds?.retryOfMessageId,
       replaceUserMessageId: requestIds?.replaceUserMessageId,
-      replacementUserMessageId: requestIds?.replaceUserMessageId === undefined ? undefined : randomUUID()
+      replacementUserMessageId: requestIds?.replaceUserMessageId === undefined ? undefined : randomUUID(),
+      supervision
     };
     const controller = new AbortController();
     try {
@@ -314,7 +464,8 @@ export class InteractiveAgentRuntime {
           continuation,
           messageId,
           retryOfMessageId: requestIds?.retryOfMessageId,
-          replaceUserMessageId: requestIds?.replaceUserMessageId
+          replaceUserMessageId: requestIds?.replaceUserMessageId,
+          supervision
         }
       });
       if (admission && !admission.created) {
@@ -334,7 +485,7 @@ export class InteractiveAgentRuntime {
       startedAt: run.startedAt, retryOfMessageId: run.retryOfMessageId
     } };
     const execution = this.executeRun(run, controller.signal);
-    const completion = execution
+    const completion: Promise<AgentRunOutcome> = execution
       .catch(async (error: unknown) => {
         try {
           return await this.failUncaughtRun(run, error);
@@ -346,8 +497,9 @@ export class InteractiveAgentRuntime {
         if (this.activeRun === run) {
           this.activeRun = undefined;
           if (this.activeRunController === controller) this.activeRunController = undefined;
-          this.activeRunCompletion = undefined;
+          if (this.activeRunCompletion === completion) this.activeRunCompletion = undefined;
         }
+        this.scheduleQueuedMessageRun(run);
         this.releaseSessionLeaseIfIdle();
       });
     this.activeRunCompletion = completion;
@@ -361,11 +513,13 @@ export class InteractiveAgentRuntime {
 
   async waitForIdle(): Promise<void> {
     try {
-      while (this.activeRun || this.state.kind === "maintenance") {
+      while (this.activeRun || this.state.kind === "maintenance" || this.queuedMessageStartCompletion) {
         if (this.activeRunCompletion) {
           await this.activeRunCompletion;
         } else if (this.activeOperationCompletion) {
           await this.activeOperationCompletion;
+        } else if (this.queuedMessageStartCompletion) {
+          await this.queuedMessageStartCompletion;
         } else {
           await new Promise<void>((resolve) => queueMicrotask(resolve));
         }
@@ -474,6 +628,7 @@ export class InteractiveAgentRuntime {
       throw new Error("Cannot start a new session while the runtime is busy.");
     }
     await this.runMaintenanceOperation("draft", async () => await this.commandRuntime.agent.startNewSession());
+    this.queuedMessages = [];
     // 草稿已经切走，旧会话的 writer claim 一并释放；否则旧会话会被这个 surface 一直占着。
     await this.releaseSessionClaim();
     return this.getSnapshot().info;
@@ -567,6 +722,7 @@ export class InteractiveAgentRuntime {
       info: this.snapshotInfo(),
       permissionMode: this.commandRuntime.agent.getPermissionMode(),
       state: cloneRunState(this.state),
+      queuedMessages: this.queuedMessageSnapshots(),
       resourceReadiness: this.commandRuntime.resourceSnapshot?.()
     };
   }
@@ -928,7 +1084,7 @@ export class InteractiveAgentRuntime {
     run.startedAt = new Date(startedAtMs).toISOString();
     this.commandRuntime.setSubagentParentRunId(run.runId);
     this.tools.clear();
-    if (!run.continuation && run.retryOfMessageId === undefined) {
+    if (!run.supervision && !run.continuation && run.retryOfMessageId === undefined) {
       this.emit({
         ...this.eventBase(run),
         type: "message.user",
@@ -983,7 +1139,8 @@ export class InteractiveAgentRuntime {
         replacementInput: run.replaceUserMessageId === undefined ? undefined : run.input,
         replacementUserMessageId: run.replacementUserMessageId,
         turnId: run.turnId,
-        emotionAnalysis: run.emotionAnalysis
+        emotionAnalysis: run.emotionAnalysis,
+        recordSessionUserMessage: run.supervision ? false : undefined
       };
       const stream = run.continuation
         ? agent.continueInterruptedTurn(runOptions)
@@ -1623,6 +1780,7 @@ function publicOperationName(operation: RuntimeOperation): string {
   if (operation === "model_catalog") return "model catalog refresh";
   if (operation === "resume") return "session resume";
   if (operation === "draft") return "a new session";
+  if (operation === "planning") return "a planning update";
   if (operation === "compact") return "conversation compaction";
   if (operation === "mcp") return "MCP reconnection";
   if (operation === "memory") return "a memory command";

@@ -124,6 +124,7 @@ export function activeSessionMessageIds(events: readonly SessionEvent[]): Readon
 /** 保留活动消息对应的工具、终态和扁平投影，避免旧版本在回放时重新出现。 */
 export function activeSessionEventsForPath(events: readonly SessionEvent[]): SessionEvent[] {
   const recordedEvents = [...events];
+  const messageTreeIds = new Set(sessionMessageTree(recordedEvents).map((node) => node.id));
   const activeIds = activeSessionMessageIds(recordedEvents);
   if (!activeIds.size) return recordedEvents;
   const activeRuns = new Set(
@@ -138,7 +139,9 @@ export function activeSessionEventsForPath(events: readonly SessionEvent[]): Ses
       return event.messageId === undefined || activeIds.has(event.messageId);
     }
     if ((event.type === "assistant_message" || event.type === "message_metadata") && event.messageId !== undefined) {
-      return activeIds.has(event.messageId);
+      // 旧会话可能只有 assistant_message，没有对应的 canonical agent_message 节点；
+      // 这类事件不参与版本筛选，不能因为带了 messageId 就被误删。
+      return !messageTreeIds.has(event.messageId) || activeIds.has(event.messageId);
     }
     if (event.runtime?.runId !== undefined && activeRuns.size > 0) {
       return activeRuns.has(event.runtime.runId);

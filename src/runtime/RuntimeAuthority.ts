@@ -14,7 +14,7 @@ import { readSessionEvents } from "../session/events.js";
 import type { SessionEvent } from "../session/recorder.js";
 import { assertRuntimeEventSequence, validateRuntimeEventStream, type RuntimeEventIdentity, type RuntimeEventSink } from "../session/runtimeEvent.js";
 
-const schemaVersion = 5;
+const schemaVersion = 7;
 const busyTimeoutMs = 5_000;
 const defaultPageSize = 100;
 const maxPageSize = 1_000;
@@ -497,6 +497,24 @@ export class RuntimeEventAuthority implements RuntimeEventSink {
     };
   }
 
+  /** 按稳定 toolCallId 从统一事实表读取跨 Session 的工具事件，供 Host 接管后恢复同一次操作。 */
+  readToolEvents(toolCallIds: readonly string[]): RuntimeEvent[] {
+    this.assertOpen();
+    const ids = [...new Set(toolCallIds)];
+    if (!ids.length || ids.some((toolCallId) => !toolCallId)) return [];
+    const placeholders = ids.map(() => "?").join(", ");
+    const rows = this.database.prepare(`
+      SELECT event_id, workspace_id, session_id, invocation_id, run_id, turn_id,
+             event_seq, sequence, event_type, payload_json, created_at
+      FROM runtime_events
+      WHERE workspace_id = ?
+        AND event_type IN ('session.tool_call', 'session.tool_execution', 'session.tool_result')
+        AND json_extract(payload_json, '$.toolCallId') IN (${placeholders})
+      ORDER BY sequence ASC
+    `).all(this.workspaceId, ...ids) as unknown as RuntimeEventRow[];
+    return rows.map(toRuntimeEvent);
+  }
+
   getRun(runId: string): RuntimeRunRecord | undefined {
     this.assertOpen();
     return this.readRun(runId);
@@ -843,6 +861,10 @@ export class RuntimeEventAuthority implements RuntimeEventSink {
             workspace_id TEXT NOT NULL,
             goal_id TEXT,
             status TEXT NOT NULL,
+            mode TEXT NOT NULL DEFAULT 'fixed',
+            supervisor_session_id TEXT,
+            max_replans INTEGER NOT NULL DEFAULT 0,
+            replan_count INTEGER NOT NULL DEFAULT 0,
             revision INTEGER NOT NULL DEFAULT 0,
             payload_json TEXT NOT NULL,
             created_at TEXT NOT NULL,
@@ -857,6 +879,7 @@ export class RuntimeEventAuthority implements RuntimeEventSink {
             intent_json TEXT NOT NULL,
             task_run_id TEXT,
             artifact_json TEXT,
+            replaces_node_id TEXT REFERENCES graph_nodes(node_id),
             revision INTEGER NOT NULL DEFAULT 0,
             UNIQUE (graph_id, node_key)
           );
@@ -874,11 +897,19 @@ export class RuntimeEventAuthority implements RuntimeEventSink {
             wake_id TEXT PRIMARY KEY,
             graph_id TEXT NOT NULL REFERENCES graphs(graph_id) ON DELETE CASCADE,
             reason TEXT NOT NULL,
+            kind TEXT NOT NULL DEFAULT 'dispatch',
+            graph_revision INTEGER,
+            checkpoint TEXT,
+            session_id TEXT,
+            run_id TEXT,
             status TEXT NOT NULL,
             attempt INTEGER NOT NULL DEFAULT 0,
             created_at TEXT NOT NULL,
             completed_at TEXT
           );
+          CREATE UNIQUE INDEX IF NOT EXISTS graph_supervisor_wakes_unique
+            ON graph_wakes (graph_id, graph_revision, checkpoint, session_id)
+            WHERE kind = 'supervisor';
 
           CREATE TABLE IF NOT EXISTS capability_registrations (
             registration_id TEXT PRIMARY KEY,
@@ -991,6 +1022,56 @@ export class RuntimeEventAuthority implements RuntimeEventSink {
             this.database.exec("ALTER TABLE runtime_backfills ADD COLUMN modified_at_ms INTEGER");
           }
           this.database.exec("PRAGMA user_version = 5");
+        });
+        currentRevision = 5;
+      }
+      if (currentRevision < 6) {
+        this.transaction(() => {
+          if (!this.hasColumn("graphs", "mode")) {
+            this.database.exec("ALTER TABLE graphs ADD COLUMN mode TEXT NOT NULL DEFAULT 'fixed'");
+          }
+          if (!this.hasColumn("graphs", "supervisor_session_id")) {
+            this.database.exec("ALTER TABLE graphs ADD COLUMN supervisor_session_id TEXT");
+          }
+          if (!this.hasColumn("graphs", "max_replans")) {
+            this.database.exec("ALTER TABLE graphs ADD COLUMN max_replans INTEGER NOT NULL DEFAULT 0");
+          }
+          if (!this.hasColumn("graphs", "replan_count")) {
+            this.database.exec("ALTER TABLE graphs ADD COLUMN replan_count INTEGER NOT NULL DEFAULT 0");
+          }
+          if (!this.hasColumn("graph_nodes", "replaces_node_id")) {
+            this.database.exec("ALTER TABLE graph_nodes ADD COLUMN replaces_node_id TEXT REFERENCES graph_nodes(node_id)");
+          }
+          if (!this.hasColumn("graph_wakes", "kind")) {
+            this.database.exec("ALTER TABLE graph_wakes ADD COLUMN kind TEXT NOT NULL DEFAULT 'dispatch'");
+          }
+          if (!this.hasColumn("graph_wakes", "graph_revision")) {
+            this.database.exec("ALTER TABLE graph_wakes ADD COLUMN graph_revision INTEGER");
+          }
+          if (!this.hasColumn("graph_wakes", "checkpoint")) {
+            this.database.exec("ALTER TABLE graph_wakes ADD COLUMN checkpoint TEXT");
+          }
+          if (!this.hasColumn("graph_wakes", "session_id")) {
+            this.database.exec("ALTER TABLE graph_wakes ADD COLUMN session_id TEXT");
+          }
+          if (!this.hasColumn("graph_wakes", "run_id")) {
+            this.database.exec("ALTER TABLE graph_wakes ADD COLUMN run_id TEXT");
+          }
+          this.database.exec(`
+            CREATE UNIQUE INDEX IF NOT EXISTS graph_supervisor_wakes_unique
+              ON graph_wakes (graph_id, graph_revision, checkpoint, session_id)
+              WHERE kind = 'supervisor'
+          `);
+          this.database.exec("PRAGMA user_version = 6");
+        });
+      }
+      if (currentRevision < 7) {
+        this.transaction(() => {
+          // 来源 run 已保存在 graph.created 事件中，无需再维护一份可变投影。
+          if (this.hasColumn("graphs", "supervisor_run_id")) {
+            this.database.exec("ALTER TABLE graphs DROP COLUMN supervisor_run_id");
+          }
+          this.database.exec("PRAGMA user_version = 7");
         });
       }
     }

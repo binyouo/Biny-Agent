@@ -253,6 +253,7 @@ export type AgentPromptOptions = Pick<
 export type { AgentAttachment } from "../attachments/store.js";
 
 export interface AgentSessionInfo {
+  planning?: boolean;
   workspaceRoot: string;
   sessionId: string;
   sessionFile: string;
@@ -300,13 +301,13 @@ interface QueuedRunMessage {
   input: string;
   attachments: AgentAttachment[];
   message: AgentUserMessage;
-  delivery: "steer" | "followUp";
+  delivery: "steer" | "queue";
   persisted: Promise<SessionEvent>;
 }
 
 interface ActiveRunMessageQueues {
   steering: QueuedRunMessage[];
-  followUps: QueuedRunMessage[];
+  queued: QueuedRunMessage[];
   delivered: WeakMap<AgentUserMessage, QueuedRunMessage>;
   projectedAssistants: WeakSet<AgentAssistantMessage>;
   accepting: boolean;
@@ -554,6 +555,7 @@ export class AgentSession {
   }
 
   async initialize(): Promise<void> {
+    this.planning = (await readSessionCatalogRecord(this.persistenceRoot(), this.recorder.sessionId))?.planning ?? false;
     await this.contextMemory.initialize();
     await this.identityStorage.initialize();
     await this.soulStorage.initialize();
@@ -564,6 +566,7 @@ export class AgentSession {
   /** 技能元数据、具名子代理清单与 MCP instructions 共同构成 system prompt 的扩展段。 */
   private extensionPrompt(capabilitySelection?: AgentCapabilitySelection): string | undefined {
     const sections = [
+      this.planning ? "Planning mode is enabled. Investigate with read-only tools and save a durable PlanDraft for user confirmation. Do not execute commands, modify workspace files, delegate, or start/update running plans. A draft is not executed work. Each task needs acceptance criteria and deterministic verification; add a read-only review block only when it adds useful independent scrutiny." : undefined,
       this.skillPrompt(capabilitySelection?.skills)?.trim(),
       this.options.subagentPrompt?.trim(),
       this.options.mcpPrompt?.().trim(),
@@ -705,6 +708,7 @@ export class AgentSession {
       this.options.toolRegistry.list().map((tool) => tool.name)
     );
     const mode = capabilitySelection?.tools ?? this.activeConfig.chat.defaultToolSelection;
+    if (this.planning && mode === "auto") return new Set([...(resolved ?? stableCodingToolNames), toolSearchToolName, "PlanDraft", "PlanStatus", "read_tool_result"]);
     if (resolved || mode !== "auto" || this.options.toolRegistry.list().length <= 40) return resolved;
     // auto 筛选器缺失或异常时绝不能把大目录整体下发；保留基础编码能力和自助发现入口。
     const fallback = new Set([...stableCodingToolNames, toolSearchToolName, "read_tool_result"]);
@@ -1454,21 +1458,93 @@ export class AgentSession {
     await this.queueRunMessage(messageId, input, attachments, "steer");
   }
 
-  async queueFollowUp(messageId: string, input: string, attachments: AgentAttachment[] = []): Promise<void> {
-    await this.queueRunMessage(messageId, input, attachments, "followUp");
+  async queueMessage(messageId: string, input: string, attachments: AgentAttachment[] = []): Promise<void> {
+    await this.queueRunMessage(messageId, input, attachments, "queue");
+  }
+
+  queuedRunMessages(): import("../runtime/agentEvents.js").QueuedRunMessageSnapshot[] {
+    return (this.activeRunMessageQueues?.queued ?? []).map((item) => ({
+      messageId: item.messageId,
+      content: item.input,
+      attachmentCount: item.attachments.length
+    }));
+  }
+
+  async updateQueuedRunMessage(messageId: string, input: string): Promise<void> {
+    const item = this.requireQueuedMessage(messageId);
+    const content = input.trim();
+    if (!content && !item.attachments.length) throw new Error("Queued message cannot be empty.");
+    await item.persisted;
+    if (this.requireQueuedMessage(messageId) !== item) throw new Error("Queued message is no longer pending.");
+    item.input = content;
+    item.message = queuedUserMessage(content, item.attachments);
+    await this.recorder.recordAndFlush({
+      type: "message_metadata",
+      messageId,
+      metadata: { queuedContent: content }
+    });
+  }
+
+  async removeQueuedRunMessage(messageId: string): Promise<void> {
+    const queues = this.requireActiveRunMessageQueues();
+    const item = this.requireQueuedMessage(messageId);
+    await item.persisted;
+    const index = queues.queued.indexOf(item);
+    if (index < 0) throw new Error("Queued message is no longer pending.");
+    queues.queued.splice(index, 1);
+    await this.recorder.recordAndFlush({
+      type: "message_metadata",
+      messageId,
+      metadata: { queuedState: "removed" }
+    });
+  }
+
+  async moveQueuedRunMessage(messageId: string, targetMessageId: string, placeAfter: boolean): Promise<void> {
+    const queue = this.requireActiveRunMessageQueues().queued;
+    const from = queue.findIndex((item) => item.messageId === messageId);
+    const over = queue.findIndex((item) => item.messageId === targetMessageId);
+    if (from < 0 || over < 0) throw new Error("Queued message is no longer pending.");
+    let target = placeAfter ? over + 1 : over;
+    if (from < target) target -= 1;
+    if (target === from) return;
+    const [item] = queue.splice(from, 1);
+    if (!item) return;
+    queue.splice(target, 0, item);
+  }
+
+  async steerQueuedRunMessage(messageId: string): Promise<void> {
+    const queues = this.requireActiveRunMessageQueues();
+    const item = this.requireQueuedMessage(messageId);
+    await item.persisted;
+    const index = queues.queued.indexOf(item);
+    if (index < 0) throw new Error("Queued message is no longer pending.");
+    queues.queued.splice(index, 1);
+    item.delivery = "steer";
+    queues.steering.push(item);
+    await this.recorder.recordAndFlush({
+      type: "message_metadata",
+      messageId,
+      metadata: { queuedDelivery: "steer" }
+    });
+  }
+
+  async steerAllQueuedRunMessages(): Promise<void> {
+    const queues = this.requireActiveRunMessageQueues();
+    const pending = [...queues.queued];
+    for (const item of pending) await this.steerQueuedRunMessage(item.messageId);
   }
 
   private async queueRunMessage(
     messageId: string,
     input: string,
     attachments: AgentAttachment[],
-    delivery: "steer" | "followUp"
+    delivery: "steer" | "queue"
   ): Promise<void> {
     const queues = this.activeRunMessageQueues;
     if (!queues?.accepting) throw new Error("The active run is no longer accepting queued messages.");
     if (!input.trim() && !attachments.length) throw new Error("Queued message cannot be empty.");
     this.assertAttachmentsSupported(attachments);
-    if (queues.steering.length + queues.followUps.length >= maxQueuedRunMessages) {
+    if (queues.steering.length + queues.queued.length >= maxQueuedRunMessages) {
       throw new Error(`The active run already has ${String(maxQueuedRunMessages)} queued messages.`);
     }
     const clonedAttachments = attachments.map((attachment) => ({ ...attachment }));
@@ -1487,8 +1563,20 @@ export class AgentSession {
         metadata: { queuedDelivery: delivery }
       })
     };
-    (delivery === "steer" ? queues.steering : queues.followUps).push(item);
+    (delivery === "steer" ? queues.steering : queues.queued).push(item);
     await item.persisted;
+  }
+
+  private requireActiveRunMessageQueues(): ActiveRunMessageQueues {
+    const queues = this.activeRunMessageQueues;
+    if (!queues?.accepting) throw new Error("The active run is no longer accepting queued messages.");
+    return queues;
+  }
+
+  private requireQueuedMessage(messageId: string): QueuedRunMessage {
+    const item = this.requireActiveRunMessageQueues().queued.find((candidate) => candidate.messageId === messageId);
+    if (!item) throw new Error("Queued message is no longer pending.");
+    return item;
   }
 
   private async *runTurn(
@@ -1503,7 +1591,7 @@ export class AgentSession {
     const release = this.beginOperation("agent turn");
     const messageQueues: ActiveRunMessageQueues = {
       steering: [],
-      followUps: [],
+      queued: [],
       delivered: new WeakMap(),
       projectedAssistants: new WeakSet(),
       accepting: true
@@ -1741,7 +1829,6 @@ export class AgentSession {
           undefined,
           undefined,
           runOptions.previousTerminals,
-          undefined,
           this.recorder.runtimeHighWater()
         );
         recordPerfPhase("turn.persistCheckpoint", persistPerfStartedAt, { runId: runtimeRunId });
@@ -1785,7 +1872,7 @@ export class AgentSession {
       messageQueues.accepting = false;
       if (this.activeRunMessageQueues === messageQueues) this.activeRunMessageQueues = undefined;
       try {
-        const pending = [...messageQueues.steering, ...messageQueues.followUps];
+        const pending = [...messageQueues.steering, ...messageQueues.queued];
         if (pending.length) {
           await Promise.allSettled(pending.map((item) => item.persisted));
           await this.recorder.flush();
@@ -1887,7 +1974,6 @@ export class AgentSession {
           coordinator.getExecutionBudgetSnapshot(),
           undefined,
           runOptions.previousTerminals,
-          coordinator.getExecutionCheckpoints(),
           this.recorder.runtimeHighWater()
         );
       });
@@ -2076,8 +2162,8 @@ export class AgentSession {
           await this.recordFatigueForMessages(next.length, runOptions.emotionAnalysis !== false);
           return next;
         },
-        getFollowUpMessages: async () => {
-          const next = await this.takeQueuedRunMessages(messageQueues, "followUp", lastAssistant, referenceByMessage);
+        getQueuedMessages: async () => {
+          const next = await this.takeQueuedRunMessages(messageQueues, "queue", lastAssistant, referenceByMessage);
           await this.recordFatigueForMessages(next.length, runOptions.emotionAnalysis !== false);
           if (!next.length) messageQueues.accepting = false;
           return next;
@@ -2209,7 +2295,6 @@ export class AgentSession {
                   coordinator.getExecutionBudgetSnapshot(),
                   undefined,
                   runOptions.previousTerminals,
-                  coordinator.getExecutionCheckpoints(),
                   this.recorder.runtimeHighWater()
                 );
               } catch {
@@ -2278,10 +2363,14 @@ export class AgentSession {
         usage: lastAssistant?.usage,
         output: content
       });
+      const finalContextStatus = await this.contextStatus();
       this.recorder.record({
         type: "assistant_message",
         content,
-        metadata: { memoryInjectedCount: (await this.contextStatus()).memoryInjectedCount },
+        metadata: {
+          memoryInjectedCount: finalContextStatus.memoryInjectedCount,
+          memoryInjectedSummaries: finalContextStatus.memoryInjectedSummaries
+        },
         reasoningContent: lastStepReasoningOutput || undefined,
         reasoningProviderOptions: stepReasoningBlocks?.length === 1 ? stepReasoningBlocks[0]?.providerOptions : undefined,
         reasoningBlocks: stepReasoningBlocks,
@@ -2321,7 +2410,6 @@ export class AgentSession {
               requiredAction: outcome.requiredAction
             },
             runOptions.previousTerminals,
-            coordinator.getExecutionCheckpoints(),
             this.recorder.runtimeHighWater()
           );
         } catch (error) {
@@ -2533,6 +2621,7 @@ export class AgentSession {
       this.contextMessageReferences = replay.messageReferences.map((reference) => ({ ...reference }));
       this.nextSessionMessageIndex = Math.max(replay.totalMessageCount, replay.messageTree.length);
       await this.options.todoStore?.useSession(replacementRecorder.sessionId);
+      this.planning = catalogRecord?.planning ?? false;
       this.recorder = replacementRecorder;
       this.turnStore = new TurnStore(this.persistenceRoot(), replacementRecorder.sessionId);
       return { ...replay, messages, filePath, sessionId: replacementRecorder.sessionId };
@@ -2601,6 +2690,7 @@ export class AgentSession {
       this.contextMessageReferences = [];
       this.nextSessionMessageIndex = 0;
       await this.options.todoStore?.useSession(nextRecorder.sessionId);
+      this.planning = false;
       this.recorder = nextRecorder;
       this.turnStore = new TurnStore(this.persistenceRoot(), nextRecorder.sessionId);
       return nextRecorder.sessionId;
@@ -2611,6 +2701,11 @@ export class AgentSession {
     } finally {
       release();
     }
+  }
+
+  /** 后台验收与当前会话共用记录器；恢复或切换会话后不得继续持有构造时的实例。 */
+  getSessionRecorder(): SessionRecorder {
+    return this.recorder;
   }
 
   async listSessions(): Promise<SessionSummary[]> {
@@ -2795,6 +2890,7 @@ export class AgentSession {
       workspaceRoot: this.options.workspaceRoot,
       sessionId: this.recorder.sessionId,
       sessionFile: this.recorder.filePath,
+      planning: this.planning,
       ...model,
       skills: this.skillPaths()
     };
@@ -2802,6 +2898,23 @@ export class AgentSession {
 
   getPermissionMode(): PermissionMode {
     return this.options.permissionManager.getStatus().mode;
+  }
+
+  private planning = false;
+
+  /** 仅由宿主用户操作调用，模型不能自行退出只读规划。 */
+  async setPlanning(planning: boolean): Promise<void> {
+    const release = this.beginOperation("planning mode");
+    try {
+      const existing = await readSessionCatalogRecord(this.persistenceRoot(), this.recorder.sessionId);
+      if (existing) {
+        await updateSessionCatalogMetadata(this.persistenceRoot(), this.recorder.sessionId, { planning }, sessionCatalogRecordRevision(existing));
+      } else {
+        const now = new Date().toISOString();
+        await writeSessionCatalogRecord(this.persistenceRoot(), { version: 1, sessionId: this.recorder.sessionId, rootSessionId: this.recorder.sessionId, planning, createdAt: now, updatedAt: now }, { expectedRevision: SESSION_CATALOG_MISSING_REVISION });
+      }
+      this.planning = planning;
+    } finally { release(); }
   }
 
   /** 装配期 AgentSession 先于宿主 Runtime 构造；宿主构造完成后再用 setter 接上事件通道。 */
@@ -3010,11 +3123,11 @@ export class AgentSession {
 
   private async takeQueuedRunMessages(
     queues: ActiveRunMessageQueues,
-    delivery: "steer" | "followUp",
+    delivery: "steer" | "queue",
     previousAssistant: AgentAssistantMessage | undefined,
     referenceByMessage: WeakMap<AgentMessage, SessionMessageReference>
   ): Promise<AgentUserMessage[]> {
-    const pending = delivery === "steer" ? queues.steering : queues.followUps;
+    const pending = delivery === "steer" ? queues.steering : queues.queued;
     if (!pending.length) return [];
     const items = [...pending];
     await Promise.all(items.map((item) => item.persisted));
@@ -3141,6 +3254,7 @@ export class AgentSession {
     const model = this.options.modelManager?.getModel() ?? this.options.model;
     if (!model) throw new Error("Native model runtime is not configured.");
     return {
+      planning: this.planning,
       workspaceRoot: this.options.workspaceRoot,
       config: this.options.config,
       model,
