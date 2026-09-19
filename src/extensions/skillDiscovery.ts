@@ -316,19 +316,46 @@ async function fetchRepositoryTree(repository: SkillRepository, fetcher: typeof 
 }
 
 async function fetchRepositoryTreeWithFallback(repository: SkillRepository, fetcher: typeof globalThis.fetch): Promise<{ tree: GitTreeEntry[]; branch: string; revision: string }> {
-  const branches = repository.branch === "main" ? ["main", "master"] : [repository.branch];
+  const primaryBranches = repository.branch === "main" ? ["main", "master"] : [repository.branch];
   let lastError: unknown;
-  for (const branch of branches) {
+  for (const branch of primaryBranches) {
     try {
-      const commit = await fetchJson<{ sha: string }>(fetcher, `${githubApiBase}/repos/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.name)}/commits/${encodeURIComponent(branch)}?per_page=1`, maxMetadataBytes);
-      if (!/^[a-f0-9]{40}$/u.test(commit.sha)) throw new Error("GitHub 返回的提交 SHA 无效。");
-      return { tree: await fetchRepositoryTree({ ...repository, branch: commit.sha }, fetcher), branch, revision: commit.sha };
+      return await fetchTreeForBranch(repository, branch, fetcher);
     } catch (error) {
       lastError = error;
-      if (!(error instanceof Error) || !error.message.includes("HTTP 404")) throw error;
+      if (!isHttp404(error)) throw error;
+    }
+  }
+  // 常规分支全部 404：查仓库真实默认分支再试一次，覆盖默认分支非 main/master 的仓库。
+  const defaultBranch = await fetchDefaultBranch(repository, fetcher);
+  if (defaultBranch) {
+    try {
+      return await fetchTreeForBranch(repository, defaultBranch, fetcher);
+    } catch (error) {
+      lastError = error;
     }
   }
   throw lastError instanceof Error ? lastError : new Error("无法读取 Skill 仓库。");
+}
+
+async function fetchTreeForBranch(repository: SkillRepository, branch: string, fetcher: typeof globalThis.fetch): Promise<{ tree: GitTreeEntry[]; branch: string; revision: string }> {
+  const commit = await fetchJson<{ sha: string }>(fetcher, `${githubApiBase}/repos/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.name)}/commits/${encodeURIComponent(branch)}?per_page=1`, maxMetadataBytes);
+  if (!/^[a-f0-9]{40}$/u.test(commit.sha)) throw new Error("GitHub 返回的提交 SHA 无效。");
+  return { tree: await fetchRepositoryTree({ ...repository, branch: commit.sha }, fetcher), branch, revision: commit.sha };
+}
+
+async function fetchDefaultBranch(repository: SkillRepository, fetcher: typeof globalThis.fetch): Promise<string | undefined> {
+  try {
+    const repositoryInfo = await fetchJson<{ default_branch?: unknown }>(fetcher, `${githubApiBase}/repos/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.name)}`, maxMetadataBytes);
+    return typeof repositoryInfo.default_branch === "string" && repositoryInfo.default_branch ? repositoryInfo.default_branch : undefined;
+  } catch {
+    // 仓库信息读取失败不阻断既有错误上报。
+    return undefined;
+  }
+}
+
+function isHttp404(error: unknown): boolean {
+  return error instanceof Error && error.message.includes("HTTP 404");
 }
 
 function resolveSkillDirectory(tree: readonly GitTreeEntry[], directory: string): string | undefined {
