@@ -8,6 +8,7 @@ import os from "node:os";
 import path from "node:path";
 import { type Component, type TUI, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import type { PermissionMode } from "../../permission/PermissionManager.js";
+import type { ContextBudgetStatus } from "../../agent/context/types.js";
 import type { TuiStatus } from "../types.js";
 import { theme } from "../theme/index.js";
 import { formatToolDuration } from "../transcriptText.js";
@@ -25,6 +26,15 @@ export interface FooterData {
   contextSource?: "estimated" | "provider";
   cacheHitRate?: number;
   sessionCacheHitRate?: number;
+}
+
+/** 预算 → footer 水位字段；百分比按模型自身上下文窗口算，没有窗口信息时才退回输入预算。 */
+export function footerUsageFromBudget(budget: ContextBudgetStatus): Pick<FooterData, "contextUsedTokens" | "contextMaxTokens" | "contextSource"> {
+  return {
+    contextUsedTokens: budget.usedTokens,
+    contextMaxTokens: budget.contextWindow ?? budget.maxTokens,
+    contextSource: budget.source
+  };
 }
 
 /** 两行：工作区路径与会话，上下文用量与右对齐的模型。 */
