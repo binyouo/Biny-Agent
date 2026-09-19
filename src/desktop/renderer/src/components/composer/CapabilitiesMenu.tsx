@@ -5,9 +5,8 @@
  * MCP 服务器按需展开。选择值沿用 AgentCapabilitySelection 协议：auto / all 之外是
  * 工具名数组，只随当前这条消息传给 Runtime，不写入会话配置。
  *
- * 内置工具的中文展示信息在 TOOL_PRESENTATIONS 里静态维护；目录里没有映射的工具按
- * source 落入兜底分组（插件 / 其他），MCP 工具按描述里的 `[MCP 服务器名]` 前缀再按
- * 服务器分组。
+ * 内置工具的中文展示信息在 TOOL_PRESENTATIONS 里静态维护；内部编排工具不进入用户菜单，
+ * MCP 工具也只在下方的服务器选择器中管理，避免把执行协议泄露成一长串函数清单。
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { AgentCapabilitySelection, CapabilitySelectionValue } from "../../../../../agent/capabilitySelection.js";
@@ -18,18 +17,18 @@ import { FluidHoverHighlight } from "../FluidHoverHighlight.js";
 import { Icon, type IconName } from "../Icon.js";
 import { ComposerPopover } from "./ComposerPopover.js";
 import { applyCapabilityNames, toggleCapabilityName } from "./capabilitySelectionLogic.js";
+import { compareCapabilitySkills, compareCapabilityTools, shouldShowToolInCapabilityMenu, skillCapabilityGroupId, SKILL_CAPABILITY_GROUPS, type SkillCapabilityGroupId } from "./capabilityVisibility.js";
 
 type CapabilityTab = "tools" | "skills";
 
-type ToolGroupId = "web" | "workspace" | "shell" | "planning" | "memory";
+type ToolGroupId = "web" | "workspace" | "shell" | "planning";
 
 /** 展示分组；与注册表 source 无关，仅决定菜单里的类别与顺序。 */
 const TOOL_GROUPS: Array<{ id: ToolGroupId; label: string; icon: IconName }> = [
-  { id: "web", label: "网络与搜索", icon: "site" },
   { id: "workspace", label: "项目与文件", icon: "folder-open" },
   { id: "shell", label: "Shell 与进程", icon: "terminal" },
-  { id: "planning", label: "规划与指令", icon: "list-tree" },
-  { id: "memory", label: "记忆与活动", icon: "brain" }
+  { id: "web", label: "网络与搜索", icon: "site" },
+  { id: "planning", label: "规划与指令", icon: "list-tree" }
 ];
 
 interface ToolPresentation {
@@ -43,10 +42,14 @@ interface ToolPresentation {
 const TOOL_PRESENTATIONS: Record<string, ToolPresentation> = {
   WebFetch: { group: "web", label: "网络获取", detail: "抓取 URL 的原始内容。" },
   WebSearch: { group: "web", label: "网络搜索", detail: "在网上搜索最新信息。" },
+  BrowserOpen: { group: "web", label: "打开网页", detail: "在 Biny 浏览器中打开网页。" },
+  BrowserReadDom: { group: "web", label: "读取网页", detail: "读取当前网页的文本和可交互元素。" },
+  BrowserClick: { group: "web", label: "点击网页", detail: "点击网页上的可见元素。" },
+  BrowserType: { group: "web", label: "填写网页", detail: "向网页输入框或编辑器填写内容。" },
+  BrowserPress: { group: "web", label: "操作网页按键", detail: "向网页发送 Enter、Tab 等按键。" },
   Read: { group: "workspace", label: "读取文件", detail: "读取文件内容以获取上下文。" },
   Glob: { group: "workspace", label: "列出文件", detail: "按 glob 模式列出匹配的文件。" },
   Grep: { group: "workspace", label: "搜索文件", detail: "在工作区文件中搜索文本。" },
-  read_tool_result: { group: "workspace", label: "读取工具输出", detail: "分页读取归档的工具输出。" },
   Write: { group: "workspace", label: "写入文件", detail: "用提供的内容覆盖文件。" },
   Edit: { group: "workspace", label: "编辑文件", detail: "精确替换文件中的文本片段。" },
   Bash: { group: "shell", label: "执行命令", detail: "执行有限命令或启动托管的后台命令。" },
@@ -55,13 +58,7 @@ const TOOL_PRESENTATIONS: Record<string, ToolPresentation> = {
   TodoWrite: { group: "planning", label: "待办同步", detail: "执行计划时更新共享待办列表。" },
   Task: { group: "planning", label: "任务委派", detail: "启动子代理处理多步骤任务。" },
   Skill: { group: "planning", label: "技能调用", detail: "调用已启用的技能或工作流。" },
-  read_skill_resource: { group: "planning", label: "读取技能资源", detail: "读取技能附带的资源文件。" },
-  save_memory: { group: "memory", label: "保存记忆", detail: "把值得记住的信息写入记忆。" },
-  recall_memory: { group: "memory", label: "召回记忆", detail: "按语义检索历史记忆。" },
-  activity_report: { group: "memory", label: "活动报告", detail: "汇总活动记录生成报告。" },
-  activity_digest: { group: "memory", label: "活动摘要", detail: "生成活动记录的每日摘要。" },
-  activity_search: { group: "memory", label: "活动检索", detail: "语义搜索历史活动记录。" },
-  activity_sessions: { group: "memory", label: "活动会话", detail: "查看活动会话聚合。" }
+  ToolSearch: { group: "planning", label: "工具搜索", detail: "按名称或描述发现可用工具。" }
 };
 
 /** 没有静态映射的工具按来源落入兜底分组。 */
@@ -70,12 +67,6 @@ const SOURCE_GROUPS: Record<Exclude<DesktopToolCatalogEntry["source"], "mcp">, {
   plugin: { label: "插件工具", icon: "puzzle" },
   skill: { label: "技能工具", icon: "wand" },
   subagent: { label: "子 Agent", icon: "person" }
-};
-
-const skillSourceLabels: Record<DesktopSkillCatalogEntry["source"], string> = {
-  agents: "外部 Agent 技能",
-  biny: "Biny 技能",
-  builtin: "Biny 内置技能"
 };
 
 /** MCP 工具描述以 `[MCP 服务器名]` 开头；用它把工具归回所属服务器。 */
@@ -92,6 +83,10 @@ interface ToolGroup {
     label: string;
     detail: string;
   }>;
+}
+
+interface SkillGroup extends ToolGroup {
+  key: `skill:${SkillCapabilityGroupId}`;
 }
 
 export function CapabilitiesMenu({ anchorRef, onOpenMcpSettings, onRefreshCatalog, onWarning, open, projectId, resourceState, resourceRevision, skillWarnings, onChange, selection, skills, toolsSupported, tools }: {
@@ -178,6 +173,10 @@ export function CapabilitiesMenu({ anchorRef, onOpenMcpSettings, onRefreshCatalo
 
   const toolGroups = useMemo(() => buildToolGroups(tools, normalizedQuery(query)), [query, tools]);
   const skillGroups = useMemo(() => buildSkillGroups(skills, normalizedQuery(query)), [query, skills]);
+  const visibleToolNames = useMemo(() => tools.filter(shouldShowToolInCapabilityMenu).sort(compareCapabilityTools).map((tool) => tool.name), [tools]);
+  const allMcpToolNames = useMemo(() => tools.filter((tool) => tool.source === "mcp").sort(compareCapabilityTools).map((tool) => tool.name), [tools]);
+  const allToolNames = useMemo(() => [...visibleToolNames, ...allMcpToolNames], [allMcpToolNames, visibleToolNames]);
+  const allSkillNames = useMemo(() => [...skills].sort(compareCapabilitySkills).map((skill) => skill.ref), [skills]);
   // 列表与搜索共用一套条目，避免同一能力在不同布局中依赖图标辨认。
   const listRef = useRef<HTMLDivElement>(null);
   const listHover = useFluidHoverItems(listRef, ".capability-row");
@@ -187,12 +186,10 @@ export function CapabilitiesMenu({ anchorRef, onOpenMcpSettings, onRefreshCatalo
   const value = selection[tab];
   const isAuto = value === "auto";
   const explicit = explicitNames(value);
-  const allToolNames = tools.map((tool) => tool.name);
-  const allNames = tab === "tools" ? allToolNames : skills.map((skill) => skill.ref);
+  const allNames = tab === "tools" ? allToolNames : allSkillNames;
   const activeGroups = tab === "tools" ? toolGroups : skillGroups;
   const hasItems = activeGroups.length > 0;
   const mcpServerSelection = mcpServerSelectionState(value, tools, mcpServers);
-  const allMcpToolNames = tools.filter((tool) => tool.source === "mcp").map((tool) => tool.name);
 
   const setMode = (next: CapabilitySelectionValue): void => {
     onChange({ ...selection, [tab]: next });
@@ -344,7 +341,7 @@ function TabButton({ active, count, label, onSelect }: { active: boolean; count:
   );
 }
 
-/** 工具目录 → 展示分组；顺序保持目录注册顺序，MCP 工具按服务器再分组。 */
+/** 工具目录 → 展示分组；MCP 和内部协调工具由独立入口管理。 */
 function buildToolGroups(tools: DesktopToolCatalogEntry[], query: string): ToolGroup[] {
   const buckets = new Map<string, ToolGroup>();
   const bucket = (key: string, label: string, icon: IconName, badge?: string): ToolGroup => {
@@ -354,7 +351,10 @@ function buildToolGroups(tools: DesktopToolCatalogEntry[], query: string): ToolG
     buckets.set(key, created);
     return created;
   };
-  for (const tool of tools) {
+  for (const tool of [...tools].sort(compareCapabilityTools)) {
+    if (!shouldShowToolInCapabilityMenu(tool)) continue;
+    // 保留显式分支让类型系统知道这里已经进入内置/插件/技能/子 Agent 分组。
+    if (tool.source === "mcp") continue;
     const presentation = TOOL_PRESENTATIONS[tool.name];
     let group: ToolGroup;
     let label: string;
@@ -364,12 +364,6 @@ function buildToolGroups(tools: DesktopToolCatalogEntry[], query: string): ToolG
       group = bucket(presentation.group, declared?.label ?? "其他工具", declared?.icon ?? "wrench");
       label = presentation.label;
       detail = presentation.detail ?? tool.description;
-    } else if (tool.source === "mcp") {
-      const server = mcpServerOf(tool);
-      group = server
-        ? bucket(`mcp:${server}`, server, "plug", "MCP")
-        : bucket("mcp:generic", "MCP 工具", "plug");
-      ({ label, detail } = mcpDisplay(tool, server));
     } else {
       const source = SOURCE_GROUPS[tool.source];
       group = bucket(`source:${tool.source}`, source.label, source.icon);
@@ -389,25 +383,29 @@ function buildToolGroups(tools: DesktopToolCatalogEntry[], query: string): ToolG
   for (const remaining of buckets.values()) {
     if (remaining.entries.length > 0) ordered.push(remaining);
   }
-  return ordered;
+  return ordered.map((group) => ({ ...group, entries: group.entries.sort(compareCapabilityTools) }));
 }
 
-function buildSkillGroups(skills: DesktopSkillCatalogEntry[], query: string): ToolGroup[] {
-  const buckets = new Map<DesktopSkillCatalogEntry["source"], ToolGroup>();
-  for (const skill of skills) {
+function buildSkillGroups(skills: DesktopSkillCatalogEntry[], query: string): SkillGroup[] {
+  const buckets = new Map<SkillCapabilityGroupId, SkillGroup>();
+  for (const skill of [...skills].sort(compareCapabilitySkills)) {
     const label = skill.name;
     const detail = skill.description || "暂无描述";
     if (query && !`${label} ${detail} ${skill.ref}`.toLocaleLowerCase().includes(query)) continue;
-    const bucket = buckets.get(skill.source) ?? {
-      key: `skill:${skill.source}`,
-      label: skillSourceLabels[skill.source] ?? skill.source,
-      icon: "wand" as const,
+    const groupId = skillCapabilityGroupId(skill);
+    const groupDefinition = SKILL_CAPABILITY_GROUPS.find((group) => group.id === groupId);
+    const bucket = buckets.get(groupId) ?? {
+      key: `skill:${groupId}`,
+      label: groupDefinition?.label ?? "技能",
+      icon: groupDefinition?.icon ?? "wand",
       entries: []
     };
     bucket.entries.push({ name: skill.ref, label, detail });
-    buckets.set(skill.source, bucket);
+    buckets.set(groupId, bucket);
   }
-  return [...buckets.values()];
+  return SKILL_CAPABILITY_GROUPS
+    .map((group) => buckets.get(group.id))
+    .filter((group): group is SkillGroup => group !== undefined);
 }
 
 /** 展示用服务器勾选状态：auto / all 视为全选；显式数组按「该服务器工具全部勾选」判定。 */
@@ -448,22 +446,6 @@ function explicitNames(value: CapabilitySelectionValue): string[] | undefined {
 function mcpServerOf(tool: DesktopToolCatalogEntry): string | undefined {
   if (tool.source !== "mcp") return undefined;
   return MCP_DESCRIPTION_PREFIX.exec(tool.description)?.[1];
-}
-
-/** MCP 工具的展示信息：描述剥掉 `[MCP 服务器]` 前缀，工具名剥掉注册时的服务器段。 */
-function mcpDisplay(tool: DesktopToolCatalogEntry, server: string | undefined): { label: string; detail: string } {
-  const match = MCP_DESCRIPTION_PREFIX.exec(tool.description);
-  const detail = match ? tool.description.slice(match[0].length) : tool.description;
-  if (!server) return { label: tool.name, detail };
-  const registeredPrefix = `mcp_${normalizeMcpSegment(server)}_`;
-  const label = tool.name.startsWith(registeredPrefix) ? tool.name.slice(registeredPrefix.length) : tool.name;
-  return { label, detail };
-}
-
-/** 与 runtime 侧 MCP 工具注册使用同一段名规整规则，用于还原展示用工具名。 */
-function normalizeMcpSegment(value: string): string {
-  const normalized = value.replace(/[^A-Za-z0-9_-]+/g, "_").replace(/^_+|_+$/g, "");
-  return normalized.slice(0, 42) || "tool";
 }
 
 /** 当前显式选择的总项数；auto / all 不计入（触发 pill 与页签计数只反映逐项选择）。 */
