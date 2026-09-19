@@ -46,7 +46,7 @@ import {
 } from "../runtime/agentEvents.js";
 import type { SessionSummary } from "../session/events.js";
 import type { UsageSummary } from "../session/metadata.js";
-import { FooterComponent, ShortcutsBarComponent, StatusIndicatorComponent, WelcomeComponent } from "./components/chrome.js";
+import { FooterComponent, ShortcutsBarComponent, StatusIndicatorComponent, WelcomeComponent, footerUsageFromBudget, type FooterData } from "./components/chrome.js";
 import { CardComponent } from "./components/cards.js";
 import { PermissionDialog, SelectDialog, TextViewerDialog } from "./components/dialogs.js";
 import { PendingAttachmentsComponent } from "./components/pendingAttachments.js";
@@ -158,7 +158,7 @@ export class BinyTui {
   private modelSwitchGeneration = 0;
   private confirmedModel: ModelPresentation | undefined;
   private gitBranch: string | undefined;
-  private contextUsage: { usedTokens?: number; maxTokens?: number; source?: "estimated" | "provider" } = {};
+  private contextUsage: Pick<FooterData, "contextUsedTokens" | "contextMaxTokens" | "contextSource"> = {};
   private cacheHitRate: number | undefined;
   private sessionCacheHitRate: number | undefined;
   private overlay: OverlayHandle | undefined;
@@ -373,7 +373,10 @@ export class BinyTui {
     this.unsubscribe?.();
     this.unsubscribe = runtime.subscribe((update) => {
       this.runtimeSnapshot = update.snapshot;
-      if (update.event) this.dispatch(update.event);
+      if (update.event) {
+        this.dispatch(update.event);
+        if (update.event.type === "context.updated") this.applyLiveContextUsage(update.event);
+      }
       else if (update.snapshot.state.kind === "maintenance") this.dispatch({ type: "maintenance.started" });
       else this.refreshChrome();
       if (isTerminalRunEvent(update.event)) {
@@ -503,9 +506,7 @@ export class BinyTui {
       modelLabel: this.state.modelLabel,
       thinkingLabel: this.state.reasoningLabel,
       permissionMode: this.permissionMode,
-      contextUsedTokens: this.contextUsage.usedTokens,
-      contextMaxTokens: this.contextUsage.maxTokens,
-      contextSource: this.contextUsage.source,
+      ...this.contextUsage,
       cacheHitRate: this.cacheHitRate,
       sessionCacheHitRate: this.sessionCacheHitRate
     };
@@ -520,16 +521,22 @@ export class BinyTui {
         ? await this.commands.agent.contextStatus()
         : await requireRemoteRuntime(runtime).contextStatus();
       if (runtime.getSnapshot().info.sessionId !== sessionId) return;
-      // 百分比按模型自身的上下文窗口算；没有窗口信息时才退回输入预算。
-      this.contextUsage = {
-        usedTokens: context.budget.usedTokens,
-        maxTokens: context.budget.contextWindow ?? context.budget.maxTokens,
-        source: context.budget.source
-      };
+      this.contextUsage = footerUsageFromBudget(context.budget);
       this.refreshChrome();
     } catch {
       // Footer telemetry is best effort and must never interrupt the TUI.
     }
+  }
+
+  /**
+   * 运行中每个 provider step 都会广播 context.updated；footer 水位直接吃事件，
+   * 不等回合结束后的拉取兜底。其他 session 的事件不更新当前 footer。
+   */
+  private applyLiveContextUsage(event: Extract<AgentHostEvent, { type: "context.updated" }>): void {
+    const sessionId = this.runtime?.getSnapshot().info.sessionId;
+    if (sessionId !== undefined && event.sessionId !== sessionId) return;
+    this.contextUsage = footerUsageFromBudget(event.context.budget);
+    this.refreshChrome();
   }
 
   private async refreshUsage(): Promise<void> {
@@ -555,7 +562,6 @@ export class BinyTui {
     const value = text.trim();
     if (!value && !this.pendingAttachments.length) return;
     const runtime = this.runtime;
-    const commands = this.commands;
     // TUI 在 runtime 启动完成前（或启动失败时）已经可以接收键盘输入；
     // slash 命令里有一部分（命令选择器、/clear、/exit）不依赖 runtime，照常路由过去，
     // 避免「runtime 没起来 → 连 /exit 都打不出来」。普通消息仍保留在编辑器里等 runtime。

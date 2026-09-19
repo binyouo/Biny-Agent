@@ -5,7 +5,6 @@
  * 预览，Activity 则通过独立 CAS 通道即时落盘，其余设置仍由 saveAll 进入主进程事务。
  */
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { ThinkingSelection } from "../../../../../llm/ModelManager.js";
 import type { ModelProfile } from "../../../../../config/schema.js";
 import type {
   DesktopActivitySettingsInput,
@@ -71,21 +70,6 @@ export function SettingsDraftProvider({
     onThemePreview(next.themePreference);
     onFontPreview(next.fontPreference);
   }, [onFontPreview, onThemePreview]);
-
-  /**
-   * 「设为默认」等即时动作落盘后，用返回的权威快照推进基线，但保留用户对其它字段的
-   * 未保存草稿（主题/字体/个性化等），避免一次即时保存吞掉未提交的编辑。models 草稿只
-   * 清掉已即时生效的 defaultModel 项，upserts/removes/凭据句柄照常保留。
-   */
-  const adoptExternalSnapshot = useCallback((next: DesktopSettingsSnapshot): void => {
-    snapshotRef.current = next;
-    setSnapshot(next);
-    setSaveState(next.pendingRecovery ? "recovery_required" : "clean");
-    setDraft((current) => current ? {
-      ...current,
-      models: { ...current.models, defaultModel: undefined }
-    } : current);
-  }, []);
 
   useEffect(() => {
     if (!active) return;
@@ -213,13 +197,6 @@ export function SettingsDraftProvider({
         }
       };
     });
-  }, []);
-
-  const setDefaultModel = useCallback((alias: string, thinking: ThinkingSelection): void => {
-    setDraft((current) => current ? {
-      ...current,
-      models: { ...current.models, defaultModel: { alias, thinking } }
-    } : current);
   }, []);
 
   const setModelProfile = useCallback((providerAlias: string, modelId: string, profile: ModelProfile | undefined): void => {
@@ -432,17 +409,14 @@ export function SettingsDraftProvider({
     upsertModel,
     removeModel,
     saveModels,
-    setDefaultModel,
     setModelProfile,
     stageCredential,
     addOauthCredentialHandle,
     releaseCredential,
     discard,
-    saveAll,
-    adoptExternalSnapshot
+    saveAll
   }), [
     addOauthCredentialHandle,
-    adoptExternalSnapshot,
     dirtyCount,
     discard,
     draft,
@@ -458,7 +432,6 @@ export function SettingsDraftProvider({
     setChat,
     setChatParams,
     setCompaction,
-    setDefaultModel,
     setModelProfile,
     setFontPreference,
     setMemory,

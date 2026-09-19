@@ -76,15 +76,12 @@ export interface SettingsDraftContextValue {
    * models 段（草稿待提交项 + 本次变更），提交成功后 models 草稿清零，其余分页草稿不动。
    */
   saveModels(models: DesktopSettingsModelsInput): Promise<DesktopSettingsSaveResult | undefined>;
-  setDefaultModel(alias: string, thinking: ThinkingSelection): void;
   setModelProfile(providerAlias: string, modelId: string, profile: ModelProfile | undefined): void;
   stageCredential(secret: string, scope: DesktopSettingsCredentialScope): Promise<DesktopStagedSettingsCredential>;
   addOauthCredentialHandle(handle: string): void;
   releaseCredential(handle: string): Promise<void>;
   discard(): Promise<void>;
   saveAll(): Promise<DesktopSettingsSaveResult | undefined>;
-  /** 即时动作（如设为默认）落盘后，用权威快照推进基线但保留其它未保存草稿。 */
-  adoptExternalSnapshot(snapshot: DesktopSettingsSnapshot): void;
 }
 
 export const SettingsDraftContext = createContext<SettingsDraftContextValue | undefined>(undefined);

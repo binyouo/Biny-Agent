@@ -102,6 +102,16 @@ export const settingsSaveInputSchema = z.object({
   models: z.object({
     upserts: z.array(modelConfigurationSchema).max(200),
     removeAliases: z.array(idSchema).max(200),
+    // 自定义服务商「先建连接、后补模型」：只写 providers 段，不改模型列表。
+    customProviders: z.array(z.object({
+      alias: idSchema,
+      displayName: z.string().trim().min(1).max(80).optional(),
+      baseUrl: z.string().url().optional(),
+      protocol: providerProtocolSchema.optional(),
+      apiBackend: modelApiBackendSchema.optional(),
+      apiKey: z.string().min(1).max(4_000).optional(),
+      apiKeyHandle: z.string().uuid().optional()
+    })).max(64).optional(),
     removeProviderAliases: z.array(idSchema).max(200).optional(),
     providerApiFormats: z.record(idSchema, z.union([modelApiBackendSchema, z.literal("auto")])).optional(),
     toolModel: z.object({ alias: idSchema.optional() }).strict().optional(),

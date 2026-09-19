@@ -5,6 +5,11 @@
  * 面板是两态设计：未连接只给「启用」出口，连接后原地展开完整表单——把「连接服务商」
  * 从一次性对话框改成常驻面板，用户随时回来改密钥、增删模型、测试连通。
  *
+ * 自定义服务商对齐「先建连接、后补模型」的流程：工具栏主按钮打开创建对话框（名称/
+ * 地址/密钥/格式），提交只写 providers 段并立即选中，模型随后在面板里获取或手动添加；
+ * 「自定义 OpenAI 兼容接口」的常驻内联表单随之废弃。头部按钮组（删除/测试/总开关）
+ * 与徽标（自定义/已启用）也按同一套产品惯例呈现。
+ *
  * 人体工学上对齐零保存按钮的产品惯例：文本字段（密钥/服务地址）防抖 + 失焦提交，模型
  * 开关与全选即点即提交，且一批变更只发一次事务（saveModels 只提交 models 段，与其它
  * 分页的草稿互不影响）；运行中的会话会让主进程拒绝事务，此时变更留在草稿里，等会话
@@ -14,7 +19,7 @@ import { Tooltip } from "@astryxdesign/core/Tooltip";
 import { NativeSelect } from "../NativeSelect.js";
 import { createContext, useContext, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ModelProfile, ThinkingLevelMap } from "../../../../../config/schema.js";
-import type { ModelChoice, ThinkingSelection } from "../../../../../llm/ModelManager.js";
+import type { ModelChoice } from "../../../../../llm/ModelManager.js";
 import { useFluidHoverItems } from "../../useFluidHoverItems.js";
 import { FluidHoverHighlight } from "../FluidHoverHighlight.js";
 import type {
@@ -46,19 +51,13 @@ import {
 } from "../../providerCatalog.js";
 import { Icon } from "../Icon.js";
 import { ProviderBrandGlyph } from "../ProviderBrandGlyph.js";
-import { connectionLabel } from "./providerModelProjection.js";
+import { connectionLabel, type ConnectionGroup } from "./providerModelProjection.js";
+import { ModelTestStatusIcon } from "./ModelTestButton.js";
 import { useSettingsDraft, type SettingsModelDraft } from "./SettingsDraftContext.js";
 import { SettingsDetailLayer } from "./SettingsDetailLayer.js";
 import { providerErrorMessage } from "./providerFeedback.js";
 
 const CatalogErrorContext = createContext<string | undefined>(undefined);
-
-interface ConnectionGroup {
-  provider: string;
-  providerType: string;
-  models: ModelChoice[];
-  defaultModel?: ModelChoice;
-}
 
 /** 左栏一行：目录条目或一个未匹配目录的自定义端点。 */
 interface ProviderListEntry {
@@ -86,10 +85,8 @@ export interface ProviderSettingsProps {
   catalogs: Record<string, DesktopModelCatalogResult["models"]>;
   defaultModelAlias?: string;
   projectId?: string;
-  onDefaultModel(alias: string, thinking: ThinkingSelection): void;
   onTest(configuration: DesktopModelConfigurationInput): Promise<DesktopModelConnectionTestResult>;
   onFetchCatalog(providerAlias: string, force?: boolean): Promise<DesktopModelCatalogResult>;
-  onFetchCatalogCandidate(configuration: DesktopModelConfigurationInput): Promise<DesktopModelCatalogResult>;
   onReadModelApiKey(providerAlias: string): Promise<string | undefined>;
   onStartLogin(provider: DesktopModelLoginProvider): Promise<DesktopModelLoginStartResult>;
   onCompleteLogin(provider: DesktopModelLoginProvider, authRequestId: string, pastedAuthorization?: string): Promise<DesktopStagedModelLoginResult>;
@@ -106,10 +103,8 @@ export function ProviderSettings({
   catalogs: cachedCatalogs,
   defaultModelAlias,
   projectId,
-  onDefaultModel,
   onTest,
   onFetchCatalog,
-  onFetchCatalogCandidate,
   onReadModelApiKey,
   onStartLogin,
   onCompleteLogin,
@@ -130,7 +125,11 @@ export function ProviderSettings({
       if (catalog) groupByCatalogId.set(catalog.id, group);
       else leftover.push(group);
     }
-    const rows: ProviderListEntry[] = providerCatalog.map((catalog) => {
+    // 静态的「自定义 OpenAI 兼容接口」入口已被创建对话框取代；只有旧配置的空端点
+    // 连接（alias 为 custom）仍按目录条目显示，避免老用户列表里丢行。
+    const rows: ProviderListEntry[] = providerCatalog
+      .filter((catalog) => catalog.id !== "openai-compatible" || groupByCatalogId.has(catalog.id))
+      .map((catalog) => {
       const group = groupByCatalogId.get(catalog.id);
       return {
         key: catalog.id,
@@ -359,9 +358,9 @@ export function ProviderSettings({
     cancelLoginRef.current();
   }, [active]);
 
-  // ── 测试连接 ──
-  const [testing, setTesting] = useState(false);
-  const [testResult, setTestResult] = useState<DesktopModelConnectionTestResult>();
+  // ── 测试连接：进行中与最近结果都按服务商隔离，切换面板不会把状态安到别家头上 ──
+  const [testingAlias, setTestingAlias] = useState<string>();
+  const [testResult, setTestResult] = useState<{ alias: string; result: DesktopModelConnectionTestResult }>();
   const [testMenuOpen, setTestMenuOpen] = useState(false);
   const testTargetAlias = useRef<string | undefined>(undefined);
   const testConfiguration = useCallback((model: ModelChoice): DesktopModelConfigurationInput | undefined => {
@@ -393,17 +392,18 @@ export function ProviderSettings({
   const runTest = useCallback(async (model: ModelChoice): Promise<void> => {
     const configuration = testConfiguration(model);
     setTestMenuOpen(false);
-    if (!configuration) return;
-    testTargetAlias.current = group?.provider;
-    setTesting(true);
+    if (!configuration || !group) return;
+    const providerKey = group.provider;
+    testTargetAlias.current = providerKey;
+    setTestingAlias(providerKey);
     setTestResult(undefined);
     try {
       const result = await onTest(configuration);
-      if (testTargetAlias.current === group?.provider) setTestResult(result);
+      if (testTargetAlias.current === providerKey) setTestResult({ alias: providerKey, result });
     } finally {
-      if (testTargetAlias.current === group?.provider) setTesting(false);
+      if (testTargetAlias.current === providerKey) setTestingAlias(undefined);
     }
-  }, [group?.provider, onTest, testConfiguration]);
+  }, [group, onTest, testConfiguration]);
 
   // ── 密钥 / 服务地址：即输即存（防抖 + 失焦立即提交），换服务商时作废未提交的编辑 ──
   const [keyDraft, setKeyDraft] = useState("");
@@ -458,10 +458,55 @@ export function ProviderSettings({
     : undefined;
 
   const commitKey = useCallback(async (value: string): Promise<void> => {
-    if (!group || !catalog || !value.trim() || !activeModel) return;
-    const input = choiceUpsertInput(activeModel);
-    if (!input) return;
+    if (!group || !catalog || !value.trim()) return;
+    const draft = settingsDraft.draft;
+    if (!draft) return;
     setKeySaveState("saving");
+    // 刚创建、还没有任何模型的自定义连接：密钥直接补到 provider 段，不动模型。
+    if (!activeModel) {
+      if (projectId === undefined) {
+        setKeySaveState("idle");
+        onNotify("暂存模型密钥前必须先选择项目。");
+        return;
+      }
+      try {
+        const staged = await settingsDraft.stageCredential(value.trim(), {
+          projectId,
+          purpose: "model",
+          providerAlias: group.provider
+        });
+        const result = await settingsDraft.saveModels({
+          ...draft.models,
+          customProviders: [{
+            alias: group.provider,
+            protocol: connection?.protocol,
+            apiBackend: connection?.apiBackend,
+            apiKeyHandle: staged.handle
+          }]
+        });
+        if (activeProviderRef.current !== group.provider) return;
+        if (result?.status === "committed") {
+          setKeySaveState("saved");
+          setKeyDraft(value.trim());
+          void refreshCatalog(group.provider, { force: true });
+        } else {
+          await settingsDraft.releaseCredential(staged.handle);
+          // 失败原因由草稿层通知（回滚/恢复），这里只标失败态。
+          setKeySaveState("error");
+        }
+      } catch (error) {
+        if (activeProviderRef.current === group.provider) {
+          setKeySaveState("error");
+          onNotify(error instanceof Error ? error.message : String(error));
+        }
+      }
+      return;
+    }
+    const input = choiceUpsertInput(activeModel);
+    if (!input) {
+      setKeySaveState("idle");
+      return;
+    }
     const result = await applyModelBatch([{ ...input, apiKey: value.trim() }]);
     if (activeProviderRef.current !== group.provider) return;
     if (result) {
@@ -473,7 +518,7 @@ export function ProviderSettings({
       setKeySaveState("error");
       onNotify("密钥未能保存，请稍后重试");
     }
-  }, [activeModel, applyModelBatch, catalog, choiceUpsertInput, group, onNotify, refreshCatalog]);
+  }, [activeModel, applyModelBatch, catalog, choiceUpsertInput, connection?.apiBackend, connection?.protocol, group, onNotify, projectId, refreshCatalog, settingsDraft]);
 
   const onKeyDraftChange = (value: string): void => {
     setKeyDraft(value);
@@ -497,14 +542,25 @@ export function ProviderSettings({
   }, [savedBaseUrl]);
 
   const commitBaseUrl = useCallback(async (value: string): Promise<void> => {
-    if (!group || !catalog || !activeModel) return;
+    if (!group || !catalog) return;
     const trimmed = value.trim();
     if (!trimmed || trimmed === savedBaseUrl) return;
+    const draft = settingsDraft.draft;
+    if (!draft) return;
+    // 零模型的自定义连接：地址直接补到 provider 段。
+    if (!activeModel) {
+      const result = await settingsDraft.saveModels({
+        ...draft.models,
+        customProviders: [{ alias: group.provider, baseUrl: trimmed }]
+      });
+      if (result?.status === "committed" && activeProviderRef.current === group.provider) onNotify("服务地址已保存");
+      return;
+    }
     const input = choiceUpsertInput(activeModel);
     if (!input) return;
     const result = await applyModelBatch([{ ...input, baseUrl: trimmed }]);
     if (result && activeProviderRef.current === group.provider) onNotify("服务地址已保存");
-  }, [activeModel, applyModelBatch, catalog, choiceUpsertInput, group, onNotify, savedBaseUrl]);
+  }, [activeModel, applyModelBatch, catalog, choiceUpsertInput, group, onNotify, savedBaseUrl, settingsDraft]);
 
   const onBaseUrlDraftChange = (value: string): void => {
     setBaseUrlDraft(value);
@@ -572,7 +628,7 @@ export function ProviderSettings({
 
   // ── 手动添加模型（目录滞后时的逃生通道） ──
   const [manualModelId, setManualModelId] = useState("");
-  const submitManualModel = useCallback(async (): Promise<void> => {
+  const submitManualModel = useCallback(async (displayName?: string): Promise<void> => {
     const id = manualModelId.trim();
     if (!id || !group || !catalog) return;
     if (group.models.some((model) => model.model === id)) {
@@ -582,7 +638,7 @@ export function ProviderSettings({
     setManualModelId("");
     await applyModelBatch([{
       alias: modelAliasFor(group.provider, id),
-      displayName: id,
+      displayName: displayName?.trim() || id,
       providerAlias: group.provider,
       providerType: catalog.value,
       protocol: connection?.protocol ?? catalog.protocol,
@@ -595,6 +651,12 @@ export function ProviderSettings({
     }]);
     onNotify(`已添加 ${id}`);
   }, [applyModelBatch, catalog, connection, group, manualModelId, onNotify]);
+
+  // ── 删除手动模型：只删配置项，不动服务商连接 ──
+  const removeManualModel = useCallback(async (model: ModelChoice): Promise<void> => {
+    const removed = await applyModelBatch([], [model.alias]);
+    if (removed) onNotify(`已删除 ${model.displayName}`);
+  }, [applyModelBatch, onNotify]);
 
   // ── 模型元数据覆盖（sliders 弹窗）：能力/headers/profile 在同一个事务里落盘 ──
   const [profileTarget, setProfileTarget] = useState<{ providerAlias: string; model: ModelChoice }>();
@@ -677,100 +739,69 @@ export function ProviderSettings({
     if (result) void refreshCatalog(alias, { force: true });
   }, [applyModelBatch, defaultModelAlias, refreshCatalog]);
 
-  // ── 自定义端点（未连接的 openai-compatible 条目）：地址 + 格式 + 密钥 → 拉模型 → 勾选 ──
-  const [customBaseUrl, setCustomBaseUrl] = useState("");
-  const [customApiKey, setCustomApiKey] = useState("");
-  const [customFormat, setCustomFormat] = useState<ApiFormatId>("chat_completions");
-  const [customModels, setCustomModels] = useState<CatalogModel[]>([]);
-  const [customSelected, setCustomSelected] = useState<string[]>([]);
-  const [customFetching, setCustomFetching] = useState(false);
-  const customGenerationRef = useRef(0);
-  useEffect(() => {
-    setCustomBaseUrl("");
-    setCustomApiKey("");
-    setCustomFormat("chat_completions");
-    setCustomModels([]);
-    setCustomSelected([]);
-    setCustomFetching(false);
-    customGenerationRef.current += 1;
-    setCatalogErrors((current) => ({ ...current, custom: undefined }));
-  }, [activeKey]);
-
-  const loadCustomModels = useCallback(async (_announce: boolean): Promise<void> => {
-    if (!catalog) return;
-    const baseUrl = customBaseUrl.trim();
-    if (!baseUrl) {
-      setCatalogErrors((current) => ({ ...current, custom: "请先填写服务地址再获取模型。" }));
-      return;
-    }
-    const generation = ++customGenerationRef.current;
-    setCustomFetching(true);
-    setCatalogErrors((current) => ({ ...current, custom: undefined }));
-    try {
-      const providerAlias = providerAliasFor(catalog, baseUrl);
-      const seed = catalog.models[0];
-      const format = apiFormatOption(customFormat);
-      const result = await onFetchCatalogCandidate({
-        alias: modelAliasFor(providerAlias, seed?.id ?? "probe"),
-        displayName: seed?.displayName ?? seed?.id ?? "probe",
-        providerAlias,
-        providerType: catalog.value,
-        protocol: format.protocol,
-        model: seed?.id ?? "probe",
-        baseUrl,
-        apiKey: customApiKey.trim() || undefined,
-        requiresApiKey: catalog.requiresApiKey,
-        modelsRequiresApiKey: catalog.modelsRequiresApiKey,
-        supportsTools: true,
-        supportsThinking: seed?.supportsThinking,
-        apiBackend: format.apiBackend
-      });
-      if (generation !== customGenerationRef.current) return;
-      const loaded = result.models.map(catalogModelFromEntry);
-      setCustomModels(loaded);
-      // 实时目录失败后不代替用户勾选，避免把账号未开放的模型自动存为默认。
-      setCustomSelected(loaded[0] ? [loaded[0].id] : []);
-
-    } catch (error) {
-      if (generation !== customGenerationRef.current) return;
-      setCustomModels([]);
-      setCustomSelected([]);
-      setCatalogErrors((current) => ({ ...current, custom: providerErrorMessage(error) }));
-    } finally {
-      if (generation === customGenerationRef.current) setCustomFetching(false);
-    }
-  }, [catalog, customApiKey, customBaseUrl, customFormat, onFetchCatalogCandidate]);
-
-  /** 换格式后旧目录不可信（不同协议的 /models 形状不同），清空候选。 */
-  const changeCustomFormat = (id: ApiFormatId): void => {
-    setCustomFormat(id);
-    setCustomModels([]);
-    setCustomSelected([]);
+  // ── 自定义服务商创建对话框：只写 providers 段建空连接，模型随后在面板里补 ──
+  const [createDialogOpen, setCreateDialogOpen] = useState(false);
+  const [creating, setCreating] = useState(false);
+  const openCreateDialog = (): void => {
+    setCreateDialogOpen(true);
   };
 
-  const connectCustom = useCallback(async (): Promise<void> => {
-    if (!catalog) return;
-    const baseUrl = customBaseUrl.trim();
-    const candidates = customModels.filter((model) => customSelected.includes(model.id));
-    if (!baseUrl || !candidates.length) return;
-    const providerAlias = providerAliasFor(catalog, baseUrl);
-    const format = apiFormatOption(customFormat);
-    // 勾选的全部模型在同一个事务里建连接；只有首个模型在无默认时接管默认。
-    const result = await applyModelBatch(candidates.map((model, index) =>
-      catalogModelUpsertInput(providerAlias, catalog.value, format.protocol, model, {
-        baseUrl,
-        apiKey: customApiKey.trim() || undefined,
-        requiresApiKey: catalog.requiresApiKey,
-        modelsRequiresApiKey: catalog.modelsRequiresApiKey,
-        apiBackend: model.apiBackend ?? format.apiBackend,
-        makeDefault: index === 0 && !defaultModelAlias
-      })));
-    if (result) {
-      setCustomApiKey("");
-      onNotify("自定义服务已连接");
-      void refreshCatalog(providerAlias, { force: true });
+  /**
+   * 提交创建：名称生成唯一别名（避开现有连接与内置目录别名，防后续连接同厂商时撞键），
+   * 密钥先暂存拿句柄，然后 saveModels 只带 customProviders 段。失败时释放句柄并保留
+   * 对话框，用户修正后重试。
+   */
+  const createCustomProvider = useCallback(async (input: {
+    displayName: string;
+    baseUrl: string;
+    apiKey: string;
+    format: ApiFormatId;
+  }): Promise<void> => {
+    const draft = settingsDraft.draft;
+    if (!draft || creating) return;
+    if (input.apiKey && !projectId) {
+      onNotify("暂存模型密钥前必须先选择项目。");
+      return;
     }
-  }, [applyModelBatch, catalog, customApiKey, customBaseUrl, customFormat, customModels, customSelected, defaultModelAlias, onNotify, refreshCatalog]);
+    const format = apiFormatOption(input.format);
+    const alias = uniqueProviderAlias(input.displayName, input.baseUrl, connectionInfos);
+    setCreating(true);
+    try {
+      let apiKeyHandle: string | undefined;
+      if (input.apiKey) {
+        apiKeyHandle = (await settingsDraft.stageCredential(input.apiKey, {
+          projectId: projectId!,
+          purpose: "model",
+          providerAlias: alias
+        })).handle;
+      }
+      const result = await settingsDraft.saveModels({
+        ...draft.models,
+        customProviders: [{
+          alias,
+          displayName: input.displayName,
+          baseUrl: input.baseUrl,
+          protocol: format.protocol,
+          apiBackend: format.apiBackend,
+          apiKeyHandle
+        }]
+      });
+      if (result?.status === "committed") {
+        setCreateDialogOpen(false);
+        // 选中新连接：端点恰好命中内置目录时行键是目录 id，否则是自定义行。
+        const matched = catalogForConnection({ provider: alias, providerType: "openai-compatible" }, input.baseUrl);
+        setActiveKey(matched ? matched.id : `custom:${alias}`);
+        onNotify(`已添加自定义服务商 ${input.displayName}`);
+      } else if (apiKeyHandle) {
+        // 失败的具体原因由草稿层通知；这里只释放未落盘的密钥句柄并保留对话框。
+        await settingsDraft.releaseCredential(apiKeyHandle);
+      }
+    } catch (error) {
+      onNotify(error instanceof Error ? error.message : String(error));
+    } finally {
+      setCreating(false);
+    }
+  }, [connectionInfos, creating, onNotify, projectId, settingsDraft]);
 
   // ── 订阅登录（Claude Code / Codex） ──
   const [loginStage, setLoginStage] = useState<"idle" | "opening" | "waiting" | "submitted">("idle");
@@ -915,7 +946,7 @@ export function ProviderSettings({
           <Icon name="search" size={14} />
           <input onChange={(event) => setQuery(event.target.value)} placeholder="搜索服务商" value={query} />
         </label>
-        <button className="ghost-button" onClick={() => { setQuery(""); setActiveKey("openai-compatible"); }} type="button"><Icon name="add" size={14} />添加自定义服务商</button>
+        <button className="settings-primary-button" onClick={openCreateDialog} type="button"><Icon name="add" size={14} />添加自定义服务商</button>
       </header>
       <aside aria-label="服务商列表" className="provider-list-pane">
         <div className="provider-list-rows" role="tablist">
@@ -962,7 +993,7 @@ export function ProviderSettings({
         </div>
         <footer className="provider-list-footer">
           <Icon name="info" size={13} />
-          <span>找不到服务商？用「自定义 OpenAI 兼容接口」接入任意中转站或网关。</span>
+          <span>找不到想要的服务商？点右上角「添加自定义服务商」接入任意 OpenAI 兼容端点。</span>
         </footer>
       </aside>
 
@@ -985,7 +1016,6 @@ export function ProviderSettings({
             error={loginError}
             authorizationCode={authorizationCode}
             availableModels={availableModels}
-            defaultModelAlias={defaultModelAlias}
             fetchingCatalog={fetchingAlias === group?.provider}
             onAuthorizationCode={setAuthorizationCode}
             onStart={() => activeEntry.catalog && void startLogin(activeEntry.catalog)}
@@ -996,12 +1026,12 @@ export function ProviderSettings({
             onToggleMany={toggleModels}
             manualModelId={manualModelId}
             onManualModelId={setManualModelId}
-            onSubmitManualModel={() => void submitManualModel()}
+            onSubmitManualModel={(displayName) => void submitManualModel(displayName)}
+            onRemoveModel={removeManualModel}
             onOpenModelOptions={(model) => group && setProfileTarget({ providerAlias: group.provider, model })}
-            onDefaultModel={onDefaultModel}
             onTest={runTest}
-            testing={testing}
-            testResult={testResult}
+            testing={testingAlias === group?.provider}
+            testResult={testResult && testResult.alias === group?.provider ? testResult.result : undefined}
             testConfiguration={testConfiguration}
             testMenuOpen={testMenuOpen}
             setTestMenuOpen={setTestMenuOpen}
@@ -1014,7 +1044,6 @@ export function ProviderSettings({
             group={group}
             status={status}
             availableModels={availableModels}
-            defaultModelAlias={defaultModelAlias}
             keyDraft={keyDraft}
             keySaveState={keySaveState}
             keyLoading={keyLoading}
@@ -1023,8 +1052,8 @@ export function ProviderSettings({
             savedBaseUrl={savedBaseUrl}
             fetchingCatalog={fetchingAlias === group.provider}
             saving={saving}
-            testing={testing}
-            testResult={testResult}
+            testing={testingAlias === group.provider}
+            testResult={testResult && testResult.alias === group.provider ? testResult.result : undefined}
             testMenuOpen={testMenuOpen}
             deleteArmed={deleteArmed}
             manualModelId={manualModelId}
@@ -1040,9 +1069,9 @@ export function ProviderSettings({
             onToggleModel={toggleModel}
             onToggleMany={toggleModels}
             onManualModelId={setManualModelId}
-            onSubmitManualModel={() => void submitManualModel()}
+            onSubmitManualModel={(displayName) => void submitManualModel(displayName)}
+            onRemoveModel={removeManualModel}
             onOpenModelOptions={(model) => setProfileTarget({ providerAlias: group.provider, model })}
-            onDefaultModel={onDefaultModel}
             onTest={runTest}
             onTestMenuOpen={setTestMenuOpen}
             testConfiguration={testConfiguration}
@@ -1052,9 +1081,8 @@ export function ProviderSettings({
         ) : catalog && catalog.baseUrl ? (
           <section className="provider-panel">
             <header className="provider-panel-head">
-              <span className={`provider-mark is-${catalog.iconTone} is-large`}><ProviderBrandGlyph type={catalog.iconTone} /></span>
               <div className="provider-panel-title">
-                <h3>{catalog.label}</h3>
+                <h3><span className="provider-panel-name">{catalog.label}</span></h3>
                 <p>{catalog.description}</p>
               </div>
             </header>
@@ -1069,27 +1097,18 @@ export function ProviderSettings({
               ) : null}
             </div>
           </section>
-        ) : catalog ? (
-          <CustomProviderPanel
-            catalog={catalog}
-            baseUrl={customBaseUrl}
-            apiKey={customApiKey}
-            format={customFormat}
-            models={customModels}
-            selected={customSelected}
-            fetching={customFetching}
-            saving={saving}
-            onBaseUrl={setCustomBaseUrl}
-            onApiKey={setCustomApiKey}
-            onFormat={changeCustomFormat}
-            onLoadModels={() => void loadCustomModels(true)}
-            onToggleModel={(modelId) => setCustomSelected((current) => current.includes(modelId) ? current.filter((id) => id !== modelId) : [...current, modelId])}
-            onSelectedChange={setCustomSelected}
-            onConnect={() => void connectCustom()}
-          />
         ) : null}
       </section>
       </CatalogErrorContext.Provider>
+
+      {createDialogOpen ? (
+        <CreateCustomProviderDialog
+          apiFormatOptions={apiFormatOptions}
+          creating={creating}
+          onCancel={() => setCreateDialogOpen(false)}
+          onSave={(input) => void createCustomProvider(input)}
+        />
+      ) : null}
 
       {profileTarget ? (
         <ModelOptionsDialog
@@ -1121,7 +1140,6 @@ function LoginProviderPanel({
   error,
   authorizationCode,
   availableModels,
-  defaultModelAlias,
   fetchingCatalog,
   onAuthorizationCode,
   onStart,
@@ -1133,8 +1151,8 @@ function LoginProviderPanel({
   manualModelId,
   onManualModelId,
   onSubmitManualModel,
+  onRemoveModel,
   onOpenModelOptions,
-  onDefaultModel,
   onTest,
   testing,
   testResult,
@@ -1150,7 +1168,6 @@ function LoginProviderPanel({
   error?: string;
   authorizationCode: string;
   availableModels: CatalogModel[];
-  defaultModelAlias?: string;
   fetchingCatalog: boolean;
   onAuthorizationCode(value: string): void;
   onStart(): void;
@@ -1161,9 +1178,9 @@ function LoginProviderPanel({
   onToggleMany(models: CatalogModel[], enabled: boolean): Promise<void>;
   manualModelId: string;
   onManualModelId(value: string): void;
-  onSubmitManualModel(): void;
+  onSubmitManualModel(displayName?: string): void;
+  onRemoveModel(model: ModelChoice): Promise<void>;
   onOpenModelOptions(model: ModelChoice): void;
-  onDefaultModel(alias: string, thinking: ThinkingSelection): void;
   onTest(model: ModelChoice): Promise<void>;
   testing: boolean;
   testResult?: DesktopModelConnectionTestResult;
@@ -1184,15 +1201,17 @@ function LoginProviderPanel({
   return (
     <section className="provider-panel">
       <header className="provider-panel-head">
-        <span className={`provider-mark is-${catalog.iconTone} is-large`}><ProviderBrandGlyph type={catalog.iconTone} /></span>
         <div className="provider-panel-title">
-          <h3>{catalog.label}{catalog.badge ? <span className="provider-panel-badge">{catalog.badge}</span> : null}</h3>
+          <h3>
+            <span className="provider-panel-name">{catalog.label}{catalog.badge ? <span className="provider-panel-badge">{catalog.badge}</span> : null}</span>
+          </h3>
           <p>{catalog.description}</p>
         </div>
         {group ? (
           <TestConnectionButton
             models={group.models}
             testing={testing}
+            lastResult={testResult}
             open={testMenuOpen}
             onOpen={setTestMenuOpen}
             onTest={onTest}
@@ -1254,7 +1273,6 @@ function LoginProviderPanel({
           key={catalog.id}
           models={filteredModels}
           enabledModels={group.models}
-          defaultModelAlias={defaultModelAlias}
           query={modelQuery}
           onQuery={setModelQuery}
           fetchingCatalog={fetchingCatalog}
@@ -1262,10 +1280,10 @@ function LoginProviderPanel({
           onToggleModel={onToggleModel}
           onToggleMany={onToggleMany}
           onOpenModelOptions={onOpenModelOptions}
-          onDefaultModel={onDefaultModel}
           manualModelId={manualModelId}
           onManualModelId={onManualModelId}
           onSubmitManualModel={onSubmitManualModel}
+          onRemoveModel={onRemoveModel}
         />
       ) : null}
     </section>
@@ -1279,7 +1297,6 @@ function ConnectedProviderPanel({
   group,
   status,
   availableModels,
-  defaultModelAlias,
   keyDraft,
   keySaveState,
   keyLoading,
@@ -1306,8 +1323,8 @@ function ConnectedProviderPanel({
   onToggleMany,
   onManualModelId,
   onSubmitManualModel,
+  onRemoveModel,
   onOpenModelOptions,
-  onDefaultModel,
   onTest,
   onTestMenuOpen,
   testConfiguration,
@@ -1319,7 +1336,6 @@ function ConnectedProviderPanel({
   group: ConnectionGroup;
   status: { label: string; tone: "warn" | "error" } | null;
   availableModels: CatalogModel[];
-  defaultModelAlias?: string;
   keyDraft: string;
   keySaveState: "idle" | "saving" | "saved" | "error";
   keyLoading: boolean;
@@ -1345,9 +1361,9 @@ function ConnectedProviderPanel({
   onToggleModel(model: CatalogModel, enabled: boolean): Promise<void>;
   onToggleMany(models: CatalogModel[], enabled: boolean): Promise<void>;
   onManualModelId(value: string): void;
-  onSubmitManualModel(): void;
+  onSubmitManualModel(displayName?: string): void;
+  onRemoveModel(model: ModelChoice): Promise<void>;
   onOpenModelOptions(model: ModelChoice): void;
-  onDefaultModel(alias: string, thinking: ThinkingSelection): void;
   onTest(model: ModelChoice): Promise<void>;
   onTestMenuOpen(open: boolean): void;
   testConfiguration(model: ModelChoice): DesktopModelConfigurationInput | undefined;
@@ -1393,7 +1409,7 @@ function ConnectedProviderPanel({
             onBlur={onBaseUrlBlur}
             onChange={(event) => onBaseUrlChange(event.target.value)}
             onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); onBaseUrlBlur(); } }}
-            placeholder="留空使用服务商默认地址"
+            placeholder="https://api.example.com/v1"
             value={baseUrlDraft}
           />
           {showVersionHint
@@ -1433,17 +1449,30 @@ function ConnectedProviderPanel({
   return (
     <section className="provider-panel">
       <header className="provider-panel-head">
-        <span className={`provider-mark is-${catalog.iconTone} is-large`}><ProviderBrandGlyph type={catalog.iconTone} /></span>
         <div className="provider-panel-title">
           <h3>
-            {catalog.label}
+            <span className="provider-panel-name">{catalog.label}</span>
+            {catalog.badge ? <span className="provider-panel-badge">{catalog.badge}</span> : null}
             {status
               ? <span className={`status-pill is-${status.tone}`}>{status.label}</span>
-              : <span className="status-pill">{group.models.some((model) => model.showInPicker !== false) ? "已启用" : "未启用"}</span>}
+              : <span className="status-pill is-accent">{group.models.some((model) => model.showInPicker !== false) ? "已启用" : "未启用"}</span>}
           </h3>
+          <p>{catalog.description}</p>
         </div>
+        {/* 自定义端点的删除入口对齐头部按钮组（垃圾桶）；官方目录连接保留底部危险区。 */}
+        {isCustomEndpoint ? (
+          <Tooltip content={deleteArmed ? "再次点击确认删除连接" : "删除连接"}>
+            <button
+              aria-label={deleteArmed ? "确认删除连接" : "删除连接"}
+              className={`provider-delete-button${deleteArmed ? " is-armed" : ""}`}
+              disabled={saving}
+              onClick={onDeleteConnection}
+              type="button"
+            ><Icon name="trash" size={15} /></button>
+          </Tooltip>
+        ) : null}
         <TestConnectionButton
-          defaultModelAlias={defaultModelAlias}
+          lastResult={testResult}
           models={group.models}
           testing={testing}
           open={testMenuOpen}
@@ -1522,7 +1551,6 @@ function ConnectedProviderPanel({
         key={group.provider}
         models={filteredModels}
         enabledModels={group.models}
-        defaultModelAlias={defaultModelAlias}
         query={modelQuery}
         onQuery={setModelQuery}
         fetchingCatalog={fetchingCatalog}
@@ -1530,189 +1558,45 @@ function ConnectedProviderPanel({
         onToggleModel={onToggleModel}
         onToggleMany={onToggleMany}
         onOpenModelOptions={onOpenModelOptions}
-        onDefaultModel={onDefaultModel}
         manualModelId={manualModelId}
         onManualModelId={onManualModelId}
         onSubmitManualModel={onSubmitManualModel}
+        onRemoveModel={onRemoveModel}
       />
 
-      <section className="provider-danger-zone">
-        <div className="provider-danger-copy">
-          <strong>删除连接</strong>
-          <span>删除此连接的全部模型与本地凭据引用，无法撤销。</span>
-        </div>
-        <button className="danger-button" disabled={saving} onClick={onDeleteConnection} type="button">
-          {deleteArmed ? "确认删除？" : "删除"}
-        </button>
-      </section>
+      {!isCustomEndpoint ? (
+        <section className="provider-danger-zone">
+          <div className="provider-danger-copy">
+            <strong>删除连接</strong>
+            <span>删除此连接的全部模型与本地凭据引用，无法撤销。</span>
+          </div>
+          <button className="danger-button" disabled={saving} onClick={onDeleteConnection} type="button">
+            {deleteArmed ? "确认删除？" : "删除"}
+          </button>
+        </section>
+      ) : null}
     </section>
   );
 }
 
-/** 自定义端点（未连接）：地址 + 格式 + 密钥 → 拉模型 → 勾选启用。 */
-function CustomProviderPanel({
-  catalog,
-  baseUrl,
-  apiKey,
-  format,
-  models,
-  selected,
-  fetching,
-  saving,
-  onBaseUrl,
-  onApiKey,
-  onFormat,
-  onLoadModels,
-  onToggleModel,
-  onSelectedChange,
-  onConnect
-}: {
-  catalog: ProviderCatalogItem;
-  baseUrl: string;
-  apiKey: string;
-  format: ApiFormatId;
-  models: CatalogModel[];
-  selected: string[];
-  fetching: boolean;
-  saving: boolean;
-  onBaseUrl(value: string): void;
-  onApiKey(value: string): void;
-  onFormat(id: ApiFormatId): void;
-  onLoadModels(): void;
-  onToggleModel(modelId: string): void;
-  onSelectedChange(ids: string[]): void;
-  onConnect(): void;
-}): React.JSX.Element {
-  const [showKey, setShowKey] = useState(false);
-  const keyMissing = catalog.requiresApiKey && !apiKey.trim();
-  const canConnect = !saving && !fetching && !keyMissing && Boolean(baseUrl.trim()) && selected.length > 0;
-  return (
-    <section className="provider-panel">
-      <header className="provider-panel-head">
-        <span className={`provider-mark is-${catalog.iconTone} is-large`}><ProviderBrandGlyph type={catalog.iconTone} /></span>
-        <div className="provider-panel-title">
-          <h3>{catalog.label}<span className="provider-panel-badge">{catalog.badge}</span></h3>
-          <p>{catalog.description}</p>
-        </div>
-      </header>
-
-      <div className="provider-rows">
-        <div className="provider-row-item">
-          <label className="provider-row-label" htmlFor="custom-provider-base-url">服务地址</label>
-          <input
-            autoFocus
-            id="custom-provider-base-url"
-            onChange={(event) => onBaseUrl(event.target.value)}
-            placeholder={apiFormatOption(format).baseUrlPlaceholder}
-            value={baseUrl}
-          />
-          {baseUrlNeedsVersionHint(baseUrl)
-            ? <div className="provider-row-warning"><Icon name="info" size={12} />部分服务商要求地址以版本路径结尾（如 /v1），请求失败时可尝试追加。</div>
-            : null}
-        </div>
-        <div className="provider-row-item">
-          <label className="provider-row-label" htmlFor="custom-provider-api-format">API 格式</label>
-          <NativeSelect className="connection-select" id="custom-provider-api-format" onChange={(event) => onFormat(event.target.value as ApiFormatId)} value={format}>
-            {apiFormatOptions.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}
-          </NativeSelect>
-          <div className="provider-row-hint">{apiFormatOption(format).description}</div>
-        </div>
-        <div className="provider-row-item">
-          <label className="provider-row-label" htmlFor="custom-provider-api-key">API Key{catalog.requiresApiKey ? "" : "（可选）"}</label>
-          <div className="secret-input-row">
-            <input
-              autoComplete="off"
-              id="custom-provider-api-key"
-              onChange={(event) => onApiKey(event.target.value)}
-              placeholder="输入或粘贴 API Key"
-              type={showKey ? "text" : "password"}
-              value={apiKey}
-            />
-            <button className="icon-button" type="button" aria-label={showKey ? "隐藏密钥" : "显示密钥"} onClick={() => setShowKey((value) => !value)}><Icon name={showKey ? "eye-off" : "eye"} size={16} /></button>
-          </div>
-        </div>
-      </div>
-
-      <section className="provider-models">
-      <CatalogFeedback />
-        <div className="provider-models-head">
-          <h4>启用模型</h4>
-          <div className="provider-models-actions">
-            {models.length > 0 ? (
-              <button
-                className="ghost-button"
-                disabled={fetching}
-                onClick={() => onSelectedChange(selected.length >= models.length ? [] : models.map((model) => model.id))}
-                type="button"
-              >
-                {selected.length >= models.length ? "清空选择" : "全选"}
-              </button>
-            ) : null}
-            <button className="ghost-button" disabled={fetching || !baseUrl.trim()} onClick={onLoadModels} type="button">
-              <Icon name="refresh" size={13} />
-              {fetching ? "加载中…" : "加载模型"}
-            </button>
-          </div>
-        </div>
-        <p className="provider-models-hint">
-          {fetching
-            ? "正在从服务商加载模型…"
-            : models.length > 0
-              ? `已选 ${String(selected.length)} / ${String(models.length)}`
-              : keyMissing
-                ? "填写服务地址和密钥后，点击“加载模型”获取支持列表"
-                : "填写服务地址后，点击“加载模型”获取支持列表"}
-        </p>
-        <div aria-label="选择要启用的模型" className="provider-model-list" role="group">
-          {models.map((model) => {
-            const checked = selected.includes(model.id);
-            return (
-              <button
-                aria-checked={checked}
-                className={`provider-model-row${checked ? " is-enabled" : ""}`}
-                key={model.id}
-                onClick={() => onToggleModel(model.id)}
-                role="checkbox"
-                type="button"
-              >
-                <span className={`check-dot${checked ? " is-on" : ""}`}><Icon name="check" size={11} /></span>
-                <span className="provider-model-copy">
-                  <span className="provider-model-name">{model.displayName}</span>
-                  {model.id !== model.displayName ? (
-                    <Tooltip content={model.id}>
-                      <span className="provider-model-id">{model.id}</span>
-                    </Tooltip>
-                  ) : null}
-                </span>
-              </button>
-            );
-          })}
-          {!models.length ? <div className="provider-models-empty">{fetching ? "正在加载模型…" : "尚未加载模型列表"}</div> : null}
-        </div>
-      </section>
-
-      <div className="provider-panel-actions">
-        <button className="settings-primary-button" disabled={!canConnect} onClick={onConnect} type="button">
-          {saving ? "连接中…" : "连接服务商"}
-        </button>
-      </div>
-    </section>
-  );
-}
-
-/** 测试连接入口；测试结果由面板独立展示，避免长错误挤占标题。 */
+/**
+ * 测试连接入口（紧凑图标按钮）：按钮自身反映最近一次测试状态——空闲闪电、进行中
+ * 转圈、成功绿勾、失败红叉，结果保留到下一次测试。多模型时点击展开可搜索的模型
+ * 菜单，选定才发起测试；单一模型直接测，省一次点击。测试结果由面板独立成行展示，
+ * 避免长错误挤占标题。
+ */
 function TestConnectionButton({
-  defaultModelAlias,
   models,
   testing,
+  lastResult,
   open,
   onOpen,
   onTest,
   testConfiguration
 }: {
-  defaultModelAlias?: string;
   models: ModelChoice[];
   testing: boolean;
+  lastResult?: DesktopModelConnectionTestResult;
   open: boolean;
   onOpen(open: boolean): void;
   onTest(model: ModelChoice): Promise<void>;
@@ -1722,6 +1606,7 @@ function TestConnectionButton({
   // 流动悬停：测试模型菜单按选择器自动注册。
   const testMenuRef = useRef<HTMLDivElement>(null);
   const testMenuHover = useFluidHoverItems(testMenuRef, ".provider-test-option");
+  const [search, setSearch] = useState("");
   useEffect(() => {
     if (!open) return;
     const onPointerDown = (event: MouseEvent): void => {
@@ -1730,61 +1615,93 @@ function TestConnectionButton({
     window.addEventListener("mousedown", onPointerDown);
     return () => window.removeEventListener("mousedown", onPointerDown);
   }, [onOpen, open]);
-  const target = models.find((model) => model.alias === defaultModelAlias) ?? models[0];
-  return (
-    <div className="provider-test-split" ref={menuRef}>
+  const closeMenu = useCallback((): void => {
+    onOpen(false);
+    setSearch("");
+  }, [onOpen]);
+  if (models.length <= 1) {
+    const target = models[0];
+    return (
       <Tooltip content="测试连接">
         <button
-          className="ghost-button provider-test-button"
+          aria-label="测试连接"
+          className={`provider-test-button${testing ? " is-testing" : ""}`}
           disabled={testing || !target || !testConfiguration(target)}
           onClick={() => target && void onTest(target)}
           type="button"
         >
-          <Icon name={testing ? "refresh" : "spark"} size={13} />
-          测试
+          <ModelTestStatusIcon lastResult={lastResult} testing={testing} />
         </button>
       </Tooltip>
-      {models.length > 1 ? (
-        <button aria-label="选择要测试的模型" className="ghost-button provider-test-caret" disabled={testing} onClick={() => onOpen(!open)} type="button">
-          <Icon name="chevron" size={12} />
+    );
+  }
+  const normalizedSearch = search.trim().toLocaleLowerCase();
+  const filteredModels = normalizedSearch
+    ? models.filter((model) => `${model.displayName} ${model.model}`.toLocaleLowerCase().includes(normalizedSearch))
+    : models;
+  return (
+    <div className="provider-test-split" ref={menuRef}>
+      <Tooltip content="测试连接">
+        <button
+          aria-expanded={open}
+          aria-label="测试连接"
+          className={`provider-test-button${testing ? " is-testing" : ""}`}
+          disabled={testing}
+          onClick={() => onOpen(!open)}
+          type="button"
+        >
+          <ModelTestStatusIcon lastResult={lastResult} testing={testing} />
+          <Icon className="provider-test-caret" name="chevron" size={11} />
         </button>
-      ) : null}
-      {open && models.length > 1 ? (
+      </Tooltip>
+      {open ? (
         <div className="provider-test-menu" ref={testMenuRef} role="listbox" {...testMenuHover.handlers}>
           <FluidHoverHighlight hover={testMenuHover} className="has-row-radius" />
-          {models.map((model) => (
-            <button className="provider-test-option" key={model.alias} onClick={() => void onTest(model)} role="option" type="button">
-              <span>{model.displayName}</span>
-              <small>{model.model}</small>
-            </button>
-          ))}
+          <div className="provider-test-search">
+            <Icon name="search" size={12} />
+            <input
+              autoFocus
+              onChange={(event) => setSearch(event.target.value)}
+              onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); closeMenu(); } }}
+              placeholder="搜索模型…"
+              value={search}
+            />
+          </div>
+          <div className="provider-test-options">
+            {filteredModels.map((model) => (
+              <button className="provider-test-option" key={model.alias} onClick={() => { closeMenu(); void onTest(model); }} role="option" type="button">
+                <span>{model.displayName}</span>
+                <small>{model.model}</small>
+              </button>
+            ))}
+            {!filteredModels.length ? <div className="provider-test-empty">未找到模型</div> : null}
+          </div>
         </div>
       ) : null}
     </div>
   );
 }
 
+/** 测试结果独立成行：成功带时长，失败直接给原因，长错误整体折行不撑破面板。 */
 function ConnectionTestResult({ result }: { result: DesktopModelConnectionTestResult }): React.JSX.Element {
   return (
-    <div className={`connection-test-result${result.ok ? " is-ok" : " is-error"}`}>
-      <span role="status">{result.ok
-        ? `测试通过${result.latencyMs === undefined ? "" : ` · ${String(result.latencyMs)} ms`}`
-        : "测试失败，请检查服务商账户和连接设置。"}</span>
-      {!result.ok && result.message ? (
-        <details>
-          <summary>查看错误详情</summary>
-          <pre>{result.message}</pre>
-        </details>
-      ) : null}
-    </div>
+    <p className={`connection-test-result${result.ok ? " is-ok" : " is-error"}`} role="status">
+      {result.ok
+        ? `连接成功${result.latencyMs === undefined ? "" : `（${String(result.latencyMs)} ms）`}`
+        : `连接测试失败：${result.message || "未知错误"}`}
+    </p>
   );
 }
 
-/** 模型区：搜索 + 全选 + 整行可点的模型列表 + 手动添加。 */
+/**
+ * 模型区：对齐 alma 的结构——标题行（全选/获取）→ 常驻手动添加行 → 搜索 →
+ * 计数提示 → 独立滚动的模型列表。行内是两段式分层：第一行模型名（手动模型带
+ * 「手动」徽标），第二行能力徽标 + 右对齐的模型 ID；右侧是模型选项、删除（仅手动
+ * 模型）与启用开关。默认模型语义不在行内：跟随聊天里的选择，连接仅在无默认时接管。
+ */
 function ModelsSection({
   models,
   enabledModels,
-  defaultModelAlias,
   query,
   onQuery,
   fetchingCatalog,
@@ -1792,14 +1709,13 @@ function ModelsSection({
   onToggleModel,
   onToggleMany,
   onOpenModelOptions,
-  onDefaultModel,
+  onRemoveModel,
   manualModelId,
   onManualModelId,
   onSubmitManualModel
 }: {
   models: CatalogModel[];
   enabledModels: ModelChoice[];
-  defaultModelAlias?: string;
   query: string;
   onQuery(value: string): void;
   fetchingCatalog: boolean;
@@ -1807,12 +1723,12 @@ function ModelsSection({
   onToggleModel(model: CatalogModel, enabled: boolean): Promise<void>;
   onToggleMany(models: CatalogModel[], enabled: boolean): Promise<void>;
   onOpenModelOptions(model: ModelChoice): void;
-  onDefaultModel(alias: string, thinking: ThinkingSelection): void;
+  onRemoveModel(model: ModelChoice): Promise<void>;
   manualModelId: string;
   onManualModelId(value: string): void;
-  onSubmitManualModel(): void;
+  onSubmitManualModel(displayName?: string): void;
 }): React.JSX.Element {
-  const [manualOpen, setManualOpen] = useState(false);
+  const [manualDisplayName, setManualDisplayName] = useState("");
   const choiceByModel = new Map(enabledModels.map((model) => [model.model, model] as const));
   const enabledChoiceByModel = new Map(enabledModels.filter((model) => model.showInPicker !== false).map((model) => [model.model, model] as const));
   // 已启用模型置顶，同组保持目录顺序；每次切换后重新排序，不重复展示。
@@ -1821,6 +1737,11 @@ function ModelsSection({
   );
   // 全选只作用于当前可见（搜索过滤后）的模型，大批量启用也在一次事务里完成。
   const allVisibleEnabled = models.length > 0 && models.every((model) => enabledChoiceByModel.has(model.id));
+  const submitManual = (): void => {
+    if (!manualModelId.trim()) return;
+    onSubmitManualModel(manualDisplayName);
+    setManualDisplayName("");
+  };
   return (
     <section className="provider-models">
       <CatalogFeedback />
@@ -1843,60 +1764,75 @@ function ModelsSection({
           </button>
         </div>
       </div>
+      {/* 目录滞后时的逃生通道：常驻行按原始 ID 直接启用，显示名称可选。 */}
+      <div className="provider-manual-row">
+        <input
+          aria-label="手动添加模型 ID"
+          onChange={(event) => onManualModelId(event.target.value)}
+          onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); submitManual(); } }}
+          placeholder="模型 ID（例如 gpt-4o）"
+          value={manualModelId}
+        />
+        <input
+          aria-label="手动添加模型显示名称"
+          onChange={(event) => setManualDisplayName(event.target.value)}
+          onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); submitManual(); } }}
+          placeholder="显示名称（可选）"
+          value={manualDisplayName}
+        />
+        <button className="ghost-button" disabled={!manualModelId.trim()} onClick={submitManual} type="button">
+          <Icon name="add" size={13} />
+          添加
+        </button>
+      </div>
+      <p className="provider-models-hint">手动添加模型，或用「获取」按钮从 API 加载</p>
       <label className="provider-model-search">
         <Icon name="search" size={13} />
         <input aria-label="搜索模型" onChange={(event) => onQuery(event.target.value)} placeholder="搜索模型…" value={query} />
       </label>
       <p className="provider-models-hint">
-        {query.trim() ? `${String(models.length)} 个结果 · 全选仅作用于搜索结果` : `${String(models.length)} 个模型 · 已启用 ${String(enabledChoiceByModel.size)}`}
+        {query.trim() ? `${String(models.length)} 个结果 · 全选仅作用于搜索结果` : `显示 ${String(models.length)} 个模型（已启用的模型排在前面）`}
       </p>
 
       <div className="provider-model-list">
         {orderedModels.map((model) => {
           const choice = choiceByModel.get(model.id);
           const enabled = enabledChoiceByModel.has(model.id);
-          const isDefault = choice !== undefined && choice.alias === defaultModelAlias;
+          // 行结构与 alma 一致：左侧两段分层（名称行 / 徽标+ID 行），右侧操作区固定
+          // 同位（选项/删除/开关）；手动模型才有删除入口。
           return (
-            <div
-              className={`provider-model-row${enabled ? " is-enabled" : ""}`}
-              key={model.id}
-
-            >
+            <div className={`provider-model-row${enabled ? " is-enabled" : ""}`} key={model.id}>
               <div className="provider-model-copy">
-                <span className="provider-model-name">{model.displayName}</span>
-                <span className="provider-model-meta" id={`${model.id.replace(/[^a-z0-9_-]/gi, "-")}-meta`}>
-                  <CapabilityBadges model={model} />
-                  {model.contextWindow && !model.contextWindowIsFallback ? (
-                    // 徽标只显示 1M/128K 一类缩写；悬停补全精确容量，数字按千分位便于确认量级。
-                    <Tooltip content={`${model.contextWindow.toLocaleString()} token 上下文窗口`}>
-                      <span>{formatContextWindow(model.contextWindow)}</span>
-                    </Tooltip>
-                  ) : null}
-                  {model.id !== model.displayName ? (
-                    <Tooltip content={model.id}>
-                      <span className="provider-model-id">{model.id}</span>
-                    </Tooltip>
-                  ) : null}
-                </span>
+                <div className="provider-model-name-line">
+                  <span className="provider-model-name">{model.displayName}</span>
+                  {model.isManual ? <span className="provider-model-manual">手动</span> : null}
+                </div>
+                <div className="provider-model-meta" id={`${model.id.replace(/[^a-z0-9_-]/gi, "-")}-meta`}>
+                  <ModelRowBadges model={model} />
+                  <span className="provider-model-id" title={model.id}>{model.id}</span>
+                </div>
               </div>
               <div className="provider-model-actions">
-                {choice && enabled && !isDefault ? (
+                <Tooltip content={choice ? "模型选项" : "启用模型后可调整选项"}>
                   <button
-                    className="text-button"
-                    onClick={(event) => { event.stopPropagation(); onDefaultModel(choice.alias, choice.defaultThinking); }}
+                    aria-label={choice ? `${model.displayName} 模型选项` : "启用模型后可调整模型选项"}
+                    className="icon-button"
+                    disabled={!choice}
+                    onClick={() => { if (choice) onOpenModelOptions(choice); }}
                     type="button"
-                  >设为默认</button>
-                ) : null}
-                {isDefault ? <span className="default-pill">默认</span> : null}
-                {choice ? (
-                  <Tooltip content="模型选项">
+                  >
+                    <Icon name="sliders" size={13} />
+                  </button>
+                </Tooltip>
+                {model.isManual && choice ? (
+                  <Tooltip content="删除手动模型">
                     <button
-                      aria-label={`${model.displayName} 模型选项`}
+                      aria-label={`删除手动模型 ${model.displayName}`}
                       className="icon-button"
-                      onClick={(event) => { event.stopPropagation(); onOpenModelOptions(choice); }}
+                      onClick={() => void onRemoveModel(choice)}
                       type="button"
                     >
-                      <Icon name="sliders" size={13} />
+                      <Icon name="trash" size={13} />
                     </button>
                   </Tooltip>
                 ) : null}
@@ -1905,7 +1841,7 @@ function ModelsSection({
                   aria-label={`${enabled ? "停用" : "启用"} ${model.displayName}`}
                   aria-describedby={`${model.id.replace(/[^a-z0-9_-]/gi, "-")}-meta`}
                   className={`model-toggle${enabled ? " is-on" : ""}`}
-                  onClick={(event) => { event.stopPropagation(); void onToggleModel(model, !enabled); }}
+                  onClick={() => { void onToggleModel(model, !enabled); }}
                   role="switch"
                   type="button"
                 >
@@ -1922,44 +1858,179 @@ function ModelsSection({
           </div>
         ) : null}
       </div>
-      {/* 目录滞后时的逃生通道：默认收起不占空间，展开后按原始 ID 直接启用。 */}
-      {manualOpen ? (
-        <div className="provider-manual-row">
-          <input
-            autoFocus
-            onChange={(event) => onManualModelId(event.target.value)}
-            onKeyDown={(event) => { if (event.key === "Enter" && manualModelId.trim()) { event.preventDefault(); onSubmitManualModel(); } }}
-            placeholder="输入模型 ID，例如 gpt-4o"
-            value={manualModelId}
-          />
-          <button className="ghost-button" disabled={!manualModelId.trim()} onClick={onSubmitManualModel} type="button">添加</button>
-        </div>
-      ) : (
-        <button className="ghost-button provider-manual-toggle" onClick={() => setManualOpen(true)} type="button">
-          <Icon name="add" size={13} />
-          手动添加模型
-        </button>
-      )}
     </section>
   );
 }
 
-function CapabilityBadges({ model }: { model: CatalogModel }): React.JSX.Element {
-  // 图标语义不直观，悬停时用一句能力描述代替只重复图标名的短语。
-  const badges: Array<{ icon: "brain-spark" | "eye"; tooltip: string }> = [];
-  if (model.supportsThinking) badges.push({ icon: "brain-spark", tooltip: "支持扩展思考/推理" });
-  if (model.supportsVision) badges.push({ icon: "eye", tooltip: "支持图片输入" });
+/** 模型行徽标：图片输入 → 工具调用 → 扩展思考 → 上下文容量缩写；与 alma 一致，容量是纯文本无图标。 */
+function ModelRowBadges({ model }: { model: CatalogModel }): React.JSX.Element {
+  // 上下文容量只在目录给出真实值时展示；回退估值不能伪装成服务商声明的窗口。
+  const context = model.contextWindow !== undefined && model.contextWindowIsFallback !== true
+    ? { label: contextWindowLabel(model.contextWindow), tokens: model.contextWindow }
+    : undefined;
   return (
     <>
-      {badges.map((badge) => (
-        <Tooltip content={badge.tooltip} key={badge.icon}>
-          <span className="provider-model-cap">
-            <Icon name={badge.icon} size={11} />
-          </span>
+      {model.supportsVision ? (
+        <Tooltip content="支持图片输入" key="vision">
+          <span className="provider-model-cap"><Icon name="eye" size={11} /></span>
         </Tooltip>
-      ))}
+      ) : null}
+      {model.supportsTools !== false ? (
+        <Tooltip content="支持工具调用" key="tools">
+          <span className="provider-model-cap"><Icon name="wrench" size={11} /></span>
+        </Tooltip>
+      ) : null}
+      {model.supportsThinking ? (
+        <Tooltip content="支持扩展思考/推理" key="thinking">
+          <span className="provider-model-cap"><Icon name="brain-spark" size={11} /></span>
+        </Tooltip>
+      ) : null}
+      {context ? (
+        <Tooltip content={`${context.tokens.toLocaleString("zh-CN")} token 上下文窗口`} key="context">
+          <span className="provider-model-ctx">{context.label}</span>
+        </Tooltip>
+      ) : null}
     </>
   );
+}
+
+/** 上下文容量徽标缩写：与 alma 一致，百万位取 M、其余取 K。 */
+function contextWindowLabel(contextWindow: number): string {
+  return contextWindow >= 1e6 ? `${Math.round(contextWindow / 1e6)}M` : `${Math.round(contextWindow / 1e3)}K`;
+}
+
+/**
+ * 自定义服务商创建对话框：名称 + 地址 + 可选密钥 + API 格式。提交只创建连接本身，
+ * 不预选任何模型——模型在详情面板里获取或手动添加，避免把未验证的列表存成配置。
+ */
+function CreateCustomProviderDialog({ apiFormatOptions: formatOptions, creating, onCancel, onSave }: {
+  apiFormatOptions: ApiFormatOption[];
+  creating: boolean;
+  onCancel(): void;
+  onSave(input: { displayName: string; baseUrl: string; apiKey: string; format: ApiFormatId }): void;
+}): React.JSX.Element {
+  const [displayName, setDisplayName] = useState("");
+  const [baseUrl, setBaseUrl] = useState("");
+  const [apiKey, setApiKey] = useState("");
+  const [format, setFormat] = useState<ApiFormatId>("chat_completions");
+  const [showKey, setShowKey] = useState(false);
+  const validBaseUrl = isValidHttpUrl(baseUrl);
+  const canSubmit = !creating && displayName.trim().length > 0 && validBaseUrl;
+  return (
+    <SettingsDetailLayer onClose={onCancel}>
+      <form
+        aria-label="添加自定义服务商"
+        aria-modal="true"
+        className="provider-dialog"
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (canSubmit) onSave({ displayName: displayName.trim(), baseUrl: baseUrl.trim(), apiKey: apiKey.trim(), format });
+        }}
+        role="dialog"
+      >
+        <header>
+          <div>
+            <strong>添加自定义服务商</strong>
+            <small>OpenAI 兼容中转站、代理或自部署网关</small>
+          </div>
+          <button aria-label="关闭" className="icon-button" onClick={onCancel} type="button"><Icon name="close" size={16} /></button>
+        </header>
+
+        <div className="provider-dialog-body">
+          <div className="provider-rows">
+            <div className="provider-row-item">
+              <label className="provider-row-label" htmlFor="custom-provider-create-name">名称</label>
+              <input
+                autoFocus
+                id="custom-provider-create-name"
+                onChange={(event) => setDisplayName(event.target.value)}
+                placeholder="例如 我的中转站"
+                value={displayName}
+              />
+            </div>
+            <div className="provider-row-item">
+              <label className="provider-row-label" htmlFor="custom-provider-create-url">服务地址</label>
+              <input
+                id="custom-provider-create-url"
+                onChange={(event) => setBaseUrl(event.target.value)}
+                placeholder="https://api.example.com/v1"
+                value={baseUrl}
+              />
+              {baseUrl.trim() && !validBaseUrl
+                ? <div className="provider-row-warning"><Icon name="info" size={12} />地址需要以 http:// 或 https:// 开头。</div>
+                : null}
+            </div>
+            <div className="provider-row-item">
+              <label className="provider-row-label" htmlFor="custom-provider-create-key">API Key（可选）</label>
+              <div className="secret-input-row">
+                <input
+                  autoComplete="off"
+                  id="custom-provider-create-key"
+                  onChange={(event) => setApiKey(event.target.value)}
+                  placeholder="留空，稍后在面板中填写"
+                  type={showKey ? "text" : "password"}
+                  value={apiKey}
+                />
+                <button className="icon-button" type="button" aria-label={showKey ? "隐藏密钥" : "显示密钥"} onClick={() => setShowKey((value) => !value)}><Icon name={showKey ? "eye-off" : "eye"} size={16} /></button>
+              </div>
+            </div>
+            <div className="provider-row-item">
+              <label className="provider-row-label" htmlFor="custom-provider-create-format">API 格式</label>
+              <NativeSelect className="connection-select" id="custom-provider-create-format" onChange={(event) => setFormat(event.target.value as ApiFormatId)} value={format}>
+                {formatOptions.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}
+              </NativeSelect>
+              <div className="provider-row-hint">{apiFormatOption(format).description}</div>
+            </div>
+          </div>
+          <p className="provider-dialog-hint">创建后进入服务商面板，用「获取」或手动添加启用模型。</p>
+        </div>
+
+        <footer>
+          <button className="ghost-button" onClick={onCancel} type="button">取消</button>
+          <button className="settings-primary-button" disabled={!canSubmit} type="submit">{creating ? "添加中…" : "添加"}</button>
+        </footer>
+      </form>
+    </SettingsDetailLayer>
+  );
+}
+
+function isValidHttpUrl(value: string): boolean {
+  try {
+    const parsed = new URL(value.trim());
+    return parsed.protocol === "http:" || parsed.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 名称 → 服务商别名：中文名回退到端点主机名，并避开现有连接与内置目录占用的别名，
+ * 防止之后连接同厂商官方端点时撞键。冲突时追加序号。
+ */
+function uniqueProviderAlias(displayName: string, baseUrl: string, connections: DesktopModelConnection[]): string {
+  const base = slugify(displayName) || hostnameSlug(baseUrl) || "provider";
+  const reserved = new Set<string>([
+    ...connections.map((connection) => connection.providerAlias),
+    ...providerCatalog.map((catalog) => providerAliasFor(catalog, catalog.baseUrl))
+  ]);
+  if (!reserved.has(base)) return base;
+  for (let index = 2; ; index += 1) {
+    const candidate = `${base}-${index}`;
+    if (!reserved.has(candidate)) return candidate;
+  }
+}
+
+function slugify(value: string): string {
+  return value.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+}
+
+function hostnameSlug(baseUrl: string): string {
+  const withoutProtocol = baseUrl.replace(/^[a-z][a-z0-9+.-]*:\/\//i, "");
+  try {
+    return slugify(new URL(baseUrl).hostname) || slugify(withoutProtocol);
+  } catch {
+    return slugify(withoutProtocol);
+  }
 }
 
 /** 模型设置：默认展示能力，高级覆盖按需展开；所有编辑仍在保存时一次提交。 */
@@ -2379,6 +2450,7 @@ function mergeAvailableModels(
       id: model.model,
       displayName: live?.displayName ?? model.displayName,
       supportsThinking: model.efforts.length > 0 || Boolean(live?.supportsThinking),
+      supportsTools: model.supportsTools ?? live?.supportsTools ?? true,
       parallelToolCalls: model.capabilities?.parallelToolCalls ?? live?.parallelToolCalls,
       reasoningStream: model.capabilities?.reasoningStream ?? live?.reasoningStream,
       reasoningSummary: model.capabilities?.reasoningSummary ?? live?.reasoningSummary,
@@ -2402,7 +2474,8 @@ function mergeAvailableModels(
   for (const model of configuredModels) {
     if (seen.has(model.model)) continue;
     seen.add(model.model);
-    merged.push(projectConfigured(model));
+    // 目录里不存在的已配置模型是手动添加或已下线的：按手动模型展示，可单独删除。
+    merged.push({ ...projectConfigured(model), isManual: true });
   }
   return merged;
 }
@@ -2459,14 +2532,6 @@ function oauthExpiryHint(expiresAt: number | undefined): string {
   return `已登录，访问令牌 ${String(Math.round(remainingMinutes / 60))} 小时后自动刷新。`;
 }
 
-function formatContextWindow(tokens: number): string {
-  if (tokens >= 1_000_000) {
-    const millions = tokens / 1_000_000;
-    return `${millions >= 10 ? Math.round(millions) : millions.toFixed(1).replace(/\.0$/, "")}M`;
-  }
-  return `${Math.round(tokens / 1_000)}K`;
-}
-
 /** URL 缺版本段（/v1 等）且路径很浅时提示：这是中转站 404 的最常见原因。 */
 function baseUrlNeedsVersionHint(url: string): boolean {
   const trimmed = url.trim();
@@ -2501,8 +2566,8 @@ function ProviderToggle({ group }: { group: ConnectionGroup }): React.JSX.Elemen
       setSaving(false);
     }
   };
+  // 启用状态由标题旁的状态徽标展示，开关旁不再重复文字；保存中用禁用态表达。
   return <div className="provider-master-toggle">
-    <span className="provider-toggle-status" role="status">{saving ? "保存中…" : enabled ? "已启用" : "未启用"}</span>
     <button type="button" role="switch" aria-checked={enabled} aria-label={enabled ? "停用整个服务商" : "启用整个服务商"} disabled={saving || !draft || !group.models.length} className={`model-toggle${enabled ? " is-on" : ""}`} onClick={() => void toggle()}><span className="model-toggle-thumb" /></button>
     {error ? <small role="alert">{error}</small> : null}
   </div>;

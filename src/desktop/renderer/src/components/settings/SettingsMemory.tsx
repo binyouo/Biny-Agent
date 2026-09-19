@@ -19,6 +19,7 @@ import type { MemorySleepRun } from "../../../../../agent/context/memoryTypes.js
 import { catalogForConnection } from "../../providerCatalog.js";
 import { Icon } from "../Icon.js";
 import { useSettingsDraft } from "./SettingsDraftContext.js";
+import { ModelTestButton, ModelTestResult } from "./ModelTestButton.js";
 import { SettingsModelPicker } from "./SettingsModelPicker.js";
 import { modelPickerGroups, type SettingsModelPickerGroup } from "./settingsModelPickerData.js";
 
@@ -124,6 +125,7 @@ export function SettingsMemory({
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [modelTesting, setModelTesting] = useState(false);
+  const [modelTestResult, setModelTestResult] = useState<DesktopModelConnectionTestResult>();
   const [exporting, setExporting] = useState(false);
   const [editor, setEditor] = useState<{ id?: string; value: string }>();
   const [error, setError] = useState<string>();
@@ -660,8 +662,9 @@ export function SettingsMemory({
               placeholder="使用默认工具模型"
               value={policy.memoryModel}
             />
-            <button className="text-button" disabled={modelTesting || !models.length} onClick={() => { void testMemoryModel(); }} type="button">{modelTesting ? "测试中…" : "测试模型"}</button>
+            <ModelTestButton disabled={!models.length} label="测试模型" testing={modelTesting} onClick={() => { void testMemoryModel(); }} />
           </div>
+          <ModelTestResult result={modelTestResult} />
         </section>
 
         <section className="activity-memory-group" id="memory-embedding" tabIndex={-1}>

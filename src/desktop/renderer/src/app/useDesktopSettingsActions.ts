@@ -74,12 +74,6 @@ export function useDesktopSettingsActions({
     return await fetchCatalog(requireProject(projectIdRef.current), providerAlias, force);
   }, [projectIdRef]);
 
-  const fetchModelCatalogCandidate = useCallback(async (configuration: DesktopModelConfigurationInput) => {
-    const fetchCandidate = window.biny.fetchModelCatalogCandidate;
-    if (typeof fetchCandidate !== "function") throw new Error(desktopApiVersionMismatchMessage);
-    return await fetchCandidate(requireProject(projectIdRef.current), configuration);
-  }, [projectIdRef]);
-
   const startModelLogin = useCallback(async (provider: DesktopModelLoginProvider) => {
     const startLogin = window.biny.startModelLogin;
     if (typeof startLogin !== "function") throw new Error(desktopApiVersionMismatchMessage);
@@ -227,7 +221,6 @@ export function useDesktopSettingsActions({
     deleteMemoryEmbeddingModel,
     downloadMemoryEmbeddingModel,
     fetchModelCatalog,
-    fetchModelCatalogCandidate,
     loadCookieJarStatus,
     loadMemoryEmbeddingStatus,
     loadMemoryOverview,

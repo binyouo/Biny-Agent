@@ -8,7 +8,7 @@ import { useState } from "react";
 import { useSettingsDraft } from "./SettingsDraftContext.js";
 import { SettingsModelPicker } from "./SettingsModelPicker.js";
 import { modelPickerGroups } from "./settingsModelPickerData.js";
-import { Icon } from "../Icon.js";
+import { ModelTestButton, ModelTestResult } from "./ModelTestButton.js";
 import type { DesktopModelConfigurationInput, DesktopModelConnectionTestResult } from "../../../../protocol.js";
 
 export function SettingsToolModel({ onTest }: { onTest(configuration: DesktopModelConfigurationInput): Promise<DesktopModelConnectionTestResult> }): React.JSX.Element | null {
@@ -53,23 +53,14 @@ export function SettingsToolModel({ onTest }: { onTest(configuration: DesktopMod
             placeholder="自动选择"
             value={snapshot.models.toolModel}
           />
-          <button aria-label="测试模型" className="icon-button tool-model-test-button" disabled={!active || testing || saving} title={testing ? "测试中…" : "测试模型"} type="button" onClick={runTest}>
-            <Icon name="flask" size={16} />
-          </button>
+          <ModelTestButton disabled={!active || saving} label="测试模型" testing={testing} onClick={runTest} />
         </div>
         <p className="tool-model-status">{active
           ? snapshot.models.toolModel
             ? `当前使用：${active.displayName}。`
             : `当前使用：${active.displayName}（自动模式，按供应商与辅助型号优先级选择已配置模型）。`
           : "暂无可用工具模型，请先在「模型供应商」中配置。"}</p>
-        {testResult ? (
-          <div className={`connection-test-result${testResult.ok ? " is-ok" : " is-error"}`} role="status">
-            <span>{testResult.ok
-              ? `测试通过${testResult.latencyMs === undefined ? "" : ` · ${(testResult.latencyMs / 1000).toFixed(1)} 秒`}`
-              : "测试失败"}</span>
-            {!testResult.ok && testResult.message ? <pre>{testResult.message}</pre> : null}
-          </div>
-        ) : null}
+        <ModelTestResult result={testResult} />
         {error ? <p role="alert">{error}</p> : null}
       </section>
     </div>

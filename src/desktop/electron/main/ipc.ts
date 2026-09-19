@@ -592,18 +592,6 @@ export function registerDesktopIpc(context: IpcContext): void {
     return await context.agents.switchModel(idSchema.parse(projectId), idSchema.parse(alias), thinkingSchema.parse(thinking));
   });
 
-  // 「设为默认」走即时 CAS 写，不进跨页草稿事务；写完复读一次权威快照返回给渲染层同步基线。
-  handleRecoveryGated(desktopIpc.setDefaultModel, async (_event, projectId: unknown, alias: unknown, thinking: unknown, expectedConfigRevision: unknown, sessionId: unknown) => {
-    const parsedProjectId = idSchema.parse(projectId);
-    await context.agents.setDefaultModelImmediate(
-      parsedProjectId,
-      idSchema.parse(alias),
-      thinkingSchema.parse(thinking),
-      z.string().parse(expectedConfigRevision)
-    );
-    return await settings.snapshot(parsedProjectId, sessionId === undefined ? undefined : idSchema.parse(sessionId));
-  });
-
   handleRecoveryGated(desktopIpc.testModelConfiguration, async (_event, projectId: unknown, configuration: unknown) => {
     return await context.agents.testModelConfiguration(idSchema.parse(projectId), modelConfigurationSchema.parse(configuration));
   });
