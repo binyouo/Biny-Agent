@@ -62,7 +62,13 @@ interface OptimisticRewrite {
   settled: boolean;
 }
 
-export const MessageTimeline = memo(function MessageTimeline({ projectId, turns, skillNames, pendingUserMessage, pendingFloatFromComposer, onPreviewFile, onOpenExternal, onResolvePermission, thinking, onRetry, onSwitchVersion, onEditRequest, editInFlight, onCreateBranch, onRollbackFiles, onDeleteUserMessage }: MessageTimelineProps): React.JSX.Element {
+/** live 回合的 id 是 runId；状态停在 idle 说明 run.started 被丢过，由 runtime 的活动 run 兜底。 */
+function turnIsRunning(turn: TimelineTurn, runtimeActiveRunId: string | undefined): boolean {
+  if (turn.status === "running" || turn.status === "waiting_permission") return true;
+  return runtimeActiveRunId !== undefined && turn.status === "idle" && turn.id === runtimeActiveRunId;
+}
+
+export const MessageTimeline = memo(function MessageTimeline({ projectId, turns, skillDescriptions, skillNamesBySelector, pendingUserMessage, pendingFloatFromComposer, runtimeActiveRunId, onPreviewFile, onOpenExternal, onResolvePermission, thinking, onRetry, onSwitchVersion, onEditRequest, editInFlight, onCreateBranch, onRollbackFiles, onDeleteUserMessage }: MessageTimelineProps): React.JSX.Element {
   // 重试会先把目标之后的消息从视图中撤掉，再等待新回合流入；这里保留同样的乐观投影。
   // 编辑的重写投影来自 App（editInFlight），提交入口在底部输入框，不经过本组件状态。
   const [optimisticRewrite, setOptimisticRewrite] = useState<OptimisticRewrite>();
@@ -171,7 +177,7 @@ export const MessageTimeline = memo(function MessageTimeline({ projectId, turns,
     }, pending.user)];
   }, [rewrite, turns]);
 
-  const busy = thinking || Boolean(rewrite) || displayedTurns.some((turn) => turn.status === "running" || turn.status === "waiting_permission");
+  const busy = thinking || Boolean(rewrite) || displayedTurns.some((turn) => turnIsRunning(turn, runtimeActiveRunId));
   // 失败状态跟随对应消息，切会话、重启后仍可定位和重试。
   return (
     <div className="message-timeline">
@@ -203,10 +209,11 @@ export const MessageTimeline = memo(function MessageTimeline({ projectId, turns,
           onRetrySettled={settleOptimisticRewrite}
           onSwitchVersion={onSwitchVersion}
           projectId={projectId}
+          runtimeActiveRunId={runtimeActiveRunId}
           turn={turn}
         />
       ))}
-      {thinking && !displayedTurns.some((turn) => turn.status === "running" || turn.status === "waiting_permission") ? <RunStatus /> : null}
+      {thinking && !displayedTurns.some((turn) => turnIsRunning(turn, runtimeActiveRunId)) ? <RunStatus /> : null}
     </div>
   );
 });
@@ -328,7 +335,7 @@ const Turn = memo(function Turn({
   onRollbackFiles(turn: TimelineTurn): void;
   onDeleteUserMessage(turnId: string): void;
 }): React.JSX.Element {
-  const running = turn.status === "running" || turn.status === "waiting_permission";
+  const running = turnIsRunning(turn, runtimeActiveRunId);
   const retryPromiseRef = useRef<Promise<void> | undefined>(undefined);
   const retry = useCallback((): Promise<void> => {
     if (running || busy) return Promise.resolve();

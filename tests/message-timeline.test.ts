@@ -17,11 +17,12 @@ const failure: AgentHostEvent = { ...base, timestamp: "2026-09-11T00:00:12.000Z"
 const noop = (): void => undefined;
 const noopAsync = (): Promise<void> => Promise.resolve();
 
-function renderTurns(turns: TimelineTurn[], thinking = false): string {
+function renderTurns(turns: TimelineTurn[], thinking = false, runtimeActiveRunId?: string): string {
   return renderToStaticMarkup(createElement(MessageTimeline, {
     projectId: "project",
     turns,
     thinking,
+    runtimeActiveRunId,
     onPreviewFile: noop,
     onOpenExternal: noop,
     onResolvePermission: noopAsync,

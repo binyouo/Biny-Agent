@@ -47,6 +47,8 @@ interface WorkspaceProps {
   onRuntimePanelOpenChange(open: boolean): void;
   thinking: boolean;
   running: boolean;
+  /** Runtime snapshot 里当前会话的活动 run；时间线用它兜底丢了 run.started 的 live 回合。 */
+  runtimeActiveRunId?: string;
   planning?: boolean;
   /** 当前会话的 Recipe 提示卡；固定在输入框上方，不随消息流滚走。 */
   recipeNotices?: RecipeNotice[];
@@ -103,6 +105,7 @@ export function Workspace({
   onRuntimePanelOpenChange,
   thinking,
   running,
+  runtimeActiveRunId,
   planning,
   recipeNotices,
   skillExtraction,
@@ -244,7 +247,7 @@ export function Workspace({
                   ? { id: visiblePendingPrompt.id, messageId: visiblePendingPrompt.messageId, content: visiblePendingPrompt.text }
                   : undefined}
                 pendingFloatFromComposer={pendingFloatFromComposer}
-                skillNames={skillNames}
+                runtimeActiveRunId={runtimeActiveRunId}
                 thinking={streaming || thinking}
                 projectId={projectId}
                 turns={turns}
@@ -291,6 +294,7 @@ function ChatScroll({ children, onScrolledChange, sessionId, streaming }: { chil
   const containerRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const fadeTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const scrollFrameRef = useRef<number | undefined>(undefined);
   // 「钉在底部」用 ref 不用 state：流式期间滚动事件极频繁，贴底状态翻转不该触发重渲染。
   const pinnedRef = useRef(true);
   const scrollAnchorRef = useRef<{ element: HTMLElement; top: number; until: number } | undefined>(undefined);
@@ -298,10 +302,23 @@ function ChatScroll({ children, onScrolledChange, sessionId, streaming }: { chil
 
   useEffect(() => () => {
     if (fadeTimerRef.current !== undefined) clearTimeout(fadeTimerRef.current);
+    if (scrollFrameRef.current !== undefined) cancelAnimationFrame(scrollFrameRef.current);
   }, []);
 
-  // 切会话从头贴底；内容随后异步长高，由下面的 ResizeObserver 持续贴住。
-  useEffect(() => {
+  const scrollToPinnedBottom = (): void => {
+    const container = containerRef.current;
+    if (!container || !pinnedRef.current || scrollAnchorRef.current) return;
+    container.scrollTop = container.scrollHeight;
+  };
+
+  // 在 React 完成布局后贴底，避免只依赖 ResizeObserver 时错过纯文本/Markdown 增量。
+  // children 每次实时事件更新都会变化；用户主动离底后 pinnedRef 会阻止这里抢回滚动权。
+  useLayoutEffect(() => {
+    scrollToPinnedBottom();
+  }, [children, sessionId, streaming]);
+
+  // 切会话从头贴底；内容随后异步长高，由下面的观察器持续贴住。
+  useLayoutEffect(() => {
     pinnedRef.current = true;
     scrollAnchorRef.current = undefined;
     setJumpVisible(false);
@@ -317,15 +334,26 @@ function ChatScroll({ children, onScrolledChange, sessionId, streaming }: { chil
     const container = containerRef.current;
     const content = contentRef.current;
     if (!container || !content) return;
+    const schedulePinnedScroll = (): void => {
+      if (!pinnedRef.current || scrollAnchorRef.current || scrollFrameRef.current !== undefined) return;
+      scrollFrameRef.current = requestAnimationFrame(() => {
+        scrollFrameRef.current = undefined;
+        scrollToPinnedBottom();
+      });
+    };
     const observer = new ResizeObserver(() => {
-      if (pinnedRef.current && !scrollAnchorRef.current) {
-        container.scrollTop = container.scrollHeight;
-      } else {
-        setJumpVisible(distanceFromBottom(container) > JUMP_BUTTON_DISTANCE);
-      }
+      schedulePinnedScroll();
+      setJumpVisible(!pinnedRef.current && distanceFromBottom(container) > JUMP_BUTTON_DISTANCE);
     });
+    const mutationObserver = new MutationObserver(schedulePinnedScroll);
     observer.observe(content);
-    return () => observer.disconnect();
+    mutationObserver.observe(content, { childList: true, subtree: true, characterData: true });
+    return () => {
+      observer.disconnect();
+      mutationObserver.disconnect();
+      if (scrollFrameRef.current !== undefined) cancelAnimationFrame(scrollFrameRef.current);
+      scrollFrameRef.current = undefined;
+    };
   }, []);
 
   // 捕获点击时布局尚未变化。折叠动画期间锁住所点标题的位置，暂停自动贴底。
@@ -351,6 +379,8 @@ function ChatScroll({ children, onScrolledChange, sessionId, streaming }: { chil
       else {
         scrollAnchorRef.current = undefined;
         anchorFrameRef.current = undefined;
+        // 折叠动画结束后如果仍在底部，恢复自动跟随；展开导致离底则继续尊重用户位置。
+        pinnedRef.current = distanceFromBottom(container) < PIN_DISTANCE;
       }
     };
     anchorFrameRef.current = requestAnimationFrame(holdAnchor);
