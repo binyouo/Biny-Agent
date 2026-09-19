@@ -7,6 +7,7 @@ import type { AgentHostEvent } from "../src/runtime/agentEvents.js";
 import { GenerationErrorBanner } from "../src/desktop/renderer/src/components/chat/GenerationErrorBanner.js";
 import { MessageTimeline } from "../src/desktop/renderer/src/components/MessageTimeline.js";
 import { buildSessionTimeline, type TimelineTurn } from "../src/desktop/renderer/src/sessionTimeline.js";
+import type { SessionEvent } from "../src/session/events.js";
 
 const base = { sessionId: "session", runId: "run", timestamp: "2026-09-11T00:00:00.000Z" };
 const start: AgentHostEvent[] = [
@@ -52,6 +53,27 @@ test("模型尚未输出就失败：只保留用户消息，不生成助手错�
   assert.doesNotMatch(markup, /chat-meta-indicator|1 条记忆|1 个工具|1 个技能/u);
 });
 
+test("记忆召回降级时在回复上下文行给出主动提示", () => {
+  const history: SessionEvent[] = [
+    { type: "user_message", content: "检查项目", messageId: "user-message", time: "2026-09-11T00:00:00.000Z" },
+    {
+      type: "assistant_message",
+      content: "已完成检查。",
+      messageId: "assistant-message",
+      time: "2026-09-11T00:00:10.000Z",
+      metadata: { memoryRecallDegraded: "model_mismatch" }
+    }
+  ];
+  const turns = buildSessionTimeline(history, []);
+  const completed = turns.find((turn) => turn.memoryRecallDegraded !== undefined);
+  assert.ok(completed, "会话时间线必须解析 assistant_message 元数据中的降级原因");
+  assert.equal(completed.memoryRecallDegraded, "model_mismatch");
+  const markup = renderTurns(turns);
+  // 折叠态只展示警示短语；完整原因在悬停浮层里。
+  assert.match(markup, /chat-meta-indicator/u);
+  assert.match(markup, /记忆召回降级/u);
+});
+
 test("历史失败只有请求耗时：不能用总耗时生成思考步骤", () => {
   const markup = renderTurns(buildSessionTimeline([
     { type: "user_message", content: "检查项目", messageId: "user-message", time: base.timestamp },
@@ -84,6 +106,19 @@ test("部分回复后失败：保留已收到的正文、真实思考和工具�
   assert.doesNotMatch(markup, /Connection timed out|chat-run-notice/u);
   assert.match(markup, /复制回复/u);
   assert.doesNotMatch(markup, /chat-meta-indicator|1 条记忆|1 个工具|1 个技能/u);
+});
+
+test("实时思考不截断长内容，并把思考中的围栏代码渲染为代码块", () => {
+  const reasoning = `先检查入口。\n\n\`\`\`ts\nconst answer = 42;\n\`\`\`\n${"继续分析。".repeat(140)}`;
+  const turns = buildSessionTimeline([], [
+    ...start,
+    { ...base, type: "reasoning.delta", content: reasoning }
+  ]);
+  assert.equal(turns[0]?.reasoning, reasoning);
+  const markup = renderTurns(turns);
+  assert.match(markup, /markdown-code-block/u);
+  assert.match(markup, /markdown-code-language[\s\S]*>ts<\/span>/u);
+  assert.match(markup, /继续分析。继续分析。/u);
 });
 
 test("仅有工具结果的失败不会补出思考或空助手操作栏", () => {
@@ -150,10 +185,8 @@ test("运行中保留活动反馈，并禁止重试旧失败消息", () => {
     memoryInjectedCount: 1,
     memoryInjectedSummaries: ["运行中的记忆摘要"]
   })), true);
-  assert.match(running, /正在等待模型响应/u);
-  assert.match(running, /chat-meta-indicator/u);
-  assert.match(running, /1 条记忆/u);
-  assert.doesNotMatch(running, /个工具|个技能/u);
+  assert.match(running, /Thinking\.\.\./u);
+  assert.doesNotMatch(running, /chat-meta-indicator|1 条记忆|个工具|个技能/u);
   assert.doesNotMatch(running, /chat-run-status-time/u);
   assert.doesNotMatch(running, /chat-activity/u);
   assert.doesNotMatch(running, /回复生成失败|assistant-actions/u);
@@ -284,4 +317,55 @@ test("正文流结束但轮次未结束时恢复等待反馈，下一次输出�
   html = renderTurns(buildSessionTimeline([], events));
   assert.match(html, /is-suppressed/u);
   assert.equal((html.match(/with-streaming-cursor/gu) ?? []).length, 1);
+});
+
+test("messageId 对齐不受时间戳偏差影响：同一回合不渲染两遍", () => {
+  // 真实回归场景：实时 message.user 的时间戳晚于落盘时间（时钟偏差/事件重发），
+  // 旧的内容+时间匹配会失配，历史副本和实时副本各渲染一遍。
+  const history: SessionEvent[] = [
+    { type: "user_message", content: "构建一个harness agent", messageId: "user-message", time: "2026-09-18T03:34:07.000Z" },
+    { type: "tool_call", tool: "Write", args: { path: "harness/errors.py" }, toolCallId: "call-1", time: "2026-09-18T03:38:14.000Z", runtime: { eventId: "e2", eventSeq: 2, runId: "run" } }
+  ];
+  const live: AgentHostEvent[] = [
+    { ...base, timestamp: "2026-09-18T03:38:00.000Z", type: "message.user", messageId: "user-message", content: "构建一个harness agent" },
+    { ...base, timestamp: "2026-09-18T03:38:20.000Z", type: "tool.started", toolCallId: "call-2", tool: "Write", args: { path: "harness/llm.py" } }
+  ];
+  const turns = buildSessionTimeline(history, live);
+  assert.equal(turns.length, 1);
+  assert.equal(turns[0]?.user, "构建一个harness agent");
+  assert.deepEqual(turns[0]?.tools.map((tool) => tool.id), ["call-2"], "落盘的工具调用由实时流接管，不重复出现");
+});
+
+test("实时流丢失 message.user 锚点时按 runId 截断，用户气泡保留在历史段", () => {
+  const history: SessionEvent[] = [
+    { type: "user_message", content: "构建一个harness agent", messageId: "user-message", time: "2026-09-18T03:34:07.000Z", runtime: { eventId: "e1", eventSeq: 1, runId: "run" } },
+    { type: "tool_call", tool: "Write", args: { path: "harness/errors.py" }, toolCallId: "call-1", time: "2026-09-18T03:38:14.000Z", runtime: { eventId: "e2", eventSeq: 2, runId: "run" } }
+  ];
+  // 草稿首发的头部事件被丢掉后，实时流里没有 message.user，只剩工具事件能证明 runId 归属。
+  const live: AgentHostEvent[] = [
+    { ...base, type: "tool.started", toolCallId: "call-2", tool: "Write", args: { path: "harness/llm.py" } },
+    { ...base, type: "tool.completed", toolCallId: "call-2", tool: "Write", result: { status: "succeeded" } }
+  ];
+  const turns = buildSessionTimeline(history, live);
+  assert.deepEqual(turns.flatMap((turn) => turn.tools.map((tool) => tool.id)), ["call-2"], "runId 对齐截断后工具调用不重复出现");
+  assert.equal(turns[0]?.user, "构建一个harness agent");
+  assert.equal(turns[1]?.user, "");
+});
+
+test("回合状态停在 idle 时由 runtime 活动 run 兜底，不渲染完成态操作栏", () => {
+  // message.user 和 run.started 都被丢掉时，live 回合状态停在 idle；没有兜底就会按完成态渲染操作行和产出卡。
+  const turn = buildSessionTimeline([], [
+    { ...base, type: "reasoning.started", phase: "initial" },
+    { ...base, type: "tool.started", toolCallId: "read", tool: "Read", args: { path: "package.json" } },
+    { ...base, type: "tool.completed", toolCallId: "read", tool: "Read", result: { content: "{}" } },
+    { ...base, type: "assistant.delta", content: "检查完成" }
+  ])[0]!;
+  assert.equal(turn.status, "idle");
+  const stale = renderTurns([{ ...turn, assistant: "检查完成" }]);
+  assert.match(stale, /assistant-actions/u);
+  const live = renderTurns([{ ...turn, assistant: "检查完成" }], false, "run");
+  assert.doesNotMatch(live, /assistant-actions/u);
+  assert.match(live, /chat-run-status/u);
+  // runtime 报告的 run 已结束（未传 runtimeActiveRunId）时恢复原判断。
+  assert.match(renderTurns([{ ...turn, assistant: "检查完成", status: "completed" }]), /assistant-actions/u);
 });

@@ -21,17 +21,21 @@ import { useTypewriter } from "./useTypewriter.js";
 import { ActivitySegment, type ActivitySegmentStep } from "./chat/ActivitySegment.js";
 import { CompactionDivider } from "./chat/CompactionDivider.js";
 import { MessageClock } from "./chat/MessageClock.js";
-import { SkillsIndicator } from "./chat/SkillsIndicator.js";
+import { SkillsIndicator, TurnSkillsNotice } from "./chat/SkillsIndicator.js";
 import { ChangesSummary } from "./chat/ChangesSummary.js";
 import { RunStatus } from "./chat/RunStatus.js";
 
 interface MessageTimelineProps {
   projectId: string;
   turns: TimelineTurn[];
-  skillNames?: ReadonlyMap<string, string>;
+  skillDescriptions?: ReadonlyMap<string, string>;
+  /** 技能 ref/id → 展示名；回合顶部技能清单用它解析预选结果。 */
+  skillNamesBySelector?: ReadonlyMap<string, string>;
   pendingUserMessage?: PendingUserMessage;
   /** 首条提交自空态切入：pending 气泡以上浮 FLIP 进入（submittedPreview 原文参数）。 */
   pendingFloatFromComposer?: boolean;
+  /** Runtime snapshot 里当前会话的活动 run；live 回合丢了 run.started（状态停在 idle）时以它兜底。 */
+  runtimeActiveRunId?: string;
   onPreviewFile(path: string): void;
   onOpenExternal(url: string): void;
   onResolvePermission(requestId: string, result: PermissionResult): Promise<void>;
@@ -195,7 +199,8 @@ export const MessageTimeline = memo(function MessageTimeline({ projectId, turns,
         <Turn
           busy={busy}
           entrySheenOnly={firstTurnSheenOnly && index === 0}
-          skillNames={skillNames}
+          skillDescriptions={skillDescriptions}
+          skillNamesBySelector={skillNamesBySelector}
           key={turn.id}
           onCreateBranch={onCreateBranch}
           onDeleteUserMessage={onDeleteUserMessage}
@@ -280,6 +285,7 @@ function optimisticRewriteTurn(turn: TimelineTurn, user: string): TimelineTurn {
     skills: [],
     memoryInjectedCount: undefined,
     memoryInjectedSummaries: undefined,
+    memoryRecallDegraded: undefined,
     preparationStage: undefined,
     capabilitySelection: undefined,
     status: "running",
@@ -299,11 +305,23 @@ function optimisticRewriteTurn(turn: TimelineTurn, user: string): TimelineTurn {
   };
 }
 
+/** 回合技能清单：auto 预选/手动勾选的 ref/id 解析为展示名；目录里已不存在的跳过。 */
+function turnSkillNames(turn: TimelineTurn, selectors?: ReadonlyMap<string, string>): string[] {
+  const selection = turn.capabilitySelection?.skills;
+  if (!Array.isArray(selection)) return [];
+  return [...new Set(selection.flatMap((selector) => {
+    const name = selectors?.get(selector);
+    return name ? [name] : [];
+  }))];
+}
+
 const Turn = memo(function Turn({
   busy,
   entrySheenOnly,
-  skillNames,
+  skillDescriptions,
+  skillNamesBySelector,
   projectId,
+  runtimeActiveRunId,
   turn,
   onPreviewFile,
   onOpenExternal,
@@ -320,8 +338,11 @@ const Turn = memo(function Turn({
   busy: boolean;
   /** FLIP 落定后的首条用户消息只播扫光（原文 animateUserEntry "sheen-only"）。 */
   entrySheenOnly?: boolean;
-  skillNames?: ReadonlyMap<string, string>;
+  skillDescriptions?: ReadonlyMap<string, string>;
+  skillNamesBySelector?: ReadonlyMap<string, string>;
   projectId: string;
+  /** Runtime snapshot 里当前会话的活动 run；回合状态停在 idle 时以它兜底。 */
+  runtimeActiveRunId?: string;
   turn: TimelineTurn;
   onPreviewFile(path: string): void;
   onOpenExternal(url: string): void;
@@ -396,7 +417,8 @@ const Turn = memo(function Turn({
       {running || executionSteps.length > 0 || turn.assistant.trim() || completedChangedFiles.length > 0 ? (
       <article className="chat-message desktop-assistant-message" data-sender="assistant">
         <div className="agent-response">
-        {shouldShowResponseContext(turn) ? <SkillsIndicator skillNames={skillNames} memoryInjectedSummaries={turn.memoryInjectedSummaries} skills={turn.skills} tools={turn.tools.map((tool) => tool.tool)} /> : null}
+        {turnSkillNames(turn, skillNamesBySelector).length ? <TurnSkillsNotice names={turnSkillNames(turn, skillNamesBySelector)} /> : null}
+        {shouldShowResponseContext(turn) ? <SkillsIndicator memoryRecallDegraded={turn.memoryRecallDegraded} skillDescriptions={skillDescriptions} skills={turn.skills} tools={turn.tools.map((tool) => tool.tool)} /> : null}
         {executionSteps.length ? (
           <ExecutionTimeline
             onPreviewFile={onPreviewFile}
