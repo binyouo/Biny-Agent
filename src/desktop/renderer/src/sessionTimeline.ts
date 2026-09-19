@@ -237,24 +237,46 @@ function hasVersionMetadata(events: SessionEvent[]): boolean {
 /**
  * 找出历史事件中应当保留的前缀，避免与实时事件重复。
  *
- * 做法是在历史里找与首条实时用户消息「内容相同且时间不早于它」的那一条，从该处截断；
- * 找不到就整段保留。内容比较用 `publicUserMessage`，因为落盘的内容可能带 harness 脚手架。
+ * 实时事件先发出、随后才写进 session，直接拼接会让同一回合出现两次，所以要在历史里找到
+ * 当前运行的起点并从那里截断。对齐按可靠性递减的三级进行，任一级命中即返回：
+ *
+ * 1. messageId：实时 message.user 与落盘 user_message 共用同一消息 ID，时钟偏差、
+ *    事件重发都不影响；
+ * 2. 内容 + 时间：老会话可能没有 messageId，退回内容匹配——实时先于落盘发出，只有时间
+ *    不早于实时消息的记录才可能是「同一条」，更早的同样内容必须留在历史里。内容比较用
+ *    `publicUserMessage`，因为落盘的内容可能带 harness 脚手架；
+ * 3. runId：以上都失配（渲染端丢过 message.user、或时钟偏差盖过了内容兜底）时，历史里
+ *    任何属于实时 runId 的事件都来自当前运行。锚点缺失时实时回合没有用户消息，历史里的
+ *    user_message 要保留下来承担气泡。
  */
 function historicalPrefix(events: SessionEvent[], liveEvents: AgentHostEvent[]): SessionEvent[] {
-  const firstLiveUser = liveEvents.find((event) => event.type === "message.user");
-  if (!firstLiveUser || firstLiveUser.type !== "message.user") return events;
-  const liveTimestamp = Date.parse(firstLiveUser.timestamp);
-  if (Number.isNaN(liveTimestamp)) return events;
-  let matchingIndex = -1;
-  for (let index = 0; index < events.length; index += 1) {
-    const event = events[index];
-    if (event?.type !== "user_message" || publicUserMessage(event.content) !== publicUserMessage(firstLiveUser.content)) continue;
-    const eventTimestamp = event.time ? Date.parse(event.time) : Number.NaN;
-    // 实时事件先于 AgentSession 落盘发出，所以只有时间不早于它的记录才可能是「同一条」；
-    // 更早的同样内容（用户重复发过一次）必须留在历史里。
-    if (!Number.isNaN(eventTimestamp) && eventTimestamp >= liveTimestamp) matchingIndex = index;
+  const firstLiveUser = liveEvents.find((event): event is Extract<AgentHostEvent, { type: "message.user" }> => event.type === "message.user");
+  if (firstLiveUser) {
+    for (let index = events.length - 1; index >= 0; index -= 1) {
+      const event = events[index];
+      if (event?.type === "user_message" && event.messageId === firstLiveUser.messageId) return events.slice(0, index);
+    }
+    const liveTimestamp = Date.parse(firstLiveUser.timestamp);
+    if (!Number.isNaN(liveTimestamp)) {
+      let matchingIndex = -1;
+      for (let index = 0; index < events.length; index += 1) {
+        const event = events[index];
+        if (event?.type !== "user_message" || publicUserMessage(event.content) !== publicUserMessage(firstLiveUser.content)) continue;
+        const eventTimestamp = event.time ? Date.parse(event.time) : Number.NaN;
+        if (!Number.isNaN(eventTimestamp) && eventTimestamp >= liveTimestamp) matchingIndex = index;
+      }
+      if (matchingIndex >= 0) return events.slice(0, matchingIndex);
+    }
   }
-  return matchingIndex >= 0 ? events.slice(0, matchingIndex) : events;
+  const liveRunIds = new Set(liveEvents.map((event) => event.runId));
+  if (liveRunIds.size === 0) return events;
+  const firstLiveRunEvent = events.findIndex((event) => {
+    const runId = event.runtime?.runId;
+    return runId !== undefined && liveRunIds.has(runId);
+  });
+  if (firstLiveRunEvent < 0) return events;
+  const keepUserMessage = !firstLiveUser && events[firstLiveRunEvent]?.type === "user_message";
+  return events.slice(0, firstLiveRunEvent + (keepUserMessage ? 1 : 0));
 }
 
 function buildHistoricalTurns(events: SessionEvent[]): TimelineTurn[] {

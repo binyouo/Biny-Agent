@@ -1758,6 +1758,7 @@ function DesktopApp(): React.JSX.Element {
         onDismissSkillExtraction={() => setSkillExtraction(undefined)}
         thinking={selectedThinking}
         running={selectedRunning}
+        runtimeActiveRunId={selectedRunId}
         planning={selectedRuntimeSnapshot?.info.planning === true}
         turns={visibleTurns}
         writerConflict={writerConflict}

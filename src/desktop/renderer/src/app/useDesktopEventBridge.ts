@@ -4,7 +4,7 @@
  * 主进程为所有项目共用一条事件通道。本 hook 负责按帧批处理、按项目/会话过滤、刷新终态快照，
  * 并把结果写回 React 状态；组件无需理解事件时序或处理流式输出的高频更新。
  */
-import { useEffect, type Dispatch, type SetStateAction } from "react";
+import { useEffect, type Dispatch, type RefObject, type SetStateAction } from "react";
 import type { ContextBudgetStatus } from "../../../../agent/context/types.js";
 import { isTerminalRunEvent, type AgentHostEvent } from "../../../../runtime/agentEvents.js";
 import type {
@@ -15,6 +15,7 @@ import type {
   DesktopRecipeSuggestion,
   DesktopWorkspaceSnapshot
 } from "../../../protocol.js";
+import { createSessionEventBuffer } from "./sessionEventBuffer.js";
 import { liveTimelineEvents } from "../sessionTimeline.js";
 import { applyUpdatesToSidebarSessions, applyUpdatesToWorkspace, hasContextStatus } from "./desktopState.js";
 
@@ -59,6 +60,7 @@ export function useDesktopEventBridge({
   onRuntimeProjectionChanged,
   activeProjectIdRef,
   selectedSessionIdRef,
+  documentRef,
   mergeProjectSnapshot,
   onError,
   setContextBudget,
@@ -75,6 +77,7 @@ export function useDesktopEventBridge({
     const eventQueue: DesktopAgentEventEnvelope[] = [];
     const refreshTimers = new Map<string, ReturnType<typeof setTimeout>>();
     let eventFrame: number | undefined;
+    const pendingEvents = createSessionEventBuffer<DesktopAgentEventEnvelope>();
 
     const scheduleRefresh = (projectId: string, sessionId: string): void => {
       const existing = refreshTimers.get(projectId);
