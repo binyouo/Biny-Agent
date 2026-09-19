@@ -42,6 +42,7 @@ import {
 } from "./vercelModelAdapter.js";
 import { createVercelTools } from "./vercelAgentTools.js";
 import { errorMessage, isRecord, providerMetadata, stringify } from "./vercelAgentUtils.js";
+import { toolCallRepair } from "./toolCallRepair.js";
 
 export interface VercelLoopState {
   context: AgentContext;
@@ -327,6 +328,8 @@ function streamModelStep(state: VercelLoopState) {
     model,
     instructions: state.context.systemPrompt,
     tools,
+    // 名字或参数不合法的工具调用先自愈再执行，避免可修复失败进入重试循环。
+    repairToolCall: toolCallRepair,
     maxRetries: state.vercelModel === undefined ? 0 : state.maxRetries ?? 0,
     // 接管 SDK 默认的 console.error，错误仍由 fullStream 进入 Biny 稳定事件链。
     onError: ({ error }) => { state.directModelError = error; },
