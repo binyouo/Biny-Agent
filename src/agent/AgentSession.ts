@@ -96,6 +96,7 @@ import {
 import { isActivityMemory } from "../activity/modelContext.js";
 import { FatigueService } from "./context/fatigue.js";
 import { runMemoryCommand } from "./context/memoryCommands.js";
+import { SessionSearchIndex } from "../session/searchIndex.js";
 import { readFileMemoryPrompt } from "./context/fileMemory.js";
 import { MemoryVectorIndex } from "./context/MemoryVectorIndex.js";
 import { HybridMemoryRetriever } from "./context/HybridMemoryRetriever.js";
@@ -322,6 +323,7 @@ const maxQueuedRunMessages = 100;
 export class AgentSession {
   private readonly contextMemory: ContextMemory;
   private readonly localMemory: LocalMemory;
+  private readonly sessionSearchIndex = new SessionSearchIndex();
   private readonly identityStorage: IdentityStorage;
   private readonly soulStorage: SoulStorage;
   private readonly emotionStorage: EmotionStorage;
@@ -951,6 +953,16 @@ export class AgentSession {
   /** 持久记忆存储句柄；读取/自动贡献开关不影响显式 /memory 管理操作。 */
   getLocalMemory(): LocalMemory {
     return this.localMemory;
+  }
+
+  /** 会话原文检索索引（派生数据，可重建）。 */
+  getSessionSearchIndex(): SessionSearchIndex {
+    return this.sessionSearchIndex;
+  }
+
+  /** 把当前会话 JSONL 的新增消息增量刷入检索索引。 */
+  async flushSessionSearchIndex(): Promise<void> {
+    await this.sessionSearchIndex.indexSessionFile(this.recorder.sessionId, this.recorder.filePath);
   }
 
   getCrystalService(): CrystalService {
@@ -2504,6 +2516,7 @@ export class AgentSession {
           assistantMessage: content,
           occurredAt: new Date()
         }).catch(() => undefined);
+        void this.flushSessionSearchIndex().catch(() => undefined);
         if (this.activePersonalization.contributeMemories) {
           const memoryRecorder = this.recorder;
           const memoryRuntime = memoryRecorder.runtimeContextSnapshot();

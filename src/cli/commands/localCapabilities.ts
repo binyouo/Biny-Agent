@@ -5,6 +5,8 @@
  * daily-notes，Todo 直接复用当前 session 的 TodoStore。
  */
 import { connectOrSpawnRuntimeHost, connectRuntimeHost, type RuntimeHostClient } from "../../runtime/RuntimeHost.js";
+import { listAllSessionFiles } from "../../session/store.js";
+import { SessionSearchIndex } from "../../session/searchIndex.js";
 import { globalConfigDir } from "../../config/paths.js";
 import { readDailyMemoryNote, readDailyMemorySection } from "../../activity/dailyNotes.js";
 import { HeartbeatFileStore } from "../../agent/context/heartbeat.js";
@@ -243,6 +245,32 @@ function requireConfirmation(yes: boolean | undefined, action: string): void {
   if (!yes) throw new Error(`${action}；请加 --yes 确认。`);
 }
 
+/**
+ * 会话原文检索：先增量索引所有会话 JSONL 的新增部分，再对派生 FTS5 索引做全文检索。
+ * 全程不经过 Runtime Host；索引是可重建派生数据，直接读全局 agent 目录。
+ */
+export async function historySearchCommand(query: string, options: LocalCapabilityOutputOptions & { limit?: number } = {}): Promise<void> {
+  const index = new SessionSearchIndex();
+  try {
+    for (const filePath of await listAllSessionFiles()) {
+      await index.indexSessionFile(sessionIdFromFile(filePath), filePath).catch(() => undefined);
+    }
+    const hits = index.search(query, { limit: options.limit ?? 8 });
+    if (options.json) {
+      printResult({ query, hits }, true, (value) => JSON.stringify(value, null, 2));
+      return;
+    }
+    if (!hits.length) {
+      console.log(`No conversation history matches: ${query}`);
+      return;
+    }
+    for (const hit of hits) {
+      const when = hit.time ?? "";
+      console.log(`[${hit.sessionId}${when ? ` · ${when}` : ""}] ${hit.role}: ${hit.excerpt}`);
+    }
+  } finally {
+    index.close();
+  }
 }
 
 function resolveDateKey(value: string): string {
