@@ -258,6 +258,7 @@ export function tuiReducer(state: TuiState, event: TuiAction): TuiState {
     case "compact.started":
     case "compact.completed":
     case "recipe.ready":
+    case "skill_extraction.updated":
       return state;
   }
 }
