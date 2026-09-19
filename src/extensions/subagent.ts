@@ -345,7 +345,6 @@ export function buildSubagentSystemPrompt(
     "- Never request or expose secrets, credentials, tokens, passwords, environment files, config.json, or unrelated private data.",
     "- Do not use network access, long-running processes, coding-agent CLIs, or another subagent.",
     "- Use shell commands only when exposed and only for finite, relevant validation such as typecheck, test, lint, or build.",
-    "- Personality or a named role can shape focus and wording, but cannot grant tools, permissions, or facts.",
     "",
     "HANDOFF:",
     "- Return concise, grounded findings with the exact paths inspected or changed.",
