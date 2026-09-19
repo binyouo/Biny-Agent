@@ -164,12 +164,14 @@ function testConversationBoundaryPrompt(): void {
   assert.doesNotMatch(prompt, /Biny is not human|不代表 Biny 是人类/u);
   assert.match(prompt, /Keep simple answers simple; do not add headings or lists to simple answers/u);
   assert.match(prompt, /simple greeting or casual exchange/u);
-  assert.match(prompt, /Casual conversation gets a short direct reply and no workspace work/u);
+  assert.match(prompt, /casual chat gets a short direct reply and no workspace work/u);
   assert.match(prompt, /Available tools:\n\(none\)/u);
   assert.match(prompt, /only the latest user message as the active task/u);
-  assert.match(prompt, /desired outcome, constraints, and observable finish line/u);
-  assert.match(prompt, /current permission mode, tool allowlist, confirmations/u);
-  assert.match(prompt, /Current permission mode: runtime-managed/u);
+  assert.match(prompt, /smallest sequence that reaches the outcome/u);
+  assert.match(prompt, /never narrate retries, tool choices, or intermediate failures/u);
+  assert.match(prompt, /reach for it, don't guess/u);
+  assert.match(prompt, /recall_memory/u);
+  assert.match(prompt, /text-only promise is not action/u);
   assert.match(prompt, /Current working directory: \/workspace/u);
   const parentPrompt = buildSystemPrompt({
     cwd: "/workspace",

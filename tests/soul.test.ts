@@ -36,8 +36,7 @@ async function main(): Promise<void> {
     });
     assert.match(prompt, /<biny_soul source="user">/u);
     assert.match(prompt, /Prefer a short concrete next step\./u);
-    assert.match(prompt, /LANGUAGE \(IMPORTANT\)/u);
-    assert.match(prompt, /The active Soul defines identity/u);
+    assert.match(prompt, /LANGUAGE RULE \(CRITICAL\)/u);
     assert.doesNotMatch(prompt, /<biny_soul source="builtin">/u);
     assert.doesNotMatch(prompt, /不代表 Biny 是人类/u);
     const telemetry = systemPromptForTelemetry(prompt);
