@@ -107,7 +107,7 @@ export async function preselectCapabilities(options: CapabilityPreselectionInput
     const mcpServers = new Set(tools.filter((tool) => tool.source === "mcp" && selectedTools.has(tool.name)).map((tool) => tool.capability).filter(Boolean));
     for (const tool of tools) if (tool.source === "mcp" && tool.capability && mcpServers.has(tool.capability)) selectedTools.add(tool.name);
     if (selectedSkills.size || (skillsMode !== "auto" && skillsMode !== "none" && skillsMode.length > 0)) {
-      for (const name of ["Skill", "read_skill_resource"]) if (tools.some((tool) => tool.name === name)) selectedTools.add(name);
+      for (const name of ["Skill", "read_skill_resource", "skill_lookup"]) if (tools.some((tool) => tool.name === name)) selectedTools.add(name);
     }
     // 输出归档是所有工具共用的运行时协议，不能因筛选而让模型无法取回被截断的结果。
     if (selectedTools.size && tools.some((tool) => tool.name === "read_tool_result")) selectedTools.add("read_tool_result");
