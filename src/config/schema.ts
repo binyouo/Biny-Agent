@@ -93,6 +93,8 @@ export type SkillExtractionConfig = z.infer<typeof skillExtractionSchema>;
 export const chatParamsSchema = z.object({
   /** 实验开关：覆盖协议自动选择，让 Read/Edit 使用行哈希。 */
   hashlineEdit: z.boolean().optional(),
+  /** Prompt 缓存标记：按协议给 system 和请求尾部打断言点以命中服务商缓存；严格网关不认时可关闭。 */
+  cacheMarkers: z.boolean().default(true),
   /** 采样温度 0–2；越低越确定，越高越发散。 */
   temperature: z.number().min(0).max(2).optional(),
   /** 单次回复的最大输出 token 数。 */
@@ -103,6 +105,7 @@ export const chatParamsSchema = z.object({
   defaultSkillSelection: capabilityDefaultSelectionSchema.default("auto"),
   skillExtraction: skillExtractionSchema
 }).default({
+  cacheMarkers: true,
   temperature: undefined,
   maxOutputTokens: undefined,
   defaultToolSelection: "auto",
@@ -248,9 +251,9 @@ export const modelProfileSchema = z.object({
 
 const thinkingSchema = z.object({
   enabled: z.boolean().default(true),
-  effort: reasoningEffortSchema.default("high")
-}).default({ enabled: true, effort: "high" });
-
+  // 默认 medium：high 档思考链明显更长，日常对话收益有限；模型不支持 medium 时会投影到最近档位。
+  effort: reasoningEffortSchema.default("medium")
+}).default({ enabled: true, effort: "medium" });
 
 export const providerEmbeddingModelSchema = z.object({
   id: z.string().trim().min(1).max(256),
@@ -876,7 +879,7 @@ export const defaultConfig: AgentConfig = {
     nucleus: { count: 8, turns: 5, spread: 2 },
     dormantDays: 14
   },
-  chat: { temperature: undefined, maxOutputTokens: undefined, defaultToolSelection: "auto", defaultSkillSelection: "auto", skillExtraction: { enabled: true, minToolCalls: 5 } },
+  chat: { cacheMarkers: true, temperature: undefined, maxOutputTokens: undefined, defaultToolSelection: "auto", defaultSkillSelection: "auto", skillExtraction: { enabled: true, minToolCalls: 5 } },
   checkpoints: { enabled: true },
   sandbox: { mode: "off", allowNetwork: true },
   hooks: { beforeTool: [], afterTool: [] },
