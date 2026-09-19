@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { expandSkillCommand, loadSkills } from "../src/extensions/skills.js";
+import { createSkillTool, loadSkills } from "../src/extensions/skills.js";
 import { resolveSkillActivation, setSkillActivation } from "../src/extensions/skillActivation.js";
 import { createSkillRef } from "../src/extensions/skillRef.js";
 
@@ -51,8 +51,8 @@ async function main(): Promise<void> {
     assert.equal(builtins.skills.filter((skill) => skill.scope === "builtin").every((skill) => skill.source === "builtin"), true);
     const report = builtins.skills.find((skill) => skill.name === "daily-report")!;
     assert.equal(report.scope, "builtin");
-    const reportCommand = await expandSkillCommand(builtins, "/skill:daily-report");
-    assert.ok(reportCommand, "日报技能必须能经运行时加载，不只是源码目录里存在");
+    const reportExecution = createSkillTool(builtins).resolveExecution({ skill: "daily-report" });
+    assert.ok(!("isError" in reportExecution), "日报技能必须能经运行时 Skill 工具加载，不只是源码目录里存在");
     for (const skill of builtins.skills.filter((candidate) => candidate.scope === "builtin")) {
       const document = await readFile(skill.filePath, "utf8");
       assert.match(document, new RegExp(`name:\\s*${skill.name}\\b`));
@@ -68,7 +68,11 @@ async function main(): Promise<void> {
     const projectOverride = overridden.skills.find((skill) => skill.name === "memory-management");
     assert.equal(projectOverride?.scope, "project");
     assert.equal(projectOverride?.source, "biny");
-    assert.match(await expandSkillCommand(overridden, "/skill:memory-management"), /Project instructions/);
+    const overrideExecution = createSkillTool(overridden).resolveExecution({ skill: "memory-management" });
+    assert.ok(!("isError" in overrideExecution));
+    if (!("isError" in overrideExecution)) {
+      assert.match(await overrideExecution.execute({ toolCallId: "override" }) as string, /Project instructions/);
+    }
 
     const disabledOverride = await loadSkills({
       workspaceRoot,

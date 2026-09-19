@@ -589,40 +589,9 @@ export class BinyTui {
     void appendInputHistory(this.workspaceRoot, prompt)
       .catch((error) => this.notify(`写入输入历史失败：${describeError(error)}`));
 
-    if (value.startsWith("/skill:") && runtime) {
-      try {
-        // 与 Pi 一致：补全只显示元数据，按 Enter 后才读取并注入 Skill 正文。
-        const expandedPrompt = commands
-          ? await commands.expandSkillCommand(value)
-          : await requireRemoteRuntime(runtime).expandSkillCommand(value, sessionId);
-        const input = withAttachmentReferences(expandedPrompt, attachments);
-        await this.ensureSessionWriteAccess(sessionId);
-        if (runtimeIsBusy(runtime instanceof RuntimeHostClient ? runtime.getSnapshot(sessionId) : runtime.getSnapshot())) {
-          if (runtime instanceof RuntimeHostClient) {
-            const queued = await runtime.queueRunMessageForSession(sessionId, input, "queue", attachments);
-            if (!queued.accepted) throw new Error(queued.reason);
-          } else await runtime.enqueue(input, attachments);
-          this.notify("Skill 消息已加入待发送队列，将在当前任务结束后继续处理。");
-          return;
-        }
-        await (runtime instanceof RuntimeHostClient
-          ? runtime.submitPromptForSession(sessionId, input, attachments)
-          : runtime.submitPrompt(input, attachments)).completion;
-      } catch (error) {
-        if (isSessionWriterConflictError(error)) {
-          await this.showSessionWriterConflict(error.sessionId, error.ownerSurface);
-          return;
-        }
-        this.setPendingAttachments([...attachments, ...this.pendingAttachments]);
-        this.setEditorText(prompt);
-        this.dispatch({ type: "error.message", message: describeError(error) });
-      } finally {
-        await this.refreshContextUsage();
-      }
-      return;
-    }
-
-    if (value.startsWith("/")) {
+    // /skill:name、/skills:name 是技能调用而非 slash 命令，保留原文走普通提交；
+    // 正文由模型按 <available_skills> 指引调用 Skill 工具按需加载（渐进式披露）。
+    if (value.startsWith("/") && !isSkillInvocationText(value)) {
       // slash 命令不消费附件；保留它们给用户执行命令后继续编辑并发送。
       this.setPendingAttachments(attachments);
       try {
@@ -728,7 +697,6 @@ export class BinyTui {
 
   private async steerCurrentInput(): Promise<void> {
     const runtime = this.runtime;
-    const commands = this.commands;
     if (!runtime) return;
     const sessionId = runtime.getSnapshot().info.sessionId;
     const value = this.editor.getText().trim();
@@ -736,16 +704,11 @@ export class BinyTui {
     const prompt = value || "请分析这个附件。";
     const attachments = this.pendingAttachments;
     try {
-      const expandedPrompt = value.startsWith("/skill:")
-        ? commands
-          ? await commands.expandSkillCommand(value)
-          : await requireRemoteRuntime(runtime).expandSkillCommand(value, sessionId)
-        : prompt;
       await this.ensureSessionWriteAccess(sessionId);
       if (runtime instanceof RuntimeHostClient) {
-        const queued = await runtime.queueRunMessageForSession(sessionId, withAttachmentReferences(expandedPrompt, attachments), "steer", attachments);
+        const queued = await runtime.queueRunMessageForSession(sessionId, withAttachmentReferences(prompt, attachments), "steer", attachments);
         if (!queued.accepted) throw new Error(queued.reason);
-      } else await runtime.steer(withAttachmentReferences(expandedPrompt, attachments), attachments);
+      } else await runtime.steer(withAttachmentReferences(prompt, attachments), attachments);
       this.setPendingAttachments([]);
       this.setEditorText("");
       this.editor.addToHistory(prompt);
@@ -1794,6 +1757,11 @@ function describeError(error: unknown): string {
 function requireRemoteRuntime(runtime: InteractiveRuntimeHandle): RuntimeHostClient {
   if (!(runtime instanceof RuntimeHostClient)) throw new Error("Remote runtime client is unavailable.");
   return runtime;
+}
+
+/** /skill:name、/skills:name 是技能调用而非 slash 命令，按普通输入原文提交。 */
+function isSkillInvocationText(value: string): boolean {
+  return /^\/skills?:[^\s]+/u.test(value.trim().replace(/\u00a0/g, " "));
 }
 
 export function memoryPolicyOptionForOverride(

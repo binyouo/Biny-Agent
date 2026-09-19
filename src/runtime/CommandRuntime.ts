@@ -22,7 +22,7 @@ import type { ActivitySettings } from "../activity/settings.js";
 import { TodoStore } from "../session/todoStore.js";
 import { CheckpointStore } from "../session/checkpointStore.js";
 import { PermissionManager } from "../permission/PermissionManager.js";
-import { createSkillResourceTool, createSkillTool, expandSkillCommand as expandSkillCommandText, type SkillBundle, type SkillDefinition } from "../extensions/skills.js";
+import { createSkillLookupTool, createSkillResourceTool, createSkillTool, type SkillBundle, type SkillDefinition } from "../extensions/skills.js";
 import { createSkillInstallTool, createSkillSearchTool } from "../tools/skillDiscovery.js";
 import { skillPathsForSelection, skillPromptForSelection } from "../extensions/skills.js";
 import type { ToolRisk, ToolSource } from "../tools/types.js";
@@ -99,8 +99,6 @@ export interface CommandRuntime {
   listSkills(): SkillDefinition[];
   /** 当前注册表的脱敏工具目录，供 Desktop 的单回合能力选择器使用。 */
   listTools(): RuntimeToolCatalogEntry[];
-  /** 用户提交 `/skill:name` 后才读取并展开 Skill 正文。 */
-  expandSkillCommand(input: string): Promise<string>;
   /** 每个新根回合前重新扫描 Skill，使新增和元数据修改无需重启即可生效。 */
   refreshSkills(): Promise<void>;
   /** 刷新共享 MCP/Skill 代理；回合开始前调用，避免活动回合看到半套工具。 */
@@ -320,6 +318,7 @@ export async function createCommandRuntime(workspaceRoot: string, options: Comma
     skills = resourceScope.skills;
     toolRegistry.registerUserTool(createSkillTool(() => requireSkillBundle(skills)));
     toolRegistry.registerUserTool(createSkillResourceTool(() => requireSkillBundle(skills)));
+    toolRegistry.registerUserTool(createSkillLookupTool(() => requireSkillBundle(skills)));
     toolRegistry.registerBuiltinTool(createSkillSearchTool({
       getInstalledNames: () => {
         const installed = new Set<string>();
@@ -820,7 +819,6 @@ export async function createCommandRuntime(workspaceRoot: string, options: Comma
         ...extensionTools
       ];
     },
-    expandSkillCommand: async (input: string): Promise<string> => await expandSkillCommandText(requireSkillBundle(skills), input),
     refreshSkills,
     refreshExtensionTools,
     resourceSnapshot: (): RuntimeResourceReadiness => resourceScope.readiness(),

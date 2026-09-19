@@ -335,7 +335,7 @@ const SkillCatalogContent = memo(function SkillCatalogContent({
         <span className="biny-extension-count">本地技能 {skills.length}</span>
       </div>
       {managedSources.length ? <ManagedSkillSources sources={managedSources} onInstall={onInstallSource} /> : null}
-      {loading && !skills.length ? <ExtensionLoading /> : !skills.length ? <ExtensionEmpty icon="wand" title="还没有找到 Skill" detail="将 Skill 放入全局 Agent Skill 目录或项目的 .agents/skills；已有外部 Skill 可通过“导入已有”复制到 Biny。" /> : (
+      {loading && !skills.length ? <ExtensionLoading /> : !skills.length ? <ExtensionEmpty icon="wand" title="还没有找到技能" detail="将技能放入全局技能目录或项目的 .agents/skills；已有外部技能可通过“导入已有”复制到 Biny。" /> : (
         <div className={selectedSkill ? "biny-skill-layout has-detail" : "biny-skill-layout"}>
           <div className="biny-skill-card-grid">
             {skills.map((skill) => <SkillCard key={skill.id} skill={skill} selected={skill.id === selectedSkill?.id} onSelect={onSelect} />)}
@@ -387,7 +387,7 @@ const ManagedSkillSources = memo(function ManagedSkillSources({
   onInstall(sourceId: string): void;
 }): React.JSX.Element {
   return (
-    <section className="biny-skill-sources" aria-label="受管 Skill 来源">
+    <section className="biny-skill-sources" aria-label="受管技能来源">
       <div className="biny-skill-sources-heading"><h2>本地来源</h2><span>导入不会自动启用</span></div>
       <div className="biny-skill-source-grid">
         {sources.map((source) => <article className="biny-skill-source-card" key={source.id}>

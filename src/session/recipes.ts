@@ -194,7 +194,7 @@ function recipeDefinitions(facts: RecipeFacts): Array<{ id: RecipeId; title: str
     {
       id: "thread-to-workflow",
       title: "把这次对话提炼成工作流",
-      description: "这条线程已经跑通了一件多步骤的事 —— 可以提炼成 Skill/工作流，下次一句话复用。",
+      description: "这条线程已经跑通了一件多步骤的事 —— 可以提炼成技能或工作流，下次一句话复用。",
       slots: [
         { key: "depth", label: "足够的来回打磨（≥5 个用户回合）", filled: facts.userTurns >= 5 },
         { key: "work", label: "实际产出（文件或多种工具）", filled: facts.filesWritten.length > 0 || facts.toolNames.size + facts.mcpToolNames.size >= 3 },

@@ -17,7 +17,7 @@ const model: AgentModel = {
     })();
   }
 };
-const tools = ["ToolSearch", "Read", "Write", "WebSearch", "WebFetch", "Task", "Skill", "read_skill_resource"].map((name) => ({ name, description: name, source: "builtin" as const }));
+const tools = ["ToolSearch", "Read", "Write", "WebSearch", "WebFetch", "Task", "Skill", "read_skill_resource", "skill_lookup"].map((name) => ({ name, description: name, source: "builtin" as const }));
 const options = {
   input: "查看文档并评审", config: defaultConfig, history: [], previousTools: ["Read", "removed"], model,
   tools: [...tools, { name: "mcp_docs_read", description: "Read docs", source: "mcp" as const, capability: "mcp:docs" },
@@ -27,7 +27,7 @@ const options = {
 };
 const result = await preselectCapabilities(options);
 assert.equal(calls, 2, "工具与技能分别调用同一辅助模型");
-assert.deepEqual(new Set(result.tools), new Set(["ToolSearch", "Read", "Write", "WebSearch", "WebFetch", "Task", "mcp_docs_read", "mcp_docs_search", "Skill", "read_skill_resource"]));
+assert.deepEqual(new Set(result.tools), new Set(["ToolSearch", "Read", "Write", "WebSearch", "WebFetch", "Task", "mcp_docs_read", "mcp_docs_search", "Skill", "read_skill_resource", "skill_lookup"]));
 assert.deepEqual(result.skills, ["review-id"]);
 const before = calls;
 assert.deepEqual(await preselectCapabilities({ ...options, selection: { tools: ["Write"], skills: "none" } }), { tools: ["Write"], skills: "none" });
@@ -37,7 +37,7 @@ answer = JSON.stringify({ tools: [], skillIds: [] });
 assert.deepEqual(await preselectCapabilities({ ...options, input: "你好", previousTools: [] }), { tools: ["Read", "Write", "ToolSearch"], skills: [] });
 answer = "invalid JSON";
 assert.deepEqual(await preselectCapabilities(options), { tools: ["Read", "Write", "ToolSearch"], skills: [] });
-assert.deepEqual(await preselectCapabilities({ ...options, model: undefined, input: "/skill:review" }), { tools: ["Read", "Write", "ToolSearch", "Skill", "read_skill_resource"], skills: ["review-id"] });
+assert.deepEqual(await preselectCapabilities({ ...options, model: undefined, input: "/skill:review" }), { tools: ["Read", "Write", "ToolSearch", "Skill", "read_skill_resource", "skill_lookup"], skills: ["review-id"] });
 assert.deepEqual(await preselectCapabilities({ ...options, model: undefined, input: "$review", previousTools: [], selection: { tools: "auto", skills: "none" } }), { tools: ["Read", "Write", "ToolSearch"], skills: "none" }, "显式关闭技能不能被点名检测重新启用");
 const controller = new AbortController();
 controller.abort();
@@ -66,7 +66,7 @@ const parallelModel: AgentModel = {
   }
 };
 assert.deepEqual(await preselectCapabilities({ ...options, model: parallelModel, signal: AbortSignal.timeout(1_000) }), {
-  tools: ["Read", "Write", "ToolSearch", "Skill", "read_skill_resource"], skills: ["review-id"]
+  tools: ["Read", "Write", "ToolSearch", "Skill", "read_skill_resource", "skill_lookup"], skills: ["review-id"]
 }, "工具解析失败不影响并发成功的技能选择");
 let isolatedCalls = 0;
 const isolatedModel: AgentModel = { ...parallelModel, stream: async () => {

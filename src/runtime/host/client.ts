@@ -883,10 +883,6 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
     return await this.request("tools.list", { sessionId: this.focusedSessionId });
   }
 
-  async expandSkillCommand(input: string, sessionId = this.focusedSessionId): Promise<string> {
-    return await this.request<string>("skills.expand", { input, sessionId });
-  }
-
   async mcpStatus(): Promise<Awaited<ReturnType<CommandRuntime["mcp"]["listServers"]>>> {
     return await this.request("mcp.status", { sessionId: this.focusedSessionId });
   }

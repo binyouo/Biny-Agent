@@ -1202,8 +1202,6 @@ export class RuntimeHostServer {
         return commands.listSkills();
       case "tools.list":
         return commands.listTools();
-      case "skills.expand":
-        return await commands.expandSkillCommand(requiredString(payload.input, "input"));
       case "mcp.status":
         return commands.mcp.listServers();
       case "mcp.details":

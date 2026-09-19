@@ -24,6 +24,9 @@ const bundle = buildPromptBundle({
 });
 
 assert.match(bundle.systemPrompt, /Available Skill metadata/u);
+// 技能优先级链与自进化是无条件常驻指引，不依赖本回合工具筛选。
+assert.match(bundle.systemPrompt, /look for a skill: check <available_skills> first, then skill_lookup/u);
+assert.match(bundle.systemPrompt, /save it as a reusable Skill/u);
 assert.doesNotMatch(bundle.systemPrompt, /private daily note|private activity|private crystal|Current emotion/u);
 assert.ok(bundle.turnContext.indexOf("<local_time") < bundle.turnContext.indexOf("<!-- biny-emotion:start -->"));
 assert.ok(bundle.turnContext.indexOf("<local_time") < bundle.turnContext.indexOf("private daily note"));
