@@ -1,9 +1,10 @@
 /**
- * Agent Skills 扩展模块（渐进式披露）。
+ * Agent Skills 扩展模块（渐进式披露，对齐 Agent Skills 范式）。
  *
- * 新根回合开始前只扫描 YAML frontmatter 的 name/description 并按总预算拼进 system prompt；
- * 完整指令由显式 `/skill:name` 提交或 Skill 按需读取，references/scripts/assets
- * 仍由 read_skill_resource 按需读取。
+ * 每个根回合开始前只把 YAML frontmatter 的 name/description 拼成 <available_skills>
+ * 清单进入 system prompt；SKILL.md 正文唯一加载路径是模型调用 Skill 工具，
+ * references/scripts/assets 仍由 read_skill_resource 按需读取。用户提交的
+ * /skill:name 保留原文，由模型按清单指引调用 Skill 工具加载。
  * 默认发现 Biny 受管目录和各 Agent 的标准全局 Skill 根；全局入口中的已有软链会被保留，
  * 项目 Skill 根仍禁止越界软链，避免工作区配置意外扩大运行时读取范围。
  */
@@ -275,16 +276,19 @@ function selectSkillCandidates(
 
 function buildSkillPrompt(skills: SkillDefinition[]): string {
   if (!skills.length) return "";
-  const header = "Available Skills (metadata only; load the matching Skill when you need its full instructions):";
-  const footer = "When a task matches a Skill, load it before improvising. A $skill-name mention is explicit and must be honored. If the user submits /skill:name, the full instructions are already in that message; follow them without loading the same Skill again.";
+  const guidance = [
+    "Skills use progressive disclosure: the list above holds metadata only, and the Skill tool loads a skill's full instructions on demand.",
+    "When a task matches a listed skill, invoke the Skill tool as your first action instead of improvising a separate workflow.",
+    "A /skill:name or $skill-name mention in the user's message is an explicit request: load that skill before replying about the task."
+  ].join(" ");
   const render = (descriptionLimit: number, limit = skills.length): string => {
     const lines = skills.slice(0, limit).map((skill) => {
       const description = truncateChars(skill.description, descriptionLimit);
-      return `- ${skill.name} (${skill.scope}) [${skill.path}]: ${description}`;
+      return `- "${skill.name}": ${description}`;
     });
     const omitted = skills.length - limit;
-    if (omitted > 0) lines.push(`Warning: ${String(omitted)} additional skills were omitted from the initial list. Use /skills to inspect all skills.`);
-    return [header, ...lines, footer].join("\n");
+    if (omitted > 0) lines.push(`(${String(omitted)} additional skills were omitted from this list. Use /skills to inspect all skills.)`);
+    return ["<available_skills>", ...lines, "</available_skills>", guidance].join("\n");
   };
   for (const descriptionLimit of [maxSkillDescriptionChars, 300, 160, 80]) {
     const prompt = render(descriptionLimit);
@@ -296,41 +300,15 @@ function buildSkillPrompt(skills: SkillDefinition[]): string {
 }
 
 /**
- * 按当前回合的 Skill 选择组装首轮提示词。
+ * 按当前回合的 Skill 选择组装 system prompt 中的 <available_skills> 清单。
  *
- * 目录分析阶段只读取元数据；选择完成后才读取命中的正文和声明信息，避免把整个
- * Skill 目录误当成「已使用」能力，也让首轮模型请求拿到与选择结果一致的上下文。
+ * 渐进式披露：无论选择方式（auto 预选、手动勾选还是 /skill:name 点名），这里都只输出
+ * 元数据清单；正文一律由模型调用 Skill 工具按需加载，避免把整个 SKILL.md 目录
+ * 预注入上下文。
  */
-export async function skillPromptForSelection(bundle: SkillBundle, selection?: CapabilitySelectionValue): Promise<string> {
+export function skillPromptForSelection(bundle: SkillBundle, selection?: CapabilitySelectionValue): string {
   const selected = selectSkills(bundle, selection);
-  if (!selected.length) return "";
-  const metadata = buildSkillPrompt(selected);
-  const loaded = await Promise.all(selected.map(async (skill) => await readSkillPrompt(skill)));
-  return [metadata, "Selected Skill instructions (already loaded for this turn):", ...loaded].filter(Boolean).join("\n\n");
-}
-
-async function readSkillPrompt(skill: SkillDefinition): Promise<string> {
-  const content = await readSkillFileFresh(skill.rootPath, skill.filePath, maxSkillInstructionBytes);
-  let body = content;
-  let metadata: SkillMetadata | undefined;
-  try {
-    const parsed = splitFrontmatter(content);
-    metadata = parsed.frontmatter;
-    if (path.basename(skill.filePath) === "SKILL.md" || parsed.frontmatter.name || parsed.frontmatter.description) {
-      body = parsed.body;
-    }
-  } catch (error) {
-    if (path.basename(skill.filePath) === "SKILL.md") throw error;
-  }
-  return [
-    `<skill name="${skill.name}" location="${skill.filePath}">`,
-    `References are relative to ${path.dirname(skill.filePath)}.`,
-    metadata?.compatibility ? `Compatibility notes (not automatically verified): ${metadata.compatibility}` : undefined,
-    metadata?.allowedTools?.length ? `Declared tools (normal permissions still apply): ${metadata.allowedTools.join(" ")}` : undefined,
-    "",
-    body.trim(),
-    "</skill>"
-  ].filter((line): line is string => line !== undefined).join("\n");
+  return selected.length ? buildSkillPrompt(selected) : "";
 }
 
 export function skillPathsForSelection(bundle: SkillBundle, selection?: CapabilitySelectionValue): string[] {
@@ -345,66 +323,20 @@ function selectSkills(bundle: SkillBundle, selection?: CapabilitySelectionValue)
 }
 
 const invokeSkillArgsSchema = z.object({
-  skill: z.string().trim().min(1),
-  path: z.string().trim().min(1).optional()
+  skill: z.string().trim().min(1)
 });
 
 type SkillBundleSource = SkillBundle | (() => SkillBundle);
 
-/**
- * 按 Pi 的交互约定展开 `/skill:name args`。
- *
- * 补全阶段只需要元数据；用户提交后才在这里重新读取正文，避免把所有
- * Skill 指令提前塞进上下文。未知 Skill 保留原输入，让模型自行处理。
- */
-export async function expandSkillCommand(bundle: SkillBundle, input: string): Promise<string> {
-  const normalized = input.trim().replace(/\u00a0/g, " ");
-  const prefix = normalized.startsWith("/skills:")
-    ? "/skills:"
-    : normalized.startsWith("/skill:")
-      ? "/skill:"
-      : undefined;
-  if (!prefix) return input;
-  const spaceIndex = normalized.indexOf(" ");
-  const skillName = spaceIndex === -1 ? normalized.slice(prefix.length) : normalized.slice(prefix.length, spaceIndex);
-  const args = spaceIndex === -1 ? "" : normalized.slice(spaceIndex + 1).trim();
-  const skill = bundle.skills.find((candidate) => candidate.name === skillName);
-  if (!skill) return input;
-
-  const content = await readSkillFileFresh(skill.rootPath, skill.filePath, maxSkillInstructionBytes);
-  let body = content;
-  let metadata: SkillMetadata | undefined;
-  try {
-    const parsed = splitFrontmatter(content);
-    metadata = parsed.frontmatter;
-    if (path.basename(skill.filePath) === "SKILL.md" || parsed.frontmatter.name || parsed.frontmatter.description) {
-      body = parsed.body;
-    }
-  } catch (error) {
-    if (path.basename(skill.filePath) === "SKILL.md") throw error;
-  }
-  const skillBlock = [
-    `<skill name="${skill.name}" location="${skill.filePath}">`,
-    `References are relative to ${path.dirname(skill.filePath)}.`,
-    metadata?.compatibility ? `Compatibility notes (not automatically verified): ${metadata.compatibility}` : undefined,
-    metadata?.allowedTools?.length ? `Declared tools (normal permissions still apply): ${metadata.allowedTools.join(" ")}` : undefined,
-    "",
-    body.trim(),
-    "</skill>"
-  ].filter((line) => line !== undefined).join("\n");
-  return args ? `${skillBlock}\n\n${args}` : skillBlock;
-}
-
 export function createSkillTool(source: SkillBundleSource): Tool {
   return {
     name: "Skill",
-    description: "Load the full instructions of an available skill by name. Call this before performing a task that a listed skill covers, then follow the returned instructions.",
+    description: "Load the full instructions of an available skill by name (progressive disclosure). The <available_skills> list in the system prompt contains only skill names and brief descriptions; full content loads on demand solely through this tool. When a task matches an available skill, invoke this tool immediately as your first action; never just mention a skill in your response without loading it. Only use skills listed in <available_skills>.",
     promptSnippet: "Load the full instructions for an available skill",
     parameters: {
       type: "object",
       properties: {
-        skill: { type: "string", description: "Skill name exactly as listed in the available skills." },
-        path: { type: "string", description: "Optional listed path for selecting an exact active skill." }
+        skill: { type: "string", description: "Skill name exactly as listed in <available_skills>." }
       },
       required: ["skill"],
       additionalProperties: false
@@ -420,7 +352,7 @@ export function createSkillTool(source: SkillBundleSource): Tool {
       }
       const requested = parsed.data.skill;
       const bundle = currentBundle(source);
-      const resolved = resolveSkill(bundle, requested, parsed.data.path);
+      const resolved = resolveSkill(bundle, requested);
       if (typeof resolved === "string") {
         const message = resolved;
         return { isError: true as const, result: message, errorMessage: message };
@@ -428,7 +360,7 @@ export function createSkillTool(source: SkillBundleSource): Tool {
       const definition = resolved;
       return {
         accesses: ToolAccesses.readFile(definition.filePath),
-        display: { kind: "generic" as const, summary: `Skill ${definition.name}`, detail: { path: definition.path } },
+        display: { kind: "generic" as const, summary: `Skill ${definition.name}`, detail: truncateChars(definition.description, 200) },
         description: `Load skill instructions from ${definition.path}`,
         approvalRule: `Skill:${definition.name}`,
         async execute(): Promise<unknown> {
@@ -445,29 +377,54 @@ export function createSkillTool(source: SkillBundleSource): Tool {
             if (path.basename(definition.filePath) === "SKILL.md") throw error;
           }
           const resources = await listSkillResources(definition.filePath);
-          const result: Record<string, unknown> = {
-            skill: definition.name,
-            scope: definition.scope,
-            path: definition.path,
-            instructions: body.trim() || content.trim(),
-            license: metadata?.license,
-            compatibility: metadata?.compatibility,
-            allowedTools: metadata?.allowedTools,
-            metadata: metadata?.metadata,
-            resourceRoot: path.dirname(definition.filePath),
-            resources
-          };
-          return result;
+          return renderSkillInstructions(definition, body.trim() || content.trim(), metadata, resources);
         }
       };
     }
   };
 }
 
+/** Skill 工具结果模板：技能目录绝对路径是第三层资源（read_skill_resource/Read）的定位基准。 */
+function renderSkillInstructions(
+  skill: SkillDefinition,
+  body: string,
+  metadata: SkillMetadata | undefined,
+  resources: SkillResourceEntry[]
+): string {
+  const directory = path.dirname(skill.filePath);
+  const declarations = [
+    metadata?.compatibility ? `Compatibility notes (not automatically verified): ${metadata.compatibility}` : undefined,
+    metadata?.allowedTools?.length ? `Declared tools (normal permissions still apply): ${metadata.allowedTools.join(" ")}` : undefined
+  ].filter((line): line is string => line !== undefined);
+  const resourceLines = resources.length
+    ? [
+        "Resources in this skill directory (resolve them to absolute paths under the directory above):",
+        ...resources.map((resource) => `- ${resource.path} (${resource.kind})`)
+      ]
+    : [];
+  return [
+    `# Skill: ${skill.name}`,
+    "",
+    `**Skill Directory:** \`${directory}\``,
+    "",
+    `> **IMPORTANT:** When this skill references any files (templates, scripts, references, assets), you MUST read them using absolute paths based on the skill directory above. For example, "references/guide.md" means \`${path.join(directory, "references", "guide.md")}\`.`,
+    "",
+    "---",
+    "",
+    ...declarations,
+    ...(declarations.length ? [""] : []),
+    body,
+    "",
+    "---",
+    ...resourceLines,
+    ...(resourceLines.length ? [""] : []),
+    "Follow the instructions above for your response. Remember to use absolute paths when accessing files in the skill directory."
+  ].join("\n");
+}
+
 const readSkillResourceArgsSchema = z.object({
   skill: z.string().trim().min(1),
-  path: z.string().trim().min(1),
-  skillPath: z.string().trim().min(1).optional()
+  path: z.string().trim().min(1)
 });
 
 /** 第三级渐进式披露：只在 SKILL.md 明确需要时读取 references/scripts/assets。 */
@@ -480,8 +437,7 @@ export function createSkillResourceTool(source: SkillBundleSource): Tool {
       type: "object",
       properties: {
         skill: { type: "string", description: "Activated skill name." },
-        path: { type: "string", description: "Resource path relative to the skill directory." },
-        skillPath: { type: "string", description: "Optional listed path for selecting an exact active skill." }
+        path: { type: "string", description: "Resource path relative to the skill directory." }
       },
       required: ["skill", "path"],
       additionalProperties: false
@@ -496,7 +452,7 @@ export function createSkillResourceTool(source: SkillBundleSource): Tool {
         const message = "read_skill_resource requires a skill name and relative resource path.";
         return { isError: true as const, result: message, errorMessage: message };
       }
-      const resolved = resolveSkill(currentBundle(source), parsed.data.skill, parsed.data.skillPath);
+      const resolved = resolveSkill(currentBundle(source), parsed.data.skill);
       if (typeof resolved === "string") return { isError: true as const, result: resolved, errorMessage: resolved };
       let resourcePath: string;
       try {
@@ -528,12 +484,98 @@ function currentBundle(source: SkillBundleSource): SkillBundle {
   return typeof source === "function" ? source() : source;
 }
 
-function resolveSkill(bundle: SkillBundle, requested: string, requestedPath?: string): SkillDefinition | string {
-  const matches = bundle.skills.filter((skill) => skill.name.toLowerCase() === requested.toLowerCase());
-  const selected = requestedPath ? matches.find((skill) => skill.path === requestedPath) : matches[0];
-  if (!matches.length || !selected) {
+const skillLookupArgsSchema = z.object({
+  query: z.string().trim().min(1).max(200),
+  limit: z.number().int().min(1).max(20).optional()
+});
+
+/**
+ * 本地技能搜索（介于元数据清单与 Skill 工具之间的发现层）。
+ *
+ * 清单只含本回合激活的技能；模型怀疑还有其他已装技能时用关键词在这里检索，
+ * 纯本地打分、不联网也不调辅助模型，命中后仍经 Skill 工具加载全文。
+ */
+export function createSkillLookupTool(source: SkillBundleSource): Tool {
+  return {
+    name: "skill_lookup",
+    description: "Search installed skills by name or description, including skills beyond the current <available_skills> list. Pure local keyword scoring; invoke the Skill tool with a returned name to load its full instructions.",
+    promptSnippet: "Search installed skills beyond the active list",
+    parameters: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "Capability or task keywords to match against skill names and descriptions." },
+        limit: { type: "integer", minimum: 1, maximum: 20, description: "Maximum matches to return. Defaults to 8." }
+      },
+      required: ["query"],
+      additionalProperties: false
+    },
+    schema: skillLookupArgsSchema,
+    source: "skill",
+    capability: "skills",
+    risk: "read",
+    resolveExecution(args: unknown) {
+      const parsed = skillLookupArgsSchema.safeParse(args);
+      if (!parsed.success) {
+        const message = "skill_lookup requires a query.";
+        return { isError: true as const, result: message, errorMessage: message };
+      }
+      const matches = rankSkillsByQuery(currentBundle(source).skills, parsed.data.query, parsed.data.limit ?? 8);
+      return {
+        accesses: ToolAccesses.none(),
+        display: { kind: "generic" as const, summary: "Search installed skills", detail: parsed.data.query },
+        description: `Search installed skills for ${parsed.data.query}`,
+        approvalRule: `skill_lookup(${parsed.data.query})`,
+        async execute(): Promise<unknown> {
+          return {
+            query: parsed.data.query,
+            found: matches.length,
+            skills: matches,
+            hint: matches.length
+              ? "Invoke the Skill tool with a returned name to load its full instructions."
+              : "No installed skill matched. Use skill_search to look for an installable one."
+          };
+        }
+      };
+    }
+  };
+}
+
+/** token 覆盖数优先、命中权重次之（name 权重高于 description），同分按名字稳定排序。 */
+function rankSkillsByQuery(
+  skills: SkillDefinition[],
+  query: string,
+  limit: number
+): Array<{ name: string; description: string; scope: SkillScope; path: string }> {
+  const tokens = [...new Set(query.normalize("NFKC").toLowerCase().split(/\s+/u).filter((token) => token.length > 0))];
+  if (!tokens.length) return [];
+  const ranked = skills
+    .map((skill) => {
+      const name = skill.name.normalize("NFKC").toLowerCase();
+      const description = skill.description.normalize("NFKC").toLowerCase();
+      let covered = 0;
+      let score = 0;
+      for (const token of tokens) {
+        if (name.includes(token)) {
+          covered += 1;
+          score += 10;
+        } else if (description.includes(token)) {
+          covered += 1;
+          score += 2;
+        }
+      }
+      return { skill, covered, score };
+    })
+    .filter((entry) => entry.covered > 0);
+  ranked.sort((left, right) => right.covered - left.covered || right.score - left.score || left.skill.name.localeCompare(right.skill.name));
+  return ranked.slice(0, limit).map(({ skill }) => ({ name: skill.name, description: skill.description, scope: skill.scope, path: skill.path }));
+}
+
+/** 同名冲突已在加载时按优先级去重，技能名全局唯一，按名解析即可。 */
+function resolveSkill(bundle: SkillBundle, requested: string): SkillDefinition | string {
+  const selected = bundle.skills.find((skill) => skill.name.toLowerCase() === requested.toLowerCase());
+  if (!selected) {
     const known = bundle.skills.map((skill) => `${skill.name} [${skill.path}]`).join(", ") || "none";
-    return `Unknown skill: ${requested}${requestedPath ? ` at ${requestedPath}` : ""}. Available skills: ${known}.`;
+    return `Unknown skill: ${requested}. Available skills: ${known}.`;
   }
   return selected;
 }

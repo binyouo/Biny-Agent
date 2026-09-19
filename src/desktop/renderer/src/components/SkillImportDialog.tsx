@@ -11,7 +11,7 @@ const skillEngineLabels: Record<DesktopSkillEngine, string> = {
 };
 
 function formatSkillImportSources(foundIn: DesktopSkillEngine[]): string {
-  return foundIn.length ? foundIn.map((engine) => skillEngineLabels[engine]).join("、") : "本地 Skill 目录";
+  return foundIn.length ? foundIn.map((engine) => skillEngineLabels[engine]).join("、") : "本地技能目录";
 }
 
 export const SkillImportDialog = memo(function SkillImportDialog({ candidates, importing, onClose, onImport }: {
@@ -35,7 +35,7 @@ export const SkillImportDialog = memo(function SkillImportDialog({ candidates, i
 
   return (
     <div className="biny-skill-dialog-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !importing) onClose(); }}>
-      <section aria-label="导入已有 Skill" className="biny-skill-import-dialog" role="dialog">
+      <section aria-label="导入已有技能" className="biny-skill-import-dialog" role="dialog">
         <div className="biny-skill-dialog-heading"><div><h2>导入已有</h2><p>选择要导入到 Biny 统一管理的技能</p></div><button aria-label="关闭导入已有" disabled={importing} onClick={onClose} type="button"><Icon name="close" size={18} /></button></div>
         {candidates.length ? <>
           <button className="biny-skill-import-select-all" disabled={importing} onClick={() => setSelected(allSelected ? new Set() : new Set(candidates.map((candidate) => candidate.id)))} type="button">{allSelected ? "取消全选" : "全选"}</button>

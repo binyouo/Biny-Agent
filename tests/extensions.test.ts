@@ -8,7 +8,7 @@ import { createMcpResourceTools, expandEnvTemplate, McpToolHost } from "../src/e
 import { createMcpPromptTools } from "../src/extensions/mcpPrompts.js";
 import { loadPlugins } from "../src/extensions/plugins.js";
 import { formatExtensionReport } from "../src/extensions/report.js";
-import { createSkillResourceTool, createSkillTool, expandSkillCommand, loadSkills } from "../src/extensions/skills.js";
+import { createSkillLookupTool, createSkillResourceTool, createSkillTool, loadSkills } from "../src/extensions/skills.js";
 import { calculateUsageCost, sumSessionUsage, summarizeUsage } from "../src/observability/usage.js";
 import { buildSystemPrompt, stableSystemPromptForCache } from "../src/agent/prompts.js";
 import { canonicalToolSchemaHash, computePromptShapeDiagnostic, LocalPromptProjectionCache, promptCacheCapability } from "../src/llm/promptCache.js";
@@ -410,55 +410,44 @@ async function testProgressiveSkills(workspaceRoot: string): Promise<void> {
     assert.equal(bundle.conflicts[0]?.winner.scope, "project");
     assert.deepEqual(bundle.conflicts[0]?.shadowed.map((skill) => skill.scope), ["global"]);
     assert.match(bundle.warnings.find((warning) => warning.includes("Skill conflict")) ?? "", /test-runner/);
-    // 渐进式披露：prompt 只含元数据与 Skill 指引，不含技能正文。
-    assert.match(bundle.prompt, /test-runner \(project\).*Run the repository test suite/);
-    assert.match(bundle.prompt, /release-notes \(global\).*Draft release notes/);
+    // 渐进式披露：system prompt 只放 <available_skills> 元数据清单，不含技能正文。
+    assert.match(bundle.prompt, /<available_skills>/u);
+    assert.match(bundle.prompt, /- "test-runner": Run the repository test suite/u);
+    assert.match(bundle.prompt, /- "release-notes": Draft release notes/u);
     assert.ok(bundle.prompt.length <= 8_000);
-    assert.match(bundle.prompt, /Skill/);
+    assert.match(bundle.prompt, /Skill tool/u);
     assert.equal(bundle.prompt.includes("Always run pnpm test"), false);
     assert.equal(bundle.prompt.includes("Global variant must lose"), false);
 
-    // Pi 风格的 Skill 命令只在提交后读取正文；补全阶段不会把正文放进元数据 prompt。
-    const expanded = await expandSkillCommand(bundle, "/skill:test-runner run the tests");
-    assert.match(expanded, /<skill name="test-runner" location="[^"]+\/test-runner\/SKILL\.md">/);
-    assert.match(expanded, /References are relative to .*test-runner\./);
-    assert.match(expanded, /Always run pnpm test from the workspace root\./);
-    assert.match(expanded, /Compatibility notes \(not automatically verified\): Requires pnpm/);
-    assert.match(expanded, /Declared tools \(normal permissions still apply\): Read Bash/);
-    assert.match(expanded, /<\/skill>\n\nrun the tests$/);
-    const expandedDesktop = await expandSkillCommand(bundle, "/skills:test-runner\u00a0run the desktop tests");
-    assert.match(expandedDesktop, /<skill name="test-runner"/);
-    assert.match(expandedDesktop, /<\/skill>\n\nrun the desktop tests$/);
-    assert.equal(await expandSkillCommand(bundle, "/skill:missing do something"), "/skill:missing do something");
-
+    // `/skill:name` 不再展开全文：原文提交，正文唯一加载路径是 Skill 工具。
     const tool = createSkillTool(bundle);
     assert.equal(tool.name, "Skill");
     assert.equal(tool.risk, "read");
+    assert.match(tool.description, /progressive disclosure/u);
     const resolved = await tool.resolveExecution({ skill: "test-runner" });
     assert.equal("isError" in resolved, false);
     const projectSkill = bundle.skills.find((skill) => skill.name === "test-runner" && skill.scope === "project");
     assert.ok(projectSkill);
-    const execution = await tool.resolveExecution({ skill: "test-runner", path: projectSkill.path });
-    assert.equal("isError" in execution, false);
-    if (!("isError" in execution)) {
-      const result = await execution.execute({ toolCallId: "test" }) as { skill: string; scope: string; license: string; allowedTools: string[]; instructions: string; resources: Array<{ path: string; kind: string }> };
-      assert.equal(result.skill, "test-runner");
-      assert.equal(result.scope, "project");
-      assert.equal(result.license, "MIT");
-      assert.deepEqual(result.allowedTools, ["Read", "Bash"]);
-      assert.equal(execution.approvalRule, "Skill:test-runner");
-      assert.match(result.instructions, /Always run pnpm test/);
-      assert.deepEqual(result.resources.map((resource) => [resource.path, resource.kind]), [
-        ["notes.md", "file"],
-        [path.join("references", "details.md"), "reference"]
-      ]);
-    }
+    const execution = resolved;
+    if ("isError" in execution) throw new Error(execution.errorMessage);
+    assert.equal(execution.approvalRule, "Skill:test-runner");
+    const result = await execution.execute({ toolCallId: "test" }) as string;
+    // 返回体对齐 Agent Skills 模板：目录绝对路径是引用文件的定位基准。
+    assert.match(result, /^# Skill: test-runner/u);
+    assert.ok(result.includes(`**Skill Directory:** \`${path.dirname(projectSkill.filePath)}\``), "返回体必须带技能目录绝对路径");
+    assert.match(result, /MUST read them using absolute paths based on the skill directory above/u);
+    assert.match(result, /Compatibility notes \(not automatically verified\): Requires pnpm/);
+    assert.match(result, /Declared tools \(normal permissions still apply\): Read Bash/);
+    assert.match(result, /Always run pnpm test/);
+    assert.match(result, /notes\.md \(file\)/u);
+    assert.match(result, /references[/\\]details\.md \(reference\)/u);
+    assert.match(result, /Follow the instructions above for your response\./u);
     const globalExecution = await tool.resolveExecution({ skill: "release-notes" });
     assert.equal("isError" in globalExecution, false);
     if (!("isError" in globalExecution)) {
-      const result = await globalExecution.execute({ toolCallId: "test" }) as { instructions: string; scope: string };
-      assert.equal(result.scope, "global");
-      assert.match(result.instructions, /Global release instructions/);
+      const result = await globalExecution.execute({ toolCallId: "test" }) as string;
+      assert.match(result, /# Skill: release-notes/u);
+      assert.match(result, /Global release instructions/);
     }
     const resourceTool = createSkillResourceTool(bundle);
     const globalResource = await resourceTool.resolveExecution({ skill: "release-notes", path: "references/format.md" });
@@ -466,6 +455,29 @@ async function testProgressiveSkills(workspaceRoot: string): Promise<void> {
     if (!("isError" in globalResource)) {
       const result = await globalResource.execute({ toolCallId: "resource" }) as { content: string };
       assert.equal(result.content, "Nested global reference.");
+    }
+
+    // skill_lookup：本地打分搜索清单外的已装技能，命中后仍经 Skill 工具加载。
+    const lookup = createSkillLookupTool(bundle);
+    assert.equal(lookup.risk, "read");
+    const lookupExecution = lookup.resolveExecution({ query: "release notes draft" });
+    assert.equal("isError" in lookupExecution, false);
+    if (!("isError" in lookupExecution)) {
+      const lookupResult = await lookupExecution.execute({ toolCallId: "lookup" }) as { found: number; skills: Array<{ name: string }>; hint: string };
+      assert.ok(lookupResult.found >= 1);
+      assert.equal(lookupResult.skills[0]?.name, "release-notes", "name 命中优先于 description 命中");
+      assert.match(lookupResult.hint, /Skill tool/u);
+    }
+    const nameOnly = lookup.resolveExecution({ query: "test-runner" });
+    if (!("isError" in nameOnly)) {
+      const result = await nameOnly.execute({ toolCallId: "lookup-name" }) as { skills: Array<{ name: string }> };
+      assert.equal(result.skills[0]?.name, "test-runner");
+    }
+    const missExecution = lookup.resolveExecution({ query: "zzz-no-match" });
+    if (!("isError" in missExecution)) {
+      const result = await missExecution.execute({ toolCallId: "lookup-miss" }) as { found: number; hint: string };
+      assert.equal(result.found, 0);
+      assert.match(result.hint, /skill_search/u);
     }
     const unknown = await tool.resolveExecution({ skill: "missing" });
     assert.equal("isError" in unknown && unknown.isError, true);
@@ -591,8 +603,7 @@ async function testGlobalSkillSymlinkRoots(): Promise<void> {
     const invoke = await createSkillTool(linked).resolveExecution({ skill: "linked-skill" });
     assert.equal("isError" in invoke, false);
     if (!("isError" in invoke)) {
-      const result = await invoke.execute({ toolCallId: "test" }) as { instructions: string };
-      assert.match(result.instructions, /Linked body/);
+      assert.match(await invoke.execute({ toolCallId: "test" }) as string, /Linked body/);
     }
 
     // 全局根下的悬空软链只跳过自身，不能让同根的其他技能一起丢失。

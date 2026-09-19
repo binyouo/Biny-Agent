@@ -70,7 +70,6 @@ const api: DesktopApi = {
   cancelRun: async (projectId, runId) => await ipcRenderer.invoke(desktopIpc.cancelRun, projectId, runId),
   runSlashCommand: async (projectId, sessionId, command) => await ipcRenderer.invoke(desktopIpc.runSlashCommand, projectId, sessionId, command),
   runInspectorCommand: async (projectId, owner, kind, input, history) => await ipcRenderer.invoke(desktopIpc.runInspectorCommand, projectId, owner, kind, input, history),
-  expandSkillCommand: async (projectId, input) => await ipcRenderer.invoke(desktopIpc.skillExpand, projectId, input),
   resolvePermission: async (projectId, requestId, result) => await ipcRenderer.invoke(desktopIpc.resolvePermission, projectId, requestId, result),
   setPermissionMode: async (projectId, mode) => await ipcRenderer.invoke(desktopIpc.setPermissionMode, projectId, mode),
   switchModel: async (projectId, alias, thinking) => await ipcRenderer.invoke(desktopIpc.switchModel, projectId, alias, thinking),

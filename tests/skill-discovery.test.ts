@@ -66,9 +66,10 @@ async function main(): Promise<void> {
     assert.equal((await scanSkillCatalog({ homeDir })).skills.some((skill) => skill.name === "demo-skill"), true);
     const runtime = await loadSkills({ workspaceRoot: root, projectPaths: [], globalRoot: managedRoot });
     assert.equal(runtime.skills.some((skill) => skill.name === "demo-skill"), true, "受管版本必须被实际 runtime 发现");
-    const selectedPrompt = await skillPromptForSelection(runtime, ["demo-skill"]);
-    assert.match(selectedPrompt, /# Demo/u, "首轮提示词必须包含选中 Skill 正文");
-    assert.match(selectedPrompt, /metadata only/u, "首轮提示词仍应保留 Skill 元数据声明");
+    const selectedPrompt = skillPromptForSelection(runtime, ["demo-skill"]);
+    assert.match(selectedPrompt, /- "demo-skill": Demo discovery skill/u, "首轮提示词只含选中 Skill 的元数据清单");
+    assert.equal(selectedPrompt.includes("# Demo"), false, "渐进式披露：正文只经 Skill 工具加载，不进入 system prompt");
+    assert.match(selectedPrompt, /progressive disclosure/u, "清单需说明全文经 Skill 工具按需加载");
     const unchanged = await updateDiscoveredSkill({ name: "demo-skill", expectedVersion: installed.version.id, homeDir, fetcher });
     assert.equal(unchanged.version.id, installed.version.id, "未改变的版本不增加历史");
     revision = "b".repeat(40); guide = "# Updated\n";

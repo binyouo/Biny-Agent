@@ -25,8 +25,8 @@ export function createDesktopSlashTrigger(skills: readonly DesktopSkillCatalogEn
       if (!command) return item.label;
       return command.requiresArgs || command.acceptsArgs ? `${command.name} ` : command.name;
     },
-    emptySearchResultsText: "没有匹配的命令或 Skill",
-    menuLabel: "命令和 Skill"
+    emptySearchResultsText: "没有匹配的命令或技能",
+    menuLabel: "命令和技能"
   };
 }
 

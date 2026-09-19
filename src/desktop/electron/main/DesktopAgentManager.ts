@@ -2249,13 +2249,6 @@ export class DesktopAgentManager {
     }
   }
 
-  async expandSkillCommand(projectId: string, input: string): Promise<string> {
-    const { runtime, commands } = await this.ensureRuntime(projectId);
-    return commands
-      ? await commands.expandSkillCommand(input)
-      : await requireRemoteRuntime(runtime).expandSkillCommand(input);
-  }
-
   async planProjection(projectId: string, sessionId: string): Promise<import("../../protocol.js").DesktopPlanProjection> {
     const { runtime, commands } = await this.ensureRuntime(projectId);
     const plans = commands

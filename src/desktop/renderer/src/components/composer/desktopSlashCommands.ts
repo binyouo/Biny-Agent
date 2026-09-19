@@ -116,7 +116,7 @@ export function buildDesktopComposerItems(skills: readonly DesktopSkillCatalogEn
       auxiliaryData: {
         kind: "skill" as const,
         group: "Skills",
-        description: skill.description || "调用此 Skill 处理当前任务",
+        description: skill.description || "调用此技能处理当前任务",
         hint: undefined,
         icon: "wand" as const,
         keywords: [skill.name, skill.description],
@@ -127,15 +127,6 @@ export function buildDesktopComposerItems(skills: readonly DesktopSkillCatalogEn
     } satisfies DesktopComposerItem));
 
   return [...commandItems, ...skillItems];
-}
-
-export function isSkillSlashCommand(value: string): boolean {
-  const normalized = normalizeSkillSlashCommand(value);
-  return /^\/skills?:[^\s]+(?:\s|$)/u.test(normalized);
-}
-
-export function normalizeSkillSlashCommand(value: string): string {
-  return value.trim().replace(/\u00a0/g, " ");
 }
 
 export function desktopCommandForName(name: string): DesktopSlashCommand | undefined {

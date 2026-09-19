@@ -580,11 +580,6 @@ export function registerDesktopIpc(context: IpcContext): void {
     );
   });
 
-  handleRecoveryGated(desktopIpc.skillExpand, async (_event, projectId: unknown, input: unknown) => await context.agents.expandSkillCommand(
-    idSchema.parse(projectId),
-    z.string().min(1).max(200_000).parse(input)
-  ));
-
   handleRecoveryGated(desktopIpc.resolvePermission, async (_event, projectId: unknown, requestId: unknown, result: unknown) => {
     await context.agents.resolvePermission(idSchema.parse(projectId), idSchema.parse(requestId), permissionResultSchema.parse(result));
   });
@@ -623,10 +618,6 @@ export function registerDesktopIpc(context: IpcContext): void {
 
   handle(desktopIpc.fetchModelCatalog, async (_event, projectId: unknown, providerAlias: unknown, force: unknown) => {
     return await context.agents.fetchModelCatalog(idSchema.parse(projectId), idSchema.parse(providerAlias), force === true);
-  });
-
-  handle(desktopIpc.fetchModelCatalogCandidate, async (_event, projectId: unknown, configuration: unknown) => {
-    return await context.agents.fetchModelCatalogCandidate(idSchema.parse(projectId), modelConfigurationSchema.parse(configuration));
   });
 
   handle(desktopIpc.startModelLogin, async (_event, projectId: unknown, provider: unknown) => {

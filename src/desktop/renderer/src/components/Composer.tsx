@@ -28,7 +28,6 @@ import { Icon } from "./Icon.js";
 import { ProviderBrandGlyph } from "./ProviderBrandGlyph.js";
 import { SendOrStopButton } from "./composer/SendOrStopButton.js";
 import { useBreathingCaret } from "./composer/useBreathingCaret.js";
-import { isSkillSlashCommand, normalizeSkillSlashCommand } from "./composer/desktopSlashCommands.js";
 import { createDesktopSlashTrigger } from "./composer/desktopSlashTrigger.js";
 import type { QueuedRunMessageSnapshot } from "../../../../runtime/agentEvents.js";
 import { QueuedMessages } from "./composer/QueuedMessages.js";
@@ -72,7 +71,6 @@ interface ComposerProps {
   /** 取消编辑（横幅 X / 退出编辑态）。 */
   onCancelEdit(): void;
   onSlashCommand(command: string): Promise<void>;
-  onExpandSkillCommand(input: string): Promise<string>;
   onStop(): Promise<void>;
   onToggleMemory(): Promise<void>;
   onSwitchModel(alias: string, thinking: ThinkingSelection): Promise<void>;
@@ -127,7 +125,6 @@ export const Composer = memo(function Composer({
   onSubmitEdit,
   onCancelEdit,
   onSlashCommand,
-  onExpandSkillCommand,
   onStop,
   onToggleMemory,
   onSwitchModel,
@@ -289,14 +286,13 @@ export const Composer = memo(function Composer({
       const sentAttachments = attachments;
       setBusy(true);
       try {
-        const sendValue = isSkillSlashCommand(value)
-          ? await onExpandSkillCommand(normalizeSkillSlashCommand(value))
-          : value;
+        // /skills:name 技能调用不再展开正文：原文提交，模型按 <available_skills> 指引
+        // 调用 Skill 工具按需加载全文（渐进式披露）。
         // 模型标签已经即时更新，但真正的 Runtime 切换仍需完成后才能发送，
         // 否则用户紧接着按 Enter 时可能把消息发给旧模型。
         setInput("");
         setAttachments([]);
-        await onSend(sendValue, sentAttachments, undefined, globalThis.crypto.randomUUID(), capabilitySelection);
+        await onSend(value, sentAttachments, undefined, globalThis.crypto.randomUUID(), capabilitySelection);
       } catch (submitError) {
         setInput(value);
         setAttachments(sentAttachments);
@@ -441,7 +437,7 @@ export const Composer = memo(function Composer({
       : modelSetupRequired
         ? "还没有可用的模型连接，请先配置模型。"
         : resourceState === "loading"
-          ? "正在准备 MCP / Skill 能力，请稍候再发送。"
+          ? "正在准备 MCP / 技能能力，请稍候再发送。"
         : memoryToggleBusy
           ? "正在确认当前聊天的记忆状态，请稍候。"
         : sessionWriterConflict

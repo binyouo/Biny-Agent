@@ -271,7 +271,7 @@ function DesktopApp(): React.JSX.Element {
       setComposerSkillWarnings([]);
       setComposerSkills([]);
       setComposerTools([]);
-      setWarning(`无法加载 Skill 补全：${errorMessage(error)}`);
+      setWarning(`无法加载技能补全：${errorMessage(error)}`);
     });
     return () => { active = false; };
   }, [
@@ -994,12 +994,6 @@ function DesktopApp(): React.JSX.Element {
     setSlashResult(await window.biny.runSlashCommand(projectId, selectedRef.current, command));
   }, [draftProjectId]);
 
-  const expandSkillCommand = useCallback(async (input: string): Promise<string> => {
-    const projectId = selectedRef.current === undefined ? draftProjectId ?? projectRef.current : projectRef.current;
-    if (!projectId) throw new Error("请先打开一个项目。");
-    return await window.biny.expandSkillCommand(projectId, input);
-  }, [draftProjectId]);
-
   const editPrompt = useCallback(async (
     input: string,
     attachments: DesktopAttachment[],
@@ -1572,7 +1566,6 @@ function DesktopApp(): React.JSX.Element {
       onSubmitEdit={submitEditedMessage}
       onCancelEdit={cancelEditMessage}
       onSlashCommand={runSlashCommand}
-      onExpandSkillCommand={expandSkillCommand}
       onStop={async () => {
         const projectId = projectRef.current;
         if (!projectId || !selectedRunId) throw new Error("当前运行已结束或状态尚未同步，未发送取消请求。");

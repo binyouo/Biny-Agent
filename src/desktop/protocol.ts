@@ -207,7 +207,6 @@ export const desktopIpc = {
   recipeSuggestions: "desktop:recipe:suggestions",
   recipeState: "desktop:recipe:state",
   skillCatalog: "desktop:skill:catalog",
-  skillExpand: "desktop:skill:expand",
   skillSourceImport: "desktop:skill:source-import",
   skillSourceInstall: "desktop:skill:source-install",
   skillImportExisting: "desktop:skill:import-existing",
@@ -1504,7 +1503,6 @@ export interface DesktopApi {
   cancelRun(projectId: string, runId: string): Promise<void>;
   runSlashCommand(projectId: string, sessionId: string | undefined, command: string): Promise<DesktopSlashResult>;
   runInspectorCommand(projectId: string, owner: string, kind: "review" | "side-chat", input: string, history: import("./inspectorTask.js").InspectorMessage[]): Promise<DesktopSlashResult>;
-  expandSkillCommand(projectId: string, input: string): Promise<string>;
   resolvePermission(projectId: string, requestId: string, result: PermissionResult): Promise<void>;
   setPermissionMode(projectId: string, mode: PermissionMode): Promise<DesktopWorkspaceSnapshot>;
   switchModel(projectId: string, alias: string, thinking: ThinkingSelection): Promise<ModelRuntimeInfo>;
