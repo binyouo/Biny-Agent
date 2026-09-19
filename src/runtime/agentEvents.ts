@@ -66,7 +66,7 @@ export type AgentHostEvent =
   | (AgentEventBase & { type: "context.updated"; context: ContextStatus })
   | (AgentEventBase & { type: "compact.started"; hint?: string })
   | (AgentEventBase & { type: "compact.completed"; summary: string; context: ContextStatus })
-  | (AgentEventBase & { type: "run.completed"; durationMs: number; stopReason?: AgentTurnStopReason; finishReason?: string; steps?: number; usage?: SessionUsage })
+  | (AgentEventBase & { type: "run.completed"; durationMs: number; stopReason?: AgentTurnStopReason; finishReason?: string; steps?: number; usage?: SessionUsage; notification?: string })
   | (AgentEventBase & {
       type: "run.blocked";
       durationMs: number;
@@ -79,6 +79,7 @@ export type AgentHostEvent =
       finishReason?: string;
       steps?: number;
       usage?: SessionUsage;
+      notification?: string;
     })
   | (AgentEventBase & { type: "run.incomplete"; durationMs: number; reason: string; resumable?: boolean; stopReason: AgentTurnStopReason; finishReason?: string; steps: number; usage?: SessionUsage })
   | (AgentEventBase & { type: "run.cancelled"; durationMs: number; reason: string; stopReason?: AgentTurnStopReason; finishReason?: string; steps?: number; usage?: SessionUsage })

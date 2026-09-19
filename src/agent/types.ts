@@ -55,6 +55,8 @@ export interface AgentTurnOutcome {
   blockedReason?: string;
   requiredAction?: string;
   affectedTodoIds?: string[];
+  /** 模型在回复末尾写的一句结果摘要；宿主剥块后用作后台系统通知正文。 */
+  notification?: string;
 }
 
 export type AgentSessionUpdate =
@@ -63,7 +65,7 @@ export type AgentSessionUpdate =
   | { type: "message.user"; messageId: string; content: string; delivery: "steer" | "queue" }
   | { type: "context.retrying"; reason: "context_overflow"; attempt: number; compactedMessages: number }
   | { type: "assistant.delta"; content: string }
-  | { type: "assistant.completed"; content: string }
+  | { type: "assistant.completed"; content: string; notification?: string }
   | { type: "reasoning.started"; phase: "initial" | "continuing" }
   | { type: "reasoning.delta"; content: string }
   | { type: "reasoning.completed" }

@@ -135,6 +135,15 @@ async function startDesktopApplication(): Promise<void> {
         silent: true
       }).show();
     }
+    // 任务收尾时窗口在后台，用模型写的通知块作为系统通知正文；前台可见时不打扰。
+    if (event && (event.type === "run.completed" || event.type === "run.blocked") && event.notification
+      && (!mainWindow || !mainWindow.isFocused() || !mainWindow.isVisible()) && Notification.isSupported()) {
+      new Notification({
+        title: "Biny",
+        body: event.notification,
+        silent: true
+      }).show();
+    }
   }, async (url) => await shell.openExternal(url), undefined, net.fetch.bind(net) as unknown as typeof globalThis.fetch, browserAutomation);
   const mcp = new DesktopMcpService(
     configStore,

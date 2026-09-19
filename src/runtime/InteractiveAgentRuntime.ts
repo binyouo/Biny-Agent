@@ -1242,7 +1242,8 @@ export class InteractiveAgentRuntime {
       stopReason: turn.stopReason,
       finishReason: turn.finishReason,
       steps: turn.steps,
-      usage: turn.usage
+      usage: turn.usage,
+      notification: turn.notification
     });
     return outcome;
   }
@@ -1308,7 +1309,8 @@ export class InteractiveAgentRuntime {
       stopReason: turn.stopReason,
       finishReason: turn.finishReason,
       steps: turn.steps,
-      usage: turn.usage
+      usage: turn.usage,
+      notification: turn.notification
     });
     return outcome;
   }

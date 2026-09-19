@@ -46,6 +46,8 @@ async function testNaturalCompletion(scenario: "answer" | "write" | "recovery" |
         response.push({ type: "tool-call", id: `length-write-${String(requests)}`, name: "Write", arguments: { path: "result.txt", content: "written" } });
       } else if (scenario === "recovery" && requests <= 2) {
         response.push({ type: "tool-call", id: `check-${requests}`, name: "check", arguments: { command: requests === 1 ? "wrong" : "correct" } });
+      } else if (scenario === "notification") {
+        response.push({ type: "text-delta", text: "已完成，结果已检查。\n\n<biny_notification>修复了登录崩溃，测试通过。</biny_notification>" });
       } else {
         response.push({ type: "text-delta", text: "已完成，结果已检查。" });
       }
@@ -70,6 +72,11 @@ async function testNaturalCompletion(scenario: "answer" | "write" | "recovery" |
     const outcome = await agent.runTask("Perform the requested work and report the result", { confirmPermission: async () => ({ approved: true, scope: "once" }) });
     assert.equal(requests, scenario === "recovery" ? 3 : scenario === "write" ? 2 : 1);
     assert.equal(outcome.status, scenario === "limit" || scenario === "length" ? "incomplete" : "completed");
+    if (scenario === "notification") {
+      assert.equal(outcome.notification, "修复了登录崩溃，测试通过。");
+      assert.equal(outcome.output.includes("<biny_notification>"), false, "通知块不能进入对外输出");
+    }
+    if (scenario !== "notification" && scenario !== "answer") assert.equal(outcome.notification, undefined);
     if (scenario === "limit" || scenario === "length") {
       assert.equal(outcome.stopReason, scenario === "limit" ? "hard_step_limit" : "model_length");
       assert.equal(outcome.resumable, true);
@@ -88,8 +95,13 @@ async function testNaturalCompletion(scenario: "answer" | "write" | "recovery" |
       assert.equal(await readFile(path.join(workspaceRoot, "result.txt"), "utf8"), "written");
     }
     await recorder.flush();
-    const stored = (await readFile(recorder.filePath, "utf8")).trim().split("\n").map((line) => JSON.parse(line) as { type: string });
+    const stored = (await readFile(recorder.filePath, "utf8")).trim().split("\n").map((line) => JSON.parse(line) as { type: string; content?: string });
     for (const type of ["user_message", "assistant_message"]) assert.ok(stored.some((event) => event.type === type));
+    assert.equal(
+      stored.some((event) => event.type === "assistant_message" && event.content?.includes("<biny_notification>")),
+      false,
+      "通知块不能进入 session 落盘"
+    );
     if (scenario === "write" || scenario === "recovery" || scenario === "limit" || scenario === "length") {
       for (const type of ["tool_call", "tool_result"]) assert.ok(stored.some((event) => event.type === type));
     }
@@ -99,5 +111,5 @@ async function testNaturalCompletion(scenario: "answer" | "write" | "recovery" |
   }
 }
 
-for (const scenario of ["answer", "write", "recovery", "limit", "length"] as const) await testNaturalCompletion(scenario);
+for (const scenario of ["answer", "write", "recovery", "limit", "length", "notification"] as const) await testNaturalCompletion(scenario);
 console.log("agent natural completion tests passed");
