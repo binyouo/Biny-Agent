@@ -9,7 +9,7 @@
  * `dangerouslySetInnerHTML`，其余节点都交给 React 转义。
  */
 import React, { isValidElement, memo, useMemo, useState } from "react";
-import Markdown from "react-markdown";
+import Markdown, { type Components } from "react-markdown";
 import rehypeKatex from "rehype-katex";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
@@ -43,49 +43,54 @@ export const MarkdownContent = memo(function MarkdownContent({
     () => (breaks ? [remarkGfm, remarkBreaks, remarkMath] : [remarkGfm, remarkMath]),
     [breaks]
   );
+  // components 里的函数会被 react-markdown 直接当作 React 元素类型；
+  // 每次渲染内联重建会让表格/代码块/链接整棵子树在流式期间每帧卸载重建，
+  // 配合入场动画表现为持续闪烁（.markdown-table 横向滚动位置也会被不断重置），
+  // 因此必须用 useMemo 稳定组件身份，让 React 原地更新 DOM。
+  const components = useMemo<Components>(() => ({
+    a({ node: _node, children, ...props }) {
+      const href = props.href;
+      const path = localPathFromHref(href);
+      // 本地路径收成文件卡片（alma 式资源卡），不再渲染普通 <a>；
+      // 外链必须显式走 openExternal（主进程 deny 了所有新窗口导航）；
+      // 页内锚点（如脚注）保留默认跳转，不能带 target=_blank 否则点击被吞。
+      if (path) return <FileLinkCard onPreviewFile={onPreviewFile} path={path} />;
+      const externalUrl = href && /^https?:\/\//i.test(href) ? href : undefined;
+      const isAnchor = !externalUrl && Boolean(href?.startsWith("#"));
+      const onClick = externalUrl
+        ? (event: React.MouseEvent) => { event.preventDefault(); onOpenExternal(externalUrl); }
+        : undefined;
+      return <a {...props} onClick={onClick} rel="noreferrer" target={isAnchor ? undefined : "_blank"} title={externalUrl ? "在浏览器中打开" : undefined}>{children}</a>;
+    },
+    code({ className, children }) {
+      // 围栏代码块由下面的 pre 接管，这里只剩行内代码。
+      if (className) return <code className={className}>{children}</code>;
+      // Codex 风格的行内路径只是灰色代码标记；不根据文本外观暗中添加文件跳转。
+      return <code>{children}</code>;
+    },
+    img({ alt, src, title }) {
+      const source = typeof src === "string" ? src : undefined;
+      const path = localPathFromHref(source);
+      if (path) return <InlineImage alt={alt ?? ""} path={path} projectId={projectId} />;
+      if (!source) return null;
+      return <img alt={alt ?? ""} className="markdown-image" src={source} title={title} />;
+    },
+    pre({ children }) {
+      const block = fencedCode(children);
+      // 图表单独渲染；解析失败时 MermaidBlock 自己回退成普通代码块
+      if (block.language?.toLowerCase() === "mermaid") return <MermaidBlock code={block.code} />;
+      return <MarkdownCodeBlock code={block.code} language={block.language} />;
+    },
+    table({ children }) {
+      // 宽表格自己横向滚动，不能把整条消息撑宽。
+      return <div className="markdown-table"><table>{children}</table></div>;
+    }
+  }), [onOpenExternal, onPreviewFile, projectId]);
   return (
     <div className={variant ? `markdown-body ${variant}` : "markdown-body"}>
       <Markdown
-        components={{
-          a({ node: _node, children, ...props }) {
-            const href = props.href;
-            const path = localPathFromHref(href);
-            // 本地路径收成文件卡片（alma 式资源卡），不再渲染普通 <a>；
-            // 外链必须显式走 openExternal（主进程 deny 了所有新窗口导航）；
-            // 页内锚点（如脚注）保留默认跳转，不能带 target=_blank 否则点击被吞。
-            if (path) return <FileLinkCard onPreviewFile={onPreviewFile} path={path} />;
-            const externalUrl = href && /^https?:\/\//i.test(href) ? href : undefined;
-            const isAnchor = !externalUrl && Boolean(href?.startsWith("#"));
-            const onClick = externalUrl
-              ? (event: React.MouseEvent) => { event.preventDefault(); onOpenExternal(externalUrl); }
-              : undefined;
-            return <a {...props} onClick={onClick} rel="noreferrer" target={isAnchor ? undefined : "_blank"} title={externalUrl ? "在浏览器中打开" : undefined}>{children}</a>;
-          },
-          code({ className, children }) {
-            // 围栏代码块由下面的 pre 接管，这里只剩行内代码。
-            if (className) return <code className={className}>{children}</code>;
-            // Codex 风格的行内路径只是灰色代码标记；不根据文本外观暗中添加文件跳转。
-            return <code>{children}</code>;
-          },
-          img({ alt, src, title }) {
-            const source = typeof src === "string" ? src : undefined;
-            const path = localPathFromHref(source);
-            if (path) return <InlineImage alt={alt ?? ""} path={path} projectId={projectId} />;
-            if (!source) return null;
-            return <img alt={alt ?? ""} className="markdown-image" src={source} title={title} />;
-          },
-          pre({ children }) {
-            const block = fencedCode(children);
-            // 图表单独渲染；解析失败时 MermaidBlock 自己回退成普通代码块
-            if (block.language?.toLowerCase() === "mermaid") return <MermaidBlock code={block.code} />;
-            return <MarkdownCodeBlock code={block.code} language={block.language} />;
-          },
-          table({ children }) {
-            // 宽表格自己横向滚动，不能把整条消息撑宽。
-            return <div className="markdown-table"><table>{children}</table></div>;
-          }
-        }}
         // singleDollarTextMath 关闭：$ 是常见计价符号，只认 $$...$$ 行内/块级公式
+        components={components}
         remarkPlugins={remarkPlugins}
         rehypePlugins={[[rehypeKatex, { throwOnError: false, errorColor: "var(--biny-danger)" }]]}
       >
