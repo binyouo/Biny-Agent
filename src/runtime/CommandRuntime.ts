@@ -11,6 +11,7 @@ import type { AgentConfig } from "../config/schema.js";
 import { AgentSession } from "../agent/AgentSession.js";
 import { ModelManager } from "../llm/ModelManager.js";
 import { resolveToolModel } from "../llm/toolModel.js";
+import { runSkillExtraction } from "../agent/skillExtraction.js";
 import { preselectCapabilities } from "../agent/capabilityPreselection.js";
 import { SessionRecorder, type SessionEvent } from "../session/recorder.js";
 import { readSessionEvents } from "../session/events.js";
@@ -448,6 +449,15 @@ export async function createCommandRuntime(workspaceRoot: string, options: Comma
       permissionManager,
       recorder,
       skillPrompt: (selection) => skillPromptForSelection(requireSkillBundle(skills), selection),
+      extractSkill: async ({ messageId, events, minToolCalls, onNotice }) => await runSkillExtraction({
+        messageId,
+        events,
+        minToolCalls,
+        onNotice,
+        installedSkills: requireSkillBundle(skills).skills,
+        model: resolveToolModel(config),
+        refreshSkills: async () => await refreshSkills(true)
+      }),
       subagentPrompt: buildSubagentDefinitionsPrompt(subagentDefinitions),
       skillPaths: (selection) => skillPathsForSelection(requireSkillBundle(skills), selection),
       selectCapabilities: async (input) => await preselectCapabilities({

@@ -76,6 +76,16 @@ export const compactionSchema = z.object({
   summaryModel: undefined
 });
 
+/** 回合后自动技能提取（自进化）：analyst→author 两步辅助模型，写入受管全局技能根。 */
+export const skillExtractionSchema = z.object({
+  /** 总开关；关闭后成功回合不再触发旁路分析。 */
+  enabled: z.boolean().default(true),
+  /** 本回合工具调用数达到阈值才分析，避免普通问答也跑辅助模型。 */
+  minToolCalls: z.number().int().min(1).max(100).default(5)
+}).default({ enabled: true, minToolCalls: 5 });
+
+export type SkillExtractionConfig = z.infer<typeof skillExtractionSchema>;
+
 /**
  * 聊天采样参数（全局）。temperature 缺省不下发请求体（跟随模型/provider 默认）；
  * maxOutputTokens 缺省跟随模型别名配置，显式配置后全局覆盖。
@@ -90,12 +100,14 @@ export const chatParamsSchema = z.object({
   /** 默认把哪些工具暴露给模型；单条消息可在 Composer 中覆盖。 */
   defaultToolSelection: capabilityDefaultSelectionSchema.default("auto"),
   /** 默认把哪些 Skill 元数据暴露给模型；单条消息可在 Composer 中覆盖。 */
-  defaultSkillSelection: capabilityDefaultSelectionSchema.default("auto")
+  defaultSkillSelection: capabilityDefaultSelectionSchema.default("auto"),
+  skillExtraction: skillExtractionSchema
 }).default({
   temperature: undefined,
   maxOutputTokens: undefined,
   defaultToolSelection: "auto",
-  defaultSkillSelection: "auto"
+  defaultSkillSelection: "auto",
+  skillExtraction: { enabled: true, minToolCalls: 5 }
 });
 
 const identityPolicySchema = z.object({
@@ -862,7 +874,7 @@ export const defaultConfig: AgentConfig = {
     nucleus: { count: 8, turns: 5, spread: 2 },
     dormantDays: 14
   },
-  chat: { temperature: undefined, maxOutputTokens: undefined, defaultToolSelection: "auto", defaultSkillSelection: "auto" },
+  chat: { temperature: undefined, maxOutputTokens: undefined, defaultToolSelection: "auto", defaultSkillSelection: "auto", skillExtraction: { enabled: true, minToolCalls: 5 } },
   checkpoints: { enabled: true },
   sandbox: { mode: "off", allowNetwork: true },
   hooks: { beforeTool: [], afterTool: [] },

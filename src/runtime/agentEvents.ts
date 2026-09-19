@@ -86,7 +86,15 @@ export type AgentHostEvent =
   | (AgentEventBase & { type: "run.aborted"; durationMs: number; reason: string; stopReason?: AgentTurnStopReason; finishReason?: string; steps?: number })
   | (AgentEventBase & { type: "run.failed"; durationMs: number; error: string; stopReason?: AgentTurnStopReason; finishReason?: string; steps?: number })
   /** 会话事实满足 Recipe 槽位后的界面入口；不进入时间线，仅触发聊天内提示卡。 */
-  | (AgentEventBase & { type: "recipe.ready"; recipe: import("../session/recipes.js").RecipeSuggestion });
+  | (AgentEventBase & { type: "recipe.ready"; recipe: import("../session/recipes.js").RecipeSuggestion })
+  /** 回合后技能提取进度；不进入时间线，仅触发聊天内提示卡。 */
+  | (AgentEventBase & {
+    type: "skill_extraction.updated";
+    stage: "extracting" | "saving" | "done";
+    skillName?: string;
+    skillDescription?: string;
+    updated?: boolean;
+  });
 
 export type TerminalRunEvent = Extract<AgentHostEvent, {
   type:

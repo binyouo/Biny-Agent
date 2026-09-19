@@ -23,16 +23,29 @@ export interface RecipeNotice extends DesktopRecipeSuggestion {
   sessionId: string;
 }
 
+/** 技能提取卡状态；同一会话同时只有一个提取在跑，阶段事件直接覆盖。 */
+export interface SkillExtractionCardState {
+  sessionId: string;
+  stage: "extracting" | "saving" | "done";
+  skillName?: string;
+  skillDescription?: string;
+  updated?: boolean;
+}
+
 interface DesktopEventBridgeOptions {
   onRuntimeProjectionChanged?(): Promise<void>;
   activeProjectIdRef: { current: string | undefined };
   selectedSessionIdRef: { current: string | undefined };
+  /** 当前会话文档；判断 pending 缓冲是否已被 openSession 的主进程桶覆盖时读取。 */
+  documentRef: RefObject<DesktopSessionDocument | undefined>;
   mergeProjectSnapshot(snapshot: DesktopWorkspaceSnapshot): void;
   onError(error: unknown): void;
   setContextBudget: Dispatch<SetStateAction<ContextBudgetStatus | undefined>>;
   setDocument: Dispatch<SetStateAction<DesktopSessionDocument | undefined>>;
   /** 收集当前选中会话的 Recipe 通知；事件不进消息时间线，只驱动聊天内提示卡。 */
   setRecipeNotices: Dispatch<SetStateAction<RecipeNotice[]>>;
+  /** 技能提取（自进化）进度卡；run.started 时清除，不进消息时间线。 */
+  setSkillExtraction: Dispatch<SetStateAction<SkillExtractionCardState | undefined>>;
   setWriterConflict: Dispatch<SetStateAction<DesktopSessionWriterConflict | undefined>>;
   setSidebarSessions: Dispatch<SetStateAction<DesktopSessionSummary[]>>;
   setWorkspace: Dispatch<SetStateAction<DesktopWorkspaceSnapshot | undefined>>;
@@ -51,6 +64,7 @@ export function useDesktopEventBridge({
   setContextBudget,
   setDocument,
   setRecipeNotices,
+  setSkillExtraction,
   setWriterConflict,
   setSidebarSessions,
   setWorkspace,
@@ -98,11 +112,29 @@ export function useDesktopEventBridge({
           ? applyUpdatesToWorkspace(current, projectBatch)
           : current);
         const currentSessionId = selectedSessionIdRef.current;
+        const currentEvents: AgentHostEvent[] = [];
+        // 头部事件可能先于会话选中到达（草稿首发时 message.user / run.started 先于 receipt）：
+        // 未命中当前会话的事件按会话暂存，不能丢——historicalPrefix 依赖这些锚点截断历史。
+        // 会话选中后，文档还是空占位时原序回放缓冲；文档已带该会话内容（openSession 的
+        // 主进程桶是超集）则整体作废，避免同一批事件被折叠两次。
+        for (const envelope of projectBatch) {
+          const event = envelope.event;
+          if (event === undefined) continue;
+          if (currentSessionId !== undefined && event.sessionId === currentSessionId) currentEvents.push(event);
+          else if (event.sessionId !== undefined) pendingEvents.hold(event.sessionId, envelope);
+        }
         if (currentSessionId) {
-          const currentEvents = projectBatch
-            .map((envelope) => envelope.event)
-            .filter((event): event is AgentHostEvent => event !== undefined && event.sessionId === currentSessionId);
-          // recipe.ready 是提示通知而非对话内容：不进消息时间线，单独收集成聊天内卡片。
+          const doc = documentRef.current;
+          if (doc?.session.id === currentSessionId && (doc.events.length > 0 || doc.liveEvents.length > 0)) {
+            pendingEvents.take(currentSessionId, true);
+          } else if (doc?.session.id === currentSessionId && doc.events.length === 0 && doc.liveEvents.length === 0) {
+            const drained = pendingEvents.take(currentSessionId)
+              .map((envelope) => envelope.event)
+              .filter((event): event is AgentHostEvent => event !== undefined);
+            currentEvents.unshift(...drained);
+          }
+          // recipe.ready / skill_extraction.updated 是提示通知而非对话内容：
+          // 不进消息时间线，分别驱动聊天内卡片。
           const recipeNotices = currentEvents.filter((event) => event.type === "recipe.ready");
           if (recipeNotices.length) {
             setRecipeNotices((current) => {
@@ -113,8 +145,19 @@ export function useDesktopEventBridge({
               return fresh.length ? [...current, ...fresh] : current;
             });
           }
-          const timelineSource = recipeNotices.length
-            ? currentEvents.filter((event) => event.type !== "recipe.ready")
+          for (const event of currentEvents) {
+            if (event.type === "skill_extraction.updated") {
+              setSkillExtraction({
+                sessionId: currentSessionId,
+                stage: event.stage,
+                skillName: event.skillName,
+                skillDescription: event.skillDescription,
+                updated: event.updated
+              });
+            }
+          }
+          const timelineSource = recipeNotices.length || currentEvents.some((event) => event.type === "skill_extraction.updated")
+            ? currentEvents.filter((event) => event.type !== "recipe.ready" && event.type !== "skill_extraction.updated")
             : currentEvents;
           const timelineEvents = liveTimelineEvents(timelineSource);
           if (timelineEvents.length) {
@@ -127,7 +170,11 @@ export function useDesktopEventBridge({
           if (latestContext) setContextBudget(latestContext.context.budget);
           // 按事件顺序更新瞬态提示，确保同一批中后开始的运行清掉前一轮失败。
           for (const event of currentEvents) {
-            if (event.type === "run.started") onGenerationStarted();
+            if (event.type === "run.started") {
+              onGenerationStarted();
+              // 新一轮开始：上一轮的技能提取卡退场。
+              setSkillExtraction(undefined);
+            }
             if (event.type === "run.failed") onGenerationError(event.error.trim() || "生成失败，请重试。");
             if (event.type === "run.incomplete" || event.type === "run.blocked") onGenerationError(event.reason.trim() || "生成失败，请重试。");
           }
@@ -154,5 +201,5 @@ export function useDesktopEventBridge({
       for (const timer of refreshTimers.values()) clearTimeout(timer);
       refreshTimers.clear();
     };
-  }, [activeProjectIdRef, mergeProjectSnapshot, onError, selectedSessionIdRef, setContextBudget, setDocument, setRecipeNotices, setSidebarSessions, setWorkspace, setWriterConflict, onGenerationError, onGenerationStarted, onRuntimeProjectionChanged]);
+  }, [activeProjectIdRef, documentRef, mergeProjectSnapshot, onError, selectedSessionIdRef, setContextBudget, setDocument, setRecipeNotices, setSkillExtraction, setSidebarSessions, setWorkspace, setWriterConflict, onGenerationError, onGenerationStarted, onRuntimeProjectionChanged]);
 }

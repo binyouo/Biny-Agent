@@ -4,6 +4,7 @@ import path from "node:path";
 import { configSchema, type AgentConfig } from "../config/schema.js";
 import { createFileConfigStore, updateConfig, type AgentConfigStore } from "../config/store.js";
 import { globalAgentDir } from "../config/paths.js";
+import type { SkillExtractionNotice, SkillExtractionOutcome } from "./skillExtraction.js";
 import {
   listModelChoices,
   modelRuntimeInfo,
@@ -192,6 +193,15 @@ export interface AgentSessionOptions {
   capabilities?: CapabilityStore;
   /** 回合完成后识别出可复用 Recipe；只通知界面，不创建任何对象。 */
   onRecipeReady?: (notice: { recipe: import("../session/recipes.js").RecipeSuggestion; runId?: string }) => void;
+  /** 回合后技能提取（自进化）；由宿主装配辅助模型、技能目录与刷新，失败静默。 */
+  extractSkill?: (input: {
+    messageId: string;
+    events: readonly SessionEvent[];
+    minToolCalls: number;
+    onNotice: (notice: SkillExtractionNotice) => void;
+  }) => Promise<SkillExtractionOutcome | undefined>;
+  /** 提取进度只通知界面，不进入消息时间线。 */
+  onSkillExtractionUpdate?: (notice: SkillExtractionNotice & { runId: string }) => void;
   onTitleGenerated?: (sessionId: string, title: string) => void;
   /** 自省识别出明确未完成行动后的持久化入口；只创建记录，不启动任务。 */
   createSelfReflectionTask?: (candidate: SelfReflectionActionCandidate) => Promise<boolean>;
@@ -2546,6 +2556,7 @@ export class AgentSession {
           this.pendingMemoryTasks.add(memoryTask);
         }
         void this.enqueueRecipeSuggestions(runOptions).catch(() => undefined);
+        void this.enqueueSkillExtraction(runOptions).catch(() => undefined);
         yield { type: "status", status: "completed" };
       } else if (outcome.status === "incomplete") {
         yield { type: "status", status: "incomplete" };
@@ -2872,6 +2883,38 @@ export class AgentSession {
     }
   }
 
+  /**
+   * 回合后技能提取（自进化）：只在成功回合触发，由宿主装配的辅助模型与技能目录
+   * 完成分析；保存成功后向本回合消息记 metadata 留审计痕迹。任何失败静默。
+   */
+  private async enqueueSkillExtraction(runOptions: AgentRunOptions): Promise<void> {
+    const config = this.activeConfig.chat.skillExtraction;
+    if (!config.enabled || !this.options.extractSkill || !runOptions.messageId) return;
+    // 后台监督回合显式关闭技能，自进化分析也不应在其上运行。
+    if (runOptions.capabilitySelection?.skills === "none") return;
+    await this.recorder.flush();
+    const events = await readSessionEvents(this.recorder.filePath);
+    const outcome = await this.options.extractSkill({
+      messageId: runOptions.messageId,
+      events,
+      minToolCalls: config.minToolCalls,
+      onNotice: (notice) => {
+        try {
+          this.options.onSkillExtractionUpdate?.({ ...notice, runId: runOptions.runId ?? "" });
+        } catch {
+          // 界面通知失败不影响提取本身。
+        }
+      }
+    });
+    if (!outcome?.installedPath || !outcome.skillName || outcome.stage !== "done") return;
+    this.recorder.recordWithRuntimeContext({
+      type: "message_metadata",
+      messageId: runOptions.messageId,
+      metadata: { skillExtracted: { name: outcome.skillName, path: outcome.installedPath, updated: outcome.updated === true } }
+    });
+    await this.recorder.flush();
+  }
+
   async compactConversation(hint?: string, signal?: AbortSignal): Promise<string> {
     const release = this.beginOperation("conversation compaction");
     try {
@@ -2986,6 +3029,10 @@ export class AgentSession {
   /** 装配期 AgentSession 先于宿主 Runtime 构造；宿主构造完成后再用 setter 接上事件通道。 */
   setOnRecipeReady(callback: AgentSessionOptions["onRecipeReady"]): void {
     this.options.onRecipeReady = callback;
+  }
+
+  setOnSkillExtractionUpdate(callback: AgentSessionOptions["onSkillExtractionUpdate"]): void {
+    this.options.onSkillExtractionUpdate = callback;
   }
 
   setOnTitleGenerated(callback: AgentSessionOptions["onTitleGenerated"]): void {

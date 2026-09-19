@@ -105,6 +105,8 @@ export function Workspace({
   running,
   planning,
   recipeNotices,
+  skillExtraction,
+  onDismissSkillExtraction,
   onDismissRecipe,
   onExtractRecipe,
   onOpenExternal,

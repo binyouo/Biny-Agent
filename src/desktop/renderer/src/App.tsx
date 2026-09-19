@@ -63,7 +63,7 @@ import {
   syntheticSession
 } from "./app/desktopState.js";
 import { useDesktopEventBridge } from "./app/useDesktopEventBridge.js";
-import type { RecipeNotice } from "./app/useDesktopEventBridge.js";
+import type { RecipeNotice, SkillExtractionCardState } from "./app/useDesktopEventBridge.js";
 import { useSessionTimeline } from "./app/useSessionTimeline.js";
 import { useDesktopSettingsActions } from "./app/useDesktopSettingsActions.js";
 import { useSidebarLayout } from "./app/useSidebarLayout.js";
@@ -146,6 +146,8 @@ function DesktopApp(): React.JSX.Element {
   const [warning, setWarning] = useState<string>();
   /** 当前选中会话的 Recipe 提示卡；换会话清空，事件桥和历史读取共同填充。 */
   const [recipeNotices, setRecipeNotices] = useState<RecipeNotice[]>([]);
+  /** 技能提取（自进化）进度卡；换会话与新一轮 run.started 时清空。 */
+  const [skillExtraction, setSkillExtraction] = useState<SkillExtractionCardState>();
   const selectedRef = useRef<string | undefined>(undefined);
   const projectRef = useRef<string | undefined>(undefined);
   const permissionModeRequestRef = useRef(0);
@@ -215,9 +217,10 @@ function DesktopApp(): React.JSX.Element {
     projectRef.current = workspace?.project.id;
   }, [selectedSessionId, workspace?.project.id]);
 
-  // 换会话时清掉上一会话的 Recipe 卡片；新会话的卡片由历史读取和事件桥共同收集。
+  // 换会话时清掉上一会话的 Recipe 卡片与技能提取卡；新会话的卡片由历史读取和事件桥共同收集。
   useEffect(() => {
     setRecipeNotices([]);
+    setSkillExtraction(undefined);
   }, [selectedSessionId]);
 
   useEffect(() => {
@@ -663,6 +666,7 @@ function DesktopApp(): React.JSX.Element {
     setContextBudget,
     setDocument,
     setRecipeNotices,
+    setSkillExtraction,
     setWriterConflict,
     setSidebarSessions,
     setWorkspace,
@@ -1752,6 +1756,8 @@ function DesktopApp(): React.JSX.Element {
         recipeNotices={recipeNotices}
         onDismissRecipe={dismissRecipe}
         onExtractRecipe={extractRecipe}
+        skillExtraction={skillExtraction}
+        onDismissSkillExtraction={() => setSkillExtraction(undefined)}
         thinking={selectedThinking}
         running={selectedRunning}
         planning={selectedRuntimeSnapshot?.info.planning === true}

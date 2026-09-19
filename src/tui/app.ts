@@ -41,6 +41,7 @@ import {
   isTerminalRunEvent,
   pendingPermission,
   runtimeIsBusy,
+  type AgentHostEvent,
   type InteractiveRuntimeSnapshot
 } from "../runtime/agentEvents.js";
 import type { SessionSummary } from "../session/events.js";
@@ -467,6 +468,10 @@ export class BinyTui {
   }
 
   private dispatch(event: Parameters<typeof tuiReducer>[1]): void {
+    // 技能提取（自进化）是回合后旁路：进度不进 reducer 状态，完成时通知一条即可。
+    if (event.type === "skill_extraction.updated" && event.stage === "done" && event.skillName) {
+      this.notify(`${event.updated ? "已更新技能" : "已提取新技能"} ${event.skillName}，下一回合可用。`);
+    }
     const nextState = tuiReducer(this.state, event);
     // 长思考会产生大量 reasoning.delta；这些增量只用于 provider/session，TUI
     // 不展示原文。忽略没有改变界面的增量，避免每个 token 都同步组件树并请求重绘。

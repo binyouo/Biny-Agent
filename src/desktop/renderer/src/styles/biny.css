@@ -10227,3 +10227,103 @@ div:has(> .astryx-trigger-menu) {
     transition: none;
   }
 }
+
+/* 技能提取（自进化）进度卡：与 Recipe 提示卡同区域的轻量状态横幅。 */
+.biny-skill-extraction-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px 16px;
+  border: 1px solid color-mix(in srgb, var(--biny-border) 76%, transparent);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--biny-surface-elevated) 94%, transparent);
+  box-shadow: 0 1px 2px var(--biny-shadow-soft);
+}
+
+.biny-skill-extraction-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  margin-top: 1px;
+  color: var(--biny-text-secondary);
+  flex: none;
+}
+
+.biny-skill-extraction-banner.is-running .biny-skill-extraction-title-row h3 {
+  color: var(--biny-text-secondary);
+}
+
+.biny-skill-extraction-copy {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.biny-skill-extraction-title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.biny-skill-extraction-title-row h3 {
+  min-width: 0;
+  margin: 0;
+  color: var(--biny-text);
+  font-size: calc(13px * var(--font-scale));
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.biny-skill-extraction-badge {
+  flex: none;
+  padding: 1px 7px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--biny-border) 90%, transparent);
+  color: var(--biny-text-secondary);
+  font-size: calc(10px * var(--font-scale));
+  line-height: 1.5;
+}
+
+.biny-skill-extraction-badge.is-updated {
+  color: var(--biny-text);
+  border-color: color-mix(in srgb, var(--biny-accent, var(--biny-text)) 45%, transparent);
+}
+
+.biny-skill-extraction-name {
+  margin: 4px 0 0;
+  color: var(--biny-text);
+  font-size: calc(11.5px * var(--font-scale));
+  line-height: 1.5;
+}
+
+.biny-skill-extraction-name code {
+  font-size: calc(11px * var(--font-scale));
+}
+
+.biny-skill-extraction-name span {
+  color: var(--biny-text-secondary);
+}
+
+.biny-skill-extraction-detail {
+  margin: 3px 0 0;
+  color: var(--biny-text-tertiary);
+  font-size: calc(10.5px * var(--font-scale));
+  line-height: 1.5;
+}
+
+.biny-skill-extraction-dismiss {
+  margin: -2px -6px 0 0;
+  padding: 4px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--biny-text-tertiary);
+  cursor: pointer;
+  flex: none;
+}
+
+.biny-skill-extraction-dismiss:hover {
+  color: var(--biny-text);
+  background: color-mix(in srgb, var(--biny-border) 30%, transparent);
+}
