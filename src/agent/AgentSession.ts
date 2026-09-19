@@ -2431,6 +2431,7 @@ export class AgentSession {
       this.contextMemory.replaceHistory(stripTransientTurnContext(finalMessages));
       this.contextMessageReferences = finalReferences;
       const usageRecord = stepUsageRecords.length ? sumSessionUsage(stepUsageRecords) : undefined;
+      const notification = lastAssistant ? extractNotificationBlock(lastAssistant) : undefined;
       const content = lastAssistant ? agentMessageText(lastAssistant) : "";
       await recordNativeTelemetry(this.options.config, this.options.workspaceRoot, {
         type: "end",
@@ -2461,15 +2462,18 @@ export class AgentSession {
         replyToMessageId: runOptions.replyToMessageId ?? lastUserMessageReference?.id,
         retryOfMessageId: runOptions.retryOfMessageId
       });
-      let outcome = nativeTurnOutcome(
-        hardStepLimitReached,
-        content,
-        lastAssistant?.stopReason,
-        completedStepsBeforeRun + observedSteps,
-        usageRecord
-      );
+      let outcome = {
+        ...nativeTurnOutcome(
+          hardStepLimitReached,
+          content,
+          lastAssistant?.stopReason,
+          completedStepsBeforeRun + observedSteps,
+          usageRecord
+        ),
+        notification
+      };
       if (content && (outcome.status === "completed" || outcome.status === "incomplete" || outcome.status === "blocked")) {
-        yield { type: "assistant.completed", content };
+        yield { type: "assistant.completed", content, notification };
       }
       if (outcome.status === "blocked" || outcome.status === "incomplete" && outcome.resumable === true) {
         try {
@@ -3586,6 +3590,24 @@ function agentMessageText(message: AgentAssistantMessage): string {
   return message.content.filter((part): part is Extract<AgentAssistantMessage["content"][number], { type: "text" }> => part.type === "text")
     .map((part) => part.text)
     .join("");
+}
+
+/**
+ * 从最后的 assistant 消息末尾剥掉 <biny_notification> 块（就地改写消息，历史回传也变干净），
+ * 返回用作后台通知的一句摘要。块不在末尾或内容为空时视为未写，原文保留。
+ */
+function extractNotificationBlock(message: AgentAssistantMessage): string | undefined {
+  const parts = message.content;
+  for (let index = parts.length - 1; index >= 0; index -= 1) {
+    const part = parts[index];
+    if (part === undefined || part.type !== "text") continue;
+    const match = /<biny_notification>([\s\S]*?)<\/biny_notification>\s*$/u.exec(part.text);
+    if (!match) return undefined;
+    part.text = part.text.slice(0, match.index).trimEnd();
+    const notification = match[1]?.trim().split("\n")[0]?.slice(0, 280).trim();
+    return notification || undefined;
+  }
+  return undefined;
 }
 
 function queuedUserMessage(input: string, attachments: AgentAttachment[]): AgentUserMessage {
