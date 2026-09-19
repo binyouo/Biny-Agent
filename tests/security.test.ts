@@ -39,7 +39,7 @@ try {
   assert.ok(securityIndex > -1 && securityIndex < soulIndex);
   assert.ok(soulIndex < identityIndex && identityIndex < modeIndex && modeIndex < toolsIndex);
   assert.match(first, /private user preference/u);
-  assert.match(first, /Current permission mode: runtime-managed/u);
+  assert.match(first, /Soul should remain stable\./u);
   assert.doesNotMatch(first, /Alma/u);
 
   const baselineStable = stableSystemPromptForCache(buildSystemPrompt({ cwd: "/workspace" }));

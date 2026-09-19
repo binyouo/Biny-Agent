@@ -628,7 +628,6 @@ export class AgentSession {
   /** 重新生成也要使用和普通回合相同的稳定系统提示词，只替换消息上下文。 */
   private async baseSystemPrompt(
     input: string,
-    permissionMode: PermissionMode,
     personalization: ResolvedChatPersonalization,
     capabilitySelection: Promise<AgentCapabilitySelection | undefined>,
     signal: AbortSignal | undefined,
@@ -667,7 +666,6 @@ export class AgentSession {
       // 辅助引用读取失败不扩大到其他会话或阻断当前对话。
     }
     return buildPromptBundle({
-      permissionMode,
       extensionPrompt: await this.extensionPrompt(selection),
       tools: initialTools,
       soulPrompt,
@@ -1327,7 +1325,6 @@ export class AgentSession {
     this.activeConfig = snapshot.config;
     this.activePersonalization = snapshot.state.resolved;
     const personalization = snapshot.state.resolved;
-    const permissionMode = this.options.permissionManager.getStatus().mode;
     this.contextMemory.restore(prefixMessages, replay.contextState ?? replay.contextUsage);
     this.contextMessageReferences = prefixReferences;
     const originalActiveIds = activeSessionMessageIds(recordedEvents);
@@ -1344,7 +1341,7 @@ export class AgentSession {
     if (this.options.selectCapabilities && (options.capabilitySelection?.tools ?? this.activeConfig.chat.defaultToolSelection) === "auto") {
       yield { type: "preparation.updated", stage: "tools" };
     }
-    const basePrompt = this.baseSystemPrompt(sourceInput, permissionMode, personalization, selection, options.abortSignal, referenceHistory)
+    const basePrompt = this.baseSystemPrompt(sourceInput, personalization, selection, options.abortSignal, referenceHistory)
       .then((prompt) => appendExternalTurnContext(prompt, options.promptContext));
     yield { type: "preparation.updated", stage: "workspace" };
     const prepared = yield* this.prepareContext(
@@ -1737,7 +1734,6 @@ export class AgentSession {
       yield doneEvent(outcome);
       return;
     }
-    const permissionMode = this.options.permissionManager.getStatus().mode;
     let systemPrompt: string | undefined;
     let messages: AgentMessage[];
     let messageReferences: Array<SessionMessageReference | undefined>;
@@ -1809,7 +1805,7 @@ export class AgentSession {
         yield { type: "preparation.updated", stage: "tools" };
       }
       const systemPromptPerfStartedAt = perfNow();
-      const basePrompt = this.baseSystemPrompt(input, permissionMode, turnPersonalization, selection, abortSignal, referenceHistory)
+      const basePrompt = this.baseSystemPrompt(input, turnPersonalization, selection, abortSignal, referenceHistory)
         .then((prompt) => {
           recordPerfPhase("turn.baseSystemPrompt", systemPromptPerfStartedAt, { runId: runtimeRunId });
           return appendExternalTurnContext(prompt, runOptions.promptContext);
