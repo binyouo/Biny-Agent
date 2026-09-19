@@ -27,12 +27,15 @@ import { emotionGetCommand, emotionSetBaseCommand, emotionSetContextCommand, emo
 import {
   activityClearCommand,
   activityConfigCommand,
+  activityConfigSetCommand,
   activityDigestCommand,
   activityReportCommand,
   activityAnalyzeCommand,
+  activityRecordingCommand,
   activitySearchCommand,
   activityServeCommand,
   activitySessionsCommand,
+  activityShowCommand,
   activityStatusCommand,
   activitySuggestionsCommand,
   activitySummaryCommand
@@ -244,13 +247,25 @@ session
 const activity = program.command("activity").description("Inspect and serve local Activity Recorder data");
 activity.command("analyze").argument("<session-id>", "activity session to analyze again").option("--json", "print JSON").action((sessionId: string, options: { json?: boolean }) => wrap(() => activityAnalyzeCommand(workspaceRoot, sessionId, options))());
 activity.command("status").option("--json", "print JSON").action((options: { json?: boolean }) => wrap(() => activityStatusCommand(workspaceRoot, options))());
-activity.command("config").option("--json", "print JSON").action((options: { json?: boolean }) => wrap(() => activityConfigCommand(workspaceRoot, options))());
+for (const [name, enabled] of [["start", true], ["stop", false]] as const) {
+  activity.command(name).description(enabled ? "Enable recording via the shared config" : "Pause recording via the shared config").option("--json", "print JSON").action((options: { json?: boolean }) => wrap(() => activityRecordingCommand(workspaceRoot, enabled, options))());
+}
+activity.command("show").argument("<session-id>", "activity session to inspect").option("--json", "print JSON").action((sessionId: string, options: { json?: boolean }) => wrap(() => activityShowCommand(workspaceRoot, sessionId, options))());
+const activityConfig = activity.command("config").description("Print the recorder config");
+activityConfig.option("--json", "print JSON").action((options: { json?: boolean }) => wrap(() => activityConfigCommand(workspaceRoot, options))());
+activityConfig
+  .command("set")
+  .argument("<key>", "ActivitySettings key, e.g. jpegQuality")
+  .argument("<value>", "JSON value or raw string")
+  .option("--json", "print JSON")
+  .action((key: string, value: string, options: { json?: boolean }) => wrap(() => activityConfigSetCommand(workspaceRoot, key, value, options))());
 activity
   .command("search")
   .argument("<query...>", "keyword query")
+  .option("--semantic", "use local embedding semantic search instead of keyword FTS")
   .option("--limit <count>", "maximum results", parsePositiveInteger)
   .option("--json", "print JSON")
-  .action((query: string[], options: { limit?: number; json?: boolean }) => wrap(() => activitySearchCommand(workspaceRoot, query.join(" "), options))());
+  .action((query: string[], options: { semantic?: boolean; limit?: number; json?: boolean }) => wrap(() => activitySearchCommand(workspaceRoot, query.join(" "), options))());
 activity
   .command("sessions")
   .option("--limit <count>", "maximum sessions", parsePositiveInteger)
@@ -269,9 +284,13 @@ activity
   .action((date: string, options: { json?: boolean }) => wrap(() => activityReportCommand(workspaceRoot, date, options))());
 activity
   .command("summary")
-  .argument("[date]", "YYYY-MM-DD", localDateKey())
+  .argument("<kind>", "daily or weekly")
+  .argument("[date]", "YYYY-MM-DD; weekly 的 date 代表该周周一", localDateKey())
   .option("--json", "print JSON")
-  .action((date: string, options: { json?: boolean }) => wrap(() => activitySummaryCommand(workspaceRoot, date, options))());
+  .action((kind: string, date: string, options: { json?: boolean }) => {
+    if (kind !== "daily" && kind !== "weekly") throw new Error("summary kind 只支持 daily 或 weekly。");
+    return wrap(() => activitySummaryCommand(workspaceRoot, kind, date, options))();
+  });
 activity
   .command("suggestions")
   .option("--force", "ignore the ten-minute cache")

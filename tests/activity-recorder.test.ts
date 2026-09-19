@@ -17,7 +17,7 @@ await testCanonicalActivitySchema();
 await testActivityServiceLifecycleQueue();
 await testSidecarInputFailureDoesNotCrashService();
 await testPermissionRequestStartsStandaloneSidecar();
-await testActivitySettingsRestartSidecar();
+await testActivitySettingsHotUpdateSidecar();
 await testGlobalActivitySettingsUseVersionedSnapshot();
 await testSidecarPersistsCaptureBeforeOcr();
 await testEventAndFallbackStorage();
@@ -178,17 +178,25 @@ done
   }
 }
 
-async function testActivitySettingsRestartSidecar(): Promise<void> {
-  const root = await mkdtemp(path.join(os.tmpdir(), "biny-activity-restart-"));
+async function testActivitySettingsHotUpdateSidecar(): Promise<void> {
+  // Given: sidecar 正在录制且已有 session；When: 运行中更新采集参数；
+  // Then: 不重启 sidecar（命令日志只有一个 start），settings_updated 原地送达，事件落在同一 session。
+  const root = await mkdtemp(path.join(os.tmpdir(), "biny-activity-hotupdate-"));
   const sidecarPath = path.join(root, "fake-sidecar");
+  const commandLog = path.join(root, "commands.log");
   await writeFile(sidecarPath, `#!/bin/sh
 while IFS= read -r line; do
   case "$line" in
     *'"type":"start"'*)
+      printf '%s\\n' "start" >> "${commandLog}"
       printf '%s\\n' '{"type":"event","occurredAt":"2026-08-31T01:00:00.000Z","eventType":"app_focus","application":"Fake App"}'
       ;;
-    *'"type":"stop"'*)
+    *'"type":"settings_updated"'*)
+      printf '%s\\n' "settings_updated" >> "${commandLog}"
       printf '%s\\n' '{"type":"event","occurredAt":"2026-08-31T01:00:01.000Z","eventType":"keypress","application":"Fake App","inputEventCount":1}'
+      ;;
+    *'"type":"stop"'*)
+      printf '%s\\n' "stop" >> "${commandLog}"
       exit 0
       ;;
   esac
@@ -216,8 +224,10 @@ done
     await service.initialize();
     await waitForActivitySnapshot(service, (snapshot) => snapshot.sessions === 1);
     await service.updateSettings({ captureDebounceMs: 6_000 }, revision);
-    await waitForActivitySnapshot(service, (snapshot) => snapshot.sessions === 2);
+    await waitForActivitySnapshot(service, (snapshot) => snapshot.events === 2);
     assert.equal(config.activity.captureDebounceMs, 6_000);
+    assert.deepEqual((await readFile(commandLog, "utf8")).trim().split("\n"), ["start", "settings_updated"]);
+    assert.equal(service.snapshot().sessions, 1);
   } finally {
     await service.stop();
     await rm(root, { recursive: true, force: true });
@@ -430,7 +440,9 @@ async function testEventAndFallbackStorage(): Promise<void> {
         endedAt: undefined,
         snapshotCount: 2,
         eventCount: 1,
-        applications: ["Test App"]
+        applications: ["Test App"],
+        analysisTitle: undefined,
+        analysisDescription: undefined
       }]
     });
     await store.clear();
@@ -594,7 +606,9 @@ async function testStorageLimitKeepsEventSemantics(): Promise<void> {
         endedAt: undefined,
         snapshotCount: 1,
         eventCount: 0,
-        applications: ["Canvas App"]
+        applications: ["Canvas App"],
+        analysisTitle: undefined,
+        analysisDescription: undefined
       }]
     });
     await store.rotateSnapshots(1);
@@ -609,7 +623,9 @@ async function testStorageLimitKeepsEventSemantics(): Promise<void> {
         endedAt: undefined,
         snapshotCount: 0,
         eventCount: 0,
-        applications: ["Canvas App"]
+        applications: ["Canvas App"],
+        analysisTitle: undefined,
+        analysisDescription: undefined
       }]
     });
     const result = store.search("Canvas App");
@@ -861,6 +877,9 @@ async function testDailySummaryAggregation(): Promise<void> {
     });
     store.endSession(firstSession, endedAt);
     store.recordAnalysis(makeAnalysis(firstSession, "完成编辑器与浏览器切换"));
+    // 设置页最近会话直接消费 snapshot 投影；分析标题/摘要必须随 session 一起返回。
+    assert.equal(store.snapshot().recentSessions[0]?.analysisTitle, "完成编辑器与浏览器切换");
+    assert.equal(store.snapshot().recentSessions[0]?.analysisDescription, "完成编辑器与浏览器切换");
 
     const secondSession = store.startSession(new Date(2026, 7, 28, 13, 0, 0).toISOString());
     store.recordEvent({ sessionId: secondSession, occurredAt: new Date(2026, 7, 28, 13, 1, 0).toISOString(), eventType: "click", application: "Terminal" });

@@ -2,6 +2,35 @@ import { z } from "zod";
 
 export const activityDataResidencySchema = z.enum(["local", "external"]);
 
+/** 配置缺失 activity 段时的完整默认值；schema 默认也引用它，避免两份字面量漂移。 */
+export const defaultActivitySettings = {
+  enabled: true,
+  captureDebounceMs: 4_000,
+  heartbeatMs: 120_000,
+  idleTimeoutMs: 30_000,
+  inputPauseMs: 1_200,
+  visualPollMs: 12_000,
+  browserPollIntervalMs: 12_000,
+  jpegQuality: 55,
+  histogramChangeThreshold: 0.05,
+  pixelDiffThreshold: 0.02,
+  pixelTolerance: 30,
+  ocrEnabled: true,
+  inputMonitoringEnabled: true,
+  ocrLanguages: ["en-US", "zh-Hans", "zh-Hant", "ja"],
+  ocrEveryNFrames: 3,
+  sensitiveApplications: [
+    "com.apple.keychainaccess",
+    "com.1password.1password",
+    "com.agilebits.onepassword7",
+    "org.bitwarden.desktop",
+    "com.lastpass.LastPass",
+    "com.dashlane.dashlanephonefinal"
+  ],
+  maxStorageMb: 10_240,
+  outputDirectory: "~/.biny/agent/activity-records",
+};
+
 interface ActivitySettingsNormalizationFields {
   captureDebounceMs: number;
   heartbeatMs: number;
@@ -89,63 +118,9 @@ export const activitySettingsPatchSchema = z.preprocess(
 export const activitySettingsSchema = z.preprocess(
   stripDeprecatedActivitySettings,
   activitySettingsObjectSchema
-).transform(normalizeActivitySettingsValue).default({
-  enabled: true,
-  captureDebounceMs: 4_000,
-  heartbeatMs: 120_000,
-  idleTimeoutMs: 30_000,
-  inputPauseMs: 1_200,
-  visualPollMs: 12_000,
-  browserPollIntervalMs: 12_000,
-  jpegQuality: 55,
-  histogramChangeThreshold: 0.05,
-  pixelDiffThreshold: 0.02,
-  pixelTolerance: 30,
-  ocrEnabled: true,
-  inputMonitoringEnabled: true,
-  ocrLanguages: ["en-US", "zh-Hans", "zh-Hant", "ja"],
-  ocrEveryNFrames: 3,
-  sensitiveApplications: [
-    "com.apple.keychainaccess",
-    "com.1password.1password",
-    "com.agilebits.onepassword7",
-    "org.bitwarden.desktop",
-    "com.lastpass.LastPass",
-    "com.dashlane.dashlanephonefinal"
-  ],
-  maxStorageMb: 10_240,
-  outputDirectory: "~/.biny/agent/activity-records",
-});
+).transform(normalizeActivitySettingsValue).default(defaultActivitySettings);
 
 export type ActivityDataResidency = z.infer<typeof activityDataResidencySchema>;
 export type ActivitySettings = z.infer<typeof activitySettingsSchema>;
 export type ActivitySettingsInput = ActivitySettings;
 export type ActivitySettingsPatch = Partial<ActivitySettingsInput>;
-
-export const defaultActivitySettings: ActivitySettings = {
-  enabled: true,
-  captureDebounceMs: 4_000,
-  heartbeatMs: 120_000,
-  idleTimeoutMs: 30_000,
-  inputPauseMs: 1_200,
-  visualPollMs: 12_000,
-  browserPollIntervalMs: 12_000,
-  jpegQuality: 55,
-  histogramChangeThreshold: 0.05,
-  pixelDiffThreshold: 0.02,
-  pixelTolerance: 30,
-  ocrEnabled: true,
-  inputMonitoringEnabled: true,
-  ocrLanguages: ["en-US", "zh-Hans", "zh-Hant", "ja"],
-  ocrEveryNFrames: 3,
-  sensitiveApplications: [
-    "com.apple.keychainaccess",
-    "com.1password.1password",
-    "com.agilebits.onepassword7",
-    "org.bitwarden.desktop",
-    "com.lastpass.LastPass",
-    "com.dashlane.dashlanephonefinal"
-  ],
-  maxStorageMb: 10_240,
-  outputDirectory: "~/.biny/agent/activity-records",
-};

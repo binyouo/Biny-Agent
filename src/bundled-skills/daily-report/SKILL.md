@@ -44,7 +44,7 @@ biny activity report 2026-09-10
 biny activity digest --lookback-min 120
 ```
 
-When the user asks a follow-up about one project or event, drill down with `biny activity search` or `biny activity sessions` instead of regenerating the whole report.
+When the user asks a follow-up about one project or event, drill down with `biny activity search` (add `--semantic` when keyword search misses meaning-based recalls), `biny activity sessions`, or `biny activity show <session-id>` for one session's events, snapshots and analysis, instead of regenerating the whole report.
 
 ## Output rules
 

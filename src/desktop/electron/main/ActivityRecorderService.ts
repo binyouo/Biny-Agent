@@ -497,8 +497,24 @@ export class ActivityRecorderService {
   }
 
   private async applySettings(nextSettings: ActivitySettings): Promise<void> {
-    // updateConfig 会完整 stop/reconfigure/start；除了让配置边界可观察，也会重置
-    // sidecar 的截图去重、输入聚合和浏览器状态，不能在当前 session 内原地 update。
+    // 热更新语义：运行中的 sidecar 对多数参数原地生效，不打断当前 session、
+    // 不重置截图去重与输入聚合；只有开关切换或库目录变化才走完整 stop/reconfigure/start。
+    // 会话/空闲计时参数在已排定的 session idle timer 里天然到下个会话才生效。
+    const previous = this.settings;
+    if (
+      previous !== undefined
+      && previous.enabled === nextSettings.enabled
+      && previous.outputDirectory === nextSettings.outputDirectory
+      && this.child !== undefined
+      && this.state === "running"
+    ) {
+      this.settings = nextSettings;
+      this.send({ type: "settings_updated", settings: nextSettings });
+      if (previous.maxStorageMb !== nextSettings.maxStorageMb) this.scheduleSnapshotRotation(nextSettings.maxStorageMb);
+      this.publish();
+      return;
+    }
+    // 完整重启路径：让配置边界可观察，也会重置 sidecar 的截图去重、输入聚合和浏览器状态。
     this.analysisScheduler.stop();
     this.embeddingScheduler.stop();
     this.analysisAbort.abort();

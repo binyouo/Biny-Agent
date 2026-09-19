@@ -325,6 +325,12 @@ private final class ActivityRecorder {
             }
         case "stop":
             stop()
+        case "settings_updated":
+            guard let updated = command.settings else {
+                output.write(SidecarError(message: "settings_updated 缺少 Activity 设置。"))
+                return
+            }
+            applySettingsUpdate(updated)
         case "status":
             emitStatus(status: sessionActive ? "running" : "stopped", error: lastStatusError)
         case "capture":
@@ -445,6 +451,27 @@ private final class ActivityRecorder {
         frontmostApplicationChanged(NSWorkspace.shared.frontmostApplication, emitEvent: false)
         lastAccessibilityGranted = AXIsProcessTrusted()
         emitStatus(status: "running", error: statusError())
+    }
+
+    /// 热更新语义：运行中不重置去重基线、输入聚合与当前会话，定时器用新参数重排。
+    /// 会话/空闲计时相关参数由主进程持有，天然到下个会话才生效；OCR 开关在采集链路逐帧读取，无需额外处理。
+    private func applySettingsUpdate(_ nextSettings: ActivitySettings) {
+        guard sessionActive, settings != nil else {
+            // 未在录制时不做任何重排；下次 start 会携带完整设置。
+            settings = nextSettings
+            return
+        }
+        settings = nextSettings
+        if nextSettings.inputMonitoringEnabled {
+            installWorkspaceObserver()
+            installGlobalInputMonitorsIfNeeded(nextSettings)
+        } else {
+            removeGlobalEventMonitors()
+            removeWorkspaceObserver()
+        }
+        installFallbackTimer(nextSettings)
+        installBrowserPollTimer(nextSettings)
+        emitStatus(status: sessionActive ? "running" : "stopped", error: statusError())
     }
 
     private func installWorkspaceObserver() {
