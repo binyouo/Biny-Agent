@@ -8,7 +8,7 @@ import type { PermissionResult } from "../../../../permission/PermissionManager.
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { ThinkingOrb } from "thinking-orbs";
 import type { DesktopProject, DesktopRuntimeMutation, DesktopRuntimeProjection, DesktopPlanProjection, DesktopSessionLimits, DesktopSessionWriterConflict } from "../../../protocol.js";
-import type { RecipeNotice } from "../app/useDesktopEventBridge.js";
+import type { RecipeNotice, SkillExtractionCardState } from "../app/useDesktopEventBridge.js";
 import { hasSubmittedUserMessage } from "../chatModel.js";
 import type { TimelineTurn } from "../sessionTimeline.js";
 import { desktopWorktreeView } from "../worktreePresentation.js";
@@ -19,6 +19,7 @@ import { GenerationErrorBanner } from "./chat/GenerationErrorBanner.js";
 import { MessageTimeline } from "./MessageTimeline.js";
 import { RuntimePanel } from "./RuntimePanel.js";
 import { RecipeReadyBanner } from "./RecipeReadyBanner.js";
+import { SkillExtractionCard } from "./SkillExtractionCard.js";
 import { PlanPanel } from "./workspace/PlanPanel.js";
 
 /** 新会话首条消息的临时投影；真实 message.user 到达后由 App 清掉。 */
@@ -54,6 +55,9 @@ interface WorkspaceProps {
   recipeNotices?: RecipeNotice[];
   onDismissRecipe?(notice: RecipeNotice): void;
   onExtractRecipe?(notice: RecipeNotice): void;
+  /** 技能提取（自进化）进度卡；与 Recipe 卡同区域，run.started 后由事件桥清除。 */
+  skillExtraction?: SkillExtractionCardState;
+  onDismissSkillExtraction?(): void;
   onOpenExternal(url: string): void;
   onResolvePermission(requestId: string, result: PermissionResult): Promise<void>;
   onRetry(targetMessageId: string, input: string, idempotencyKey: string): Promise<void>;
@@ -81,7 +85,9 @@ interface WorkspaceProps {
   inspectorRail?: React.ReactNode;
   /** 新会话首条消息的临时投影；真实事件到达后由 App 清掉。 */
   pendingPrompt?: PendingPrompt;
-  skillNames?: ReadonlyMap<string, string>;
+  skillDescriptions?: ReadonlyMap<string, string>;
+  /** 技能 ref/id → 展示名；回复顶部回合技能清单使用。 */
+  skillNamesBySelector?: ReadonlyMap<string, string>;
   /** 顶部工具条：自动化/技能入口（搜索与新建任务在侧栏 chrome）。 */
   onOpenRuntime(): void;
   onOpenExtensions(): void;
@@ -130,7 +136,8 @@ export function Workspace({
   onRuntimeMutation,
   onRuntimeRefresh,
   pendingPrompt,
-  skillNames,
+  skillDescriptions,
+  skillNamesBySelector,
   workspaceContext,
   inspectorRail,
   onOpenRuntime: _onOpenRuntime,
@@ -248,6 +255,8 @@ export function Workspace({
                   : undefined}
                 pendingFloatFromComposer={pendingFloatFromComposer}
                 runtimeActiveRunId={runtimeActiveRunId}
+                skillDescriptions={skillDescriptions}
+                skillNamesBySelector={skillNamesBySelector}
                 thinking={streaming || thinking}
                 projectId={projectId}
                 turns={turns}
@@ -268,6 +277,7 @@ export function Workspace({
                 />
               </div>
             ) : null}
+            {skillExtraction ? <SkillExtractionCard state={skillExtraction} onDismiss={() => onDismissSkillExtraction?.()} /> : null}
             {generationError ? (
               <GenerationErrorBanner error={generationError} model={generationError === lastTurn?.error ? lastTurn?.model?.label : undefined} onDismiss={onDismissGenerationError} />
             ) : null}

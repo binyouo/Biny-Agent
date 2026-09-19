@@ -139,6 +139,8 @@ export interface TimelineTurn {
   capabilitySelection?: AgentCapabilitySelection;
   memoryInjectedCount?: number;
   memoryInjectedSummaries?: string[];
+  /** 本轮自动记忆召回的降级原因；存在时回复上下文行应提示用户。 */
+  memoryRecallDegraded?: string;
   status: TimelineRunStatus;
   model?: AgentRunModel;
   tools: TimelineTool[];
@@ -196,15 +198,9 @@ export function liveTimelineEvents(events: AgentHostEvent[]): AgentHostEvent[] {
   return result;
 }
 
-const LIVE_REASONING_LIMIT = 640;
-
-/** 实时行只保留可用于预览的前缀，终态刷新后再从 session 恢复完整内容。 */
+/** 合并实时思考增量；终态刷新后仍会从 session 回放同一份完整内容。 */
 function appendLiveReasoning(existing: string, next: string): string {
-  if (!next || existing.endsWith("…")) return existing;
-  const combined = existing + next;
-  return combined.length <= LIVE_REASONING_LIMIT
-    ? combined
-    : `${combined.slice(0, LIVE_REASONING_LIMIT - 1).trimEnd()}…`;
+  return next ? existing + next : existing;
 }
 
 /** 完全空的轮次（只有元信息、没有任何可展示内容）不进时间线。 */
@@ -319,6 +315,8 @@ function buildHistoricalTurns(events: SessionEvent[]): TimelineTurn[] {
       if (typeof memoryCount === "number" && Number.isInteger(memoryCount) && memoryCount >= 0) turn.memoryInjectedCount = memoryCount;
       const memorySummaries = injectedMemorySummaries(event.metadata?.memoryInjectedSummaries);
       if (memorySummaries) turn.memoryInjectedSummaries = memorySummaries;
+      const memoryRecallDegraded = event.metadata?.memoryRecallDegraded;
+      if (typeof memoryRecallDegraded === "string" && memoryRecallDegraded.trim()) turn.memoryRecallDegraded = memoryRecallDegraded.trim();
       appendHistoricalReasoning(turn, event.reasoningContent, reasoningStartedAt, event.time);
       appendHistoricalAssistant(turn, event.content);
       turn.durationMs = elapsedMs(turn.timestamp, event.time) ?? turn.durationMs;
@@ -509,6 +507,8 @@ function buildVersionedHistoricalTurns(events: SessionEvent[]): TimelineTurn[] {
       if (typeof memoryCount === "number" && Number.isInteger(memoryCount) && memoryCount >= 0) turn.memoryInjectedCount = memoryCount;
       const memorySummaries = injectedMemorySummaries(event.metadata?.memoryInjectedSummaries);
       if (memorySummaries) turn.memoryInjectedSummaries = memorySummaries;
+      const memoryRecallDegraded = event.metadata?.memoryRecallDegraded;
+      if (typeof memoryRecallDegraded === "string" && memoryRecallDegraded.trim()) turn.memoryRecallDegraded = memoryRecallDegraded.trim();
       appendHistoricalReasoning(turn, event.reasoningContent, reasoningStartedAt, event.time);
       appendHistoricalAssistant(turn, event.content);
       turn.durationMs = elapsedMs(turn.timestamp, event.time) ?? turn.durationMs;
@@ -792,6 +792,7 @@ function createLiveTimelineFold(initialUserMessageIndex: number): LiveTimelineFo
     } else if (event.type === "context.updated") {
       turn.memoryInjectedCount = event.context.memoryInjectedCount;
       turn.memoryInjectedSummaries = event.context.memoryInjectedSummaries.length ? [...event.context.memoryInjectedSummaries] : undefined;
+      turn.memoryRecallDegraded = event.context.memoryRecallDegraded;
       if (event.context.capabilitySelection) turn.capabilitySelection = event.context.capabilitySelection;
     } else if (event.type === "context.retrying") {
       turn.steps.push({

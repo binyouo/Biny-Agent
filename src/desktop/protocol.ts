@@ -1569,7 +1569,7 @@ export interface DesktopApi {
   releaseSettingsCredentials(handles: string[]): Promise<void>;
   updateSettingsDraftState(state: DesktopSettingsDraftState): Promise<void>;
   respondSettingsCloseRequest(requestId: string, response: DesktopSettingsCloseResponse): Promise<boolean>;
-  searchMemory(projectId: string, filter: DesktopMemoryOriginFilter, query: string, includeArchived?: boolean): Promise<DesktopMemorySearchMatch[]>;
+  searchMemory(projectId: string, query: string, includeArchived?: boolean): Promise<DesktopMemorySearchMatch[]>;
   addMemoryEntry(projectId: string, input: DesktopMemoryEntryInput, expectedRevision: number): Promise<DesktopMemoryOverview>;
   updateMemoryEntry(projectId: string, entryId: string, patch: DesktopMemoryEntryPatch, expectedRevision: number): Promise<DesktopMemoryOverview>;
   deleteMemoryEntry(projectId: string, entryId: string, expectedRevision: number): Promise<DesktopMemoryOverview>;
@@ -1580,7 +1580,7 @@ export interface DesktopApi {
   memorySleepRuns(projectId: string): Promise<MemorySleepRun[]>;
   previewMemorySleep(projectId: string): Promise<DesktopMemorySleepPreview>;
   cancelMemorySleep(projectId: string): Promise<{ cancelled: boolean }>;
-  clearMemory(projectId: string, filter: DesktopMemoryOriginFilter, expectedRevision: number): Promise<DesktopMemoryOverview>;
+  clearMemory(projectId: string, expectedRevision: number): Promise<DesktopMemoryOverview>;
   memoryEmbeddingStatus(projectId: string): Promise<DesktopMemoryEmbeddingStatus>;
   downloadMemoryEmbeddingModel(projectId: string, model: LocalEmbeddingModelId): Promise<DesktopMemoryEmbeddingStatus>;
   cancelMemoryEmbeddingDownload(projectId: string, model: LocalEmbeddingModelId): Promise<DesktopMemoryEmbeddingCancellationResult>;
