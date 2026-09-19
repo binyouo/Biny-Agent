@@ -5,6 +5,11 @@
  * 展开控件；落定后默认收起，摘要报「工具调用 N 次」或纯思考的「已思考 N 秒」；
  * 当前阶段直接反馈运行状态，消息末尾只在等待空档补充提示。
  *
+ * 相位超过 8 个时头部左侧出现「+N」溢出徽标，悬停扇形展开成液滴：
+ * 徽标收成 0 宽、隐藏相位逐枚长出（溢出液滴时序：
+ * 展开 300ms ease-out 逐枚 +18ms 错峰，收起反向 +12ms）；超过 12 枚时
+ * 改用 -16px 高密度叠放并启用 3D 翻面 hover。
+ *
  * 运行时只展开最新相位；结束后可点头像查看单相位，或打开完整时间线。
  * 工具行是动宾紧凑行（读取 xx / 编辑 xx +3 -2），点击行内展开完整工具详情；
  * 思考相位直接平铺思考文本。待授权卡片独立展示在工具详情之后。
@@ -16,6 +21,7 @@ import type { PermissionResult } from "../../../../../permission/PermissionManag
 import {
   activityToolRow,
   buildActivityPhases,
+  formatDuration,
   phaseLabel,
   phaseThinkingSeconds,
   type ActivityPhase,
@@ -26,6 +32,7 @@ import type { IconName } from "../Icon.js";
 import { reasoningDetailText } from "../../reasoningPresentation.js";
 import type { TimelineReasoningStep, TimelineTool, TimelineToolStep } from "../../sessionTimeline.js";
 import { Icon } from "../Icon.js";
+import { MarkdownContent } from "../MarkdownContent.js";
 import { ToolActivityDetail, ToolPermission } from "../ToolActivity.js";
 import { Collapse } from "../Collapse.js";
 
@@ -78,9 +85,6 @@ export const ActivitySegment = memo(function ActivitySegment({
     if (running && phase.items.some(({ step }) => step.kind === "tool" && step.tool.permission && !step.tool.permission.resolved)) {
       return { verb: "等待确认", rest: "" };
     }
-    if (isLive(phase) && phase.kind === "thinking" && !phase.items.some(({ step }) => step.kind === "reasoning" && step.content.trim())) {
-      return { verb: "等待模型响应", rest: "" };
-    }
     return phaseLabel(phase, isLive(phase), seconds);
   };
   const activePhase = phases.findLast(isLive);
@@ -108,6 +112,8 @@ export const ActivitySegment = memo(function ActivitySegment({
   // 模型执行时自动跟随，只有落定后的选择才由用户控制。恢复执行也清除旧选择。
   const [selection, setSelection] = useState<{ running: boolean; phase: number | null; timeline: boolean }>({ running, phase: null, timeline: false });
   if (selection.running !== running) setSelection({ running, phase: null, timeline: false });
+  // 悬停「+N」时液滴展开；用户选中的相位落在隐藏区时保持展开（溢出展开态）。
+  const [overflowExpanded, setOverflowExpanded] = useState(false);
   const timelineMode = !running && selection.running === running && selection.timeline;
   const selectedPhase = pendingPhaseIndex >= 0 ? pendingPhaseIndex
     : running ? phases.length - 1 : selection.running === running ? selection.phase : null;
@@ -127,20 +133,55 @@ export const ActivitySegment = memo(function ActivitySegment({
     ? labelFor(openPhaseOrNull, secondsForThinkingPhase(openPhaseOrNull))
     : activePhase ? labelFor(activePhase) : null;
 
+  // 液滴几何：≤12 枚用常规 -7 重叠，>12 枚压到 -16 并启用翻面；
+  // 用户选中隐藏相位时保持展开，悬停仅在落定后生效。
+  const dropletOverlap = hiddenCount > 12 ? -16 : -7;
+  const dropletExpanded = !running && (overflowExpanded
+    || (selection.phase !== null && selection.phase < hiddenCount));
+
   return (
     <section className={`chat-activity${railOpen ? " is-open" : ""}`} data-activity-anchor="" data-running={running || undefined}>
       <div className="chat-activity-header">
-        <div className="chat-activity-avatars">
+        <div className={`chat-activity-avatars${phases.length > 1 ? " is-stacked" : ""}`}>
           {hiddenCount > 0 ? (
-            <button
-              aria-label={`${String(hiddenCount)} 个更早阶段`}
-              className="chat-phase-avatar is-overflow"
-              data-activity-toggle=""
-              disabled={running}
-              onClick={openTimeline}
-              title={`${String(hiddenCount)} 个更早阶段`}
-              type="button"
-            >+{String(hiddenCount)}</button>
+            <span
+              className="chat-phase-overflow"
+              key={`${segmentKey}-avatar-overflow`}
+              onMouseEnter={() => { if (!running) setOverflowExpanded(true); }}
+              onMouseLeave={() => setOverflowExpanded(false)}
+            >
+              <button
+                aria-label={`${String(hiddenCount)} 个更早阶段`}
+                className={`chat-phase-avatar is-overflow${dropletExpanded ? " is-collapsed" : ""}`}
+                data-activity-toggle=""
+                disabled={running}
+                onClick={openTimeline}
+                style={{ zIndex: hiddenCount + 2 }}
+                title={`${String(hiddenCount)} 个更早阶段`}
+                type="button"
+              >+{String(hiddenCount)}</button>
+              {phases.slice(0, hiddenCount).map((phase, hi) => {
+                const isOpen = selectedPhase === hi;
+                return (
+                  <button
+                    aria-label={labelFor(phase).verb}
+                    className={`chat-phase-avatar is-droplet${dropletExpanded ? " is-open" : ""}${isOpen ? " is-active" : ""}${hiddenCount > 12 ? " is-flip" : ""}`}
+                    data-activity-toggle=""
+                    disabled={running}
+                    key={`${segmentKey}-avatar-h-${String(hi)}`}
+                    onClick={() => openPhase(hi)}
+                    style={{
+                      marginLeft: dropletExpanded ? (hi === 0 ? 2 : dropletOverlap) : 0,
+                      zIndex: isOpen ? 50 : hi + 1,
+                      transitionDelay: dropletExpanded ? `${String(hi * 18)}ms` : `${String((hiddenCount - hi) * 12)}ms`
+                    }}
+                    type="button"
+                  >
+                    <Icon name={PHASE_ICONS[phase.kind]} size={12} />
+                  </button>
+                );
+              })}
+            </span>
           ) : null}
           {phases.slice(hiddenCount).map((phase, visibleIndex) => {
             const index = hiddenCount + visibleIndex;
@@ -269,7 +310,17 @@ const PhaseBody = memo(function PhaseBody({
       .filter(Boolean)
       .join("\n\n");
     if (!text) return null;
-    return <div className="chat-activity-thinking">{text}</div>;
+    return (
+      <div className="chat-activity-thinking">
+        <MarkdownContent
+          content={text}
+          onOpenExternal={onOpenExternal}
+          onPreviewFile={onPreviewFile}
+          projectId={projectId}
+          variant="is-thinking"
+        />
+      </div>
+    );
   }
   return (
     <>
@@ -322,6 +373,9 @@ export const ActivityToolRow = memo(function ActivityToolRow({
         <span className="chat-tool-row-object" title={row.object}>{row.object}</span>
         {row.plus !== undefined && row.plus > 0 ? <span className="chat-tool-row-diff is-add">+{String(row.plus)}</span> : null}
         {row.minus !== undefined && row.minus > 0 ? <span className="chat-tool-row-diff is-del">-{String(row.minus)}</span> : null}
+        {tool.durationMs !== undefined ? (
+          <span className="chat-tool-row-duration" title="耗时"><Icon name="timer" size={12} />{formatDuration(tool.durationMs)}</span>
+        ) : null}
         <span className="chat-tool-row-chevron"><Icon name="chevron" size={14} /></span>
       </button>
       <Collapse className="chat-tool-row-collapse" open={open}>
