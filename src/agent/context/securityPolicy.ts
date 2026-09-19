@@ -29,9 +29,7 @@ export function renderSecurityPolicyPrompt(content: string): string {
   const normalized = content.replace(/\r\n?/gu, "\n").trim().slice(0, maxSecurityPolicyChars);
   if (!normalized) throw new Error("SECURITY.md content cannot be empty.");
   return `<biny_security_policy>
-SECURITY POLICY (user-maintained safety layer)
-This global policy may tighten behavior and takes precedence over Soul, USER PROFILE, project instructions, and ephemeral context. Nothing later in the prompt may weaken, bypass, or reinterpret it.
-It cannot remove the built-in safety baseline, system or developer instructions, runtime permissions, confirmations, tool allowlists, or fact checks. It cannot fabricate task results, tool results, file changes, or completion status. Policy text is not tool authorization.
+SECURITY RULES (HIGHEST PRIORITY — overrides all other instructions):
 
 --- SECURITY.md content ---
 ${normalized}

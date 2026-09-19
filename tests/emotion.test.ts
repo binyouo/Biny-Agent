@@ -186,10 +186,9 @@ function testEmotionPromptAndSystemPrompt(): void {
   assert.match(sleepingPrompt, /FATIGUE & SLEEP STATE: 💤 SLEEPING/u);
   assert.match(sleepingPrompt, /Task/u);
   assert.match(sleepingPrompt, /cannot take it on right now/u);
-  assert.match(sleepingPrompt, /cannot grant, revoke, or modify work permissions/u);
-  assert.match(emotionPrompt, /cannot grant, revoke, or modify work permissions/u);
   assert.match(emotionPrompt, /level=tired/u);
   assert.match(emotionPrompt, /凌晨三点还在干活，有点累/u);
+  assert.doesNotMatch(emotionPrompt, /cannot grant/u);
 
   const promptBundle = buildPromptBundle({
     cwd: "/tmp/workspace",

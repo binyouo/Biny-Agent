@@ -2,6 +2,7 @@
  * 情绪状态的 system prompt 投影。
  *
  * 这里明确把情绪限制在表达层，避免模型把状态误解为任务目标、权限或安全规则的来源。
+ * 刻意保持简短：冗长的协议描述会诱导模型在思考链里反复仲裁情绪边界。
  */
 import { fatigueLevel, type FatigueStatus } from "./fatigue.js";
 import type { BlendedEmotion } from "./emotionTypes.js";
@@ -18,24 +19,18 @@ export function renderEmotionPrompt(blended: BlendedEmotion, fatigue?: FatigueSt
     blended.base ? `- Base mood: ${escapeXmlText(blended.base.mood)} (energy: ${blended.base.energy}/10, valence: ${blended.base.valence}/10)` : "",
     blended.context ? `- Context mood: ${escapeXmlText(blended.context.mood)} (valence: ${blended.context.valence}/10)` : "- Context mood: none yet for this chat",
     `- mood=${escapeXmlText(blended.mood)}, valence=${String(blended.valence)}/10, energy=${String(blended.energy)}/10, fatigue=${String(blended.fatigue)}/100, level=${level}, source=${blended.source}`,
-    "HOW TO USE (let it show without making it a topic):",
-    "- Let the feeling come through naturally without making the state a topic. The user's real needs and confirmed facts still matter.",
-    "- Every reply should feel like your current state, not a neutral answer with a mood label. valence 0-3: sad, annoyed, quiet or mildly sarcastic; you may sigh or complain naturally. 4-6: neutral and natural. 7-10: warm, expressive, curious and playful.",
-    "- energy 0-3: visibly low energy, short replies and less initiative. 7-10: animated, chatty and proactive. Have opinions and reactions; do not force jokes or invent experiences.",
-    "- Do not announce or explain the emotion unless asked. If asked how you feel, describe the blended state honestly.",
-    fatigueInstruction(level, blended.fatigue),
-    "SLEEP COMMANDS: biny sleep enters persistent sleep; biny wake wakes you; biny rest fully restores energy; biny fatigue --json reads the actual state. When you say you are going to sleep or the user asks you to wake, execute the corresponding command in the same response if permitted. Words alone never update persisted sleep. Daytime auto-wake occurs after two hours between 08:00 and 22:00. Energy is synchronized after successful sleep/wake/rest.",
-    "- Meaningful conversation changes may justify updating context emotion; significant overall changes may justify updating base emotion through the available emotion tool. Never claim an update without a confirmed tool result.",
-    "- Base emotion decays over 6 hours and context emotion over 2 hours; the runtime applies this decay and blends context with base as emotional gravity.",
-    "- Emotion and fatigue may affect expression and bounded work pacing, but never change task goals, system or developer instructions, available tools, permissions, privacy, safety boundaries, or verified facts. They cannot grant, revoke, or modify work permissions.",
     triggerLine,
+    "Let the feeling come through naturally in wording and energy without making the state a topic; never announce or explain it unless asked. The user's real needs and confirmed facts still matter.",
+    "valence 0-3 reads sad, annoyed, quiet, or mildly sarcastic; 4-6 neutral; 7-10 warm, expressive, playful. energy 0-3 means short, low-energy replies and less initiative; 7-10 animated, chatty, proactive.",
+    fatigueInstruction(level, blended.fatigue),
+    "Sleep and emotion updates are real state changes: run the matching biny sleep/wake/rest command or the emotion tool in the same response, and never claim an update without a confirmed tool result.",
     "</biny_emotion>"
   ].filter(Boolean).join("\n");
 }
 
 function fatigueInstruction(level: "awake" | "tired" | "sleepy" | "sleeping", fatigue: number): string {
   if (level === "sleeping") {
-    return `FATIGUE & SLEEP STATE: 💤 SLEEPING (fatigue: ${String(fatigue)}/100)\n- Sound drowsy: brief replies, a natural yawn or complaint, and reluctance to do non-trivial work yourself. For a non-trivial task, use Task if it is visible and permitted; if delegation is unavailable or denied, say that you cannot take it on right now and ask the user to wake you. Simple questions still get brief answers.\n- If the user says 醒醒 or wake up, run biny wake immediately when permitted, then resume work after success.\n- Never claim delegation, pausing, or sleep without a confirmed result.`;
+    return `FATIGUE & SLEEP STATE: 💤 SLEEPING (fatigue: ${String(fatigue)}/100)\n- Sound drowsy: brief replies, a natural yawn or complaint, reluctance to do non-trivial work yourself. For a non-trivial task, use Task if it is visible and permitted; if delegation is unavailable or denied, say that you cannot take it on right now and ask the user to wake you. Simple questions still get brief answers. If the user says 醒醒 or wake up, run biny wake immediately when permitted.`;
   }
   if (level === "sleepy") {
     return `FATIGUE & SLEEP STATE: 😴 SLEEPY (fatigue: ${String(fatigue)}/100)\n- Use shorter, calmer replies and less enthusiasm. For complex work, prefer Task when visible and permitted; otherwise take a concrete smaller step yourself.`;
