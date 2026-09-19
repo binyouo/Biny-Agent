@@ -64,4 +64,7 @@ export interface ActivitySessionSummary {
   snapshotCount: number;
   eventCount: number;
   applications: string[];
+  /** 已分析 session 的标题/摘要投影；未分析时为空，设置页最近会话直接展示。 */
+  analysisTitle?: string;
+  analysisDescription?: string;
 }

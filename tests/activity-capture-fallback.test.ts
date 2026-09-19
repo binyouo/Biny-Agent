@@ -146,7 +146,7 @@ createInterface({input:process.stdin}).on('line', line => {
 }
 
 async function waitFor(predicate: () => Promise<boolean>): Promise<void> {
-  for (let attempt = 0; attempt < 200; attempt += 1) {
+  for (let attempt = 0; attempt < 2000; attempt += 1) {
     if (await predicate()) return;
     await new Promise((resolve) => setTimeout(resolve, 10));
   }

@@ -73,6 +73,9 @@ export interface ActivitySessionRecord {
   snapshotCount: number;
   eventCount: number;
   applications: string[];
+  /** Session 分析投影；未分析的 session 为空，设置页用它做最近会话的标题/摘要。 */
+  analysisTitle?: string;
+  analysisDescription?: string;
 }
 
 export interface ActivityStoreSnapshot {
@@ -637,6 +640,7 @@ export class ActivityStore {
     `).get() as { sessions: number; events: number; fallback_captures: number; storage_bytes: number };
     const rows = database.prepare(`
       SELECT s.id, s.started_at, s.ended_at, s.event_count,
+        s.analysis_title, s.analysis_description,
         COUNT(DISTINCT snap.id) AS snapshot_count,
         GROUP_CONCAT(DISTINCT e.application) AS applications
       FROM activity_sessions s
@@ -657,7 +661,9 @@ export class ActivityStore {
         endedAt: row.ended_at === null ? undefined : activityTimestampString(row.ended_at),
         snapshotCount: Number(row.snapshot_count),
         eventCount: Number(row.event_count),
-        applications: row.applications === null ? [] : String(row.applications).split(",")
+        applications: row.applications === null ? [] : String(row.applications).split(","),
+        analysisTitle: row.analysis_title === null ? undefined : String(row.analysis_title),
+        analysisDescription: row.analysis_description === null ? undefined : String(row.analysis_description)
       }))
     };
   }

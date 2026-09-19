@@ -182,10 +182,6 @@ function SettingsActivityForm({ activity, onChange, onRefreshRuntime, onRuntimeC
         {feedback ? <p aria-live="polite" className="activity-feedback" role="status">{feedback}</p> : null}
       </section>
 
-      <ActivitySection id="activity-model-use" icon="shield" title="模型使用">
-        <p className="activity-section-description">活动记录和 OCR 文字经脱敏后交给工具模型分析；聊天也可按需查询脱敏 OCR 和摘要，不会每轮自动注入。使用云模型时，这些文字会发送给其服务商，不发送截图原图。规则脱敏不能保证去除所有敏感信息。</p>
-      </ActivitySection>
-
       <ActivitySection
         action={<button aria-label="刷新 macOS 权限状态" className="activity-icon-button" onClick={refreshRuntime} title="刷新权限状态" type="button"><Icon name="refresh" size={14} /></button>}
         id="activity-permissions"
@@ -224,7 +220,6 @@ function SettingsActivityForm({ activity, onChange, onRefreshRuntime, onRuntimeC
           <ActivityNumberField disabled={!activity.enabled} id="activity-idle" label="空闲阈值" hint="无事件达到该时长后关闭当前会话" unit="ms" max={600_000} min={10_000} step={5_000} value={activity.idleTimeoutMs} onCommit={(value) => updateActivity({ idleTimeoutMs: value })} />
           <ActivityNumberField disabled={!activity.enabled} id="activity-input-pause" label="输入停顿" hint="无输入 N 毫秒后检查是否需要截图" unit="ms" max={5_000} min={800} step={100} value={activity.inputPauseMs} onCommit={(value) => updateActivity({ inputPauseMs: value })} />
           <ActivityNumberField disabled={!activity.enabled} id="activity-visual-poll" label="截图轮询" hint="定期检查画面并触发截图；0 = 关闭" unit="ms" max={30_000} min={0} step={500} value={activity.visualPollMs} onCommit={(value) => updateActivity({ visualPollMs: value })} />
-          <ActivityNumberField disabled={!activity.enabled} id="activity-browser-poll" label="浏览器标签轮询" hint="前台浏览器标签 URL 与标题的采集间隔；0 = 关闭" unit="ms" max={600_000} min={0} step={1_000} value={activity.browserPollIntervalMs} onCommit={(value) => updateActivity({ browserPollIntervalMs: value })} />
           <ActivityNumberField disabled={!activity.enabled} id="activity-jpeg-quality" label="JPEG 质量" hint="30–95，越低文件越小" unit="" max={95} min={30} step={5} value={activity.jpegQuality} onCommit={(value) => updateActivity({ jpegQuality: value })} />
         </div>
       </ActivitySection>
@@ -261,6 +256,27 @@ function SettingsActivityForm({ activity, onChange, onRefreshRuntime, onRuntimeC
         <p className="activity-storage-note">事件和脱敏摘要不受容量上限影响。</p>
       </ActivitySection>
 
+      {activity.enabled && runtime !== undefined && runtime.recentSessions.length > 0 ? (
+        <ActivitySection
+          action={<button aria-label="刷新最近会话" className="activity-icon-button" onClick={refreshRuntime} title="刷新最近会话" type="button"><Icon name="refresh" size={14} /></button>}
+          id="activity-recent-sessions"
+          icon="timer"
+          title="最近会话"
+        >
+          <div className="activity-session-list">
+            {runtime.recentSessions.slice(0, 8).map((session) => (
+              <div className="activity-session-row" key={session.id}>
+                <div className="activity-session-title">{session.analysisTitle || session.applications.join(", ") || "会话"}</div>
+                <div className="activity-session-meta">
+                  {formatActivityRelative(session.startedAt)} · {session.endedAt ? formatActivityDuration(session.startedAt, session.endedAt) : "活跃"} · {session.snapshotCount} 张快照 · {session.eventCount} 个事件
+                </div>
+                {session.analysisDescription ? <div className="activity-session-description">{session.analysisDescription}</div> : null}
+              </div>
+            ))}
+          </div>
+        </ActivitySection>
+      ) : null}
+
       <section className="activity-card activity-danger-zone" id="activity-danger" tabIndex={-1}>
         <div className="activity-section-title is-danger"><Icon name="trash" size={15} /><h3>危险区</h3></div>
         <p className="activity-section-description">删除活动会话、事件、OCR、截图、分析和摘要。不可撤销；已沉淀的长期记忆、结晶和已导出日报保留，需在各自位置单独删除。</p>
@@ -268,7 +284,7 @@ function SettingsActivityForm({ activity, onChange, onRefreshRuntime, onRuntimeC
         <small className="activity-disabled-hint">{runtime?.sessions ? undefined : runtime?.collectorAvailable === false ? "采集服务尚未接入，清除操作暂不可用。" : "暂无可清除的活动数据。"}</small>
       </section>
 
-      {isRuntimeRunning ? <p className="activity-running-footer">运行中 · 部分参数在下一个会话生效。</p> : null}
+      {isRuntimeRunning ? <p className="activity-running-footer">运行中 · 多数参数即时生效；会话与空闲计时相关改动在下一个会话生效。</p> : null}
 
       {clearOpen ? (
         <SettingsDetailLayer onClose={() => { if (!clearing) setClearOpen(false); }}>
@@ -297,6 +313,21 @@ function activityServiceLabel(runtime: ActivityRuntimeSnapshot | undefined): str
 function formatActivityBytes(value: number): string {
   if (value < 1024 * 1024) return `${Math.round(value / 1024)} KB`;
   return `${(value / (1024 * 1024 * 1024) >= 1 ? value / (1024 * 1024 * 1024) : value / (1024 * 1024)).toFixed(2)} ${value / (1024 * 1024 * 1024) >= 1 ? "GB" : "MB"}`;
+}
+
+/** 最近会话的开始时间用相对时间表达；粒度与 alma 对齐：刚刚/分钟/小时/天。 */
+function formatActivityRelative(iso: string): string {
+  const diffMinutes = Math.round((Date.now() - new Date(iso).getTime()) / 60_000);
+  if (diffMinutes < 1) return "刚刚";
+  if (diffMinutes < 60) return `${diffMinutes} 分钟前`;
+  if (diffMinutes < 60 * 24) return `${Math.floor(diffMinutes / 60)} 小时前`;
+  return `${Math.floor(diffMinutes / (60 * 24))} 天前`;
+}
+
+function formatActivityDuration(startedAt: string, endedAt: string): string {
+  const minutes = Math.round((new Date(endedAt).getTime() - new Date(startedAt).getTime()) / 60_000);
+  if (minutes < 60) return `${minutes} 分钟`;
+  return `${Math.floor(minutes / 60)} 小时 ${minutes % 60} 分钟`;
 }
 
 function activityErrorMessage(error: unknown): string {
