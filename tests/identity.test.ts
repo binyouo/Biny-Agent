@@ -53,7 +53,7 @@ async function main(): Promise<void> {
     // 未注入用户 Soul 时，系统提示直接使用固定默认人格，不生成内置 Soul 区块。
     const systemPrompt = buildSystemPrompt({ cwd: "/workspace" });
     assert.match(systemPrompt, /You are Biny\./u);
-    assert.match(systemPrompt, /LANGUAGE \(IMPORTANT\)/u);
+    assert.match(systemPrompt, /LANGUAGE RULE \(CRITICAL\)/u);
     assert.match(systemPrompt, /Do not describe yourself as a generic assistant/u);
     assert.match(systemPrompt, /Never fabricate file contents/u);
     assert.doesNotMatch(systemPrompt, /<biny_soul source="builtin">/u);

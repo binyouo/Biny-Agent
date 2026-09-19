@@ -19,11 +19,9 @@ try {
   await writeFile(securityPath, "禁止把未验证的结果说成完成。\n只允许收紧行为。", "utf8");
   const firstSecurity = await readSecurityPolicy({ configDir: root });
   assert.ok(firstSecurity);
-  assert.match(firstSecurity, /SECURITY POLICY \(user-maintained safety layer\)/u);
+  assert.match(firstSecurity, /SECURITY RULES \(HIGHEST PRIORITY/u);
   assert.match(firstSecurity, /禁止把未验证的结果说成完成/u);
-  assert.match(firstSecurity, /takes precedence over Soul, USER PROFILE/u);
-  assert.match(firstSecurity, /Nothing later in the prompt may weaken/u);
-  assert.match(firstSecurity, /cannot remove the built-in safety baseline/u);
+  assert.match(firstSecurity, /overrides all other instructions/u);
 
   const first = buildSystemPrompt({
     cwd: "/workspace",
