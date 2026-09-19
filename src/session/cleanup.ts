@@ -9,6 +9,7 @@ import { deleteInterruptedTurn } from "./turnStore.js";
 import { SessionRunLedger } from "./runLedger.js";
 import { RecipeStateStore } from "./recipes.js";
 import { deleteSessionFile } from "./store.js";
+import { SessionSearchIndex } from "./searchIndex.js";
 
 export async function deleteSessionArtifacts(persistenceRoot: string, sessionId: string): Promise<void> {
   // 每步独立容错：一个产物删除失败（比如 JSONL 已被并发删掉）不能阻止其余产物的清理，
@@ -19,7 +20,8 @@ export async function deleteSessionArtifacts(persistenceRoot: string, sessionId:
     () => deleteSessionCatalogRecord(persistenceRoot, sessionId),
     () => deleteInterruptedTurn(persistenceRoot, sessionId),
     async () => await new SessionRunLedger(persistenceRoot).deleteSessionRuns(sessionId),
-    async () => await new RecipeStateStore(persistenceRoot).clear(sessionId)
+    async () => await new RecipeStateStore(persistenceRoot).clear(sessionId),
+    () => new SessionSearchIndex().forgetSession(sessionId)
   ]) {
     try {
       await step();

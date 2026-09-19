@@ -32,6 +32,7 @@ import type { McpToolHost } from "../extensions/mcp.js";
 import { createSubagentTool, createTaskStatusTool, runSubagentTask as executeSubagentTask, type SubagentOptions } from "../extensions/subagent.js";
 import { createPlanTools } from "../extensions/plan.js";
 import { buildSubagentDefinitionsPrompt, loadSubagentDefinitions, type SubagentDefinition } from "../extensions/agents.js";
+import { createHistoryTools } from "../extensions/history.js";
 import { createMemoryTools } from "../extensions/memory.js";
 import { createActivityReportTool } from "../tools/activity/report.js";
 import { createActivityDigestTool } from "../tools/activity/digest.js";
@@ -394,6 +395,16 @@ export async function createCommandRuntime(workspaceRoot: string, options: Comma
         return await currentAgent.searchMemory(query, paths, options);
       }
     )) {
+      toolRegistry.registerBuiltinTool(tool);
+    }
+    for (const tool of createHistoryTools({
+      getIndex: () => (agent ? agent.getSessionSearchIndex() : undefined),
+      flushCurrentSession: async () => {
+        const currentAgent = agent;
+        if (!currentAgent) return;
+        await currentAgent.flushSessionSearchIndex();
+      }
+    })) {
       toolRegistry.registerBuiltinTool(tool);
     }
     // Activity 回忆改为主动工具集：模型按需生成打工日记、时间线或搜索，而不是把脱敏事件

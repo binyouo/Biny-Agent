@@ -75,7 +75,9 @@ import {
   memoryClearCommand,
   memoryListCommand,
   memorySearchCommand,
+  memoryStatsCommand,
   memorySleepCommand,
+  historySearchCommand,
   reflectionRunCommand,
   reflectionStatusCommand,
   todoClearCommand,
@@ -176,11 +178,15 @@ task.command("list").option("--status <status>", "TaskRun status").option("--lim
 task.command("events").argument("<taskRunId>", "TaskRun id").option("--limit <count>", "maximum events", parsePositiveInteger).option("--json", "print JSON").action((taskRunId: string, options: { limit?: number; json?: boolean }) => wrap(() => taskEventsCommand(workspaceRoot, taskRunId, options))());
 
 const memory = program.command("memory").description("Manage local memory");
-memory.command("list").argument("[selector]", "all, current, user, or other", "all").option("--json", "print JSON").action((selector: string, options: { json?: boolean }) => wrap(() => memoryListCommand(workspaceRoot, selector, options))());
-memory.command("search").argument("<query...>", "search query").option("--selector <selector>", "all, current, user, or other", "all").option("--json", "print JSON").action((query: string[], options: { selector: string; json?: boolean }) => wrap(() => memorySearchCommand(workspaceRoot, query.join(" "), options.selector, options))());
+memory.command("list").option("--json", "print JSON").action((options: { json?: boolean }) => wrap(() => memoryListCommand(workspaceRoot, options))());
+memory.command("stats").description("Show memory store counts and maintenance status").option("--json", "print JSON").action((options: { json?: boolean }) => wrap(() => memoryStatsCommand(workspaceRoot, options))());
+memory.command("search").argument("<query...>", "search query").option("--tag <tag...>", "filter entries carrying all given tags").option("--json", "print JSON").action((query: string[], options: { tag?: string[]; json?: boolean }) => wrap(() => memorySearchCommand(workspaceRoot, query.join(" "), options))());
 memory.command("add").requiredOption("--entry <json>", "structured memory JSON").option("--json", "print JSON").action((options: { entry: string; json?: boolean }) => wrap(() => memoryAddCommand(workspaceRoot, options.entry, options))());
 memory.command("archive").argument("<id>", "memory id").requiredOption("--yes", "confirm archive").option("--json", "print JSON").action((id: string, options: { yes?: boolean; json?: boolean }) => wrap(() => memoryArchiveCommand(workspaceRoot, id, options))());
-memory.command("clear").argument("[selector]", "all, current, user, or other", "all").requiredOption("--yes", "confirm clear").option("--json", "print JSON").action((selector: string, options: { yes?: boolean; json?: boolean }) => wrap(() => memoryClearCommand(workspaceRoot, selector, options))());
+memory.command("clear").requiredOption("--yes", "confirm clear").option("--json", "print JSON").action((options: { yes?: boolean; json?: boolean }) => wrap(() => memoryClearCommand(workspaceRoot, options))());
+const history = program.command("history").description("Search past conversation transcripts");
+history.command("search").argument("<query...>", "full-text query over past user and assistant messages").option("--limit <n>", "maximum hits", "8").option("--json", "print JSON").action((query: string[], options: { limit: string; json?: boolean }) => wrap(() => historySearchCommand(query.join(" "), { limit: Number(options.limit), json: options.json }))());
+
 memory.command("sleep").option("--run", "run maintenance now").option("--yes", "confirm maintenance").option("--json", "print JSON").action((options: { run?: boolean; yes?: boolean; json?: boolean }) => wrap(() => memorySleepCommand(workspaceRoot, options))());
 
 const diary = program.command("diary").description("Show or refresh daily notes");
