@@ -144,6 +144,9 @@ function createPlanStartTool(options: PlanToolOptions): Tool<z.infer<typeof plan
 function createPlanDraftTool(options: PlanToolOptions): Tool<z.infer<typeof planDraftSchema>, unknown> {
   return {
     name: "PlanDraft", description: "Save a plan without execution. Nodes with verification can modify files and optionally have independent review; nodes without verification are read-only reports with required acceptance criteria. To revise a draft, include its graphId and revision.",
+    promptGuidelines: [
+      "When the user asks to plan first, save the plan with PlanDraft and keep it unstarted; PlanStart runs only after the user authorizes execution."
+    ],
     source: "subagent", capability: "subagent.workspace", risk: "write", schema: planDraftSchema,
     parameters: { type: "object", properties: { objective: { type: "string" }, constraints: { type: "array", items: { type: "string" } }, nodes: { type: "array", minItems: 2, maxItems: 20, items: planNodeParameters() }, graphId: { type: "string" }, revision: { type: "integer" } }, required: ["objective", "nodes"], additionalProperties: false },
     resolveExecution(args) {
