@@ -10,17 +10,15 @@ import { readDailyMemoryNote, readDailyMemorySection } from "../../activity/dail
 import { HeartbeatFileStore } from "../../agent/context/heartbeat.js";
 import { TodoStore, type TodoItem } from "../../session/todoStore.js";
 import { resolveSessionFile, sessionIdFromFile } from "../../session/store.js";
-import type { MemoryKind, MemoryOriginSelector } from "../../agent/context/memoryTypes.js";
 
 export interface LocalCapabilityOutputOptions {
   json?: boolean;
   noSpawn?: boolean;
 }
 
-export async function memoryListCommand(workspaceRoot: string, selectorInput: string, options: LocalCapabilityOutputOptions = {}): Promise<void> {
+export async function memoryListCommand(workspaceRoot: string, options: LocalCapabilityOutputOptions = {}): Promise<void> {
   await withHost(workspaceRoot, options, async (client) => {
     const result = await client.memory<{ entries: unknown[]; storeRevision: number }>("list-v3", {
-      selector: memorySelector(selectorInput),
       limit: 200,
       includeArchived: false
     });
@@ -32,40 +30,54 @@ export async function memoryListCommand(workspaceRoot: string, selectorInput: st
   });
 }
 
-export async function memorySearchCommand(workspaceRoot: string, query: string, selectorInput: string, options: LocalCapabilityOutputOptions = {}): Promise<void> {
+export async function memorySearchCommand(
+  workspaceRoot: string,
+  query: string,
+  options: LocalCapabilityOutputOptions & { tag?: string[] } = {}
+): Promise<void> {
   await withHost(workspaceRoot, options, async (client) => {
-    const result = await client.memory("search-v3", { query, selector: memorySelector(selectorInput), limit: 20 });
+    const result = await client.memory("search-v3", { query, tags: options.tag, limit: 20 });
     printResult(result, options.json, (value) => JSON.stringify(value, null, 2));
+  });
+}
+
+/** 记忆库统计：总量、来源分布与维护状态，全部来自 overview-v3 的只读快照。 */
+export async function memoryStatsCommand(workspaceRoot: string, options: LocalCapabilityOutputOptions = {}): Promise<void> {
+  await withHost(workspaceRoot, options, async (client) => {
+    const result = await client.memory("overview-v3", {});
+    printResult(result, options.json, (value) => {
+      const record = asRecord(value);
+      const overview = asRecord(record.overview);
+      const allEntries = Array.isArray(record.allEntries) ? record.allEntries as Array<Record<string, unknown>> : [];
+      const countBy = (key: string): string => {
+        const counts = new Map<string, number>();
+        for (const entry of allEntries) {
+          const label = typeof entry[key] === "string" ? entry[key] as string : "unknown";
+          counts.set(label, (counts.get(label) ?? 0) + 1);
+        }
+        return [...counts.entries()].sort((left, right) => right[1] - left[1]).map(([label, count]) => `${label}=${String(count)}`).join(", ");
+      };
+      return [
+        `记忆总条数：${String(overview.entryCount ?? allEntries.length)}（storeRevision=${String(overview.storeRevision ?? "?")}）`,
+        `按 source：${countBy("source") || "无"}`,
+        `维护状态：${JSON.stringify(record.maintenance ?? {})}`
+      ].join("\n");
+    });
   });
 }
 
 export async function memoryAddCommand(workspaceRoot: string, entryJson: string, options: LocalCapabilityOutputOptions = {}): Promise<void> {
   const entry = JSON.parse(entryJson) as Record<string, unknown>;
-  const audience = entry.audience === "universal" ? "universal" : "workspace";
-  const summary = typeof entry.summary === "string" ? entry.summary : "";
-  const kind = isMemoryKind(entry.kind) ? entry.kind : audience === "universal" ? "preference" : "fact";
-  const topic = typeof entry.topic === "string" ? entry.topic : "cli";
-  const title = typeof entry.title === "string" ? entry.title : summary.slice(0, 60);
   await withHost(workspaceRoot, options, async (client) => {
-    const overview = await client.memory<{ overview: { storeRevision: number } }>("overview-v3", { selector: "all" });
+    const overview = await client.memory<{ overview: { storeRevision: number } }>("overview-v3", {});
     const result = await client.memory("write-v3", {
       expectedRevision: overview.overview.storeRevision,
       entry: {
-        audience,
-        kind,
-        topic,
-        title,
-        summary,
-        decisions: Array.isArray(entry.decisions) ? entry.decisions : undefined,
-        paths: Array.isArray(entry.paths) ? entry.paths : undefined,
-        keywords: Array.isArray(entry.keywords) ? entry.keywords : undefined,
+        content: entry.content,
+        tags: Array.isArray(entry.tags) ? entry.tags : undefined,
         importance: typeof entry.importance === "number" ? entry.importance : undefined,
         durability: entry.durability === "temporary" ? "temporary" : "permanent",
-        lineage: {
-          source: "explicit",
-          externalContext: false,
-          userEvidence: audience === "universal" ? summary : undefined
-        }
+        rationale: typeof entry.rationale === "string" ? entry.rationale : undefined
       }
     });
     printResult(result, options.json, (value) => JSON.stringify(value, null, 2));
@@ -75,17 +87,17 @@ export async function memoryAddCommand(workspaceRoot: string, entryJson: string,
 export async function memoryArchiveCommand(workspaceRoot: string, id: string, options: LocalCapabilityOutputOptions & { yes?: boolean } = {}): Promise<void> {
   requireConfirmation(options.yes, "归档记忆会改变召回结果");
   await withHost(workspaceRoot, options, async (client) => {
-    const overview = await client.memory<{ overview: { storeRevision: number } }>("overview-v3", { selector: "all" });
+    const overview = await client.memory<{ overview: { storeRevision: number } }>("overview-v3", {});
     const result = await client.memory("archive-v3", { id, archived: true, expectedRevision: overview.overview.storeRevision });
     printResult(result, options.json, (value) => JSON.stringify(value, null, 2));
   });
 }
 
-export async function memoryClearCommand(workspaceRoot: string, selectorInput: string, options: LocalCapabilityOutputOptions & { yes?: boolean } = {}): Promise<void> {
+export async function memoryClearCommand(workspaceRoot: string, options: LocalCapabilityOutputOptions & { yes?: boolean } = {}): Promise<void> {
   requireConfirmation(options.yes, "清理记忆会删除当前和归档条目");
   await withHost(workspaceRoot, options, async (client) => {
-    const overview = await client.memory<{ overview: { storeRevision: number } }>("overview-v3", { selector: "all" });
-    const result = await client.memory("clear-v3", { selector: memorySelector(selectorInput), expectedRevision: overview.overview.storeRevision });
+    const overview = await client.memory<{ overview: { storeRevision: number } }>("overview-v3", {});
+    const result = await client.memory("clear-v3", { expectedRevision: overview.overview.storeRevision });
     printResult(result, options.json, (value) => JSON.stringify(value, null, 2));
   });
 }
@@ -231,15 +243,6 @@ function requireConfirmation(yes: boolean | undefined, action: string): void {
   if (!yes) throw new Error(`${action}；请加 --yes 确认。`);
 }
 
-function memorySelector(value: string): MemoryOriginSelector {
-  if (value === "current") return "current_workspace";
-  if (value === "other") return "other_workspaces";
-  if (value === "all" || value === "user" || value === "current_workspace" || value === "other_workspaces") return value;
-  throw new Error(`未知记忆范围：${value}`);
-}
-
-function isMemoryKind(value: unknown): value is MemoryKind {
-  return value === "preference" || value === "working_style" || value === "fact" || value === "decision" || value === "workflow" || value === "gotcha";
 }
 
 function resolveDateKey(value: string): string {
