@@ -92,7 +92,6 @@ const reasoningModelPatterns: RegExp[] = [
   /\bdeepseek-(?:r1|reasoner)/iu,
   /\bdeepseek-v(?:[4-9]|3[.-][1-9])/iu,
   /\bqw[qe]n?3/iu,                                // Qwen3 / QwQ
-  /\bglm-(?:[5-9]|4[.-][5-9]|z1)/iu,
   /\bkimi-k(?:[2-9]|1[.-]5)/iu,
   /\bminimax-m[1-9]/iu,
   /\bgemini-(?:[3-9]|2[.-]5)/iu,
@@ -132,6 +131,9 @@ export function inferReasoningEfforts(modelId: string): ReasoningEffort[] {
   const identifier = modelIdentifier(modelId);
   if (!identifier) return [];
   if (/^deepseek-v4-(?:flash|pro)$/iu.test(identifier)) return ["high", "max"];
+  // GLM 全系支持 low/medium/high/max 四档 reasoning_effort，避免落进 ["high","max"]
+  // 兜底导致 medium 不可选、默认档偏高。
+  if (/^glm-(?:[5-9]|4[.-][5-9]|z1)/iu.test(identifier)) return ["low", "medium", "high", "max"];
   if (isKimiK3Model(identifier)) return ["low", "high", "max"];
   if (isKimiK27CodeModel(identifier)) return ["high"];
   return reasoningModelPatterns.some((pattern) => pattern.test(identifier)) ? ["high", "max"] : [];
