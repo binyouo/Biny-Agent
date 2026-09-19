@@ -58,7 +58,7 @@ try {
   let fail = true;
   const output = {
     reflection: "今天一起解开难题，心里很踏实。我更愿意从具体经历出发，少说空话。",
-    memories: [{ summary: "用户长期偏好简短句子。", title: "短句偏好", topic: "communication", kind: "preference", durability: "permanent", evidence: "用户明确说明长期偏好。" }],
+    memories: [{ content: "用户长期偏好简短句子。", evidence: "用户明确说明长期偏好。" }],
     actions: [],
     soul: { add: "更愿意用具体经历表达自己的看法。", evidence: "今天一起解决难题。" },
     baseEmotion: { mood: "踏实", valence: 8, energy: 6, trigger: "一起解决难题" }
