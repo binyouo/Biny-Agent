@@ -9,7 +9,6 @@ import type {
   DesktopMemoryEntryPatch,
   DesktopMemoryEmbeddingCancellationResult,
   DesktopMemoryEmbeddingStatus,
-  DesktopMemoryOriginFilter,
   DesktopMemorySearchMatch,
   DesktopMemoryStats,
   DesktopMemorySleepPreview,
@@ -29,9 +28,9 @@ interface SettingsMemoryProps {
   hidden?: boolean;
   workspaceAvailable: boolean;
   sessionRunning: boolean;
-  onLoadStats(filter?: DesktopMemoryOriginFilter): Promise<DesktopMemoryStats>;
-  onLoadEntries(filter: DesktopMemoryOriginFilter, offset: number, limit: number, includeArchived?: boolean): Promise<DesktopMemoryEntriesPage>;
-  onSearch(filter: DesktopMemoryOriginFilter, query: string, includeArchived?: boolean): Promise<DesktopMemorySearchMatch[]>;
+  onLoadStats(): Promise<DesktopMemoryStats>;
+  onLoadEntries(offset: number, limit: number, includeArchived?: boolean): Promise<DesktopMemoryEntriesPage>;
+  onSearch(query: string, includeArchived?: boolean): Promise<DesktopMemorySearchMatch[]>;
   onAdd(input: DesktopMemoryEntryInput, expectedRevision: number): Promise<DesktopMemoryStats>;
   onUpdate(entryId: string, patch: DesktopMemoryEntryPatch, expectedRevision: number): Promise<DesktopMemoryStats>;
   onDeleteEntry(entryId: string, expectedRevision: number): Promise<DesktopMemoryStats>;
@@ -42,7 +41,7 @@ interface SettingsMemoryProps {
   onSleepRuns(): Promise<MemorySleepRun[]>;
   onPreviewSleep(): Promise<DesktopMemorySleepPreview>;
   onCancelSleep(): Promise<{ cancelled: boolean }>;
-  onClearMemory(filter: DesktopMemoryOriginFilter, expectedRevision: number): Promise<DesktopMemoryStats>;
+  onClearMemory(expectedRevision: number): Promise<DesktopMemoryStats>;
   onTestModelConfiguration(configuration: DesktopModelConfigurationInput): Promise<DesktopModelConnectionTestResult>;
   onLoadEmbeddingStatus(): Promise<DesktopMemoryEmbeddingStatus>;
   onDownloadEmbeddingModel(model: LocalEmbeddingModelId): Promise<DesktopMemoryEmbeddingStatus>;
@@ -53,7 +52,6 @@ interface SettingsMemoryProps {
 }
 
 const PAGE_SIZE = 20;
-type MemoryFilter = "all";
 
 function rangeProgress(value: number, min: number, max: number): React.CSSProperties {
   const percent = max === min ? 0 : ((value - min) / (max - min)) * 100;
@@ -116,7 +114,6 @@ export function SettingsMemory({
   onNotify
 }: SettingsMemoryProps): React.JSX.Element {
   const { draft, setMemory, snapshot, dirtyCount } = useSettingsDraft();
-  const filter: MemoryFilter = "all";
   const [currentPage, setCurrentPage] = useState(0);
   const [totalEntries, setTotalEntries] = useState(0);
   const [stats, setStats] = useState<DesktopMemoryStats>();
@@ -150,13 +147,13 @@ export function SettingsMemory({
     }
   }, [onLoadEmbeddingStatus, workspaceAvailable]);
 
-  const reload = useCallback(async (nextFilter: MemoryFilter = filter, pageIndex = 0): Promise<void> => {
+  const reload = useCallback(async (pageIndex = 0): Promise<void> => {
     if (!workspaceAvailable) return;
     setLoading(true);
     try {
       const [nextStats, page, status, runs, archived] = await Promise.all([
-        onLoadStats(nextFilter),
-        onLoadEntries(nextFilter, pageIndex * PAGE_SIZE, PAGE_SIZE),
+        onLoadStats(),
+        onLoadEntries(pageIndex * PAGE_SIZE, PAGE_SIZE),
         onSleepStatus(),
         onSleepRuns(),
         onLoadArchived()
@@ -175,7 +172,7 @@ export function SettingsMemory({
     } finally {
       setLoading(false);
     }
-  }, [filter, onLoadArchived, onLoadEntries, onLoadStats, onSleepRuns, onSleepStatus, workspaceAvailable]);
+  }, [onLoadArchived, onLoadEntries, onLoadStats, onSleepRuns, onSleepStatus, workspaceAvailable]);
 
   useEffect(() => { void reload(); }, [reload]);
   useEffect(() => { void refreshEmbeddingStatus(); }, [refreshEmbeddingStatus]);
@@ -248,7 +245,7 @@ export function SettingsMemory({
     }
     setSearching(true);
     try {
-      setSearchResults(await onSearch(filter, value));
+      setSearchResults(await onSearch(value));
     } catch (cause) {
       setSearchResults([]);
       onNotify(errorMessage(cause));
@@ -264,19 +261,8 @@ export function SettingsMemory({
     try {
       const editId = editor?.id;
       const next = editId
-        ? await onUpdate(editId, { title: value.slice(0, 120), summary: value }, stats.revision)
-        : await onAdd({
-            audience: "universal",
-            kind: "preference",
-            topic: "memory",
-            title: value.slice(0, 120),
-            summary: value,
-            decisions: [],
-            paths: [],
-            keywords: [],
-            importance: 3,
-            userEvidence: value
-          }, stats.revision);
+        ? await onUpdate(editId, { content: value }, stats.revision)
+        : await onAdd({ content: value, importance: 3 }, stats.revision);
       setStats(next);
       setEditor(undefined);
       await reload();
@@ -344,7 +330,7 @@ export function SettingsMemory({
 
   const remove = async (entry: DesktopMemoryEntry): Promise<void> => {
     if (!stats || saving) return;
-    if (!window.confirm(`删除这条记忆？\n\n${entry.summary}`)) return;
+    if (!window.confirm(`删除这条记忆？\n\n${entry.content}`)) return;
     setSaving(true);
     try {
       const next = await onDeleteEntry(entry.id, stats.revision);
@@ -363,7 +349,7 @@ export function SettingsMemory({
     if (!window.confirm("确定要删除所有记忆吗？此操作无法撤销。")) return;
     setSaving(true);
     try {
-      const next = await onClearMemory(filter, stats.revision);
+      const next = await onClearMemory(stats.revision);
       setStats(next);
       setSearchResults([]);
       await reload();
@@ -402,7 +388,7 @@ export function SettingsMemory({
     setExporting(true);
     try {
       const [page, archiveEntries] = await Promise.all([
-        onLoadEntries(filter, 0, 100_000, true),
+        onLoadEntries(0, 100_000, true),
         onLoadArchived()
       ]);
       const date = new Date().toISOString().slice(0, 10);
@@ -573,7 +559,7 @@ export function SettingsMemory({
             {lastRun ? <div className="activity-memory-last-run">
               <strong>上次：{lastRun.status}（{lastRun.trigger}）</strong>
               <span>{formatDate(lastRun.startedAt)}</span>
-              <small>检查 {lastRun.examined} 条 · 归档 {lastRun.exact} 条完全重复、{lastRun.expired} 条过期、{lastRun.similarity} 条近似、{lastRun.llm} 条 LLM 合并</small>
+              <small>检查 {lastRun.examined} 条 · 归档 {lastRun.exact} 条完全重复、{lastRun.expired} 条过期、{lastRun.similarity} 条近似、{lastRun.llm} 条 LLM 合并{lastRun.synthesisFailed > 0 ? ` · ⚠ ${lastRun.synthesisFailed} 条合成失败（已进归档，可恢复）` : ""}</small>
             </div> : null}
             <div className="activity-memory-sleep-actions">
               <button className="ghost-button" disabled={sleepRunning || saving || sessionRunning} onClick={() => { void runSleep(); }} type="button">{sleepRunning ? "运行中…" : "立即运行睡眠周期"}</button>
@@ -642,12 +628,6 @@ export function SettingsMemory({
                   value={policy.llmBatchSize}
                 />
               </> : null}
-              <MemoryCheckbox
-                checked={policy.dedupAcrossUserIds}
-                detail="启用时，来自不同 channel bridge（Slack、Discord 等）的完全相同的记忆会合并为一条。多用户共享场景中需要保留各 namespace 各自的副本时关闭此项。"
-                label="跨用户命名空间去重"
-                onChange={(dedupAcrossUserIds) => setMemory({ ...policy, dedupAcrossUserIds })}
-              />
             </div> : null}
             <div className="activity-memory-sleep-footer">
               <button className="ghost-button" disabled={exporting} onClick={() => { void exportSnapshot(); }} type="button">{exporting ? "正在导出…" : "导出记忆快照"}</button>
@@ -656,14 +636,14 @@ export function SettingsMemory({
             {archiveOpen ? <div className="activity-memory-archive-list">
               {archivedEntries.length === 0 ? <p>暂无归档记忆。</p> : archivedEntries.slice(0, 25).map((entry) => (
                 <article className="activity-memory-entry" key={entry.id}>
-                  <div className="activity-memory-entry-content"><p>{entry.summary}</p><small>{entry.archivedReason ?? "手动"} · {entry.archivedAt ? formatDate(entry.archivedAt) : ""}</small></div>
+                  <div className="activity-memory-entry-content"><p>{entry.content}</p><small>{entry.archivedReason ?? "手动"} · {entry.archivedAt ? formatDate(entry.archivedAt) : ""}</small></div>
                   <button aria-label="恢复" className="ghost-button" disabled={saving} onClick={() => { void archive(entry); }} type="button">恢复</button>
                 </article>
               ))}
             </div> : null}
             {sleepRuns.length > 0 ? <details className="activity-memory-run-details">
               <summary>近期运行（{sleepRuns.length}）</summary>
-              <div>{sleepRuns.map((run) => <p key={run.id}>{formatDate(run.startedAt)} · {run.status} · {run.trigger} · {run.archived} archived</p>)}</div>
+              <div>{sleepRuns.map((run) => <p key={run.id}>{formatDate(run.startedAt)} · {run.status} · {run.trigger} · {run.archived} archived{run.synthesisFailed > 0 ? ` · ⚠ ${run.synthesisFailed} 合成失败` : ""}</p>)}</div>
             </details> : null}
           </div> : null}
         </section>
@@ -686,7 +666,7 @@ export function SettingsMemory({
 
         <section className="activity-memory-group" id="memory-embedding" tabIndex={-1}>
           <h3>嵌入模型</h3>
-          <p>用于语义搜索的嵌入模型。留空则使用默认值（text-embedding-3-small）。</p>
+          <p>用于语义搜索的嵌入模型。默认使用本地 Multilingual E5 Small，无需配置云端服务商。</p>
           <SettingsModelPicker
             ariaLabel="选择嵌入模型"
             groups={embeddingGroups}
@@ -698,6 +678,10 @@ export function SettingsMemory({
             placeholder="选择嵌入模型"
             value={selectedEmbeddingKey}
           />
+          {embeddingStatus?.needsRebuild ? <div aria-live="polite" className="activity-memory-embedding-error" role="alert">
+            <span>{embeddingStatus.degradedReason ?? "嵌入索引与当前模型不匹配，自动记忆召回已暂停。"}</span>
+            <button className="text-button" disabled={!canRebuild || embeddingWorking !== undefined || sessionRunning} onClick={() => { void rebuildEmbedding(); }} type="button">立即重建</button>
+          </div> : null}
           {embeddingOperation?.kind === "download" && embeddingOperation.progress?.progress !== undefined ? <div className="activity-memory-embedding-progress" role="status">正在下载模型… {Math.round(embeddingOperation.progress.progress * 100)}%</div> : null}
           {embeddingError ? <div aria-live="polite" className="activity-memory-embedding-error"><span>暂时无法读取状态，请重试。</span><button className="text-button" disabled={embeddingWorking !== undefined} onClick={() => { void refreshEmbeddingStatus(); }} type="button">重试</button></div> : null}
           {embeddingNeedsDownload ? (downloadingSelected ? <button className="text-button" onClick={() => { void cancelEmbeddingDownload(selectedEmbeddingModel.model); }} type="button">取消</button> : <button className="text-button" disabled={embeddingWorking !== undefined || sessionRunning} onClick={() => { void downloadEmbedding(selectedEmbeddingModel.model); }} type="button">下载模型</button>) : null}
@@ -753,15 +737,15 @@ export function SettingsMemory({
                   <div><button className="text-button" onClick={() => setEditor(undefined)} type="button">取消</button><button className="settings-primary-button" disabled={saving} onClick={() => { void saveText(); }} type="button">保存</button></div>
                 </div> : <>
                   <div className="activity-memory-entry-content">
-                    <div className="activity-memory-entry-meta"><span>{entry.lineage.some((lineage) => lineage.source === "explicit" || lineage.source === "explicit_edit") ? "手动" : "自动"}</span><span>{entry.durability === "temporary" ? "临时" : "长期"}</span><span>{formatDate(entry.updatedAt)}</span>{entry.accessCount > 0 ? <span>已访问 {entry.accessCount} 次</span> : null}</div>
-                    <p>{entry.summary}</p>
+                    <div className="activity-memory-entry-meta"><span>{entry.source === "manual" ? "手动" : "自动"}</span><span>{entry.durability === "temporary" ? "临时" : "长期"}</span><span>{formatDate(entry.updatedAt)}</span>{entry.accessCount > 0 ? <span>已访问 {entry.accessCount} 次</span> : null}</div>
+                    <p>{entry.content}</p>
                   </div>
-                  <div className="activity-memory-entry-actions"><button aria-label="编辑记忆" className="icon-button" disabled={saving} onClick={() => setEditor({ id: entry.id, value: entry.summary })} type="button"><Icon name="edit" size={13} /></button><button aria-label="删除记忆" className="icon-button" disabled={saving} onClick={() => { void remove(entry); }} type="button"><Icon name="trash" size={13} /></button></div>
+                  <div className="activity-memory-entry-actions"><button aria-label="编辑记忆" className="icon-button" disabled={saving} onClick={() => setEditor({ id: entry.id, value: entry.content })} type="button"><Icon name="edit" size={13} /></button><button aria-label="删除记忆" className="icon-button" disabled={saving} onClick={() => { void remove(entry); }} type="button"><Icon name="trash" size={13} /></button></div>
                 </>}
               </article>
             ))}
           </div>
-          {totalEntries > PAGE_SIZE ? <MemoryPagination currentPage={currentPage} onPageChange={(page) => { void reload(filter, page); }} totalEntries={totalEntries} /> : null}
+          {totalEntries > PAGE_SIZE ? <MemoryPagination currentPage={currentPage} onPageChange={(page) => { void reload(page); }} totalEntries={totalEntries} /> : null}
         </section>
       </> : null}
     </div>

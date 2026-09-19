@@ -135,15 +135,8 @@ const externalUrlSchema = z.string().url().refine((value) => {
   const protocol = new URL(value).protocol;
   return protocol === "https:" || protocol === "http:";
 }, "Only HTTP(S) links can be opened externally.");
-const memoryOriginFilterSchema = z.enum(["all", "current_workspace", "user", "other_workspaces"]);
-const memoryAudienceSchema = z.enum(["workspace", "universal"]);
-const memoryTopicSchema = z.string().trim().min(1).max(64);
-const memoryTitleSchema = z.string().trim().min(1).max(120);
-const memorySummarySchema = z.string().trim().min(1).max(4_000);
-const memoryDecisionListSchema = z.array(z.string().trim().min(1).max(500)).max(8);
-const memoryPathListSchema = z.array(z.string().trim().min(1).max(500)).max(16);
-const memoryKeywordListSchema = z.array(z.string().trim().min(1).max(120)).max(12);
-const memoryUserEvidenceSchema = z.string().trim().min(1).max(1_000).optional();
+const memoryContentSchema = z.string().trim().min(1).max(4_000);
+const memoryTagListSchema = z.array(z.string().trim().min(1).max(120)).max(12);
 const memoryQuerySchema = z.string().trim().min(1).max(2_000);
 const memoryEntryIdSchema = z.string().min(1).max(512);
 const localEmbeddingModelSchema = z.literal("multilingual-e5-small");
@@ -153,27 +146,18 @@ const memorySettingsInputSchema = z.object({
   settings: memorySettingsSchema
 }).strict();
 const memoryEntryInputSchema = z.object({
-  audience: memoryAudienceSchema,
-  topic: memoryTopicSchema,
-  kind: z.enum(["preference", "working_style", "fact", "decision", "workflow", "gotcha"]),
-  title: memoryTitleSchema,
-  summary: memorySummarySchema,
-  decisions: memoryDecisionListSchema,
-  paths: memoryPathListSchema,
-  keywords: memoryKeywordListSchema,
-  importance: z.number().finite(),
-  userEvidence: memoryUserEvidenceSchema
+  content: memoryContentSchema,
+  tags: memoryTagListSchema.optional(),
+  importance: z.number().finite().optional(),
+  durability: z.enum(["permanent", "temporary"]).optional(),
+  rationale: z.string().trim().min(1).max(1_000).optional()
 }).strict();
 const memoryEntryPatchSchema = z.object({
-  topic: memoryTopicSchema.optional(),
-  kind: z.enum(["preference", "working_style", "fact", "decision", "workflow", "gotcha"]).optional(),
-  title: memoryTitleSchema.optional(),
-  summary: memorySummarySchema.optional(),
-  decisions: memoryDecisionListSchema.optional(),
-  paths: memoryPathListSchema.optional(),
-  keywords: memoryKeywordListSchema.optional(),
+  content: memoryContentSchema.optional(),
+  tags: memoryTagListSchema.optional(),
   importance: z.number().finite().optional(),
-  userEvidence: memoryUserEvidenceSchema
+  durability: z.enum(["permanent", "temporary"]).optional(),
+  rationale: z.string().trim().min(1).max(1_000).optional()
 }).strict();
 const runtimeMutationSchema = z.enum([
   "plan.mode", "plan.start",
@@ -734,24 +718,17 @@ export function registerDesktopIpc(context: IpcContext): void {
     );
   });
 
-  handleRecoveryGated(desktopIpc.memoryOverview, async (_event, projectId: unknown, filter: unknown) => {
-    return await context.agents.memoryOverview(
-      idSchema.parse(projectId),
-      filter === undefined ? undefined : memoryOriginFilterSchema.parse(filter)
-    );
+  handleRecoveryGated(desktopIpc.memoryOverview, async (_event, projectId: unknown) => {
+    return await context.agents.memoryOverview(idSchema.parse(projectId));
   });
 
-  handleRecoveryGated(desktopIpc.memoryStats, async (_event, projectId: unknown, filter: unknown) => {
-    return await context.agents.memoryStats(
-      idSchema.parse(projectId),
-      filter === undefined ? undefined : memoryOriginFilterSchema.parse(filter)
-    );
+  handleRecoveryGated(desktopIpc.memoryStats, async (_event, projectId: unknown) => {
+    return await context.agents.memoryStats(idSchema.parse(projectId));
   });
 
-  handleRecoveryGated(desktopIpc.memoryEntries, async (_event, projectId: unknown, filter: unknown, offset: unknown, limit: unknown, includeArchived: unknown) => {
+  handleRecoveryGated(desktopIpc.memoryEntries, async (_event, projectId: unknown, offset: unknown, limit: unknown, includeArchived: unknown) => {
     return await context.agents.memoryEntries(
       idSchema.parse(projectId),
-      memoryOriginFilterSchema.parse(filter),
       typeof offset === "number" && Number.isInteger(offset) && offset >= 0 ? offset : 0,
       typeof limit === "number" && Number.isInteger(limit) && limit > 0 ? limit : 20,
       includeArchived === true
@@ -895,10 +872,9 @@ export function registerDesktopIpc(context: IpcContext): void {
     );
   });
 
-  handleRecoveryGated(desktopIpc.searchMemory, async (_event, projectId: unknown, filter: unknown, query: unknown, includeArchived: unknown) => {
+  handleRecoveryGated(desktopIpc.searchMemory, async (_event, projectId: unknown, query: unknown, includeArchived: unknown) => {
     return await context.agents.searchMemory(
       idSchema.parse(projectId),
-      memoryOriginFilterSchema.parse(filter),
       memoryQuerySchema.parse(query),
       includeArchived === true
     );
@@ -957,10 +933,9 @@ export function registerDesktopIpc(context: IpcContext): void {
     );
   });
 
-  handleRecoveryGated(desktopIpc.clearMemory, async (_event, projectId: unknown, filter: unknown, expectedRevision: unknown) => {
+  handleRecoveryGated(desktopIpc.clearMemory, async (_event, projectId: unknown, expectedRevision: unknown) => {
     return await context.agents.clearMemory(
       idSchema.parse(projectId),
-      memoryOriginFilterSchema.parse(filter),
       memoryRevisionSchema.parse(expectedRevision)
     );
   });

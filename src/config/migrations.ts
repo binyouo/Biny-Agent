@@ -124,7 +124,12 @@ function migrateActivityEmbeddingPolicy(document: Record<string, unknown>): void
 function migrateRemovedMemoryPolicyFields(document: Record<string, unknown>): void {
   const context = isRecord(document.context) ? document.context : undefined;
   const memory = context && isRecord(context.memory) ? context.memory : undefined;
-  if (memory) delete memory.telos;
+  if (!memory) return;
+  delete memory.telos;
+  // 旧向量生命周期策略：按来源分表的相似度阈值已收窄为单一 similarityThreshold，
+  // 跨用户去重随多用户目录一起移除。存量配置残留时严格 schema 会拒绝整个文档。
+  delete memory.similarityThresholds;
+  delete memory.dedupAcrossUserIds;
 }
 
 function migrateMemoryEmbeddingPolicy(document: Record<string, unknown>): void {

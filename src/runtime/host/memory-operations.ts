@@ -1,17 +1,15 @@
 /**
  * Runtime Host Memory 协议操作。
  *
- * socket Server 只负责决定是否进入独占 lane；Memory 的 selector、CAS 和派生索引副作用在这里
+ * socket Server 只负责决定是否进入独占 lane；Memory 的 CAS 和派生索引副作用在这里
  * 统一落到 AgentSession，避免协议路由层直接拼装领域读写细节。
  */
 import type { CommandRuntime } from "../CommandRuntime.js";
 import type { MemoryEntry } from "../../agent/context/memoryTypes.js";
 import {
   optionalSafeInteger,
-  optionalString,
   readMemoryEntryInput,
   readMemoryEntryPatch,
-  readMemoryOriginSelector,
   readStringArray,
   requiredInteger,
   requiredString
@@ -30,20 +28,16 @@ export async function executeRuntimeHostMemoryOperation(
   const memory = commands.agent.getLocalMemory();
   const action = requiredString(payload.action, "action");
   if (action === "overview-v3") {
-    const selector = readMemoryOriginSelector(payload.selector, true);
     // 各读取来自独立原子快照；允许它们跨越一次写入，避免为 UI 读请求占用 Runtime。
-    const [overview, entries, allEntries, maintenance] = await Promise.all([
+    const [overview, entries, maintenance] = await Promise.all([
       memory.getOverview(),
-      memory.listMemoryEntries({ origins: [selector] }),
-      memory.listMemoryEntries({ origins: ["all"] }),
+      memory.listMemoryEntries(),
       memory.loadMaintenanceStatus()
     ]);
-    return { overview, entries, allEntries, maintenance };
+    return { overview, entries, allEntries: entries, maintenance };
   }
   if (action === "list-v3") {
     return await memory.listMemoryEntries({
-      origins: [readMemoryOriginSelector(payload.selector, true)],
-      topic: optionalString(payload.topic),
       limit: optionalSafeInteger(payload.limit),
       offset: optionalSafeInteger(payload.offset),
       includeArchived: payload.includeArchived === true
@@ -54,7 +48,6 @@ export async function executeRuntimeHostMemoryOperation(
       requiredString(payload.query, "query"),
       payload.paths === undefined ? [] : readStringArray(payload.paths, "paths"),
       {
-        origins: [readMemoryOriginSelector(payload.selector, true)],
         limit: optionalSafeInteger(payload.limit),
         maxChars: optionalSafeInteger(payload.maxChars),
         includeArchived: payload.includeArchived === true
@@ -75,7 +68,6 @@ export async function executeRuntimeHostMemoryOperation(
       archiveRetentionDays: policy.archiveRetentionDays,
       temporaryTtl: policy.temporaryTtl,
       similarityMergeThreshold: policy.similarityMergeThreshold,
-      dedupAcrossUserIds: policy.dedupAcrossUserIds,
       useLlm: policy.useLlm,
       llmMergeLow: policy.llmMergeLow,
       llmBatchSize: policy.llmBatchSize
@@ -126,8 +118,7 @@ export async function executeRuntimeHostMemoryOperation(
     return result;
   }
   if (action === "clear-v3") {
-    const selector = readMemoryOriginSelector(payload.selector, true);
-    const result = await memory.clearEntries(selector, {
+    const result = await memory.clearAllEntries({
       expectedRevision: requiredInteger(payload.expectedRevision, "expectedRevision")
     });
     return result;

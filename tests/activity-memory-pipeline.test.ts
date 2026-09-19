@@ -50,7 +50,7 @@ try {
 
     const memory = new MemoryStorage(root);
     try {
-      const entries = await memory.listEntries({ origins: ["current_workspace"] });
+      const entries = await memory.listEntries();
       assert.equal(entries.entries.length, 1);
       assert.equal(entries.entries[0]?.activitySessionId, "activity-session-1");
     } finally {
@@ -117,7 +117,7 @@ try {
     }
     const memory = new MemoryStorage(root);
     try {
-      assert.equal((await memory.listEntries({ origins: ["current_workspace"] })).entries.length, 1, "清空 Activity 不跨库删除长期记忆");
+      assert.equal((await memory.listEntries()).entries.length, 1, "清空 Activity 不跨库删除长期记忆");
     } finally {
       memory.close();
     }
@@ -167,10 +167,10 @@ async function testDeferredCandidatesRecover(): Promise<void> {
     assert.deepEqual(store.listAnalysesPendingProjection(), []);
     const memory = new MemoryStorage(root);
     try {
-      const entries = await memory.listEntries({ origins: ["current_workspace"] });
+      const entries = await memory.listEntries();
       const written = entries.entries.filter((entry) => entry.activitySessionId === id);
       assert.equal(written.length, 1);
-      assert.equal(written[0]?.summary, candidate.content);
+      assert.equal(written[0]?.content, candidate.content);
       await memory.deleteEntry(written[0]!.id, { expectedRevision: entries.storeRevision });
     } finally { memory.close(); }
   } finally {

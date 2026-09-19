@@ -14,7 +14,7 @@ import type { ModelContextBudget } from "../../ai/types.js";
 import type { AgentAttachment } from "../AgentSession.js";
 import type { PersonalizationMetadata } from "../../session/metadata.js";
 import { canonicalToolSchemaHash, type PromptEpochReason } from "../../llm/promptCache.js";
-import type { MemoryOrigin, MemoryOriginCounts, MemoryRecallReport } from "./memoryTypes.js";
+import type { MemoryRecallReport } from "./memoryTypes.js";
 import type { HybridMemoryRetriever } from "./HybridMemoryRetriever.js";
 import type { PromptBundle } from "../prompts.js";
 import { stripTransientTurnContext } from "../prompts.js";
@@ -62,6 +62,7 @@ export class ContextMemory {
   private memoryUseEnabled = false;
   private memoryRecall: MemoryRecallReport = emptyMemoryRecallReport();
   private memoryInjectedSummaries: string[] = [];
+  private memoryRecallDegraded: MemoryRecallReport["degraded"];
   private personalization: PersonalizationMetadata | undefined;
   private promptEpoch = 0;
   private promptEpochReason: PromptEpochReason = "initial";
@@ -149,6 +150,7 @@ export class ContextMemory {
     try {
       this.memoryUseEnabled = useMemories;
       this.memoryRecall = emptyMemoryRecallReport();
+      this.memoryRecallDegraded = undefined;
       this.memoryInjectedSummaries = [];
       signal?.throwIfAborted();
       yield "workspace";
@@ -223,6 +225,7 @@ export class ContextMemory {
         }
       }
       this.memoryRecall = memoryRecallForAssembly(recalled.report, recalled.entries, assembly.budget.components);
+      this.memoryRecallDegraded = this.memoryRecall.degraded;
       this.memoryInjectedSummaries = assembly.budget.components?.some((component) => component.id === "stable memory" && component.disposition === "included")
         ? memoryMatches.map((match) => redactSecrets(match.excerpt))
         : [];
@@ -465,8 +468,9 @@ export class ContextMemory {
       compaction: this.compactionStatus(),
       budget: cloneBudget(this.lastBudget),
       memoryEnabled: this.memoryUseEnabled,
-      memoryInjectedCount: Object.values(this.memoryRecall.origins.included).reduce((sum, count) => sum + count, 0),
-      memoryInjectedSummaries: [...this.memoryInjectedSummaries]
+      memoryInjectedCount: this.memoryInjectedSummaries.length,
+      memoryInjectedSummaries: [...this.memoryInjectedSummaries],
+      memoryRecallDegraded: this.memoryUseEnabled ? this.memoryRecallDegraded : undefined
     };
   }
 
@@ -638,23 +642,20 @@ export class ContextMemory {
     return deterministicSummary(plan.compacted, previousSummary, hint, maxSummaryTokens);
   }
 
-  /** 语义 + 词法混合召回条目；向量不可用时 fail-closed 到 user+当前工作区词法。 */
+  /** 语义 + 词法混合召回条目；向量不可用时自动召回保持为空。 */
   private async findRelevantMemory(
     input: string,
     signal?: AbortSignal
   ): Promise<{
       matches: MemoryMatch[];
       report: MemoryRecallReport;
-      entries: Array<{ origin: MemoryOrigin; originBucket?: keyof MemoryOriginCounts; id: string }>;
+      entries: string[];
     }> {
     const limit = this.localMemory?.recallLimit ?? 0;
-    if (!this.localMemory || limit < 1) {
+    if (!this.localMemory || limit < 1 || !this.memoryRetriever) {
       return { matches: [], report: emptyMemoryRecallReport(), entries: [] };
     }
     try {
-      if (!this.memoryRetriever) {
-        return { matches: [], report: emptyMemoryRecallReport(), entries: [] };
-      }
       const result = await this.memoryRetriever.retrieve(input, [], {
         limit,
         maxChars: memoryRecallMaxChars,
@@ -664,17 +665,13 @@ export class ContextMemory {
       await this.memoryRetriever.recordRecallUsage(result.matches.map((match) => match.entry.id), { signal });
       return {
         matches: result.matches.map((match) => ({
-          topic: match.topic,
           path: match.path,
           excerpt: match.excerpt,
+          tags: match.entry.tags,
           score: match.score
         })),
         report: result.report,
-        entries: result.matches.map((match) => ({
-          origin: match.entry.origin,
-          originBucket: match.originBucket,
-          id: match.entry.id
-        }))
+        entries: result.matches.map((match) => match.entry.id)
       };
     } catch {
       signal?.throwIfAborted();
@@ -1048,53 +1045,36 @@ function cloneBudget(budget: ContextBudgetStatus): ContextBudgetStatus {
 const memoryRecallMaxChars = 12_000;
 
 function emptyMemoryRecallReport(): MemoryRecallReport {
-  return {
-    origins: { included: emptyMemoryOriginCounts(), trimmed: emptyMemoryOriginCounts() },
-    omitted: [],
-    budgetOmission: undefined
-  };
-}
-
-function cloneMemoryRecallReport(report: MemoryRecallReport): MemoryRecallReport {
-  return {
-    origins: {
-      included: { ...report.origins.included },
-      trimmed: { ...report.origins.trimmed }
-    },
-    omitted: report.omitted.map((item) => ({ ...item })),
-    budgetOmission: report.budgetOmission === undefined ? undefined : { ...report.budgetOmission }
-  };
-}
-
-function emptyMemoryOriginCounts(): MemoryOriginCounts {
-  return { user: 0, currentWorkspace: 0, otherWorkspaces: 0 };
+  return { omitted: [], budgetOmission: undefined };
 }
 
 function memoryRecallForAssembly(
   report: MemoryRecallReport,
-  entries: Array<{ origin: MemoryOrigin; originBucket?: keyof MemoryOriginCounts; id: string }>,
+  entries: readonly string[],
   components: ContextComponentUsage[] | undefined
 ): MemoryRecallReport {
-  const next = cloneMemoryRecallReport(report);
+  const omitted = report.omitted.map((item) => ({ ...item }));
   const memoryComponent = components?.find((component) => component.id === "stable memory");
-  if (!memoryComponent || memoryComponent.disposition === "included") return next;
-  for (const entry of entries) {
-    const bucket = entry.originBucket ?? (entry.origin.kind === "user"
-      ? "user"
-      : next.origins.included.currentWorkspace > 0 ? "currentWorkspace" : "otherWorkspaces");
-    if (next.origins.included[bucket] > 0) next.origins.included[bucket] -= 1;
-    next.origins.trimmed[bucket] += 1;
-    if (!next.omitted.some((omission) => omission.id === entry.id)) {
-      next.omitted.push({ origin: entry.origin, id: entry.id, reason: "budget" });
+  if (memoryComponent && memoryComponent.disposition !== "included") {
+    // 记忆块最终没进 prompt：把已计入的命中改记为预算裁剪，保证 report 与实际注入一致。
+    for (const id of entries) {
+      if (!omitted.some((omission) => omission.id === id)) {
+        omitted.push({ id, reason: "budget" });
+      }
     }
   }
-  const omitted = next.omitted.filter((item) => item.reason === "budget").length;
-  next.budgetOmission = {
-    maxChars: next.budgetOmission?.maxChars ?? memoryRecallMaxChars,
-    usedChars: memoryComponent.usedTokens > 0 ? next.budgetOmission?.usedChars ?? 0 : 0,
-    omitted
+  const budgetOmitted = omitted.filter((item) => item.reason === "budget").length;
+  return {
+    omitted,
+    budgetOmission: memoryComponent && memoryComponent.disposition !== "included"
+      ? {
+          maxChars: memoryRecallMaxChars,
+          usedChars: memoryComponent.usedTokens > 0 ? report.budgetOmission?.usedChars ?? 0 : 0,
+          omitted: budgetOmitted
+        }
+      : report.budgetOmission,
+    degraded: report.degraded
   };
-  return next;
 }
 
 function normalizeRestoredBudget(budget: ContextBudgetStatus, limits: ModelContextBudget): ContextBudgetStatus {

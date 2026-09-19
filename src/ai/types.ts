@@ -16,10 +16,7 @@ export interface ProviderEmbeddingModelDefinition {
   displayName: string;
   description?: string;
   dimensions?: number;
-  recommendedThresholds: {
-    currentWorkspace: number;
-    crossWorkspace: number;
-  };
+  recommendedThreshold: number;
 }
 
 export interface ProviderEmbeddingDefinition {

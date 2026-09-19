@@ -42,7 +42,7 @@ export function createRuntimeHostMemoryMaintenance(
     if (stopped || maintenancePromise || (options.isBusy?.() ?? (options.getRuntime().getSnapshot().state.kind !== "idle"))) return;
     const commands = options.getCommands();
     const agent = commands.agent as CommandRuntime["agent"] & {
-      getPersonalizationState?: () => Promise<{ memory?: { enabled?: boolean; sleepEnabled?: boolean; sleepTime?: string; archiveRetentionDays?: number; temporaryTtl?: number; similarityMergeThreshold?: number; dedupAcrossUserIds?: boolean; useLlm?: boolean; llmMergeLow?: number; llmBatchSize?: number } }>;
+      getPersonalizationState?: () => Promise<{ memory?: { enabled?: boolean; sleepEnabled?: boolean; sleepTime?: string; archiveRetentionDays?: number; temporaryTtl?: number; similarityMergeThreshold?: number; useLlm?: boolean; llmMergeLow?: number; llmBatchSize?: number } }>;
     };
     if (!agent) return;
     const state = agent.getPersonalizationState
@@ -84,7 +84,6 @@ export function createRuntimeHostMemoryMaintenance(
             archiveRetentionDays: sleep?.archiveRetentionDays,
             temporaryTtl: sleep?.temporaryTtl,
             similarityMergeThreshold: sleep?.similarityMergeThreshold,
-            dedupAcrossUserIds: sleep?.dedupAcrossUserIds,
             useLlm: sleep?.useLlm,
             llmMergeLow: sleep?.llmMergeLow,
             llmBatchSize: sleep?.llmBatchSize

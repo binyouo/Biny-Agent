@@ -91,7 +91,7 @@ export class MemoryEmbeddingService {
   async status(): Promise<MemoryEmbeddingRuntimeStatus> {
     const [localModels, entries] = await Promise.all([
       this.options.localManager.list(),
-      this.options.localMemory.listMemoryEntries({ origins: ["all"] })
+      this.options.localMemory.listMemoryEntries()
     ]);
     const models = [
       ...localModels.map(({ descriptor, installed }) => ({ ...descriptor, installed })),
@@ -139,7 +139,10 @@ export class MemoryEmbeddingService {
       : !indexAvailable
         ? entries.entries.length
         : Math.max(entries.entries.length - indexedEntries, 0);
-    const needsRebuild = this.options.getNeedsRebuild?.() === true;
+    // needsRebuild 除了读配置标志，还要反映真实状态：索引是用旧模型/旧维度建的，
+    // 而配置已经换到新模型。没有这条，自动召回会一直 fail-closed 却没有任何提示。
+    const needsRebuild = this.options.getNeedsRebuild?.() === true
+      || (descriptor !== undefined && indexAvailable && index.active !== undefined && !activeMatches);
     return {
       activeModel,
       models,
@@ -240,7 +243,7 @@ export class MemoryEmbeddingService {
     const vectors: Array<{ entryId: string; embedding: ArrayLike<number> }> = [];
     let dimensions: number | undefined;
     try {
-      const snapshot = await this.options.localMemory.listMemoryEntries({ origins: ["all"], signal: combined });
+      const snapshot = await this.options.localMemory.listMemoryEntries({ signal: combined });
       entries = snapshot.entries;
       snapshotRevision = snapshot.storeRevision;
       this.operation = {
@@ -333,7 +336,7 @@ export class MemoryEmbeddingService {
     }
     return (entry) => {
       signal?.throwIfAborted();
-      if (entry.summary !== content) throw new Error("Sleep synthesis changed after embedding.");
+      if (entry.content !== content) throw new Error("Sleep synthesis changed after embedding.");
       const current = index.status().active;
       if (!current || current.modelFingerprint !== active.modelFingerprint || current.dimensions !== active.dimensions) {
         throw new Error("Sleep synthesis embedding index changed.");

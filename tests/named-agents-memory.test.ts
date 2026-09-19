@@ -21,6 +21,7 @@ import { ToolRegistry } from "../src/tools/registry.js";
 import type { Tool } from "../src/tools/types.js";
 import { SubagentTaskIncompleteError, SubagentTaskManager } from "../src/runtime/SubagentTaskManager.js";
 import type { AgentModel } from "../src/agent/core/types.js";
+import type { MemoryEntryInput } from "../src/agent/context/memoryTypes.js";
 
 async function main(): Promise<void> {
   const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "biny-named-agents-"));
@@ -257,13 +258,16 @@ function unusedModel(): AgentModel {
   };
 }
 
+/** 扁平化后记忆只有 content 正文。 */
+function projectEntry(content: string): MemoryEntryInput {
+  return { content };
+}
+
+/** /memory 新语法：list / show <id> / add <note> / forget <id-or-text> / search / archived / restore。 */
 async function testMemoryTopicLifecycle(): Promise<void> {
   const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "biny-memory-cmd-"));
   try {
     const memory = new LocalMemory(workspaceRoot, unusedModel);
-    const oldMemoryDir = path.join(workspaceRoot, ".biny", "memory");
-    await mkdir(oldMemoryDir, { recursive: true });
-    await writeFile(path.join(oldMemoryDir, "old.md"), "Old project-local memory must remain ignored.", "utf8");
 
     const disabled = await runMemoryCommand(undefined, []);
     assert.match(disabled, /unavailable/);
@@ -272,39 +276,53 @@ async function testMemoryTopicLifecycle(): Promise<void> {
     assert.match(empty, /empty/);
     assert.deepEqual((await memory.listMemoryEntries()).entries, []);
 
-    const added = await runMemoryCommand(memory, ["add", "decisions", "Always run pnpm typecheck before committing changes."]);
-    assert.match(added, /Saved workspace\/fact memory/);
+    const added = await runMemoryCommand(memory, ["add", "Always run pnpm typecheck before committing changes."]);
+    assert.match(added, /Saved memory /);
 
-    const tooShort = await runMemoryCommand(memory, ["add", "decisions", "too short"]);
+    const tooShort = await runMemoryCommand(memory, ["add", "too short"]);
     assert.match(tooShort, /Skipped/);
 
     const listed = await runMemoryCommand(memory, ["list"]);
-    assert.match(listed, /decisions/);
+    assert.match(listed, /typecheck/);
 
-    const shown = await runMemoryCommand(memory, ["show", "decisions"]);
+    const shown = await runMemoryCommand(memory, ["show", "typecheck"]);
     assert.match(shown, /pnpm typecheck/);
 
-    const searchCalls: Array<{ query: string; paths: string[]; origins: string[] | undefined; limit: number | undefined }> = [];
+    const searchCalls: Array<{ query: string; paths: string[]; limit: number | undefined }> = [];
     const searchMemory = async (query: string, paths: string[], options: Parameters<LocalMemory["search"]>[2]) => {
-      searchCalls.push({ query, paths, origins: options.origins, limit: options.limit });
+      searchCalls.push({ query, paths, limit: options.limit });
       return await memory.search(query, paths, options);
     };
     const searched = await runMemoryCommand(memory, ["search", "typecheck"], searchMemory);
     assert.match(searched, /pnpm typecheck/);
-    await runMemoryCommand(memory, ["search", "other", "typecheck"], searchMemory);
-    assert.deepEqual(searchCalls, [
-      { query: "typecheck", paths: [], origins: ["all"], limit: 8 },
-      { query: "typecheck", paths: [], origins: ["other_workspaces"], limit: 8 }
-    ]);
+    assert.deepEqual(searchCalls, [{ query: "typecheck", paths: [], limit: 8 }]);
 
-    const forgotten = await runMemoryCommand(memory, ["forget", "decisions"]);
+    const forgotten = await runMemoryCommand(memory, ["forget", "typecheck"]);
     assert.match(forgotten, /Deleted 1 memory entry/);
     assert.deepEqual((await memory.listMemoryEntries()).entries, []);
-    // 索引中的话题行也要被清掉。
-    assert.equal((await memory.listMemoryEntries({ topic: "decisions" })).entries.length, 0);
 
-    const missing = await runMemoryCommand(memory, ["forget", "decisions"]);
-    assert.match(missing, /No memory entry or topic/);
+    const missing = await runMemoryCommand(memory, ["forget", "typecheck"]);
+    assert.match(missing, /No memory entry/);
+
+    // 归档列表与恢复按 archive row id 定位。
+    const reAdded = await runMemoryCommand(memory, ["add", "Review the diff with a second pass before pushing commits."]);
+    assert.match(reAdded, /Saved memory /);
+    const active = (await memory.listMemoryEntries()).entries[0];
+    assert.ok(active);
+    const archived = await memory.archiveEntry(active.id, true, { expectedRevision: (await memory.getOverview()).storeRevision });
+    assert.equal(archived.archived, true);
+    assert.ok(archived.entry);
+    const archivedList = await runMemoryCommand(memory, ["archived"]);
+    assert.match(archivedList, /Archived memory entries/);
+    const restored = await runMemoryCommand(memory, ["restore", archived.entry.id]);
+    assert.match(restored, /Restored 1 memory entry/);
+    assert.equal((await memory.listMemoryEntries()).entries.length, 1);
+    // 恢复出来的条目清理掉，保持记忆库为空，不污染后续用例的共享全局库。
+    const restoredEntry = (await memory.listMemoryEntries()).entries[0];
+    assert.ok(restoredEntry);
+    const cleaned = await runMemoryCommand(memory, ["forget", restoredEntry.id]);
+    assert.match(cleaned, /Deleted 1 memory entry/);
+    assert.deepEqual((await memory.listMemoryEntries()).entries, []);
   } finally {
     await rm(workspaceRoot, { recursive: true, force: true });
   }
@@ -321,10 +339,9 @@ async function testMemoryTools(): Promise<void> {
     assert.equal(recallTool.risk, "read");
 
     const saveExecution = await saveTool.resolveExecution({
-      topic: "workflows",
-      title: "Release flow",
-      summary: "Releases are cut from main after pnpm test and pnpm typecheck pass.",
-      keywords: ["release", "main"]
+      content: "Releases are cut from main after pnpm test and pnpm typecheck pass.",
+      tags: ["release", "main"],
+      importance: 3
     });
     assert.ok(!("isError" in saveExecution));
     const saved = await saveExecution.execute({ toolCallId: "save-1" }) as { saved: boolean; id?: string; path?: string };
@@ -332,20 +349,18 @@ async function testMemoryTools(): Promise<void> {
     assert.match(saved.path ?? "", /^memory:\/\/[a-z0-9-]+$/u);
 
     // 无效参数走 isError 分支而不是抛异常。
-    const invalid = await saveTool.resolveExecution({ topic: "x", title: "y", summary: "short" });
+    const invalid = await saveTool.resolveExecution({ content: "short" });
     assert.ok("isError" in invalid);
 
     const recallExecution = await recallTool.resolveExecution({ query: "release main" });
     assert.ok(!("isError" in recallExecution));
-    const recalled = await recallExecution.execute({ toolCallId: "recall-1" }) as { matches: Array<{ topic: string }> };
-    assert.equal(recalled.matches[0]?.topic, "workflows");
+    const recalled = await recallExecution.execute({ toolCallId: "recall-1" }) as { matches: Array<{ entry: { content: string } }> };
+    assert.match(recalled.matches[0]?.entry.content ?? "", /Releases are cut from main/);
 
-    const topicExecution = await recallTool.resolveExecution({ query: "anything", topic: "workflows" });
-    assert.ok(!("isError" in topicExecution));
-    const topicResult = await topicExecution.execute({ toolCallId: "recall-2" }) as {
-      entries: Array<{ title: string }>;
-    };
-    assert.equal(topicResult.entries[0]?.title, "Release flow");
+    const limitedExecution = await recallTool.resolveExecution({ query: "typecheck", limit: 5 });
+    assert.ok(!("isError" in limitedExecution));
+    const limited = await limitedExecution.execute({ toolCallId: "recall-2" }) as { matches: unknown[] };
+    assert.equal(limited.matches.length, 1);
   } finally {
     await rm(workspaceRoot, { recursive: true, force: true });
   }
@@ -358,27 +373,15 @@ async function testMaintenanceScansDurableEntries(): Promise<void> {
   process.env[BINY_AGENT_DIR_ENV] = agentRoot;
   try {
     const memory = new LocalMemory(workspaceRoot, unusedModel);
-    const summary = "The same durable maintenance workflow is shared by the workspace and the user memory namespace.";
-    const existing = await memory.writeEntry({
-      audience: "workspace",
-      kind: "workflow",
-      topic: "maintenance",
-      title: "Existing maintenance rule",
-      summary,
-      lineage: { source: "explicit", externalContext: false }
-    }, { expectedRevision: 0, now: new Date("2026-08-01T00:00:00.000Z") });
-    await memory.writeEntry({
-      audience: "universal",
-      kind: "working_style",
-      topic: "maintenance",
-      title: "Durable maintenance preference",
-      summary,
-      lineage: {
-        source: "explicit",
-        externalContext: false,
-        userEvidence: "The user explicitly wants this maintenance workflow remembered."
-      }
-    }, { expectedRevision: existing.revision, now: new Date("2026-08-01T01:00:00.000Z") });
+    const summary = "The same durable maintenance workflow is shared by every memory writer.";
+    const first = await memory.writeEntry(projectEntry(summary), { expectedRevision: 0, now: new Date("2026-08-01T00:00:00.000Z") });
+    const second = await memory.writeEntry(projectEntry(
+      "A different durable note that will be edited into the same maintenance workflow text."
+    ), { expectedRevision: first.revision, now: new Date("2026-08-01T00:30:00.000Z") });
+    assert.ok(first.entry && second.entry);
+    // updateEntry 不做写入期去重：用它构造一对同文行，供 Sleep exact 层无条件合并。
+    const edited = await memory.updateEntry(second.entry.id, { content: summary }, { expectedRevision: second.revision, now: new Date("2026-08-01T01:00:00.000Z") });
+    assert.equal(edited.written, true);
 
     let rebuilds = 0;
     const result = await memory.runMemoryMaintenance({ now: new Date("2026-08-01T07:00:00.000Z"), useLlm: false }, {
@@ -387,12 +390,12 @@ async function testMaintenanceScansDurableEntries(): Promise<void> {
     assert.equal(result.failed, 0);
     assert.equal(result.written, 0);
     assert.equal(rebuilds, 1);
-    const entries = (await memory.listMemoryEntries({ origins: ["all"] })).entries;
+    const entries = (await memory.listMemoryEntries()).entries;
     assert.equal(entries.length, 1);
-    assert.equal(entries[0]?.origin.kind, "user");
+    assert.equal(entries[0]?.id, second.entry.id, "较新的同文条目成为 survivor");
     const archived = (await memory.listArchivedEntries()).entries;
     assert.equal(archived.length, 1);
-    assert.equal(archived[0]?.origin.kind, "workspace");
+    assert.equal(archived[0]?.archivedReason, "exact_dup");
     const status = await memory.loadMaintenanceStatus();
     assert.equal(status.lastRun?.exact, 1);
   } finally {

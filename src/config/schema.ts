@@ -171,7 +171,6 @@ const contextSchema = z.object({
     extractModel: undefined,
     embeddingModel: { kind: "local", model: "multilingual-e5-small" },
     similarityThreshold: 0.1,
-    similarityThresholds: {},
     cloudEmbeddingConsents: {},
     excludeExternalContext: true,
     maxRecalled: 5
@@ -240,23 +239,13 @@ const thinkingSchema = z.object({
   effort: reasoningEffortSchema.default("high")
 }).default({ enabled: true, effort: "high" });
 
-const providerEmbeddingThresholdsSchema = z.object({
-  currentWorkspace: z.number().min(0).max(1),
-  crossWorkspace: z.number().min(0).max(1)
-}).strict().superRefine((value, context) => {
-  if (value.crossWorkspace >= value.currentWorkspace) return;
-  context.addIssue({
-    code: z.ZodIssueCode.custom,
-    path: ["crossWorkspace"],
-    message: "Cross-workspace embedding threshold must be at least the current-workspace threshold."
-  });
-});
 
 export const providerEmbeddingModelSchema = z.object({
   id: z.string().trim().min(1).max(256),
   displayName: z.string().trim().min(1).max(256),
   dimensions: z.number().int().min(1).max(65_536).optional(),
-  recommendedThresholds: providerEmbeddingThresholdsSchema.optional()
+  /** 语义召回的最低相似度；未配置时使用运行时推荐值。 */
+  recommendedThreshold: z.number().min(0).max(1).optional()
 }).strict();
 
 const providerConfigSchema = z.object({
@@ -899,7 +888,6 @@ export const defaultConfig: AgentConfig = {
       extractModel: undefined,
       embeddingModel: { kind: "local", model: "multilingual-e5-small" },
       similarityThreshold: 0.1,
-      similarityThresholds: {},
       cloudEmbeddingConsents: {},
       excludeExternalContext: true,
       maxRecalled: 5,
@@ -908,7 +896,6 @@ export const defaultConfig: AgentConfig = {
       archiveRetentionDays: 30,
       temporaryTtl: 30,
       similarityMergeThreshold: 0.95,
-      dedupAcrossUserIds: true,
       useLlm: true,
       llmMergeLow: 0.75,
       llmBatchSize: 20

@@ -13,6 +13,9 @@ Search and manage Biny's persistent local memory. Memory is useful for continuit
 # List memories. Selector: all, current, user, or other
 biny memory list [selector] --json
 
+# Show store totals, per-scope/kind distribution, and maintenance status
+biny memory stats --json
+
 # Search semantically within a selector
 biny memory search "<query>" --selector current --json
 

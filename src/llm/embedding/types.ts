@@ -19,10 +19,7 @@ export const defaultEmbeddingModelRef: EmbeddingModelRef = {
   model: defaultLocalEmbeddingModel
 };
 
-export interface EmbeddingThresholds {
-  currentWorkspace: number;
-  crossWorkspace: number;
-}
+
 
 export interface EmbeddingModelDescriptor {
   ref: EmbeddingModelRef;
@@ -31,7 +28,8 @@ export interface EmbeddingModelDescriptor {
   displayName: string;
   description?: string;
   dimensions?: number;
-  recommendedThresholds: EmbeddingThresholds;
+  /** 语义召回的最低相似度；不同向量空间不可共用。 */
+  recommendedThreshold: number;
   source: "local" | "provider";
   providerType?: string;
   endpoint?: string;

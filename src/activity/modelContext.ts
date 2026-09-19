@@ -5,7 +5,7 @@ import { redactSecrets } from "../utils/secrets.js";
 export const activityDerivedMarker = "<!-- biny-activity-derived -->";
 
 export function isActivityMemory(entry: MemoryEntry): boolean {
-  return Boolean(entry.activitySource || entry.activitySessionId || entry.metadata?.activityDerived === true);
+  return Boolean(entry.activitySource || entry.activitySessionId);
 }
 
 export function dailyNoteForModel(content: string, allowActivity: boolean): string {

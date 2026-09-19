@@ -11,7 +11,6 @@ import type { LocalEmbeddingModelId } from "../../../../llm/embedding/types.js";
 import type {
   DesktopMemoryEntryInput,
   DesktopMemoryEntryPatch,
-  DesktopMemoryOriginFilter,
   DesktopModelConfigurationInput,
   DesktopModelLoginProvider,
   DesktopWebSearchProvider,
@@ -145,26 +144,26 @@ export function useDesktopSettingsActions({
     return await cancel(requireProject(projectIdRef.current));
   }, [projectIdRef]);
 
-  const loadMemoryOverview = useCallback(async (filter?: DesktopMemoryOriginFilter) => {
+  const loadMemoryOverview = useCallback(async () => {
     const memoryOverview = window.biny.memoryOverview;
     if (typeof memoryOverview !== "function") throw new Error(desktopApiVersionMismatchMessage);
-    return await memoryOverview(requireProject(projectIdRef.current), filter);
+    return await memoryOverview(requireProject(projectIdRef.current));
   }, [projectIdRef]);
 
-  const loadMemoryStats = useCallback(async (filter?: DesktopMemoryOriginFilter) => {
+  const loadMemoryStats = useCallback(async () => {
     const memoryStats = window.biny.memoryStats;
     if (typeof memoryStats !== "function") throw new Error(desktopApiVersionMismatchMessage);
-    return await memoryStats(requireProject(projectIdRef.current), filter);
+    return await memoryStats(requireProject(projectIdRef.current));
   }, [projectIdRef]);
 
-  const loadMemoryEntries = useCallback(async (filter: DesktopMemoryOriginFilter, offset: number, limit: number, _includeArchived = false) => {
+  const loadMemoryEntries = useCallback(async (offset: number, limit: number, includeArchived = false) => {
     const memoryEntries = window.biny.memoryEntries;
     if (typeof memoryEntries !== "function") throw new Error(desktopApiVersionMismatchMessage);
-    return await memoryEntries(requireProject(projectIdRef.current), filter, offset, limit);
+    return await memoryEntries(requireProject(projectIdRef.current), offset, limit, includeArchived);
   }, [projectIdRef]);
 
-  const searchMemory = useCallback(async (filter: DesktopMemoryOriginFilter, query: string, includeArchived = false) => {
-    return await window.biny.searchMemory(requireProject(projectIdRef.current), filter, query, includeArchived);
+  const searchMemory = useCallback(async (query: string, includeArchived = false) => {
+    return await window.biny.searchMemory(requireProject(projectIdRef.current), query, includeArchived);
   }, [projectIdRef]);
 
   const addMemoryEntry = useCallback(async (input: DesktopMemoryEntryInput, expectedRevision: number) => {
@@ -207,8 +206,8 @@ export function useDesktopSettingsActions({
     return await window.biny.cancelMemorySleep(requireProject(projectIdRef.current));
   }, [projectIdRef]);
 
-  const clearMemory = useCallback(async (filter: DesktopMemoryOriginFilter, expectedRevision: number) => {
-    return await window.biny.clearMemory(requireProject(projectIdRef.current), filter, expectedRevision);
+  const clearMemory = useCallback(async (expectedRevision: number) => {
+    return await window.biny.clearMemory(requireProject(projectIdRef.current), expectedRevision);
   }, [projectIdRef]);
 
   return {
