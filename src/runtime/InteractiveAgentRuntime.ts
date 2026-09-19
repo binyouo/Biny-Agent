@@ -209,6 +209,19 @@ export class InteractiveAgentRuntime {
         recipe: notice.recipe
       });
     });
+    // 技能提取（自进化）同样是回合后旁路；进度通知转成 host event 广播给界面。
+    commandRuntime.agent.setOnSkillExtractionUpdate?.((notice) => {
+      this.emit({
+        type: "skill_extraction.updated",
+        sessionId: this.commandRuntime.agent.getInfo().sessionId,
+        runId: notice.runId,
+        timestamp: new Date().toISOString(),
+        stage: notice.stage,
+        skillName: notice.skillName,
+        skillDescription: notice.skillDescription,
+        updated: notice.updated
+      });
+    });
     commandRuntime.agent.setOnTitleGenerated?.((sessionId, title) => {
       this.emit({ type: "session.title", sessionId, title, runId: "", timestamp: new Date().toISOString() });
     });
