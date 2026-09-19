@@ -366,6 +366,7 @@ export function SettingsMemory({
     const selected = models.find((model) => model.alias === (policy?.memoryModel ?? snapshot?.models.resolvedToolModel));
     if (!selected || modelTesting) return;
     setModelTesting(true);
+    setModelTestResult(undefined);
     try {
       const result = await onTestModelConfiguration({
         alias: selected.alias,
@@ -377,9 +378,10 @@ export function SettingsMemory({
         supportsTools: selected.supportsTools === true,
         supportsThinking: selected.efforts.length > 0
       });
-      onNotify(result.ok ? "测试通过" : result.message);
+      setModelTestResult(result);
     } catch (cause) {
-      onNotify(errorMessage(cause));
+      // 结果（含失败原因）统一由按钮下方的结果卡片展示，不再弹 toast。
+      setModelTestResult({ ok: false, message: errorMessage(cause) });
     } finally {
       setModelTesting(false);
     }
