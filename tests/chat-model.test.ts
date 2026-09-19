@@ -499,9 +499,31 @@ test("parseCompactionNotice 解析压缩条数与节省 token", () => {
 import { ActivitySegment } from "../src/desktop/renderer/src/components/chat/ActivitySegment.js";
 import { RecipeReadyBanner } from "../src/desktop/renderer/src/components/RecipeReadyBanner.js";
 import { CompactionDivider } from "../src/desktop/renderer/src/components/chat/CompactionDivider.js";
-import { SkillsIndicator } from "../src/desktop/renderer/src/components/chat/SkillsIndicator.js";
+import { SkillsIndicator, TurnSkillsNotice } from "../src/desktop/renderer/src/components/chat/SkillsIndicator.js";
+import { compareCapabilitySkills, compareCapabilityTools, shouldShowToolInCapabilityMenu, skillCapabilityGroupId, SKILL_CAPABILITY_GROUPS } from "../src/desktop/renderer/src/components/composer/capabilityVisibility.js";
 
 const noopAsync = (): Promise<void> => Promise.resolve();
+
+test("能力菜单隐藏记忆、技能内部工具和原始 MCP 工具", () => {
+  assert.equal(shouldShowToolInCapabilityMenu({ name: "Read", source: "builtin" }), true);
+  assert.equal(shouldShowToolInCapabilityMenu({ name: "ToolSearch", source: "builtin" }), true);
+  for (const name of ["recall_memory", "save_memory", "skill_search", "skill_install", "read_skill_resource", "TaskStatus", "PlanStatus"]) {
+    assert.equal(shouldShowToolInCapabilityMenu({ name, source: "builtin" }), false, name);
+  }
+  assert.equal(shouldShowToolInCapabilityMenu({ name: "mcp_Context7_get-library-docs", source: "mcp" }), false);
+});
+
+test("能力菜单按固定分区和顺序整理工具与 Skill", () => {
+  const toolNames = ["WebSearch", "BrowserPress", "Bash", "BrowserOpen", "Read", "Glob"].map((name) => ({ name }));
+  assert.deepEqual(toolNames.sort(compareCapabilityTools).map((tool) => tool.name), ["Glob", "Read", "Bash", "BrowserOpen", "BrowserPress", "WebSearch"]);
+  assert.equal(shouldShowToolInCapabilityMenu({ name: "BrowserOpen", source: "builtin" }), true);
+  assert.deepEqual(SKILL_CAPABILITY_GROUPS.map((group) => group.id), ["bundled", "personal", "claudeCode", "codex", "marketplace", "project", "external"]);
+  assert.equal(skillCapabilityGroupId({ scope: "builtin", source: "builtin", engine: "biny" }), "bundled");
+  assert.equal(skillCapabilityGroupId({ scope: "global", source: "agents", engine: "claude" }), "claudeCode");
+  assert.equal(skillCapabilityGroupId({ scope: "global", source: "agents", engine: "codex" }), "codex");
+  assert.equal(skillCapabilityGroupId({ scope: "project", source: "biny", engine: "biny" }), "project");
+  assert.equal(compareCapabilitySkills({ name: "a", ref: "z", id: "2" }, { name: "b", ref: "a", id: "1" }) < 0, true);
+});
 
 test("ActivitySegment 工具次数不包含思考相位", () => {
   const markup = renderToStaticMarkup(createElement(ActivitySegment, {
