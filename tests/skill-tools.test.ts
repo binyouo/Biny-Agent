@@ -82,6 +82,34 @@ async function main(): Promise<void> {
     assert.equal(refreshCount, 1);
     assert.match(committedEvidence ?? "", /demo-skill/u);
     assert.equal(await readFile(path.join(homeDir, ".config", "biny", "skills", "demo-skill", "SKILL.md"), "utf8"), "---\nname: demo-skill\ndescription: Demo\n---\n\n# Demo\n");
+
+    // 默认分支非 main/master 的仓库：commits 404 后查仓库默认分支再装。
+    const developHome = path.join(root, "develop-home");
+    const developFetches: string[] = [];
+    const developFetcher: typeof globalThis.fetch = async (input) => {
+      const url = String(input);
+      if (url.includes("/commits/main") || url.includes("/commits/master")) return response("not found", 404);
+      if (url.endsWith("/repos/demo-owner/demo-skills") && !url.includes("/commits") && !url.includes("/git/")) {
+        developFetches.push("repo-info");
+        return response(JSON.stringify({ default_branch: "develop" }));
+      }
+      if (url.includes("/commits/develop")) {
+        developFetches.push("commit-develop");
+        return response(JSON.stringify({ sha: "b".repeat(40) }));
+      }
+      if (url.includes("/git/trees/")) return response(JSON.stringify({ tree: [{ path: "skills/demo/SKILL.md", type: "blob", size: 64 }] }));
+      if (url.endsWith("/skills/demo/SKILL.md")) return response("---\nname: demo-skill\ndescription: Demo\n---\n\n# Demo\n");
+      return response("not found", 404);
+    };
+    const developInstall = createSkillInstallTool({ homeDir: developHome, fetcher: developFetcher, refreshSkills: async () => undefined });
+    const developExecution = developInstall.resolveExecution({ name: "demo-skill", directory: "skills/demo", repoOwner: "demo-owner", repoName: "demo-skills", repoBranch: "main" });
+    assert.equal("isError" in developExecution, false);
+    if (!("isError" in developExecution)) {
+      const installed = await developExecution.execute({ toolCallId: "install-develop" });
+      assert.equal(installed.name, "demo-skill");
+      assert.deepEqual(developFetches, ["repo-info", "commit-develop"], "main/master 均 404 后才查默认分支");
+      assert.equal(await readFile(path.join(developHome, ".config", "biny", "skills", "demo-skill", "SKILL.md"), "utf8"), "---\nname: demo-skill\ndescription: Demo\n---\n\n# Demo\n");
+    }
   } finally {
     await rm(root, { recursive: true, force: true });
   }
