@@ -1,4 +1,4 @@
-import { generateText } from "ai";
+import { streamText } from "ai";
 import { randomUUID } from "node:crypto";
 import type { LanguageModelV4CallOptions } from "@ai-sdk/provider";
 import type { AgentMessage, AgentModel, AgentUsage, ModelRequestContext, ModelRequestObserver } from "../agent/core/types.js";
@@ -8,6 +8,8 @@ export interface NativeTextGenerationOptions {
   systemPrompt?: string;
   signal?: AbortSignal;
   maxOutputTokens?: number;
+  /** 覆盖模型默认的 provider 请求重试次数；不传时沿用模型配置。 */
+  maxRetries?: number;
   providerOptions?: Record<string, unknown>;
   reasoning?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
   timeoutMs?: number;
@@ -56,18 +58,32 @@ async function consumeVercelText(
 ): Promise<NativeTextGenerationResult> {
   const startedAtMs = Date.now();
   try {
-    const result = await generateText({
+    // 辅助请求也走流式：相当一部分 OpenAI 兼容代理只支持 SSE，非流式请求会拿到
+    // 无法按 JSON 解析的响应体（Invalid JSON response），Vercel 统一重构前的
+    // model.stream 路径没有这个问题。
+    const result = streamText({
       model: model.vercelModel!,
       system: options.systemPrompt,
       messages: toModelMessages(messages),
       abortSignal: options.signal,
       maxOutputTokens: options.maxOutputTokens,
       providerOptions: options.providerOptions as LanguageModelV4CallOptions["providerOptions"],
-      maxRetries: model.vercelOptions?.maxRetries ?? 0
+      maxRetries: options.maxRetries ?? model.vercelOptions?.maxRetries ?? 0,
+      // 接管 SDK 默认的 console.error；错误仍通过 fullStream 的 error 部件抛出。
+      onError: () => undefined
     });
-    const usage = fromVercelUsage(result.usage);
+    // result.text 的拒绝不携带原始错误（NoOutputGeneratedError），错误保真必须直接消费 fullStream。
+    let text = "";
+    let usage: AgentUsage | undefined;
+    let failure: unknown;
+    for await (const part of result.fullStream) {
+      if (part.type === "text-delta") text += part.text;
+      else if (part.type === "finish") usage = fromVercelUsage(part.totalUsage);
+      else if (part.type === "error") failure ??= part.error;
+    }
+    if (failure !== undefined) throw failure instanceof Error ? failure : new Error(String(failure));
     await reportVercelMetrics(model, options, startedAtMs, usage, undefined);
-    return { text: result.text, usage };
+    return { text, usage };
   } catch (error) {
     await reportVercelMetrics(model, options, startedAtMs, undefined, error);
     throw error;
