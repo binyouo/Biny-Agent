@@ -7,7 +7,7 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import type { AgentMessage, AgentModel } from "../agent/core/types.js";
-import { generateNativeText, parseNativeJson } from "../llm/nativeJson.js";
+import { generateNativeText } from "../llm/nativeJson.js";
 import { redactSecrets } from "../utils/secrets.js";
 import { ToolAccesses } from "./access.js";
 import type { RegisteredTool } from "./registry.js";
@@ -26,11 +26,6 @@ const toolSearchSchema = z.object({
   query: z.string().trim().min(1).max(500),
   type: sourceSchema.optional(),
   maxResults: z.number().int().min(1).max(maxResults).optional()
-});
-
-const modelResponseSchema = z.object({
-  tools: z.array(z.string()).max(512),
-  reasoning: z.string().optional()
 });
 
 export type ToolSearchArgs = z.infer<typeof toolSearchSchema>;
@@ -149,11 +144,13 @@ async function searchWithModel(
     const response = await generateNativeText(model, messages, {
       systemPrompt: toolSearchPrompt(candidates, type, limit),
       signal,
-      timeoutMs: 15_000,
+      // 对齐 Alma：辅助搜索请求交给 SDK 重试瞬时 provider 故障，不再设独立硬超时，
+      // 取消边界统一由调用方的 abort signal 负责。
+      maxRetries: 2,
       maxOutputTokens: 2048,
       reasoning: "off"
     });
-    const parsed = modelResponseSchema.parse(parseNativeJson(response.text));
+    const parsed = parseSelectedTools(response.text);
     const byName = new Map(candidates.map((candidate) => [candidate.name, candidate]));
     const selected: ToolSearchMatch[] = [];
     const seen = new Set<string>();
@@ -176,6 +173,29 @@ async function searchWithModel(
     const code = toolSearchErrorCode(error);
     return failedResult(query, code, error instanceof Error ? error.message : String(error));
   }
+}
+
+interface SelectedTools {
+  tools: string[];
+  reasoning?: string;
+}
+
+/**
+ * 对齐 Alma 的容错解析：先从回复文本中提取首个 { 到最后一个 } 的子串再 JSON.parse，
+ * 容忍 prose 包裹、代码围栏与前后噪声；字段缺失或类型不符按空结果处理，
+ * 只有完全解析不出 JSON 才抛 SyntaxError 并归类为 invalid_response。
+ */
+function parseSelectedTools(text: string): SelectedTools {
+  const match = text.trim().match(/\{[\s\S]*\}/u);
+  const value: unknown = JSON.parse(match ? match[0]! : text.trim());
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return { tools: [] };
+  const record = value as { tools?: unknown; reasoning?: unknown };
+  return {
+    tools: Array.isArray(record.tools)
+      ? record.tools.filter((name): name is string => typeof name === "string")
+      : [],
+    reasoning: typeof record.reasoning === "string" ? record.reasoning : undefined
+  };
 }
 
 export function toolSearchResultNames(value: unknown): string[] {

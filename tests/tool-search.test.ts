@@ -85,6 +85,7 @@ try {
 await testCacheBoundaries();
 await testConcurrentSearchesDeduplicate();
 await testFailureClassification();
+await testTolerantResponseParsing();
 await testDiscoveredToolsResumeFromTurnStore();
 await testDiscoveredRiskToolStillRequiresPermission();
 await testSourceFiltersAllRegistrationPaths();
@@ -240,6 +241,60 @@ async function testFailureClassification(): Promise<void> {
       execution.execute({ toolCallId: "abort", operationId: "abort", signal: abort.signal }),
       { name: "AbortError" }
     );
+  } finally {
+    await rm(testRoot, { recursive: true, force: true });
+  }
+}
+
+/** 对齐 Alma 的容错解析：prose/围栏包裹的 JSON 能命中；字段缺失或类型不符按空结果处理。 */
+async function testTolerantResponseParsing(): Promise<void> {
+  const testRoot = await mkdtemp(path.join(os.tmpdir(), "biny-tool-search-tolerant-"));
+  await ensureAgentDirs(testRoot);
+  const cases: Array<{ name: string; text: string; expected: string[] }> = [
+    {
+      name: "prose-fenced",
+      text: 'Sure! Here is the selection:\n```json\n{"tools":["candidate"],"reasoning":"exact name match"}\n```\nAnything else?',
+      expected: ["candidate"]
+    },
+    {
+      name: "prose-wrapped",
+      text: 'The result is {"tools":["candidate"]} for this query.',
+      expected: ["candidate"]
+    },
+    {
+      name: "missing-tools-field",
+      text: '{"reasoning":"nothing matched"}',
+      expected: []
+    },
+    {
+      name: "non-string-entries",
+      text: '{"tools":["candidate", 42, null]}',
+      expected: ["candidate"]
+    }
+  ];
+  try {
+    for (const scenario of cases) {
+      const registry = new ToolRegistry();
+      registry.register(createToolSearchTool(() => registry.listEntries(), () => ({
+        provider: "tool-search-tolerant-test",
+        modelId: scenario.name,
+        stream: async () => events([
+          { type: "text-delta", text: scenario.text },
+          { type: "finish", reason: "stop" }
+        ])
+      })));
+      registry.register(candidateTool("candidate", "Candidate", "test"));
+      const recorder = new SessionRecorder(testRoot, `tolerant-${scenario.name}`);
+      try {
+        const result = await requiredAgentTool(coordinatorFor(testRoot, recorder, registry), "ToolSearch")
+          .execute(`tolerant-${scenario.name}`, { query: "find candidate" });
+        assert.equal(result.isError, false, scenario.name);
+        assert.equal((result.details as ToolSearchResult).status, "completed", scenario.name);
+        assert.deepEqual(toolSearchResultNames(result.details), scenario.expected, scenario.name);
+      } finally {
+        await recorder.close();
+      }
+    }
   } finally {
     await rm(testRoot, { recursive: true, force: true });
   }
