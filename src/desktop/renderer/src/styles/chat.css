@@ -144,8 +144,11 @@
    落定后 hover 整行出现弱底色；展开体是左导轨分相列表，工具行是动宾紧凑行。 */
 
 .biny-chat-scroll {
-  /* 相位头像 hover / 头部 hover 的底色（alma --activity-hover-bg 的 Biny token 等价物）。 */
-  --activity-hover-bg: var(--biny-surface-hover);
+  /* 相位头像 hover / 头部 hover 的底色（alma --activity-hover-bg 的 Biny token 等价物）。
+     不能直接用 --biny-surface-hover：它与选中头像（.is-active）的填充同色，
+     hover 药丸出现时选中头像会溶进底色，药丸左端像被挖掉一块；
+     alma 用 color-mix(muted 40%, background) 保持药丸比头像浅一档。 */
+  --activity-hover-bg: color-mix(in srgb, var(--biny-surface-hover) 40%, var(--biny-surface));
 }
 
 .biny-chat-scroll .chat-activity {
@@ -159,10 +162,15 @@
   align-items: center;
   gap: 10px;
   min-height: 32px;
-  margin-inline: -8px;
-  padding-inline: 8px;
   border-radius: 6px;
   transition: background 150ms ease;
+}
+
+/* 负边距外扩与 hover 底色只在落定后出现（alma !isLive 才加 -mx-2）：
+   运行中头像行与内容列左缘对齐，避免整行向左突出一截。 */
+.biny-chat-scroll .chat-activity:not([data-running]) .chat-activity-header {
+  margin-inline: -8px;
+  padding-inline: 8px;
 }
 
 .biny-chat-scroll .chat-activity:not([data-running]) .chat-activity-header:hover {
@@ -190,22 +198,36 @@
   background: var(--bg, var(--biny-surface));
   color: var(--biny-text-tertiary);
   cursor: pointer;
-  transition: border-color 150ms ease, color 150ms ease, background 150ms ease;
+  /* alma transition-all duration-150：边距/环色等变化统一平滑过渡。 */
+  transition: all 150ms cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .chat-phase-avatar + .chat-phase-avatar {
   margin-left: -7px;
 }
 
-/* 堆叠头像之间的隔离环：与消息背景同色的 2px 环。 */
-.chat-activity-avatars .chat-phase-avatar {
+/* 堆叠头像之间的隔离环：与消息背景同色的 2px 环；头部 hover 出底色时环跟随变色
+   （alma ring-background → group-hover/ahdr:ring-[--activity-hover-bg]）。 */
+.chat-activity-avatars.is-stacked .chat-phase-avatar {
   box-shadow: 0 0 0 2px var(--bg, var(--biny-surface));
+}
+
+.biny-chat-scroll .chat-activity:not([data-running]) .chat-activity-header:hover .chat-activity-avatars.is-stacked .chat-phase-avatar:not(.is-collapsed):not(.is-droplet) {
+  box-shadow: 0 0 0 2px var(--activity-hover-bg);
+}
+
+.biny-chat-scroll .chat-activity:not([data-running]) .chat-activity-header:hover .chat-activity-avatars.is-stacked .chat-phase-avatar.is-droplet.is-open {
+  box-shadow: 0 0 0 2px var(--activity-hover-bg);
 }
 
 .chat-phase-avatar:hover:not(:disabled) {
   border-color: color-mix(in srgb, var(--biny-text) 60%, transparent);
   color: var(--biny-text);
-  z-index: 50;
+}
+
+/* 高密度液滴（>12 枚）hover 需要越过 inline zIndex 抬升（alma hover:z-50!）。 */
+.chat-phase-avatar.is-flip:hover:not(:disabled) {
+  z-index: 50 !important;
 }
 
 .chat-phase-avatar.is-active {
@@ -232,15 +254,75 @@
   }
 }
 
-/* 超过 8 个相位时的「+N」溢出徽标（椭圆胶囊）。 */
+/* 「+N」溢出徽标与液滴（alma overflow droplet）：悬停时徽标收成 0 宽，
+   隐藏相位从头像串左侧逐枚长出；错峰时序由组件按索引写 transition-delay。 */
+.chat-phase-overflow {
+  position: relative;
+  z-index: 0;
+  display: flex;
+  align-items: center;
+}
+
 .chat-phase-avatar.is-overflow {
   width: auto;
-  min-width: 24px;
+  max-width: 56px;
   padding: 0 8px;
   border-radius: 999px;
+  overflow: hidden;
   font-size: calc(10px * var(--font-scale, 1));
   font-weight: 600;
   font-variant-numeric: tabular-nums;
+  transition: all 300ms ease-out;
+}
+
+.chat-phase-avatar.is-overflow.is-collapsed {
+  max-width: 0;
+  padding-inline: 0;
+  border-color: transparent;
+  box-shadow: none;
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* 液滴规则带容器前缀提升优先级：闭合态必须压过堆叠隔离环，否则 0 宽液滴会漏出 2px 环。 */
+.chat-activity-avatars.is-stacked .chat-phase-avatar.is-droplet {
+  width: 0;
+  min-width: 0;
+  padding: 0;
+  border-color: transparent;
+  border-radius: 999px;
+  overflow: hidden;
+  box-shadow: none;
+  opacity: 0;
+  pointer-events: none;
+  transition: width 300ms ease-out, margin 300ms ease-out, opacity 300ms ease-out, border-color 300ms ease-out, transform 300ms ease-out;
+}
+
+.chat-activity-avatars.is-stacked .chat-phase-avatar.is-droplet.is-open {
+  width: 24px;
+  border-color: var(--biny-border);
+  box-shadow: 0 0 0 2px var(--bg, var(--biny-surface));
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* >12 枚隐藏相位启用 3D 翻面 hover（alma activity-avatar-flip 原文）。 */
+.chat-phase-avatar.is-flip {
+  transform-style: preserve-3d;
+}
+
+.chat-phase-avatar.is-flip:hover:not(:disabled) {
+  animation: 220ms cubic-bezier(0.25, 0.6, 0.3, 1) both chat-phase-avatar-flip-in;
+}
+
+@keyframes chat-phase-avatar-flip-in {
+  from {
+    transform: perspective(300px) rotateY(-55deg) scale(1.03);
+  }
+
+  to {
+    transform: perspective(300px) rotateY(0) scale(1.06);
+  }
 }
 
 /* 摘要文案：verb 加重前景、rest 弱化；占满头部剩余宽度，长文案截断。 */
@@ -369,6 +451,22 @@
   overflow-wrap: break-word;
 }
 
+/* 思考流也按 Markdown 展示，尤其是模型在分析阶段输出的代码片段。 */
+.biny-chat-scroll .chat-activity-thinking .markdown-body {
+  max-width: 78ch;
+  font-size: inherit;
+  line-height: inherit;
+  color: inherit;
+}
+
+.biny-chat-scroll .chat-activity-thinking .markdown-body p {
+  margin-bottom: 0.65em;
+}
+
+.biny-chat-scroll .chat-activity-thinking .markdown-code-block {
+  margin-block: 0.55em 0.8em;
+}
+
 /* ---- 轨道里的工具动宾行 ---- */
 
 .chat-tool-row-wrap {
@@ -457,6 +555,19 @@
 
 .chat-tool-row-diff.is-add { color: color-mix(in srgb, var(--biny-success) 75%, transparent); }
 .chat-tool-row-diff.is-del { color: color-mix(in srgb, var(--biny-danger) 75%, transparent); }
+
+/* 耗时（alma 工具头的时钟 + 时长）：等宽表格数字、弱化，落定后出现。 */
+.chat-tool-row-duration {
+  display: inline-flex;
+  flex: none;
+  align-self: center;
+  align-items: center;
+  gap: 3px;
+  font-family: var(--font-mono);
+  font-size: calc(11px * var(--font-scale, 1));
+  font-variant-numeric: tabular-nums;
+  color: color-mix(in srgb, var(--biny-text-tertiary) 85%, transparent);
+}
 
 .chat-tool-row-chevron {
   display: inline-flex;
@@ -756,7 +867,7 @@
   outline-offset: -2px;
 }
 
-.biny-chat-scroll :is(.copyable-code-block, .tool-output-surface, .code-card, .markdown-code-block):hover .copy-button,
+.biny-chat-scroll :is(.copyable-code-block, .tool-output-surface, .command-log-output, .code-card, .markdown-code-block):hover .copy-button,
 .biny-chat-scroll .copy-button.is-copied {
   opacity: 1;
 }
@@ -771,15 +882,12 @@
 
 /* ============ 工具展开体：命令日志 ============ */
 
+/* Diff 视图沿用的输出卡壳（命令日志已改为 alma 的「命令卡 + 输出终端盒」结构）。 */
 .tool-output-surface {
   border: 1px solid var(--biny-border);
   border-radius: var(--biny-radius-card, 10px);
   background: var(--biny-surface-soft);
   overflow: hidden;
-}
-
-.tool-output-surface.is-error {
-  border-color: color-mix(in srgb, var(--biny-danger) 35%, transparent);
 }
 
 .tool-output-header {
@@ -792,64 +900,103 @@
   border-bottom: 1px solid color-mix(in srgb, var(--biny-border) 65%, transparent);
 }
 
-.tool-output-command {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-family: var(--font-mono);
-  font-size: calc(12px * var(--font-scale, 1));
-  color: var(--biny-text-secondary);
-}
-
 .tool-output-header .copy-button {
   flex: none;
 }
 
-.tool-output-body-wrap {
-  position: relative;
+/* 输出终端盒：折叠时按行裁切（运行中跟尾、落定取头），展开后限高滚动。 */
+.command-log-output {
+  border: 1px solid var(--biny-border);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--biny-surface-hover) 38%, transparent);
+  overflow: hidden;
 }
 
-.tool-output-body {
+.command-log-output.is-error {
+  border-color: color-mix(in srgb, var(--biny-danger) 35%, transparent);
+}
+
+.command-log-output-scroll {
+  position: relative;
+  overflow: hidden;
+}
+
+.command-log-output.is-expanded .command-log-output-scroll {
+  max-height: 60vh;
+  overflow: auto;
+  scrollbar-width: thin;
+}
+
+.command-log-output-scroll pre {
   margin: 0;
   padding: 10px 12px;
-  max-height: 220px;
-  overflow: auto;
   font-family: var(--font-mono);
   font-size: calc(12px * var(--font-scale, 1));
   line-height: 1.55;
   white-space: pre-wrap;
   overflow-wrap: break-word;
   color: var(--biny-text-secondary);
-  scrollbar-width: thin;
 }
 
-.tool-output-body.is-expanded {
-  max-height: none;
-}
-
-.tool-output-copy {
+.command-log-output-copy {
   position: absolute;
+  top: 6px;
   right: 6px;
-  bottom: 6px;
 }
 
-.tool-output-empty {
+.command-log-expand {
+  display: block;
+  width: 100%;
+  padding: 6px 12px;
+  border: none;
+  border-top: 1px solid color-mix(in srgb, var(--biny-border) 65%, transparent);
+  background: none;
+  font-size: calc(11.5px * var(--font-scale, 1));
+  text-align: left;
+  color: var(--biny-focus);
+  cursor: pointer;
+}
+
+.biny-chat-scroll .command-log-expand:hover {
+  text-decoration: underline;
+}
+
+.command-log-exit {
+  margin: 0;
+  padding: 6px 12px;
+  border-top: 1px solid color-mix(in srgb, var(--biny-danger) 25%, transparent);
+  font-size: calc(11.5px * var(--font-scale, 1));
+  color: var(--biny-danger);
+}
+
+/* 运行徽标：标题行内的琥珀脉冲点（复用动宾行的脉冲节奏）。 */
+.command-log-live {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-left: 8px;
+  font-weight: 400;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--biny-text-tertiary);
+}
+
+.command-log-live-dot {
+  width: 6px;
+  height: 6px;
+  flex: none;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--biny-warning) 80%, transparent);
+  animation: chat-tool-run-pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+.command-log-empty {
   display: inline-flex;
   align-items: center;
   gap: 6px;
   padding: 10px 12px;
   font-size: calc(12px * var(--font-scale, 1));
   color: var(--biny-text-tertiary);
-}
-
-.tool-output-error-meta {
-  margin: 0;
-  padding: 6px 12px;
-  border-top: 1px solid color-mix(in srgb, var(--biny-danger) 25%, transparent);
-  font-size: calc(11.5px * var(--font-scale, 1));
-  color: var(--biny-danger);
 }
 
 .stderr-output {
@@ -879,16 +1026,6 @@
   width: 100%;
   text-align: left;
 }
-
-/* 命令语义着色 */
-.command-text .cmd-program { color: var(--biny-text); font-weight: 600; }
-.command-text .cmd-subcommand { color: var(--biny-focus); }
-.command-text .cmd-path { color: var(--biny-text-secondary); }
-.command-text .cmd-flag { color: var(--biny-warning); }
-.command-text .cmd-string { color: var(--biny-success); }
-.command-text .cmd-operator { color: var(--biny-text-tertiary); }
-.command-text .cmd-variable { color: var(--biny-focus); }
-.command-text .cmd-comment { color: var(--biny-text-tertiary); }
 
 /* ============ 工具展开体：权限卡片 ============ */
 
@@ -2419,6 +2556,13 @@
   overflow: hidden;
 }
 
+/* 命令执行详情里的命令卡（alma BashToolContent）：虚线边框 + 更弱底色。 */
+.markdown-code-block.is-dashed {
+  border-style: dashed;
+  border-color: color-mix(in srgb, var(--biny-border) 62%, transparent);
+  background: color-mix(in srgb, var(--biny-surface-hover) 32%, transparent);
+}
+
 .markdown-code-header {
   display: flex;
   align-items: center;
@@ -2427,13 +2571,14 @@
   min-height: 30px;
   padding: 4px 8px 4px 14px;
   border-bottom: 1px solid color-mix(in srgb, var(--biny-border) 65%, transparent);
+  background: color-mix(in srgb, var(--biny-surface-hover) 38%, transparent);
 }
 
 .biny-chat-scroll .markdown-code-copy {
   position: static;
   flex: none;
-  width: auto;
-  height: 24px;
+  padding: 4px;
+  border-radius: 6px;
   line-height: 1;
   opacity: 0.7;
 }
@@ -2452,10 +2597,12 @@
   user-select: none;
 }
 
+/* 正文长行折行而非横向滚动（alma 对聊天内 pre/code 的全局处理）。 */
 .markdown-code-block pre {
   margin: 0;
   padding: 12px 14px;
-  overflow-x: auto;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
   font-family: var(--font-mono);
   font-size: calc(12.5px * var(--font-scale, 1));
   line-height: 1.6;
@@ -2631,6 +2778,7 @@
   }
   .with-streaming-cursor .markdown-body > * { animation: none !important; }
   .chat-phase-avatar.is-alive { animation: none; }
+  .chat-phase-avatar.is-flip:hover:not(:disabled) { animation: none; transform: scale(1.06); }
 }
 
 /* ============ 消息"更多"菜单与用量悬浮卡（portal 到 body） ============ */
@@ -2819,25 +2967,32 @@
   }
 }
 
-/* 状态反馈保持单行；长工具参数只占一行。 */
+/* 思考球状态行（alma 思考球）：外层负责占位与可见性过渡，内层负责排版与入场。
+ * 让位（is-suppressed）只切透明度、保留高度，空档亮球时不跳动。 */
 .chat-run-status {
-  display: flex;
-  align-items: center;
-  gap: 8px;
+  min-height: 32px;
+  padding: 8px 0;
   color: var(--biny-text-secondary);
   font-size: calc(14px * var(--font-scale, 1));
   line-height: 20px;
-  min-height: 32px;
-  padding: 8px 0;
   transition: opacity 300ms ease;
 }
 .chat-run-status.is-suppressed { opacity: 0; pointer-events: none; }
+.chat-run-status-line { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.chat-run-status.is-following .chat-run-status-line { gap: 10px; }
+/* 入场时序（alma activity-orb-appear 原文：0.3s ease-out 0.8s both）：
+ * 挂载后延迟淡入，短空档不闪球；播在内层，避免 fill 值盖过外层的让位透明度。 */
+@keyframes chat-orb-appear {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+.chat-run-status-line.is-orb-appear { animation: 0.3s ease-out 0.8s both chat-orb-appear; }
 .chat-run-status-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
-.chat-run-status-orb { flex-shrink: 0; opacity: 0.8; }
-.chat-run-status.is-following { gap: 10px; }
 .chat-run-status.is-following .chat-run-status-label { font-weight: 500; }
+.chat-run-status-orb { flex-shrink: 0; opacity: 0.8; }
 @media (prefers-reduced-motion: reduce) {
   .chat-run-status { transition: none; }
+  .chat-run-status-line.is-orb-appear { animation: none; }
 }
 
 
@@ -2942,4 +3097,45 @@
   .working-dot-grid > span { animation: none !important; }
   .working-dot-grid > span { opacity: 0.55; }
   .message-smoke-out { animation: none !important; opacity: 0; }
+}
+
+/* 回合顶部的技能启用清单：auto 预选/手动勾选的技能在正文开始前可见（对齐 Agent Skills 的 autoSelectedSkills 反馈）。 */
+.chat-turn-skills {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  column-gap: 7px;
+  row-gap: 4px;
+  margin-bottom: 7px;
+  padding: 6px 9px;
+  border: 1px solid color-mix(in srgb, var(--biny-border) 60%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--biny-surface-elevated) 88%, transparent);
+}
+
+.chat-turn-skills-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--biny-text-tertiary);
+  font-size: 10.5px;
+  white-space: nowrap;
+}
+
+.chat-turn-skills-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.chat-turn-skills-list li {
+  padding: 1px 7px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--biny-border) 76%, transparent);
+  color: var(--biny-text-secondary);
+  font-size: 10.5px;
+  line-height: 1.5;
 }

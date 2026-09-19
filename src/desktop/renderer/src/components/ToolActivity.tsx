@@ -9,11 +9,11 @@ import { permissionPresentation } from "../../../../permission/presentation.js";
 import { isFullYesConfirmation } from "../../../../permission/confirmation.js";
 import type { PermissionAction, PermissionResult } from "../../../../permission/PermissionManager.js";
 import { permissionScopeForAlways } from "../../../../permission/permissionScope.js";
-import { tokenizeCommand } from "../commandHighlight.js";
 import type { TimelineCommand, TimelineTool } from "../sessionTimeline.js";
 import { projectWebSearchView, type WebSearchResultView, type WebSearchView } from "../webSearchPresentation.js";
 import { CopyButton } from "./CopyButton.js";
 import { Icon } from "./Icon.js";
+import { MarkdownCodeBlock } from "./MarkdownCodeBlock.js";
 import { CodeView } from "./chat/CodeView.js";
 import { IoCard } from "./chat/IoCard.js";
 
@@ -42,6 +42,12 @@ export const ToolActivityDetail = memo(function ToolActivityDetail({ projectId, 
       {diff && committedDiff && !tool.fileChange?.server && tool.fileChange?.operation !== "delete" ? <DiffView diff={committedDiff} info={diff} onPreviewFile={onPreviewFile} /> : null}
       {tool.fileChange?.operation === "delete" && !tool.fileChange.server ? <pre><code>{tool.fileChange.diff}</code></pre> : null}
       {webSearch ? <WebSearchLog onOpenExternal={onOpenExternal} tool={tool} view={webSearch} /> : null}
+      {(tool.tool === "Skill" || tool.tool === "skill_call") && tool.display?.kind === "generic" && typeof tool.display.detail === "string" ? (
+        <section className="tool-section">
+          <h4 className="tool-section-label">技能介绍</h4>
+          <pre><code>{tool.display.detail}</code></pre>
+        </section>
+      ) : null}
       {!command && !diff && !webSearch && !tool.fileChange ? <ToolPayload onPreviewFile={onPreviewFile} tool={tool} /> : null}
       {errorText ? (
         <section className="tool-section">
@@ -203,56 +209,80 @@ function resolvedPermissionLabel(action: PermissionAction | undefined, approved:
   return approved ? "已允许" : "已拒绝";
 }
 
-/** 命令按语义分段着色；配色规则见 styles.css 里的 `.command-text`。 */
-function CommandText({ command }: { command: string }): React.JSX.Element {
-  const tokens = useMemo(() => tokenizeCommand(command), [command]);
-  return <>{tokens.map((token, position) => <span className={`cmd-${token.kind}`} key={position}>{token.text}</span>)}</>;
+/** 输出折叠态展示的行数（alma STREAMING_LINE_LIMIT）。 */
+const OUTPUT_COLLAPSED_LINES = 10;
+
+interface OutputLine {
+  text: string;
+  stderr: boolean;
 }
 
+/** stdout / stderr 拼成逐行数组：折叠按行切片，stderr 行保留染色。 */
+function commandOutputLines(command: TimelineCommand): OutputLine[] {
+  const lines: OutputLine[] = [];
+  for (const line of command.stdout.split("\n")) lines.push({ text: line, stderr: false });
+  // stdout 以换行收尾时 split 出的末尾空行不是真实空行，接 stderr 前去掉
+  if (command.stderr && lines.length > 0 && lines.at(-1)?.text === "") lines.pop();
+  if (command.stderr) for (const line of command.stderr.split("\n")) lines.push({ text: line, stderr: true });
+  if (lines.length > 0 && lines.at(-1)?.text === "") lines.pop();
+  return lines;
+}
+
+/**
+ * 命令执行详情（alma BashToolContent 结构）：
+ * 「命令」小节 = 虚线边框 bash 代码卡；「输出」小节 = 边框终端盒 + 运行徽标。
+ * 输出按行折叠：运行中跟随尾部（长命令的实时日志在末尾），落定后从头部折叠，
+ * 展开后限高滚动，不再用测高展开的老方案。
+ */
 function CommandLog({ command, running }: { command: TimelineCommand; running: boolean }): React.JSX.Element {
   const [expanded, setExpanded] = useState(false);
-  const outputRef = useRef<HTMLPreElement>(null);
-  const [expandedHeight, setExpandedHeight] = useState<number>();
-  const output = [command.stdout, command.stderr].filter(Boolean).join(command.stdout && command.stderr ? "\n" : "");
-  const copyPayload = [command.command, output].filter(Boolean).join("\n");
-  const longOutput = output.length > 3_000 || output.split("\n").length > 18;
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const lines = commandOutputLines(command);
+  const output = lines.map((line) => line.text).join("\n");
+  const hasOutput = lines.length > 0;
+  const hiddenCount = Math.max(0, lines.length - OUTPUT_COLLAPSED_LINES);
+  const visibleLines = expanded ? lines : running ? lines.slice(-OUTPUT_COLLAPSED_LINES) : lines.slice(0, OUTPUT_COLLAPSED_LINES);
+  const failed = command.exitCode !== undefined && command.exitCode !== 0;
   useEffect(() => {
-    if (!running || !outputRef.current) return;
-    outputRef.current.scrollTop = outputRef.current.scrollHeight;
-  }, [output, running]);
-  useEffect(() => {
-    const outputElement = outputRef.current;
-    if (!outputElement) return;
-    const updateExpandedHeight = (): void => {
-      const nextHeight = outputElement.scrollHeight;
-      setExpandedHeight((current) => current === nextHeight ? current : nextHeight);
-    };
-    updateExpandedHeight();
-    if (typeof ResizeObserver === "undefined") return;
-    const observer = new ResizeObserver(updateExpandedHeight);
-    observer.observe(outputElement);
-    return () => observer.disconnect();
-  }, [output]);
-  const outputStyle = expandedHeight === undefined
-    ? undefined
-    : { "--terminal-output-expanded-height": `${String(expandedHeight)}px` } as React.CSSProperties;
+    if (!running || !expanded || !scrollRef.current) return;
+    scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+  }, [output, running, expanded]);
+
   return (
-    <section className={`tool-output-surface${command.exitCode !== undefined && command.exitCode !== 0 ? " is-error" : ""}`}>
-      <header className="tool-output-header">
-        <code className="tool-output-command"><CommandText command={command.command} /></code>
-        <CopyButton className="copy-button" label="复制命令和输出" value={copyPayload} />
-      </header>
-      {output || running ? (
-        output ? (
-          <div className="tool-output-body-wrap">
-            <pre className={`tool-output-body${expanded ? " is-expanded" : ""}`} ref={outputRef} style={outputStyle}><code>{command.stdout}{command.stdout && command.stderr && !command.stdout.endsWith("\n") ? "\n" : null}{command.stderr ? <span className="stderr-output">{command.stderr}</span> : null}</code></pre>
-            <CopyButton className="tool-output-copy" label="复制输出" value={output} />
-          </div>
-        ) : <div className="tool-output-empty"><span className="mini-spinner" />等待输出…</div>
+    <>
+      {command.command ? (
+        <section className="tool-section">
+          <h4 className="tool-section-label">命令</h4>
+          <MarkdownCodeBlock code={command.command} dashed language="bash" />
+        </section>
       ) : null}
-      {command.exitCode !== undefined && command.exitCode !== 0 ? <p className="tool-output-error-meta">退出码 {command.exitCode}</p> : null}
-      {longOutput ? <button className="expand-output" onClick={() => setExpanded(!expanded)} type="button">{expanded ? "收起输出" : "展开全部输出"}</button> : null}
-    </section>
+      {hasOutput || running ? (
+        <section className="tool-section">
+          <h4 className="tool-section-label">
+            输出
+            {running && hasOutput ? <span className="command-log-live"><span className="command-log-live-dot" />运行中</span> : null}
+          </h4>
+          {hasOutput ? (
+            <div className={`command-log-output${failed ? " is-error" : ""}${expanded ? " is-expanded" : ""}`}>
+              <div className="command-log-output-scroll" ref={scrollRef}>
+                <pre><code>{visibleLines.map((line, index) => (
+                  <span className={line.stderr ? "stderr-output" : undefined} key={index}>{line.text}{"\n"}</span>
+                ))}</code></pre>
+                <CopyButton className="command-log-output-copy" label="复制输出" value={output} />
+              </div>
+              {hiddenCount > 0 ? (
+                <button className="command-log-expand" onClick={() => setExpanded(!expanded)} type="button">
+                  {expanded ? "收起输出" : `展开全部输出（还有 ${String(hiddenCount)} 行）`}
+                </button>
+              ) : null}
+              {failed ? <p className="command-log-exit">退出码 {String(command.exitCode)}</p> : null}
+            </div>
+          ) : (
+            <div className="command-log-empty"><span className="command-log-live-dot" />等待输出…</div>
+          )}
+        </section>
+      ) : null}
+    </>
   );
 }
 

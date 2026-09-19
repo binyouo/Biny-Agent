@@ -9,9 +9,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
  *  2. reveal 速度跟随到达速度：取「最近 3s 到达速率」与「全程平均速率」的较小者
  *     （经 EMA 平滑），永不透支缓冲区 → 不会卡住等 token；
  *  3. 同时保证缓冲能撑过观测到的最大到达间隔（safeCps），网络抖动不断流；
- *  4. 开流先攒一小段缓冲再开始 reveal，避免前几个 token 一顿一顿；
- *  5. 流结束后把剩余缓冲按到达速率 1.25 倍收尾（封顶 90cps、4 秒内 flush 完）；
- *  6. 单块追加超过 500 字符（恢复会话/粘贴）或内容被整体替换时直接同步，不做动画。
+ *  4. 流结束后把剩余缓冲按到达速率 1.25 倍收尾（封顶 90cps、4 秒内 flush 完）；
+ *  5. 单块追加超过 500 字符（恢复会话/粘贴）或内容被整体替换时直接同步，不做动画。
  */
 
 const DEFAULT_CPS = 50;
@@ -25,7 +24,6 @@ const EMA_ALPHA = 0.15;
 const LARGE_APPEND = 500;
 const ARRIVAL_WINDOW_MS = 3000;
 const STALL_GAP_MS = 300;
-const INITIAL_HOLD_MAX_MS = 5000;
 const MAX_FRAME_DT_S = 0.1;
 
 const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
@@ -55,7 +53,6 @@ export function useTypewriter(content: string, streaming: boolean): string {
   const maxGapMsRef = useRef(0);
   const stallCountRef = useRef(0);
   const charAccumRef = useRef(0);
-  const renderedOnceRef = useRef(false);
   const rafRef = useRef<number | null>(null);
   const lastFrameTsRef = useRef<number | null>(null);
 
@@ -68,7 +65,6 @@ export function useTypewriter(content: string, streaming: boolean): string {
     targetRef.current = text;
     displayedRef.current = text;
     charAccumRef.current = 0;
-    renderedOnceRef.current = true;
     setDisplayed(text);
   }, []);
 
@@ -119,14 +115,6 @@ export function useTypewriter(content: string, streaming: boolean): string {
         const natural = Math.max(MIN_FLUSH_CPS, recentArrivalCps * FLUSH_SPEEDUP);
         cps = clamp(Math.max(natural, backlog / FLUSH_MAX_SECONDS), MIN_FLUSH_CPS, MAX_FLUSH_CPS);
       } else {
-        // 初始holdback：先攒缓冲再开口，开头不结巴
-        const elapsedSinceStart = streamStartTsRef.current > 0 ? nowMs - streamStartTsRef.current : 0;
-        const minInitialBuffer = Math.max(50, Math.round(MIN_CPS * 2 * Math.max(1, (maxGapMsRef.current * 2) / 1000)));
-        if (!renderedOnceRef.current && elapsedSinceStart < INITIAL_HOLD_MAX_MS && backlog < minInitialBuffer) {
-          rafRef.current = requestAnimationFrame(tick);
-          return;
-        }
-
         let arrivalCps: number;
         const log = arrivalLogRef.current;
         const first = log[0];
@@ -148,7 +136,6 @@ export function useTypewriter(content: string, streaming: boolean): string {
         cps = clamp(Math.min(safeCps, arrivalCap), MIN_CPS, MAX_CPS);
       }
 
-      renderedOnceRef.current = true;
       charAccumRef.current += cps * dt;
       const chars = Math.min(Math.floor(charAccumRef.current), backlog);
       if (chars < 1) {

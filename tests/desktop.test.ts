@@ -68,10 +68,9 @@ import { projectWebSearchView } from "../src/desktop/renderer/src/webSearchPrese
 import { catalogForConnection, customCatalogEntry, providerCatalog } from "../src/desktop/renderer/src/providerCatalog.js";
 import { connectionLabel, stagedModelChoices } from "../src/desktop/renderer/src/components/settings/providerModelProjection.js";
 import { thinkingLabel as composerThinkingLabel } from "../src/desktop/renderer/src/components/composer/composerLabels.js";
-import { DESKTOP_COMPOSER_COMMAND_NAMES, buildDesktopComposerItems, isSkillSlashCommand, normalizeSkillSlashCommand } from "../src/desktop/renderer/src/components/composer/desktopSlashCommands.js";
+import { DESKTOP_COMPOSER_COMMAND_NAMES, buildDesktopComposerItems } from "../src/desktop/renderer/src/components/composer/desktopSlashCommands.js";
 import { highlightFencedCode, highlightWorkspaceFile } from "../src/desktop/renderer/src/syntaxHighlight.js";
 import { splitAttachmentReferences, withAttachmentReferences } from "../src/desktop/attachmentReferences.js";
-import { tokenizeCommand } from "../src/desktop/renderer/src/commandHighlight.js";
 import { workspaceFileMarker } from "../src/desktop/renderer/src/workspaceFileMarker.js";
 import { filterPickerModelChoices, listConfiguredModelChoices, listModelChoices, listPickerModelChoices, ModelManager } from "../src/llm/ModelManager.js";
 import { FileModelsStore } from "../src/llm/ModelsStore.js";
@@ -113,7 +112,6 @@ await testWorkspaceSyntaxHighlighting();
 await testFencedCodeHighlighting();
 testAttachmentReferenceRoundTrip();
 await testInlineImageReading();
-testCommandHighlighting();
 testDesktopComposerSlashItems();
 testWorkspaceFileMarkers();
 await testFilePanelSizing();
@@ -1291,22 +1289,6 @@ async function testInlineImageReading(): Promise<void> {
   }
 }
 
-function testCommandHighlighting(): void {
-  const kinds = (command: string): string => tokenizeCommand(command).filter((token) => token.text.trim()).map((token) => `${token.kind}:${token.text}`).join(" ");
-
-  assert.equal(kinds("git commit -m \"修复 #12\""), "program:git subcommand:commit flag:-m string:\"修复 #12\"");
-  assert.equal(kinds("pnpm run build 2>&1 | tail -n 20"), "program:pnpm subcommand:run plain:build plain:2 operator:>& plain:1 operator:| program:tail flag:-n plain:20");
-  assert.equal(kinds("NODE_ENV=test npx vite preview --port=4190 # 预览"), "variable:NODE_ENV operator:= plain:test program:npx subcommand:vite plain:preview flag:--port operator:= plain:4190 comment:# 预览");
-  assert.equal(kinds("cat src/index.ts > $HOME/out.log"), "program:cat path:src/index.ts operator:> variable:$HOME path:/out.log");
-  assert.equal(kinds("rm -rf ./dist && echo ok"), "program:rm flag:-rf path:./dist operator:&& program:echo plain:ok");
-  assert.equal(kinds("$(which node) --version"), "operator:$( program:which plain:node operator:) flag:--version");
-
-  // 引号未闭合、变量残缺这类畸形输入也不能吞字符：拼回去必须和原文一致。
-  for (const command of ["node -e \"console.log('x')\" 2>&1", "echo '未闭合", "echo $", "find . -exec rm {} \\;", ""]) {
-    assert.equal(tokenizeCommand(command).map((token) => token.text).join(""), command);
-  }
-}
-
 function testWorkspaceFileMarkers(): void {
   assert.deepEqual(workspaceFileMarker("README.md"), { label: "MD", tone: "markdown" });
   assert.deepEqual(workspaceFileMarker("src/App.tsx"), { label: "TSX", tone: "typescript" });
@@ -1699,14 +1681,8 @@ async function testDesktopGlobalWriteGateAndRuntimeRefresh(): Promise<void> {
     );
     await assert.rejects(
       agents.addMemoryEntry(first.id, {
-        audience: "workspace",
-        topic: "门禁测试",
-        kind: "fact",
-        title: "不能并发写入",
-        summary: "另一个项目正在运行时，共享记忆库必须拒绝当前项目发起的新写入操作。",
-        decisions: [],
-        paths: [],
-        keywords: ["gate"],
+        content: "另一个项目正在运行时，共享记忆库必须拒绝当前项目发起的新写入操作。",
+        tags: ["gate"],
         importance: 3
       }, 0),
       /任务运行期间/u
@@ -2838,113 +2814,69 @@ async function testDesktopMemoryFlatStoreCas(): Promise<void> {
     await state.setSelectedSession(project.id, recorder.sessionId);
 
     agents = new DesktopAgentManager(state, projects, configStore, () => undefined);
-    const initialProject = await agents.memoryOverview(project.id, "current_workspace");
+    const initialProject = await agents.memoryOverview(project.id);
     assert.equal(initialProject.revision, 0);
     assert.equal(initialProject.totalEntries, 0);
     assert.equal(initialProject.maintenance.state, "idle");
     const projectMemory = await agents.addMemoryEntry(project.id, {
-      audience: "workspace",
-      topic: "发布流程",
-      kind: "workflow",
-      title: "Desktop 发布检查",
-      summary: "发布前先运行 Desktop 类型检查和定向测试，并保留失败输出供排查。",
-      decisions: ["先验证再发布"],
-      paths: ["src/desktop"],
-      keywords: ["desktop", "typecheck"],
+      content: "发布前先运行 Desktop 类型检查和定向测试，并保留失败输出供排查。",
+      tags: ["desktop", "typecheck"],
+      rationale: "先验证再发布",
       importance: 5
     }, initialProject.revision);
     assert.equal(projectMemory.revision, 1);
-    const projectEntries = await agents.memoryEntries(project.id, "current_workspace", 0, 100);
+    const projectEntries = await agents.memoryEntries(project.id, 0, 100);
     assert.equal(projectEntries.total, 1);
-    assert.equal(projectEntries.entries[0]?.kind, "workflow");
+    assert.equal(projectEntries.entries[0]?.source, "manual");
     assert.equal(projectEntries.entries[0]?.importance, 5);
     assert.ok(projectEntries.entries[0]?.updatedAt);
-    assert.equal(projectEntries.entries[0]?.origin.kind, "workspace");
-    assert.equal(projectEntries.entries[0]?.lineage[0]?.sessionId, recorder.sessionId);
     await assert.rejects(
       agents.addMemoryEntry(project.id, {
-        audience: "workspace",
-        topic: "过期写入",
-        kind: "fact",
-        title: "过期写入",
-        summary: "这条写入携带过期的 store revision，不能覆盖已经保存的项目记忆。",
-        decisions: [],
-        paths: [],
-        keywords: [],
+        content: "这条写入携带过期的 store revision，不能覆盖已经保存的项目记忆。",
         importance: 3
       }, initialProject.revision),
       /Memory revision conflict/u
     );
 
-    const initialGlobal = await agents.memoryOverview(project.id, "user");
-    assert.equal(initialGlobal.revision, 1, "不同来源视图必须共享同一个 store revision");
-    await assert.rejects(
-      agents.addMemoryEntry(project.id, {
-        audience: "universal",
-        topic: "项目事实",
-        kind: "fact",
-        title: "不合法的通用事实",
-        summary: "通用偏好来源不应接受没有偏好语义的普通项目事实，即使用户显式点击保存。",
-        decisions: [],
-        paths: [],
-        keywords: [],
-        importance: 3
-      }, initialGlobal.revision),
-      /Universal memory only accepts/u
-    );
-    const globalMemory = await agents.addMemoryEntry(project.id, {
-      audience: "universal",
-      topic: "沟通偏好",
-      kind: "preference",
-      title: "进度同步偏好",
-      summary: "用户明确希望长任务的进度同步保持简洁，并优先说明已验证的结果。",
-      decisions: [],
-      paths: [],
-      keywords: ["进度", "验证"],
-      userEvidence: "用户明确说长任务同步应简洁，并先报告验证结果。",
+    // 扁平单库后没有 origin 门禁：普通事实不再需要特定语义或 audience 就能保存。
+    const plainFact = await agents.addMemoryEntry(project.id, {
+      content: "用户明确希望长任务的进度同步保持简洁，并优先说明已验证的结果。",
+      tags: ["进度", "验证"],
       importance: 4
-    }, initialGlobal.revision);
-    assert.equal(globalMemory.revision, 2);
-    assert.equal(globalMemory.origins.user, 1);
-    assert.equal(globalMemory.origins.currentWorkspace, 1);
-    assert.deepEqual(globalMemory.memoryStats, { total: 2, autoGenerated: 0, manualAdded: 2 });
-    assert.equal((await agents.memoryOverview(project.id, "current_workspace")).revision, 2);
+    }, projectMemory.revision);
+    assert.equal(plainFact.revision, 2);
+    assert.equal(plainFact.totalEntries, 2);
+    assert.deepEqual(plainFact.memoryStats, { total: 2, autoGenerated: 0, manualAdded: 2 });
+    assert.equal((await agents.memoryOverview(project.id)).revision, 2);
 
+    // 另一个项目的写入落在同一个全局记忆库；两个项目读取到同一个 store revision。
     const otherProject = await projects.createProject(otherWorkspaceRoot);
     const otherMemory = await agents.addMemoryEntry(otherProject.id, {
-      audience: "workspace",
-      topic: "其他项目",
-      kind: "fact",
-      title: "其他工作区事实",
-      summary: "这条事实来自另一个工作区，只能通过其他项目来源筛选浏览。",
-      decisions: [],
-      paths: [],
-      keywords: ["other-workspace"],
+      content: "这条事实来自另一个项目，保存在同一个全局记忆库中。",
+      tags: ["other-project"],
       importance: 3
-    }, globalMemory.revision);
+    }, plainFact.revision);
     assert.equal(otherMemory.revision, 3);
-    const otherStats = await agents.memoryStats(project.id, "other_workspaces");
-    assert.equal(otherStats.totalEntries, 3);
-    assert.deepEqual(otherStats.memoryStats, { total: 3, autoGenerated: 0, manualAdded: 3 });
-    const otherWorkspaceEntries = await agents.memoryEntries(project.id, "other_workspaces", 0, 100);
-    assert.equal(otherWorkspaceEntries.total, 1);
-    assert.equal(otherWorkspaceEntries.entries[0]?.origin.kind, "workspace");
-    assert.notEqual(
-      otherWorkspaceEntries.entries[0]?.origin.kind === "workspace" ? otherWorkspaceEntries.entries[0].origin.workspaceId : undefined,
-      projectEntries.entries[0]?.origin.kind === "workspace" ? projectEntries.entries[0].origin.workspaceId : undefined
-    );
+    const stats = await agents.memoryStats(project.id);
+    assert.equal(stats.totalEntries, 3);
+    assert.deepEqual(stats.memoryStats, { total: 3, autoGenerated: 0, manualAdded: 3 });
+    const otherProjectStats = await agents.memoryStats(otherProject.id);
+    assert.equal(otherProjectStats.revision, 3);
 
-    const matches = await agents.searchMemory(project.id, "current_workspace", "Desktop 类型检查");
+    const matches = await agents.searchMemory(project.id, "Desktop 类型检查");
     assert.equal(matches[0]?.id, projectEntries.entries[0]?.id);
-    assert.equal(matches[0]?.lineage?.[0]?.sessionId, recorder.sessionId);
+    assert.match(matches[0]?.excerpt ?? "", /Desktop 类型检查/u);
 
     const updated = await agents.updateMemoryEntry(project.id, projectEntries.entries[0]!.id, {
-      summary: "发布前必须运行 Desktop 类型检查和定向测试，失败输出应原样保留供后续排查。",
+      content: "发布前必须运行 Desktop 类型检查和定向测试，失败输出应原样保留供后续排查。",
       importance: 4
     }, otherMemory.revision);
     assert.equal(updated.revision, 4);
-    const updatedEntries = await agents.memoryEntries(project.id, "current_workspace", 0, 100);
-    assert.equal(updatedEntries.entries.find(({ id }) => id === projectEntries.entries[0]!.id)?.lineage.at(-1)?.source, "explicit_edit");
+    const updatedEntries = await agents.memoryEntries(project.id, 0, 100);
+    assert.match(
+      updatedEntries.entries.find(({ id }) => id === projectEntries.entries[0]!.id)?.content ?? "",
+      /原样保留/u
+    );
 
     const policy = await agents.saveMemorySettings(project.id, {
       expectedRevision: updated.configRevision,
