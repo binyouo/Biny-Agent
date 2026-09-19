@@ -567,11 +567,50 @@ test("ActivitySegment 多相位段提供时间线视图且思考相位独立展�
   assert.match(markup, /chat-activity-collapse/u);
 });
 
-test("SkillsIndicator 只渲染真实工具和 Skill 调用", () => {
-  const markup = renderToStaticMarkup(createElement(SkillsIndicator, { selection: { tools: ["Read"], skills: ["write-tui"] }, tools: ["Read", "Read"], skills: ["write-tui", "write-tui", "simplify-audit"] }));
+test("ActivitySegment 相位超过 8 个时折叠为「+N」液滴入口", () => {
+  // Given 10 个交替相位（思考/工具），只有最后 8 个直显，前 2 个进入液滴。
+  const steps: Array<TimelineToolStep | TimelineReasoningStep> = [];
+  for (let i = 1; i <= 5; i += 1) {
+    steps.push(reasoningStep(`r${String(i)}`, { durationMs: 400 }));
+    steps.push(toolStep(`t${String(i)}`, "Read", "success", { args: { path: `a${String(i)}.ts` } }));
+  }
+  const segmentProps = {
+    steps,
+    projectId: "p1",
+    onPreviewFile: (): void => undefined,
+    onOpenExternal: (): void => undefined,
+    onResolvePermission: noopAsync,
+  };
+  // When 落定渲染：徽标展开态关闭，隐藏相位以 0 宽液滴形式常驻并带错峰延迟。
+  const markup = renderToStaticMarkup(createElement(ActivitySegment, { ...segmentProps, running: false }));
+  assert.match(markup, /chat-activity-avatars is-stacked/u);
+  assert.match(markup, /aria-label="2 个更早阶段"[^>]*class="chat-phase-avatar is-overflow"/u);
+  const droplets = markup.match(/chat-phase-avatar is-droplet( is-open)?(?:"| is-active| is-flip)/gu) ?? [];
+  assert.equal(droplets.length, 2);
+  assert.ok(droplets.every((entry) => !entry.includes("is-open")), "默认收起");
+  // 错峰收起延迟：第 1 枚 24ms、第 2 枚 12ms（(hiddenCount - hi) * 12）。
+  assert.match(markup, /transition-delay:24ms/u);
+  assert.match(markup, /transition-delay:12ms/u);
+  // Then 运行中徽标常驻且液滴不展开（悬停入口由 !running 守卫）。
+  const running = renderToStaticMarkup(createElement(ActivitySegment, { ...segmentProps, running: true }));
+  assert.match(running, /class="chat-phase-avatar is-overflow"/u);
+  assert.doesNotMatch(running, /is-droplet is-open/u);
+});
+
+test("SkillsIndicator 只渲染真实且面向用户的工具与技能调用", () => {
+  const markup = renderToStaticMarkup(createElement(SkillsIndicator, { tools: ["Read", "Read", "Glob", "ToolSearch", "TaskStatus", "Bash"], skills: ["write-tui", "write-tui", "simplify-audit"] }));
   assert.match(markup, /2 个技能/u);
-  assert.match(markup, /1 个工具/u);
-  assert.equal(renderToStaticMarkup(createElement(SkillsIndicator, { selection: { tools: ["Read"], skills: ["write-tui"] } })), "");
+  assert.match(markup, /2 个工具/u);
+  assert.doesNotMatch(markup, /Glob|工具搜索|TaskStatus/u);
+  assert.equal(renderToStaticMarkup(createElement(SkillsIndicator, {})), "");
+});
+
+test("TurnSkillsNotice 展示回合启用的技能清单", () => {
+  const markup = renderToStaticMarkup(createElement(TurnSkillsNotice, { names: ["image-gen", "references"] }));
+  assert.match(markup, /本回合技能/u);
+  assert.match(markup, /image-gen/u);
+  assert.match(markup, /references/u);
+  assert.equal(renderToStaticMarkup(createElement(TurnSkillsNotice, { names: [] })), "");
 });
 
 test("CompactionDivider 渲染压缩药丸并省略缺失段", () => {
@@ -658,31 +697,24 @@ test("RecipeReadyBanner 渲染提取横幅（标题、槽位、提取与忽略�
 });
 
 
-test("记忆指示器只展示本轮有内容的真实记忆", () => {
+test("自动记忆不在回复顶部单独展示", () => {
   const markup = renderToStaticMarkup(createElement(SkillsIndicator, {
     memoryInjectedSummaries: ["偏好使用中文回复", "发布前运行完整测试"]
   }));
-  assert.match(markup, /chat-meta-trigger/u);
-  assert.match(markup, /2 条记忆/u);
-  assert.doesNotMatch(markup, /已注入/u);
-  assert.equal(renderToStaticMarkup(createElement(SkillsIndicator, {})), "");
+  assert.equal(markup, "");
 });
 
-test("回复上下文按记忆、工具、技能顺序并列组合", () => {
+test("回复顶部展示本轮调用的技能与工具摘要", () => {
   const markup = renderToStaticMarkup(createElement(SkillsIndicator, {
     memoryInjectedSummaries: ["使用浏览器核验当前网页"],
-    selection: { tools: ["Read"], skills: ["browser"] },
-    skillNames: new Map([["browser", "浏览器"]]),
-    tools: ["Read"],
+    skillDescriptions: new Map([["browser", "浏览器自动化技能"]]),
+    tools: ["Read", "Glob"],
     skills: ["browser"]
   }));
-  const memoryAt = markup.indexOf("1 条记忆");
-  const toolsAt = markup.indexOf("1 个工具");
-  const skillsAt = markup.indexOf("1 个技能");
-  assert.ok(memoryAt >= 0);
-  assert.ok(toolsAt > memoryAt);
-  assert.ok(skillsAt > toolsAt);
-  assert.equal((markup.match(/chat-meta-separator/gu) ?? []).length, 2);
+  assert.ok(markup.indexOf("1 个工具") >= 0);
+  assert.ok(markup.indexOf("1 个技能") >= 0);
+  assert.doesNotMatch(markup, /记忆|Glob/u);
+  assert.equal((markup.match(/chat-meta-separator/gu) ?? []).length, 1);
 });
 
 test("历史回复保留本轮实际注入数量，旧会话不推测命中", () => {
