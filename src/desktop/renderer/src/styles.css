@@ -471,10 +471,9 @@ button:disabled { opacity: 0.42; }
 .connection-card-copy strong, .provider-catalog-copy strong { display: flex; align-items: center; gap: 8px; font-size: calc(13px * var(--font-scale)); font-weight: 600; }
 .connection-card-copy small, .provider-catalog-copy small { color: var(--text-tertiary); font-size: calc(11px * var(--font-scale)); }
 .connection-chevron { flex: 0 0 auto; color: var(--text-tertiary); transform: rotate(-90deg); }
-.default-pill { display: inline-flex; align-items: center; height: 18px; padding: 0 7px; border-radius: 999px; color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, transparent); font-size: calc(10px * var(--font-scale)); font-weight: 600; }
-/* Connection health, shown on the connection row and in its detail header.
-   Same geometry as .default-pill so the two never disagree by a pixel. */
+/* Connection health, shown on the connection row and in its detail header. */
 .status-pill { display: inline-flex; flex: 0 0 auto; align-items: center; height: 18px; padding: 0 7px; border-radius: 999px; font-size: calc(10px * var(--font-scale)); font-weight: 600; }
+.status-pill.is-accent { color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, transparent); }
 .status-pill.is-ok { color: var(--green); background: var(--green-bg); }
 .status-pill.is-warn { color: var(--amber); background: var(--amber-bg); }
 .status-pill.is-error { color: var(--red); background: var(--red-bg); }

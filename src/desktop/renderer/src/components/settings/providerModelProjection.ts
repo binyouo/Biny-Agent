@@ -9,9 +9,11 @@ import type { DesktopModelConnection, DesktopModelConfigurationInput } from "../
 
 const localThinkingLevels: readonly ReasoningEffort[] = ["minimal", "low", "medium", "high", "xhigh", "max"];
 
-interface ConnectionGroup {
+export interface ConnectionGroup {
   provider: string;
   providerType: string;
+  /** 用户在创建对话框命名的显示名；内置目录服务商缺省。 */
+  displayName?: string;
   models: ModelChoice[];
   defaultModel?: ModelChoice;
 }
@@ -20,7 +22,12 @@ interface ConnectionGroup {
 export function connectionLabel(models: ModelChoice[], connections: DesktopModelConnection[] = []): ConnectionGroup[] {
   const groups = new Map<string, ConnectionGroup>();
   for (const connection of connections) {
-    groups.set(connection.providerAlias, { provider: connection.providerAlias, providerType: connection.providerType, models: [] });
+    groups.set(connection.providerAlias, {
+      provider: connection.providerAlias,
+      providerType: connection.providerType,
+      displayName: connection.displayName,
+      models: []
+    });
   }
   for (const model of models) {
     const current = groups.get(model.provider) ?? {

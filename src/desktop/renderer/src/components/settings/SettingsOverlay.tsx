@@ -51,7 +51,6 @@ interface SettingsOverlayProps {
   onClose(): void;
   onTestModelConfiguration(configuration: DesktopModelConfigurationInput): Promise<DesktopModelConnectionTestResult>;
   onFetchModelCatalog(providerAlias: string): Promise<DesktopModelCatalogResult>;
-  onFetchModelCatalogCandidate(configuration: DesktopModelConfigurationInput): Promise<DesktopModelCatalogResult>;
   onReadModelApiKey(providerAlias: string): Promise<string | undefined>;
   onReadWebSearchApiKey(provider: DesktopWebSearchProvider): Promise<string | undefined>;
   sessionId?: string;
@@ -152,7 +151,6 @@ function SettingsOverlayContent({
   onClose,
   onTestModelConfiguration,
   onFetchModelCatalog,
-  onFetchModelCatalogCandidate,
   onReadModelApiKey,
   onReadWebSearchApiKey,
   sessionRunning,
@@ -196,7 +194,6 @@ function SettingsOverlayContent({
   const [dismissedLoadError, setDismissedLoadError] = useState<string>();
   const [closeGuardOpen, setCloseGuardOpen] = useState(false);
   const [detailHost, setDetailHost] = useState<HTMLElement | null>(null);
-  const [defaultModelSaving, setDefaultModelSaving] = useState(false);
   const activeTab = normalizeSettingsTab(tab);
   const activePage = settingsNav.find((item) => item.tab === activeTab)!;
   const activeTabRef = useRef<SettingsTab>(activeTab);
@@ -325,31 +322,12 @@ function SettingsOverlayContent({
             defaultModelAlias={defaultModelAlias}
             projectId={workspace?.project.id}
             onFetchCatalog={onFetchModelCatalog}
-            onFetchCatalogCandidate={onFetchModelCatalogCandidate}
             onReadModelApiKey={onReadModelApiKey}
             onOpenExternal={onOpenExternal}
             onStartLogin={onStartModelLogin}
             onCompleteLogin={(provider, authRequestId, pastedAuthorization) =>
               window.biny.completeModelLoginForSettings(workspace?.project.id ?? "", provider, authRequestId, pastedAuthorization)}
             onCancelLogin={onCancelModelLogin}
-            onDefaultModel={(alias, thinking) => {
-              // 「设为默认」即时落盘，不进跨页草稿；用当前 config revision 做乐观锁，
-              // 冲突时提示并重读，绝不覆盖别处已改的基线。
-              const projectId = workspace?.project.id;
-              const snapshot = settingsDraft.snapshot;
-              if (!projectId || !snapshot || defaultModelSaving) return;
-              setDefaultModelSaving(true);
-              notifyForTab("模型", undefined);
-              void window.biny.setDefaultModel(projectId, alias, thinking, snapshot.configRevision, snapshot.chat?.sessionId)
-                .then((next) => {
-                  settingsDraft.adoptExternalSnapshot(next);
-                  notifyForTab("模型", "默认模型已保存");
-                })
-                .catch((error: unknown) => {
-                  notifyForTab("模型", error instanceof Error ? error.message : String(error));
-                })
-                .finally(() => setDefaultModelSaving(false));
-            }}
             onNotify={(nextMessage) => notifyForTab("模型", nextMessage)}
             onTest={async (configuration) => {
               try {

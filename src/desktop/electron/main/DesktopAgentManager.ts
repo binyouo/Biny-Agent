@@ -43,7 +43,7 @@ import { createProjectSkillKey } from "../../../extensions/skillRef.js";
 import { synchronizeCredentialRevisions, type DeferredCredentialTransactionStatus } from "../../../config/credentials.js";
 import { configSchema, type AgentConfig, type ProviderConfig } from "../../../config/schema.js";
 import { updateConfig, type AgentConfigStore } from "../../../config/store.js";
-import { ConfigRevisionConflictError, configDocumentRevision } from "../../../config/versioned.js";
+import { configDocumentRevision } from "../../../config/versioned.js";
 import { createModelSettings, validateModelConfiguration } from "../../../llm/modelFactory.js";
 import { ModelRuntime } from "../../../llm/ModelRuntime.js";
 import { LocalEmbeddingManager, listLocalEmbeddingModels } from "../../../llm/embedding/LocalEmbeddingRuntime.js";
@@ -116,6 +116,7 @@ import type {
   DesktopModelConfigurationInput,
   DesktopModelConnection,
   DesktopModelConnectionTestResult,
+  DesktopCustomProviderInput,
   DesktopModelLoginProvider,
   DesktopModelLoginStartResult,
   DesktopPersonalizationOverview,
@@ -1038,40 +1039,6 @@ export class DesktopAgentManager {
     return await requireRemoteRuntime(runtime).switchModel(alias, thinking, sessionId);
   }
 
-  /**
-   * 设置页「设为默认」的即时持久化：绕开跨页草稿事务，只对全局 config 的
-   * defaultModel/thinking 做一次 CAS 写。与 switchModel 的运行时切换不同，这里始终落盘，
-   * 语义是「改持久默认」。返回新的 config revision 供前端推进草稿基线。
-   */
-  async setDefaultModelImmediate(
-    projectId: string,
-    alias: string,
-    thinking: ThinkingSelection,
-    expectedConfigRevision: string
-  ): Promise<string> {
-    this.assertNoRunningTasks("任务运行期间不能切换默认模型。");
-    const project = this.projects.requireProject(projectId);
-    const store = this.requireVersionedConfig();
-    const current = await store.loadVersioned(project.path);
-    if (current.revision !== expectedConfigRevision) {
-      throw new ConfigRevisionConflictError(expectedConfigRevision, current.revision);
-    }
-    const resolved = resolveConfiguredModelAlias(current.config, alias);
-    if (!resolved) throw new Error(`未知模型：${alias}`);
-    const next = configSchema.parse({
-      ...current.config,
-      defaultModel: resolved,
-      thinking: {
-        enabled: thinking !== "off",
-        effort: thinking === "off" ? current.config.thinking.effort : thinking
-      }
-    });
-    validateModelConfiguration(next, next.defaultModel);
-    const saved = await store.saveVersioned(next, current.revision, project.path);
-    this.scheduleIdleManagedRuntimeRebuild();
-    return saved.revision;
-  }
-
   async settingsConfigSnapshot(projectId: string): Promise<DesktopSettingsConfigSnapshot> {
     const project = this.projects.requireProject(projectId);
     const current = await this.requireVersionedConfig().loadVersioned!(project.path);
@@ -1203,6 +1170,16 @@ export class DesktopAgentManager {
         }
         credentialHandles.add(handle);
         next = this.buildConfigWithAuthenticatedLogin(next, staged.authenticated);
+      }
+      for (const custom of input.models.customProviders ?? []) {
+        const apiKey = custom.apiKeyHandle === undefined
+          ? custom.apiKey
+          : this.requireApiKeyHandle(custom.apiKeyHandle, credentialHandles, {
+              projectId,
+              purpose: "model",
+              providerAlias: custom.alias
+            });
+        next = this.buildConfigWithCustomProvider(next, { ...custom, apiKey, apiKeyHandle: undefined });
       }
       for (const upsert of input.models.upserts) {
         const apiKey = upsert.apiKeyHandle === undefined
@@ -1974,22 +1951,6 @@ export class DesktopAgentManager {
    * 服务商要模型列表再勾选启用，避免用户手填模型 ID。失败时返回明确错误；渲染层可以
    * 展示内置候选，但必须保留其静态来源，不能当成实时目录。
    */
-  async fetchModelCatalogCandidate(projectId: string, input: DesktopModelConfigurationInput): Promise<DesktopModelCatalogResult> {
-    this.projects.requireProject(projectId);
-    const current = await this.loadProjectConfig(projectId);
-    const candidate = this.buildConfigWithModel(current, input);
-    const catalogs = await restoreProviderCatalogs(Object.keys(candidate.providers), this.modelsStore, candidate.providers);
-    const runtime = new ModelRuntime(candidate, catalogs, undefined, this.modelsStore, this.fetcher);
-    try {
-      // 候选配置可能复用了同一 provider alias，但密钥/端点已变化；不能用旧 ETag 的
-      // 304 当成当前候选账号的目录，新增连接始终做一次无条件读取。
-      const models = await runtime.refreshModels(input.providerAlias, undefined, true);
-      return { providerAlias: input.providerAlias, source: "fetched", fetchedAt: new Date().toISOString(), models };
-    } catch (error) {
-      throw new Error(`无法从服务商获取模型列表：${formatModelConnectionError(error)}`, { cause: error });
-    }
-  }
-
   async testModelConfiguration(projectId: string, input: DesktopModelConfigurationInput): Promise<DesktopModelConnectionTestResult> {
     this.projects.requireProject(projectId);
     const current = await this.loadProjectConfig(projectId);
@@ -2123,6 +2084,30 @@ export class DesktopAgentManager {
     }
   }
 
+  /**
+   * 只写 providers 段、不动 models：自定义服务商「先建连接、后补模型」的入口。
+   * 字段按合并语义落到 provider 上（未提供即保留）；别名不存在时新建为
+   * openai-compatible。端点允许被补丁改写（与模型级「服务地址」提交语义一致）；
+   * 新建别名的唯一性由渲染层生成规则保证，并发提交由 CAS 事务兜底。
+   */
+  private buildConfigWithCustomProvider(current: AgentConfig, input: DesktopCustomProviderInput): AgentConfig {
+    const existing = current.providers[input.alias];
+    const provider: ProviderConfig = {
+      ...existing,
+      type: existing?.type ?? "openai-compatible",
+      displayName: input.displayName ?? existing?.displayName,
+      protocol: input.protocol ?? existing?.protocol,
+      baseUrl: input.baseUrl ?? existing?.baseUrl,
+      apiKey: input.apiKey ?? existing?.apiKey,
+      requiresApiKey: existing?.requiresApiKey ?? true,
+      apiBackend: input.apiBackend ?? existing?.apiBackend
+    };
+    return configSchema.parse({
+      ...current,
+      providers: { ...current.providers, [input.alias]: provider }
+    });
+  }
+
   private buildConfigWithModel(current: AgentConfig, input: DesktopModelConfigurationInput): AgentConfig {
     const existingProvider = current.providers[input.providerAlias];
     const profile = providerDefinition(input.providerType);
@@ -2132,6 +2117,8 @@ export class DesktopAgentManager {
       : Object.assign({}, sameProvider ? existingProvider?.modelProfiles : undefined, { [input.model]: input.modelProfile });
     const provider = {
       type: input.providerType,
+      // 自定义服务商的显示名保存在 provider 上；模型级 upsert 不携带它，不能清掉。
+      displayName: sameProvider ? existingProvider?.displayName : undefined,
       protocol: input.protocol,
       baseUrl: input.baseUrl ?? existingProvider?.baseUrl ?? profile.baseUrl,
       apiKey: input.apiKey ?? existingProvider?.apiKey,
@@ -3289,6 +3276,7 @@ function describeModelConnections(config: AgentConfig): DesktopModelConnection[]
     return {
       providerAlias,
       providerType: provider.type,
+      displayName: provider.displayName,
       protocol: provider.protocol,
       apiBackend: provider.apiBackend,
       baseUrl: provider.baseUrl ?? profile.baseUrl,

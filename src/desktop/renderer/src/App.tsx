@@ -406,7 +406,6 @@ function DesktopApp(): React.JSX.Element {
     deleteMemoryEmbeddingModel,
     downloadMemoryEmbeddingModel,
     fetchModelCatalog,
-    fetchModelCatalogCandidate,
     loadCookieJarStatus,
     loadMemoryStats,
     loadMemoryEntries,
@@ -1624,7 +1623,6 @@ function DesktopApp(): React.JSX.Element {
             onUpdateMemoryEntry={updateMemoryEntry}
             onExportCookies={async () => await window.biny.exportCookies()}
             onFetchModelCatalog={fetchModelCatalog}
-            onFetchModelCatalogCandidate={fetchModelCatalogCandidate}
             onReadModelApiKey={readModelApiKey}
             onReadWebSearchApiKey={readWebSearchApiKey}
             onFontPreference={changeFontPreference}

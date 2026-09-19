@@ -25,9 +25,11 @@ export type IconName =
   | "chart"
   | "check"
   | "circle-add"
+  | "circle-check"
   | "circle-close"
   | "chevron"
   | "close"
+  | "loader"
   | "code"
   | "compose"
   | "commit"
@@ -147,9 +149,13 @@ function pathFor(name: IconName): React.JSX.Element {
     case "chart": return <><path {...common} d="M4 20V5M4 20h17" /><path {...common} d="M8 17v-5M12 17V7M16 17v-8" /></>;
     case "check": return <path {...common} d="m5 12 4.2 4.2L19 6.5" />;
     case "circle-add": return <><circle {...common} cx="12" cy="12" r="10" /><path {...common} d="M8 12h8" /><path {...common} d="M12 8v8" /></>;
+    // 圆圈对勾 / 圆圈叉：测试连接按钮的结果态（成功/失败）。
+    case "circle-check": return <><circle {...common} cx="12" cy="12" r="10" /><path {...common} d="m8.5 12.4 2.3 2.3 4.7-5.4" /></>;
     case "circle-close": return <><circle {...common} cx="12" cy="12" r="10" /><path {...common} d="m15 9-6 6" /><path {...common} d="m9 9 6 6" /></>;
     case "chevron": return <path {...common} d="m6 9 6 6 6-6" />;
     case "close": return <path {...common} d="m6 6 12 12M18 6 6 18" />;
+    // 缺口圆环：配合旋转动画充当进行中指示（单路径，旋转中心即图标中心）。
+    case "loader": return <path {...common} d="M21 12a9 9 0 1 1-9-9" />;
     case "code": return <path {...common} d="m8.5 8-4 4 4 4M15.5 8l4 4-4 4M14 5l-4 14" />;
     case "compose": return <><path {...common} d="M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" /><path {...common} d="M18.375 2.625a1 1 0 0 1 3 3l-9.013 9.014a2 2 0 0 1-.853.505l-2.873.84a.5.5 0 0 1-.62-.62l.84-2.873a2 2 0 0 1 .506-.852z" /></>;
     case "commit": return <><circle {...common} cx="12" cy="12" r="4" /><path {...common} d="M3 12h5m8 0h5" /></>;

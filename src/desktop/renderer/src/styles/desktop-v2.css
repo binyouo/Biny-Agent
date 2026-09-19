@@ -3079,9 +3079,8 @@ select option:disabled {
 .activity-memory-run-details { margin: 0; }
 .activity-memory-run-details summary { color: var(--text-tertiary); font-size: calc(12px * var(--font-scale)); cursor: pointer; }
 .activity-memory-run-details p { margin: 7px 0 0; color: var(--text-tertiary); font-size: calc(11px * var(--font-scale)); }
-.activity-memory-model-picker-row { display: flex; align-items: center; gap: 12px; }
+.activity-memory-model-picker-row { display: flex; align-items: stretch; gap: 12px; }
 .activity-memory-model-picker-row .settings-model-picker { flex: 1; }
-.activity-memory-model-picker-row .text-button { flex: 0 0 auto; }
 .activity-memory-settings .settings-model-picker { width: 100%; }
 .activity-memory-embedding-footer > span { color: var(--text-tertiary); font-size: calc(12px * var(--font-scale)); }
 .activity-memory-embedding-error { display: flex; align-items: center; justify-content: space-between; gap: 12px; color: var(--red); font-size: calc(12px * var(--font-scale)); }
@@ -3109,6 +3108,7 @@ select option:disabled {
   .activity-memory-heading-row { align-items: flex-start; flex-direction: column; gap: 4px; }
   .activity-memory-heading-row span { white-space: normal; }
   .activity-memory-model-picker-row { align-items: stretch; flex-direction: column; }
+  .activity-memory-model-picker-row .model-test-button { align-self: flex-end; }
   .activity-memory-stat-grid { grid-template-columns: 1fr; }
   .activity-memory-row,
   .activity-memory-number-row { align-items: stretch; flex-direction: column; gap: 8px; }
@@ -3758,24 +3758,17 @@ select option:disabled {
   text-align: center;
 }
 
-/* 工具模型：选择器占满剩余宽度，烧瓶测试按钮为等高方形描边按钮；
+/* 工具模型：选择器占满剩余宽度，测试按钮与其等高成组；
    当前使用状态独立成行，不与说明文案混排。 */
 .desktop-settings-dialog .settings-modal .tool-model-row {
   display: flex;
-  align-items: center;
+  align-items: stretch;
   gap: 10px;
 }
 
 .desktop-settings-dialog .settings-modal .tool-model-row .settings-model-picker {
   flex: 1;
   min-width: 0;
-}
-
-.desktop-settings-dialog .settings-modal .tool-model-test-button {
-  width: var(--st-control-h);
-  min-height: var(--st-control-h);
-  flex: 0 0 auto;
-  border: 1px solid var(--border);
 }
 
 .desktop-settings-dialog .settings-modal .tool-model-status {
@@ -4077,7 +4070,7 @@ select option:disabled {
 .provider-panel-head {
   display: flex;
   flex: none;
-  align-items: flex-start;
+  align-items: center;
   gap: 12px;
 }
 
@@ -4086,13 +4079,24 @@ select option:disabled {
 .provider-panel-title h3 {
   display: flex;
   margin: 0;
+  min-width: 0;
   align-items: center;
-  flex-wrap: wrap;
   gap: 8px;
   color: var(--text);
   font-size: calc(1.125 * var(--st-rem));
   font-weight: 500;
 }
+
+/* 名称不换行：放不下时在自身范围内横向滚动（隐藏滚动条），徽标与状态不被挤到第二行。 */
+.provider-panel-name {
+  min-width: 0;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  white-space: nowrap;
+  scrollbar-width: none;
+}
+
+.provider-panel-name::-webkit-scrollbar { display: none; }
 
 .provider-panel-title p {
   margin: 3px 0 0;
@@ -4102,8 +4106,10 @@ select option:disabled {
 
 .provider-panel-badge {
   display: inline-flex;
+  flex: 0 0 auto;
   align-items: center;
   height: 17px;
+  margin-left: 2px;
   padding: 0 7px;
   border: 1px solid var(--border);
   border-radius: 999px;
@@ -4112,9 +4118,6 @@ select option:disabled {
   font-weight: 600;
   letter-spacing: 0.02em;
 }
-
-.provider-mark.is-large { width: 34px; height: 34px; }
-.provider-mark.is-large .provider-logo { width: 26px; height: 26px; }
 
 /* 未连接态的启用卡片：一个出口、一句解释、一个密钥链接。 */
 .provider-enable-card {
@@ -4214,48 +4217,133 @@ select option:disabled {
 
 .secret-input-row input:focus { border-color: var(--accent); outline: none; }
 
-/* 测试结果独占内容宽度，原始错误按需展开，不参与标题行布局。 */
+/* 测试结果独立成行：成功带时长，失败直接给原因；长错误整体折行不撑破面板。 */
 .connection-test-result {
-  min-width: 0;
-  max-width: 100%;
-  flex-direction: column;
-  gap: 6px;
   margin: 0;
+  overflow-wrap: anywhere;
   white-space: normal;
   font-size: calc(0.75 * var(--st-rem));
 }
 
 .connection-test-result.is-ok { color: var(--green); }
 .connection-test-result.is-error { color: var(--red); }
-.connection-test-result details { min-width: 0; width: 100%; }
-.connection-test-result summary { width: fit-content; cursor: pointer; }
-.connection-test-result pre {
-  max-height: 180px;
-  margin: 8px 0 0;
-  overflow: auto;
+
+/* 测试连接：紧凑图标按钮，状态（空闲/进行中/最近结果）都在图标上；多模型带下拉箭头。 */
+.provider-test-split { position: relative; flex: 0 0 auto; }
+
+.provider-test-button {
+  display: inline-flex;
+  min-height: var(--st-control-h-sm);
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  padding: 0 9px;
+  border: 1px solid var(--border);
+  border-radius: var(--st-radius);
   color: var(--text-secondary);
-  font: inherit;
-  font-family: var(--font-mono, ui-monospace, monospace);
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
+  background: transparent;
+  transition: background-color 0.15s var(--st-ease), border-color 0.15s var(--st-ease), color 0.15s var(--st-ease);
 }
 
-.provider-test-split { position: relative; display: flex; flex: 0 0 auto; align-items: stretch; }
+.provider-test-button:hover:not(:disabled) {
+  color: var(--text);
+  border-color: var(--border-strong);
+  background: color-mix(in srgb, var(--text) 5%, transparent);
+}
 
-.provider-test-button { border-top-right-radius: 0; border-bottom-right-radius: 0; }
-.provider-test-caret { border-top-left-radius: 0; border-bottom-left-radius: 0; border-left: 1px solid var(--border); }
+.provider-test-button:active:not(:disabled) { background: color-mix(in srgb, var(--text) 9%, transparent); }
+
+.provider-test-button:disabled { opacity: 0.55; }
+/* 测试中按钮虽禁用，但转圈指示不能跟着变淡。 */
+.provider-test-button.is-testing:disabled { opacity: 1; }
+
+/* 头部删除按钮：与测试按钮同高的描边方块，待确认时变红提示二次点击。 */
+.provider-delete-button {
+  display: inline-flex;
+  width: 36px;
+  min-height: var(--st-control-h-sm);
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--st-radius);
+  color: var(--text-secondary);
+  background: transparent;
+  transition: background-color 0.15s var(--st-ease), border-color 0.15s var(--st-ease), color 0.15s var(--st-ease);
+}
+
+.provider-delete-button:hover:not(:disabled) {
+  color: var(--red);
+  border-color: color-mix(in srgb, var(--red) 45%, var(--border));
+  background: color-mix(in srgb, var(--red) 8%, transparent);
+}
+
+.provider-delete-button.is-armed {
+  color: var(--red);
+  border-color: color-mix(in srgb, var(--red) 55%, var(--border));
+  background: color-mix(in srgb, var(--red) 12%, transparent);
+}
+
+.provider-delete-button:disabled { opacity: 0.55; }
+
+.provider-test-button .is-ok { color: var(--green); }
+.provider-test-button .is-error { color: var(--red); }
+.provider-test-button .provider-test-caret { color: var(--text-tertiary); }
+
+/* 工具模型/记忆工具模型的测试按钮：同套描边样式，高度跟随同行选择器，烧瓶图标。 */
+.model-test-button { flex: 0 0 auto; padding: 0 12px; }
+
+.icon-spin { animation: provider-icon-spin 0.7s linear infinite; }
+
+@keyframes provider-icon-spin { to { transform: rotate(360deg); } }
 
 .provider-test-menu {
   position: absolute;
   z-index: 30;
   top: calc(100% + 4px);
   right: 0;
-  max-height: 240px;
-  overflow-y: auto;
+  display: flex;
+  width: 264px;
+  flex-direction: column;
   border: 1px solid var(--border-strong);
   border-radius: var(--st-radius);
   background: var(--surface-raised);
   box-shadow: 0 10px 28px var(--biny-shadow-heavy);
+}
+
+.provider-test-search {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 10px;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+  color: var(--text-tertiary);
+}
+
+.provider-test-search input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  color: var(--text);
+  background: transparent;
+  font-size: calc(0.75 * var(--st-rem));
+}
+
+.provider-test-search input:focus { outline: none; }
+
+.provider-test-options {
+  max-height: 240px;
+  padding: 4px;
+  overflow-y: auto;
+}
+
+.provider-test-empty {
+  padding: 14px 10px;
+  color: var(--text-tertiary);
+  font-size: calc(0.6875 * var(--st-rem));
+  text-align: center;
 }
 
 .provider-test-option {
@@ -4264,8 +4352,9 @@ select option:disabled {
   min-width: 0;
   flex-direction: column;
   gap: 1px;
-  padding: 7px 12px;
+  padding: 7px 8px;
   border: 0;
+  border-radius: calc(var(--st-radius) - 4px);
   background: transparent;
   text-align: left;
 }
@@ -4396,43 +4485,90 @@ select option:disabled {
 
 .provider-model-search input:focus { outline: none; }
 
-/* 模型列表不再自设滚动：详情面板是唯一滚动容器，避免双滚动条嵌套。 */
+/* 模型列表是独立滚动容器：max(16rem, 100dvh-40rem) 封顶，内部出
+   滚动条，服务商表单和搜索行不随模型列表滚动。 */
 .provider-model-list {
   display: flex;
   flex-direction: column;
+  max-height: max(16rem, calc(100dvh - 40rem));
+  overflow-y: auto;
   border: 1px solid var(--border);
   border-radius: var(--st-radius);
 }
 
+/* 模型行：两段式分层——左列第一行模型名（手动模型带徽标），第二行
+   能力徽标 + 右对齐的模型 ID；右列操作控件每行齐全、整列严格同位。 */
 .provider-model-row {
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 8px 12px;
-  border-bottom: 1px solid color-mix(in srgb, var(--border) 55%, transparent);
+  padding: 7px 12px;
   background: var(--surface-raised);
   cursor: default;
 }
 
-.provider-model-row:last-child { border-bottom: 0; }
+.provider-model-row + .provider-model-row { border-top: 1px solid var(--border); }
+
 .provider-model-row:hover { background: var(--surface-hover); }
 
 .provider-model-row:not(.is-enabled) .provider-model-name { color: var(--text-secondary); }
 
+/* 名称用等宽字体：模型名以 ID 为主，等宽保证各行字符对齐。 */
+.provider-model-name {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: calc(0.8125 * var(--st-rem));
+  line-height: 1.4;
+}
+
+.provider-model-name-line {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+}
+
+/* 「手动」徽标：描边小药丸，标记目录里不存在的手动添加模型。 */
+.provider-model-manual {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  height: 14px;
+  padding: 0 4px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-tertiary);
+  font-size: calc(0.625 * var(--st-rem));
+  line-height: 1;
+}
+
+/* 名称行 + 徽标行的左列；徽标行内 ID 由 margin-left:auto 推到右缘。 */
 .provider-model-copy {
   display: flex;
   min-width: 0;
   flex: 1;
   flex-direction: column;
-  gap: 2px;
+  gap: 3px;
 }
 
-.provider-model-name {
-  color: var(--text);
-  overflow-wrap: anywhere;
-  font-size: calc(0.8125 * var(--st-rem));
-  line-height: 1.4;
-  text-align: left;
+/* 能力徽标是裸图标，无底色芯片。 */
+.provider-model-cap {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  color: var(--text-tertiary);
+}
+
+/* 上下文容量缩写：纯文本（1M / 500K），无图标无底色。 */
+.provider-model-ctx {
+  flex: 0 0 auto;
+  color: var(--text-tertiary);
+  font-size: calc(0.625 * var(--st-rem));
 }
 
 .provider-model-meta {
@@ -4444,51 +4580,36 @@ select option:disabled {
   font-size: calc(0.6875 * var(--st-rem));
 }
 
-.provider-model-cap {
-  display: inline-flex;
-  flex: 0 0 auto;
-  align-items: center;
-  justify-content: center;
-  width: 18px;
-  height: 18px;
-  border-radius: 5px;
-  color: var(--text-tertiary);
-  background: var(--surface-soft);
-}
-
 .provider-model-id {
+  flex: 0 1 auto;
   min-width: 0;
   overflow: hidden;
   color: var(--text-tertiary);
   text-overflow: ellipsis;
   white-space: nowrap;
   font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: calc(0.6875 * var(--st-rem));
-  text-align: left;
+  font-size: calc(0.625 * var(--st-rem));
 }
 
-/* 信息区自由伸缩，操作占固定列；长名称不会挤走开关，各行按钮保持对齐。 */
+/* 徽标行内的模型 ID：推到行右缘，弱化到更浅的三级色。 */
+.provider-model-meta .provider-model-id {
+  margin-left: auto;
+  color: color-mix(in srgb, var(--text-tertiary) 70%, transparent);
+  text-align: right;
+}
+
+/* 操作区右对齐：模型选项与开关固定尺寸、每行齐全，整列严格同位。
+   Tooltip 会在按钮外包一层 display:contents 的 div，因此必须用后代选择器，
+   子选择器会匹配不到（此前齿轮按钮错位进第一列就是这个原因）。 */
 .provider-model-actions {
-  display: grid;
+  display: flex;
   flex: 0 0 auto;
-  grid-template-columns: calc(3 * var(--st-rem)) var(--st-control-h-sm) 30px;
+  margin-left: auto;
   align-items: center;
-  justify-items: center;
-  gap: 4px;
+  gap: 6px;
 }
 
-.provider-model-actions > .text-button,
-.provider-model-actions > .default-pill {
-  grid-column: 1;
-  grid-row: 1;
-  margin: 0;
-  font-size: calc(0.6875 * var(--st-rem));
-  white-space: nowrap;
-}
-
-.provider-model-actions > .text-button { min-height: var(--st-control-h-sm); padding: 0; }
-.provider-model-actions > .icon-button { grid-column: 2; grid-row: 1; width: var(--st-control-h-sm); }
-.provider-model-actions > .model-toggle { grid-column: 3; grid-row: 1; }
+.provider-model-actions .icon-button { width: var(--st-control-h-sm); }
 
 /* 迷你开关：几何与 settings-switch 一致，尺寸缩到行内。 */
 .model-toggle {
@@ -4518,6 +4639,10 @@ select option:disabled {
 .model-toggle.is-on { background: var(--accent); }
 .model-toggle.is-on .model-toggle-thumb { transform: translateX(12px); }
 
+/* 悬停加深轨道：开关是纯图形控件，需要额外的可供性提示。 */
+.model-toggle:hover:not(:disabled) { background: color-mix(in srgb, var(--text-tertiary) 52%, transparent); }
+.model-toggle.is-on:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 82%, var(--text)); }
+
 .provider-models-empty {
   display: flex;
   flex-direction: column;
@@ -4536,11 +4661,7 @@ select option:disabled {
   gap: 8px;
 }
 
-/* 收起态的手动添加入口：紧凑靠左，不与列表争视觉权重。 */
-.provider-manual-toggle {
-  align-self: flex-start;
-}
-
+/* 常驻手动添加行：模型 ID 是必填项占更宽，显示名称可选占较窄。 */
 .provider-manual-row input {
   min-width: 0;
   flex: 1;
@@ -4552,6 +4673,8 @@ select option:disabled {
   background: var(--surface-soft);
   font-size: calc(0.75 * var(--st-rem));
 }
+
+.provider-manual-row input:first-of-type { flex: 1.4; }
 
 .provider-manual-row input:focus { border-color: var(--accent); outline: none; }
 

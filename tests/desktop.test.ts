@@ -19,7 +19,6 @@ import type { RuntimeHostFactoryOptions } from "../src/runtime/host/types.js";
 import type { CredentialStore } from "../src/config/credentials.js";
 import { BINY_AGENT_DIR_ENV } from "../src/config/paths.js";
 import { createFileConfigStore } from "../src/config/store.js";
-import { ConfigRevisionConflictError } from "../src/config/versioned.js";
 import { defaultConfig } from "../src/config/schema.js";
 import type { ModelCatalogEntry } from "../src/ai/types.js";
 import { openAiCodexCatalogModels } from "../src/ai/codexModels.js";
@@ -126,12 +125,13 @@ await testDesktopDragRegionStyles();
 await testDesktopUserMessageEnterDoesNotShadowFullRow();
 await testDesktopMemoryFlatStoreCas();
 await testDesktopSettingsTransaction();
-await testDesktopSetDefaultModelImmediate();
+await testDesktopToolModelSelection();
 await testDesktopGlobalWriteGateAndRuntimeRefresh();
 await testDesktopSettingsSaveReturnsBeforeRuntimeRefresh();
 await testDesktopGlobalPersonalizationRefreshesInBackground();
 await testDesktopSettingsCredentialLifecycle();
 await testDesktopModelConfiguration();
+await testDesktopCustomProviderConnection();
 await testDesktopModelSwitchDoesNotResumeInterruptedTurn();
 await testDesktopModelSwitchDoesNotStartDetachedHost();
 await testDesktopSubagentSlashCommands();
@@ -1584,9 +1584,9 @@ async function testDesktopSettingsTransaction(): Promise<void> {
   }
 }
 
-async function testDesktopSetDefaultModelImmediate(): Promise<void> {
-  const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "biny-set-default-workspace-"));
-  const desktopRoot = await mkdtemp(path.join(os.tmpdir(), "biny-set-default-data-"));
+async function testDesktopToolModelSelection(): Promise<void> {
+  const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "biny-tool-model-workspace-"));
+  const desktopRoot = await mkdtemp(path.join(os.tmpdir(), "biny-tool-model-data-"));
   let agents: DesktopAgentManager | undefined;
   try {
     const { configStore, projects, state } = await createDesktopTestServices(desktopRoot);
@@ -1602,36 +1602,24 @@ async function testDesktopSetDefaultModelImmediate(): Promise<void> {
       }
     }, workspaceRoot);
 
-    const snapshot = await agents.settingsConfigSnapshot(project.id);
-    assert.equal(snapshot.models.defaultModel, "test-model");
-
-    // revision 不匹配时按乐观锁拒绝，不落盘。
-    await assert.rejects(
-      agents.setDefaultModelImmediate(project.id, "alt-model", "off", "sha256:stale"),
-      ConfigRevisionConflictError
-    );
-
-    const nextRevision = await agents.setDefaultModelImmediate(project.id, "alt-model", "high", snapshot.revision);
-    assert.notEqual(nextRevision, snapshot.revision);
+    const settings = new DesktopSettingsTransaction(state, agents);
+    // models 事务切换默认模型：与聊天里 switchModel 的落盘语义一致（defaultModel + thinking）。
+    const switched = await commitDesktopSettings(settings, project.id, {
+      models: { upserts: [], removeAliases: [], defaultModel: { alias: "alt-model", thinking: "high" } }
+    });
+    assert.equal(switched.models.defaultModel, "alt-model");
     const persisted = await configStore.load(workspaceRoot);
     assert.equal(persisted.defaultModel, "alt-model");
     assert.equal(persisted.thinking.enabled, true);
     assert.equal(persisted.thinking.effort, "high");
 
-    // 未知模型别名必须报错。
-    await assert.rejects(
-      agents.setDefaultModelImmediate(project.id, "no-such-model", "off", nextRevision),
-      /未知模型/u
-    );
-
-    const settings = new DesktopSettingsTransaction(state, agents);
-    const selected = await commitDesktopSettings(settings, project.id, {
+    const withToolModel = await commitDesktopSettings(settings, project.id, {
       models: { upserts: [], removeAliases: [], toolModel: { alias: "test-model" } }
     });
-    assert.equal(selected.models.toolModel, "test-model");
-    assert.equal(selected.models.resolvedToolModel, "test-model");
+    assert.equal(withToolModel.models.toolModel, "test-model");
+    assert.equal(withToolModel.models.resolvedToolModel, "test-model");
     assert.equal((await configStore.load(workspaceRoot)).toolModel, "test-model");
-    assert.equal(selected.models.defaultModel, "alt-model", "工具模型与聊天模型独立保存");
+    assert.equal(withToolModel.models.defaultModel, "alt-model", "工具模型与聊天模型独立保存");
     const automatic = await commitDesktopSettings(settings, project.id, {
       models: { upserts: [], removeAliases: [], toolModel: {} }
     });
@@ -2188,6 +2176,111 @@ async function testDesktopModelConfiguration(): Promise<void> {
     await assert.rejects(access(path.join(workspaceRoot, ".biny", "attachments")));
     await assert.rejects(access(path.join(desktopRoot, "projects", project.id, ".biny", "attachments")));
     await assert.rejects(access(path.join(workspaceRoot, "config.json")));
+    await agents.closeAll();
+  } finally {
+    await rm(workspaceRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    await rm(desktopRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  }
+}
+
+/** 自定义服务商「先建连接、后补模型」：providers 段独立写入，模型 upsert 不丢显示名与端点。 */
+async function testDesktopCustomProviderConnection(): Promise<void> {
+  const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "biny-desktop-custom-provider-"));
+  const desktopRoot = await mkdtemp(path.join(os.tmpdir(), "biny-desktop-data-"));
+  try {
+    const { configStore, projects, state } = await createDesktopTestServices(desktopRoot);
+    const project = await projects.createProject(workspaceRoot);
+    const agents = new DesktopAgentManager(state, projects, configStore, () => undefined);
+    const settings = new DesktopSettingsTransaction(state, agents);
+    const beforeConfig = await configStore.load();
+
+    // 创建不含任何模型的服务商连接：providers 段新增条目，models 与默认模型不动。
+    const created = await commitDesktopSettings(settings, project.id, {
+      models: {
+        upserts: [],
+        removeAliases: [],
+        customProviders: [{
+          alias: "my-relay",
+          displayName: "我的中转",
+          baseUrl: "https://relay.example/v1",
+          protocol: "openai-compatible",
+          apiBackend: "chat_completions",
+          apiKey: "relay-key"
+        }]
+      }
+    });
+    const createdConfig = await configStore.load();
+    const relayProvider = createdConfig.providers["my-relay"];
+    assert.equal(relayProvider?.type, "openai-compatible");
+    assert.equal(relayProvider?.displayName, "我的中转");
+    assert.equal(relayProvider?.baseUrl, "https://relay.example/v1");
+    assert.equal(relayProvider?.apiKey, "relay-key");
+    assert.equal(relayProvider?.requiresApiKey, true);
+    assert.equal(relayProvider?.apiBackend, "chat_completions");
+    assert.deepEqual(createdConfig.models, beforeConfig.models, "创建服务商不新增模型");
+    assert.equal(createdConfig.defaultModel, beforeConfig.defaultModel);
+    const connection = created.models.connections.find((item) => item.providerAlias === "my-relay");
+    assert.equal(connection?.displayName, "我的中转");
+    assert.equal(connection?.hasCredential, true);
+    assert.equal(connection?.baseUrl, "https://relay.example/v1");
+
+    // 在零模型连接上启用模型：模型落在同一 provider 下，显示名/端点/密钥原样保留。
+    const enabled = await commitDesktopSettings(settings, project.id, {
+      models: {
+        upserts: [{
+          alias: "my-relay-test-model",
+          displayName: "test-model",
+          providerAlias: "my-relay",
+          providerType: "openai-compatible",
+          protocol: "openai-compatible",
+          model: "test-model",
+          apiKeyEnv: undefined,
+          requiresApiKey: true,
+          supportsTools: true,
+          supportsThinking: false
+        }],
+        removeAliases: []
+      }
+    });
+    const enabledConfig = await configStore.load();
+    assert.equal(enabledConfig.models["my-relay-test-model"]?.model, "test-model");
+    assert.equal(enabledConfig.providers["my-relay"]?.displayName, "我的中转", "模型 upsert 保留 provider 显示名");
+    assert.equal(enabledConfig.providers["my-relay"]?.baseUrl, "https://relay.example/v1");
+    assert.equal(enabledConfig.providers["my-relay"]?.apiKey, "relay-key");
+    assert.equal(enabled.models.configured.some((model) => model.alias === "my-relay-test-model"), true);
+
+    // 端点补丁按合并语义改写（与模型级「服务地址」提交一致），显示名等未提供字段保留。
+    const rewired = await commitDesktopSettings(settings, project.id, {
+      models: {
+        upserts: [],
+        removeAliases: [],
+        customProviders: [{ alias: "my-relay", baseUrl: "https://other.example/v1" }]
+      }
+    });
+    const rewiredConfig = await configStore.load();
+    assert.equal(rewiredConfig.providers["my-relay"]?.baseUrl, "https://other.example/v1");
+    assert.equal(rewiredConfig.providers["my-relay"]?.displayName, "我的中转");
+    assert.equal(rewired.models.connections.find((item) => item.providerAlias === "my-relay")?.baseUrl, "https://other.example/v1");
+
+    // 零模型连接创建后仍可修补（如修正地址），字段按合并语义落盘。
+    await commitDesktopSettings(settings, project.id, {
+      models: {
+        upserts: [],
+        removeAliases: [],
+        customProviders: [{ alias: "empty-relay", displayName: "Empty", baseUrl: "https://empty.example/v1" }]
+      }
+    });
+    const patched = await commitDesktopSettings(settings, project.id, {
+      models: {
+        upserts: [],
+        removeAliases: [],
+        customProviders: [{ alias: "empty-relay", baseUrl: "https://empty.example/v2" }]
+      }
+    });
+    const patchedConfig = await configStore.load();
+    assert.equal(patchedConfig.providers["empty-relay"]?.baseUrl, "https://empty.example/v2");
+    assert.equal(patchedConfig.providers["empty-relay"]?.displayName, "Empty");
+    assert.equal(patched.models.connections.some((item) => item.providerAlias === "empty-relay" && item.baseUrl === "https://empty.example/v2"), true);
     await agents.closeAll();
   } finally {
     await rm(workspaceRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });

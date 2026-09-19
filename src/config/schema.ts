@@ -262,6 +262,8 @@ export const providerEmbeddingModelSchema = z.object({
 
 const providerConfigSchema = z.object({
   type: modelProviderSchema,
+  /** 用户自定义服务商的显示名；内置目录服务商不使用，列表标签优先于端点主机名。 */
+  displayName: z.string().trim().min(1).max(80).optional(),
   protocol: providerProtocolSchema.optional(),
   baseUrl: z.string().url().optional(),
   apiKey: z.string().min(1).optional(),

@@ -107,12 +107,10 @@ export const desktopIpc = {
   resolvePermission: "desktop:permission:resolve",
   setPermissionMode: "desktop:permission:mode",
   switchModel: "desktop:model:switch",
-  setDefaultModel: "desktop:model:set-default",
   testModelConfiguration: "desktop:model:test-configuration",
   readModelApiKey: "desktop:model:read-api-key",
   readWebSearchApiKey: "desktop:web-search:read-api-key",
   fetchModelCatalog: "desktop:model:fetch-catalog",
-  fetchModelCatalogCandidate: "desktop:model:fetch-catalog-candidate",
   startModelLogin: "desktop:model:login:start",
   cancelModelLogin: "desktop:model:login:cancel",
   compact: "desktop:agent:compact",
@@ -908,6 +906,8 @@ export interface DesktopModelConfigurationInput {
 export interface DesktopModelConnection {
   providerAlias: string;
   providerType: ModelProvider;
+  /** 自定义服务商的用户命名；内置目录服务商缺省，列表标签回退到端点主机名。 */
+  displayName?: string;
   protocol?: "anthropic" | "openai-compatible";
   /** 连接级适配器（新建连接时与模型级一致写入）；渲染层用它回显「API 格式」。 */
   apiBackend?: ModelApiBackend;
@@ -1242,6 +1242,12 @@ export interface DesktopSettingsSnapshot {
 export interface DesktopSettingsModelsInput {
   /** 修改连接默认格式；auto 清除覆盖，模型级覆盖保持独立。 */
   providerApiFormats?: Record<string, ModelApiBackend | "auto">;
+  /**
+   * 创建或修补不含模型的服务商连接（复刻「先建服务商、后补模型」的自定义流程）。
+   * 字段按合并语义写入 providers 段：未提供的字段保留现值；同别名且端点相同视为更新，
+   * 端点不同视为冲突。已有模型的服务商也能通过它补改密钥/地址。
+   */
+  customProviders?: DesktopCustomProviderInput[];
   /** 显式删除连接及其模型；删除单个模型不会删除连接。 */
   removeProviderAliases?: string[];
   upserts: DesktopModelConfigurationInput[];
@@ -1255,6 +1261,17 @@ export interface DesktopSettingsModelsInput {
   oauthCredentialHandles?: string[];
   /** 只包含需要保留的 profile；未列出的 provider profile 保持现状。 */
   modelProfiles?: Record<string, Record<string, ModelProfile>>;
+}
+
+/** 自定义服务商连接的创建/修补输入；除 alias 外全部按「未提供即保留现值」合并。 */
+export interface DesktopCustomProviderInput {
+  alias: string;
+  displayName?: string;
+  baseUrl?: string;
+  protocol?: "anthropic" | "openai-compatible";
+  apiBackend?: ModelApiBackend;
+  apiKey?: string;
+  apiKeyHandle?: string;
 }
 
 export interface DesktopSettingsChatInput {
@@ -1510,11 +1527,6 @@ export interface DesktopApi {
   readModelApiKey(projectId: string, providerAlias: string): Promise<string | undefined>;
   readWebSearchApiKey(projectId: string, provider: DesktopWebSearchProvider): Promise<string | undefined>;
   fetchModelCatalog(projectId: string, providerAlias: string, force?: boolean): Promise<DesktopModelCatalogResult>;
-  /**
-   * 用尚未保存的候选配置（临时密钥 + 目录地址）直接向服务商拉取模型目录，
-   * 供“新增连接”流程在提交前加载可勾选的模型列表。
-  */
-  fetchModelCatalogCandidate(projectId: string, configuration: DesktopModelConfigurationInput): Promise<DesktopModelCatalogResult>;
   startModelLogin(projectId: string, provider: DesktopModelLoginProvider): Promise<DesktopModelLoginStartResult>;
   cancelModelLogin(projectId: string, provider: DesktopModelLoginProvider, authRequestId: string): Promise<void>;
   compact(projectId: string, hint?: string): Promise<string>;
@@ -1540,12 +1552,6 @@ export interface DesktopApi {
   saveIdentityDocument(projectId: string, document: DesktopIdentityDocumentKind, content: string, expectedRevision: number, reason?: string): Promise<DesktopIdentityOverview>;
   settingsSnapshot(projectId: string, sessionId?: string): Promise<DesktopSettingsSnapshot>;
   saveSettings(projectId: string, input: DesktopSettingsSaveInput): Promise<DesktopSettingsSaveResult>;
-  /**
-   * 设置页「设为默认」的即时持久化通道：绕开跨页草稿事务，直接对全局 config 做
-   * CAS 更新默认模型。`expectedConfigRevision` 是乐观锁，不匹配时抛冲突让前端重读。
-   * 返回最新设置快照供前端整体同步草稿基线。
-   */
-  setDefaultModel(projectId: string, alias: string, thinking: ThinkingSelection, expectedConfigRevision: string, sessionId?: string): Promise<DesktopSettingsSnapshot>;
   activitySnapshot(): Promise<ActivityRuntimeSnapshot>;
   activitySettings(): Promise<DesktopActivitySettingsUpdate>;
   updateActivitySettings(patch: DesktopActivitySettingsPatch, expectedConfigRevision: string): Promise<DesktopActivitySettingsUpdate>;

@@ -18,6 +18,8 @@ export interface CatalogModel {
   id: string;
   displayName: string;
   supportsThinking: boolean;
+  /** 未声明时视为支持工具（内置目录模型均可用工具）；仅显式关闭时隐藏工具徽标。 */
+  supportsTools?: boolean;
   parallelToolCalls?: boolean;
   reasoningStream?: boolean;
   reasoningSummary?: boolean;
@@ -31,6 +33,8 @@ export interface CatalogModel {
   limits?: ModelLimits;
   thinkingLevelMap?: DesktopModelConfigurationInput["thinkingLevelMap"];
   apiBackend?: DesktopModelConfigurationInput["apiBackend"];
+  /** 手动添加、目录里不存在的模型：行内展示「手动」徽标并允许单独删除。 */
+  isManual?: boolean;
 }
 
 export interface ProviderCatalogItem {
@@ -322,14 +326,15 @@ export function catalogForConnection(
 
 /** Neutral entry for a relay / self-hosted endpoint that matches no known vendor. */
 export function customCatalogEntry(
-  connection: { provider: string; providerType: string; models: ModelChoice[] },
+  connection: { provider: string; providerType: string; displayName?: string; models: ModelChoice[] },
   baseUrl: string | undefined
 ): ProviderCatalogItem {
   return {
     id: "custom",
     value: connection.providerType as ProviderCatalogItem["value"],
     protocol: undefined,
-    label: endpointLabel(baseUrl) ?? connection.provider,
+    // 创建对话框命名的服务商优先显示用户名字，其次才是端点主机名。
+    label: connection.displayName ?? endpointLabel(baseUrl) ?? connection.provider,
     description: baseUrl ?? connection.providerType,
     badge: "自定义",
     connectionMode: "api",
