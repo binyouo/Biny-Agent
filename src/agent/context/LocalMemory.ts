@@ -9,12 +9,10 @@ import path from "node:path";
 import { z } from "zod";
 import type { AgentMessage, AgentModel, ModelRequestContext, ModelRequestObserver } from "../core/types.js";
 import { globalConfigDir } from "../../config/paths.js";
-import { isActivityMemory } from "../../activity/modelContext.js";
 import { generateNativeText } from "../../llm/nativeJson.js";
 import type { ModelUsageObserver } from "../../observability/usage.js";
 import { redactSecrets } from "../../utils/secrets.js";
 import {
-  assertAllowedMemoryEntry,
   memoryEntryExactKey,
   sanitizeMemoryEntryInput
 } from "./memoryFormat.js";
@@ -38,12 +36,11 @@ import {
   type MemoryMaintenanceOptions,
   type MemoryMaintenanceResult,
   type MemoryMaintenanceStatus,
-  type MemorySleepPreview,
-  type MemorySleepRun,
   type MemoryMutationOptions,
   type MemoryOverview,
-  type MemoryOriginSelector,
   type MemoryReadOptions,
+  type MemorySleepPreview,
+  type MemorySleepRun,
   type MemorySearchOptions,
   type MemorySearchResult,
   type MemorySimilarEntrySearch,
@@ -129,7 +126,6 @@ export class LocalMemory {
   async getOverview(options: MemoryReadOptions = {}): Promise<MemoryOverview> {
     return await this.storage.getOverview(options);
   }
-
   async listMemoryEntries(options: MemoryListOptions = {}): Promise<MemoryEntriesResult> {
     return await this.storage.listEntries(options);
   }
@@ -155,20 +151,19 @@ export class LocalMemory {
     await options.checkpoint?.();
     options.signal?.throwIfAborted();
     const safe = sanitizeMemoryEntryInput(input);
-    const person = parsePersonMemory(safe.summary);
+    const person = parsePersonMemory(safe.content);
     if (person) {
       await this.appendPersonMemory(person.name, person.fact, options.signal);
       return { written: false, revision: (await this.getOverview({ signal: options.signal })).storeRevision };
     }
-    assertAllowedMemoryEntry(safe, this.workspaceRoot);
 
-    const candidates = await this.findSemanticMemoryEntries(safe.summary, 5, 0.3, options.signal);
+    const candidates = await this.findSemanticMemoryEntries(safe.content, 5, 0.3, options.signal);
     await options.checkpoint?.();
     if (options.requireSemantic && candidates === undefined) {
       return { written: false, deferred: true, revision: (await this.getOverview({ signal: options.signal })).storeRevision };
     }
     const duplicate = candidates?.length
-      ? await this.findDuplicateMemory(safe.summary, candidates, options.signal)
+      ? await this.findDuplicateMemory(safe.content, candidates, options.signal)
       : undefined;
     await options.checkpoint?.();
     options.signal?.throwIfAborted();
@@ -232,7 +227,7 @@ export class LocalMemory {
   }
 
   async listArchivedEntries(options: MemoryReadOptions = {}): Promise<MemoryArchiveEntriesResult> {
-    const result = await this.storage.listEntries({ origins: ["all"], includeArchived: true, signal: options.signal });
+    const result = await this.storage.listEntries({ includeArchived: true, signal: options.signal });
     const entries = result.entries.filter((entry) => entry.archivedAt !== undefined);
     return { entries, storeRevision: result.storeRevision, total: entries.length };
   }
@@ -243,11 +238,11 @@ export class LocalMemory {
     return result;
   }
 
-  async clearEntries(selector: MemoryOriginSelector, options: MemoryMutationOptions): Promise<MemoryClearResult> {
+  async clearAllEntries(options: MemoryMutationOptions): Promise<MemoryClearResult> {
     // 底层 clear 会同时删除 active 与 archived；快照也必须包含归档条目，才能把它们的
     // 旧向量一并从派生索引移除。
-    const snapshot = await this.storage.listEntries({ origins: [selector], includeArchived: true, signal: options.signal });
-    const result = await this.storage.clearEntries(selector, options);
+    const snapshot = await this.storage.listEntries({ includeArchived: true, signal: options.signal });
+    const result = await this.storage.clearAll(options);
     if (result.deletedEntries) this.removeDerivedEntries(snapshot.entries.map((entry) => entry.originalId ?? entry.id));
     return result;
   }
@@ -325,10 +320,9 @@ export class LocalMemory {
     options = { ...options, signal: options.signal === undefined ? controller.signal : AbortSignal.any([options.signal, controller.signal]) };
     try {
       const [entries, status] = await Promise.all([
-        this.storage.listEntries({ origins: ["all"], includeArchived: true }),
+        this.storage.listEntries({ includeArchived: true }),
         this.storage.readMaintenanceStatus().catch(() => undefined)
       ]);
-      const currentWorkspaceId = await this.storage.getCurrentWorkspaceId();
       const now = options.now ?? new Date();
       const archiveCutoff = now.getTime() - Math.max(1, Math.trunc(options.archiveRetentionDays ?? 30)) * 86_400_000;
       const temporaryToArchive = entries.entries.filter((entry) => (
@@ -345,30 +339,29 @@ export class LocalMemory {
       let examined = 0;
       let skipped: string | undefined;
       try {
-        for (const group of exactDuplicateGroups(active, options.dedupAcrossUserIds !== false, currentWorkspaceId)) {
+        for (const group of exactDuplicateGroups(active)) {
           const survivor = selectSleepSurvivor(group, true);
-          for (const entry of group) if (entry.id !== survivor.id) archiveProposed.push({ id: entry.id, content: entry.summary, reason: "exact_dup", mergedInto: survivor.id });
+          for (const entry of group) if (entry.id !== survivor.id) archiveProposed.push({ id: entry.id, content: entry.content, reason: "exact_dup", mergedInto: survivor.id });
         }
         // 预览各阶段读取同一份未变更数据，建议可重叠，不模拟实际归档。
         options.signal?.throwIfAborted();
         for (const entry of active) {
-          if (isExpiredTemporaryMemory(entry, now, options.temporaryTtl ?? 30)) archiveProposed.push({ id: entry.id, content: entry.summary, reason: "expired" });
+          if (isExpiredTemporaryMemory(entry, now, options.temporaryTtl ?? 30)) archiveProposed.push({ id: entry.id, content: entry.content, reason: "expired" });
         }
         options.signal?.throwIfAborted();
         if (derivedIndex?.findSimilarPairs) {
           const low = clampSimilarity(options.llmMergeLow, defaultSleepSimilarityLow);
-          for (const namespace of similarityNamespaces(active)) {
+          if (active.length >= 2) {
             options.signal?.throwIfAborted();
-            if (namespace.length < 2) continue;
-            const scan = await derivedIndex.findSimilarPairs(namespace, low, options.signal);
+            const scan = await derivedIndex.findSimilarPairs(active, low, options.signal);
             examined += scan.examined;
             options.signal?.throwIfAborted();
-            for (const cluster of buildSimilarityClusters(namespace, scan.pairs, low)) {
+            for (const cluster of buildSimilarityClusters(active, scan.pairs, low)) {
               options.signal?.throwIfAborted();
               if (cluster.entries.length > maxSleepClusterSize) continue;
               if (cluster.maxSimilarity >= clampSimilarity(options.similarityMergeThreshold, sleepSimilarityMergeThreshold)) {
                 const survivor = selectSleepSurvivor(cluster.entries);
-                for (const entry of cluster.entries) if (entry.id !== survivor.id) archiveProposed.push({ id: entry.id, content: entry.summary, reason: "similarity_merge", mergedInto: survivor.id });
+                for (const entry of cluster.entries) if (entry.id !== survivor.id) archiveProposed.push({ id: entry.id, content: entry.content, reason: "similarity_merge", mergedInto: survivor.id });
               } else if (options.useLlm !== false) {
                 const batchSize = normalizeSleepBatchSize(options.llmBatchSize);
                 const ordered = cluster.entries.length > batchSize ? [...cluster.entries].sort(compareSleepEntries) : cluster.entries;
@@ -381,7 +374,7 @@ export class LocalMemory {
                   const mergedInto = decision.synthesize.length
                     ? `preview-${synthesisProposed.length + 1}`
                     : batch.filter((entry) => !ids.includes(entry.id)).sort(compareSleepEntries)[0]?.id;
-                  archiveProposed.push(...ids.map((id) => ({ id, content: batch.find((entry) => entry.id === id)?.summary ?? "(unknown)", reason: "llm_merge" as const, mergedInto })));
+                  archiveProposed.push(...ids.map((id) => ({ id, content: batch.find((entry) => entry.id === id)?.content ?? "(unknown)", reason: "llm_merge" as const, mergedInto })));
                   const sourceIds = ids.length ? ids : batch.map((entry) => entry.id);
                   synthesisProposed.push(...decision.synthesize.map((item) => ({ ...item, sourceIds: [...sourceIds] })));
                 }
@@ -484,6 +477,7 @@ export class LocalMemory {
       archivedOrphan: 0,
       archivedSimilarity: 0,
       archivedLlm: 0,
+      synthesisFailed: 0,
       inputTokens: 0,
       outputTokens: 0,
       startedAt
@@ -512,6 +506,7 @@ export class LocalMemory {
     let expired = 0;
     let similarity = 0;
     let llm = 0;
+    let synthesisFailed = 0;
     let examined = 0;
     let lastError: string | undefined;
     let runStatus: MemorySleepRun["status"] = "completed";
@@ -537,6 +532,7 @@ export class LocalMemory {
         archivedOrphan: 0,
         archivedSimilarity: similarity,
         archivedLlm: llm,
+        synthesisFailed,
         inputTokens: sleepUsage.inputTokens,
         outputTokens: sleepUsage.outputTokens,
         error: lastError
@@ -557,13 +553,12 @@ export class LocalMemory {
     try {
       await this.storage.writeMaintenanceStatus(this.maintenance, options.signal);
       // Sleep 直接扫描现有 active entries；记忆写入不再经过延迟候选队列。
-      let active = (await this.storage.listEntries({ origins: ["all"], signal: options.signal })).entries;
-      const currentWorkspaceId = await this.storage.getCurrentWorkspaceId();
+      let active = (await this.storage.listEntries({ signal: options.signal })).entries;
       scanned = active.length;
       this.maintenance.eligible = scanned;
 
-      // Layer 1: 同一 origin namespace 内的 exact duplicate，完全确定性处理。
-      for (const group of exactDuplicateGroups(active, options.dedupAcrossUserIds !== false, currentWorkspaceId)) {
+      // Layer 1: 精确去重，完全确定性处理。
+      for (const group of exactDuplicateGroups(active)) {
         options.signal?.throwIfAborted();
         const survivor = selectSleepSurvivor(group, true);
         const duplicateIds = group.filter((entry) => entry.id !== survivor.id).map((entry) => entry.id);
@@ -604,70 +599,65 @@ export class LocalMemory {
       }
 
       // Layer 2/3: 先按 embedding 相似度做 union-find，再把模糊簇交给 LLM。
-      active = (await this.storage.listEntries({ origins: ["all"], signal: options.signal })).entries;
+      active = (await this.storage.listEntries({ signal: options.signal })).entries;
       const lowThreshold = clampSimilarity(options.llmMergeLow, defaultSleepSimilarityLow);
       const similarityMergeThreshold = clampSimilarity(options.similarityMergeThreshold, sleepSimilarityMergeThreshold);
-      if (derivedIndex?.findSimilarPairs) {
-        for (const namespace of similarityNamespaces(active)) {
-          options.signal?.throwIfAborted();
-          if (namespace.length < 2) continue;
-          try {
-            const currentNamespace = namespace.filter((entry) => active.some((activeEntry) => activeEntry.id === entry.id));
-            if (currentNamespace.length < 2) continue;
-            const scan = await derivedIndex.findSimilarPairs(currentNamespace, lowThreshold, options.signal);
-            examined += scan.examined;
-            const clusters = buildSimilarityClusters(currentNamespace, scan.pairs, lowThreshold);
-            for (const cluster of clusters) {
-              options.signal?.throwIfAborted();
-              if (cluster.entries.length > maxSleepClusterSize) continue;
-              const activeIds = new Set(active.map((entry) => entry.id));
-              const current = cluster.entries.filter((entry) => activeIds.has(entry.id));
-              if (current.length < 2) continue;
-              if (cluster.maxSimilarity >= similarityMergeThreshold) {
-                const survivor = selectSleepSurvivor(current);
-                const duplicateIds = current.filter((entry) => entry.id !== survivor.id).map((entry) => entry.id);
-                try {
-                  const result = await this.archiveForSleep(duplicateIds, "similarity_merge", options, survivor.id, now, runId);
-                  if (result.archived > 0) {
-                    archived += result.archived;
-                    similarity += result.archived;
-                    processed += result.archived;
-                    active = active.filter((entry) => !duplicateIds.includes(entry.id));
-                    notifySleepIndexRebuild(derivedIndex);
-                  }
-                } catch (error) {
-                  options.signal?.throwIfAborted();
-                  recordFailure(error);
-                }
-                continue;
-              }
-              if (options.useLlm === false) continue;
-
-              const batchSize = normalizeSleepBatchSize(options.llmBatchSize);
-              const ordered = current.length > batchSize ? [...current].sort(compareSleepEntries) : current;
-              for (let offset = 0; offset < ordered.length; offset += batchSize) {
-                const batch = ordered.slice(offset, offset + batchSize);
-                if (batch.length < 2) continue;
-                try {
-                  const result = await this.mergeSleepBatch(batch, options, now, derivedIndex, sleepUsage, runId);
-                  written += result.written;
+      if (derivedIndex?.findSimilarPairs && active.length >= 2) {
+        try {
+          const scan = await derivedIndex.findSimilarPairs(active, lowThreshold, options.signal);
+          examined += scan.examined;
+          const clusters = buildSimilarityClusters(active, scan.pairs, lowThreshold);
+          for (const cluster of clusters) {
+            options.signal?.throwIfAborted();
+            if (cluster.entries.length > maxSleepClusterSize) continue;
+            const activeIds = new Set(active.map((entry) => entry.id));
+            const current = cluster.entries.filter((entry) => activeIds.has(entry.id));
+            if (current.length < 2) continue;
+            if (cluster.maxSimilarity >= similarityMergeThreshold) {
+              const survivor = selectSleepSurvivor(current);
+              const duplicateIds = current.filter((entry) => entry.id !== survivor.id).map((entry) => entry.id);
+              try {
+                const result = await this.archiveForSleep(duplicateIds, "similarity_merge", options, survivor.id, now, runId);
+                if (result.archived > 0) {
                   archived += result.archived;
-                  llm += result.archived;
-                  processed += result.written + result.archived;
-                  if (result.archived > 0) {
-                    const archivedIds = new Set(result.archivedIds);
-                    active = active.filter((entry) => !archivedIds.has(entry.id));
-                  }
-                } catch (error) {
-                  options.signal?.throwIfAborted();
-                  recordFailure(error);
+                  similarity += result.archived;
+                  processed += result.archived;
+                  active = active.filter((entry) => !duplicateIds.includes(entry.id));
+                  notifySleepIndexRebuild(derivedIndex);
                 }
+              } catch (error) {
+                options.signal?.throwIfAborted();
+                recordFailure(error);
+              }
+              continue;
+            }
+            if (options.useLlm === false) continue;
+
+            const batchSize = normalizeSleepBatchSize(options.llmBatchSize);
+            const ordered = current.length > batchSize ? [...current].sort(compareSleepEntries) : current;
+            for (let offset = 0; offset < ordered.length; offset += batchSize) {
+              const batch = ordered.slice(offset, offset + batchSize);
+              if (batch.length < 2) continue;
+              try {
+                const result = await this.mergeSleepBatch(batch, options, now, derivedIndex, sleepUsage, runId);
+                written += result.written;
+                archived += result.archived;
+                llm += result.archived;
+                synthesisFailed += result.synthesisFailed;
+                processed += result.written + result.archived;
+                if (result.archived > 0) {
+                  const archivedIds = new Set(result.archivedIds);
+                  active = active.filter((entry) => !archivedIds.has(entry.id));
+                }
+              } catch (error) {
+                options.signal?.throwIfAborted();
+                recordFailure(error);
               }
             }
-          } catch (error) {
-            options.signal?.throwIfAborted();
-            recordFailure(error);
           }
+        } catch (error) {
+          options.signal?.throwIfAborted();
+          recordFailure(error);
         }
       }
 
@@ -703,6 +693,7 @@ export class LocalMemory {
         archivedOrphan: 0,
         archivedSimilarity: similarity,
         archivedLlm: llm,
+        synthesisFailed,
         inputTokens: sleepUsage.inputTokens,
         outputTokens: sleepUsage.outputTokens,
         startedAt,
@@ -770,18 +761,21 @@ export class LocalMemory {
     derivedIndex?: MemoryDerivedIndexSink,
     sleepUsage?: MemoryTokenUsage,
     archivedBy = "sleep"
-  ): Promise<{ written: number; archived: number; archivedIds: string[] }> {
+  ): Promise<{ written: number; archived: number; archivedIds: string[]; synthesisFailed: number }> {
+    // synthesisFailed 是"删而不合"的审计口径：模型提出了合成条目，但最终没有一条落库，
+    // 而归档照常发生。按 alma 的生产教训，这正是静默信息损失的主要通道。
+    let synthesisFailed = 0;
     const parsed = await this.sleepMergeEntriesWithModel(entries, options.signal, sleepUsage);
     const sourceIds = new Set(entries.map((entry) => entry.id));
     // 模型可能会带出簇外 ID；过滤它们，保留同一响应里的合法删除决定。
     const deleteIds = [...new Set(parsed.delete.filter((id) => sourceIds.has(id)))];
     if (!deleteIds.length && !parsed.synthesize.length) {
-      return { written: 0, archived: 0, archivedIds: [] };
+      return { written: 0, archived: 0, archivedIds: [], synthesisFailed: 0 };
     }
     if (deleteIds.length === entries.length && parsed.synthesize.length === 0) {
       // 没有保留条目也没有 synthesis 时，放弃这一簇；把它当作 no-op，
       // 不把模型的过激判断升级成维护失败。
-      return { written: 0, archived: 0, archivedIds: [] };
+      return { written: 0, archived: 0, archivedIds: [], synthesisFailed: 0 };
     }
     // synthesis 不等于删除原始记忆。只归档模型明确列在 delete 中的条目；
     // synthesis 且 delete=[] 时，旧条目和新条目会暂时同时保留。
@@ -789,54 +783,32 @@ export class LocalMemory {
 
     if (!entries.length) throw new Error("Sleep similarity cluster is empty.");
     const first = selectSleepSurvivor(entries);
-    const origin = first.origin;
-    const lineages = entries.flatMap((entry) => entry.lineage);
-    const sourceEntryIds = entries.map((entry) => entry.id);
-    const externalContext = lineages.some((lineage) => lineage.externalContext);
-    const decisions = [...new Set(entries.flatMap((entry) => entry.decisions))];
-    const paths = [...new Set(entries.flatMap((entry) => entry.paths))];
-    const keywords = [...new Set(entries.flatMap((entry) => entry.keywords))];
-    const syntheses = parsed.synthesize.map((synthesis) => {
-      const input = sanitizeMemoryEntryInput({
-        origin,
-        kind: first.kind,
-        topic: first.topic,
-        title: entries.length === 1 ? first.title : `${first.title} (synthesized)`,
-        summary: synthesis.content,
-        decisions,
-        paths,
-        keywords,
-        source: "auto",
-        tags: [...new Set(["sleep-merged", ...entries.flatMap((entry) => entry.tags)])],
-        // 合并会丢掉顶层活动字段，必须保留来源，保证撤回授权后派生记忆仍被隔离。
-        metadata: { ...first.metadata, activityDerived: entries.some(isActivityMemory) },
-        threadId: first.threadId,
-        messageId: first.messageId,
-        userId: first.userId,
-        importance: first.importance,
-        accessCount: Math.max(0, ...entries.map((entry) => entry.accessCount)),
-        durability: synthesis.durability,
-        expiresAt: synthesis.expiresAt,
-        lineage: [
-          ...lineages,
-          { source: "sleep", externalContext, sourceEntryIds }
-        ]
-      });
-      assertAllowedMemoryEntry(input, this.workspaceRoot);
-      return input;
-    });
+    const sourceEntryTags = [...new Set(entries.flatMap((entry) => entry.tags))];
+    const syntheses = parsed.synthesize.map((synthesis) => sanitizeMemoryEntryInput({
+      content: synthesis.content,
+      source: "auto",
+      tags: [...new Set(["sleep-merged", ...sourceEntryTags])],
+      importance: Math.max(...entries.map((entry) => entry.importance)),
+      accessCount: Math.max(0, ...entries.map((entry) => entry.accessCount)),
+      durability: synthesis.durability,
+      expiresAt: synthesis.expiresAt,
+      threadId: first.threadId,
+      messageId: first.messageId,
+      userId: first.userId
+    }));
 
     let written = 0;
     const synthesisIds: string[] = [];
     for (const input of syntheses) {
       let saveEmbedding: ((entry: MemoryEntry) => void) | undefined;
       try {
-        saveEmbedding = await derivedIndex?.prepareSynthesis?.(input.summary, options.signal);
+        saveEmbedding = await derivedIndex?.prepareSynthesis?.(input.content, options.signal);
       } catch {
         // 单条 synthesis 失败不能阻断同一簇的其他 synthesis 或归档决定。
+        synthesisFailed += 1;
         continue;
       }
-      if (!saveEmbedding) return { written, archived: 0, archivedIds: [] };
+      if (!saveEmbedding) return { written, archived: 0, archivedIds: [], synthesisFailed: 0 };
       try {
         const result = await this.writeEntryWithRetry(input, options.signal, now);
         if (result.entry) {
@@ -850,6 +822,7 @@ export class LocalMemory {
         }
       } catch {
         // SQLite/CAS 或 embedding 提交失败时，保留可执行的 delete 决定。
+        synthesisFailed += 1;
       }
     }
     if (synthesisIds.some((id) => archiveIds.includes(id))) {
@@ -865,7 +838,8 @@ export class LocalMemory {
     return {
       written,
       archived: archivedResult.archived,
-      archivedIds: archivedResult.entries.map((entry) => entry.originalId ?? entry.id)
+      archivedIds: archivedResult.entries.map((entry) => entry.originalId ?? entry.id),
+      synthesisFailed
     };
   }
 
@@ -874,7 +848,7 @@ export class LocalMemory {
     signal?: AbortSignal,
     usage?: MemoryTokenUsage
   ): Promise<SleepMergeDecision> {
-    const prompt = `Cluster of related memories:\n${entries.map((entry) => `- id: "${entry.id}", content: "${entry.summary}"`).join("\n")}`;
+    const prompt = `Cluster of related memories:\n${entries.map((entry) => `- id: "${entry.id}", content: "${entry.content}"`).join("\n")}`;
     const response = await generateNativeText(this.getToolModel(), [{ role: "user", content: prompt }], {
       systemPrompt: sleepMergePrompt,
       signal,
@@ -978,34 +952,22 @@ export class LocalMemory {
     for (const proposal of operations.filter((operation) => operation.operation === "add")) {
       options.signal?.throwIfAborted();
       try {
-        const summary = proposal.content.trim();
-        if (!summary) continue;
+        const content = proposal.content.trim();
+        if (!content) continue;
         const input = sanitizeMemoryEntryInput({
-          audience: "workspace",
-          kind: "fact",
-          topic: "memory",
-          title: summary.slice(0, 120),
-          summary,
+          content,
           source: "auto",
           threadId: options.sessionId,
           messageId: options.messageId,
           tags: ["conversation-summary"],
-          durability: proposal.durability,
-          lineage: {
-            source: "completed_task",
-            externalContext: options.externalContext,
-            sessionId: options.sessionId,
-            turnId: options.turnId,
-            runId: options.runId
-          }
+          durability: proposal.durability
         });
-        assertAllowedMemoryEntry(input, this.workspaceRoot);
         // Generate an embedding before every automatic ADD. If the
         // semantic path is unavailable, skip this candidate instead of
         // silently weakening the write-time dedup guarantee.
         const result = await this.writeAutoEntryWithRetry(input, { signal: options.signal, now, requireSemantic: true });
         if (result.written) {
-          created.push({ id: result.entry!.id, content: result.entry!.summary });
+          created.push({ id: result.entry!.id, content: result.entry!.content });
           await options.onMemoryWritten?.(result.entry!);
         }
       } catch {
@@ -1042,7 +1004,7 @@ export class LocalMemory {
     candidates: readonly MemoryEntry[],
     signal?: AbortSignal
   ): Promise<{ entry?: MemoryEntry } | undefined> {
-    const prompt = `New memory to add: "${summary.trim()}"\n\nExisting memories in the database:\n${candidates.map((entry, index) => `${index + 1}. ${entry.durability === "temporary" ? "[temporary]" : "[permanent]"} ${entry.summary}`).join("\n")}\n\nIs the new memory essentially a duplicate of any existing memory? Consider it a duplicate if ANY of these hold:\n- It carries the same core fact (even if worded differently).\n- It is a subset of an existing memory (the existing one already implies it) — adding it would be redundant.\n- It is a vaguer or noisier restatement of an existing, cleaner memory.\n\nIt is NOT a duplicate if it adds a materially new fact, constraint, or detail not present in any existing memory.\n\nRespond with ONLY a JSON object:\n- If duplicate: {"isDuplicate": true, "reason": "brief explanation", "duplicateOf": <number>}\n- If not duplicate: {"isDuplicate": false}\n\nPrefer keeping the store clean: when the new memory adds no genuinely new information, mark it a duplicate.`;
+    const prompt = `New memory to add: "${summary.trim()}"\n\nExisting memories in the database:\n${candidates.map((entry, index) => `${index + 1}. ${entry.durability === "temporary" ? "[temporary]" : "[permanent]"} ${entry.content}`).join("\n")}\n\nIs the new memory essentially a duplicate of any existing memory? Consider it a duplicate if ANY of these hold:\n- It carries the same core fact (even if worded differently).\n- It is a subset of an existing memory (the existing one already implies it) — adding it would be redundant.\n- It is a vaguer or noisier restatement of an existing, cleaner memory.\n\nIt is NOT a duplicate if it adds a materially new fact, constraint, or detail not present in any existing memory.\n\nRespond with ONLY a JSON object:\n- If duplicate: {"isDuplicate": true, "reason": "brief explanation", "duplicateOf": <number>}\n- If not duplicate: {"isDuplicate": false}\n\nPrefer keeping the store clean: when the new memory adds no genuinely new information, mark it a duplicate.`;
     try {
       const response = await generateNativeText(this.getToolModel(), [{ role: "user", content: prompt }], {
         signal,
@@ -1080,7 +1042,7 @@ export class LocalMemory {
         const result = await this.retryMutation(signal, async (expectedRevision) => (
           await this.deleteEntryById(entry.id, { expectedRevision, signal, now })
         ));
-        if (result.deleted) deleted.push({ id: entry.id, content: entry.summary });
+        if (result.deleted) deleted.push({ id: entry.id, content: entry.content });
       } catch {
         signal?.throwIfAborted();
         // 一个语义删除失败不应阻止同一轮继续清理其它候选。
@@ -1094,7 +1056,7 @@ export class LocalMemory {
     candidates: readonly MemoryEntry[],
     signal?: AbortSignal
   ): Promise<number[]> {
-    const prompt = `The user wants to delete memories about: "${description}"\n\nHere are the candidate memories from the database:\n${candidates.map((entry, index) => `${index + 1}. ${entry.durability === "temporary" ? "[temporary]" : "[permanent]"} ${entry.summary}`).join("\n")}\n\nWhich memories should be deleted? Respond with ONLY a JSON array of the numbers (1-indexed) of memories that should be deleted.\nIf none should be deleted, respond with [].\nExample response: [1, 3, 5] or []\n\nBe precise - only select memories that truly match what the user wants to delete.`;
+    const prompt = `The user wants to delete memories about: "${description}"\n\nHere are the candidate memories from the database:\n${candidates.map((entry, index) => `${index + 1}. ${entry.durability === "temporary" ? "[temporary]" : "[permanent]"} ${entry.content}`).join("\n")}\n\nWhich memories should be deleted? Respond with ONLY a JSON array of the numbers (1-indexed) of memories that should be deleted.\nIf none should be deleted, respond with [].\nExample response: [1, 3, 5] or []\n\nBe precise - only select memories that truly match what the user wants to delete.`;
     try {
       const response = await generateNativeText(this.getToolModel(), [{ role: "user", content: prompt }], {
         signal,
@@ -1120,7 +1082,7 @@ export class LocalMemory {
     const temporary = candidates?.filter((entry) => entry.durability === "temporary") ?? [];
     if (!temporary.length) return [];
     const formatDate = (date: Date) => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")} ${date.toLocaleTimeString()}`;
-    const memories = temporary.map((entry) => `- id: "${entry.id}", created: "${formatDate(new Date(entry.createdAt))}", content: "${entry.summary}"`).join("\n");
+    const memories = temporary.map((entry) => `- id: "${entry.id}", created: "${formatDate(new Date(entry.createdAt))}", content: "${entry.content}"`).join("\n");
     const prompt = `Current date and time: ${formatDate(now)}\n\nCurrent conversation context:\n${conversation}\n\nTemporary memories related to this conversation:\n${memories}`;
     let selected: unknown[];
     try {
@@ -1151,7 +1113,7 @@ export class LocalMemory {
         const result = await this.retryMutation(signal, async (expectedRevision) => (
           await this.deleteEntryById(entry.id, { expectedRevision, signal, now })
         ));
-        if (result.deleted) deleted.push({ id: entry.id, content: entry.summary });
+        if (result.deleted) deleted.push({ id: entry.id, content: entry.content });
       } catch {
         signal?.throwIfAborted();
       }
@@ -1211,36 +1173,13 @@ function sanitizePersonFileName(name: string): string {
     .replace(/[._-]+$/gu, "");
 }
 
-function exactDuplicateGroups(entries: readonly MemoryEntry[], crossUserIds: boolean, currentWorkspaceId: string): MemoryEntry[][] {
+function exactDuplicateGroups(entries: readonly MemoryEntry[]): MemoryEntry[][] {
   const grouped = new Map<string, MemoryEntry[]>();
   for (const entry of entries) {
-    const key = JSON.stringify([
-      exactDuplicateOriginKey(entry, currentWorkspaceId),
-      crossUserIds ? null : entry.userId ?? null,
-      memoryEntryExactKey(entry)
-    ]);
+    const key = memoryEntryExactKey(entry);
     grouped.set(key, [...(grouped.get(key) ?? []), entry]);
   }
   return [...grouped.values()].filter((group) => group.length > 1);
-}
-
-function exactDuplicateOriginKey(entry: MemoryEntry, currentWorkspaceId: string): string {
-  return entry.origin.kind === "user"
-    ? `workspace:${currentWorkspaceId}`
-    : `workspace:${entry.origin.workspaceId}`;
-}
-
-function similarityNamespaces(entries: readonly MemoryEntry[]): MemoryEntry[][] {
-  const grouped = new Map<string, MemoryEntry[]>();
-  for (const entry of entries) {
-    const key = JSON.stringify([sleepOriginKey(entry), entry.userId ?? null]);
-    grouped.set(key, [...(grouped.get(key) ?? []), entry]);
-  }
-  return [...grouped.values()];
-}
-
-function sleepOriginKey(entry: MemoryEntry): string {
-  return entry.origin.kind === "user" ? "user" : `workspace:${entry.origin.workspaceId}`;
 }
 
 function buildSimilarityClusters(
@@ -1265,9 +1204,7 @@ function buildSimilarityClusters(
   const usablePairs: Array<{ leftId: string; rightId: string; similarity: number }> = [];
   for (const pair of pairs) {
     if (!Number.isFinite(pair.similarity) || pair.similarity < minimumSimilarity || pair.leftId === pair.rightId) continue;
-    const left = entriesById.get(pair.leftId);
-    const right = entriesById.get(pair.rightId);
-    if (!left || !right || JSON.stringify([sleepOriginKey(left), left.userId ?? null]) !== JSON.stringify([sleepOriginKey(right), right.userId ?? null])) continue;
+    if (!entriesById.has(pair.leftId) || !entriesById.has(pair.rightId)) continue;
     usablePairs.push(pair);
     union(pair.leftId, pair.rightId);
   }
@@ -1289,10 +1226,10 @@ function buildSimilarityClusters(
 }
 
 function selectSleepSurvivor(entries: readonly MemoryEntry[], exactDuplicate = false): MemoryEntry {
-  // 访问次数与重要性共同贡献总分；来源目录不是用户命名空间。
+  // 访问次数与重要性共同贡献总分。
   const score = (entry: MemoryEntry): number => (
     (entry.durability === "permanent" ? 1_000_000 : 0)
-    + (exactDuplicate && entry.userId ? 100_000 : 0)
+    + (exactDuplicate ? 100_000 : 0)
     + 1_000 * (entry.importance ?? 0)
     + Math.min(entry.accessCount ?? 0, 10_000)
     + Math.floor(Date.parse(entry.updatedAt) / 1_000) / 1_000_000_000
@@ -1371,14 +1308,15 @@ export async function withFreshRevision<T>(
   throw new Error("Unable to mutate memory after repeated revision conflicts.");
 }
 
-export function formatMemoryMatches(matches: Array<{ topic: string; excerpt: string }>): string {
+export function formatMemoryMatches(matches: Array<{ excerpt: string; tags?: readonly string[] }>): string {
   if (!matches.length) return "";
-  // Keep the display label separate from the embedding text: the vector uses
-  // only the memory summary, while the prompt still benefits from an explicit
-  // field marker when several recalled entries are shown together.
+  // 注入正文优先；非默认标签跟在正文后，帮助模型自行权衡来源相关性。
   return [
     "## Relevant Memories",
-    ...matches.map((match) => `- ${match.topic}: Summary: ${match.excerpt}`)
+    ...matches.map((match) => {
+      const tags = (match.tags ?? []).filter((tag) => tag && tag !== "conversation-summary");
+      return `- ${match.excerpt}${tags.length ? ` [tags: ${tags.join(", ")}]` : ""}`;
+    })
   ].join("\n");
 }
 
@@ -1403,9 +1341,6 @@ export type {
   MemoryEntry,
   MemoryEntryInput,
   MemoryDurability,
-  MemoryKind,
-  MemoryLineage,
-  MemoryLineageSource,
   MemoryListOptions,
   MemoryMaintenanceOptions,
   MemoryMaintenanceResult,
@@ -1415,7 +1350,6 @@ export type {
   MemoryOmissionReason,
   MemoryOverview,
   MemoryReadOptions,
-  MemoryRecallOmission,
   MemoryRecallReport,
   MemorySearchOptions,
   MemorySearchResult,

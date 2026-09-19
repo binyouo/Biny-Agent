@@ -31,11 +31,7 @@ const promotionModel: AgentModel = {
       text: JSON.stringify({
         reflection: "今天完成了日报闭环。后续应继续保持可追溯的整理。",
         memories: [{
-          title: "日报整理方式",
-          topic: "workflow",
-          summary: "日报整理应保留可追溯的来源和结果。",
-          kind: "workflow",
-          durability: "permanent",
+          content: "日报整理应保留可追溯的来源和结果。",
           evidence: "聊天摘要明确记录了这项工作方式。"
         }],
         actions: [{
@@ -98,7 +94,8 @@ try {
   assert.equal(promoted.written, true);
   assert.equal(promoted.memoriesCreated, 1);
   assert.equal(promoted.tasksCreated, 1);
-  assert.equal(promotedMemories[0]?.kind, "workflow");
+  assert.equal(promotedMemories[0]?.content, "日报整理应保留可追溯的来源和结果。");
+  assert.equal(promotedMemories[0]?.evidence, "聊天摘要明确记录了这项工作方式。");
   assert.equal(promotedActions[0]?.taskRunId.startsWith("reflection-"), true);
   const promotedNote = await readDailyMemoryNote("2026-09-06", { configDir: root });
   assert.match(readDailyMemorySection(promotedNote ?? "", "自我反思") ?? "", /biny-reflection-promoted/u);

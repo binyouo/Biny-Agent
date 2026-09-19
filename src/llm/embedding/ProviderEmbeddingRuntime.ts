@@ -178,9 +178,7 @@ function embeddingModels(
       id: configured.id,
       displayName: configured.displayName,
       dimensions: configured.dimensions ?? baseline?.dimensions,
-      recommendedThresholds: configured.recommendedThresholds
-        ?? baseline?.recommendedThresholds
-        ?? { currentWorkspace: 0.3, crossWorkspace: 0.55 },
+      recommendedThreshold: configured.recommendedThreshold ?? baseline?.recommendedThreshold ?? 0.3,
       description: baseline?.description
     });
   }
@@ -208,7 +206,7 @@ function providerDescriptor(
     displayName: declared?.displayName ?? modelId,
     description: declared?.description,
     dimensions: declared?.dimensions,
-    recommendedThresholds: declared?.recommendedThresholds ?? { currentWorkspace: 0.3, crossWorkspace: 0.55 },
+    recommendedThreshold: declared?.recommendedThreshold ?? 0.3,
     source: "provider",
     providerType: config.type,
     endpoint,

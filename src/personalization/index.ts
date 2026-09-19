@@ -15,18 +15,6 @@ export const embeddingModelRefSchema: z.ZodType<EmbeddingModelRef> = z.discrimin
 
 export type { EmbeddingModelRef } from "../llm/embedding/types.js";
 
-export const memorySimilarityThresholdSchema = z.object({
-  currentWorkspace: z.number().min(0).max(1),
-  crossWorkspace: z.number().min(0).max(1)
-}).strict().superRefine((value, context) => {
-  if (value.crossWorkspace >= value.currentWorkspace) return;
-  context.addIssue({
-    code: z.ZodIssueCode.custom,
-    path: ["crossWorkspace"],
-    message: "Cross-project memory threshold must be at least the current-project threshold."
-  });
-});
-
 const rawMemoryPolicySchema = z.object({
   // enabled 是硬门禁；聊天级 use/contribute 覆盖不能绕过它。
   enabled: z.boolean().optional(),
@@ -39,8 +27,7 @@ const rawMemoryPolicySchema = z.object({
   extractModel: z.string().min(1).optional(),
   // 嵌入模型默认本地 multilingual-e5-small（可下载）；云端需 provider 已配置并经隐私确认。
   embeddingModel: embeddingModelRefSchema.optional(),
-  similarityThreshold: z.number().min(0).max(1).default(0.7),
-  similarityThresholds: z.record(memorySimilarityThresholdSchema).default({}),
+  similarityThreshold: z.number().min(0).max(1).default(0.1),
   // key 是 provider alias + endpoint 的不可逆摘要；不保存 URL、凭据或记忆正文。
   cloudEmbeddingConsents: z.record(z.object({
     endpointHash: z.string().min(16).max(128),
@@ -55,7 +42,6 @@ const rawMemoryPolicySchema = z.object({
   archiveRetentionDays: z.number().int().min(1).max(3650).default(30),
   temporaryTtl: z.number().int().min(1).max(3650).default(30),
   similarityMergeThreshold: z.number().min(0).max(1).default(0.95),
-  dedupAcrossUserIds: z.boolean().default(true),
   useLlm: z.boolean().default(true),
   llmMergeLow: z.number().min(0).max(1).default(0.75),
   llmBatchSize: z.number().int().min(1).max(100).default(20),
@@ -79,7 +65,6 @@ export const memoryPolicySchema = rawMemoryPolicySchema.transform((policy): Memo
   extractModel: undefined,
   embeddingModel: { kind: "local", model: "multilingual-e5-small" },
   similarityThreshold: 0.1,
-  similarityThresholds: {},
   cloudEmbeddingConsents: {},
   excludeExternalContext: true,
   maxRecalled: 5,
@@ -88,7 +73,6 @@ export const memoryPolicySchema = rawMemoryPolicySchema.transform((policy): Memo
   archiveRetentionDays: 30,
   temporaryTtl: 30,
   similarityMergeThreshold: 0.95,
-  dedupAcrossUserIds: true,
   useLlm: true,
   llmMergeLow: 0.75,
   llmBatchSize: 20
@@ -137,7 +121,6 @@ export interface ResolvedChatPersonalization {
   extractModel?: string;
   embeddingModel?: EmbeddingModelRef;
   similarityThreshold: number;
-  similarityThresholds: Record<string, z.infer<typeof memorySimilarityThresholdSchema>>;
   excludeExternalContext: boolean;
   maxRecalled: number;
   sleepEnabled: boolean;
@@ -178,7 +161,6 @@ export function resolveChatPersonalization(
     extractModel: parsedMemory.extractModel,
     embeddingModel: parsedMemory.embeddingModel,
     similarityThreshold: parsedMemory.similarityThreshold,
-    similarityThresholds: parsedMemory.similarityThresholds,
     excludeExternalContext: parsedMemory.excludeExternalContext,
     maxRecalled: parsedMemory.maxRecalled,
     sleepEnabled: parsedMemory.sleepEnabled,

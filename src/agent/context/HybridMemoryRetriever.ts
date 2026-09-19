@@ -1,36 +1,33 @@
 /**
  * 自动记忆召回：可选查询改写后进行向量余弦 topK；向量不可用时保持为空。
  *
- * SQLite/LocalMemory 负责事实源；向量索引只提供可丢弃的语义排名。向量不可用或指纹
- * 不匹配时自动召回 fail closed，绝不把词法猜测或其他项目内容带进上下文；手动
- * `/memory search` 仍然保留词法 fallback。
+ * SQLite/LocalMemory 负责事实源；向量索引只提供可丢弃的语义排名。召回覆盖整个记忆库，
+ * 不做来源分桶或工作区过滤；向量不可用或指纹不匹配时自动召回 fail closed，
+ * 手动 `/memory search` 仍然保留词法 fallback。
  */
-import { createHash } from "node:crypto";
-import { promises as fs } from "node:fs";
-import path from "node:path";
-import type { EmbeddingModelRuntime, EmbeddingThresholds } from "../../llm/embedding/types.js";
+import type { EmbeddingModelRuntime } from "../../llm/embedding/types.js";
 import { redactSecrets } from "../../utils/secrets.js";
 import { perfNow, recordPerfPhase } from "../../observability/perfTiming.js";
 import { type MemoryVectorIndexStatus, type MemoryVectorSearchResult } from "./MemoryVectorIndex.js";
+import { entryHasAllTags } from "./memoryFormat.js";
 import type {
   MemoryEntriesResult,
   MemoryEntry,
   MemoryMatch,
-  MemoryOriginCounts,
-  MemoryOriginSelector,
   MemoryRecallReport,
   MemorySearchOptions,
   MemorySearchResult
 } from "./memoryTypes.js";
 
+/** 自动召回为空且不是"确实没有相关内容"时的降级原因。 */
+export type MemoryRecallDegraded = NonNullable<MemoryRecallReport["degraded"]>;
+
 const lexicalWeight = 1;
 const queryRewriteTimeoutMs = 3_000;
-const currentWorkspaceBoost = 1.1;
-const userMemoryBoost = 1.05;
 const defaultRecallMaxChars = 12_000;
 
 export interface AutomaticMemoryStore {
-  listMemoryEntries(options?: { origins?: MemoryOriginSelector[]; includeArchived?: boolean; signal?: AbortSignal }): Promise<MemoryEntriesResult>;
+  listMemoryEntries(options?: { includeArchived?: boolean; signal?: AbortSignal }): Promise<MemoryEntriesResult>;
   search(query: string, paths: string[], options?: MemorySearchOptions): Promise<MemorySearchResult>;
   recordRecallUsage(ids: string[], options?: { signal?: AbortSignal; now?: Date }): Promise<void>;
 }
@@ -51,25 +48,25 @@ export interface MemoryVectorSearchIndex {
 
 export interface HybridMemoryRetrieverOptions {
   localMemory: AutomaticMemoryStore;
-  workspaceRoot: string;
   getEmbeddingRuntime: () => Promise<EmbeddingModelRuntime | undefined>;
   getReadOnlyVectorIndex: () => MemoryVectorSearchIndex | undefined;
-  getThresholds: (fingerprint: string, recommended: EmbeddingThresholds) => EmbeddingThresholds;
+  /** 命中条目必须达到的最低相似度；未配置时使用 embedding 模型的推荐值。 */
+  getThreshold: (fingerprint: string, recommended: number) => number;
   rewriteQuery?: (query: string, signal?: AbortSignal) => Promise<string>;
   queryRewriteEnabled?: () => boolean;
   allowEntry?: (entry: MemoryEntry) => boolean;
-  now?: () => Date;
   closeVectorIndex?: boolean;
 }
 
 export interface HybridMemoryRankingInput {
   entries: readonly MemoryEntry[];
-  currentWorkspaceId: string;
   lexicalRankings: readonly (readonly string[])[];
   vectorRanking: readonly { entryId: string; similarity: number }[];
   semanticAvailable: boolean;
-  /** 自动召回会禁止无向量依据的跨项目结果；手动搜索允许用户浏览整个筛选范围。 */
+  /** 自动召回只接受向量结果；手动搜索允许在 embedding 不可用时回退词法。 */
   automatic?: boolean;
+  /** 语义路径不可用的降级原因；仅在自动召回受影响时随空结果上报。 */
+  degraded?: MemoryRecallDegraded;
   paths?: ReadonlyMap<string, string>;
   limit: number;
   maxChars: number;
@@ -77,20 +74,16 @@ export interface HybridMemoryRankingInput {
 
 /**
  * AgentSession 与 Runtime Host 重建索引必须使用同一段文本和同一哈希。
- * Embedding 只接收记忆 summary；它就是这段事实正文。
- * 标题、topic、来源和展示字段不应污染语义向量，也不应因为元数据编辑触发重建。
+ * Embedding 只接收记忆 content；它就是这段事实正文。
  */
 export function memoryEntryEmbeddingText(entry: MemoryEntry): string {
-  return entry.summary;
+  return entry.content;
 }
 
 export class HybridMemoryRetriever {
-  private readonly currentWorkspaceId: Promise<string>;
   private vectorIndex: MemoryVectorSearchIndex | undefined;
 
-  constructor(private readonly options: HybridMemoryRetrieverOptions) {
-    this.currentWorkspaceId = canonicalWorkspaceId(options.workspaceRoot);
-  }
+  constructor(private readonly options: HybridMemoryRetrieverOptions) {}
 
   async retrieve(
     query: string,
@@ -99,22 +92,23 @@ export class HybridMemoryRetriever {
       limit: number;
       maxChars?: number;
       signal?: AbortSignal;
-      origins?: MemoryOriginSelector[];
       includeArchived?: boolean;
       automatic?: boolean;
+      tags?: string[];
     }
   ): Promise<MemorySearchResult> {
     options.signal?.throwIfAborted();
-    const origins = options.origins ?? (options.automatic === false
-      ? ["all"]
-      : ["user", "current_workspace"]);
     const listPerfStartedAt = perfNow();
     const snapshot = await this.options.localMemory.listMemoryEntries({
-      origins,
       includeArchived: options.includeArchived,
       signal: options.signal
     });
     if (this.options.allowEntry) snapshot.entries = snapshot.entries.filter(this.options.allowEntry);
+    // tag 后过滤先于语义检索：向量候选集合与词法回退都只看通过过滤的条目。
+    snapshot.entries = snapshot.entries.filter((entry) => entryHasAllTags(entry, options.tags));
+    snapshot.paths = snapshot.paths === undefined
+      ? undefined
+      : Object.fromEntries(Object.entries(snapshot.paths).filter(([id]) => snapshot.entries.some((entry) => entry.id === id)));
     recordPerfPhase("memory.listEntries", listPerfStartedAt);
     if (!snapshot.entries.length || options.limit < 1) return emptySearchResult(snapshot);
 
@@ -130,8 +124,8 @@ export class HybridMemoryRetriever {
       const lexicalPerfStartedAt = perfNow();
       const lexicalResults = await Promise.all(lexicalQueries.map(async (value) => (
         await this.options.localMemory.search(value, paths, {
-          origins,
           includeArchived: options.includeArchived,
+          tags: options.tags,
           limit: snapshot.entries.length,
           signal: options.signal
         })
@@ -147,11 +141,13 @@ export class HybridMemoryRetriever {
 
     return rankHybridMemory({
       entries: snapshot.entries,
-      currentWorkspaceId: await this.currentWorkspaceId,
       lexicalRankings,
       vectorRanking: semantic.results,
       semanticAvailable: semantic.available,
       automatic: options.automatic,
+      degraded: options.automatic === true && !semantic.available && safeQuery.length > 0
+        ? semantic.degraded ?? "no_vector_index"
+        : undefined,
       paths: matchPaths,
       limit: options.limit,
       maxChars: options.maxChars ?? defaultRecallMaxChars
@@ -193,80 +189,69 @@ export class HybridMemoryRetriever {
     entries: readonly MemoryEntry[],
     limit: number,
     signal?: AbortSignal
-  ): Promise<{ available: boolean; results: MemoryVectorSearchResult[]; query?: string }> {
+  ): Promise<{ available: boolean; results: MemoryVectorSearchResult[]; query?: string; degraded?: MemoryRecallDegraded }> {
     if (!query) return { available: false, results: [] };
     let rewritten = query;
     try {
-      // 先排除缺失、空或不兼容的索引，再启动改写和 embedding；自动召回仍保持 fail closed。
+      // 先排除缺失、空或不兼容的索引，再启动改写和 embedding；自动召回仍保持 fail closed，
+      // 但每个失败点都带出降级原因，供界面主动提示而不是静默为空。
       const index = this.vectorIndex ?? this.options.getReadOnlyVectorIndex();
-      if (!index) return { available: false, results: [] };
+      if (!index) return { available: false, results: [], degraded: "no_vector_index" };
       this.vectorIndex = index;
       const active = index.status().active;
-      if (!active || active.vectorCount < 1) return { available: false, results: [] };
+      if (!active || active.vectorCount < 1) return { available: false, results: [], degraded: "no_vector_index" };
       const runtime = await this.options.getEmbeddingRuntime();
-      if (!runtime) return { available: false, results: [] };
+      if (!runtime) return { available: false, results: [], degraded: "no_embedding_runtime" };
       if (
         active.modelFingerprint !== runtime.descriptor.fingerprint
         || (runtime.descriptor.dimensions !== undefined && active.dimensions !== runtime.descriptor.dimensions)
-      ) return { available: false, results: [] };
+      ) return { available: false, results: [], degraded: "model_mismatch" };
       signal?.throwIfAborted();
       rewritten = await this.rewrite(query, entries, signal);
       const embedded = await runtime.embed({ texts: [rewritten], inputType: "query", signal });
       signal?.throwIfAborted();
       const queryVector = embedded.embeddings[0];
       if (!queryVector || embedded.embeddings.length !== 1 || embedded.fingerprint !== runtime.descriptor.fingerprint) {
-        return { available: false, results: [] };
+        return { available: false, results: [], degraded: "no_embedding_runtime" };
       }
-      if (active.dimensions !== embedded.dimensions) return { available: false, results: [], query: rewritten };
+      if (active.dimensions !== embedded.dimensions) return { available: false, results: [], query: rewritten, degraded: "model_mismatch" };
 
-      const currentWorkspaceId = await this.currentWorkspaceId;
       const entryById = new Map(entries.map((entry) => [entry.id, entry]));
-      const thresholds = this.options.getThresholds(runtime.descriptor.fingerprint, runtime.descriptor.recommendedThresholds);
-      const candidates = index.search(queryVector, {
+      const threshold = this.options.getThreshold(
+        runtime.descriptor.fingerprint,
+        runtime.descriptor.recommendedThreshold
+      );
+      const results = index.search(queryVector, {
         modelFingerprint: runtime.descriptor.fingerprint,
         limit: Math.min(limit, entries.length),
-        minimumSimilarity: Math.min(thresholds.currentWorkspace, thresholds.crossWorkspace),
+        minimumSimilarity: threshold,
         entryIds: new Set(entryById.keys())
       });
-      return {
-        available: true,
-        query: rewritten,
-        results: candidates.filter((candidate) => {
-          const entry = entryById.get(candidate.entryId);
-          if (!entry) return false;
-          const otherWorkspace = entry.origin.kind === "workspace" && entry.origin.workspaceId !== currentWorkspaceId;
-          return candidate.similarity >= (otherWorkspace ? thresholds.crossWorkspace : thresholds.currentWorkspace);
-        })
-      };
-    } catch {
+      return { available: true, query: rewritten, results };
+    } catch (error) {
       signal?.throwIfAborted();
-      return { available: false, results: [], query: rewritten };
+      // 改写/嵌入中途失败按模型侧降级处理；主动取消不算降级。
+      const degraded = signal?.aborted ? undefined : "model_mismatch" as const;
+      void error;
+      return { available: false, results: [], query: rewritten, degraded };
     }
   }
 }
 
-/** 纯排序函数不访问磁盘或模型，便于锁定跨项目门禁、权重和预算行为。 */
+/** 纯排序函数不访问磁盘或模型，便于锁定权重和预算行为。 */
 export function rankHybridMemory(input: HybridMemoryRankingInput, storeRevision = 0): MemorySearchResult {
   const entries = new Map(input.entries.map((entry) => [entry.id, entry]));
   const scores = new Map<string, number>();
   const add = (id: string, score: number): void => {
-    const entry = entries.get(id);
-    if (!entry || (input.automatic !== false
-      && !automaticOriginAllowed(entry, input.currentWorkspaceId))) return;
+    if (!entries.has(id)) return;
     scores.set(id, (scores.get(id) ?? 0) + score);
   };
 
   // 自动模式只接受通过阈值的向量结果；手动搜索才在 embedding 不可用时回退词法。
-  // 过滤必须发生在分支选择前，否则跨 workspace 向量被丢弃后会错误触发词法回退。
-  const allowedVectorRanking = input.vectorRanking.filter((candidate) => {
-    const entry = entries.get(candidate.entryId);
-    return entry !== undefined && (input.automatic === false
-      || automaticOriginAllowed(entry, input.currentWorkspaceId));
-  });
-  if (input.semanticAvailable && allowedVectorRanking.length > 0) {
-    for (const candidate of allowedVectorRanking) add(candidate.entryId, candidate.similarity);
+  if (input.semanticAvailable && input.vectorRanking.length > 0) {
+    for (const candidate of input.vectorRanking) add(candidate.entryId, candidate.similarity);
   } else if (input.automatic === true) {
-    return emptyRankedMemoryResult(storeRevision);
+    return emptyRankedMemoryResult(storeRevision, input.degraded);
   } else {
     const lexicalDivisor = Math.max(1, input.lexicalRankings.length);
     for (const ranking of input.lexicalRankings) {
@@ -276,13 +261,7 @@ export function rankHybridMemory(input: HybridMemoryRankingInput, storeRevision 
     }
   }
 
-  const ranked = [...scores].map(([id, score]) => {
-    const entry = entries.get(id)!;
-    return {
-      entry,
-      score: input.automatic === true ? score : score * originBoost(entry, input.currentWorkspaceId)
-    };
-  }).sort((left, right) => (
+  const ranked = [...scores].map(([id, score]) => ({ entry: entries.get(id)!, score })).sort((left, right) => (
     right.score - left.score
     || (input.automatic === true
       ? left.entry.id.localeCompare(right.entry.id)
@@ -291,33 +270,26 @@ export function rankHybridMemory(input: HybridMemoryRankingInput, storeRevision 
         || left.entry.id.localeCompare(right.entry.id))
   ));
 
-  const included = emptyOriginCounts();
-  const trimmed = emptyOriginCounts();
   const omitted: MemoryRecallReport["omitted"] = [];
   const matches: MemoryMatch[] = [];
   let usedChars = 0;
   let budgetOmitted = 0;
   for (const { entry, score } of ranked) {
-    const bucket = originBucket(entry, input.currentWorkspaceId);
     const excerpt = memoryEntryEmbeddingText(entry);
-    const chars = entry.topic.length + excerpt.length + 5;
+    const chars = excerpt.length + 5;
     const reason = matches.length >= input.limit
       ? "entry_limit" as const
       : usedChars + chars > Math.max(0, input.maxChars)
         ? "budget" as const
         : undefined;
     if (reason) {
-      trimmed[bucket] += 1;
-      omitted.push({ origin: entry.origin, id: entry.id, reason });
+      omitted.push({ id: entry.id, reason });
       if (reason === "budget") budgetOmitted += 1;
       continue;
     }
     usedChars += chars;
-    included[bucket] += 1;
     matches.push({
       entry,
-      originBucket: bucket,
-      topic: entry.topic,
       path: input.paths?.get(entry.id) ?? "memory://" + entry.id,
       excerpt,
       score
@@ -328,69 +300,29 @@ export function rankHybridMemory(input: HybridMemoryRankingInput, storeRevision 
     matches,
     storeRevision,
     report: {
-      origins: { included, trimmed },
       omitted,
       budgetOmission: budgetOmitted > 0
         ? { maxChars: Math.max(0, input.maxChars), usedChars, omitted: budgetOmitted }
-        : undefined
+        : undefined,
+      degraded: input.automatic === true ? input.degraded : undefined
     }
   };
 }
 
-function emptyRankedMemoryResult(storeRevision: number): MemorySearchResult {
-  const origins = emptyOriginCounts();
+function emptyRankedMemoryResult(storeRevision: number, degraded?: MemoryRecallDegraded): MemorySearchResult {
   return {
     matches: [],
     storeRevision,
-    report: {
-      origins: { included: origins, trimmed: { ...origins } },
-      omitted: [],
-      budgetOmission: undefined
-    }
+    report: { omitted: [], budgetOmission: undefined, degraded }
   };
-}
-
-function automaticOriginAllowed(
-  entry: MemoryEntry,
-  currentWorkspaceId: string
-): boolean {
-  return entry.origin.kind === "user" || entry.origin.workspaceId === currentWorkspaceId;
-}
-
-function originBoost(entry: MemoryEntry, currentWorkspaceId: string): number {
-  if (entry.origin.kind === "user") return userMemoryBoost;
-  return entry.origin.workspaceId === currentWorkspaceId ? currentWorkspaceBoost : 1;
-}
-
-function originBucket(entry: MemoryEntry, currentWorkspaceId: string): keyof MemoryOriginCounts {
-  if (entry.origin.kind === "user") return "user";
-  return entry.origin.workspaceId === currentWorkspaceId ? "currentWorkspace" : "otherWorkspaces";
 }
 
 function emptySearchResult(snapshot: MemoryEntriesResult): MemorySearchResult {
-  const report = emptyRecallReport();
   return {
     matches: [],
     storeRevision: snapshot.storeRevision,
-    report
+    report: { omitted: [], budgetOmission: undefined }
   };
-}
-
-function emptyRecallReport(): MemoryRecallReport {
-  return {
-    origins: { included: emptyOriginCounts(), trimmed: emptyOriginCounts() },
-    omitted: [],
-    budgetOmission: undefined
-  };
-}
-
-function emptyOriginCounts(): MemoryOriginCounts {
-  return { user: 0, currentWorkspace: 0, otherWorkspaces: 0 };
-}
-
-async function canonicalWorkspaceId(workspaceRoot: string): Promise<string> {
-  const canonical = await fs.realpath(path.resolve(workspaceRoot));
-  return createHash("sha256").update(canonical).digest("hex").slice(0, 24);
 }
 
 function raceWithAbort<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {

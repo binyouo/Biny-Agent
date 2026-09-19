@@ -55,14 +55,8 @@ class ContextTestModel {
     if (prompt.includes("Extract memories from this conversation:")) {
       this.memoryExtractionCalls += 1;
       return JSON.stringify([{ operation: "add",
-          audience: "workspace",
-          kind: "workflow",
-          topic: "workflows",
-          title: "Context refresh workflow",
           content: "Refresh the workspace snapshot and RepoMap after a successful workspace write before the next turn.",
-          decisions: ["Use deterministic paths instead of vector retrieval."],
-          paths: ["src/agent/context/ContextMemory.ts"],
-          keywords: ["context", "refresh", "workflow"]
+          durability: "permanent"
          }]);
     }
     if (prompt.includes("durable context checkpoint")) {
@@ -569,12 +563,10 @@ async function testRecallCountsBeforeBudget(): Promise<void> {
     const local = new LocalMemory(workspaceRoot, () => new ContextTestModel().model);
     try {
       const written = await local.writeEntry({
-        audience: "workspace", kind: "fact", topic: "release", title: "Release",
-        summary: "Release verification requires a complete test run. ".repeat(30),
-        lineage: { source: "explicit", externalContext: false }
+        content: "Release verification requires a complete test run. ".repeat(30)
       }, { expectedRevision: (await local.getOverview()).storeRevision });
       assert.ok(written.entry);
-      const result = await local.search("Release verification", [], { origins: ["current_workspace"], limit: 1 });
+      const result = await local.search("Release verification", [], { limit: 1 });
       let calls = 0;
       const retriever = {
         retrieve: async () => result,
@@ -589,7 +581,7 @@ async function testRecallCountsBeforeBudget(): Promise<void> {
       );
       await context.prepareTurn("current task ".repeat(20), "system rule ".repeat(30));
       assert.equal(calls, 1);
-      assert.equal((await local.listMemoryEntries({ origins: ["current_workspace"] })).entries.find((entry) => entry.id === written.entry!.id)?.accessCount, 1);
+      assert.equal((await local.listMemoryEntries()).entries.find((entry) => entry.id === written.entry!.id)?.accessCount, 1);
       assert.notEqual((await context.status()).budget.components?.find((item) => item.id === "stable memory")?.disposition, "included");
       assert.equal((await context.status()).memoryInjectedCount, 0, "被预算排除的命中不能报成已注入");
       assert.deepEqual((await context.status()).memoryInjectedSummaries, [], "被预算排除的记忆不能暴露在界面摘要中");
@@ -1621,29 +1613,17 @@ async function testMemoryExactDurableContentAndWriter(): Promise<void> {
     const oldMemoryDir = path.join(workspaceRoot, ".biny", "memory");
     await fs.mkdir(oldMemoryDir, { recursive: true });
     await fs.writeFile(path.join(oldMemoryDir, "old.md"), "This old project-local memory must not be loaded.", "utf8");
-    assert.deepEqual((await store.listMemoryEntries({ origins: ["current_workspace"] })).entries, []);
+    assert.deepEqual((await store.listMemoryEntries()).entries, []);
     const first = await store.writeEntry({
-      audience: "workspace",
-      kind: "gotcha",
-      topic: "debugging",
-      title: "Context refresh result",
-      summary: "Refresh src/agent/context/ContextMemory.ts after Write. apiKey=sk-supersecretvalue123.",
-      decisions: ["Use deterministic SQLite memory."],
-      paths: ["src/agent/context/ContextMemory.ts"],
-      keywords: ["context", "refresh"],
-      lineage: { source: "explicit", externalContext: false }
+      content: "Refresh src/agent/context/ContextMemory.ts after Write. apiKey=sk-supersecretvalue123.",
+      tags: ["context", "refresh"],
+      rationale: "Use deterministic SQLite memory."
     }, { expectedRevision: 0 });
     assert.equal(first.written, true);
     const duplicate = await store.writeEntry({
-      audience: "workspace",
-      kind: "gotcha",
-      topic: "debugging",
-      title: "Context refresh result",
-      summary: "Refresh src/agent/context/ContextMemory.ts after Write. apiKey=sk-supersecretvalue123.",
-      decisions: ["Use deterministic SQLite memory."],
-      paths: ["src/agent/context/ContextMemory.ts"],
-      keywords: ["context", "refresh"],
-      lineage: { source: "explicit", externalContext: false }
+      content: "Refresh src/agent/context/ContextMemory.ts after Write. apiKey=sk-supersecretvalue123.",
+      tags: ["context", "refresh"],
+      rationale: "Use deterministic SQLite memory."
     }, { expectedRevision: first.revision });
     assert.equal(duplicate.written, false);
 
@@ -1693,6 +1673,9 @@ async function testMemoryLifecycleAndUsagePersistence(): Promise<void> {
       extractionMessageIds.push(options.messageId);
       return summarize(messages, options);
     };
+    // 记忆库现在是单一全局库：同一 agent 目录里先前测试写入的条目会一直保留，
+    // 因此这里断言"失败闭合的回合不新增条目"，而不是断言绝对计数为 0。
+    const baseline = await agent.getLocalMemory().getOverview();
     await agent.runTask(`Remember this successful context workflow: ${"grounded details ".repeat(20)}`);
     await waitForMemoryExtraction(provider, 1);
     await agent.runTask("Remember that this workflow also applies to the next completed answer.");
@@ -1716,7 +1699,7 @@ async function testMemoryLifecycleAndUsagePersistence(): Promise<void> {
     assert.equal(extractionMessageIds.some((id) => id !== undefined && userIds.includes(id)), false);
     // 有信息量的成功回合会直接尝试写入 active memory，不再经过候选队列；
     // 但语义能力不可用时，按自动记忆的 fail-closed 规则跳过 ADD。
-    assert.equal(overview.origins.currentWorkspace, 0);
+    assert.equal(overview.entryCount, baseline.entryCount);
 
     const shortProvider = new ContextTestModel();
     const shortAgent = new AgentSession({
@@ -1732,7 +1715,7 @@ async function testMemoryLifecycleAndUsagePersistence(): Promise<void> {
     await waitForMemoryExtraction(shortProvider, 1);
     const afterShortTurn = await shortAgent.getLocalMemory().getOverview();
     await shortAgent.close();
-    assert.equal(afterShortTurn.origins.currentWorkspace, overview.origins.currentWorkspace);
+    assert.equal(afterShortTurn.entryCount, overview.entryCount);
   });
 }
 
@@ -1751,12 +1734,7 @@ async function testMemoryMetadataDetailsFromCompletedExtraction(): Promise<void>
     };
     const memory = agent.getLocalMemory();
     const written = await memory.writeEntry({
-      audience: "workspace",
-      kind: "fact",
-      topic: "memory",
-      title: "Stored extraction fixture",
-      summary: changes.created[0]!.content,
-      lineage: { source: "explicit", externalContext: false }
+      content: changes.created[0]!.content
     }, { expectedRevision: (await memory.getOverview()).storeRevision });
     assert.ok(written.entry);
     const termInputs: string[] = [];
@@ -1816,23 +1794,16 @@ async function testAutomaticMemoryRecallRequiresEmbedding(): Promise<void> {
       let revision = (await agent.getLocalMemory().getOverview()).storeRevision;
       for (let index = 0; index < 4; index += 1) {
         const result = await agent.getLocalMemory().writeEntry({
-          audience: "workspace",
-          kind: "fact",
-          topic: "recall-limit",
-          title: `Recall limit marker ${String(index)}`,
-          summary: `The recall-limit-token marker ${String(index)} is available for this retrieval test.`,
-          decisions: [],
-          paths: [],
-          keywords: ["recall-limit-token"],
-          importance: 3,
-          lineage: { source: "explicit", externalContext: false }
+          content: `The recall-limit-token marker ${String(index)} is available for this retrieval test.`,
+          tags: ["recall-limit-token"],
+          importance: 3
         }, { expectedRevision: revision });
         revision = result.revision;
       }
 
       await agent.runTask("Find the recall-limit-token markers.");
       const systemPrompt = provider.systemPrompts.at(-1) ?? "";
-      assert.doesNotMatch(systemPrompt, /Summary: The recall-limit-token marker/u);
+      assert.doesNotMatch(systemPrompt, /recall-limit-token marker/u, "embedding 不可用时自动召回必须 fail-closed，不注入任何记忆");
     } finally {
       await agent.close();
     }
@@ -1845,42 +1816,34 @@ async function testMemoryEntryManagementAndCjkSearch(): Promise<void> {
     const store = new LocalMemory(workspaceRoot, () => provider.model);
     let revision = (await store.getOverview()).storeRevision;
     const first = await store.writeEntry({
-      audience: "workspace",
-      kind: "workflow",
-      topic: "project",
-      title: "Weather workflow",
-      summary: "使用 wttr.in 获取天气并渲染 Markdown 表格。",
-      decisions: [],
-      paths: [],
-      keywords: ["weather"],
-      lineage: { source: "explicit", externalContext: false }
+      content: "使用 wttr.in 获取天气并渲染 Markdown 表格。",
+      tags: ["weather"]
     }, { expectedRevision: revision });
     revision = first.revision;
     const second = await store.writeEntry({
-      audience: "workspace",
-      kind: "workflow",
-      topic: "project",
-      title: "Weather retries",
-      summary: "wttr.in 请求失败时最多重试三次并按指数退避。",
-      decisions: [],
-      paths: [],
-      keywords: ["retry"],
-      lineage: { source: "explicit", externalContext: false }
+      content: "wttr.in 请求失败时最多重试三次并按指数退避。",
+      tags: ["retry"]
     }, { expectedRevision: revision });
 
     // 中文查询没有空格分界，必须靠 bigram 命中记忆内容。
     const matches = await store.search("天气怎么获取", []);
     assert.equal(matches.matches.length > 0, true);
-    assert.equal(matches.matches[0]?.topic, "project");
+    assert.match(matches.matches[0]?.entry.content ?? "", /wttr\.in/u);
 
-    const entries = await store.listMemoryEntries({ origins: ["current_workspace"] });
-    assert.equal(entries.entries.length, 2);
-    assert.equal(entries.entries.every((entry) => entry.topic === "project"), true);
-    assert.equal(entries.entries.some((entry) => entry.title === "Weather retries"), true);
+    // 记忆库是单一全局库，可能包含同 agent 目录里先前测试写入的条目；
+    // 这里只断言本测试写入的两条记忆，避免与其他用例的条目互相耦合。
+    const ownEntries = (await store.listMemoryEntries()).entries.filter((entry) => (
+      entry.tags.includes("weather") || entry.tags.includes("retry")
+    ));
+    assert.equal(ownEntries.length, 2);
+    assert.equal(ownEntries.some((entry) => entry.content.includes("按指数退避")), true);
 
     const deleted = await store.deleteEntryById(second.entry!.id, { expectedRevision: second.revision });
     assert.equal(deleted.deleted, true);
-    assert.equal((await store.listMemoryEntries({ topic: "project" })).entries.length, 1);
+    const remaining = (await store.listMemoryEntries()).entries.filter((entry) => (
+      entry.tags.includes("weather") || entry.tags.includes("retry")
+    ));
+    assert.equal(remaining.length, 1);
     assert.equal((await store.deleteEntryById(second.entry!.id, { expectedRevision: deleted.revision })).deleted, false);
   });
 }
@@ -1893,15 +1856,8 @@ async function testMemoryStorageBoundaries(): Promise<void> {
     const outsideRoot = await mkdtemp(path.join(os.tmpdir(), "biny-memory-outside-"));
     const store = new LocalMemory(workspaceRoot, () => new ContextTestModel().model);
     const entry = {
-      audience: "workspace" as const,
-      kind: "gotcha" as const,
-      topic: "debugging",
-      title: "Safe local memory boundary",
-      summary: "This sufficiently long test summary must never be written through an unsafe memory link.",
-      decisions: [],
-      paths: [],
-      keywords: ["boundary"],
-      lineage: { source: "explicit" as const, externalContext: false }
+      content: "This sufficiently long test summary must never be written through an unsafe memory link.",
+      tags: ["boundary"]
     };
     try {
       const victim = path.join(outsideRoot, "victim.md");
@@ -2031,7 +1987,7 @@ async function testCrystalSemanticDotProduct(): Promise<void> {
       models.push(model);
       return {
       fingerprint: "crystal-dot-test",
-      descriptor: { ref: { kind: "local", model: "multilingual-e5-small" }, fingerprint: "crystal-dot-test", displayName: "test", recommendedThresholds: { currentWorkspace: 0, crossWorkspace: 0 }, source: "local" },
+      descriptor: { ref: { kind: "local", model: "multilingual-e5-small" }, fingerprint: "crystal-dot-test", displayName: "test", recommendedThreshold: 0, source: "local" },
       embed: async (request) => {
         inputs.push([...request.texts]);
         if (failEmbedding || request.texts[0] === failedText) throw new Error("Embedding fixture failure");

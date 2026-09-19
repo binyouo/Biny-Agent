@@ -30,10 +30,7 @@ interface LocalModelDefinition {
   description: string;
   dimensions: number;
   modelSizeBytes: number;
-  recommendedThresholds: {
-    currentWorkspace: number;
-    crossWorkspace: number;
-  };
+  recommendedThreshold: number;
 }
 
 interface FeatureExtractor {
@@ -84,7 +81,7 @@ export const localEmbeddingModels: readonly LocalModelDefinition[] = [
     description: "适合中英文检索；对原文做平均池化并归一化。",
     dimensions: 384,
     modelSizeBytes: 145 * 1024 * 1024,
-    recommendedThresholds: { currentWorkspace: 0.8, crossWorkspace: 0.86 }
+    recommendedThreshold: 0.8
   }
 ] as const;
 
@@ -279,7 +276,7 @@ function localDescriptor(model: LocalModelDefinition): EmbeddingModelDescriptor 
     displayName: model.displayName,
     description: model.description,
     dimensions: model.dimensions,
-    recommendedThresholds: model.recommendedThresholds,
+    recommendedThreshold: model.recommendedThreshold,
     source: "local",
     modelSizeBytes: model.modelSizeBytes
   };

@@ -106,7 +106,6 @@ import type {
   DesktopMemoryEntryInput,  DesktopMemoryEntryPatch,
   DesktopMemoryEntriesPage,
   DesktopMemoryOverview,
-  DesktopMemoryOriginFilter,
   DesktopMemoryStats,
   DesktopMemorySearchMatch,
   DesktopMemorySettingsInput,
@@ -1532,8 +1531,8 @@ export class DesktopAgentManager {
     return await this.workspaceSnapshot(projectId);
   }
 
-  /** 单一记忆库条目与 revision；filter 只影响视图，不参与物理存储。 */
-  async memoryOverview(projectId: string, filter: DesktopMemoryOriginFilter = "all"): Promise<DesktopMemoryOverview> {
+  /** 单一记忆库条目与 revision；记忆是扁平全库视图。 */
+  async memoryOverview(projectId: string): Promise<DesktopMemoryOverview> {
     const project = this.projects.requireProject(projectId);
     const managed = this.runtimes.get(projectId);
     // runtime 未驻留时不触发冷启动：记忆策略/config revision 直接读 config 文件，
@@ -1544,74 +1543,60 @@ export class DesktopAgentManager {
             configRevision: requireConfigRevision(state),
             memory: state.memory
           })),
-          this.readMemoryStoreFromRuntime(managed, filter)
+          this.readMemoryStoreFromRuntime(managed)
         ])
       : await Promise.all([
           this.requireVersionedConfig().loadVersioned!(project.path).then((current) => ({
             configRevision: current.revision,
             memory: current.config.context.memory
           })),
-          this.readMemoryStoreFromDisk(projectId, filter)
+          this.readMemoryStoreFromDisk(projectId)
         ]);
-    const entries = store.entries.entries;
-    const topicCounts = new Map<string, number>();
-    for (const entry of entries) topicCounts.set(entry.topic, (topicCounts.get(entry.topic) ?? 0) + 1);
     return {
-      filter,
       configRevision: config.configRevision,
       // entries 与 storeRevision 来自同一份单库快照；overview 只补充统计，不能替代 CAS revision。
       revision: store.entries.storeRevision,
       settings: { ...config.memory },
       totalEntries: store.overview.entryCount,
       memoryStats: memoryStats(store.allEntries),
-      origins: { ...store.overview.origins },
       maintenance: { ...store.maintenance },
-      topics: [...topicCounts.entries()].map(([topic, count]) => ({ topic, entries: count })),
-      entries
+      entries: store.entries.entries
     };
   }
 
   /** 记忆库统计：不含条目内容，runtime 驻留与否都返回（config 与全局库均可廉价直读）。 */
-  async memoryStats(projectId: string, filter: DesktopMemoryOriginFilter = "all"): Promise<DesktopMemoryStats> {
+  async memoryStats(projectId: string): Promise<DesktopMemoryStats> {
     const project = this.projects.requireProject(projectId);
     const managed = this.runtimes.get(projectId);
     const [config, store] = managed
       ? await Promise.all([
           this.currentPersonalizationState(projectId).then((state) => ({ configRevision: requireConfigRevision(state), memory: state.memory })),
-          this.readMemoryStoreFromRuntime(managed, filter)
+          this.readMemoryStoreFromRuntime(managed)
         ])
       : await Promise.all([
           this.requireVersionedConfig().loadVersioned!(project.path).then((current) => ({ configRevision: current.revision, memory: current.config.context.memory })),
-          this.readMemoryStoreFromDisk(projectId, filter)
+          this.readMemoryStoreFromDisk(projectId)
         ]);
-    const all = store.allEntries.entries;
-    const topicCounts = new Map<string, number>();
-    for (const entry of all) topicCounts.set(entry.topic, (topicCounts.get(entry.topic) ?? 0) + 1);
     return {
-      filter,
       configRevision: config.configRevision,
       revision: store.entries.storeRevision,
       settings: { ...config.memory },
       totalEntries: store.overview.entryCount,
       memoryStats: memoryStats(store.allEntries),
-      origins: { ...store.overview.origins },
-      maintenance: { ...store.maintenance },
-      topics: [...topicCounts.entries()].map(([topic, count]) => ({ topic, entries: count }))
+      maintenance: { ...store.maintenance }
     };
   }
 
   /** 记忆条目分页读取；offset 分页，revision 供翻页一致性判断。 */
   async memoryEntries(
     projectId: string,
-    filter: DesktopMemoryOriginFilter,
     offset: number,
     limit: number,
     includeArchived = false
   ): Promise<DesktopMemoryEntriesPage> {
     this.projects.requireProject(projectId);
-    const store = await this.readMemoryStorePaged(projectId, filter, offset, limit, includeArchived);
+    const store = await this.readMemoryStorePaged(projectId, offset, limit, includeArchived);
     return {
-      filter,
       revision: store.storeRevision,
       entries: store.entries,
       total: store.total,
@@ -1736,19 +1721,18 @@ export class DesktopAgentManager {
     return await this.identityStorage.saveDocument(document, content, expectedRevision, reason);
   }
 
-  async searchMemory(projectId: string, filter: DesktopMemoryOriginFilter, query: string, includeArchived = false): Promise<DesktopMemorySearchMatch[]> {
+  async searchMemory(projectId: string, query: string, includeArchived = false): Promise<DesktopMemorySearchMatch[]> {
     this.projects.requireProject(projectId);
     const { runtime, commands } = await this.ensureRuntime(projectId);
     const result = commands
-      ? await commands.agent.searchMemory(query, [], { origins: [filter], limit: 8, includeArchived })
-      : await requireRemoteRuntime(runtime).memory<MemorySearchResult>("search-v3", { selector: filter, query, limit: 8, includeArchived });
+      ? await commands.agent.searchMemory(query, [], { limit: 8, includeArchived })
+      : await requireRemoteRuntime(runtime).memory<MemorySearchResult>("search-v3", { query, limit: 8, includeArchived });
     return result.matches.map((match) => ({
       id: match.entry.id,
       originalId: match.entry.originalId,
-      origin: match.entry.origin,
-      topic: match.topic,
-      kind: match.entry.kind,
-      lineage: match.entry.lineage,
+      content: match.entry.content,
+      source: match.entry.source,
+      tags: match.entry.tags,
       importance: match.entry.importance,
       createdAt: match.entry.createdAt,
       updatedAt: match.entry.updatedAt,
@@ -1776,25 +1760,13 @@ export class DesktopAgentManager {
       projectId,
       "任务运行期间不能新增记忆。"
     );
-    const sessionId = this.state.selectedSessionId(projectId);
     const entry = {
-      audience: input.audience,
-      kind: input.kind,
-      topic: input.topic,
-      title: input.title,
-      summary: input.summary,
-      decisions: input.decisions,
-      paths: input.paths,
-      keywords: input.keywords,
+      content: input.content,
+      source: "manual",
+      tags: input.tags,
       importance: input.importance,
       durability: input.durability,
-      expiresAt: input.expiresAt,
-      lineage: {
-        source: "explicit" as const,
-        externalContext: false,
-        sessionId,
-        userEvidence: input.userEvidence ?? (input.audience === "universal" ? input.summary : undefined)
-      }
+      rationale: input.rationale
     };
     const result = commands
       ? await runtime.runExclusiveOperation(
@@ -1879,7 +1851,6 @@ export class DesktopAgentManager {
       archiveRetentionDays: memoryPolicy.archiveRetentionDays,
       temporaryTtl: memoryPolicy.temporaryTtl,
       similarityMergeThreshold: memoryPolicy.similarityMergeThreshold,
-      dedupAcrossUserIds: memoryPolicy.dedupAcrossUserIds,
       useLlm: memoryPolicy.useLlm,
       llmMergeLow: memoryPolicy.llmMergeLow,
       llmBatchSize: memoryPolicy.llmBatchSize
@@ -1958,16 +1929,16 @@ export class DesktopAgentManager {
     return await this.memoryStats(projectId);
   }
 
-  async clearMemory(projectId: string, filter: DesktopMemoryOriginFilter, expectedRevision: number): Promise<DesktopMemoryStats> {
+  async clearMemory(projectId: string, expectedRevision: number): Promise<DesktopMemoryStats> {
     this.projects.requireProject(projectId);
     const { runtime, commands } = await this.runtimeForGlobalWrite(
       projectId,
       "任务运行期间不能清空记忆。"
     );
     if (commands) {
-      await runtime.runExclusiveOperation("memory", () => requireLocalMemory(commands).clearEntries(filter, { expectedRevision }));
+      await runtime.runExclusiveOperation("memory", () => requireLocalMemory(commands).clearAllEntries({ expectedRevision }));
     } else {
-      await requireRemoteRuntime(runtime).memory("clear-v3", { selector: filter, expectedRevision });
+      await requireRemoteRuntime(runtime).memory("clear-v3", { expectedRevision });
     }
     return await this.memoryStats(projectId);
   }
@@ -2951,26 +2922,24 @@ export class DesktopAgentManager {
   }
 
   private async readMemoryStore(
-    projectId: string,
-    filter: DesktopMemoryOriginFilter
+    projectId: string
   ): Promise<{ overview: MemoryOverview; entries: MemoryEntriesResult; allEntries: MemoryEntriesResult; maintenance: MemoryMaintenanceStatus }> {
     const managed = this.runtimes.get(projectId);
-    if (managed) return await this.readMemoryStoreFromRuntime(managed, filter);
-    return await this.readMemoryStoreFromDisk(projectId, filter);
+    if (managed) return await this.readMemoryStoreFromRuntime(managed);
+    return await this.readMemoryStoreFromDisk(projectId);
   }
 
   /** runtime 已驻留：普通读取不占用 Runtime 独占，允许各投影短暂跨 revision。 */
   private async readMemoryStoreFromRuntime(
-    managed: ManagedRuntime,
-    filter: DesktopMemoryOriginFilter
+    managed: ManagedRuntime
   ): Promise<{ overview: MemoryOverview; entries: MemoryEntriesResult; allEntries: MemoryEntriesResult; maintenance: MemoryMaintenanceStatus }> {
     const { runtime, commands } = managed;
     if (commands) {
       const memory = requireLocalMemory(commands);
       const [overview, entries, allEntries, maintenance] = await Promise.all([
         memory.getOverview(),
-        memory.listMemoryEntries({ origins: [filter] }),
-        memory.listMemoryEntries({ origins: ["all"] }),
+        memory.listMemoryEntries(),
+        memory.listMemoryEntries(),
         memory.loadMaintenanceStatus().catch(() => ({ state: "idle" as const, eligible: 0, processed: 0, written: 0, failed: 0 }))
       ]);
       return { overview, entries, allEntries, maintenance };
@@ -2981,7 +2950,7 @@ export class DesktopAgentManager {
       entries: MemoryEntriesResult;
       allEntries: MemoryEntriesResult;
       maintenance: MemoryMaintenanceStatus;
-    }>("overview-v3", { selector: filter });
+    }>("overview-v3", {});
   }
 
   /**
@@ -2989,15 +2958,14 @@ export class DesktopAgentManager {
    * SQLite 读取使用自己的只读查询；与正在写入的进程并发时由 SQLite 事务保证一致性。
    */
   private async readMemoryStoreFromDisk(
-    projectId: string,
-    filter: DesktopMemoryOriginFilter
+    projectId: string
   ): Promise<{ overview: MemoryOverview; entries: MemoryEntriesResult; allEntries: MemoryEntriesResult; maintenance: MemoryMaintenanceStatus }> {
     const project = this.projects.requireProject(projectId);
     const storage = new MemoryStorage(project.path);
     const [overview, entries, allEntries, maintenance] = await Promise.all([
       storage.getOverview(),
-      storage.listEntries({ origins: [filter] }),
-      storage.listEntries({ origins: ["all"] }),
+      storage.listEntries(),
+      storage.listEntries(),
       storage.readMaintenanceStatus()
     ]);
     return { overview, entries, allEntries, maintenance };
@@ -3006,7 +2974,6 @@ export class DesktopAgentManager {
   /** 记忆条目分页读取；runtime 驻留走 runtime，未驻留直连。 */
   private async readMemoryStorePaged(
     projectId: string,
-    filter: DesktopMemoryOriginFilter,
     offset: number,
     limit: number,
     includeArchived = false
@@ -3014,16 +2981,16 @@ export class DesktopAgentManager {
     const managed = this.runtimes.get(projectId);
     if (managed?.commands) {
       const memory = requireLocalMemory(managed.commands);
-      const result = await memory.listMemoryEntries({ origins: [filter], offset, limit, includeArchived });
+      const result = await memory.listMemoryEntries({ offset, limit, includeArchived });
       return { entries: result.entries, total: result.total, storeRevision: result.storeRevision };
     }
     if (managed) {
-      const result = await requireRemoteRuntime(managed.runtime).memory<MemoryEntriesResult>("list-v3", { selector: filter, offset, limit, includeArchived });
+      const result = await requireRemoteRuntime(managed.runtime).memory<MemoryEntriesResult>("list-v3", { offset, limit, includeArchived });
       return { entries: result.entries, total: result.total, storeRevision: result.storeRevision };
     }
     const project = this.projects.requireProject(projectId);
     const storage = new MemoryStorage(project.path);
-    const result = await storage.listEntries({ origins: [filter], offset, limit, includeArchived });
+    const result = await storage.listEntries({ offset, limit, includeArchived });
     return { entries: result.entries, total: result.total, storeRevision: result.storeRevision };
   }
 
@@ -3190,9 +3157,8 @@ function memoryStats(entries: MemoryEntriesResult): { total: number; autoGenerat
   let autoGenerated = 0;
   let manualAdded = 0;
   for (const entry of entries.entries) {
-    const manual = entry.lineage.some((item) => item.source === "explicit" || item.source === "explicit_edit");
-    if (manual) manualAdded += 1;
-    else if (entry.lineage.some((item) => item.source === "completed_task" || item.source === "self_reflection" || item.source === "sleep")) autoGenerated += 1;
+    if (entry.source === "manual") manualAdded += 1;
+    else autoGenerated += 1;
   }
   return { total: entries.entries.length, autoGenerated, manualAdded };
 }

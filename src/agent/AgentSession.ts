@@ -420,7 +420,6 @@ export class AgentSession {
       },
       async (query, searchOptions) => {
         const snapshot = await this.localMemory.listMemoryEntries({
-          origins: ["user", "current_workspace"],
           signal: searchOptions.signal
         });
         return await this.memoryEmbeddingService.findSimilarEntries(
@@ -455,15 +454,11 @@ export class AgentSession {
     });
     this.memoryRetriever = new HybridMemoryRetriever({
       localMemory: this.localMemory,
-      workspaceRoot: options.workspaceRoot,
       getEmbeddingRuntime: async () => await this.memoryEmbeddingService.embeddingRuntime(),
       getReadOnlyVectorIndex: openReadOnlyMemoryIndex,
-      getThresholds: (fingerprint, _recommended) => {
-        const configured = this.activeConfig.context.memory.similarityThresholds[fingerprint];
-        const threshold = this.activeConfig.context.memory.similarityThreshold;
-        return configured === undefined
-          ? { currentWorkspace: threshold, crossWorkspace: threshold }
-          : { currentWorkspace: Math.max(threshold, configured.currentWorkspace), crossWorkspace: Math.max(threshold, configured.crossWorkspace) };
+      getThreshold: (fingerprint, recommended) => {
+        void fingerprint;
+        return Math.max(this.activeConfig.context.memory.similarityThreshold, recommended);
       },
       queryRewriteEnabled: () => this.activePersonalization.queryRewrite,
       rewriteQuery: async (query, signal) => {
@@ -985,7 +980,7 @@ export class AgentSession {
       requestContext: { operation: "memory" }
     });
     if (model) {
-      const memories = await this.localMemory.listMemoryEntries({ origins: ["user", "current_workspace"], limit: 40 }).catch(() => undefined);
+      const memories = await this.localMemory.listMemoryEntries({ limit: 40 }).catch(() => undefined);
       const allowReflectionPromotion = this.activePersonalization.contributeMemories;
       result.reflection = await refreshSelfReflection(dateKey, {
         soulStorage: this.soulStorage,
@@ -994,7 +989,7 @@ export class AgentSession {
         allowActivity: true,
         signal: options.signal,
         model,
-        memoryContext: memories?.entries.filter((entry) => entry.metadata?.source !== "self_reflection" && !isActivityMemory(entry)).map((entry) => `- ${entry.summary}`).join("\n"),
+        memoryContext: memories?.entries.filter((entry) => !entry.tags.includes("self-reflection") && !isActivityMemory(entry)).map((entry) => `- ${entry.content}`).join("\n"),
         force: options.force,
         onUsage: async (usage, operation) => { this.recordModelUsage(usage, operation); },
         onModelRequest: async (metrics) => await this.recordModelRequest(metrics),
@@ -1002,28 +997,11 @@ export class AgentSession {
         promoteMemory: allowReflectionPromotion
           ? async (candidate: SelfReflectionMemoryCandidate) => {
             const result = await this.localMemory.writeAutoEntryWithRetry({
-              audience: "workspace",
-              kind: candidate.kind,
-              topic: candidate.topic,
-              title: candidate.title,
-              summary: candidate.summary,
+              content: candidate.content,
               source: "auto",
               tags: ["self-reflection"],
               rationale: candidate.evidence,
-              metadata: {
-                source: "self_reflection",
-                activityDerived: candidate.activityDerived,
-                dateKey: candidate.dateKey,
-                sourceHash: candidate.sourceHash,
-                evidence: candidate.evidence
-              },
-              threadId: this.recorder.sessionId,
-              lineage: {
-                source: "self_reflection",
-                externalContext: false,
-                sessionId: this.recorder.sessionId,
-                userEvidence: undefined
-              }
+              threadId: this.recorder.sessionId
             }, {
               signal: options.signal,
               now: new Date(),
@@ -1094,13 +1072,12 @@ export class AgentSession {
     }
   }
 
-  /** 手动浏览与自动召回共用混合检索；跨项目内容仅在显式选择对应 origin 时可见。 */
+  /** 手动浏览与自动召回共用混合检索；检索范围是整个记忆库。 */
   async searchMemory(query: string, paths: string[], options: MemorySearchOptions = {}): Promise<MemorySearchResult> {
     return await this.memoryRetriever.retrieve(query, paths, {
       limit: options.limit ?? this.localMemory.recallLimit,
       maxChars: options.maxChars,
       signal: options.signal,
-      origins: options.origins,
       includeArchived: options.includeArchived,
       automatic: false
     });
@@ -1172,7 +1149,6 @@ export class AgentSession {
     const embeddingModel = this.activeConfig.context.memory.embeddingModel;
     if (embeddingModel?.kind !== "local" || embeddingModel.model !== "multilingual-e5-small") return undefined;
     const snapshot = await this.localMemory.listMemoryEntries({
-      origins: ["user", "current_workspace"],
       signal: options.signal
     });
     return await this.memoryEmbeddingService.findSimilarEntries(
@@ -2452,7 +2428,8 @@ export class AgentSession {
         content,
         metadata: {
           memoryInjectedCount: finalContextStatus.memoryInjectedCount,
-          memoryInjectedSummaries: finalContextStatus.memoryInjectedSummaries
+          memoryInjectedSummaries: finalContextStatus.memoryInjectedSummaries,
+          memoryRecallDegraded: finalContextStatus.memoryRecallDegraded
         },
         reasoningContent: lastStepReasoningOutput || undefined,
         reasoningProviderOptions: stepReasoningBlocks?.length === 1 ? stepReasoningBlocks[0]?.providerOptions : undefined,
@@ -2543,10 +2520,7 @@ export class AgentSession {
               messageId: memoryMessageId,
               runId: runOptions.runId!,
               externalContext: Boolean(runOptions.attachments?.length) || this.usedExternalContext(finalMessages),
-              excludeExternalContext: this.activePersonalization.excludeExternalContext,
-              onMemoryWritten: async (entry) => {
-                if (entry.origin.kind === "user") await this.identityStorage.appendUserFact(entry.summary);
-              }
+              excludeExternalContext: this.activePersonalization.excludeExternalContext
             });
             if (memoryMessageId) {
               const metadata: Record<string, unknown> = { memoryExtracted: true, memoryExtractedAt: new Date().toISOString() };

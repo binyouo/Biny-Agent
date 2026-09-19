@@ -2334,6 +2334,47 @@ select option:disabled {
   color: var(--red);
 }
 
+/* 最近会话列表：行内标题/元信息/摘要三层，摘要最多两行截断。 */
+.activity-session-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.activity-session-row {
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  min-width: 0;
+}
+
+.activity-session-title {
+  overflow: hidden;
+  color: var(--text);
+  font-size: calc(11.5px * var(--font-scale));
+  font-weight: 570;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.activity-session-meta {
+  margin-top: 2px;
+  color: var(--text-tertiary);
+  font-size: calc(10.5px * var(--font-scale));
+}
+
+.activity-session-description {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  margin-top: 2px;
+  color: var(--text-secondary);
+  font-size: calc(10.5px * var(--font-scale));
+  line-height: 1.45;
+}
+
 .activity-feedback {
   margin: 8px 0 0;
   color: var(--green);
@@ -3097,15 +3138,27 @@ select option:disabled {
   min-height: 0;
 }
 
-/* 包装器内的裸输入不吃外层控件的边框与内边距。 */
-.desktop-settings-dialog .settings-modal .settings-sections .activity-number-input input {
+/* 包装器内的裸输入不吃外层控件的边框与内边距。all:unset 抹平 .settings-sections
+   input[type="number"] 的通用边框/背景/焦点环（含焦点态），再显式声明所需属性；
+   否则多条同权重规则散落在后文，焦点环和边框会从容器内层漏出来形成双层框。 */
+.desktop-settings-dialog .settings-modal .settings-sections .activity-number-input > input,
+.desktop-settings-dialog .settings-modal .settings-sections .activity-number-input > input:focus-visible {
+  all: unset;
+  box-sizing: border-box;
+  display: block;
+  flex: 1 1 auto;
+  width: 100%;
+  min-width: 0;
   height: 100%;
-  min-height: 0;
-  padding: 0;
-  border: 0;
-  border-radius: 0;
+  padding: 0 9px;
+  color: var(--text);
   background: transparent;
-  box-shadow: none;
+  font: inherit;
+  font-size: calc(12px * var(--font-scale));
+}
+
+.desktop-settings-dialog .settings-modal .settings-sections .activity-number-input > input:disabled {
+  color: var(--text-tertiary);
 }
 
 /* —— 对话框与面板输入（模型连接、记忆编辑、详情层） —— */
@@ -3414,11 +3467,6 @@ select option:disabled {
 .desktop-settings-dialog .settings-modal .activity-number-input {
   min-height: var(--st-control-h);
   border-radius: var(--st-radius);
-}
-
-.desktop-settings-dialog .settings-modal .activity-number-input input {
-  height: 100%;
-  min-height: 0;
 }
 
 /* 减少动态效果时关闭内容区过渡。 */

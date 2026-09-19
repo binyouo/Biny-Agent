@@ -86,38 +86,14 @@ export interface ContextStatus {
   memoryInjectedCount?: number;
   /** 本轮实际注入模型上下文的记忆摘要；用于本地界面解释召回结果。 */
   memoryInjectedSummaries: string[];
+  /** 本轮自动记忆召回降级原因（向量索引缺失/模型不匹配等）；存在时界面应主动提示。 */
+  memoryRecallDegraded?: string;
   memoryOverviewChars?: number;
 }
 
-export interface MemoryEntry {
-  topic: string;
-  title: string;
-  summary: string;
-  decisions: string[];
-  paths: string[];
-  keywords: string[];
-}
-
 export interface MemoryMatch {
-  topic: string;
   path: string;
   excerpt: string;
+  tags?: string[];
   score: number;
-}
-
-/** 话题文件里的一个 `##` 小节，供列表展示与按条删除定位。`index` 是小节在文件中的序号。 */
-export interface MemoryEntrySummary {
-  topic: string;
-  index: number;
-  title: string;
-  date?: string;
-  summary: string;
-}
-
-/** 单个话题的整理结果；`error` 存在表示该话题整理失败并保持原样。 */
-export interface MemoryCompactionTopicResult {
-  topic: string;
-  before: number;
-  after: number;
-  error?: string;
 }

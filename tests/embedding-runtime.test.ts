@@ -100,7 +100,7 @@ function testConfiguredEmbeddingCatalog(): void {
           id: "multilingual-custom",
           displayName: "Multilingual Custom",
           dimensions: 1_024,
-          recommendedThresholds: { currentWorkspace: 0.4, crossWorkspace: 0.6 }
+          recommendedThreshold: 0.4
         }]
       }
     },
@@ -297,7 +297,7 @@ function embeddingDefinition(
         id: wire === "google-generative-ai" ? "gemini-embedding-test" : "embed-v1",
         displayName: "Embedding Test",
         dimensions,
-        recommendedThresholds: { currentWorkspace: 0.3, crossWorkspace: 0.5 }
+        recommendedThreshold: 0.3
       }]
     }
   };

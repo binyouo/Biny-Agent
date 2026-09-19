@@ -37,34 +37,37 @@ async function main(): Promise<void> {
     testUsageCostAccounting();
     testPromptCacheAccounting();
     testShellPermissionBoundary();
-    testSourceAwareMemoryToolSchemas();
+    testFlatMemoryToolSchemas();
   } finally {
     await rm(workspaceRoot, { recursive: true, force: true });
   }
 }
 
-function testSourceAwareMemoryToolSchemas(): void {
+function testFlatMemoryToolSchemas(): void {
   const [saveMemory, recallMemory] = createMemoryTools(() => undefined);
   assert.ok(saveMemory && recallMemory);
-  assert.deepEqual((saveMemory.parameters.properties.audience as { enum?: string[] }).enum, ["workspace", "universal"]);
-  assert.equal("scope" in saveMemory.parameters.properties, false);
-  assert.deepEqual((recallMemory.parameters.properties.origin as { enum?: string[] }).enum, ["all", "current_workspace", "user", "other_workspaces"]);
-  assert.equal("scope" in recallMemory.parameters.properties, false);
-  const missingEvidence = saveMemory.resolveExecution({
-    audience: "universal",
-    kind: "preference",
+  // 记忆工具参数已扁平化：save_memory 只收事实字段，recall_memory 只收 query/limit；
+  // 原 audience/origin/topic 等分类与门禁字段全部删除。
+  assert.deepEqual(Object.keys(saveMemory.parameters.properties).sort(), ["content", "durability", "importance", "rationale", "tags"]);
+  assert.deepEqual((saveMemory.parameters.properties.durability as { enum?: string[] }).enum, ["permanent", "temporary"]);
+  const importance = saveMemory.parameters.properties.importance as { minimum?: number; maximum?: number };
+  assert.equal(importance.minimum, 1);
+  assert.equal(importance.maximum, 5);
+  assert.deepEqual(Object.keys(recallMemory.parameters.properties).sort(), ["limit", "query"]);
+  const missingContent = saveMemory.resolveExecution({
     topic: "style",
     title: "Concise replies",
     summary: "The user prefers concise replies with the result first."
   });
-  assert.equal("isError" in missingEvidence && missingEvidence.isError, true);
+  assert.equal("isError" in missingContent && missingContent.isError, true);
+  const shortContent = saveMemory.resolveExecution({ content: "too short" });
+  assert.equal("isError" in shortContent && shortContent.isError, true);
   const explicit = saveMemory.resolveExecution({
-    audience: "universal",
-    kind: "preference",
-    topic: "style",
-    title: "Concise replies",
-    summary: "The user prefers concise replies with the result first.",
-    userEvidence: "Please keep replies concise and lead with the result."
+    content: "The user prefers concise replies with the result first.",
+    tags: ["style"],
+    importance: 4,
+    durability: "permanent",
+    rationale: "Asked for repeatedly."
   });
   assert.equal("isError" in explicit, false);
 }

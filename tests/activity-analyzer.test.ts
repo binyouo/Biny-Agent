@@ -26,13 +26,14 @@ for (const type of ["feedback", "user", "project", "reference"] as const) {
   const context = { sessionId: "activity-source", analyzedAt: NOW.toISOString(), project: "  Project A  ", model: {} as AgentModel };
   const candidate = { type, content: "A stable activity fact that should be retained.", why: "  repeated observation  " };
   const input = activityMemoryInput(candidate, context);
-  assert.equal(input.importance, type === "feedback" || type === "user" ? 0.8 : 0.7);
+  assert.equal(input.importance, type === "feedback" ? 0.8 : 0.7);
   assert.deepEqual(input.tags, [type, "project:Project A"]);
   assert.equal(input.rationale, "repeated observation");
   assert.equal(input.source, "auto");
   assert.equal(input.activitySource, "activity_session");
   assert.equal(input.activitySessionId, "activity-source");
-  assert.equal(input.audience, type === "user" ? "universal" : "workspace");
+  assert.equal(input.durability, "permanent");
+  assert.equal(input.content, candidate.content);
   assert.deepEqual(activityMemoryInput(candidate, { ...context, project: undefined }).tags, [type]);
   assert.equal(activityMemoryInput({ ...candidate, why: " " }, context).rationale, undefined);
 }

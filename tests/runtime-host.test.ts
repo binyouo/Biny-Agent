@@ -296,8 +296,7 @@ async function main(): Promise<void> {
         },
         getOverview: async () => ({
           storeRevision: 7,
-          entryCount: 0,
-          origins: { user: 0, currentWorkspace: 0, otherWorkspaces: 0 }
+          entryCount: 0
         }),
         listMemoryEntries: async () => ({ entries: [], storeRevision: 7 }),
         writeEntry: async (_entry: unknown, options: { expectedRevision: number }) => {
@@ -543,12 +542,10 @@ async function main(): Promise<void> {
   await client.memory("write-v3", {
     expectedRevision: 7,
     entry: {
-      audience: "workspace",
-      kind: "fact",
-      topic: "runtime-host",
-      title: "Scoped revision",
-      summary: "The scoped memory revision must reach the owner unchanged.",
-      lineage: { source: "explicit", externalContext: false }
+      content: "The scoped memory revision must reach the owner unchanged.",
+      tags: ["runtime-host"],
+      importance: 3,
+      durability: "permanent"
     }
   });
   assert.equal(memoryExpectedRevision, 7, "v3 memory CAS must not be replaced by the Runtime Host snapshot revision");
@@ -560,7 +557,7 @@ async function main(): Promise<void> {
   const exclusiveOperationsBeforeRead = exclusiveOperations.length;
   const remoteOverview = await client.memory<{
     maintenance: { state: string; eligible: number };
-  }>("overview-v3", { selector: "all" });
+  }>("overview-v3", {});
   assert.deepEqual(
     exclusiveOperations.slice(exclusiveOperationsBeforeRead),
     [],

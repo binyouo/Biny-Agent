@@ -138,13 +138,13 @@ function openAiEmbeddingDefinition(): NonNullable<ProviderDefinition["embedding"
         id: "text-embedding-3-small",
         displayName: "text-embedding-3-small",
         dimensions: 1_536,
-        recommendedThresholds: { currentWorkspace: 0.3, crossWorkspace: 0.5 }
+        recommendedThreshold: 0.3
       },
       {
         id: "text-embedding-3-large",
         displayName: "text-embedding-3-large",
         dimensions: 3_072,
-        recommendedThresholds: { currentWorkspace: 0.3, crossWorkspace: 0.5 }
+        recommendedThreshold: 0.3
       }
     ]
   };
@@ -157,7 +157,7 @@ function geminiOpenAiEmbeddingDefinition(): NonNullable<ProviderDefinition["embe
       id: "gemini-embedding-001",
       displayName: "Gemini Embedding 001",
       dimensions: 3_072,
-      recommendedThresholds: { currentWorkspace: 0.35, crossWorkspace: 0.55 }
+      recommendedThreshold: 0.35
     }]
   };
 }

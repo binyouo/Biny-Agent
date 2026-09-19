@@ -7,7 +7,7 @@ import { randomUUID } from "node:crypto";
 import type { AgentAttachment } from "../../agent/AgentSession.js";
 import { agentCapabilitySelectionSchema, type AgentCapabilitySelection } from "../../agent/capabilitySelection.js";
 import type { AgentRunOutcome, RuntimeRequestIds } from "../InteractiveAgentRuntime.js";
-import type { MemoryDurability, MemoryEntryInput, MemoryEntryPatch, MemoryKind, MemoryLineage, MemoryLineageSource, MemoryOriginSelector } from "../../agent/context/memoryTypes.js";
+import type { MemoryDurability, MemoryEntryInput, MemoryEntryPatch } from "../../agent/context/memoryTypes.js";
 import { thinkingLevelSchema } from "../../config/schema.js";
 import type { PermissionAction, PermissionMode, PermissionResult } from "../../permission/PermissionManager.js";
 import type { RuntimeRunStatus } from "../RuntimeAuthority.js";
@@ -20,11 +20,6 @@ import type { HostSurface, RuntimeIsolation } from "./types.js";
 import type { LocalEmbeddingModelId } from "../../llm/embedding/types.js";
 import type { ThinkingSelection } from "../../llm/ModelManager.js";
 import { SessionWriterConflictError } from "../SessionLease.js";
-
-export function readMemoryOriginSelector(value: unknown, allowAll: boolean): MemoryOriginSelector {
-  if (value === "current_workspace" || value === "user" || value === "other_workspaces" || (allowAll && value === "all")) return value;
-  throw new Error("Runtime Host memory selector must be " + (allowAll ? "all, " : "") + "current_workspace, user, or other_workspaces.");
-}
 
 export function asRecord(value: unknown): Record<string, unknown> {
   return typeof value === "object" && value !== null ? value as Record<string, unknown> : {};
@@ -78,27 +73,17 @@ export function readMemoryEntryInput(value: unknown): MemoryEntryInput {
   if (importance !== undefined && (importance < 1 || importance > 5)) {
     throw new Error("Runtime Host memory entry importance must be between 1 and 5.");
   }
-  const lineageValues = Array.isArray(record.lineage) ? record.lineage : [record.lineage];
-  if (lineageValues.some((item) => item === undefined)) throw new Error("Runtime Host memory entry lineage is required.");
   return {
-    audience: readMemoryAudience(record.audience),
-    kind: readMemoryKind(record.kind),
-    topic: requiredString(record.topic, "entry.topic"),
-    title: requiredString(record.title, "entry.title"),
-    summary: requiredString(record.summary, "entry.summary"),
-    decisions: record.decisions === undefined ? undefined : readStringArray(record.decisions, "entry.decisions"),
-    paths: record.paths === undefined ? undefined : readStringArray(record.paths, "entry.paths"),
-    keywords: record.keywords === undefined ? undefined : readStringArray(record.keywords, "entry.keywords"),
+    content: requiredString(record.content, "entry.content"),
+    source: optionalString(record.source),
+    tags: record.tags === undefined ? undefined : readStringArray(record.tags, "entry.tags"),
+    rationale: optionalString(record.rationale),
     importance,
     durability: readMemoryDurability(record.durability),
     expiresAt: optionalString(record.expiresAt),
-    lineage: lineageValues.map(readMemoryLineage)
+    threadId: optionalString(record.threadId),
+    messageId: optionalString(record.messageId)
   };
-}
-
-export function readMemoryAudience(value: unknown): "workspace" | "universal" {
-  if (value === "workspace" || value === "universal") return value;
-  throw new Error("Runtime Host memory audience must be workspace or universal.");
 }
 
 export function readMemoryEntryPatch(value: unknown): MemoryEntryPatch {
@@ -108,17 +93,13 @@ export function readMemoryEntryPatch(value: unknown): MemoryEntryPatch {
     throw new Error("Runtime Host memory patch importance must be between 1 and 5.");
   }
   return {
-    kind: record.kind === undefined ? undefined : readMemoryKind(record.kind),
-    topic: optionalString(record.topic),
-    title: optionalString(record.title),
-    summary: optionalString(record.summary),
-    decisions: record.decisions === undefined ? undefined : readStringArray(record.decisions, "patch.decisions"),
-    paths: record.paths === undefined ? undefined : readStringArray(record.paths, "patch.paths"),
-    keywords: record.keywords === undefined ? undefined : readStringArray(record.keywords, "patch.keywords"),
+    content: optionalString(record.content),
+    source: optionalString(record.source),
+    tags: record.tags === undefined ? undefined : readStringArray(record.tags, "patch.tags"),
+    rationale: optionalString(record.rationale),
     importance,
     durability: readMemoryDurability(record.durability),
-    expiresAt: optionalString(record.expiresAt),
-    userEvidence: optionalString(record.userEvidence)
+    expiresAt: optionalString(record.expiresAt)
   };
 }
 
@@ -128,38 +109,9 @@ export function readMemoryDurability(value: unknown): MemoryDurability | undefin
   throw new Error("Runtime Host memory durability must be temporary or permanent.");
 }
 
-export function readMemoryKind(value: unknown): MemoryKind {
-  if (value === "preference" || value === "working_style" || value === "fact" || value === "decision" || value === "workflow" || value === "gotcha") {
-    return value;
-  }
-  throw new Error("Runtime Host memory entry kind is invalid.");
-}
-
-
 export function readLocalEmbeddingModel(value: unknown): LocalEmbeddingModelId {
   if (value === "multilingual-e5-small") return value;
   throw new Error("Runtime Host local embedding model is invalid.");
-}
-
-export function readMemoryLineage(value: unknown): MemoryLineage {
-  const record = asRecord(value);
-  if (typeof record.externalContext !== "boolean") throw new Error("Runtime Host memory lineage externalContext must be boolean.");
-  return {
-    source: readMemoryLineageSource(record.source),
-    externalContext: record.externalContext,
-    sessionId: optionalString(record.sessionId),
-    turnId: optionalString(record.turnId),
-    runId: optionalString(record.runId),
-    sourceEntryIds: record.sourceEntryIds === undefined ? undefined : readStringArray(record.sourceEntryIds, "entry.lineage.sourceEntryIds"),
-    userEvidence: optionalString(record.userEvidence)
-  };
-}
-
-export function readMemoryLineageSource(value: unknown): MemoryLineageSource {
-  if (value === "explicit" || value === "explicit_edit" || value === "completed_task" || value === "self_reflection" || value === "sleep") {
-    return value;
-  }
-  throw new Error("Runtime Host memory lineage source is invalid.");
 }
 
 export function readAttachments(value: unknown): AgentAttachment[] {

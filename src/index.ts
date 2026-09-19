@@ -13,7 +13,6 @@ import type {
   MemoryEntryInput as StoredMemoryEntryInput,
   MemoryMatch as StoredMemoryMatch,
   MemoryOverview as StoredMemoryOverview,
-  MemoryRecallOmission as StoredMemoryRecallOmission,
   MemoryRecallReport as StoredMemoryRecallReport,
   MemorySearchResult as StoredMemorySearchResult,
   MemoryWriteResult as StoredMemoryWriteResult
@@ -31,14 +30,8 @@ export type {
   ResolvedChatPersonalization
 } from "./personalization/index.js";
 export type {
-  MemoryAudience,
   MemoryDeleteResult,
   MemoryEntryPatch,
-  MemoryKind,
-  MemoryLineage,
-  MemoryOrigin,
-  MemoryOriginCounts,
-  MemoryOriginSelector,
 } from "./agent/context/memoryTypes.js";
 
 export type MemoryEntryInput = StoredMemoryEntryInput;
@@ -46,7 +39,6 @@ export type MemoryEntry = StoredMemoryEntry;
 export type MemoryOverview = StoredMemoryOverview;
 export type MemoryEntriesResult = StoredMemoryEntriesResult;
 export type MemoryClearResult = StoredMemoryClearResult;
-export type MemoryRecallOmission = StoredMemoryRecallOmission;
 export type MemoryRecallReport = StoredMemoryRecallReport;
 export type MemoryMatch = StoredMemoryMatch;
 export type MemorySearchResult = StoredMemorySearchResult;
