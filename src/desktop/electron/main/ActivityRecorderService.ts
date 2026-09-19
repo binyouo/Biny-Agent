@@ -507,6 +507,8 @@ export class ActivityRecorderService {
       && previous.outputDirectory === nextSettings.outputDirectory
       && this.child !== undefined
       && this.state === "running"
+      // 外部清空待处理时不能走热更新短路：持久化路径依赖这次 applySettings 重启采集器。
+      && this.recordingRevision === this.store.clearRevision()
     ) {
       this.settings = nextSettings;
       this.send({ type: "settings_updated", settings: nextSettings });
