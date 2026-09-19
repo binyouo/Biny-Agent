@@ -836,11 +836,17 @@ async function testRemovedMemoryPolicyFieldsAreIgnored(): Promise<void> {
       driftDetection: true,
       proactivePrompts: false
     };
+    // 旧版记忆策略的向量生命周期字段（806cb2d 前的 schema）仍可能留在存量配置里。
+    document.context.memory.similarityThresholds = { memory: 0.2, activity: 0.3 };
+    document.context.memory.dedupAcrossUserIds = false;
     await fs.mkdir(root, { recursive: true });
     await fs.writeFile(path.join(root, "config.json"), JSON.stringify(document, null, 2) + "\n", "utf8");
 
     const loaded = await loadConfigFile(root);
-    assert.equal("telos" in (loaded.context.memory as Record<string, unknown>), false);
+    const memory = loaded.context.memory as Record<string, unknown>;
+    assert.equal("telos" in memory, false);
+    assert.equal("similarityThresholds" in memory, false);
+    assert.equal("dedupAcrossUserIds" in memory, false);
     assert.equal(loaded.context.memory.enabled, defaultConfig.context.memory.enabled);
   } finally {
     await fs.rm(root, { recursive: true, force: true });
