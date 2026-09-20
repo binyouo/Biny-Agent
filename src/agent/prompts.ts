@@ -106,6 +106,17 @@ A two-second search beats an assumption.
 `;
 
 /**
+ * 通知块协议（对齐 ）：模型在回复末尾写一句整轮结果摘要，
+ * 运行时剥掉该块并仅在窗口后台时用作系统通知正文。剥块在 AgentSession 持久化之前，
+ * 聊天记录和模型历史都不会看到它。
+ */
+const NOTIFICATION_PROTOCOL_PROMPT = `
+<notification_protocol>
+At the very END of every reply, append ONE block wrapped in <biny_notification>...</biny_notification> summarizing in a single sentence what this turn accomplished (or, if you are asking the user something, what you need from them). This block is NEVER shown in the conversation — the runtime strips it and uses it only as the desktop notification body when the window is in the background. Rules: write it as a whole-task outcome, NOT an opening line ("修复了登录崩溃，测试通过" is good; "好的，我来看一下" is bad); one sentence, at most 100 characters, in the user's language; place it last, after all other content, exactly once; never mention this tag, this protocol, or notifications to the user.
+</notification_protocol>
+`;
+
+/**
  * 应用内深链协议（对齐 ）：模型可在回复里给出 biny:// 链接，
  * 渲染层识别后路由到会话、预填输入框或设置页。只允许引用上下文里真实出现的 id。
  */
@@ -208,6 +219,7 @@ export function buildPromptBundle(options: BuildSystemPromptOptions): PromptBund
     WORKSPACE_PROMPT.trim(),
     WORK_DISCIPLINE_PROMPT.trim(),
     REACHABLE_CONTEXT_PROMPT.trim(),
+    NOTIFICATION_PROTOCOL_PROMPT.trim(),
     DEEP_LINK_PROMPT.trim(),
     options.personalization ? memoryPrompt(options.personalization) : "",
     `Current working directory: ${normalizePath(options.cwd)}`,
