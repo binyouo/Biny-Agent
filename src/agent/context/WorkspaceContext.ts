@@ -220,7 +220,14 @@ export class WorkspaceContext {
     } catch {
       return;
     }
-    const content = await fs.readFile(filePath, { encoding: "utf8", signal });
+    let content: string;
+    try {
+      content = await fs.readFile(filePath, { encoding: "utf8", signal });
+    } catch {
+      // 全局指令是辅助上下文；不可读时跳过，取消信号仍需正常传播。
+      signal?.throwIfAborted();
+      return;
+    }
     signal?.throwIfAborted();
     const selectedContent = truncateUtf8(content, this.instructionMaxBytes - this.instructionBytes);
     const bytes = Buffer.byteLength(selectedContent, "utf8");
@@ -244,7 +251,15 @@ export class WorkspaceContext {
       return;
     }
 
-    const content = await fs.readFile(filePath, { encoding: "utf8", signal });
+    let content: string;
+    try {
+      content = await fs.readFile(filePath, { encoding: "utf8", signal });
+    } catch {
+      // 项目指令不可读时不能阻断整个发送链路；真实文件访问仍由工具层明确报错。
+      signal?.throwIfAborted();
+      this.visitedInstructionDirectories.add(canonicalDirectory);
+      return;
+    }
     signal?.throwIfAborted();
     const selectedContent = truncateUtf8(content, this.instructionMaxBytes - this.instructionBytes);
     const bytes = Buffer.byteLength(selectedContent, "utf8");
@@ -421,7 +436,8 @@ async function findInstructionFile(workspaceRoot: string, directory: string, ign
       if ((await fs.stat(filePath)).isFile()) return filePath;
     } catch (error) {
       if (isNotFound(error)) continue;
-      throw error;
+      signal?.throwIfAborted();
+      return undefined;
     }
   }
   return undefined;

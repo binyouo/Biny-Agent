@@ -75,11 +75,13 @@ export async function readFileMemoryPrompt(
   options: FileMemoryOptions = {}
 ): Promise<string | undefined> {
   const storage = new FileMemoryStorage(options);
-  const [longTerm, todayRaw, yesterdayRaw] = await Promise.all([
+  // 长期文件与两份日报互不依赖；活动库暂时不可读时不能把已经存在的 MEMORY.md 一并丢掉。
+  const results = await Promise.allSettled([
     storage.readLongTerm(),
     readDailyMemoryNote(formatLocalDate(now), options),
     readDailyMemoryNote(formatLocalDate(new Date(now.getTime() - 86_400_000)), options)
   ]);
+  const [longTerm, todayRaw, yesterdayRaw] = results.map((result) => result.status === "fulfilled" ? result.value : undefined);
   const today = todayRaw ? dailyNoteForModel(todayRaw, options.allowActivity === true) : undefined;
   const yesterday = yesterdayRaw ? dailyNoteForModel(yesterdayRaw, options.allowActivity === true) : undefined;
   const sections = [

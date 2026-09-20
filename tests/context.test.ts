@@ -116,6 +116,7 @@ async function main(): Promise<void> {
     await testInstructionLoadingUsesExplicitPaths();
     await testRepoMapExactCandidate();
     await testAutomaticContextRejectsExternalSymlinks();
+    await testAutomaticContextSkipsUnreadableOptionalFiles();
     await testAutomaticContextSupportsSymlinkedWorkspaceRoot();
     await testBudgetAndCompaction();
     await testRecallCountsBeforeBudget();
@@ -351,6 +352,27 @@ async function testAutomaticContextRejectsExternalSymlinks(): Promise<void> {
       assert.deepEqual(turn.snapshot.context.srcTree, []);
     } finally {
       await rm(externalRoot, { recursive: true, force: true });
+    }
+  });
+}
+
+async function testAutomaticContextSkipsUnreadableOptionalFiles(): Promise<void> {
+  if (process.platform === "win32") return;
+  await withTempWorkspace(async (workspaceRoot) => {
+    const readmePath = path.join(workspaceRoot, "README.md");
+    const instructionsPath = path.join(workspaceRoot, "AGENTS.md");
+    await fs.writeFile(readmePath, "optional readme\n", "utf8");
+    await fs.writeFile(instructionsPath, "optional instructions\n", "utf8");
+    await fs.chmod(readmePath, 0);
+    await fs.chmod(instructionsPath, 0);
+    try {
+      const workspace = new WorkspaceContext(workspaceRoot, [], 32 * 1024);
+      const turn = await workspace.prepareTurn("hi");
+      assert.equal(turn.snapshot.context.readme, undefined);
+      assert.deepEqual(turn.instructions, []);
+    } finally {
+      await fs.chmod(readmePath, 0o644);
+      await fs.chmod(instructionsPath, 0o644);
     }
   });
 }

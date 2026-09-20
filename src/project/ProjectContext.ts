@@ -145,7 +145,15 @@ async function readTextSummary(workspaceRoot: string, requestedPath: string, ign
   signal?.throwIfAborted();
   const filePath = resolveProjectFile(workspaceRoot, requestedPath, ignore);
   if (!filePath || !(await pathExists(filePath))) return undefined;
-  const content = await fs.readFile(filePath, { encoding: "utf8", signal });
+  let content: string;
+  try {
+    content = await fs.readFile(filePath, { encoding: "utf8", signal });
+  } catch {
+    // README 只是可选摘要。外置卷或 Downloads 被 macOS TCC 拒绝时按缺失降级，
+    // 不能让普通聊天在首轮 workspace 准备阶段直接失败。
+    signal?.throwIfAborted();
+    return undefined;
+  }
   signal?.throwIfAborted();
   return content.slice(0, maxChars);
 }

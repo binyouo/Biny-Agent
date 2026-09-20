@@ -187,7 +187,9 @@ export class DesktopProjectService {
         })
         .filter((branch) => branch.name.length > 0);
     } catch (error) {
-      if (isGitRepositoryMissing(error)) return [];
+      // 分支清单只是侧栏辅助信息。恢复到外置卷项目时，macOS 可能尚未给新客户端进程
+      // 恢复目录访问权；此时按“无可用分支”降级，真正的切换操作仍会严格报错。
+      if (isGitRepositoryMissing(error) || isWorkspaceAccessDenied(error)) return [];
       throw new Error(`读取本地 Git 分支失败：${gitErrorText(error)}`);
     }
   }
@@ -803,6 +805,14 @@ function normalizeBranchName(branchName: string): string {
 
 function isGitRepositoryMissing(error: unknown): boolean {
   return /not a git repository|不是 git 仓库/iu.test(gitErrorText(error));
+}
+
+function isWorkspaceAccessDenied(error: unknown): boolean {
+  if (typeof error === "object" && error !== null && "code" in error) {
+    const code = (error as { code?: unknown }).code;
+    if (code === "EACCES" || code === "EPERM") return true;
+  }
+  return /operation not permitted|permission denied/iu.test(gitErrorText(error));
 }
 
 function gitErrorText(error: unknown): string {
