@@ -80,6 +80,7 @@ import { SearchOverlay } from "./components/overlays/SearchOverlay.js";
 import { SlashResultOverlay } from "./components/overlays/SlashResultOverlay.js";
 import { SettingsOverlay, type SettingsTab } from "./components/settings/SettingsOverlay.js";
 import { useWorkspaceInspector } from "./components/workspace/useWorkspaceInspector.js";
+import { parseBinyDeepLink, setDeepLinkHandler } from "./deepLinks.js";
 import { QuickChatApp } from "./quickchat/QuickChatApp.js";
 
 interface RenameTarget {
@@ -1494,6 +1495,27 @@ function DesktopApp(): React.JSX.Element {
     setComposerDraft(input);
     setFocusToken((value) => value + 1);
   }, []);
+  // 深链路由：MarkdownContent 叶子渲染直接调用 hub，这里统一解析并导航。
+  const openDeepLink = useCallback(async (url: string): Promise<void> => {
+    const link = parseBinyDeepLink(url);
+    if (!link) return;
+    if (link.kind === "compose") {
+      prefillComposer(link.text);
+      return;
+    }
+    if (link.kind === "settings") {
+      openSettings();
+      return;
+    }
+    const projectId = workspace?.project.id !== undefined && workspace.sessions.some((session) => session.id === link.sessionId)
+      ? workspace.project.id
+      : sidebarSessions.find((session) => session.id === link.sessionId)?.projectId;
+    if (projectId !== undefined) await openSession(projectId, link.sessionId);
+  }, [openSession, openSettings, prefillComposer, sidebarSessions, workspace]);
+  useEffect(() => {
+    setDeepLinkHandler((url) => void openDeepLink(url));
+    return () => setDeepLinkHandler(undefined);
+  }, [openDeepLink]);
   const insertCrystalReference = useCallback((reference: string): void => {
     if (composerRef.current) {
       composerRef.current.appendText(reference);

@@ -15,6 +15,7 @@ import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import remarkBreaks from "remark-breaks";
 import { useInlineImage } from "../inlineImage.js";
+import { openDeepLink } from "../deepLinks.js";
 import { MermaidBlock } from "./MermaidBlock.js";
 import { MarkdownCodeBlock } from "./MarkdownCodeBlock.js";
 import { FileLinkCard } from "./FileLinkCard.js";
@@ -52,9 +53,23 @@ export const MarkdownContent = memo(function MarkdownContent({
       const href = props.href;
       const path = localPathFromHref(href);
       // 本地路径收成文件卡片（资源卡样式），不再渲染普通 <a>；
+      // biny:// 深链交给宿主路由（会话跳转/预填输入框/设置）；
       // 外链必须显式走 openExternal（主进程 deny 了所有新窗口导航）；
       // 页内锚点（如脚注）保留默认跳转，不能带 target=_blank 否则点击被吞。
       if (path) return <FileLinkCard onPreviewFile={onPreviewFile} path={path} />;
+      if (href?.startsWith("biny://")) {
+        return (
+          <a
+            {...props}
+            className="markdown-deeplink"
+            onClick={(event) => {
+              event.preventDefault();
+              openDeepLink(href);
+            }}
+            title="在 Biny 中打开"
+          >{children}</a>
+        );
+      }
       const externalUrl = href && /^https?:\/\//i.test(href) ? href : undefined;
       const isAnchor = !externalUrl && Boolean(href?.startsWith("#"));
       const onClick = externalUrl

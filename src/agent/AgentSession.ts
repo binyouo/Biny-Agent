@@ -678,6 +678,7 @@ export class AgentSession {
       // 辅助引用读取失败不扩大到其他会话或阻断当前对话。
     }
     return buildPromptBundle({
+      sessionId: this.recorder.sessionId,
       extensionPrompt: await this.extensionPrompt(selection),
       tools: initialTools,
       soulPrompt,

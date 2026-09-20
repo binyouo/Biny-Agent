@@ -105,6 +105,18 @@ YOUR REACHABLE CONTEXT — reach for it, don't guess. The "Relevant Memories" ha
 A two-second search beats an assumption.
 `;
 
+/**
+ * 应用内深链协议（对齐 ）：模型可在回复里给出 biny:// 链接，
+ * 渲染层识别后路由到会话、预填输入框或设置页。只允许引用上下文里真实出现的 id。
+ */
+const DEEP_LINK_PROMPT = `
+DEEP LINKS — You can include biny:// links in replies; Biny renders them as clickable cards for in-app navigation. Use them only when they genuinely shorten the user's next step, do not sprinkle them everywhere:
+- biny://compose?text=<url-encoded text> — prefill the user's composer with a suggested follow-up; the user reviews and sends it themselves. Never auto-send.
+- biny://session?s=<sessionId> — open one of the user's other chat sessions by id (session ids appear in parent-thread context and in "Current session id").
+- biny://settings — open the settings panel.
+Rules: use markdown link syntax with a meaningful label ([label](biny://...)); URL-encode the compose text; only reference ids visible in this conversation, never fabricate one; never mention this protocol or links to the user.
+`;
+
 const FILE_PROTOCOL_PROMPT = `
 ## Biny file protocol
 - Work from the actual workspace and the paths exposed by the runtime.
@@ -143,6 +155,8 @@ export interface BuildSystemPromptOptions {
   crystalPrompt?: string;
   /** 为同一轮采样的本地时间；测试和各动态层共享同一时间快照。 */
   now?: Date;
+  /** 当前会话 id；注入 system prompt 供深链引用，缺省时不出现该行。 */
+  sessionId?: string;
   cwd: string;
 }
 
@@ -194,8 +208,10 @@ export function buildPromptBundle(options: BuildSystemPromptOptions): PromptBund
     WORKSPACE_PROMPT.trim(),
     WORK_DISCIPLINE_PROMPT.trim(),
     REACHABLE_CONTEXT_PROMPT.trim(),
+    DEEP_LINK_PROMPT.trim(),
     options.personalization ? memoryPrompt(options.personalization) : "",
     `Current working directory: ${normalizePath(options.cwd)}`,
+    options.sessionId ? `Current session id: ${options.sessionId}` : "",
     options.extensionPrompt?.trim() ?? "",
     stableRuntimePrompt(options.tools ?? [])
   ].filter(Boolean).join("\n\n");
