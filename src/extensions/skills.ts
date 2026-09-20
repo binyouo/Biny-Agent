@@ -1,10 +1,9 @@
 /**
  * Agent Skills 扩展模块（渐进式披露，对齐 Agent Skills 范式）。
  *
- * 每个根回合开始前只把 YAML frontmatter 的 name/description 拼成 <available_skills>
- * 清单进入 system prompt；SKILL.md 正文唯一加载路径是模型调用 Skill 工具，
- * references/scripts/assets 仍由 read_skill_resource 按需读取。用户提交的
- * /skill:name 保留原文，由模型按清单指引调用 Skill 工具加载。
+ * 启动时只读取 YAML frontmatter；根回合能力分析完成后，选中 Skill 的正文和声明
+ * 才进入首轮 system prompt。未选中的 Skill 仍可由 Skill/skill_lookup 动态发现，
+ * references/scripts/assets 继续由 read_skill_resource 按需读取。
  * 默认发现 Biny 受管目录和各 Agent 的标准全局 Skill 根；全局入口中的已有软链会被保留，
  * 项目 Skill 根仍禁止越界软链，避免工作区配置意外扩大运行时读取范围。
  */
@@ -299,16 +298,36 @@ function buildSkillPrompt(skills: SkillDefinition[]): string {
   return render(80, visible);
 }
 
-/**
- * 按当前回合的 Skill 选择组装 system prompt 中的 <available_skills> 清单。
- *
- * 渐进式披露：无论选择方式（auto 预选、手动勾选还是 /skill:name 点名），这里都只输出
- * 元数据清单；正文一律由模型调用 Skill 工具按需加载，避免把整个 SKILL.md 目录
- * 预注入上下文。
- */
-export function skillPromptForSelection(bundle: SkillBundle, selection?: CapabilitySelectionValue): string {
+/** 能力分析完成后只读取选中 Skill 的正文；自动装配不等同于一次 Skill 工具调用。 */
+export async function skillPromptForSelection(bundle: SkillBundle, selection?: CapabilitySelectionValue): Promise<string> {
   const selected = selectSkills(bundle, selection);
-  return selected.length ? buildSkillPrompt(selected) : "";
+  if (!selected.length) return "";
+  const sections = await Promise.all(selected.map(async (definition) => {
+    const content = await readSkillFileFresh(definition.rootPath, definition.filePath, maxSkillInstructionBytes);
+    let body = content;
+    let metadata: SkillMetadata | undefined;
+    try {
+      const parsed = splitFrontmatter(content);
+      metadata = parsed.frontmatter;
+      if (path.basename(definition.filePath) === "SKILL.md" || parsed.frontmatter.name || parsed.frontmatter.description) {
+        body = parsed.body;
+      }
+    } catch (error) {
+      if (path.basename(definition.filePath) === "SKILL.md") throw error;
+    }
+    return renderSkillInstructions(
+      definition,
+      body.trim() || content.trim(),
+      metadata,
+      await listSkillResources(definition.filePath)
+    );
+  }));
+  return [
+    "<selected_skills>",
+    "The following Skill instructions were selected during turn preparation. They are context, not evidence that a Skill tool was invoked.",
+    ...sections,
+    "</selected_skills>"
+  ].join("\n\n");
 }
 
 export function skillPathsForSelection(bundle: SkillBundle, selection?: CapabilitySelectionValue): string[] {
@@ -331,7 +350,7 @@ type SkillBundleSource = SkillBundle | (() => SkillBundle);
 export function createSkillTool(source: SkillBundleSource): Tool {
   return {
     name: "Skill",
-    description: "Load the full instructions of an available skill by name (progressive disclosure). The <available_skills> list in the system prompt contains only skill names and brief descriptions; full content loads on demand solely through this tool. When a task matches an available skill, invoke this tool immediately as your first action; never just mention a skill in your response without loading it. Only use skills listed in <available_skills>.",
+    description: "Load the full instructions of an installed skill by name through progressive disclosure. Turn preparation may already include selected Skill instructions; use this tool when instructions are not present or when explicitly invoking another discovered skill. A real invocation is recorded as Skill usage and remains subject to normal permissions.",
     promptSnippet: "Load the full instructions for an available skill",
     parameters: {
       type: "object",

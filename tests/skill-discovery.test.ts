@@ -34,7 +34,7 @@ async function main(): Promise<void> {
       ] }));
     }
     if (url.startsWith("https://raw.githubusercontent.com/")) downloadedRevisions.push(url.split("/")[5]!);
-    if (url.endsWith("/skills/demo/SKILL.md")) return response("---\nname: demo-skill\ndescription: Demo discovery skill\n---\n\n# Demo\n");
+    if (url.endsWith("/skills/demo/SKILL.md")) return response("---\nname: demo-skill\ndescription: Demo discovery skill\nallowed-tools: Read Bash\n---\n\n# Demo\n");
     if (url.endsWith("/skills/demo/references/guide.md")) return response(guide);
     if (url.includes("skills.sh/api/search")) return response(JSON.stringify({ query: "demo", count: 1, skills: [{ id: "demo-owner/demo-skills:demo-skill", skillId: "demo-skill", name: "demo-skill", installs: 42, source: "demo-owner/demo-skills" }] }));
     return response("not found", 404);
@@ -66,10 +66,11 @@ async function main(): Promise<void> {
     assert.equal((await scanSkillCatalog({ homeDir })).skills.some((skill) => skill.name === "demo-skill"), true);
     const runtime = await loadSkills({ workspaceRoot: root, projectPaths: [], globalRoot: managedRoot });
     assert.equal(runtime.skills.some((skill) => skill.name === "demo-skill"), true, "受管版本必须被实际 runtime 发现");
-    const selectedPrompt = skillPromptForSelection(runtime, ["demo-skill"]);
-    assert.match(selectedPrompt, /- "demo-skill": Demo discovery skill/u, "首轮提示词只含选中 Skill 的元数据清单");
-    assert.equal(selectedPrompt.includes("# Demo"), false, "渐进式披露：正文只经 Skill 工具加载，不进入 system prompt");
-    assert.match(selectedPrompt, /progressive disclosure/u, "清单需说明全文经 Skill 工具按需加载");
+    const selectedPrompt = await skillPromptForSelection(runtime, ["demo-skill"]);
+    assert.match(selectedPrompt, /# Skill: demo-skill/u, "能力分析完成后首轮提示词必须装配选中 Skill");
+    assert.match(selectedPrompt, /# Demo/u, "选中 Skill 的正文必须在首轮主模型请求前读取");
+    assert.match(selectedPrompt, /Declared tools \(normal permissions still apply\)/u, "声明信息与正文一起进入首轮提示词");
+    assert.doesNotMatch(selectedPrompt, /demo-owner/u, "未选中的 Skill 不得混入首轮提示词");
     const unchanged = await updateDiscoveredSkill({ name: "demo-skill", expectedVersion: installed.version.id, homeDir, fetcher });
     assert.equal(unchanged.version.id, installed.version.id, "未改变的版本不增加历史");
     revision = "b".repeat(40); guide = "# Updated\n";
