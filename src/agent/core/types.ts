@@ -172,6 +172,13 @@ export interface ModelStreamContext {
   tools: AgentTool[];
 }
 
+/** prompt 缓存标记协议：anthropic 用内容块 cacheControl 断言点，openai-compatible 用消息级 cache_control 字段。 */
+export type CacheMarkerProtocol = "anthropic" | "openai-compatible";
+
+export interface CacheMarkerPlan {
+  protocol: CacheMarkerProtocol;
+}
+
 export interface ModelStreamOptions {
   signal?: AbortSignal;
   maxOutputTokens?: number;
@@ -179,6 +186,8 @@ export interface ModelStreamOptions {
   temperature?: number;
   reasoning?: "off" | ReasoningEffort;
   providerOptions?: Record<string, unknown>;
+  /** 按协议给稳定前缀打 prompt 缓存标记；undefined 时不下发标记。 */
+  cacheMarkers?: CacheMarkerPlan;
   timeoutMs?: number;
   onRequestMetrics?: ModelRequestObserver;
   requestContext?: ModelRequestContext;

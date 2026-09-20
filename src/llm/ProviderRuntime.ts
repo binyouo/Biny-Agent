@@ -4,7 +4,8 @@
  * 每个配置别名对应一个实例，统一持有服务商默认值、鉴权、模型目录和请求准备逻辑。
  * Provider 只负责把配置解析成 Vercel AI SDK 的 LanguageModel；请求协议由 SDK 统一处理。
  */
-import type { AgentModel } from "../agent/core/types.js";
+import type { AgentModel, CacheMarkerPlan } from "../agent/core/types.js";
+import { cacheMarkerPlanFor } from "../agent/core/cacheMarkers.js";
 import type { LanguageModelV4 } from "@ai-sdk/provider";
 import { completeThinkingLevelMap, effectiveThinkingSelection, isKimiAlwaysThinkingModel, isKimiK3Model, modelCapabilities, modelReasoningConfig, modelThinkingLevelMap, nativeReasoningEffort, normalizeModelMetadata, reasoningBudgetTokens, thinkingLevelMapForModel } from "../ai/capabilities.js";
 import { fetchModelCatalogSnapshot } from "../ai/modelCatalog.js";
@@ -40,6 +41,8 @@ export interface ModelSettings {
   timeoutMs?: number;
   maxOutputTokens?: number;
   contextWindow: number | undefined;
+  /** 按协议生成的 prompt 缓存标记计划；隐式缓存或用户关闭时为 undefined。 */
+  cacheMarkers?: CacheMarkerPlan;
 }
 
 export interface ProviderRuntime {
@@ -282,7 +285,8 @@ export class ConfiguredProviderRuntime implements ProviderRuntime {
       reasoning: selection,
       timeoutMs: this.config.timeoutMs,
       maxOutputTokens: normalizedModel.maxOutputTokens,
-      contextWindow: normalizedModel.contextWindow
+      contextWindow: normalizedModel.contextWindow,
+      cacheMarkers: agentConfig.chat.cacheMarkers ? cacheMarkerPlanFor(api) : undefined
     };
   }
 

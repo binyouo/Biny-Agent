@@ -43,6 +43,7 @@ import {
 import { createVercelTools } from "./vercelAgentTools.js";
 import { errorMessage, isRecord, providerMetadata, stringify } from "./vercelAgentUtils.js";
 import { toolCallRepair } from "./toolCallRepair.js";
+import { applyCacheMarkers, markInstructions } from "./cacheMarkers.js";
 
 export interface VercelLoopState {
   context: AgentContext;
@@ -323,10 +324,13 @@ function streamModelStep(state: VercelLoopState) {
     }
   });
   return streamText({
-    messages: toModelMessages(state.context.messages, state.context.tools.some((tool) => tool.providerTool === "openai-apply-patch")),
+    messages: applyCacheMarkers(
+      toModelMessages(state.context.messages, state.context.tools.some((tool) => tool.providerTool === "openai-apply-patch")),
+      state.modelOptions?.cacheMarkers
+    ),
     abortSignal: state.signal,
     model,
-    instructions: state.context.systemPrompt,
+    instructions: markInstructions(state.context.systemPrompt, state.modelOptions?.cacheMarkers),
     tools,
     // 名字或参数不合法的工具调用先自愈再执行，避免可修复失败进入重试循环。
     repairToolCall: toolCallRepair,
@@ -346,8 +350,8 @@ function streamModelStep(state: VercelLoopState) {
     ],
     prepareStep: async () => ({
       model,
-      instructions: state.context.systemPrompt,
-      messages: await modelMessages(state),
+      instructions: markInstructions(state.context.systemPrompt, state.modelOptions?.cacheMarkers),
+      messages: applyCacheMarkers(await modelMessages(state), state.modelOptions?.cacheMarkers),
       ...vercelCallSettings(state),
       activeTools: state.context.tools.map((candidate) => candidate.name) as Array<keyof ToolSet>
     }),

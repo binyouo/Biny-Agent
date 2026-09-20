@@ -2136,6 +2136,7 @@ export class AgentSession {
           temperature: this.activeConfig.chat.temperature,
           reasoning: activeModelSettings.reasoning,
           providerOptions: activeModelSettings.providerOptions,
+          cacheMarkers: activeModelSettings.cacheMarkers,
           timeoutMs: activeModelSettings.timeoutMs,
           onRequestMetrics: (metrics) => this.recordModelRequest(metrics),
           requestContext: modelRequestContext(completedStepsBeforeRun + 1)
@@ -2170,6 +2171,7 @@ export class AgentSession {
               temperature: this.activeConfig.chat.temperature,
               reasoning: settings.reasoning,
               providerOptions: settings.providerOptions,
+              cacheMarkers: settings.cacheMarkers,
               timeoutMs: settings.timeoutMs,
               onRequestMetrics: (metrics) => this.recordModelRequest(metrics),
               requestContext: modelRequestContext(completedStepsBeforeRun + observedSteps + 1)
