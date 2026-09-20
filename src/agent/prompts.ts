@@ -331,7 +331,7 @@ function stableRuntimePrompt(tools: readonly PromptTool[]): string {
   const toolList = visibleTools.length ? visibleTools.map((tool) => `- ${tool.name}: ${tool.promptSnippet!.trim()}`).join("\n") : "(none)";
   const guidelines = uniqueGuidelines([
     ...sortedTools.flatMap((tool) => tool.promptGuidelines ?? []),
-    // 技能优先级链与自进化是无条件常驻原则（对齐 Agent Skills 的 SKILLS FIRST），
+    // 技能优先级链与自进化是无条件常驻原则，
     // 不依赖本回合工具筛选结果；工具暂不可见时模型经 ToolSearch 自助发现。
     "Before improvising a separate workflow for a recurring task, look for a skill: check <available_skills> first, then skill_lookup to search other installed skills, then skill_search to find and skill_install an installable one; use ToolSearch when these tools are not currently visible",
     "When you repeatedly perform the same multi-step workflow, save it as a reusable Skill: write a SKILL.md (YAML frontmatter with a lowercase-hyphen name matching its directory and a one-sentence description) to ~/.config/biny/skills/<name>/SKILL.md for cross-project workflows, or the project's .agents/skills/<name>/SKILL.md for project-specific ones; it becomes available in the next turn",
