@@ -10,6 +10,8 @@ const originalObjectivePrefix = "\n\nOriginal objective: ";
 const previousFeedbackPrefix = "\n\nPrevious attempt feedback:";
 const skillWrapperPattern = /^<skill\b[^>]*\bname="([^"]+)"[^>]*>/u;
 const skillWrapperEnd = "</skill>";
+const notificationOpenTag = "<biny_notification>";
+const notificationBlockPattern = /<biny_notification>[\s\S]*?<\/biny_notification>\s*$/u;
 
 /** 取出消息中面向用户的那一段；识别不出脚手架时原样返回。 */
 export function publicUserMessage(content: string): string {
@@ -30,4 +32,25 @@ export function publicUserMessage(content: string): string {
   const feedbackStart = content.indexOf(previousFeedbackPrefix, objectiveStart + originalObjectivePrefix.length);
   if (objectiveStart === -1 || feedbackStart === -1 || feedbackStart <= objectiveStart) return content;
   return content.slice(objectiveStart + originalObjectivePrefix.length, feedbackStart).trim();
+}
+
+/**
+ * 隐藏后台通知协议，只返回可以进入聊天界面的 assistant 正文。
+ *
+ * 完整块用于清理旧 session；流式输出还可能只到达起始标签的一部分，因此也要扣住与
+ * 起始标签匹配的末尾前缀，避免 XML 在下一帧补全前短暂闪到界面上。
+ */
+export function publicAssistantMessage(content: string): string {
+  const completeBlock = notificationBlockPattern.exec(content);
+  if (completeBlock) return content.slice(0, completeBlock.index).trimEnd();
+
+  const openTagIndex = content.lastIndexOf(notificationOpenTag);
+  if (openTagIndex >= 0) return content.slice(0, openTagIndex);
+
+  for (let length = Math.min(content.length, notificationOpenTag.length - 1); length > 0; length -= 1) {
+    if (content.endsWith(notificationOpenTag.slice(0, length))) {
+      return content.slice(0, -length);
+    }
+  }
+  return content;
 }

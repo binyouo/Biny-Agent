@@ -230,6 +230,12 @@ const sessionEventSchema = z.discriminatedUnion("type", [
     time: z.string().optional()
   }).passthrough(),
   z.object({
+    type: z.literal("turn_interrupted"),
+    reason: z.literal("interrupted"),
+    content: z.string(),
+    time: z.string().optional()
+  }).passthrough(),
+  z.object({
     type: z.literal("turn_status"),
     status: z.enum(["completed", "incomplete", "blocked", "cancelled", "failed", "aborted"]),
     stopReason: z.string(),

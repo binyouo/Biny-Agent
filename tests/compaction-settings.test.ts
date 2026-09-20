@@ -73,6 +73,38 @@ async function testTriggerPercentFiresAndHolds(): Promise<void> {
   });
 }
 
+async function testActiveRunCompactsTheNextRequestCandidate(): Promise<void> {
+  await withTempWorkspace(async (workspaceRoot) => {
+    const provider = new RecordingModel();
+    const memory = makeMemory(workspaceRoot, provider, {
+      triggerPercent: 0.8,
+      keepRecentTokens: 100
+    });
+    const quietContext = {
+      systemPrompt: "system",
+      tools: [],
+      messages: [userMessage(1_000), { role: "assistant" as const, content: [{ type: "text" as const, text: "done" }] }]
+    };
+    assert.equal(await memory.compactRunContextIfNeeded(quietContext), undefined);
+    assert.equal(provider.requests.length, 0, "低于水位时不能调用摘要模型");
+
+    memory.recordProviderUsage({ inputTokens: 100 });
+    const busyContext = {
+      ...quietContext,
+      messages: [
+        userMessage(8_000),
+        { role: "assistant" as const, content: [{ type: "text" as const, text: "first" }] },
+        userMessage(8_000),
+        { role: "assistant" as const, content: [{ type: "text" as const, text: "second" }] }
+      ]
+    };
+    const compacted = await memory.compactRunContextIfNeeded(busyContext);
+    assert.ok(compacted && compacted.compactedMessageCount > 0);
+    assert.equal(provider.requests.length, 1);
+    assert.ok(compacted.messages.length < busyContext.messages.length);
+  });
+}
+
 async function testExplicitReserveBeatsTriggerPercent(): Promise<void> {
   await withTempWorkspace(async (workspaceRoot) => {
     // triggerPercent 0.5 → 阈值 2000；显式 reserve 3900 → 阈值 100。
@@ -144,6 +176,7 @@ async function main(): Promise<void> {
   process.env[BINY_AGENT_DIR_ENV] = globalRoot;
   try {
     await testTriggerPercentFiresAndHolds();
+    await testActiveRunCompactsTheNextRequestCandidate();
     await testExplicitReserveBeatsTriggerPercent();
     await testKeepRecentMessagesBoundsRetainedHistory();
     await testSummaryModelInjection();

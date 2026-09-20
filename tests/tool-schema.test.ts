@@ -28,11 +28,11 @@ const parameters = {
 } as unknown as JsonObjectSchema;
 
 const normalized = normalizeToolParameters("nested", parameters) as unknown as Record<string, unknown>;
-assert.equal("required" in normalized, false);
+assert.deepEqual(normalized.required, []);
 const properties = normalized.properties as Record<string, Record<string, unknown>>;
-assert.equal("required" in (properties.optionalObject ?? {}), false);
+assert.deepEqual(properties.optionalObject?.required, []);
 assert.deepEqual((properties.list?.items as Record<string, unknown>).required, ["value"]);
-assert.equal("required" in ((properties.choice?.oneOf as Array<Record<string, unknown>>)[0] ?? {}), false);
+assert.deepEqual((properties.choice?.oneOf as Array<Record<string, unknown>>)[0]?.required, []);
 assert.deepEqual(((properties.choice?.oneOf as Array<Record<string, unknown>>)[1]?.required), ["right"]);
 assert.equal("required" in (parameters.properties?.optionalObject as unknown as Record<string, unknown>), false, "normalization must not mutate registered tools");
 
@@ -46,6 +46,20 @@ const tool = {
 const providerTool = stableAgentTools([tool])[0]!;
 assert.deepEqual(providerTool.parameters, normalized);
 assert.deepEqual((canonicalToolSchemas([tool])[0] as { parameters: unknown }).parameters, normalized);
+
+const sibling = {
+  ...tool,
+  name: "sibling",
+  parameters: {
+    type: "object",
+    properties: { value: { type: "string" } },
+    required: ["value"]
+  } as JsonObjectSchema
+} satisfies AgentTool;
+const batch = stableAgentTools([tool, sibling]);
+assert.deepEqual(batch.find((entry) => entry.name === "nested")?.parameters.required, []);
+assert.deepEqual(batch.find((entry) => entry.name === "sibling")?.parameters.required, ["value"]);
+assert.equal(parameters.required, undefined, "batch normalization must not mutate or cross-contaminate schemas");
 
 const malformed = {
   type: "object",

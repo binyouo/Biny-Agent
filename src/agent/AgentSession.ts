@@ -40,6 +40,8 @@ import {
 } from "../session/catalog.js";
 import type { ToolRegistry } from "../tools/registry.js";
 import { vercelAgentLoopContinue } from "./core/vercelAgentLoop.js";
+import { EventQueue } from "./core/EventQueue.js";
+import { publicAssistantMessage } from "../session/publicMessage.js";
 import type {
   AgentAssistantMessage,
   AgentModel,
@@ -68,9 +70,11 @@ import type {
   AgentPermissionResult,
   AgentRuntimeContext,
   AgentSessionEvent,
+  AgentToolEvent,
   AgentTurnOutcome
 } from "./types.js";
-import { ContextMemory } from "./context/ContextMemory.js";
+import { AgentTurnCancellationError, type AgentTurnCancellationReason } from "./types.js";
+import { ContextMemory, type RunContextCompaction } from "./context/ContextMemory.js";
 import {
   appendCompletedChatDiaryEntry,
   refreshChatDailyDiary,
@@ -161,6 +165,10 @@ import {
   toolSearchResultNamesFromMessages,
   toolSearchToolName
 } from "../tools/toolSearch.js";
+
+const interruptedTurnMarker = `<turn_aborted>
+The user intentionally interrupted the previous turn. Running processes may still be active in the background. If tools or commands were cancelled, they may have partially executed.
+</turn_aborted>`;
 
 export interface AgentSessionOptions {
   workspaceRoot: string;
@@ -1704,6 +1712,21 @@ export class AgentSession {
       });
       return userMessageReference;
     };
+    const cancellationContext = (): {
+      messages: AgentMessage[];
+      references: Array<SessionMessageReference | undefined>;
+    } => {
+      if (runOptions.continueFrom?.length) {
+        return {
+          messages: [...runOptions.continueFrom],
+          references: [...(runOptions.continueMessageReferences ?? runOptions.continueFrom.map(() => undefined))]
+        };
+      }
+      return {
+        messages: [...this.contextMemory.getHistory(), { role: "user", content: input }],
+        references: [...this.contextMessageReferences, userMessageReference]
+      };
+    };
     let fatigueRecorded = false;
     const recordRootFatigue = async (): Promise<void> => {
       if (fatigueRecorded || runOptions.recordSessionUserMessage === false) return;
@@ -1721,9 +1744,9 @@ export class AgentSession {
     await recordRootFatigue();
     if (abortSignal.aborted) {
       recordUserMessage();
-      const outcome = cancelledTurn("Current turn cancelled before execution.", completedStepsBeforeRun);
-      await this.turnStore.clear().catch(() => undefined);
-      await this.recordTurnOutcome(outcome);
+      const outcome = cancelledTurn("Current turn cancelled before execution.", completedStepsBeforeRun, turnCancellationReason(abortSignal));
+      const context = cancellationContext();
+      await this.recordCancelledTurn(outcome, context.messages, context.references);
       yield { type: "error", message: outcome.error ?? "Current turn interrupted." };
       yield { type: "status", status: "cancelled" };
       yield doneEvent(outcome);
@@ -1735,11 +1758,15 @@ export class AgentSession {
     } catch (error) {
       recordUserMessage();
       const outcome = abortSignal.aborted
-        ? cancelledTurn("Current turn cancelled during model preparation.", completedStepsBeforeRun)
+        ? cancelledTurn("Current turn cancelled during model preparation.", completedStepsBeforeRun, turnCancellationReason(abortSignal))
         : failedTurn(errorMessage(error), completedStepsBeforeRun, "provider_error");
       this.recordError(outcome.error);
-      if (outcome.status === "cancelled") await this.turnStore.clear().catch(() => undefined);
-      await this.recordTurnOutcome(outcome);
+      if (outcome.status === "cancelled") {
+        const context = cancellationContext();
+        await this.recordCancelledTurn(outcome, context.messages, context.references);
+      } else {
+        await this.recordTurnOutcome(outcome);
+      }
       yield { type: "error", message: outcome.error ?? "Agent run failed." };
       yield { type: "status", status: outcome.status === "cancelled" ? "cancelled" : "error" };
       yield doneEvent(outcome);
@@ -1865,11 +1892,15 @@ export class AgentSession {
     } catch (error) {
       recordUserMessage();
       const outcome = abortSignal.aborted
-        ? cancelledTurn("Current turn cancelled during context preparation.", completedStepsBeforeRun)
+        ? cancelledTurn("Current turn cancelled during context preparation.", completedStepsBeforeRun, turnCancellationReason(abortSignal))
         : failedTurn(errorMessage(error), completedStepsBeforeRun, isTimeoutFailure(error) ? "timeout" : "provider_error");
       this.recordError(outcome.error);
-      if (outcome.status === "cancelled") await this.turnStore.clear().catch(() => undefined);
-      await this.recordTurnOutcome(outcome);
+      if (outcome.status === "cancelled") {
+        const context = cancellationContext();
+        await this.recordCancelledTurn(outcome, context.messages, context.references);
+      } else {
+        await this.recordTurnOutcome(outcome);
+      }
       yield { type: "error", message: outcome.error ?? "Agent run failed." };
       yield { type: "status", status: outcome.status === "cancelled" ? "cancelled" : "error" };
       yield doneEvent(outcome);
@@ -1878,10 +1909,9 @@ export class AgentSession {
     }
     if (abortSignal.aborted) {
       recordUserMessage();
-      const outcome = cancelledTurn("Current turn cancelled during context preparation.", completedStepsBeforeRun);
+      const outcome = cancelledTurn("Current turn cancelled during context preparation.", completedStepsBeforeRun, turnCancellationReason(abortSignal));
       this.recordError(outcome.error);
-      await this.turnStore.clear().catch(() => undefined);
-      await this.recordTurnOutcome(outcome);
+      await this.recordCancelledTurn(outcome, messages, messageReferences);
       yield { type: "error", message: outcome.error ?? "Current turn interrupted." };
       yield { type: "status", status: "cancelled" };
       yield doneEvent(outcome);
@@ -2025,11 +2055,13 @@ export class AgentSession {
     let stepAssistantContent = "";
     let stepReasoningOutput = "";
     let stepReasoningBlocks: ReasoningBlock[] | undefined;
-    const pendingEvents: AgentSessionEvent[] = [];
-    let wakePendingEvents: (() => void) | undefined;
-    const emitUpdate = (event: AgentSessionEvent): void => {
+    type CallbackDisplayEvent = AgentToolEvent | Extract<AgentSessionEvent, {
+      type: "preparation.updated" | "context.updated" | "error";
+    }>;
+    // 这里只桥接工具和运行状态回调；消息里程碑与终态始终由下方控制流直接 yield。
+    const pendingEvents = new EventQueue<CallbackDisplayEvent>();
+    const emitUpdate = (event: CallbackDisplayEvent): void => {
       pendingEvents.push(event);
-      wakePendingEvents?.();
     };
     let observedSteps = 0;
     let toolResultCheckpointBarrier = Promise.resolve();
@@ -2087,15 +2119,29 @@ export class AgentSession {
 
     const hashlineEdit = this.activeConfig.chat.hashlineEdit;
     const editingTools = (settings: ModelSettings) => settings.model.supportsTools === false ? [] : coordinator.createAgentTools({ mode: resolveEditingMode(hashlineEdit, settings.applyPatchProtocol), attachmentRoot: this.options.attachmentRoot });
-    const initialTools = editingTools(activeModelSettings);
-    systemPrompt = refreshRuntimeSystemPrompt(
-      systemPrompt,
-      initialTools
-    );
-    refreshRuntimeTurnContext(messages, await this.currentEmotionPrompt());
-    const loopContext: AgentContext = { systemPrompt, messages: [...messages], tools: initialTools };
-    this.contextMemory.recordToolSchema(loopContext.tools);
+    let loopContext: AgentContext;
+    try {
+      const initialTools = editingTools(activeModelSettings);
+      systemPrompt = refreshRuntimeSystemPrompt(
+        systemPrompt,
+        initialTools
+      );
+      refreshRuntimeTurnContext(messages, await this.currentEmotionPrompt());
+      loopContext = { systemPrompt, messages: [...messages], tools: initialTools };
+      // schema 在首轮 provider 请求与任何 tool.started 之前统一规范化并校验。
+      this.contextMemory.recordToolSchema(loopContext.tools);
+    } catch (error) {
+      const message = errorMessage(error);
+      const outcome = failedTurn(message, completedStepsBeforeRun, "provider_error");
+      this.recordError(message);
+      await this.recordTurnOutcome(outcome);
+      yield { type: "error", message };
+      yield { type: "status", status: "error" };
+      yield doneEvent(outcome);
+      return;
+    }
     let lastAssistant: AgentAssistantMessage | undefined;
+    let notification: string | undefined;
     let finalAssistantReference: SessionMessageReference | undefined;
     let newMessages: AgentMessage[] = [];
     let finalContextMessages: AgentMessage[] = [...messages];
@@ -2115,6 +2161,24 @@ export class AgentSession {
     let hardStepLimitReached = false;
     let softLimitWarningInjected = completedStepsBeforeRun >= runBudget.softStepLimit;
     let contextRecoveryAttempts = 0;
+    let runContextCompacted = false;
+    const applyRunContextCompaction = (
+      context: AgentContext,
+      compacted: RunContextCompaction,
+      reason: "threshold" | "overflow"
+    ): void => {
+      const sourceReferences = context.messages.map((message) => referenceByMessage.get(message));
+      this.persistContextCheckpoint(compacted, reason, sourceReferences);
+      const retainedReferences = sourceReferences.slice(compacted.compactedMessageCount);
+      for (const [index, message] of compacted.messages.entries()) {
+        const reference = retainedReferences[index];
+        if (reference) referenceByMessage.set(message, reference);
+      }
+      context.messages.splice(0, context.messages.length, ...compacted.messages);
+      // 基于当前提示词替换摘要，保留前一步刚刷新的工具和扩展能力信息。
+      context.systemPrompt = withActiveRunCompactionSummary(context.systemPrompt, compacted.summary);
+      runContextCompacted = true;
+    };
 
     recordPerfPhase("turn.loopPre", loopPerfStartedAt, { runId: runOptions.runId });
     yield { type: "status", status: "thinking" };
@@ -2143,6 +2207,84 @@ export class AgentSession {
           requestContext: modelRequestContext(completedStepsBeforeRun + 1)
         },
         maxSteps: runBudget.hardStepLimit - completedStepsBeforeRun,
+        persistStep: async ({ message, toolResults, context }) => {
+          const finalMessage = !message.content.some((part) => part.type === "toolCall");
+          if (message.stopReason !== "error" && message.stopReason !== "aborted") {
+            const extractedNotification = extractNotificationBlock(message);
+            if (finalMessage && extractedNotification) notification = extractedNotification;
+          }
+          stepAssistantContent = agentMessageText(message);
+          stepReasoningBlocks = reasoningBlocks(message);
+          if (message.stopReason !== "error" && message.stopReason !== "aborted") {
+            const reference = this.recordCanonicalMessage({
+              type: "agent_message",
+              message,
+              messageId: finalMessage && runOptions.retryOfMessageId !== undefined ? runOptions.messageId : undefined,
+              parentMessageId: finalMessage ? runOptions.retryParentMessageId : undefined,
+              slotId: finalMessage
+                ? runOptions.retrySlotId ?? lastUserMessageReference?.id
+                : undefined,
+              replyToMessageId: finalMessage
+                ? runOptions.replyToMessageId ?? lastUserMessageReference?.id
+                : undefined,
+              retryOfMessageId: finalMessage ? runOptions.retryOfMessageId : undefined
+            });
+            referenceByMessage.set(message, reference);
+            if (finalMessage) {
+              finalAssistantReference = reference;
+              if (runOptions.retryOfMessageId !== undefined && reference.id && reference.slotId) {
+                // 重试旧版本时覆盖此前的选择标记，让新回答立即成为活动版本。
+                this.recorder.record({ type: "message_version_selected", messageId: reference.id, slotId: reference.slotId });
+              }
+            }
+          }
+          relatedToolCallIds = toolResults.map((toolResult) => toolResult.toolCallId);
+          for (const toolResult of toolResults) {
+            referenceByMessage.set(
+              toolResult,
+              this.recordCanonicalMessage({ type: "agent_message", message: toolResult })
+            );
+          }
+          await this.recorder.flush();
+          observedSteps += 1;
+          lastStepReasoningOutput = stepReasoningOutput;
+          lastAssistant = message;
+          const usage = message.usage;
+          // 未回报 usage 的步骤也要保留“未知”，否则恢复后会把部分缓存数据当作完整平均值。
+          stepUsageRecords.push(this.recordModelUsage(usage ?? {}, "agent"));
+          this.contextMemory.recordProviderUsage(
+            usage ?? {},
+            summarizeUsage(this.usageRecords.filter((record) => record.operation === "agent" || record.operation === "plan")).sessionCacheHitRate
+          );
+          await recordNativeTelemetry(this.options.config, this.options.workspaceRoot, {
+            type: "step",
+            provider: activeModelSettings.model.provider,
+            modelId: activeModelSettings.model.modelId,
+            step: completedStepsBeforeRun + observedSteps,
+            finishReason: message.stopReason,
+            usage,
+            output: agentMessageText(message)
+          });
+          // 保存每个已完成的工具步。进程可能在下一次 provider 请求前退出，
+          // 续跑必须从最后一个完整的 assistant + tool result context 开始。
+          if (toolResults.length > 0 && completedStepsBeforeRun + observedSteps < runBudget.hardStepLimit) {
+            try {
+              await this.turnStore.save(
+                input,
+                context.systemPrompt ?? systemPrompt,
+                context.messages,
+                completedStepsBeforeRun + observedSteps,
+                coordinator.getExecutionBudgetSnapshot(),
+                undefined,
+                runOptions.previousTerminals,
+                this.recorder.runtimeHighWater()
+              );
+            } catch {
+              // 步间 checkpoint 失败时不伪装为可恢复；工具结果和最终终态仍照常提交。
+            }
+          }
+          emitUpdate({ type: "context.updated", context: await this.contextStatus() });
+        },
         prepareNextTurn: async ({ context, toolResults }) => {
           coordinator.assertCanContinue();
           const discovered = toolResults
@@ -2160,6 +2302,14 @@ export class AgentSession {
           );
           refreshRuntimeTurnContext(context.messages, await this.currentEmotionPrompt());
           this.contextMemory.recordToolSchema(tools);
+          context.tools = [...tools];
+          if (this.contextMemory.shouldCompactRunContext(context)) {
+            emitUpdate({ type: "preparation.updated", stage: "compacting" });
+            const compacted = await this.contextMemory.compactRunContextIfNeeded(context, abortSignal).finally(() => {
+              emitUpdate({ type: "preparation.updated", stage: "ready" });
+            });
+            if (compacted) applyRunContextCompaction(context, compacted, "threshold");
+          }
           return {
             context,
             model: settings.model,
@@ -2181,22 +2331,13 @@ export class AgentSession {
         },
         recoverFromModelError: async (error, context, signal) => {
           if (!isModelContextOverflowError(error) || contextRecoveryAttempts >= 2) return undefined;
-          const sourceReferences = context.messages.map((message) => referenceByMessage.get(message));
           emitUpdate({ type: "preparation.updated", stage: "compacting" });
           const compacted = await this.contextMemory.compactRunContext(context.messages, signal).finally(() => {
             emitUpdate({ type: "preparation.updated", stage: "ready" });
           });
           if (!compacted) return undefined;
           contextRecoveryAttempts += 1;
-          this.persistContextCheckpoint(compacted, "overflow", sourceReferences);
-          const retainedReferences = sourceReferences.slice(compacted.compactedMessageCount);
-          for (const [index, message] of compacted.messages.entries()) {
-            const reference = retainedReferences[index];
-            if (reference) referenceByMessage.set(message, reference);
-          }
-          context.messages.splice(0, context.messages.length, ...compacted.messages);
-          // 基于当前提示词替换摘要，保留前一步刚刷新的工具和扩展能力信息。
-          context.systemPrompt = withActiveRunCompactionSummary(context.systemPrompt, compacted.summary);
+          applyRunContextCompaction(context, compacted, "overflow");
           return {
             reason: "context_overflow",
             attempt: contextRecoveryAttempts,
@@ -2250,25 +2391,25 @@ export class AgentSession {
         }
       }, abortSignal);
 
-      // 每次只拉取一个核心事件，保留 message_end/turn_end 的宿主处理屏障；
-      // 等待工具期间，Coordinator 的进度可以独立唤醒消费者。
+      // 核心 loop 已在完成事件前提交 step；这里仅把工具进度与核心显示事件汇合。
       try {
         let nextLoopEvent = loop.next();
+        let streamedVisibleContent = "";
         while (true) {
-          const pending = new Promise<undefined>((resolve) => { wakePendingEvents = () => resolve(undefined); });
-          const next = pendingEvents.length ? undefined : await Promise.race([nextLoopEvent, pending]);
-          wakePendingEvents = undefined;
-          while (pendingEvents.length) {
-            const next = pendingEvents.shift();
-            if (next) yield next;
-          }
+          const next = await pendingEvents.waitForEventOr(nextLoopEvent);
+          yield* pendingEvents.drain();
           if (!next) continue;
           if (next.done) break;
           const event = next.value;
           if (event.type === "message_update") {
             stepAssistantContent = agentMessageText(event.message);
             if (event.event.type === "text-delta") {
-              yield { type: "assistant.delta", content: event.event.text };
+              const visibleContent = publicAssistantMessage(stepAssistantContent);
+              if (visibleContent.startsWith(streamedVisibleContent)) {
+                const visibleDelta = visibleContent.slice(streamedVisibleContent.length);
+                if (visibleDelta) yield { type: "assistant.delta", content: visibleDelta };
+              }
+              streamedVisibleContent = visibleContent;
             } else if (event.event.type === "reasoning-start") {
               if (!reasoningActive) {
                 reasoningActive = true;
@@ -2288,39 +2429,10 @@ export class AgentSession {
           } else if (event.type === "turn_start") {
             // 每个 provider step 都重新开始计数，后续 tool_call 才能携带对应的 Thought。
             stepAssistantContent = "";
+            streamedVisibleContent = "";
             stepReasoningOutput = "";
             stepReasoningBlocks = undefined;
-          } else if (event.type === "message_end") {
-            if (event.message.role === "assistant") {
-              stepAssistantContent = agentMessageText(event.message);
-              stepReasoningBlocks = reasoningBlocks(event.message);
-              if (event.message.stopReason !== "error" && event.message.stopReason !== "aborted") {
-                const finalMessage = !event.message.content.some((part) => part.type === "toolCall");
-                const reference = this.recordCanonicalMessage({
-                  type: "agent_message",
-                  message: event.message,
-                  messageId: finalMessage && runOptions.retryOfMessageId !== undefined ? runOptions.messageId : undefined,
-                  parentMessageId: finalMessage
-                    ? runOptions.retryParentMessageId
-                    : undefined,
-                  slotId: finalMessage
-                    ? runOptions.retrySlotId ?? lastUserMessageReference?.id
-                    : undefined,
-                  replyToMessageId: finalMessage
-                    ? runOptions.replyToMessageId ?? lastUserMessageReference?.id
-                    : undefined,
-                  retryOfMessageId: finalMessage ? runOptions.retryOfMessageId : undefined
-                });
-                referenceByMessage.set(event.message, reference);
-                if (finalMessage) {
-                  finalAssistantReference = reference;
-                  if (runOptions.retryOfMessageId !== undefined && reference.id && reference.slotId) {
-                    // 重试旧版本时覆盖此前的选择标记，让新回答立即成为活动版本。
-                    this.recorder.record({ type: "message_version_selected", messageId: reference.id, slotId: reference.slotId });
-                  }
-                }
-              }
-            } else if (event.message.role === "user") {
+          } else if (event.type === "message_end" && event.message.role === "user") {
               const queued = messageQueues.delivered.get(event.message);
               if (queued) {
                 yield {
@@ -2330,57 +2442,6 @@ export class AgentSession {
                   delivery: queued.delivery
                 };
               }
-            }
-          } else if (event.type === "turn_end") {
-            relatedToolCallIds = event.toolResults.map((toolResult) => toolResult.toolCallId);
-            for (const toolResult of event.toolResults) {
-              referenceByMessage.set(
-                toolResult,
-                this.recordCanonicalMessage({ type: "agent_message", message: toolResult })
-              );
-            }
-            observedSteps += 1;
-            lastStepReasoningOutput = stepReasoningOutput;
-            lastAssistant = event.message;
-            const usage = event.message.usage;
-            // 未回报 usage 的步骤也要保留“未知”，否则恢复后会把部分缓存数据当作完整平均值。
-            stepUsageRecords.push(this.recordModelUsage(usage ?? {}, "agent"));
-            this.contextMemory.recordProviderUsage(
-              usage ?? {},
-              summarizeUsage(this.usageRecords.filter((record) => record.operation === "agent" || record.operation === "plan")).sessionCacheHitRate
-            );
-            yield { type: "context.updated", context: await this.contextStatus() };
-            await recordNativeTelemetry(this.options.config, this.options.workspaceRoot, {
-              type: "step",
-              provider: activeModelSettings.model.provider,
-              modelId: activeModelSettings.model.modelId,
-              step: completedStepsBeforeRun + observedSteps,
-              finishReason: event.message.stopReason,
-              usage,
-              output: agentMessageText(event.message)
-            });
-            // 保存每个已完成的工具步。进程可能在下一次 provider 请求前退出，
-            // 续跑必须从最后一个完整的 assistant + tool result context 开始。
-            if (
-              event.toolResults.length > 0
-              && completedStepsBeforeRun + observedSteps < runBudget.hardStepLimit
-            ) {
-              try {
-                await this.recorder.flush();
-                await this.turnStore.save(
-                  input,
-                  systemPrompt,
-                  event.messages,
-                  completedStepsBeforeRun + observedSteps,
-                  coordinator.getExecutionBudgetSnapshot(),
-                  undefined,
-                  runOptions.previousTerminals,
-                  this.recorder.runtimeHighWater()
-                );
-              } catch {
-                // 步间 checkpoint 失败时不伪装为可恢复；工具结果和最终终态仍照常提交。
-              }
-            }
           } else if (event.type === "agent_end") {
             newMessages = event.messages;
             finalContextMessages = event.contextMessages;
@@ -2406,25 +2467,21 @@ export class AgentSession {
           nextLoopEvent = loop.next();
         }
       } finally {
-        wakePendingEvents = undefined;
         await loop.return([]);
       }
-      while (pendingEvents.length) {
-        const next = pendingEvents.shift();
-        if (next) yield next;
-      }
+      yield* pendingEvents.drain();
       await coordinator.waitForIdle();
       if (reasoningActive) yield { type: "reasoning.completed" };
       if (streamFailure) throw new Error(streamFailure);
       const currentUserMessage = messages.at(-1);
-      const finalMessages = runOptions.continueFrom?.length || contextRecoveryAttempts > 0
+      const finalMessages = runOptions.continueFrom?.length || contextRecoveryAttempts > 0 || runContextCompacted
         ? finalContextMessages
         : [
           ...this.contextMemory.getHistory(),
           ...(currentUserMessage ? [currentUserMessage] : []),
           ...newMessages
         ];
-      const finalReferences = runOptions.continueFrom?.length || contextRecoveryAttempts > 0
+      const finalReferences = runOptions.continueFrom?.length || contextRecoveryAttempts > 0 || runContextCompacted
         ? finalMessages.map((message) => referenceByMessage.get(message))
         : [
           ...this.contextMessageReferences,
@@ -2434,7 +2491,6 @@ export class AgentSession {
       this.contextMemory.replaceHistory(stripTransientTurnContext(finalMessages));
       this.contextMessageReferences = finalReferences;
       const usageRecord = stepUsageRecords.length ? sumSessionUsage(stepUsageRecords) : undefined;
-      const notification = lastAssistant ? extractNotificationBlock(lastAssistant) : undefined;
       const content = lastAssistant ? agentMessageText(lastAssistant) : "";
       await recordNativeTelemetry(this.options.config, this.options.workspaceRoot, {
         type: "end",
@@ -2587,11 +2643,22 @@ export class AgentSession {
         error: message
       });
       const outcome = abortSignal.aborted
-        ? cancelledTurn(message || "Current turn cancelled.", completedStepsBeforeRun + observedSteps)
+        ? cancelledTurn(
+          message || "Current turn cancelled.",
+          completedStepsBeforeRun + observedSteps,
+          turnCancellationReason(abortSignal)
+        )
         : failedTurn(message, completedStepsBeforeRun + observedSteps, isTimeoutFailure(error) ? "timeout" : "provider_error");
       this.recordError(message);
-      if (outcome.status === "cancelled") await this.turnStore.clear().catch(() => undefined);
-      await this.recordTurnOutcome(outcome);
+      if (outcome.status === "cancelled") {
+        await this.recordCancelledTurn(
+          outcome,
+          loopContext.messages,
+          loopContext.messages.map((item) => referenceByMessage.get(item))
+        );
+      } else {
+        await this.recordTurnOutcome(outcome);
+      }
       if (!streamFailureReported) yield { type: "error", message };
       yield { type: "status", status: outcome.status === "cancelled" ? "cancelled" : "error" };
       yield doneEvent(outcome);
@@ -3155,6 +3222,34 @@ export class AgentSession {
       affectedTodoIds: outcome.affectedTodoIds
     });
     return recorded.runtime;
+  }
+
+  /**
+   * 取消前先把当时的模型上下文固定下来。只有用户显式停止会追加模型可见标记；
+   * 新消息替换旧回合只保留真实上下文和 replaced 终态，避免误导模型认为任务被放弃。
+   */
+  private async recordCancelledTurn(
+    outcome: AgentTurnOutcome,
+    messages: AgentMessage[],
+    references: Array<SessionMessageReference | undefined>
+  ): Promise<void> {
+    const history = stripTransientTurnContext(messages);
+    const historyReferences = [...references];
+    if (outcome.stopReason === "interrupted") {
+      const marker: AgentUserMessage = { role: "user", content: interruptedTurnMarker };
+      this.recorder.record({
+        type: "turn_interrupted",
+        reason: "interrupted",
+        content: interruptedTurnMarker
+      });
+      history.push(marker);
+      historyReferences.push(undefined);
+    }
+    this.contextMemory.replaceHistory(history);
+    this.contextMessageReferences = historyReferences;
+    await this.recorder.flush();
+    await this.turnStore.clear().catch(() => undefined);
+    await this.recordTurnOutcome(outcome);
   }
 
   /**
@@ -3742,16 +3837,24 @@ function failedTurn(
   };
 }
 
-function cancelledTurn(message: string, steps: number): AgentTurnOutcome {
+function cancelledTurn(
+  message: string,
+  steps: number,
+  stopReason: AgentTurnCancellationReason = "interrupted"
+): AgentTurnOutcome {
   return {
     status: "cancelled",
-    stopReason: "cancelled",
+    stopReason,
     finishReason: undefined,
     steps,
     output: "",
     usage: undefined,
     error: message
   };
+}
+
+function turnCancellationReason(signal: AbortSignal): AgentTurnCancellationReason {
+  return signal.reason instanceof AgentTurnCancellationError ? signal.reason.reason : "cancelled";
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

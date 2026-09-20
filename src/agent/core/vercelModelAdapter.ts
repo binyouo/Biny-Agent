@@ -298,8 +298,7 @@ async function* streamModel(
         ? await state.config.recoverFromModelError?.(errorMessage(error), state.context, signal)
         : undefined;
       if (!recovery) throw error;
-      state.pendingEvents.push({ type: "model_retry", ...recovery });
-      state.wakePendingEvents?.();
+      state.displayEvents.push({ type: "model_retry", ...recovery });
       emittedOutput = false;
       textStarted = false;
       streamStarted = false;

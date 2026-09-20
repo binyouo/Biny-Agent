@@ -65,6 +65,7 @@ await testMaintenanceGateIsAtomic();
 await testPermissionGateIsAtomic();
 await testEmptyPromptIsRejected();
 await testConcurrentRootRunIsRejected();
+await testManualCancellationIsInterrupted();
 await testActiveRunAcceptsSteeringAndQueuedMessages();
 await testQueuedMessageControlsUseRuntimeMemory();
 await testQueuedMessagesCanBeSentImmediately();
@@ -791,6 +792,19 @@ async function testConcurrentRootRunIsRejected(): Promise<void> {
   await runtime.close();
 }
 
+async function testManualCancellationIsInterrupted(): Promise<void> {
+  const firstGate = deferred<void>();
+  const runtime = new InteractiveAgentRuntime(fakeCommandRuntime({ firstGate }));
+  const run = runtime.submitPrompt("hold");
+  await waitUntil(() => activeRun(runtime.getSnapshot())?.runId === run.runId);
+
+  runtime.cancelCurrentRun("interrupted");
+  const outcome = await run.completion;
+  assert.equal(outcome.status, "cancelled");
+  assert.equal(outcome.stopReason, "interrupted");
+  await runtime.close();
+}
+
 async function testActiveRunAcceptsSteeringAndQueuedMessages(): Promise<void> {
   const firstGate = deferred<void>();
   const queued: string[] = [];
@@ -829,7 +843,8 @@ async function testQueuedMessagesCanBeSentImmediately(): Promise<void> {
 
   await runtime.sendQueuedRunMessagesNow();
   const firstOutcome = await run.completion;
-  assert.notEqual(firstOutcome.status, "completed");
+  assert.equal(firstOutcome.status, "cancelled");
+  assert.equal(firstOutcome.stopReason, "replaced");
   await runtime.waitForIdle();
   assert.deepEqual(runInputs, ["hold", "send this next"]);
   assert.deepEqual(runtime.getSnapshot().queuedMessages, []);
@@ -877,7 +892,7 @@ async function testContinueRequiresIdleRuntime(): Promise<void> {
   const run = runtime.submitPrompt("hold");
   await waitUntil(() => activeRun(runtime.getSnapshot()) !== undefined);
   await assert.rejects(runtime.continueInterruptedTurn(), /while the runtime is busy/u);
-  runtime.cancelCurrentRun();
+  runtime.cancelCurrentRun("interrupted");
   firstGate.resolve();
   await run.completion;
   await runtime.close();
@@ -1013,7 +1028,7 @@ async function testSubagentMaintenanceCancellation(): Promise<void> {
   const task = executeRuntimeCommand(runtime, commandRuntime, "/subagent inspect safely", "tui");
   const rejected = assert.rejects(task, /abort|cancel/i);
   await waitUntil(() => runtime.getSnapshot().state.kind === "maintenance");
-  runtime.cancelCurrentRun();
+  runtime.cancelCurrentRun("interrupted");
   await rejected;
   assert.deepEqual(events, []);
   assert.deepEqual(audit, ["user:inspect safely", "call:Task", "result:Task"]);
@@ -1053,7 +1068,7 @@ async function testImmediateSubagentMaintenanceCancellation(): Promise<void> {
   const runtime = new InteractiveAgentRuntime(commandRuntime);
   const task = executeRuntimeCommand(runtime, commandRuntime, "/review cancel before the deferred start", "tui");
   const rejected = assert.rejects(task, /abort/i);
-  runtime.cancelCurrentRun();
+  runtime.cancelCurrentRun("interrupted");
 
   await rejected;
   assert.equal(childStarted, false);

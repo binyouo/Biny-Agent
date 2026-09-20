@@ -5,15 +5,17 @@ import os from "node:os";
 import path from "node:path";
 import { z } from "zod";
 import { AgentSession } from "../src/agent/AgentSession.js";
-import type { AgentModel, ModelStreamEvent } from "../src/agent/core/types.js";
+import type { AgentMessage, AgentModel, ModelStreamEvent } from "../src/agent/core/types.js";
+import { AgentTurnCancellationError } from "../src/agent/types.js";
 import { configSchema, defaultConfig } from "../src/config/schema.js";
 import { PermissionManager } from "../src/permission/PermissionManager.js";
-import { SessionRecorder } from "../src/session/recorder.js";
+import { SessionRecorder, type SessionEvent } from "../src/session/recorder.js";
+import { replaySession } from "../src/session/replay.js";
 import { ensureAgentDirs } from "../src/session/store.js";
 import { createWriteFileTool } from "../src/tools/file/writeFile.js";
 import { ToolRegistry } from "../src/tools/registry.js";
 
-async function testNaturalCompletion(scenario: "answer" | "write" | "recovery" | "limit" | "length"): Promise<void> {
+async function testNaturalCompletion(scenario: "answer" | "write" | "recovery" | "limit" | "length" | "notification"): Promise<void> {
   const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "biny-natural-completion-"));
   await ensureAgentDirs(workspaceRoot);
   const registry = new ToolRegistry();
@@ -47,7 +49,11 @@ async function testNaturalCompletion(scenario: "answer" | "write" | "recovery" |
       } else if (scenario === "recovery" && requests <= 2) {
         response.push({ type: "tool-call", id: `check-${requests}`, name: "check", arguments: { command: requests === 1 ? "wrong" : "correct" } });
       } else if (scenario === "notification") {
-        response.push({ type: "text-delta", text: "已完成，结果已检查。\n\n<biny_notification>修复了登录崩溃，测试通过。</biny_notification>" });
+        response.push(
+          { type: "text-delta", text: "已完成，结果已检查。\n\n<bin" },
+          { type: "text-delta", text: "y_notification>修复了登录崩溃，测试通过。</biny_not" },
+          { type: "text-delta", text: "ification>" }
+        );
       } else {
         response.push({ type: "text-delta", text: "已完成，结果已检查。" });
       }
@@ -69,12 +75,24 @@ async function testNaturalCompletion(scenario: "answer" | "write" | "recovery" |
   const agent = new AgentSession({ workspaceRoot, config, model, toolRegistry: registry, permissionManager: new PermissionManager(config.permission), recorder });
   try {
     await agent.initialize();
-    const outcome = await agent.runTask("Perform the requested work and report the result", { confirmPermission: async () => ({ approved: true, scope: "once" }) });
+    const streamedEvents = [];
+    let outcome;
+    for await (const event of agent.prompt("Perform the requested work and report the result", { confirmPermission: async () => ({ approved: true, scope: "once" }) })) {
+      streamedEvents.push(event);
+      if (event.type === "done") outcome = event.outcome;
+    }
+    assert.ok(outcome);
     assert.equal(requests, scenario === "recovery" ? 3 : scenario === "write" ? 2 : 1);
     assert.equal(outcome.status, scenario === "limit" || scenario === "length" ? "incomplete" : "completed");
     if (scenario === "notification") {
       assert.equal(outcome.notification, "修复了登录崩溃，测试通过。");
       assert.equal(outcome.output.includes("<biny_notification>"), false, "通知块不能进入对外输出");
+      const streamedAssistant = streamedEvents
+        .filter((event) => event.type === "assistant.delta")
+        .map((event) => event.content)
+        .join("");
+      assert.equal(streamedAssistant.includes("<"), false, "通知标签的分片不能进入流式界面事件");
+      assert.equal(streamedAssistant.includes("修复了登录崩溃"), false, "通知正文不能进入流式界面事件");
     }
     if (scenario !== "notification" && scenario !== "answer") assert.equal(outcome.notification, undefined);
     if (scenario === "limit" || scenario === "length") {
@@ -95,12 +113,17 @@ async function testNaturalCompletion(scenario: "answer" | "write" | "recovery" |
       assert.equal(await readFile(path.join(workspaceRoot, "result.txt"), "utf8"), "written");
     }
     await recorder.flush();
-    const stored = (await readFile(recorder.filePath, "utf8")).trim().split("\n").map((line) => JSON.parse(line) as { type: string; content?: string });
+    const stored = (await readFile(recorder.filePath, "utf8")).trim().split("\n").map((line) => JSON.parse(line) as { type: string; content?: string; message?: AgentMessage });
     for (const type of ["user_message", "assistant_message"]) assert.ok(stored.some((event) => event.type === type));
     assert.equal(
       stored.some((event) => event.type === "assistant_message" && event.content?.includes("<biny_notification>")),
       false,
       "通知块不能进入 session 落盘"
+    );
+    assert.equal(
+      stored.some((event) => event.type === "agent_message" && JSON.stringify(event.message).includes("<biny_notification>")),
+      false,
+      "通知块不能进入 canonical agent_message"
     );
     if (scenario === "write" || scenario === "recovery" || scenario === "limit" || scenario === "length") {
       for (const type of ["tool_call", "tool_result"]) assert.ok(stored.some((event) => event.type === type));
@@ -111,5 +134,230 @@ async function testNaturalCompletion(scenario: "answer" | "write" | "recovery" |
   }
 }
 
+async function testStepPersistenceFailureIsATurnFailure(): Promise<void> {
+  const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "biny-step-persistence-failure-"));
+  await ensureAgentDirs(workspaceRoot);
+  class FailingRecorder extends SessionRecorder {
+    private failed = false;
+
+    override record(event: SessionEvent): SessionEvent {
+      if (!this.failed && event.type === "agent_message") {
+        this.failed = true;
+        throw new Error("injected step persistence failure");
+      }
+      return super.record(event);
+    }
+  }
+  const model: AgentModel = {
+    provider: "test",
+    modelId: "persistence-failure",
+    stream: async () => (async function* (): AsyncGenerator<ModelStreamEvent> {
+      yield { type: "text-delta", text: "must not complete" };
+      yield { type: "finish", reason: "stop" };
+    })()
+  };
+  const config = configSchema.parse({
+    ...defaultConfig,
+    context: { ...defaultConfig.context, memory: { ...defaultConfig.context.memory, useMemories: false, generateMemories: false } }
+  });
+  const recorder = new FailingRecorder(workspaceRoot);
+  const agent = new AgentSession({
+    workspaceRoot,
+    config,
+    model,
+    toolRegistry: new ToolRegistry(),
+    permissionManager: new PermissionManager(config.permission),
+    recorder
+  });
+  try {
+    await agent.initialize();
+    const outcome = await agent.runTask("persist the response");
+    assert.equal(outcome.status, "failed");
+    assert.equal(outcome.stopReason, "provider_error");
+    assert.match(outcome.error ?? "", /injected step persistence failure/u);
+  } finally {
+    await agent.close();
+    await rm(workspaceRoot, { recursive: true, force: true });
+  }
+}
+
+async function testInterruptedTurnMarkerIsModelVisibleOnlyForManualStop(): Promise<void> {
+  const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "biny-turn-interruption-"));
+  await ensureAgentDirs(workspaceRoot);
+  let started: (() => void) | undefined;
+  const modelStarted = new Promise<void>((resolve) => { started = resolve; });
+  let requests = 0;
+  let resumedMessages: AgentMessage[] | undefined;
+  const model: AgentModel = {
+    provider: "test",
+    modelId: "turn-interruption",
+    async stream(context, options) {
+      requests += 1;
+      if (requests > 1) {
+        resumedMessages = context.messages;
+        return (async function* (): AsyncGenerator<ModelStreamEvent> {
+          yield { type: "text-delta", text: "continued safely" };
+          yield { type: "finish", reason: "stop" };
+        })();
+      }
+      return (async function* (): AsyncGenerator<ModelStreamEvent> {
+        started?.();
+        const signal = options?.signal;
+        if (!signal) throw new Error("missing abort signal");
+        await new Promise<never>((_resolve, reject) => {
+          if (signal.aborted) reject(signal.reason);
+          else signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+        });
+        yield { type: "finish", reason: "aborted" };
+      })();
+    }
+  };
+  const config = configSchema.parse({
+    ...defaultConfig,
+    context: { ...defaultConfig.context, memory: { ...defaultConfig.context.memory, useMemories: false, generateMemories: false } }
+  });
+  const recorder = new SessionRecorder(workspaceRoot);
+  const agent = new AgentSession({
+    workspaceRoot,
+    config,
+    model,
+    toolRegistry: new ToolRegistry(),
+    permissionManager: new PermissionManager(config.permission),
+    recorder
+  });
+  try {
+    await agent.initialize();
+    const controller = new AbortController();
+    const interruptedRun = agent.runTask("start a long task", { abortSignal: controller.signal });
+    await modelStarted;
+    controller.abort(new AgentTurnCancellationError("interrupted"));
+    const interrupted = await interruptedRun;
+    assert.equal(interrupted.status, "cancelled");
+    assert.equal(interrupted.stopReason, "interrupted");
+
+    await recorder.flush();
+    const replay = await replaySession(recorder.filePath);
+    assert.equal(replay.events.filter((event) => event.type === "turn_interrupted").length, 1);
+    assert.equal(replay.messageTree.length, 1, "the hidden marker must not become a visible message-tree node");
+
+    const continued = await agent.runTask("continue with the new instruction");
+    assert.equal(continued.status, "completed");
+    assert.equal(resumedMessages?.some((message) => message.role === "user"
+      && typeof message.content === "string"
+      && message.content.includes("<turn_aborted>")), true, "the next model request must see the interruption marker");
+  } finally {
+    await agent.close();
+    await rm(workspaceRoot, { recursive: true, force: true });
+  }
+}
+
+async function testReplacedTurnDoesNotWriteInterruptionMarker(): Promise<void> {
+  const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "biny-turn-replaced-"));
+  await ensureAgentDirs(workspaceRoot);
+  let started: (() => void) | undefined;
+  const modelStarted = new Promise<void>((resolve) => { started = resolve; });
+  const model: AgentModel = {
+    provider: "test",
+    modelId: "turn-replaced",
+    async stream(_context, options) {
+      return (async function* (): AsyncGenerator<ModelStreamEvent> {
+        started?.();
+        const signal = options?.signal;
+        if (!signal) throw new Error("missing abort signal");
+        await new Promise<never>((_resolve, reject) => {
+          if (signal.aborted) reject(signal.reason);
+          else signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+        });
+        yield { type: "finish", reason: "aborted" };
+      })();
+    }
+  };
+  const config = configSchema.parse({
+    ...defaultConfig,
+    context: { ...defaultConfig.context, memory: { ...defaultConfig.context.memory, useMemories: false, generateMemories: false } }
+  });
+  const recorder = new SessionRecorder(workspaceRoot);
+  const agent = new AgentSession({
+    workspaceRoot,
+    config,
+    model,
+    toolRegistry: new ToolRegistry(),
+    permissionManager: new PermissionManager(config.permission),
+    recorder
+  });
+  try {
+    await agent.initialize();
+    const controller = new AbortController();
+    const replacedRun = agent.runTask("old instruction", { abortSignal: controller.signal });
+    await modelStarted;
+    controller.abort(new AgentTurnCancellationError("replaced"));
+    const replaced = await replacedRun;
+    assert.equal(replaced.status, "cancelled");
+    assert.equal(replaced.stopReason, "replaced");
+    await recorder.flush();
+    const replay = await replaySession(recorder.filePath);
+    assert.equal(replay.events.some((event) => event.type === "turn_interrupted"), false);
+  } finally {
+    await agent.close();
+    await rm(workspaceRoot, { recursive: true, force: true });
+  }
+}
+
+async function testUnattributedCancellationDoesNotWriteInterruptionMarker(): Promise<void> {
+  const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "biny-turn-cancelled-"));
+  await ensureAgentDirs(workspaceRoot);
+  let started: (() => void) | undefined;
+  const modelStarted = new Promise<void>((resolve) => { started = resolve; });
+  const model: AgentModel = {
+    provider: "test",
+    modelId: "turn-cancelled",
+    async stream(_context, options) {
+      return (async function* (): AsyncGenerator<ModelStreamEvent> {
+        started?.();
+        const signal = options?.signal;
+        if (!signal) throw new Error("missing abort signal");
+        await new Promise<never>((_resolve, reject) => {
+          if (signal.aborted) reject(signal.reason);
+          else signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+        });
+        yield { type: "finish", reason: "aborted" };
+      })();
+    }
+  };
+  const config = configSchema.parse({
+    ...defaultConfig,
+    context: { ...defaultConfig.context, memory: { ...defaultConfig.context.memory, useMemories: false, generateMemories: false } }
+  });
+  const recorder = new SessionRecorder(workspaceRoot);
+  const agent = new AgentSession({
+    workspaceRoot,
+    config,
+    model,
+    toolRegistry: new ToolRegistry(),
+    permissionManager: new PermissionManager(config.permission),
+    recorder
+  });
+  try {
+    await agent.initialize();
+    const controller = new AbortController();
+    const cancelledRun = agent.runTask("cancel for an unspecified host reason", { abortSignal: controller.signal });
+    await modelStarted;
+    controller.abort();
+    const cancelled = await cancelledRun;
+    assert.equal(cancelled.status, "cancelled");
+    assert.equal(cancelled.stopReason, "cancelled");
+    await recorder.flush();
+    const replay = await replaySession(recorder.filePath);
+    assert.equal(replay.events.some((event) => event.type === "turn_interrupted"), false);
+  } finally {
+    await agent.close();
+    await rm(workspaceRoot, { recursive: true, force: true });
+  }
+}
+
 for (const scenario of ["answer", "write", "recovery", "limit", "length", "notification"] as const) await testNaturalCompletion(scenario);
+await testStepPersistenceFailureIsATurnFailure();
+await testInterruptedTurnMarkerIsModelVisibleOnlyForManualStop();
+await testReplacedTurnDoesNotWriteInterruptionMarker();
+await testUnattributedCancellationDoesNotWriteInterruptionMarker();
 console.log("agent natural completion tests passed");

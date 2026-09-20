@@ -8,6 +8,7 @@ import type { planStatus } from "../../extensions/plan.js";
 import net from "node:net";
 import type { AgentAttachment, AgentSessionInfo, ResumedAgentSession } from "../../agent/AgentSession.js";
 import type { AgentCapabilitySelection } from "../../agent/capabilitySelection.js";
+import type { AgentTurnCancellationReason } from "../../agent/types.js";
 import type { AgentRunOutcome, InteractiveRuntimeHandle, QueuedAgentMessage, RuntimeRequestIds, SubmittedAgentRun } from "../InteractiveAgentRuntime.js";
 import type { ContextStatus } from "../../agent/context/types.js";
 import type { MemorySleepPreview } from "../../agent/context/memoryTypes.js";
@@ -279,8 +280,12 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
     }, sessionId);
   }
 
-  async cancelRunRequest(runId: string, sessionId?: string): Promise<HostOperationResult<{ runId: string }>> {
-    return await this.request("run.cancel", { runId, sessionId });
+  async cancelRunRequest(
+    runId: string,
+    reason: AgentTurnCancellationReason,
+    sessionId?: string
+  ): Promise<HostOperationResult<{ runId: string }>> {
+    return await this.request("run.cancel", { runId, reason, sessionId });
   }
 
   async answerPermissionRequest(requestId: string, result: PermissionResult, sessionId?: string): Promise<HostOperationResult<{ requestId: string }>> {
@@ -614,16 +619,16 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
     });
   }
 
-  cancelCurrentRun(): void {
+  cancelCurrentRun(reason: AgentTurnCancellationReason): void {
     const runId = this.activeRunId();
     if (!runId) return;
-    void this.request("cancel", { runId, sessionId: this.focusedSessionId }).catch((error) => this.reportError(error));
+    void this.request("cancel", { runId, reason, sessionId: this.focusedSessionId }).catch((error) => this.reportError(error));
   }
 
-  cancelRun(runId: string): boolean {
+  cancelRun(runId: string, reason: AgentTurnCancellationReason): boolean {
     const active = this.activeRunId();
     if (active !== runId) return false;
-    void this.request("cancel", { runId, sessionId: this.focusedSessionId }).catch((error) => this.reportError(error));
+    void this.request("cancel", { runId, reason, sessionId: this.focusedSessionId }).catch((error) => this.reportError(error));
     return true;
   }
 

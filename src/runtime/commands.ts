@@ -310,7 +310,7 @@ export async function cancelRuntimeGraph(
   const result = services.graphs.cancelGraph(graphId);
   for (const active of activeRuns) {
     services.subagents?.cancelTask(active.taskRunId, "Graph cancelled.");
-    if (active.runId !== undefined) runtime.cancelRun(active.runId);
+    if (active.runId !== undefined) runtime.cancelRun(active.runId, "cancelled");
     try {
       const task = services.taskRuns.get(active.taskRunId);
       if (task && !isTaskRunTerminal(task.status)) services.taskRuns.transition(active.taskRunId, "cancelled");

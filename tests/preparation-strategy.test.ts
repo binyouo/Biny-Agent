@@ -8,6 +8,7 @@ import { ContextMemory } from "../src/agent/context/ContextMemory.js";
 import { HybridMemoryRetriever } from "../src/agent/context/HybridMemoryRetriever.js";
 import { LocalMemory } from "../src/agent/context/LocalMemory.js";
 import { WorkspaceContext } from "../src/agent/context/WorkspaceContext.js";
+import type { MemoryEntry } from "../src/agent/context/memoryTypes.js";
 
 const root = await mkdtemp(path.join(os.tmpdir(), "biny-preparation-strategy-"));
 let calls = 0;
@@ -56,8 +57,62 @@ try {
   await parallel.prepareTurn("recall", "system", AbortSignal.timeout(1_000));
   assert.equal(memoryStarted, true, "记忆召回不等待工作区扫描完成");
   assert.equal(calls, 0);
-  local.close();
   retriever.close();
+
+  const semanticEntry: MemoryEntry = {
+    id: "semantic-1",
+    content: "语义记忆首轮标记。",
+    source: "manual",
+    tags: [],
+    importance: 0.8,
+    createdAt: "2026-09-20T00:00:00.000Z",
+    updatedAt: "2026-09-20T00:00:00.000Z",
+    revision: 1,
+    durability: "permanent",
+    accessCount: 0
+  };
+  const semanticRetriever = new HybridMemoryRetriever({
+    localMemory: {
+      listMemoryEntries: async () => ({ entries: [semanticEntry], storeRevision: 1 }),
+      search: async () => { throw new Error("automatic recall must stay semantic"); },
+      recordRecallUsage: async () => undefined
+    },
+    getEmbeddingRuntime: async () => ({
+      fingerprint: "fixture",
+      descriptor: {
+        ref: { kind: "local", model: "multilingual-e5-small" },
+        fingerprint: "fixture",
+        displayName: "fixture",
+        dimensions: 2,
+        recommendedThreshold: 0.1,
+        source: "local"
+      },
+      embed: async () => ({ embeddings: [new Float32Array([1, 0])], dimensions: 2, fingerprint: "fixture", model: { kind: "local", model: "multilingual-e5-small" } })
+    }),
+    getReadOnlyVectorIndex: () => ({
+      status: () => ({ active: { modelFingerprint: "fixture", dimensions: 2, vectorCount: 1, createdAt: "2026-09-20T00:00:00.000Z", completedAt: "2026-09-20T00:00:00.000Z" } }),
+      search: () => [{ entryId: semanticEntry.id, similarity: 0.95 }]
+    }),
+    getThreshold: (_fingerprint, recommended) => recommended
+  });
+  const semanticContext = new ContextMemory(
+    () => model,
+    new WorkspaceContext(root, [], 4096),
+    local,
+    10_000,
+    4096,
+    undefined,
+    undefined,
+    {},
+    undefined,
+    undefined,
+    semanticRetriever
+  );
+  const semanticPrepared = await semanticContext.prepareTurn("回忆偏好", "system", undefined, [], true);
+  assert.match(JSON.stringify(semanticPrepared.messages), /语义记忆首轮标记/u);
+  assert.deepEqual((await semanticContext.status()).memoryInjectedSummaries, ["语义记忆首轮标记。"]);
+  semanticRetriever.close();
+  local.close();
 
   const compacting = new ContextMemory(() => model, new WorkspaceContext(root, [], 4096), undefined, 1_000, 4096, undefined, undefined, {
     keepRecentTokens: 20, maxSummaryTokens: 2_000

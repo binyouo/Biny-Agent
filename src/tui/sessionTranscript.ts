@@ -102,6 +102,7 @@ export function sessionEventsToTranscript(events: SessionEvent[]): TranscriptIte
     if (event.type === "model_request") continue;
     if (event.type === "message_version_selected") continue;
     if (event.type === "message_metadata") continue;
+    if (event.type === "turn_interrupted") continue;
 
     while (pendingTools.length > 0) {
       const pending = pendingTools.shift();

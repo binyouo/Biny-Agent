@@ -65,6 +65,7 @@ async function main(): Promise<void> {
   let switchedThinking: string | undefined;
   let interruptedStarts = 0;
   let cancellationRequests = 0;
+  const cancellationReasons: string[] = [];
   let activeRunId = "run-host-test";
   const exclusiveOperations: string[] = [];
   let memoryExpectedRevision: number | undefined;
@@ -149,10 +150,14 @@ async function main(): Promise<void> {
       return undefined;
     },
     waitForIdle: async () => undefined,
-    cancelCurrentRun: () => { cancellationRequests += 1; },
-    cancelRun: (runId) => {
+    cancelCurrentRun: (reason) => {
+      cancellationRequests += 1;
+      cancellationReasons.push(reason);
+    },
+    cancelRun: (runId, reason) => {
       if (runId !== activeRunId) return false;
       cancellationRequests += 1;
+      cancellationReasons.push(reason);
       return true;
     },
     answerPermission: () => undefined,
@@ -589,16 +594,17 @@ async function main(): Promise<void> {
 
   // 同一 run 的取消可绕过滞后的 revision；Host 改为按 runId 匹配而不是取消当前运行。
   currentSnapshot = { ...currentSnapshot, revision: currentSnapshot.revision + 1 };
-  client.cancelCurrentRun();
+  client.cancelCurrentRun("interrupted");
   await waitUntil(() => cancellationRequests === 1);
-  const cancellation = await client.cancelRunRequest("run-host-test");
+  const cancellation = await client.cancelRunRequest("run-host-test", "interrupted");
   assert.equal(cancellation.accepted, true, "取消不应被客户端滞后的 revision 拒绝");
   assert.equal(cancellationRequests, 2);
+  assert.deepEqual(cancellationReasons, ["interrupted", "interrupted"]);
 
   // 旧客户端晚到的取消不能停止已经替换为新 run 的 Host 当前运行。
   activeRunId = "new-run";
   currentSnapshot = { ...currentSnapshot, revision: currentSnapshot.revision + 1 };
-  const staleCancellation = await client.cancelRunRequest("run-host-test");
+  const staleCancellation = await client.cancelRunRequest("run-host-test", "cancelled");
   assert.equal(staleCancellation.accepted, false, "Host must reject a cancellation for a superseded run");
   assert.equal(cancellationRequests, 2, "a stale cancellation must not reach the newer run");
 

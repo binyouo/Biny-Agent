@@ -130,7 +130,7 @@ async function runAttachedCommand(
     const submitted = runtime.submitPromptForSession(sessionId, input);
     const turn = await withCliAbortSignal(async (signal) => {
       const onAbort = (): void => {
-        void runtime.cancelRunRequest(submitted.runId, sessionId);
+        void runtime.cancelRunRequest(submitted.runId, "interrupted", sessionId);
       };
       signal.addEventListener("abort", onAbort, { once: true });
       try {

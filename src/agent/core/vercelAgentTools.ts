@@ -5,13 +5,15 @@ import type { JSONSchema7 } from "@ai-sdk/provider";
 import type { VercelLoopState } from "./vercelAgentLoop.js";
 import type { AgentToolResult } from "./types.js";
 import { errorMessage, isRecord } from "./vercelAgentUtils.js";
-import { normalizeToolParameters } from "../../tools/schema.js";
+import { normalizeToolParameters, openAiCompatibleToolParameters } from "../../tools/schema.js";
 
 export function createVercelTools(state: VercelLoopState): ToolSet {
   const entries = state.tools.map((agentTool) => {
     // AI SDK 的 schema 也属于 provider 出站边界；不能只在 prompt-cache 投影时修正。
     // 这里提前校验，首轮失败会在任何 tool.started 之前变成带工具名和路径的本地错误。
-    const parameters = normalizeToolParameters(agentTool.name, agentTool.parameters);
+    const parameters = state.model.provider === "openai-compatible"
+      ? openAiCompatibleToolParameters(agentTool.name, agentTool.parameters)
+      : normalizeToolParameters(agentTool.name, agentTool.parameters);
     return [
     agentTool.name,
     tool({
@@ -20,14 +22,12 @@ export function createVercelTools(state: VercelLoopState): ToolSet {
       execute: async (input: unknown, options: { toolCallId: string; abortSignal?: AbortSignal }) => {
         const execute = async (): Promise<AgentToolResult> => {
           const args = isRecord(input) ? input : {};
-          state.pendingEvents.push({
+          state.displayEvents.push({
             type: "tool_execution_start",
             toolCallId: options.toolCallId,
             toolName: agentTool.name,
             args
           });
-          state.wakePendingEvents?.();
-
           let result: AgentToolResult;
           try {
             result = await agentTool.execute(
@@ -35,13 +35,12 @@ export function createVercelTools(state: VercelLoopState): ToolSet {
               args,
               options.abortSignal,
               (update) => {
-                state.pendingEvents.push({
+                state.displayEvents.push({
                   type: "tool_execution_update",
                   toolCallId: options.toolCallId,
                   toolName: agentTool.name,
                   update
                 });
-                state.wakePendingEvents?.();
               }
             );
           } catch (error) {
@@ -51,13 +50,12 @@ export function createVercelTools(state: VercelLoopState): ToolSet {
             };
           }
           state.toolResults.set(options.toolCallId, result);
-          state.pendingEvents.push({
+          state.displayEvents.push({
             type: "tool_execution_end",
             toolCallId: options.toolCallId,
             toolName: agentTool.name,
             result
           });
-          state.wakePendingEvents?.();
           if (result.terminate) state.terminateRequested = true;
           return result;
         };

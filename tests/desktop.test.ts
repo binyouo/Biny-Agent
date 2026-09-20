@@ -84,6 +84,7 @@ import { TurnStore } from "../src/session/turnStore.js";
 const execFileAsync = promisify(execFile);
 
 await testInteractiveRuntimeProtocol();
+await testInteractiveRuntimePersistsBeforeGenerating();
 await testInteractiveRuntimePublishesRunStartedBeforeSkillRefresh();
 await testInteractiveRuntimePublishesStatusSnapshot();
 await testInteractiveRuntimeRedactsToolEvents();
@@ -245,6 +246,25 @@ async function testInteractiveRuntimeProtocol(): Promise<void> {
   await runtime.close();
 }
 
+async function testInteractiveRuntimePersistsBeforeGenerating(): Promise<void> {
+  const commandRuntime = fakeCommandRuntime();
+  let admitted = false;
+  commandRuntime.agent.admitUserMessage = async () => { admitted = true; };
+  const runtime = new InteractiveAgentRuntime(commandRuntime);
+  const events: AgentHostEvent[] = [];
+  const unsubscribe = subscribeHostEvents(runtime, (event) => {
+    events.push(event);
+    if (event.type === "message.user" || event.type === "run.started") {
+      assert.equal(admitted, true, `${event.type} must follow durable user admission`);
+    }
+  });
+  const submitted = runtime.submitPrompt("status-snapshot");
+  await submitted.completion;
+  assert.deepEqual(events.slice(0, 2).map((event) => event.type), ["message.user", "run.started"]);
+  unsubscribe();
+  await runtime.close();
+}
+
 async function testInteractiveRuntimePublishesRunStartedBeforeSkillRefresh(): Promise<void> {
   let releaseRefresh!: () => void;
   const refresh = new Promise<void>((resolve) => { releaseRefresh = resolve; });
@@ -260,8 +280,8 @@ async function testInteractiveRuntimePublishesRunStartedBeforeSkillRefresh(): Pr
   });
 
   const submitted = runtime.submitPrompt("status-snapshot");
-  assert.deepEqual(events.map((event) => event.type), ["message.user", "run.started"]);
   await started;
+  assert.deepEqual(events.map((event) => event.type), ["message.user", "run.started"]);
   assert.equal(events.some((event) => event.type === "run.started"), true);
   releaseRefresh();
   await submitted.completion;
@@ -633,7 +653,7 @@ async function testInteractiveRuntimeAbort(): Promise<void> {
   });
   const submitted = runtime.submitPrompt("cancel");
   await runStarted;
-  runtime.cancelCurrentRun();
+  runtime.cancelCurrentRun("interrupted");
   await submitted.completion;
   assert.equal(events.at(-1)?.type, "run.cancelled");
   await runtime.close();
@@ -4175,6 +4195,7 @@ function fakeCommandRuntime(requireFullYes = false, statusGate?: Promise<void>):
   };
   const agent = {
     getInfo: () => info,
+    admitUserMessage: async () => undefined,
     getPermissionMode: () => "ask" as const,
     setPermissionMode: async () => undefined,
     listModels: () => [],

@@ -656,7 +656,7 @@ export class BinyTui {
         if (this.overlay) return undefined;
         if (busy) {
           this.dismissAutocomplete();
-          this.runtime?.cancelCurrentRun();
+          this.runtime?.cancelCurrentRun("interrupted");
         } else {
           this.setEditorText("");
           this.setPendingAttachments([]);
@@ -680,7 +680,7 @@ export class BinyTui {
     if (matchesKey(data, "escape")) {
       if (this.overlay) return undefined;
       if (busy) {
-        this.runtime?.cancelCurrentRun();
+        this.runtime?.cancelCurrentRun("interrupted");
         return { consume: true };
       }
       return undefined;
@@ -1683,10 +1683,10 @@ async function drainRuntimeBeforeExit(runtime: InteractiveRuntimeHandle, session
       (async () => {
         if (runtime instanceof RuntimeHostClient) {
           const snapshot = runtime.getSnapshot(sessionId);
-          if (snapshot.state.kind === "runs") await runtime.cancelRunRequest(snapshot.state.activeRun.runId, sessionId);
+          if (snapshot.state.kind === "runs") await runtime.cancelRunRequest(snapshot.state.activeRun.runId, "cancelled", sessionId);
           await runtime.waitForIdle(sessionId);
         } else {
-          runtime.cancelCurrentRun();
+          runtime.cancelCurrentRun("cancelled");
           await runtime.waitForIdle();
         }
       })(),

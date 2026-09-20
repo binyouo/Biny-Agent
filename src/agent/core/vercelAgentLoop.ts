@@ -22,6 +22,7 @@ import type {
   AgentContext,
   AgentEvent,
   AgentLoopConfig,
+  AgentLoopTurnContext,
   AgentMessage,
   AgentTool,
   AgentToolResult,
@@ -44,6 +45,7 @@ import { createVercelTools } from "./vercelAgentTools.js";
 import { errorMessage, isRecord, providerMetadata, stringify } from "./vercelAgentUtils.js";
 import { toolCallRepair } from "./toolCallRepair.js";
 import { applyCacheMarkers, markInstructions } from "./cacheMarkers.js";
+import { EventQueue } from "./EventQueue.js";
 
 export interface VercelLoopState {
   context: AgentContext;
@@ -56,16 +58,9 @@ export interface VercelLoopState {
   tools: AgentTool[];
   newMessages: AgentMessage[];
   hasPendingMessages: boolean;
-  pendingEvents: AgentEvent[];
-  wakePendingEvents: (() => void) | undefined;
+  /** 只承接工具执行和模型重试产生的展示事件，不参与控制流或持久化排序。 */
+  displayEvents: EventQueue<AgentLoopDisplayEvent>;
   toolResults: Map<string, AgentToolResult>;
-  stepRecords: VercelStepRecord[];
-  activeStepRecord: VercelStepRecord | undefined;
-  finishStepSeen: boolean;
-  finishStepEventsEmitted: boolean;
-  stepCompletion: Promise<void> | undefined;
-  resolveStepCompletion: (() => void) | undefined;
-  pendingStepPreparation: (() => Promise<void>) | undefined;
   lastStep: VercelStepRecord | undefined;
   completedSteps: number;
   terminateRequested: boolean;
@@ -90,7 +85,12 @@ interface VercelStepRecord {
   toolResults: AgentToolResultMessage[];
   messages: AgentMessage[];
   hadToolCalls: boolean;
+  error?: string;
 }
+
+type AgentLoopDisplayEvent = Extract<AgentEvent, {
+  type: "tool_execution_start" | "tool_execution_update" | "tool_execution_end" | "model_retry";
+}>;
 
 export async function* vercelAgentLoopContinue(
   context: AgentContext,
@@ -113,16 +113,8 @@ export async function* vercelAgentLoopContinue(
     tools: [...config.tools],
     newMessages: [],
     hasPendingMessages: false,
-    pendingEvents: [],
-    wakePendingEvents: undefined,
+    displayEvents: new EventQueue<AgentLoopDisplayEvent>(),
     toolResults: new Map(),
-    stepRecords: [],
-    activeStepRecord: undefined,
-    finishStepSeen: false,
-    finishStepEventsEmitted: false,
-    stepCompletion: undefined,
-    resolveStepCompletion: undefined,
-    pendingStepPreparation: undefined,
     lastStep: undefined,
     completedSteps: 0,
     terminateRequested: false,
@@ -143,13 +135,10 @@ export async function* vercelAgentLoopContinue(
   };
 
   yield { type: "agent_start" };
-  await appendQueuedMessages(state, await config.getSteeringMessages?.() ?? []);
-  while (state.pendingEvents.length) {
-    const event = state.pendingEvents.shift();
-    if (event) yield event;
-  }
+  yield* appendQueuedMessages(state, await config.getSteeringMessages?.() ?? []);
 
-  while (true) {
+  let needsFollowUp = true;
+  while (needsFollowUp) {
     signal?.throwIfAborted();
     // 这些消息已经写入 context；标记只用于判断上一段 loop 是否需要再次启动。
     state.hasPendingMessages = false;
@@ -169,28 +158,14 @@ export async function* vercelAgentLoopContinue(
     state.directModelError = undefined;
     state.directAttempts = [];
     state.outputProducedSinceStep = false;
-    state.finishStepSeen = false;
-    state.finishStepEventsEmitted = false;
-    state.stepCompletion = new Promise<void>((resolve) => {
-      state.resolveStepCompletion = resolve;
-    });
-    state.pendingStepPreparation = undefined;
+    let stepResult: StepResult<ToolSet> | undefined;
     try {
       const result = streamModelStep(state);
       const stream = result.fullStream[Symbol.asyncIterator]();
       let nextStream = stream.next();
       while (true) {
-        const pending = new Promise<undefined>((resolve) => {
-          state.wakePendingEvents = () => resolve(undefined);
-        });
-        const next = state.pendingEvents.length
-          ? undefined
-          : await Promise.race([nextStream, pending]);
-        state.wakePendingEvents = undefined;
-        while (state.pendingEvents.length) {
-          const event = state.pendingEvents.shift();
-          if (event) yield event;
-        }
+        const next = await state.displayEvents.waitForEventOr(nextStream);
+        yield* state.displayEvents.drain();
         if (!next) continue;
         if (next.done) break;
         yield* handleVercelStreamPart(state, next.value);
@@ -198,43 +173,57 @@ export async function* vercelAgentLoopContinue(
       }
       signal?.throwIfAborted();
       if (stream.return) await stream.return();
+      stepResult = (await result.steps).at(-1);
+      if (!stepResult) throw new Error("Provider stream ended without a completed step.");
     } catch (error) {
-      await recordDirectModelFailure(state, error);
+      // AI SDK 在首个输出前失败时可能向 fullStream 抛出通用的 NoOutputGeneratedError，
+      // onError 仍保留了 provider 原始错误。持久化和界面都应展示原始原因。
+      const providerError = state.directModelError ?? error;
+      await recordDirectModelFailure(state, providerError);
       if (signal?.aborted) throw error;
-      state.streamFailure = errorMessage(error);
+      state.streamFailure = errorMessage(providerError);
       if (state.vercelModel === undefined) {
         yield { type: "error", error: state.streamFailure, fatal: true };
       }
     } finally {
-      state.wakePendingEvents = undefined;
       await recordDirectModelFailure(state, signal?.aborted ? signal.reason : state.directModelError ?? state.streamFailure ?? "Provider stream ended before a finish event.");
     }
-    if (!state.streamFailure && state.finishStepSeen) {
-      await state.stepCompletion;
-    }
-
     if (state.streamFailure && state.vercelModel !== undefined && !state.outputProducedSinceStep) {
       const failure = state.streamFailure;
       state.streamFailure = undefined;
-      if (!await recoverDirectModelError(state, failure, signal)) {
+      const recovery = await recoverDirectModelError(state, failure, signal);
+      if (!recovery) {
         state.streamFailure = failure;
         yield { type: "error", error: failure, fatal: true };
+      } else {
+        yield { type: "model_retry", ...recovery };
       }
     }
     if (state.streamFailure && state.vercelModel !== undefined && state.outputProducedSinceStep) {
       yield { type: "error", error: state.streamFailure, fatal: true };
     }
-    while (state.pendingEvents.length) {
-      const event = state.pendingEvents.shift();
-      if (event) yield event;
-    }
-    // SDK 可能先把 finish-step 推给 fullStream，再执行 onStepEnd；先让宿主消费 turn_end，
-    // prepareNextTurn 才能读取已更新的 provider step 计数和下一轮上下文。
-    const stepPreparation = state.pendingStepPreparation as (() => Promise<void>) | undefined;
-    state.pendingStepPreparation = undefined;
-    if (stepPreparation !== undefined) {
+    yield* state.displayEvents.drain();
+    let completedStep: VercelStepRecord | undefined;
+    if (!state.streamFailure && stepResult !== undefined) {
       try {
-        await stepPreparation();
+        completedStep = completeStep(state, stepResult);
+        await state.config.persistStep?.(turnContext(state, completedStep));
+      } catch (error) {
+        if (signal?.aborted) throw error;
+        state.streamFailure = errorMessage(error);
+        yield { type: "error", error: state.streamFailure, fatal: true };
+      }
+    }
+    if (completedStep !== undefined && !state.streamFailure) {
+      yield* completedStepEvents(completedStep);
+      if (completedStep.error) yield { type: "error", error: completedStep.error, fatal: true };
+      yield* state.displayEvents.drain();
+    }
+    if (completedStep !== undefined && !state.streamFailure) {
+      try {
+        if (await state.config.shouldStopAfterTurn?.(turnContext(state, completedStep))) {
+          state.stopRequested = true;
+        }
       } catch (error) {
         if (signal?.aborted) throw error;
         state.streamFailure = errorMessage(error);
@@ -244,22 +233,16 @@ export async function* vercelAgentLoopContinue(
     if (state.streamFailure) break;
     if (state.stopRequested) break;
 
-    // 只有在完整的 finish-step 已经向宿主发出后才读取追问。这样 AgentSession
-    // 能先持久化 assistant message，再持久化 queued user message，不会倒序。
+    // 当前 step 已经提交完成；此后读取追问，持久化顺序直接由控制流保证。
     if (!state.hasPendingMessages) {
-      await appendQueuedMessages(state, await config.getSteeringMessages?.() ?? []);
-      while (state.pendingEvents.length) {
-        const event = state.pendingEvents.shift();
-        if (event) yield event;
-      }
+      yield* appendQueuedMessages(state, await config.getSteeringMessages?.() ?? []);
     }
-    if (state.hasPendingMessages) {
-      continue;
+    const modelNeedsFollowUp = state.lastStep?.hadToolCalls === true && !state.terminateRequested;
+    if (!state.hasPendingMessages && !modelNeedsFollowUp) {
+      yield* appendQueuedMessages(state, await config.getQueuedMessages?.() ?? []);
     }
-
-    if (state.completedSteps >= config.maxSteps
-      && !state.terminateRequested
-      && state.lastStep?.hadToolCalls === true) {
+    needsFollowUp = state.hasPendingMessages || modelNeedsFollowUp;
+    if (state.completedSteps >= config.maxSteps && needsFollowUp) {
       yield {
         type: "error",
         error: `Agent reached its ${String(config.maxSteps)}-step limit.`,
@@ -268,17 +251,15 @@ export async function* vercelAgentLoopContinue(
       };
       break;
     }
-
-    if (state.lastStep?.hadToolCalls === true && !state.terminateRequested) {
-      continue;
-    }
-
-    const queuedMessages = await config.getQueuedMessages?.() ?? [];
-    if (!queuedMessages.length) break;
-    await appendQueuedMessages(state, queuedMessages);
-    while (state.pendingEvents.length) {
-      const event = state.pendingEvents.shift();
-      if (event) yield event;
+    if (needsFollowUp && completedStep !== undefined) {
+      try {
+        await prepareNextModelStep(state, completedStep);
+      } catch (error) {
+        if (signal?.aborted) throw error;
+        state.streamFailure = errorMessage(error);
+        yield { type: "error", error: state.streamFailure, fatal: true };
+        break;
+      }
     }
   }
 
@@ -294,13 +275,12 @@ async function recoverDirectModelError(
   state: VercelLoopState,
   error: string,
   signal: AbortSignal | undefined
-): Promise<boolean> {
-  if (state.vercelModel === undefined || state.outputProducedSinceStep) return false;
+): Promise<{ reason: string; attempt: number; compactedMessages: number } | undefined> {
+  if (state.vercelModel === undefined || state.outputProducedSinceStep) return undefined;
   const recovery = await state.config.recoverFromModelError?.(error, state.context, signal);
-  if (!recovery) return false;
-  state.pendingEvents.push({ type: "model_retry", ...recovery });
+  if (!recovery) return undefined;
   state.hasPendingMessages = true;
-  return true;
+  return recovery;
 }
 
 function streamModelStep(state: VercelLoopState) {
@@ -360,8 +340,7 @@ function streamModelStep(state: VercelLoopState) {
       : (event) => { beginDirectModelRequest(state, event.callId); },
     onLanguageModelCallEnd: state.vercelModel === undefined
       ? undefined
-      : async (event) => { await recordDirectModelRequest(state, event); },
-    onStepEnd: (step) => { completeStep(state, step); }
+      : async (event) => { await recordDirectModelRequest(state, event); }
   });
 }
 
@@ -392,7 +371,7 @@ function retryableEmptySuccessfulResponse(error: unknown): unknown {
   });
 }
 
-function completeStep(state: VercelLoopState, step: StepResult<ToolSet>): void {
+function completeStep(state: VercelLoopState, step: StepResult<ToolSet>): VercelStepRecord {
   const message = assistantFromStep(step);
   const toolResults = step.toolCalls.map((call) => toolResultMessage(
     call.toolCallId,
@@ -404,9 +383,7 @@ function completeStep(state: VercelLoopState, step: StepResult<ToolSet>): void {
   state.context.messages.push(message, ...toolResults);
   state.newMessages.push(message, ...toolResults);
   state.completedSteps += 1;
-  const record = { message, toolResults, messages, hadToolCalls: step.toolCalls.length > 0 };
-  if (!state.finishStepSeen) state.stepRecords.push(record);
-  state.activeStepRecord = record;
+  const record: VercelStepRecord = { message, toolResults, messages, hadToolCalls: step.toolCalls.length > 0 };
   state.lastStep = record;
   updateStepReasoningMetadata(state, record);
   const invalidToolCall = step.toolCalls.find((call) => call.invalid);
@@ -422,63 +399,53 @@ function completeStep(state: VercelLoopState, step: StepResult<ToolSet>): void {
       const error = name
         ? `Tool call for ${name} is invalid.`
         : "Tool call is missing a function name.";
-      state.pendingEvents.push({ type: "error", error, fatal: true });
+      record.error = error;
     }
   } else if (unavailableToolCall) {
     const error = unavailableToolCall.toolName.trim()
       ? `Tool ${unavailableToolCall.toolName} not found.`
       : "Tool call is missing a function name.";
-    state.pendingEvents.push({ type: "error", error, fatal: true });
+    record.error = error;
     state.stopRequested = true;
   }
 
-  if (state.finishStepSeen && !state.finishStepEventsEmitted) {
-    state.finishStepEventsEmitted = true;
-    state.pendingEvents.push(...completedStepEvents(record));
-    state.wakePendingEvents?.();
-  }
-  state.pendingStepPreparation = async () => {
-    const nextTurn = await state.config.prepareNextTurn?.({
-      message,
-      toolResults,
-      context: state.context,
-      newMessages: state.newMessages
-    });
-    if (nextTurn) {
-      if (nextTurn.context) state.context = nextTurn.context;
-      state.tools = [...(nextTurn.tools ?? state.context.tools)];
-      state.context.tools = [...state.tools];
-      if (nextTurn.model) {
-        state.model = nextTurn.model;
-        state.vercelModel = nextTurn.vercelModel;
-      } else if (nextTurn.vercelModel) {
-        state.vercelModel = nextTurn.vercelModel;
-      }
-      state.modelOptions = nextTurn.modelOptions ?? state.modelOptions;
-      if ("maxRetries" in nextTurn) state.maxRetries = nextTurn.maxRetries;
-    }
-    if (await state.config.shouldStopAfterTurn?.({
-      message,
-      toolResults,
-      context: state.context,
-      newMessages: state.newMessages
-    })) {
-      state.stopRequested = true;
-    }
-  };
-  state.resolveStepCompletion?.();
+  return record;
 }
 
-async function appendQueuedMessages(state: VercelLoopState, messages: AgentMessage[]): Promise<void> {
-  if (!messages.length) return;
+function turnContext(state: VercelLoopState, record: VercelStepRecord): AgentLoopTurnContext {
+  return {
+    message: record.message,
+    toolResults: record.toolResults,
+    context: state.context,
+    newMessages: state.newMessages
+  };
+}
+
+async function prepareNextModelStep(state: VercelLoopState, record: VercelStepRecord): Promise<void> {
+  const nextTurn = await state.config.prepareNextTurn?.(turnContext(state, record));
+  if (!nextTurn) return;
+  if (nextTurn.context) state.context = nextTurn.context;
+  state.tools = [...(nextTurn.tools ?? state.context.tools)];
+  state.context.tools = [...state.tools];
+  if (nextTurn.model) {
+    state.model = nextTurn.model;
+    state.vercelModel = nextTurn.vercelModel;
+  } else if (nextTurn.vercelModel) {
+    state.vercelModel = nextTurn.vercelModel;
+  }
+  state.modelOptions = nextTurn.modelOptions ?? state.modelOptions;
+  if ("maxRetries" in nextTurn) state.maxRetries = nextTurn.maxRetries;
+}
+
+function appendQueuedMessages(state: VercelLoopState, messages: AgentMessage[]): AgentEvent[] {
+  if (!messages.length) return [];
   state.hasPendingMessages = true;
   state.context.messages.push(...messages);
   state.newMessages.push(...messages);
-  for (const message of messages) {
-    state.pendingEvents.push({ type: "message_start", message });
-    state.pendingEvents.push({ type: "message_end", message });
-  }
-  state.wakePendingEvents?.();
+  return messages.flatMap((message): AgentEvent[] => [
+    { type: "message_start", message },
+    { type: "message_end", message }
+  ]);
 }
 
 function vercelCallSettings(state: VercelLoopState): {
@@ -519,7 +486,6 @@ function handleVercelStreamPart(state: VercelLoopState, part: {
     state.currentText = "";
     state.currentReasoning.clear();
     state.currentToolCalls = [];
-    state.activeStepRecord = undefined;
     return [{ type: "turn_start" }, { type: "message_start", message: emptyAssistant() }];
   }
   if (part.type === "text-delta" && typeof part.text === "string") {
@@ -536,7 +502,6 @@ function handleVercelStreamPart(state: VercelLoopState, part: {
       text: "",
       providerMetadata: providerMetadata(part.providerMetadata)
     });
-    if (state.activeStepRecord) updateStepReasoningMetadata(state, state.activeStepRecord);
     return [{
       type: "message_update",
       message: assistantSnapshot(state),
@@ -549,7 +514,6 @@ function handleVercelStreamPart(state: VercelLoopState, part: {
     reasoning.text += part.text;
     reasoning.providerMetadata = providerMetadata(part.providerMetadata) ?? reasoning.providerMetadata;
     state.currentReasoning.set(part.id, reasoning);
-    if (state.activeStepRecord) updateStepReasoningMetadata(state, state.activeStepRecord);
     return [{
       type: "message_update",
       message: assistantSnapshot(state),
@@ -559,7 +523,6 @@ function handleVercelStreamPart(state: VercelLoopState, part: {
   if (part.type === "reasoning-end" && typeof part.id === "string") {
     const reasoning = state.currentReasoning.get(part.id);
     if (reasoning) reasoning.providerMetadata = providerMetadata(part.providerMetadata) ?? reasoning.providerMetadata;
-    if (state.activeStepRecord) updateStepReasoningMetadata(state, state.activeStepRecord);
     return [{
       type: "message_update",
       message: assistantSnapshot(state),
@@ -577,12 +540,7 @@ function handleVercelStreamPart(state: VercelLoopState, part: {
     }];
   }
   if (part.type === "finish-step") {
-    state.finishStepSeen = true;
-    const record = state.stepRecords.shift();
-    if (!record) return [];
-    state.finishStepEventsEmitted = true;
-    updateStepReasoningMetadata(state, record);
-    return completedStepEvents(record);
+    return [];
   }
   if (part.type === "error") {
     const error = errorMessage(part.error);

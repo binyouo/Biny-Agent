@@ -73,6 +73,24 @@ function main(): void {
   ]);
   assert.deepEqual(legacyBoundary.messages.map((message) => message.role), ["user", "assistant", "toolResult", "toolResult", "user"]);
 
+  const interruptionMarker = "<turn_aborted>\nThe user intentionally interrupted the previous turn.\n</turn_aborted>";
+  const interrupted = replaySessionEvents([
+    { type: "user_message", content: "start work", messageId: "interrupted-user" },
+    { type: "turn_interrupted", reason: "interrupted", content: interruptionMarker },
+    { type: "turn_status", status: "cancelled", stopReason: "interrupted", steps: 0 }
+  ]);
+  assert.deepEqual(interrupted.messages, [
+    { role: "user", content: "start work" },
+    { role: "user", content: interruptionMarker }
+  ]);
+  assert.deepEqual(interrupted.messageTree.map((node) => node.id), ["interrupted-user"], "the marker must stay out of the public message tree");
+
+  const failedWithoutMarker = replaySessionEvents([
+    { type: "user_message", content: "start work" },
+    { type: "turn_status", status: "failed", stopReason: "provider_error", steps: 0 }
+  ]);
+  assert.deepEqual(failedWithoutMarker.messages, [{ role: "user", content: "start work" }]);
+
   const legacyNames = replaySessionEvents([
     { type: "user_message", content: "legacy tools" },
     { type: "tool_call", tool: "write_file", args: { path: "a.txt" }, toolCallId: "legacy-write" },

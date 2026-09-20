@@ -78,7 +78,7 @@ export class ExecutionService {
     try {
       const submitted = this.interactive.submitPrompt(options.input, options.attachments ?? []);
       const abort = (): void => {
-        this.interactive.cancelRun(submitted.runId);
+        this.interactive.cancelRun(submitted.runId, "cancelled");
       };
       options.signal.addEventListener("abort", abort, { once: true });
       if (options.signal.aborted) abort();

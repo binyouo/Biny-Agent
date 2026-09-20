@@ -896,8 +896,8 @@ export class DesktopAgentManager {
     const { runtime } = managed;
     const snapshot = runtime instanceof RuntimeHostClient ? runtime.getSnapshot(sessionId) : runtime.getSnapshot();
     if (snapshot.state.kind === "runs") {
-      if (runtime instanceof RuntimeHostClient) await runtime.cancelRunRequest(snapshot.state.activeRun.runId, sessionId);
-      else runtime.cancelCurrentRun();
+      if (runtime instanceof RuntimeHostClient) await runtime.cancelRunRequest(snapshot.state.activeRun.runId, "replaced", sessionId);
+      else runtime.cancelCurrentRun("replaced");
       if (runtime instanceof RuntimeHostClient) await runtime.waitForIdle(sessionId);
       else await runtime.waitForIdle();
     } else if (snapshot.state.kind === "maintenance") {
@@ -961,11 +961,11 @@ export class DesktopAgentManager {
     if (runtime instanceof RuntimeHostClient) {
       const targetSessionId = runtime.runtimeSnapshots()
         .find((entry) => activeRun(entry.snapshot)?.runId === runId)?.sessionId;
-      const result = await runtime.cancelRunRequest(runId, targetSessionId);
+      const result = await runtime.cancelRunRequest(runId, "interrupted", targetSessionId);
       if (!result.accepted) throw new Error(result.reason ?? "Runtime Host did not accept cancellation.");
       return;
     }
-    if (!runtime.cancelRun(runId)) throw new Error(`Run ${runId} is not active.`);
+    if (!runtime.cancelRun(runId, "interrupted")) throw new Error(`Run ${runId} is not active.`);
   }
 
   async resolvePermission(projectId: string, requestId: string, result: PermissionResult): Promise<void> {
@@ -2379,7 +2379,7 @@ export class DesktopAgentManager {
       const result = commands.graphs.cancelGraph(graphId);
       for (const active of activeRuns) {
         commands.subagents?.cancelTask(active.taskRunId, "Graph cancelled.");
-        if (active.runId !== undefined) runtime.cancelRun(active.runId);
+        if (active.runId !== undefined) runtime.cancelRun(active.runId, "cancelled");
         try {
           const task = commands.taskRuns.get(active.taskRunId);
           if (task && !isTaskRunTerminal(task.status)) commands.taskRuns.transition(active.taskRunId, "cancelled");
@@ -2511,10 +2511,10 @@ export class DesktopAgentManager {
         if (runtime instanceof RuntimeHostClient) {
           for (const { sessionId, snapshot } of runtime.runtimeSnapshots()) {
             const run = activeRun(snapshot);
-            if (run) void runtime.cancelRunRequest(run.runId, sessionId).catch(() => undefined);
+            if (run) void runtime.cancelRunRequest(run.runId, "cancelled", sessionId).catch(() => undefined);
           }
         } else {
-          runtime.cancelCurrentRun();
+          runtime.cancelCurrentRun("cancelled");
         }
       }
     }
@@ -2533,12 +2533,12 @@ export class DesktopAgentManager {
           .map(({ sessionId, snapshot }) => ({ sessionId, run: activeRun(snapshot) }))
           .filter((entry): entry is { sessionId: string; run: NonNullable<ReturnType<typeof activeRun>> } => entry.run !== undefined);
         await Promise.all(runs.map(async ({ sessionId, run }) => {
-          await waitForRuntimeOperation(runtime.cancelRunRequest(run.runId, sessionId), remainingTimeout(deadline));
+          await waitForRuntimeOperation(runtime.cancelRunRequest(run.runId, "cancelled", sessionId), remainingTimeout(deadline));
         }));
       } else {
         const run = activeRun(runtime.getSnapshot());
-        if (run) runtime.cancelRun(run.runId);
-        else runtime.cancelCurrentRun();
+        if (run) runtime.cancelRun(run.runId, "cancelled");
+        else runtime.cancelCurrentRun("cancelled");
       }
       await waitForRuntimeIdle(runtime, remainingTimeout(deadline));
     })));

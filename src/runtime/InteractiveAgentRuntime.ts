@@ -1,7 +1,16 @@
 import { randomUUID } from "node:crypto";
 import type { AgentAttachment, AgentSessionInfo, ResumedAgentSession } from "../agent/AgentSession.js";
 import type { AgentCapabilitySelection } from "../agent/capabilitySelection.js";
-import type { AgentPermissionResult, AgentSessionEvent, AgentTurnOutcome, AgentTurnStatus, AgentTurnStopReason, BlockedReason } from "../agent/types.js";
+import {
+  AgentTurnCancellationError,
+  type AgentPermissionResult,
+  type AgentSessionEvent,
+  type AgentTurnCancellationReason,
+  type AgentTurnOutcome,
+  type AgentTurnStatus,
+  type AgentTurnStopReason,
+  type BlockedReason
+} from "../agent/types.js";
 import { isFullYesConfirmation } from "../permission/confirmation.js";
 import type { PermissionAction, PermissionResult } from "../permission/PermissionManager.js";
 import type { ToolInputDisplay } from "../tools/types.js";
@@ -89,8 +98,8 @@ export interface InteractiveRuntimeHandle {
   continueInterruptedTurn(): Promise<AgentRunOutcome | undefined>;
   startInterruptedTurn(requestIds?: RuntimeRequestIds): Promise<SubmittedAgentRun | undefined>;
   waitForIdle(): Promise<void>;
-  cancelCurrentRun(): void;
-  cancelRun(runId: string): boolean;
+  cancelCurrentRun(reason: AgentTurnCancellationReason): void;
+  cancelRun(runId: string, reason: AgentTurnCancellationReason): boolean;
   answerPermission(requestId: string, result: PermissionResult): void;
   /** 以当前 surface 的 writer 身份打开一个 session，并在切换/关闭前保持占用。 */
   claimSession(session: string): Promise<void>;
@@ -336,7 +345,7 @@ export class InteractiveAgentRuntime {
     const run = this.activeRun;
     const completion = this.activeRunCompletion;
     this.sendQueuedMessagesWithoutDelay = true;
-    if (!run || !completion || !this.cancelRun(run.runId)) {
+    if (!run || !completion || !this.cancelRun(run.runId, "replaced")) {
       this.sendQueuedMessagesWithoutDelay = false;
       throw new Error("There is no active run to stop before sending queued messages.");
     }
@@ -519,8 +528,8 @@ export class InteractiveAgentRuntime {
     return { runId, messageId, completion };
   }
 
-  cancelCurrentRun(): void {
-    if (this.activeRun) this.cancelRun(this.activeRun.runId);
+  cancelCurrentRun(reason: AgentTurnCancellationReason): void {
+    if (this.activeRun) this.cancelRun(this.activeRun.runId, reason);
     else if (this.state.kind === "maintenance") this.abortController?.abort();
   }
 
@@ -542,12 +551,13 @@ export class InteractiveAgentRuntime {
     }
   }
 
-  cancelRun(runId: string): boolean {
+  cancelRun(runId: string, reason: AgentTurnCancellationReason): boolean {
     if (this.activeRun?.runId === runId) {
-      this.commandRuntime.subagents?.cancelParent(this.activeRun.runId, "Current turn interrupted.");
-      this.pendingPermission?.resolve({ approved: false, action: "deny", scope: "once", message: "Current turn interrupted.", confirmation: undefined });
+      const cancellation = new AgentTurnCancellationError(reason);
+      this.commandRuntime.subagents?.cancelParent(this.activeRun.runId, cancellation.message);
+      this.pendingPermission?.resolve({ approved: false, action: "deny", scope: "once", message: cancellation.message, confirmation: undefined });
       this.pendingPermission = undefined;
-      this.activeRunController?.abort(new Error("Current turn interrupted."));
+      this.activeRunController?.abort(cancellation);
       return true;
     }
     return false;
@@ -757,7 +767,7 @@ export class InteractiveAgentRuntime {
   close(): Promise<void> {
     if (this.closePromise) return this.closePromise;
     this.closed = true;
-    this.cancelCurrentRun();
+    this.cancelCurrentRun("cancelled");
     this.closePromise = (async () => {
       const activeWriters = Promise.all([
         this.activeRunCompletion,
@@ -1097,21 +1107,6 @@ export class InteractiveAgentRuntime {
     run.startedAt = new Date(startedAtMs).toISOString();
     this.commandRuntime.setSubagentParentRunId(run.runId);
     this.tools.clear();
-    if (!run.supervision && !run.continuation && run.retryOfMessageId === undefined) {
-      this.emit({
-        ...this.eventBase(run),
-        type: "message.user",
-        messageId: run.messageId,
-        content: run.input
-      });
-    } else if (run.replaceUserMessageId !== undefined && run.replacementUserMessageId !== undefined) {
-      this.emit({
-        ...this.eventBase(run),
-        type: "message.user",
-        messageId: run.replacementUserMessageId,
-        content: run.input
-      });
-    }
     // Durable user admission 必须先于前台 generating 状态；这样取消、准备失败或 provider
     // 错误都不会留下只有 UI 占位而没有 canonical user_message 的回合。
     const replacingUserMessage = run.replaceUserMessageId !== undefined && run.replacementUserMessageId !== undefined;
@@ -1123,6 +1118,22 @@ export class InteractiveAgentRuntime {
         attachments: run.attachments,
         replaceUserMessageId: replacingUserMessage ? run.replaceUserMessageId : undefined,
         replacementUserMessageId: replacingUserMessage ? run.replacementUserMessageId : undefined
+      });
+    }
+    // message.user 也会把时间线切到 running；必须和 run.started 一样晚于 durable admission。
+    if (!run.supervision && !run.continuation && run.retryOfMessageId === undefined) {
+      this.emit({
+        ...this.eventBase(run),
+        type: "message.user",
+        messageId: run.messageId,
+        content: run.input
+      });
+    } else if (replacingUserMessage) {
+      this.emit({
+        ...this.eventBase(run),
+        type: "message.user",
+        messageId: run.replacementUserMessageId!,
+        content: run.input
       });
     }
     this.emit({
@@ -1213,8 +1224,13 @@ export class InteractiveAgentRuntime {
       const message = error instanceof Error ? error.message : String(error);
       const durationMs = Date.now() - startedAtMs;
       if (signal.aborted) {
-        const reason = "Current turn cancelled.";
-        return this.cancelledRun(run, durationMs, reason);
+        const cancellation = cancellationReason(signal);
+        const reason = cancellation === "interrupted"
+          ? "Current turn interrupted by the user."
+          : cancellation === "replaced"
+            ? "Current turn replaced by newer user input."
+            : "Current turn cancelled.";
+        return this.cancelledRun(run, durationMs, reason, undefined, cancellation);
       }
       agent.recordError(error);
       return this.failRun(run, durationMs, message);
@@ -1319,14 +1335,15 @@ export class InteractiveAgentRuntime {
     run: AgentRun,
     durationMs: number,
     reason: string,
-    turn?: AgentTurnOutcome
+    turn?: AgentTurnOutcome,
+    cancellation: AgentTurnCancellationReason = "cancelled"
   ): Promise<AgentRunOutcome> {
     const publicReason = redactSecrets(reason);
     run.status = "cancelled";
     const outcome: AgentRunOutcome = {
       runId: run.runId,
       status: "cancelled",
-      stopReason: "cancelled",
+      stopReason: turn?.stopReason ?? cancellation,
       finishReason: turn?.finishReason,
       steps: turn?.steps ?? 0,
       output: turn?.output ?? "",
@@ -1337,7 +1354,7 @@ export class InteractiveAgentRuntime {
     await this.commitTerminal(run, outcome, {
       status: "cancelled",
       durationMs,
-      stopReason: turn?.stopReason ?? "cancelled",
+      stopReason: turn?.stopReason ?? cancellation,
       finishReason: turn?.finishReason,
       steps: turn?.steps ?? 0,
       error: publicReason
@@ -1347,7 +1364,7 @@ export class InteractiveAgentRuntime {
       type: "run.cancelled",
       durationMs,
       reason: publicReason,
-      stopReason: turn?.stopReason ?? "cancelled",
+      stopReason: turn?.stopReason ?? cancellation,
       finishReason: turn?.finishReason,
       steps: turn?.steps ?? 0,
       usage: turn?.usage
@@ -1724,11 +1741,17 @@ function readAgentTurnStopReason(value: unknown, status: AgentTurnStatus): Agent
     || value === "content_filter"
     || value === "provider_error"
     || value === "blocked"
+    || value === "interrupted"
+    || value === "replaced"
     || value === "cancelled"
     || value === "aborted"
     || value === "budget_exhausted"
   ) return value;
   return status === "cancelled" ? "cancelled" : status === "aborted" ? "aborted" : status === "blocked" ? "blocked" : "provider_error";
+}
+
+function cancellationReason(signal: AbortSignal): AgentTurnCancellationReason {
+  return signal.reason instanceof AgentTurnCancellationError ? signal.reason.reason : "cancelled";
 }
 
 function recordObject(value: unknown): Record<string, unknown> {

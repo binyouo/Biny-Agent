@@ -271,6 +271,8 @@ export interface AgentLoopConfig {
   transformContext?: (messages: AgentMessage[], signal?: AbortSignal) => Promise<AgentMessage[]>;
   getSteeringMessages?: () => Promise<AgentMessage[]>;
   getQueuedMessages?: () => Promise<AgentMessage[]>;
+  /** 在任何 step 完成通知或后续输入消费之前，提交该 step 的持久化事实。 */
+  persistStep?: (context: AgentLoopTurnContext) => Promise<void>;
   shouldStopAfterTurn?: (context: AgentLoopTurnContext) => boolean | Promise<boolean>;
   prepareNextTurn?: (context: AgentLoopTurnContext) => Promise<AgentLoopNextTurnSnapshot | undefined>;
   recoverFromModelError?: (

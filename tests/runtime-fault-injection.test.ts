@@ -310,7 +310,7 @@ async function testCancellationAfterCanonicalTerminalDoesNotLeaveBusySnapshot():
       turnId: "canonical-cancel-turn"
     });
     await reachedCanonical;
-    assert.equal(runtime.cancelRun(submitted.runId), true);
+    assert.equal(runtime.cancelRun(submitted.runId, "cancelled"), true);
     releaseStream?.();
 
     const outcome = await submitted.completion;

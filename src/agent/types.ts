@@ -16,6 +16,23 @@ export type AgentPermissionResult = PermissionResult;
 
 export type AgentTurnStatus = "completed" | "incomplete" | "blocked" | "cancelled" | "failed" | "aborted";
 
+/** 区分用户显式停止、新输入替换，以及无法归因给用户的宿主取消。 */
+export type AgentTurnCancellationReason = "interrupted" | "replaced" | "cancelled";
+
+export class AgentTurnCancellationError extends Error {
+  readonly reason: AgentTurnCancellationReason;
+
+  constructor(reason: AgentTurnCancellationReason) {
+    super(reason === "interrupted"
+      ? "Current turn interrupted by the user."
+      : reason === "replaced"
+        ? "Current turn replaced by newer user input."
+        : "Current turn cancelled.");
+    this.name = "AgentTurnCancellationError";
+    this.reason = reason;
+  }
+}
+
 export type BlockedReason =
   | "missing_user_input"
   | "waiting_for_approval"
@@ -38,6 +55,8 @@ export type AgentTurnStopReason =
   | "provider_error"
   | "missing_terminal_event"
   | "blocked"
+  | "interrupted"
+  | "replaced"
   | "cancelled"
   | "aborted"
   | "budget_exhausted";

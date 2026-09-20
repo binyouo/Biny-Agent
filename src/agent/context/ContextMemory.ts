@@ -1,5 +1,5 @@
 import { estimateContextBreakdown, estimateMessageTokens, estimateTokens, messageTokenCost, type ContextTokenInput } from "./tokenUsage.js";
-import type { AgentMessage, AgentModel, AgentTool, AgentToolResultMessage, AgentUsage, AgentUserMessage, ModelRequestContext, ModelRequestObserver } from "../core/types.js";
+import type { AgentContext, AgentMessage, AgentModel, AgentTool, AgentToolResultMessage, AgentUsage, AgentUserMessage, ModelRequestContext, ModelRequestObserver } from "../core/types.js";
 import { generateNativeText } from "../../llm/nativeJson.js";
 import { createHash } from "node:crypto";
 import { cloneAgentMessages, messageText, messageToolName } from "../modelMessages.js";
@@ -262,10 +262,7 @@ export class ContextMemory {
   }
 
   /**
-   * 回合内的上下文治理。turn 中途不能做整段摘要压缩：那要改动消息结构，很容易让
-   * tool-call 和 tool-result 配不上对，也会碰到带签名的 reasoning 块。
-   *
-   * 这里只做一件安全的事 —— 把较早的 tool result 正文替换成一个占位说明，从最旧的
+   * 每次 provider 请求前的轻量上下文治理。把较早的 tool result 正文替换成一个占位说明，从最旧的
    * 开始，直到估算落回预算内。消息条数、角色、toolCallId 全部不变，配对关系天然保住；
    * 原文早就在 session JSONL；超出回合预算的结果则有 `.biny/tool-results` 引用。占位符
    * 会保留可重新读取的 archivePath 或一小段预览，只影响下一次推理，不改写持久化事实。
@@ -397,13 +394,38 @@ export class ContextMemory {
    * 保留段按 assistant + tool-result 批次切分，不能把工具调用和结果从中间拆开。
    */
   async compactRunContext(messages: AgentMessage[], signal?: AbortSignal): Promise<RunContextCompaction | undefined> {
+    return await this.compactClosedRunContext(messages, signal, "overflow");
+  }
+
+  /** 完整 step 落库后，用下一请求的真实候选形状判断是否需要主动压缩闭合消息前缀。 */
+  shouldCompactRunContext(context: AgentContext): boolean {
+    const requestedTokens = estimateRunContextTokens(context);
+    return this.shouldCompact(requestedTokens, this.compactionLimits(), context.messages.length > 0);
+  }
+
+  async compactRunContextIfNeeded(
+    context: AgentContext,
+    signal?: AbortSignal
+  ): Promise<RunContextCompaction | undefined> {
+    const requestedTokens = estimateRunContextTokens(context);
+    if (!this.shouldCompact(requestedTokens, this.compactionLimits(), context.messages.length > 0)) return undefined;
+    return await this.compactClosedRunContext(context.messages, signal, "automatic", requestedTokens);
+  }
+
+  private async compactClosedRunContext(
+    messages: AgentMessage[],
+    signal: AbortSignal | undefined,
+    mode: "automatic" | "overflow",
+    requestedTokens?: number
+  ): Promise<RunContextCompaction | undefined> {
     signal?.throwIfAborted();
     if (messages.length < 2) return undefined;
     const compacted = await this.compactMessages(
       messages,
-      "Recover from a provider context overflow during the active run.",
+      mode === "overflow" ? "Recover from a provider context overflow during the active run." : undefined,
       signal,
-      "overflow"
+      mode,
+      requestedTokens
     );
     if (!compacted.compacted || !compacted.summary) return undefined;
     return {
@@ -559,8 +581,12 @@ export class ContextMemory {
     };
   }
 
-  private shouldCompact(requestedTokens: number, limits: ResolvedCompactionLimits): boolean {
-    if (!limits.enabled || !this.history.length) return false;
+  private shouldCompact(
+    requestedTokens: number,
+    limits: ResolvedCompactionLimits,
+    hasMessages = this.history.length > 0
+  ): boolean {
+    if (!limits.enabled || !hasMessages) return false;
     const threshold = Math.max(1, this.inputBudget() - limits.reserveTokens);
     if (requestedTokens > threshold) return true;
     return this.lastBudget.source === "provider" && this.lastBudget.usedTokens > threshold;
@@ -1158,6 +1184,12 @@ export interface RunContextCompaction {
   compactedMessageCount: number;
   retainedMessageCount: number;
   tokensBefore: number;
+}
+
+function estimateRunContextTokens(context: AgentContext): number {
+  // 主动压缩只关心总量；工具来源只影响展示分类，不影响各项 token 之和。
+  const breakdown = estimateContextBreakdown({ ...context, toolSources: new Map() });
+  return Object.values(breakdown).reduce((total, tokens) => total + tokens, 0);
 }
 
 function assembleContext(

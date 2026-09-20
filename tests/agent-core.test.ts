@@ -23,6 +23,9 @@ async function main(): Promise<void> {
   await testModelErrorRecoveryRetriesBeforeAnyDelta();
   await testModelStreamWithoutFinishFails();
   await testNextTurnRefreshesModelAndTools();
+  await testQueuedFollowUpPreparesOnlyTheNextModelStep();
+  await testStepPersistencePrecedesMilestoneAndQueue();
+  await testStepPersistenceFailureStopsTheLoop();
   await testRemovedToolNameIsRejected();
   await testUnknownToolCallStopsWithoutRetry();
   await testTruncatedInvalidToolCallPreservesLength();
@@ -82,6 +85,7 @@ async function testToolProgressBeforeCompletion(): Promise<void> {
   let release!: () => void;
   const barrier = new Promise<void>((resolve) => { release = resolve; });
   let completed = false;
+  const displayOrder: string[] = [];
   const tool: AgentTool = {
     name: "slow", description: "test", parameters: { type: "object" },
     async execute(_id, _args, _signal, onUpdate) {
@@ -100,14 +104,26 @@ async function testToolProgressBeforeCompletion(): Promise<void> {
   };
   const running = (async () => {
     for await (const event of agentLoop([{ role: "user", content: "test" }], { messages: [], tools: [] }, { model, tools: [tool], maxSteps: 1 })) {
-      if (event.type === "tool_execution_start") assert.equal(completed, false);
+      if (event.type === "tool_execution_start") {
+        displayOrder.push(event.type);
+        assert.equal(completed, false);
+      }
       if (event.type === "tool_execution_update") {
+        displayOrder.push(event.type);
         assert.equal(completed, false);
         release();
       }
+      if (event.type === "tool_execution_end") displayOrder.push(event.type);
+      if (event.type === "message_end" && event.message.role === "assistant") displayOrder.push(event.type);
     }
   })();
   try { await settlesWithin(running, 1000); } finally { release(); }
+  assert.deepEqual(displayOrder, [
+    "tool_execution_start",
+    "tool_execution_update",
+    "tool_execution_end",
+    "message_end"
+  ], "展示事件保持局部顺序，assistant 里程碑在工具完成后由控制流直接发出");
 }
 
 async function testReasoningSignatureAndReplacedContext(): Promise<void> {
@@ -424,6 +440,89 @@ async function testNextTurnRefreshesModelAndTools(): Promise<void> {
   }
   assert.equal(refreshedContext?.systemPrompt, "refreshed");
   assert.deepEqual(refreshedContext?.tools.map((tool) => tool.name), ["next_tool"]);
+}
+
+async function testQueuedFollowUpPreparesOnlyTheNextModelStep(): Promise<void> {
+  let requests = 0;
+  let preparations = 0;
+  let queueRead = false;
+  const model: AgentModel = {
+    provider: "test",
+    modelId: "queued-follow-up",
+    stream: async () => {
+      requests += 1;
+      return events([{ type: "text-delta", text: `answer-${String(requests)}` }, { type: "finish", reason: "stop" }]);
+    }
+  };
+  const completedRoles: AgentMessage["role"][] = [];
+  for await (const event of agentLoop([{ role: "user", content: "first" }], { messages: [], tools: [] }, {
+    model,
+    tools: [],
+    maxSteps: 3,
+    getQueuedMessages: async () => {
+      if (queueRead) return [];
+      queueRead = true;
+      return [{ role: "user", content: "follow up" }];
+    },
+    prepareNextTurn: async ({ context }) => {
+      preparations += 1;
+      return { context };
+    }
+  })) {
+    if (event.type === "message_end") completedRoles.push(event.message.role);
+  }
+
+  assert.equal(requests, 2);
+  assert.equal(preparations, 1, "最终回答后没有下一次模型请求时不应再准备或压缩上下文");
+  assert.deepEqual(completedRoles, ["assistant", "user", "assistant"]);
+}
+
+async function testStepPersistencePrecedesMilestoneAndQueue(): Promise<void> {
+  let persisted = false;
+  const model: AgentModel = {
+    provider: "test",
+    modelId: "persist-order",
+    stream: async () => events([{ type: "text-delta", text: "done" }, { type: "finish", reason: "stop" }])
+  };
+  for await (const event of agentLoop([{ role: "user", content: "persist" }], { messages: [], tools: [] }, {
+    model,
+    tools: [],
+    maxSteps: 1,
+    persistStep: async () => { persisted = true; },
+    getQueuedMessages: async () => {
+      assert.equal(persisted, true, "读取后续输入前必须已经提交当前 step");
+      return [];
+    }
+  })) {
+    if (event.type === "message_end" && event.message.role === "assistant") {
+      assert.equal(persisted, true, "完成通知不能早于 step 持久化");
+    }
+  }
+}
+
+async function testStepPersistenceFailureStopsTheLoop(): Promise<void> {
+  let requests = 0;
+  const model: AgentModel = {
+    provider: "test",
+    modelId: "persist-failure",
+    stream: async () => {
+      requests += 1;
+      return events([{ type: "text-delta", text: "done" }, { type: "finish", reason: "stop" }]);
+    }
+  };
+  const received: AgentEvent[] = [];
+  for await (const event of agentLoop([{ role: "user", content: "persist" }], { messages: [], tools: [] }, {
+    model,
+    tools: [],
+    maxSteps: 2,
+    persistStep: async () => { throw new Error("session write failed"); }
+  })) received.push(event);
+
+  assert.equal(requests, 1);
+  assert.equal(received.some((event) => event.type === "message_end" && event.message.role === "assistant"), false);
+  const failure = received.find((event): event is Extract<AgentEvent, { type: "error" }> => event.type === "error");
+  assert.equal(failure?.fatal, true);
+  assert.match(failure?.error ?? "", /session write failed/u);
 }
 
 async function testAssistantDeltasAreForwardedBeforeProviderCompletes(): Promise<void> {

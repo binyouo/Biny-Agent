@@ -15,6 +15,7 @@ import {
   memoryPolicySchema,
 } from "../../personalization/index.js";
 import type { AgentSessionInfo } from "../../agent/AgentSession.js";
+import type { AgentTurnCancellationReason } from "../../agent/types.js";
 import type { CommandRuntime } from "../CommandRuntime.js";
 import { AutomationTargetBusyError } from "../AutomationScheduler.js";
 import type {
@@ -379,7 +380,7 @@ export class RuntimeHostServer {
       this.quota.beginDrain();
       this.businessComposition.stop();
       for (const entry of this.registry.list()) {
-        if (entry.runtime.getSnapshot().state.kind !== "idle") entry.runtime.cancelCurrentRun();
+        if (entry.runtime.getSnapshot().state.kind !== "idle") entry.runtime.cancelCurrentRun("cancelled");
       }
       // 执行者真正退出时由 Runtime 释放 lease，不能在取消刚发出时提前放行新 writer。
       this.sessionWriterOwners.clear();
@@ -832,7 +833,10 @@ export class RuntimeHostServer {
       }
       case "cancel": {
         // 取消可绕过滞后的 revision，但必须绑定具体 run，不能让迟到请求影响后续运行。
-        return runtime.cancelRun(requiredString(payload.runId, "runId"));
+        return runtime.cancelRun(
+          requiredString(payload.runId, "runId"),
+          readCancellationReason(payload.reason)
+        );
       }
       case "permission":
         this.assertRevision(payload, runtime);
@@ -842,7 +846,7 @@ export class RuntimeHostServer {
         return await this.executeControl(async () => {
           // 取消与运行状态更新并发到达时，不用 revision 拒绝同一 run，但不允许旧请求取消新 run。
           const runId = requiredString(payload.runId, "runId");
-          const accepted = runtime.cancelRun(runId);
+          const accepted = runtime.cancelRun(runId, readCancellationReason(payload.reason));
           if (!accepted) throw new Error(`Run ${runId} is not active.`);
           return { runId };
         }, runtime);
@@ -1762,4 +1766,9 @@ export class RuntimeHostServer {
     if (connection.socket.destroyed) return;
     connection.socket.write(encodeHostFrame(frame));
   }
+}
+
+function readCancellationReason(value: unknown): AgentTurnCancellationReason {
+  if (value === "interrupted" || value === "replaced" || value === "cancelled") return value;
+  throw new Error("Cancellation reason must be interrupted, replaced, or cancelled.");
 }

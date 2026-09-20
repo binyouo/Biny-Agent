@@ -648,6 +648,16 @@ function projectSessionConversation(
       continue;
     }
 
+    if (event.type === "turn_interrupted") {
+      // 中断事实只进入模型上下文，不成为一条可编辑、可分叉的公开用户消息。
+      flushPendingCalls();
+      appendRecoveredResultsForOpenCalls();
+      resetPendingCalls();
+      appendMessage({ role: "user", content: event.content });
+      canonicalTurn = false;
+      continue;
+    }
+
     if (event.type === "agent_message") {
       flushPendingCalls();
       appendRecoveredResultsForOpenCalls();

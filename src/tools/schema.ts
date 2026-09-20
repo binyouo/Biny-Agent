@@ -53,14 +53,22 @@ export interface JsonSchemaValidationResult {
 }
 
 /**
- * Provider 只应看到结构稳定的工具 Schema。部分 OpenAI-compatible 网关会把缺失或畸形的
- * `required` 当成协议错误；没有必填字段时直接省略该属性，避免部分网关把空数组错误转换成对象。
+ * Provider 只应看到结构稳定的工具 Schema。所有 object 节点都显式携带 string[] `required`；
+ * 缺失时补空数组，畸形值在本地带工具名和节点路径失败，不能静默改写。
  */
 export function normalizeToolParameters(toolName: string, parameters: JsonSchema): JsonObjectSchema {
   if (typeof parameters !== "object" || parameters === null || Array.isArray(parameters) || parameters.type !== "object") {
     throw new Error(`Tool ${toolName} has invalid JSON Schema at parameters.type: expected object.`);
   }
   return normalizeSchemaNode(parameters, toolName, "parameters", new WeakSet<object>()) as JsonObjectSchema;
+}
+
+/**
+ * 自定义 OpenAI-compatible 网关对空 `required` 的实现并不一致。Schema 先按统一规则
+ * 完成严格校验，再在该 wire 边界省略语义等价的空数组；非法值仍会在本地直接失败。
+ */
+export function openAiCompatibleToolParameters(toolName: string, parameters: JsonSchema): JsonObjectSchema {
+  return omitEmptyRequired(normalizeToolParameters(toolName, parameters)) as JsonObjectSchema;
 }
 
 function normalizeSchemaNode(value: unknown, toolName: string, path: string, ancestors: WeakSet<object>): unknown {
@@ -75,11 +83,8 @@ function normalizeSchemaNode(value: unknown, toolName: string, path: string, anc
       const required = source.required;
       if (required !== undefined && (!Array.isArray(required) || required.some((item) => typeof item !== "string"))) {
         throw new Error(`Tool ${toolName} has invalid JSON Schema at ${path}.required: expected string[].`);
-      } else if (Array.isArray(required) && required.length > 0) {
-        normalized.required = [...required];
-      } else {
-        delete normalized.required;
       }
+      normalized.required = required === undefined ? [] : [...required];
     }
     if (typeof source.properties === "object" && source.properties !== null && !Array.isArray(source.properties)) {
       normalized.properties = Object.fromEntries(Object.entries(source.properties)
@@ -98,6 +103,15 @@ function normalizeSchemaNode(value: unknown, toolName: string, path: string, anc
   } finally {
     ancestors.delete(value);
   }
+}
+
+function omitEmptyRequired(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map((item) => omitEmptyRequired(item));
+  if (typeof value !== "object" || value === null) return value;
+  const source = value as Record<string, unknown>;
+  return Object.fromEntries(Object.entries(source)
+    .filter(([key, child]) => key !== "required" || !Array.isArray(child) || child.length > 0)
+    .map(([key, child]) => [key, omitEmptyRequired(child)]));
 }
 
 export function validateJsonSchema(schema: JsonSchema, value: unknown, path = "arguments"): JsonSchemaValidationResult {
