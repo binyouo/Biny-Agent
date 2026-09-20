@@ -72,6 +72,9 @@ import {
   heartbeatStatusCommand,
   memoryAddCommand,
   memoryArchiveCommand,
+  memoryManageCommand,
+  memoryExportCommand,
+  memoryServeCommand,
   memoryClearCommand,
   memoryListCommand,
   memorySearchCommand,
@@ -180,14 +183,22 @@ task.command("events").argument("<taskRunId>", "TaskRun id").option("--limit <co
 const memory = program.command("memory").description("Manage local memory");
 memory.command("list").option("--json", "print JSON").action((options: { json?: boolean }) => wrap(() => memoryListCommand(workspaceRoot, options))());
 memory.command("stats").description("Show memory store counts and maintenance status").option("--json", "print JSON").action((options: { json?: boolean }) => wrap(() => memoryStatsCommand(workspaceRoot, options))());
-memory.command("search").argument("<query...>", "search query").option("--tag <tag...>", "filter entries carrying all given tags").option("--json", "print JSON").action((query: string[], options: { tag?: string[]; json?: boolean }) => wrap(() => memorySearchCommand(workspaceRoot, query.join(" "), options))());
-memory.command("add").requiredOption("--entry <json>", "structured memory JSON").option("--json", "print JSON").action((options: { entry: string; json?: boolean }) => wrap(() => memoryAddCommand(workspaceRoot, options.entry, options))());
-memory.command("archive").argument("<id>", "memory id").requiredOption("--yes", "confirm archive").option("--json", "print JSON").action((id: string, options: { yes?: boolean; json?: boolean }) => wrap(() => memoryArchiveCommand(workspaceRoot, id, options))());
+memory.command("search").argument("<query...>", "search query").option("--tag <tag...>", "filter entries carrying any given tag").option("--json", "print JSON").action((query: string[], options: { tag?: string[]; json?: boolean }) => wrap(() => memorySearchCommand(workspaceRoot, query.join(" "), options))());
+memory.command("add").argument("[content]", "memory text").option("--entry <json>", "structured memory JSON instead of text").option("--json", "print JSON").action((content: string | undefined, options: { entry?: string; json?: boolean }) => wrap(() => memoryAddCommand(workspaceRoot, content, options))());
+memory.command("archive").description("Export conversation transcripts to local Markdown; does not archive facts").action(wrap(memoryExportCommand));
+memory.command("archive-entry").argument("<id>", "memory id").requiredOption("--yes", "confirm archive").option("--json", "print JSON").action((id: string, options: { yes?: boolean; json?: boolean }) => wrap(() => memoryArchiveCommand(workspaceRoot, id, options))());
+memory.command("get").argument("<id>").option("--json", "print JSON").action((id: string, options: { json?: boolean }) => wrap(() => memoryManageCommand(workspaceRoot, "get", id, options))());
+memory.command("update").argument("<id>").requiredOption("--entry <json>", "patch fields").option("--json", "print JSON").action((id: string, options: { entry: string; json?: boolean }) => wrap(() => memoryManageCommand(workspaceRoot, "update", id, options))());
+memory.command("delete").argument("<id>").requiredOption("--yes", "confirm permanent deletion").option("--json", "print JSON").action((id: string, options: { yes?: boolean; json?: boolean }) => wrap(() => memoryManageCommand(workspaceRoot, "delete", id, options))());
+memory.command("restore").argument("<id>", "archive id").option("--json", "print JSON").action((id: string, options: { json?: boolean }) => wrap(() => memoryManageCommand(workspaceRoot, "restore", id, options))());
+memory.command("archived").option("--json", "print JSON").action((options: { json?: boolean }) => wrap(() => memoryManageCommand(workspaceRoot, "archived", undefined, options))());
+memory.command("grep").argument("<query...>", "literal text in conversation history").option("--json", "print JSON").action((query: string[], options: { json?: boolean }) => wrap(() => historySearchCommand(query.join(" "), { json: options.json, literal: true }))());
+memory.command("serve").description("Serve authenticated loopback memory REST API").option("--port <number>", "listen port", parsePositiveInteger, 23001).action((options: { port: number }) => wrap(() => memoryServeCommand(workspaceRoot, options.port))());
 memory.command("clear").requiredOption("--yes", "confirm clear").option("--json", "print JSON").action((options: { yes?: boolean; json?: boolean }) => wrap(() => memoryClearCommand(workspaceRoot, options))());
 const history = program.command("history").description("Search past conversation transcripts");
 history.command("search").argument("<query...>", "full-text query over past user and assistant messages").option("--limit <n>", "maximum hits", "8").option("--json", "print JSON").action((query: string[], options: { limit: string; json?: boolean }) => wrap(() => historySearchCommand(query.join(" "), { limit: Number(options.limit), json: options.json }))());
 
-memory.command("sleep").option("--run", "run maintenance now").option("--yes", "confirm maintenance").option("--json", "print JSON").action((options: { run?: boolean; yes?: boolean; json?: boolean }) => wrap(() => memorySleepCommand(workspaceRoot, options))());
+memory.command("sleep").option("--run", "run maintenance now").option("--preview", "preview without mutation").option("--runs", "recent maintenance runs").option("--cancel", "cancel active maintenance").option("--yes", "confirm maintenance").option("--json", "print JSON").action((options: Parameters<typeof memorySleepCommand>[1]) => wrap(() => memorySleepCommand(workspaceRoot, options))());
 
 const diary = program.command("diary").description("Show or refresh daily notes");
 diary.command("show").argument("[date]", "today, yesterday, or YYYY-MM-DD", "today").option("--json", "print JSON").action((date: string, options: { json?: boolean }) => wrap(() => diaryShowCommand(workspaceRoot, date, options))());

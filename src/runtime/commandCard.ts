@@ -2,7 +2,7 @@
  * 结构化命令卡片数据。
  *
  * `/status`、`/usage` 等报告类命令除纯文本 `content` 外，可附带这份结构化数据
- * （纯 JSON，可跨 Runtime Host 序列化），TUI 用它渲染 Codex 风格的卡片；
+ * （纯 JSON，可跨 Runtime Host 序列化），TUI 用它渲染报告卡片；
  * CLI / Desktop 继续使用纯文本，互不影响。
  */
 

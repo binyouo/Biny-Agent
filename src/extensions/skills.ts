@@ -181,7 +181,7 @@ function isOfficialProjectSkillPath(configuredPath: string): boolean {
   return path.normalize(configuredPath) === path.join(".agents", "skills");
 }
 
-/** Codex 从 CWD 逐层扫描到当前仓库根目录；非 Git 目录只扫描当前目录。 */
+/** 从 CWD 逐层扫描到当前仓库根目录；非 Git 目录只扫描当前目录。 */
 async function findRepositoryRoot(workspaceRoot: string): Promise<string> {
   let current = workspaceRoot;
   while (true) {
@@ -801,7 +801,7 @@ async function collectSkillFiles(
   }
   if (stat.isSymbolicLink()) {
     // 全局 Skill 根本身是用户主动登记的入口，允许其第一层目录软链指向
-    // Claude/Codex/Biny 等已有技能；进入技能目录后仍禁止内部软链。
+    // 已有技能目录可以作为直接入口；进入技能目录后仍禁止内部软链。
     if (!allowDirectDirectorySymlink || path.dirname(target) !== rootPath) return;
     let canonical: string;
     try {

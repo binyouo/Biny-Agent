@@ -803,7 +803,7 @@ export function ProviderSettings({
     }
   }, [connectionInfos, creating, onNotify, projectId, settingsDraft]);
 
-  // ── 订阅登录（Claude Code / Codex） ──
+  // ── 订阅登录 ──
   const [loginStage, setLoginStage] = useState<"idle" | "opening" | "waiting" | "submitted">("idle");
   const [loginRequest, setLoginRequest] = useState<DesktopModelLoginStartResult>();
   const [loginError, setLoginError] = useState<string>();

@@ -12,7 +12,34 @@ import type { MemoryEntry } from "../src/agent/context/memoryTypes.js";
 
 const root = await mkdtemp(path.join(os.tmpdir(), "biny-preparation-strategy-"));
 let calls = 0;
-let response = `## Goal\n${"summary detail ".repeat(200)}\n## Next Steps\nContinue.`;
+const checkpoint = (goal: string): string => [
+  "## Goal",
+  `- ${goal}`,
+  "## Constraints & Preferences",
+  "- Keep grounded facts.",
+  "## Progress",
+  "### Done",
+  "- (none verified)",
+  "### In Progress",
+  "- [ ] Continue.",
+  "### Blocked",
+  "- (unknown)",
+  "## Key Decisions",
+  "- (none recorded)",
+  "## Errors & Fixes",
+  "- (none recorded)",
+  "## All User Messages",
+  "- Continue.",
+  "## Next Steps",
+  "1. Continue.",
+  "## Critical Context",
+  "- Preserve retained evidence."
+].map((line) => {
+  const item = line.replace(/^(?:[-*]|\d+\.)\s+/u, "").replace(/^\[[ xX]\]\s*/u, "").trim();
+  if (!/^(?:[-*]|\d+\.)\s+/u.test(line) || /^\((?:none|not recorded|none verified|unknown)\b/iu.test(item)) return line;
+  return `${line} <!-- evidence:m0 -->`;
+}).join("\n");
+let response = checkpoint("summary detail ".repeat(200));
 const model: AgentModel = {
   provider: "test", modelId: "summary",
   stream: async (_context, options) => {
@@ -21,6 +48,7 @@ const model: AgentModel = {
     assert.equal(options?.timeoutMs, 30_000);
     return (async function* (): AsyncGenerator<ModelStreamEvent> {
       yield { type: "text-delta", text: response };
+      yield { type: "finish", reason: "stop" };
     })();
   }
 };
@@ -115,7 +143,8 @@ try {
   local.close();
 
   const compacting = new ContextMemory(() => model, new WorkspaceContext(root, [], 4096), undefined, 1_000, 4096, undefined, undefined, {
-    keepRecentTokens: 20, maxSummaryTokens: 2_000
+    keepRecentTokens: 20, maxSummaryTokens: 2_000,
+    resolveSummaryBudget: () => ({ contextWindow: 8_000, contextWindowIsFallback: false, maxInputTokens: 7_000, maxOutputTokens: 2_000 })
   });
   const original = [
     { role: "user" as const, content: "old request ".repeat(20) },
@@ -130,7 +159,7 @@ try {
   await compacting.prepareTurn("continue again", largeSystem, undefined, [], false);
   assert.equal(calls, 1, "固定上下文很大时，不反复摘要同一段无收益历史");
 
-  response = "## Goal\nContinue.\n## Progress\nCompleted the earlier step.\n## Next Steps\nUse the retained result.";
+  response = checkpoint("Continue with the retained result.");
   compacting.replaceHistory([
     { role: "user", content: "earlier completed work ".repeat(300) },
     { role: "assistant", content: [{ type: "toolCall", id: "kept", name: "Read", arguments: {} }] },
@@ -150,7 +179,7 @@ try {
     await new Promise<void>((resolve) => { releaseModel = resolve; });
     return (async function* (): AsyncGenerator<ModelStreamEvent> { yield { type: "text-delta", text: "late summary" }; })();
   } };
-  const cancelled = new ContextMemory(() => slowModel, new WorkspaceContext(root, [], 4096), undefined, 1_000, 4096);
+  const cancelled = new ContextMemory(() => slowModel, new WorkspaceContext(root, [], 4096), undefined, 8_000, 4096);
   cancelled.replaceHistory(original);
   const before = cancelled.snapshot();
   const controller = new AbortController();

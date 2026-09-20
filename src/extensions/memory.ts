@@ -6,7 +6,6 @@
  */
 import { z } from "zod";
 import type { LocalMemory } from "../agent/context/LocalMemory.js";
-import { withFreshRevision } from "../agent/context/LocalMemory.js";
 import type {
   MemorySearchOptions,
   MemorySearchResult
@@ -15,9 +14,9 @@ import { ToolAccesses } from "../tools/access.js";
 import type { Tool } from "../tools/types.js";
 
 const saveMemorySchema = z.object({
-  content: z.string().trim().min(20).max(2_000),
+  content: z.string().trim().min(1).max(2_000),
   tags: z.array(z.string().trim().min(1).max(120)).max(12).default([]),
-  importance: z.number().int().min(1).max(5).default(3),
+  importance: z.number().finite().default(0.5),
   durability: z.enum(["permanent", "temporary"]).default("permanent"),
   rationale: z.string().trim().min(1).max(1_000).optional()
 });
@@ -42,9 +41,9 @@ function createSaveMemoryTool(getMemory: () => LocalMemory | undefined): Tool {
     parameters: {
       type: "object",
       properties: {
-        content: { type: "string", description: "The durable fact itself, 20-2000 characters, self-contained." },
+        content: { type: "string", description: "The durable fact itself, 1-2000 characters, self-contained." },
         tags: { type: "array", items: { type: "string" }, description: "Optional retrieval tags." },
-        importance: { type: "integer", minimum: 1, maximum: 5, description: "Retrieval importance from 1 to 5." },
+        importance: { type: "number", description: "Relative importance; defaults to 0.5." },
         durability: { type: "string", enum: ["permanent", "temporary"], description: "Temporary memories expire after the TTL; defaults to permanent." },
         rationale: { type: "string", description: "Optional short reason for saving this memory." }
       },
@@ -58,7 +57,7 @@ function createSaveMemoryTool(getMemory: () => LocalMemory | undefined): Tool {
     resolveExecution(args: unknown) {
       const parsed = saveMemorySchema.safeParse(args);
       if (!parsed.success) {
-        const message = "save_memory requires a self-contained content statement of at least 20 characters.";
+        const message = "save_memory requires a nonempty, self-contained content statement of at most 2000 characters.";
         return { isError: true as const, result: message, errorMessage: message };
       }
       const entry = parsed.data;
@@ -71,19 +70,17 @@ function createSaveMemoryTool(getMemory: () => LocalMemory | undefined): Tool {
         async execute(): Promise<unknown> {
           const memory = getMemory();
           if (!memory) throw new Error("Local memory is unavailable.");
-          const result = await withFreshRevision(memory, undefined, async (expectedRevision) => (
-            await memory.writeEntry({
-              content: entry.content,
-              source: "manual",
-              tags: entry.tags,
-              importance: entry.importance,
-              durability: entry.durability,
-              rationale: entry.rationale
-            }, { expectedRevision })
-          ));
+          const result = await memory.writeEntry({
+            content: entry.content,
+            source: "manual",
+            tags: entry.tags,
+            importance: entry.importance,
+            durability: entry.durability,
+            rationale: entry.rationale
+          });
           return result.written
             ? { saved: true, id: result.entry?.id, path: result.path, revision: result.revision }
-            : { saved: false, reason: "An equivalent entry already exists or the content is too short.", path: result.path };
+            : { saved: false, reason: "An equivalent entry already exists or the content is empty.", path: result.path };
         }
       };
     }
@@ -102,7 +99,8 @@ function createRecallMemoryTool(
       type: "object",
       properties: {
         query: { type: "string", description: "Keywords describing what to recall." },
-        limit: { type: "integer", minimum: 1, maximum: 20, description: "Maximum number of matches; defaults to 8." }
+        limit: { type: "integer", minimum: 1, maximum: 20, description: "Maximum number of matches; defaults to 8." },
+        tags: { type: "array", items: { type: "string" }, description: "Match any of these optional tags." }
       },
       required: ["query"],
       additionalProperties: false

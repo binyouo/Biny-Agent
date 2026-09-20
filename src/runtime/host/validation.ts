@@ -69,9 +69,9 @@ export function readStringArray(value: unknown, name: string): string[] {
 
 export function readMemoryEntryInput(value: unknown): MemoryEntryInput {
   const record = asRecord(value);
-  const importance = record.importance === undefined ? undefined : requiredInteger(record.importance, "entry.importance");
-  if (importance !== undefined && (importance < 1 || importance > 5)) {
-    throw new Error("Runtime Host memory entry importance must be between 1 and 5.");
+  const importance = record.importance;
+  if (importance !== undefined && (typeof importance !== "number" || !Number.isFinite(importance))) {
+    throw new Error("Memory importance must be a finite number.");
   }
   return {
     content: requiredString(record.content, "entry.content"),
@@ -88,9 +88,9 @@ export function readMemoryEntryInput(value: unknown): MemoryEntryInput {
 
 export function readMemoryEntryPatch(value: unknown): MemoryEntryPatch {
   const record = asRecord(value);
-  const importance = record.importance === undefined ? undefined : requiredInteger(record.importance, "patch.importance");
-  if (importance !== undefined && (importance < 1 || importance > 5)) {
-    throw new Error("Runtime Host memory patch importance must be between 1 and 5.");
+  const importance = record.importance;
+  if (importance !== undefined && (typeof importance !== "number" || !Number.isFinite(importance))) {
+    throw new Error("Memory importance must be a finite number.");
   }
   return {
     content: optionalString(record.content),

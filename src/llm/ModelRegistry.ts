@@ -59,7 +59,7 @@ export interface ModelChoice {
   headers?: Record<string, string>;
   compatibility?: ModelCompatibility;
   pricing?: ModelAliasConfig["pricing"];
-  /** Codex 风格的普通模型选择器可见性；旧 Runtime Host 未返回时按默认策略处理。 */
+  /** 普通模型选择器可见性；旧 Runtime Host 未返回时按默认策略处理。 */
   showInPicker?: boolean;
   available: boolean;
   source: ModelSource;

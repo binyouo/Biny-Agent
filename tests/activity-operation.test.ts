@@ -150,8 +150,7 @@ await withFixture(async ({ root, settings, loadSettings, store, id }) => {
     })()
   };
   const memory = new MemoryStorage(root);
-  const entries = await memory.listEntries({ origins: ["current_workspace"] });
-  const existing = await memory.writeEntry(activityMemoryInput(candidate, { sessionId: "previous", analyzedAt: new Date().toISOString(), model }), { expectedRevision: entries.storeRevision });
+  const existing = await memory.writeEntry(activityMemoryInput(candidate, { sessionId: "previous", analyzedAt: new Date().toISOString(), model }));
   assert.ok(existing.entry);
   const pipeline = await createActivityMemoryPipeline({
     workspaceRoot: root,

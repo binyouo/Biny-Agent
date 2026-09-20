@@ -901,11 +901,7 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
   }
 
   async memory<T>(action: string, payload: Record<string, unknown> = {}): Promise<T> {
-    const v3 = action.endsWith("-v3");
-    return await this.request<T>(
-      "memory",
-      v3 ? { action, ...payload } : { action, ...payload, expectedRevision: this.currentRevision() }
-    );
+    return await this.request<T>("memory", { action, ...payload });
   }
 
   async runMemorySleep(): Promise<unknown> {
@@ -913,7 +909,7 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
   }
 
   async listArchivedMemory(): Promise<unknown> {
-    return await this.memory("archive-list-v3", {});
+    return await this.memory("archive-list", {});
   }
 
   async memorySleepStatus(): Promise<{ state: string; lastRun?: unknown; sleepRuns?: unknown[] }> {
@@ -934,15 +930,15 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
   }
 
   async memoryEmbeddingStatus(): Promise<MemoryEmbeddingRuntimeStatus> {
-    return await this.request("memory.embedding.status-v3", {});
+    return await this.request("memory.embedding.status", {});
   }
 
   async downloadMemoryEmbeddingModel(model: LocalEmbeddingModelId): Promise<MemoryEmbeddingRuntimeStatus> {
-    return await this.request("memory.embedding.download-v3", { model });
+    return await this.request("memory.embedding.download", { model });
   }
 
   async cancelMemoryEmbeddingDownload(model: LocalEmbeddingModelId): Promise<{ cancelled: boolean; status: MemoryEmbeddingRuntimeStatus }> {
-    return await this.request("memory.embedding.cancel-download-v3", { model });
+    return await this.request("memory.embedding.cancel-download", { model });
   }
 
   async deleteMemoryEmbeddingModel(model: LocalEmbeddingModelId): Promise<{
@@ -950,15 +946,15 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
     bytesFreed: number;
     status: MemoryEmbeddingRuntimeStatus;
   }> {
-    return await this.request("memory.embedding.delete-v3", { model });
+    return await this.request("memory.embedding.delete", { model });
   }
 
   async rebuildMemoryEmbeddingIndex(): Promise<MemoryEmbeddingRuntimeStatus> {
-    return await this.request("memory.embedding.rebuild-v3", {});
+    return await this.request("memory.embedding.rebuild", {});
   }
 
   async cancelMemoryEmbeddingRebuild(): Promise<{ cancelled: boolean; status: MemoryEmbeddingRuntimeStatus }> {
-    return await this.request("memory.embedding.cancel-rebuild-v3", {});
+    return await this.request("memory.embedding.cancel-rebuild", {});
   }
 
   /** 让 owner 按指定会话或新会话重建 AgentSession。 */

@@ -1,5 +1,5 @@
 import { promises as fs } from "node:fs";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
 import { configSchema, type AgentConfig } from "../config/schema.js";
 import { createFileConfigStore, updateConfig, type AgentConfigStore } from "../config/store.js";
@@ -61,8 +61,7 @@ import {
   refreshRuntimeSystemPrompt,
   messagesForTelemetry,
   stripTransientTurnContext,
-  systemPromptForTelemetry,
-  withActiveRunCompactionSummary
+  systemPromptForTelemetry
 } from "./prompts.js";
 import { perfNow, recordPerfPhase, setPerfTimingRoot } from "../observability/perfTiming.js";
 import type {
@@ -115,9 +114,10 @@ import type { CompactionResult, ContextStatus } from "./context/types.js";
 import { recordNativeTelemetry } from "../observability/telemetry.js";
 import { summarizeModelRequests, type ModelRequestSummary } from "../observability/modelRequests.js";
 import { createSessionUsage, formatUsageSummary, sumSessionUsage, summarizeUsage, type UsageModelInfo } from "../observability/usage.js";
-import type { SessionContextCheckpoint, SessionUsage, UsageOperation, UsageSummary } from "../session/metadata.js";
+import type { SessionContextCheckpoint, SessionContextCheckpointState, SessionUsage, UsageOperation, UsageSummary } from "../session/metadata.js";
+import { sessionContextCheckpointFields } from "../session/metadata.js";
 import { defaultModelContextWindow } from "../ai/capabilities.js";
-import { modelCapabilities } from "../ai/capabilities.js";
+import { modelCapabilities, modelContextBudget } from "../ai/capabilities.js";
 import { createModelForConfig } from "../llm/modelFactory.js";
 import { resolveEditingMode } from "../tools/file/editingMode.js";
 import { resolveMemoryModelAlias, resolveToolModelAlias, type MemoryModelField } from "../llm/toolModel.js";
@@ -158,6 +158,8 @@ import type {
   MemorySimilarityScan
 } from "./context/memoryTypes.js";
 import { agentCapabilitySelectionSchema, resolveCapabilityNames, type AgentCapabilitySelection } from "./capabilitySelection.js";
+import { checkpointClaims } from "../session/checkpointClaims.js";
+import type { CheckpointEvidenceArgs } from "../extensions/checkpointEvidence.js";
 import type { CapabilityPreselectionInput } from "./capabilityPreselection.js";
 import { stableCodingToolNames } from "./capabilityPreselection.js";
 import {
@@ -369,6 +371,8 @@ export class AgentSession {
   /** Runtime 已接纳的普通发送；让 canonical user_message 先于前台 generating 状态落盘。 */
   private readonly admittedUserMessages = new Map<string, { input: string; reference: SessionMessageReference }>();
   private closed = false;
+  /** checkpoint 持久化结果不确定后只能关闭重开，禁止继续使用已经压缩的内存视图。 */
+  private checkpointPersistenceError: Error | undefined;
   /** 与 ContextMemory history 一一对应；内部 steering 消息没有持久化引用。 */
   private contextMessageReferences: Array<SessionMessageReference | undefined> = [];
   private nextSessionMessageIndex = 0;
@@ -529,16 +533,22 @@ export class AgentSession {
       }
     });
     // 压缩摘要可切换到更便宜的模型。与 memoryModel 一样读取 root-turn 快照；解析失败只
-    // 打 warning 并回退当前对话模型，绝不让配置问题阻断会话压缩。按 alias 缓存成功结果。
+    // 打 warning 并回退当前对话模型。模型和容量来自同一配置快照，避免 endpoint 更新后复用旧模型。
     const summaryModels = new Map<string, AgentModel>();
+    const summaryBudgets = new WeakMap<AgentModel, ReturnType<typeof modelContextBudget>>();
     const resolveSummaryModel = (): AgentModel => {
       const alias = this.activeConfig.context.compaction.summaryModel;
       if (!alias) return getModel();
-      const cached = summaryModels.get(alias);
+      const cacheKey = createHash("sha256").update(JSON.stringify([alias, this.activeConfig.providers, this.activeConfig.models, this.activeConfig.context.maxInputTokens])).digest("hex");
+      const cached = summaryModels.get(cacheKey);
       if (cached) return cached;
       try {
-        const created = createModelForConfig(this.activeConfig, alias);
-        summaryModels.set(alias, created);
+        const registry = new ProviderRegistry(this.activeConfig);
+        const created = registry.createModelSettings(alias).model;
+        const resolved = registry.forModel(alias).model;
+        summaryBudgets.set(created, modelContextBudget(resolved, this.activeConfig.context.maxInputTokens, alias, { reasoning: "off", toolSchemaTokens: 0 }));
+        summaryModels.clear();
+        summaryModels.set(cacheKey, created);
         return created;
       } catch (error) {
         console.warn(`[biny] 压缩摘要模型 ${alias} 解析失败，回退当前对话模型：${errorMessage(error)}`);
@@ -558,7 +568,17 @@ export class AgentSession {
         const fallback = options.config.context.maxInputTokens ?? defaultModelContextWindow;
         return { contextWindow: fallback, contextWindowIsFallback: true, maxInputTokens: fallback, maxOutputTokens: undefined };
       },
-      { ...options.config.context.compaction, resolveSummaryModel },
+      {
+        ...options.config.context.compaction,
+        resolveSummaryModel,
+        resolveSummaryBudget: (model) => summaryBudgets.get(model),
+        configurationIdentity: () => createHash("sha256").update(JSON.stringify([
+          this.activeConfig.providers, this.activeConfig.models, this.activeConfig.thinking, this.activeConfig.chat.maxOutputTokens
+        ])).digest("hex"),
+        onFailure: async () => {
+          await this.recorder.recordAndFlush({ type: "assistant_message", content: "", contextState: this.checkpointPersistenceError ? undefined : this.contextMemory.snapshot() });
+        }
+      },
       onModelRequest,
       () => this.sideModelRequestContext(),
       this.memoryRetriever
@@ -729,10 +749,12 @@ export class AgentSession {
       this.options.toolRegistry.list().map((tool) => tool.name)
     );
     const mode = capabilitySelection?.tools ?? this.activeConfig.chat.defaultToolSelection;
-    if (this.planning && mode === "auto") return new Set([...(resolved ?? stableCodingToolNames), toolSearchToolName, "PlanDraft", "PlanStatus", "read_tool_result"]);
+    const evidenceTool = this.options.toolRegistry.list().some((tool) => tool.name === "read_checkpoint_evidence")
+      ? ["read_checkpoint_evidence"] : [];
+    if (this.planning && mode === "auto") return new Set([...(resolved ?? stableCodingToolNames), toolSearchToolName, "PlanDraft", "PlanStatus", "read_tool_result", ...evidenceTool]);
     if (resolved || mode !== "auto" || this.options.toolRegistry.list().length <= 40) return resolved;
     // auto 筛选器缺失或异常时绝不能把大目录整体下发；保留基础编码能力和自助发现入口。
-    const fallback = new Set([...stableCodingToolNames, toolSearchToolName, "read_tool_result"]);
+    const fallback = new Set([...stableCodingToolNames, toolSearchToolName, "read_tool_result", ...evidenceTool]);
     return new Set(this.options.toolRegistry.list().map((tool) => tool.name).filter((name) => fallback.has(name)));
   }
 
@@ -1025,7 +1047,7 @@ export class AgentSession {
         requestContext: { operation: "memory" },
         promoteMemory: allowReflectionPromotion
           ? async (candidate: SelfReflectionMemoryCandidate) => {
-            const result = await this.localMemory.writeAutoEntryWithRetry({
+            const result = await this.localMemory.writeAutoEntry({
               content: candidate.content,
               source: "auto",
               tags: ["self-reflection"],
@@ -1492,6 +1514,7 @@ export class AgentSession {
     replaceUserMessageId?: string;
     replacementUserMessageId?: string;
   }): Promise<void> {
+    this.assertNotQuarantined("user message admission");
     if (!input.trim() && !(options.attachments?.length)) throw new Error("Agent prompt cannot be empty.");
     if (this.admittedUserMessages.has(options.runId)) return;
     let replacement: { messageId: string; parentMessageId?: string; slotId?: string } | undefined;
@@ -1518,7 +1541,7 @@ export class AgentSession {
         slotId: replacement?.slotId,
         skills: this.skillPaths(),
         contextUsage: this.contextMemory.getBudget(),
-        contextState: this.contextMemory.persistedState()
+        contextState: this.checkpointPersistenceError ? undefined : this.contextMemory.persistedState()
       });
       await this.recorder.flush();
       this.admittedUserMessages.set(options.runId, { input, reference });
@@ -1703,7 +1726,7 @@ export class AgentSession {
         attachments: sessionAttachments(runOptions.attachments),
         skills: this.skillPaths(runOptions.capabilitySelection?.skills),
         contextUsage: this.contextMemory.getBudget(),
-        contextState: this.contextMemory.persistedState(),
+        contextState: this.checkpointPersistenceError ? undefined : this.contextMemory.persistedState(),
         preparationUsage: this.usageRecords.slice(usageBeforePreparation),
         // 普通发送沿用回执/实时事件的 ID，避免落盘后变成另一条用户消息。
         messageId: runOptions.replacementUserMessage?.messageId ?? (retrying ? undefined : runOptions.messageId),
@@ -1869,19 +1892,19 @@ export class AgentSession {
         this.supportedAttachments(runOptions.attachments),
         turnPersonalization.useMemories
       );
-      runOptions.capabilitySelection = await selection;
-      recordPerfPhase("turn.prepareTurn", prepareTurnPerfStartedAt, { runId: runtimeRunId, compacted: prepared.compaction !== undefined });
-      yield { type: "preparation.updated", stage: "waiting" };
-      // 在模型开始输出前发布实际注入结果，界面不把记忆开关误报为记忆命中。
-      yield { type: "context.updated", context: { ...await this.contextStatus(), capabilitySelection: runOptions.capabilitySelection } };
       if (prepared.compaction) {
-        this.persistContextCheckpoint(
+        await this.persistContextCheckpoint(
           prepared.compaction,
           "threshold",
           this.contextMessageReferences,
           userMessageReference
         );
       }
+      runOptions.capabilitySelection = await selection;
+      recordPerfPhase("turn.prepareTurn", prepareTurnPerfStartedAt, { runId: runtimeRunId, compacted: prepared.compaction !== undefined });
+      yield { type: "preparation.updated", stage: "waiting" };
+      // 压缩边界持久化成功后才发布上下文状态，不向外暴露未确认的 checkpoint。
+      yield { type: "context.updated", context: { ...await this.contextStatus(), capabilitySelection: runOptions.capabilitySelection } };
       systemPrompt = prepared.systemPrompt;
       messages = prepared.messages;
       const selectedHistoryCount = Math.max(0, messages.length - 1);
@@ -2162,22 +2185,35 @@ export class AgentSession {
     let softLimitWarningInjected = completedStepsBeforeRun >= runBudget.softStepLimit;
     let contextRecoveryAttempts = 0;
     let runContextCompacted = false;
-    const applyRunContextCompaction = (
+    const applyRunContextCompaction = async (
       context: AgentContext,
       compacted: RunContextCompaction,
       reason: "threshold" | "overflow"
-    ): void => {
+    ): Promise<void> => {
       const sourceReferences = context.messages.map((message) => referenceByMessage.get(message));
-      this.persistContextCheckpoint(compacted, reason, sourceReferences);
+      await this.persistContextCheckpoint(compacted, reason, sourceReferences);
       const retainedReferences = sourceReferences.slice(compacted.compactedMessageCount);
       for (const [index, message] of compacted.messages.entries()) {
         const reference = retainedReferences[index];
         if (reference) referenceByMessage.set(message, reference);
       }
       context.messages.splice(0, context.messages.length, ...compacted.messages);
-      // 基于当前提示词替换摘要，保留前一步刚刷新的工具和扩展能力信息。
-      context.systemPrompt = withActiveRunCompactionSummary(context.systemPrompt, compacted.summary);
       runContextCompacted = true;
+    };
+    let activeRequestContext = loopContext;
+    const projectForModelRequest = async (contextMessages: AgentMessage[]): Promise<AgentMessage[]> => {
+      const projectedMessages = await projectToolResultsForModel(contextMessages, {
+        archiveResult: async ({ message, result, output, sequence }) => await archiveToolResult({
+          workspaceRoot: this.options.workspaceRoot,
+          sessionId: this.recorder.sessionId,
+          toolCallId: message.toolCallId,
+          sequence,
+          tool: message.toolName,
+          result,
+          output
+        })
+      });
+      return this.contextMemory.pruneToolResultsForStep(projectedMessages);
     };
 
     recordPerfPhase("turn.loopPre", loopPerfStartedAt, { runId: runOptions.runId });
@@ -2303,13 +2339,7 @@ export class AgentSession {
           refreshRuntimeTurnContext(context.messages, await this.currentEmotionPrompt());
           this.contextMemory.recordToolSchema(tools);
           context.tools = [...tools];
-          if (this.contextMemory.shouldCompactRunContext(context)) {
-            emitUpdate({ type: "preparation.updated", stage: "compacting" });
-            const compacted = await this.contextMemory.compactRunContextIfNeeded(context, abortSignal).finally(() => {
-              emitUpdate({ type: "preparation.updated", stage: "ready" });
-            });
-            if (compacted) applyRunContextCompaction(context, compacted, "threshold");
-          }
+          activeRequestContext = context;
           return {
             context,
             model: settings.model,
@@ -2337,7 +2367,7 @@ export class AgentSession {
           });
           if (!compacted) return undefined;
           contextRecoveryAttempts += 1;
-          applyRunContextCompaction(context, compacted, "overflow");
+          await applyRunContextCompaction(context, compacted, "overflow");
           return {
             reason: "context_overflow",
             attempt: contextRecoveryAttempts,
@@ -2353,30 +2383,38 @@ export class AgentSession {
           emitUpdate({ type: "context.updated", context: await this.contextStatus() });
         },
         transformContext: async (contextMessages) => {
-          const projectedMessages = await projectToolResultsForModel(contextMessages, {
-            archiveResult: async ({ message, result, output, sequence }) => await archiveToolResult({
-              workspaceRoot: this.options.workspaceRoot,
-              sessionId: this.recorder.sessionId,
-              toolCallId: message.toolCallId,
-              sequence,
-              tool: message.toolName,
-              result,
-              output
-            })
-          });
-          const prunedMessages = this.contextMemory.pruneToolResultsForStep(projectedMessages);
+          let prunedMessages = await projectForModelRequest(contextMessages);
+          let requestMessages = this.contextMemory.projectCompactionCheckpoint(prunedMessages);
+          const projectedContext: AgentContext = { ...activeRequestContext, messages: requestMessages };
+          const compacted = this.contextMemory.shouldCompactRunContext(projectedContext)
+            ? await (async () => {
+                emitUpdate({ type: "preparation.updated", stage: "compacting" });
+                return await this.contextMemory.compactRunContextIfNeeded(
+                  activeRequestContext,
+                  abortSignal,
+                  projectedContext
+                ).finally(() => {
+                  emitUpdate({ type: "preparation.updated", stage: "ready" });
+                });
+              })()
+            : undefined;
+          if (compacted) {
+            await applyRunContextCompaction(activeRequestContext, compacted, "threshold");
+            prunedMessages = await projectForModelRequest(activeRequestContext.messages);
+            requestMessages = this.contextMemory.projectCompactionCheckpoint(prunedMessages);
+          }
           const absoluteStep = completedStepsBeforeRun + observedSteps;
           if (!softLimitWarningInjected && absoluteStep >= runBudget.softStepLimit) {
             softLimitWarningInjected = true;
             return [
-              ...prunedMessages,
+              ...requestMessages,
               {
                 role: "user",
                 content: "## Biny run budget\n\nThe soft provider-step limit has been reached. Continue only if more work is needed for the user's request, and avoid repeating completed actions."
               }
             ];
           }
-          return prunedMessages;
+          return requestMessages;
         },
         getSteeringMessages: async () => {
           const next = await this.takeQueuedRunMessages(messageQueues, "steer", lastAssistant, referenceByMessage);
@@ -2514,7 +2552,7 @@ export class AgentSession {
         reasoningBlocks: stepReasoningBlocks,
         usage: usageRecord,
         relatedUsage: this.takeRelatedUsage(),
-        contextState: this.contextMemory.snapshot(),
+        contextState: this.checkpointPersistenceError ? undefined : this.contextMemory.snapshot(),
         messageId: finalAssistantReference?.id,
         parentMessageId: finalAssistantReference?.parentId,
         slotId: finalAssistantReference?.slotId,
@@ -2607,7 +2645,7 @@ export class AgentSession {
             if (memoryMessageId) {
               const metadata: Record<string, unknown> = { memoryExtracted: true, memoryExtractedAt: new Date().toISOString() };
               if (changes.created.length) metadata.createdMemories = changes.created.map((entry) => ({ id: entry.id, content: entry.content, type: "created" }));
-              if (changes.deleted.length) metadata.deletedMemories = changes.deleted.map((entry) => ({ id: entry.id, content: entry.content, type: "created" }));
+              if (changes.deleted.length) metadata.deletedMemories = changes.deleted.map((entry) => ({ id: entry.id, content: entry.content, type: "deleted" }));
               memoryRecorder.recordWithRuntimeContext({
                 type: "message_metadata",
                 messageId: memoryMessageId,
@@ -2816,7 +2854,7 @@ export class AgentSession {
           type: "assistant_message",
           content: "",
           relatedUsage: pendingRelated,
-          contextState: this.contextMemory.persistedState()
+          contextState: this.checkpointPersistenceError ? undefined : this.contextMemory.persistedState()
         });
       }
       // 旧 recorder 只是被丢弃；关闭失败不阻断切换到新会话（空草稿关闭时会顺带删除草稿文件）。
@@ -2989,47 +3027,124 @@ export class AgentSession {
     await this.recorder.flush();
   }
 
+  async readCheckpointEvidence(args: CheckpointEvidenceArgs, signal?: AbortSignal): Promise<unknown> {
+    this.assertNotQuarantined("checkpoint evidence");
+    signal?.throwIfAborted();
+    const checkpoint = this.contextMemory.snapshot().checkpoint;
+    const claim = checkpoint?.state && checkpointClaims(checkpoint.state, checkpoint.evidence).find((item) => item.id === args.claimId);
+    if (!claim) throw new Error("Claim not found in the current checkpoint.");
+    await this.recorder.flush();
+    const events = await readSessionEvents(this.recorder.filePath);
+    signal?.throwIfAborted();
+    // 保留当前分支选择，只移除压缩边界以读回原文；绝不按外部传入路径访问其他会话。
+    const full = replaySessionEvents(events, { sessionId: this.recorder.sessionId, includeCompactedMessages: true });
+    const sources = claim.references.map((reference) => {
+      if (reference.kind === "checkpoint") return { reference, status: "inherited_only", note: "Original evidence unavailable; this is a previous summary, not verification." };
+      const index = full.messageReferences.findIndex((item) => reference.messageId !== undefined
+        ? item.id === reference.messageId
+        : reference.messageIndex !== undefined && item.index === reference.messageIndex);
+      const message = full.messages[index];
+      if (!message) return { reference, status: "unavailable" };
+      if (reference.kind === "tool_result" && (message.role !== "toolResult" || message.toolCallId !== reference.toolCallId)) return { reference, status: "unavailable" };
+      if (reference.kind === "tool_call" && (message.role !== "assistant" || !message.content.some((part) => part.type === "toolCall" && part.id === reference.toolCallId))) return { reference, status: "unavailable" };
+      // 仅返回文本和调用参数；不回传图片、音频、推理签名或原始二进制。
+      const content = typeof message.content === "string" ? message.content : message.content.flatMap((part) =>
+        part.type === "text" ? [part.text] : part.type === "toolCall" ? [JSON.stringify({ tool: part.name, arguments: part.arguments })] : []
+      ).join("\n");
+      return { reference, status: "available", role: message.role, isError: message.role === "toolResult" ? message.isError : undefined, content };
+    });
+    const content = redactSecrets(JSON.stringify(sources));
+    const offset = Math.min(args.offset ?? 0, content.length);
+    const page = content.slice(offset, offset + (args.length ?? 8_000));
+    return { claimId: claim.id, verification: claim.verification, offset, totalCharacters: content.length, content: page, hasMore: offset + page.length < content.length };
+  }
+
   async compactConversation(hint?: string, signal?: AbortSignal): Promise<string> {
     const release = this.beginOperation("conversation compaction");
-    try {
     const usageBeforeCompaction = this.usageRecords.length;
-    const result = await this.contextMemory.compact(hint, signal);
-    if (result.compacted) this.persistContextCheckpoint(result, "manual", this.contextMessageReferences);
-    const compactionUsage = this.usageRecords.slice(usageBeforeCompaction).at(-1);
-    this.recorder.record({
-      type: "assistant_message",
-      content: "",
-      reasoningContent: undefined,
-      usage: compactionUsage,
-      contextState: this.contextMemory.snapshot()
-    });
-    return this.contextMemory.formatCompaction(result);
+    try {
+      const result = await this.contextMemory.compact(hint, signal);
+      if (result.compacted) await this.persistContextCheckpoint(result, "manual", this.contextMessageReferences);
+      return this.contextMemory.formatCompaction(result);
     } finally {
-      release();
+      // 手动失败也要保存冷却原因，否则重启会立即重复请求同一摘要。
+      try {
+        if (!this.checkpointPersistenceError) {
+          this.recorder.record({ type: "assistant_message", content: "", usage: this.usageRecords.slice(usageBeforeCompaction).at(-1), contextState: this.contextMemory.snapshot() });
+          await this.recorder.flush();
+        }
+      } finally { release(); }
     }
   }
 
-  private persistContextCheckpoint(
+  private async persistContextCheckpoint(
     result: CompactionResult,
     reason: "threshold" | "overflow" | "manual",
     sourceReferences: Array<SessionMessageReference | undefined>,
     nextKeptReference?: SessionMessageReference
-  ): SessionContextCheckpoint | undefined {
+  ): Promise<SessionContextCheckpoint | undefined> {
     if (!result.compacted || !result.summary) return undefined;
+    try {
     const retainedReferences = sourceReferences.slice(result.compactedMessageCount);
     const firstKept = retainedReferences.find((reference) => reference !== undefined) ?? nextKeptReference;
+    const previousCheckpoint = this.contextMemory.snapshot().checkpoint;
+    const state: SessionContextCheckpointState | undefined = result.checkpoint === undefined ? undefined : {
+      goal: [], constraints: [], done: [], inProgress: [], blocked: [], decisions: [],
+      errorsAndFixes: [], userMessages: [], nextSteps: [], criticalContext: []
+    };
+    const evidence: SessionContextCheckpoint["evidence"] = [];
+    for (const field of sessionContextCheckpointFields) {
+      for (const [itemIndex, text] of (result.checkpoint?.state[field] ?? []).entries()) {
+        const claim = result.checkpoint?.evidence.find((candidate) => candidate.field === field && candidate.itemIndex === itemIndex);
+        const references = claim?.references.flatMap((item) => {
+          const reference = item.relativeMessageIndex === undefined
+            ? undefined
+            : sourceReferences[item.relativeMessageIndex];
+          if (item.relativeMessageIndex !== undefined && !reference) return [];
+          return [{
+            kind: item.kind,
+            role: item.role,
+            messageId: reference?.id ?? item.messageId,
+            messageIndex: reference?.index ?? item.messageIndex,
+            toolCallId: item.toolCallId,
+            tool: item.tool,
+            archivePath: item.archivePath,
+            checkpointCreatedAt: item.checkpointCreatedAt
+          }];
+        }) ?? [];
+        // 无法绑定到 append-only session 的条目不能进入持久化 checkpoint。
+        if (!state || !references.length) continue;
+        const persistedIndex = state[field].length;
+        state[field].push(text);
+        evidence.push({ field, itemIndex: persistedIndex, references });
+      }
+    }
     const checkpoint: SessionContextCheckpoint = {
       summary: result.summary,
       firstKeptMessageId: firstKept?.id,
       firstKeptMessageIndex: firstKept?.index ?? this.nextSessionMessageIndex,
       tokensBefore: Math.max(0, Math.round(result.tokensBefore)),
       compactedMessages: this.contextMemory.snapshot().compactedMessages,
-      createdAt: new Date().toISOString()
+      createdAt: new Date().toISOString(),
+      formatVersion: result.checkpoint?.formatVersion,
+      state,
+      evidence: evidence.length ? evidence : undefined,
+      parentCreatedAt: previousCheckpoint?.createdAt,
+      coveredMessageCount: result.compactedMessageCount,
+      tokensAfter: result.checkpoint?.tokensAfter,
+      summaryProvider: result.checkpoint?.summaryProvider,
+      summaryModel: result.checkpoint?.summaryModel,
+      summaryPromptVersion: result.checkpoint?.summaryPromptVersion
     };
-    this.recorder.record({ type: "context_checkpoint", reason, ...checkpoint });
+    if (!evidence.length) throw new Error("Checkpoint has no durable evidence.");
+    await this.recorder.recordAndFlush({ type: "context_checkpoint", reason, ...checkpoint });
     this.contextMessageReferences = retainedReferences;
     this.contextMemory.setCheckpoint(checkpoint);
     return checkpoint;
+    } catch (error) {
+      this.checkpointPersistenceError = new Error("Checkpoint persistence failed; close and reopen this session before continuing.", { cause: error });
+      throw this.checkpointPersistenceError;
+    }
   }
 
   listModels(): ModelChoice[] {
@@ -3355,7 +3470,7 @@ export class AgentSession {
         attachments: sessionAttachments(item.attachments),
         skills: this.skillPaths(),
         contextUsage: this.contextMemory.getBudget(),
-        contextState: this.contextMemory.persistedState(),
+        contextState: this.checkpointPersistenceError ? undefined : this.contextMemory.persistedState(),
         messageId: item.messageId
       });
       referenceByMessage.set(item.message, reference);
@@ -3412,7 +3527,7 @@ export class AgentSession {
         type: "assistant_message",
         content: "",
         relatedUsage,
-        contextState: this.contextMemory.persistedState()
+        contextState: this.checkpointPersistenceError ? undefined : this.contextMemory.persistedState()
       });
     }
     await this.recorder.close();
@@ -3431,6 +3546,7 @@ export class AgentSession {
   }
 
   private assertNotQuarantined(operation: string): void {
+    if (this.checkpointPersistenceError) throw this.checkpointPersistenceError;
     const lingering = this.lingeringExternalTools.values().next().value as { tool: string; toolCallId: string } | undefined;
     if (lingering) {
       throw new Error(`Cannot start ${operation}: this agent session is quarantined while cancelled external tool ${lingering.tool} (${lingering.toolCallId}) is still settling.`);

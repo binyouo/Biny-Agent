@@ -2,7 +2,7 @@
  * 报告类 slash command 的结构化卡片构建。
  *
  * 纯文本报告继续由 statusReport.ts / usage.ts / report.ts 生成给 CLI、Desktop 和 evals，
- * 这里单独产出 TUI 渲染 Codex 风格卡片所需的结构化数据，两边互不干扰。
+ * 这里单独产出 TUI 渲染报告卡片所需的结构化数据，两边互不干扰。
  */
 import type { AgentSessionInfo } from "../agent/AgentSession.js";
 import type { ContextStatus } from "../agent/context/types.js";

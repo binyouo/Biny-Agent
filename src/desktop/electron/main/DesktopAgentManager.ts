@@ -1703,7 +1703,7 @@ export class DesktopAgentManager {
     const { runtime, commands } = await this.ensureRuntime(projectId);
     const result = commands
       ? await commands.agent.searchMemory(query, [], { limit: 8, includeArchived })
-      : await requireRemoteRuntime(runtime).memory<MemorySearchResult>("search-v3", { query, limit: 8, includeArchived });
+      : await requireRemoteRuntime(runtime).memory<MemorySearchResult>("search", { query, limit: 8, includeArchived });
     return result.matches.map((match) => ({
       id: match.entry.id,
       originalId: match.entry.originalId,
@@ -1729,8 +1729,7 @@ export class DesktopAgentManager {
 
   async addMemoryEntry(
     projectId: string,
-    input: DesktopMemoryEntryInput,
-    expectedRevision: number
+    input: DesktopMemoryEntryInput
   ): Promise<DesktopMemoryStats> {
     this.projects.requireProject(projectId);
     const { runtime, commands } = await this.runtimeForGlobalWrite(
@@ -1749,13 +1748,13 @@ export class DesktopAgentManager {
       ? await runtime.runExclusiveOperation(
         "memory",
         async () => {
-          const written = await requireLocalMemory(commands).writeEntry(entry, { expectedRevision });
+          const written = await requireLocalMemory(commands).writeEntry(entry);
           return written;
         }
       )
-      : await requireRemoteRuntime(runtime).memory<{ written: boolean; path?: string }>("write-v3", { entry, expectedRevision });
+      : await requireRemoteRuntime(runtime).memory<{ written: boolean; path?: string }>("write", { entry });
     if (!result.written) {
-      throw new Error(result.path ? "已存在等价的记忆条目，未重复保存。" : "内容太短，至少需要 20 个字符才能作为持久记忆。");
+      throw new Error(result.path ? "已存在等价的记忆条目，未重复保存。" : "记忆正文不能为空。");
     }
     return await this.memoryStats(projectId);
   }
@@ -1763,8 +1762,7 @@ export class DesktopAgentManager {
   async updateMemoryEntry(
     projectId: string,
     entryId: string,
-    patch: DesktopMemoryEntryPatch,
-    expectedRevision: number
+    patch: DesktopMemoryEntryPatch
   ): Promise<DesktopMemoryStats> {
     this.projects.requireProject(projectId);
     const { runtime, commands } = await this.runtimeForGlobalWrite(
@@ -1775,16 +1773,15 @@ export class DesktopAgentManager {
       ? await runtime.runExclusiveOperation(
         "memory",
         async () => {
-          const written = await requireLocalMemory(commands).updateEntry(entryId, patch, { expectedRevision });
+          const written = await requireLocalMemory(commands).updateEntry(entryId, patch);
           return written;
         }
       )
-      : await requireRemoteRuntime(runtime).memory<{ written: boolean }>("update-v3", {
+      : await requireRemoteRuntime(runtime).memory<{ written: boolean }>("update", {
         id: entryId,
-        patch,
-        expectedRevision
+        patch
       });
-    if (!result.written) throw new Error("未找到该记忆条目，或修改后的正文不足 20 个字符。");
+    if (!result.written) throw new Error("未找到该记忆条目，或修改后的正文为空。");
     return await this.memoryStats(projectId);
   }
 
@@ -1861,21 +1858,20 @@ export class DesktopAgentManager {
     const { runtime, commands } = await this.ensureRuntime(projectId);
     const result = commands
       ? await commands.agent.getLocalMemory().listArchivedEntries()
-      : await requireRemoteRuntime(runtime).memory<{ entries: MemoryEntry[] }>("archive-list-v3", {});
+      : await requireRemoteRuntime(runtime).memory<{ entries: MemoryEntry[] }>("archive-list", {});
     return result.entries as DesktopMemoryEntry[];
   }
 
   async archiveMemoryEntry(
     projectId: string,
     entryId: string,
-    archived: boolean,
-    expectedRevision: number
+    archived: boolean
   ): Promise<DesktopMemoryStats> {
     this.projects.requireProject(projectId);
     const { runtime, commands } = await this.runtimeForGlobalWrite(projectId, archived ? "任务运行期间不能归档记忆。" : "任务运行期间不能恢复记忆。");
     const result = commands
-      ? await runtime.runExclusiveOperation("memory", async () => await requireLocalMemory(commands).archiveEntry(entryId, archived, { expectedRevision }))
-      : await requireRemoteRuntime(runtime).memory<{ archived: boolean; entry?: MemoryEntry }>("archive-v3", { id: entryId, archived, expectedRevision });
+      ? await runtime.runExclusiveOperation("memory", async () => await requireLocalMemory(commands).archiveEntry(entryId, archived))
+      : await requireRemoteRuntime(runtime).memory<{ archived: boolean; entry?: MemoryEntry }>("archive", { id: entryId, archived });
     // `archived` is the resulting state, so a successful restore legitimately
     // returns false. Presence of the returned entry is the mutation/no-op
     // success signal; absence means the id was not found.
@@ -1885,8 +1881,7 @@ export class DesktopAgentManager {
 
   async deleteMemoryEntry(
     projectId: string,
-    entryId: string,
-    expectedRevision: number
+    entryId: string
   ): Promise<DesktopMemoryStats> {
     this.projects.requireProject(projectId);
     const { runtime, commands } = await this.runtimeForGlobalWrite(
@@ -1897,25 +1892,25 @@ export class DesktopAgentManager {
       ? await runtime.runExclusiveOperation(
         "memory",
         async () => {
-          const deleted = await requireLocalMemory(commands).deleteEntryById(entryId, { expectedRevision });
+          const deleted = await requireLocalMemory(commands).deleteEntryById(entryId);
           return deleted;
         }
       )
-      : await requireRemoteRuntime(runtime).memory<{ deleted: boolean }>("delete-v3", { id: entryId, expectedRevision });
+      : await requireRemoteRuntime(runtime).memory<{ deleted: boolean }>("delete", { id: entryId });
     if (!result.deleted) throw new Error("未找到该记忆条目，可能已被删除。");
     return await this.memoryStats(projectId);
   }
 
-  async clearMemory(projectId: string, expectedRevision: number): Promise<DesktopMemoryStats> {
+  async clearMemory(projectId: string): Promise<DesktopMemoryStats> {
     this.projects.requireProject(projectId);
     const { runtime, commands } = await this.runtimeForGlobalWrite(
       projectId,
       "任务运行期间不能清空记忆。"
     );
     if (commands) {
-      await runtime.runExclusiveOperation("memory", () => requireLocalMemory(commands).clearAllEntries({ expectedRevision }));
+      await runtime.runExclusiveOperation("memory", () => requireLocalMemory(commands).clearAllEntries());
     } else {
-      await requireRemoteRuntime(runtime).memory("clear-v3", { expectedRevision });
+      await requireRemoteRuntime(runtime).memory("clear", {});
     }
     return await this.memoryStats(projectId);
   }
@@ -2930,7 +2925,7 @@ export class DesktopAgentManager {
       entries: MemoryEntriesResult;
       allEntries: MemoryEntriesResult;
       maintenance: MemoryMaintenanceStatus;
-    }>("overview-v3", {});
+    }>("overview", {});
   }
 
   /**
@@ -2965,7 +2960,7 @@ export class DesktopAgentManager {
       return { entries: result.entries, total: result.total, storeRevision: result.storeRevision };
     }
     if (managed) {
-      const result = await requireRemoteRuntime(managed.runtime).memory<MemoryEntriesResult>("list-v3", { offset, limit, includeArchived });
+      const result = await requireRemoteRuntime(managed.runtime).memory<MemoryEntriesResult>("list", { offset, limit, includeArchived });
       return { entries: result.entries, total: result.total, storeRevision: result.storeRevision };
     }
     const project = this.projects.requireProject(projectId);

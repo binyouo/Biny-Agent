@@ -3,7 +3,7 @@
  * 分析结果先保存在 Activity 数据库，再由这里把稳定候选写入 SQLite 记忆并把会话材料
  * 投影到主题沉淀层。两条投影都允许失败而不回滚已落库的 Activity 分析。
  */
-import { LocalMemory, withFreshRevision } from "../agent/context/LocalMemory.js";
+import { LocalMemory } from "../agent/context/LocalMemory.js";
 import { CrystalService } from "../agent/context/crystalService.js";
 import { CrystalStorage } from "../agent/context/crystalStorage.js";
 import type { CrystalConfig } from "../agent/context/crystalTypes.js";
@@ -66,13 +66,12 @@ export async function createActivityMemoryPipeline(options: ActivityMemoryPipeli
       );
       try {
         const input = activityMemoryInput(candidate, context);
-        const result = await withFreshRevision(memory, context.signal, async (expectedRevision) => await memory.writeAutoEntry(input, {
-          expectedRevision,
+        const result = await memory.writeAutoEntry(input, {
           signal: context.signal,
           checkpoint: context.checkpoint,
           now: new Date(context.analyzedAt),
           requireSemantic: options.requireSemantic === true
-        }));
+        });
         if (result.deferred) throw new Error("本地语义检索暂不可用，保留活动记忆候选。");
       } finally {
         memory.close();

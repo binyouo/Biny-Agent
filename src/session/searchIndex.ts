@@ -15,6 +15,7 @@ import { DatabaseSync } from "node:sqlite";
 import { globalAgentDir } from "../config/paths.js";
 import { tokenizeMemoryText } from "../agent/context/memoryFormat.js";
 import { parseSessionEvents, type SessionEvent } from "./events.js";
+import { listAllSessionFiles, sessionIdFromFile } from "./store.js";
 
 export interface SessionTranscriptHit {
   sessionId: string;
@@ -56,6 +57,30 @@ export class SessionSearchIndex {
     };
   }
 
+  /** 按需补齐旧会话，不能假设历史都曾在当前进程打开过。 */
+  async refreshAll(): Promise<void> {
+    const root = typeof this.agentDir === "function" ? this.agentDir() : this.agentDir;
+    for (const file of await listAllSessionFiles(root)) {
+      await this.indexSessionFile(sessionIdFromFile(file), file);
+    }
+  }
+
+  /** 按原文子串检索，不把正则元字符或中文单字交给 FTS 分词器。 */
+  grep(query: string, limit = 20): SessionTranscriptHit[] {
+    if (!query.trim()) return [];
+    const rows = this.open().prepare(
+      "SELECT session_id, message_id, role, time, substr(body, max(1, instr(lower(body), lower(?)) - 80), 500) AS excerpt " +
+      "FROM session_transcripts WHERE instr(lower(body), lower(?)) > 0 ORDER BY time DESC LIMIT ?"
+    ).all(query, query, Math.max(1, Math.min(200, Math.trunc(limit)))) as Array<Record<string, unknown>>;
+    return rows.map((row) => ({
+      sessionId: String(row.session_id),
+      messageId: typeof row.message_id === "string" ? row.message_id : undefined,
+      role: row.role === "assistant" ? "assistant" : "user",
+      time: typeof row.time === "string" ? row.time : undefined,
+      excerpt: String(row.excerpt)
+    }));
+  }
+
   /**
    * 增量索引一个会话 JSONL：只解析上次索引偏移之后的完整行。半行（正在写入）会留到
    * 下次再处理；文件被截断或轮转时回退为重建该会话的索引。
@@ -88,6 +113,12 @@ export class SessionSearchIndex {
     );
     database.exec("BEGIN IMMEDIATE");
     try {
+      // 读取文件期间其它连接可能已推进偏移；重读状态避免同一消息重复入索引。
+      const current = database.prepare("SELECT byte_offset FROM session_index_state WHERE session_id = ?").get(sessionId) as IndexStateRow | undefined;
+      if (Number(current?.byte_offset ?? 0) !== previousOffset) {
+        database.exec("ROLLBACK");
+        return await this.indexSessionFile(sessionId, filePath);
+      }
       for (const { event, endOffset } of appended) {
         offset = endOffset;
         if (event.type !== "user_message" && event.type !== "assistant_message") continue;

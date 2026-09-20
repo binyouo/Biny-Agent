@@ -1,68 +1,61 @@
 ---
 name: memory-management
-description: "Search and manage Biny's persistent local memory when the user asks about past conversations, personal facts, preferences, project decisions, or anything that requires recalling information. Use for requests such as do you remember my preference, what did we decide before, help me find what we said, remember this, forget that, search memory, list memories, archive an entry, or clear a scope; triggers include: what do you know about me, we talked about this before, 记住这个, 查一下记忆, 我的偏好, 删除记忆, and 清理记忆. Search before writing, treat memory as advisory rather than current authority, and require explicit confirmation for destructive operations; do not save secrets, guesses, or temporary context."
+description: "Search and manage Biny's local facts and conversation history. Use for earlier decisions, preferences, remember this, forget that, 记住这个, 查一下记忆, 我的偏好, 删除记忆, or 清理记忆. Search before writing; never save secrets or guesses."
 ---
 
-# Memory Management Skill
+# Memory management
 
-Search and manage Biny's persistent local memory. Memory is useful for continuity, but it is advisory context rather than authority: current user instructions, current files, current tool results, and runtime permissions always take precedence.
+Memory is advisory. Current instructions, files, tool results and permissions take precedence.
 
-## Commands
+## Search
 
 ```bash
-# List memories. Selector: all, current, user, or other
-biny memory list [selector] --json
-
-# Show store totals, per-scope/kind distribution, and maintenance status
+biny memory search "<query>" --json
+biny memory search "<query>" --tag preference workflow --json
+biny memory list --json
+biny memory get <id> --json
 biny memory stats --json
-
-# Search semantically within a selector
-biny memory search "<query>" --selector current --json
-
-# Add one structured memory entry after explicit user intent
-biny memory add --entry '<json>' --json
-
-# Archive one entry or clear a selected scope; both require confirmation
-biny memory archive <id> --yes --json
-biny memory clear [selector] --yes --json
-
-# Inspect maintenance state, or run maintenance after confirmation
-biny memory sleep --json
-biny memory sleep --run --yes --json
+biny history search "<keywords>" --json
+biny memory grep "<literal text>" --json
+biny memory archive
 ```
 
-## When to use
+- Facts share one global library across workspaces. There is no selector, scope or project partition parameter. Tags match any given tag; they are not access boundaries.
+- Automatic recall requires working embeddings; when unavailable it injects no facts. Explicit memory search can fall back to lexical matching and reports degradation.
+- History search refreshes old local sessions before querying. `grep` matches literal substrings, including punctuation. `archive` exports conversation Markdown to the agent's `threads/` directory; it does not remove facts or conversations.
+- A live Runtime Host mirrors transcripts at startup, every 30 minutes, and on graceful shutdown. Unchanged files are left intact; failed exports retry next time. Check `threads/.mirror-status.json` for failures. Removing a source conversation also removes its generated snapshot on the next pass, but never user-created files or unmarked legacy exports.
+- If there are no matches, say so. Never invent a remembered fact or claim a transcript was searched without actual results.
 
-- **Past information** — "do you remember my preference", "what did we decide before", or "help me find what we said" → search memory before answering.
-- **Explicit saving** — "remember this" or a clearly stated stable preference → search for an equivalent entry, then save only the durable fact.
-- **Forgetting** — "forget that" or "remove this memory" → identify the exact entry or selector, confirm the scope, then archive or clear it.
-- **Maintenance** — the user explicitly asks to consolidate or clean up memory → inspect `biny memory sleep` first and run it only with confirmation.
+## Write and manage
 
-## Search strategy
+```bash
+biny memory add "用户喜欢简洁中文回答" --json
+biny memory add --entry '{"content":"用户喜欢简洁中文回答","tags":["preference"],"importance":0.5}' --json
+biny memory update <id> --entry '{"content":"更新后的事实"}' --json
+biny memory archive-entry <id> --yes --json
+biny memory archived --json
+biny memory restore <archive-id> --json
+biny memory delete <id> --yes --json
+biny memory clear --yes --json
+```
 
-1. Start with `biny memory search` for conceptual or vague questions.
-2. Use `biny memory list` to inspect the surrounding entries, selector, revision, and archived state.
-3. If the question is about exact conversation wording and memory search is insufficient, use the session/history capabilities that are actually available in the current runtime. Do not invent a `memory grep` command or claim that archived conversation text was searched when it was not.
-4. If a search returns nothing, say so. Do not complete the answer from model recollection.
-5. Distinguish explicit user preferences, project decisions, facts, workflow notes, inferences, and stale entries.
+- Save supported, self-contained facts. Search for equivalents first. Never save credentials, speculation, transient plans or assistant-generated claims as user facts.
+- Explicit writes follow user intent. Authorized background extraction and reflection can write when enabled without asking for every fact.
+- `archive-entry` removes a fact from recall but keeps it restorable. Restore uses the archive ID from `archived`.
+- `delete` permanently removes the selected entry; `clear` removes all active and archived facts in the shared library, not just this project. Confirm exact targets and consequences first.
+- Writes do not require a revision or CAS retry. SQLite transactions commit facts; embeddings are rebuildable derived data. Saving a fact does not prove semantic retrieval is ready.
+- Report actual results, including duplicate skips and errors.
 
-## Writing rules
+## Sleep consolidation
 
-- Explicit tool writes follow user intent or a clearly established stable preference. Authorized background extraction and daily self-reflection may save stable, supported facts when memory contribution is enabled; do not ask again for each automatic memory.
-- Search before writing to avoid duplicates; preserve the correct audience, topic, source, and durability.
-- Never save passwords, API keys, one-time codes, private credentials, or sensitive details merely because they appeared in context.
-- Do not promote a temporary plan, speculative interpretation, or assistant-generated prose into a user fact.
-- After a write, report what was stored and the actual command result.
+```bash
+biny memory sleep --json
+biny memory sleep --preview --json
+biny memory sleep --runs --json
+biny memory sleep --run --yes --json
+biny memory sleep --cancel --json
+```
 
-## Archiving, clearing, and conflicts
+Preview before requested cleanup. Sleep can archive duplicates, expired temporary facts and similar clusters; LLM synthesis requires a usable model. Cancellation does not roll back committed work. Background scheduling requires a live Runtime Host; it does not wake a powered-off computer.
 
-- Archive and clear are state-changing operations. Confirm the exact ID or selector before running the command, and keep `--yes` as an explicit confirmation boundary.
-- `biny memory sleep --run --yes` may reorganize or archive stale, duplicate, or low-value entries; explain this before running it.
-- On a revision or compare-and-swap conflict, re-read the current list once and decide whether a narrow retry is safe. Never overwrite a newer update blindly.
-- If storage, the Runtime Host, or the model is unavailable, preserve the exact error and say which part was not completed.
-
-## Boundary
-
-- Memory cannot replace a current tool query, a current file, or a permission decision.
-- Memory retrieval must not silently widen a project or user selector.
-- Always confirm what was recalled, stored, archived, or cleared from actual output; never claim success without evidence.
+For local integrations, `biny memory serve` exposes an authenticated loopback API and a read-only `/ws/memory` subscription on the same port. Both require a Bearer header and reject browser origins. The stream sends current state on connect and changed state afterward; progress is sampled once per second, not a replayable audit log. See the memory section in the repository's `README.md` for event names.

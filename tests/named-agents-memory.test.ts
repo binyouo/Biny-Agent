@@ -279,8 +279,9 @@ async function testMemoryTopicLifecycle(): Promise<void> {
     const added = await runMemoryCommand(memory, ["add", "Always run pnpm typecheck before committing changes."]);
     assert.match(added, /Saved memory /);
 
-    const tooShort = await runMemoryCommand(memory, ["add", "too short"]);
-    assert.match(tooShort, /Skipped/);
+    const shortFact = await runMemoryCommand(memory, ["add", "用户喜欢中文"]);
+    assert.match(shortFact, /Saved memory/);
+    assert.match(await runMemoryCommand(memory, ["forget", "用户喜欢中文"]), /Deleted 1 memory entry/);
 
     const listed = await runMemoryCommand(memory, ["list"]);
     assert.match(listed, /typecheck/);
@@ -309,7 +310,7 @@ async function testMemoryTopicLifecycle(): Promise<void> {
     assert.match(reAdded, /Saved memory /);
     const active = (await memory.listMemoryEntries()).entries[0];
     assert.ok(active);
-    const archived = await memory.archiveEntry(active.id, true, { expectedRevision: (await memory.getOverview()).storeRevision });
+    const archived = await memory.archiveEntry(active.id, true);
     assert.equal(archived.archived, true);
     assert.ok(archived.entry);
     const archivedList = await runMemoryCommand(memory, ["archived"]);
@@ -349,7 +350,7 @@ async function testMemoryTools(): Promise<void> {
     assert.match(saved.path ?? "", /^memory:\/\/[a-z0-9-]+$/u);
 
     // 无效参数走 isError 分支而不是抛异常。
-    const invalid = await saveTool.resolveExecution({ content: "short" });
+    const invalid = await saveTool.resolveExecution({ content: "   " });
     assert.ok("isError" in invalid);
 
     const recallExecution = await recallTool.resolveExecution({ query: "release main" });
@@ -374,13 +375,13 @@ async function testMaintenanceScansDurableEntries(): Promise<void> {
   try {
     const memory = new LocalMemory(workspaceRoot, unusedModel);
     const summary = "The same durable maintenance workflow is shared by every memory writer.";
-    const first = await memory.writeEntry(projectEntry(summary), { expectedRevision: 0, now: new Date("2026-08-01T00:00:00.000Z") });
+    const first = await memory.writeEntry(projectEntry(summary), { now: new Date("2026-08-01T00:00:00.000Z") });
     const second = await memory.writeEntry(projectEntry(
       "A different durable note that will be edited into the same maintenance workflow text."
-    ), { expectedRevision: first.revision, now: new Date("2026-08-01T00:30:00.000Z") });
+    ), { now: new Date("2026-08-01T00:30:00.000Z") });
     assert.ok(first.entry && second.entry);
     // updateEntry 不做写入期去重：用它构造一对同文行，供 Sleep exact 层无条件合并。
-    const edited = await memory.updateEntry(second.entry.id, { content: summary }, { expectedRevision: second.revision, now: new Date("2026-08-01T01:00:00.000Z") });
+    const edited = await memory.updateEntry(second.entry.id, { content: summary }, { now: new Date("2026-08-01T01:00:00.000Z") });
     assert.equal(edited.written, true);
 
     let rebuilds = 0;

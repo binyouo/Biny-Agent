@@ -6,6 +6,8 @@
 import type { OperationLane } from "./types.js";
 import { sessionIdFromFile } from "../../session/store.js";
 
+export const memoryQueryActions = new Set(["overview", "list", "get", "search", "archive-list", "sleep-status", "sleep-runs", "sleep-preview"]);
+
 export class OperationDispatcher {
   private readonly tails: Record<Exclude<OperationLane, "query">, Promise<void>> = {
     mutation: Promise.resolve(),
@@ -46,7 +48,8 @@ export function operationLaneKey(operation: string, payload: Record<string, unkn
     : "primary";
 }
 
-export function operationLane(operation: string): OperationLane {
+export function operationLane(operation: string, payload: Record<string, unknown> = {}): OperationLane {
+  if (operation === "memory" && memoryQueryActions.has(String(payload.action))) return "query";
   // Runtime 重建会替换快照并重置 revision。权限模式写入必须与重建共用 mutation 队列。
   if (operation === "agent.permission-mode" || operation === "agent.permission-command" || operation === "runtime.restart") return "mutation";
   // Admission 与取消/审批共享一条因果队列，保证 submit 后立即 cancel 时顺序稳定。
@@ -78,7 +81,7 @@ export function operationLane(operation: string): OperationLane {
     || operation === "agent.models"
     || operation === "agent.sessions"
     || operation === "personalization.get"
-    || operation === "memory.embedding.status-v3"
+    || operation === "memory.embedding.status"
     || operation === "skills.list"
     || operation === "mcp.status"
     || operation === "mcp.details"
@@ -100,7 +103,7 @@ export function operationLane(operation: string): OperationLane {
     || operation === "capability.get"
     || operation === "host.info"
   ) return "query";
-  if (operation === "memory.sleep.cancel" || operation === "memory.embedding.cancel-download-v3" || operation === "memory.embedding.cancel-rebuild-v3") return "control";
+  if (operation === "memory.sleep.cancel" || operation === "memory.embedding.cancel-download" || operation === "memory.embedding.cancel-rebuild") return "control";
   if (operation === "capability.cancel" || operation === "capability.fail" || operation === "capability.release" || operation === "capability.reject") return "control";
   if (operation === "goal.pause" || operation === "goal.cancel" || operation === "graph.pause" || operation === "graph.cancel") return "control";
   if (operation === "capability.register" || operation === "capability.replace" || operation === "capability.invoke" || operation === "capability.accept" || operation === "capability.start" || operation === "capability.result" || operation === "capability.chunk" || operation === "capability.admit" || operation === "graph.start" || operation === "graph.resume" || operation === "goal.resume") return "admission";

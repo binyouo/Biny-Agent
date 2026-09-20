@@ -81,9 +81,87 @@ export interface SessionContextCheckpoint {
   tokensBefore: number;
   compactedMessages: number;
   createdAt: string;
+  /** 结构化 checkpoint 格式；旧 session 没有时继续读取 summary。 */
+  formatVersion?: 1;
+  state?: SessionContextCheckpointState;
+  evidence?: SessionContextClaimEvidence[];
+  parentCreatedAt?: string;
+  coveredMessageCount?: number;
+  tokensAfter?: number;
+  summaryProvider?: string;
+  summaryModel?: string;
+  summaryPromptVersion?: number;
+}
+
+/**
+ * 模型摘要的结构化投影。每个字段只表达当前工作状态，不承担权限；来源由 evidence 单独记录。
+ */
+export interface SessionContextCheckpointState {
+  goal: string[];
+  constraints: string[];
+  done: string[];
+  inProgress: string[];
+  blocked: string[];
+  decisions: string[];
+  errorsAndFixes: string[];
+  userMessages: string[];
+  nextSteps: string[];
+  criticalContext: string[];
+}
+
+export const sessionContextCheckpointFields = [
+  "goal",
+  "constraints",
+  "done",
+  "inProgress",
+  "blocked",
+  "decisions",
+  "errorsAndFixes",
+  "userMessages",
+  "nextSteps",
+  "criticalContext"
+] as const satisfies readonly (keyof SessionContextCheckpointState)[];
+
+export type SessionContextCheckpointField = typeof sessionContextCheckpointFields[number];
+
+/** checkpoint 中某一条状态及其来源；itemIndex 指向对应 state 字段里的条目。 */
+export interface SessionContextClaimEvidence {
+  field: SessionContextCheckpointField;
+  itemIndex: number;
+  references: SessionContextEvidenceReference[];
+}
+
+/** 被压缩事实在 append-only session 中的可恢复锚点。 */
+export interface SessionContextEvidenceReference {
+  kind: "message" | "tool_call" | "tool_result" | "archive" | "checkpoint";
+  messageId?: string;
+  messageIndex?: number;
+  toolCallId?: string;
+  tool?: string;
+  archivePath?: string;
+  checkpointCreatedAt?: string;
+  /** 来源角色由运行时记录；引用存在不代表其正文支持摘要结论。 */
+  role?: "user" | "assistant" | "toolResult";
+}
+
+/** 只保存请求指纹与数字，不能把提示词或凭据复制进预算状态。 */
+export interface SessionUsageAnchor {
+  fixedFingerprint: string;
+  messageFingerprints: string[];
+  inputTokens: number;
+  measuredAt: string;
+}
+
+export interface SessionCompactionFailure {
+  inputFingerprint: string;
+  kind: "invalid_structure" | "invalid_evidence" | "empty_checkpoint" | "output_truncated" | "incomplete_response" | "input_budget" | "no_savings" | "provider_error";
+  failedAt: number;
+  retryAfter: number;
 }
 
 export interface SessionContextState {
+  usageAnchor?: SessionUsageAnchor;
+  compactionFailure?: SessionCompactionFailure;
   summary?: string;
   compactedMessages: number;
   lastCompactedAt?: string;

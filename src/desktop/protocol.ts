@@ -1490,9 +1490,9 @@ export interface DesktopApi {
   markSessionRead(projectId: string, sessionId: string, expectedRevision?: string): Promise<DesktopWorkspaceSnapshot>;
   duplicateSession(projectId: string, sessionId: string): Promise<DesktopWorkspaceSnapshot>;
   deleteSession(projectId: string, sessionId: string): Promise<DesktopWorkspaceSnapshot>;
-  /** 导出为 Biny bundle（无损 JSON）或 Claude Code JSONL；用户在保存对话框里选位置。 */
+  /** 导出为 Biny bundle（无损 JSON）或外部 JSONL；用户在保存对话框里选位置。 */
   exportSession(projectId: string, sessionId: string, format: "biny" | "claude"): Promise<DesktopWorkspaceSnapshot>;
-  /** 从 Biny bundle / Claude Code / Codex rollout 文件导入一条新会话并选中它。 */
+  /** 从 Biny bundle 或外部 rollout 文件导入一条新会话并选中它。 */
   importSession(projectId: string): Promise<DesktopWorkspaceSnapshot>;
   sendPrompt(
     projectId: string,
@@ -1570,17 +1570,17 @@ export interface DesktopApi {
   updateSettingsDraftState(state: DesktopSettingsDraftState): Promise<void>;
   respondSettingsCloseRequest(requestId: string, response: DesktopSettingsCloseResponse): Promise<boolean>;
   searchMemory(projectId: string, query: string, includeArchived?: boolean): Promise<DesktopMemorySearchMatch[]>;
-  addMemoryEntry(projectId: string, input: DesktopMemoryEntryInput, expectedRevision: number): Promise<DesktopMemoryOverview>;
-  updateMemoryEntry(projectId: string, entryId: string, patch: DesktopMemoryEntryPatch, expectedRevision: number): Promise<DesktopMemoryOverview>;
-  deleteMemoryEntry(projectId: string, entryId: string, expectedRevision: number): Promise<DesktopMemoryOverview>;
-  archiveMemoryEntry(projectId: string, entryId: string, archived: boolean, expectedRevision: number): Promise<DesktopMemoryStats>;
+  addMemoryEntry(projectId: string, input: DesktopMemoryEntryInput): Promise<DesktopMemoryOverview>;
+  updateMemoryEntry(projectId: string, entryId: string, patch: DesktopMemoryEntryPatch): Promise<DesktopMemoryOverview>;
+  deleteMemoryEntry(projectId: string, entryId: string): Promise<DesktopMemoryOverview>;
+  archiveMemoryEntry(projectId: string, entryId: string, archived: boolean): Promise<DesktopMemoryStats>;
   archivedMemoryEntries(projectId: string): Promise<DesktopMemoryEntry[]>;
   runMemorySleep(projectId: string): Promise<DesktopMemoryStats>;
   memorySleepStatus(projectId: string): Promise<MemoryMaintenanceStatus>;
   memorySleepRuns(projectId: string): Promise<MemorySleepRun[]>;
   previewMemorySleep(projectId: string): Promise<DesktopMemorySleepPreview>;
   cancelMemorySleep(projectId: string): Promise<{ cancelled: boolean }>;
-  clearMemory(projectId: string, expectedRevision: number): Promise<DesktopMemoryOverview>;
+  clearMemory(projectId: string): Promise<DesktopMemoryOverview>;
   memoryEmbeddingStatus(projectId: string): Promise<DesktopMemoryEmbeddingStatus>;
   downloadMemoryEmbeddingModel(projectId: string, model: LocalEmbeddingModelId): Promise<DesktopMemoryEmbeddingStatus>;
   cancelMemoryEmbeddingDownload(projectId: string, model: LocalEmbeddingModelId): Promise<DesktopMemoryEmbeddingCancellationResult>;

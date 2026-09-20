@@ -5,7 +5,7 @@
  * 避免各实现文件之间循环依赖。
  */
 import type { ProjectContext } from "../../project/ProjectContext.js";
-import type { SessionContextUsage } from "../../session/metadata.js";
+import type { SessionCompactionFailure, SessionContextCheckpointField, SessionContextCheckpointState, SessionContextUsage } from "../../session/metadata.js";
 
 export interface LoadedInstruction {
   path: string;
@@ -50,6 +50,7 @@ export interface WorkspaceTurnData {
 export type ContextBudgetStatus = SessionContextUsage;
 
 export interface CompactionStatus {
+  lastFailure?: SessionCompactionFailure;
   summaryPresent: boolean;
   compactedMessages: number;
   lastCompactedAt?: string;
@@ -61,6 +62,36 @@ export interface CompactionResult {
   retainedMessageCount: number;
   tokensBefore: number;
   summary?: string;
+  checkpoint?: CompactionCheckpointDraft;
+}
+
+export interface CompactionEvidenceDraft {
+  role?: "user" | "assistant" | "toolResult";
+  kind: "message" | "tool_call" | "tool_result" | "archive" | "checkpoint";
+  relativeMessageIndex?: number;
+  messageId?: string;
+  messageIndex?: number;
+  toolCallId?: string;
+  tool?: string;
+  archivePath?: string;
+  checkpointCreatedAt?: string;
+}
+
+export interface CompactionClaimEvidenceDraft {
+  field: SessionContextCheckpointField;
+  itemIndex: number;
+  references: CompactionEvidenceDraft[];
+}
+
+/** ContextMemory 生成、由 AgentSession 绑定稳定 session 消息引用后持久化的 checkpoint。 */
+export interface CompactionCheckpointDraft {
+  formatVersion: 1;
+  state: SessionContextCheckpointState;
+  evidence: CompactionClaimEvidenceDraft[];
+  tokensAfter: number;
+  summaryProvider: string;
+  summaryModel: string;
+  summaryPromptVersion: number;
 }
 
 /** 仅用于实时准备进度，不作为持久化上下文事实。 */

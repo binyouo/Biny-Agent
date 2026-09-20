@@ -134,19 +134,19 @@ const backoff = { minMs: runtimeHostReconnectMinMs, maxMs: runtimeHostReconnectM
 }
 
 // ─── 3. 协议 v5 骨架 + 握手兼容矩阵（{v3,v5} × {v3,v5}）────────────────────────
-assert.equal(protocolVersion, 7, "移除运行模式参数后协议版本必须为 7");
+assert.equal(protocolVersion, 8, "记忆操作移除版本后缀与 CAS 后使用新协议");
 
 // capabilities 协商：取声明 ∩ 支持，去重，host 不认识的声明不报错只是不生效。
 {
   assert.deepEqual(
-    negotiateRuntimeHostCapabilities(["runtime.authority", "memory.v3", "runtime.future-op"], runtimeHostCapabilities),
-    ["runtime.authority", "memory.v3"],
+    negotiateRuntimeHostCapabilities(["runtime.authority", "memory", "runtime.future-op"], runtimeHostCapabilities),
+    ["runtime.authority", "memory"],
     "生效集 = client 声明 ∩ host 支持；未知 capability 被丢弃而非报错"
   );
   assert.deepEqual(negotiateRuntimeHostCapabilities([], runtimeHostCapabilities), [], "空声明 → 空生效集");
   assert.deepEqual(
-    negotiateRuntimeHostCapabilities(["memory.v3", "memory.v3", "runtime.authority"], runtimeHostCapabilities),
-    ["memory.v3", "runtime.authority"],
+    negotiateRuntimeHostCapabilities(["memory", "memory", "runtime.authority"], runtimeHostCapabilities),
+    ["memory", "runtime.authority"],
     "重复声明被去重"
   );
 }
@@ -266,7 +266,7 @@ assert.equal(authenticateRuntimeHostHello(helloFor(5), registrationFor(3), 3), f
     await rm(workspaceRoot, { recursive: true, force: true });
   }
   assert.equal(rejection?.errorCode, "protocol_version_mismatch", "拒绝帧必须带 protocol_version_mismatch 错误码");
-  assert.match(rejection?.error ?? "", /protocol 3 is incompatible with 7/u, "拒绝消息要点明版本不匹配");
+  assert.match(rejection?.error ?? "", /protocol 3 is incompatible with 8/u, "拒绝消息要点明版本不匹配");
   assert.match(rejection?.error ?? "", /biny daemon uninstall && biny daemon install/u, "拒绝消息必须给 actionable 指引，不允许静默降级");
 }
 

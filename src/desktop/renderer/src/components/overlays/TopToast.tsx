@@ -1,4 +1,4 @@
-/** 顶部悬浮通知：Codex 式全圆角药丸 toast，可叉掉，超时自动消失（带滑出动画）。 */
+/** 顶部悬浮通知：全圆角药丸 toast，可叉掉，超时自动消失（带滑出动画）。 */
 import { useCallback, useEffect, useState } from "react";
 import { Icon } from "../Icon.js";
 

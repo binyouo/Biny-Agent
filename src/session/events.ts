@@ -20,6 +20,7 @@ import type { SessionEvent, SessionTurnStatusEvent } from "./recorder.js";
 export type { SessionEvent } from "./recorder.js";
 import { publicUserMessage } from "./publicMessage.js";
 import { validateRuntimeEventRecord, type RuntimeEventIdentity } from "./runtimeEvent.js";
+import { contextCheckpointSchema, contextStateSchema, contextUsageSchema } from "./contextSchema.js";
 
 const sessionListReadConcurrency = 8;
 const sessionUsageSchema = z.record(z.unknown());
@@ -27,7 +28,6 @@ const reasoningBlockSchema = z.object({
   text: z.string(),
   providerOptions: z.record(z.unknown()).optional()
 });
-const sessionContextSchema = z.record(z.unknown());
 const attachmentReferenceSchema = z.object({
   name: z.string(),
   mimeType: z.string(),
@@ -123,8 +123,8 @@ const sessionEventSchema = z.discriminatedUnion("type", [
     content: z.string(),
     attachments: z.array(attachmentReferenceSchema).optional(),
     skills: z.array(z.string()).optional(),
-    contextUsage: sessionContextSchema.optional(),
-    contextState: sessionContextSchema.optional(),
+    contextUsage: contextUsageSchema.optional(),
+    contextState: contextStateSchema.optional(),
     preparationUsage: z.array(sessionUsageSchema).optional(),
     messageId: z.string().optional(),
     parentMessageId: z.string().optional(),
@@ -141,7 +141,7 @@ const sessionEventSchema = z.discriminatedUnion("type", [
     reasoningBlocks: z.array(reasoningBlockSchema).optional(),
     usage: sessionUsageSchema.optional(),
     relatedUsage: z.array(sessionUsageSchema).optional(),
-    contextState: sessionContextSchema.optional(),
+    contextState: contextStateSchema.optional(),
     messageId: z.string().optional(),
     parentMessageId: z.string().optional(),
     slotId: z.string().optional(),
@@ -201,17 +201,11 @@ const sessionEventSchema = z.discriminatedUnion("type", [
     retryOfMessageId: z.string().optional(),
     time: z.string().optional()
   }).passthrough(),
-  z.object({
+  contextCheckpointSchema.extend({
     type: z.literal("context_checkpoint"),
     reason: z.enum(["threshold", "overflow", "manual"]),
-    summary: z.string(),
-    firstKeptMessageId: z.string().optional(),
-    firstKeptMessageIndex: z.number().int().nonnegative(),
-    tokensBefore: z.number().int().nonnegative(),
-    compactedMessages: z.number().int().nonnegative(),
-    createdAt: z.string(),
     time: z.string().optional()
-  }).passthrough(),
+  }),
   z.object({
     type: z.literal("model_request"),
     metrics: modelRequestMetricsSchema,

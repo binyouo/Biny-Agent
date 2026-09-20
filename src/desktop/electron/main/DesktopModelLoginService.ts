@@ -1,7 +1,7 @@
 /**
- * 订阅制模型的 OAuth 登录（Claude 订阅、OpenAI Codex）。
+ * 订阅制模型的 OAuth 登录。
  *
- * 走 PKCE 授权码流程，两家的回调方式不同：Claude 由用户把授权码粘回来，Codex 需要在本地
+ * 走 PKCE 授权码流程，不同订阅入口的回调方式不同：一种由用户把授权码粘回来，另一种需要在本地
  * localhost:1455 起一个临时回调服务器接收重定向。
  *
  * 安全约束：`state` 用常量时间比较，防止时序侧信道；待处理的授权有 10 分钟有效期；本地回调
@@ -117,10 +117,10 @@ export class DesktopModelLoginService {
     if (pending?.provider === provider) this.dispose(authRequestId);
   }
 
-  /** Claude 侧回调落在其官网页面上，拿不到重定向，只能让用户把授权码粘回来（paste-code）。 */
+  /** 当前入口回调落在外部页面上，拿不到重定向，只能让用户把授权码粘回来（paste-code）。 */
   private async startClaudeAuthorization(): Promise<DesktopModelLoginStartResult> {
     const verifier = base64url(randomBytes(32));
-    // Claude 的授权流要求 state 与 verifier 一致。
+    // 当前授权流要求 state 与 verifier 一致。
     const state = verifier;
     const url = new URL(CLAUDE_AUTHORIZE_ENDPOINT);
     url.searchParams.set("code", "true");
@@ -142,7 +142,7 @@ export class DesktopModelLoginService {
   }
 
   /**
-   * Codex 的回调地址固定是 http://localhost:1455/auth/callback，所以必须先把本地服务器起好
+   * 当前入口的回调地址固定是 http://localhost:1455/auth/callback，所以必须先把本地服务器起好
    * 再打开浏览器，否则回调会落空。
    */
   private async startCodexAuthorization(): Promise<DesktopModelLoginStartResult> {

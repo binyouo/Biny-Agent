@@ -754,7 +754,8 @@ export class ToolExecutionCoordinator {
       const resultBytes = Buffer.byteLength(output, "utf8");
       this.producedToolResultBytes += rawResultBytes;
       const remaining = Math.max(0, budget - this.inlineToolResultBytes);
-      if (resultBytes <= remaining || call.name === readToolResultToolName) {
+      // 两种显式回查都已限制单页大小；预算耗尽时再次归档会让模型永远读不到证据。
+      if (resultBytes <= remaining || call.name === readToolResultToolName || call.name === "read_checkpoint_evidence") {
         this.inlineToolResultBytes += resultBytes;
         return modelResult;
       }

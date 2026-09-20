@@ -32,11 +32,11 @@ export async function preselectCapabilities(options: CapabilityPreselectionInput
   const skillsMode = options.selection?.skills ?? options.config.chat.defaultSkillSelection;
   if (toolsMode !== "auto" && skillsMode !== "auto") return { tools: toolsMode, skills: skillsMode };
   const tools = options.tools;
-  const optionalTools = tools.filter((tool) => !stableCodingToolNames.has(tool.name) && tool.name !== "read_tool_result" && tool.name !== toolSearchToolName);
+  const optionalTools = tools.filter((tool) => !stableCodingToolNames.has(tool.name) && tool.name !== "read_tool_result" && tool.name !== "read_checkpoint_evidence" && tool.name !== toolSearchToolName);
   const skills = options.skills;
   const selectedTools = new Set(
     toolsMode === "auto"
-      ? tools.filter((tool) => stableCodingToolNames.has(tool.name)).map((tool) => tool.name)
+      ? tools.filter((tool) => stableCodingToolNames.has(tool.name) || tool.name === "read_checkpoint_evidence").map((tool) => tool.name)
       : []
   );
   for (const name of options.previousTools) if (tools.some((tool) => tool.name === name)) selectedTools.add(name);

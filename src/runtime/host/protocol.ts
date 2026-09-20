@@ -11,7 +11,7 @@ import type {
 } from "../CapabilityStore.js";
 import type { HostSurface } from "./types.js";
 
-export const runtimeHostProtocolVersion = 7 as const;
+export const runtimeHostProtocolVersion = 8 as const;
 export const runtimeHostEventHistoryLimit = 4_000;
 export const runtimeHostMaxFrameBytes = 8 * 1024 * 1024;
 /** 旧名保留：重连基准延迟。实际退避曲线（minMs/maxMs/stableConnectionMs）见 reconnect.ts。 */
@@ -36,7 +36,7 @@ export const runtimeHostCapabilities = [
   "agent.graph",
   "capability.channel",
   "personalization",
-  "memory.v3"
+  "memory"
 ] as const;
 
 /**

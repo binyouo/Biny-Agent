@@ -46,22 +46,22 @@ async function main(): Promise<void> {
 function testFlatMemoryToolSchemas(): void {
   const [saveMemory, recallMemory] = createMemoryTools(() => undefined);
   assert.ok(saveMemory && recallMemory);
-  // 记忆工具参数已扁平化：save_memory 只收事实字段，recall_memory 只收 query/limit；
+  // 记忆工具参数已扁平化：save_memory 只收事实字段，recall_memory 收 query/limit/tags；
   // 原 audience/origin/topic 等分类与门禁字段全部删除。
   assert.deepEqual(Object.keys(saveMemory.parameters.properties).sort(), ["content", "durability", "importance", "rationale", "tags"]);
   assert.deepEqual((saveMemory.parameters.properties.durability as { enum?: string[] }).enum, ["permanent", "temporary"]);
-  const importance = saveMemory.parameters.properties.importance as { minimum?: number; maximum?: number };
-  assert.equal(importance.minimum, 1);
-  assert.equal(importance.maximum, 5);
-  assert.deepEqual(Object.keys(recallMemory.parameters.properties).sort(), ["limit", "query"]);
+  assert.equal((saveMemory.parameters.properties.importance as { type?: string }).type, "number");
+  assert.deepEqual(Object.keys(recallMemory.parameters.properties).sort(), ["limit", "query", "tags"]);
   const missingContent = saveMemory.resolveExecution({
     topic: "style",
     title: "Concise replies",
     summary: "The user prefers concise replies with the result first."
   });
   assert.equal("isError" in missingContent && missingContent.isError, true);
-  const shortContent = saveMemory.resolveExecution({ content: "too short" });
-  assert.equal("isError" in shortContent && shortContent.isError, true);
+  const shortContent = saveMemory.resolveExecution({ content: "用户喜欢中文", importance: 0.5 });
+  assert.equal("isError" in shortContent, false);
+  const emptyContent = saveMemory.resolveExecution({ content: "   " });
+  assert.equal("isError" in emptyContent && emptyContent.isError, true);
   const explicit = saveMemory.resolveExecution({
     content: "The user prefers concise replies with the result first.",
     tags: ["style"],
@@ -585,7 +585,7 @@ async function testGlobalSkillSymlinkRoots(): Promise<void> {
   const fakeHome = await fs.realpath(await mkdtemp(path.join(os.tmpdir(), "biny-symlink-home-")));
   const originalHome = process.env.HOME;
   try {
-    // 跨根软链：全局 .agents/skills 的第一层目录软链指向 .claude/skills 里的技能。
+    // 跨根软链：全局技能根的第一层目录软链指向另一个技能根里的技能。
     // 绑定校验按软链目标自己的根进行，技能正常加载，且扫描真正所属的根时不重复出现。
     const claudeSkill = path.join(fakeHome, ".claude", "skills", "linked-skill");
     await mkdir(claudeSkill, { recursive: true });

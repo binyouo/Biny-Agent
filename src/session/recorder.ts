@@ -439,7 +439,30 @@ function redactSessionEvent(event: SessionEvent): SessionEvent {
     return { ...event, message: redactAgentMessage(event.message) };
   }
   if (event.type === "context_checkpoint") {
-    return { ...event, summary: redactSecrets(event.summary) };
+    return {
+      ...event,
+      summary: redactSecrets(event.summary),
+      state: event.state === undefined ? undefined : {
+        goal: event.state.goal.map(redactSecrets),
+        constraints: event.state.constraints.map(redactSecrets),
+        done: event.state.done.map(redactSecrets),
+        inProgress: event.state.inProgress.map(redactSecrets),
+        blocked: event.state.blocked.map(redactSecrets),
+        decisions: event.state.decisions.map(redactSecrets),
+        errorsAndFixes: event.state.errorsAndFixes.map(redactSecrets),
+        userMessages: event.state.userMessages.map(redactSecrets),
+        nextSteps: event.state.nextSteps.map(redactSecrets),
+        criticalContext: event.state.criticalContext.map(redactSecrets)
+      },
+      evidence: event.evidence?.map((claim) => ({
+        ...claim,
+        references: claim.references.map((item) => ({
+          ...item,
+          tool: item.tool === undefined ? undefined : redactSecrets(item.tool),
+          archivePath: item.archivePath === undefined ? undefined : redactSecrets(item.archivePath)
+        }))
+      }))
+    };
   }
   if (event.type === "model_request") {
     return { ...event, metrics: redactModelRequestMetrics(event.metrics) };
@@ -658,7 +681,7 @@ function lastPersistedRuntimeEvent(raw: Buffer): RuntimeHighWater | undefined {
  * 生成新 session 的逻辑 id，同时就是 session 文件的 basename（`<id>.jsonl`）。
  *
  * 格式 `<yyyymmdd-hhmmss>-<rand8>`，与 7 月旧布局同构：时间戳段用本地时间（跟墙上时钟一致，
- * "按时间找会话"才符合直觉，也对齐 Codex rollout 的本地时间命名；单机使用时字典序仍按创建
+ * "按时间找会话"才符合直觉，也对齐外部 rollout 的本地时间命名；单机使用时字典序仍按创建
  * 先后排列），8 位 hex 随机段消掉同一秒内的碰撞。catalog/runLedger/claim/resume 只把 id 当
  * 不透明字符串，所以改格式不需要动那 30 处耦合；store 的 `sessionFilePath` 靠"先查重、再落
  * 候选路径"保证 id 与文件名始终一致。

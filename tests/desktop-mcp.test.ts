@@ -96,7 +96,7 @@ assert.deepEqual(
   [{ key: "KEY", action: "set", value: "v2" }]
 );
 
-// 剪贴板导入兼容 Claude Desktop / Cursor 的 "type": "sse" 写法。
+// 剪贴板导入兼容部分客户端的 "type": "sse" 写法。
 const sseByType = parseClipboardConfig({ mcpServers: { remote: { type: "sse", url: "https://example.com/mcp" } } });
 assert.equal(sseByType?.transport, "remote");
 assert.equal(sseByType?.remoteProtocol, "sse");

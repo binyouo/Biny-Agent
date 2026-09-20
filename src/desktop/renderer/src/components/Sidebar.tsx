@@ -15,6 +15,7 @@ import { useClosingPresence } from "../useClosingPresence.js";
 import { useFluidHover, useRegisterFluidHoverItem, type UseFluidHoverReturn } from "../useFluidHover.js";
 import { Collapse } from "./Collapse.js";
 import { CrystalDock } from "./CrystalDock.js";
+import { DiaryDock } from "./DiaryDock.js";
 import { FluidHoverHighlight } from "./FluidHoverHighlight.js";
 import { Icon, type IconName } from "./Icon.js";
 import { WorkingIndicator } from "./WorkingIndicator.js";
@@ -489,6 +490,7 @@ export const Sidebar = memo(function Sidebar({
           <span>设置</span>
         </button>
         <CrystalDock sessionId={selectedSessionId} onInsert={onInsertCrystal} />
+        <DiaryDock />
       </div>
       </div>
       {resizable ? <SidebarResizer width={layout.contentWidth} {...resizeHandlers} /> : null}

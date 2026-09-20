@@ -43,8 +43,8 @@ export function accessPathThinkingLevelMap(providerType: string, modelId: string
 }
 
 /**
- * Codex OAuth 与 OpenAI API 共用模型 ID，但订阅访问路径的有效上下文窗口更小。
- * 这是访问路径事实，不应覆盖普通 OpenAI provider 的模型元数据。
+ * 订阅 OAuth 与普通 API 可能共用模型 ID，但订阅访问路径的有效上下文窗口更小。
+ * 这是访问路径事实，不应覆盖普通 provider 的模型元数据。
  */
 const openAiCodexContextWindows: Record<string, number> = {
   "gpt-5.6-sol": 372_000,
@@ -90,7 +90,7 @@ export function isOpenCodeModelEndpoint(baseUrl: string | undefined): boolean {
 /**
  * 为「目录没有给出任何推理信息」的模型推断 canonical 档位。
  *
- * 优先用生成快照（若携带可用档位），否则按模型 ID 命中已知推理家族（gpt-5、claude-4、deepseek-v4、
+ * 优先用生成快照（若携带可用档位），否则按模型 ID 命中已知推理家族（gpt-5、deepseek-v4、
  * kimi-k3 等）推断。与 access path / OpenCode 端点无关，对所有 provider 生效；未知模型返回
  * undefined，调用方据此维持保守关闭。
  */

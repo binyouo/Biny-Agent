@@ -6,9 +6,9 @@
  * - **Biny bundle**：单文件 JSON（`format: "biny-session-bundle"`），自描述成
  *   `manifest + events + attachments` 三段。`events` 保留完整事件流；`attachments` 内嵌
  *   `user_message` 引用的附件本体（base64），让跨机器迁移后附件仍可打开。
- * - **Claude Code**：一行一个 `{type:"user"|"assistant", message:{role,content}}` 的 JSONL，
+ * - **外部对话格式**：一行一个 `{type:"user"|"assistant", message:{role,content}}` 的 JSONL，
  *   可导出也可导入。
- * - **Codex**：`rollout-*.jsonl`，只导入；事件在 `type:"response_item"` 的 payload 里。
+ * - **外部 rollout**：只导入；事件在 `type:"response_item"` 的 payload 里。
  *
  * 所有外部格式都先翻译成事件、再用 `parseSessionEvents` 走一遍与读取路径相同的校验，
  * 避免把一份语法上能解析、语义上却非法的文件写进会话目录。导入一律分配全新 session id，
@@ -123,7 +123,7 @@ export async function exportSessionBundle(workspaceRoot: string, session: string
   };
 }
 
-/** 导出成 Claude Code 兼容的 JSONL，供那边直接 resume。只保留对话事实，丢弃运行遥测。 */
+/** 导出成外部兼容的 JSONL，供其他客户端直接 resume。只保留对话事实，丢弃运行遥测。 */
 export async function exportSessionClaudeCode(workspaceRoot: string, session: string): Promise<ExportedSessionFile> {
   const { events } = await readStoredSessionEvents(workspaceRoot, session);
   const filePath = await resolveSessionFile(workspaceRoot, session);
@@ -235,7 +235,7 @@ function importEventsFromSource(raw: string, format: SessionTransferFormat, sour
 
 // ── 格式探测 ────────────────────────────────────────────────────────────────
 
-/** 显式 format 优先；否则先看 bundle 信封，再按首行的字段形状区分 Claude / Codex。 */
+/** 显式 format 优先；否则先看 bundle 信封，再按首行的字段形状区分两类外部格式。 */
 function detectSessionImportFormat(raw: string, sourcePath: string): SessionTransferFormat {
   const trimmed = raw.trimStart();
   if (trimmed.startsWith("{")) {
@@ -246,7 +246,7 @@ function detectSessionImportFormat(raw: string, sourcePath: string): SessionTran
       // 单 JSON 解析失败就按 JSONL 继续探测。
     }
   }
-  // 真实 Codex rollout 首行是 session_meta、Claude 可能有 summary 行，只看首行不可靠，
+  // 外部 rollout 首行可能是 session_meta，另一类格式可能有 summary 行，只看首行不可靠，
   // 扫前 20 个非空行找特征字段。
   const probeLines = raw.split("\n").filter((line) => line.trim().length > 0).slice(0, 20);
   for (const probeLine of probeLines) {
@@ -291,7 +291,7 @@ function parseBinyBundleEnvelope(raw: string, sourcePath: string): Record<string
   return parsed;
 }
 
-/** 读 bundle 内嵌的附件段；缺失（旧格式 / Claude / Codex）时按空处理。 */
+/** 读 bundle 内嵌的附件段；缺失（旧格式 / 外部 JSONL）时按空处理。 */
 function parseBinyBundleAttachments(raw: string): BinySessionBundleAttachment[] {
   let parsed: unknown;
   try {
@@ -378,7 +378,7 @@ function rewriteAttachmentPaths(events: readonly SessionEvent[], pathBySource: R
   });
 }
 
-// ── Claude Code ─────────────────────────────────────────────────────────────
+// ── 外部对话格式 ─────────────────────────────────────────────────────────────
 
 interface ClaudeContentText { type: "text"; text: string }
 interface ClaudeContentThinking { type: "thinking"; thinking?: string; text?: string }
@@ -485,7 +485,7 @@ function pushClaudeUserContent(events: SessionEvent[], content: string | ClaudeC
     }
     if (!isRecord(block)) continue;
     if (block.type === "tool_result") {
-      // 工具结果在 Claude 里以 user 角色承载；只有真正执行过才单独翻译，避免伪造结果。
+      // 工具结果在外部格式里以 user 角色承载；只有真正执行过才单独翻译，避免伪造结果。
       const result = block as ClaudeContentToolResult;
       events.push({
         type: "tool_result",
@@ -548,7 +548,7 @@ function pushClaudeAssistantContent(events: SessionEvent[], content: string | Cl
   }
 }
 
-// ── Codex rollout ───────────────────────────────────────────────────────────
+// ── 外部 rollout ───────────────────────────────────────────────────────────
 
 interface CodexContentPart { type?: string; text?: string }
 interface CodexReasoningSummaryPart { type?: string; text?: string }
@@ -569,7 +569,7 @@ interface CodexMessagePayload {
 interface CodexLine { type?: string; timestamp?: string; payload?: CodexMessagePayload }
 
 /**
- * 把 Codex rollout 翻成 Biny 事件。真实 payload 形态（对照 `~/.codex/sessions/...rollout-*.jsonl`）：
+ * 把外部 rollout 翻成 Biny 事件。真实 payload 形态：
  *
  * - `message`：`content[].text`，`input_text`（user）/`output_text`（assistant）。
  * - `function_call`：`name` + `call_id` + `arguments`（**JSON 字符串**）。

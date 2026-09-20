@@ -54,6 +54,7 @@ export function createHistoryTools(deps: SearchHistoryDeps): Tool[] {
           const index = deps.getIndex();
           if (!index) throw new Error("Session history search is unavailable.");
           await deps.flushCurrentSession?.();
+          await index.refreshAll();
           const hits = index.search(query, { limit: limit ?? 8 });
           return { query, hits };
         }

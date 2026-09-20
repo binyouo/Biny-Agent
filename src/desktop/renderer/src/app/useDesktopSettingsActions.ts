@@ -160,20 +160,20 @@ export function useDesktopSettingsActions({
     return await window.biny.searchMemory(requireProject(projectIdRef.current), query, includeArchived);
   }, [projectIdRef]);
 
-  const addMemoryEntry = useCallback(async (input: DesktopMemoryEntryInput, expectedRevision: number) => {
-    return await window.biny.addMemoryEntry(requireProject(projectIdRef.current), input, expectedRevision);
+  const addMemoryEntry = useCallback(async (input: DesktopMemoryEntryInput) => {
+    return await window.biny.addMemoryEntry(requireProject(projectIdRef.current), input);
   }, [projectIdRef]);
 
-  const updateMemoryEntry = useCallback(async (entryId: string, patch: DesktopMemoryEntryPatch, expectedRevision: number) => {
-    return await window.biny.updateMemoryEntry(requireProject(projectIdRef.current), entryId, patch, expectedRevision);
+  const updateMemoryEntry = useCallback(async (entryId: string, patch: DesktopMemoryEntryPatch) => {
+    return await window.biny.updateMemoryEntry(requireProject(projectIdRef.current), entryId, patch);
   }, [projectIdRef]);
 
-  const deleteMemoryEntry = useCallback(async (entryId: string, expectedRevision: number) => {
-    return await window.biny.deleteMemoryEntry(requireProject(projectIdRef.current), entryId, expectedRevision);
+  const deleteMemoryEntry = useCallback(async (entryId: string) => {
+    return await window.biny.deleteMemoryEntry(requireProject(projectIdRef.current), entryId);
   }, [projectIdRef]);
 
-  const archiveMemoryEntry = useCallback(async (entryId: string, archived: boolean, expectedRevision: number) => {
-    return await window.biny.archiveMemoryEntry(requireProject(projectIdRef.current), entryId, archived, expectedRevision);
+  const archiveMemoryEntry = useCallback(async (entryId: string, archived: boolean) => {
+    return await window.biny.archiveMemoryEntry(requireProject(projectIdRef.current), entryId, archived);
   }, [projectIdRef]);
 
   const loadArchivedMemory = useCallback(async () => {
@@ -200,8 +200,8 @@ export function useDesktopSettingsActions({
     return await window.biny.cancelMemorySleep(requireProject(projectIdRef.current));
   }, [projectIdRef]);
 
-  const clearMemory = useCallback(async (expectedRevision: number) => {
-    return await window.biny.clearMemory(requireProject(projectIdRef.current), expectedRevision);
+  const clearMemory = useCallback(async () => {
+    return await window.biny.clearMemory(requireProject(projectIdRef.current));
   }, [projectIdRef]);
 
   return {

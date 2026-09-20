@@ -49,7 +49,7 @@ export interface ModelContextBudget {
   contextWindow: number;
   /** 未拿到模型官方窗口时使用保守预算；这个标记禁止 UI 把 fallback 当成声明值。 */
   contextWindowIsFallback: boolean;
-  /** 按 Codex 模型元数据口径折算后的可用输入窗口。 */
+  /** 按模型元数据口径折算后的可用输入窗口。 */
   effectiveContextWindow?: number;
   effectiveContextWindowPercent?: number;
   /** 原始模型窗口中没有计入可用输入的 headroom；它不是已使用 token。 */

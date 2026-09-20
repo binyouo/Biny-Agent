@@ -174,8 +174,6 @@ export interface BuildSystemPromptOptions {
 const stableRuntimePromptStart = "<!-- biny-runtime-tools:start -->";
 const stableRuntimePromptEnd = "<!-- biny-runtime-tools:end -->";
 const dynamicPromptStart = "<!-- biny-runtime-context:start -->";
-const activeRunSummaryStart = "<!-- biny-active-run-summary:start -->";
-const activeRunSummaryEnd = "<!-- biny-active-run-summary:end -->";
 const personalizationPromptStart = "<!-- biny-personalization:start -->";
 const personalizationPromptEnd = "<!-- biny-personalization:end -->";
 const soulPromptStart = "<!-- biny-soul:start -->";
@@ -314,15 +312,6 @@ export function systemPromptForTelemetry(systemPrompt: string | undefined): stri
 export function refreshRuntimeSystemPrompt(systemPrompt: string | undefined, tools: readonly PromptTool[]): string | undefined {
   if (!systemPrompt) return systemPrompt;
   return replacePromptBlock(systemPrompt, stableRuntimePromptStart, stableRuntimePromptEnd, stableRuntimePrompt(tools));
-}
-
-export function withActiveRunCompactionSummary(systemPrompt: string | undefined, summary: string): string {
-  const block = [activeRunSummaryStart, "Active run handoff summary after context compaction:", summary.trim(), activeRunSummaryEnd].join("\n\n");
-  if (!systemPrompt) return block;
-  const start = systemPrompt.indexOf(activeRunSummaryStart);
-  const end = systemPrompt.indexOf(activeRunSummaryEnd, start + activeRunSummaryStart.length);
-  if (start === -1 || end === -1) return `${systemPrompt}\n\n${block}`;
-  return `${systemPrompt.slice(0, start)}${block}${systemPrompt.slice(end + activeRunSummaryEnd.length)}`;
 }
 
 function stableRuntimePrompt(tools: readonly PromptTool[]): string {

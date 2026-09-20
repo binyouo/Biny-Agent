@@ -59,7 +59,7 @@ async function testEntryFieldsAndAccessCount(): Promise<void> {
     userId: "user-0001",
     importance: 0.125
   };
-  const first = await storage.writeEntry(input, { expectedRevision: 0 });
+  const first = await storage.writeEntry(input);
   assert.equal(first.written, true);
   assert.ok(first.entry);
   const fields = { id: "validation-entry", revision: 0, createdAt: "2026-09-05T12:00:00.000Z", updatedAt: "2026-09-05T12:00:00.000Z" };
@@ -78,7 +78,7 @@ async function testEntryFieldsAndAccessCount(): Promise<void> {
     assert.equal(createStoredMemoryEntry({ ...input, importance }, fields).importance, importance);
   }
   assert.equal(createStoredMemoryEntry({ ...input, importance: undefined }, fields).importance, 0.5);
-  const duplicate = await storage.writeEntry(input, { expectedRevision: first.revision });
+  const duplicate = await storage.writeEntry(input);
   assert.equal(duplicate.written, false);
   await storage.recordRecallUsage([first.entry!.id], { now: new Date("2026-09-05T12:00:00.000Z") });
   const entry = (await storage.listEntries()).entries[0];
@@ -91,12 +91,12 @@ async function testEntryFieldsAndAccessCount(): Promise<void> {
   assert.equal(entry?.threadId, "thread-0001");
   assert.equal(entry?.accessCount, 1);
   assert.equal(entry?.lastAccessedAt, "2026-09-05T12:00:00.000Z");
-  const edited = await storage.updateEntry(entry!.id, { content: "The release convention entry was updated by the lifecycle test." }, { expectedRevision: first.revision });
+  const edited = await storage.updateEntry(entry!.id, { content: "The release convention entry was updated by the lifecycle test." });
   assert.equal(edited.entry?.activitySessionId, "activity-session-001");
-  const archived = await storage.archiveEntry(entry!.id, true, { expectedRevision: edited.revision });
+  const archived = await storage.archiveEntry(entry!.id, true);
   assert.equal(archived.entry?.activitySource, "activity_session");
   assert.equal(archived.entry?.activitySessionId, "activity-session-001");
-  const restored = await storage.archiveEntry(archived.entry!.id, false, { expectedRevision: archived.revision });
+  const restored = await storage.archiveEntry(archived.entry!.id, false);
   assert.equal(restored.entry?.activitySessionId, "activity-session-001");
   assert.deepEqual(restored.entry?.tags, sanitizedTags);
   assert.equal(restored.entry?.rationale, rationale);
@@ -159,7 +159,7 @@ async function testOldMemoryDatabaseIsRejected(): Promise<void> {
       assert.equal((await migrated.listEntries()).entries.length, 0);
       const written = await migrated.writeEntry({
         content: "A fresh current memory database can be rebuilt after removing the old one."
-      }, { expectedRevision: 0 });
+      });
       assert.equal(written.written, true);
       const reopened = new DatabaseSync(databasePath, { readOnly: true });
       try {

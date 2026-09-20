@@ -32,7 +32,7 @@ export interface RuntimeCommandResult {
   command: string;
   title: string;
   content: string;
-  /** TUI 渲染 Codex 风格卡片的结构化数据；CLI / Desktop 忽略，继续用 `content`。 */
+  /** TUI 渲染报告卡片的结构化数据；CLI / Desktop 忽略，继续用 `content`。 */
   card?: CommandCardData;
 }
 

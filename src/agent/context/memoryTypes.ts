@@ -3,7 +3,7 @@
  *
  * 记忆是扁平的事实文本：content 就是事实正文，其余全部是可展示的元数据。所有条目
  * 保存在一个全局记忆库中，不做 user/workspace 来源分桶；所有写操作共享一个单调
- * revision，并通过 expectedRevision 做 CAS。
+ * revision 仅用于标记内容变更；SQLite 写事务保证原子提交，不要求调用方预读版本。
  */
 
 /** Sleep 用 durability 区分会自然过期的短期记忆和长期记忆。 */
@@ -104,7 +104,6 @@ export interface MemoryReadOptions {
 }
 
 export interface MemoryMutationOptions extends MemoryReadOptions {
-  expectedRevision: number;
   /** 测试与确定性维护可注入时间；普通调用无需传入。 */
   now?: Date;
   /** 归档审计来源；Sleep 使用 run id，手动归档默认 manual。 */
@@ -313,16 +312,4 @@ export interface MemoryMaintenanceStatus {
   lastRun?: MemorySleepRun;
   /** 最近的睡眠整理历史，最多保留 20 次。 */
   sleepRuns?: MemorySleepRun[];
-}
-
-/** CAS 失败是正常并发结果，调用方应重新读取 storeRevision 后重试。 */
-export class MemoryRevisionConflictError extends Error {
-  readonly name = "MemoryRevisionConflictError";
-
-  constructor(
-    readonly expectedRevision: number,
-    readonly actualRevision: number
-  ) {
-    super(`Memory revision conflict: expected ${String(expectedRevision)}, actual ${String(actualRevision)}.`);
-  }
 }

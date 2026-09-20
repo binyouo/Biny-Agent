@@ -34,6 +34,7 @@ import { createSubagentTool, createTaskStatusTool, runSubagentTask as executeSub
 import { createPlanTools } from "../extensions/plan.js";
 import { buildSubagentDefinitionsPrompt, loadSubagentDefinitions, type SubagentDefinition } from "../extensions/agents.js";
 import { createHistoryTools } from "../extensions/history.js";
+import { createCheckpointEvidenceTool } from "../extensions/checkpointEvidence.js";
 import { createMemoryTools } from "../extensions/memory.js";
 import { createActivityReportTool } from "../tools/activity/report.js";
 import { createActivityDigestTool } from "../tools/activity/digest.js";
@@ -408,6 +409,10 @@ export async function createCommandRuntime(workspaceRoot: string, options: Comma
     })) {
       toolRegistry.registerBuiltinTool(tool);
     }
+    toolRegistry.registerBuiltinTool(createCheckpointEvidenceTool(async (args, signal) => {
+      if (!agent) throw new Error("Session is unavailable.");
+      return await agent.readCheckpointEvidence(args, signal);
+    }));
     // Activity 回忆改为主动工具集：模型按需生成打工日记、时间线或搜索，而不是把脱敏事件
     // 注入每个回合。模型、策略与嵌入运行时都在调用时现取，不沿用装配时的快照。
     const loadActivitySettings = async (): Promise<ActivitySettings> =>

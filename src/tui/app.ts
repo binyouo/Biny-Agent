@@ -643,7 +643,7 @@ export class BinyTui {
   private handleGlobalKey(data: string): { consume?: boolean } | undefined {
     const busy = runtimeIsBusy(this.runtimeSnapshot);
 
-    // 连续两次 Ctrl+C 始终退出（弹层打开时也一样，和 Codex 体感一致）；
+    // 连续两次 Ctrl+C 始终退出（弹层打开时也一样）；
     // 单次 Ctrl+C 在弹层打开时交给弹层自己处理（选择器取消、查看器关闭），
     // 避免「想退出却发现被弹层卡住」。
     if (matchesKey(data, "ctrl+c")) {
@@ -1075,7 +1075,7 @@ export class BinyTui {
       : await requireRemoteRuntime(runtime).listModels();
     const pickerModels = filterPickerModelChoices(models);
     // 选择器只展示配置列表里勾选启用且可用的模型；一个都没有时给出明确提示，
-    // 而不是弹一个空列表（对应 Codex 在目录不可用时显示提示而非空 picker 的做法）。
+    // 而不是弹一个空列表。
     if (pickerModels.length === 0) {
       this.showTextViewer("Select model", "当前没有可用模型。请在桌面端设置 > 模型供应商中配置并启用模型，或检查连接的密钥/登录状态后重试。");
       return;

@@ -63,7 +63,7 @@ try {
   assert.match(reflectionHelp.stdout, /status \[options\]/u);
   assert.match(reflectionHelp.stdout, /run \[options\]/u);
 
-  const archiveWithoutConfirmation = await runCli(["memory", "archive", "memory-id"]);
+  const archiveWithoutConfirmation = await runCli(["memory", "archive-entry", "memory-id"]);
   assert.equal(archiveWithoutConfirmation.code, 1);
   assert.match(archiveWithoutConfirmation.stderr, /required option '--yes' not specified/u);
 

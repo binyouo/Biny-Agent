@@ -17,7 +17,7 @@ import { CrystalStorage } from "../src/agent/context/crystalStorage.js";
 import { memoryDatabaseFileName } from "../src/agent/context/memoryStorage.js";
 import { WorkspaceContext } from "../src/agent/context/WorkspaceContext.js";
 import { cloneAgentMessages, messageReasoning, messageText } from "../src/agent/modelMessages.js";
-import { buildSystemPrompt, refreshRuntimeSystemPrompt, stableSystemPromptForCache, stripTransientTurnContext, withActiveRunCompactionSummary } from "../src/agent/prompts.js";
+import { buildSystemPrompt, refreshRuntimeSystemPrompt, stableSystemPromptForCache, stripTransientTurnContext } from "../src/agent/prompts.js";
 import { BINY_AGENT_DIR_ENV, globalAgentDir, legacyProjectStateDirName, projectSessionsDir, projectStateDirName } from "../src/config/paths.js";
 import type { AgentConfig } from "../src/config/schema.js";
 import { defaultConfig } from "../src/config/schema.js";
@@ -38,11 +38,25 @@ import {
 } from "../src/session/store.js";
 import { listSessionSummaries, parseSessionEvents, readSessionEvents, readStoredSessionEvents, repairSessionTailForAppend } from "../src/session/events.js";
 import { ToolRegistry } from "../src/tools/registry.js";
+import { createCheckpointEvidenceTool } from "../src/extensions/checkpointEvidence.js";
+import { checkpointClaims } from "../src/session/checkpointClaims.js";
 import { createToolPermissionRequest } from "../src/tools/display/ToolDisplay.js";
 import { appendInputHistory, loadInputHistory } from "../src/tui/inputHistory.js";
 import { resolveWorkspacePath } from "../src/workspace/resolvePath.js";
 
+function citeCheckpoint(summary: string, source = "m0"): string {
+  return summary.split("\n").map((line) => {
+    const item = line.replace(/^(?:[-*]|\d+\.)\s+/u, "").replace(/^\[[ xX]\]\s*/u, "").trim();
+    if (!/^(?:[-*]|\d+\.)\s+/u.test(line) || /^\((?:none|not recorded|none verified|unknown)\b/iu.test(item)) return line;
+    return `${line} <!-- evidence:${source} -->`;
+  }).join("\n");
+}
+
 class ContextTestModel {
+  evidenceClaimId?: string;
+  failCompaction = false;
+  reportUsage = true;
+  summarySource = "m0";
   readonly requests: AgentMessage[][] = [];
   readonly systemPrompts: Array<string | undefined> = [];
   memoryExtractionCalls = 0;
@@ -59,8 +73,8 @@ class ContextTestModel {
           durability: "permanent"
          }]);
     }
-    if (prompt.includes("durable context checkpoint")) {
-      return [
+    if (systemPrompt?.includes("durable context checkpoint")) {
+      return citeCheckpoint([
         "## Goal",
         "- Keep context bounded.",
         "",
@@ -78,12 +92,18 @@ class ContextTestModel {
         "## Key Decisions",
         "- **Checkpoint**: Keep a stable compaction boundary.",
         "",
+        "## Errors & Fixes",
+        "- (none recorded)",
+        "",
+        "## All User Messages",
+        "- Keep context bounded.",
+        "",
         "## Next Steps",
         "1. Continue from retained history.",
         "",
         "## Critical Context",
         "- Tests passed."
-      ].join("\n");
+      ].join("\n"), this.summarySource);
     }
     return "ok";
   }
@@ -94,12 +114,30 @@ function createContextTestModel(provider: ContextTestModel): AgentModel {
     provider: "context-test",
     modelId: "context-test",
     async stream(context: ModelStreamContext, options): Promise<AsyncIterable<ModelStreamEvent>> {
+      if (provider.failCompaction && context.systemPrompt?.includes("durable context checkpoint")) throw new Error("summary provider unavailable");
+      if (provider.evidenceClaimId) {
+        const claimId = provider.evidenceClaimId;
+        const toolEnabled = context.tools.some((tool) => tool.name === "read_checkpoint_evidence");
+        const result = context.messages.at(-1);
+        return (async function* (): AsyncGenerator<ModelStreamEvent> {
+          if (!toolEnabled) {
+            yield { type: "text-delta", text: "Evidence tool disabled" };
+            yield { type: "finish", reason: "stop" };
+          } else if (result?.role === "toolResult") {
+            yield { type: "text-delta", text: messageText(result) };
+            yield { type: "finish", reason: "stop" };
+          } else {
+            yield { type: "tool-call", id: `lookup-${claimId}`, name: "read_checkpoint_evidence", arguments: { claimId } };
+            yield { type: "finish", reason: "tool-calls" };
+          }
+        })();
+      }
       const text = provider.respond(context.messages, context.systemPrompt);
       return (async function* () {
         options?.signal?.throwIfAborted();
         yield { type: "start" as const };
         if (text) yield { type: "text-delta" as const, text };
-        yield { type: "finish" as const, reason: "stop" as const, usage: { inputTokens: 0, outputTokens: 1, totalTokens: 1 } };
+        yield { type: "finish" as const, reason: "stop" as const, usage: provider.reportUsage ? { inputTokens: 0, outputTokens: 1, totalTokens: 1 } : undefined };
       })();
     }
   };
@@ -132,6 +170,7 @@ async function main(): Promise<void> {
     await testCrystalDormancyWithoutNewAnchors();
     await testCrystalFailedAndCancelledTurns();
     await testCheckpointIsResumeTruthSource();
+    await testCheckpointPersistenceFailureStopsSession();
     await testLegacyAgentStateIsIgnored();
     await testFlatSessionMigration();
     await testSessionPathBoundaries();
@@ -199,20 +238,17 @@ function testConversationBoundaryPrompt(): void {
     buildSystemPrompt({ cwd: "/workspace", tools: [{ name: "custom_tool" }] }),
     /- custom_tool:/u
   );
-  const compacted = withActiveRunCompactionSummary(
-    buildSystemPrompt({ cwd: "/workspace", extensionPrompt: "static capability", tools: [webTool] }),
-    "first overflow summary"
-  );
-  const refreshed = refreshRuntimeSystemPrompt(compacted, [{
+  const refreshed = refreshRuntimeSystemPrompt(buildSystemPrompt({
+    cwd: "/workspace",
+    extensionPrompt: "static capability",
+    tools: [webTool]
+  }), [{
     name: "Bash",
     promptSnippet: "Run a finite command",
     promptGuidelines: ["Use Bash only for finite commands"]
   }]);
-  const recoveredAgain = withActiveRunCompactionSummary(refreshed, "second overflow summary");
-  assert.match(recoveredAgain, /static capability/u);
-  assert.match(recoveredAgain, /Use Bash/u);
-  assert.match(recoveredAgain, /second overflow summary/u);
-  assert.doesNotMatch(recoveredAgain, /first overflow summary/u);
+  assert.match(refreshed, /static capability/u);
+  assert.match(refreshed, /Use Bash/u);
 }
 
 async function testPromptEpochAndCanonicalPrefix(): Promise<void> {
@@ -571,7 +607,7 @@ async function testIncrementalSplitTurnCompaction(): Promise<void> {
     assert.match(split.summary, /src\/read-0\.ts/u, "incremental summaries must retain the cumulative file list");
     const updatePrompt = messageText(provider.requests.at(-1)?.at(-1) ?? { role: "user", content: "" });
     assert.match(updatePrompt, /<previous-summary>/u);
-    assert.match(updatePrompt, /ends inside a long user turn/u);
+    assert.match(provider.systemPrompts.at(-1) ?? "", /ends inside a long user turn/u);
   });
 }
 
@@ -588,7 +624,7 @@ async function testRecallCountsBeforeBudget(): Promise<void> {
     try {
       const written = await local.writeEntry({
         content: "Release verification requires a complete test run. ".repeat(30)
-      }, { expectedRevision: (await local.getOverview()).storeRevision });
+      });
       assert.ok(written.entry);
       const result = await local.search("Release verification", [], { limit: 1 });
       let calls = 0;
@@ -637,7 +673,10 @@ async function testBudgetAndCompaction(): Promise<void> {
   await withTempWorkspace(async (workspaceRoot) => {
     const provider = new ContextTestModel();
     const workspace = new WorkspaceContext(workspaceRoot, [], 32 * 1024);
-    const memory = new ContextMemory(() => provider.model, workspace, undefined, 120, 32 * 1024);
+    const memory = new ContextMemory(() => provider.model, workspace, undefined, 120, 32 * 1024, undefined, undefined, {
+      // 主请求刻意设为极小窗口来验证裁剪；摘要使用独立、能容纳结构化提示词的容量。
+      resolveSummaryBudget: () => ({ contextWindow: 8_000, contextWindowIsFallback: false, maxInputTokens: 7_000, maxOutputTokens: 1_000 })
+    });
     memory.replaceHistory([
       { role: "user", content: "old request ".repeat(40) },
       { role: "assistant", content: [{ type: "text", text: "old response ".repeat(40) }] }
@@ -659,16 +698,18 @@ async function testBudgetAndCompaction(): Promise<void> {
     assert.equal(preparedStatus.budget.components?.every((component) => component.requestedTokens >= component.usedTokens), true);
     assert.equal(estimateMessageTokens([{ role: "assistant", content: [{ type: "reasoning", text: "reason ".repeat(20) }] }]) > 4, true);
 
-    memory.replaceHistory(Array.from({ length: 8 }, (_, index): AgentMessage => index % 2
-      ? { role: "assistant", content: [{ type: "text", text: `message ${String(index)} ${"detail ".repeat(180)}` }] }
-      : { role: "user", content: `message ${String(index)} ${"detail ".repeat(180)}` }));
-    await memory.prepareTurn("continue", "system");
-    const compactedStatus = await memory.status();
+    // 极小窗口只能验证裁剪，不能要求空摘要成功；压缩成功使用能容纳有效 claim 的窗口。
+    const compacting = new ContextMemory(() => provider.model, workspace, undefined, 8_000, 32 * 1024);
+    compacting.replaceHistory(Array.from({ length: 8 }, (_, index): AgentMessage => index % 2
+      ? { role: "assistant", content: [{ type: "text", text: `message ${String(index)} ${"detail ".repeat(800)}` }] }
+      : { role: "user", content: `message ${String(index)} ${"detail ".repeat(800)}` }));
+    await compacting.prepareTurn("continue", "system");
+    const compactedStatus = await compacting.status();
     assert.equal(compactedStatus.compaction.summaryPresent, true);
     assert.equal(compactedStatus.budget.autoCompacted, true);
 
-    memory.replaceHistory([{ role: "user", content: "manual compact request" }]);
-    const manual = await memory.compact("retain next steps");
+    compacting.replaceHistory([{ role: "user", content: "manual compact request" }]);
+    const manual = await compacting.compact("retain next steps");
     assert.equal(manual.compacted, true);
   });
 }
@@ -700,7 +741,10 @@ async function testContextPreparationAbortStopsAutoCompaction(): Promise<void> {
       new WorkspaceContext(workspaceRoot, [], 32 * 1024),
       undefined,
       120,
-      32 * 1024
+      32 * 1024,
+      undefined,
+      undefined,
+      { resolveSummaryBudget: () => ({ contextWindow: 8_000, contextWindowIsFallback: false, maxInputTokens: 7_000, maxOutputTokens: 1_000 }) }
     );
     memory.replaceHistory([
       { role: "user", content: "old request ".repeat(80) },
@@ -893,6 +937,8 @@ async function testCheckpointIsResumeTruthSource(): Promise<void> {
     config.context.memory.useMemories = false;
     config.context.memory.generateMemories = false;
     const firstProvider = new ContextTestModel();
+    // 显式证据回查不应在耗尽的输出预算里再次被归档，导致模型循环回查。
+    config.context.maxTurnToolResultBytes = 1;
     const firstRecorder = new SessionRecorder(workspaceRoot, "checkpoint-resume");
     const firstAgent = new AgentSession({
       workspaceRoot,
@@ -904,6 +950,12 @@ async function testCheckpointIsResumeTruthSource(): Promise<void> {
     });
     await firstAgent.initialize();
     await firstAgent.runTask("old checkpoint payload that must not be replayed verbatim");
+    firstProvider.failCompaction = true;
+    await assert.rejects(firstAgent.compactConversation(), /summary provider unavailable/u);
+    const failedReplay = await replaySession(firstRecorder.filePath);
+    assert.equal(failedReplay.contextState?.compactionFailure?.kind, "provider_error", "失败后必须先落盘冷却信息");
+    assert.equal(failedReplay.messages.length, 2, "失败不能推进压缩边界");
+    firstProvider.failCompaction = false;
     assert.match(await firstAgent.compactConversation(), /Compacted 2 messages/u);
     await firstAgent.close();
 
@@ -912,17 +964,24 @@ async function testCheckpointIsResumeTruthSource(): Promise<void> {
     assert.equal(compactedReplay.messageTree.length, 2, "compacted messages remain available for audit and branching");
     assert.equal(compactedReplay.contextCheckpoint?.firstKeptMessageIndex, 2);
     assert.match(compactedReplay.contextCheckpoint?.summary ?? "", /## Goal/u);
+    assert.equal(compactedReplay.contextCheckpoint?.formatVersion, 1);
+    assert.deepEqual(compactedReplay.contextCheckpoint?.state?.goal, ["Keep context bounded."]);
+    const goalEvidence = compactedReplay.contextCheckpoint?.evidence?.find((claim) => claim.field === "goal" && claim.itemIndex === 0);
+    assert.equal(goalEvidence?.references.every((item) => item.messageIndex !== undefined), true);
 
     const resumedProvider = new ContextTestModel();
+    const registry = new ToolRegistry();
     const resumedAgent = new AgentSession({
       workspaceRoot,
       config,
       model: resumedProvider.model,
-      toolRegistry: new ToolRegistry(),
+      toolRegistry: registry,
       permissionManager: new PermissionManager({ ...config.permission, source: "test" }),
       recorder: new SessionRecorder(workspaceRoot)
     });
     await resumedAgent.initialize();
+    const evidenceTool = createCheckpointEvidenceTool((args, signal) => resumedAgent.readCheckpointEvidence(args, signal));
+    registry.registerBuiltinTool(evidenceTool);
     await resumedAgent.resume("checkpoint-resume");
     await resumedAgent.runTask("continue only from the durable checkpoint");
     const resumedMessages = resumedProvider.requests.at(-1) ?? [];
@@ -932,9 +991,127 @@ async function testCheckpointIsResumeTruthSource(): Promise<void> {
       false,
       "resume must not reintroduce pre-checkpoint messages"
     );
-    assert.match(resumedProvider.systemPrompts.at(-1) ?? "", /Conversation handoff summary:[\s\S]*Keep context bounded/u);
+    assert.doesNotMatch(resumedProvider.systemPrompts.at(-1) ?? "", /Conversation handoff summary/u);
+    assert.match(
+      messageText(resumedMessages[0] ?? { role: "user", content: "" }),
+      /<context_checkpoint>[\s\S]*Keep context bounded/u
+    );
+    // Given 真正落盘并恢复的 checkpoint，When 模型回查，Then 原消息按稳定 ID 返回且工具事件完整。
+    const claims = checkpointClaims(compactedReplay.contextCheckpoint!.state!, compactedReplay.contextCheckpoint!.evidence);
+    const claim = claims.find((item) => item.field === "goal")!;
+    assert.deepEqual(claim.sources, ["user_stated"]);
+    assert.equal(claim.verification, "not_verified");
+    assert.equal(evidenceTool.schema.safeParse({ claimId: claim.id, sessionId: "another-session" }).success, false);
+    assert.equal(evidenceTool.schema.safeParse({ claimId: claim.id, path: "/outside/session.jsonl" }).success, false);
+    assert.equal(evidenceTool.schema.safeParse({ claimId: claim.id, offset: -1 }).success, false);
+    assert.equal(evidenceTool.schema.safeParse({ claimId: claim.id, length: 16_001 }).success, false);
+    const mixedClaims = checkpointClaims(compactedReplay.contextCheckpoint!.state!, [{
+      field: "goal", itemIndex: 0, references: [
+        { kind: "tool_result", toolCallId: "failed-call" },
+        { kind: "checkpoint", checkpointCreatedAt: "2026-09-21T00:00:00.000Z" }
+      ]
+    }]);
+    assert.deepEqual(mixedClaims[0]!.sources, ["tool_result", "inherited"]);
+    assert.equal(mixedClaims[0]!.verification, "not_verified", "工具结果和旧摘要不能自动变成事实认证");
+    const page = await resumedAgent.readCheckpointEvidence({ claimId: claim.id, length: 10 }) as { content: string; hasMore: boolean };
+    assert.equal(page.content.length, 10);
+    assert.equal(page.hasMore, true);
+    await assert.rejects(resumedAgent.readCheckpointEvidence({ claimId: "0".repeat(64) }), /Claim not found/u);
+    await assert.rejects(resumedAgent.readCheckpointEvidence({ claimId: claim.id }, AbortSignal.abort()), /abort/iu);
+    resumedProvider.evidenceClaimId = claim.id;
+    const lookup = await resumedAgent.runTask("请回查原始证据");
+    assert.match(lookup.output, /old checkpoint payload/u);
+    const lookupEvents = await readSessionEvents(resumedAgent.getInfo().sessionFile);
+    assert.ok(lookupEvents.some((event) => event.type === "tool_call" && event.tool === "read_checkpoint_evidence"));
+    assert.ok(lookupEvents.some((event) => event.type === "tool_result" && event.tool === "read_checkpoint_evidence"));
+    const disabled = await resumedAgent.runTask("不要使用工具", { capabilitySelection: { tools: "none", skills: "none" } });
+    assert.match(disabled.output, /Evidence tool disabled/u);
+    // 连续压缩继承同一 claim 后，必须仍指回最初消息，不能把上一次摘要变成原始证据。
+    resumedProvider.evidenceClaimId = undefined;
+    resumedProvider.summarySource = "p.goal.0";
+    for (let generation = 0; generation < 3; generation++) {
+      await resumedAgent.runTask(`追加第 ${generation} 轮上下文`);
+      await resumedAgent.compactConversation();
+      await resumedAgent.resume("checkpoint-resume");
+      const inherited = await resumedAgent.readCheckpointEvidence({ claimId: claim.id }) as { content: string; verification: string };
+      assert.match(inherited.content, /old checkpoint payload/u);
+      assert.equal(inherited.verification, "not_verified");
+    }
+    const missingCheckpoint = {
+      ...compactedReplay.contextCheckpoint!, firstKeptMessageIndex: 1,
+      evidence: [{ field: "goal" as const, itemIndex: 0, references: [
+        { kind: "message" as const, messageId: "missing-original-message" },
+        { kind: "checkpoint" as const, checkpointCreatedAt: "2026-09-21T00:00:00.000Z" }
+      ] }]
+    };
+    const missingEvents: SessionEvent[] = [
+      { type: "user_message", content: "remaining session material" },
+      { type: "context_checkpoint", reason: "manual", ...missingCheckpoint }
+    ];
+    await fs.writeFile(sessionFilePath(workspaceRoot, "missing-checkpoint-evidence"), missingEvents.map((event) => JSON.stringify(event)).join("\n") + "\n");
+    await resumedAgent.resume("missing-checkpoint-evidence");
+    const missingClaim = checkpointClaims(missingCheckpoint.state!, missingCheckpoint.evidence)[0]!;
+    const missing = await resumedAgent.readCheckpointEvidence({ claimId: missingClaim.id }) as { content: string; verification: string };
+    assert.match(missing.content, /"status":"unavailable"/u);
+    assert.match(missing.content, /"status":"inherited_only"/u);
+    assert.equal(missing.verification, "not_verified");
     await resumedAgent.close();
   });
+}
+
+async function testCheckpointPersistenceFailureStopsSession(): Promise<void> {
+  for (const phase of ["before_write", "after_write"] as const) for (const mode of ["manual", "automatic"] as const) {
+    await withTempWorkspace(async (workspaceRoot) => {
+      await ensureAgentDirs(workspaceRoot);
+      class FaultRecorder extends SessionRecorder {
+        armed = false;
+        override async recordAndFlush(event: SessionEvent): Promise<SessionEvent> {
+          if (event.type !== "context_checkpoint" || !this.armed) return await super.recordAndFlush(event);
+          this.armed = false;
+          if (phase === "before_write") throw new Error("Injected checkpoint write failure");
+          await super.recordAndFlush(event);
+          throw new Error("Injected ambiguous sync failure");
+        }
+      }
+      const config = testConfig();
+      config.context.memory.useMemories = false;
+      config.context.memory.generateMemories = false;
+      const recorder = new FaultRecorder(workspaceRoot, `fault-${phase}-${mode}`);
+      config.context.maxInputTokens = 8_000;
+      config.context.compaction.keepRecentTokens = 100;
+      const provider = new ContextTestModel();
+      // 自动压缩场景不能回报虚构的零 input usage，否则有效锚点会正确抑制估算触发。
+      provider.reportUsage = mode !== "automatic";
+      const agent = new AgentSession({ workspaceRoot, config, model: provider.model,
+        toolRegistry: new ToolRegistry(), permissionManager: new PermissionManager({ ...config.permission, source: "test" }), recorder });
+      await agent.initialize();
+      await agent.runTask("original evidence must remain recoverable ".repeat(mode === "automatic" ? 5_000 : 1));
+      recorder.armed = true;
+      if (mode === "manual") await assert.rejects(agent.compactConversation(), /Checkpoint persistence failed/u);
+      else {
+        const failed = await agent.runTask("trigger automatic compaction");
+        assert.equal(failed.status, "failed", JSON.stringify((await agent.contextStatus()).compaction));
+        assert.match(failed.error ?? "", /Checkpoint persistence failed/u);
+      }
+      const blocked = await agent.runTask("must not execute");
+      assert.equal(blocked.status, "failed");
+      assert.match(blocked.error ?? "", /close and reopen/u);
+      await assert.rejects(agent.compactConversation(), /close and reopen/u);
+      await agent.close();
+      const events = await readSessionEvents(recorder.filePath);
+      assert.equal(events.some((event) => event.type === "user_message" && event.content === "must not execute"), false);
+      assert.equal(events.some((event) => event.type === "assistant_message" && (event.contextState?.compactedMessages ?? 0) > 0), false, "失败后不得通过快照间接提交未确认状态");
+      const replay = await replaySession(recorder.filePath);
+      assert.equal(replay.contextCheckpoint !== undefined, phase === "after_write");
+      if (mode === "manual") assert.equal(replay.messages.length, phase === "before_write" ? 2 : 0);
+      const reopened = new AgentSession({ workspaceRoot, config, model: new ContextTestModel().model,
+        toolRegistry: new ToolRegistry(), permissionManager: new PermissionManager({ ...config.permission, source: "test" }), recorder: new SessionRecorder(workspaceRoot) });
+      await reopened.initialize();
+      await reopened.resume(recorder.sessionId);
+      assert.equal((await reopened.runTask("continue after recovery")).output, "ok");
+      await reopened.close();
+    });
+  }
 }
 
 async function testTruncatedSessionTailAndDanglingToolRecovery(): Promise<void> {
@@ -1117,6 +1294,24 @@ async function testSessionAndToolDisplayRedaction(): Promise<void> {
       type: "context_checkpoint",
       reason: "manual",
       summary: `## Goal\n- Authorization: Bearer ${checkpointSecret}`,
+      formatVersion: 1,
+      state: {
+        goal: [`Authorization: Bearer ${checkpointSecret}`],
+        constraints: [],
+        done: [],
+        inProgress: [],
+        blocked: [],
+        decisions: [],
+        errorsAndFixes: [],
+        userMessages: [],
+        nextSteps: [],
+        criticalContext: []
+      },
+      evidence: [{
+        field: "goal",
+        itemIndex: 0,
+        references: [{ kind: "archive", archivePath: `Authorization: Bearer ${checkpointSecret}` }]
+      }],
       firstKeptMessageIndex: 1,
       tokensBefore: 1_000,
       compactedMessages: 1,
@@ -1136,6 +1331,8 @@ async function testSessionAndToolDisplayRedaction(): Promise<void> {
     assert.equal((call?.args as { webhookSecret?: string } | undefined)?.webhookSecret, "[redacted]");
     assert.equal((result?.result as { safe?: string } | undefined)?.safe, "visible");
     assert.match(checkpoint?.summary ?? "", /\[redacted\]/u);
+    assert.match(checkpoint?.state?.goal[0] ?? "", /\[redacted\]/u);
+    assert.match(checkpoint?.evidence?.[0]?.references[0]?.archivePath ?? "", /\[redacted\]/u);
 
     const genericSecret = "opaque-generic-value";
     const generic = await createToolPermissionRequest({
@@ -1642,13 +1839,13 @@ async function testMemoryExactDurableContentAndWriter(): Promise<void> {
       content: "Refresh src/agent/context/ContextMemory.ts after Write. apiKey=sk-supersecretvalue123.",
       tags: ["context", "refresh"],
       rationale: "Use deterministic SQLite memory."
-    }, { expectedRevision: 0 });
+    });
     assert.equal(first.written, true);
     const duplicate = await store.writeEntry({
       content: "Refresh src/agent/context/ContextMemory.ts after Write. apiKey=sk-supersecretvalue123.",
       tags: ["context", "refresh"],
       rationale: "Use deterministic SQLite memory."
-    }, { expectedRevision: first.revision });
+    });
     assert.equal(duplicate.written, false);
 
     assert.ok(first.path);
@@ -1759,7 +1956,7 @@ async function testMemoryMetadataDetailsFromCompletedExtraction(): Promise<void>
     const memory = agent.getLocalMemory();
     const written = await memory.writeEntry({
       content: changes.created[0]!.content
-    }, { expectedRevision: (await memory.getOverview()).storeRevision });
+    });
     assert.ok(written.entry);
     const termInputs: string[] = [];
     agent.getCrystalService().extract = async (text) => {
@@ -1783,7 +1980,7 @@ async function testMemoryMetadataDetailsFromCompletedExtraction(): Promise<void>
     const metadata = sessionMessageMetadata(events, assistant.messageId);
     assert.equal(metadata.memoryExtracted, true);
     assert.deepEqual(metadata.createdMemories, changes.created.map((entry) => ({ ...entry, type: "created" })));
-    assert.deepEqual(metadata.deletedMemories, changes.deleted.map((entry) => ({ ...entry, type: "created" })));
+    assert.deepEqual(metadata.deletedMemories, changes.deleted.map((entry) => ({ ...entry, type: "deleted" })));
   });
 }
 
@@ -1815,14 +2012,14 @@ async function testAutomaticMemoryRecallRequiresEmbedding(): Promise<void> {
     });
     try {
       await agent.initialize();
-      let revision = (await agent.getLocalMemory().getOverview()).storeRevision;
+
       for (let index = 0; index < 4; index += 1) {
-        const result = await agent.getLocalMemory().writeEntry({
+        await agent.getLocalMemory().writeEntry({
           content: `The recall-limit-token marker ${String(index)} is available for this retrieval test.`,
           tags: ["recall-limit-token"],
           importance: 3
-        }, { expectedRevision: revision });
-        revision = result.revision;
+        });
+
       }
 
       await agent.runTask("Find the recall-limit-token markers.");
@@ -1838,16 +2035,16 @@ async function testMemoryEntryManagementAndCjkSearch(): Promise<void> {
   await withTempWorkspace(async (workspaceRoot) => {
     const provider = new ContextTestModel();
     const store = new LocalMemory(workspaceRoot, () => provider.model);
-    let revision = (await store.getOverview()).storeRevision;
-    const first = await store.writeEntry({
+
+    await store.writeEntry({
       content: "使用 wttr.in 获取天气并渲染 Markdown 表格。",
       tags: ["weather"]
-    }, { expectedRevision: revision });
-    revision = first.revision;
+    });
+
     const second = await store.writeEntry({
       content: "wttr.in 请求失败时最多重试三次并按指数退避。",
       tags: ["retry"]
-    }, { expectedRevision: revision });
+    });
 
     // 中文查询没有空格分界，必须靠 bigram 命中记忆内容。
     const matches = await store.search("天气怎么获取", []);
@@ -1862,13 +2059,13 @@ async function testMemoryEntryManagementAndCjkSearch(): Promise<void> {
     assert.equal(ownEntries.length, 2);
     assert.equal(ownEntries.some((entry) => entry.content.includes("按指数退避")), true);
 
-    const deleted = await store.deleteEntryById(second.entry!.id, { expectedRevision: second.revision });
+    const deleted = await store.deleteEntryById(second.entry!.id);
     assert.equal(deleted.deleted, true);
     const remaining = (await store.listMemoryEntries()).entries.filter((entry) => (
       entry.tags.includes("weather") || entry.tags.includes("retry")
     ));
     assert.equal(remaining.length, 1);
-    assert.equal((await store.deleteEntryById(second.entry!.id, { expectedRevision: deleted.revision })).deleted, false);
+    assert.equal((await store.deleteEntryById(second.entry!.id)).deleted, false);
   });
 }
 
@@ -1892,7 +2089,7 @@ async function testMemoryStorageBoundaries(): Promise<void> {
 
       await fs.symlink(outsideRoot, memoryDir);
       await assert.rejects(store.search("outside-memory", []), /real directory, not a symbolic link/);
-      await assert.rejects(store.writeEntry(entry, { expectedRevision: 0 }), /real directory, not a symbolic link/);
+      await assert.rejects(store.writeEntry(entry), /real directory, not a symbolic link/);
       assert.equal(await fs.readFile(victim, "utf8"), victimContent);
 
       await fs.rm(memoryDir, { force: true });
@@ -1900,7 +2097,7 @@ async function testMemoryStorageBoundaries(): Promise<void> {
       const databasePath = path.join(memoryDir, memoryDatabaseFileName);
       await fs.symlink(victim, databasePath);
       await assert.rejects(store.listMemoryEntries(), /regular, canonical file/);
-      await assert.rejects(store.writeEntry(entry, { expectedRevision: 0 }), /regular, canonical file/);
+      await assert.rejects(store.writeEntry(entry), /regular, canonical file/);
       assert.equal(await fs.readFile(victim, "utf8"), victimContent);
     } finally {
       if (previousAgentRoot === undefined) delete process.env[BINY_AGENT_DIR_ENV];
@@ -2185,6 +2382,33 @@ async function testCrystalHistoricalMaterial(): Promise<void> {
         // 后台称呼抽取与主聊天并发，不能覆盖这里观察的聊天/材料请求。
         if (context.systemPrompt?.startsWith("你是一个称呼抽取器。")) {
           yield { type: "text-delta", text: "[]" };
+          yield { type: "finish", reason: "stop" };
+          return;
+        }
+        if (context.systemPrompt?.includes("durable context checkpoint")) {
+          yield { type: "text-delta", text: citeCheckpoint([
+            "## Goal",
+            "- Continue the current project task.",
+            "## Constraints & Preferences",
+            "- Keep only grounded facts.",
+            "## Progress",
+            "### Done",
+            "- (none verified)",
+            "### In Progress",
+            "- [ ] Continue from retained evidence.",
+            "### Blocked",
+            "- (unknown)",
+            "## Key Decisions",
+            "- (none recorded)",
+            "## Errors & Fixes",
+            "- (none recorded)",
+            "## All User Messages",
+            "- Continue after compacting the conversation.",
+            "## Next Steps",
+            "1. Inspect retained context.",
+            "## Critical Context",
+            "- Keep evidence references."
+          ].join("\n")) };
           yield { type: "finish", reason: "stop" };
           return;
         }

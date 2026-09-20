@@ -54,7 +54,7 @@ import {
   type HostFrame,
   type HostRequestFrame
 } from "./protocol.js";
-import { OperationDispatcher, operationLane, operationLaneKey } from "./operations.js";
+import { OperationDispatcher, operationLane, operationLaneKey, memoryQueryActions } from "./operations.js";
 import { SessionRuntimeRegistry, type ManagedSessionRuntime } from "./registry.js";
 import {
   RuntimeHostQuota,
@@ -97,6 +97,7 @@ import { WorktreeDirtyError, WorktreeManager } from "./worktree.js";
 import { RuntimeHostFrameDecoder } from "./framing.js";
 import { approveTaskVerification, type TaskClosureResult } from "../TaskClosure.js";
 import { readTaskDefinition } from "../taskVerification.js";
+import { ConversationMarkdownMirror } from "../../session/markdownArchive.js";
 
 interface HostConnection {
   socket: net.Socket;
@@ -129,6 +130,7 @@ export class RuntimeHostServer {
   private sequence = 0;
   private readonly dispatcher = new OperationDispatcher();
   private readonly businessComposition: RuntimeHostBusinessComposition;
+  private readonly conversationMirror: ConversationMarkdownMirror;
   private journalTail: Promise<void> = Promise.resolve();
   private readonly registry: SessionRuntimeRegistry;
   private readonly worktrees: WorktreeManager;
@@ -159,6 +161,7 @@ export class RuntimeHostServer {
     options: { workspaceRoot?: string; maxSessionRuntimes?: number; maxConcurrentRuns?: number; shutdownDrainMs?: number; resourceRegistry?: RuntimeHostResourceRegistry } = {}
   ) {
     this.createRuntime = createRuntime;
+    this.conversationMirror = new ConversationMarkdownMirror(registration.agentRoot);
     this.resourceRegistry = options.resourceRegistry ?? new RuntimeHostResourceRegistry();
     this.journalPath = path.join(agentDir(registration.persistenceRoot), "runs", hostJournalFile);
     this.worktrees = new WorktreeManager(
@@ -226,6 +229,7 @@ export class RuntimeHostServer {
 
   startAutomationScheduler(): void {
     this.businessComposition.start();
+    void this.conversationMirror.start().catch(() => undefined);
   }
 
   /**
@@ -399,6 +403,8 @@ export class RuntimeHostServer {
       ]);
       if (shutdownTimer) clearTimeout(shutdownTimer);
       void runtimeClose.catch(() => undefined);
+      // JSONL writer 退出后补写最后一批；派生导出失败不能阻止宿主释放连接和 owner 锁。
+      await this.conversationMirror.close().catch(() => undefined);
       await this.resourceRegistry.close();
       for (const connection of this.connections) connection.socket.destroy();
       this.connections.clear();
@@ -537,7 +543,7 @@ export class RuntimeHostServer {
     try {
       const payload = asRecord(frame.payload);
       const result = await this.dispatcher.dispatch(
-        operationLane(frame.operation),
+        operationLane(frame.operation, payload),
         async () => await this.execute(connection, frame),
         operationLaneKey(frame.operation, payload)
       );
@@ -1217,7 +1223,7 @@ export class RuntimeHostServer {
         );
       case "memory": {
         // 普通读取允许看到短暂不一致的快照，不占用交互会话；写入与整理仍需独占。
-        if (payload.action === "overview-v3" || payload.action === "list-v3" || payload.action === "search-v3" || payload.action === "sleep-preview") {
+        if (memoryQueryActions.has(String(payload.action))) {
           return await executeRuntimeHostMemoryOperation({
             getCommands: () => commands,
             scheduleEmbeddingRebuild: () => this.businessComposition.scheduleMemoryEmbeddingRebuild()
@@ -1233,9 +1239,9 @@ export class RuntimeHostServer {
       }
       case "memory.sleep.cancel":
         return { cancelled: this.businessComposition.cancelMemorySleep() };
-      case "memory.embedding.status-v3":
+      case "memory.embedding.status":
         return await commands.agent.memoryEmbeddingStatus();
-      case "memory.embedding.download-v3":
+      case "memory.embedding.download":
         return await runtime.runExclusiveOperation(
           "memory",
           async (signal) => {
@@ -1243,12 +1249,12 @@ export class RuntimeHostServer {
             return await commands.agent.memoryEmbeddingStatus();
           }
         );
-      case "memory.embedding.cancel-download-v3":
+      case "memory.embedding.cancel-download":
         return {
           cancelled: commands.agent.cancelMemoryEmbeddingDownload(readLocalEmbeddingModel(payload.model)),
           status: await commands.agent.memoryEmbeddingStatus()
         };
-      case "memory.embedding.delete-v3":
+      case "memory.embedding.delete":
         return await runtime.runExclusiveOperation(
           "memory",
           async () => ({
@@ -1256,7 +1262,7 @@ export class RuntimeHostServer {
             status: await commands.agent.memoryEmbeddingStatus()
           })
         );
-      case "memory.embedding.rebuild-v3":
+      case "memory.embedding.rebuild":
         return await runtime.runExclusiveOperation(
           "memory",
           async (signal) => {
@@ -1264,7 +1270,7 @@ export class RuntimeHostServer {
             return await commands.agent.memoryEmbeddingStatus();
           }
         );
-      case "memory.embedding.cancel-rebuild-v3":
+      case "memory.embedding.cancel-rebuild":
         return {
           cancelled: commands.agent.cancelMemoryEmbeddingRebuild(),
           status: await commands.agent.memoryEmbeddingStatus()

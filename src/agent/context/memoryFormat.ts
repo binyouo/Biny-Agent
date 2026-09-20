@@ -92,11 +92,11 @@ export function createStoredMemoryEntry(input: MemoryEntryInput, fields: StoredE
   };
 }
 
-/** tag 后过滤：条目必须同时携带 filter 中的全部标签；filter 为空表示不过滤。 */
-export function entryHasAllTags(entry: Pick<MemoryEntry, "tags">, filter: readonly string[] | undefined): boolean {
+/** tag 后过滤：匹配任意给定标签；空列表表示不过滤。 */
+export function entryHasAnyTag(entry: Pick<MemoryEntry, "tags">, filter: readonly string[] | undefined): boolean {
   if (!filter?.length) return true;
   const owned = new Set(entry.tags.map((tag) => tag.toLowerCase()));
-  return filter.every((tag) => owned.has(tag.trim().toLowerCase()));
+  return filter.some((tag) => owned.has(tag.trim().toLowerCase()));
 }
 
 /** 确定性词法打分：标签命中权重最高，其次是正文包含；新条目有轻微新鲜度加成。 */

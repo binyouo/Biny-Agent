@@ -1,4 +1,4 @@
-/** Claude/OpenAI 订阅登录与模型请求共用的协议常量和请求头。 */
+/** 订阅登录与模型请求共用的协议常量和请求头。 */
 import { extractOpenAiAccountId } from "../ai/codexAuth.js";
 import { createProxyAwareFetch } from "../network/proxyFetch.js";
 

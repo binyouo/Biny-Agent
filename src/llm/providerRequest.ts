@@ -2,8 +2,8 @@
  * Provider 请求路由解析。
  *
  * Provider 负责连接级默认值，Model 负责单模型覆盖；最终请求格式只能在这里解析一次，
- * 目录、连接测试和主 Agent 都复用同一条规则。这对应 Maka 的「connection defaults +
- * model apiProtocol」边界，也避免把 endpoint/auth protocol 和 request body wire 混成一个字段。
+ * 目录、连接测试和主 Agent 都复用同一条规则。连接默认值与单模型协议覆盖在这里合并，
+ * 也避免把 endpoint/auth protocol 和 request body wire 混成一个字段。
  */
 import { providerProtocol } from "../ai/provider.js";
 import type { ProviderDefinition } from "../ai/types.js";

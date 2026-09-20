@@ -1,8 +1,8 @@
 /**
  * 会话导出/导入命令模块。
  *
- * `biny session export <session>` 把一条会话写成 Biny bundle（`.json`，含附件）或 Claude Code
- * 兼容的 `.jsonl`；`biny session import <file>` 反向把 Biny/Claude/Codex 文件导入成一条全新会话。
+ * `biny session export <session>` 把一条会话写成 Biny bundle（`.json`，含附件）或外部兼容的
+ * `.jsonl`；`biny session import <file>` 反向把 Biny/外部文件导入成一条全新会话。
  * 两条命令都只是薄壳：格式转换与落盘细节都在 `session/transfer.ts`，这里只负责参数解析、
  * 默认输出路径和把结果打印成人/机可读的形式。
  */
@@ -18,7 +18,7 @@ import {
 import { ensureAgentDirs } from "../../session/store.js";
 
 export interface SessionExportOptions {
-  /** 导出格式：`biny` 无损 bundle（默认）或 `claude`。 */
+  /** 导出格式：`biny` 无损 bundle（默认）或外部 JSONL 格式。 */
   format?: "biny" | "claude";
   /** 输出文件路径；不给则写到当前目录下 `<sessionId>.<ext>`。 */
   out?: string;

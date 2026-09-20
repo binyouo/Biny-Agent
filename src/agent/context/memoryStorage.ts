@@ -16,14 +16,13 @@ import { globalAgentDir } from "../../config/paths.js";
 import { redactSecrets } from "../../utils/secrets.js";
 import {
   createStoredMemoryEntry,
-  entryHasAllTags,
+  entryHasAnyTag,
   memoryEntryEquals,
   memoryMatchFromRanked,
   rankMemoryEntries,
   sanitizeMemoryEntryInput
 } from "./memoryFormat.js";
 import {
-  MemoryRevisionConflictError,
   type MemoryArchiveReason,
   type MemoryBulkArchiveResult,
   type MemoryClearResult,
@@ -212,7 +211,7 @@ export class MemoryStorage {
     const ranked = rankMemoryEntries(
       allEntries
         .filter((entry) => options.includeArchived === true || entry.archivedAt === undefined)
-        .filter((entry) => entryHasAllTags(entry, options.tags)),
+        .filter((entry) => entryHasAnyTag(entry, options.tags)),
       query,
       now
     );
@@ -254,13 +253,12 @@ export class MemoryStorage {
     };
   }
 
-  async writeEntry(input: MemoryEntryInput, options: MemoryMutationOptions): Promise<MemoryWriteResult> {
+  async writeEntry(input: MemoryEntryInput, options: MemoryMutationOptions = {}): Promise<MemoryWriteResult> {
     options.signal?.throwIfAborted();
     const safe = sanitizeMemoryEntryInput(input);
     return await this.withWrite(options.signal, (database) => {
       const revision = readRevision(database);
-      assertExpectedRevision(options.expectedRevision, revision);
-      if (safe.content.length < 20) return { written: false, revision };
+      if (!safe.content.length) return { written: false, revision };
       const duplicate = readMemoryEntries(database).find((entry) => (
         entry.archivedAt === undefined && memoryEntryEquals(entry, safe)
       ));
@@ -291,11 +289,10 @@ export class MemoryStorage {
     });
   }
 
-  async updateEntry(id: string, patch: MemoryEntryPatch, options: MemoryMutationOptions): Promise<MemoryWriteResult> {
+  async updateEntry(id: string, patch: MemoryEntryPatch, options: MemoryMutationOptions = {}): Promise<MemoryWriteResult> {
     options.signal?.throwIfAborted();
     return await this.withWrite(options.signal, (database) => {
       const revision = readRevision(database);
-      assertExpectedRevision(options.expectedRevision, revision);
       const existing = findMemoryEntry(database, id);
       if (!existing) return { written: false, revision };
       const entry = createStoredMemoryEntry({
@@ -322,7 +319,7 @@ export class MemoryStorage {
         originalId: existing.originalId,
         archivedBy: existing.archivedBy
       });
-      if (entry.content.length < 20) {
+      if (!entry.content.length) {
         return { written: false, entry: existing, path: memoryReference(existing.id), revision };
       }
       entry.accessCount = existing.accessCount;
@@ -339,11 +336,10 @@ export class MemoryStorage {
     });
   }
 
-  async archiveEntry(id: string, archived: boolean, options: MemoryMutationOptions): Promise<{ archived: boolean; entry?: MemoryEntry; revision: number }> {
+  async archiveEntry(id: string, archived: boolean, options: MemoryMutationOptions = {}): Promise<{ archived: boolean; entry?: MemoryEntry; revision: number }> {
     options.signal?.throwIfAborted();
     return await this.withWrite(options.signal, (database) => {
       const revision = readRevision(database);
-      assertExpectedRevision(options.expectedRevision, revision);
       const existing = findMemoryEntry(database, id);
       if (!existing) return { archived: false, revision };
       if ((existing.archivedAt !== undefined) === archived) return { archived, entry: existing, revision };
@@ -400,13 +396,12 @@ export class MemoryStorage {
   async archiveEntries(
     ids: readonly string[],
     reason: MemoryArchiveReason,
-    options: MemoryMutationOptions & { mergedInto?: string }
+    options: MemoryMutationOptions & { mergedInto?: string } = {}
   ): Promise<MemoryBulkArchiveResult> {
     options.signal?.throwIfAborted();
     const uniqueIds = [...new Set(ids)];
     return await this.withWrite(options.signal, (database) => {
       const revision = readRevision(database);
-      assertExpectedRevision(options.expectedRevision, revision);
       if (!uniqueIds.length) return { entries: [], archived: 0, revision };
       const active = readMemoryEntries(database).filter((entry) => (
         entry.archivedAt === undefined && uniqueIds.includes(entry.id)
@@ -442,11 +437,10 @@ export class MemoryStorage {
     });
   }
 
-  async purgeArchivedEntries(retentionDays: number, options: MemoryMutationOptions): Promise<{ deleted: number; revision: number }> {
+  async purgeArchivedEntries(retentionDays: number, options: MemoryMutationOptions = {}): Promise<{ deleted: number; revision: number }> {
     options.signal?.throwIfAborted();
     return await this.withWrite(options.signal, (database) => {
       const revision = readRevision(database);
-      assertExpectedRevision(options.expectedRevision, revision);
       const cutoff = (options.now ?? new Date()).getTime()
         - Math.max(1, Math.trunc(retentionDays)) * 86_400_000;
       const targets = readMemoryEntries(database).filter((entry) => (
@@ -460,11 +454,10 @@ export class MemoryStorage {
     });
   }
 
-  async deleteEntry(id: string, options: MemoryMutationOptions): Promise<MemoryDeleteResult> {
+  async deleteEntry(id: string, options: MemoryMutationOptions = {}): Promise<MemoryDeleteResult> {
     options.signal?.throwIfAborted();
     return await this.withWrite(options.signal, (database) => {
       const revision = readRevision(database);
-      assertExpectedRevision(options.expectedRevision, revision);
       const existing = findMemoryEntry(database, id);
       if (!existing) return { deleted: false, revision };
       if (existing.archivedAt === undefined) deleteActiveMemory(database, existing.id);
@@ -474,11 +467,10 @@ export class MemoryStorage {
     });
   }
 
-  async clearAll(options: MemoryMutationOptions): Promise<MemoryClearResult> {
+  async clearAll(options: MemoryMutationOptions = {}): Promise<MemoryClearResult> {
     options.signal?.throwIfAborted();
     return await this.withWrite(options.signal, (database) => {
       const revision = readRevision(database);
-      assertExpectedRevision(options.expectedRevision, revision);
       const entries = readMemoryEntries(database);
       if (!entries.length) return { deletedEntries: 0, revision };
       for (const entry of entries) {
@@ -1279,11 +1271,4 @@ function isNotFound(error: unknown): boolean {
 
 function isAlreadyExists(error: unknown): boolean {
   return typeof error === "object" && error !== null && "code" in error && error.code === "EEXIST";
-}
-
-function assertExpectedRevision(expected: number, actual: number): void {
-  if (!Number.isSafeInteger(expected) || expected < 0) {
-    throw new Error("expectedRevision must be a non-negative integer.");
-  }
-  if (expected !== actual) throw new MemoryRevisionConflictError(expected, actual);
 }

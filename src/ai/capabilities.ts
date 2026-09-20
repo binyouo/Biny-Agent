@@ -9,9 +9,9 @@ import type { ModelCapabilities, ModelContextBudget, ModelLimits, ProviderModelD
 
 export const defaultModelContextWindow = 32_768;
 export const defaultModelOutputTokens = 8_192;
-/** Codex 默认把原始窗口的 95% 视为可用于输入的有效窗口。 */
+/** 默认把原始窗口的 95% 视为可用于输入的有效窗口。 */
 export const defaultEffectiveContextWindowPercent = 95;
-/** Codex 默认在原始窗口达到 90% 时触发自动压缩。 */
+/** 默认在原始窗口达到 90% 时触发自动压缩。 */
 export const defaultAutoCompactContextWindowPercent = 90;
 const defaultToolSchemaReserveTokens = 1_024;
 const defaultSystemPromptReserveTokens = 1_024;
@@ -78,7 +78,7 @@ export function effectiveThinkingSelection(
  * 已知具备可调推理档位的模型家族。
  *
  * OpenAI 兼容端点（尤其是中转站和自建网关）几乎都不返回 `reasoning_efforts`，
- * 只按响应字段判断的话，grok-4.5、GPT-5、Claude 4 这类模型都会被当成不支持
+ * 只按响应字段判断的话，grok-4.5、GPT-5 这类模型都会被当成不支持
  * 思考，界面上只剩一个「默认」档。所以在服务商没有声明时按模型 ID 兜底推断。
  *
  * 这是一张需要维护的启发式清单：宁可漏判（退回单一默认档，行为与今天一致），
@@ -332,7 +332,7 @@ export function normalizeModelMetadata(
 }
 
 /**
- * 上下文预算以模型自身窗口为基准：先按 Codex 的有效窗口比例保留统一 headroom，再叠加
+ * 上下文预算以模型自身窗口为基准：先按有效窗口比例保留统一 headroom，再叠加
  * provider 硬上限和用户额外上限。输出、reasoning、工具 schema 等字段只用于诊断与展示，
  * 不能再次从有效窗口中重复扣除。
  */

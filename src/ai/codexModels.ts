@@ -1,5 +1,5 @@
 /**
- * OpenAI Codex OAuth 访问路径的静态模型目录。
+ * 订阅 OAuth 访问路径的静态模型目录。
  *
  * 账号接口返回的实时目录优先；这里的目录用于首次登录、接口暂时不可用或
  * 账号目录为空时的离线兜底。模型元数据仍由 modelMetadata.ts 统一补全。
@@ -12,7 +12,7 @@ export interface OpenAiCodexCatalogModel {
   contextWindow: number | undefined;
 }
 
-/** Codex 访问路径的能力覆盖；通用 OpenAI 元数据不能替代订阅入口的真实档位。 */
+/** 订阅访问路径的能力覆盖；通用元数据不能替代订阅入口的真实档位。 */
 export const openAiCodexThinkingLevelMaps: Readonly<Record<string, ThinkingLevelMap>> = {
   "gpt-5.6-luna": {
     low: "low",

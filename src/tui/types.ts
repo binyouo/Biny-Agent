@@ -51,7 +51,7 @@ export interface ErrorTranscriptItem extends TranscriptItemBase {
   content: string;
 }
 
-/** 报告类 slash command 的 Codex 风格卡片，内联进对话历史。 */
+/** 报告类 slash command 的结构化卡片，内联进对话历史。 */
 export interface CardTranscriptItem extends TranscriptItemBase {
   kind: "card";
   /** 触发的命令原文，如 `/status`。 */

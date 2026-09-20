@@ -5,7 +5,8 @@
  * daily-notes，Todo 直接复用当前 session 的 TodoStore。
  */
 import { connectOrSpawnRuntimeHost, connectRuntimeHost, type RuntimeHostClient } from "../../runtime/RuntimeHost.js";
-import { listAllSessionFiles } from "../../session/store.js";
+import { archiveConversationMarkdown } from "../../session/markdownArchive.js";
+import { startMemoryHttpServer } from "../../runtime/host/memory-http.js";
 import { SessionSearchIndex } from "../../session/searchIndex.js";
 import { globalConfigDir } from "../../config/paths.js";
 import { readDailyMemoryNote, readDailyMemorySection } from "../../activity/dailyNotes.js";
@@ -18,16 +19,38 @@ export interface LocalCapabilityOutputOptions {
   noSpawn?: boolean;
 }
 
+export async function memoryExportCommand(): Promise<void> {
+  console.log(JSON.stringify(await archiveConversationMarkdown()));
+}
+
+export async function memoryServeCommand(workspaceRoot: string, port: number): Promise<void> {
+  const token = process.env.BINY_MEMORY_API_TOKEN;
+  if (!token?.trim()) throw new Error("请先设置 BINY_MEMORY_API_TOKEN；不会自动开放无认证的记忆接口。");
+  await withHost(workspaceRoot, {}, async (client) => {
+    const api = await startMemoryHttpServer(client, { token, port });
+    console.log(`Memory API: http://127.0.0.1:${String(api.port)} (Bearer token required)`);
+    try {
+      await new Promise<void>((resolve) => {
+        const stop = (): void => { process.off("SIGINT", stop); process.off("SIGTERM", stop); resolve(); };
+        process.once("SIGINT", stop);
+        process.once("SIGTERM", stop);
+      });
+    } finally { await api.close(); }
+  });
+}
+
 export async function memoryListCommand(workspaceRoot: string, options: LocalCapabilityOutputOptions = {}): Promise<void> {
   await withHost(workspaceRoot, options, async (client) => {
-    const result = await client.memory<{ entries: unknown[]; storeRevision: number }>("list-v3", {
+    const result = await client.memory<{ entries: unknown[]; storeRevision: number }>("list", {
       limit: 200,
       includeArchived: false
     });
     printResult(result, options.json, (value) => {
       const record = asRecord(value);
       const entries = Array.isArray(record.entries) ? record.entries : [];
-      return `记忆 ${String(entries.length)} 条，revision=${String(record.storeRevision ?? "?")}`;
+      return entries.length
+        ? entries.map((entry) => { const item = asRecord(entry); return `[${String(item.id)}] ${String(item.content)}`; }).join("\n")
+        : "没有记忆条目。";
     });
   });
 }
@@ -38,19 +61,20 @@ export async function memorySearchCommand(
   options: LocalCapabilityOutputOptions & { tag?: string[] } = {}
 ): Promise<void> {
   await withHost(workspaceRoot, options, async (client) => {
-    const result = await client.memory("search-v3", { query, tags: options.tag, limit: 20 });
+    const result = await client.memory("search", { query, tags: options.tag, limit: 20 });
     printResult(result, options.json, (value) => JSON.stringify(value, null, 2));
   });
 }
 
-/** 记忆库统计：总量、来源分布与维护状态，全部来自 overview-v3 的只读快照。 */
+/** 记忆库统计：总量、来源分布与维护状态来自宿主只读快照。 */
 export async function memoryStatsCommand(workspaceRoot: string, options: LocalCapabilityOutputOptions = {}): Promise<void> {
   await withHost(workspaceRoot, options, async (client) => {
-    const result = await client.memory("overview-v3", {});
+    const result = await client.memory("overview", {});
     printResult(result, options.json, (value) => {
       const record = asRecord(value);
       const overview = asRecord(record.overview);
-      const allEntries = Array.isArray(record.allEntries) ? record.allEntries as Array<Record<string, unknown>> : [];
+      const snapshot = asRecord(record.allEntries);
+      const allEntries = Array.isArray(snapshot.entries) ? snapshot.entries as Array<Record<string, unknown>> : [];
       const countBy = (key: string): string => {
         const counts = new Map<string, number>();
         for (const entry of allEntries) {
@@ -68,12 +92,11 @@ export async function memoryStatsCommand(workspaceRoot: string, options: LocalCa
   });
 }
 
-export async function memoryAddCommand(workspaceRoot: string, entryJson: string, options: LocalCapabilityOutputOptions = {}): Promise<void> {
-  const entry = JSON.parse(entryJson) as Record<string, unknown>;
+export async function memoryAddCommand(workspaceRoot: string, content: string | undefined, options: LocalCapabilityOutputOptions & { entry?: string } = {}): Promise<void> {
+  if (Boolean(content) === Boolean(options.entry)) throw new Error("请提供正文或 --entry JSON，不能同时提供。");
+  const entry = options.entry ? JSON.parse(options.entry) as Record<string, unknown> : { content };
   await withHost(workspaceRoot, options, async (client) => {
-    const overview = await client.memory<{ overview: { storeRevision: number } }>("overview-v3", {});
-    const result = await client.memory("write-v3", {
-      expectedRevision: overview.overview.storeRevision,
+    const result = await client.memory("write", {
       entry: {
         content: entry.content,
         tags: Array.isArray(entry.tags) ? entry.tags : undefined,
@@ -89,8 +112,7 @@ export async function memoryAddCommand(workspaceRoot: string, entryJson: string,
 export async function memoryArchiveCommand(workspaceRoot: string, id: string, options: LocalCapabilityOutputOptions & { yes?: boolean } = {}): Promise<void> {
   requireConfirmation(options.yes, "归档记忆会改变召回结果");
   await withHost(workspaceRoot, options, async (client) => {
-    const overview = await client.memory<{ overview: { storeRevision: number } }>("overview-v3", {});
-    const result = await client.memory("archive-v3", { id, archived: true, expectedRevision: overview.overview.storeRevision });
+    const result = await client.memory("archive", { id, archived: true });
     printResult(result, options.json, (value) => JSON.stringify(value, null, 2));
   });
 }
@@ -98,13 +120,20 @@ export async function memoryArchiveCommand(workspaceRoot: string, id: string, op
 export async function memoryClearCommand(workspaceRoot: string, options: LocalCapabilityOutputOptions & { yes?: boolean } = {}): Promise<void> {
   requireConfirmation(options.yes, "清理记忆会删除当前和归档条目");
   await withHost(workspaceRoot, options, async (client) => {
-    const overview = await client.memory<{ overview: { storeRevision: number } }>("overview-v3", {});
-    const result = await client.memory("clear-v3", { expectedRevision: overview.overview.storeRevision });
+    const result = await client.memory("clear");
     printResult(result, options.json, (value) => JSON.stringify(value, null, 2));
   });
 }
 
-export async function memorySleepCommand(workspaceRoot: string, options: LocalCapabilityOutputOptions & { run?: boolean; yes?: boolean } = {}): Promise<void> {
+export async function memorySleepCommand(workspaceRoot: string, options: LocalCapabilityOutputOptions & { run?: boolean; preview?: boolean; runs?: boolean; cancel?: boolean; yes?: boolean } = {}): Promise<void> {
+  if ([options.run, options.preview, options.runs, options.cancel].filter(Boolean).length > 1) throw new Error("Sleep 只能选择一种操作。");
+  if (options.preview || options.runs || options.cancel) {
+    await withHost(workspaceRoot, options, async (client) => {
+      const result = options.cancel ? await client.cancelMemorySleep() : await client.memory(options.preview ? "sleep-preview" : "sleep-runs");
+      printResult(result, options.json, (value) => JSON.stringify(value, null, 2));
+    });
+    return;
+  }
   if (options.run) {
     requireConfirmation(options.yes, "Sleep 可能归档重复或过期记忆");
     await withHost(workspaceRoot, options, async (client) => {
@@ -115,6 +144,24 @@ export async function memorySleepCommand(workspaceRoot: string, options: LocalCa
   }
   await withHost(workspaceRoot, options, async (client) => {
     const result = await client.memorySleepStatus();
+    printResult(result, options.json, (value) => JSON.stringify(value, null, 2));
+  });
+}
+
+export async function memoryManageCommand(
+  workspaceRoot: string,
+  action: "get" | "delete" | "restore" | "archived" | "update",
+  id: string | undefined,
+  options: LocalCapabilityOutputOptions & { yes?: boolean; entry?: string } = {}
+): Promise<void> {
+  if (action === "delete") requireConfirmation(options.yes, "删除记忆不可恢复");
+  await withHost(workspaceRoot, options, async (client) => {
+    const operation = action === "restore" ? "archive" : action === "archived" ? "archive-list" : action;
+    const result = await client.memory(operation, {
+      id,
+      archived: action === "restore" ? false : undefined,
+      patch: options.entry === undefined ? undefined : JSON.parse(options.entry)
+    });
     printResult(result, options.json, (value) => JSON.stringify(value, null, 2));
   });
 }
@@ -249,13 +296,11 @@ function requireConfirmation(yes: boolean | undefined, action: string): void {
  * 会话原文检索：先增量索引所有会话 JSONL 的新增部分，再对派生 FTS5 索引做全文检索。
  * 全程不经过 Runtime Host；索引是可重建派生数据，直接读全局 agent 目录。
  */
-export async function historySearchCommand(query: string, options: LocalCapabilityOutputOptions & { limit?: number } = {}): Promise<void> {
+export async function historySearchCommand(query: string, options: LocalCapabilityOutputOptions & { limit?: number; literal?: boolean } = {}): Promise<void> {
   const index = new SessionSearchIndex();
   try {
-    for (const filePath of await listAllSessionFiles()) {
-      await index.indexSessionFile(sessionIdFromFile(filePath), filePath).catch(() => undefined);
-    }
-    const hits = index.search(query, { limit: options.limit ?? 8 });
+    await index.refreshAll();
+    const hits = options.literal ? index.grep(query, options.limit) : index.search(query, { limit: options.limit ?? 8 });
     if (options.json) {
       printResult({ query, hits }, true, (value) => JSON.stringify(value, null, 2));
       return;

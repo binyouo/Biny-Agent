@@ -138,7 +138,7 @@ export function parseClipboardConfig(value: unknown): McpDraftForm | undefined {
     cwd: typeof config.cwd === "string" ? config.cwd : "",
     stderr: config.stderr === "inherit" || config.stderr === "pipe" ? config.stderr : "ignore",
     url: typeof config.url === "string" ? config.url : "",
-    // Claude Desktop / Cursor 用 "type": "sse" 声明传输协议，与 transportProtocol 写法一并兼容。
+    // 部分客户端用 "type": "sse" 声明传输协议，与 transportProtocol 写法一并兼容。
     remoteProtocol: config.transportProtocol === "sse" || config.type === "sse" ? "sse" : "streamable-http",
     oauthEnabled: isRecord(config.oauth),
     oauthClientId: isRecord(config.oauth) && typeof config.oauth.clientId === "string" ? config.oauth.clientId : "",

@@ -20,7 +20,6 @@ import { MemoryStorage } from "./memoryStorage.js";
 import { sleepMergePrompt } from "./sleepMergePrompt.js";
 import { memoryExtractionPrompt, temporaryMemoryCleanupPrompt, parseMemoryOperations, type MemoryOperation, type ExtractedMemory } from "./memoryExtraction.js";
 import {
-  MemoryRevisionConflictError,
   type MemoryDerivedIndexSink,
   type MemoryClearResult,
   type MemoryArchiveEntriesResult,
@@ -75,7 +74,7 @@ interface MemoryTokenUsage {
   outputTokens: number;
 }
 
-/** Durable, local-first memory. maxRecalled is a total entry count across global + project. */
+/** 全局共享的持久记忆；召回上限作用于整个事实库。 */
 export class LocalMemory {
   private readonly storage: MemoryStorage;
   private readonly recallLimitSource: number | (() => number);
@@ -94,7 +93,7 @@ export class LocalMemory {
     private readonly workspaceRoot: string,
     private readonly getExtractionModel: () => AgentModel,
     private readonly onUsage: ModelUsageObserver = () => undefined,
-    /** global + project 合计自动注入条数上限。 */
+    /** 共享记忆库合计自动注入条数上限。 */
     recallLimit: number | (() => number) = 3,
     private readonly onModelRequest: ModelRequestObserver = () => undefined,
     private readonly getModelRequestContext: () => ModelRequestContext | undefined = () => undefined,
@@ -121,7 +120,7 @@ export class LocalMemory {
     this.storage.close();
   }
 
-  // ------------------------------ v3 public API ------------------------------
+  // SQLite 事实、检索与生命周期操作。
 
   async getOverview(options: MemoryReadOptions = {}): Promise<MemoryOverview> {
     return await this.storage.getOverview(options);
@@ -134,7 +133,7 @@ export class LocalMemory {
     return await this.storage.search(query, paths, { ...options, limit: options.limit ?? this.recallLimit });
   }
 
-  async writeEntry(input: MemoryEntryInput, options: MemoryMutationOptions): Promise<MemoryWriteResult> {
+  async writeEntry(input: MemoryEntryInput, options: MemoryMutationOptions = {}): Promise<MemoryWriteResult> {
     const result = await this.storage.writeEntry(input, options);
     if (result.written && result.entry) await this.syncDerivedEntry(result.entry);
     return result;
@@ -146,7 +145,7 @@ export class LocalMemory {
    */
   async writeAutoEntry(
     input: MemoryEntryInput,
-    options: MemoryMutationOptions & { requireSemantic?: boolean; checkpoint?: () => Promise<void> }
+    options: MemoryMutationOptions & { requireSemantic?: boolean; checkpoint?: () => Promise<void> } = {}
   ): Promise<MemoryWriteResult> {
     await options.checkpoint?.();
     options.signal?.throwIfAborted();
@@ -178,23 +177,7 @@ export class LocalMemory {
     return await this.writeEntry(safe, options);
   }
 
-  /** 后台自动写入使用的 CAS 重试入口；调用方不需要自行读取 revision。 */
-  async writeAutoEntryWithRetry(
-    input: MemoryEntryInput,
-    options: { signal?: AbortSignal; now?: Date; requireSemantic?: boolean } = {}
-  ): Promise<MemoryWriteResult> {
-    const now = options.now ?? new Date();
-    return await this.retryMutation(options.signal, async (expectedRevision) => (
-      await this.writeAutoEntry(input, {
-        expectedRevision,
-        signal: options.signal,
-        now,
-        requireSemantic: options.requireSemantic
-      })
-    ));
-  }
-
-  async updateEntry(id: string, patch: MemoryEntryPatch, options: MemoryMutationOptions): Promise<MemoryWriteResult> {
+  async updateEntry(id: string, patch: MemoryEntryPatch, options: MemoryMutationOptions = {}): Promise<MemoryWriteResult> {
     const result = await this.storage.updateEntry(id, patch, options);
     if (result.written && result.entry) {
       if (result.entry.archivedAt === undefined) {
@@ -205,21 +188,18 @@ export class LocalMemory {
     return result;
   }
 
-  async archiveEntry(id: string, archived: boolean, options: MemoryMutationOptions): Promise<MemoryArchiveResult> {
+  async archiveEntry(id: string, archived: boolean, options: MemoryMutationOptions = {}): Promise<MemoryArchiveResult> {
     const result = await this.storage.archiveEntry(id, archived, options);
-    // archived 表示操作后的状态；是否真的发生 mutation 要看 revision 是否前进，
-    // 否则“恢复”会漏掉派生向量的重新写入。
-    if (result.revision !== options.expectedRevision) {
-      if (archived) this.removeDerivedEntries([id]);
-      else if (result.entry) await this.syncDerivedEntry(result.entry);
-    }
+    // 重复恢复也允许重建派生向量，修复上一次写事实成功而索引失败的情况。
+    if (archived) this.removeDerivedEntries([id]);
+    else if (result.entry) await this.syncDerivedEntry(result.entry);
     return result;
   }
 
   async archiveEntries(
     ids: readonly string[],
     reason: MemoryArchiveReason,
-    options: MemoryMutationOptions & { mergedInto?: string }
+    options: MemoryMutationOptions & { mergedInto?: string } = {}
   ): Promise<MemoryBulkArchiveResult> {
     const result = await this.storage.archiveEntries(ids, reason, options);
     if (result.archived) this.removeDerivedEntries(result.entries.map((entry) => entry.originalId ?? entry.id));
@@ -232,13 +212,13 @@ export class LocalMemory {
     return { entries, storeRevision: result.storeRevision, total: entries.length };
   }
 
-  async deleteEntryById(id: string, options: MemoryMutationOptions): Promise<MemoryDeleteResult> {
+  async deleteEntryById(id: string, options: MemoryMutationOptions = {}): Promise<MemoryDeleteResult> {
     const result = await this.storage.deleteEntry(id, options);
     if (result.deleted) this.removeDerivedEntries([result.entry?.originalId ?? id]);
     return result;
   }
 
-  async clearAllEntries(options: MemoryMutationOptions): Promise<MemoryClearResult> {
+  async clearAllEntries(options: MemoryMutationOptions = {}): Promise<MemoryClearResult> {
     // 底层 clear 会同时删除 active 与 archived；快照也必须包含归档条目，才能把它们的
     // 旧向量一并从派生索引移除。
     const snapshot = await this.storage.listEntries({ includeArchived: true, signal: options.signal });
@@ -662,7 +642,7 @@ export class LocalMemory {
       }
 
       await persistProgress();
-      const purged = await this.purgeArchivedWithRetry(options.archiveRetentionDays ?? 30, options, now);
+      const purged = await this.purgeArchived(options.archiveRetentionDays ?? 30, options, now);
       if (purged > 0) notifySleepIndexRebuild(derivedIndex);
       const finishedAt = new Date().toISOString();
       return { scanned, processed, written, failed, startedAt, finishedAt };
@@ -728,29 +708,19 @@ export class LocalMemory {
     now: Date,
     archivedBy: string
   ): Promise<MemoryBulkArchiveResult> {
-    return await this.retryMutation(options.signal, async (expectedRevision) => (
-      await this.storage.archiveEntries(ids, reason, {
-        expectedRevision,
-        mergedInto,
-        archivedBy,
-        now,
-        signal: options.signal
-      })
-    ));
+    return await this.storage.archiveEntries(ids, reason, {
+      mergedInto, archivedBy, now, signal: options.signal
+    });
   }
 
-  private async purgeArchivedWithRetry(
+  private async purgeArchived(
     retentionDays: number,
     options: MemoryMaintenanceOptions,
     now: Date
   ): Promise<number> {
-    const result = await this.retryMutation(options.signal, async (expectedRevision) => (
-      await this.storage.purgeArchivedEntries(retentionDays, {
-        expectedRevision,
-        now,
-        signal: options.signal
-      })
-    ));
+    const result = await this.storage.purgeArchivedEntries(retentionDays, {
+      now, signal: options.signal
+    });
     return result.deleted;
   }
 
@@ -810,7 +780,7 @@ export class LocalMemory {
       }
       if (!saveEmbedding) return { written, archived: 0, archivedIds: [], synthesisFailed: 0 };
       try {
-        const result = await this.writeEntryWithRetry(input, options.signal, now);
+        const result = await this.writeEntry(input, { signal: options.signal, now });
         if (result.entry) {
           synthesisIds.push(result.entry.id);
           if (result.written) written += 1;
@@ -821,7 +791,7 @@ export class LocalMemory {
           }
         }
       } catch {
-        // SQLite/CAS 或 embedding 提交失败时，保留可执行的 delete 决定。
+        // SQLite 写事务 或 embedding 提交失败时，保留可执行的 delete 决定。
         synthesisFailed += 1;
       }
     }
@@ -893,7 +863,7 @@ export class LocalMemory {
 
   /**
    * 在成功回合结束后直接整理并写入记忆。这里不落候选表：模型一次返回 add/delete，
-   * 每个变更都通过同一套 SQLite CAS 写路径提交，失败也不会影响已经完成的对话。
+   * 每个变更都通过同一套 SQLite 事务写路径提交，失败也不会影响已经完成的对话。
    */
   async summarizeAndStoreMemories(
     messages: readonly AgentMessage[],
@@ -965,7 +935,7 @@ export class LocalMemory {
         // Generate an embedding before every automatic ADD. If the
         // semantic path is unavailable, skip this candidate instead of
         // silently weakening the write-time dedup guarantee.
-        const result = await this.writeAutoEntryWithRetry(input, { signal: options.signal, now, requireSemantic: true });
+        const result = await this.writeAutoEntry(input, { signal: options.signal, now, requireSemantic: true });
         if (result.written) {
           created.push({ id: result.entry!.id, content: result.entry!.content });
           await options.onMemoryWritten?.(result.entry!);
@@ -1039,9 +1009,7 @@ export class LocalMemory {
       const entry = candidates[index - 1];
       if (!entry) continue;
       try {
-        const result = await this.retryMutation(signal, async (expectedRevision) => (
-          await this.deleteEntryById(entry.id, { expectedRevision, signal, now })
-        ));
+        const result = await this.deleteEntryById(entry.id, { signal, now });
         if (result.deleted) deleted.push({ id: entry.id, content: entry.content });
       } catch {
         signal?.throwIfAborted();
@@ -1110,9 +1078,7 @@ export class LocalMemory {
       if (!entry) continue;
       signal?.throwIfAborted();
       try {
-        const result = await this.retryMutation(signal, async (expectedRevision) => (
-          await this.deleteEntryById(entry.id, { expectedRevision, signal, now })
-        ));
+        const result = await this.deleteEntryById(entry.id, { signal, now });
         if (result.deleted) deleted.push({ id: entry.id, content: entry.content });
       } catch {
         signal?.throwIfAborted();
@@ -1134,18 +1100,6 @@ export class LocalMemory {
     );
   }
 
-  private async writeEntryWithRetry(input: MemoryEntryInput, signal: AbortSignal | undefined, now: Date): Promise<MemoryWriteResult> {
-    return await this.retryMutation(signal, async (expectedRevision) => (
-      await this.writeEntry(input, { expectedRevision, signal, now })
-    ));
-  }
-
-  private async retryMutation<T>(
-    signal: AbortSignal | undefined,
-    operation: (expectedRevision: number) => Promise<T>
-  ): Promise<T> {
-    return await withFreshRevision(this.storage, signal, operation);
-  }
 }
 
 interface SleepSimilarityCluster {
@@ -1287,27 +1241,6 @@ function notifySleepIndexRebuild(derivedIndex: MemoryDerivedIndexSink | undefine
   }
 }
 
-/**
- * 共享的 CAS 重试包装：重读 storeRevision 后重放操作，最多 4 次。
- * 写入路径的幂等性由存储层去重保证，因此重放是安全的。
- */
-export async function withFreshRevision<T>(
-  memory: Pick<LocalMemory, "getOverview"> | { getOverview(options?: MemoryReadOptions): Promise<MemoryOverview> },
-  signal: AbortSignal | undefined,
-  operation: (expectedRevision: number) => Promise<T>
-): Promise<T> {
-  for (let attempt = 0; attempt < 4; attempt += 1) {
-    signal?.throwIfAborted();
-    const overview = await memory.getOverview({ signal });
-    try {
-      return await operation(overview.storeRevision);
-    } catch (error) {
-      if (!(error instanceof MemoryRevisionConflictError) || attempt === 3) throw error;
-    }
-  }
-  throw new Error("Unable to mutate memory after repeated revision conflicts.");
-}
-
 export function formatMemoryMatches(matches: Array<{ excerpt: string; tags?: readonly string[] }>): string {
   if (!matches.length) return "";
   // 注入正文优先；非默认标签跟在正文后，帮助模型自行权衡来源相关性。
@@ -1330,7 +1263,7 @@ function formatMemoryExtractionMessages(messages: readonly AgentMessage[]): stri
   }).join("\n\n");
 }
 
-export { redactSecrets, MemoryRevisionConflictError };
+export { redactSecrets };
 export type {
   MemoryBudgetOmission,
   MemoryArchiveReason,

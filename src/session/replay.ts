@@ -43,6 +43,8 @@ export interface SessionReplay {
 }
 
 export interface SessionReplayOptions {
+  /** 只读证据回查需要压缩前原文，仍完整验证日志与当前消息分支。 */
+  includeCompactedMessages?: boolean;
   sessionId?: string;
   expectedRuntimeHighWater?: RuntimeHighWater;
 }
@@ -87,7 +89,7 @@ export function replaySessionEvents(recordedEvents: SessionEvent[], options: Ses
     recoveredToolResults
   });
   const contextCheckpoint = latestContextCheckpoint(activeEvents);
-  const activeProjection = applyContextCheckpoint(projection, contextCheckpoint);
+  const activeProjection = options.includeCompactedMessages ? projection : applyContextCheckpoint(projection, contextCheckpoint);
   const contextStartMessageIndex = activeProjection.references[0]?.index ?? projection.messages.length;
   const persistedContextState = latestContextState(activeEvents);
   const contextState = persistedContextState && contextCheckpoint
@@ -477,7 +479,31 @@ function latestContextCheckpoint(events: SessionEvent[]): SessionContextCheckpoi
       firstKeptMessageIndex: event.firstKeptMessageIndex,
       tokensBefore: event.tokensBefore,
       compactedMessages: event.compactedMessages,
-      createdAt: event.createdAt
+      createdAt: event.createdAt,
+      formatVersion: event.formatVersion,
+      state: event.state === undefined ? undefined : {
+        ...event.state,
+        goal: [...event.state.goal],
+        constraints: [...event.state.constraints],
+        done: [...event.state.done],
+        inProgress: [...event.state.inProgress],
+        blocked: [...event.state.blocked],
+        decisions: [...event.state.decisions],
+        errorsAndFixes: [...event.state.errorsAndFixes],
+        userMessages: [...event.state.userMessages],
+        nextSteps: [...event.state.nextSteps],
+        criticalContext: [...event.state.criticalContext]
+      },
+      evidence: event.evidence?.map((claim) => ({
+        ...claim,
+        references: claim.references.map((item) => ({ ...item }))
+      })),
+      parentCreatedAt: event.parentCreatedAt,
+      coveredMessageCount: event.coveredMessageCount,
+      tokensAfter: event.tokensAfter,
+      summaryProvider: event.summaryProvider,
+      summaryModel: event.summaryModel,
+      summaryPromptVersion: event.summaryPromptVersion
     };
   }
   return undefined;

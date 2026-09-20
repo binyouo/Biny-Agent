@@ -1,7 +1,7 @@
 /**
  * 报告类 slash command 的内联卡片组件。
  *
- * 仿 Codex 的 `/status` 历史卡片：命令原文一行，下面是带边框的对齐卡片，
+ * `/status` 历史卡片：命令原文一行，下面是带边框的对齐卡片，
  * label 统一 dim、对齐到固定列，value 分段着色（总量加粗、括号细节 dim）。
  * 组件只负责展示，卡片数据由 runtime 的 `CommandCardData` 提供；
  * 细节行的展开/折叠是本地交互状态，不进入 reducer。
@@ -59,7 +59,7 @@ export function renderCardLines(item: CardTranscriptItem, expanded: boolean, wid
 
   const contentWidth = safeWidth - 4;
   const labelWidth = visibleRows.reduce((max, row) => Math.max(max, visibleWidth(row.label)), 0);
-  // 值列 = label 宽 + 4：最长 label 冒号后也保留 2 个空格，和 Codex 的对齐方式一致。
+  // 值列 = label 宽 + 4：最长 label 冒号后也保留 2 个空格。
   const valueCol = labelWidth + 4;
 
   const body: string[] = [];

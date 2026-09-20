@@ -1,4 +1,4 @@
-/** Codex 访问路径共用的请求头和账号标识提取。 */
+/** 订阅访问路径共用的请求头和账号标识提取。 */
 export function openAiCodexHeaders(accessToken?: string): Record<string, string> {
   const headers: Record<string, string> = {
     "OpenAI-Beta": "responses=experimental",

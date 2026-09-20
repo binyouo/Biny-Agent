@@ -9,7 +9,7 @@ import type { EmbeddingModelRuntime } from "../../llm/embedding/types.js";
 import { redactSecrets } from "../../utils/secrets.js";
 import { perfNow, recordPerfPhase } from "../../observability/perfTiming.js";
 import { type MemoryVectorIndexStatus, type MemoryVectorSearchResult } from "./MemoryVectorIndex.js";
-import { entryHasAllTags } from "./memoryFormat.js";
+import { entryHasAnyTag } from "./memoryFormat.js";
 import type {
   MemoryEntriesResult,
   MemoryEntry,
@@ -105,7 +105,7 @@ export class HybridMemoryRetriever {
     });
     if (this.options.allowEntry) snapshot.entries = snapshot.entries.filter(this.options.allowEntry);
     // tag 后过滤先于语义检索：向量候选集合与词法回退都只看通过过滤的条目。
-    snapshot.entries = snapshot.entries.filter((entry) => entryHasAllTags(entry, options.tags));
+    snapshot.entries = snapshot.entries.filter((entry) => entryHasAnyTag(entry, options.tags));
     snapshot.paths = snapshot.paths === undefined
       ? undefined
       : Object.fromEntries(Object.entries(snapshot.paths).filter(([id]) => snapshot.entries.some((entry) => entry.id === id)));

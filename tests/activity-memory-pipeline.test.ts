@@ -171,7 +171,7 @@ async function testDeferredCandidatesRecover(): Promise<void> {
       const written = entries.entries.filter((entry) => entry.activitySessionId === id);
       assert.equal(written.length, 1);
       assert.equal(written[0]?.content, candidate.content);
-      await memory.deleteEntry(written[0]!.id, { expectedRevision: entries.storeRevision });
+      await memory.deleteEntry(written[0]!.id);
     } finally { memory.close(); }
   } finally {
     pipeline.close();

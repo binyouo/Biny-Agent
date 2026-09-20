@@ -6,11 +6,12 @@
  * Then：只有新增完整消息被索引，检索命中可按会话/角色/摘要读回，索引可整会话丢弃。
  */
 import assert from "node:assert/strict";
-import { appendFile, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { mkdtempSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { SessionSearchIndex } from "../src/session/searchIndex.js";
+import { archiveConversationMarkdown } from "../src/session/markdownArchive.js";
 
 const persistenceRoot = await mkdtemp(path.join(os.tmpdir(), "biny-session-search-"));
 process.env.BINY_AGENT_DIR = mkdtempSync(path.join(os.tmpdir(), "biny-session-search-agent-"));
@@ -76,6 +77,16 @@ try {
   index.forgetSession("s-1");
   assert.equal(index.search("deploy").length, 0);
   assert.equal(index.status().indexedMessages, 0);
+  // 未在当前进程打开过的旧会话也能发现；文字与 Markdown 导出均来自原文。
+  const oldRoot = path.join(process.env.BINY_AGENT_DIR, "sessions", "old-project");
+  await mkdir(oldRoot, { recursive: true });
+  await writeFile(path.join(oldRoot, "old-session.jsonl"), line({ type: "user_message", content: "价格是 $5.00，文件 a[b].ts", time: "2026-09-17T10:00:00.000Z" }));
+  await Promise.all([index.refreshAll(), index.refreshAll()]);
+  assert.equal(index.grep("a[b].ts").length, 1, "并发刷新不重复收录，grep 使用字面值");
+  assert.equal(index.grep("价格")[0]?.sessionId, "old-session");
+  const archive = await archiveConversationMarkdown();
+  assert.equal(archive.exported, 1);
+  assert.match(await readFile(path.join(archive.directory, "old-session.md"), "utf8"), /价格是 \$5\.00，文件 a\[b\]\.ts/u);
   index.close();
 
   console.log("session search index tests passed");

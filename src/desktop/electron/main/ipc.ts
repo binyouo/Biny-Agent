@@ -140,7 +140,6 @@ const memoryTagListSchema = z.array(z.string().trim().min(1).max(120)).max(12);
 const memoryQuerySchema = z.string().trim().min(1).max(2_000);
 const memoryEntryIdSchema = z.string().min(1).max(512);
 const localEmbeddingModelSchema = z.literal("multilingual-e5-small");
-const memoryRevisionSchema = z.number().int().nonnegative();
 const memorySettingsInputSchema = z.object({
   expectedRevision: configRevisionSchema,
   settings: memorySettingsSchema
@@ -859,20 +858,18 @@ export function registerDesktopIpc(context: IpcContext): void {
     );
   });
 
-  handleRecoveryGated(desktopIpc.addMemoryEntry, async (_event, projectId: unknown, input: unknown, expectedRevision: unknown) => {
+  handleRecoveryGated(desktopIpc.addMemoryEntry, async (_event, projectId: unknown, input: unknown) => {
     return await context.agents.addMemoryEntry(
       idSchema.parse(projectId),
-      memoryEntryInputSchema.parse(input),
-      memoryRevisionSchema.parse(expectedRevision)
+      memoryEntryInputSchema.parse(input)
     );
   });
 
-  handleRecoveryGated(desktopIpc.updateMemoryEntry, async (_event, projectId: unknown, entryId: unknown, patch: unknown, expectedRevision: unknown) => {
+  handleRecoveryGated(desktopIpc.updateMemoryEntry, async (_event, projectId: unknown, entryId: unknown, patch: unknown) => {
     return await context.agents.updateMemoryEntry(
       idSchema.parse(projectId),
       memoryEntryIdSchema.parse(entryId),
-      memoryEntryPatchSchema.parse(patch),
-      memoryRevisionSchema.parse(expectedRevision)
+      memoryEntryPatchSchema.parse(patch)
     );
   });
 
@@ -900,22 +897,20 @@ export function registerDesktopIpc(context: IpcContext): void {
     return await context.agents.archivedMemoryEntries(idSchema.parse(projectId));
   });
 
-  handleRecoveryGated(desktopIpc.archiveMemoryEntry, async (_event, projectId: unknown, entryId: unknown, archived: unknown, expectedRevision: unknown) => {
-    return await context.agents.archiveMemoryEntry(idSchema.parse(projectId), memoryEntryIdSchema.parse(entryId), archived === true, memoryRevisionSchema.parse(expectedRevision));
+  handleRecoveryGated(desktopIpc.archiveMemoryEntry, async (_event, projectId: unknown, entryId: unknown, archived: unknown) => {
+    return await context.agents.archiveMemoryEntry(idSchema.parse(projectId), memoryEntryIdSchema.parse(entryId), archived === true);
   });
 
-  handleRecoveryGated(desktopIpc.deleteMemoryEntry, async (_event, projectId: unknown, entryId: unknown, expectedRevision: unknown) => {
+  handleRecoveryGated(desktopIpc.deleteMemoryEntry, async (_event, projectId: unknown, entryId: unknown) => {
     return await context.agents.deleteMemoryEntry(
       idSchema.parse(projectId),
-      memoryEntryIdSchema.parse(entryId),
-      memoryRevisionSchema.parse(expectedRevision)
+      memoryEntryIdSchema.parse(entryId)
     );
   });
 
-  handleRecoveryGated(desktopIpc.clearMemory, async (_event, projectId: unknown, expectedRevision: unknown) => {
+  handleRecoveryGated(desktopIpc.clearMemory, async (_event, projectId: unknown) => {
     return await context.agents.clearMemory(
-      idSchema.parse(projectId),
-      memoryRevisionSchema.parse(expectedRevision)
+      idSchema.parse(projectId)
     );
   });
 

@@ -32,17 +32,17 @@ interface SettingsMemoryProps {
   onLoadStats(): Promise<DesktopMemoryStats>;
   onLoadEntries(offset: number, limit: number, includeArchived?: boolean): Promise<DesktopMemoryEntriesPage>;
   onSearch(query: string, includeArchived?: boolean): Promise<DesktopMemorySearchMatch[]>;
-  onAdd(input: DesktopMemoryEntryInput, expectedRevision: number): Promise<DesktopMemoryStats>;
-  onUpdate(entryId: string, patch: DesktopMemoryEntryPatch, expectedRevision: number): Promise<DesktopMemoryStats>;
-  onDeleteEntry(entryId: string, expectedRevision: number): Promise<DesktopMemoryStats>;
-  onArchiveEntry(entryId: string, archived: boolean, expectedRevision: number): Promise<DesktopMemoryStats>;
+  onAdd(input: DesktopMemoryEntryInput): Promise<DesktopMemoryStats>;
+  onUpdate(entryId: string, patch: DesktopMemoryEntryPatch): Promise<DesktopMemoryStats>;
+  onDeleteEntry(entryId: string): Promise<DesktopMemoryStats>;
+  onArchiveEntry(entryId: string, archived: boolean): Promise<DesktopMemoryStats>;
   onLoadArchived(): Promise<DesktopMemoryEntry[]>;
   onRunSleep(): Promise<DesktopMemoryStats>;
   onSleepStatus(): Promise<DesktopMemoryStats["maintenance"]>;
   onSleepRuns(): Promise<MemorySleepRun[]>;
   onPreviewSleep(): Promise<DesktopMemorySleepPreview>;
   onCancelSleep(): Promise<{ cancelled: boolean }>;
-  onClearMemory(expectedRevision: number): Promise<DesktopMemoryStats>;
+  onClearMemory(): Promise<DesktopMemoryStats>;
   onTestModelConfiguration(configuration: DesktopModelConfigurationInput): Promise<DesktopModelConnectionTestResult>;
   onLoadEmbeddingStatus(): Promise<DesktopMemoryEmbeddingStatus>;
   onDownloadEmbeddingModel(model: LocalEmbeddingModelId): Promise<DesktopMemoryEmbeddingStatus>;
@@ -263,8 +263,8 @@ export function SettingsMemory({
     try {
       const editId = editor?.id;
       const next = editId
-        ? await onUpdate(editId, { content: value }, stats.revision)
-        : await onAdd({ content: value, importance: 3 }, stats.revision);
+        ? await onUpdate(editId, { content: value })
+        : await onAdd({ content: value, importance: 0.5 });
       setStats(next);
       setEditor(undefined);
       await reload();
@@ -281,7 +281,7 @@ export function SettingsMemory({
     const archived = entry.archivedAt === undefined;
     setSaving(true);
     try {
-      const next = await onArchiveEntry(entry.id, archived, stats.revision);
+      const next = await onArchiveEntry(entry.id, archived);
       setStats(next);
       await reload();
       onNotify(archived ? "记忆已归档" : "记忆已恢复");
@@ -335,7 +335,7 @@ export function SettingsMemory({
     if (!window.confirm(`删除这条记忆？\n\n${entry.content}`)) return;
     setSaving(true);
     try {
-      const next = await onDeleteEntry(entry.id, stats.revision);
+      const next = await onDeleteEntry(entry.id);
       setStats(next);
       await reload();
       onNotify("记忆已删除");
@@ -351,7 +351,7 @@ export function SettingsMemory({
     if (!window.confirm("确定要删除所有记忆吗？此操作无法撤销。")) return;
     setSaving(true);
     try {
-      const next = await onClearMemory(stats.revision);
+      const next = await onClearMemory();
       setStats(next);
       setSearchResults([]);
       await reload();

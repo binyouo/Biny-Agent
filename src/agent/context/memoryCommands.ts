@@ -8,7 +8,6 @@ import type {
   MemorySearchOptions,
   MemorySearchResult
 } from "./memoryTypes.js";
-import { withFreshRevision } from "./LocalMemory.js";
 import type { LocalMemory } from "./LocalMemory.js";
 
 export const memoryCommandUsage = [
@@ -53,12 +52,12 @@ export async function runMemoryCommand(
   if (action === "add") {
     const note = args.slice(1).join(" ").trim();
     if (!note) return "Usage: /memory add <note>";
-    const result = await withFreshRevision(memory, undefined, async (expectedRevision) => await memory.writeEntry({
+    const result = await memory.writeEntry({
       content: note,
       source: "manual",
-      importance: 3
-    }, { expectedRevision }));
-    if (!result.written) return "Skipped: an equivalent note already exists or the note is too short.";
+      importance: 0.5
+    });
+    if (!result.written) return "Skipped: an equivalent note already exists or the note is empty.";
     return `Saved memory ${result.entry?.id ?? result.path ?? ""}`.trim();
   }
 
@@ -70,9 +69,7 @@ export async function runMemoryCommand(
     if (!targets.length) return `No memory entry named ${selector}.`;
     let deleted = 0;
     for (const target of targets) {
-      const result = await withFreshRevision(memory, undefined, async (expectedRevision) => (
-        await memory.deleteEntryById(target.id, { expectedRevision })
-      ));
+      const result = await memory.deleteEntryById(target.id);
       if (result.deleted) deleted += 1;
     }
     return `Deleted ${String(deleted)} memory ${deleted === 1 ? "entry" : "entries"}.`;
@@ -118,9 +115,7 @@ export async function runMemoryCommand(
     if (!targets.length) return `No archived memory entry named ${selector}.`;
     let restored = 0;
     for (const target of targets) {
-      const result = await withFreshRevision(memory, undefined, async (expectedRevision) => (
-        await memory.archiveEntry(target.id, false, { expectedRevision })
-      ));
+      const result = await memory.archiveEntry(target.id, false);
       if (result.archived === false && result.entry) restored += 1;
     }
     return `Restored ${String(restored)} memory ${restored === 1 ? "entry" : "entries"}.`;

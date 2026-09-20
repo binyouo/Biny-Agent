@@ -188,7 +188,7 @@ try {
     }
   }
 
-  // ── Claude Code：导出 .jsonl 再导入，对话事实保持 ──────────────────────────
+  // ── 外部对话 JSONL：导出再导入，对话事实保持 ───────────────────────────────
   {
     const source = await tempWorkspace("biny-claude-out-");
     const target = await tempWorkspace("biny-claude-in-");
@@ -204,7 +204,7 @@ try {
     assert.deepEqual(lines.map((line) => [line.type, line.message.role]), [
       ["user", "user"],
       ["assistant", "assistant"],
-      ["user", "user"], // tool_result 在 Claude 里由 user 角色承载
+      ["user", "user"], // tool_result 在外部格式里由 user 角色承载
       ["assistant", "assistant"]
     ]);
 
@@ -224,7 +224,7 @@ try {
     assert.equal((toolResult as { executionStatus?: string }).executionStatus, "succeeded");
   }
 
-  // ── Codex：rollout JSONL 导入映射 ─────────────────────────────────────────
+  // ── 外部 rollout JSONL 导入映射 ───────────────────────────────────────────
   {
     const target = await tempWorkspace("biny-codex-in-");
     await ensureAgentDirs(target);
@@ -255,7 +255,7 @@ try {
     assert.equal(events[3]?.type === "assistant_message" ? events[3].content : undefined, "完成");
   }
 
-  // ── 格式探测：bundle / claude / codex / 无法识别 ───────────────────────────
+  // ── 格式探测：bundle / 两类外部格式 / 无法识别 ─────────────────────────────
   {
     const target = await tempWorkspace("biny-detect-in-");
     await ensureAgentDirs(target);

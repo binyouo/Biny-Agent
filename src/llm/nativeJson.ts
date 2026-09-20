@@ -20,6 +20,7 @@ export interface NativeTextGenerationOptions {
 export interface NativeTextGenerationResult {
   text: string;
   usage?: AgentUsage;
+  finishReason?: string;
 }
 
 /** Small text helper for structured side tasks such as memory and compaction. */
@@ -75,15 +76,19 @@ async function consumeVercelText(
     // result.text 的拒绝不携带原始错误（NoOutputGeneratedError），错误保真必须直接消费 fullStream。
     let text = "";
     let usage: AgentUsage | undefined;
+    let finishReason: string | undefined;
     let failure: unknown;
     for await (const part of result.fullStream) {
       if (part.type === "text-delta") text += part.text;
-      else if (part.type === "finish") usage = fromVercelUsage(part.totalUsage);
+      else if (part.type === "finish") {
+        usage = fromVercelUsage(part.totalUsage);
+        finishReason = part.finishReason;
+      }
       else if (part.type === "error") failure ??= part.error;
     }
     if (failure !== undefined) throw failure instanceof Error ? failure : new Error(String(failure));
     await reportVercelMetrics(model, options, startedAtMs, usage, undefined);
-    return { text, usage };
+    return { text, usage, finishReason };
   } catch (error) {
     await reportVercelMetrics(model, options, startedAtMs, undefined, error);
     throw error;
@@ -131,17 +136,21 @@ async function consumeInjectedText(
   options.signal?.throwIfAborted();
   let text = "";
   let usage: AgentUsage | undefined;
+  let finishReason: string | undefined;
   if (!model.stream) throw new Error("Vercel model is unavailable for this text request.");
   const streamModel = model.stream.bind(model);
   const { systemPrompt, ...streamOptions } = options;
   for await (const event of await streamModel({ systemPrompt, messages, tools: [] }, streamOptions)) {
     options.signal?.throwIfAborted();
     if (event.type === "text-delta") text += event.text;
-    else if (event.type === "finish") usage = event.usage;
+    else if (event.type === "finish") {
+      usage = event.usage;
+      finishReason = event.reason;
+    }
     else if (event.type === "error") throw event.error instanceof Error ? event.error : new Error(String(event.error));
   }
   options.signal?.throwIfAborted();
-  return { text, usage };
+  return { text, usage, finishReason };
 }
 
 export function nativeJsonMessages(systemPrompt: string, prompt: string): AgentMessage[] {
