@@ -33,7 +33,7 @@
     "test:skills": "tsx tests/skill-discovery.test.ts && tsx tests/skill-diagnostics.test.ts && tsx tests/skill-tools.test.ts",
     "build:desktop": "pnpm build:cli && pnpm build:activity-sidecar && electron-vite build && node scripts/copy-bundled-skills.mjs out/main/bundled-skills",
     "desktop:dev": "pnpm desktop:prepare && electron-vite dev",
-    "desktop:prepare": "pnpm build:activity-sidecar && pnpm exec install-electron --no && pnpm exec electron-rebuild -w node-pty",
+    "desktop:prepare": "node scripts/prepare-desktop.mjs",
     "desktop:preview": "electron-vite preview",
     "desktop:pack": "pnpm build:desktop && electron-builder --mac dir",
     "desktop:dist": "pnpm build:desktop && electron-builder --mac dmg zip --publish never",
