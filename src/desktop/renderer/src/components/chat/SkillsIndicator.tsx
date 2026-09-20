@@ -4,17 +4,6 @@ import { executionToolLabel } from "../../sessionTimeline.js";
 import { Icon, type IconName } from "../Icon.js";
 import { ComposerPopover } from "../composer/ComposerPopover.js";
 
-/** 回合顶部的技能启用清单：auto 预选或手动勾选的技能在正文开始前就可见。 */
-export const TurnSkillsNotice = memo(function TurnSkillsNotice({ names }: { names: readonly string[] }): React.JSX.Element | null {
-  if (!names.length) return null;
-  return (
-    <div className="chat-turn-skills">
-      <span className="chat-turn-skills-label"><Icon name="wand" size={11} />本回合技能</span>
-      <ul className="chat-turn-skills-list">{names.map((name) => <li key={name}>{name}</li>)}</ul>
-    </div>
-  );
-});
-
 export const SkillsIndicator = memo(function SkillsIndicator({ memoryRecallDegraded, skillDescriptions, skills, tools }: {
   /** 本轮自动记忆召回的降级原因；这不是后台上下文清单，而是需要用户知道的异常提示。 */
   memoryRecallDegraded?: string;
@@ -103,9 +92,7 @@ function ContextIndicator({ icon, names, text, title }: { icon: IconName; names:
   );
 }
 
-/** 探索、分页、状态同步和记忆/技能内部动作不占用用户可见的工具摘要。 */
-const VISIBLE_RESPONSE_TOOLS = new Set(["Read", "Write", "Edit", "Bash", "WebSearch", "WebFetch", "Task"]);
-
 function isVisibleResponseTool(tool: string): boolean {
-  return VISIBLE_RESPONSE_TOOLS.has(tool);
+  // Skill 调用单独进入技能清单；其余真实 tool.started 都属于本轮执行事实。
+  return tool !== "Skill" && tool !== "skill_call";
 }

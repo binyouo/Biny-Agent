@@ -106,8 +106,6 @@ function DesktopApp(): React.JSX.Element {
   const [composerSkillWarnings, setComposerSkillWarnings] = useState<string[]>([]);
   const [composerSkills, setComposerSkills] = useState<DesktopSkillCatalogEntry[]>([]);
   const skillDescriptions = useMemo(() => new Map(composerSkills.map((skill) => [skill.name, skill.description])), [composerSkills]);
-  /** 技能 ref/id → 展示名；回复顶部回合技能清单用它解析预选结果。 */
-  const skillNamesBySelector = useMemo(() => new Map(composerSkills.flatMap((skill) => [[skill.ref, skill.name], [skill.id, skill.name]])), [composerSkills]);
   const [composerTools, setComposerTools] = useState<DesktopToolCatalogEntry[]>([]);
   const [composerCatalogNonce, setComposerCatalogNonce] = useState(0);
   const [document, setDocument] = useState<DesktopSessionDocument>();
@@ -1793,7 +1791,6 @@ function DesktopApp(): React.JSX.Element {
         workspaceContext={workspaceContext}
         pendingPrompt={pendingPrompt}
         skillDescriptions={skillDescriptions}
-        skillNamesBySelector={skillNamesBySelector}
         onOpenRuntime={openRuntimePanel}
         onOpenExtensions={openExtensions}
       >

@@ -86,8 +86,6 @@ interface WorkspaceProps {
   /** 新会话首条消息的临时投影；真实事件到达后由 App 清掉。 */
   pendingPrompt?: PendingPrompt;
   skillDescriptions?: ReadonlyMap<string, string>;
-  /** 技能 ref/id → 展示名；回复顶部回合技能清单使用。 */
-  skillNamesBySelector?: ReadonlyMap<string, string>;
   /** 顶部工具条：自动化/技能入口（搜索与新建任务在侧栏 chrome）。 */
   onOpenRuntime(): void;
   onOpenExtensions(): void;
@@ -137,7 +135,6 @@ export function Workspace({
   onRuntimeRefresh,
   pendingPrompt,
   skillDescriptions,
-  skillNamesBySelector,
   workspaceContext,
   inspectorRail,
   onOpenRuntime: _onOpenRuntime,
@@ -256,7 +253,6 @@ export function Workspace({
                 pendingFloatFromComposer={pendingFloatFromComposer}
                 runtimeActiveRunId={runtimeActiveRunId}
                 skillDescriptions={skillDescriptions}
-                skillNamesBySelector={skillNamesBySelector}
                 thinking={streaming || thinking}
                 projectId={projectId}
                 turns={turns}

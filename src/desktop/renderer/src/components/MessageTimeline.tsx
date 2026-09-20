@@ -21,7 +21,7 @@ import { useTypewriter } from "./useTypewriter.js";
 import { ActivitySegment, type ActivitySegmentStep } from "./chat/ActivitySegment.js";
 import { CompactionDivider } from "./chat/CompactionDivider.js";
 import { MessageClock } from "./chat/MessageClock.js";
-import { SkillsIndicator, TurnSkillsNotice } from "./chat/SkillsIndicator.js";
+import { SkillsIndicator } from "./chat/SkillsIndicator.js";
 import { ChangesSummary } from "./chat/ChangesSummary.js";
 import { RunStatus } from "./chat/RunStatus.js";
 
@@ -29,8 +29,6 @@ interface MessageTimelineProps {
   projectId: string;
   turns: TimelineTurn[];
   skillDescriptions?: ReadonlyMap<string, string>;
-  /** 技能 ref/id → 展示名；回合顶部技能清单用它解析预选结果。 */
-  skillNamesBySelector?: ReadonlyMap<string, string>;
   pendingUserMessage?: PendingUserMessage;
   /** 首条提交自空态切入：pending 气泡以上浮 FLIP 进入（submittedPreview 原文参数）。 */
   pendingFloatFromComposer?: boolean;
@@ -72,7 +70,7 @@ function turnIsRunning(turn: TimelineTurn, runtimeActiveRunId: string | undefine
   return runtimeActiveRunId !== undefined && turn.status === "idle" && turn.id === runtimeActiveRunId;
 }
 
-export const MessageTimeline = memo(function MessageTimeline({ projectId, turns, skillDescriptions, skillNamesBySelector, pendingUserMessage, pendingFloatFromComposer, runtimeActiveRunId, onPreviewFile, onOpenExternal, onResolvePermission, thinking, onRetry, onSwitchVersion, onEditRequest, editInFlight, onCreateBranch, onRollbackFiles, onDeleteUserMessage }: MessageTimelineProps): React.JSX.Element {
+export const MessageTimeline = memo(function MessageTimeline({ projectId, turns, skillDescriptions, pendingUserMessage, pendingFloatFromComposer, runtimeActiveRunId, onPreviewFile, onOpenExternal, onResolvePermission, thinking, onRetry, onSwitchVersion, onEditRequest, editInFlight, onCreateBranch, onRollbackFiles, onDeleteUserMessage }: MessageTimelineProps): React.JSX.Element {
   // 重试会先把目标之后的消息从视图中撤掉，再等待新回合流入；这里保留同样的乐观投影。
   // 编辑的重写投影来自 App（editInFlight），提交入口在底部输入框，不经过本组件状态。
   const [optimisticRewrite, setOptimisticRewrite] = useState<OptimisticRewrite>();
@@ -200,7 +198,6 @@ export const MessageTimeline = memo(function MessageTimeline({ projectId, turns,
           busy={busy}
           entrySheenOnly={firstTurnSheenOnly && index === 0}
           skillDescriptions={skillDescriptions}
-          skillNamesBySelector={skillNamesBySelector}
           key={turn.id}
           onCreateBranch={onCreateBranch}
           onDeleteUserMessage={onDeleteUserMessage}
@@ -305,21 +302,10 @@ function optimisticRewriteTurn(turn: TimelineTurn, user: string): TimelineTurn {
   };
 }
 
-/** 回合技能清单：auto 预选/手动勾选的 ref/id 解析为展示名；目录里已不存在的跳过。 */
-function turnSkillNames(turn: TimelineTurn, selectors?: ReadonlyMap<string, string>): string[] {
-  const selection = turn.capabilitySelection?.skills;
-  if (!Array.isArray(selection)) return [];
-  return [...new Set(selection.flatMap((selector) => {
-    const name = selectors?.get(selector);
-    return name ? [name] : [];
-  }))];
-}
-
 const Turn = memo(function Turn({
   busy,
   entrySheenOnly,
   skillDescriptions,
-  skillNamesBySelector,
   projectId,
   runtimeActiveRunId,
   turn,
@@ -339,7 +325,6 @@ const Turn = memo(function Turn({
   /** FLIP 落定后的首条用户消息只播扫光（原文 animateUserEntry "sheen-only"）。 */
   entrySheenOnly?: boolean;
   skillDescriptions?: ReadonlyMap<string, string>;
-  skillNamesBySelector?: ReadonlyMap<string, string>;
   projectId: string;
   /** Runtime snapshot 里当前会话的活动 run；回合状态停在 idle 时以它兜底。 */
   runtimeActiveRunId?: string;
@@ -417,7 +402,6 @@ const Turn = memo(function Turn({
       {running || executionSteps.length > 0 || turn.assistant.trim() || completedChangedFiles.length > 0 ? (
       <article className="chat-message desktop-assistant-message" data-sender="assistant">
         <div className="agent-response">
-        {turnSkillNames(turn, skillNamesBySelector).length ? <TurnSkillsNotice names={turnSkillNames(turn, skillNamesBySelector)} /> : null}
         {shouldShowResponseContext(turn) ? <SkillsIndicator memoryRecallDegraded={turn.memoryRecallDegraded} skillDescriptions={skillDescriptions} skills={turn.skills} tools={turn.tools.map((tool) => tool.tool)} /> : null}
         {executionSteps.length ? (
           <ExecutionTimeline

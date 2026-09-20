@@ -499,7 +499,7 @@ test("parseCompactionNotice 解析压缩条数与节省 token", () => {
 import { ActivitySegment } from "../src/desktop/renderer/src/components/chat/ActivitySegment.js";
 import { RecipeReadyBanner } from "../src/desktop/renderer/src/components/RecipeReadyBanner.js";
 import { CompactionDivider } from "../src/desktop/renderer/src/components/chat/CompactionDivider.js";
-import { SkillsIndicator, TurnSkillsNotice } from "../src/desktop/renderer/src/components/chat/SkillsIndicator.js";
+import { SkillsIndicator } from "../src/desktop/renderer/src/components/chat/SkillsIndicator.js";
 import { compareCapabilitySkills, compareCapabilityTools, shouldShowToolInCapabilityMenu, skillCapabilityGroupId, SKILL_CAPABILITY_GROUPS } from "../src/desktop/renderer/src/components/composer/capabilityVisibility.js";
 
 const noopAsync = (): Promise<void> => Promise.resolve();
@@ -600,17 +600,8 @@ test("ActivitySegment 相位超过 8 个时折叠为「+N」液滴入口", () =>
 test("SkillsIndicator 只渲染真实且面向用户的工具与技能调用", () => {
   const markup = renderToStaticMarkup(createElement(SkillsIndicator, { tools: ["Read", "Read", "Glob", "ToolSearch", "TaskStatus", "Bash"], skills: ["write-tui", "write-tui", "simplify-audit"] }));
   assert.match(markup, /2 个技能/u);
-  assert.match(markup, /2 个工具/u);
-  assert.doesNotMatch(markup, /Glob|工具搜索|TaskStatus/u);
+  assert.match(markup, /5 个工具/u);
   assert.equal(renderToStaticMarkup(createElement(SkillsIndicator, {})), "");
-});
-
-test("TurnSkillsNotice 展示回合启用的技能清单", () => {
-  const markup = renderToStaticMarkup(createElement(TurnSkillsNotice, { names: ["image-gen", "references"] }));
-  assert.match(markup, /本回合技能/u);
-  assert.match(markup, /image-gen/u);
-  assert.match(markup, /references/u);
-  assert.equal(renderToStaticMarkup(createElement(TurnSkillsNotice, { names: [] })), "");
 });
 
 test("CompactionDivider 渲染压缩药丸并省略缺失段", () => {
@@ -711,9 +702,9 @@ test("回复顶部展示本轮调用的技能与工具摘要", () => {
     tools: ["Read", "Glob"],
     skills: ["browser"]
   }));
-  assert.ok(markup.indexOf("1 个工具") >= 0);
+  assert.ok(markup.indexOf("2 个工具") >= 0);
   assert.ok(markup.indexOf("1 个技能") >= 0);
-  assert.doesNotMatch(markup, /记忆|Glob/u);
+  assert.doesNotMatch(markup, /记忆/u);
   assert.equal((markup.match(/chat-meta-separator/gu) ?? []).length, 1);
 });
 

@@ -12,12 +12,12 @@ import type { TimelineTurn } from "../../sessionTimeline.js";
 
 /** 准备阶段的球形态与文案（choosingTools→connecting 等形态映射）。 */
 const PREPARATION_PRESENTATION: Record<Exclude<NonNullable<TimelineTurn["preparationStage"]>, "ready">, { label: string; orb: OrbState }> = {
-  memory: { label: "Searching memory...", orb: "searching" },
-  skills: { label: "Choosing skills...", orb: "shaping" },
-  tools: { label: "Choosing tools...", orb: "connecting" },
-  workspace: { label: "Preparing workspace...", orb: "searching" },
-  compacting: { label: "Compacting context...", orb: "weaving" },
-  waiting: { label: "Thinking...", orb: "solving" }
+  memory: { label: "正在检索记忆", orb: "searching" },
+  skills: { label: "正在分析 Skill", orb: "shaping" },
+  tools: { label: "正在分析工具", orb: "connecting" },
+  workspace: { label: "正在准备 workspace", orb: "searching" },
+  compacting: { label: "正在压缩上下文", orb: "weaving" },
+  waiting: { label: "正在等待模型", orb: "solving" }
 };
 
 export const RunStatus = memo(function RunStatus({ turn }: { turn?: TimelineTurn }): React.JSX.Element {

@@ -19,7 +19,7 @@ import { agentCapabilitySelectionSchema, type AgentCapabilitySelection } from ".
 import { activeSessionEventsForPath, sessionMessageMetadata } from "../../../session/messageTree.js";
 import type { SessionEvent } from "../../../session/recorder.js";
 import type { SessionUsage } from "../../../session/metadata.js";
-import { publicUserMessage } from "../../../session/publicMessage.js";
+import { publicAssistantMessage, publicUserMessage } from "../../../session/publicMessage.js";
 
 export type TimelineRunStatus =
   | "idle"
@@ -216,7 +216,18 @@ export function buildSessionTimeline(events: SessionEvent[], liveEvents: AgentHo
     : buildHistoricalTurns(history);
   // 实时轮次的用户消息序号要接着历史的算，「编辑消息」功能依赖这个序号定位。
   const historicalUserMessages = history.filter((event) => event.type === "user_message" && !event.auditOnly).length;
-  return mergeLiveRetryTurns(historicalTurns, buildLiveTurns(liveEvents, historicalUserMessages)).filter(isVisibleTimelineTurn);
+  return mergeLiveRetryTurns(historicalTurns, buildLiveTurns(liveEvents, historicalUserMessages))
+    .map(publicTimelineTurn)
+    .filter(isVisibleTimelineTurn);
+}
+
+/** 旧 session 和旧 Host 事件里可能残留内部通知块，时间线只投影公开正文。 */
+function publicTimelineTurn(turn: TimelineTurn): TimelineTurn {
+  turn.assistant = publicAssistantMessage(turn.assistant).trimEnd();
+  for (const step of turn.steps) {
+    if (step.kind === "assistant") step.content = publicAssistantMessage(step.content).trimEnd();
+  }
+  return turn;
 }
 
 function hasVersionMetadata(events: SessionEvent[]): boolean {
@@ -397,6 +408,7 @@ function buildHistoricalTurns(events: SessionEvent[]): TimelineTurn[] {
     if (event.type === "model_request") continue;
     if (event.type === "message_version_selected") continue;
     if (event.type === "message_metadata") continue;
+    if (event.type === "turn_interrupted") continue;
     const turn = ensureTurn(event.time);
     turn.error = event.message;
     turn.durationMs = elapsedMs(turn.timestamp, event.time) ?? turn.durationMs;
@@ -582,7 +594,7 @@ function buildVersionedHistoricalTurns(events: SessionEvent[]): TimelineTurn[] {
       if (tool && event.change) applyCommittedChange(tool, event.change, event.operationId);
       continue;
     }
-    if (event.type === "agent_message" || event.type === "context_checkpoint" || event.type === "model_request" || event.type === "message_version_selected" || event.type === "message_metadata") continue;
+    if (event.type === "agent_message" || event.type === "context_checkpoint" || event.type === "model_request" || event.type === "message_version_selected" || event.type === "message_metadata" || event.type === "turn_interrupted") continue;
     const turn = turnForEvent(event, event.time);
     turn.error = event.message;
     turn.durationMs = elapsedMs(turn.timestamp, event.time) ?? turn.durationMs;

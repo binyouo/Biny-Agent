@@ -53,6 +53,37 @@ test("模型尚未输出就失败：只保留用户消息，不生成助手错�
   assert.doesNotMatch(markup, /chat-meta-indicator|1 条记忆|1 个工具|1 个技能/u);
 });
 
+test("中断上下文标记不作为用户消息展示", () => {
+  const marker = "<turn_aborted>hidden model context</turn_aborted>";
+  const turns = buildSessionTimeline([
+    { type: "user_message", content: "停止前的请求", messageId: "user-message", time: base.timestamp },
+    { type: "turn_interrupted", reason: "interrupted", content: marker, time: "2026-09-11T00:00:01.000Z" },
+    { type: "turn_status", status: "cancelled", stopReason: "interrupted", steps: 0, time: "2026-09-11T00:00:02.000Z" }
+  ], []);
+  assert.equal(turns.length, 1);
+  assert.equal(turns[0]?.user, "停止前的请求");
+  assert.doesNotMatch(renderTurns(turns), /hidden model context/u);
+});
+
+test("后台通知 XML 不进入实时或历史消息界面", () => {
+  const notification = "<biny_notification>修复完成。</biny_notification>";
+  const historical = buildSessionTimeline([
+    { type: "user_message", content: "修复问题", messageId: "user-message", time: base.timestamp },
+    { type: "assistant_message", content: `正文内容。\n\n${notification}`, messageId: "assistant-message", time: "2026-09-11T00:00:01.000Z" }
+  ], []);
+  assert.equal(historical[0]?.assistant, "正文内容。");
+  assert.doesNotMatch(renderTurns(historical), /biny_notification|修复完成/u);
+
+  const live = buildSessionTimeline([], [
+    { ...base, type: "message.user", messageId: "live-user", content: "修复问题" },
+    { ...base, type: "run.started", messageId: "live-assistant", model: { alias: "test", provider: "test", label: "test", reasoning: "" } },
+    { ...base, type: "assistant.delta", content: "正文内容。\n\n<bin" },
+    { ...base, type: "assistant.delta", content: "y_notification>修复完成。" }
+  ]);
+  assert.equal(live[0]?.assistant, "正文内容。");
+  assert.doesNotMatch(renderTurns(live), /biny_notification|修复完成/u);
+});
+
 test("记忆召回降级时在回复上下文行给出主动提示", () => {
   const history: SessionEvent[] = [
     { type: "user_message", content: "检查项目", messageId: "user-message", time: "2026-09-11T00:00:00.000Z" },
@@ -234,7 +265,7 @@ test("失败后正常再发一条消息：保留两条用户消息，不插入�
   assert.equal(markup.match(/data-sender="assistant"/gu)?.length, 1, "仅新一轮活动占用助手区域");
 });
 
-for (const [stage, label] of [["skills", "Choosing skills..."], ["tools", "Choosing tools..."], ["workspace", "Preparing workspace..."], ["memory", "Searching memory..."], ["compacting", "Compacting context..."]] as const) {
+for (const [stage, label] of [["skills", "正在分析 Skill"], ["tools", "正在分析工具"], ["workspace", "正在准备 workspace"], ["memory", "正在检索记忆"], ["compacting", "正在压缩上下文"]] as const) {
   test(`准备阶段实时显示并在完成或失败时清除：${stage}`, () => {
     const events: AgentHostEvent[] = [start[0]!, { ...base, type: "preparation.updated", stage }];
     const pattern = new RegExp(label.replace(/\./gu, "\\."));
