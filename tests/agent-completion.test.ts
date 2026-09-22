@@ -181,6 +181,102 @@ async function testStepPersistenceFailureIsATurnFailure(): Promise<void> {
   }
 }
 
+async function testRepeatedActionBudgetStopsTheLoop(withFileProgress = false): Promise<void> {
+  const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "biny-repeated-action-limit-"));
+  await ensureAgentDirs(workspaceRoot);
+  const registry = new ToolRegistry();
+  registry.registerBuiltinTool(createWriteFileTool({ workspaceRoot, ignore: [] }));
+  let executions = 0;
+  registry.registerBuiltinTool({
+    name: "repeatable_check",
+    description: "Run a repeatable check",
+    risk: "read",
+    parameters: { type: "object", properties: { target: { type: "string" } }, required: ["target"] },
+    schema: z.object({ target: z.string() }),
+    resolveExecution: () => ({
+      approvalRule: "repeatable_check",
+      execute: async () => {
+        executions += 1;
+        return { ok: true };
+      }
+    })
+  });
+  let requests = 0;
+  const model: AgentModel = {
+    provider: "test",
+    modelId: "repeated-action-limit",
+    supportsTools: true,
+    async stream() {
+      requests += 1;
+      assert.ok(requests <= (withFileProgress ? 7 : 3), "budget rejection must stop the loop before another model request");
+      return (async function* (): AsyncGenerator<ModelStreamEvent> {
+        if (withFileProgress && requests === 3) {
+          yield { type: "tool-call", id: "progress-write", name: "Write", arguments: { path: "progress.txt", content: "changed" } };
+        } else if (withFileProgress && requests === 6) {
+          yield { type: "text-delta", text: "Rechecked after changing the file." };
+          yield { type: "finish", reason: "stop" };
+          return;
+        } else {
+          yield {
+            type: "tool-call",
+            id: `repeat-${String(requests)}`,
+            name: "repeatable_check",
+            arguments: { target: "same" }
+          };
+        }
+        yield { type: "finish", reason: "tool-calls" };
+      })();
+    }
+  };
+  const config = configSchema.parse({
+    ...defaultConfig,
+    agent: {
+      ...defaultConfig.agent,
+      hardStepLimit: 8,
+      maxRepeatedActions: 2
+    },
+    context: {
+      ...defaultConfig.context,
+      memory: { ...defaultConfig.context.memory, useMemories: false, generateMemories: false }
+    },
+    permission: { ...defaultConfig.permission, mode: "full-access" }
+  });
+  const recorder = new SessionRecorder(workspaceRoot);
+  const agent = new AgentSession({
+    workspaceRoot,
+    config,
+    model,
+    toolRegistry: registry,
+    permissionManager: new PermissionManager(config.permission),
+    recorder
+  });
+  try {
+    await agent.initialize();
+    const outcome = await agent.runTask("Repeat the same check forever");
+    if (withFileProgress) {
+      assert.equal(outcome.status, "completed");
+      assert.equal(executions, 4, "真实文件修改之后允许重新执行相同测试");
+      assert.equal(await readFile(path.join(workspaceRoot, "progress.txt"), "utf8"), "changed");
+      await recorder.flush();
+      const events = (await readFile(recorder.filePath, "utf8")).trim().split("\n").map((line) => JSON.parse(line) as SessionEvent);
+      assert.equal(events.filter((event) => event.type === "tool_result" && event.tool === "repeatable_check" && event.executionStatus === "succeeded").length, 4);
+      return;
+    }
+    assert.equal(requests, 3);
+    assert.equal(executions, 2);
+    assert.equal(outcome.status, "incomplete");
+    assert.equal(outcome.stopReason, "repeated_action_limit");
+    assert.equal(outcome.resumable, true);
+    assert.match(outcome.error ?? "", /repeat limit of 2/u);
+    const interrupted = await agent.interruptedTurn();
+    assert.equal(interrupted?.completedSteps, 0, "explicit continuation must open a new budget window");
+    assert.equal(interrupted?.terminal?.stopReason, "repeated_action_limit");
+  } finally {
+    await agent.close();
+    await rm(workspaceRoot, { recursive: true, force: true });
+  }
+}
+
 async function testInterruptedTurnMarkerIsModelVisibleOnlyForManualStop(): Promise<void> {
   const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "biny-turn-interruption-"));
   await ensureAgentDirs(workspaceRoot);
@@ -356,6 +452,8 @@ async function testUnattributedCancellationDoesNotWriteInterruptionMarker(): Pro
 }
 
 for (const scenario of ["answer", "write", "recovery", "limit", "length", "notification"] as const) await testNaturalCompletion(scenario);
+await testRepeatedActionBudgetStopsTheLoop();
+await testRepeatedActionBudgetStopsTheLoop(true);
 await testStepPersistenceFailureIsATurnFailure();
 await testInterruptedTurnMarkerIsModelVisibleOnlyForManualStop();
 await testReplacedTurnDoesNotWriteInterruptionMarker();

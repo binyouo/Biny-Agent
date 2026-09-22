@@ -54,10 +54,8 @@ async function testBatchCannotExceedToolCallLimit(): Promise<void> {
       ),
       true
     );
-    assert.deepEqual(fixture.coordinator.getExecutionBudgetSnapshot(), {
-      accountedToolCalls: 3,
-      maxRepeatedActionCount: 1
-    });
+    assert.equal(fixture.coordinator.getExecutionBudgetSnapshot().accountedToolCalls, 3);
+    assert.equal(fixture.coordinator.getExecutionBudgetSnapshot().maxRepeatedActionCount, 1);
   } finally {
     await fixture.close();
   }
@@ -95,10 +93,8 @@ async function testBatchCannotExceedRepeatedActionLimit(): Promise<void> {
       ),
       true
     );
-    assert.deepEqual(fixture.coordinator.getExecutionBudgetSnapshot(), {
-      accountedToolCalls: 3,
-      maxRepeatedActionCount: 3
-    });
+    assert.equal(fixture.coordinator.getExecutionBudgetSnapshot().accountedToolCalls, 3);
+    assert.equal(fixture.coordinator.getExecutionBudgetSnapshot().maxRepeatedActionCount, 3);
   } finally {
     await fixture.close();
   }
@@ -226,7 +222,51 @@ async function createLifecycleFixture(
   };
 }
 
-async function createFixture(budget: ToolExecutionBudget): Promise<{
+async function testProgressAndRestoredActionBudgets(): Promise<void> {
+  let version = 0;
+  const fixture = await createFixture({ maxToolCalls: 20, maxRepeatedActions: 2 }, () => ({ version }));
+  try {
+    for (version = 0; version < 5; version++) {
+      const result = await fixture.tool.execute(`progress-${version}`, { key: "same" });
+      assert.equal(readString(result, "status"), undefined, "成功结果变化不能累计成重复动作");
+    }
+    version = 4;
+    await fixture.tool.execute("unchanged", { key: "same" });
+    const snapshot = fixture.coordinator.getExecutionBudgetSnapshot();
+    const resumed = await createFixture({
+      maxToolCalls: 20, maxRepeatedActions: 2,
+      initialToolCallCount: snapshot.accountedToolCalls,
+      initialRepeatedActions: snapshot.repeatedActions
+    });
+    try {
+      assert.equal(readString(await resumed.tool.execute("new-action", { key: "different" }), "status"), undefined,
+        "恢复不能把旧动作次数转嫁给新动作");
+      assert.equal(readString(await resumed.tool.execute("old-action", { key: "same" }), "reason"), "repeated_action_limit",
+        "恢复也不能清掉原动作的无变化重复次数");
+    } finally {
+      await resumed.close();
+    }
+  } finally {
+    await fixture.close();
+  }
+}
+
+async function testChangingErrorsDoNotResetRepeatBudget(): Promise<void> {
+  let failures = 0;
+  const fixture = await createFixture({ maxToolCalls: 10, maxRepeatedActions: 2 }, () => {
+    throw new Error(`Failure attempt ${++failures}`);
+  });
+  try {
+    await fixture.tool.execute("error-1", { key: "same" });
+    await fixture.tool.execute("error-2", { key: "same" });
+    assert.equal(readString(await fixture.tool.execute("error-3", { key: "same" }), "reason"), "repeated_action_limit");
+    assert.equal(failures, 2, "不同错误文本不能被当成进展而无限执行");
+  } finally {
+    await fixture.close();
+  }
+}
+
+async function createFixture(budget: ToolExecutionBudget, result?: () => unknown): Promise<{
   coordinator: ToolExecutionCoordinator;
   tool: ExecutableTool;
   events: CoordinatorEvent[];
@@ -259,7 +299,7 @@ async function createFixture(budget: ToolExecutionBudget): Promise<{
         approvalRule: "counted_tool",
         async execute() {
           executed += 1;
-          return { key: args.key };
+          return result ? result() : { key: args.key };
         }
       };
     }
@@ -311,6 +351,8 @@ function readString(value: unknown, key: string): string | undefined {
 
 await testBatchCannotExceedToolCallLimit();
 await testBatchCannotExceedRepeatedActionLimit();
+await testProgressAndRestoredActionBudgets();
+await testChangingErrorsDoNotResetRepeatBudget();
 await testAbortAfterSuccessfulPromiseKeepsSuccess();
 await testStartedExternalToolQuarantinesAsUnknown();
 await testNotStartedToolIsAuditOnly();

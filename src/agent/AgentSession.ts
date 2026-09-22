@@ -52,7 +52,11 @@ import type {
   ModelRequestContext,
   ModelRequestMetrics
 } from "./core/types.js";
-import { ToolExecutionCoordinator, type ToolExecutionBudgetSnapshot } from "./toolExecutionCoordinator.js";
+import {
+  ToolExecutionCoordinator,
+  type ToolBudgetRejection,
+  type ToolExecutionBudgetSnapshot
+} from "./toolExecutionCoordinator.js";
 import {
   appendExternalTurnContext,
   buildPromptBundle,
@@ -2129,7 +2133,7 @@ export class AgentSession {
         maxToolCalls: runBudget.maxToolCalls,
         maxRepeatedActions: runBudget.maxRepeatedActions,
         initialToolCallCount: runOptions.initialToolBudget?.accountedToolCalls,
-        initialMaxRepeatedActionCount: runOptions.initialToolBudget?.maxRepeatedActionCount
+        initialRepeatedActions: runOptions.initialToolBudget?.repeatedActions
       },
       persistToolResultCheckpoint
     );
@@ -2321,6 +2325,9 @@ export class AgentSession {
           }
           emitUpdate({ type: "context.updated", context: await this.contextStatus() });
         },
+        // 工具预算拒绝已经是确定的运行时终态。若继续请求模型，它只能再次调用已被拒绝的工具，
+        // 既不会产生新事实，还会把一次明确失败放大成数百次空转。
+        shouldStopAfterTurn: () => coordinator.getBudgetRejection() !== undefined,
         prepareNextTurn: async ({ context, toolResults }) => {
           coordinator.assertCanContinue();
           const discovered = toolResults
@@ -2559,14 +2566,23 @@ export class AgentSession {
         replyToMessageId: runOptions.replyToMessageId ?? lastUserMessageReference?.id,
         retryOfMessageId: runOptions.retryOfMessageId
       });
+      const budgetRejection = coordinator.getBudgetRejection();
       let outcome = {
-        ...nativeTurnOutcome(
-          hardStepLimitReached,
-          content,
-          lastAssistant?.stopReason,
-          completedStepsBeforeRun + observedSteps,
-          usageRecord
-        ),
+        ...(budgetRejection
+          ? toolBudgetTurnOutcome(
+              budgetRejection,
+              content,
+              lastAssistant?.stopReason,
+              completedStepsBeforeRun + observedSteps,
+              usageRecord
+            )
+          : nativeTurnOutcome(
+              hardStepLimitReached,
+              content,
+              lastAssistant?.stopReason,
+              completedStepsBeforeRun + observedSteps,
+              usageRecord
+            )),
         notification
       };
       if (content && (outcome.status === "completed" || outcome.status === "incomplete" || outcome.status === "blocked")) {
@@ -3937,6 +3953,25 @@ function nativeTurnOutcome(
   return { status: "completed", stopReason: "model_stop", finishReason, steps, output, usage };
 }
 
+function toolBudgetTurnOutcome(
+  rejection: ToolBudgetRejection,
+  output: string,
+  finishReason: string | undefined,
+  steps: number,
+  usage?: SessionUsage
+): AgentTurnOutcome {
+  return {
+    status: "incomplete",
+    stopReason: rejection.reason,
+    finishReason,
+    steps,
+    output,
+    usage,
+    error: rejection.error,
+    resumable: true
+  };
+}
+
 function failedTurn(
   message: string,
   steps: number,
@@ -3986,10 +4021,20 @@ function readToolBudget(value: unknown): ToolExecutionBudgetSnapshot | undefined
     || !Number.isSafeInteger(value.maxRepeatedActionCount)
     || typeof value.maxRepeatedActionCount !== "number"
     || value.maxRepeatedActionCount < 0
+    || !Array.isArray(value.repeatedActions)
+    || !value.repeatedActions.every((action: unknown) => isRecord(action)
+      && typeof action.fingerprint === "string" && /^[a-f0-9]{64}$/u.test(action.fingerprint)
+      && typeof action.count === "number" && Number.isSafeInteger(action.count) && action.count >= 0
+      && (action.resultFingerprint === undefined || typeof action.resultFingerprint === "string" && /^[a-f0-9]{64}$/u.test(action.resultFingerprint)))
   ) return undefined;
   return {
     accountedToolCalls: value.accountedToolCalls,
-    maxRepeatedActionCount: value.maxRepeatedActionCount
+    maxRepeatedActionCount: value.maxRepeatedActionCount,
+    repeatedActions: value.repeatedActions.map((action) => ({
+      fingerprint: action.fingerprint as string,
+      count: action.count as number,
+      resultFingerprint: action.resultFingerprint as string | undefined
+    }))
   };
 }
 
@@ -4000,7 +4045,8 @@ function restartToolBudget(
   if (!budget || !restartBudget) return budget;
   return {
     accountedToolCalls: 0,
-    maxRepeatedActionCount: 0
+    maxRepeatedActionCount: 0,
+    repeatedActions: []
   };
 }
 

@@ -115,21 +115,25 @@ export interface ToolExecutionBudget {
   maxRepeatedActions: number;
   /** 进程内断点续跑时，已占用的调用额度。显式新预算窗口应传 0。 */
   initialToolCallCount?: number;
-  /**
-   * 旧断点只持久化了最大重复次数，没有逐动作计数。恢复时保守继承这个上界，避免重启绕过
-   * 重复动作限制；显式新预算窗口应传 0。
-   */
-  initialMaxRepeatedActionCount?: number;
+  /** 逐动作恢复，不能把某个动作的次数转嫁给恢复后的所有其他动作。 */
+  initialRepeatedActions?: RepeatedActionBudget[];
+}
+
+export interface RepeatedActionBudget {
+  fingerprint: string;
+  count: number;
+  resultFingerprint?: string;
 }
 
 export interface ToolExecutionBudgetSnapshot {
   accountedToolCalls: number;
   maxRepeatedActionCount: number;
+  repeatedActions: RepeatedActionBudget[];
 }
 
-type ToolBudgetReason = "tool_call_limit" | "repeated_action_limit";
+export type ToolBudgetReason = "tool_call_limit" | "repeated_action_limit";
 
-interface ToolBudgetRejection {
+export interface ToolBudgetRejection {
   status: "budget_rejected";
   reason: ToolBudgetReason;
   resumable: true;
@@ -158,8 +162,11 @@ export class ToolExecutionCoordinator {
   /** 本回合是否已建过快照；每回合只建一个，建在第一次真正改动之前。 */
   private checkpointTaken = false;
   private accountedToolCallCount = 0;
-  private restoredMaxRepeatedActionCount = 0;
   private readonly accountedActionCounts = new Map<string, number>();
+  private readonly actionResults = new Map<string, string>();
+  private readonly pendingActionCounts = new Map<string, number>();
+  /** 首个预算拒绝决定本轮终态，后续并行调用不得覆盖更早发生的事实。 */
+  private budgetRejection: ToolBudgetRejection | undefined;
   private readonly uncertainExecutions = new Map<string, string>();
 
   constructor(
@@ -176,12 +183,12 @@ export class ToolExecutionCoordinator {
       assertPositiveSafeInteger(executionBudget.maxToolCalls, "maxToolCalls");
       assertPositiveSafeInteger(executionBudget.maxRepeatedActions, "maxRepeatedActions");
       assertNonNegativeSafeInteger(executionBudget.initialToolCallCount ?? 0, "initialToolCallCount");
-      assertNonNegativeSafeInteger(
-        executionBudget.initialMaxRepeatedActionCount ?? 0,
-        "initialMaxRepeatedActionCount"
-      );
       this.accountedToolCallCount = executionBudget.initialToolCallCount ?? 0;
-      this.restoredMaxRepeatedActionCount = executionBudget.initialMaxRepeatedActionCount ?? 0;
+      for (const action of executionBudget.initialRepeatedActions ?? []) {
+        assertNonNegativeSafeInteger(action.count, "repeatedAction.count");
+        this.accountedActionCounts.set(action.fingerprint, action.count);
+        if (action.resultFingerprint) this.actionResults.set(action.fingerprint, action.resultFingerprint);
+      }
     }
     this.diagnostics = context.config.diagnostics.enabled
       ? new DiagnosticsRunner(context.workspaceRoot, context.config.diagnostics)
@@ -267,11 +274,17 @@ export class ToolExecutionCoordinator {
     return {
       accountedToolCalls: this.accountedToolCallCount,
       maxRepeatedActionCount: Math.max(
-        this.restoredMaxRepeatedActionCount,
         0,
         ...this.accountedActionCounts.values()
-      )
+      ),
+      repeatedActions: [...this.accountedActionCounts].map(([fingerprint, count]) => ({
+        fingerprint, count, resultFingerprint: this.actionResults.get(fingerprint)
+      }))
     };
+  }
+
+  getBudgetRejection(): ToolBudgetRejection | undefined {
+    return this.budgetRejection;
   }
 
   assertCanContinue(): void {
@@ -377,6 +390,7 @@ export class ToolExecutionCoordinator {
     let executionStarted = false;
     let finishPromise: Promise<unknown> | undefined;
     let committedChange: CommittedFileChange | undefined;
+    let budgetAdmitted = false;
     const updateState = (state: ToolExecutionState, evidence?: string): void => {
       latestState = state;
       latestEvidence = evidence ?? latestEvidence;
@@ -429,6 +443,32 @@ export class ToolExecutionCoordinator {
         const neverStarted = latestState === "not_started";
         const terminalState = executionStateForResultStatus(status);
         if (latestState !== terminalState) await persistState(terminalState, latestEvidence);
+        if (budgetAdmitted) {
+          const fingerprint = actionFingerprint(call);
+          const pending = Math.max(0, (this.pendingActionCounts.get(fingerprint) ?? 1) - 1);
+          this.pendingActionCounts.set(fingerprint, pending);
+          // 比较原始结果，排除后续附加的 operationId 等每次必变的审计元数据。
+          // 仅成功结果变化才重置；报错文案变化、权限拒绝和取消不算进展。
+          if (executionStarted && status === "succeeded") {
+            const comparableResult = typeof result === "object" && result !== null && !Array.isArray(result)
+              ? Object.fromEntries(Object.entries(result).filter(([key]) => key !== "durationMs"))
+              : result;
+            const resultFingerprint = createHash("sha256").update(stableJson(comparableResult)).digest("hex");
+            const previous = this.actionResults.get(fingerprint);
+            if (previous !== undefined && previous !== resultFingerprint) {
+              this.accountedActionCounts.set(fingerprint, pending + 1);
+            }
+            this.actionResults.set(fingerprint, resultFingerprint);
+            // 已落盘的文件提交允许其他检查重新开始；自己的次数不清零，避免重复写入自我豁免。
+            if (committedChange && committedChange.diff.length > 0) {
+              for (const key of this.accountedActionCounts.keys()) {
+                if (key === fingerprint) continue;
+                this.accountedActionCounts.set(key, this.pendingActionCounts.get(key) ?? 0);
+                this.actionResults.delete(key);
+              }
+            }
+          }
+        }
         return await this.finishSyntheticCall(
           call,
           sequence,
@@ -464,9 +504,11 @@ export class ToolExecutionCoordinator {
       }
       const budgetRejection = this.admitToolCall(call);
       if (budgetRejection) {
+        this.budgetRejection ??= budgetRejection;
         this.emit({ type: "tool.started", toolCallId: call.id, tool: call.name, args: call.args, operationId });
         return await finish(budgetRejection, budgetRejection.error, "failed");
       }
+      budgetAdmitted = this.executionBudget !== undefined;
 
       return await this.admissionScheduler.schedule({
         accesses: ToolAccesses.none(),
@@ -1208,17 +1250,13 @@ export class ToolExecutionCoordinator {
     const budget = this.executionBudget;
     if (!budget) return undefined;
     const attemptedToolCallCount = this.accountedToolCallCount + 1;
-    const fingerprint = `${call.name}\0${stableJson(call.args)}`;
+    const fingerprint = actionFingerprint(call);
     const actionCount = this.accountedActionCounts.get(fingerprint) ?? 0;
-    const attemptedRestoredCount = this.restoredMaxRepeatedActionCount > 0
-      ? this.restoredMaxRepeatedActionCount + 1
-      : 0;
-    const attemptedActionCount = Math.max(actionCount + 1, attemptedRestoredCount);
+    const attemptedActionCount = actionCount + 1;
     // 被重复动作规则拒绝的调用仍是真实 provider Tool Call，也必须消耗总调用额度。先原子记账，
     // 再选择拒绝原因，保证同一批后续调用看见最新计数。
     this.accountedToolCallCount = attemptedToolCallCount;
     this.accountedActionCounts.set(fingerprint, actionCount + 1);
-    this.restoredMaxRepeatedActionCount = attemptedRestoredCount;
 
     if (attemptedToolCallCount > budget.maxToolCalls) {
       return {
@@ -1243,6 +1281,7 @@ export class ToolExecutionCoordinator {
       };
     }
 
+    this.pendingActionCounts.set(fingerprint, (this.pendingActionCounts.get(fingerprint) ?? 0) + 1);
     return undefined;
   }
 
@@ -1501,6 +1540,11 @@ function displaySummary(display: ToolInputDisplay | undefined): string | undefin
   if (display.kind === "command") return `Run command: ${display.command}`;
   if (display.kind === "file_io") return `${display.operation}${display.path ? ` ${display.path}` : ""}`.trim();
   return display.summary;
+}
+
+function actionFingerprint(call: { name: string; args: unknown }): string {
+  // 持久化计数只保存摘要，不能把工具参数中的凭据写进恢复状态。
+  return createHash("sha256").update(`${call.name}\0${stableJson(call.args)}`).digest("hex");
 }
 
 function attachToolSummary(result: unknown, durationMs: number): unknown {
