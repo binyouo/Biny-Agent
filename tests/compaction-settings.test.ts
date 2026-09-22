@@ -339,11 +339,26 @@ async function testRequestAnchorAndPersistentFailure(): Promise<void> {
     assert.ok(await good.compactRunContextIfNeeded(busy), "到期后应能恢复压缩");
     assert.equal(good.snapshot().compactionFailure, undefined);
 
-    const truncated = makeMemory(workspaceRoot, new RecordingModel(citeCheckpoint(checkpointSummary), undefined, "length"), options);
+    const recoveringProvider = new RecordingModel();
+    const originalStream = recoveringProvider.model.stream!;
+    recoveringProvider.model.stream = async (context, streamOptions) => {
+      const stream = await originalStream(context, streamOptions);
+      const truncatedAttempt = recoveringProvider.requests.length === 1;
+      return (async function* () {
+        for await (const event of stream) yield event.type === "finish" && truncatedAttempt ? { ...event, reason: "length" as const } : event;
+      })();
+    };
+    const recovered = makeMemory(workspaceRoot, recoveringProvider, options);
+    recovered.replaceHistory(busy.messages);
+    assert.equal((await recovered.compact()).compacted, true, "截断后用同一材料重写更短摘要，而不是接受半截结果");
+    assert.match(recoveringProvider.systemPrompts[1] ?? "", /shorter/iu);
+    const truncatedProvider = new RecordingModel(citeCheckpoint(checkpointSummary), undefined, "length");
+    const truncated = makeMemory(workspaceRoot, truncatedProvider, options);
     truncated.replaceHistory(busy.messages);
     await assert.rejects(truncated.compact(), /output_truncated/u);
     assert.deepEqual(truncated.getHistory(), busy.messages, "结构碰巧完整也不能接受被输出上限截断的摘要");
     assert.equal(truncated.snapshot().compactionFailure?.kind, "output_truncated");
+    assert.equal(truncatedProvider.requests.length, 2, "截断修复最多一次，不能无限重试");
     const invalid = makeMemory(workspaceRoot, new RecordingModel("missing headings"), options);
     invalid.replaceHistory(busy.messages);
     await assert.rejects(invalid.compact(), /invalid_structure/u);

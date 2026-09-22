@@ -45,7 +45,7 @@ const model: AgentModel = {
   stream: async (_context, options) => {
     calls++;
     assert.equal(options?.reasoning, "off");
-    assert.equal(options?.timeoutMs, 30_000);
+    assert.equal(options?.timeoutMs, 300_000, "30 秒是空闲期限，不再是整个摘要的总期限");
     return (async function* (): AsyncGenerator<ModelStreamEvent> {
       yield { type: "text-delta", text: response };
       yield { type: "finish", reason: "stop" };

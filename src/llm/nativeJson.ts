@@ -13,6 +13,8 @@ export interface NativeTextGenerationOptions {
   providerOptions?: Record<string, unknown>;
   reasoning?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
   timeoutMs?: number;
+  /** 首个事件和相邻流事件的最长等待；有持续进展时不消耗这个空闲期限。 */
+  idleTimeoutMs?: number;
   onRequestMetrics?: ModelRequestObserver;
   requestContext?: ModelRequestContext;
 }
@@ -30,24 +32,35 @@ export async function generateNativeText(
   options: NativeTextGenerationOptions = {}
 ): Promise<NativeTextGenerationResult> {
   options.signal?.throwIfAborted();
-  const timeout = options.timeoutMs === undefined ? undefined : new AbortController();
-  const timer = timeout && setTimeout(() => timeout.abort(new DOMException("Auxiliary model request timed out.", "TimeoutError")), options.timeoutMs);
+  const timeout = options.timeoutMs === undefined && options.idleTimeoutMs === undefined ? undefined : new AbortController();
+  const timer = timeout && options.timeoutMs !== undefined
+    ? setTimeout(() => timeout.abort(new DOMException("Auxiliary model request timed out.", "TimeoutError")), options.timeoutMs)
+    : undefined;
+  let idleTimer: ReturnType<typeof setTimeout> | undefined;
+  const onProgress = () => {
+    if (idleTimer) clearTimeout(idleTimer);
+    if (timeout && !timeout.signal.aborted && options.idleTimeoutMs !== undefined) {
+      idleTimer = setTimeout(() => timeout.abort(new DOMException("Auxiliary model stream stalled.", "TimeoutError")), options.idleTimeoutMs);
+    }
+  };
   const signal = timeout
     ? (options.signal ? AbortSignal.any([options.signal, timeout.signal]) : timeout.signal)
     : options.signal;
   let onAbort: (() => void) | undefined;
   try {
+    onProgress();
     const aborted = new Promise<never>((_resolve, reject) => {
       onAbort = () => reject(signal?.reason);
       signal?.addEventListener("abort", onAbort, { once: true });
     });
     // 辅助任务没有工具副作用；不等待忽略取消的 Provider，迟到流也不得产出有效结果。
     const result = model.vercelModel === undefined
-      ? consumeInjectedText(model, messages, { ...options, signal })
-      : consumeVercelText(model, messages, { ...model.vercelOptions, ...options, signal });
+      ? consumeInjectedText(model, messages, { ...options, signal }, onProgress)
+      : consumeVercelText(model, messages, { ...model.vercelOptions, ...options, signal }, onProgress);
     return await Promise.race([result, aborted]);
   } finally {
     if (timer) clearTimeout(timer);
+    if (idleTimer) clearTimeout(idleTimer);
     if (onAbort) signal?.removeEventListener("abort", onAbort);
   }
 }
@@ -55,7 +68,8 @@ export async function generateNativeText(
 async function consumeVercelText(
   model: AgentModel,
   messages: AgentMessage[],
-  options: NativeTextGenerationOptions
+  options: NativeTextGenerationOptions,
+  onProgress: () => void
 ): Promise<NativeTextGenerationResult> {
   const startedAtMs = Date.now();
   try {
@@ -79,6 +93,8 @@ async function consumeVercelText(
     let finishReason: string | undefined;
     let failure: unknown;
     for await (const part of result.fullStream) {
+      options.signal?.throwIfAborted();
+      onProgress();
       if (part.type === "text-delta") text += part.text;
       else if (part.type === "finish") {
         usage = fromVercelUsage(part.totalUsage);
@@ -131,7 +147,8 @@ async function reportVercelMetrics(
 async function consumeInjectedText(
   model: AgentModel,
   messages: AgentMessage[],
-  options: NativeTextGenerationOptions
+  options: NativeTextGenerationOptions,
+  onProgress: () => void
 ): Promise<NativeTextGenerationResult> {
   options.signal?.throwIfAborted();
   let text = "";
@@ -142,6 +159,7 @@ async function consumeInjectedText(
   const { systemPrompt, ...streamOptions } = options;
   for await (const event of await streamModel({ systemPrompt, messages, tools: [] }, streamOptions)) {
     options.signal?.throwIfAborted();
+    onProgress();
     if (event.type === "text-delta") text += event.text;
     else if (event.type === "finish") {
       usage = event.usage;

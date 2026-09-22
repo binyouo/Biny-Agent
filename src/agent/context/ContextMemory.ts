@@ -740,6 +740,7 @@ export class ContextMemory {
     } | undefined> {
     const previousSummary = this.summary;
     const systemPrompt = buildCompactionSystemPrompt(previousSummary !== undefined, plan.splitTurn);
+    const shorterPrompt = `${systemPrompt}\nThe previous attempt hit the output limit. Write a substantially shorter checkpoint from the same sources. Keep the required headings, evidence citations, latest constraints and unfinished work; remove repetition and secondary detail.`;
     const previousSources = previousCheckpointSources(this.checkpoint, previousSummary);
     try {
       const budget = this.compactionOptions.resolveSummaryBudget?.(summaryModel)
@@ -748,7 +749,8 @@ export class ContextMemory {
       if (!budget) throw new CompactionSummaryError("input_budget");
       const outputTokens = Math.min(maxSummaryTokens, budget.maxOutputTokens ?? maxSummaryTokens);
       const inputLimit = Math.min(budget.maxInputTokens, (budget.effectiveContextWindow ?? budget.contextWindow) - outputTokens - (budget.protocolSafetyMarginTokens ?? 32));
-      const promptOverhead = estimateTokens(systemPrompt) + estimateTokens(buildCompactionDataPrompt("", previousSummary, previousSources.text, hint)) + 8;
+      // 为唯一一次截断修复预留指令空间，重试不再裁掉材料或改变可引用来源。
+      const promptOverhead = estimateTokens(shorterPrompt) + estimateTokens(buildCompactionDataPrompt("", previousSummary, previousSources.text, hint)) + 8;
       if (outputTokens <= 0 || inputLimit <= promptOverhead) throw new CompactionSummaryError("input_budget");
       const compactedMessages = stripTransientTurnContext(plan.compacted);
       const transcript = boundedCompactionTranscript(compactedMessages, inputLimit - promptOverhead);
@@ -756,19 +758,27 @@ export class ContextMemory {
       const prompt = buildCompactionDataPrompt(transcript.text, previousSummary, previousSources.text, hint);
       if (estimateTokens(systemPrompt) + estimateTokens(prompt) + 8 > inputLimit) throw new CompactionSummaryError("input_budget");
       const sourceCatalog = new Map([...previousSources.catalog, ...transcript.catalog]);
-      const result = await generateNativeText(summaryModel, [{ role: "user", content: prompt }], {
-        systemPrompt,
-        signal,
-        timeoutMs: 30_000,
-        reasoning: "off",
-        maxOutputTokens: outputTokens,
-        onRequestMetrics: this.onModelRequest,
-        requestContext: {
-          ...(this.getModelRequestContext() ?? {}),
-          operation: "compaction"
-        }
-      });
-      if (result.usage) await this.onUsage(result.usage, "compaction");
+      const generateSummary = async (instructions: string) => {
+        signal?.throwIfAborted();
+        const result = await generateNativeText(summaryModel, [{ role: "user", content: prompt }], {
+          systemPrompt: instructions,
+          signal,
+          // 活跃输出不能被 30 秒总期限切断；空闲仍有限，持续输出也受总期限保护。
+          timeoutMs: summaryModel.vercelOptions?.timeoutMs ?? 300_000,
+          idleTimeoutMs: 30_000,
+          reasoning: "off",
+          maxOutputTokens: outputTokens,
+          onRequestMetrics: this.onModelRequest,
+          requestContext: {
+            ...(this.getModelRequestContext() ?? {}),
+            operation: "compaction"
+          }
+        });
+        if (result.usage) await this.onUsage(result.usage, "compaction");
+        return result;
+      };
+      let result = await generateSummary(systemPrompt);
+      if (result.finishReason === "length") result = await generateSummary(shorterPrompt);
       if (result.finishReason === "length") throw new CompactionSummaryError("output_truncated");
       if (result.finishReason !== "stop") throw new CompactionSummaryError("incomplete_response");
       const summary = cleanModelSummary(result.text);
