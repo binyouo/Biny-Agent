@@ -195,15 +195,22 @@ class BinyAgent(BaseAgent):
         return parsed
 
     def _timeout_seconds(self) -> int:
-        value = self._env("BINY_TIMEOUT_SEC")
+        # 外层 Harbor exec 的 deadline 要和 Biny/任务的长命令 deadline 分开配置。
+        # 优先使用专门的 adapter deadline，避免把默认的短运行时配置误当成
+        # 整个 trial 的命令执行上限。
+        value = self._env("BINY_AGENT_EXEC_TIMEOUT_SEC") or self._env("BINY_TIMEOUT_SEC")
         if value is None:
             return 5_400
         try:
             timeout = int(value)
         except ValueError as error:
-            raise RuntimeError("BINY_TIMEOUT_SEC must be a positive integer.") from error
+            raise RuntimeError(
+                "BINY_AGENT_EXEC_TIMEOUT_SEC/BINY_TIMEOUT_SEC must be a positive integer."
+            ) from error
         if timeout < 1:
-            raise RuntimeError("BINY_TIMEOUT_SEC must be a positive integer.")
+            raise RuntimeError(
+                "BINY_AGENT_EXEC_TIMEOUT_SEC/BINY_TIMEOUT_SEC must be a positive integer."
+            )
         return timeout
 
     def _validate_model_binding(self) -> None:
