@@ -1048,6 +1048,7 @@ export class ToolExecutionCoordinator {
       executionStarted = true;
       onStarted?.();
       const executeWithSignal = (executionSignal?: AbortSignal): Promise<unknown> => execution.execute({
+        deniedPaths: this.permissionManager.getDeniedPaths(),
         toolCallId: call.id,
         operationId: operationId ?? createToolOperationId(this.context.recorder.sessionId, call.id),
         sessionId: this.context.recorder.sessionId,

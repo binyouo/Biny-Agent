@@ -5,6 +5,7 @@
  * 工具动作类型和风险等级决定放行、询问或拒绝。工具本身不做 UI 确认。
  */
 import path from "node:path";
+import { matchingDeniedPath } from "./pathPolicy.js";
 import { permissionScopeForAlways } from "./permissionScope.js";
 
 export type ActionType = "read" | "write" | "delete" | "shell" | "network" | "git" | "install" | "unknown";
@@ -98,7 +99,7 @@ const defaultPolicy: ProjectPermissionPolicy = {
   mode: "full-access",
   allowTools: ["Read", "Glob", "Grep", "WebSearch", "save_memory"],
   allowPaths: [],
-  denyPaths: [".env", ".ssh/", "node_modules/"],
+  denyPaths: [".env", ".ssh/"],
   criticalAlwaysAsk: true
 };
 
@@ -124,9 +125,10 @@ export class PermissionManager {
   }
 
   evaluate(request: PermissionRequestContext): PermissionEvaluation {
+    const changingPath = request.actionType === "write" || request.actionType === "delete";
     const deniedPath =
-      (request.targetPath ? matchingPathRule(request.targetPath, this.policy.denyPaths) : undefined)
-      ?? (request.secondaryTargetPath ? matchingPathRule(request.secondaryTargetPath, this.policy.denyPaths) : undefined);
+      (request.targetPath ? matchingDeniedPath(request.targetPath, this.policy.denyPaths, request.projectRoot, changingPath) : undefined)
+      ?? (request.secondaryTargetPath ? matchingDeniedPath(request.secondaryTargetPath, this.policy.denyPaths, request.projectRoot, changingPath) : undefined);
     if (deniedPath) {
       return { decision: "deny", reason: `Target path is denied by project policy: ${deniedPath}` };
     }
@@ -218,6 +220,10 @@ export class PermissionManager {
 
   setMode(mode: PermissionMode): void {
     this.mode = mode;
+  }
+
+  getDeniedPaths(): string[] {
+    return [...this.policy.denyPaths];
   }
 
   resetSession(): void {

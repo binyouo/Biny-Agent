@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { defaultConfig } from "../src/config/schema.js";
 import type { AgentConfigStore } from "../src/config/store.js";
-import { applyRunConfig, createRunConfigStore, validateRunOptions } from "../src/cli/commands/run.js";
+import { applyRunConfig, createRunConfigStore, loadRunAttachments, validateRunOptions } from "../src/cli/commands/run.js";
+import { attachmentFilePath, attachmentRoot } from "../src/attachments/store.js";
 import { appendCapped } from "../src/tools/shell/runCommand.js";
 
 const config = structuredClone(defaultConfig);
@@ -36,6 +40,7 @@ assert.throws(
 );
 
 await testRunConfigStoreKeepsOverridesEphemeral();
+await testRunImageAttachments();
 testShellOutputCapTrimsByBytes();
 
 console.log("run command tests passed");
@@ -53,6 +58,47 @@ function testShellOutputCapTrimsByBytes(): void {
   const ascii = appendCapped("a".repeat(maxOutputBytes), "b".repeat(100));
   assert.equal(Buffer.byteLength(ascii, "utf8"), maxOutputBytes);
   assert.equal(ascii, `${"a".repeat(maxOutputBytes - 100)}${"b".repeat(100)}`);
+}
+
+async function testRunImageAttachments(): Promise<void> {
+  const root = await mkdtemp(path.join(tmpdir(), "biny-run-attachments-"));
+  const workspaceRoot = path.join(root, "workspace");
+  const persistenceRoot = path.join(root, "state");
+  await mkdir(workspaceRoot);
+  await mkdir(persistenceRoot);
+  const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00]);
+  try {
+    await writeFile(path.join(workspaceRoot, "board.png"), png);
+    const attachments = await loadRunAttachments(
+      workspaceRoot,
+      persistenceRoot,
+      [],
+      ["board.png", "board.png"]
+    );
+    assert.equal(attachments.length, 1);
+    assert.equal(attachments[0]?.mimeType, "image/png");
+    assert.equal(attachments[0]?.data, png.toString("base64"));
+    const storedPath = attachmentFilePath(attachmentRoot(persistenceRoot), attachments[0]?.path ?? "");
+    assert.ok(storedPath);
+    assert.deepEqual(await readFile(storedPath), png);
+
+    await writeFile(path.join(root, "outside.png"), png);
+    await assert.rejects(
+      loadRunAttachments(workspaceRoot, persistenceRoot, [], ["../outside.png"]),
+      /escapes workspace/u
+    );
+    await writeFile(path.join(workspaceRoot, "fake.png"), "not an image");
+    await assert.rejects(
+      loadRunAttachments(workspaceRoot, persistenceRoot, [], ["fake.png"]),
+      /does not match image\/png/u
+    );
+    await assert.rejects(
+      loadRunAttachments(workspaceRoot, persistenceRoot, [], ["notes.txt"]),
+      /Unsupported image attachment type/u
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 }
 
 async function testRunConfigStoreKeepsOverridesEphemeral(): Promise<void> {

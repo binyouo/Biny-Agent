@@ -39,13 +39,13 @@ const permissionSchema = z.object({
   mode: z.enum(["ask", "read-only", "auto", "full-access"]).default("full-access"),
   allowTools: z.array(z.string()).default(["Read", "Glob", "Grep", "WebSearch", "save_memory"]),
   allowPaths: z.array(z.string()).default([]),
-  denyPaths: z.array(z.string()).default([".env", ".env.local", ".ssh/", "node_modules/"]),
+  denyPaths: z.array(z.string()).default([".env", ".ssh/"]),
   criticalAlwaysAsk: z.boolean().default(true)
 }).default({
   mode: "full-access",
   allowTools: ["Read", "Glob", "Grep", "WebSearch", "save_memory"],
   allowPaths: [],
-  denyPaths: [".env", ".env.local", ".ssh/", "node_modules/"],
+  denyPaths: [".env", ".ssh/"],
   criticalAlwaysAsk: true
 });
 
@@ -528,6 +528,7 @@ const sandboxSchema = z.object({
   /**
    * `workspace-write`：命令仍以当前用户权限运行，但内核层面只允许写工作区、临时目录和常见
    * 缓存目录。这是独立于命令字符串判定的第二道边界。目前只有 macOS 有实现。
+   * `off` 仅关闭写入范围限制；permission.denyPaths 和禁网配置仍需系统沙箱强制执行。
    */
   mode: z.enum(["off", "workspace-write"]).default("off"),
   allowNetwork: z.boolean().default(true)
@@ -865,7 +866,7 @@ export const defaultConfig: AgentConfig = {
     mode: "full-access",
     allowTools: ["Read", "Glob", "Grep", "WebSearch", "save_memory"],
     allowPaths: [],
-    denyPaths: [".env", ".env.local", ".ssh/", "node_modules/"],
+    denyPaths: [".env", ".ssh/"],
     criticalAlwaysAsk: true
   },
   workspace: {

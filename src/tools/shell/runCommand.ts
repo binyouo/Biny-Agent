@@ -147,17 +147,18 @@ export function createRunCommandTool(
         display: { kind: "command", command: args.command, cwd: commandCwd, language: "bash" },
         description: `${args.background === true ? "Start background" : "Run"} ${preview}`,
         approvalRule: `Bash(${args.command})`,
-        async execute({ signal, onUpdate }) {
+        async execute({ signal, onUpdate, deniedPaths }) {
           const currentCwd = resolveWorkspaceDirectory(context.workspaceRoot, args.cwd ?? inferredCwd ?? ".", context.ignore);
           if (currentCwd !== commandCwd) throw new Error("The command working directory changed after the tool call was prepared.");
           const cwd = args.cwd || !inferredCwd ? commandCwd : context.workspaceRoot;
-          const sandboxed = sandboxCommand(args.command, context.workspaceRoot, sandboxOptions, {
+          const executionSandbox = { ...sandboxOptions, denyPaths: deniedPaths };
+          const sandboxed = sandboxCommand(args.command, context.workspaceRoot, executionSandbox, {
             platform: process.platform,
             home: homedir(),
             temporaryDirectory: tmpdir()
           });
           const sandboxDescription = sandboxed.applied
-            ? describeSandbox(sandboxOptions, process.platform)
+            ? describeSandbox(executionSandbox, process.platform)
             : `not applied (${sandboxed.reason ?? "unknown"})`;
           if (args.background === true) {
             const process = await managedProcesses!.start({

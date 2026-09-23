@@ -9,19 +9,20 @@
  * 像什么"，所以判定错了也还有兜底。
  *
  * 范围与限制（不夸大）：
- * - 只在 macOS 生效。其他平台返回原命令，`describeSandbox()` 会如实说明。
+ * - 只在 macOS 生效。请求任何限制而平台不支持时拒绝启动，不降级为无保护执行。
  * - `sandbox-exec` 被 Apple 标记为 deprecated，但至今仍是唯一无需额外安装的用户态方案。
- * - 读取默认放行。挡住读取会让绝大多数构建和测试命令直接失败，收益不抵代价；这里防的是
- *   工作区之外的**改动**和意外出网。
+ * - 普通读取放行，显式 denyPaths 同时禁止读取和写入，独立于写入范围模式和交互审批。
  */
 import { realpathSync } from "node:fs";
 import path from "node:path";
+import { compileDeniedPaths } from "../../permission/pathPolicy.js";
 
 export type SandboxMode = "off" | "workspace-write";
 
 export interface SandboxOptions {
   mode: SandboxMode;
   allowNetwork: boolean;
+  denyPaths?: readonly string[];
 }
 
 export interface SandboxedCommand {
@@ -56,16 +57,19 @@ export function buildSeatbeltProfile(workspaceRoot: string, options: SandboxOpti
   const writable = [...new Set(roots.flatMap((entry) => [entry, realPath(entry)]))]
     .map((entry) => `  (subpath ${quoteScheme(entry)})`)
     .join("\n");
+  const denied = compileDeniedPaths(options.denyPaths ?? [], workspaceRoot);
   return [
     "(version 1)",
     "(allow default)",
-    "(deny file-write*)",
-    "(allow file-write*",
-    writable,
-    ")",
+    ...(options.mode === "workspace-write" ? ["(deny file-write*)", "(allow file-write*", writable, ")"] : []),
     // 写入 /dev/null、tty 是命令的日常行为，单独放行避免误伤。
     '(allow file-write-data (literal "/dev/null") (literal "/dev/zero") (literal "/dev/dtracehelper"))',
     ...(options.allowNetwork ? [] : ["(deny network*)"]),
+    // 放在允许规则之后，显式拒绝优先于工作区、缓存和临时目录的写入授权。
+    ...denied.patterns
+      // 使用普通 Scheme 字符串传入正则，避免 #"..." 字面量对引号与反斜杠的不同解释。
+      .map((pattern) => `(deny file-read* file-write* (regex ${quoteScheme(pattern)}))`),
+    ...denied.ancestors.map((entry) => `(deny file-write-unlink (literal ${quoteScheme(entry)}))`),
     ""
   ].join("\n");
 }
@@ -80,9 +84,11 @@ export function sandboxCommand(
   options: SandboxOptions,
   environment: { platform: NodeJS.Platform; home: string; temporaryDirectory: string }
 ): SandboxedCommand {
-  if (options.mode === "off") return { command, applied: false, reason: "sandbox is disabled in configuration" };
+  if (options.mode === "off" && options.allowNetwork && !options.denyPaths?.length) {
+    return { command, applied: false, reason: "sandbox is disabled and no path or network restrictions are configured" };
+  }
   if (environment.platform !== "darwin") {
-    return { command, applied: false, reason: `command sandboxing is only implemented for macOS; this host is ${environment.platform}` };
+    throw new Error(`Cannot enforce command sandbox restrictions on ${environment.platform}; command was not started.`);
   }
   const profile = buildSeatbeltProfile(workspaceRoot, options, environment);
   return {
@@ -92,9 +98,13 @@ export function sandboxCommand(
 }
 
 export function describeSandbox(options: SandboxOptions, platform: NodeJS.Platform): string {
-  if (options.mode === "off") return "off";
+  if (options.mode === "off" && options.allowNetwork && !options.denyPaths?.length) return "off";
   if (platform !== "darwin") return `requested but unavailable on ${platform}`;
-  return options.allowNetwork ? "workspace-write" : "workspace-write, no network";
+  return [
+    options.mode === "workspace-write" ? "workspace-write" : "unrestricted writes",
+    options.denyPaths?.length ? "denied paths enforced" : undefined,
+    options.allowNetwork ? undefined : "no network"
+  ].filter(Boolean).join(", ");
 }
 
 /** seatbelt 的路径字面量走 scheme 字符串，内部的引号和反斜杠必须转义。 */

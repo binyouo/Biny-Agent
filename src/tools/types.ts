@@ -51,6 +51,8 @@ export interface ApprovedFileSnapshot {
 }
 
 export interface ToolExecutionContext {
+  /** 当前审批权威的显式路径禁令；命令子进程必须通过系统沙箱执行这些限制。 */
+  deniedPaths?: readonly string[];
   toolCallId: string;
   operationId: string;
   sessionId?: string;

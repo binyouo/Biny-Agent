@@ -160,10 +160,15 @@ function testPathRulesMatchAnyDepth(): void {
   // 不命中时不误伤:basename 不同或目录名只是前缀都不算。
   assert.equal(manager.evaluate({ ...baseRequest, targetPath: "src/config/env.ts" }).decision, "ask");
   assert.equal(manager.evaluate({ ...baseRequest, targetPath: "packages/api/secretsmith/key.pem" }).decision, "ask");
-  assert.equal(manager.evaluate({ ...baseRequest, targetPath: "src/.env.example" }).decision, "ask");
+  assert.equal(manager.evaluate({ ...baseRequest, targetPath: "src/.env.example" }).decision, "deny");
 
   const defaults = new PermissionManager({ mode: "full-access" });
-  assert.equal(defaults.evaluate({ ...baseRequest, targetPath: "packages/api/node_modules/pkg/index.js" }).decision, "deny");
+  assert.equal(defaults.evaluate({ ...baseRequest, targetPath: "packages/api/node_modules/pkg/index.js" }).decision, "allow");
+  const exact = new PermissionManager({ mode: "full-access", denyPaths: ["nested/secret.txt"] });
+  assert.equal(exact.evaluate({ ...baseRequest, targetPath: "nested" }).decision, "deny", "renaming an ancestor must not bypass an explicit path rule");
+  assert.equal(exact.evaluate({ ...baseRequest, actionType: "read", targetPath: "nested" }).decision, "allow");
+  assert.equal(exact.evaluate({ ...baseRequest, targetPath: "/workspace/nested/secret.txt" }).decision, "deny");
+  assert.equal(exact.evaluate({ ...baseRequest, targetPath: "nested/ordinary.txt" }).decision, "allow");
 }
 
 function testSubagentAccessInheritsMode(): void {
