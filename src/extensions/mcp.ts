@@ -20,7 +20,7 @@ import { prepareMcpFileChange, readMcpFileChange } from "./mcpFileChange.js";
 import { FileChangeUncertainError } from "../tools/file/fileChange.js";
 import type { ToolRegistry } from "../tools/registry.js";
 import type { JsonObjectSchema } from "../tools/schema.js";
-import type { Tool, ToolRisk } from "../tools/types.js";
+import { ToolOutcomeUnknownError, type Tool, type ToolRisk } from "../tools/types.js";
 import { ToolAccesses } from "../tools/access.js";
 import { z } from "zod";
 import { McpOAuthProvider, McpAuthRequiredError } from "./mcpOAuth.js";
@@ -180,13 +180,22 @@ export class McpToolHost {
   }
 
   /** 调用前可以重连；派发后的断线无法证明副作用未发生，不能自动重放。 */
-  async callServerTool(serverName: string, toolName: string, args: Record<string, unknown>, signal?: AbortSignal, rawResult = false): Promise<unknown> {
+  async callServerTool(
+    serverName: string,
+    toolName: string,
+    args: Record<string, unknown>,
+    signal?: AbortSignal,
+    rawResult = false,
+    onDispatched?: () => void
+  ): Promise<unknown> {
     signal?.throwIfAborted();
     const managed = this.requireServer(serverName);
     if (!managed.client || !managed.status.connected) await this.reconnect(managed);
+    signal?.throwIfAborted();
     const client = managed.client;
     if (!client) throw new Error(`MCP server ${serverName} is not connected: ${managed.status.lastError ?? "unknown error"}`);
     try {
+      onDispatched?.();
       const result = await client.callTool({ name: toolName, arguments: args }, undefined, this.requestOptions(managed, signal));
       return rawResult ? result : normalizeMcpResult(result);
     } catch (error) {
@@ -195,7 +204,10 @@ export class McpToolHost {
         markDisconnected(managed, error);
         this.emitChange();
       }
-      throw error;
+      throw new ToolOutcomeUnknownError(
+        "transport_error",
+        `MCP ${serverName}/${toolName} connection closed after dispatch; the remote outcome cannot be confirmed.`
+      );
     }
   }
 
@@ -723,13 +735,21 @@ function createMcpTool(host: McpToolHost, serverName: string, definition: Listed
         description: definition.description ?? `Call MCP tool ${definition.name}`,
         approvalRule: `mcp:${serverName}:${definition.name}`,
         async execute(context): Promise<unknown> {
-          if (!fileChange) return await host.callServerTool(serverName, definition.name, asArguments(args), context.signal);
+          if (!fileChange) return await host.callServerTool(serverName, definition.name, asArguments(args), context.signal, false, context.onDispatched);
           try {
-            const result = await host.callServerTool(serverName, definition.name, { ...asArguments(args), operationId: context.operationId }, context.signal, true);
+            const result = await host.callServerTool(
+              serverName,
+              definition.name,
+              { ...asArguments(args), operationId: context.operationId },
+              context.signal,
+              true,
+              context.onDispatched
+            );
             const change = readMcpFileChange(result, context.operationId, fileChange);
             await context.onFileChangeCommitted?.(change);
             return { change };
           } catch (error) {
+            if (error instanceof ToolOutcomeUnknownError || context.signal?.aborted) throw error;
             throw new FileChangeUncertainError(`MCP file change outcome is unknown: ${errorText(error)}`);
           }
         }

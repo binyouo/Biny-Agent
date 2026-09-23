@@ -29,6 +29,28 @@ export type ToolExecutionState =
 
 export type ToolRetrySafety = "safe" | "idempotent" | "unsafe" | "unknown";
 export type ToolExecutionResultStatus = "cancelled" | "succeeded" | "failed" | "unknown";
+export type ToolOutcomeUnknownReason =
+  | "host_restarted"
+  | "host_shutdown"
+  | "timeout"
+  | "interrupted"
+  | "replaced"
+  | "cancelled"
+  | "paused"
+  | "result_persistence_failed"
+  | "unsettled_previous_invocation"
+  | "operation_identity_ambiguous"
+  | "transport_error";
+
+/** 外部工具在派发后失去响应时，用显式原因要求调用边界 fail-closed。 */
+export class ToolOutcomeUnknownError extends Error {
+  readonly code = "tool_outcome_unknown";
+
+  constructor(readonly reason: ToolOutcomeUnknownReason, detail: string) {
+    super(detail);
+    this.name = "ToolOutcomeUnknownError";
+  }
+}
 
 /** sessionId + toolCallId 的稳定标识，不把调用参数或敏感内容放进审计事件。 */
 export function createToolOperationId(sessionId: string, toolCallId: string): string {
@@ -59,6 +81,8 @@ export interface ToolExecutionContext {
   runId?: string;
   turnId?: string;
   signal?: AbortSignal;
+  /** MCP 在发出远端请求前调用；中断早于此边界时可确认没有派发副作用。 */
+  onDispatched?: () => void;
   onUpdate?: (update: ToolUpdate) => void;
   onExecutionState?: (state: ToolExecutionState, evidence?: string) => void;
   onFileChangeCommitted?: (change: CommittedFileChange) => Promise<void>;

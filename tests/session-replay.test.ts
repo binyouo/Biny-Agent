@@ -29,7 +29,8 @@ function main(): void {
     recovered: true,
     executionStatus: "unknown",
     change: undefined,
-    operationId: replay.recoveredToolResults[0]?.operationId
+    operationId: replay.recoveredToolResults[0]?.operationId,
+    outcomeUnknownReason: undefined
   });
   const toolCall = replay.messages.find((message) => hasToolCall(message, "read-1"));
   assert.deepEqual(reasoningProviderOptions(toolCall), signedReasoning);
@@ -52,6 +53,22 @@ function main(): void {
   assert.equal(admitted.recoveredToolResults[0]?.executionStatus, "unknown");
   assert.equal(admitted.recoveredToolResults[0]?.auditOnly, undefined);
   assert.equal(admitted.messages.some((message) => hasToolResult(message, "admitted-1")), true);
+
+  const hostRestarted = replaySessionEvents([
+    { type: "user_message", content: "host restarted during a call" },
+    { type: "tool_call", tool: "MCP", args: { value: 1 }, toolCallId: "mcp-restarted", sequence: 1 },
+    {
+      type: "tool_execution",
+      tool: "MCP",
+      toolCallId: "mcp-restarted",
+      sequence: 1,
+      operationId: "op-mcp-restarted",
+      state: "unknown",
+      outcomeUnknownReason: "host_restarted"
+    }
+  ]);
+  assert.equal(hostRestarted.recoveredToolResults[0]?.outcomeUnknownReason, "host_restarted");
+  assert.equal((hostRestarted.recoveredToolResults[0]?.result as Record<string, unknown>).outcomeUnknownReason, "host_restarted");
 
   const sideEffectCommitted = replaySessionEvents([
     { type: "user_message", content: "write once" },

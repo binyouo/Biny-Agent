@@ -319,8 +319,7 @@ try {
   assert.deepEqual(hostResult, { value: "host" });
   assert.equal(capabilities.list().find((candidate) => candidate.capabilityName === "host:test.echo")?.status, "admitted");
 
-  // result() 自身失败（超大 payload）时 invocation 已进入 unknown 终态；原始错误必须原样抛出，
-  // 不能被外层 catch 的 fail() 抛出的 "already terminal" 掩盖。
+  // result() 自身失败（超大 payload）时，调用方必须拿到明确的 unknown，不能把可能已发生的副作用误报为普通失败。
   await assert.rejects(
     capabilities.executeHostCapability(
       {
@@ -332,7 +331,12 @@ try {
       },
       async () => ({ value: "x".repeat(2 * 1024 * 1024) })
     ),
-    /exceeds the result size limit/u
+    (error: unknown) => typeof error === "object"
+      && error !== null
+      && "code" in error
+      && error.code === "outcome_unknown"
+      && "reason" in error
+      && error.reason === "result_persistence_failed"
   );
 
   const page = authority.readEvents({ limit: 10 });

@@ -3,7 +3,7 @@ import type { AgentConfig } from "../config/schema.js";
 import type { AgentModel } from "./core/types.js";
 import type { SessionRecorder } from "../session/recorder.js";
 import type { ToolRegistry } from "../tools/registry.js";
-import type { ToolExecutionResultStatus, ToolInputDisplay, ToolUpdate } from "../tools/types.js";
+import type { ToolExecutionResultStatus, ToolInputDisplay, ToolOutcomeUnknownReason, ToolUpdate } from "../tools/types.js";
 import type { PermissionManager, PermissionPrompt, PermissionResult } from "../permission/PermissionManager.js";
 import type { SessionUsage } from "../session/metadata.js";
 import type { ContextStatus } from "./context/types.js";
@@ -16,8 +16,8 @@ export type AgentPermissionResult = PermissionResult;
 
 export type AgentTurnStatus = "completed" | "incomplete" | "blocked" | "cancelled" | "failed" | "aborted";
 
-/** 区分显式停止、新输入替换、宿主取消，以及关闭窗口时保留任务的暂停。 */
-export type AgentTurnCancellationReason = "interrupted" | "replaced" | "cancelled" | "paused";
+/** 区分显式停止、新输入替换、Host 关停，以及关闭窗口时保留任务的暂停。 */
+export type AgentTurnCancellationReason = "interrupted" | "replaced" | "cancelled" | "paused" | "host_shutdown";
 
 export class AgentTurnCancellationError extends Error {
   readonly reason: AgentTurnCancellationReason;
@@ -25,11 +25,13 @@ export class AgentTurnCancellationError extends Error {
   constructor(reason: AgentTurnCancellationReason) {
     super(reason === "paused"
       ? "任务已暂停，可继续上次任务。"
-      : reason === "interrupted"
-        ? "Current turn interrupted by the user."
-        : reason === "replaced"
-          ? "Current turn replaced by newer user input."
-          : "Current turn cancelled.");
+      : reason === "host_shutdown"
+        ? "Runtime Host is shutting down."
+        : reason === "interrupted"
+          ? "Current turn interrupted by the user."
+          : reason === "replaced"
+            ? "Current turn replaced by newer user input."
+            : "Current turn cancelled.");
     this.name = "AgentTurnCancellationError";
     this.reason = reason;
   }
@@ -61,6 +63,7 @@ export type AgentTurnStopReason =
   | "replaced"
   | "cancelled"
   | "paused"
+  | "host_shutdown"
   | "aborted"
   | "budget_exhausted";
 
@@ -97,8 +100,8 @@ export type AgentToolEvent =
   | { type: "tool.started"; toolCallId: string; tool: string; args: unknown; description?: string; display?: ToolInputDisplay; operationId?: string }
   | { type: "tool.progress"; toolCallId: string; tool: string; update: ToolUpdate }
   | { type: "tool.change_committed"; toolCallId: string; tool: string; operationId: string; change: import("../tools/file/fileChange.js").CommittedFileChange }
-  | { type: "tool.completed"; toolCallId: string; tool: string; result: unknown; durationMs?: number; executionStatus?: ToolExecutionResultStatus; recovered?: boolean; operationId?: string; evidence?: string }
-  | { type: "tool.failed"; toolCallId: string; tool: string; error: string; result?: unknown; durationMs?: number; executionStatus?: ToolExecutionResultStatus; recovered?: boolean; operationId?: string; evidence?: string };
+  | { type: "tool.completed"; toolCallId: string; tool: string; result: unknown; durationMs?: number; executionStatus?: ToolExecutionResultStatus; outcomeUnknownReason?: ToolOutcomeUnknownReason; recovered?: boolean; operationId?: string; evidence?: string }
+  | { type: "tool.failed"; toolCallId: string; tool: string; error: string; result?: unknown; durationMs?: number; executionStatus?: ToolExecutionResultStatus; outcomeUnknownReason?: ToolOutcomeUnknownReason; recovered?: boolean; operationId?: string; evidence?: string };
 
 /** Provider 原始分片在 Session 内归一化，宿主不需要理解 provider wire 协议。 */
 export type AgentSessionEvent =

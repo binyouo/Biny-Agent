@@ -34,7 +34,7 @@ import { projectSessionsDir } from "../config/paths.js";
 import type { SessionContextCheckpoint, SessionContextState, SessionContextUsage, SessionUsage } from "./metadata.js";
 import type { AttachmentReference } from "../attachments/store.js";
 import type { AgentMessage, ModelRequestMetrics } from "../agent/core/types.js";
-import type { ToolExecutionResultStatus, ToolExecutionState, ToolRetrySafety } from "../tools/types.js";
+import type { ToolExecutionResultStatus, ToolExecutionState, ToolOutcomeUnknownReason, ToolRetrySafety } from "../tools/types.js";
 import type { CommittedFileChange } from "../tools/file/fileChange.js";
 import {
   createRuntimeEventIdentity,
@@ -88,8 +88,8 @@ type SessionEventPayload =
   | { type: "user_message"; metadata?: Record<string, unknown>; content: string; attachments?: AttachmentReference[]; skills?: string[]; contextUsage?: SessionContextUsage; contextState?: SessionContextState; preparationUsage?: SessionUsage[]; messageId?: string; parentMessageId?: string; slotId?: string; auditOnly?: boolean; time?: string }
   | { type: "assistant_message"; metadata?: Record<string, unknown>; content: string; reasoningContent?: string; reasoningProviderOptions?: Record<string, unknown>; reasoningBlocks?: ReasoningBlock[]; usage?: SessionUsage; relatedUsage?: SessionUsage[]; contextState?: SessionContextState; messageId?: string; parentMessageId?: string; slotId?: string; replyToMessageId?: string; retryOfMessageId?: string; auditOnly?: boolean; time?: string }
   | { type: "tool_call"; tool: string; args: unknown; toolCallId?: string; sequence?: number; assistantContent?: string; reasoningContent?: string; reasoningProviderOptions?: Record<string, unknown>; reasoningBlocks?: ReasoningBlock[]; auditOnly?: boolean; time?: string }
-  | { type: "tool_execution"; tool: string; toolCallId: string; sequence: number; operationId: string; state: ToolExecutionState; evidence?: string; retrySafety?: ToolRetrySafety; change?: CommittedFileChange; fileChangeIsResult?: boolean; time?: string }
-  | { type: "tool_result"; tool: string; result: unknown; toolCallId?: string; sequence?: number; relatedUsage?: SessionUsage[]; executionStatus?: ToolExecutionResultStatus; recovered?: boolean; operationId?: string; evidence?: string; auditOnly?: boolean; time?: string }
+  | { type: "tool_execution"; tool: string; toolCallId: string; sequence: number; operationId: string; state: ToolExecutionState; evidence?: string; retrySafety?: ToolRetrySafety; outcomeUnknownReason?: ToolOutcomeUnknownReason; change?: CommittedFileChange; fileChangeIsResult?: boolean; time?: string }
+  | { type: "tool_result"; tool: string; result: unknown; toolCallId?: string; sequence?: number; relatedUsage?: SessionUsage[]; executionStatus?: ToolExecutionResultStatus; outcomeUnknownReason?: ToolOutcomeUnknownReason; recovered?: boolean; operationId?: string; evidence?: string; auditOnly?: boolean; time?: string }
   | { type: "agent_message"; metadata?: Record<string, unknown>; message: Exclude<AgentMessage, { role: "user" }>; messageId?: string; parentMessageId?: string; slotId?: string; replyToMessageId?: string; retryOfMessageId?: string; time?: string }
   | ({ type: "context_checkpoint"; reason: "threshold" | "overflow" | "manual"; time?: string } & SessionContextCheckpoint)
   | { type: "model_request"; metrics: ModelRequestMetrics; time?: string }

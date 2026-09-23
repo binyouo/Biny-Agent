@@ -1748,6 +1748,7 @@ function readAgentTurnStopReason(value: unknown, status: AgentTurnStatus): Agent
     || value === "replaced"
     || value === "cancelled"
     || value === "paused"
+    || value === "host_shutdown"
     || value === "aborted"
     || value === "budget_exhausted"
   ) return value;

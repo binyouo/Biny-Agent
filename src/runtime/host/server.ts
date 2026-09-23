@@ -428,7 +428,7 @@ export class RuntimeHostServer {
       this.admission.beginDrain();
       this.businessComposition.stop();
       for (const entry of this.registry.list()) {
-        if (entry.runtime.getSnapshot().state.kind !== "idle") entry.runtime.cancelCurrentRun("cancelled");
+        if (entry.runtime.getSnapshot().state.kind !== "idle") entry.runtime.cancelCurrentRun("host_shutdown");
       }
       // 执行者真正退出时由 Runtime 释放 lease，不能在取消刚发出时提前放行新 writer。
       this.sessionWriterOwners.clear();
@@ -1862,6 +1862,6 @@ export class RuntimeHostServer {
 }
 
 function readCancellationReason(value: unknown): AgentTurnCancellationReason {
-  if (value === "interrupted" || value === "replaced" || value === "cancelled" || value === "paused") return value;
-  throw new Error("Cancellation reason must be interrupted, replaced, cancelled, or paused.");
+  if (value === "interrupted" || value === "replaced" || value === "cancelled" || value === "paused" || value === "host_shutdown") return value;
+  throw new Error("Cancellation reason must be interrupted, replaced, cancelled, paused, or host_shutdown.");
 }

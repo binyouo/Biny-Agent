@@ -173,6 +173,7 @@ const sessionEventSchema = z.discriminatedUnion("type", [
     change: committedFileChangeSchema.optional(),
     fileChangeIsResult: z.boolean().optional(),
     evidence: z.string().optional(),
+    outcomeUnknownReason: z.enum(["host_restarted", "host_shutdown", "timeout", "interrupted", "replaced", "cancelled", "paused", "result_persistence_failed", "unsettled_previous_invocation", "operation_identity_ambiguous", "transport_error"]).optional(),
     retrySafety: z.enum(["safe", "idempotent", "unsafe", "unknown"]).optional(),
     time: z.string().optional()
   }).passthrough(),
@@ -184,6 +185,7 @@ const sessionEventSchema = z.discriminatedUnion("type", [
     sequence: z.number().finite().optional(),
     relatedUsage: z.array(sessionUsageSchema).optional(),
     executionStatus: z.enum(["cancelled", "succeeded", "failed", "unknown"]).optional(),
+    outcomeUnknownReason: z.enum(["host_restarted", "host_shutdown", "timeout", "interrupted", "replaced", "cancelled", "paused", "result_persistence_failed", "unsettled_previous_invocation", "operation_identity_ambiguous", "transport_error"]).optional(),
     recovered: z.boolean().optional(),
     operationId: z.string().optional(),
     evidence: z.string().optional(),

@@ -6,13 +6,59 @@
  * 内存状态被误当成调用事实。真正的 MCP/Plugin 连接仍由 Host 持有，这里只统一它们
  * 对外的审计与恢复边界。
  */
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
+import { ToolOutcomeUnknownError, type ToolOutcomeUnknownReason } from "../tools/types.js";
 import type { RuntimeEventAuthority } from "./RuntimeAuthority.js";
 
 export type CapabilityOwnerType = "host" | "client";
 export type CapabilityRegistrationStatus = "registered" | "replaced" | "admitted" | "rejected" | "released";
 export type CapabilityInvocationStatus = "admitted" | "accepted" | "running" | "result" | "failed" | "cancelled" | "unknown";
+export type CapabilityDispatchState = "not_dispatched" | "dispatched";
+
+export class CapabilityIdempotencyConflictError extends Error {
+  readonly code = "idempotency_conflict";
+  readonly retrySafe = false;
+
+  constructor(readonly operationId: string, detail = "The operation id is already bound to different arguments.") {
+    super(detail);
+    this.name = "CapabilityIdempotencyConflictError";
+  }
+}
+
+export class CapabilityOutcomeUnknownError extends Error {
+  readonly code = "outcome_unknown";
+  readonly retrySafe = false;
+
+  constructor(
+    readonly operationId: string,
+    readonly reason: ToolOutcomeUnknownReason,
+    detail = "The operation may have taken effect; do not retry it automatically."
+  ) {
+    super(`Capability outcome is unknown (${reason}): ${detail}`);
+    this.name = "CapabilityOutcomeUnknownError";
+  }
+}
+
+export class CapabilityInvocationCancelledError extends Error {
+  readonly code = "operation_cancelled_before_dispatch";
+  readonly retrySafe = false;
+
+  constructor(readonly operationId: string, readonly reason: ToolOutcomeUnknownReason) {
+    super(`Capability operation ${operationId} was cancelled before dispatch (${reason}).`);
+    this.name = "CapabilityInvocationCancelledError";
+  }
+}
+
+export class CapabilityInvocationAlreadySettledError extends Error {
+  readonly code = "operation_already_settled";
+  readonly retrySafe = false;
+
+  constructor(readonly operationId: string, readonly status: "failed" | "cancelled") {
+    super(`Capability operation ${operationId} is already settled as ${status}; use a new operation id to request another attempt.`);
+    this.name = "CapabilityInvocationAlreadySettledError";
+  }
+}
 
 const maxPayloadBytes = 1_024 * 1_024;
 const maxChunkBytes = 256 * 1_024;
@@ -58,6 +104,7 @@ export interface HostCapabilityExecutionInput {
   toolCallId?: string;
   offerId?: string;
   request: unknown;
+  dispatchBoundary?: "immediate" | "reported";
   timeoutMs?: number;
 }
 
@@ -69,9 +116,11 @@ export interface CapabilityInvocation {
   turnId?: string;
   toolCallId?: string;
   status: CapabilityInvocationStatus;
+  dispatchState: CapabilityDispatchState;
   request: unknown;
   result?: unknown;
   error?: string;
+  outcomeUnknownReason?: ToolOutcomeUnknownReason;
   chunks: CapabilityResultChunk[];
   createdAt: string;
   updatedAt: string;
@@ -108,11 +157,29 @@ interface InvocationRow {
   tool_call_id: unknown;
   status: unknown;
   request_json: unknown;
+  request_hash: unknown;
+  dispatch_state: unknown;
   result_json: unknown;
   error: unknown;
+  outcome_unknown_reason: unknown;
   created_at: unknown;
   updated_at: unknown;
 }
+
+interface ActiveHostCapabilityExecution {
+  store: CapabilityStore;
+  requestHash: string;
+  sessionId?: string;
+  turnId?: string;
+  toolCallId?: string;
+  promise: Promise<unknown>;
+}
+
+interface CapabilityInvocationRecord extends CapabilityInvocation {
+  requestHash?: string;
+}
+
+const activeHostCapabilityExecutions = new Map<string, ActiveHostCapabilityExecution>();
 
 interface ChunkRow {
   invocation_id: unknown;
@@ -193,55 +260,145 @@ export class CapabilityStore {
    */
   async executeHostCapability<TResult>(
     input: HostCapabilityExecutionInput,
-    execute: (signal?: AbortSignal) => Promise<TResult>,
+    execute: (signal?: AbortSignal, onDispatched?: () => void) => Promise<TResult>,
     signal?: AbortSignal
   ): Promise<TResult> {
+    if (signal?.aborted) throw signal.reason ?? new DOMException("The operation was aborted.", "AbortError");
+    const key = input.offerId === undefined
+      ? undefined
+      : `${this.authority.databasePath}\0${input.capabilityName}\0${input.offerId}`;
+    if (key !== undefined) {
+      const active = activeHostCapabilityExecutions.get(key);
+      if (active) {
+        if (active.requestHash !== requestIdentityHash(input.request)
+          || active.sessionId !== input.sessionId
+          || active.turnId !== input.turnId
+          || active.toolCallId !== input.toolCallId) {
+          throw new CapabilityIdempotencyConflictError(input.offerId!, "The operation id is already executing with another request identity.");
+        }
+        return await active.promise as TResult;
+      }
+      const execution = this.executeHostCapabilityOnce(input, execute, signal);
+      activeHostCapabilityExecutions.set(key, {
+        store: this,
+        requestHash: requestIdentityHash(input.request),
+        sessionId: input.sessionId,
+        turnId: input.turnId,
+        toolCallId: input.toolCallId,
+        promise: execution
+      });
+      try {
+        return await execution;
+      } finally {
+        if (activeHostCapabilityExecutions.get(key)?.promise === execution) activeHostCapabilityExecutions.delete(key);
+      }
+    }
+    return await this.executeHostCapabilityOnce(input, execute, signal);
+  }
+
+  private async executeHostCapabilityOnce<TResult>(
+    input: HostCapabilityExecutionInput,
+    execute: (signal?: AbortSignal, onDispatched?: () => void) => Promise<TResult>,
+    signal?: AbortSignal
+  ): Promise<TResult> {
+    if (signal?.aborted) throw signal.reason ?? new DOMException("The operation was aborted.", "AbortError");
     const timeoutMs = input.timeoutMs ?? 120_000;
     if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1) throw new Error("Capability timeout must be a positive integer.");
     const registration = this.ensureHostCapability(input.capabilityName, input.schema);
-    const invocation = this.invoke({
+    const invocationInput: CapabilityInvocationInput = {
       registrationId: registration.registrationId,
       offerId: input.offerId,
       sessionId: input.sessionId,
       turnId: input.turnId,
       toolCallId: input.toolCallId,
       request: input.request
-    });
+    };
+    const { invocation, created } = this.createOrGetInvocation(
+      invocationInput,
+      input.offerId === undefined ? randomUUID() : invocationIdForOffer(registration.registrationId, input.offerId),
+      input.dispatchBoundary === "reported"
+    );
+    if (!created) return this.readExistingHostInvocation<TResult>(invocation, input.offerId);
     this.accept(invocation.invocationId);
     this.start(invocation.invocationId);
 
     const controller = new AbortController();
     const executionSignal = signal === undefined ? controller.signal : AbortSignal.any([controller.signal, signal]);
+    let dispatched = false;
+    const markDispatched = (): void => {
+      executionSignal.throwIfAborted();
+      this.markDispatched(invocation.invocationId);
+      dispatched = true;
+    };
     let timer: ReturnType<typeof setTimeout> | undefined;
     let timedOut = false;
+    let abortListener: (() => void) | undefined;
     const timeout = new Promise<never>((_, reject) => {
       timer = setTimeout(() => {
         timedOut = true;
-        controller.abort(new Error("Capability invocation timed out."));
-        reject(new Error("Capability invocation timed out; side-effect state is unknown."));
+        const error = new CapabilityOutcomeUnknownError(invocation.offerId ?? invocation.invocationId, "timeout");
+        controller.abort(error);
+        reject(error);
       }, timeoutMs);
       timer.unref?.();
     });
+    const aborted = signal === undefined ? undefined : new Promise<never>((_, reject) => {
+      abortListener = () => reject(signal.reason ?? new DOMException("The operation was aborted.", "AbortError"));
+      signal.addEventListener("abort", abortListener, { once: true });
+    });
     try {
-      const result = await Promise.race([execute(executionSignal), timeout]);
+      if (input.dispatchBoundary !== "reported") markDispatched();
+      const pending = [execute(executionSignal, markDispatched), timeout];
+      if (aborted) pending.push(aborted);
+      const result = await Promise.race(pending);
       try {
-        this.result(invocation.invocationId, result);
+        const persisted = this.result(invocation.invocationId, result);
+        return persisted.result as TResult;
       } catch (error) {
-        this.unknown(invocation.invocationId, error instanceof Error ? error.message : String(error));
-        throw error;
+        const detail = error instanceof Error ? error.message : String(error);
+        throw this.markUnknownForCaller(invocation.invocationId, invocation.offerId, "result_persistence_failed", detail);
       }
-      return result;
     } catch (error) {
-      // result() 失败时已经把 invocation 推进 unknown 终态；此时再 fail/unknown 只会抛出
-      // "already terminal" 掩盖真实错误，因此已终态的 invocation 直接透传原始错误。
       const current = this.getInvocation(invocation.invocationId);
+      if (current?.status === "unknown") {
+        throw error instanceof CapabilityOutcomeUnknownError
+          ? error
+          : new CapabilityOutcomeUnknownError(
+            invocation.offerId ?? invocation.invocationId,
+            current.outcomeUnknownReason ?? "unsettled_previous_invocation",
+            current.error
+          );
+      }
       if (current === undefined || isTerminalInvocationStatus(current.status)) throw error;
-      const uncertain = timedOut || signal?.aborted === true;
-      if (uncertain) this.unknown(invocation.invocationId, error instanceof Error ? error.message : String(error));
-      else this.fail(invocation.invocationId, error instanceof Error ? error.message : String(error));
+      if (input.dispatchBoundary === "reported" && !dispatched && signal?.aborted) {
+        const reason = abortUnknownReason(signal);
+        try {
+          this.cancel(invocation.invocationId, reason);
+        } catch {
+          // 确认未派发时，即使取消状态无法落盘，也不能升级成未知副作用。
+        }
+        throw new CapabilityInvocationCancelledError(invocation.offerId ?? invocation.invocationId, reason);
+      }
+      if (input.dispatchBoundary === "reported" && !dispatched && timedOut) {
+        const detail = "Capability timed out before the external request was dispatched.";
+        this.fail(invocation.invocationId, detail);
+        throw new Error(detail);
+      }
+      const uncertain = timedOut || signal?.aborted === true || isAbortError(error);
+      if (uncertain) {
+        const reason = timedOut ? "timeout" : abortUnknownReason(signal);
+        const detail = error instanceof Error ? error.message : String(error);
+        throw this.markUnknownForCaller(invocation.invocationId, invocation.offerId, reason, detail);
+      }
+      if (error instanceof ToolOutcomeUnknownError) {
+        const detail = error.message;
+        throw this.markUnknownForCaller(invocation.invocationId, invocation.offerId, error.reason, detail);
+      }
+      this.fail(invocation.invocationId, error instanceof Error ? error.message : String(error));
       throw error;
     } finally {
       if (timer !== undefined) clearTimeout(timer);
+      if (signal && abortListener) signal.removeEventListener("abort", abortListener);
     }
   }
 
@@ -302,38 +459,24 @@ export class CapabilityStore {
   }
 
   invoke(input: CapabilityInvocationInput, invocationId: string = randomUUID()): CapabilityInvocation {
+    return this.createOrGetInvocation(input, invocationId).invocation;
+  }
+
+  /** Owner startup calls this after acquiring the workspace lock and before accepting work. */
+  recoverUnsettledInvocations(reason: ToolOutcomeUnknownReason = "host_restarted"): number {
     this.assertOpen();
-    const registration = this.requireRegistration(input.registrationId);
-    if (registration.status !== "admitted") throw new Error(`Capability ${registration.capabilityName} is not admitted.`);
-    if (registration.expiresAt !== undefined && Date.parse(registration.expiresAt) <= Date.now()) {
-      this.updateRegistrationStatus(registration.registrationId, "released", "capability.expired");
-      throw new Error(`Capability ${registration.capabilityName} has expired.`);
+    const rows = this.database.prepare(
+      "SELECT invocation_id, dispatch_state FROM capability_invocations WHERE status IN ('admitted', 'accepted', 'running') ORDER BY created_at ASC"
+    ).all() as Array<Record<string, unknown>>;
+    for (const row of rows) {
+      const invocationId = stringValue(row.invocation_id);
+      if (dispatchState(row.dispatch_state) === "not_dispatched") {
+        this.cancel(invocationId, "host_restarted_before_dispatch");
+      } else {
+        this.unknown(invocationId, reason, "The previous Runtime Host ended before this capability invocation settled.");
+      }
     }
-    validateRequest(registration.schema, input.request);
-    const now = new Date().toISOString();
-    return this.withEvent({
-      eventId: "capability:" + invocationId + ":admitted",
-      sessionId: input.sessionId ?? "capability:" + registration.registrationId,
-      invocationId,
-      runId: invocationId,
-      turnId: input.turnId ?? invocationId,
-      eventType: "capability.invocation.admitted",
-      payload: { registrationId: input.registrationId, offerId: input.offerId, request: redact(input.request) },
-      createdAt: now
-    }, () => {
-      this.database.prepare("INSERT INTO capability_invocations (invocation_id, registration_id, offer_id, session_id, turn_id, tool_call_id, status, request_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 'admitted', ?, ?, ?)").run(
-        invocationId,
-        input.registrationId,
-        input.offerId ?? null,
-        input.sessionId ?? null,
-        input.turnId ?? null,
-        input.toolCallId ?? null,
-        encode(redact(input.request), maxPayloadBytes),
-        now,
-        now
-      );
-      return this.requireInvocation(invocationId);
-    });
+    return rows.length;
   }
 
   accept(invocationId: string): CapabilityInvocation {
@@ -401,18 +544,182 @@ export class CapabilityStore {
     return this.updateInvocationStatus(invocationId, "cancelled", "capability.invocation.cancelled", { reason: redactText(reason) });
   }
 
-  unknown(invocationId: string, reason = "side-effect state is unknown"): CapabilityInvocation {
-    return this.updateInvocationStatus(invocationId, "unknown", "capability.invocation.unknown", { reason: redactText(reason) });
+  unknown(
+    invocationId: string,
+    reason: ToolOutcomeUnknownReason = "unsettled_previous_invocation",
+    detail = "The side-effect outcome is unknown."
+  ): CapabilityInvocation {
+    return this.updateInvocationStatus(invocationId, "unknown", "capability.invocation.unknown", {
+      outcomeUnknownReason: reason,
+      error: redactText(detail)
+    });
+  }
+
+  private markUnknownForCaller(
+    invocationId: string,
+    offerId: string | undefined,
+    reason: ToolOutcomeUnknownReason,
+    detail: string
+  ): CapabilityOutcomeUnknownError {
+    try {
+      this.unknown(invocationId, reason, detail);
+    } catch {
+      // Session 仍须 fail closed；下次 owner 启动会把未收敛的账本行恢复为 unknown。
+    }
+    return new CapabilityOutcomeUnknownError(offerId ?? invocationId, reason, detail);
   }
 
   getInvocation(invocationId: string): CapabilityInvocation | undefined {
-    const row = this.database.prepare("SELECT invocation_id, registration_id, offer_id, session_id, turn_id, tool_call_id, status, request_json, result_json, error, created_at, updated_at FROM capability_invocations WHERE invocation_id = ?").get(invocationId) as unknown as InvocationRow | undefined;
+    const row = this.database.prepare("SELECT invocation_id, registration_id, offer_id, session_id, turn_id, tool_call_id, status, request_json, request_hash, dispatch_state, result_json, error, outcome_unknown_reason, created_at, updated_at FROM capability_invocations WHERE invocation_id = ?").get(invocationId) as unknown as InvocationRow | undefined;
     return row ? this.toInvocation(row) : undefined;
   }
 
   close(): void {
     if (this.closed) return;
     this.closed = true;
+    for (const [key, execution] of activeHostCapabilityExecutions) {
+      if (execution.store === this) activeHostCapabilityExecutions.delete(key);
+    }
+  }
+
+  private createOrGetInvocation(
+    input: CapabilityInvocationInput,
+    requestedInvocationId: string,
+    reportedDispatchBoundary = false
+  ): { invocation: CapabilityInvocation; created: boolean } {
+    this.assertOpen();
+    const registration = this.requireRegistration(input.registrationId);
+    if (registration.status !== "admitted") throw new Error(`Capability ${registration.capabilityName} is not admitted.`);
+    if (registration.expiresAt !== undefined && Date.parse(registration.expiresAt) <= Date.now()) {
+      this.updateRegistrationStatus(registration.registrationId, "released", "capability.expired");
+      throw new Error(`Capability ${registration.capabilityName} has expired.`);
+    }
+    validateRequest(registration.schema, input.request);
+    const requestHash = requestIdentityHash(input.request);
+    if (input.offerId !== undefined) {
+      const matches = this.findInvocationsByOffer(registration.registrationId, input.offerId);
+      if (matches.length > 1) {
+        throw new CapabilityOutcomeUnknownError(
+          input.offerId,
+          "operation_identity_ambiguous",
+          "Multiple persisted invocations already use this operation id. No new side effect was started."
+        );
+      }
+      const existing = matches[0];
+      if (existing) {
+        this.assertSameOperationIdentity(existing, input, requestHash);
+        return { invocation: existing, created: false };
+      }
+    }
+
+    const invocationId = input.offerId === undefined
+      ? requestedInvocationId
+      : invocationIdForOffer(registration.registrationId, input.offerId);
+    const now = new Date().toISOString();
+    try {
+      const invocation = this.withEvent({
+        eventId: "capability:" + invocationId + ":admitted",
+        sessionId: input.sessionId ?? "capability:" + registration.registrationId,
+        invocationId,
+        runId: invocationId,
+        turnId: input.turnId ?? invocationId,
+        eventType: "capability.invocation.admitted",
+        payload: { registrationId: input.registrationId, offerId: input.offerId, request: redact(input.request) },
+        createdAt: now
+      }, () => {
+        this.database.prepare("INSERT INTO capability_invocations (invocation_id, registration_id, offer_id, session_id, turn_id, tool_call_id, status, request_json, request_hash, dispatch_state, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 'admitted', ?, ?, ?, ?, ?)").run(
+          invocationId,
+          input.registrationId,
+          input.offerId ?? null,
+          input.sessionId ?? null,
+          input.turnId ?? null,
+          input.toolCallId ?? null,
+          encode(redact(input.request), maxPayloadBytes),
+          input.offerId === undefined ? null : requestHash,
+          reportedDispatchBoundary ? "not_dispatched" : "dispatched",
+          now,
+          now
+        );
+        return this.requireInvocation(invocationId);
+      });
+      return { invocation, created: true };
+    } catch (error) {
+      if (input.offerId !== undefined) {
+        const existing = this.findInvocationsByOffer(registration.registrationId, input.offerId);
+        if (existing.length === 1) {
+          this.assertSameOperationIdentity(existing[0]!, input, requestHash);
+          return { invocation: existing[0]!, created: false };
+        }
+      }
+      throw error;
+    }
+  }
+
+  private findInvocationsByOffer(registrationId: string, offerId: string): CapabilityInvocationRecord[] {
+    const rows = this.database.prepare("SELECT invocation_id, registration_id, offer_id, session_id, turn_id, tool_call_id, status, request_json, request_hash, dispatch_state, result_json, error, outcome_unknown_reason, created_at, updated_at FROM capability_invocations WHERE registration_id = ? AND offer_id = ? ORDER BY created_at ASC").all(registrationId, offerId) as unknown as InvocationRow[];
+    return rows.map((row) => this.toInvocationRecord(row));
+  }
+
+  private assertSameOperationIdentity(
+    existing: CapabilityInvocationRecord,
+    input: CapabilityInvocationInput,
+    requestHash: string
+  ): void {
+    if (existing.sessionId !== input.sessionId
+      || existing.turnId !== input.turnId
+      || existing.toolCallId !== input.toolCallId) {
+      throw new CapabilityIdempotencyConflictError(input.offerId ?? existing.invocationId, "The operation id is already bound to another session, turn, or tool call.");
+    }
+    if (existing.requestHash !== undefined) {
+      if (existing.requestHash !== requestHash) throw new CapabilityIdempotencyConflictError(input.offerId ?? existing.invocationId);
+      return;
+    }
+    const redactedRequest = redact(input.request);
+    if (containsRedactedValue(existing.request) || containsRedactedValue(redactedRequest)
+      || canonicalJson(existing.request) !== canonicalJson(redactedRequest)) {
+      throw new CapabilityIdempotencyConflictError(input.offerId ?? existing.invocationId, "This legacy operation cannot be safely matched to the new request.");
+    }
+  }
+
+  private readExistingHostInvocation<TResult>(invocation: CapabilityInvocation, offerId: string | undefined): TResult {
+    const operationId = offerId ?? invocation.invocationId;
+    if (invocation.status === "result") return invocation.result as TResult;
+    if (invocation.status === "unknown") {
+      throw new CapabilityOutcomeUnknownError(
+        operationId,
+        invocation.outcomeUnknownReason ?? "unsettled_previous_invocation",
+        invocation.error
+      );
+    }
+    if (invocation.status === "admitted" || invocation.status === "accepted" || invocation.status === "running") {
+      const recovered = this.unknown(
+        invocation.invocationId,
+        "unsettled_previous_invocation",
+        "A previous invocation with this operation id has no active executor in this Runtime Host."
+      );
+      throw new CapabilityOutcomeUnknownError(operationId, recovered.outcomeUnknownReason!, recovered.error);
+    }
+    throw new CapabilityInvocationAlreadySettledError(operationId, invocation.status);
+  }
+
+  private markDispatched(invocationId: string): void {
+    const invocation = this.requireInvocation(invocationId);
+    if (invocation.dispatchState === "dispatched") return;
+    if (invocation.status !== "running") throw new Error(`Capability invocation ${invocationId} cannot dispatch from status ${invocation.status}.`);
+    const now = new Date().toISOString();
+    this.withEvent({
+      eventId: `capability:${invocationId}:dispatched`,
+      sessionId: invocation.sessionId ?? `capability:${invocation.registrationId}`,
+      invocationId,
+      runId: invocationId,
+      turnId: invocation.turnId ?? invocationId,
+      eventType: "capability.invocation.dispatched",
+      payload: { dispatchState: "dispatched" },
+      createdAt: now
+    }, () => {
+      this.database.prepare("UPDATE capability_invocations SET dispatch_state = 'dispatched', updated_at = ? WHERE invocation_id = ? AND dispatch_state = 'not_dispatched'").run(now, invocationId);
+      return this.requireInvocation(invocationId);
+    });
   }
 
   private updateRegistrationStatus(registrationId: string, status: CapabilityRegistrationStatus, eventType: string, payload: Record<string, unknown> = {}): CapabilityRegistration {
@@ -452,7 +759,13 @@ export class CapabilityStore {
       payload: { ...payload, status },
       createdAt: now
     }, () => {
-      this.database.prepare("UPDATE capability_invocations SET status = ?, error = ?, updated_at = ? WHERE invocation_id = ?").run(status, typeof payload.error === "string" ? payload.error : null, now, invocationId);
+      this.database.prepare("UPDATE capability_invocations SET status = ?, error = ?, outcome_unknown_reason = ?, updated_at = ? WHERE invocation_id = ?").run(
+        status,
+        typeof payload.error === "string" ? payload.error : typeof payload.reason === "string" ? payload.reason : null,
+        status === "unknown" && isToolOutcomeUnknownReason(payload.outcomeUnknownReason) ? payload.outcomeUnknownReason : null,
+        now,
+        invocationId
+      );
       return this.requireInvocation(invocationId);
     });
   }
@@ -483,6 +796,12 @@ export class CapabilityStore {
   }
 
   private toInvocation(row: InvocationRow): CapabilityInvocation {
+    const invocation = this.toInvocationRecord(row);
+    delete invocation.requestHash;
+    return invocation;
+  }
+
+  private toInvocationRecord(row: InvocationRow): CapabilityInvocationRecord {
     const chunks = this.database.prepare("SELECT invocation_id, chunk_index, data_json, final, created_at FROM capability_invocation_chunks WHERE invocation_id = ? ORDER BY chunk_index ASC").all(stringValue(row.invocation_id)) as unknown as ChunkRow[];
     return {
       invocationId: stringValue(row.invocation_id),
@@ -492,9 +811,12 @@ export class CapabilityStore {
       turnId: optionalString(row.turn_id),
       toolCallId: optionalString(row.tool_call_id),
       status: invocationStatus(row.status),
+      dispatchState: dispatchState(row.dispatch_state),
       request: parse(row.request_json),
+      requestHash: optionalString(row.request_hash),
       result: parseOptional(row.result_json),
       error: optionalString(row.error),
+      outcomeUnknownReason: optionalToolOutcomeUnknownReason(row.outcome_unknown_reason),
       chunks: chunks.map(toChunk),
       createdAt: stringValue(row.created_at),
       updatedAt: stringValue(row.updated_at)
@@ -623,6 +945,11 @@ function invocationStatus(value: unknown): CapabilityInvocationStatus {
   throw new Error("Invalid capability invocation status: " + String(value));
 }
 
+function dispatchState(value: unknown): CapabilityDispatchState {
+  if (value === "not_dispatched" || value === "dispatched") return value;
+  throw new Error("Invalid capability dispatch state: " + String(value));
+}
+
 function assertInvocationCanFinish(status: CapabilityInvocationStatus, invocationId: string): void {
   if (status !== "running") throw new Error(`Capability invocation ${invocationId} cannot finish from status ${status}.`);
 }
@@ -640,4 +967,62 @@ function isAllowedInvocationTransition(from: CapabilityInvocationStatus, to: Cap
 
 function redactText(value: string): string {
   return value.replace(/(api.?key|token|secret|password|authorization|cookie)\s*[:=]\s*[^\s,;]+/giu, "$1=[REDACTED]");
+}
+
+function requestIdentityHash(value: unknown): string {
+  return createHash("sha256").update(canonicalJson(value)).digest("hex");
+}
+
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map((item) => canonicalJson(item)).join(",")}]`;
+  if (value !== null && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    return `{${Object.keys(record).filter((key) => record[key] !== undefined).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`).join(",")}}`;
+  }
+  const serialized = JSON.stringify(value);
+  if (serialized === undefined) throw new Error("Capability request cannot be serialized as JSON.");
+  return serialized;
+}
+
+function containsRedactedValue(value: unknown): boolean {
+  if (value === "[REDACTED]") return true;
+  if (Array.isArray(value)) return value.some(containsRedactedValue);
+  if (!value || typeof value !== "object") return false;
+  return Object.values(value).some(containsRedactedValue);
+}
+
+function invocationIdForOffer(registrationId: string, offerId: string): string {
+  const identity = createHash("sha256").update(registrationId).update("\0").update(offerId).digest("hex");
+  return `capability-invocation:${identity}`;
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof Error && error.name === "AbortError";
+}
+
+function abortUnknownReason(signal: AbortSignal | undefined): ToolOutcomeUnknownReason {
+  const abortReason = signal?.reason;
+  const reason = typeof abortReason === "object" && abortReason !== null && "reason" in abortReason
+    ? (abortReason as { reason?: unknown }).reason
+    : abortReason;
+  if (reason === "paused" || reason === "interrupted" || reason === "replaced" || reason === "cancelled" || reason === "host_shutdown") return reason;
+  return "cancelled";
+}
+
+function isToolOutcomeUnknownReason(value: unknown): value is ToolOutcomeUnknownReason {
+  return value === "host_restarted"
+    || value === "host_shutdown"
+    || value === "timeout"
+    || value === "interrupted"
+    || value === "replaced"
+    || value === "cancelled"
+    || value === "paused"
+    || value === "result_persistence_failed"
+    || value === "unsettled_previous_invocation"
+    || value === "operation_identity_ambiguous"
+    || value === "transport_error";
+}
+
+function optionalToolOutcomeUnknownReason(value: unknown): ToolOutcomeUnknownReason | undefined {
+  return isToolOutcomeUnknownReason(value) ? value : undefined;
 }

@@ -22,6 +22,7 @@ import {
   type FileSnapshot
 } from "../tools/file/safeFileIo.js";
 import { readToolResultToolName } from "../tools/file/readToolResult.js";
+import { CapabilityInvocationCancelledError, CapabilityOutcomeUnknownError } from "../runtime/CapabilityStore.js";
 import { DiagnosticsRunner, formatDiagnostics } from "../tools/diagnostics.js";
 import { HookRunner } from "../tools/hooks.js";
 import { validateJsonSchema } from "../tools/schema.js";
@@ -33,11 +34,13 @@ import type {
   ToolExecutionResultStatus,
   ToolExecutionState,
   ToolRetrySafety,
+  ToolOutcomeUnknownReason,
   ToolInputDisplay,
   RunnableToolExecution,
   ToolRisk,
   ToolSource
 } from "../tools/types.js";
+import { ToolOutcomeUnknownError } from "../tools/types.js";
 import { createToolOperationId } from "../tools/types.js";
 import { resolveWorkspacePath, toWorkspaceRelative } from "../workspace/resolvePath.js";
 import type { ReasoningBlock, SessionEvent } from "../session/recorder.js";
@@ -57,6 +60,7 @@ interface ToolExecutionOutcome {
   errorMessage?: string;
   permissionRequest?: AgentPermissionRequest;
   executionStatus?: ToolExecutionResultStatus;
+  outcomeUnknownReason?: ToolOutcomeUnknownReason;
   evidence?: string;
 }
 
@@ -397,7 +401,11 @@ export class ToolExecutionCoordinator {
       if (state === "unknown") this.uncertainExecutions.set(operationId, call.name);
       else this.uncertainExecutions.delete(operationId);
     };
-    const persistState = async (state: ToolExecutionState, evidence?: string): Promise<void> => {
+    const persistState = async (
+      state: ToolExecutionState,
+      evidence?: string,
+      outcomeUnknownReason?: ToolOutcomeUnknownReason
+    ): Promise<void> => {
       updateState(state, evidence);
       await this.recordAndFlush({
         type: "tool_execution",
@@ -407,10 +415,11 @@ export class ToolExecutionCoordinator {
         operationId,
         state,
         evidence: latestEvidence,
+        outcomeUnknownReason,
         retrySafety
       });
     };
-    const recordState = (state: ToolExecutionState, evidence?: string): void => {
+    const recordState = (state: ToolExecutionState, evidence?: string, outcomeUnknownReason?: ToolOutcomeUnknownReason): void => {
       updateState(state, evidence);
       void this.recordAndFlush({
         type: "tool_execution",
@@ -420,6 +429,7 @@ export class ToolExecutionCoordinator {
         operationId,
         state,
         evidence: latestEvidence,
+        outcomeUnknownReason,
         retrySafety
       }).catch(() => undefined);
     };
@@ -432,7 +442,8 @@ export class ToolExecutionCoordinator {
       result: unknown,
       errorMessage?: string,
       executionStatus?: ToolExecutionResultStatus,
-      auditOnly = false
+      auditOnly = false,
+      outcomeUnknownReason?: ToolOutcomeUnknownReason
     ): Promise<unknown> => {
       if (finishPromise) return finishPromise;
       if (committedChange && typeof result === "object" && result !== null && !Array.isArray(result)) {
@@ -442,7 +453,9 @@ export class ToolExecutionCoordinator {
       finishPromise = (async () => {
         const neverStarted = latestState === "not_started";
         const terminalState = executionStateForResultStatus(status);
-        if (latestState !== terminalState) await persistState(terminalState, latestEvidence);
+        if (latestState !== terminalState || status === "unknown" && outcomeUnknownReason !== undefined) {
+          await persistState(terminalState, latestEvidence, outcomeUnknownReason);
+        }
         if (budgetAdmitted) {
           const fingerprint = actionFingerprint(call);
           const pending = Math.max(0, (this.pendingActionCounts.get(fingerprint) ?? 1) - 1);
@@ -472,13 +485,14 @@ export class ToolExecutionCoordinator {
         return await this.finishSyntheticCall(
           call,
           sequence,
-          exposeExecutionMetadata(result, status, operationId, latestEvidence),
+          exposeExecutionMetadata(result, status, operationId, latestEvidence, outcomeUnknownReason),
           errorMessage,
           {
             executionStatus: status,
             operationId,
             evidence: latestEvidence,
-            auditOnly: auditOnly || neverStarted && status === "cancelled"
+            auditOnly: auditOnly || neverStarted && status === "cancelled",
+            outcomeUnknownReason
           }
         );
       })();
@@ -652,6 +666,15 @@ export class ToolExecutionCoordinator {
               );
             }
           });
+          if (outcome.outcomeUnknownReason !== undefined) {
+            return await finish(
+              outcome.result,
+              outcome.errorMessage,
+              "unknown",
+              false,
+              outcome.outcomeUnknownReason
+            );
+          }
           const diagnosed = await this.attachDiagnostics(toolDefinition.risk, prepared.args, outcome.result, outcome.errorMessage, signal);
           const hooked = await this.attachAfterToolHooks(call.name, prepared.args, diagnosed, signal);
           return await finish(
@@ -684,6 +707,7 @@ export class ToolExecutionCoordinator {
     errorMessage: string | undefined,
     metadata: {
       executionStatus?: ToolExecutionResultStatus;
+      outcomeUnknownReason?: ToolOutcomeUnknownReason;
       recovered?: boolean;
       operationId?: string;
       evidence?: string;
@@ -701,6 +725,7 @@ export class ToolExecutionCoordinator {
       toolCallId: call.id,
       sequence,
       executionStatus: metadata.executionStatus,
+      outcomeUnknownReason: metadata.outcomeUnknownReason,
       recovered: metadata.recovered,
       operationId: metadata.operationId,
       evidence: metadata.evidence,
@@ -724,7 +749,13 @@ export class ToolExecutionCoordinator {
     call: { id: string; name: string },
     result: unknown,
     errorMessage?: string,
-    metadata: { executionStatus?: ToolExecutionResultStatus; recovered?: boolean; operationId?: string; evidence?: string } = {}
+    metadata: {
+      executionStatus?: ToolExecutionResultStatus;
+      outcomeUnknownReason?: ToolOutcomeUnknownReason;
+      recovered?: boolean;
+      operationId?: string;
+      evidence?: string;
+    } = {}
   ): void {
     const durationMs = resultNumber(result, "durationMs");
     const error = metadata.executionStatus === "unknown" || metadata.executionStatus === "cancelled"
@@ -739,6 +770,7 @@ export class ToolExecutionCoordinator {
         result,
         durationMs,
         executionStatus: metadata.executionStatus,
+        outcomeUnknownReason: metadata.outcomeUnknownReason,
         recovered: metadata.recovered,
         operationId: metadata.operationId,
         evidence: metadata.evidence
@@ -752,6 +784,7 @@ export class ToolExecutionCoordinator {
       result,
       durationMs,
       executionStatus: metadata.executionStatus,
+      outcomeUnknownReason: metadata.outcomeUnknownReason,
       recovered: metadata.recovered,
       operationId: metadata.operationId,
       evidence: metadata.evidence
@@ -1036,6 +1069,8 @@ export class ToolExecutionCoordinator {
   ): Promise<ToolExecutionOutcome> {
     const startedAt = Date.now();
     let executionPromise: Promise<unknown> | undefined;
+    let externalExecutionPromise: Promise<unknown> | undefined;
+    let externalExecutionSettled = true;
     let executionStarted = false;
     let latestExecutionState: ToolExecutionState = "running";
     let committedChange: CommittedFileChange | undefined;
@@ -1047,28 +1082,43 @@ export class ToolExecutionCoordinator {
       signal?.throwIfAborted();
       executionStarted = true;
       onStarted?.();
-      const executeWithSignal = (executionSignal?: AbortSignal): Promise<unknown> => execution.execute({
-        deniedPaths: this.permissionManager.getDeniedPaths(),
-        toolCallId: call.id,
-        operationId: operationId ?? createToolOperationId(this.context.recorder.sessionId, call.id),
-        sessionId: this.context.recorder.sessionId,
-        runId: this.context.runId,
-        turnId: this.context.turnId,
-        signal: executionSignal,
-        onUpdate: (update) => {
-          if (!executionSignal?.aborted) this.emit({ type: "tool.progress", toolCallId: call.id, tool: call.name, update });
-        },
-        onExecutionState: reportExecutionState,
-        onFileChangeCommitted: async (change) => {
-          // 解析会复制记录，防止扩展在 await 期间修改同一对象，令返回结果与落盘证据分叉。
-          const snapshot = parseFileChange(change);
-          if (!snapshot) throw new FileChangeUncertainError("Invalid file commit evidence after a possible side effect.");
-          await onFileChangeCommitted?.(snapshot);
-          committedChange = snapshot;
-          latestExecutionState = "side_effect_committed";
-        },
-        approvedFile
-      });
+      const executeWithSignal = (executionSignal?: AbortSignal, onDispatched?: () => void): Promise<unknown> => {
+        let pending: Promise<unknown>;
+        try {
+          pending = execution.execute({
+            deniedPaths: this.permissionManager.getDeniedPaths(),
+            toolCallId: call.id,
+            operationId: operationId ?? createToolOperationId(this.context.recorder.sessionId, call.id),
+            sessionId: this.context.recorder.sessionId,
+            runId: this.context.runId,
+            turnId: this.context.turnId,
+            signal: executionSignal,
+            onDispatched,
+            onUpdate: (update) => {
+              if (!executionSignal?.aborted) this.emit({ type: "tool.progress", toolCallId: call.id, tool: call.name, update });
+            },
+            onExecutionState: reportExecutionState,
+            onFileChangeCommitted: async (change) => {
+              // 解析会复制记录，防止扩展在 await 期间修改同一对象，令返回结果与落盘证据分叉。
+              const snapshot = parseFileChange(change);
+              if (!snapshot) throw new FileChangeUncertainError("Invalid file commit evidence after a possible side effect.");
+              await onFileChangeCommitted?.(snapshot);
+              committedChange = snapshot;
+              latestExecutionState = "side_effect_committed";
+            },
+            approvedFile
+          });
+        } catch (error) {
+          pending = Promise.reject(error);
+        }
+        externalExecutionPromise = pending;
+        externalExecutionSettled = false;
+        void pending.then(
+          () => { externalExecutionSettled = true; },
+          () => { externalExecutionSettled = true; }
+        );
+        return pending;
+      };
       executionPromise = (source === "mcp" || source === "plugin") && this.context.capabilities
         ? this.context.capabilities.executeHostCapability({
           capabilityName: `host:${source}:${call.name}`,
@@ -1078,7 +1128,8 @@ export class ToolExecutionCoordinator {
           turnId: this.context.turnId,
           toolCallId: call.id,
           offerId: operationId,
-          request: call.args ?? {}
+          request: call.args ?? {},
+          dispatchBoundary: source === "mcp" ? "reported" : undefined
         }, executeWithSignal, signal)
         : executeWithSignal(signal);
       // Built-ins own a real cancellation contract, so their scheduler resources
@@ -1103,8 +1154,38 @@ export class ToolExecutionCoordinator {
         evidence: executionFailure
       };
     } catch (error) {
+      if (error instanceof CapabilityInvocationCancelledError) {
+        if (externalExecutionPromise && !externalExecutionSettled) {
+          this.context.quarantineExternalTool?.(call.name, call.id, externalExecutionPromise);
+        }
+        const message = formatToolError(call.name, error);
+        reportExecutionState("cancelled", message);
+        return {
+          result: { status: "cancelled", error: message, durationMs: Date.now() - startedAt },
+          errorMessage: message,
+          executionStatus: "cancelled",
+          evidence: message
+        };
+      }
+      if (error instanceof CapabilityOutcomeUnknownError || error instanceof ToolOutcomeUnknownError) {
+        if (externalExecutionPromise && !externalExecutionSettled) {
+          this.context.quarantineExternalTool?.(call.name, call.id, externalExecutionPromise);
+        }
+        const message = formatToolError(call.name, error);
+        return {
+          result: {
+            status: "unknown",
+            error: message,
+            durationMs: Date.now() - startedAt
+          },
+          errorMessage: message,
+          executionStatus: "unknown",
+          outcomeUnknownReason: error.reason,
+          evidence: message
+        };
+      }
       if (error instanceof ExternalToolQuarantineError && executionPromise) {
-        this.context.quarantineExternalTool?.(call.name, call.id, executionPromise);
+        this.context.quarantineExternalTool?.(call.name, call.id, externalExecutionPromise ?? executionPromise);
         const message = `Tool ${call.name} was aborted, but its external ${source} execution did not settle within ${String(externalToolAbortDrainMs)}ms. This agent session is quarantined until that execution settles, so later operations cannot overlap its possible side effects.`;
         reportExecutionState("unknown", message);
         return {
@@ -1386,7 +1467,8 @@ function exposeExecutionMetadata(
   result: unknown,
   status: ToolExecutionResultStatus,
   operationId: string,
-  evidence: string | undefined
+  evidence: string | undefined,
+  outcomeUnknownReason?: ToolOutcomeUnknownReason
 ): unknown {
   if (status === "succeeded" || status === "failed" || status === "cancelled") return result;
   if (typeof result === "object" && result !== null && !Array.isArray(result)) {
@@ -1394,10 +1476,11 @@ function exposeExecutionMetadata(
       ...(result as Record<string, unknown>),
       executionStatus: status,
       operationId,
-      evidence
+      evidence,
+      outcomeUnknownReason
     };
   }
-  return { result, executionStatus: status, operationId, evidence };
+  return { result, executionStatus: status, operationId, evidence, outcomeUnknownReason };
 }
 
 function formatToolError(toolName: string, error: unknown): string {

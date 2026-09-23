@@ -11,7 +11,7 @@
 import path from "node:path";
 import { parseFileChange, type CommittedFileChange } from "../tools/file/fileChange.js";
 import type { AgentMessage, AgentReasoningContent, ModelRequestMetrics } from "../agent/core/types.js";
-import { createToolOperationId, type ToolExecutionState } from "../tools/types.js";
+import { createToolOperationId, type ToolExecutionState, type ToolOutcomeUnknownReason } from "../tools/types.js";
 import { readSessionEvents, readStoredSessionEvents } from "./events.js";
 import { activeSessionEventsForPath, sessionMessageTree, type SessionMessageNode, type SessionMessageReference } from "./messageTree.js";
 import type { ReasoningBlock, SessionContextCheckpoint, SessionContextState, SessionContextUsage, SessionEvent, SessionUsage } from "./recorder.js";
@@ -246,6 +246,7 @@ interface RecoveryLedgerEntry {
   sequence?: number;
   operationId: string;
   state?: ToolExecutionState;
+  outcomeUnknownReason?: ToolOutcomeUnknownReason;
   evidence?: string;
   lifecycleSeen: boolean;
   hasResult: boolean;
@@ -351,6 +352,7 @@ function interruptedToolResults(events: SessionEvent[], options: SessionReplayOp
       }
       found[1].operationId = event.operationId;
       found[1].state = event.state;
+      found[1].outcomeUnknownReason = event.outcomeUnknownReason ?? found[1].outcomeUnknownReason;
       found[1].evidence = event.evidence;
       found[1].lifecycleSeen = true;
       found[1].active = true;
@@ -408,7 +410,8 @@ function interruptedToolResults(events: SessionEvent[], options: SessionReplayOp
         recovered: true,
         auditOnly: true,
         evidence: call.evidence,
-        result: { status: "skipped", interrupted: true, recovered: true, executionStatus: "cancelled", operationId, evidence: call.evidence }
+        outcomeUnknownReason: call.outcomeUnknownReason,
+        result: { status: "skipped", interrupted: true, recovered: true, executionStatus: "cancelled", operationId, evidence: call.evidence, outcomeUnknownReason: call.outcomeUnknownReason }
       });
       continue;
     }
@@ -433,9 +436,10 @@ function interruptedToolResults(events: SessionEvent[], options: SessionReplayOp
       sequence: call.sequence,
       operationId,
       executionStatus,
+      outcomeUnknownReason: call.outcomeUnknownReason,
       recovered: true,
       evidence: call.evidence,
-      result
+      result: typeof result === "object" && result !== null ? { ...result, outcomeUnknownReason: call.outcomeUnknownReason } : result
     });
   }
   return { results, discarded };

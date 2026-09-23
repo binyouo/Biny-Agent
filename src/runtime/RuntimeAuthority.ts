@@ -14,7 +14,7 @@ import { readSessionEvents } from "../session/events.js";
 import type { SessionEvent } from "../session/recorder.js";
 import { assertRuntimeEventSequence, validateRuntimeEventStream, type RuntimeEventIdentity, type RuntimeEventSink } from "../session/runtimeEvent.js";
 
-const schemaVersion = 7;
+const schemaVersion = 9;
 const busyTimeoutMs = 5_000;
 const defaultPageSize = 100;
 const maxPageSize = 1_000;
@@ -934,11 +934,15 @@ export class RuntimeEventAuthority implements RuntimeEventSink {
             tool_call_id TEXT,
             status TEXT NOT NULL,
             request_json TEXT NOT NULL,
+            request_hash TEXT,
+            dispatch_state TEXT NOT NULL DEFAULT 'dispatched',
             result_json TEXT,
             error TEXT,
+            outcome_unknown_reason TEXT,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
           );
+          CREATE INDEX IF NOT EXISTS capability_invocations_offer_idx ON capability_invocations (registration_id, offer_id);
           CREATE TABLE IF NOT EXISTS capability_invocation_chunks (
             invocation_id TEXT NOT NULL REFERENCES capability_invocations(invocation_id) ON DELETE CASCADE,
             chunk_index INTEGER NOT NULL,
@@ -1072,6 +1076,29 @@ export class RuntimeEventAuthority implements RuntimeEventSink {
             this.database.exec("ALTER TABLE graphs DROP COLUMN supervisor_run_id");
           }
           this.database.exec("PRAGMA user_version = 7");
+        });
+        currentRevision = 7;
+      }
+      if (currentRevision < 8) {
+        this.transaction(() => {
+          if (!this.hasColumn("capability_invocations", "request_hash")) {
+            this.database.exec("ALTER TABLE capability_invocations ADD COLUMN request_hash TEXT");
+          }
+          if (!this.hasColumn("capability_invocations", "outcome_unknown_reason")) {
+            this.database.exec("ALTER TABLE capability_invocations ADD COLUMN outcome_unknown_reason TEXT");
+          }
+          this.database.exec("CREATE INDEX IF NOT EXISTS capability_invocations_offer_idx ON capability_invocations (registration_id, offer_id)");
+          this.database.exec("PRAGMA user_version = 8");
+        });
+        currentRevision = 8;
+      }
+      if (currentRevision < 9) {
+        this.transaction(() => {
+          if (!this.hasColumn("capability_invocations", "dispatch_state")) {
+            // 旧版本没有派发边界证据，沿用保守解释：在途记录可能已到达外部执行器。
+            this.database.exec("ALTER TABLE capability_invocations ADD COLUMN dispatch_state TEXT NOT NULL DEFAULT 'dispatched'");
+          }
+          this.database.exec("PRAGMA user_version = 9");
         });
       }
     }

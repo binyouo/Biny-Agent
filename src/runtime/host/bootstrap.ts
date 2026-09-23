@@ -9,6 +9,8 @@ import { globalAgentDir, globalConfigDir } from "../../config/paths.js";
 import type { InteractiveAgentHost } from "../InteractiveAgentRuntime.js";
 import { RuntimeHostServer } from "./server.js";
 import { issueRuntimeHostAccessCredential } from "./credentials.js";
+import { CapabilityStore } from "../CapabilityStore.js";
+import { RuntimeEventAuthority } from "../RuntimeAuthority.js";
 import {
   acquireHostLock,
   ensureRuntimeHostDirectory,
@@ -51,12 +53,25 @@ export async function startRuntimeHost(
   const resourceRegistry = new RuntimeHostResourceRegistry();
   try {
     await removeSocketIfStale(paths.endpoint);
+    // 拿到 workspace 独占锁后先终结上个 owner 留下的在途调用；新 Runtime 接收请求前，
+    // 任何旧 offer 重放都必须看到明确的 unknown，而不能被当作一次新执行。
+    const authority = await RuntimeEventAuthority.open(persistenceRoot, { backfillLegacySessions: false });
+    try {
+      const capabilities = await CapabilityStore.open(persistenceRoot, authority);
+      try {
+        capabilities.recoverUnsettledInvocations("host_restarted");
+      } finally {
+        capabilities.close();
+      }
+    } finally {
+      authority.close();
+    }
     initial = await createInitialRuntime(resourceRegistry);
     server = new RuntimeHostServer(initial.runtime, initial.commands, registration, lock, options.createRuntime, {
       workspaceRoot: options.workspaceRoot,
-      maxSessionRuntimes: options.maxSessionRuntimes,
-      maxConcurrentRuns: options.maxConcurrentRuns,
+      sessionRuntimeCacheTarget: options.sessionRuntimeCacheTarget,
       shutdownDrainMs: options.shutdownDrainMs,
+      onClosing: options.onClosing,
       resourceRegistry
     });
     await server.initialize();
