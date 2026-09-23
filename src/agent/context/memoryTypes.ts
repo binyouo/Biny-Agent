@@ -108,6 +108,10 @@ export interface MemoryMutationOptions extends MemoryReadOptions {
   now?: Date;
   /** 归档审计来源；Sleep 使用 run id，手动归档默认 manual。 */
   archivedBy?: string;
+  /** Sleep 的共享执行权；手工事实操作不受 Sleep 执行权约束。 */
+  sleepOwnerToken?: string;
+  /** 跨异步步骤的 Sleep 决定必须仍基于这些活动条目的原版本。 */
+  expectedEntries?: readonly MemoryEntry[];
 }
 
 export interface MemoryListOptions extends MemoryReadOptions {
@@ -281,7 +285,7 @@ export interface MemorySleepRun {
   archivedOrphan: number;
   archivedSimilarity: number;
   archivedLlm: number;
-  /** 本轮 Sleep 中模型提出、但最终未能落库的合成条目数；归档照常发生时就是净信息损失。 */
+  /** 本轮 Sleep 中模型提出、但最终未能落库的合成条目数。 */
   synthesisFailed: number;
   inputTokens: number;
   outputTokens: number;

@@ -48,6 +48,20 @@ const memorySchemaVersion = 6;
 const sqliteBusyTimeoutMs = 5_000;
 const memoryRootName = "memory";
 const maxMaintenanceErrorChars = 2_000;
+const sleepOwnerKey = "sleep_owner";
+const sleepOwnerLeaseMs = 60_000;
+
+export class SleepOwnerLostError extends Error {
+  constructor() {
+    super("Sleep owner lease was lost.");
+  }
+}
+
+export class StaleMemoryDecisionError extends Error {
+  constructor() {
+    super("Sleep decision is stale because a source or survivor changed.");
+  }
+}
 
 const memoryMetadataSchema = z.object({
   source: z.string().default("manual"),
@@ -157,6 +171,11 @@ interface SleepRunDbRow {
   error: unknown;
 }
 
+interface SleepOwner {
+  token: string;
+  expiresAt: number;
+}
+
 export class MemoryStorage {
   private database: DatabaseSync | undefined;
   private databaseOpening: Promise<DatabaseSync | undefined> | undefined;
@@ -257,6 +276,8 @@ export class MemoryStorage {
     options.signal?.throwIfAborted();
     const safe = sanitizeMemoryEntryInput(input);
     return await this.withWrite(options.signal, (database) => {
+      assertSleepOwner(database, options.sleepOwnerToken);
+      assertExpectedEntries(database, options.expectedEntries);
       const revision = readRevision(database);
       if (!safe.content.length) return { written: false, revision };
       const duplicate = readMemoryEntries(database).find((entry) => (
@@ -401,12 +422,17 @@ export class MemoryStorage {
     options.signal?.throwIfAborted();
     const uniqueIds = [...new Set(ids)];
     return await this.withWrite(options.signal, (database) => {
+      assertSleepOwner(database, options.sleepOwnerToken);
+      assertExpectedEntries(database, options.expectedEntries);
       const revision = readRevision(database);
       if (!uniqueIds.length) return { entries: [], archived: 0, revision };
       const active = readMemoryEntries(database).filter((entry) => (
         entry.archivedAt === undefined && uniqueIds.includes(entry.id)
       ));
       if (!active.length) return { entries: [], archived: 0, revision };
+      if (options.expectedEntries && options.mergedInto && !findActiveMemoryEntry(database, options.mergedInto)) {
+        throw new StaleMemoryDecisionError();
+      }
       const now = (options.now ?? new Date()).toISOString();
       const nextRevision = revision + 1;
       const entries = active.map((existing) => {
@@ -440,6 +466,7 @@ export class MemoryStorage {
   async purgeArchivedEntries(retentionDays: number, options: MemoryMutationOptions = {}): Promise<{ deleted: number; revision: number }> {
     options.signal?.throwIfAborted();
     return await this.withWrite(options.signal, (database) => {
+      assertSleepOwner(database, options.sleepOwnerToken);
       const revision = readRevision(database);
       const cutoff = (options.now ?? new Date()).getTime()
         - Math.max(1, Math.trunc(retentionDays)) * 86_400_000;
@@ -506,30 +533,43 @@ export class MemoryStorage {
     options.signal?.throwIfAborted();
     const database = await this.openDatabase(false);
     if (database === undefined) return emptyMaintenanceStatus();
-    const row = database.prepare("SELECT * FROM memory_maintenance WHERE id = 1").get() as MaintenanceDbRow | undefined;
-    if (!row) {
-      const sleepRuns = readSleepRuns(database);
-      return { ...emptyMaintenanceStatus(), sleepRuns: sleepRuns.length ? sleepRuns : undefined };
-    }
-    const state = memoryStateSchema.safeParse({
-      state: row.state,
-      startedAt: optionalTimeValue(row.started_at),
-      lastScanAt: optionalTimeValue(row.last_scan_at),
-      lastFinishedAt: optionalTimeValue(row.last_finished_at),
-      eligible: safeCounter(row.eligible),
-      processed: safeCounter(row.processed),
-      written: safeCounter(row.written),
-      failed: safeCounter(row.failed),
-      error: optionalString(row.error)
+    return readMaintenanceStatusFromDb(database);
+  }
+
+  /** 共享事实库上的执行权；长模型请求期间由 owner 定期续期。 */
+  async acquireSleepOwner(token: string, signal?: AbortSignal): Promise<MemoryMaintenanceStatus> {
+    return await this.withWrite(signal, (database) => {
+      const owner = readSleepOwner(database);
+      if (owner && owner.expiresAt > Date.now()) throw new Error("Sleep already in progress in the shared memory store.");
+      // 执行权与历史快照在同一事务中取得，避免把另一实例刚完成的 run 写回 running。
+      const status = recoverInterruptedMaintenanceStatusInTransaction(database, owner);
+      writeSleepOwner(database, { token, expiresAt: Date.now() + sleepOwnerLeaseMs });
+      return status;
     });
-    if (!state.success) throw new Error("Invalid memory maintenance status.");
-    const lastRun = parseSleepRun(row.last_run_json);
-    const sleepRuns = readSleepRuns(database);
-    return {
-      ...state.data,
-      lastRun,
-      sleepRuns: sleepRuns.length ? sleepRuns : undefined
-    };
+  }
+
+  async renewSleepOwner(token: string): Promise<void> {
+    await this.withWrite(undefined, (database) => {
+      assertSleepOwner(database, token);
+      writeSleepOwner(database, { token, expiresAt: Date.now() + sleepOwnerLeaseMs });
+    });
+  }
+
+  async releaseSleepOwner(token: string): Promise<void> {
+    await this.withWrite(undefined, (database) => {
+      if (readSleepOwner(database)?.token === token) database.prepare("DELETE FROM memory_meta WHERE key = ?").run(sleepOwnerKey);
+    });
+  }
+
+  /** 只有 owner 已失效，才把遗留的 running 审计改成 interrupted。 */
+  async recoverInterruptedMaintenanceStatus(signal?: AbortSignal): Promise<MemoryMaintenanceStatus> {
+    const current = await this.readMaintenanceStatus({ signal });
+    if (current.state !== "running" && current.lastRun?.status !== "running"
+      && !current.sleepRuns?.some((run) => run.status === "running")) return current;
+    return await this.withWrite(signal, (database) => {
+      const owner = readSleepOwner(database);
+      return recoverInterruptedMaintenanceStatusInTransaction(database, owner);
+    });
   }
 
   async importSleepRun(run: MemorySleepRun, signal?: AbortSignal): Promise<boolean> {
@@ -545,31 +585,12 @@ export class MemoryStorage {
     });
   }
 
-  async writeMaintenanceStatus(status: MemoryMaintenanceStatus, signal?: AbortSignal): Promise<void> {
+  async writeMaintenanceStatus(status: MemoryMaintenanceStatus, signal?: AbortSignal, sleepOwnerToken?: string): Promise<void> {
     signal?.throwIfAborted();
     const safe = sanitizeMaintenanceStatus(status);
     await this.withWrite(signal, (database) => {
-      database.prepare(
-        "INSERT INTO memory_maintenance (id, state, started_at, last_scan_at, last_finished_at, eligible, processed, written, failed, error, last_run_json) " +
-        "VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) " +
-        "ON CONFLICT(id) DO UPDATE SET state = excluded.state, started_at = excluded.started_at, " +
-        "last_scan_at = excluded.last_scan_at, last_finished_at = excluded.last_finished_at, " +
-        "eligible = excluded.eligible, processed = excluded.processed, written = excluded.written, " +
-        "failed = excluded.failed, error = excluded.error, last_run_json = excluded.last_run_json"
-      ).run(
-        safe.state,
-        safe.startedAt ?? null,
-        safe.lastScanAt ?? null,
-        safe.lastFinishedAt ?? null,
-        safe.eligible,
-        safe.processed,
-        safe.written,
-        safe.failed,
-        safe.error ?? null,
-        safe.lastRun === undefined ? null : JSON.stringify(safe.lastRun)
-      );
-      // 状态快照可能只包含最近的运行，未包含的历史不应因此被删除。
-      for (const run of safe.sleepRuns ?? []) insertSleepRun(database, run);
+      assertSleepOwner(database, sleepOwnerToken, true);
+      writeMaintenanceStatusRow(database, safe);
     });
   }
 
@@ -792,6 +813,118 @@ function runTransaction<T>(
     }
     throw error;
   }
+}
+
+function readSleepOwner(database: DatabaseSync): SleepOwner | undefined {
+  const row = database.prepare("SELECT value FROM memory_meta WHERE key = ?").get(sleepOwnerKey) as { value?: unknown } | undefined;
+  if (!row) return undefined;
+  const value: unknown = JSON.parse(String(row.value));
+  if (typeof value !== "object" || value === null || !("token" in value) || !("expiresAt" in value)
+    || typeof value.token !== "string" || !value.token || typeof value.expiresAt !== "number" || !Number.isSafeInteger(value.expiresAt)) {
+    throw new Error("Invalid Sleep owner lease.");
+  }
+  return { token: value.token, expiresAt: value.expiresAt };
+}
+
+function writeSleepOwner(database: DatabaseSync, owner: SleepOwner): void {
+  database.prepare(
+    "INSERT INTO memory_meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+  ).run(sleepOwnerKey, JSON.stringify(owner));
+}
+
+function assertSleepOwner(database: DatabaseSync, token?: string, rejectUnownedWrite = false): void {
+  if (token === undefined && !rejectUnownedWrite) return;
+  const owner = readSleepOwner(database);
+  if (token === undefined) {
+    if (rejectUnownedWrite && owner && owner.expiresAt > Date.now()) throw new SleepOwnerLostError();
+    return;
+  }
+  if (!owner || owner.token !== token || owner.expiresAt <= Date.now()) throw new SleepOwnerLostError();
+}
+
+function findActiveMemoryEntry(database: DatabaseSync, id: string): MemoryEntry | undefined {
+  const row = database.prepare("SELECT * FROM memories WHERE id = ?").get(id) as MemoryDbRow | undefined;
+  return row === undefined ? undefined : memoryFromRow(row);
+}
+
+function assertExpectedEntries(database: DatabaseSync, expected?: readonly MemoryEntry[]): void {
+  for (const snapshot of expected ?? []) {
+    const current = findActiveMemoryEntry(database, snapshot.id);
+    if (!current || current.revision !== snapshot.revision || current.content !== snapshot.content) {
+      throw new StaleMemoryDecisionError();
+    }
+  }
+}
+
+function readMaintenanceStatusFromDb(database: DatabaseSync): MemoryMaintenanceStatus {
+  const row = database.prepare("SELECT * FROM memory_maintenance WHERE id = 1").get() as MaintenanceDbRow | undefined;
+  if (!row) {
+    const sleepRuns = readSleepRuns(database);
+    return { ...emptyMaintenanceStatus(), sleepRuns: sleepRuns.length ? sleepRuns : undefined };
+  }
+  const state = memoryStateSchema.safeParse({
+    state: row.state,
+    startedAt: optionalTimeValue(row.started_at),
+    lastScanAt: optionalTimeValue(row.last_scan_at),
+    lastFinishedAt: optionalTimeValue(row.last_finished_at),
+    eligible: safeCounter(row.eligible),
+    processed: safeCounter(row.processed),
+    written: safeCounter(row.written),
+    failed: safeCounter(row.failed),
+    error: optionalString(row.error)
+  });
+  if (!state.success) throw new Error("Invalid memory maintenance status.");
+  const lastRun = parseSleepRun(row.last_run_json);
+  const sleepRuns = readSleepRuns(database);
+  return { ...state.data, lastRun, sleepRuns: sleepRuns.length ? sleepRuns : undefined };
+}
+
+function recoverInterruptedMaintenanceStatusInTransaction(database: DatabaseSync, owner?: SleepOwner): MemoryMaintenanceStatus {
+  const loaded = readMaintenanceStatusFromDb(database);
+  if (owner && owner.expiresAt > Date.now()) return loaded;
+  const hasInterruptedRun = loaded.state === "running" || loaded.lastRun?.status === "running"
+    || loaded.sleepRuns?.some((run) => run.status === "running");
+  if (!hasInterruptedRun) return loaded;
+  const finishedAt = new Date().toISOString();
+  const interrupted = (run: MemorySleepRun): MemorySleepRun => ({ ...run, status: "failed", finishedAt, error: "interrupted" });
+  const lastRun = loaded.lastRun?.status === "running" ? interrupted(loaded.lastRun) : loaded.lastRun;
+  const history = [...(loaded.sleepRuns ?? [])];
+  if (lastRun && !history.some((run) => run.id === lastRun.id)) history.push(lastRun);
+  const recovered: MemoryMaintenanceStatus = {
+    ...loaded,
+    state: "idle",
+    lastFinishedAt: finishedAt,
+    error: "interrupted",
+    lastRun,
+    sleepRuns: history.map((run) => run.status === "running" ? interrupted(run) : run)
+  };
+  writeMaintenanceStatusRow(database, sanitizeMaintenanceStatus(recovered));
+  if (owner) database.prepare("DELETE FROM memory_meta WHERE key = ?").run(sleepOwnerKey);
+  return recovered;
+}
+
+function writeMaintenanceStatusRow(database: DatabaseSync, status: MemoryMaintenanceStatus): void {
+  database.prepare(
+    "INSERT INTO memory_maintenance (id, state, started_at, last_scan_at, last_finished_at, eligible, processed, written, failed, error, last_run_json) " +
+    "VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) " +
+    "ON CONFLICT(id) DO UPDATE SET state = excluded.state, started_at = excluded.started_at, " +
+    "last_scan_at = excluded.last_scan_at, last_finished_at = excluded.last_finished_at, " +
+    "eligible = excluded.eligible, processed = excluded.processed, written = excluded.written, " +
+    "failed = excluded.failed, error = excluded.error, last_run_json = excluded.last_run_json"
+  ).run(
+    status.state,
+    status.startedAt ?? null,
+    status.lastScanAt ?? null,
+    status.lastFinishedAt ?? null,
+    status.eligible,
+    status.processed,
+    status.written,
+    status.failed,
+    status.error ?? null,
+    status.lastRun === undefined ? null : JSON.stringify(status.lastRun)
+  );
+  // 状态快照可能只包含最近的运行，未包含的历史不应因此被删除。
+  for (const run of status.sleepRuns ?? []) insertSleepRun(database, run);
 }
 
 function readRevision(database: DatabaseSync): number {

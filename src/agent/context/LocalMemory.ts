@@ -16,7 +16,7 @@ import {
   memoryEntryExactKey,
   sanitizeMemoryEntryInput
 } from "./memoryFormat.js";
-import { MemoryStorage } from "./memoryStorage.js";
+import { MemoryStorage, SleepOwnerLostError, StaleMemoryDecisionError } from "./memoryStorage.js";
 import { sleepMergePrompt } from "./sleepMergePrompt.js";
 import { memoryExtractionPrompt, temporaryMemoryCleanupPrompt, parseMemoryOperations, type MemoryOperation, type ExtractedMemory } from "./memoryExtraction.js";
 import {
@@ -88,6 +88,7 @@ export class LocalMemory {
   private maintenancePromise: Promise<MemoryMaintenanceResult> | undefined;
   private maintenanceAbort: AbortController | undefined;
   private maintenanceLoaded = false;
+  private maintenanceOwnerToken: string | undefined;
 
   constructor(
     private readonly workspaceRoot: string,
@@ -339,9 +340,9 @@ export class LocalMemory {
             for (const cluster of buildSimilarityClusters(active, scan.pairs, low)) {
               options.signal?.throwIfAborted();
               if (cluster.entries.length > maxSleepClusterSize) continue;
-              if (cluster.maxSimilarity >= clampSimilarity(options.similarityMergeThreshold, sleepSimilarityMergeThreshold)) {
-                const survivor = selectSleepSurvivor(cluster.entries);
-                for (const entry of cluster.entries) if (entry.id !== survivor.id) archiveProposed.push({ id: entry.id, content: entry.content, reason: "similarity_merge", mergedInto: survivor.id });
+              const direct = directSimilarityDuplicates(cluster.entries, scan.pairs, clampSimilarity(options.similarityMergeThreshold, sleepSimilarityMergeThreshold));
+              if (direct.duplicates.length) {
+                for (const entry of direct.duplicates) archiveProposed.push({ id: entry.id, content: entry.content, reason: "similarity_merge", mergedInto: direct.survivor.id });
               } else if (options.useLlm !== false) {
                 const batchSize = normalizeSleepBatchSize(options.llmBatchSize);
                 const ordered = cluster.entries.length > batchSize ? [...cluster.entries].sort(compareSleepEntries) : cluster.entries;
@@ -389,39 +390,8 @@ export class LocalMemory {
 
   async loadMaintenanceStatus(options: MemoryReadOptions = {}): Promise<MemoryMaintenanceStatus> {
     options.signal?.throwIfAborted();
-    // 同一实例的维护正在进行时，UI/状态轮询不能把本进程刚写下的 running
-    // 标记误判成崩溃遗留记录。
-    if (this.maintenance.state === "running") return this.maintenanceStatus();
-    const loaded = await this.storage.readMaintenanceStatus(options);
-    const hasInterruptedRun = loaded.state === "running" || loaded.lastRun?.status === "running"
-      || loaded.sleepRuns?.some((run) => run.status === "running");
-    if (hasInterruptedRun) {
-      const finishedAt = new Date().toISOString();
-      const interrupted = (run: MemorySleepRun): MemorySleepRun => ({
-        ...run,
-        status: "failed",
-        finishedAt,
-        error: "interrupted"
-      });
-      const lastRun = loaded.lastRun?.status === "running" ? interrupted(loaded.lastRun) : loaded.lastRun;
-      const history = [...(loaded.sleepRuns ?? [])];
-      if (lastRun !== undefined && !history.some((run) => run.id === lastRun.id)) history.push(lastRun);
-      const sleepRuns = history.map((run) => (
-        run.status === "running" ? interrupted(run) : run
-      ));
-      this.maintenance = {
-        ...loaded,
-        state: "idle",
-        lastFinishedAt: finishedAt,
-        error: "interrupted",
-        lastRun,
-        sleepRuns
-      };
-      // 只恢复遗留的运行中记录，不能因旧任务中断而改写已完成的最新任务。
-      await this.storage.writeMaintenanceStatus(this.maintenance);
-    } else {
-      this.maintenance = loaded;
-    }
+    if (this.maintenanceOwnerToken && this.maintenance.state === "running") return this.maintenanceStatus();
+    this.maintenance = await this.storage.recoverInterruptedMaintenanceStatus(options.signal);
     this.maintenanceLoaded = true;
     return this.maintenanceStatus();
   }
@@ -431,13 +401,18 @@ export class LocalMemory {
     derivedIndex?: MemoryDerivedIndexSink
   ): Promise<MemoryMaintenanceResult> {
     derivedIndex ??= this.derivedIndex;
-    // Manual callers may invoke the maintenance API on a fresh AgentSession
-    // without going through Runtime Host. Load the old history first so this
-    // run does not erase the durable 20-run window.
-    if (!this.maintenanceLoaded) await this.loadMaintenanceStatus({ signal: options.signal });
     const now = options.now ?? new Date();
     const startedAt = now.toISOString();
     const runId = `${startedAt}-${randomUUID()}`;
+    // claim 同时返回数据库中的最新历史；不能沿用实例曾读取的 running 快照。
+    this.maintenance = await this.storage.acquireSleepOwner(runId, options.signal);
+    this.maintenanceLoaded = true;
+    this.maintenanceOwnerToken = runId;
+    const leaseController = this.maintenanceAbort;
+    const leaseTimer = setInterval(() => {
+      void this.storage.renewSleepOwner(runId).catch(() => leaseController?.abort(new SleepOwnerLostError()));
+    }, 15_000);
+    leaseTimer.unref?.();
     const trigger = options.trigger ?? "scheduled";
     const sleepUsage: MemoryTokenUsage = { inputTokens: 0, outputTokens: 0 };
     const runningRun: MemorySleepRun = {
@@ -490,6 +465,8 @@ export class LocalMemory {
     let examined = 0;
     let lastError: string | undefined;
     let runStatus: MemorySleepRun["status"] = "completed";
+    let outcome: MemoryMaintenanceResult | undefined;
+    let finalStatusError: unknown;
     const recordFailure = (error: unknown): void => {
       failed += 1;
       runStatus = "failed";
@@ -528,10 +505,10 @@ export class LocalMemory {
         lastRun: currentRun,
         sleepRuns: [...history, currentRun].slice(-20)
       };
-      await this.storage.writeMaintenanceStatus(this.maintenance, options.signal);
+      await this.storage.writeMaintenanceStatus(this.maintenance, options.signal, runId);
     };
     try {
-      await this.storage.writeMaintenanceStatus(this.maintenance, options.signal);
+      await this.storage.writeMaintenanceStatus(this.maintenance, options.signal, runId);
       // Sleep 直接扫描现有 active entries；记忆写入不再经过延迟候选队列。
       let active = (await this.storage.listEntries({ signal: options.signal })).entries;
       scanned = active.length;
@@ -544,7 +521,7 @@ export class LocalMemory {
         const duplicateIds = group.filter((entry) => entry.id !== survivor.id).map((entry) => entry.id);
         if (!duplicateIds.length) continue;
         try {
-          const result = await this.archiveForSleep(duplicateIds, "exact_dup", options, survivor.id, now, runId);
+          const result = await this.archiveForSleep(duplicateIds, "exact_dup", options, survivor.id, now, runId, group);
           if (result.archived > 0) {
             archived += result.archived;
             exact += result.archived;
@@ -554,6 +531,7 @@ export class LocalMemory {
           }
         } catch (error) {
           options.signal?.throwIfAborted();
+          if (error instanceof SleepOwnerLostError) throw error;
           recordFailure(error);
         }
       }
@@ -564,7 +542,7 @@ export class LocalMemory {
         .map((entry) => entry.id);
       if (expiredIds.length) {
         try {
-          const result = await this.archiveForSleep(expiredIds, "expired", options, undefined, now, runId);
+          const result = await this.archiveForSleep(expiredIds, "expired", options, undefined, now, runId, active.filter((entry) => expiredIds.includes(entry.id)));
           if (result.archived > 0) {
             archived += result.archived;
             expired += result.archived;
@@ -574,6 +552,7 @@ export class LocalMemory {
           }
         } catch (error) {
           options.signal?.throwIfAborted();
+          if (error instanceof SleepOwnerLostError) throw error;
           recordFailure(error);
         }
       }
@@ -593,11 +572,11 @@ export class LocalMemory {
             const activeIds = new Set(active.map((entry) => entry.id));
             const current = cluster.entries.filter((entry) => activeIds.has(entry.id));
             if (current.length < 2) continue;
-            if (cluster.maxSimilarity >= similarityMergeThreshold) {
-              const survivor = selectSleepSurvivor(current);
-              const duplicateIds = current.filter((entry) => entry.id !== survivor.id).map((entry) => entry.id);
+            const direct = directSimilarityDuplicates(current, scan.pairs, similarityMergeThreshold);
+            if (direct.duplicates.length) {
+              const duplicateIds = direct.duplicates.map((entry) => entry.id);
               try {
-                const result = await this.archiveForSleep(duplicateIds, "similarity_merge", options, survivor.id, now, runId);
+                const result = await this.archiveForSleep(duplicateIds, "similarity_merge", options, direct.survivor.id, now, runId, current);
                 if (result.archived > 0) {
                   archived += result.archived;
                   similarity += result.archived;
@@ -607,6 +586,7 @@ export class LocalMemory {
                 }
               } catch (error) {
                 options.signal?.throwIfAborted();
+                if (error instanceof SleepOwnerLostError) throw error;
                 recordFailure(error);
               }
               continue;
@@ -631,12 +611,14 @@ export class LocalMemory {
                 }
               } catch (error) {
                 options.signal?.throwIfAborted();
+                if (error instanceof SleepOwnerLostError) throw error;
                 recordFailure(error);
               }
             }
           }
         } catch (error) {
           options.signal?.throwIfAborted();
+          if (error instanceof SleepOwnerLostError) throw error;
           recordFailure(error);
         }
       }
@@ -645,7 +627,7 @@ export class LocalMemory {
       const purged = await this.purgeArchived(options.archiveRetentionDays ?? 30, options, now);
       if (purged > 0) notifySleepIndexRebuild(derivedIndex);
       const finishedAt = new Date().toISOString();
-      return { scanned, processed, written, failed, startedAt, finishedAt };
+      outcome = { scanned, processed, written, failed, startedAt, finishedAt };
     } catch (error) {
       if (options.signal?.aborted) {
         runStatus = "cancelled";
@@ -694,10 +676,20 @@ export class LocalMemory {
         sleepRuns: [...history, lastRun].slice(-20)
       };
       // Abort 后仍要留下已验证的清理/失败状态；状态写入不复用已中止 signal。
-      await this.storage.writeMaintenanceStatus(this.maintenance).catch((error) => {
+      clearInterval(leaseTimer);
+      try {
+        await this.storage.writeMaintenanceStatus(this.maintenance, undefined, runId);
+      } catch (error) {
         this.maintenance.error ??= error instanceof Error ? error.message : String(error);
-      });
+        if (error instanceof SleepOwnerLostError) finalStatusError = error;
+      } finally {
+        if (this.maintenanceOwnerToken === runId) this.maintenanceOwnerToken = undefined;
+        await this.storage.releaseSleepOwner(runId).catch(() => undefined);
+      }
     }
+    if (finalStatusError) throw finalStatusError;
+    if (!outcome) throw new Error("Sleep finished without a maintenance result.");
+    return outcome;
   }
 
   private async archiveForSleep(
@@ -706,10 +698,13 @@ export class LocalMemory {
     options: MemoryMaintenanceOptions,
     mergedInto: string | undefined,
     now: Date,
-    archivedBy: string
+    archivedBy: string,
+    expectedEntries: readonly MemoryEntry[]
   ): Promise<MemoryBulkArchiveResult> {
     return await this.storage.archiveEntries(ids, reason, {
-      mergedInto, archivedBy, now, signal: options.signal
+      mergedInto, archivedBy, now, signal: options.signal,
+      sleepOwnerToken: this.maintenanceOwnerToken,
+      expectedEntries
     });
   }
 
@@ -719,7 +714,7 @@ export class LocalMemory {
     now: Date
   ): Promise<number> {
     const result = await this.storage.purgeArchivedEntries(retentionDays, {
-      now, signal: options.signal
+      now, signal: options.signal, sleepOwnerToken: this.maintenanceOwnerToken
     });
     return result.deleted;
   }
@@ -732,8 +727,7 @@ export class LocalMemory {
     sleepUsage?: MemoryTokenUsage,
     archivedBy = "sleep"
   ): Promise<{ written: number; archived: number; archivedIds: string[]; synthesisFailed: number }> {
-    // synthesisFailed 是"删而不合"的审计口径：模型提出了合成条目，但最终没有一条落库，
-    // 而归档照常发生。这正是静默信息损失的主要通道。
+    // 合成失败要留下审计计数，但不能让来源退出正常召回。
     let synthesisFailed = 0;
     const parsed = await this.sleepMergeEntriesWithModel(entries, options.signal, sleepUsage);
     const sourceIds = new Set(entries.map((entry) => entry.id));
@@ -773,14 +767,17 @@ export class LocalMemory {
       let saveEmbedding: ((entry: MemoryEntry) => void) | undefined;
       try {
         saveEmbedding = await derivedIndex?.prepareSynthesis?.(input.content, options.signal);
-      } catch {
-        // 单条 synthesis 失败不能阻断同一簇的其他 synthesis 或归档决定。
+      } catch (error) {
+        if (error instanceof SleepOwnerLostError) throw error;
         synthesisFailed += 1;
         continue;
       }
-      if (!saveEmbedding) return { written, archived: 0, archivedIds: [], synthesisFailed: 0 };
+      if (!saveEmbedding) {
+        synthesisFailed += 1;
+        continue;
+      }
       try {
-        const result = await this.writeEntry(input, { signal: options.signal, now });
+        const result = await this.writeEntry(input, { signal: options.signal, now, sleepOwnerToken: this.maintenanceOwnerToken, expectedEntries: entries });
         if (result.entry) {
           synthesisIds.push(result.entry.id);
           if (result.written) written += 1;
@@ -789,9 +786,11 @@ export class LocalMemory {
           } catch {
             notifySleepIndexRebuild(derivedIndex);
           }
+        } else {
+          synthesisFailed += 1;
         }
-      } catch {
-        // SQLite 写事务 或 embedding 提交失败时，保留可执行的 delete 决定。
+      } catch (error) {
+        if (error instanceof SleepOwnerLostError || error instanceof StaleMemoryDecisionError) throw error;
         synthesisFailed += 1;
       }
     }
@@ -801,9 +800,9 @@ export class LocalMemory {
     const survivor = archiveIds.length < entries.length
       ? selectSleepSurvivor(entries.filter((entry) => !archiveIds.includes(entry.id))).id
       : undefined;
-    const archivedResult = archiveIds.length === 0
+    const archivedResult = archiveIds.length === 0 || synthesisFailed > 0
       ? { entries: [], archived: 0, revision: (await this.storage.getOverview({ signal: options.signal })).storeRevision }
-      : await this.archiveForSleep(archiveIds, "llm_merge", options, synthesisIds[0] ?? survivor, now, archivedBy);
+      : await this.archiveForSleep(archiveIds, "llm_merge", options, synthesisIds[0] ?? survivor, now, archivedBy, entries);
     if (archivedResult.archived > 0) notifySleepIndexRebuild(derivedIndex);
     return {
       written,
@@ -1104,7 +1103,6 @@ export class LocalMemory {
 
 interface SleepSimilarityCluster {
   entries: MemoryEntry[];
-  maxSimilarity: number;
 }
 
 interface PersonMemory {
@@ -1163,20 +1161,32 @@ function buildSimilarityClusters(
     union(pair.leftId, pair.rightId);
   }
   const grouped = new Map<string, Set<string>>();
-  const maxByRoot = new Map<string, number>();
   for (const pair of usablePairs) {
     const root = find(pair.leftId);
     const group = grouped.get(root) ?? new Set<string>();
     group.add(pair.leftId);
     group.add(pair.rightId);
     grouped.set(root, group);
-    maxByRoot.set(root, Math.max(maxByRoot.get(root) ?? -1, pair.similarity));
   }
   return [...grouped.entries()]
-    .map(([root, group]) => ({
-      entries: [...group].map((id) => entriesById.get(id)!),
-      maxSimilarity: maxByRoot.get(root) ?? -1
+    .map(([, group]) => ({
+      entries: [...group].map((id) => entriesById.get(id)!)
     }));
+}
+
+function directSimilarityDuplicates(
+  entries: readonly MemoryEntry[],
+  pairs: readonly MemorySimilarityPair[],
+  threshold: number
+): { survivor: MemoryEntry; duplicates: MemoryEntry[] } {
+  const survivor = selectSleepSurvivor(entries);
+  const duplicates = entries.filter((entry) => entry.id !== survivor.id && pairs.some((pair) => (
+    Number.isFinite(pair.similarity) && pair.similarity >= threshold && (
+      pair.leftId === survivor.id && pair.rightId === entry.id
+      || pair.rightId === survivor.id && pair.leftId === entry.id
+    )
+  )));
+  return { survivor, duplicates };
 }
 
 function selectSleepSurvivor(entries: readonly MemoryEntry[], exactDuplicate = false): MemoryEntry {

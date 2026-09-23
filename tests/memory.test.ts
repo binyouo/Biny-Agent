@@ -44,8 +44,14 @@ async function main(): Promise<void> {
   await testSleepCoversSharedLibraryFromAnyWorkspace();
   await testSleepSimilaritySingleNamespace();
   await testSleepSimilarityBoundaries();
+  await testSleepStrongPairDoesNotArchiveWeakClusterMember();
+  await testSleepDoesNotArchiveEditedSourceFromOldScan();
+  await testSleepDoesNotArchiveIntoDeletedSurvivor();
+  await testSecondInstanceDoesNotInterruptActiveSleep();
+  await testSecondInstanceStartsFromLatestCompletedHistory();
+  await testStaleSleepOwnerCannotCommitAfterTakeover();
   await testSleepSynthesisArchivesCluster();
-  await testSleepSynthesisFailureArchivesDeletedIds();
+  await testSleepSynthesisFailureKeepsSources();
   await testSleepInvalidDeleteIsSafe();
   await testSleepRunRecord();
   await testSleepPreviewDoesNotMutate();
@@ -973,6 +979,229 @@ async function testSleepSimilarityBoundaries(): Promise<void> {
   });
 }
 
+/** 候选簇内的一条强边不能使通过弱边连进来的事实免于独立判断。 */
+async function testSleepStrongPairDoesNotArchiveWeakClusterMember(): Promise<void> {
+  await withIsolatedMemory(async (workspaceRoot) => {
+    const memory = new LocalMemory(workspaceRoot, () => unusedModel);
+    try {
+      const first = await memory.writeEntry({ ...projectEntry("The canonical release rule is retained."), importance: 1 });
+      const duplicate = await memory.writeEntry(projectEntry("A near duplicate of the canonical release rule."));
+      const related = await memory.writeEntry(projectEntry("A related but distinct release exception."));
+      assert.ok(first.entry && duplicate.entry && related.entry);
+      const index = {
+        indexEntry: async () => undefined,
+        findSimilarPairs: async () => ({ examined: 3, pairs: [
+          { leftId: first.entry!.id, rightId: duplicate.entry!.id, similarity: 0.96 },
+          { leftId: duplicate.entry!.id, rightId: related.entry!.id, similarity: 0.8 }
+        ] })
+      };
+      const preview = await memory.previewMaintenance({ useLlm: false }, index);
+      assert.deepEqual(preview.archiveProposed?.filter((item) => item.reason === "similarity_merge").map((item) => item.id), [duplicate.entry.id]);
+
+      const result = await memory.runMemoryMaintenance({ useLlm: false }, index);
+      assert.equal(result.failed, 0);
+      assert.deepEqual(new Set((await memory.listMemoryEntries()).entries.map((entry) => entry.id)), new Set([first.entry.id, related.entry.id]));
+      assert.deepEqual((await memory.listArchivedEntries()).entries.map((entry) => entry.originalId), [duplicate.entry.id]);
+    } finally {
+      memory.close();
+    }
+  });
+}
+
+/** 相似度扫描等待期间发生的手工编辑必须让旧版本的归档决定失效。 */
+async function testSleepDoesNotArchiveEditedSourceFromOldScan(): Promise<void> {
+  await withIsolatedMemory(async (workspaceRoot) => {
+    const sleeper = new LocalMemory(workspaceRoot, () => unusedModel);
+    const editor = new LocalMemory(workspaceRoot, () => unusedModel);
+    let releaseScan: () => void = () => undefined;
+    try {
+      const survivor = await sleeper.writeEntry({ ...projectEntry("Canonical source before the scan."), importance: 1 });
+      const source = await sleeper.writeEntry(projectEntry("Source content before the scan."));
+      assert.ok(survivor.entry && source.entry);
+      let scanStarted: () => void = () => undefined;
+      const started = new Promise<void>((resolve) => { scanStarted = resolve; });
+      const paused = new Promise<void>((resolve) => { releaseScan = resolve; });
+      const run = sleeper.runMemoryMaintenance({ useLlm: false }, {
+        indexEntry: async () => undefined,
+        findSimilarPairs: async () => {
+          scanStarted();
+          await paused;
+          return { examined: 2, pairs: [{ leftId: survivor.entry!.id, rightId: source.entry!.id, similarity: 0.99 }] };
+        }
+      });
+      await started;
+      await editor.updateEntry(source.entry.id, { content: "Newly edited source must stay available." });
+      releaseScan();
+      await run;
+      assert.equal((await sleeper.listMemoryEntries()).entries.find((entry) => entry.id === source.entry!.id)?.content, "Newly edited source must stay available.");
+      assert.equal((await sleeper.listArchivedEntries()).entries.some((entry) => entry.originalId === source.entry!.id), false);
+    } finally {
+      releaseScan();
+      sleeper.close();
+      editor.close();
+    }
+  });
+}
+
+/** survivor 消失后，其他条目不能继续归档并指向不存在的目标。 */
+async function testSleepDoesNotArchiveIntoDeletedSurvivor(): Promise<void> {
+  await withIsolatedMemory(async (workspaceRoot) => {
+    const sleeper = new LocalMemory(workspaceRoot, () => unusedModel);
+    const editor = new LocalMemory(workspaceRoot, () => unusedModel);
+    let releaseScan: () => void = () => undefined;
+    try {
+      const survivor = await sleeper.writeEntry({ ...projectEntry("Canonical source before deletion."), importance: 1 });
+      const source = await sleeper.writeEntry(projectEntry("Related source before deletion."));
+      assert.ok(survivor.entry && source.entry);
+      let scanStarted: () => void = () => undefined;
+      const started = new Promise<void>((resolve) => { scanStarted = resolve; });
+      const paused = new Promise<void>((resolve) => { releaseScan = resolve; });
+      const run = sleeper.runMemoryMaintenance({ useLlm: false }, {
+        indexEntry: async () => undefined,
+        findSimilarPairs: async () => {
+          scanStarted();
+          await paused;
+          return { examined: 2, pairs: [{ leftId: survivor.entry!.id, rightId: source.entry!.id, similarity: 0.99 }] };
+        }
+      });
+      await started;
+      await editor.deleteEntryById(survivor.entry.id);
+      releaseScan();
+      await run;
+      assert.equal((await sleeper.listMemoryEntries()).entries.some((entry) => entry.id === source.entry!.id), true);
+      assert.equal((await sleeper.listArchivedEntries()).entries.some((entry) => entry.originalId === source.entry!.id), false);
+    } finally {
+      releaseScan();
+      sleeper.close();
+      editor.close();
+    }
+  });
+}
+
+/** Host B 加载共享状态时不能把仍在工作的 Host A 标记为崩溃遗留任务。 */
+async function testSecondInstanceDoesNotInterruptActiveSleep(): Promise<void> {
+  await withIsolatedMemory(async (workspaceRoot) => {
+    const first = new LocalMemory(workspaceRoot, () => unusedModel);
+    const second = new LocalMemory(workspaceRoot, () => unusedModel);
+    let releaseScan: () => void = () => undefined;
+    let run: Promise<unknown> | undefined;
+    try {
+      const left = await first.writeEntry(projectEntry("First memory for an active sleep owner."));
+      const right = await first.writeEntry(projectEntry("Second memory for an active sleep owner."));
+      assert.ok(left.entry && right.entry);
+      let scanStarted: () => void = () => undefined;
+      const started = new Promise<void>((resolve) => { scanStarted = resolve; });
+      const paused = new Promise<void>((resolve) => { releaseScan = resolve; });
+      run = first.runMemoryMaintenance({ useLlm: false }, {
+        indexEntry: async () => undefined,
+        findSimilarPairs: async () => {
+          scanStarted();
+          await paused;
+          return { examined: 2, pairs: [] };
+        }
+      });
+      await started;
+      const visible = await second.loadMaintenanceStatus();
+      assert.equal(visible.state, "running");
+      assert.equal(visible.lastRun?.status, "running");
+      await assert.rejects(second.runMemoryMaintenance({ useLlm: false }), /already in progress|owner|lease/i);
+      releaseScan();
+      await run;
+      assert.equal((await second.loadMaintenanceStatus()).lastRun?.status, "completed");
+    } finally {
+      releaseScan();
+      await run?.catch(() => undefined);
+      first.close();
+      second.close();
+    }
+  });
+}
+
+/** lease 被接管后，旧扫描结果即使返回也不能覆盖新 owner 的事实与审计。 */
+async function testStaleSleepOwnerCannotCommitAfterTakeover(): Promise<void> {
+  await withIsolatedMemory(async (workspaceRoot, agentRoot) => {
+    const first = new LocalMemory(workspaceRoot, () => unusedModel);
+    const second = new LocalMemory(workspaceRoot, () => unusedModel);
+    let releaseScan: () => void = () => undefined;
+    let firstRun: Promise<unknown> | undefined;
+    try {
+      const survivor = await first.writeEntry({ ...projectEntry("Survivor before owner takeover."), importance: 1 });
+      const source = await first.writeEntry(projectEntry("Source before owner takeover."));
+      assert.ok(survivor.entry && source.entry);
+      let scanStarted: () => void = () => undefined;
+      const started = new Promise<void>((resolve) => { scanStarted = resolve; });
+      const paused = new Promise<void>((resolve) => { releaseScan = resolve; });
+      firstRun = first.runMemoryMaintenance({ useLlm: false }, {
+        indexEntry: async () => undefined,
+        findSimilarPairs: async () => {
+          scanStarted();
+          await paused;
+          return { examined: 2, pairs: [{ leftId: survivor.entry!.id, rightId: source.entry!.id, similarity: 0.99 }] };
+        }
+      });
+      await started;
+      // 只推进持久 lease 的时间边界，模拟进程暂停超过租期；无需真实等待一分钟。
+      const database = new DatabaseSync(path.join(agentRoot, "memory", memoryDatabaseFileName));
+      try {
+        const row = database.prepare("SELECT value FROM memory_meta WHERE key = 'sleep_owner'").get() as { value?: string } | undefined;
+        assert.ok(row?.value);
+        database.prepare("UPDATE memory_meta SET value = ? WHERE key = 'sleep_owner'")
+          .run(JSON.stringify({ ...JSON.parse(row.value), expiresAt: 0 }));
+      } finally {
+        database.close();
+      }
+      const recovered = await second.loadMaintenanceStatus();
+      assert.equal(recovered.lastRun?.status, "failed");
+      const replacement = await second.runMemoryMaintenance({ useLlm: false });
+      assert.equal(replacement.failed, 0);
+      releaseScan();
+      await assert.rejects(firstRun, /owner lease was lost/i);
+      assert.deepEqual(new Set((await second.listMemoryEntries()).entries.map((entry) => entry.id)), new Set([survivor.entry.id, source.entry.id]));
+      assert.equal((await second.loadMaintenanceStatus()).lastRun?.status, "completed");
+    } finally {
+      releaseScan();
+      await firstRun?.catch(() => undefined);
+      first.close();
+      second.close();
+    }
+  });
+}
+
+/** B 曾看见 A 的 running，也不能在 A 完成后把旧状态写回历史。 */
+async function testSecondInstanceStartsFromLatestCompletedHistory(): Promise<void> {
+  await withIsolatedMemory(async (workspaceRoot) => {
+    const first = new LocalMemory(workspaceRoot, () => unusedModel);
+    const second = new LocalMemory(workspaceRoot, () => unusedModel);
+    let releaseScan: () => void = () => undefined;
+    let firstRun: Promise<unknown> | undefined;
+    try {
+      await first.writeEntry(projectEntry("One entry keeps the first Sleep occupied."));
+      await first.writeEntry(projectEntry("A second entry keeps the scan available."));
+      let scanStarted: () => void = () => undefined;
+      const started = new Promise<void>((resolve) => { scanStarted = resolve; });
+      const paused = new Promise<void>((resolve) => { releaseScan = resolve; });
+      firstRun = first.runMemoryMaintenance({ useLlm: false }, {
+        indexEntry: async () => undefined,
+        findSimilarPairs: async () => { scanStarted(); await paused; return { examined: 2, pairs: [] }; }
+      });
+      await started;
+      const observed = await second.loadMaintenanceStatus();
+      const firstRunId = observed.lastRun?.id;
+      assert.equal(observed.lastRun?.status, "running");
+      releaseScan();
+      await firstRun;
+      await second.runMemoryMaintenance({ useLlm: false });
+      const history = (await second.loadMaintenanceStatus()).sleepRuns;
+      assert.equal(history?.find((run) => run.id === firstRunId)?.status, "completed");
+    } finally {
+      releaseScan();
+      await firstRun?.catch(() => undefined);
+      first.close();
+      second.close();
+    }
+  });
+}
+
 async function testSleepWeightedSurvivor(): Promise<void> {
   await withIsolatedMemory(async (workspaceRoot) => {
     const memory = new LocalMemory(workspaceRoot, unusedModel);
@@ -1263,7 +1492,7 @@ async function testSleepSynthesisArchivesCluster(): Promise<void> {
   });
 }
 
-async function testSleepSynthesisFailureArchivesDeletedIds(): Promise<void> {
+async function testSleepSynthesisFailureKeepsSources(): Promise<void> {
   await withIsolatedMemory(async (workspaceRoot) => {
     let ids: string[] = [];
     const model = jsonMemoryModel(() => JSON.stringify({
@@ -1291,16 +1520,15 @@ async function testSleepSynthesisFailureArchivesDeletedIds(): Promise<void> {
       });
       assert.equal(result.failed, 0);
       assert.equal(result.written, 0);
-      assert.equal(result.processed, 2);
-      assert.equal((await memory.listMemoryEntries()).entries.length, 0);
+      assert.equal(result.processed, 0);
+      assert.deepEqual(new Set((await memory.listMemoryEntries()).entries.map((entry) => entry.id)), new Set(ids));
       const archived = await memory.listArchivedEntries();
-      assert.equal(archived.entries.length, 2);
-      assert.ok(archived.entries.every((entry) => entry.archivedReason === "llm_merge" && entry.mergedInto === undefined));
-      // "删而不合"必须在 sleep run 上留下可观测计数：合成条目丢失 ≠ 正常归档。
+      assert.equal(archived.entries.length, 0);
+      // 合成失败仍须留下审计计数，来源条目继续参加正常召回。
       const lastRun = memory.maintenanceStatus().lastRun;
       assert.equal(lastRun?.synthesisFailed, 1, "一条合成提议失败必须被计数");
-      assert.equal(lastRun?.archivedLlm, 2);
-      assert.equal(lastRun?.llm, 2);
+      assert.equal(lastRun?.archivedLlm, 0);
+      assert.equal(lastRun?.llm, 0);
     } finally {
       memory.close();
     }
