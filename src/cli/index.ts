@@ -353,6 +353,7 @@ program
   .option("--permission-mode <mode>", "override permission mode: ask, read-only, auto, full-access")
   .option("--headless", "run without interactive permission prompts")
   .option("--isolated", "run in a dedicated git worktree session")
+  .option("--attachment <path>", "attach a workspace image (repeatable)", collectStringOption, [])
   .option("--json", "print one machine-readable JSON result")
   .argument("<input...>", "task text")
   .action((input: string[], options: RunCommandOptions) => wrap(async () => { await runCommand(workspaceRoot, input.join(" "), options); })());
@@ -407,6 +408,10 @@ function parsePositiveInteger(value: string): number {
   const parsed = Number(value);
   if (!Number.isInteger(parsed) || parsed < 1) throw new InvalidArgumentError(`Expected a positive integer, got: ${value}`);
   return parsed;
+}
+
+function collectStringOption(value: string, previous: string[] = []): string[] {
+  return [...previous, value];
 }
 
 function parseNonNegativeInteger(value: string): number {

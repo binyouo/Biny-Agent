@@ -2,6 +2,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { AgentSession } from "../src/agent/AgentSession.js";
+import { toModelMessages } from "../src/agent/core/vercelModelAdapter.js";
 import { configSchema, defaultConfig } from "../src/config/schema.js";
 import { ModelManager } from "../src/llm/ModelManager.js";
 
@@ -30,3 +31,20 @@ for (const managed of [false, true]) {
     });
   }
 }
+
+test("图片内容会映射为 provider 的原生 file part", () => {
+  const messages = toModelMessages([{
+    role: "user",
+    content: [
+      { type: "text", text: "分析棋盘" },
+      { type: "image", mimeType: "image/png", data: "base64-image" }
+    ]
+  }]);
+  assert.deepEqual(messages, [{
+    role: "user",
+    content: [
+      { type: "text", text: "分析棋盘" },
+      { type: "file", mediaType: "image/png", data: "base64-image" }
+    ]
+  }]);
+});

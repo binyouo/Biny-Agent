@@ -1,21 +1,30 @@
 """Harbor/Pier external-agent adapter for Biny.
 
-The benchmark harness owns the task container and verifier.  This adapter only
-starts Biny in the task workdir, passes through explicitly configured runtime
-environment variables, and maps Biny's structured ``biny run --json`` result to
-Harbor's ``AgentContext``.  A non-completed Biny terminal state is preserved as
-an agent result so the benchmark verifier can score the workspace; only a
-missing structured result is treated as an adapter/infrastructure error.
+The benchmark harness owns the task container and verifier.  This adapter
+starts Biny in the task workdir, attaches existing image inputs explicitly
+named by the task, passes through configured runtime environment variables,
+and maps Biny's structured ``biny run --json`` result to Harbor's
+``AgentContext``.  A non-completed Biny terminal state is preserved as an agent
+result so the benchmark verifier can score the workspace; only a missing
+structured result is treated as an adapter/infrastructure error.
 """
 
 from __future__ import annotations
 
 import json
+import re
 import shlex
 from numbers import Real
 from typing import Any
 
 from .harness_compat import AgentContext, BaseAgent, BaseEnvironment
+
+
+_IMAGE_PATH_PATTERN = re.compile(
+    r"(?<![\w.-])(?:/app/|\./)?[A-Za-z0-9_./-]+\.(?:png|jpe?g|webp|gif)\b",
+    re.IGNORECASE,
+)
+_MAX_IMAGE_ATTACHMENTS = 8
 
 
 class BinyAgent(BaseAgent):
@@ -54,7 +63,8 @@ class BinyAgent(BaseAgent):
         context: AgentContext,
     ) -> None:
         self._validate_model_binding()
-        command = self._run_command(instruction)
+        attachments = await self._image_attachments(instruction, environment)
+        command = self._run_command(instruction, attachments)
         # Harbor 在外层 deadline 到达时会取消整个 run；先记录启动事实，避免超时样例只剩
         # 一个空 AgentContext。若 BINY_AGENT_DIR 位于 /logs/agent 下，对应 session 也会随
         # Harbor agent logs 一起持久化，便于区分慢模型、循环执行和工具阻塞。
@@ -63,6 +73,7 @@ class BinyAgent(BaseAgent):
             "status": "running",
             "modelAlias": self._env("BINY_MODEL_ALIAS"),
             "stateDir": self._env("BINY_AGENT_DIR"),
+            "attachments": attachments,
         }
         context.metadata = existing_metadata
         result = await environment.exec(
@@ -95,6 +106,7 @@ class BinyAgent(BaseAgent):
             "usage": usage,
             "returnCode": result.return_code,
             "artifacts": artifacts,
+            "attachments": attachments,
         }
         context.metadata = existing_metadata
 
@@ -147,7 +159,7 @@ class BinyAgent(BaseAgent):
     def _command_string(self) -> str:
         return self._command_display()
 
-    def _run_command(self, instruction: str) -> str:
+    def _run_command(self, instruction: str, attachments: list[str] | None = None) -> str:
         args = [*self._command_argv(), "run", "--json", "--headless"]
         model_alias = self._env("BINY_MODEL_ALIAS")
         if model_alias:
@@ -163,7 +175,10 @@ class BinyAgent(BaseAgent):
             raise RuntimeError(
                 "BINY_PERMISSION_MODE must be one of ask, read-only, auto, full-access."
             )
-        args.extend(["--permission-mode", permission_mode, "--", instruction])
+        args.extend(["--permission-mode", permission_mode])
+        for attachment in attachments or []:
+            args.extend(["--attachment", attachment])
+        args.extend(["--", instruction])
         command = shlex.join(args)
         log_dir = self._env("BINY_RUN_LOG_DIR")
         if log_dir is None:
@@ -181,6 +196,44 @@ class BinyAgent(BaseAgent):
             f"cat {stdout_path}; cat {stderr_path} >&2; "
             "exit $biny_status"
         )
+
+    async def _image_attachments(
+        self,
+        instruction: str,
+        environment: BaseEnvironment,
+    ) -> list[str]:
+        enabled = (self._env("BINY_AUTO_ATTACH_IMAGES") or "true").lower()
+        if enabled in {"0", "false", "no"}:
+            return []
+        if enabled not in {"1", "true", "yes"}:
+            raise RuntimeError(
+                "BINY_AUTO_ATTACH_IMAGES must be true/false, yes/no, or 1/0."
+            )
+
+        candidates = _instruction_image_paths(instruction)
+        if not candidates:
+            return []
+        checks = "; ".join(
+            f"[ -f {shlex.quote(candidate)} ] && printf '%s\\n' {shlex.quote(candidate)}"
+            for candidate in candidates
+        )
+        result = await environment.exec(
+            f"{checks}; exit 0",
+            env=self._agent_env(),
+            timeout_sec=30,
+        )
+        if result.return_code != 0:
+            detail = _tail(result.stderr or result.stdout)
+            raise RuntimeError(
+                "Could not inspect image paths referenced by the task."
+                + (f" Output: {detail}" if detail else "")
+            )
+        attachments = [line.strip() for line in (result.stdout or "").splitlines() if line.strip()]
+        if len(attachments) > _MAX_IMAGE_ATTACHMENTS:
+            raise RuntimeError(
+                f"Task references more than {_MAX_IMAGE_ATTACHMENTS} existing image inputs."
+            )
+        return attachments
 
     def _positive_env_int(self, name: str) -> int | None:
         value = self._env(name)
@@ -238,6 +291,19 @@ def _last_json_object(stdout: str | None) -> dict[str, Any] | None:
         ):
             return value
     return None
+
+
+def _instruction_image_paths(instruction: str) -> list[str]:
+    paths: list[str] = []
+    for match in _IMAGE_PATH_PATTERN.finditer(instruction):
+        candidate = match.group(0)
+        if candidate.startswith("/") and not candidate.startswith("/app/"):
+            continue
+        if candidate == ".." or candidate.startswith("../") or "/../" in candidate:
+            continue
+        if candidate not in paths:
+            paths.append(candidate)
+    return paths
 
 
 def _record_usage(context: AgentContext, raw_usage: Any) -> dict[str, Any]:
