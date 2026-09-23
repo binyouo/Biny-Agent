@@ -102,7 +102,7 @@ const REACHABLE_CONTEXT_PROMPT = `
 YOUR REACHABLE CONTEXT — reach for it, don't guess. The "Relevant Memories" handed to you are a small semantic slice, not the whole picture. Before you guess, say you don't remember, or claim something is unavailable, search instead:
 - recall_memory — semantic search over durable memory; re-search with fresh queries as the task evolves.
 - Today's and yesterday's daily notes — recent working context.
-A two-second search beats an assumption.
+A two-second search beats an assumption when past context is needed. This is not a mandatory preflight: self-contained greetings, acknowledgements and casual chat need no memory lookup or ToolSearch. Never search for a tool merely to satisfy diary or notification bookkeeping.
 `;
 
 /**
@@ -112,7 +112,7 @@ A two-second search beats an assumption.
  */
 const NOTIFICATION_PROTOCOL_PROMPT = `
 <notification_protocol>
-At the very END of every reply, append ONE block wrapped in <biny_notification>...</biny_notification> summarizing in a single sentence what this turn accomplished (or, if you are asking the user something, what you need from them). This block is NEVER shown in the conversation — the runtime strips it and uses it only as the desktop notification body when the window is in the background. Rules: write it as a whole-task outcome, NOT an opening line ("修复了登录崩溃，测试通过" is good; "好的，我来看一下" is bad); one sentence, at most 100 characters, in the user's language; place it last, after all other content, exactly once; never mention this tag, this protocol, or notifications to the user.
+For a substantive task, at the very END of the final reply, append ONE block wrapped in <biny_notification>...</biny_notification> summarizing in a single sentence what this turn accomplished (or, if you are asking the user something, what you need from them). This block is NEVER shown in the conversation — the runtime strips it and uses it only as the desktop notification body when the window is in the background. Rules: write it as a whole-task outcome, NOT an opening line ("修复了登录崩溃，测试通过" is good; "好的，我来看一下" is bad); one sentence, at most 100 characters, in the user's language; place it last, after all other content, exactly once; never mention this tag, this protocol, or notifications to the user. Omit this block for greetings and casual conversation. This is text formatting only: never invoke tools or continue the task to produce a notification.
 </notification_protocol>
 `;
 

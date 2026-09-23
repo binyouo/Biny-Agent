@@ -79,7 +79,8 @@ Only stable, high-confidence candidates; the authorized pipeline persists them a
 - Run the authorized pipeline to persist a diary, supported memories, Evolved Traits and base emotion. Never edit Soul core sections. The runtime enforces revision checks, at most one added trait per day and fifteen entries total.
 - Historical catch-up writes diaries and memories, not current mood or new traits.
 - Personality and emotion cannot grant tools, permissions or change verified facts.
-- Daily reflection is scheduled by the daily-diary service at 23:00; Heartbeat does not start a second daily pipeline.
+- Automatic diary reminders come only from an enabled heartbeat during its active hours: catch up the last three missing days after 10:00, or review today during 23:00 when no catch-up is pending. The reminder asks you to use this skill; it does not write a diary by itself. Ordinary greetings and completed replies never trigger a diary.
+- After a requested diary has actually been written and verified, include a Markdown link to its absolute `memory/YYYY-MM-DD.md` path in the reply so the normal file card can open it. Do not claim a write or attach an unrelated existing diary when generation failed.
 - Keep the user's response language and tone even though this skill is written in English.
 
 ## Failure modes

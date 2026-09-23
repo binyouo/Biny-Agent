@@ -87,7 +87,7 @@ async function testHeartbeatDoesNotOverlap(): Promise<void> {
 async function testHeartbeatOmitsUnrelatedBackgroundPrompts(): Promise<void> {
   const root = await mkdtemp(path.join(os.tmpdir(), "biny-heartbeat-prompts-"));
   try {
-    let now = new Date(2026, 8, 6, 12);
+    let now = new Date(2026, 8, 6, 8);
     const prompts: string[] = [];
     const scheduler = new HeartbeatScheduler({
       configDir: root,
@@ -97,7 +97,7 @@ async function testHeartbeatOmitsUnrelatedBackgroundPrompts(): Promise<void> {
     assert.equal(await scheduler.triggerNow(), true);
     assert.doesNotMatch(prompts[0] ?? "", /BASE EMOTION REFRESH/u);
     assert.doesNotMatch(prompts[0] ?? "", /MISSED DIARY CATCH-UP|DAILY DIARY TIME/u);
-    now = new Date(2026, 8, 6, 13);
+    now = new Date(2026, 8, 6, 9);
     assert.equal(await scheduler.triggerNow(), true);
     assert.doesNotMatch(prompts[1] ?? "", /BASE EMOTION REFRESH/u);
     assert.doesNotMatch(prompts[1] ?? "", /MISSED DIARY CATCH-UP/u);
@@ -119,7 +119,7 @@ async function testHeartbeatEnabledGateAndCustomSchedule(): Promise<void> {
       },
       clearInterval: () => undefined
     };
-    const now = () => new Date(2026, 8, 6, 12);
+    const now = () => new Date(2026, 8, 6, 8);
 
     const disabled = new HeartbeatScheduler({
       configDir: root,

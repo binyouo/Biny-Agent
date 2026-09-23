@@ -1,9 +1,8 @@
 /**
  * 聊天每日工作日志。
  *
- * Markdown 日志是给人和 agent 看的文件型记忆，不是 durable memory 的导出格式。完成回合
- * 会先写入一条可幂等的短摘要；每日调度再从当天全部聊天摘要（并包含 Activity section）
- * 生成一段整体回顾。这样既能立即留下事实，也能在日结时得到按天的叙事。
+ * Markdown 日志是给人和 agent 看的文件型记忆，不是 durable memory 的导出格式。
+ * 显式刷新时从已完成 session 回合补齐证据，再生成按天回顾；普通聊天完成不触发写入。
  */
 import { activityDerivedMarker } from "../../activity/modelContext.js";
 import type { SelfReflectionResult } from "./selfReflection.js";
@@ -59,7 +58,7 @@ export interface ChatDiaryRefreshResult {
   reason?: "empty" | "up_to_date";
 }
 
-/** 已完成回合结束后的即时旁路写入；失败不能改变聊天回合终态。 */
+/** 显式日记刷新时补入单轮事实，以 session 和 turn 标识去重。 */
 export async function appendCompletedChatDiaryEntry(
   entry: CompletedChatDiaryEntry,
   options: { configDir?: string } = {}
@@ -188,128 +187,6 @@ export async function refreshChatDailyDiary(
   return { dateKey, written: true, backfilled, model: modelId };
 }
 
-export interface DailyDiarySchedulerTimers {
-  setTimeout: (callback: () => void, ms: number) => ReturnType<typeof setTimeout>;
-  clearTimeout: (handle: ReturnType<typeof setTimeout>) => void;
-}
-
-export interface DailyDiarySchedulerOptions {
-  run: (dateKeys: readonly string[], signal: AbortSignal) => void | Promise<void>;
-  now?: () => Date;
-  initialDelayMs?: number;
-  dailyHour?: number;
-  dailyMinute?: number;
-  catchUpDays?: number;
-  timers?: DailyDiarySchedulerTimers;
-}
-
-const defaultDailyDiaryTimers: DailyDiarySchedulerTimers = {
-  setTimeout: (callback, ms) => setTimeout(callback, ms),
-  clearTimeout: (handle) => clearTimeout(handle)
-};
-
-/** 常驻 Runtime 的每日 23:00 日结；启动后先补写最近几天漏掉的日期。 */
-export class DailyDiaryScheduler {
-  private readonly run: DailyDiarySchedulerOptions["run"];
-  private readonly now: () => Date;
-  private readonly initialDelayMs: number;
-  private readonly dailyHour: number;
-  private readonly dailyMinute: number;
-  private readonly catchUpDays: number;
-  private readonly timers: DailyDiarySchedulerTimers;
-  private timer?: ReturnType<typeof setTimeout>;
-  private initialTimer?: ReturnType<typeof setTimeout>;
-  private running = false;
-  private stopped = true;
-  private abort = new AbortController();
-  private readonly pendingDateKeys = new Set<string>();
-
-  constructor(options: DailyDiarySchedulerOptions) {
-    this.run = options.run;
-    this.now = options.now ?? (() => new Date());
-    this.initialDelayMs = options.initialDelayMs ?? 120_000;
-    this.dailyHour = options.dailyHour ?? 23;
-    this.dailyMinute = options.dailyMinute ?? 0;
-    this.catchUpDays = Math.max(1, options.catchUpDays ?? 3);
-    this.timers = options.timers ?? defaultDailyDiaryTimers;
-    if (this.dailyHour < 0 || this.dailyHour > 23 || this.dailyMinute < 0 || this.dailyMinute > 59) {
-      throw new RangeError("Daily diary time is invalid.");
-    }
-  }
-
-  start(): void {
-    if (!this.stopped) return;
-    this.stopped = false;
-    this.abort = new AbortController();
-    this.initialTimer = this.timers.setTimeout(() => {
-      this.initialTimer = undefined;
-      this.trigger(this.catchUpDateKeys());
-    }, Math.max(0, this.initialDelayMs));
-    this.initialTimer.unref?.();
-    this.scheduleNext();
-  }
-
-  stop(): void {
-    this.stopped = true;
-    this.abort.abort();
-    if (this.initialTimer !== undefined) this.timers.clearTimeout(this.initialTimer);
-    if (this.timer !== undefined) this.timers.clearTimeout(this.timer);
-    this.initialTimer = undefined;
-    this.timer = undefined;
-    this.pendingDateKeys.clear();
-  }
-
-  private scheduleNext(): void {
-    if (this.stopped) return;
-    const now = this.now();
-    const next = new Date(now.getTime());
-    next.setHours(this.dailyHour, this.dailyMinute, 0, 0);
-    if (next.getTime() <= now.getTime()) next.setDate(next.getDate() + 1);
-    this.timer = this.timers.setTimeout(() => {
-      this.timer = undefined;
-      this.trigger(this.scheduledDateKeys());
-      this.scheduleNext();
-    }, Math.max(0, next.getTime() - now.getTime()));
-    this.timer.unref?.();
-  }
-
-  private trigger(dateKeys: readonly string[]): void {
-    if (this.stopped) return;
-    for (const dateKey of dateKeys) this.pendingDateKeys.add(dateKey);
-    if (this.running || !this.pendingDateKeys.size) return;
-    const batch = [...this.pendingDateKeys];
-    this.pendingDateKeys.clear();
-    this.running = true;
-    void Promise.resolve(this.run(batch, this.abort.signal))
-      .catch(() => undefined)
-      .finally(() => {
-        this.running = false;
-        if (this.pendingDateKeys.size) this.trigger([]);
-      });
-  }
-
-  private catchUpDateKeys(): string[] {
-    const now = this.now();
-    const includeToday = isAtOrAfterDiaryTime(now, this.dailyHour, this.dailyMinute);
-    return this.dateKeys(now, includeToday);
-  }
-
-  private scheduledDateKeys(): string[] {
-    return this.dateKeys(this.now(), true);
-  }
-
-  private dateKeys(now: Date, includeToday: boolean): string[] {
-    const keys: string[] = [];
-    const firstOffset = includeToday ? 0 : 1;
-    for (let offset = firstOffset; offset <= this.catchUpDays; offset += 1) {
-      const date = new Date(now.getTime());
-      date.setDate(date.getDate() - offset);
-      keys.push(formatLocalDate(date));
-    }
-    return keys;
-  }
-}
-
 interface CompletedChatTurn {
   turnId: string;
   userMessage: string;
@@ -396,8 +273,4 @@ function formatLocalDate(date: Date): string {
 
 function formatLocalTime(date: Date): string {
   return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
-}
-
-function isAtOrAfterDiaryTime(date: Date, hour: number, minute: number): boolean {
-  return date.getHours() > hour || date.getHours() === hour && date.getMinutes() >= minute;
 }

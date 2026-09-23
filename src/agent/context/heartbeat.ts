@@ -7,6 +7,7 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { globalConfigDir } from "../../config/paths.js";
+import { readDailyMemoryNote } from "../../activity/dailyNotes.js";
 
 export interface HeartbeatSchedule {
   intervalMinutes: number;
@@ -89,6 +90,7 @@ export class HeartbeatScheduler {
   private inFlight = false;
   private lastHeartbeatAt?: string;
   private lastError?: string;
+  private diaryHintDate?: string;
 
   constructor(options: HeartbeatSchedulerOptions) {
     this.schedule = options.schedule ?? defaultHeartbeatSchedule;
@@ -135,13 +137,19 @@ export class HeartbeatScheduler {
     this.inFlight = true;
     this.lastError = undefined;
     try {
+      const now = this.now();
       const content = await this.fileStore.read();
+      const diaryHint = await this.diaryHint(now);
+      this.abort.signal.throwIfAborted();
       const promptParts = [
         content ? `HEARTBEAT.md (the user's checklist):\n${content}` : undefined,
-        "This is a quiet background check. If nothing needs the user's personal attention, reply HEARTBEAT_OK."
+        "This is a quiet background check. If nothing needs the user's personal attention, reply HEARTBEAT_OK.",
+        diaryHint
       ].filter((value): value is string => Boolean(value));
       const prompt = promptParts.join("\n\n");
       await this.run(prompt, this.abort.signal);
+      this.abort.signal.throwIfAborted();
+      if (diaryHint) this.diaryHintDate = localDateKey(now);
       this.lastHeartbeatAt = this.now().toISOString();
       return true;
     } catch (error) {
@@ -152,6 +160,30 @@ export class HeartbeatScheduler {
     }
   }
 
+  /** 提醒和写入分开：由 Agent 读取技能后决定并执行，不能在启动时绕过心跳开关写日记。 */
+  private async diaryHint(now: Date): Promise<string | undefined> {
+    const today = localDateKey(now);
+    if (this.diaryHintDate === today || now.getHours() < 10) return undefined;
+    const configDir = path.dirname(this.fileStore.path);
+    const missed: string[] = [];
+    for (let offset = 1; offset <= 3; offset += 1) {
+      const date = new Date(now);
+      date.setDate(date.getDate() - offset);
+      const dateKey = localDateKey(date);
+      if (!await readDailyMemoryNote(dateKey, { configDir })) missed.push(dateKey);
+    }
+    if (missed.length) {
+      return `MISSED DIARY CATCH-UP: Missing diary entries for ${missed.join(", ")}. Use the self-reflection skill for each date, most recent first. Gather the available evidence before writing; do not invent events for days without records.`;
+    }
+    if (now.getHours() === 23 && !await readDailyMemoryNote(today, { configDir })) {
+      return `DAILY DIARY TIME: Write today's (${today}) diary using the self-reflection skill. Gather the day's chat and activity evidence before writing.`;
+    }
+    return undefined;
+  }
+}
+
+function localDateKey(date: Date): string {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
 }
 
 export function isActiveHour(schedule: HeartbeatSchedule, date: Date): boolean {
