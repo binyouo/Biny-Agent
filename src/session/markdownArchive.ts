@@ -8,6 +8,7 @@ import { parseSessionEvents } from "./events.js";
 import { listAllSessionFiles, sessionIdFromFile } from "./store.js";
 import { withLocalFileWriteLock } from "../utils/localFileLock.js";
 import { maxSessionFileBytes } from "./limits.js";
+import { publicAssistantMessage } from "./publicMessage.js";
 
 const generatedMarker = "<!-- biny:conversation-markdown -->\n";
 export const conversationMirrorIntervalMs = 30 * 60 * 1_000;
@@ -54,7 +55,7 @@ export async function archiveConversationMarkdown(agentDir = globalAgentDir()): 
           if (await removeGeneratedFile(target)) result.removed += 1;
           continue;
         }
-        const content = generatedMarker + [`# Conversation ${id}`, ...messages.map((event) => `## ${event.type === "user_message" ? "User" : "Assistant"} · ${event.time}\n\n${event.content}`)].join("\n\n") + "\n";
+        const content = generatedMarker + [`# Conversation ${id}`, ...messages.map((event) => `## ${event.type === "user_message" ? "User" : "Assistant"} · ${event.time}\n\n${event.type === "assistant_message" ? publicAssistantMessage(event.content) : event.content}`)].join("\n\n") + "\n";
         if (await readExistingFile(target) === content) continue;
         await writeSnapshot(target, content);
         result.exported += 1;

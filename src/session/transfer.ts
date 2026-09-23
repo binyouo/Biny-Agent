@@ -27,6 +27,7 @@ import { createSessionId } from "./recorder.js";
 import { rebaseForkedSessionEvents } from "./fork.js";
 import { createSessionFile, resolveSessionFile, sessionIdFromFile } from "./store.js";
 import { refreshSessionIndex } from "./catalog.js";
+import { publicAssistantMessage } from "./publicMessage.js";
 
 /** bundle 的格式标识与版本号；导入时据此拒绝不兼容的文件。 */
 export const BINY_BUNDLE_FORMAT = "biny-session-bundle" as const;
@@ -412,7 +413,8 @@ function binyEventsToClaudeLines(events: readonly SessionEvent[]): ClaudeLine[] 
       const content: ClaudeContentBlock[] = [];
       const reasoning = reasoningTextOf(event);
       if (reasoning) content.push({ type: "thinking", thinking: reasoning });
-      if (event.content) content.push({ type: "text", text: event.content });
+      const text = publicAssistantMessage(event.content);
+      if (text) content.push({ type: "text", text });
       if (!content.length) continue;
       lines.push({ type: "assistant", timestamp: event.time, message: { role: "assistant", content } });
       continue;

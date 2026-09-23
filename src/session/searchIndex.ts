@@ -16,6 +16,7 @@ import { globalAgentDir } from "../config/paths.js";
 import { tokenizeMemoryText } from "../agent/context/memoryFormat.js";
 import { parseSessionEvents, type SessionEvent } from "./events.js";
 import { listAllSessionFiles, sessionIdFromFile } from "./store.js";
+import { publicAssistantMessage } from "./publicMessage.js";
 
 export interface SessionTranscriptHit {
   sessionId: string;
@@ -122,14 +123,15 @@ export class SessionSearchIndex {
       for (const { event, endOffset } of appended) {
         offset = endOffset;
         if (event.type !== "user_message" && event.type !== "assistant_message") continue;
-        if (!event.content.trim()) continue;
+        const content = event.type === "assistant_message" ? publicAssistantMessage(event.content) : event.content;
+        if (!content.trim()) continue;
         insert.run(
           sessionId,
           event.messageId ?? null,
           event.type === "user_message" ? "user" : "assistant",
           event.time ?? null,
-          event.content,
-          tokenizeMemoryText(event.content).join(" ")
+          content,
+          tokenizeMemoryText(content).join(" ")
         );
         indexed += 1;
       }
@@ -158,27 +160,31 @@ export class SessionSearchIndex {
     const match = tokens.map((token) => `"${token.replaceAll("\"", "\"\"")}"`).join(" ");
     const rows = (options.sessionIds === undefined
       ? database.prepare(
-        "SELECT session_id, message_id, role, time, snippet(session_transcripts, 4, '', '', '…', 24) AS excerpt " +
+        "SELECT session_id, message_id, role, time, body, snippet(session_transcripts, 4, '', '', '…', 24) AS excerpt " +
         "FROM session_transcripts WHERE session_transcripts MATCH ? " +
         "ORDER BY rank LIMIT ?"
       ).all(match, limit)
       : database.prepare(
-        "SELECT session_id, message_id, role, time, snippet(session_transcripts, 4, '', '', '…', 24) AS excerpt " +
+        "SELECT session_id, message_id, role, time, body, snippet(session_transcripts, 4, '', '', '…', 24) AS excerpt " +
         "FROM session_transcripts WHERE session_transcripts MATCH ? " +
         "AND session_id IN (SELECT value FROM json_each(?)) " +
         "ORDER BY rank LIMIT ?"
       ).all(match, JSON.stringify(options.sessionIds), limit)) as Array<Record<string, unknown>>;
-    return rows.flatMap((row) => (
-      typeof row.session_id === "string" && typeof row.excerpt === "string"
+    return rows.flatMap((row) => {
+      // 旧索引可能带协议；先清理完整正文，不能等 snippet 把标签截断后再过滤。
+      const body = typeof row.body === "string" ? row.body : "";
+      const publicBody = row.role === "assistant" ? publicAssistantMessage(body) : body;
+      const excerpt = publicBody === body ? row.excerpt : publicBody;
+      return typeof row.session_id === "string" && typeof excerpt === "string"
         ? [{
             sessionId: row.session_id,
             messageId: typeof row.message_id === "string" ? row.message_id : undefined,
             role: row.role === "assistant" ? "assistant" as const : "user" as const,
             time: typeof row.time === "string" ? row.time : undefined,
-            excerpt: row.excerpt.replaceAll("\n", " ").trim().slice(0, 500)
+            excerpt: excerpt.replaceAll("\n", " ").trim().slice(0, 500)
           }]
-        : []
-    ));
+        : [];
+    });
   }
 
   /** 删除一个会话的全部索引行；会话清理时调用。 */

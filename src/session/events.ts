@@ -18,7 +18,7 @@ import { cachedSessionEvents, sessionFileFingerprint } from "./parseCache.js";
 import { listSessionFiles, readSessionSnapshot } from "./store.js";
 import type { SessionEvent, SessionTurnStatusEvent } from "./recorder.js";
 export type { SessionEvent } from "./recorder.js";
-import { publicUserMessage } from "./publicMessage.js";
+import { publicAssistantMessage, publicUserMessage } from "./publicMessage.js";
 import { validateRuntimeEventRecord, type RuntimeEventIdentity } from "./runtimeEvent.js";
 import { contextCheckpointSchema, contextStateSchema, contextUsageSchema } from "./contextSchema.js";
 
@@ -322,7 +322,7 @@ export function summarizeSessionEvents(
   if (!firstUser) return undefined;
   const firstUserMessage = publicUserMessage(firstUser.content);
   const lastAssistant = [...events].reverse().find((event): event is Extract<SessionEvent, { type: "assistant_message" }> => event.type === "assistant_message" && Boolean(event.content));
-  const lastAssistantMessage = lastAssistant?.content ?? "";
+  const lastAssistantMessage = publicAssistantMessage(lastAssistant?.content ?? "");
   const lastTurnStatus = [...events].reverse().find((event): event is SessionTurnStatusEvent => event.type === "turn_status");
   const firstTime = events.find((event) => typeof event.time === "string")?.time;
   const lastTime = [...events].reverse().find((event) => typeof event.time === "string")?.time;

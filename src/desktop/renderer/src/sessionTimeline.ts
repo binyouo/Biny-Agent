@@ -217,17 +217,28 @@ export function buildSessionTimeline(events: SessionEvent[], liveEvents: AgentHo
   // 实时轮次的用户消息序号要接着历史的算，「编辑消息」功能依赖这个序号定位。
   const historicalUserMessages = history.filter((event) => event.type === "user_message" && !event.auditOnly).length;
   return mergeLiveRetryTurns(historicalTurns, buildLiveTurns(liveEvents, historicalUserMessages))
-    .map(publicTimelineTurn)
+    .map((turn) => publicTimelineTurn(turn))
     .filter(isVisibleTimelineTurn);
 }
 
 /** 旧 session 和旧 Host 事件里可能残留内部通知块，时间线只投影公开正文。 */
 function publicTimelineTurn(turn: TimelineTurn): TimelineTurn {
-  turn.assistant = publicAssistantMessage(turn.assistant).trimEnd();
-  for (const step of turn.steps) {
-    if (step.kind === "assistant") step.content = publicAssistantMessage(step.content).trimEnd();
-  }
-  return turn;
+  const assistant = publicAssistantMessage(turn.assistant).trimEnd();
+  let changed = assistant !== turn.assistant;
+  const steps = turn.steps.map((step) => {
+    if (step.kind !== "assistant") return step;
+    const content = publicAssistantMessage(step.content).trimEnd();
+    if (content === step.content) return step;
+    changed = true;
+    return { ...step, content };
+  });
+  // 工具前说明与最终答复完全相同时只保留答复；不同的进度说明和真实工具事件不受影响。
+  const visibleSteps = turn.status === "completed" && assistant
+    ? steps.filter((step) => !(step.kind === "assistant" && step.summary && step.content.trim() === assistant.trim()))
+    : steps;
+  changed ||= visibleSteps.length !== steps.length;
+  // 发布公开快照，不能修改增量 fold 的累积文本，否则分片标签会失去前缀而泄漏后半段。
+  return changed ? { ...turn, assistant, steps: visibleSteps } : turn;
 }
 
 function hasVersionMetadata(events: SessionEvent[]): boolean {
@@ -1023,7 +1034,7 @@ function createLiveTimelineFold(initialUserMessageIndex: number): LiveTimelineFo
           ? { ...step, tool: publishedById.get(step.tool.id) ?? step.tool }
           : step);
       }
-      const published: TimelineTurn = { ...working, assistant: liveAssistantText(working), tools, steps };
+      const published = publicTimelineTurn({ ...working, assistant: liveAssistantText(working), tools, steps });
       publishedTurns.set(runId, published);
       result.push(published);
     }
@@ -1107,7 +1118,7 @@ export function createSessionTimelineProjector(): SessionTimelineProjector {
 
   const rebuild = (events: SessionEvent[], liveEvents: AgentHostEvent[]): void => {
     const history = historicalPrefix(events, liveEvents);
-    historyTurns = (hasVersionMetadata(history) ? buildVersionedHistoricalTurns(history) : buildHistoricalTurns(history)).filter(isVisibleTimelineTurn);
+    historyTurns = (hasVersionMetadata(history) ? buildVersionedHistoricalTurns(history) : buildHistoricalTurns(history)).map((turn) => publicTimelineTurn(turn)).filter(isVisibleTimelineTurn);
     const historicalUserMessages = history.filter((event) => event.type === "user_message" && !event.auditOnly).length;
     const nextFold = createLiveTimelineFold(historicalUserMessages);
     for (const event of liveEvents) nextFold.apply(event);

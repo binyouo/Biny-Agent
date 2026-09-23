@@ -4,6 +4,7 @@
  * 每一轮交互中的用户消息、assistant 回复、工具调用、工具结果和错误都会通过这个 recorder
  * 追加成 JSONL。追加写入让长会话可以持续落盘，也方便后续 resume、压缩和记忆功能按行读取。
  */
+import { publicAssistantMessage } from "./publicMessage.js";
 import {
   closeSync,
   constants,
@@ -405,7 +406,7 @@ function redactSessionEvent(event: SessionEvent): SessionEvent {
   if (event.type === "assistant_message") {
     return {
       ...event,
-      content: redactSecrets(event.content),
+      content: redactSecrets(publicAssistantMessage(event.content)),
       reasoningContent: event.reasoningContent === undefined ? undefined : redactSecrets(event.reasoningContent),
       reasoningProviderOptions: event.reasoningProviderOptions === undefined ? undefined : redactSensitiveValue(event.reasoningProviderOptions) as Record<string, unknown>,
       reasoningBlocks: redactReasoningBlocks(event.reasoningBlocks),
@@ -418,7 +419,7 @@ function redactSessionEvent(event: SessionEvent): SessionEvent {
     return {
       ...event,
       args: redactSensitiveValue(event.args),
-      assistantContent: event.assistantContent === undefined ? undefined : redactSecrets(event.assistantContent),
+      assistantContent: event.assistantContent === undefined ? undefined : redactSecrets(publicAssistantMessage(event.assistantContent)),
       reasoningContent: event.reasoningContent === undefined ? undefined : redactSecrets(event.reasoningContent),
       reasoningProviderOptions: event.reasoningProviderOptions === undefined ? undefined : redactSensitiveValue(event.reasoningProviderOptions) as Record<string, unknown>,
       reasoningBlocks: redactReasoningBlocks(event.reasoningBlocks)

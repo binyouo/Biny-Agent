@@ -8,7 +8,7 @@
 import type { SessionEvent } from "../session/recorder.js";
 import { replaySessionEvents } from "../session/replay.js";
 import { activitySummaryText } from "../runtime/activitySummary.js";
-import { publicUserMessage } from "../session/publicMessage.js";
+import { publicAssistantMessage, publicUserMessage } from "../session/publicMessage.js";
 import { completeToolItem, createRunningToolItem } from "./toolPresentation.js";
 import type { ToolTranscriptItem, TranscriptItem } from "./types.js";
 
@@ -27,7 +27,8 @@ export function sessionEventsToTranscript(events: SessionEvent[]): TranscriptIte
     }
 
     if (event.type === "assistant_message") {
-      if (event.content) items.push({ id: replayId("assistant", index), kind: "assistant", content: event.content });
+      const content = publicAssistantMessage(event.content);
+      if (content) items.push({ id: replayId("assistant", index), kind: "assistant", content });
       continue;
     }
 

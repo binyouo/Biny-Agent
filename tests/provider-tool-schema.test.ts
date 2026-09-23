@@ -69,6 +69,9 @@ for (const adapter of adapters) {
     // 400 只用于在首个出站请求后停止；断言目标是捕获到的 adapter request body。
   }
   assert.equal(bodies.length, 1, `${adapter.label} should make one captured request`);
+  if (adapter.api === "chat_completions" || adapter.api === "responses") {
+    assert.equal((bodies[0] as { tool_choice?: string }).tool_choice, "auto", `${adapter.label} must allow a text-only answer; a greeting must not be forced to call a tool`);
+  }
   const schema = findSchema(bodies[0], "optionalObject");
   assert.ok(schema, `${adapter.label} request should contain the tool parameters schema`);
   assertObjectRequiredArrays(schema, adapter.label, "parameters", adapter.omitEmptyRequired === true);
