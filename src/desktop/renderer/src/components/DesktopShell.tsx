@@ -6,6 +6,7 @@
  */
 import { Theme } from "@astryxdesign/core/theme";
 import { neutralTheme } from "@astryxdesign/theme-neutral/built";
+import { useEffect, useState } from "react";
 import type { SidebarLayoutSnapshot } from "../../../sidebarLayout.js";
 import type { DesktopThemePreference } from "../../../protocol.js";
 
@@ -20,6 +21,7 @@ interface DesktopShellProps {
   };
   sideNav: React.ReactNode;
   sidebarLayout: SidebarLayoutSnapshot;
+  starting?: boolean;
   theme: DesktopThemePreference;
 }
 
@@ -39,7 +41,18 @@ function SidebarPinSpacer({ active }: { active: boolean }): React.JSX.Element {
   );
 }
 
-export function DesktopShell({ children, overlays, rightPanel, rightSidebar, sideNav, sidebarLayout, theme }: DesktopShellProps): React.JSX.Element {
+export function DesktopShell({ children, overlays, rightPanel, rightSidebar, sideNav, sidebarLayout, starting = false, theme }: DesktopShellProps): React.JSX.Element {
+  const [revealed, setRevealed] = useState(!starting);
+  useEffect(() => {
+    if (revealed) return;
+    const motion = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const skipMotion = (): void => {
+      if (!starting && motion.matches) setRevealed(true);
+    };
+    skipMotion();
+    motion.addEventListener("change", skipMotion);
+    return () => motion.removeEventListener("change", skipMotion);
+  }, [revealed, starting]);
   const rootStyle = {
     "--biny-sidebar-visual-width": `${sidebarLayout.visualWidth}px`,
     "--biny-sidebar-flow-width": `${sidebarLayout.flowWidth}px`,
@@ -51,14 +64,20 @@ export function DesktopShell({ children, overlays, rightPanel, rightSidebar, sid
     <Theme mode={theme} theme={neutralTheme}>
       <div
         className="desktop-root biny-root"
+        data-startup={revealed ? undefined : starting ? "loading" : "revealing"}
         data-sidebar-mode={sidebarLayout.mode}
         data-sidebar-resizing={sidebarLayout.resizing ? "true" : undefined}
         data-inspector-resizing={rightSidebar?.resizing ? "true" : undefined}
         data-sidebar-transition={sidebarLayout.transition === "idle" ? undefined : sidebarLayout.transition}
         style={rootStyle}
+        onAnimationEnd={(event) => {
+          // 聊天页最后出现的是输入区，其他页面则以主区收尾；局部动画不能提前结束启动。
+          if (event.animationName !== "biny-startup-reveal" || !(event.target instanceof HTMLElement)) return;
+          if (event.target.matches(".biny-chat-composer, .biny-content-shell")) setRevealed(true);
+        }}
       >
-        <div className="biny-app-shell">
-          <main className="biny-content-shell">{children}</main>
+        <div className="biny-app-shell" inert={starting}>
+          <main className="biny-content-shell" aria-busy={starting}>{children}</main>
           <div className="biny-sidebar-block">
             <SidebarPinSpacer active={sidebarLayout.transition === "pinning"} />
             {sideNav}

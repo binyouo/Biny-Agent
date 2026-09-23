@@ -20,6 +20,7 @@ import {
 } from "electron";
 import { z } from "zod";
 import { desktopCrystalRequestSchema } from "../../crystalProtocol.js";
+import type { DesktopThreadBriefService } from "./DesktopThreadBriefService.js";
 import type { DesktopCrystalService } from "./DesktopCrystalService.js";
 import { agentCapabilitySelectionSchema } from "../../../agent/capabilitySelection.js";
 import {
@@ -55,6 +56,7 @@ import { readDailyMemoryNote } from "../../../activity/dailyNotes.js";
 
 interface IpcContext {
   crystals: DesktopCrystalService;
+  threadBriefs: DesktopThreadBriefService;
   state: DesktopStateStore;
   projects: DesktopProjectService;
   agents: DesktopAgentManager;
@@ -781,6 +783,8 @@ export function registerDesktopIpc(context: IpcContext): void {
   handle(desktopIpc.activityReport, async (_event, date: unknown) => (
     await context.activity.buildReport(activityReportDateSchema.parse(date))
   ));
+
+  handle(desktopIpc.threadBriefRequest, async (_event, request: unknown) => await context.threadBriefs.request(request as import("../../threadBriefProtocol.js").DesktopThreadBriefRequest));
 
   handle(desktopIpc.dailyMemoryNote, async (_event, date: unknown) => {
     const dateLabel = resolveActivityReportRange(activityReportDateSchema.parse(date) ?? "today").label;

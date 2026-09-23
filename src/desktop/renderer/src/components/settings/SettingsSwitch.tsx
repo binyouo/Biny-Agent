@@ -5,6 +5,8 @@
  * 选中位移 1.25rem；选中轨道用 --accent 蓝（状态指示，不跟随黑白操作主色），
  * 未选中为文字色的半透明灰。
  */
+import React from "react";
+
 interface SettingsSwitchProps {
   checked: boolean;
   /** 说明文案可省略：开关含义已由 label 自明时不再重复解释。 */

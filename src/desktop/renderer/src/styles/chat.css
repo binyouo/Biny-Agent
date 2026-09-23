@@ -2288,26 +2288,6 @@
   margin-top: 6px;
 }
 
-.message-attachment {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 10px;
-  border: 1px solid var(--biny-border);
-  border-radius: 999px;
-  background: var(--biny-surface);
-  font-size: calc(12px * var(--font-scale, 1));
-  color: var(--biny-text-secondary);
-}
-
-.message-attachment-image {
-  max-width: 220px;
-  max-height: 160px;
-  border-radius: 10px;
-  border: 1px solid var(--biny-border);
-  object-fit: cover;
-}
-
 /* 用户消息编辑器：迷你 composer——整卡聚焦、无框输入区、底栏快捷键提示 + 圆形发送钮（复用 .biny-send-button）。 */
 .user-message-editor {
   display: flex;

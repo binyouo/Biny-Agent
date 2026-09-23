@@ -88,6 +88,8 @@ export type IconName =
   | "site"
   | "spark"
   | "stop"
+  | "pause"
+  | "play"
   | "sun"
   | "terminal"
   | "timer"
@@ -216,6 +218,8 @@ function pathFor(name: IconName): React.JSX.Element {
     case "settings": return <><circle {...common} cx="12" cy="12" r="3" /><path {...common} d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2.8 2.8-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6v.2h-4V21a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1L4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9A1.7 1.7 0 0 0 3 14H2.8v-4H3a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9L4.2 7 7 4.2l.1.1a1.7 1.7 0 0 0 1.9.3A1.7 1.7 0 0 0 10 3v-.2h4V3a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1L19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.2v4H21a1.7 1.7 0 0 0-1.6 1Z" /></>;
     case "site": return <><circle {...common} cx="12" cy="12" r="9" /><path {...common} d="M3.5 12h17M12 3c2.4 2.5 3.5 5.5 3.5 9S14.4 18.5 12 21c-2.4-2.5-3.5-5.5-3.5-9S9.6 5.5 12 3Z" /></>;
     case "spark": return <><path {...common} d="M11.017 2.814a1 1 0 0 1 1.966 0l1.051 5.558a2 2 0 0 0 1.594 1.594l5.558 1.051a1 1 0 0 1 0 1.966l-5.558 1.051a2 2 0 0 0-1.594 1.594l-1.051 5.558a1 1 0 0 1-1.966 0l-1.051-5.558a2 2 0 0 0-1.594-1.594l-5.558-1.051a1 1 0 0 1 0-1.966l5.558-1.051a2 2 0 0 0 1.594-1.594z" /><path {...common} d="M20 2v4M22 4h-4" /><circle {...common} cx="4" cy="20" r="2" /></>;
+    case "play": return <path d="M8 5.5a1 1 0 0 1 1.5-.86l10 6a1 1 0 0 1 0 1.72l-10 6A1 1 0 0 1 8 17.5Z" fill="currentColor" />;
+    case "pause": return <><rect fill="currentColor" height="14" rx="1" width="4" x="5" y="5" /><rect fill="currentColor" height="14" rx="1" width="4" x="15" y="5" /></>;
     case "stop": return <rect fill="currentColor" height="9" rx="2" width="9" x="7.5" y="7.5" />;
     case "sun": return <><circle {...common} cx="12" cy="12" r="4" /><path {...common} d="M12 2.5V5M12 19v2.5M2.5 12H5M19 12h2.5M5.3 5.3 7 7M17 17l1.7 1.7M18.7 5.3 17 7M7 17l-1.7 1.7" /></>;
     case "terminal": return <><rect {...common} height="16" rx="2" width="19" x="2.5" y="4" /><path {...common} d="m6 9 3 3-3 3M12 15h5" /></>;

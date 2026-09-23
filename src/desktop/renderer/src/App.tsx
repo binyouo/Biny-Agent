@@ -5,8 +5,9 @@
  * 与 Composer 本地交互分别下沉到 `app/` 和对应组件。子组件通过回调表达意图，不直接持有
  * Agent、Session 或 Provider。
  */
+import { useThreadBrief } from "./threadBrief/context.js";
 import { hasSubmittedUserMessage } from "./chatModel.js";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { AgentCapabilitySelection } from "../../../agent/capabilitySelection.js";
 import type { ContextBudgetStatus } from "../../../agent/context/types.js";
 import type { PermissionResult } from "../../../permission/PermissionManager.js";
@@ -49,7 +50,7 @@ import {
 } from "./navigationHistory.js";
 import { collectSessionChanges } from "./sessionChanges.js";
 import { listChangedFiles, type TimelineTurn } from "./sessionTimeline.js";
-import { splitAttachmentReferences } from "../../attachmentReferences.js";
+import { splitAttachmentReferences, withAttachmentReferences } from "../../attachmentReferences.js";
 import { desktopApiVersionMismatchMessage, errorMessage } from "./app/desktopApi.js";
 import {
   applyProjectOrder,
@@ -113,6 +114,8 @@ function DesktopApp(): React.JSX.Element {
   const [writerConflict, setWriterConflict] = useState<DesktopSessionWriterConflict>();
   const [selectedSessionId, setSelectedSessionId] = useState<string>();
   const [loading, setLoading] = useState(true);
+  // 启动与后续会话加载分开，避免导航时再次隐藏整个客户端。
+  const [starting, setStarting] = useState(true);
   const [filePanelWidth, setFilePanelWidth] = useState(DEFAULT_FILE_PANEL_WIDTH);
   const [filePanelResizing, setFilePanelResizing] = useState(false);
   // index.html 会在 CSS 加载前写入首帧主题；首次渲染必须沿用它，否则 Astryx Theme
@@ -311,6 +314,18 @@ function DesktopApp(): React.JSX.Element {
       : replaceProjectSessions(current, snapshot.project.id, snapshot.sessions));
     if (projectRef.current === snapshot.project.id) setWorkspace(snapshot);
   }, []);
+
+  const threadBriefState = useThreadBrief();
+  const briefProjectIds = threadBriefState?.snapshot?.projects.map((project) => project.projectId).sort().join("\0") ?? "";
+  useEffect(() => {
+    let cancelled = false;
+    for (const projectId of briefProjectIds.split("\0").filter(Boolean)) {
+      void window.biny.refreshProject(projectId).then((snapshot) => {
+        if (!cancelled) mergeProjectSnapshot(snapshot);
+      }).catch(() => undefined);
+    }
+    return () => { cancelled = true; };
+  }, [briefProjectIds, mergeProjectSnapshot]);
 
   const loadProjectBranches = useCallback(async (projectId: string): Promise<void> => {
     const request = branchRequestRef.current + 1;
@@ -646,6 +661,8 @@ function DesktopApp(): React.JSX.Element {
       if (!active) return;
       setLoading(false);
       setWarning(`Biny 启动失败：${errorMessage(error)}`);
+    }).finally(() => {
+      if (active) setStarting(false);
     });
     return () => { active = false; };
   }, [commitNavigation, mergeWorkspaceProject, openSession, setSidebarExpandedWidth]);
@@ -653,7 +670,10 @@ function DesktopApp(): React.JSX.Element {
   // 生成错误横幅（会话瞬态）：由事件桥在 live 失败事件到达时置位、新一轮开始（run.started）
   // 时清除，与 document 的重放/终态刷新完全解耦——历史重放永不弹，横幅也不会被刷新闪退掉。
   const [generationError, setGenerationError] = useState<string>();
-  const clearGenerationError = useCallback((): void => setGenerationError(undefined), []);
+  const resumeFlightRef = useRef(false);
+  const clearGenerationError = useCallback((): void => {
+    setGenerationError(undefined);
+  }, []);
 
   useEffect(() => { void refreshPlans().catch(reportEventError); }, [selectedSessionId, workspace?.project.id, refreshPlans, reportEventError]);
 
@@ -924,9 +944,10 @@ function DesktopApp(): React.JSX.Element {
       capabilitySelection,
       undefined
     );
+    // 发送途中切换会话时，不让迟到回执把用户拉回原聊天。
+    if (loadRequestRef.current !== navigationRequest) return receipt;
     if (switchingDraftProject) {
       // 消息已在目标项目创建后再切换界面；这样切换前不会重绘左侧栏，也不会丢掉目标运行产生的首批事件。
-      if (loadRequestRef.current !== navigationRequest) return receipt;
       try {
         const snapshot = await window.biny.selectProject(projectId);
         if (loadRequestRef.current !== navigationRequest) return receipt;
@@ -967,21 +988,41 @@ function DesktopApp(): React.JSX.Element {
     }
   }, [openSession]);
 
+  const continueInterrupted = useCallback(async (): Promise<void> => {
+    const projectId = projectRef.current;
+    const sessionId = selectedRef.current;
+    if (!projectId || !sessionId || resumeFlightRef.current) return;
+    resumeFlightRef.current = true;
+    try {
+      const receipt = await window.biny.resumeInterruptedTurn(projectId, sessionId);
+      if (projectRef.current !== projectId || selectedRef.current !== sessionId) return;
+      if (receipt) {
+        setGenerationError(undefined);
+        setDocument((current) => current?.session.id === sessionId ? { ...current, recovery: undefined } : current);
+      } else {
+        await openSession(projectId, sessionId, false);
+      }
+    } finally {
+      resumeFlightRef.current = false;
+    }
+  }, [openSession]);
+
   // 发送直接进入聊天布局；临时用户消息覆盖 IPC/事件桥的空窗，真实事件到达后自动替换。
   const sendPromptWithTransition = useCallback(async (input: string, attachments: DesktopAttachment[], delivery?: "steer" | "queue", idempotencyKey?: string, capabilitySelection?: AgentCapabilitySelection): Promise<void> => {
     setGenerationError(undefined);
-    const pendingProjectId = selectedRef.current === undefined ? draftProjectId ?? projectRef.current : undefined;
+    const pendingProjectId = selectedRef.current === undefined ? draftProjectId ?? projectRef.current : projectRef.current;
     const pendingId = idempotencyKey ?? globalThis.crypto.randomUUID();
     if (pendingProjectId) {
       setPendingPrompt({
         id: pendingId,
         projectId: pendingProjectId,
         sessionId: selectedRef.current,
-        text: input
+        messageId: pendingId,
+        text: withAttachmentReferences(input, attachments)
       });
     }
     try {
-      const receipt = await sendPrompt(input, attachments, delivery, idempotencyKey, capabilitySelection);
+      const receipt = await sendPrompt(input, attachments, delivery, pendingId, capabilitySelection);
       if (pendingProjectId) {
         setPendingPrompt((current) => current?.id === pendingId
           ? { ...current, sessionId: receipt.sessionId, messageId: receipt.messageId }
@@ -1141,7 +1182,8 @@ function DesktopApp(): React.JSX.Element {
 
   // 字号通过 --app-font-size 驱动样式表里的 --font-scale 等比缩放全部文字；
   // 自定义字体族插到默认字体栈前面，缺字时仍能落到系统 CJK 字体。
-  useEffect(() => {
+  useLayoutEffect(() => {
+    // 字体影响文字和控件尺寸，必须在首屏绘制前应用，避免淡入后再改变布局。
     const style = window.document.documentElement.style;
     style.setProperty("--app-font-size", String(fontPreference.size));
     if (fontPreference.family === SYSTEM_FONT_FAMILY) style.removeProperty("--font-sans");
@@ -1307,12 +1349,15 @@ function DesktopApp(): React.JSX.Element {
       && (pending.sessionId === undefined
         ? selectedSessionId === undefined
         : pending.sessionId === selectedSessionId);
-    const hasRealMessage = pending.messageId !== undefined
-      && hasSubmittedUserMessage(turns, pending.messageId, pending.text);
-    if (!stillSelected || hasRealMessage) {
+    const hasRealMessage = hasSubmittedUserMessage(turns, pending.messageId);
+    const runtime = pending.sessionId === undefined ? undefined
+      : workspace?.sessionRuntimes?.[pending.sessionId]
+        ?? (workspace?.runtime?.info.sessionId === pending.sessionId ? workspace.runtime : undefined);
+    const hasQueuedMessage = runtime?.queuedMessages?.some((message) => message.messageId === pending.messageId);
+    if (!stillSelected || hasRealMessage || hasQueuedMessage) {
       setPendingPrompt((current) => current?.id === pending.id ? undefined : current);
     }
-  }, [pendingPrompt, selectedSessionId, turns, workspace?.project.id]);
+  }, [pendingPrompt, selectedSessionId, turns, workspace]);
   // 以下三个回调会一路传到 MessageTimeline 的 Turn（React.memo）；内联箭头会让引用每帧变化、
   // memo 失效，所以这里用 useCallback 固定下来，配合轮次引用稳定让流式期间只重渲染变化的轮次。
   const retryTimelinePrompt = useCallback(async (targetMessageId: string, input: string, idempotencyKey: string): Promise<void> => {
@@ -1586,6 +1631,8 @@ function DesktopApp(): React.JSX.Element {
       models={workspace?.pickerModels ?? workspace?.models ?? []}
       onSaveAttachment={saveAttachment}
       onSend={sendPromptWithTransition}
+      recovery={!loading && document?.session.id === selectedSessionId ? document?.recovery : undefined}
+      onResume={continueInterrupted}
       onMutateQueuedMessage={mutateQueuedMessage}
       onSubmitError={setGenerationError}
       editingMessage={composerEditingMessage}
@@ -1610,13 +1657,14 @@ function DesktopApp(): React.JSX.Element {
       resourceState={selectedRuntimeSnapshot?.resourceReadiness?.state}
       resourceRevision={selectedRuntimeSnapshot?.resourceReadiness?.revision}
       skillWarnings={composerSkillWarnings}
-      runtimeInfo={workspace?.runtime?.info}
+      runtimeInfo={selectedRuntimeSnapshot?.info}
     />
     </>
   );
 
   return (
     <DesktopShell
+      starting={starting}
       overlays={(
         <>
           <SearchOverlay

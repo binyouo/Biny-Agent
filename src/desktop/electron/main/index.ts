@@ -7,6 +7,7 @@
  * 单实例锁：第二个实例直接退出，因为多个进程同时读写同一份桌面状态和 session 会互相覆盖。
  */
 import { permissionPresentation } from "../../../permission/presentation.js";
+import { redactSecrets } from "../../../utils/secrets.js";
 import path from "node:path";
 import { app, BrowserWindow, dialog, globalShortcut, nativeImage, net, Notification, shell } from "electron";
 import type { DesktopBootstrap, DesktopSessionHandoff } from "../../protocol.js";
@@ -19,6 +20,7 @@ import { DesktopConfigStore } from "./DesktopConfigStore.js";
 import { DesktopMcpService } from "./DesktopMcpService.js";
 import { DesktopProjectService } from "./DesktopProjectService.js";
 import { DesktopSkillService } from "./DesktopSkillService.js";
+import { DesktopThreadBriefService } from "./DesktopThreadBriefService.js";
 import { DesktopCrystalService } from "./DesktopCrystalService.js";
 import { DesktopStateStore } from "./DesktopStateStore.js";
 import { DesktopSettingsCloseCoordinator } from "./DesktopSettingsCloseCoordinator.js";
@@ -115,6 +117,21 @@ async function startDesktopApplication(): Promise<void> {
     // QuickChat 隐藏时渲染层不消费事件；窗口已创建则无论显隐都推，让它在下次唤醒前攒好状态。
     quickChatWindow?.send(channel, payload);
   };
+  const threadBriefs = new DesktopThreadBriefService({
+    configStore, state, projects,
+    onChange: () => broadcastToWindows(desktopIpc.threadBriefChanged, {}),
+    chooseProjectDirectory: async (suggestion) => {
+      const options = {
+        title: "选择项目保存位置",
+        buttonLabel: "选择",
+        defaultPath: path.join(app.getPath("documents"), suggestion.name.replace(/[/\\:*?"<>|]/gu, "-").replace(/^\.+/u, "") || "project"),
+        message: "选择项目保存位置。确认创建前不会创建目录。"
+      };
+      const result = mainWindow ? await dialog.showSaveDialog(mainWindow, options) : await dialog.showSaveDialog(options);
+      return result.canceled ? undefined : result.filePath;
+    }
+  });
+  await threadBriefs.initialize();
   const settingsClose = new DesktopSettingsCloseCoordinator();
   // 浏览器控制面先于 Agent Host 启动，这样独立 Runtime Host 也能拿到同一个可见窗口。
   // 回调只在用户/Agent 真的触碰 cookie 或浏览器动作时执行，此时 agents 已完成装配。
@@ -127,6 +144,11 @@ async function startDesktopApplication(): Promise<void> {
   const agents = new DesktopAgentManager(state, projects, configStore, (projectId, update, meta) => {
     broadcastToWindows(desktopIpc.event, { projectId, ...update, ...meta });
     const event = update.event;
+    if (event?.type === "run.completed" && event.sessionId) {
+      void threadBriefs.engine.enqueue(event.sessionId).catch((error: unknown) => {
+        console.warn("[ThreadBrief]", redactSecrets(error instanceof Error ? error.message : String(error)));
+      });
+    }
     // 只有窗口不在前台时才发系统通知：界面上已经能看到权限询问就不用再打扰一次。
     if (event?.type === "permission.requested" && (!mainWindow || !mainWindow.isFocused() || !mainWindow.isVisible()) && Notification.isSupported()) {
       new Notification({
@@ -199,11 +221,14 @@ async function startDesktopApplication(): Promise<void> {
     if (activeProjectId && !allProjects.some((project) => project.id === activeProjectId)) activeProjectId = undefined;
     activeProjectId ??= allProjects.at(0)?.id;
     if (activeProjectId !== state.activeProjectId()) await state.setActiveProject(activeProjectId);
-    const workspace = activeProjectId ? await agents.workspaceSnapshot(activeProjectId) : undefined;
     const explicitSessionId = initialTarget !== undefined && initialTarget.projectId === activeProjectId
       ? initialTarget.sessionId
       : undefined;
     const activeView = explicitSessionId === undefined ? state.activeView() : "chat";
+    // 聊天首屏需要实际模型/思考档位；扩展页仍只读配置，不因打开扩展而启动 Runtime。
+    const workspace = activeProjectId
+      ? await (activeView === "extensions" ? agents.workspaceSnapshot(activeProjectId) : agents.prepareWorkspace(activeProjectId))
+      : undefined;
     const storedSessionId = activeProjectId === undefined ? undefined : state.selectedSessionId(activeProjectId);
     const restorableSessionId = storedSessionId && workspace?.sessions.some((session) => session.id === storedSessionId)
       ? storedSessionId
@@ -239,14 +264,14 @@ async function startDesktopApplication(): Promise<void> {
       type: "question",
       title: "任务仍在运行",
       message: "Biny 仍有正在运行或等待权限的任务。",
-      detail: "关闭 Biny 会中止当前任务；如果暂时不关闭，请取消此操作。",
-      buttons: ["中止并关闭", "取消"],
+      detail: "关闭后暂停当前任务并保留已保存的进度，重新打开后可在输入框继续。",
+      buttons: ["暂停并关闭", "取消"],
       defaultId: 0,
       cancelId: 1,
       noLink: true
     });
     if (response.response === 0) {
-      await agents.stopAllForExit();
+      await agents.pauseAllForExit();
       return "close";
     }
     return "cancel";
@@ -279,6 +304,7 @@ async function startDesktopApplication(): Promise<void> {
 
   registerDesktopIpc({
     crystals,
+    threadBriefs,
     state,
     projects,
     agents,
@@ -340,8 +366,8 @@ async function startDesktopApplication(): Promise<void> {
           const response = await showMessage(mainWindow, {
             type: "warning",
             title: "退出 Biny",
-            message: "退出会中止所有正在运行的任务。",
-            buttons: ["中止并退出", "取消"],
+            message: "退出后暂停任务并保留已保存的进度，重新打开后由你继续。",
+            buttons: ["暂停并退出", "取消"],
             defaultId: 1,
             cancelId: 1,
             noLink: true
@@ -349,7 +375,8 @@ async function startDesktopApplication(): Promise<void> {
           if (response.response !== 0) return;
         }
         confirmed = true;
-        if (hadRunningTasks) await agents.stopAllForExit();
+        if (hadRunningTasks) await agents.pauseAllForExit();
+        await threadBriefs.close();
         terminals.disposeAll();
         // 全局快捷键与悬浮窗是真正的资源，退出前必须释放，避免占用快捷键或残留窗口。
         globalShortcut.unregisterAll();
@@ -361,7 +388,7 @@ async function startDesktopApplication(): Promise<void> {
         await mcp.dispose();
         mainWindow?.destroy();
         await Promise.race([
-          agents.closeAll({ terminateOwnedHosts: true }),
+          agents.closeAll(),
           new Promise<void>((resolve) => setTimeout(resolve, 5_000))
         ]);
       } finally {

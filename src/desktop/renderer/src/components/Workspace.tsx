@@ -4,6 +4,7 @@
  * 新建页使用紧凑的单框布局；已有会话继续沿用 Biny 的时间线、
  * 权限和文件检查器回调。页面层只负责把这些能力放到正确的视觉区域。
  */
+import { ProjectSuggestionBanner } from "../threadBrief/ProjectSuggestionBanner.js";
 import type { PermissionResult } from "../../../../permission/PermissionManager.js";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { ThinkingOrb } from "thinking-orbs";
@@ -22,13 +23,13 @@ import { RecipeReadyBanner } from "./RecipeReadyBanner.js";
 import { SkillExtractionCard } from "./SkillExtractionCard.js";
 import { PlanPanel } from "./workspace/PlanPanel.js";
 
-/** 新会话首条消息的临时投影；真实 message.user 到达后由 App 清掉。 */
+/** 发送消息的临时投影；真实消息或队列接管后由 App 清掉。 */
 export interface PendingPrompt {
   id: string;
   projectId: string;
   text: string;
   sessionId?: string;
-  messageId?: string;
+  messageId: string;
 }
 
 interface WorkspaceProps {
@@ -83,7 +84,7 @@ interface WorkspaceProps {
   workspaceContext?: React.ReactNode;
   /** 工具入口与按产出显示的右上角资源按钮相互独立。 */
   inspectorRail?: React.ReactNode;
-  /** 新会话首条消息的临时投影；真实事件到达后由 App 清掉。 */
+  /** 发送消息的临时投影；真实事件到达后由 App 清掉。 */
   pendingPrompt?: PendingPrompt;
   skillDescriptions?: ReadonlyMap<string, string>;
   /** 顶部工具条：自动化/技能入口（搜索与新建任务在侧栏 chrome）。 */
@@ -143,7 +144,7 @@ export function Workspace({
 }: WorkspaceProps): React.JSX.Element {
   const visiblePendingPrompt = pendingPrompt && pendingPrompt.projectId === projectId
     && (pendingPrompt.sessionId === undefined || pendingPrompt.sessionId === sessionId)
-    && !hasSubmittedUserMessage(turns, pendingPrompt.messageId, pendingPrompt.text)
+    && !hasSubmittedUserMessage(turns, pendingPrompt.messageId)
     ? pendingPrompt
     : undefined;
   const streaming = running || visiblePendingPrompt !== undefined || turns.some((turn) => turn.status === "running" || turn.status === "waiting_permission");
@@ -262,7 +263,7 @@ export function Workspace({
             <div className="biny-chat-empty"><Icon name="message" size={20} /><span>开始一段新的对话</span></div>
           )}
         </div>
-        <div className={`biny-chat-composer${visiblePendingPrompt ? " is-entering" : ""}`}>
+        <div className={`biny-chat-composer${visiblePendingPrompt && turns.length === 0 ? " is-entering" : ""}`}>
             {sessionId && !writerConflict ? <PlanPanel sessionId={sessionId} planning={planning === true} busy={running} projection={planProjection} onMutation={onRuntimeMutation} onError={onRuntimeError} /> : null}
             {recipeNotices && recipeNotices.length > 0 && projectId ? (
               <div className="biny-recipe-ready-notices">
@@ -273,6 +274,7 @@ export function Workspace({
                 />
               </div>
             ) : null}
+            <ProjectSuggestionBanner key={sessionId} sessionId={sessionId} />
             {skillExtraction ? <SkillExtractionCard state={skillExtraction} onDismiss={() => onDismissSkillExtraction?.()} /> : null}
             {generationError ? (
               <GenerationErrorBanner error={generationError} model={generationError === lastTurn?.error ? lastTurn?.model?.label : undefined} onDismiss={onDismissGenerationError} />

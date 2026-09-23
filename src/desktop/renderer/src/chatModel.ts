@@ -8,8 +8,8 @@ import type { SessionUsage } from "../../../session/metadata.js";
 import { countDiffStats } from "./sessionChanges.js";
 
 /** 实时与历史消息共用同一身份判断，已接收的消息不再保留发送占位或驱动忙碌状态。 */
-export function hasSubmittedUserMessage(turns: TimelineTurn[], messageId: string | undefined, content: string): boolean {
-  return turns.some((turn) => messageId !== undefined ? turn.userMessageId === messageId : turn.user === content);
+export function hasSubmittedUserMessage(turns: TimelineTurn[], messageId: string | undefined): boolean {
+  return messageId !== undefined && turns.some((turn) => turn.userMessageId === messageId);
 }
 
 /**

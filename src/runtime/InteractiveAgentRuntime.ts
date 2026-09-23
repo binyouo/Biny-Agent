@@ -501,7 +501,7 @@ export class InteractiveAgentRuntime {
     }
     this.activeRun = run;
     this.activeRunController = controller;
-    // admission 同步占用运行状态；不能等异步账本写入后才让 Host 的配额看到这个 run。
+    // admission 同步发布运行状态，确保后续消息入队、取消和同会话互斥都能看到这个 run。
     this.state = { kind: "runs", activeRun: {
       sessionId, runId, messageId, input, status: run.status,
       startedAt: run.startedAt, retryOfMessageId: run.retryOfMessageId
@@ -521,7 +521,8 @@ export class InteractiveAgentRuntime {
           if (this.activeRunController === controller) this.activeRunController = undefined;
           if (this.activeRunCompletion === completion) this.activeRunCompletion = undefined;
         }
-        this.scheduleQueuedMessageRun(run);
+        // 关闭暂停不能被队列收尾重新启动；等用户明确继续后再调度。
+        if (cancellationReason(controller.signal) !== "paused") this.scheduleQueuedMessageRun(run);
         this.releaseSessionLeaseIfIdle();
       });
     this.activeRunCompletion = completion;
@@ -1349,6 +1350,7 @@ export class InteractiveAgentRuntime {
       output: turn?.output ?? "",
       durationMs,
       usage: turn?.usage,
+      resumable: turn?.resumable,
       error: publicReason
     };
     await this.commitTerminal(run, outcome, {
@@ -1357,6 +1359,7 @@ export class InteractiveAgentRuntime {
       stopReason: turn?.stopReason ?? cancellation,
       finishReason: turn?.finishReason,
       steps: turn?.steps ?? 0,
+      resumable: turn?.resumable,
       error: publicReason
     });
     this.emit({
@@ -1744,6 +1747,7 @@ function readAgentTurnStopReason(value: unknown, status: AgentTurnStatus): Agent
     || value === "interrupted"
     || value === "replaced"
     || value === "cancelled"
+    || value === "paused"
     || value === "aborted"
     || value === "budget_exhausted"
   ) return value;

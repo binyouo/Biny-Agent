@@ -1,10 +1,10 @@
 /**
  * 桌面端 agent 运行时管理。
  *
- * 每个项目一个主 runtime handle，按需懒创建并缓存在 `runtimes` 里；当前进程可能是
+ * 每个项目一个主 runtime handle，按需懒创建并缓存在 `runtimes` 里。
  * 根据凭据存储能力，主 runtime 可以在当前 Electron 进程内运行、成为 Runtime Host owner，
  * 或 attach 到其它 Desktop/TUI owner。多 session 的 runtime 注册、创建、回收和事件路由
- * 统一由 Runtime Host 负责；Desktop 进程只保留一个 Host client 或同进程 fallback。
+ * 统一由 Runtime Host 负责；Desktop 进程只保留一个 Host client 或同进程 owner。
  *
  * 几处需要注意的状态：
  * - `runtimeInitializations` 缓存正在创建中的 promise，避免并发请求把同一个项目初始化两次；
@@ -30,7 +30,6 @@ import type {
 import { MemoryStorage } from "../../../agent/context/memoryStorage.js";
 import { resolveToolModelAlias } from "../../../llm/toolModel.js";
 import { IdentityStorage } from "../../../agent/context/identityStorage.js";
-import type { ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
@@ -161,7 +160,6 @@ interface ManagedRuntime {
   runtime: InteractiveRuntimeHandle;
   commands?: CommandRuntime;
   host?: RuntimeHostServer;
-  spawnedHost?: ChildProcess;
   unsubscribe(): void;
 }
 
@@ -270,6 +268,17 @@ export class DesktopAgentManager {
         return;
       }
     }
+  }
+
+  /** 首屏先取得 Runtime 的模型与上下文状态，避免界面亮起后再从占位模型跳到实际模型。
+   * 工具连接仍在 Host 后台准备；失败必须连同历史返回，让用户能在设置中修复配置。 */
+  async prepareWorkspace(projectId: string): Promise<DesktopWorkspaceSnapshot> {
+    try {
+      await this.ensureRuntime(projectId);
+    } catch (error) {
+      this.runtimeErrors.set(projectId, formatRuntimeInitializationError(error));
+    }
+    return await this.workspaceSnapshot(projectId);
   }
 
   async workspaceSnapshot(projectId: string): Promise<DesktopWorkspaceSnapshot> {
@@ -628,7 +637,8 @@ export class DesktopAgentManager {
       personalization,
       promptContext,
       capabilitySelection,
-      draftPlanning
+      draftPlanning,
+      idempotencyKey?.trim() || undefined
     ));
   }
 
@@ -641,7 +651,8 @@ export class DesktopAgentManager {
     personalization?: DesktopChatPersonalizationOverride,
     promptContext?: string,
     capabilitySelection?: AgentCapabilitySelection,
-    draftPlanning?: boolean
+    draftPlanning?: boolean,
+    messageId?: string
   ): Promise<DesktopRunReceipt> {
     const sendPerfStartedAt = perfNow();
     const selectedBeforeSend = this.state.selectedSessionId(projectId);
@@ -660,13 +671,15 @@ export class DesktopAgentManager {
     const attachmentsPerfStartedAt = perfNow();
     const nativeAttachments = await loadNativeAttachments(this.projects.attachmentsRoot(project), attachments);
     recordPerfPhase("desktop.loadAttachments", attachmentsPerfStartedAt, { count: attachments.length }, project.path);
+    // 前端发送占位与持久用户消息共用身份，重复文本、事件先于回执到达也不会误合并。
+    const requestIds = { messageId };
     if (runtimeIsBusy(snapshot)) {
       const queued: HostOperationResult<import("../../../runtime/InteractiveAgentRuntime.js").QueuedAgentMessage> = runtime instanceof RuntimeHostClient
-        ? await runtime.queueRunMessageForSession(targetSessionId, prompt, delivery === "steer" ? "steer" : "queue", nativeAttachments)
+        ? await runtime.queueRunMessageForSession(targetSessionId, prompt, delivery === "steer" ? "steer" : "queue", nativeAttachments, requestIds)
         : {
             accepted: true,
             revision: snapshot.revision,
-            result: delivery === "steer" ? await runtime.steer(prompt, nativeAttachments) : await runtime.enqueue(prompt, nativeAttachments)
+            result: delivery === "steer" ? await runtime.steer(prompt, nativeAttachments, requestIds) : await runtime.enqueue(prompt, nativeAttachments, requestIds)
           };
       if (!queued.accepted || queued.result === undefined) {
         throw new Error(queued.reason ?? "Runtime Host did not accept the queued message.");
@@ -686,7 +699,7 @@ export class DesktopAgentManager {
         targetSessionId,
         prompt,
         nativeAttachments,
-        undefined,
+        requestIds,
         promptContext,
         capabilitySelection
       );
@@ -700,7 +713,7 @@ export class DesktopAgentManager {
         messageId: accepted.result.messageId
       };
     }
-    const submitted = runtime.submitPrompt(prompt, nativeAttachments, undefined, promptContext, capabilitySelection);
+    const submitted = runtime.submitPrompt(prompt, nativeAttachments, requestIds, promptContext, capabilitySelection);
     if (this.draftSessionIds.get(projectId) === targetSessionId) this.draftSessionIds.delete(projectId);
     if (this.state.selectedSessionId(projectId) === selectedBeforeSend) await this.state.setSelectedSession(projectId, info.sessionId);
     this.observeRunCompletion(projectId, submitted.completion);
@@ -961,11 +974,11 @@ export class DesktopAgentManager {
     if (runtime instanceof RuntimeHostClient) {
       const targetSessionId = runtime.runtimeSnapshots()
         .find((entry) => activeRun(entry.snapshot)?.runId === runId)?.sessionId;
-      const result = await runtime.cancelRunRequest(runId, "interrupted", targetSessionId);
+      const result = await runtime.cancelRunRequest(runId, "paused", targetSessionId);
       if (!result.accepted) throw new Error(result.reason ?? "Runtime Host did not accept cancellation.");
       return;
     }
-    if (!runtime.cancelRun(runId, "interrupted")) throw new Error(`Run ${runId} is not active.`);
+    if (!runtime.cancelRun(runId, "paused")) throw new Error(`Run ${runId} is not active.`);
   }
 
   async resolvePermission(projectId: string, requestId: string, result: PermissionResult): Promise<void> {
@@ -2469,7 +2482,7 @@ export class DesktopAgentManager {
     this.draftSessionIds.delete(projectId);
     const managed = this.runtimes.get(projectId);
     if (!managed) return;
-    await this.closeManagedRuntime(managed, { terminateOwnedHosts: true });
+    await this.closeManagedRuntime(managed);
     this.runtimes.delete(projectId);
   }
 
@@ -2516,10 +2529,10 @@ export class DesktopAgentManager {
   }
 
   /**
-   * Desktop 显式停止/退出时，必须先让取消请求到达 remote Host 并等待快照收敛。
-   * 超时只是不再阻塞窗口关闭；本次 Desktop 自己启动的 owner 会在 closeAll 中被回收。
+   * Desktop 关闭时先让暂停请求到达 Host，保留断点并等待快照收敛。
+   * 超时只是不再阻塞窗口关闭；Host 仍负责执行收尾和落盘。
    */
-  async stopAllForExit(timeoutMs = 2_500): Promise<void> {
+  async pauseAllForExit(timeoutMs = 2_500): Promise<void> {
     const projectIds = new Set(this.runtimes.keys());
     await Promise.all([...projectIds].flatMap((projectId) => this.runtimeEntries(projectId).map(async ({ runtime }) => {
       const deadline = Date.now() + timeoutMs;
@@ -2528,12 +2541,12 @@ export class DesktopAgentManager {
           .map(({ sessionId, snapshot }) => ({ sessionId, run: activeRun(snapshot) }))
           .filter((entry): entry is { sessionId: string; run: NonNullable<ReturnType<typeof activeRun>> } => entry.run !== undefined);
         await Promise.all(runs.map(async ({ sessionId, run }) => {
-          await waitForRuntimeOperation(runtime.cancelRunRequest(run.runId, "cancelled", sessionId), remainingTimeout(deadline));
+          await waitForRuntimeOperation(runtime.cancelRunRequest(run.runId, "paused", sessionId), remainingTimeout(deadline));
         }));
       } else {
         const run = activeRun(runtime.getSnapshot());
-        if (run) runtime.cancelRun(run.runId, "cancelled");
-        else runtime.cancelCurrentRun("cancelled");
+        if (run) runtime.cancelRun(run.runId, "paused");
+        else runtime.cancelCurrentRun("paused");
       }
       await waitForRuntimeIdle(runtime, remainingTimeout(deadline));
     })));
@@ -2543,7 +2556,7 @@ export class DesktopAgentManager {
    * 退出前收尾。先置 `closing` 挡住新的创建请求，再等正在初始化的运行时结束（否则它们会
    * 在关闭之后才注册进来，成为泄漏的运行时），最后统一取消订阅并关闭。
    */
-  async closeAll(options: { terminateOwnedHosts?: boolean } = { terminateOwnedHosts: true }): Promise<void> {
+  async closeAll(): Promise<void> {
     this.closing = true;
     for (const operation of this.modelLoginOperations.values()) operation.abort(new DOMException("Desktop is shutting down", "AbortError"));
     this.modelLoginOperations.clear();
@@ -2555,7 +2568,7 @@ export class DesktopAgentManager {
     const managedRuntimes = [...this.runtimes.values()];
     this.runtimes.clear();
     this.draftSessionIds.clear();
-    await Promise.all(managedRuntimes.map(async (managed) => await this.closeManagedRuntime(managed, options)));
+    await Promise.all(managedRuntimes.map(async (managed) => await this.closeManagedRuntime(managed)));
   }
 
   private async disposeRuntime(projectId: string): Promise<void> {
@@ -2624,16 +2637,13 @@ export class DesktopAgentManager {
     this.idleRuntimeRebuildTail = scheduled.catch(() => undefined);
   }
 
-  private async closeManagedRuntime(
-    managed: ManagedRuntime,
-    options: { terminateOwnedHosts?: boolean } = {}
-  ): Promise<void> {
+  private async closeManagedRuntime(managed: ManagedRuntime): Promise<void> {
     managed.unsubscribe();
     try {
       await managed.host?.close();
     } finally {
       await managed.runtime.close();
-      if (options.terminateOwnedHosts) await terminateOwnedHost(managed.spawnedHost);
+      // 独立 Host 可能已被 CLI/TUI 复用；是否退出由 Host 的连接和驻留工作共同决定。
     }
   }
 
@@ -2685,27 +2695,29 @@ export class DesktopAgentManager {
     const commands = undefined;
     let host: RuntimeHostServer | undefined;
     let attached: RuntimeHostClient | undefined;
-    let spawnedHost: ChildProcess | undefined;
     const supportsDetachedRuntimeHost = this.configStore.supportsDetachedRuntimeHost !== false;
+    const configPath = this.configStore.configPath?.();
+    const configDir = configPath === undefined ? globalConfigDir() : path.dirname(configPath);
     if (supportsDetachedRuntimeHost) {
-      try {
-        const connected = await connectOrSpawnRuntimeHostWithOwnership(persistenceRoot, {
-          workspaceRoot: project.path,
-          configDir: globalConfigDir(),
-          attachmentRoot: this.projects.attachmentsRoot(project),
-          // Desktop 启动本身不是恢复动作；只有用户打开会话或发送新消息时才选择 session。
-          sessionId: undefined,
-          resumeInterrupted: false,
-          clientId: `desktop-${process.pid}`,
-          surface: "desktop",
-          browserAutomation: this.browserAutomation
-        });
-        attached = connected?.client;
-        spawnedHost = connected?.spawnedProcess;
-      } catch {
-        // 独立 Host 不是可用配置时，保留同进程 owner fallback，并让下面的真实初始化给出错误。
-        attached = undefined;
-      }
+      const connected = await connectOrSpawnRuntimeHostWithOwnership(persistenceRoot, {
+        workspaceRoot: project.path,
+        configDir,
+        attachmentRoot: this.projects.attachmentsRoot(project),
+        // Desktop 启动本身不是恢复动作；只有用户打开会话或发送新消息时才选择 session。
+        sessionId: undefined,
+        resumeInterrupted: false,
+        clientId: `desktop-${process.pid}`,
+        surface: "desktop",
+        browserAutomation: this.browserAutomation
+      });
+      attached = connected?.client;
+    } else {
+      // 凭据限制的是独立启动能力；同环境已有 owner 时仍复用它，且不授予自动接管能力。
+      attached = await connectRuntimeHost(persistenceRoot, {
+        configDir,
+        clientId: `desktop-${process.pid}`,
+        surface: "desktop"
+      });
     }
     if (attached) {
       runtime = attached;
@@ -2738,10 +2750,11 @@ export class DesktopAgentManager {
         workspaceRoot: project.path,
         createRuntime: createLocalRuntime,
         resumeInterrupted: false,
-        configDir: globalConfigDir()
+        configDir
       });
       try {
         const client = await connectRuntimeHost(persistenceRoot, {
+          configDir,
           clientId: `desktop-${process.pid}`,
           surface: "desktop"
         });
@@ -2759,11 +2772,10 @@ export class DesktopAgentManager {
     } catch (error) {
       await runtime.close().catch(() => undefined);
       await host?.close().catch(() => undefined);
-      await terminateOwnedHost(spawnedHost);
       throw error;
     }
     const unsubscribe = this.wireRuntimeEvents(projectId, runtime, true);
-    const managed: ManagedRuntime = { runtime, commands, host, spawnedHost, unsubscribe };
+    const managed: ManagedRuntime = { runtime, commands, host, unsubscribe };
     this.runtimes.set(projectId, managed);
     if (runtime instanceof RuntimeHostClient) {
       for (const entry of runtime.runtimeSnapshots()) {
@@ -3321,30 +3333,6 @@ async function waitForRuntimeOperation(operation: Promise<unknown>, timeoutMs: n
 
 function remainingTimeout(deadline: number): number {
   return Math.max(1, deadline - Date.now());
-}
-
-/** 只终止当前 Desktop 本次 spawn 的精确子进程，attach 到其它 surface 的 Host 不会走这里。 */
-async function terminateOwnedHost(host: ChildProcess | undefined): Promise<void> {
-  if (!host || host.exitCode !== null || host.signalCode !== null) return;
-  await new Promise<void>((resolve) => {
-    let settled = false;
-    const finish = (): void => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      host.off("exit", finish);
-      host.off("error", finish);
-      resolve();
-    };
-    const timer = setTimeout(finish, 2_500);
-    host.once("exit", finish);
-    host.once("error", finish);
-    try {
-      if (!host.kill("SIGTERM")) finish();
-    } catch {
-      finish();
-    }
-  });
 }
 
 async function executeRemoteRuntimeMutation(runtime: RuntimeHostClient, operation: DesktopRuntimeMutation, payload: Record<string, unknown>): Promise<unknown> {

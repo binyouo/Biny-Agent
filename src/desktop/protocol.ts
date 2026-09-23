@@ -7,6 +7,7 @@
  *
  * 通道名统一用 `desktop:<领域>:<动作>` 的形式，便于排查。
  */
+import type { DesktopThreadBriefRequest, DesktopThreadBriefSnapshot } from "./threadBriefProtocol.js";
 import type { DesktopCrystalRequest, DesktopCrystalSnapshot } from "./crystalProtocol.js";
 import type { planStatus } from "../extensions/plan.js";
 import type { AgentCapabilitySelection, CapabilitySelectionMode } from "../agent/capabilitySelection.js";
@@ -147,6 +148,8 @@ export const desktopIpc = {
   activitySessionDetail: "desktop:activity:session-detail",
   activitySnapshotPreview: "desktop:activity:snapshot-preview",
   activityReport: "desktop:activity:report",
+  threadBriefRequest: "desktop:thread-brief:request",
+  threadBriefChanged: "desktop:thread-brief:changed",
   dailyMemoryNote: "desktop:memory:daily-note",
   activityClear: "desktop:activity:clear",
   activityEvent: "desktop:activity:event",
@@ -389,6 +392,8 @@ export interface DesktopSessionDocument {
   writerConflict?: DesktopSessionWriterConflict;
   /** 历史正文已成功读取，但当前 Desktop Runtime 初始化/聚焦失败时返回。 */
   runtimeError?: string;
+  /** 从持久断点和日志推导；打开会话只展示，继续执行必须由用户触发。 */
+  recovery?: { canContinue: boolean; message: string };
 }
 
 /** 会话文件体量与事件数接近上限时的预警投影。 */
@@ -1562,6 +1567,8 @@ export interface DesktopApi {
   /** 生成指定日期（today/yesterday/YYYY-MM-DD，默认 today）的 Activity 打工日记。 */
   activityReport(date?: string): Promise<DesktopActivityReport>;
   /** 读取指定日期的 Markdown 工作日志；不读取 durable memory SQLite。 */
+  threadBriefRequest(request: DesktopThreadBriefRequest): Promise<DesktopThreadBriefSnapshot>;
+  onThreadBriefChanged(listener: () => void): () => void;
   dailyMemoryNote(date?: string): Promise<DesktopDailyMemoryNote>;
   clearActivity(): Promise<ActivityRuntimeSnapshot>;
   stageSettingsCredential(secret: string, scope: DesktopSettingsCredentialScope): Promise<DesktopStagedSettingsCredential>;

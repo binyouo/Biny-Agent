@@ -79,7 +79,6 @@ import type {
 import { AgentTurnCancellationError, type AgentTurnCancellationReason } from "./types.js";
 import { ContextMemory, type RunContextCompaction } from "./context/ContextMemory.js";
 import {
-  appendCompletedChatDiaryEntry,
   refreshChatDailyDiary,
   type ChatDiaryRefreshResult
 } from "./context/chatDiary.js";
@@ -873,7 +872,12 @@ export class AgentSession {
 
   /** 上次被打断、尚未收尾的回合；没有则为 undefined。 */
   async interruptedTurn(): Promise<InterruptedTurn | undefined> {
-    return await this.turnStore.load();
+    const turn = await this.turnStore.load();
+    if (!turn) return undefined;
+    await this.recorder.flush();
+    const events = await readSessionEvents(this.recorder.filePath);
+    const plan = resolveContinuationPlan(turn, { events, recoveredToolResults: [] }, Infinity);
+    return plan.action === "finished" ? undefined : turn;
   }
 
   /** 只补齐 session 中缺失的协议结果；恢复过程不调用任何工具执行函数。 */
@@ -895,7 +899,7 @@ export class AgentSession {
    * 没有可续跑的状态时抛错而不是静默开一个新回合 —— 后者会让用户以为续上了，其实是重来。
    */
   async *continueInterruptedTurn(runOptions: AgentRunOptions = {}): AsyncGenerator<AgentSessionEvent> {
-    const turn = await this.turnStore.load();
+    const turn = await this.interruptedTurn();
     if (!turn) throw new Error("There is no interrupted turn to continue.");
     const runId = runOptions.runId ?? randomUUID();
     const turnId = turn.turnId ?? runOptions.turnId ?? randomUUID();
@@ -918,7 +922,7 @@ export class AgentSession {
           requiredAction: "Inspect the session facts and explicitly start a new turn after resolving the recovery mismatch."
         };
         this.recordError(message);
-        await this.turnStore.clear().catch(() => undefined);
+        // 校验失败时保留原断点供检查；阻塞恢复不等于放弃用户任务。
         await this.recordTurnOutcome(outcome);
         yield { type: "error", message };
         yield { type: "status", status: "blocked" };
@@ -927,6 +931,7 @@ export class AgentSession {
       }
       const turnLimit = runOptions.maxSteps ?? resolveRunBudget(this.options.config.agent).hardStepLimit;
       const recoveryPlan = resolveContinuationPlan(turn, replay, turnLimit);
+      if (recoveryPlan.action === "finished") throw new Error("There is no interrupted turn to continue.");
       if (recoveryPlan.action === "block") {
         const message = recoveryPlan.message;
         const outcome: AgentTurnOutcome = {
@@ -940,7 +945,6 @@ export class AgentSession {
           requiredAction: recoveryPlan.requiredAction
         };
         this.recordError(message);
-        await this.turnStore.clear().catch(() => undefined);
         await this.recordTurnOutcome(outcome);
         yield { type: "error", message };
         yield { type: "status", status: "blocked" };
@@ -977,6 +981,15 @@ export class AgentSession {
         ...(turn.previousTerminals ?? []),
         ...(turn.terminal ? [turn.terminal] : [])
       ];
+      if (turn.systemPrompt === undefined && turn.completedSteps === 0) {
+        // 只有输入已确认、准备尚未完成的断点，复用原消息的准备路径，避免裸上下文绕过工作区指令。
+        let userIndex = recoveredMessages.length - 1;
+        while (userIndex >= 0 && recoveredMessages[userIndex]?.role !== "user") userIndex -= 1;
+        const userId = recoveredReferences[userIndex]?.id;
+        if (!userId) throw new Error("无法找到中断任务的原始输入，恢复已阻塞。");
+        yield* this.retry(userId, { ...runOptions, runId, turnId, maxSteps: recoveryPlan.remainingSteps, emotionAnalysis: false });
+        return;
+      }
       yield* this.runTurn(turn.prompt, {
         ...runOptions,
         runId,
@@ -1548,6 +1561,9 @@ export class AgentSession {
         contextState: this.checkpointPersistenceError ? undefined : this.contextMemory.persistedState()
       });
       await this.recorder.flush();
+      // 接收确认也要留下任务意图；上下文准备尚未完成时崩溃，仍能恢复这次输入。
+      await this.turnStore.save(input, undefined, [...this.contextMemory.getHistory(), { role: "user", content: input }], 0,
+        undefined, undefined, undefined, this.recorder.runtimeHighWater());
       this.admittedUserMessages.set(options.runId, { input, reference });
     } finally {
       this.recorder.setRuntimeContext(previousContext);
@@ -1765,8 +1781,24 @@ export class AgentSession {
       await this.fatigueService.recordMessage().catch(() => undefined);
     };
     try {
-    // 新根输入明确放弃旧断点；否则它在首个新 step 落盘前崩溃时，恢复逻辑会错误复活上一回合。
-    if (!continuing) await this.turnStore.clear().catch(() => undefined);
+    // 新输入用新断点替换旧任务；在准备模型/上下文之前保存，覆盖刚发送就关闭的窗口。
+    if (!continuing && !admitted) {
+      recordUserMessage();
+      try {
+        await this.recorder.flush();
+        await this.turnStore.save(input, undefined, cancellationContext().messages, 0,
+          undefined, undefined, runOptions.previousTerminals, this.recorder.runtimeHighWater());
+      } catch (error) {
+        const message = `初始检查点持久化失败：${errorMessage(error)}`;
+        const outcome = failedTurn(message, 0, "provider_error");
+        this.recordError(message);
+        await this.recordTurnOutcome(outcome);
+        yield { type: "error", message };
+        yield { type: "status", status: "error" };
+        yield doneEvent(outcome);
+        return;
+      }
+    }
     if (ordinaryRootMessage) this.emotionAnalysisScheduler.cancel();
     await recordRootFatigue();
     if (abortSignal.aborted) {
@@ -1959,8 +1991,16 @@ export class AgentSession {
           this.recorder.runtimeHighWater()
         );
         recordPerfPhase("turn.persistCheckpoint", persistPerfStartedAt, { runId: runtimeRunId });
-      } catch {
-        // 初始断点写入失败时不伪装成可恢复；真正的终态仍由下面的 durable commit 记录。
+      } catch (error) {
+        // 没有可恢复断点就不能发出首个模型请求，更不能让后续工具产生副作用。
+        const message = `初始检查点持久化失败：${errorMessage(error)}`;
+        const outcome = failedTurn(message, completedStepsBeforeRun, "provider_error");
+        this.recordError(message);
+        await this.recordTurnOutcome(outcome);
+        yield { type: "error", message };
+        yield { type: "status", status: "error" };
+        yield doneEvent(outcome);
+        return;
       }
     }
     const configuredBudget = resolveRunBudget(this.options.config.agent);
@@ -2123,7 +2163,7 @@ export class AgentSession {
       emitUpdate,
       () => ({
         // 工具审计必须绑定到发起它的模型 step，不能等整个 run 结束后再取累计 reasoning。
-        assistantContent: stepAssistantContent || undefined,
+        assistantContent: publicAssistantMessage(stepAssistantContent) || undefined,
         reasoningContent: stepReasoningOutput || undefined,
         reasoningProviderOptions: stepReasoningBlocks?.length === 1 ? stepReasoningBlocks[0]?.providerOptions : undefined,
         reasoningBlocks: stepReasoningBlocks
@@ -2319,8 +2359,9 @@ export class AgentSession {
                 runOptions.previousTerminals,
                 this.recorder.runtimeHighWater()
               );
-            } catch {
-              // 步间 checkpoint 失败时不伪装为可恢复；工具结果和最终终态仍照常提交。
+            } catch (error) {
+              // 工具事实已落盘，但不能带着陈旧预算和上下文进入下一步。
+              throw new Error(`步骤检查点持久化失败：${errorMessage(error)}`, { cause: error });
             }
           }
           emitUpdate({ type: "context.updated", context: await this.contextStatus() });
@@ -2614,35 +2655,17 @@ export class AgentSession {
             error: `${outcome.error ?? `${outcome.status} (${outcome.stopReason})`}；检查点持久化失败：${errorMessage(error)}`
           };
         }
-      } else {
-        try {
-          await this.turnStore.clear();
-        } catch (error) {
-          outcome = {
-            ...outcome,
-            status: "failed",
-            stopReason: "provider_error",
-            resumable: false,
-            blockedReason: undefined,
-            requiredAction: undefined,
-            error: `轮次检查点清理失败：${errorMessage(error)}`
-          };
-        }
       }
       await this.recordTurnOutcome(outcome);
+      if (outcome.status !== "blocked" && !(outcome.status === "incomplete" && outcome.resumable === true)) {
+        // 先提交终态，再回收断点；清理失败也不能把已提交的成功改写为失败。
+        await this.turnStore.clear().catch(() => undefined);
+      }
       if (outcome.status === "completed") {
         if (autoAnalyzeForTurn) {
           this.emotionAnalysisScheduler.schedule(this.recorder.sessionId, finalAssistantReference?.id);
         }
         // 记忆整理是完成回合后的旁路；不等待模型请求，也不让它改变当前回合终态。
-        void appendCompletedChatDiaryEntry({
-          sessionId: this.recorder.sessionId,
-          turnId: runOptions.turnId!,
-          workspaceRoot: this.options.workspaceRoot,
-          userMessage: input,
-          assistantMessage: content,
-          occurredAt: new Date()
-        }).catch(() => undefined);
         void this.flushSessionSearchIndex().catch(() => undefined);
         if (this.activePersonalization.contributeMemories) {
           const memoryRecorder = this.recorder;
@@ -3379,8 +3402,9 @@ export class AgentSession {
     this.contextMemory.replaceHistory(history);
     this.contextMessageReferences = historyReferences;
     await this.recorder.flush();
-    await this.turnStore.clear().catch(() => undefined);
     await this.recordTurnOutcome(outcome);
+    // 关闭只结束当前执行，任务的断点仍由用户下一次主动继续。
+    if (outcome.stopReason !== "paused") await this.turnStore.clear().catch(() => undefined);
   }
 
   /**
@@ -3823,21 +3847,20 @@ function agentMessageText(message: AgentAssistantMessage): string {
 }
 
 /**
- * 从最后的 assistant 消息末尾剥掉 <biny_notification> 块（就地改写消息，历史回传也变干净），
- * 返回用作后台通知的一句摘要。块不在末尾或内容为空时视为未写，原文保留。
+ * 清理所有 assistant 文本段的通知协议，最后一个完整非空块可用作通知摘要。
+ * 模型可能在工具步或正文中间输出协议，不能只清理最后一段，否则 canonical 回放会重新泄漏。
  */
 function extractNotificationBlock(message: AgentAssistantMessage): string | undefined {
-  const parts = message.content;
-  for (let index = parts.length - 1; index >= 0; index -= 1) {
-    const part = parts[index];
-    if (part === undefined || part.type !== "text") continue;
-    const match = /<biny_notification>([\s\S]*?)<\/biny_notification>\s*$/u.exec(part.text);
-    if (!match) return undefined;
-    part.text = part.text.slice(0, match.index).trimEnd();
-    const notification = match[1]?.trim().split("\n")[0]?.slice(0, 280).trim();
-    return notification || undefined;
+  let notification: string | undefined;
+  for (const part of message.content) {
+    if (part.type !== "text") continue;
+    for (const match of part.text.matchAll(/<biny_notification>([\s\S]*?)<\/biny_notification>/gu)) {
+      notification = match[1]?.trim().split("\n")[0]?.slice(0, 280).trim() || notification;
+    }
+    const visible = publicAssistantMessage(part.text);
+    if (visible !== part.text) part.text = visible.trimEnd();
   }
-  return undefined;
+  return notification;
 }
 
 function queuedUserMessage(input: string, attachments: AgentAttachment[]): AgentUserMessage {
@@ -4000,7 +4023,8 @@ function cancelledTurn(
     steps,
     output: "",
     usage: undefined,
-    error: message
+    error: stopReason === "paused" ? "任务已暂停，可继续上次任务。" : message,
+    resumable: stopReason === "paused" ? true : undefined
   };
 }
 

@@ -2,6 +2,9 @@
 import type { DesktopAttachment } from "../../../../protocol.js";
 import { ComposerActionButton } from "./ComposerActionButton.js";
 import { Icon } from "../Icon.js";
+import { AttachmentCard } from "../AttachmentCard.js";
+import { attachmentSize } from "../../attachmentPresentation.js";
+import { FileTypeMarker } from "../workspace/FileTypeMarker.js";
 
 export interface PendingAttachment {
   error?: string;
@@ -12,7 +15,8 @@ export interface PendingAttachment {
   status: "error" | "uploading";
 }
 
-export function AttachmentList({ attachments, onRemove, onRemovePending, pending }: {
+export function AttachmentList({ attachments, projectId, onRemove, onRemovePending, pending }: {
+  projectId: string;
   attachments: DesktopAttachment[];
   onRemove(index: number): void;
   onRemovePending(id: string): void;
@@ -21,30 +25,16 @@ export function AttachmentList({ attachments, onRemove, onRemovePending, pending
   return (
     <div className="biny-composer-attachments" aria-label="待发送附件">
       {attachments.map((attachment, index) => (
-        <div className="biny-attachment-chip" key={`${attachment.path}-${String(index)}`}>
-          <Icon name={attachment.mimeType.startsWith("image/") ? "spark" : "file"} size={13} />
-          <span className="biny-attachment-copy">
-            <span>{attachment.name}</span>
-            <small>已就绪</small>
-          </span>
-          <ComposerActionButton
-            className="biny-attachment-remove"
-            label={`移除 ${attachment.name}`}
-            onClick={() => onRemove(index)}
-            tooltip={`移除附件 ${attachment.name}`}
-          >
-            <Icon name="close" size={11} />
-          </ComposerActionButton>
-        </div>
+        <AttachmentCard attachment={attachment} key={attachment.path} projectId={projectId} onRemove={() => onRemove(index)} />
       ))}
       {pending.map((attachment) => (
         <div className={`biny-attachment-chip is-${attachment.status}`} key={attachment.id}>
-          <Icon name={attachment.status === "error" ? "warning" : "file"} size={13} />
+          <FileTypeMarker name={attachment.name} />
           <span className="biny-attachment-copy">
             <span>{attachment.name}</span>
-            <small>{attachment.status === "error" ? attachment.error ?? "上传失败" : "上传中…"}</small>
+            <small role="status" title={attachment.error}>{attachment.status === "error" ? attachment.error ?? "添加失败，请移除后重试" : `${attachmentSize(attachment.size)} · 正在添加…`}</small>
           </span>
-          {attachment.status === "uploading" ? <span aria-label="上传中" className="biny-attachment-spinner" /> : null}
+          {attachment.status === "uploading" ? <span aria-label="正在添加" className="biny-attachment-spinner" /> : null}
           <ComposerActionButton
             className="biny-attachment-remove"
             label={`移除 ${attachment.name}`}

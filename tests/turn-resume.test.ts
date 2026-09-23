@@ -37,7 +37,7 @@ async function main(): Promise<void> {
     await ensureAgentDirs(root);
     await testRoundTripKeepsToolResults(root);
     await testClearedTurnIsNotResumable(root);
-    await testCorruptStateIsIgnored(root);
+    await testCorruptStateIsReported(root);
     await testLegacyTurnIgnoresDeprecatedToolSnapshot(root);
     await testIsolatedPerSession(root);
     await testAgentSessionResumesAfterCrashDuringToolB();
@@ -104,14 +104,18 @@ async function testClearedTurnIsNotResumable(root: string): Promise<void> {
   await store.clear();
 }
 
-async function testCorruptStateIsIgnored(root: string): Promise<void> {
+async function testCorruptStateIsReported(root: string): Promise<void> {
   const store = new TurnStore(root, "session-c");
   const target = path.join(agentDir(root), "turns", "session-c.json");
   await (await import("node:fs/promises")).writeFile(target, "{ not json");
-  assert.equal(await store.load(), undefined);
+  await assert.rejects(store.load(), /无法读取回合检查点/);
   // 空 messages 不构成可续跑的状态。
   await (await import("node:fs/promises")).writeFile(target, JSON.stringify({ turn: { sessionId: "session-c", prompt: "p", messages: [], completedSteps: 1 } }));
-  assert.equal(await store.load(), undefined);
+  await assert.rejects(store.load(), /无法读取回合检查点/);
+  await writeFile(target, JSON.stringify({ version: 4, turn: {
+    sessionId: "other-session", prompt: "p", messages: [{ role: "user", content: "p" }], completedSteps: 0, updatedAt: new Date().toISOString()
+  } }));
+  await assert.rejects(store.load(), /session identity/);
 }
 
 /** 旧 TurnStore 文件中的重复工具快照已停用，但不能因此让整个在途回合失效。 */
@@ -219,7 +223,7 @@ async function testAgentSessionCrashRecovery(
       crash === "after-tool-b" ? 3 : 1
     );
     if (crash !== "after-tool-b") assert.match(outcome.error ?? "", /未确认的副作用/u);
-    assert.equal(await new TurnStore(workspaceRoot, sessionId).load(), undefined);
+    if (crash === "after-tool-b") assert.equal(await new TurnStore(workspaceRoot, sessionId).load(), undefined);
 
     const sessionEvents = await readSessionEvents(sessionFile);
     const runtimeEvents = sessionEvents.filter((event) => event.runtime !== undefined);
@@ -260,6 +264,7 @@ async function testAgentSessionCrashRecovery(
     const resumedRequest = provider.resumedRequests[0];
     if (crash !== "after-tool-b") {
       assert.equal(provider.resumedRequests.length, 0, "unknown side effects must block before another model request");
+      assert.ok(await new TurnStore(workspaceRoot, sessionId).load(), "阻塞恢复必须保留原始断点供用户检查");
     } else {
       assert.ok(resumedRequest?.includes("call-a"), "resumed context must include tool A");
       assert.equal(

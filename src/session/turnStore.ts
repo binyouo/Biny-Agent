@@ -9,7 +9,7 @@
  * 下次启动发现它还在，就能从最后一个完成的步继续，而不是从头再来。
  *
  * 工具步之间保存实际已用步数；blocked 或可恢复的 incomplete 终态用 0 保存，表示只有用户
- * 显式恢复请求后才开启一个新预算窗口。正常 completed、cancelled、failed 或新根回合会清掉。
+ * 显式恢复请求后才开启一个新预算窗口。完成、显式取消会清掉；关闭暂停和可恢复失败保留，新根输入替换旧断点。
  */
 import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
@@ -88,6 +88,13 @@ export class TurnStore {
         await handle.close();
       }
       await fs.rename(temporary, target);
+      // rename 只保证可见性原子切换；同步目录后才确认新断点已提交。
+      const directory = await fs.open(path.dirname(target), "r");
+      try {
+        await directory.sync();
+      } finally {
+        await directory.close();
+      }
     } finally {
       await fs.rm(temporary, { force: true }).catch(() => undefined);
     }
@@ -97,12 +104,14 @@ export class TurnStore {
     try {
       const parsed: unknown = JSON.parse(await fs.readFile(this.filePath(), "utf8"));
       const version = (parsed as { version?: unknown }).version;
-      if (version !== turnStateVersion && version !== 3 && version !== 2) return undefined;
+      if (version !== turnStateVersion && version !== 3 && version !== 2) throw new Error("Unsupported checkpoint version.");
       const turn = (parsed as { turn?: unknown }).turn;
-      if (!isInterruptedTurn(turn)) return undefined;
+      if (!isInterruptedTurn(turn) || turn.sessionId !== this.sessionId) throw new Error("Invalid checkpoint contents or session identity.");
       return turn;
-    } catch {
-      return undefined;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+      // 损坏和读失败不能冒充“没有中断任务”，否则用户会误以为状态已丢失或任务已结束。
+      throw new Error(`无法读取回合检查点 ${this.sessionId}：${error instanceof Error ? error.message : String(error)}`, { cause: error });
     }
   }
 

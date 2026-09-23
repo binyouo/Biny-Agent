@@ -15,9 +15,9 @@ import { useClosingPresence } from "../useClosingPresence.js";
 import { useFluidHover, useRegisterFluidHoverItem, type UseFluidHoverReturn } from "../useFluidHover.js";
 import { Collapse } from "./Collapse.js";
 import { CrystalDock } from "./CrystalDock.js";
-import { DiaryDock } from "./DiaryDock.js";
 import { FluidHoverHighlight } from "./FluidHoverHighlight.js";
 import { Icon, type IconName } from "./Icon.js";
+import { ThreadBriefSessionMenu, ThreadBriefSessionState } from "../threadBrief/ThreadBriefSessionState.js";
 import { WorkingIndicator } from "./WorkingIndicator.js";
 
 const PROJECT_SESSION_COLLAPSE_LIMIT = 5;
@@ -490,13 +490,13 @@ export const Sidebar = memo(function Sidebar({
           <span>设置</span>
         </button>
         <CrystalDock sessionId={selectedSessionId} onInsert={onInsertCrystal} />
-        <DiaryDock />
       </div>
       </div>
       {resizable ? <SidebarResizer width={layout.contentWidth} {...resizeHandlers} /> : null}
       </aside>
       <SessionContextMenu
         menu={sessionMenu}
+        onClose={() => setSessionMenuVisible(false)}
         onAction={(action) => {
           setSessionMenuVisible(false);
           if (sessionMenu) onSessionAction(sessionMenu.session, action);
@@ -807,6 +807,7 @@ function SessionTreeRow({
           <span className="biny-sidebar-session-line">
             {session.pinned ? <span aria-hidden="true" className="biny-sidebar-session-pin"><Icon name="pin" size={12} /></span> : session.unread ? <span aria-label="未读" className="biny-sidebar-session-unread" /> : null}
             <span className="biny-sidebar-session-title">{title}</span>
+            <ThreadBriefSessionState sessionId={session.id} />
             {running ? <WorkingIndicator waiting={session.status === "waiting_permission"} /> : meta && metaTitle ? <span aria-label={`上次活动：${metaTitle}`} className="biny-sidebar-session-meta" title={metaTitle}>{meta}</span> : null}
           </span>
         </button>
@@ -920,11 +921,12 @@ function ProjectMenu({ anchorRef, project, open, onPin, onRefresh, onReveal, onO
 }
 
 /** 会话右键菜单：替代原先由主进程弹出的原生菜单，样式与侧栏其余菜单保持一致。 */
-function SessionContextMenu({ menu, onAction, open }: { menu?: { session: DesktopSessionSummary; point: { x: number; y: number } }; onAction(action: DesktopSessionMenuAction): void; open: boolean }): React.JSX.Element | null {
+function SessionContextMenu({ menu, onAction, onClose, open }: { menu?: { session: DesktopSessionSummary; point: { x: number; y: number } }; onAction(action: DesktopSessionMenuAction): void; onClose(): void; open: boolean }): React.JSX.Element | null {
   if (!menu) return null;
   const { session } = menu;
   return (
     <FloatingSidebarMenu ariaLabel="会话操作菜单" open={open} point={menu.point}>
+      <ThreadBriefSessionMenu sessionId={session.id} onClose={onClose} />
       <button onClick={() => onAction("rename")} role="menuitem" type="button"><Icon name="edit" size={15} /><span>重命名</span></button>
       <button onClick={() => onAction(session.pinned ? "unpin" : "pin")} role="menuitem" type="button"><Icon name="pin" size={15} /><span>{session.pinned ? "取消置顶" : "置顶"}</span></button>
       <button onClick={() => onAction(session.archived ? "unarchive" : "archive")} role="menuitem" type="button"><Icon name="archive" size={15} /><span>{session.archived ? "取消归档" : "归档"}</span></button>

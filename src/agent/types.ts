@@ -16,18 +16,20 @@ export type AgentPermissionResult = PermissionResult;
 
 export type AgentTurnStatus = "completed" | "incomplete" | "blocked" | "cancelled" | "failed" | "aborted";
 
-/** 区分用户显式停止、新输入替换，以及无法归因给用户的宿主取消。 */
-export type AgentTurnCancellationReason = "interrupted" | "replaced" | "cancelled";
+/** 区分显式停止、新输入替换、宿主取消，以及关闭窗口时保留任务的暂停。 */
+export type AgentTurnCancellationReason = "interrupted" | "replaced" | "cancelled" | "paused";
 
 export class AgentTurnCancellationError extends Error {
   readonly reason: AgentTurnCancellationReason;
 
   constructor(reason: AgentTurnCancellationReason) {
-    super(reason === "interrupted"
-      ? "Current turn interrupted by the user."
-      : reason === "replaced"
-        ? "Current turn replaced by newer user input."
-        : "Current turn cancelled.");
+    super(reason === "paused"
+      ? "任务已暂停，可继续上次任务。"
+      : reason === "interrupted"
+        ? "Current turn interrupted by the user."
+        : reason === "replaced"
+          ? "Current turn replaced by newer user input."
+          : "Current turn cancelled.");
     this.name = "AgentTurnCancellationError";
     this.reason = reason;
   }
@@ -58,6 +60,7 @@ export type AgentTurnStopReason =
   | "interrupted"
   | "replaced"
   | "cancelled"
+  | "paused"
   | "aborted"
   | "budget_exhausted";
 

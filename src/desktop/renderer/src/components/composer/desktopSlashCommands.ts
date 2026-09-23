@@ -5,7 +5,6 @@
  * （用量浮层、设置页、能力菜单），纯展示类命令不进入补全列表，只保留对动作类命令的
  * 入口，并把当前有效 Skill 作为同一份补全数据源。
  */
-import type { SearchableItem } from "@astryxdesign/core/Typeahead";
 import type { DesktopSkillCatalogEntry, DesktopSlashCommand } from "../../../../protocol.js";
 import { DESKTOP_SLASH_COMMANDS } from "../../../../protocol.js";
 import type { IconName } from "../Icon.js";
@@ -76,7 +75,11 @@ export type DesktopComposerItemData =
     skill: DesktopSkillCatalogEntry;
   };
 
-export type DesktopComposerItem = SearchableItem<DesktopComposerItemData>;
+export interface DesktopComposerItem {
+  id: string;
+  label: string;
+  auxiliaryData: DesktopComposerItemData;
+}
 
 const desktopComposerCommandNames = new Set<string>(DESKTOP_COMPOSER_COMMAND_NAMES);
 

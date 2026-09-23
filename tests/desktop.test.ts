@@ -12,6 +12,7 @@ import type { CommandRuntime } from "../src/runtime/CommandRuntime.js";
 import { createInteractiveAgentHost, InteractiveAgentRuntime } from "../src/runtime/InteractiveAgentRuntime.js";
 import { RuntimeEventAuthority } from "../src/runtime/RuntimeAuthority.js";
 import { startRuntimeHost } from "../src/runtime/RuntimeHost.js";
+import { ensureRuntimeHostDirectory, runtimeHostPaths, writeRegistration } from "../src/runtime/host/lifecycle.js";
 import { executeRuntimeCommand } from "../src/runtime/commands.js";
 import { SessionLeaseStore } from "../src/runtime/SessionLease.js";
 import { isTerminalRunEvent, pendingPermission, type AgentHostEvent } from "../src/runtime/agentEvents.js";
@@ -82,6 +83,7 @@ import type { AgentMessage } from "../src/agent/core/types.js";
 import { TurnStore } from "../src/session/turnStore.js";
 
 const execFileAsync = promisify(execFile);
+await testDesktopHostVersionConflict();
 
 await testInteractiveRuntimeProtocol();
 await testInteractiveRuntimePersistsBeforeGenerating();
@@ -821,6 +823,34 @@ async function testDesktopMessageEditFork(): Promise<void> {
   }
 }
 
+async function testDesktopHostVersionConflict(): Promise<void> {
+  for (const detached of [false, true]) {
+    const desktopRoot = await mkdtemp(path.join(os.tmpdir(), "biny-desktop-owner-data-"));
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "biny-desktop-owner-workspace-"));
+    const { configStore, projects, state } = await createDesktopTestServices(desktopRoot);
+    configStore.supportsDetachedRuntimeHost = detached;
+    const project = await projects.createProject(workspaceRoot);
+    const dataRoot = await projects.dataRoot(project);
+    const paths = runtimeHostPaths(dataRoot);
+    await ensureRuntimeHostDirectory(path.dirname(paths.endpoint));
+    const registration = { ...paths, protocolVersion: 2, persistenceRoot: dataRoot, hostEpoch: "old-owner", token: "test-only-token", pid: process.pid, createdAt: new Date().toISOString() };
+    await writeRegistration(registration);
+    await writeFile(paths.lockPath, `${process.pid}\n`, { mode: 0o600 });
+    const agents = new DesktopAgentManager(state, projects, configStore, () => undefined);
+    try {
+      await assert.rejects(agents.sendPrompt(project.id, undefined, "hello", []), /protocol 2 is incompatible with 8/);
+      assert.deepEqual(JSON.parse(await readFile(paths.registrationPath, "utf8")), registration);
+      assert.equal(await readFile(paths.lockPath, "utf8"), `${process.pid}\n`, "a failed client must not disturb the live owner");
+    } finally {
+      await agents.closeAll();
+      await rm(paths.registrationPath, { force: true });
+      await rm(paths.lockPath, { force: true });
+      await rm(desktopRoot, { recursive: true, force: true });
+      await rm(workspaceRoot, { recursive: true, force: true });
+    }
+  }
+}
+
 async function testDesktopPromptIdempotency(): Promise<void> {
   const desktopRoot = await mkdtemp(path.join(os.tmpdir(), "biny-prompt-idempotency-data-"));
   let agents: DesktopAgentManager | undefined;
@@ -1017,7 +1047,7 @@ async function testDesktopOpenSessionReturnsWriterConflictReadOnlyDocument(): Pr
     owner.acquire(recorder.sessionId);
     agents = new DesktopAgentManager(state, projects, configStore, () => undefined);
     const conflictDocument = await agents.openSession(project.id, recorder.sessionId);
-    assert.equal(conflictDocument.writerConflict?.sessionId, recorder.sessionId);
+    assert.equal(conflictDocument.writerConflict?.sessionId, recorder.sessionId, conflictDocument.runtimeError);
     assert.equal(conflictDocument.events.some((event) => event.type === "assistant_message"), true);
 
     owner.close();
@@ -2317,14 +2347,13 @@ async function testDesktopModelSwitchDoesNotResumeInterruptedTurn(): Promise<voi
       1_000_000
     );
 
-    // 不选中这个会话：普通 Desktop 初始化只能创建空闲 runtime，不能把磁盘上的
-    // resumable turn 当成启动命令。只有用户点击「继续运行」才允许调用恢复入口。
+    // 同进程凭据模式下切模型只是配置操作，不能启动或续跑磁盘上的中断回合。
     agents = new DesktopAgentManager(state, projects, configStore, () => undefined);
     const switched = await agents.switchModel(project.id, "test-model", "off");
     assert.equal(switched.modelAlias, "test-model");
     const snapshot = await agents.workspaceSnapshot(project.id);
-    assert.notEqual(snapshot.runtime?.info.sessionId, interruptedSessionId);
-    assert.equal(snapshot.runtime?.state.kind, "idle");
+    assert.equal(snapshot.runtime, undefined);
+    assert.ok(await new TurnStore(dataRoot, interruptedSessionId).load(), "switching model must preserve the interrupted turn");
   } finally {
     await agents?.closeAll();
     if (previousHostEntry === undefined) delete process.env.BINY_RUNTIME_HOST_ENTRY;
@@ -2529,6 +2558,8 @@ async function testDesktopReconcilesPersistedPermissionWithExistingHost(): Promi
     const dataRoot = await projects.dataRoot(project);
     const commands = fakeCommandRuntime();
     let hostPermissionMode: "ask" | "read-only" | "auto" | "full-access" = "ask";
+    // 本例覆盖可独立运行的配置；Electron 凭据配置下切模型只更新控制面，不启动 Runtime。
+    configStore.supportsDetachedRuntimeHost = true;
     commands.agent.getPermissionMode = () => hostPermissionMode;
     commands.agent.setPermissionMode = async (mode) => {
       hostPermissionMode = mode;

@@ -1,7 +1,7 @@
 /**
  * 文件类型角标：按文件名取 workspaceFileMarker 的色调/缩写，文件树与变更列表共用。
  */
-import type { ReactElement } from "react";
+import React, { type ReactElement } from "react";
 import { workspaceFileMarker } from "../../workspaceFileMarker.js";
 
 export function FileTypeMarker({ name }: { name: string }): ReactElement {

@@ -115,4 +115,18 @@ const unknownResult: Extract<SessionEvent, { type: "tool_result" }> = {
   assert.equal(plan.action, "exhausted");
 }
 
+for (const status of ["completed", "cancelled", "failed", "incomplete"] as const) {
+  const terminal: SessionEvent = { type: "turn_status", status, stopReason: "test", steps: 2, runtime };
+  const plan = resolveContinuationPlan(interruptedTurn(), replay([terminal]), 10);
+  assert.equal(plan.action, status === "completed" || status === "cancelled" ? "finished" : "continue");
+  assert.equal(resolveContinuationPlan(interruptedTurn({ turnId: "other-turn" }), replay([terminal]), 10).action, "continue");
+}
+
+{
+  const pause: SessionEvent = { type: "turn_status", status: "cancelled", stopReason: "paused", resumable: true, steps: 2, runtime };
+  assert.equal(resolveContinuationPlan(interruptedTurn(), replay([pause]), 10).action, "continue");
+  const replacement: SessionEvent = { type: "user_message", content: "new task", runtime: { ...runtime, eventId: "event-new", eventSeq: 2, turnId: "new-turn" } };
+  assert.equal(resolveContinuationPlan(interruptedTurn(), replay([pause, replacement]), 10).action, "finished", "新任务已接收时不能因旧断点残留而复活旧任务");
+}
+
 console.log("recovery plan tests passed");

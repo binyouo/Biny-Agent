@@ -23,6 +23,7 @@ import {
   type TimelineTool,
 } from "../src/desktop/renderer/src/sessionTimeline.js";
 import { MarkdownContent } from "../src/desktop/renderer/src/components/MarkdownContent.js";
+import { MessageTimeline } from "../src/desktop/renderer/src/components/MessageTimeline.js";
 import { QueuedMessages } from "../src/desktop/renderer/src/components/composer/QueuedMessages.js";
 
 test("sessionTimeline 保留历史工具的原始名称", () => {
@@ -724,10 +725,10 @@ test("发送占位与忙碌状态在对应用户消息落盘后一起退场，�
     { type: "user_message", messageId: "submitted-user", content: "你是谁呀" },
     { type: "assistant_message", content: "我是 Biny" }
   ], []);
-  assert.equal(hasSubmittedUserMessage([], "submitted-user", "你是谁呀"), false);
-  assert.equal(hasSubmittedUserMessage(turns, "submitted-user", "你是谁呀"), true);
-  assert.equal(hasSubmittedUserMessage(turns, "next-user", "你是谁呀"), false);
-  assert.equal(hasSubmittedUserMessage(turns, undefined, "你是谁呀"), true);
+  assert.equal(hasSubmittedUserMessage([], "submitted-user"), false);
+  assert.equal(hasSubmittedUserMessage(turns, "submitted-user"), true);
+  assert.equal(hasSubmittedUserMessage(turns, "next-user"), false);
+  assert.equal(hasSubmittedUserMessage(turns, undefined), false);
 });
 
 
@@ -740,4 +741,27 @@ test("顶部清单不展示只有预选结果的工具和 Skill", () => {
   assert.deepEqual(turns[0]?.capabilitySelection, { tools: ["Read", "WebSearch"], skills: ["browser", "web-fetch"] });
   const markup = renderToStaticMarkup(createElement(SkillsIndicator, { selection: turns[0]?.capabilitySelection }));
   assert.equal(markup, "");
+});
+
+
+test("已有会话的发送占位追加在历史后，同文消息按身份接管", () => {
+  const history = [
+    { type: "user_message" as const, messageId: "old-user", content: "继续" },
+    { type: "assistant_message" as const, content: "之前的回复" }
+  ];
+  const render = (received: boolean) => renderToStaticMarkup(createElement(MessageTimeline, {
+    projectId: "project-1",
+    turns: buildSessionTimeline(received ? [...history, { type: "user_message", messageId: "new-user", content: "继续" }] : history, []),
+    pendingUserMessage: { id: "new-user", messageId: "new-user", content: "继续" },
+    thinking: false,
+    onPreviewFile: () => undefined, onOpenExternal: () => undefined,
+    onResolvePermission: async () => undefined, onRetry: async () => undefined,
+    onSwitchVersion: async () => undefined, onEditRequest: () => undefined,
+    onCreateBranch: () => undefined, onRollbackFiles: () => undefined,
+    onDeleteUserMessage: () => undefined
+  }));
+  const pending = render(false);
+  assert.match(pending, /aria-label="发送中"/u);
+  assert.ok(pending.indexOf("之前的回复") < pending.indexOf('data-message-id="new-user"'));
+  assert.doesNotMatch(render(true), /aria-label="发送中"/u);
 });

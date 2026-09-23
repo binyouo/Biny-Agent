@@ -22,6 +22,7 @@ import { ActivityRuntimeProvider } from "./ActivityRuntimeContext.js";
 import { SettingsChatParams } from "./SettingsChatParams.js";
 import { SettingsCapabilityDefaults } from "./SettingsCapabilityDefaults.js";
 import { SettingsCompaction } from "./SettingsCompaction.js";
+import { ThreadBriefCard } from "./ThreadBriefCard.js";
 import { SettingsActivity } from "./SettingsActivity.js";
 import { SettingsSwitch } from "./SettingsSwitch.js";
 import { SettingsCloseGuard } from "./SettingsCloseGuard.js";
@@ -86,7 +87,7 @@ interface SettingsOverlayProps {
   onCancelModelLogin(provider: DesktopModelLoginProvider, authRequestId: string): Promise<void>;
 }
 
-export type SettingsTab = "通用" | "聊天" | "快速对话" | "模型" | "MCP 服务器" | "技能" | "插件" | "权限" | "活动记录" | "记忆" | "联网搜索" | "关于";
+export type SettingsTab = "通用" | "聊天" | "快速对话" | "模型" | "MCP 服务器" | "技能" | "插件" | "权限" | "活动记录" | "数据" | "记忆" | "联网搜索" | "关于";
 
 const settingsNav: Array<{ icon: IconName; tab: SettingsTab; label: string; group?: string }> = [
   { icon: "sun", tab: "通用", label: "通用", group: "偏好" },
@@ -99,6 +100,7 @@ const settingsNav: Array<{ icon: IconName; tab: SettingsTab; label: string; grou
   { icon: "search", tab: "联网搜索", label: "联网搜索" },
   { icon: "brain", tab: "记忆", label: "记忆", group: "数据与权限" },
   { icon: "activity", tab: "活动记录", label: "活动记录" },
+  { icon: "archive", tab: "数据", label: "数据" },
   { icon: "shield", tab: "权限", label: "权限" },
   { icon: "help", tab: "关于", label: "关于" }
 ];
@@ -344,6 +346,7 @@ function SettingsOverlayContent({
             font={settingsDraft.draft?.fontPreference ?? fontPreference}
             onFontChange={settingsDraft.setFontPreference}
           /> : null}
+          {activeTab === "数据" ? <ThreadBriefCard /> : null}
           {activeTab === "活动记录" ? <SettingsActivity /> : null}
           {activeTab === "聊天" ? (<><SettingsChatParams /><SettingsCapabilityDefaults /><SettingsCompaction /></>) : null}
           {activeTab === "权限" ? <SettingsPermissions /> : null}

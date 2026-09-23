@@ -11,6 +11,7 @@ import type { InterruptedTurn } from "./turnStore.js";
 
 export type ContinuationPlan =
   | { action: "continue"; remainingSteps: number }
+  | { action: "finished" }
   | {
     action: "block";
     message: string;
@@ -31,6 +32,15 @@ export function resolveContinuationPlan(
   turnLimit: number
 ): ContinuationPlan {
   const turnId = turn.turnId ?? turn.runtimeHighWater?.turnId;
+  // 终态已提交但断点尚未删除时也可能崩溃；正式日志必须压过陈旧断点。
+  if (turnId && replay.events.some((event) => event.type === "turn_status"
+    && event.runtime?.turnId === turnId
+    && (event.status === "completed" || event.status === "cancelled" && event.stopReason !== "paused"))) {
+    return { action: "finished" };
+  }
+  // 新根输入已经落盘就代表用户切换了任务；即使替换断点失败，也不能复活旧任务。
+  const latestInput = [...replay.events].reverse().find((event) => event.type === "user_message" && event.runtime?.turnId);
+  if (turnId && latestInput?.runtime?.turnId && latestInput.runtime.turnId !== turnId) return { action: "finished" };
   const operationTurnIds = toolOperationTurnIds(replay.events);
   const unsafeTools = new Set<string>();
 

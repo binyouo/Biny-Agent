@@ -5,6 +5,7 @@
  */
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
+import { ThreadBriefProvider } from "./threadBrief/ThreadBriefProvider.js";
 import { App } from "./App.js";
 import "./styles/layers.css";
 // KaTeX 公式样式在入口引入：组件里引 CSS 会让 node 侧的 SSR 测试挂掉（tsx 不认 .css）。
@@ -18,6 +19,6 @@ if (!root) throw new Error("Biny renderer root is missing.");
 
 createRoot(root).render(
   <StrictMode>
-    <App />
+    <ThreadBriefProvider><App /></ThreadBriefProvider>
   </StrictMode>
 );

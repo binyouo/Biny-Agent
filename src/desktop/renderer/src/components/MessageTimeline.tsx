@@ -10,7 +10,7 @@ import type { PermissionResult } from "../../../../permission/PermissionManager.
 import type { SessionUsage } from "../../../../session/metadata.js";
 import { splitAttachmentReferences, type AttachmentReference } from "../../../attachmentReferences.js";
 import { copyToClipboard } from "../copyToClipboard.js";
-import { useInlineImage } from "../inlineImage.js";
+import { AttachmentCard } from "./AttachmentCard.js";
 import { listChangedFiles, type TimelineStep, type TimelineTurn } from "../sessionTimeline.js";
 import { hasSubmittedUserMessage, buildUsageDetailRows, finishReasonTone, formatDuration, formatMessageClock, parseCompactionNotice, shouldShowResponseContext, turnMetrics, type TurnMetrics } from "../chatModel.js";
 import { speak, speechSupported } from "../speech.js";
@@ -51,7 +51,7 @@ interface MessageTimelineProps {
 
 interface PendingUserMessage {
   id: string;
-  messageId?: string;
+  messageId: string;
   content: string;
 }
 
@@ -114,7 +114,7 @@ export const MessageTimeline = memo(function MessageTimeline({ projectId, turns,
   }, [optimisticRewrite, turns]);
 
   const hasRealPendingMessage = pendingUserMessage !== undefined
-    && hasSubmittedUserMessage(turns, pendingUserMessage.messageId, pendingUserMessage.content);
+    && hasSubmittedUserMessage(turns, pendingUserMessage.messageId);
   // FLIP 落定标记：pending 以 FLIP 进入后，被真实回合接管的首条用户消息只播扫光
   // （原文 animateUserEntry "sheen-only"），避免「上浮完又浮入」的二次入场。
   const [flipArrived, setFlipArrived] = useState(false);
@@ -183,16 +183,6 @@ export const MessageTimeline = memo(function MessageTimeline({ projectId, turns,
   // 失败状态跟随对应消息，切会话、重启后仍可定位和重试。
   return (
     <div className="message-timeline">
-      {pendingUserMessage && !hasRealPendingMessage ? (
-        <PendingUserMessage
-          content={pendingUserMessage.content}
-          floatFromComposer={pendingFloatFromComposer === true}
-          id={pendingUserMessage.id}
-          onOpenExternal={onOpenExternal}
-          onPreviewFile={onPreviewFile}
-          projectId={projectId}
-        />
-      ) : null}
       {displayedTurns.map((turn, index) => (
         <Turn
           busy={busy}
@@ -215,6 +205,16 @@ export const MessageTimeline = memo(function MessageTimeline({ projectId, turns,
           turn={turn}
         />
       ))}
+      {pendingUserMessage && !hasRealPendingMessage ? (
+        <PendingUserMessage
+          content={pendingUserMessage.content}
+          floatFromComposer={pendingFloatFromComposer === true}
+          id={pendingUserMessage.id}
+          onOpenExternal={onOpenExternal}
+          onPreviewFile={onPreviewFile}
+          projectId={projectId}
+        />
+      ) : null}
       {thinking && !displayedTurns.some((turn) => turnIsRunning(turn, runtimeActiveRunId)) ? <RunStatus /> : null}
     </div>
   );
@@ -261,7 +261,7 @@ const PendingUserMessage = memo(function PendingUserMessage({ content, floatFrom
     };
   }, [floatFromComposer]);
   return (
-    <article className="chat-message user-message is-pending-entry" data-message-id={id} data-sender="user">
+    <article aria-label="发送中" aria-busy="true" className="chat-message user-message is-pending-entry" data-message-id={id} data-sender="user">
       <div className="user-bubble" ref={bubbleRef}>
         {message.text ? <MarkdownContent content={message.text} onOpenExternal={onOpenExternal} onPreviewFile={onPreviewFile} projectId={projectId} /> : null}
         {message.attachments.length ? <MessageAttachments attachments={message.attachments} projectId={projectId} /> : null}
@@ -417,6 +417,10 @@ const Turn = memo(function Turn({
         {!executionSteps.some((step) => step.kind === "assistant") && turn.assistant ? <TypewriterMarkdown active={running} content={turn.assistant} onOpenExternal={onOpenExternal} onPreviewFile={onPreviewFile} projectId={projectId} /> : null}
         {running ? <RunStatus turn={turn} /> : null}
 
+        {!running && completedChangedFiles.length > 0 ? (
+          <ChangesSummary files={completedChangedFiles} onPreviewFile={onPreviewFile} />
+        ) : null}
+
         {!running && turn.assistant.trim() ? (
           <AssistantActions
             content={turn.assistant}
@@ -433,9 +437,6 @@ const Turn = memo(function Turn({
           />
         ) : null}
 
-        {completedChangedFiles.length ? (
-          <ChangesSummary files={completedChangedFiles} onPreviewFile={onPreviewFile} />
-        ) : null}
 
         </div>
       </article>
@@ -920,18 +921,6 @@ function MessageAttachments({ attachments, projectId }: { attachments: Attachmen
       {attachments.map((attachment) => (
         <AttachmentCard attachment={attachment} key={attachment.path} projectId={projectId} />
       ))}
-    </div>
-  );
-}
-
-function AttachmentCard({ attachment, projectId }: { attachment: AttachmentReference; projectId: string }): React.JSX.Element {
-  const isImage = attachment.mimeType?.startsWith("image/") ?? false;
-  const source = useInlineImage(projectId, isImage ? attachment.path : "");
-  if (source) return <img alt={attachment.name} className="message-attachment-image" src={source} title={attachment.name} />;
-  return (
-    <div className="message-attachment" title={attachment.path}>
-      <Icon name={isImage ? "spark" : "file"} size={13} />
-      <span>{attachment.name}</span>
     </div>
   );
 }

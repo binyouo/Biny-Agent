@@ -8,6 +8,6 @@ export const ChangesSummary = memo(function ChangesSummary({ files, onPreviewFil
   onPreviewFile(path: string): void;
 }): React.JSX.Element {
   return <section aria-label="本轮产出" className="biny-output-cards">
-    {files.map((file) => <FileLinkCard key={file.path} path={file.path} description={`${file.operation === "write" ? "写入文件" : "更新文件"} · ${file.path}`} projectFile onPreviewFile={onPreviewFile} />)}
+    {files.map((file) => <FileLinkCard key={file.path} path={file.path} description={`${file.operation === "write" ? "写入文件" : "更新文件"} · ${file.path}`} onPreviewFile={onPreviewFile} />)}
   </section>;
 });

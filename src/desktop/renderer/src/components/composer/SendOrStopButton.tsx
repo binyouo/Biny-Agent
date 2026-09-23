@@ -1,4 +1,4 @@
-/** Composer 的发送/停止状态切换。 */
+/** Composer 的发送、暂停和继续状态切换。 */
 import React from "react";
 import { ComposerActionButton } from "./ComposerActionButton.js";
 import { Icon } from "../Icon.js";
@@ -10,6 +10,8 @@ export function SendOrStopButton({
   onSend,
   onStop,
   running,
+  resume = false,
+  resumePending = false,
   stopPending
 }: {
   disabled: boolean;
@@ -18,13 +20,15 @@ export function SendOrStopButton({
   onSend(): void;
   onStop(): void;
   running: boolean;
+  resume?: boolean;
+  resumePending?: boolean;
   stopPending: boolean;
 }): React.JSX.Element {
-  // 生成中始终保留停止入口；出现新草稿时再并列显示排队发送。
+  // 生成中始终保留暂停入口；出现新草稿时再并列显示排队发送。
   const showSend = !running || hasDraft;
-  // 停止请求发出后运行态可能还要等待 provider/tool 收尾；这段时间仍要允许用户重试取消。
-  const sendLabel = running ? "加入队列" : "发送消息";
-  const sendTooltip = disabledReason ?? (disabled
+  // 暂停请求发出后运行态可能还要等待 provider/tool 收尾；这段时间仍要允许用户重试暂停。
+  const sendLabel = resume ? (resumePending ? "正在继续上次任务" : "继续上次任务") : running ? "加入队列" : "发送消息";
+  const sendTooltip = disabledReason ?? (resume ? "任务已暂停，点击继续上次任务" : disabled
     ? "输入内容或附件后发送消息"
     : running ? "加入待发送队列 — 点「插话」立即注入本轮，或等本轮结束后自动发送" : "发送消息");
 
@@ -35,12 +39,12 @@ export function SendOrStopButton({
           <ComposerActionButton
             active
             className="biny-send-button is-stop"
-            label={stopPending ? "正在停止" : "停止生成"}
+            label={stopPending ? "正在暂停" : "暂停生成"}
             loading={stopPending}
             onClick={onStop}
-            tooltip={stopPending ? "正在停止当前运行，点击可重试" : "停止当前运行"}
+            tooltip={stopPending ? "正在暂停当前任务，点击可重试" : "暂停当前任务"}
           >
-            <Icon name="stop" size={15} />
+            <Icon name="pause" size={15} />
           </ComposerActionButton>
         </span>
       ) : null}
@@ -51,10 +55,11 @@ export function SendOrStopButton({
             disabled={disabled}
             disabledReason={disabled ? disabledReason ?? "输入内容或附件后发送消息" : undefined}
             label={sendLabel}
+            loading={resumePending}
             onClick={onSend}
             tooltip={sendTooltip}
           >
-            <Icon name="arrow-up" size={15} />
+            <Icon name={resume ? "play" : "arrow-up"} size={15} />
           </ComposerActionButton>
         </span>
       ) : null}

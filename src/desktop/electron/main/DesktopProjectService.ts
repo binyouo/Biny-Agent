@@ -12,6 +12,7 @@ import { execFile } from "node:child_process";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
+import { globalConfigDir } from "../../../config/paths.js";
 import type { AgentConfigStore } from "../../../config/store.js";
 import { listModelChoices, type ModelChoice } from "../../../llm/ModelManager.js";
 import {
@@ -41,6 +42,9 @@ import { rebaseForkedSessionEvents } from "../../../session/fork.js";
 import { createSessionId, type SessionTurnStatus } from "../../../session/recorder.js";
 import { SessionRunLedger, type SessionRunRecord } from "../../../session/runLedger.js";
 import { createSessionFile, ensureAgentDirs } from "../../../session/store.js";
+import { TurnStore } from "../../../session/turnStore.js";
+import { replaySessionEvents } from "../../../session/replay.js";
+import { resolveContinuationPlan } from "../../../session/recoveryPlan.js";
 import {
   exportSessionBundle,
   exportSessionClaudeCode,
@@ -432,8 +436,24 @@ export class DesktopProjectService {
     );
     const sizeBytes = stored.sizeBytes;
     const eventCount = stored.events.length;
+    let recovery: DesktopSessionDocument["recovery"];
+    try {
+      const turn = await new TurnStore(dataRoot, sessionId).load();
+      if (turn) {
+        const replay = replaySessionEvents(stored.events, { sessionId, expectedRuntimeHighWater: turn.runtimeHighWater });
+        const plan = resolveContinuationPlan(turn, replay, Number.MAX_SAFE_INTEGER);
+        if (plan.action !== "finished") {
+          recovery = plan.action === "continue"
+            ? { canContinue: true, message: "上次任务已中断，已保存的进度可以继续。" }
+            : { canContinue: false, message: plan.message };
+        }
+      }
+    } catch (error) {
+      recovery = { canContinue: false, message: `无法安全恢复：${error instanceof Error ? error.message : String(error)}` };
+    }
     return {
       session,
+      recovery,
       events: stored.events,
       liveEvents: [...(liveEvents.get(sessionId) ?? [])],
       // 接近上限时让渲染层提示分叉；一个会话越接近 16MB，每次打开/回放的 IO 与解析就越贵。
@@ -610,6 +630,7 @@ export class DesktopProjectService {
    */
   async readWorkspaceFile(project: DesktopProject, relativePath: string): Promise<DesktopWorkspaceFilePreview> {
     const filePath = this.workspaceFile(project, relativePath);
+    const isDailyNote = path.isAbsolute(relativePath) && path.dirname(relativePath) === path.join(globalConfigDir(), "memory");
     const stat = await fs.stat(filePath);
     if (!stat.isFile()) throw new Error(`Path is not a file: ${relativePath}`);
     const previewBytes = Math.min(stat.size, filePreviewLimit);
@@ -630,7 +651,7 @@ export class DesktopProjectService {
     const content = buffer.subarray(0, bytesRead);
     const binary = content.includes(0);
     return {
-      path: toWorkspaceRelative(project.path, filePath),
+      path: isDailyNote || relativePath.startsWith(attachmentPathPrefix) ? relativePath : toWorkspaceRelative(project.path, filePath),
       content: binary ? undefined : content.toString("utf8"),
       bytes: stat.size,
       binary,
@@ -663,6 +684,18 @@ export class DesktopProjectService {
 
   // 文件浏览统一屏蔽 node_modules 和 .git：既没有查看价值，也避免误改仓库内部数据。
   workspaceFile(project: DesktopProject, relativePath: string): string {
+    const configRoot = globalConfigDir();
+    const globalRelative = path.relative(configRoot, relativePath);
+    // 预览与系统打开共用同一条显式日记边界；以配置根校验软链接，不能读取任意外部文件。
+    if (path.isAbsolute(relativePath) && /^memory[/\\]\d{4}-\d{2}-\d{2}\.md$/u.test(globalRelative)) {
+      return resolveWorkspacePath(configRoot, globalRelative, []);
+    }
+    if (relativePath.startsWith(attachmentPathPrefix)) {
+      const root = this.storage.attachmentsRoot(project);
+      const target = attachmentFilePath(root, relativePath);
+      if (!target) throw new Error("Invalid attachment path.");
+      return resolveWorkspacePath(root, path.basename(target), []);
+    }
     return resolveWorkspacePath(project.path, relativePath, ["node_modules", ".git"]);
   }
 

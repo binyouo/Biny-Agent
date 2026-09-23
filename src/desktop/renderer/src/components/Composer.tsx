@@ -1,19 +1,16 @@
 /**
  * 桌面端聊天输入区。
  *
- * Astryx ChatComposer 只负责输入框、附件抽屉和发送按钮的视觉与基础交互；模型切换、
- * 权限变更、附件保存和 Agent 执行仍沿用 Biny 原有的数据流。Slash command 使用
- * Astryx 输入控件内置的 trigger 菜单，避免在组件里复制一套会和 contentEditable 键盘状态冲突的补全逻辑。
+ * 用原生表单组合附件、多行编辑器和底部工具栏；模型切换、附件保存和
+ * Agent 执行仍沿用原有数据流。输入与补全的局部交互由 PromptInput 负责。
  */
-import { ChatComposer, ChatComposerDrawer, ChatComposerInput } from "@astryxdesign/core/Chat";
-import type { ChatComposerInputHandle } from "@astryxdesign/core/Chat";
 import { useTooltip } from "@astryxdesign/core/Tooltip";
-import { memo, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useImperativeHandle, useRef, useState } from "react";
 import type { AgentSessionInfo } from "../../../../agent/AgentSession.js";
 import type { AgentCapabilitySelection } from "../../../../agent/capabilitySelection.js";
 import type { ModelChoice } from "../../../../llm/ModelManager.js";
 import { modelThinkingSelections, thinkingSelectionForModel, type ThinkingSelection } from "../../../../llm/modelThinking.js";
-import type { DesktopAttachment, DesktopCapabilityDefaults, DesktopProject, DesktopSkillCatalogEntry, DesktopToolCatalogEntry } from "../../../protocol.js";
+import type { DesktopAttachment, DesktopCapabilityDefaults, DesktopProject, DesktopSessionDocument, DesktopSkillCatalogEntry, DesktopToolCatalogEntry } from "../../../protocol.js";
 import { DESKTOP_SLASH_COMMANDS } from "../../../protocol.js";
 import { catalogForConnection } from "../providerCatalog.js";
 import { formatContextUsage, type ContextUsage } from "../usagePresentation.js";
@@ -26,9 +23,9 @@ import { ModelPickerMenu } from "./composer/ModelPickerMenu.js";
 import { thinkingLabel } from "./composer/composerLabels.js";
 import { Icon } from "./Icon.js";
 import { ProviderBrandGlyph } from "./ProviderBrandGlyph.js";
+import { isResumeInput } from "./composer/resumeInput.js";
 import { SendOrStopButton } from "./composer/SendOrStopButton.js";
-import { useBreathingCaret } from "./composer/useBreathingCaret.js";
-import { createDesktopSlashTrigger } from "./composer/desktopSlashTrigger.js";
+import { PromptInput } from "./composer/PromptInput.js";
 import type { QueuedRunMessageSnapshot } from "../../../../runtime/agentEvents.js";
 import { QueuedMessages } from "./composer/QueuedMessages.js";
 
@@ -50,6 +47,8 @@ interface ComposerProps {
   memoryToggleDisabled: boolean;
   memoryToggleDisabledReason?: string;
   running: boolean;
+  recovery?: DesktopSessionDocument["recovery"];
+  onResume(): Promise<void>;
   runtimeBusy: boolean;
   queuedMessages: readonly QueuedRunMessageSnapshot[];
   resourceState?: "loading" | "ready" | "degraded";
@@ -107,6 +106,8 @@ export const Composer = memo(function Composer({
   memoryToggleDisabled,
   memoryToggleDisabledReason,
   running,
+  recovery,
+  onResume,
   runtimeBusy,
   queuedMessages,
   resourceState,
@@ -142,7 +143,7 @@ export const Composer = memo(function Composer({
   const [busy, setBusy] = useState(false);
   const [stopPending, setStopPending] = useState(false);
   const [optimisticModel, setOptimisticModel] = useState<PendingModelSelection>();
-  const inputRef = useRef<ChatComposerInputHandle>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
   // 侧栏引用只追加到当前草稿，不经过回填或提交路径。
   useImperativeHandle(ref, () => ({
     appendText(text) {
@@ -150,10 +151,6 @@ export const Composer = memo(function Composer({
       window.requestAnimationFrame(() => inputRef.current?.focus());
     }
   }), []);
-  const editorWrapRef = useRef<HTMLDivElement>(null);
-  const breathingCaretRef = useRef<HTMLDivElement>(null);
-  const breathingCaretTrailRef = useRef<HTMLDivElement>(null);
-  useBreathingCaret(editorWrapRef, breathingCaretRef, breathingCaretTrailRef);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const capabilityAnchorRef = useRef<HTMLDivElement>(null);
   const modelAnchorRef = useRef<HTMLDivElement>(null);
@@ -161,6 +158,10 @@ export const Composer = memo(function Composer({
   const modelSwitchPromiseRef = useRef<Promise<void> | undefined>(undefined);
   const modelSwitchRequestRef = useRef(0);
   const submitFlightRef = useRef(false);
+  const attachmentRequests = useRef(new Set<string>());
+  const attachmentGeneration = useRef(0);
+  const addingFiles = useRef(false);
+  const [draggingFiles, setDraggingFiles] = useState(false);
   const defaultToolSelection = capabilityDefaults.tools;
   const defaultSkillSelection = capabilityDefaults.skills;
 
@@ -172,6 +173,11 @@ export const Composer = memo(function Composer({
     setInput("");
     setAttachments([]);
     setPendingAttachments([]);
+    attachmentRequests.current.clear();
+    attachmentGeneration.current += 1;
+    addingFiles.current = false;
+    setBusy(false);
+    setDraggingFiles(false);
     setCapabilitySelection(selectionFromDefaults({ tools: defaultToolSelection, skills: defaultSkillSelection }));
     setMenu(null);
   }, [defaultSkillSelection, defaultToolSelection, project?.id]);
@@ -224,8 +230,6 @@ export const Composer = memo(function Composer({
     };
   }, [menu]);
 
-  const desktopSlashTriggers = useMemo(() => [createDesktopSlashTrigger(skills)], [skills]);
-
   const runSlash = async (command: string): Promise<void> => {
     if (!project || busy) return;
     setInput("");
@@ -242,7 +246,9 @@ export const Composer = memo(function Composer({
 
   const submit = async (submittedInput = input): Promise<void> => {
     const value = submittedInput.trim() || (attachments.length ? "请分析这些附件。" : "");
-    if (!project || !value || busy || submitFlightRef.current || sessionWriterConflict) return;
+    const resume = Boolean(recovery) && !running && !editing && isResumeInput(submittedInput, attachments.length + pendingAttachments.length);
+    if (!project || (!value && !resume) || busy || submitFlightRef.current || sessionWriterConflict
+      || modelSetupRequired || resourceState === "loading" || memoryToggleBusy || pendingAttachments.length) return;
     // 编辑模式：提交直接走「替换原消息并重新生成」，不携带附件，也不走模型切换/斜杠命令链路。
     if (editing) {
       submitFlightRef.current = true;
@@ -256,13 +262,12 @@ export const Composer = memo(function Composer({
       } finally {
         setBusy(false);
         submitFlightRef.current = false;
-        // 提交期间 Composer 会短暂禁用并让 contenteditable 失焦；恢复后主动把
+        // 提交期间 Composer 会短暂禁用并让编辑器失焦；恢复后主动把
         // 光标交还输入框，用户可以在 Agent 运行时直接继续输入补充要求。
         window.requestAnimationFrame(() => inputRef.current?.focus());
       }
       return;
     }
-    if (pendingAttachments.length || memoryToggleBusy) return;
     submitFlightRef.current = true;
     try {
       const pendingModelSwitch = modelSwitchPromiseRef.current;
@@ -278,7 +283,7 @@ export const Composer = memo(function Composer({
       }
       const [slashName] = value.split(/\s+/, 1);
       const slashCommand = DESKTOP_SLASH_COMMANDS.find((command) => command.name === slashName);
-      if (slashCommand && (value === slashCommand.name || slashCommand.acceptsArgs)) {
+      if (!resume && slashCommand && (value === slashCommand.name || slashCommand.acceptsArgs)) {
         await runSlash(value);
         return;
       }
@@ -292,7 +297,12 @@ export const Composer = memo(function Composer({
         // 否则用户紧接着按 Enter 时可能把消息发给旧模型。
         setInput("");
         setAttachments([]);
-        await onSend(value, sentAttachments, undefined, globalThis.crypto.randomUUID(), capabilitySelection);
+        if (resume) {
+          if (!recovery?.canContinue) throw new Error(recovery?.message ?? "当前任务无法继续。");
+          await onResume();
+        } else {
+          await onSend(value, sentAttachments, undefined, globalThis.crypto.randomUUID(), capabilitySelection);
+        }
       } catch (submitError) {
         setInput(value);
         setAttachments(sentAttachments);
@@ -308,7 +318,9 @@ export const Composer = memo(function Composer({
   };
 
   const addFiles = async (files: File[]): Promise<void> => {
-    if (!project || !files.length || busy || submitFlightRef.current || running || sessionWriterConflict) return;
+    if (!project || !files.length || busy || addingFiles.current || submitFlightRef.current || sessionWriterConflict) return;
+    addingFiles.current = true;
+    const generation = attachmentGeneration.current;
     setBusy(true);
     try {
       const existing = new Set([
@@ -338,28 +350,38 @@ export const Composer = memo(function Composer({
         }
       }));
       setPendingAttachments((current) => [...current, ...uploadItems.map((item) => item.pending)]);
+      for (const item of uploadItems) attachmentRequests.current.add(item.pending.id);
       const results = await Promise.all(uploadItems.map(async ({ file, pending }) => {
         try {
           const saved = await onSaveAttachment(file);
-          setPendingAttachments((current) => current.filter((item) => item.id !== pending.id));
+          if (generation !== attachmentGeneration.current || !attachmentRequests.current.has(pending.id)) return { pending };
           return { pending, saved };
         } catch (uploadError) {
+          if (generation !== attachmentGeneration.current || !attachmentRequests.current.has(pending.id)) return { pending };
           const message = errorMessage(uploadError);
           setPendingAttachments((current) => current.map((item) => item.id === pending.id ? { ...item, error: message, status: "error" } : item));
           return { error: message, pending };
         }
       }));
-      const saved = results.flatMap((result): DesktopAttachment[] => {
+      if (generation !== attachmentGeneration.current) return;
+      const activeResults = results.filter((result) => attachmentRequests.current.has(result.pending.id));
+      const completedIds = new Set(activeResults.filter((result) => "saved" in result).map((result) => result.pending.id));
+      setPendingAttachments((current) => current.filter((item) => !completedIds.has(item.id)));
+      const saved = activeResults.flatMap((result): DesktopAttachment[] => {
+        attachmentRequests.current.delete(result.pending.id);
         const uploaded = "saved" in result ? result.saved : undefined;
         return uploaded ? [uploaded] : [];
       });
       if (saved.length) setAttachments((current) => [...current, ...saved].slice(0, MAX_COMPOSER_ATTACHMENTS));
-      const failed = results.flatMap((result) => "error" in result ? [result.error] : []);
+      const failed = activeResults.flatMap((result) => "error" in result ? [result.error] : []);
       if (failed.length) onWarning(failed.join("；"));
     } catch (attachmentError) {
       onWarning(errorMessage(attachmentError));
     } finally {
-      setBusy(false);
+      if (generation === attachmentGeneration.current) {
+        addingFiles.current = false;
+        setBusy(false);
+      }
     }
   };
 
@@ -430,8 +452,9 @@ export const Composer = memo(function Composer({
   const inputDisabled = sessionWriterConflict || busy;
   const attachmentCount = attachments.length + pendingAttachments.length;
   const hasDraft = Boolean(input.trim() || attachments.length);
-  const sendDisabled = memoryToggleBusy || resourceState === "loading"
-    || !hasDraft || !project || sessionWriterConflict || modelSetupRequired || busy || pendingAttachments.length > 0;
+  const resumeAction = Boolean(recovery) && !running && !editing && isResumeInput(input, attachmentCount);
+  const sendDisabled = (resumeAction && !recovery?.canContinue) || memoryToggleBusy || resourceState === "loading"
+    || (!hasDraft && !resumeAction) || !project || sessionWriterConflict || modelSetupRequired || busy || pendingAttachments.length > 0;
   const sendDisabledReason = !project
     ? "请先打开一个项目。"
       : modelSetupRequired
@@ -446,10 +469,12 @@ export const Composer = memo(function Composer({
           ? "当前附件或命令正在处理，请稍候。"
           : pendingAttachments.length
             ? "请等待附件处理完成，或移除失败附件。"
-          : !input.trim() && !attachments.length
+          : resumeAction && !recovery?.canContinue
+            ? recovery?.message
+          : !resumeAction && !input.trim() && !attachments.length
             ? "输入消息或添加附件后发送。"
             : undefined;
-  const placeholder = running ? "补充要求…" : "输入消息…";
+  const placeholder = running ? "补充要求…" : recovery && !editing ? "任务已暂停，发送“继续”可接着完成…" : "输入消息…";
   const modelSwitchPending = Boolean(optimisticModel);
   const modelSwitchDisabled = sessionWriterConflict || running || runtimeBusy || busy;
   const modelSwitchDisabledReason = !project
@@ -480,14 +505,23 @@ export const Composer = memo(function Composer({
 
   return (
     <div
-      className={`composer-container biny-composer-frame${running ? " is-running" : ""}`}
-      onDragOver={(event) => event.preventDefault()}
+      className={`composer-container biny-composer-frame${running ? " is-running" : ""}${draggingFiles ? " is-file-dragging" : ""}`}
+      onDragOver={(event) => {
+        if (!event.dataTransfer.types.includes("Files")) return;
+        event.preventDefault();
+        if (project && !busy && !sessionWriterConflict) setDraggingFiles(true);
+      }}
+      onDragLeave={(event) => {
+        if (!(event.relatedTarget instanceof Node) || !event.currentTarget.contains(event.relatedTarget)) setDraggingFiles(false);
+      }}
       onDrop={(event) => {
-        if (event.defaultPrevented) return;
+        setDraggingFiles(false);
+        if (event.defaultPrevented || !event.dataTransfer.types.includes("Files")) return;
         event.preventDefault();
         void addFiles([...event.dataTransfer.files]);
       }}
     >
+      {draggingFiles ? <div className="attachment-drop-hint" role="status"><Icon name="paperclip" size={22} /><strong>松开以添加附件</strong><span>图片、PDF 和文件 · 最多 8 个，每个 50 MB</span></div> : null}
       {editing ? (
         <div className="composer-edit-banner" role="status">
           <Icon name="edit" size={13} />
@@ -515,20 +549,35 @@ export const Composer = memo(function Composer({
         onSendNow={async () => await onMutateQueuedMessage("send-all")}
         onUpdate={async (messageId, input) => await onMutateQueuedMessage("update", { messageId, input })}
       />
-      <ChatComposer
+      <form
         className={`biny-composer${running ? " is-running" : ""}`}
-        density="compact"
-        drawer={attachmentCount ? (
-          <ChatComposerDrawer count={attachmentCount} label="附件">
+        onSubmit={(event) => { event.preventDefault(); void submit(); }}
+      >
+        {attachmentCount ? (
+          <div className="biny-prompt-attachments">
             <AttachmentList
+              projectId={project?.id ?? ""}
               attachments={attachments}
               onRemove={(index) => setAttachments((current) => current.filter((_, itemIndex) => itemIndex !== index))}
-              onRemovePending={(id) => setPendingAttachments((current) => current.filter((attachment) => attachment.id !== id))}
+              onRemovePending={(id) => {
+                attachmentRequests.current.delete(id);
+                setPendingAttachments((current) => current.filter((attachment) => attachment.id !== id));
+              }}
               pending={pendingAttachments}
             />
-          </ChatComposerDrawer>
-        ) : undefined}
-        footerActions={(
+          </div>
+        ) : null}
+        <PromptInput
+          inputRef={inputRef}
+          value={input}
+          onChange={setInput}
+          onSubmit={() => void submit()}
+          onFiles={(files) => void addFiles(files)}
+          disabled={inputDisabled}
+          placeholder={placeholder}
+          skills={skills}
+        />
+        <div className="biny-prompt-toolbar">
           <div className="biny-composer-footer-start">
             <input
               hidden
@@ -543,11 +592,11 @@ export const Composer = memo(function Composer({
             <div className="composer-menu-anchor">
               <ComposerActionButton
                 className="biny-composer-add"
-                disabled={!project || busy || running}
-                disabledReason={!project ? "请先打开项目" : running ? "回复结束后可添加附件" : busy ? "正在处理附件，请稍候" : undefined}
+                disabled={!project || busy || sessionWriterConflict}
+                disabledReason={!project ? "请先打开项目" : sessionWriterConflict ? "会话已在另一个应用中打开" : busy ? "正在处理附件，请稍候" : undefined}
                 label="添加附件"
                 onClick={() => { setMenu(null); fileInputRef.current?.click(); }}
-                tooltip="添加附件"
+                tooltip="添加图片、PDF 或文件 · 最多 8 个，每个 50 MB"
               >
                 <Icon name="add" size={15} />
               </ComposerActionButton>
@@ -626,27 +675,6 @@ export const Composer = memo(function Composer({
               />
             </div>
           </div>
-        )}
-        input={(
-          <div className="biny-composer-editor" ref={editorWrapRef}>
-            <ChatComposerInput
-              className="biny-composer-input"
-              debounceMs={0}
-              handleRef={inputRef}
-              label="任务输入"
-              maxRows={6}
-              onFiles={(files) => void addFiles(files)}
-              triggers={desktopSlashTriggers}
-            />
-            <div ref={breathingCaretTrailRef} className="biny-breathing-caret-trail" aria-hidden="true" />
-            <div ref={breathingCaretRef} className="biny-breathing-caret" aria-hidden="true" />
-          </div>
-        )}
-        isDisabled={inputDisabled}
-        onChange={setInput}
-        onSubmit={(value) => void submit(value)}
-        placeholder={placeholder}
-        sendActions={(
           <div className="biny-composer-footer-end">
             <div className="composer-menu-anchor">
               <ComposerActionButton
@@ -711,21 +739,20 @@ export const Composer = memo(function Composer({
                 )}
               </>
             ) : null}
+            <SendOrStopButton
+              resume={resumeAction}
+              resumePending={resumeAction && busy}
+              disabled={sendDisabled}
+              disabledReason={sendDisabledReason}
+              hasDraft={hasDraft}
+              onSend={() => void submit()}
+              onStop={() => void requestStop()}
+              running={running}
+              stopPending={stopPending}
+            />
           </div>
-        )}
-        sendButton={(
-          <SendOrStopButton
-            disabled={sendDisabled}
-            disabledReason={sendDisabledReason}
-            hasDraft={hasDraft}
-            onSend={() => void submit()}
-            onStop={() => void requestStop()}
-            running={running}
-            stopPending={stopPending}
-          />
-        )}
-        value={input}
-      />
+        </div>
+      </form>
     </div>
   );
 });

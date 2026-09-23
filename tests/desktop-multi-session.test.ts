@@ -12,7 +12,6 @@ import { DesktopStateStore } from "../src/desktop/electron/main/DesktopStateStor
 import { DesktopUserDataStore } from "../src/desktop/electron/main/DesktopUserDataStore.js";
 import type { DesktopAgentEventEnvelope } from "../src/desktop/protocol.js";
 import { HeartbeatScheduler } from "../src/agent/context/heartbeat.js";
-import { DailyDiaryScheduler } from "../src/agent/context/chatDiary.js";
 import { pendingPermission } from "../src/runtime/agentEvents.js";
 import { RuntimeHostClient, startRuntimeHost } from "../src/runtime/RuntimeHost.js";
 import { readSessionEvents } from "../src/session/events.js";
@@ -24,11 +23,8 @@ process.env.BINY_AGENT_DIR = path.join(root, "agent");
 const responses = new Map<string, ServerResponse>();
 const updates: DesktopAgentEventEnvelope[] = [];
 const originalHeartbeatStart = HeartbeatScheduler.prototype.start;
-const originalDiaryStart = DailyDiaryScheduler.prototype.start;
 let heartbeatStarts = 0;
-let diaryStarts = 0;
 HeartbeatScheduler.prototype.start = function () { heartbeatStarts += 1; originalHeartbeatStart.call(this); };
-DailyDiaryScheduler.prototype.start = function () { diaryStarts += 1; originalDiaryStart.call(this); };
 const provider = createServer(async (request, response) => {
   let body = "";
   for await (const chunk of request) body += String(chunk);
@@ -85,16 +81,18 @@ try {
   assert.equal(factoryCalled, false, "竞争 owner 失败不能先创建 Runtime");
 
   const [a, b] = await Promise.all([
-    manager.sendPrompt(project.id, undefined, "parallel-probe-A", []),
-    manager.sendPrompt(project.id, undefined, "parallel-probe-B", [])
+    manager.sendPrompt(project.id, undefined, "parallel-probe-A", [], undefined, undefined, "pending-message-a"),
+    manager.sendPrompt(project.id, undefined, "parallel-probe-B", [], undefined, undefined, "pending-message-b")
   ]);
   assert.notEqual(a.sessionId, b.sessionId);
+  assert.equal(a.messageId, "pending-message-a");
+  assert.equal(b.messageId, "pending-message-b");
+  assert.deepEqual(await manager.sendPrompt(project.id, undefined, "parallel-probe-A", [], undefined, undefined, "pending-message-a"), a);
   await waitFor(() => responses.has("parallel-probe-A") && responses.has("parallel-probe-B"), () => ({ received: [...responses.keys()], states: [a, b].map((session) => ({ sessionId: session.sessionId, state: client.getSnapshot(session.sessionId).state })) }));
   assert.equal(client.getSnapshot(a.sessionId).state.kind, "runs");
   assert.equal(client.getSnapshot(b.sessionId).state.kind, "runs");
   assert.equal(client.getSnapshot(a.sessionId).info.workspaceRoot, client.getSnapshot(b.sessionId).info.workspaceRoot);
   assert.equal(heartbeatStarts, 1, "多个 Session 只启用一份心跳");
-  assert.equal(diaryStarts, 1, "多个 Session 只启用一份日报");
   const aResponse = responses.get("parallel-probe-A")!;
   aResponse.writeHead(200, { "content-type": "text/event-stream" });
   aResponse.end([
@@ -114,6 +112,10 @@ try {
   await waitFor(() => client.getSnapshot(a.sessionId).state.kind === "idle");
   const aEvents = await readSessionEvents(sessionFilePath(root, a.sessionId));
   const bEvents = await readSessionEvents(sessionFilePath(root, b.sessionId));
+  for (const [receipt, events] of [[a, aEvents], [b, bEvents]] as const) {
+    assert.equal(events.filter((event) => event.type === "user_message" && event.messageId === receipt.messageId).length, 1);
+    assert.ok(updates.some((update) => update.event?.type === "message.user" && update.event.messageId === receipt.messageId));
+  }
   assert.ok(aEvents.some((event) => event.type === "user_message" && event.content.includes("parallel-probe-A")));
   assert.ok(bEvents.some((event) => event.type === "assistant_message" && event.content.includes("parallel-probe-B")));
   assert.ok(!JSON.stringify(aEvents).includes("parallel-probe-B"));
@@ -127,23 +129,30 @@ try {
   await internals.rebuildIdleManagedRuntimes();
   assert.ok(client.runtimeSnapshots().every((entry) => entry.snapshot.permissionMode === "full-access"));
 
-  // 五个 Session 同时申请四个运行槽；claimSession 中的 await 不得造成超卖。
-  const markers = ["C", "D", "E", "F", "G"];
+  // 十个独立 Session 同时发送都应成功，跨过旧的 4 并发 / 8 常驻门槛。
+  const markers = ["C", "D", "E", "F", "G", "H", "I", "J", "K", "L"];
   const sessions = await Promise.all(markers.map(async () => await client.ensureSession({ writeIntent: true, focus: false })));
   const admissions = await Promise.all(sessions.map(async (session, index) => await client.submitRunForSession(session.sessionId, `parallel-probe-${markers[index]}`)));
-  assert.equal(admissions.filter((result) => result.accepted).length, 4);
-  assert.equal(admissions.filter((result) => !result.accepted).length, 1);
+  assert.equal(admissions.filter((result) => result.accepted).length, markers.length);
+  assert.equal(admissions.filter((result) => !result.accepted).length, 0);
   const accepted = sessions.filter((_session, index) => admissions[index]?.accepted);
-  await waitFor(() => responses.size === 6, () => ({ received: [...responses.keys()], states: accepted.map((session) => ({ sessionId: session.sessionId, state: client.getSnapshot(session.sessionId).state })) }));
-  assert.equal(client.runtimeSnapshots().filter((entry) => entry.snapshot.state.kind === "runs").length, 4);
+  await waitFor(() => responses.size === markers.length + 2, () => ({ received: [...responses.keys()], states: accepted.map((session) => ({ sessionId: session.sessionId, state: client.getSnapshot(session.sessionId).state })) }));
+  assert.equal(client.runtimeSnapshots().filter((entry) => entry.snapshot.state.kind === "runs").length, markers.length);
   const duplicate = await client.submitRunForSession(accepted[0]!.sessionId, "same-session-cannot-overlap");
   assert.equal(duplicate.accepted, false, "同一 Session 不得并行两个 run");
+  // 一个 Provider 失败只结束对应会话，不能影响其余九个运行中的会话。
+  const failedResponse = responses.get("parallel-probe-C")!;
+  failedResponse.writeHead(400, { "content-type": "application/json" });
+  failedResponse.end(JSON.stringify({ error: { message: "controlled provider failure", type: "invalid_request_error" } }));
+  await waitFor(() => client.getSnapshot(accepted[0]!.sessionId).state.kind === "idle");
+  assert.equal(client.runtimeSnapshots().filter((entry) => entry.snapshot.state.kind === "runs").length, markers.length - 1);
   await manager.closeAll();
-  for (const session of accepted) {
+  for (const [index, session] of accepted.entries()) {
     const events = await readSessionEvents(sessionFilePath(root, session.sessionId));
-    assert.ok(events.some((event) => event.type === "turn_status" && event.status === "cancelled"), "退出必须收尾所有 Session");
+    assert.equal(events.filter((event) => event.type === "user_message" && event.content.includes(`parallel-probe-${markers[index]}`)).length, 1);
+    assert.ok(events.some((event) => event.type === "turn_status" && event.status === (index === 0 ? "failed" : "cancelled")), "失败与退出必须按会话持久化对应终态");
   }
-  console.log("desktop multi-session integration tests passed (overlap, routing, cancellation, refresh, quota race, shutdown)");
+  console.log("desktop multi-session integration tests passed (overlap, routing, cancellation, refresh, unbounded sessions, shutdown)");
 } catch (error) {
   console.error("runtime terminal events", updates.flatMap((update) => update.event?.type === "run.failed" ? [update.event] : []));
   console.error(error);
@@ -151,7 +160,6 @@ try {
 } finally {
   await manager?.closeAll().catch((error) => console.error("cleanup", error));
   HeartbeatScheduler.prototype.start = originalHeartbeatStart;
-  DailyDiaryScheduler.prototype.start = originalDiaryStart;
   provider.closeAllConnections();
   await new Promise<void>((resolve) => provider.close(() => resolve()));
   if (previousAgentDir === undefined) delete process.env.BINY_AGENT_DIR;
