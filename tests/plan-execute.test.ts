@@ -627,7 +627,8 @@ function config(): AgentConfig {
         displayName: "Plan Execute Test"
       }
     },
-    permission: { ...defaultConfig.permission, mode: "full-access", criticalAlwaysAsk: false },
+    // 该套件验证计划调度和验收；默认路径禁令依赖 macOS Seatbelt，Linux 上无法执行验收命令。
+    permission: { ...defaultConfig.permission, mode: "full-access", criticalAlwaysAsk: false, denyPaths: [] },
     checkpoints: { enabled: false },
     extensions: { ...defaultConfig.extensions, subagent: { ...defaultConfig.extensions.subagent, enabled: true, maxSteps: 2 } },
     context: { ...defaultConfig.context, memory: { ...defaultConfig.context.memory, useMemories: false, generateMemories: false } }
