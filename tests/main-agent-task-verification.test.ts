@@ -252,7 +252,8 @@ function config(): AgentConfig {
         displayName: "Main Agent Verification Test"
       }
     },
-    permission: { ...defaultConfig.permission, mode: "ask", criticalAlwaysAsk: true },
+    // 本用例只覆盖审批恢复；默认路径禁令依赖 macOS Seatbelt，Linux 上无法执行沙箱命令。
+    permission: { ...defaultConfig.permission, mode: "ask", criticalAlwaysAsk: true, denyPaths: [] },
     checkpoints: { enabled: false },
     workspace: { ...defaultConfig.workspace, ignore: [...defaultConfig.workspace.ignore, ".verification-state"] },
     extensions: {
