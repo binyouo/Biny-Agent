@@ -186,8 +186,8 @@ testDesktopRendererProjectOrder();
 
 async function testDesktopDragRegionStyles(): Promise<void> {
   const css = await readFile(new URL("../src/desktop/renderer/src/styles/biny.css", import.meta.url), "utf8");
-  const toolbar = css.match(/\.biny-chat-toolbar\s*\{(?<body>[^}]*)\}/)?.groups?.body;
-  const scroll = css.match(/\.biny-chat-scroll\s*\{(?<body>[^}]*)\}/)?.groups?.body;
+  const toolbar = css.match(/^[ \t]*\.biny-chat-toolbar[ \t]*\{(?<body>[^}]*)\}/mu)?.groups?.body;
+  const scroll = css.match(/^[ \t]*\.biny-chat-scroll[ \t]*\{(?<body>[^}]*)\}/mu)?.groups?.body;
 
   assert.ok(toolbar, "聊天工具栏样式必须存在");
   assert.match(toolbar, /-webkit-app-region:\s*drag;/, "聊天工具栏必须保留原生窗口拖动区");
@@ -3937,11 +3937,10 @@ function testLiveAssistantCompletionDoesNotDuplicateDelta(): void {
   ]);
   const turn = timeline[0];
   const assistantSteps = turn?.steps.filter((step) => step.kind === "assistant") ?? [];
-  assert.equal(assistantSteps.length, 2);
-  assert.equal(assistantSteps[0]?.kind === "assistant" ? assistantSteps[0].summary : undefined, true);
+  assert.equal(assistantSteps.length, 1);
+  assert.equal(assistantSteps[0]?.kind === "assistant" ? assistantSteps[0].summary : undefined, undefined);
   assert.equal(assistantSteps[0]?.kind === "assistant" ? assistantSteps[0].content : undefined, "正文");
-  assert.equal(assistantSteps[1]?.kind === "assistant" ? assistantSteps[1].summary : undefined, undefined);
-  assert.equal(assistantSteps[1]?.kind === "assistant" ? assistantSteps[1].content : undefined, "正文");
+  assert.equal(assistantSteps[0]?.kind === "assistant" ? assistantSteps[0].completed : undefined, true);
   assert.equal(turn?.assistant, "正文");
 }
 

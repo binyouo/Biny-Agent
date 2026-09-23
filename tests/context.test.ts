@@ -1089,7 +1089,8 @@ async function testCheckpointPersistenceFailureStopsSession(): Promise<void> {
       recorder.armed = true;
       if (mode === "manual") await assert.rejects(agent.compactConversation(), /Checkpoint persistence failed/u);
       else {
-        const failed = await agent.runTask("trigger automatic compaction");
+        // 首轮会先截断单条超长输入；再用超限请求确保已有闭合历史进入自动压缩路径。
+        const failed = await agent.runTask("trigger automatic compaction ".repeat(1_000));
         assert.equal(failed.status, "failed", JSON.stringify((await agent.contextStatus()).compaction));
         assert.match(failed.error ?? "", /Checkpoint persistence failed/u);
       }
