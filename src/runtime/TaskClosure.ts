@@ -168,7 +168,6 @@ export async function runTaskClosure(input: {
         });
         return { status: "completed", output, evidence: attempt.verification as TaskVerificationEvidence };
       }
-      resumeAttempt = undefined;
     } else {
       const beforeWorkspace = contract
         ? await captureTaskWorkspaceSnapshot(input.workspaceRoot, input.ignore)
@@ -220,6 +219,8 @@ export async function runTaskClosure(input: {
     if (!isCurrentAttempt(input.taskRuns, input.taskRunId, attempt.attemptId)) {
       return { status: "cancelled", reason: "A stale verification result was ignored." };
     }
+    // 恢复时先在原候选和原 Attempt 上完成验收；若验收失败并进入修复，下一轮才创建新 Attempt。
+    resumeAttempt = undefined;
     const artifacts: TaskCandidateArtifacts = {
       ...candidateArtifacts,
       artifactFingerprint: evidence.artifactFingerprint
