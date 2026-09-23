@@ -27,6 +27,8 @@ const recorder = new SessionRecorder(root, "plan-safety", undefined, authority.a
 const config = structuredClone(defaultConfig);
 config.permission.mode = "full-access";
 config.permission.criticalAlwaysAsk = false;
+// 本测试覆盖规划安全和验收闭环，不测依赖 macOS Seatbelt 的默认路径禁令。
+config.permission.denyPaths = [];
 config.sandbox.mode = "off";
 const registry = createToolRegistry({ workspaceRoot: root, ignore: [".biny"] }, undefined, undefined, undefined, config.sandbox);
 const permissions = new PermissionManager(config.permission);

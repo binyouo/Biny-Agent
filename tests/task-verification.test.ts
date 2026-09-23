@@ -1167,7 +1167,7 @@ function hostApprovalConfig(): AgentConfig {
         displayName: "Host Verification Test"
       }
     },
-    permission: { ...defaultConfig.permission, mode: "ask", criticalAlwaysAsk: true },
+    permission: { ...defaultConfig.permission, mode: "ask", criticalAlwaysAsk: true, denyPaths: [] },
     workspace: { ...defaultConfig.workspace, ignore: [...defaultConfig.workspace.ignore, ".verification-state", "agent"] },
     context: {
       ...defaultConfig.context,
@@ -1407,6 +1407,8 @@ function createRealTaskExecutor(
 ): { executor: TaskCommandExecutor; recorder: SessionRecorder; permission: PermissionManager } {
   const config = structuredClone(defaultConfig) as AgentConfig;
   config.permission.mode = mode;
+  // 该夹具验证 TaskRun 验收协议；默认路径禁令依赖 macOS Seatbelt，Linux 上无法执行命令。
+  config.permission.denyPaths = [];
   config.sandbox.mode = "off";
   const registry = new ToolRegistry();
   registry.registerBuiltinTool(createRunCommandTool({ workspaceRoot: root, ignore: verificationIgnore }, config.sandbox));
