@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { readFile, writeFile, unlink, symlink } from "node:fs/promises";
 import path from "node:path";
 import { compareReports, formatComparison, runEvalSuite, summarize } from "../src/evals/runner.js";
 import { builtinEvalTasks } from "../src/evals/suite.js";
@@ -10,7 +10,8 @@ async function main(): Promise<void> {
   await testFailureIsAttributedNotSwallowed();
   await testFixtureCannotEscapeWorkspace();
   testSummaryWithholdsCostWhenPricingIsIncomplete();
-  testComparisonOnlyCountsSharedTasks();
+  testComparisonRejectsDifferentTasks();
+  await testBuiltinVerifierRejectsTampering();
   testBuiltinTasksAreWellFormed();
   console.log("eval tests passed");
 }
@@ -96,8 +97,8 @@ function testSummaryWithholdsCostWhenPricingIsIncomplete(): void {
   assert.equal(summary.totalSteps, 3);
 }
 
-/** 增删任务不能被读成能力变化，所以只比较两边都跑过的任务。 */
-function testComparisonOnlyCountsSharedTasks(): void {
+/** 总指标只允许在相同任务集上比较，增删任务必须明确拒绝。 */
+function testComparisonRejectsDifferentTasks(): void {
   const baseline = report("baseline", [
     { id: "shared-regressed", passed: true },
     { id: "shared-improved", passed: false },
@@ -108,11 +109,45 @@ function testComparisonOnlyCountsSharedTasks(): void {
     { id: "shared-improved", passed: true },
     { id: "only-in-candidate", passed: true }
   ]);
-  const comparison = compareReports(baseline, candidate);
+  assert.throws(() => compareReports(baseline, candidate), /task sets differ/i);
+  const matchingCandidate = report("candidate", [
+    { id: "shared-regressed", passed: false },
+    { id: "shared-improved", passed: true },
+    { id: "only-in-baseline", passed: true }
+  ]);
+  const comparison = compareReports(baseline, matchingCandidate);
   assert.deepEqual(comparison.newlyPassing, ["shared-improved"]);
   assert.deepEqual(comparison.newlyFailing, ["shared-regressed"]);
   const text = formatComparison(comparison);
   assert.equal(text.includes("newly failing: shared-regressed"), true);
+  assert.throws(() => compareReports(baseline, { ...matchingCandidate, suite: "other" }), /suite/i);
+  assert.throws(() => compareReports(baseline, report("duplicate", [
+    { id: "shared-regressed", passed: true }, { id: "shared-regressed", passed: true }
+  ])), /duplicate/i);
+  const falsifiedSummary = { ...matchingCandidate, summary: { ...matchingCandidate.summary, passRate: 1 } };
+  assert.equal(compareReports(baseline, falsifiedSummary).passRateDelta, 0);
+}
+
+async function testBuiltinVerifierRejectsTampering(): Promise<void> {
+  for (const mode of ["broken", "test-overwritten", "test-deleted", "test-symlink", "test-mutated-during-verification", "fixed"] as const) {
+    const result = await runEvalSuite({
+      suite: "test", label: mode, model: "fake", tasks: [builtinEvalTasks[0]!],
+      run: async (root) => {
+        if (mode === "test-overwritten") await writeFile(path.join(root, "test.js"), "process.exit(0);\n");
+        if (mode === "test-deleted" || mode === "test-symlink") await unlink(path.join(root, "test.js"));
+        if (mode === "test-symlink") {
+          await writeFile(path.join(root, "fake.js"), "process.exit(0);\n");
+          await symlink("fake.js", path.join(root, "test.js"));
+        }
+        if (mode === "fixed") await writeFile(path.join(root, "sum.js"), "export function sum(values) { return values.reduce((a, b) => a + b, 0); }\n");
+        if (mode === "test-mutated-during-verification") await writeFile(path.join(root, "sum.js"), 'import { writeFileSync } from "node:fs"; writeFileSync("test.js", "process.exit(0)"); export function sum(values) { return values.reduce((a, b) => a + b, 0); }\n');
+        return { steps: 1, pricingKnown: false };
+      }
+    });
+    assert.equal(result.results[0]?.passed, mode === "fixed", mode);
+    assert.equal(result.results[0]?.metrics.steps, 1, "验收失败仍需保留已经消耗的运行指标");
+    if (mode.startsWith("test-")) assert.match(result.results[0]?.failure ?? "", /protected fixture/i);
+  }
 }
 
 function testBuiltinTasksAreWellFormed(): void {

@@ -17,6 +17,7 @@ export const builtinEvalTasks: EvalTask[] = [
       { path: "sum.js", content: "export function sum(values) {\n  return values.length;\n}\n" },
       {
         path: "test.js",
+        protected: true,
         content: [
           "import { sum } from './sum.js';",
           "const actual = sum([1, 2, 3]);",
@@ -28,9 +29,10 @@ export const builtinEvalTasks: EvalTask[] = [
           ""
         ].join("\n")
       },
-      { path: "package.json", content: '{\n  "name": "eval-fixture",\n  "type": "module"\n}\n' }
+      { path: "package.json", content: '{\n  "name": "eval-fixture",\n  "type": "module"\n}\n', protected: true }
     ],
-    verify: "node test.js"
+    // 最终判据由框架持有；工作区中的测试只是供 Agent 调试的样例。
+    verify: `node --input-type=module -e 'import assert from "node:assert/strict"; import { sum } from "./sum.js"; for (const [input, expected] of [[[1,2,3],6],[[],0],[[-2,3],1],[[0.5,1.5],2]]) assert.equal(sum(input), expected);'`
   },
   {
     id: "multi-file-rename",

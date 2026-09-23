@@ -5,7 +5,7 @@
  * 真正跑 agent 的部分通过 `EvalAgentRunner` 注入，这样评测逻辑本身可以被测试，
  * 而不需要真的连模型。
  */
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, writeFile, readFile, lstat, realpath } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { runShellCommand } from "../tools/shell/runCommand.js";
@@ -46,13 +46,16 @@ export async function runEvalSuite(options: RunEvalSuiteOptions): Promise<EvalRe
     options.signal?.throwIfAborted();
     const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), `biny-eval-${task.id}-`));
     const startedMs = now();
+    let metrics: EvalAttemptMetrics = { steps: 0, pricingKnown: false };
     try {
       await writeFixture(workspaceRoot, task);
-      const metrics = await options.run(workspaceRoot, task, options.signal);
+      metrics = await options.run(workspaceRoot, structuredClone(task), options.signal);
+      await verifyProtectedFixtures(workspaceRoot, task);
       const verification = await runShellCommand(workspaceRoot, task.verify, {
         timeoutMs: options.verifyTimeoutMs ?? 120_000,
         signal: options.signal
       });
+      await verifyProtectedFixtures(workspaceRoot, task);
       const passed = verification.status === "completed" && verification.exitCode === 0;
       results.push({
         taskId: task.id,
@@ -68,7 +71,7 @@ export async function runEvalSuite(options: RunEvalSuiteOptions): Promise<EvalRe
         passed: false,
         failure: error instanceof Error ? error.message : String(error),
         durationMs: now() - startedMs,
-        metrics: { steps: 0, pricingKnown: false }
+        metrics
       });
     } finally {
       await rm(workspaceRoot, { recursive: true, force: true });
@@ -111,21 +114,28 @@ export function compareReports(baseline: EvalReport, candidate: EvalReport): Eva
   const candidatePassed = new Set(candidate.results.filter((result) => result.passed).map((result) => result.taskId));
   const baselineTasks = new Set(baseline.results.map((result) => result.taskId));
   const candidateTasks = new Set(candidate.results.map((result) => result.taskId));
+  if (baselineTasks.size !== baseline.results.length || candidateTasks.size !== candidate.results.length) {
+    throw new Error("Cannot compare reports with duplicate task IDs.");
+  }
+  if (baseline.suite !== candidate.suite) throw new Error("Cannot compare reports from different suites.");
+  if (baselineTasks.size !== candidateTasks.size || [...baselineTasks].some((id) => !candidateTasks.has(id))) {
+    throw new Error("Cannot compare reports: task sets differ.");
+  }
+  // 汇总值从逐任务证据重算，避免读取过期或手动修改过的 summary。
+  const baselineSummary = summarize(baseline.results);
+  const candidateSummary = summarize(candidate.results);
 
   return {
     baseline: baseline.label,
     candidate: candidate.label,
-    passRateDelta: candidate.summary.passRate - baseline.summary.passRate,
-    stepsDelta: candidate.summary.totalSteps - baseline.summary.totalSteps,
-    ...(candidate.summary.totalTokens !== undefined && baseline.summary.totalTokens !== undefined
-      ? { tokensDelta: candidate.summary.totalTokens - baseline.summary.totalTokens }
-      : {}),
-    ...(candidate.summary.totalCostUsd !== undefined && baseline.summary.totalCostUsd !== undefined
-      ? { costUsdDelta: candidate.summary.totalCostUsd - baseline.summary.totalCostUsd }
-      : {}),
-    // 只比较两边都跑过的任务，否则增删任务会被读成能力变化。
-    newlyPassing: [...candidatePassed].filter((id) => baselineTasks.has(id) && !baselinePassed.has(id)).sort(),
-    newlyFailing: [...baselinePassed].filter((id) => candidateTasks.has(id) && !candidatePassed.has(id)).sort()
+    passRateDelta: candidateSummary.passRate - baselineSummary.passRate,
+    stepsDelta: candidateSummary.totalSteps - baselineSummary.totalSteps,
+    tokensDelta: candidateSummary.totalTokens !== undefined && baselineSummary.totalTokens !== undefined
+      ? candidateSummary.totalTokens - baselineSummary.totalTokens : undefined,
+    costUsdDelta: candidateSummary.totalCostUsd !== undefined && baselineSummary.totalCostUsd !== undefined
+      ? candidateSummary.totalCostUsd - baselineSummary.totalCostUsd : undefined,
+    newlyPassing: [...candidatePassed].filter((id) => !baselinePassed.has(id)).sort(),
+    newlyFailing: [...baselinePassed].filter((id) => !candidatePassed.has(id)).sort()
   };
 }
 
@@ -153,6 +163,21 @@ async function writeFixture(workspaceRoot: string, task: EvalTask): Promise<void
     }
     await mkdir(path.dirname(target), { recursive: true });
     await writeFile(target, file.content, "utf8");
+  }
+}
+
+/** 禁止修改的 fixture 必须仍是原位置的普通文件，不能用软链或删除绕过校验。 */
+async function verifyProtectedFixtures(workspaceRoot: string, task: EvalTask): Promise<void> {
+  const root = await realpath(workspaceRoot);
+  for (const file of task.fixture.filter((entry) => entry.protected)) {
+    const target = path.resolve(root, file.path);
+    try {
+      const metadata = await lstat(target);
+      if (!metadata.isFile() || metadata.nlink !== 1 || await realpath(target) !== target
+        || await readFile(target, "utf8") !== file.content) throw new Error("changed");
+    } catch {
+      throw new Error(`Protected fixture was changed or removed: ${file.path}`);
+    }
   }
 }
 

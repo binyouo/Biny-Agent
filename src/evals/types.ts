@@ -12,6 +12,8 @@
 export interface EvalFixtureFile {
   path: string;
   content: string;
+  /** 验收前后必须保持原文和普通文件身份；这是结果约束，不是进程沙箱。 */
+  protected?: boolean;
 }
 
 export interface EvalTask {
