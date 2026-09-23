@@ -23,27 +23,18 @@ export interface ManagedSessionRuntime {
 
 export interface SessionRuntimeRegistryOptions {
   readonly createRuntime?: RuntimeHostFactory;
-  readonly maxSessionRuntimes?: number;
+  readonly sessionRuntimeCacheTarget?: number;
   /** 有外部 writer claim 的 session 仍是用户正在使用的资源，不能被 LRU 静默驱逐。 */
   canEvict?(entry: ManagedSessionRuntime): boolean;
   onUpdate(update: AgentRuntimeUpdate, managed: ManagedSessionRuntime): void;
 }
 
-export class RuntimeCapacityExceededError extends Error {
-  readonly code = "runtime_capacity_exceeded";
-
-  constructor(readonly maxSessionRuntimes: number) {
-    super(`Runtime Host reached the session runtime limit (${String(maxSessionRuntimes)}). Close an idle session and retry.`);
-    this.name = "RuntimeCapacityExceededError";
-  }
-}
-
 export class SessionRuntimeRegistry {
   private readonly entries = new Map<string, ManagedSessionRuntime>();
   private readonly initializations = new Map<string, Promise<ManagedSessionRuntime>>();
-  /** 已经进入建 runtime 流程但尚未注册的 session 也要占一个容量槽。 */
+  /** 将正在创建的会话计入缓存需求，提前尝试回收空闲实例；不作为准入上限。 */
   private readonly reservations = new Set<string>();
-  private readonly maxSessionRuntimes: number;
+  private readonly sessionRuntimeCacheTarget: number;
   private readonly primaryEntry: ManagedSessionRuntime;
   private closed = false;
 
@@ -51,9 +42,9 @@ export class SessionRuntimeRegistry {
     initial: { runtime: InteractiveRuntimeHandle; commands: CommandRuntime },
     private readonly options: SessionRuntimeRegistryOptions
   ) {
-    this.maxSessionRuntimes = options.maxSessionRuntimes ?? 8;
-    if (!Number.isSafeInteger(this.maxSessionRuntimes) || this.maxSessionRuntimes < 1) {
-      throw new Error("maxSessionRuntimes must be a positive safe integer.");
+    this.sessionRuntimeCacheTarget = options.sessionRuntimeCacheTarget ?? 8;
+    if (!Number.isSafeInteger(this.sessionRuntimeCacheTarget) || this.sessionRuntimeCacheTarget < 1) {
+      throw new Error("sessionRuntimeCacheTarget must be a positive safe integer.");
     }
     this.primaryEntry = this.attach(initial, true);
     this.entries.set(this.primaryEntry.sessionId, this.primaryEntry);
@@ -226,7 +217,10 @@ export class SessionRuntimeRegistry {
       .filter((entry) => !entry.primary && !runtimeIsBusy(entry.runtime.getSnapshot()) && (this.options.canEvict?.(entry) ?? true))
       .sort((left, right) => left.lastActiveAt - right.lastActiveAt);
     const evicted: string[] = [];
-    for (const entry of candidates.slice(0, Math.max(0, requiredFreeSlots))) {
+    for (const entry of candidates) {
+      if (evicted.length >= Math.max(0, requiredFreeSlots)) break;
+      // 关闭上一个实例期间可能有新请求进入；重新确认候选仍空闲且没有新的使用者。
+      if (this.entries.get(entry.sessionId) !== entry || runtimeIsBusy(entry.runtime.getSnapshot()) || !(this.options.canEvict?.(entry) ?? true)) continue;
       await this.closeSession(entry.sessionId);
       evicted.push(entry.sessionId);
     }
@@ -237,12 +231,10 @@ export class SessionRuntimeRegistry {
     const existing = this.entries.get(sessionId);
     if (existing) return existing;
     if (!this.options.createRuntime) throw new Error("Runtime Host cannot create a second session runtime without a factory.");
+    // 缓存目标只触发尽力回收；忙碌、被 claim 或有在途操作的会话不能驱逐，也不能挡住新聊天。
     const occupiedSlots = this.entries.size + this.reservations.size;
-    if (occupiedSlots > this.maxSessionRuntimes) {
-      await this.evictIdle(occupiedSlots - this.maxSessionRuntimes);
-    }
-    if (this.entries.size + this.reservations.size > this.maxSessionRuntimes) {
-      throw new RuntimeCapacityExceededError(this.maxSessionRuntimes);
+    if (occupiedSlots > this.sessionRuntimeCacheTarget) {
+      await this.evictIdle(occupiedSlots - this.sessionRuntimeCacheTarget);
     }
 
     let host: { runtime: InteractiveRuntimeHandle; commands: CommandRuntime } | undefined;

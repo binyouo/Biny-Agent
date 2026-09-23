@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
-import { OperationDispatcher, operationLane } from "../src/runtime/host/operations.js";
+import { OperationDispatcher, operationLane, operationLaneKey } from "../src/runtime/host/operations.js";
 
-assert.equal(operationLane("runtime.restart"), "mutation");
+assert.equal(operationLane("runtime.restart"), "run");
+assert.equal(operationLane("session.ensure"), "run");
+assert.equal(operationLane("agent.permission-mode"), "run");
+assert.equal(operationLaneKey("runtime.restart", {}, "session-a"), "session-a");
+assert.equal(operationLaneKey("session.ensure", { sessionId: "session-a" }, "primary"), "session-a");
 assert.equal(operationLane("run.submit"), "run");
 assert.equal(operationLane("host.info"), "query");
 assert.equal(operationLane("run.cancel"), "run");

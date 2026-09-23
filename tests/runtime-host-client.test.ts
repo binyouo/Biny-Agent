@@ -124,6 +124,7 @@ try {
       "已有 shared runtime 不能被显式参数静默改成 worktree"
     );
     const created = await client.ensureSession();
+    assert.equal(createdFactoryOptions.at(-1)?.resourceRegistry, hostResourceRegistry, "新建会话必须复用 Host 的 MCP/Skill 资源注册表");
     assert.equal(client.runtimeSnapshots().length, 2, "session.ensure 后客户端必须保留主 session 和新 session 的快照");
     assert.ok(client.runtimeSnapshots().some((entry) => entry.sessionId === created.sessionId));
 
@@ -193,7 +194,7 @@ const capacityPrimary = fakeRuntime("capacity-primary", capacityWorkspace);
 const capacityRuntimes = new Map<string, ReturnType<typeof fakeRuntime>>();
 const capacityHost = await startRuntimeHost(capacityWorkspace, async () => ({ runtime: capacityPrimary, commands }), {
   workspaceRoot: capacityWorkspace,
-  maxSessionRuntimes: 2,
+  sessionRuntimeCacheTarget: 2,
   createRuntime: async (sessionId) => {
     const runtime = fakeRuntime(sessionId ?? `capacity-${String(++draftCounter)}`, capacityWorkspace);
     capacityRuntimes.set(runtime.getSnapshot().info.sessionId, runtime);

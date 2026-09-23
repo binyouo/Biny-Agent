@@ -9,6 +9,8 @@ import { assertPlanningOperationAllowed } from "../../agent/planningPolicy.js";
 import { promises as fs } from "node:fs";
 import type { FileHandle } from "node:fs/promises";
 import net from "node:net";
+import { performance } from "node:perf_hooks";
+import { RuntimeHostProtocolMismatchError } from "./errors.js";
 import path from "node:path";
 import {
   chatPersonalizationOverridePatchSchema,
@@ -57,9 +59,9 @@ import {
 import { OperationDispatcher, operationLane, operationLaneKey, memoryQueryActions } from "./operations.js";
 import { SessionRuntimeRegistry, type ManagedSessionRuntime } from "./registry.js";
 import {
-  RuntimeHostQuota,
+  RuntimeHostAdmission,
   isRuntimeHostAdmissionOperation
-} from "./quota.js";
+} from "./admission.js";
 import { executeRuntimeHostMemoryOperation } from "./memory-operations.js";
 import {
   asRecord,
@@ -134,8 +136,9 @@ export class RuntimeHostServer {
   private journalTail: Promise<void> = Promise.resolve();
   private readonly registry: SessionRuntimeRegistry;
   private readonly worktrees: WorktreeManager;
-  private readonly quota: RuntimeHostQuota;
+  private readonly admission: RuntimeHostAdmission;
   private readonly shutdownDrainMs: number;
+  private readonly onClosing: (() => void) | undefined;
   private readonly resourceRegistry: RuntimeHostResourceRegistry;
   private readonly createRuntime: RuntimeHostFactory | undefined;
   private closePromise: Promise<void> | undefined;
@@ -143,6 +146,9 @@ export class RuntimeHostServer {
   private readonly runtimeRestartPromises = new Map<string, Promise<{ snapshot: InteractiveRuntimeSnapshot; sequence: number }>>();
   private listening = false;
   private initialized = false;
+  private pendingRequests = 0;
+  private activityRevision = 0;
+  private idleSince: number | undefined;
 
   private get runtime(): InteractiveRuntimeHandle {
     return this.registry.primary().runtime;
@@ -158,7 +164,7 @@ export class RuntimeHostServer {
     private readonly registration: HostRegistration,
     private readonly lock: FileHandle,
     createRuntime?: RuntimeHostFactory,
-    options: { workspaceRoot?: string; maxSessionRuntimes?: number; maxConcurrentRuns?: number; shutdownDrainMs?: number; resourceRegistry?: RuntimeHostResourceRegistry } = {}
+    options: { workspaceRoot?: string; sessionRuntimeCacheTarget?: number; shutdownDrainMs?: number; resourceRegistry?: RuntimeHostResourceRegistry; onClosing?: () => void } = {}
   ) {
     this.createRuntime = createRuntime;
     this.conversationMirror = new ConversationMarkdownMirror(registration.agentRoot);
@@ -168,13 +174,14 @@ export class RuntimeHostServer {
       options.workspaceRoot ?? registration.persistenceRoot,
       registration.persistenceRoot
     );
-    this.quota = new RuntimeHostQuota(options.maxConcurrentRuns);
+    this.admission = new RuntimeHostAdmission();
     this.shutdownDrainMs = options.shutdownDrainMs ?? 4_000;
+    this.onClosing = options.onClosing;
     if (!Number.isSafeInteger(this.shutdownDrainMs) || this.shutdownDrainMs < 1) throw new Error("shutdownDrainMs must be a positive safe integer.");
     this.registry = new SessionRuntimeRegistry({ runtime, commands }, {
       createRuntime,
-      maxSessionRuntimes: options.maxSessionRuntimes,
-      canEvict: (entry) => !this.sessionWriterOwners.has(entry.sessionId),
+      sessionRuntimeCacheTarget: options.sessionRuntimeCacheTarget,
+      canEvict: (entry) => !this.sessionWriterOwners.has(entry.sessionId) && !this.dispatcher.hasPendingSession(entry.sessionId),
       onUpdate: (update, managed) => this.handleRuntimeUpdate(update, managed)
     });
     this.businessComposition = createRuntimeHostBusinessComposition({
@@ -220,7 +227,7 @@ export class RuntimeHostServer {
       sessionExists: async (sessionId) => this.registry.get(sessionId) !== undefined
         || (await listSessionFiles(this.registration.persistenceRoot)).includes(`${sessionId}.jsonl`),
       isBusy: () => this.registry.list().some((entry) => runtimeIsBusy(entry.runtime.getSnapshot())),
-      canStartAutomationRun: () => this.quota.canStartRun(this.registry),
+      canStartAutomationRun: () => !this.admission.isDraining(),
       restartRuntime: async () => {
         await this.restartRuntime(undefined);
       }
@@ -358,6 +365,42 @@ export class RuntimeHostServer {
     await this.close();
   }
 
+  /** 退出权威留在 Host；客户端断开不等于后台任务结束，也不能误杀另一个 surface。 */
+  async retireIfIdle(graceMs = 30_000): Promise<boolean> {
+    if (this.closePromise) return false;
+    if (this.connections.size || this.pendingRequests) {
+      this.idleSince = undefined;
+      return false;
+    }
+    const revision = this.activityRevision;
+    for (const { runtime, commands } of this.registry.list()) {
+      const processes = await commands.managedProcesses?.list({ includeExited: false });
+      const heartbeat = commands.heartbeat?.status();
+      const resident = runtimeIsBusy(runtime.getSnapshot())
+        || commands.hasBackgroundWork?.()
+        || Boolean(processes?.length)
+        || heartbeat?.enabled || heartbeat?.running
+        || commands.automationStore?.list().some((entry) => entry.status === "active")
+        || Boolean(commands.automationStore?.listPending().length)
+        || commands.graphs?.listGraphs().some((entry) => entry.status === "running")
+        || commands.graphs?.listGoals().some((entry) => entry.status === "active")
+        || (["queued", "running", "verifying"] as const).some((status) => Boolean(commands.taskRuns?.list({ status, limit: 1 }).tasks.length));
+      if (resident) {
+        this.idleSince = undefined;
+        return false;
+      }
+    }
+    // 上面的进程查询有 await；必须重新核对连接和活动代次，然后同步关闭 admission。
+    if (this.closePromise || this.connections.size || this.pendingRequests || revision !== this.activityRevision) {
+      this.idleSince = undefined;
+      return false;
+    }
+    this.idleSince ??= performance.now();
+    if (performance.now() - this.idleSince < graceMs) return false;
+    await this.closeOwner();
+    return true;
+  }
+
   async listen(): Promise<void> {
     if (this.listening) return;
     await new Promise<void>((resolve, reject) => {
@@ -381,7 +424,8 @@ export class RuntimeHostServer {
   async close(): Promise<void> {
     if (this.closePromise) return await this.closePromise;
     this.closePromise = (async () => {
-      this.quota.beginDrain();
+      this.onClosing?.();
+      this.admission.beginDrain();
       this.businessComposition.stop();
       for (const entry of this.registry.list()) {
         if (entry.runtime.getSnapshot().state.kind !== "idle") entry.runtime.cancelCurrentRun("cancelled");
@@ -413,14 +457,21 @@ export class RuntimeHostServer {
         this.listening = false;
       }
       await this.journalTail;
+      // 执行者还没确认结束时不能释放 owner 锁；独立进程的硬期限会结束旧进程，再由选举清理。
+      if (shutdownTimedOut) throw new Error(`Runtime Host shutdown exceeded ${String(this.shutdownDrainMs)}ms; ownership remains held until the process exits.`);
       await removeRegistration(this.registration);
       await this.lock.close();
-      if (shutdownTimedOut) throw new Error(`Runtime Host shutdown exceeded ${String(this.shutdownDrainMs)}ms; stopped waiting for a runtime.`);
     })();
     return await this.closePromise;
   }
 
   private accept(socket: net.Socket): void {
+    if (this.closePromise) { socket.destroy(); return; }
+    this.idleSince = undefined;
+    this.activityRevision += 1;
+    // 未完成握手的连接也算占用，但不能无限保活一个无人使用的 Host。
+    const handshakeTimeout = setTimeout(() => { if (!connection.authenticated) socket.destroy(); }, 8_000);
+    handshakeTimeout.unref();
     socket.setEncoding("utf8");
     const connection: HostConnection = {
       socket,
@@ -435,6 +486,7 @@ export class RuntimeHostServer {
     this.connections.add(connection);
     socket.on("data", (chunk: string) => this.read(connection, chunk));
     socket.once("close", () => {
+      clearTimeout(handshakeTimeout);
       this.connections.delete(connection);
       if (this.closePromise !== undefined) return;
       if (connection.clientId) this.commands.capabilities?.releaseOwner(connection.clientId);
@@ -449,6 +501,8 @@ export class RuntimeHostServer {
   }
 
   private handleRuntimeUpdate(update: AgentRuntimeUpdate, managed?: ManagedSessionRuntime): void {
+    this.activityRevision += 1;
+    this.idleSince = undefined;
     this.businessComposition.handleRuntimeUpdate(update);
     if (managed && update.snapshot.state.kind === "idle") {
       this.releaseIdleSessionWriter(update.snapshot.info.sessionId, managed);
@@ -499,9 +553,7 @@ export class RuntimeHostServer {
         // §4.2「拒绝的组合必须给明确错误，不允许静默降级」。
         const protocolMismatch = frame.protocolVersion !== protocolVersion;
         const message = protocolMismatch
-          ? `Runtime Host protocol ${String(frame.protocolVersion)} is incompatible with ${String(protocolVersion)}. `
-            + "A stale Runtime Host from another Biny version is still running. "
-            + "Run `biny daemon uninstall && biny daemon install`, or quit the old Biny Desktop/TUI process, then retry."
+          ? new RuntimeHostProtocolMismatchError(protocolVersion, frame.protocolVersion, this.registration.pid).message
           : "Runtime Host handshake rejected (root hash, environment, or access token mismatch).";
         this.send(connection, {
           kind: "response",
@@ -540,12 +592,21 @@ export class RuntimeHostServer {
       connection.socket.destroy(new Error("Invalid Runtime Host request."));
       return;
     }
+    this.pendingRequests += 1;
+    this.activityRevision += 1;
+    this.idleSince = undefined;
     try {
+      if (this.closePromise) throw new Error("Runtime Host is shutting down.");
       const payload = asRecord(frame.payload);
+      // 新会话先分配身份，避免所有未命名草稿挤进 primary 的准入队列。
+      if (frame.operation === "session.ensure" && payload.sessionId === undefined) {
+        payload.sessionId = randomUUID();
+      }
+      const request = { ...frame, payload };
       const result = await this.dispatcher.dispatch(
         operationLane(frame.operation, payload),
-        async () => await this.execute(connection, frame),
-        operationLaneKey(frame.operation, payload)
+        async () => await this.execute(connection, request),
+        operationLaneKey(frame.operation, payload, this.registry.primary().sessionId)
       );
       this.send(connection, { kind: "response", requestId: frame.requestId, ok: true, result });
     } catch (error) {
@@ -558,6 +619,7 @@ export class RuntimeHostServer {
         errorData: publicErrorData(error)
       });
     } finally {
+      this.pendingRequests -= 1;
       // CLI 的 Graph/审批操作也可能改变 readiness；查询本身不触发调度扫描。
       if ((frame.operation.startsWith("graph.") || frame.operation.startsWith("task.") || frame.operation.startsWith("plan."))
         && operationLane(frame.operation) !== "query") {
@@ -567,8 +629,9 @@ export class RuntimeHostServer {
   }
 
   private async execute(connection: HostConnection, frame: HostRequestFrame): Promise<unknown> {
+    if (this.closePromise) throw new Error("Runtime Host is shutting down.");
     const payload = asRecord(frame.payload);
-    if (isRuntimeHostAdmissionOperation(frame.operation)) this.quota.assertAdmission();
+    if (isRuntimeHostAdmissionOperation(frame.operation)) this.admission.assertAdmission();
     if (frame.operation === "session.list") return this.sessionSummaries();
     if (frame.operation === "session.ensure") {
       const requestedSessionId = optionalString(payload.sessionId);
@@ -576,6 +639,20 @@ export class RuntimeHostServer {
       const writeIntent = payload.writeIntent === true;
       const sessionId = requestedSessionId ?? (requestedIsolation === "worktree" ? randomUUID() : undefined);
       if (writeIntent && sessionId !== undefined) this.assertSessionWriterAvailable(connection, sessionId);
+      if (sessionId !== undefined) await this.runtimeRestartPromises.get(sessionId);
+      const resident = sessionId === undefined ? undefined : this.registry.get(sessionId);
+      // 注册表中的实例已经确认过 checkout 绑定。普通发送复用它，不再枚举整个会话目录；
+      // 显式更改隔离方式仍走下方完整校验，写入者仍需取得真实 session lease。
+      if (resident && requestedIsolation === undefined) {
+        this.registry.touch(resident.sessionId);
+        if (writeIntent) await this.claimSessionWriter(connection, resident.sessionId);
+        return {
+          sessionId: resident.sessionId,
+          snapshot: resident.runtime.getSnapshot(),
+          sessions: this.sessionSummaries(),
+          sequence: this.sequence
+        };
+      }
       const catalog = sessionId === undefined
         ? undefined
         : await readSessionCatalogRecord(this.registration.persistenceRoot, sessionId);
@@ -606,8 +683,8 @@ export class RuntimeHostServer {
           ? undefined
           : { sessionId: requestedSessionId, fresh: !sessionFileExists, isolation: "shared" as const };
       const managed = requestedSessionId === undefined
-        ? await this.registry.createFresh({ sessionId, ...factoryOptions, isolation })
-        : await this.registry.ensure(requestedSessionId, factoryOptions);
+        ? await this.registry.createFresh({ sessionId, ...factoryOptions, isolation, resourceRegistry: this.resourceRegistry })
+        : await this.registry.ensure(requestedSessionId, { ...factoryOptions, resourceRegistry: this.resourceRegistry });
       if (writeIntent) {
         this.assertSessionWriterAvailable(connection, managed.sessionId);
         // 新 session 还没有 JSONL 时，runtime 尚未能建立文件 lease；先登记连接 owner，
@@ -715,7 +792,7 @@ export class RuntimeHostServer {
       case "submit": {
         this.assertRevision(payload, runtime);
         if (payload.writeIntent === true) await this.ensureSessionWriter(connection, runtime);
-        this.quota.assertRunCapacity(this.registry, managed);
+        this.admission.assertAdmission();
         const ids = readRequestIds(payload);
         const submitted = runtime.submitPrompt(
           requiredString(payload.input, "input"),
@@ -734,7 +811,7 @@ export class RuntimeHostServer {
         return await this.executeAdmission(async () => {
           this.assertRevision(payload, runtime);
           if (payload.writeIntent === true) await this.ensureSessionWriter(connection, runtime);
-          this.quota.assertRunCapacity(this.registry, managed);
+          this.admission.assertAdmission();
           const ids = readRequestIds(payload);
           const submitted = runtime.submitPrompt(
             requiredString(payload.input, "input"),
@@ -749,7 +826,7 @@ export class RuntimeHostServer {
       case "queue": {
         this.assertRevision(payload, runtime);
         if (payload.writeIntent === true) await this.ensureSessionWriter(connection, runtime);
-        this.quota.assertRunCapacity(this.registry, managed);
+        this.admission.assertAdmission();
         const ids = readRequestIds(payload);
         const input = requiredString(payload.input, "input");
         const attachments = readAttachments(payload.attachments);
@@ -763,7 +840,7 @@ export class RuntimeHostServer {
         return await this.executeAdmission(async () => {
           this.assertRevision(payload, runtime);
           if (payload.writeIntent === true) await this.ensureSessionWriter(connection, runtime);
-          this.quota.assertRunCapacity(this.registry, managed);
+          this.admission.assertAdmission();
           const ids = readRequestIds(payload);
           const input = requiredString(payload.input, "input");
           const attachments = readAttachments(payload.attachments);
@@ -830,7 +907,7 @@ export class RuntimeHostServer {
       case "start-interrupted": {
         this.assertRevision(payload, runtime);
         if (payload.writeIntent === true) await this.ensureSessionWriter(connection, runtime);
-        this.quota.assertRunCapacity(this.registry, managed);
+        this.admission.assertAdmission();
         const submitted = await runtime.startInterruptedTurn(readRequestIds(payload));
         if (submitted) this.trackCompletion(submitted);
         return submitted === undefined
@@ -865,7 +942,7 @@ export class RuntimeHostServer {
       case "run.continue":
         return await this.executeAdmission(async () => {
           if (payload.writeIntent === true) await this.ensureSessionWriter(connection, runtime);
-          this.quota.assertRunCapacity(this.registry, managed);
+          this.admission.assertAdmission();
           return await this.continueRun(payload, runtime, commands);
         }, runtime);
       case "run.inspect": {
@@ -1313,7 +1390,7 @@ export class RuntimeHostServer {
 
   private async executeAdmission<T>(execute: () => Promise<T>, runtime = this.runtime): Promise<HostOperationResult<T>> {
     try {
-      this.quota.assertAdmission();
+      this.admission.assertAdmission();
       const result = await execute();
       return { accepted: true, sessionId: runtime.getSnapshot().info.sessionId, revision: runtime.getSnapshot().revision, result };
     } catch (error) {
@@ -1419,23 +1496,28 @@ export class RuntimeHostServer {
   }
 
   private async runtimeEntry(operation: string, payload: Record<string, unknown>): Promise<ManagedSessionRuntime> {
-    // 重建期间旧 store 已关闭；查询和新运行要等注册表替换完成后再取句柄。
-    await Promise.all(this.runtimeRestartPromises.values());
     const explicitSessionId = optionalString(payload.sessionId);
     const sessionFromFile = typeof payload.session === "string" ? sessionIdFromFile(payload.session) : undefined;
     const taskRunId = operation.startsWith("task.") ? optionalString(payload.taskRunId) : undefined;
-    const task = taskRunId === undefined ? undefined : this.registry.primary().commands.taskRuns.get(taskRunId);
-    const taskSessionId = task?.sessionId;
     const graphId = operation.startsWith("graph.") || operation.startsWith("plan.") ? optionalString(payload.graphId) : undefined;
-    const graphSessionId = graphId === undefined ? undefined : this.registry.primary().commands.graphs.getGraph(graphId)?.supervisorSessionId;
     const sourceRunId = operation === "run.continue"
       ? optionalString(payload.sourceRunId)
       : operation === "cancel" || operation === "run.cancel" || operation === "run.inspect"
         ? optionalString(payload.runId)
         : undefined;
+    // 各会话连接同一份 authority 数据库；优先用目标会话的连接读取身份映射，
+    // 避免 primary 重建时把其它会话的取消/继续也挂起。
+    const routingSessionId = this.registry.get(explicitSessionId ?? sessionFromFile ?? "")?.sessionId ?? this.registry.primary().sessionId;
+    if (taskRunId !== undefined || graphId !== undefined || sourceRunId !== undefined) {
+      await this.runtimeRestartPromises.get(routingSessionId);
+    }
+    const routingCommands = (this.registry.get(routingSessionId) ?? this.registry.primary()).commands;
+    const task = taskRunId === undefined ? undefined : routingCommands.taskRuns.get(taskRunId);
+    const taskSessionId = task?.sessionId;
+    const graphSessionId = graphId === undefined ? undefined : routingCommands.graphs.getGraph(graphId)?.supervisorSessionId;
     // 真实 CommandRuntime 始终提供 authority；保留无 authority 的轻量测试/fallback 也能
     // 继续把未带 sessionId 的取消交给当前 primary，而不是在路由层先抛 TypeError。
-    const authority = this.registry.primary().commands.runtimeAuthority;
+    const authority = routingCommands.runtimeAuthority;
     const sourceRun = sourceRunId === undefined || authority === undefined ? undefined : authority.getRun(sourceRunId);
     const sourceSessionId = sourceRun?.sessionId;
     const requestedSessionId = explicitSessionId ?? sessionFromFile;
@@ -1448,8 +1530,13 @@ export class RuntimeHostServer {
     if (requestedSessionId !== undefined && sourceSessionId !== undefined && requestedSessionId !== sourceSessionId) {
       throw new Error(`Run ${sourceRunId} belongs to session ${sourceSessionId}, not ${requestedSessionId}.`);
     }
-    const sessionId = requestedSessionId ?? taskSessionId ?? sourceSessionId ?? graphSessionId;
-    if (sessionId === undefined) return this.registry.primary();
+    const sessionId = requestedSessionId ?? taskSessionId ?? sourceSessionId ?? graphSessionId ?? this.registry.primary().sessionId;
+    await this.runtimeRestartPromises.get(sessionId);
+    const resident = this.registry.get(sessionId);
+    if (resident) {
+      this.registry.touch(sessionId);
+      return resident;
+    }
     return await this.registry.ensure(sessionId, await this.factoryOptionsForSession(sessionId));
   }
 
@@ -1546,7 +1633,7 @@ export class RuntimeHostServer {
     this.assertSessionWriterAvailable(connection, sessionId);
     const foreignOwner = this.sessionWriterOwners.get(sessionId);
     if (foreignOwner?.clientId === connection.clientId) return;
-    const managed = await this.registry.ensure(sessionId, await this.factoryOptionsForSession(sessionId));
+    const managed = this.registry.get(sessionId) ?? await this.registry.ensure(sessionId, await this.factoryOptionsForSession(sessionId));
     await managed.runtime.claimSession(sessionId);
     this.sessionWriterOwners.set(sessionId, { clientId: connection.clientId, surface: connection.surface });
   }
@@ -1775,6 +1862,6 @@ export class RuntimeHostServer {
 }
 
 function readCancellationReason(value: unknown): AgentTurnCancellationReason {
-  if (value === "interrupted" || value === "replaced" || value === "cancelled") return value;
-  throw new Error("Cancellation reason must be interrupted, replaced, or cancelled.");
+  if (value === "interrupted" || value === "replaced" || value === "cancelled" || value === "paused") return value;
+  throw new Error("Cancellation reason must be interrupted, replaced, cancelled, or paused.");
 }

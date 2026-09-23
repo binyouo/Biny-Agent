@@ -51,6 +51,9 @@ export interface RuntimeHostPaths {
 }
 
 export interface RuntimeHostSpawnOptions {
+  /** 临时 Host 空闲后退出；显式常驻服务不随客户端离开而停止。 */
+  lifecycleMode?: "ephemeral" | "service";
+  idleGraceMs?: number;
   workspaceRoot: string;
   configDir?: string;
   attachmentRoot?: string;
@@ -79,6 +82,8 @@ export interface RuntimeHostFactoryOptions {
 }
 
 export interface HostClientOptions {
+  /** 只用于发现同配置环境的 owner，不授予重启或接管能力。 */
+  configDir?: string;
   clientId?: string;
   surface?: HostSurface;
   /** owner 退出后，client 是否有足够 composition root 重新选举 Host。 */
@@ -98,6 +103,8 @@ export interface RuntimeHostInfo {
 export type RuntimeHostFactory = (sessionId?: string, options?: RuntimeHostFactoryOptions) => Promise<InteractiveAgentHost>;
 
 export interface RuntimeHostStartOptions {
+  /** 独立进程在关闭开始时启动硬退出期限，同进程 Host 不结束调用方进程。 */
+  onClosing?: () => void;
   /** Host 的主 checkout；初始 runtime 可能已经位于某个 worktree，不能从它反推仓库根。 */
   workspaceRoot?: string;
   /** 远端请求新会话、配置重载或编辑分支时，按 sessionId 重建 owner。 */
@@ -106,8 +113,8 @@ export interface RuntimeHostStartOptions {
   resumeInterrupted?: boolean;
   /** Host 发现身份必须包含配置根，避免同一工作区的隔离实例复用错误 owner。 */
   configDir?: string;
-  maxSessionRuntimes?: number;
-  maxConcurrentRuns?: number;
+  /** 常驻 runtime 的缓存目标；忙碌或被占用的会话可以超过目标，不能因此拒绝新会话。 */
+  sessionRuntimeCacheTarget?: number;
   shutdownDrainMs?: number;
 }
 

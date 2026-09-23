@@ -12,12 +12,15 @@ import { WorktreeManager } from "./host/worktree.js";
 import {
   findLatestInterruptedSession,
   startRuntimeHost,
+  type RuntimeHostServer,
   type RuntimeHostFactory,
   type RuntimeHostFactoryOptions
 } from "./RuntimeHost.js";
 import type { BrowserAutomationEndpoint } from "../tools/browser.js";
 
 export interface RuntimeHostProcessOptions {
+  lifecycleMode: "ephemeral" | "service";
+  idleGraceMs: number;
   workspaceRoot: string;
   persistenceRoot: string;
   configDir?: string;
@@ -28,6 +31,46 @@ export interface RuntimeHostProcessOptions {
 
 export async function runRuntimeHostProcess(argv: readonly string[] = process.argv.slice(2)): Promise<void> {
   const options = parseOptions(argv);
+  let server: RuntimeHostServer | undefined = undefined;
+  let shuttingDown = false;
+  let shutdownDeadline: ReturnType<typeof setTimeout> | undefined;
+  let checkingIdle = false;
+  const armShutdownDeadline = (): void => {
+    // 期限属于整个独立进程，覆盖资源关闭、日志刷盘卡住等情况；不能提前删 owner 锁。
+    shutdownDeadline ??= setTimeout(() => process.exit(1), 10_000);
+  };
+  const closeOwner = (): void => {
+    if (!server) return;
+    void server.closeOwner().then(() => process.exit(0), () => process.exit(1));
+  };
+  const shutdown = (): void => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    armShutdownDeadline();
+    closeOwner();
+  };
+  const checkIdle = async (): Promise<void> => {
+    if (!server || shuttingDown || checkingIdle || options.lifecycleMode === "service") return;
+    checkingIdle = true;
+    try {
+      if (await server.retireIfIdle(options.idleGraceMs)) process.exit(0);
+    } catch {
+      // 已经开始关闭时由硬期限兜底；空闲证明失败不能被当作可以终止任务的证据。
+      if (shutdownDeadline) process.exit(1);
+    } finally {
+      checkingIdle = false;
+    }
+  };
+  process.once("SIGINT", shutdown);
+  process.once("SIGTERM", shutdown);
+  if (options.lifecycleMode === "ephemeral" && process.channel) {
+    process.once("disconnect", () => {
+      // 还没 ready 就失去启动者时，给初始化一个有界的收尾机会。
+      if (!server) armShutdownDeadline();
+      else void checkIdle();
+    });
+    process.channel.unref();
+  }
   const selectedSession = options.sessionId
     ?? (options.resumeInterrupted ? await findLatestInterruptedSession(options.persistenceRoot) : undefined);
   const configStore = createFileConfigStore(options.workspaceRoot, {
@@ -58,7 +101,7 @@ export async function runRuntimeHostProcess(argv: readonly string[] = process.ar
   const initialFactoryOptions = selectedSession === undefined
     ? undefined
     : await worktrees.runtimeFactoryOptions(selectedSession);
-  const server = await startRuntimeHost(options.persistenceRoot, (resourceRegistry) => createRuntime(selectedSession, {
+  server = await startRuntimeHost(options.persistenceRoot, (resourceRegistry) => createRuntime(selectedSession, {
     ...initialFactoryOptions,
     resourceRegistry,
     resourceBoot: "background"
@@ -66,20 +109,19 @@ export async function runRuntimeHostProcess(argv: readonly string[] = process.ar
     workspaceRoot: options.workspaceRoot,
     createRuntime,
     resumeInterrupted: options.resumeInterrupted,
-    configDir: options.configDir
+    configDir: options.configDir,
+    onClosing: armShutdownDeadline
   });
-
-  let shuttingDown = false;
-  const shutdown = (): void => {
-    if (shuttingDown) return;
-    shuttingDown = true;
-    void server.closeOwner().then(
-      () => process.exit(0),
-      () => process.exit(1)
-    );
-  };
-  process.once("SIGINT", shutdown);
-  process.once("SIGTERM", shutdown);
+  if (shuttingDown) closeOwner();
+  else {
+    if (shutdownDeadline) clearTimeout(shutdownDeadline);
+    shutdownDeadline = undefined;
+    if (options.lifecycleMode === "ephemeral") {
+      const interval = setInterval(() => { void checkIdle(); }, Math.min(1_000, Math.max(10, options.idleGraceMs)));
+      interval.unref();
+      void checkIdle();
+    }
+  }
   await new Promise<void>(() => undefined);
 }
 
@@ -107,7 +149,13 @@ function parseOptions(argv: readonly string[]): RuntimeHostProcessOptions {
   }
   const workspaceRoot = requiredOption(values, "workspace-root");
   const persistenceRoot = requiredOption(values, "persistence-root");
+  const lifecycleMode = values.get("lifecycle-mode") ?? "ephemeral";
+  if (lifecycleMode !== "ephemeral" && lifecycleMode !== "service") throw new Error("Runtime Host lifecycle-mode must be ephemeral or service.");
+  const idleGraceMs = Number(values.get("idle-grace-ms") ?? 30_000);
+  if (!Number.isSafeInteger(idleGraceMs) || idleGraceMs < 0) throw new Error("Runtime Host idle-grace-ms must be a non-negative safe integer.");
   return {
+    lifecycleMode,
+    idleGraceMs,
     workspaceRoot: path.resolve(workspaceRoot),
     persistenceRoot: path.resolve(persistenceRoot),
     configDir: values.get("config-dir"),

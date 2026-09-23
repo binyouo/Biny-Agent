@@ -10,5 +10,5 @@ export * from "./connection.js";
 export * from "./server.js";
 export * from "./client.js";
 export * from "./registry.js";
-export * from "./quota.js";
+export * from "./admission.js";
 export * from "./worktree.js";

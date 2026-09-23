@@ -166,7 +166,8 @@ export function createFileConfigStore(workspaceRoot: string, options: FileConfig
   };
   return {
     configPath: () => path.join(configRoot, CONFIG_FILE),
-    supportsDetachedRuntimeHost: true,
+    // 注入的凭据实现不一定能被子进程重新构建；不能先 spawn 失败再靠吞错回到同进程。
+    supportsDetachedRuntimeHost: options.credentialStore === undefined,
     load,
     save: async (config, requestedWorkspaceRoot) => {
       const run = writeTail.then(async () => await withGlobalConfigWriteLock(

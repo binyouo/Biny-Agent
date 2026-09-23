@@ -19,6 +19,7 @@ import {
   runtimeHostStartupTimeoutMs as hostStartupTimeoutMs
 } from "./protocol.js";
 import { runtimeHostSpawnCircuitFor } from "./reconnect.js";
+import { RuntimeHostProtocolMismatchError } from "./errors.js";
 import type {
   HostRegistration,
   RuntimeHostPaths,
@@ -61,6 +62,8 @@ export function spawnRuntimeHostProcess(
     path.resolve(options.workspaceRoot),
     "--persistence-root",
     path.resolve(persistenceRoot),
+    "--lifecycle-mode", options.lifecycleMode ?? "ephemeral",
+    "--idle-grace-ms", String(options.idleGraceMs ?? 30_000),
     ...(options.configDir === undefined ? [] : ["--config-dir", path.resolve(options.configDir)]),
     ...(options.attachmentRoot === undefined ? [] : ["--attachment-root", path.resolve(options.attachmentRoot)]),
     ...(options.sessionId === undefined ? [] : ["--session-id", options.sessionId]),
@@ -68,7 +71,8 @@ export function spawnRuntimeHostProcess(
   ], {
     cwd: moduleRoot,
     detached: true,
-    stdio: "ignore",
+    // 控制 socket 可以重连；这条 IPC 仅代表启动者寿命，不能与业务连接混为一谈。
+    stdio: ["ignore", "ignore", "ignore", "ipc"],
     env: {
       ...process.env,
       ...(options.browserAutomation === undefined ? {} : {
@@ -78,6 +82,8 @@ export function spawnRuntimeHostProcess(
       ...(process.versions.electron === undefined ? {} : { ELECTRON_RUN_AS_NODE: "1" })
     }
   });
+  child.unref();
+  child.channel?.unref();
   return child;
 }
 
@@ -134,14 +140,14 @@ export async function waitForHostRegistration(
 
 /** 超时候选只允许短暂优雅退出，随后强制回收；不会触碰 registration 中的其他 owner。 */
 export async function terminateSpawnedHost(child: ChildProcess, graceMs = 250): Promise<void> {
-  if (child.exitCode !== null) return;
+  if (child.exitCode !== null || child.signalCode !== null) return;
   try {
     child.kill("SIGTERM");
   } catch {
     return;
   }
   await new Promise<void>((resolve) => {
-    if (child.exitCode !== null) {
+    if (child.exitCode !== null || child.signalCode !== null) {
       resolve();
       return;
     }
@@ -156,7 +162,7 @@ export async function terminateSpawnedHost(child: ChildProcess, graceMs = 250): 
       resolve();
     };
     const timer = setTimeout(() => {
-      if (child.exitCode === null) {
+      if (child.exitCode === null && child.signalCode === null) {
         try {
           child.kill("SIGKILL");
         } catch {
@@ -168,7 +174,7 @@ export async function terminateSpawnedHost(child: ChildProcess, graceMs = 250): 
     const hardTimer = setTimeout(finish, Math.max(graceMs + 1_000, 1_000));
     child.once("exit", finish);
     child.once("error", finish);
-    if (child.exitCode !== null) queueMicrotask(finish);
+    if (child.exitCode !== null || child.signalCode !== null) queueMicrotask(finish);
   });
 }
 
@@ -183,7 +189,7 @@ export async function waitForHostExit(paths: RuntimeHostPaths, registration: Hos
   throw new Error(`Runtime Host process ${String(registration.pid)} did not stop within ${String(hostStartupTimeoutMs)}ms.`);
 }
 
-export function currentRuntimeHostIdentity(options?: RuntimeHostSpawnOptions): { configRoot: string; agentRoot: string } {
+export function currentRuntimeHostIdentity(options?: Pick<RuntimeHostSpawnOptions, "configDir">): { configRoot: string; agentRoot: string } {
   return {
     configRoot: path.resolve(options?.configDir ?? globalConfigDir()),
     agentRoot: path.resolve(globalAgentDir())
@@ -192,7 +198,7 @@ export function currentRuntimeHostIdentity(options?: RuntimeHostSpawnOptions): {
 
 export function registrationMatchesCurrentEnvironment(
   registration: HostRegistration,
-  options?: RuntimeHostSpawnOptions
+  options?: Pick<RuntimeHostSpawnOptions, "configDir">
 ): boolean {
   const identity = currentRuntimeHostIdentity(options);
   return registration.configRoot === identity.configRoot && registration.agentRoot === identity.agentRoot;
@@ -262,6 +268,9 @@ export async function acquireHostLock(paths: RuntimeHostPaths, persistenceRoot: 
       const registration = await readRegistration(paths);
       const ownerPid = registration?.pid ?? await readLockPid(paths.lockPath);
       if (ownerPid !== undefined && isProcessAlive(ownerPid)) {
+        if (registration && registration.protocolVersion !== protocolVersion) {
+          throw new RuntimeHostProtocolMismatchError(registration.protocolVersion, protocolVersion, ownerPid);
+        }
         throw new Error(`Runtime Host is already running for ${path.resolve(persistenceRoot)}.`);
       }
       await removeStaleRegistration(registration ?? {

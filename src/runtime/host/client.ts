@@ -1047,7 +1047,7 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
           : undefined;
         const identity = this.environmentTakeoverHandshake && registrationIdentity !== undefined
           ? registrationIdentity
-          : currentRuntimeHostIdentity(this.options.spawnOptions);
+          : currentRuntimeHostIdentity(this.options.spawnOptions ?? { configDir: this.options.configDir });
         this.send(socket, {
           kind: "hello",
           requestId: helloRequestId,

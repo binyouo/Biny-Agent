@@ -62,7 +62,6 @@ import { CapabilityStore } from "./CapabilityStore.js";
 import { RuntimeHostResourceScope, RuntimeResourceBaselinePendingError, type RuntimeHostResourceRegistry, type RuntimeResourceSnapshot, type RuntimeResourceReadiness } from "./host/resources.js";
 import { listEnabledGlobalPluginPaths, listEnabledProjectPluginPaths } from "../extensions/pluginRegistry.js";
 import { globalPluginRoot } from "../config/paths.js";
-import { DailyDiaryScheduler } from "../agent/context/chatDiary.js";
 import { HeartbeatScheduler } from "../agent/context/heartbeat.js";
 import { createBrowserTools, type BrowserAutomationEndpoint } from "../tools/browser.js";
 import { ToolExecutionCoordinator } from "../agent/toolExecutionCoordinator.js";
@@ -132,6 +131,8 @@ export interface CommandRuntime {
     signal?: AbortSignal;
   }): Promise<TaskCommandExecution>;
   refreshDailyDiary(dateKey: string, options?: { force?: boolean }): Promise<unknown>;
+  /** 不依赖前台 session 状态的进程内工作，防止空闲回收打断日报或子代理。 */
+  hasBackgroundWork(): boolean;
   setSubagentParentRunId(parentRunId?: string): void;
   close(): Promise<void>;
 }
@@ -507,14 +508,7 @@ export async function createCommandRuntime(workspaceRoot: string, options: Comma
   }
   if (!agent) throw new Error("Failed to initialize Biny agent runtime.");
 
-  const dailyDiaryAgent = agent;
-  const dailyDiaryScheduler = new DailyDiaryScheduler({
-    run: async (dateKeys, signal) => {
-      for (const dateKey of dateKeys) {
-        await dailyDiaryAgent.refreshDailyDiary(dateKey, { signal }).catch(() => undefined);
-      }
-    }
-  });
+  const heartbeatAgent = agent;
   const heartbeat = new HeartbeatScheduler({
     configDir: undefined,
     enabled: config.heartbeat.enabled,
@@ -524,12 +518,13 @@ export async function createCommandRuntime(workspaceRoot: string, options: Comma
       activeHoursEnd: config.heartbeat.activeHoursEnd
     },
     run: async (prompt, signal) => {
-      await dailyDiaryAgent.runTask(prompt, { abortSignal: signal, runId: randomUUID(), turnId: randomUUID(), emotionAnalysis: false });
+      const outcome = await heartbeatAgent.runTask(prompt, { abortSignal: signal, runId: randomUUID(), turnId: randomUUID(), emotionAnalysis: false });
+      if (outcome.status !== "completed") throw new Error(outcome.error ?? "Heartbeat did not complete.");
     }
   });
   const backgroundOwner = {
-    start: (): void => { dailyDiaryScheduler.start(); heartbeat.start(); },
-    stop: (): void => { dailyDiaryScheduler.stop(); heartbeat.stop(); }
+    start: (): void => { heartbeat.start(); },
+    stop: (): void => { heartbeat.stop(); }
   };
   backgroundOwners.add(backgroundOwner);
   if (backgroundOwners.size === 1) backgroundOwner.start();
@@ -826,6 +821,8 @@ export async function createCommandRuntime(workspaceRoot: string, options: Comma
     graphs,
     capabilities,
     subagents: subagentTaskManager,
+    hasBackgroundWork: () => heartbeat.status().running
+      || Boolean(subagentTaskManager?.listSnapshots().some((task) => task.status === "queued" || task.status === "running")),
     extensionReport: (section?: ExtensionSection): string => formatExtensionReport(extensionStatus(), section),
     extensionStatus: (): ExtensionStatus => extensionStatus(),
     listSkills: (): SkillDefinition[] => [...requireSkillBundle(skills).skills],

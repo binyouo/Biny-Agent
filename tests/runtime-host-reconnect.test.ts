@@ -266,8 +266,8 @@ assert.equal(authenticateRuntimeHostHello(helloFor(5), registrationFor(3), 3), f
     await rm(workspaceRoot, { recursive: true, force: true });
   }
   assert.equal(rejection?.errorCode, "protocol_version_mismatch", "拒绝帧必须带 protocol_version_mismatch 错误码");
-  assert.match(rejection?.error ?? "", /protocol 3 is incompatible with 8/u, "拒绝消息要点明版本不匹配");
-  assert.match(rejection?.error ?? "", /biny daemon uninstall && biny daemon install/u, "拒绝消息必须给 actionable 指引，不允许静默降级");
+  assert.match(rejection?.error ?? "", /protocol 8 is incompatible with 3/u, "拒绝消息先报告 Host 版本，再报告客户端版本");
+  assert.match(rejection?.error ?? "", /PID \d+/u, "拒绝消息必须指出实际 owner，不建议不存在的 daemon 命令");
 }
 
 console.log("runtime-host-reconnect tests passed");

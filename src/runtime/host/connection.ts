@@ -6,6 +6,7 @@
 import type { ChildProcess } from "node:child_process";
 import path from "node:path";
 import { RuntimeHostClient } from "./client.js";
+import { RuntimeHostProtocolMismatchError } from "./errors.js";
 import {
   ensureRuntimeHostDirectory,
   isConnectionRefused,
@@ -35,20 +36,17 @@ export async function connectRuntimeHost(
   if (!registration) return undefined;
   if (registration.protocolVersion !== protocolVersion) {
     if (isProcessAlive(registration.pid)) {
-      throw new Error(
-        `Runtime Host protocol ${String(registration.protocolVersion)} is incompatible with ${String(protocolVersion)}. `
-        + "A stale Runtime Host from another Biny version is still running. "
-        + "Run `biny daemon uninstall && biny daemon install`, or quit the old Biny Desktop/TUI process, then retry."
-      );
+      throw new RuntimeHostProtocolMismatchError(registration.protocolVersion, protocolVersion, registration.pid);
     }
     await removeStaleRegistration(registration);
     return undefined;
   }
-  const identityMatches = registrationMatchesCurrentEnvironment(registration, options.spawnOptions);
+  const identityMatches = registrationMatchesCurrentEnvironment(registration, options.spawnOptions ?? { configDir: options.configDir });
   if (!identityMatches && options.spawnOptions === undefined) return undefined;
   try {
     const client = await RuntimeHostClient.connect({
       registration,
+      configDir: options.configDir,
       clientId: options.clientId,
       surface: options.surface,
       spawnOptions: options.spawnOptions,
@@ -66,7 +64,7 @@ export async function connectRuntimeHost(
     }
   } catch (error) {
     if (!isConnectionRefused(error)) throw error;
-    if (isProcessAlive(registration.pid)) return undefined;
+    if (isProcessAlive(registration.pid)) throw new Error(`Runtime Host PID ${String(registration.pid)} is alive but its endpoint is unavailable. No replacement was started.`);
     await removeStaleRegistration(registration);
     return undefined;
   }
@@ -114,7 +112,6 @@ export async function spawnRuntimeHost(
   const child = spawnRuntimeHostProcess(persistenceRoot, options);
   try {
     const client = await waitForSpawnedRuntimeHost(persistenceRoot, options, child);
-    child.unref();
     return { process: child, client };
   } catch (error) {
     if (child.exitCode === null) await terminateSpawnedHost(child);
@@ -151,6 +148,8 @@ async function waitForSpawnedRuntimeHost(
 
 function toSpawnOptions(options: SpawnRuntimeHostOptions): RuntimeHostSpawnOptions {
   return {
+    lifecycleMode: options.lifecycleMode,
+    idleGraceMs: options.idleGraceMs,
     workspaceRoot: options.workspaceRoot,
     configDir: options.configDir,
     attachmentRoot: options.attachmentRoot,

@@ -17,6 +17,10 @@ export class OperationDispatcher {
   };
   private readonly runTails = new Map<string, Promise<void>>();
 
+  hasPendingSession(sessionId: string): boolean {
+    return this.runTails.has(sessionId);
+  }
+
   dispatch<T>(lane: OperationLane, work: () => Promise<T>, key?: string): Promise<T> {
     // 查询不占因果写队列：wait-idle 或远端 MCP 读取不能挡住其他会话的快照和订阅。
     if (lane === "query") return Promise.resolve().then(work);
@@ -36,7 +40,7 @@ export class OperationDispatcher {
   }
 }
 
-export function operationLaneKey(operation: string, payload: Record<string, unknown>): string | undefined {
+export function operationLaneKey(operation: string, payload: Record<string, unknown>, primarySessionId = "primary"): string | undefined {
   if (operationLane(operation) !== "run") return undefined;
   const session = typeof payload.sessionId === "string" && payload.sessionId.trim()
     ? payload.sessionId
@@ -45,16 +49,28 @@ export function operationLaneKey(operation: string, payload: Record<string, unkn
       : undefined;
   return session !== undefined
     ? session
-    : "primary";
+    : primarySessionId;
 }
 
 export function operationLane(operation: string, payload: Record<string, unknown> = {}): OperationLane {
   if (operation === "memory" && memoryQueryActions.has(String(payload.action))) return "query";
-  // Runtime 重建会替换快照并重置 revision。权限模式写入必须与重建共用 mutation 队列。
-  if (operation === "agent.permission-mode" || operation === "agent.permission-command" || operation === "runtime.restart") return "mutation";
-  // Admission 与取消/审批共享一条因果队列，保证 submit 后立即 cancel 时顺序稳定。
+  // 会话的创建、替换、写入者和准入共用短因果队列；重建与权限写入不能交错，
+  // 但一个会话的生命周期不应排在其它会话的 MCP/记忆维护之后。
+  // 队列只等 submit 返回运行句柄，不等待模型执行完成。
   if (
-    operation === "cancel"
+    operation === "session.ensure"
+    || operation === "session.close"
+    || operation === "session.claim"
+    || operation === "session.release"
+    || operation === "runtime.restart"
+    || operation === "runtime.start-draft"
+    || operation === "runtime.rotate-primary"
+    || operation === "agent.permission-mode"
+    || operation === "agent.permission-command"
+    || operation === "resume"
+    || operation === "worktree.merge"
+    || operation === "worktree.remove"
+    || operation === "cancel"
     || operation === "permission"
     || operation === "run.cancel"
     || operation === "run.permission"

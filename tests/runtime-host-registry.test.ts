@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import {
-  RuntimeCapacityExceededError,
   SessionRuntimeRegistry
 } from "../src/runtime/host/registry.js";
 import type { CommandRuntime } from "../src/runtime/CommandRuntime.js";
@@ -59,7 +58,7 @@ const commands = {} as CommandRuntime;
   const registry = new SessionRuntimeRegistry(
     { runtime: fakeRuntime("primary"), commands },
     {
-      maxSessionRuntimes: 3,
+      sessionRuntimeCacheTarget: 3,
       createRuntime: async (sessionId) => {
         created += 1;
         await gate;
@@ -75,14 +74,14 @@ const commands = {} as CommandRuntime;
   assert.equal(created, 1);
 }
 
-// 不同 session 可以并发创建，但进行中的创建也要占用容量槽，不能超卖。
+// 不同 session 可以并发创建；全部缓存都被占用时仍应允许新会话。
 {
   let release!: () => void;
   const gate = new Promise<void>((resolve) => { release = resolve; });
   const registry = new SessionRuntimeRegistry(
     { runtime: fakeRuntime("primary"), commands },
     {
-      maxSessionRuntimes: 2,
+      sessionRuntimeCacheTarget: 2,
       createRuntime: async (sessionId) => {
         await gate;
         return { runtime: fakeRuntime(sessionId ?? "missing"), commands };
@@ -91,9 +90,11 @@ const commands = {} as CommandRuntime;
     }
   );
   const first = registry.ensure("session-a");
-  await assert.rejects(registry.ensure("session-b"), (error: unknown) => error instanceof RuntimeCapacityExceededError);
+  const second = registry.ensure("session-b");
   release();
-  await first;
+  await Promise.all([first, second]);
+  assert.ok(registry.get("session-a"));
+  assert.ok(registry.get("session-b"));
 }
 
 // 超限只回收 idle 的非主 runtime，并按最久未使用顺序回收；忙 runtime 和 primary 都不能动。
@@ -101,7 +102,7 @@ const commands = {} as CommandRuntime;
   const registry = new SessionRuntimeRegistry(
     { runtime: fakeRuntime("primary"), commands },
     {
-      maxSessionRuntimes: 3,
+      sessionRuntimeCacheTarget: 3,
       createRuntime: async (sessionId) => ({ runtime: fakeRuntime(sessionId ?? "missing"), commands }),
       onUpdate: () => undefined
     }
@@ -121,15 +122,18 @@ const commands = {} as CommandRuntime;
   const registry = new SessionRuntimeRegistry(
     { runtime: fakeRuntime("primary"), commands },
     {
-      maxSessionRuntimes: 2,
+      sessionRuntimeCacheTarget: 2,
       createRuntime: async (sessionId) => ({ runtime: fakeRuntime(sessionId ?? "missing", sessionId === "session-a" ? "runs" : "idle"), commands }),
       onUpdate: () => undefined
     }
   );
   await registry.ensure("session-a");
-  await assert.rejects(registry.ensure("session-b"), (error: unknown) => error instanceof RuntimeCapacityExceededError);
+  assert.equal((await registry.ensure("session-b")).sessionId, "session-b");
   assert.ok(registry.get("primary"), "容量不足时 primary 必须保留");
   assert.ok(registry.get("session-a"), "忙 runtime 不能被 LRU 回收");
+  registry.get("session-a")!.runtime.getSnapshot().state = { kind: "idle" };
+  await registry.ensure("session-c");
+  assert.deepEqual(registry.list().map((entry) => entry.sessionId), ["primary", "session-c"], "超额会话空闲后，下次创建应回收至缓存目标");
 }
 
 // 被外部 surface claim 的 idle runtime 也不能被容量回收，否则另一个客户端仍持有的 session 会被静默关闭。
@@ -137,15 +141,41 @@ const commands = {} as CommandRuntime;
   const registry = new SessionRuntimeRegistry(
     { runtime: fakeRuntime("primary"), commands },
     {
-      maxSessionRuntimes: 2,
+      sessionRuntimeCacheTarget: 2,
       createRuntime: async (sessionId) => ({ runtime: fakeRuntime(sessionId ?? "missing"), commands }),
       canEvict: (entry) => entry.sessionId !== "session-a",
       onUpdate: () => undefined
     }
   );
   await registry.ensure("session-a");
-  await assert.rejects(registry.ensure("session-b"), (error: unknown) => error instanceof RuntimeCapacityExceededError);
+  assert.equal((await registry.ensure("session-b")).sessionId, "session-b");
   assert.ok(registry.get("session-a"), "被 writer claim 的 session 不能被 LRU 回收");
+}
+
+// 回收多个空闲实例时，后面的候选可能在 await 期间重新运行，不能因此关闭它或拒绝新会话。
+{
+  const runtimes = new Map<string, InteractiveRuntimeHandle>();
+  const registry = new SessionRuntimeRegistry(
+    { runtime: fakeRuntime("primary"), commands },
+    {
+      sessionRuntimeCacheTarget: 3,
+      createRuntime: async (sessionId) => {
+        const runtime = fakeRuntime(sessionId!);
+        runtimes.set(sessionId!, runtime);
+        return { runtime, commands };
+      },
+      onUpdate: () => undefined
+    }
+  );
+  const first = await registry.ensure("session-a");
+  const second = await registry.ensure("session-b");
+  first.lastActiveAt = 1;
+  second.lastActiveAt = 2;
+  runtimes.get("session-a")!.close = async () => {
+    runtimes.get("session-b")!.getSnapshot().state = fakeRuntime("session-b", "runs").getSnapshot().state;
+  };
+  assert.deepEqual(await registry.evictIdle(2), ["session-a"]);
+  assert.equal(registry.get("session-b")?.runtime.getSnapshot().state.kind, "runs");
 }
 
 console.log("runtime-host registry tests passed");
