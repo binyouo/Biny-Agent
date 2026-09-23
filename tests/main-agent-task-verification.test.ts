@@ -177,8 +177,25 @@ async function main(): Promise<void> {
       workspaceRoot: root,
       ignore: recoveredCommands.config.workspace.ignore
     });
+    const approvedTask = recoveredCommands.taskRuns.get(taskRunId)!;
+    const approvedAttempt = approvedTask.attempts[0]!;
+    assert.equal(approvedAttempt.attemptId, pending.attemptId);
+    assert.equal(((approvedAttempt.artifacts as { verificationApprovals?: unknown[] }).verificationApprovals ?? []).length, 1);
     const resumed = await recoveredCommands.startTaskRun(taskRunId);
-    assert.equal((await resumed.completion).status, "completed");
+    const resumedOutcome = await resumed.completion;
+    const resumedTask = recoveredCommands.taskRuns.get(taskRunId)!;
+    assert.equal(resumedOutcome.status, "completed", JSON.stringify({
+      outcome: resumedOutcome,
+      status: resumedTask.status,
+      attempts: resumedTask.attempts.map((attempt) => ({
+        attemptId: attempt.attemptId,
+        status: attempt.status,
+        verification: attempt.verification,
+        artifacts: attempt.artifacts,
+        failure: attempt.failure
+      })),
+      workerRequests
+    }));
     assert.equal(workerRequests, 2, "approval recovery must not rerun Worker");
     assert.equal(await readFile(path.join(root, ".verification-state", "count"), "utf8"), "1");
     const completed = recoveredCommands.taskRuns.get(taskRunId)!;
