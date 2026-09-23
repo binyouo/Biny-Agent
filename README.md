@@ -68,6 +68,8 @@ pnpm dev -- tui
 pnpm dev -- chat
 ```
 
+交互入口的 `/undo` 使用工作区快照恢复文件；快照后新增的可见文件移入 `.biny/undo-trash/`，真实 Git 暂存区不变。文件移动失败时会报错，不把未移动的文件列为已移走。
+
 ### One-shot Command
 
 ```bash

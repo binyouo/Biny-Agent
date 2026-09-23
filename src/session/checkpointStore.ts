@@ -9,8 +9,8 @@
  * - **恢复不删文件**。快照之后新建的文件会被移到 `.biny/undo-trash/<时间戳>/` 而不是
  *   删除。恢复本身也是可逆的 —— 一个"撤销"功能如果会让人丢东西，就没人敢用。
  *
- * 快照只覆盖 git 认得的范围（遵守 .gitignore）。`node_modules`、构建产物和被忽略的本地
- * 文件不在其中，恢复时也不会动它们。
+ * 快照覆盖已跟踪文件和未被 .gitignore 排除的新文件。已跟踪文件后来被忽略仍属于
+ * 快照范围；从未跟踪且被忽略的本地文件不在其中，恢复时也不会动它们。
  */
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -60,11 +60,19 @@ export class CheckpointStore {
 
   async create(label: string): Promise<Checkpoint> {
     // pid+毫秒在并发下同毫秒会撞名，加随机成分保证临时索引互不污染。
-    const temporaryIndex = path.join(os.tmpdir(), `biny-checkpoint-index-${process.pid}-${Date.now().toString(36)}-${randomUUID()}`);
+    // 放在 Git 目录内，使 split-index 相对引用的 sharedindex 仍能被副本找到。
+    const temporaryIndex = path.join(this.gitDir, `biny-checkpoint-index-${process.pid}-${Date.now().toString(36)}-${randomUUID()}`);
     try {
-      // 独立索引文件：用户暂存了什么、没暂存什么，全程不受影响。
+      // 从真实 index 复制文件集合，再在副本上更新工作区内容。空 index 会漏掉
+      // 已跟踪但后来命中 .gitignore 的路径，使恢复误把它们当成新增文件。
       const env = { ...process.env, GIT_INDEX_FILE: temporaryIndex };
-      await this.git(["read-tree", "--empty"], env);
+      const indexPath = (await this.git(["rev-parse", "--git-path", "index"])).trim();
+      try {
+        await fs.copyFile(path.resolve(this.workspaceRoot, indexPath), temporaryIndex);
+      } catch (error) {
+        if (!isMissingFile(error)) throw error;
+        await this.git(["read-tree", "--empty"], env);
+      }
       await this.git(["add", "-A", "--", ".", ...excludeAgentState], env);
       const tree = (await this.git(["write-tree"], env)).trim();
       const commit = (await this.git([
@@ -107,13 +115,21 @@ export class CheckpointStore {
 
     // 先把新增文件挪走，再落回快照内容。顺序反过来的话，新增文件会被后面的写入覆盖判断漏掉。
     let trashDirectory: string | undefined;
+    const movedAside: string[] = [];
     if (addedSinceCheckpoint.length) {
-      trashDirectory = path.join(".biny", "undo-trash", new Date().toISOString().replace(/[:.]/g, "-"));
+      trashDirectory = path.join(".biny", "undo-trash", `${new Date().toISOString().replace(/[:.]/g, "-")}-${randomUUID()}`);
       await ensureAgentDirs(this.workspaceRoot);
       for (const file of addedSinceCheckpoint) {
         const destination = path.join(this.workspaceRoot, trashDirectory, file);
         await fs.mkdir(path.dirname(destination), { recursive: true });
-        await fs.rename(path.join(this.workspaceRoot, file), destination).catch(() => undefined);
+        try {
+          await fs.rename(path.join(this.workspaceRoot, file), destination);
+          movedAside.push(file);
+        } catch (error) {
+          // Git index 仍可列出工作区已经消失的暂存文件；它没有东西可移。
+          if (isMissingFile(error)) continue;
+          throw new Error(`Cannot move ${file} to undo trash at ${trashDirectory}`, { cause: error });
+        }
       }
     }
 
@@ -131,20 +147,24 @@ export class CheckpointStore {
     return {
       checkpoint,
       restoredFiles: snapshotFiles.size,
-      movedAside: addedSinceCheckpoint,
-      ...(trashDirectory ? { trashDirectory } : {})
+      movedAside,
+      trashDirectory: movedAside.length ? trashDirectory : undefined
     };
   }
 
   private async filesInCommit(commit: string): Promise<string[]> {
-    const { stdout } = await run("git", ["ls-tree", "-r", "--name-only", commit], { cwd: this.workspaceRoot, maxBuffer: 64 * 1024 * 1024 });
-    return stdout.split("\n").map((line) => line.trim()).filter(Boolean);
+    return await this.gitPaths(["ls-tree", "-r", "-z", "--name-only", commit]);
   }
 
   private async trackedFilesNow(): Promise<Set<string>> {
     // -c 已跟踪 + -o 未跟踪，--exclude-standard 让 .gitignore 生效，和建快照时的范围一致。
-    const { stdout } = await run("git", ["ls-files", "-co", "--exclude-standard", "--", ".", ...excludeAgentState], { cwd: this.workspaceRoot, maxBuffer: 64 * 1024 * 1024 });
-    return new Set(stdout.split("\n").map((line) => line.trim()).filter(Boolean));
+    return new Set(await this.gitPaths(["ls-files", "-co", "-z", "--exclude-standard", "--", ".", ...excludeAgentState]));
+  }
+
+  private async gitPaths(args: string[]): Promise<string[]> {
+    // -z 禁止 Git 对非 ASCII、换行和边界空格做引用/转义；文件名不可 trim。
+    const { stdout } = await run("git", args, { cwd: this.workspaceRoot, encoding: "buffer", maxBuffer: 64 * 1024 * 1024 });
+    return stdout.toString("utf8").split("\0").filter(Boolean);
   }
 
   private indexPath(): string {
@@ -173,6 +193,10 @@ export class CheckpointStore {
     });
     return stdout;
   }
+}
+
+function isMissingFile(error: unknown): boolean {
+  return typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT";
 }
 
 function shortId(commit: string): string {

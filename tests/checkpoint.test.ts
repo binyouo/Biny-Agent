@@ -18,6 +18,10 @@ async function main(): Promise<void> {
     await testRestoresEditsAndPreservesNewFiles(workspaceRoot);
     await testDoesNotTouchUserGitState(workspaceRoot);
     await testIgnoredFilesAreUntouched(workspaceRoot);
+    await testTrackedFileIgnoredAfterCommitIsPreserved(workspaceRoot);
+    await testUnusualFileNamesAreMovedAside(workspaceRoot);
+    await testMissingStagedFileIsNotReportedAsMoved(workspaceRoot);
+    await testSplitIndexCheckpoint();
     console.log("checkpoint tests passed");
   } finally {
     await rm(workspaceRoot, { recursive: true, force: true });
@@ -95,6 +99,77 @@ async function testIgnoredFilesAreUntouched(workspaceRoot: string): Promise<void
 
   assert.equal(await readFile(path.join(workspaceRoot, "ignored", "local.txt"), "utf8"), "still mine\n");
   assert.equal(summary.movedAside.includes("ignored/local.txt"), false);
+}
+
+/** 已跟踪文件即使后来命中 ignore，立即恢复快照也不能把它当成新增文件。 */
+async function testTrackedFileIgnoredAfterCommitIsPreserved(workspaceRoot: string): Promise<void> {
+  await writeFile(path.join(workspaceRoot, "tracked-then-ignored.txt"), "already here\n");
+  await run("git", ["add", "tracked-then-ignored.txt"], { cwd: workspaceRoot });
+  await run("git", ["commit", "-m", "track file before ignore"], { cwd: workspaceRoot });
+  await writeFile(path.join(workspaceRoot, ".gitignore"), "ignored/\ntracked-then-ignored.txt\n");
+
+  const store = await CheckpointStore.open(workspaceRoot);
+  assert.ok(store);
+  const checkpoint = await store.create("tracked file now ignored");
+  const stagedBefore = (await run("git", ["diff", "--cached", "--raw"], { cwd: workspaceRoot })).stdout;
+  const summary = await store.restore(checkpoint.id);
+
+  assert.equal(await readFile(path.join(workspaceRoot, "tracked-then-ignored.txt"), "utf8"), "already here\n");
+  assert.equal(summary.movedAside.includes("tracked-then-ignored.txt"), false);
+  assert.equal((await run("git", ["diff", "--cached", "--raw"], { cwd: workspaceRoot })).stdout, stagedBefore);
+}
+
+/** Git 的默认转义与逐行分割不能正确表示中文、空格和换行文件名。 */
+async function testUnusualFileNamesAreMovedAside(workspaceRoot: string): Promise<void> {
+  const store = await CheckpointStore.open(workspaceRoot);
+  assert.ok(store);
+  const checkpoint = await store.create("before unusual names");
+  const names = ["新增.txt", " leading-space.txt", "trailing-space.txt ", "line\nbreak.txt"];
+  for (const name of names) await writeFile(path.join(workspaceRoot, name), name);
+
+  const summary = await store.restore(checkpoint.id);
+  assert.deepEqual(summary.movedAside, [...names].sort());
+  assert.ok(summary.trashDirectory);
+  for (const name of names) {
+    assert.equal(await readFile(path.join(workspaceRoot, summary.trashDirectory, name), "utf8"), name);
+    await assert.rejects(readFile(path.join(workspaceRoot, name), "utf8"));
+  }
+}
+
+/** 暂存区里仍有路径但工作区文件已消失时，不能声称已经移动该文件。 */
+async function testMissingStagedFileIsNotReportedAsMoved(workspaceRoot: string): Promise<void> {
+  const store = await CheckpointStore.open(workspaceRoot);
+  assert.ok(store);
+  const checkpoint = await store.create("before staged file disappears");
+  const name = "staged-then-missing.txt";
+  await writeFile(path.join(workspaceRoot, name), "staged only\n");
+  await run("git", ["add", name], { cwd: workspaceRoot });
+  await rm(path.join(workspaceRoot, name));
+  const stagedBefore = (await run("git", ["diff", "--cached", "--raw"], { cwd: workspaceRoot })).stdout;
+
+  const summary = await store.restore(checkpoint.id);
+  assert.equal(summary.movedAside.includes(name), false);
+  assert.equal((await run("git", ["diff", "--cached", "--raw"], { cwd: workspaceRoot })).stdout, stagedBefore);
+}
+
+/** 临时 index 必须能解析真实 index 的 sharedindex 引用。 */
+async function testSplitIndexCheckpoint(): Promise<void> {
+  const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "biny-checkpoint-split-"));
+  try {
+    await initRepository(workspaceRoot);
+    await writeFile(path.join(workspaceRoot, "split.txt"), "before\n");
+    await run("git", ["add", "split.txt"], { cwd: workspaceRoot });
+    await run("git", ["commit", "-m", "base"], { cwd: workspaceRoot });
+    await run("git", ["update-index", "--split-index"], { cwd: workspaceRoot });
+    const store = await CheckpointStore.open(workspaceRoot);
+    assert.ok(store);
+    const checkpoint = await store.create("split index");
+    await writeFile(path.join(workspaceRoot, "split.txt"), "after\n");
+    await store.restore(checkpoint.id);
+    assert.equal(await readFile(path.join(workspaceRoot, "split.txt"), "utf8"), "before\n");
+  } finally {
+    await rm(workspaceRoot, { recursive: true, force: true });
+  }
 }
 
 async function initRepository(workspaceRoot: string): Promise<void> {
