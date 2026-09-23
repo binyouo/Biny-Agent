@@ -113,6 +113,16 @@ export class HybridMemoryRetriever {
     if (!snapshot.entries.length || options.limit < 1) return emptySearchResult(snapshot);
 
     const safeQuery = redactSecrets(query).trim();
+    // 显式 ID 查找是确定性读取，不应受 embedding 是否可用或相似度排名影响。
+    const exactEntry = options.automatic === true ? undefined : snapshot.entries.find(({ id }) => id === safeQuery);
+    if (exactEntry) {
+      return rankHybridMemory({
+        entries: [exactEntry], lexicalRankings: [[exactEntry.id]], vectorRanking: [],
+        semanticAvailable: false, limit: options.limit,
+        maxChars: options.maxChars ?? defaultRecallMaxChars,
+        paths: new Map(Object.entries(snapshot.paths ?? {}))
+      }, snapshot.storeRevision);
+    }
     const semanticPerfStartedAt = perfNow();
     const semantic = await this.semanticSearch(safeQuery, snapshot.entries, options.limit, options.signal);
     recordPerfPhase("memory.semantic", semanticPerfStartedAt, { available: semantic.available });
@@ -131,10 +141,9 @@ export class HybridMemoryRetriever {
         })
       )));
       recordPerfPhase("memory.lexical", lexicalPerfStartedAt);
-      const exactId = snapshot.entries.find(({ id }) => id === safeQuery)?.id;
       for (const result of lexicalResults) {
         const ids = result.matches.map(({ entry }) => entry.id);
-        lexicalRankings.push(exactId === undefined ? ids : [exactId, ...ids.filter((id) => id !== exactId)]);
+        lexicalRankings.push(ids);
         for (const match of result.matches) if (!matchPaths.has(match.entry.id)) matchPaths.set(match.entry.id, match.path);
       }
     }

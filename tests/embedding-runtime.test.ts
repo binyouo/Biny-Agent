@@ -5,6 +5,7 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { load as loadSqliteVec } from "sqlite-vec";
 import { MemoryVectorIndex } from "../src/agent/context/MemoryVectorIndex.js";
+import { MemoryStorage } from "../src/agent/context/memoryStorage.js";
 import type { ProviderDefinition } from "../src/ai/types.js";
 import { providerDefinition } from "../src/ai/provider.js";
 import { configSchema, defaultConfig, type ProviderConfig } from "../src/config/schema.js";
@@ -31,30 +32,46 @@ async function testSqliteVectorProjection(): Promise<void> {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "biny-vec-projection-"));
   let index: MemoryVectorIndex | undefined;
   let database: DatabaseSync | undefined;
+  const storage = new MemoryStorage(root, { agentDir: root });
   try {
-    index = new MemoryVectorIndex(root);
+    const allowed = (await storage.writeEntry({ content: "Allowed projection entry" })).entry!;
+    const excluded = (await storage.writeEntry({ content: "Excluded projection entry" })).entry!;
+    const memoryRoot = path.join(root, "memory");
+    index = new MemoryVectorIndex(memoryRoot);
     index.replaceAll("test-vector-model", 2, [
-      { entryId: "allowed", embedding: [0.8, 0.6] },
-      { entryId: "excluded", embedding: [1, 0] }
+      { entryId: allowed.id, revision: allowed.revision, embedding: [0.8, 0.6] },
+      { entryId: excluded.id, revision: excluded.revision, embedding: [1, 0] }
     ]);
-    database = new DatabaseSync(path.join(root, "memory.sqlite"), { allowExtension: true });
+    database = new DatabaseSync(path.join(memoryRoot, "memory.sqlite"), { allowExtension: true });
     loadSqliteVec(database);
     assert.match(String(database.prepare("SELECT sql FROM sqlite_master WHERE name = 'memory_embeddings'").get()?.sql), /vec0/u);
-    index.upsertActiveVectors("test-vector-model", 2, [{ entryId: "allowed", embedding: [0, 1] }]);
-    assert.equal(database.prepare("SELECT COUNT(*) AS count FROM memory_embeddings WHERE memory_id = 'allowed'").get()?.count, 1);
+    index.upsertActiveVectors("test-vector-model", 2, [{ entryId: allowed.id, revision: allowed.revision, embedding: [0, 1] }]);
+    assert.equal(database.prepare("SELECT COUNT(*) AS count FROM memory_embeddings WHERE memory_id = ?").get(allowed.id)?.count, 1);
     index.close();
-    index = new MemoryVectorIndex(root);
+    index = new MemoryVectorIndex(memoryRoot);
     assert.match(String(database.prepare("SELECT sql FROM sqlite_master WHERE name = 'memory_embeddings'").get()?.sql), /FLOAT\[2\]/u);
     assert.equal(index.status().active?.modelFingerprint, "test-vector-model");
     assert.match(String(database.prepare("SELECT sql FROM sqlite_master WHERE name = 'memory_embeddings'").get()?.sql), /FLOAT\[2\]/u);
     assert.equal(database.prepare("SELECT COUNT(*) AS count FROM memory_embeddings").get()?.count, 2);
-    const results = index.search([1, 0], { modelFingerprint: "test-vector-model", limit: 1, entryIds: new Set(["allowed"]) });
-    assert.deepEqual(results.map((row) => row.entryId), ["allowed"]);
+    const results = index.search([1, 0], { modelFingerprint: "test-vector-model", limit: 1, entryIds: new Set([allowed.id]) });
+    assert.deepEqual(results.map((row) => row.entryId), [allowed.id]);
     assert.ok(Math.abs(results[0]!.similarity) < 1e-6);
-    assert.deepEqual(index.listActiveEmbeddings({ modelFingerprint: "test-vector-model" }).map((row) => row.entryId), ["allowed", "excluded"]);
+    assert.deepEqual(index.listActiveEmbeddings({ modelFingerprint: "test-vector-model" }).map((row) => row.entryId), [allowed.id, excluded.id].sort());
+    index.close();
+    database.exec("DROP TABLE memory_embedding_versions");
+    assert.equal(MemoryVectorIndex.openReadOnly(memoryRoot), undefined, "没有来源版本的旧投影不能当成有效索引");
+    index = new MemoryVectorIndex(memoryRoot);
+    assert.equal(index.status().active?.vectorCount, 0);
+    assert.equal((await storage.listEntries()).total, 2, "派生投影失效不能删除事实");
+    index.replaceAll("test-vector-model", 2, [
+      { entryId: allowed.id, revision: allowed.revision, embedding: [0, 1] },
+      { entryId: excluded.id, revision: excluded.revision, embedding: [1, 0] }
+    ]);
+    assert.equal(index.status().active?.vectorCount, 2, "重新嵌入后恢复当前事实投影");
   } finally {
     database?.close();
     index?.close();
+    storage.close();
     await fs.rm(root, { recursive: true, force: true });
   }
 }

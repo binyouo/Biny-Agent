@@ -240,7 +240,7 @@ export class MemoryEmbeddingService {
     const startedAt = this.now();
     let entries: MemoryEntry[] = [];
     let snapshotRevision = 0;
-    const vectors: Array<{ entryId: string; embedding: ArrayLike<number> }> = [];
+    const vectors: Array<{ entryId: string; revision: number; embedding: ArrayLike<number> }> = [];
     let dimensions: number | undefined;
     try {
       const snapshot = await this.options.localMemory.listMemoryEntries({ signal: combined });
@@ -273,6 +273,7 @@ export class MemoryEmbeddingService {
           dimensions ??= embedded.dimensions;
           vectors.push(...batch.map((entry, index) => ({
             entryId: entry.id,
+            revision: entry.revision,
             embedding: embedded.embeddings[index]!
           })));
           this.operation = {
@@ -341,7 +342,7 @@ export class MemoryEmbeddingService {
       if (!current || current.modelFingerprint !== active.modelFingerprint || current.dimensions !== active.dimensions) {
         throw new Error("Sleep synthesis embedding index changed.");
       }
-      if (!index.upsertActiveVectors(embedded.fingerprint, active.dimensions, [{ entryId: entry.id, embedding: vector }])) {
+      if (!index.upsertActiveVectors(embedded.fingerprint, active.dimensions, [{ entryId: entry.id, revision: entry.revision, embedding: vector }])) {
         throw new Error("Sleep synthesis embedding index changed.");
       }
     };
@@ -366,7 +367,7 @@ export class MemoryEmbeddingService {
       if (!vector || embedded.fingerprint !== runtime.descriptor.fingerprint) {
         throw new Error("Embedding 模型没有返回可用的单条向量。");
       }
-      const updated = index.upsertActiveVectors(embedded.fingerprint, active.dimensions, [{ entryId: entry.id, embedding: vector }]);
+      const updated = index.upsertActiveVectors(embedded.fingerprint, active.dimensions, [{ entryId: entry.id, revision: entry.revision, embedding: vector }]);
       if (!updated) {
         await this.rebuild();
         return;

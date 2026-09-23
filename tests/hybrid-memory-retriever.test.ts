@@ -381,6 +381,21 @@ function fakeRuntime(fingerprint: string): EmbeddingModelRuntime {
 }
 
 testPureHybridRanking();
+// Given 精确 ID 已存在，When 语义结果只命中另一条，Then 显式查找仍优先返回该 ID。
+{
+  const exact = memoryEntry("exact-id");
+  const other = memoryEntry("other-id");
+  const retriever = new HybridMemoryRetriever({
+    localMemory: new FakeMemoryStore([exact, other]),
+    getReadOnlyVectorIndex: () => new FakeVectorIndex("model", [{ entryId: other.id, similarity: 0.9 }]),
+    getEmbeddingRuntime: async () => fakeRuntime("model"),
+    getThreshold: (_fingerprint, recommended) => recommended
+  });
+  assert.equal((await retriever.retrieve(exact.id, [], { limit: 1 })).matches[0]?.entry.id, exact.id);
+  assert.equal((await retriever.retrieve(exact.id, [], { limit: 1, automatic: true })).matches[0]?.entry.id, other.id);
+  assert.equal((await retriever.retrieve(exact.id, [], { limit: 1, tags: ["missing"] })).matches.length, 0);
+  assert.equal((await retriever.retrieve(exact.id, [], { limit: 1, maxChars: 0 })).matches.length, 0);
+}
 testWholeEntryBudget();
 await testLexicalFallbackAndRewrite();
 await testRewriteFailureUsesOriginalQuery();

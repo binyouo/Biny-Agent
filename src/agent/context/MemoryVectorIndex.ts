@@ -3,7 +3,7 @@
  *
  * 记忆事实仍由 memory.sqlite 的事实表负责；向量只保存在 SQLite 的
  * memory_embeddings vec0 表中。重建在一个 SQLite transaction 内替换整张投影，
- * 不再维护第二套 generation、条目状态或文件锁。
+ * 不再维护第二套 generation、条目状态或文件锁；版本表只标记向量对应的事实 revision。
  */
 import {
   existsSync,
@@ -22,8 +22,13 @@ const maxSearchLimit = 100;
 
 export interface MemoryVectorInput {
   entryId: string;
+  revision: number;
   embedding: ArrayLike<number>;
 }
+
+// 查询时仍要联结事实版本：事实提交后即使进程崩溃、来不及清理旧向量，也不能召回旧投影。
+const currentVectorIds = `SELECT v.memory_id FROM memory_embedding_versions v
+  JOIN memories m ON m.id = v.memory_id AND m.revision = v.revision`;
 
 export interface MemoryVectorSearchResult {
   entryId: string;
@@ -97,8 +102,12 @@ export class MemoryVectorIndex {
     if (!this.vectorExtensionAvailable) throw new Error("SQLite vector extension is unavailable.");
     const now = new Date().toISOString();
     this.transaction(() => {
+      if (prepared.some((input) => !this.isCurrentEntry(input))) {
+        throw new Error("Memory changed before embedding projection commit.");
+      }
       this.ensureVectorTable(dimensions);
       this.database.exec("DELETE FROM memory_embeddings");
+      this.database.exec("DELETE FROM memory_embedding_versions");
       this.insertVectors(prepared);
       this.writeMetadata({
         embedding_model: modelFingerprint,
@@ -109,7 +118,7 @@ export class MemoryVectorIndex {
     });
   }
 
-  /** 只更新当前模型和维度的投影；不匹配时要求调用方做完整重建。 */
+  /** 模型/维度不匹配返回 false 以请求重建；过期条目直接丢弃，不能覆盖当前投影。 */
   upsertActiveVectors(
     modelFingerprint: string,
     dimensions: number,
@@ -118,17 +127,19 @@ export class MemoryVectorIndex {
     this.assertOpen();
     validateFingerprint(modelFingerprint);
     validateDimensions(dimensions);
-    const active = this.status().active;
-    if (!active || active.modelFingerprint !== modelFingerprint || active.dimensions !== dimensions) return false;
     const prepared = prepareInputs(inputs, dimensions);
     if (!this.vectorExtensionAvailable) return false;
-    this.transaction(() => {
+    return this.transaction(() => {
+      const active = this.status().active;
+      if (!active || active.modelFingerprint !== modelFingerprint || active.dimensions !== dimensions) return false;
+      // CAS 与写入共用 SQLite 写事务，跨 Host 也不能让旧请求覆盖新事实的向量。
+      const current = prepared.filter((input) => this.isCurrentEntry(input));
       const remove = this.database.prepare("DELETE FROM memory_embeddings WHERE memory_id = ?");
-      for (const input of prepared) remove.run(input.entryId);
-      this.insertVectors(prepared);
+      for (const input of current) remove.run(input.entryId);
+      this.insertVectors(current);
       this.writeMetadata({ embedding_completed_at: new Date().toISOString() });
+      return true;
     });
-    return true;
   }
 
   removeEntries(entryIds: readonly string[]): void {
@@ -138,7 +149,8 @@ export class MemoryVectorIndex {
     if (!ids.length || !this.hasSchema()) return;
     this.transaction(() => {
       const remove = this.database.prepare("DELETE FROM memory_embeddings WHERE memory_id = ?");
-      for (const id of ids) remove.run(id);
+      const removeVersion = this.database.prepare("DELETE FROM memory_embedding_versions WHERE memory_id = ?");
+      for (const id of ids) { remove.run(id); removeVersion.run(id); }
     });
   }
 
@@ -168,6 +180,7 @@ export class MemoryVectorIndex {
       `SELECT memory_id, 1 - vec_distance_cosine(embedding, ?) AS similarity
        FROM memory_embeddings
        WHERE similarity >= ?
+         AND memory_id IN (${currentVectorIds})
          AND (? IS NULL OR memory_id IN (SELECT value FROM json_each(?)))
        ORDER BY similarity DESC, memory_id ASC
        LIMIT ?`
@@ -193,7 +206,7 @@ export class MemoryVectorIndex {
     const active = this.status().active;
     if (!active || active.modelFingerprint !== options.modelFingerprint || !this.vectorExtensionAvailable) return [];
     const rows = this.database.prepare(
-      "SELECT memory_id, embedding FROM memory_embeddings ORDER BY memory_id ASC"
+      `SELECT memory_id, embedding FROM memory_embeddings WHERE memory_id IN (${currentVectorIds}) ORDER BY memory_id ASC`
     ).all() as unknown as VectorRow[];
     const embeddings: Array<{ entryId: string; embedding: Float32Array }> = [];
     for (const row of rows) {
@@ -217,7 +230,7 @@ export class MemoryVectorIndex {
     const completedAt = this.readMetadata("embedding_completed_at");
     if (!model || !dimensions || !createdAt || !completedAt) return {};
     const vectorCount = nonNegativeInteger(
-      (this.database.prepare("SELECT COUNT(*) AS count FROM memory_embeddings").get() as { count?: unknown } | undefined)?.count,
+      (this.database.prepare(`SELECT COUNT(*) AS count FROM memory_embeddings WHERE memory_id IN (${currentVectorIds})`).get() as { count?: unknown } | undefined)?.count,
       "vector count"
     );
     return { active: { modelFingerprint: model, dimensions, vectorCount, createdAt, completedAt } };
@@ -236,6 +249,10 @@ export class MemoryVectorIndex {
         CREATE TABLE IF NOT EXISTS memory_metadata (
           key TEXT PRIMARY KEY NOT NULL,
           value TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS memory_embedding_versions (
+          memory_id TEXT PRIMARY KEY NOT NULL,
+          revision INTEGER NOT NULL
         );
         DROP TABLE IF EXISTS memory_vectors;
         DROP TABLE IF EXISTS memory_vector_entry_states;
@@ -258,7 +275,16 @@ export class MemoryVectorIndex {
 
   private insertVectors(inputs: readonly PreparedVectorInput[]): void {
     const insert = this.database.prepare("INSERT INTO memory_embeddings (memory_id, embedding) VALUES (?, ?)");
-    for (const input of inputs) insert.run(input.entryId, JSON.stringify([...input.embedding]));
+    const version = this.database.prepare("INSERT INTO memory_embedding_versions (memory_id, revision) VALUES (?, ?) ON CONFLICT(memory_id) DO UPDATE SET revision = excluded.revision");
+    for (const input of inputs) {
+      insert.run(input.entryId, JSON.stringify([...input.embedding]));
+      version.run(input.entryId, input.revision);
+    }
+  }
+
+  private isCurrentEntry(input: PreparedVectorInput): boolean {
+    const current = this.database.prepare("SELECT revision FROM memories WHERE id = ?").get(input.entryId);
+    return current?.revision === input.revision;
   }
 
   private writeMetadata(values: Record<string, string>): void {
@@ -284,9 +310,9 @@ export class MemoryVectorIndex {
   }
 
   private hasSchema(): boolean {
-    return Boolean(this.database.prepare(
-      "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'memory_embeddings'"
-    ).get());
+    return this.database.prepare(
+      "SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name IN ('memory_embeddings', 'memory_embedding_versions', 'memories')"
+    ).get()?.count === 3;
   }
 
   private transaction<T>(execute: () => T): T {
@@ -312,6 +338,7 @@ export class MemoryVectorIndex {
 
 interface PreparedVectorInput {
   entryId: string;
+  revision: number;
   embedding: Float32Array;
 }
 
@@ -319,8 +346,9 @@ function prepareInputs(inputs: readonly MemoryVectorInput[], dimensions: number)
   const unique = new Map<string, PreparedVectorInput>();
   for (const input of inputs) {
     validateIdentifier(input.entryId, "memory entry");
+    nonNegativeInteger(input.revision, "memory revision");
     if (input.embedding.length !== dimensions) throw new Error(`Memory vector for ${input.entryId} has an incompatible dimension.`);
-    unique.set(input.entryId, { entryId: input.entryId, embedding: normalizeEmbedding(input.embedding) });
+    unique.set(input.entryId, { entryId: input.entryId, revision: input.revision, embedding: normalizeEmbedding(input.embedding) });
   }
   return [...unique.values()];
 }
