@@ -1,0 +1,90 @@
+task,verdict,cause,reward_sequence
+adaptive-rejection-sampler,pass,首评即通过,1
+bn-fit-modify,fail,首评即判 0,0
+break-filter-js-from-html,fail,首评即判 0,0 → 0
+build-cython-ext,fail,首评即判 0,0
+build-pmars,pass,首评即通过,1
+build-pov-ray,pass,首评即通过,1
+caffe-cifar-10,pass,首评即通过,1
+cancel-async-tasks,pass,首评即通过,1
+chess-best-move,pass,首评即通过,1
+circuit-fibsqrt,pass,首评即通过,1
+cobol-modernization,pass,首评即通过,1
+code-from-image,pass,首评即通过,1
+compile-compcert,fail,首评即判 0,0
+configure-git-webserver,pass,首评判0，重跑才过,0 → 1
+constraints-scheduling,pass,首评即通过,1
+count-dataset-tokens,pass,首评即通过,1
+crack-7z-hash,pass,首评即通过,1
+custom-memory-heap-crash,pass,首评即通过,1
+db-wal-recovery,pass,首评即通过,1
+distribution-search,pass,首评即通过,1
+dna-assembly,fail,首评即判 0,0
+dna-insert,fail,首评即判 0,0 → 0
+extract-elf,pass,首评即通过,1
+extract-moves-from-video,fail,首评即判 0,0
+feal-differential-cryptanalysis,fail,首评即判 0,0 → 0
+feal-linear-cryptanalysis,pass,首评即通过,1
+filter-js-from-html,fail,首评即判 0,0 → 0
+financial-document-processor,pass,首评即通过,1
+fix-code-vulnerability,pass,首评即通过,1
+fix-git,pass,首评即通过,1
+fix-ocaml-gc,fail,首评即判 0,0
+gcode-to-text,fail,首评即判 0,0
+git-leak-recovery,pass,首评即通过,1
+git-multibranch,pass,首评判0，重跑才过,0 → 1
+gpt2-codegolf,fail,首评即判 0,0
+headless-terminal,pass,首评即通过,1
+hf-model-inference,fail,首评即判 0,0 → 0
+install-windows-3.11,pass,首评即通过,1
+kv-store-grpc,fail,首评即判 0,0 → 0
+large-scale-text-editing,pass,首评即通过,1
+largest-eigenval,pass,首评即通过,1
+llm-inference-batching-scheduler,fail,首评即判 0,0
+log-summary-date-ranges,pass,首评即通过,1
+mailman,pass,首评即通过,1
+make-doom-for-mips,fail,首评即判 0,0
+make-mips-interpreter,fail,首评即判 0,0
+mcmc-sampling-stan,pass,首评即通过,1
+merge-diff-arc-agi-task,pass,首评即通过,1
+model-extraction-relu-logits,pass,首评即通过,1
+modernize-scientific-stack,pass,首评即通过,1
+mteb-leaderboard,fail,首评即判 0,0
+mteb-retrieve,fail,首评即判 0,0 → 0
+multi-source-data-merger,pass,首评即通过,1
+nginx-request-logging,pass,首评即通过,1
+openssl-selfsigned-cert,pass,首评即通过,1
+overfull-hbox,pass,首评即通过,1
+password-recovery,pass,首评即通过,1
+path-tracing,pass,首评即通过,1
+path-tracing-reverse,pass,首评即通过,1
+polyglot-c-py,pass,首评即通过,1
+polyglot-rust-c,pass,首评即通过,1
+portfolio-optimization,pass,首评即通过,1
+protein-assembly,pass,首评即通过,1
+prove-plus-comm,pass,首评即通过,1
+pypi-server,fail,首评即判 0,0 → 0
+pytorch-model-cli,fail,首评即判 0,0
+pytorch-model-recovery,pass,首评即通过,1
+qemu-alpine-ssh,fail,首评即判 0,0
+qemu-startup,fail,首评即判 0,0 → 0
+query-optimize,pass,首评即通过,1
+raman-fitting,pass,首评即通过,1
+regex-chess,pass,首评即通过,1
+regex-log,pass,首评即通过,1
+reshard-c4-data,pass,首评即通过,1
+rstan-to-pystan,pass,首评即通过,1
+sam-cell-seg,fail,首评即判 0,0
+sanitize-git-repo,pass,首评即通过,1
+schemelike-metacircular-eval,pass,首评即通过,1
+sparql-university,pass,首评即通过,1
+sqlite-db-truncate,pass,首评即通过,1
+sqlite-with-gcov,pass,首评即通过,1
+torch-pipeline-parallelism,fail,首评即判 0,0 → 0
+torch-tensor-parallelism,pass,首评即通过,1
+train-fasttext,fail,判分器 setup 失败（apt 502），测试从未运行,0
+tune-mjcf,fail,首评即判 0,0
+video-processing,fail,首评即判 0,0 → 0
+vulnerable-secret,pass,首评即通过,1
+winning-avg-corewars,fail,首评即判 0,0
+write-compressor,pass,首评即通过,1
