@@ -1,0 +1,103 @@
+{
+  "_comment": "模型预设表。adapter 只在没有 BINY_EVAL_* 环境变量时才查这里。加模型改这个文件，不用动 biny_agent.py。",
+  "defaultAlias": "deepseek-v4-flash",
+  "presets": {
+    "deepseek-v4.1-flash": {
+      "provider": "commandcode",
+      "type": "openai-compatible",
+      "baseUrl": "https://api.commandcode.ai/provider/v1",
+      "apiKeyEnv": "COMMANDCODE_API_KEY",
+      "model": "deepseek/deepseek-v4.1-flash",
+      "apiBackend": "chat_completions",
+      "envOverrides": {
+        "baseUrl": "BINY_COMMANDCODE_BASE_URL",
+        "model": "BINY_COMMANDCODE_MODEL",
+        "apiBackend": "BINY_COMMANDCODE_API_BACKEND"
+      }
+    },
+    "deepseek-v4-pro": {
+      "provider": "sub2api",
+      "type": "openai-compatible",
+      "baseUrl": "https://ai.suv.run/v1",
+      "apiKeyEnv": "SUB2API_API_KEY",
+      "model": "deepseek-v4-pro",
+      "apiBackend": "responses",
+      "envOverrides": {
+        "baseUrl": "BINY_SUB2API_BASE_URL",
+        "apiBackend": "BINY_SUB2API_API_BACKEND"
+      }
+    },
+    "deepseek-v4-flash": {
+      "provider": "sub2api",
+      "type": "openai-compatible",
+      "baseUrl": "https://ai.suv.run/v1",
+      "apiKeyEnv": "SUB2API_API_KEY",
+      "model": "deepseek-v4-flash",
+      "apiBackend": "responses",
+      "envOverrides": {
+        "baseUrl": "BINY_SUB2API_BASE_URL",
+        "apiBackend": "BINY_SUB2API_API_BACKEND"
+      }
+    },
+    "grok": {
+      "provider": "xai",
+      "type": "openai-compatible",
+      "baseUrl": "https://api.x.ai/v1",
+      "apiKeyEnv": "GROK_API_KEY",
+      "model": "grok-4.5",
+      "apiBackend": "responses",
+      "envOverrides": {
+        "baseUrl": "BINY_GROK_BASE_URL",
+        "model": "BINY_GROK_MODEL",
+        "apiBackend": "BINY_GROK_API_BACKEND"
+      }
+    },
+    "grok-4.5": {
+      "provider": "xai",
+      "type": "openai-compatible",
+      "baseUrl": "https://api.x.ai/v1",
+      "apiKeyEnv": "GROK_API_KEY",
+      "model": "grok-4.5",
+      "apiBackend": "responses",
+      "envOverrides": {
+        "baseUrl": "BINY_GROK_BASE_URL",
+        "model": "BINY_GROK_MODEL",
+        "apiBackend": "BINY_GROK_API_BACKEND"
+      }
+    },
+    "opencode-go-deepseek-v4-flash": {
+      "provider": "opencodego",
+      "type": "openai-compatible",
+      "baseUrl": "https://opencode.ai/zen/go/v1",
+      "apiKeyEnv": "OPENCODE_GO_KEY",
+      "model": "deepseek-v4-flash",
+      "apiBackend": "chat_completions",
+      "envOverrides": {
+        "baseUrl": "BINY_OPENCODE_GO_BASE_URL",
+        "model": "BINY_OPENCODE_GO_MODEL",
+        "apiBackend": "BINY_OPENCODE_GO_API_BACKEND"
+      }
+    },
+    "deepseek": {
+      "provider": "deepseek",
+      "type": "deepseek",
+      "baseUrl": "https://api.deepseek.com",
+      "apiKeyEnv": "DEEPSEEK_API_KEY",
+      "model": "",
+      "apiBackend": "chat_completions"
+    }
+  },
+  "envDriven": {
+    "_comment": "给 BINY_EVAL_* 时完全绕过 presets，新模型不用改任何代码。",
+    "alias": "BINY_EVAL_ALIAS",
+    "provider": "BINY_EVAL_PROVIDER",
+    "type": "BINY_EVAL_API_TYPE",
+    "baseUrl": "BINY_EVAL_BASE_URL",
+    "apiKeyEnv": "BINY_EVAL_API_KEY_ENV",
+    "model": "BINY_EVAL_MODEL",
+    "apiBackend": "BINY_EVAL_API_BACKEND",
+    "displayName": "BINY_EVAL_DISPLAY_NAME",
+    "contextWindow": "BINY_EVAL_CONTEXT_WINDOW",
+    "reasoning": "BINY_EVAL_REASONING"
+  }
+}
