@@ -2,14 +2,16 @@
 import React, { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { RefObject } from "react";
 import type { DesktopSkillCatalogEntry } from "../../../../protocol.js";
+import type { LocalReferenceResult } from "../../../../../session/localReferences.js";
 import { Icon } from "../Icon.js";
 import { ComposerPopover } from "./ComposerPopover.js";
 import { buildDesktopComposerItems } from "./desktopSlashCommands.js";
 import { findPromptCompletion, filterPromptCompletions, replacePromptCompletion, promptKeyAction } from "./promptCompletion.js";
 import { promptSkillDeletion, promptSkillTokens } from "./promptDecorations.js";
 import { useBreathingCaret } from "./useBreathingCaret.js";
+import { findReferenceCompletion, referenceKeyAction, replaceReferenceCompletion } from "./referenceCompletion.js";
 
-export function PromptInput({ value, onChange, onSubmit, onFiles, disabled, placeholder, skills, inputRef }: {
+export function PromptInput({ value, onChange, onSubmit, onFiles, disabled, placeholder, skills, projectId, inputRef }: {
   value: string;
   onChange(value: string): void;
   onSubmit(): void;
@@ -17,6 +19,7 @@ export function PromptInput({ value, onChange, onSubmit, onFiles, disabled, plac
   disabled: boolean;
   placeholder: string;
   skills: readonly DesktopSkillCatalogEntry[];
+  projectId?: string;
   inputRef: RefObject<HTMLTextAreaElement | null>;
 }): React.JSX.Element {
   const anchorRef = useRef<HTMLDivElement>(null);
@@ -30,15 +33,40 @@ export function PromptInput({ value, onChange, onSubmit, onFiles, disabled, plac
   const [focused, setFocused] = useState(false);
   const [dismissed, setDismissed] = useState<string>();
   const [activeIndex, setActiveIndex] = useState(0);
+  const [referenceIndex, setReferenceIndex] = useState(0);
+  const [referenceResults, setReferenceResults] = useState<LocalReferenceResult[]>([]);
+  const [referenceError, setReferenceError] = useState<string>();
+  const [referenceDismissed, setReferenceDismissed] = useState<string>();
+  const [compositionRevision, setCompositionRevision] = useState(0);
   const menuId = useId();
   const items = useMemo(() => buildDesktopComposerItems(skills), [skills]);
   const tokens = useMemo(() => promptSkillTokens(value, skills), [value, skills]);
   const completion = findPromptCompletion(value, selection.start, selection.end);
+  const referenceCompletion = findReferenceCompletion(value, selection.start, selection.end);
+  const referenceKey = referenceCompletion ? `${referenceCompletion.start}:${referenceCompletion.end}:${referenceCompletion.query}` : undefined;
+  const referenceQuery = referenceCompletion?.query;
+  const referenceKind = referenceCompletion?.kind;
+  const unknownReferencePrefix = referenceCompletion?.unknownPrefix;
+  const referenceOpen = focused && !disabled && projectId !== undefined && referenceCompletion !== undefined && referenceKey !== referenceDismissed;
   const completionKey = completion ? `${String(completion.start)}:${String(completion.end)}:${completion.query}` : undefined;
   const options = completion ? filterPromptCompletions(items, completion.query) : [];
   const open = focused && !disabled && completion !== undefined && completionKey !== dismissed;
   const selected = Math.min(activeIndex, Math.max(0, options.length - 1));
+  const selectedReference = Math.min(referenceIndex, Math.max(0, referenceResults.length - 1));
   useBreathingCaret(inputRef, surfaceRef, caretRef, trailRef, value, disabled);
+
+  useEffect(() => {
+    if (!referenceOpen || referenceQuery === undefined || !projectId) { setReferenceResults([]); setReferenceError(undefined); return; }
+    if (unknownReferencePrefix) { setReferenceResults([]); setReferenceError(`未知引用种类：${unknownReferencePrefix}`); return; }
+    let active = true;
+    const timer = window.setTimeout(() => {
+      void window.biny.referenceSearch(projectId, referenceQuery, referenceKind,
+        Intl.DateTimeFormat().resolvedOptions().timeZone).then((results) => {
+        if (active) { setReferenceResults(results); setReferenceError(undefined); setReferenceIndex(0); }
+      }).catch((cause) => { if (active) { setReferenceResults([]); setReferenceError(cause instanceof Error ? cause.message : String(cause)); } });
+    }, 120);
+    return () => { active = false; window.clearTimeout(timer); };
+  }, [referenceOpen, referenceKey, referenceQuery, referenceKind, unknownReferencePrefix, projectId, compositionRevision]);
 
   useLayoutEffect(() => {
     const input = inputRef.current;
@@ -84,6 +112,20 @@ export function PromptInput({ value, onChange, onSubmit, onFiles, disabled, plac
     });
   };
 
+  const chooseReference = (index: number): void => {
+    const result = referenceResults[index];
+    if (!referenceCompletion || !result) return;
+    const next = replaceReferenceCompletion(value, referenceCompletion, result.label, result.uri);
+    onChange(next.value);
+    setReferenceDismissed(referenceKey);
+    setReferenceIndex(0);
+    selectionFrame.current = requestAnimationFrame(() => {
+      inputRef.current?.focus();
+      inputRef.current?.setSelectionRange(next.cursor, next.cursor);
+      setSelection({ start: next.cursor, end: next.cursor });
+    });
+  };
+
   return <div className="biny-prompt-editor" ref={anchorRef}>
     <div className="biny-prompt-surface" ref={surfaceRef}>
     <div className="biny-prompt-skill-overlay" aria-hidden="true" ref={skillOverlayRef}>
@@ -98,8 +140,8 @@ export function PromptInput({ value, onChange, onSubmit, onFiles, disabled, plac
       className="biny-prompt-textarea"
       aria-label="任务输入"
       aria-autocomplete="list"
-      aria-controls={open ? menuId : undefined}
-      aria-activedescendant={open && options.length ? `${menuId}-${String(selected)}` : undefined}
+      aria-controls={open || referenceOpen ? menuId : undefined}
+      aria-activedescendant={open && options.length ? `${menuId}-${String(selected)}` : referenceOpen && referenceResults.length ? `${menuId}-ref-${String(selectedReference)}` : undefined}
       disabled={disabled}
       placeholder={placeholder}
       value={value}
@@ -111,12 +153,13 @@ export function PromptInput({ value, onChange, onSubmit, onFiles, disabled, plac
         if (overlay) { overlay.scrollTop = event.currentTarget.scrollTop; overlay.scrollLeft = event.currentTarget.scrollLeft; }
       }}
       onCompositionStart={() => { composing.current = true; }}
-      onCompositionEnd={() => { composing.current = false; }}
+      onCompositionEnd={() => { composing.current = false; setCompositionRevision((value) => value + 1); }}
       onChange={(event) => {
         onChange(event.currentTarget.value);
         setSelection({ start: event.currentTarget.selectionStart, end: event.currentTarget.selectionEnd });
         setActiveIndex(0);
         setDismissed(undefined);
+        setReferenceDismissed(undefined);
       }}
       onSelect={(event) => setSelection({ start: event.currentTarget.selectionStart, end: event.currentTarget.selectionEnd })}
       onPaste={(event) => {
@@ -126,6 +169,15 @@ export function PromptInput({ value, onChange, onSubmit, onFiles, disabled, plac
         onFiles(files);
       }}
       onKeyDown={(event) => {
+        const referenceAction = referenceKeyAction(event.nativeEvent, composing.current, referenceOpen, referenceResults.length);
+        if (referenceAction !== "native") {
+          event.preventDefault();
+          if (referenceAction === "dismiss") { event.stopPropagation(); setReferenceDismissed(referenceKey); }
+          else if (referenceAction === "next" || referenceAction === "previous") {
+            setReferenceIndex((selectedReference + (referenceAction === "next" ? 1 : -1) + referenceResults.length) % referenceResults.length);
+          } else chooseReference(selectedReference);
+          return;
+        }
         if (!composing.current && !event.nativeEvent.isComposing && event.keyCode !== 229
           && !event.metaKey && !event.ctrlKey && !event.altKey) {
           const input = event.currentTarget;
@@ -174,6 +226,20 @@ export function PromptInput({ value, onChange, onSubmit, onFiles, disabled, plac
             <span className="desktop-slash-option-copy"><span className="desktop-slash-option-name"><code>{item.label}</code>{item.auxiliaryData.hint ? <em className="desktop-slash-option-hint">{item.auxiliaryData.hint}</em> : null}</span><span className="desktop-slash-option-desc">{item.auxiliaryData.description}</span></span>
           </span>
         </button>) : <p className="biny-prompt-completions-empty">没有匹配的命令或技能</p>}
+      </div>
+    </ComposerPopover> : null}
+    {referenceOpen ? <ComposerPopover anchorRef={anchorRef} className="composer-popover biny-prompt-completions" phase="open">
+      <div id={menuId} role="listbox" aria-label="本地引用">
+        {referenceError ? <p className="biny-prompt-completions-empty" role="alert">{referenceError}</p> : null}
+        {!referenceError && !referenceResults.length ? <p className="biny-prompt-completions-empty">没有匹配的引用</p> : null}
+        {referenceResults.map((result, index) => <button key={result.uri} id={`${menuId}-ref-${String(index)}`} type="button" role="option"
+          aria-selected={index === selectedReference} tabIndex={-1} onMouseDown={(event) => event.preventDefault()}
+          onClick={() => chooseReference(index)}>
+          <span className="desktop-slash-option"><span className="desktop-slash-option-copy">
+            <span className="desktop-slash-option-name"><code>{result.label}</code></span>
+            <span className="desktop-slash-option-desc">{result.kind}</span>
+          </span></span>
+        </button>)}
       </div>
     </ComposerPopover> : null}
   </div>;

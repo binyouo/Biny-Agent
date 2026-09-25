@@ -12,11 +12,7 @@ const HIDDEN_TOOL_NAMES = new Set([
   "PlanUpdate",
   "PlanDraft",
   "save_memory",
-  "recall_memory",
-  "activity_report",
-  "activity_digest",
-  "activity_search",
-  "activity_sessions"
+  "recall_memory"
 ]);
 
 export function shouldShowToolInCapabilityMenu(tool: Pick<DesktopToolCatalogEntry, "name" | "source">): boolean {

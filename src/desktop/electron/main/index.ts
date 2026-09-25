@@ -9,12 +9,12 @@
 import { permissionPresentation } from "../../../permission/presentation.js";
 import { redactSecrets } from "../../../utils/secrets.js";
 import path from "node:path";
-import { app, BrowserWindow, dialog, globalShortcut, nativeImage, net, Notification, shell } from "electron";
+import { app, BrowserWindow, dialog, globalShortcut, Menu, nativeImage, net, Notification, powerMonitor, shell, Tray } from "electron";
 import type { DesktopBootstrap, DesktopSessionHandoff } from "../../protocol.js";
 import { desktopIpc } from "../../protocol.js";
 import { DesktopAgentManager } from "./DesktopAgentManager.js";
-import { ActivityRecorderService, defaultActivitySidecarPath } from "./ActivityRecorderService.js";
-import { captureActivityDesktopScreen } from "./activityCapture.js";
+import { ActivityRecorderService, defaultActivityInputMonitorPath } from "./ActivityRecorderService.js";
+import { captureActivityDesktopScreen, encodeActivityFrame, recompressActivitySnapshot } from "./activityCapture.js";
 import { DesktopBrowserService } from "./DesktopBrowserService.js";
 import { DesktopConfigStore } from "./DesktopConfigStore.js";
 import { DesktopMcpService } from "./DesktopMcpService.js";
@@ -30,11 +30,17 @@ import { DesktopUserDataStore } from "./DesktopUserDataStore.js";
 import { globalAgentDir, globalConfigDir } from "../../../config/paths.js";
 import { LocalEmbeddingManager } from "../../../llm/embedding/LocalEmbeddingRuntime.js";
 import { createActivityMemoryPipeline } from "../../../activity/memoryPipeline.js";
+import { startActivityHttpEndpoint } from "../../../activity/httpEndpoint.js";
+import { formatActivityReportResult } from "../../../activity/analyzer.js";
+import type { ActivityServiceState } from "../../../activity/types.js";
 import { registerDesktopIpc } from "./ipc.js";
 import { installApplicationMenu } from "./menu.js";
+import { activityTrayItems } from "./activityTrayMenu.js";
+import { createDesktopActivityHttpDependencies } from "./activityHttpApi.js";
 import { QuickChatContextService } from "./QuickChatContextService.js";
 import { createQuickChatWindow, type QuickChatWindowController } from "./quickChatWindow.js";
 import { createDesktopWindow, type WindowCloseDecision } from "./window.js";
+import { parseDesktopReferenceLaunch } from "./desktopReferenceLaunch.js";
 
 app.setName("Biny");
 app.setAboutPanelOptions({
@@ -45,6 +51,7 @@ app.setAboutPanelOptions({
 });
 
 const initialHandoff = parseDesktopLaunchHandoff(process.argv);
+let pendingReferenceOpen = parseDesktopReferenceLaunch(process.argv);
 
 if (!app.requestSingleInstanceLock()) {
   app.quit();
@@ -81,6 +88,8 @@ async function startDesktopApplication(): Promise<void> {
   ));
   const skills = new DesktopSkillService(state, configStore, net.fetch.bind(net) as unknown as typeof globalThis.fetch);
   let mainWindow: BrowserWindow | undefined;
+  let activityTray: Tray | undefined;
+  let refreshActivityTray: ((state?: ActivityServiceState) => void) | undefined;
   let preparingQuit = false;
   let quickChatWindow: QuickChatWindowController | undefined;
   const quickChatContext = new QuickChatContextService({
@@ -187,7 +196,9 @@ async function startDesktopApplication(): Promise<void> {
   const activity = new ActivityRecorderService({
     configStore,
     captureDesktopScreen: captureActivityDesktopScreen,
-    sidecarPath: defaultActivitySidecarPath({
+    encodeFrame: encodeActivityFrame,
+    recompressSnapshot: recompressActivitySnapshot,
+    inputMonitorPath: defaultActivityInputMonitorPath({
       packaged: app.isPackaged,
       resourcesPath: process.resourcesPath,
       appPath: app.getAppPath()
@@ -197,8 +208,14 @@ async function startDesktopApplication(): Promise<void> {
     getEmbeddingRuntime: async () => await activityEmbeddingModels.createRuntime("multilingual-e5-small").catch(() => undefined),
     emit: (snapshot) => {
       if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(desktopIpc.activityEvent, snapshot);
+      refreshActivityTray?.(snapshot.state);
     }
   });
+  powerMonitor.on("lock-screen", () => activity.handlePowerEvent("lock-screen"));
+  powerMonitor.on("unlock-screen", () => activity.handlePowerEvent("unlock-screen"));
+  powerMonitor.on("suspend", () => activity.handlePowerEvent("suspend"));
+  powerMonitor.on("resume", () => activity.handlePowerEvent("resume"));
+
   const settings = new DesktopSettingsTransaction(state, agents);
   // 恢复检查必须早于 IPC 注册和窗口开放；无法自动恢复时保留应用可用来展示设置错误，
   // 但同一个 transaction 实例会阻止所有新工作入口。
@@ -213,6 +230,20 @@ async function startDesktopApplication(): Promise<void> {
     if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(desktopIpc.terminalEvent, event);
   });
   await activity.initialize();
+  const activityApi = await startActivityHttpEndpoint(createDesktopActivityHttpDependencies({
+    activity,
+    configStore,
+    writeMemories: activityMemoryPipeline.writeMemories,
+    onAnalyzed: activityMemoryPipeline.onAnalyzed,
+    getEmbeddingRuntime: async () => await activityEmbeddingModels.createRuntime("multilingual-e5-small").catch(() => undefined),
+    openPermissions: process.platform === "darwin" ? async (pane) => {
+      const urls = {
+        "screen-recording": "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture",
+        accessibility: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
+      };
+      await shell.openExternal(urls[pane]);
+    } : undefined
+  }));
   /** 渲染进程启动时拉取的一次性初始状态：项目列表、当前项目、布局尺寸等。 */
   const bootstrap = async (): Promise<DesktopBootstrap> => {
     const allProjects = await projects.refreshAllProjects();
@@ -280,11 +311,13 @@ async function startDesktopApplication(): Promise<void> {
   const createWindow = (): BrowserWindow => {
     settingsClose.reset();
     mainWindow = createDesktopWindow(state, decideWindowClose);
+    mainWindow.webContents.once("did-finish-load", () => {
+      if (pendingReferenceOpen) mainWindow?.webContents.send(desktopIpc.referenceOpen, pendingReferenceOpen);
+      pendingReferenceOpen = undefined;
+    });
     mainWindow.on("closed", () => {
       mainWindow = undefined;
-      // macOS 关闭最后一个窗口默认不会退出进程；这里显式退出，避免下次打开继续复用本次
-      // Desktop 进程和 Runtime Host 的运行态。菜单里的“隐藏 Biny”仍保留为显式后台操作。
-      if (process.platform === "darwin" && !preparingQuit) app.quit();
+      // 关闭窗口后托盘继续承载 Activity；重新打开时创建新的主窗口。
     });
     return mainWindow;
   };
@@ -325,6 +358,56 @@ async function startDesktopApplication(): Promise<void> {
   });
   installApplicationMenu(() => mainWindow);
   createWindow();
+  if (process.platform === "darwin") {
+    const sourceIcon = nativeImage.createFromPath(app.isPackaged
+      ? path.join(process.resourcesPath, "native/tray-icon.png")
+      : path.join(app.getAppPath(), "build/icon-master.png"));
+    if (!sourceIcon.isEmpty()) {
+      const icon = sourceIcon.resize({ width: 18, height: 18 });
+      icon.setTemplateImage(true);
+      activityTray = new Tray(icon);
+      activityTray.setToolTip("Biny 活动记录");
+      const openMainWindow = (): void => {
+        if (!mainWindow || mainWindow.isDestroyed()) createWindow();
+        mainWindow?.show();
+        mainWindow?.focus();
+      };
+      const showActivityError = (error: unknown): void => {
+        dialog.showErrorBox("活动记录操作失败", error instanceof Error ? error.message : String(error));
+      };
+      refreshActivityTray = (state) => {
+        if (!activityTray) return;
+        activityTray.setContextMenu(Menu.buildFromTemplate(activityTrayItems(state ?? activity.snapshot().state, {
+          open: openMainWindow,
+          toggle: () => {
+            void (async () => {
+              const settings = await activity.settingsSnapshot();
+              await activity.updateSettings({ enabled: !settings.activity.enabled }, settings.configRevision);
+              refreshActivityTray?.();
+            })().catch(showActivityError);
+          },
+          summary: () => {
+            void activity.buildReport("today").then(async (result) => {
+              await showMessage(mainWindow, {
+                type: "info",
+                title: "今日活动摘要",
+                message: "今日活动摘要",
+                detail: formatActivityReportResult(result),
+                buttons: ["关闭"]
+              });
+            }).catch(showActivityError);
+          },
+          settings: () => {
+            openMainWindow();
+            mainWindow?.webContents.send(desktopIpc.menuAction, "activity-settings");
+          },
+          quit: () => app.quit()
+        })));
+      };
+      activityTray.on("click", openMainWindow);
+      refreshActivityTray();
+    }
+  }
 
   // 平台约定：macOS 使用 Command+Shift+Space，其它平台使用 Ctrl+Shift+Space。
   // 注册失败（被占用）时降级为静默无快捷键，设置页仍可从调试入口切换。
@@ -345,6 +428,11 @@ async function startDesktopApplication(): Promise<void> {
     mainWindow?.focus();
     const handoff = parseDesktopLaunchHandoff(commandLine);
     if (handoff) void handleHandoff(handoff);
+    const reference = parseDesktopReferenceLaunch(commandLine);
+    if (reference) {
+      if (mainWindow?.webContents.isLoading()) pendingReferenceOpen = reference;
+      else mainWindow?.webContents.send(desktopIpc.referenceOpen, reference);
+    }
   });
   app.on("window-all-closed", () => {
     if (process.platform !== "darwin") app.quit();
@@ -380,7 +468,10 @@ async function startDesktopApplication(): Promise<void> {
         terminals.disposeAll();
         // 全局快捷键与悬浮窗是真正的资源，退出前必须释放，避免占用快捷键或残留窗口。
         globalShortcut.unregisterAll();
+        activityTray?.destroy();
+        activityTray = undefined;
         quickChatWindow?.destroy();
+        await activityApi.close().catch(() => undefined);
         await activity.stop();
         await activityEmbeddingModels.close();
         activityMemoryPipeline.close();

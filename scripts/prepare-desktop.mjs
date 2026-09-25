@@ -15,8 +15,10 @@ const dryRun = process.argv.includes("--dry-run");
 const packageRoot = path.join(root, "node_modules");
 const cacheRoot = path.join(packageRoot, ".cache/biny");
 const stampPath = path.join(cacheRoot, "desktop-prepare.json");
-const activitySource = path.join(root, "native/activity-recorder/main.swift");
-const activityOutput = path.join(root, "out/native/activity-recorder");
+const activityBinaries = ["activity-input-monitor", "activity-ocr", "computer-use"];
+const calendarSource = path.join(root, "native/calendar-reader/main.swift");
+const calendarPlist = path.join(root, "native/calendar-reader/Info.plist");
+const calendarOutput = path.join(root, "out/native/calendar-reader");
 const electronRoot = path.join(packageRoot, "electron");
 const nodePtyRoot = path.join(packageRoot, "node-pty");
 const electronVersion = packageVersion(electronRoot, "electron");
@@ -25,8 +27,11 @@ const nativeKey = [process.platform, process.arch, electronVersion, nodePtyVersi
 const previous = readStamp();
 const actions = [];
 
-if (process.platform === "darwin" && (force || isOlder(activityOutput, activitySource))) {
+if (process.platform === "darwin" && (force || activityBinaries.some(name => isOlder(path.join(root, "out/native", name), path.join(root, "native", name, "main.swift"))))) {
   actions.push("activity-sidecar");
+}
+if (process.platform === "darwin" && (force || isOlder(calendarOutput, calendarSource) || isOlder(calendarOutput, calendarPlist))) {
+  actions.push("calendar-sidecar");
 }
 if (force || !existsSync(electronExecutable())) actions.push("electron");
 if (force || previous?.nativeKey !== nativeKey || !existsSync(path.join(nodePtyRoot, "build/Release/pty.node"))) {
@@ -43,6 +48,7 @@ if (dryRun) {
 }
 
 if (actions.includes("activity-sidecar")) run(process.execPath, [path.join(root, "scripts/build-activity-sidecar.mjs")]);
+if (actions.includes("calendar-sidecar")) run(process.execPath, [path.join(root, "scripts/build-calendar-sidecar.mjs")]);
 if (actions.includes("electron")) run(pnpmCommand(), ["exec", "install-electron", "--no"]);
 if (actions.includes("node-pty")) run(pnpmCommand(), ["exec", "electron-rebuild", "-w", "node-pty"]);
 

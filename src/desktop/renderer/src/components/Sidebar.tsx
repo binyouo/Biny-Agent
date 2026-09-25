@@ -59,6 +59,8 @@ interface SidebarProps {
   onImportSession(projectId: string): void;
   onRemoveProject(projectId: string): void;
   onSearch(): void;
+  onTimeClues(): void;
+  temporalUnread: number;
   onSettings(): void;
   onInsertCrystal(reference: string): void;
   onToggleSidebar(): void;
@@ -89,6 +91,8 @@ export const Sidebar = memo(function Sidebar({
   onImportSession,
   onRemoveProject,
   onSearch,
+  onTimeClues,
+  temporalUnread,
   onSettings,
   onInsertCrystal,
   onToggleSidebar
@@ -485,6 +489,11 @@ export const Sidebar = memo(function Sidebar({
       </div>
 
       <div className="biny-sidebar-footer">
+        <button aria-label="时间线索" className="biny-sidebar-settings-item" onClick={onTimeClues} title="时间线索" type="button">
+          <Icon name="calendar" size={16} />
+          <span>时间线索</span>
+          {temporalUnread > 0 ? <span className="time-clues-unread" aria-label={`${temporalUnread} 条今日未读线索`}>{temporalUnread > 99 ? "99+" : temporalUnread}</span> : null}
+        </button>
         <button aria-label="设置" className="biny-sidebar-settings-item" onClick={onSettings} title="设置" type="button">
           <Icon name="settings" size={16} />
           <span>设置</span>

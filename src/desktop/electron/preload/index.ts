@@ -12,6 +12,13 @@ import type { ActivityRuntimeSnapshot } from "../../../activity/types.js";
 import type { DesktopAgentEventEnvelope, DesktopApi, DesktopMenuAction, DesktopQuickChatScreenContext, DesktopSessionHandoff, DesktopSettingsCloseRequest, DesktopTerminalEvent } from "../../protocol.js";
 import { desktopIpc } from "../../protocol.js";
 
+const pendingReferenceOpens: Array<{ uri: string; projectId: string }> = [];
+let referenceOpenListener: ((target: { uri: string; projectId: string }) => void) | undefined;
+ipcRenderer.on(desktopIpc.referenceOpen, (_event, target: { uri: string; projectId: string }) => {
+  if (referenceOpenListener) referenceOpenListener(target);
+  else pendingReferenceOpens.push(target);
+});
+
 const api: DesktopApi = {
   activitySuggestions: async () => await ipcRenderer.invoke(desktopIpc.activitySuggestions),
   crystalRequest: async (request) => await ipcRenderer.invoke(desktopIpc.crystalRequest, request),
@@ -94,6 +101,21 @@ const api: DesktopApi = {
   memoryOverview: async (projectId) => await ipcRenderer.invoke(desktopIpc.memoryOverview, projectId),
   memoryStats: async (projectId) => await ipcRenderer.invoke(desktopIpc.memoryStats, projectId),
   memoryEntries: async (projectId, offset, limit, includeArchived) => await ipcRenderer.invoke(desktopIpc.memoryEntries, projectId, offset, limit, includeArchived),
+  temporalClues: async (query) => await ipcRenderer.invoke(desktopIpc.temporalClues, query),
+  temporalIgnoreClue: async (id) => await ipcRenderer.invoke(desktopIpc.temporalIgnoreClue, id),
+  temporalMarkSeen: async (ids, day, timeZone) => await ipcRenderer.invoke(desktopIpc.temporalMarkSeen, ids, day, timeZone),
+  temporalMarkTodaySeen: async (day, timeZone) => await ipcRenderer.invoke(desktopIpc.temporalMarkTodaySeen, day, timeZone),
+  referenceKinds: async () => await ipcRenderer.invoke(desktopIpc.referenceKinds),
+  referenceSearch: async (projectId, query, kind, timeZone) => await ipcRenderer.invoke(desktopIpc.referenceSearch, projectId, query, kind, timeZone),
+  referenceResolve: async (projectId, uri) => await ipcRenderer.invoke(desktopIpc.referenceResolve, projectId, uri),
+  referenceBacklinks: async (projectId, uri) => await ipcRenderer.invoke(desktopIpc.referenceBacklinks, projectId, uri),
+  referenceCaptureSnippet: async (projectId, sourceUri, start, end) => await ipcRenderer.invoke(desktopIpc.referenceCaptureSnippet, projectId, sourceUri, start, end),
+  referenceCaptureQuote: async (projectId, sourceUri, quote) => await ipcRenderer.invoke(desktopIpc.referenceCaptureQuote, projectId, sourceUri, quote),
+  referenceForMessage: async (projectId, threadId, messageId) => await ipcRenderer.invoke(desktopIpc.referenceForMessage, projectId, threadId, messageId),
+  referenceDateDetail: async (projectId, uri) => await ipcRenderer.invoke(desktopIpc.referenceDateDetail, projectId, uri),
+  referenceDateCalendar: async (projectId, uri) => await ipcRenderer.invoke(desktopIpc.referenceDateCalendar, projectId, uri),
+  referenceIndexOriginal: async (projectId, sessionId, requestId) => await ipcRenderer.invoke(desktopIpc.referenceIndexOriginal, projectId, sessionId, requestId),
+  referenceCancelIndex: async (requestId) => await ipcRenderer.invoke(desktopIpc.referenceCancelIndex, requestId),
   saveMemorySettings: async (projectId, input) => await ipcRenderer.invoke(desktopIpc.saveMemorySettings, projectId, input),
   identityOverview: async (projectId) => await ipcRenderer.invoke(desktopIpc.identityOverview, projectId),
   saveIdentityDocument: async (projectId, document, content, expectedRevision, reason) => await ipcRenderer.invoke(
@@ -268,6 +290,11 @@ const api: DesktopApi = {
     const handler = (_event: Electron.IpcRendererEvent, target: DesktopSessionHandoff): void => listener(target);
     ipcRenderer.on(desktopIpc.sessionHandoff, handler);
     return () => ipcRenderer.removeListener(desktopIpc.sessionHandoff, handler);
+  },
+  onReferenceOpen(listener) {
+    referenceOpenListener = listener;
+    for (const target of pendingReferenceOpens.splice(0)) listener(target);
+    return () => { if (referenceOpenListener === listener) referenceOpenListener = undefined; };
   },
   onMenuAction(listener) {
     const handler = (_event: Electron.IpcRendererEvent, action: DesktopMenuAction): void => listener(action);

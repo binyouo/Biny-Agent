@@ -18,7 +18,6 @@ import { readSessionEvents } from "../session/events.js";
 import { ensureAgentDirs } from "../session/store.js";
 import { createToolRegistry } from "../tools/registry.js";
 import { createTodoTool } from "../tools/todo.js";
-import type { ActivitySettings } from "../activity/settings.js";
 
 import { TodoStore } from "../session/todoStore.js";
 import { CheckpointStore } from "../session/checkpointStore.js";
@@ -36,10 +35,6 @@ import { buildSubagentDefinitionsPrompt, loadSubagentDefinitions, type SubagentD
 import { createHistoryTools } from "../extensions/history.js";
 import { createCheckpointEvidenceTool } from "../extensions/checkpointEvidence.js";
 import { createMemoryTools } from "../extensions/memory.js";
-import { createActivityReportTool } from "../tools/activity/report.js";
-import { createActivityDigestTool } from "../tools/activity/digest.js";
-import { createActivitySearchTool } from "../tools/activity/search.js";
-import { createActivitySessionsTool } from "../tools/activity/sessions.js";
 import { createToolCounts, formatExtensionReport, type ExtensionSection, type ExtensionStatus } from "../extensions/report.js";
 import { createModelSettings, type ModelSettings } from "../llm/modelFactory.js";
 import {
@@ -414,27 +409,6 @@ export async function createCommandRuntime(workspaceRoot: string, options: Comma
       if (!agent) throw new Error("Session is unavailable.");
       return await agent.readCheckpointEvidence(args, signal);
     }));
-    // Activity 回忆改为主动工具集：模型按需生成打工日记、时间线或搜索，而不是把脱敏事件
-    // 注入每个回合。模型、策略与嵌入运行时都在调用时现取，不沿用装配时的快照。
-    const loadActivitySettings = async (): Promise<ActivitySettings> =>
-      (await configStore.load(workspaceRoot)).activity;
-
-    const getActivityChatModel = () => modelManager?.getModel();
-    toolRegistry.registerBuiltinTool(createActivityReportTool({
-      getChatModel: getActivityChatModel,
-      getModel: async () => resolveToolModel(await configStore.load(workspaceRoot)),
-      loadSettings: loadActivitySettings
-    }));
-    toolRegistry.registerBuiltinTool(createActivityDigestTool({
-      getChatModel: getActivityChatModel,
-      loadSettings: loadActivitySettings
-    }));
-    toolRegistry.registerBuiltinTool(createActivitySearchTool({
-      getChatModel: getActivityChatModel,
-      loadSettings: loadActivitySettings,
-      getEmbeddingRuntime: async () => await agent?.getActivityEmbeddingRuntime()
-    }));
-    toolRegistry.registerBuiltinTool(createActivitySessionsTool({ loadSettings: loadActivitySettings, getChatModel: getActivityChatModel }));
     // MCP/Plugin 仍由 Host 持有连接和执行权；共享 MCP 工具在回合开始前按最新快照同步。
     for (const entry of toolRegistry.listEntries()) {
       if (entry.source !== "mcp" && entry.source !== "plugin") continue;
@@ -518,7 +492,7 @@ export async function createCommandRuntime(workspaceRoot: string, options: Comma
       activeHoursEnd: config.heartbeat.activeHoursEnd
     },
     run: async (prompt, signal) => {
-      const outcome = await heartbeatAgent.runTask(prompt, { abortSignal: signal, runId: randomUUID(), turnId: randomUUID(), emotionAnalysis: false });
+      const outcome = await heartbeatAgent.runTask(prompt, { abortSignal: signal, runId: randomUUID(), turnId: randomUUID(), emotionAnalysis: false, source: "heartbeat" });
       if (outcome.status !== "completed") throw new Error(outcome.error ?? "Heartbeat did not complete.");
     }
   });

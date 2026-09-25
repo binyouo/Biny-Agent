@@ -8,6 +8,7 @@ import { resolveSessionFile, sessionIdFromFile } from "../../../session/store.js
 import { activeSessionMessageIds, sessionMessageTree } from "../../../session/messageTree.js";
 import { redactSecrets } from "../../../utils/secrets.js";
 import { ActivityStore } from "../../../activity/store.js";
+import { globalAgentDir } from "../../../config/paths.js";
 import { desktopCrystalRequestSchema, type DesktopCrystalRequest, type DesktopCrystalSnapshot } from "../../crystalProtocol.js";
 
 export class DesktopCrystalService {
@@ -32,7 +33,7 @@ export class DesktopCrystalService {
         if (threadId.startsWith("activity:") && anchorId.startsWith("activity:")) {
           if (!activityStore) {
             activityStore = new ActivityStore();
-            activityReady = activityStore.open(config.activity.outputDirectory);
+            activityReady = activityStore.open(config.activity.outputDirectory, globalAgentDir());
           }
           await activityReady;
           const analysis = activityStore.getAnalysis(anchorId.slice("activity:".length));

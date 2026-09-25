@@ -31,20 +31,21 @@ export function resolveToolModelAlias(config: AgentConfig): string | undefined {
     return selected?.source === "configured" && registry.isAvailable(selected) ? selected.alias : undefined;
   }
   const providerOrder = Object.keys(toolModelPreferences);
-  const priority = (provider: string, model: string): [number, number] => {
+  const priority = (provider: string, model: string): [number, number, number] => {
     const type = config.providers[provider]?.type ?? "custom";
     const providerIndex = providerOrder.indexOf(type);
     const modelIndex = Object.hasOwn(toolModelPreferences, type) ? toolModelPreferences[type]!.indexOf(model) : -1;
-    return [providerIndex < 0 ? providerOrder.length : providerIndex, modelIndex < 0 ? Number.MAX_SAFE_INTEGER : modelIndex];
+    return [modelIndex < 0 ? 1 : 0, providerIndex < 0 ? providerOrder.length : providerIndex, modelIndex < 0 ? Number.MAX_SAFE_INTEGER : modelIndex];
   };
-  // Provider 优先、型号次之，其余保持配置顺序；价格元数据变化不应悄悄切换后台模型。
+  // 先选参考偏好的辅助型号；未命中时保留原有 Provider 优先级和配置顺序。
+  // 价格元数据变化不应悄悄切换后台模型。
   const candidates = Object.keys(config.models).flatMap((alias) => {
     const model = registry.resolve(alias);
     return model && registry.isAvailable(model) ? [model] : [];
   }).sort((left, right) => {
     const a = priority(left.providerAlias, left.model.model);
     const b = priority(right.providerAlias, right.model.model);
-    return a[0] - b[0] || a[1] - b[1];
+    return a[0] - b[0] || a[1] - b[1] || a[2] - b[2];
   });
   return candidates[0]?.alias;
 }

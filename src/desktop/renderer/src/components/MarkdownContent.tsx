@@ -8,8 +8,8 @@
  * 渲染的是模型输出，一切外部内容都当不可信处理：只有经高亮库转义过的高亮结果会用
  * `dangerouslySetInnerHTML`，其余节点都交给 React 转义。
  */
-import React, { isValidElement, memo, useMemo, useState } from "react";
-import Markdown, { type Components } from "react-markdown";
+import React, { isValidElement, memo, useEffect, useMemo, useState } from "react";
+import Markdown, { defaultUrlTransform, type Components } from "react-markdown";
 import rehypeKatex from "rehype-katex";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
@@ -58,6 +58,9 @@ export const MarkdownContent = memo(function MarkdownContent({
       // 页内锚点（如脚注）保留默认跳转，不能带 target=_blank 否则点击被吞。
       if (path) return <FileLinkCard onPreviewFile={onPreviewFile} path={path} />;
       if (href?.startsWith("biny://")) {
+        if (/^biny:\/\/(?:date|project|file|thread|memory|snippet|scratch|skill|mcp|model|provider|tool|task|cron|crystal|bundle|mission|plan)\//u.test(href)) {
+          return <LocalReferenceLink href={href} projectId={projectId}>{children}</LocalReferenceLink>;
+        }
         return (
           <a
             {...props}
@@ -104,6 +107,7 @@ export const MarkdownContent = memo(function MarkdownContent({
   return (
     <div className={variant ? `markdown-body ${variant}` : "markdown-body"}>
       <Markdown
+        urlTransform={(url) => url.startsWith("biny://") ? url : defaultUrlTransform(url)}
         // singleDollarTextMath 关闭：$ 是常见计价符号，只认 $$...$$ 行内/块级公式
         components={components}
         remarkPlugins={remarkPlugins}
@@ -114,6 +118,20 @@ export const MarkdownContent = memo(function MarkdownContent({
     </div>
   );
 });
+
+function LocalReferenceLink({ href, projectId, children }: { href: string; projectId: string; children: React.ReactNode }): React.JSX.Element {
+  const [valid, setValid] = useState<boolean>();
+  useEffect(() => {
+    let active = true;
+    setValid(undefined);
+    void window.biny.referenceResolve(projectId, href).then(() => { if (active) setValid(true); })
+      .catch(() => { if (active) setValid(false); });
+    return () => { active = false; };
+  }, [href, projectId]);
+  if (valid === false) return <span className="markdown-reference-invalid" title="引用已失效">{children}（已失效）</span>;
+  return <a className="markdown-deeplink" href={href} onClick={(event) => { event.preventDefault(); openDeepLink(href); }}
+    title={valid ? "打开本地引用" : "正在验证引用"}>{children}</a>;
+}
 
 /** 图片没读到（不是图片、太大、路径不存在）时退回成一行文件名，不留一块空白。 */
 function InlineImage({ alt, path, projectId }: { alt: string; path: string; projectId: string }): React.JSX.Element {

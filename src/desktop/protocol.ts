@@ -40,6 +40,11 @@ import { slashCommandsForSurface, type SlashCommandDefinition } from "../runtime
 import type { SessionBranchPoint, SessionIsolation } from "../session/catalog.js";
 import type { SessionEvent } from "../session/recorder.js";
 import type { SessionRunStatus } from "../session/runLedger.js";
+import type { DesktopTemporalPage, DesktopTemporalQuery } from "./temporalMemoryService.js";
+import type { LocalReferenceKind, LocalReferenceResult } from "../session/localReferences.js";
+import type { LocalReferenceLink } from "../session/referenceGraph.js";
+import type { DateReferenceDetail } from "../session/dateReferenceDetail.js";
+import type { NativeCalendarResult } from "../session/nativeCalendar.js";
 
 export type DesktopActivitySettings = ActivitySettings;
 export type DesktopActivitySettingsInput = ActivitySettingsInput;
@@ -87,6 +92,7 @@ export const desktopIpc = {
   startDraft: "desktop:session:draft",
   openSession: "desktop:session:open",
   sessionHandoff: "desktop:session:handoff",
+  referenceOpen: "desktop:references:open",
   listSessionTreePage: "desktop:session:tree-page",
   renameSession: "desktop:session:rename",
   pinSession: "desktop:session:pin",
@@ -129,6 +135,21 @@ export const desktopIpc = {
   memoryOverview: "desktop:memory:overview",
   memoryStats: "desktop:memory:stats",
   memoryEntries: "desktop:memory:entries",
+  temporalClues: "desktop:memory:temporal-clues",
+  temporalIgnoreClue: "desktop:memory:temporal-ignore",
+  temporalMarkSeen: "desktop:memory:temporal-seen",
+  temporalMarkTodaySeen: "desktop:memory:temporal-today-seen",
+  referenceKinds: "desktop:references:kinds",
+  referenceSearch: "desktop:references:search",
+  referenceResolve: "desktop:references:resolve",
+  referenceBacklinks: "desktop:references:backlinks",
+  referenceCaptureSnippet: "desktop:references:snippet",
+  referenceCaptureQuote: "desktop:references:quote",
+  referenceForMessage: "desktop:references:message",
+  referenceDateDetail: "desktop:references:date-detail",
+  referenceDateCalendar: "desktop:references:date-calendar",
+  referenceIndexOriginal: "desktop:references:index-original",
+  referenceCancelIndex: "desktop:references:cancel-index",
   saveMemorySettings: "desktop:memory:save-settings",
   identityOverview: "desktop:identity:overview",
   saveIdentityDocument: "desktop:identity:save-document",
@@ -1432,7 +1453,7 @@ export type DesktopRuntimeMutation =
   | "worktree.merge"
   | "worktree.remove";
 
-export type DesktopMenuAction = "new-task" | "open-project" | "search" | "settings" | "toggle-sidebar" | "focus-composer";
+export type DesktopMenuAction = "new-task" | "open-project" | "search" | "settings" | "activity-settings" | "toggle-sidebar" | "focus-composer";
 /** 侧栏会话右键菜单的动作；菜单本身由渲染进程绘制。 */
 export type DesktopSessionMenuAction = "rename" | "pin" | "unpin" | "archive" | "unarchive" | "duplicate" | "export-bundle" | "export-claude" | "delete";
 
@@ -1552,6 +1573,21 @@ export interface DesktopApi {
   memoryStats(projectId: string): Promise<DesktopMemoryStats>;
   /** 记忆条目分页读取；offset 分页，revision 变化时调用方应回第 0 页。 */
   memoryEntries(projectId: string, offset: number, limit: number, includeArchived?: boolean): Promise<DesktopMemoryEntriesPage>;
+  temporalClues(query: DesktopTemporalQuery): Promise<DesktopTemporalPage>;
+  temporalIgnoreClue(id: string): Promise<boolean>;
+  temporalMarkSeen(ids: string[], day: string, timeZone: string): Promise<number>;
+  temporalMarkTodaySeen(day: string, timeZone: string): Promise<number>;
+  referenceKinds(): Promise<Array<{ kind: LocalReferenceKind; label: string }>>;
+  referenceSearch(projectId: string, query: string, kind?: LocalReferenceKind, timeZone?: string): Promise<LocalReferenceResult[]>;
+  referenceResolve(projectId: string, uri: string): Promise<LocalReferenceResult>;
+  referenceBacklinks(projectId: string, uri: string): Promise<LocalReferenceLink[]>;
+  referenceCaptureSnippet(projectId: string, sourceUri: string, start: number, end: number): Promise<LocalReferenceResult>;
+  referenceCaptureQuote(projectId: string, sourceUri: string, quote: string): Promise<LocalReferenceResult>;
+  referenceForMessage(projectId: string, threadId: string, messageId: string): Promise<LocalReferenceResult>;
+  referenceDateDetail(projectId: string, uri: string): Promise<DateReferenceDetail>;
+  referenceDateCalendar(projectId: string, uri: string): Promise<NativeCalendarResult>;
+  referenceIndexOriginal(projectId: string, sessionId: string, requestId: string): Promise<{ indexedMessages: number }>;
+  referenceCancelIndex(requestId: string): Promise<boolean>;
   saveMemorySettings(projectId: string, input: DesktopMemorySettingsInput): Promise<DesktopMemorySettingsSnapshot>;
   identityOverview(projectId: string): Promise<DesktopIdentityOverview>;
   saveIdentityDocument(projectId: string, document: DesktopIdentityDocumentKind, content: string, expectedRevision: number, reason?: string): Promise<DesktopIdentityOverview>;
@@ -1675,6 +1711,7 @@ export interface DesktopApi {
   onTerminalEvent(listener: (event: DesktopTerminalEvent) => void): () => void;
   onAgentEvent(listener: (envelope: DesktopAgentEventEnvelope) => void): () => void;
   onSessionHandoff(listener: (target: DesktopSessionHandoff) => void): () => void;
+  onReferenceOpen(listener: (target: { uri: string; projectId: string }) => void): () => void;
   onMenuAction(listener: (action: DesktopMenuAction) => void): () => void;
   onSettingsCloseRequest(listener: (request: DesktopSettingsCloseRequest) => void): () => void;
   onActivityEvent(listener: (snapshot: ActivityRuntimeSnapshot) => void): () => void;

@@ -136,6 +136,7 @@ interface AgentRun extends ActiveRunSnapshot {
   replaceUserMessageId?: string;
   replacementUserMessageId?: string;
   supervision: boolean;
+  source?: "auto";
 }
 
 interface PendingPermission extends PendingPermissionSnapshot {
@@ -470,7 +471,8 @@ export class InteractiveAgentRuntime {
       retryOfMessageId: requestIds?.retryOfMessageId,
       replaceUserMessageId: requestIds?.replaceUserMessageId,
       replacementUserMessageId: requestIds?.replaceUserMessageId === undefined ? undefined : randomUUID(),
-      supervision
+      supervision,
+      source: /^(?:automation:|graph:|plan-wake:)/u.test(requestIds?.continuationSource ?? "") ? "auto" : undefined
     };
     const controller = new AbortController();
     try {
@@ -1118,7 +1120,8 @@ export class InteractiveAgentRuntime {
         messageId: replacingUserMessage ? run.replacementUserMessageId ?? run.messageId : run.messageId,
         attachments: run.attachments,
         replaceUserMessageId: replacingUserMessage ? run.replaceUserMessageId : undefined,
-        replacementUserMessageId: replacingUserMessage ? run.replacementUserMessageId : undefined
+        replacementUserMessageId: replacingUserMessage ? run.replacementUserMessageId : undefined,
+        source: run.source
       });
     }
     // message.user 也会把时间线切到 running；必须和 run.started 一样晚于 durable admission。
@@ -1178,6 +1181,7 @@ export class InteractiveAgentRuntime {
         replacementUserMessageId: run.replacementUserMessageId,
         turnId: run.turnId,
         emotionAnalysis: run.emotionAnalysis,
+        source: run.source,
         recordSessionUserMessage: run.supervision ? false : undefined
       };
       const stream = run.continuation

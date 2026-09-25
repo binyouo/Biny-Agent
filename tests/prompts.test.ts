@@ -33,6 +33,21 @@ assert.ok(bundle.turnContext.indexOf("<local_time") < bundle.turnContext.indexOf
 assert.ok(bundle.turnContext.indexOf("private daily note") < bundle.turnContext.indexOf("private crystal"));
 assert.doesNotMatch(bundle.turnContext, /biny-activity|Activity Recorder/u, "每轮不再被动注入 Activity");
 
+const relevantBundle = buildPromptBundle({
+  cwd: "/workspace",
+  now: fixedNow,
+  activityRelevantPrompt: "相关会话：登录故障已定位",
+  activityEnabled: true
+});
+assert.match(relevantBundle.turnContext, /相关会话：登录故障已定位/u);
+assert.doesNotMatch(relevantBundle.systemPrompt, /相关会话：登录故障已定位/u);
+assert.match(relevantBundle.systemPrompt, /biny activity report/u,
+  "开启 Activity 时应告诉 Agent 如何按日期查报告");
+assert.equal(stripTransientTurnContext([{
+  role: "user", originalContent: "上次登录问题呢？",
+  content: `${relevantBundle.turnContext}\n\n上次登录问题呢？`
+}])[0]?.content, "上次登录问题呢？");
+
 const datedAgain = buildPromptBundle({ ...buildOptions(), now: new Date("2026-09-12T04:05:06.000Z") });
 assert.equal(bundle.systemPrompt, datedAgain.systemPrompt, "date changes must not invalidate the static system prompt");
 

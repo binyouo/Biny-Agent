@@ -53,6 +53,18 @@ import { exportSessionBundle, exportSessionClaudeCode } from "../../../session/t
 import { activitySettingsPatchSchema } from "../../../activity/settings.js";
 import { resolveActivityReportRange } from "../../../activity/analyzer.js";
 import { readDailyMemoryNote } from "../../../activity/dailyNotes.js";
+import { DesktopTemporalMemoryService } from "../../temporalMemoryService.js";
+import { LocalReferenceGraph, LocalReferenceService, localReferenceKinds } from "../../../session/localReferences.js";
+import { globalAgentDir } from "../../../config/paths.js";
+import { runtimeReferenceEntries } from "../../../session/runtimeReferenceEntries.js";
+import { DateReferenceDetailService } from "../../../session/dateReferenceDetail.js";
+import { readNativeCalendar } from "../../../session/nativeCalendar.js";
+import { parseLocalReferenceUri } from "../../../session/localReferences.js";
+import { createFileConfigStore } from "../../../config/store.js";
+import { resolveToolModel } from "../../../llm/toolModel.js";
+import { createTemporalModelExtractor } from "../../../session/temporalModelExtractor.js";
+import { TemporalMemoryIndex } from "../../../session/temporalMemory.js";
+import { resolveSessionFile } from "../../../session/store.js";
 
 interface IpcContext {
   crystals: DesktopCrystalService;
@@ -141,6 +153,11 @@ const memoryContentSchema = z.string().trim().min(1).max(4_000);
 const memoryTagListSchema = z.array(z.string().trim().min(1).max(120)).max(12);
 const memoryQuerySchema = z.string().trim().min(1).max(2_000);
 const memoryEntryIdSchema = z.string().min(1).max(512);
+const temporalDaySchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/u);
+const temporalQuerySchema = z.object({ startDate: temporalDaySchema, endDate: temporalDaySchema,
+  sessionId: z.string().min(1).max(128).optional(), currentSessionId: z.string().min(1).max(128).optional(),
+  limit: z.number().int().min(1).max(50).optional(), offset: z.number().int().min(0).optional(),
+  today: temporalDaySchema.optional(), timeZone: z.string().min(1).max(100).optional(), includeScheduled: z.boolean().optional() });
 const localEmbeddingModelSchema = z.literal("multilingual-e5-small");
 const memorySettingsInputSchema = z.object({
   expectedRevision: configRevisionSchema,
@@ -252,6 +269,7 @@ function settingsSaveRequiresIdleRuntime(input: DesktopSettingsSaveInput): boole
 }
 
 export function registerDesktopIpc(context: IpcContext): void {
+  const referenceIndexRequests = new Map<string, AbortController>();
   const settings = context.settings;
   const handleRecoveryGated = (
     channel: string,
@@ -713,6 +731,113 @@ export function registerDesktopIpc(context: IpcContext): void {
       typeof limit === "number" && Number.isInteger(limit) && limit > 0 ? limit : 20,
       includeArchived === true
     );
+  });
+
+  handleRecoveryGated(desktopIpc.temporalClues, async (_event, query: unknown) => {
+    const service = new DesktopTemporalMemoryService();
+    try {
+      const parsed = temporalQuerySchema.parse(query);
+      const projects = context.state.projects();
+      const scheduled = parsed.includeScheduled !== false && (parsed.offset ?? 0) === 0 ? await Promise.all(projects.map(async (project) => ({
+        projectId: project.id,
+        automations: (await context.agents.runtimeProjection(project.id)).automations as import("../../../runtime/AutomationScheduler.js").AutomationRecord[]
+      }))) : [];
+      return await service.query(parsed, projects, scheduled);
+    }
+    finally { service.close(); }
+  });
+  handleRecoveryGated(desktopIpc.temporalIgnoreClue, async (_event, id: unknown) => {
+    const service = new DesktopTemporalMemoryService();
+    try { return service.ignore(memoryEntryIdSchema.parse(id)); }
+    finally { service.close(); }
+  });
+  handleRecoveryGated(desktopIpc.temporalMarkSeen, async (_event, ids: unknown, day: unknown, timeZone: unknown) => {
+    const service = new DesktopTemporalMemoryService();
+    try { return service.markSeen(z.array(memoryEntryIdSchema).max(50).parse(ids), temporalDaySchema.parse(day), z.string().min(1).max(100).parse(timeZone)); }
+    finally { service.close(); }
+  });
+  handleRecoveryGated(desktopIpc.temporalMarkTodaySeen, async (_event, day: unknown, timeZone: unknown) => {
+    const service = new DesktopTemporalMemoryService();
+    try { return service.markTodaySeen(temporalDaySchema.parse(day), z.string().min(1).max(100).parse(timeZone)); }
+    finally { service.close(); }
+  });
+  const referenceService = (): LocalReferenceService => new LocalReferenceService({ projects: context.state.projects(), runtimeEntries: async (id) => {
+    const [projection, tools] = await Promise.all([context.agents.runtimeProjection(id), context.agents.toolCatalog(id)]);
+    return runtimeReferenceEntries(projection, tools);
+  } });
+  handleRecoveryGated(desktopIpc.referenceKinds, async () => localReferenceKinds);
+  handleRecoveryGated(desktopIpc.referenceSearch, async (_event, projectId: unknown, query: unknown, kind: unknown, timeZone: unknown) => {
+    const service = referenceService();
+    const selectedKind = z.enum(["date", "project", "file", "thread", "message", "memory", "snippet", "scratch", "skill", "mcp", "model", "provider", "tool", "task", "cron", "crystal", "bundle", "mission", "plan"]).optional().parse(kind);
+    return await service.search(z.string().max(128).parse(query), idSchema.parse(projectId), selectedKind, 30,
+      z.string().min(1).max(100).optional().parse(timeZone));
+  });
+  handleRecoveryGated(desktopIpc.referenceResolve, async (_event, projectId: unknown, uri: unknown) => {
+    const service = referenceService();
+    return await service.resolve(z.string().min(1).max(4096).parse(uri), idSchema.parse(projectId));
+  });
+  handleRecoveryGated(desktopIpc.referenceBacklinks, async (_event, projectId: unknown, uri: unknown) => {
+    const graph = new LocalReferenceGraph(globalAgentDir(), referenceService());
+    try { return await graph.backlinks(z.string().max(4096).parse(uri), idSchema.parse(projectId)); }
+    finally { graph.close(); }
+  });
+  handleRecoveryGated(desktopIpc.referenceCaptureSnippet, async (_event, projectId: unknown, uri: unknown, start: unknown, end: unknown) => {
+    const graph = new LocalReferenceGraph(globalAgentDir(), referenceService());
+    try { return await graph.captureSnippet(z.string().max(4096).parse(uri), z.number().int().nonnegative().parse(start),
+      z.number().int().positive().parse(end), idSchema.parse(projectId)); }
+    finally { graph.close(); }
+  });
+  handleRecoveryGated(desktopIpc.referenceCaptureQuote, async (_event, projectId: unknown, uri: unknown, quote: unknown) => {
+    const graph = new LocalReferenceGraph(globalAgentDir(), referenceService());
+    try { return await graph.captureQuote(z.string().max(4096).parse(uri), z.string().min(1).max(4000).parse(quote), idSchema.parse(projectId)); }
+    finally { graph.close(); }
+  });
+  handleRecoveryGated(desktopIpc.referenceForMessage, async (_event, projectId: unknown, threadId: unknown, messageId: unknown) => {
+    return await referenceService().referenceForMessage(
+      idSchema.parse(threadId), idSchema.parse(messageId), idSchema.parse(projectId));
+  });
+  handleRecoveryGated(desktopIpc.referenceDateDetail, async (_event, projectId: unknown, uri: unknown) => {
+    const id = idSchema.parse(projectId);
+    const project = context.state.projects().find((item) => item.id === id);
+    if (!project) throw new Error("Project is not available.");
+    const parsed = parseLocalReferenceUri(z.string().max(4096).parse(uri));
+    if (parsed.kind !== "date") throw new Error("Reference is not a date.");
+    const runtime = await context.agents.runtimeProjection(id);
+    const service = new DateReferenceDetailService(globalAgentDir());
+    try { return await service.query(parsed.range, [project], runtime); }
+    finally { service.close(); }
+  });
+  handleRecoveryGated(desktopIpc.referenceDateCalendar, async (_event, projectId: unknown, uri: unknown) => {
+    const id = idSchema.parse(projectId);
+    if (!context.state.projects().some((item) => item.id === id)) throw new Error("Project is not available.");
+    const parsed = parseLocalReferenceUri(z.string().max(4096).parse(uri));
+    if (parsed.kind !== "date") throw new Error("Reference is not a date.");
+    return await readNativeCalendar(parsed.range, { authorized: true });
+  });
+  handleRecoveryGated(desktopIpc.referenceIndexOriginal, async (_event, projectId: unknown, sessionId: unknown, requestId: unknown) => {
+    const id = idSchema.parse(projectId);
+    const project = context.state.projects().find((item) => item.id === id);
+    if (!project) throw new Error("Project is not available.");
+    const threadId = idSchema.parse(sessionId);
+    const request = z.string().uuid().parse(requestId);
+    if (referenceIndexRequests.has(request)) throw new Error("Index request already exists.");
+    const controller = new AbortController();
+    referenceIndexRequests.set(request, controller);
+    try {
+      const config = await createFileConfigStore(project.path).load();
+      const model = resolveToolModel(config);
+      if (!model) throw new Error("No configured tool model is available for dated work facts.");
+      const file = await resolveSessionFile(project.path, threadId);
+      const index = new TemporalMemoryIndex(globalAgentDir(), createTemporalModelExtractor(model));
+      try { return { indexedMessages: (await index.indexSessionFile(threadId, file, controller.signal)).length }; }
+      finally { index.close(); }
+    } finally { referenceIndexRequests.delete(request); }
+  });
+  handle(desktopIpc.referenceCancelIndex, async (_event, requestId: unknown) => {
+    const controller = referenceIndexRequests.get(z.string().uuid().parse(requestId));
+    if (!controller) return false;
+    controller.abort();
+    return true;
   });
 
   handleRecoveryGated(desktopIpc.saveMemorySettings, async (_event, projectId: unknown, input: unknown) => {

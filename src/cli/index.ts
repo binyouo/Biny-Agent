@@ -10,6 +10,8 @@ import { createRequire } from "node:module";
 import { Command, InvalidArgumentError } from "commander";
 import { initCommand } from "./commands/init.js";
 import { registerCrystalCommands } from "./commands/crystal.js";
+import { referenceKindsCommand, referenceSearchCommand, referenceResolveCommand, referenceGraphCommand,
+  referenceTokenCommand, referenceContextCommand, referenceOpenCommand } from "./commands/references.js";
 import { registerFatigueCommands } from "./commands/fatigue.js";
 import { registerSoulCommands } from "./commands/soul.js";
 import { doctorCommand } from "./commands/doctor.js";
@@ -25,7 +27,6 @@ import { registerSkillCommands } from "./commands/skills.js";
 import { runtimeHostCommand } from "./commands/runtimeHost.js";
 import { emotionGetCommand, emotionSetBaseCommand, emotionSetContextCommand, emotionStatusCommand } from "./commands/emotion.js";
 import {
-  activityClearCommand,
   activityConfigCommand,
   activityConfigSetCommand,
   activityDigestCommand,
@@ -33,11 +34,9 @@ import {
   activityAnalyzeCommand,
   activityRecordingCommand,
   activitySearchCommand,
-  activityServeCommand,
   activitySessionsCommand,
   activityShowCommand,
   activityStatusCommand,
-  activitySuggestionsCommand,
   activitySummaryCommand
 } from "./commands/activity.js";
 import {
@@ -80,6 +79,11 @@ import {
   memorySearchCommand,
   memoryStatsCommand,
   memorySleepCommand,
+  temporalMemoryCommand,
+  temporalDateReferenceCommand,
+  temporalCalendarCommand,
+  temporalClueActionCommand,
+  temporalIndexFactsCommand,
   historySearchCommand,
   reflectionRunCommand,
   reflectionStatusCommand,
@@ -103,6 +107,37 @@ registerCrystalCommands(program);
 registerSoulCommands(program);
 registerFatigueCommands(program);
 registerSkillCommands(program, workspaceRoot);
+
+const ref = program.command("ref").description("Search and resolve local @ references");
+ref.command("kinds").option("--json", "print JSON").action((options: { json?: boolean }) => wrap(() => referenceKindsCommand(workspaceRoot, options))());
+ref.command("search").argument("[query]", "search text", "").option("--kind <kind>", "reference kind or Chinese name")
+  .option("--limit <count>", "maximum results", parsePositiveInteger).option("--json", "print JSON")
+  .action((query: string, options: { kind?: string; limit?: number; json?: boolean }) => wrap(() => referenceSearchCommand(workspaceRoot, query, options))());
+ref.command("resolve").argument("<uri>", "reference URI").option("--json", "print JSON")
+  .action((uri: string, options: { json?: boolean }) => wrap(() => referenceResolveCommand(workspaceRoot, uri, options))());
+ref.command("token").argument("<uri>", "reference URI").argument("[label]", "display label")
+  .action((uri: string, label?: string) => wrap(() => referenceTokenCommand(workspaceRoot, uri, label))());
+ref.command("context").argument("[text]", "message containing @ references").option("--thread <id>", "read latest active user message")
+  .option("--json", "print JSON")
+  .action((input: string | undefined, options: { thread?: string; json?: boolean }) => wrap(() => referenceContextCommand(workspaceRoot, input, options))());
+ref.command("open").argument("<uri>", "reference URI")
+  .action((uri: string) => wrap(() => referenceOpenCommand(workspaceRoot, uri))());
+for (const action of ["link", "unlink"] as const) {
+  ref.command(action).argument("<source-uri>").argument("<target-uri>").option("--json", "print JSON")
+    .action((source: string, target: string, options: { json?: boolean }) => wrap(() => referenceGraphCommand(workspaceRoot, action, source, target, options))());
+}
+for (const action of ["backlinks", "outlinks", "related", "graph", "promote", "pin", "unpin"] as const) {
+  ref.command(action).argument("<uri>").option("--json", "print JSON")
+    .action((uri: string, options: { json?: boolean }) => wrap(() => referenceGraphCommand(workspaceRoot, action, uri, undefined, options))());
+}
+ref.command("pins").option("--json", "print JSON")
+  .action((options: { json?: boolean }) => wrap(() => referenceGraphCommand(workspaceRoot, "pins", undefined, undefined, options))());
+ref.command("snippet").argument("<message-uri>").requiredOption("--start <offset>", "inclusive offset", parseNonNegativeInteger)
+  .requiredOption("--end <offset>", "exclusive offset", parsePositiveInteger).option("--json", "print JSON")
+  .action((uri: string, options: { start: number; end: number; json?: boolean }) => wrap(() => referenceGraphCommand(workspaceRoot, "snippet", uri, undefined, options))());
+ref.command("scratch").argument("<content>").option("--ttl-ms <milliseconds>", "time to live", parsePositiveInteger)
+  .option("--json", "print JSON")
+  .action((content: string, options: { ttlMs?: number; json?: boolean }) => wrap(() => referenceGraphCommand(workspaceRoot, "scratch", content, undefined, options))());
 
 program.command("init").description("Initialize config and .biny directories").action(wrap(() => initCommand(workspaceRoot)));
 program.command("doctor").description("Check local environment").action(wrap(() => doctorCommand(workspaceRoot)));
@@ -183,7 +218,7 @@ task.command("events").argument("<taskRunId>", "TaskRun id").option("--limit <co
 const memory = program.command("memory").description("Manage local memory");
 memory.command("list").option("--json", "print JSON").action((options: { json?: boolean }) => wrap(() => memoryListCommand(workspaceRoot, options))());
 memory.command("stats").description("Show memory store counts and maintenance status").option("--json", "print JSON").action((options: { json?: boolean }) => wrap(() => memoryStatsCommand(workspaceRoot, options))());
-memory.command("search").argument("<query...>", "search query").option("--tag <tag...>", "filter entries carrying any given tag").option("--json", "print JSON").action((query: string[], options: { tag?: string[]; json?: boolean }) => wrap(() => memorySearchCommand(workspaceRoot, query.join(" "), options))());
+memory.command("search").argument("<query...>", "search query").option("--tag <tag...>", "filter entries carrying any given tag").option("--thread-id <id>", "filter by one thread ID").option("--json", "print JSON").action((query: string[], options: { tag?: string[]; threadId?: string; json?: boolean }) => wrap(() => memorySearchCommand(workspaceRoot, query.join(" "), options))());
 memory.command("add").argument("[content]", "memory text").option("--entry <json>", "structured memory JSON instead of text").option("--json", "print JSON").action((content: string | undefined, options: { entry?: string; json?: boolean }) => wrap(() => memoryAddCommand(workspaceRoot, content, options))());
 memory.command("archive").description("Export conversation transcripts to local Markdown; does not archive facts").action(wrap(memoryExportCommand));
 memory.command("archive-entry").argument("<id>", "memory id").requiredOption("--yes", "confirm archive").option("--json", "print JSON").action((id: string, options: { yes?: boolean; json?: boolean }) => wrap(() => memoryArchiveCommand(workspaceRoot, id, options))());
@@ -193,6 +228,22 @@ memory.command("delete").argument("<id>").requiredOption("--yes", "confirm perma
 memory.command("restore").argument("<id>", "archive id").option("--json", "print JSON").action((id: string, options: { json?: boolean }) => wrap(() => memoryManageCommand(workspaceRoot, "restore", id, options))());
 memory.command("archived").option("--json", "print JSON").action((options: { json?: boolean }) => wrap(() => memoryManageCommand(workspaceRoot, "archived", undefined, options))());
 memory.command("grep").argument("<query...>", "literal text in conversation history").option("--json", "print JSON").action((query: string[], options: { json?: boolean }) => wrap(() => historySearchCommand(query.join(" "), { json: options.json, literal: true }))());
+for (const kind of ["timeline", "facts"] as const) {
+  memory.command(kind).requiredOption("--from <day>", "inclusive YYYY-MM-DD").requiredOption("--to <day>", "exclusive YYYY-MM-DD")
+    .option("--session-id <id>", "filter one session").option("--limit <n>", "maximum results, up to 50")
+    .option("--offset <n>", "pagination offset").option("--json", "print JSON")
+    .action((options: { from: string; to: string; sessionId?: string; limit?: string; offset?: string; json?: boolean }) => wrap(() => temporalMemoryCommand(kind, options))());
+}
+memory.command("ignore-clue").argument("<id>").option("--json", "print JSON").action((id: string, options: { json?: boolean }) => wrap(() => temporalClueActionCommand("ignore", id, options))());
+memory.command("date-ref").requiredOption("--from <day>", "inclusive YYYY-MM-DD").requiredOption("--to <day>", "exclusive YYYY-MM-DD")
+  .requiredOption("--time-zone <zone>", "IANA time zone").option("--label <text>", "display label").option("--json", "print JSON")
+  .action((options: { from: string; to: string; timeZone: string; label?: string; json?: boolean }) => wrap(() => temporalDateReferenceCommand(options))());
+memory.command("calendar").requiredOption("--from <day>", "inclusive YYYY-MM-DD").requiredOption("--to <day>", "exclusive YYYY-MM-DD")
+  .requiredOption("--time-zone <zone>", "IANA time zone").option("--allow-calendar", "explicitly request macOS Calendar access")
+  .option("--json", "print JSON")
+  .action((options: { from: string; to: string; timeZone: string; allowCalendar?: boolean; json?: boolean }) => wrap(() => temporalCalendarCommand(options))());
+memory.command("seen-clue").argument("<id>").option("--json", "print JSON").action((id: string, options: { json?: boolean }) => wrap(() => temporalClueActionCommand("seen", id, options))());
+memory.command("index-facts").argument("<session-id>").option("--json", "print JSON").action((sessionId: string, options: { json?: boolean }) => wrap(() => temporalIndexFactsCommand(workspaceRoot, sessionId, options))());
 memory.command("serve").description("Serve authenticated loopback memory REST API").option("--port <number>", "listen port", parsePositiveInteger, 23001).action((options: { port: number }) => wrap(() => memoryServeCommand(workspaceRoot, options.port))());
 memory.command("clear").requiredOption("--yes", "confirm clear").option("--json", "print JSON").action((options: { yes?: boolean; json?: boolean }) => wrap(() => memoryClearCommand(workspaceRoot, options))());
 const history = program.command("history").description("Search past conversation transcripts");
@@ -261,7 +312,7 @@ session
     const format: SessionTransferFormat | undefined = options.format === "biny" || options.format === "claude" || options.format === "codex" ? options.format : undefined;
     return wrap(() => sessionImportCommand(workspaceRoot, file, { format, json: options.json }))();
   });
-const activity = program.command("activity").description("Inspect and serve local Activity Recorder data");
+const activity = program.command("activity").description("Inspect local Activity Recorder data");
 activity.command("analyze").argument("<session-id>", "activity session to analyze again").option("--json", "print JSON").action((sessionId: string, options: { json?: boolean }) => wrap(() => activityAnalyzeCommand(workspaceRoot, sessionId, options))());
 activity.command("status").option("--json", "print JSON").action((options: { json?: boolean }) => wrap(() => activityStatusCommand(workspaceRoot, options))());
 for (const [name, enabled] of [["start", true], ["stop", false]] as const) {
@@ -276,53 +327,47 @@ activityConfig
   .argument("<value>", "JSON value or raw string")
   .option("--json", "print JSON")
   .action((key: string, value: string, options: { json?: boolean }) => wrap(() => activityConfigSetCommand(workspaceRoot, key, value, options))());
-activity
+const activitySearch = activity
   .command("search")
   .argument("<query...>", "keyword query")
-  .option("--semantic", "use local embedding semantic search instead of keyword FTS")
   .option("--limit <count>", "maximum results", parsePositiveInteger)
   .option("--json", "print JSON")
-  .action((query: string[], options: { semantic?: boolean; limit?: number; json?: boolean }) => wrap(() => activitySearchCommand(workspaceRoot, query.join(" "), options))());
+  .action((query: string[], options: { limit?: number; json?: boolean }) => wrap(() => activitySearchCommand(workspaceRoot, query.join(" "), options))());
+activitySearch
+  .command("semantic")
+  .argument("<query...>", "semantic query")
+  .option("--limit <count>", "maximum results", parsePositiveInteger)
+  .option("--json", "print JSON")
+  .action((query: string[], options: { limit?: number; json?: boolean }) => wrap(() => activitySearchCommand(workspaceRoot, query.join(" "), { ...options, semantic: true }))());
 activity
   .command("sessions")
-  .option("--limit <count>", "maximum sessions", parsePositiveInteger)
+  .argument("[limit]", "maximum sessions", parsePositiveInteger)
   .option("--since <timestamp>", "ISO lower bound")
   .option("--json", "print JSON")
-  .action((options: { limit?: number; since?: string; json?: boolean }) => wrap(() => activitySessionsCommand(workspaceRoot, options))());
+  .action((limit: number | undefined, options: { since?: string; json?: boolean }) => wrap(() => activitySessionsCommand(workspaceRoot, { ...options, limit }))());
 activity
   .command("digest")
-  .option("--lookback-min <minutes>", "minutes to include", parsePositiveInteger)
+  .option("--lookback <minutes>", "minutes to include", parsePositiveInteger)
+  .option("--max-analyzed <count>", "maximum analyzed sessions", parsePositiveInteger)
   .option("--json", "print JSON")
-  .action((options: { lookbackMin?: number; json?: boolean }) => wrap(() => activityDigestCommand(workspaceRoot, options))());
+  .action((options: { lookback?: number; maxAnalyzed?: number; json?: boolean }) => wrap(() => activityDigestCommand(workspaceRoot, { lookbackMin: options.lookback, maxAnalyzed: options.maxAnalyzed, json: options.json }))());
 activity
   .command("report")
   .argument("[date]", "today, yesterday, or YYYY-MM-DD", "today")
+  .option("--force", "reanalyze sessions in the requested date")
+  .option("--skeleton", "render stored analysis without requesting the model")
   .option("--json", "print JSON")
-  .action((date: string, options: { json?: boolean }) => wrap(() => activityReportCommand(workspaceRoot, date, options))());
+  .action((date: string, options: { force?: boolean; skeleton?: boolean; json?: boolean }) => wrap(() => activityReportCommand(workspaceRoot, date, options))());
 activity
   .command("summary")
   .argument("<kind>", "daily or weekly")
   .argument("[date]", "YYYY-MM-DD; weekly 的 date 代表该周周一", localDateKey())
+  .option("--narrative", "generate model narrative")
   .option("--json", "print JSON")
-  .action((kind: string, date: string, options: { json?: boolean }) => {
+  .action((kind: string, date: string, options: { narrative?: boolean; json?: boolean }) => {
     if (kind !== "daily" && kind !== "weekly") throw new Error("summary kind 只支持 daily 或 weekly。");
     return wrap(() => activitySummaryCommand(workspaceRoot, kind, date, options))();
   });
-activity
-  .command("suggestions")
-  .option("--force", "ignore the ten-minute cache")
-  .option("--json", "print JSON")
-  .action((options: { force?: boolean; json?: boolean }) => wrap(() => activitySuggestionsCommand(workspaceRoot, options))());
-activity
-  .command("clear")
-  .requiredOption("--yes", "confirm deletion of local Activity data")
-  .option("--json", "print JSON")
-  .action((options: { yes?: boolean; json?: boolean }) => wrap(() => activityClearCommand(workspaceRoot, options))());
-activity
-  .command("serve")
-  .description("Run the loopback Activity REST API and recorder")
-  .option("--port <port>", "TCP port; 0 chooses a free port", parseNonNegativeInteger, 0)
-  .action((options: { port?: number }) => wrap(() => activityServeCommand(workspaceRoot, options))());
 const emotion = program.command("emotion").description("Read and update local emotion snapshots");
 emotion.action(wrap(() => emotionStatusCommand()));
 emotion.command("status").description("Show current emotion state").action(wrap(() => emotionStatusCommand()));

@@ -15,8 +15,16 @@ files:
   - dist/**/*
   - package.json
 extraResources:
-  - from: out/native/activity-recorder
-    to: native/activity-recorder
+  - from: out/native/activity-input-monitor
+    to: native/activity-input-monitor
+  - from: out/native/activity-ocr
+    to: native/activity-ocr
+  - from: out/native/computer-use
+    to: native/computer-use
+  - from: out/native/calendar-reader
+    to: native/calendar-reader
+  - from: build/icon-master.png
+    to: native/tray-icon.png
 mac:
   category: public.app-category.developer-tools
   icon: build/icon.icns

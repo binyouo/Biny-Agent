@@ -3,7 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
 import { configSchema, type AgentConfig } from "../config/schema.js";
 import { createFileConfigStore, updateConfig, type AgentConfigStore } from "../config/store.js";
-import { globalAgentDir } from "../config/paths.js";
+import { AGENT_DATABASE_FILE, globalAgentDir } from "../config/paths.js";
 import type { SkillExtractionNotice, SkillExtractionOutcome } from "./skillExtraction.js";
 import {
   listModelChoices,
@@ -20,6 +20,8 @@ import { sessionMessageMetadata } from "../session/messageTree.js";
 import { assertSessionFileSize } from "../session/limits.js";
 import { cachedSessionEvents, sessionFileFingerprint } from "../session/parseCache.js";
 import { SessionRecorder, type ReasoningBlock, type SessionEvent } from "../session/recorder.js";
+import { TemporalMemoryIndex, parseTemporalClues } from "../session/temporalMemory.js";
+import { createTemporalModelExtractor } from "../session/temporalModelExtractor.js";
 import { activeSessionEventsForPath, activeSessionMessageIds, replaySessionEvents, sessionMessageTree, type SessionMessageReference, type SessionReplay } from "../session/replay.js";
 import { tryReadSessionSnapshot, writeSessionSnapshot, snapshotToReplay, type SessionSnapshotData } from "../session/sessionSnapshot.js";
 import { runtimeEventsForRun, type RuntimeEventSink, type RuntimeHighWater } from "../session/runtimeEvent.js";
@@ -59,6 +61,7 @@ import {
 } from "./toolExecutionCoordinator.js";
 import {
   appendExternalTurnContext,
+  appendLocalReferenceContext,
   buildPromptBundle,
   type PromptBundle,
   refreshRuntimeTurnContext,
@@ -101,9 +104,12 @@ import {
   type EmotionAnalysisMessage
 } from "./context/emotionAnalysis.js";
 import { isActivityMemory } from "../activity/modelContext.js";
+import { activityContextForTurn, type ActivityChatContext } from "../activity/chatContext.js";
+import { ActivityStore } from "../activity/store.js";
 import { FatigueService } from "./context/fatigue.js";
 import { runMemoryCommand } from "./context/memoryCommands.js";
 import { SessionSearchIndex } from "../session/searchIndex.js";
+import { LocalReferenceService, localReferenceContext, localReferenceProjectId } from "../session/localReferences.js";
 import { readFileMemoryPrompt } from "./context/fileMemory.js";
 import { MemoryVectorIndex } from "./context/MemoryVectorIndex.js";
 import { HybridMemoryRetriever } from "./context/HybridMemoryRetriever.js";
@@ -181,6 +187,8 @@ export interface AgentSessionOptions {
   configStore?: AgentConfigStore;
   config: AgentConfig;
   model?: AgentModel;
+  /** Activity 本地嵌入边界；宿主可共享已加载运行时，测试可注入协议 fake。 */
+  getActivityEmbeddingRuntime?: () => Promise<EmbeddingModelRuntime | undefined>;
   toolRegistry: ToolRegistry;
   permissionManager: PermissionManager;
   recorder: SessionRecorder;
@@ -222,6 +230,8 @@ export interface AgentSessionOptions {
 
 export interface AgentRunOptions {
   abortSignal?: AbortSignal;
+  /** 后台发起的消息保留来源，防止被当成用户原话建立日期索引。 */
+  source?: "heartbeat" | "auto";
   confirmPermission?: (request: AgentPermissionRequest) => Promise<AgentPermissionResult>;
   /** 本次调用可消费的硬 step 上限；普通根回合默认使用配置的 hardStepLimit。 */
   maxSteps?: number;
@@ -467,7 +477,7 @@ export class AgentSession {
       analyze: async (sessionId, signal, messageId) => await this.analyzeContextEmotion(sessionId, signal, messageId)
     });
     this.localEmbeddingManager = new LocalEmbeddingManager(path.join(globalAgentDir(), "models", "embeddings"));
-    const memoryIndexRoot = path.join(globalAgentDir(), "memory");
+    const memoryIndexRoot = globalAgentDir();
     const openReadOnlyMemoryIndex = (): MemoryVectorIndex | undefined => MemoryVectorIndex.openReadOnly(memoryIndexRoot);
     this.memoryEmbeddingService = new MemoryEmbeddingService({
       localMemory: this.localMemory,
@@ -513,6 +523,7 @@ export class AgentSession {
     this.crystalService = new CrystalService({
       getModel: this.toolModel,
       getConfig: () => this.activeConfig.crystal,
+      allowActivity: () => this.activeConfig.activity.enabled,
       readAnchorText: async ({ threadId, anchorId }) => {
         if (!threadId || !/^[A-Za-z0-9_-]+$/u.test(threadId)) return undefined;
         const filePath = threadId === this.recorder.sessionId
@@ -584,7 +595,8 @@ export class AgentSession {
       },
       onModelRequest,
       () => this.sideModelRequestContext(),
-      this.memoryRetriever
+      this.memoryRetriever,
+      () => this.activeConfig.activity.enabled
     );
     this.contextMemory.setPersonalization(
       {},
@@ -627,9 +639,34 @@ export class AgentSession {
 
   private async dailyNotesPrompt(now = new Date()): Promise<string | undefined> {
     try {
-      return await readFileMemoryPrompt(now, { allowActivity: true });
+      return await readFileMemoryPrompt(now, { allowActivity: this.activeConfig.activity.enabled });
     } catch {
       return undefined;
+    }
+  }
+
+  private async activityContextPrompt(input: string, now: Date, signal?: AbortSignal): Promise<ActivityChatContext | undefined> {
+    if (!this.activeConfig.activity.enabled) return undefined;
+    const agentDir = globalAgentDir();
+    try {
+      await fs.access(path.join(agentDir, AGENT_DATABASE_FILE));
+    } catch {
+      return undefined;
+    }
+    const store = new ActivityStore();
+    try {
+      await store.open(this.activeConfig.activity.outputDirectory, agentDir);
+      return await activityContextForTurn({
+        store, input, now, enabled: this.activeConfig.activity.enabled,
+        getEmbeddingRuntime: this.options.getActivityEmbeddingRuntime
+          ?? (async () => await this.localEmbeddingManager.createRuntime("multilingual-e5-small").catch(() => undefined)),
+        signal
+      });
+    } catch {
+      // 辅助上下文读取失败时，对话仍可正常发送。
+      return undefined;
+    } finally {
+      await store.close();
     }
   }
 
@@ -686,13 +723,14 @@ export class AgentSession {
       this.soulStorage.read(),
       this.parentThreadPrompt(),
       this.currentEmotionPrompt(promptNow),
-      this.dailyNotesPrompt(promptNow)
+      this.dailyNotesPrompt(promptNow),
+      this.activityContextPrompt(input, promptNow, signal)
     ]);
     const [selectionResult, contextResult] = await Promise.allSettled([capabilitySelection, contextPromise]);
     if (selectionResult.status === "rejected") throw selectionResult.reason;
     if (contextResult.status === "rejected") throw contextResult.reason;
     const selection = selectionResult.value;
-    const [identityPrompt, securityPrompt, soulSnapshot, parentThreadPrompt, emotionPrompt, dailyNotesPrompt] = contextResult.value;
+    const [identityPrompt, securityPrompt, soulSnapshot, parentThreadPrompt, emotionPrompt, dailyNotesPrompt, activityContextPrompt] = contextResult.value;
     signal?.throwIfAborted();
     const selectedToolNames = this.selectedToolNames(selection);
     const initialTools = this.promptTools(selectedToolNames ? [...selectedToolNames] : undefined);
@@ -708,7 +746,7 @@ export class AgentSession {
     } catch {
       // 辅助引用读取失败不扩大到其他会话或阻断当前对话。
     }
-    return buildPromptBundle({
+    const bundle = buildPromptBundle({
       sessionId: this.recorder.sessionId,
       extensionPrompt: await this.extensionPrompt(selection),
       tools: initialTools,
@@ -721,9 +759,15 @@ export class AgentSession {
       soulSource: soulSnapshot.source,
       dailyNotesPrompt,
       crystalPrompt,
+      activityGreetingPrompt: activityContextPrompt?.kind === "greeting" ? activityContextPrompt.text : undefined,
+      activityRelevantPrompt: activityContextPrompt?.kind === "relevant" ? activityContextPrompt.text : undefined,
+      activityEnabled: this.activeConfig.activity.enabled,
       now: promptNow,
       cwd: this.options.workspaceRoot
     });
+    const projectId = localReferenceProjectId(this.options.workspaceRoot);
+    const service = new LocalReferenceService({ projects: [{ id: projectId, path: this.options.workspaceRoot, name: this.options.workspaceRoot }] });
+    return appendLocalReferenceContext(bundle, await localReferenceContext(input, service, projectId));
   }
 
   /** 将上下文准备阶段透传给宿主；完成后清除临时状态，包括未命中记忆的轮次。 */
@@ -1040,7 +1084,7 @@ export class AgentSession {
     }
     const result = await refreshChatDailyDiary(dateKey, {
       model,
-      allowActivity: true,
+      allowActivity: this.activeConfig.activity.enabled,
       signal: options.signal,
       force: options.force,
       onUsage: (usage, operation, modelAlias) => { this.recordModelUsage(usage, operation, modelAlias); },
@@ -1054,7 +1098,7 @@ export class AgentSession {
         soulStorage: this.soulStorage,
         emotionStorage: this.emotionStorage,
         sessionId: this.recorder.sessionId,
-        allowActivity: true,
+        allowActivity: this.activeConfig.activity.enabled,
         signal: options.signal,
         model,
         memoryContext: memories?.entries.filter((entry) => !entry.tags.includes("self-reflection") && !isActivityMemory(entry)).map((entry) => `- ${entry.content}`).join("\n"),
@@ -1114,15 +1158,6 @@ export class AgentSession {
     return providers.createEmbeddingRuntime(ref);
   }
 
-  /** Activity 固定使用本地 multilingual-e5-small，不复用可配置的云端记忆 embedding。 */
-  async getActivityEmbeddingRuntime(): Promise<EmbeddingModelRuntime | undefined> {
-    try {
-      return await this.localEmbeddingManager.createRuntime("multilingual-e5-small");
-    } catch {
-      return undefined;
-    }
-  }
-
   /** 身份资料由同一个 AgentSession 读取，Desktop 也可通过本地存储服务复用这份权威。 */
   getIdentityStorage(): IdentityStorage {
     return this.identityStorage;
@@ -1140,15 +1175,20 @@ export class AgentSession {
     }
   }
 
-  /** 手动浏览与自动召回共用混合检索；检索范围是整个记忆库。 */
+  /** 手动浏览与自动召回共用混合检索；显式 scope 缺省时搜索共享记忆库。 */
   async searchMemory(query: string, paths: string[], options: MemorySearchOptions = {}): Promise<MemorySearchResult> {
-    return await this.memoryRetriever.retrieve(query, paths, {
+    const result = await this.memoryRetriever.retrieve(query, paths, {
       limit: options.limit ?? this.localMemory.recallLimit,
       maxChars: options.maxChars,
       signal: options.signal,
       includeArchived: options.includeArchived,
+      tags: options.tags,
+      threadId: options.threadId,
       automatic: false
     });
+    // 仅公开入口的最终返回命中记账；检索器内部扫描的候选不计入访问。
+    await this.memoryRetriever.recordRecallUsage(result.matches.map((match) => match.entry.id), { signal: options.signal });
+    return result;
   }
 
   cancelMemoryMaintenance(): boolean {
@@ -1530,6 +1570,7 @@ export class AgentSession {
     attachments?: AgentAttachment[];
     replaceUserMessageId?: string;
     replacementUserMessageId?: string;
+    source?: "heartbeat" | "auto";
   }): Promise<void> {
     this.assertNotQuarantined("user message admission");
     if (!input.trim() && !(options.attachments?.length)) throw new Error("Agent prompt cannot be empty.");
@@ -1551,6 +1592,7 @@ export class AgentSession {
     try {
       const reference = this.recordCanonicalMessage({
         type: "user_message",
+        metadata: options.source === undefined ? undefined : { source: options.source },
         content: input,
         attachments: sessionAttachments(options.attachments),
         messageId: replacement?.messageId ?? options.messageId,
@@ -1742,6 +1784,7 @@ export class AgentSession {
       if (runOptions.recordSessionUserMessage === false && runOptions.replacementUserMessage === undefined) return undefined;
       userMessageReference = this.recordCanonicalMessage({
         type: "user_message",
+        metadata: runOptions.source === undefined ? undefined : { source: runOptions.source },
         content: input,
         attachments: sessionAttachments(runOptions.attachments),
         skills: this.skillPaths(runOptions.capabilitySelection?.skills),
@@ -2667,6 +2710,19 @@ export class AgentSession {
         }
         // 记忆整理是完成回合后的旁路；不等待模型请求，也不让它改变当前回合终态。
         void this.flushSessionSearchIndex().catch(() => undefined);
+        const temporalRecorder = this.recorder;
+        const temporalTask = (async () => {
+          const mayUseModel = runOptions.source === undefined
+            && this.activePersonalization.contributeMemories
+            && !(this.activePersonalization.excludeExternalContext && (Boolean(runOptions.attachments?.length) || this.usedExternalContext(finalMessages)))
+            && parseTemporalClues(input).length > 0;
+          const model = mayUseModel ? this.toolModel() : undefined;
+          const modelExtractor = model ? createTemporalModelExtractor(model) : undefined;
+          const index = new TemporalMemoryIndex(undefined, { extractClues: modelExtractor?.extractClues });
+          try { await index.indexSessionFile(temporalRecorder.sessionId, temporalRecorder.filePath); }
+          finally { index.close(); }
+        })().catch(() => undefined).finally(() => this.pendingMemoryTasks.delete(temporalTask));
+        this.pendingMemoryTasks.add(temporalTask);
         if (this.activePersonalization.contributeMemories) {
           const memoryRecorder = this.recorder;
           const memoryRuntime = memoryRecorder.runtimeContextSnapshot();
@@ -3522,7 +3578,10 @@ export class AgentSession {
   private recordCanonicalMessage(
     event: Extract<SessionEvent, { type: "user_message" | "agent_message" }>
   ): SessionMessageReference {
-    const recorded = this.recorder.record(event);
+    // 相对日期以后只能以用户发送时的时区解释，不能用检索时的机器时区回填。
+    const recorded = this.recorder.record(event.type === "user_message"
+      ? { ...event, metadata: { ...event.metadata, sentAtTimeZone: event.metadata?.sentAtTimeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone } }
+      : event);
     const reference = {
       id: "messageId" in recorded ? recorded.messageId : undefined,
       index: this.nextSessionMessageIndex,

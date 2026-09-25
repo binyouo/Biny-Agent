@@ -569,6 +569,7 @@ export const Composer = memo(function Composer({
         ) : null}
         <PromptInput
           inputRef={inputRef}
+          projectId={project?.id}
           value={input}
           onChange={setInput}
           onSubmit={() => void submit()}

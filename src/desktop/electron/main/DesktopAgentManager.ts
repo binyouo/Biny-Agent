@@ -2941,7 +2941,7 @@ export class DesktopAgentManager {
   }
 
   /**
-   * runtime 未驻留：不触发冷启动，主进程直接读 memory.sqlite。
+   * runtime 未驻留：不触发冷启动，主进程直接读 Agent SQLite。
    * SQLite 读取使用自己的只读查询；与正在写入的进程并发时由 SQLite 事务保证一致性。
    */
   private async readMemoryStoreFromDisk(

@@ -60,6 +60,9 @@ interface WorkspaceProps {
   skillExtraction?: SkillExtractionCardState;
   onDismissSkillExtraction?(): void;
   onOpenExternal(url: string): void;
+  onReferenceMessage(messageId: string): void;
+  onShowMessageReferences(messageId: string): void;
+  onCaptureQuote(messageId: string, quote: string): void;
   onResolvePermission(requestId: string, result: PermissionResult): Promise<void>;
   onRetry(targetMessageId: string, input: string, idempotencyKey: string): Promise<void>;
   onSwitchVersion(messageId: string, direction: "prev" | "next"): Promise<void>;
@@ -118,6 +121,9 @@ export function Workspace({
   onDismissRecipe,
   onExtractRecipe,
   onOpenExternal,
+  onReferenceMessage,
+  onShowMessageReferences,
+  onCaptureQuote,
   onResolvePermission,
   onRetry,
   onSwitchVersion,
@@ -243,6 +249,9 @@ export function Workspace({
                 editInFlight={editInFlight}
                 onEditRequest={onEditRequest}
                 onOpenExternal={onOpenExternal}
+                onReferenceMessage={onReferenceMessage}
+                onShowMessageReferences={onShowMessageReferences}
+                onCaptureQuote={onCaptureQuote}
                 onPreviewFile={onPreviewFile}
                 onResolvePermission={onResolvePermission}
                 onRollbackFiles={onRollbackFiles}

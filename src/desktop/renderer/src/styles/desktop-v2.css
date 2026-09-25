@@ -3019,6 +3019,39 @@ select option:disabled {
 
 /* 记忆设置沿用 ；索引状态只在必要的操作反馈中出现。 */
 .activity-memory-group { display: flex; flex-direction: column; gap: 13px; padding: 16px 18px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); }
+.time-clues-dialog { display: flex; flex-direction: column; max-height: min(82vh, 720px); min-height: 220px; }
+.time-clues-tabs { display: flex; gap: 20px; padding: 0 24px; border-bottom: 1px solid var(--border); }
+.time-clues-tabs button { border: 0; border-bottom: 1px solid transparent; padding: 10px 0; color: var(--text-secondary); background: transparent; cursor: pointer; }
+.time-clues-tabs button[aria-pressed="true"] { border-bottom-color: var(--text-primary); color: var(--text-primary); font-weight: 600; }
+.time-clues-unread { margin-left: auto; color: var(--text-secondary); font-size: 11px; font-variant-numeric: tabular-nums; }
+.time-clues-calendar { padding: 12px 24px; border-bottom: 1px solid var(--border); }
+.time-clues-calendar-heading { display: flex; justify-content: space-between; align-items: center; }
+.time-clues-calendar-heading button, .time-clues-calendar-grid button { border: 0; color: var(--text-primary); background: transparent; cursor: pointer; }
+.time-clues-calendar p { margin: 8px 0; color: var(--text-secondary); font-size: 12px; }
+.time-clues-calendar-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px; text-align: center; }
+.time-clues-calendar-grid span, .time-clues-calendar-grid button { padding: 4px; font-size: 12px; }
+.time-clues-calendar-grid button[aria-pressed="true"] { background: var(--border); }
+.time-clues-list { min-height: 120px; overflow-y: auto; padding: 16px 24px; }
+.time-clues-list > p { color: var(--text-secondary); }
+.time-clues-group + .time-clues-group { margin-top: 20px; }
+.time-clues-group h3 { margin: 0 0 6px; font-size: 12px; }
+.time-clues-row { display: flex; align-items: flex-start; gap: 8px; border-bottom: 1px solid var(--border); padding: 10px 0; }
+.time-clues-source { display: flex; flex: 1; min-width: 0; flex-direction: column; gap: 3px; border: 0; padding: 0; color: var(--text-primary); background: transparent; text-align: left; cursor: pointer; }
+.time-clues-source:disabled { cursor: default; }
+.time-clues-source span { color: var(--text-secondary); overflow-wrap: anywhere; }
+.time-clues-row > button:last-child { border: 0; padding: 0; color: var(--text-secondary); background: transparent; cursor: pointer; }
+.time-clues-footer { border-top: 1px solid var(--border); padding: 12px 24px; color: var(--text-secondary); font-size: 12px; }
+.time-clues-footer button { border: 0; padding: 0; color: inherit; background: transparent; cursor: pointer; }
+.time-clues-footer button:disabled { opacity: .45; cursor: default; }
+.time-clues-pagination, .time-clues-footer-actions { display: flex; justify-content: space-between; gap: 16px; }
+.time-clues-pagination { margin-bottom: 8px; }
+.time-clues-footer p { margin: 8px 0 0; }
+.message-references-list { display: flex; flex-direction: column; max-height: 50vh; overflow-y: auto; }
+.message-references-list button { display: flex; justify-content: space-between; gap: 12px; border: 0; border-bottom: 1px solid var(--border); padding: 10px 0; color: var(--text-primary); background: transparent; text-align: left; cursor: pointer; }
+.message-references-list span { color: var(--text-secondary); }
+.message-selection-reference { position: fixed; z-index: 180; border: 1px solid var(--border); border-radius: 6px; padding: 5px 9px; color: var(--text-primary); background: var(--color-background-popover); box-shadow: 0 3px 12px rgb(0 0 0 / 12%); cursor: pointer; }
+.markdown-reference-invalid { color: var(--text-secondary); }
+.reference-detail-content { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .activity-memory-entries { display: flex; flex-direction: column; gap: 8px; }
 .activity-memory-entry { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 12px; border: 1px solid var(--border); border-radius: 9px; background: var(--surface-soft); }
 .activity-memory-entry-content { min-width: 0; flex: 1; }

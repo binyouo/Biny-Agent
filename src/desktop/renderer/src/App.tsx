@@ -79,6 +79,12 @@ import { DesktopToast } from "./components/overlays/DesktopToast.js";
 import { RenameOverlay } from "./components/overlays/RenameOverlay.js";
 import { SearchOverlay } from "./components/overlays/SearchOverlay.js";
 import { SlashResultOverlay } from "./components/overlays/SlashResultOverlay.js";
+import { TimeCluesDialog } from "./components/overlays/TimeCluesDialog.js";
+import { MessageReferencesDialog } from "./components/overlays/MessageReferencesDialog.js";
+import { ReferenceDetailDialog } from "./components/overlays/ReferenceDetailDialog.js";
+import { DateReferenceDetailDialog } from "./components/overlays/DateReferenceDetailDialog.js";
+import type { LocalReferenceResult } from "../../../session/localReferences.js";
+import { naturalTemporalRanges } from "./temporalRanges.js";
 import { SettingsOverlay, type SettingsTab } from "./components/settings/SettingsOverlay.js";
 import { useWorkspaceInspector } from "./components/workspace/useWorkspaceInspector.js";
 import { parseBinyDeepLink, setDeepLinkHandler } from "./deepLinks.js";
@@ -137,7 +143,13 @@ function DesktopApp(): React.JSX.Element {
   const [deletedUserMessages, setDeletedUserMessages] = useState<Set<string>>(() => new Set());
   const [searchOpen, setSearchOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [timeCluesOpen, setTimeCluesOpen] = useState(false);
+  const [temporalUnread, setTemporalUnread] = useState(0);
   const [settingsTargetTab, setSettingsTargetTab] = useState<SettingsTab>();
+  const [temporalSourceTarget, setTemporalSourceTarget] = useState<{ sessionId: string; messageId: string }>();
+  const [messageReferencesUri, setMessageReferencesUri] = useState<string>();
+  const [referenceDetail, setReferenceDetail] = useState<LocalReferenceResult>();
+  const [dateReferenceUri, setDateReferenceUri] = useState<string>();
   const [settingsCloseRequest, setSettingsCloseRequest] = useState<DesktopSettingsCloseRequest>();
   const [runtimePanelOpen, setRuntimePanelOpen] = useState(false);
   const [page, setPage] = useState<DesktopPage>("chat");
@@ -220,6 +232,23 @@ function DesktopApp(): React.JSX.Element {
     selectedRef.current = selectedSessionId;
     projectRef.current = workspace?.project.id;
   }, [selectedSessionId, workspace?.project.id]);
+
+  useEffect(() => {
+    let active = true;
+    const refresh = async (): Promise<void> => {
+      if (window.document.visibilityState !== "visible") return;
+      try {
+        const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+        const today = naturalTemporalRanges(new Date(), timeZone).today;
+        const result = await window.biny.temporalClues({ ...today, today: today.startDate, limit: 1, timeZone, includeScheduled: false });
+        if (active) setTemporalUnread(result.unread);
+      } catch { if (active) setTemporalUnread(0); }
+    };
+    void refresh();
+    const timer = window.setInterval(() => void refresh(), 60_000);
+    window.addEventListener("focus", refresh);
+    return () => { active = false; window.clearInterval(timer); window.removeEventListener("focus", refresh); };
+  }, [document?.events.length, timeCluesOpen]);
 
   // 换会话时清掉上一会话的 Recipe 卡片与技能提取卡；新会话的卡片由历史读取和事件桥共同收集。
   useEffect(() => {
@@ -830,6 +859,16 @@ function DesktopApp(): React.JSX.Element {
     }
   }, [commitNavigation, openNavigationTarget, page, runtimePanelOpen]);
 
+  useEffect(() => {
+    if (!temporalSourceTarget || document?.session.id !== temporalSourceTarget.sessionId || page !== "chat") return;
+    const source = [...globalThis.document.querySelectorAll<HTMLElement>("[data-message-id]")]
+      .find((element) => element.dataset.messageId === temporalSourceTarget.messageId);
+    if (!source) return;
+    source.scrollIntoView({ block: "center" });
+    source.focus({ preventScroll: true });
+    setTemporalSourceTarget(undefined);
+  }, [document, page, temporalSourceTarget]);
+
   const toggleSessionPinned = useCallback(async (session: DesktopSessionSummary, pinned = !session.pinned): Promise<void> => {
     try {
       mergeProjectSnapshot(await window.biny.pinSession(session.projectId, session.id, pinned, session.metadataRevision));
@@ -912,6 +951,7 @@ function DesktopApp(): React.JSX.Element {
       if (action === "open-project") void openProject();
       if (action === "search") openSearch();
       if (action === "settings") openSettings();
+      if (action === "activity-settings") openSettings("活动记录");
       if (action === "toggle-sidebar") toggleSidebar();
       if (action === "focus-composer") setFocusToken((value) => value + 1);
     };
@@ -1538,8 +1578,57 @@ function DesktopApp(): React.JSX.Element {
     setComposerDraft(input);
     setFocusToken((value) => value + 1);
   }, []);
+  const referenceMessage = useCallback(async (messageId: string): Promise<void> => {
+    const projectId = projectRef.current;
+    const sessionId = selectedRef.current;
+    if (!projectId || !sessionId) return;
+    try {
+      const result = await window.biny.referenceForMessage(projectId, sessionId, messageId);
+      const label = result.label.replace(/[\]\n\r]/gu, " ").slice(0, 80) || "消息";
+      composerRef.current?.appendText(`@[${label}](${result.uri})`);
+    } catch (error) { setWarning(errorMessage(error)); }
+  }, []);
+  const showMessageReferences = useCallback(async (messageId: string): Promise<void> => {
+    const projectId = projectRef.current;
+    const sessionId = selectedRef.current;
+    if (!projectId || !sessionId) return;
+    try { setMessageReferencesUri((await window.biny.referenceForMessage(projectId, sessionId, messageId)).uri); }
+    catch (error) { setWarning(errorMessage(error)); }
+  }, []);
+  const captureQuote = useCallback(async (messageId: string, quote: string): Promise<void> => {
+    const projectId = projectRef.current;
+    const sessionId = selectedRef.current;
+    if (!projectId || !sessionId) return;
+    try {
+      const source = await window.biny.referenceForMessage(projectId, sessionId, messageId);
+      const result = await window.biny.referenceCaptureQuote(projectId, source.uri, quote);
+      const label = result.label.replace(/[\]\n\r]/gu, " ").slice(0, 80) || "片段";
+      composerRef.current?.appendText(`@[${label}](${result.uri})`);
+    } catch (error) { setWarning(errorMessage(error)); }
+  }, []);
   // 深链路由：MarkdownContent 叶子渲染直接调用 hub，这里统一解析并导航。
-  const openDeepLink = useCallback(async (url: string): Promise<void> => {
+  const openDeepLink = useCallback(async (url: string, requestedProjectId?: string): Promise<void> => {
+    if (/^biny:\/\/(?:date|project|file|thread|memory|snippet|scratch|skill|mcp|model|provider|tool|task|cron|crystal|bundle|mission|plan)\//u.test(url)) {
+      const projectId = requestedProjectId ?? workspace?.project.id;
+      if (!projectId) return;
+      try {
+        if (requestedProjectId && requestedProjectId !== workspace?.project.id) await selectProject(requestedProjectId);
+        const reference = await window.biny.referenceResolve(projectId, url);
+        if ((reference.kind === "message" || reference.kind === "snippet") && reference.threadId && reference.messageId) {
+          setTemporalSourceTarget({ sessionId: reference.threadId, messageId: reference.messageId });
+          await navigateToSession(projectId, reference.threadId);
+        } else if (reference.kind === "thread" && reference.threadId) await navigateToSession(projectId, reference.threadId);
+        else if (reference.kind === "file") inspector.previewFile(reference.label);
+        else if (reference.kind === "project") await selectProject(projectId);
+        else if (reference.kind === "memory") openSettings("记忆");
+        else if (reference.kind === "date") setDateReferenceUri(url);
+        else if (reference.kind === "skill") openExtensions();
+        else if (reference.kind === "mcp") openSettings("MCP 服务器");
+        else if (reference.kind === "model" || reference.kind === "provider") openSettings("模型");
+        else setReferenceDetail(reference);
+      } catch (error) { setWarning(errorMessage(error)); }
+      return;
+    }
     const link = parseBinyDeepLink(url);
     if (!link) return;
     if (link.kind === "compose") {
@@ -1554,11 +1643,14 @@ function DesktopApp(): React.JSX.Element {
       ? workspace.project.id
       : sidebarSessions.find((session) => session.id === link.sessionId)?.projectId;
     if (projectId !== undefined) await openSession(projectId, link.sessionId);
-  }, [openSession, openSettings, prefillComposer, sidebarSessions, workspace]);
+  }, [inspector, navigateToSession, openExtensions, openSession, openSettings, prefillComposer, selectProject, sidebarSessions, workspace]);
   useEffect(() => {
     setDeepLinkHandler((url) => void openDeepLink(url));
     return () => setDeepLinkHandler(undefined);
   }, [openDeepLink]);
+  useEffect(() => window.biny.onReferenceOpen(({ uri, projectId }) => {
+    void openDeepLink(uri, projectId);
+  }), [openDeepLink]);
   const insertCrystalReference = useCallback((reference: string): void => {
     if (composerRef.current) {
       composerRef.current.appendText(reference);
@@ -1726,6 +1818,23 @@ function DesktopApp(): React.JSX.Element {
             version={version}
             workspace={workspace}
           />
+          <TimeCluesDialog open={timeCluesOpen} currentSessionId={selectedSessionId}
+            refreshKey={`${document?.events.length ?? 0}:${document?.liveEvents.length ?? 0}`}
+            onClose={() => setTimeCluesOpen(false)} onSource={(projectId, sessionId, messageId) => {
+            setTimeCluesOpen(false);
+            setTemporalSourceTarget({ sessionId, messageId });
+            void navigateToSession(projectId, sessionId);
+          }} />
+          {messageReferencesUri && workspace?.project.id ? <MessageReferencesDialog projectId={workspace.project.id}
+            uri={messageReferencesUri} onClose={() => setMessageReferencesUri(undefined)} onOpen={(uri) => void openDeepLink(uri)} /> : null}
+          {referenceDetail ? <ReferenceDetailDialog reference={referenceDetail} onClose={() => setReferenceDetail(undefined)} /> : null}
+          {dateReferenceUri && workspace?.project.id ? <DateReferenceDetailDialog projectId={workspace.project.id}
+            uri={dateReferenceUri} onClose={() => setDateReferenceUri(undefined)} onSource={(sessionId, messageId) => {
+              const projectId = workspace.project.id;
+              setDateReferenceUri(undefined);
+              setTemporalSourceTarget({ sessionId, messageId });
+              void navigateToSession(projectId, sessionId);
+            }} /> : null}
           <RenameOverlay
             initialValue={renameTarget?.title ?? ""}
             onClose={() => setRenameTarget(undefined)}
@@ -1775,6 +1884,8 @@ function DesktopApp(): React.JSX.Element {
           onLoadSessionChildren={loadSessionChildren}
           onSessionAction={runSidebarSessionAction}
           onSettings={openSettings}
+          onTimeClues={() => setTimeCluesOpen(true)}
+          temporalUnread={temporalUnread}
           onInsertCrystal={insertCrystalReference}
           onToggleSidebar={toggleSidebar}
           layout={sidebarLayout}
@@ -1801,6 +1912,9 @@ function DesktopApp(): React.JSX.Element {
         generationError={generationError}
         onDismissGenerationError={clearGenerationError}
         onOpenExternal={openExternalLink}
+        onReferenceMessage={(messageId) => void referenceMessage(messageId)}
+        onShowMessageReferences={(messageId) => void showMessageReferences(messageId)}
+        onCaptureQuote={(messageId, quote) => void captureQuote(messageId, quote)}
         onOpenProject={() => void openProject()}
         onPreviewFile={inspector.previewFile}
         inspectorRail={inspector.rail}

@@ -60,4 +60,39 @@ assert.equal(resolveToolModelAlias(preferred), "mini", "Provider 与预设型号
 assert.equal(resolveToolModelAlias({ ...preferred, toolModel: "flash" }), "flash", "用户显式选择仍优先");
 assert.equal(resolveToolModelAlias({ ...preferred, models: { flash: preferred.models.flash!, haiku: preferred.models.haiku! } }), "haiku");
 assert.equal(resolveToolModelAlias({ ...config, models: { chat: config.models.chat!, cheap: config.models.cheap! } }), "chat", "未列入偏好的型号保持配置顺序，不按价格排序");
+
+const preferredAfterUnlisted = configSchema.parse({
+  ...preferred,
+  defaultModel: "large",
+  models: {
+    large: { ...preferred.models.large!, model: "gpt-4.1" },
+    haiku: preferred.models.haiku!,
+    flash: preferred.models.flash!
+  }
+});
+assert.equal(resolveToolModelAlias(preferredAfterUnlisted), "haiku", "未列入辅助型号的 OpenAI 模型不能抢占 Anthropic 预设型号");
+assert.equal(resolveToolModelAlias({ ...preferredAfterUnlisted, models: {
+  large: { ...preferred.models.large!, model: "gpt-4.1" },
+  flash: preferred.models.flash!
+} }), "flash", "OpenAI 未命中预设型号时，Google 预设型号仍优先于普通模型");
+assert.equal(resolveToolModelAlias({ ...preferredAfterUnlisted, toolModel: "large" }), "large", "显式选择普通模型覆盖自动优先级");
+assert.equal(resolveToolModelAlias({ ...preferredAfterUnlisted, defaultModel: "flash" }), "haiku", "聊天默认模型不改变后台自动选择");
+
+const fallback = configSchema.parse({
+  ...config,
+  providers: {
+    deepseek: { type: "deepseek", apiKey: "test-key" },
+    openrouter: { type: "openrouter", apiKey: "test-key" }
+  },
+  models: {
+    deepseek: { provider: "deepseek", model: "deepseek-v4-flash" },
+    router: { provider: "openrouter", model: "other/model" }
+  },
+  defaultModel: "router"
+});
+assert.equal(resolveToolModelAlias(fallback), "router", "没有预设型号时保留现有供应商优先级兜底");
+assert.equal(resolveToolModelAlias({ ...fallback, providers: {
+  ...fallback.providers,
+  openrouter: { type: "openrouter", requiresApiKey: true, apiKeyEnv: "BINY_TOOL_MODEL_TEST_MISSING_KEY" }
+} }), "deepseek", "兜底跳过缺少凭据的供应商");
 console.log("tool model tests passed");
