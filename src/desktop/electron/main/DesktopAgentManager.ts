@@ -812,8 +812,8 @@ export class DesktopAgentManager {
   async resumeInterruptedTurn(projectId: string, sessionId: string): Promise<DesktopRunReceipt | undefined> {
     const { runtime } = await this.resolveSessionRuntime(projectId, sessionId);
     const submitted = runtime instanceof RuntimeHostClient
-      ? await runtime.startInterruptedTurnForSession(sessionId)
-      : await runtime.startInterruptedTurn();
+      ? await runtime.startInterruptedTurnForSession(sessionId, undefined, "newTurn")
+      : await runtime.startInterruptedTurn(undefined, "newTurn");
     if (!submitted) return undefined;
     await this.state.setSelectedSession(projectId, sessionId);
     this.observeRunCompletion(projectId, submitted.completion);

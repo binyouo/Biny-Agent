@@ -1,4 +1,4 @@
-/** 恢复入口只识别明确的继续指令；补充要求和附件仍作为正常消息发送。 */
+/** 空草稿使用明确的恢复按钮；输入文字和附件始终交给模型处理。 */
 export function isResumeInput(input: string, attachmentCount: number): boolean {
-  return attachmentCount === 0 && /^(?:继续(?:上次的?任务|任务)?[。！!]?|\/continue)?$/u.test(input.trim());
+  return attachmentCount === 0 && input.trim() === "";
 }

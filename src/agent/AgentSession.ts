@@ -25,7 +25,7 @@ import { createTemporalModelExtractor } from "../session/temporalModelExtractor.
 import { activeSessionEventsForPath, activeSessionMessageIds, replaySessionEvents, sessionMessageTree, type SessionMessageReference, type SessionReplay } from "../session/replay.js";
 import { tryReadSessionSnapshot, writeSessionSnapshot, snapshotToReplay, type SessionSnapshotData } from "../session/sessionSnapshot.js";
 import { runtimeEventsForRun, type RuntimeEventSink, type RuntimeHighWater } from "../session/runtimeEvent.js";
-import { resolveContinuationPlan } from "../session/recoveryPlan.js";
+import { pausedTurnAvailable, resolveContinuationPlan } from "../session/recoveryPlan.js";
 import type { CapabilityStore } from "../runtime/CapabilityStore.js";
 import {
   TurnStore,
@@ -180,6 +180,9 @@ import {
 const interruptedTurnMarker = `<turn_aborted>
 The user intentionally interrupted the previous turn. Running processes may still be active in the background. If tools or commands were cancelled, they may have partially executed.
 </turn_aborted>`;
+const pausedTurnMarker = `<turn_paused>
+The previous turn was paused before completion. Running processes may still be active in the background. If tools or commands were cancelled, they may have partially executed.
+</turn_paused>`;
 
 export interface AgentSessionOptions {
   workspaceRoot: string;
@@ -244,6 +247,8 @@ export interface AgentRunOptions {
   continueSystemPrompt?: string;
   /** 续跑同一 Turn 时不重复追加公开用户消息。 */
   recordSessionUserMessage?: boolean;
+  /** 空输入启动新回合，只使用当前会话历史，不生成可见用户消息。 */
+  emptyTurn?: boolean;
   attachments?: AgentAttachment[];
   /** Runtime host 为本次执行分配的 invocation identity。 */
   runId?: string;
@@ -924,6 +929,13 @@ export class AgentSession {
     return plan.action === "finished" ? undefined : turn;
   }
 
+  /** Desktop 的空输入入口仅对已暂停的断点改用会话历史；其他恢复仍走原有精确规则。 */
+  async isPausedInterruptedTurn(turn: InterruptedTurn): Promise<boolean> {
+    await this.recorder.flush();
+    const events = await readSessionEvents(this.recorder.filePath);
+    return pausedTurnAvailable(turn, { events });
+  }
+
   /** 只补齐 session 中缺失的协议结果；恢复过程不调用任何工具执行函数。 */
   private async reconcileInterruptedToolExecutions(expectedRuntimeHighWater?: RuntimeHighWater): Promise<SessionReplay> {
     await this.recorder.flush().catch(() => undefined);
@@ -1007,9 +1019,14 @@ export class AgentSession {
         replay.events,
         replay.contextStartUserMessageIndex
       );
-      const recoveredMessages = replayMessages.length ? replayMessages : turn.messages;
-      const recoveredReferences = replay.messages.length
-        ? replay.messageReferences
+      // 精确续跑沿用暂停前的断点；暂停标记只供之后发起的新回合读取。
+      const replayIndexes = replayMessages.map((_, index) => index).filter((index) =>
+        !(replay.messageReferences[index]?.id === undefined
+          && replayMessages[index]?.role === "user"
+          && replayMessages[index].content === pausedTurnMarker));
+      const recoveredMessages = replayIndexes.length ? replayIndexes.map((index) => replayMessages[index]!) : turn.messages;
+      const recoveredReferences = replayIndexes.length
+        ? replayIndexes.map((index) => replay.messageReferences[index])
         : turn.messages.map(() => undefined);
       const continuationMessages = turn.terminal
         ? [...recoveredMessages, runtimeContinuationMessage(turn.terminal)]
@@ -1026,6 +1043,20 @@ export class AgentSession {
         ...(turn.terminal ? [turn.terminal] : [])
       ];
       if (turn.systemPrompt === undefined && turn.completedSteps === 0) {
+        const emptyFollowup = turn.prompt === "" && replay.events.some((event) => event.type === "user_message"
+          && event.auditOnly && event.metadata?.turnTrigger === "resume_interrupted_task"
+          && event.runtime?.turnId === turnId);
+        if (emptyFollowup) {
+          // 新回合刚写入初始检查点就崩溃时，仍使用其新 turn 身份和历史，不能重试旧用户输入。
+          this.contextMemory.restore(replayMessages, replay.contextState ?? replay.contextUsage);
+          this.contextMessageReferences = replay.messageReferences.map((reference) => reference === undefined ? undefined : { ...reference });
+          yield* this.runTurn("", {
+            ...runOptions, runId, turnId, maxSteps: recoveryPlan.remainingSteps,
+            recordSessionUserMessage: false, emptyTurn: true, emptyTurnAuditRecorded: true,
+            emotionAnalysis: false
+          });
+          return;
+        }
         // 只有输入已确认、准备尚未完成的断点，复用原消息的准备路径，避免裸上下文绕过工作区指令。
         let userIndex = recoveredMessages.length - 1;
         while (userIndex >= 0 && recoveredMessages[userIndex]?.role !== "user") userIndex -= 1;
@@ -1050,6 +1081,35 @@ export class AgentSession {
     } finally {
       this.recorder.setRuntimeContext(previousContext);
     }
+  }
+
+  /** 暂停后的空输入沿会话历史开始新回合，不使用旧 turn 的执行断点。 */
+  async *startInterruptedFollowup(runOptions: AgentRunOptions = {}): AsyncGenerator<AgentSessionEvent> {
+    const turn = await this.interruptedTurn();
+    if (!turn) throw new Error("There is no interrupted turn to continue.");
+    const replay = await this.reconcileInterruptedToolExecutions(turn.runtimeHighWater);
+    if (!pausedTurnAvailable(turn, replay)) {
+      throw new Error("The previous turn is no longer paused.");
+    }
+    if (resolveContinuationPlan(turn, replay, Number.MAX_SAFE_INTEGER).action === "finished") {
+      throw new Error("The previous turn is no longer paused.");
+    }
+    const messages = await this.rehydrateSessionAttachments(
+      replay.messages,
+      replay.events,
+      replay.contextStartUserMessageIndex
+    );
+    if (!messages.length) throw new Error("The interrupted conversation has no history to continue.");
+    this.contextMemory.restore(messages, replay.contextState ?? replay.contextUsage);
+    if (replay.contextCheckpoint) this.contextMemory.setCheckpoint(replay.contextCheckpoint);
+    this.contextMessageReferences = replay.messageReferences.map((reference) => reference === undefined ? undefined : { ...reference });
+    this.nextSessionMessageIndex = Math.max(replay.totalMessageCount, replay.messageTree.length);
+    yield* this.runTurn("", {
+      ...runOptions,
+      turnId: runOptions.turnId ?? randomUUID(),
+      recordSessionUserMessage: false,
+      emptyTurn: true
+    });
   }
 
   /** 持久记忆存储句柄；读取/自动贡献开关不影响显式 /memory 管理操作。 */
@@ -1736,6 +1796,7 @@ export class AgentSession {
       initialToolBudget?: ToolExecutionBudgetSnapshot;
       previousTerminals?: InterruptedTurnTerminal[];
       continueMessageReferences?: Array<SessionMessageReference | undefined>;
+      emptyTurnAuditRecorded?: boolean;
     } = {}
   ): AsyncGenerator<AgentSessionEvent> {
     const release = this.beginOperation("agent turn");
@@ -1754,7 +1815,7 @@ export class AgentSession {
     const retrying = runOptions.retryOfMessageId !== undefined;
     const hasProvidedContext = Boolean(runOptions.continueFrom?.length);
     const continuing = hasProvidedContext && !retrying;
-    const ordinaryRootMessage = !continuing && !retrying && runOptions.recordSessionUserMessage !== false;
+    const ordinaryRootMessage = !continuing && !retrying && !runOptions.emptyTurn && runOptions.recordSessionUserMessage !== false;
     let turnPersonalization: ResolvedChatPersonalization = this.activePersonalization;
     this.contextMemory.setPersonalization(
       {},
@@ -1781,7 +1842,7 @@ export class AgentSession {
     const recordUserMessage = (): SessionMessageReference | undefined => {
       if (userMessageRecorded) return userMessageReference;
       userMessageRecorded = true;
-      if (runOptions.recordSessionUserMessage === false && runOptions.replacementUserMessage === undefined) return undefined;
+      if ((runOptions.recordSessionUserMessage === false || runOptions.emptyTurn) && runOptions.replacementUserMessage === undefined) return undefined;
       userMessageReference = this.recordCanonicalMessage({
         type: "user_message",
         metadata: runOptions.source === undefined ? undefined : { source: runOptions.source },
@@ -1809,8 +1870,12 @@ export class AgentSession {
         };
       }
       return {
-        messages: [...this.contextMemory.getHistory(), { role: "user", content: input }],
-        references: [...this.contextMessageReferences, userMessageReference]
+        messages: runOptions.emptyTurn
+          ? [...this.contextMemory.getHistory()]
+          : [...this.contextMemory.getHistory(), { role: "user", content: input }],
+        references: runOptions.emptyTurn
+          ? [...this.contextMessageReferences]
+          : [...this.contextMessageReferences, userMessageReference]
       };
     };
     let fatigueRecorded = false;
@@ -1828,6 +1893,16 @@ export class AgentSession {
     if (!continuing && !admitted) {
       recordUserMessage();
       try {
+        if (runOptions.emptyTurn && !runOptions.emptyTurnAuditRecorded) {
+          // 只记录新回合的持久身份；审计消息不进入模型历史或聊天时间线。
+          await this.recorder.recordAndFlush({
+            type: "user_message",
+            content: "",
+            messageId: runOptions.messageId,
+            auditOnly: true,
+            metadata: { turnTrigger: "resume_interrupted_task" }
+          });
+        }
         await this.recorder.flush();
         await this.turnStore.save(input, undefined, cancellationContext().messages, 0,
           undefined, undefined, runOptions.previousTerminals, this.recorder.runtimeHighWater());
@@ -1969,7 +2044,8 @@ export class AgentSession {
         basePrompt,
         abortSignal,
         this.supportedAttachments(runOptions.attachments),
-        turnPersonalization.useMemories
+        turnPersonalization.useMemories && !runOptions.emptyTurn,
+        !runOptions.emptyTurn
       );
       if (prepared.compaction) {
         await this.persistContextCheckpoint(
@@ -1986,10 +2062,10 @@ export class AgentSession {
       yield { type: "context.updated", context: { ...await this.contextStatus(), capabilitySelection: runOptions.capabilitySelection } };
       systemPrompt = prepared.systemPrompt;
       messages = prepared.messages;
-      const selectedHistoryCount = Math.max(0, messages.length - 1);
+      const selectedHistoryCount = runOptions.emptyTurn ? messages.length : Math.max(0, messages.length - 1);
       messageReferences = [
-        ...this.contextMessageReferences.slice(-selectedHistoryCount),
-        userMessageReference
+        ...(selectedHistoryCount ? this.contextMessageReferences.slice(-selectedHistoryCount) : []),
+        ...(runOptions.emptyTurn ? [] : [userMessageReference])
       ];
     } catch (error) {
       recordUserMessage();
@@ -3435,8 +3511,8 @@ export class AgentSession {
   }
 
   /**
-   * 取消前先把当时的模型上下文固定下来。只有用户显式停止会追加模型可见标记；
-   * 新消息替换旧回合只保留真实上下文和 replaced 终态，避免误导模型认为任务被放弃。
+   * 取消前先把当时的模型上下文固定下来。暂停与显式停止保留模型可见边界，
+   * 让后续自由输入知道上轮未完成；replaced 只保留真实上下文，避免误称用户放弃任务。
    */
   private async recordCancelledTurn(
     outcome: AgentTurnOutcome,
@@ -3445,12 +3521,13 @@ export class AgentSession {
   ): Promise<void> {
     const history = stripTransientTurnContext(messages);
     const historyReferences = [...references];
-    if (outcome.stopReason === "interrupted") {
-      const marker: AgentUserMessage = { role: "user", content: interruptedTurnMarker };
+    if (outcome.stopReason === "interrupted" || outcome.stopReason === "paused") {
+      const content = outcome.stopReason === "paused" ? pausedTurnMarker : interruptedTurnMarker;
+      const marker: AgentUserMessage = { role: "user", content };
       this.recorder.record({
         type: "turn_interrupted",
-        reason: "interrupted",
-        content: interruptedTurnMarker
+        reason: outcome.stopReason,
+        content
       });
       history.push(marker);
       historyReferences.push(undefined);

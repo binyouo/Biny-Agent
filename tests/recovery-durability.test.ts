@@ -22,6 +22,7 @@ import { ToolRegistry } from "../src/tools/registry.js";
 
 const config = configSchema.parse({
   ...defaultConfig,
+  activity: { ...defaultConfig.activity, enabled: false },
   permission: { ...defaultConfig.permission, mode: "full-access" },
   context: {
     ...defaultConfig.context,
@@ -202,6 +203,32 @@ async function pauseUnknownSideEffect(root: string): Promise<void> {
     assert.equal(await readFile(effects, "utf8"), "written\n");
     assert.ok(await resumed.interruptedTurn(), "核对之前保留断点");
   } finally { await resumed.close(); }
+  let followupContext = "";
+  const followupModel = model(async () => answer);
+  const followup = agent(root, new SessionRecorder(root), {
+    ...followupModel,
+    stream: async (context) => {
+      followupContext = JSON.stringify(context.messages);
+      return await followupModel.stream(context);
+    }
+  }, registry);
+  try {
+    await followup.initialize();
+    await followup.resume("paused-unknown");
+    let emptyResult;
+    for await (const event of followup.startInterruptedFollowup({ emotionAnalysis: false })) {
+      if (event.type === "done") emptyResult = event.outcome;
+    }
+    assert.equal(emptyResult?.status, "completed", JSON.stringify(emptyResult));
+    assert.equal(await readFile(effects, "utf8"), "written\n", "空输入新回合不能重放不确定副作用");
+    assert.equal(followupContext.includes("<turn_paused>"), true, "空输入新回合应获知上次工作被暂停");
+    const emptyFacts = await readSessionEvents(followup.getInfo().sessionFile);
+    assert.equal(emptyFacts.filter((event) => event.type === "user_message" && !event.auditOnly).length, 1);
+    assert.equal(emptyFacts.filter((event) => event.type === "user_message" && event.auditOnly && event.metadata?.turnTrigger === "resume_interrupted_task").length, 1);
+    const result = await followup.runTask("先核对上次写入结果，不要重复执行", { emotionAnalysis: false });
+    assert.equal(result.status, "completed", JSON.stringify(result));
+    assert.equal(await readFile(effects, "utf8"), "written\n", "新的自由输入不能自动重放未知副作用");
+  } finally { await followup.close(); }
 }
 
 async function terminalCrashWorker(root: string): Promise<void> {
@@ -271,14 +298,72 @@ async function desktopRecovery(root: string): Promise<void> {
     const blocked = await projects.openSession(project, recorder.sessionId, undefined, new Map());
     assert.equal(blocked.recovery?.canContinue, false);
     assert.match(blocked.recovery?.message ?? "", /未确认的副作用/);
+    await recorder.recordAndFlush({ type: "turn_status", status: "cancelled", stopReason: "paused", steps: 0, resumable: true });
+    const pausedUnknown = await projects.openSession(project, recorder.sessionId, undefined, new Map());
+    assert.equal(pausedUnknown.recovery?.canContinue, true,
+      "暂停后的空输入应能开启新回合核对不确定结果，无须精确重放旧工具");
     await recorder.recordAndFlush({ type: "tool_result", tool: "Bash", toolCallId: "unknown-call", result: "done", executionStatus: "succeeded" });
+    recorder.setRuntimeContext({ runId: "run-followup", turnId: "turn-followup" });
+    await recorder.recordAndFlush({ type: "user_message", content: "", auditOnly: true, metadata: { turnTrigger: "resume_interrupted_task" } });
+    await store.save("", undefined, [{ role: "user", content: "unfinished task" }], 0,
+      undefined, undefined, undefined, recorder.runtimeHighWater());
+    const interruptedFollowup = await projects.openSession(project, recorder.sessionId, undefined, new Map());
+    assert.equal(interruptedFollowup.recovery?.canContinue, false,
+      "新 turn 的启动记录已落盘后，不得再次把旧暂停当成可点击的新回合");
     await recorder.recordAndFlush({ type: "turn_status", status: "completed", stopReason: "model_stop", steps: 1 });
     assert.equal((await projects.openSession(project, recorder.sessionId, undefined, new Map())).recovery, undefined);
     await writeFile(path.join(agentDir(dataRoot), "turns", `${recorder.sessionId}.json`), "{corrupt");
     const corrupt = await projects.openSession(project, recorder.sessionId, undefined, new Map());
     assert.equal(corrupt.recovery?.canContinue, false);
     assert.match(corrupt.recovery?.message ?? "", /无法读取回合检查点/);
+    const legacy = new SessionRecorder(dataRoot, "legacy-paused-stale");
+    try {
+      await legacy.recordAndFlush({ type: "user_message", content: "old task" });
+      await new TurnStore(dataRoot, legacy.sessionId).save("old task", undefined, [{ role: "user", content: "old task" }], 0);
+      await legacy.recordAndFlush({ type: "turn_status", status: "cancelled", stopReason: "paused", steps: 0, resumable: true });
+      await legacy.recordAndFlush({ type: "user_message", content: "new task" });
+      assert.equal((await projects.openSession(project, legacy.sessionId, undefined, new Map())).recovery, undefined,
+        "无 turnId 的旧断点在新输入后不能重新显示继续入口");
+    } finally { await legacy.close(); }
   } finally { await recorder.close(); }
+}
+
+/** 新回合只写完初始检查点就重启时，内部恢复不能退回到旧暂停 turn。 */
+async function emptyFollowupCheckpointRestart(root: string): Promise<void> {
+  const sessionId = "empty-followup-restart";
+  const recorder = new SessionRecorder(root, sessionId);
+  const store = new TurnStore(root, sessionId);
+  const marker = "<turn_paused>\nThe previous turn was paused before completion. Running processes may still be active in the background. If tools or commands were cancelled, they may have partially executed.\n</turn_paused>";
+  recorder.setRuntimeContext({ runId: "original-run", turnId: "original-turn" });
+  await recorder.recordAndFlush({ type: "user_message", content: "original work" });
+  await recorder.recordAndFlush({ type: "turn_interrupted", reason: "paused", content: marker });
+  await recorder.recordAndFlush({ type: "turn_status", status: "cancelled", stopReason: "paused", steps: 0, resumable: true });
+  recorder.setRuntimeContext({ runId: "followup-run", turnId: "followup-turn" });
+  await recorder.recordAndFlush({ type: "user_message", content: "", auditOnly: true, metadata: { turnTrigger: "resume_interrupted_task" } });
+  await store.save("", undefined, [{ role: "user", content: "original work" }, { role: "user", content: marker }], 0,
+    undefined, undefined, undefined, recorder.runtimeHighWater());
+  await recorder.close();
+
+  let request = "";
+  const provider = model(async () => answer);
+  const resumed = agent(root, new SessionRecorder(root), {
+    ...provider,
+    stream: async (context) => { request = JSON.stringify(context.messages); return await provider.stream(context); }
+  });
+  try {
+    await resumed.initialize();
+    await resumed.resume(sessionId);
+    let result;
+    for await (const event of resumed.continueInterruptedTurn({ emotionAnalysis: false })) {
+      if (event.type === "done") result = event.outcome;
+    }
+    assert.equal(result?.status, "completed", JSON.stringify(result));
+    assert.equal(request.includes("<turn_paused>"), true, "重启后继续新 turn 时仍保留旧暂停事实");
+    const facts = await readSessionEvents(resumed.getInfo().sessionFile);
+    const terminals = facts.filter((event) => event.type === "turn_status");
+    assert.deepEqual(terminals.map((event) => event.runtime?.turnId), ["original-turn", "followup-turn"]);
+    assert.equal(facts.filter((event) => event.type === "user_message" && !event.auditOnly).length, 1);
+  } finally { await resumed.close(); }
 }
 
 if (process.argv[2] === "terminal-worker") {
@@ -294,6 +379,7 @@ if (process.argv[2] === "terminal-worker") {
     await pausedTurn(root, true);
     await pauseUnknownSideEffect(root);
     await desktopRecovery(root);
+    await emptyFollowupCheckpointRestart(root);
     console.log("recovery durability tests passed");
   } finally { await rm(root, { recursive: true, force: true }); }
 }

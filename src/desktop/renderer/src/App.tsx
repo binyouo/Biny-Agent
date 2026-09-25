@@ -984,6 +984,10 @@ function DesktopApp(): React.JSX.Element {
       capabilitySelection,
       undefined
     );
+    // 新输入已被 Runtime 接收，旧断点不再是当前会话可继续的任务。
+    setDocument((current) => current?.session.id === receipt.sessionId && current.recovery
+      ? { ...current, recovery: undefined }
+      : current);
     // 发送途中切换会话时，不让迟到回执把用户拉回原聊天。
     if (loadRequestRef.current !== navigationRequest) return receipt;
     if (switchingDraftProject) {

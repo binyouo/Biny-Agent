@@ -95,8 +95,8 @@ type SessionEventPayload =
   | { type: "model_request"; metrics: ModelRequestMetrics; time?: string }
   | { type: "message_version_selected"; messageId: string; slotId: string; time?: string }
   | { type: "message_metadata"; messageId: string; metadata: Record<string, unknown>; time?: string }
-  /** 用户显式停止留下的模型上下文；不属于公开消息树，也不在聊天时间线展示。 */
-  | { type: "turn_interrupted"; reason: "interrupted"; content: string; time?: string }
+  /** 中断或暂停留下的模型上下文；不属于公开消息树，也不在聊天时间线展示。 */
+  | { type: "turn_interrupted"; reason: "interrupted" | "paused"; content: string; time?: string }
   | SessionTurnStatusEvent
   | { type: "error"; message: string; detail?: unknown; relatedUsage?: SessionUsage[]; time?: string };
 

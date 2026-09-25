@@ -44,7 +44,7 @@ import { SessionRunLedger, type SessionRunRecord } from "../../../session/runLed
 import { createSessionFile, ensureAgentDirs } from "../../../session/store.js";
 import { TurnStore } from "../../../session/turnStore.js";
 import { replaySessionEvents } from "../../../session/replay.js";
-import { resolveContinuationPlan } from "../../../session/recoveryPlan.js";
+import { pausedTurnAvailable, resolveContinuationPlan } from "../../../session/recoveryPlan.js";
 import {
   exportSessionBundle,
   exportSessionClaudeCode,
@@ -443,9 +443,18 @@ export class DesktopProjectService {
         const replay = replaySessionEvents(stored.events, { sessionId, expectedRuntimeHighWater: turn.runtimeHighWater });
         const plan = resolveContinuationPlan(turn, replay, Number.MAX_SAFE_INTEGER);
         if (plan.action !== "finished") {
-          recovery = plan.action === "continue"
-            ? { canContinue: true, message: "上次任务已中断，已保存的进度可以继续。" }
-            : { canContinue: false, message: plan.message };
+          const turnId = turn.turnId ?? turn.runtimeHighWater?.turnId;
+          const paused = pausedTurnAvailable(turn, replay);
+          const emptyFollowupStarted = replay.events.some((event) => event.type === "user_message"
+            && event.auditOnly && event.metadata?.turnTrigger === "resume_interrupted_task"
+            && event.runtime?.turnId === turnId);
+          recovery = emptyFollowupStarted
+            ? { canContinue: false, message: "上次继续过程已中断，请输入消息继续。" }
+            : paused
+            ? { canContinue: true, message: "上次任务已暂停，可以根据会话历史继续。" }
+            : plan.action === "continue"
+              ? { canContinue: true, message: "上次任务已中断，已保存的进度可以继续。" }
+              : { canContinue: false, message: plan.message };
         }
       }
     } catch (error) {

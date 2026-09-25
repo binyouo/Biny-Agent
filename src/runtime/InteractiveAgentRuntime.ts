@@ -96,7 +96,7 @@ export interface InteractiveRuntimeHandle {
   steerQueuedRunMessage?(messageId: string): Promise<void>;
   sendQueuedRunMessagesNow?(): Promise<void>;
   continueInterruptedTurn(): Promise<AgentRunOutcome | undefined>;
-  startInterruptedTurn(requestIds?: RuntimeRequestIds): Promise<SubmittedAgentRun | undefined>;
+  startInterruptedTurn(requestIds?: RuntimeRequestIds, mode?: "exact" | "newTurn"): Promise<SubmittedAgentRun | undefined>;
   waitForIdle(): Promise<void>;
   cancelCurrentRun(reason: AgentTurnCancellationReason): void;
   cancelRun(runId: string, reason: AgentTurnCancellationReason): boolean;
@@ -128,6 +128,7 @@ interface AgentRun extends ActiveRunSnapshot {
   turnId: string;
   startedAtMs: number;
   continuation: boolean;
+  emptyTurn: boolean;
   emotionAnalysis: boolean;
   attachments: AgentAttachment[];
   promptContext?: string;
@@ -411,12 +412,15 @@ export class InteractiveAgentRuntime {
   }
 
   /** 只启动持久化断点恢复，返回句柄让 Desktop/TUI 保持流式事件通道。 */
-  async startInterruptedTurn(requestIds?: RuntimeRequestIds): Promise<SubmittedAgentRun | undefined> {
+  async startInterruptedTurn(requestIds?: RuntimeRequestIds, mode: "exact" | "newTurn" = "exact"): Promise<SubmittedAgentRun | undefined> {
     if (this.state.kind !== "idle" || this.activeRun) {
       throw new Error("Cannot continue an interrupted turn while the runtime is busy.");
     }
     const interrupted = await this.commandRuntime.agent.interruptedTurn();
     if (!interrupted) return undefined;
+    if (mode === "newTurn" && await this.commandRuntime.agent.isPausedInterruptedTurn(interrupted)) {
+      return this.startRun("", [], false, requestIds, undefined, undefined, undefined, false, true);
+    }
     return this.startRun(interrupted.prompt, [], true, requestIds, interrupted.turnId);
   }
 
@@ -428,7 +432,8 @@ export class InteractiveAgentRuntime {
     continuationTurnId?: string,
     promptContext?: string,
     capabilitySelection?: AgentCapabilitySelection,
-    supervision = false
+    supervision = false,
+    emptyTurn = false
   ): SubmittedAgentRun {
     if (this.closed) throw new Error("Agent runtime is closed.");
     if (this.state.kind === "maintenance") {
@@ -437,7 +442,7 @@ export class InteractiveAgentRuntime {
     if (this.state.kind === "runs" || this.activeRun) {
       throw new Error("Cannot submit a prompt while the runtime is busy.");
     }
-    if (!input.trim()) throw new Error("Agent prompt cannot be empty.");
+    if (!input.trim() && !emptyTurn && !continuation) throw new Error("Agent prompt cannot be empty.");
     // MCP/Skill 工具面在首个快照稳定前不可提交；检查发生在 writer lease、run ledger
     // 和 user_message 之前，确保 Desktop 点击竞态不会留下半条会话记录。
     this.commandRuntime.assertResourceBaselineReady?.();
@@ -462,7 +467,8 @@ export class InteractiveAgentRuntime {
       startedAt: new Date(startedAtMs).toISOString(),
       startedAtMs,
       continuation,
-      emotionAnalysis: !supervision
+      emptyTurn,
+      emotionAnalysis: !emptyTurn && !supervision
         && !continuation
         && requestIds?.retryOfMessageId === undefined
         && requestIds?.continuationSource === undefined,
@@ -486,6 +492,7 @@ export class InteractiveAgentRuntime {
         payload: {
           input,
           continuation,
+          emptyTurn,
           messageId,
           retryOfMessageId: requestIds?.retryOfMessageId,
           replaceUserMessageId: requestIds?.replaceUserMessageId,
@@ -1113,7 +1120,7 @@ export class InteractiveAgentRuntime {
     // Durable user admission 必须先于前台 generating 状态；这样取消、准备失败或 provider
     // 错误都不会留下只有 UI 占位而没有 canonical user_message 的回合。
     const replacingUserMessage = run.replaceUserMessageId !== undefined && run.replacementUserMessageId !== undefined;
-    if (!run.continuation && !run.supervision && (run.retryOfMessageId === undefined || replacingUserMessage) && typeof agent.admitUserMessage === "function") {
+    if (!run.continuation && !run.emptyTurn && !run.supervision && (run.retryOfMessageId === undefined || replacingUserMessage) && typeof agent.admitUserMessage === "function") {
       await agent.admitUserMessage(run.input, {
         runId: run.runId,
         turnId: run.turnId,
@@ -1125,7 +1132,7 @@ export class InteractiveAgentRuntime {
       });
     }
     // message.user 也会把时间线切到 running；必须和 run.started 一样晚于 durable admission。
-    if (!run.supervision && !run.continuation && run.retryOfMessageId === undefined) {
+    if (!run.supervision && !run.continuation && !run.emptyTurn && run.retryOfMessageId === undefined) {
       this.emit({
         ...this.eventBase(run),
         type: "message.user",
@@ -1184,8 +1191,10 @@ export class InteractiveAgentRuntime {
         source: run.source,
         recordSessionUserMessage: run.supervision ? false : undefined
       };
-      const stream = run.continuation
-        ? agent.continueInterruptedTurn(runOptions)
+      const stream = run.emptyTurn
+        ? agent.startInterruptedFollowup(runOptions)
+        : run.continuation
+          ? agent.continueInterruptedTurn(runOptions)
         : run.retryOfMessageId === undefined
           ? agent.prompt(run.input, runOptions)
           : agent.retry(run.retryOfMessageId, runOptions);

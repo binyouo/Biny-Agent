@@ -168,7 +168,8 @@ export class ContextMemory {
     prompt: PromptBundle | string | Promise<PromptBundle | string>,
     signal?: AbortSignal,
     attachments: AgentAttachment[] = [],
-    useMemories = true
+    useMemories = true,
+    includeInput = true
   ): AsyncGenerator<import("./types.js").PreparationStage, PreparedAgentContext> {
     // 能力筛选与工作区和记忆准备并行；拼装前才汇合。
     const promptPromise = Promise.resolve(prompt);
@@ -222,7 +223,8 @@ export class ContextMemory {
         limits.reserveTokens,
         false,
         attachments,
-        this.usageAnchor !== undefined
+        this.usageAnchor !== undefined,
+        includeInput
       );
       let compaction = noCompaction(this.summary, estimateMessageTokens(this.history));
       // 有实测锚点时延迟到最终请求：此处还没有本轮工具 schema，不能判定旧 usage 是否适用。
@@ -249,7 +251,9 @@ export class ContextMemory {
             budget.maxInputTokens,
             limits.reserveTokens,
             true,
-            attachments
+            attachments,
+            false,
+            includeInput
           );
         }
       }
@@ -1782,7 +1786,8 @@ function assembleContext(
   reserveTokens: number,
   autoCompacted: boolean,
   attachments: AgentAttachment[],
-  preserveHistory = false
+  preserveHistory = false,
+  includeInput = true
 ): ContextAssembly {
   const omitted: string[] = [];
   const components: ContextComponentUsage[] = [];
@@ -1813,9 +1818,9 @@ function assembleContext(
     : taskContent;
   const fullUserMessage: AgentMessage = { role: "user", content: fullUserContent };
   const userMessageWithoutMemory: AgentMessage = { role: "user", content: userContent };
-  const requestedTaskTokens = estimateMessageTokens([fullUserMessage]);
-  const usedTaskTokens = estimateMessageTokens([userMessageWithoutMemory]);
-  components.push({
+  const requestedTaskTokens = includeInput ? estimateMessageTokens([fullUserMessage]) : 0;
+  const usedTaskTokens = includeInput ? estimateMessageTokens([userMessageWithoutMemory]) : 0;
+  if (includeInput) components.push({
     id: "task",
     requestedTokens: requestedTaskTokens,
     usedTokens: usedTaskTokens,
@@ -1875,13 +1880,13 @@ function assembleContext(
   const projectInstructions = formatInstructions(workspace.instructions);
   const explicitPaths = formatExplicitPaths(workspace.explicitPaths);
   const recentActivity = formatRecentActivity(workspace.recentActivity);
-  const stableMemory = memoryMatches.length ? formatMemoryMatches(memoryMatches) : "";
+  const stableMemory = includeInput && memoryMatches.length ? formatMemoryMatches(memoryMatches) : "";
   const repoMap = `RepoMap candidates:\n${formatRepoMapCandidates(workspace.repoMapCandidates)}`;
   const projectSnapshot = `Project snapshot:\n${truncateTextToTokens(formatProjectContext(workspace.snapshot.context), 3_500)}`;
   const requestedHistoryTokens = estimateMessageTokens(history);
   const requestedTokens = requestedHistoryTokens + requestedTaskTokens + checkpointTokens + [
     systemPrompt,
-    turnContext,
+    includeInput ? turnContext : "",
     projectInstructions,
     explicitPaths,
     recentActivity,
@@ -1914,7 +1919,7 @@ function assembleContext(
   // 每轮上下文必须先于 recalled memory，且不能挤掉用户原文；超长的日报/Activity
   // 只在本轮截断，不写回 history。这样模型能看到交错的动态顺序，历史仍保持干净。
   let includedTurnContext = "";
-  if (turnContext) {
+  if (includeInput && turnContext) {
     const requestedTurnContextTokens = estimateTokens(turnContext) + 4;
     const contextCap = Math.max(1, Math.floor(usableTokens * 0.2));
     const available = Math.min(Math.max(0, remaining - 4), contextCap);
@@ -1967,9 +1972,10 @@ function assembleContext(
     }
   }
 
-  const userMessage = withUserContext(userContent, includedTurnContext, includedMemory);
-
-  const messages: AgentMessage[] = [...selectedHistory, userMessage];
+  // 空输入续接沿用历史事实，不把占位文字或动态参考资料伪装成用户新消息。
+  const messages: AgentMessage[] = includeInput
+    ? [...selectedHistory, withUserContext(userContent, includedTurnContext, includedMemory)]
+    : [...selectedHistory];
   const assembledSystemPrompt = systemParts.join("\n\n") || undefined;
   return {
     systemPrompt: assembledSystemPrompt,

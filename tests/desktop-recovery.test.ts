@@ -19,10 +19,16 @@ process.env.BINY_AGENT_DIR = path.join(root, "agent");
 let providerReached = false;
 let resumeRequested = false;
 let completedRunId: string | undefined;
+let holdResponse = false;
+let releaseHeldResponse: (() => void) | undefined;
+const providerRequestBodies: string[] = [];
 const server = createServer(async (request, response) => {
-  for await (const _chunk of request) { /* 消费请求体后再设置屏障。 */ }
+  let body = "";
+  for await (const chunk of request) body += chunk.toString();
+  providerRequestBodies.push(body);
   providerReached = true;
   if (!resumeRequested) return;
+  if (holdResponse) await new Promise<void>((resolve) => { releaseHeldResponse = resolve; });
   response.writeHead(200, { "content-type": "text/event-stream" });
   response.end([
     `data: ${JSON.stringify({ choices: [{ index: 0, delta: { content: "resumed task complete" }, finish_reason: null }] })}\n\n`,
@@ -40,6 +46,7 @@ try {
   });
   await configStore.save(configSchema.parse({
     ...defaultConfig,
+    activity: { ...defaultConfig.activity, enabled: false },
     defaultModel: "local-test",
     providers: { local: { type: "openai-compatible", baseUrl: `http://127.0.0.1:${address.port}/v1`, requiresApiKey: false, retry: { maxAttempts: 1 } } },
     models: { "local-test": { provider: "local", model: "local-test", contextWindow: 128000, capabilities: { tools: true, reasoning: false, streaming: true } } },
@@ -83,13 +90,23 @@ try {
   assert.notEqual(resumed.runId, original.runId);
   assert.equal(resumed.sessionId, original.sessionId);
   await waitFor(() => completedRunId === resumed.runId);
+  assert.equal(providerRequestBodies.at(-1)?.includes("<turn_paused>") ?? false, true,
+    "空输入继续应让模型看到上次任务暂停的事实");
+  const emptyRequest = JSON.parse(providerRequestBodies.at(-1) ?? "{}") as { messages?: Array<{ role?: string; content?: unknown }> };
+  assert.equal(JSON.stringify(emptyRequest.messages).includes("preserve this unfinished task"), true,
+    "空输入新回合应沿用之前的会话任务");
+  assert.equal(emptyRequest.messages?.some((message) => message.role === "user" && message.content === ""), false,
+    "空输入按钮不能伪造一条空白用户消息给模型");
   const facts = await readSessionEvents(file);
-  assert.equal(facts.filter((event) => event.type === "user_message").length, 1, "继续不创建重复用户任务");
+  assert.equal(facts.filter((event) => event.type === "user_message" && !event.auditOnly).length, 1, "继续不创建重复用户任务");
+  assert.equal(facts.filter((event) => event.type === "user_message" && event.auditOnly && event.metadata?.turnTrigger === "resume_interrupted_task").length, 1,
+    "空输入新回合必须留下可辨认的持久边界");
   const terminals = facts.filter((event) => event.type === "turn_status");
   assert.equal(terminals.length, 2);
-  assert.equal(terminals[0]?.runtime?.turnId, terminals[1]?.runtime?.turnId, "恢复必须续接同一 turn");
+  assert.notEqual(terminals[0]?.runtime?.turnId, terminals[1]?.runtime?.turnId, "空输入继续应开始新 turn");
   assert.equal(terminals[1]?.status, "completed");
   assert.equal((await manager.openSession(project.id, original.sessionId)).recovery, undefined);
+  assert.equal(await manager.resumeInterruptedTurn(project.id, original.sessionId), undefined, "重复点击不能重开已完成任务");
   // Composer 的暂停按钮走 cancelRun；暂停后也必须保留同一任务供继续。
   providerReached = false;
   resumeRequested = false;
@@ -100,16 +117,48 @@ try {
   const buttonPaused = await manager.openSession(project.id, buttonTask.sessionId);
   assert.equal(buttonPaused.recovery?.canContinue, true, "点击暂停后必须可继续");
   resumeRequested = true;
+  holdResponse = true;
   const buttonResumed = await manager.resumeInterruptedTurn(project.id, buttonTask.sessionId);
   assert.ok(buttonResumed);
+  await waitFor(() => releaseHeldResponse !== undefined);
+  const requestCount = providerRequestBodies.length;
+  await assert.rejects(manager.resumeInterruptedTurn(project.id, buttonTask.sessionId), /busy|正在运行/u,
+    "重复点击不能并发执行第二次回合");
+  assert.equal(providerRequestBodies.length, requestCount);
+  holdResponse = false;
+  releaseHeldResponse?.();
+  releaseHeldResponse = undefined;
   await waitFor(() => completedRunId === buttonResumed.runId);
   const buttonFacts = await readSessionEvents(sessionFilePath(root, buttonTask.sessionId));
-  assert.equal(buttonFacts.filter((event) => event.type === "user_message").length, 1);
+  assert.equal(buttonFacts.filter((event) => event.type === "user_message" && !event.auditOnly).length, 1);
   const buttonTerminals = buttonFacts.filter((event) => event.type === "turn_status");
   assert.equal(buttonTerminals[0]?.stopReason, "paused");
-  assert.equal(buttonTerminals[0]?.runtime?.turnId, buttonTerminals[1]?.runtime?.turnId);
-  console.log("desktop recovery tests passed (close and composer pause, explicit resume, same task)");
+  assert.notEqual(buttonTerminals[0]?.runtime?.turnId, buttonTerminals[1]?.runtime?.turnId);
+  // 暂停后输入自由文本应成为同一会话的新回合；模型仍能理解刚被暂停的工作。
+  providerReached = false;
+  resumeRequested = false;
+  const naturalTask = await manager.sendPrompt(project.id, undefined, "inspect old task", []);
+  await waitFor(() => providerReached);
+  await manager.cancelRun(project.id, naturalTask.runId);
+  await waitFor(() => !manager!.hasRunningTasks());
+  assert.equal((await manager.openSession(project.id, naturalTask.sessionId)).recovery?.canContinue, true);
+  resumeRequested = true;
+  const naturalFollowup = await manager.sendPrompt(project.id, naturalTask.sessionId, "继续", []);
+  await waitFor(() => completedRunId === naturalFollowup.runId);
+  const naturalFacts = await readSessionEvents(sessionFilePath(root, naturalTask.sessionId));
+  const naturalMessages = naturalFacts.filter((event) => event.type === "user_message");
+  assert.deepEqual(naturalMessages.map((event) => event.content), ["inspect old task", "继续"]);
+  assert.notEqual(naturalMessages[0]?.runtime?.turnId, naturalMessages[1]?.runtime?.turnId);
+  assert.equal(naturalFacts.filter((event) => event.type === "turn_status" && event.stopReason === "paused").length, 1);
+  const lastRequest = providerRequestBodies.at(-1) ?? "";
+  assert.equal(lastRequest.includes("inspect old task"), true, "新回合模型请求保留先前工作");
+  assert.equal(lastRequest.includes("继续"), true, "自由输入原样交给模型");
+  assert.equal(lastRequest.includes("<turn_paused>"), true, "模型能区分暂停事实，不能误以为旧任务已完成");
+  assert.equal((await manager.openSession(project.id, naturalTask.sessionId)).recovery, undefined,
+    "新输入受理后不能重新唤起被替代的旧断点");
+  console.log("desktop recovery tests passed (pause, new turn follow-up, natural input)");
 } finally {
+  releaseHeldResponse?.();
   await manager?.closeAll();
   server.closeAllConnections();
   await new Promise<void>((resolve) => server.close(() => resolve()));

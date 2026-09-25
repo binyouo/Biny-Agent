@@ -908,7 +908,10 @@ export class RuntimeHostServer {
         this.assertRevision(payload, runtime);
         if (payload.writeIntent === true) await this.ensureSessionWriter(connection, runtime);
         this.admission.assertAdmission();
-        const submitted = await runtime.startInterruptedTurn(readRequestIds(payload));
+        if (payload.mode !== undefined && payload.mode !== "exact" && payload.mode !== "newTurn") {
+          throw new Error("Invalid interrupted turn mode.");
+        }
+        const submitted = await runtime.startInterruptedTurn(readRequestIds(payload), payload.mode === "newTurn" ? "newTurn" : "exact");
         if (submitted) this.trackCompletion(submitted);
         return submitted === undefined
           ? undefined

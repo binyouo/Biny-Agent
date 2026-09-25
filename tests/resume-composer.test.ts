@@ -5,11 +5,13 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { isResumeInput } from "../src/desktop/renderer/src/components/composer/resumeInput.js";
 import { SendOrStopButton } from "../src/desktop/renderer/src/components/composer/SendOrStopButton.js";
 
-for (const input of ["", "  ", "继续", "继续任务", "继续上次的任务", "继续。", "/continue"]) {
+for (const input of ["", "  "]) {
   assert.equal(isResumeInput(input, 0), true, input);
   assert.equal(isResumeInput(input, 1), false, "附件不能被恢复入口吞掉");
 }
-for (const input of ["继续优化这个文件", "先改其他任务", "/status"]) assert.equal(isResumeInput(input, 0), false);
+for (const input of ["继续", "继续任务", "继续上次的任务", "继续。", "/continue", "继续优化这个文件", "先改其他任务", "/status"]) {
+  assert.equal(isResumeInput(input, 0), false, `${input} 应作为原文消息发送给模型`);
+}
 const render = (options: Partial<Parameters<typeof SendOrStopButton>[0]>): string => renderToStaticMarkup(createElement(SendOrStopButton, {
   disabled: false, hasDraft: false, running: false, stopPending: false,
   onSend: () => { throw new Error("展示不能自动执行"); }, onStop: () => undefined,
@@ -25,4 +27,5 @@ const running = render({ running: true, hasDraft: true });
 assert.match(running, /aria-label="暂停生成"/u);
 assert.match(running, /aria-label="加入队列"/u);
 assert.match(render({ disabled: true }), /aria-label="发送消息"/u);
+assert.match(render({ resume: false, hasDraft: true }), /aria-label="发送消息"/u);
 console.log("resume composer tests passed");

@@ -41,6 +41,12 @@ export function resolveContinuationPlan(
   // 新根输入已经落盘就代表用户切换了任务；即使替换断点失败，也不能复活旧任务。
   const latestInput = [...replay.events].reverse().find((event) => event.type === "user_message" && event.runtime?.turnId);
   if (turnId && latestInput?.runtime?.turnId && latestInput.runtime.turnId !== turnId) return { action: "finished" };
+  if (!turnId) {
+    const pausedIndex = lastPausedIndex(replay.events);
+    if (pausedIndex >= 0 && replay.events.slice(pausedIndex + 1).some((event) => event.type === "user_message")) {
+      return { action: "finished" };
+    }
+  }
   const operationTurnIds = toolOperationTurnIds(replay.events);
   const unsafeTools = new Set<string>();
 
@@ -80,6 +86,25 @@ export function resolveContinuationPlan(
     };
   }
   return { action: "continue", remainingSteps };
+}
+
+/** 暂停属于当前断点，且暂停后没有新的根输入或完成终态，才允许从历史开启新回合。 */
+export function pausedTurnAvailable(turn: InterruptedTurn, replay: Pick<SessionReplay, "events">): boolean {
+  const turnId = turn.turnId ?? turn.runtimeHighWater?.turnId;
+  const pausedIndex = lastPausedIndex(replay.events, turnId);
+  if (pausedIndex < 0) return false;
+  return !replay.events.slice(pausedIndex + 1).some((event) => event.type === "user_message"
+    || event.type === "turn_status" && (event.status === "completed" || event.status === "cancelled" && event.stopReason !== "paused")
+      && (turnId === undefined || event.runtime?.turnId === undefined || event.runtime.turnId === turnId));
+}
+
+function lastPausedIndex(events: readonly SessionEvent[], turnId?: string): number {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    if (event?.type === "turn_status" && event.stopReason === "paused"
+      && (turnId === undefined || event.runtime?.turnId === undefined || event.runtime.turnId === turnId)) return index;
+  }
+  return -1;
 }
 
 function toolOperationTurnIds(events: readonly SessionEvent[]): Map<string, string> {

@@ -474,7 +474,7 @@ export const Composer = memo(function Composer({
           : !resumeAction && !input.trim() && !attachments.length
             ? "输入消息或添加附件后发送。"
             : undefined;
-  const placeholder = running ? "补充要求…" : recovery && !editing ? "任务已暂停，发送“继续”可接着完成…" : "输入消息…";
+  const placeholder = running ? "补充要求…" : "输入消息…";
   const modelSwitchPending = Boolean(optimisticModel);
   const modelSwitchDisabled = sessionWriterConflict || running || runtimeBusy || busy;
   const modelSwitchDisabledReason = !project

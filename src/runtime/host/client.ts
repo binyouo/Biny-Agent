@@ -551,11 +551,11 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
     return submitted?.completion;
   }
 
-  async startInterruptedTurn(requestIds?: RuntimeRequestIds): Promise<SubmittedAgentRun | undefined> {
-    return await this.startInterruptedTurnForSession(this.focusedSessionId, requestIds);
+  async startInterruptedTurn(requestIds?: RuntimeRequestIds, mode: "exact" | "newTurn" = "exact"): Promise<SubmittedAgentRun | undefined> {
+    return await this.startInterruptedTurnForSession(this.focusedSessionId, requestIds, mode);
   }
 
-  async startInterruptedTurnForSession(sessionId: string | undefined, requestIds?: RuntimeRequestIds): Promise<SubmittedAgentRun | undefined> {
+  async startInterruptedTurnForSession(sessionId: string | undefined, requestIds?: RuntimeRequestIds, mode: "exact" | "newTurn" = "exact"): Promise<SubmittedAgentRun | undefined> {
     const ids = normalizeRequestIds(requestIds);
     const completion = this.createCompletion(ids.runId);
     let result: { runId: string; messageId: string } | undefined;
@@ -566,6 +566,7 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
         turnId: ids.turnId,
         parentRunId: ids.parentRunId,
         continuationSource: ids.continuationSource,
+        mode,
         sessionId,
         writeIntent: true,
         expectedRevision: this.currentRevision(sessionId)
