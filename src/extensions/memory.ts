@@ -24,7 +24,8 @@ const saveMemorySchema = z.object({
 const recallMemorySchema = z.object({
   query: z.string().trim().min(1).max(2_000),
   limit: z.number().int().min(1).max(20).optional(),
-  tags: z.array(z.string().trim().min(1).max(120)).max(12).optional()
+  tags: z.array(z.string().trim().min(1).max(120)).max(12).optional(),
+  threadId: z.string().trim().min(1).max(200).optional()
 });
 
 export function createMemoryTools(
@@ -100,7 +101,8 @@ function createRecallMemoryTool(
       properties: {
         query: { type: "string", description: "Keywords describing what to recall." },
         limit: { type: "integer", minimum: 1, maximum: 20, description: "Maximum number of matches; defaults to 8." },
-        tags: { type: "array", items: { type: "string" }, description: "Match any of these optional tags." }
+        tags: { type: "array", items: { type: "string" }, description: "Match any of these optional tags." },
+        threadId: { type: "string", description: "Optional strict thread scope." }
       },
       required: ["query"],
       additionalProperties: false
@@ -115,7 +117,7 @@ function createRecallMemoryTool(
         const message = "recall_memory requires a query.";
         return { isError: true as const, result: message, errorMessage: message };
       }
-      const { query, limit, tags } = parsed.data;
+      const { query, limit, tags, threadId } = parsed.data;
       return {
         accesses: ToolAccesses.none(),
         display: { kind: "generic" as const, summary: "Recall memory", detail: query },
@@ -124,9 +126,10 @@ function createRecallMemoryTool(
         async execute(): Promise<unknown> {
           const memory = getMemory();
           if (!memory) throw new Error("Local memory is unavailable.");
-          return searchMemory
-            ? await searchMemory(query, [], { tags, limit: limit ?? 8 })
-            : await memory.search(query, [], { tags, limit: limit ?? 8 });
+          if (searchMemory) return await searchMemory(query, [], { tags, threadId, limit: limit ?? 8 });
+          const result = await memory.search(query, [], { tags, threadId, limit: limit ?? 8 });
+          await memory.recordRecallUsage(result.matches.map((match) => match.entry.id));
+          return result;
         }
       };
     }

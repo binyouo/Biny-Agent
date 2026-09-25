@@ -1,7 +1,7 @@
 /**
  * 记忆 Embedding 的 SQLite 派生投影。
  *
- * 记忆事实仍由 memory.sqlite 的事实表负责；向量只保存在 SQLite 的
+ * 记忆事实仍由 Agent SQLite 的事实表负责；向量只保存在同一库的
  * memory_embeddings vec0 表中。重建在一个 SQLite transaction 内替换整张投影，
  * 不再维护第二套 generation、条目状态或文件锁；版本表只标记向量对应的事实 revision。
  */
@@ -15,7 +15,7 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { load as loadSqliteVec } from "sqlite-vec";
 import { normalizeEmbedding } from "../../llm/embedding/vector.js";
-import { memoryDatabaseFileName } from "./memoryStorage.js";
+import { AGENT_DATABASE_FILE } from "../../config/paths.js";
 
 const sqliteBusyTimeoutMs = 5_000;
 const maxSearchLimit = 100;
@@ -62,7 +62,7 @@ export class MemoryVectorIndex {
 
   static openReadOnly(memoryRoot: string): MemoryVectorIndex | undefined {
     const resolvedRoot = path.resolve(memoryRoot);
-    const databasePath = path.join(resolvedRoot, memoryDatabaseFileName);
+    const databasePath = path.join(resolvedRoot, AGENT_DATABASE_FILE);
     if (!existsSync(databasePath)) return undefined;
     const index = new MemoryVectorIndex(resolvedRoot, { readOnly: true });
     if (!index.hasSchema()) {
@@ -76,7 +76,7 @@ export class MemoryVectorIndex {
   constructor(memoryRoot: string, options: MemoryVectorIndexOpenOptions = {}) {
     const resolvedRoot = path.resolve(memoryRoot);
     if (!options.readOnly) mkdirSync(resolvedRoot, { recursive: true });
-    this.databasePath = path.join(resolvedRoot, memoryDatabaseFileName);
+    this.databasePath = path.join(resolvedRoot, AGENT_DATABASE_FILE);
     assertSafeDatabaseFile(this.databasePath);
     this.database = new DatabaseSync(this.databasePath, {
       timeout: sqliteBusyTimeoutMs,

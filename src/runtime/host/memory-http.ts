@@ -50,7 +50,14 @@ export async function startMemoryHttpServer(client: MemoryHttpClient, options: {
       } else if (route === "/api/memories/search" && method === "POST") {
         if (typeof body.query !== "string" || !body.query.trim()) throw new InputError("query is required");
         if (body.tags !== undefined && (!Array.isArray(body.tags) || body.tags.some((tag) => typeof tag !== "string"))) throw new InputError("tags must be a string array");
-        result = await client.memory("search", { query: body.query, tags: body.tags, limit: body.limit });
+        result = await client.memory("search", {
+          query: body.query,
+          tags: body.tags,
+          userId: body.userId,
+          userIds: body.userIds,
+          threadId: body.threadId,
+          limit: body.limit
+        });
       } else if (route === "/api/memories/archive" && method === "GET") {
         result = await client.memory("archive-list");
       } else if (/^\/api\/memories\/archive\/[^/]+\/restore$/u.test(route) && method === "POST") {

@@ -2,21 +2,20 @@
  * 本地记忆的 SQLite 事实库。
  *
  * memories 保存当前可召回的事实，memory_archive 保存可恢复的历史，Sleep 审计和 Embedding
- * 派生表也都在同一个 memory.sqlite 里。向量仍是可重建投影，不参与事实提交。
+ * 派生表也都在全局 agent.sqlite 里。向量仍是可重建投影，不参与事实提交。
  *
- * Schema v5 起条目是扁平模型（content + metadata JSON），不再有 origin/kind/lineage 结构；
- * 打开 v4 及更早的库时直接清空记忆事实表重建（向量投影一并失效），crystal 表不受影响。
+ * 记忆条目是扁平模型（content + metadata JSON）；旧库不在此处迁移。
  */
 import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { z } from "zod";
-import { globalAgentDir } from "../../config/paths.js";
+import { AGENT_DATABASE_FILE, globalAgentDir } from "../../config/paths.js";
 import { redactSecrets } from "../../utils/secrets.js";
 import {
   createStoredMemoryEntry,
-  entryHasAnyTag,
+  entryMatchesMemorySearchScope,
   memoryEntryEquals,
   memoryMatchFromRanked,
   rankMemoryEntries,
@@ -42,11 +41,8 @@ import {
   type MemoryWriteResult
 } from "./memoryTypes.js";
 
-export const memoryDatabaseFileName = "memory.sqlite";
-
 const memorySchemaVersion = 6;
 const sqliteBusyTimeoutMs = 5_000;
-const memoryRootName = "memory";
 const maxMaintenanceErrorChars = 2_000;
 const sleepOwnerKey = "sleep_owner";
 const sleepOwnerLeaseMs = 60_000;
@@ -230,7 +226,7 @@ export class MemoryStorage {
     const ranked = rankMemoryEntries(
       allEntries
         .filter((entry) => options.includeArchived === true || entry.archivedAt === undefined)
-        .filter((entry) => entryHasAnyTag(entry, options.tags)),
+        .filter((entry) => entryMatchesMemorySearchScope(entry, options)),
       query,
       now
     );
@@ -516,13 +512,13 @@ export class MemoryStorage {
     await this.withWrite(options.signal, (database) => {
       const now = (options.now ?? new Date()).toISOString();
       const active = database.prepare(
-        "UPDATE memories SET access_count = access_count + 1, last_accessed_at = ?, updated_at = ? WHERE id = ?"
+        "UPDATE memories SET access_count = access_count + 1, last_accessed_at = ? WHERE id = ?"
       );
       const archived = database.prepare(
         "UPDATE memory_archive SET access_count = access_count + 1, last_accessed_at = ? WHERE id = ?"
       );
       for (const id of uniqueIds) {
-        const result = active.run(now, now, id);
+        const result = active.run(now, id);
         if (result.changes > 0) updateAccessMetadata(database, "memories", id, now);
         else if (archived.run(now, id).changes > 0) updateAccessMetadata(database, "memory_archive", id, now);
       }
@@ -616,12 +612,9 @@ export class MemoryStorage {
   private async openDatabaseInternal(create: boolean): Promise<DatabaseSync | undefined> {
     const databasePath = await resolveMemoryDatabasePath(create, this.agentDir);
     if (databasePath === undefined) return undefined;
-    // allowExtension 只为 v4 迁移服务：旧库里的 memory_embeddings 是 vec0 虚表，
-    // 不加载 sqlite-vec 扩展就连 DROP 它都做不到。
     const database = new DatabaseSync(databasePath, {
       timeout: sqliteBusyTimeoutMs,
-      enableForeignKeyConstraints: true,
-      allowExtension: true
+      enableForeignKeyConstraints: true
     });
     try {
       await assertSafeDatabaseFile(databasePath);
@@ -647,7 +640,7 @@ export class MemoryStorage {
 async function initializeDatabase(database: DatabaseSync): Promise<void> {
   const row = database.prepare("PRAGMA user_version").get() as Record<string, unknown> | undefined;
   const version = safeCounter(row?.user_version);
-  if (version !== 0 && version !== 4 && version !== 5 && version !== memorySchemaVersion) {
+  if (version !== 0 && version !== memorySchemaVersion) {
     throw new Error("Memory database schema is not current; remove it before starting.");
   }
   const existingTables = (database.prepare(
@@ -658,33 +651,6 @@ async function initializeDatabase(database: DatabaseSync): Promise<void> {
   // 向量索引可能先创建自己的派生表；只要事实表尚未出现，仍属于当前库的首次初始化。
   if (version === 0 && existingTables.includes("memories")) {
     throw new Error("Memory database schema is not current; remove it before starting.");
-  }
-  if (version === 4) {
-    // v4 及更早的结构化模型不再保留兼容层；记忆事实是可再提取的派生数据，直接重建。
-    // memory_embeddings 是 vec0 虚表，DROP 前必须加载 sqlite-vec 扩展，否则整个迁移
-    // 会永远卡在 "no such module: vec0"。扩展不可用时保留这张孤儿表：普通读写不受
-    // 影响，向量索引进程下次打开时自会重建投影。
-    let vectorModuleAvailable = false;
-    try {
-      const { load: loadSqliteVec } = await import("sqlite-vec");
-      loadSqliteVec(database);
-      vectorModuleAvailable = true;
-    } catch {
-      // 迁移在无扩展环境下仍要能完成。
-    }
-    database.exec(
-      "DROP TABLE IF EXISTS memory_archive; " +
-      "DROP TABLE IF EXISTS memories; " +
-      (vectorModuleAvailable ? "DROP TABLE IF EXISTS memory_embeddings; " : "") +
-      "DROP TABLE IF EXISTS memory_maintenance; " +
-      "DROP TABLE IF EXISTS memory_sleep_runs; " +
-      "DROP TABLE IF EXISTS memory_meta; " +
-      "DROP TABLE IF EXISTS memory_metadata;"
-    );
-  }
-  if (version === 5) {
-    // v5 → v6：sleep run 增加"删而不合"审计计数，纯加列迁移。
-    database.exec("ALTER TABLE memory_sleep_runs ADD COLUMN synthesis_failed INTEGER NOT NULL DEFAULT 0;");
   }
   database.exec(
     "PRAGMA journal_mode = WAL; " +
@@ -1286,14 +1252,7 @@ async function resolveMemoryDatabasePath(create: boolean, agentDir?: string): Pr
   const agent = await ensureRealDirectory(configuredAgentPath, create, "global agent directory");
   if (!agent) return undefined;
   const canonicalAgent = await fs.realpath(configuredAgentPath);
-  const memoryPath = path.join(canonicalAgent, memoryRootName);
-  const memory = await ensureRealDirectory(memoryPath, create, "global memory root");
-  if (!memory) return undefined;
-  const canonicalMemory = await fs.realpath(memoryPath);
-  if (canonicalMemory !== memoryPath) {
-    throw new Error("Global memory root must be a real canonical directory.");
-  }
-  const databasePath = path.join(canonicalMemory, memoryDatabaseFileName);
+  const databasePath = path.join(canonicalAgent, AGENT_DATABASE_FILE);
   try {
     await assertSafeDatabaseFile(databasePath);
   } catch (error) {

@@ -219,8 +219,18 @@ class FakeMemoryStore implements AutomaticMemoryStore {
   async search(query: string, _paths: string[], options?: MemorySearchOptions): Promise<MemorySearchResult> {
     this.searches.push(query);
     this.searchArchivedFlags.push(options?.includeArchived);
+    const exactIdEntry = this.entries.find((entry) => entry.id === query);
+    const scopedEntries = this.entries.filter((entry) => {
+      if (exactIdEntry && entry.id !== query) return false;
+      if (options?.threadId !== undefined && entry.threadId !== options.threadId) return false;
+      if (options?.tags?.length) {
+        const tags = new Set(entry.tags.map((tag) => tag.toLowerCase()));
+        if (!options.tags.some((tag) => tags.has(tag.toLowerCase()))) return false;
+      }
+      return true;
+    }).slice(0, options?.limit ?? this.entries.length);
     return {
-      matches: this.entries.map((entry, index) => ({
+      matches: scopedEntries.map((entry, index) => ({
         entry,
         path: "memory://" + entry.id,
         excerpt: entry.content,
@@ -260,9 +270,11 @@ class FakeVectorIndex implements MemoryVectorSearchIndex {
     };
   }
 
-  search(_query: ArrayLike<number>, options: { limit?: number; minimumSimilarity?: number }): Array<{ entryId: string; similarity: number }> {
+  search(_query: ArrayLike<number>, options: { limit?: number; minimumSimilarity?: number; entryIds?: ReadonlySet<string> }): Array<{ entryId: string; similarity: number }> {
     this.lastSearch = { limit: options.limit, minimumSimilarity: options.minimumSimilarity };
-    return this.results;
+    return this.results
+      .filter((result) => options.entryIds === undefined || options.entryIds.has(result.entryId))
+      .slice(0, options.limit ?? this.results.length);
   }
 
   close(): void {
@@ -311,6 +323,103 @@ async function testTagPostFilter(): Promise<void> {
   const none = await retriever.retrieve("summary", [], { limit: 5, automatic: true, tags: ["missing-tag"] });
   assert.equal(none.matches.length, 0);
   assert.equal(none.report.degraded, undefined);
+}
+
+/** 关闭采集时自动上下文过滤 Activity 派生事实，显式记忆搜索仍可回看。 */
+async function testActivityRecallFilter(): Promise<void> {
+  const activity = { ...memoryEntry("activity-derived"), activitySource: "activity_session" as const };
+  const ordinary = memoryEntry("ordinary");
+  const store = new FakeMemoryStore([activity, ordinary]);
+  const fingerprint = "activity-recall-filter";
+  const retriever = new HybridMemoryRetriever({
+    localMemory: store,
+    getReadOnlyVectorIndex: () => new FakeVectorIndex(fingerprint, [
+      { entryId: activity.id, similarity: 0.99 }, { entryId: ordinary.id, similarity: 0.88 }
+    ]),
+    getEmbeddingRuntime: async () => fakeRuntime(fingerprint),
+    getThreshold: (_resolvedFingerprint, recommended) => recommended
+  });
+  const automatic = await retriever.retrieve("remember", [], {
+    automatic: true, limit: 2,
+    allowEntry: (entry) => entry.activitySource === undefined
+  });
+  assert.deepEqual(automatic.matches.map(({ entry }) => entry.id), [ordinary.id]);
+  const manual = await retriever.retrieve(activity.id, [], { limit: 1 });
+  assert.deepEqual(manual.matches.map(({ entry }) => entry.id), [activity.id]);
+}
+
+/** 不同来源条目共用事实库；显式 thread/tag 范围在候选排名前生效。 */
+async function testMemorySearchScope(): Promise<void> {
+  const bob = memoryEntryWithScope("scope-bob", "shared scope phrase from Bob.", ["Scope"], "bob", "thread-a");
+  const aliceOtherThread = memoryEntryWithScope("scope-alice-other-thread", "shared scope phrase from Alice.", ["scope"], "alice", "thread-b");
+  const unowned = memoryEntryWithScope("scope-unowned", "shared scope phrase with no owner.", ["scope"], undefined, "thread-a");
+  const alice = memoryEntryWithScope("scope-alice", "shared scope phrase for the selected thread.", ["scope"], "alice", "thread-a");
+  const entries = [bob, aliceOtherThread, unowned, alice];
+  const store = new FakeMemoryStore(entries);
+  const fingerprint = "scope-fingerprint";
+  const index = new FakeVectorIndex(fingerprint, [
+    { entryId: bob.id, similarity: 0.99 },
+    { entryId: aliceOtherThread.id, similarity: 0.98 },
+    { entryId: unowned.id, similarity: 0.97 },
+    { entryId: alice.id, similarity: 0.96 }
+  ]);
+  const semanticRetriever = new HybridMemoryRetriever({
+    localMemory: store,
+    getReadOnlyVectorIndex: () => index,
+    getEmbeddingRuntime: async () => fakeRuntime(fingerprint),
+    getThreshold: (_resolvedFingerprint, recommended) => recommended
+  });
+
+  const scope = {
+    threadId: "thread-a",
+    tags: ["scope", "unmatched-alternative"]
+  };
+  const automatic = await semanticRetriever.retrieve("shared scope phrase", [], {
+    ...scope,
+    limit: 2,
+    automatic: true
+  });
+  assert.deepEqual(automatic.matches.map(({ entry }) => entry.id), [bob.id, unowned.id], "范围外高分条目不占 top-K；无 userId 条目仍参与检索");
+
+  const lexicalRetriever = new HybridMemoryRetriever({
+    localMemory: store,
+    getReadOnlyVectorIndex: () => undefined,
+    getEmbeddingRuntime: async () => undefined,
+    getThreshold: (_resolvedFingerprint, recommended) => recommended
+  });
+  const manual = await lexicalRetriever.retrieve("shared scope phrase", [], {
+    threadId: "thread-a",
+    tags: ["scope"],
+    limit: 4,
+    automatic: false
+  });
+  assert.deepEqual(new Set(manual.matches.map(({ entry }) => entry.id)), new Set([bob.id, unowned.id, alice.id]));
+
+  const inScopeId = await lexicalRetriever.retrieve(unowned.id, [], {
+    threadId: "thread-a",
+    limit: 1,
+    automatic: false
+  });
+  const outOfScopeId = await lexicalRetriever.retrieve(aliceOtherThread.id, [], {
+    threadId: "thread-a",
+    limit: 1,
+    automatic: false
+  });
+  assert.deepEqual(inScopeId.matches.map(({ entry }) => entry.id), [unowned.id], "scope 内 ID 查询保持确定性");
+  assert.deepEqual(outOfScopeId.matches, [], "不能通过精确 ID 绕过 thread scope");
+
+  const unscoped = await lexicalRetriever.retrieve("shared scope phrase", [], { limit: 5, automatic: false });
+  assert.deepEqual(new Set(unscoped.matches.map(({ entry }) => entry.id)), new Set(entries.map(({ id }) => id)), "未指定 scope 时继续搜索共享事实库");
+}
+
+function memoryEntryWithScope(
+  id: string,
+  content: string,
+  tags: string[],
+  userId: string | undefined,
+  threadId: string | undefined
+): MemoryEntry {
+  return { ...memoryEntry(id, content, tags), userId, threadId };
 }
 
 /** 自动召回为空时必须带出降级原因；手动词法回退不携带降级标记。 */
@@ -403,6 +512,8 @@ await testArchivedSearchFlagPropagates();
 await testUnavailableIndexSkipsModels();
 await testFingerprintThresholdSelectsAllSources();
 await testTagPostFilter();
+await testActivityRecallFilter();
+await testMemorySearchScope();
 await testDegradedReasonReported();
 
 console.log("hybrid memory retriever tests passed");

@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleIdentifier</key><string>com.biny.calendar-reader</string>
+  <key>CFBundleName</key><string>Biny Calendar Reader</string>
+  <key>NSCalendarsFullAccessUsageDescription</key><string>Biny reads calendar events only when you request a date range.</string>
+  <key>NSCalendarsUsageDescription</key><string>Biny reads calendar events only when you request a date range.</string>
+</dict>
+</plist>

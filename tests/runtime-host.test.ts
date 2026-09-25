@@ -16,6 +16,11 @@ import { SubagentTaskIncompleteError } from "../src/runtime/SubagentTaskManager.
 import type { InteractiveRuntimeHandle } from "../src/runtime/InteractiveAgentRuntime.js";
 import { defaultChatPersonalizationOverride, resolveChatPersonalization } from "../src/personalization/index.js";
 import { LocalMemory } from "../src/agent/context/LocalMemory.js";
+import { AgentSession } from "../src/agent/AgentSession.js";
+import { PermissionManager } from "../src/permission/PermissionManager.js";
+import { SessionRecorder } from "../src/session/recorder.js";
+import { ToolRegistry } from "../src/tools/registry.js";
+import { ensureAgentDirs } from "../src/session/store.js";
 import { startMemoryHttpServer } from "../src/runtime/host/memory-http.js";
 import { spawn } from "node:child_process";
 import { WebSocket } from "ws";
@@ -74,6 +79,14 @@ async function main(): Promise<void> {
   let activeRunId = "run-host-test";
   const exclusiveOperations: string[] = [];
   const localMemory = new LocalMemory(workspace, () => { throw new Error("Model must not be used for manual memory writes"); });
+  await ensureAgentDirs(workspace);
+  const searchAgent = new AgentSession({
+    workspaceRoot: workspace,
+    config: defaultConfig,
+    toolRegistry: new ToolRegistry(),
+    permissionManager: new PermissionManager({ ...defaultConfig.permission, source: "test" }),
+    recorder: new SessionRecorder(workspace)
+  });
   let maintenanceRuns = 0;
   let releaseMemoryPreview: (() => void) | undefined;
   const previewReport: MemorySleepPreview = {
@@ -286,7 +299,7 @@ async function main(): Promise<void> {
         };
       },
       getPersonalizationState: async () => personalizationState(),
-      searchMemory: localMemory.search.bind(localMemory),
+      searchMemory: searchAgent.searchMemory.bind(searchAgent),
       updateChatPersonalization: async (_patch: unknown, expectedRevision: string) => {
         chatExpectedRevision = expectedRevision;
         return personalizationState();
@@ -594,6 +607,98 @@ async function main(): Promise<void> {
     failed: 0
   });
 
+  const aliceScopedEntry = await localMemory.writeEntry({
+    content: "Runtime Host scope query marker for Alice in thread A.",
+    source: "manual",
+    tags: ["scope-test"],
+    userId: "scope-user-alice",
+    threadId: "scope-thread-a"
+  });
+  const bobScopedEntry = await localMemory.writeEntry({
+    content: "Runtime Host scope query marker for Bob in thread A.",
+    source: "manual",
+    tags: ["scope-test"],
+    userId: "scope-user-bob",
+    threadId: "scope-thread-a"
+  });
+  const unownedScopedEntry = await localMemory.writeEntry({
+    content: "Runtime Host scope query marker with no user in thread A.",
+    source: "manual",
+    tags: ["scope-test"],
+    threadId: "scope-thread-a"
+  });
+  const otherThreadEntry = await localMemory.writeEntry({
+    content: "Runtime Host scope query marker for Alice in thread B.",
+    source: "manual",
+    tags: ["scope-test"],
+    userId: "scope-user-alice",
+    threadId: "scope-thread-b"
+  });
+  assert.ok(aliceScopedEntry.entry && bobScopedEntry.entry && unownedScopedEntry.entry && otherThreadEntry.entry);
+  const scopedIds = [aliceScopedEntry.entry.id, bobScopedEntry.entry.id, unownedScopedEntry.entry.id];
+  const scopeRevision = (await localMemory.getOverview()).storeRevision;
+  const cancelledSearch = new AbortController();
+  cancelledSearch.abort(new Error("Cancelled before memory search"));
+  await assert.rejects(searchAgent.searchMemory("Runtime Host scope query marker", [], { signal: cancelledSearch.signal }));
+  const afterCancelledSearch = (await localMemory.listMemoryEntries()).entries;
+  assert.deepEqual(
+    scopedIds.map((id) => afterCancelledSearch.find((entry) => entry.id === id)?.accessCount),
+    [0, 0, 0]
+  );
+  const runtimeScopedResult = await client.memory<{ matches: Array<{ entry: { id: string } }> }>("search", {
+    query: "Runtime Host scope query marker",
+    threadId: "scope-thread-a",
+    tags: ["scope-test"],
+    limit: 10
+  });
+  assert.deepEqual(
+    new Set(runtimeScopedResult.matches.map(({ entry }) => entry.id)),
+    new Set(scopedIds),
+    "thread/tag 过滤不依赖 userId 元数据"
+  );
+  const afterHostSearch = (await localMemory.listMemoryEntries()).entries;
+  assert.deepEqual(scopedIds.map((id) => afterHostSearch.find((entry) => entry.id === id)?.accessCount), [1, 1, 1]);
+  assert.equal(afterHostSearch.find((entry) => entry.id === otherThreadEntry.entry!.id)?.accessCount, 0);
+  assert.equal(new Set(scopedIds.map((id) => afterHostSearch.find((entry) => entry.id === id)?.lastAccessedAt)).size, 1);
+  assert.equal((await localMemory.getOverview()).storeRevision, scopeRevision);
+  for (const unsupportedScope of [{ userId: "scope-user-alice" }, { userIds: ["scope-user-alice"] }]) {
+    await assert.rejects(
+      client.memory("search", { query: "Runtime Host scope query marker", ...unsupportedScope }),
+      /userId|userIds/u
+    );
+  }
+  const afterRejectedSearch = (await localMemory.listMemoryEntries()).entries;
+  assert.deepEqual(
+    scopedIds.map((id) => afterRejectedSearch.find((entry) => entry.id === id)?.accessCount),
+    [1, 1, 1],
+    "被 Host 拒绝的搜索不能记账"
+  );
+  const limited = await client.memory<{ matches: Array<{ entry: { id: string } }> }>("search", {
+    query: "Runtime Host scope query marker",
+    threadId: "scope-thread-a",
+    tags: ["scope-test"],
+    limit: 1
+  });
+  assert.equal(limited.matches.length, 1);
+  const afterLimit = (await localMemory.listMemoryEntries()).entries;
+  assert.deepEqual(
+    scopedIds.map((id) => afterLimit.find((entry) => entry.id === id)?.accessCount),
+    scopedIds.map((id) => limited.matches.some((match) => match.entry.id === id) ? 2 : 1),
+    "只有最终返回的 top-1 结果记账"
+  );
+  const omittedByBudget = await client.memory<{ matches: unknown[] }>("search", {
+    query: "Runtime Host scope query marker",
+    threadId: "scope-thread-a",
+    tags: ["scope-test"],
+    maxChars: 1
+  });
+  assert.equal(omittedByBudget.matches.length, 0);
+  const afterBudget = (await localMemory.listMemoryEntries()).entries;
+  assert.deepEqual(
+    scopedIds.map((id) => afterBudget.find((entry) => entry.id === id)?.accessCount),
+    scopedIds.map((id) => limited.matches.some((match) => match.entry.id === id) ? 2 : 1)
+  );
+
   // HTTP → socket → 领域存储：鉴权、短文本与小数权重、更新、删除都用真实 SQLite。
   const api = await startMemoryHttpServer(client, { token: "test-memory-token" });
   const memoryFrames: Array<{ type: string; data: { storeRevision?: number } }> = [];
@@ -613,6 +718,42 @@ async function main(): Promise<void> {
       assert.equal(exit, 0, stderr);
       return stdout;
     };
+    const searchHelp = await cli(["search", "--help"]);
+    assert.doesNotMatch(searchHelp, /--user-id(?:s)?\b/u);
+    assert.match(searchHelp, /--thread-id/u);
+    const cliScopedSearch = JSON.parse(await cli([
+      "search", "Runtime Host scope query marker",
+      "--thread-id", "scope-thread-a",
+      "--tag", "scope-test",
+      "--json"
+    ])) as { matches: Array<{ entry: { id: string } }> };
+    assert.deepEqual(
+      new Set(cliScopedSearch.matches.map(({ entry }) => entry.id)),
+      new Set(scopedIds)
+    );
+    const afterCliSearch = (await localMemory.listMemoryEntries()).entries;
+    assert.deepEqual(
+      scopedIds.map((id) => afterCliSearch.find((entry) => entry.id === id)?.accessCount),
+      scopedIds.map((id) => limited.matches.some((match) => match.entry.id === id) ? 3 : 2)
+    );
+    const archivedCandidate = await localMemory.writeEntry({
+      content: "Archived access statistics marker unique to this test.",
+      source: "manual"
+    });
+    assert.ok(archivedCandidate.entry);
+    const archived = await localMemory.archiveEntry(archivedCandidate.entry.id, true);
+    assert.ok(archived.entry);
+    const archivedSearch = await client.memory<{ matches: Array<{ entry: { id: string } }> }>("search", {
+      query: archived.entry.id,
+      includeArchived: true,
+      limit: 1
+    });
+    assert.deepEqual(archivedSearch.matches.map((match) => match.entry.id), [archived.entry.id]);
+    assert.equal(
+      (await localMemory.listArchivedEntries()).entries.find((entry) => entry.id === archived.entry!.id)?.accessCount,
+      1,
+      "显式返回的归档命中也应记账"
+    );
     await waitUntil(() => memoryFrames.some((frame) => frame.type === "memory-changed"), 3_000);
     const beforeCliRevision = (await localMemory.getOverview()).storeRevision;
     const added = JSON.parse(await cli(["add", "CLI 保存短中文事实", "--json"])) as { entry: { id: string } };
@@ -709,6 +850,7 @@ async function main(): Promise<void> {
   await idleWait;
   await fs.appendFile(mirrorSource, JSON.stringify({ type: "assistant_message", content: "宿主退出前的会话", time: new Date().toISOString() }) + "\n");
   await host.close();
+  await searchAgent.close();
   assert.match(await readFile(mirrorTarget, "utf8"), /宿主退出前的会话/u);
   currentSnapshot = snapshot;
   const explicitResumeHost = await startRuntimeHost(workspace, async () => ({ runtime: runtime, commands: commands }), { resumeInterrupted: true });

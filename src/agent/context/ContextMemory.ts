@@ -23,6 +23,7 @@ import { checkpointClaims } from "../../session/checkpointClaims.js";
 import { anchoredRequestTokens, requestFingerprints } from "./requestAnchor.js";
 import type { SessionUsageAnchor, SessionCompactionFailure } from "../../session/metadata.js";
 import { contextCheckpointSchema, contextStateSchema, contextUsageSchema } from "../../session/contextSchema.js";
+import { isActivityMemory } from "../../activity/modelContext.js";
 
 const piReserveTokens = 16_384;
 const piKeepRecentTokens = 20_000;
@@ -109,7 +110,8 @@ export class ContextMemory {
     private readonly compactionOptions: ContextCompactionOptions = {},
     private readonly onModelRequest: ModelRequestObserver = () => undefined,
     private readonly getModelRequestContext: () => ModelRequestContext | undefined = () => undefined,
-    private readonly memoryRetriever?: HybridMemoryRetriever
+    private readonly memoryRetriever?: HybridMemoryRetriever,
+    private readonly allowActivity: () => boolean = () => true
   ) {
     this.resolveBudget = getBudgetLimits ?? (() => ({
       contextWindow: maxTokens,
@@ -251,9 +253,18 @@ export class ContextMemory {
           );
         }
       }
+      const memoryIncluded = assembly.budget.components?.some((component) => component.id === "stable memory" && component.disposition === "included") === true;
+      if (memoryIncluded && recalled.entries.length && this.memoryRetriever) {
+        // 预算决策前的候选不算召回；统计故障不应丢掉已经组装好的上下文。
+        try {
+          await this.memoryRetriever.recordRecallUsage(recalled.entries, { signal });
+        } catch {
+          signal?.throwIfAborted();
+        }
+      }
       this.memoryRecall = memoryRecallForAssembly(recalled.report, recalled.entries, assembly.budget.components);
       this.memoryRecallDegraded = this.memoryRecall.degraded;
-      this.memoryInjectedSummaries = assembly.budget.components?.some((component) => component.id === "stable memory" && component.disposition === "included")
+      this.memoryInjectedSummaries = memoryIncluded
         ? memoryMatches.map((match) => redactSecrets(match.excerpt))
         : [];
       this.lastBudget = {
@@ -832,9 +843,9 @@ export class ContextMemory {
         limit,
         maxChars: memoryRecallMaxChars,
         signal,
-        automatic: true
+        automatic: true,
+        allowEntry: this.allowActivity() ? undefined : (entry) => !isActivityMemory(entry)
       });
-      await this.memoryRetriever.recordRecallUsage(result.matches.map((match) => match.entry.id), { signal });
       return {
         matches: result.matches.map((match) => ({
           path: match.path,

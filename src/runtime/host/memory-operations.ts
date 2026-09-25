@@ -48,6 +48,9 @@ export async function executeRuntimeHostMemoryOperation(
     return result.entries.find((entry) => entry.id === id) ?? null;
   }
   if (action === "search") {
+    if (payload.userId !== undefined || payload.userIds !== undefined) {
+      throw new Error("Memory search userId/userIds scope is not supported.");
+    }
     return await commands.agent.searchMemory(
       requiredString(payload.query, "query"),
       payload.paths === undefined ? [] : readStringArray(payload.paths, "paths"),
@@ -55,6 +58,7 @@ export async function executeRuntimeHostMemoryOperation(
         limit: optionalSafeInteger(payload.limit),
         maxChars: optionalSafeInteger(payload.maxChars),
         tags: payload.tags === undefined ? undefined : readStringArray(payload.tags, "tags"),
+        threadId: payload.threadId === undefined ? undefined : requiredString(payload.threadId, "threadId"),
         includeArchived: payload.includeArchived === true
       }
     );

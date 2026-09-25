@@ -8,8 +8,7 @@ import { randomUUID } from "node:crypto";
 import { chmod, mkdir } from "node:fs/promises";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { globalAgentDir } from "../../config/paths.js";
-import { memoryDatabaseFileName } from "./memoryStorage.js";
+import { AGENT_DATABASE_FILE, globalAgentDir } from "../../config/paths.js";
 import type {
   Crystal,
   CrystalAnchor,
@@ -84,7 +83,7 @@ export class CrystalStorage {
 
   constructor(options: CrystalStorageOptions = {}) {
     const agentDir = path.resolve(options.agentDir ?? globalAgentDir());
-    this.databasePath = path.join(agentDir, "memory", memoryDatabaseFileName);
+    this.databasePath = path.join(agentDir, AGENT_DATABASE_FILE);
     this.now = options.now ?? (() => new Date());
   }
 

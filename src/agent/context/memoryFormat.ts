@@ -7,7 +7,8 @@ import type {
   MemoryDurability,
   MemoryEntry,
   MemoryEntryInput,
-  MemoryMatch
+  MemoryMatch,
+  MemorySearchScope
 } from "./memoryTypes.js";
 
 export const maxMemoryContentChars = 2_000;
@@ -97,6 +98,12 @@ export function entryHasAnyTag(entry: Pick<MemoryEntry, "tags">, filter: readonl
   if (!filter?.length) return true;
   const owned = new Set(entry.tags.map((tag) => tag.toLowerCase()));
   return filter.some((tag) => owned.has(tag.trim().toLowerCase()));
+}
+
+/** 显式搜索的 thread 与 tag 范围取交集，不按存储中的 userId 切分事实。 */
+export function entryMatchesMemorySearchScope(entry: MemoryEntry, scope: MemorySearchScope): boolean {
+  if (scope.threadId !== undefined && entry.threadId !== scope.threadId) return false;
+  return entryHasAnyTag(entry, scope.tags);
 }
 
 /** 确定性词法打分：标签命中权重最高，其次是正文包含；新条目有轻微新鲜度加成。 */

@@ -36,13 +36,13 @@ async function testSqliteVectorProjection(): Promise<void> {
   try {
     const allowed = (await storage.writeEntry({ content: "Allowed projection entry" })).entry!;
     const excluded = (await storage.writeEntry({ content: "Excluded projection entry" })).entry!;
-    const memoryRoot = path.join(root, "memory");
+    const memoryRoot = root;
     index = new MemoryVectorIndex(memoryRoot);
     index.replaceAll("test-vector-model", 2, [
       { entryId: allowed.id, revision: allowed.revision, embedding: [0.8, 0.6] },
       { entryId: excluded.id, revision: excluded.revision, embedding: [1, 0] }
     ]);
-    database = new DatabaseSync(path.join(memoryRoot, "memory.sqlite"), { allowExtension: true });
+    database = new DatabaseSync(path.join(memoryRoot, "agent.sqlite"), { allowExtension: true });
     loadSqliteVec(database);
     assert.match(String(database.prepare("SELECT sql FROM sqlite_master WHERE name = 'memory_embeddings'").get()?.sql), /vec0/u);
     index.upsertActiveVectors("test-vector-model", 2, [{ entryId: allowed.id, revision: allowed.revision, embedding: [0, 1] }]);

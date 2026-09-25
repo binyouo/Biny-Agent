@@ -3,9 +3,8 @@ import { watch, type FSWatcher } from "node:fs";
 import { lstat, mkdir } from "node:fs/promises";
 import type { IncomingMessage, Server } from "node:http";
 import type { Duplex } from "node:stream";
-import path from "node:path";
 import { WebSocket, WebSocketServer } from "ws";
-import { globalAgentDir } from "../../config/paths.js";
+import { AGENT_DATABASE_FILE, globalAgentDir } from "../../config/paths.js";
 import type { RuntimeHostClient } from "./client.js";
 
 type MemoryStatusClient = Pick<RuntimeHostClient, "memory" | "memoryEmbeddingStatus">;
@@ -16,7 +15,7 @@ export async function attachMemoryWebSocket(
   client: MemoryStatusClient,
   authorize: (request: IncomingMessage) => number | undefined
 ): Promise<() => Promise<void>> {
-  const directory = path.join(globalAgentDir(), "memory");
+  const directory = globalAgentDir();
   await mkdir(directory, { recursive: true, mode: 0o700 });
   if (!(await lstat(directory)).isDirectory()) throw new Error("Memory directory must be a real directory.");
   const wss = new WebSocketServer({ noServer: true, maxPayload: 1024, perMessageDeflate: false });
@@ -89,7 +88,7 @@ export async function attachMemoryWebSocket(
   // 文件监听补获其它进程/工作区的 SQLite 提交；定时采样同时兜底丢失的文件事件。
   try {
     watcher = watch(directory, (_event, name) => {
-      if (!name || String(name).startsWith("memory.sqlite")) scheduleRefresh();
+      if (!name || String(name).startsWith(AGENT_DATABASE_FILE)) scheduleRefresh();
     });
     watcher.on("error", () => { watcher?.close(); watcher = undefined; });
     watcher.unref();

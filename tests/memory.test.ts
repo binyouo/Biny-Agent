@@ -13,7 +13,8 @@ import {
 } from "../src/agent/context/LocalMemory.js";
 import { MemoryEmbeddingService } from "../src/agent/context/MemoryEmbeddingService.js";
 import { MemoryVectorIndex } from "../src/agent/context/MemoryVectorIndex.js";
-import { MemoryStorage, memoryDatabaseFileName } from "../src/agent/context/memoryStorage.js";
+import { MemoryStorage } from "../src/agent/context/memoryStorage.js";
+import { AGENT_DATABASE_FILE } from "../src/config/paths.js";
 import { sleepMergePrompt } from "../src/agent/context/sleepMergePrompt.js";
 import { memoryExtractionPrompt, temporaryMemoryCleanupPrompt, parseMemoryOperations } from "../src/agent/context/memoryExtraction.js";
 import { BINY_AGENT_DIR_ENV } from "../src/config/paths.js";
@@ -25,8 +26,10 @@ async function main(): Promise<void> {
   await testSingleStoreAndEdit();
   await testSharedLibraryAcrossWorkspaces();
   await testConcurrentWritesAndUsageProjection();
+  await testRecallUsageAtomicityAndConcurrency();
   await testExactDuplicateNormalization();
   await testAutomaticSemanticDedup();
+  await testAutomaticDedupFailureContract();
   await testSemanticDeleteAndTemporaryCleanup();
   await testSemanticDeleteResponseProtocol();
   await testTemporaryCleanupRequiresExactCandidateIds();
@@ -153,7 +156,7 @@ async function testSingleStoreAndEdit(): Promise<void> {
     assert.equal(updated.entry?.content, "Use src/weather.ts as the deterministic weather request entry point.");
     assert.equal(updated.revision, 4);
 
-    const database = new DatabaseSync(path.join(agentRoot, "memory", memoryDatabaseFileName), { readOnly: true });
+    const database = new DatabaseSync(path.join(agentRoot, AGENT_DATABASE_FILE), { readOnly: true });
     try {
       const rows = database.prepare("SELECT content, metadata FROM memories").all() as Array<{ content: string; metadata: string }>;
       assert.equal(rows.length, 3);
@@ -192,7 +195,7 @@ async function testSharedLibraryAcrossWorkspaces(): Promise<void> {
       ));
       assert.equal(own.revision, 2, "两个工作区写入推进同一个 revision");
       assert.equal((await second.listMemoryEntries()).entries.length, 2);
-      assert.equal(await fs.realpath(path.join(agentRoot, "memory")), path.join(await fs.realpath(agentRoot), "memory"));
+      assert.equal(await fs.realpath(path.join(agentRoot, AGENT_DATABASE_FILE)), path.join(await fs.realpath(agentRoot), AGENT_DATABASE_FILE));
       first.close();
       second.close();
     } finally {
@@ -229,7 +232,7 @@ async function testConcurrentWritesAndUsageProjection(): Promise<void> {
     assert.equal(recalled?.accessCount, 1, "one citation call counts an id once");
     assert.equal(recalled?.lastAccessedAt, "2026-08-03T00:00:00.000Z");
     assert.equal((await storage.getOverview()).storeRevision, beforeRevision, "derived usage must not advance content revision");
-    const database = new DatabaseSync(path.join(agentRoot, "memory", memoryDatabaseFileName), { readOnly: true });
+    const database = new DatabaseSync(path.join(agentRoot, AGENT_DATABASE_FILE), { readOnly: true });
     try {
       const row = database.prepare("SELECT metadata FROM memories WHERE id = ?").get(entry.id) as { metadata?: string } | undefined;
       assert.equal(row?.metadata?.includes("accessCount"), true, "usage metadata follows the canonical field name");
@@ -241,6 +244,44 @@ async function testConcurrentWritesAndUsageProjection(): Promise<void> {
     await storage.deleteEntry(entry.id);
     const pruned = (await storage.listEntries()).entries.filter(({ id }) => id === entry.id);
     assert.equal(pruned.length, 0, "deleted entry must be removed");
+  });
+}
+
+async function testRecallUsageAtomicityAndConcurrency(): Promise<void> {
+  await withIsolatedMemory(async (workspaceRoot, agentRoot) => {
+    const storage = new MemoryStorage(workspaceRoot);
+    const first = (await storage.writeEntry(projectEntry("First access statistics transaction fact."))).entry!;
+    const second = (await storage.writeEntry(projectEntry("Second access statistics transaction fact."))).entry!;
+    const initialRevision = (await storage.getOverview()).storeRevision;
+    const database = new DatabaseSync(path.join(agentRoot, AGENT_DATABASE_FILE));
+    try {
+      database.exec(
+        `CREATE TRIGGER reject_second_access BEFORE UPDATE OF access_count ON memories
+         WHEN NEW.id = '${second.id}' BEGIN SELECT RAISE(ABORT, 'blocked access update'); END`
+      );
+      await assert.rejects(storage.recordRecallUsage([first.id, second.id]), /blocked access update/u);
+      database.exec("DROP TRIGGER reject_second_access");
+      assert.deepEqual((await storage.listEntries()).entries.map((entry) => entry.accessCount), [0, 0]);
+
+      const cancelled = new AbortController();
+      cancelled.abort(new Error("Cancelled before access commit"));
+      await assert.rejects(storage.recordRecallUsage([first.id, second.id], { signal: cancelled.signal }));
+      assert.deepEqual((await storage.listEntries()).entries.map((entry) => entry.accessCount), [0, 0]);
+
+      await Promise.all([
+        storage.recordRecallUsage([first.id, second.id, first.id], { now: new Date("2026-08-03T10:00:00.000Z") }),
+        storage.recordRecallUsage([first.id, second.id], { now: new Date("2026-08-03T11:00:00.000Z") })
+      ]);
+      const entries = (await storage.listEntries()).entries;
+      assert.deepEqual(entries.map((entry) => entry.accessCount), [2, 2]);
+      assert.equal(entries.find((entry) => entry.id === first.id)?.updatedAt, first.updatedAt);
+      assert.equal(entries.find((entry) => entry.id === second.id)?.updatedAt, second.updatedAt);
+      assert.equal(entries[0]?.lastAccessedAt, entries[1]?.lastAccessedAt);
+      assert.equal((await storage.getOverview()).storeRevision, initialRevision);
+    } finally {
+      database.close();
+      storage.close();
+    }
   });
 }
 
@@ -320,6 +361,63 @@ async function testAutomaticSemanticDedup(): Promise<void> {
     }
     memory.close();
     seed.close();
+  });
+}
+
+/** 自动写入的模型故障应允许 exact-safe 新增；取消和必需语义缺失不能写入。 */
+async function testAutomaticDedupFailureContract(): Promise<void> {
+  await withIsolatedMemory(async (workspaceRoot) => {
+    const seed = new LocalMemory(workspaceRoot, unusedModel);
+    const first = await seed.writeEntry(projectEntry(
+      "Release verification requires a complete test run before publishing."
+    ));
+    assert.ok(first.entry);
+    const controller = new AbortController();
+    let response: "invalid" | "throw" | "abort" = "invalid";
+    const model = jsonMemoryModel(() => {
+      if (response === "throw") throw new Error("The test model disconnected.");
+      if (response === "abort") controller.abort(new Error("The test request was cancelled."));
+      return "{invalid-json}";
+    });
+    const memory = new LocalMemory(
+      workspaceRoot, () => model, undefined, 3, undefined, undefined, undefined,
+      async () => [first.entry!]
+    );
+    const unavailable = new LocalMemory(
+      workspaceRoot, unusedModel, undefined, 3, undefined, undefined, undefined,
+      async () => undefined
+    );
+    try {
+      const malformed = await memory.writeAutoEntry(projectEntry(
+        "The release checklist also requires reviewing the package manifest."
+      ), { requireSemantic: true });
+      assert.equal(malformed.written, true);
+      assert.equal((await memory.getOverview()).entryCount, 2);
+
+      response = "throw";
+      const disconnected = await memory.writeAutoEntry(projectEntry(
+        "The release checklist additionally requires reviewing the license file."
+      ), { requireSemantic: true });
+      assert.equal(disconnected.written, true);
+      assert.equal((await memory.getOverview()).entryCount, 3);
+
+      response = "abort";
+      await assert.rejects(memory.writeAutoEntry(projectEntry(
+        "A cancelled release note must never be saved as a memory."
+      ), { requireSemantic: true, signal: controller.signal }));
+      assert.equal((await memory.getOverview()).entryCount, 3);
+
+      const deferred = await unavailable.writeAutoEntry(projectEntry(
+        "A missing semantic runtime defers this automatic memory candidate."
+      ), { requireSemantic: true });
+      assert.equal(deferred.written, false);
+      assert.equal(deferred.deferred, true);
+      assert.equal((await memory.getOverview()).entryCount, 3);
+    } finally {
+      unavailable.close();
+      memory.close();
+      seed.close();
+    }
   });
 }
 
@@ -1141,7 +1239,7 @@ async function testStaleSleepOwnerCannotCommitAfterTakeover(): Promise<void> {
       });
       await started;
       // 只推进持久 lease 的时间边界，模拟进程暂停超过租期；无需真实等待一分钟。
-      const database = new DatabaseSync(path.join(agentRoot, "memory", memoryDatabaseFileName));
+      const database = new DatabaseSync(path.join(agentRoot, AGENT_DATABASE_FILE));
       try {
         const row = database.prepare("SELECT value FROM memory_meta WHERE key = 'sleep_owner'").get() as { value?: string } | undefined;
         assert.ok(row?.value);
@@ -1480,7 +1578,7 @@ async function testSleepSynthesisArchivesCluster(): Promise<void> {
     assert.deepEqual(synthesis.tags, ["sleep-merged", "first", "shared", "second"]);
     const archived = (await memory.listArchivedEntries()).entries;
     assert.equal(archived.length, 0, "synthesis without delete keeps the old cluster active");
-    const database = new DatabaseSync(path.join(agentRoot, "memory", memoryDatabaseFileName), { readOnly: true });
+    const database = new DatabaseSync(path.join(agentRoot, AGENT_DATABASE_FILE), { readOnly: true });
     try {
       const row = database.prepare("SELECT metadata FROM memories WHERE id = ?").get(synthesis.id) as { metadata?: string } | undefined;
       assert.match(row?.metadata ?? "", /"source":"auto"/u);
@@ -1562,11 +1660,12 @@ async function testSingleRootSafetyBoundary(): Promise<void> {
   const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "biny-memory-workspace-"));
   const outside = await mkdtemp(path.join(os.tmpdir(), "biny-memory-outside-"));
   const previous = process.env[BINY_AGENT_DIR_ENV];
-  process.env[BINY_AGENT_DIR_ENV] = agentRoot;
+  const linkedAgentRoot = path.join(agentRoot, "linked-agent");
+  process.env[BINY_AGENT_DIR_ENV] = linkedAgentRoot;
   try {
-    await fs.symlink(outside, path.join(agentRoot, "memory"), "dir");
+    await fs.symlink(outside, linkedAgentRoot, "dir");
     await assert.rejects(new LocalMemory(workspaceRoot, unusedModel).writeEntry(projectEntry(
-      "This entry must never be written through a symbolic memory root."
+      "This entry must never be written through a symbolic Agent root."
     )), /real directory, not a symbolic link/u);
     assert.deepEqual(await fs.readdir(outside), []);
   } finally {
@@ -1579,8 +1678,8 @@ async function testSingleRootSafetyBoundary(): Promise<void> {
 
 async function testEmbeddingStatusDoesNotCreateIndex(): Promise<void> {
   await withIsolatedMemory(async (workspaceRoot, agentRoot) => {
-    const memoryRoot = path.join(agentRoot, "memory");
-    const databasePath = path.join(memoryRoot, memoryDatabaseFileName);
+    const memoryRoot = agentRoot;
+    const databasePath = path.join(memoryRoot, AGENT_DATABASE_FILE);
     const service = new MemoryEmbeddingService({
       localMemory: new LocalMemory(workspaceRoot, unusedModel),
       localManager: { list: async () => [] } as unknown as LocalEmbeddingManager,
@@ -1678,8 +1777,8 @@ async function testFactsAndVectorsShareDatabase(): Promise<void> {
     ));
     assert.ok(written.entry);
 
-    const memoryRoot = path.join(agentRoot, "memory");
-    const databasePath = path.join(memoryRoot, memoryDatabaseFileName);
+    const memoryRoot = agentRoot;
+    const databasePath = path.join(memoryRoot, AGENT_DATABASE_FILE);
     assert.equal(
       MemoryVectorIndex.openReadOnly(memoryRoot),
       undefined,
@@ -1745,8 +1844,8 @@ async function testInitialEmbeddingGeneration(): Promise<void> {
     const service = new MemoryEmbeddingService({
       localMemory: memory,
       localManager: { list: async () => [] } as unknown as LocalEmbeddingManager,
-      getVectorIndex: () => new MemoryVectorIndex(path.join(agentRoot, "memory")),
-      getReadOnlyVectorIndex: () => MemoryVectorIndex.openReadOnly(path.join(agentRoot, "memory")),
+      getVectorIndex: () => new MemoryVectorIndex(agentRoot),
+      getReadOnlyVectorIndex: () => MemoryVectorIndex.openReadOnly(agentRoot),
       getActiveModel: () => ref,
       getProviderModels: () => [descriptor],
       getRuntime: async () => runtime
@@ -1760,11 +1859,26 @@ async function testInitialEmbeddingGeneration(): Promise<void> {
     const matches = await service.findSimilarEntries("Find the first stored fact", [created.entry], 5, 0.3);
     assert.equal(matches?.length, 1);
     assert.equal(matches?.[0]?.accessCount, 0, "search returns the pre-access snapshot");
+    const readVectorRevision = (): number | undefined => {
+      const database = new DatabaseSync(path.join(agentRoot, AGENT_DATABASE_FILE), { readOnly: true });
+      try {
+        const row = database.prepare("SELECT revision FROM memory_embedding_versions WHERE memory_id = ?")
+          .get(created.entry!.id) as { revision?: number } | undefined;
+        return row?.revision;
+      } finally {
+        database.close();
+      }
+    };
+    const vectorRevision = readVectorRevision();
+    assert.equal(vectorRevision, created.entry.revision);
     await memory.recordRecallUsage([created.entry.id]);
     const accessed = (await memory.listMemoryEntries()).entries[0]!;
     assert.equal(accessed.accessCount, 1);
-    assert.equal(accessed.lastAccessedAt, accessed.updatedAt);
+    assert.ok(accessed.lastAccessedAt);
+    assert.equal(accessed.updatedAt, created.entry.updatedAt, "访问统计不能改写事实更新时间");
     assert.equal(accessed.revision, created.entry.revision);
+    assert.equal(readVectorRevision(), vectorRevision, "访问统计不能改写向量对应的事实版本");
+    assert.equal((await service.status()).pendingEntries, 0, "访问统计不能使向量投影失效");
     await service.findSimilarEntries("Find no candidates", [], 5, 0.3);
     assert.equal((await memory.listMemoryEntries()).entries[0]?.accessCount, 1);
     const save = await service.prepareSynthesis(created.entry.content);
@@ -1840,7 +1954,7 @@ async function testMemoryVectorProjectionLifecycle(): Promise<void> {
         model: ref
       })
     };
-    const memoryRoot = path.join(agentRoot, "memory");
+    const memoryRoot = agentRoot;
     const memory = new LocalMemory(
       workspaceRoot,
       unusedModel,
@@ -1863,7 +1977,7 @@ async function testMemoryVectorProjectionLifecycle(): Promise<void> {
       getRuntime: async () => runtime
     });
     const database = (): DatabaseSync => {
-      const opened = new DatabaseSync(path.join(memoryRoot, memoryDatabaseFileName), { allowExtension: true });
+      const opened = new DatabaseSync(path.join(memoryRoot, AGENT_DATABASE_FILE), { allowExtension: true });
       loadSqliteVec(opened);
       return opened;
     };

@@ -88,6 +88,7 @@ export async function runMemoryCommand(
     const result = searchMemory
       ? await searchMemory(query, [], options)
       : await memory.search(query, [], options);
+    if (!searchMemory) await memory.recordRecallUsage(result.matches.map((match) => match.entry.id));
     if (!result.matches.length) return `No memory matches for: ${query}`;
     return [
       `Memory matches for "${query}":`,

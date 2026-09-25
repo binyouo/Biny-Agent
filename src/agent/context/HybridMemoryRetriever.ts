@@ -9,7 +9,7 @@ import type { EmbeddingModelRuntime } from "../../llm/embedding/types.js";
 import { redactSecrets } from "../../utils/secrets.js";
 import { perfNow, recordPerfPhase } from "../../observability/perfTiming.js";
 import { type MemoryVectorIndexStatus, type MemoryVectorSearchResult } from "./MemoryVectorIndex.js";
-import { entryHasAnyTag } from "./memoryFormat.js";
+import { entryMatchesMemorySearchScope } from "./memoryFormat.js";
 import type {
   MemoryEntriesResult,
   MemoryEntry,
@@ -94,7 +94,9 @@ export class HybridMemoryRetriever {
       signal?: AbortSignal;
       includeArchived?: boolean;
       automatic?: boolean;
+      allowEntry?: (entry: MemoryEntry) => boolean;
       tags?: string[];
+      threadId?: string;
     }
   ): Promise<MemorySearchResult> {
     options.signal?.throwIfAborted();
@@ -104,8 +106,9 @@ export class HybridMemoryRetriever {
       signal: options.signal
     });
     if (this.options.allowEntry) snapshot.entries = snapshot.entries.filter(this.options.allowEntry);
-    // tag 后过滤先于语义检索：向量候选集合与词法回退都只看通过过滤的条目。
-    snapshot.entries = snapshot.entries.filter((entry) => entryHasAnyTag(entry, options.tags));
+    if (options.allowEntry) snapshot.entries = snapshot.entries.filter(options.allowEntry);
+    // 所有 scope 都在 exact ID、语义 top-K 和词法排名前生效。
+    snapshot.entries = snapshot.entries.filter((entry) => entryMatchesMemorySearchScope(entry, options));
     snapshot.paths = snapshot.paths === undefined
       ? undefined
       : Object.fromEntries(Object.entries(snapshot.paths).filter(([id]) => snapshot.entries.some((entry) => entry.id === id)));
@@ -136,6 +139,7 @@ export class HybridMemoryRetriever {
         await this.options.localMemory.search(value, paths, {
           includeArchived: options.includeArchived,
           tags: options.tags,
+          threadId: options.threadId,
           limit: snapshot.entries.length,
           signal: options.signal
         })

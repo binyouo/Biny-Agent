@@ -1,7 +1,7 @@
 /**
  * 记忆 Embedding 的下载与派生索引协调器。
  *
- * SQLite 记忆仍是唯一事实源；事实表和向量派生表位于同一个 memory.sqlite。完整重建只
+ * SQLite 记忆仍是唯一事实源；事实表和向量派生表位于同一个 Agent SQLite。完整重建只
  * 替换已有 vec0 投影，增量写只允许命中相同模型指纹和维度的当前投影。
  */
 import type {
@@ -107,7 +107,7 @@ export class MemoryEmbeddingService {
     try {
       statusIndex = this.vectorIndexInstance ?? this.options.getReadOnlyVectorIndex();
       if (statusIndex === undefined) {
-        // memory.sqlite 或其中的向量表尚未存在时，状态页只报告未知/待处理，不为了一次
+        // Agent SQLite 或其中的向量表尚未存在时，状态页只报告未知/待处理，不为了一次
         // 读取创建数据库或补写向量表。
         index = {};
       } else {

@@ -128,11 +128,11 @@ async function testCrystalHttpLifecycle(): Promise<void> {
     const api = await startActivityHttpServer({
       loadSettings: async () => ({ ...defaultActivitySettings, outputDirectory: root }),
       crystal
-    });
+    }, { token: "crystal-http-test-token" });
     try {
       const response = await fetch(`http://${api.host}:${String(api.port)}/api/crystal/seeds`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", Authorization: "Bearer crystal-http-test-token" },
         body: JSON.stringify({ name: "Loopback Theme" })
       });
       assert.equal(response.status, 200);
@@ -140,7 +140,7 @@ async function testCrystalHttpLifecycle(): Promise<void> {
       assert.ok(loopbackSeed.id);
       const invalid = await fetch(`http://${api.host}:${String(api.port)}/api/crystal/seeds`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", Authorization: "Bearer crystal-http-test-token" },
         body: "not-json"
       });
       assert.equal(invalid.status, 400);

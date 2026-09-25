@@ -23,6 +23,7 @@ export const GLOBAL_CONFIG_FILE = "config.json";
 export const PROJECT_SETTINGS_FILE = "settings.json";
 export const MODELS_STORE_FILE = "models-store.json";
 export const GLOBAL_PLUGIN_DIR = "plugins";
+export const AGENT_DATABASE_FILE = "agent.sqlite";
 
 export interface PathEnvironment {
   env?: NodeJS.ProcessEnv;

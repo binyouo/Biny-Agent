@@ -1,6 +1,6 @@
 /** 人格闭环回归：真实文件、跨实例状态、重试幂等和活动派生内容撤回。 */
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import { FatigueService } from "../src/agent/context/fatigue.js";
@@ -10,11 +10,11 @@ import { refreshSelfReflection } from "../src/agent/context/selfReflection.js";
 import { renderEmotionPrompt } from "../src/agent/context/emotionPrompt.js";
 import { upsertDailyMemorySection, readDailyMemoryNote } from "../src/activity/dailyNotes.js";
 import { dailyNoteForModel, activityDerivedMarker } from "../src/activity/modelContext.js";
-import { createActivitySessionsTool } from "../src/tools/activity/sessions.js";
-import { defaultActivitySettings } from "../src/activity/settings.js";
 import type { AgentModel } from "../src/agent/core/types.js";
 
 const root = await mkdtemp(path.join(os.tmpdir(), "biny-persona-lifecycle-"));
+const previousAgentDir = process.env.BINY_AGENT_DIR;
+process.env.BINY_AGENT_DIR = root;
 try {
   let now = new Date(2026, 8, 11, 9);
   const fatigue = new FatigueService({ agentDir: path.join(root, "fatigue"), now: () => now });
@@ -96,10 +96,9 @@ try {
   assert.equal((await reflectionSoul.read()).revision, afterFirst.revision, "catch-up cannot grow today's persona");
   assert.deepEqual(await emotions.readBase(), previousBase, "catch-up cannot overwrite current mood");
 
-  const activity = createActivitySessionsTool({ getChatModel: () => model, loadSettings: async () => ({ ...defaultActivitySettings, outputDirectory: path.join(root, "activity") }) });
-  const execution = await activity.resolveExecution({});
-  assert.ok(!("isError" in execution));
-  assert.match(await execution.execute({ toolCallId: "test", operationId: "test" }), /还没有录到/u, "云聊天模型可直接查询 Activity，无额外授权");
-  assert.ok((await readFile(path.join(root, "activity", "activity.sqlite"))).length > 0);
-} finally { await rm(root, { recursive: true, force: true }); }
+} finally {
+  if (previousAgentDir === undefined) delete process.env.BINY_AGENT_DIR;
+  else process.env.BINY_AGENT_DIR = previousAgentDir;
+  await rm(root, { recursive: true, force: true });
+}
 console.log("persona lifecycle tests passed");

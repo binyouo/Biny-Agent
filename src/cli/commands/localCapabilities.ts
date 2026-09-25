@@ -8,6 +8,14 @@ import { connectOrSpawnRuntimeHost, connectRuntimeHost, type RuntimeHostClient }
 import { archiveConversationMarkdown } from "../../session/markdownArchive.js";
 import { startMemoryHttpServer } from "../../runtime/host/memory-http.js";
 import { SessionSearchIndex } from "../../session/searchIndex.js";
+import { TemporalMemoryIndex, type TemporalQuery } from "../../session/temporalMemory.js";
+import { createDateReference, type DateReferenceRange } from "../../session/dateReference.js";
+import { readNativeCalendar } from "../../session/nativeCalendar.js";
+import { createTemporalModelExtractor } from "../../session/temporalModelExtractor.js";
+import { listAllSessionFiles } from "../../session/store.js";
+import { createFileConfigStore } from "../../config/store.js";
+import { resolveToolModel } from "../../llm/toolModel.js";
+import path from "node:path";
 import { globalConfigDir } from "../../config/paths.js";
 import { readDailyMemoryNote, readDailyMemorySection } from "../../activity/dailyNotes.js";
 import { HeartbeatFileStore } from "../../agent/context/heartbeat.js";
@@ -58,10 +66,15 @@ export async function memoryListCommand(workspaceRoot: string, options: LocalCap
 export async function memorySearchCommand(
   workspaceRoot: string,
   query: string,
-  options: LocalCapabilityOutputOptions & { tag?: string[] } = {}
+  options: LocalCapabilityOutputOptions & { tag?: string[]; threadId?: string } = {}
 ): Promise<void> {
   await withHost(workspaceRoot, options, async (client) => {
-    const result = await client.memory("search", { query, tags: options.tag, limit: 20 });
+    const result = await client.memory("search", {
+      query,
+      tags: options.tag,
+      threadId: options.threadId,
+      limit: 20
+    });
     printResult(result, options.json, (value) => JSON.stringify(value, null, 2));
   });
 }
@@ -316,6 +329,68 @@ export async function historySearchCommand(query: string, options: LocalCapabili
   } finally {
     index.close();
   }
+}
+
+/** 日期检索直接读可重建的本地 Session 投影，公开文本与 JSON 使用同一份结果。 */
+export async function temporalMemoryCommand(
+  kind: "timeline" | "facts",
+  options: LocalCapabilityOutputOptions & { from: string; to: string; sessionId?: string; limit?: string; offset?: string }
+): Promise<void> {
+  const index = new TemporalMemoryIndex();
+  try {
+    await index.refreshAll();
+    const query: TemporalQuery = {
+      startDate: options.from, endDate: options.to, sessionId: options.sessionId,
+      limit: options.limit === undefined ? undefined : Number(options.limit),
+      offset: options.offset === undefined ? undefined : Number(options.offset),
+      today: new Intl.DateTimeFormat("en-CA", { year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date())
+    };
+    const result = kind === "timeline" ? index.queryClues(query) : index.queryFacts(query);
+    printResult(result, options.json, () => {
+      if ("clues" in result) return result.clues.length
+        ? result.clues.map((row) => `[${String(row.date ?? "日期未定")}] ${row.expression} · ${row.sourceUri} · ${row.quote}`).join("\n")
+        : "没有匹配的原始用户消息。";
+      return result.facts.length
+        ? result.facts.map((row) => `[${row.state}] ${row.title} · ${row.sourceUri} · ${row.quote}`).join("\n")
+        : "没有匹配的原始用户消息。";
+    });
+  } finally { index.close(); }
+}
+
+export async function temporalDateReferenceCommand(options: LocalCapabilityOutputOptions & { from: string; to: string; timeZone: string; label?: string }): Promise<void> {
+  const range: DateReferenceRange = { startDate: options.from, endDate: options.to, timeZone: options.timeZone };
+  const reference = createDateReference(range, options.label);
+  printResult({ reference, range }, options.json, () => reference);
+}
+
+export async function temporalCalendarCommand(options: LocalCapabilityOutputOptions & { from: string; to: string; timeZone: string; allowCalendar?: boolean }): Promise<void> {
+  const result = await readNativeCalendar({ startDate: options.from, endDate: options.to, timeZone: options.timeZone }, { authorized: options.allowCalendar === true });
+  printResult(result, options.json, () => result.events.length
+    ? result.events.map((event) => `${event.startDate} · ${event.title}${event.calendar ? ` · ${event.calendar}` : ""}`).join("\n")
+    : "此日期范围没有日历事件。");
+}
+
+export async function temporalClueActionCommand(kind: "ignore" | "seen", id: string, options: LocalCapabilityOutputOptions = {}): Promise<void> {
+  const index = new TemporalMemoryIndex();
+  try {
+    const result = kind === "ignore"
+      ? { ignored: index.ignoreClue(id) }
+      : { seen: index.markSeen([id], new Intl.DateTimeFormat("en-CA", { year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date()), Intl.DateTimeFormat().resolvedOptions().timeZone) };
+    printResult(result, options.json, (value) => JSON.stringify(value));
+  } finally { index.close(); }
+}
+
+/** 显式按一条本机会话建立带引文的工作事实；请求模型前必须已选定原始 Session。 */
+export async function temporalIndexFactsCommand(workspaceRoot: string, sessionId: string, options: LocalCapabilityOutputOptions = {}): Promise<void> {
+  const matches = (await listAllSessionFiles()).filter((file) => path.basename(file) === `${sessionId}.jsonl`);
+  if (matches.length !== 1) throw new Error(matches.length ? "Session ID is ambiguous." : "Session not found.");
+  const model = resolveToolModel(await createFileConfigStore(workspaceRoot).load());
+  if (!model) throw new Error("No configured tool model is available for dated work facts.");
+  const index = new TemporalMemoryIndex(undefined, createTemporalModelExtractor(model));
+  try {
+    const indexed = await index.indexSessionFile(sessionId, matches[0]!);
+    printResult({ sessionId, indexedMessages: indexed.length }, options.json, (value) => JSON.stringify(value));
+  } finally { index.close(); }
 }
 
 function resolveDateKey(value: string): string {

@@ -37,7 +37,7 @@ for (const outcome of ["updated", "deleted", "archived"] as const) {
       indexEntry: async (entry) => service.indexEntry(entry),
       removeEntries: (ids) => service.removeEntries(ids)
     });
-  const memoryRoot = path.join(root, "memory");
+  const memoryRoot = root;
   const service = new MemoryEmbeddingService({
     localMemory: memory, localManager: new LocalEmbeddingManager(path.join(root, "models")),
     getVectorIndex: () => new MemoryVectorIndex(memoryRoot),

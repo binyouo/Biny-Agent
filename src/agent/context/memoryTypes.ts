@@ -194,10 +194,15 @@ export interface MemoryRecallReport {
   degraded?: "no_vector_index" | "no_embedding_runtime" | "model_mismatch";
 }
 
-export interface MemorySearchOptions extends MemoryReadOptions {
-  includeArchived?: boolean;
-  /** tag 后过滤：条目必须同时携带这里列出的全部标签；空/缺省表示不过滤。 */
+export interface MemorySearchScope {
+  /** 条目的 threadId 必须严格匹配。 */
+  threadId?: string;
+  /** 匹配任一标签即可，大小写不敏感；空/缺省表示不过滤。 */
   tags?: string[];
+}
+
+export interface MemorySearchOptions extends MemoryReadOptions, MemorySearchScope {
+  includeArchived?: boolean;
   /** 单库合计上限。 */
   limit?: number;
   /** 注入预算；命中条目超过预算时在 report 中明确标为 budget。 */

@@ -14,7 +14,7 @@ import { sessionMessageMetadata } from "../src/session/messageTree.js";
 import { sessionEventsToTranscript } from "../src/tui/sessionTranscript.js";
 import type { HybridMemoryRetriever } from "../src/agent/context/HybridMemoryRetriever.js";
 import { CrystalStorage } from "../src/agent/context/crystalStorage.js";
-import { memoryDatabaseFileName } from "../src/agent/context/memoryStorage.js";
+import { AGENT_DATABASE_FILE } from "../src/config/paths.js";
 import { WorkspaceContext } from "../src/agent/context/WorkspaceContext.js";
 import { cloneAgentMessages, messageReasoning, messageText } from "../src/agent/modelMessages.js";
 import { buildSystemPrompt, refreshRuntimeSystemPrompt, stableSystemPromptForCache, stripTransientTurnContext } from "../src/agent/prompts.js";
@@ -24,6 +24,7 @@ import { defaultConfig } from "../src/config/schema.js";
 import { PermissionManager } from "../src/permission/PermissionManager.js";
 import { recordNativeTelemetry } from "../src/observability/telemetry.js";
 import { SessionRecorder, type SessionEvent } from "../src/session/recorder.js";
+import { TemporalMemoryIndex } from "../src/session/temporalMemory.js";
 import { maxSessionEventLineBytes, maxSessionEvents, maxSessionFileBytes } from "../src/session/limits.js";
 import { replaySession, sessionEventsToConversation } from "../src/session/replay.js";
 import {
@@ -157,7 +158,7 @@ async function main(): Promise<void> {
     await testAutomaticContextSkipsUnreadableOptionalFiles();
     await testAutomaticContextSupportsSymlinkedWorkspaceRoot();
     await testBudgetAndCompaction();
-    await testRecallCountsBeforeBudget();
+    await testRecallCountsOnlyAfterInjection();
     await testMidTurnToolResultPruning();
     await testActiveRunCompactionPreservesToolBatches();
     await testIncrementalSplitTurnCompaction();
@@ -616,7 +617,7 @@ function toolResultValue(message: AgentMessage | undefined): unknown {
   return message.content.find((entry) => entry.type === "text")?.text;
 }
 
-async function testRecallCountsBeforeBudget(): Promise<void> {
+async function testRecallCountsOnlyAfterInjection(): Promise<void> {
   await withTempWorkspace(async (workspaceRoot) => {
     const previousRoot = process.env[BINY_AGENT_DIR_ENV];
     process.env[BINY_AGENT_DIR_ENV] = path.join(workspaceRoot, "agent-data");
@@ -627,21 +628,16 @@ async function testRecallCountsBeforeBudget(): Promise<void> {
       });
       assert.ok(written.entry);
       const result = await local.search("Release verification", [], { limit: 1 });
-      let calls = 0;
       const retriever = {
         retrieve: async () => result,
-        recordRecallUsage: async (ids: string[]) => {
-          calls += 1;
-          await local.recordRecallUsage(ids);
-        }
+        recordRecallUsage: async (ids: string[]) => await local.recordRecallUsage(ids)
       } as unknown as HybridMemoryRetriever;
       const context = new ContextMemory(
         () => new ContextTestModel().model, new WorkspaceContext(workspaceRoot, [], 32 * 1024),
         local, 120, 32 * 1024, undefined, undefined, {}, undefined, undefined, retriever
       );
       await context.prepareTurn("current task ".repeat(20), "system rule ".repeat(30));
-      assert.equal(calls, 1);
-      assert.equal((await local.listMemoryEntries()).entries.find((entry) => entry.id === written.entry!.id)?.accessCount, 1);
+      assert.equal((await local.listMemoryEntries()).entries.find((entry) => entry.id === written.entry!.id)?.accessCount, 0);
       assert.notEqual((await context.status()).budget.components?.find((item) => item.id === "stable memory")?.disposition, "included");
       assert.equal((await context.status()).memoryInjectedCount, 0, "被预算排除的命中不能报成已注入");
       assert.deepEqual((await context.status()).memoryInjectedSummaries, [], "被预算排除的记忆不能暴露在界面摘要中");
@@ -652,15 +648,16 @@ async function testRecallCountsBeforeBudget(): Promise<void> {
       const progress = roomy.prepareTurnProgress("Release verification", "system");
       assert.deepEqual(await progress.next(), { value: "workspace", done: false });
       assert.deepEqual(await progress.next(), { value: "memory", done: false });
-      assert.equal(calls, 1, "记忆检索开始前即发布进度，不等检索结束再补发");
+      assert.equal((await local.listMemoryEntries()).entries.find((entry) => entry.id === written.entry!.id)?.accessCount, 0);
       assert.equal((await progress.next()).done, true);
       assert.equal((await roomy.status()).memoryInjectedCount, 1);
       assert.deepEqual((await roomy.status()).memoryInjectedSummaries, result.matches.map((match) => match.excerpt));
+      assert.equal((await local.listMemoryEntries()).entries.find((entry) => entry.id === written.entry!.id)?.accessCount, 1);
       await roomy.prepareTurn("no memory", "system", undefined, [], false);
       assert.equal((await roomy.status()).memoryInjectedCount, 0);
       assert.deepEqual((await roomy.status()).memoryInjectedSummaries, []);
       await context.prepareTurn("no memory", "system", undefined, [], false);
-      assert.equal(calls, 2);
+      assert.equal((await local.listMemoryEntries()).entries.find((entry) => entry.id === written.entry!.id)?.accessCount, 1);
     } finally {
       local.close();
       if (previousRoot === undefined) delete process.env[BINY_AGENT_DIR_ENV];
@@ -1850,7 +1847,7 @@ async function testMemoryExactDurableContentAndWriter(): Promise<void> {
     assert.equal(duplicate.written, false);
 
     assert.ok(first.path);
-    const database = new DatabaseSync(path.join(globalAgentDir(), "memory", memoryDatabaseFileName), { readOnly: true });
+    const database = new DatabaseSync(path.join(globalAgentDir(), AGENT_DATABASE_FILE), { readOnly: true });
     try {
       const row = database.prepare("SELECT content FROM memories WHERE id = ?").get(first.entry?.id) as { content?: string } | undefined;
       assert.equal(row?.content?.includes("sk-supersecretvalue123"), true);
@@ -1907,6 +1904,9 @@ async function testMemoryLifecycleAndUsagePersistence(): Promise<void> {
     const recordedEvents = await readSessionEvents(recorder.filePath);
     const assistantIds = recordedEvents.flatMap((event) => event.type === "assistant_message" && event.messageId ? [event.messageId] : []);
     const userIds = recordedEvents.flatMap((event) => event.type === "user_message" && event.messageId ? [event.messageId] : []);
+    assert.ok(recordedEvents.filter((event) => event.type === "user_message" && !event.auditOnly)
+      .every((event) => typeof event.metadata?.sentAtTimeZone === "string" && event.metadata.sentAtTimeZone.length > 0),
+    "canonical user messages preserve their original timezone for later date parsing");
     assert.equal(assistantIds.length, 2);
     assert.equal(new Set(assistantIds).size, 2);
     assert.deepEqual(extractionMessageIds, assistantIds);
@@ -1938,6 +1938,34 @@ async function testMemoryLifecycleAndUsagePersistence(): Promise<void> {
     const afterShortTurn = await shortAgent.getLocalMemory().getOverview();
     await shortAgent.close();
     assert.equal(afterShortTurn.entryCount, overview.entryCount);
+
+    const automaticRecorder = new SessionRecorder(workspaceRoot, "temporal-automatic-source");
+    const automaticAgent = new AgentSession({
+      workspaceRoot, config, model: new ContextTestModel().model,
+      toolRegistry: new ToolRegistry(),
+      permissionManager: new PermissionManager({ ...config.permission, source: "test" }),
+      recorder: automaticRecorder
+    });
+    await automaticAgent.initialize();
+    await automaticAgent.runTask("明天执行例行检查", { source: "auto", emotionAnalysis: false });
+    await automaticAgent.close();
+    const automaticEvents = await readSessionEvents(automaticRecorder.filePath);
+    assert.equal(automaticEvents.find((event) => event.type === "user_message")?.metadata?.source, "auto");
+
+    const datedRecorder = new SessionRecorder(workspaceRoot, "temporal-human-source");
+    const datedAgent = new AgentSession({
+      workspaceRoot, config, model: new ContextTestModel().model,
+      toolRegistry: new ToolRegistry(),
+      permissionManager: new PermissionManager({ ...config.permission, source: "test" }),
+      recorder: datedRecorder
+    });
+    await datedAgent.initialize();
+    await datedAgent.runTask("2026-10-13审查计划");
+    await datedAgent.close();
+    const temporal = new TemporalMemoryIndex();
+    assert.equal(temporal.queryClues({ startDate: "2026-10-13", endDate: "2026-10-14", sessionId: datedRecorder.sessionId }).clues.length, 1,
+      "a completed human turn indexes its persisted original message without a CLI refresh");
+    temporal.close();
   });
 }
 
@@ -2074,7 +2102,7 @@ async function testMemoryStorageBoundaries(): Promise<void> {
   await withTempWorkspace(async (workspaceRoot) => {
     const isolatedAgentRoot = await mkdtemp(path.join(os.tmpdir(), "biny-memory-boundary-agent-"));
     const previousAgentRoot = process.env[BINY_AGENT_DIR_ENV];
-    process.env[BINY_AGENT_DIR_ENV] = isolatedAgentRoot;
+    process.env[BINY_AGENT_DIR_ENV] = path.join(isolatedAgentRoot, "linked-agent");
     const outsideRoot = await mkdtemp(path.join(os.tmpdir(), "biny-memory-outside-"));
     const store = new LocalMemory(workspaceRoot, () => new ContextTestModel().model);
     const entry = {
@@ -2085,7 +2113,7 @@ async function testMemoryStorageBoundaries(): Promise<void> {
       const victim = path.join(outsideRoot, "victim.md");
       const victimContent = "outside-memory-must-stay-unchanged";
       await fs.writeFile(victim, victimContent, "utf8");
-      const memoryDir = path.join(globalAgentDir(), "memory");
+      const memoryDir = globalAgentDir();
       await fs.mkdir(path.dirname(memoryDir), { recursive: true });
 
       await fs.symlink(outsideRoot, memoryDir);
@@ -2095,7 +2123,7 @@ async function testMemoryStorageBoundaries(): Promise<void> {
 
       await fs.rm(memoryDir, { force: true });
       await fs.mkdir(memoryDir);
-      const databasePath = path.join(memoryDir, memoryDatabaseFileName);
+      const databasePath = path.join(memoryDir, AGENT_DATABASE_FILE);
       await fs.symlink(victim, databasePath);
       await assert.rejects(store.listMemoryEntries(), /regular, canonical file/);
       await assert.rejects(store.writeEntry(entry), /regular, canonical file/);

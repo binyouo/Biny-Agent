@@ -46,12 +46,12 @@ async function main(): Promise<void> {
 function testFlatMemoryToolSchemas(): void {
   const [saveMemory, recallMemory] = createMemoryTools(() => undefined);
   assert.ok(saveMemory && recallMemory);
-  // 记忆工具参数已扁平化：save_memory 只收事实字段，recall_memory 收 query/limit/tags；
+  // 记忆工具参数已扁平化：save_memory 只收事实字段，recall_memory 只收当前可用的检索范围；
   // 原 audience/origin/topic 等分类与门禁字段全部删除。
   assert.deepEqual(Object.keys(saveMemory.parameters.properties).sort(), ["content", "durability", "importance", "rationale", "tags"]);
   assert.deepEqual((saveMemory.parameters.properties.durability as { enum?: string[] }).enum, ["permanent", "temporary"]);
   assert.equal((saveMemory.parameters.properties.importance as { type?: string }).type, "number");
-  assert.deepEqual(Object.keys(recallMemory.parameters.properties).sort(), ["limit", "query", "tags"]);
+  assert.deepEqual(Object.keys(recallMemory.parameters.properties).sort(), ["limit", "query", "tags", "threadId"]);
   const missingContent = saveMemory.resolveExecution({
     topic: "style",
     title: "Concise replies",

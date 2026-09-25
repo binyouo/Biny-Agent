@@ -5,7 +5,8 @@ import os from "node:os";
 import path from "node:path";
 import { BINY_AGENT_DIR_ENV } from "../src/config/paths.js";
 import { LocalMemory } from "../src/agent/context/LocalMemory.js";
-import { MemoryStorage, memoryDatabaseFileName } from "../src/agent/context/memoryStorage.js";
+import { MemoryStorage } from "../src/agent/context/memoryStorage.js";
+import { AGENT_DATABASE_FILE } from "../src/config/paths.js";
 import { createStoredMemoryEntry } from "../src/agent/context/memoryFormat.js";
 import type { AgentModel } from "../src/agent/core/types.js";
 import type { MemoryEntryInput, MemoryMaintenanceStatus, MemorySleepRun } from "../src/agent/context/memoryTypes.js";
@@ -25,8 +26,7 @@ process.env[BINY_AGENT_DIR_ENV] = agentRoot;
 
 try {
   await testEntryFieldsAndAccessCount();
-  await testOldMemoryDatabaseIsRejected();
-  await testV5DatabaseGainsSynthesisFailedColumn();
+  await testUnknownAgentDatabaseSchemaIsRejected();
   await testSleepRunPersistenceAndRecovery();
 } finally {
   if (previous === undefined) delete process.env[BINY_AGENT_DIR_ENV];
@@ -102,7 +102,7 @@ async function testEntryFieldsAndAccessCount(): Promise<void> {
   assert.equal(restored.entry?.rationale, rationale);
   storage.close();
 
-  const database = new DatabaseSync(path.join(agentRoot, "memory", memoryDatabaseFileName), { readOnly: true });
+  const database = new DatabaseSync(path.join(agentRoot, AGENT_DATABASE_FILE), { readOnly: true });
   try {
     const row = database.prepare("SELECT metadata FROM memories WHERE id = ?").get(restored.entry!.id) as { metadata: string };
     const metadata = JSON.parse(row.metadata) as Record<string, unknown>;
@@ -125,122 +125,24 @@ async function testEntryFieldsAndAccessCount(): Promise<void> {
   }
 }
 
-/** 未知旧版本库必须拒绝打开；v4 结构化旧库直接清空记忆事实表并重建为当前版本，crystal 表保留。 */
-async function testOldMemoryDatabaseIsRejected(): Promise<void> {
-  const root = await mkdtemp(path.join(os.tmpdir(), "biny-memory-current-schema-"));
+/** 新的 Agent 事实库只接受当前 schema；旧库不会在读写时被静默重建。 */
+async function testUnknownAgentDatabaseSchemaIsRejected(): Promise<void> {
+  const root = await mkdtemp(path.join(os.tmpdir(), "biny-agent-old-schema-"));
   const agentDir = path.join(root, "agent");
-  const memoryDir = path.join(agentDir, "memory");
-  await mkdir(memoryDir, { recursive: true });
-  const databasePath = path.join(memoryDir, memoryDatabaseFileName);
-  const legacyV2 = new DatabaseSync(databasePath);
-  legacyV2.exec("CREATE TABLE memories (id TEXT PRIMARY KEY); PRAGMA user_version = 2;");
-  legacyV2.close();
+  await mkdir(agentDir, { recursive: true });
+  const databasePath = path.join(agentDir, AGENT_DATABASE_FILE);
   try {
-    const oldStorage = new MemoryStorage(workspaceRoot, { agentDir });
-    await assert.rejects(oldStorage.listEntries(), /schema is not current/u);
-    oldStorage.close();
-
-    await rm(databasePath, { force: true });
-    const legacyV4 = new DatabaseSync(databasePath, { allowExtension: true });
-    // crystal 表与记忆 schema 无关，v4 库里本来就是完整结构；这里保留索引需要的列。
-    // memory_embeddings 按真实 v4 库的样子建一张 vec0 虚表：迁移必须加载 sqlite-vec
-    // 才能删掉它，否则任何进程打开旧库都会卡在 "no such module: vec0"。
-    const { load: loadSqliteVec } = await import("sqlite-vec");
-    loadSqliteVec(legacyV4);
-    legacyV4.exec(
-      "CREATE TABLE memories (id TEXT PRIMARY KEY); " +
-      "CREATE TABLE crystals (id TEXT PRIMARY KEY NOT NULL, stage TEXT NOT NULL DEFAULT 'candidate', dormant INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL); " +
-      "CREATE VIRTUAL TABLE memory_embeddings USING vec0(memory_id TEXT PRIMARY KEY, embedding FLOAT[384]); " +
-      "PRAGMA user_version = 4;"
-    );
-    legacyV4.close();
-    const migrated = new MemoryStorage(workspaceRoot, { agentDir });
-    try {
-      assert.equal((await migrated.listEntries()).entries.length, 0);
-      const written = await migrated.writeEntry({
-        content: "A fresh current memory database can be rebuilt after removing the old one."
-      });
-      assert.equal(written.written, true);
-      const reopened = new DatabaseSync(databasePath, { readOnly: true });
+    for (const version of [2, 4, 5]) {
+      await rm(databasePath, { force: true });
+      const database = new DatabaseSync(databasePath);
+      database.exec(`CREATE TABLE memories (id TEXT PRIMARY KEY); PRAGMA user_version = ${version};`);
+      database.close();
+      const storage = new MemoryStorage(workspaceRoot, { agentDir });
       try {
-        const version = (reopened.prepare("PRAGMA user_version").get() as { user_version?: unknown }).user_version;
-        assert.equal(version, 6);
-        const tables = new Set((reopened.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{ name?: string }>).map((row) => row.name));
-        assert.equal(tables.has("memories"), true);
-        assert.equal(tables.has("crystals"), true, "v4 旧库重建时 crystal 表必须保留");
+        await assert.rejects(storage.listEntries(), /schema is not current/u);
       } finally {
-        reopened.close();
+        storage.close();
       }
-    } finally {
-      migrated.close();
-    }
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
-}
-
-/** v5 → v6 纯加列迁移：sleep run 历史保留，synthesisFailed 缺省为 0。 */
-async function testV5DatabaseGainsSynthesisFailedColumn(): Promise<void> {
-  const root = await mkdtemp(path.join(os.tmpdir(), "biny-memory-v5-migrate-"));
-  const agentDir = path.join(root, "agent");
-  const memoryDir = path.join(agentDir, "memory");
-  await mkdir(memoryDir, { recursive: true });
-  const databasePath = path.join(memoryDir, memoryDatabaseFileName);
-  try {
-    const current = new MemoryStorage(workspaceRoot, { agentDir });
-    await current.writeMaintenanceStatus({
-      state: "idle",
-      eligible: 1,
-      processed: 1,
-      written: 0,
-      failed: 0,
-      lastRun: {
-        id: "v5-run",
-        status: "completed",
-        trigger: "scheduled",
-        examined: 1,
-        written: 0,
-        failed: 0,
-        archived: 0,
-        exact: 0,
-        expired: 0,
-        similarity: 0,
-        llm: 0,
-        archivedExact: 0,
-        archivedExpired: 0,
-        archivedOrphan: 0,
-        archivedSimilarity: 0,
-        archivedLlm: 0,
-        inputTokens: 0,
-        outputTokens: 0,
-        startedAt: "2026-09-10T19:00:00.000Z",
-        finishedAt: "2026-09-10T19:01:00.000Z"
-      },
-      sleepRuns: []
-    });
-    current.close();
-
-    // 把库降回 v5：去掉 synthesis_failed 列，模拟旧版本数据。
-    const legacy = new DatabaseSync(databasePath);
-    legacy.exec("ALTER TABLE memory_sleep_runs DROP COLUMN synthesis_failed; PRAGMA user_version = 5;");
-    const versionRow = legacy.prepare("PRAGMA user_version").get() as { user_version?: unknown };
-    assert.equal(versionRow.user_version, 5);
-    legacy.close();
-
-    const migrated = new MemoryStorage(workspaceRoot, { agentDir });
-    try {
-      const status = await migrated.readMaintenanceStatus();
-      assert.equal(status.lastRun?.id, "v5-run");
-      assert.equal(status.lastRun?.synthesisFailed, 0, "旧运行记录的合成失败计数缺省为 0");
-      const reopened = new DatabaseSync(databasePath, { readOnly: true });
-      try {
-        const version = (reopened.prepare("PRAGMA user_version").get() as { user_version?: unknown }).user_version;
-        assert.equal(version, 6);
-      } finally {
-        reopened.close();
-      }
-    } finally {
-      migrated.close();
     }
   } finally {
     await rm(root, { recursive: true, force: true });
