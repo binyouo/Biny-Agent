@@ -1,31 +1,24 @@
 /**
- * Activity CLI 与本地 API 入口。
+ * Activity CLI 入口。
  *
- * 查询、日报和 suggestions 都直接复用 ActivityStore/业务模块；`serve` 只在用户明确
- * 启动时打开 loopback REST，并由同一进程托管 macOS sidecar。
+ * 查询与日报直接复用 ActivityStore 和业务模块；采集器由 Desktop 宿主管理。
  */
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { updateConfig, createFileConfigStore } from "../../config/store.js";
-import { globalAgentDir } from "../../config/paths.js";
+import { AGENT_DATABASE_FILE, globalAgentDir } from "../../config/paths.js";
 import { resolveToolModel } from "../../llm/toolModel.js";
 import { defaultLocalEmbeddingModel, LocalEmbeddingManager } from "../../llm/embedding/index.js";
 import { createActivityOperation } from "../../activity/operation.js";
 import { buildActivityDigest } from "../../activity/digest.js";
 import { analyzeActivitySession, buildActivityReport, formatActivityDailyNote, formatActivityReportResult } from "../../activity/analyzer.js";
+import { narrateActivityReport } from "../../activity/reportNarrative.js";
 import { writeDailyActivityNote } from "../../activity/dailyNotes.js";
 import { refreshActivitySummaryWithNarrative } from "../../activity/summary.js";
-import { generateActivitySuggestions } from "../../activity/suggestions.js";
 import { ActivityStore, resolveActivityDirectory } from "../../activity/store.js";
 import { searchActivitySemantic } from "../../activity/semanticSearch.js";
 import { activitySettingsPatchSchema, type ActivitySettings } from "../../activity/settings.js";
 import { createActivityMemoryPipeline } from "../../activity/memoryPipeline.js";
-import { startActivityHttpServer } from "../../activity/httpServer.js";
 import type { ActivitySummaryKind } from "../../activity/summary.js";
-import { CrystalService } from "../../agent/context/crystalService.js";
-import { ActivityRecorderService, defaultActivitySidecarPath } from "../../desktop/electron/main/ActivityRecorderService.js";
-import { readSessionEvents } from "../../session/events.js";
-import { resolveSessionFile, sessionIdFromFile } from "../../session/store.js";
 
 export interface ActivityOutputOptions {
   json?: boolean;
@@ -43,13 +36,17 @@ export interface ActivitySessionsCommandOptions extends ActivityOutputOptions {
 
 export interface ActivityDigestCommandOptions extends ActivityOutputOptions {
   lookbackMin?: number;
+  maxAnalyzed?: number;
 }
 
-export interface ActivityServeCommandOptions {
-  port?: number;
+export interface ActivityReportCommandOptions extends ActivityOutputOptions {
+  force?: boolean;
+  skeleton?: boolean;
 }
 
-const activityPackageRoot = path.resolve(fileURLToPath(new URL("../../../", import.meta.url)));
+export interface ActivitySummaryCommandOptions extends ActivityOutputOptions {
+  narrative?: boolean;
+}
 
 export async function activityStatusCommand(workspaceRoot: string, options: ActivityOutputOptions = {}): Promise<void> {
   const configStore = createFileConfigStore(workspaceRoot);
@@ -60,7 +57,8 @@ export async function activityStatusCommand(workspaceRoot: string, options: Acti
     if (options.json) console.log(JSON.stringify(result));
     else {
       console.log(`Activity: ${config.activity.enabled ? "enabled" : "paused"}`);
-      console.log(`Directory: ${resolveActivityDirectory(config.activity.outputDirectory)}`);
+      console.log(`Database: ${path.join(globalAgentDir(), AGENT_DATABASE_FILE)}`);
+      console.log(`Snapshots: ${path.join(resolveActivityDirectory(config.activity.outputDirectory), "snapshots")}`);
       console.log(`Sessions: ${String(result.store.sessions)}  Events: ${String(result.store.events)}  Screenshots: ${String(result.store.fallbackCaptures)}`);
       console.log(`Storage: ${formatBytes(result.store.storageBytes)}`);
     }
@@ -75,7 +73,7 @@ export async function activityConfigCommand(workspaceRoot: string, options: Acti
   else console.log(JSON.stringify(config.activity, null, 2));
 }
 
-/** start/stop 只翻转全局 enabled；真正的采集由 Desktop 应用或 `biny activity serve` 按配置变更热应用。 */
+/** start/stop 只翻转全局 enabled；真正的采集由运行中的 Desktop 宿主按配置变更热应用。 */
 export async function activityRecordingCommand(workspaceRoot: string, enabled: boolean, options: ActivityOutputOptions = {}): Promise<void> {
   const configStore = createFileConfigStore(workspaceRoot);
   const saved = await updateConfig(configStore, undefined, (config) => ({
@@ -87,7 +85,7 @@ export async function activityRecordingCommand(workspaceRoot: string, enabled: b
   else {
     console.log(`Activity 记录${label}（enabled=${String(saved.activity.enabled)}）。`);
     console.log(enabled
-      ? "Desktop 应用或 biny activity serve 运行时会自动应用该变更；当前没有运行中的记录器时不会采集。"
+      ? "Desktop 应用运行时会自动应用该变更；当前没有运行中的记录器时不会采集。"
       : "运行中的记录器会在数秒内感知配置变化并停止采集。");
   }
 }
@@ -114,7 +112,7 @@ export async function activityConfigSetCommand(workspaceRoot: string, key: strin
   }
 }
 
-/** 与 Desktop 回看同一套脱敏边界：事件不含 snapshotPath，截图原图不落标准输出。 */
+/** CLI 回看返回事件与截图元数据；filePath 可交给本机截图文件接口。 */
 export async function activityShowCommand(workspaceRoot: string, sessionId: string, options: ActivityOutputOptions = {}): Promise<void> {
   const config = await createFileConfigStore(workspaceRoot).load();
   const store = await openActivityStore(config.activity);
@@ -148,15 +146,24 @@ export async function activitySearchCommand(
   query: string,
   options: ActivitySearchCommandOptions = {}
 ): Promise<void> {
-  const config = await createFileConfigStore(workspaceRoot).load();
+  const configStore = createFileConfigStore(workspaceRoot);
+  const config = await configStore.load();
   const store = await openActivityStore(config.activity);
   let embeddingManager: LocalEmbeddingManager | undefined;
   try {
+    const operation = createActivityOperation(store, config.activity, async () => (await configStore.load()).activity);
+    await operation.checkpoint();
     if (options.semantic) {
       embeddingManager = new LocalEmbeddingManager(path.join(globalAgentDir(), "models", "embeddings"));
       // 本地 e5 模型未下载时 createRuntime 会抛错；降级为 undefined 让 semanticSearch 输出指引。
       const runtime = await embeddingManager.createRuntime(defaultLocalEmbeddingModel).catch(() => undefined);
-      const result = await searchActivitySemantic({ store, getEmbeddingRuntime: async () => runtime, query, limit: options.limit ?? 20 });
+      const result = await searchActivitySemantic({
+        store,
+        getEmbeddingRuntime: async () => runtime,
+        query,
+        limit: options.limit ?? 20,
+        ...operation
+      });
       const hits = result.ok
         ? result.hits.map((hit) => ({ occurredAt: hit.occurredAt ?? hit.startedAt, application: hit.source === "ocr" ? "OCR" : "摘要", summary: hit.excerpt ?? hit.summary, sessionId: hit.sessionId }))
         : [];
@@ -231,7 +238,7 @@ export async function activityDigestCommand(
   const config = await createFileConfigStore(workspaceRoot).load();
   const store = await openActivityStore(config.activity);
   try {
-    const result = await buildActivityDigest({ store }, options.lookbackMin);
+    const result = await buildActivityDigest({ store, maxAnalyzed: options.maxAnalyzed }, options.lookbackMin);
     if (options.json) console.log(JSON.stringify(result));
     else console.log(result.markdown);
   } finally {
@@ -270,7 +277,7 @@ export async function activityAnalyzeCommand(workspaceRoot: string, sessionId: s
 export async function activityReportCommand(
   workspaceRoot: string,
   date = "today",
-  options: ActivityOutputOptions = {}
+  options: ActivityReportCommandOptions = {}
 ): Promise<void> {
   const configStore = createFileConfigStore(workspaceRoot);
   const config = await configStore.load();
@@ -285,13 +292,19 @@ export async function activityReportCommand(
       requireSemantic: false
     });
 
-    const result = await buildActivityReport({
+    const skeleton = await buildActivityReport({
       store,
       model: resolveToolModel(config),
       ...operation,
       writeMemories: memoryPipeline.writeMemories,
-      onAnalyzed: memoryPipeline.onAnalyzed
-    }, date);
+      onAnalyzed: memoryPipeline.onAnalyzed,
+      analyzePending: !options.skeleton
+    }, date, { force: options.force });
+    const result = await narrateActivityReport(skeleton, {
+      model: resolveToolModel(config),
+      skeleton: options.skeleton,
+      ...operation
+    });
     await writeDailyActivityNote(result.date, formatActivityDailyNote(result), { checkpoint: operation.checkpoint });
     if (options.json) console.log(JSON.stringify(result));
     else console.log(formatActivityReportResult(result));
@@ -305,7 +318,7 @@ export async function activitySummaryCommand(
   workspaceRoot: string,
   kind: ActivitySummaryKind,
   dateKey: string,
-  options: ActivityOutputOptions = {}
+  options: ActivitySummaryCommandOptions = {}
 ): Promise<void> {
   const configStore = createFileConfigStore(workspaceRoot);
   const config = await configStore.load();
@@ -316,8 +329,7 @@ export async function activitySummaryCommand(
     const result = await refreshActivitySummaryWithNarrative(store, kind, dateKey, {
       model: resolveToolModel(config),
       ...operation,
-
-      withNarrative: true
+      withNarrative: options.narrative === true
     });
     if (options.json) console.log(JSON.stringify(result));
     else console.log(result.summary);
@@ -326,143 +338,10 @@ export async function activitySummaryCommand(
   }
 }
 
-export async function activitySuggestionsCommand(
-  workspaceRoot: string,
-  options: { force?: boolean; json?: boolean } = {}
-): Promise<void> {
-  const configStore = createFileConfigStore(workspaceRoot);
-  const config = await configStore.load();
-  const store = await openActivityStore(config.activity);
-  try {
-    const operation = createActivityOperation(store, config.activity, async () => (await configStore.load()).activity);
-    await operation.checkpoint();
-    const result = await generateActivitySuggestions({
-      store,
-      model: resolveToolModel(config),
-      ...operation,
-      force: options.force
-    });
-    if (options.json) console.log(JSON.stringify(result));
-    else if (!result.suggestions.length) console.log("暂时没有可生成的 Activity 建议。");
-    else for (const suggestion of result.suggestions) console.log(`- ${suggestion}`);
-  } finally {
-    await store.close();
-  }
-}
-
-export async function activityClearCommand(
-  workspaceRoot: string,
-  options: { yes?: boolean; json?: boolean } = {}
-): Promise<void> {
-  if (!options.yes) throw new Error("清空 Activity 会删除本地会话、截图、事件、OCR、分析和摘要；长期记忆、结晶及已导出日报保留。请加 --yes 确认。");
-  const config = await createFileConfigStore(workspaceRoot).load();
-  const store = await openActivityStore(config.activity);
-  try {
-    await store.clear();
-    const result = store.snapshot();
-    if (options.json) console.log(JSON.stringify(result));
-    else console.log("Activity 数据已清空；长期记忆、结晶及已导出日报保留。");
-  } finally {
-    await store.close();
-  }
-}
-
-export async function activityServeCommand(
-  workspaceRoot: string,
-  options: ActivityServeCommandOptions = {}
-): Promise<void> {
-  const configStore = createFileConfigStore(workspaceRoot);
-  let currentConfig = await configStore.load();
-  const memoryPipeline = await createActivityMemoryPipeline({
-    workspaceRoot,
-    getCrystalConfig: () => currentConfig.crystal,
-    requireSemantic: false
-  });
-  const crystalHttpService = new CrystalService({
-    getConfig: () => currentConfig.crystal,
-    getModel: () => resolveToolModel(currentConfig),
-    readAnchorText: async ({ threadId, anchorId }) => {
-      if (!threadId || !/^[A-Za-z0-9_-]+$/u.test(threadId)) return undefined;
-      const filePath = await resolveSessionFile(workspaceRoot, threadId).catch(() => undefined);
-      if (!filePath || sessionIdFromFile(filePath) !== threadId) return undefined;
-      const events = await readSessionEvents(filePath).catch(() => []);
-      const event = events.find((candidate) => (
-        (candidate.type === "user_message" || candidate.type === "assistant_message")
-        && candidate.messageId === anchorId
-      ));
-      return event?.type === "user_message" || event?.type === "assistant_message" ? event.content : undefined;
-    }
-  });
-  await crystalHttpService.initialize();
-  const recorder = new ActivityRecorderService({
-    configStore,
-    sidecarPath: defaultActivitySidecarPath({
-      packaged: false,
-      resourcesPath: activityPackageRoot,
-      appPath: activityPackageRoot
-    }),
-    writeMemories: memoryPipeline.writeMemories,
-    onAnalyzed: memoryPipeline.onAnalyzed
-  });
-  let api: Awaited<ReturnType<typeof startActivityHttpServer>> | undefined;
-  try {
-    await recorder.initialize();
-    api = await startActivityHttpServer({
-      loadSettings: async () => {
-        currentConfig = await configStore.load();
-        return currentConfig.activity;
-      },
-      getModel: async () => {
-        currentConfig = await configStore.load();
-        return resolveToolModel(currentConfig);
-      },
-      getRuntimeSnapshot: () => recorder.snapshot(),
-      getOperationSignal: () => recorder.getOperationSignal(),
-      start: async () => {
-        currentConfig = await updateConfig(configStore, undefined, (config) => ({
-          ...config,
-          activity: { ...config.activity, enabled: true }
-        }));
-        await recorder.refresh();
-      },
-      stop: async () => await recorder.stop(),
-      clear: async () => await recorder.clear(),
-      writeMemories: memoryPipeline.writeMemories,
-      onAnalyzed: memoryPipeline.onAnalyzed,
-      crystal: {
-        service: crystalHttpService,
-        getConfig: () => currentConfig.crystal,
-        setConfig: async (crystal) => {
-          currentConfig = await updateConfig(configStore, undefined, (config) => ({ ...config, crystal }));
-        }
-      }
-    }, { port: options.port ?? 0 });
-    console.log(`Activity API listening on http://${api.host}:${String(api.port)}`);
-    await waitForTermination();
-  } finally {
-    await api?.close().catch(() => undefined);
-    await recorder.stop().catch(() => undefined);
-    crystalHttpService.close();
-    memoryPipeline.close();
-  }
-}
-
 async function openActivityStore(settings: ActivitySettings): Promise<ActivityStore> {
   const store = new ActivityStore();
-  await store.open(settings.outputDirectory);
+  await store.open(settings.outputDirectory, globalAgentDir());
   return store;
-}
-
-async function waitForTermination(): Promise<void> {
-  await new Promise<void>((resolve) => {
-    const finish = (): void => {
-      process.off("SIGINT", finish);
-      process.off("SIGTERM", finish);
-      resolve();
-    };
-    process.once("SIGINT", finish);
-    process.once("SIGTERM", finish);
-  });
 }
 
 function formatBytes(value: number): string {

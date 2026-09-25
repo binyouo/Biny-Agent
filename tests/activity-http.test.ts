@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { defaultActivitySettings, type ActivitySettings } from "../src/activity/settings.js";
@@ -7,6 +7,8 @@ import { handleActivityHttpRequest, startActivityHttpServer } from "../src/activ
 import { ActivityStore } from "../src/activity/store.js";
 import type { AgentModel, ModelStreamEvent } from "../src/agent/core/types.js";
 
+
+await testHttpAllowsTokenlessLocalAccess();
 await testActivityHttpServerExposesLoopbackQueries();
 await testActivityHttpReportProjectsMemoryCallbacks();
 await testActivitySummaryReadsWithoutGeneratingAndManualAnalysisRetries();
@@ -16,7 +18,7 @@ async function testHttpCancellationDiscardsLateAnalysis(): Promise<void> {
   for (const mode of ["disconnect", "host", "shutdown"] as const) {
     const root = await mkdtemp(path.join(os.tmpdir(), "biny-activity-http-cancel-"));
     const store = new ActivityStore();
-    await store.open(root);
+    await store.open(root, root);
     const id = store.startSession("2026-08-31T09:00:00.000Z");
     store.recordEvent({ sessionId: id, occurredAt: "2026-08-31T09:01:00.000Z", eventType: "app_focus", application: "Editor" });
     store.endSession(id, "2026-08-31T10:00:00.000Z");
@@ -38,6 +40,7 @@ async function testHttpCancellationDiscardsLateAnalysis(): Promise<void> {
       })()
     };
     const api = await startActivityHttpServer({
+      agentDir: root,
       loadSettings: async () => ({ ...defaultActivitySettings, outputDirectory: root }),
       getOperationSignal: () => host.signal,
       getModel: () => model,
@@ -88,9 +91,9 @@ async function testActivitySummaryReadsWithoutGeneratingAndManualAnalysisRetries
       yield { type: "finish", reason: "stop" };
     })()
   };
-  const deps = { loadSettings: async () => settings, getModel: () => model };
+  const deps = { agentDir: root, loadSettings: async () => settings, getModel: () => model };
   try {
-    await store.open(root);
+    await store.open(root, root);
     const sessionId = store.startSession("2026-08-31T09:00:00.000Z");
     store.recordEvent({ sessionId, occurredAt: "2026-08-31T09:00:01.000Z", eventType: "app_focus", application: "Editor" });
     store.endSession(sessionId, "2026-08-31T10:00:00.000Z");
@@ -126,7 +129,7 @@ async function testActivityHttpServerExposesLoopbackQueries(): Promise<void> {
   const settings: ActivitySettings = { ...defaultActivitySettings, outputDirectory: root };
   const store = new ActivityStore();
   try {
-    await store.open(root);
+    await store.open(root, root);
     const sessionId = store.startSession("2026-08-31T09:00:00.000Z");
     store.recordEvent({
       sessionId,
@@ -136,22 +139,116 @@ async function testActivityHttpServerExposesLoopbackQueries(): Promise<void> {
       windowTitle: "中文检索 API"
     });
     const direct = await handleActivityHttpRequest(
-      { method: "GET", pathname: "/api/activity-recorder/search", searchParams: new URLSearchParams("query=中文") },
-      { loadSettings: async () => settings }
+      { method: "GET", pathname: "/api/activity-recorder/search", searchParams: new URLSearchParams("q=中文") },
+      { agentDir: root, loadSettings: async () => settings }
     );
     assert.equal(direct.status, 200);
-    assert.equal((direct.body as Array<unknown>).length, 1);
+    assert.equal((direct.body as {results:unknown[]}).results.length, 0);
+    const keyword = await handleActivityHttpRequest(
+      { method: "GET", pathname: "/api/activity-recorder/search/keyword", searchParams: new URLSearchParams("q=中文") },
+      { agentDir: root, loadSettings: async () => settings }
+    );
+    assert.equal((keyword.body as {results:unknown[]}).results.length, 0);
+    const semantic = await handleActivityHttpRequest(
+      { method: "GET", pathname: "/api/activity-recorder/search/semantic", searchParams: new URLSearchParams("q=中文") },
+      { agentDir: root, loadSettings: async () => settings }
+    );
+    assert.equal(semantic.status, 500);
+    assert.ok((semantic.body as {error:string}).error);
+    const weeklyPath = "/api/activity-recorder/summary/weekly/2026-08-31";
+    const weekly = await handleActivityHttpRequest(
+      { method: "POST", pathname: weeklyPath },
+      { agentDir: root, loadSettings: async () => settings }
+    );
+    assert.equal(weekly.status, 200);
+    assert.equal((weekly.body as { kind: string }).kind, "weekly");
+    const weeklyRead = await handleActivityHttpRequest(
+      { method: "GET", pathname: weeklyPath },
+      { agentDir: root, loadSettings: async () => settings }
+    );
+    assert.equal(weeklyRead.status, 200);
+    const missingSnapshot = await handleActivityHttpRequest(
+      { method: "GET", pathname: "/api/activity-recorder/snapshot-file", searchParams: new URLSearchParams({path: path.join(root, "missing.jpg")}) },
+      { agentDir: root, loadSettings: async () => settings }
+    );
+    assert.equal(missingSnapshot.status, 404);
+    const jpeg = Buffer.from([0xff, 0xd8, 0xff, 0xd9]);
+    const capture = await store.recordFallbackCapture({
+      sessionId, occurredAt: "2026-08-31T09:00:02.000Z", eventType: "screenshot", jpeg
+    });
+    const file = await handleActivityHttpRequest(
+      { method: "GET", pathname: "/api/activity-recorder/snapshot-file", searchParams: new URLSearchParams({path: store.getSnapshotPath(capture.snapshotId!)!}) },
+      { agentDir: root, loadSettings: async () => settings }
+    );
+    assert.equal(file.status, 200);
+    assert.equal(file.contentType, "image/jpeg");
+    assert.deepEqual(file.body, jpeg);
+    const snapshotPath = store.getSnapshotPath(capture.snapshotId!);
+    assert.ok(snapshotPath);
+    const sessions = await handleActivityHttpRequest(
+      { method: "GET", pathname: "/api/activity-recorder/sessions", searchParams: new URLSearchParams("since=2026-08-30T00%3A00%3A00.000Z&until=2026-09-01T00%3A00%3A00.000Z&analysisStatus=pending&limit=1&offset=0") },
+      { agentDir: root, loadSettings: async () => settings }
+    );
+    assert.deepEqual((sessions.body as Array<{ id: string }>).map((row) => row.id), [sessionId]);
+    const pastEnd = await handleActivityHttpRequest(
+      { method: "GET", pathname: "/api/activity-recorder/sessions", searchParams: new URLSearchParams("since=2026-08-30T00%3A00%3A00.000Z&until=2026-08-30T12%3A00%3A00.000Z") },
+      { agentDir: root, loadSettings: async () => settings }
+    );
+    assert.deepEqual(pastEnd.body, []);
+    const nextPage = await handleActivityHttpRequest(
+      { method: "GET", pathname: "/api/activity-recorder/sessions", searchParams: new URLSearchParams("since=2026-08-30T00%3A00%3A00.000Z&offset=1") },
+      { agentDir: root, loadSettings: async () => settings }
+    );
+    assert.deepEqual(nextPage.body, []);
+    const invalidDate = await handleActivityHttpRequest(
+      { method: "GET", pathname: "/api/activity-recorder/sessions", searchParams: new URLSearchParams("since=invalid") },
+      { agentDir: root, loadSettings: async () => settings }
+    );
+    assert.equal(invalidDate.status, 400);
+    const active = await handleActivityHttpRequest(
+      { method: "DELETE", pathname: `/api/activity-recorder/sessions/${sessionId}` },
+      { agentDir: root, loadSettings: async () => settings }
+    );
+    assert.equal(active.status, 409);
+    store.endSession(sessionId, "2026-08-31T10:00:00.000Z");
+    const deleted = await handleActivityHttpRequest(
+      { method: "DELETE", pathname: `/api/activity-recorder/sessions/${sessionId}` },
+      { agentDir: root, loadSettings: async () => settings }
+    );
+    assert.equal(deleted.status, 200);
+    assert.equal(store.getSessionDetail(sessionId), undefined);
+    assert.deepEqual(store.search("中文"), []);
+    await assert.rejects(stat(snapshotPath), { code: "ENOENT" });
   } finally {
     await store.close();
   }
 
-  const api = await startActivityHttpServer({ loadSettings: async () => settings });
+  const api = await startActivityHttpServer({ agentDir: root, loadSettings: async () => settings });
   try {
     const response = await fetch("http://" + api.host + ":" + String(api.port) + "/api/activity-recorder/status");
     assert.equal(response.status, 200);
     const status = await response.json() as { state: string; sessions: number };
     assert.equal(status.state, "unavailable");
-    assert.equal(status.sessions, 1);
+    assert.equal(status.sessions, 0);
+  } finally {
+    await api.close();
+    await rm(root, { recursive: true, force: true });
+  }
+}
+
+async function testHttpAllowsTokenlessLocalAccess(): Promise<void> {
+  const root = await mkdtemp(path.join(os.tmpdir(), "biny-activity-http-auth-"));
+  const api = await startActivityHttpServer({
+    agentDir: root,
+    loadSettings: async () => ({ ...defaultActivitySettings, outputDirectory: root })
+  });
+  try {
+    const url = `http://${api.host}:${api.port}/api/activity-recorder/config`;
+    assert.equal((await fetch(url)).status, 200, "Activity 本机 API 不要求令牌");
+    assert.equal((await fetch(url, { headers: { Authorization: "Bearer wrong" } })).status, 200);
+    assert.equal((await fetch(url, { headers: { Origin: "https://example.test" } })).status, 200);
+    const granted = await fetch(url);
+    assert.equal(granted.status, 200);
   } finally {
     await api.close();
     await rm(root, { recursive: true, force: true });
@@ -163,7 +260,7 @@ async function testActivityHttpReportProjectsMemoryCallbacks(): Promise<void> {
   const settings: ActivitySettings = { ...defaultActivitySettings, outputDirectory: root };
   const store = new ActivityStore();
   try {
-    await store.open(root);
+    await store.open(root, root);
     const sessionId = store.startSession("2026-08-31T09:00:00.000Z");
     for (let index = 0; index < 3; index += 1) {
       store.recordEvent({
@@ -213,6 +310,7 @@ async function testActivityHttpReportProjectsMemoryCallbacks(): Promise<void> {
         pathname: "/api/activity-recorder/report/2026-08-31"
       },
       {
+        agentDir: root,
         loadSettings: async () => settings,
         getModel: () => model,
         writeMemories: async () => {

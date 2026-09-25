@@ -2,7 +2,6 @@ export * from "./analyzer.js";
 export * from "./analysisScheduler.js";
 export * from "./embeddingScheduler.js";
 export * from "./dailyNotes.js";
-export * from "./ftsText.js";
 export * from "./httpServer.js";
 export * from "./persistence.js";
 export * from "./redaction.js";

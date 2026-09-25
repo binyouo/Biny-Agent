@@ -10,10 +10,10 @@ import { ActivityStore, type ActivitySessionAnalysis } from "../src/activity/sto
 import { defaultActivitySettings, type ActivitySettings } from "../src/activity/settings.js";
 import { handleActivityHttpRequest } from "../src/activity/httpServer.js";
 import { createActivityOperation } from "../src/activity/operation.js";
-import { createActivityReportTool } from "../src/tools/activity/report.js";
 import type { AgentModel } from "../src/agent/core/types.js";
-import { createActivitySearchTool } from "../src/tools/activity/search.js";
-import { precomputeActivityEmbeddings } from "../src/activity/semanticSearch.js";
+import { precomputeActivityEmbeddings, searchActivitySemantic } from "../src/activity/semanticSearch.js";
+import { buildActivityReport } from "../src/activity/analyzer.js";
+import { narrateActivityReport } from "../src/activity/reportNarrative.js";
 import type { EmbeddingModelRuntime } from "../src/llm/embedding/types.js";
 import { writeDailyActivityNote } from "../src/activity/dailyNotes.js";
 import { createActivityMemoryPipeline } from "../src/activity/memoryPipeline.js";
@@ -63,25 +63,27 @@ for (const route of ["analyze", "summary", "suggestions"] as const) {
 }
 
 await withFixture(async ({ root, settings, loadSettings, store, id }) => {
+  await store.recordFallbackCapture({sessionId: id, occurredAt: new Date().toISOString(), eventType: "heartbeat", jpeg: Buffer.from("fixture"), rawOcrText: "发布"});
   store.recordAnalysis(analysis(id));
   const started = Promise.withResolvers<void>();
   const release = Promise.withResolvers<void>();
-  let cacheWrites = 0;
-  const model: AgentModel = { provider: "test", modelId: "chat", runtime: "provider", dataResidency: "external", stream: async () => { throw new Error("模型不应被调用"); } };
-  const tool = createActivityReportTool({
-    loadSettings, getChatModel: () => model,
-    getModel: async () => { started.resolve(); await release.promise; return model; },
-    cache: { get: () => undefined, set: () => { cacheWrites += 1; } }
-  });
-  const execution = await tool.resolveExecution({ date: "2026-09-13" });
-  if ("isError" in execution) throw new Error(execution.errorMessage);
-  const task = execution.execute({ toolCallId: "report-test", operationId: "report-test" });
+  const model: AgentModel = {
+    provider: "test", modelId: "chat", runtime: "provider", dataResidency: "external",
+    stream: async () => (async function* () {
+      started.resolve();
+      await release.promise;
+      yield { type: "text-delta" as const, text: "# 今日工作日记\n\n## 项目\n我检查了发布。" };
+      yield { type: "finish" as const, reason: "stop" as const };
+    })()
+  };
+  const operation = createActivityOperation(store, settings, loadSettings);
+  const skeleton = await buildActivityReport({ store, analyzePending: false, ...operation }, "today");
+  const task = narrateActivityReport(skeleton, { model, ...operation });
   const rejected = assert.rejects(task, { name: "AbortError" }, "report must reject disabled recording");
   await started.promise;
   await mutateFromAnotherProcess(root, settings, "disable");
   release.resolve();
   await rejected;
-  assert.equal(cacheWrites, 0);
 });
 
 await withFixture(async ({ root, settings, loadSettings, store }) => {
@@ -97,6 +99,7 @@ await withFixture(async ({ root, settings, loadSettings, store }) => {
 });
 
 await withFixture(async ({ root, settings, loadSettings, store, id }) => {
+  await store.recordFallbackCapture({sessionId: id, occurredAt: new Date().toISOString(), eventType: "heartbeat", jpeg: Buffer.from("fixture"), rawOcrText: "发布"});
   store.recordAnalysis(analysis(id));
   const started = Promise.withResolvers<void>();
   const release = Promise.withResolvers<void>();
@@ -110,11 +113,10 @@ await withFixture(async ({ root, settings, loadSettings, store, id }) => {
   };
   const indexed = await precomputeActivityEmbeddings({ store, getEmbeddingRuntime: async () => runtime });
   assert.ok(indexed.ok && indexed.embedded === 1, "先建立真实可查询的向量，再测试查询中途清空");
-  const model: AgentModel = { provider: "local", modelId: "chat", runtime: "builtin-llama.cpp", dataResidency: "local", stream: async () => { throw new Error("No model request expected"); } };
-  const tool = createActivitySearchTool({ loadSettings, getChatModel: () => model, getEmbeddingRuntime: async () => runtime });
-  const execution = await tool.resolveExecution({ query: "发布", mode: "semantic" });
-  if ("isError" in execution) throw new Error(execution.errorMessage);
-  const rejected = assert.rejects(execution.execute({ toolCallId: "query", operationId: "query" }), { name: "AbortError" }, "semantic query must reject clear");
+  const operation = createActivityOperation(store, settings, loadSettings);
+  const rejected = assert.rejects(searchActivitySemantic({
+    store, getEmbeddingRuntime: async () => runtime, query: "发布", ...operation
+  }), { name: "AbortError" }, "semantic query must reject clear");
   await started.promise;
   await mutateFromAnotherProcess(root, settings, "clear");
   release.resolve();
@@ -166,7 +168,7 @@ await withFixture(async ({ root, settings, loadSettings, store, id }) => {
     await rejected;
     assert.equal(modelCalls, 1, "关闭采集后不能再发送记忆语义去重请求");
     assert.equal((await memory.listEntries({ origins: ["current_workspace"] })).entries.length, 1);
-    assert.equal(store.getPendingAnalysisProjection(store.getAnalysis(id)!).memoryCandidates.length, 1);
+    assert.ok(store.getAnalysis(id), "已提交的分析仍保留");
   } finally { release.resolve(); pipeline.close(); memory.close(); }
 });
 
@@ -174,7 +176,7 @@ async function mutateFromAnotherProcess(root: string, settings: ActivitySettings
   const code = mode === "clear" ? `
     import { ActivityStore } from ${JSON.stringify(storeModule)};
     const store = new ActivityStore();
-    await store.open(${JSON.stringify(settings.outputDirectory)});
+    await store.open(${JSON.stringify(settings.outputDirectory)}, ${JSON.stringify(root)});
     await store.clear(); await store.close();
   ` : `
     import { writeFile } from 'node:fs/promises';
@@ -185,19 +187,26 @@ async function mutateFromAnotherProcess(root: string, settings: ActivitySettings
 
 async function withFixture(fn: (value: { root: string; settings: ActivitySettings; loadSettings(): Promise<ActivitySettings>; store: ActivityStore; id: string }) => Promise<void>): Promise<void> {
   const root = await mkdtemp(path.join(os.tmpdir(), "biny-activity-operation-"));
+  const previousAgentDir = process.env.BINY_AGENT_DIR;
+  process.env.BINY_AGENT_DIR = root;
   const settings: ActivitySettings = { ...defaultActivitySettings, outputDirectory: path.join(root, "records"), enabled: true };
   const settingsPath = path.join(root, "settings.json");
   await writeFile(settingsPath, JSON.stringify(settings));
   const store = new ActivityStore();
   try {
-    await store.open(settings.outputDirectory);
+    await store.open(settings.outputDirectory, root);
     const id = store.startSession(new Date(Date.now() - 3_600_000).toISOString());
     for (let index = 0; index < 3; index += 1) {
       store.recordEvent({ sessionId: id, occurredAt: new Date(Date.now() - 3_599_000 + index * 1_000).toISOString(), eventType: "app_focus", application: "Editor" });
     }
     store.endSession(id, new Date().toISOString());
     await fn({ root, settings, loadSettings: async () => JSON.parse(await readFile(settingsPath, "utf8")) as ActivitySettings, store, id });
-  } finally { await store.close(); await rm(root, { recursive: true, force: true }); }
+  } finally {
+    await store.close();
+    if (previousAgentDir === undefined) delete process.env.BINY_AGENT_DIR;
+    else process.env.BINY_AGENT_DIR = previousAgentDir;
+    await rm(root, { recursive: true, force: true });
+  }
 }
 
 function analysis(sessionId: string): ActivitySessionAnalysis {

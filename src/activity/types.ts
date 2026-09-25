@@ -43,7 +43,6 @@ export interface ActivityRuntimeSnapshot {
   collectorAvailable: boolean;
   screenRecordingGranted: boolean;
   accessibilityGranted: boolean;
-  axAvailable: boolean;
   fallbackAvailable: boolean;
   /** macOS 当前是否处于锁屏；锁屏期间不采集截图，解锁后恢复。 */
   screenLocked: boolean;

@@ -14,11 +14,13 @@ import {
   type ActivityReportResult
 } from "../src/activity/analyzer.js";
 import { activityMemoryInput } from "../src/activity/memoryInput.js";
+import { buildActivityDigest } from "../src/activity/digest.js";
 import { ActivityStore, type ActivitySessionAnalysis } from "../src/activity/store.js";
 import type { ActivityDataResidency } from "../src/activity/settings.js";
 import type { ActivityModelRuntime } from "../src/activity/types.js";
 import type { AgentModel, ModelStreamEvent } from "../src/agent/core/types.js";
 import { refreshActivitySummaryWithNarrative } from "../src/activity/summary.js";
+import { narrateActivityReport } from "../src/activity/reportNarrative.js";
 
 const NOW = new Date(2026, 7, 26, 15, 30, 0); // 本地 2026-08-26 15:30
 
@@ -70,6 +72,11 @@ await testBuildReportGroupsAndFilters();
 await testBuildReportAnalyzesPendingInRange();
 await testBuildReportUsesExternalModel();
 await testBuildReportCanRenderStoredAnalysesOnly();
+await testBuildReportForceReanalyzesTargetDate();
+await testDigestLimitsAnalyzedSessions();
+await testDigestIncludesRedactedOcrExcerpt();
+await testReportNarrativeAndSkeleton();
+await testForceReportFindsOlderDateBeyondRecentSessions();
 testDailyNoteFormatter();
 testReportRangeParsing();
 
@@ -111,57 +118,25 @@ async function testCancelledAnalysisAndSummaryLeaveNoResult(): Promise<void> {
 }
 
 async function testPendingProjectionSurvivesRestartWithoutReanalysis(): Promise<void> {
-  const root = await mkdtemp(path.join(os.tmpdir(), "biny-activity-projection-recovery-"));
-  const store = new ActivityStore();
-  await store.open(root);
-  const candidate = { type: "project" as const, content: "项目持续采用分阶段发布流程", why: "重复出现的稳定约束" };
-  const scripted = scriptedModel([JSON.stringify({ ...JSON.parse(ANALYSIS_JSON), memoryCandidates: [candidate] })]);
-  const controller = new AbortController();
-  let memoryCalls = 0;
-  let crystalCalls = 0;
-  try {
+  await withStore(async (store) => {
     const id = seedEndedSession(store, todayAt(9), todayAt(10), 3);
-    await assert.rejects(analyzeActivitySession({
-      ...deps(store, scripted.model), signal: controller.signal,
-      writeMemories: async () => { memoryCalls += 1; controller.abort(); },
-      onAnalyzed: async () => { crystalCalls += 1; }
-    }, id), { name: "AbortError" });
-    assert.equal(scripted.calls(), 1);
-    assert.equal(crystalCalls, 0);
-    await store.close();
-    await store.open(root);
-    assert.deepEqual(store.getPendingAnalysisProjection(store.getAnalysis(id)!).memoryCandidates, [candidate]);
-    // 候选不属于对外分析投影，API/聊天不能从普通分析读取顺带拿到它。
-    assert.doesNotMatch(JSON.stringify(store.getAnalysis(id)), /项目持续采用分阶段发布流程/u);
-    const resumed: ActivityAnalyzerDeps = {
+    const scripted = scriptedModel([JSON.stringify({ ...JSON.parse(ANALYSIS_JSON), memoryCandidates: [
+      { type: "project", content: "项目持续采用分阶段发布流程", why: "稳定约束" }
+    ] })]);
+    let memoryCalls = 0;
+    let crystalCalls = 0;
+    const options: ActivityAnalyzerDeps = {
       ...deps(store, scripted.model),
-      writeMemories: async () => { memoryCalls += 1; },
-      onAnalyzed: async () => { crystalCalls += 1; throw new Error("temporary crystal failure"); }
+      writeMemories: async () => { memoryCalls++; throw new Error("memory unavailable"); },
+      onAnalyzed: async () => { crystalCalls++; throw new Error("crystal unavailable"); }
     };
-    await analyzePendingActivitySessions(resumed);
-    assert.equal(memoryCalls, 2);
-    assert.equal(crystalCalls, 1);
-    assert.equal(scripted.calls(), 1, "恢复旁路不能重跑分析模型");
-    await analyzePendingActivitySessions({ ...resumed, onAnalyzed: async () => { crystalCalls += 1; } });
-    assert.equal(memoryCalls, 2, "已确认记忆不能随结晶重试重复执行");
-    assert.equal(crystalCalls, 2);
-    assert.deepEqual(store.listAnalysesPendingProjection(), []);
-    await analyzePendingActivitySessions(resumed);
+    assert.equal((await analyzeActivitySession(options, id)).status, "analyzed");
+    await analyzePendingActivitySessions(options);
+    assert.equal(memoryCalls, 1, "失败的记忆写入不通过后台补偿重放");
+    assert.equal(crystalCalls, 1, "失败的 Crystal 写入不通过后台补偿重放");
     assert.equal(scripted.calls(), 1);
-    assert.equal(memoryCalls, 2);
-    assert.equal(crystalCalls, 2);
-    store.recordAnalysis(store.getAnalysis(id)!, [candidate]);
-    const before = store.getPendingAnalysisProjection(store.getAnalysis(id)!);
-    store.recordAnalysis(store.getAnalysis(id)!, [{ ...candidate, content: "新的发布约束需要独立确认" }]);
-    store.completeAnalysisProjection(id, "memory", before.revision);
-    assert.equal(store.getPendingAnalysisProjection(store.getAnalysis(id)!).memoryCandidates.length, 1,
-      "即使输入 hash 和毫秒时间相同，旧回调也不能确认新一版候选");
-    await store.clear();
-    assert.deepEqual(store.listAnalysesPendingProjection(), []);
-  } finally {
-    await store.close();
-    await rm(root, { recursive: true, force: true });
-  }
+    assert.ok(store.getAnalysis(id));
+  });
 }
 
 async function testSweepCancellationKeepsRemainingSessionsPending(): Promise<void> {
@@ -525,6 +500,19 @@ async function testBuildReportCanRenderStoredAnalysesOnly(): Promise<void> {
   });
 }
 
+async function testBuildReportForceReanalyzesTargetDate(): Promise<void> {
+  await withStore(async (store) => {
+    seedEndedSession(store, todayAt(9), todayAt(10), 3);
+    seedEndedSession(store, yesterdayAt(9), yesterdayAt(10), 3);
+    const { model, calls } = scriptedModel([ANALYSIS_JSON, ANALYSIS_JSON]);
+    await buildActivityReport(deps(store, model), "today");
+    assert.equal(calls(), 1);
+    const forced = await buildActivityReport(deps(store, model), "today", { force: true });
+    assert.equal(forced.analyzedNow, 1);
+    assert.equal(calls(), 2, "force 只重分析目标日期的已结束会话");
+  });
+}
+
 function testDailyNoteFormatter(): void {
   const result: ActivityReportResult = {
     date: "2026-08-26",
@@ -564,6 +552,72 @@ function testReportRangeParsing(): void {
   assert.throws(() => resolveActivityReportRange("2026-13-01", NOW), /无效日期/u);
   const leapDay = resolveActivityReportRange("2028-02-29", NOW);
   assert.equal(leapDay.label, "2028-02-29", "真正的闰日仍应解析成功");
+}
+
+async function testDigestLimitsAnalyzedSessions(): Promise<void> {
+  await withStore(async (store) => {
+    const first = seedEndedSession(store, todayAt(13), todayAt(14), 1);
+    const second = seedEndedSession(store, todayAt(14), todayAt(15), 1);
+    seedEndedSession(store, todayAt(15), todayAt(16), 1);
+    store.recordAnalysis(analysisRow(first, { summary: "较早的已分析活动" }));
+    store.recordAnalysis(analysisRow(second, { summary: "较新的已分析活动" }));
+    const result = await buildActivityDigest({ store, maxAnalyzed: 1, now: () => NOW }, 180);
+    assert.equal(result.analyzed, 1);
+    assert.equal(result.sessions, 2);
+    assert.match(result.markdown, /未分析/u);
+  });
+}
+
+async function testDigestIncludesRedactedOcrExcerpt(): Promise<void> {
+  await withStore(async (store) => {
+    const sessionId = seedEndedSession(store, todayAt(14), todayAt(15), 1);
+    await store.recordFallbackCapture({
+      sessionId,
+      occurredAt: todayAt(14),
+      eventType: "fallback_capture",
+      rawOcrText: "活动摘要中的可检索文字 token=private-activity-secret",
+      jpeg: Buffer.from("LOCAL_JPEG_TEST"),
+      fallbackReason: "test"
+    });
+    store.recordAnalysis(analysisRow(sessionId, { summary: "已分析的活动" }));
+    const result = await buildActivityDigest({ store, now: () => NOW }, 120);
+    assert.match(result.markdown, /活动摘要中的可检索文字/u);
+    assert.doesNotMatch(result.markdown, /private-activity-secret/u);
+  });
+}
+
+async function testReportNarrativeAndSkeleton(): Promise<void> {
+  await withStore(async (store) => {
+    const sessionId = seedEndedSession(store, todayAt(14), todayAt(15), 1);
+    store.recordAnalysis(analysisRow(sessionId, { project: "biny", summary: "检查 PR #123 的构建结果" }));
+    const skeleton = await buildActivityReport({ ...deps(store), analyzePending: false }, "today");
+    const { model, calls } = scriptedModel(["# 2026-08-26 工作日记\n\n## biny\n我检查了 PR #123 的构建结果。"]);
+    const narrative = await narrateActivityReport(skeleton, { model });
+    assert.match(narrative.markdown, /我检查了 PR #123/u);
+    assert.equal(narrative.narrativeModel, model.modelId);
+    assert.equal(calls(), 1);
+    const raw = await narrateActivityReport(skeleton, { model, skeleton: true });
+    assert.equal(raw.markdown, skeleton.markdown);
+    assert.equal(calls(), 1);
+    const unsupported = scriptedModel(["# 工作日记\n新增了 PR #999。"]).model;
+    assert.equal((await narrateActivityReport(skeleton, { model: unsupported })).markdown, skeleton.markdown);
+  });
+}
+
+async function testForceReportFindsOlderDateBeyondRecentSessions(): Promise<void> {
+  await withStore(async (store) => {
+    const target = seedEndedSession(store, yesterdayAt(9), yesterdayAt(10), 3);
+    const newer = todayAt(8);
+    for (let index = 0; index < 1_001; index += 1) {
+      const id = store.startSession(new Date(Date.parse(newer) + index * 1_000).toISOString());
+      store.endSession(id, new Date(Date.parse(newer) + index * 1_000 + 500).toISOString());
+    }
+    const { model, calls } = scriptedModel([ANALYSIS_JSON]);
+    const forced = await buildActivityReport(deps(store, model), "yesterday", { force: true });
+    assert.equal(forced.analyzedNow, 1);
+    assert.equal(calls(), 1);
+    assert.ok(store.getAnalysis(target));
+  });
 }
 
 function deps(store: ActivityStore, model?: AgentModel): ActivityAnalyzerDeps {
@@ -653,7 +707,7 @@ async function withStore(run: (store: ActivityStore) => Promise<void>): Promise<
   const root = await mkdtemp(path.join(os.tmpdir(), "biny-activity-analyzer-"));
   const store = new ActivityStore();
   try {
-    await store.open(root);
+    await store.open(root, root);
     await run(store);
   } finally {
     await store.close();

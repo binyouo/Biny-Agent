@@ -1,5 +1,5 @@
 /**
- * activity_digest 的业务实现：把最近 N 分钟内的 session（含进行中）渲染成一条浅的时间线。
+ * Activity digest 的业务实现：把最近 N 分钟内的 session（含进行中）渲染成一条浅的时间线。
  *
  * 设计上刻意「浅」：与 report 不同，digest 不补分析（不烧模型），已分析的 session 用
  * project+summary+topics 一行带过，还没分析的 session 直接退化展示脱敏事件摘要并标注
@@ -25,6 +25,7 @@ export interface ActivityDigestDeps {
   store: ActivityStore;
   lookbackMin?: number;
   limit?: number;
+  maxAnalyzed?: number;
   now?: () => Date;
 }
 
@@ -37,9 +38,20 @@ export function resolveDigestWindow(lookbackMin: number, now: Date = new Date())
 export async function buildActivityDigest(deps: ActivityDigestDeps, lookbackMin = ACTIVITY_DIGEST_DEFAULT_LOOKBACK_MIN): Promise<ActivityDigestResult> {
   const now = deps.now?.() ?? new Date();
   const sinceIso = resolveDigestWindow(lookbackMin, now);
-  const rows = deps.store.listRecentSessionsWithAnalysis(sinceIso, deps.limit ?? 50);
+  const recent = deps.store.listRecentSessionsWithAnalysis(sinceIso, deps.limit ?? 50);
+  let analyzedCount = 0;
+  const rows = recent.filter((row) => {
+    if (!row.analysis) return true;
+    analyzedCount += 1;
+    return analyzedCount <= (deps.maxAnalyzed ?? Number.POSITIVE_INFINITY);
+  });
   const eventsBySession = new Map<string, string[]>();
+  const ocrBySession = new Map<string, string[]>();
   for (const row of rows) {
+    const excerpts = deps.store.listSessionOcrExcerpts(row.id)
+      .map((value) => value.replace(/\s+/gu, " ").trim().slice(0, 180))
+      .filter(Boolean);
+    if (excerpts.length) ocrBySession.set(row.id, dedupeOrdered(excerpts));
     if (row.analysis) continue;
     const summaries = deps.store.listSessionEventSummaries(row.id)
       .map((event) => event.summary.trim())
@@ -47,7 +59,7 @@ export async function buildActivityDigest(deps: ActivityDigestDeps, lookbackMin 
     eventsBySession.set(row.id, dedupeOrdered(summaries).slice(0, UNANALYZED_EVENT_LINES));
   }
   return {
-    markdown: renderActivityDigest(rows, eventsBySession, now),
+    markdown: renderActivityDigest(rows, eventsBySession, now, ocrBySession),
     lookbackMin,
     sinceIso,
     sessions: rows.length,
@@ -59,30 +71,32 @@ export async function buildActivityDigest(deps: ActivityDigestDeps, lookbackMin 
 export function renderActivityDigest(
   rows: readonly ActivityRecentSessionRow[],
   eventsBySession: ReadonlyMap<string, readonly string[]> = new Map(),
-  now: Date = new Date()
+  now: Date = new Date(),
+  ocrBySession: ReadonlyMap<string, readonly string[]> = new Map()
 ): string {
   const ordered = [...rows].sort((left, right) => left.startedAt.localeCompare(right.startedAt));
   const title = `## 近期活动摘要（${digestWindowLabel(rows, now)}）`;
   if (!ordered.length) return `${title}\n\n（这段时间没有录到的活动。）`;
-  const lines = ordered.map((row) => renderRecentRow(row, eventsBySession.get(row.id)));
-  return [title, "", ...lines].join("\n\n");
+  const lines = ordered.map((row) => renderRecentRow(row, eventsBySession.get(row.id), ocrBySession.get(row.id)));
+  return [title, ...lines].join("\n\n");
 }
 
-function renderRecentRow(row: ActivityRecentSessionRow, eventLines: readonly string[] | undefined): string {
+function renderRecentRow(row: ActivityRecentSessionRow, eventLines: readonly string[] | undefined, ocrLines: readonly string[] | undefined): string {
   const range = sessionTimeRange(row);
   const ongoing = row.endedAt === undefined ? "（进行中）" : "";
+  const ocr = ocrLines?.length ? `\n  OCR：${ocrLines.join("；")}` : "";
   if (row.analysis) {
     const project = row.analysis.project?.trim() ? ` [${row.analysis.project.trim()}]` : "";
     const lead = row.analysis.topics.length
       ? row.analysis.topics.join("；")
       : row.analysis.summary.trim();
     const meeting = row.analysis.isMeeting ? " 📅" : "";
-    return `- ${range}${ongoing}${project}${meeting}：${lead}`;
+    return `- ${range}${ongoing}${project}${meeting}：${lead}${ocr}`;
   }
   const events = eventLines?.length
     ? eventLines.map((line) => `- ${line}`).join(" · ")
     : `共 ${String(row.eventCount)} 个事件`;
-  return `- ${range}${ongoing}（未分析）：${events}`;
+  return `- ${range}${ongoing}（未分析）：${events}${ocr}`;
 }
 
 /** 窗口标签按最早一条已录 session 距 now 的跨度给出人话。 */

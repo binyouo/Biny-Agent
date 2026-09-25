@@ -1,7 +1,7 @@
 import { redactSecrets } from "../utils/redaction.js";
 
 /**
- * Activity 原始 OCR 只在 sidecar 到主进程的短暂内存链路中存在；写入 SQLite 前先做规则脱敏和
+ * Activity 原始 OCR 只在 独立 OCR 进程到主进程的短暂内存链路中存在；写入 SQLite 前先做规则脱敏和
  * 展示裁剪。OCR 保留完整脱敏文本，模型输入在消费端按预算截取，避免长屏幕内容永久丢失。
  * 输入监听不接收具体键值，因此不会把按键内容带入这条链路。
  */
@@ -48,8 +48,6 @@ function redactSensitiveText(value: string): string {
 export interface ActivitySummaryDetails {
   eventType?: string;
   windowTitle?: string;
-  axRole?: string;
-  axTitle?: string;
   mouseEventType?: string;
   fallbackReason?: string;
 }
@@ -57,14 +55,10 @@ export interface ActivitySummaryDetails {
 export function activitySummary(application: string | undefined, text: string | undefined, details: ActivitySummaryDetails = {}): string {
   const safeApplication = redactActivityText(application);
   const safeWindowTitle = redactActivityText(details.windowTitle);
-  const safeAxRole = redactActivityText(details.axRole);
-  const safeAxTitle = redactActivityText(details.axTitle);
   const parts = [
     safeApplication ? `前台应用：${safeApplication}` : "前台应用未知",
     safeWindowTitle ? `窗口：${safeWindowTitle}` : undefined,
     details.eventType ? `事件：${activityEventLabel(details.eventType)}` : undefined,
-    safeAxRole ? `控件：${safeAxRole}` : undefined,
-    safeAxTitle ? `控件标题：${safeAxTitle}` : undefined,
     details.mouseEventType ? `鼠标：${activityEventLabel(details.mouseEventType)}` : undefined,
     details.fallbackReason ? `视觉 fallback：${activityEventLabel(details.fallbackReason)}` : undefined,
     text ? `文本摘要：${text}` : "检测到活动"
@@ -87,9 +81,6 @@ function activityEventLabel(value: string): string {
     visual_change: "画面变化",
     heartbeat: "心跳",
     accessibility_unavailable: "辅助功能不可用",
-    ax_connection_failed: "AX 连接失败",
-    missing_window_or_focus_semantics: "缺少窗口或焦点语义",
-    visual_application: "视觉型应用"
   };
   return labels[value] ?? value.slice(0, 80);
 }

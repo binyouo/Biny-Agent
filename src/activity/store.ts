@@ -1,15 +1,9 @@
-/**
- * Activity 的全局 SQLite/FTS5 存储。
- *
- * 事件本身不依赖截图即可落盘；只有视觉 fallback 才会写 JPEG。所有进入数据库的文本
- * 都先经过规则脱敏，原始截图和 SQLite 继续保存在全局 0700 目录，不进入项目 Session 或 LocalMemory。
- */
+/** Activity 本地事实存储：kind/data 事件、独立截图、OCR 帧和会话分析。 */
 import { randomUUID } from "node:crypto";
-import { chmod, mkdir, readdir, rename, rm, unlink, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, readdir, realpath, rename, rm, unlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { DatabaseSync, type StatementSync } from "node:sqlite";
-import sharp from "sharp";
+import { DatabaseSync } from "node:sqlite";
 import type {
   ActivityEventType,
   ActivitySnapshotStorageTier,
@@ -22,10 +16,10 @@ import type {
   ActivitySummarySource,
   ActivitySummaryStats
 } from "./summary.js";
-import { ACTIVITY_FTS_INDEX_VERSION, activityFtsMatch, segmentActivityText } from "./ftsText.js";
+import { activityEventData, ensureActivityTables, activityEventProjection } from "./schema.js";
 import { activitySummary, redactActivityOcrText, redactActivityText } from "./redaction.js";
-import type { ActivityMemoryCandidate } from "./analyzer.js";
 import { withLocalFileWriteLock } from "../utils/localFileLock.js";
+import { AGENT_DATABASE_FILE } from "../config/paths.js";
 
 export interface ActivityEventInput {
   sessionId: string;
@@ -35,13 +29,11 @@ export interface ActivityEventInput {
   application?: string;
   bundleId?: string;
   windowTitle?: string;
-  axRole?: string;
-  axTitle?: string;
   rawText?: string;
   rawOcrText?: string;
   /** 结构化 URL 列：只保留站点、端口和路径，不保存凭据、查询参数或片段。 */
   url?: string;
-  /** sidecar 截图的幂等键，用于重启后把 OCR 投影回原截图。 */
+  /** 截图的幂等键，用于重启后把 OCR 投影回原截图。 */
   captureId?: string;
   mouseEventType?: string;
   mouseButton?: string;
@@ -91,13 +83,13 @@ export type ActivityRecordId = string;
 export interface ActivitySearchResult {
   id: ActivityRecordId;
   sessionId: string;
+  snapshotId?: string;
+  createdAt?: number;
   occurredAt: string;
   source: ActivitySource;
   eventType: string;
   application?: string;
   windowTitle?: string;
-  axRole?: string;
-  axTitle?: string;
   summary: string;
   /** 已脱敏的 OCR 投影；只在主动搜索/回看时返回，原始截图不会进入工具结果。 */
   ocrText?: string;
@@ -118,12 +110,12 @@ export interface ActivityStoredEvent extends ActivitySearchResult {
   captureId?: string;
 }
 
-/** 回看界面使用的截图元数据；绝不把磁盘路径暴露给 renderer。 */
+/** 回看和文件接口使用的截图元数据。 */
 export interface ActivitySnapshotRecord {
   id: ActivityRecordId;
   sessionId: string;
-  eventId: ActivityRecordId;
   capturedAt: string;
+  filePath?: string;
   bytes: number;
   width?: number;
   height?: number;
@@ -154,6 +146,8 @@ export interface ActivityOcrEmbeddingSource {
 }
 
 export interface ActivityOcrEmbeddingRow extends ActivityOcrEmbeddingSource {
+  createdAt: number;
+  snapshotId: string;
   occurredAt: string;
   startedAt: string;
   application?: string;
@@ -194,7 +188,7 @@ export interface ActivityAnalysisReference {
   title?: string;
 }
 
-/** 落库的单个 session 分析结果（activity_session_analysis 一行的内存形态）。 */
+/** 落库的单个 session 分析结果（activity_sessions 内联字段的内存形态）。 */
 export interface ActivitySessionAnalysis {
   sessionId: string;
   analyzedAt: string;
@@ -285,22 +279,6 @@ export interface ActivitySessionDetail {
   analysis?: ActivitySessionAnalysis;
 }
 
-/** semantic 搜索的嵌入源：project+summary+topics+highlights 拼成 passage 文本，不碰事件原文。 */
-export interface ActivityAnalysisEmbeddingSource {
-  sessionId: string;
-  project?: string;
-  summary: string;
-  topics: string[];
-  highlights: string[];
-}
-
-/** semantic 命中行：analysis 信息 + session 开始时间 + 当前指纹下的向量。 */
-export interface ActivityAnalysisEmbeddingRow extends ActivityAnalysisEmbeddingSource {
-  startedAt: string;
-  embedding: Float32Array;
-}
-
-
 export function resolveActivityDirectory(value: string): string {
   const trimmed = value.trim();
   if (trimmed === "~") return os.homedir();
@@ -308,22 +286,40 @@ export function resolveActivityDirectory(value: string): string {
   return path.resolve(trimmed);
 }
 
+export type ActivitySnapshotCompressor = (file: string, target: { width: number; height: number; quality: number }) => Promise<{ data: Buffer; width: number; height: number }>;
+
 export class ActivityStore {
   private database?: DatabaseSync;
   private root?: string;
 
-  async open(directory: string): Promise<void> {
+  async open(directory: string, agentDir: string): Promise<void> {
     await this.close();
     const root = resolveActivityDirectory(directory);
+    const agentRoot = path.resolve(agentDir);
     const snapshots = path.join(root, "snapshots");
+    await mkdir(agentRoot, { recursive: true, mode: 0o700 });
+    const agentRootStat = await lstat(agentRoot);
+    if (!agentRootStat.isDirectory() || agentRootStat.isSymbolicLink()) {
+      throw new Error("Agent database directory must be a real directory.");
+    }
+    const canonicalAgentRoot = await realpath(agentRoot);
+    await chmod(agentRoot, 0o700);
     await mkdir(snapshots, { recursive: true, mode: 0o700 });
     await chmod(root, 0o700);
     await chmod(snapshots, 0o700);
-    const databasePath = path.join(root, "activity.sqlite");
+    const databasePath = path.join(canonicalAgentRoot, AGENT_DATABASE_FILE);
+    try {
+      const databaseStat = await lstat(databasePath);
+      if (!databaseStat.isFile() || databaseStat.isSymbolicLink() || databaseStat.nlink !== 1 || await realpath(databasePath) !== databasePath) {
+        throw new Error("Agent database must be a regular, canonical file.");
+      }
+    } catch (error) {
+      if (!(error instanceof Error) || !("code" in error) || error.code !== "ENOENT") throw error;
+    }
     const database = new DatabaseSync(databasePath);
     try {
       await chmod(databasePath, 0o600);
-      // WAL + busy_timeout：采集器持续写事件，分析层（activity_report / 桌面报告）用独立连接
+      // WAL + busy_timeout：采集器持续写事件，分析层（CLI 报告 / 桌面报告）用独立连接
       // 并发读写同一个库；没有 busy_timeout 时写冲突会立刻报 SQLITE_BUSY 而不是短暂等待。
       database.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;");
       database.exec("CREATE TABLE IF NOT EXISTS activity_generation (id INTEGER PRIMARY KEY CHECK (id = 1), revision TEXT NOT NULL);");
@@ -343,100 +339,8 @@ export class ActivityStore {
       `);
       this.ensureSessionColumns(database);
       this.ensureSessionCompatibilityColumns(database);
-      this.migrateLegacyEvents(database);
+      ensureActivityTables(database);
       database.exec(`
-        CREATE TABLE IF NOT EXISTS activity_events (
-          id TEXT PRIMARY KEY,
-          session_id TEXT NOT NULL REFERENCES activity_sessions(id) ON DELETE CASCADE,
-          timestamp INTEGER,
-          kind TEXT,
-          app_name TEXT,
-          data TEXT NOT NULL DEFAULT '{}',
-          created_at INTEGER,
-          occurred_at TEXT NOT NULL,
-          source TEXT NOT NULL DEFAULT 'event',
-          event_type TEXT NOT NULL DEFAULT 'activity',
-          application TEXT,
-          bundle_id TEXT,
-          window_title TEXT,
-          ax_role TEXT,
-          ax_title TEXT,
-          url TEXT,
-          capture_id TEXT,
-          redacted_text TEXT,
-          mouse_event_type TEXT,
-          mouse_button TEXT,
-          key_code INTEGER,
-          key_modifiers INTEGER,
-          mouse_x REAL,
-          mouse_y REAL,
-          summary TEXT NOT NULL,
-          ocr_text TEXT,
-          input_event_count INTEGER NOT NULL DEFAULT 0,
-          input_event_first_at TEXT,
-          fallback_reason TEXT,
-          snapshot_path TEXT,
-          snapshot_bytes INTEGER NOT NULL DEFAULT 0
-        );
-        CREATE INDEX IF NOT EXISTS activity_events_time_idx ON activity_events(occurred_at);
-        CREATE INDEX IF NOT EXISTS activity_events_session_idx ON activity_events(session_id);
-      `);
-      // 浏览器标签 URL 是 P4 增量列：新库已在 CREATE TABLE 里，旧库缺列时这里补上；
-      // 与 migrateLegacyEvents / FTS 重建相互独立，只做最小加法。
-      if (!tableColumns(database, "activity_events").has("url")) {
-        database.exec("ALTER TABLE activity_events ADD COLUMN url TEXT;");
-      }
-      this.ensureEventColumns(database);
-      // 将截图与事件分开存储：事件是时间线元数据，snapshot 是可轮转的原图索引，
-      // OCR frame 再作为截图的文本投影。保留 activity_events.snapshot_* 是为了兼容已有库，
-      // 新写入同时维护两份引用，旧库在这里一次性回填独立索引。
-      database.exec(`
-        CREATE TABLE IF NOT EXISTS activity_snapshots (
-          id TEXT PRIMARY KEY,
-          session_id TEXT NOT NULL REFERENCES activity_sessions(id) ON DELETE CASCADE,
-          event_id TEXT NOT NULL UNIQUE REFERENCES activity_events(id) ON DELETE CASCADE,
-          timestamp INTEGER,
-          captured_at TEXT NOT NULL,
-          file_path TEXT,
-          bytes INTEGER NOT NULL DEFAULT 0,
-          size_bytes INTEGER,
-          width INTEGER,
-          height INTEGER,
-          trigger TEXT,
-          app_name TEXT,
-          window_title TEXT,
-          content_hash TEXT,
-          hash_hex TEXT,
-          histogram TEXT,
-          histogram_change REAL,
-          pixel_diff REAL,
-          diff_pct REAL,
-          created_at INTEGER,
-          storage_tier TEXT NOT NULL DEFAULT 'hot'
-        );
-        CREATE INDEX IF NOT EXISTS activity_snapshots_time_idx ON activity_snapshots(captured_at);
-        CREATE INDEX IF NOT EXISTS activity_snapshots_session_idx ON activity_snapshots(session_id);
-        CREATE TABLE IF NOT EXISTS activity_ocr_frames (
-          id TEXT PRIMARY KEY,
-          session_id TEXT NOT NULL REFERENCES activity_sessions(id) ON DELETE CASCADE,
-          snapshot_id TEXT NOT NULL UNIQUE REFERENCES activity_snapshots(id) ON DELETE CASCADE,
-          timestamp INTEGER,
-          occurred_at TEXT NOT NULL,
-          text TEXT NOT NULL,
-          char_count INTEGER NOT NULL DEFAULT 0,
-          token_count INTEGER NOT NULL DEFAULT 0,
-          application TEXT,
-          window_title TEXT,
-          model_fingerprint TEXT,
-          embedding BLOB,
-          embedded_at TEXT,
-          embedding_model TEXT,
-          embedding_dim INTEGER,
-          created_at INTEGER
-        );
-        CREATE INDEX IF NOT EXISTS activity_ocr_frames_time_idx ON activity_ocr_frames(occurred_at);
-        CREATE INDEX IF NOT EXISTS activity_ocr_frames_session_idx ON activity_ocr_frames(session_id);
-        CREATE INDEX IF NOT EXISTS activity_ocr_frames_fp_idx ON activity_ocr_frames(model_fingerprint);
         CREATE TABLE IF NOT EXISTS activity_summaries (
           id TEXT PRIMARY KEY,
           kind TEXT NOT NULL,
@@ -454,74 +358,20 @@ export class ActivityStore {
         CREATE INDEX IF NOT EXISTS activity_summaries_date_idx ON activity_summaries(date_key);
       `);
       this.ensureSummaryColumns(database);
-      this.ensureSnapshotColumns(database);
-      this.ensureSnapshotCompatibilityColumns(database);
-      this.ensureOcrCompatibilityColumns(database);
-      this.migrateActivityRecordIds(database);
-      database.exec("CREATE INDEX IF NOT EXISTS activity_events_capture_id_idx ON activity_events(capture_id);");
-      this.ensureSnapshotRows(database);
       // 撤掉实验性的分块派生索引；保留原始 OCR 和原有整帧向量。
       database.exec(`
         DROP TRIGGER IF EXISTS activity_ocr_chunks_text_changed;
         DROP TABLE IF EXISTS activity_ocr_chunks;
       `);
-      // 分析层输出表：一个 session 一行的结构化分析结果，与原始事件分表存放。
+      // 分析由 session 行持有，OCR 向量留在帧行。
       database.exec(`
-        CREATE TABLE IF NOT EXISTS activity_session_analysis (
-          session_id   TEXT PRIMARY KEY REFERENCES activity_sessions(id) ON DELETE CASCADE,
-          analyzed_at  TEXT NOT NULL,
-          analyzer_model TEXT NOT NULL,
-          project      TEXT,
-          summary      TEXT NOT NULL,
-          topics_json  TEXT NOT NULL DEFAULT '[]',
-          prs_json     TEXT NOT NULL DEFAULT '[]',
-          issues_json  TEXT NOT NULL DEFAULT '[]',
-          people_json  TEXT NOT NULL DEFAULT '[]',
-          versions_json TEXT NOT NULL DEFAULT '[]',
-          decisions_json TEXT NOT NULL DEFAULT '[]',
-          entities_json TEXT NOT NULL DEFAULT '[]',
-          highlights_json TEXT NOT NULL DEFAULT '[]',
-          worth_memory INTEGER NOT NULL DEFAULT 0,
-          worth_knowledge INTEGER NOT NULL DEFAULT 0,
-          is_meeting INTEGER NOT NULL DEFAULT 0,
-          storage_tier TEXT NOT NULL DEFAULT 'standard',
-          title TEXT,
-          description TEXT,
-          commits_json TEXT NOT NULL DEFAULT '[]',
-          identifiers_json TEXT NOT NULL DEFAULT '[]',
-          repos_json TEXT NOT NULL DEFAULT '[]',
-          events_json TEXT NOT NULL DEFAULT '[]',
-          urls_json TEXT NOT NULL DEFAULT '[]',
-          entity_details_json TEXT NOT NULL DEFAULT '{}',
-          confidence   REAL NOT NULL DEFAULT 0,
-          source_event_count INTEGER NOT NULL DEFAULT 0,
-          input_hash   TEXT NOT NULL,
-          memory_candidates_json TEXT NOT NULL DEFAULT '[]',
-          crystal_pending INTEGER NOT NULL DEFAULT 0,
-          projection_checked_at INTEGER NOT NULL DEFAULT 0,
-          projection_revision TEXT NOT NULL DEFAULT ''
-        );
-        CREATE INDEX IF NOT EXISTS activity_analysis_time_idx ON activity_session_analysis(analyzed_at);
-        CREATE INDEX IF NOT EXISTS activity_analysis_project_idx ON activity_session_analysis(project);
+        CREATE INDEX IF NOT EXISTS activity_analysis_time_idx ON activity_sessions(analysis_generated_at);
+        CREATE INDEX IF NOT EXISTS activity_analysis_project_idx ON activity_sessions(project);
       `);
-      // P1 已建表但缺 P2 字段的旧库：逐列 ALTER 补齐（幂等），不重建表。
-      this.ensureAnalysisColumns(database);
-      this.reconcileSessionAnalysisStatus(database);
-      // 语义检索的派生向量表：analysis 行（project+summary+topics+highlights）的本地嵌入。
-      // 向量只属于分析行，session 删除时随 activity_session_analysis 级联清理。
-      database.exec(`
-        CREATE TABLE IF NOT EXISTS activity_analysis_embeddings (
-          session_id TEXT PRIMARY KEY REFERENCES activity_session_analysis(session_id) ON DELETE CASCADE,
-          model_fingerprint TEXT NOT NULL,
-          embedding BLOB NOT NULL,
-          embedded_at TEXT NOT NULL
-        );
-        CREATE INDEX IF NOT EXISTS activity_analysis_embeddings_fp_idx ON activity_analysis_embeddings(model_fingerprint);
-      `);
-      this.ensureSearchIndex(database);
+      database.exec("DROP TABLE IF EXISTS activity_fts; DROP TABLE IF EXISTS activity_fts_metadata;");
       // 缓存版本跟随数据提交，而不是数量或输入 hash：同一输入重新分析也会改变输出。
       // SQLite 触发器覆盖独立进程、级联删除与事务回滚；开库和向量回填本身不递增。
-      for (const table of ["activity_sessions", "activity_events", "activity_session_analysis"]) {
+      for (const table of ["activity_sessions", "activity_events"]) {
         for (const operation of ["INSERT", "UPDATE", "DELETE"]) {
           database.exec(`CREATE TRIGGER IF NOT EXISTS ${table}_cache_${operation.toLowerCase()}
             AFTER ${operation} ON ${table} BEGIN
@@ -619,8 +469,7 @@ export class ActivityStore {
         if (stored.snapshotPath !== relativeSnapshotPath) {
           await unlink(snapshotPath).catch(() => undefined);
         }
-        const current = this.requireDatabase().prepare("SELECT snapshot_path FROM activity_events WHERE id = ?").get(stored.id) as { snapshot_path: string | null } | undefined;
-        return { ...stored, snapshotPath: current?.snapshot_path ?? undefined };
+        return stored;
       } catch (error) {
         await unlink(temporaryPath).catch(() => undefined);
         await unlink(snapshotPath).catch(() => undefined);
@@ -634,7 +483,7 @@ export class ActivityStore {
     const counts = database.prepare(`
       SELECT
         (SELECT COUNT(*) FROM activity_sessions) AS sessions,
-        (SELECT COUNT(*) FROM activity_events WHERE source <> 'screenshot_fallback') AS events,
+        (SELECT COUNT(*) FROM ${activityEventProjection} WHERE source <> 'screenshot_fallback') AS events,
         (SELECT COUNT(*) FROM activity_snapshots WHERE file_path IS NOT NULL) AS fallback_captures,
         COALESCE((SELECT SUM(bytes) FROM activity_snapshots), 0) AS storage_bytes
     `).get() as { sessions: number; events: number; fallback_captures: number; storage_bytes: number };
@@ -642,9 +491,8 @@ export class ActivityStore {
       SELECT s.id, s.started_at, s.ended_at, s.event_count,
         s.analysis_title, s.analysis_description,
         COUNT(DISTINCT snap.id) AS snapshot_count,
-        GROUP_CONCAT(DISTINCT e.application) AS applications
+        s.app_names AS applications
       FROM activity_sessions s
-      LEFT JOIN activity_events e ON e.session_id = s.id
       LEFT JOIN activity_snapshots snap ON snap.session_id = s.id
       GROUP BY s.id
       ORDER BY s.started_at DESC
@@ -661,7 +509,7 @@ export class ActivityStore {
         endedAt: row.ended_at === null ? undefined : activityTimestampString(row.ended_at),
         snapshotCount: Number(row.snapshot_count),
         eventCount: Number(row.event_count),
-        applications: row.applications === null ? [] : String(row.applications).split(","),
+        applications: parseJsonArray<string>(row.applications),
         analysisTitle: row.analysis_title === null ? undefined : String(row.analysis_title),
         analysisDescription: row.analysis_description === null ? undefined : String(row.analysis_description)
       }))
@@ -671,40 +519,16 @@ export class ActivityStore {
   search(query: string, limit = 20): ActivitySearchResult[] {
     const normalized = query.trim();
     if (!normalized) return [];
-    const match = activityFtsMatch(normalized);
-    if (!match) return [];
     const rows = this.requireDatabase().prepare(`
-      SELECT e.id, e.session_id, e.occurred_at, e.source, e.event_type,
-        e.application, e.window_title, e.ax_role, e.ax_title, e.summary,
-        e.ocr_text, e.url, e.fallback_reason, e.snapshot_path, e.mouse_button, e.key_code, e.key_modifiers,
-        e.mouse_x, e.mouse_y, e.input_event_first_at
-      FROM activity_fts f
-      JOIN activity_events e ON e.id = f.event_id
-      WHERE activity_fts MATCH ?
-      ORDER BY e.occurred_at DESC
-      LIMIT ?
-    `).all(match, limit) as Array<Record<string, unknown>>;
+      SELECT * FROM activity_ocr_frames
+      WHERE text LIKE ? ESCAPE '\\'
+      ORDER BY created_at DESC, id DESC LIMIT ?
+    `).all(`%${normalized.replace(/%/gu, "\\%")}%`, Math.max(1, Math.min(500, limit))) as Array<Record<string, unknown>>;
     return rows.map((row) => ({
-      id: String(row.id),
-      sessionId: String(row.session_id),
-      occurredAt: String(row.occurred_at),
-      source: row.source === "screenshot_fallback" ? "screenshot_fallback" : "event",
-      eventType: String(row.event_type),
-      application: nullableString(row.application),
-      windowTitle: nullableString(row.window_title),
-      axRole: nullableString(row.ax_role),
-      axTitle: nullableString(row.ax_title),
-      summary: String(row.summary),
-      ocrText: nullableString(row.ocr_text),
-      url: nullableString(row.url),
-      fallbackReason: nullableString(row.fallback_reason),
-      snapshotPath: nullableString(row.snapshot_path),
-      mouseButton: nullableString(row.mouse_button),
-      keyCode: nullableInteger(row.key_code),
-      keyModifiers: nullableInteger(row.key_modifiers),
-      mouseX: nullableNumber(row.mouse_x),
-      mouseY: nullableNumber(row.mouse_y),
-      inputEventFirstAt: nullableString(row.input_event_first_at)
+      id: String(row.id), sessionId: String(row.session_id), snapshotId: String(row.snapshot_id), createdAt: Number(row.created_at),
+      occurredAt: String(row.occurred_at), source: "screenshot_fallback", eventType: "screenshot_ocr",
+      application: nullableString(row.application), windowTitle: nullableString(row.window_title),
+      summary: String(row.text), ocrText: String(row.text)
     }));
   }
 
@@ -763,6 +587,17 @@ export class ActivityStore {
     }));
   }
 
+  /** 强制报告只扫目标日期，避免其它日期的近期 session 把目标挤出数量上限。 */
+  listEndedSessionIdsForDateRange(startIso: string, endIso: string, limit = 200): string[] {
+    const rows = this.requireDatabase().prepare(`
+      SELECT id FROM activity_sessions
+      WHERE ended_at IS NOT NULL AND started_at >= ? AND started_at < ?
+      ORDER BY started_at ASC, id ASC
+      LIMIT ?
+    `).all(activityEpochMilliseconds(startIso), activityEpochMilliseconds(endIso), limit) as Array<{ id: string }>;
+    return rows.map((row) => row.id);
+  }
+
   /** 将时间相邻且应用集合相交的待分析 session 收口成一条连续活动。 */
   mergePendingAdjacent(mergeGapMs = 300_000): number {
     const database = this.requireDatabase();
@@ -804,18 +639,13 @@ export class ActivityStore {
           .run(left.id, right.id);
         database.prepare("UPDATE activity_ocr_frames SET session_id = ? WHERE session_id = ?")
           .run(left.id, right.id);
-        database.prepare("DELETE FROM activity_analysis_embeddings WHERE session_id = ?").run(left.id);
-        database.prepare("DELETE FROM activity_session_analysis WHERE session_id = ?").run(left.id);
-        database.prepare("DELETE FROM activity_analysis_embeddings WHERE session_id = ?").run(right.id);
-        database.prepare("DELETE FROM activity_session_analysis WHERE session_id = ?").run(right.id);
-
         const appNames = new Set([...left.appNames, ...right.appNames]);
         const aggregate = database.prepare(`
           SELECT
             COALESCE(SUM(CASE WHEN source <> 'screenshot_fallback' THEN 1 ELSE 0 END), 0) AS event_count,
             (SELECT COUNT(*) FROM activity_snapshots WHERE session_id = ?) AS snapshot_count,
             COALESCE((SELECT SUM(bytes) FROM activity_snapshots WHERE session_id = ?), 0) AS total_bytes
-          FROM activity_events
+          FROM ${activityEventProjection}
           WHERE session_id = ?
         `).get(left.id, left.id, left.id) as Record<string, unknown>;
         const updatedAt = Date.now();
@@ -827,19 +657,6 @@ export class ActivityStore {
               snapshot_count = ?,
               total_bytes = ?,
               app_names = ?,
-              analysis_status = 'pending',
-              analysis_title = NULL,
-              analysis_description = NULL,
-              analysis_model = NULL,
-              analysis_error = NULL,
-              analyzed_at = NULL,
-              worth_memory = 0,
-              worth_knowledge = 0,
-              is_meeting = 0,
-              entities = '{}',
-              topics = '[]',
-              project = NULL,
-              highlights = '[]',
               updated_at = ?
           WHERE id = ?
         `).run(
@@ -852,6 +669,7 @@ export class ActivityStore {
           updatedAt,
           left.id
         );
+        this.resetSessionAnalysis(database, left.id);
         database.prepare("DELETE FROM activity_sessions WHERE id = ?").run(right.id);
         left.endedAt = right.endedAt;
         for (const app of right.appNames) left.appNames.add(app);
@@ -904,7 +722,7 @@ export class ActivityStore {
     const database = this.requireDatabase();
     const eventRows = database.prepare(`
       SELECT id, occurred_at, summary, application, window_title, event_type, ocr_text, url
-      FROM activity_events
+      FROM ${activityEventProjection}
       WHERE session_id = ? AND source <> 'screenshot_fallback'
       ORDER BY occurred_at ASC, id ASC
     `).all(sessionId) as Array<Record<string, unknown>>;
@@ -939,6 +757,17 @@ export class ActivityStore {
       .map(({ id: _id, ...event }) => event);
   }
 
+  /** 近期摘要只取少量已脱敏 OCR 文字，避免遍历长会话的完整事件流。 */
+  listSessionOcrExcerpts(sessionId: string, limit = 2): string[] {
+    const rows = this.requireDatabase().prepare(`
+      SELECT text FROM activity_ocr_frames
+      WHERE session_id = ? AND text <> ''
+      ORDER BY occurred_at DESC, id DESC
+      LIMIT ?
+    `).all(sessionId, Math.max(0, Math.min(10, Math.trunc(limit)))) as Array<{ text: string }>;
+    return rows.map((row) => row.text);
+  }
+
   /** 读取设置页回看所需的事件、OCR 摘要和截图元数据；原始路径只留在主进程内部。 */
   getSessionDetail(sessionId: string, limit = 200): ActivitySessionDetail | undefined {
     const record = this.getSessionRecord(sessionId);
@@ -946,17 +775,16 @@ export class ActivityStore {
     const database = this.requireDatabase();
     const eventRows = database.prepare(`
       SELECT e.id, e.session_id, e.occurred_at, e.source, e.event_type,
-        e.application, e.window_title, e.ax_role, e.ax_title, e.summary,
+        e.application, e.window_title, e.summary,
         e.ocr_text, e.url, e.fallback_reason, e.mouse_button, e.key_code, e.key_modifiers,
-        e.mouse_x, e.mouse_y, e.input_event_count, e.input_event_first_at, snap.id AS snapshot_id
-      FROM activity_events e
-      LEFT JOIN activity_snapshots snap ON snap.event_id = e.id
+        e.mouse_x, e.mouse_y, e.input_event_count, e.input_event_first_at
+      FROM ${activityEventProjection} e
       WHERE e.session_id = ? AND e.source <> 'screenshot_fallback'
       ORDER BY e.occurred_at ASC, e.id ASC
       LIMIT ?
     `).all(sessionId, limit) as Array<Record<string, unknown>>;
     const snapshotRows = database.prepare(`
-      SELECT id, session_id, event_id, captured_at, bytes, width, height,
+      SELECT id, session_id, captured_at, file_path, bytes, width, height,
         trigger, content_hash, histogram_change, pixel_diff, storage_tier
       FROM activity_snapshots
       WHERE session_id = ?
@@ -973,8 +801,6 @@ export class ActivityStore {
         eventType: String(row.event_type),
         application: nullableString(row.application),
         windowTitle: nullableString(row.window_title),
-        axRole: nullableString(row.ax_role),
-        axTitle: nullableString(row.ax_title),
         summary: String(row.summary),
         ocrText: nullableString(row.ocr_text),
         url: nullableString(row.url),
@@ -991,8 +817,8 @@ export class ActivityStore {
       snapshots: snapshotRows.map((row) => ({
         id: String(row.id),
         sessionId: String(row.session_id),
-        eventId: String(row.event_id),
         capturedAt: String(row.captured_at),
+        filePath: row.file_path ? path.resolve(this.requireRoot(), String(row.file_path)) : undefined,
         bytes: Number(row.bytes),
         width: nullableInteger(row.width),
         height: nullableInteger(row.height),
@@ -1086,7 +912,7 @@ export class ActivityStore {
     const sessionIds = sessions.map((session) => session.id);
     const focusRows = database.prepare(`
       SELECT session_id, occurred_at, application
-      FROM activity_events
+      FROM ${activityEventProjection}
       WHERE event_type = 'app_focus' AND session_id IN (${sessionPlaceholders})
       ORDER BY occurred_at ASC, id ASC
     `).all(...sessionIds) as Array<Record<string, unknown>>;
@@ -1100,7 +926,7 @@ export class ActivityStore {
     }
     const appRows = database.prepare(`
       SELECT session_id, application
-      FROM activity_events
+      FROM ${activityEventProjection}
       WHERE application IS NOT NULL AND application <> '' AND session_id IN (${sessionPlaceholders})
       ORDER BY occurred_at ASC, id ASC
     `).all(...sessionIds) as Array<Record<string, unknown>>;
@@ -1135,15 +961,13 @@ export class ActivityStore {
       if (session) session.ocrCharCount += String(row.text ?? "").length;
     }
     const analysisRows = database.prepare(`
-      SELECT a.*, s.id AS activity_session_id, s.analysis_status AS activity_analysis_status
-      FROM activity_sessions s
-      LEFT JOIN activity_session_analysis a ON a.session_id = s.id
-      WHERE s.id IN (${sessionPlaceholders})
-      ORDER BY s.started_at ASC, s.id ASC
+      SELECT * FROM activity_sessions
+      WHERE id IN (${sessionPlaceholders})
+      ORDER BY started_at ASC, id ASC
     `).all(...sessionIds) as Array<Record<string, unknown>>;
     for (const row of analysisRows) {
-      const session = byId.get(String(row.activity_session_id));
-      if (session && row.analyzed_at !== null && row.analyzed_at !== undefined) {
+      const session = byId.get(String(row.id));
+      if (session && row.input_hash !== null) {
         session.analysis = parseAnalysisRow(row);
       }
     }
@@ -1164,49 +988,23 @@ export class ActivityStore {
   }
 
   /**
-   * 把 sidecar 异步返回的 OCR 投影写回已落库 snapshot。
+   * 把独立 OCR 进程返回的文字写回已落库 snapshot。
    *
    * 截图和 OCR 必须分开提交：Vision 可能耗时，不能让它决定截图是否存在；这里仍复用
-   * 与首次写入相同的脱敏、摘要和 FTS 更新逻辑，保证搜索与分析看到一致的数据。
+   * 与首次写入相同的文字处理逻辑，保证搜索与分析看到一致的数据。
    */
   updateSnapshotOcr(snapshotId: ActivityRecordId, rawOcrText: string | undefined): void {
     const database = this.requireDatabase();
-    const row = database.prepare(`
-      SELECT s.session_id, s.event_id, s.captured_at,
-        e.application, e.window_title, e.event_type, e.ax_role, e.ax_title,
-        e.mouse_event_type, e.fallback_reason, e.redacted_text
-      FROM activity_snapshots s
-      JOIN activity_events e ON e.id = s.event_id
-      WHERE s.id = ?
-    `).get(snapshotId) as Record<string, unknown> | undefined;
+    const row = database.prepare("SELECT session_id, captured_at, app_name, window_title FROM activity_snapshots WHERE id = ?").get(snapshotId) as Record<string, unknown> | undefined;
     if (!row) return;
-
-    const application = nullableString(row.application);
+    const application = nullableString(row.app_name);
     const windowTitle = nullableString(row.window_title);
-    const axRole = nullableString(row.ax_role);
-    const axTitle = nullableString(row.ax_title);
-    const eventType = nullableString(row.event_type) ?? "fallback_capture";
-    const mouseEventType = nullableString(row.mouse_event_type);
-    const fallbackReason = nullableString(row.fallback_reason);
     const ocrText = redactActivityOcrText(rawOcrText);
-    const redactedText = nullableString(row.redacted_text);
-    const summaryText = [redactedText, ocrText].filter((value): value is string => value !== undefined).join("；") || undefined;
-    const summary = activitySummary(application, summaryText, {
-      eventType,
-      windowTitle,
-      axRole,
-      axTitle,
-      mouseEventType,
-      fallbackReason
-    });
-    const eventId = String(row.event_id);
     const sessionId = String(row.session_id);
     const occurredAt = String(row.captured_at);
 
     database.exec("BEGIN IMMEDIATE;");
     try {
-      database.prepare("UPDATE activity_events SET summary = ?, ocr_text = ? WHERE id = ?")
-        .run(summary, ocrText ?? null, eventId);
       database.prepare("DELETE FROM activity_ocr_frames WHERE snapshot_id = ?").run(snapshotId);
       if (ocrText) {
         database.prepare(`
@@ -1228,29 +1026,12 @@ export class ActivityStore {
           Date.now()
         );
       }
-      // activity_fts 是独立 FTS5 表，更新事件正文时必须同步替换对应索引行。
-      database.prepare("DELETE FROM activity_fts WHERE event_id = ?").run(eventId);
-      this.insertSearchIndexRow(database, eventId);
       database.prepare(`
         UPDATE activity_sessions
-        SET analysis_status = 'pending',
-            analysis_title = NULL,
-            analysis_description = NULL,
-            analysis_model = NULL,
-            analysis_error = NULL,
-            analyzed_at = NULL,
-            worth_memory = 0,
-            worth_knowledge = 0,
-            is_meeting = 0,
-            entities = '{}',
-            topics = '[]',
-            project = NULL,
-            highlights = '[]',
-            updated_at = ?
+        SET updated_at = ?
         WHERE id = ?
       `).run(Date.now(), sessionId);
-      database.prepare("DELETE FROM activity_analysis_embeddings WHERE session_id = ?").run(sessionId);
-      database.prepare("DELETE FROM activity_session_analysis WHERE session_id = ?").run(sessionId);
+      this.resetSessionAnalysis(database, sessionId);
       database.exec("COMMIT;");
     } catch (error) {
       database.exec("ROLLBACK;");
@@ -1261,14 +1042,7 @@ export class ActivityStore {
   updateSnapshotOcrByCaptureId(captureId: string, rawOcrText: string | undefined): boolean {
     const normalized = normalizeShortText(captureId);
     if (!normalized) return false;
-    const row = this.requireDatabase().prepare(`
-      SELECT s.id
-      FROM activity_events e
-      JOIN activity_snapshots s ON s.event_id = e.id
-      WHERE e.capture_id = ?
-      ORDER BY e.occurred_at DESC, e.id DESC
-      LIMIT 1
-    `).get(normalized) as { id: unknown } | undefined;
+    const row = this.requireDatabase().prepare("SELECT id FROM activity_snapshots WHERE capture_id = ?").get(normalized) as { id: unknown } | undefined;
     if (row?.id === undefined || row.id === null) return false;
     this.updateSnapshotOcr(String(row.id), rawOcrText);
     return true;
@@ -1333,7 +1107,7 @@ export class ActivityStore {
 
   listOcrEmbeddingRows(fingerprint: string, limit = 2_000): ActivityOcrEmbeddingRow[] {
     const rows = this.requireDatabase().prepare(`
-      SELECT f.id, f.session_id, f.occurred_at, f.text, f.application, f.window_title,
+      SELECT f.id, f.snapshot_id, f.session_id, f.occurred_at, f.created_at, f.text, f.application, f.window_title,
         s.started_at AS session_started_at, f.embedding
       FROM activity_ocr_frames f
       JOIN activity_sessions s ON s.id = f.session_id
@@ -1345,8 +1119,10 @@ export class ActivityStore {
       const blob = row.embedding as Uint8Array | undefined;
       return {
         id: String(row.id),
+        snapshotId: String(row.snapshot_id),
         sessionId: String(row.session_id),
         occurredAt: String(row.occurred_at),
+        createdAt: Number(row.created_at),
         startedAt: activityTimestampString(row.session_started_at),
         text: String(row.text),
         application: nullableString(row.application),
@@ -1360,9 +1136,27 @@ export class ActivityStore {
 
   getAnalysis(sessionId: string): ActivitySessionAnalysis | undefined {
     const row = this.requireDatabase().prepare(
-      "SELECT a.*, s.analysis_status AS activity_analysis_status\n       FROM activity_session_analysis a\n       JOIN activity_sessions s ON s.id = a.session_id\n       WHERE a.session_id = ?"
+      "SELECT * FROM activity_sessions WHERE id = ? AND input_hash IS NOT NULL"
     ).get(sessionId) as Record<string, unknown> | undefined;
     return row ? parseAnalysisRow(row) : undefined;
+  }
+
+  /** 输入变化后重新排队分析，不保留已经失效的旧结论。 */
+  private resetSessionAnalysis(database: DatabaseSync, sessionId: string): void {
+    database.prepare(`
+      UPDATE activity_sessions SET
+        analysis_status = 'pending', analysis_title = NULL, analysis_description = NULL,
+        analysis_model = NULL, analysis_error = NULL, analyzed_at = NULL,
+        analysis_generated_at = NULL, project = NULL, summary = NULL,
+        topics = '[]', topics_json = '[]', prs_json = '[]', issues_json = '[]',
+        people_json = '[]', versions_json = '[]', decisions_json = '[]',
+        entities = '{}', entities_json = '[]', highlights = '[]', highlights_json = '[]',
+        worth_memory = 0, worth_knowledge = 0, is_meeting = 0,
+        analysis_storage_tier = 'standard', commits_json = '[]', identifiers_json = '[]',
+        repos_json = '[]', events_json = '[]', urls_json = '[]', entity_details_json = '{}',
+        confidence = 0, source_event_count = 0, input_hash = NULL
+      WHERE id = ?
+    `).run(sessionId);
   }
 
   /** 记录模型尚未产出结构化分析时的 session 状态；正文分析行保持为空，便于区分重试和已处理。 */
@@ -1372,6 +1166,7 @@ export class ActivityStore {
     details: { model?: string; error?: string; analyzedAt?: string; title?: string | null; description?: string | null } = {}
   ): void {
     const database = this.requireDatabase();
+    this.resetSessionAnalysis(database, sessionId);
     const analyzedAt = details.analyzedAt === undefined ? null : Date.parse(details.analyzedAt);
     database.prepare(`
       UPDATE activity_sessions
@@ -1393,170 +1188,83 @@ export class ActivityStore {
       Date.now(),
       sessionId
     );
-    database.prepare("DELETE FROM activity_analysis_embeddings WHERE session_id = ?").run(sessionId);
-    database.prepare("DELETE FROM activity_session_analysis WHERE session_id = ?").run(sessionId);
   }
 
   /** 幂等写入：同一 session 重复分析时按主键覆盖。 */
-  recordAnalysis(analysis: ActivitySessionAnalysis, memoryCandidates: readonly ActivityMemoryCandidate[] = []): void {
+  recordAnalysis(analysis: ActivitySessionAnalysis): void {
     const database = this.requireDatabase();
     const analysisStatus = analysis.analysisStatus ?? "analyzed";
     database.prepare(`
-      INSERT INTO activity_session_analysis (
-        session_id, analyzed_at, analyzer_model, project, summary,
-        topics_json, prs_json, issues_json, people_json, versions_json, decisions_json,
-        entities_json, highlights_json, worth_memory, worth_knowledge, is_meeting, storage_tier,
-        title, description, commits_json, identifiers_json, repos_json, events_json, urls_json,
-        entity_details_json,
-        confidence, source_event_count, input_hash, memory_candidates_json, crystal_pending, projection_revision
-      ) VALUES (
-        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
-      )
-      ON CONFLICT(session_id) DO UPDATE SET
-        analyzed_at = excluded.analyzed_at,
-        analyzer_model = excluded.analyzer_model,
-        project = excluded.project,
-        summary = excluded.summary,
-        topics_json = excluded.topics_json,
-        prs_json = excluded.prs_json,
-        issues_json = excluded.issues_json,
-        people_json = excluded.people_json,
-        versions_json = excluded.versions_json,
-        decisions_json = excluded.decisions_json,
-        entities_json = excluded.entities_json,
-        highlights_json = excluded.highlights_json,
-        worth_memory = excluded.worth_memory,
-        worth_knowledge = excluded.worth_knowledge,
-        is_meeting = excluded.is_meeting,
-        storage_tier = excluded.storage_tier,
-        title = excluded.title,
-        description = excluded.description,
-        commits_json = excluded.commits_json,
-        identifiers_json = excluded.identifiers_json,
-        repos_json = excluded.repos_json,
-        events_json = excluded.events_json,
-        urls_json = excluded.urls_json,
-        entity_details_json = excluded.entity_details_json,
-        confidence = excluded.confidence,
-        source_event_count = excluded.source_event_count,
-        input_hash = excluded.input_hash,
-        memory_candidates_json = excluded.memory_candidates_json,
-        crystal_pending = excluded.crystal_pending,
-        projection_revision = excluded.projection_revision,
-        projection_checked_at = 0
-    `).run(
-      analysis.sessionId,
-      analysis.analyzedAt,
-      analysis.analyzerModel,
-      analysis.project ?? null,
-      analysis.summary,
-      JSON.stringify(analysis.topics),
-      JSON.stringify(analysis.prs),
-      JSON.stringify(analysis.issues),
-      JSON.stringify(analysis.people),
-      JSON.stringify(analysis.versions),
-      JSON.stringify(analysis.decisions),
-      JSON.stringify(analysis.entities),
-      JSON.stringify(analysis.highlights),
-      analysis.worthMemory ? 1 : 0,
-      analysis.worthKnowledge ? 1 : 0,
-      analysis.isMeeting ? 1 : 0,
-      analysis.storageTier,
-      analysis.title ?? null,
-      analysis.description ?? null,
-      JSON.stringify(analysis.commits ?? []),
-      JSON.stringify(analysis.identifiers ?? []),
-      JSON.stringify(analysis.repos ?? []),
-      JSON.stringify(analysis.events ?? []),
-      JSON.stringify(analysis.urls ?? []),
-      JSON.stringify(analysis.entityDetails ?? {}),
-      analysis.confidence,
-      analysis.sourceEventCount,
-      analysis.inputHash,
-      JSON.stringify(analysis.worthMemory ? memoryCandidates : []),
-      analysisStatus === "analyzed" ? 1 : 0,
-      randomUUID()
-    );
-    // analysis embedding 是摘要内容的派生缓存；覆盖分析结果后旧向量不能继续命中。
-    database.prepare("DELETE FROM activity_analysis_embeddings WHERE session_id = ?").run(analysis.sessionId);
-    const analyzedAt = Date.parse(analysis.analyzedAt);
-    database.prepare(`
-      UPDATE activity_sessions
-      SET analysis_status = ?,
-          analysis_title = ?,
-          analysis_description = ?,
-          analysis_model = ?,
-          analysis_error = NULL,
-          analyzed_at = ?,
-          worth_memory = ?,
-          worth_knowledge = ?,
-          is_meeting = ?,
-          entities = ?,
-          topics = ?,
-          project = ?,
-          highlights = ?,
-          updated_at = ?
-      WHERE id = ?
-    `).run(
-      analysisStatus,
-      analysis.title ?? null,
-      analysis.description ?? analysis.summary,
-      analysis.analyzerModel,
-      Number.isFinite(analyzedAt) ? analyzedAt : Date.now(),
-      analysis.worthMemory ? 1 : 0,
-      analysis.worthKnowledge ? 1 : 0,
-      analysis.isMeeting ? 1 : 0,
-      JSON.stringify(analysis.entityDetails ?? analysis.entities),
-      JSON.stringify(analysis.topics),
-      analysis.project ?? null,
-      JSON.stringify(analysis.highlights),
-      Date.now(),
-      analysis.sessionId
-    );
-    database.prepare("UPDATE activity_sessions SET updated_at = ? WHERE id = ?")
-      .run(Date.now(), analysis.sessionId);
-  }
-
-  /** 待沉淀信息只供后台读取，不随分析查询投影给聊天、HTTP 或界面。 */
-  getPendingAnalysisProjection(analysis: ActivitySessionAnalysis): { memoryCandidates: ActivityMemoryCandidate[]; crystalPending: boolean; revision: string } {
-    const row = this.requireDatabase().prepare(`
-      SELECT memory_candidates_json, crystal_pending, projection_revision FROM activity_session_analysis
-      WHERE session_id = ? AND input_hash = ? AND analyzed_at = ?
-    `).get(analysis.sessionId, analysis.inputHash, analysis.analyzedAt) as Record<string, unknown> | undefined;
-    return {
-      memoryCandidates: parseJsonArray<ActivityMemoryCandidate>(row?.memory_candidates_json),
-      crystalPending: Number(row?.crystal_pending) === 1,
-      revision: String(row?.projection_revision ?? "")
-    };
-  }
-
-  completeAnalysisProjection(sessionId: string, kind: "memory" | "crystal", revision: string): void {
-    // 只确认本次读取的分析版本，迟到回调不能确认重分析后产生的新候选。
-    this.requireDatabase().prepare(`
-      UPDATE activity_session_analysis SET
-        memory_candidates_json = CASE WHEN ? = 'memory' THEN '[]' ELSE memory_candidates_json END,
-        crystal_pending = CASE WHEN ? = 'crystal' THEN 0 ELSE crystal_pending END
-      WHERE session_id = ? AND projection_revision = ?
-    `).run(kind, kind, sessionId, revision);
-  }
-
-  markAnalysisProjectionChecked(analysis: ActivitySessionAnalysis): void {
-    this.requireDatabase().prepare(`
-      UPDATE activity_session_analysis SET projection_checked_at = ?
-      WHERE session_id = ? AND input_hash = ? AND analyzed_at = ?
-    `).run(Date.now(), analysis.sessionId, analysis.inputHash, analysis.analyzedAt);
-  }
-
-  listAnalysesPendingProjection(limit = 10): ActivitySessionAnalysis[] {
-    const rows = this.requireDatabase().prepare(`
-      SELECT a.*, s.analysis_status AS activity_analysis_status FROM activity_session_analysis a
-      JOIN activity_sessions s ON s.id = a.session_id
-      WHERE a.memory_candidates_json <> '[]' OR a.crystal_pending = 1
-      ORDER BY a.projection_checked_at, a.analyzed_at, a.session_id LIMIT ?
-    `).all(limit) as Record<string, unknown>[];
-    return rows.map(parseAnalysisRow);
+      UPDATE activity_sessions SET
+        analysis_status = :status,
+        analysis_title = :title,
+        analysis_description = :description,
+        analysis_model = :model,
+        analysis_error = NULL,
+        analyzed_at = :analyzedAtEpoch,
+        analysis_generated_at = :analyzedAt,
+        project = :project,
+        summary = :summary,
+        topics = :topics,
+        topics_json = :topics,
+        prs_json = :prs,
+        issues_json = :issues,
+        people_json = :people,
+        versions_json = :versions,
+        decisions_json = :decisions,
+        entities = :entitiesLegacy,
+        entities_json = :entities,
+        highlights = :highlights,
+        highlights_json = :highlights,
+        worth_memory = :worthMemory,
+        worth_knowledge = :worthKnowledge,
+        is_meeting = :isMeeting,
+        analysis_storage_tier = :storageTier,
+        commits_json = :commits,
+        identifiers_json = :identifiers,
+        repos_json = :repos,
+        events_json = :events,
+        urls_json = :urls,
+        entity_details_json = :entityDetails,
+        confidence = :confidence,
+        source_event_count = :sourceEventCount,
+        input_hash = :inputHash,
+        updated_at = :updatedAt
+      WHERE id = :sessionId
+    `).run({
+      status: analysisStatus,
+      title: analysis.title ?? null,
+      description: analysis.description ?? analysis.summary,
+      model: analysis.analyzerModel,
+      analyzedAtEpoch: Date.parse(analysis.analyzedAt),
+      analyzedAt: analysis.analyzedAt,
+      project: analysis.project ?? null,
+      summary: analysis.summary,
+      topics: JSON.stringify(analysis.topics),
+      prs: JSON.stringify(analysis.prs),
+      issues: JSON.stringify(analysis.issues),
+      people: JSON.stringify(analysis.people),
+      versions: JSON.stringify(analysis.versions),
+      decisions: JSON.stringify(analysis.decisions),
+      entities: JSON.stringify(analysis.entities),
+      entitiesLegacy: JSON.stringify(analysis.entityDetails ?? analysis.entities),
+      entityDetails: JSON.stringify(analysis.entityDetails ?? {}),
+      highlights: JSON.stringify(analysis.highlights),
+      worthMemory: analysis.worthMemory ? 1 : 0,
+      worthKnowledge: analysis.worthKnowledge ? 1 : 0,
+      isMeeting: analysis.isMeeting ? 1 : 0,
+      storageTier: analysis.storageTier,
+      commits: JSON.stringify(analysis.commits ?? []),
+      identifiers: JSON.stringify(analysis.identifiers ?? []),
+      repos: JSON.stringify(analysis.repos ?? []),
+      events: JSON.stringify(analysis.events ?? []),
+      urls: JSON.stringify(analysis.urls ?? []),
+      confidence: analysis.confidence,
+      sourceEventCount: analysis.sourceEventCount,
+      inputHash: analysis.inputHash,
+      updatedAt: Date.now(),
+      sessionId: analysis.sessionId
+    });
   }
 
   /** 指定时间范围（按 session 开始时间）内的分析行，按时间升序，供报告渲染。 */
@@ -1564,11 +1272,9 @@ export class ActivityStore {
     const startAt = activityEpochMilliseconds(startIso);
     const endAt = activityEpochMilliseconds(endIso);
     const rows = this.requireDatabase().prepare(`
-      SELECT a.*, s.started_at AS session_started_at, s.analysis_status AS activity_analysis_status
-      FROM activity_session_analysis a
-      JOIN activity_sessions s ON s.id = a.session_id
-      WHERE s.started_at >= ? AND s.started_at < ?
-      ORDER BY s.started_at ASC, a.session_id ASC
+      SELECT *, started_at AS session_started_at FROM activity_sessions
+      WHERE input_hash IS NOT NULL AND started_at >= ? AND started_at < ?
+      ORDER BY started_at ASC, id ASC
     `).all(startAt, endAt) as Array<Record<string, unknown>>;
     return rows.map((row) => ({
       ...parseAnalysisRow(row),
@@ -1576,27 +1282,72 @@ export class ActivityStore {
     }));
   }
 
-  /**
-   * digest / sessions 工具的近期 session 行：开始/结束时间落在窗口内（涵盖进行中且
-   * 较早开始的 session），LEFT JOIN 已落库的分析。
-   */
+  /** digest / sessions 工具的近期 session 行，包含已落库的分析。 */
   listRecentSessionsWithAnalysis(sinceIso: string, limit = 20): ActivityRecentSessionRow[] {
-    const sinceAt = activityEpochMilliseconds(sinceIso);
+    return this.listSessionsWithAnalysis({ sinceIso, limit });
+  }
+
+  listSessionsWithAnalysis(options: {
+    sinceIso: string;
+    untilIso?: string;
+    analysisStatus?: string;
+    limit?: number;
+    offset?: number;
+  }): ActivityRecentSessionRow[] {
+    const sinceAt = activityEpochMilliseconds(options.sinceIso);
+    const untilAt = options.untilIso === undefined ? null : activityEpochMilliseconds(options.untilIso);
     const rows = this.requireDatabase().prepare(`
-      SELECT s.id, s.started_at, s.ended_at, s.event_count, s.analysis_status AS activity_analysis_status, a.*
-      FROM activity_sessions s
-      LEFT JOIN activity_session_analysis a ON a.session_id = s.id
-      WHERE s.started_at >= ? OR (s.ended_at IS NOT NULL AND s.ended_at >= ?)
-      ORDER BY s.started_at DESC, s.id ASC
-      LIMIT ?
-    `).all(sinceAt, sinceAt, limit) as Array<Record<string, unknown>>;
+      SELECT * FROM activity_sessions
+      WHERE (started_at >= ? OR (ended_at IS NOT NULL AND ended_at >= ?))
+        AND (? IS NULL OR started_at <= ?)
+        AND (? IS NULL OR analysis_status = ?)
+      ORDER BY started_at DESC, id ASC
+      LIMIT ? OFFSET ?
+    `).all(
+      sinceAt, sinceAt, untilAt, untilAt,
+      options.analysisStatus ?? null, options.analysisStatus ?? null,
+      options.limit ?? 20, options.offset ?? 0
+    ) as Array<Record<string, unknown>>;
     return rows.map((row) => ({
       id: String(row.id),
       startedAt: activityTimestampString(row.started_at),
       endedAt: row.ended_at === null ? undefined : activityTimestampString(row.ended_at),
       eventCount: Number(row.event_count),
-      analysis: row.analyzed_at === null ? undefined : parseAnalysisRow(row)
+      analysis: row.input_hash === null ? undefined : parseAnalysisRow(row)
     }));
+  }
+
+  /** 单条历史删除同时清理关联截图与检索索引；进行中的 session 由采集宿主持有。 */
+  async deleteSession(sessionId: string): Promise<"deleted" | "not_found" | "active"> {
+    const database = this.requireDatabase();
+    const root = this.requireRoot();
+    return await withLocalFileWriteLock(root, ".activity.files.lock", async () => {
+      database.exec("BEGIN IMMEDIATE;");
+      let paths: Array<{ snapshot_path: string }>;
+      try {
+        const session = database.prepare("SELECT ended_at FROM activity_sessions WHERE id = ?").get(sessionId) as { ended_at: number | null } | undefined;
+        if (!session || session.ended_at === null) {
+          database.exec("ROLLBACK;");
+          return session ? "active" : "not_found";
+        }
+        paths = database.prepare(`
+          SELECT file_path AS snapshot_path FROM activity_snapshots WHERE session_id = ? AND file_path IS NOT NULL
+        `).all(sessionId) as Array<{ snapshot_path: string }>;
+        // 删除会话后旧分析、报告与在途模型输出均不能继续代表当前数据。
+        database.prepare("UPDATE activity_generation SET revision = ? WHERE id = 1").run(randomUUID());
+        database.exec("DELETE FROM activity_summaries;");
+        database.prepare("DELETE FROM activity_sessions WHERE id = ?").run(sessionId);
+        database.exec("COMMIT;");
+      } catch (error) {
+        database.exec("ROLLBACK;");
+        throw error;
+      }
+      for (const row of paths) {
+        const snapshotPath = safeStoredSnapshotPath(root, row.snapshot_path);
+        if (snapshotPath) await unlink(snapshotPath).catch(() => undefined);
+      }
+      return "deleted";
+    });
   }
 
   /** session 元数据；不存在返回 undefined（不要求已结束，session_show 也要能看进行中的）。 */
@@ -1618,11 +1369,9 @@ export class ActivityStore {
   /** worthMemory=1 的分析行（按分析时间升序），供记忆同步消费。 */
   listWorthMemoryAnalyses(limit = 50): ActivitySessionAnalysis[] {
     const rows = this.requireDatabase().prepare(`
-      SELECT a.*, s.analysis_status AS activity_analysis_status
-      FROM activity_session_analysis a
-      JOIN activity_sessions s ON s.id = a.session_id
-      WHERE a.worth_memory = 1
-      ORDER BY a.analyzed_at ASC, a.session_id ASC
+      SELECT * FROM activity_sessions
+      WHERE input_hash IS NOT NULL AND worth_memory = 1
+      ORDER BY analysis_generated_at ASC, id ASC
       LIMIT ?
     `).all(limit) as Array<Record<string, unknown>>;
     return rows.map(parseAnalysisRow);
@@ -1632,8 +1381,8 @@ export class ActivityStore {
   listRecentProjects(sinceIso: string, limit = 20): string[] {
     const rows = this.requireDatabase().prepare(`
       SELECT project, COUNT(*) AS n
-      FROM activity_session_analysis
-      WHERE project IS NOT NULL AND project <> '' AND analyzed_at >= ?
+      FROM activity_sessions
+      WHERE input_hash IS NOT NULL AND project IS NOT NULL AND project <> '' AND analysis_generated_at >= ?
       GROUP BY project
       ORDER BY n DESC, project ASC
       LIMIT ?
@@ -1645,62 +1394,6 @@ export class ActivityStore {
    * 缺当前指纹向量的分析行（未嵌入过，或换过嵌入模型指纹不匹配）。按分析时间升序，
    * 语义检索工具每次调用补嵌入一部分；source_event_count 过滤掉心跳/零星占位。
    */
-  listAnalysisEmbeddingSources(fingerprint: string, limit = 200): ActivityAnalysisEmbeddingSource[] {
-    const rows = this.requireDatabase().prepare(`
-      SELECT a.session_id, a.project, a.summary, a.topics_json, a.highlights_json
-      FROM activity_session_analysis a
-      LEFT JOIN activity_analysis_embeddings e
-        ON e.session_id = a.session_id AND e.model_fingerprint = ?
-      WHERE e.session_id IS NULL AND a.source_event_count >= 3
-      ORDER BY a.analyzed_at ASC, a.session_id ASC
-      LIMIT ?
-    `).all(fingerprint, limit) as Array<Record<string, unknown>>;
-    return rows.map((row) => ({
-      sessionId: String(row.session_id),
-      project: nullableString(row.project),
-      summary: String(row.summary),
-      topics: parseJsonArray<string>(row.topics_json),
-      highlights: parseJsonArray<string>(row.highlights_json)
-    }));
-  }
-
-  /** 写/覆盖一个分析行在当前指纹下的向量（语义检索的本地派生数据）。 */
-  upsertAnalysisEmbedding(sessionId: string, modelFingerprint: string, embedding: Float32Array, embeddedAt: string): void {
-    this.requireDatabase().prepare(`
-      INSERT INTO activity_analysis_embeddings (session_id, model_fingerprint, embedding, embedded_at)
-      VALUES (?, ?, ?, ?)
-      ON CONFLICT(session_id) DO UPDATE SET
-        model_fingerprint = excluded.model_fingerprint,
-        embedding = excluded.embedding,
-        embedded_at = excluded.embedded_at
-    `).run(sessionId, modelFingerprint, Buffer.from(embedding.buffer, embedding.byteOffset, embedding.byteLength), embeddedAt);
-  }
-
-  /** 当前指纹下已嵌入的分析行 + session 开始时间，供 cosine 排序。 */
-  listAnalysisEmbeddingRows(fingerprint: string, limit = 500): ActivityAnalysisEmbeddingRow[] {
-    const rows = this.requireDatabase().prepare(`
-      SELECT a.session_id, s.started_at AS session_started_at, a.project, a.summary,
-        a.topics_json, a.highlights_json, e.embedding
-      FROM activity_analysis_embeddings e
-      JOIN activity_session_analysis a ON a.session_id = e.session_id
-      JOIN activity_sessions s ON s.id = a.session_id
-      WHERE e.model_fingerprint = ?
-      ORDER BY a.analyzed_at DESC, a.session_id ASC
-      LIMIT ?
-    `).all(fingerprint, limit) as Array<Record<string, unknown>>;
-    return rows.map((row) => {
-      const blob = row.embedding as Uint8Array | undefined;
-      return {
-        sessionId: String(row.session_id),
-        startedAt: activityTimestampString(row.session_started_at),
-        project: nullableString(row.project),
-        summary: String(row.summary),
-        topics: parseJsonArray<string>(row.topics_json),
-        highlights: parseJsonArray<string>(row.highlights_json),
-        embedding: blob === undefined ? new Float32Array(0) : new Float32Array(blob.buffer, blob.byteOffset, Math.floor(blob.byteLength / 4))
-      };
-    });
-  }
 
   async clear(): Promise<void> {
     const database = this.requireDatabase();
@@ -1712,10 +1405,8 @@ export class ActivityStore {
         database.prepare("UPDATE activity_generation SET revision = ? WHERE id = 1").run(randomUUID());
         paths = database.prepare(`
           SELECT file_path AS snapshot_path FROM activity_snapshots WHERE file_path IS NOT NULL
-          UNION
-          SELECT snapshot_path FROM activity_events WHERE snapshot_path IS NOT NULL
         `).all() as Array<{ snapshot_path: string }>;
-        database.exec("DELETE FROM activity_fts; DELETE FROM activity_summaries; DELETE FROM activity_analysis_embeddings; DELETE FROM activity_session_analysis; DELETE FROM activity_ocr_frames; DELETE FROM activity_snapshots; DELETE FROM activity_events; DELETE FROM activity_sessions;");
+        database.exec("DELETE FROM activity_summaries; DELETE FROM activity_ocr_frames; DELETE FROM activity_snapshots; DELETE FROM activity_events; DELETE FROM activity_sessions;");
         database.exec("COMMIT;");
       } catch (error) {
         database.exec("ROLLBACK;");
@@ -1734,44 +1425,11 @@ export class ActivityStore {
   }
 
   private findStoredEventByCaptureId(captureId: string): ActivityStoredEvent | undefined {
-    const row = this.requireDatabase().prepare(`
-      SELECT e.id, e.session_id, e.occurred_at, e.source, e.event_type,
-        e.application, e.window_title, e.ax_role, e.ax_title, e.url, e.summary, e.ocr_text,
-        e.fallback_reason, e.snapshot_path, e.input_event_count, e.input_event_first_at,
-        e.mouse_button, e.key_code, e.key_modifiers, e.mouse_x, e.mouse_y, e.capture_id,
-        s.id AS snapshot_id
-      FROM activity_events e
-      LEFT JOIN activity_snapshots s ON s.event_id = e.id
-      WHERE e.capture_id = ?
-      ORDER BY e.occurred_at DESC, e.id DESC
-      LIMIT 1
-    `).get(captureId) as Record<string, unknown> | undefined;
+    const row = this.requireDatabase().prepare("SELECT * FROM activity_snapshots WHERE capture_id = ?").get(captureId);
     if (!row) return undefined;
-    return {
-      id: String(row.id),
-      sessionId: String(row.session_id),
-      occurredAt: String(row.occurred_at),
-      source: row.source === "screenshot_fallback" ? "screenshot_fallback" : "event",
-      eventType: String(row.event_type),
-      application: nullableString(row.application),
-      windowTitle: nullableString(row.window_title),
-      axRole: nullableString(row.ax_role),
-      axTitle: nullableString(row.ax_title),
-      summary: String(row.summary),
-      ocrText: nullableString(row.ocr_text),
-      url: nullableString(row.url),
-      fallbackReason: nullableString(row.fallback_reason),
-      snapshotPath: nullableString(row.snapshot_path),
-      mouseButton: nullableString(row.mouse_button),
-      keyCode: nullableInteger(row.key_code),
-      keyModifiers: nullableInteger(row.key_modifiers),
-      mouseX: nullableNumber(row.mouse_x),
-      mouseY: nullableNumber(row.mouse_y),
-      inputEventCount: Number(row.input_event_count),
-      inputEventFirstAt: nullableString(row.input_event_first_at),
-      snapshotId: nullableString(row.snapshot_id),
-      captureId: nullableString(row.capture_id)
-    };
+    return { id: String(row.id), snapshotId: String(row.id), sessionId: String(row.session_id),
+      occurredAt: String(row.captured_at), source: "screenshot_fallback", eventType: String(row.trigger),
+      summary: "", snapshotPath: nullableString(row.file_path), inputEventCount: 0, captureId };
   }
 
   /** 宿主启动时修复孤儿文件；普通查询开库不扫描目录，也不等待截图文件锁。 */
@@ -1782,8 +1440,6 @@ export class ActivityStore {
       const referenced = new Set<string>();
       const rows = database.prepare(`
         SELECT file_path AS snapshot_path FROM activity_snapshots WHERE file_path IS NOT NULL
-        UNION
-        SELECT snapshot_path FROM activity_events WHERE snapshot_path IS NOT NULL
       `).all() as Array<{ snapshot_path: unknown }>;
       for (const row of rows) {
         const relativePath = typeof row.snapshot_path === "string" ? row.snapshot_path : undefined;
@@ -1834,8 +1490,6 @@ export class ActivityStore {
     const captureId = normalizeShortText(input.captureId);
     const application = redactActivityText(input.application);
     const windowTitle = redactActivityText(input.windowTitle);
-    const axRole = redactActivityText(input.axRole);
-    const axTitle = redactActivityText(input.axTitle);
     // URL 保留为结构化列，便于按站点和路径检索；凭据、查询参数和片段在进入数据库前移除。
     const url = normalizeStructuredUrl(input.url);
     const redactedText = redactActivityText(input.rawText);
@@ -1856,8 +1510,6 @@ export class ActivityStore {
     const summary = activitySummary(application, summaryText, {
       eventType,
       windowTitle,
-      axRole,
-      axTitle,
       mouseEventType,
       fallbackReason
     });
@@ -1866,8 +1518,7 @@ export class ActivityStore {
       const existing = this.findStoredEventByCaptureId(captureId);
       if (existing) return existing;
     }
-    // 事件行、FTS 行、session 计数必须原子提交：任一步失败（或进程在两句之间崩溃）都会让
-    // FTS 与事件表永久不一致——FTS 只在缺列时重建，没有针对数据不一致的自愈入口。
+    // 事件或截图与 session 聚合计数在同一事务提交。
     database.exec("BEGIN IMMEDIATE;");
     const eventId = randomUUID();
     let snapshotId: ActivityRecordId | undefined;
@@ -1879,67 +1530,24 @@ export class ActivityStore {
           return existing;
         }
       }
-      database.prepare(`
-        INSERT INTO activity_events (
-          id, session_id, occurred_at, source, event_type, application, bundle_id,
-          window_title, ax_role, ax_title, url, capture_id, redacted_text, mouse_event_type,
-          mouse_button, key_code, key_modifiers, mouse_x, mouse_y, summary, ocr_text, input_event_count, input_event_first_at, fallback_reason,
-          snapshot_path, snapshot_bytes
-        ) VALUES (
-          ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-          ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-          ?, ?, ?, ?, ?, ?
-        )
-      `).run(
-        eventId,
-        input.sessionId,
-        input.occurredAt,
-        source,
-        eventType,
-        application ?? null,
-        normalizeShortText(input.bundleId) ?? null,
-        windowTitle ?? null,
-        axRole ?? null,
-        axTitle ?? null,
-        url ?? null,
-        captureId ?? null,
-        redactedText ?? null,
-        mouseEventType ?? null,
-        mouseButton ?? null,
-        keyCode,
-        keyModifiers,
-        mouseX,
-        mouseY,
-        summary,
-        ocrText ?? null,
-        inputEventCount,
-        inputEventFirstAt ?? null,
-        fallbackReason ?? null,
-        snapshot?.relativeSnapshotPath ?? null,
-        snapshot?.bytes ?? 0
-      );
-      const timestamp = Number.isFinite(Date.parse(input.occurredAt)) ? Date.parse(input.occurredAt) : Date.now();
-      database.prepare(
-        "UPDATE activity_events SET timestamp = ?, kind = ?, app_name = ?, data = ?, created_at = ? WHERE id = ?"
-      ).run(
-        timestamp,
-        eventType,
-        application ?? null,
-        JSON.stringify({ url, keyCode: keyCode ?? undefined, keyModifiers: keyModifiers ?? undefined }),
-        timestamp,
-        eventId
+      const timestamp = Date.parse(input.occurredAt);
+      if (!snapshot) database.prepare("INSERT INTO activity_events (id, session_id, timestamp, kind, app_name, data, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)").run(
+        eventId, input.sessionId, timestamp, eventType, application ?? null,
+        JSON.stringify(activityEventData(eventType, {timestamp, bundleId:input.bundleId,window_title:windowTitle,url,
+          redacted_text:redactedText, mouse_button:mouseButton,key_code:keyCode,key_modifiers:keyModifiers,
+          mouse_x:mouseX,mouse_y:mouseY,input_event_count:inputEventCount,input_event_first_at:inputEventFirstAt,fallback_reason:fallbackReason})), timestamp
       );
       if (snapshot) {
         const nextSnapshotId = randomUUID();
         database.prepare(`
           INSERT INTO activity_snapshots (
-            id, session_id, event_id, captured_at, file_path, bytes, width, height,
+            id, session_id, capture_id, captured_at, file_path, bytes, width, height,
             trigger, content_hash, histogram_change, pixel_diff
           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `).run(
           nextSnapshotId,
           input.sessionId,
-          eventId,
+          captureId ?? null,
           input.occurredAt,
           snapshot.relativeSnapshotPath,
           snapshot.bytes,
@@ -1988,10 +1596,8 @@ export class ActivityStore {
           );
         }
       }
-      // url 进 FTS：结构化列只包含已清理的站点和路径，可按站点/路径关键字检索。
-      this.insertSearchIndexRow(database, eventId);
       // 截图是独立的时间锚点，不应伪装成语义输入事件；event_count 与 snapshot_count
-      // 分开统计。截图 event 仍保留在事件表/FTS 中，便于回看和兼容旧库。
+      // 分开统计，截图只写独立 snapshot 和 OCR frame。
       const updatedAt = Date.now();
       const sessionRow = database.prepare("SELECT app_names FROM activity_sessions WHERE id = ?").get(input.sessionId) as { app_names?: unknown } | undefined;
       const appNames = new Set(parseJsonArray<string>(sessionRow?.app_names));
@@ -2002,19 +1608,6 @@ export class ActivityStore {
             snapshot_count = snapshot_count + ?,
             total_bytes = total_bytes + ?,
             app_names = ?,
-            analysis_status = 'pending',
-            analysis_title = NULL,
-            analysis_description = NULL,
-            analysis_model = NULL,
-            analysis_error = NULL,
-            analyzed_at = NULL,
-            worth_memory = 0,
-            worth_knowledge = 0,
-            is_meeting = 0,
-            entities = '{}',
-            topics = '[]',
-            project = NULL,
-            highlights = '[]',
             updated_at = ?
         WHERE id = ?
       `).run(
@@ -2025,23 +1618,20 @@ export class ActivityStore {
         updatedAt,
         input.sessionId
       );
-      database.prepare("DELETE FROM activity_analysis_embeddings WHERE session_id = ?").run(input.sessionId);
-      database.prepare("DELETE FROM activity_session_analysis WHERE session_id = ?").run(input.sessionId);
+      this.resetSessionAnalysis(database, input.sessionId);
       database.exec("COMMIT;");
     } catch (error) {
       database.exec("ROLLBACK;");
       throw error;
     }
     return {
-      id: eventId,
+      id: snapshotId ?? eventId,
       sessionId: input.sessionId,
       occurredAt: input.occurredAt,
       source,
       eventType,
       application,
       windowTitle,
-      axRole,
-      axTitle,
       url,
       summary,
       ocrText,
@@ -2063,7 +1653,7 @@ export class ActivityStore {
    * 按 hot/warm/cold 策略维护截图文件。降级和容量淘汰都限制单轮处理量，避免新图
    * 写入时被一轮大清理阻塞；超过 cold 保留期时删除 snapshot 行，让 OCR 按外键级联删除。
    */
-  async rotateSnapshots(maxStorageMb: number, now = new Date()): Promise<void> {
+  async rotateSnapshots(maxStorageMb: number, now = new Date(), recompress?: ActivitySnapshotCompressor): Promise<void> {
     const database = this.requireDatabase();
     const root = this.requireRoot();
     await withLocalFileWriteLock(root, ".activity.files.lock", async () => {
@@ -2074,7 +1664,7 @@ export class ActivityStore {
         target: { width: number; height: number; quality: number }
       ): Promise<void> => {
         const rows = database.prepare(`
-          SELECT id, event_id, file_path, bytes, storage_tier, captured_at
+          SELECT id, file_path, bytes, storage_tier, captured_at
           FROM activity_snapshots
           WHERE storage_tier = ?
           ORDER BY captured_at ASC, id ASC
@@ -2085,7 +1675,6 @@ export class ActivityStore {
           const ageMs = Number.isFinite(capturedAt) ? now.getTime() - capturedAt : 0;
           if (ageMs <= thresholdMs) continue;
           const snapshotId = String(row.id);
-          const eventId = String(row.event_id);
           const relativePath = nullableString(row.file_path);
           const originalBytes = Number(row.bytes);
           if (!relativePath || originalBytes <= 0) {
@@ -2098,10 +1687,8 @@ export class ActivityStore {
             continue;
           }
           try {
-            const encoded = await sharp(absolutePath)
-              .resize({ width: target.width, height: target.height, fit: "inside", withoutEnlargement: true })
-              .jpeg({ quality: target.quality })
-              .toBuffer({ resolveWithObject: true });
+            if (!recompress) throw new Error("截图轮转需要 Electron nativeImage 压缩器");
+            const encoded = await recompress(absolutePath, target);
             // 只有在新 JPEG 更小的时候替换文件；否则仍然完成 tier 降级，避免反复重压缩。
             if (encoded.data.byteLength >= originalBytes) {
               this.updateSnapshotTier(snapshotId, nextTier);
@@ -2118,10 +1705,9 @@ export class ActivityStore {
             }
             this.updateSnapshotStorage(
               snapshotId,
-              eventId,
               encoded.data.byteLength,
-              encoded.info.width,
-              encoded.info.height,
+              encoded.width,
+              encoded.height,
               nextTier
             );
           } catch {
@@ -2135,7 +1721,7 @@ export class ActivityStore {
       await processTier("warm", "cold", SNAPSHOT_COLD_AGE_MS, SNAPSHOT_COLD_SIZE);
 
       const coldRows = database.prepare(`
-        SELECT id, event_id, file_path, bytes
+        SELECT id, file_path, bytes
         FROM activity_snapshots
         WHERE storage_tier = 'cold' AND captured_at < ?
         ORDER BY captured_at ASC, id ASC
@@ -2144,7 +1730,6 @@ export class ActivityStore {
       for (const row of coldRows) {
         await this.deleteSnapshot(
           String(row.id),
-          String(row.event_id),
           nullableString(row.file_path)
         );
       }
@@ -2158,7 +1743,7 @@ export class ActivityStore {
       for (const tier of ["cold", "warm", "hot"] as const) {
         while (remainingBytes > targetBytes) {
           const candidates = database.prepare(`
-            SELECT id, event_id, file_path, bytes
+            SELECT id, file_path, bytes
             FROM activity_snapshots
             WHERE storage_tier = ? AND file_path IS NOT NULL AND bytes > 0
             ORDER BY captured_at ASC, id ASC
@@ -2167,7 +1752,7 @@ export class ActivityStore {
           if (!candidates.length) break;
           for (const row of candidates) {
             if (remainingBytes <= targetBytes) break;
-            await this.deleteSnapshot(String(row.id), String(row.event_id), nullableString(row.file_path));
+            await this.deleteSnapshot(String(row.id), nullableString(row.file_path));
             remainingBytes -= Math.max(0, Number(row.bytes));
           }
         }
@@ -2181,7 +1766,6 @@ export class ActivityStore {
 
   private updateSnapshotStorage(
     snapshotId: ActivityRecordId,
-    eventId: ActivityRecordId,
     bytes: number,
     width: number | undefined,
     height: number | undefined,
@@ -2190,79 +1774,17 @@ export class ActivityStore {
     const database = this.requireDatabase();
     database.prepare("UPDATE activity_snapshots SET bytes = ?, width = ?, height = ?, storage_tier = ? WHERE id = ?")
       .run(bytes, width ?? null, height ?? null, tier, snapshotId);
-    database.prepare("UPDATE activity_events SET snapshot_bytes = ? WHERE id = ?").run(bytes, eventId);
     database.prepare("UPDATE activity_sessions SET updated_at = ? WHERE id = (SELECT session_id FROM activity_snapshots WHERE id = ?)")
       .run(Date.now(), snapshotId);
   }
 
-  private async deleteSnapshot(snapshotId: ActivityRecordId, eventId: ActivityRecordId, relativePath: string | undefined): Promise<void> {
+  private async deleteSnapshot(snapshotId: ActivityRecordId, relativePath: string | undefined): Promise<void> {
     if (relativePath) {
       const absolutePath = safeStoredSnapshotPath(this.requireRoot(), relativePath);
       if (absolutePath) await unlink(absolutePath).catch(() => undefined);
     }
     const database = this.requireDatabase();
-    database.prepare("UPDATE activity_events SET snapshot_path = NULL, snapshot_bytes = 0 WHERE id = ?").run(eventId);
     database.prepare("DELETE FROM activity_snapshots WHERE id = ?").run(snapshotId);
-  }
-
-  private migrateLegacyEvents(database: DatabaseSync): void {
-    const columns = tableColumns(database, "activity_events");
-    if (!columns.size || columns.has("source")) return;
-    database.exec("DROP INDEX IF EXISTS activity_events_time_idx; DROP INDEX IF EXISTS activity_events_session_idx;");
-    database.exec("BEGIN IMMEDIATE;");
-    try {
-      database.exec("ALTER TABLE activity_events RENAME TO activity_events_legacy;");
-      database.exec(`
-        CREATE TABLE activity_events (
-          id TEXT PRIMARY KEY,
-          session_id TEXT NOT NULL REFERENCES activity_sessions(id) ON DELETE CASCADE,
-          timestamp INTEGER,
-          kind TEXT,
-          app_name TEXT,
-          data TEXT NOT NULL DEFAULT '{}',
-          created_at INTEGER,
-          occurred_at TEXT NOT NULL,
-          source TEXT NOT NULL DEFAULT 'event',
-          event_type TEXT NOT NULL DEFAULT 'activity',
-          application TEXT,
-          bundle_id TEXT,
-          window_title TEXT,
-          ax_role TEXT,
-          ax_title TEXT,
-          redacted_text TEXT,
-          mouse_event_type TEXT,
-          mouse_button TEXT,
-          key_code INTEGER,
-          key_modifiers INTEGER,
-          mouse_x REAL,
-          mouse_y REAL,
-          summary TEXT NOT NULL,
-          ocr_text TEXT,
-          input_event_count INTEGER NOT NULL DEFAULT 0,
-          input_event_first_at TEXT,
-          fallback_reason TEXT,
-          snapshot_path TEXT,
-          snapshot_bytes INTEGER NOT NULL DEFAULT 0
-        );
-        INSERT INTO activity_events (
-          id, session_id, timestamp, kind, app_name, data, created_at,
-          occurred_at, source, event_type, application, bundle_id,
-          summary, ocr_text, input_event_count, snapshot_path, snapshot_bytes
-        )
-        SELECT CAST(id AS TEXT), session_id,
-          CAST(strftime('%s', occurred_at) AS INTEGER) * 1000,
-          'fallback_capture', application, '{}', CAST(strftime('%s', occurred_at) AS INTEGER) * 1000,
-          occurred_at, 'screenshot_fallback', 'fallback_capture',
-          application, bundle_id, summary, ocr_text, input_event_count,
-          snapshot_path, snapshot_bytes
-        FROM activity_events_legacy;
-        DROP TABLE activity_events_legacy;
-      `);
-      database.exec("COMMIT;");
-    } catch (error) {
-      database.exec("ROLLBACK;");
-      throw error;
-    }
   }
 
   /** Activity session 持久化结束时长和更新时间；旧库在打开时补列并回填已结束行。 */
@@ -2316,10 +1838,34 @@ export class ActivityStore {
       ["topics", "TEXT NOT NULL DEFAULT '[]'"],
       ["project", "TEXT"],
       ["highlights", "TEXT NOT NULL DEFAULT '[]'"],
-      ["created_at", "INTEGER"]
+      ["created_at", "INTEGER"],
+      ["analysis_generated_at", "TEXT"],
+      ["summary", "TEXT"],
+      ["topics_json", "TEXT NOT NULL DEFAULT '[]'"],
+      ["prs_json", "TEXT NOT NULL DEFAULT '[]'"],
+      ["issues_json", "TEXT NOT NULL DEFAULT '[]'"],
+      ["people_json", "TEXT NOT NULL DEFAULT '[]'"],
+      ["versions_json", "TEXT NOT NULL DEFAULT '[]'"],
+      ["decisions_json", "TEXT NOT NULL DEFAULT '[]'"],
+      ["entities_json", "TEXT NOT NULL DEFAULT '[]'"],
+      ["highlights_json", "TEXT NOT NULL DEFAULT '[]'"],
+      ["analysis_storage_tier", "TEXT NOT NULL DEFAULT 'standard'"],
+      ["commits_json", "TEXT NOT NULL DEFAULT '[]'"],
+      ["identifiers_json", "TEXT NOT NULL DEFAULT '[]'"],
+      ["repos_json", "TEXT NOT NULL DEFAULT '[]'"],
+      ["events_json", "TEXT NOT NULL DEFAULT '[]'"],
+      ["urls_json", "TEXT NOT NULL DEFAULT '[]'"],
+      ["entity_details_json", "TEXT NOT NULL DEFAULT '{}'"],
+      ["confidence", "REAL NOT NULL DEFAULT 0"],
+      ["source_event_count", "INTEGER NOT NULL DEFAULT 0"],
+      ["input_hash", "TEXT"],
     ];
     for (const [column, definition] of additions) {
       if (!columns.has(column)) database.exec(`ALTER TABLE activity_sessions ADD COLUMN ${column} ${definition};`);
+    }
+    database.exec("DROP INDEX IF EXISTS activity_analysis_embeddings_fp_idx;");
+    for (const name of ["memory_candidates_json", "crystal_pending", "projection_checked_at", "projection_revision", "analysis_embedding", "analysis_embedding_fingerprint", "analysis_embedded_at"]) {
+      if (columns.has(name)) database.exec(`ALTER TABLE activity_sessions DROP COLUMN ${name};`);
     }
     database.exec(`
       UPDATE activity_sessions
@@ -2329,484 +1875,6 @@ export class ActivityStore {
     `);
   }
 
-  private reconcileSessionAnalysisStatus(database: DatabaseSync): void {
-    database.exec(`
-      UPDATE activity_sessions
-      SET analysis_status = CASE
-            WHEN a.worth_memory = 1 OR a.worth_knowledge = 1 THEN 'analyzed'
-            ELSE 'not_worth'
-          END,
-          analysis_title = a.title,
-          analysis_description = a.description,
-          analysis_model = a.analyzer_model,
-          analyzed_at = CAST(strftime('%s', a.analyzed_at) AS INTEGER) * 1000,
-          worth_memory = a.worth_memory,
-          worth_knowledge = a.worth_knowledge,
-          is_meeting = a.is_meeting,
-          project = a.project,
-          topics = a.topics_json,
-          highlights = a.highlights_json
-      FROM activity_session_analysis a
-      WHERE a.session_id = activity_sessions.id
-        AND activity_sessions.analysis_status = 'pending';
-    `);
-  }
-
-  /** Activity 输入元数据是增量列；旧库保留原事件文本与截图，只补上空列。 */
-  private ensureEventColumns(database: DatabaseSync): void {
-    const columns = tableColumns(database, "activity_events");
-    const additions: ReadonlyArray<readonly [string, string]> = [
-      ["mouse_button", "TEXT"],
-      ["key_code", "INTEGER"],
-      ["key_modifiers", "INTEGER"],
-      ["mouse_x", "REAL"],
-      ["mouse_y", "REAL"],
-      ["input_event_first_at", "TEXT"],
-      ["capture_id", "TEXT"],
-      ["timestamp", "INTEGER"],
-      ["kind", "TEXT"],
-      ["data", "TEXT NOT NULL DEFAULT '{}'"],
-      ["created_at", "INTEGER"]
-    ];
-    for (const [column, definition] of additions) {
-      if (columns.has(column)) continue;
-      database.exec(`ALTER TABLE activity_events ADD COLUMN ${column} ${definition};`);
-    }
-    database.exec("UPDATE activity_events SET timestamp = CAST(strftime('%s', occurred_at) AS INTEGER) * 1000 WHERE timestamp IS NULL;");
-    database.exec("UPDATE activity_events SET kind = event_type WHERE kind IS NULL;");
-    database.exec("UPDATE activity_events SET created_at = occurred_at WHERE created_at IS NULL;");
-  }
-
-  /**
-   * P2 分析字段的向后兼容迁移：P1 建的表没有 entities/highlights/worthMemory 等列，
-   * 逐列 ALTER 补齐（幂等），只在确实缺某列时执行，不重建表、不动其它列。
-   */
-  private ensureAnalysisColumns(database: DatabaseSync): void {
-    const columns = tableColumns(database, "activity_session_analysis");
-    if (
-      columns.has("entities_json")
-      && columns.has("highlights_json")
-      && columns.has("worth_memory")
-      && columns.has("worth_knowledge")
-      && columns.has("is_meeting")
-      && columns.has("storage_tier")
-      && columns.has("title")
-      && columns.has("description")
-      && columns.has("commits_json")
-      && columns.has("identifiers_json")
-      && columns.has("repos_json")
-      && columns.has("events_json")
-      && columns.has("urls_json")
-      && columns.has("entity_details_json")
-      && columns.has("memory_candidates_json")
-      && columns.has("crystal_pending")
-      && columns.has("projection_checked_at")
-      && columns.has("projection_revision")
-    ) return;
-    const additions: ReadonlyArray<readonly [string, string]> = [
-      ["entities_json", "TEXT NOT NULL DEFAULT '[]'"],
-      ["highlights_json", "TEXT NOT NULL DEFAULT '[]'"],
-      ["worth_memory", "INTEGER NOT NULL DEFAULT 0"],
-      ["worth_knowledge", "INTEGER NOT NULL DEFAULT 0"],
-      ["is_meeting", "INTEGER NOT NULL DEFAULT 0"],
-      ["storage_tier", "TEXT NOT NULL DEFAULT 'standard'"],
-      ["title", "TEXT"],
-      ["description", "TEXT"],
-      ["commits_json", "TEXT NOT NULL DEFAULT '[]'"],
-      ["identifiers_json", "TEXT NOT NULL DEFAULT '[]'"],
-      ["repos_json", "TEXT NOT NULL DEFAULT '[]'"],
-      ["events_json", "TEXT NOT NULL DEFAULT '[]'"],
-      ["urls_json", "TEXT NOT NULL DEFAULT '[]'"],
-      ["entity_details_json", "TEXT NOT NULL DEFAULT '{}'" ],
-      ["memory_candidates_json", "TEXT NOT NULL DEFAULT '[]'"],
-      ["crystal_pending", "INTEGER NOT NULL DEFAULT 0"],
-      ["projection_checked_at", "INTEGER NOT NULL DEFAULT 0"],
-      ["projection_revision", "TEXT NOT NULL DEFAULT ''"]
-    ];
-    for (const [column, definition] of additions) {
-      if (columns.has(column)) continue;
-      database.exec(`ALTER TABLE activity_session_analysis ADD COLUMN ${column} ${definition};`);
-    }
-  }
-
-  /** 截图物理保留档位是独立增量列；旧库里的 JPEG 默认仍视为 hot。 */
-  private ensureSnapshotColumns(database: DatabaseSync): void {
-    const columns = tableColumns(database, "activity_snapshots");
-    if (columns.has("storage_tier")) return;
-    database.exec("ALTER TABLE activity_snapshots ADD COLUMN storage_tier TEXT NOT NULL DEFAULT 'hot';");
-  }
-
-  private ensureSnapshotCompatibilityColumns(database: DatabaseSync): void {
-    const columns = tableColumns(database, "activity_snapshots");
-    const additions: ReadonlyArray<readonly [string, string]> = [
-      ["timestamp", "INTEGER"],
-      ["size_bytes", "INTEGER"],
-      ["app_name", "TEXT"],
-      ["window_title", "TEXT"],
-      ["hash_hex", "TEXT"],
-      ["histogram", "TEXT"],
-      ["diff_pct", "REAL"],
-      ["created_at", "INTEGER"]
-    ];
-    for (const [column, definition] of additions) {
-      if (!columns.has(column)) database.exec(`ALTER TABLE activity_snapshots ADD COLUMN ${column} ${definition};`);
-    }
-    database.exec(`
-      UPDATE activity_snapshots
-      SET timestamp = COALESCE(timestamp, CAST(strftime('%s', captured_at) AS INTEGER) * 1000),
-          size_bytes = COALESCE(size_bytes, bytes),
-          hash_hex = COALESCE(hash_hex, content_hash),
-          diff_pct = COALESCE(diff_pct, pixel_diff),
-          created_at = COALESCE(created_at, CAST(strftime('%s', captured_at) AS INTEGER) * 1000)
-      WHERE timestamp IS NULL OR size_bytes IS NULL OR created_at IS NULL;
-    `);
-  }
-
-  private ensureOcrCompatibilityColumns(database: DatabaseSync): void {
-    const columns = tableColumns(database, "activity_ocr_frames");
-    const additions: ReadonlyArray<readonly [string, string]> = [
-      ["char_count", "INTEGER NOT NULL DEFAULT 0"],
-      ["token_count", "INTEGER NOT NULL DEFAULT 0"],
-      ["embedding_model", "TEXT"],
-      ["embedding_dim", "INTEGER"],
-      ["created_at", "INTEGER"]
-    ];
-    for (const [column, definition] of additions) {
-      if (!columns.has(column)) database.exec(`ALTER TABLE activity_ocr_frames ADD COLUMN ${column} ${definition};`);
-    }
-    database.exec(`
-      UPDATE activity_ocr_frames
-      SET char_count = CASE WHEN char_count = 0 THEN length(text) ELSE char_count END,
-          token_count = CASE WHEN token_count = 0 THEN CAST((length(text) + 3) / 4 AS INTEGER) ELSE token_count END,
-          embedding_model = COALESCE(embedding_model, model_fingerprint),
-          embedding_dim = COALESCE(embedding_dim, CASE WHEN embedding IS NULL THEN NULL ELSE length(embedding) / 4 END),
-          created_at = COALESCE(created_at, CAST(strftime('%s', occurred_at) AS INTEGER) * 1000)
-      WHERE created_at IS NULL OR char_count = 0 OR token_count = 0;
-    `);
-  }
-
-  /** 将旧版的整数主键一次性转换为文本 ID，并保留所有已落库的事件、截图和 OCR 引用。 */
-  private migrateActivityRecordIds(database: DatabaseSync): void {
-    const eventInfo = tableInfo(database, "activity_events");
-    const snapshotInfo = tableInfo(database, "activity_snapshots");
-    const ocrInfo = tableInfo(database, "activity_ocr_frames");
-    const summaryInfo = tableInfo(database, "activity_summaries");
-    const needsSummaryRebuild = summaryInfo.find((column) => column.name === "id")?.pk !== 1;
-    const needsIdentifierRebuild = eventInfo.find((column) => column.name === "id")?.type.toUpperCase() !== "TEXT"
-      || snapshotInfo.find((column) => column.name === "id")?.type.toUpperCase() !== "TEXT"
-      || snapshotInfo.find((column) => column.name === "event_id")?.type.toUpperCase() !== "TEXT"
-      || ocrInfo.find((column) => column.name === "id")?.type.toUpperCase() !== "TEXT"
-      || ocrInfo.find((column) => column.name === "snapshot_id")?.type.toUpperCase() !== "TEXT"
-      || needsSummaryRebuild;
-    if (!needsIdentifierRebuild) return;
-
-    const eventRows = database.prepare("SELECT * FROM activity_events ORDER BY rowid ASC").all() as Array<Record<string, unknown>>;
-    const snapshotRows = database.prepare("SELECT * FROM activity_snapshots ORDER BY rowid ASC").all() as Array<Record<string, unknown>>;
-    const ocrRows = database.prepare("SELECT * FROM activity_ocr_frames ORDER BY rowid ASC").all() as Array<Record<string, unknown>>;
-    const summaryRows = database.prepare("SELECT * FROM activity_summaries ORDER BY rowid ASC").all() as Array<Record<string, unknown>>;
-    const eventIds = new Map<string, string>();
-    const snapshotIds = new Map<string, string>();
-    const idFor = (value: unknown, map: Map<string, string>): string => {
-      const oldId = value === null || value === undefined ? undefined : String(value);
-      if (oldId !== undefined) {
-        const existing = map.get(oldId);
-        if (existing) return existing;
-        const next = oldId || randomUUID();
-        map.set(oldId, next);
-        return next;
-      }
-      return randomUUID();
-    };
-    const numberOrUndefined = (value: unknown): number | undefined => {
-      if (value === null || value === undefined || value === "") return undefined;
-      const number = Number(value);
-      return Number.isFinite(number) ? Math.trunc(number) : undefined;
-    };
-    const valueOr = (row: Record<string, unknown>, name: string, fallback: unknown): unknown => (
-      row[name] === null || row[name] === undefined ? fallback : row[name]
-    );
-    const eventIdFor = (value: unknown): string => {
-      const oldId = value === null || value === undefined ? undefined : String(value);
-      return oldId === undefined ? randomUUID() : eventIds.get(oldId) ?? oldId;
-    };
-    const snapshotIdFor = (value: unknown): string => {
-      const oldId = value === null || value === undefined ? undefined : String(value);
-      return oldId === undefined ? randomUUID() : snapshotIds.get(oldId) ?? oldId;
-    };
-
-    database.exec("DROP TABLE IF EXISTS activity_fts; DROP TABLE IF EXISTS activity_fts_metadata;");
-    database.exec("PRAGMA foreign_keys = OFF; BEGIN IMMEDIATE;");
-    try {
-      database.exec(`
-        CREATE TABLE activity_events_canonical (
-          id TEXT PRIMARY KEY,
-          session_id TEXT NOT NULL REFERENCES activity_sessions(id) ON DELETE CASCADE,
-          timestamp INTEGER,
-          kind TEXT,
-          app_name TEXT,
-          data TEXT NOT NULL DEFAULT '{}',
-          created_at INTEGER,
-          occurred_at TEXT NOT NULL,
-          source TEXT NOT NULL DEFAULT 'event',
-          event_type TEXT NOT NULL DEFAULT 'activity',
-          application TEXT,
-          bundle_id TEXT,
-          window_title TEXT,
-          ax_role TEXT,
-          ax_title TEXT,
-          url TEXT,
-          capture_id TEXT,
-          redacted_text TEXT,
-          mouse_event_type TEXT,
-          mouse_button TEXT,
-          key_code INTEGER,
-          key_modifiers INTEGER,
-          mouse_x REAL,
-          mouse_y REAL,
-          summary TEXT NOT NULL,
-          ocr_text TEXT,
-          input_event_count INTEGER NOT NULL DEFAULT 0,
-          input_event_first_at TEXT,
-          fallback_reason TEXT,
-          snapshot_path TEXT,
-          snapshot_bytes INTEGER NOT NULL DEFAULT 0
-        );
-        CREATE TABLE activity_snapshots_canonical (
-          id TEXT PRIMARY KEY,
-          session_id TEXT NOT NULL REFERENCES activity_sessions(id) ON DELETE CASCADE,
-          event_id TEXT NOT NULL UNIQUE REFERENCES activity_events(id) ON DELETE CASCADE,
-          timestamp INTEGER,
-          captured_at TEXT NOT NULL,
-          file_path TEXT,
-          bytes INTEGER NOT NULL DEFAULT 0,
-          size_bytes INTEGER,
-          width INTEGER,
-          height INTEGER,
-          trigger TEXT,
-          app_name TEXT,
-          window_title TEXT,
-          content_hash TEXT,
-          hash_hex TEXT,
-          histogram TEXT,
-          histogram_change REAL,
-          pixel_diff REAL,
-          diff_pct REAL,
-          created_at INTEGER,
-          storage_tier TEXT NOT NULL DEFAULT 'hot'
-        );
-        CREATE TABLE activity_ocr_frames_canonical (
-          id TEXT PRIMARY KEY,
-          session_id TEXT NOT NULL REFERENCES activity_sessions(id) ON DELETE CASCADE,
-          snapshot_id TEXT NOT NULL UNIQUE REFERENCES activity_snapshots(id) ON DELETE CASCADE,
-          timestamp INTEGER,
-          occurred_at TEXT NOT NULL,
-          text TEXT NOT NULL,
-          char_count INTEGER NOT NULL DEFAULT 0,
-          token_count INTEGER NOT NULL DEFAULT 0,
-          application TEXT,
-          window_title TEXT,
-          model_fingerprint TEXT,
-          embedding BLOB,
-          embedded_at TEXT,
-          embedding_model TEXT,
-          embedding_dim INTEGER,
-          created_at INTEGER
-        );
-        CREATE TABLE activity_summaries_canonical (
-          id TEXT PRIMARY KEY,
-          kind TEXT NOT NULL,
-          date_key TEXT NOT NULL,
-          summary TEXT NOT NULL,
-          stats TEXT NOT NULL DEFAULT '{}',
-          stats_json TEXT NOT NULL DEFAULT '{}',
-          model TEXT,
-          is_partial INTEGER NOT NULL DEFAULT 0,
-          created_at INTEGER NOT NULL,
-          updated_at INTEGER NOT NULL,
-          generated_at TEXT,
-          UNIQUE (kind, date_key)
-        );
-      `);
-
-      const insertEvent = database.prepare(`
-        INSERT INTO activity_events_canonical (
-          id, session_id, timestamp, kind, app_name, data, created_at, occurred_at,
-          source, event_type, application, bundle_id, window_title, ax_role, ax_title,
-          url, capture_id, redacted_text, mouse_event_type, mouse_button, key_code, key_modifiers,
-          mouse_x, mouse_y, summary, ocr_text, input_event_count, input_event_first_at,
-          fallback_reason, snapshot_path, snapshot_bytes
-        ) VALUES (
-          ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-          ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-          ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
-        )
-      `);
-      for (const row of eventRows) {
-        const id = idFor(row.id, eventIds);
-        const occurredAt = nullableString(row.occurred_at) ?? new Date(numberOrUndefined(row.timestamp) ?? Date.now()).toISOString();
-        const timestamp = numberOrUndefined(row.timestamp) ?? activityEpochMillisecondsOrUndefined(occurredAt) ?? Date.now();
-        const application = nullableString(valueOr(row, "application", row.app_name));
-        const eventType = nullableString(valueOr(row, "event_type", row.kind)) ?? "activity";
-        insertEvent.run(
-          id,
-          String(row.session_id),
-          timestamp,
-          nullableString(valueOr(row, "kind", eventType)) ?? null,
-          application ?? null,
-          nullableString(row.data) ?? "{}",
-          numberOrUndefined(row.created_at) ?? timestamp,
-          occurredAt,
-          row.source === "screenshot_fallback" ? "screenshot_fallback" : "event",
-          eventType,
-          application ?? null,
-          nullableString(row.bundle_id) ?? null,
-          nullableString(row.window_title) ?? null,
-          nullableString(row.ax_role) ?? null,
-          nullableString(row.ax_title) ?? null,
-          nullableString(row.url) ?? null,
-          nullableString(row.capture_id) ?? null,
-          nullableString(row.redacted_text) ?? null,
-          nullableString(row.mouse_event_type) ?? null,
-          nullableString(row.mouse_button) ?? null,
-          numberOrUndefined(row.key_code) ?? null,
-          numberOrUndefined(row.key_modifiers) ?? null,
-          Number.isFinite(Number(row.mouse_x)) ? Number(row.mouse_x) : null,
-          Number.isFinite(Number(row.mouse_y)) ? Number(row.mouse_y) : null,
-          nullableString(row.summary) ?? eventType,
-          nullableString(row.ocr_text) ?? null,
-          numberOrUndefined(row.input_event_count) ?? 0,
-          nullableString(row.input_event_first_at) ?? null,
-          nullableString(row.fallback_reason) ?? null,
-          nullableString(row.snapshot_path) ?? null,
-          numberOrUndefined(row.snapshot_bytes) ?? 0
-        );
-      }
-
-      const insertSnapshot = database.prepare(`
-        INSERT INTO activity_snapshots_canonical (
-          id, session_id, event_id, timestamp, captured_at, file_path, bytes, size_bytes,
-          width, height, trigger, app_name, window_title, content_hash, hash_hex,
-          histogram, histogram_change, pixel_diff, diff_pct, created_at, storage_tier
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `);
-      for (const row of snapshotRows) {
-        const id = idFor(row.id, snapshotIds);
-        const capturedAt = nullableString(row.captured_at) ?? new Date(numberOrUndefined(row.timestamp) ?? Date.now()).toISOString();
-        const timestamp = numberOrUndefined(row.timestamp) ?? activityEpochMillisecondsOrUndefined(capturedAt) ?? Date.now();
-        const bytes = numberOrUndefined(valueOr(row, "bytes", row.size_bytes)) ?? 0;
-        const hash = nullableString(valueOr(row, "content_hash", row.hash_hex));
-        const diff = Number.isFinite(Number(valueOr(row, "pixel_diff", row.diff_pct)))
-          ? Number(valueOr(row, "pixel_diff", row.diff_pct))
-          : null;
-        insertSnapshot.run(
-          id,
-          String(row.session_id),
-          eventIdFor(row.event_id),
-          timestamp,
-          capturedAt,
-          nullableString(row.file_path) ?? null,
-          bytes,
-          numberOrUndefined(valueOr(row, "size_bytes", bytes)) ?? bytes,
-          numberOrUndefined(row.width) ?? null,
-          numberOrUndefined(row.height) ?? null,
-          nullableString(row.trigger) ?? null,
-          nullableString(valueOr(row, "app_name", row.application)) ?? null,
-          nullableString(row.window_title) ?? null,
-          hash ?? null,
-          hash ?? null,
-          nullableString(row.histogram) ?? null,
-          Number.isFinite(Number(row.histogram_change)) ? Number(row.histogram_change) : null,
-          diff,
-          diff,
-          numberOrUndefined(row.created_at) ?? timestamp,
-          parseSnapshotStorageTier(row.storage_tier)
-        );
-      }
-
-      const insertOcr = database.prepare(`
-        INSERT INTO activity_ocr_frames_canonical (
-          id, session_id, snapshot_id, timestamp, occurred_at, text, char_count, token_count,
-          application, window_title, model_fingerprint, embedding, embedded_at,
-          embedding_model, embedding_dim, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `);
-      for (const row of ocrRows) {
-        const occurredAt = nullableString(row.occurred_at) ?? new Date(numberOrUndefined(row.timestamp) ?? Date.now()).toISOString();
-        const timestamp = numberOrUndefined(row.timestamp) ?? activityEpochMillisecondsOrUndefined(occurredAt) ?? Date.now();
-        const embedding = row.embedding instanceof Uint8Array ? row.embedding : null;
-        insertOcr.run(
-          idFor(row.id, new Map()),
-          String(row.session_id),
-          snapshotIdFor(row.snapshot_id),
-          timestamp,
-          occurredAt,
-          String(row.text ?? ""),
-          numberOrUndefined(row.char_count) ?? String(row.text ?? "").length,
-          numberOrUndefined(row.token_count) ?? Math.ceil(String(row.text ?? "").length / 4),
-          nullableString(row.application) ?? null,
-          nullableString(row.window_title) ?? null,
-          nullableString(row.model_fingerprint) ?? null,
-          embedding,
-          nullableString(row.embedded_at) ?? null,
-          nullableString(valueOr(row, "embedding_model", row.model_fingerprint)) ?? null,
-          numberOrUndefined(row.embedding_dim) ?? null,
-          numberOrUndefined(row.created_at) ?? timestamp
-        );
-      }
-
-      const insertSummary = database.prepare(`
-        INSERT INTO activity_summaries_canonical (
-          id, kind, date_key, summary, stats, stats_json, model, is_partial,
-          created_at, updated_at, generated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `);
-      for (const row of summaryRows) {
-        const generatedAt = nullableString(row.generated_at);
-        const createdAt = numberOrUndefined(row.created_at)
-          ?? activityEpochMillisecondsOrUndefined(generatedAt)
-          ?? Date.now();
-        const stats = nullableString(valueOr(row, "stats", row.stats_json)) ?? "{}";
-        insertSummary.run(
-          nullableString(row.id) ?? randomUUID(),
-          nullableString(row.kind) ?? "daily",
-          nullableString(row.date_key) ?? new Date(createdAt).toISOString().slice(0, 10),
-          nullableString(row.summary) ?? "",
-          stats,
-          nullableString(row.stats_json) ?? stats,
-          nullableString(row.model) ?? null,
-          numberOrUndefined(row.is_partial) ?? 0,
-          createdAt,
-          numberOrUndefined(row.updated_at) ?? createdAt,
-          generatedAt ?? new Date(createdAt).toISOString()
-        );
-      }
-
-      database.exec(`
-        DROP TABLE activity_ocr_frames;
-        DROP TABLE activity_snapshots;
-        DROP TABLE activity_events;
-        DROP TABLE activity_summaries;
-        ALTER TABLE activity_events_canonical RENAME TO activity_events;
-        ALTER TABLE activity_snapshots_canonical RENAME TO activity_snapshots;
-        ALTER TABLE activity_ocr_frames_canonical RENAME TO activity_ocr_frames;
-        ALTER TABLE activity_summaries_canonical RENAME TO activity_summaries;
-        CREATE INDEX activity_events_time_idx ON activity_events(occurred_at);
-        CREATE INDEX activity_events_session_idx ON activity_events(session_id);
-        CREATE INDEX activity_snapshots_time_idx ON activity_snapshots(captured_at);
-        CREATE INDEX activity_snapshots_session_idx ON activity_snapshots(session_id);
-        CREATE INDEX activity_ocr_frames_time_idx ON activity_ocr_frames(occurred_at);
-        CREATE INDEX activity_ocr_frames_session_idx ON activity_ocr_frames(session_id);
-        CREATE INDEX activity_ocr_frames_fp_idx ON activity_ocr_frames(model_fingerprint);
-        CREATE INDEX activity_summaries_date_idx ON activity_summaries(date_key);
-      `);
-      database.exec("COMMIT; PRAGMA foreign_keys = ON;");
-    } catch (error) {
-      database.exec("ROLLBACK; PRAGMA foreign_keys = ON;");
-      throw error;
-    }
-  }
-
-  /** 日结会记录生成 narrative 所用的模型；旧版 Biny 日结表没有这列。 */
   private ensureSummaryColumns(database: DatabaseSync): void {
     const columns = tableColumns(database, "activity_summaries");
     if (!columns.has("model")) database.exec("ALTER TABLE activity_summaries ADD COLUMN model TEXT;");
@@ -2822,120 +1890,6 @@ export class ActivityStore {
           updated_at = COALESCE(updated_at, CAST(strftime('%s', generated_at) AS INTEGER) * 1000)
       WHERE id IS NULL OR stats IS NULL OR created_at IS NULL OR updated_at IS NULL;
     `);
-  }
-
-  /** 把旧版事件表里已有的 JPEG 转成独立 snapshot 索引，重复打开时幂等。 */
-  private ensureSnapshotRows(database: DatabaseSync): void {
-    database.exec(`
-      INSERT OR IGNORE INTO activity_snapshots (
-        session_id, event_id, captured_at, file_path, bytes, trigger
-      )
-      SELECT e.session_id, e.id, e.occurred_at, e.snapshot_path, e.snapshot_bytes, e.fallback_reason
-      FROM activity_events e
-      WHERE e.source = 'screenshot_fallback' AND e.snapshot_path IS NOT NULL;
-    `);
-    database.exec(`
-      INSERT OR IGNORE INTO activity_ocr_frames (
-        session_id, snapshot_id, occurred_at, text, application, window_title
-      )
-      SELECT e.session_id, s.id, e.occurred_at, e.ocr_text, e.application, e.window_title
-      FROM activity_events e
-      JOIN activity_snapshots s ON s.event_id = e.id
-      WHERE e.ocr_text IS NOT NULL AND e.ocr_text <> '';
-    `);
-  }
-
-  private ensureSearchIndex(database: DatabaseSync): void {
-    database.exec(`
-      CREATE TABLE IF NOT EXISTS activity_fts_metadata (
-        id INTEGER PRIMARY KEY CHECK (id = 1),
-        version INTEGER NOT NULL
-      );
-    `);
-    const columns = tableColumns(database, "activity_fts");
-    const requiredColumns = ["event_id", "summary", "application", "window_title", "event_type", "ax_role", "ax_title", "redacted_text", "ocr_text", "url", "occurred_at"];
-    const metadata = database.prepare("SELECT version FROM activity_fts_metadata WHERE id = 1").get() as { version?: number } | undefined;
-    if (requiredColumns.every((column) => columns.has(column)) && metadata?.version === ACTIVITY_FTS_INDEX_VERSION) return;
-    this.rebuildSearchIndex(database);
-  }
-
-  private rebuildSearchIndex(database: DatabaseSync): void {
-    database.exec("BEGIN IMMEDIATE;");
-    try {
-      database.exec("DROP TABLE IF EXISTS activity_fts;");
-      database.exec(`
-        CREATE VIRTUAL TABLE activity_fts USING fts5(
-          event_id UNINDEXED,
-          summary,
-          application,
-          window_title,
-          event_type,
-          ax_role,
-          ax_title,
-          redacted_text,
-          ocr_text,
-          url,
-          occurred_at
-        );
-      `);
-      const rows = database.prepare(`
-        SELECT id, summary, application, window_title, event_type, ax_role, ax_title,
-          redacted_text, ocr_text, url, occurred_at
-        FROM activity_events
-        ORDER BY id ASC
-      `).all() as Array<Record<string, unknown>>;
-      const insert = database.prepare(`
-        INSERT INTO activity_fts (
-          event_id, summary, application, window_title, event_type,
-          ax_role, ax_title, redacted_text, ocr_text, url, occurred_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `);
-      for (const row of rows) this.insertSearchIndexValues(insert, row);
-      database.prepare(`
-        INSERT INTO activity_fts_metadata (id, version) VALUES (1, ?)
-        ON CONFLICT(id) DO UPDATE SET version = excluded.version
-      `).run(ACTIVITY_FTS_INDEX_VERSION);
-      database.exec("COMMIT;");
-    } catch (error) {
-      database.exec("ROLLBACK;");
-      throw error;
-    }
-  }
-
-  private insertSearchIndexRow(database: DatabaseSync, eventId: ActivityRecordId): void {
-    const row = database.prepare(`
-      SELECT id, summary, application, window_title, event_type, ax_role, ax_title,
-        redacted_text, ocr_text, url, occurred_at
-      FROM activity_events
-      WHERE id = ?
-    `).get(eventId) as Record<string, unknown> | undefined;
-    if (!row) return;
-    const insert = database.prepare(`
-      INSERT INTO activity_fts (
-        event_id, summary, application, window_title, event_type,
-        ax_role, ax_title, redacted_text, ocr_text, url, occurred_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `);
-    this.insertSearchIndexValues(insert, row);
-  }
-
-  private insertSearchIndexValues(
-    insert: StatementSync,
-    row: Record<string, unknown>
-  ): void {
-    insert.run(
-      String(row.id),
-      segmentActivityText(nullableString(row.summary)),
-      segmentActivityText(nullableString(row.application)),
-      segmentActivityText(nullableString(row.window_title)),
-      segmentActivityText(nullableString(row.event_type)),
-      segmentActivityText(nullableString(row.ax_role)),
-      segmentActivityText(nullableString(row.ax_title)),
-      segmentActivityText(nullableString(row.redacted_text)),
-      segmentActivityText(nullableString(row.ocr_text)),
-      segmentActivityText(nullableString(row.url)),
-      segmentActivityText(nullableString(row.occurred_at))
-    );
   }
 
   private requireDatabase(): DatabaseSync {
@@ -3061,18 +2015,18 @@ function nullableNumber(value: unknown): number | undefined {
 
 function parseAnalysisRow(row: Record<string, unknown>): ActivitySessionAnalysis {
   return {
-    sessionId: String(row.session_id),
-    analyzedAt: String(row.analyzed_at),
-    analyzerModel: String(row.analyzer_model),
-    analysisStatus: row.activity_analysis_status === "pending"
-      || row.activity_analysis_status === "skipped"
-      || row.activity_analysis_status === "failed"
-      || row.activity_analysis_status === "not_worth"
-      ? row.activity_analysis_status
+    sessionId: String(row.id),
+    analyzedAt: String(row.analysis_generated_at),
+    analyzerModel: String(row.analysis_model),
+    analysisStatus: row.analysis_status === "pending"
+      || row.analysis_status === "skipped"
+      || row.analysis_status === "failed"
+      || row.analysis_status === "not_worth"
+      ? row.analysis_status
       : "analyzed",
     project: nullableString(row.project),
-    title: nullableString(row.title),
-    description: nullableString(row.description),
+    title: nullableString(row.analysis_title),
+    description: nullableString(row.analysis_description),
     summary: String(row.summary),
     topics: parseJsonArray<string>(row.topics_json),
     prs: parseJsonArray<ActivityAnalysisReference>(row.prs_json),
@@ -3091,7 +2045,7 @@ function parseAnalysisRow(row: Record<string, unknown>): ActivitySessionAnalysis
     worthMemory: Number(row.worth_memory) === 1,
     worthKnowledge: Number(row.worth_knowledge) === 1,
     isMeeting: Number(row.is_meeting) === 1,
-    storageTier: parseStorageTier(row.storage_tier),
+    storageTier: parseStorageTier(row.analysis_storage_tier),
     confidence: Number(row.confidence),
     sourceEventCount: Number(row.source_event_count),
     inputHash: String(row.input_hash)

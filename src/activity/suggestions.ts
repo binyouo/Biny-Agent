@@ -13,7 +13,7 @@ import { ACTIVITY_ANALYSIS_FAILED_SUMMARY, ACTIVITY_TRIVIAL_SUMMARY } from "./an
 const SUGGESTION_LOOKBACK_MS = 3 * 24 * 60 * 60 * 1_000;
 const SUGGESTION_SESSION_LIMIT = 12;
 const SUGGESTION_CACHE_TTL_MS = 10 * 60 * 1_000;
-const suggestionArraySchema = z.array(z.string().trim().min(1).max(240)).min(1).max(8);
+const suggestionArraySchema = z.array(z.string().trim().min(1).max(60)).min(4).max(5);
 
 export interface ActivitySuggestionCache {
   get(key: string): string[] | undefined;
@@ -117,10 +117,11 @@ function buildSuggestionPrompt(
 ): string {
   const lines = [
     "Generate 4 or 5 short, actionable suggestions for a new chat.",
-    "Write each suggestion in first person, as something the user could ask next.",
+    "Write each suggestion as a first-person request the user could send next, using the same language as the activity.",
     "Ground every suggestion in the activity below: use real project names, files, PRs, topics, or decisions when present.",
+    "Cover distinct useful next steps rather than paraphrasing the same request.",
     "Do not invent facts, do not mention that you are reading activity, and do not give generic productivity advice.",
-    "Return ONLY a JSON array of strings. Keep each string under 60 Chinese characters or 120 Latin characters.",
+    "Return ONLY a JSON array of 4 or 5 strings, each under 60 characters. Return [] if the activity lacks enough concrete context.",
     `Current date: ${now.toISOString().slice(0, 10)}`,
     "Analyzed activity:"
   ];
@@ -152,8 +153,8 @@ function parseSuggestions(text: string): string[] {
     const normalized = value.replace(/\s+/gu, " ").trim();
     if (!normalized || seen.has(normalized)) continue;
     seen.add(normalized);
-    suggestions.push(normalized.slice(0, 160));
+    suggestions.push(normalized);
     if (suggestions.length === 5) break;
   }
-  return suggestions;
+  return suggestions.length >= 4 ? suggestions : [];
 }

@@ -78,7 +78,7 @@ async function testBackgroundEmbeddingPrecomputesOcr(): Promise<void> {
   const root = await mkdtemp(path.join(os.tmpdir(), "biny-activity-background-"));
   const store = new ActivityStore();
   try {
-    await store.open(root);
+    await store.open(root, root);
     const sessionId = store.startSession("2026-08-31T09:00:00.000Z");
     await store.recordFallbackCapture({
       sessionId,
@@ -161,7 +161,7 @@ async function testBackgroundEmbeddingPrecomputesOcr(): Promise<void> {
 
 async function testDailySummaryTimerPersistsSummary(): Promise<void> {
   const root = await mkdtemp(path.join(os.tmpdir(), "biny-activity-daily-timer-"));
-  const sidecarPath = path.join(root, "fake-sidecar");
+  const inputMonitorPath = path.join(root, "fake-sidecar");
   const yesterday = new Date();
   yesterday.setDate(yesterday.getDate() - 1);
   const yesterdayIso = new Date(yesterday.getFullYear(), yesterday.getMonth(), yesterday.getDate(), 9, 0, 0).toISOString();
@@ -170,7 +170,7 @@ async function testDailySummaryTimerPersistsSummary(): Promise<void> {
     String(yesterday.getMonth() + 1).padStart(2, "0"),
     String(yesterday.getDate()).padStart(2, "0")
   ].join("-");
-  await writeFile(sidecarPath, `#!/bin/sh
+  await writeFile(inputMonitorPath, `#!/bin/sh
 while IFS= read -r line; do
   case "$line" in
     *'"type":"start"'*)
@@ -182,7 +182,7 @@ while IFS= read -r line; do
   esac
 done
 `, { mode: 0o700 });
-  await chmod(sidecarPath, 0o700);
+  await chmod(inputMonitorPath, 0o700);
   const config = {
     ...defaultConfig,
     activity: { ...defaultActivitySettings, outputDirectory: root }
@@ -191,9 +191,9 @@ done
   const timers = new FakeTimers();
   let notes = 0;
   let lastNote: string | undefined;
-  const service = new ActivityRecorderService({
+  const service = new ActivityRecorderService({ agentDir: root,
     configStore,
-    sidecarPath,
+    inputMonitorPath,
     dailySummaryTimers: timers,
     dailySummaryInitialDelayMs: 10,
     embeddingInitialDelayMs: 60_000,
@@ -212,7 +212,7 @@ done
     assert.equal(notes, 0, "自动摘要不写入 Agent 每日记忆文件");
     assert.equal(lastNote, undefined);
     const verifier = new ActivityStore();
-    await verifier.open(root);
+    await verifier.open(root, root);
     try {
       const first = verifier.getSummary("daily", yesterdayKey);
       assert.ok(first && !first.isPartial);
@@ -245,16 +245,16 @@ async function testSettingsFenceLateBackgroundEmbedding(): Promise<void> {
       await new Promise<void>((resolve) => { release = resolve; });
       return embed(request);
     };
-    const service = new ActivityRecorderService({
+    const service = new ActivityRecorderService({ agentDir: root,
       configStore: { load: async () => config } as AgentConfigStore,
-      sidecarPath: undefined,
+      inputMonitorPath: undefined,
       getEmbeddingRuntime: async () => runtime,
       embeddingInitialDelayMs: 10,
       embeddingSweepIntervalMs: 0,
       embeddingSchedulerTimers: timers
     });
     try {
-      await store.open(root);
+      await store.open(root, root);
       const sessionId = store.startSession(new Date().toISOString());
       await store.recordFallbackCapture({
         sessionId, occurredAt: new Date().toISOString(), eventType: "fallback_capture",
@@ -359,7 +359,7 @@ async function waitFor(predicate: () => boolean): Promise<void> {
 async function waitForSummary(root: string, dateKey: string): Promise<void> {
   for (let attempt = 0; attempt < 80; attempt += 1) {
     const verifier = new ActivityStore();
-    await verifier.open(root);
+    await verifier.open(root, root);
     const summary = verifier.getSummary("daily", dateKey);
     await verifier.close();
     if (summary) return;

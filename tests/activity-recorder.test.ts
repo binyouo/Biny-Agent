@@ -10,16 +10,15 @@ import { createFileConfigStore } from "../src/config/store.js";
 import { defaultActivitySettings } from "../src/activity/settings.js";
 import { ActivityStore } from "../src/activity/store.js";
 import { refreshActivitySummary, refreshActivitySummaryWithNarrative } from "../src/activity/summary.js";
-import { ActivityRecorderService, defaultActivitySidecarPath } from "../src/desktop/electron/main/ActivityRecorderService.js";
+import { ActivityRecorderService, defaultActivityInputMonitorPath } from "../src/desktop/electron/main/ActivityRecorderService.js";
 
 testDefaultActivitySidecarPath();
 await testCanonicalActivitySchema();
 await testActivityServiceLifecycleQueue();
 await testSidecarInputFailureDoesNotCrashService();
 await testPermissionRequestStartsStandaloneSidecar();
-await testActivitySettingsHotUpdateSidecar();
+await testActivitySettingsRestartInputMonitor();
 await testGlobalActivitySettingsUseVersionedSnapshot();
-await testSidecarPersistsCaptureBeforeOcr();
 await testEventAndFallbackStorage();
 await testSnapshotOrphanRecovery();
 await testKeyBurstFirstTimestamp();
@@ -37,10 +36,10 @@ await testBuildReportPersistsDailyNote();
 
 function testDefaultActivitySidecarPath(): void {
   const expectedPath = process.platform === "darwin"
-    ? "/tmp/biny-project/out/native/activity-recorder"
+    ? "/tmp/biny-project/out/native/activity-input-monitor"
     : undefined;
   assert.equal(
-    defaultActivitySidecarPath({
+    defaultActivityInputMonitorPath({
       packaged: false,
       resourcesPath: "/tmp/biny-resources",
       appPath: "/tmp/biny-project/out/main"
@@ -48,7 +47,7 @@ function testDefaultActivitySidecarPath(): void {
     expectedPath
   );
   assert.equal(
-    defaultActivitySidecarPath({
+    defaultActivityInputMonitorPath({
       packaged: false,
       resourcesPath: "/tmp/biny-resources",
       appPath: "/tmp/biny-project"
@@ -60,7 +59,7 @@ function testDefaultActivitySidecarPath(): void {
 async function testGlobalActivitySettingsUseVersionedSnapshot(): Promise<void> {
   const root = await mkdtemp(path.join(os.tmpdir(), "biny-activity-global-settings-"));
   const configStore = createFileConfigStore(root, { globalDir: root });
-  const service = new ActivityRecorderService({ configStore, sidecarPath: undefined });
+  const service = new ActivityRecorderService({ agentDir: root, configStore, inputMonitorPath: undefined });
   try {
     await configStore.save({ ...defaultConfig, activity: { ...defaultActivitySettings, enabled: false, outputDirectory: path.join(root, "activity") } });
     const first = await service.settingsSnapshot();
@@ -85,21 +84,21 @@ async function testCanonicalActivitySchema(): Promise<void> {
   const root = await mkdtemp(path.join(os.tmpdir(), "biny-activity-schema-"));
   const store = new ActivityStore();
   try {
-    await store.open(root);
-    const database = new DatabaseSync(path.join(root, "activity.sqlite"));
+    await store.open(root, root);
+    const database = new DatabaseSync(path.join(root, "agent.sqlite"));
     const columns = (table: string): Map<string, { type: string; pk: number }> => new Map(
       (database.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string; type: string; pk: number }>)
         .map((column) => [column.name, column])
     );
     assert.equal(columns("activity_events").get("id")?.type, "TEXT");
-    assert.equal(columns("activity_events").has("capture_id"), true);
+    assert.equal(columns("activity_events").has("capture_id"), false);
     assert.equal(columns("activity_snapshots").get("id")?.type, "TEXT");
-    assert.equal(columns("activity_snapshots").get("event_id")?.type, "TEXT");
+    assert.equal(columns("activity_snapshots").has("event_id"), false);
     assert.equal(columns("activity_ocr_frames").get("id")?.type, "TEXT");
     assert.equal(columns("activity_ocr_frames").get("snapshot_id")?.type, "TEXT");
     assert.equal(columns("activity_summaries").get("id")?.pk, 1);
     const snapshotForeignKeys = database.prepare("PRAGMA foreign_key_list(activity_snapshots)").all() as Array<Record<string, unknown>>;
-    assert.ok(snapshotForeignKeys.some((foreignKey) => foreignKey.table === "activity_events" && foreignKey.on_delete === "CASCADE"));
+    assert.ok(snapshotForeignKeys.some((foreignKey) => foreignKey.table === "activity_sessions" && foreignKey.on_delete === "CASCADE"));
     const sessionId = store.startSession("2026-08-27T00:00:00.000Z");
     const event = store.recordEvent({
       sessionId,
@@ -133,7 +132,7 @@ async function testActivityServiceLifecycleQueue(): Promise<void> {
     load: async () => config,
     save: async () => undefined
   } as AgentConfigStore;
-  const service = new ActivityRecorderService({ configStore, sidecarPath: undefined });
+  const service = new ActivityRecorderService({ agentDir: root, configStore, inputMonitorPath: undefined });
   try {
     // stopInternal 会在 initialize/stop 的 operation queue 内执行；这个生命周期测试
     // 防止收口逻辑再次等待包含自身的 operationTail。
@@ -149,42 +148,42 @@ async function testActivityServiceLifecycleQueue(): Promise<void> {
 
 async function testSidecarInputFailureDoesNotCrashService(): Promise<void> {
   const root = await mkdtemp(path.join(os.tmpdir(), "biny-activity-sidecar-input-"));
-  const sidecarPath = path.join(root, "fake-sidecar");
-  await writeFile(sidecarPath, `#!/bin/sh
+  const inputMonitorPath = path.join(root, "fake-sidecar");
+  await writeFile(inputMonitorPath, `#!/bin/sh
 while IFS= read -r line; do
   case "$line" in
     *'"type":"start"'*)
       exec 0<&-
       printf '%s\\n' '{"type":"event","occurredAt":"2026-08-31T00:00:00.000Z","eventType":"app_focus","application":"Fake App"}'
-      sleep 2
+      exit 7
       ;;
   esac
 done
 `, { mode: 0o700 });
-  await chmod(sidecarPath, 0o700);
+  await chmod(inputMonitorPath, 0o700);
   const config = {
     ...defaultConfig,
     activity: { ...defaultActivitySettings, outputDirectory: root }
   };
   const configStore = { load: async () => config } as AgentConfigStore;
-  const service = new ActivityRecorderService({ configStore, sidecarPath });
+  const service = new ActivityRecorderService({ agentDir: root, configStore, inputMonitorPath });
   try {
     await service.initialize();
     await waitForActivitySnapshot(service, (snapshot) => snapshot.state === "error");
-    assert.match(service.snapshot().error ?? "", /EPIPE/u);
+    assert.match(service.snapshot().error ?? "", /已退出/u);
   } finally {
     await service.stop();
     await rm(root, { recursive: true, force: true });
   }
 }
 
-async function testActivitySettingsHotUpdateSidecar(): Promise<void> {
+async function testActivitySettingsRestartInputMonitor(): Promise<void> {
   // Given: sidecar 正在录制且已有 session；When: 运行中更新采集参数；
-  // Then: 不重启 sidecar（命令日志只有一个 start），settings_updated 原地送达，事件落在同一 session。
+  // Then: 重启输入进程并关闭旧 session，使原生失败状态可重试。
   const root = await mkdtemp(path.join(os.tmpdir(), "biny-activity-hotupdate-"));
-  const sidecarPath = path.join(root, "fake-sidecar");
+  const inputMonitorPath = path.join(root, "fake-sidecar");
   const commandLog = path.join(root, "commands.log");
-  await writeFile(sidecarPath, `#!/bin/sh
+  await writeFile(inputMonitorPath, `#!/bin/sh
 while IFS= read -r line; do
   case "$line" in
     *'"type":"start"'*)
@@ -202,7 +201,7 @@ while IFS= read -r line; do
   esac
 done
 `, { mode: 0o700 });
-  await chmod(sidecarPath, 0o700);
+  await chmod(inputMonitorPath, 0o700);
   let config = {
     ...defaultConfig,
     activity: { ...defaultActivitySettings, outputDirectory: root }
@@ -219,15 +218,15 @@ done
       return { config, revision };
     }
   } as AgentConfigStore;
-  const service = new ActivityRecorderService({ configStore, sidecarPath });
+  const service = new ActivityRecorderService({ agentDir: root, configStore, inputMonitorPath });
   try {
     await service.initialize();
     await waitForActivitySnapshot(service, (snapshot) => snapshot.sessions === 1);
     await service.updateSettings({ captureDebounceMs: 6_000 }, revision);
     await waitForActivitySnapshot(service, (snapshot) => snapshot.events === 2);
     assert.equal(config.activity.captureDebounceMs, 6_000);
-    assert.deepEqual((await readFile(commandLog, "utf8")).trim().split("\n"), ["start", "settings_updated"]);
-    assert.equal(service.snapshot().sessions, 1);
+    assert.deepEqual((await readFile(commandLog, "utf8")).trim().split("\n"), ["start", "stop", "start"]);
+    assert.equal(service.snapshot().sessions, 2);
   } finally {
     await service.stop();
     await rm(root, { recursive: true, force: true });
@@ -237,67 +236,24 @@ done
 async function testPermissionRequestStartsStandaloneSidecar(): Promise<void> {
   const root = await mkdtemp(path.join(os.tmpdir(), "biny-activity-permission-"));
   const marker = path.join(root, "permission-requested");
-  const sidecarPath = path.join(root, "fake-sidecar");
-  await writeFile(sidecarPath, `#!/bin/sh
+  const inputMonitorPath = path.join(root, "fake-sidecar");
+  await writeFile(inputMonitorPath, `#!/bin/sh
 if [ "$1" = "--request-permission" ] && [ "$2" = "screen-recording" ]; then
   touch "${marker}"
   exit 0
 fi
 exit 64
 `);
-  await chmod(sidecarPath, 0o700);
+  await chmod(inputMonitorPath, 0o700);
   const config = {
     ...defaultConfig,
     activity: { ...defaultActivitySettings, outputDirectory: root }
   };
   const configStore = { load: async () => config } as AgentConfigStore;
-  const service = new ActivityRecorderService({ configStore, sidecarPath });
+  const service = new ActivityRecorderService({ agentDir: root, configStore, inputMonitorPath });
   try {
     await service.requestPermission("screen-recording");
     await stat(marker);
-  } finally {
-    await service.stop();
-    await rm(root, { recursive: true, force: true });
-  }
-}
-
-async function testSidecarPersistsCaptureBeforeOcr(): Promise<void> {
-  const root = await mkdtemp(path.join(os.tmpdir(), "biny-activity-ocr-order-"));
-  const sidecarPath = path.join(root, "fake-sidecar");
-  await writeFile(sidecarPath, `#!/bin/sh
-while IFS= read -r line; do
-  case "$line" in
-    *'"type":"start"'*)
-      printf '%s\\n' '{"type":"capture","occurredAt":"2026-08-31T02:00:00.000Z","application":"Fake App","jpegBase64":"anBn","captureId":"capture-1","width":160,"height":90,"captureTrigger":"visual_change","fallbackReason":"visual_change"}'
-      printf '%s\\n' '{"type":"ocr","captureId":"capture-1","ocrText":"late OCR"}'
-      ;;
-    *'"type":"stop"'*)
-      exit 0
-      ;;
-  esac
-done
-`, { mode: 0o700 });
-  await chmod(sidecarPath, 0o700);
-  const config = {
-    ...defaultConfig,
-    activity: { ...defaultActivitySettings, outputDirectory: root }
-  };
-  const configStore = { load: async () => config } as AgentConfigStore;
-  const service = new ActivityRecorderService({ configStore, sidecarPath });
-  try {
-    await service.initialize();
-    await waitForActivitySnapshot(service, (snapshot) => snapshot.fallbackCaptures === 1);
-    await service.stop();
-
-    const verifier = new ActivityStore();
-    try {
-      await verifier.open(root);
-      const frames = verifier.listRecentOcrFrames("2026-08-31T00:00:00.000Z", 10);
-      assert.equal(frames.length, 1);
-      assert.equal(frames[0]?.text, "late OCR");
-    } finally {
-      await verifier.close();
-    }
   } finally {
     await service.stop();
     await rm(root, { recursive: true, force: true });
@@ -308,7 +264,7 @@ async function waitForActivitySnapshot(
   service: ActivityRecorderService,
   predicate: (snapshot: ReturnType<ActivityRecorderService["snapshot"]>) => boolean
 ): Promise<void> {
-  for (let attempt = 0; attempt < 40; attempt += 1) {
+  for (let attempt = 0; attempt < 160; attempt += 1) {
     if (predicate(service.snapshot())) return;
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
@@ -319,7 +275,7 @@ async function testEventAndFallbackStorage(): Promise<void> {
   const root = await mkdtemp(path.join(os.tmpdir(), "biny-activity-events-"));
   const store = new ActivityStore();
   try {
-    await store.open(root);
+    await store.open(root, root);
     const sessionId = store.startSession("2026-08-24T00:00:00.000Z");
     const event = store.recordEvent({
       sessionId,
@@ -327,7 +283,6 @@ async function testEventAndFallbackStorage(): Promise<void> {
       eventType: "focus_changed",
       application: "Test App",
       windowTitle: "token=window-secret",
-      axRole: "AXTextField",
       rawText: "token=secret user@example.com /Users/think/private.txt",
       inputEventCount: 3
     });
@@ -340,7 +295,7 @@ async function testEventAndFallbackStorage(): Promise<void> {
     assert.equal(store.snapshot().fallbackCaptures, 0);
     assert.equal(store.snapshot().storageBytes, 0);
     assert.equal((await stat(path.join(root, "snapshots"))).mode & 0o777, 0o700);
-    assert.equal((await stat(path.join(root, "activity.sqlite"))).mode & 0o777, 0o600);
+    assert.equal((await stat(path.join(root, "agent.sqlite"))).mode & 0o777, 0o600);
 
     const capture = await store.recordFallbackCapture({
       sessionId,
@@ -358,7 +313,7 @@ async function testEventAndFallbackStorage(): Promise<void> {
     assert.match(capture.ocrText ?? "", /\n第二行 OCR/u);
     assert.deepEqual(await readFile(path.join(root, capture.snapshotPath)), Buffer.from("jpeg"));
     assert.equal((await stat(path.join(root, capture.snapshotPath))).mode & 0o777, 0o600);
-    assert.equal(store.search("Test App").length, 2);
+    assert.equal(store.search("Test App").length, 0);
     assert.equal(store.search("ocr-secret").length, 0);
     assert.equal(store.search("window-secret").length, 0);
     const deferredCapture = await store.recordFallbackCapture({
@@ -375,7 +330,7 @@ async function testEventAndFallbackStorage(): Promise<void> {
     store.updateSnapshotOcr(deferredCapture.snapshotId!, "late-secret=hidden\nlate OCR");
     store.updateSnapshotOcr(deferredCapture.snapshotId!, "late-secret=hidden\nlate OCR");
     assert.equal(store.updateSnapshotOcrByCaptureId("capture-restart", "late-secret=hidden\nlate OCR"), true);
-    const ocrDatabase = new DatabaseSync(path.join(root, "activity.sqlite"), { readOnly: true });
+    const ocrDatabase = new DatabaseSync(path.join(root, "agent.sqlite"), { readOnly: true });
     try {
       const frame = ocrDatabase.prepare("SELECT text, char_count, token_count, created_at FROM activity_ocr_frames WHERE snapshot_id = ?").get(deferredCapture.snapshotId!)!;
       assert.equal(ocrDatabase.prepare("SELECT COUNT(*) AS count FROM activity_ocr_frames WHERE snapshot_id = ?").get(deferredCapture.snapshotId!)?.count, 1);
@@ -386,7 +341,7 @@ async function testEventAndFallbackStorage(): Promise<void> {
     } finally {
       ocrDatabase.close();
     }
-    const orderingDatabase = new DatabaseSync(path.join(root, "activity.sqlite"));
+    const orderingDatabase = new DatabaseSync(path.join(root, "agent.sqlite"));
     try {
       orderingDatabase.prepare("UPDATE activity_ocr_frames SET created_at = ? WHERE snapshot_id = ?").run(200, capture.snapshotId!);
       orderingDatabase.prepare("UPDATE activity_ocr_frames SET created_at = ? WHERE snapshot_id = ?").run(100, deferredCapture.snapshotId!);
@@ -414,7 +369,7 @@ async function testEventAndFallbackStorage(): Promise<void> {
       orderingDatabase.close();
     }
     await store.close();
-    await store.open(root);
+    await store.open(root, root);
     const duplicateCapture = await store.recordFallbackCapture({
       sessionId,
       occurredAt: "2026-08-24T00:00:04.000Z",
@@ -458,14 +413,14 @@ async function testSnapshotOrphanRecovery(): Promise<void> {
   const root = await mkdtemp(path.join(os.tmpdir(), "biny-activity-orphan-"));
   const store = new ActivityStore();
   try {
-    await store.open(root);
+    await store.open(root, root);
     await store.close();
     const orphanPath = path.join(root, "snapshots", "2026-09-07", "orphan.jpg");
     await mkdir(path.dirname(orphanPath), { recursive: true });
     await writeFile(orphanPath, Buffer.from("orphan"));
     await mkdir(path.join(root, ".capture-tmp"), { recursive: true });
     await writeFile(path.join(root, ".capture-tmp", "stale.tmp"), Buffer.from("stale"));
-    await store.open(root);
+    await store.open(root, root);
     assert.ok(await stat(orphanPath), "普通开库不触发文件清理");
     await store.reconcileSnapshotFiles();
     await assert.rejects(stat(orphanPath));
@@ -482,7 +437,7 @@ async function testLegacyScreenshotMigration(): Promise<void> {
   await mkdir(snapshots, { recursive: true });
   const snapshotPath = path.join(snapshots, "legacy.jpg");
   await writeFile(snapshotPath, Buffer.from("old-jpeg"));
-  const database = new DatabaseSync(path.join(root, "activity.sqlite"));
+  const database = new DatabaseSync(path.join(root, "agent.sqlite"));
   database.exec(`
     PRAGMA foreign_keys = ON;
     CREATE TABLE activity_sessions (
@@ -517,11 +472,10 @@ async function testLegacyScreenshotMigration(): Promise<void> {
 
   const store = new ActivityStore();
   try {
-    await store.open(root);
+    await store.open(root, root);
     const result = store.search("Legacy App");
-    assert.equal(result.length, 1);
-    assert.equal(result[0]?.source, "screenshot_fallback");
-    assert.equal(result[0]?.eventType, "fallback_capture");
+    assert.equal(result.length, 0);
+    assert.equal(store.getSessionDetail("legacy-session")?.snapshots.length, 1);
     assert.equal(store.snapshot().events, 0);
     assert.equal(store.snapshot().fallbackCaptures, 1);
     assert.equal(store.snapshot().storageBytes, 8);
@@ -537,7 +491,7 @@ async function testKeyBurstFirstTimestamp(): Promise<void> {
   const root = await mkdtemp(path.join(os.tmpdir(), "biny-activity-keyburst-"));
   const store = new ActivityStore();
   try {
-    await store.open(root);
+    await store.open(root, root);
     const sessionId = store.startSession("2026-08-25T10:00:00.000Z");
     store.recordEvent({
       sessionId,
@@ -561,10 +515,10 @@ async function testSessionClosePersistsDuration(): Promise<void> {
   const root = await mkdtemp(path.join(os.tmpdir(), "biny-activity-session-fields-"));
   const store = new ActivityStore();
   try {
-    await store.open(root);
+    await store.open(root, root);
     const sessionId = store.startSession("2026-08-25T10:00:00.000Z");
     store.endSession(sessionId, "2026-08-25T10:01:02.345Z");
-    const database = new DatabaseSync(path.join(root, "activity.sqlite"));
+    const database = new DatabaseSync(path.join(root, "agent.sqlite"));
     const row = database.prepare("SELECT typeof(started_at) AS started_type, typeof(ended_at) AS ended_type, duration_ms, updated_at FROM activity_sessions WHERE id = ?").get(sessionId) as {
       started_type: string;
       ended_type: string;
@@ -586,7 +540,7 @@ async function testStorageLimitKeepsEventSemantics(): Promise<void> {
   const root = await mkdtemp(path.join(os.tmpdir(), "biny-activity-limit-"));
   const store = new ActivityStore();
   try {
-    await store.open(root);
+    await store.open(root, root);
     const sessionId = store.startSession("2026-08-25T00:00:00.000Z");
     await store.recordFallbackCapture({
       sessionId,
@@ -629,8 +583,7 @@ async function testStorageLimitKeepsEventSemantics(): Promise<void> {
       }]
     });
     const result = store.search("Canvas App");
-    assert.equal(result.length, 1);
-    assert.equal(result[0]?.snapshotPath, undefined);
+    assert.equal(result.length, 0, "淘汰截图后 OCR 一起删除");
   } finally {
     await store.close();
     await rm(root, { recursive: true, force: true });
@@ -641,10 +594,10 @@ async function testStorageLimitEvictsColdBeforeOlderHot(): Promise<void> {
   const root = await mkdtemp(path.join(os.tmpdir(), "biny-activity-tier-order-"));
   const store = new ActivityStore();
   try {
-    await store.open(root);
+    await store.open(root, root);
     const now = new Date();
     const sessionId = store.startSession(now.toISOString());
-    const database = new DatabaseSync(path.join(root, "activity.sqlite"));
+    const database = new DatabaseSync(path.join(root, "agent.sqlite"));
     try {
       for (const [index, tier] of ["hot", "warm", "cold"].entries()) {
         await store.recordFallbackCapture({
@@ -653,14 +606,13 @@ async function testStorageLimitEvictsColdBeforeOlderHot(): Promise<void> {
           eventType: "fallback_capture", application: tier,
           jpeg: Buffer.alloc(500_000 - index * 100_000, 1)
         });
-        database.prepare(`UPDATE activity_snapshots SET storage_tier = ? WHERE event_id IN
-          (SELECT id FROM activity_events WHERE application = ?)`).run(tier, tier);
+        database.prepare("UPDATE activity_snapshots SET storage_tier = ? WHERE app_name = ?").run(tier, tier);
       }
       await store.rotateSnapshots(1, now);
       assert.equal(store.snapshot().storageBytes, 500_000);
-      assert.ok(store.search("hot")[0]?.snapshotPath, "即使热数据更旧，也先保留高质量热图");
-      assert.equal(store.search("warm")[0]?.snapshotPath, undefined);
-      assert.equal(store.search("cold")[0]?.snapshotPath, undefined);
+      const remaining = store.getSessionDetail(sessionId)!.snapshots;
+      assert.equal(remaining.length, 1);
+      assert.equal(remaining[0]?.storageTier, "hot", "优先淘汰 cold、warm");
     } finally {
       database.close();
     }
@@ -675,7 +627,7 @@ async function testBrowserTabUrlStructuredStorageAndSearch(): Promise<void> {
   const root = await mkdtemp(path.join(os.tmpdir(), "biny-activity-browser-"));
   const store = new ActivityStore();
   try {
-    await store.open(root);
+    await store.open(root, root);
     const sessionId = store.startSession("2026-08-26T00:00:00.000Z");
     const event = store.recordEvent({
       sessionId,
@@ -694,10 +646,10 @@ async function testBrowserTabUrlStructuredStorageAndSearch(): Promise<void> {
     assert.match(event.summary, /ChatGPT/u);
 
     // URL 与标签标题都进入 FTS 可搜索范围。
-    assert.equal(store.search("openai").length, 1);
-    assert.equal(store.search("design doc").length, 1);
-    assert.equal(store.search("chat.openai.com")[0]?.url, "https://chat.openai.com/c/abc-123");
-    assert.equal(store.search("https://chat.openai.com/c/abc-123").length, 1);
+    assert.equal(store.search("openai").length, 0);
+    assert.equal(store.search("design doc").length, 0);
+    assert.equal(store.getSessionDetail(sessionId)?.events[0]?.url, "https://chat.openai.com/c/abc-123");
+    assert.equal(store.search("https://chat.openai.com/c/abc-123").length, 0);
 
     const privateUrl = store.recordEvent({
       sessionId,
@@ -738,7 +690,7 @@ async function testBrowserTabUrlStructuredStorageAndSearch(): Promise<void> {
 
 async function testFtsRebuildIncludesBrowserUrl(): Promise<void> {
   const root = await mkdtemp(path.join(os.tmpdir(), "biny-activity-fts-rebuild-"));
-  const database = new DatabaseSync(path.join(root, "activity.sqlite"));
+  const database = new DatabaseSync(path.join(root, "agent.sqlite"));
   database.exec(`
     PRAGMA foreign_keys = ON;
     CREATE TABLE activity_sessions (
@@ -817,11 +769,10 @@ async function testFtsRebuildIncludesBrowserUrl(): Promise<void> {
 
   const store = new ActivityStore();
   try {
-    await store.open(root);
+    await store.open(root, root);
     // 旧库 FTS 缺 url 列：open 时自动重建索引，URL 进入可搜索范围。
-    const rows = store.search("openai");
-    assert.equal(rows.length, 1);
-    assert.equal(rows[0]?.url, "https://chat.openai.com/c/abc-123");
+    assert.deepEqual(store.search("openai"), []);
+    assert.equal(store.getSessionDetail("browser-session")?.events[0]?.url, "https://chat.openai.com/c/abc-123");
   } finally {
     await store.close();
     await rm(root, { recursive: true, force: true });
@@ -833,11 +784,11 @@ async function testRecordEventRollsBackWhenFtsInsertFails(): Promise<void> {
   const root = await mkdtemp(path.join(os.tmpdir(), "biny-activity-txn-"));
   const store = new ActivityStore();
   try {
-    await store.open(root);
+    await store.open(root, root);
     const sessionId = store.startSession("2026-08-26T00:00:00.000Z");
     // 用第二个连接拆掉 FTS 表，迫使 recordEvent 在事件行写入之后才失败。
-    const saboteur = new DatabaseSync(path.join(root, "activity.sqlite"));
-    saboteur.exec("DROP TABLE activity_fts;");
+    const saboteur = new DatabaseSync(path.join(root, "agent.sqlite"));
+    saboteur.exec("CREATE TRIGGER reject_event BEFORE INSERT ON activity_events BEGIN SELECT RAISE(ABORT, 'test insert failure'); END;");
     saboteur.close();
     assert.throws(
       () => store.recordEvent({
@@ -846,7 +797,7 @@ async function testRecordEventRollsBackWhenFtsInsertFails(): Promise<void> {
         eventType: "focus_changed",
         application: "Test App"
       }),
-      /activity_fts/u
+      /test insert failure/u
     );
     assert.equal(store.snapshot().events, 0, "事件行必须随事务回滚");
     assert.equal(store.snapshot().recentSessions[0]?.eventCount, 0, "session 计数必须随事务回滚");
@@ -860,7 +811,7 @@ async function testDailySummaryAggregation(): Promise<void> {
   const root = await mkdtemp(path.join(os.tmpdir(), "biny-activity-summary-"));
   const store = new ActivityStore();
   try {
-    await store.open(root);
+    await store.open(root, root);
     const startedAt = new Date(2026, 7, 28, 9, 0, 0).toISOString();
     const focusAt = new Date(2026, 7, 28, 10, 0, 0).toISOString();
     const endedAt = new Date(2026, 7, 28, 11, 0, 0).toISOString();
@@ -930,7 +881,7 @@ async function testDailySummarySkipsPlaceholderAnalyses(): Promise<void> {
   const root = await mkdtemp(path.join(os.tmpdir(), "biny-activity-summary-placeholders-"));
   const store = new ActivityStore();
   try {
-    await store.open(root);
+    await store.open(root, root);
     const sessionId = store.startSession("2026-08-28T09:00:00.000Z");
     store.endSession(sessionId, "2026-08-28T09:00:00.000Z");
     store.recordAnalysis({ ...makeAnalysis(sessionId), summary: "零星活动", title: "零星活动" });
@@ -958,7 +909,7 @@ async function testActivitySummaryNarrativePersistence(): Promise<void> {
   const root = await mkdtemp(path.join(os.tmpdir(), "biny-activity-summary-narrative-"));
   const store = new ActivityStore();
   try {
-    await store.open(root);
+    await store.open(root, root);
     const model: AgentModel = {
       provider: "test",
       modelId: "summary-model",
@@ -993,7 +944,7 @@ async function testBuildReportPersistsDailyNote(): Promise<void> {
   let writtenDate: string | undefined;
   let writtenContent: string | undefined;
   try {
-    await store.open(root);
+    await store.open(root, root);
     const sessionId = store.startSession("2026-08-28T09:00:00.000Z");
     store.endSession(sessionId, "2026-08-28T10:00:00.000Z");
     store.recordAnalysis({ ...makeAnalysis(sessionId, "完成日报聚合"), project: "biny", topics: ["日报聚合"] });
@@ -1004,9 +955,9 @@ async function testBuildReportPersistsDailyNote(): Promise<void> {
       activity: { ...defaultActivitySettings, outputDirectory: root }
     };
     const configStore = { load: async () => config } as AgentConfigStore;
-    const service = new ActivityRecorderService({
+    const service = new ActivityRecorderService({ agentDir: root,
       configStore,
-      sidecarPath: undefined,
+      inputMonitorPath: undefined,
       writeDailyNote: async (dateKey, content) => {
         writtenDate = dateKey;
         writtenContent = content;

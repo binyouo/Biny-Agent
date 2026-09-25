@@ -4,6 +4,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { ActivityNativeClient } from "../src/desktop/electron/main/ActivityNativeClient.js";
 import { ActivityStore } from "../src/activity/store.js";
 import { ActivityRecorderService } from "../src/desktop/electron/main/ActivityRecorderService.js";
 import { defaultConfig } from "../src/config/schema.js";
@@ -14,10 +15,10 @@ await testRecorderResumesAfterExternalClear();
 
 async function testRecorderResumesAfterExternalClear(): Promise<void> {
   const root = await mkdtemp(path.join(os.tmpdir(), "biny-activity-external-clear-"));
-  const sidecarPath = path.join(root, "sidecar.mjs");
+  const inputMonitorPath = path.join(root, "sidecar.mjs");
   const startsPath = path.join(root, "starts.jsonl");
   const triggerPath = path.join(root, "trigger");
-  await writeFile(sidecarPath, `#!${process.execPath}
+  await writeFile(inputMonitorPath, `#!${process.execPath}
 import { createInterface } from 'node:readline';
 import { appendFileSync, existsSync } from 'node:fs';
 const send = value => process.stdout.write(JSON.stringify(value) + '\\n');
@@ -42,14 +43,14 @@ createInterface({input:process.stdin}).on('line', line => {
 });
 `, { mode: 0o700 });
   const config = { ...defaultConfig, activity: { ...defaultActivitySettings, outputDirectory: path.join(root, "records") } };
-  const service = new ActivityRecorderService({ configStore: { load: async () => config } as AgentConfigStore, sidecarPath });
+  const service = new ActivityRecorderService({ agentDir: root, configStore: { load: async () => config } as AgentConfigStore, inputMonitorPath });
   const externalStore = new ActivityStore();
   let database: DatabaseSync | undefined;
   try {
     await service.initialize();
-    await externalStore.open(config.activity.outputDirectory);
-    database = new DatabaseSync(path.join(config.activity.outputDirectory, "activity.sqlite"));
-    const applications = (): string[] => (database!.prepare("SELECT application FROM activity_events").all() as Array<{ application: string }>).map((row) => row.application);
+    await externalStore.open(config.activity.outputDirectory, root);
+    database = new DatabaseSync(path.join(root, "agent.sqlite"));
+    const applications = (): string[] => (database!.prepare("SELECT app_name AS application FROM activity_events").all() as Array<{ application: string }>).map((row) => row.application);
     await waitFor(async () => applications().length === 1);
     const oldApplication = applications()[0];
     await externalStore.clear();
@@ -68,81 +69,89 @@ createInterface({input:process.stdin}).on('line', line => {
   }
 }
 
-for (const mode of ["success", "denied", "locked", "stopped", "restarted"] as const) {
-  const root = await mkdtemp(path.join(os.tmpdir(), "biny-activity-capture-fallback-"));
-  const sidecarPath = path.join(root, "sidecar.mjs");
-  const resultPath = path.join(root, "results.jsonl");
-  await writeFile(sidecarPath, `#!${process.execPath}
+// 主进程收到输入事件后调用独立截图 daemon 与 OCR，落入同一真实 SQLite。
+{
+  const root = await mkdtemp(path.join(os.tmpdir(), "biny-activity-native-stack-"));
+  const input = path.join(root, "activity-input-monitor");
+  await writeFile(input, `#!${process.execPath}
 import { createInterface } from 'node:readline';
-import { appendFileSync } from 'node:fs';
+import {existsSync} from 'node:fs';
 const send = value => process.stdout.write(JSON.stringify(value) + '\\n');
-const status = locked => send({type:'status',status:'running',screenRecordingGranted:${mode !== "denied"},accessibilityGranted:false,screenLocked:locked});
-createInterface({input:process.stdin}).on('line', line => {
-  const command = JSON.parse(line);
-  if (command.type === 'start') {
-    if (!command.desktopCaptureAvailable) process.exit(3);
-    status(false);
-    send({type:'desktop_capture',requestId:String(process.pid),maxWidth:160});
-    ${mode === "locked" ? "status(true);" : ""}
-  } else if (command.type === 'desktop_capture_result') {
-    appendFileSync(${JSON.stringify(resultPath)}, JSON.stringify(command) + '\\n');
-    if (command.imageBase64) send({type:'capture',occurredAt:new Date().toISOString(),application:'QA',jpegBase64:command.imageBase64,captureTrigger:'heartbeat'});
-  } else if (command.type === 'stop') process.exit(0);
+createInterface({input: process.stdin}).on('line', line => {
+ const command = JSON.parse(line);
+ if (command.type === 'stop') process.exit(0);
+ if (command.type === 'start') {
+  send({type:'status',status:'running',screenRecordingGranted:true,accessibilityGranted:true});
+  send({type:'event',eventType:'app_focus',occurredAt:new Date().toISOString(),application:'Editor'});
+  const timer=setInterval(()=>{if(existsSync(${JSON.stringify(path.join(root,'ocr-started'))})) {
+    clearInterval(timer);send({type:'event',eventType:'app_focus',occurredAt:new Date().toISOString(),application:'Browser'});send({type:'status',status:'running',screenRecordingGranted:false,accessibilityGranted:true});
+  }},10);
+ }
 });
-`, { mode: 0o700 });
-  let release: (() => void) | undefined;
-  let captureCalls = 0;
-  const config = { ...defaultConfig, activity: { ...defaultActivitySettings, outputDirectory: path.join(root, "records") } };
-  const service = new ActivityRecorderService({
-    configStore: { load: async () => config } as AgentConfigStore,
-    sidecarPath,
-    captureDesktopScreen: async (maxWidth) => {
-      assert.equal(maxWidth, 160);
-      captureCalls += 1;
-      if (mode !== "success" && captureCalls === 1) await new Promise<void>((resolve) => { release = resolve; });
-      return Buffer.from("local-fallback-image");
-    }
+`, {mode: 0o700});
+  await writeFile(path.join(root, "computer-use"), `#!${process.execPath}
+import { createServer } from 'node:net';
+import { writeFileSync } from 'node:fs';
+const server = createServer(socket => {
+ socket.on('data', data => {
+  const request = JSON.parse(data.toString());
+  writeFileSync(request.args.out, 'native-jpeg');
+  socket.write(JSON.stringify({id:request.id,ok:true,data:{path:request.args.out}}) + '\\n');
+ });
+});
+server.listen(process.argv[process.argv.indexOf('--socket')+1], () => console.log('ready'));
+`, {mode: 0o700});
+  await writeFile(path.join(root, "activity-ocr"), `#!${process.execPath}
+import {writeFileSync,existsSync} from 'node:fs';
+writeFileSync(${JSON.stringify(path.join(root,'ocr-started'))}, 'ready');
+const timer=setInterval(()=>{if(existsSync(${JSON.stringify(path.join(root,'ocr-release'))})) {clearInterval(timer);console.log('independent OCR evidence');}},10);
+`, {mode:0o700});
+  const config = { ...defaultConfig, activity: { ...defaultActivitySettings, outputDirectory: path.join(root, "records"), ocrEveryNFrames: 1 } };
+  const service = new ActivityRecorderService({ agentDir: root,
+    configStore: { load: async () => config } as AgentConfigStore, inputMonitorPath: input,
+    captureDesktopScreen: async () => { throw new Error("native should succeed"); },
+    encodeFrame: async jpeg => ({jpeg, width:2, height:1, pixels:Buffer.from([0,0,0,255,255,255,255,255])})
   });
-  const responses = async (): Promise<Array<{ imageBase64?: string; error?: string }>> => {
-    const text = await readFile(resultPath, "utf8").catch(() => "");
-    return text.trim() ? text.trim().split("\n").map((line) => JSON.parse(line)) : [];
-  };
+  const store = new ActivityStore();
   try {
     await service.initialize();
-    if (mode === "success") {
-      await waitFor(async () => service.snapshot().fallbackCaptures === 1);
-      assert.equal((await responses())[0]?.imageBase64, Buffer.from("local-fallback-image").toString("base64"));
-      assert.equal(captureCalls, 1);
-    } else if (mode === "denied") {
-      await waitFor(async () => (await responses()).length === 1);
-      assert.equal(captureCalls, 0, "无权限时不能调用备用截图后端");
-      assert.ok((await responses())[0]?.error);
-      assert.equal(service.snapshot().fallbackCaptures, 0);
-    } else {
-      await waitFor(async () => release !== undefined);
-      if (mode === "locked") {
-        await waitFor(async () => service.snapshot().screenLocked);
-        release!();
-        await waitFor(async () => (await responses()).length === 1);
-        assert.ok((await responses())[0]?.error);
-        assert.equal((await responses())[0]?.imageBase64, undefined);
-        assert.equal(service.snapshot().fallbackCaptures, 0);
-      } else {
-        await service.stop();
-        if (mode === "restarted") {
-          await service.refresh();
-          await waitFor(async () => service.snapshot().fallbackCaptures === 1);
-        }
-        release!();
-        await new Promise((resolve) => setTimeout(resolve, 20));
-        assert.equal((await responses()).length, mode === "restarted" ? 1 : 0, "旧采集器的响应不能送给新进程");
-      }
-    }
-  } finally {
-    release?.();
-    await service.stop();
-    await rm(root, { recursive: true, force: true });
-  }
+    await store.open(config.activity.outputDirectory, root);
+    await waitFor(async () => store.snapshot().events === 2);
+    await writeFile(path.join(root,"ocr-release"), "release");
+    await waitFor(async () => store.search("independent OCR").length === 1);
+    assert.equal(store.snapshot().events, 2, "截图不再创建占位事件");
+    assert.equal(store.snapshot().fallbackCaptures, 1);
+  } finally { await service.stop(); await store.close(); await rm(root, {recursive:true, force:true}); }
+}
+
+// 切换应用和锁屏必须先落盘上一段按键，不能合并跨应用输入或在锁屏后新建 session。
+{
+  const root = await mkdtemp(path.join(os.tmpdir(), "biny-activity-key-boundary-"));
+  const input = path.join(root, "activity-input-monitor");
+  await writeFile(input, `#!${process.execPath}
+import { createInterface } from 'node:readline';
+createInterface({input: process.stdin}).on('line', line => {
+ const command = JSON.parse(line);
+ if (command.type === 'stop') process.exit(0);
+ if (command.type === 'start') {
+  for (const [eventType, application] of [['keypress','App A'], ['app_focus','App B'], ['keypress','App B'], ['lock','App B']])
+   console.log(JSON.stringify({type:'event',eventType,application,occurredAt:new Date().toISOString(),inputEventCount:1}));
+ }
+});
+`, {mode: 0o700});
+  const config = { ...defaultConfig, activity: { ...defaultActivitySettings, outputDirectory: path.join(root, "records") } };
+  const service = new ActivityRecorderService({ agentDir: root,
+    configStore: { load: async () => config } as AgentConfigStore, inputMonitorPath: input });
+  let db: DatabaseSync | undefined;
+  try {
+    await service.initialize();
+    db = new DatabaseSync(path.join(root, "agent.sqlite"));
+    await waitFor(async () => Boolean(db!.prepare("SELECT id FROM activity_events WHERE kind = 'lock'").get()));
+    const keys = db.prepare("SELECT app_name, data FROM activity_events WHERE kind = 'keypress' ORDER BY rowid").all();
+    assert.deepEqual(keys.map(row => row.app_name), ['App A', 'App B']);
+    assert.deepEqual(keys.map(row => JSON.parse(String(row.data)).count), [1, 1]);
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM activity_sessions").get()!.n, 1);
+  } finally { await service.stop(); db?.close(); await rm(root, {recursive:true, force:true}); }
 }
 
 async function waitFor(predicate: () => Promise<boolean>): Promise<void> {
@@ -151,4 +160,41 @@ async function waitFor(predicate: () => Promise<boolean>): Promise<void> {
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
   assert.fail("备用截图协议未到达预期状态");
+}
+
+// 原生二进制缺失时 capture 可降级，随后停止不能等待一个永远不会发出 exit 的 spawn。
+{
+  const root = await mkdtemp(path.join(os.tmpdir(), "biny-activity-missing-native-"));
+  const native = new ActivityNativeClient(root, root);
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await assert.rejects(native.capture(2560, 55), { code: "ENOENT" });
+    await Promise.race([
+      native.stop(),
+      new Promise<never>((_, reject) => { timeout = setTimeout(() => reject(new Error("停止缺失的 daemon 超时")), 1500); })
+    ]);
+  } finally { clearTimeout(timeout); await rm(root, {recursive:true, force:true}); }
+}
+
+// 连续输入不等待 typing pause：第 40 个键立刻成为一条持久事件。
+{
+ const root=await mkdtemp(path.join(os.tmpdir(),'biny-key-batch-'));
+ const input=path.join(root,'input');
+ await writeFile(input, `#!${process.execPath}
+import {createInterface} from 'node:readline';
+createInterface({input:process.stdin}).on('line',line=>{const c=JSON.parse(line);if(c.type==='stop')process.exit(0);if(c.type==='start')for(let i=0;i<45;i++)console.log(JSON.stringify({type:'event',eventType:'keypress',occurredAt:new Date().toISOString(),application:'Editor',inputEventCount:1}));});
+`,{mode:0o700});
+ const config={...defaultConfig,activity:{...defaultActivitySettings,outputDirectory:path.join(root,'records')}};
+ const service=new ActivityRecorderService({agentDir:root,configStore:{load:async()=>config} as AgentConfigStore,inputMonitorPath:input});
+ let db:DatabaseSync|undefined;
+ try {await service.initialize();db=new DatabaseSync(path.join(root,'agent.sqlite'));
+ await waitFor(async()=>Boolean(db!.prepare('SELECT id FROM activity_events LIMIT 1').get()));
+ const rows=db.prepare('SELECT data FROM activity_events ORDER BY rowid').all();
+ assert.equal(JSON.parse(String(rows[0]!.data)).count,40);
+ service.handlePowerEvent('suspend');
+ await waitFor(async()=>Boolean(db!.prepare("SELECT id FROM activity_events WHERE kind='lock'").get()));
+ assert.equal(service.snapshot().currentSessionId,undefined);
+ service.handlePowerEvent('resume');
+ await waitFor(async()=>Boolean(db!.prepare("SELECT id FROM activity_events WHERE kind='unlock'").get()));
+ }finally{await service.stop();db?.close();await rm(root,{recursive:true,force:true});}
 }

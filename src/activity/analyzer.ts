@@ -1,6 +1,6 @@
 /**
  * Activity 分析层：把单个已结束 session 的脱敏事件与 OCR 投影归纳成结构化 SessionAnalysis 落库，
- * 并把指定日期的分析结果聚合成一份确定性的「打工日记」。
+ * 并把指定日期的分析结果聚合成可追溯的工作日记骨架。
  *
  * 模型输入边界：
  * - 送给分析模型的只有 store.listSessionEventSummaries 提供的时间、应用、事件摘要和已脱敏
@@ -185,6 +185,8 @@ export interface ActivityReportResult {
   startIso: string;
   endIso: string;
   markdown: string;
+  /** 有模型叙事时记录来源；缺失表示确定性的结构化骨架。 */
+  narrativeModel?: string;
   /** 范围内可入报告的分析行数（已过滤零星/失败占位）。 */
   sessionCount: number;
   /** 本次调用新分析（含零星占位）的 session 数。 */
@@ -300,9 +302,6 @@ export async function analyzeActivitySession(
     if (existing.analysisStatus === "failed") {
       return { status: "error", error: "LLM did not return parseable JSON" };
     }
-    if (existing.analysisStatus !== "not_worth") {
-      await projectActivityAnalysis(deps, existing, session);
-    }
     return { status: "analyzed", analysis: existing, cached: true };
   }
   const now = deps.now?.() ?? new Date();
@@ -404,45 +403,33 @@ export async function analyzeActivitySession(
     sourceEventCount: semanticEventCount,
     inputHash
   };
-  // 候选与分析正文在同一行原子落库；沉淀失败只重试旁路，不重新请求分析模型。
-  store.recordAnalysis(analysis, memoryCandidates);
-  if (parsed.worth) await projectActivityAnalysis(deps, analysis, session);
+  store.recordAnalysis(analysis);
+  if (parsed.worth) await projectActivityAnalysis(deps, analysis, session, memoryCandidates);
   deps.signal?.throwIfAborted();
   return { status: "analyzed", analysis, cached: false };
 }
 
-async function projectActivityAnalysis(deps: ActivityAnalyzerDeps, analysis: ActivitySessionAnalysis, session: ActivityPendingAnalysisSession): Promise<void> {
+/** 分析提交后直接通知消费者；写入失败记录日志，不保存重放队列。 */
+async function projectActivityAnalysis(deps: ActivityAnalyzerDeps, analysis: ActivitySessionAnalysis,
+  session: ActivityPendingAnalysisSession, memoryCandidates: ActivityMemoryCandidate[]): Promise<void> {
   await deps.checkpoint?.();
   deps.signal?.throwIfAborted();
-  const pending = deps.store.getPendingAnalysisProjection(analysis);
-  // 未关联项目或暂时无法投影的旧候选不能永久占满首批，下一轮先检查其它候选。
-  deps.store.markAnalysisProjectionChecked(analysis);
-  if (pending.memoryCandidates.length && deps.writeMemories && deps.model) {
+  if (memoryCandidates.length && deps.writeMemories && deps.model) {
     try {
-      await deps.writeMemories(pending.memoryCandidates, {
-        sessionId: session.id,
-        analyzedAt: analysis.analyzedAt,
-        project: analysis.project,
-        model: deps.model,
-        signal: deps.signal,
-        checkpoint: deps.checkpoint
+      await deps.writeMemories(memoryCandidates, {
+        sessionId: session.id, analyzedAt: analysis.analyzedAt, project: analysis.project,
+        model: deps.model, signal: deps.signal, checkpoint: deps.checkpoint
       });
-      await deps.checkpoint?.();
-      deps.signal?.throwIfAborted();
-      deps.store.completeAnalysisProjection(analysis.sessionId, "memory", pending.revision);
     } catch {
-      // 保留候选，等后台下一轮恢复；下游确定性去重处理写入成功但未确认的情况。
+      console.error("[ActivityAnalyzer] memory write failed", session.id);
     }
   }
   deps.signal?.throwIfAborted();
-  if (pending.crystalPending && deps.onAnalyzed) {
+  if (deps.onAnalyzed) {
     try {
-      await deps.checkpoint?.();
       await deps.onAnalyzed(analysis, session, deps.signal);
-      deps.signal?.throwIfAborted();
-      deps.store.completeAnalysisProjection(analysis.sessionId, "crystal", pending.revision);
     } catch {
-      // 结晶按 anchor 去重；中断只重试这个未确认的投影。
+      console.error("[ActivityAnalyzer] Crystal write failed", session.id);
     }
   }
   deps.signal?.throwIfAborted();
@@ -455,10 +442,6 @@ export async function analyzePendingActivitySessions(
 ): Promise<ActivitySweepResult> {
   await deps.checkpoint?.();
   deps.signal?.throwIfAborted();
-  for (const analysis of deps.store.listAnalysesPendingProjection(limit)) {
-    const session = deps.store.getEndedSession(analysis.sessionId);
-    if (session) await projectActivityAnalysis(deps, analysis, session);
-  }
   deps.store.mergePendingAdjacent();
   const pending = deps.store.listSessionsPendingAnalysis(limit);
   const result: ActivitySweepResult = { evaluated: pending.length, analyzed: 0, trivial: 0, blocked: 0, errors: 0 };
@@ -482,26 +465,29 @@ export async function analyzePendingActivitySessions(
 
 /**
  * 生成指定日期的工作日记。先补分析该日期内已结束但还没分析的 session（范围外的积压由
- * 周期 sweep 处理），再从分析表读取并按项目分组渲染成确定性 Markdown——不再过一次模型。
+ * 周期 sweep 处理），再从分析表读取并按项目分组渲染成确定性骨架；叙事由 reportNarrative 单独负责。
  */
 export async function buildActivityReport(
   deps: ActivityAnalyzerDeps,
-  date: string
+  date: string,
+  options: { force?: boolean } = {}
 ): Promise<ActivityReportResult> {
   await deps.checkpoint?.();
   deps.signal?.throwIfAborted();
   const now = deps.now?.() ?? new Date();
   const range = resolveActivityReportRange(date, now);
-  const pending = deps.store.listSessionsPendingAnalysisForDateRange(range.startIso, range.endIso, 200);
+  const pendingIds = options.force
+    ? deps.store.listEndedSessionIdsForDateRange(range.startIso, range.endIso, 200)
+    : deps.store.listSessionsPendingAnalysisForDateRange(range.startIso, range.endIso, 200).map((session) => session.id);
 
   let analyzedNow = 0;
   let pendingModel = 0;
   let blocked = false;
   let message: string | undefined;
   if (deps.analyzePending !== false) {
-    for (const session of pending) {
+    for (const sessionId of pendingIds) {
       deps.signal?.throwIfAborted();
-      const outcome = await analyzeActivitySession(deps, session.id);
+      const outcome = await analyzeActivitySession(deps, sessionId, options.force === true);
       if (outcome.status === "analyzed" || outcome.status === "trivial") analyzedNow += 1;
       else if (outcome.status === "skipped" && outcome.reason === "no_model") {
         blocked = true;
@@ -534,7 +520,7 @@ export async function buildActivityReport(
 
 /**
  * 把日报结果和未完成原因渲染成工具/CLI 都能直接输出的文本。
- * 这里不重新调用模型，避免不同入口对同一天产生两套叙事。
+ * 这里仅输出已经选定的骨架或叙事，避免不同入口再改写一次。
  */
 export function formatActivityReportResult(result: ActivityReportResult): string {
   const notes: string[] = [];
@@ -583,7 +569,7 @@ export function renderActivityReport(rows: readonly ActivityAnalysisReportRow[],
 }
 
 /**
- * 解析 activity_report 的日期参数。`today`/`yesterday` 相对当前本地时间，`YYYY-MM-DD`
+ * 解析 activity report 的日期参数。`today`/`yesterday` 相对当前本地时间，`YYYY-MM-DD`
  * 按本地日界解析；start/end 转为 UTC ISO，存储层会将其转换为 epoch-ms 查询参数。
  */
 export function resolveActivityReportRange(date: string, now: Date = new Date()): ActivityReportRange {

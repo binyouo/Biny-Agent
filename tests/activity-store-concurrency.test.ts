@@ -11,8 +11,8 @@ const root = await mkdtemp(path.join(os.tmpdir(), "biny-activity-store-concurren
 const writer = new ActivityStore();
 const cleaner = new ActivityStore();
 try {
-  await writer.open(root);
-  await cleaner.open(root);
+  await writer.open(root, root);
+  await cleaner.open(root, root);
   const sessionId = writer.startSession(new Date().toISOString());
   const captures = Array.from({ length: 20 }, (_, index) => writer.recordFallbackCapture({
     sessionId, occurredAt: new Date(Date.now() + index).toISOString(), eventType: "fallback_capture",
@@ -20,7 +20,7 @@ try {
   }));
   const readers = Array.from({ length: 10 }, async () => {
     const reader = new ActivityStore();
-    try { await reader.open(root); reader.snapshot(); await reader.reconcileSnapshotFiles(); }
+    try { await reader.open(root, root); reader.snapshot(); await reader.reconcileSnapshotFiles(); }
     finally { await reader.close(); }
   });
   const stored = await Promise.all(captures);
@@ -64,7 +64,7 @@ process.exit(0);
       owner.once("error", reject);
       owner.once("exit", () => reject(new Error("Lock owner exited before acquiring lock")));
     });
-    await reader.open(root);
+    await reader.open(root, root);
     let cleaned = false;
     const cleaning = reader.reconcileSnapshotFiles().then(() => { cleaned = true; });
     await new Promise((resolve) => setTimeout(resolve, 75));

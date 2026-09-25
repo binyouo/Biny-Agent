@@ -23,7 +23,7 @@ Use this skill for a **day-level or multi-day** question about the user's own ac
 
 - "What was I just doing?" → use `biny activity digest` with an appropriate lookback window.
 - "Find the activity about this code/project" → use `biny activity search <query>`.
-- "Show recent or specific sessions" → use `biny activity sessions`, optionally with `--since` or `--limit`.
+- "Show recent or specific sessions" → use `biny activity sessions [limit]`, optionally with `--since`.
 - A request about the daily note itself → use `biny diary show [date]`.
 
 ## How to use
@@ -41,10 +41,10 @@ biny activity report yesterday
 biny activity report 2026-09-10
 
 # Recent timeline instead of a day-level journal
-biny activity digest --lookback-min 120
+biny activity digest --lookback 120
 ```
 
-When the user asks a follow-up about one project or event, drill down with `biny activity search` (add `--semantic` when keyword search misses meaning-based recalls), `biny activity sessions`, or `biny activity show <session-id>` for one session's events, snapshots and analysis, instead of regenerating the whole report.
+When the user asks a follow-up about one project or event, drill down with `biny activity search` (use `biny activity search semantic <query>` when keyword search misses meaning-based recalls), `biny activity sessions`, or `biny activity show <session-id>` for one session's events, snapshots and analysis, instead of regenerating the whole report.
 
 ## Output rules
 
