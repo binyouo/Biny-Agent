@@ -1,14 +1,8 @@
 #!/usr/bin/env python3
-"""按 docs/evaluation-plan.md 的状态模型，把一个 harbor job 的失败分流。
+"""按 verifier reward 计 Pass@1，并独立保留 Harbor 执行状态。
 
-状态定义（与 evaluation-plan.md 对齐）：
-  completed       verifier 给出确定 reward=1，且没有冲突记录
-  subject_failed  verifier 正常跑完但断言没过
-  timeout         Agent 达到外层超时，不混入模型断言失败
-  infra_failed    verifier / 容器 / 外部依赖挂了，测试根本没跑出结果
-  cancelled       job/trial 被人为中止，不混入模型分母
-  ambiguous       同一任务同时出现 reward、超时或运行时异常等冲突记录
-  indeterminate   数据缺失，无法判定
+超时不覆盖 verifier 结果：reward=1 仍是 pass，reward=0 仍是 fail；状态记录
+Agent 是否在预算内结束。只有缺少可信 verifier reward 的 cell 不进入 Pass@1。
 
 用法: python3 classify_job.py <job_dir> [<job_dir> ...]
 """
@@ -135,18 +129,34 @@ def main():
             td = os.path.join(job, t)
             reward, ran, signs, verifier_signs = classify_task(td)
             recorded = b in passed or b in failed or b in tmo or b in rte or b in cancelled
-            result_conflict = sum((b in passed, b in failed, b in tmo, b in rte, b in cancelled)) > 1
+            reward_conflict = b in passed and b in failed
+            if reward is None and not reward_conflict:
+                if b in passed:
+                    reward = 1.0
+                elif b in failed:
+                    reward = 0.0
+            elif reward is not None and (
+                (b in passed and reward != 1.0) or (b in failed and reward != 0.0)
+            ):
+                reward_conflict = True
+
+            if reward_conflict or verifier_signs or reward not in (0.0, 1.0):
+                score = "unscored"
+            else:
+                score = "pass" if reward == 1.0 else "fail"
             timeout_sign = any("超时" in sign for sign in signs)
-            # Agent 超时/运行时异常后，Harbor 仍可能继续执行 verifier 并写 reward=0；
-            # 这个 0 是失败后果，不是独立的 subject verdict，不能把它误报为 ambiguous。
-            if (b in tmo or timeout_sign) and b not in passed:
-                st, why = "timeout", "harness/agent 外层命令执行超时；后续 verifier reward 不计入模型断言失败"
+            if reward_conflict:
+                st, why = "ambiguous", "同一 task 的 verifier reward 记录互相冲突"
+            elif b in tmo or timeout_sign:
+                st = "timeout"
+                why = (
+                    "Agent 达到时限；verifier reward=%s，按 reward 计分"
+                    % ("缺失" if reward is None else f"{reward:g}")
+                )
             elif b in rte:
                 st, why = "infra_failed", "；".join(signs) or "运行时异常"
             elif b in cancelled:
                 st, why = "cancelled", "job/trial 被中止（不计入模型断言失败）"
-            elif result_conflict:
-                st, why = "ambiguous", "result.json 同时记录互相冲突的终态"
             elif verifier_signs:
                 st, why = "infra_failed", "；".join(verifier_signs)
             elif signs and (
@@ -154,27 +164,58 @@ def main():
                 or any("provider" in sign or "流" in sign for sign in signs)
             ):
                 st, why = "infra_failed", "；".join(signs)
-            elif b in tmo:
-                st, why = "timeout", "agent 超时（不计入模型断言失败）"
-            elif b in passed or (reward == 1.0):
+            elif score == "pass":
                 st, why = "completed", ""
+            elif score == "fail":
+                st, why = "subject_failed", "verifier reward=0"
             elif not os.path.exists(os.path.join(td, "verifier", "reward.txt")) and not recorded:
                 st, why = "indeterminate", "无 reward 且无异常记录（可能仍在跑）"
             else:
-                st, why = "subject_failed", "verifier 正常，断言未过"
+                st, why = "indeterminate", "没有可信 verifier reward"
             overall[st] += 1
             if st == "infra_failed":
                 for s in signs:
                     infra_reasons[s] += 1
-            row = (b, st, why)
+            row = {"task": b, "status": st, "reward": reward, "score": score, "reason": why}
             rows.append(row)
             job_rows.append(row)
 
         # result.json 可能已有任务记录，但 Harbor 因异常/取消没有留下 task 目录。
         # 这类任务不能静默从最终报告中消失。
         for b in sorted((passed | failed | tmo | rte | cancelled) - seen):
-            overall["indeterminate"] += 1
-            row = (b, "indeterminate", "result.json 有记录但缺少 task 目录")
+            reward_conflict = b in passed and b in failed
+            if reward_conflict:
+                reward = None
+            elif b in passed:
+                reward = 1.0
+            elif b in failed:
+                reward = 0.0
+            else:
+                reward = None
+            score = "unscored" if reward_conflict or reward is None else (
+                "pass" if reward == 1.0 else "fail"
+            )
+            if reward_conflict:
+                status = "ambiguous"
+            elif b in tmo:
+                status = "timeout"
+            elif b in cancelled:
+                status = "cancelled"
+            elif b in rte:
+                status = "infra_failed"
+            else:
+                status = "indeterminate"
+            overall[status] += 1
+            row = {
+                "task": b,
+                "status": status,
+                "reward": reward,
+                "score": score,
+                "reason": (
+                    "result.json 有记录但缺少 task 目录；verifier reward=%s"
+                    % ("缺失" if reward is None else f"{reward:g}")
+                ),
+            }
             rows.append(row)
             job_rows.append(row)
 
@@ -187,7 +228,7 @@ def main():
             print("警告：result.json 尚未确认 job 完成；本次分类仅供诊断，不应作为最终报告。")
 
     print("=" * 74)
-    print("状态分布")
+    print("执行状态分布")
     print("=" * 74)
     tot = sum(overall.values())
     for k in ("completed", "subject_failed", "timeout", "infra_failed", "cancelled", "ambiguous", "indeterminate"):
@@ -195,21 +236,29 @@ def main():
         print("  %-16s %3d  %5.1f%%" % (k, n, (n / tot * 100) if tot else 0))
     print("  %-16s %3d" % ("总计", tot))
 
-    model_outcomes = sum(
-        overall[status]
-        for status in ("completed", "subject_failed", "timeout", "ambiguous")
-    )
-    if model_outcomes:
+    scored_rows = [row for row in rows if row["score"] in {"pass", "fail"}]
+    passed_count = sum(row["score"] == "pass" for row in scored_rows)
+    failed_count = sum(row["score"] == "fail" for row in scored_rows)
+    if scored_rows:
         print(
-            "\n排除基建后的执行通过率（超时与冲突按未通过）: %d/%d = %.1f%%"
+            "\n官方 verifier Pass@1: %d/%d = %.1f%%"
             % (
-                overall["completed"],
-                model_outcomes,
-                overall["completed"] / model_outcomes * 100,
+                passed_count,
+                len(scored_rows),
+                passed_count / len(scored_rows) * 100,
             )
         )
+    print(
+        "verifier 计分: pass=%d fail=%d unscored=%d"
+        % (passed_count, failed_count, len(rows) - len(scored_rows))
+    )
+    timeout_passes = sum(
+        row["status"] == "timeout" and row["score"] == "pass" for row in rows
+    )
+    if timeout_passes:
+        print("超时但 verifier 通过: %d（计入 Pass@1）" % timeout_passes)
     known = tot - overall["indeterminate"]
-    print("coverage（有明确分类的比例）: %.1f%%" % ((known / tot * 100) if tot else 0))
+    print("执行状态 coverage（有明确分类的比例）: %.1f%%" % ((known / tot * 100) if tot else 0))
 
     if infra_reasons:
         print("\n基础设施失败原因分布")
@@ -217,26 +266,26 @@ def main():
             print("  %-34s %d" % (k, v))
 
     print("\ninfra_failed 明细")
-    for b, st, why in rows:
-        if st == "infra_failed":
-            print("  %-44s %s" % (b, why))
+    for row in rows:
+        if row["status"] == "infra_failed":
+            print("  %-44s %s" % (row["task"], row["reason"]))
     print("\nindeterminate 明细")
-    for b, st, why in rows:
-        if st == "indeterminate":
-            print("  %-44s %s" % (b, why))
+    for row in rows:
+        if row["status"] == "indeterminate":
+            print("  %-44s %s" % (row["task"], row["reason"]))
 
     print("\ncancelled 明细")
-    for b, st, why in rows:
-        if st == "cancelled":
-            print("  %-44s %s" % (b, why))
+    for row in rows:
+        if row["status"] == "cancelled":
+            print("  %-44s %s" % (row["task"], row["reason"]))
 
     print("\nambiguous 明细")
-    for b, st, why in rows:
-        if st == "ambiguous":
-            print("  %-44s %s" % (b, why))
+    for row in rows:
+        if row["status"] == "ambiguous":
+            print("  %-44s %s" % (row["task"], row["reason"]))
 
     out = os.path.join(jobs[0].rstrip("/"), "_status.json")
-    json.dump([{"task": b, "status": s, "reason": w} for b, s, w in rows], open(out, "w"), indent=2, ensure_ascii=False)
+    json.dump(rows, open(out, "w"), indent=2, ensure_ascii=False)
     print("\n明细 ->", out)
 
 

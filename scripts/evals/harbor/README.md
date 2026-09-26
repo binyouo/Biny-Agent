@@ -70,7 +70,7 @@ nohup ./rerun-failures.sh <主批次pid> <主批次目录> <补跑job名> deepse
 - 通过 `biny run --json` 执行任务，让非 `completed` 终态也交给 Terminal-Bench verifier 检查工作区；模型终态与模型调用异常仍按各自结果记录，Harbor 的硬超时仍独立生效。
 - Harbor 默认每题运行 1 次（`BINY_EVAL_ATTEMPTS` 可覆写）；agent timeout multiplier 默认 1，沿用各任务 `task.toml` 的时限（`BINY_EVAL_AGENT_TIMEOUT_MULTIPLIER` 可覆写）；自动重试保持 0。复测结果独立记录，不并入旧的 pass@1。
 - Biny 的硬步骤上限为 1024，工具调用上限设为 schema 允许的最大值 65,536；软步骤提示为 256。工具调用不单独限次，由任务时限控制实际运行长度。
-- `classify_job.py` 的执行通过率用于失败排查：时间超限和冲突终态按未通过计，基础设施失败、取消和无法判定单独排除；失败子集的结果不能当作全量 TB2.1 pass@1。
+- `classify_job.py` 将官方 verifier Pass@1 与执行状态分开报告：可信 reward=1/0 决定通过/失败，超时仍单独标记；缺少可信 reward 的 trial 不进入分母。`merge_results.py` 也只按 verifier reward 汇总，异常状态另列作诊断。
 - 每个 trial 在 `agent/biny-evaluation.json` 保存适配器版本、有效 context、命令 timeout 来源和脱敏后的 Biny 配置。配置保留 `apiKeyEnv` 变量名，endpoint 的 userinfo、query 和 fragment 会被移除。
 - 旧 job 没有 `biny-evaluation.json` 时，不能从 Harbor 的 trial config 推断 Biny 实际收到的 `contextWindow`；应标为配置未证实，不与已按模型上限配置的结果直接比较。
 

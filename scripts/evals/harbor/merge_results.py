@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
-"""把多轮 harbor 跑批合并成一份可复现的 Pass@1 汇总。
+"""按官方 verifier reward 合并多轮 Harbor 跑批，生成可复现的 Pass@1 汇总。
 
 背景：09-16 那份 dashboard 上的 "44 / 89 = 49.44%" 是多轮跑批取并集算出来的，
 但当时没有留下脚本，事后谁都复现不出来。这个脚本把口径固定下来。
+
+Verifier reward 是唯一 pass/fail 来源；执行异常单独显示。若 Agent 超时但 Harbor 仍取得
+可信 verifier reward，该 reward 仍参与通过率。没有 reward 的 trial 不会被脚本虚构成 pass/fail。
 
 两种口径，别混着用：
   --mode union    某题只要在**任意一轮**通过就算通过（跨轮取最好成绩）。

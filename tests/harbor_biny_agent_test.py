@@ -449,14 +449,19 @@ class HarborClassificationTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             statuses = json.loads((job / "_status.json").read_text(encoding="utf-8"))
 
-        by_task = {row["task"].split("__")[0]: row["status"] for row in statuses}
+        rows_by_task = {row["task"].split("__")[0]: row for row in statuses}
+        by_task = {task: row["status"] for task, row in rows_by_task.items()}
         self.assertEqual(by_task["mteb-leaderboard"], "infra_failed")
         self.assertEqual(by_task["qemu-alpine-ssh"], "infra_failed")
         self.assertEqual(by_task["install-windows-3.11"], "subject_failed")
         self.assertEqual(by_task["compile-compcert"], "timeout")
+        self.assertEqual(rows_by_task["compile-compcert"]["reward"], 0.0)
+        self.assertEqual(rows_by_task["compile-compcert"]["score"], "fail")
         self.assertEqual(by_task["cobol-modernization"], "completed")
-        self.assertEqual(by_task["regex-chess"], "ambiguous")
-        self.assertIn("排除基建后的执行通过率（超时与冲突按未通过）: 1/4", result.stdout)
+        self.assertEqual(by_task["regex-chess"], "timeout")
+        self.assertEqual(rows_by_task["regex-chess"]["reward"], 1.0)
+        self.assertEqual(rows_by_task["regex-chess"]["score"], "pass")
+        self.assertIn("官方 verifier Pass@1: 2/4 = 50.0%", result.stdout)
 
 
 class AgentExecutionTests(unittest.IsolatedAsyncioTestCase):
