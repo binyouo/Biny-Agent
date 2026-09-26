@@ -1,7 +1,7 @@
 /** 自动压缩设置分页：触发阈值、保留策略与摘要模型，统一走设置草稿，保存时进入主进程事务。 */
 import { useEffect, useState } from "react";
 import type { DesktopCompactionSettings } from "../../../../protocol.js";
-import { SettingsSwitch } from "./SettingsSwitch.js";
+import { SettingsCheckbox } from "./SettingsCheckbox.js";
 import { useSettingsDraft } from "./SettingsDraftContext.js";
 import { SettingsModelPicker } from "./SettingsModelPicker.js";
 import { modelPickerGroups } from "./settingsModelPickerData.js";
@@ -64,7 +64,8 @@ export function SettingsCompaction(): React.JSX.Element {
   return (
     <div className="settings-sections compaction-settings">
       <section id="compaction-enable" tabIndex={-1}>
-        <SettingsSwitch checked={compaction.enabled} detail="上下文接近上限时总结历史；关闭后需手动压缩。" label="自动压缩" onChange={(enabled) => update({ enabled })} />
+        <h3>自动压缩</h3>
+        <SettingsCheckbox checked={compaction.enabled} detail="上下文接近上限时总结历史；关闭后需手动压缩。" label="启用自动压缩" onChange={(enabled) => update({ enabled })} />
         <label className="compaction-threshold-field">
           <span><strong>触发阈值</strong><em>{percent}%</em></span>
           <input aria-label="压缩阈值" disabled={!compaction.enabled} max={95} min={50} onChange={(event) => update({ triggerPercent: Number(event.target.value) / 100 })} style={{ "--range-progress": thresholdProgress } as React.CSSProperties} type="range" value={percent} />

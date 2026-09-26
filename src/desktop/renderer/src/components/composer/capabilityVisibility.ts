@@ -24,6 +24,7 @@ const TOOL_ORDER = [
   "Glob", "Grep", "Read", "Edit", "Write", "NotebookEdit",
   "Bash", "BashOutput", "KillShell",
   "BrowserOpen", "BrowserReadDom", "BrowserClick", "BrowserType", "BrowserPress",
+  "ChromeRelayStatus", "ChromeRelayListTabs", "ChromeRelayRead", "ChromeRelayNavigate", "ChromeRelayClick", "ChromeRelayType", "ChromeRelayPress",
   "WebFetch", "WebSearch",
   "Task", "TodoWrite", "Skill", "ToolSearch"
 ];

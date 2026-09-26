@@ -16,6 +16,7 @@ interface CopyButtonProps {
   resolveValue?: () => string;
   /** 图标旁展示文字标签（复制成功变为「已复制」）。 */
   showLabel?: boolean;
+  showTooltip?: boolean;
 }
 
 export function CopyButton({
@@ -24,7 +25,8 @@ export function CopyButton({
   className = "copy-button",
   size = 12,
   resolveValue,
-  showLabel = false
+  showLabel = false,
+  showTooltip = true
 }: CopyButtonProps): React.JSX.Element {
   const [copied, setCopied] = useState(false);
   return (
@@ -40,7 +42,7 @@ export function CopyButton({
           window.setTimeout(() => setCopied(false), 1_200);
         });
       }}
-      title={copied ? "已复制" : label}
+      title={showTooltip ? copied ? "已复制" : label : undefined}
       type="button"
     >
       <Icon name={copied ? "check" : "copy"} size={size} />

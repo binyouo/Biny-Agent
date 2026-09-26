@@ -9,7 +9,7 @@
 import { permissionPresentation } from "../../../permission/presentation.js";
 import { redactSecrets } from "../../../utils/secrets.js";
 import path from "node:path";
-import { app, BrowserWindow, dialog, globalShortcut, Menu, nativeImage, net, Notification, powerMonitor, shell, Tray } from "electron";
+import { app, BrowserWindow, dialog, globalShortcut, Menu, nativeImage, net, Notification, powerMonitor, shell, systemPreferences, Tray } from "electron";
 import type { DesktopBootstrap, DesktopSessionHandoff } from "../../protocol.js";
 import { desktopIpc } from "../../protocol.js";
 import { DesktopAgentManager } from "./DesktopAgentManager.js";
@@ -33,7 +33,9 @@ import { createActivityMemoryPipeline } from "../../../activity/memoryPipeline.j
 import { startActivityHttpEndpoint } from "../../../activity/httpEndpoint.js";
 import { formatActivityReportResult } from "../../../activity/analyzer.js";
 import type { ActivityServiceState } from "../../../activity/types.js";
+import { DesktopTemporalMemoryService } from "../../temporalMemoryService.js";
 import { registerDesktopIpc } from "./ipc.js";
+import { StaticPreviewServer } from "./StaticPreviewServer.js";
 import { installApplicationMenu } from "./menu.js";
 import { activityTrayItems } from "./activityTrayMenu.js";
 import { createDesktopActivityHttpDependencies } from "./activityHttpApi.js";
@@ -150,6 +152,9 @@ async function startDesktopApplication(): Promise<void> {
     () => agents.assertNoRunningTasks("任务运行期间不能修改 Cookie 或驱动浏览器。")
   );
   const browserAutomation = await browser.startAutomationServer(path.join(desktopRoot, "browser-control.sock"));
+  await browser.startRelay().catch((error: unknown) => {
+    console.warn("[BrowserRelay]", redactSecrets(error instanceof Error ? error.message : String(error)));
+  });
   const agents = new DesktopAgentManager(state, projects, configStore, (projectId, update, meta) => {
     broadcastToWindows(desktopIpc.event, { projectId, ...update, ...meta });
     const event = update.event;
@@ -190,8 +195,7 @@ async function startDesktopApplication(): Promise<void> {
     resolveWorkspace: async (projectName) => resolveActivityProject(projectName, state.projects())?.path,
     skipUnknownWorkspace: true,
     indexEntry: async (entry) => await agents.indexActivityMemoryEntry(entry),
-    findSimilarEntries: async (query, options) => await agents.findMemorySimilarEntries(query, options),
-    requireSemantic: false
+    findSimilarEntries: async (query, options) => await agents.findMemorySimilarEntries(query, options)
   });
   const activity = new ActivityRecorderService({
     configStore,
@@ -216,6 +220,7 @@ async function startDesktopApplication(): Promise<void> {
   powerMonitor.on("suspend", () => activity.handlePowerEvent("suspend"));
   powerMonitor.on("resume", () => activity.handlePowerEvent("resume"));
 
+  const temporalMemory = new DesktopTemporalMemoryService();
   const settings = new DesktopSettingsTransaction(state, agents);
   // 恢复检查必须早于 IPC 注册和窗口开放；无法自动恢复时保留应用可用来展示设置错误，
   // 但同一个 transaction 实例会阻止所有新工作入口。
@@ -229,13 +234,27 @@ async function startDesktopApplication(): Promise<void> {
   const terminals = new DesktopTerminalManager((event) => {
     if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(desktopIpc.terminalEvent, event);
   });
+  const staticPreview = new StaticPreviewServer();
   await activity.initialize();
+  // REST 与设置页 IPC 共用同一实时系统读取器；采集门禁仍由采集器独立判断。
+  const getActivityPermissions = () => process.platform === "darwin" ? {
+    platform: "darwin",
+    screenRecording: systemPreferences.getMediaAccessStatus("screen"),
+    accessibility: systemPreferences.isTrustedAccessibilityClient(false),
+    openSettingsCapable: true
+  } : {
+    platform: process.platform,
+    screenRecording: "granted",
+    accessibility: true,
+    openSettingsCapable: false
+  };
   const activityApi = await startActivityHttpEndpoint(createDesktopActivityHttpDependencies({
     activity,
     configStore,
     writeMemories: activityMemoryPipeline.writeMemories,
     onAnalyzed: activityMemoryPipeline.onAnalyzed,
     getEmbeddingRuntime: async () => await activityEmbeddingModels.createRuntime("multilingual-e5-small").catch(() => undefined),
+    getPermissions: getActivityPermissions,
     openPermissions: process.platform === "darwin" ? async (pane) => {
       const urls = {
         "screen-recording": "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture",
@@ -282,6 +301,7 @@ async function startDesktopApplication(): Promise<void> {
       sidebarWidth: state.sidebarWidth(),
       filePanelWidth: state.filePanelWidth(),
       themePreference: state.themePreference(),
+      chatResponse: (await configStore.load()).chat.response,
       fontPreference: state.fontPreference()
     };
   };
@@ -311,6 +331,7 @@ async function startDesktopApplication(): Promise<void> {
   const createWindow = (): BrowserWindow => {
     settingsClose.reset();
     mainWindow = createDesktopWindow(state, decideWindowClose);
+    browser.attachDesktopWindow(mainWindow);
     mainWindow.webContents.once("did-finish-load", () => {
       if (pendingReferenceOpen) mainWindow?.webContents.send(desktopIpc.referenceOpen, pendingReferenceOpen);
       pendingReferenceOpen = undefined;
@@ -336,6 +357,7 @@ async function startDesktopApplication(): Promise<void> {
   };
 
   registerDesktopIpc({
+    temporalMemory,
     crystals,
     threadBriefs,
     state,
@@ -343,7 +365,9 @@ async function startDesktopApplication(): Promise<void> {
     agents,
     settings,
     activity,
+    getActivityPermissions,
     terminals,
+    staticPreview,
     browser,
     skills,
     mcp,
@@ -466,6 +490,7 @@ async function startDesktopApplication(): Promise<void> {
         if (hadRunningTasks) await agents.pauseAllForExit();
         await threadBriefs.close();
         terminals.disposeAll();
+        await staticPreview.disposeAll();
         // 全局快捷键与悬浮窗是真正的资源，退出前必须释放，避免占用快捷键或残留窗口。
         globalShortcut.unregisterAll();
         activityTray?.destroy();
@@ -478,6 +503,7 @@ async function startDesktopApplication(): Promise<void> {
         await browser.dispose();
         await mcp.dispose();
         mainWindow?.destroy();
+        await temporalMemory.close();
         await Promise.race([
           agents.closeAll(),
           new Promise<void>((resolve) => setTimeout(resolve, 5_000))

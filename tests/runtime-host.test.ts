@@ -320,6 +320,7 @@ async function main(): Promise<void> {
         },
         getOverview: () => localMemory.getOverview(),
         listMemoryEntries: () => localMemory.listMemoryEntries({ includeArchived: true }),
+        getEntry: localMemory.getEntry.bind(localMemory),
         writeEntry: localMemory.writeEntry.bind(localMemory),
         updateEntry: localMemory.updateEntry.bind(localMemory),
         deleteEntryById: localMemory.deleteEntryById.bind(localMemory),
@@ -645,58 +646,28 @@ async function main(): Promise<void> {
     scopedIds.map((id) => afterCancelledSearch.find((entry) => entry.id === id)?.accessCount),
     [0, 0, 0]
   );
-  const runtimeScopedResult = await client.memory<{ matches: Array<{ entry: { id: string } }> }>("search", {
+  const runtimeScopedResult = await client.memory<{ matches: Array<{ entry: { id: string } }>; report: { degraded?: string } }>("search", {
     query: "Runtime Host scope query marker",
     threadId: "scope-thread-a",
     tags: ["scope-test"],
     limit: 10
   });
-  assert.deepEqual(
-    new Set(runtimeScopedResult.matches.map(({ entry }) => entry.id)),
-    new Set(scopedIds),
-    "thread/tag 过滤不依赖 userId 元数据"
-  );
+  assert.deepEqual(runtimeScopedResult.matches, []);
+  assert.equal(runtimeScopedResult.report.degraded, "no_vector_index");
   const afterHostSearch = (await localMemory.listMemoryEntries()).entries;
-  assert.deepEqual(scopedIds.map((id) => afterHostSearch.find((entry) => entry.id === id)?.accessCount), [1, 1, 1]);
+  assert.deepEqual(scopedIds.map((id) => afterHostSearch.find((entry) => entry.id === id)?.accessCount), [0, 0, 0]);
   assert.equal(afterHostSearch.find((entry) => entry.id === otherThreadEntry.entry!.id)?.accessCount, 0);
-  assert.equal(new Set(scopedIds.map((id) => afterHostSearch.find((entry) => entry.id === id)?.lastAccessedAt)).size, 1);
   assert.equal((await localMemory.getOverview()).storeRevision, scopeRevision);
-  for (const unsupportedScope of [{ userId: "scope-user-alice" }, { userIds: ["scope-user-alice"] }]) {
-    await assert.rejects(
-      client.memory("search", { query: "Runtime Host scope query marker", ...unsupportedScope }),
-      /userId|userIds/u
-    );
+  for (const userScope of [{ userId: "scope-user-alice" }, { userIds: ["scope-user-alice"] }]) {
+    const scoped = await client.memory<{ matches: unknown[]; report: { degraded?: string } }>("search", {
+      query: "Runtime Host scope query marker", ...userScope
+    });
+    assert.deepEqual(scoped.matches, []);
+    assert.equal(scoped.report.degraded, "no_vector_index");
   }
-  const afterRejectedSearch = (await localMemory.listMemoryEntries()).entries;
-  assert.deepEqual(
-    scopedIds.map((id) => afterRejectedSearch.find((entry) => entry.id === id)?.accessCount),
-    [1, 1, 1],
-    "被 Host 拒绝的搜索不能记账"
-  );
-  const limited = await client.memory<{ matches: Array<{ entry: { id: string } }> }>("search", {
-    query: "Runtime Host scope query marker",
-    threadId: "scope-thread-a",
-    tags: ["scope-test"],
-    limit: 1
-  });
-  assert.equal(limited.matches.length, 1);
-  const afterLimit = (await localMemory.listMemoryEntries()).entries;
-  assert.deepEqual(
-    scopedIds.map((id) => afterLimit.find((entry) => entry.id === id)?.accessCount),
-    scopedIds.map((id) => limited.matches.some((match) => match.entry.id === id) ? 2 : 1),
-    "只有最终返回的 top-1 结果记账"
-  );
-  const omittedByBudget = await client.memory<{ matches: unknown[] }>("search", {
-    query: "Runtime Host scope query marker",
-    threadId: "scope-thread-a",
-    tags: ["scope-test"],
-    maxChars: 1
-  });
-  assert.equal(omittedByBudget.matches.length, 0);
-  const afterBudget = (await localMemory.listMemoryEntries()).entries;
-  assert.deepEqual(
-    scopedIds.map((id) => afterBudget.find((entry) => entry.id === id)?.accessCount),
-    scopedIds.map((id) => limited.matches.some((match) => match.entry.id === id) ? 2 : 1)
+  await assert.rejects(
+    client.memory("search", { query: "Runtime Host scope query marker", userIds: "invalid" }),
+    /userIds/u
   );
 
   // HTTP → socket → 领域存储：鉴权、短文本与小数权重、更新、删除都用真实 SQLite。
@@ -719,22 +690,26 @@ async function main(): Promise<void> {
       return stdout;
     };
     const searchHelp = await cli(["search", "--help"]);
-    assert.doesNotMatch(searchHelp, /--user-id(?:s)?\b/u);
+    assert.match(searchHelp, /--user-id\b/u);
+    assert.match(searchHelp, /--user-ids\b/u);
     assert.match(searchHelp, /--thread-id/u);
     const cliScopedSearch = JSON.parse(await cli([
       "search", "Runtime Host scope query marker",
       "--thread-id", "scope-thread-a",
       "--tag", "scope-test",
       "--json"
-    ])) as { matches: Array<{ entry: { id: string } }> };
-    assert.deepEqual(
-      new Set(cliScopedSearch.matches.map(({ entry }) => entry.id)),
-      new Set(scopedIds)
-    );
+    ])) as { matches: Array<{ entry: { id: string } }>; report: { degraded?: string } };
+    assert.deepEqual(cliScopedSearch.matches, []);
+    assert.equal(cliScopedSearch.report.degraded, "no_vector_index");
+    const cliUserSearch = JSON.parse(await cli([
+      "search", "Runtime Host scope query marker", "--user-ids", "scope-user-alice", "scope-user-bob", "--json"
+    ])) as { matches: unknown[]; report: { degraded?: string } };
+    assert.deepEqual(cliUserSearch.matches, []);
+    assert.equal(cliUserSearch.report.degraded, "no_vector_index");
     const afterCliSearch = (await localMemory.listMemoryEntries()).entries;
     assert.deepEqual(
       scopedIds.map((id) => afterCliSearch.find((entry) => entry.id === id)?.accessCount),
-      scopedIds.map((id) => limited.matches.some((match) => match.entry.id === id) ? 3 : 2)
+      [0, 0, 0]
     );
     const archivedCandidate = await localMemory.writeEntry({
       content: "Archived access statistics marker unique to this test.",
@@ -745,14 +720,13 @@ async function main(): Promise<void> {
     assert.ok(archived.entry);
     const archivedSearch = await client.memory<{ matches: Array<{ entry: { id: string } }> }>("search", {
       query: archived.entry.id,
-      includeArchived: true,
       limit: 1
     });
-    assert.deepEqual(archivedSearch.matches.map((match) => match.entry.id), [archived.entry.id]);
+    assert.deepEqual(archivedSearch.matches, []);
     assert.equal(
       (await localMemory.listArchivedEntries()).entries.find((entry) => entry.id === archived.entry!.id)?.accessCount,
-      1,
-      "显式返回的归档命中也应记账"
+      0,
+      "归档条目不参与普通语义搜索"
     );
     await waitUntil(() => memoryFrames.some((frame) => frame.type === "memory-changed"), 3_000);
     const beforeCliRevision = (await localMemory.getOverview()).storeRevision;
@@ -762,20 +736,26 @@ async function main(): Promise<void> {
     await cli(["delete", added.entry.id, "--yes", "--json"]);
     assert.equal((await fetch(base, { headers: { ...headers, origin: "https://example.test" } })).status, 403);
     assert.equal((await fetch(base, { method: "POST", headers, body: "{" })).status, 400);
-    const saved = await fetch(base, { method: "POST", headers, body: JSON.stringify({ content: "用户喜欢中文", importance: 0.5, tags: ["preference"] }) });
-    assert.equal(saved.status, 200);
-    const written = await saved.json() as { written: boolean; entry: { id: string; importance: number } };
-    assert.equal(written.written, true);
-    assert.equal(written.entry.importance, 0.5);
-    const search = await (await fetch(`${base}/search`, { method: "POST", headers, body: JSON.stringify({ query: "用户", tags: ["preference"] }) })).json() as { matches: unknown[] };
-    assert.equal(search.matches.length, 1);
-    const unrelated = await (await fetch(`${base}/search`, { method: "POST", headers, body: JSON.stringify({ query: "用户", tags: ["unrelated"] }) })).json() as { matches: unknown[] };
-    assert.equal(unrelated.matches.length, 0);
-    const id = written.entry.id;
+    const saved = await fetch(base, { method: "POST", headers, body: JSON.stringify({
+      content: "用户喜欢中文", metadata: { importance: 0.5, tags: ["preference"] }
+    }) });
+    assert.equal(saved.status, 201);
+    const written = await saved.json() as { id: string; metadata: { importance: number; tags: string[] } };
+    assert.equal(written.metadata.importance, 0.5);
+    assert.deepEqual(written.metadata.tags, ["preference"]);
+    assert.equal((await client.memory<{ importance: number }>("get", { id: written.id })).importance, 0.5,
+      "Host keeps its internal flat entry shape");
+    const search = await (await fetch(`${base}/search`, { method: "POST", headers, body: JSON.stringify({ query: "用户", tags: ["preference"] }) })).json() as { results: unknown[]; originalQuery: string };
+    assert.deepEqual(search, { results: [], originalQuery: "用户" });
+    const internalSearch = await client.memory<{ report: { degraded?: string } }>("search", { query: "用户", tags: ["preference"] });
+    assert.equal(internalSearch.report.degraded, "no_vector_index");
+    const unrelated = await (await fetch(`${base}/search`, { method: "POST", headers, body: JSON.stringify({ query: "用户", tags: ["unrelated"] }) })).json() as { results: unknown[] };
+    assert.equal(unrelated.results.length, 0);
+    const id = written.id;
     assert.equal((await fetch(`${base}/${id}`, { method: "PUT", headers, body: JSON.stringify({ content: "用户喜欢简洁中文" }) })).status, 200);
     const fetched = await (await fetch(`${base}/${id}`, { headers })).json() as { content: string };
     assert.equal(fetched.content, "用户喜欢简洁中文");
-    assert.equal((await fetch(`${base}/${id}`, { method: "DELETE", headers })).status, 200);
+    assert.equal((await fetch(`${base}/${id}`, { method: "DELETE", headers })).status, 204);
     assert.equal((await fetch(`${base}/${id}`, { headers })).status, 404);
   } finally { memorySocket.terminate(); await api.close(); localMemory.close(); }
 
@@ -982,11 +962,12 @@ async function main(): Promise<void> {
     if (typeof replacementRegistration.pid === "number") {
       const pid = replacementRegistration.pid;
       process.kill(pid, "SIGTERM");
-      // 最后一次镜像属于 graceful shutdown；不能只等最初的旧 owner 就删除新 owner 的目录。
+      // 最后一次镜像属于 graceful shutdown；独立 Host 的进程级硬期限为 10 秒，
+      // 全量测试并发时还需留出事件循环调度余量，不能在期限前误报未退出。
       await waitUntil(() => {
         try { process.kill(pid, 0); return false; }
         catch (error) { return (error as NodeJS.ErrnoException).code === "ESRCH"; }
-      }, 8_000);
+      }, 15_000);
     }
   } catch (error) {
     if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;

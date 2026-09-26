@@ -1,3 +1,4 @@
+import { useChatResponseSettings } from "../chatResponseSettings.js";
 /**
  * 对话时间线：逐轮渲染用户消息、思考过程、助手回复和工具活动。
  *
@@ -12,7 +13,7 @@ import { splitAttachmentReferences, type AttachmentReference } from "../../../at
 import { copyToClipboard } from "../copyToClipboard.js";
 import { AttachmentCard } from "./AttachmentCard.js";
 import { listChangedFiles, type TimelineStep, type TimelineTurn } from "../sessionTimeline.js";
-import { hasSubmittedUserMessage, buildUsageDetailRows, finishReasonTone, formatDuration, formatMessageClock, parseCompactionNotice, shouldShowResponseContext, turnMetrics, type TurnMetrics } from "../chatModel.js";
+import { hasSubmittedUserMessage, buildUsageDetailRows, finishReasonTone, formatDuration, formatMessageClock, parseCompactionNotice, turnMetrics, type TurnMetrics } from "../chatModel.js";
 import { speak, speechSupported } from "../speech.js";
 import { CopyButton } from "./CopyButton.js";
 import { Icon } from "./Icon.js";
@@ -22,10 +23,13 @@ import { ActivitySegment, type ActivitySegmentStep } from "./chat/ActivitySegmen
 import { CompactionDivider } from "./chat/CompactionDivider.js";
 import { MessageClock } from "./chat/MessageClock.js";
 import { SkillsIndicator } from "./chat/SkillsIndicator.js";
+import { MessageContextMenu } from "./chat/MessageContextMenu.js";
+import { ExecutionTraceDialog } from "./chat/ExecutionTraceDialog.js";
 import { ChangesSummary } from "./chat/ChangesSummary.js";
 import { RunStatus } from "./chat/RunStatus.js";
 
 interface MessageTimelineProps {
+  sessionId?: string;
   projectId: string;
   turns: TimelineTurn[];
   skillDescriptions?: ReadonlyMap<string, string>;
@@ -73,7 +77,7 @@ function turnIsRunning(turn: TimelineTurn, runtimeActiveRunId: string | undefine
   return runtimeActiveRunId !== undefined && turn.status === "idle" && turn.id === runtimeActiveRunId;
 }
 
-export const MessageTimeline = memo(function MessageTimeline({ projectId, turns, skillDescriptions, pendingUserMessage, pendingFloatFromComposer, runtimeActiveRunId, onPreviewFile, onOpenExternal, onReferenceMessage, onShowMessageReferences, onCaptureQuote, onResolvePermission, thinking, onRetry, onSwitchVersion, onEditRequest, editInFlight, onCreateBranch, onRollbackFiles, onDeleteUserMessage }: MessageTimelineProps): React.JSX.Element {
+export const MessageTimeline = memo(function MessageTimeline({ sessionId, projectId, turns, skillDescriptions, pendingUserMessage, pendingFloatFromComposer, runtimeActiveRunId, onPreviewFile, onOpenExternal, onReferenceMessage, onShowMessageReferences, onCaptureQuote, onResolvePermission, thinking, onRetry, onSwitchVersion, onEditRequest, editInFlight, onCreateBranch, onRollbackFiles, onDeleteUserMessage }: MessageTimelineProps): React.JSX.Element {
   // 重试会先把目标之后的消息从视图中撤掉，再等待新回合流入；这里保留同样的乐观投影。
   // 编辑的重写投影来自 App（editInFlight），提交入口在底部输入框，不经过本组件状态。
   const [optimisticRewrite, setOptimisticRewrite] = useState<OptimisticRewrite>();
@@ -223,6 +227,7 @@ export const MessageTimeline = memo(function MessageTimeline({ projectId, turns,
           onRetrySettled={settleOptimisticRewrite}
           onSwitchVersion={onSwitchVersion}
           projectId={projectId}
+          sessionId={sessionId}
           runtimeActiveRunId={runtimeActiveRunId}
           turn={turn}
         />
@@ -330,6 +335,7 @@ function optimisticRewriteTurn(turn: TimelineTurn, user: string): TimelineTurn {
 }
 
 const Turn = memo(function Turn({
+  sessionId,
   busy,
   entrySheenOnly,
   skillDescriptions,
@@ -350,6 +356,7 @@ const Turn = memo(function Turn({
   onRollbackFiles,
   onDeleteUserMessage
 }: {
+  sessionId?: string;
   busy: boolean;
   /** FLIP 落定后的首条用户消息只播扫光（原文 animateUserEntry "sheen-only"）。 */
   entrySheenOnly?: boolean;
@@ -436,7 +443,7 @@ const Turn = memo(function Turn({
       {running || executionSteps.length > 0 || turn.assistant.trim() || completedChangedFiles.length > 0 ? (
       <article className="chat-message desktop-assistant-message" data-message-id={turn.assistantMessageId} data-sender="assistant" tabIndex={-1}>
         <div className="agent-response">
-        {shouldShowResponseContext(turn) ? <SkillsIndicator memoryRecallDegraded={turn.memoryRecallDegraded} skillDescriptions={skillDescriptions} skills={turn.skills} tools={turn.tools.map((tool) => tool.tool)} /> : null}
+        <SkillsIndicator memoryRecallDegraded={turn.memoryRecallDegraded} />
         {executionSteps.length ? (
           <ExecutionTimeline
             onPreviewFile={onPreviewFile}
@@ -455,8 +462,12 @@ const Turn = memo(function Turn({
           <ChangesSummary files={completedChangedFiles} onPreviewFile={onPreviewFile} />
         ) : null}
 
-        {!running && turn.assistant.trim() ? (
+        {!running && (turn.assistant.trim() || (turn.status === "completed" && turn.tools.length > 0)) ? (
           <AssistantActions
+            projectId={projectId}
+            sessionId={sessionId}
+            turn={turn}
+            skillDescriptions={skillDescriptions}
             content={turn.assistant}
             finishReason={turn.finishReason}
             metrics={turnMetrics(turn)}
@@ -491,11 +502,13 @@ const TypewriterMarkdown = memo(function TypewriterMarkdown({ active, content, o
   onOpenExternal(url: string): void;
   onPreviewFile(path: string): void;
   projectId: string;
-}): React.JSX.Element {
-  const typed = useTypewriter(content, active);
+}): React.JSX.Element | null {
+  const { streaming } = useChatResponseSettings();
+  const typed = useTypewriter(!streaming && active ? "" : content, streaming && active);
+  if (!streaming && active) return null;
   return (
     <div className={active ? "with-streaming-cursor" : undefined}>
-      <MarkdownContent content={typed} onOpenExternal={onOpenExternal} onPreviewFile={onPreviewFile} projectId={projectId} />
+      <MarkdownContent content={typed} streaming={active || typed !== content} onOpenExternal={onOpenExternal} onPreviewFile={onPreviewFile} projectId={projectId} />
     </div>
   );
 });
@@ -691,7 +704,7 @@ function UserMessage({
           <button className="message-menu-item" onClick={() => { copyText(message.text); closeMenu(); }} role="menuitem" type="button"><Icon name="copy" size={14} /><span>复制为 Markdown</span></button>
           <button className="message-menu-item" onClick={() => { copyText(plainTextFromMarkdown(message.text)); closeMenu(); }} role="menuitem" type="button"><Icon name="copy" size={14} /><span>复制为纯文本</span></button>
           <button className="message-menu-item" onClick={() => { onCreateBranch(); closeMenu(); }} role="menuitem" type="button"><Icon name="branch" size={14} /><span>创建分支</span></button>
-          {onReference ? <button className="message-menu-item" onClick={() => { onReference(); closeMenu(); }} role="menuitem" type="button"><Icon name="message" size={14} /><span>引用消息</span></button> : null}
+          {onReference ? <button className="message-menu-item" onClick={() => { onReference(); closeMenu(); }} role="menuitem" type="button"><Icon name="at" size={14} /><span>引用消息</span></button> : null}
           {onShowReferences ? <button className="message-menu-item" onClick={() => { onShowReferences(); closeMenu(); }} role="menuitem" type="button"><Icon name="network" size={14} /><span>查看引用来源</span></button> : null}
           <button className="message-menu-item" disabled={!hasChangedFiles} onClick={() => { onRollbackFiles(); closeMenu(); }} role="menuitem" title={hasChangedFiles ? "回滚本条消息产生的文件修改" : "当前消息没有可回滚的文件修改"} type="button"><Icon name="arrow-left" size={14} /><span>回滚文件</span></button>
           <div className="message-menu-separator" />
@@ -722,7 +735,11 @@ function plainTextFromMarkdown(content: string): string {
  *  （LLM 用时 / 首 token / 解码吞吐）常显。更多菜单与用量悬浮卡都走 portal
  *  fixed 定位：用量项悬停出详情卡（80ms 悬停意图防抖），结束原因带语义色点，
  *  复制成功后图标变勾并延迟收菜单。 */
-function AssistantActions({ content, timestamp, metrics, runMs, usage, finishReason, onCreateBranch, onReference, onShowReferences, onRegenerate, onSwitchVersion, versionIndex, versionCount }: {
+function AssistantActions({ projectId, sessionId, turn, skillDescriptions, content, timestamp, metrics, runMs, usage, finishReason, onCreateBranch, onReference, onShowReferences, onRegenerate, onSwitchVersion, versionIndex, versionCount }: {
+  projectId?: string;
+  sessionId?: string;
+  turn: TimelineTurn;
+  skillDescriptions?: ReadonlyMap<string, string>;
   content: string;
   timestamp?: string;
   metrics?: TurnMetrics;
@@ -737,13 +754,15 @@ function AssistantActions({ content, timestamp, metrics, runMs, usage, finishRea
   versionIndex?: number;
   versionCount?: number;
 }): React.JSX.Element {
+  const [traceOpen, setTraceOpen] = useState(false);
   const [speaking, setSpeaking] = useState(false);
   const stopSpeechRef = useRef<() => void>(undefined);
-  const usageRows = buildUsageDetailRows(usage, metrics ?? {});
+  const { showTokenUsage } = useChatResponseSettings();
+  const usageRows = showTokenUsage ? buildUsageDetailRows(usage, metrics ?? {}) : [];
   const tone = finishReason ? finishReasonTone(finishReason) : undefined;
   // 更多菜单走 portal fixed 定位；条目数按需增减（用量/结束原因 + 分隔线），高度用于弹出方向判断。
-  const menuItemCount = 3 + Number(Boolean(onReference)) + Number(Boolean(onShowReferences)) + (usageRows.length ? 1 : 0) + (finishReason ? 1 : 0) + ((usageRows.length || finishReason) ? 1 : 0);
-  const { open: menuOpen, position: menuPosition, anchorRef: moreButtonRef, menuRef, toggle: toggleMenu, close: closeMenu } = useAnchoredMenu({ width: 208, estimatedHeight: menuItemCount * 32 + 12 });
+  const menuItemCount = 5 + Number(Boolean(onReference)) + Number(Boolean(onShowReferences)) + (usageRows.length ? 1 : 0) + (finishReason ? 1 : 0) + ((usageRows.length || finishReason) ? 1 : 0);
+  const { open: menuOpen, position: menuPosition, anchorRef: moreButtonRef, menuRef, toggle: toggleMenu, close: closeMenu } = useAnchoredMenu({ width: 288, estimatedHeight: menuItemCount * 32 + 12 });
   const usageItemRef = useRef<HTMLButtonElement>(null);
   const [usagePopover, setUsagePopover] = useState<{ top: number; left: number }>();
   const usageHideTimerRef = useRef<number | undefined>(undefined);
@@ -856,6 +875,7 @@ function AssistantActions({ content, timestamp, metrics, runMs, usage, finishRea
           role="menu"
           style={menuPosition.style}
         >
+          <MessageContextMenu tools={turn.tools.map((tool) => tool.tool)} skills={turn.skills} descriptions={skillDescriptions} />
           {hasInfoSection ? (
             <>
               {usageRows.length ? (
@@ -876,7 +896,7 @@ function AssistantActions({ content, timestamp, metrics, runMs, usage, finishRea
               {finishReason && tone ? (
                 <div className="message-menu-item is-static" role="menuitem">
                   <span aria-hidden="true" className={`finish-reason-dot is-${tone}`} />
-                  <span className="finish-reason-label">Turn 结束原因</span>
+                  <span className="finish-reason-label">结束原因</span>
                   <span className="finish-reason-value">{finishReason}</span>
                 </div>
               ) : null}
@@ -889,16 +909,19 @@ function AssistantActions({ content, timestamp, metrics, runMs, usage, finishRea
                 <Icon name={copiedKind === "markdown" ? "check" : "copy"} size={14} /><span>复制为 Markdown</span>
               </button>
               <button className={`message-menu-item${copiedKind === "plain" ? " is-success" : ""}`} onClick={() => copyAs("plain")} role="menuitem" type="button">
-                <Icon name={copiedKind === "plain" ? "check" : "copy"} size={14} /><span>复制为纯文本</span>
+                <Icon name={copiedKind === "plain" ? "check" : "file-text"} size={14} /><span>复制为纯文本</span>
               </button>
             </>
           ) : null}
+          <button className="message-menu-item" role="menuitem" type="button" onClick={() => { closeMenu(); setTraceOpen(true); }}><Icon name="activity" size={14} /><span>查看 Trace</span></button>
+          <div className="message-menu-separator" role="separator" />
           <button className="message-menu-item" onClick={() => { onCreateBranch(); closeMenu(); }} role="menuitem" type="button"><Icon name="branch" size={14} /><span>创建分支</span></button>
-          {onReference ? <button className="message-menu-item" onClick={() => { onReference(); closeMenu(); }} role="menuitem" type="button"><Icon name="message" size={14} /><span>引用消息</span></button> : null}
+          {onReference ? <button className="message-menu-item" onClick={() => { onReference(); closeMenu(); }} role="menuitem" type="button"><Icon name="at" size={14} /><span>引用消息</span></button> : null}
           {onShowReferences ? <button className="message-menu-item" onClick={() => { onShowReferences(); closeMenu(); }} role="menuitem" type="button"><Icon name="network" size={14} /><span>查看引用来源</span></button> : null}
         </div>,
         document.body
       ) : null}
+      {traceOpen ? <ExecutionTraceDialog projectId={projectId} sessionId={sessionId} turn={turn} onClose={() => setTraceOpen(false)} /> : null}
       {usagePopover && usageRows.length ? createPortal(
         <div
           className="usage-detail-popover"
@@ -1018,7 +1041,7 @@ function useAnchoredMenu({ width, estimatedHeight }: { width: number; estimatedH
     if (!open) return;
     const onPointerDown = (event: PointerEvent): void => {
       const target = event.target as Node;
-      if (anchorRef.current?.contains(target) || menuRef.current?.contains(target)) return;
+      if (anchorRef.current?.contains(target) || menuRef.current?.contains(target) || (target instanceof Element && target.closest(".message-context-submenu"))) return;
       setOpen(false);
     };
     const onKeyDown = (event: KeyboardEvent): void => {

@@ -978,7 +978,7 @@ export function ProviderSettings({
                   <strong>{row.label}</strong>
                   {row.badge ? <small>{row.badge}</small> : null}
                 </span>
-                <Tooltip
+                <Tooltip delay={150}
                   content={rowEnabled ? rowStatus?.label ?? "已启用" : "未启用"}
                 >
                   <span
@@ -1461,7 +1461,7 @@ function ConnectedProviderPanel({
         </div>
         {/* 自定义端点的删除入口对齐头部按钮组（垃圾桶）；官方目录连接保留底部危险区。 */}
         {isCustomEndpoint ? (
-          <Tooltip content={deleteArmed ? "再次点击确认删除连接" : "删除连接"}>
+          <Tooltip delay={150} content={deleteArmed ? "再次点击确认删除连接" : "删除连接"}>
             <button
               aria-label={deleteArmed ? "确认删除连接" : "删除连接"}
               className={`provider-delete-button${deleteArmed ? " is-armed" : ""}`}
@@ -1622,7 +1622,7 @@ function TestConnectionButton({
   if (models.length <= 1) {
     const target = models[0];
     return (
-      <Tooltip content="测试连接">
+      <Tooltip delay={150} content="测试连接">
         <button
           aria-label="测试连接"
           className={`provider-test-button${testing ? " is-testing" : ""}`}
@@ -1641,7 +1641,7 @@ function TestConnectionButton({
     : models;
   return (
     <div className="provider-test-split" ref={menuRef}>
-      <Tooltip content="测试连接">
+      <Tooltip delay={150} content="测试连接">
         <button
           aria-expanded={open}
           aria-label="测试连接"
@@ -1813,7 +1813,7 @@ function ModelsSection({
                 </div>
               </div>
               <div className="provider-model-actions">
-                <Tooltip content={choice ? "模型选项" : "启用模型后可调整选项"}>
+                <Tooltip delay={150} content={choice ? "模型选项" : "启用模型后可调整选项"}>
                   <button
                     aria-label={choice ? `${model.displayName} 模型选项` : "启用模型后可调整模型选项"}
                     className="icon-button"
@@ -1825,7 +1825,7 @@ function ModelsSection({
                   </button>
                 </Tooltip>
                 {model.isManual && choice ? (
-                  <Tooltip content="删除手动模型">
+                  <Tooltip delay={150} content="删除手动模型">
                     <button
                       aria-label={`删除手动模型 ${model.displayName}`}
                       className="icon-button"
@@ -1871,22 +1871,22 @@ function ModelRowBadges({ model }: { model: CatalogModel }): React.JSX.Element {
   return (
     <>
       {model.supportsVision ? (
-        <Tooltip content="支持图片输入" key="vision">
+        <Tooltip delay={150} content="支持图片输入" key="vision">
           <span className="provider-model-cap"><Icon name="eye" size={11} /></span>
         </Tooltip>
       ) : null}
       {model.supportsTools !== false ? (
-        <Tooltip content="支持工具调用" key="tools">
+        <Tooltip delay={150} content="支持工具调用" key="tools">
           <span className="provider-model-cap"><Icon name="wrench" size={11} /></span>
         </Tooltip>
       ) : null}
       {model.supportsThinking ? (
-        <Tooltip content="支持扩展思考/推理" key="thinking">
+        <Tooltip delay={150} content="支持扩展思考/推理" key="thinking">
           <span className="provider-model-cap"><Icon name="brain-spark" size={11} /></span>
         </Tooltip>
       ) : null}
       {context ? (
-        <Tooltip content={`${context.tokens.toLocaleString("zh-CN")} token 上下文窗口`} key="context">
+        <Tooltip delay={150} content={`${context.tokens.toLocaleString("zh-CN")} token 上下文窗口`} key="context">
           <span className="provider-model-ctx">{context.label}</span>
         </Tooltip>
       ) : null}

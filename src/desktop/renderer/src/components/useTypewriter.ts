@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { startTransition, useCallback, useEffect, useRef, useState } from "react";
 
 /**
  * 平滑流式「打字机」——用于聊天正文的流式展示。
@@ -25,6 +25,7 @@ const LARGE_APPEND = 500;
 const ARRIVAL_WINDOW_MS = 3000;
 const STALL_GAP_MS = 300;
 const MAX_FRAME_DT_S = 0.1;
+const MIN_COMMIT_INTERVAL_MS = 24;
 
 const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
 
@@ -55,6 +56,7 @@ export function useTypewriter(content: string, streaming: boolean): string {
   const charAccumRef = useRef(0);
   const rafRef = useRef<number | null>(null);
   const lastFrameTsRef = useRef<number | null>(null);
+  const lastCommitTsRef = useRef(-Infinity);
 
   const syncImmediate = useCallback((text: string) => {
     if (rafRef.current !== null) {
@@ -86,20 +88,15 @@ export function useTypewriter(content: string, streaming: boolean): string {
       const backlog = total - cur;
       const isStreaming = streamingRef.current;
 
-      if (!isStreaming && backlog <= 0) {
-        // 完结且已追平：收工
+      if (backlog <= 0) {
+        // 追平后由下一次内容变化唤醒，等待 token 时不持续占用帧回调。
         rafRef.current = null;
         lastFrameTsRef.current = null;
+        charAccumRef.current = 0;
         return;
       }
 
       const nowMs = performance.now();
-
-      if (backlog <= 0) {
-        // 缓冲区吃空，等下一波 token
-        rafRef.current = requestAnimationFrame(tick);
-        return;
-      }
 
       let cps: number;
       if (!isStreaming) {
@@ -137,6 +134,10 @@ export function useTypewriter(content: string, streaming: boolean): string {
       }
 
       charAccumRef.current += cps * dt;
+      if (ts - lastCommitTsRef.current < MIN_COMMIT_INTERVAL_MS) {
+        rafRef.current = requestAnimationFrame(tick);
+        return;
+      }
       const chars = Math.min(Math.floor(charAccumRef.current), backlog);
       if (chars < 1) {
         rafRef.current = requestAnimationFrame(tick);
@@ -146,7 +147,9 @@ export function useTypewriter(content: string, streaming: boolean): string {
       const nextCount = alignSliceEnd(target, Math.min(cur + chars, total));
       const next = displayedRef.current + target.slice(cur, nextCount);
       displayedRef.current = next;
-      setDisplayed(next);
+      lastCommitTsRef.current = ts;
+      // 正文解析可让位于输入、滚动等交互；字符预算仍按真实帧间隔累计。
+      startTransition(() => setDisplayed(next));
       rafRef.current = requestAnimationFrame(tick);
     };
 

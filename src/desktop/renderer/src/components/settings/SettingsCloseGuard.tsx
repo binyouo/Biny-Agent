@@ -1,25 +1,18 @@
-/** 底部“取消”放弃设置草稿前的二次确认；系统窗口关闭不经过这里。 */
-import { AppIcon } from "../AppIcon.js";
-import { SettingsDetailLayer } from "./SettingsDetailLayer.js";
+/** 设置取消、关窗和退出共用系统原生确认；只有确认后才交由调用方丢弃草稿。 */
+import { useEffect, useRef } from "react";
 
 export function SettingsCloseGuard({ busy, onCancel, onDiscard }: {
   busy: boolean;
   onCancel(): void;
   onDiscard(): void;
-}): React.JSX.Element {
-  return (
-    <SettingsDetailLayer onClose={onCancel}>
-      <section aria-describedby="settings-close-description" aria-labelledby="settings-close-title" className="settings-confirm-panel settings-discard-panel" role="dialog">
-        <div className="settings-confirm-icon-frame">
-          <AppIcon className="settings-confirm-icon" size={88} />
-        </div>
-        <h3 id="settings-close-title">有未保存的更改</h3>
-        <p className="settings-discard-desc" id="settings-close-description">关闭后，未保存的更改将丢失。</p>
-        <div className="settings-confirm-actions">
-          <button className="ghost-button" data-settings-detail-autofocus disabled={busy} onClick={onCancel} type="button">继续编辑</button>
-          <button disabled={busy} onClick={onDiscard} type="button">放弃更改</button>
-        </div>
-      </section>
-    </SettingsDetailLayer>
-  );
+}): null {
+  const prompted = useRef(false);
+  useEffect(() => {
+    // StrictMode 重放 effect 或父组件重渲染不能重复弹出系统确认框。
+    if (busy || prompted.current) return;
+    prompted.current = true;
+    if (window.confirm("有未保存的更改，确定要关闭吗？未保存的更改将丢失。")) onDiscard();
+    else onCancel();
+  }, [busy, onCancel, onDiscard]);
+  return null;
 }

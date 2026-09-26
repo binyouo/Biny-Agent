@@ -1,3 +1,5 @@
+import { ChatResponseContext } from "./chatResponseSettings.js";
+import type { ChatResponseSettings } from "../../../config/schema.js";
 /**
  * Desktop 渲染进程的装配根。
  *
@@ -81,10 +83,7 @@ import { SearchOverlay } from "./components/overlays/SearchOverlay.js";
 import { SlashResultOverlay } from "./components/overlays/SlashResultOverlay.js";
 import { TimeCluesDialog } from "./components/overlays/TimeCluesDialog.js";
 import { MessageReferencesDialog } from "./components/overlays/MessageReferencesDialog.js";
-import { ReferenceDetailDialog } from "./components/overlays/ReferenceDetailDialog.js";
 import { DateReferenceDetailDialog } from "./components/overlays/DateReferenceDetailDialog.js";
-import type { LocalReferenceResult } from "../../../session/localReferences.js";
-import { naturalTemporalRanges } from "./temporalRanges.js";
 import { SettingsOverlay, type SettingsTab } from "./components/settings/SettingsOverlay.js";
 import { useWorkspaceInspector } from "./components/workspace/useWorkspaceInspector.js";
 import { parseBinyDeepLink, setDeepLinkHandler } from "./deepLinks.js";
@@ -130,6 +129,7 @@ function DesktopApp(): React.JSX.Element {
     const theme = window.document.documentElement.dataset.theme;
     return theme === "light" || theme === "dark" || theme === "system" ? theme : "system";
   });
+  const [chatResponse, setChatResponse] = useState<ChatResponseSettings>();
   const [fontPreference, setFontPreference] = useState<DesktopFontPreference>(DEFAULT_FONT_PREFERENCE);
   const [focusToken, setFocusToken] = useState(0);
   const [composerDraft, setComposerDraft] = useState<string>();
@@ -144,18 +144,20 @@ function DesktopApp(): React.JSX.Element {
   const [searchOpen, setSearchOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [timeCluesOpen, setTimeCluesOpen] = useState(false);
-  const [temporalUnread, setTemporalUnread] = useState(0);
   const [settingsTargetTab, setSettingsTargetTab] = useState<SettingsTab>();
   const [temporalSourceTarget, setTemporalSourceTarget] = useState<{ sessionId: string; messageId: string }>();
   const [messageReferencesUri, setMessageReferencesUri] = useState<string>();
-  const [referenceDetail, setReferenceDetail] = useState<LocalReferenceResult>();
   const [dateReferenceUri, setDateReferenceUri] = useState<string>();
   const [settingsCloseRequest, setSettingsCloseRequest] = useState<DesktopSettingsCloseRequest>();
+  const browserSelectionPending = useRef<string | undefined>(undefined);
+  const [pendingBrowserProject, setPendingBrowserProject] = useState<string>();
   const [runtimePanelOpen, setRuntimePanelOpen] = useState(false);
   const [page, setPage] = useState<DesktopPage>("chat");
   const [contextBudget, setContextBudget] = useState<ContextBudgetStatus>();
   const [draftMemoryOverride, setDraftMemoryOverride] = useState<boolean>();
   const [memoryToggleBusy, setMemoryToggleBusy] = useState(false);
+  const [incognitoOverride, setIncognitoOverride] = useState<boolean>();
+  const [incognitoToggleBusy, setIncognitoToggleBusy] = useState(false);
   const [renameTarget, setRenameTarget] = useState<RenameTarget>();
   const [slashResult, setSlashResult] = useState<DesktopSlashResult>();
   const [toast, setToast] = useState<string>();
@@ -233,22 +235,6 @@ function DesktopApp(): React.JSX.Element {
     projectRef.current = workspace?.project.id;
   }, [selectedSessionId, workspace?.project.id]);
 
-  useEffect(() => {
-    let active = true;
-    const refresh = async (): Promise<void> => {
-      if (window.document.visibilityState !== "visible") return;
-      try {
-        const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
-        const today = naturalTemporalRanges(new Date(), timeZone).today;
-        const result = await window.biny.temporalClues({ ...today, today: today.startDate, limit: 1, timeZone, includeScheduled: false });
-        if (active) setTemporalUnread(result.unread);
-      } catch { if (active) setTemporalUnread(0); }
-    };
-    void refresh();
-    const timer = window.setInterval(() => void refresh(), 60_000);
-    window.addEventListener("focus", refresh);
-    return () => { active = false; window.clearInterval(timer); window.removeEventListener("focus", refresh); };
-  }, [document?.events.length, timeCluesOpen]);
 
   // 换会话时清掉上一会话的 Recipe 卡片与技能提取卡；新会话的卡片由历史读取和事件桥共同收集。
   useEffect(() => {
@@ -292,6 +278,8 @@ function DesktopApp(): React.JSX.Element {
       setComposerTools([]);
       return () => { active = false; };
     }
+    // 设置关闭后统一刷新；打开设置时不再额外扫描一次相同目录。
+    if (settingsOpen) return () => { active = false; };
     void Promise.all([
       window.biny.skillCatalog(projectId),
       window.biny.skillSettings(projectId),
@@ -457,7 +445,6 @@ function DesktopApp(): React.JSX.Element {
     loadMemoryEmbeddingStatus,
     openBrowser,
     readModelApiKey,
-    readWebSearchApiKey,
     rebuildMemoryEmbeddingIndex,
     searchMemory,
     startModelLogin,
@@ -484,6 +471,7 @@ function DesktopApp(): React.JSX.Element {
     if (loadRequestRef.current !== request) return false;
     memoryToggleRequestRef.current += 1;
     setMemoryToggleBusy(false);
+    setIncognitoToggleBusy(false);
     if (showLoader) setLoading(true);
     try {
       const nextDocument = await window.biny.openSession(projectId, sessionId);
@@ -501,6 +489,7 @@ function DesktopApp(): React.JSX.Element {
       setSelectedSessionId(sessionId);
       setDraftProjectId(undefined);
       setDraftMemoryOverride(undefined);
+      setIncognitoOverride(undefined);
       // 上下文用量属于某一个会话，换会话就作废，等新会话跑出 context.updated 再显示。
       setContextBudget(undefined);
       setDocument(nextDocument);
@@ -543,6 +532,7 @@ function DesktopApp(): React.JSX.Element {
     }
     memoryToggleRequestRef.current += 1;
     setMemoryToggleBusy(false);
+    setIncognitoToggleBusy(false);
     setPage("chat");
     setRuntimePanelOpen(false);
     projectRef.current = snapshot.project.id;
@@ -552,6 +542,7 @@ function DesktopApp(): React.JSX.Element {
     setSelectedSessionId(undefined);
     setDraftProjectId(undefined);
     setDraftMemoryOverride(undefined);
+    setIncognitoOverride(undefined);
     setDocument(undefined);
     setWriterConflict(undefined);
     setContextBudget(undefined);
@@ -569,6 +560,7 @@ function DesktopApp(): React.JSX.Element {
       contextBudget,
       document: documentRef.current,
       draftMemoryOverride,
+      incognitoOverride,
       draftProjectId,
       page,
       runtimePanelOpen,
@@ -590,6 +582,7 @@ function DesktopApp(): React.JSX.Element {
       memoryToggleRequestRef.current += 1;
       setMemoryToggleBusy(false);
       setDraftMemoryOverride(undefined);
+      setIncognitoOverride(undefined);
       setDocument(undefined);
       setWriterConflict(undefined);
       setContextBudget(undefined);
@@ -606,6 +599,7 @@ function DesktopApp(): React.JSX.Element {
       setSelectedSessionId(target.sessionId);
       setDraftProjectId(undefined);
       setDraftMemoryOverride(undefined);
+      setIncognitoOverride(undefined);
       setContextBudget(undefined);
       setDocument({ session: targetSummary, events: [], liveEvents: [] });
       setWriterConflict(undefined);
@@ -640,6 +634,7 @@ function DesktopApp(): React.JSX.Element {
         setRuntimePanelOpen(previousView.runtimePanelOpen);
         setDraftProjectId(previousView.draftProjectId);
         setDraftMemoryOverride(previousView.draftMemoryOverride);
+        setIncognitoOverride(previousView.incognitoOverride);
         setContextBudget(previousView.contextBudget);
         setDocument(previousView.document);
         setWriterConflict(previousView.writerConflict);
@@ -651,7 +646,7 @@ function DesktopApp(): React.JSX.Element {
     } finally {
       if (loadRequestRef.current === request) setLoading(false);
     }
-  }, [adoptWorkspace, contextBudget, draftMemoryOverride, draftProjectId, openSession, page, runtimePanelOpen, sidebarSessions, workspace, writerConflict]);
+  }, [adoptWorkspace, contextBudget, draftMemoryOverride, draftProjectId, incognitoOverride, openSession, page, runtimePanelOpen, sidebarSessions, workspace, writerConflict]);
 
   useEffect(() => {
     let active = true;
@@ -663,6 +658,7 @@ function DesktopApp(): React.JSX.Element {
       setSidebarExpandedWidth(bootstrap.sidebarWidth ?? DEFAULT_SIDEBAR_WIDTH);
       setFilePanelWidth(bootstrap.filePanelWidth ?? DEFAULT_FILE_PANEL_WIDTH);
       setThemePreference(bootstrap.themePreference ?? "system");
+      setChatResponse(bootstrap.chatResponse);
       setFontPreference(bootstrap.fontPreference ?? DEFAULT_FONT_PREFERENCE);
       setPage(bootstrap.activeView === "extensions" ? "extensions" : "chat");
       setRuntimePanelOpen(bootstrap.activeView === "runtime" && Boolean(bootstrap.workspace));
@@ -982,7 +978,8 @@ function DesktopApp(): React.JSX.Element {
       idempotencyKey,
       undefined,
       capabilitySelection,
-      undefined
+      undefined,
+      previousSessionId === undefined ? incognitoOverride === true : undefined
     );
     // 新输入已被 Runtime 接收，旧断点不再是当前会话可继续的任务。
     setDocument((current) => current?.session.id === receipt.sessionId && current.recovery
@@ -1007,6 +1004,7 @@ function DesktopApp(): React.JSX.Element {
     setSelectedSessionId(receipt.sessionId);
     setDraftProjectId(undefined);
     setDraftMemoryOverride(undefined);
+    setIncognitoOverride(undefined);
     if (receipt.sessionId !== previousSessionId) {
       const target: DesktopNavigationTarget = { projectId, sessionId: receipt.sessionId };
       const currentTarget = previousNavigation.entries[previousNavigation.index];
@@ -1019,7 +1017,7 @@ function DesktopApp(): React.JSX.Element {
       setDocument({ session: summary, events: [], liveEvents: [] });
     }
     return receipt;
-  }, [commitNavigation, document, draftMemoryOverride, draftProjectId, openSession, workspace?.sessions]);
+  }, [commitNavigation, document, draftMemoryOverride, draftProjectId, incognitoOverride, openSession, workspace?.sessions]);
 
   const retryWriterConflict = useCallback(async (): Promise<void> => {
     const projectId = projectRef.current;
@@ -1239,6 +1237,7 @@ function DesktopApp(): React.JSX.Element {
   }, []);
 
   const settingsCommitted = useCallback((snapshot: DesktopSettingsSnapshot): void => {
+    setChatResponse(snapshot.chatParams.response);
     setThemePreference(snapshot.themePreference);
     setFontPreference(snapshot.fontPreference);
     void window.biny.refreshProject(snapshot.projectId)
@@ -1293,6 +1292,8 @@ function DesktopApp(): React.JSX.Element {
 
   // 聊天区状态变化很频繁；侧栏已经 memo，这些桥接回调必须保持引用稳定，避免每次输入/流式更新
   // 都把整棵项目树重新渲染一遍，触发 macOS 玻璃侧栏的重绘闪烁。
+  const openTimeClues = useCallback((): void => setTimeCluesOpen(true), []);
+
   const createSidebarProject = useCallback((): void => {
     void createEmptyProject();
   }, [createEmptyProject]);
@@ -1368,6 +1369,7 @@ function DesktopApp(): React.JSX.Element {
   const sessionChanges = useMemo(() => collectSessionChanges(turns), [turns]);
   const inspector = useWorkspaceInspector({
     changes: sessionChanges,
+    sidebarFlowWidth: sidebarLayout.flowWidth,
     tools: turns.flatMap((turn) => turn.tools),
     filePanelResizing,
     filePanelWidth,
@@ -1380,11 +1382,38 @@ function DesktopApp(): React.JSX.Element {
     onListDirectory: listWorkspaceDirectory,
     onOpenFile: openWorkspaceFile,
     onOpenBrowser: openBrowser,
+    onFixPreview: (error) => {
+      const prompt = `当前项目的预览服务无法启动。请检查项目实际文件和启动方式，修复后验证预览可运行。\n\n错误：${error.slice(0, 2_000)}`;
+      setComposerDraft(prompt);
+      setFocusToken((value) => value + 1);
+    },
+    onAttachBrowserReference: (reference) => {
+      const label = reference.label.replace(/[\]\n\r]/gu, " ").slice(0, 80) || "网页";
+      composerRef.current?.appendText(`@[${label}](${reference.uri})`);
+      setFocusToken((value) => value + 1);
+    },
+    onSwitchBranch: async (projectId, branch) => {
+      const snapshot = await window.biny.switchProjectBranch(projectId, branch);
+      mergeProjectSnapshot(snapshot);
+      setContextBudget(undefined);
+      await loadProjectBranches(projectId);
+    },
     onReadFile: readWorkspaceFile,
     onWarning: setWarning,
     projectId: workspace?.project.id,
     source: `${workspace?.project.id ?? "none"}:${document?.session.id ?? "draft"}`
   });
+
+  useEffect(() => window.biny.onBrowserOpenRequest(setPendingBrowserProject), []);
+  useEffect(() => {
+    if (!pendingBrowserProject) return;
+    if (workspace?.project.id === pendingBrowserProject) {
+      inspector.showBrowser(); setPendingBrowserProject(undefined);
+    } else if (browserSelectionPending.current !== pendingBrowserProject) {
+      browserSelectionPending.current = pendingBrowserProject;
+      void selectProject(pendingBrowserProject).catch((error: unknown) => { setWarning(errorMessage(error)); setPendingBrowserProject(undefined); }).finally(() => { browserSelectionPending.current = undefined; });
+    }
+  }, [inspector, pendingBrowserProject, selectProject, workspace?.project.id]);
 
   useEffect(() => {
     const pending = pendingPrompt;
@@ -1513,7 +1542,8 @@ function DesktopApp(): React.JSX.Element {
     : resolveChatPersonalization(memoryPolicy, currentChatPersonalization);
   const globalMemoryEnabled = resolvedPersonalization?.memoryEnabled === true;
   const confirmedChatMemoryEnabled = resolvedPersonalization?.useMemories === true;
-  const chatMemoryEnabled = globalMemoryEnabled && (draftMemoryOverride ?? confirmedChatMemoryEnabled);
+  const incognitoEnabled = incognitoOverride ?? selectedSession?.isIncognito ?? false;
+  const chatMemoryEnabled = !incognitoEnabled && globalMemoryEnabled && (draftMemoryOverride ?? confirmedChatMemoryEnabled);
   const memoryState: ComposerMemoryState = resolvedPersonalization === undefined
     ? "unknown"
     : chatMemoryEnabled ? "enabled" : "disabled";
@@ -1521,7 +1551,9 @@ function DesktopApp(): React.JSX.Element {
     ? "请先打开一个项目。"
     : memoryPolicy === undefined
       ? undefined
-      : !globalMemoryEnabled
+      : incognitoEnabled
+          ? "无痕聊天不会自动读取或写入长期记忆。"
+          : !globalMemoryEnabled
           ? "全局记忆已在设置中关闭，请先开启记忆功能。"
           : memoryToggleBusy
             ? "正在确认当前聊天的记忆状态…"
@@ -1530,6 +1562,7 @@ function DesktopApp(): React.JSX.Element {
               : undefined;
   const memoryToggleDisabled = !workspace?.project
     || memoryPolicy === undefined
+    || incognitoEnabled
     || !globalMemoryEnabled
     || memoryToggleBusy
     || runtimeBusy;
@@ -1537,7 +1570,7 @@ function DesktopApp(): React.JSX.Element {
     const projectId = projectRef.current;
     const sessionId = selectedRef.current;
     const current = selectedSession?.personalization ?? defaultChatPersonalizationOverride;
-    if (!projectId || !memoryPolicy || !memoryPolicy.enabled || memoryToggleBusy) return;
+    if (!projectId || !memoryPolicy || !memoryPolicy.enabled || memoryToggleBusy || incognitoEnabled) return;
     if (!sessionId) {
       const enabled = !(draftMemoryOverride ?? memoryPolicy.useMemories);
       setDraftMemoryOverride(enabled);
@@ -1577,7 +1610,46 @@ function DesktopApp(): React.JSX.Element {
     } finally {
       if (isCurrentRequest()) setMemoryToggleBusy(false);
     }
-  }, [chatMemoryEnabled, draftMemoryOverride, memoryPolicy, memoryToggleBusy, mergeProjectSnapshot, selectedSession]);
+  }, [chatMemoryEnabled, draftMemoryOverride, incognitoEnabled, memoryPolicy, memoryToggleBusy, mergeProjectSnapshot, selectedSession]);
+  const incognitoToggleDisabledReason = !workspace?.project
+    ? "请先打开一个项目。"
+    : incognitoToggleBusy
+      ? "正在确认当前聊天的无痕状态…"
+      : runtimeBusy
+        ? "当前运行或后台维护尚未结束，请稍后再切换无痕状态。"
+        : undefined;
+  const toggleSessionIncognito = useCallback(async (): Promise<void> => {
+    const projectId = projectRef.current;
+    const sessionId = selectedRef.current;
+    if (!projectId || incognitoToggleBusy || runtimeBusy) return;
+    const next = !incognitoEnabled;
+    if (!sessionId) {
+      setIncognitoOverride(next);
+      if (next) setDraftMemoryOverride(undefined);
+      setToast(next ? "当前新聊天已开启无痕" : "当前新聊天已关闭无痕");
+      return;
+    }
+    if (!selectedSession?.metadataRevision) {
+      setWarning("当前聊天状态尚未同步，请稍后再试。");
+      return;
+    }
+    setIncognitoToggleBusy(true);
+    try {
+      const snapshot = await window.biny.saveSessionIncognito(projectId, sessionId, next, selectedSession.metadataRevision);
+      if (projectRef.current !== projectId || selectedRef.current !== sessionId) return;
+      mergeProjectSnapshot(snapshot);
+      setToast(next ? "当前聊天已开启无痕" : "当前聊天已关闭无痕");
+    } catch (error) {
+      if (projectRef.current === projectId && selectedRef.current === sessionId) {
+        if (/Session catalog revision conflict/u.test(errorMessage(error))) {
+          await openSession(projectId, sessionId, false).catch(() => undefined);
+        }
+        setWarning(errorMessage(error));
+      }
+    } finally {
+      setIncognitoToggleBusy(false);
+    }
+  }, [incognitoEnabled, incognitoToggleBusy, mergeProjectSnapshot, openSession, runtimeBusy, selectedSession]);
   const prefillComposer = useCallback((input: string): void => {
     setComposerDraft(input);
     setFocusToken((value) => value + 1);
@@ -1612,7 +1684,7 @@ function DesktopApp(): React.JSX.Element {
   }, []);
   // 深链路由：MarkdownContent 叶子渲染直接调用 hub，这里统一解析并导航。
   const openDeepLink = useCallback(async (url: string, requestedProjectId?: string): Promise<void> => {
-    if (/^biny:\/\/(?:date|project|file|thread|memory|snippet|scratch|skill|mcp|model|provider|tool|task|cron|crystal|bundle|mission|plan)\//u.test(url)) {
+    if (/^biny:\/\/(?:date|project|file|thread|memory|snippet|scratch|skill|agent|mcp|model|provider|tool|tool-call|task|cron|crystal|bundle|mission|plan)\//u.test(url)) {
       const projectId = requestedProjectId ?? workspace?.project.id;
       if (!projectId) return;
       try {
@@ -1629,7 +1701,7 @@ function DesktopApp(): React.JSX.Element {
         else if (reference.kind === "skill") openExtensions();
         else if (reference.kind === "mcp") openSettings("MCP 服务器");
         else if (reference.kind === "model" || reference.kind === "provider") openSettings("模型");
-        else setReferenceDetail(reference);
+        else inspector.previewReference(reference);
       } catch (error) { setWarning(errorMessage(error)); }
       return;
     }
@@ -1709,12 +1781,17 @@ function DesktopApp(): React.JSX.Element {
   const composer = (
     <>
     <Composer
+      onInspectReference={inspector.previewReference}
       ref={composerRef}
       sessionWriterConflict={writerConflict !== undefined}
       memoryState={memoryState}
       memoryToggleBusy={memoryToggleBusy}
       memoryToggleDisabled={memoryToggleDisabled}
       memoryToggleDisabledReason={memoryToggleDisabledReason}
+      incognitoEnabled={incognitoEnabled}
+      incognitoToggleBusy={incognitoToggleBusy}
+      incognitoToggleDisabled={!workspace?.project || incognitoToggleBusy || runtimeBusy}
+      incognitoToggleDisabledReason={incognitoToggleDisabledReason}
       contextUsage={contextUsage}
       focusToken={focusToken}
       prefillInput={composerDraft}
@@ -1741,6 +1818,7 @@ function DesktopApp(): React.JSX.Element {
         await window.biny.cancelRun(projectId, selectedRunId);
       }}
       onToggleMemory={toggleChatMemory}
+      onToggleIncognito={toggleSessionIncognito}
       onSwitchModel={async (alias, thinking) => {
         clearGenerationError();
         await switchModel(alias, thinking);
@@ -1759,7 +1837,7 @@ function DesktopApp(): React.JSX.Element {
   );
 
   return (
-    <DesktopShell
+    <ChatResponseContext value={chatResponse}><DesktopShell
       starting={starting}
       overlays={(
         <>
@@ -1791,7 +1869,6 @@ function DesktopApp(): React.JSX.Element {
             onExportCookies={async () => await window.biny.exportCookies()}
             onFetchModelCatalog={fetchModelCatalog}
             onReadModelApiKey={readModelApiKey}
-            onReadWebSearchApiKey={readWebSearchApiKey}
             onFontPreference={changeFontPreference}
             onSettingsCommitted={settingsCommitted}
             onResolveCloseRequest={resolveSettingsCloseRequest}
@@ -1823,7 +1900,7 @@ function DesktopApp(): React.JSX.Element {
             workspace={workspace}
           />
           <TimeCluesDialog open={timeCluesOpen} currentSessionId={selectedSessionId}
-            refreshKey={`${document?.events.length ?? 0}:${document?.liveEvents.length ?? 0}`}
+            refreshKey={`${document?.events.length ?? 0}`}
             onClose={() => setTimeCluesOpen(false)} onSource={(projectId, sessionId, messageId) => {
             setTimeCluesOpen(false);
             setTemporalSourceTarget({ sessionId, messageId });
@@ -1831,7 +1908,6 @@ function DesktopApp(): React.JSX.Element {
           }} />
           {messageReferencesUri && workspace?.project.id ? <MessageReferencesDialog projectId={workspace.project.id}
             uri={messageReferencesUri} onClose={() => setMessageReferencesUri(undefined)} onOpen={(uri) => void openDeepLink(uri)} /> : null}
-          {referenceDetail ? <ReferenceDetailDialog reference={referenceDetail} onClose={() => setReferenceDetail(undefined)} /> : null}
           {dateReferenceUri && workspace?.project.id ? <DateReferenceDetailDialog projectId={workspace.project.id}
             uri={dateReferenceUri} onClose={() => setDateReferenceUri(undefined)} onSource={(sessionId, messageId) => {
               const projectId = workspace.project.id;
@@ -1888,8 +1964,7 @@ function DesktopApp(): React.JSX.Element {
           onLoadSessionChildren={loadSessionChildren}
           onSessionAction={runSidebarSessionAction}
           onSettings={openSettings}
-          onTimeClues={() => setTimeCluesOpen(true)}
-          temporalUnread={temporalUnread}
+          onTimeClues={openTimeClues}
           onInsertCrystal={insertCrystalReference}
           onToggleSidebar={toggleSidebar}
           layout={sidebarLayout}
@@ -1916,9 +1991,9 @@ function DesktopApp(): React.JSX.Element {
         generationError={generationError}
         onDismissGenerationError={clearGenerationError}
         onOpenExternal={openExternalLink}
-        onReferenceMessage={(messageId) => void referenceMessage(messageId)}
-        onShowMessageReferences={(messageId) => void showMessageReferences(messageId)}
-        onCaptureQuote={(messageId, quote) => void captureQuote(messageId, quote)}
+        onReferenceMessage={referenceMessage}
+        onShowMessageReferences={showMessageReferences}
+        onCaptureQuote={captureQuote}
         onOpenProject={() => void openProject()}
         onPreviewFile={inspector.previewFile}
         inspectorRail={inspector.rail}
@@ -1962,6 +2037,6 @@ function DesktopApp(): React.JSX.Element {
       >
         {composer}
       </Workspace>}
-    </DesktopShell>
+    </DesktopShell></ChatResponseContext>
   );
 }

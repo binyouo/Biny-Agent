@@ -1,6 +1,7 @@
 /** 结晶的桌面工作区：观察位、收纳与正式对象共用核心生命周期，确认后可插入聊天引用。 */
 import { useEffect, useRef, useState } from "react";
 import { Dialog, DialogHeader } from "@astryxdesign/core/Dialog";
+import { Tooltip } from "@astryxdesign/core/Tooltip";
 import type { Crystal, CrystalType } from "../../../../agent/context/crystalTypes.js";
 import type { DesktopCrystalRequest, DesktopCrystalSnapshot } from "../../../crystalProtocol.js";
 import { Icon } from "./Icon.js";
@@ -63,9 +64,11 @@ export function CrystalDock({ sessionId, onInsert }: { sessionId?: string; onIns
     </button>
   );
   return <>
-    <button aria-label="结晶" aria-haspopup="dialog" className="biny-chrome-button biny-sidebar-crystal-button" onClick={() => setOpen(true)} title="结晶" type="button">
-      <Icon name="cube" size={16} />
-    </button>
+    <Tooltip content="结晶" delay={150} placement="above">
+      <button aria-label="结晶" aria-haspopup="dialog" className="biny-chrome-button biny-sidebar-crystal-button" onClick={() => setOpen(true)} type="button">
+        <Icon name="cube" size={16} />
+      </button>
+    </Tooltip>
     <Dialog isOpen={open} onOpenChange={setOpen} padding={0} width={880} purpose="form">
       <div className="crystal-window">
         <div className="crystal-window-title"><DialogHeader onOpenChange={setOpen} title="结晶" /></div>

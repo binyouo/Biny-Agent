@@ -45,6 +45,7 @@ export class DesktopThreadBriefService {
       store: options.store ?? new ThreadBriefStore(),
       readThread: (sessionId, minimumCreatedAt) => this.readThread(sessionId, minimumCreatedAt),
       getModel: async () => resolveToolModel(await options.configStore.load()),
+      canPersist: async (threads) => await this.isVisibleSuggestion({ threads }),
       onChange: options.onChange
     });
   }
@@ -63,8 +64,17 @@ export class DesktopThreadBriefService {
         history = [];
         for (const project of this.options.state.projects()) {
           if (project.missing) continue;
-          const entries = await listSessionCatalog(await this.options.projects.dataRoot(project));
-          history.push(...entries.map((entry) => ({ sessionId: entry.id, projectId: project.id, title: entry.title ?? entry.summary.firstUserMessage.slice(0, 120), createdAt: entry.summary.createdAt })));
+          const root = await this.options.projects.dataRoot(project);
+          const entries = await listSessionCatalog(root);
+          for (const entry of entries) {
+            // listSessionCatalog 会容忍坏 catalog 以保留普通历史；派生摘要入口须单独 fail closed。
+            let catalog;
+            try { catalog = await readSessionCatalogRecord(root, entry.id); }
+            catch { continue; }
+            if (entry.isIncognito || catalog?.isIncognito) continue;
+            history.push({ sessionId: entry.id, projectId: project.id,
+              title: entry.title ?? entry.summary.firstUserMessage.slice(0, 120), createdAt: entry.summary.createdAt });
+          }
         }
         history.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
         history = history.slice(0, 500);
@@ -75,26 +85,34 @@ export class DesktopThreadBriefService {
         await this.engine.enqueue(request.sessionId, true);
         break;
       }
-      case "status": store.setStatus(request.sessionId, request.status); break;
+      case "status": {
+        const brief = store.brief(request.sessionId);
+        if (!brief || !await this.isVisibleThread(brief)) throw new Error("对话摘要不存在。");
+        store.setStatus(request.sessionId, request.status);
+        break;
+      }
       case "dismiss": {
         const suggestion = this.requireOpen(request.id);
+        if (!await this.isVisibleSuggestion(suggestion)) throw new Error("项目建议已处理或不存在。");
         store.putSuggestion({ ...suggestion, status: "dismissed" });
         break;
       }
       case "revise": {
         const suggestion = this.requireOpen(request.id);
+        if (!await this.isVisibleSuggestion(suggestion)) throw new Error("项目建议已处理或不存在。");
         const selected = new Set(request.sessionIds);
         if (request.sessionIds.some((sessionId) => !suggestion.threads.some((thread) => thread.sessionId === sessionId))) throw new Error("不能关联建议之外的对话。");
         store.putSuggestion({ ...suggestion, name: request.name, brief: request.brief, focus: request.focus, threads: suggestion.threads.filter((thread) => selected.has(thread.sessionId)) });
         break;
       }
       case "rewrite": {
-        this.requireOpen(request.id);
+        if (!await this.isVisibleSuggestion(this.requireOpen(request.id))) throw new Error("项目建议已处理或不存在。");
         await this.engine.rewriteSuggestion(request.id, request.feedback);
         break;
       }
       case "choose-location": {
         const suggestion = this.requireOpen(request.id);
+        if (!await this.isVisibleSuggestion(suggestion)) throw new Error("项目建议已处理或不存在。");
         if (suggestion.kind !== "create") throw new Error("已有项目的位置不能修改。");
         const location = await this.options.chooseProjectDirectory(suggestion);
         if (location) store.putSuggestion({ ...this.requireOpen(request.id), location });
@@ -102,6 +120,7 @@ export class DesktopThreadBriefService {
       }
       case "accept": {
         const suggestion = this.requireOpen(request.id);
+        if (!await this.isVisibleSuggestion(suggestion)) throw new Error("项目建议已处理或不存在。");
         this.accepting.add(request.id);
         try {
           let projectId = suggestion.projectId;
@@ -123,7 +142,14 @@ export class DesktopThreadBriefService {
     }
     if (request.action !== "overview" && request.action !== "history") this.options.onChange?.();
     const snapshot = store.snapshot();
-    return { ...snapshot, history, suggestions: snapshot.suggestions.map((suggestion) => ({
+    const [briefs, suggestions, projects] = await Promise.all([
+      Promise.all(snapshot.briefs.map(async (brief) => await this.isVisibleThread(brief) ? brief : undefined)),
+      Promise.all(snapshot.suggestions.map(async (suggestion) => await this.isVisibleSuggestion(suggestion) ? suggestion : undefined)),
+      Promise.all(snapshot.projects.map(async (project) => await this.isVisibleSuggestion(project) ? project : undefined))
+    ]);
+    return { ...snapshot, briefs: briefs.filter((brief) => brief !== undefined), projects: projects.filter((project) => project !== undefined),
+      lastError: snapshot.lastError && await this.isVisibleSessionId(snapshot.lastError.sessionId) ? snapshot.lastError : undefined,
+      history, suggestions: suggestions.filter((suggestion) => suggestion !== undefined).map((suggestion) => ({
       ...suggestion,
       location: suggestion.location ?? this.options.state.projects().find((project) => project.id === suggestion.projectId)?.path
     })) };
@@ -136,6 +162,31 @@ export class DesktopThreadBriefService {
     return suggestion;
   }
 
+  private async isVisibleSessionId(sessionId: string): Promise<boolean> {
+    for (const project of this.options.state.projects()) {
+      if (project.missing) continue;
+      const root = await this.options.projects.dataRoot(project);
+      const file = await resolveSessionFile(root, sessionId).catch(() => undefined);
+      if (!file || sessionIdFromFile(file) !== sessionId) continue;
+      return (await readSessionCatalogRecord(root, sessionId))?.isIncognito !== true;
+    }
+    return false;
+  }
+
+  private async isVisibleThread(thread: BriefThreadReference): Promise<boolean> {
+    const project = this.options.state.projects().find((entry) => entry.id === thread.projectId && !entry.missing);
+    if (!project) return false;
+    const root = await this.options.projects.dataRoot(project);
+    const file = await resolveSessionFile(root, thread.sessionId).catch(() => undefined);
+    if (!file || sessionIdFromFile(file) !== thread.sessionId) return false;
+    return (await readSessionCatalogRecord(root, thread.sessionId))?.isIncognito !== true;
+  }
+
+  private async isVisibleSuggestion(suggestion: { threads: readonly BriefThreadReference[] }): Promise<boolean> {
+    for (const thread of suggestion.threads) if (!await this.isVisibleThread(thread)) return false;
+    return true;
+  }
+
   private async readThread(sessionId: string, minimumCreatedAt?: string): Promise<BriefThread | undefined> {
     for (const project of this.options.state.projects()) {
       if (project.missing) continue;
@@ -143,6 +194,7 @@ export class DesktopThreadBriefService {
       const file = await resolveSessionFile(root, sessionId).catch(() => undefined);
       if (!file || sessionIdFromFile(file) !== sessionId) continue;
       const catalog = await readSessionCatalogRecord(root, sessionId);
+      if (catalog?.isIncognito) return undefined;
       // 自动路径先看控制面时间，旧对话不能为了判断是否要摘要而先读一遍正文。
       const createdAt = catalog?.createdAt ?? (await stat(file)).birthtime.toISOString();
       if (minimumCreatedAt && createdAt < minimumCreatedAt) return undefined;

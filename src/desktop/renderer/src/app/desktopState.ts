@@ -59,11 +59,19 @@ export function applyUpdatesToWorkspace(
   };
 }
 
+/** 文本/思考增量不会改变任务摘要，先过滤再扫描会话列表。 */
+function affectsSidebarSession(event: AgentHostEvent | undefined): boolean {
+  return event !== undefined && (event.type === "message.user" || event.type === "run.started"
+    || event.type === "permission.requested" || event.type === "permission.resolved" || isTerminalRunEvent(event));
+}
+
 /** 把所有项目共用的事件流投影到侧栏任务摘要，并保留未受影响项目的任务。 */
 export function applyUpdatesToSidebarSessions(
   sessions: DesktopSessionSummary[],
   updates: DesktopAgentEventEnvelope[]
 ): DesktopSessionSummary[] {
+  const relevantUpdates = updates.filter((update) => affectsSidebarSession(update.event));
+  if (!relevantUpdates.length) return sessions;
   const sessionsByProject = new Map<string, DesktopSessionSummary[]>();
   for (const session of sessions) {
     const group = sessionsByProject.get(session.projectId) ?? [];
@@ -71,19 +79,18 @@ export function applyUpdatesToSidebarSessions(
     sessionsByProject.set(session.projectId, group);
   }
   const updatesByProject = new Map<string, DesktopAgentEventEnvelope[]>();
-  for (const update of updates) {
+  for (const update of relevantUpdates) {
     const group = updatesByProject.get(update.projectId) ?? [];
     group.push(update);
     updatesByProject.set(update.projectId, group);
   }
+  let changed = false;
   for (const [projectId, projectUpdates] of updatesByProject) {
-    sessionsByProject.set(projectId, applyUpdatesToProjectSessions(
-      projectId,
-      sessionsByProject.get(projectId) ?? [],
-      projectUpdates
-    ));
+    const current = sessionsByProject.get(projectId) ?? [];
+    const next = applyUpdatesToProjectSessions(projectId, current, projectUpdates);
+    if (next !== current) { changed = true; sessionsByProject.set(projectId, next); }
   }
-  return [...sessionsByProject.values()].flat();
+  return changed ? [...sessionsByProject.values()].flat() : sessions;
 }
 
 /** 用项目快照中的完整任务列表替换侧栏里该项目的旧投影。 */
@@ -169,9 +176,12 @@ function applyUpdatesToProjectSessions(
   currentSessions: DesktopSessionSummary[],
   updates: DesktopAgentEventEnvelope[]
 ): DesktopSessionSummary[] {
+  if (!updates.some((update) => affectsSidebarSession(update.event))) return currentSessions;
   const sessions = [...currentSessions];
+  let changed = false;
   const sessionIndexes = new Map(sessions.map((session, index) => [session.id, index]));
   const upsert = (session: DesktopSessionSummary): void => {
+    changed = true;
     const index = sessionIndexes.get(session.id);
     if (index === undefined) {
       sessionIndexes.set(session.id, sessions.length);
@@ -230,7 +240,7 @@ function applyUpdatesToProjectSessions(
       });
     }
   }
-  return sessions.sort(sessionSort);
+  return changed ? sessions.sort(sessionSort) : currentSessions;
 }
 
 export function lastReportedInputTokens(document?: DesktopSessionDocument): number | undefined {
@@ -306,6 +316,7 @@ export function syntheticSession(projectId: string, sessionId: string, input: st
     createdAt: now,
     updatedAt: now,
     pinned: false,
+    isIncognito: false,
     status: "running",
     resumable: undefined
   };

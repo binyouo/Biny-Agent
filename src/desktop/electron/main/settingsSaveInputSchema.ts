@@ -55,13 +55,11 @@ export const modelConfigurationSchema = z.object({
 });
 const webSearchSettingsSchema = z.object({
   enabled: z.boolean(),
-  provider: z.enum(["duckduckgo", "google", "tavily", "brave", "anysearch"]),
-  apiKey: z.string().max(4_000).optional(),
-  apiKeyHandle: z.string().uuid().optional(),
-  apiKeyEnv: z.string().trim().min(1).max(120).optional(),
+  provider: z.enum(["google", "xiaohongshu"]),
+  visibleBrowsing: z.boolean(),
   timeoutMs: z.number().int().min(1_000).max(60_000),
   maxResults: z.number().int().min(1).max(10)
-});
+}).strict();
 const permissionSettingsSchema = z.object({
   mode: z.enum(["ask", "read-only", "auto", "full-access"]),
   allowTools: z.array(idSchema).max(512),

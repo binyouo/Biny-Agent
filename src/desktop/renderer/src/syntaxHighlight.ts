@@ -1,7 +1,7 @@
 /**
  * 代码高亮（Shiki）。
  *
- * 全渲染进程共享一个 highlighter 单例，模块加载即预热；语言按需 `loadLanguage`，
+ * 全渲染进程共享一个按需初始化的 highlighter；语言按需 `loadLanguage`，
  * 未预载的语法由打包器自然切成独立 chunk，用到才拉取。主题一次高亮同时输出
  * github-light / github-dark 两组颜色 CSS 变量，明暗切换纯靠 CSS，不重新高亮。
  *
@@ -9,47 +9,24 @@
  * 超长或高亮抛错时，退回自行转义的纯文本——结果要作为 HTML 插进 DOM，不能把
  * 未转义的文件内容直接交出去。
  */
-import { bundledLanguages, createHighlighter, createJavaScriptRegexEngine, type BundledLanguage } from "shiki";
+import { bundledLanguages } from "shiki/langs";
+import type { BundledLanguage, Highlighter } from "shiki";
 
 /** 双主题输出 `--shiki-light` / `--shiki-dark` 变量，由全局 CSS 按 data-theme 取值。 */
 const LIGHT_THEME = "github-light";
 const DARK_THEME = "github-dark";
 
-const PRELOAD_LANGUAGES = [
-  "bash",
-  "cpp",
-  "css",
-  "go",
-  "html",
-  "java",
-  "javascript",
-  "json",
-  "jsx",
-  "markdown",
-  "python",
-  "rust",
-  "sql",
-  "tsx",
-  "typescript",
-  "xml",
-  "yaml"
-];
+let highlighterPromise: Promise<Highlighter> | undefined;
+const languageLoads = new Map<string, Promise<void>>();
 
-let highlighterPromise: ReturnType<typeof createHighlighter> | undefined;
-
-function getHighlighter() {
-  highlighterPromise ??= createHighlighter({
+function getHighlighter(): Promise<Highlighter> {
+  // 首屏不编译未使用的语法；没有代码块的页面无需加载高亮引擎。
+  highlighterPromise ??= import("shiki").then(({ createHighlighter, createJavaScriptRegexEngine }) => createHighlighter({
     themes: [LIGHT_THEME, DARK_THEME],
-    langs: PRELOAD_LANGUAGES,
-    // JS 正则引擎：免 wasm 加载，覆盖绝大多数语法；forgiving 让不支持的构造静默降级
+    langs: [],
     engine: createJavaScriptRegexEngine({ forgiving: true })
-  });
+  })).catch((error: unknown) => { highlighterPromise = undefined; throw error; });
   return highlighterPromise;
-}
-
-// 模块加载即预热：首条消息渲染时高亮器通常已就绪，未就绪期间展示层先退纯文本。
-if (typeof window !== "undefined") {
-  getHighlighter().catch(() => {});
 }
 
 /**
@@ -126,7 +103,12 @@ async function highlight(content: string, language?: string): Promise<Highlighte
     const lang = language as BundledLanguage;
     if (!highlighter.getLoadedLanguages().includes(lang)) {
       // 未预载的语言按需加载；打包器会把它和 shiki 的语法注册表拆成独立 chunk
-      await highlighter.loadLanguage(lang);
+      let pending = languageLoads.get(lang);
+      if (!pending) {
+        pending = highlighter.loadLanguage(lang).finally(() => { languageLoads.delete(lang); });
+        languageLoads.set(lang, pending);
+      }
+      await pending;
     }
     const html = highlighter.codeToHtml(content, {
       lang,

@@ -215,7 +215,7 @@ test("workspaceSnapshot 区分连接默认与模型单独覆盖", async () => {
       defaultModel: "gemini-pro",
       web: {
         ...defaultConfig.web,
-        search: { ...defaultConfig.web.search, provider: "tavily", apiKey: "search-key" }
+        search: { ...defaultConfig.web.search, provider: "google" }
       },
       providers: {
         gemini: {
@@ -246,7 +246,6 @@ test("workspaceSnapshot 区分连接默认与模型单独覆盖", async () => {
     assert.equal(legacy?.apiBackend, undefined);
     assert.equal(JSON.stringify(snapshot).includes("g-key"), false);
     assert.equal(await agents.readModelApiKey(project.id, "gemini"), "g-key");
-    assert.equal(await agents.readWebSearchApiKey(project.id, "tavily"), "search-key");
 
     // 一笔设置事务必须同时保留能力、请求格式、profile 和明确清空的 Header。
     const upsert = {

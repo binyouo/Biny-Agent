@@ -16,6 +16,7 @@ interface DesktopShellProps {
   rightPanel?: React.ReactNode;
   rightSidebar?: {
     open: boolean;
+    focused?: boolean;
     resizing: boolean;
     width: number;
   };
@@ -68,6 +69,7 @@ export function DesktopShell({ children, overlays, rightPanel, rightSidebar, sid
         data-sidebar-mode={sidebarLayout.mode}
         data-sidebar-resizing={sidebarLayout.resizing ? "true" : undefined}
         data-inspector-resizing={rightSidebar?.resizing ? "true" : undefined}
+        data-inspector-focused={rightSidebar?.focused ? "true" : undefined}
         data-sidebar-transition={sidebarLayout.transition === "idle" ? undefined : sidebarLayout.transition}
         style={rootStyle}
         onAnimationEnd={(event) => {
@@ -77,7 +79,7 @@ export function DesktopShell({ children, overlays, rightPanel, rightSidebar, sid
         }}
       >
         <div className="biny-app-shell" inert={starting}>
-          <main className="biny-content-shell" aria-busy={starting}>{children}</main>
+          <main className="biny-content-shell" aria-busy={starting} inert={rightSidebar?.focused} aria-hidden={rightSidebar?.focused}>{children}</main>
           <div className="biny-sidebar-block">
             <SidebarPinSpacer active={sidebarLayout.transition === "pinning"} />
             {sideNav}

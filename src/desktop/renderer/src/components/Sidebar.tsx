@@ -5,6 +5,7 @@
  * 和未归类对话三段树。项目与会话的业务操作通过回调返回上层，避免把 IPC 和持久化状态
  * 复制到视觉组件中。
  */
+import { Tooltip } from "@astryxdesign/core/Tooltip";
 import { createPortal } from "react-dom";
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { SidebarLayoutSnapshot } from "../../../sidebarLayout.js";
@@ -60,7 +61,6 @@ interface SidebarProps {
   onRemoveProject(projectId: string): void;
   onSearch(): void;
   onTimeClues(): void;
-  temporalUnread: number;
   onSettings(): void;
   onInsertCrystal(reference: string): void;
   onToggleSidebar(): void;
@@ -92,7 +92,6 @@ export const Sidebar = memo(function Sidebar({
   onRemoveProject,
   onSearch,
   onTimeClues,
-  temporalUnread,
   onSettings,
   onInsertCrystal,
   onToggleSidebar
@@ -378,16 +377,13 @@ export const Sidebar = memo(function Sidebar({
         aria-hidden={contentVisible ? undefined : true}
         className={`biny-sidebar${contentVisible ? "" : " is-hidden"}${compact ? " is-compact" : ""}${layout.resizing ? " is-resizing" : ""}${peekOpen ? ` is-peek-overlay is-peek-${layout.transition === "peek-closing" ? "closing" : layout.transition === "pinning" ? "pinning" : "peeking"}` : ""}`}
         ref={peekOpen ? peekDrawerRef : undefined}
-        style={{
-          width: "var(--biny-sidebar-animated-visual-width)"
-        }}
         onPointerEnter={peekOpen ? peekDrawerHandlers.onPointerEnter : undefined}
         onPointerLeave={peekOpen ? peekDrawerHandlers.onPointerLeave : undefined}
         onPointerMove={peekOpen ? peekDrawerHandlers.onPointerMove : undefined}
         onPointerDown={peekOpen ? peekDrawerHandlers.onPointerDown : undefined}
         onPointerUp={peekOpen ? peekDrawerHandlers.onPointerUp : undefined}
       >
-        {/* 浮动卡片：aside 只负责宽度动画与裁剪，视觉壳在 card 上。 */}
+        {/* 布局占位平滑插值，卡片保持原宽度淡入，由外壳裁切可见范围。 */}
         <div className="biny-sidebar-card">
           {/* 顶部行是侧栏内容的固定锚点（顶栏按钮 + 底部分割线）；收起时也保留它，避免导航内容上跳。 */}
           <div aria-hidden="true" className="biny-sidebar-topbar-spacer" />
@@ -489,15 +485,15 @@ export const Sidebar = memo(function Sidebar({
       </div>
 
       <div className="biny-sidebar-footer">
-        <button aria-label="时间线索" className="biny-sidebar-settings-item" onClick={onTimeClues} title="时间线索" type="button">
-          <Icon name="calendar" size={16} />
-          <span>时间线索</span>
-          {temporalUnread > 0 ? <span className="time-clues-unread" aria-label={`${temporalUnread} 条今日未读线索`}>{temporalUnread > 99 ? "99+" : temporalUnread}</span> : null}
-        </button>
         <button aria-label="设置" className="biny-sidebar-settings-item" onClick={onSettings} title="设置" type="button">
           <Icon name="settings" size={16} />
           <span>设置</span>
         </button>
+        <Tooltip content="时间线索" delay={150} placement="above">
+          <button aria-label="时间线索" aria-haspopup="dialog" className="biny-chrome-button biny-sidebar-time-clues-button" onClick={onTimeClues} type="button">
+            <Icon name="calendar" size={16} />
+          </button>
+        </Tooltip>
         <CrystalDock sessionId={selectedSessionId} onInsert={onInsertCrystal} />
       </div>
       </div>

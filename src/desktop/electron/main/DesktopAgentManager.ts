@@ -21,13 +21,16 @@ import { planStatus } from "../../../extensions/plan.js";
 import { assertPlanningOperationAllowed } from "../../../agent/planningPolicy.js";
 import type { AgentCapabilitySelection } from "../../../agent/capabilitySelection.js";
 import type {
+  MemoryArchiveEntriesResult,
   MemoryEntriesResult,
   MemoryMaintenanceStatus,
   MemoryEntry,
+  MemorySimilarSearchOptions,
   MemoryOverview,
   MemorySearchResult
 } from "../../../agent/context/memoryTypes.js";
 import { MemoryStorage } from "../../../agent/context/memoryStorage.js";
+import { DesktopActivityMemoryIndex } from "./DesktopActivityMemoryIndex.js";
 import { resolveToolModelAlias } from "../../../llm/toolModel.js";
 import { IdentityStorage } from "../../../agent/context/identityStorage.js";
 import { randomUUID } from "node:crypto";
@@ -52,7 +55,6 @@ import type { MemoryEmbeddingRuntimeStatus } from "../../../agent/context/Memory
 import { FileModelsStore, restoreProviderCatalogs, type ModelsStore } from "../../../llm/ModelsStore.js";
 import { listConfiguredModelChoices, listPickerModelChoices, modelRuntimeInfo, type ModelRuntimeInfo, type ThinkingSelection } from "../../../llm/ModelManager.js";
 import type { PermissionMode, PermissionResult } from "../../../permission/PermissionManager.js";
-import { webSearchKeyEnvNames } from "../../../tools/web/search.js";
 import type { BrowserAutomationEndpoint } from "../../../tools/browser.js";
 import { executeRuntimeCommand } from "../../../runtime/commands.js";
 import {
@@ -83,7 +85,9 @@ import {
 } from "../../../session/catalog.js";
 import { readSessionEvents } from "../../../session/events.js";
 import { openRecipeSuggestions, recipeIds, RecipeStateStore, type RecipeId } from "../../../session/recipes.js";
-import { resolveSessionFile } from "../../../session/store.js";
+import { agentDir, resolveSessionFile } from "../../../session/store.js";
+import { AutomationStore, type AutomationRecord } from "../../../runtime/AutomationScheduler.js";
+import { RuntimeEventAuthority } from "../../../runtime/RuntimeAuthority.js";
 import {
   defaultChatPersonalizationOverride,
   type AgentPersonalizationState,
@@ -101,6 +105,8 @@ import type {
   DesktopMemoryEmbeddingCancellationResult,
   DesktopMemoryEmbeddingDeleteResult,
   DesktopMemoryEmbeddingStatus,
+  DesktopMemoryArchivePage,
+  DesktopMemoryArchiveMutationResult,
   DesktopMemoryEntry,
   DesktopMemoryEntryInput,  DesktopMemoryEntryPatch,
   DesktopMemoryEntriesPage,
@@ -133,7 +139,6 @@ import type {
   DesktopSessionTreePageOptions,
   DesktopSlashResult,
   DesktopWebSearchSettings,
-  DesktopWebSearchProvider,
   DesktopWorktreeStatus,
   DesktopSettingsChatSnapshot,
   DesktopSettingsCredentialScope,
@@ -232,6 +237,7 @@ export class DesktopAgentManager {
   private readonly stagedSettingsCredentials = new Map<string, StagedSettingsCredential>();
   private readonly modelLogin: DesktopModelLoginService;
   private readonly identityStorage = new IdentityStorage();
+  private activityMemoryIndex?: Promise<DesktopActivityMemoryIndex>;
   private closing = false;
 
   constructor(
@@ -249,25 +255,27 @@ export class DesktopAgentManager {
     }), this.fetcher);
   }
 
-  /** Activity 记忆写入复用已经驻留的 AgentSession；没有 session 时不为后台分析强行启动 Runtime。 */
+  /** Activity 的记忆模型与索引独立于聊天 Session，后台分析不强行启动 Runtime。 */
   async findMemorySimilarEntries(
     query: string,
-    options: { limit: number; minimumSimilarity: number; signal?: AbortSignal }
+    options: MemorySimilarSearchOptions
   ): Promise<MemoryEntry[] | undefined> {
-    for (const managed of this.runtimes.values()) {
-      if (managed.commands) return await managed.commands.agent.findMemorySimilarEntries(query, options);
-    }
-    return undefined;
+    return await (await this.getActivityMemoryIndex()).findSimilarEntries(query, options);
   }
 
   /** Activity 事实已经写入 SQLite 后，尽力把它投影进现有的全局向量索引。 */
   async indexActivityMemoryEntry(entry: MemoryEntry): Promise<void> {
-    for (const managed of this.runtimes.values()) {
-      if (managed.commands) {
-        await managed.commands.agent.indexMemoryEntry(entry);
-        return;
-      }
-    }
+    await (await this.getActivityMemoryIndex()).indexEntry(entry);
+  }
+
+  private async getActivityMemoryIndex(): Promise<DesktopActivityMemoryIndex> {
+    this.activityMemoryIndex ??= this.projects.globalDataRoot().then((workspaceRoot) => new DesktopActivityMemoryIndex({
+      workspaceRoot,
+      agentDir: globalAgentDir(),
+      loadConfig: async () => await this.configStore.load(workspaceRoot),
+      fetcher: this.fetcher
+    }));
+    return await this.activityMemoryIndex;
   }
 
   /** 首屏先取得 Runtime 的模型与上下文状态，避免界面亮起后再从占位模型跳到实际模型。
@@ -364,8 +372,8 @@ export class DesktopAgentManager {
   async sidebarSessions(workspace?: DesktopWorkspaceSnapshot): Promise<DesktopSessionSummary[]> {
     const sessionGroups = await Promise.all(this.state.projects().map(async (storedProject) => {
       if (workspace?.project.id === storedProject.id) return workspace.sessionPage?.sessions ?? workspace.sessions;
-      const project = await this.projects.inspectProject(storedProject);
-      return (await this.projects.listSessionTreePage(project, this.runtimeSnapshots(project.id), this.projectEvents(project.id))).sessions;
+      // bootstrap 已刷新所有项目；侧栏只读会话，不再次为每个项目启动 Git 子进程。
+      return (await this.projects.listSessionTreePage(storedProject, this.runtimeSnapshots(storedProject.id), this.projectEvents(storedProject.id))).sessions;
     }));
     return sessionGroups.flat();
   }
@@ -626,7 +634,8 @@ export class DesktopAgentManager {
     idempotencyKey?: string,
     promptContext?: string,
     capabilitySelection?: AgentCapabilitySelection,
-    draftPlanning?: boolean
+    draftPlanning?: boolean,
+    draftIncognito?: boolean
   ): Promise<DesktopRunReceipt> {
     return await this.runIdempotently(projectId, "send", idempotencyKey, async () => await this.sendPromptOnce(
       projectId,
@@ -638,7 +647,8 @@ export class DesktopAgentManager {
       promptContext,
       capabilitySelection,
       draftPlanning,
-      idempotencyKey?.trim() || undefined
+      idempotencyKey?.trim() || undefined,
+      draftIncognito
     ));
   }
 
@@ -652,13 +662,14 @@ export class DesktopAgentManager {
     promptContext?: string,
     capabilitySelection?: AgentCapabilitySelection,
     draftPlanning?: boolean,
-    messageId?: string
+    messageId?: string,
+    draftIncognito?: boolean
   ): Promise<DesktopRunReceipt> {
     const sendPerfStartedAt = perfNow();
     const selectedBeforeSend = this.state.selectedSessionId(projectId);
     const requestedSessionId = sessionId ?? this.draftSessionIds.get(projectId);
     const runtimeForPromptPerfStartedAt = perfNow();
-    const { managed, snapshot } = await this.runtimeForPrompt(projectId, requestedSessionId, personalization);
+    const { managed, snapshot } = await this.runtimeForPrompt(projectId, requestedSessionId, personalization, sessionId === undefined ? draftIncognito : undefined);
     const runtime = managed.runtime;
     const targetSessionId = snapshot.info.sessionId;
     if (sessionId === undefined && draftPlanning !== undefined) {
@@ -770,11 +781,16 @@ export class DesktopAgentManager {
   private async runtimeForPrompt(
     projectId: string,
     sessionId: string | undefined,
-    personalization?: DesktopChatPersonalizationOverride
+    personalization?: DesktopChatPersonalizationOverride,
+    draftIncognito?: boolean
   ): Promise<{ managed: ManagedRuntime; snapshot: InteractiveRuntimeSnapshot }> {
     const primary = await this.ensureRuntime(projectId);
     if (primary.runtime instanceof RuntimeHostClient) {
       const target = await primary.runtime.ensureSession({ sessionId, writeIntent: true, focus: false });
+      if (draftIncognito === true) {
+        const state = await primary.runtime.getPersonalizationState(target.sessionId);
+        await primary.runtime.updateSessionIncognito(true, state.catalogRevision, target.sessionId);
+      }
       if (personalization !== undefined) {
         const state = await primary.runtime.getPersonalizationState(target.sessionId);
         await primary.runtime.updateChatPersonalization(personalization, state.catalogRevision, target.sessionId);
@@ -789,6 +805,10 @@ export class DesktopAgentManager {
       await primary.runtime.resumeSession(sessionId);
     } else if (sessionId === undefined) {
       await this.ensureDraftRuntime(projectId);
+    }
+    if (draftIncognito === true) {
+      const state = await primary.commands!.agent.getPersonalizationState();
+      await primary.runtime.runExclusiveOperation("personalization", async () => await primary.commands!.agent.updateSessionIncognito(true, state.catalogRevision));
     }
     if (personalization !== undefined) await this.updateManagedChatPersonalization(primary, personalization);
     return { managed: primary, snapshot: primary.runtime.getSnapshot() };
@@ -1152,28 +1172,7 @@ export class DesktopAgentManager {
       });
     }
     if (input.webSearch !== undefined) {
-      const sameProvider = input.webSearch.provider === next.web.search.provider;
-      const apiKey = input.webSearch.apiKeyHandle === undefined
-        ? input.webSearch.apiKey
-        : this.requireApiKeyHandle(input.webSearch.apiKeyHandle, credentialHandles, {
-            projectId,
-            purpose: "web-search",
-            providerAlias: input.webSearch.provider
-          });
-      next = configSchema.parse({
-        ...next,
-        web: {
-          ...next.web,
-          search: {
-            enabled: input.webSearch.enabled,
-            provider: input.webSearch.provider,
-            apiKey: apiKey === undefined ? (sameProvider ? next.web.search.apiKey : undefined) : apiKey || undefined,
-            apiKeyEnv: sameProvider ? input.webSearch.apiKeyEnv : undefined,
-            timeoutMs: input.webSearch.timeoutMs,
-            maxResults: input.webSearch.maxResults
-          }
-        }
-      });
+      next = configSchema.parse({ ...next, web: { ...next.web, search: input.webSearch } });
     }
     if (input.models !== undefined) {
       for (const handle of input.models.oauthCredentialHandles ?? []) {
@@ -1426,7 +1425,7 @@ export class DesktopAgentManager {
   stageSettingsCredential(secret: string, scope: DesktopSettingsCredentialScope): DesktopStagedSettingsCredential {
     if (!secret.trim() || secret.length > 16_000) throw new Error("凭据不能为空且不能超过 16000 个字符。");
     this.projects.requireProject(scope.projectId);
-    if (!scope.providerAlias.trim() || (scope.purpose !== "model" && scope.purpose !== "web-search")) {
+    if (!scope.providerAlias.trim() || scope.purpose !== "model") {
       throw new Error("暂存凭据用途无效。");
     }
     this.pruneStagedSettingsCredentials();
@@ -1517,6 +1516,24 @@ export class DesktopAgentManager {
       await managed.commands.agent.updateChatPersonalization(input, revision);
     } else {
       await requireRemoteRuntime(managed.runtime).updateChatPersonalization(input, revision, sessionId);
+    }
+    return await this.workspaceSnapshot(projectId);
+  }
+
+  async saveSessionIncognito(
+    projectId: string,
+    sessionId: string,
+    isIncognito: boolean,
+    expectedRevision: string
+  ): Promise<DesktopWorkspaceSnapshot> {
+    this.assertNoRunningTasks("任务运行期间不能修改当前聊天的无痕状态。");
+    const revision = (await this.resolvePendingSessionRead(projectId, sessionId, expectedRevision)) ?? expectedRevision;
+    const managed = await this.runtimeForSession(projectId, sessionId, "任务运行期间不能修改当前聊天的无痕状态。");
+    this.assertNoRunningTasks("任务运行期间不能修改当前聊天的无痕状态。");
+    if (managed.commands) {
+      await managed.runtime.runExclusiveOperation("personalization", async () => await managed.commands!.agent.updateSessionIncognito(isIncognito, revision));
+    } else {
+      await requireRemoteRuntime(managed.runtime).updateSessionIncognito(isIncognito, revision, sessionId);
     }
     return await this.workspaceSnapshot(projectId);
   }
@@ -1711,12 +1728,13 @@ export class DesktopAgentManager {
     return await this.identityStorage.saveDocument(document, content, expectedRevision, reason);
   }
 
-  async searchMemory(projectId: string, query: string, includeArchived = false): Promise<DesktopMemorySearchMatch[]> {
+  async searchMemory(projectId: string, query: string): Promise<DesktopMemorySearchMatch[]> {
     this.projects.requireProject(projectId);
     const { runtime, commands } = await this.ensureRuntime(projectId);
     const result = commands
-      ? await commands.agent.searchMemory(query, [], { limit: 8, includeArchived })
-      : await requireRemoteRuntime(runtime).memory<MemorySearchResult>("search", { query, limit: 8, includeArchived });
+      ? await commands.agent.searchMemory(query, [], { limit: 8 })
+      : await requireRemoteRuntime(runtime).memory<MemorySearchResult>("search", { query, limit: 8 });
+    if (result.report.degraded) throw new Error(`记忆语义搜索暂不可用：${result.report.degraded}`);
     return result.matches.map((match) => ({
       id: match.entry.id,
       originalId: match.entry.originalId,
@@ -1866,30 +1884,51 @@ export class DesktopAgentManager {
     return await this.memoryStats(projectId);
   }
 
-  async archivedMemoryEntries(projectId: string): Promise<DesktopMemoryEntry[]> {
+  async archivedMemoryEntries(projectId: string, offset: number, limit: number, includeChains = false): Promise<DesktopMemoryArchivePage> {
     this.projects.requireProject(projectId);
+    if (includeChains && limit > 25) throw new Error("归档合并链仅支持每页至多 25 条。");
     const { runtime, commands } = await this.ensureRuntime(projectId);
     const result = commands
-      ? await commands.agent.getLocalMemory().listArchivedEntries()
-      : await requireRemoteRuntime(runtime).memory<{ entries: MemoryEntry[] }>("archive-list", {});
-    return result.entries as DesktopMemoryEntry[];
+      ? await commands.agent.getLocalMemory().listArchivedEntries({ offset, limit })
+      : await requireRemoteRuntime(runtime).memory<MemoryArchiveEntriesResult>("archive-list", { offset, limit });
+    const entryIds = result.entries.filter((entry) => entry.mergedInto).map((entry) => entry.id);
+    const chains = !includeChains || entryIds.length === 0 ? undefined : commands
+      ? await commands.agent.getLocalMemory().resolveArchiveChains(entryIds)
+      : await requireRemoteRuntime(runtime).memory<Record<string, { finalId: string; depth: number }>>("archive-chains", { entryIds });
+    return { revision: result.storeRevision, entries: result.entries as DesktopMemoryEntry[], chains, total: result.total, offset, limit };
   }
 
   async archiveMemoryEntry(
     projectId: string,
     entryId: string,
     archived: boolean
-  ): Promise<DesktopMemoryStats> {
+  ): Promise<DesktopMemoryArchiveMutationResult> {
     this.projects.requireProject(projectId);
     const { runtime, commands } = await this.runtimeForGlobalWrite(projectId, archived ? "任务运行期间不能归档记忆。" : "任务运行期间不能恢复记忆。");
-    const result = commands
-      ? await runtime.runExclusiveOperation("memory", async () => await requireLocalMemory(commands).archiveEntry(entryId, archived))
-      : await requireRemoteRuntime(runtime).memory<{ archived: boolean; entry?: MemoryEntry }>("archive", { id: entryId, archived });
+    // 恢复会消耗归档行。与 HTTP 入口一致，写入前读取合并指向；只向界面报告仍为活动事实的目标。
+    const readAndArchive = async (get: (id: string) => Promise<MemoryEntry | null>,
+      mutate: () => Promise<{ archived: boolean; entry?: MemoryEntry }>) => {
+      const source = archived ? null : await get(entryId);
+      const target = source?.archivedAt && source.archivedReason === "llm_merge" && source.mergedInto
+        ? await get(source.mergedInto) : null;
+      const result = await mutate();
+      return { result, mergedTarget: target && !target.archivedAt ? { id: target.id, content: target.content } : null };
+    };
+    const { result, mergedTarget } = commands
+      ? await runtime.runExclusiveOperation("memory", async () => {
+        const memory = requireLocalMemory(commands);
+        const get = async (id: string) => await memory.getEntry(id) ?? null;
+        return await readAndArchive(get, async () => await memory.archiveEntry(entryId, archived));
+      })
+      : await readAndArchive(
+        async (id) => await requireRemoteRuntime(runtime).memory<MemoryEntry | null>("get", { id }),
+        async () => await requireRemoteRuntime(runtime).memory<{ archived: boolean; entry?: MemoryEntry }>("archive", { id: entryId, archived })
+      );
     // `archived` is the resulting state, so a successful restore legitimately
     // returns false. Presence of the returned entry is the mutation/no-op
     // success signal; absence means the id was not found.
     if (!result.entry) throw new Error("未找到该记忆条目，可能已被其他操作改变。");
-    return await this.memoryStats(projectId);
+    return { ...await this.memoryStats(projectId), mergedTarget };
   }
 
   async deleteMemoryEntry(
@@ -1975,13 +2014,6 @@ export class DesktopAgentManager {
     if (!provider || provider.authMode === "oauth-bearer") return undefined;
     const apiKeyEnv = provider.apiKeyEnv ?? providerDefinition(provider.type).apiKeyEnv;
     return provider.apiKey ?? (apiKeyEnv ? process.env[apiKeyEnv] : undefined);
-  }
-
-  async readWebSearchApiKey(projectId: string, provider: DesktopWebSearchProvider): Promise<string | undefined> {
-    const search = (await this.loadProjectConfig(projectId)).web.search;
-    if (search.provider !== provider) return undefined;
-    const apiKeyEnv = search.apiKeyEnv ?? (provider === "duckduckgo" || provider === "google" ? undefined : webSearchKeyEnvNames[provider]);
-    return search.apiKey ?? (apiKeyEnv ? process.env[apiKeyEnv] : undefined);
   }
 
   private async testCandidate(candidate: AgentConfig, alias: string): Promise<DesktopModelConnectionTestResult> {
@@ -2250,6 +2282,24 @@ export class DesktopAgentManager {
       ? commands.graphs.listGraphs().filter((graph) => graph.mode === "supervised" && graph.supervisorSessionId === sessionId).map((graph) => planStatus(commands, graph.graphId, sessionId))
       : await requireRemoteRuntime(runtime).planList(sessionId);
     return { sessionId, plans };
+  }
+
+  /** 日期列表只需持久化任务；不得为其他项目加载模型、工具或启动调度器。 */
+  async scheduledAutomations(projectId: string): Promise<AutomationRecord[]> {
+    const project = this.projects.requireProject(projectId);
+    if (project.missing) return [];
+    try {
+      await fs.stat(path.join(agentDir(project.path), "runtime.sqlite"));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+      throw error;
+    }
+    const authority = await RuntimeEventAuthority.open(project.path, { backfillLegacySessions: false });
+    try {
+      const store = await AutomationStore.open(project.path, authority);
+      try { return store.list(); }
+      finally { store.close(); }
+    } finally { authority.close(); }
   }
 
   async runtimeProjection(projectId: string): Promise<DesktopRuntimeProjection> {
@@ -2565,6 +2615,7 @@ export class DesktopAgentManager {
     this.pendingSessionReads.clear();
     await Promise.allSettled(this.runtimeInitializations.values());
     await this.idleRuntimeRebuildTail.catch(() => undefined);
+    await this.activityMemoryIndex?.then(async (index) => await index.close()).catch(() => undefined);
     const managedRuntimes = [...this.runtimes.values()];
     this.runtimes.clear();
     this.draftSessionIds.clear();
@@ -2708,7 +2759,7 @@ export class DesktopAgentManager {
         resumeInterrupted: false,
         clientId: `desktop-${process.pid}`,
         surface: "desktop",
-        browserAutomation: this.browserAutomation
+        browserAutomation: this.browserAutomation ? { ...this.browserAutomation, projectId } : undefined
       });
       attached = connected?.client;
     } else {
@@ -2729,7 +2780,7 @@ export class DesktopAgentManager {
           configStore: this.configStore,
           attachmentRoot: this.projects.attachmentsRoot(project),
           sessionId: fresh ? sessionId : undefined,
-          browserAutomation: this.browserAutomation,
+          browserAutomation: this.browserAutomation ? { ...this.browserAutomation, projectId } : undefined,
           resourceRegistry: factoryOptions?.resourceRegistry,
           resourceBoot: factoryOptions?.resourceBoot ?? (factoryOptions?.resourceRegistry === undefined ? "blocking" : "background")
         });
@@ -2871,10 +2922,10 @@ export class DesktopAgentManager {
     update: GlobalPersonalizationUpdate,
     expectedRevision: string
   ): Promise<AgentPersonalizationState> {
-    this.assertNoRunningTasks("任务运行期间不能修改个性化或记忆设置。");
     // 上一次全局设置提交后的空闲实例重建不能和本次 Runtime RPC 并发，
     // 否则用户连续点击时可能正好撞上 Host 重启；首个点击仍不等待本次写入后的后台任务。
     await this.idleRuntimeRebuildTail.catch(() => undefined);
+    this.assertNoRunningTasks("任务运行期间不能修改个性化或记忆设置。");
     const managed = await this.ensureRuntime(projectId);
     this.assertNoRunningTasks("任务运行期间不能修改个性化或记忆设置。");
     const commands = managed.commands;
@@ -3169,19 +3220,7 @@ function resolveConfiguredModelAlias(config: AgentConfig, aliasOrReference: stri
  * refresh token 始终不跨桥。
  */
 function describeWebSearchSettings(search: AgentConfig["web"]["search"]): DesktopWebSearchSettings {
-  const envKeyName = search.provider === "duckduckgo" || search.provider === "google"
-    ? undefined
-    : search.apiKeyEnv ?? webSearchKeyEnvNames[search.provider];
-  return {
-    enabled: search.enabled,
-    provider: search.provider,
-    apiKeyEnv: search.apiKeyEnv,
-    timeoutMs: search.timeoutMs,
-    maxResults: search.maxResults,
-    hasApiKey: Boolean(search.apiKey),
-    envKeyName,
-    envKeyDetected: Boolean(envKeyName && process.env[envKeyName])
-  };
+  return { enabled: search.enabled, provider: search.provider, visibleBrowsing: search.visibleBrowsing, timeoutMs: search.timeoutMs, maxResults: search.maxResults };
 }
 
 function describeSettingsConfigSnapshot(

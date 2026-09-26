@@ -488,9 +488,7 @@ function webSearchInput(value: DesktopWebSearchSettings): DesktopWebSearchSettin
   return {
     enabled: value.enabled,
     provider: value.provider,
-    apiKey: undefined,
-    apiKeyHandle: undefined,
-    apiKeyEnv: value.apiKeyEnv,
+    visibleBrowsing: value.visibleBrowsing,
     timeoutMs: value.timeoutMs,
     maxResults: value.maxResults
   };
@@ -595,9 +593,7 @@ function skillInputFromSnapshot(value: DesktopSettingsSnapshot["skills"] | undef
 function sameWebSearch(draft: DesktopWebSearchSettingsInput, snapshot: DesktopWebSearchSettings): boolean {
   return draft.enabled === snapshot.enabled
     && draft.provider === snapshot.provider
-    && draft.apiKey === undefined
-    && draft.apiKeyHandle === undefined
-    && draft.apiKeyEnv === snapshot.apiKeyEnv
+    && draft.visibleBrowsing === snapshot.visibleBrowsing
     && draft.timeoutMs === snapshot.timeoutMs
     && draft.maxResults === snapshot.maxResults;
 }

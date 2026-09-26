@@ -1,10 +1,9 @@
-/** 回复顶部的上下文清单：展示本轮真实调用的技能（含介绍悬停）与工具。 */
+/** 回复顶部仅保留真实的记忆召回降级警告；工具和技能清单已移入消息菜单。 */
 import React, { Fragment, memo, useEffect, useId, useRef, useState } from "react";
-import { executionToolLabel } from "../../sessionTimeline.js";
 import { Icon, type IconName } from "../Icon.js";
 import { ComposerPopover } from "../composer/ComposerPopover.js";
 
-export const SkillsIndicator = memo(function SkillsIndicator({ memoryRecallDegraded, skillDescriptions, skills, tools }: {
+export const SkillsIndicator = memo(function SkillsIndicator({ memoryRecallDegraded }: {
   /** 本轮自动记忆召回的降级原因；这不是后台上下文清单，而是需要用户知道的异常提示。 */
   memoryRecallDegraded?: string;
   /** 技能名 → 介绍；悬停清单优先展示完整介绍。 */
@@ -13,40 +12,8 @@ export const SkillsIndicator = memo(function SkillsIndicator({ memoryRecallDegra
   tools?: readonly string[];
 }): React.JSX.Element | null {
   // 记忆注入本身是后台上下文，不在回复顶部伪装成用户操作；只有召回降级这种异常才提示。
-  const invokedSkills = [...new Set(skills ?? [])].filter((name) => name.trim());
-  const invokedTools = [...new Set(tools ?? [])].filter(isVisibleResponseTool);
-  const items = [
-    memoryRecallDegraded
-      ? {
-        kind: "memory-degraded" as const,
-        icon: "brain-off" as const,
-        names: [memoryRecallDegraded],
-        text: "记忆召回降级",
-        title: `本轮自动记忆召回未执行：${memoryRecallDegraded}`
-      }
-      : undefined,
-    invokedSkills.length
-      ? {
-        kind: "skills" as const,
-        icon: "wand" as const,
-        names: invokedSkills.map((name) => {
-          const description = skillDescriptions?.get(name);
-          return description ? `${name} — ${description}` : name;
-        }),
-        text: `${String(invokedSkills.length)} 个技能`,
-        title: "本轮调用的技能"
-      }
-      : undefined,
-    invokedTools.length
-      ? {
-        kind: "tools" as const,
-        icon: "wrench" as const,
-        names: invokedTools.map(executionToolLabel),
-        text: `${String(invokedTools.length)} 个工具`,
-        title: "本轮实际调用的工具"
-      }
-      : undefined
-  ].filter((item): item is NonNullable<typeof item> => item !== undefined);
+  const items = memoryRecallDegraded ? [{ kind: "memory-degraded", icon: "brain-off" as const,
+    names: [memoryRecallDegraded], text: "记忆召回降级", title: `本轮自动记忆召回未执行：${memoryRecallDegraded}` }] : [];
   if (items.length === 0) return null;
   return (
     <div className="chat-meta-indicator">
@@ -90,9 +57,4 @@ function ContextIndicator({ icon, names, text, title }: { icon: IconName; names:
       ) : null}
     </>
   );
-}
-
-function isVisibleResponseTool(tool: string): boolean {
-  // Skill 调用单独进入技能清单；其余真实 tool.started 都属于本轮执行事实。
-  return tool !== "Skill" && tool !== "skill_call";
 }

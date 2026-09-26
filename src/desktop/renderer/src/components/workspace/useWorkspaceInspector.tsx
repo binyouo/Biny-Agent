@@ -9,12 +9,16 @@ import {
 } from "../../../../filePanelSizing.js";
 import type { TimelineTool } from "../../sessionTimeline.js";
 import type { SessionFileChange } from "../../sessionChanges.js";
+import type { LocalReferenceResult } from "../../../../../session/localReferences.js";
+import { WorkspaceBrowserPanel } from "./WorkspaceBrowserPanel.js";
+import { WorkspaceCommitPanel } from "./WorkspaceCommitPanel.js";
+import { WorkspaceReferencesPanel } from "./WorkspaceReferencesPanel.js";
+import { WorkspaceRailButton } from "./WorkspaceRailButton.js";
 import { Icon, type IconName } from "../Icon.js";
 import { TerminalView } from "../TerminalView.js";
-import { useClosingPresence } from "../../useClosingPresence.js";
 import { FilePreviewPanel, type FileDirectoryState, type FilePreviewState } from "./FilePreviewPanel.js";
 import { SessionChangesPanel } from "./SessionChangesPanel.js";
-import { WorkspaceBrowserPanel, WorkspaceCommitPanel, WorkspaceToolsPanel } from "./WorkspaceUtilityPanels.js";
+import { WorkspaceToolsPanel } from "./WorkspaceUtilityPanels.js";
 
 interface UseWorkspaceInspectorOptions {
   /** 当前会话 Agent 改过的文件（「变更」视图数据 + tab/rail 徽标计数）。 */
@@ -22,6 +26,8 @@ interface UseWorkspaceInspectorOptions {
   tools: TimelineTool[];
   filePanelResizing: boolean;
   filePanelWidth: number;
+  /** 左栏目标占位宽度；动画中的每帧宽度不得回传为 React 状态。 */
+  sidebarFlowWidth?: number;
   projectId?: string;
   source: string;
   onFilePanelResizeEnd(width: number): void;
@@ -30,12 +36,15 @@ interface UseWorkspaceInspectorOptions {
   onListDirectory(path: string): Promise<DesktopWorkspaceDirectory>;
   onOpenFile(path: string): void;
   onOpenBrowser(): Promise<void>;
+  onFixPreview(error: string): void;
+  onAttachBrowserReference?(reference: LocalReferenceResult): void;
+  onSwitchBranch(projectId: string, branch: string): Promise<void>;
   onReadFile(path: string): Promise<DesktopWorkspaceFilePreview>;
   /** rail 动作（浏览器打开等）失败的提示通道。 */
   onWarning(message: string): void;
 }
 
-type InspectorView = "files" | "changes" | "commit" | "terminal" | "browser" | "tools";
+type InspectorView = "files" | "changes" | "commit" | "terminal" | "browser" | "tools" | "references";
 
 const inspectorViewMetadata: Record<InspectorView, { icon: IconName; label: string }> = {
   files: { icon: "list-tree", label: "文件" },
@@ -43,14 +52,12 @@ const inspectorViewMetadata: Record<InspectorView, { icon: IconName; label: stri
   commit: { icon: "commit", label: "提交" },
   terminal: { icon: "terminal", label: "终端" },
   browser: { icon: "globe", label: "浏览器" },
-  tools: { icon: "wrench", label: "工具" }
+  tools: { icon: "wrench", label: "工具" },
+  references: { icon: "search", label: "引用" }
 };
 
 /** 所有面板入口只切换视图，模型任务由面板中的明确操作触发。 */
 type RailAction = InspectorView | "browser";
-
-/** rail 滑出动画（x→88 + blur5，.3s）结束后再挂 40ms 卸载，合计 340ms。 */
-const RAIL_EXIT_MS = 340;
 
 const inspectorViews = Object.keys(inspectorViewMetadata) as InspectorView[];
 
@@ -59,6 +66,7 @@ export function useWorkspaceInspector({
   tools,
   filePanelResizing,
   filePanelWidth,
+  sidebarFlowWidth = 0,
   projectId,
   source,
   onFilePanelResizeEnd,
@@ -67,6 +75,9 @@ export function useWorkspaceInspector({
   onListDirectory,
   onOpenFile,
   onOpenBrowser,
+  onFixPreview,
+  onAttachBrowserReference,
+  onSwitchBranch,
   onReadFile,
   onWarning
 }: UseWorkspaceInspectorOptions): {
@@ -74,44 +85,59 @@ export function useWorkspaceInspector({
   rail?: React.JSX.Element;
   layout: {
     open: boolean;
+    focused?: boolean;
     resizing: boolean;
     width: number;
   };
   filesOpen: boolean;
   terminalOpen: boolean;
   openFiles(): void;
+  showBrowser(): void;
   previewFile(path: string): void;
+  previewReference(reference: LocalReferenceResult): void;
   toggleTerminal(): void;
 } {
   const previewRequestRef = useRef(0);
   const directoryRequestIdRef = useRef(0);
   const directoryRequestRef = useRef(new Map<string, number>());
   const [inspectorOpen, setInspectorOpen] = useState(false);
+  const [pinned, setPinned] = useState(false);
+  const previousSource = useRef({ source, projectId });
   const [visitedViews, setVisitedViews] = useState<Set<InspectorView>>(() => new Set());
   const [compactTabs, setCompactTabs] = useState(false);
   const tabStripRef = useRef<HTMLElement>(null);
   const tabMeasureRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
-  const [availableWidth, setAvailableWidth] = useState(window.innerWidth);
-  // 右栏只能使用聊天区之外的空间；保留用户拖拽宽度作为偏好，不把临时收窄写回设置。
-  const panelWidth = Math.min(filePanelWidth, Math.max(0, Math.min(availableWidth * 0.45, availableWidth - 360)));
+  const [viewportWidth, setViewportWidth] = useState(window.innerWidth);
+  const availableWidth = Math.max(0, viewportWidth - sidebarFlowWidth);
+  const [browserExpanded, setBrowserExpanded] = useState(false);
   const [inspectorView, setInspectorView] = useState<InspectorView>("files");
+  const focused = browserExpanded && inspectorView === "browser" && inspectorOpen;
+  // 右栏只能使用聊天区之外的空间；保留用户拖拽宽度作为偏好，不把临时收窄写回设置。
+  const panelWidth = focused ? availableWidth : Math.min(filePanelWidth, Math.max(0, Math.min(availableWidth * 0.45, availableWidth - 360)));
+  const [gitChangeCount, setGitChangeCount] = useState<number>();
+  const [reference, setReference] = useState<LocalReferenceResult>();
   const [preview, setPreview] = useState<FilePreviewState>();
   const [directoryStates, setDirectoryStates] = useState<Map<string, FileDirectoryState>>(new Map());
   const [expandedDirectories, setExpandedDirectories] = useState<Set<string>>(() => new Set());
-  // 和左侧侧栏共用 250ms 的几何过渡，关闭时要等宽度动画结束后再卸载。
-  const inspectorPresence = useClosingPresence(inspectorOpen && Boolean(projectId), 250);
+  const effectiveOpen = inspectorOpen && Boolean(projectId);
   const activePreview = preview?.source === source ? preview : undefined;
 
   useLayoutEffect(() => {
+    const previous = previousSource.current;
+    if (previous.source === source && previous.projectId === projectId) return;
+    previousSource.current = { source, projectId };
+    const projectChanged = previous.projectId !== projectId;
+    if (projectChanged) { setPinned(false); setGitChangeCount(undefined); }
     previewRequestRef.current += 1;
     directoryRequestIdRef.current += 1;
     directoryRequestRef.current.clear();
-    setInspectorOpen(false);
+    if (projectChanged || !pinned) setInspectorOpen(false);
     setPreview(undefined);
+    setReference(undefined);
     setDirectoryStates(new Map());
     setExpandedDirectories(new Set());
-  }, [source]);
+  }, [pinned, projectId, source]);
 
   const loadDirectory = useCallback((relativePath: string): void => {
     const normalizedPath = normalizeWorkspacePath(relativePath);
@@ -150,6 +176,12 @@ export function useWorkspaceInspector({
 
   const openFiles = useCallback((): void => {
     openInspector("files");
+  }, [openInspector]);
+
+  const showBrowser = useCallback((): void => openInspector("browser"), [openInspector]);
+  const previewReference = useCallback((value: LocalReferenceResult): void => {
+    setReference(value);
+    openInspector("references");
   }, [openInspector]);
 
   const toggleTerminal = useCallback((): void => {
@@ -250,9 +282,10 @@ export function useWorkspaceInspector({
   const toolContent = (view: InspectorView): React.JSX.Element | null => !projectId ? null : view === "terminal" ? <TerminalView projectId={projectId} active={inspectorOpen && inspectorView === "terminal"} />
     : view === "files" ? <FilePreviewPanel directoryStates={directoryStates} expandedDirectories={expandedDirectories} onOpenFile={onOpenFile} onPreviewFile={previewFile} onShowFiles={showFileBrowser} onToggleDirectory={toggleDirectory} preview={activePreview} projectId={projectId} onRefresh={refreshFiles} onCollapse={() => setExpandedDirectories(new Set())} />
       : view === "changes" ? <SessionChangesPanel changes={changes} onPreviewFile={previewFile} />
-        : view === "commit" ? <WorkspaceCommitPanel changes={changes} onOpenTerminal={() => openInspector("terminal")} />
-          : view === "browser" ? <WorkspaceBrowserPanel onWarning={onWarning} />
-            : <WorkspaceToolsPanel tools={tools} />;
+        : view === "commit" ? <WorkspaceCommitPanel projectId={projectId} active={effectiveOpen && inspectorView === "commit"} onCount={setGitChangeCount} onSwitchBranch={onSwitchBranch} onPreviewFile={previewFile} />
+          : view === "browser" ? <WorkspaceBrowserPanel projectId={projectId} active={effectiveOpen && inspectorView === "browser"} expanded={focused} onToggleExpanded={() => setBrowserExpanded((value) => !value)} onAttachReference={onAttachBrowserReference ? (value) => { setBrowserExpanded(false); onAttachBrowserReference(value); } : undefined} onWarning={onWarning} onOpenTerminal={() => openInspector("terminal")} onFixPreview={onFixPreview} />
+            : view === "references" ? <WorkspaceReferencesPanel projectId={projectId} reference={reference} onSelect={setReference} />
+              : <WorkspaceToolsPanel tools={tools} />;
   const changeCount = changes.length;
   // 以真正可用的标签宽度决定折叠；留出滞回空间，避免拖动临界宽度时来回闪动。
   useLayoutEffect(() => {
@@ -260,36 +293,32 @@ export function useWorkspaceInspector({
     const measure = tabMeasureRef.current;
     if (!strip || !measure) return;
     const update = (): void => {
-      if (!strip.clientWidth) return;
-      setCompactTabs((current) => strip.clientWidth < measure.scrollWidth + (current ? 24 : 0));
+      if (!measure.scrollWidth) return;
+      // 按目标宽度决定标签形态，避免开合插值期间文字与图标来回切换。
+      setCompactTabs((current) => panelWidth - 80 < measure.scrollWidth + (current ? 24 : 0));
     };
     update();
     const observer = new ResizeObserver(update);
-    observer.observe(strip);
     observer.observe(measure);
     return () => observer.disconnect();
-  }, [inspectorPresence.present, projectId]);
+  }, [effectiveOpen, panelWidth, projectId]);
 
   useLayoutEffect(() => {
     const root = panelRef.current?.closest<HTMLElement>(".biny-app-shell");
     if (!root) return;
-    const sidebar = root.querySelector<HTMLElement>(":scope > .biny-sidebar-block");
-    const measure = (): void => {
-      const available = root.clientWidth - (sidebar?.getBoundingClientRect().width ?? 0);
-      setAvailableWidth(available);
-    };
+    // 只观察窗口容器尺寸；侧栏动画的 ResizeObserver 通知曾让整棵 App 每帧提交。
+    // 左栏目标宽度直接参与上面的派生计算，拖拽仍跟随状态实时更新。
+    const measure = (): void => { setViewportWidth(root.clientWidth); };
     measure();
     const observer = new ResizeObserver(measure);
     observer.observe(root);
-    if (sidebar) observer.observe(sidebar);
     return () => observer.disconnect();
-  }, [filePanelWidth, inspectorPresence.present]);
+  }, [effectiveOpen, projectId]);
 
   const inspector = visitedViews.size > 0 && projectId ? (
     <div
       ref={panelRef}
-      className={`desktop-inspector-wrap is-${inspectorPresence.phase}${filePanelResizing ? " is-resizing" : ""}`}
-      style={{ display: inspectorPresence.present ? undefined : "none" }}
+      className={`desktop-inspector-wrap is-${effectiveOpen ? "open" : "closed"}${filePanelResizing ? " is-resizing" : ""}`}
       inert={!inspectorOpen}
       aria-hidden={!inspectorOpen}
     >
@@ -312,7 +341,8 @@ export function useWorkspaceInspector({
             <div className="inspector-tab-measure" aria-hidden="true" ref={tabMeasureRef}>{inspectorViews.map((view) => <span key={view}><Icon name={inspectorViewMetadata[view].icon} size={14} />{inspectorViewMetadata[view].label}{view === "changes" && changeCount > 0 ? "99+" : ""}</span>)}</div>
             {(Object.keys(inspectorViewMetadata) as InspectorView[]).map((view) => {
               const active = inspectorView === view;
-              const badge = view === "changes" && changeCount > 0 ? (changeCount > 99 ? "99+" : String(changeCount)) : undefined;
+              const count = view === "commit" ? gitChangeCount ?? 0 : view === "changes" ? changeCount : 0;
+              const badge = count > 0 ? (count > 99 ? "99+" : String(count)) : undefined;
               return (
                 <button
                   role="tab"
@@ -324,7 +354,7 @@ export function useWorkspaceInspector({
                   className={`biny-inspector-tab${active ? " is-active" : ""}${compactTabs ? " is-compact" : ""}`}
                   key={view}
                   onClick={() => openInspector(view)}
-                  title={inspectorViewMetadata[view].label}
+                  title={view === "files" ? undefined : inspectorViewMetadata[view].label}
                   type="button"
                 >
                   <Icon name={inspectorViewMetadata[view].icon} size={compactTabs ? 16 : 14} />
@@ -334,58 +364,57 @@ export function useWorkspaceInspector({
               );
             })}
           </nav>
+          <button aria-label="切换会话时保持工具栏展开" aria-pressed={pinned} className="desktop-inspector-close" title="切换会话时保持展开" onClick={() => setPinned((value) => !value)} type="button"><Icon name="pin" size={14} /></button>
           <button aria-label="收起工作区工具" className="desktop-inspector-close" onClick={() => setInspectorOpen(false)} title="收起工作区工具" type="button">
             <Icon name="close" size={15} />
           </button>
         </header>
         <div className="desktop-inspector-body" id="desktop-inspector-panel">
-          {inspectorViews.filter((view) => visitedViews.has(view)).map((view) => <div className="biny-inspector-view-content" role="tabpanel" aria-labelledby={`inspector-tab-${view}`} id={`inspector-panel-${view}`} hidden={inspectorView !== view} key={view === "terminal" ? `${projectId}:${view}` : `${source}:${view}`}>{toolContent(view)}</div>)}
+          {inspectorViews.filter((view) => visitedViews.has(view)).map((view) => <div className="biny-inspector-view-content" role="tabpanel" aria-labelledby={`inspector-tab-${view}`} id={`inspector-panel-${view}`} data-active={inspectorView === view} aria-hidden={inspectorView !== view} inert={inspectorView !== view} key={(view === "terminal" || view === "browser") ? `${projectId}:${view}` : `${source}:${view}`}>{toolContent(view)}</div>)}
         </div>
       </aside>
     </div>
   ) : undefined;
 
-  // rail 可见性：dock 打开时滑出（x→88 + blur，.3s），340ms 后卸载；dock 收起时以
-  // .78s 的签名缓动滑回。dock 打开期间 rail 不接指针（参考应用 railHidden 语义）。
-  // is-visible 只在 open 相位挂载后下一帧加上（opening 相位保持隐藏初态），
-  // 否则元素带着终态样式挂载，浏览器不会插值滑入过渡。
-  const railVisible = Boolean(projectId) && !inspectorOpen;
-  const railPresence = useClosingPresence(railVisible, RAIL_EXIT_MS);
+  // rail 与 dock 使用同一次提交的开合值；保留 DOM 让 CSS 负责可中断的进退场。
+  const railVisible = Boolean(projectId) && !effectiveOpen;
 
   return {
     dock: inspector,
-    rail: railPresence.present && projectId ? (
+    rail: projectId ? (
       <div
         aria-hidden={!railVisible}
+        inert={!railVisible}
         aria-label="工作区工具"
-        className={`biny-inspector-rail${railPresence.phase === "open" ? " is-visible" : ""}`}
+        className={`biny-inspector-rail${railVisible ? " is-visible" : ""}`}
         role="toolbar"
       >
         {inspectorViews.map((view) => (
-          <button
-            aria-label={inspectorViewMetadata[view].label}
-            className="biny-inspector-rail-btn"
+          <WorkspaceRailButton
+            label={inspectorViewMetadata[view].label}
             key={view}
             onClick={() => openRailAction(view)}
             tabIndex={railVisible ? 0 : -1}
-            title={inspectorViewMetadata[view].label}
-            type="button"
+            tooltip={view !== "files"}
           >
             <Icon name={inspectorViewMetadata[view].icon} size={16} />
             {view === "changes" && changeCount > 0 ? <span className="biny-inspector-badge is-corner">{changeCount > 99 ? "99+" : changeCount}</span> : null}
-          </button>
+          </WorkspaceRailButton>
         ))}
       </div>
     ) : undefined,
     layout: {
       open: inspectorOpen && Boolean(projectId),
+      focused,
       resizing: filePanelResizing,
       width: panelWidth
     },
     filesOpen: inspectorOpen && inspectorView === "files",
     terminalOpen: inspectorOpen && inspectorView === "terminal",
     openFiles,
+    showBrowser,
     previewFile,
+    previewReference,
     toggleTerminal
   };
 }

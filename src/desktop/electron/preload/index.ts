@@ -8,8 +8,9 @@
  * 事件订阅返回取消函数，组件卸载时必须调用，否则监听器会随重新挂载不断累积。
  */
 import { contextBridge, ipcRenderer, webUtils } from "electron";
+import { createDesktopReadRequest } from "../../readRequests.js";
 import type { ActivityRuntimeSnapshot } from "../../../activity/types.js";
-import type { DesktopAgentEventEnvelope, DesktopApi, DesktopMenuAction, DesktopQuickChatScreenContext, DesktopSessionHandoff, DesktopSettingsCloseRequest, DesktopTerminalEvent } from "../../protocol.js";
+import type { DesktopAgentEventEnvelope, DesktopApi, DesktopBrowserSnapshot, DesktopMenuAction, DesktopQuickChatScreenContext, DesktopSessionHandoff, DesktopSettingsCloseRequest, DesktopTerminalEvent } from "../../protocol.js";
 import { desktopIpc } from "../../protocol.js";
 
 const pendingReferenceOpens: Array<{ uri: string; projectId: string }> = [];
@@ -19,10 +20,12 @@ ipcRenderer.on(desktopIpc.referenceOpen, (_event, target: { uri: string; project
   else pendingReferenceOpens.push(target);
 });
 
+const readRequest = createDesktopReadRequest((channel, ...args) => ipcRenderer.invoke(channel, ...args));
+
 const api: DesktopApi = {
   activitySuggestions: async () => await ipcRenderer.invoke(desktopIpc.activitySuggestions),
   crystalRequest: async (request) => await ipcRenderer.invoke(desktopIpc.crystalRequest, request),
-  bootstrap: async () => await ipcRenderer.invoke(desktopIpc.bootstrap),
+  bootstrap: async () => await readRequest(desktopIpc.bootstrap),
   openProject: async () => await ipcRenderer.invoke(desktopIpc.openProject),
   createEmptyProject: async () => await ipcRenderer.invoke(desktopIpc.createEmptyProject),
   selectProject: async (projectId) => await ipcRenderer.invoke(desktopIpc.selectProject, projectId),
@@ -33,12 +36,17 @@ const api: DesktopApi = {
   renameProject: async (projectId, name) => await ipcRenderer.invoke(desktopIpc.renameProject, projectId, name),
   removeProject: async (projectId) => await ipcRenderer.invoke(desktopIpc.removeProject, projectId),
   refreshProject: async (projectId) => await ipcRenderer.invoke(desktopIpc.refreshProject, projectId),
-  listProjectBranches: async (projectId) => await ipcRenderer.invoke(desktopIpc.listProjectBranches, projectId),
+  projectGitStatus: async (projectId) => await readRequest(desktopIpc.projectGitStatus, projectId),
+  initializeProjectGit: async (projectId) => await ipcRenderer.invoke(desktopIpc.initializeProjectGit, projectId),
+  commitProjectFiles: async (projectId, input) => await ipcRenderer.invoke(desktopIpc.commitProjectFiles, projectId, input),
+  projectGitRemote: async (projectId, action) => await ipcRenderer.invoke(desktopIpc.projectGitRemote, projectId, action),
+  listProjectBranches: async (projectId) => await readRequest(desktopIpc.listProjectBranches, projectId),
   switchProjectBranch: async (projectId, branchName) => await ipcRenderer.invoke(desktopIpc.switchProjectBranch, projectId, branchName),
   createProjectBranch: async (projectId, branchName) => await ipcRenderer.invoke(desktopIpc.createProjectBranch, projectId, branchName),
   revealProject: async (projectId) => await ipcRenderer.invoke(desktopIpc.revealProject, projectId),
   openProjectTerminal: async (projectId) => await ipcRenderer.invoke(desktopIpc.openProjectTerminal, projectId),
   startDraft: async (projectId) => await ipcRenderer.invoke(desktopIpc.startDraft, projectId),
+  readSessionTrace: async (projectId, sessionId) => await readRequest(desktopIpc.readSessionTrace, projectId, sessionId),
   openSession: async (projectId, sessionId) => await ipcRenderer.invoke(desktopIpc.openSession, projectId, sessionId),
   listSessionTreePage: async (projectId, options) => await ipcRenderer.invoke(desktopIpc.listSessionTreePage, projectId, options),
   renameSession: async (projectId, sessionId, title, expectedRevision) => await ipcRenderer.invoke(desktopIpc.renameSession, projectId, sessionId, title, expectedRevision),
@@ -49,7 +57,7 @@ const api: DesktopApi = {
   deleteSession: async (projectId, sessionId) => await ipcRenderer.invoke(desktopIpc.deleteSession, projectId, sessionId),
   exportSession: async (projectId, sessionId, format) => await ipcRenderer.invoke(desktopIpc.exportSession, projectId, sessionId, format),
   importSession: async (projectId) => await ipcRenderer.invoke(desktopIpc.importSession, projectId),
-  sendPrompt: async (projectId, sessionId, input, attachments, delivery, personalization, idempotencyKey, promptContext, capabilitySelection, draftPlanning) => await ipcRenderer.invoke(
+  sendPrompt: async (projectId, sessionId, input, attachments, delivery, personalization, idempotencyKey, promptContext, capabilitySelection, draftPlanning, draftIncognito) => await ipcRenderer.invoke(
     desktopIpc.sendPrompt,
     projectId,
     sessionId,
@@ -60,7 +68,8 @@ const api: DesktopApi = {
     idempotencyKey,
     promptContext,
     capabilitySelection,
-    draftPlanning
+    draftPlanning,
+    draftIncognito
   ),
   mutateQueuedMessage: async (projectId, sessionId, action, mutation) => await ipcRenderer.invoke(
     desktopIpc.mutateQueuedMessage,
@@ -69,7 +78,7 @@ const api: DesktopApi = {
     action,
     mutation
   ),
-  toolCatalog: async (projectId) => await ipcRenderer.invoke(desktopIpc.toolCatalog, projectId),
+  toolCatalog: async (projectId) => await readRequest(desktopIpc.toolCatalog, projectId),
   resumeInterruptedTurn: async (projectId, sessionId) => await ipcRenderer.invoke(desktopIpc.resumeInterruptedTurn, projectId, sessionId),
   editPrompt: async (projectId, sessionId, userMessageIndex, input, attachments, idempotencyKey) => await ipcRenderer.invoke(desktopIpc.editPrompt, projectId, sessionId, userMessageIndex, input, attachments, idempotencyKey),
   retryPrompt: async (projectId, sessionId, targetMessageId, input, attachments, idempotencyKey) => await ipcRenderer.invoke(desktopIpc.retryPrompt, projectId, sessionId, targetMessageId, input, attachments, idempotencyKey),
@@ -82,7 +91,6 @@ const api: DesktopApi = {
   switchModel: async (projectId, alias, thinking) => await ipcRenderer.invoke(desktopIpc.switchModel, projectId, alias, thinking),
   testModelConfiguration: async (projectId, configuration) => await ipcRenderer.invoke(desktopIpc.testModelConfiguration, projectId, configuration),
   readModelApiKey: async (projectId, providerAlias) => await ipcRenderer.invoke(desktopIpc.readModelApiKey, projectId, providerAlias),
-  readWebSearchApiKey: async (projectId, provider) => await ipcRenderer.invoke(desktopIpc.readWebSearchApiKey, projectId, provider),
   fetchModelCatalog: async (projectId, providerAlias, force) => await ipcRenderer.invoke(desktopIpc.fetchModelCatalog, projectId, providerAlias, force),
   startModelLogin: async (projectId, provider) => await ipcRenderer.invoke(desktopIpc.startModelLogin, projectId, provider),
   cancelModelLogin: async (projectId, provider, authRequestId) => await ipcRenderer.invoke(desktopIpc.cancelModelLogin, projectId, provider, authRequestId),
@@ -91,17 +99,42 @@ const api: DesktopApi = {
   planProjection: async (projectId, sessionId) => await ipcRenderer.invoke(desktopIpc.planProjection, projectId, sessionId),
   runtimeMutation: async (projectId, operation, payload) => await ipcRenderer.invoke(desktopIpc.runtimeMutation, projectId, operation, payload),
   runtimeEvents: async (projectId, afterSequence, limit) => await ipcRenderer.invoke(desktopIpc.runtimeEvents, projectId, afterSequence, limit),
-  openBrowser: async (url) => await ipcRenderer.invoke(desktopIpc.openBrowser, url),
+  startProjectPreview: async (projectId, entry) => await ipcRenderer.invoke(desktopIpc.startProjectPreview, projectId, entry),
+  projectPreviewAvailability: async (projectId) => await readRequest(desktopIpc.projectPreviewAvailability, projectId),
+  projectPreviewStatus: async (projectId) => await readRequest(desktopIpc.projectPreviewStatus, projectId),
+  stopProjectPreview: async (projectId) => await ipcRenderer.invoke(desktopIpc.stopProjectPreview, projectId),
+  browserSnapshot: async (projectId) => await ipcRenderer.invoke(desktopIpc.browserSnapshot, projectId),
+  browserInspect: async (projectId, tabId, enabled) => await ipcRenderer.invoke(desktopIpc.browserInspect, projectId, tabId, enabled),
+  browserCapture: async (projectId, tabId, selection) => await ipcRenderer.invoke(desktopIpc.browserCapture, projectId, tabId, selection),
+  browserRelayStatus: async () => await ipcRenderer.invoke(desktopIpc.browserRelayStatus),
+  browserRelaySetup: async () => await ipcRenderer.invoke(desktopIpc.browserRelaySetup),
+  browserRelayDisconnect: async () => await ipcRenderer.invoke(desktopIpc.browserRelayDisconnect),
+  browserAction: async (projectId, action) => await ipcRenderer.invoke(desktopIpc.browserAction, projectId, action),
+  browserBounds: async (projectId, tabId, bounds) => await ipcRenderer.invoke(desktopIpc.browserBounds, projectId, tabId, bounds),
+  onBrowserOpenRequest(listener) {
+    const handler = (_event: Electron.IpcRendererEvent, projectId: string): void => listener(projectId);
+    ipcRenderer.on(desktopIpc.browserOpenRequest, handler);
+    return () => ipcRenderer.removeListener(desktopIpc.browserOpenRequest, handler);
+  },
+  onBrowserState(listener) {
+    const handler = (_event: Electron.IpcRendererEvent, snapshot: DesktopBrowserSnapshot): void => listener(snapshot);
+    ipcRenderer.on(desktopIpc.browserState, handler);
+    return () => ipcRenderer.removeListener(desktopIpc.browserState, handler);
+  },
+  openBrowser: async (url, purpose) => await ipcRenderer.invoke(desktopIpc.openBrowser, url, purpose),
   cookieJarStatus: async () => await ipcRenderer.invoke(desktopIpc.cookieJarStatus),
   exportCookies: async () => await ipcRenderer.invoke(desktopIpc.exportCookies),
   importCookies: async () => await ipcRenderer.invoke(desktopIpc.importCookies),
+  listBrowserProfiles: async () => await readRequest(desktopIpc.listBrowserProfiles),
+  importBrowserProfile: async (profileId) => await ipcRenderer.invoke(desktopIpc.importBrowserProfile, profileId),
   clearCookies: async () => await ipcRenderer.invoke(desktopIpc.clearCookies),
   personalizationOverview: async (projectId, sessionId) => await ipcRenderer.invoke(desktopIpc.personalizationOverview, projectId, sessionId),
   saveChatPersonalization: async (projectId, sessionId, input, expectedRevision) => await ipcRenderer.invoke(desktopIpc.saveChatPersonalization, projectId, sessionId, input, expectedRevision),
+  saveSessionIncognito: async (projectId, sessionId, isIncognito, expectedRevision) => await ipcRenderer.invoke(desktopIpc.saveSessionIncognito, projectId, sessionId, isIncognito, expectedRevision),
   memoryOverview: async (projectId) => await ipcRenderer.invoke(desktopIpc.memoryOverview, projectId),
   memoryStats: async (projectId) => await ipcRenderer.invoke(desktopIpc.memoryStats, projectId),
   memoryEntries: async (projectId, offset, limit, includeArchived) => await ipcRenderer.invoke(desktopIpc.memoryEntries, projectId, offset, limit, includeArchived),
-  temporalClues: async (query) => await ipcRenderer.invoke(desktopIpc.temporalClues, query),
+  temporalClues: async (query) => await readRequest(desktopIpc.temporalClues, query),
   temporalIgnoreClue: async (id) => await ipcRenderer.invoke(desktopIpc.temporalIgnoreClue, id),
   temporalMarkSeen: async (ids, day, timeZone) => await ipcRenderer.invoke(desktopIpc.temporalMarkSeen, ids, day, timeZone),
   temporalMarkTodaySeen: async (day, timeZone) => await ipcRenderer.invoke(desktopIpc.temporalMarkTodaySeen, day, timeZone),
@@ -129,6 +162,7 @@ const api: DesktopApi = {
   settingsSnapshot: async (projectId, sessionId) => await ipcRenderer.invoke(desktopIpc.settingsSnapshot, projectId, sessionId),
   saveSettings: async (projectId, input) => await ipcRenderer.invoke(desktopIpc.saveSettings, projectId, input),
   activitySnapshot: async () => await ipcRenderer.invoke(desktopIpc.activitySnapshot),
+  activityPermissions: async () => await ipcRenderer.invoke(desktopIpc.activityPermissions),
   activitySettings: async () => await ipcRenderer.invoke(desktopIpc.activitySettings),
   updateActivitySettings: async (patch, expectedConfigRevision) => await ipcRenderer.invoke(desktopIpc.activityUpdateSettings, patch, expectedConfigRevision),
   requestActivityPermission: async (pane) => await ipcRenderer.invoke(desktopIpc.activityRequestPermission, pane),
@@ -159,12 +193,12 @@ const api: DesktopApi = {
     requestId,
     response
   ),
-  searchMemory: async (projectId, query, includeArchived) => await ipcRenderer.invoke(desktopIpc.searchMemory, projectId, query, includeArchived),
+  searchMemory: async (projectId, query) => await ipcRenderer.invoke(desktopIpc.searchMemory, projectId, query),
   addMemoryEntry: async (projectId, input) => await ipcRenderer.invoke(desktopIpc.addMemoryEntry, projectId, input),
   updateMemoryEntry: async (projectId, entryId, patch) => await ipcRenderer.invoke(desktopIpc.updateMemoryEntry, projectId, entryId, patch),
   deleteMemoryEntry: async (projectId, entryId) => await ipcRenderer.invoke(desktopIpc.deleteMemoryEntry, projectId, entryId),
   archiveMemoryEntry: async (projectId, entryId, archived) => await ipcRenderer.invoke(desktopIpc.archiveMemoryEntry, projectId, entryId, archived),
-  archivedMemoryEntries: async (projectId) => await ipcRenderer.invoke(desktopIpc.archivedMemoryEntries, projectId),
+  archivedMemoryEntries: async (projectId, offset, limit, includeChains) => await ipcRenderer.invoke(desktopIpc.archivedMemoryEntries, projectId, offset, limit, includeChains),
   runMemorySleep: async (projectId) => await ipcRenderer.invoke(desktopIpc.runMemorySleep, projectId),
   memorySleepStatus: async (projectId) => await ipcRenderer.invoke(desktopIpc.memorySleepStatus, projectId),
   memorySleepRuns: async (projectId) => await ipcRenderer.invoke(desktopIpc.memorySleepRuns, projectId),
@@ -186,8 +220,8 @@ const api: DesktopApi = {
   openWorkspaceFile: async (projectId, relativePath) => await ipcRenderer.invoke(desktopIpc.openWorkspaceFile, projectId, relativePath),
   recipeSuggestions: async (projectId, sessionId) => await ipcRenderer.invoke(desktopIpc.recipeSuggestions, projectId, sessionId),
   setRecipeState: async (projectId, sessionId, recipeId, state) => await ipcRenderer.invoke(desktopIpc.recipeState, projectId, sessionId, recipeId, state),
-  skillCatalog: async (projectId) => await ipcRenderer.invoke(desktopIpc.skillCatalog, projectId),
-  skillSettings: async (projectId) => await ipcRenderer.invoke(desktopIpc.skillSettings, projectId),
+  skillCatalog: async (projectId) => await readRequest(desktopIpc.skillCatalog, projectId),
+  skillSettings: async (projectId) => await readRequest(desktopIpc.skillSettings, projectId),
   importSkillSource: async () => await ipcRenderer.invoke(desktopIpc.skillSourceImport),
   installSkillSource: async (sourceId) => await ipcRenderer.invoke(desktopIpc.skillSourceInstall, sourceId),
   importExistingSkills: async (skillIds) => await ipcRenderer.invoke(desktopIpc.skillImportExisting, skillIds),

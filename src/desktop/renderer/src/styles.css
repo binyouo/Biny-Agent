@@ -898,11 +898,6 @@ button:disabled { opacity: 0.42; }
 
 .check-dot { display: grid; width: 16px; height: 16px; flex: 0 0 16px; place-items: center; margin-top: 1px; border: 1px solid var(--border-strong); border-radius: 4px; color: transparent; background: var(--surface-soft); transition: border-color 150ms ease, background 150ms ease, color 150ms ease; }
 .check-dot.is-on { border-color: var(--accent); color: var(--biny-selection-text); background: var(--accent); }
-.web-search-select { min-height: 26px; padding: 0 7px; border: 1px solid var(--border); border-radius: 7px; color: var(--text); background: var(--surface); font-size: calc(11.5px * var(--font-scale)); }
-.web-search-key-status { margin: 7px 0 5px; color: var(--text-tertiary); font-size: calc(11px * var(--font-scale)); }
-.cookie-domain-list { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 0 2px; }
-.cookie-domain { display: inline-flex; max-width: 100%; align-items: center; gap: 5px; padding: 3px 7px; border-radius: 6px; color: var(--text-secondary); background: var(--surface-soft); font-size: calc(10.5px * var(--font-scale)); }
-.cookie-domain small { flex: 0 0 auto; color: var(--text-tertiary); font-size: inherit; font-variant-numeric: tabular-nums; }
 .web-browser-url-row { display: flex; align-items: center; gap: 7px; }
 .web-browser-url-row input { min-width: 0; flex: 1; height: 30px; padding: 0 9px; border: 1px solid var(--border); border-radius: 7px; outline: 0; color: var(--text); background: var(--surface); font: inherit; font-size: calc(11.5px * var(--font-scale)); }
 .web-browser-url-row input:focus { border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 12%, transparent); }
@@ -1049,9 +1044,9 @@ button:disabled { opacity: 0.42; }
   display: grid;
   place-items: center;
   padding: 24px;
-  background: var(--color-overlay);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
+  background: rgb(0 0 0 / 30%);
+  backdrop-filter: blur(3px);
+  -webkit-backdrop-filter: blur(3px);
 }
 /* 二级弹层可能覆盖设置页顶部的窗口拖拽区；整个弹层及其控件都必须重新声明可交互。 */
 .model-dialog-backdrop,
@@ -1388,4 +1383,11 @@ button:disabled { opacity: 0.42; }
   line-height: 1.4;
   cursor: default;
   user-select: none;
+}
+
+/* 弹窗遮罩只轻度模糊背景，保留原页面的结构和颜色。 */
+dialog.astryx-dialog::backdrop {
+  background: rgb(0 0 0 / 30%);
+  backdrop-filter: blur(3px);
+  -webkit-backdrop-filter: blur(3px);
 }

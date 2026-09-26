@@ -203,6 +203,7 @@ const EXPLORING_TOOLS = new Set([
   "activity_search", "activity_search_semantic", "activity_sessions", "activity_session_show",
   "activity_report", "activity_digest",
   "recall_memory", "skill_search", "BrowserReadDom",
+  "ChromeRelayStatus", "ChromeRelayListTabs", "ChromeRelayRead",
 ]);
 
 /** 写入类工具：归入「修改」相位。 */

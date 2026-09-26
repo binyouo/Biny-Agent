@@ -13,6 +13,7 @@ import type { planStatus } from "../extensions/plan.js";
 import type { AgentCapabilitySelection, CapabilitySelectionMode } from "../agent/capabilitySelection.js";
 import type { ActivitySettings, ActivitySettingsInput, ActivitySettingsPatch } from "../activity/settings.js";
 import type { ActivityRuntimeSnapshot } from "../activity/types.js";
+import type { ActivityPermissionStatus } from "../activity/httpServer.js";
 import type { ActivityReportResult } from "../activity/analyzer.js";
 import type { ActivitySearchResult, ActivitySessionDetail } from "../activity/store.js";
 import type { ModelCatalogEntry } from "../ai/types.js";
@@ -85,11 +86,16 @@ export const desktopIpc = {
   removeProject: "desktop:project:remove",
   refreshProject: "desktop:project:refresh",
   listProjectBranches: "desktop:project:branches",
+  projectGitStatus: "desktop:project:git:status",
+  initializeProjectGit: "desktop:project:git:init",
+  commitProjectFiles: "desktop:project:git:commit",
+  projectGitRemote: "desktop:project:git:remote",
   switchProjectBranch: "desktop:project:branch:switch",
   createProjectBranch: "desktop:project:branch:create",
   revealProject: "desktop:project:reveal",
   openProjectTerminal: "desktop:project:terminal",
   startDraft: "desktop:session:draft",
+  readSessionTrace: "desktop:session:trace",
   openSession: "desktop:session:open",
   sessionHandoff: "desktop:session:handoff",
   referenceOpen: "desktop:references:open",
@@ -116,7 +122,6 @@ export const desktopIpc = {
   switchModel: "desktop:model:switch",
   testModelConfiguration: "desktop:model:test-configuration",
   readModelApiKey: "desktop:model:read-api-key",
-  readWebSearchApiKey: "desktop:web-search:read-api-key",
   fetchModelCatalog: "desktop:model:fetch-catalog",
   startModelLogin: "desktop:model:login:start",
   cancelModelLogin: "desktop:model:login:cancel",
@@ -126,12 +131,29 @@ export const desktopIpc = {
   runtimeMutation: "desktop:runtime:mutation",
   runtimeEvents: "desktop:runtime:events",
   openBrowser: "desktop:browser:open",
+  browserSnapshot: "desktop:browser:snapshot",
+  browserInspect: "desktop:browser:inspect",
+  browserCapture: "desktop:browser:capture",
+  browserRelayStatus: "desktop:browser:relay-status",
+  browserRelaySetup: "desktop:browser:relay-setup",
+  browserRelayDisconnect: "desktop:browser:relay-disconnect",
+  browserAction: "desktop:browser:action",
+  browserBounds: "desktop:browser:bounds",
+  browserState: "desktop:browser:state",
+  browserOpenRequest: "desktop:browser:request",
+  startProjectPreview: "desktop:project:preview:start",
+  projectPreviewAvailability: "desktop:project:preview:availability",
+  projectPreviewStatus: "desktop:project:preview:status",
+  stopProjectPreview: "desktop:project:preview:stop",
   cookieJarStatus: "desktop:browser:cookies:status",
   exportCookies: "desktop:browser:cookies:export",
   importCookies: "desktop:browser:cookies:import",
+  listBrowserProfiles: "desktop:browser:profiles:list",
+  importBrowserProfile: "desktop:browser:profiles:import",
   clearCookies: "desktop:browser:cookies:clear",
   personalizationOverview: "desktop:personalization:overview",
   saveChatPersonalization: "desktop:personalization:save-chat",
+  saveSessionIncognito: "desktop:session:incognito",
   memoryOverview: "desktop:memory:overview",
   memoryStats: "desktop:memory:stats",
   memoryEntries: "desktop:memory:entries",
@@ -162,6 +184,7 @@ export const desktopIpc = {
   settingsCloseRequest: "desktop:settings:close-request",
   settingsCloseResponse: "desktop:settings:close-response",
   activitySnapshot: "desktop:activity:snapshot",
+  activityPermissions: "desktop:activity:permissions",
   activitySettings: "desktop:activity:settings",
   activityUpdateSettings: "desktop:activity:update-settings",
   activityRequestPermission: "desktop:activity:request-permission",
@@ -351,6 +374,42 @@ export interface DesktopProject {
 }
 
 /** 项目目录中实际存在的本地 refs/heads 分支；不包含远程跟踪分支。 */
+export interface DesktopBrowserTab {
+  id: string;
+  title: string;
+  url: string;
+  loading: boolean;
+  canGoBack: boolean;
+  canGoForward: boolean;
+  error?: string;
+  floating?: boolean;
+  inspecting?: boolean;
+  inspectionError?: string;
+  selection?: { tag: string; selector: string; text: string };
+}
+export interface DesktopBrowserSnapshot {
+  projectId: string;
+  revision: number;
+  activeId?: string;
+  tabs: DesktopBrowserTab[];
+}
+export interface DesktopBrowserBounds { x: number; y: number; width: number; height: number }
+export type DesktopBrowserAction =
+  | { type: "new"; url?: string }
+  | { type: "navigate"; tabId: string; url: string }
+  | { type: "close" | "select" | "back" | "forward" | "reload" | "stop" | "float"; tabId: string };
+
+export interface DesktopGitStatus {
+  branch: string;
+  revision: string;
+  files: Array<{ path: string; status: string }>;
+}
+export interface DesktopGitCommitInput {
+  message: string;
+  paths: string[];
+  revision: string;
+}
+
 export interface DesktopGitBranch {
   name: string;
   current: boolean;
@@ -367,6 +426,7 @@ export interface DesktopSessionSummary {
   createdAt: string;
   updatedAt: string;
   pinned: boolean;
+  isIncognito: boolean;
   status: DesktopSessionStatus;
   resumable?: boolean;
   /** 分支关系来自 session catalog；旧会话没有 parent 时视为根会话。 */
@@ -499,6 +559,7 @@ export interface DesktopPermissionSettings {
 
 /** 渲染进程启动时一次性取回的初始状态，之后的变化都通过事件推送。 */
 export interface DesktopBootstrap {
+  chatResponse?: import("../config/schema.js").ChatResponseSettings;
   version: string;
   platform: NodeJS.Platform;
   projects: DesktopProject[];
@@ -974,33 +1035,19 @@ export interface DesktopModelConnectionTestResult {
 export type DesktopWebSearchProvider = WebSearchConfig["provider"];
 
 /**
- * 联网搜索设置的普通渲染端视图。这里仍只返回密钥状态；设置页按需读取 API Key，避免
- * 普通设置快照携带明文凭据。
+ * 网络搜索偏好；网站登录凭据保存在 Electron 分区，不进入设置快照。
  */
 export interface DesktopWebSearchSettings {
   enabled: boolean;
   provider: DesktopWebSearchProvider;
-  apiKeyEnv?: string;
-  timeoutMs: number;
-  maxResults: number;
-  hasApiKey: boolean;
-  envKeyName?: string;
-  envKeyDetected: boolean;
-}
-
-export interface DesktopWebSearchSettingsInput {
-  enabled: boolean;
-  provider: DesktopWebSearchProvider;
-  /** undefined 保留已存密钥；空字符串表示清除。 */
-  apiKey?: string;
-  /** 统一事务可使用主进程暂存句柄，避免明文进入 journal。 */
-  apiKeyHandle?: string;
-  apiKeyEnv?: string;
+  visibleBrowsing: boolean;
   timeoutMs: number;
   maxResults: number;
 }
 
-export type DesktopSettingsCredentialPurpose = "model" | "web-search";
+export type DesktopWebSearchSettingsInput = DesktopWebSearchSettings;
+
+export type DesktopSettingsCredentialPurpose = "model";
 
 /** 临时凭据句柄的受众；句柄不能跨项目、用途或 provider 重放。 */
 export interface DesktopSettingsCredentialScope {
@@ -1134,12 +1181,27 @@ export interface DesktopMemoryStats {
   maintenance: MemoryMaintenanceStatus;
 }
 
+/** 归档恢复的额外提示来自恢复前仍存活的合并目标。 */
+export interface DesktopMemoryArchiveMutationResult extends DesktopMemoryStats {
+  mergedTarget: { id: string; content: string } | null;
+}
+
 /** 记忆条目的一页；offset 分页，revision 供翻页期间的一致性判断。 */
 export interface DesktopMemoryEntriesPage {
   /** 读取时的单库 revision；翻页间若变化，调用方应回到第 0 页重读。 */
   revision: number;
   entries: DesktopMemoryEntry[];
   /** 应用 filter 后、分页前的条目总数。 */
+  total: number;
+  offset: number;
+  limit: number;
+}
+
+export interface DesktopMemoryArchivePage {
+  revision: number;
+  entries: DesktopMemoryEntry[];
+  /** 当前页归档行 ID 到合并链终点；普通批量读取可省略。 */
+  chains?: Record<string, { finalId: string; depth: number }>;
   total: number;
   offset: number;
   limit: number;
@@ -1502,12 +1564,17 @@ export interface DesktopApi {
   renameProject(projectId: string, name: string): Promise<DesktopWorkspaceSnapshot>;
   removeProject(projectId: string): Promise<DesktopBootstrap>;
   refreshProject(projectId: string): Promise<DesktopWorkspaceSnapshot>;
+  projectGitStatus(projectId: string): Promise<DesktopGitStatus>;
+  initializeProjectGit(projectId: string): Promise<DesktopGitStatus>;
+  commitProjectFiles(projectId: string, input: DesktopGitCommitInput): Promise<DesktopGitStatus>;
+  projectGitRemote(projectId: string, action: "pull" | "push"): Promise<DesktopGitStatus>;
   listProjectBranches(projectId: string): Promise<DesktopGitBranch[]>;
   switchProjectBranch(projectId: string, branchName: string): Promise<DesktopWorkspaceSnapshot>;
   createProjectBranch(projectId: string, branchName: string): Promise<DesktopWorkspaceSnapshot>;
   revealProject(projectId: string): Promise<void>;
   openProjectTerminal(projectId: string): Promise<void>;
   startDraft(projectId: string): Promise<DesktopWorkspaceSnapshot>;
+  readSessionTrace(projectId: string, sessionId: string): Promise<SessionEvent[]>;
   openSession(projectId: string, sessionId: string): Promise<DesktopSessionDocument>;
   listSessionTreePage(projectId: string, options?: DesktopSessionTreePageOptions): Promise<DesktopSessionTreePage>;
   renameSession(projectId: string, sessionId: string, title: string, expectedRevision?: string): Promise<DesktopWorkspaceSnapshot>;
@@ -1530,7 +1597,8 @@ export interface DesktopApi {
     idempotencyKey?: string,
     promptContext?: string,
     capabilitySelection?: AgentCapabilitySelection,
-    draftPlanning?: boolean
+    draftPlanning?: boolean,
+    draftIncognito?: boolean
   ): Promise<DesktopRunReceipt>;
   mutateQueuedMessage(
     projectId: string,
@@ -1551,7 +1619,6 @@ export interface DesktopApi {
   switchModel(projectId: string, alias: string, thinking: ThinkingSelection): Promise<ModelRuntimeInfo>;
   testModelConfiguration(projectId: string, configuration: DesktopModelConfigurationInput): Promise<DesktopModelConnectionTestResult>;
   readModelApiKey(projectId: string, providerAlias: string): Promise<string | undefined>;
-  readWebSearchApiKey(projectId: string, provider: DesktopWebSearchProvider): Promise<string | undefined>;
   fetchModelCatalog(projectId: string, providerAlias: string, force?: boolean): Promise<DesktopModelCatalogResult>;
   startModelLogin(projectId: string, provider: DesktopModelLoginProvider): Promise<DesktopModelLoginStartResult>;
   cancelModelLogin(projectId: string, provider: DesktopModelLoginProvider, authRequestId: string): Promise<void>;
@@ -1561,13 +1628,30 @@ export interface DesktopApi {
   runtimeMutation(projectId: string, operation: DesktopRuntimeMutation, payload?: Record<string, unknown>): Promise<unknown>;
   runtimeEvents(projectId: string, afterSequence?: number, limit?: number): Promise<unknown>;
   /** 打开内嵌浏览器窗口；`url` 省略时打开首页。登录态由浏览器 partition 保存并同步给 agent 工具。 */
-  openBrowser(url?: string): Promise<void>;
+  openBrowser(url?: string, purpose?: "google" | "xiaohongshu" | "webfetch"): Promise<void>;
+  startProjectPreview(projectId: string, entry?: string): Promise<{ kind: "script"; terminalId: string; replay: string; sequence: number; command: string } | { kind: "static"; url: string }>;
+  projectPreviewAvailability(projectId: string): Promise<{ available: true; command: string } | { available: true; kind: "static"; entry: string; entries: string[] } | { available: false; reason: string }>;
+  projectPreviewStatus(projectId: string): Promise<{ kind: "starting"; terminalId: string } | { kind: "script"; terminalId: string; url: string } | { kind: "static"; url: string } | { kind: "failed"; error: string } | { kind: "stopped" }>;
+  stopProjectPreview(projectId: string): Promise<void>;
+  browserSnapshot(projectId: string): Promise<DesktopBrowserSnapshot>;
+  browserInspect(projectId: string, tabId: string, enabled: boolean): Promise<DesktopBrowserSnapshot>;
+  browserCapture(projectId: string, tabId: string, selection?: boolean): Promise<LocalReferenceResult>;
+  browserRelayStatus(): Promise<{ running: boolean; connected: boolean; browsers: Array<{ browserId: string; browserName: string }> }>;
+  browserRelaySetup(): Promise<{ extensionPath: string }>;
+  browserRelayDisconnect(): Promise<void>;
+  browserAction(projectId: string, action: DesktopBrowserAction): Promise<DesktopBrowserSnapshot>;
+  browserBounds(projectId: string, tabId: string, bounds?: DesktopBrowserBounds): Promise<void>;
+  onBrowserOpenRequest(listener: (projectId: string) => void): () => void;
+  onBrowserState(listener: (snapshot: DesktopBrowserSnapshot) => void): () => void;
   cookieJarStatus(): Promise<DesktopCookieJarStatus>;
   exportCookies(): Promise<DesktopCookieJarStatus>;
   importCookies(): Promise<DesktopCookieJarStatus>;
+  listBrowserProfiles(): Promise<Array<{ id: string; appName: string; profileName: string; userName?: string }>>;
+  importBrowserProfile(profileId: string): Promise<{ imported: number; failed: number; appName: string }>;
   clearCookies(): Promise<DesktopCookieJarStatus>;
   personalizationOverview(projectId: string, sessionId?: string): Promise<DesktopPersonalizationOverview>;
   saveChatPersonalization(projectId: string, sessionId: string, input: DesktopChatPersonalizationOverride, expectedRevision: string): Promise<DesktopWorkspaceSnapshot>;
+  saveSessionIncognito(projectId: string, sessionId: string, isIncognito: boolean, expectedRevision: string): Promise<DesktopWorkspaceSnapshot>;
   memoryOverview(projectId: string): Promise<DesktopMemoryOverview>;
   /** 记忆库统计（不含条目内容）；条目增删后用于刷新头部与翻页控件。 */
   memoryStats(projectId: string): Promise<DesktopMemoryStats>;
@@ -1594,6 +1678,7 @@ export interface DesktopApi {
   settingsSnapshot(projectId: string, sessionId?: string): Promise<DesktopSettingsSnapshot>;
   saveSettings(projectId: string, input: DesktopSettingsSaveInput): Promise<DesktopSettingsSaveResult>;
   activitySnapshot(): Promise<ActivityRuntimeSnapshot>;
+  activityPermissions(): Promise<ActivityPermissionStatus>;
   activitySettings(): Promise<DesktopActivitySettingsUpdate>;
   updateActivitySettings(patch: DesktopActivitySettingsPatch, expectedConfigRevision: string): Promise<DesktopActivitySettingsUpdate>;
   requestActivityPermission(pane: DesktopSystemSettingsPane): Promise<void>;
@@ -1612,12 +1697,12 @@ export interface DesktopApi {
   releaseSettingsCredentials(handles: string[]): Promise<void>;
   updateSettingsDraftState(state: DesktopSettingsDraftState): Promise<void>;
   respondSettingsCloseRequest(requestId: string, response: DesktopSettingsCloseResponse): Promise<boolean>;
-  searchMemory(projectId: string, query: string, includeArchived?: boolean): Promise<DesktopMemorySearchMatch[]>;
+  searchMemory(projectId: string, query: string): Promise<DesktopMemorySearchMatch[]>;
   addMemoryEntry(projectId: string, input: DesktopMemoryEntryInput): Promise<DesktopMemoryOverview>;
   updateMemoryEntry(projectId: string, entryId: string, patch: DesktopMemoryEntryPatch): Promise<DesktopMemoryOverview>;
   deleteMemoryEntry(projectId: string, entryId: string): Promise<DesktopMemoryOverview>;
-  archiveMemoryEntry(projectId: string, entryId: string, archived: boolean): Promise<DesktopMemoryStats>;
-  archivedMemoryEntries(projectId: string): Promise<DesktopMemoryEntry[]>;
+  archiveMemoryEntry(projectId: string, entryId: string, archived: boolean): Promise<DesktopMemoryArchiveMutationResult>;
+  archivedMemoryEntries(projectId: string, offset: number, limit: number, includeChains?: boolean): Promise<DesktopMemoryArchivePage>;
   runMemorySleep(projectId: string): Promise<DesktopMemoryStats>;
   memorySleepStatus(projectId: string): Promise<MemoryMaintenanceStatus>;
   memorySleepRuns(projectId: string): Promise<MemorySleepRun[]>;

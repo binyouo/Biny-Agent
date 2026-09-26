@@ -34,6 +34,7 @@ test("内容流式增长时表格与链接的 DOM 节点保持同一实例，不
   const container = document.getElementById("root")!;
   const root = createRoot(container);
   const props = {
+    streaming: true,
     projectId: "project",
     onOpenExternal: () => undefined,
     onPreviewFile: () => undefined
@@ -49,6 +50,7 @@ test("内容流式增长时表格与链接的 DOM 节点保持同一实例，不
   const table = wrapper?.querySelector("table");
   const firstCell = wrapper?.querySelector("td");
   assert.ok(wrapper && table && firstCell);
+  (wrapper as HTMLElement).scrollLeft = 72;
 
   // When：打字机继续追加表格行、结尾段落和链接（每一步都以前一步为前缀）。
   render(`${base}| a.ts | 完成 |\n| b.ts | 完成 |`);
@@ -66,4 +68,8 @@ test("内容流式增长时表格与链接的 DOM 节点保持同一实例，不
   assert.equal(firstCell.textContent, "a.ts");
   assert.equal(anchor.getAttribute("href"), "https://example.com");
   assert.match(wrapper.textContent ?? "", /b\.ts/u);
+  flushSync(() => root.render(createElement(MarkdownContent, { ...props, streaming: false, content: `${withParagraph}\n\n完毕。` })));
+  assert.equal(document.querySelector(".markdown-table"), wrapper, "流结束不重建已完成的表格");
+  assert.equal((wrapper as HTMLElement).scrollLeft, 72, "保留用户在表格中的横向位置");
+  flushSync(() => root.unmount());
 });

@@ -84,9 +84,11 @@ async function removeDeadOwnerLock(lockPath: string): Promise<boolean> {
 async function safeLockStat(lockPath: string): Promise<Stats | undefined> {
   try {
     const stat = await fs.lstat(lockPath);
-    if (stat.isSymbolicLink() || !stat.isFile() || stat.nlink !== 1 || await fs.realpath(lockPath) !== lockPath) {
-      throw new Error("Local file lock must be a single-link regular file.");
-    }
+    const reason = stat.isSymbolicLink() ? "symbolic link"
+      : !stat.isFile() ? "not a regular file"
+      : stat.nlink !== 1 ? "multiple links"
+      : await fs.realpath(lockPath) !== lockPath ? "noncanonical path" : undefined;
+    if (reason) throw new Error(`Local file lock must be a single-link regular file (${path.basename(lockPath)}: ${reason}).`);
     return stat;
   } catch (error) {
     if (isNotFound(error)) return undefined;

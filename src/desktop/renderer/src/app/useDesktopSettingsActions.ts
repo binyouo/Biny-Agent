@@ -13,7 +13,6 @@ import type {
   DesktopMemoryEntryPatch,
   DesktopModelConfigurationInput,
   DesktopModelLoginProvider,
-  DesktopWebSearchProvider,
   DesktopWorkspaceSnapshot
 } from "../../../protocol.js";
 import { desktopApiVersionMismatchMessage } from "./desktopApi.js";
@@ -62,12 +61,6 @@ export function useDesktopSettingsActions({
     return await readKey(requireProject(projectIdRef.current), providerAlias);
   }, [projectIdRef]);
 
-  const readWebSearchApiKey = useCallback(async (provider: DesktopWebSearchProvider): Promise<string | undefined> => {
-    const readKey = window.biny.readWebSearchApiKey;
-    if (typeof readKey !== "function") throw new Error(desktopApiVersionMismatchMessage);
-    return await readKey(requireProject(projectIdRef.current), provider);
-  }, [projectIdRef]);
-
   const fetchModelCatalog = useCallback(async (providerAlias: string, force = false) => {
     const fetchCatalog = window.biny.fetchModelCatalog;
     if (typeof fetchCatalog !== "function") throw new Error(desktopApiVersionMismatchMessage);
@@ -96,10 +89,10 @@ export function useDesktopSettingsActions({
     return await cookieJarStatus();
   }, []);
 
-  const openBrowser = useCallback(async (url?: string) => {
+  const openBrowser = useCallback(async (url?: string, purpose?: "google" | "xiaohongshu" | "webfetch") => {
     const open = window.biny.openBrowser;
     if (typeof open !== "function") throw new Error(desktopApiVersionMismatchMessage);
-    await open(url);
+    await open(url, purpose);
   }, []);
 
   const loadMemoryEmbeddingStatus = useCallback(async () => {
@@ -156,8 +149,8 @@ export function useDesktopSettingsActions({
     return await memoryEntries(requireProject(projectIdRef.current), offset, limit, includeArchived);
   }, [projectIdRef]);
 
-  const searchMemory = useCallback(async (query: string, includeArchived = false) => {
-    return await window.biny.searchMemory(requireProject(projectIdRef.current), query, includeArchived);
+  const searchMemory = useCallback(async (query: string) => {
+    return await window.biny.searchMemory(requireProject(projectIdRef.current), query);
   }, [projectIdRef]);
 
   const addMemoryEntry = useCallback(async (input: DesktopMemoryEntryInput) => {
@@ -176,8 +169,8 @@ export function useDesktopSettingsActions({
     return await window.biny.archiveMemoryEntry(requireProject(projectIdRef.current), entryId, archived);
   }, [projectIdRef]);
 
-  const loadArchivedMemory = useCallback(async () => {
-    return await window.biny.archivedMemoryEntries(requireProject(projectIdRef.current));
+  const loadArchivedMemory = useCallback(async (offset: number, limit: number, includeChains?: boolean) => {
+    return await window.biny.archivedMemoryEntries(requireProject(projectIdRef.current), offset, limit, includeChains);
   }, [projectIdRef]);
 
   const runMemorySleep = useCallback(async () => {
@@ -228,7 +221,6 @@ export function useDesktopSettingsActions({
     loadMemoryEntries,
     openBrowser,
     readModelApiKey,
-    readWebSearchApiKey,
     rebuildMemoryEmbeddingIndex,
     searchMemory,
     startModelLogin,

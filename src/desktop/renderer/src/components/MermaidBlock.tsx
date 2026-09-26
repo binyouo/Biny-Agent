@@ -8,6 +8,10 @@
  * 图表内容是模型输出，mermaid 保持默认 securityLevel=strict（净化 HTML 标签、禁事件回调）。
  */
 import { useEffect, useState } from "react";
+import { Dialog, DialogHeader } from "@astryxdesign/core/Dialog";
+import { CopyButton } from "./CopyButton.js";
+import { DownloadButton } from "./MarkdownDownload.js";
+import { Icon } from "./Icon.js";
 import { MarkdownCodeBlock } from "./MarkdownCodeBlock.js";
 
 /** 流式增量到达频繁，debounce 掉中间态，只在停顿后尝试渲染。 */
@@ -20,6 +24,8 @@ interface MermaidState {
 
 export function MermaidBlock({ code }: { code: string }): React.JSX.Element {
   const dark = useIsDarkTheme();
+  const [zoom, setZoom] = useState(1);
+  const [expanded, setExpanded] = useState(false);
   const [state, setState] = useState<MermaidState | undefined>();
 
   useEffect(() => {
@@ -40,7 +46,22 @@ export function MermaidBlock({ code }: { code: string }): React.JSX.Element {
   }, [code, dark]);
 
   // 成功过就保留最后一份有效 SVG（即使源码又变了）；从没成功过（含解析失败）回退代码块
-  if (state) return <div className="markdown-mermaid" dangerouslySetInnerHTML={{ __html: state.svg }} />;
+  if (state) {
+    const diagram = <div className="markdown-diagram-viewport" tabIndex={0} role="region" aria-label="图表"><div className="markdown-mermaid" style={{ zoom }} dangerouslySetInnerHTML={{ __html: state.svg }} /></div>;
+    const controls = <div className="markdown-block-actions">
+      <CopyButton label="复制图表源码" value={state.code} />
+      <details className="markdown-action-menu"><summary aria-label="下载图表" title="下载图表"><Icon name="download" size={14} /></summary><div>
+        <DownloadButton label="SVG" showLabel filename="diagram.svg" getContent={() => new Blob([state.svg], { type: "image/svg+xml" })} />
+        <DownloadButton label="MMD" showLabel filename="diagram.mmd" getContent={() => new Blob([state.code], { type: "text/plain" })} />
+        <DownloadButton label="PNG" showLabel filename="diagram.png" getContent={() => diagramPng(state.svg)} />
+      </div></details>
+      <button type="button" aria-label="缩小图表" title="缩小图表" disabled={zoom <= .5} onClick={() => setZoom(value => Math.max(.5, value - .25))}><Icon name="minus" size={14} /></button>
+      <button type="button" aria-label="重置图表缩放" onClick={() => setZoom(1)}>{Math.round(zoom * 100)}%</button>
+      <button type="button" aria-label="放大图表" title="放大图表" disabled={zoom >= 3} onClick={() => setZoom(value => Math.min(3, value + .25))}><Icon name="add" size={14} /></button>
+      <button type="button" aria-label="全屏查看图表" title="全屏查看图表" onClick={() => setExpanded(true)}><Icon name="display" size={14} /></button>
+    </div>;
+    return <div className="markdown-diagram">{controls}{diagram}{expanded ? <Dialog isOpen onOpenChange={setExpanded} width="min(1100px, calc(100vw - 48px))"><DialogHeader title="图表" onOpenChange={setExpanded} />{controls}{diagram}</Dialog> : null}</div>;
+  }
   return <MarkdownCodeBlock code={code} language="mermaid" />;
 }
 
@@ -95,4 +116,26 @@ function currentIsDark(): boolean {
   if (theme === "dark") return true;
   if (theme === "light") return false;
   return window.matchMedia("(prefers-color-scheme: dark)").matches;
+}
+
+/** PNG 只从已净化 SVG 导出；限制像素尺寸并释放临时 URL。 */
+async function diagramPng(svg: string): Promise<Blob> {
+  const url = URL.createObjectURL(new Blob([svg], { type: "image/svg+xml" }));
+  try {
+    const image = new Image();
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("图表导出超时")), 10000);
+      image.onload = () => { clearTimeout(timer); resolve(); };
+      image.onerror = () => { clearTimeout(timer); reject(new Error("图表无法导出")); };
+      image.src = url;
+    });
+    const canvas = document.createElement("canvas");
+    const scale = Math.min(2, 4096 / Math.max(image.width, image.height, 1));
+    canvas.width = Math.max(1, Math.round(image.width * scale));
+    canvas.height = Math.max(1, Math.round(image.height * scale));
+    const context = canvas.getContext("2d");
+    if (!context) throw new Error("无法创建画布");
+    context.drawImage(image, 0, 0, canvas.width, canvas.height);
+    return await new Promise<Blob>((resolve, reject) => canvas.toBlob(blob => blob ? resolve(blob) : reject(new Error("图表导出失败")), "image/png"));
+  } finally { URL.revokeObjectURL(url); }
 }

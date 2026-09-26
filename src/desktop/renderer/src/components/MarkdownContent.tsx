@@ -1,3 +1,4 @@
+import { useChatResponseSettings } from "../chatResponseSettings.js";
 /**
  * 消息正文的 Markdown 渲染。
  *
@@ -19,7 +20,24 @@ import { openDeepLink } from "../deepLinks.js";
 import { MermaidBlock } from "./MermaidBlock.js";
 import { MarkdownCodeBlock } from "./MarkdownCodeBlock.js";
 import { FileLinkCard } from "./FileLinkCard.js";
+import { MarkdownTable } from "./MarkdownTable.js";
+import { MarkdownImage } from "./MarkdownImage.js";
 import { Icon } from "./Icon.js";
+import { createMarkdownBlockParser } from "../markdownBlocks.js";
+import type { PluggableList } from "unified";
+
+const rehypePlugins: PluggableList = [[rehypeKatex, { throwOnError: false, errorColor: "var(--biny-danger)" }]];
+const transformUrl = (url: string): string => url.startsWith("biny://") ? url : defaultUrlTransform(url);
+
+// 块内容相同就跳过 Markdown → HAST → React；不增加 DOM 包裹，保留原有段落间距。
+const MarkdownBlock = memo(function MarkdownBlock({ content, components, remarkPlugins }: {
+  content: string;
+  components: Components;
+  remarkPlugins: PluggableList;
+}): React.JSX.Element {
+  return <Markdown urlTransform={transformUrl} components={components} remarkPlugins={remarkPlugins}
+    rehypePlugins={rehypePlugins}>{content}</Markdown>;
+});
 
 interface MarkdownContentProps {
   content: string;
@@ -28,6 +46,8 @@ interface MarkdownContentProps {
   variant?: string;
   /** 用户消息传 true：单换行渲染成换行（聊天里手敲的换行不应被 Markdown 吞掉）。 */
   breaks?: boolean;
+  /** 仅流式正文启用分块；已落盘的历史首屏保持一次完整解析。 */
+  streaming?: boolean;
   onPreviewFile(path: string): void;
   onOpenExternal(url: string): void;
 }
@@ -37,12 +57,21 @@ export const MarkdownContent = memo(function MarkdownContent({
   projectId,
   variant,
   breaks,
+  streaming = false,
   onPreviewFile,
   onOpenExternal
 }: MarkdownContentProps): React.JSX.Element {
+  const { markdown, singleDollarMath, openLinksInBrowser } = useChatResponseSettings();
+  const [linkError, setLinkError] = useState<string>();
+  const parseBlocks = useMemo(() => createMarkdownBlockParser(), []);
+  const [wasStreaming, setWasStreaming] = useState(streaming);
+  useEffect(() => { if (streaming) setWasStreaming(true); }, [streaming]);
+  // 流结束不切换组件树，保留代码/表格节点和用户的横向滚动位置。
+  const partitioned = streaming || wasStreaming;
+  const blocks = useMemo(() => partitioned ? parseBlocks(content) : [content], [content, parseBlocks, partitioned]);
   const remarkPlugins = useMemo(
-    () => (breaks ? [remarkGfm, remarkBreaks, remarkMath] : [remarkGfm, remarkMath]),
-    [breaks]
+    () => (breaks ? [remarkGfm, remarkBreaks, [remarkMath, { singleDollarTextMath: singleDollarMath }]] : [remarkGfm, [remarkMath, { singleDollarTextMath: singleDollarMath }]]) as PluggableList,
+    [breaks, singleDollarMath]
   );
   // components 里的函数会被 react-markdown 直接当作 React 元素类型；
   // 每次渲染内联重建会让表格/代码块/链接整棵子树在流式期间每帧卸载重建，
@@ -76,7 +105,13 @@ export const MarkdownContent = memo(function MarkdownContent({
       const externalUrl = href && /^https?:\/\//i.test(href) ? href : undefined;
       const isAnchor = !externalUrl && Boolean(href?.startsWith("#"));
       const onClick = externalUrl
-        ? (event: React.MouseEvent) => { event.preventDefault(); onOpenExternal(externalUrl); }
+        ? (event: React.MouseEvent) => {
+          event.preventDefault();
+          if (openLinksInBrowser && !event.metaKey && !event.ctrlKey) {
+            setLinkError(undefined);
+            void window.biny.openBrowser(externalUrl).catch(() => setLinkError("无法打开内置浏览器，请重试链接。"));
+          } else onOpenExternal(externalUrl);
+        }
         : undefined;
       return <a {...props} onClick={onClick} rel="noreferrer" target={isAnchor ? undefined : "_blank"} title={externalUrl ? "在浏览器中打开" : undefined}>{children}</a>;
     },
@@ -91,7 +126,7 @@ export const MarkdownContent = memo(function MarkdownContent({
       const path = localPathFromHref(source);
       if (path) return <InlineImage alt={alt ?? ""} path={path} projectId={projectId} />;
       if (!source) return null;
-      return <img alt={alt ?? ""} className="markdown-image" src={source} title={title} />;
+      return <MarkdownImage key={source} alt={alt ?? ""} src={source} title={title} />;
     },
     pre({ children }) {
       const block = fencedCode(children);
@@ -101,20 +136,14 @@ export const MarkdownContent = memo(function MarkdownContent({
     },
     table({ children }) {
       // 宽表格自己横向滚动，不能把整条消息撑宽。
-      return <div className="markdown-table"><table>{children}</table></div>;
+      return <MarkdownTable>{children}</MarkdownTable>;
     }
-  }), [onOpenExternal, onPreviewFile, projectId]);
+  }), [onOpenExternal, onPreviewFile, projectId, openLinksInBrowser]);
+  if (!markdown) return <div className={`markdown-body is-plain-text${variant ? ` ${variant}` : ""}`}>{content}</div>;
   return (
     <div className={variant ? `markdown-body ${variant}` : "markdown-body"}>
-      <Markdown
-        urlTransform={(url) => url.startsWith("biny://") ? url : defaultUrlTransform(url)}
-        // singleDollarTextMath 关闭：$ 是常见计价符号，只认 $$...$$ 行内/块级公式
-        components={components}
-        remarkPlugins={remarkPlugins}
-        rehypePlugins={[[rehypeKatex, { throwOnError: false, errorColor: "var(--biny-danger)" }]]}
-      >
-        {content}
-      </Markdown>
+      {linkError ? <p role="alert">{linkError}</p> : null}
+      {blocks.map((block, index) => <MarkdownBlock key={index} content={block} components={components} remarkPlugins={remarkPlugins} />)}
     </div>
   );
 });
@@ -135,18 +164,9 @@ function LocalReferenceLink({ href, projectId, children }: { href: string; proje
 
 /** 图片没读到（不是图片、太大、路径不存在）时退回成一行文件名，不留一块空白。 */
 function InlineImage({ alt, path, projectId }: { alt: string; path: string; projectId: string }): React.JSX.Element {
-  const [expanded, setExpanded] = useState(false);
   const source = useInlineImage(projectId, path);
   if (!source) return <span className="markdown-image-fallback"><Icon name="file" size={12} /><span>{alt || path}</span></span>;
-  return (
-    <img
-      alt={alt}
-      className={expanded ? "markdown-image is-expanded" : "markdown-image"}
-      onClick={() => setExpanded(!expanded)}
-      src={source}
-      title={expanded ? "点击收起" : "点击放大"}
-    />
-  );
+  return <MarkdownImage key={source} src={source} alt={alt || path.split("/").pop() || "图片"} />;
 }
 
 /** 从 `pre` 的子节点里取回围栏代码块的原文和语言标注。 */

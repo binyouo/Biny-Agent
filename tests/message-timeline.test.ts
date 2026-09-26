@@ -164,15 +164,15 @@ test("仅有工具结果的失败不会补出思考或空助手操作栏", () =>
   assert.doesNotMatch(markup, /已思考|Worked for|assistant-actions/u);
 });
 
-test("只有工具产出的成功轮次保留活动记录，并展示真实工具清单", () => {
+test("只有工具产出的成功轮次保留活动记录，清单移入更多菜单", () => {
   const markup = renderTurns(buildSessionTimeline([], [
     ...start,
     { ...base, type: "tool.started", toolCallId: "read", tool: "Read", args: { path: "package.json" } },
     { ...base, type: "tool.completed", toolCallId: "read", tool: "Read", result: { content: "{}" } },
     { ...base, type: "run.completed", durationMs: 20 }
   ]));
-  assert.match(markup, /chat-meta-indicator/u);
-  assert.match(markup, /1 个工具/u);
+  assert.doesNotMatch(markup, /chat-meta-indicator|1 个工具/u);
+  assert.match(markup, /更多回复操作/u);
   assert.match(markup, /chat-activity/u);
   assert.match(markup, /工具调用 1 次/u);
   assert.doesNotMatch(markup, /条记忆|个技能/u);

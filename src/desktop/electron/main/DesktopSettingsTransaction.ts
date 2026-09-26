@@ -953,7 +953,6 @@ function createRecoveryPayload(
 
 function withoutRecoveryCredentials(config: AgentConfig): AgentConfig {
   const safe = structuredClone(config);
-  safe.web.search.apiKey = undefined;
   for (const provider of Object.values(safe.providers)) {
     provider.apiKey = undefined;
     if (provider.oauth) provider.oauth.refreshToken = undefined;
@@ -1047,7 +1046,6 @@ function settingsConfigSide(
 }
 
 function hasRecoveryCredential(config: AgentConfig): boolean {
-  if (config.web.search.apiKey !== undefined) return true;
   return Object.values(config.providers).some((provider) => (
     provider.apiKey !== undefined || provider.oauth?.refreshToken !== undefined
   ));

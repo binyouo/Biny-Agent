@@ -6,7 +6,7 @@
  * data URL 内联显示；二进制/超限给「使用系统应用打开」兜底。文件树支持懒加载展开
  * 和名称过滤。这里只做展示与本地交互，数据请求全部由 useWorkspaceInspector 的回调注入。
  */
-import { useDeferredValue, useEffect, useRef, useState } from "react";
+import { useDeferredValue, useLayoutEffect, useRef, useState } from "react";
 import { IconButton } from "@astryxdesign/core/IconButton";
 import type {
   DesktopWorkspaceDirectoryEntry,
@@ -61,19 +61,21 @@ export function FilePreviewPanel({ preview, directoryStates, expandedDirectories
   const [fileTreeOpen, setFileTreeOpen] = useState(true);
   const [treeWidth, setTreeWidth] = useState(DEFAULT_TREE_WIDTH);
   const [resizing, setResizing] = useState(false);
-  const browserOnly = !preview;
+  const browserOnly = !preview && narrow;
   const treeVisible = browserOnly || (fileTreeOpen && !narrow);
   const bodyRef = useRef<HTMLDivElement>(null);
   // dock 被拖窄时树宽必须跟着收敛（clamp 是「面板宽 − 预览最小宽」），否则预览会被挤没。
-  useEffect(() => {
+  useLayoutEffect(() => {
     const body = bodyRef.current;
     if (!body) return;
-    const observer = new ResizeObserver(() => {
+    const measure = (): void => {
       if (body.clientWidth === 0) return;
       setNarrow(body.clientWidth < 520);
       const available = Math.max(MIN_TREE_WIDTH, body.clientWidth - MIN_PREVIEW_WIDTH);
       setTreeWidth((current) => Math.min(current, available));
-    });
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
     observer.observe(body);
     return () => observer.disconnect();
   }, []);
@@ -102,10 +104,10 @@ export function FilePreviewPanel({ preview, directoryStates, expandedDirectories
   return (
     <aside aria-label={preview ? "文件预览" : "文件浏览器"} className="file-preview-panel file-browser-panel">
       <header className="file-browser-path">
-        <span className="file-browser-current-path" title={path ?? "工作区"}>{preview ? <button type="button" aria-label="返回文件列表" onClick={onShowFiles}><Icon name="arrow-left" size={14} /></button> : <Icon name="folder" size={14} />}{path ?? "工作区"}</span>
+        <span className="file-browser-current-path">{preview ? <button type="button" aria-label="返回文件列表" onClick={onShowFiles}><Icon name="arrow-left" size={14} /></button> : <Icon name="folder" size={14} />}{path ?? "工作区"}</span>
         <div className="file-browser-path-actions">
-          {preview?.status === "ready" && path ? <IconButton icon={<Icon name="external" size={14} />} label="使用系统应用打开" onClick={() => onOpenFile(path)} size="sm" tooltip="使用系统应用打开" variant="ghost" /> : null}
-          {preview ? <IconButton icon={<Icon name="close" size={14} />} label="关闭当前文件" onClick={onShowFiles} size="sm" tooltip="返回文件列表" variant="ghost" /> : null}
+          {preview?.status === "ready" && path ? <IconButton icon={<Icon name="external" size={14} />} label="使用系统应用打开" onClick={() => onOpenFile(path)} size="sm" variant="ghost" /> : null}
+          {preview ? <IconButton icon={<Icon name="close" size={14} />} label="关闭当前文件" onClick={onShowFiles} size="sm" variant="ghost" /> : null}
           {preview && !narrow ? (
             <IconButton
               aria-pressed={fileTreeOpen}
@@ -113,7 +115,6 @@ export function FilePreviewPanel({ preview, directoryStates, expandedDirectories
               label={fileTreeOpen ? "隐藏文件树" : "显示文件树"}
               onClick={() => setFileTreeOpen((current) => !current)}
               size="sm"
-              tooltip={fileTreeOpen ? "隐藏文件树" : "显示文件树"}
               variant={fileTreeOpen ? "secondary" : "ghost"}
             />
           ) : null}
@@ -123,10 +124,10 @@ export function FilePreviewPanel({ preview, directoryStates, expandedDirectories
         <div aria-hidden={treeVisible ? undefined : true} className="file-browser-tree" inert={treeVisible ? undefined : true} style={treeVisible && !browserOnly ? { width: treeWidth } : undefined}>
           <div className="inspector-subtoolbar file-explorer-tools">
             <span>文件</span>
-            <button type="button" title="筛选文件" aria-label="筛选文件" aria-pressed={filterOpen} onClick={() => { setFilterOpen(!filterOpen); setQuery(""); }}><Icon name="search" size={14} /></button>
-            <button type="button" title={showHidden ? "隐藏点文件" : "显示隐藏文件"} aria-label="显示隐藏文件" aria-pressed={showHidden} onClick={() => setShowHidden(!showHidden)}><Icon name={showHidden ? "eye" : "eye-off"} size={14} /></button>
-            <button type="button" title="折叠所有目录" aria-label="折叠所有目录" onClick={onCollapse}><Icon name="fold" size={14} /></button>
-            <button type="button" title="刷新文件" aria-label="刷新文件" onClick={onRefresh}><Icon name="refresh" size={14} /></button>
+            <button type="button" aria-label="筛选文件" aria-pressed={filterOpen} onClick={() => { setFilterOpen(!filterOpen); setQuery(""); }}><Icon name="search" size={14} /></button>
+            <button type="button" aria-label={showHidden ? "隐藏点文件" : "显示隐藏文件"} aria-pressed={showHidden} onClick={() => setShowHidden(!showHidden)}><Icon name={showHidden ? "eye" : "eye-off"} size={14} /></button>
+            <button type="button" aria-label="折叠所有目录" onClick={onCollapse}><Icon name="fold" size={14} /></button>
+            <button type="button" aria-label="刷新文件" onClick={onRefresh}><Icon name="refresh" size={14} /></button>
           </div>
           {filterOpen ? <div className="inspector-file-filter"><Icon name="search" size={13} /><input autoFocus aria-label="按名称筛选文件" placeholder="筛选文件…" value={query} onChange={(event) => setQuery(event.target.value)} onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); setQuery(""); setFilterOpen(false); } }} /><button type="button" aria-label="清除筛选" onClick={() => setQuery("")}><Icon name="close" size={12} /></button></div> : null}
           <FileTree
@@ -142,7 +143,7 @@ export function FilePreviewPanel({ preview, directoryStates, expandedDirectories
         </div>
         {treeVisible && !browserOnly ? <div aria-label="调整文件树宽度" aria-orientation="vertical" className="file-browser-tree-resizer" onPointerDown={startTreeResize} role="separator" tabIndex={0} aria-valuemin={MIN_TREE_WIDTH} aria-valuemax={MAX_TREE_WIDTH} aria-valuenow={treeWidth} onKeyDown={(event) => { if (event.key === "ArrowLeft" || event.key === "ArrowRight") { event.preventDefault(); setTreeWidth((current) => Math.max(MIN_TREE_WIDTH, Math.min(MAX_TREE_WIDTH, (bodyRef.current?.clientWidth ?? 0) - MIN_PREVIEW_WIDTH, current + (event.key === "ArrowRight" ? 16 : -16)))); } }} /> : null}
         <div className="file-browser-content">
-          {preview ? <FilePreviewContent key={path} preview={preview} projectId={projectId} onOpenFile={onOpenFile} onPreviewFile={onPreviewFile} /> : null}
+          {preview ? <FilePreviewContent key={path} preview={preview} projectId={projectId} onOpenFile={onOpenFile} onPreviewFile={onPreviewFile} /> : <div className="inspector-empty"><Icon name="file" size={28} /><p>选择要预览的文件</p><small>从左侧文件树选择文件。</small></div>}
         </div>
       </div>
     </aside>
@@ -183,12 +184,12 @@ function FilePreviewContent({ preview, projectId, onOpenFile, onPreviewFile }: {
       <button type="button" aria-pressed={mode === "preview"} onClick={() => setMode("preview")}><Icon name="eye" size={13} />预览</button>
       <button type="button" aria-pressed={mode === "code"} onClick={() => setMode("code")}><Icon name="code" size={13} />源码</button>
       <span />
-      <CopyButton label="复制文件内容" value={file.content} />
+      <CopyButton label="复制文件内容" showTooltip={false} value={file.content} />
     </div>
     {openError ? <div className="inspector-error" role="alert">{openError}</div> : null}
     {file.truncated ? <div className="inspector-progress">文件过大，仅预览已读取的部分。</div> : null}
     {mode === "code" ? <CodeFilePreview file={file} /> : extension === "md" || extension === "markdown" ? <div className="inspector-result-scroll"><MarkdownContent content={file.content} projectId={projectId} onPreviewFile={(target) => onPreviewFile(target.startsWith("/") ? target : `${path.includes("/") ? path.slice(0, path.lastIndexOf("/") + 1) : ""}${target}`)} onOpenExternal={(url) => { void window.biny.openExternal(url).catch((error: unknown) => setOpenError(String(error))); }} /></div>
-      : <iframe title={`预览 ${path}`} sandbox="" referrerPolicy="no-referrer" srcDoc={`<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:; form-action 'none'; base-uri 'none'">${file.content}`} />}
+      : <iframe aria-label={`预览 ${path}`} sandbox="" referrerPolicy="no-referrer" srcDoc={`<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:; form-action 'none'; base-uri 'none'">${file.content}`} />}
   </div>;
 }
 
@@ -203,7 +204,7 @@ function CodeFilePreview({ file }: { file: DesktopWorkspaceFilePreview }): React
         <span>{highlighted.language ?? "纯文本"}</span>
         <div className="file-preview-meta-actions">
           <span>{formatBytes(file.bytes)}{file.truncated ? " · 仅显示前 512 KB" : ""}</span>
-          <CopyButton className="copy-button" label="复制文件内容" value={file.content ?? ""} />
+          <CopyButton className="copy-button" label="复制文件内容" showTooltip={false} value={file.content ?? ""} />
         </div>
       </div>
       <div className="file-preview-body">
@@ -287,7 +288,7 @@ function FileTree({ path, query, directoryStates, expandedDirectories, onToggleD
                 const next = rows[rows.indexOf(event.currentTarget) + (event.key === "ArrowDown" ? 1 : -1)];
                 event.preventDefault(); next?.focus();
               } else if (isDirectory && ((event.key === "ArrowRight" && !isExpanded) || (event.key === "ArrowLeft" && isExpanded))) { event.preventDefault(); onToggleDirectory(entry.path); }
-            }} style={{ paddingLeft: `${8 + depth * 16}px` }} title={entry.path} type="button">
+            }} style={{ paddingLeft: `${8 + depth * 16}px` }} type="button">
               {isDirectory ? <span className={`file-tree-disclosure${isExpanded ? " is-expanded" : ""}`}><Icon name="chevron" size={13} /></span> : <span aria-hidden="true" className="file-tree-disclosure is-file-slot" />}
               {isDirectory ? <Icon className="file-tree-folder-icon" name="folder" size={14} /> : <FileTypeMarker name={entry.name} />}
               <span>{entry.name}</span>

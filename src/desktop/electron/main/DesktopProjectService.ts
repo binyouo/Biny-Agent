@@ -11,6 +11,7 @@ import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import os from "node:os";
 import { promisify } from "node:util";
 import { globalConfigDir } from "../../../config/paths.js";
 import type { AgentConfigStore } from "../../../config/store.js";
@@ -58,6 +59,8 @@ import { attachmentFilePath, attachmentPathPrefix, saveAttachment as saveProject
 import type {
   DesktopAttachment,
   DesktopGitBranch,
+  DesktopGitStatus,
+  DesktopGitCommitInput,
   DesktopProject,
   DesktopSessionDocument,
   DesktopSessionTreePage,
@@ -96,6 +99,7 @@ const imageMediaTypes: Record<string, string> = {
 };
 
 export class DesktopProjectService {
+  private readonly gitMutations = new Set<string>();
   constructor(
     private readonly state: DesktopStateStore,
     private readonly storage: DesktopUserDataStore,
@@ -232,6 +236,136 @@ export class DesktopProjectService {
     } catch (error) {
       throw new Error(`创建并检出分支失败：${gitErrorText(error)}`);
     }
+  }
+
+  /** NUL 分隔保留空格、换行和非 ASCII 文件名；禁用重命名合并，让选择范围明确。 */
+  async projectGitStatus(projectIdValue: string): Promise<DesktopGitStatus> {
+    const project = this.requireProject(projectIdValue);
+    await assertGitRepository(project);
+    const top = (await runGit(project.path, ["rev-parse", "--show-toplevel"])).stdout.trim();
+    if (await fs.realpath(top) !== await fs.realpath(project.path)) throw new Error("请打开 Git 仓库根目录后操作提交。");
+    const [status, branch, head] = await Promise.all([
+      runGit(project.path, ["status", "--porcelain=v1", "-z", "--untracked-files=all", "--no-renames", "--ignore-submodules=all"]),
+      runGit(project.path, ["branch", "--show-current"]),
+      gitOutput(project.path, ["rev-parse", "--verify", "HEAD"])
+    ]);
+    return { branch: branch.stdout.trim() || "分离 HEAD", revision: createHash("sha256").update(`${head ?? "unborn"}\0${branch.stdout}\0${status.stdout}`).digest("hex"),
+      files: status.stdout.split("\0").filter(Boolean).map((entry) => ({ path: entry.slice(3), status: entry.slice(0, 2) })) };
+  }
+
+  async initializeProjectGit(projectIdValue: string): Promise<DesktopGitStatus> {
+    const project = this.requireProject(projectIdValue);
+    if (project.missing || !await directoryExists(project.path)) throw new Error("项目目录不可用，无法初始化 Git 仓库。");
+    if (this.gitMutations.has(project.path)) throw new Error("Git 操作进行中，请等待完成。");
+    this.gitMutations.add(project.path);
+    try {
+      try {
+        await runGit(project.path, ["rev-parse", "--git-dir"]);
+        throw new Error("当前项目已经是 Git 仓库。");
+      } catch (error) {
+        if (!isGitRepositoryMissing(error)) throw error;
+      }
+      await runGit(project.path, ["init"], 10_000);
+      return await this.projectGitStatus(project.id);
+    } finally { this.gitMutations.delete(project.path); }
+  }
+
+  /** 只提交明确选择的整文件；不夹带其他已暂存内容，失败时保留暂存区供用户检查。 */
+  async commitProjectFiles(projectIdValue: string, input: DesktopGitCommitInput): Promise<DesktopGitStatus> {
+    const project = this.requireProject(projectIdValue);
+    if (this.gitMutations.has(project.path)) throw new Error("Git 操作进行中，请等待完成。");
+    this.gitMutations.add(project.path);
+    let temp: string | undefined;
+    try {
+      if (!input.message.trim() || input.message.length > 10_000 || !input.paths.length || input.paths.length > 10_000) throw new Error("请选择文件并填写提交说明。");
+      const snapshot = await this.projectGitStatus(project.id);
+      if (snapshot.revision !== input.revision) throw new Error("Git 状态已变化，请刷新后重新选择文件。");
+      const files = new Map(snapshot.files.map((file) => [file.path, file]));
+      const paths = [...new Set(input.paths)];
+      for (const file of paths) {
+        if (!files.has(file) || file.includes("\0") || path.isAbsolute(file) || file.split("/").includes("..")) throw new Error("选择的文件路径无效，请刷新。");
+        if (/U|AA|DD/u.test(files.get(file)!.status)) throw new Error("请先解决合并冲突再提交。");
+      }
+      temp = await fs.mkdtemp(path.join(os.tmpdir(), "biny-git-paths-"));
+      const pathspec = path.join(temp, "paths");
+      await fs.writeFile(pathspec, `${paths.join("\0")}\0`, { mode: 0o600 });
+      await runGit(project.path, ["--literal-pathspecs", "add", `--pathspec-from-file=${pathspec}`, "--pathspec-file-nul"], 30_000);
+      try {
+        await runGit(project.path, ["--literal-pathspecs", "commit", "--only", "-m", input.message.trim(), `--pathspec-from-file=${pathspec}`, "--pathspec-file-nul"], 120_000);
+      } catch (error) {
+        throw new Error(`提交失败或未确认完成，请检查 Git 状态；不自动重试，所选文件的暂存内容予以保留。${gitErrorText(error)}`);
+      }
+      return await this.projectGitStatus(project.id);
+    } finally {
+      try { if (temp) await fs.rm(temp, { recursive: true, force: true }); }
+      finally { this.gitMutations.delete(project.path); }
+    }
+  }
+
+  async projectGitRemote(projectIdValue: string, action: "pull" | "push"): Promise<DesktopGitStatus> {
+    const project = this.requireProject(projectIdValue);
+    if (this.gitMutations.has(project.path)) throw new Error("Git 操作进行中，请等待完成。");
+    this.gitMutations.add(project.path);
+    try {
+      await this.projectGitStatus(project.id);
+      if (action === "pull") await assertCleanGitWorkspace(project);
+      try { await runGit(project.path, action === "pull" ? ["pull", "--ff-only"] : ["push"], 120_000); }
+      catch (error) { throw new Error(`Git ${action} 未确认成功，请检查状态后决定是否重试：${gitErrorText(error)}`); }
+      return await this.projectGitStatus(project.id);
+    } finally { this.gitMutations.delete(project.path); }
+  }
+
+  async projectPreviewAvailability(projectIdValue: string): Promise<{ available: true; command: string } | { available: true; kind: "static"; entry: string; entries: string[] } | { available: false; reason: string }> {
+    const project = this.requireProject(projectIdValue);
+    if (project.missing || !await directoryExists(project.path)) throw new Error("项目目录不可用，无法检查开发服务器。");
+    const staticEntry = async (): Promise<{ available: true; kind: "static"; entry: string; entries: string[] } | undefined> => {
+      const files: string[] = [];
+      const pending = [""];
+      // 不跟随目录符号链接；限定遍历量，避免在依赖目录或巨大工作区中无界扫描。
+      let scanned = 0;
+      while (pending.length && files.length < 100 && scanned < 500) {
+        const relative = pending.shift()!;
+        scanned++;
+        const entries = await fs.readdir(path.join(project.path, relative), { withFileTypes: true });
+        for (const item of entries) {
+          if (files.length >= 100 || pending.length >= 500) break;
+          const next = relative ? `${relative}/${item.name}` : item.name;
+          if (item.isDirectory() && !item.name.startsWith(".") && !["node_modules", "dist", "build", "coverage"].includes(item.name)) pending.push(next);
+          else if (item.isFile() && /\.html?$/iu.test(item.name)) files.push(next);
+        }
+      }
+      files.sort((a, b) => a.localeCompare(b));
+      const entry = files.includes("index.html") ? "index.html" : files[0];
+      return entry ? { available: true, kind: "static", entry, entries: files } : undefined;
+    };
+    let file: DesktopWorkspaceFilePreview;
+    try { file = await this.readWorkspaceFile(project, "package.json"); }
+    catch (error) {
+      if (isNotFound(error)) return await staticEntry() ?? { available: false, reason: "项目没有 package.json 或 HTML 页面，无法自动运行预览。" };
+      throw error;
+    }
+    if (file.truncated || !file.content) return await staticEntry() ?? { available: false, reason: "无法读取 package.json。" };
+    let manifest: { packageManager?: unknown; scripts?: Record<string, unknown> };
+    try { manifest = JSON.parse(file.content) as typeof manifest; }
+    catch { return await staticEntry() ?? { available: false, reason: "package.json 格式有误，无法识别开发脚本。" }; }
+    if (!manifest || typeof manifest !== "object" || Array.isArray(manifest)) return await staticEntry() ?? { available: false, reason: "package.json 格式有误，无法识别开发脚本。" };
+    const script = ["dev", "start", "serve"].find((name) => typeof manifest.scripts?.[name] === "string");
+    if (!script) return await staticEntry() ?? { available: false, reason: "项目没有 dev、start 或 serve 脚本，也没有 HTML 页面。" };
+    let manager = typeof manifest.packageManager === "string" ? /^(npm|pnpm|yarn|bun)@/u.exec(manifest.packageManager)?.[1] : undefined;
+    if (!manager) {
+      for (const [lockfile, candidate] of [["pnpm-lock.yaml", "pnpm"], ["yarn.lock", "yarn"], ["bun.lock", "bun"], ["bun.lockb", "bun"]] as const) {
+        try { await fs.access(path.join(project.path, lockfile)); manager = candidate; break; }
+        catch (error) { if (!isNotFound(error)) throw error; }
+      }
+    }
+    return { available: true, command: `${manager ?? "npm"} run ${script}` };
+  }
+
+  async projectPreviewCommand(projectIdValue: string): Promise<string> {
+    const availability = await this.projectPreviewAvailability(projectIdValue);
+    if (!availability.available) throw new Error(`${availability.reason}请在终端手动启动服务后输入本地地址。`);
+    if ("kind" in availability) throw new Error("当前项目使用静态预览，无需开发脚本。");
+    return availability.command;
   }
 
   async listModels(project: DesktopProject): Promise<ModelChoice[]> {
@@ -372,6 +506,7 @@ export class DesktopProjectService {
         createdAt: now,
         updatedAt: now,
         pinned: false,
+        isIncognito: false,
         archived: false,
         unread: false,
         labels: undefined,
@@ -413,6 +548,7 @@ export class DesktopProjectService {
       fileName: summary.fileName,
       summary,
       rootSessionId: catalogRecord?.rootSessionId ?? sessionId,
+      isIncognito: catalogRecord?.isIncognito ?? false,
       parentSessionId: catalogRecord?.parentSessionId,
       branchPoint: catalogRecord?.branchPoint,
       title: catalogRecord?.title,
@@ -770,6 +906,7 @@ function desktopSessionSummary(
     createdAt: summary.createdAt,
     updatedAt: summary.updatedAt,
     pinned: item.pinned ?? false,
+    isIncognito: item.isIncognito,
     archived: item.archived ?? false,
     unread: item.unread ?? false,
     labels: item.labels,

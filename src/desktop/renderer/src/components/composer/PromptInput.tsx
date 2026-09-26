@@ -2,18 +2,29 @@
 import React, { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { RefObject } from "react";
 import type { DesktopSkillCatalogEntry } from "../../../../protocol.js";
-import type { LocalReferenceResult } from "../../../../../session/localReferences.js";
-import { Icon } from "../Icon.js";
+import type { LocalReferenceKind, LocalReferenceResult } from "../../../../../session/localReferences.js";
+import { Icon, type IconName } from "../Icon.js";
 import { ComposerPopover } from "./ComposerPopover.js";
 import { buildDesktopComposerItems } from "./desktopSlashCommands.js";
 import { findPromptCompletion, filterPromptCompletions, replacePromptCompletion, promptKeyAction } from "./promptCompletion.js";
 import { promptSkillDeletion, promptSkillTokens } from "./promptDecorations.js";
 import { useBreathingCaret } from "./useBreathingCaret.js";
-import { findReferenceCompletion, referenceKeyAction, replaceReferenceCompletion } from "./referenceCompletion.js";
+import { findReferenceCompletion, insertDraftReference, normalizeDraftReferences, reconcileDraftReferenceChange,
+  referenceDraftDeletion, referenceKeyAction, referenceKindLabel, referenceResultSubtitle, type DraftReferenceToken } from "./referenceCompletion.js";
 
-export function PromptInput({ value, onChange, onSubmit, onFiles, disabled, placeholder, skills, projectId, inputRef }: {
+const referenceIcons: Record<LocalReferenceKind, IconName> = {
+  date: "calendar", project: "folder", file: "file", thread: "message", message: "message", memory: "brain",
+  snippet: "file-text", scratch: "file-text", skill: "wand", agent: "person", mcp: "plug", model: "cpu",
+  provider: "server", tool: "wrench", "tool-call": "wrench", task: "check", cron: "timer",
+  crystal: "cube", bundle: "cube", mission: "circle-check", plan: "list-tree"
+};
+
+export function PromptInput({ value, onChange, onReferenceChange, onInspectReference, referenceTokens, onSubmit, onFiles, disabled, placeholder, skills, projectId, inputRef }: {
   value: string;
-  onChange(value: string): void;
+  onChange(value: string, inputType?: string): void;
+  onReferenceChange(value: string, tokens: DraftReferenceToken[]): void;
+  onInspectReference?(reference: LocalReferenceResult): void;
+  referenceTokens: readonly DraftReferenceToken[];
   onSubmit(): void;
   onFiles(files: File[]): void;
   disabled: boolean;
@@ -41,8 +52,11 @@ export function PromptInput({ value, onChange, onSubmit, onFiles, disabled, plac
   const menuId = useId();
   const items = useMemo(() => buildDesktopComposerItems(skills), [skills]);
   const tokens = useMemo(() => promptSkillTokens(value, skills), [value, skills]);
+  const decorations = [...tokens.map((token) => ({ ...token, type: "skill" as const })),
+    ...referenceTokens.filter((token) => value.slice(token.start, token.end) === `@${token.label}`)
+      .map((token) => ({ ...token, type: "ref" as const }))].sort((left, right) => left.start - right.start);
   const completion = findPromptCompletion(value, selection.start, selection.end);
-  const referenceCompletion = findReferenceCompletion(value, selection.start, selection.end);
+  const referenceCompletion = findReferenceCompletion(value, selection.start, selection.end, referenceTokens);
   const referenceKey = referenceCompletion ? `${referenceCompletion.start}:${referenceCompletion.end}:${referenceCompletion.query}` : undefined;
   const referenceQuery = referenceCompletion?.query;
   const referenceKind = referenceCompletion?.kind;
@@ -115,8 +129,9 @@ export function PromptInput({ value, onChange, onSubmit, onFiles, disabled, plac
   const chooseReference = (index: number): void => {
     const result = referenceResults[index];
     if (!referenceCompletion || !result) return;
-    const next = replaceReferenceCompletion(value, referenceCompletion, result.label, result.uri);
-    onChange(next.value);
+    const next = insertDraftReference(value, referenceCompletion, result, referenceTokens);
+    onReferenceChange(next.value, next.tokens);
+    onInspectReference?.(result);
     setReferenceDismissed(referenceKey);
     setReferenceIndex(0);
     selectionFrame.current = requestAnimationFrame(() => {
@@ -128,16 +143,21 @@ export function PromptInput({ value, onChange, onSubmit, onFiles, disabled, plac
 
   return <div className="biny-prompt-editor" ref={anchorRef}>
     <div className="biny-prompt-surface" ref={surfaceRef}>
-    <div className="biny-prompt-skill-overlay" aria-hidden="true" ref={skillOverlayRef}>
-      {tokens.map((token, index) => <React.Fragment key={token.start}>
-        {value.slice(tokens[index - 1]?.end ?? 0, token.start)}
-        <span className="biny-prompt-skill-token" data-skill-name={token.name}>{value.slice(token.start, token.end)}</span>
+    {decorations.length > 0 ? <div className="biny-prompt-skill-overlay" aria-hidden="true" ref={skillOverlayRef}>
+      {decorations.map((token, index) => <React.Fragment key={`${token.type}-${String(token.start)}`}>
+        {value.slice(decorations[index - 1]?.end ?? 0, token.start)}
+        {token.type === "skill"
+          ? <span className="biny-prompt-skill-token" data-skill-name={token.name}>{value.slice(token.start, token.end)}</span>
+          : <span className="biny-prompt-reference-token" data-reference-kind={token.kind}>
+            <span className="biny-prompt-reference-icon"><span>@</span><Icon name={referenceIcons[token.kind]} size={11} /></span>
+            {value.slice(token.start + 1, token.end)}
+          </span>}
       </React.Fragment>)}
-      {value.slice(tokens.at(-1)?.end ?? 0)}{"\u200b"}
-    </div>
+      {value.slice(decorations.at(-1)?.end ?? 0)}{"\u200b"}
+    </div> : null}
     <textarea
       ref={inputRef}
-      className="biny-prompt-textarea"
+      className={`biny-prompt-textarea${decorations.length ? " has-decorations" : ""}`}
       aria-label="任务输入"
       aria-autocomplete="list"
       aria-controls={open || referenceOpen ? menuId : undefined}
@@ -155,7 +175,7 @@ export function PromptInput({ value, onChange, onSubmit, onFiles, disabled, plac
       onCompositionStart={() => { composing.current = true; }}
       onCompositionEnd={() => { composing.current = false; setCompositionRevision((value) => value + 1); }}
       onChange={(event) => {
-        onChange(event.currentTarget.value);
+        onChange(event.currentTarget.value, (event.nativeEvent as InputEvent).inputType);
         setSelection({ start: event.currentTarget.selectionStart, end: event.currentTarget.selectionEnd });
         setActiveIndex(0);
         setDismissed(undefined);
@@ -164,9 +184,22 @@ export function PromptInput({ value, onChange, onSubmit, onFiles, disabled, plac
       onSelect={(event) => setSelection({ start: event.currentTarget.selectionStart, end: event.currentTarget.selectionEnd })}
       onPaste={(event) => {
         const files = [...event.clipboardData.files];
-        if (!files.length) return;
+        if (files.length) { event.preventDefault(); onFiles(files); return; }
+        const text = event.clipboardData.getData("text/plain");
+        if (!/@\[[^\]\n]{1,80}\]\(biny:\/\//u.test(text)) return;
         event.preventDefault();
-        onFiles(files);
+        const input = event.currentTarget;
+        const start = input.selectionStart;
+        const end = input.selectionEnd;
+        const raw = value.slice(0, start) + text + value.slice(end);
+        const retained = reconcileDraftReferenceChange(value, raw, referenceTokens);
+        const next = normalizeDraftReferences(raw, retained);
+        onReferenceChange(next.value, next.tokens);
+        const cursor = next.value.length - value.slice(end).length;
+        selectionFrame.current = requestAnimationFrame(() => {
+          input.setSelectionRange(cursor, cursor);
+          setSelection({ start: cursor, end: cursor });
+        });
       }}
       onKeyDown={(event) => {
         const referenceAction = referenceKeyAction(event.nativeEvent, composing.current, referenceOpen, referenceResults.length);
@@ -181,7 +214,8 @@ export function PromptInput({ value, onChange, onSubmit, onFiles, disabled, plac
         if (!composing.current && !event.nativeEvent.isComposing && event.keyCode !== 229
           && !event.metaKey && !event.ctrlKey && !event.altKey) {
           const input = event.currentTarget;
-          const deletion = promptSkillDeletion(value, input.selectionStart, input.selectionEnd, event.key, tokens);
+          const deletion = referenceDraftDeletion(value, input.selectionStart, input.selectionEnd, event.key, referenceTokens)
+            ?? promptSkillDeletion(value, input.selectionStart, input.selectionEnd, event.key, tokens);
           if (deletion) {
             event.preventDefault();
             input.setSelectionRange(deletion.start, deletion.end);
@@ -232,14 +266,17 @@ export function PromptInput({ value, onChange, onSubmit, onFiles, disabled, plac
       <div id={menuId} role="listbox" aria-label="本地引用">
         {referenceError ? <p className="biny-prompt-completions-empty" role="alert">{referenceError}</p> : null}
         {!referenceError && !referenceResults.length ? <p className="biny-prompt-completions-empty">没有匹配的引用</p> : null}
-        {referenceResults.map((result, index) => <button key={result.uri} id={`${menuId}-ref-${String(index)}`} type="button" role="option"
+        {referenceResults.map((result, index) => <React.Fragment key={result.uri}>
+          {index === 0 || referenceResults[index - 1]?.kind !== result.kind ? <p className="biny-prompt-completions-kind" role="presentation">{referenceKindLabel(result.kind)}</p> : null}
+          <button id={`${menuId}-ref-${String(index)}`} type="button" role="option"
           aria-selected={index === selectedReference} tabIndex={-1} onMouseDown={(event) => event.preventDefault()}
+          ref={index === selectedReference ? (element) => element?.scrollIntoView({ block: "nearest" }) : undefined}
           onClick={() => chooseReference(index)}>
           <span className="desktop-slash-option"><span className="desktop-slash-option-copy">
             <span className="desktop-slash-option-name"><code>{result.label}</code></span>
-            <span className="desktop-slash-option-desc">{result.kind}</span>
+            <span className="desktop-slash-option-desc">{referenceResultSubtitle(result)}</span>
           </span></span>
-        </button>)}
+        </button></React.Fragment>)}
       </div>
     </ComposerPopover> : null}
   </div>;

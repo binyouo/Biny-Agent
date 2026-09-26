@@ -16,14 +16,6 @@
   initial-value: 0px;
 }
 
-/* 首帧兜底值需与 --biny-sidebar-chrome-width 保持一致（@property 不支持 var()）。
-   若小于 chrome 宽度，收起态下聊天标题栏会左移叠到浮动按钮簇上。 */
-@property --biny-sidebar-animated-toolbar-left {
-  syntax: "<length>";
-  inherits: true;
-  initial-value: 194px;
-}
-
 @property --biny-inspector-animated-flow-width {
   syntax: "<length>";
   inherits: true;
@@ -295,20 +287,17 @@
   /* chrome 按钮簇（侧栏开关/搜索/新建）的收起态兜底宽度：80px 红绿灯区 + 3×28px 按钮 + 2×9px 间距 + 12px 右 padding。 */
   --biny-sidebar-chrome-width: 194px;
   --biny-chat-toolbar-inline-padding: 18px;
-  --biny-sidebar-transition: 250ms cubic-bezier(0.22, 1, 0.36, 1);
+  --biny-sidebar-transition: 500ms cubic-bezier(0.4, 0, 0.2, 1);
   --biny-sidebar-content-fade-duration: 180ms;
   --biny-sidebar-content-fade: var(--biny-sidebar-content-fade-duration) ease;
-  /* 所有会改变侧栏几何边界的层都消费同一组共享插值值，避免各自启动过渡。
-     标题栏左向下限必须兜住 chrome 按钮簇宽度，否则收起态标题会叠到按钮上。 */
+  /* 侧栏、主区轨道和顶部按钮共用插值；标题直接从同一宽度推导，避免独立时钟错位。 */
   --biny-sidebar-animated-visual-width: var(--biny-sidebar-visual-width, 0px);
   --biny-sidebar-animated-flow-width: var(--biny-sidebar-flow-width, 0px);
-  --biny-sidebar-animated-toolbar-left: max(var(--biny-sidebar-chrome-width), var(--biny-sidebar-visual-width, 0px));
   --biny-inspector-animated-flow-width: var(--biny-inspector-flow-width, 0px);
   transition:
     --biny-sidebar-animated-visual-width var(--biny-sidebar-transition),
     --biny-sidebar-animated-flow-width var(--biny-sidebar-transition),
-    --biny-sidebar-animated-toolbar-left var(--biny-sidebar-transition),
-    --biny-inspector-animated-flow-width var(--biny-sidebar-transition);
+    --biny-inspector-animated-flow-width 300ms cubic-bezier(0.4, 0, 0.2, 1);
   position: relative;
   display: block;
   width: 100%;
@@ -551,7 +540,7 @@
   transition:
     transform var(--biny-sidebar-content-fade-duration) cubic-bezier(0.22, 1, 0.36, 1),
     opacity var(--biny-sidebar-content-fade);
-  will-change: flex-basis, width, transform, opacity;
+  will-change: transform, opacity;
 }
 
 /* dock 内容体铺满：终端与文件面板依赖这里撑满高度（旧 desktop-v2 直连子选择器已随重构移除）。 */
@@ -1299,7 +1288,7 @@
   }
 }
 
-/* 右侧 Inspector 在所有桌面宽度里都留在三栏 flex 流中；展开只会平滑挤压主区，不覆盖内容。 */
+/* Inspector 留在三栏 flex 流中，宽度一次更新，表面使用淡入和短距离位移。 */
 
 /* Peek 固定展开时先由这个流内占位条推动主区，避免 fixed 侧栏切回流布局时发生二次回弹。 */
 .biny-sidebar-pin-spacer {
@@ -1310,9 +1299,8 @@
   flex: 0 0 0;
   order: -2;
   pointer-events: none;
-  background: var(--biny-sidebar-surface);
+  background: transparent;
   flex-basis: 0;
-  will-change: width, flex-basis;
 }
 
 /* pinning 时占位条跟随共享流宽度；结束时瞬间交给普通流中的 aside。 */
@@ -1335,21 +1323,19 @@
 }
 
 .biny-sidebar.is-peek-overlay {
+  /* 预览由外壳整体平移，不再同时从零宽裁切；固定后才把轨道交给主布局。 */
+  width: var(--biny-sidebar-content-width);
   position: fixed;
   z-index: 90;
   top: 0;
   bottom: 0;
   left: 0;
   box-sizing: border-box;
-  box-shadow: 8px 0 28px var(--biny-shadow-sidebar);
+  /* 阴影只由内层卡片提供；固定到流内时外壳不应增减一圈黑边。 */
+  box-shadow: none;
   transform: translateX(0);
-  /* box-shadow 必须留在这个过渡列表里：本类比基础 .biny-sidebar 优先级高，
-     展开首帧 aside 切入本类时如果缺了它，阴影会瞬现。
-     注意时长不能再用 --biny-sidebar-content-fade：它自带 ease，后面再拼 bezier
-     会出现双缓动函数，整条 transition 声明会因语法非法被整体丢弃。 */
-  transition: transform var(--biny-sidebar-content-fade-duration) cubic-bezier(0.4, 0, 0.2, 1), opacity var(--biny-sidebar-content-fade-duration) cubic-bezier(0.4, 0, 0.2, 1),
-    box-shadow var(--biny-sidebar-transition);
-  will-change: width, transform, opacity;
+  transition: transform var(--biny-sidebar-content-fade-duration) cubic-bezier(0.4, 0, 0.2, 1), opacity var(--biny-sidebar-content-fade-duration) cubic-bezier(0.4, 0, 0.2, 1);
+  will-change: transform, opacity;
 }
 
 /* Biny 的 peek 入场不是挂载后瞬间出现，而是用 ease-out 的滑入 keyframe 先从屏外进入。 */
@@ -1364,7 +1350,9 @@
   }
 }
 
-.biny-sidebar.is-peek-peeking {
+/* 固定预览时保留同名动画，滑入中途点击也不会跳到终点。 */
+.biny-sidebar.is-peek-peeking,
+.biny-sidebar.is-peek-pinning {
   animation: biny-sidebar-peek-in var(--biny-sidebar-content-fade-duration) cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 
@@ -1390,6 +1378,8 @@
   --biny-sidebar-hover-duration: 120ms;
   --biny-sidebar-row-duration: 160ms;
   --biny-sidebar-hover-ease: cubic-bezier(0.2, 0, 0, 1);
+  --biny-sidebar-edge-light: color-mix(in srgb, white 14%, transparent);
+  --biny-sidebar-row-shadow: 0 2px 5px -2px var(--biny-shadow-sidebar);
   position: relative;
   z-index: 3;
   display: flex;
@@ -1397,19 +1387,12 @@
   height: 100%;
   flex: 0 0 auto;
   flex-direction: column;
-  /* aside 只负责宽度动画；视觉壳在内部卡片，四周留出参考项目同样的窗口缝隙。 */
+  /* 卡片保持原宽度，外壳与主区同步推开并裁切，内容不横向滑动或挤压重排。 */
   box-sizing: border-box;
-  padding: 10px;
-  overflow: visible;
+  width: var(--biny-sidebar-animated-visual-width);
+  padding: 10px 0;
+  overflow: clip;
   color: var(--biny-text);
-  will-change: width;
-  /* 收起态归零内边距，避免零宽侧栏仍被卡片缝隙占位。 */
-  transition: padding var(--biny-sidebar-transition), box-shadow var(--biny-sidebar-transition);
-}
-
-.biny-sidebar.is-hidden {
-  padding-inline: 0;
-  padding-block: 0;
 }
 
 /* 拖拽把手落在 aside 右侧 10px 缝隙内，不遮住卡片内容；顶部让开窗口拖动区。 */
@@ -1449,22 +1432,38 @@
   display: flex;
   min-width: 0;
   min-height: 0;
-  width: 100%;
+  width: max(0px, calc(var(--biny-sidebar-content-width) - 20px));
   height: 100%;
   flex: 0 0 auto;
   flex-direction: column;
   box-sizing: border-box;
   overflow: hidden;
-  /* 描边勾出卡片边界，柔和投影只落在外侧缝隙，保持内容层次清晰。 */
+  /* 仅保留紧贴卡片的轻阴影，避免右缘形成宽黑带。 */
   border: 1px solid var(--biny-sidebar-border);
   border-radius: 16px;
-  background: var(--biny-sidebar-surface);
-  box-shadow: 0 8px 24px -8px var(--biny-shadow-sidebar);
-  transition: opacity var(--biny-sidebar-content-fade);
+  background: linear-gradient(165deg,
+    color-mix(in srgb, var(--biny-surface-elevated) 40%, var(--biny-sidebar-surface)),
+    var(--biny-sidebar-surface) 42%);
+  box-shadow:
+    inset 0 1px 0 var(--biny-sidebar-edge-light),
+    inset 1px 0 0 var(--biny-sidebar-edge-light),
+    0 1px 4px -2px var(--biny-shadow-sidebar);
+  margin-inline: 10px;
+  /* 保持独立合成层，开合只改变透明度，避免末尾位移归零时重新合成造成闪边。 */
+  transform: translateZ(0);
+  backface-visibility: hidden;
+  will-change: opacity;
+  transition: opacity var(--biny-sidebar-transition);
+}
+
+.biny-sidebar.is-peek-overlay .biny-sidebar-card {
+  /* 预览的短程显隐由外壳承担，不能再叠加普通展开的 500ms 淡入。 */
+  transition: none;
 }
 
 .biny-sidebar.is-hidden .biny-sidebar-card {
   opacity: 0;
+  pointer-events: none;
 }
 
 .biny-sidebar-body,
@@ -1474,16 +1473,15 @@
   width: max(0px, calc(var(--biny-sidebar-content-width) - 20px));
   -webkit-app-region: no-drag;
   app-region: no-drag;
-  transition: opacity var(--biny-sidebar-content-fade), visibility 0s linear 0s;
-  will-change: opacity;
+  transition: visibility 0s linear 0s;
 }
 
 .biny-sidebar.is-hidden .biny-sidebar-body,
 .biny-sidebar.is-hidden .biny-sidebar-footer {
   visibility: hidden;
-  opacity: 0;
   pointer-events: none;
-  transition: opacity var(--biny-sidebar-content-fade), visibility 0s linear var(--biny-sidebar-content-fade-duration);
+  /* 只在卡片淡出结束后隐藏内容，避免父子透明度相乘使文字过早消失。 */
+  transition: visibility 0s linear 500ms;
 }
 
 .biny-sidebar-topbar-spacer {
@@ -1492,6 +1490,7 @@
   flex: 0 0 38px;
   /* 顶栏、底栏与卡片外框共用线色，浅深主题下保持一致的边界深度。 */
   border-bottom: 1px solid var(--biny-sidebar-border);
+  background: color-mix(in srgb, var(--biny-surface-elevated) 22%, transparent);
 }
 
 /* 内联会话搜索已移除：搜索统一走顶栏按钮的全局搜索浮层。 */
@@ -1517,10 +1516,10 @@
   box-sizing: border-box;
   display: block;
   /*
-   * 外层是和 aside 同宽的透明动画壳；真正的按钮命中层在内部保持固定宽度，
-   * 这样顶部控制既能跟侧栏同帧进出，又不会把 Electron 命中依赖在零宽外层上。
+   * 外层与标题左边界使用同一个带下限的宽度；收起后仍为窗口按钮和操作按钮保留空间。
+   * 不让 fixed 命中层归零，避免按钮溢出到标题和原生窗口控制区。
    */
-  width: var(--biny-sidebar-animated-visual-width);
+  width: max(var(--biny-sidebar-chrome-width), var(--biny-sidebar-animated-visual-width));
   height: 38px;
   min-height: 38px;
   padding: 0;
@@ -1536,8 +1535,8 @@
 .biny-sidebar-topbar-hit-layer {
   display: flex;
   box-sizing: border-box;
-  /* 按钮簇右对齐贴侧栏右缘；侧栏收起（壳宽 0）时用 chrome 宽度兜底，按钮贴在红绿灯右侧。 */
-  width: max(var(--biny-sidebar-chrome-width), 100%);
+  /* 安全宽度由外层统一保证，按钮始终贴在它的右缘。 */
+  width: 100%;
   height: 38px;
   min-height: 38px;
   align-items: center;
@@ -1556,7 +1555,7 @@
   app-region: no-drag;
 }
 
-/* 浮层沿用组件库的延迟、Escape 和锚点定位，仅收紧提示的排版。 */
+/* 浮层沿用组件库的 Escape 和锚点定位，短提示保持紧凑排版。 */
 .astryx-tooltip {
   border: 1px solid var(--biny-border-strong);
   border-radius: var(--biny-radius-control);
@@ -1624,7 +1623,7 @@
 
 .biny-composer-action:focus-visible {
   outline: 2px solid var(--biny-focus);
-  outline-offset: 2px;
+  outline-offset: -2px;
 }
 
 .biny-composer-action[aria-disabled="true"],
@@ -1674,7 +1673,8 @@
 .biny-model-pill:focus-visible,
 .biny-memory-toggle:focus-visible {
   outline: 2px solid var(--biny-focus);
-  outline-offset: 2px;
+  /* 轮廓留在命中区内，避免输入栏和侧栏的 overflow 裁掉边缘。 */
+  outline-offset: -2px;
 }
 
 .biny-sidebar-body {
@@ -1715,12 +1715,15 @@
   align-items: center;
   padding: 6px 8px;
   border-top: 1px solid var(--biny-sidebar-border);
+  background: color-mix(in srgb, var(--biny-sidebar-surface) 80%, var(--biny-surface-elevated));
+  box-shadow: inset 0 1px 0 var(--biny-sidebar-edge-light);
 }
 
 .biny-sidebar-footer .biny-sidebar-settings-item {
   flex: 1 1 auto;
 }
 
+.biny-sidebar-time-clues-button,
 .biny-sidebar-crystal-button {
   flex: 0 0 28px;
 }
@@ -2054,6 +2057,7 @@
 
 .biny-project-row-wrap.is-active {
   background: var(--biny-surface-selected, var(--biny-surface-hover));
+  box-shadow: inset 0 1px 0 var(--biny-sidebar-edge-light), var(--biny-sidebar-row-shadow);
 }
 
 .biny-project-row {
@@ -2232,7 +2236,11 @@
 }
 
 .biny-sidebar-session-tree-row.is-selected {
-  background: var(--biny-selection-surface);
+  background: linear-gradient(180deg,
+    color-mix(in srgb, var(--biny-surface-elevated) 35%, var(--biny-selection-surface)),
+    var(--biny-selection-surface));
+  box-shadow: inset 0 1px 0 var(--biny-sidebar-edge-light),
+    inset 0 0 0 1px var(--biny-sidebar-border), var(--biny-sidebar-row-shadow);
 }
 
 .biny-sidebar-session-entry {
@@ -4007,13 +4015,22 @@ button.capability-check[aria-checked="true"] {
 /* 装饰层与原生文本等宽，既不接管键盘/选区，也不影响输入框的排版和撤销。 */
 .biny-prompt-surface { position: relative; isolation: isolate; overflow: hidden; }
 .biny-prompt-surface .biny-prompt-textarea { position: relative; z-index: 1; }
+.biny-prompt-surface .biny-prompt-textarea.has-decorations {
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+}
+.biny-prompt-surface .biny-prompt-textarea.has-decorations::placeholder {
+  color: var(--biny-placeholder);
+  -webkit-text-fill-color: var(--biny-placeholder);
+}
 .biny-prompt-skill-overlay {
   position: absolute;
   inset: 0;
+  z-index: 2;
   overflow: hidden;
   pointer-events: none;
   user-select: none;
-  color: transparent;
+  color: var(--biny-text);
   font: inherit;
   font-size: 15px;
   line-height: 22px;
@@ -4026,6 +4043,22 @@ button.capability-check[aria-checked="true"] {
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--biny-focus) 50%, transparent);
   box-decoration-break: clone;
   -webkit-box-decoration-break: clone;
+}
+.biny-prompt-reference-token {
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--biny-text) 6%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--biny-text) 16%, transparent);
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+}
+.biny-prompt-reference-icon { position: relative; display: inline-block; }
+.biny-prompt-reference-icon > span { color: transparent; }
+.biny-prompt-reference-icon > svg {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  color: var(--biny-text-secondary);
 }
 .biny-breathing-caret {
   position: absolute;
@@ -4139,6 +4172,12 @@ button.capability-check[aria-checked="true"] {
   padding: 12px 9px;
   color: var(--biny-text-secondary);
   font-size: 12px;
+}
+
+.biny-prompt-completions-kind {
+  margin: 8px 9px 3px;
+  color: var(--biny-text-secondary);
+  font-size: 11px;
 }
 
 /* 紧凑命令行：命令名和参数提示保持一行，描述单独一行截断。 */
@@ -4337,16 +4376,14 @@ button.capability-check[aria-checked="true"] {
   --biny-chat-content-width: calc(100% - 48px - 60px);
 }
 
-/* 主区 plate 通高到顶：工具条悬浮在正文上方（对照 ZCode），消息滚动时从工具条下穿过；
-   滚动区自带顶部 padding，保证滚到顶时首条消息不被标题栏盖住。 */
+/* 顶栏在纵向布局中实际占位，正文的滚动裁切边界从顶栏下缘开始。
+   收起时整行仍承接窗口控制和侧栏按钮，不能仅靠滚动内容的 padding 避让。 */
 
 .biny-chat-toolbar {
-  position: fixed;
-  z-index: 101;
-  top: 0;
-  right: var(--biny-inspector-animated-flow-width, 0px);
-  /* 标题栏和侧栏共用同一时钟，避免 raw visual width 在展开首帧瞬移。 */
-  left: var(--biny-sidebar-animated-toolbar-left);
+  position: relative;
+  /* 浮动侧栏按钮在本行背景上方接收点击。 */
+  z-index: 80;
+  flex-shrink: 0;
   box-sizing: border-box;
   display: flex;
   height: 48px;
@@ -4356,10 +4393,13 @@ button.capability-check[aria-checked="true"] {
   /* 上下各留 10px：内容与红绿灯（中心 y=24）和侧栏 chrome 按钮共线；总高 48 让
      下缘线与侧栏顶栏分割线（卡片缝隙 10px + 顶栏 38px）平行衔接。 */
   padding: 10px var(--biny-chat-toolbar-inline-padding) 10px;
+  /* 主区已经被流宽度推开，只补足按钮簇/预览抽屉仍占据的部分。
+     与共享宽度逐帧计算，不再额外过渡 padding，避免标题滞后。 */
+  padding-left: calc(var(--biny-chat-toolbar-inline-padding) + max(0px, max(var(--biny-sidebar-chrome-width), var(--biny-sidebar-animated-visual-width)) - var(--biny-sidebar-animated-flow-width)));
   /* 聊天区离开顶部时叠加阴影 + 发丝线。 */
   border-bottom: 1px solid transparent;
   background: var(--biny-surface);
-  transition: padding-left var(--biny-sidebar-transition), opacity var(--biny-sidebar-content-fade),
+  transition: opacity var(--biny-sidebar-content-fade),
     box-shadow 0.2s ease-out, border-color 0.2s ease-out;
   /* 整条顶部默认用于拖动；右侧操作容器单独退出拖动区。 */
   -webkit-app-region: drag;
@@ -4962,9 +5002,9 @@ button.capability-check[aria-checked="true"] {
   min-height: 0;
   flex: 1 1 auto;
   overflow: hidden;
-  /* 这里不能显式声明 app-region: no-drag：Electron 的原生拖动区按 DOM 顺序做并/差集，
-     本元素通高到顶且排在 .biny-chat-toolbar 之后，显式 no-drag 会把工具栏的拖动区整块挖掉，
-     窗口顶部就再也拖不动了。默认值本身就是不可拖，无需声明。 */
+  /* 正文与顶栏不重叠，滚动和选择内容不会占用窗口拖动区。 */
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
 }
 
 /* 首页/欢迎态：body 整体居中，内容超高时仍可滚。 */
@@ -5040,12 +5080,10 @@ button.capability-check[aria-checked="true"] {
   margin: 0;
   overflow-x: hidden;
   overflow-y: auto;
-  /* 顶部 padding = 工具条 48px + 8px 呼吸距离：滚到顶时首条消息停在分隔线下方。 */
-  padding: 56px 0 32px;
+  /* 顶栏已独立占位，此处只保留首条消息的间距。 */
+  padding: 8px 0 32px;
   scrollbar-color: transparent transparent;
   scrollbar-width: thin;
-  /* 滚动层通高且排在固定工具栏之后，不能再显式声明 no-drag，否则会把顶栏的
-     原生拖动命中区挖掉。普通内容默认不可拖，交互不依赖这条声明。 */
 }
 
 .biny-chat-scroll::-webkit-scrollbar {
@@ -5568,6 +5606,7 @@ button.capability-check[aria-checked="true"] {
 @media (prefers-reduced-motion: reduce) {
   .desktop-root.biny-root,
   .biny-sidebar,
+  .biny-sidebar-card,
   .biny-sidebar-pin-spacer,
   .biny-sidebar-body,
   .biny-sidebar-footer,
@@ -5611,7 +5650,8 @@ button.capability-check[aria-checked="true"] {
     transition: none !important;
   }
 
-  .biny-sidebar.is-peek-peeking {
+  .biny-sidebar.is-peek-peeking,
+  .biny-sidebar.is-peek-pinning {
     animation: none !important;
   }
 
@@ -6643,7 +6683,6 @@ button.capability-check[aria-checked="true"] {
   background: var(--biny-overlay);
 }
 
-.biny-skill-import-dialog,
 .biny-skill-repository-dialog {
   width: min(760px, 100%);
   max-height: min(760px, calc(100vh - 48px));
@@ -6652,6 +6691,18 @@ button.capability-check[aria-checked="true"] {
   border-radius: var(--biny-radius-dialog);
   background: var(--biny-surface-elevated);
   box-shadow: var(--biny-shadow-dialog);
+}
+
+.biny-skill-import-dialog {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  max-height: calc(100dvh - 48px);
+  overflow: hidden;
+}
+
+.biny-skill-import-dialog > :not(.biny-skill-import-list) {
+  flex-shrink: 0;
 }
 
 .biny-skill-dialog-heading {
@@ -6702,6 +6753,7 @@ button.capability-check[aria-checked="true"] {
 }
 
 .biny-skill-import-list {
+  min-height: 0;
   max-height: 500px;
   overflow: auto;
   padding: 0 24px 12px;
@@ -10032,7 +10084,7 @@ button.capability-check[aria-checked="true"] {
 .desktop-settings-dialog .settings-modal .biny-mcp-install-button:hover:not(:disabled),
 .desktop-settings-dialog .settings-modal .biny-mcp-toolbar-add-button:hover:not(:disabled),
 .desktop-settings-dialog .settings-modal .settings-plugin-install-button:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--st-primary, var(--accent)) 90%, transparent);
+  background: var(--st-primary-hover, var(--accent));
 }
 
 /* outline（次要操作）。 */
@@ -10132,29 +10184,29 @@ button.capability-check[aria-checked="true"] {
 
 /* —— 开关：对齐统一滑动开关几何 —— */
 .desktop-settings-dialog .settings-modal .settings-extension-switch {
-  width: calc(2.75 * var(--st-rem, 13px));
-  height: calc(1.5 * var(--st-rem, 13px));
+  width: calc(32px * var(--font-scale, 1));
+  height: calc(20px * var(--font-scale, 1));
   padding: 0;
-  border: 2px solid transparent;
+  border: calc(2px * var(--font-scale, 1)) solid transparent;
   background: color-mix(in srgb, var(--text) 22%, transparent);
   transition: background 0.15s var(--st-ease, ease);
 }
 
 .desktop-settings-dialog .settings-modal .settings-extension-switch span {
-  width: calc(1.25 * var(--st-rem, 13px));
-  height: calc(1.25 * var(--st-rem, 13px));
+  width: calc(16px * var(--font-scale, 1));
+  height: calc(16px * var(--font-scale, 1));
   border-radius: 999px;
-  background: var(--bg);
-  box-shadow: 0 10px 15px -3px rgb(0 0 0 / 10%), 0 4px 6px -4px rgb(0 0 0 / 10%);
+  background: #fff;
+  box-shadow: 0 1px 2px rgb(0 0 0 / 12%);
   transition: transform 0.15s var(--st-ease, ease);
 }
 
 .desktop-settings-dialog .settings-modal .settings-extension-switch.is-on {
-  background: var(--st-primary, var(--accent));
+  background: #309cff;
 }
 
 .desktop-settings-dialog .settings-modal .settings-extension-switch.is-on span {
-  transform: translateX(calc(1.25 * var(--st-rem, 13px)));
+  transform: translateX(calc(12px * var(--font-scale, 1)));
 }
 
 /* —— 弹层面板 —— */
@@ -10291,3 +10343,13 @@ button.capability-check[aria-checked="true"] {
   color: var(--biny-text);
   background: color-mix(in srgb, var(--biny-border) 30%, transparent);
 }
+
+/* 网络搜索页面：五个独立设置区，尺寸沿用设置中心的主题变量。 */
+.web-search-settings p { color: var(--text-secondary); line-height: 1.6; margin: 12px 0 16px; }
+.web-search-settings label { display: block; margin-bottom: 10px; font-weight: 600; }
+.web-search-settings select { width: 100%; }
+.web-search-settings .settings-switch-row { padding: 0; align-items: flex-start; }
+.web-search-settings .settings-switch-copy strong { font-size: 18px; }
+.web-search-settings .settings-switch-copy small { line-height: 1.6; }
+.web-search-cookie-actions { margin-top: 30px; padding-top: 18px; border-top: 1px solid var(--border); }
+.web-search-cookie-actions h4 { margin: 0; }

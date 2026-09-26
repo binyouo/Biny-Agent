@@ -8,6 +8,7 @@ import React from "react";
 import type { SVGProps } from "react";
 
 export type IconName =
+  | "at"
   | "activity"
   | "add"
   | "archive"
@@ -45,6 +46,10 @@ export type IconName =
   | "download"
   | "edit"
   | "external"
+  | "expand"
+  | "collapse"
+  | "inspect"
+  | "pip"
   | "eye"
   | "eye-off"
   | "file"
@@ -59,6 +64,7 @@ export type IconName =
   | "help"
   | "home"
   | "info"
+  | "key"
   | "list-tree"
   | "lock"
   | "layout-grid"
@@ -150,6 +156,7 @@ function pathFor(name: IconName): React.JSX.Element {
     case "calendar": return <><rect {...common} height="16" rx="2" width="16" x="4" y="5" /><path {...common} d="M8 3v4M16 3v4M4 10h16M8 14h3" /></>;
     case "chart": return <><path {...common} d="M4 20V5M4 20h17" /><path {...common} d="M8 17v-5M12 17V7M16 17v-8" /></>;
     case "check": return <path {...common} d="m5 12 4.2 4.2L19 6.5" />;
+    case "at": return <><circle {...common} cx="12" cy="12" r="4" /><path {...common} d="M16 8v5a3 3 0 0 0 6 0v-1a10 10 0 1 0-4 8" /></>;
     case "circle-add": return <><circle {...common} cx="12" cy="12" r="10" /><path {...common} d="M8 12h8" /><path {...common} d="M12 8v8" /></>;
     // 圆圈对勾 / 圆圈叉：测试连接按钮的结果态（成功/失败）。
     case "circle-check": return <><circle {...common} cx="12" cy="12" r="10" /><path {...common} d="m8.5 12.4 2.3 2.3 4.7-5.4" /></>;
@@ -187,6 +194,7 @@ function pathFor(name: IconName): React.JSX.Element {
     case "help": return <><circle {...common} cx="12" cy="12" r="9" /><path {...common} d="M9.8 9a2.3 2.3 0 0 1 4.5.7c0 1.8-2.3 2-2.3 3.8M12 17.4h.01" /></>;
     case "home": return <path {...common} d="m4 10 8-6 8 6v9a1 1 0 0 1-1 1h-5v-6h-4v6H5a1 1 0 0 1-1-1v-9Z" />;
     case "info": return <><circle {...common} cx="12" cy="12" r="9" /><path {...common} d="M12 11v5" /><path {...common} d="M12 8h.01" /></>;
+    case "key": return <><circle {...common} cx="8" cy="15" r="4" /><path {...common} d="m11 12 9-9 2 2-2 2 1 1-3 3-2-2-2 2" /></>;
     case "list-tree": return <><path {...common} d="M21 12h-8" /><path {...common} d="M21 6H8" /><path {...common} d="M21 18h-8" /><path {...common} d="M3 6v4c0 1.1.9 2 2 2h3" /><path {...common} d="M3 10v6c0 1.1.9 2 2 2h3" /></>;
     case "lock": return <><rect {...common} height="9" rx="1.5" width="14" x="5" y="10" /><path {...common} d="M8 10V7a4 4 0 0 1 8 0v3" /></>;
     // 能力菜单布局切换：网格 = 四宫格；列表 = 两块 + 右侧行（对应 lucide LayoutGrid / LayoutList）。
@@ -218,6 +226,10 @@ function pathFor(name: IconName): React.JSX.Element {
     case "settings": return <><circle {...common} cx="12" cy="12" r="3" /><path {...common} d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2.8 2.8-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6v.2h-4V21a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1L4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9A1.7 1.7 0 0 0 3 14H2.8v-4H3a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9L4.2 7 7 4.2l.1.1a1.7 1.7 0 0 0 1.9.3A1.7 1.7 0 0 0 10 3v-.2h4V3a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1L19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.2v4H21a1.7 1.7 0 0 0-1.6 1Z" /></>;
     case "site": return <><circle {...common} cx="12" cy="12" r="9" /><path {...common} d="M3.5 12h17M12 3c2.4 2.5 3.5 5.5 3.5 9S14.4 18.5 12 21c-2.4-2.5-3.5-5.5-3.5-9S9.6 5.5 12 3Z" /></>;
     case "spark": return <><path {...common} d="M11.017 2.814a1 1 0 0 1 1.966 0l1.051 5.558a2 2 0 0 0 1.594 1.594l5.558 1.051a1 1 0 0 1 0 1.966l-5.558 1.051a2 2 0 0 0-1.594 1.594l-1.051 5.558a1 1 0 0 1-1.966 0l-1.051-5.558a2 2 0 0 0-1.594-1.594l-5.558-1.051a1 1 0 0 1 0-1.966l5.558-1.051a2 2 0 0 0 1.594-1.594z" /><path {...common} d="M20 2v4M22 4h-4" /><circle {...common} cx="4" cy="20" r="2" /></>;
+    case "expand": return <><path {...common} d="M14 4h6v6M20 4l-7 7M10 20H4v-6M4 20l7-7" /></>;
+    case "collapse": return <><path {...common} d="M20 4l-7 7M13 5v6h6M4 20l7-7M5 13h6v6" /></>;
+    case "inspect": return <><path {...common} strokeDasharray="3 3" d="M20 10V4H4v16h6" /><path {...common} d="m12 12 9 3-4 2-2 4-3-9Z" /></>;
+    case "pip": return <><rect {...common} x="3" y="4" width="18" height="15" rx="2" /><rect {...common} x="12" y="11" width="9" height="8" rx="1" fill="var(--biny-surface)" /></>;
     case "play": return <path d="M8 5.5a1 1 0 0 1 1.5-.86l10 6a1 1 0 0 1 0 1.72l-10 6A1 1 0 0 1 8 17.5Z" fill="currentColor" />;
     case "pause": return <><rect fill="currentColor" height="14" rx="1" width="4" x="5" y="5" /><rect fill="currentColor" height="14" rx="1" width="4" x="15" y="5" /></>;
     case "stop": return <rect fill="currentColor" height="9" rx="2" width="9" x="7.5" y="7.5" />;

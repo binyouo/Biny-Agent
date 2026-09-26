@@ -39,6 +39,7 @@ import type { DesktopActiveView, DesktopBootstrap, DesktopQuickChatSettings, Des
 import { desktopIpc } from "../../protocol.js";
 import { DesktopAgentManager } from "./DesktopAgentManager.js";
 import { ActivityRecorderService } from "./ActivityRecorderService.js";
+import type { ActivityPermissionStatus } from "../../../activity/httpServer.js";
 import { DesktopBrowserService } from "./DesktopBrowserService.js";
 import { DesktopMcpService } from "./DesktopMcpService.js";
 import { DesktopProjectService } from "./DesktopProjectService.js";
@@ -46,6 +47,7 @@ import { DesktopSkillService } from "./DesktopSkillService.js";
 import { DesktopStateStore } from "./DesktopStateStore.js";
 import { DesktopSettingsTransaction } from "./DesktopSettingsTransaction.js";
 import { DesktopTerminalManager } from "./DesktopTerminalManager.js";
+import { StaticPreviewServer } from "./StaticPreviewServer.js";
 import { QuickChatContextService } from "./QuickChatContextService.js";
 import type { QuickChatWindowController } from "./quickChatWindow.js";
 import { runtimeMutationStartsWork } from "./settingsRuntimeGate.js";
@@ -68,13 +70,16 @@ import { resolveSessionFile } from "../../../session/store.js";
 
 interface IpcContext {
   crystals: DesktopCrystalService;
+  temporalMemory: DesktopTemporalMemoryService;
   threadBriefs: DesktopThreadBriefService;
   state: DesktopStateStore;
   projects: DesktopProjectService;
   agents: DesktopAgentManager;
   settings: DesktopSettingsTransaction;
   activity: ActivityRecorderService;
+  getActivityPermissions(): ActivityPermissionStatus;
   terminals: DesktopTerminalManager;
+  staticPreview: StaticPreviewServer;
   browser: DesktopBrowserService;
   skills: DesktopSkillService;
   mcp: DesktopMcpService;
@@ -128,7 +133,7 @@ const activityReportDateSchema = z.string().trim().min(1).max(40).optional();
 const modelLoginProviderSchema = z.enum(["claude-code", "openai-codex"]);
 const settingsCredentialScopeSchema = z.object({
   projectId: idSchema,
-  purpose: z.enum(["model", "web-search"]),
+  purpose: z.literal("model"),
   providerAlias: idSchema
 }).strict();
 const permissionResultSchema = z.object({
@@ -360,6 +365,20 @@ export function registerDesktopIpc(context: IpcContext): void {
     return await context.agents.workspaceSnapshot(idSchema.parse(projectId));
   });
 
+  handle(desktopIpc.projectGitStatus, async (_event, projectId: unknown) => await context.projects.projectGitStatus(idSchema.parse(projectId)));
+  handle(desktopIpc.initializeProjectGit, async (_event, projectId: unknown) => {
+    context.agents.assertNoRunningTasks("任务运行期间不能初始化 Git 仓库。");
+    return await context.projects.initializeProjectGit(idSchema.parse(projectId));
+  });
+  handle(desktopIpc.commitProjectFiles, async (_event, projectId: unknown, input: unknown) => {
+    context.agents.assertNoRunningTasks("任务运行期间不能提交项目文件。");
+    return await context.projects.commitProjectFiles(idSchema.parse(projectId), z.object({ message: z.string().trim().min(1).max(10_000), paths: z.array(z.string().min(1).max(4096)).min(1).max(10_000), revision: z.string().length(64) }).strict().parse(input));
+  });
+  handle(desktopIpc.projectGitRemote, async (_event, projectId: unknown, action: unknown) => {
+    context.agents.assertNoRunningTasks("任务运行期间不能同步 Git 远程。");
+    return await context.projects.projectGitRemote(idSchema.parse(projectId), z.enum(["pull", "push"]).parse(action));
+  });
+
   handle(desktopIpc.listProjectBranches, async (_event, projectId: unknown) => {
     return await context.agents.listProjectBranches(idSchema.parse(projectId));
   });
@@ -414,6 +433,12 @@ export function registerDesktopIpc(context: IpcContext): void {
 
   handleRecoveryGated(desktopIpc.startDraft, async (_event, projectId: unknown) => {
     return await context.agents.startDraft(idSchema.parse(projectId));
+  });
+
+  // Trace 只读磁盘，不经 AgentManager.openSession，避免抢占当前会话或启动模型运行时。
+  handle(desktopIpc.readSessionTrace, async (_event, projectId: unknown, sessionId: unknown) => {
+    const project = context.projects.requireProject(idSchema.parse(projectId));
+    return (await context.projects.openSession(project, idSchema.parse(sessionId), [], new Map())).events;
   });
 
   handle(desktopIpc.openSession, async (_event, projectId: unknown, sessionId: unknown) => {
@@ -510,7 +535,7 @@ export function registerDesktopIpc(context: IpcContext): void {
     return await context.agents.importSession(parsedProjectId, sourcePath);
   });
 
-  handleRecoveryGated(desktopIpc.sendPrompt, async (_event, projectId: unknown, sessionId: unknown, input: unknown, attachments: unknown, delivery: unknown, personalization: unknown, idempotencyKey: unknown, promptContext: unknown, capabilitySelection: unknown, draftPlanning: unknown) => {
+  handleRecoveryGated(desktopIpc.sendPrompt, async (_event, projectId: unknown, sessionId: unknown, input: unknown, attachments: unknown, delivery: unknown, personalization: unknown, idempotencyKey: unknown, promptContext: unknown, capabilitySelection: unknown, draftPlanning: unknown, draftIncognito: unknown) => {
     return await context.agents.sendPrompt(
       idSchema.parse(projectId),
       sessionId === undefined ? undefined : idSchema.parse(sessionId),
@@ -521,7 +546,8 @@ export function registerDesktopIpc(context: IpcContext): void {
       idempotencyKeySchema.parse(idempotencyKey),
       promptContextSchema.parse(promptContext),
       capabilitySelection === undefined ? undefined : agentCapabilitySelectionSchema.parse(capabilitySelection),
-      z.boolean().optional().parse(draftPlanning)
+      z.boolean().optional().parse(draftPlanning),
+      z.boolean().optional().parse(draftIncognito)
     );
   });
 
@@ -619,9 +645,7 @@ export function registerDesktopIpc(context: IpcContext): void {
     return await context.agents.readModelApiKey(idSchema.parse(projectId), idSchema.parse(providerAlias));
   });
 
-  handleRecoveryGated(desktopIpc.readWebSearchApiKey, async (_event, projectId: unknown, provider: unknown) => {
-    return await context.agents.readWebSearchApiKey(idSchema.parse(projectId), z.enum(["anysearch", "google", "duckduckgo", "tavily", "brave"]).parse(provider));
-  });
+
 
   handle(desktopIpc.fetchModelCatalog, async (_event, projectId: unknown, providerAlias: unknown, force: unknown) => {
     return await context.agents.fetchModelCatalog(idSchema.parse(projectId), idSchema.parse(providerAlias), force === true);
@@ -665,20 +689,127 @@ export function registerDesktopIpc(context: IpcContext): void {
     );
   });
 
-  handle(desktopIpc.openBrowser, async (_event, url: unknown) => {
-    await context.browser.open(url === undefined ? undefined : externalUrlSchema.parse(url));
+  const assertBrowserSender = (event: Electron.IpcMainInvokeEvent): void => {
+    const host = context.getWindow();
+    if (!host || event.sender !== host.webContents || event.senderFrame !== host.webContents.mainFrame) throw new Error("浏览器面板只接受主窗口请求。");
+  };
+  handle(desktopIpc.startProjectPreview, async (event, projectId: unknown, entry: unknown) => {
+    assertBrowserSender(event);
+    const project = context.projects.requireProject(idSchema.parse(projectId));
+    const runningStatic = context.staticPreview.status(project.id);
+    if (runningStatic) return { kind: "static" as const, url: runningStatic.url };
+    const availability = await context.projects.projectPreviewAvailability(project.id);
+    if (!availability.available) throw new Error(availability.reason);
+    if ("kind" in availability) {
+      const selected = entry === undefined ? availability.entry : z.string().min(1).max(2_000).parse(entry);
+      if (!availability.entries.includes(selected)) throw new Error("所选 HTML 入口已失效，请重新选择。");
+      const result = await context.staticPreview.start(project.id, project.path, selected);
+      context.terminals.clearPreviewFailure(project.id);
+      return { kind: "static" as const, ...result };
+    }
+    return { kind: "script" as const, ...(await context.terminals.startPreview(project.id, project.path, availability.command)), command: availability.command };
+  });
+  handle(desktopIpc.projectPreviewAvailability, async (event, projectId: unknown) => {
+    assertBrowserSender(event);
+    return await context.projects.projectPreviewAvailability(idSchema.parse(projectId));
+  });
+  handle(desktopIpc.projectPreviewStatus, (event, projectId: unknown) => {
+    assertBrowserSender(event);
+    const project = context.projects.requireProject(idSchema.parse(projectId));
+    const runningStatic = context.staticPreview.status(project.id);
+    if (runningStatic) return { kind: "static" as const, url: runningStatic.url };
+    const status = context.terminals.previewStatus(project.id);
+    return status.kind === "running" ? { kind: "script" as const, terminalId: status.terminalId, url: status.url } : status;
+  });
+  handle(desktopIpc.stopProjectPreview, async (event, projectId: unknown) => {
+    assertBrowserSender(event);
+    const project = context.projects.requireProject(idSchema.parse(projectId));
+    const terminalId = context.terminals.list(project.id).find((entry) => entry.slotId === "preview")?.terminalId;
+    if (terminalId) context.terminals.dispose(terminalId);
+    context.terminals.clearPreviewFailure(project.id);
+    await context.staticPreview.stop(project.id);
+  });
+  handle(desktopIpc.browserSnapshot, (event, projectId: unknown) => {
+    assertBrowserSender(event); const project = context.projects.requireProject(idSchema.parse(projectId));
+    return context.browser.browserSnapshot(project.id);
+  });
+  handle(desktopIpc.browserRelayStatus, (event) => {
+    assertBrowserSender(event);
+    return context.browser.relayStatus();
+  });
+  handle(desktopIpc.browserRelaySetup, async (event) => {
+    assertBrowserSender(event);
+    const result = await context.browser.setupRelay();
+    const error = await shell.openPath(result.extensionPath);
+    if (error) throw new Error("配对地址已复制，但扩展目录无法打开，请运行 biny browser setup 查看路径。");
+    return result;
+  });
+  handle(desktopIpc.browserRelayDisconnect, async (event) => {
+    assertBrowserSender(event);
+    await context.browser.disconnectRelay();
+  });
+  handle(desktopIpc.browserAction, (event, projectId: unknown, action: unknown) => {
+    assertBrowserSender(event); const project = context.projects.requireProject(idSchema.parse(projectId));
+    const parsed = z.discriminatedUnion("type", [
+      z.object({ type: z.literal("new"), url: externalUrlSchema.optional() }).strict(),
+      z.object({ type: z.literal("navigate"), tabId: idSchema, url: externalUrlSchema }).strict(),
+      z.object({ type: z.enum(["close", "select", "back", "forward", "reload", "stop", "float"]), tabId: idSchema }).strict()
+    ]).parse(action);
+    return context.browser.browserAction(project.id, parsed);
+  });
+  handle(desktopIpc.browserInspect, async (event, projectId: unknown, tabId: unknown, enabled: unknown) => {
+    assertBrowserSender(event); const project = context.projects.requireProject(idSchema.parse(projectId));
+    await context.browser.inspectEmbeddedPage(project.id, idSchema.parse(tabId), z.boolean().parse(enabled));
+    return context.browser.browserSnapshot(project.id);
+  });
+  handleRecoveryGated(desktopIpc.browserCapture, async (event, projectId: unknown, tabId: unknown, selection: unknown) => {
+    assertBrowserSender(event); const project = context.projects.requireProject(idSchema.parse(projectId));
+    const content = await context.browser.captureEmbeddedPage(project.id, idSchema.parse(tabId), z.boolean().optional().parse(selection));
+    const graph = new LocalReferenceGraph(globalAgentDir(), referenceService());
+    try { return await graph.createScratch(content, project.id); } finally { graph.close(); }
+  });
+  handle(desktopIpc.browserBounds, (event, projectId: unknown, tabId: unknown, bounds: unknown) => {
+    assertBrowserSender(event); const project = context.projects.requireProject(idSchema.parse(projectId));
+    const coordinate = z.number().finite().min(-20_000).max(20_000);
+    context.browser.showEmbeddedBrowser(project.id, idSchema.parse(tabId), z.object({ x: coordinate, y: coordinate, width: coordinate.nonnegative(), height: coordinate.nonnegative() }).strict().optional().parse(bounds));
+  });
+
+  handle(desktopIpc.openBrowser, async (_event, url: unknown, purpose: unknown) => {
+    const target = url === undefined ? undefined : externalUrlSchema.parse(url);
+    const kind = z.enum(["google", "xiaohongshu", "webfetch"]).optional().parse(purpose);
+    if (kind) {
+      context.agents.assertNoRunningTasks("任务运行期间不能修改网站登录状态。");
+      await context.browser.openSettings(target ?? "https://www.google.com/", kind);
+      return;
+    }
+    const projectId = context.state.activeProjectId();
+    const host = context.getWindow();
+    if (projectId && host) {
+      context.projects.requireProject(projectId);
+      context.browser.browserAction(projectId, { type: "new", url: target });
+      host.webContents.send(desktopIpc.browserOpenRequest, projectId);
+    } else await context.browser.open(target);
   });
 
   handle(desktopIpc.cookieJarStatus, async () => await context.browser.status());
 
   handle(desktopIpc.exportCookies, async () => {
     context.agents.assertNoRunningTasks("任务运行期间不能导出 Cookie。");
-    return await context.browser.exportToFile(context.getWindow());
+    return await context.browser.exportXiaohongshuCookies();
   });
 
   handle(desktopIpc.importCookies, async () => {
     context.agents.assertNoRunningTasks("任务运行期间不能导入 Cookie。");
-    return await context.browser.importFromFile(context.getWindow());
+    return await context.browser.importXiaohongshuCookies();
+  });
+  handle(desktopIpc.listBrowserProfiles, async (event) => {
+    assertBrowserSender(event);
+    return await context.browser.listProfiles();
+  });
+  handle(desktopIpc.importBrowserProfile, async (event, profileId: unknown) => {
+    assertBrowserSender(event);
+    context.agents.assertNoRunningTasks("任务运行期间不能导入浏览器登录态。");
+    return await context.browser.importProfile(z.string().min(1).max(100).parse(profileId));
   });
 
   handle(desktopIpc.clearCookies, async () => {
@@ -686,8 +817,8 @@ export function registerDesktopIpc(context: IpcContext): void {
     const options: MessageBoxOptions = {
       type: "warning",
       title: "清除 Cookie",
-      message: "确定要清除全部 Cookie 吗？",
-      detail: "浏览器窗口和 agent 工具都会退出所有已登录的网站。此操作无法撤销。",
+      message: "确定要清除小红书 Cookie 吗？",
+      detail: "小红书搜索将退出登录，其他网站的登录状态不受影响。",
       buttons: ["清除", "取消"],
       defaultId: 1,
       cancelId: 1,
@@ -695,9 +826,9 @@ export function registerDesktopIpc(context: IpcContext): void {
     };
     const window = context.getWindow();
     const confirmation = window ? await dialog.showMessageBox(window, options) : await dialog.showMessageBox(options);
-    if (confirmation.response !== 0) return await context.browser.status();
+    if (confirmation.response !== 0) return await context.browser.xiaohongshuCookieStatus();
     context.agents.assertNoRunningTasks("任务运行期间不能清除 Cookie。");
-    return await context.browser.clear();
+    return await context.browser.clearXiaohongshuCookies();
   });
 
   handleRecoveryGated(desktopIpc.personalizationOverview, async (_event, projectId: unknown, sessionId: unknown) => {
@@ -712,6 +843,15 @@ export function registerDesktopIpc(context: IpcContext): void {
       idSchema.parse(projectId),
       idSchema.parse(sessionId),
       chatPersonalizationSchema.parse(input),
+      configRevisionSchema.parse(expectedRevision)
+    );
+  });
+
+  handleRecoveryGated(desktopIpc.saveSessionIncognito, async (_event, projectId: unknown, sessionId: unknown, isIncognito: unknown, expectedRevision: unknown) => {
+    return await context.agents.saveSessionIncognito(
+      idSchema.parse(projectId),
+      idSchema.parse(sessionId),
+      z.boolean().parse(isIncognito),
       configRevisionSchema.parse(expectedRevision)
     );
   });
@@ -733,34 +873,22 @@ export function registerDesktopIpc(context: IpcContext): void {
     );
   });
 
+  // 索引由主进程生命周期持有，查询之间共享文件指纹和在途扫描。
   handleRecoveryGated(desktopIpc.temporalClues, async (_event, query: unknown) => {
-    const service = new DesktopTemporalMemoryService();
-    try {
-      const parsed = temporalQuerySchema.parse(query);
-      const projects = context.state.projects();
-      const scheduled = parsed.includeScheduled !== false && (parsed.offset ?? 0) === 0 ? await Promise.all(projects.map(async (project) => ({
-        projectId: project.id,
-        automations: (await context.agents.runtimeProjection(project.id)).automations as import("../../../runtime/AutomationScheduler.js").AutomationRecord[]
-      }))) : [];
-      return await service.query(parsed, projects, scheduled);
-    }
-    finally { service.close(); }
+    const parsed = temporalQuerySchema.parse(query);
+    const projects = context.state.projects();
+    const scheduled = parsed.includeScheduled !== false && (parsed.offset ?? 0) === 0 ? await Promise.all(projects.map(async (project) => ({
+      projectId: project.id,
+      automations: await context.agents.scheduledAutomations(project.id)
+    }))) : [];
+    return await context.temporalMemory.query(parsed, projects, scheduled);
   });
-  handleRecoveryGated(desktopIpc.temporalIgnoreClue, async (_event, id: unknown) => {
-    const service = new DesktopTemporalMemoryService();
-    try { return service.ignore(memoryEntryIdSchema.parse(id)); }
-    finally { service.close(); }
-  });
-  handleRecoveryGated(desktopIpc.temporalMarkSeen, async (_event, ids: unknown, day: unknown, timeZone: unknown) => {
-    const service = new DesktopTemporalMemoryService();
-    try { return service.markSeen(z.array(memoryEntryIdSchema).max(50).parse(ids), temporalDaySchema.parse(day), z.string().min(1).max(100).parse(timeZone)); }
-    finally { service.close(); }
-  });
-  handleRecoveryGated(desktopIpc.temporalMarkTodaySeen, async (_event, day: unknown, timeZone: unknown) => {
-    const service = new DesktopTemporalMemoryService();
-    try { return service.markTodaySeen(temporalDaySchema.parse(day), z.string().min(1).max(100).parse(timeZone)); }
-    finally { service.close(); }
-  });
+  handleRecoveryGated(desktopIpc.temporalIgnoreClue, async (_event, id: unknown) =>
+    context.temporalMemory.ignore(memoryEntryIdSchema.parse(id)));
+  handleRecoveryGated(desktopIpc.temporalMarkSeen, async (_event, ids: unknown, day: unknown, timeZone: unknown) =>
+    context.temporalMemory.markSeen(z.array(memoryEntryIdSchema).max(50).parse(ids), temporalDaySchema.parse(day), z.string().min(1).max(100).parse(timeZone)));
+  handleRecoveryGated(desktopIpc.temporalMarkTodaySeen, async (_event, day: unknown, timeZone: unknown) =>
+    context.temporalMemory.markTodaySeen(temporalDaySchema.parse(day), z.string().min(1).max(100).parse(timeZone)));
   const referenceService = (): LocalReferenceService => new LocalReferenceService({ projects: context.state.projects(), runtimeEntries: async (id) => {
     const [projection, tools] = await Promise.all([context.agents.runtimeProjection(id), context.agents.toolCatalog(id)]);
     return runtimeReferenceEntries(projection, tools);
@@ -768,7 +896,7 @@ export function registerDesktopIpc(context: IpcContext): void {
   handleRecoveryGated(desktopIpc.referenceKinds, async () => localReferenceKinds);
   handleRecoveryGated(desktopIpc.referenceSearch, async (_event, projectId: unknown, query: unknown, kind: unknown, timeZone: unknown) => {
     const service = referenceService();
-    const selectedKind = z.enum(["date", "project", "file", "thread", "message", "memory", "snippet", "scratch", "skill", "mcp", "model", "provider", "tool", "task", "cron", "crystal", "bundle", "mission", "plan"]).optional().parse(kind);
+    const selectedKind = z.enum(["date", "project", "file", "thread", "message", "memory", "snippet", "scratch", "skill", "agent", "mcp", "model", "provider", "tool", "tool-call", "task", "cron", "crystal", "bundle", "mission", "plan"]).optional().parse(kind);
     return await service.search(z.string().max(128).parse(query), idSchema.parse(projectId), selectedKind, 30,
       z.string().min(1).max(100).optional().parse(timeZone));
   });
@@ -873,6 +1001,7 @@ export function registerDesktopIpc(context: IpcContext): void {
   });
 
   handle(desktopIpc.activitySnapshot, async () => context.activity.snapshot());
+  handle(desktopIpc.activityPermissions, async () => context.getActivityPermissions());
 
   handle(desktopIpc.activitySettings, async () => context.activity.settingsSnapshot());
 
@@ -979,11 +1108,10 @@ export function registerDesktopIpc(context: IpcContext): void {
     );
   });
 
-  handleRecoveryGated(desktopIpc.searchMemory, async (_event, projectId: unknown, query: unknown, includeArchived: unknown) => {
+  handleRecoveryGated(desktopIpc.searchMemory, async (_event, projectId: unknown, query: unknown) => {
     return await context.agents.searchMemory(
       idSchema.parse(projectId),
-      memoryQuerySchema.parse(query),
-      includeArchived === true
+      memoryQuerySchema.parse(query)
     );
   });
 
@@ -1022,8 +1150,13 @@ export function registerDesktopIpc(context: IpcContext): void {
     return await context.agents.cancelMemorySleep(idSchema.parse(projectId));
   });
 
-  handleRecoveryGated(desktopIpc.archivedMemoryEntries, async (_event, projectId: unknown) => {
-    return await context.agents.archivedMemoryEntries(idSchema.parse(projectId));
+  handleRecoveryGated(desktopIpc.archivedMemoryEntries, async (_event, projectId: unknown, offset: unknown, limit: unknown, includeChains: unknown) => {
+    return await context.agents.archivedMemoryEntries(
+      idSchema.parse(projectId),
+      z.number().int().nonnegative().safe().parse(offset),
+      z.number().int().min(1).max(1_000).parse(limit),
+      includeChains === true
+    );
   });
 
   handleRecoveryGated(desktopIpc.archiveMemoryEntry, async (_event, projectId: unknown, entryId: unknown, archived: unknown) => {

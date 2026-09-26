@@ -1,65 +1,20 @@
-/** 聊天默认能力设置：保存 Agent 每回合默认暴露的工具与 Skill 范围。 */
+/** 新对话的工具/技能默认范围；原生单选组支持键盘切换，提交仍走聊天草稿。 */
 import type { CapabilitySelectionMode } from "../../../../../agent/capabilitySelection.js";
-import type { DesktopChatParamsSettings } from "../../../../protocol.js";
 import { useSettingsDraft } from "./SettingsDraftContext.js";
 
-// 三个选项含义自明（自动 / 全部 / 不调用），不再逐项解释。
-const selectionOptions: Array<{ value: CapabilitySelectionMode; label: string }> = [
-  { value: "auto", label: "自动" },
-  { value: "all", label: "全部" },
-  { value: "none", label: "不调用" }
-];
-
-export function SettingsCapabilityDefaults(): React.JSX.Element {
+export function SettingsCapabilityDefaults(): React.JSX.Element | null {
   const { draft, setChatParams } = useSettingsDraft();
-  if (!draft) return <div className="settings-sections"><section><p>正在加载能力设置…</p></section></div>;
-
-  const update = (patch: Partial<DesktopChatParamsSettings>): void => setChatParams({ ...draft.chatParams, ...patch });
-
-  return (
-    <div className="settings-sections capability-default-settings">
-      <section id="chat-capability-defaults" tabIndex={-1}>
-        <div className="section-heading-row">
-          <div><h3>工具与技能</h3><p>默认调用范围，发送前可在输入框调整。</p></div>
-        </div>
-        <CapabilitySelectionField
-          label="工具"
-          value={draft.chatParams.defaultToolSelection}
-          onChange={(defaultToolSelection) => update({ defaultToolSelection })}
-        />
-        <CapabilitySelectionField
-          label="技能"
-          value={draft.chatParams.defaultSkillSelection}
-          onChange={(defaultSkillSelection) => update({ defaultSkillSelection })}
-        />
-      </section>
-    </div>
-  );
-}
-
-function CapabilitySelectionField({ label, onChange, value }: {
-  label: string;
-  onChange(value: CapabilitySelectionMode): void;
-  value: CapabilitySelectionMode;
-}): React.JSX.Element {
-  return (
-    <div className="capability-default-field">
-      <strong>{label}</strong>
-      <div aria-label={label} className="capability-default-grid" role="radiogroup">
-        {selectionOptions.map((option) => (
-          <button
-            aria-checked={option.value === value}
-            className={`capability-default-option${option.value === value ? " is-selected" : ""}`}
-            key={option.value}
-            onClick={() => onChange(option.value)}
-            role="radio"
-            type="button"
-          >
-            <span className={`radio${option.value === value ? " is-selected" : ""}`} />
-            <span className="capability-default-option-title">{option.label}</span>
-          </button>
-        ))}
+  if (!draft) return null;
+  return <div className="settings-sections capability-default-settings">
+    {([{ label: "工具", field: "defaultToolSelection" }, { label: "技能", field: "defaultSkillSelection" }] as const).map(({ label, field }) => <section key={field}>
+      <h3>默认{label}选择</h3><p>为新对话设置默认的{label}选择，发送前可在输入框调整。</p>
+      <div aria-label={`默认${label}选择`} className="chat-capability-options" role="radiogroup">
+        {(["auto", "all", "none"] as CapabilitySelectionMode[]).map((mode) => <label className="chat-capability-option" key={mode}>
+          <input type="radio" name={field} value={mode} checked={draft.chatParams[field] === mode} onChange={() => setChatParams({ ...draft.chatParams, [field]: mode })} />
+          <span><strong>{mode === "auto" ? "自动" : mode === "all" ? `全部${label}` : `禁用${label}`}</strong>
+            <small>{mode === "auto" ? `根据上下文自动选择需要的${label}。` : mode === "all" ? `为每个对话启用所有可用${label}。` : `默认不调用${label}。`}</small></span>
+        </label>)}
       </div>
-    </div>
-  );
+    </section>)}
+  </div>;
 }

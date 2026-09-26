@@ -13,15 +13,16 @@ export function TerminalView({ projectId, active = true }: { projectId: string; 
   const [busy, setBusy] = useState(false);
   const requestRef = useRef(false);
   useEffect(() => {
+    if (!active) return;
     let disposed = false;
     void window.biny.listTerminals(projectId).then(async (existing) => {
       const entries = existing.length ? existing : [{ ...(await window.biny.createTerminal(projectId, 80, 24)), slotId: "default" }];
       if (disposed) return;
       setTabs(entries);
-      setSelected(entries[0]?.slotId);
+      setSelected((current) => entries.some((entry) => entry.slotId === current) ? current : entries[0]?.slotId);
     }).catch((reason: unknown) => { if (!disposed) setError(String(reason)); });
     return () => { disposed = true; };
-  }, [projectId]);
+  }, [active, projectId]);
   const add = async (): Promise<void> => {
     if (requestRef.current) return;
     requestRef.current = true;
@@ -47,7 +48,7 @@ export function TerminalView({ projectId, active = true }: { projectId: string; 
     <div className="inspector-subtoolbar">
       <div className="inspector-terminal-tabs" role="tablist" aria-label="终端会话">
         {(tabs ?? []).map((tab, index) => <div className={`inspector-terminal-tab${activeSlot === tab.slotId ? " is-active" : ""}`} key={tab.slotId}>
-          <button type="button" role="tab" aria-selected={activeSlot === tab.slotId} onClick={() => setSelected(tab.slotId)}><Icon name="terminal" size={13} />终端 {index + 1}</button>
+          <button type="button" role="tab" aria-selected={activeSlot === tab.slotId} onClick={() => setSelected(tab.slotId)}><Icon name="terminal" size={13} />{tab.slotId === "preview" ? "开发服务器" : `终端 ${index + 1}`}</button>
           <button type="button" aria-label={`关闭终端 ${index + 1} 并终止进程`} title="关闭并终止进程" onClick={() => void close(tab)}><Icon name="close" size={12} /></button>
         </div>)}
       </div>

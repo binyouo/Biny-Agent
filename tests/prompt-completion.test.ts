@@ -56,6 +56,7 @@ assert.equal(promptKeyAction({ ...enter, key: "Escape" }, false, true, 4), "dism
 assert.equal(promptKeyAction({ ...enter, key: " " }, false, true, 4), "native");
 
 const markup = renderToStaticMarkup(createElement(PromptInput, {
+  referenceTokens: [], onReferenceChange: () => undefined,
   value: "第一行\n<第二行>", onChange: () => undefined, onSubmit: () => undefined,
   onFiles: () => undefined, disabled: true, placeholder: "输入消息…", skills: [],
   inputRef: createRef<HTMLTextAreaElement>()
@@ -69,6 +70,7 @@ assert.match(markup, /class="biny-breathing-caret" aria-hidden="true"/u);
 assert.match(markup, /class="biny-breathing-caret-trails" aria-hidden="true"/u);
 assert.ok(skill.auxiliaryData.kind === "skill");
 const decorated = renderToStaticMarkup(createElement(PromptInput, {
+  referenceTokens: [], onReferenceChange: () => undefined,
   value: "/skills:diagram 检查代码", onChange: () => undefined, onSubmit: () => undefined,
   onFiles: () => undefined, disabled: false, placeholder: "输入消息…", skills: [skill.auxiliaryData.skill],
   inputRef: createRef<HTMLTextAreaElement>()

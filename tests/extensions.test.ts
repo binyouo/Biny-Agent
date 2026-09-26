@@ -51,7 +51,7 @@ function testFlatMemoryToolSchemas(): void {
   assert.deepEqual(Object.keys(saveMemory.parameters.properties).sort(), ["content", "durability", "importance", "rationale", "tags"]);
   assert.deepEqual((saveMemory.parameters.properties.durability as { enum?: string[] }).enum, ["permanent", "temporary"]);
   assert.equal((saveMemory.parameters.properties.importance as { type?: string }).type, "number");
-  assert.deepEqual(Object.keys(recallMemory.parameters.properties).sort(), ["limit", "query", "tags", "threadId"]);
+  assert.deepEqual(Object.keys(recallMemory.parameters.properties).sort(), ["limit", "query", "tags", "threadId", "threshold"]);
   const missingContent = saveMemory.resolveExecution({
     topic: "style",
     title: "Concise replies",

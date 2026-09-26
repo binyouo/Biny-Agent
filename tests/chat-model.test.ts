@@ -598,10 +598,9 @@ test("ActivitySegment 相位超过 8 个时折叠为「+N」液滴入口", () =>
   assert.doesNotMatch(running, /is-droplet is-open/u);
 });
 
-test("SkillsIndicator 只渲染真实且面向用户的工具与技能调用", () => {
+test("回复顶部不再展示工具与技能清单", () => {
   const markup = renderToStaticMarkup(createElement(SkillsIndicator, { tools: ["Read", "Read", "Glob", "ToolSearch", "TaskStatus", "Bash"], skills: ["write-tui", "write-tui", "simplify-audit"] }));
-  assert.match(markup, /2 个技能/u);
-  assert.match(markup, /5 个工具/u);
+  assert.equal(markup, "");
   assert.equal(renderToStaticMarkup(createElement(SkillsIndicator, {})), "");
 });
 
@@ -696,17 +695,16 @@ test("自动记忆不在回复顶部单独展示", () => {
   assert.equal(markup, "");
 });
 
-test("回复顶部展示本轮调用的技能与工具摘要", () => {
+test("工具技能摘要移入消息菜单后顶部保持空白", () => {
   const markup = renderToStaticMarkup(createElement(SkillsIndicator, {
     memoryInjectedSummaries: ["使用浏览器核验当前网页"],
     skillDescriptions: new Map([["browser", "浏览器自动化技能"]]),
     tools: ["Read", "Glob"],
     skills: ["browser"]
   }));
-  assert.ok(markup.indexOf("2 个工具") >= 0);
-  assert.ok(markup.indexOf("1 个技能") >= 0);
+  assert.equal(markup, "");
   assert.doesNotMatch(markup, /记忆/u);
-  assert.equal((markup.match(/chat-meta-separator/gu) ?? []).length, 1);
+  assert.equal((markup.match(/chat-meta-separator/gu) ?? []).length, 0);
 });
 
 test("历史回复保留本轮实际注入数量，旧会话不推测命中", () => {

@@ -8,6 +8,7 @@
 import React from "react";
 import { useHighlightedCode } from "../useHighlightedCode.js";
 import { CopyButton } from "./CopyButton.js";
+import { DownloadButton } from "./MarkdownDownload.js";
 import { Icon } from "./Icon.js";
 
 export function MarkdownCodeBlock({ code, language, dashed }: { code: string; language?: string; dashed?: boolean }): React.JSX.Element {
@@ -19,7 +20,7 @@ export function MarkdownCodeBlock({ code, language, dashed }: { code: string; la
           <Icon name={dashed ? "terminal" : "code"} size={12} />
           {language ?? "代码"}
         </span>
-        <CopyButton className="copy-button markdown-code-copy" label="复制代码" value={code} />
+        <span className="markdown-block-actions"><DownloadButton label="下载代码" filename={`code.${language?.replace(/[^a-z0-9]/gi, "") || "txt"}`} getContent={() => new Blob([code], { type: "text/plain;charset=utf-8" })} /><CopyButton className="copy-button markdown-code-copy" label="复制代码" value={code} /></span>
       </div>
       <pre><code className="shiki" dangerouslySetInnerHTML={{ __html: highlighted.html }} /></pre>
     </div>

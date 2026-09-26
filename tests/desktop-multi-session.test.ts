@@ -1,7 +1,7 @@
 /** Desktop 的真实配置、Host/socket、Agent 和 JSONL 链路；模型响应由本地服务设置屏障。 */
 import assert from "node:assert/strict";
 import { createServer, type ServerResponse } from "node:http";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, realpath, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { configSchema, defaultConfig } from "../src/config/schema.js";
@@ -16,8 +16,9 @@ import { pendingPermission } from "../src/runtime/agentEvents.js";
 import { RuntimeHostClient, startRuntimeHost } from "../src/runtime/RuntimeHost.js";
 import { readSessionEvents } from "../src/session/events.js";
 import { sessionFilePath } from "../src/session/store.js";
+import { readSessionCatalogRecord } from "../src/session/catalog.js";
 
-const root = await mkdtemp(path.join(os.tmpdir(), "biny-desktop-parallel-"));
+const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "biny-desktop-parallel-")));
 const previousAgentDir = process.env.BINY_AGENT_DIR;
 process.env.BINY_AGENT_DIR = path.join(root, "agent");
 const responses = new Map<string, ServerResponse>();
@@ -81,10 +82,12 @@ try {
   assert.equal(factoryCalled, false, "竞争 owner 失败不能先创建 Runtime");
 
   const [a, b] = await Promise.all([
-    manager.sendPrompt(project.id, undefined, "parallel-probe-A", [], undefined, undefined, "pending-message-a"),
+    manager.sendPrompt(project.id, undefined, "parallel-probe-A", [], undefined, undefined, "pending-message-a", undefined, undefined, undefined, true),
     manager.sendPrompt(project.id, undefined, "parallel-probe-B", [], undefined, undefined, "pending-message-b")
   ]);
   assert.notEqual(a.sessionId, b.sessionId);
+  assert.equal((await readSessionCatalogRecord(await projects.dataRoot(project), a.sessionId))?.isIncognito, true);
+  assert.equal((await readSessionCatalogRecord(await projects.dataRoot(project), b.sessionId))?.isIncognito ?? false, false);
   assert.equal(a.messageId, "pending-message-a");
   assert.equal(b.messageId, "pending-message-b");
   assert.deepEqual(await manager.sendPrompt(project.id, undefined, "parallel-probe-A", [], undefined, undefined, "pending-message-a"), a);

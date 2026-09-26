@@ -2,7 +2,6 @@
 import type { DesktopChatParamsSettings } from "../../../../protocol.js";
 import { OptionalNumberField } from "./SettingsCompaction.js";
 import { useSettingsDraft } from "./SettingsDraftContext.js";
-import { SettingsSwitch } from "./SettingsSwitch.js";
 
 /** 温度滑块的展示默认值；未配置时不下发 temperature，由模型/provider 自行决定。 */
 const temperatureDisplayDefault = 0.7;
@@ -18,7 +17,7 @@ export function SettingsChatParams(): React.JSX.Element {
   return (
     <div className="settings-sections chat-params-settings">
       <section id="chat-params-temperature" tabIndex={-1}>
-        <h3>回复</h3>
+        <h3>聊天参数</h3>
         <label className="compaction-threshold-field">
           <span>
             <strong>温度</strong>
@@ -35,6 +34,7 @@ export function SettingsChatParams(): React.JSX.Element {
           />
           <span className="chat-temperature-scale"><i>精确 0.0</i><i>平衡 1.0</i><i>创造 2.0</i></span>
         </label>
+        <small className="compaction-hint">控制回复的随机性。较低的值更稳定，较高的值更发散。</small>
         {temperatureSet ? (
           <small className="compaction-hint">
             <button className="chat-temperature-reset" onClick={() => update({ temperature: undefined })} type="button">恢复模型默认</button>
@@ -42,22 +42,13 @@ export function SettingsChatParams(): React.JSX.Element {
         ) : null}
         <OptionalNumberField
           id="chat-max-output-tokens"
-          label="输出上限"
+          label="最大令牌数"
           hint="单次回复的最大 token 数，留空使用模型默认值。"
           max={131_072}
           min={256}
           onCommit={(maxOutputTokens) => update({ maxOutputTokens })}
           unit="tokens"
           value={chatParams.maxOutputTokens}
-        />
-      </section>
-      <section>
-        <h3>编辑工具</h3>
-        <SettingsSwitch
-          checked={chatParams.hashlineEdit === true}
-          detail="开启后，Read 输出行哈希，Edit 引用行标签。关闭时默认搜索替换；协议明确支持时自动使用 patch。保存后从下一回合生效。"
-          label="Hashline 编辑（实验）"
-          onChange={(hashlineEdit) => update({ hashlineEdit })}
         />
       </section>
     </div>

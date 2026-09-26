@@ -73,16 +73,7 @@ class FakeSettingsAgents implements DesktopSettingsTransactionAgents {
       compaction: structuredClone(this.config.context.compaction),
       chatParams: structuredClone(this.config.chat),
       permission: structuredClone(this.config.permission),
-      webSearch: {
-        enabled: this.config.web.search.enabled,
-        provider: this.config.web.search.provider,
-        apiKeyEnv: this.config.web.search.apiKeyEnv,
-        timeoutMs: this.config.web.search.timeoutMs,
-        maxResults: this.config.web.search.maxResults,
-        hasApiKey: Boolean(this.config.web.search.apiKey),
-        envKeyName: undefined,
-        envKeyDetected: false
-      },
+      webSearch: structuredClone(this.config.web.search),
       models: {
         configured: [],
         connections: [],
@@ -117,15 +108,9 @@ class FakeSettingsAgents implements DesktopSettingsTransactionAgents {
     if (input.compaction !== undefined) after.context.compaction = structuredClone(input.compaction);
     if (input.chatParams !== undefined) after.chat = structuredClone(input.chatParams);
     if (input.permission !== undefined) after.permission = structuredClone(input.permission);
-    if (input.webSearch !== undefined) {
-      after.web.search = {
-        enabled: input.webSearch.enabled,
-        provider: input.webSearch.provider,
-        apiKey: input.webSearch.apiKey ?? after.web.search.apiKey,
-        apiKeyEnv: input.webSearch.apiKeyEnv,
-        timeoutMs: input.webSearch.timeoutMs,
-        maxResults: input.webSearch.maxResults
-      };
+    if (input.webSearch !== undefined) after.web.search = structuredClone(input.webSearch);
+    for (const model of input.models?.upserts ?? []) {
+      after.providers.deepseek!.apiKey = model.apiKey ?? after.providers.deepseek!.apiKey;
     }
     if (input.skills !== undefined) {
       after.extensions.skillDefaults = structuredClone(input.skills.globalDefaults);
@@ -150,7 +135,6 @@ class FakeSettingsAgents implements DesktopSettingsTransactionAgents {
       || input.skills !== undefined
       || input.models !== undefined;
     const credentialHandles = [
-      input.webSearch?.apiKeyHandle,
       ...(input.models?.upserts.map((model) => model.apiKeyHandle) ?? []),
       ...(input.models?.oauthCredentialHandles ?? [])
     ].filter((handle): handle is string => handle !== undefined);
@@ -388,13 +372,14 @@ async function testChatParamsOnlySaveCommits(): Promise<void> {
     const result = await transaction.save("project", {
       expectedPreferenceRevision: initial.preferenceRevision,
       expectedConfigRevision: initial.configRevision,
-      chatParams: { temperature: 0.4, maxOutputTokens: 8_192, hashlineEdit: true }
+      chatParams: { temperature: 0.4, maxOutputTokens: 8_192, hashlineEdit: true, response: { markdown: false, streaming: false } }
     });
     assert.equal(result.status, "committed", JSON.stringify(result));
     assert.deepEqual(result.appliedFields, ["chatParams"]);
-    assert.deepEqual(agents.config.chat, { temperature: 0.4, maxOutputTokens: 8_192, hashlineEdit: true });
+    assert.deepEqual(agents.config.chat, { temperature: 0.4, maxOutputTokens: 8_192, hashlineEdit: true, response: { markdown: false, streaming: false } });
     assert.equal(result.snapshot.chatParams.temperature, 0.4);
     assert.equal(result.snapshot.chatParams.hashlineEdit, true);
+    assert.deepEqual((await transaction.snapshot("project")).chatParams.response, { markdown: false, streaming: false });
   });
 }
 
@@ -516,15 +501,7 @@ async function testCommitAndJournalRedaction(): Promise<void> {
       expectedPreferenceRevision: initial.preferenceRevision,
       expectedConfigRevision: initial.configRevision,
       themePreference: "dark",
-      webSearch: {
-        enabled: true,
-        provider: "brave",
-        apiKey: secret,
-        apiKeyHandle: "credential-handle",
-        apiKeyEnv: undefined,
-        timeoutMs: 12_000,
-        maxResults: 6
-      },
+      models: { upserts: [{ alias: "deepseek-v4-flash", displayName: "DeepSeek", providerType: "deepseek", model: "deepseek-v4-flash", apiKey: secret, apiKeyHandle: "credential-handle" }], deletes: [] },
       chat: chatInput("missing")
     });
     assert.equal(result.status, "committed", JSON.stringify(result));
@@ -617,20 +594,12 @@ async function testCredentialOnlyChatFailureRestoresKeychainState(): Promise<voi
     const result = await transaction.save("project", {
       expectedPreferenceRevision: initial.preferenceRevision,
       expectedConfigRevision: initial.configRevision,
-      webSearch: {
-        enabled: initial.webSearch.enabled,
-        provider: initial.webSearch.provider,
-        apiKey: "credential-only-target",
-        apiKeyHandle: "credential-only-handle",
-        apiKeyEnv: initial.webSearch.apiKeyEnv,
-        timeoutMs: initial.webSearch.timeoutMs,
-        maxResults: initial.webSearch.maxResults
-      },
+      models: { upserts: [{ alias: "deepseek-v4-flash", displayName: "DeepSeek", providerType: "deepseek", model: "deepseek-v4-flash", apiKey: "credential-only-target", apiKeyHandle: "credential-only-handle" }], deletes: [] },
       chat: chatInput("missing")
     });
     assert.equal(result.status, "rolled_back");
     assert.equal(agents.configRevision, initial.configRevision, "credential-only save keeps the public revision");
-    assert.equal(agents.config.web.search.apiKey, undefined, "later chat failure restores the prior credential");
+    assert.equal(agents.config.providers.deepseek!.apiKey, undefined, "later chat failure restores the prior credential");
     assert.equal(agents.deferredConfigTransactions.size, 0, "rollback cleans the retained Keychain lineage");
   });
 }
@@ -770,15 +739,7 @@ async function testCrashAfterConfigBeforeChatIsCompensatedOnRestart(): Promise<v
       expectedPreferenceRevision: initial.preferenceRevision,
       expectedConfigRevision: initial.configRevision,
       themePreference: "dark",
-      webSearch: {
-        enabled: true,
-        provider: "brave",
-        apiKey: credentialSecret,
-        apiKeyHandle: "opaque-crash-handle",
-        apiKeyEnv: undefined,
-        timeoutMs: 12_000,
-        maxResults: 6
-      },
+      models: { upserts: [{ alias: "deepseek-v4-flash", displayName: "DeepSeek", providerType: "deepseek", model: "deepseek-v4-flash", apiKey: credentialSecret, apiKeyHandle: "opaque-crash-handle" }], deletes: [] },
       chat: chatInput("missing")
     });
     await agents.waitForBlockedChatCommit();
@@ -816,7 +777,7 @@ async function testCrashAfterConfigBeforeChatIsCompensatedOnRestart(): Promise<v
     assert.equal(recovered.pendingRecovery, undefined);
     assert.equal(state.themePreference(), "system");
     assert.equal(agents.configRevision, initial.configRevision);
-    assert.equal(agents.config.web.search.apiKey, undefined);
+    assert.equal(agents.config.providers.deepseek!.apiKey, undefined);
     assert.equal(agents.chatRevision, "missing");
     assert.equal(agents.deferredConfigTransactions.size, 0);
     await assert.rejects(fs.access(state.settingsTransactionJournalPath()), { code: "ENOENT" });
@@ -830,7 +791,7 @@ async function testCredentialOnlyCrashUsesInnerTargetMarker(): Promise<void> {
     const transactionId = "credential-only-inner-target";
     const before = structuredClone(agents.config);
     const after = structuredClone(before);
-    after.web.search.apiKey = "inner-keychain-only-secret";
+    after.providers.deepseek!.apiKey = "inner-keychain-only-secret";
     const prepared: PreparedDesktopSettingsConfig = {
       projectId: "project",
       workspaceRoot: "/fake-workspace",
@@ -880,7 +841,7 @@ async function testCredentialOnlyCrashUsesInnerTargetMarker(): Promise<void> {
     assert.equal(snapshot.pendingRecovery, undefined);
     assert.deepEqual(agents.finalizedConfigTransactions, [transactionId]);
     assert.deepEqual(agents.consumedCredentialHandles, ["opaque-inner-handle"]);
-    assert.equal(agents.config.web.search.apiKey, "inner-keychain-only-secret");
+    assert.equal(agents.config.providers.deepseek!.apiKey, "inner-keychain-only-secret");
     await assert.rejects(fs.access(state.settingsTransactionJournalPath()), { code: "ENOENT" });
   });
 }

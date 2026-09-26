@@ -18,6 +18,7 @@ import { activitySummaryText } from "../../../runtime/activitySummary.js";
 import { agentCapabilitySelectionSchema, type AgentCapabilitySelection } from "../../../agent/capabilitySelection.js";
 import { activeSessionEventsForPath, sessionMessageMetadata } from "../../../session/messageTree.js";
 import type { SessionEvent } from "../../../session/recorder.js";
+import type { ModelRequestMetrics } from "../../../agent/core/types.js";
 import type { SessionUsage } from "../../../session/metadata.js";
 import { publicAssistantMessage, publicUserMessage } from "../../../session/publicMessage.js";
 
@@ -111,6 +112,8 @@ export interface TimelineUserStep {
 export type TimelineStep = TimelineReasoningStep | TimelineAssistantStep | TimelineToolStep | TimelineUserStep;
 
 export function executionToolLabel(tool: string): string {
+  // MCP 执行标识仅用于协议；展示去掉前缀，但不猜测下划线两侧的服务归属。
+  if (tool.startsWith("mcp_") && tool.length > 4) return tool.slice(4).replaceAll("_", " / ");
   if (tool === "Bash") return "Bash";
   if (tool === "BashOutput") return "后台输出";
   if (tool === "KillShell") return "停止命令";
@@ -118,7 +121,13 @@ export function executionToolLabel(tool: string): string {
   return tool;
 }
 
+export interface TimelineModelRequest extends ModelRequestMetrics {
+  output?: { messageId?: string; toolCalls: Array<{ id: string; name: string }>; textPreview: string };
+}
+
 export interface TimelineTurn {
+  /** 已落盘的主回合模型请求；旧记录缺失时不推算。 */
+  modelRequests?: TimelineModelRequest[];
   preparationStage?: import("../../../agent/context/types.js").PreparationStage;
   id: string;
   user: string;
@@ -210,13 +219,14 @@ function isVisibleTimelineTurn(turn: TimelineTurn): boolean {
 
 /** 合成完整时间线；末尾过滤掉完全空的轮次（只有元信息、没有任何可展示内容）。 */
 export function buildSessionTimeline(events: SessionEvent[], liveEvents: AgentHostEvent[]): TimelineTurn[] {
+  events = traceOutputEvents(events);
   const history = historicalPrefix(events, liveEvents);
   const historicalTurns = hasVersionMetadata(history)
     ? buildVersionedHistoricalTurns(history)
     : buildHistoricalTurns(history);
   // 实时轮次的用户消息序号要接着历史的算，「编辑消息」功能依赖这个序号定位。
   const historicalUserMessages = history.filter((event) => event.type === "user_message" && !event.auditOnly).length;
-  return mergeLiveRetryTurns(historicalTurns, buildLiveTurns(liveEvents, historicalUserMessages))
+  return mergeLiveRetryTurns(historicalTurns, buildLiveTurns(liveEvents, historicalUserMessages).map(attachLiveRequestMetrics(events)))
     .map((turn) => publicTimelineTurn(turn))
     .filter(isVisibleTimelineTurn);
 }
@@ -416,7 +426,7 @@ function buildHistoricalTurns(events: SessionEvent[]): TimelineTurn[] {
       continue;
     }
     if (event.type === "context_checkpoint") continue;
-    if (event.type === "model_request") continue;
+    if (event.type === "model_request") { appendModelRequest(ensureTurn(event.time), event.metrics); continue; }
     if (event.type === "message_version_selected") continue;
     if (event.type === "message_metadata") continue;
     if (event.type === "turn_interrupted") continue;
@@ -481,7 +491,7 @@ function buildVersionedHistoricalTurns(events: SessionEvent[]): TimelineTurn[] {
     return current;
   };
   const turnForEvent = (event: SessionEvent, timestamp?: string): TimelineTurn => {
-    const runId = event.runtime?.runId;
+    const runId = event.runtime?.runId ?? (event.type === "model_request" ? event.metrics.requestContext?.runId : undefined);
     const runTurn = runId === undefined ? undefined : turnsByRunId.get(runId);
     if (runTurn) return runTurn;
     const runUserId = runId === undefined ? undefined : runToUserId.get(runId);
@@ -605,7 +615,8 @@ function buildVersionedHistoricalTurns(events: SessionEvent[]): TimelineTurn[] {
       if (tool && event.change) applyCommittedChange(tool, event.change, event.operationId);
       continue;
     }
-    if (event.type === "agent_message" || event.type === "context_checkpoint" || event.type === "model_request" || event.type === "message_version_selected" || event.type === "message_metadata" || event.type === "turn_interrupted") continue;
+    if (event.type === "model_request") { appendModelRequest(turnForEvent(event, event.time), event.metrics); continue; }
+    if (event.type === "agent_message" || event.type === "context_checkpoint" || event.type === "message_version_selected" || event.type === "message_metadata" || event.type === "turn_interrupted") continue;
     const turn = turnForEvent(event, event.time);
     turn.error = event.message;
     turn.durationMs = elapsedMs(turn.timestamp, event.time) ?? turn.durationMs;
@@ -1115,9 +1126,12 @@ export function createSessionTimelineProjector(): SessionTimelineProjector {
   let historyTurns: TimelineTurn[] = [];
   let fold: LiveTimelineFold | undefined;
   let processedLive = 0;
+  let attachRequests = attachLiveRequestMetrics([]);
 
   const rebuild = (events: SessionEvent[], liveEvents: AgentHostEvent[]): void => {
+    events = traceOutputEvents(events);
     const history = historicalPrefix(events, liveEvents);
+    attachRequests = attachLiveRequestMetrics(events);
     historyTurns = (hasVersionMetadata(history) ? buildVersionedHistoricalTurns(history) : buildHistoricalTurns(history)).map((turn) => publicTimelineTurn(turn)).filter(isVisibleTimelineTurn);
     const historicalUserMessages = history.filter((event) => event.type === "user_message" && !event.auditOnly).length;
     const nextFold = createLiveTimelineFold(historicalUserMessages);
@@ -1147,7 +1161,7 @@ export function createSessionTimelineProjector(): SessionTimelineProjector {
         processedLive = liveEvents.length;
       }
       const liveTurns = (fold ? fold.snapshot() : []).filter(isVisibleTimelineTurn);
-      return mergeLiveRetryTurns(historyTurns, liveTurns).filter(isVisibleTimelineTurn);
+      return mergeLiveRetryTurns(historyTurns, liveTurns.map(attachRequests)).filter(isVisibleTimelineTurn);
     }
   };
 }
@@ -1382,4 +1396,67 @@ function injectedMemorySummaries(value: unknown): string[] | undefined {
   if (!Array.isArray(value)) return undefined;
   const summaries = value.filter((item): item is string => typeof item === "string" && Boolean(item.trim()));
   return summaries.length ? summaries : undefined;
+}
+
+/** 后台压缩/记忆请求不属于聊天执行 Trace；重复落盘只保留一次。 */
+function appendModelRequest(turn: TimelineTurn, metrics: TimelineModelRequest): void {
+  if (metrics.requestContext?.operation && metrics.requestContext.operation !== "agent") return;
+  const existing = turn.modelRequests?.find((item) => item.requestId === metrics.requestId);
+  if (existing) { if (!existing.output && metrics.output) existing.output = metrics.output; return; }
+  (turn.modelRequests ??= []).push({ ...metrics });
+}
+
+/** 终态仍保留实时正文时，把同 run 的已落盘指标附回去；按输入引用缓存，避免逐帧扫描 session。 */
+function attachLiveRequestMetrics(events: SessionEvent[]): (turn: TimelineTurn) => TimelineTurn {
+  const byRun = new Map<string, NonNullable<TimelineTurn["modelRequests"]>>();
+  for (const event of events) {
+    if (event.type !== "model_request") continue;
+    const runId = event.runtime?.runId ?? event.metrics.requestContext?.runId;
+    const operation = event.metrics.requestContext?.operation;
+    if (!runId || (operation && operation !== "agent")) continue;
+    const list = byRun.get(runId) ?? [];
+    const metrics = event.metrics as TimelineModelRequest;
+    const existing = list.findIndex((item) => item.requestId === metrics.requestId);
+    if (existing < 0) list.push(metrics);
+    else if (metrics.output) list[existing] = metrics;
+    byRun.set(runId, list);
+  }
+  const cache = new WeakMap<TimelineTurn, TimelineTurn>();
+  return (turn) => {
+    const metrics = byRun.get(turn.id);
+    if (!metrics) return turn;
+    let result = cache.get(turn);
+    if (!result) { result = { ...turn, modelRequests: metrics }; cache.set(turn, result); }
+    return result;
+  };
+}
+
+/** 请求记录先于 canonical 输出落盘；只关联同 run 的下一条真实 assistant 输出。
+ * relatedToolCallIds 是请求输入中的历史结果，不能作为本步新工具；不读取 reasoning 作为正文预览。
+ */
+function traceOutputEvents(events: SessionEvent[]): SessionEvent[] {
+  const result = [...events];
+  const pending = new Map<string, number>();
+  for (const [index, event] of events.entries()) {
+    const runId = event.runtime?.runId ?? (event.type === "model_request" ? event.metrics.requestContext?.runId : undefined);
+    if (!runId) continue;
+    if (event.type === "model_request") {
+      if (event.metrics.requestContext?.operation && event.metrics.requestContext.operation !== "agent") continue;
+      if (event.metrics.error) { pending.delete(runId); continue; }
+      pending.set(runId, index);
+    } else if (event.type === "agent_message" && event.message.role === "assistant") {
+      const requestIndex = pending.get(runId);
+      if (requestIndex === undefined) continue;
+      pending.delete(runId);
+      const request = result[requestIndex];
+      if (request?.type !== "model_request") continue;
+      const metrics: TimelineModelRequest = { ...request.metrics, output: {
+        messageId: event.messageId,
+        toolCalls: event.message.content.flatMap((part) => part.type === "toolCall" ? [{ id: part.id, name: part.name }] : []),
+        textPreview: publicAssistantMessage(event.message.content.filter((part) => part.type === "text").map((part) => part.text).join("\n")).slice(0, 400)
+      } };
+      result[requestIndex] = { ...request, metrics };
+    }
+  }
+  return result;
 }

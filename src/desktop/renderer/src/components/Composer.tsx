@@ -1,3 +1,4 @@
+import type { LocalReferenceResult } from "../../../../session/localReferences.js";
 /**
  * 桌面端聊天输入区。
  *
@@ -5,7 +6,7 @@
  * Agent 执行仍沿用原有数据流。输入与补全的局部交互由 PromptInput 负责。
  */
 import { useTooltip } from "@astryxdesign/core/Tooltip";
-import { memo, useEffect, useImperativeHandle, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useImperativeHandle, useRef, useState } from "react";
 import type { AgentSessionInfo } from "../../../../agent/AgentSession.js";
 import type { AgentCapabilitySelection } from "../../../../agent/capabilitySelection.js";
 import type { ModelChoice } from "../../../../llm/ModelManager.js";
@@ -17,6 +18,7 @@ import { formatContextUsage, type ContextUsage } from "../usagePresentation.js";
 import { AttachmentList } from "./composer/AttachmentList.js";
 import type { PendingAttachment } from "./composer/AttachmentList.js";
 import { ComposerActionButton } from "./composer/ComposerActionButton.js";
+import { IncognitoToggle } from "./composer/IncognitoToggle.js";
 import { CapabilitiesMenu } from "./composer/CapabilitiesMenu.js";
 import { explicitCapabilityCount } from "./composer/capabilitySelectionView.js";
 import { ModelPickerMenu } from "./composer/ModelPickerMenu.js";
@@ -26,6 +28,8 @@ import { ProviderBrandGlyph } from "./ProviderBrandGlyph.js";
 import { isResumeInput } from "./composer/resumeInput.js";
 import { SendOrStopButton } from "./composer/SendOrStopButton.js";
 import { PromptInput } from "./composer/PromptInput.js";
+import { materializeDraftReferences, normalizeDraftReferences, reconcileDraftReferenceChange,
+  referenceDraftHistoryStep, type DraftReferenceToken, type ReferenceDraft, type ReferenceDraftTransition } from "./composer/referenceCompletion.js";
 import type { QueuedRunMessageSnapshot } from "../../../../runtime/agentEvents.js";
 import { QueuedMessages } from "./composer/QueuedMessages.js";
 
@@ -46,6 +50,10 @@ interface ComposerProps {
   memoryToggleBusy: boolean;
   memoryToggleDisabled: boolean;
   memoryToggleDisabledReason?: string;
+  incognitoEnabled: boolean;
+  incognitoToggleBusy: boolean;
+  incognitoToggleDisabled: boolean;
+  incognitoToggleDisabledReason?: string;
   running: boolean;
   recovery?: DesktopSessionDocument["recovery"];
   onResume(): Promise<void>;
@@ -72,12 +80,14 @@ interface ComposerProps {
   onSlashCommand(command: string): Promise<void>;
   onStop(): Promise<void>;
   onToggleMemory(): Promise<void>;
+  onToggleIncognito(): Promise<void>;
   onSwitchModel(alias: string, thinking: ThinkingSelection): Promise<void>;
   onSaveAttachment(file: File): Promise<DesktopAttachment>;
   /** 打开 MCP 设置页（能力菜单的 MCP 区跳转入口）。 */
   onOpenMcpSettings?(): void;
   /** 重新拉取工具目录与技能目录（能力菜单的刷新入口）。 */
   onRefreshCatalog?(): void;
+  onInspectReference?(reference: LocalReferenceResult): void;
   onWarning(message: string): void;
   onSubmitError(message: string): void;
 }
@@ -105,6 +115,10 @@ export const Composer = memo(function Composer({
   memoryToggleBusy,
   memoryToggleDisabled,
   memoryToggleDisabledReason,
+  incognitoEnabled,
+  incognitoToggleBusy,
+  incognitoToggleDisabled,
+  incognitoToggleDisabledReason,
   running,
   recovery,
   onResume,
@@ -128,14 +142,38 @@ export const Composer = memo(function Composer({
   onSlashCommand,
   onStop,
   onToggleMemory,
+  onToggleIncognito,
   onSwitchModel,
   onSaveAttachment,
   onOpenMcpSettings,
   onRefreshCatalog,
+  onInspectReference,
   onWarning,
   onSubmitError
 }: ComposerProps): React.JSX.Element {
   const [input, setInput] = useState("");
+  const [referenceTokens, setReferenceTokens] = useState<DraftReferenceToken[]>([]);
+  const draftRef = useRef<ReferenceDraft>({ value: "", tokens: [] });
+  const historyRef = useRef<ReferenceDraftTransition[]>([]);
+  const setDraft = useCallback((draft: ReferenceDraft): void => {
+    draftRef.current = draft;
+    setInput(draft.value);
+    setReferenceTokens(draft.tokens);
+  }, []);
+  const rememberDraft = useCallback((draft: ReferenceDraft): void => {
+    historyRef.current.push({ before: draftRef.current, after: draft });
+    if (historyRef.current.length > 100) historyRef.current.shift();
+    setDraft(draft);
+  }, [setDraft]);
+  const changeDraft = useCallback((value: string, inputType?: string): void => {
+    const previous = draftRef.current;
+    if (inputType === "historyUndo" || inputType === "historyRedo") {
+      const restored = referenceDraftHistoryStep(previous, value, inputType === "historyUndo" ? "undo" : "redo", historyRef.current);
+      if (restored) { setDraft(restored); return; }
+    }
+    const tokens = reconcileDraftReferenceChange(previous.value, value, previous.tokens);
+    rememberDraft(normalizeDraftReferences(value, tokens));
+  }, [rememberDraft, setDraft]);
   const [attachments, setAttachments] = useState<DesktopAttachment[]>([]);
   const [pendingAttachments, setPendingAttachments] = useState<PendingAttachment[]>([]);
   const [capabilitySelection, setCapabilitySelection] = useState<AgentCapabilitySelection>(() => selectionFromDefaults(capabilityDefaults));
@@ -147,10 +185,12 @@ export const Composer = memo(function Composer({
   // 侧栏引用只追加到当前草稿，不经过回填或提交路径。
   useImperativeHandle(ref, () => ({
     appendText(text) {
-      setInput((current) => `${current}${current && !/\s$/u.test(current) ? " " : ""}${text} `);
+      const current = draftRef.current;
+      const value = `${current.value}${current.value && !/\s$/u.test(current.value) ? " " : ""}${text} `;
+      rememberDraft(normalizeDraftReferences(value, current.tokens));
       window.requestAnimationFrame(() => inputRef.current?.focus());
     }
-  }), []);
+  }), [rememberDraft]);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const capabilityAnchorRef = useRef<HTMLDivElement>(null);
   const modelAnchorRef = useRef<HTMLDivElement>(null);
@@ -166,11 +206,12 @@ export const Composer = memo(function Composer({
   const defaultSkillSelection = capabilityDefaults.skills;
 
   useEffect(() => {
+    historyRef.current = [];
     modelSwitchRequestRef.current += 1;
     setOptimisticModel(undefined);
     modelSwitchPromiseRef.current = undefined;
     modelSwitchQueueRef.current = Promise.resolve();
-    setInput("");
+    setDraft({ value: "", tokens: [] });
     setAttachments([]);
     setPendingAttachments([]);
     attachmentRequests.current.clear();
@@ -180,7 +221,7 @@ export const Composer = memo(function Composer({
     setDraggingFiles(false);
     setCapabilitySelection(selectionFromDefaults({ tools: defaultToolSelection, skills: defaultSkillSelection }));
     setMenu(null);
-  }, [defaultSkillSelection, defaultToolSelection, project?.id]);
+  }, [defaultSkillSelection, defaultToolSelection, project?.id, setDraft]);
 
   useEffect(() => {
     if (focusToken) inputRef.current?.focus();
@@ -188,19 +229,21 @@ export const Composer = memo(function Composer({
 
   useEffect(() => {
     if (prefillInput === undefined) return;
-    setInput(prefillInput);
+    historyRef.current = [];
+    setDraft(normalizeDraftReferences(prefillInput, []));
     inputRef.current?.focus();
-  }, [prefillInput]);
+  }, [prefillInput, setDraft]);
 
   // 编辑模式：横幅常驻 + 新的编辑请求（nonce）到达时回填一次文本并聚焦。
   const editing = editingMessage !== undefined;
   const editNonce = editingMessage?.nonce;
   useEffect(() => {
     if (editNonce === undefined) return;
-    setInput(editingMessage?.value ?? "");
+    historyRef.current = [];
+    setDraft(normalizeDraftReferences(editingMessage?.value ?? "", []));
     inputRef.current?.focus();
     // eslint-disable-next-line react-hooks/exhaustive-deps -- 只对新的编辑请求响应，回填取当帧闭包
-  }, [editNonce]);
+  }, [editNonce, setDraft]);
 
   useEffect(() => {
     if (!running) setStopPending(false);
@@ -232,21 +275,23 @@ export const Composer = memo(function Composer({
 
   const runSlash = async (command: string): Promise<void> => {
     if (!project || busy) return;
-    setInput("");
+    historyRef.current = [];
+    setDraft({ value: "", tokens: [] });
     setBusy(true);
     try {
       await onSlashCommand(command);
     } catch (slashError) {
-      setInput(command);
+      setDraft({ value: command, tokens: [] });
       onWarning(errorMessage(slashError));
     } finally {
       setBusy(false);
     }
   };
 
-  const submit = async (submittedInput = input): Promise<void> => {
-    const value = submittedInput.trim() || (attachments.length ? "请分析这些附件。" : "");
-    const resume = Boolean(recovery) && !running && !editing && isResumeInput(submittedInput, attachments.length + pendingAttachments.length);
+  const submit = async (): Promise<void> => {
+    const draft = draftRef.current;
+    const value = materializeDraftReferences(draft.value, draft.tokens).trim() || (attachments.length ? "请分析这些附件。" : "");
+    const resume = Boolean(recovery) && !running && !editing && isResumeInput(draft.value, attachments.length + pendingAttachments.length);
     if (!project || (!value && !resume) || busy || submitFlightRef.current || sessionWriterConflict
       || modelSetupRequired || resourceState === "loading" || memoryToggleBusy || pendingAttachments.length) return;
     // 编辑模式：提交直接走「替换原消息并重新生成」，不携带附件，也不走模型切换/斜杠命令链路。
@@ -254,10 +299,11 @@ export const Composer = memo(function Composer({
       submitFlightRef.current = true;
       setBusy(true);
       try {
-        setInput("");
+        historyRef.current = [];
+        setDraft({ value: "", tokens: [] });
         await onSubmitEdit(value);
       } catch (submitError) {
-        setInput(value);
+        setDraft(draft);
         onSubmitError(errorMessage(submitError));
       } finally {
         setBusy(false);
@@ -295,7 +341,8 @@ export const Composer = memo(function Composer({
         // 调用 Skill 工具按需加载全文（渐进式披露）。
         // 模型标签已经即时更新，但真正的 Runtime 切换仍需完成后才能发送，
         // 否则用户紧接着按 Enter 时可能把消息发给旧模型。
-        setInput("");
+        historyRef.current = [];
+        setDraft({ value: "", tokens: [] });
         setAttachments([]);
         if (resume) {
           if (!recovery?.canContinue) throw new Error(recovery?.message ?? "当前任务无法继续。");
@@ -304,7 +351,7 @@ export const Composer = memo(function Composer({
           await onSend(value, sentAttachments, undefined, globalThis.crypto.randomUUID(), capabilitySelection);
         }
       } catch (submitError) {
-        setInput(value);
+        setDraft(draft);
         setAttachments(sentAttachments);
         onSubmitError(errorMessage(submitError));
       } finally {
@@ -445,7 +492,7 @@ export const Composer = memo(function Composer({
   const usage = formatContextUsage(contextUsage);
   const contextUsageTooltip = useTooltip({
     alignment: "end",
-    delay: 400,
+    delay: 150,
     isEnabled: Boolean(usage),
     placement: "above"
   });
@@ -529,7 +576,8 @@ export const Composer = memo(function Composer({
           <button
             aria-label="取消编辑"
             onClick={() => {
-              setInput("");
+              historyRef.current = [];
+              setDraft({ value: "", tokens: [] });
               onCancelEdit();
             }}
             title="取消编辑"
@@ -571,7 +619,10 @@ export const Composer = memo(function Composer({
           inputRef={inputRef}
           projectId={project?.id}
           value={input}
-          onChange={setInput}
+          onChange={changeDraft}
+          onReferenceChange={(value, tokens) => rememberDraft({ value, tokens })}
+          onInspectReference={onInspectReference}
+          referenceTokens={referenceTokens}
           onSubmit={() => void submit()}
           onFiles={(files) => void addFiles(files)}
           disabled={inputDisabled}
@@ -597,7 +648,7 @@ export const Composer = memo(function Composer({
                 disabledReason={!project ? "请先打开项目" : sessionWriterConflict ? "会话已在另一个应用中打开" : busy ? "正在处理附件，请稍候" : undefined}
                 label="添加附件"
                 onClick={() => { setMenu(null); fileInputRef.current?.click(); }}
-                tooltip="添加图片、PDF 或文件 · 最多 8 个，每个 50 MB"
+                tooltip="添加附件"
               >
                 <Icon name="add" size={15} />
               </ComposerActionButton>
@@ -677,6 +728,13 @@ export const Composer = memo(function Composer({
             </div>
           </div>
           <div className="biny-composer-footer-end">
+            <IncognitoToggle
+              enabled={incognitoEnabled}
+              busy={incognitoToggleBusy}
+              disabled={incognitoToggleDisabled}
+              disabledReason={incognitoToggleDisabledReason}
+              onToggle={onToggleIncognito}
+            />
             <div className="composer-menu-anchor">
               <ComposerActionButton
                 aria-pressed={memoryState === "unknown" ? undefined : memoryState === "enabled"}

@@ -27,7 +27,7 @@ export function ModelTestButton({ testing, disabled, label, onClick }: {
   onClick(): void;
 }): React.JSX.Element {
   return (
-    <Tooltip content={label}>
+    <Tooltip delay={150} content={label}>
       <button
         aria-label={label}
         className={`provider-test-button model-test-button${testing ? " is-testing" : ""}`}

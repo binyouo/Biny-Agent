@@ -159,11 +159,15 @@ export function useSidebarLayout(): UseSidebarLayoutResult {
   }, [clearTimer, setPeekPhaseValue]);
 
   const pinPeek = useCallback((): void => {
-    if (baseModeRef.current !== "collapsed") {
+    clearTimers();
+    // 只有已打开的预览需要从覆盖层固定到布局；普通展开直接交给共享宽度过渡，
+    // 避免末尾从 fixed 切回流内时更换阴影、层级和底色。
+    if (peekPhaseRef.current !== "peeking") {
+      hoverLockedRef.current = false;
+      setPeekPhaseValue("idle");
       setBaseModeValue("expanded");
       return;
     }
-    clearTimers();
     hoverLockedRef.current = true;
     setPeekPhaseValue("pinning");
     pinTimerRef.current = setTimeout(() => {
@@ -182,7 +186,7 @@ export function useSidebarLayout(): UseSidebarLayoutResult {
   }, [clearTimers, setBaseModeValue, setPeekPhaseValue]);
 
   const toggle = useCallback((): void => {
-    if (baseModeRef.current === "collapsed") pinPeek();
+    if (baseModeRef.current === "collapsed" && peekPhaseRef.current !== "pinning") pinPeek();
     else collapse();
   }, [collapse, pinPeek]);
 
@@ -256,12 +260,18 @@ export function useSidebarLayout(): UseSidebarLayoutResult {
 
   const layout = useMemo(() => resolveSidebarLayout({ baseMode, peekPhase, expandedWidth, resizing }), [baseMode, expandedWidth, peekPhase, resizing]);
 
+  // 流式消息会更新父组件，稳定回调集合以保留侧栏的 memo 边界。
+  const drawerHandlers = useMemo(() => ({ onPointerEnter, onPointerLeave, onPointerMove, onPointerDown, onPointerUp }),
+    [onPointerEnter, onPointerLeave, onPointerMove, onPointerDown, onPointerUp]);
+  const triggerHandlers = useMemo(() => ({ onPointerEnter, onPointerLeave, onPointerMove }),
+    [onPointerEnter, onPointerLeave, onPointerMove]);
+
   return {
     layout,
-    drawerHandlers: { onPointerEnter, onPointerLeave, onPointerMove, onPointerDown, onPointerUp },
+    drawerHandlers,
     drawerRef,
     resizeHandlers,
-    triggerHandlers: { onPointerEnter, onPointerLeave, onPointerMove },
+    triggerHandlers,
     setExpandedWidth,
     toggle
   };

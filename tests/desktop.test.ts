@@ -2675,16 +2675,12 @@ async function testDesktopCredentialsAreSeparated(): Promise<void> {
     const store = new DesktopConfigStore(desktopRoot, memoryCredentialStore());
     const config = structuredClone(defaultConfig);
     config.providers.deepseek!.apiKey = "desktop-secret";
-    config.web.search.apiKey = "tvly-web-secret";
     await store.save(config);
     const settings = await readFile(path.join(desktopRoot, "config.json"), "utf8");
     assert.doesNotMatch(settings, /desktop-secret/);
-    // 联网搜索密钥同样只进凭据后端，不落明文设置文件。
-    assert.doesNotMatch(settings, /tvly-web-secret/);
     await assert.rejects(readFile(path.join(desktopRoot, "credentials.json"), "utf8"), /ENOENT/u);
     const loaded = await store.load();
     assert.equal(loaded.providers.deepseek?.apiKey, "desktop-secret");
-    assert.equal(loaded.web.search.apiKey, "tvly-web-secret");
   } finally {
     await rm(desktopRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
@@ -2701,68 +2697,20 @@ async function testDesktopWebSearchSettings(): Promise<void> {
 
     const initial = await settings.snapshot(project.id);
     assert.equal(initial.webSearch.enabled, false);
-    assert.equal(initial.webSearch.provider, "anysearch");
-    assert.equal(initial.webSearch.hasApiKey, false);
-
-    const stagedKey = agents.stageSettingsCredential("tvly-test-secret", { projectId: project.id, purpose: "web-search", providerAlias: "tavily" });
+    assert.equal(initial.webSearch.provider, "google");
+    assert.equal(initial.webSearch.visibleBrowsing, false);
     const saved = (await commitDesktopSettings(settings, project.id, {
-      webSearch: {
-        enabled: true,
-        provider: "tavily",
-        apiKey: undefined,
-        apiKeyHandle: stagedKey.handle,
-        apiKeyEnv: undefined,
-        timeoutMs: 8_000,
-        maxResults: 6
-      }
+      webSearch: { enabled: true, provider: "xiaohongshu", visibleBrowsing: true, timeoutMs: 8_000, maxResults: 6 }
     })).webSearch;
-    assert.equal(saved.provider, "tavily");
-    assert.equal(saved.hasApiKey, true);
-    assert.equal(saved.envKeyName, "TAVILY_API_KEY");
+    assert.equal(saved.provider, "xiaohongshu");
+    assert.equal(saved.visibleBrowsing, true);
     assert.equal(saved.maxResults, 6);
-
-    // 同 provider 重新保存且未传 apiKey：已存密钥保留。
-    const kept = (await commitDesktopSettings(settings, project.id, {
-      webSearch: {
-        enabled: true,
-        provider: "tavily",
-        apiKey: undefined,
-        apiKeyEnv: undefined,
-        timeoutMs: 8_000,
-        maxResults: 6
-      }
-    })).webSearch;
-    assert.equal(kept.hasApiKey, true);
-
-    // 切换 provider 且未提供新密钥：旧密钥必须被清除，不能带给新服务商。
-    const switched = (await commitDesktopSettings(settings, project.id, {
-      webSearch: {
-        enabled: true,
-        provider: "brave",
-        apiKey: undefined,
-        apiKeyEnv: undefined,
-        timeoutMs: 8_000,
-        maxResults: 6
-      }
-    })).webSearch;
-    assert.equal(switched.provider, "brave");
-    assert.equal(switched.hasApiKey, false);
-    assert.equal(switched.envKeyName, "BRAVE_SEARCH_API_KEY");
-    assert.equal((await configStore.load()).web.search.apiKey, undefined);
-
+    assert.equal((await configStore.load()).web.search.visibleBrowsing, true);
     const google = (await commitDesktopSettings(settings, project.id, {
-      webSearch: {
-        enabled: true,
-        provider: "google",
-        apiKey: undefined,
-        apiKeyEnv: undefined,
-        timeoutMs: 8_000,
-        maxResults: 6
-      }
+      webSearch: { ...saved, provider: "google", visibleBrowsing: false }
     })).webSearch;
     assert.equal(google.provider, "google");
-    assert.equal(google.hasApiKey, false);
-    assert.equal(google.envKeyName, undefined);
+    assert.equal(google.visibleBrowsing, false);
 
     await agents.closeAll();
   } finally {
@@ -2812,6 +2760,15 @@ async function testDesktopPersonalizationCasAndChatOverride(): Promise<void> {
     const markedWorkspace = await agents.markSessionRead(project.id, recorder.sessionId, document.session.metadataRevision);
     const markedSummary = markedWorkspace.sessions.find((session) => session.id === recorder.sessionId);
     assert.ok(markedSummary?.metadataRevision);
+    const incognitoWorkspace = await agents.saveSessionIncognito(project.id, recorder.sessionId, true, markedSummary.metadataRevision);
+    const incognitoSummary = incognitoWorkspace.sessions.find((session) => session.id === recorder.sessionId);
+    assert.equal(incognitoSummary?.isIncognito, true);
+    assert.ok(incognitoSummary?.metadataRevision);
+    assert.notEqual(incognitoSummary.metadataRevision, markedSummary.metadataRevision);
+    await assert.rejects(
+      agents.saveSessionIncognito(project.id, recorder.sessionId, false, markedSummary.metadataRevision),
+      /Session catalog revision conflict/u
+    );
     const override = {
 
       useMemories: false,
@@ -2821,18 +2778,18 @@ async function testDesktopPersonalizationCasAndChatOverride(): Promise<void> {
       project.id,
       recorder.sessionId,
       override,
-      markedSummary.metadataRevision
+      incognitoSummary.metadataRevision
     );
     const summary = workspace.sessions.find((session) => session.id === recorder.sessionId);
     assert.deepEqual(summary?.personalization, override);
-    assert.notEqual(summary?.metadataRevision, markedSummary.metadataRevision);
+    assert.notEqual(summary?.metadataRevision, incognitoSummary.metadataRevision);
 
     const current = await agents.personalizationOverview(project.id, recorder.sessionId);
     assert.deepEqual(current.chat?.override, override);
     assert.equal(current.chat?.effective.useMemories, false);
     assert.equal(current.chat?.effective.contributeMemories, false);
     await assert.rejects(
-      agents.saveChatPersonalization(project.id, recorder.sessionId, override, markedSummary.metadataRevision),
+      agents.saveChatPersonalization(project.id, recorder.sessionId, override, incognitoSummary.metadataRevision),
       /Session catalog revision conflict/u
     );
   } finally {
@@ -2906,14 +2863,28 @@ async function testDesktopMemorySharedStore(): Promise<void> {
     const otherProjectStats = await agents.memoryStats(otherProject.id);
     assert.equal(otherProjectStats.revision, 3);
 
-    const matches = await agents.searchMemory(project.id, "Desktop 类型检查");
-    assert.equal(matches[0]?.id, projectEntries.entries[0]?.id);
-    assert.match(matches[0]?.excerpt ?? "", /Desktop 类型检查/u);
+    await assert.rejects(
+      agents.searchMemory(project.id, "Desktop 类型检查"),
+      /记忆语义搜索暂不可用：no_vector_index/u
+    );
 
-    const updated = await agents.updateMemoryEntry(project.id, projectEntries.entries[0]!.id, {
+    // 索引维护可能在前一次写入后短暂占用 Runtime；本用例只验证共享事实库，
+    // 等待维护结束后再执行下一次用户写入，不绕过生产环境的忙碌保护。
+    const whenIdle = async <T>(operation: () => Promise<T>): Promise<T> => {
+      const deadline = Date.now() + 10_000;
+      for (;;) {
+        try { return await operation(); }
+        catch (error) {
+          if (!(error instanceof Error) || !/任务运行期间不能/u.test(error.message) || Date.now() >= deadline) throw error;
+          await new Promise<void>((resolve) => setTimeout(resolve, 20));
+        }
+      }
+    };
+
+    const updated = await whenIdle(() => agents.updateMemoryEntry(project.id, projectEntries.entries[0]!.id, {
       content: "发布前必须运行 Desktop 类型检查和定向测试，失败输出应原样保留供后续排查。",
       importance: 4
-    });
+    }));
     assert.equal(updated.revision, 4);
     const updatedEntries = await agents.memoryEntries(project.id, 0, 100);
     assert.match(
@@ -2921,29 +2892,29 @@ async function testDesktopMemorySharedStore(): Promise<void> {
       /原样保留/u
     );
 
-    const policy = await agents.saveMemorySettings(project.id, {
+    const policy = await whenIdle(() => agents.saveMemorySettings(project.id, {
       expectedRevision: updated.configRevision,
       settings: { ...updated.settings, enabled: true, useMemories: true, generateMemories: true, excludeExternalContext: false }
-    });
+    }));
     assert.equal(policy.settings.excludeExternalContext, false);
     assert.notEqual(policy.configRevision, updated.configRevision);
     await assert.rejects(
-      agents.saveMemorySettings(project.id, {
+      whenIdle(() => agents.saveMemorySettings(project.id, {
         expectedRevision: updated.configRevision,
         settings: { ...policy.settings, excludeExternalContext: true }
-      }),
+      })),
       /Global config revision conflict/u
     );
 
-    const afterDelete = await agents.deleteMemoryEntry(
+    const afterDelete = await whenIdle(() => agents.deleteMemoryEntry(
       project.id,
       projectEntries.entries[0]!.id
-    );
+    ));
     assert.equal(afterDelete.revision, 5);
     assert.equal(afterDelete.totalEntries, 2);
     const afterDeleteEntries = await agents.memoryEntries(project.id, 0, 100);
     assert.equal(afterDeleteEntries.entries.some(({ id }) => id === projectEntries.entries[0]!.id), false);
-    const cleared = await agents.clearMemory(project.id);
+    const cleared = await whenIdle(() => agents.clearMemory(project.id));
     assert.equal(cleared.totalEntries, 0);
     assert.equal(cleared.revision, 6);
   } finally {

@@ -2,7 +2,7 @@
  * 服务商标识。
  *
  * 两种来源：需要精确品牌形状的走 `providerBrandAssets` 里的 SVG 资源文件，其余直接内联路径
- * （便于用 `currentColor` 跟随主题变色）。都认不出来时返回一个中性的占位圆圈。
+ * （便于用 `currentColor` 跟随主题变色）。都认不出来时返回一个中性的模型芯片图标。
  */
 import { useId } from "react";
 
@@ -122,8 +122,9 @@ export function ProviderBrandGlyph({ type }: { type: string }): React.JSX.Elemen
 
   return (
     <svg aria-hidden="true" className="provider-logo" fill="none" viewBox="0 0 24 24">
-      <circle cx="12" cy="12" r="8.5" stroke="currentColor" strokeWidth="1.7" />
-      <path d="M8.5 12h7M12 8.5v7" stroke="currentColor" strokeLinecap="round" strokeWidth="1.7" />
+      <rect x="5" y="5" width="14" height="14" rx="4" stroke="currentColor" strokeWidth="1.7" />
+      <rect x="9" y="9" width="6" height="6" rx="1.5" stroke="currentColor" strokeWidth="1.7" />
+      <path d="M9 2v3m6-3v3M9 19v3m6-3v3M2 9h3m-3 6h3m14-6h3m-3 6h3" stroke="currentColor" strokeLinecap="round" strokeWidth="1.7" />
     </svg>
   );
 }

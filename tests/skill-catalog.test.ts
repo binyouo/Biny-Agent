@@ -38,8 +38,9 @@ async function main(): Promise<void> {
     const snapshot = await scanSkillCatalog({ homeDir, projectRoots: [projectRoot] });
     assert.equal(snapshot.warnings.length, 0);
     assert.deepEqual(snapshot.skills.filter((skill) => skill.scope !== "builtin").map((skill) => skill.name), ["biny-only", "shared-skill", "project-skill"]);
-    assert.equal(snapshot.inventory.length, 12);
+    assert.equal(snapshot.inventory.length, 13);
     assert.deepEqual(snapshot.skills.filter((skill) => skill.scope === "builtin").map((skill) => skill.name), [
+      "browser",
       "daily-report",
       "memory-management",
       "plan-weave",

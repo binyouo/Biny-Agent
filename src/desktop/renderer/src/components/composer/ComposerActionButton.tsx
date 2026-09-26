@@ -1,7 +1,7 @@
 /**
  * Composer 内的统一动作按钮。
  *
- * 这里不使用原生 `title`，避免浏览器立即弹出不可控的提示；Tooltip 由 Astryx
+ * 这里不使用原生 `title`，避免浏览器弹出时序不可控的提示；Tooltip 由 Astryx
  * 的 layer 统一处理延迟、焦点、Escape 和窗口边界。带禁用原因时保留按钮焦点，
  * 但拦截激活事件，让键盘用户也能知道按钮为什么不可用。
  */
@@ -37,7 +37,7 @@ export const ComposerActionButton = forwardRef<HTMLButtonElement, ComposerAction
   const content = disabled ? disabledReason ?? tooltip : tooltip;
   const keepFocusable = disabled && Boolean(disabledReason);
   const tooltipApi = useTooltip({
-    delay: 400,
+    delay: 150,
     focusTrigger: "auto",
     isEnabled: Boolean(content),
     placement: "above"

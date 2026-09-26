@@ -10,12 +10,13 @@ export const MIN_SIDEBAR_WIDTH = 200;
 export const MAX_SIDEBAR_WIDTH = 400;
 /** Biny rail 需要容纳 macOS 红绿灯和顶部按钮簇，视觉宽度固定为 78px。 */
 export const SIDEBAR_RAIL_WIDTH = 78;
-export const SIDEBAR_TRANSITION_MS = 250;
-export const SIDEBAR_CONTENT_FADE_MS = 200;
+/** 与左侧栏几何/卡片显隐共用的过渡时长一致，预览固定不得提前结束。 */
+export const SIDEBAR_TRANSITION_MS = 500;
+export const SIDEBAR_CONTENT_FADE_MS = SIDEBAR_TRANSITION_MS;
 export const SIDEBAR_PEEK_OPEN_DELAY_MS = 120;
 export const SIDEBAR_PEEK_LEAVE_GRACE_MS = 160;
 export const SIDEBAR_PEEK_CLOSE_MS = 200;
-export const SIDEBAR_PEEK_PINNING_MS = 300;
+export const SIDEBAR_PEEK_PINNING_MS = SIDEBAR_TRANSITION_MS;
 
 export function clampSidebarWidth(width: number): number {
   if (!Number.isFinite(width)) return DEFAULT_SIDEBAR_WIDTH;
