@@ -486,7 +486,6 @@ function rebaseUneditedFields(current: DesktopSettingsDraft, previous: DesktopSe
 
 function webSearchInput(value: DesktopWebSearchSettings): DesktopWebSearchSettingsInput {
   return {
-    enabled: value.enabled,
     provider: value.provider,
     visibleBrowsing: value.visibleBrowsing,
     timeoutMs: value.timeoutMs,
@@ -591,8 +590,7 @@ function skillInputFromSnapshot(value: DesktopSettingsSnapshot["skills"] | undef
 }
 
 function sameWebSearch(draft: DesktopWebSearchSettingsInput, snapshot: DesktopWebSearchSettings): boolean {
-  return draft.enabled === snapshot.enabled
-    && draft.provider === snapshot.provider
+  return draft.provider === snapshot.provider
     && draft.visibleBrowsing === snapshot.visibleBrowsing
     && draft.timeoutMs === snapshot.timeoutMs
     && draft.maxResults === snapshot.maxResults;
