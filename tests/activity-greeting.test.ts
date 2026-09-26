@@ -52,13 +52,20 @@ try {
   assert.doesNotMatch(capped, /星河项目|四十七小时项目/u, "第六条及更早会话不进入问候");
   assert.ok(capped.length <= 900, "问候上下文最多 900 字");
 
+  const screenshotOnly = store.startSession("2026-09-24T07:00:00.000Z");
+  await store.recordFallbackCapture({ sessionId: screenshotOnly, occurredAt: "2026-09-24T07:05:00.000Z",
+    eventType: "fallback_capture", application: "Browser", jpeg: Buffer.from("fixture-jpeg") });
+  store.endSession(screenshotOnly, "2026-09-24T08:00:00.000Z");
+  assert.match(recentActivityForGreeting(store, "你好", now) ?? "", /主要应用：Browser/u,
+    "仅有截图的会话也应从已保存的应用归属进入今日主要应用");
+
   const active = store.startSession(new Date(now.getTime() - 10 * 60_000).toISOString());
   store.recordEvent({ sessionId: active, occurredAt: new Date(now.getTime() - 5 * 60_000).toISOString(),
     eventType: "app_focus", application: "Terminal", rawText: "当前活动" });
   const withToday = recentActivityForGreeting(store, "你好", now) ?? "";
   assert.match(withToday, /Terminal/u, "正在使用的应用进入问候概况");
   assert.match(withToday, /Today|今天/iu, "今天的活动统计进入问候概况");
-  assert.match(withToday, /主要应用：Terminal/u, "今天的主要应用也进入活动概况");
+  assert.match(withToday, /主要应用：.*Terminal/u, "今天的主要应用也进入活动概况");
 } finally {
   await store.close();
   await rm(root, { recursive: true, force: true });

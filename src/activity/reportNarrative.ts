@@ -1,13 +1,15 @@
 /** 把可追溯的 Activity 报告骨架改写为第一人称日志，失败时保留骨架。 */
 import type { AgentModel } from "../agent/core/types.js";
 import { generateNativeText, nativeJsonMessages } from "../llm/nativeJson.js";
-import type { ActivityReportResult } from "./analyzer.js";
+import { persistActivityReport, type ActivityReportResult } from "./analyzer.js";
+import type { ActivityStore } from "./store.js";
 
 export interface ActivityReportNarrativeOptions {
   model?: AgentModel;
   skeleton?: boolean;
   signal?: AbortSignal;
   checkpoint?: () => Promise<void>;
+  store?: ActivityStore;
 }
 
 const prompt = [
@@ -25,7 +27,7 @@ export async function narrateActivityReport(
 ): Promise<ActivityReportResult> {
   await options.checkpoint?.();
   options.signal?.throwIfAborted();
-  if (options.skeleton || !options.model || report.sessionCount === 0) return report;
+  if (report.cached || options.skeleton || !options.model || report.sessionCount === 0) return report;
   try {
     const generated = await generateNativeText(
       options.model,
@@ -36,8 +38,11 @@ export async function narrateActivityReport(
     options.signal?.throwIfAborted();
     const markdown = generated.text.trim();
     if (!validNarrative(markdown, report.markdown)) return report;
-    return { ...report, markdown, narrativeModel: options.model.modelId };
+    const narrated = { ...report, markdown, narrativeModel: options.model.modelId };
+    if (options.store) persistActivityReport(options.store, narrated);
+    return narrated;
   } catch {
+    await options.checkpoint?.();
     options.signal?.throwIfAborted();
     return report;
   }

@@ -18,7 +18,7 @@ export async function startActivityHttpEndpoint(deps: ActivityHttpApiDependencie
   const instanceId = randomUUID();
   const server = await startActivityHttpServer(deps);
   try {
-    await writeFile(tempPath, JSON.stringify({ host: server.host, port: server.port, instanceId, pid: process.pid }), {
+    await writeFile(tempPath, JSON.stringify({ host: server.host, port: server.port, token: server.token, instanceId, pid: process.pid }), {
       mode: 0o600,
       flag: "wx"
     });

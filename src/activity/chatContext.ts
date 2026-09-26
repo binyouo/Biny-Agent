@@ -69,19 +69,23 @@ async function relevantActivityForChat(
 
   const since = now.getTime() - relevantLookbackMs;
   const best = new Map<string, number>();
-  for (const row of rows) {
-    const occurredAt = Date.parse(row.occurredAt);
-    if (!Number.isFinite(occurredAt) || occurredAt < since || occurredAt > now.getTime()) continue;
-    const score = cosineSimilarity(query, row.embedding);
+  // OCR 向量先形成有界命中窗口，再筛时间和会话；窗口外的分析不会补位。
+  const hits = rows
+    .map((row) => ({ row, score: cosineSimilarity(query, row.embedding) }))
+    .filter(({ score }) => Number.isFinite(score))
+    .sort((left, right) => right.score - left.score)
+    .slice(0, 20);
+  for (const { row, score } of hits) {
+    if (!Number.isFinite(row.createdAt) || row.createdAt < since) continue;
     if (score < relevantThreshold) continue;
     const previous = best.get(row.sessionId);
     if (previous === undefined || score > previous) best.set(row.sessionId, score);
   }
   const lines = [...best]
     .sort((left, right) => right[1] - left[1])
+    .slice(0, 3)
     .map(([id, score]) => ({ session: store.getSessionRecord(id), analysis: store.getAnalysis(id), score }))
     .filter(({ session, analysis }) => session !== undefined && Boolean(analysis?.title?.trim()))
-    .slice(0, 3)
     .map(({ session, analysis, score }) => {
       const ageMinutes = Math.max(0, Math.round((now.getTime() - Date.parse(session!.startedAt)) / 60_000));
       const durationMinutes = Math.max(0, Math.round(((session!.endedAt ? Date.parse(session!.endedAt) : now.getTime()) - Date.parse(session!.startedAt)) / 60_000));

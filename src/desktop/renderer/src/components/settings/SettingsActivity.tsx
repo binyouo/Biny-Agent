@@ -1,6 +1,7 @@
 /** 活动记录设置：采集配置、运行摘要与权限入口；截图仅在后台使用。 */
 import { useEffect, useRef, useState } from "react";
 import type { ActivityRuntimeSnapshot } from "../../../../../activity/types.js";
+import type { ActivityPermissionStatus } from "../../../../../activity/httpServer.js";
 import type { DesktopActivitySettingsInput } from "../../../../protocol.js";
 import { Icon, type IconName } from "../Icon.js";
 import { SettingsDetailLayer } from "./SettingsDetailLayer.js";
@@ -9,12 +10,12 @@ import { useActivityRuntime } from "./ActivityRuntimeContext.js";
 
 export function SettingsActivity(): React.JSX.Element {
   const { activity, loadError, updateActivityImmediately } = useSettingsDraft();
-  const { runtime, refresh, updateRuntime } = useActivityRuntime();
+  const { runtime, permissions, permissionError, refresh, refreshPermissions, updateRuntime } = useActivityRuntime();
   if (!activity) return <div aria-busy={!loadError} className="settings-sections"><section><p role={loadError ? "alert" : "status"}>{loadError ? `活动记录设置加载失败：${loadError}。请关闭设置后重试。` : "正在加载活动记录设置…"}</p></section></div>;
-  return <SettingsActivityForm activity={activity} onChange={updateActivityImmediately} onRefreshRuntime={refresh} onRuntimeChange={updateRuntime} runtime={runtime} />;
+  return <SettingsActivityForm activity={activity} onChange={updateActivityImmediately} onRefreshRuntime={refresh} onRefreshPermissions={refreshPermissions} onRuntimeChange={updateRuntime} permissions={permissions} permissionError={permissionError} runtime={runtime} />;
 }
 
-function SettingsActivityForm({ activity, onChange, onRefreshRuntime, onRuntimeChange, runtime }: { activity: DesktopActivitySettingsInput; onChange(patch: Partial<DesktopActivitySettingsInput>): Promise<void>; onRefreshRuntime(): Promise<ActivityRuntimeSnapshot>; onRuntimeChange(next: ActivityRuntimeSnapshot): void; runtime: ActivityRuntimeSnapshot | undefined }): React.JSX.Element {
+function SettingsActivityForm({ activity, onChange, onRefreshRuntime, onRefreshPermissions, onRuntimeChange, permissions, permissionError, runtime }: { activity: DesktopActivitySettingsInput; onChange(patch: Partial<DesktopActivitySettingsInput>): Promise<void>; onRefreshRuntime(): Promise<ActivityRuntimeSnapshot>; onRefreshPermissions(): Promise<ActivityPermissionStatus>; onRuntimeChange(next: ActivityRuntimeSnapshot): void; permissions: ActivityPermissionStatus | undefined; permissionError: string | undefined; runtime: ActivityRuntimeSnapshot | undefined }): React.JSX.Element {
   const [languagesText, setLanguagesText] = useState(activity.ocrLanguages.join(", "));
   const [sensitiveApplicationsText, setSensitiveApplicationsText] = useState(activity.sensitiveApplications.join("\n"));
   const [clearing, setClearing] = useState(false);
@@ -68,6 +69,9 @@ function SettingsActivityForm({ activity, onChange, onRefreshRuntime, onRuntimeC
   const refreshRuntime = (): void => {
     void onRefreshRuntime().catch((error: unknown) => setFeedback(activityErrorMessage(error)));
   };
+  const refreshPermissions = (): void => {
+    void onRefreshPermissions().catch(() => undefined);
+  };
 
   const commitLanguages = (): void => {
     const languages = languagesText.split(",").map((value) => value.trim()).filter(Boolean);
@@ -103,6 +107,7 @@ function SettingsActivityForm({ activity, onChange, onRefreshRuntime, onRuntimeC
     } catch (error) {
       failureMessage = activityErrorMessage(error);
     }
+    void onRefreshPermissions().catch(() => undefined);
     if (failureMessage) setFeedback(failureMessage);
     setRequestingPermission(undefined);
   };
@@ -130,13 +135,13 @@ function SettingsActivityForm({ activity, onChange, onRefreshRuntime, onRuntimeC
   const runtimeStorage = runtime === undefined
     ? "采集服务未接入"
     : `${formatActivityBytes(runtime.storageBytes)} / ${formatActivityBytes(activity.maxStorageMb * 1024 * 1024)}（${Math.round(storagePercent)}%）`;
-  const permissionStatus = (granted: boolean | undefined, enabled = true): string => {
-    if (!enabled) return "未启用";
+  const permissionStatus = (granted: boolean | undefined): string => {
+    if (permissionError) return "读取失败";
     if (granted === undefined) return "检查中";
     return granted ? "已授权" : "需授权";
   };
-  const screenPermission = permissionStatus(runtime?.screenRecordingGranted);
-  const accessibilityPermission = permissionStatus(runtime?.accessibilityGranted);
+  const screenPermission = permissionStatus(permissions ? permissions.screenRecording === "granted" : undefined);
+  const accessibilityPermission = permissionStatus(permissions?.accessibility);
   const activityUpdating = activityUpdateCount > 0;
   const activityStatusClass = runtime?.state === "error"
     ? " is-error"
@@ -182,8 +187,8 @@ function SettingsActivityForm({ activity, onChange, onRefreshRuntime, onRuntimeC
         {feedback ? <p aria-live="polite" className="activity-feedback" role="status">{feedback}</p> : null}
       </section>
 
-      <ActivitySection
-        action={<button aria-label="刷新 macOS 权限状态" className="activity-icon-button" onClick={refreshRuntime} title="刷新权限状态" type="button"><Icon name="refresh" size={14} /></button>}
+      {document.documentElement.dataset.platform === "darwin" ? <ActivitySection
+        action={<button aria-label="刷新 macOS 权限状态" className="activity-icon-button" onClick={refreshPermissions} title="刷新权限状态" type="button"><Icon name="refresh" size={14} /></button>}
         id="activity-permissions"
         icon="shield"
         title="macOS 权限"
@@ -207,11 +212,12 @@ function SettingsActivityForm({ activity, onChange, onRefreshRuntime, onRuntimeC
               </button>
             ) : null}
           </div>
-          {runtime?.screenRecordingGranted === false && runtime?.collectorAvailable === true
+          {permissionError ? <p className="activity-section-description is-error" role="alert">系统权限读取失败：{permissionError}</p> : null}
+          {permissions?.screenRecording !== "granted" && permissions !== undefined && runtime?.collectorAvailable === true
             ? <p className="activity-section-description">输入事件仍可记录，但截图与 OCR 暂不可用。</p>
             : null}
         </div>
-      </ActivitySection>
+      </ActivitySection> : null}
 
       <ActivitySection id="activity-capture" icon="activity" title="采集">
         <div className="activity-field-grid">

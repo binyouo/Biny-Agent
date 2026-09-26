@@ -12,7 +12,7 @@ export function activityMemoryInput(candidate: ActivityMemoryCandidate, context:
     activitySessionId: context.sessionId,
     tags,
     rationale: candidate.why.trim() || undefined,
-    importance: candidate.type === "feedback" ? 0.8 : 0.7,
+    importance: candidate.type === "feedback" || candidate.type === "user" ? 0.8 : 0.7,
     durability: "permanent"
   };
 }

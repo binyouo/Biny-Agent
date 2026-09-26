@@ -1,6 +1,6 @@
 /** 主进程截图选择和变化检测。 */
 import type { ActivitySettings } from "./settings.js";
-export interface ActivityFrame { jpeg: Buffer; width: number; height: number; pixels: Buffer; contentHash?: string; histogramChange?: number; pixelDiff?: number }
+export interface ActivityFrame { jpeg: Buffer; width: number; height: number; pixels: Buffer; contentHash?: string; histogram?: number[]; histogramChange?: number; pixelDiff?: number }
 export interface ActivityCaptureDependencies {
   now?(): number;
   native(maxWidth: number, quality: number): Promise<Buffer>;
@@ -72,6 +72,6 @@ export class ActivityCaptureEngine {
     const baseline = { pixels: frame.pixels, hash, histogram };
     if (trigger === "visual_change") frame = await this.readFrame(settings, false);
     this.previous = baseline;
-    return { ...frame, contentHash: hash.toString(16).padStart(8, "0"), histogramChange, pixelDiff };
+    return { ...frame, contentHash: hash.toString(16).padStart(8, "0"), histogram, histogramChange, pixelDiff };
   }
 }

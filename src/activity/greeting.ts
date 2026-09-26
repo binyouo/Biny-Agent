@@ -2,6 +2,7 @@
 import { redactSecrets } from "../utils/secrets.js";
 import { ACTIVITY_ANALYSIS_FAILED_SUMMARY, ACTIVITY_TRIVIAL_SUMMARY } from "./analyzer.js";
 import type { ActivityStore } from "./store.js";
+import { buildActivitySummary } from "./summary.js";
 
 const greetingPatterns = [
   /^(hi+|hello+|hey+|yo+|sup|hola|halo|howdy|aloha)[\s!.,~?]*$/iu,
@@ -34,33 +35,14 @@ export function recentActivityForGreeting(store: ActivityStore, input: string, n
     const minutes = Math.max(0, Math.round((now.getTime() - Date.parse(active.startedAt)) / 60_000));
     lines.push(`当前活动：${apps}（${minutes} 分钟，${active.eventCount} 个事件，${active.snapshotCount} 张截图）`);
   }
-  const localMidnight = new Date(now);
-  localMidnight.setHours(0, 0, 0, 0);
-  const today = store.listRecentSessionsWithAnalysis(localMidnight.toISOString(), 500);
-  if (today.length) {
-    const appDurations = new Map<string, number>();
-    const totalMinutes = Math.round(today.reduce((total, session) => {
-      const start = Math.max(Date.parse(session.startedAt), localMidnight.getTime());
-      const end = Math.min(session.endedAt ? Date.parse(session.endedAt) : now.getTime(), now.getTime());
-      const events = store.listSessionEventSummaries(session.id)
-        .filter((event) => event.application && Date.parse(event.occurredAt) >= start && Date.parse(event.occurredAt) <= end);
-      let app: string | undefined;
-      let appStartedAt = start;
-      for (const event of events) {
-        if (app === event.application) continue;
-        if (app) appDurations.set(app, (appDurations.get(app) ?? 0) + Math.max(0, Date.parse(event.occurredAt) - appStartedAt));
-        app = event.application;
-        appStartedAt = Date.parse(event.occurredAt);
-      }
-      if (app) appDurations.set(app, (appDurations.get(app) ?? 0) + Math.max(0, end - appStartedAt));
-      return total + Math.max(0, end - start);
-    }, 0) / 60_000);
-    const topApps = [...appDurations]
-      .sort((left, right) => right[1] - left[1])
+  const dateKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+  const today = buildActivitySummary(store, "daily", dateKey, now, 500).stats;
+  if (today.sessionCount) {
+    const topApps = today.apps
       .slice(0, 3)
-      .map(([app, duration]) => `${app}（${Math.round(duration / 60_000)} 分钟）`)
+      .map(({ app, durationMs }) => `${app}（${Math.round(durationMs / 60_000)} 分钟）`)
       .join("、");
-    lines.push(`今天：${totalMinutes} 分钟，共 ${today.length} 个会话${topApps ? `；主要应用：${topApps}` : ""}`);
+    lines.push(`今天：${Math.round(today.totalActiveMs / 60_000)} 分钟，共 ${today.sessionCount} 个会话${topApps ? `；主要应用：${topApps}` : ""}`);
   }
   for (const session of sessions) {
     const analysis = session.analysis!;

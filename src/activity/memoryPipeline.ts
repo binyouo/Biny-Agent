@@ -47,11 +47,13 @@ export async function createActivityMemoryPipeline(options: ActivityMemoryPipeli
   ): Promise<void> => {
     context.signal?.throwIfAborted();
     const workspaceRoot = await options.resolveWorkspace?.(context.project);
+    let hadDeferredCandidate = false;
     for (const candidate of candidates) {
       await context.checkpoint?.();
       context.signal?.throwIfAborted();
       if (workspaceRoot === undefined && options.skipUnknownWorkspace === true && candidate.type !== "user") {
-        throw new Error("活动对应的项目尚未关联，保留候选等待工作区确认。");
+        console.error("[ActivityMemoryPipeline] project memory skipped because workspace is unknown", context.sessionId);
+        continue;
       }
       const memory = new LocalMemory(
         workspaceRoot ?? options.workspaceRoot,
@@ -64,19 +66,27 @@ export async function createActivityMemoryPipeline(options: ActivityMemoryPipeli
         options.findSimilarEntries,
         () => context.model
       );
+      let deferred = false;
       try {
         const input = activityMemoryInput(candidate, context);
         const result = await memory.writeAutoEntry(input, {
           signal: context.signal,
           checkpoint: context.checkpoint,
           now: new Date(context.analyzedAt),
-          requireSemantic: options.requireSemantic === true
+          requireSemantic: options.requireSemantic !== false
         });
-        if (result.deferred) throw new Error("本地语义检索暂不可用，保留活动记忆候选。");
+        deferred = result.deferred === true;
+      } catch (error) {
+        await context.checkpoint?.();
+        context.signal?.throwIfAborted();
+        if (error instanceof Error && error.name === "AbortError") throw error;
+        console.error("[ActivityMemoryPipeline] memory candidate write failed", context.sessionId);
       } finally {
         memory.close();
       }
+      if (deferred) hadDeferredCandidate = true;
     }
+    if (hadDeferredCandidate) throw new Error("本地语义检索暂不可用，部分活动记忆未写入。");
   };
 
   const onAnalyzed = async (

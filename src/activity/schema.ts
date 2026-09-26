@@ -58,7 +58,12 @@ CREATE INDEX IF NOT EXISTS activity_events_session_idx ON activity_events(sessio
 
 export function ensureActivityTables(db: DatabaseSync): void {
   const columns = db.prepare("PRAGMA table_info(activity_events)").all() as { name: string }[];
-  if (!columns.some(row => row.name === "occurred_at")) { db.exec(schema); migrateEventData(db); return; }
+  if (!columns.some(row => row.name === "occurred_at")) {
+    db.exec(schema);
+    ensureSnapshotHistogramColumn(db);
+    migrateEventData(db);
+    return;
+  }
   db.exec("PRAGMA foreign_keys = OFF; BEGIN IMMEDIATE;");
   try {
     // 获得写锁后再读取迁移输入；另一个进程可能已经完成迁移。
@@ -118,7 +123,16 @@ export function ensureActivityTables(db: DatabaseSync): void {
     db.exec("COMMIT;");
   } catch (error) { db.exec("ROLLBACK;"); throw error; }
   finally { db.exec("PRAGMA foreign_keys = ON;"); }
+  ensureSnapshotHistogramColumn(db);
   migrateEventData(db);
+}
+
+function ensureSnapshotHistogramColumn(db: DatabaseSync): void {
+  const columns = db.prepare("PRAGMA table_info(activity_snapshots)").all() as Array<{ name: string }>;
+  if (!columns.some((column) => column.name === "histogram")) {
+    // 已采用独立 snapshot 的旧库只补缺列；历史画面无法重建直方图，保持 NULL。
+    db.exec("ALTER TABLE activity_snapshots ADD COLUMN histogram TEXT;");
+  }
 }
 
 /** 将旧列式 payload 一次性转换成按事件类型定义的数据，不再保留 AX 内容。 */

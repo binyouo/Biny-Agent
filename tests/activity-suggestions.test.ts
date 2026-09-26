@@ -8,7 +8,8 @@ import type { AgentModel, ModelStreamEvent } from "../src/agent/core/types.js";
 
 await testActivitySuggestionsAreGroundedAndCached();
 await testActivitySuggestionsUseExternalModel();
-await testTooFewSuggestionsAreRejected();
+await testShortAndMixedSuggestionsAreRetained();
+await testEmptySuggestionsAreCached();
 
 async function testActivitySuggestionsAreGroundedAndCached(): Promise<void> {
   await withStore(async (store) => {
@@ -27,16 +28,16 @@ async function testActivitySuggestionsAreGroundedAndCached(): Promise<void> {
       analyzerModel: "analyzer",
       project: "biny",
       title: "修复 Activity 检索",
-      description: "完成中文检索与日报对齐。",
+      description: `${"描述".repeat(120)}DESCRIPTION_BEYOND_240_817`,
       summary: "完成 Activity 中文检索与日报对齐",
-      topics: ["jieba", "日报"],
+      topics: ["jieba", "日报", "索引", "检索", "TOPIC_BEYOND_FOUR_258"],
       prs: [],
       issues: [],
       people: [],
       versions: [],
       decisions: ["使用本地 FTS 分词"],
       entities: ["activity_fts"],
-      highlights: ["接入中文分词"],
+      highlights: ["接入中文分词", "完成日报对齐", "HIGHLIGHT_BEYOND_TWO_594"],
       worthMemory: false,
       worthKnowledge: false,
       isMeeting: false,
@@ -74,6 +75,11 @@ async function testActivitySuggestionsAreGroundedAndCached(): Promise<void> {
     assert.equal(calls, 1);
     assert.match(prompt, /biny/u);
     assert.match(prompt, /jieba/u);
+    assert.doesNotMatch(prompt, /使用本地 FTS 分词/u, "建议素材不包含决定字段");
+    assert.doesNotMatch(prompt, /HIGHLIGHT_BEYOND_TWO_594/u, "亮点只取前两条");
+    assert.doesNotMatch(prompt, /TOPIC_BEYOND_FOUR_258/u, "主题只取前四条");
+    assert.doesNotMatch(prompt, /DESCRIPTION_BEYOND_240_817/u, "描述只取前 240 字符");
+    assert.doesNotMatch(prompt, /完成 Activity 中文检索与日报对齐/u, "建议素材不包含摘要字段");
     const second = await generateActivitySuggestions(deps);
     assert.equal(second.cached, true);
     assert.equal(calls, 1);
@@ -108,7 +114,7 @@ async function testActivitySuggestionsUseExternalModel(): Promise<void> {
       sessionId,
       analyzedAt: "2026-08-31T10:00:00.000Z",
       analyzerModel: "analyzer",
-      summary: "有内容",
+      title: "继续处理项目", summary: "有内容",
       topics: [],
       prs: [],
       issues: [],
@@ -149,7 +155,7 @@ async function testActivitySuggestionsUseExternalModel(): Promise<void> {
   });
 }
 
-async function testTooFewSuggestionsAreRejected(): Promise<void> {
+async function testShortAndMixedSuggestionsAreRetained(): Promise<void> {
   await withStore(async (store) => {
     const sessionId = store.startSession("2026-09-23T09:00:00.000Z");
     store.endSession(sessionId, "2026-09-23T10:00:00.000Z");
@@ -157,7 +163,7 @@ async function testTooFewSuggestionsAreRejected(): Promise<void> {
       sessionId,
       analyzedAt: "2026-09-23T10:00:00.000Z",
       analyzerModel: "test",
-      summary: "完成检索设计",
+      title: "完成检索设计", summary: "完成检索设计",
       topics: [], prs: [], issues: [], people: [], versions: [], decisions: [], entities: [], highlights: [],
       worthMemory: false, worthKnowledge: false, isMeeting: false, storageTier: "standard",
       confidence: 1, sourceEventCount: 3, inputHash: "count-test"
@@ -165,13 +171,43 @@ async function testTooFewSuggestionsAreRejected(): Promise<void> {
     const model: AgentModel = {
       provider: "test", modelId: "count-test", runtime: "builtin-llama.cpp", dataResidency: "local",
       stream: async () => (async function* (): AsyncGenerator<ModelStreamEvent> {
-        yield { type: "text-delta", text: '["看看检索设计", "继续完善检索", "回顾完成内容"]' };
+        yield { type: "text-delta", text: JSON.stringify(["看看检索设计", 7, "继续完善检索", "x".repeat(120), "y".repeat(121)]) };
         yield { type: "finish", reason: "stop" };
       })()
     };
     const result = await generateActivitySuggestions({ store, model, now: new Date("2026-09-24T09:00:00.000Z") });
-    assert.deepEqual(result.suggestions, []);
-    assert.equal(result.reason, "generation_failed");
+    assert.deepEqual(result.suggestions, ["看看检索设计", "继续完善检索", "x".repeat(120)]);
+    assert.equal(result.reason, undefined);
+  });
+}
+
+async function testEmptySuggestionsAreCached(): Promise<void> {
+  await withStore(async (store) => {
+    const sessionId = store.startSession("2026-09-23T09:00:00.000Z");
+    store.endSession(sessionId, "2026-09-23T10:00:00.000Z");
+    store.recordAnalysis({
+      sessionId, analyzedAt: "2026-09-23T10:00:00.000Z", analyzerModel: "test",
+      title: "梳理近期工作", summary: "梳理近期工作", topics: [], prs: [], issues: [], people: [], versions: [],
+      decisions: [], entities: [], highlights: [], worthMemory: false, worthKnowledge: false,
+      isMeeting: false, storageTier: "standard", confidence: 1, sourceEventCount: 3, inputHash: "empty-cache-test"
+    });
+    let calls = 0;
+    const model: AgentModel = {
+      provider: "test", modelId: "empty-cache-test", stream: async () => {
+        calls += 1;
+        return (async function* (): AsyncGenerator<ModelStreamEvent> {
+          yield { type: "text-delta", text: "[]" };
+          yield { type: "finish", reason: "stop" };
+        })();
+      }
+    };
+    const cache = createInMemoryActivitySuggestionCache();
+    const deps = { store, model, cache, now: new Date("2026-09-24T09:00:00.000Z") };
+    assert.deepEqual((await generateActivitySuggestions(deps)).suggestions, []);
+    const second = await generateActivitySuggestions(deps);
+    assert.deepEqual(second.suggestions, []);
+    assert.equal(second.cached, true);
+    assert.equal(calls, 1);
   });
 }
 

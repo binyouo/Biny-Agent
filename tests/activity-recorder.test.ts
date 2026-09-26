@@ -23,9 +23,12 @@ await testEventAndFallbackStorage();
 await testSnapshotOrphanRecovery();
 await testKeyBurstFirstTimestamp();
 await testLegacyScreenshotMigration();
+await testMissingHistogramColumnMigration();
 await testSessionClosePersistsDuration();
 await testStorageLimitKeepsEventSemantics();
-await testStorageLimitEvictsColdBeforeOlderHot();
+await testStorageLimitEvictsOldestAcrossTiers();
+await testStorageLimitKeepsRecordWhenFileCannotBeDeleted();
+await testSnapshotTierRetriesAfterCompressionFailure();
 await testBrowserTabUrlStructuredStorageAndSearch();
 await testFtsRebuildIncludesBrowserUrl();
 await testRecordEventRollsBackWhenFtsInsertFails();
@@ -431,6 +434,31 @@ async function testSnapshotOrphanRecovery(): Promise<void> {
   }
 }
 
+async function testMissingHistogramColumnMigration(): Promise<void> {
+  const root = await mkdtemp(path.join(os.tmpdir(), "biny-activity-old-histogram-"));
+  const store = new ActivityStore();
+  try {
+    await store.open(root, root);
+    const sessionId = store.startSession("2026-09-25T09:00:00.000Z");
+    const older = await store.recordFallbackCapture({sessionId,occurredAt:"2026-09-25T09:00:01.000Z",eventType:"heartbeat",jpeg:Buffer.from("old")});
+    await store.close();
+    const database = new DatabaseSync(path.join(root, "agent.sqlite"));
+    database.exec("ALTER TABLE activity_snapshots DROP COLUMN histogram");
+    database.close();
+    await store.open(root, root);
+    const histogram = Array<number>(32).fill(0);
+    histogram[0] = 1;
+    const newer = await store.recordFallbackCapture({sessionId,occurredAt:"2026-09-25T09:00:02.000Z",eventType:"heartbeat",jpeg:Buffer.from("new"),histogram});
+    const detail = store.getHttpSessionDetail(sessionId)!;
+    assert.equal(detail.snapshots.find(row => row.id === older.snapshotId)?.histogram, null,
+      "旧截图缺少直方图时应显示未知，不伪造历史值");
+    assert.deepEqual(detail.snapshots.find(row => row.id === newer.snapshotId)?.histogram, histogram);
+  } finally {
+    await store.close();
+    await rm(root, { recursive: true, force: true });
+  }
+}
+
 async function testLegacyScreenshotMigration(): Promise<void> {
   const root = await mkdtemp(path.join(os.tmpdir(), "biny-activity-legacy-"));
   const snapshots = path.join(root, "snapshots");
@@ -590,7 +618,7 @@ async function testStorageLimitKeepsEventSemantics(): Promise<void> {
   }
 }
 
-async function testStorageLimitEvictsColdBeforeOlderHot(): Promise<void> {
+async function testStorageLimitEvictsOldestAcrossTiers(): Promise<void> {
   const root = await mkdtemp(path.join(os.tmpdir(), "biny-activity-tier-order-"));
   const store = new ActivityStore();
   try {
@@ -609,13 +637,61 @@ async function testStorageLimitEvictsColdBeforeOlderHot(): Promise<void> {
         database.prepare("UPDATE activity_snapshots SET storage_tier = ? WHERE app_name = ?").run(tier, tier);
       }
       await store.rotateSnapshots(1, now);
-      assert.equal(store.snapshot().storageBytes, 500_000);
+      assert.equal(store.snapshot().storageBytes, 700_000);
       const remaining = store.getSessionDetail(sessionId)!.snapshots;
-      assert.equal(remaining.length, 1);
-      assert.equal(remaining[0]?.storageTier, "hot", "优先淘汰 cold、warm");
+      assert.deepEqual(remaining.map(row => row.storageTier).sort(), ["cold", "warm"],
+        "容量淘汰按截图时间排序，旧 hot 应先于较新的 cold 淘汰");
     } finally {
       database.close();
     }
+  } finally {
+    await store.close();
+    await rm(root, { recursive: true, force: true });
+  }
+}
+
+async function testStorageLimitKeepsRecordWhenFileCannotBeDeleted(): Promise<void> {
+  const root = await mkdtemp(path.join(os.tmpdir(), "biny-activity-delete-failure-"));
+  const store = new ActivityStore();
+  try {
+    await store.open(root, root);
+    const sessionId = store.startSession(new Date().toISOString());
+    const capture = await store.recordFallbackCapture({
+      sessionId, occurredAt: new Date().toISOString(), eventType: "fallback_capture",
+      jpeg: Buffer.alloc(1_100_000, 1)
+    });
+    const snapshotPath = path.join(root, capture.snapshotPath!);
+    await rm(snapshotPath);
+    await mkdir(snapshotPath);
+
+    await assert.rejects(store.rotateSnapshots(1), /EISDIR|EPERM/u);
+    assert.equal(store.snapshot().fallbackCaptures, 1, "文件删除失败时保留记录供下次重试");
+    await rm(snapshotPath, { recursive: true });
+    await store.rotateSnapshots(1);
+    assert.equal(store.snapshot().fallbackCaptures, 0);
+  } finally {
+    await store.close();
+    await rm(root, { recursive: true, force: true });
+  }
+}
+
+async function testSnapshotTierRetriesAfterCompressionFailure(): Promise<void> {
+  const root = await mkdtemp(path.join(os.tmpdir(), "biny-activity-recompress-failure-"));
+  const store = new ActivityStore();
+  try {
+    await store.open(root, root);
+    const now = new Date("2026-09-25T12:00:00.000Z");
+    const sessionId = store.startSession("2026-09-23T12:00:00.000Z");
+    await store.recordFallbackCapture({
+      sessionId, occurredAt: "2026-09-23T12:00:00.000Z", eventType: "fallback_capture",
+      jpeg: Buffer.alloc(100, 1)
+    });
+    await store.rotateSnapshots(1, now, async () => { throw new Error("codec failed"); });
+    assert.equal(store.getSessionDetail(sessionId)?.snapshots[0]?.storageTier, "hot",
+      "压缩失败后不能误标为已降级");
+    await store.rotateSnapshots(1, now, async () => ({ data: Buffer.alloc(50, 2), width: 50, height: 50 }));
+    assert.equal(store.getSessionDetail(sessionId)?.snapshots[0]?.storageTier, "warm");
+    assert.equal(store.snapshot().storageBytes, 50);
   } finally {
     await store.close();
     await rm(root, { recursive: true, force: true });
@@ -851,7 +927,7 @@ async function testDailySummaryAggregation(): Promise<void> {
     assert.equal(summary.stats.sessionCount, 2);
     assert.equal(summary.stats.totalActiveMs, 4 * 60 * 60 * 1_000);
     assert.equal(summary.stats.analyzedCount, 2);
-    assert.equal(summary.stats.notWorthCount, 1);
+    assert.equal(summary.stats.notWorthCount, 0);
     assert.equal(summary.stats.snapshotCount, 1);
     assert.equal(summary.stats.ocrCharCount, 5);
     assert.deepEqual(summary.stats.hours.filter((item) => item.count > 0), [
@@ -884,10 +960,10 @@ async function testDailySummarySkipsPlaceholderAnalyses(): Promise<void> {
     await store.open(root, root);
     const sessionId = store.startSession("2026-08-28T09:00:00.000Z");
     store.endSession(sessionId, "2026-08-28T09:00:00.000Z");
-    store.recordAnalysis({ ...makeAnalysis(sessionId), summary: "零星活动", title: "零星活动" });
+    store.recordAnalysis({ ...makeAnalysis(sessionId), analysisStatus: "skipped", summary: "零星活动", title: "零星活动" });
     const failedSessionId = store.startSession("2026-08-28T10:00:00.000Z");
     store.endSession(failedSessionId, "2026-08-28T10:00:00.000Z");
-    store.recordAnalysis({ ...makeAnalysis(failedSessionId), summary: "活动分析失败", title: "活动分析失败" });
+    store.recordAnalysis({ ...makeAnalysis(failedSessionId), analysisStatus: "failed", summary: "活动分析失败", title: "活动分析失败" });
 
     const summary = refreshActivitySummary(
       store,
@@ -910,6 +986,23 @@ async function testActivitySummaryNarrativePersistence(): Promise<void> {
   const store = new ActivityStore();
   try {
     await store.open(root, root);
+    const failingModel: AgentModel = {
+      provider: "test",
+      modelId: "failing-summary-model",
+      runtime: "provider",
+      stream: async () => (async function* () {
+        throw new Error("temporary model failure");
+        yield { type: "finish" as const, reason: "stop" as const };
+      })()
+    };
+    const fallback = await refreshActivitySummaryWithNarrative(store, "daily", "2026-08-28", {
+      model: failingModel,
+      withNarrative: true,
+      now: new Date("2026-08-30T12:00:00.000Z")
+    });
+    assert.ok(fallback.summary, "模型失败时仍保存确定性摘要供读取");
+    assert.equal(fallback.model, undefined, "fallback 不能标记成成功叙事");
+    assert.equal(store.getSummary("daily", "2026-08-28")?.model, undefined);
     const model: AgentModel = {
       provider: "test",
       modelId: "summary-model",
@@ -948,6 +1041,8 @@ async function testBuildReportPersistsDailyNote(): Promise<void> {
     const sessionId = store.startSession("2026-08-28T09:00:00.000Z");
     store.endSession(sessionId, "2026-08-28T10:00:00.000Z");
     store.recordAnalysis({ ...makeAnalysis(sessionId, "完成日报聚合"), project: "biny", topics: ["日报聚合"] });
+    const pendingSessionId = store.startSession("2026-08-28T11:00:00.000Z");
+    store.endSession(pendingSessionId, "2026-08-28T12:00:00.000Z");
     await store.close();
 
     const config = {
@@ -968,8 +1063,10 @@ async function testBuildReportPersistsDailyNote(): Promise<void> {
     assert.equal(report.sessionCount, 1);
     assert.equal(writtenDate, "2026-08-28");
     assert.match(writtenContent ?? "", /^# 2026-08-28 每日摘要/u);
-    assert.match(writtenContent ?? "", /### biny/u);
+    assert.match(writtenContent ?? "", /^### biny$/mu);
     assert.match(writtenContent ?? "", /日报聚合/u);
+    await store.open(root, root);
+    assert.equal(store.getAnalysis(pendingSessionId), undefined, "Desktop 生成日报不补分析待处理会话");
   } finally {
     await store.close();
     await rm(root, { recursive: true, force: true });

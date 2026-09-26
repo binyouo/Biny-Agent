@@ -14,6 +14,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { z } from "zod";
 import type { AgentModel } from "../agent/core/types.js";
 import { generateNativeText, nativeJsonMessages } from "../llm/nativeJson.js";
+import { buildActivitySummary } from "./summary.js";
 import type {
   ActivityAnalysisCommit,
   ActivityAnalysisReference,
@@ -21,6 +22,7 @@ import type {
   ActivityAnalysisReportRow,
   ActivityEventSummary,
   ActivityPendingAnalysisSession,
+  ActivityReportSourceSession,
   ActivitySessionAnalysis,
   ActivityStore
 } from "./store.js";
@@ -41,7 +43,7 @@ export const ACTIVITY_ANALYSIS_FAILED_SUMMARY = "活动分析失败";
 const KNOWN_PROJECT_LOOKBACK_MS = 30 * 24 * 60 * 60 * 1000;
 const KNOWN_PROJECT_LIMIT = 20;
 /** 进入 inputHash 的 prompt/解析版本；改动它会让已分析 session 因 hash 变化而重跑。 */
-const ACTIVITY_ANALYSIS_VERSION = "activity-session-analysis/v4";
+const ACTIVITY_ANALYSIS_VERSION = "activity-session-analysis/v5";
 
 const analysisReferenceSchema = z.object({
   label: z.string().trim().min(1).max(160).optional(),
@@ -155,8 +157,6 @@ export interface ActivityAnalyzerDeps {
   checkpoint?: () => Promise<void>;
   /** 可注入时钟，便于测试固定 analyzedAt 与「今天」。 */
   now?: () => Date;
-  /** false 时只消费已落库的分析行；用于每日摘要，避免在日结阶段临时调用模型。 */
-  analyzePending?: boolean;
   /** 分析完成后把模型挑出的稳定事实写入统一记忆库；失败不能影响 Activity 分析结果。 */
   writeMemories?: (
     candidates: readonly ActivityMemoryCandidate[],
@@ -189,14 +189,25 @@ export interface ActivityReportResult {
   narrativeModel?: string;
   /** 范围内可入报告的分析行数（已过滤零星/失败占位）。 */
   sessionCount: number;
-  /** 本次调用新分析（含零星占位）的 session 数。 */
+  /** 报告不触发会话分析，保持零值以兼容已有结果结构。 */
   analyzedNow: number;
-  /** 范围内仍需模型但本次未分析的 session 数。 */
+  /** 范围内尚未保存分析的已结束 session 数。 */
   pendingModel: number;
-  /** 是否有 session 因未请求补分析或无模型而未分析。 */
+  /** 是否有已结束 session 尚未完成独立分析。 */
   blocked: boolean;
   /** blocked 时携带的原因说明。 */
   message?: string;
+  /** SQLite 日报缓存命中，叙事层据此避免再次调用模型。 */
+  cached?: boolean;
+  stats: ActivityReportStats;
+}
+
+export interface ActivityReportStats {
+  sessionCount: number;
+  analyzedCount: number;
+  totalActiveMinutes: number;
+  clusterCount: number;
+  topApps: Array<{ app: string; minutes: number }>;
 }
 
 const ANALYSIS_SYSTEM_PROMPT = String.raw`
@@ -293,7 +304,7 @@ export async function analyzeActivitySession(
   if (!session) return { status: "skipped", reason: "session_not_ended" };
   const events = store.listSessionEventSummaries(sessionId);
   const semanticEventCount = events.filter((event) => event.eventType !== "screenshot_ocr").length;
-  const inputHash = activityAnalysisInputHash(events);
+  const inputHash = activityAnalysisInputHash(session.appNames, events);
   const existing = store.getAnalysis(sessionId);
   if (!force && existing && existing.inputHash === inputHash) {
     if (existing.analysisStatus === "skipped" && existing.summary === ACTIVITY_TRIVIAL_SUMMARY) {
@@ -332,6 +343,7 @@ export async function analyzeActivitySession(
       model,
       session,
       events,
+      store.listSessionAnalysisOcrTexts(sessionId),
       deps.signal,
       deps.checkpoint
     );
@@ -435,7 +447,7 @@ async function projectActivityAnalysis(deps: ActivityAnalyzerDeps, analysis: Act
   deps.signal?.throwIfAborted();
 }
 
-/** 兜底 sweep：分析所有「已结束但还没分析行」的 session，按结束时间升序逐个处理。 */
+/** 兜底 sweep：每轮从最新的已结束 pending session 开始处理。 */
 export async function analyzePendingActivitySessions(
   deps: ActivityAnalyzerDeps,
   limit = 10
@@ -464,58 +476,84 @@ export async function analyzePendingActivitySessions(
 }
 
 /**
- * 生成指定日期的工作日记。先补分析该日期内已结束但还没分析的 session（范围外的积压由
- * 周期 sweep 处理），再从分析表读取并按项目分组渲染成确定性骨架；叙事由 reportNarrative 单独负责。
+ * 生成指定日期的工作日记。只读取已保存分析并按项目分组渲染确定性骨架；
+ * 待分析会话由显式分析或周期 sweep 处理，叙事由 reportNarrative 单独负责。
  */
 export async function buildActivityReport(
   deps: ActivityAnalyzerDeps,
   date: string,
-  options: { force?: boolean } = {}
+  options: { force?: boolean; skeletonOnly?: boolean } = {}
 ): Promise<ActivityReportResult> {
   await deps.checkpoint?.();
   deps.signal?.throwIfAborted();
   const now = deps.now?.() ?? new Date();
   const range = resolveActivityReportRange(date, now);
-  const pendingIds = options.force
-    ? deps.store.listEndedSessionIdsForDateRange(range.startIso, range.endIso, 200)
-    : deps.store.listSessionsPendingAnalysisForDateRange(range.startIso, range.endIso, 200).map((session) => session.id);
-
-  let analyzedNow = 0;
-  let pendingModel = 0;
-  let blocked = false;
-  let message: string | undefined;
-  if (deps.analyzePending !== false) {
-    for (const sessionId of pendingIds) {
-      deps.signal?.throwIfAborted();
-      const outcome = await analyzeActivitySession(deps, sessionId, options.force === true);
-      if (outcome.status === "analyzed" || outcome.status === "trivial") analyzedNow += 1;
-      else if (outcome.status === "skipped" && outcome.reason === "no_model") {
-        blocked = true;
-        pendingModel += 1;
-        message ??= "未配置可用的分析模型。";
-      }
+  // 明确请求骨架时仍渲染结构化分析，避免复用此前缓存的叙事正文。
+  if (!options.force && !options.skeletonOnly) {
+    const cached = deps.store.getSummary("daily", range.label)?.stats;
+    const generatedAt = cached?.reportGeneratedAt;
+    if (typeof cached?.report === "string" && typeof generatedAt === "number" && cached.reportStats && cached.reportState
+      && (range.label !== formatLocalDate(now) || now.getTime() - generatedAt <= 600_000)) {
+      const state = cached.reportState;
+      return {
+        date: range.label,
+        startIso: range.startIso,
+        endIso: range.endIso,
+        markdown: cached.report,
+        narrativeModel: state.narrativeModel,
+        sessionCount: state.sessionCount,
+        analyzedNow: 0,
+        pendingModel: state.pendingModel,
+        blocked: state.blocked,
+        message: state.message,
+        stats: cached.reportStats,
+        cached: true
+      };
     }
   }
-
   deps.signal?.throwIfAborted();
   const remaining = deps.store.listSessionsPendingAnalysisForDateRange(range.startIso, range.endIso, 200);
-  if (remaining.length > 0) {
-    blocked = true;
-    pendingModel = Math.max(pendingModel, remaining.length);
-    message ??= `还有 ${String(remaining.length)} 个已结束会话尚未完成分析。`;
-  }
-  const rows = deps.store.listAnalysisForDateRange(range.startIso, range.endIso);
-  return {
+  const blocked = remaining.length > 0;
+  const pendingModel = remaining.length;
+  const message = blocked ? `还有 ${String(remaining.length)} 个已结束会话尚未完成分析。` : undefined;
+  const source = deps.store.listReportSourceForDateRange(range.startIso, range.endIso);
+  const { markdown, stats } = renderActivityReport(source, range.label);
+  const result: ActivityReportResult = {
     date: range.label,
     startIso: range.startIso,
     endIso: range.endIso,
-    markdown: renderActivityReport(rows, range.label),
-    sessionCount: rows.filter(isReportableAnalysis).length,
-    analyzedNow,
+    markdown,
+    sessionCount: stats.analyzedCount,
+    analyzedNow: 0,
     pendingModel,
     blocked,
-    message
+    message,
+    stats
   };
+  persistActivityReport(deps.store, result, now);
+  return result;
+}
+
+/** 日报和日结保存在同一 SQLite 行，叙事成功后可以用最终正文覆盖骨架。 */
+export function persistActivityReport(store: ActivityStore, result: ActivityReportResult, now = new Date()): void {
+  const previous = store.getSummary("daily", result.date);
+  const base = previous ?? buildActivitySummary(store, "daily", result.date, now);
+  store.upsertSummary({
+    ...base,
+    stats: {
+      ...base.stats,
+      report: result.markdown,
+      reportGeneratedAt: now.getTime(),
+      reportStats: result.stats,
+      reportState: {
+        sessionCount: result.sessionCount,
+        pendingModel: result.pendingModel,
+        blocked: result.blocked,
+        message: result.message,
+        narrativeModel: result.narrativeModel
+      }
+    }
+  });
 }
 
 /**
@@ -537,35 +575,66 @@ export function formatActivityReportResult(result: ActivityReportResult): string
  */
 export function formatActivityDailyNote(result: ActivityReportResult): string {
   const report = formatActivityReportResult(result)
-    .replace(/^## [^\n]+\n*/u, "")
+    .replace(/^# [^\n]+\n*/u, "")
+    // 日报的二级主题嵌入「活动记录」后必须降为三级，避免被每日摘要当作同级 section。
+    .replace(/^## /gmu, "### ")
     .trim();
   return [`# ${result.date} 每日摘要`, "", report].join("\n");
 }
 
-/**
- * 把一天的分析行渲染成可读的工作日记：按项目分组、组内按时间排，条目去重。
- * 确定性模板渲染——分析已是结构化数据，聚合不需要再过模型，也避免二次编造。
- */
-export function renderActivityReport(rows: readonly ActivityAnalysisReportRow[], label: string): string {
-  const title = `## ${label} 工作日记`;
-  const reportable = rows.filter(isReportableAnalysis);
-  if (!reportable.length) return `${title}\n\n（这一天没有已分析的活动记录。）`;
-
-  const groups = new Map<string, ActivityAnalysisReportRow[]>();
-  for (const row of reportable) {
-    const key = row.project?.trim() || "未归类";
-    const bucket = groups.get(key);
-    if (bucket) bucket.push(row);
-    else groups.set(key, [row]);
+/** 1000 条最新 session 聚合为主题；OCR 和窗口标题不参与日报骨架或叙事输入。 */
+export function renderActivityReport(
+  sessions: readonly ActivityReportSourceSession[],
+  label: string
+): { markdown: string; stats: ActivityReportStats } {
+  const analyzed = sessions.filter((session) => session.analysis);
+  const clusters = clusterReportSessions(analyzed);
+  const appDurations = new Map<string, number>();
+  for (const session of sessions) {
+    for (const [app, duration] of reportAppDurations(session)) {
+      appDurations.set(app, (appDurations.get(app) ?? 0) + duration);
+    }
   }
-  // 项目按当天最早一个 session 的开始时间排序，让日记读起来是时间推进的。
-  const orderedGroups = [...groups.entries()].sort((left, right) => {
-    const a = left[1][0]?.sessionStartedAt ?? "";
-    const b = right[1][0]?.sessionStartedAt ?? "";
-    return a.localeCompare(b);
-  });
-  const sections = orderedGroups.map(([project, group]) => `### ${project}\n${renderProjectBullets(group)}`);
-  return [title, "", ...sections].join("\n\n");
+  const stats: ActivityReportStats = {
+    sessionCount: sessions.length,
+    analyzedCount: analyzed.length,
+    totalActiveMinutes: Math.round(sessions.reduce((total, session) => total + session.durationMs, 0) / 60_000),
+    clusterCount: clusters.length,
+    topApps: [...appDurations.entries()]
+      .sort((left, right) => right[1] - left[1])
+      .slice(0, 5)
+      .map(([app, duration]) => ({ app, minutes: Math.round(duration / 60_000) }))
+  };
+  if (clusters.length === 0) return { markdown: `# ${label} 打工日记\n\n今天没有可分析的活动记录。`, stats };
+
+  const weekday = ["日", "一", "二", "三", "四", "五", "六"][new Date(`${label}T00:00:00`).getDay()];
+  const lines = [
+    `# ${label} 周${weekday} 打工日记`,
+    "",
+    `活跃 ${stats.totalActiveMinutes} 分钟，共 ${stats.sessionCount} 个 session（已分析 ${stats.analyzedCount}），分到 ${stats.clusterCount} 个主题。`
+      + (stats.topApps.length ? ` 主用：${stats.topApps.map(({ app, minutes }) => `${app} (${minutes}m)`).join("、")}。` : ""),
+    ""
+  ];
+  clusters.sort((left, right) => reportArtifactCount(right) - reportArtifactCount(left) || right.totalMs - left.totalMs);
+  for (const cluster of clusters) {
+    const heading = cluster.key === "misc"
+      ? "其他零碎"
+      : cluster.project ?? cluster.topics[0] ?? cluster.sessions[0]?.analysis?.title?.slice(0, 60) ?? "未命名主题";
+    lines.push(`## ${heading}`, `_${Math.round(cluster.totalMs / 60_000)} 分钟 · ${cluster.sessions.length} 个 session_`, "");
+    const highlights = [...new Set(cluster.sessions.flatMap((session) => session.analysis?.highlights ?? []))].slice(0, 6);
+    if (highlights.length) lines.push("**做了什么：**", ...highlights.map((highlight) => `- ${highlight}`), "");
+    const entities = renderReportEntities(cluster.entities);
+    if (entities) lines.push("**关键信息：**", entities, "");
+    lines.push("**时间线：**");
+    for (const session of cluster.sessions) {
+      const started = new Date(session.startedAt);
+      const time = `${String(started.getHours()).padStart(2, "0")}:${String(started.getMinutes()).padStart(2, "0")}`;
+      lines.push(`- ${time} · ${Math.max(1, Math.round(session.durationMs / 60_000))}m — ${session.analysis?.title ?? "(未分析)"}`);
+      if (session.analysis?.description) lines.push(`  ${session.analysis.description.replace(/\s+/gu, " ").slice(0, 240)}`);
+    }
+    lines.push("");
+  }
+  return { markdown: lines.join("\n").trim(), stats };
 }
 
 /**
@@ -600,10 +669,12 @@ export function resolveActivityReportRange(date: string, now: Date = new Date())
   return { startIso: start.toISOString(), endIso: end.toISOString(), label: formatLocalDate(start) };
 }
 
-/** 输入指纹：版本 + 每条事件的时间、类型、应用、窗口、URL、摘要和已脱敏 OCR。 */
-function activityAnalysisInputHash(events: readonly ActivityEventSummary[]): string {
+/** 输入指纹：版本、session 应用名单与每条事件的脱敏输入。 */
+function activityAnalysisInputHash(appNames: readonly string[], events: readonly ActivityEventSummary[]): string {
   const hash = createHash("sha256");
   hash.update(ACTIVITY_ANALYSIS_VERSION);
+  hash.update("\0");
+  hash.update(JSON.stringify(appNames));
   for (const event of events) {
     hash.update("\0");
     hash.update(event.occurredAt);
@@ -772,11 +843,13 @@ function normalizeMemoryCandidates(value: unknown): Array<{ type: "project" | "f
   if (!Array.isArray(value)) return [];
   const result: Array<{ type: "project" | "feedback" | "reference" | "user"; content: string; why: string }> = [];
   for (const item of value) {
-    if (!isRecord(item) || typeof item.type !== "string" || !isMemoryCandidateType(item.type)) continue;
+    if (!isRecord(item)) continue;
+    const type = typeof item.type === "string" ? item.type.trim().toLowerCase() : "";
+    if (!isMemoryCandidateType(type)) continue;
     const content = typeof item.content === "string" ? item.content.trim().slice(0, 240) : "";
     if (!content) continue;
     const why = typeof item.why === "string" ? item.why.trim().slice(0, 200) : "";
-    result.push({ type: item.type, content, why });
+    result.push({ type, content, why });
     if (result.length >= 5) break;
   }
   return result;
@@ -804,10 +877,11 @@ async function requestSessionAnalysis(
   model: AgentModel,
   session: ActivityPendingAnalysisSession,
   events: readonly ActivityEventSummary[],
+  ocrTexts: readonly string[],
   signal: AbortSignal | undefined,
   checkpoint: (() => Promise<void>) | undefined
 ): Promise<AnalysisOutput | undefined> {
-  const prompt = buildAnalysisPrompt(session, events);
+  const prompt = buildAnalysisPrompt(session, events, ocrTexts);
   for (let attempt = 0; attempt < 2; attempt += 1) {
     await checkpoint?.();
     const result = await generateNativeText(model, nativeJsonMessages(ANALYSIS_SYSTEM_PROMPT, prompt), { signal });
@@ -826,30 +900,20 @@ async function requestSessionAnalysis(
 /** 按四段结构组装事件、窗口标题、浏览器访问和已脱敏 OCR。 */
 function buildAnalysisPrompt(
   session: ActivityPendingAnalysisSession,
-  events: readonly ActivityEventSummary[]
+  events: readonly ActivityEventSummary[],
+  ocrTexts: readonly string[]
 ): string {
   const semanticEvents = events.filter((event) => event.eventType !== "screenshot_ocr");
-  const applications = uniqueStrings(
-    semanticEvents
-      .map((event) => event.application)
-      .filter((value): value is string => Boolean(value))
-  );
   const promptEvents = semanticEvents.slice(0, ACTIVITY_ANALYSIS_MAX_EVENTS_IN_PROMPT);
   const eventSample = formatEventSample(promptEvents);
   const windowTitleSample = formatWindowTitleSample(promptEvents);
   const browserVisitSample = formatBrowserVisitSample(promptEvents);
-  const ocrTexts = dedupeOcrTexts(
-    events
-      .filter((event) => event.eventType === "screenshot_ocr")
-      .map((event) => event.ocrText?.trim())
-      .filter((value): value is string => Boolean(value))
-  );
-  const ocrPrompt = truncateOcrText(ocrTexts.join("\n---\n"), ACTIVITY_ANALYSIS_MAX_OCR_CHARS);
+  const ocrPrompt = truncateOcrText(dedupeOcrTexts(ocrTexts).join("\n---\n"), ACTIVITY_ANALYSIS_MAX_OCR_CHARS);
   return [
     `Session ${session.id}`,
     `Started: ${isoTimestamp(session.startedAt)}`,
     `Duration: ${String(Math.round(session.durationMs / 1_000))}s`,
-    `Apps: ${applications.join(", ") || "(unknown)"}`,
+    `Apps: ${session.appNames.join(", ") || "(unknown)"}`,
     `Events: ${String(session.eventCount)}  Snapshots: ${String(session.snapshotCount)}`,
     "",
     "Event sample:",
@@ -1013,58 +1077,186 @@ function deriveTitle(summary: string): string {
   return firstSentence.slice(0, 240);
 }
 
-const PLACEHOLDER_SUMMARIES = new Set([ACTIVITY_TRIVIAL_SUMMARY, ACTIVITY_ANALYSIS_FAILED_SUMMARY]);
-
-function isReportableAnalysis(row: ActivityAnalysisReportRow): boolean {
-  if (row.analysisStatus !== "analyzed") return false;
-  const itemCount = row.topics.length + row.prs.length + row.issues.length + row.decisions.length
-    + row.people.length + row.versions.length + row.highlights.length + row.entities.length;
-  if (itemCount > 0) return true;
-  if (row.title?.trim() && !PLACEHOLDER_SUMMARIES.has(row.title.trim())) return true;
-  return row.summary.trim().length > 0 && !PLACEHOLDER_SUMMARIES.has(row.summary);
+interface ReportEntities {
+  prs: ActivityAnalysisReference[];
+  issues: ActivityAnalysisReference[];
+  commits: ActivityAnalysisCommit[];
+  people: string[];
+  identifiers: string[];
+  repos: string[];
+  versions: string[];
+  decisions: string[];
 }
 
-function renderProjectBullets(group: readonly ActivityAnalysisReportRow[]): string {
-  const bullets: string[] = [];
-  const seen = new Set<string>();
-  const push = (text: string): void => {
-    const normalized = text.trim();
-    if (!normalized || seen.has(normalized)) return;
-    seen.add(normalized);
-    bullets.push(`- ${normalized}`);
+interface ReportCluster {
+  key: string;
+  project?: string;
+  sessions: ActivityReportSourceSession[];
+  entities: ReportEntities;
+  topics: string[];
+  totalMs: number;
+}
+
+function emptyReportEntities(): ReportEntities {
+  return { prs: [], issues: [], commits: [], people: [], identifiers: [], repos: [], versions: [], decisions: [] };
+}
+
+function mergeReportEntities(target: ReportEntities, row: ActivityAnalysisReportRow): void {
+  const details = row.entityDetails;
+  const mergeRefs = (targetRows: ActivityAnalysisReference[], sourceRows: ActivityAnalysisReference[]): void => {
+    const keys = new Set(targetRows.map((item) => `${item.repo ?? ""}#${item.ref ?? item.number ?? item.label ?? ""}`));
+    for (const item of sourceRows) {
+      const key = `${item.repo ?? ""}#${item.ref ?? item.number ?? item.label ?? ""}`;
+      if (!keys.has(key)) { keys.add(key); targetRows.push(item); }
+    }
   };
-  // group 已按 session 开始时间升序；条目按时间顺序去重合并。
-  for (const row of group) {
-    const marker = row.isMeeting ? " 📅" : "";
-    const titleLead = row.title?.trim() && !PLACEHOLDER_SUMMARIES.has(row.title.trim())
-      ? `${row.title.trim()}${row.description?.trim() && row.description.trim() !== row.title.trim() ? `：${row.description.trim()}` : ""}`
-      : undefined;
-    const leads = row.topics.length
-      ? row.topics
-      : titleLead ? [titleLead] : row.summary.trim() && !PLACEHOLDER_SUMMARIES.has(row.summary) ? [row.summary] : [];
-    for (const topic of leads) push(`${topic}${marker}`);
-    for (const pr of row.prs) push(formatReference("PR", pr));
-    for (const issue of row.issues) push(formatReference("Issue", issue));
-    for (const decision of row.decisions) push(`决策：${decision}`);
-    for (const highlight of row.highlights) push(`亮点：${highlight}`);
-    if (row.worthKnowledge) push("知识沉淀：值得记录");
-    if (row.people.length) push(`涉及：${row.people.join("、")}`);
-    if (row.versions.length) push(`版本：${row.versions.join("、")}`);
+  mergeRefs(target.prs, details?.prs ?? row.prs);
+  mergeRefs(target.issues, details?.issues ?? row.issues);
+  const commits = details?.commits ?? row.commits ?? [];
+  for (const item of commits) {
+    if (!target.commits.some((current) => `${current.repo ?? ""}#${current.ref ?? current.hash ?? current.label ?? ""}`
+      === `${item.repo ?? ""}#${item.ref ?? item.hash ?? item.label ?? ""}`)) target.commits.push(item);
   }
-  return bullets.join("\n");
+  for (const [name, values] of [
+    ["people", details?.people ?? row.people], ["identifiers", details?.identifiers ?? row.identifiers ?? []],
+    ["repos", details?.repos ?? row.repos ?? []], ["versions", details?.versions ?? row.versions],
+    ["decisions", details?.decisions ?? row.decisions]
+  ] as const) {
+    const bucket = target[name];
+    const seen = new Set(bucket.map((value) => value.toLowerCase()));
+    for (const value of values) {
+      if (!seen.has(value.toLowerCase())) { seen.add(value.toLowerCase()); bucket.push(value); }
+    }
+  }
 }
 
-function formatReference(kind: "PR" | "Issue", reference: ActivityAnalysisReference): string {
-  const parts: string[] = [kind];
-  if (reference.repo && reference.ref) parts.push(`${reference.repo}#${reference.ref}`);
-  else if (reference.repo && reference.number !== undefined) parts.push(`${reference.repo}#${String(reference.number)}`);
-  else if (reference.ref) parts.push(reference.ref);
-  else if (reference.number !== undefined) parts.push(`#${String(reference.number)}`);
-  else if (reference.repo) parts.push(reference.repo);
-  else if (reference.label) parts.push(reference.label);
-  const head = parts.join(" ");
-  const detail = reference.title ?? (reference.label && parts.length > 1 ? "" : reference.url ?? "");
-  return detail ? `${head} ${detail}` : head;
+function reportTokens(session: ActivityReportSourceSession): Set<string> {
+  const row = session.analysis;
+  if (!row) return new Set();
+  const details = row.entityDetails;
+  const tokens = new Set<string>();
+  if (row.project) tokens.add(`proj:${row.project.toLowerCase()}`);
+  for (const topic of row.topics) tokens.add(`topic:${topic.toLowerCase()}`);
+  for (const repo of details?.repos ?? row.repos ?? []) tokens.add(`repo:${repo.toLowerCase()}`);
+  for (const id of details?.identifiers ?? row.identifiers ?? []) tokens.add(`id:${id.toLowerCase()}`);
+  for (const pr of details?.prs ?? row.prs) if (pr.repo) tokens.add(`repo:${pr.repo.toLowerCase()}`);
+  for (const person of details?.people ?? row.people) tokens.add(`person:${person.toLowerCase()}`);
+  for (const url of session.browserUrls) {
+    try {
+      const host = new URL(url).host.replace(/^www\./u, "");
+      if (!/^(google\.com|bing\.com|duckduckgo\.com)$/iu.test(host)) tokens.add(`host:${host}`);
+    } catch { /* 无效或脱敏后的 URL 不参与聚合。 */ }
+  }
+  return tokens;
+}
+
+function clusterTokens(cluster: ReportCluster): Set<string> {
+  const tokens = new Set<string>();
+  if (cluster.project) tokens.add(`proj:${cluster.project.toLowerCase()}`);
+  for (const topic of cluster.topics) tokens.add(`topic:${topic.toLowerCase()}`);
+  for (const repo of cluster.entities.repos) tokens.add(`repo:${repo.toLowerCase()}`);
+  for (const id of cluster.entities.identifiers) tokens.add(`id:${id.toLowerCase()}`);
+  for (const pr of cluster.entities.prs) if (pr.repo) tokens.add(`repo:${pr.repo.toLowerCase()}`);
+  for (const person of cluster.entities.people) tokens.add(`person:${person.toLowerCase()}`);
+  for (const session of cluster.sessions) {
+    for (const token of reportTokens(session)) if (token.startsWith("host:")) tokens.add(token);
+  }
+  return tokens;
+}
+
+function tokenSimilarity(left: Set<string>, right: Set<string>): number {
+  if (left.size === 0 || right.size === 0) return 0;
+  let common = 0;
+  for (const token of left) if (right.has(token)) common += 1;
+  return common / (left.size + right.size - common);
+}
+
+function clusterReportSessions(sessions: readonly ActivityReportSourceSession[]): ReportCluster[] {
+  const clusters: ReportCluster[] = [];
+  const add = (cluster: ReportCluster, session: ActivityReportSourceSession): void => {
+    const row = session.analysis!;
+    cluster.sessions.push(session);
+    cluster.totalMs += session.durationMs;
+    mergeReportEntities(cluster.entities, row);
+    for (const topic of row.topics) if (!cluster.topics.includes(topic)) cluster.topics.push(topic);
+  };
+  for (const session of [...sessions].sort((left, right) => left.startedAt.localeCompare(right.startedAt))) {
+    const row = session.analysis!;
+    let target: ReportCluster | undefined;
+    if (row.project) {
+      target = clusters.find((cluster) => cluster.key === `proj:${row.project!.toLowerCase()}`);
+    } else {
+      const tokens = reportTokens(session);
+      let similarity = 0;
+      for (const cluster of clusters) {
+        const score = tokenSimilarity(tokens, clusterTokens(cluster));
+        if (score > similarity) { similarity = score; target = cluster; }
+      }
+      if (similarity < 0.18) target = undefined;
+    }
+    if (!target) {
+      target = { key: row.project ? `proj:${row.project.toLowerCase()}` : `sess:${session.id}`,
+        project: row.project, sessions: [], entities: emptyReportEntities(), topics: [], totalMs: 0 };
+      clusters.push(target);
+    }
+    add(target, session);
+  }
+  const short: ReportCluster[] = [];
+  const retained: ReportCluster[] = [];
+  for (const cluster of clusters) {
+    const hasArtifact = reportArtifactCount(cluster) + cluster.entities.decisions.length > 0;
+    if (cluster.sessions.length === 1 && cluster.totalMs < 180_000 && !hasArtifact) short.push(cluster);
+    else retained.push(cluster);
+  }
+  if (short.length <= 1) return [...retained, ...short];
+  const misc: ReportCluster = { key: "misc", sessions: [], entities: emptyReportEntities(), topics: [], totalMs: 0 };
+  for (const cluster of short) {
+    for (const session of cluster.sessions) add(misc, session);
+  }
+  return [...retained, misc];
+}
+
+function reportArtifactCount(cluster: ReportCluster): number {
+  return cluster.entities.prs.length + cluster.entities.issues.length;
+}
+
+function reportAppDurations(session: ActivityReportSourceSession): Map<string, number> {
+  const durations = new Map<string, number>();
+  if (session.focusEvents.length === 0) {
+    const apps = session.appNames.map((app) => app.trim()).filter(Boolean);
+    for (const app of apps) durations.set(app, (durations.get(app) ?? 0) + session.durationMs / apps.length);
+    return durations;
+  }
+  const events = [...session.focusEvents].sort((left, right) => left.at.localeCompare(right.at));
+  let cursor = Date.parse(session.startedAt);
+  let currentApp = events[0]?.app;
+  for (const event of events) {
+    const at = Date.parse(event.at);
+    if (currentApp) durations.set(currentApp, (durations.get(currentApp) ?? 0) + Math.max(0, at - cursor));
+    cursor = at;
+    currentApp = event.app ?? currentApp;
+  }
+  if (currentApp) durations.set(currentApp, (durations.get(currentApp) ?? 0)
+    + Math.max(0, Date.parse(session.endedAt ?? session.startedAt) - cursor));
+  return durations;
+}
+
+function renderReportEntities(entities: ReportEntities): string {
+  const link = (value: ActivityAnalysisReference | ActivityAnalysisCommit): string => {
+    const ref = value.ref ?? ("number" in value && value.number !== undefined ? String(value.number) : undefined)
+      ?? ("hash" in value ? value.hash : undefined);
+    const label = (value.label ?? `${value.repo ?? ""}${ref ? `#${ref}` : ""}${"title" in value && value.title ? ` ${value.title}` : ""}`.trim()) || "引用";
+    return value.url ? `[${label}](${value.url})` : label;
+  };
+  const lines: string[] = [];
+  if (entities.prs.length) lines.push(`- **PRs**: ${entities.prs.map(link).join("、")}`);
+  if (entities.issues.length) lines.push(`- **Issues**: ${entities.issues.map(link).join("、")}`);
+  if (entities.commits.length) lines.push(`- **Commits**: ${entities.commits.map(link).join("、")}`);
+  if (entities.people.length) lines.push(`- **人**: ${entities.people.join("、")}`);
+  if (entities.versions.length) lines.push(`- **版本**: ${entities.versions.map((value) => `\`${value}\``).join("、")}`);
+  if (entities.identifiers.length) lines.push(`- **关键标识**: ${entities.identifiers.slice(0, 12).map((value) => `\`${value}\``).join("、")}`);
+  if (entities.decisions.length) lines.push(`- **决定/产出**:\n  - ${entities.decisions.join("\n  - ")}`);
+  return lines.join("\n");
 }
 
 function formatLocalDate(date: Date): string {

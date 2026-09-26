@@ -1,6 +1,7 @@
 /** 从真实 ActivityStore 组装对话引用；只有本地向量负责匹配，OCR 原文不进入模型请求。 */
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
+import { DatabaseSync } from "node:sqlite";
 import os from "node:os";
 import path from "node:path";
 import { activityContextForTurn } from "../src/activity/chatContext.js";
@@ -28,10 +29,22 @@ try {
     getEmbeddingRuntime: async () => runtime
   });
   assert.equal(relevant?.kind, "relevant");
-  assert.match(relevant?.text ?? "", /最相关活动|第二相关活动|第三相关活动/u);
-  assert.doesNotMatch(relevant?.text ?? "", /过期活动|未分析活动|第四相关活动|低分活动|OCR_SECRET_831/u);
+  assert.match(relevant?.text ?? "", /最相关活动|第二相关活动/u);
+  assert.doesNotMatch(relevant?.text ?? "", /过期活动|未分析活动|第三相关活动|第四相关活动|低分活动|OCR_SECRET_831/u);
   assert.ok((relevant?.text.length ?? 0) <= 800);
   assert.equal((relevant?.text.match(/^- .*最相关活动.*$/gmu) ?? []).length, 1, "同一 session 的多个 OCR 帧只注入一次");
+
+  await seed(25, "迟到 OCR 活动", 0.975, true, undefined, 1);
+  const lateOcr = await activityContextForTurn({ store, input: "上次登录问题查到了什么", now, enabled: true,
+    getEmbeddingRuntime: async () => runtime });
+  assert.match(lateOcr?.text ?? "", /迟到 OCR 活动/u,
+    "近期入库的 OCR 帧仍在 24 小时候选窗口，即使截图发生在更早以前");
+  assert.doesNotMatch(lateOcr?.text ?? "", /第二相关活动/u, "session top 3 在分析检查前确定");
+
+  for (let index = 0; index < 20; index += 1) await seed(1, `高分未分析活动 ${index}`, 0.99, false);
+  assert.equal(await activityContextForTurn({ store, input: "上次登录问题查到了什么", now, enabled: true,
+    getEmbeddingRuntime: async () => runtime }), undefined,
+  "相似度最高的 20 个 OCR 命中都没有可展示分析时，不从窗口外补位");
 
   assert.equal(await activityContextForTurn({ store, input: "你好", now, enabled: false,
     getEmbeddingRuntime: async () => { throw new Error("关闭后不应启动模型"); } }), undefined);
@@ -52,7 +65,7 @@ try {
   await rm(root, { recursive: true, force: true });
 }
 
-async function seed(hoursAgo: number, title: string, score: number, analyzed = true, duplicateScore?: number): Promise<void> {
+async function seed(hoursAgo: number, title: string, score: number, analyzed = true, duplicateScore?: number, createdHoursAgo = hoursAgo): Promise<void> {
   const startedAt = new Date(now.getTime() - hoursAgo * 60 * 60_000).toISOString();
   const sessionId = store.startSession(startedAt);
   const recordFrame = async (minute: number, similarity: number): Promise<void> => {
@@ -66,6 +79,13 @@ async function seed(hoursAgo: number, title: string, score: number, analyzed = t
     const source = store.listOcrEmbeddingSources(fingerprint).find((row) => row.sessionId === sessionId && row.text.includes(title));
     assert.ok(source);
     store.upsertOcrEmbedding(source.id, fingerprint, vector(similarity), startedAt);
+    const database = new DatabaseSync(path.join(root, "agent.sqlite"));
+    try {
+      database.prepare("UPDATE activity_ocr_frames SET created_at = ? WHERE id = ?")
+        .run(now.getTime() - createdHoursAgo * 60 * 60_000, source.id);
+    } finally {
+      database.close();
+    }
   };
   await recordFrame(1, score);
   if (duplicateScore !== undefined) await recordFrame(2, duplicateScore);

@@ -77,9 +77,34 @@ await withFixture(async ({ root, settings, loadSettings, store, id }) => {
     })()
   };
   const operation = createActivityOperation(store, settings, loadSettings);
-  const skeleton = await buildActivityReport({ store, analyzePending: false, ...operation }, "today");
+  const skeleton = await buildActivityReport({ store, now: () => new Date(Date.now() - 3_600_000), ...operation }, "today", { skeletonOnly: true });
+  assert.equal(skeleton.sessionCount, 1);
   const task = narrateActivityReport(skeleton, { model, ...operation });
   const rejected = assert.rejects(task, { name: "AbortError" }, "report must reject disabled recording");
+  await started.promise;
+  await mutateFromAnotherProcess(root, settings, "disable");
+  release.resolve();
+  await rejected;
+});
+
+await withFixture(async ({ root, settings, loadSettings, store, id }) => {
+  store.recordAnalysis(analysis(id));
+  const started = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const model: AgentModel = {
+    provider: "test", modelId: "failing-report", runtime: "provider", dataResidency: "external",
+    stream: async () => (async function* () {
+      started.resolve();
+      await release.promise;
+      yield { type: "text-delta" as const, text: "# 未完成的报告" };
+      throw new Error("provider failed after recording was disabled");
+    })()
+  };
+  const operation = createActivityOperation(store, settings, loadSettings);
+  const skeleton = await buildActivityReport({ store, now: () => new Date(Date.now() - 3_600_000), ...operation }, "today", { skeletonOnly: true });
+  assert.equal(skeleton.sessionCount, 1);
+  const task = narrateActivityReport(skeleton, { model, ...operation });
+  const rejected = assert.rejects(task, { name: "AbortError" }, "provider fallback must recheck disabled recording");
   await started.promise;
   await mutateFromAnotherProcess(root, settings, "disable");
   release.resolve();
@@ -211,7 +236,7 @@ async function withFixture(fn: (value: { root: string; settings: ActivitySetting
 
 function analysis(sessionId: string): ActivitySessionAnalysis {
   return {
-    sessionId, analyzedAt: new Date().toISOString(), analyzerModel: "test", summary: "维护项目的发布与回归检查", topics: ["发布"],
+    sessionId, analyzedAt: new Date().toISOString(), analyzerModel: "test", title: "维护发布检查", summary: "维护项目的发布与回归检查", topics: ["发布"],
     prs: [], issues: [], people: [], versions: [], decisions: [], entities: [], highlights: [],
     worthMemory: false, worthKnowledge: false, isMeeting: false, storageTier: "standard", confidence: 1, sourceEventCount: 3, inputHash: "test-input"
   };

@@ -5,8 +5,9 @@
  * 服务只绑定 127.0.0.1，所有文本仍从 ActivityStore 的脱敏查询层读取。
  */
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import { randomBytes, timingSafeEqual } from "node:crypto";
 import path from "node:path";
-import { readFile } from "node:fs/promises";
+import { readFile, realpath } from "node:fs/promises";
 import { URL } from "node:url";
 import type { AgentModel } from "../agent/core/types.js";
 import { activitySettingsPatchSchema, type ActivitySettings, type ActivitySettingsPatch } from "./settings.js";
@@ -34,12 +35,23 @@ export interface ActivityHttpApiDependencies {
   onAnalyzed?: ActivityAnalyzerDeps["onAnalyzed"];
   crystal?: CrystalHttpDependencies;
   getRuntimeSnapshot?(): ActivityRuntimeSnapshot | Promise<ActivityRuntimeSnapshot>;
+  /** REST 专属前台状态；IPC 快照继续使用自身的展示模型。 */
+  getFrontmost?(): { bundleId: string | null; appName: string | null };
+  isCaptureRunning?(): boolean;
+  getPermissions?(): ActivityPermissionStatus | Promise<ActivityPermissionStatus>;
   /** 使用采集宿主现有的一代任务信号，stop/clear/配置变更时共同失效。 */
   getOperationSignal?(): AbortSignal;
-  start?(): Promise<void>;
-  stop?(): Promise<void>;
+  start?(): Promise<unknown>;
+  stop?(): Promise<unknown>;
   clear?(): Promise<unknown>;
   openPermissions?(pane: "screen-recording" | "accessibility"): Promise<void>;
+}
+
+export interface ActivityPermissionStatus {
+  platform: string;
+  screenRecording: string;
+  accessibility: boolean;
+  openSettingsCapable: boolean;
 }
 
 export interface ActivityHttpRequest {
@@ -60,6 +72,7 @@ export interface ActivityHttpServer {
   server: Server;
   host: string;
   port: number;
+  token: string;
   close(): Promise<void>;
 }
 
@@ -91,42 +104,46 @@ export async function handleActivityHttpRequest(
         body: {
           endpoints: [
             "config", "status", "permissions", "start", "stop", "clear", "search/keyword", "search/semantic", "sessions", "digest",
-            "sessions/:id/analyze", "report/:date", "summary/daily/:date", "summary/weekly/:date", "suggestions", "snapshot-file"
+            "sessions/:id/analyze", "report/:date", "summary/daily/:date", "summary/weekly/:weekKey (GET)", "summary/weekly/:endDateKey (POST)", "suggestions", "snapshot-file"
           ]
         }
       };
     }
   if (pathname === "/api/activity-recorder/config" && method === "GET") {
-      return { status: 200, body: await deps.loadSettings() };
+      return { status: 200, body: toActivityRestConfig(await deps.loadSettings()) };
     }
     if (pathname === "/api/activity-recorder/config" && method === "PUT") {
-      const parsed = activitySettingsPatchSchema.safeParse(request.body);
+      const parsed = activitySettingsPatchSchema.safeParse(fromActivityRestPatch(request.body));
       if (!parsed.success) return badRequest("Activity 配置无效。");
       if (!deps.setConfig) return { status: 501, body: { error: "当前 Activity 宿主不提供配置修改。" } };
-      return { status: 200, body: await deps.setConfig(parsed.data) };
+      return { status: 200, body: toActivityRestConfig(await deps.setConfig(parsed.data)) };
     }
     if (pathname === "/api/activity-recorder/status" && method === "GET") {
       return { status: 200, body: await activityStatus(deps) };
     }
     if (pathname === "/api/activity-recorder/permissions" && method === "GET") {
-      const snapshot = await deps.getRuntimeSnapshot?.();
-      if (!snapshot) return { status: 501, body: { error: "当前 Activity 宿主不提供权限状态。" } };
-      return { status: 200, body: {
-        collectorAvailable: snapshot.collectorAvailable,
-        screenRecordingGranted: snapshot.screenRecordingGranted,
-        accessibilityGranted: snapshot.accessibilityGranted,
-        fallbackAvailable: snapshot.fallbackAvailable
-      } };
+      if (!deps.getPermissions) return { status: 501, body: { error: "当前 Activity 宿主不提供权限状态。" } };
+      return { status: 200, body: await deps.getPermissions() };
     }
     if (pathname === "/api/activity-recorder/permissions/open" && method === "POST") {
       const which = searchParams.get("which");
       const pane = which === "screen" ? "screen-recording" : which;
       if (pane !== "screen-recording" && pane !== "accessibility") return badRequest("权限设置页无效。");
-      if (!deps.openPermissions) return { status: 501, body: { error: "当前 Activity 宿主不能打开系统设置。" } };
+      if (!deps.openPermissions) {
+        const permissions = await deps.getPermissions?.();
+        if (permissions && permissions.platform !== "darwin") {
+          return { status: 200, body: { ok: false, reason: "not darwin" } };
+        }
+        return { status: 501, body: { error: "当前 Activity 宿主不能打开系统设置。" } };
+      }
       await deps.openPermissions(pane);
-      return { status: 200, body: { opened: true } };
+      return { status: 200, body: { ok: true } };
     }
-    if (pathname === "/api/activity-recorder/start" && method === "POST") return await control(deps.start, "start");
+    if (pathname === "/api/activity-recorder/start" && method === "POST") {
+      if (!deps.start) return { status: 501, body: { error: "start 不在当前 Activity 宿主中可用。" } };
+      await deps.start();
+      return { status: 200, body: await activityStatus(deps) };
+    }
     if (pathname === "/api/activity-recorder/stop" && method === "POST") return await control(deps.stop, "stop");
     if (pathname === "/api/activity-recorder/clear" && method === "POST") return await control(deps.clear, "clear");
 
@@ -155,48 +172,40 @@ export async function handleActivityHttpRequest(
         return {status:200,body:{results:result.hits.map(row=>({id:row.id,sessionId:row.sessionId,snapshotId:row.snapshotId,text:row.text,score:row.score,createdAt:row.createdAt}))}};
       }
       if (pathname === "/api/activity-recorder/sessions" && method === "GET") {
-        const since = searchParams.get("since") ?? new Date(Date.now() - 7 * 24 * 60 * 60 * 1_000).toISOString();
-        const until = searchParams.get("until") ?? undefined;
+        const since = epochMilliseconds(searchParams.get("since"));
+        const until = epochMilliseconds(searchParams.get("until"));
         const analysisStatus = searchParams.get("analysisStatus") ?? undefined;
-        if (!Number.isFinite(Date.parse(since)) || (until !== undefined && !Number.isFinite(Date.parse(until)))) {
-          return badRequest("session 时间无效。");
-        }
+        if (since === null || until === null) return badRequest("session 时间无效。");
         if (analysisStatus !== undefined && !["pending", "analyzed", "skipped", "failed", "not_worth"].includes(analysisStatus)) {
           return badRequest("analysisStatus 无效。");
         }
-        return { status: 200, body: store.listSessionsWithAnalysis({
-          sinceIso: since, untilIso: until, analysisStatus,
-          limit: boundedLimit(searchParams.get("limit"), 50, 200),
+        return { status: 200, body: {sessions:store.listHttpSessions({
+          since, until, analysisStatus,
+          limit: boundedLimit(searchParams.get("limit"), 100, 1_000),
           offset: boundedOffset(searchParams.get("offset"))
-        }) };
+        })} };
       }
       if (pathname.startsWith("/api/activity-recorder/sessions/") && pathname.endsWith("/analyze") && method === "POST") {
         hostSignal?.throwIfAborted();
         const sessionId = decodePathPart(pathname.slice("/api/activity-recorder/sessions/".length, -"/analyze".length));
-        if (!store.getSessionDetail(sessionId)) return notFound("没有找到 Activity session。");
-        return {
-          status: 200,
-          body: await analyzeActivitySession({
+        const resolvedSessionId = store.getHttpSessionDetail(sessionId)?.session.id;
+        if (!resolvedSessionId) return notFound("没有找到 Activity session。");
+        await analyzeActivitySession({
             store,
             model: await deps.getModel?.(),
             ...operation,
             writeMemories: deps.writeMemories,
             onAnalyzed: deps.onAnalyzed
-          }, sessionId, true)
-        };
+          }, resolvedSessionId, true);
+        // REST 返回保存后的 session 元数据，分析结果由状态字段表达。
+        return { status: 200, body: store.getHttpSessionDetail(resolvedSessionId)?.session };
       }
       if (pathname.startsWith("/api/activity-recorder/sessions/") && method === "GET") {
         const sessionId = decodePathPart(pathname.slice("/api/activity-recorder/sessions/".length));
         if (!sessionId) return badRequest("session id 不能为空。");
-        const detail = store.getSessionDetail(sessionId);
+        const detail = store.getHttpSessionDetail(sessionId);
         if (!detail) return notFound("没有找到 Activity session。");
-        return {
-          status: 200,
-          body: {
-            ...detail,
-            events: detail.events.map(({ snapshotPath: _snapshotPath, ...event }) => event)
-          }
-        };
+        return { status: 200, body: detail };
       }
       if (pathname.startsWith("/api/activity-recorder/sessions/") && method === "DELETE") {
         const sessionId = decodePathPart(pathname.slice("/api/activity-recorder/sessions/".length));
@@ -204,49 +213,60 @@ export async function handleActivityHttpRequest(
         const result = await store.deleteSession(sessionId);
         if (result === "not_found") return notFound("没有找到 Activity session。");
         if (result === "active") return { status: 409, body: { error: "进行中的 Activity session 不能删除。" } };
-        return { status: 200, body: { deleted: true } };
+        return { status: 200, body: { ok: true } };
       }
       if (pathname === "/api/activity-recorder/digest" && method === "GET") {
-        const lookbackMin = boundedLimit(searchParams.get("lookbackMin"), 120, 1_440);
-        const result = await buildActivityDigest({ store, lookbackMin });
-        return { status: 200, body: result };
+        const lookbackMin = Math.max(5, boundedLimit(searchParams.get("lookbackMin"), 120, 1_440));
+        const maxAnalyzed = boundedLimit(searchParams.get("maxAnalyzed"), 8, 50);
+        const result = await buildActivityDigest({ store, maxAnalyzed }, lookbackMin);
+        return { status: 200, body: result.markdown, contentType: "text/markdown; charset=utf-8" };
       }
       if (pathname.startsWith("/api/activity-recorder/report/") && method === "GET") {
         hostSignal?.throwIfAborted();
         const date = decodePathPart(pathname.slice("/api/activity-recorder/report/".length));
         const range = resolveActivityReportRange(date, new Date());
-        const model = await deps.getModel?.();
+        const skeletonOnly = isTrueQueryValue(searchParams.get("skeletonOnly"));
 
         const skeleton = await buildActivityReport({
           store,
-          model,
-          ...operation,
-          writeMemories: deps.writeMemories,
-          onAnalyzed: deps.onAnalyzed,
-          analyzePending: searchParams.get("skeleton") !== "true"
-        }, range.label, { force: searchParams.get("force") === "true" });
-        return {
-          status: 200,
-          body: await narrateActivityReport(skeleton, { model, skeleton: searchParams.get("skeleton") === "true", ...operation })
+          ...operation
+        }, range.label, { force: isTrueQueryValue(searchParams.get("force")), skeletonOnly });
+        const model = skeleton.cached || skeletonOnly ? undefined : await deps.getModel?.();
+        const report = await narrateActivityReport(skeleton, { store, model, skeleton: skeletonOnly, ...operation });
+        if (searchParams.get("format") !== "json") {
+          return { status: 200, body: report.markdown, contentType: "text/markdown; charset=utf-8" };
+        }
+        const reportGeneratedAt = store.getSummary("daily", report.date)?.stats.reportGeneratedAt;
+        if (typeof reportGeneratedAt !== "number") throw new Error("Activity report 缺少持久化生成时间。");
+        const jsonReport = {
+          dateKey: report.date,
+          markdown: report.markdown,
+          isPartial: report.date >= resolveActivityReportRange("today", new Date()).label,
+          model: report.cached ? null : report.narrativeModel ?? null,
+          generatedAt: reportGeneratedAt,
+          stats: report.stats
         };
+        return { status: 200, body: jsonReport };
       }
       const summaryRoute = /^\/api\/activity-recorder\/summary\/(daily|weekly)\/(.+)$/u.exec(pathname);
       if (summaryRoute && (method === "GET" || method === "POST")) {
         const kind = summaryRoute[1] as "daily" | "weekly";
         const dateKey = decodePathPart(summaryRoute[2] ?? "");
+        if (kind === "weekly" && method === "GET") {
+          if (!/^\d{4}-W(?:0[1-9]|[1-4]\d|5[0-3])$/u.test(dateKey)) return badRequest("weekly summary weekKey 必须是 YYYY-Www。");
+          return { status: 200, body: store.getHttpSummary("weekly", dateKey) ?? null };
+        }
         if (!/^\d{4}-\d{2}-\d{2}$/u.test(dateKey)) return badRequest("summary date 必须是 YYYY-MM-DD。");
-        if (method === "GET") return { status: 200, body: store.getSummary(kind, dateKey) ?? null };
+        if (method === "GET") return { status: 200, body: store.getHttpSummary(kind, dateKey) ?? null };
         hostSignal?.throwIfAborted();
         const model = await deps.getModel?.();
 
-        return {
-          status: 200,
-          body: await refreshActivitySummaryWithNarrative(store, kind, dateKey, {
+        const refreshed = await refreshActivitySummaryWithNarrative(store, kind, dateKey, {
             model,
             ...operation,
             withNarrative: searchParams.get("narrative") === "true"
-          })
-        };
+          });
+        return { status: 200, body: store.getHttpSummary(kind, refreshed.dateKey) };
       }
       if (pathname === "/api/activity-recorder/suggestions" && method === "GET") {
         hostSignal?.throwIfAborted();
@@ -255,15 +275,25 @@ export async function handleActivityHttpRequest(
           store,
           model,
           ...operation,
-          force: searchParams.get("force") === "true"
+          force: isTrueQueryValue(searchParams.get("force"))
         });
-        return { status: 200, body: result };
+        return { status: 200, body: { suggestions: result.suggestions } };
       }
       if (method === "GET" && pathname === "/api/activity-recorder/snapshot-file") {
         const requested = searchParams.get("path");
         if (!requested) return badRequest("path required");
-        const file = path.resolve(requested);
-        if (!file.startsWith(resolveActivityDirectory(settings.outputDirectory))) return { status: 403, body: { error: "forbidden path" } };
+        const root = await realpath(resolveActivityDirectory(settings.outputDirectory));
+        let file: string;
+        try {
+          file = await realpath(path.resolve(requested));
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code === "ENOENT") return notFound("not found");
+          throw error;
+        }
+        const relative = path.relative(root, file);
+        if (relative === "" || relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+          return { status: 403, body: { error: "forbidden path" } };
+        }
         try {
           return { status: 200, body: await readFile(file), contentType: "image/jpeg" };
         } catch (error) {
@@ -283,12 +313,14 @@ export async function handleActivityHttpRequest(
 
 export async function startActivityHttpServer(
   deps: ActivityHttpApiDependencies,
-  options: { port?: number } = {}
+  options: { port?: number; token?: string } = {}
 ): Promise<ActivityHttpServer> {
   const host = "127.0.0.1";
+  const token = options.token ?? randomBytes(32).toString("base64url");
+  let port = options.port ?? 0;
   const shutdown = new AbortController();
   const server = createServer((request, response) => {
-    void respond(request, response, deps, shutdown.signal);
+    void respond(request, response, deps, shutdown.signal, token, port);
   });
   await new Promise<void>((resolve, reject) => {
     const onError = (error: Error): void => {
@@ -304,11 +336,12 @@ export async function startActivityHttpServer(
     server.listen(options.port ?? 0, host);
   });
   const address = server.address();
-  const port = typeof address === "object" && address !== null ? address.port : options.port ?? 0;
+  port = typeof address === "object" && address !== null ? address.port : options.port ?? 0;
   return {
     server,
     host,
     port,
+    token,
     close: async () => await new Promise<void>((resolve, reject) => {
       shutdown.abort();
       server.close((error) => error ? reject(error) : resolve());
@@ -321,7 +354,9 @@ async function respond(
   request: IncomingMessage,
   response: ServerResponse,
   deps: ActivityHttpApiDependencies,
-  shutdownSignal: AbortSignal
+  shutdownSignal: AbortSignal,
+  token: string,
+  port: number
 ): Promise<void> {
   const disconnected = new AbortController();
   const onClose = (): void => { if (!response.writableFinished) disconnected.abort(); };
@@ -329,9 +364,26 @@ async function respond(
   try {
     response.setHeader("Cache-Control", "no-store");
     response.setHeader("Content-Type", "application/json; charset=utf-8");
-    response.setHeader("Access-Control-Allow-Origin", "*");
-    response.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS");
-    response.setHeader("Access-Control-Allow-Headers", "Content-Type");
+    const origin = request.headers.origin;
+    if (origin !== undefined && origin !== `http://127.0.0.1:${port}`) {
+      response.statusCode = 403;
+      response.end(JSON.stringify({ error: "forbidden origin" }));
+      return;
+    }
+    if (origin !== undefined) response.setHeader("Access-Control-Allow-Origin", origin);
+    const authorization = request.headers.authorization;
+    const supplied = authorization?.startsWith("Bearer ") ? Buffer.from(authorization.slice(7)) : Buffer.alloc(0);
+    const expected = Buffer.from(token);
+    if (supplied.length !== expected.length || !timingSafeEqual(supplied, expected)) {
+      response.statusCode = 401;
+      response.setHeader("WWW-Authenticate", "Bearer");
+      response.end(JSON.stringify({ error: "unauthorized" }));
+      return;
+    }
+    if (request.method === "OPTIONS") {
+      response.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS");
+      response.setHeader("Access-Control-Allow-Headers", "Authorization, Content-Type");
+    }
     const url = new URL(request.url ?? "/", "http://127.0.0.1");
     let body: unknown;
     if (["POST", "PUT", "PATCH"].includes((request.method ?? "GET").toUpperCase())) {
@@ -360,7 +412,8 @@ async function respond(
       response.end();
       return;
     }
-    response.end(Buffer.isBuffer(result.body) ? result.body : JSON.stringify(result.body));
+    response.end(Buffer.isBuffer(result.body) || (typeof result.body === "string" && result.contentType?.startsWith("text/"))
+      ? result.body : JSON.stringify(result.body));
   } finally {
     response.off("close", onClose);
   }
@@ -410,19 +463,72 @@ async function readJsonBody(
 
 async function activityStatus(deps: ActivityHttpApiDependencies): Promise<unknown> {
   const runtime = await deps.getRuntimeSnapshot?.();
-  if (runtime) return runtime;
+  if (!runtime) return { running: false, config: null };
   const settings = await deps.loadSettings();
-  const store = new ActivityStore();
-  await store.open(settings.outputDirectory, deps.agentDir ?? globalAgentDir());
-  try {
-    return {
-      state: settings.enabled ? "unavailable" : "paused",
-      collectorAvailable: false,
-      ...store.snapshot()
-    };
-  } finally {
-    await store.close();
+  return {
+    running: deps.isCaptureRunning?.() ?? runtime.state === "running",
+    currentSessionId: runtime.currentSessionId ?? null,
+    screenLocked: runtime.screenLocked,
+    frontmost: deps.getFrontmost?.() ?? { bundleId: null, appName: null },
+    config: toActivityRestConfig(settings),
+    outputDir: settings.outputDirectory,
+    totalBytes: runtime.storageBytes,
+    sessionCount: runtime.sessions
+  };
+}
+
+/** REST 只暴露本地采集器能兑现的配置；未实现的设置不伪装成可配置能力。 */
+function toActivityRestConfig(settings: ActivitySettings): Record<string, unknown> {
+  return {
+    enabled: settings.enabled,
+    outputDir: settings.outputDirectory,
+    snapshotDebounceMs: settings.captureDebounceMs,
+    heartbeatIntervalMs: settings.heartbeatMs,
+    idleThresholdMs: settings.idleTimeoutMs,
+    typingPauseMs: settings.inputPauseMs,
+    visualCheckIntervalMs: settings.visualPollMs,
+    histogramChangeThreshold: settings.histogramChangeThreshold,
+    pixelDiffThreshold: settings.pixelDiffThreshold,
+    pixelTolerance: settings.pixelTolerance,
+    enableOcr: settings.ocrEnabled,
+    ocrLanguages: settings.ocrLanguages,
+    ocrEveryN: settings.ocrEveryNFrames,
+    enableInputMonitor: settings.inputMonitoringEnabled,
+    sensitiveApps: settings.sensitiveApplications,
+    maxStorageBytes: settings.maxStorageMb * 1024 * 1024,
+    captureFormat: "jpg",
+    jpegQuality: settings.jpegQuality,
+    browserPollIntervalMs: settings.browserPollIntervalMs
+  };
+}
+
+function fromActivityRestPatch(value: unknown): unknown {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return value;
+  const names: Record<string, keyof ActivitySettings> = {
+    outputDir: "outputDirectory", snapshotDebounceMs: "captureDebounceMs", heartbeatIntervalMs: "heartbeatMs",
+    idleThresholdMs: "idleTimeoutMs", typingPauseMs: "inputPauseMs", visualCheckIntervalMs: "visualPollMs",
+    enableOcr: "ocrEnabled", ocrEveryN: "ocrEveryNFrames", enableInputMonitor: "inputMonitoringEnabled",
+    sensitiveApps: "sensitiveApplications"
+  };
+  const patch: Record<string, unknown> = {};
+  const internalNames = new Set([...Object.values(names), "maxStorageMb"]);
+  for (const [key, field] of Object.entries(value)) {
+    if (internalNames.has(key)) {
+      patch[`unsupported:${key}`] = field;
+      continue;
+    }
+    if (key === "maxStorageBytes") {
+      patch.maxStorageMb = typeof field === "number" && Number.isInteger(field) && field % (1024 * 1024) === 0
+        ? field / (1024 * 1024) : field;
+      continue;
+    }
+    if (key === "captureFormat") {
+      if (field !== "jpg") patch.captureFormat = field;
+      continue;
+    }
+    patch[names[key] ?? key] = field;
   }
+  return patch;
 }
 
 async function control(
@@ -451,6 +557,16 @@ function boundedLimit(value: string | null, fallback: number, maximum: number): 
   const parsed = Number(value);
   if (!Number.isInteger(parsed) || parsed < 1) return fallback;
   return Math.min(maximum, parsed);
+}
+
+function isTrueQueryValue(value: string | null): boolean {
+  return value === "1" || value === "true";
+}
+
+function epochMilliseconds(value: string | null): number | undefined | null {
+  if (value === null) return undefined;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : null;
 }
 
 function boundedOffset(value: string | null): number {

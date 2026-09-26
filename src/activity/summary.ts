@@ -2,11 +2,12 @@
  * Activity 的日/周聚合。
  *
  * 日报只统计 session 的开始时间落在日期范围内的记录；session 时长、应用切换和
- * 截图/OCR 计数都以完整 session 为单位，不按日期边界裁剪。这里保留 weekly 类型供旧调用方
- * 编译，但 ActivityRecorderService 只会统一生成 daily summary。
+ * 截图/OCR 计数都以完整 session 为单位，不按日期边界裁剪。周结按结束日逐日
+ * 聚合七天，以 ISO 周键持久化；周键和结束日期属于不同的参数域。
  */
 import type { ActivitySessionAnalysis, ActivityStore } from "./store.js";
 import type { AgentModel } from "../agent/core/types.js";
+import type { ActivityReportStats } from "./analyzer.js";
 import { generateNativeText, nativeJsonMessages } from "../llm/nativeJson.js";
 
 export type ActivitySummaryKind = "daily" | "weekly";
@@ -39,10 +40,21 @@ export interface ActivitySummaryStats {
   apps: ActivitySummaryApplication[];
   hours: ActivitySummaryHour[];
   keyMoments: ActivitySummaryKeyMoment[];
+  /** 日报与日结共用 SQLite 行；刷新日结时保留已生成日报。 */
+  report?: string;
+  reportGeneratedAt?: number;
+  reportStats?: ActivityReportStats;
+  reportState?: {
+    sessionCount: number;
+    pendingModel: number;
+    blocked: boolean;
+    message?: string;
+    narrativeModel?: string;
+  };
 }
 
 export interface ActivitySummaryRecord {
-  kind: ActivitySummaryKind;
+  kind: "daily";
   dateKey: string;
   summary: string;
   /** 只有 narrative 成功生成时才有值；确定性 fallback 不伪装成模型摘要。 */
@@ -51,6 +63,29 @@ export interface ActivitySummaryRecord {
   isPartial: boolean;
   generatedAt: string;
 }
+
+export interface ActivityWeeklySummaryStats {
+  weekKey: string;
+  startDate: string;
+  endDate: string;
+  totalActiveMs: number;
+  sessionCount: number;
+  apps: ActivitySummaryApplication[];
+  daily: Array<{ dateKey: string; activeMs: number; sessionCount: number }>;
+}
+
+export interface ActivityWeeklySummaryRecord {
+  kind: "weekly";
+  /** ISO week key，例如 2026-W53；不是周一或结束日的日期键。 */
+  dateKey: string;
+  summary: string | null;
+  model?: string;
+  stats: ActivityWeeklySummaryStats;
+  isPartial: boolean;
+  generatedAt: string;
+}
+
+export type ActivityAnySummaryRecord = ActivitySummaryRecord | ActivityWeeklySummaryRecord;
 
 export interface ActivitySummaryNarrativeOptions {
   model?: AgentModel;
@@ -79,22 +114,23 @@ export interface ActivitySummarySource {
 const MAX_APPS = 10;
 const MAX_KEY_MOMENTS = 10;
 
-/** 构造指定本地日历范围；weekly 的 dateKey 代表该周周一。 */
-export function activitySummaryRange(kind: ActivitySummaryKind, dateKey: string): { start: Date; end: Date } {
+/** 构造指定本地日报范围。 */
+export function activitySummaryRange(kind: "daily", dateKey: string): { start: Date; end: Date } {
   const start = parseLocalDateKey(dateKey);
   const end = new Date(start.getTime());
-  end.setDate(end.getDate() + (kind === "weekly" ? 7 : 1));
+  end.setDate(end.getDate() + 1);
   return { start, end };
 }
 
 export function buildActivitySummary(
   store: ActivityStore,
-  kind: ActivitySummaryKind,
+  kind: "daily",
   dateKey: string,
-  now = new Date()
+  now = new Date(),
+  sessionLimit = 1000
 ): ActivitySummaryRecord {
   const range = activitySummaryRange(kind, dateKey);
-  const source = store.getActivitySummarySource(range.start.toISOString(), range.end.toISOString());
+  const source = store.getActivitySummarySource(range.start.toISOString(), range.end.toISOString(), sessionLimit);
   const stats = aggregateActivitySummaryStats(dateKey, source, now);
   return {
     kind,
@@ -112,11 +148,18 @@ export function buildActivitySummary(
 
 export function refreshActivitySummary(
   store: ActivityStore,
-  kind: ActivitySummaryKind,
+  kind: "daily",
   dateKey: string,
   now = new Date()
 ): ActivitySummaryRecord {
   const summary = buildActivitySummary(store, kind, dateKey, now);
+  const previous = store.getSummary(kind, dateKey)?.stats;
+  if (previous?.report !== undefined) {
+    summary.stats.report = previous.report;
+    summary.stats.reportGeneratedAt = previous.reportGeneratedAt;
+    summary.stats.reportStats = previous.reportStats;
+    summary.stats.reportState = previous.reportState;
+  }
   store.upsertSummary(summary);
   return summary;
 }
@@ -125,12 +168,22 @@ export function refreshActivitySummary(
  * 生成并持久化 narrative 日结。模型只接收聚合后的日期统计和 session 标题，
  * 不接触截图/OCR 原文；无模型或调用失败时保留本地确定性摘要。
  */
+export function refreshActivitySummaryWithNarrative(
+  store: ActivityStore, kind: "daily", dateKey: string, options?: ActivitySummaryNarrativeOptions
+): Promise<ActivitySummaryRecord>;
+export function refreshActivitySummaryWithNarrative(
+  store: ActivityStore, kind: "weekly", endDateKey: string, options?: ActivitySummaryNarrativeOptions
+): Promise<ActivityWeeklySummaryRecord>;
+export function refreshActivitySummaryWithNarrative(
+  store: ActivityStore, kind: ActivitySummaryKind, dateKey: string, options?: ActivitySummaryNarrativeOptions
+): Promise<ActivityAnySummaryRecord>;
 export async function refreshActivitySummaryWithNarrative(
   store: ActivityStore,
   kind: ActivitySummaryKind,
   dateKey: string,
   options: ActivitySummaryNarrativeOptions = {}
-): Promise<ActivitySummaryRecord> {
+): Promise<ActivityAnySummaryRecord> {
+  if (kind === "weekly") return refreshActivityWeeklySummary(store, dateKey, options);
   await options.checkpoint?.();
   options.signal?.throwIfAborted();
   const base = buildActivitySummary(store, kind, dateKey, options.now ?? new Date());
@@ -162,8 +215,105 @@ export async function refreshActivitySummaryWithNarrative(
   await options.checkpoint?.();
   options.signal?.throwIfAborted();
   const result: ActivitySummaryRecord = { ...base, summary, model };
+  const previous = store.getSummary(kind, dateKey)?.stats;
+  if (previous?.report !== undefined) {
+    result.stats.report = previous.report;
+    result.stats.reportGeneratedAt = previous.reportGeneratedAt;
+    result.stats.reportStats = previous.reportStats;
+    result.stats.reportState = previous.reportState;
+  }
   store.upsertSummary(result);
   return result;
+}
+
+/** 周报按区间结束日统计；结束日不能当作周一或 ISO 周键。 */
+async function refreshActivityWeeklySummary(
+  store: ActivityStore,
+  endDateKey: string,
+  options: ActivitySummaryNarrativeOptions
+): Promise<ActivityWeeklySummaryRecord> {
+  await options.checkpoint?.();
+  options.signal?.throwIfAborted();
+  const end = parseLocalDateKey(endDateKey);
+  const start = new Date(end.getTime());
+  start.setDate(start.getDate() - 6);
+  const now = options.now ?? new Date();
+  const daily: ActivityWeeklySummaryStats["daily"] = [];
+  const apps = new Map<string, number>();
+  let totalActiveMs = 0;
+  let sessionCount = 0;
+  for (let index = 0; index < 7; index += 1) {
+    await options.checkpoint?.();
+    options.signal?.throwIfAborted();
+    const day = new Date(start.getTime());
+    day.setDate(start.getDate() + index);
+    const dayKey = formatLocalDateKey(day);
+    const stats = buildActivitySummary(store, "daily", dayKey, now).stats;
+    daily.push({ dateKey: dayKey, activeMs: stats.totalActiveMs, sessionCount: stats.sessionCount });
+    totalActiveMs += stats.totalActiveMs;
+    sessionCount += stats.sessionCount;
+    for (const app of stats.apps) apps.set(app.app, (apps.get(app.app) ?? 0) + app.durationMs);
+  }
+  const stats: ActivityWeeklySummaryStats = {
+    weekKey: formatIsoWeekKey(end),
+    startDate: formatLocalDateKey(start),
+    endDate: formatLocalDateKey(end),
+    totalActiveMs,
+    sessionCount,
+    apps: [...apps.entries()]
+      .map(([app, durationMs]) => ({ app, durationMs: Math.round(durationMs) }))
+      .sort((left, right) => right.durationMs - left.durationMs || left.app.localeCompare(right.app))
+      .slice(0, MAX_APPS),
+    daily
+  };
+  let summary: string | null = null;
+  let model: string | undefined;
+  if (options.withNarrative && options.model) {
+    try {
+      const result = await generateNativeText(
+        options.model,
+        nativeJsonMessages(
+          "You write short narrative summaries of the user's computing activity. 3-6 sentences. Neutral, factual, avoid speculation or value judgements. Write in the same language the apps/OCR text are in (default English).",
+          activityWeeklySummaryNarrativePrompt(stats)
+        ),
+        { signal: options.signal, maxOutputTokens: 600, reasoning: "off" }
+      );
+      summary = result.text.trim() || null;
+      if (summary !== null) model = options.model.modelId;
+    } catch {
+      // 周结可在模型不可用时只保留确定性统计；取消和宿主失效仍在写入前检查。
+    }
+  }
+  await options.checkpoint?.();
+  options.signal?.throwIfAborted();
+  const record: ActivityWeeklySummaryRecord = {
+    kind: "weekly",
+    dateKey: stats.weekKey,
+    summary,
+    model,
+    stats,
+    isPartial: endDateKey >= formatLocalDateKey(now),
+    generatedAt: now.toISOString()
+  };
+  store.upsertSummary(record);
+  return record;
+}
+
+function activityWeeklySummaryNarrativePrompt(stats: ActivityWeeklySummaryStats): string {
+  const topApps = stats.apps.slice(0, 5)
+    .map((app) => `${app.app} (${Math.round(app.durationMs / 60_000)}m)`)
+    .join(", ") || "(none)";
+  const daily = stats.daily.map((day) => `${day.dateKey}: ${Math.round(day.activeMs / 60_000)}m (${day.sessionCount} sessions)`).join("\n");
+  return `Week ${stats.weekKey} (${stats.startDate} … ${stats.endDate})\nTotal active time: ${Math.round(stats.totalActiveMs / 60_000)} minutes across ${stats.sessionCount} sessions\nTop apps: ${topApps}\n\nDaily breakdown:\n${daily}`;
+}
+
+function formatIsoWeekKey(date: Date): string {
+  const thursday = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
+  thursday.setUTCDate(thursday.getUTCDate() - ((thursday.getUTCDay() + 6) % 7) + 3);
+  const firstThursday = new Date(Date.UTC(thursday.getUTCFullYear(), 0, 4));
+  firstThursday.setUTCDate(firstThursday.getUTCDate() - ((firstThursday.getUTCDay() + 6) % 7) + 3);
+  const week = 1 + Math.round((thursday.getTime() - firstThursday.getTime()) / 604_800_000);
+  return `${thursday.getUTCFullYear()}-W${String(week).padStart(2, "0")}`;
 }
 
 function aggregateActivitySummaryStats(
@@ -203,7 +353,6 @@ function aggregateActivitySummaryStats(
     }
     if (!isReportableAnalysis(analysis)) continue;
     analyzedCount += 1;
-    if (!analysis.worthMemory && !analysis.worthKnowledge) notWorthCount += 1;
     const title = analysis.title?.trim();
     if (title) {
       keyMoments.push({
@@ -311,12 +460,9 @@ function activitySummaryNarrativePrompt(stats: ActivitySummaryStats): string {
   ].join("\n");
 }
 
-const PLACEHOLDER_SUMMARIES = new Set(["零星活动", "活动分析失败"]);
-
 function isReportableAnalysis(analysis: ActivitySessionAnalysis | undefined): analysis is ActivitySessionAnalysis {
   return analysis !== undefined
-    && analysis.analysisStatus === "analyzed"
-    && !PLACEHOLDER_SUMMARIES.has(analysis.summary.trim());
+    && analysis.analysisStatus === "analyzed";
 }
 
 function parseLocalDateKey(value: string): Date {

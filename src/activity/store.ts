@@ -11,10 +11,13 @@ import type {
   ActivityStorageTier
 } from "./types.js";
 import type {
+  ActivityAnySummaryRecord,
   ActivitySummaryKind,
   ActivitySummaryRecord,
   ActivitySummarySource,
-  ActivitySummaryStats
+  ActivitySummaryStats,
+  ActivityWeeklySummaryRecord,
+  ActivityWeeklySummaryStats
 } from "./summary.js";
 import { activityEventData, ensureActivityTables, activityEventProjection } from "./schema.js";
 import { activitySummary, redactActivityOcrText, redactActivityText } from "./redaction.js";
@@ -45,6 +48,7 @@ export interface ActivityEventInput {
   /** keypress 聚合的首个 keyDown 时间；occurredAt 保留最后一个 keyDown 时间。 */
   inputEventFirstAt?: string;
   fallbackReason?: string;
+  via?: string;
   inputEventCount?: number;
 }
 
@@ -54,6 +58,7 @@ export interface ActivityFallbackCaptureInput extends ActivityEventInput {
   height?: number;
   captureTrigger?: string;
   contentHash?: string;
+  histogram?: number[];
   histogramChange?: number;
   pixelDiff?: number;
 }
@@ -121,6 +126,7 @@ export interface ActivitySnapshotRecord {
   height?: number;
   trigger?: string;
   contentHash?: string;
+  histogram?: number[];
   histogramChange?: number;
   pixelDiff?: number;
   storageTier: ActivitySnapshotStorageTier;
@@ -137,6 +143,35 @@ export interface ActivityOcrFrame {
   text: string;
   application?: string;
   windowTitle?: string;
+}
+
+/** 本地 REST 会话元数据使用 Unix 毫秒和显式 null，与内部 ISO 展示模型隔离。 */
+export interface ActivityHttpSessionRecord {
+  id: string;
+  startedAt: number;
+  endedAt: number | null;
+  durationMs: number | null;
+  triggerKind: string;
+  appNames: string[];
+  eventCount: number;
+  snapshotCount: number;
+  totalBytes: number;
+  analysisStatus: string;
+  analysisTitle: string | null;
+  analysisDescription: string | null;
+  analysisModel: string | null;
+  analysisError: string | null;
+  analyzedAt: number | null;
+  worthMemory: boolean;
+  worthKnowledge: boolean;
+  isMeeting: boolean;
+  storageTier: string;
+  entities: Record<string, unknown> | string[];
+  topics: string[];
+  project: string | null;
+  highlights: string[];
+  createdAt: number;
+  updatedAt: number;
 }
 
 export interface ActivityOcrEmbeddingSource {
@@ -235,6 +270,18 @@ export interface ActivityAnalysisReportRow extends ActivitySessionAnalysis {
   sessionStartedAt: string;
 }
 
+/** 日报只看日期内最新 1000 个 session，分析和活动时长都以这批行作为权威。 */
+export interface ActivityReportSourceSession {
+  id: string;
+  startedAt: string;
+  endedAt?: string;
+  durationMs: number;
+  appNames: string[];
+  focusEvents: Array<{ at: string; app?: string }>;
+  browserUrls: string[];
+  analysis?: ActivityAnalysisReportRow;
+}
+
 /** 兜底 sweep 找出的「已结束但还没分析」的 session。 */
 export interface ActivityPendingAnalysisSession {
   id: string;
@@ -243,6 +290,7 @@ export interface ActivityPendingAnalysisSession {
   eventCount: number;
   durationMs: number;
   snapshotCount: number;
+  appNames: string[];
 }
 
 /**
@@ -463,6 +511,7 @@ export class ActivityStore {
           height: input.height,
           trigger: input.captureTrigger ?? input.fallbackReason ?? input.eventType,
           contentHash: input.contentHash,
+          histogram: input.histogram,
           histogramChange: input.histogramChange,
           pixelDiff: input.pixelDiff
         });
@@ -532,17 +581,15 @@ export class ActivityStore {
     }));
   }
 
-  /** 兜底 sweep：列出已结束且状态仍为 pending 的 session，按结束时间升序。 */
+  /** 兜底 sweep：每轮优先分析最新开始的已结束 session，避免积压拖延近期活动。 */
   listSessionsPendingAnalysis(limit = 10): ActivityPendingAnalysisSession[] {
     const rows = this.requireDatabase().prepare(`
       SELECT s.id, s.started_at, s.ended_at, s.event_count,
         COALESCE(s.duration_ms, MAX(0, s.ended_at - s.started_at)) AS duration_ms,
-        COUNT(DISTINCT snap.id) AS snapshot_count
+        s.snapshot_count, s.app_names
       FROM activity_sessions s
-      LEFT JOIN activity_snapshots snap ON snap.session_id = s.id
       WHERE s.ended_at IS NOT NULL AND s.analysis_status = 'pending'
-      GROUP BY s.id
-      ORDER BY s.ended_at ASC, s.id ASC
+      ORDER BY s.started_at DESC, s.id DESC
       LIMIT ?
     `).all(limit) as Array<Record<string, unknown>>;
     return rows.map((row) => ({
@@ -551,7 +598,8 @@ export class ActivityStore {
       endedAt: activityTimestampString(row.ended_at),
       eventCount: Number(row.event_count),
       durationMs: Number(row.duration_ms),
-      snapshotCount: Number(row.snapshot_count)
+      snapshotCount: Number(row.snapshot_count),
+      appNames: parseJsonArray<string>(row.app_names)
     }));
   }
 
@@ -566,14 +614,12 @@ export class ActivityStore {
     const rows = this.requireDatabase().prepare(`
       SELECT s.id, s.started_at, s.ended_at, s.event_count,
         COALESCE(s.duration_ms, MAX(0, s.ended_at - s.started_at)) AS duration_ms,
-        COUNT(DISTINCT snap.id) AS snapshot_count
+        s.snapshot_count, s.app_names
       FROM activity_sessions s
-      LEFT JOIN activity_snapshots snap ON snap.session_id = s.id
       WHERE s.ended_at IS NOT NULL
         AND s.analysis_status = 'pending'
         AND s.started_at >= ?
         AND s.started_at < ?
-      GROUP BY s.id
       ORDER BY s.ended_at ASC, s.id ASC
       LIMIT ?
     `).all(startAt, endAt, limit) as Array<Record<string, unknown>>;
@@ -583,32 +629,22 @@ export class ActivityStore {
       endedAt: activityTimestampString(row.ended_at),
       eventCount: Number(row.event_count),
       durationMs: Number(row.duration_ms),
-      snapshotCount: Number(row.snapshot_count)
+      snapshotCount: Number(row.snapshot_count),
+      appNames: parseJsonArray<string>(row.app_names)
     }));
   }
 
-  /** 强制报告只扫目标日期，避免其它日期的近期 session 把目标挤出数量上限。 */
-  listEndedSessionIdsForDateRange(startIso: string, endIso: string, limit = 200): string[] {
-    const rows = this.requireDatabase().prepare(`
-      SELECT id FROM activity_sessions
-      WHERE ended_at IS NOT NULL AND started_at >= ? AND started_at < ?
-      ORDER BY started_at ASC, id ASC
-      LIMIT ?
-    `).all(activityEpochMilliseconds(startIso), activityEpochMilliseconds(endIso), limit) as Array<{ id: string }>;
-    return rows.map((row) => row.id);
-  }
-
-  /** 将时间相邻且应用集合相交的待分析 session 收口成一条连续活动。 */
+  /** 选最新待分析会话，再按时间正序合并相邻且应用集合相交的活动。 */
   mergePendingAdjacent(mergeGapMs = 300_000): number {
     const database = this.requireDatabase();
     const rows = database.prepare(`
       SELECT id, started_at, ended_at, app_names
       FROM activity_sessions
       WHERE ended_at IS NOT NULL AND analysis_status = 'pending'
-      ORDER BY started_at ASC, id ASC
+      ORDER BY started_at DESC, id DESC
       LIMIT 200
     `).all() as Array<Record<string, unknown>>;
-    const sessions = rows.map((row) => ({
+    const sessions = rows.reverse().map((row) => ({
       id: String(row.id),
       startedAt: activityTimestampString(row.started_at),
       endedAt: activityTimestampString(row.ended_at),
@@ -643,11 +679,11 @@ export class ActivityStore {
         const aggregate = database.prepare(`
           SELECT
             COALESCE(SUM(CASE WHEN source <> 'screenshot_fallback' THEN 1 ELSE 0 END), 0) AS event_count,
-            (SELECT COUNT(*) FROM activity_snapshots WHERE session_id = ?) AS snapshot_count,
+            (SELECT COALESCE(SUM(snapshot_count), 0) FROM activity_sessions WHERE id IN (?, ?)) AS snapshot_count,
             COALESCE((SELECT SUM(bytes) FROM activity_snapshots WHERE session_id = ?), 0) AS total_bytes
           FROM ${activityEventProjection}
           WHERE session_id = ?
-        `).get(left.id, left.id, left.id) as Record<string, unknown>;
+        `).get(left.id, right.id, left.id, left.id) as Record<string, unknown>;
         const updatedAt = Date.now();
         database.prepare(`
           UPDATE activity_sessions
@@ -700,11 +736,9 @@ export class ActivityStore {
     const row = this.requireDatabase().prepare(`
       SELECT s.id, s.started_at, s.ended_at, s.event_count,
         COALESCE(s.duration_ms, MAX(0, s.ended_at - s.started_at)) AS duration_ms,
-        COUNT(DISTINCT snap.id) AS snapshot_count
+        s.snapshot_count, s.app_names
       FROM activity_sessions s
-      LEFT JOIN activity_snapshots snap ON snap.session_id = s.id
       WHERE s.id = ? AND s.ended_at IS NOT NULL
-      GROUP BY s.id
     `).get(sessionId) as Record<string, unknown> | undefined;
     if (!row) return undefined;
     return {
@@ -713,7 +747,8 @@ export class ActivityStore {
       endedAt: activityTimestampString(row.ended_at),
       eventCount: Number(row.event_count),
       durationMs: Number(row.duration_ms),
-      snapshotCount: Number(row.snapshot_count)
+      snapshotCount: Number(row.snapshot_count),
+      appNames: parseJsonArray<string>(row.app_names)
     };
   }
 
@@ -757,12 +792,23 @@ export class ActivityStore {
       .map(({ id: _id, ...event }) => event);
   }
 
-  /** 近期摘要只取少量已脱敏 OCR 文字，避免遍历长会话的完整事件流。 */
+  /** 分析模型只读取最早完成的 OCR 帧；全量事件读取仍用于输入 hash。 */
+  listSessionAnalysisOcrTexts(sessionId: string, limit = 400): string[] {
+    const rows = this.requireDatabase().prepare(`
+      SELECT text FROM activity_ocr_frames
+      WHERE session_id = ?
+      ORDER BY created_at ASC, id ASC
+      LIMIT ?
+    `).all(sessionId, limit) as Array<{ text: string }>;
+    return rows.map((row) => row.text);
+  }
+
+  /** Digest 取最早完成的少量已脱敏 OCR 帧，与会话分析的取样方向一致。 */
   listSessionOcrExcerpts(sessionId: string, limit = 2): string[] {
     const rows = this.requireDatabase().prepare(`
       SELECT text FROM activity_ocr_frames
-      WHERE session_id = ? AND text <> ''
-      ORDER BY occurred_at DESC, id DESC
+      WHERE session_id = ?
+      ORDER BY created_at ASC, id ASC
       LIMIT ?
     `).all(sessionId, Math.max(0, Math.min(10, Math.trunc(limit)))) as Array<{ text: string }>;
     return rows.map((row) => row.text);
@@ -824,6 +870,7 @@ export class ActivityStore {
         height: nullableInteger(row.height),
         trigger: nullableString(row.trigger),
         contentHash: nullableString(row.content_hash),
+        histogram: row.histogram === null ? undefined : parseJsonArray<number>(row.histogram),
         histogramChange: nullableNumber(row.histogram_change),
         pixelDiff: nullableNumber(row.pixel_diff),
         storageTier: parseSnapshotStorageTier(row.storage_tier)
@@ -832,15 +879,36 @@ export class ActivityStore {
     };
   }
 
-  getSummary(kind: ActivitySummaryKind, dateKey: string): ActivitySummaryRecord | undefined {
+  getSummary(kind: "daily", dateKey: string): ActivitySummaryRecord | undefined;
+  getSummary(kind: "weekly", dateKey: string): ActivityWeeklySummaryRecord | undefined;
+  getSummary(kind: ActivitySummaryKind, dateKey: string): ActivityAnySummaryRecord | undefined;
+  getSummary(kind: ActivitySummaryKind, dateKey: string): ActivityAnySummaryRecord | undefined {
     const row = this.requireDatabase().prepare(`
       SELECT kind, date_key, summary, stats, stats_json, model, is_partial, created_at, generated_at
       FROM activity_summaries
       WHERE kind = ? AND date_key = ?
     `).get(kind, dateKey) as Record<string, unknown> | undefined;
     if (!row) return undefined;
+    return this.summaryFromRow(row, kind, dateKey);
+  }
+
+  private summaryFromRow(row: Record<string, unknown>, kind: ActivitySummaryKind, dateKey: string): ActivityAnySummaryRecord | undefined {
+    if (kind === "weekly") {
+      const stats = parseWeeklySummaryStats(row.stats ?? row.stats_json, dateKey);
+      if (!stats) return undefined;
+      return {
+        kind: "weekly",
+        dateKey: String(row.date_key),
+        // SQLite 历史表的 summary 是 NOT NULL；空字符串只表示没有模型叙事。
+        summary: String(row.summary) || null,
+        model: nullableString(row.model),
+        stats,
+        isPartial: Number(row.is_partial) === 1,
+        generatedAt: nullableString(row.generated_at) ?? new Date(Number(row.created_at)).toISOString()
+      };
+    }
     return {
-      kind: row.kind === "weekly" ? "weekly" : "daily",
+      kind: "daily",
       dateKey: String(row.date_key),
       summary: String(row.summary),
       model: nullableString(row.model),
@@ -850,7 +918,41 @@ export class ActivityStore {
     };
   }
 
-  upsertSummary(summary: ActivitySummaryRecord): void {
+  /** REST 只公开摘要字段；日报缓存仍留在同一持久行供内部重用。 */
+  getHttpSummary(kind: ActivitySummaryKind, dateKey: string): {
+    id: string;
+    kind: ActivitySummaryKind;
+    dateKey: string;
+    summary: string | null;
+    stats: ActivitySummaryStats | ActivityWeeklySummaryStats;
+    model: string | null;
+    isPartial: boolean;
+    createdAt: number;
+    updatedAt: number;
+  } | undefined {
+    const row = this.requireDatabase().prepare(`
+      SELECT id, kind, date_key, summary, stats, stats_json, model, is_partial, created_at, updated_at, generated_at
+      FROM activity_summaries WHERE kind = ? AND date_key = ?
+    `).get(kind, dateKey) as Record<string, unknown> | undefined;
+    if (!row) return undefined;
+    const summary = this.summaryFromRow(row, kind, dateKey);
+    if (!summary) return undefined;
+    const stats = { ...summary.stats };
+    if (summary.kind === "daily") {
+      delete (stats as ActivitySummaryStats).report;
+      delete (stats as ActivitySummaryStats).reportGeneratedAt;
+      delete (stats as ActivitySummaryStats).reportStats;
+      delete (stats as ActivitySummaryStats).reportState;
+    }
+    return {
+      id: String(row.id), kind: summary.kind, dateKey: summary.dateKey,
+      summary: summary.summary, stats, model: summary.model ?? null,
+      isPartial: summary.isPartial,
+      createdAt: Number(row.created_at), updatedAt: Number(row.updated_at)
+    };
+  }
+
+  upsertSummary(summary: ActivityAnySummaryRecord): void {
     const id = randomUUID();
     const now = Date.now();
     this.requireDatabase().prepare(`
@@ -869,7 +971,7 @@ export class ActivityStore {
       id,
       summary.kind,
       summary.dateKey,
-      summary.summary,
+      summary.summary ?? "",
       JSON.stringify(summary.stats),
       JSON.stringify(summary.stats),
       summary.model ?? null,
@@ -884,25 +986,26 @@ export class ActivityStore {
    * 提供给 summary.ts 的聚合源。
    *
    * 日报按 session.started_at 选取 session，再读取该 session 的完整时长、appNames、
-   * app_focus、截图和 OCR；不能按事件时间或 session 与日期的重叠区间裁剪。
+   * app_focus、累计截图数和 OCR；不能按事件时间或 session 与日期的重叠区间裁剪。
    */
-  getActivitySummarySource(startIso: string, endIso: string): ActivitySummarySource {
+  getActivitySummarySource(startIso: string, endIso: string, limit = 1000): ActivitySummarySource {
     const database = this.requireDatabase();
     const startAt = activityEpochMilliseconds(startIso);
     const endAt = activityEpochMilliseconds(endIso);
     const sessionRows = database.prepare(`
-      SELECT id, started_at, ended_at
+      SELECT id, started_at, ended_at, app_names, snapshot_count
       FROM activity_sessions
       WHERE started_at >= ? AND started_at < ?
-      ORDER BY started_at ASC, id ASC
-    `).all(startAt, endAt) as Array<Record<string, unknown>>;
+      ORDER BY started_at DESC, id ASC
+      LIMIT ?
+    `).all(startAt, endAt, limit) as Array<Record<string, unknown>>;
     const sessions = sessionRows.map((row) => ({
       id: String(row.id),
       startedAt: activityTimestampString(row.started_at),
       endedAt: row.ended_at === null ? undefined : activityTimestampString(row.ended_at),
-      snapshotCount: 0,
+      snapshotCount: Number(row.snapshot_count ?? 0),
       ocrCharCount: 0,
-      appNames: [] as string[],
+      appNames: parseJsonArray<string>(row.app_names),
       applicationEvents: [] as Array<{ occurredAt: string; application?: string }>,
       analysis: undefined as ActivitySummarySource["sessions"][number]["analysis"]
     }));
@@ -936,21 +1039,11 @@ export class ActivityStore {
       if (!session || !application || session.appNames.includes(application)) continue;
       session.appNames.push(application);
     }
-    const snapshotRows = database.prepare(`
-      SELECT session_id, COUNT(*) AS count
-      FROM activity_snapshots
-      WHERE session_id IN (${sessionPlaceholders})
-      GROUP BY session_id
-    `).all(...sessionIds) as Array<Record<string, unknown>>;
-    for (const row of snapshotRows) {
-      const session = byId.get(String(row.session_id));
-      if (session) session.snapshotCount = Number(row.count);
-    }
     const ocrRows = database.prepare(`
       SELECT session_id, text
       FROM (
         SELECT session_id, text,
-          ROW_NUMBER() OVER (PARTITION BY session_id ORDER BY occurred_at ASC, id ASC) AS frame_number
+          ROW_NUMBER() OVER (PARTITION BY session_id ORDER BY created_at ASC, id ASC) AS frame_number
         FROM activity_ocr_frames
         WHERE session_id IN (${sessionPlaceholders})
       )
@@ -1282,6 +1375,56 @@ export class ActivityStore {
     }));
   }
 
+  listReportSourceForDateRange(startIso: string, endIso: string): ActivityReportSourceSession[] {
+    const database = this.requireDatabase();
+    const rows = database.prepare(`
+      SELECT * FROM activity_sessions
+      WHERE started_at >= ? AND started_at < ?
+      ORDER BY started_at DESC, id ASC LIMIT 1000
+    `).all(activityEpochMilliseconds(startIso), activityEpochMilliseconds(endIso)) as Array<Record<string, unknown>>;
+    const sessions = rows.map((row): ActivityReportSourceSession => ({
+      id: String(row.id),
+      startedAt: activityTimestampString(row.started_at),
+      endedAt: row.ended_at === null ? undefined : activityTimestampString(row.ended_at),
+      durationMs: row.ended_at === null ? 0 : Math.max(0, Number(row.duration_ms ?? Number(row.ended_at) - Number(row.started_at))),
+      appNames: parseJsonArray<string>(row.app_names),
+      focusEvents: [],
+      browserUrls: [],
+      analysis: row.analysis_status === "analyzed" && nullableString(row.analysis_title)
+        ? { ...parseAnalysisRow(row), sessionStartedAt: activityTimestampString(row.started_at) }
+        : undefined
+    }));
+    if (sessions.length === 0) return sessions;
+    const byId = new Map(sessions.map((session) => [session.id, session]));
+    // 先按每个 session 的全部事件截到 200 条，再挑焦点/浏览访问；过滤后截断会把第 201 条访问误算进日报。
+    for (let offset = 0; offset < sessions.length; offset += 400) {
+      const ids = sessions.slice(offset, offset + 400).map((session) => session.id);
+      const placeholders = ids.map(() => "?").join(", ");
+      const events = database.prepare(`
+        SELECT session_id, occurred_at, event_type, application, url
+        FROM (
+          SELECT session_id, occurred_at, event_type, application, url,
+            ROW_NUMBER() OVER (PARTITION BY session_id ORDER BY timestamp ASC, id ASC) AS event_number
+          FROM ${activityEventProjection}
+          WHERE session_id IN (${placeholders})
+        )
+        WHERE event_number <= 200 AND event_type IN ('app_focus', 'browser_visit')
+        ORDER BY occurred_at ASC
+      `).all(...ids) as Array<Record<string, unknown>>;
+      for (const event of events) {
+        const session = byId.get(String(event.session_id));
+        if (!session) continue;
+        if (event.event_type === "app_focus") {
+          session.focusEvents.push({ at: String(event.occurred_at), app: nullableString(event.application) });
+        } else if (session.analysis && session.browserUrls.length < 40) {
+          const url = nullableString(event.url);
+          if (url && !session.browserUrls.includes(url)) session.browserUrls.push(url);
+        }
+      }
+    }
+    return sessions;
+  }
+
   /** digest / sessions 工具的近期 session 行，包含已落库的分析。 */
   listRecentSessionsWithAnalysis(sinceIso: string, limit = 20): ActivityRecentSessionRow[] {
     return this.listSessionsWithAnalysis({ sinceIso, limit });
@@ -1291,6 +1434,7 @@ export class ActivityStore {
     sinceIso: string;
     untilIso?: string;
     analysisStatus?: string;
+    startedAtOnly?: boolean;
     limit?: number;
     offset?: number;
   }): ActivityRecentSessionRow[] {
@@ -1298,13 +1442,13 @@ export class ActivityStore {
     const untilAt = options.untilIso === undefined ? null : activityEpochMilliseconds(options.untilIso);
     const rows = this.requireDatabase().prepare(`
       SELECT * FROM activity_sessions
-      WHERE (started_at >= ? OR (ended_at IS NOT NULL AND ended_at >= ?))
+      WHERE (started_at >= ? OR (? = 0 AND ended_at IS NOT NULL AND ended_at >= ?))
         AND (? IS NULL OR started_at <= ?)
         AND (? IS NULL OR analysis_status = ?)
       ORDER BY started_at DESC, id ASC
       LIMIT ? OFFSET ?
     `).all(
-      sinceAt, sinceAt, untilAt, untilAt,
+      sinceAt, options.startedAtOnly ? 1 : 0, sinceAt, untilAt, untilAt,
       options.analysisStatus ?? null, options.analysisStatus ?? null,
       options.limit ?? 20, options.offset ?? 0
     ) as Array<Record<string, unknown>>;
@@ -1315,6 +1459,88 @@ export class ActivityStore {
       eventCount: Number(row.event_count),
       analysis: row.input_hash === null ? undefined : parseAnalysisRow(row)
     }));
+  }
+
+  /** HTTP 详情使用原始 kind/data 事件和独立 OCR 帧；桌面与 CLI 仍用各自的展示投影。 */
+  getHttpSessionDetail(sessionId: string) {
+    const database = this.requireDatabase();
+    let row = database.prepare("SELECT * FROM activity_sessions WHERE id = ?").get(sessionId) as Record<string, unknown> | undefined;
+    if (!row && sessionId.length >= 6) {
+      const matches = database.prepare("SELECT * FROM activity_sessions WHERE substr(id, 1, ?) = ? LIMIT 2")
+        .all(sessionId.length, sessionId) as Array<Record<string, unknown>>;
+      if (matches.length === 1) row = matches[0];
+    }
+    if (!row) return undefined;
+    sessionId = String(row.id);
+    const events = database.prepare(`
+      SELECT id, session_id, timestamp, kind, app_name, data, created_at
+      FROM activity_events WHERE session_id = ? ORDER BY timestamp ASC, id ASC LIMIT 500
+    `).all(sessionId) as Array<Record<string, unknown>>;
+    const snapshots = database.prepare(`
+      SELECT * FROM activity_snapshots WHERE session_id = ? ORDER BY captured_at ASC, id ASC LIMIT 500
+    `).all(sessionId) as Array<Record<string, unknown>>;
+    const ocr = database.prepare(`
+      SELECT id, snapshot_id, text, char_count, created_at, embedding
+      FROM activity_ocr_frames WHERE session_id = ? ORDER BY created_at ASC, id ASC LIMIT 500
+    `).all(sessionId) as Array<Record<string, unknown>>;
+    return {
+      session: parseHttpSessionRow(row),
+      events: events.map((event) => ({
+        id: String(event.id), sessionId: String(event.session_id), timestamp: Number(event.timestamp),
+        kind: String(event.kind), appName: nullableString(event.app_name) ?? null,
+        data: parseJsonObject<Record<string, unknown>>(event.data) ?? {}, createdAt: Number(event.created_at)
+      })),
+      snapshots: snapshots.map((snapshot) => ({
+        id: String(snapshot.id), sessionId: String(snapshot.session_id), timestamp: Number(snapshot.timestamp ?? Date.parse(String(snapshot.captured_at))),
+        filePath: nullableString(snapshot.file_path) ? safeStoredSnapshotPath(this.requireRoot(), String(snapshot.file_path)) ?? null : null,
+        width: nullableInteger(snapshot.width) ?? 0, height: nullableInteger(snapshot.height) ?? 0,
+        sizeBytes: Number(snapshot.bytes), trigger: nullableString(snapshot.trigger) ?? "heartbeat",
+        appName: nullableString(snapshot.app_name) ?? null, windowTitle: nullableString(snapshot.window_title) ?? null,
+        hashHex: nullableString(snapshot.content_hash) ?? null,
+        histogram: snapshot.histogram === null ? null : parseJsonArray<number>(snapshot.histogram),
+        diffPct: nullableNumber(snapshot.pixel_diff) ?? null,
+        storageTier: parseSnapshotStorageTier(snapshot.storage_tier),
+        createdAt: Number(snapshot.created_at ?? Date.parse(String(snapshot.captured_at)))
+      })),
+      ocr: ocr.map((frame) => ({
+        id: String(frame.id), snapshotId: String(frame.snapshot_id), text: String(frame.text),
+        charCount: Number(frame.char_count), createdAt: Number(frame.created_at), hasEmbedding: frame.embedding !== null
+      }))
+    };
+  }
+
+  /** REST 会话列表按开始时间过滤；内部近期 digest 仍可包含跨越 since 的会话。 */
+  listHttpSessions(options: {
+    since?: number;
+    until?: number;
+    analysisStatus?: string;
+    limit?: number;
+    offset?: number;
+  }): ActivityHttpSessionRecord[] {
+    const rows = this.requireDatabase().prepare(`
+      SELECT * FROM activity_sessions
+      WHERE (? IS NULL OR started_at >= ?)
+        AND (? IS NULL OR started_at < ?)
+        AND (? IS NULL OR analysis_status = ?)
+      ORDER BY started_at DESC, id ASC
+      LIMIT ? OFFSET ?
+    `).all(
+      options.since ?? null, options.since ?? null,
+      options.until ?? null, options.until ?? null,
+      options.analysisStatus ?? null, options.analysisStatus ?? null,
+      options.limit ?? 100, options.offset ?? 0
+    ) as Array<Record<string, unknown>>;
+    return rows.map(parseHttpSessionRow);
+  }
+
+  listOpenHttpSessions(limit = 1): ActivityHttpSessionRecord[] {
+    const rows = this.requireDatabase().prepare(`
+      SELECT * FROM activity_sessions
+      WHERE ended_at IS NULL
+      ORDER BY started_at DESC, id ASC
+      LIMIT ?
+    `).all(limit) as Array<Record<string, unknown>>;
+    return rows.map(parseHttpSessionRow);
   }
 
   /** 单条历史删除同时清理关联截图与检索索引；进行中的 session 由采集宿主持有。 */
@@ -1483,6 +1709,7 @@ export class ActivityStore {
     height?: number;
     trigger?: string;
     contentHash?: string;
+    histogram?: number[];
     histogramChange?: number;
     pixelDiff?: number;
   } | undefined): ActivityStoredEvent {
@@ -1535,7 +1762,8 @@ export class ActivityStore {
         eventId, input.sessionId, timestamp, eventType, application ?? null,
         JSON.stringify(activityEventData(eventType, {timestamp, bundleId:input.bundleId,window_title:windowTitle,url,
           redacted_text:redactedText, mouse_button:mouseButton,key_code:keyCode,key_modifiers:keyModifiers,
-          mouse_x:mouseX,mouse_y:mouseY,input_event_count:inputEventCount,input_event_first_at:inputEventFirstAt,fallback_reason:fallbackReason})), timestamp
+          mouse_x:mouseX,mouse_y:mouseY,input_event_count:inputEventCount,input_event_first_at:inputEventFirstAt,
+          fallback_reason:fallbackReason,via:normalizeShortText(input.via)})), timestamp
       );
       if (snapshot) {
         const nextSnapshotId = randomUUID();
@@ -1570,7 +1798,7 @@ export class ActivityStore {
           application ?? null,
           windowTitle ?? null,
           normalizeShortText(snapshot.contentHash) ?? null,
-          null,
+          normalizeHistogram(snapshot.histogram),
           normalizeRatio(snapshot.pixelDiff),
           timestamp,
           snapshotId
@@ -1686,34 +1914,52 @@ export class ActivityStore {
             this.updateSnapshotTier(snapshotId, nextTier);
             continue;
           }
+          if (!recompress) continue;
+          let encoded: Awaited<ReturnType<ActivitySnapshotCompressor>>;
           try {
-            if (!recompress) throw new Error("截图轮转需要 Electron nativeImage 压缩器");
-            const encoded = await recompress(absolutePath, target);
-            // 只有在新 JPEG 更小的时候替换文件；否则仍然完成 tier 降级，避免反复重压缩。
-            if (encoded.data.byteLength >= originalBytes) {
+            encoded = await recompress(absolutePath, target);
+          } catch (error) {
+            // 原文件已丢失时无法通过重试恢复压缩；仍推进保留档位，使残留记录按期限清理。
+            // Electron nativeImage 对缺图也可能只抛普通 Error，不能仅看错误码。
+            let sourceMissing = false;
+            try {
+              await lstat(absolutePath);
+            } catch (sourceError) {
+              sourceMissing = (sourceError as NodeJS.ErrnoException).code === "ENOENT";
+            }
+            if (sourceMissing) {
               this.updateSnapshotTier(snapshotId, nextTier);
               continue;
             }
-            const temporaryPath = path.join(path.dirname(absolutePath), `.${path.basename(absolutePath)}.${randomUUID()}.tmp`);
-            await writeFile(temporaryPath, encoded.data, { mode: 0o600 });
-            try {
-              await rename(temporaryPath, absolutePath);
-              await chmod(absolutePath, 0o600);
-            } catch (error) {
-              await unlink(temporaryPath).catch(() => undefined);
-              throw error;
-            }
-            this.updateSnapshotStorage(
-              snapshotId,
-              encoded.data.byteLength,
-              encoded.width,
-              encoded.height,
-              nextTier
-            );
-          } catch {
-            // 旧库里可能存在损坏/非 JPEG 文件；仍标记降级，下一轮不会重复尝试该档位。
-            this.updateSnapshotTier(snapshotId, nextTier);
+            // 单张坏图不应阻断同轮其他图片及保留期/容量清理；原档位留待下轮重试。
+            console.warn("[ActivityStore] snapshot recompression failed; retry next rotation:",
+              error instanceof Error ? error.name : typeof error);
+            continue;
           }
+          // 只有在新 JPEG 更小的时候替换文件；否则仍然完成 tier 降级，避免反复重压缩。
+          if (encoded.data.byteLength >= originalBytes) {
+            this.updateSnapshotTier(snapshotId, nextTier);
+            continue;
+          }
+          const temporaryPath = path.join(path.dirname(absolutePath), `.${path.basename(absolutePath)}.${randomUUID()}.tmp`);
+          try {
+            await writeFile(temporaryPath, encoded.data, { mode: 0o600 });
+            await chmod(temporaryPath, 0o600);
+            await rename(temporaryPath, absolutePath);
+          } catch (error) {
+            await unlink(temporaryPath).catch(() => undefined);
+            // 仅隔离这张图的文件操作；数据库故障仍向调用方报告。
+            console.warn("[ActivityStore] snapshot replacement failed; retry next rotation:",
+              error instanceof Error ? error.name : typeof error);
+            continue;
+          }
+          this.updateSnapshotStorage(
+            snapshotId,
+            encoded.data.byteLength,
+            encoded.width,
+            encoded.height,
+            nextTier
+          );
         }
       };
 
@@ -1739,22 +1985,20 @@ export class ActivityStore {
       const currentBytes = database.prepare("SELECT COALESCE(SUM(bytes), 0) AS bytes FROM activity_snapshots").get() as { bytes: number };
       if (Number(currentBytes.bytes) <= maxBytes) return;
       let remainingBytes = Number(currentBytes.bytes);
-      // 档位优先于时间，不能把三档重新全局排序。分页删除直到低水位，避免大库只清首批。
-      for (const tier of ["cold", "warm", "hot"] as const) {
-        while (remainingBytes > targetBytes) {
-          const candidates = database.prepare(`
-            SELECT id, file_path, bytes
-            FROM activity_snapshots
-            WHERE storage_tier = ? AND file_path IS NOT NULL AND bytes > 0
-            ORDER BY captured_at ASC, id ASC
-            LIMIT 500
-          `).all(tier) as Array<Record<string, unknown>>;
-          if (!candidates.length) break;
-          for (const row of candidates) {
-            if (remainingBytes <= targetBytes) break;
-            await this.deleteSnapshot(String(row.id), nullableString(row.file_path));
-            remainingBytes -= Math.max(0, Number(row.bytes));
-          }
+      // 容量上限按截图年龄全局淘汰，档位仅控制压缩与保留期限；分页直到低水位。
+      while (remainingBytes > targetBytes) {
+        const candidates = database.prepare(`
+          SELECT id, file_path, bytes
+          FROM activity_snapshots
+          WHERE file_path IS NOT NULL AND bytes > 0
+          ORDER BY captured_at ASC, id ASC
+          LIMIT 500
+        `).all() as Array<Record<string, unknown>>;
+        if (!candidates.length) break;
+        for (const row of candidates) {
+          if (remainingBytes <= targetBytes) break;
+          await this.deleteSnapshot(String(row.id), nullableString(row.file_path));
+          remainingBytes -= Math.max(0, Number(row.bytes));
         }
       }
     });
@@ -1781,7 +2025,14 @@ export class ActivityStore {
   private async deleteSnapshot(snapshotId: ActivityRecordId, relativePath: string | undefined): Promise<void> {
     if (relativePath) {
       const absolutePath = safeStoredSnapshotPath(this.requireRoot(), relativePath);
-      if (absolutePath) await unlink(absolutePath).catch(() => undefined);
+      if (absolutePath) {
+        try {
+          await unlink(absolutePath);
+        } catch (error) {
+          // 文件已不存在时可以清理残留记录；其他删除失败须保留记录供下轮重试。
+          if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        }
+      }
     }
     const database = this.requireDatabase();
     database.prepare("DELETE FROM activity_snapshots WHERE id = ?").run(snapshotId);
@@ -2001,6 +2252,12 @@ function normalizeRatio(value: number | undefined): number | null {
   return value !== undefined && Number.isFinite(value) ? Math.min(1, Math.max(0, value)) : null;
 }
 
+function normalizeHistogram(value: number[] | undefined): string | null {
+  return value?.length === 32 && value.every((bin) => Number.isFinite(bin) && bin >= 0 && bin <= 1)
+    ? JSON.stringify(value)
+    : null;
+}
+
 function nullableString(value: unknown): string | undefined {
   return value === null || value === undefined ? undefined : String(value);
 }
@@ -2011,6 +2268,37 @@ function nullableInteger(value: unknown): number | undefined {
 
 function nullableNumber(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function parseHttpSessionRow(row: Record<string, unknown>): ActivityHttpSessionRecord {
+  return {
+    id: String(row.id), startedAt: Number(row.started_at), endedAt: nullableNumber(row.ended_at) ?? null,
+    durationMs: nullableNumber(row.duration_ms) ?? null, triggerKind: nullableString(row.trigger_kind) ?? "idle",
+    appNames: parseJsonArray<string>(row.app_names), eventCount: Number(row.event_count),
+    snapshotCount: Number(row.snapshot_count), totalBytes: Number(row.total_bytes),
+    analysisStatus: nullableString(row.analysis_status) ?? "pending",
+    analysisTitle: nullableString(row.analysis_title) ?? null,
+    analysisDescription: nullableString(row.analysis_description) ?? null,
+    analysisModel: nullableString(row.analysis_model) ?? null,
+    analysisError: nullableString(row.analysis_error) ?? null,
+    analyzedAt: nullableNumber(row.analyzed_at) ?? null,
+    worthMemory: Boolean(row.worth_memory), worthKnowledge: Boolean(row.worth_knowledge),
+    isMeeting: Boolean(row.is_meeting), storageTier: nullableString(row.storage_tier) ?? "hot",
+    entities: parseHttpSessionEntities(row.entities),
+    topics: parseJsonArray<string>(row.topics), project: nullableString(row.project) ?? null,
+    highlights: parseJsonArray<string>(row.highlights),
+    createdAt: Number(row.created_at ?? row.started_at), updatedAt: Number(row.updated_at ?? row.started_at)
+  };
+}
+
+function parseHttpSessionEntities(value: unknown): Record<string, unknown> | string[] {
+  if (typeof value !== "string") return {};
+  try {
+    const parsed: unknown = JSON.parse(value);
+    if (Array.isArray(parsed)) return parsed.filter((item): item is string => typeof item === "string");
+    if (typeof parsed === "object" && parsed !== null) return parsed as Record<string, unknown>;
+  } catch { /* 旧库中无效 JSON 不应破坏整个 REST 列表。 */ }
+  return {};
 }
 
 function parseAnalysisRow(row: Record<string, unknown>): ActivitySessionAnalysis {
@@ -2075,6 +2363,22 @@ function parseJsonObject<T extends object>(value: unknown): T | undefined {
   try {
     const parsed = JSON.parse(value) as unknown;
     return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed) ? parsed as T : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function parseWeeklySummaryStats(value: unknown, weekKey: string): ActivityWeeklySummaryStats | undefined {
+  if (typeof value !== "string" || !/^\d{4}-W(?:0[1-9]|[1-4]\d|5[0-3])$/u.test(weekKey)) return undefined;
+  try {
+    const parsed = JSON.parse(value) as Partial<ActivityWeeklySummaryStats>;
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return undefined;
+    if (parsed.weekKey !== weekKey || typeof parsed.startDate !== "string" || typeof parsed.endDate !== "string"
+      || typeof parsed.totalActiveMs !== "number" || typeof parsed.sessionCount !== "number"
+      || !Array.isArray(parsed.apps) || !Array.isArray(parsed.daily) || parsed.daily.length !== 7) return undefined;
+    if (!parsed.apps.every((app) => typeof app.app === "string" && typeof app.durationMs === "number")) return undefined;
+    if (!parsed.daily.every((day) => typeof day.dateKey === "string" && typeof day.activeMs === "number" && typeof day.sessionCount === "number")) return undefined;
+    return parsed as ActivityWeeklySummaryStats;
   } catch {
     return undefined;
   }

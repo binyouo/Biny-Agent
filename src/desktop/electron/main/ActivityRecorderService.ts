@@ -77,6 +77,7 @@ interface CaptureMessage {
   /** 只有需要异步 OCR 的截图才携带；用于把 OCR 投影回已落库的 snapshot。 */
   captureId?: string;
   contentHash?: string;
+  histogram?: number[];
   histogramChange?: number;
   pixelDiff?: number;
 }
@@ -115,6 +116,10 @@ const STORE_SNAPSHOT_TTL_MS = 30_000;
 
 export interface ActivityRecorderServiceOptions {
   captureTimers?: {setInterval:typeof setInterval;clearInterval:typeof clearInterval};
+  now?: () => number;
+  /** 输入监听失效时独立读取前台 bundle；失败或空值禁止截图。 */
+  readFrontmostBundle?: () => Promise<string | undefined>;
+  hasScreenRecordingPermission?: () => Promise<boolean>;
   readBrowser?: (script:string) => Promise<string>;
   encodeFrame?: (bytes: Buffer, quality: number) => Promise<ActivityFrame>;
   recompressSnapshot?: import("../../../activity/store.js").ActivitySnapshotCompressor;
@@ -142,6 +147,10 @@ export interface ActivityRecorderServiceOptions {
 
 export class ActivityRecorderService {
   private readonly captureTimerScheduler: {setInterval:typeof setInterval;clearInterval:typeof clearInterval};
+  private readonly now: () => number;
+  private readonly readFrontmostBundle: () => Promise<string | undefined>;
+  private readonly hasScreenRecordingPermission: () => Promise<boolean>;
+  private readonly independentCaptureAvailable: boolean;
   private readonly readBrowser: (script:string) => Promise<string>;
   private readonly store = new ActivityStore();
   private readonly configStore: AgentConfigStore;
@@ -162,6 +171,8 @@ export class ActivityRecorderService {
   private captureEpoch = 0;
   private foregroundBundle?: string;
   private foregroundTitle?: string;
+  private lastSensitiveEventAt = -Infinity;
+  private sensitiveMarkerQueued = false;
   private browserLastVisit?: string;
   private child?: ChildProcessWithoutNullStreams;
   private output?: Interface;
@@ -173,6 +184,11 @@ export class ActivityRecorderService {
   private snapshotRotationInitialTimer?: ReturnType<typeof setTimeout>;
   private snapshotRotationTimer?: ReturnType<typeof setInterval>;
   private settings?: ActivitySettings;
+  /** REST 调整仅属于当前采集宿主；文件配置变化与 Desktop 设置操作重新取得权威。 */
+  private persistedActivitySettings?: ActivitySettings;
+  /** 配置 enabled 与 start/stop 运行状态独立；settings 是采集器实际生效的开关。 */
+  private runtimeConfig?: ActivitySettings;
+  private runtimeRunning = false;
   private currentApplication?: string;
   private state: ActivityServiceState = "stopped";
   private error?: string;
@@ -210,16 +226,24 @@ export class ActivityRecorderService {
 
   constructor(options: ActivityRecorderServiceOptions) {
     this.captureTimerScheduler = options.captureTimers ?? {setInterval,clearInterval};
+    this.now = options.now ?? Date.now;
+    this.readFrontmostBundle = options.readFrontmostBundle ?? readMacFrontmostBundle;
+    this.hasScreenRecordingPermission = options.hasScreenRecordingPermission ?? checkMacScreenRecordingPermission;
+    this.independentCaptureAvailable = process.platform === "darwin"
+      || (options.readFrontmostBundle !== undefined && options.hasScreenRecordingPermission !== undefined);
     this.readBrowser = options.readBrowser ?? (async script => (await promisify(execFile)("/usr/bin/osascript",["-e",script],{timeout:1500,maxBuffer:64*1024})).stdout);
     this.configStore = options.configStore;
     this.agentDir = options.agentDir ?? globalAgentDir();
     this.inputMonitorPath = options.inputMonitorPath;
     this.recompressSnapshot = options.recompressSnapshot;
-    if (options.inputMonitorPath && options.encodeFrame && options.captureDesktopScreen) {
-      const client = new ActivityNativeClient(path.dirname(options.inputMonitorPath), path.join(this.agentDir, ".activity-capture"));
+    if (options.encodeFrame && options.captureDesktopScreen) {
+      const client = options.inputMonitorPath
+        ? new ActivityNativeClient(path.dirname(options.inputMonitorPath), path.join(this.agentDir, ".activity-capture"))
+        : undefined;
       this.nativeClient = client;
       this.captureEngine = new ActivityCaptureEngine({
-        native: (width, quality) => client.capture(width, quality),
+        now: this.now,
+        native: (width, quality) => client?.capture(width, quality) ?? Promise.reject(new Error("Native capture unavailable")),
         desktop: options.captureDesktopScreen,
         frame: options.encodeFrame
       });
@@ -252,6 +276,9 @@ export class ActivityRecorderService {
   async initialize(): Promise<void> {
     await this.enqueue(async () => {
       const config = await this.configStore.load();
+      this.persistedActivitySettings = config.activity;
+      this.runtimeConfig = config.activity;
+      this.runtimeRunning = config.activity.enabled;
       await this.applySettings(config.activity);
       this.watchConfig();
     });
@@ -261,6 +288,9 @@ export class ActivityRecorderService {
     this.analysisAbort.abort();
     await this.enqueue(async () => {
       const config = await this.configStore.load();
+      this.persistedActivitySettings = config.activity;
+      this.runtimeConfig = config.activity;
+      this.runtimeRunning = config.activity.enabled;
       await this.applySettings(config.activity);
       this.watchConfig();
     });
@@ -284,6 +314,18 @@ export class ActivityRecorderService {
     return structuredClone(this.createSnapshot(true));
   }
 
+  /** REST 只报告实际存在的采集资源与已知前台身份，不能以配置 enabled 冒充运行状态。 */
+  httpCaptureStatus(): { running: boolean; frontmost: { bundleId: string | null; appName: string | null } } {
+    const bundleId = this.foregroundBundle ?? null;
+    return {
+      running: this.child !== undefined || this.captureTimers.length > 0,
+      frontmost: {
+        bundleId,
+        appName: this.currentApplication && this.currentApplication !== bundleId ? this.currentApplication : null
+      }
+    };
+  }
+
   private watchConfig(): void {
     const configPath = this.configStore.configPath?.();
     if (!configPath || this.configWatcher) return;
@@ -298,8 +340,13 @@ export class ActivityRecorderService {
           try {
             const config = await this.configStore.load();
             if (this.configWatcher !== watcher) return;
-            if (!isDeepStrictEqual(config.activity, this.settings) || this.state === "error") {
+            if (!isDeepStrictEqual(config.activity, this.persistedActivitySettings)) {
+              this.persistedActivitySettings = config.activity;
+              this.runtimeConfig = config.activity;
+              this.runtimeRunning = config.activity.enabled;
               await this.applySettings(config.activity);
+            } else if (this.state === "error" && this.settings) {
+              await this.applySettings(this.settings);
             }
           } catch (error) {
             if (this.configWatcher !== watcher) return;
@@ -327,6 +374,42 @@ export class ActivityRecorderService {
     return { activity: structuredClone(config.activity), configRevision: revision };
   }
 
+  /** 本地 REST 读取和变更进程内配置；Desktop 设置与 CLI 仍由磁盘配置决定。 */
+  async runtimeSettingsSnapshot(): Promise<ActivitySettings> {
+    return structuredClone(this.runtimeConfig ?? (await this.configStore.load()).activity);
+  }
+
+  async updateRuntimeSettings(patch: DesktopActivitySettingsPatch): Promise<ActivitySettings> {
+    return await this.enqueue(async () => {
+      const current = this.runtimeConfig ?? (await this.configStore.load()).activity;
+      const next = activitySettingsSchema.parse({ ...current, ...patch });
+      // 修改配置只重启先前正在运行的采集；已停止时仍需显式 start。
+      this.runtimeRunning = this.runtimeRunning && next.enabled;
+      this.runtimeConfig = next;
+      await this.applySettings({ ...next, enabled: this.runtimeRunning });
+      return structuredClone(next);
+    });
+  }
+
+  async startRuntime(): Promise<ActivityRuntimeSnapshot> {
+    return await this.enqueue(async () => {
+      const config = this.runtimeConfig ?? (await this.configStore.load()).activity;
+      this.runtimeConfig = config;
+      this.runtimeRunning = true;
+      await this.applySettings({ ...config, enabled: true });
+      return this.snapshot();
+    });
+  }
+
+  async stopRuntime(): Promise<void> {
+    await this.enqueue(async () => {
+      const config = this.runtimeConfig ?? (await this.configStore.load()).activity;
+      this.runtimeConfig = config;
+      this.runtimeRunning = false;
+      await this.applySettings({ ...config, enabled: false });
+    });
+  }
+
   /**
    * Activity 设置采用即时保存与重启采集器语义，但仍通过全局 config revision 做 CAS。
    * 这样设置页的其它未保存草稿不会被一次 Activity 开关操作悄悄覆盖。
@@ -351,7 +434,12 @@ export class ActivityRecorderService {
     const saved = await saveVersioned(next, current.revision);
     // 保存成功即撤销旧配置下的在途任务，不等待采集写队列完成才生效。
     this.analysisAbort.abort();
-    await this.enqueue(async () => await this.applySettings(saved.config.activity));
+    await this.enqueue(async () => {
+      this.persistedActivitySettings = saved.config.activity;
+      this.runtimeConfig = saved.config.activity;
+      this.runtimeRunning = saved.config.activity.enabled;
+      await this.applySettings(saved.config.activity);
+    });
     return {
       activity: structuredClone(saved.config.activity),
       configRevision: saved.revision
@@ -397,22 +485,23 @@ export class ActivityRecorderService {
   }
 
   /**
-   * 生成并持久化指定日期的打工日记。刻意不走 enqueue、也不用采集器自己的 store：补分析要
-   * 做多次模型调用，占用采集器那条写连接会把事件落盘队列堵住。这里开一条独立连接读分析表、补分析。
+   * 生成并持久化指定日期的打工日记。独立连接只读取已保存的会话分析，
+   * 避免日报读取和缓存写入占用采集器的事件落盘队列。
    */
   async buildReport(date?: string): Promise<ActivityReportResult> {
     const signal = this.analysisAbort.signal;
     signal.throwIfAborted();
     const config = await this.configStore.load();
     signal.throwIfAborted();
+    const settings = await this.runtimeSettingsSnapshot();
 
-    const model = resolveToolModel(config);
     const store = new ActivityStore();
-    await store.open(config.activity.outputDirectory, this.agentDir);
+    await store.open(settings.outputDirectory, this.agentDir);
     try {
-      const operation = createActivityOperation(store, config.activity, async () => (await this.configStore.load()).activity, signal);
-      const skeleton = await buildActivityReport({ store, model, ...operation, writeMemories: this.writeMemories, onAnalyzed: this.onAnalyzed }, date ?? "today");
-      const result = await narrateActivityReport(skeleton, { model, ...operation });
+      const operation = createActivityOperation(store, settings, () => this.runtimeSettingsSnapshot(), signal);
+      const skeleton = await buildActivityReport({ store, ...operation }, date ?? "today");
+      const model = skeleton.cached ? undefined : resolveToolModel(config);
+      const result = await narrateActivityReport(skeleton, { model, store, ...operation });
       await operation.checkpoint();
       await this.writeDailyNote(result.date, formatActivityDailyNote(result), { checkpoint: operation.checkpoint });
       return result;
@@ -427,10 +516,11 @@ export class ActivityRecorderService {
     signal.throwIfAborted();
     const config = await this.configStore.load();
     signal.throwIfAborted();
+    const settings = await this.runtimeSettingsSnapshot();
     const store = new ActivityStore();
-    await store.open(config.activity.outputDirectory, this.agentDir);
+    await store.open(settings.outputDirectory, this.agentDir);
     try {
-      const operation = createActivityOperation(store, config.activity, async () => (await this.configStore.load()).activity, signal);
+      const operation = createActivityOperation(store, settings, () => this.runtimeSettingsSnapshot(), signal);
       return await generateActivitySuggestions({ store, model: resolveToolModel(config), ...operation });
     } finally {
       await store.close();
@@ -442,15 +532,15 @@ export class ActivityRecorderService {
     if (!this.getEmbeddingRuntime) return;
     const signal = this.analysisAbort.signal;
     signal.throwIfAborted();
-    const config = await this.configStore.load();
+    const settings = await this.runtimeSettingsSnapshot();
     signal.throwIfAborted();
     const store = new ActivityStore();
-    await store.open(config.activity.outputDirectory, this.agentDir);
+    await store.open(settings.outputDirectory, this.agentDir);
     try {
       await precomputeActivityEmbeddings({
         store,
         getEmbeddingRuntime: this.getEmbeddingRuntime,
-        ...createActivityOperation(store, config.activity, async () => (await this.configStore.load()).activity, signal)
+        ...createActivityOperation(store, settings, () => this.runtimeSettingsSnapshot(), signal)
       });
     } finally {
       await store.close();
@@ -468,12 +558,13 @@ export class ActivityRecorderService {
     signal.throwIfAborted();
     const config = await this.configStore.load();
     signal.throwIfAborted();
+    const settings = await this.runtimeSettingsSnapshot();
 
     const model = resolveToolModel(config);
     const store = new ActivityStore();
-    await store.open(config.activity.outputDirectory, this.agentDir);
+    await store.open(settings.outputDirectory, this.agentDir);
     try {
-      const operation = createActivityOperation(store, config.activity, async () => (await this.configStore.load()).activity, signal);
+      const operation = createActivityOperation(store, settings, () => this.runtimeSettingsSnapshot(), signal);
       await analyzePendingActivitySessions({ store, model, ...operation, writeMemories: this.writeMemories, onAnalyzed: this.onAnalyzed });
     } finally {
       await store.close();
@@ -555,7 +646,7 @@ export class ActivityRecorderService {
     // 日报消费已经落库的 session 分析，不依赖本次是否成功启动采集输入进程。
     this.scheduleDailySummaryCheck();
     if (this.inputMonitorPath === undefined) {
-      this.setState("unavailable", "当前平台没有可用的 macOS Activity 输入监听。");
+      this.startCaptureWithoutInput(nextSettings, "Activity 输入监听不可用");
       return;
     }
     try {
@@ -564,8 +655,21 @@ export class ActivityRecorderService {
     } catch (error) {
       await this.stopInternal();
       this.scheduleDailySummaryCheck();
-      this.setState("unavailable", safeError(error));
+      this.startCaptureWithoutInput(nextSettings, `Activity 输入监听不可用：${safeError(error)}`);
     }
+  }
+
+  private startCaptureWithoutInput(settings: ActivitySettings, reason: string): void {
+    this.screenRecordingGranted = false;
+    this.fallbackAvailable = false;
+    if (!this.captureEngine || !this.independentCaptureAvailable) {
+      this.setState("unavailable", reason);
+      return;
+    }
+    this.captureEngine.restart();
+    this.scheduleSnapshotRotation(settings.maxStorageMb);
+    this.startCaptureTimers(settings);
+    this.setState("error", `${reason}；截图等待独立验证屏幕权限和前台应用。`);
   }
 
   private async startInputMonitor(settings: ActivitySettings): Promise<void> {
@@ -585,7 +689,12 @@ export class ActivityRecorderService {
       if (this.child === child) this.setState("error", safeError(error));
     });
     child.once("error", (error) => {
-      this.setState("error", safeError(error));
+      if (this.child !== child) return;
+      this.output?.close();
+      this.output = undefined;
+      this.child = undefined;
+      this.endCurrentSession(new Date().toISOString());
+      this.startCaptureWithoutInput(settings, `Activity 输入监听启动失败：${safeError(error)}`);
     });
     child.once("exit", (code, signal) => {
       if (this.child !== child) return;
@@ -597,7 +706,9 @@ export class ActivityRecorderService {
       this.output = undefined;
       this.child = undefined;
       this.endCurrentSession(new Date().toISOString());
-      this.setState("error", `Activity 输入监听 已退出（code=${code ?? "-"}, signal=${signal ?? "-"}）。`);
+      this.screenRecordingGranted = false;
+      this.fallbackAvailable = false;
+      this.setState("error", `Activity 输入监听已退出（code=${code ?? "-"}, signal=${signal ?? "-"}）；截图等待独立验证屏幕权限和前台应用。`);
     });
     // session 是懒创建的：只有收到首个输入/焦点事件或首张截图时才落库，
     // 启动输入进程本身不能制造一个空 session。
@@ -618,6 +729,8 @@ export class ActivityRecorderService {
     this.captureTimer = undefined;
     this.typingTimer = undefined;
     this.pendingTrigger = undefined;
+    this.lastSensitiveEventAt = -Infinity;
+    this.sensitiveMarkerQueued = false;
     this.captureEngine?.resetBaseline();
     if (this.pendingKey) { await this.persistEvent(this.pendingKey); this.pendingKey = undefined; }
     this.clearSessionIdleTimer();
@@ -658,6 +771,10 @@ export class ActivityRecorderService {
     this.output?.close();
     this.output = undefined;
     this.child = undefined;
+    // 关停阶段可能还有最后一条 status 到达；结束后统一清除上一个进程的权限报告。
+    this.screenRecordingGranted = false;
+    this.accessibilityGranted = false;
+    this.fallbackAvailable = false;
     this.pendingOcrCaptures.clear();
     this.endCurrentSession(new Date().toISOString());
   }
@@ -671,24 +788,45 @@ export class ActivityRecorderService {
     }
   }
 
-  private async persistInputMessage(message: PersistableInputMessage, child: ChildProcessWithoutNullStreams | undefined): Promise<void> {
-    if (!child || child !== this.child) return;
+  private async persistInputMessage(message: PersistableInputMessage, child: ChildProcessWithoutNullStreams | undefined): Promise<boolean> {
+    if (!child || child !== this.child) return false;
     try {
       if (this.recordingRevision !== this.store.clearRevision()) {
         // 其他进程清空后，旧 session 和输入进程缓冲都已失效。重新启动采集，不能把
         // 旧消息挂到新 session；stop 冲刷出的消息也必须丢弃，且不能递归重启。
-        if (!this.inputMonitorStopping) await this.applySettings((await this.configStore.load()).activity);
-        return;
+        if (!this.inputMonitorStopping) await this.applySettings(this.settings ?? await this.runtimeSettingsSnapshot());
+        return false;
       }
-      await this.persistEvent(message);
+      return await this.persistEvent(message);
     } catch (error) {
       this.setState("error", safeError(error));
+      return false;
     }
   }
 
   handlePowerEvent(event: "lock-screen" | "unlock-screen" | "suspend" | "resume"): void {
-    if (!this.child || !this.settings?.enabled) return;
-    this.handleInputLine(JSON.stringify({type:"event",eventType:event === "lock-screen" || event === "suspend" ? "lock" : "unlock",occurredAt:new Date().toISOString()}));
+    if (!this.settings?.enabled || (this.state !== "running" && this.state !== "error" && this.state !== "permission_required")) return;
+    // powerMonitor 与输入监听是两个事件来源。系统解锁只解除截图门禁；
+    // 只有输入监听真正报告 unlock 时才记录事件、创建新 session。
+    this.captureEpoch++;
+    if (event === "unlock-screen" || event === "resume") {
+      this.screenLocked = false;
+      this.captureEngine?.resetBaseline();
+      this.publish();
+      return;
+    }
+    this.flushPendingKeypress();
+    this.screenLocked = true;
+    const occurredAt = new Date().toISOString();
+    const revision = this.recordingRevision;
+    void this.enqueue(async () => {
+      if (revision !== this.store.clearRevision()) return;
+      // 外部锁屏只附着到已有活动；没有输入监听时截图会话也要保留锁屏边界。
+      if (this.sessionId) this.store.recordEvent({sessionId:this.sessionId,occurredAt,eventType:"lock",via:"powerMonitor"});
+      this.endCurrentSession(occurredAt);
+      this.publish();
+    }).catch((error: unknown) => this.setState("error", safeError(error)));
+    this.publish();
   }
 
   private flushPendingKeypress(): void {
@@ -710,9 +848,44 @@ export class ActivityRecorderService {
     }
     if (message.type === "event") {
       if (message.eventType !== "keypress") this.flushPendingKeypress();
+      const enteringSensitive = message.bundleId !== undefined && message.bundleId !== this.foregroundBundle
+        && this.settings?.sensitiveApplications.includes(message.bundleId);
+      if (message.bundleId !== undefined && message.bundleId !== this.foregroundBundle) this.foregroundTitle = undefined;
       this.foregroundBundle = message.bundleId ?? this.foregroundBundle;
       this.foregroundTitle = message.windowTitle ?? this.foregroundTitle;
       if (this.screenLocked && message.eventType !== "unlock" && message.eventType !== "lock") return;
+      if (this.foregroundBundle && this.settings?.sensitiveApplications.includes(this.foregroundBundle)
+        && message.eventType !== "lock" && message.eventType !== "unlock") {
+        if (message.eventType === "keypress") this.flushPendingKeypress();
+        if (this.typingTimer) clearTimeout(this.typingTimer);
+        this.typingTimer = undefined;
+        if (enteringSensitive) {
+          // 应用切入时撤销已开始/待触发的旧截图，防止异步帧跨过敏感边界落库。
+          this.captureEpoch++;
+          this.captureEngine?.resetBaseline();
+          if (this.captureTimer) clearTimeout(this.captureTimer);
+          this.captureTimer = undefined;
+          this.pendingTrigger = undefined;
+        }
+        if (!this.inputMonitorStopping && !this.sensitiveMarkerQueued && this.now() - this.lastSensitiveEventAt >= 5_000) {
+          const child = this.child;
+          const marker: PersistableInputMessage = {
+            type: "event", eventType: "system", occurredAt: message.occurredAt,
+            application: message.application ?? this.currentApplication, fallbackReason: "sensitive_app"
+          };
+          this.sensitiveMarkerQueued = true;
+          void this.enqueue(async () => {
+            try {
+              if (this.now() - this.lastSensitiveEventAt < 5_000) return;
+              if (await this.persistInputMessage(marker, child)) this.lastSensitiveEventAt = this.now();
+            } finally { this.sensitiveMarkerQueued = false; }
+          }).catch((error: unknown) => {
+            this.sensitiveMarkerQueued = false;
+            this.setState("error", safeError(error));
+          });
+        }
+        return;
+      }
       if (message.eventType === "keypress") {
         this.lastInputAt = Date.parse(message.occurredAt);
         void this.enqueue(async () => { this.ensureSession(message.occurredAt); this.touchSession(); });
@@ -726,7 +899,7 @@ export class ActivityRecorderService {
       }
       if (message.eventType === "app_focus" || message.eventType === "unlock") { this.captureEpoch++; this.captureEngine?.resetBaseline(); }
       if (message.eventType === "lock") { this.captureEpoch++; this.screenLocked = true; }
-      if (["click", "app_focus", "unlock"].includes(message.eventType)) this.scheduleCapture(message.eventType === "unlock" ? "app_focus" : message.eventType);
+      if (message.eventType === "click" || message.eventType === "app_focus") this.scheduleCapture(message.eventType);
     }
     if (message.type === "event") {
       if (this.inputMonitorStopping) {
@@ -741,7 +914,8 @@ export class ActivityRecorderService {
       this.screenRecordingGranted = message.screenRecordingGranted;
       this.accessibilityGranted = message.accessibilityGranted;
       this.fallbackAvailable = message.fallbackAvailable ?? message.screenRecordingGranted;
-      this.screenLocked = message.screenLocked ?? false;
+      // 状态报文可在 Electron 锁屏通知之后晚到；只有明确的 unlock/resume 事件才能放行截图。
+      if (message.screenLocked === true) this.screenLocked = true;
       this.currentApplication = message.currentApplication ?? undefined;
       if (message.status === "paused") this.setState("paused", message.error);
       else if (message.status === "stopped") this.setState("stopped", message.error);
@@ -761,8 +935,10 @@ export class ActivityRecorderService {
     if (settings.visualPollMs > 0) {
       let ticks = 0;
       this.captureTimers.push(this.captureTimerScheduler.setInterval(() => {
-        if (Date.now() - (this.captureEngine?.lastAttemptAt ?? -Infinity) < settings.visualPollMs) {ticks = 0;return;}
-        const idle = Date.now() - (this.lastInputAt ?? Date.now());
+        const now = this.now();
+        if (now - (this.captureEngine?.lastAttemptAt ?? -Infinity) < settings.visualPollMs) {ticks = 0;return;}
+        // 尚无可信输入时间时按长期空闲处理，与视觉采样初始节奏保持一致。
+        const idle = now - (this.lastInputAt ?? 0);
         if (idle <= settings.idleTimeoutMs) ticks = 0;
         if (idle > settings.idleTimeoutMs && ++ticks % Math.min(5, 1 + Math.floor(idle / (4 * settings.visualPollMs))) !== 0) return;
         void this.capture("visual_change");
@@ -787,39 +963,53 @@ export class ActivityRecorderService {
 
   private async capture(trigger: string): Promise<void> {
     const settings = this.settings;
-    if (!settings?.enabled || !this.captureEngine || this.captureInFlight || this.screenLocked || !this.screenRecordingGranted || !this.child) return;
-    if (this.foregroundBundle && settings.sensitiveApplications.includes(this.foregroundBundle)) return;
+    if (!settings?.enabled || !this.captureEngine || this.captureTimers.length === 0 || this.captureInFlight || this.screenLocked || (this.child && !this.screenRecordingGranted)
+      || this.state === "stopped" || this.state === "paused" || this.state === "unavailable") return;
+    if (this.child && this.foregroundBundle && settings.sensitiveApplications.includes(this.foregroundBundle)) return;
     const epoch = this.captureEpoch;
-    const application = this.currentApplication;
-    const bundleId = this.foregroundBundle;
-    const windowTitle = this.foregroundTitle;
     this.captureInFlight = true;
     try {
+      const independentBundle = this.child ? undefined : await this.verifiedIndependentBundle(epoch, settings);
+      if (!this.child && !independentBundle) return;
+      const application = this.child ? this.currentApplication : independentBundle;
+      const bundleId = this.child ? this.foregroundBundle : independentBundle;
+      const windowTitle = this.child ? this.foregroundTitle : undefined;
       const frame = await this.captureEngine.capture(settings, trigger);
       if (epoch !== this.captureEpoch) { this.captureEngine.resetBaseline(); return; }
       if (!frame) return;
+      if (independentBundle && await this.verifiedIndependentBundle(epoch, settings) !== independentBundle) {
+        this.captureEngine.resetBaseline(); return;
+      }
       const captureId = crypto.randomUUID();
       const occurredAt = new Date().toISOString();
-      await this.enqueue(async () => {
-        if (epoch !== this.captureEpoch) return;
-        await this.persistFallbackCapture({ type: "capture", occurredAt, application, bundleId, windowTitle,
+      const persisted = await this.enqueue(async () => {
+        if (epoch !== this.captureEpoch) return false;
+        if (independentBundle && await this.verifiedIndependentBundle(epoch, settings) !== independentBundle) return false;
+        return await this.persistFallbackCapture({ type: "capture", occurredAt, application, bundleId, windowTitle,
           jpegBase64: frame.jpeg.toString("base64"), width: frame.width, height: frame.height, captureTrigger: trigger, captureId,
-          contentHash: frame.contentHash, histogramChange: frame.histogramChange, pixelDiff: frame.pixelDiff });
+          contentHash: frame.contentHash, histogram: frame.histogram,
+          histogramChange: frame.histogramChange, pixelDiff: frame.pixelDiff });
       });
+      if (!persisted) { this.captureEngine.resetBaseline(); return; }
+      if (independentBundle) this.setState("error", "Activity 输入监听不可用；仅屏幕截图继续。");
       this.frameCount++;
       if (settings.ocrEnabled && this.frameCount >= settings.ocrEveryNFrames) {
-        this.frameCount = 0;
         const snapshotId = this.pendingOcrCaptures.get(captureId);
         const file = snapshotId ? this.store.getSnapshotPath(snapshotId) : undefined;
         const signal = this.analysisAbort.signal;
         if (file && this.nativeClient) {
           try {
             const ocrText = await this.nativeClient.recognize(file, settings.ocrLanguages, signal);
+            this.frameCount = 0;
             // 已落盘帧的 OCR 不受前台切换影响；暂停、重启和清空仍取消旧结果。
             if (!signal.aborted) await this.enqueue(async () => {
               if (!signal.aborted && this.recordingRevision === this.store.clearRevision()) await this.persistOcr({type:"ocr",captureId,ocrText});
             });
-          } catch { if (!signal.aborted) this.error = "Activity OCR 识别失败"; }
+          } catch (error) {
+            // OCR 程序暂缺时尚未完成这一轮识别；下张已保存帧应立即重试。
+            if ((error as NodeJS.ErrnoException).code !== "ENOENT") this.frameCount = 0;
+            if (!signal.aborted) this.error = "Activity OCR 识别失败";
+          }
         }
       }
       this.pendingOcrCaptures.delete(captureId);
@@ -828,8 +1018,41 @@ export class ActivityRecorderService {
     } finally { this.captureInFlight = false; }
   }
 
+  private async verifiedIndependentBundle(epoch: number, settings: ActivitySettings): Promise<string | undefined> {
+    const active = (): boolean => epoch === this.captureEpoch && settings.enabled && this.settings?.enabled === true
+      && this.captureTimers.length > 0 && !this.child && !this.screenLocked
+      && this.state !== "stopped" && this.state !== "paused" && this.state !== "unavailable";
+    if (!active()) return undefined;
+    let granted = false;
+    try { granted = await this.hasScreenRecordingPermission(); } catch { /* 权限未知时按拒绝处理。 */ }
+    if (!active()) return undefined;
+    this.screenRecordingGranted = granted;
+    this.fallbackAvailable = granted;
+    if (!granted) {
+      this.setState("permission_required", "Activity 输入监听不可用；无法确认屏幕录制权限，截图已暂停。");
+      return undefined;
+    }
+    let bundleId: string | undefined;
+    try { bundleId = await this.readFrontmostBundle(); } catch { /* 前台状态未知时禁止落帧。 */ }
+    if (!active()) return undefined;
+    if (!bundleId || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$/u.test(bundleId)) {
+      this.setState("error", "Activity 输入监听不可用；无法确认前台应用，截图已暂停。");
+      return undefined;
+    }
+    if (settings.sensitiveApplications.includes(bundleId)) {
+      this.foregroundBundle = bundleId;
+      this.foregroundTitle = undefined;
+      this.captureEngine?.resetBaseline();
+      return undefined;
+    }
+    if (this.foregroundBundle !== bundleId) this.foregroundTitle = undefined;
+    this.foregroundBundle = bundleId;
+    this.currentApplication = bundleId;
+    return bundleId;
+  }
+
   private async pollBrowser(): Promise<void> {
-    if (!this.sessionId || this.screenLocked || !this.foregroundBundle) return;
+    if (!this.settings?.enabled || !this.sessionId || this.screenLocked || !this.foregroundBundle) return;
     const bundleId = this.foregroundBundle;
     if (this.settings?.sensitiveApplications.includes(bundleId)) return;
     const script = activityBrowserScript(bundleId);
@@ -847,19 +1070,21 @@ export class ActivityRecorderService {
       await this.enqueue(async () => {
         if (epoch !== this.captureEpoch || sessionId !== this.sessionId) return;
         const event: InputEventMessage = {type:"event",eventType:"browser_visit",occurredAt:new Date().toISOString(),application,bundleId,windowTitle:visit.title,url:visit.url};
-        await this.persistEvent(event);
-        if (visit.title) await this.persistEvent({...event,eventType:"window_title"});
+        if (!await this.persistEvent(event)) return;
+        if (visit.title && !await this.persistEvent({...event,eventType:"window_title"})) return;
         this.browserLastVisit = key;
       });
     } catch { /* 浏览器未授权或没有窗口时等下一次轮询。 */ }
   }
 
-  private async persistEvent(message: InputEventMessage): Promise<void> {
-    if (!this.settings || !this.child) return;
+  private async persistEvent(message: InputEventMessage): Promise<boolean> {
+    const isBrowserEvent = message.eventType === "browser_visit" || message.eventType === "window_title";
+    // 截图创建的 session 可在输入进程退出后继续接收浏览器访问，但不能以轮询创建 session。
+    if (!this.settings?.enabled || (!this.child && (!isBrowserEvent || !this.screenRecordingGranted || !this.captureTimers.length))
+      || (isBrowserEvent && this.screenLocked)) return false;
     try {
-      const isBrowserEvent = message.eventType === "browser_visit" || message.eventType === "window_title";
       // 浏览器轮询只附着到已有 session；它本身既不能创建 session，也不能延长 idle timer。
-      if (isBrowserEvent && !this.sessionId) return;
+      if (isBrowserEvent && !this.sessionId) return false;
       const sessionId = isBrowserEvent ? this.sessionId! : this.ensureSession(message.occurredAt);
       this.store.recordEvent({
         sessionId,
@@ -896,13 +1121,16 @@ export class ActivityRecorderService {
         }
       }
       this.publish();
+      return true;
     } catch (error) {
       this.setState("error", safeError(error));
+      return false;
     }
   }
 
-  private async persistFallbackCapture(message: CaptureMessage): Promise<void> {
-    if (!this.settings || !this.child || this.screenLocked) return;
+  private async persistFallbackCapture(message: CaptureMessage): Promise<boolean> {
+    if (!this.settings?.enabled || this.screenLocked || !this.screenRecordingGranted || this.state === "stopped" || this.state === "paused"
+      || (this.foregroundBundle !== undefined && this.settings.sensitiveApplications.includes(this.foregroundBundle))) return false;
     try {
       const jpeg = Buffer.from(message.jpegBase64, "base64");
       if (!jpeg.byteLength) throw new Error("Activity 输入监听 返回了空截图 JPEG。");
@@ -923,6 +1151,7 @@ export class ActivityRecorderService {
         width: message.width,
         height: message.height,
         contentHash: message.contentHash,
+        histogram: message.histogram,
         histogramChange: message.histogramChange,
         pixelDiff: message.pixelDiff,
         jpeg
@@ -932,13 +1161,15 @@ export class ActivityRecorderService {
       }
       this.currentApplication = message.application ?? this.currentApplication;
       this.publish();
+      return stored.snapshotId !== undefined;
     } catch (error) {
       this.setState("error", safeError(error));
+      return false;
     }
   }
 
   private async persistOcr(message: OcrMessage): Promise<void> {
-    if (!this.settings || !this.child) return;
+    if (!this.settings?.enabled || this.state === "stopped" || this.state === "paused") return;
     try {
       const persisted = this.store.updateSnapshotOcrByCaptureId(message.captureId, message.ocrText);
       if (!persisted) {
@@ -1020,8 +1251,9 @@ export class ActivityRecorderService {
         await this.store.rotateSnapshots(maxStorageMb, new Date(), this.recompressSnapshot);
         // 轮转删除会改变 storageBytes/fallbackCaptures；反正最多 30 分钟一次，直接作废缓存。
         this.invalidateStoreSnapshot();
-      } catch {
-        // 轮转失败不应中断实时采集；下一次检查会再次尝试。
+      } catch (error) {
+        // 轮转失败不应中断实时采集；保留原档位供下一次检查重试。
+        console.warn("[ActivityRecorder] snapshot rotation failed:", safeError(error));
       }
     });
   }
@@ -1067,18 +1299,20 @@ export class ActivityRecorderService {
         const dateKey = formatLocalDateKey(yesterday);
         const config = await this.configStore.load();
         signal.throwIfAborted();
+        const settings = await this.runtimeSettingsSnapshot();
 
         // 独立连接让事件在生成日报期间继续落盘。
         const store = new ActivityStore();
-        await store.open(config.activity.outputDirectory, this.agentDir);
+        await store.open(settings.outputDirectory, this.agentDir);
         try {
           const existing = store.getSummary("daily", dateKey);
-          if (existing && !existing.isPartial && existing.summary) return;
+          // 确定性 fallback 也有正文；只有模型叙事成功才停止昨日自动重试。
+          if (existing && !existing.isPartial && existing.summary && existing.model) return;
           // 自动日结只维护 SQLite 摘要；工作日报的文件导出由显式请求触发。
           await refreshActivitySummaryWithNarrative(store, "daily", dateKey, {
             model: resolveToolModel(config),
 
-            ...createActivityOperation(store, config.activity, async () => (await this.configStore.load()).activity, signal),
+            ...createActivityOperation(store, settings, () => this.runtimeSettingsSnapshot(), signal),
             now,
             withNarrative: true
           });
@@ -1185,6 +1419,24 @@ function formatLocalDateKey(date: Date): string {
 
 function safeError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+async function readMacFrontmostBundle(): Promise<string | undefined> {
+  if (process.platform !== "darwin") return undefined;
+  try {
+    const script = 'ObjC.import("AppKit"); var app = $.NSWorkspace.sharedWorkspace.frontmostApplication; app ? ObjC.unwrap(app.bundleIdentifier) : ""';
+    const { stdout } = await promisify(execFile)("/usr/bin/osascript", ["-l", "JavaScript", "-e", script],
+      { timeout: 1500, maxBuffer: 1024 });
+    return stdout.trim() || undefined;
+  } catch { return undefined; }
+}
+
+async function checkMacScreenRecordingPermission(): Promise<boolean> {
+  if (process.platform !== "darwin" || !process.versions.electron) return false;
+  try {
+    const { systemPreferences } = await import("electron");
+    return systemPreferences.getMediaAccessStatus("screen") === "granted";
+  } catch { return false; }
 }
 
 async function requestStandaloneScreenRecordingPermission(inputMonitorPath: string): Promise<void> {

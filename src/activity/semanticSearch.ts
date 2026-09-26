@@ -153,7 +153,7 @@ function unsupportedRuntimeResult(): { ok: false; reason: "no_runtime"; message:
 
 function activityEmbeddingModelName(runtime: EmbeddingModelRuntime): string {
   const ref = runtime.descriptor.ref;
-  return ref.kind === "local" ? ref.model : `${ref.provider}/${ref.model}`;
+  return ref.kind === "local" ? ref.model : ref.kind === "provider" ? `${ref.provider}/${ref.model}` : "unavailable";
 }
 
 async function embedMissingActivitySources(
@@ -187,7 +187,7 @@ async function embedOcrPassages(
           fingerprint,
           vector,
           (deps.now?.() ?? new Date()).toISOString(),
-          runtime.descriptor.ref.model
+          runtime.descriptor.ref.kind === "auto" ? "unavailable" : runtime.descriptor.ref.model
         );
         if (saved) embedded += 1;
       }

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createServer } from "node:http";
 import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -7,6 +8,7 @@ import { precomputeActivityEmbeddings } from "../src/activity/semanticSearch.js"
 import { ActivityStore } from "../src/activity/store.js";
 import { ActivityRecorderService } from "../src/desktop/electron/main/ActivityRecorderService.js";
 import { defaultConfig } from "../src/config/schema.js";
+import type { AgentConfig } from "../src/config/schema.js";
 import type { AgentConfigStore } from "../src/config/store.js";
 import { defaultActivitySettings } from "../src/activity/settings.js";
 import type { EmbeddingModelRuntime } from "../src/llm/embedding/types.js";
@@ -183,12 +185,20 @@ while IFS= read -r line; do
 done
 `, { mode: 0o700 });
   await chmod(inputMonitorPath, 0o700);
-  const config = {
+  let config: AgentConfig = {
     ...defaultConfig,
     activity: { ...defaultActivitySettings, outputDirectory: root }
   };
   const configStore = { load: async () => config } as AgentConfigStore;
   const timers = new FakeTimers();
+  let narrativeCalls = 0;
+  const provider = createServer(async (request, response) => {
+    for await (const _chunk of request) { /* Drain local provider request. */ }
+    narrativeCalls += 1;
+    response.writeHead(200, { "content-type": "text/event-stream" });
+    response.end(`data: ${JSON.stringify({ choices: [{ index: 0, delta: { content: "昨天完成了编辑器中的工作。" }, finish_reason: null }] })}\n\ndata: ${JSON.stringify({ choices: [{ index: 0, delta: {}, finish_reason: "stop" }] })}\n\ndata: [DONE]\n\n`);
+  });
+  await new Promise<void>((resolve) => provider.listen(0, "127.0.0.1", resolve));
   let notes = 0;
   let lastNote: string | undefined;
   const service = new ActivityRecorderService({ agentDir: root,
@@ -216,15 +226,31 @@ done
     try {
       const first = verifier.getSummary("daily", yesterdayKey);
       assert.ok(first && !first.isPartial);
+      assert.equal(first.model, undefined, "无模型时只保存确定性摘要");
+      const address = provider.address();
+      assert.ok(address && typeof address !== "string");
+      config = {
+        ...config,
+        toolModel: "local-test",
+        providers: { local: { type: "openai-compatible", baseUrl: `http://127.0.0.1:${address.port}/v1`, requiresApiKey: false, retry: { maxAttempts: 1 } } },
+        models: { "local-test": { provider: "local", model: "local-test", contextWindow: 128_000, capabilities: { tools: true, reasoning: false, streaming: true } } }
+      };
+      timers.advance(15 * 60 * 1_000);
+      await waitFor(() => verifier.getSummary("daily", yesterdayKey)?.model === "local-test");
+      const completed = verifier.getSummary("daily", yesterdayKey);
+      assert.equal(completed?.summary, "昨天完成了编辑器中的工作。");
+      assert.equal(narrativeCalls, 1);
       timers.advance(15 * 60 * 1_000);
       await new Promise((resolve) => setTimeout(resolve, 50));
-      assert.deepEqual(verifier.getSummary("daily", yesterdayKey), first, "已完成的昨日摘要不重复生成");
+      assert.deepEqual(verifier.getSummary("daily", yesterdayKey), completed, "成功生成叙事后不重复请求模型");
+      assert.equal(narrativeCalls, 1);
       assert.equal(notes, 0);
     } finally {
       await verifier.close();
     }
   } finally {
     await service.stop();
+    await new Promise<void>((resolve, reject) => provider.close((error) => error ? reject(error) : resolve()));
     await rm(root, { recursive: true, force: true });
   }
 }

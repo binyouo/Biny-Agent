@@ -1,3 +1,4 @@
+import { useChatResponseSettings } from "../../chatResponseSettings.js";
 /**
  * 活动段：连续「思考 + 工具」步骤的可展开记录。
  *
@@ -72,6 +73,7 @@ export const ActivitySegment = memo(function ActivitySegment({
   onOpenExternal,
   onResolvePermission,
 }: ActivitySegmentProps): React.JSX.Element | null {
+  const { collapseThinking } = useChatResponseSettings();
   const items: ActivityPhaseItem[] = useMemo(
     () => steps.map((step, index) => ({ step, index })),
     [steps]
@@ -110,17 +112,19 @@ export const ActivitySegment = memo(function ActivitySegment({
     : -1;
 
   // 模型执行时自动跟随，只有落定后的选择才由用户控制。恢复执行也清除旧选择。
-  const [selection, setSelection] = useState<{ running: boolean; phase: number | null; timeline: boolean }>({ running, phase: null, timeline: false });
-  if (selection.running !== running) setSelection({ running, phase: null, timeline: false });
+  const thinkingIndex = phases.findLastIndex((phase) => phase.kind === "thinking");
+  const defaultPhase = !collapseThinking && thinkingIndex >= 0 ? thinkingIndex : null;
+  const [selection, setSelection] = useState<{ running: boolean; collapsed: boolean; phase: number | null; timeline: boolean }>({ running, collapsed: collapseThinking, phase: defaultPhase, timeline: !collapseThinking && allThinking });
+  if (selection.running !== running || selection.collapsed !== collapseThinking) setSelection({ running, collapsed: collapseThinking, phase: defaultPhase, timeline: !collapseThinking && allThinking });
   // 悬停「+N」时液滴展开；用户选中的相位落在隐藏区时保持展开（溢出展开态）。
   const [overflowExpanded, setOverflowExpanded] = useState(false);
   const timelineMode = !running && selection.running === running && selection.timeline;
   const selectedPhase = pendingPhaseIndex >= 0 ? pendingPhaseIndex
     : running ? phases.length - 1 : selection.running === running ? selection.phase : null;
   const railOpen = timelineMode || selectedPhase !== null;
-  const close = (): void => setSelection({ running, phase: null, timeline: false });
-  const openTimeline = (): void => setSelection({ running, phase: null, timeline: true });
-  const openPhase = (index: number): void => setSelection({ running, phase: selectedPhase === index ? null : index, timeline: false });
+  const close = (): void => setSelection({ running, collapsed: collapseThinking, phase: null, timeline: false });
+  const openTimeline = (): void => setSelection({ running, collapsed: collapseThinking, phase: null, timeline: true });
+  const openPhase = (index: number): void => setSelection({ running, collapsed: collapseThinking, phase: selectedPhase === index ? null : index, timeline: false });
 
   if (phases.length === 0) return null;
 
@@ -230,7 +234,7 @@ export const ActivitySegment = memo(function ActivitySegment({
                 aria-pressed={timelineMode}
                 className={`chat-activity-mode${timelineMode ? " is-active" : ""}`}
                 data-activity-toggle=""
-                onClick={() => timelineMode ? setSelection({ running, phase: phases.length - 1, timeline: false }) : openTimeline()}
+                onClick={() => timelineMode ? setSelection({ running, collapsed: collapseThinking, phase: phases.length - 1, timeline: false }) : openTimeline()}
                 title="时间线视图"
                 type="button"
               ><Icon name="list-tree" size={14} /></button>
