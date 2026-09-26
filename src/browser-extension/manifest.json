@@ -1,0 +1,12 @@
+{
+  "manifest_version": 3,
+  "name": "Biny Browser Relay",
+  "version": "1.1.0",
+  "minimum_chrome_version": "125",
+  "description": "连接 Biny 与当前 Chrome 配置中的网页标签。",
+  "permissions": ["tabs", "debugger", "storage", "alarms"],
+  "host_permissions": ["http://127.0.0.1/*"],
+  "background": { "service_worker": "background.js", "type": "module" },
+  "options_page": "options.html",
+  "action": { "default_title": "Biny 浏览器连接设置" }
+}

@@ -17,6 +17,7 @@ const requestTimeoutMs = 20_000;
 const maxResponseBytes = 4 * 1024 * 1024;
 
 export interface BrowserAutomationEndpoint {
+  projectId?: string;
   endpoint: string;
   token: string;
 }
@@ -78,9 +79,9 @@ function createBrowserNavigateTool(endpoint: BrowserAutomationEndpoint): Tool<Br
 function createBrowserReadDomTool(endpoint: BrowserAutomationEndpoint): Tool<BrowserReadDomArgs> {
   return {
     name: "BrowserReadDom",
-    description: "Read the visible browser page title, URL, readable text, and a compact list of interactive elements.",
-    promptSnippet: "Inspect the visible browser DOM and interactive elements",
-    promptGuidelines: ["After a page transition or interaction, use BrowserReadDom again to verify the result"],
+    description: "Read the Biny built-in browser page title, URL, text and interactive elements. This does not read the user's Chrome, Edge or other external browser tabs.",
+    promptSnippet: "Inspect the Biny built-in browser page",
+    promptGuidelines: ["For the user's existing browser or open tabs, use ChromeRelayListTabs then ChromeRelayRead. Never describe a Biny page as the user's daily browser.", "After a page transition or interaction, use BrowserReadDom again to verify the result"],
     parameters: {
       type: "object",
       properties: { maxCharacters: { type: "integer", minimum: 1_000, maximum: 100_000, description: "Maximum readable text characters." } },
@@ -189,7 +190,7 @@ function browserDisplayDetail(method: string, detail: Record<string, unknown>): 
   return redactSensitiveValue(detail);
 }
 
-async function requestBrowser(
+export async function requestBrowser(
   endpoint: BrowserAutomationEndpoint,
   method: string,
   args: Record<string, unknown>,
@@ -201,7 +202,7 @@ async function requestBrowser(
     const socket = net.createConnection(endpoint.endpoint);
     let buffer = "";
     let settled = false;
-    const timer = setTimeout(() => finish(new Error("Browser automation timed out.")), requestTimeoutMs);
+    const timer = setTimeout(() => finish(new Error("Browser automation timed out.")), method === "web_read" && typeof args.timeoutMs === "number" ? args.timeoutMs + 5_000 : requestTimeoutMs);
     const abort = (): void => finish(new Error("Browser action cancelled."));
     const finish = (error?: Error, value?: unknown): void => {
       if (settled) return;
@@ -235,6 +236,7 @@ async function requestBrowser(
         finish(error instanceof Error ? error : new Error(String(error)));
       }
     });
+    socket.once("close", () => { if (!settled) finish(new Error("Browser connection closed before a result.")); });
     socket.once("connect", () => {
       socket.write(`${JSON.stringify({ id, token: endpoint.token, method, args })}\n`);
     });

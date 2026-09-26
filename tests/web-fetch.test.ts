@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
+import { createServer } from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { blockedAddressReason, assertFetchableUrl } from "../src/tools/web/addressPolicy.js";
@@ -27,6 +28,7 @@ async function main(): Promise<void> {
   await testFetchesTextAndPages();
   await testRedirectToInternalTargetIsRefused();
   await testByteLimitTruncatesInsteadOfHanging();
+  await testBrowserFetchPropagatesByteLimitTruncation();
   await testErrorResponseBodyIsCancelled();
   await testFetchUsesOnlyMatchingCookiesPerRedirect();
   console.log("web fetch tests passed");
@@ -117,6 +119,52 @@ async function testByteLimitTruncatesInsteadOfHanging(): Promise<void> {
     assert.equal(result.truncatedAtByteLimit, true);
     assert.equal(result.totalCharacters <= 4_096, true, `expected <= 4096 characters, got ${String(result.totalCharacters)}`);
   });
+}
+
+async function testBrowserFetchPropagatesByteLimitTruncation(): Promise<void> {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "biny-web-fetch-browser-"));
+  const socketPath = path.join(directory, "browser.sock");
+  const server = createServer((socket) => {
+    let requestText = "";
+    socket.setEncoding("utf8");
+    socket.on("data", (chunk: string) => {
+      requestText += chunk;
+      const newline = requestText.indexOf("\n");
+      if (newline < 0) return;
+      const request = JSON.parse(requestText.slice(0, newline)) as { id: string };
+      socket.end(`${JSON.stringify({
+        id: request.id,
+        ok: true,
+        result: {
+          body: "browser text",
+          finalUrl: "https://example.com/doc",
+          status: 200,
+          contentType: "text/plain",
+          truncatedAtByteLimit: true
+        }
+      })}\n`);
+    });
+  });
+
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(socketPath, resolve);
+  });
+  try {
+    const tool = createWebFetchTool(
+      undefined,
+      { enabled: false },
+      { browser: { endpoint: socketPath, token: "test-token" } }
+    );
+    const result = await run(tool, { url: "https://example.com/doc" });
+    assert.equal(result.content, "browser text");
+    assert.equal(result.truncatedAtByteLimit, true);
+  } finally {
+    await new Promise<void>((resolve, reject) => {
+      server.close((error) => error ? reject(error) : resolve());
+    });
+    await rm(directory, { recursive: true, force: true });
+  }
 }
 
 /** HTTP 错误分支也必须取消响应体，否则未消费的流会挂到 GC。 */

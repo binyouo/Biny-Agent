@@ -125,12 +125,21 @@ export class FileReadLimitError extends Error {
   }
 }
 
-export async function readBoundedUtf8File(
+export async function readBoundedUtf8File(filePath: string, maxBytes: number, overflow: "reject" | "truncate", signal?: AbortSignal): Promise<BoundedFileRead> {
+  const result = await readBoundedFile(filePath, maxBytes, overflow, signal);
+  return { ...result, content: result.content.toString("utf8") };
+}
+
+export async function readBoundedBinaryFile(filePath: string, maxBytes: number, signal?: AbortSignal): Promise<Buffer> {
+  return (await readBoundedFile(filePath, maxBytes, "reject", signal)).content;
+}
+
+async function readBoundedFile(
   filePath: string,
   maxBytes: number,
   overflow: "reject" | "truncate",
   signal?: AbortSignal
-): Promise<BoundedFileRead> {
+): Promise<{ content: Buffer; truncated: boolean; snapshot: FileSnapshot }> {
   signal?.throwIfAborted();
   const handle = await openBoundRegularFile(filePath);
   try {
@@ -159,7 +168,7 @@ export async function readBoundedUtf8File(
       throw new FileReadLimitError(current.size > BigInt(bytesRead) ? current.size : BigInt(bytesRead), maxBytes);
     }
     return {
-      content: Buffer.concat(chunks, bytesRead).subarray(0, maxBytes).toString("utf8"),
+      content: Buffer.concat(chunks, bytesRead).subarray(0, maxBytes),
       truncated,
       snapshot: current
     };
@@ -180,9 +189,18 @@ export async function readUtf8FileForEdit(filePath: string, signal?: AbortSignal
  * 传具体快照意为「必须还是我读到的那一版」，`undefined` 则表示不做版本校验（以当前状态为准）。
  * 对不上就抛错，绝不悄悄覆盖别人的改动。
  */
-export async function atomicWriteUtf8File(
+export async function atomicWriteUtf8File(filePath: string, content: string, expectedSnapshot: FileSnapshot | null | undefined, signal?: AbortSignal, onCommit?: (evidence: string) => void | Promise<void>): Promise<number> {
+  return atomicWriteFile(filePath, content, expectedSnapshot, signal, onCommit);
+}
+
+/** 二进制产物只允许新建，不覆盖用户已有文件；复用同一 inode 与原子提交边界。 */
+export async function atomicWriteBinaryFile(filePath: string, content: Uint8Array, signal?: AbortSignal, onCommit?: (evidence: string) => void | Promise<void>): Promise<number> {
+  return atomicWriteFile(filePath, content, null, signal, onCommit);
+}
+
+async function atomicWriteFile(
   filePath: string,
-  content: string,
+  content: string | Uint8Array,
   expectedSnapshot: FileSnapshot | null | undefined,
   signal?: AbortSignal,
   onCommit?: (evidence: string) => void | Promise<void>

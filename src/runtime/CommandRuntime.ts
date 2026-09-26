@@ -193,7 +193,8 @@ export async function createCommandRuntime(workspaceRoot: string, options: Comma
     config.web.fetch,
     config.sandbox,
     config.web.cookies,
-    () => resolveToolModel(config)
+    () => resolveToolModel(config),
+    options.browserAutomation
   );
   if (options.browserAutomation) {
     for (const tool of createBrowserTools(options.browserAutomation)) toolRegistry.registerBuiltinTool(tool);

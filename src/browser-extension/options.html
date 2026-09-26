@@ -1,0 +1,5 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Biny 浏览器连接</title>
+<style>body{font:15px system-ui;max-width:580px;margin:48px auto;padding:0 24px;color:#222}label{display:block;margin:20px 0}input{display:block;box-sizing:border-box;width:100%;padding:10px;margin-top:6px}button{padding:8px 16px;margin-right:8px}p{line-height:1.6}#status{min-height:24px}</style></head>
+<body><h1>Biny 浏览器连接</h1><p>打开 Biny 的“设置 → 浏览器”，复制配对地址并粘贴到这里。扩展连接当前 Chrome 配置；其他配置需分别安装扩展并填写不同的连接名称。最多同时连接 8 个配置，需要 Chrome 125 或更新版本。</p>
+<form id="settings"><label>连接名称<input id="name" maxlength="80" value="Chrome" required></label><label>配对地址<input id="url" type="password" autocomplete="off" required placeholder="粘贴 Biny 复制的配对地址"></label><button type="submit">保存并连接</button><button type="button" id="disconnect">断开并清除配对</button></form><p id="status" role="status"></p><p>扩展只操作 HTTP(S) 网页。网页确认框需要你手动处理。若连接已在 Biny 中撤销，请重新复制配对地址。</p><script src="options.js" type="module"></script></body></html>

@@ -5,6 +5,7 @@
  * 抓取本身是把一个任意出网请求交给模型，所以目标地址必须先过 `addressPolicy` 的校验，
  * 跳转也要逐跳重新校验 —— 一次跳到 `169.254.169.254` 就能读到云实例凭证。
  */
+import { requestBrowser, type BrowserAutomationEndpoint } from "../browser.js";
 import { z } from "zod";
 import type { WebCookiesConfig, WebFetchConfig } from "../../config/schema.js";
 import { ToolAccesses } from "../access.js";
@@ -36,6 +37,8 @@ export interface WebFetchResult {
 }
 
 export interface WebFetchDependencies {
+  browser?: BrowserAutomationEndpoint;
+  visibleBrowsing?: boolean;
   resolveHostname?: HostnameResolver;
 }
 
@@ -74,13 +77,15 @@ export function createWebFetchTool(
     resolveExecution(args) {
       const target = parseUrl(args.url);
       return {
-        accesses: ToolAccesses.none(),
+        accesses: dependencies?.browser ? ToolAccesses.browser(dependencies.browser.endpoint) : ToolAccesses.none(),
         display: { kind: "generic", summary: "Fetch web page", detail: target.toString() },
         description: `Fetch ${target.toString()}`,
         approvalRule: `WebFetch(${target.origin})`,
         async execute({ signal }) {
-          const jar = cookieJarPath ? await readCookieJar(cookieJarPath) : [];
-          const fetched = await fetchDocument(target, {
+          const jar = !dependencies?.browser && cookieJarPath ? await readCookieJar(cookieJarPath) : [];
+          const fetched = dependencies?.browser
+            ? await requestBrowser(dependencies.browser, "web_read", { url: target.href, projectId: dependencies.browser.projectId, visible: dependencies.visibleBrowsing, timeoutMs, maxBytes, maxRedirects, allowPrivateNetwork }, signal) as BrowserFetchedDocument
+            : await fetchDocument(target, {
             timeoutMs,
             maxBytes,
             maxRedirects,
@@ -91,6 +96,9 @@ export function createWebFetchTool(
           const text = isHtml(fetched.contentType) ? htmlToText(fetched.body) : fetched.body;
           const offset = Math.min(args.offset ?? 0, text.length);
           const content = text.slice(offset, offset + (args.length ?? defaultLength));
+          const truncatedAtByteLimit = "truncatedAtByteLimit" in fetched
+            ? fetched.truncatedAtByteLimit
+            : fetched.truncated;
           return {
             url: args.url,
             finalUrl: fetched.finalUrl,
@@ -101,7 +109,7 @@ export function createWebFetchTool(
             offset,
             content,
             hasMore: offset + content.length < text.length,
-            truncatedAtByteLimit: fetched.truncated
+            truncatedAtByteLimit
           };
         }
       };
@@ -125,6 +133,14 @@ interface FetchedDocument {
   contentType?: string;
   body: string;
   truncated: boolean;
+}
+
+interface BrowserFetchedDocument {
+  finalUrl: string;
+  status: number;
+  contentType: string;
+  body: string;
+  truncatedAtByteLimit: boolean;
 }
 
 async function fetchDocument(url: URL, limits: FetchLimits, signal?: AbortSignal): Promise<FetchedDocument> {

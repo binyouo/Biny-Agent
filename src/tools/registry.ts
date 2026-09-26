@@ -1,3 +1,4 @@
+import type { BrowserAutomationEndpoint } from "./browser.js";
 /**
  * 工具注册表模块。
  *
@@ -18,6 +19,7 @@ import { createManagedProcessTools } from "./process/managedProcesses.js";
 import { createWebFetchTool } from "./web/fetch.js";
 import { createWebSearchTool } from "./web/search.js";
 import { createToolSearchTool } from "./toolSearch.js";
+import { createBrowserRelayTools } from "./browserRelay.js";
 import type { AgentModel } from "../agent/core/types.js";
 import type { ManagedProcessService } from "../runtime/ManagedProcessService.js";
 
@@ -94,10 +96,12 @@ export function createToolRegistry(
   webFetchConfig?: WebFetchConfig,
   sandboxConfig?: SandboxConfig,
   webCookiesConfig?: WebCookiesConfig,
-  getToolSearchModel?: () => AgentModel | undefined
+  getToolSearchModel?: () => AgentModel | undefined,
+  browser?: BrowserAutomationEndpoint
 ): ToolRegistry {
   // 这里集中注册内置工具；外部扩展在 CommandRuntime 装配完成后追加到同一 registry。
   const registry = new ToolRegistry();
+  for (const tool of createBrowserRelayTools(undefined, context)) registry.register(tool);
   registry.register(createToolSearchTool(() => registry.listEntries(), getToolSearchModel));
   registry.register(createReadFileTool(context));
   registry.register(createReadToolResultTool(context));
@@ -109,7 +113,7 @@ export function createToolRegistry(
   if (managedProcessService) {
     for (const tool of createManagedProcessTools(managedProcessService)) registry.register(tool);
   }
-  if (webSearchConfig?.enabled !== false) registry.register(createWebSearchTool(webSearchConfig, webCookiesConfig));
-  if (webFetchConfig?.enabled !== false) registry.register(createWebFetchTool(webFetchConfig, webCookiesConfig));
+  if (browser || webSearchConfig?.enabled !== false) registry.register(createWebSearchTool(webSearchConfig, webCookiesConfig, browser));
+  if (browser || webFetchConfig?.enabled !== false) registry.register(createWebFetchTool(webFetchConfig, webCookiesConfig, { browser, visibleBrowsing: webSearchConfig?.visibleBrowsing }));
   return registry;
 }

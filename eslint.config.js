@@ -26,6 +26,10 @@ export default tseslint.config(
     }
   },
   {
+    files: ["src/browser-extension/**/*.js"],
+    languageOptions: { globals: { ...globals.browser, chrome: "readonly" } }
+  },
+  {
     files: ["src/desktop/renderer/**/*.{ts,tsx}"],
     languageOptions: {
       globals: globals.browser
