@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
+import { DatabaseSync } from "node:sqlite";
 import os from "node:os";
 import path from "node:path";
 import { LocalMemory } from "../src/agent/context/LocalMemory.js";
+import { AGENT_DATABASE_FILE } from "../src/config/paths.js";
 import { executeRuntimeHostMemoryOperation } from "../src/runtime/host/memory-operations.js";
 import type { CommandRuntime } from "../src/runtime/CommandRuntime.js";
 import type { MemoryEntriesResult } from "../src/agent/context/memoryTypes.js";
@@ -39,6 +41,24 @@ try {
   assert.equal((await list({ limit: 101 })).entries.length, 101, "explicit limit is respected");
   assert.equal((await memory.listMemoryEntries()).entries.length, 101,
     "internal full-store scans remain complete");
+
+  const archivedOld = (await memory.archiveEntry(old.id, true)).entry!;
+  const database = new DatabaseSync(path.join(root, "agent", AGENT_DATABASE_FILE));
+  try {
+    database.prepare("UPDATE memories SET metadata = ? WHERE id = ?").run("{damaged", recent.id);
+    database.prepare("UPDATE memory_archive SET metadata = ? WHERE id = ?").run("{damaged", archivedOld.id);
+  } finally {
+    database.close();
+  }
+  const firstPage = await memory.listMemoryEntries({ limit: 1 });
+  assert.equal(firstPage.entries.length, 1);
+  assert.equal(firstPage.entries[0]?.content, "Extra fact 98",
+    "an active page must not decode unrelated rows outside the requested page");
+  assert.equal(firstPage.total, 100);
+  const archivedPage = await memory.listMemoryEntries({ includeArchived: true, limit: 1 });
+  assert.equal(archivedPage.entries[0]?.content, "Extra fact 98",
+    "an all-memory page must not decode unrelated active or archived rows");
+  assert.equal(archivedPage.total, 101);
 } finally {
   memory.close();
   if (previousAgentDir === undefined) delete process.env.BINY_AGENT_DIR;

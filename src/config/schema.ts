@@ -476,13 +476,11 @@ const extensionsSchema = z.object({
 });
 
 const webSearchSchema = z.object({
-  enabled: z.boolean().default(false),
   provider: z.enum(["google", "xiaohongshu"]).default("google"),
   visibleBrowsing: z.boolean().default(false),
   timeoutMs: z.number().int().min(1_000).max(60_000).default(10_000),
   maxResults: z.number().int().min(1).max(10).default(5)
 }).default({
-  enabled: false,
   provider: "google",
   visibleBrowsing: false,
   timeoutMs: 10_000,
@@ -573,7 +571,6 @@ const webSchema = z.object({
   cookies: webCookiesSchema
 }).default({
   search: {
-    enabled: false,
     provider: "google",
     visibleBrowsing: false,
     timeoutMs: 10_000,
@@ -928,7 +925,6 @@ export const defaultConfig: AgentConfig = {
   },
   web: {
     search: {
-      enabled: false,
       provider: "google",
       visibleBrowsing: false,
       timeoutMs: 10_000,

@@ -3,7 +3,7 @@ import { createServer, type IncomingMessage } from "node:http";
 import { timingSafeEqual } from "node:crypto";
 import type { RuntimeHostClient } from "./client.js";
 import { readMemoryEntryInput, readMemoryEntryPatch } from "./validation.js";
-import { SessionSearchIndex } from "../../session/searchIndex.js";
+import { SessionSearchIndex, sessionSearchRefreshMaxAgeMs } from "../../session/searchIndex.js";
 import { archiveConversationMarkdown } from "../../session/markdownArchive.js";
 import { attachMemoryWebSocket } from "./memory-websocket.js";
 import type { MemoryArchiveEntriesResult, MemoryArchiveResult, MemoryClearResult, MemoryDeleteResult, MemoryEntriesResult, MemoryEntry, MemorySearchResult, MemorySleepRun, MemoryWriteResult } from "../../agent/context/memoryTypes.js";
@@ -16,6 +16,7 @@ type MemoryHttpClient = Pick<RuntimeHostClient,
 export async function startMemoryHttpServer(client: MemoryHttpClient, options: { token: string; port?: number }) {
   if (!options.token.trim()) throw new Error("BINY_MEMORY_API_TOKEN must be set before starting the memory API.");
   const expected = Buffer.from(`Bearer ${options.token}`);
+  const sessionSearchIndex = new SessionSearchIndex();
   const authorize = (request: IncomingMessage): number | undefined => {
     if (request.headers.origin || !/^(127\.0\.0\.1|localhost):\d+$/u.test(request.headers.host ?? "")) return 403;
     const supplied = Buffer.from(request.headers.authorization ?? "");
@@ -120,8 +121,13 @@ export async function startMemoryHttpServer(client: MemoryHttpClient, options: {
           }
         }
       } else if (route === "/api/memories/sleep/cancel" && method === "POST") {
-        await client.cancelMemorySleep();
-        result = { success: true };
+        try {
+          await client.cancelMemorySleep();
+          result = { success: true };
+        } catch (error) {
+          send(500, { error: `Failed to cancel sleep cycle: ${error instanceof Error ? error.message : String(error)}` });
+          return;
+        }
       } else if (/^\/api\/memories\/sleep\/(status|runs|run|preview)$/u.test(route)) {
         const action = route.split("/").at(-1)!;
         if (method !== (action === "status" || action === "runs" ? "GET" : "POST")) { send(405, { error: "Method not allowed" }); return; }
@@ -130,11 +136,21 @@ export async function startMemoryHttpServer(client: MemoryHttpClient, options: {
           const runs = await client.memory<MemorySleepRun[]>("sleep-runs");
           result = { runs: [...runs].sort((left, right) => Date.parse(right.startedAt) - Date.parse(left.startedAt)).slice(0, limit) };
         } else if (action === "run") {
-          const execution = await client.memory<{ maintenance: { lastRun?: MemorySleepRun } }>("sleep-run-now");
-          if (!execution.maintenance.lastRun) throw new Error("Sleep run completed without an audit record");
-          result = { success: true, run: execution.maintenance.lastRun };
+          try {
+            const execution = await client.memory<{ maintenance: { lastRun?: MemorySleepRun } }>("sleep-run-now");
+            if (!execution.maintenance.lastRun) throw new Error("Sleep run completed without an audit record");
+            result = { success: true, run: execution.maintenance.lastRun };
+          } catch (error) {
+            send(500, { error: `Failed to run sleep cycle: ${error instanceof Error ? error.message : String(error)}` });
+            return;
+          }
         } else if (action === "preview") {
-          result = { success: true, report: await client.memory("sleep-preview") };
+          try {
+            result = { success: true, report: await client.memory("sleep-preview") };
+          } catch (error) {
+            send(500, { success: false, error: `Failed to preview: ${error instanceof Error ? error.message : String(error)}` });
+            return;
+          }
         } else result = await client.memory("sleep-http-status");
       } else if (route === "/api/memories/rebuild-progress" && method === "GET") {
         const status = await client.memoryEmbeddingStatus();
@@ -166,11 +182,8 @@ export async function startMemoryHttpServer(client: MemoryHttpClient, options: {
         result = await archiveConversationMarkdown();
       } else if (route === "/api/history/search" && method === "POST") {
         if (typeof body.query !== "string" || !body.query.trim()) throw new InputError("query is required");
-        const index = new SessionSearchIndex();
-        try {
-          await index.refreshAll();
-          result = { hits: body.literal === true ? index.grep(body.query) : index.search(body.query) };
-        } finally { index.close(); }
+        await sessionSearchIndex.refreshAll({ maxAgeMs: sessionSearchRefreshMaxAgeMs });
+        result = { hits: body.literal === true ? sessionSearchIndex.grep(body.query) : sessionSearchIndex.search(body.query) };
       } else if (/^\/api\/memories\/[^/]+$/u.test(route)) {
         const id = decodeURIComponent(route.split("/")[3]!);
         if (method === "GET") {
@@ -203,7 +216,11 @@ export async function startMemoryHttpServer(client: MemoryHttpClient, options: {
       server.once("error", reject);
       server.listen(options.port ?? 0, "127.0.0.1", () => { server.off("error", reject); resolve(); });
     });
-  } catch (error) { await closeWebSocket(); throw error; }
+  } catch (error) {
+    sessionSearchIndex.close();
+    await closeWebSocket().catch(() => undefined);
+    throw error;
+  }
   const address = server.address();
   if (!address || typeof address === "string") throw new Error("Memory API address unavailable");
   let closing: Promise<void> | undefined;
@@ -211,8 +228,12 @@ export async function startMemoryHttpServer(client: MemoryHttpClient, options: {
     port: address.port,
     close: (): Promise<void> => {
       closing ??= (async () => {
-        await closeWebSocket();
-        await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+        try {
+          await closeWebSocket();
+          await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+        } finally {
+          sessionSearchIndex.close();
+        }
       })();
       return closing;
     }

@@ -46,6 +46,7 @@ async function main(): Promise<void> {
   await testSemanticDeleteResponseProtocol();
   await testTemporaryCleanupRequiresExactCandidateIds();
   await testTemporaryCleanupFailureKeepsMemories();
+  await testAutomaticCleanupFailureKeepsCompletedWrites();
   await testPersonMemoryRouting();
   await testSummarizationUsesToolModelAndRequiresCompleteTurn();
   await testExtractionPreservesOriginalMessageTime();
@@ -56,6 +57,7 @@ async function main(): Promise<void> {
   await testSingleRootSafetyBoundary();
   await testListEntriesPagination();
   await testArchiveAndRestore();
+  await testUnrelatedArchiveCorruptionDoesNotBlockActiveFactsOrPurge();
   await testTemporaryMemoryExpiry();
   await testSleepSingleNamespaceExactAndExpired();
   await testSleepCoversSharedLibraryFromAnyWorkspace();
@@ -77,8 +79,11 @@ async function main(): Promise<void> {
   await testSleepSynthesisFailureKeepsSources();
   await testSleepInvalidDeleteIsSafe();
   await testSleepRunRecord();
+  await testSleepArchiveFailureStopsLaterStages();
+  await testSleepSimilarityArchiveFailureStopsLaterClusters();
   await testSleepProgressPersistsAcrossInstances();
   await testSleepPreviewDoesNotMutate();
+  await testSleepPreviewReadFailureCanRetry();
   await testSleepBatchOrdering();
   await testSleepWeightedSurvivor();
   await testEmbeddingStatusDoesNotCreateIndex();
@@ -880,6 +885,62 @@ async function testTemporaryCleanupFailureKeepsMemories(): Promise<void> {
   });
 }
 
+async function testAutomaticCleanupFailureKeepsCompletedWrites(): Promise<void> {
+  await withIsolatedMemory(async (workspaceRoot, agentRoot) => {
+    const fact = "The user prefers a written release checklist before publishing.";
+    const searches: string[] = [];
+    let temporary: MemoryEntry | undefined;
+    const memory = new LocalMemory(
+      workspaceRoot,
+      () => jsonMemoryModel((prompt) => prompt.startsWith("Extract memories from this conversation:")
+        ? JSON.stringify([{ operation: "add", content: fact, durability: "permanent" }])
+        : "[]"),
+      undefined, 3, undefined, undefined, undefined,
+      async (query) => {
+        searches.push(query);
+        return query.startsWith("user:") && temporary ? [temporary] : [];
+      }
+    );
+    const database = new DatabaseSync(path.join(agentRoot, AGENT_DATABASE_FILE));
+    try {
+      const writtenTemporary = await memory.writeEntry({
+        content: "The user is preparing a temporary release with a deadline.",
+        durability: "temporary"
+      });
+      assert.ok(writtenTemporary.entry);
+      temporary = writtenTemporary.entry;
+      database.exec(`CREATE TRIGGER reject_cleanup_access BEFORE UPDATE OF access_count ON memories
+        WHEN NEW.id = '${temporary.id}' BEGIN SELECT RAISE(ABORT, 'cleanup access unavailable'); END`);
+      await assert.rejects(memory.recordRecallUsage([temporary.id]), /cleanup access unavailable/u);
+      const messages = [
+        { role: "user" as const, content: "Please remember my release checklist preference." },
+        { role: "assistant" as const, content: "I will remember that preference." }
+      ];
+      const options = { sessionId: "cleanup-failure-session", turnId: "turn", runId: "run",
+        externalContext: false, excludeExternalContext: false };
+      const result = await memory.summarizeAndStoreMemories(messages, options);
+      assert.equal(searches.some((query) => query.startsWith("user:")), true, "cleanup must search the current conversation");
+      assert.equal(result.created.length, 1);
+      assert.equal(result.created[0]?.content, fact);
+      assert.deepEqual(result.deleted, []);
+      assert.equal((await memory.listMemoryEntries()).entries.some((entry) => entry.id === result.created[0]?.id), true);
+      assert.equal((await memory.getEntry(temporary.id))?.id, temporary.id);
+
+      let wrote = false;
+      await assert.rejects(memory.summarizeAndStoreMemories(messages, {
+        ...options, turnId: "incognito-turn", runId: "incognito-run",
+        onMemoryWritten: async () => { wrote = true; },
+        beforeWrite: async () => {
+          if (wrote) throw new Error("Automatic memory extraction stopped for incognito session.");
+        }
+      }), /incognito session/u);
+    } finally {
+      database.close();
+      memory.close();
+    }
+  });
+}
+
 async function testPersonMemoryRouting(): Promise<void> {
   await withIsolatedMemory(async (workspaceRoot, agentRoot) => {
     const memory = new LocalMemory(workspaceRoot, unusedModel);
@@ -1202,6 +1263,101 @@ async function testSleepRunRecord(): Promise<void> {
   });
 }
 
+async function testSleepArchiveFailureStopsLaterStages(): Promise<void> {
+  for (const failedReason of ["exact_dup", "expired"] as const) {
+    await withIsolatedMemory(async (workspaceRoot, agentRoot) => {
+      const memory = new LocalMemory(workspaceRoot, unusedModel);
+      try {
+        const old = await memory.writeEntry(projectEntry("An old archived fact remains recoverable after Sleep fails."), {
+          now: new Date("2026-01-01T00:00:00.000Z")
+        });
+        assert.ok(old.entry);
+        const oldArchive = await memory.archiveEntry(old.entry.id, true, {
+          now: new Date("2026-01-01T00:00:01.000Z")
+        });
+        assert.ok(oldArchive.entry);
+        const duplicateText = "The same durable fact is present twice before maintenance.";
+        await memory.writeEntry(projectEntry(duplicateText));
+        await memory.writeEntry(projectEntry(duplicateText));
+        const temporary = await memory.writeEntry({
+          ...projectEntry("An expired temporary fact awaits maintenance."),
+          durability: "temporary",
+          expiresAt: "2020-01-01T00:00:00.000Z"
+        });
+        assert.ok(temporary.entry);
+
+        const database = new DatabaseSync(path.join(agentRoot, AGENT_DATABASE_FILE));
+        try {
+          database.exec(`CREATE TRIGGER fail_sleep_archive BEFORE INSERT ON memory_archive
+            WHEN NEW.archived_reason = '${failedReason}'
+            BEGIN SELECT RAISE(ABORT, 'sleep ${failedReason} archive unavailable'); END`);
+        } finally {
+          database.close();
+        }
+
+        const result = await memory.runMemoryMaintenance({
+          now: new Date("2026-08-02T00:00:00.000Z"), useLlm: false
+        }, {
+          findSimilarPairs: async () => { throw new Error("similarity must not run after archive failure"); }
+        });
+        assert.equal(result.failed, 1);
+        const status = await memory.loadMaintenanceStatus();
+        assert.equal(status.lastRun?.status, "failed");
+        assert.match(status.lastRun?.error ?? "", new RegExp(`sleep ${failedReason} archive unavailable`));
+        assert.deepEqual(status.lastRun?.progressEvents?.map((event) => event.stage),
+          failedReason === "exact_dup" ? [] : ["exact"], "failed stage and later stages are not reported as completed");
+        assert.equal(status.lastRun?.archivedExact, failedReason === "expired" ? 1 : 0);
+        assert.equal(status.lastRun?.archivedExpired, 0);
+        assert.equal((await memory.listMemoryEntries()).entries.some((entry) => entry.id === temporary.entry!.id), true);
+        assert.equal((await memory.listArchivedEntries()).entries.some((entry) => entry.id === oldArchive.entry!.id), true,
+          "a failed run must preserve previous archives beyond retention");
+      } finally {
+        memory.close();
+      }
+    });
+  }
+}
+
+async function testSleepSimilarityArchiveFailureStopsLaterClusters(): Promise<void> {
+  await withIsolatedMemory(async (workspaceRoot, agentRoot) => {
+    const memory = new LocalMemory(workspaceRoot, unusedModel);
+    try {
+      const old = (await memory.writeEntry(projectEntry("An old archive must remain after a failed similarity pass."))).entry!;
+      const oldArchive = (await memory.archiveEntry(old.id, true, {
+        now: new Date("2026-01-01T00:00:00.000Z")
+      })).entry!;
+      const firstSurvivor = (await memory.writeEntry({ ...projectEntry("First release rule is retained."), importance: 1 })).entry!;
+      const firstDuplicate = (await memory.writeEntry({ ...projectEntry("First release rule has a semantic duplicate."), importance: 0 })).entry!;
+      const secondSurvivor = (await memory.writeEntry({ ...projectEntry("Second workflow rule is retained."), importance: 1 })).entry!;
+      const secondDuplicate = (await memory.writeEntry({ ...projectEntry("Second workflow rule has a semantic duplicate."), importance: 0 })).entry!;
+      const database = new DatabaseSync(path.join(agentRoot, AGENT_DATABASE_FILE));
+      try {
+        database.exec(`CREATE TRIGGER fail_first_similarity_archive BEFORE INSERT ON memory_archive
+          WHEN NEW.archived_reason = 'similarity_merge' AND NEW.original_id = '${firstDuplicate.id}'
+          BEGIN SELECT RAISE(ABORT, 'first similarity archive unavailable'); END`);
+      } finally { database.close(); }
+
+      const result = await memory.runMemoryMaintenance({
+        now: new Date("2026-08-02T00:00:00.000Z"), useLlm: false
+      }, {
+        findSimilarPairs: async () => ({ examined: 4, pairs: [
+          { leftId: firstSurvivor.id, rightId: firstDuplicate.id, similarity: 0.99 },
+          { leftId: secondSurvivor.id, rightId: secondDuplicate.id, similarity: 0.99 }
+        ] })
+      });
+      assert.equal(result.failed, 1);
+      const status = await memory.loadMaintenanceStatus();
+      assert.equal(status.lastRun?.status, "failed");
+      assert.match(status.lastRun?.error ?? "", /first similarity archive unavailable/u);
+      const activeIds = new Set((await memory.listMemoryEntries()).entries.map((entry) => entry.id));
+      assert.deepEqual(activeIds, new Set([firstSurvivor.id, firstDuplicate.id, secondSurvivor.id, secondDuplicate.id]),
+        "first failed similarity cluster must stop later clusters");
+      assert.equal((await memory.listArchivedEntries()).entries.some((entry) => entry.id === oldArchive.id), true,
+        "failed similarity pass must not purge prior archives");
+    } finally { memory.close(); }
+  });
+}
+
 /** 另一 Runtime 在相似扫描等待期间也能读到此前阶段的累计计数。 */
 async function testSleepProgressPersistsAcrossInstances(): Promise<void> {
   await withIsolatedMemory(async (workspaceRoot) => {
@@ -1266,6 +1422,50 @@ async function testArchiveAndRestore(): Promise<void> {
     assert.notEqual(restored.entry?.id, created.entry!.id);
     assert.equal(restored.entry?.originalId, undefined);
     assert.equal((await storage.listEntries()).entries.length, 1);
+  });
+}
+
+async function testUnrelatedArchiveCorruptionDoesNotBlockActiveFactsOrPurge(): Promise<void> {
+  await withIsolatedMemory(async (workspaceRoot, agentRoot) => {
+    const storage = new MemoryStorage(workspaceRoot);
+    try {
+      const old = (await storage.writeEntry(projectEntry("Old archived fact to purge."))).entry!;
+      const recent = (await storage.writeEntry(projectEntry("Recent archived fact with damaged metadata."))).entry!;
+      const active = (await storage.writeEntry(projectEntry("Active fact must remain usable."))).entry!;
+      const oldArchive = (await storage.archiveEntry(old.id, true, { now: new Date("2026-08-01T00:00:00.000Z") })).entry!;
+      const recentArchive = (await storage.archiveEntry(recent.id, true, { now: new Date("2026-08-28T00:00:00.000Z") })).entry!;
+      const database = new DatabaseSync(path.join(agentRoot, AGENT_DATABASE_FILE));
+      try {
+        database.prepare("UPDATE memory_archive SET metadata = ? WHERE id = ?").run("{damaged", recentArchive.id);
+      } finally { database.close(); }
+
+      assert.deepEqual((await storage.listEntries()).entries.map((entry) => entry.id), [active.id]);
+      assert.equal((await storage.getOverview()).entryCount, 1);
+      const moved = await storage.archiveEntries([active.id], "manual", { now: new Date("2026-08-31T00:00:00.000Z") });
+      assert.equal(moved.archived, 1);
+      const purged = await storage.purgeArchivedEntries(7, { now: new Date("2026-08-31T00:00:00.000Z") });
+      assert.equal(purged.deleted, 1);
+      const check = new DatabaseSync(path.join(agentRoot, AGENT_DATABASE_FILE), { readOnly: true });
+      try {
+        const ids = (check.prepare("SELECT id FROM memory_archive ORDER BY id").all() as { id: string }[]).map((row) => row.id);
+        assert.deepEqual(ids, [recentArchive.id, moved.entries[0]!.id].sort());
+        assert.ok(!ids.includes(oldArchive.id));
+      } finally { check.close(); }
+
+      const removedIds: string[] = [];
+      const memory = new LocalMemory(workspaceRoot, unusedModel, undefined, 3, undefined, undefined,
+        { removeEntries: (ids) => { removedIds.push(...ids); } });
+      try {
+        const cleared = await memory.clearAllEntries();
+        assert.equal(cleared.deletedEntries, 2, "damaged archive metadata must not block permanent clear");
+        assert.deepEqual(new Set(removedIds), new Set([recent.id, active.id]));
+        const remaining = new DatabaseSync(path.join(agentRoot, AGENT_DATABASE_FILE), { readOnly: true });
+        try {
+          assert.equal((remaining.prepare("SELECT COUNT(*) AS total FROM memories").get() as { total: number }).total, 0);
+          assert.equal((remaining.prepare("SELECT COUNT(*) AS total FROM memory_archive").get() as { total: number }).total, 0);
+        } finally { remaining.close(); }
+      } finally { memory.close(); }
+    } finally { storage.close(); }
   });
 }
 
@@ -2063,6 +2263,31 @@ async function testSleepPreviewDoesNotMutate(): Promise<void> {
       storage.close();
       memory.close();
     }
+  });
+}
+
+async function testSleepPreviewReadFailureCanRetry(): Promise<void> {
+  await withIsolatedMemory(async (workspaceRoot, agentRoot) => {
+    const memory = new LocalMemory(workspaceRoot, unusedModel);
+    try {
+      const entry = (await memory.writeEntry(projectEntry("A fact remains intact across a failed preview scan."))).entry!;
+      const database = new DatabaseSync(path.join(agentRoot, AGENT_DATABASE_FILE));
+      try {
+        const original = (database.prepare("SELECT metadata FROM memories WHERE id = ?").get(entry.id) as { metadata: string }).metadata;
+        database.prepare("UPDATE memories SET metadata = ? WHERE id = ?").run("{damaged", entry.id);
+        const failed = await memory.previewMaintenance({ useLlm: false });
+        assert.match(failed.skipped ?? "", /^Preview failed: Invalid memory metadata JSON/u);
+        assert.equal(failed.available, true);
+        assert.deepEqual(failed.archiveProposed, []);
+        assert.deepEqual(failed.synthesisProposed, []);
+        assert.equal(memory.cancelMaintenance(), false, "failed preview releases its cancellation owner");
+
+        database.prepare("UPDATE memories SET metadata = ? WHERE id = ?").run(original, entry.id);
+        const retried = await memory.previewMaintenance({ useLlm: false });
+        assert.equal(retried.skipped, undefined);
+        assert.equal(retried.entries, 1);
+      } finally { database.close(); }
+    } finally { memory.close(); }
   });
 }
 

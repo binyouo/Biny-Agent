@@ -108,10 +108,9 @@ export class MemoryVectorIndex {
     if (!this.vectorExtensionAvailable) throw new Error("SQLite vector extension is unavailable.");
     const now = new Date().toISOString();
     this.transaction(() => {
-      if (prepared.length === 0 && this.database.prepare("SELECT id FROM memories LIMIT 1").get() !== undefined) {
-        throw new Error("Memory changed before embedding projection commit.");
-      }
-      if (prepared.some((input) => !this.isCurrentEntry(input))) {
+      // BEGIN IMMEDIATE 后同时核对全量覆盖和逐条版本，新增事实也不能被旧快照遗漏。
+      const activeCount = this.database.prepare("SELECT COUNT(*) AS count FROM memories").get()?.count;
+      if (activeCount !== prepared.length || prepared.some((input) => !this.isCurrentEntry(input))) {
         throw new Error("Memory changed before embedding projection commit.");
       }
       this.ensureVectorTable(dimensions);

@@ -32,7 +32,7 @@ const index = {
   status: () => ({ active: { modelFingerprint: "e5", dimensions: 2, vectorCount: entries.length, createdAt: "now", completedAt: "now" } }),
   search: (_query: ArrayLike<number>, options: { limit?: number; minimumSimilarity?: number; entryIds?: ReadonlySet<string> }) => {
     searched.push(options);
-    return ranking.slice(0, options.limit);
+    return ranking.filter((row) => options.entryIds?.has(row.entryId) ?? true).slice(0, options.limit);
   }
 };
 const retriever = new HybridMemoryRetriever({
@@ -51,6 +51,13 @@ assert.equal(searched[0]?.entryIds, undefined);
 assert.equal(searched[0]?.limit, 2);
 assert.equal(searched[0]?.minimumSimilarity, 0.1);
 assert.deepEqual(embeddedQueries, ["rewritten terms"]);
+
+// Automatic recall has no trusted actor; private facts must not consume the shared top-K slot.
+const automatic = await retriever.retrieve("question", [], {
+  limit: 1, automatic: true, allowEntry: (item) => item.userId === undefined
+});
+assert.deepEqual(automatic.matches.map(({ entry }) => entry.id), ["public"]);
+assert.deepEqual([...searched.at(-1)!.entryIds!], ["public"]);
 
 // Tags are exact and thread scope is applied after the same top-K window.
 assert.deepEqual((await retriever.retrieve("question", [], { limit: 4, tags: ["work"] })).matches, []);

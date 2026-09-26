@@ -26,6 +26,7 @@ try {
   config.context.memory.useMemories = true;
   config.context.memory.generateMemories = false;
   config.context.memory.queryRewrite = true;
+  config.context.memory.maxRecalled = 1;
   let rewritePrompt = "";
   const modelRequests: string[] = [];
   const model: AgentModel = {
@@ -67,21 +68,22 @@ try {
     assert.ok(scoped.entry);
     const index = new MemoryVectorIndex(globalAgentDir());
     try {
-      index.replaceAll(runtime.fingerprint, 2, [written.entry, scoped.entry].map((entry) => ({
-        entryId: entry.id, revision: entry.revision, embedding: new Float32Array([1, 0])
-      })));
+      index.replaceAll(runtime.fingerprint, 2, [
+        { entryId: written.entry.id, revision: written.entry.revision, embedding: new Float32Array([0.8, 0.6]) },
+        { entryId: scoped.entry.id, revision: scoped.entry.revision, embedding: new Float32Array([1, 0]) }
+      ]);
     } finally {
       index.close();
     }
     // 只替代外部 embedding 模型；Session、改写请求、事实库和 SQLite 向量搜索均走真实链路。
     const service = (agent as unknown as { memoryEmbeddingService: { embeddingRuntime: () => Promise<EmbeddingModelRuntime | undefined> } }).memoryEmbeddingService;
     service.embeddingRuntime = async () => runtime;
-    const recalled = await agent.searchMemory("我做什么工作", []);
+    const recalled = await agent.searchMemory("我做什么工作", [], { limit: 2 });
     assert.match(rewritePrompt, /always output in English/iu);
     assert.equal(recalled.matches.some((match) => match.entry.id === written.entry!.id), true);
     await agent.runTask("What is my occupation job?");
     assert.equal(modelRequests.some((request) => request.includes("The user's occupation is a software engineer.")), true,
-      "测试必须验证自动召回确实注入了共享事实");
+      "专属事实得分更高且只有一个召回名额时，自动召回仍须注入共享事实");
     assert.equal(modelRequests.some((request) => request.includes("Private occupation job marker for another account.")), false,
       "没有可信 actor 身份的自动召回不得注入其他用户的事实");
   } finally {

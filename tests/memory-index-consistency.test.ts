@@ -97,4 +97,34 @@ for (const outcome of ["updated", "deleted", "archived"] as const) {
     await rm(root, { recursive: true, force: true });
   }
 }
+// 重建快照的每条事实可以仍然有效，但另一写入者已新增事实；提交时必须拒绝不完整投影。
+{
+  const root = await mkdtemp(path.join(os.tmpdir(), "biny-memory-rebuild-race-"));
+  const previous = process.env.BINY_AGENT_DIR;
+  process.env.BINY_AGENT_DIR = root;
+  const firstWriter = new MemoryStorage(root);
+  const secondWriter = new MemoryStorage(root);
+  let index: MemoryVectorIndex | undefined;
+  try {
+    const first = (await firstWriter.writeEntry({ content: "first fact" })).entry!;
+    index = new MemoryVectorIndex(root);
+    index.replaceAll("test-consistency", 2, [{ entryId: first.id, revision: first.revision, embedding: [1, 0] }]);
+    const second = (await secondWriter.writeEntry({ content: "second fact" })).entry!;
+    assert.throws(() => index!.replaceAll("test-consistency", 2, [
+      { entryId: first.id, revision: first.revision, embedding: [1, 0] }
+    ]), /changed before embedding projection commit/u);
+    assert.equal(index.status().active?.vectorCount, 1, "失败的重建应保留先前投影");
+    index.replaceAll("test-consistency", 2, [
+      { entryId: first.id, revision: first.revision, embedding: [1, 0] },
+      { entryId: second.id, revision: second.revision, embedding: [0, 1] }
+    ]);
+    assert.equal(index.status().active?.vectorCount, 2);
+  } finally {
+    index?.close(); firstWriter.close(); secondWriter.close();
+    if (previous === undefined) delete process.env.BINY_AGENT_DIR;
+    else process.env.BINY_AGENT_DIR = previous;
+    await rm(root, { recursive: true, force: true });
+  }
+}
+
 console.log("memory index consistency tests passed");

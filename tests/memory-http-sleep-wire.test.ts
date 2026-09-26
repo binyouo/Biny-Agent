@@ -156,7 +156,8 @@ try {
   findPairs = async () => ({ pairs: [], examined: 0 });
   try {
     const uncommitted = await fetch(`${base}/run`, { method: "POST", headers });
-    assert.equal(uncommitted.status, 502);
+    assert.equal(uncommitted.status, 500);
+    assert.match((await uncommitted.json() as { error: string }).error, /^Failed to run sleep cycle: injected terminal commit failure$/u);
   } finally {
     guardedStorage.writeMaintenanceStatus = writeStatus;
   }
@@ -165,7 +166,8 @@ try {
   guardedStorage.acquireSleepOwner = async () => { throw new Error("injected Sleep lease refusal"); };
   try {
     const noLease = await fetch(`${base}/run`, { method: "POST", headers });
-    assert.equal(noLease.status, 502);
+    assert.equal(noLease.status, 500);
+    assert.match((await noLease.json() as { error: string }).error, /^Failed to run sleep cycle: injected Sleep lease refusal$/u);
   } finally {
     guardedStorage.acquireSleepOwner = acquireOwner;
   }
@@ -186,7 +188,8 @@ try {
   try {
     await otherStarted;
     const overlapping = await fetch(`${base}/run`, { method: "POST", headers });
-    assert.equal(overlapping.status, 502);
+    assert.equal(overlapping.status, 500);
+    assert.match((await overlapping.json() as { error: string }).error, /^Failed to run sleep cycle: /u);
   } finally {
     releaseOtherScan();
     await otherRun;

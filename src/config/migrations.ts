@@ -33,6 +33,8 @@ export function migrateGlobalConfigDocument(value: unknown): ConfigMigrationResu
   const web = isRecord(document.web) ? document.web : undefined;
   const search = web && isRecord(web.search) ? web.search : undefined;
   if (search) {
+    // WebSearch 按浏览器执行端能力注册，不再由用户配置开关控制；旧字段曾暴露无法工作的工具。
+    delete search.enabled;
     // API 搜索服务已移除；存量配置统一迁到 Google，保存时落盘，旧钥匙串项不再读取。
     if (["anysearch", "duckduckgo", "tavily", "brave"].includes(String(search.provider))) search.provider = "google";
     delete search.apiKey;

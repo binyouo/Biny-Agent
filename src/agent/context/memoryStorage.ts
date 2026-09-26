@@ -206,7 +206,7 @@ export class MemoryStorage {
       storeRevision: database === undefined ? 0 : readRevision(database),
       entryCount: database === undefined
         ? 0
-        : readMemoryEntries(database).filter((entry) => entry.archivedAt === undefined).length
+        : (database.prepare("SELECT COUNT(*) AS total FROM memories").get() as { total: number }).total
     };
   }
 
@@ -248,20 +248,23 @@ export class MemoryStorage {
   async listEntries(options: MemoryListOptions = {}): Promise<MemoryEntriesResult> {
     options.signal?.throwIfAborted();
     const database = await this.openDatabase(false);
-    const allEntries = database === undefined ? [] : readMemoryEntries(database);
-    const matched = allEntries
-      .filter((entry) => options.includeArchived === true || entry.archivedAt === undefined)
-      .filter((entry) => options.threadId === undefined || entry.threadId === options.threadId)
-      .sort(compareEntriesForDisplay);
-    const offset = normalizeLimit(options.offset, 0);
-    const records = matched.slice(offset, offset + normalizeLimit(options.limit, Number.MAX_SAFE_INTEGER));
+    const page = database === undefined ? { rows: [], total: 0 }
+      : readMemoryEntryPage(database, {
+        includeArchived: options.includeArchived === true,
+        threadId: options.threadId,
+        limit: options.limit === undefined || !Number.isFinite(options.limit)
+          ? -1
+          : normalizeLimit(options.limit, 0),
+        offset: normalizeLimit(options.offset, 0)
+      });
+    const records = page.rows.map(memoryFromRow);
     return {
       entries: records,
       paths: database === undefined
         ? undefined
         : Object.fromEntries(records.map((entry) => [entry.id, memoryReference(entry.id)])),
       storeRevision: database === undefined ? 0 : readRevision(database),
-      total: matched.length
+      total: page.total
     };
   }
 
@@ -437,9 +440,7 @@ export class MemoryStorage {
       assertExpectedEntries(database, options.expectedEntries);
       const revision = readRevision(database);
       if (!uniqueIds.length) return { entries: [], archived: 0, revision };
-      const active = readMemoryEntries(database).filter((entry) => (
-        entry.archivedAt === undefined && uniqueIds.includes(entry.id)
-      ));
+      const active = readActiveMemoryEntries(database).filter((entry) => uniqueIds.includes(entry.id));
       if (!active.length) return { entries: [], archived: 0, revision };
       if (options.expectedEntries && options.mergedInto && !findActiveMemoryEntry(database, options.mergedInto)) {
         throw new StaleMemoryDecisionError();
@@ -479,16 +480,13 @@ export class MemoryStorage {
     return await this.withWrite(options.signal, (database) => {
       assertSleepOwner(database, options.sleepOwnerToken);
       const revision = readRevision(database);
-      const cutoff = (options.now ?? new Date()).getTime()
-        - Math.max(1, Math.trunc(retentionDays)) * 86_400_000;
-      const targets = readMemoryEntries(database).filter((entry) => (
-        entry.archivedAt !== undefined && Date.parse(entry.archivedAt) < cutoff
-      ));
-      if (!targets.length) return { deleted: 0, revision };
-      const deleteStatement = database.prepare("DELETE FROM memory_archive WHERE id = ?");
-      for (const entry of targets) deleteStatement.run(entry.id);
+      const cutoff = new Date((options.now ?? new Date()).getTime()
+        - Math.max(1, Math.trunc(retentionDays)) * 86_400_000).toISOString();
+      // 保留期只依赖归档时间；损坏或无关的事实 metadata 不应挡住清理。
+      const deleted = Number(database.prepare("DELETE FROM memory_archive WHERE archived_at < ?").run(cutoff).changes);
+      if (!deleted) return { deleted: 0, revision };
       setRevision(database, revision + 1);
-      return { deleted: targets.length, revision: revision + 1 };
+      return { deleted, revision: revision + 1 };
     });
   }
 
@@ -506,18 +504,20 @@ export class MemoryStorage {
     });
   }
 
-  async clearAll(options: MemoryMutationOptions = {}): Promise<MemoryClearResult> {
+  async clearAll(options: MemoryMutationOptions = {}): Promise<MemoryClearResult & { deletedIds: string[] }> {
     options.signal?.throwIfAborted();
     return await this.withWrite(options.signal, (database) => {
       const revision = readRevision(database);
-      const entries = readMemoryEntries(database);
-      if (!entries.length) return { deletedEntries: 0, revision };
-      for (const entry of entries) {
-        if (entry.archivedAt === undefined) deleteActiveMemory(database, entry.id);
-        else deleteArchivedMemory(database, entry.id);
-      }
+      const activeIds = (database.prepare("SELECT id FROM memories").all() as Array<{ id: string }>).map((row) => row.id);
+      const archivedIds = (database.prepare("SELECT original_id FROM memory_archive").all() as Array<{ original_id: string }>)
+        .map((row) => row.original_id);
+      const deletedEntries = activeIds.length + archivedIds.length;
+      if (!deletedEntries) return { deletedEntries: 0, deletedIds: [], revision };
+      // 全局清空是永久删除；即使事实 metadata 损坏，也要能删掉原始行和派生向量。
+      database.prepare("DELETE FROM memories").run();
+      database.prepare("DELETE FROM memory_archive").run();
       setRevision(database, revision + 1);
-      return { deletedEntries: entries.length, revision: revision + 1 };
+      return { deletedEntries, deletedIds: [...new Set([...activeIds, ...archivedIds])], revision: revision + 1 };
     });
   }
 
@@ -710,7 +710,9 @@ async function initializeDatabase(database: DatabaseSync): Promise<void> {
     "created_at TEXT NOT NULL, updated_at TEXT NOT NULL, revision INTEGER NOT NULL, " +
     "access_count INTEGER NOT NULL DEFAULT 0, last_accessed_at TEXT" +
     "); " +
-    "CREATE INDEX IF NOT EXISTS memories_thread_idx ON memories(thread_id); " +
+    "CREATE INDEX IF NOT EXISTS memories_thread_updated_id_idx ON memories(thread_id, updated_at DESC, id ASC); " +
+    "DROP INDEX IF EXISTS memories_thread_idx; " +
+    "CREATE INDEX IF NOT EXISTS memories_updated_id_idx ON memories(updated_at DESC, id ASC); " +
     "CREATE INDEX IF NOT EXISTS memories_user_idx ON memories(user_id); " +
     "CREATE TABLE IF NOT EXISTS memory_archive (" +
     "id TEXT PRIMARY KEY NOT NULL, original_id TEXT NOT NULL, content TEXT NOT NULL, metadata TEXT NOT NULL, " +
@@ -972,19 +974,35 @@ function setRevision(database: DatabaseSync, revision: number): void {
   ).run(String(revision));
 }
 
-function readMemoryEntries(database: DatabaseSync): MemoryEntry[] {
-  const active = database.prepare("SELECT * FROM memories").all() as unknown as MemoryDbRow[];
-  const archived = database.prepare(archivedEntrySelect + " FROM memory_archive").all() as unknown as MemoryDbRow[];
-  const entries = [
-    ...active.map((row) => memoryFromRow(row)),
-    ...archived.map((row) => memoryFromRow(row))
-  ];
-  const ids = new Set<string>();
-  for (const entry of entries) {
-    if (ids.has(entry.id)) throw new Error("Duplicate memory entry id: " + entry.id);
-    ids.add(entry.id);
+function readActiveMemoryEntries(database: DatabaseSync): MemoryEntry[] {
+  const rows = database.prepare("SELECT * FROM memories").all() as unknown as MemoryDbRow[];
+  return rows.map(memoryFromRow);
+}
+
+function readMemoryEntryPage(
+  database: DatabaseSync,
+  options: { includeArchived: boolean; threadId?: string; limit: number; offset: number }
+): { rows: MemoryDbRow[]; total: number } {
+  if (options.includeArchived) {
+    const duplicate = database.prepare(
+      "SELECT memories.id AS id FROM memories INNER JOIN memory_archive USING (id) LIMIT 1"
+    ).get() as { id?: unknown } | undefined;
+    if (duplicate) throw new Error("Duplicate memory entry id: " + String(duplicate.id));
   }
-  return entries;
+  const source = options.includeArchived
+    ? "(SELECT id, NULL AS original_id, content, metadata, thread_id, message_id, user_id, " +
+      "created_at, updated_at, revision, access_count, last_accessed_at, " +
+      "NULL AS archived_at, NULL AS archived_reason, NULL AS archived_by, NULL AS merged_into FROM memories " +
+      "UNION ALL " + archivedEntrySelect + " FROM memory_archive) AS entries"
+    : "memories";
+  const where = options.threadId === undefined ? "" : " WHERE thread_id = ?";
+  const parameters = options.threadId === undefined ? [] : [options.threadId];
+  const total = (database.prepare("SELECT COUNT(*) AS total FROM " + source + where)
+    .get(...parameters) as { total: number }).total;
+  const rows = database.prepare(
+    "SELECT * FROM " + source + where + " ORDER BY updated_at DESC, id ASC LIMIT ? OFFSET ?"
+  ).all(...parameters, options.limit, options.offset) as unknown as MemoryDbRow[];
+  return { rows, total };
 }
 
 function findMemoryEntry(database: DatabaseSync, id: string): MemoryEntry | undefined {
@@ -1384,11 +1402,6 @@ async function ensureRealDirectory(
   }
   if (create) await fs.chmod(directory, 0o700);
   return stat;
-}
-
-function compareEntriesForDisplay(left: MemoryEntry, right: MemoryEntry): number {
-  return right.updatedAt.localeCompare(left.updatedAt)
-    || left.id.localeCompare(right.id);
 }
 
 function normalizeLimit(value: number | undefined, fallback: number): number {

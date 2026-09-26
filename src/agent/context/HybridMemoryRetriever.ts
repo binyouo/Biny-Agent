@@ -1,7 +1,7 @@
 /**
- * 记忆搜索：可选查询改写后进行向量余弦 topK，再过滤事实范围。
+ * 记忆搜索：手动查询先向量 topK 再按请求范围过滤；自动召回先限制可注入事实再取 topK。
  *
- * SQLite/LocalMemory 负责事实源；向量索引只提供可丢弃的语义排名。召回覆盖整个记忆库，
+ * SQLite/LocalMemory 负责事实源；向量索引只提供可丢弃的语义排名。手动查询覆盖整个记忆库，
  * 不做来源分桶或工作区过滤；向量不可用或指纹不匹配时返回空结果及原因。
  */
 import type { EmbeddingModelRuntime } from "../../llm/embedding/types.js";
@@ -104,11 +104,18 @@ export class HybridMemoryRetriever {
     if (!snapshot.entries.length || options.limit < 1) return {
       ...emptySearchResult(snapshot), originalQuery: safeQuery
     };
+    // 自动注入没有可信 actor 身份，范围外专属事实不能占据共享事实的召回名额。
+    // 手动查询仍保留公开搜索的先 top-K、后按请求范围过滤语义。
+    const eligibleEntryIds = options.automatic
+      ? new Set(snapshot.entries.filter((entry) => entryMatchesMemorySearchScope(entry, options)
+        && (this.options.allowEntry?.(entry) ?? true)
+        && (options.allowEntry?.(entry) ?? true)).map((entry) => entry.id))
+      : undefined;
     const semanticPerfStartedAt = perfNow();
-    const semantic = await this.semanticSearch(safeQuery, options.limit, options.signal, options.threshold, options.rewriteQuery);
+    const semantic = await this.semanticSearch(safeQuery, options.limit, options.signal, options.threshold, options.rewriteQuery, eligibleEntryIds);
     recordPerfPhase("memory.semantic", semanticPerfStartedAt, { available: semantic.available });
     const byId = new Map(snapshot.entries.map((entry) => [entry.id, entry]));
-    // 先取语义相似度最高的 top-K，再按 scope 过滤；过滤后不补取被范围外结果占用的名额。
+    // 手动查询在 top-K 后过滤且不补位；自动召回在向量查询前已经限定可注入集合。
     const selected = semantic.results.filter(({ entryId }) => {
       const entry = byId.get(entryId);
       return entry !== undefined
@@ -170,7 +177,8 @@ export class HybridMemoryRetriever {
     limit: number,
     signal?: AbortSignal,
     thresholdOverride?: number,
-    rewriteOverride?: boolean
+    rewriteOverride?: boolean,
+    entryIds?: ReadonlySet<string>
   ): Promise<{ available: boolean; results: MemoryVectorSearchResult[]; rewrittenQuery?: string; degraded?: MemoryRecallDegraded }> {
     if (!query) return { available: false, results: [] };
     let rewritten = query;
@@ -212,7 +220,8 @@ export class HybridMemoryRetriever {
       const results = index.search(queryVector, {
         modelFingerprint: runtime.descriptor.fingerprint,
         limit,
-        minimumSimilarity: threshold
+        minimumSimilarity: threshold,
+        entryIds
       });
       return { available: true, rewrittenQuery, results };
     } catch (error) {

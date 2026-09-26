@@ -233,11 +233,8 @@ export class LocalMemory {
   }
 
   async clearAllEntries(options: MemoryMutationOptions = {}): Promise<MemoryClearResult> {
-    // 底层 clear 会同时删除 active 与 archived；快照也必须包含归档条目，才能把它们的
-    // 旧向量一并从派生索引移除。
-    const snapshot = await this.storage.listEntries({ includeArchived: true, signal: options.signal });
-    const result = await this.storage.clearAll(options);
-    if (result.deletedEntries) this.removeDerivedEntries(snapshot.entries.map((entry) => entry.originalId ?? entry.id));
+    const { deletedIds, ...result } = await this.storage.clearAll(options);
+    if (deletedIds.length) this.removeDerivedEntries(deletedIds);
     return result;
   }
 
@@ -331,10 +328,29 @@ export class LocalMemory {
     this.maintenanceAbort = controller;
     options = { ...options, signal: options.signal === undefined ? controller.signal : AbortSignal.any([options.signal, controller.signal]) };
     try {
-      const [entries, status] = await Promise.all([
-        this.storage.listEntries({ includeArchived: true }),
-        this.storage.readMaintenanceStatus().catch(() => undefined)
-      ]);
+      let entries: MemoryEntriesResult;
+      let status: MemoryMaintenanceStatus | undefined;
+      try {
+        [entries, status] = await Promise.all([
+          this.storage.listEntries({ includeArchived: true, signal: options.signal }),
+          this.storage.readMaintenanceStatus({ signal: options.signal }).catch(() => undefined)
+        ]);
+      } catch (error) {
+        return {
+          skipped: options.signal?.aborted ? "Cancelled by user"
+            : `Preview failed: ${redactSecrets(error instanceof Error ? error.message : String(error))}`,
+          examined: 0,
+          archiveProposed: [],
+          synthesisProposed: [],
+          inputTokens: 0,
+          outputTokens: 0,
+          available: true,
+          entries: 0,
+          temporaryToArchive: 0,
+          archivedToDelete: 0,
+          recentRuns: 0
+        };
+      }
       const now = options.now ?? new Date();
       const archiveCutoff = now.getTime() - Math.max(1, Math.trunc(options.archiveRetentionDays ?? 30)) * 86_400_000;
       const temporaryToArchive = entries.entries.filter((entry) => (
@@ -508,6 +524,7 @@ export class LocalMemory {
     let outcome: MemoryMaintenanceResult | undefined;
     let finalStatusError: unknown;
     let executionError: unknown;
+    let archiveStageError: unknown;
     let terminalRun: MemorySleepRun | undefined;
     const recordFailure = (error: unknown): void => {
       failed += 1;
@@ -585,6 +602,8 @@ export class LocalMemory {
           options.signal?.throwIfAborted();
           if (error instanceof SleepOwnerLostError) throw error;
           recordFailure(error);
+          archiveStageError = error;
+          throw error;
         }
       }
       recordProgress("exact");
@@ -609,6 +628,8 @@ export class LocalMemory {
           options.signal?.throwIfAborted();
           if (error instanceof SleepOwnerLostError) throw error;
           recordFailure(error);
+          archiveStageError = error;
+          throw error;
         }
       }
       recordProgress("expired");
@@ -638,19 +659,13 @@ export class LocalMemory {
                 : directSimilarityDuplicates(current, scan.pairs, similarityMergeThreshold);
               if (direct?.duplicates.length) {
                 const duplicateIds = direct.duplicates.map((entry) => entry.id);
-                try {
-                  const result = await this.archiveForSleep(duplicateIds, "similarity_merge", options, direct.survivor.id, now, runId, current);
-                  if (result.archived > 0) {
-                    archived += result.archived;
-                    similarity += result.archived;
-                    processed += result.archived;
-                    active = active.filter((entry) => !duplicateIds.includes(entry.id));
-                    notifySleepIndexRebuild(derivedIndex);
-                  }
-                } catch (error) {
-                  options.signal?.throwIfAborted();
-                  if (error instanceof SleepOwnerLostError) throw error;
-                  recordFailure(error);
+                const result = await this.archiveForSleep(duplicateIds, "similarity_merge", options, direct.survivor.id, now, runId, current);
+                if (result.archived > 0) {
+                  archived += result.archived;
+                  similarity += result.archived;
+                  processed += result.archived;
+                  active = active.filter((entry) => !duplicateIds.includes(entry.id));
+                  notifySleepIndexRebuild(derivedIndex);
                 }
                 await persistProgress();
               }
@@ -661,21 +676,15 @@ export class LocalMemory {
               for (let offset = 0; offset < ordered.length; offset += batchSize) {
                 const batch = ordered.slice(offset, offset + batchSize);
                 if (batch.length < 2) continue;
-                try {
-                  const result = await this.mergeSleepBatch(batch, options, now, derivedIndex, sleepUsage, runId);
-                  written += result.written;
-                  archived += result.archived;
-                  llm += result.archived;
-                  synthesisFailed += result.synthesisFailed;
-                  processed += result.written + result.archived;
-                  if (result.archived > 0) {
-                    const archivedIds = new Set(result.archivedIds);
-                    active = active.filter((entry) => !archivedIds.has(entry.id));
-                  }
-                } catch (error) {
-                  options.signal?.throwIfAborted();
-                  if (error instanceof SleepOwnerLostError) throw error;
-                  recordFailure(error);
+                const result = await this.mergeSleepBatch(batch, options, now, derivedIndex, sleepUsage, runId);
+                written += result.written;
+                archived += result.archived;
+                llm += result.archived;
+                synthesisFailed += result.synthesisFailed;
+                processed += result.written + result.archived;
+                if (result.archived > 0) {
+                  const archivedIds = new Set(result.archivedIds);
+                  active = active.filter((entry) => !archivedIds.has(entry.id));
                 }
                 await persistProgress();
               }
@@ -706,10 +715,13 @@ export class LocalMemory {
       const finishedAt = new Date().toISOString();
       outcome = { scanned, processed, written, failed, startedAt, finishedAt };
     } catch (error) {
-      executionError = error;
-      if (options.signal?.aborted) {
+      if (error === archiveStageError) {
+        outcome = { scanned, processed, written, failed, startedAt, finishedAt: new Date().toISOString() };
+      } else if (options.signal?.aborted) {
+        executionError = error;
         runStatus = "cancelled";
       } else {
+        executionError = error;
         runStatus = "failed";
         lastError = error instanceof Error ? error.message : String(error);
       }
@@ -1164,7 +1176,16 @@ export class LocalMemory {
 
   private async cleanupTemporaryMemories(conversation: string, now: Date, signal: AbortSignal | undefined, userId: string | null,
     beforeWrite?: () => Promise<void>): Promise<ExtractedMemory[]> {
-    const candidates = await this.findSemanticMemoryEntries(conversation, 20, 0.3, signal, userId);
+    let candidates: MemoryEntry[] | undefined;
+    try {
+      candidates = await this.findSemanticMemoryEntries(conversation, 20, 0.3, signal, userId);
+    } catch (error) {
+      signal?.throwIfAborted();
+      if (error instanceof Error && error.name === "AbortError") throw error;
+      // 清理候选读取或访问统计失败不能丢掉此前已提交的自动 add/delete 结果。
+      // beforeWrite 在外层和每次真正删除前单独执行，门禁失败仍向上传播。
+      return [];
+    }
     const temporary = candidates?.filter((entry) => entry.durability === "temporary") ?? [];
     if (!temporary.length) return [];
     const formatDate = (date: Date) => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")} ${date.toLocaleTimeString()}`;

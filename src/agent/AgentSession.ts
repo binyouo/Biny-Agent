@@ -680,7 +680,9 @@ export class AgentSession {
       return await activityContextForTurn({
         store, input, now, enabled: this.activeConfig.activity.enabled,
         getEmbeddingRuntime: this.options.getActivityEmbeddingRuntime
-          ?? (async () => await this.localEmbeddingManager.createRuntime("multilingual-e5-small").catch(() => undefined)),
+          ?? (async () => this.localEmbeddingManager.isReady()
+            ? await this.localEmbeddingManager.createRuntime("multilingual-e5-small").catch(() => undefined)
+            : undefined),
         signal
       });
     } catch {
@@ -2253,7 +2255,8 @@ export class AgentSession {
       abortSignal,
       runBudget,
       completedStepsBeforeRun,
-      messageQueues
+      messageQueues,
+      personalization: turnPersonalization
     } = args;
     const autoAnalyzeForTurn = !runOptions.continueFrom?.length
       && runOptions.retryOfMessageId === undefined
@@ -2852,11 +2855,12 @@ export class AgentSession {
           && !(this.activePersonalization.excludeExternalContext && (Boolean(runOptions.attachments?.length) || this.usedExternalContext(finalMessages)))
           && parseTemporalClues(input).length > 0;
         if (mayUseModel) this.scheduleTemporalIndex(this.toolModel());
-        if (this.activePersonalization.contributeMemories || finalAssistantReference?.id !== undefined) {
+        if (turnPersonalization.contributeMemories || finalAssistantReference?.id !== undefined) {
           const memoryRecorder = this.recorder;
           const memoryRuntime = memoryRecorder.runtimeContextSnapshot();
           const memoryMessageId = finalAssistantReference?.id;
-          const contributeMemories = this.activePersonalization.contributeMemories;
+          const contributeMemories = turnPersonalization.contributeMemories;
+          const excludeExternalContext = turnPersonalization.excludeExternalContext;
           const markMemoryHandled = async (changes: { created: Array<{ id: string; content: string }>; deleted: Array<{ id: string; content: string }> }): Promise<void> => {
             if (!memoryMessageId) return;
             const metadata: Record<string, unknown> = { memoryExtracted: true, memoryExtractedAt: new Date().toISOString() };
@@ -2899,7 +2903,7 @@ export class AgentSession {
               messageId: memoryMessageId,
               runId: runOptions.runId!,
               externalContext: Boolean(runOptions.attachments?.length) || this.usedExternalContext(finalMessages),
-              excludeExternalContext: this.activePersonalization.excludeExternalContext,
+              excludeExternalContext,
               originAnchors,
               beforeWrite: async () => {
                 if ((await readSessionCatalogRecord(this.persistenceRoot(), memoryRecorder.sessionId))?.isIncognito) {
