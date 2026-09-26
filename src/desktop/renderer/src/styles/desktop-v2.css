@@ -1282,6 +1282,9 @@ select option:disabled {
   --st-primary-active: color-mix(in srgb, var(--st-primary) 82%, var(--surface));
   --st-ring: color-mix(in srgb, var(--accent) 25%, transparent);
   --st-ring-weak: color-mix(in srgb, var(--accent) 22%, transparent);
+  --st-action-border: color-mix(in srgb, var(--text) 27%, var(--surface-raised));
+  --st-action-border-hover: color-mix(in srgb, var(--text) 43%, var(--surface-raised));
+  --st-action-bg: color-mix(in srgb, var(--text) 6%, var(--surface-raised));
   --st-muted-foreground: var(--text-secondary);
   --st-card: color-mix(in srgb, var(--surface-soft) 48%, var(--surface-raised));
   --st-sidebar-bg: var(--sidebar);
@@ -4926,6 +4929,10 @@ select option:disabled {
 .desktop-settings-dialog .settings-modal .web-search-settings > section + section { margin-top: 24px; }
 .desktop-settings-dialog .settings-modal .web-search-settings > section:not(.activity-memory-group) > h3 { margin-bottom: 16px; }
 .desktop-settings-dialog .settings-modal .web-search-settings p { margin: 0; color: var(--text-secondary); font-size: calc(14px * var(--font-scale, 1)); line-height: 1.6; }
+.desktop-settings-dialog .settings-modal .web-search-options-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; margin-top: 16px; }
+.desktop-settings-dialog .settings-modal .web-search-options-grid > div { min-width: 0; }
+.desktop-settings-dialog .settings-modal .web-search-options-grid label { display: block; margin-bottom: 8px; font-weight: 600; }
+.desktop-settings-dialog .settings-modal .web-search-options-grid select { width: 100%; }
 .desktop-settings-dialog .settings-modal .web-search-settings > section > button { align-self: flex-start; }
 .desktop-settings-dialog .settings-modal .web-search-settings > section > .settings-switch-row { align-self: stretch; }
 .desktop-settings-dialog .settings-modal .web-search-settings .settings-button-row button { display: inline-flex; align-items: center; gap: 8px; }

@@ -5,8 +5,8 @@
 .desktop-settings-dialog .settings-modal .biny-thread-brief-settings header > svg { flex-shrink: 0; color: var(--biny-text-secondary); }
 .desktop-settings-dialog .settings-modal .biny-thread-brief-settings header h3 { margin: 0; font-size: 14px; font-weight: 500; }
 .desktop-settings-dialog .settings-modal .biny-thread-brief-settings header small { font-size: 11px; color: var(--biny-text-secondary); }
-.desktop-settings-dialog .settings-modal .biny-thread-brief-settings header button { display: inline-flex; align-items: center; gap: 4px; height: 24px; margin-left: auto; padding: 0 8px; border: 0; border-radius: 6px; background: transparent; color: var(--biny-text-secondary); font-size: 12px; }
-.desktop-settings-dialog .settings-modal .biny-thread-brief-settings header button:hover { background: var(--biny-surface-hover); }
+.desktop-settings-dialog .settings-modal .biny-thread-brief-settings header button { display: inline-flex; align-items: center; gap: 4px; height: 24px; margin-left: auto; padding: 0 8px; border: 1px solid var(--st-action-border); border-radius: 6px; background: var(--st-action-bg); color: var(--biny-text-secondary); font-size: 12px; }
+.desktop-settings-dialog .settings-modal .biny-thread-brief-settings header button:hover { border-color: var(--st-action-border-hover); background: var(--biny-surface-hover); }
 .desktop-settings-dialog .settings-modal .biny-thread-brief-settings p { margin: 0; color: var(--biny-text-secondary); font-size: 12px; line-height: 16px; }
 .desktop-settings-dialog .settings-modal .biny-thread-brief-settings .biny-brief-description { margin-bottom: 12px; }
 .biny-brief-controls { display: flex; flex-direction: column; gap: 12px; }
