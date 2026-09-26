@@ -3055,7 +3055,7 @@
 .execution-trace-empty { padding: 24px 0; font-size: 12px; }
 .execution-trace-empty button { display: block; margin-top: 8px; }
 
-/* 正文资源控件与参考渲染保持相同层次：工具条独立于横向滚动区。 */
+/* 正文资源操作工具条独立于横向滚动区，避免控件被裁切。 */
 .markdown-table-block { margin: 16px 0; min-width: 0; }
 .markdown-block-actions { display: flex; align-items: center; justify-content: flex-end; gap: 4px; margin-bottom: 8px; }
 .markdown-code-header .markdown-block-actions { margin-bottom: 0; }

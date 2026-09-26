@@ -50,7 +50,7 @@ export function createTemporalModelExtractor(model: AgentModel): TemporalExtract
     async extractClues(source, signal) {
       const release = await acquireClueCall(signal);
       try {
-        // 原文仍由索引层完整保存和规则解析；模型输入限幅与参考实现一致，避免长消息拖垮旁路提取。
+        // 原文仍由索引层完整保存并由规则解析；限制模型输入长度，避免长消息拖慢旁路提取。
         const prompt = `Extract up to 50 date expressions from ORIGINAL USER TEXT. Return ONLY a JSON array with expression,date,endDate,time,offset,quote. expression and quote must be verbatim contiguous substrings; offset is the zero-based UTF-16 offset in originalText. Dates are YYYY-MM-DD or null, endDate is inclusive. Resolve relative dates ONLY from sentAt and sentAtTimeZone; if timezone is unknown, relative date is null. Never invent dates.\n${sourceEnvelope(source, source.text.slice(0, temporalClueModelTextLimit))}`;
         const result = await generateNativeText(model, [{ role: "user", content: prompt }], { signal, timeoutMs: 30_000, maxOutputTokens: 2_000, requestContext: { operation: "memory" } });
         return parseArray(result.text);

@@ -4924,7 +4924,7 @@ select option:disabled {
 .desktop-settings-dialog .settings-modal .settings-chat-page .chat-params-settings .activity-number-input { width: 100%; }
 .desktop-settings-dialog .settings-modal .settings-chat-page .compaction-advanced > section { border: 0; padding: 12px 0 0; }
 
-/* 网络搜索保持参考页面的卡片间距，覆盖设置中心的紧凑行布局。 */
+/* 网络搜索卡片使用舒展间距，覆盖设置中心的紧凑行布局。 */
 .desktop-settings-dialog .settings-modal .web-search-settings > section { padding: 24px; gap: 16px; }
 .desktop-settings-dialog .settings-modal .web-search-settings > section + section { margin-top: 24px; }
 .desktop-settings-dialog .settings-modal .web-search-settings > section:not(.activity-memory-group) > h3 { margin-bottom: 16px; }

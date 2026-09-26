@@ -123,7 +123,7 @@ export function ChatScroll({ children, onScrolledChange, sessionId, streaming }:
     const container = containerRef.current;
     if (!container) return;
     const distance = distanceFromBottom(container);
-    // 标题栏底缘阴影跟随「是否离开顶部」（参考应用 showBottomShadow 语义）。
+    // 标题栏底缘阴影仅在聊天区离开顶部时显示。
     onScrolledChange(container.scrollTop > 0);
     if (!scrollAnchorRef.current) pinnedRef.current = distance < PIN_DISTANCE;
     if (distance > JUMP_BUTTON_DISTANCE) setJumpVisible(true);

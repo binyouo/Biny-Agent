@@ -159,7 +159,7 @@ export function Workspace({
   // 上限预警按会话 dismiss：换会话要重新提示，同会话点掉后不再打扰。
   const [limitBannerDismissedFor, setLimitBannerDismissedFor] = useState<string>();
   const showLimitBanner = Boolean(sessionLimits?.nearSizeLimit && sessionId && limitBannerDismissedFor !== sessionId);
-  // 标题栏底缘阴影跟随聊天区滚动（参考应用 showBottomShadow：离开顶部时才出现）。
+  // 标题栏底缘阴影仅在聊天区离开顶部时显示。
   const [chatScrolled, setChatScrolled] = useState(false);
   const selectedWorktree = sessionId === undefined
     ? undefined
@@ -302,11 +302,11 @@ function LoadingState(): React.JSX.Element {
   return <div className="biny-status-state" role="status"><ThinkingOrb aria-label="正在恢复会话" className="thinking-orb" size={20} state="connecting" theme="auto" /><span>正在恢复会话…</span></div>;
 }
 
-/* ---- 标题打字机（参考应用 ThreadTitle 原文逻辑移植） ----
+/* ---- 标题打字机 ----
  * 生成中先进入 thinking 呼吸（thread-title-thinking，标题栏内禁用扫光改用呼吸）；
  * 生成中的标题更新走「删字 → 打字」两段打字机：删字 85ms/字符 easeInQuart、打字 95ms/字符
  * easeOutQuart，光标带 shrink/grow 拖尾（.thread-title-caret.trail-*），思考态最短保持 500ms；
- * 删掉的字符在标题右缘喷尘粒（titleDust.ts，原文 spawnTitleDeleteDust 移植）。
+ * 删除的字符在标题右缘显示喷尘粒动画（titleDust.ts）。
  * 动画只在生成中播放；非生成中的标题变化（切会话等）直接同步，见下方标题变化 effect。 */
 
 const CHAR_DELETE_DELAY = 85;
