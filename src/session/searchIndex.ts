@@ -10,10 +10,12 @@
  */
 import { open, stat } from "node:fs/promises";
 import { mkdirSync } from "node:fs";
+import { performance } from "node:perf_hooks";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { globalAgentDir } from "../config/paths.js";
 import { tokenizeMemoryText } from "../agent/context/memoryFormat.js";
+import { maxSessionEventLineBytes } from "./limits.js";
 import { parseSessionEvents, type SessionEvent } from "./events.js";
 import { listAllSessionFiles, sessionIdFromFile } from "./store.js";
 import { publicAssistantMessage } from "./publicMessage.js";
@@ -32,6 +34,15 @@ export interface SessionSearchIndexStatus {
 }
 
 const sqliteBusyTimeoutMs = 5_000;
+const sessionSearchReadChunkBytes = 64 * 1024;
+const sessionSearchBatchBytes = 256 * 1024;
+const sessionSearchBatchEvents = 128;
+export const sessionSearchRefreshMaxAgeMs = 1_000;
+
+export interface SessionSearchRefreshOptions {
+  /** 跳过此窗口内已成功完成的全目录刷新；省略时始终检查文件系统。 */
+  maxAgeMs?: number;
+}
 
 interface IndexStateRow {
   session_id: unknown;
@@ -40,6 +51,8 @@ interface IndexStateRow {
 
 export class SessionSearchIndex {
   private database: DatabaseSync | undefined;
+  private refreshFlight: Promise<void> | undefined;
+  private lastFullRefreshAt: number | undefined;
 
   constructor(private readonly agentDir: string | (() => string) = globalAgentDir) {}
 
@@ -58,8 +71,28 @@ export class SessionSearchIndex {
     };
   }
 
-  /** 按需补齐旧会话，不能假设历史都曾在当前进程打开过。 */
-  async refreshAll(): Promise<void> {
+  /** 按需补齐旧会话；并发调用共享一次扫描，调用方可声明可接受的新鲜窗口。 */
+  async refreshAll(options: SessionSearchRefreshOptions = {}): Promise<void> {
+    if (this.refreshFlight) return await this.refreshFlight;
+    const maxAgeMs = options.maxAgeMs;
+    if (
+      this.lastFullRefreshAt !== undefined
+      && maxAgeMs !== undefined
+      && Number.isFinite(maxAgeMs)
+      && maxAgeMs > 0
+      && performance.now() - this.lastFullRefreshAt < maxAgeMs
+    ) return;
+    const refresh = this.scanAll();
+    this.refreshFlight = refresh;
+    try {
+      await refresh;
+      this.lastFullRefreshAt = performance.now();
+    } finally {
+      if (this.refreshFlight === refresh) this.refreshFlight = undefined;
+    }
+  }
+
+  private async scanAll(): Promise<void> {
     const root = typeof this.agentDir === "function" ? this.agentDir() : this.agentDir;
     for (const file of await listAllSessionFiles(root)) {
       await this.indexSessionFile(sessionIdFromFile(file), file);
@@ -106,48 +139,52 @@ export class SessionSearchIndex {
     }
     if (fileSize === previousOffset) return 0;
 
-    const appended = await readAppendedEvents(filePath, previousOffset);
     let offset = previousOffset;
     let indexed = 0;
+    let retry = false;
     const insert = database.prepare(
       "INSERT INTO session_transcripts (session_id, message_id, role, time, body, tokens) VALUES (?, ?, ?, ?, ?, ?)"
     );
-    database.exec("BEGIN IMMEDIATE");
-    try {
-      // 读取文件期间其它连接可能已推进偏移；重读状态避免同一消息重复入索引。
-      const current = database.prepare("SELECT byte_offset FROM session_index_state WHERE session_id = ?").get(sessionId) as IndexStateRow | undefined;
-      if (Number(current?.byte_offset ?? 0) !== previousOffset) {
-        database.exec("ROLLBACK");
-        return await this.indexSessionFile(sessionId, filePath);
-      }
-      for (const { event, endOffset } of appended) {
-        offset = endOffset;
-        if (event.type !== "user_message" && event.type !== "assistant_message") continue;
-        const content = event.type === "assistant_message" ? publicAssistantMessage(event.content) : event.content;
-        if (!content.trim()) continue;
-        insert.run(
-          sessionId,
-          event.messageId ?? null,
-          event.type === "user_message" ? "user" : "assistant",
-          event.time ?? null,
-          content,
-          tokenizeMemoryText(content).join(" ")
-        );
-        indexed += 1;
-      }
-      database.prepare(
-        "INSERT INTO session_index_state (session_id, byte_offset, updated_at) VALUES (?, ?, ?) " +
-        "ON CONFLICT(session_id) DO UPDATE SET byte_offset = excluded.byte_offset, updated_at = excluded.updated_at"
-      ).run(sessionId, offset, new Date().toISOString());
-      database.exec("COMMIT");
-    } catch (error) {
+    for await (const batch of readAppendedEventBatches(filePath, previousOffset)) {
+      database.exec("BEGIN IMMEDIATE");
       try {
-        database.exec("ROLLBACK");
-      } catch {
-        // 保留原始错误。
+        // 每批都核对已提交偏移；另一个连接推进后，释放当前 reader 再从新位置继续。
+        const current = database.prepare("SELECT byte_offset FROM session_index_state WHERE session_id = ?").get(sessionId) as IndexStateRow | undefined;
+        if (Number(current?.byte_offset ?? 0) !== offset) {
+          database.exec("ROLLBACK");
+          retry = true;
+          break;
+        }
+        for (const { event, endOffset } of batch) {
+          offset = endOffset;
+          if (event?.type !== "user_message" && event?.type !== "assistant_message") continue;
+          const content = event.type === "assistant_message" ? publicAssistantMessage(event.content) : event.content;
+          if (!content.trim()) continue;
+          insert.run(
+            sessionId,
+            event.messageId ?? null,
+            event.type === "user_message" ? "user" : "assistant",
+            event.time ?? null,
+            content,
+            tokenizeMemoryText(content).join(" ")
+          );
+          indexed += 1;
+        }
+        database.prepare(
+          "INSERT INTO session_index_state (session_id, byte_offset, updated_at) VALUES (?, ?, ?) " +
+          "ON CONFLICT(session_id) DO UPDATE SET byte_offset = excluded.byte_offset, updated_at = excluded.updated_at"
+        ).run(sessionId, offset, new Date().toISOString());
+        database.exec("COMMIT");
+      } catch (error) {
+        try {
+          database.exec("ROLLBACK");
+        } catch {
+          // 保留原始错误。
+        }
+        throw error;
       }
-      throw error;
     }
+    if (retry) return await this.indexSessionFile(sessionId, filePath);
     return indexed;
   }
 
@@ -221,39 +258,86 @@ export class SessionSearchIndex {
   }
 }
 
-/** 读取上一次索引偏移之后追加的完整事件；最后一个不完整行不会推进偏移。 */
-async function readAppendedEvents(
+/** 分块读取追加数据；每批仅保留有限事件，半行等下次追加后再读。 */
+async function* readAppendedEventBatches(
   filePath: string,
   startOffset: number
-): Promise<Array<{ event: SessionEvent; endOffset: number }>> {
+): AsyncGenerator<Array<{ event?: SessionEvent; endOffset: number }>> {
   const handle = await open(filePath, "r");
   try {
     const { size } = await handle.stat();
-    const length = size - startOffset;
-    if (length <= 0) return [];
-    const read = await handle.read({ buffer: Buffer.alloc(length), position: startOffset });
-    const text = read.buffer.toString("utf8");
-    let completeText = text;
-    if (!text.endsWith("\n")) {
-      // 末尾不带换行说明最后一行仍在写入；完整事件以换行结尾为准。
-      completeText = text.slice(0, text.lastIndexOf("\n") + 1);
+    if (size <= startOffset) {
+      yield [];
+      return;
     }
+    const buffer = Buffer.allocUnsafe(sessionSearchReadChunkBytes);
+    const lineParts: Buffer[] = [];
+    let lineBytes = 0;
+    let lineTooLarge = false;
     let offset = startOffset;
-    const result: Array<{ event: SessionEvent; endOffset: number }> = [];
-    for (const line of completeText.split("\n")) {
-      offset += Buffer.byteLength(line, "utf8") + 1;
-      const trimmed = line.trim();
-      if (!trimmed) continue;
-      try {
-        const [event] = parseSessionEvents(trimmed);
-        if (event) result.push({ event, endOffset: offset });
-      } catch {
-        // 单行损坏只跳过该行，不阻断索引推进；偏移仍要前移避免反复重读坏行。
-        result.push({ event: { type: "error", message: "unparsable" } as SessionEvent, endOffset: offset });
+    let batchBytes = 0;
+    let yieldedBatch = false;
+    let batch: Array<{ event?: SessionEvent; endOffset: number }> = [];
+    while (offset < size) {
+      const read = await handle.read(buffer, 0, Math.min(buffer.length, size - offset), offset);
+      if (read.bytesRead === 0) break;
+      const chunk = buffer.subarray(0, read.bytesRead);
+      let lineStart = 0;
+      let newline = chunk.indexOf(0x0a, lineStart);
+      while (newline !== -1) {
+        const segment = chunk.subarray(lineStart, newline);
+        const completeLineBytes = lineBytes + segment.length;
+        const oversized = lineTooLarge || completeLineBytes > maxSessionEventLineBytes;
+        const line = oversized
+          ? undefined
+          : lineParts.length ? Buffer.concat([...lineParts, segment], completeLineBytes) : segment;
+        const endOffset = offset + newline + 1;
+        const appended = parseAppendedEventLine(line, oversized, endOffset);
+        batch.push(appended);
+        batchBytes += completeLineBytes + 1;
+        if (batch.length >= sessionSearchBatchEvents || batchBytes >= sessionSearchBatchBytes) {
+          yield batch;
+          yieldedBatch = true;
+          batch = [];
+          batchBytes = 0;
+        }
+        lineParts.length = 0;
+        lineBytes = 0;
+        lineTooLarge = false;
+        lineStart = newline + 1;
+        newline = chunk.indexOf(0x0a, lineStart);
       }
+      const trailing = chunk.subarray(lineStart);
+      if (trailing.length) {
+        lineBytes += trailing.length;
+        if (lineTooLarge || lineBytes > maxSessionEventLineBytes) {
+          lineTooLarge = true;
+          lineParts.length = 0;
+        } else {
+          lineParts.push(Buffer.from(trailing));
+        }
+      }
+      offset += read.bytesRead;
     }
-    return result;
+    if (batch.length || !yieldedBatch) yield batch;
   } finally {
     await handle.close();
+  }
+}
+
+function parseAppendedEventLine(
+  line: Buffer | undefined,
+  oversized: boolean,
+  endOffset: number
+): { event?: SessionEvent; endOffset: number } {
+  if (oversized) return { event: { type: "error", message: "unparsable" } as SessionEvent, endOffset };
+  const trimmed = line?.toString("utf8").trim() ?? "";
+  if (!trimmed) return { endOffset };
+  try {
+    const [event] = parseSessionEvents(trimmed);
+    return event ? { event, endOffset } : { endOffset };
+  } catch {
+    // 单行损坏只跳过该行，不阻断索引推进；偏移仍要前移避免反复重读坏行。
+    return { event: { type: "error", message: "unparsable" } as SessionEvent, endOffset };
   }
 }

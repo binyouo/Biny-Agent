@@ -5,7 +5,7 @@
  * 派生 FTS5 索引做全文检索。索引是增量推进的，检索前先把当前会话的新增消息刷进去。
  */
 import { z } from "zod";
-import type { SessionSearchIndex } from "../session/searchIndex.js";
+import { sessionSearchRefreshMaxAgeMs, type SessionSearchIndex } from "../session/searchIndex.js";
 import { ToolAccesses } from "../tools/access.js";
 import type { Tool } from "../tools/types.js";
 
@@ -54,7 +54,7 @@ export function createHistoryTools(deps: SearchHistoryDeps): Tool[] {
           const index = deps.getIndex();
           if (!index) throw new Error("Session history search is unavailable.");
           await deps.flushCurrentSession?.();
-          await index.refreshAll();
+          await index.refreshAll({ maxAgeMs: sessionSearchRefreshMaxAgeMs });
           const hits = index.search(query, { limit: limit ?? 8 });
           return { query, hits };
         }
