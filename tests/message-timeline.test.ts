@@ -84,7 +84,7 @@ test("后台通知 XML 不进入实时或历史消息界面", () => {
   assert.doesNotMatch(renderTurns(live), /biny_notification|修复完成/u);
 });
 
-test("记忆召回降级时在回复上下文行给出主动提示", () => {
+test("记忆召回降级保留在回合元数据，不占用回复顶部", () => {
   const history: SessionEvent[] = [
     { type: "user_message", content: "检查项目", messageId: "user-message", time: "2026-09-11T00:00:00.000Z" },
     {
@@ -100,9 +100,7 @@ test("记忆召回降级时在回复上下文行给出主动提示", () => {
   assert.ok(completed, "会话时间线必须解析 assistant_message 元数据中的降级原因");
   assert.equal(completed.memoryRecallDegraded, "model_mismatch");
   const markup = renderTurns(turns);
-  // 折叠态只展示警示短语；完整原因在悬停浮层里。
-  assert.match(markup, /chat-meta-indicator/u);
-  assert.match(markup, /记忆召回降级/u);
+  assert.doesNotMatch(markup, /chat-meta-indicator|记忆召回降级/u);
 });
 
 test("历史失败只有请求耗时：不能用总耗时生成思考步骤", () => {

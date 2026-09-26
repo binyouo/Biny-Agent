@@ -22,7 +22,6 @@ import { useTypewriter } from "./useTypewriter.js";
 import { ActivitySegment, type ActivitySegmentStep } from "./chat/ActivitySegment.js";
 import { CompactionDivider } from "./chat/CompactionDivider.js";
 import { MessageClock } from "./chat/MessageClock.js";
-import { SkillsIndicator } from "./chat/SkillsIndicator.js";
 import { MessageContextMenu } from "./chat/MessageContextMenu.js";
 import { ExecutionTraceDialog } from "./chat/ExecutionTraceDialog.js";
 import { ChangesSummary } from "./chat/ChangesSummary.js";
@@ -443,7 +442,6 @@ const Turn = memo(function Turn({
       {running || executionSteps.length > 0 || turn.assistant.trim() || completedChangedFiles.length > 0 ? (
       <article className="chat-message desktop-assistant-message" data-message-id={turn.assistantMessageId} data-sender="assistant" tabIndex={-1}>
         <div className="agent-response">
-        <SkillsIndicator memoryRecallDegraded={turn.memoryRecallDegraded} />
         {executionSteps.length ? (
           <ExecutionTimeline
             onPreviewFile={onPreviewFile}
@@ -875,7 +873,7 @@ function AssistantActions({ projectId, sessionId, turn, skillDescriptions, conte
           role="menu"
           style={menuPosition.style}
         >
-          <MessageContextMenu tools={turn.tools.map((tool) => tool.tool)} skills={turn.skills} descriptions={skillDescriptions} />
+          <MessageContextMenu tools={turn.tools.map((tool) => tool.tool)} skills={turn.skills} descriptions={skillDescriptions} memoryRecallDegraded={turn.memoryRecallDegraded} />
           {hasInfoSection ? (
             <>
               {usageRows.length ? (

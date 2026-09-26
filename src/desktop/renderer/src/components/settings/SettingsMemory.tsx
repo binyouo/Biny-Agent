@@ -139,6 +139,7 @@ export function SettingsMemory({
   const [sleepStatus, setSleepStatus] = useState<DesktopMemoryStats["maintenance"]>();
   const [sleepStatusError, setSleepStatusError] = useState<string>();
   const lastSleepState = useRef<DesktopMemoryStats["maintenance"]["state"] | undefined>(undefined);
+  const lastSleepRun = useRef<string | undefined>(undefined);
   const [archivedEntries, setArchivedEntries] = useState<DesktopMemoryEntry[]>([]);
   const [archiveChains, setArchiveChains] = useState<NonNullable<DesktopMemoryArchivePage["chains"]>>({});
   const [archivedTotal, setArchivedTotal] = useState(0);
@@ -183,6 +184,7 @@ export function SettingsMemory({
       setCurrentPage(Math.floor(page.offset / PAGE_SIZE));
       setSleepStatus(status);
       lastSleepState.current = status.state;
+      lastSleepRun.current = status.lastRun ? `${status.lastRun.id}:${status.lastRun.status}:${status.lastRun.finishedAt ?? ""}` : undefined;
       setSleepStatusError(undefined);
       setSleepRuns(runs);
       setArchivedEntries(archived.entries);
@@ -209,8 +211,11 @@ export function SettingsMemory({
       pending = true;
       void onSleepStatus().then((next) => {
         if (cancelled) return;
-        const finished = lastSleepState.current === "running" && next.state !== "running";
+        const nextRun = next.lastRun ? `${next.lastRun.id}:${next.lastRun.status}:${next.lastRun.finishedAt ?? ""}` : undefined;
+        const finished = next.state !== "running"
+          && (lastSleepState.current === "running" || lastSleepRun.current !== nextRun);
         lastSleepState.current = next.state;
+        lastSleepRun.current = nextRun;
         setSleepStatus(next);
         setSleepStatusError(undefined);
         if (finished) void reload();
@@ -607,7 +612,7 @@ export function SettingsMemory({
             onChange={(sleepEnabled) => setMemory({ ...policy, sleepEnabled })}
           />
           {policy.sleepEnabled ? <div className="activity-memory-sleep-content">
-            {sleepRunning && sleepStage ? <p className="activity-memory-sleep-preview" role="status">当前阶段：{sleepStage} · 已归档 {lastRun?.archived ?? 0} 条</p> : null}
+            {sleepRunning && sleepStage ? <p className="activity-memory-sleep-preview" role="status">当前阶段：{sleepStage} · 已归档 {lastRun?.archived ?? 0} 条 · 精确重复 {lastRun?.archivedExact ?? 0} · 过期 {lastRun?.archivedExpired ?? 0} · 相似合并 {lastRun?.archivedSimilarity ?? 0} · LLM 合并 {lastRun?.archivedLlm ?? 0}</p> : null}
             {sleepStatusError ? <p role="alert">记忆整理状态读取失败：{sleepStatusError}</p> : null}
             {lastRun ? <div className="activity-memory-last-run">
               <strong>上次：{lastRun.status}（{lastRun.trigger}）</strong>

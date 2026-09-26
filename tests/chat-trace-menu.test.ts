@@ -19,13 +19,17 @@ test("上下文菜单支持键盘展开、显示真实清单并用 Escape 收起
   const { MessageContextMenu } = await import("../src/desktop/renderer/src/components/chat/MessageContextMenu.js");
   const root = createRoot(document.getElementById("root")!);
   try {
-    await React.act(async () => root.render(React.createElement(MessageContextMenu, { tools: ["Bash", "Bash", "Skill"], skills: ["references"] })));
+    await React.act(async () => root.render(React.createElement(MessageContextMenu, { tools: ["Bash", "Bash", "Skill"], skills: ["references"], memoryRecallDegraded: "no_vector_index" })));
     const button = document.querySelector<HTMLButtonElement>("button")!;
     await React.act(async () => button.focus());
     assert.equal(button.getAttribute("aria-expanded"), "true");
     const panel = document.querySelector('[aria-label="本轮上下文"]')!;
     assert.equal(panel.parentElement, document.body, "浮层脱离菜单动画的 transform 包含块");
     assert.match(panel.textContent!, /Bash/); assert.match(panel.textContent!, /技能调用/); assert.match(panel.textContent!, /references/);
+    assert.match(panel.textContent!, /记忆召回/u);
+    assert.match(panel.textContent!, /向量索引尚未建立/u);
+    assert.match(panel.textContent!, /配置嵌入模型并重建索引/u);
+    assert.doesNotMatch(panel.textContent!, /no_vector_index/u);
     await React.act(async () => button.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
     assert.equal(document.querySelector('[aria-label="本轮上下文"]'), null);
     const dialogHook = registerHooks({

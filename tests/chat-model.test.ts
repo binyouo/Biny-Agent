@@ -500,7 +500,6 @@ test("parseCompactionNotice 解析压缩条数与节省 token", () => {
 import { ActivitySegment } from "../src/desktop/renderer/src/components/chat/ActivitySegment.js";
 import { RecipeReadyBanner } from "../src/desktop/renderer/src/components/RecipeReadyBanner.js";
 import { CompactionDivider } from "../src/desktop/renderer/src/components/chat/CompactionDivider.js";
-import { SkillsIndicator } from "../src/desktop/renderer/src/components/chat/SkillsIndicator.js";
 import { compareCapabilitySkills, compareCapabilityTools, shouldShowToolInCapabilityMenu, skillCapabilityGroupId, SKILL_CAPABILITY_GROUPS } from "../src/desktop/renderer/src/components/composer/capabilityVisibility.js";
 
 const noopAsync = (): Promise<void> => Promise.resolve();
@@ -598,12 +597,6 @@ test("ActivitySegment 相位超过 8 个时折叠为「+N」液滴入口", () =>
   assert.doesNotMatch(running, /is-droplet is-open/u);
 });
 
-test("回复顶部不再展示工具与技能清单", () => {
-  const markup = renderToStaticMarkup(createElement(SkillsIndicator, { tools: ["Read", "Read", "Glob", "ToolSearch", "TaskStatus", "Bash"], skills: ["write-tui", "write-tui", "simplify-audit"] }));
-  assert.equal(markup, "");
-  assert.equal(renderToStaticMarkup(createElement(SkillsIndicator, {})), "");
-});
-
 test("CompactionDivider 渲染压缩药丸并省略缺失段", () => {
   const full = renderToStaticMarkup(createElement(CompactionDivider, { count: 117, savedTokens: 824069, summary: "讨论了工具冒烟测试" }));
   assert.match(full, /上下文已压缩/u);
@@ -688,25 +681,6 @@ test("RecipeReadyBanner 渲染提取横幅（标题、槽位、提取与忽略�
 });
 
 
-test("自动记忆不在回复顶部单独展示", () => {
-  const markup = renderToStaticMarkup(createElement(SkillsIndicator, {
-    memoryInjectedSummaries: ["偏好使用中文回复", "发布前运行完整测试"]
-  }));
-  assert.equal(markup, "");
-});
-
-test("工具技能摘要移入消息菜单后顶部保持空白", () => {
-  const markup = renderToStaticMarkup(createElement(SkillsIndicator, {
-    memoryInjectedSummaries: ["使用浏览器核验当前网页"],
-    skillDescriptions: new Map([["browser", "浏览器自动化技能"]]),
-    tools: ["Read", "Glob"],
-    skills: ["browser"]
-  }));
-  assert.equal(markup, "");
-  assert.doesNotMatch(markup, /记忆/u);
-  assert.equal((markup.match(/chat-meta-separator/gu) ?? []).length, 0);
-});
-
 test("历史回复保留本轮实际注入数量，旧会话不推测命中", () => {
   const history = [
     { type: "user_message" as const, content: "继续", time: "2026-09-12T00:00:00Z" },
@@ -730,15 +704,13 @@ test("发送占位与忙碌状态在对应用户消息落盘后一起退场，�
 });
 
 
-test("顶部清单不展示只有预选结果的工具和 Skill", () => {
+test("预选工具和 Skill 保留在回合元数据", () => {
   const turns = buildSessionTimeline([
     { type: "user_message", content: "检查网页", messageId: "u" },
     { type: "message_metadata", messageId: "u", metadata: { capabilitySelection: { tools: ["Read", "WebSearch"], skills: ["browser", "web-fetch"] } } },
     { type: "assistant_message", content: "开始检查" }
   ], []);
   assert.deepEqual(turns[0]?.capabilitySelection, { tools: ["Read", "WebSearch"], skills: ["browser", "web-fetch"] });
-  const markup = renderToStaticMarkup(createElement(SkillsIndicator, { selection: turns[0]?.capabilitySelection }));
-  assert.equal(markup, "");
 });
 
 
