@@ -33,6 +33,18 @@ INFRA_SIGNS = [
     (r"Illegal instruction", "模拟器缺指令(SIGILL)"),
     (r"input/output error|blob sha256:", "docker 镜像层 I/O 错误"),
 ]
+VERIFIER_ENV_SIGNS = [
+    (r"No interpreter found for Python [\d.]+", "verifier 缺少目标 Python 解释器"),
+    (r"Python downloads are set to 'never'", "verifier 禁止下载目标 Python"),
+    (
+        r"(?is)(?:E: Failed to fetch|Err:\d+).*?404\s+Not Found",
+        "verifier apt 依赖下载返回 404",
+    ),
+    (
+        r"FileNotFoundError:.*No such file or directory: 'sshpass'",
+        "verifier 缺少 sshpass",
+    ),
+]
 TEST_SUMMARY = re.compile(r"\d+ (?:passed|failed)")
 
 
@@ -93,6 +105,9 @@ def classify_task(td):
             blob += "\n" + open(p, errors="replace").read(400000)
 
     signs = [label for rx, label in INFRA_SIGNS if re.search(rx, blob)]
+    verifier_signs = [
+        label for rx, label in VERIFIER_ENV_SIGNS if re.search(rx, stdout)
+    ]
     reward = None
     if os.path.exists(rp):
         try:
@@ -100,7 +115,7 @@ def classify_task(td):
         except Exception:
             pass
     ran = bool(TEST_SUMMARY.search(stdout))
-    return reward, ran, signs
+    return reward, ran, signs, verifier_signs
 
 
 def main():
@@ -118,7 +133,7 @@ def main():
             b = t.split("__")[0]
             seen.add(b)
             td = os.path.join(job, t)
-            reward, ran, signs = classify_task(td)
+            reward, ran, signs, verifier_signs = classify_task(td)
             recorded = b in passed or b in failed or b in tmo or b in rte or b in cancelled
             result_conflict = sum((b in passed, b in failed, b in tmo, b in rte, b in cancelled)) > 1
             timeout_sign = any("超时" in sign for sign in signs)
@@ -132,6 +147,8 @@ def main():
                 st, why = "cancelled", "job/trial 被中止（不计入模型断言失败）"
             elif result_conflict:
                 st, why = "ambiguous", "result.json 同时记录互相冲突的终态"
+            elif verifier_signs:
+                st, why = "infra_failed", "；".join(verifier_signs)
             elif signs and (
                 not ran
                 or any("provider" in sign or "流" in sign for sign in signs)
@@ -178,9 +195,19 @@ def main():
         print("  %-16s %3d  %5.1f%%" % (k, n, (n / tot * 100) if tot else 0))
     print("  %-16s %3d" % ("总计", tot))
 
-    model = overall["completed"] + overall["subject_failed"]
-    if model:
-        print("\n计入模型的通过率: %d/%d = %.1f%%" % (overall["completed"], model, overall["completed"] / model * 100))
+    model_outcomes = sum(
+        overall[status]
+        for status in ("completed", "subject_failed", "timeout", "ambiguous")
+    )
+    if model_outcomes:
+        print(
+            "\n排除基建后的执行通过率（超时与冲突按未通过）: %d/%d = %.1f%%"
+            % (
+                overall["completed"],
+                model_outcomes,
+                overall["completed"] / model_outcomes * 100,
+            )
+        )
     known = tot - overall["indeterminate"]
     print("coverage（有明确分类的比例）: %.1f%%" % ((known / tot * 100) if tot else 0))
 

@@ -19,7 +19,7 @@
 | `verifier-env.sh` | 交给 verifier 的 `KEY=VALUE` 列表（由 `run-tb21.sh` 转成 `--verifier-env`） |
 | `classify_job.py` | 按 `docs/evaluation-plan.md` 的状态模型给一个 job 的失败分流 |
 | `merge_results.py` | 跨多个 job 合并结果（union / latest） |
-| `fast_verifier.py` | verifier 快速预检 |
+| `fast_verifier.py` | 只替换已精确预置的 pytest/uv 引导；保留原测试断言，并单独安装 qemu 用例所需的 `sshpass` |
 | `legacy/` | 旧的 zai 专用路径，只为复现历史成绩保留 |
 
 ## 跑
@@ -57,11 +57,22 @@ nohup ./rerun-failures.sh <主批次pid> <主批次目录> <补跑job名> deepse
 | --- | --- | --- |
 | 装 biny 依赖（上百个请求） | `npm error network` | npm 重试预算 + runtime 缓存（装一次，后续容器直接解压） |
 | 模型连续调 API | `Connect Timeout Error` | provider `retry` |
-| verifier 现场下 uv | `uvx: command not found` → 判 0 分 | setup 阶段预铺 uv/uvx/pytest + `--verifier-env` |
+| verifier 现场下 uv | 找不到 Python 或 uvx → pytest 没启动却记 0 分 | 运行时确认预置 pytest 存在后才走离线快路径；其他架构保留任务原 uv 引导并允许 uv 下载 Python。qemu 快路径单独装 `sshpass`，不连带升级 curl |
 
 **还有一条不是网络的**：强杀 harbor 不会清理它建的 `<task>__<hash>__env` docker 网络，
 攒十几个就把 Docker 默认地址池耗尽，之后所有 trial 都起不来容器。
 `run-tb21.sh` 每次启动前会清一遍。
+
+## 评测限额与配置留档
+
+- `deepseek-v4.1-flash` 预设使用模型支持的 1M context；`BINY_EVAL_CONTEXT_WINDOW` 可显式覆写。
+- Agent 命令默认不另设 `environment.exec` timeout，由 Harbor 的任务 timeout 和 multiplier 控制。只有显式设置 `BINY_AGENT_EXEC_TIMEOUT_SEC` 才会增加一层命令 timeout。
+- 通过 `biny run --json` 执行任务，让非 `completed` 终态也交给 Terminal-Bench verifier 检查工作区；模型终态与模型调用异常仍按各自结果记录，Harbor 的硬超时仍独立生效。
+- Harbor 默认每题运行 1 次（`BINY_EVAL_ATTEMPTS` 可覆写）；agent timeout multiplier 默认 1，沿用各任务 `task.toml` 的时限（`BINY_EVAL_AGENT_TIMEOUT_MULTIPLIER` 可覆写）；自动重试保持 0。复测结果独立记录，不并入旧的 pass@1。
+- Biny 的硬步骤上限为 1024，工具调用上限设为 schema 允许的最大值 65,536；软步骤提示为 256。工具调用不单独限次，由任务时限控制实际运行长度。
+- `classify_job.py` 的执行通过率用于失败排查：时间超限和冲突终态按未通过计，基础设施失败、取消和无法判定单独排除；失败子集的结果不能当作全量 TB2.1 pass@1。
+- 每个 trial 在 `agent/biny-evaluation.json` 保存适配器版本、有效 context、命令 timeout 来源和脱敏后的 Biny 配置。配置保留 `apiKeyEnv` 变量名，endpoint 的 userinfo、query 和 fragment 会被移除。
+- 旧 job 没有 `biny-evaluation.json` 时，不能从 Harbor 的 trial config 推断 Biny 实际收到的 `contextWindow`；应标为配置未证实，不与已按模型上限配置的结果直接比较。
 
 ## 操作纪律
 

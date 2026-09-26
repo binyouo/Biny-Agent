@@ -48,8 +48,9 @@ exec harbor run \
   --jobs-dir "${BINY_EVAL_JOBS_DIR:-/Volumes/T7/biny-evals/jobs}" \
   --path .agent/harbor/tb21-tasks-full/tasks \
   --agent scripts.evals.harbor.biny_agent:BinyAgent \
-  --n-attempts 1 \
-  --agent-timeout-multiplier "${BINY_EVAL_AGENT_TIMEOUT_MULTIPLIER:-4}" \
+  --verifier scripts.evals.harbor.fast_verifier:FastVerifier \
+  --n-attempts "${BINY_EVAL_ATTEMPTS:-1}" \
+  --agent-timeout-multiplier "${BINY_EVAL_AGENT_TIMEOUT_MULTIPLIER:-1}" \
   --agent-setup-timeout-multiplier 6 \
   --verifier-timeout-multiplier 4 \
   --max-retries 0 \

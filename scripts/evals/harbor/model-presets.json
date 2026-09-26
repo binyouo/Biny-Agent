@@ -1,5 +1,5 @@
 {
-  "_comment": "模型预设表。adapter 只在没有 BINY_EVAL_* 环境变量时才查这里。加模型改这个文件，不用动 biny_agent.py。",
+  "_comment": "模型/provider 预设表。BINY_EVAL_* 可覆盖对应字段；用 BINY_EVAL_MODEL 时切到环境变量驱动模式。",
   "defaultAlias": "deepseek-v4-flash",
   "presets": {
     "deepseek-v4.1-flash": {
@@ -9,6 +9,7 @@
       "apiKeyEnv": "COMMANDCODE_API_KEY",
       "model": "deepseek/deepseek-v4.1-flash",
       "apiBackend": "chat_completions",
+      "contextWindow": 1000000,
       "envOverrides": {
         "baseUrl": "BINY_COMMANDCODE_BASE_URL",
         "model": "BINY_COMMANDCODE_MODEL",

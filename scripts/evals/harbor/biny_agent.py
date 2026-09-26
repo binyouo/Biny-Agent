@@ -22,6 +22,7 @@ import subprocess
 import tarfile
 import threading
 from typing import Any, AsyncIterator
+from urllib.parse import urlsplit, urlunsplit
 
 from harbor.agents.base import BaseAgent
 from harbor.environments.base import BaseEnvironment
@@ -45,6 +46,7 @@ DEFAULT_MODEL = PRESETS["defaultAlias"]
 # 当前依赖树包含要求 Node >=22.19.0 的包；旧版本会把安装/启动错误误计为任务失败。
 NODE_VERSION = "22.19.0"
 NODE_MIN_MAJOR, NODE_MIN_MINOR = (int(part) for part in NODE_VERSION.split(".")[:2])
+ADAPTER_VERSION = "0.2.3"
 PROVIDER_ENV_NAMES = (
     "COMMANDCODE_API_KEY",
     "SUB2API_API_KEY",
@@ -67,7 +69,7 @@ class BinyAgent(BaseAgent):
         return "biny"
 
     def version(self) -> str | None:
-        return "0.2.2"
+        return ADAPTER_VERSION
 
     async def setup(self, environment: BaseEnvironment) -> None:
         package_path = ensure_package()
@@ -196,7 +198,12 @@ class BinyAgent(BaseAgent):
             f"mkdir -p {shlex.quote(global_dir)}",
             user="root",
         )
-        config = make_config(resolve_model_alias(self.model_name), self.extra_env)
+        model_alias = resolve_model_alias(self.model_name)
+        config = make_config(model_alias, self.extra_env)
+        agent_exec_timeout = _agent_exec_timeout({**os.environ, **self.extra_env})
+        write_evaluation_provenance(
+            self.logs_dir, model_alias, config, agent_exec_timeout
+        )
         await write_remote_text(
             environment,
             global_dir,
@@ -258,19 +265,12 @@ class BinyAgent(BaseAgent):
             # "--" 必须有：有的题 instruction 正好以 markdown 的 "- " 开头
             # （实测 pytorch-model-recovery），不加就会被 commander 当成选项，
             # 报 "error: unknown option '- You are given ...'"，整题作废。
-            'biny run -- "$(cat .agent/harbor-instruction.txt)"'
+            'biny run --json -- "$(cat .agent/harbor-instruction.txt)"'
         )
         run_env = agent_environment(self.extra_env)
-        # harbor 给的预算是 agent.timeout_sec × agent_timeout_multiplier（本题 3600×4 = 4 小时）。
-        # 这里默认 1800s 等于把官方预算砍到 1/8，长任务全被 "Command timed out after 1800
-        # seconds" 截死。zai_bench 用的是 7200s，对齐它。
-        try:
-            agent_exec_timeout = max(
-                1,
-                int(self.extra_env.get("BINY_AGENT_EXEC_TIMEOUT_SEC", "7200")),
-            )
-        except (TypeError, ValueError):
-            agent_exec_timeout = 7200
+        # Harbor 已按 task.agent.timeout_sec 和 multiplier 包住整个 run；默认不在
+        # environment.exec 再加第二道固定上限。只有显式设置此变量才增加内部 timeout。
+        agent_exec_timeout = _agent_exec_timeout({**os.environ, **self.extra_env})
         # 让 biny 把 /opt/biny-global 当作全局配置/agent 目录，从而读到我们在 setup 写下的 model。
         run_env["BINY_AGENT_DIR"] = "/opt/biny-global"
         result = await environment.exec(
@@ -282,6 +282,7 @@ class BinyAgent(BaseAgent):
 
         record = {
             "model": resolve_model_alias(self.model_name),
+            "agent_exec_timeout_sec": agent_exec_timeout,
             "return_code": result.return_code,
             "stdout": result.stdout or "",
             "stderr": result.stderr or "",
@@ -294,6 +295,7 @@ class BinyAgent(BaseAgent):
         context.metadata = {
             "agent": "biny",
             "model": record["model"],
+            "agent_exec_timeout_sec": agent_exec_timeout,
             "return_code": result.return_code,
             "stdout_tail": (result.stdout or "")[-8_000:],
             "stderr_tail": (result.stderr or "")[-8_000:],
@@ -331,14 +333,24 @@ def ensure_package() -> Path:
                 if existing and existing[0].stat().st_mtime >= newest_source:
                     return existing[0]
 
-                subprocess.run(
-                    ["pnpm", "pack", "--pack-destination", str(PACKAGE_CACHE)],
-                    cwd=REPO_ROOT,
-                    check=True,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    text=True,
-                )
+                try:
+                    subprocess.run(
+                        ["pnpm", "pack", "--pack-destination", str(PACKAGE_CACHE)],
+                        cwd=REPO_ROOT,
+                        check=True,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.STDOUT,
+                        text=True,
+                    )
+                except subprocess.CalledProcessError as error:
+                    output = error.stdout or error.output or ""
+                    if isinstance(output, bytes):
+                        output = output.decode("utf-8", errors="replace")
+                    detail = output[-8_000:].strip()
+                    message = f"pnpm pack failed with exit status {error.returncode}."
+                    if detail:
+                        message += f"\n{detail}"
+                    raise RuntimeError(message) from error
                 packages = sorted(
                     PACKAGE_CACHE.glob("biny012-biny-*.tgz"),
                     key=lambda path: path.stat().st_mtime,
@@ -448,14 +460,11 @@ def make_config(model_alias: str, runtime_env: dict[str, str] | None = None) -> 
         provider_config["apiBackend"] = provider["apiBackend"]
     if provider["type"] == "openai-compatible":
         provider_config["compatibility"] = {"supportsReasoning": False}
-    # Maka 的 MAX_PROVIDER_ATTEMPTS_PER_STEP 是 10，但 biny 自己的 schema 上限只有 6
-    # （src/config/schema.ts:286 `maxAttempts: z.number().int().min(1).max(6)`）。
-    # 填 10 会让 config 校验失败、每道题在启动瞬间就死 —— 实测废掉 30 道。
-    # 用满 schema 上限 6：实测过代理链路单次失败率 ~25%，一道题约 100 次调用，
-    # 4 次重试约 32% 概率撞上连续全挂，6 次降到 ~0.6%。
+    # 配置 schema 将 Provider 重试次数限制在 6；超出上限会使每道任务在启动时校验失败。
+    # 这里使用允许的最大次数，降低临时请求故障导致整题失败的概率。
     provider_config["retry"] = {"maxAttempts": 6, "initialDelayMs": 1000, "maxDelayMs": 15000}
     # deepseek-v4-flash 这类模型没有真实 thinking；强行走 reasoning 会让模型空想而不动手，
-    # 这是此前评测空转/高步数的温床。openai-compatible（含 OpenCode Go）一律关掉全局 thinking。
+    # 这是此前评测空转/高步数的温床。openai-compatible Provider 一律关闭全局 thinking。
     is_reasoning_model = not (provider["type"] == "openai-compatible")
     if os.environ.get(ENV_DRIVEN["reasoning"]) is not None:
         is_reasoning_model = _env_flag(ENV_DRIVEN["reasoning"], is_reasoning_model)
@@ -466,7 +475,7 @@ def make_config(model_alias: str, runtime_env: dict[str, str] | None = None) -> 
         "displayName": model_alias,
         "supportsTools": True,
         "capabilities": model_capabilities,
-        "contextWindow": _context_window(model_alias),
+        "contextWindow": _context_window(model_alias, runtime_env),
     }
     if is_reasoning_model:
         model_config["capabilities"]["reasoning"] = True
@@ -480,9 +489,8 @@ def make_config(model_alias: str, runtime_env: dict[str, str] | None = None) -> 
     agent_config = {
         "softStepLimit": 256,
         "hardStepLimit": 1024,
-        # 不设 maxToolCalls：biny 自己的默认是 512（src/agent/runBudget.ts）。
-        # 这里曾经写死 128，比默认还紧，长任务会被它砍断
-        # （实测 "the run reached its 128-call limit"），而 GLM 基线那批根本没有这个键。
+        # 工具调用数不单独限次，交由 Harbor 的 task.toml 时限终止长任务。
+        "maxToolCalls": 65_536,
         "maxRepeatedActions": 3,
         "maxConcurrentTools": 4,
         "maxQueuedToolCalls": 128,
@@ -598,10 +606,92 @@ def _env_flag(name: str, default: bool) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _context_window(model_alias: str) -> int:
-    configured = (os.environ.get(ENV_DRIVEN["contextWindow"]) or "").strip()
-    if configured.isdigit():
-        return int(configured)
+def _context_window(
+    model_alias: str, runtime_env: dict[str, str] | None = None
+) -> int:
+    env = {**os.environ, **(runtime_env or {})}
+    configured = (env.get(ENV_DRIVEN["contextWindow"]) or "").strip()
+    if configured:
+        try:
+            context_window = int(configured)
+        except ValueError as error:
+            raise ValueError(
+                f"{ENV_DRIVEN['contextWindow']} must be a positive integer"
+            ) from error
+        if context_window <= 0:
+            raise ValueError(f"{ENV_DRIVEN['contextWindow']} must be a positive integer")
+        return context_window
+
+    preset = PRESETS["presets"].get(model_alias) or {}
+    preset_context_window = preset.get("contextWindow")
+    if isinstance(preset_context_window, int) and not isinstance(
+        preset_context_window, bool
+    ):
+        return preset_context_window
     if model_alias in {"grok", "grok-4.5", "opencode-go-deepseek-v4-flash"}:
         return 1_000_000
     return 128_000
+
+
+def _agent_exec_timeout(runtime_env: dict[str, str]) -> int | None:
+    configured = runtime_env.get("BINY_AGENT_EXEC_TIMEOUT_SEC")
+    if configured is None or not configured.strip():
+        return None
+    try:
+        timeout = int(configured)
+    except ValueError as error:
+        raise ValueError("BINY_AGENT_EXEC_TIMEOUT_SEC must be a positive integer") from error
+    if timeout <= 0:
+        raise ValueError("BINY_AGENT_EXEC_TIMEOUT_SEC must be a positive integer")
+    return timeout
+
+
+def write_evaluation_provenance(
+    logs_dir: Path,
+    model_alias: str,
+    config: dict[str, Any],
+    agent_exec_timeout_sec: int | None,
+) -> Path:
+    """Save effective per-trial limits without persisting endpoint URL credentials."""
+
+    model = config["models"][model_alias]
+    safe_config = json.loads(json.dumps(config))
+    for provider in safe_config.get("providers", {}).values():
+        base_url = provider.get("baseUrl")
+        if isinstance(base_url, str) and base_url:
+            provider["baseUrl"] = _redact_base_url(base_url)
+    record = {
+        "adapterVersion": ADAPTER_VERSION,
+        "modelAlias": model_alias,
+        "contextWindow": model["contextWindow"],
+        "agentExecTimeoutSec": agent_exec_timeout_sec,
+        "agentExecTimeoutSource": (
+            "explicit-BINY_AGENT_EXEC_TIMEOUT_SEC"
+            if agent_exec_timeout_sec is not None
+            else "harbor-trial-deadline"
+        ),
+        "binyConfig": safe_config,
+    }
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    path = logs_dir / "biny-evaluation.json"
+    path.write_text(
+        json.dumps(record, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
+    return path
+
+
+def _redact_base_url(value: str) -> str:
+    """Keep the endpoint route for audit while dropping URL credentials and query data."""
+
+    try:
+        parsed = urlsplit(value)
+        hostname = parsed.hostname
+        port = parsed.port
+    except ValueError:
+        return "[redacted invalid URL]"
+    if not parsed.scheme or not hostname:
+        return "[redacted invalid URL]"
+    host = f"[{hostname}]" if ":" in hostname else hostname
+    if port is not None:
+        host = f"{host}:{port}"
+    return urlunsplit((parsed.scheme, host, parsed.path, "", ""))
