@@ -9,6 +9,7 @@
 import { createRequire } from "node:module";
 import { Command, InvalidArgumentError } from "commander";
 import { initCommand } from "./commands/init.js";
+import { registerBrowserCommands } from "./commands/browser.js";
 import { registerCrystalCommands } from "./commands/crystal.js";
 import { referenceKindsCommand, referenceSearchCommand, referenceResolveCommand, referenceGraphCommand,
   referenceTokenCommand, referenceContextCommand, referenceOpenCommand } from "./commands/references.js";
@@ -107,6 +108,7 @@ registerCrystalCommands(program);
 registerSoulCommands(program);
 registerFatigueCommands(program);
 registerSkillCommands(program, workspaceRoot);
+registerBrowserCommands(program);
 
 const ref = program.command("ref").description("Search and resolve local @ references");
 ref.command("kinds").option("--json", "print JSON").action((options: { json?: boolean }) => wrap(() => referenceKindsCommand(workspaceRoot, options))());
@@ -218,7 +220,7 @@ task.command("events").argument("<taskRunId>", "TaskRun id").option("--limit <co
 const memory = program.command("memory").description("Manage local memory");
 memory.command("list").option("--json", "print JSON").action((options: { json?: boolean }) => wrap(() => memoryListCommand(workspaceRoot, options))());
 memory.command("stats").description("Show memory store counts and maintenance status").option("--json", "print JSON").action((options: { json?: boolean }) => wrap(() => memoryStatsCommand(workspaceRoot, options))());
-memory.command("search").argument("<query...>", "search query").option("--tag <tag...>", "filter entries carrying any given tag").option("--thread-id <id>", "filter by one thread ID").option("--json", "print JSON").action((query: string[], options: { tag?: string[]; threadId?: string; json?: boolean }) => wrap(() => memorySearchCommand(workspaceRoot, query.join(" "), options))());
+memory.command("search").argument("<query...>", "search query").option("--tag <tag...>", "filter entries carrying any given tag").option("--thread-id <id>", "filter by one thread ID").option("--user-id <id>", "filter by one user ID and shared entries").option("--user-ids <ids...>", "filter by any user ID and shared entries").option("--json", "print JSON").action((query: string[], options: { tag?: string[]; threadId?: string; userId?: string; userIds?: string[]; json?: boolean }) => wrap(() => memorySearchCommand(workspaceRoot, query.join(" "), options))());
 memory.command("add").argument("[content]", "memory text").option("--entry <json>", "structured memory JSON instead of text").option("--json", "print JSON").action((content: string | undefined, options: { entry?: string; json?: boolean }) => wrap(() => memoryAddCommand(workspaceRoot, content, options))());
 memory.command("archive").description("Export conversation transcripts to local Markdown; does not archive facts").action(wrap(memoryExportCommand));
 memory.command("archive-entry").argument("<id>", "memory id").requiredOption("--yes", "confirm archive").option("--json", "print JSON").action((id: string, options: { yes?: boolean; json?: boolean }) => wrap(() => memoryArchiveCommand(workspaceRoot, id, options))());
@@ -245,7 +247,7 @@ memory.command("calendar").requiredOption("--from <day>", "inclusive YYYY-MM-DD"
 memory.command("seen-clue").argument("<id>").option("--json", "print JSON").action((id: string, options: { json?: boolean }) => wrap(() => temporalClueActionCommand("seen", id, options))());
 memory.command("index-facts").argument("<session-id>").option("--json", "print JSON").action((sessionId: string, options: { json?: boolean }) => wrap(() => temporalIndexFactsCommand(workspaceRoot, sessionId, options))());
 memory.command("serve").description("Serve authenticated loopback memory REST API").option("--port <number>", "listen port", parsePositiveInteger, 23001).action((options: { port: number }) => wrap(() => memoryServeCommand(workspaceRoot, options.port))());
-memory.command("clear").requiredOption("--yes", "confirm clear").option("--json", "print JSON").action((options: { yes?: boolean; json?: boolean }) => wrap(() => memoryClearCommand(workspaceRoot, options))());
+memory.command("clear").requiredOption("--yes", "confirm clear").option("--thread-id <id>", "clear active memories for one thread only").option("--json", "print JSON").action((options: { yes?: boolean; threadId?: string; json?: boolean }) => wrap(() => memoryClearCommand(workspaceRoot, options))());
 const history = program.command("history").description("Search past conversation transcripts");
 history.command("search").argument("<query...>", "full-text query over past user and assistant messages").option("--limit <n>", "maximum hits", "8").option("--json", "print JSON").action((query: string[], options: { limit: string; json?: boolean }) => wrap(() => historySearchCommand(query.join(" "), { limit: Number(options.limit), json: options.json }))());
 
@@ -361,7 +363,7 @@ activity
 activity
   .command("summary")
   .argument("<kind>", "daily or weekly")
-  .argument("[date]", "YYYY-MM-DD; weekly 的 date 代表该周周一", localDateKey())
+  .argument("[date]", "YYYY-MM-DD; weekly 使用七天范围的结束日", localDateKey())
   .option("--narrative", "generate model narrative")
   .option("--json", "print JSON")
   .action((kind: string, date: string, options: { narrative?: boolean; json?: boolean }) => {

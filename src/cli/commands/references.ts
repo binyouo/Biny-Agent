@@ -14,8 +14,8 @@ const aliases: Record<string, LocalReferenceKind> = {
   date: "date", 日期: "date", project: "project", 项目: "project", file: "file", 文件: "file",
   thread: "thread", 会话: "thread", message: "message", 消息: "message", memory: "memory", 记忆: "memory",
   snippet: "snippet", 片段: "snippet", scratch: "scratch", 临时引用: "scratch",
-  skill: "skill", 技能: "skill", mcp: "mcp", model: "model", 模型: "model", provider: "provider", 服务商: "provider",
-  tool: "tool", 工具: "tool", task: "task", 任务: "task", cron: "cron", 定时任务: "cron",
+  skill: "skill", 技能: "skill", agent: "agent", 子代理: "agent", 智能体: "agent", mcp: "mcp", model: "model", 模型: "model", provider: "provider", 服务商: "provider",
+  tool: "tool", 工具: "tool", "tool-call": "tool-call", 工具调用: "tool-call", task: "task", 任务: "task", cron: "cron", 定时任务: "cron",
   crystal: "crystal", 结晶: "crystal", bundle: "bundle", 结晶包: "bundle", mission: "mission", 目标: "mission", plan: "plan", 计划: "plan"
 };
 

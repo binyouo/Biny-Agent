@@ -8,6 +8,13 @@ import { updateConfig, createFileConfigStore } from "../../config/store.js";
 import { AGENT_DATABASE_FILE, globalAgentDir } from "../../config/paths.js";
 import { resolveToolModel } from "../../llm/toolModel.js";
 import { defaultLocalEmbeddingModel, LocalEmbeddingManager } from "../../llm/embedding/index.js";
+import type { EmbeddingModelRuntime } from "../../llm/embedding/types.js";
+import { selectMemoryEmbeddingModel } from "../../llm/embedding/selectMemoryModel.js";
+import { ProviderRegistry } from "../../llm/ProviderRuntime.js";
+import { LocalMemory } from "../../agent/context/LocalMemory.js";
+import { MemoryEmbeddingService } from "../../agent/context/MemoryEmbeddingService.js";
+import { MemoryVectorIndex } from "../../agent/context/MemoryVectorIndex.js";
+import type { AgentConfig } from "../../config/schema.js";
 import { createActivityOperation } from "../../activity/operation.js";
 import { buildActivityDigest } from "../../activity/digest.js";
 import { analyzeActivitySession, buildActivityReport, formatActivityDailyNote, formatActivityReportResult } from "../../activity/analyzer.js";
@@ -251,12 +258,12 @@ export async function activityAnalyzeCommand(workspaceRoot: string, sessionId: s
   const configStore = createFileConfigStore(workspaceRoot);
   const config = await configStore.load();
   const store = await openActivityStore(config.activity);
-  let memoryPipeline: Awaited<ReturnType<typeof createActivityMemoryPipeline>> | undefined;
+  let memoryPipeline: Awaited<ReturnType<typeof createCliActivityMemoryPipeline>> | undefined;
   try {
     const operation = createActivityOperation(store, config.activity, async () => (await configStore.load()).activity);
     await operation.checkpoint();
     if (!store.getSessionDetail(sessionId)) throw new Error("没有找到活动会话。");
-    memoryPipeline = await createActivityMemoryPipeline({ workspaceRoot, getCrystalConfig: () => config.crystal, requireSemantic: false });
+    memoryPipeline = await createCliActivityMemoryPipeline(workspaceRoot, config);
     const result = await analyzeActivitySession({
       store,
       model: resolveToolModel(config),
@@ -270,7 +277,7 @@ export async function activityAnalyzeCommand(workspaceRoot: string, sessionId: s
     else console.log(result.reason === "no_model" ? "暂无可用工具模型。" : "会话尚未结束，请稍后再试。");
   } finally {
     await store.close();
-    memoryPipeline?.close();
+    await memoryPipeline?.close();
   }
 }
 
@@ -282,26 +289,17 @@ export async function activityReportCommand(
   const configStore = createFileConfigStore(workspaceRoot);
   const config = await configStore.load();
   const store = await openActivityStore(config.activity);
-  let memoryPipeline: Awaited<ReturnType<typeof createActivityMemoryPipeline>> | undefined;
   try {
     const operation = createActivityOperation(store, config.activity, async () => (await configStore.load()).activity);
     await operation.checkpoint();
-    memoryPipeline = await createActivityMemoryPipeline({
-      workspaceRoot,
-      getCrystalConfig: () => config.crystal,
-      requireSemantic: false
-    });
 
     const skeleton = await buildActivityReport({
       store,
-      model: resolveToolModel(config),
-      ...operation,
-      writeMemories: memoryPipeline.writeMemories,
-      onAnalyzed: memoryPipeline.onAnalyzed,
-      analyzePending: !options.skeleton
-    }, date, { force: options.force });
+      ...operation
+    }, date, { force: options.force, skeletonOnly: options.skeleton });
     const result = await narrateActivityReport(skeleton, {
-      model: resolveToolModel(config),
+      store,
+      model: skeleton.cached || options.skeleton ? undefined : resolveToolModel(config),
       skeleton: options.skeleton,
       ...operation
     });
@@ -310,14 +308,13 @@ export async function activityReportCommand(
     else console.log(formatActivityReportResult(result));
   } finally {
     await store.close();
-    memoryPipeline?.close();
   }
 }
 
 export async function activitySummaryCommand(
   workspaceRoot: string,
   kind: ActivitySummaryKind,
-  dateKey: string,
+  dateOrEndDateKey: string,
   options: ActivitySummaryCommandOptions = {}
 ): Promise<void> {
   const configStore = createFileConfigStore(workspaceRoot);
@@ -326,7 +323,7 @@ export async function activitySummaryCommand(
   try {
     const operation = createActivityOperation(store, config.activity, async () => (await configStore.load()).activity);
     await operation.checkpoint();
-    const result = await refreshActivitySummaryWithNarrative(store, kind, dateKey, {
+    const result = await refreshActivitySummaryWithNarrative(store, kind, dateOrEndDateKey, {
       model: resolveToolModel(config),
       ...operation,
       withNarrative: options.narrative === true
@@ -342,6 +339,70 @@ async function openActivityStore(settings: ActivitySettings): Promise<ActivitySt
   const store = new ActivityStore();
   await store.open(settings.outputDirectory, globalAgentDir());
   return store;
+}
+
+/** CLI 不驻留 AgentSession，复用同一记忆向量服务完成 Activity 自动写入前的语义门禁。 */
+export async function createCliActivityMemoryPipeline(
+  workspaceRoot: string,
+  config: AgentConfig,
+  getEmbeddingRuntime?: () => Promise<EmbeddingModelRuntime | undefined>
+) {
+  const memoryRoot = globalAgentDir();
+  const manager = new LocalEmbeddingManager(path.join(memoryRoot, "models", "embeddings"));
+  const memory = new LocalMemory(workspaceRoot, () => {
+    const model = resolveToolModel(config);
+    if (!model) throw new Error("没有可用的 Activity 分析模型。");
+    return model;
+  });
+  const providers = new ProviderRegistry(config);
+  const providerModels = providers.listEmbeddingModels();
+  const selected = selectMemoryEmbeddingModel(config.context.memory.embeddingModel, providerModels);
+  const embeddings = new MemoryEmbeddingService({
+    localMemory: memory,
+    localManager: manager,
+    getVectorIndex: () => new MemoryVectorIndex(memoryRoot),
+    getReadOnlyVectorIndex: () => MemoryVectorIndex.openReadOnly(memoryRoot),
+    getActiveModel: () => selected,
+    getProviderModels: () => providerModels,
+    getRuntime: async () => {
+      if (!selected) return undefined;
+      if (getEmbeddingRuntime) return await getEmbeddingRuntime().catch(() => undefined);
+      if (selected.kind === "local") {
+        if (selected.model !== defaultLocalEmbeddingModel) return undefined;
+        return await manager.createRuntime(selected.model).catch(() => undefined);
+      }
+      if (selected.kind !== "provider") return undefined;
+      const descriptor = providerModels.find((candidate) => candidate.ref.kind === "provider"
+        && candidate.ref.provider === selected.provider && candidate.ref.model === selected.model);
+      if (!descriptor?.endpoint || descriptor.available !== true) return undefined;
+      return await Promise.resolve().then(() => providers.createEmbeddingRuntime(selected)).catch(() => undefined);
+    }
+  });
+  try {
+    const pipeline = await createActivityMemoryPipeline({
+      workspaceRoot,
+      getCrystalConfig: () => config.crystal,
+      indexEntry: async (entry) => await embeddings.indexEntry(entry),
+      findSimilarEntries: async (query, options) => {
+        const snapshot = await memory.listMemoryEntries({ signal: options.signal });
+        return await embeddings.findSimilarEntries(query, snapshot.entries, options.limit, options.minimumSimilarity, options.signal);
+      }
+    });
+    return {
+      ...pipeline,
+      close: async () => {
+        pipeline.close();
+        embeddings.close();
+        memory.close();
+        await manager.close();
+      }
+    };
+  } catch (error) {
+    embeddings.close();
+    memory.close();
+    await manager.close();
+    throw error;
+  }
 }
 
 function formatBytes(value: number): string {

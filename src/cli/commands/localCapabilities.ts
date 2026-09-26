@@ -50,7 +50,7 @@ export async function memoryServeCommand(workspaceRoot: string, port: number): P
 export async function memoryListCommand(workspaceRoot: string, options: LocalCapabilityOutputOptions = {}): Promise<void> {
   await withHost(workspaceRoot, options, async (client) => {
     const result = await client.memory<{ entries: unknown[]; storeRevision: number }>("list", {
-      limit: 200,
+      limit: 100,
       includeArchived: false
     });
     printResult(result, options.json, (value) => {
@@ -66,13 +66,15 @@ export async function memoryListCommand(workspaceRoot: string, options: LocalCap
 export async function memorySearchCommand(
   workspaceRoot: string,
   query: string,
-  options: LocalCapabilityOutputOptions & { tag?: string[]; threadId?: string } = {}
+  options: LocalCapabilityOutputOptions & { tag?: string[]; threadId?: string; userId?: string; userIds?: string[] } = {}
 ): Promise<void> {
   await withHost(workspaceRoot, options, async (client) => {
     const result = await client.memory("search", {
       query,
       tags: options.tag,
       threadId: options.threadId,
+      userId: options.userId,
+      userIds: options.userIds,
       limit: 20
     });
     printResult(result, options.json, (value) => JSON.stringify(value, null, 2));
@@ -107,16 +109,12 @@ export async function memoryStatsCommand(workspaceRoot: string, options: LocalCa
 
 export async function memoryAddCommand(workspaceRoot: string, content: string | undefined, options: LocalCapabilityOutputOptions & { entry?: string } = {}): Promise<void> {
   if (Boolean(content) === Boolean(options.entry)) throw new Error("请提供正文或 --entry JSON，不能同时提供。");
-  const entry = options.entry ? JSON.parse(options.entry) as Record<string, unknown> : { content };
+  const entry: unknown = options.entry ? JSON.parse(options.entry) : { content };
+  if (typeof entry !== "object" || entry === null || Array.isArray(entry)) throw new Error("--entry 必须是 JSON 对象。");
   await withHost(workspaceRoot, options, async (client) => {
     const result = await client.memory("write", {
-      entry: {
-        content: entry.content,
-        tags: Array.isArray(entry.tags) ? entry.tags : undefined,
-        importance: typeof entry.importance === "number" ? entry.importance : undefined,
-        durability: entry.durability === "temporary" ? "temporary" : "permanent",
-        rationale: typeof entry.rationale === "string" ? entry.rationale : undefined
-      }
+      // CLI 保留结构化字段，由 Host 的统一校验边界拒绝非法类型和值。
+      entry: { ...entry, source: "manual" }
     });
     printResult(result, options.json, (value) => JSON.stringify(value, null, 2));
   });
@@ -130,10 +128,13 @@ export async function memoryArchiveCommand(workspaceRoot: string, id: string, op
   });
 }
 
-export async function memoryClearCommand(workspaceRoot: string, options: LocalCapabilityOutputOptions & { yes?: boolean } = {}): Promise<void> {
-  requireConfirmation(options.yes, "清理记忆会删除当前和归档条目");
+export async function memoryClearCommand(workspaceRoot: string, options: LocalCapabilityOutputOptions & { yes?: boolean; threadId?: string } = {}): Promise<void> {
+  if (options.threadId !== undefined && !options.threadId.trim()) throw new Error("threadId 不能为空。");
+  requireConfirmation(options.yes, options.threadId === undefined
+    ? "清理记忆会删除当前和归档条目"
+    : "清理指定 thread 的活动记忆会改变召回结果");
   await withHost(workspaceRoot, options, async (client) => {
-    const result = await client.memory("clear");
+    const result = await client.memory("clear", { threadId: options.threadId });
     printResult(result, options.json, (value) => JSON.stringify(value, null, 2));
   });
 }

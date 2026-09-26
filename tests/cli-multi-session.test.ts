@@ -21,7 +21,7 @@ const provider = createServer(async (request, response) => {
   let text = "";
   for await (const chunk of request) text += String(chunk);
   const body = JSON.parse(text) as { messages: Array<{ role: string; content: unknown }> };
-  const marker = JSON.stringify(body.messages.filter((message) => message.role === "user").at(-1)?.content).match(/terminal-probe-[A-Z]/gu)?.at(-1);
+  const marker = JSON.stringify(body.messages.filter((message) => message.role === "user").at(-1)?.content).match(/terminal-probe-[A-F]/gu)?.at(-1);
   if (!marker || responses.has(marker)) { sendText(response, "[]"); return; }
   responses.set(marker, response);
 });
@@ -104,6 +104,15 @@ try {
   const eEvents = await readSessionEvents(sessionFilePath(root, e));
   assert.ok(!JSON.stringify(dEvents).includes("terminal-probe-E"));
   assert.ok(!JSON.stringify(eEvents).includes("terminal-probe-D"));
+
+  const incompleteRun = command(["run", "--json", "--", "- terminal-probe-F"]);
+  await waitFor(() => responses.has("terminal-probe-F"));
+  sendText(responses.get("terminal-probe-F")!, "partial result", "other");
+  const incomplete = await incompleteRun;
+  assert.equal(incomplete.code, 0, incomplete.output);
+  const incompleteResult = JSON.parse(incomplete.stdout) as { status: string; stopReason: string };
+  assert.equal(incompleteResult.status, "incomplete");
+  assert.equal(incompleteResult.stopReason, "budget_exhausted");
   console.log("CLI/TUI multi-session tests passed (two PTYs, new/resume, cancellation, exit, concurrent runs)");
 } catch (error) {
   for (const terminal of terminals) console.error(terminal.output.replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, "").slice(-3500));
@@ -142,9 +151,9 @@ async function activeSession(input: string): Promise<string> {
   assert.ok(target, `missing active session ${input}`);
   return target.sessionId;
 }
-function sendText(response: ServerResponse, text: string): void {
+function sendText(response: ServerResponse, text: string, finishReason = "stop"): void {
   response.writeHead(200, { "content-type": "text/event-stream" });
-  response.end(`data: ${JSON.stringify({ choices: [{ index: 0, delta: { content: text }, finish_reason: null }] })}\n\ndata: ${JSON.stringify({ choices: [{ index: 0, delta: {}, finish_reason: "stop" }] })}\n\ndata: [DONE]\n\n`);
+  response.end(`data: ${JSON.stringify({ choices: [{ index: 0, delta: { content: text }, finish_reason: null }] })}\n\ndata: ${JSON.stringify({ choices: [{ index: 0, delta: {}, finish_reason: finishReason }] })}\n\ndata: [DONE]\n\n`);
 }
 function command(args: string[]): Promise<{ code: number | null; output: string; stdout: string }> {
   const child = spawn(cli.executable, [...cli.args, ...args], { cwd: root, env: process.env });
