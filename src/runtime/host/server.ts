@@ -1269,6 +1269,16 @@ export class RuntimeHostServer {
         return await commands.agent.listSessions();
       case "personalization.get":
         return await commands.agent.getPersonalizationState();
+      case "session.incognito":
+        if (typeof payload.isIncognito !== "boolean") throw new Error("isIncognito must be a boolean.");
+        await this.ensureSessionWriter(connection, runtime);
+        return await runtime.runExclusiveOperation(
+          "personalization",
+          async () => await commands.agent.updateSessionIncognito(
+            payload.isIncognito as boolean,
+            requiredString(payload.expectedRevision, "expectedRevision")
+          )
+        );
       case "personalization.update-chat":
         return await runtime.runExclusiveOperation(
           "personalization",

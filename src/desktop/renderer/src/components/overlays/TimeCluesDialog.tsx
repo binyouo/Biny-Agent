@@ -1,5 +1,8 @@
 /** 侧栏时间线索弹层；只显示原始用户消息索引，来源操作交给 App 导航。 */
 import { useCallback, useEffect, useRef, useState } from "react";
+import { Calendar, type DateRange, type ISODateString } from "@astryxdesign/core/Calendar";
+import { Icon } from "../Icon.js";
+import { usePopover } from "@astryxdesign/core/Popover";
 import { Dialog, DialogHeader } from "@astryxdesign/core/Dialog";
 import type { DesktopTemporalPage } from "../../../../temporalMemoryService.js";
 import { parseTemporalSourceUri } from "../../../../../session/temporalSourceUri.js";
@@ -26,9 +29,8 @@ export function TimeCluesDialog({ open, currentSessionId, refreshKey, onClose, o
   const [error, setError] = useState<string>();
   const [aboutOpen, setAboutOpen] = useState(false);
   const [custom, setCustom] = useState<TemporalDateRange>();
-  const [rangeStart, setRangeStart] = useState<string>();
-  const [calendarMonth, setCalendarMonth] = useState(() => new Date().toISOString().slice(0, 7));
-  const [calendarOpen, setCalendarOpen] = useState(false);
+  const { triggerRef, triggerProps, toggle: toggleCalendar, hide: hideCalendar, isOpen: calendarOpen, render: renderCalendar } = usePopover({ hasSurface: false, dialogLabel: "选择日期范围", closeButtonLabel: "关闭日历" });
+  const [calendarError, setCalendarError] = useState<string>();
   const requestRef = useRef(0);
   const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
   const ranges = naturalTemporalRanges(now, timeZone);
@@ -90,53 +92,36 @@ export function TimeCluesDialog({ open, currentSessionId, refreshKey, onClose, o
     groups.set(date, group);
   }
 
-  const selectDay = (day: string): void => {
-    if (!rangeStart || day < rangeStart) { setRangeStart(day); return; }
+  const selectRange = ({ start, end }: DateRange): void => {
     try {
-      setCustom(customTemporalRange(rangeStart, day));
+      setCustom(customTemporalRange(start, end));
       setRangeKind("custom");
       setOffset(0);
-      setCalendarOpen(false);
-      setRangeStart(undefined);
-      setError(undefined);
-    } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
-  };
-  const [calendarYear, calendarMonthNumber] = calendarMonth.split("-").map(Number);
-  const firstWeekday = (new Date(Date.UTC(calendarYear!, calendarMonthNumber! - 1, 1)).getUTCDay() + 6) % 7;
-  const daysInMonth = new Date(Date.UTC(calendarYear!, calendarMonthNumber!, 0)).getUTCDate();
-  const shiftMonth = (amount: number): void => {
-    const month = new Date(Date.UTC(calendarYear!, calendarMonthNumber! - 1 + amount, 1));
-    setCalendarMonth(month.toISOString().slice(0, 7));
+      setCalendarError(undefined);
+      hideCalendar();
+    } catch (cause) { setCalendarError(cause instanceof Error ? cause.message : String(cause)); }
   };
 
   return <Dialog isOpen={open} maxHeight="min(82vh, 720px)" onOpenChange={(isOpen) => { if (!isOpen) onClose(); }} padding={0} purpose="info" width="min(600px, calc(100vw - 48px))">
     <section className="time-clues-dialog">
-      <DialogHeader onOpenChange={(isOpen) => { if (!isOpen) onClose(); }} subtitle="按日期找回原始对话中的时间线索" title="时间线索" />
+      <div className="time-clues-header"><DialogHeader onOpenChange={(isOpen) => { if (!isOpen) onClose(); }} subtitle="对话里提到的日期，点开即可回到原文。" title="时间线索" /></div>
       <div className="time-clues-tabs">
-        {(Object.keys(RANGE_LABELS) as RangeKind[]).map((kind) => <button aria-pressed={rangeKind === kind} key={kind}
-          onClick={() => { if (kind === "custom") setCalendarOpen((value) => !value); else { setRangeKind(kind); setCalendarOpen(false); setOffset(0); } }} type="button">
-          {kind === "custom" && custom ? `${shiftTemporalDay(custom.startDate, 0)}–${shiftTemporalDay(custom.endDate, -1)}` : RANGE_LABELS[kind]}</button>)}
+        {(["today", "thisWeek", "nextWeek"] as const).map((kind) => <button aria-pressed={rangeKind === kind} key={kind}
+          onClick={() => { setRangeKind(kind); hideCalendar(); setOffset(0); }} type="button">{RANGE_LABELS[kind]}</button>)}
+        <button {...triggerProps} aria-pressed={rangeKind === "custom"} ref={triggerRef}
+          onClick={() => { setCalendarError(undefined); toggleCalendar(); }} type="button">
+          选择日期<Icon className={calendarOpen ? "time-clues-chevron is-open" : "time-clues-chevron"} name="chevron" size={12} />
+        </button>
       </div>
-      {calendarOpen ? <div className="time-clues-calendar">
-        <div className="time-clues-calendar-heading">
-          <button aria-label="上个月" onClick={() => shiftMonth(-1)} type="button">‹</button>
-          <strong>{calendarMonth}</strong>
-          <button aria-label="下个月" onClick={() => shiftMonth(1)} type="button">›</button>
-        </div>
-        <p>{rangeStart ? `选择结束日期（起始 ${rangeStart}）` : "选择起始日期"}</p>
-        <div className="time-clues-calendar-grid">
-          {["一", "二", "三", "四", "五", "六", "日"].map((label) => <span key={label}>{label}</span>)}
-          {Array.from({ length: firstWeekday }, (_, index) => <span key={`empty-${index}`} />)}
-          {Array.from({ length: daysInMonth }, (_, index) => {
-            const day = `${calendarMonth}-${String(index + 1).padStart(2, "0")}`;
-            return <button aria-pressed={day === rangeStart} key={day} onClick={() => selectDay(day)} type="button">{index + 1}</button>;
-          })}
-        </div>
-      </div> : null}
+      {renderCalendar(calendarOpen ? <div className="time-clues-calendar">
+        <Calendar mode="range" weekStartsOn="mon" value={{ start: startDate as ISODateString, end: shiftTemporalDay(endDate, -1) as ISODateString }} onChange={selectRange} />
+        <p>{new Intl.DateTimeFormat("zh-CN", { month: "long", day: "numeric", timeZone: "UTC" }).format(new Date(`${startDate}T00:00:00Z`))} – {new Intl.DateTimeFormat("zh-CN", { month: "long", day: "numeric", timeZone: "UTC" }).format(new Date(`${shiftTemporalDay(endDate, -1)}T00:00:00Z`))}</p>
+        {calendarError ? <p role="alert">{calendarError}</p> : null}
+      </div> : null, { placement: "below", alignment: "start" })}
       <div aria-live="polite" className="time-clues-list">
-        {busy && !page ? <p>正在读取…</p> : null}
+        {busy && !page ? <p className="time-clues-status" role="status">正在读取…</p> : null}
         {error ? <p role="alert">读取时间线索失败：{error} <button onClick={() => void load(offset)} type="button">重试</button></p> : null}
-        {!busy && !error && page?.clues.length === 0 && page.scheduled.length === 0 ? <p>此范围没有时间线索。</p> : null}
+        {!busy && !error && page?.clues.length === 0 && page.scheduled.length === 0 ? <p className="time-clues-status">此范围没有时间线索。</p> : null}
         {[...groups].map(([date, clues]) => <section className="time-clues-group" key={date}>
           <h3>{date === today ? `今天 · ${date}` : date || "日期未确定"}</h3>
           {clues.map((clue) => <article className="time-clues-row" key={clue.id}>
@@ -164,7 +149,7 @@ export function TimeCluesDialog({ open, currentSessionId, refreshKey, onClose, o
           <button disabled={busy || !page?.hasMore} onClick={() => void load(page?.nextOffset ?? offset)} type="button">下一页</button>
         </div> : null}
         <div className="time-clues-footer-actions">
-          <button aria-expanded={aboutOpen} onClick={() => setAboutOpen((value) => !value)} type="button">关于线索</button>
+          <button aria-expanded={aboutOpen} onClick={() => setAboutOpen((value) => !value)} type="button">关于时间线索<Icon className={aboutOpen ? "time-clues-chevron is-open" : "time-clues-chevron"} name="chevron" size={12} /></button>
           {page && page.unread > 0 ? <button disabled={busy} onClick={() => void markSeen()} type="button">标记今日已读（{page.unread}）</button> : null}
         </div>
         {aboutOpen ? <p>仅覆盖已索引的原始用户消息 · {range.startDate} 至 {range.endDate}（结束日期不含） · {timeZone}</p> : null}

@@ -62,6 +62,121 @@ maintenance.scheduleEmbeddingRebuild();
 await new Promise<void>((resolve) => setTimeout(resolve, 10));
 assert.deepEqual(calls, ["load", "process", "rebuild"]);
 
+let activeFingerprint = "model-a";
+let backgroundRebuilds = 0;
+let embeddingHealthy = false;
+const backgroundCommands = {
+  agent: {
+    getPersonalizationState: async () => ({ memory: { sleepEnabled: false } }),
+    memoryEmbeddingStatus: async () => ({
+      activeModel: { kind: "provider", provider: "configured", model: activeFingerprint },
+      index: { active: { modelFingerprint: "old" } },
+      pendingEntries: embeddingHealthy ? 0 : 1,
+      needsRebuild: !embeddingHealthy
+    }),
+    rebuildMemoryEmbeddingIndex: async () => { backgroundRebuilds += 1; }
+  }
+} as unknown as CommandRuntime;
+const background = createRuntimeHostMemoryMaintenance({ getRuntime: () => runtime, getCommands: () => backgroundCommands });
+const waitForBackgroundRebuild = async (target: number): Promise<void> => {
+  const deadline = Date.now() + 2_000;
+  while (backgroundRebuilds < target && Date.now() < deadline) {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+  assert.equal(backgroundRebuilds, target);
+};
+await background.runNow();
+await waitForBackgroundRebuild(1);
+assert.equal(backgroundRebuilds, 1, "模型不匹配时即使 Sleep 关闭也后台重建");
+await background.runNow();
+await new Promise<void>((resolve) => setImmediate(resolve));
+assert.equal(backgroundRebuilds, 1, "同一失败状态不无限重试");
+activeFingerprint = "model-b";
+await background.runNow();
+await waitForBackgroundRebuild(2);
+assert.equal(backgroundRebuilds, 2, "切换模型后重建新指纹");
+embeddingHealthy = true;
+await background.runNow();
+embeddingHealthy = false;
+await background.runNow();
+await waitForBackgroundRebuild(3);
+assert.equal(backgroundRebuilds, 3, "索引恢复后出现的新待索引条目可再次触发重建");
+background.stop();
+
+// Given: 同一模型与待索引数量下首次重建确实失败；When: 周期检查跨过退避窗口；
+// Then: 重新读取状态后再试一次，成功后不会在健康状态下重复重建。
+{
+  let now = 0;
+  let pendingEntries = 1;
+  let healthy = false;
+  let attempts = 0;
+  const scheduled: Array<() => void> = [];
+  const timers = {
+    setTimeout: ((callback: () => void) => {
+      scheduled.push(callback);
+      return { unref() {} } as ReturnType<typeof setTimeout>;
+    }) as unknown as typeof setTimeout,
+    clearTimeout: (() => undefined) as typeof clearTimeout
+  };
+  const retryCommands = {
+    agent: {
+      getPersonalizationState: async () => ({ memory: { sleepEnabled: false } }),
+      memoryEmbeddingStatus: async () => ({
+        activeModel: { kind: "provider", provider: "configured", model: "same-model" },
+        index: { active: { modelFingerprint: "old" } },
+        pendingEntries: healthy ? 0 : pendingEntries,
+        needsRebuild: !healthy
+      }),
+      rebuildMemoryEmbeddingIndex: async () => {
+        attempts++;
+        if (attempts <= 2) throw new Error("injected failed rebuild");
+        healthy = true;
+      }
+    }
+  } as unknown as CommandRuntime;
+  const retry = createRuntimeHostMemoryMaintenance({
+    getRuntime: () => runtime,
+    getCommands: () => retryCommands,
+    now: () => now,
+    embeddingRebuildTimers: timers
+  });
+  const flushRebuild = async (): Promise<void> => {
+    const callback = scheduled.shift();
+    assert.ok(callback, "expected one scheduled rebuild");
+    callback();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  };
+  try {
+    await retry.runNow();
+    await flushRebuild();
+    assert.equal(attempts, 1);
+    now = 59_999;
+    await retry.runNow();
+    assert.equal(scheduled.length, 0, "失败后不能紧密循环重建");
+    now = 60_000;
+    await retry.runNow();
+    assert.equal(scheduled.length, 1, "退避期后同一缺口应安全重试");
+    await flushRebuild();
+    assert.equal(attempts, 2);
+    now = 179_999;
+    await retry.runNow();
+    assert.equal(scheduled.length, 0, "连续失败采用递增退避");
+    pendingEntries = 2;
+    await retry.runNow();
+    assert.equal(scheduled.length, 1, "待索引状态变化后不用沿用旧退避");
+    await flushRebuild();
+    assert.equal(attempts, 3);
+    await retry.runNow();
+    assert.equal(scheduled.length, 0);
+    healthy = false;
+    pendingEntries = 3;
+    await retry.runNow();
+    assert.equal(scheduled.length, 1, "健康后出现新缺口可立即调度");
+  } finally {
+    retry.stop();
+  }
+}
+
 mock.timers.enable({ apis: ["Date", "setTimeout", "setInterval"], now: new Date(2026, 8, 6, 2, 59) });
 calls.length = 0;
 const notDue = createRuntimeHostMemoryMaintenance({
@@ -208,6 +323,47 @@ try {
 } finally {
   releasePreview();
   previewOwner.stop();
+}
+
+for (const interruption of ["busy", "commands-replaced"] as const) {
+  let releaseEmbedding!: () => void;
+  const embeddingReady = new Promise<void>((resolve) => { releaseEmbedding = resolve; });
+  let embeddingStarted!: () => void;
+  const embeddingEntered = new Promise<void>((resolve) => { embeddingStarted = resolve; });
+  let busy = false;
+  let processed = 0;
+  const staleCommands = {
+    agent: {
+      getPersonalizationState: async () => ({ memory: { sleepTime: "00:00" } }),
+      memoryEmbeddingStatus: async () => {
+        embeddingStarted();
+        await embeddingReady;
+        return undefined;
+      },
+      getLocalMemory: () => ({
+        loadMaintenanceStatus: async () => undefined,
+        runMemoryMaintenance: async () => { processed += 1; }
+      })
+    }
+  } as unknown as CommandRuntime;
+  let currentCommands = staleCommands;
+  const guarded = createRuntimeHostMemoryMaintenance({
+    getRuntime: () => runtime,
+    getCommands: () => currentCommands,
+    isBusy: () => busy
+  });
+  try {
+    const running = guarded.runNow();
+    await embeddingEntered;
+    if (interruption === "busy") busy = true;
+    else currentCommands = { agent: {} } as CommandRuntime;
+    releaseEmbedding();
+    await running;
+    assert.equal(processed, 0, `${interruption} prevents a stale Sleep run`);
+  } finally {
+    releaseEmbedding();
+    guarded.stop();
+  }
 }
 
 console.log("runtime-host maintenance tests passed");

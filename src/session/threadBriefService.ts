@@ -38,6 +38,7 @@ export class ThreadBriefService {
     store: ThreadBriefStore;
     readThread(sessionId: string, minimumCreatedAt?: string): Promise<BriefThread | undefined>;
     getModel(): Promise<AgentModel | undefined>;
+    canPersist?(threads: readonly BriefThreadReference[]): Promise<boolean>;
     now?: () => Date;
     onChange?(): void;
   }) { this.store = options.store; this.now = options.now ?? (() => new Date()); }
@@ -96,6 +97,7 @@ export class ThreadBriefService {
   async rewriteSuggestion(id: string, feedback: string): Promise<void> {
     const original = this.store.suggestion(id);
     if (!original || original.status !== "open") throw new Error("项目建议已处理或不存在。");
+    if (!await this.mayPersist(original.threads)) throw new Error("项目建议的来源对话已不可用。");
     const model = await this.options.getModel();
     if (!model) throw new Error("请先配置工具模型。");
     const revision = z.object({ name: z.string().trim().min(1).max(120), brief: z.string().trim().min(1).max(2000), focus: z.string().trim().max(500), drop: z.array(z.string()).max(50), reason: shortText }).parse(
@@ -107,6 +109,7 @@ export class ThreadBriefService {
     if (revision.drop.some((id) => !original.threads.some((thread) => thread.sessionId === id))) throw new Error("改写包含建议之外的对话。");
     const threads = original.threads.filter((thread) => !revision.drop.includes(thread.sessionId));
     if (!threads.length) throw new Error("项目建议至少需要保留一段对话。");
+    if (!await this.mayPersist(threads)) throw new Error("项目建议的来源对话已不可用。");
     this.store.putSuggestion({ ...original, name: revision.name, brief: revision.brief, focus: revision.focus, reason: revision.reason, threads });
     this.options.onChange?.();
   }
@@ -146,6 +149,8 @@ export class ThreadBriefService {
     // 引用必须来自确实发给模型的用户文本；仅凭模型声称“用户说过”不能增加待办。
     if (brief.followUp && !messages.some((message) => message.role === "user" && message.text.includes(brief.followUp!.quote) && material.includes(`USER: ${message.text}`))) brief.followUp = null;
     signal.throwIfAborted();
+    if (!await this.mayPersist([thread])) return;
+    signal.throwIfAborted();
     this.store.putBrief({
       sessionId, projectId: thread.projectId, title: thread.title, createdAt: thread.createdAt,
       brief, contentHash: hash, materialLength: fullMaterial.length, userTurns, updatedAt: this.now().toISOString(),
@@ -157,9 +162,11 @@ export class ThreadBriefService {
   }
 
   private async suggest(current: ThreadBriefRecord, model: AgentModel, config: ThreadBriefSettings, signal: AbortSignal): Promise<void> {
+    if (!await this.mayPersist([reference(current)])) return;
     const currentTokens = tokens(current.brief.objects);
     if (!currentTokens.size) return;
-    const projects = this.store.projects();
+    const projects = (await Promise.all(this.store.projects().map(async (project) =>
+      await this.mayPersist(project.threads) ? project : undefined))).filter((project) => project !== undefined);
     if (projects.some((project) => project.threads.some((thread) => thread.sessionId === current.sessionId))) return;
     for (const project of projects) {
       const projectTokens = tokens([project.name, ...project.brief.split(/[\s,、，。;；]+/u)]);
@@ -167,6 +174,8 @@ export class ThreadBriefService {
       const signature = `link:${project.projectId}:${current.sessionId}`;
       if (this.store.hasSignature(signature)) continue;
       const result = linkSchema.parse(await this.ask(model, briefLinkPrompt, { project, conversation: current.brief }, signal));
+      if (!await this.mayPersist([reference(current), ...project.threads])) return;
+      signal.throwIfAborted();
       this.store.putSuggestion({ id: randomUUID(), signature, kind: "link", projectId: project.projectId,
         status: result.belongs ? "open" : "rejected", name: project.name, brief: project.brief, focus: project.focus,
         reason: result.reason, threads: [reference(current)], createdAt: this.now().toISOString() });
@@ -174,7 +183,8 @@ export class ThreadBriefService {
       if (result.belongs) return;
     }
     const assigned = new Set(projects.flatMap((project) => project.threads.map((thread) => thread.sessionId)));
-    const candidates = this.store.briefs().filter((entry) => entry.sessionId !== current.sessionId && !assigned.has(entry.sessionId));
+    const candidates = (await Promise.all(this.store.briefs().filter((entry) => entry.sessionId !== current.sessionId && !assigned.has(entry.sessionId))
+      .map(async (entry) => await this.mayPersist([reference(entry)]) ? entry : undefined))).filter((entry) => entry !== undefined);
     let cluster: ThreadBriefRecord[] = [];
     for (const token of currentTokens) {
       const matching = [current, ...candidates.filter((entry) => tokens(entry.brief.objects).has(token))].slice(0, 50);
@@ -191,10 +201,16 @@ export class ThreadBriefService {
       id: randomUUID(), signature, kind: "create", status: "rejected", name: result.name, brief: result.brief,
       focus: result.focus, reason: result.reason, threads: cluster.map(reference), createdAt: this.now().toISOString()
     };
+    if (!await this.mayPersist(cluster.map(reference))) return;
+    signal.throwIfAborted();
     // 同时记住整个候选组的判定，避免删掉成员后又反复询问同一组材料。
     if (!valid || signature !== selectedSignature) this.store.putSuggestion(suggestion);
     if (valid && !this.store.hasSignature(selectedSignature)) this.store.putSuggestion({ ...suggestion, id: randomUUID(), signature: selectedSignature, status: "open", threads: members.map(reference) });
     this.options.onChange?.();
+  }
+
+  private async mayPersist(threads: readonly BriefThreadReference[]): Promise<boolean> {
+    return this.options.canPersist === undefined || await this.options.canPersist(threads);
   }
 }
 

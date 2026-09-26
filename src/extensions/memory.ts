@@ -24,6 +24,7 @@ const saveMemorySchema = z.object({
 const recallMemorySchema = z.object({
   query: z.string().trim().min(1).max(2_000),
   limit: z.number().int().min(1).max(20).optional(),
+  threshold: z.number().min(0).max(1).optional(),
   tags: z.array(z.string().trim().min(1).max(120)).max(12).optional(),
   threadId: z.string().trim().min(1).max(200).optional()
 });
@@ -100,7 +101,8 @@ function createRecallMemoryTool(
       type: "object",
       properties: {
         query: { type: "string", description: "Keywords describing what to recall." },
-        limit: { type: "integer", minimum: 1, maximum: 20, description: "Maximum number of matches; defaults to 8." },
+        limit: { type: "integer", minimum: 1, maximum: 20, description: "Maximum number of matches; defaults to 5." },
+        threshold: { type: "number", minimum: 0, maximum: 1, description: "Minimum cosine similarity; defaults to 0.3." },
         tags: { type: "array", items: { type: "string" }, description: "Match any of these optional tags." },
         threadId: { type: "string", description: "Optional strict thread scope." }
       },
@@ -117,7 +119,7 @@ function createRecallMemoryTool(
         const message = "recall_memory requires a query.";
         return { isError: true as const, result: message, errorMessage: message };
       }
-      const { query, limit, tags, threadId } = parsed.data;
+      const { query, limit, threshold, tags, threadId } = parsed.data;
       return {
         accesses: ToolAccesses.none(),
         display: { kind: "generic" as const, summary: "Recall memory", detail: query },
@@ -126,10 +128,8 @@ function createRecallMemoryTool(
         async execute(): Promise<unknown> {
           const memory = getMemory();
           if (!memory) throw new Error("Local memory is unavailable.");
-          if (searchMemory) return await searchMemory(query, [], { tags, threadId, limit: limit ?? 8 });
-          const result = await memory.search(query, [], { tags, threadId, limit: limit ?? 8 });
-          await memory.recordRecallUsage(result.matches.map((match) => match.entry.id));
-          return result;
+          if (!searchMemory) throw new Error("Semantic memory search is unavailable.");
+          return await searchMemory(query, [], { tags, threadId, limit: limit ?? 5, threshold: threshold ?? 0.3 });
         }
       };
     }

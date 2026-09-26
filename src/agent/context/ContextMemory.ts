@@ -257,20 +257,9 @@ export class ContextMemory {
           );
         }
       }
-      const memoryIncluded = assembly.budget.components?.some((component) => component.id === "stable memory" && component.disposition === "included") === true;
-      if (memoryIncluded && recalled.entries.length && this.memoryRetriever) {
-        // 预算决策前的候选不算召回；统计故障不应丢掉已经组装好的上下文。
-        try {
-          await this.memoryRetriever.recordRecallUsage(recalled.entries, { signal });
-        } catch {
-          signal?.throwIfAborted();
-        }
-      }
-      this.memoryRecall = memoryRecallForAssembly(recalled.report, recalled.entries, assembly.budget.components);
+      this.memoryRecall = memoryRecallForAssembly(recalled.report, recalled.entries, assembly.includedMemoryMatches);
       this.memoryRecallDegraded = this.memoryRecall.degraded;
-      this.memoryInjectedSummaries = memoryIncluded
-        ? memoryMatches.map((match) => redactSecrets(match.excerpt))
-        : [];
+      this.memoryInjectedSummaries = assembly.includedMemoryMatches.map((match) => redactSecrets(match.excerpt));
       this.lastBudget = {
         ...assembly.budget,
         cacheHitRate: this.lastBudget.cacheHitRate,
@@ -829,7 +818,7 @@ export class ContextMemory {
     return { summary, state: grounded.state, evidence: grounded.evidence };
   }
 
-  /** 语义 + 词法混合召回条目；向量不可用时自动召回保持为空。 */
+  /** 语义召回条目；向量不可用时自动召回保持为空。 */
   private async findRelevantMemory(
     input: string,
     signal?: AbortSignal
@@ -848,13 +837,14 @@ export class ContextMemory {
         maxChars: memoryRecallMaxChars,
         signal,
         automatic: true,
-        allowEntry: this.allowActivity() ? undefined : (entry) => !isActivityMemory(entry)
+        // Session 尚无可信 actor ID；自动注入只允许共享事实，不能泄露显式归属其他用户的事实。
+        allowEntry: (entry) => entry.userId === undefined && (this.allowActivity() || !isActivityMemory(entry))
       });
       return {
         matches: result.matches.map((match) => ({
+          entry: match.entry,
           path: match.path,
           excerpt: match.excerpt,
-          tags: match.entry.tags,
           score: match.score
         })),
         report: result.report,
@@ -1666,14 +1656,14 @@ function emptyMemoryRecallReport(): MemoryRecallReport {
 function memoryRecallForAssembly(
   report: MemoryRecallReport,
   entries: readonly string[],
-  components: ContextComponentUsage[] | undefined
+  includedMatches: readonly MemoryMatch[]
 ): MemoryRecallReport {
   const omitted = report.omitted.map((item) => ({ ...item }));
-  const memoryComponent = components?.find((component) => component.id === "stable memory");
-  if (memoryComponent && memoryComponent.disposition !== "included") {
-    // 记忆块最终没进 prompt：把已计入的命中改记为预算裁剪，保证 report 与实际注入一致。
+  if (entries.length > includedMatches.length) {
+    // 逐条记下未进入 Prompt 的命中；搜索访问统计仍按检索时点计算。
+    const includedIds = new Set(includedMatches.map((match) => match.entry.id));
     for (const id of entries) {
-      if (!omitted.some((omission) => omission.id === id)) {
+      if (!includedIds.has(id) && !omitted.some((omission) => omission.id === id)) {
         omitted.push({ id, reason: "budget" });
       }
     }
@@ -1681,10 +1671,10 @@ function memoryRecallForAssembly(
   const budgetOmitted = omitted.filter((item) => item.reason === "budget").length;
   return {
     omitted,
-    budgetOmission: memoryComponent && memoryComponent.disposition !== "included"
+    budgetOmission: budgetOmitted > 0
       ? {
           maxChars: memoryRecallMaxChars,
-          usedChars: memoryComponent.usedTokens > 0 ? report.budgetOmission?.usedChars ?? 0 : 0,
+          usedChars: includedMatches.reduce((total, match) => total + match.excerpt.length + 5, 0),
           omitted: budgetOmitted
         }
       : report.budgetOmission,
@@ -1750,6 +1740,7 @@ interface ContextAssembly {
   systemPrompt?: string;
   messages: AgentMessage[];
   budget: ContextBudgetStatus;
+  includedMemoryMatches: MemoryMatch[];
 }
 
 export interface PreparedAgentContext {
@@ -1946,30 +1937,23 @@ function assembleContext(
     }
   }
 
-  // 记忆不是 system instruction，而是本轮 user message 前的参考资料。只有完整块能放进
-  // 剩余预算时才注入，避免把记忆截成半句话；没有命中时 user message 保持原样。
+  // 记忆不是 system instruction，而是本轮 user message 前的参考资料。按排名逐条
+  // 装入完整事实；第一条放不下就不跳到更低排名，也不截断事实正文。
   let includedMemory = "";
+  let includedMemoryMatches: MemoryMatch[] = [];
   if (stableMemory) {
     const requestedMemoryTokens = estimateTokens(stableMemory) + 4;
-    const available = Math.max(0, remaining - 4);
-    if (requestedMemoryTokens <= remaining && available > 0) {
-      includedMemory = stableMemory;
-      components.push({
-        id: "stable memory",
-        requestedTokens: requestedMemoryTokens,
-        usedTokens: requestedMemoryTokens,
-        disposition: "included"
-      });
-      remaining -= requestedMemoryTokens;
-    } else {
-      omitted.push("stable memory");
-      components.push({
-        id: "stable memory",
-        requestedTokens: requestedMemoryTokens,
-        usedTokens: 0,
-        disposition: "omitted"
-      });
+    for (let count = 1; count <= memoryMatches.length; count += 1) {
+      const candidate = formatMemoryMatches(memoryMatches.slice(0, count));
+      if (estimateTokens(candidate) + 4 > remaining) break;
+      includedMemory = candidate;
+      includedMemoryMatches = memoryMatches.slice(0, count);
     }
+    const usedTokens = includedMemory ? estimateTokens(includedMemory) + 4 : 0;
+    const disposition = !includedMemory ? "omitted" : includedMemoryMatches.length === memoryMatches.length ? "included" : "trimmed";
+    if (disposition !== "included") omitted.push(disposition === "trimmed" ? "stable memory (trimmed)" : "stable memory");
+    components.push({ id: "stable memory", requestedTokens: requestedMemoryTokens, usedTokens, disposition });
+    remaining -= usedTokens;
   }
 
   // 空输入续接沿用历史事实，不把占位文字或动态参考资料伪装成用户新消息。
@@ -1980,6 +1964,7 @@ function assembleContext(
   return {
     systemPrompt: assembledSystemPrompt,
     messages,
+    includedMemoryMatches,
     budget: {
       maxTokens,
       usedTokens: estimateMessageTokens(messages) + estimateTokens(assembledSystemPrompt ?? "") + usedCheckpointTokens,

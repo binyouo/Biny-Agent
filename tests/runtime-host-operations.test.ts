@@ -8,6 +8,7 @@ assert.equal(operationLaneKey("runtime.restart", {}, "session-a"), "session-a");
 assert.equal(operationLaneKey("session.ensure", { sessionId: "session-a" }, "primary"), "session-a");
 assert.equal(operationLane("run.submit"), "run");
 assert.equal(operationLane("host.info"), "query");
+assert.equal(operationLane("memory", { action: "archive-chains" }), "query");
 assert.equal(operationLane("run.cancel"), "run");
 assert.equal(operationLane("capability.fail"), "control");
 assert.equal(operationLane("graph.start"), "admission");

@@ -1,10 +1,11 @@
-/** 记忆只读推送：文件事件触发刷新，内存进度按秒采样；所有数据仍从宿主读取。 */
+/** 记忆只读推送：文件事件触发刷新，Sleep 阶段从有界持久日志补发，所有数据仍从宿主读取。 */
 import { watch, type FSWatcher } from "node:fs";
 import { lstat, mkdir } from "node:fs/promises";
 import type { IncomingMessage, Server } from "node:http";
 import type { Duplex } from "node:stream";
 import { WebSocket, WebSocketServer } from "ws";
 import { AGENT_DATABASE_FILE, globalAgentDir } from "../../config/paths.js";
+import type { MemoryMaintenanceStatus } from "../../agent/context/memoryTypes.js";
 import type { RuntimeHostClient } from "./client.js";
 
 type MemoryStatusClient = Pick<RuntimeHostClient, "memory" | "memoryEmbeddingStatus">;
@@ -19,18 +20,25 @@ export async function attachMemoryWebSocket(
   await mkdir(directory, { recursive: true, mode: 0o700 });
   if (!(await lstat(directory)).isDirectory()) throw new Error("Memory directory must be a real directory.");
   const wss = new WebSocketServer({ noServer: true, maxPayload: 1024, perMessageDeflate: false });
-  const states = new Map<WebSocket, { last: Map<string, string>; alive: boolean }>();
+  const states = new Map<WebSocket, {
+    last: Map<string, string>;
+    alive: boolean;
+    sleepInitialized: boolean;
+    lastSleepRunId?: string;
+    sleepReplayEligible: boolean;
+  }>();
   let closed = false;
   let pending = false;
   let dirty = false;
   let refreshTimer: ReturnType<typeof setTimeout> | undefined;
   let watcher: FSWatcher | undefined;
 
-  const publish = (type: string, data: unknown, key = type): void => {
+  const publish = (type: string, data: unknown, key = type, recipients?: ReadonlySet<WebSocket>): void => {
     if (closed) return;
     const value = JSON.stringify(data);
     const frame = JSON.stringify({ type, data, timestamp: new Date().toISOString() });
     for (const [ws, state] of states) {
+      if (recipients && !recipients.has(ws)) continue;
       if (ws.readyState !== WebSocket.OPEN || state.last.get(key) === value) continue;
       // 慢消费者应重连补快照，不能让其无界累积宿主状态。
       if (ws.bufferedAmount + Buffer.byteLength(frame) > maxBufferedBytes) { ws.terminate(); continue; }
@@ -46,7 +54,7 @@ export async function attachMemoryWebSocket(
       const sources = ["memory", "sleep", "embedding"];
       const results = await Promise.allSettled([
         client.memory<{ overview?: unknown }>("overview"),
-        client.memory("sleep-status"),
+        client.memory<MemoryMaintenanceStatus>("sleep-status"),
         client.memoryEmbeddingStatus()
       ]);
       if (closed) return;
@@ -65,7 +73,46 @@ export async function attachMemoryWebSocket(
       }
       const [memory, sleep, embedding] = results;
       if (memory.status === "fulfilled") publish("memory-changed", memory.value.overview ?? memory.value);
-      if (sleep.status === "fulfilled") publish("memory-sleep-progress", sleep.value);
+      if (sleep.status === "fulfilled") {
+        const status = sleep.value;
+        publish("memory-sleep-status", status);
+        const run = status.lastRun;
+        const recipients = new Set<WebSocket>();
+        for (const [ws, state] of states) {
+          if (!state.sleepInitialized) {
+            state.sleepInitialized = true;
+            state.lastSleepRunId = run?.id;
+            state.sleepReplayEligible = run?.status === "running";
+          } else if (run && state.lastSleepRunId !== run.id) {
+            for (const key of state.last.keys()) if (key.startsWith("sleep:")) state.last.delete(key);
+            state.lastSleepRunId = run.id;
+            state.sleepReplayEligible = true;
+          }
+          if (run && state.sleepReplayEligible) recipients.add(ws);
+        }
+        // 采样可能跨过多个快速阶段；按已提交的有界阶段日志逐一补发。
+        if (run && recipients.size && (status.state === "running" || run.progressEvents !== undefined)) {
+          const currentProgressKeys = new Set((run.progressEvents ?? []).map((progress, index) =>
+            `sleep:${run.id}:progress:${progress.sequence ?? index + 1}`));
+          for (const ws of recipients) {
+            const last = states.get(ws)?.last;
+            if (!last) continue;
+            for (const key of last.keys()) if (key.startsWith(`sleep:${run.id}:progress:`) && !currentProgressKeys.has(key)) last.delete(key);
+          }
+          publish("memory-sleep-started", { runId: run.id, trigger: run.trigger }, `sleep:${run.id}:started`, recipients);
+          for (const [index, progress] of (run.progressEvents ?? []).entries()) {
+            publish("memory-sleep-progress", { runId: run.id, ...progress }, `sleep:${run.id}:progress:${progress.sequence ?? index + 1}`, recipients);
+          }
+          if (run.status !== "running") {
+            publish("memory-sleep-completed", {
+              runId: run.id, status: run.status, examined: run.examined,
+              archivedExact: run.archivedExact, archivedExpired: run.archivedExpired,
+              archivedSimilarity: run.archivedSimilarity, archivedLlm: run.archivedLlm,
+              error: run.error
+            }, `sleep:${run.id}:completed`, recipients);
+          }
+        }
+      }
       if (embedding.status === "fulfilled") {
         publish("memory-embedding-status", embedding.value);
         const operation = embedding.value.operation;
@@ -113,7 +160,7 @@ export async function attachMemoryWebSocket(
       return;
     }
     wss.handleUpgrade(request, socket, head, (ws) => {
-      const state = { last: new Map<string, string>(), alive: true };
+      const state = { last: new Map<string, string>(), alive: true, sleepInitialized: false, sleepReplayEligible: false };
       states.set(ws, state);
       ws.on("error", () => ws.terminate());
       ws.on("close", () => states.delete(ws));

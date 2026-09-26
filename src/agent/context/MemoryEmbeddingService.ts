@@ -65,6 +65,8 @@ export interface MemoryEmbeddingServiceOptions {
   getVectorIndex: () => MemoryVectorIndex;
   getReadOnlyVectorIndex: () => MemoryVectorIndex | undefined;
   getActiveModel: () => EmbeddingModelRef | undefined;
+  /** 原始配置选择；用于 Sleep 在暂时无可用 Provider 时识别已有投影。 */
+  getConfiguredModel?: () => EmbeddingModelRef | undefined;
   getProviderModels: () => EmbeddingModelDescriptor[];
   getRuntime: () => Promise<EmbeddingModelRuntime | undefined>;
   getNeedsRebuild?: () => boolean;
@@ -86,6 +88,16 @@ export class MemoryEmbeddingService {
 
   embeddingRuntime(): Promise<EmbeddingModelRuntime | undefined> {
     return this.options.getRuntime();
+  }
+
+  storedModelId(): string | null {
+    const index = this.vectorIndexInstance ?? this.options.getReadOnlyVectorIndex();
+    if (index === undefined) return null;
+    try {
+      return index.storedModelId();
+    } finally {
+      if (index !== this.vectorIndexInstance) index.close();
+    }
   }
 
   async status(): Promise<MemoryEmbeddingRuntimeStatus> {
@@ -292,8 +304,13 @@ export class MemoryEmbeddingService {
       if (latest.storeRevision !== snapshotRevision) {
         throw new Error("记忆在向量索引重建期间发生变化，请稍后重试。");
       }
+      combined.throwIfAborted();
+      if (runtime.descriptor.ref.kind === "auto") throw new Error("Embedding 模型未解析为具体模型。");
+      const storedModelId = runtime.descriptor.ref.model;
       if (dimensions !== undefined) {
-        this.vectorIndex().replaceAll(runtime.descriptor.fingerprint, dimensions, vectors);
+        this.vectorIndex().replaceAll(runtime.descriptor.fingerprint, dimensions, vectors, storedModelId);
+      } else {
+        this.vectorIndex().clearEmptyProjection(storedModelId);
       }
       this.operation = {
         kind: "rebuild",
@@ -388,15 +405,6 @@ export class MemoryEmbeddingService {
     }
     if (entries.length === 0) return { examined: 0, pairs: [] };
     signal?.throwIfAborted();
-    let runtime: EmbeddingModelRuntime | undefined;
-    try {
-      runtime = await this.options.getRuntime();
-    } catch {
-      signal?.throwIfAborted();
-      return { examined: 0, pairs: [] };
-    }
-    if (!runtime) return { examined: 0, pairs: [] };
-    signal?.throwIfAborted();
     const cachedIndex = this.vectorIndexInstance;
     let index: MemoryVectorIndex | undefined;
     try {
@@ -405,12 +413,15 @@ export class MemoryEmbeddingService {
       return { examined: 0, pairs: [] };
     }
     if (!index) return { examined: 0, pairs: [] };
-    let active: MemoryVectorIndexStatus["active"] | undefined;
     try {
-      active = index.status().active;
-      if (!active || active.modelFingerprint !== runtime.descriptor.fingerprint) return { examined: 0, pairs: [] };
+      const active = index.status().active;
+      if (!active) return { examined: 0, pairs: [] };
+      // Sleep 不生成新向量；只允许当前配置仍能识别的单一持久投影。
+      const fingerprint = await this.activeModelFingerprint(active.modelFingerprint);
+      signal?.throwIfAborted();
+      if (active.modelFingerprint !== fingerprint) return { examined: 0, pairs: [] };
       const vectorById = new Map(index.listActiveEmbeddings({
-        modelFingerprint: runtime.descriptor.fingerprint,
+        modelFingerprint: fingerprint,
         entryIds: new Set(entries.map((entry) => entry.id))
       }).map((vector) => [vector.entryId, vector] as const));
       const usable = entries.filter((entry) => {
@@ -570,13 +581,27 @@ export class MemoryEmbeddingService {
     return (this.options.now?.() ?? new Date()).toISOString();
   }
 
-  private async activeModelFingerprint(): Promise<string | undefined> {
+  private async activeModelFingerprint(storedFingerprint: string): Promise<string | undefined> {
     const active = this.options.getActiveModel();
-    if (!active) return undefined;
-    const models = active.kind === "local"
-      ? (await this.options.localManager.list()).map(({ descriptor }) => descriptor)
-      : this.options.getProviderModels();
-    return models.find((candidate) => sameEmbeddingModel(candidate.ref, active))?.fingerprint;
+    if (active) {
+      const models = active.kind === "local"
+        ? (await this.options.localManager.list()).map(({ descriptor }) => descriptor)
+        : this.options.getProviderModels();
+      return models.find((candidate) => sameEmbeddingModel(candidate.ref, active))?.fingerprint;
+    }
+    const configured = this.options.getConfiguredModel?.();
+    if (!configured) return undefined;
+    const models = this.options.getProviderModels();
+    if (configured.kind === "provider") {
+      return models.find((candidate) => sameEmbeddingModel(candidate.ref, configured))?.fingerprint;
+    }
+    if (configured.kind === "auto") {
+      // 自动选择无可用 Provider 时，只能复用仍列在当前配置中的旧模型空间。
+      return models.some((candidate) => candidate.source === "provider"
+        && candidate.ref.kind === "provider"
+        && candidate.fingerprint === storedFingerprint) ? storedFingerprint : undefined;
+    }
+    return undefined;
   }
 }
 
@@ -584,6 +609,7 @@ function sameEmbeddingModel(left: EmbeddingModelRef, right: EmbeddingModelRef): 
   return left.kind === right.kind
     && (left.kind === "local"
       ? left.model === (right as Extract<EmbeddingModelRef, { kind: "local" }>).model
+      : left.kind === "auto" ? true
       : left.provider === (right as Extract<EmbeddingModelRef, { kind: "provider" }>).provider
         && left.model === (right as Extract<EmbeddingModelRef, { kind: "provider" }>).model);
 }
@@ -597,16 +623,16 @@ function degradedReason(
   totalEntries: number,
   needsRebuild: boolean
 ): string | undefined {
-  if (!activeModel) return "未选择 Embedding 模型，当前使用词法检索。";
-  if (!descriptor) return "当前 Embedding 模型不可用，当前使用词法检索。";
-  if (descriptor.source === "local" && descriptor.installed !== true) return "本地 Embedding 模型尚未下载，当前使用词法检索。";
-  if (descriptor.available === false) return "云端 Embedding 模型当前不可用，当前使用词法检索。";
+  if (!activeModel) return "没有可用的 Embedding 模型，记忆语义搜索暂不可用。";
+  if (!descriptor) return "当前 Embedding 模型不可用，记忆语义搜索暂不可用。";
+  if (descriptor.source === "local" && descriptor.installed !== true) return "本地 Embedding 模型尚未下载，记忆语义搜索暂不可用。";
+  if (descriptor.available === false) return "云端 Embedding 模型当前不可用，记忆语义搜索暂不可用。";
   if (totalEntries === 0) return undefined;
   if (needsRebuild) return "Embedding 模型已变化，需要重建记忆向量索引。";
-  if (!index.active) return totalEntries ? "记忆向量索引尚未建立，当前使用词法检索。" : undefined;
+  if (!index.active) return totalEntries ? "记忆向量索引尚未建立，语义搜索暂不可用。" : undefined;
   if (index.active.modelFingerprint !== descriptor.fingerprint) return "索引模型与当前设置不一致，需要重建。";
-  if (pendingEntries > 0) return `${String(pendingEntries)} 条记忆等待索引，缺失条目将使用词法检索。`;
-  if (indexedEntries < totalEntries) return "部分记忆尚未索引，缺失条目将使用词法检索。";
+  if (pendingEntries > 0) return `${String(pendingEntries)} 条记忆等待索引，未索引条目暂不能被搜索。`;
+  if (indexedEntries < totalEntries) return "部分记忆尚未索引，未索引条目暂不能被搜索。";
   return undefined;
 }
 

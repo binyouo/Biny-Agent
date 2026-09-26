@@ -1,9 +1,8 @@
 /**
- * 自动记忆召回：可选查询改写后进行向量余弦 topK；向量不可用时保持为空。
+ * 记忆搜索：可选查询改写后进行向量余弦 topK，再过滤事实范围。
  *
  * SQLite/LocalMemory 负责事实源；向量索引只提供可丢弃的语义排名。召回覆盖整个记忆库，
- * 不做来源分桶或工作区过滤；向量不可用或指纹不匹配时自动召回 fail closed，
- * 手动 `/memory search` 仍然保留词法 fallback。
+ * 不做来源分桶或工作区过滤；向量不可用或指纹不匹配时返回空结果及原因。
  */
 import type { EmbeddingModelRuntime } from "../../llm/embedding/types.js";
 import { redactSecrets } from "../../utils/secrets.js";
@@ -15,20 +14,17 @@ import type {
   MemoryEntry,
   MemoryMatch,
   MemoryRecallReport,
-  MemorySearchOptions,
   MemorySearchResult
 } from "./memoryTypes.js";
 
 /** 自动召回为空且不是"确实没有相关内容"时的降级原因。 */
 export type MemoryRecallDegraded = NonNullable<MemoryRecallReport["degraded"]>;
 
-const lexicalWeight = 1;
 const queryRewriteTimeoutMs = 3_000;
 const defaultRecallMaxChars = 12_000;
 
 export interface AutomaticMemoryStore {
   listMemoryEntries(options?: { includeArchived?: boolean; signal?: AbortSignal }): Promise<MemoryEntriesResult>;
-  search(query: string, paths: string[], options?: MemorySearchOptions): Promise<MemorySearchResult>;
   recordRecallUsage(ids: string[], options?: { signal?: AbortSignal; now?: Date }): Promise<void>;
 }
 
@@ -50,7 +46,7 @@ export interface HybridMemoryRetrieverOptions {
   localMemory: AutomaticMemoryStore;
   getEmbeddingRuntime: () => Promise<EmbeddingModelRuntime | undefined>;
   getReadOnlyVectorIndex: () => MemoryVectorSearchIndex | undefined;
-  /** 命中条目必须达到的最低相似度；未配置时使用 embedding 模型的推荐值。 */
+  /** 命中条目必须达到的最低相似度。 */
   getThreshold: (fingerprint: string, recommended: number) => number;
   rewriteQuery?: (query: string, signal?: AbortSignal) => Promise<string>;
   queryRewriteEnabled?: () => boolean;
@@ -60,12 +56,10 @@ export interface HybridMemoryRetrieverOptions {
 
 export interface HybridMemoryRankingInput {
   entries: readonly MemoryEntry[];
-  lexicalRankings: readonly (readonly string[])[];
   vectorRanking: readonly { entryId: string; similarity: number }[];
   semanticAvailable: boolean;
-  /** 自动召回只接受向量结果；手动搜索允许在 embedding 不可用时回退词法。 */
   automatic?: boolean;
-  /** 语义路径不可用的降级原因；仅在自动召回受影响时随空结果上报。 */
+  /** 语义路径不可用时随空结果上报。 */
   degraded?: MemoryRecallDegraded;
   paths?: ReadonlyMap<string, string>;
   limit: number;
@@ -87,89 +81,63 @@ export class HybridMemoryRetriever {
 
   async retrieve(
     query: string,
-    paths: string[],
+    _paths: string[],
     options: {
       limit: number;
+      threshold?: number;
+      rewriteQuery?: boolean;
       maxChars?: number;
       signal?: AbortSignal;
-      includeArchived?: boolean;
       automatic?: boolean;
       allowEntry?: (entry: MemoryEntry) => boolean;
       tags?: string[];
       threadId?: string;
+      userId?: string;
+      userIds?: string[];
     }
   ): Promise<MemorySearchResult> {
     options.signal?.throwIfAborted();
     const listPerfStartedAt = perfNow();
-    const snapshot = await this.options.localMemory.listMemoryEntries({
-      includeArchived: options.includeArchived,
-      signal: options.signal
-    });
-    if (this.options.allowEntry) snapshot.entries = snapshot.entries.filter(this.options.allowEntry);
-    if (options.allowEntry) snapshot.entries = snapshot.entries.filter(options.allowEntry);
-    // 所有 scope 都在 exact ID、语义 top-K 和词法排名前生效。
-    snapshot.entries = snapshot.entries.filter((entry) => entryMatchesMemorySearchScope(entry, options));
-    snapshot.paths = snapshot.paths === undefined
-      ? undefined
-      : Object.fromEntries(Object.entries(snapshot.paths).filter(([id]) => snapshot.entries.some((entry) => entry.id === id)));
+    const snapshot = await this.options.localMemory.listMemoryEntries({ signal: options.signal });
     recordPerfPhase("memory.listEntries", listPerfStartedAt);
-    if (!snapshot.entries.length || options.limit < 1) return emptySearchResult(snapshot);
-
     const safeQuery = redactSecrets(query).trim();
-    // 显式 ID 查找是确定性读取，不应受 embedding 是否可用或相似度排名影响。
-    const exactEntry = options.automatic === true ? undefined : snapshot.entries.find(({ id }) => id === safeQuery);
-    if (exactEntry) {
-      return rankHybridMemory({
-        entries: [exactEntry], lexicalRankings: [[exactEntry.id]], vectorRanking: [],
-        semanticAvailable: false, limit: options.limit,
-        maxChars: options.maxChars ?? defaultRecallMaxChars,
-        paths: new Map(Object.entries(snapshot.paths ?? {}))
-      }, snapshot.storeRevision);
-    }
+    if (!snapshot.entries.length || options.limit < 1) return {
+      ...emptySearchResult(snapshot), originalQuery: safeQuery
+    };
     const semanticPerfStartedAt = perfNow();
-    const semantic = await this.semanticSearch(safeQuery, snapshot.entries, options.limit, options.signal);
+    const semantic = await this.semanticSearch(safeQuery, options.limit, options.signal, options.threshold, options.rewriteQuery);
     recordPerfPhase("memory.semantic", semanticPerfStartedAt, { available: semantic.available });
-    const matchPaths = new Map(Object.entries(snapshot.paths ?? {}));
-    const lexicalRankings: string[][] = [];
-    if (options.automatic !== true) {
-      const lexicalQueries = [...new Set([safeQuery, semantic.query].filter((value): value is string => Boolean(value)))];
-      if (!lexicalQueries.length && paths.length) lexicalQueries.push("");
-      const lexicalPerfStartedAt = perfNow();
-      const lexicalResults = await Promise.all(lexicalQueries.map(async (value) => (
-        await this.options.localMemory.search(value, paths, {
-          includeArchived: options.includeArchived,
-          tags: options.tags,
-          threadId: options.threadId,
-          limit: snapshot.entries.length,
-          signal: options.signal
-        })
-      )));
-      recordPerfPhase("memory.lexical", lexicalPerfStartedAt);
-      for (const result of lexicalResults) {
-        const ids = result.matches.map(({ entry }) => entry.id);
-        lexicalRankings.push(ids);
-        for (const match of result.matches) if (!matchPaths.has(match.entry.id)) matchPaths.set(match.entry.id, match.path);
-      }
-    }
+    const byId = new Map(snapshot.entries.map((entry) => [entry.id, entry]));
+    // 先取语义相似度最高的 top-K，再按 scope 过滤；过滤后不补取被范围外结果占用的名额。
+    const selected = semantic.results.filter(({ entryId }) => {
+      const entry = byId.get(entryId);
+      return entry !== undefined
+        && entryMatchesMemorySearchScope(entry, options)
+        && (this.options.allowEntry?.(entry) ?? true)
+        && (options.allowEntry?.(entry) ?? true);
+    });
+    if (selected.length) await this.options.localMemory.recordRecallUsage(selected.map(({ entryId }) => entryId), { signal: options.signal });
 
-    return rankHybridMemory({
-      entries: snapshot.entries,
-      lexicalRankings,
-      vectorRanking: semantic.results,
-      semanticAvailable: semantic.available,
-      automatic: options.automatic,
-      degraded: options.automatic === true && !semantic.available && safeQuery.length > 0
-        ? semantic.degraded ?? "no_vector_index"
-        : undefined,
-      paths: matchPaths,
-      limit: options.limit,
-      maxChars: options.maxChars ?? defaultRecallMaxChars
-    }, snapshot.storeRevision);
+    return {
+      ...rankHybridMemory({
+        entries: selected.map(({ entryId }) => byId.get(entryId)!),
+        vectorRanking: selected,
+        semanticAvailable: semantic.available,
+        automatic: options.automatic,
+        degraded: !semantic.available && safeQuery.length > 0
+          ? semantic.degraded ?? "no_vector_index"
+          : undefined,
+        paths: new Map(Object.entries(snapshot.paths ?? {})),
+        limit: options.limit,
+        maxChars: options.maxChars ?? defaultRecallMaxChars
+      }, snapshot.storeRevision),
+      originalQuery: safeQuery,
+      rewrittenQuery: semantic.rewrittenQuery
+    };
   }
 
-  private async rewrite(query: string, entries: readonly MemoryEntry[], signal?: AbortSignal): Promise<string> {
-    if (!query || !this.options.rewriteQuery || this.options.queryRewriteEnabled?.() === false) return query;
-    if (entries.some(({ id }) => id === query)) return query;
+  private async rewrite(query: string, signal?: AbortSignal): Promise<string> {
+    if (!query || !this.options.rewriteQuery) return query;
     const timeout = AbortSignal.timeout(queryRewriteTimeoutMs);
     const rewriteSignal = signal === undefined ? timeout : AbortSignal.any([signal, timeout]);
     const startedAt = perfNow();
@@ -199,12 +167,15 @@ export class HybridMemoryRetriever {
 
   private async semanticSearch(
     query: string,
-    entries: readonly MemoryEntry[],
     limit: number,
-    signal?: AbortSignal
-  ): Promise<{ available: boolean; results: MemoryVectorSearchResult[]; query?: string; degraded?: MemoryRecallDegraded }> {
+    signal?: AbortSignal,
+    thresholdOverride?: number,
+    rewriteOverride?: boolean
+  ): Promise<{ available: boolean; results: MemoryVectorSearchResult[]; rewrittenQuery?: string; degraded?: MemoryRecallDegraded }> {
     if (!query) return { available: false, results: [] };
     let rewritten = query;
+    let rewrittenQuery: string | undefined;
+    let failureReason: MemoryRecallDegraded = "no_vector_index";
     try {
       // 先排除缺失、空或不兼容的索引，再启动改写和 embedding；自动召回仍保持 fail closed，
       // 但每个失败点都带出降级原因，供界面主动提示而不是静默为空。
@@ -213,6 +184,7 @@ export class HybridMemoryRetriever {
       this.vectorIndex = index;
       const active = index.status().active;
       if (!active || active.vectorCount < 1) return { available: false, results: [], degraded: "no_vector_index" };
+      failureReason = "no_embedding_runtime";
       const runtime = await this.options.getEmbeddingRuntime();
       if (!runtime) return { available: false, results: [], degraded: "no_embedding_runtime" };
       if (
@@ -220,33 +192,34 @@ export class HybridMemoryRetriever {
         || (runtime.descriptor.dimensions !== undefined && active.dimensions !== runtime.descriptor.dimensions)
       ) return { available: false, results: [], degraded: "model_mismatch" };
       signal?.throwIfAborted();
-      rewritten = await this.rewrite(query, entries, signal);
+      if (rewriteOverride ?? this.options.queryRewriteEnabled?.() ?? true) {
+        rewritten = await this.rewrite(query, signal);
+        rewrittenQuery = rewritten;
+      }
       const embedded = await runtime.embed({ texts: [rewritten], inputType: "query", signal });
       signal?.throwIfAborted();
       const queryVector = embedded.embeddings[0];
       if (!queryVector || embedded.embeddings.length !== 1 || embedded.fingerprint !== runtime.descriptor.fingerprint) {
         return { available: false, results: [], degraded: "no_embedding_runtime" };
       }
-      if (active.dimensions !== embedded.dimensions) return { available: false, results: [], query: rewritten, degraded: "model_mismatch" };
+      if (active.dimensions !== embedded.dimensions) return { available: false, results: [], rewrittenQuery, degraded: "model_mismatch" };
 
-      const entryById = new Map(entries.map((entry) => [entry.id, entry]));
-      const threshold = this.options.getThreshold(
+      const threshold = thresholdOverride ?? this.options.getThreshold(
         runtime.descriptor.fingerprint,
         runtime.descriptor.recommendedThreshold
       );
+      failureReason = "no_vector_index";
       const results = index.search(queryVector, {
         modelFingerprint: runtime.descriptor.fingerprint,
-        limit: Math.min(limit, entries.length),
-        minimumSimilarity: threshold,
-        entryIds: new Set(entryById.keys())
+        limit,
+        minimumSimilarity: threshold
       });
-      return { available: true, query: rewritten, results };
+      return { available: true, rewrittenQuery, results };
     } catch (error) {
       signal?.throwIfAborted();
-      // 改写/嵌入中途失败按模型侧降级处理；主动取消不算降级。
-      const degraded = signal?.aborted ? undefined : "model_mismatch" as const;
+      // 指纹/维度不匹配由明确分支报告；异常按实际发生的模型或索引阶段归类。
       void error;
-      return { available: false, results: [], query: rewritten, degraded };
+      return { available: false, results: [], rewrittenQuery, degraded: failureReason };
     }
   }
 }
@@ -255,23 +228,9 @@ export class HybridMemoryRetriever {
 export function rankHybridMemory(input: HybridMemoryRankingInput, storeRevision = 0): MemorySearchResult {
   const entries = new Map(input.entries.map((entry) => [entry.id, entry]));
   const scores = new Map<string, number>();
-  const add = (id: string, score: number): void => {
-    if (!entries.has(id)) return;
-    scores.set(id, (scores.get(id) ?? 0) + score);
-  };
-
-  // 自动模式只接受通过阈值的向量结果；手动搜索才在 embedding 不可用时回退词法。
-  if (input.semanticAvailable && input.vectorRanking.length > 0) {
-    for (const candidate of input.vectorRanking) add(candidate.entryId, candidate.similarity);
-  } else if (input.automatic === true) {
-    return emptyRankedMemoryResult(storeRevision, input.degraded);
-  } else {
-    const lexicalDivisor = Math.max(1, input.lexicalRankings.length);
-    for (const ranking of input.lexicalRankings) {
-      for (const [index, id] of ranking.entries()) {
-        add(id, lexicalWeight / lexicalDivisor / (index + 1));
-      }
-    }
+  if (!input.semanticAvailable) return emptyRankedMemoryResult(storeRevision, input.degraded);
+  for (const candidate of input.vectorRanking) {
+    if (entries.has(candidate.entryId)) scores.set(candidate.entryId, candidate.similarity);
   }
 
   const ranked = [...scores].map(([id, score]) => ({ entry: entries.get(id)!, score })).sort((left, right) => (
@@ -317,7 +276,7 @@ export function rankHybridMemory(input: HybridMemoryRankingInput, storeRevision 
       budgetOmission: budgetOmitted > 0
         ? { maxChars: Math.max(0, input.maxChars), usedChars, omitted: budgetOmitted }
         : undefined,
-      degraded: input.automatic === true ? input.degraded : undefined
+      degraded: input.degraded
     }
   };
 }

@@ -26,6 +26,7 @@ process.env[BINY_AGENT_DIR_ENV] = agentRoot;
 
 try {
   await testEntryFieldsAndAccessCount();
+  await testCompatibleAgentDatabaseSchemaIsMigrated();
   await testUnknownAgentDatabaseSchemaIsRejected();
   await testSleepRunPersistenceAndRecovery();
 } finally {
@@ -79,9 +80,10 @@ async function testEntryFieldsAndAccessCount(): Promise<void> {
   }
   assert.equal(createStoredMemoryEntry({ ...input, importance: undefined }, fields).importance, 0.5);
   const duplicate = await storage.writeEntry(input);
-  assert.equal(duplicate.written, false);
+  assert.equal(duplicate.written, true);
+  assert.notEqual(duplicate.entry?.id, first.entry.id);
   await storage.recordRecallUsage([first.entry!.id], { now: new Date("2026-09-05T12:00:00.000Z") });
-  const entry = (await storage.listEntries()).entries[0];
+  const entry = (await storage.listEntries()).entries.find((candidate) => candidate.id === first.entry!.id);
   assert.equal(entry?.source, "auto");
   assert.equal(entry?.activitySource, "activity_session");
   assert.equal(entry?.activitySessionId, "activity-session-001");
@@ -125,7 +127,43 @@ async function testEntryFieldsAndAccessCount(): Promise<void> {
   }
 }
 
-/** 新的 Agent 事实库只接受当前 schema；旧库不会在读写时被静默重建。 */
+/** 仅对结构完全可辨认的扁平事实库补版本/列，保留共库 Activity 与归档原文。 */
+async function testCompatibleAgentDatabaseSchemaIsMigrated(): Promise<void> {
+  for (const version of [5, 0]) {
+    const root = await mkdtemp(path.join(os.tmpdir(), `biny-agent-compatible-v${String(version)}-`));
+    const agentDir = path.join(root, "agent");
+    const databasePath = path.join(agentDir, AGENT_DATABASE_FILE);
+    try {
+      const original = new MemoryStorage(workspaceRoot, { agentDir });
+      const active = await original.writeEntry({ content: `v${String(version)} active fact`, threadId: "thread-A" });
+      const archived = await original.writeEntry({ content: `v${String(version)} archived fact`, threadId: "thread-A" });
+      assert.ok(active.entry && archived.entry);
+      await original.archiveEntry(archived.entry.id, true);
+      original.close();
+      const database = new DatabaseSync(databasePath);
+      try {
+        database.exec("CREATE TABLE activity_sessions (id TEXT PRIMARY KEY, summary TEXT NOT NULL);");
+        database.prepare("INSERT INTO activity_sessions VALUES (?, ?)").run("kept-session", "private activity record");
+        if (version === 5) database.exec("ALTER TABLE memory_sleep_runs DROP COLUMN synthesis_failed;");
+        database.exec(`PRAGMA user_version = ${String(version)};`);
+      } finally { database.close(); }
+      const reopened = new MemoryStorage(workspaceRoot, { agentDir });
+      try {
+        assert.deepEqual((await reopened.listEntries()).entries.map((entry) => entry.id), [active.entry.id]);
+        assert.equal((await reopened.listArchivedEntries()).entries.some((entry) => entry.originalId === archived.entry!.id), true);
+      } finally { reopened.close(); }
+      const verified = new DatabaseSync(databasePath, { readOnly: true });
+      try {
+        assert.equal((verified.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, 6);
+        assert.equal((verified.prepare("SELECT summary FROM activity_sessions WHERE id = ?").get("kept-session") as { summary: string }).summary,
+          "private activity record");
+        assert.equal((verified.prepare("PRAGMA table_info(memory_sleep_runs)").all() as Array<{ name: string }>).some((column) => column.name === "synthesis_failed"), true);
+      } finally { verified.close(); }
+    } finally { await rm(root, { recursive: true, force: true }); }
+  }
+}
+
+/** 未知结构或带 workspace 范围的旧事实不能被扁平化为全局可见，也不能建议删共库。 */
 async function testUnknownAgentDatabaseSchemaIsRejected(): Promise<void> {
   const root = await mkdtemp(path.join(os.tmpdir(), "biny-agent-old-schema-"));
   const agentDir = path.join(root, "agent");
@@ -135,14 +173,28 @@ async function testUnknownAgentDatabaseSchemaIsRejected(): Promise<void> {
     for (const version of [2, 4, 5]) {
       await rm(databasePath, { force: true });
       const database = new DatabaseSync(databasePath);
-      database.exec(`CREATE TABLE memories (id TEXT PRIMARY KEY); PRAGMA user_version = ${version};`);
+      database.exec(`CREATE TABLE memories (id TEXT PRIMARY KEY, content TEXT, origin_kind TEXT, workspace_id TEXT);
+        CREATE TABLE activity_sessions (id TEXT PRIMARY KEY, summary TEXT NOT NULL);
+        PRAGMA user_version = ${String(version)};`);
+      database.prepare("INSERT INTO memories VALUES (?, ?, ?, ?)").run("scoped-fact", "Private workspace fact", "workspace", "workspace-A");
+      database.prepare("INSERT INTO activity_sessions VALUES (?, ?)").run("kept-session", "private activity record");
       database.close();
       const storage = new MemoryStorage(workspaceRoot, { agentDir });
       try {
-        await assert.rejects(storage.listEntries(), /schema is not current/u);
+        await assert.rejects(storage.listEntries(), /Preserve agent\.sqlite.*explicit migration/u);
       } finally {
         storage.close();
       }
+      const verified = new DatabaseSync(databasePath, { readOnly: true });
+      try {
+        assert.equal((verified.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, version);
+        assert.deepEqual((verified.prepare("PRAGMA table_info(memories)").all() as Array<{ name: string }>).map((column) => column.name),
+          ["id", "content", "origin_kind", "workspace_id"]);
+        assert.equal((verified.prepare("SELECT workspace_id FROM memories WHERE id = ?").get("scoped-fact") as { workspace_id: string }).workspace_id,
+          "workspace-A", "unsupported scoped facts must not become globally visible");
+        assert.equal((verified.prepare("SELECT summary FROM activity_sessions WHERE id = ?").get("kept-session") as { summary: string }).summary,
+          "private activity record");
+      } finally { verified.close(); }
     }
   } finally {
     await rm(root, { recursive: true, force: true });

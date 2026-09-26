@@ -10,14 +10,12 @@ export type LocalEmbeddingModelId =
   | "multilingual-e5-small";
 
 export type EmbeddingModelRef =
+  | { kind: "auto" }
   | { kind: "local"; model: LocalEmbeddingModelId }
   | { kind: "provider"; provider: string; model: string };
 
 export const defaultLocalEmbeddingModel: LocalEmbeddingModelId = "multilingual-e5-small";
-export const defaultEmbeddingModelRef: EmbeddingModelRef = {
-  kind: "local",
-  model: defaultLocalEmbeddingModel
-};
+export const defaultEmbeddingModelRef: EmbeddingModelRef = { kind: "auto" };
 
 
 
@@ -74,7 +72,7 @@ export interface LocalEmbeddingModelStatus {
 }
 
 export function embeddingModelRefKey(ref: EmbeddingModelRef): string {
-  return ref.kind === "local"
+  return ref.kind === "auto" ? "auto" : ref.kind === "local"
     ? `local:${ref.model}`
     : `provider:${ref.provider}:${ref.model}`;
 }

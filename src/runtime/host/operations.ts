@@ -6,7 +6,7 @@
 import type { OperationLane } from "./types.js";
 import { sessionIdFromFile } from "../../session/store.js";
 
-export const memoryQueryActions = new Set(["overview", "list", "get", "search", "archive-list", "sleep-status", "sleep-runs", "sleep-preview"]);
+export const memoryQueryActions = new Set(["overview", "stats", "service-status", "stored-embedding-model", "tool-model", "list", "get", "search", "archive-list", "archive-chains", "sleep-status", "sleep-http-status", "sleep-runs", "sleep-preview"]);
 
 export class OperationDispatcher {
   private readonly tails: Record<Exclude<OperationLane, "query">, Promise<void>> = {
@@ -59,6 +59,7 @@ export function operationLane(operation: string, payload: Record<string, unknown
   // 队列只等 submit 返回运行句柄，不等待模型执行完成。
   if (
     operation === "session.ensure"
+    || operation === "session.incognito"
     || operation === "session.close"
     || operation === "session.claim"
     || operation === "session.release"

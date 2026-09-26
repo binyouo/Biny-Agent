@@ -25,6 +25,8 @@ export interface RuntimeHostMemoryMaintenanceOptions {
   getRuntime(): InteractiveRuntimeHandle;
   getCommands(): CommandRuntime;
   isBusy?: () => boolean;
+  now?: () => number;
+  embeddingRebuildTimers?: { setTimeout: typeof setTimeout; clearTimeout: typeof clearTimeout };
 }
 
 export function createRuntimeHostMemoryMaintenance(
@@ -35,8 +37,13 @@ export function createRuntimeHostMemoryMaintenance(
   let maintenanceAbort: AbortController | undefined;
   let maintenancePromise: Promise<void> | undefined;
   let embeddingRebuildTimer: ReturnType<typeof setTimeout> | undefined;
+  let embeddingRebuildPromise: Promise<void> | undefined;
   let startupHeal: { commands: CommandRuntime; promise: Promise<MemoryMaintenanceStatus> } | undefined;
+  let lastEmbeddingAttempt: string | undefined;
+  let embeddingFailureCount = 0;
+  let embeddingRetryAt: number | undefined;
   let stopped = false;
+  const embeddingTimers = options.embeddingRebuildTimers ?? { setTimeout, clearTimeout };
 
   const run = async (force = false): Promise<void> => {
     if (stopped || maintenancePromise || (options.isBusy?.() ?? (options.getRuntime().getSnapshot().state.kind !== "idle"))) return;
@@ -50,6 +57,32 @@ export function createRuntimeHostMemoryMaintenance(
       : undefined;
     // 配置读取会让出执行权；期间可能已停止、切换 runtime 或由另一入口启动维护。
     if (stopped || maintenancePromise || options.getCommands() !== commands || (options.isBusy?.() ?? (options.getRuntime().getSnapshot().state.kind !== "idle"))) return;
+    const embedding = typeof commands.agent.memoryEmbeddingStatus === "function"
+      ? await commands.agent.memoryEmbeddingStatus().catch(() => undefined)
+      : undefined;
+    // 向量状态查询也是异步边界；前台可能已接管 Runtime，或 CommandRuntime 已被重建。
+    if (stopped || maintenancePromise || options.getCommands() !== commands || (options.isBusy?.() ?? (options.getRuntime().getSnapshot().state.kind !== "idle"))) return;
+    if (embedding?.activeModel && (embedding.needsRebuild || embedding.pendingEntries > 0)) {
+      const attempt = JSON.stringify([embedding.activeModel, embedding.index.active?.modelFingerprint, embedding.pendingEntries]);
+      if (attempt !== lastEmbeddingAttempt) {
+        if (!embeddingRebuildTimer && !embeddingRebuildPromise) {
+          lastEmbeddingAttempt = attempt;
+          embeddingFailureCount = 0;
+          embeddingRetryAt = undefined;
+          api.scheduleEmbeddingRebuild();
+        }
+      } else if (embeddingRetryAt !== undefined && (options.now?.() ?? Date.now()) >= embeddingRetryAt) {
+        if (!embeddingRebuildTimer && !embeddingRebuildPromise) {
+          embeddingRetryAt = undefined;
+          api.scheduleEmbeddingRebuild();
+        }
+      }
+    } else if (embedding && !embedding.needsRebuild && embedding.pendingEntries === 0) {
+      // 上一轮缺口已消失；之后相同数量的新条目仍是一次新的索引任务。
+      lastEmbeddingAttempt = undefined;
+      embeddingFailureCount = 0;
+      embeddingRetryAt = undefined;
+    }
     const sleep = state?.memory;
     const now = new Date();
     const localMemory = typeof agent.getLocalMemory === "function" ? agent.getLocalMemory() : undefined;
@@ -73,6 +106,7 @@ export function createRuntimeHostMemoryMaintenance(
         ? await healed
         : await localMemory.loadMaintenanceStatus({ signal: controller.signal });
       controller.signal.throwIfAborted();
+      if (stopped || options.getCommands() !== commands) return;
       if (!force && shouldSkipScheduledRun(persistedStatus, now)) return;
       if ((options.isBusy?.() ?? (options.getRuntime().getSnapshot().state.kind !== "idle"))) return;
       let rebuildRequested = false;
@@ -165,20 +199,44 @@ export function createRuntimeHostMemoryMaintenance(
       if (initialTimer) clearTimeout(initialTimer);
       initialTimer = undefined;
       maintenanceAbort?.abort();
-      if (embeddingRebuildTimer) clearTimeout(embeddingRebuildTimer);
+      if (embeddingRebuildTimer) embeddingTimers.clearTimeout(embeddingRebuildTimer);
       embeddingRebuildTimer = undefined;
     },
     handleRuntimeUpdate(update: AgentRuntimeUpdate): void {
       if (update.snapshot.state.kind !== "idle") maintenanceAbort?.abort();
     },
     scheduleEmbeddingRebuild(): void {
-      if (stopped || embeddingRebuildTimer) return;
-      embeddingRebuildTimer = setTimeout(() => {
+      if (stopped || embeddingRebuildTimer || embeddingRebuildPromise) return;
+      embeddingRebuildTimer = embeddingTimers.setTimeout(() => {
         embeddingRebuildTimer = undefined;
-        void options.getRuntime().runExclusiveOperation(
+        if (stopped) return;
+        const commands = options.getCommands();
+        const attempt = lastEmbeddingAttempt;
+        let started = false;
+        const promise = Promise.resolve().then(async () => await options.getRuntime().runExclusiveOperation(
           "memory",
-          async (signal) => await options.getCommands().agent.rebuildMemoryEmbeddingIndex(signal)
-        ).catch(() => undefined);
+          async (signal) => {
+            if (stopped || options.getCommands() !== commands) return;
+            started = true;
+            await commands.agent.rebuildMemoryEmbeddingIndex(signal);
+          }
+        ));
+        embeddingRebuildPromise = promise;
+        void promise.then(() => {
+          if (!started && lastEmbeddingAttempt === attempt) lastEmbeddingAttempt = undefined;
+        }, () => {
+          if (stopped || lastEmbeddingAttempt !== attempt) return;
+          if (!started) {
+            // 未进入本地重建函数的 admission 失败，下个空闲 tick 可重新申请。
+            lastEmbeddingAttempt = undefined;
+            return;
+          }
+          // 重建只修改可重算的本地向量投影；下次先重新读取状态再按有界退避重试。
+          embeddingFailureCount = Math.min(embeddingFailureCount + 1, 6);
+          embeddingRetryAt = (options.now?.() ?? Date.now()) + Math.min(30 * 60_000, 60_000 * 2 ** (embeddingFailureCount - 1));
+        }).finally(() => {
+          if (embeddingRebuildPromise === promise) embeddingRebuildPromise = undefined;
+        });
       }, 0);
       embeddingRebuildTimer.unref?.();
     }

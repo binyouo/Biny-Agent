@@ -4,7 +4,7 @@
  * memories 保存当前可召回的事实，memory_archive 保存可恢复的历史，Sleep 审计和 Embedding
  * 派生表也都在全局 agent.sqlite 里。向量仍是可重建投影，不参与事实提交。
  *
- * 记忆条目是扁平模型（content + metadata JSON）；旧库不在此处迁移。
+ * 记忆条目是扁平模型（content + metadata JSON）；只迁移可严格识别的同形旧库。
  */
 import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
@@ -15,14 +15,11 @@ import { AGENT_DATABASE_FILE, globalAgentDir } from "../../config/paths.js";
 import { redactSecrets } from "../../utils/secrets.js";
 import {
   createStoredMemoryEntry,
-  entryMatchesMemorySearchScope,
-  memoryEntryEquals,
-  memoryMatchFromRanked,
-  rankMemoryEntries,
   sanitizeMemoryEntryInput
 } from "./memoryFormat.js";
 import {
   type MemoryArchiveReason,
+  type MemoryArchiveEntriesResult,
   type MemoryBulkArchiveResult,
   type MemoryClearResult,
   type MemoryDeleteResult,
@@ -31,12 +28,11 @@ import {
   type MemoryEntryInput,
   type MemoryEntryPatch,
   type MemoryListOptions,
+  type MemoryArchiveChain,
   type MemoryMaintenanceStatus,
   type MemoryMutationOptions,
   type MemoryOverview,
   type MemoryReadOptions,
-  type MemorySearchOptions,
-  type MemorySearchResult,
   type MemorySleepRun,
   type MemoryWriteResult
 } from "./memoryTypes.js";
@@ -67,8 +63,11 @@ const memoryMetadataSchema = z.object({
   durability: z.enum(["temporary", "permanent"]),
   expiresAt: z.string().optional(),
   activitySource: z.string().optional(),
-  activitySessionId: z.string().optional()
-});
+  activitySessionId: z.string().optional(),
+  originAnchors: z.array(z.object({
+    messageId: z.string(), sentAt: z.string(), timeZone: z.string()
+  })).optional()
+}).passthrough();
 
 const memorySleepRunSchema = z.object({
   id: z.string().min(1),
@@ -92,7 +91,19 @@ const memorySleepRunSchema = z.object({
   outputTokens: z.number().int().nonnegative().default(0),
   startedAt: z.string(),
   finishedAt: z.string().optional(),
-  error: z.string().optional()
+  error: z.string().optional(),
+  progressStage: z.enum(["exact", "expired", "similarity", "purge"]).optional(),
+  progressEvents: z.array(z.object({
+    sequence: z.number().int().positive().optional(),
+    stage: z.enum(["exact", "expired", "similarity", "purge"]),
+    namespaceUserId: z.string().nullable().optional(),
+    examined: z.number().int().nonnegative(),
+    archivedExact: z.number().int().nonnegative(),
+    archivedExpired: z.number().int().nonnegative(),
+    archivedSimilarity: z.number().int().nonnegative(),
+    archivedLlm: z.number().int().nonnegative(),
+    purged: z.number().int().nonnegative()
+  })).max(64).optional()
 });
 
 const memoryStateSchema = z.object({
@@ -199,12 +210,48 @@ export class MemoryStorage {
     };
   }
 
+  async getEntry(id: string, options: MemoryReadOptions = {}): Promise<MemoryEntry | undefined> {
+    options.signal?.throwIfAborted();
+    const database = await this.openDatabase(false);
+    return database ? (options.activeOnly ? findActiveMemoryEntry(database, id) : findMemoryEntry(database, id)) : undefined;
+  }
+
+  /** 只对给定归档行沿 original_id 索引追踪，避免为一页 UI 扫描全部归档。 */
+  async resolveArchiveChains(archiveIds: readonly string[], options: MemoryReadOptions = {}): Promise<Record<string, MemoryArchiveChain>> {
+    options.signal?.throwIfAborted();
+    if (archiveIds.length > 25) throw new Error("Archive chain lookup accepts at most 25 entries.");
+    const database = await this.openDatabase(false);
+    if (!database) return {};
+    const archive = database.prepare("SELECT merged_into FROM memory_archive WHERE id = ?");
+    const next = database.prepare("SELECT merged_into FROM memory_archive WHERE original_id = ? ORDER BY archived_at DESC, id DESC LIMIT 1");
+    const chains: Record<string, MemoryArchiveChain> = {};
+    for (const archiveId of archiveIds) {
+      options.signal?.throwIfAborted();
+      const start = archive.get(archiveId) as { merged_into: string | null } | undefined;
+      if (!start?.merged_into) continue;
+      let finalId = start.merged_into;
+      let depth = 0;
+      const seen = new Set<string>();
+      while (depth < 10 && !seen.has(finalId)) {
+        options.signal?.throwIfAborted();
+        const row = next.get(finalId) as { merged_into: string | null } | undefined;
+        if (!row?.merged_into) break;
+        seen.add(finalId);
+        finalId = row.merged_into;
+        depth += 1;
+      }
+      chains[archiveId] = { finalId, depth };
+    }
+    return chains;
+  }
+
   async listEntries(options: MemoryListOptions = {}): Promise<MemoryEntriesResult> {
     options.signal?.throwIfAborted();
     const database = await this.openDatabase(false);
     const allEntries = database === undefined ? [] : readMemoryEntries(database);
     const matched = allEntries
       .filter((entry) => options.includeArchived === true || entry.archivedAt === undefined)
+      .filter((entry) => options.threadId === undefined || entry.threadId === options.threadId)
       .sort(compareEntriesForDisplay);
     const offset = normalizeLimit(options.offset, 0);
     const records = matched.slice(offset, offset + normalizeLimit(options.limit, Number.MAX_SAFE_INTEGER));
@@ -218,54 +265,31 @@ export class MemoryStorage {
     };
   }
 
-  async search(query: string, queryPaths: string[], options: MemorySearchOptions = {}): Promise<MemorySearchResult> {
+  async listArchivedEntries(options: MemoryListOptions = {}): Promise<MemoryArchiveEntriesResult> {
     options.signal?.throwIfAborted();
     const database = await this.openDatabase(false);
-    const allEntries = database === undefined ? [] : readMemoryEntries(database);
-    const now = options.now ?? new Date();
-    const ranked = rankMemoryEntries(
-      allEntries
-        .filter((entry) => options.includeArchived === true || entry.archivedAt === undefined)
-        .filter((entry) => entryMatchesMemorySearchScope(entry, options)),
-      query,
-      now
-    );
-    void queryPaths;
-    const limit = normalizeLimit(options.limit, 3);
-    const omitted: MemorySearchResult["report"]["omitted"] = [];
-    const matches: MemorySearchResult["matches"] = [];
-    let usedChars = 0;
-    let budgetOmitted = 0;
-
-    for (const rankedEntry of ranked) {
-      if (matches.length >= limit) {
-        omitted.push({ id: rankedEntry.entry.id, reason: "entry_limit" });
-        continue;
-      }
-      const estimatedChars = rankedEntry.excerpt.length + 80;
-      if (options.maxChars !== undefined && usedChars + estimatedChars > Math.max(0, options.maxChars)) {
-        budgetOmitted += 1;
-        omitted.push({ id: rankedEntry.entry.id, reason: "budget" });
-        continue;
-      }
-      usedChars += estimatedChars;
-      matches.push(memoryMatchFromRanked(rankedEntry, memoryReference(rankedEntry.entry.id)));
+    if (!database) return { entries: [], storeRevision: 0, total: 0 };
+    const filters: string[] = [];
+    const parameters: string[] = [];
+    if (options.runId !== undefined) {
+      filters.push("archived_by = ?");
+      parameters.push(options.runId);
     }
-
-    return {
-      matches,
-      storeRevision: database === undefined ? 0 : readRevision(database),
-      report: {
-        omitted,
-        budgetOmission: options.maxChars === undefined || budgetOmitted === 0
-          ? undefined
-          : {
-              maxChars: Math.max(0, options.maxChars),
-              usedChars,
-              omitted: budgetOmitted
-            }
-      }
-    };
+    if (options.userId !== undefined) {
+      filters.push("user_id = ?");
+      parameters.push(options.userId);
+    }
+    const where = filters.length ? " WHERE " + filters.join(" AND ") : "";
+    const total = (database.prepare("SELECT COUNT(*) AS total FROM memory_archive" + where)
+      .get(...parameters) as { total: number }).total;
+    const offset = normalizeLimit(options.offset, 0);
+    const limit = options.limit === undefined ? -1 : normalizeLimit(options.limit, 0);
+    const rows = database.prepare(
+      archivedEntrySelect + " FROM memory_archive" + where + " " +
+      "ORDER BY archived_at DESC, id DESC " +
+      "LIMIT ? OFFSET ?"
+    ).all(...parameters, limit, offset) as unknown as MemoryDbRow[];
+    return { entries: rows.map(memoryFromRow), storeRevision: readRevision(database), total };
   }
 
   async writeEntry(input: MemoryEntryInput, options: MemoryMutationOptions = {}): Promise<MemoryWriteResult> {
@@ -276,17 +300,6 @@ export class MemoryStorage {
       assertExpectedEntries(database, options.expectedEntries);
       const revision = readRevision(database);
       if (!safe.content.length) return { written: false, revision };
-      const duplicate = readMemoryEntries(database).find((entry) => (
-        entry.archivedAt === undefined && memoryEntryEquals(entry, safe)
-      ));
-      if (duplicate) {
-        return {
-          written: false,
-          entry: duplicate,
-          path: memoryReference(duplicate.id),
-          revision
-        };
-      }
       const nextRevision = revision + 1;
       const now = (options.now ?? new Date()).toISOString();
       const entry = createStoredMemoryEntry(safe, {
@@ -310,7 +323,7 @@ export class MemoryStorage {
     options.signal?.throwIfAborted();
     return await this.withWrite(options.signal, (database) => {
       const revision = readRevision(database);
-      const existing = findMemoryEntry(database, id);
+      const existing = options.activeOnly ? findActiveMemoryEntry(database, id) : findMemoryEntry(database, id);
       if (!existing) return { written: false, revision };
       const entry = createStoredMemoryEntry({
         content: patch.content ?? existing.content,
@@ -325,6 +338,8 @@ export class MemoryStorage {
         userId: patch.userId ?? existing.userId,
         activitySource: existing.activitySource,
         activitySessionId: existing.activitySessionId,
+        originAnchors: patch.originAnchors ?? existing.originAnchors,
+        metadataExtra: { ...existing.metadataExtra, ...patch.metadataExtra },
         archivedAt: existing.archivedAt,
         archivedReason: existing.archivedReason,
         mergedInto: patch.mergedInto ?? existing.mergedInto
@@ -480,8 +495,9 @@ export class MemoryStorage {
   async deleteEntry(id: string, options: MemoryMutationOptions = {}): Promise<MemoryDeleteResult> {
     options.signal?.throwIfAborted();
     return await this.withWrite(options.signal, (database) => {
+      assertExpectedEntries(database, options.expectedEntries);
       const revision = readRevision(database);
-      const existing = findMemoryEntry(database, id);
+      const existing = options.activeOnly ? findActiveMemoryEntry(database, id) : findMemoryEntry(database, id);
       if (!existing) return { deleted: false, revision };
       if (existing.archivedAt === undefined) deleteActiveMemory(database, existing.id);
       else deleteArchivedMemory(database, existing.id);
@@ -505,6 +521,22 @@ export class MemoryStorage {
     });
   }
 
+  /** 按对话清除活动事实；归档审计和其他对话在同一事务中保持不变。 */
+  async clearThread(threadId: string, options: MemoryMutationOptions = {}): Promise<MemoryClearResult & { deletedIds: string[] }> {
+    options.signal?.throwIfAborted();
+    const scope = threadId.trim();
+    if (!scope) throw new Error("Memory clear requires a non-empty threadId.");
+    return await this.withWrite(options.signal, (database) => {
+      const revision = readRevision(database);
+      const deletedIds = (database.prepare("SELECT id FROM memories WHERE thread_id = ?").all(scope) as Array<{ id: unknown }>)
+        .map((row) => stringValue(row.id, "memory id"));
+      if (!deletedIds.length) return { deletedEntries: 0, deletedIds, revision };
+      for (const id of deletedIds) deleteActiveMemory(database, id);
+      setRevision(database, revision + 1);
+      return { deletedEntries: deletedIds.length, deletedIds, revision: revision + 1 };
+    });
+  }
+
   async recordRecallUsage(ids: string[], options: MemoryReadOptions & { now?: Date } = {}): Promise<void> {
     options.signal?.throwIfAborted();
     const uniqueIds = [...new Set(ids)];
@@ -512,13 +544,13 @@ export class MemoryStorage {
     await this.withWrite(options.signal, (database) => {
       const now = (options.now ?? new Date()).toISOString();
       const active = database.prepare(
-        "UPDATE memories SET access_count = access_count + 1, last_accessed_at = ? WHERE id = ?"
+        "UPDATE memories SET access_count = access_count + 1, last_accessed_at = ?, updated_at = ? WHERE id = ?"
       );
       const archived = database.prepare(
         "UPDATE memory_archive SET access_count = access_count + 1, last_accessed_at = ? WHERE id = ?"
       );
       for (const id of uniqueIds) {
-        const result = active.run(now, id);
+        const result = active.run(now, now, id);
         if (result.changes > 0) updateAccessMetadata(database, "memories", id, now);
         else if (archived.run(now, id).changes > 0) updateAccessMetadata(database, "memory_archive", id, now);
       }
@@ -640,17 +672,28 @@ export class MemoryStorage {
 async function initializeDatabase(database: DatabaseSync): Promise<void> {
   const row = database.prepare("PRAGMA user_version").get() as Record<string, unknown> | undefined;
   const version = safeCounter(row?.user_version);
-  if (version !== 0 && version !== memorySchemaVersion) {
-    throw new Error("Memory database schema is not current; remove it before starting.");
-  }
+  const unsupportedSchema = (): Error => new Error(
+    "Memory database schema is not current. Preserve agent.sqlite; export existing memory facts and use an explicit migration before starting."
+  );
+  if (version !== 0 && version !== 5 && version !== memorySchemaVersion) throw unsupportedSchema();
   const existingTables = (database.prepare(
     "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
   ).all() as Array<{ name?: unknown }>)
     .map((table) => typeof table.name === "string" ? table.name : "")
     .filter(Boolean);
   // 向量索引可能先创建自己的派生表；只要事实表尚未出现，仍属于当前库的首次初始化。
-  if (version === 0 && existingTables.includes("memories")) {
-    throw new Error("Memory database schema is not current; remove it before starting.");
+  if (version === 5 || (version === 0 && existingTables.includes("memories"))) {
+    // v4 以前的 origin_kind/workspace_id 是访问范围；不能扁平化成全局事实。
+    // v5 只补 Sleep 审计列，无版本号的完整 v6 库只补版本；先严格核对，再在一个事务中提交。
+    database.exec("BEGIN IMMEDIATE");
+    try {
+      if (!isKnownFlatMemorySchema(database, version)) throw unsupportedSchema();
+      if (version === 5) database.exec("ALTER TABLE memory_sleep_runs ADD COLUMN synthesis_failed INTEGER NOT NULL DEFAULT 0;");
+      database.exec(`PRAGMA user_version = ${String(memorySchemaVersion)}; COMMIT;`);
+    } catch (error) {
+      database.exec("ROLLBACK");
+      throw error;
+    }
   }
   database.exec(
     "PRAGMA journal_mode = WAL; " +
@@ -701,6 +744,21 @@ async function initializeDatabase(database: DatabaseSync): Promise<void> {
   );
   createCrystalTables(database);
   database.exec(`PRAGMA user_version = ${String(memorySchemaVersion)};`);
+}
+
+function isKnownFlatMemorySchema(database: DatabaseSync, version: number): boolean {
+  const tables: Record<string, readonly string[]> = {
+    memory_meta: ["key", "value"],
+    memories: ["id", "content", "metadata", "thread_id", "message_id", "user_id", "created_at", "updated_at", "revision", "access_count", "last_accessed_at"],
+    memory_archive: ["id", "original_id", "content", "metadata", "thread_id", "message_id", "user_id", "original_created_at", "original_updated_at", "revision", "access_count", "last_accessed_at", "archived_at", "archived_reason", "archived_by", "merged_into"],
+    memory_metadata: ["key", "value"],
+    memory_maintenance: ["id", "state", "started_at", "last_scan_at", "last_finished_at", "eligible", "processed", "written", "failed", "error", "last_run_json"],
+    memory_sleep_runs: ["id", "status", "trigger", "examined", "written", "failed", "archived", "exact", "expired", "similarity", "llm", "archived_exact", "archived_expired", "archived_orphan", "archived_similarity", "archived_llm", ...(version === 5 ? [] : ["synthesis_failed"]), "input_tokens", "output_tokens", "started_at", "finished_at", "ended_at", "error"]
+  };
+  return Object.entries(tables).every(([name, expected]) => {
+    const columns = database.prepare(`PRAGMA table_info(${name})`).all() as Array<{ name: string }>;
+    return columns.length === expected.length && columns.every((column, index) => column.name === expected[index]);
+  });
 }
 
 function createCrystalTables(database: DatabaseSync): void {
@@ -842,7 +900,12 @@ function readMaintenanceStatusFromDb(database: DatabaseSync): MemoryMaintenanceS
   if (!state.success) throw new Error("Invalid memory maintenance status.");
   const lastRun = parseSleepRun(row.last_run_json);
   const sleepRuns = readSleepRuns(database);
-  return { ...state.data, lastRun, sleepRuns: sleepRuns.length ? sleepRuns : undefined };
+  return {
+    ...state.data,
+    progressStage: state.data.state === "running" ? lastRun?.progressStage : undefined,
+    lastRun,
+    sleepRuns: sleepRuns.length ? sleepRuns : undefined
+  };
 }
 
 function recoverInterruptedMaintenanceStatusInTransaction(database: DatabaseSync, owner?: SleepOwner): MemoryMaintenanceStatus {
@@ -852,13 +915,17 @@ function recoverInterruptedMaintenanceStatusInTransaction(database: DatabaseSync
     || loaded.sleepRuns?.some((run) => run.status === "running");
   if (!hasInterruptedRun) return loaded;
   const finishedAt = new Date().toISOString();
-  const interrupted = (run: MemorySleepRun): MemorySleepRun => ({ ...run, status: "failed", finishedAt, error: "interrupted" });
+  const interrupted = (run: MemorySleepRun): MemorySleepRun => {
+    const { progressStage: _inProgressStage, ...rest } = run;
+    return { ...rest, status: "failed", finishedAt, error: "interrupted" };
+  };
   const lastRun = loaded.lastRun?.status === "running" ? interrupted(loaded.lastRun) : loaded.lastRun;
   const history = [...(loaded.sleepRuns ?? [])];
   if (lastRun && !history.some((run) => run.id === lastRun.id)) history.push(lastRun);
   const recovered: MemoryMaintenanceStatus = {
     ...loaded,
     state: "idle",
+    progressStage: undefined,
     lastFinishedAt: finishedAt,
     error: "interrupted",
     lastRun,
@@ -921,8 +988,8 @@ function readMemoryEntries(database: DatabaseSync): MemoryEntry[] {
 }
 
 function findMemoryEntry(database: DatabaseSync, id: string): MemoryEntry | undefined {
-  const active = database.prepare("SELECT * FROM memories WHERE id = ?").get(id) as MemoryDbRow | undefined;
-  if (active) return memoryFromRow(active);
+  const active = findActiveMemoryEntry(database, id);
+  if (active) return active;
   const archived = database.prepare(archivedEntrySelect + " FROM memory_archive WHERE id = ?").get(id) as MemoryDbRow | undefined;
   return archived ? memoryFromRow(archived) : undefined;
 }
@@ -946,6 +1013,8 @@ function memoryFromRow(row: MemoryDbRow): MemoryEntry {
     expiresAt: metadata.expiresAt,
     activitySource: metadata.activitySource,
     activitySessionId: metadata.activitySessionId,
+    originAnchors: metadata.originAnchors,
+    metadataExtra: Object.fromEntries(Object.entries(metadata).filter(([key]) => !memoryMetadataKnownKeys.has(key))),
     threadId: optionalString(row.thread_id),
     messageId: optionalString(row.message_id),
     userId: optionalString(row.user_id),
@@ -1073,6 +1142,7 @@ function archivedMemoryValues(entry: MemoryEntry): SqlValue[] {
 
 function memoryMetadata(entry: MemoryEntry): string {
   return JSON.stringify({
+    ...entry.metadataExtra,
     source: entry.source,
     tags: entry.tags,
     rationale: entry.rationale,
@@ -1080,9 +1150,15 @@ function memoryMetadata(entry: MemoryEntry): string {
     durability: entry.durability,
     expiresAt: entry.expiresAt,
     activitySource: entry.activitySource,
-    activitySessionId: entry.activitySessionId
+    activitySessionId: entry.activitySessionId,
+    originAnchors: entry.originAnchors
   });
 }
+
+const memoryMetadataKnownKeys = new Set([
+  "source", "tags", "rationale", "importance", "durability", "expiresAt",
+  "activitySource", "activitySessionId", "originAnchors", "accessCount", "lastAccessedAt"
+]);
 
 function insertSleepRun(database: DatabaseSync, run: MemorySleepRun): void {
   database.prepare(
@@ -1157,6 +1233,7 @@ function sanitizeMaintenanceStatus(status: MemoryMaintenanceStatus): MemoryMaint
   const runs = status.sleepRuns?.map(sanitizeSleepRun);
   return {
     state: status.state,
+    progressStage: status.state === "running" ? safeRun?.progressStage : undefined,
     startedAt: safeOptionalTime(status.startedAt),
     lastScanAt: safeOptionalTime(status.lastScanAt),
     lastFinishedAt: safeOptionalTime(status.lastFinishedAt),
@@ -1193,7 +1270,19 @@ function sanitizeSleepRun(run: MemorySleepRun): MemorySleepRun {
     outputTokens: safeCounter(run.outputTokens),
     startedAt: safeOptionalTime(run.startedAt) ?? new Date(0).toISOString(),
     finishedAt: safeOptionalTime(run.finishedAt),
-    error: sanitizeError(run.error)
+    error: sanitizeError(run.error),
+    progressStage: run.status === "running" ? run.progressStage : undefined,
+    progressEvents: run.progressEvents?.slice(-64).map((event) => ({
+      sequence: event.sequence === undefined ? undefined : Math.max(1, Math.trunc(event.sequence)),
+      stage: event.stage,
+      namespaceUserId: event.namespaceUserId,
+      examined: safeCounter(event.examined),
+      archivedExact: safeCounter(event.archivedExact),
+      archivedExpired: safeCounter(event.archivedExpired),
+      archivedSimilarity: safeCounter(event.archivedSimilarity),
+      archivedLlm: safeCounter(event.archivedLlm),
+      purged: safeCounter(event.purged)
+    }))
   };
 }
 
@@ -1298,8 +1387,7 @@ async function ensureRealDirectory(
 }
 
 function compareEntriesForDisplay(left: MemoryEntry, right: MemoryEntry): number {
-  return right.importance - left.importance
-    || right.updatedAt.localeCompare(left.updatedAt)
+  return right.updatedAt.localeCompare(left.updatedAt)
     || left.id.localeCompare(right.id);
 }
 

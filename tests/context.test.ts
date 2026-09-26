@@ -158,7 +158,8 @@ async function main(): Promise<void> {
     await testAutomaticContextSkipsUnreadableOptionalFiles();
     await testAutomaticContextSupportsSymlinkedWorkspaceRoot();
     await testBudgetAndCompaction();
-    await testRecallCountsOnlyAfterInjection();
+    await testRecallCountsAtSearchBeforeInjection();
+    await testRecallKeepsRankedEntriesThatFitPromptBudget();
     await testMidTurnToolResultPruning();
     await testActiveRunCompactionPreservesToolBatches();
     await testIncrementalSplitTurnCompaction();
@@ -170,6 +171,7 @@ async function main(): Promise<void> {
     await testCrystalSemanticDotProduct();
     await testCrystalDormancyWithoutNewAnchors();
     await testCrystalFailedAndCancelledTurns();
+    await testTemporalCluesFromDurableFailedAndCancelledMessages();
     await testCheckpointIsResumeTruthSource();
     await testCheckpointPersistenceFailureStopsSession();
     await testLegacyAgentStateIsIgnored();
@@ -189,7 +191,7 @@ async function main(): Promise<void> {
     await testMemoryMetadataDetailsFromCompletedExtraction();
     await testAutomaticMemoryRecallRequiresEmbedding();
     await testMemoryStorageBoundaries();
-    await testMemoryEntryManagementAndCjkSearch();
+    await testMemoryEntryManagement();
     await testCredentialAndSymlinkBoundaries();
     await testToolWriteMarksSnapshotAndRepoMapDirty();
   } finally {
@@ -617,27 +619,34 @@ function toolResultValue(message: AgentMessage | undefined): unknown {
   return message.content.find((entry) => entry.type === "text")?.text;
 }
 
-async function testRecallCountsOnlyAfterInjection(): Promise<void> {
+async function testRecallCountsAtSearchBeforeInjection(): Promise<void> {
   await withTempWorkspace(async (workspaceRoot) => {
     const previousRoot = process.env[BINY_AGENT_DIR_ENV];
     process.env[BINY_AGENT_DIR_ENV] = path.join(workspaceRoot, "agent-data");
     const local = new LocalMemory(workspaceRoot, () => new ContextTestModel().model);
     try {
       const written = await local.writeEntry({
-        content: "Release verification requires a complete test run. ".repeat(30)
+        content: "Release verification requires a complete test run. ".repeat(30),
+        originAnchors: [{ messageId: "source-release", sentAt: "2026-09-12T08:00:00.000Z", timeZone: "unknown" }]
       });
       assert.ok(written.entry);
-      const result = await local.search("Release verification", [], { limit: 1 });
+      const result = {
+        matches: [{ entry: written.entry, path: `memory://${written.entry.id}`, excerpt: written.entry.content, score: 0.9 }],
+        storeRevision: written.revision,
+        report: { omitted: [] }
+      };
       const retriever = {
-        retrieve: async () => result,
-        recordRecallUsage: async (ids: string[]) => await local.recordRecallUsage(ids)
+        retrieve: async () => {
+          await local.recordRecallUsage(result.matches.map((match) => match.entry.id));
+          return result;
+        }
       } as unknown as HybridMemoryRetriever;
       const context = new ContextMemory(
         () => new ContextTestModel().model, new WorkspaceContext(workspaceRoot, [], 32 * 1024),
         local, 120, 32 * 1024, undefined, undefined, {}, undefined, undefined, retriever
       );
       await context.prepareTurn("current task ".repeat(20), "system rule ".repeat(30));
-      assert.equal((await local.listMemoryEntries()).entries.find((entry) => entry.id === written.entry!.id)?.accessCount, 0);
+      assert.equal((await local.listMemoryEntries()).entries.find((entry) => entry.id === written.entry!.id)?.accessCount, 1);
       assert.notEqual((await context.status()).budget.components?.find((item) => item.id === "stable memory")?.disposition, "included");
       assert.equal((await context.status()).memoryInjectedCount, 0, "被预算排除的命中不能报成已注入");
       assert.deepEqual((await context.status()).memoryInjectedSummaries, [], "被预算排除的记忆不能暴露在界面摘要中");
@@ -648,16 +657,53 @@ async function testRecallCountsOnlyAfterInjection(): Promise<void> {
       const progress = roomy.prepareTurnProgress("Release verification", "system");
       assert.deepEqual(await progress.next(), { value: "workspace", done: false });
       assert.deepEqual(await progress.next(), { value: "memory", done: false });
-      assert.equal((await local.listMemoryEntries()).entries.find((entry) => entry.id === written.entry!.id)?.accessCount, 0);
-      assert.equal((await progress.next()).done, true);
+      assert.equal((await local.listMemoryEntries()).entries.find((entry) => entry.id === written.entry!.id)?.accessCount, 1);
+      const prepared = await progress.next();
+      assert.equal(prepared.done, true);
+      assert.match(JSON.stringify(prepared.value), /source-release/u,
+        "实际模型请求应保留记忆来源消息锚点");
       assert.equal((await roomy.status()).memoryInjectedCount, 1);
       assert.deepEqual((await roomy.status()).memoryInjectedSummaries, result.matches.map((match) => match.excerpt));
-      assert.equal((await local.listMemoryEntries()).entries.find((entry) => entry.id === written.entry!.id)?.accessCount, 1);
+      assert.equal((await local.listMemoryEntries()).entries.find((entry) => entry.id === written.entry!.id)?.accessCount, 2);
       await roomy.prepareTurn("no memory", "system", undefined, [], false);
       assert.equal((await roomy.status()).memoryInjectedCount, 0);
       assert.deepEqual((await roomy.status()).memoryInjectedSummaries, []);
       await context.prepareTurn("no memory", "system", undefined, [], false);
-      assert.equal((await local.listMemoryEntries()).entries.find((entry) => entry.id === written.entry!.id)?.accessCount, 1);
+      assert.equal((await local.listMemoryEntries()).entries.find((entry) => entry.id === written.entry!.id)?.accessCount, 2);
+    } finally {
+      local.close();
+      if (previousRoot === undefined) delete process.env[BINY_AGENT_DIR_ENV];
+      else process.env[BINY_AGENT_DIR_ENV] = previousRoot;
+    }
+  });
+}
+
+async function testRecallKeepsRankedEntriesThatFitPromptBudget(): Promise<void> {
+  await withTempWorkspace(async (workspaceRoot) => {
+    const previousRoot = process.env[BINY_AGENT_DIR_ENV];
+    process.env[BINY_AGENT_DIR_ENV] = path.join(workspaceRoot, "agent-data");
+    const local = new LocalMemory(workspaceRoot, () => new ContextTestModel().model);
+    try {
+      const first = (await local.writeEntry({ content: "Prefer concise release notes." })).entry;
+      const second = (await local.writeEntry({ content: "Long lower-ranked background: ".repeat(120) })).entry;
+      assert.ok(first && second);
+      const matches = [first, second].map((entry, index) => ({
+        entry, path: `memory://${entry.id}`, excerpt: entry.content, score: 0.9 - index * 0.1
+      }));
+      const retriever = { retrieve: async () => ({ matches, report: { omitted: [] } }) } as unknown as HybridMemoryRetriever;
+      const context = new ContextMemory(
+        () => new ContextTestModel().model, new WorkspaceContext(workspaceRoot, [], 32 * 1024),
+        local, 650, 32 * 1024, undefined, undefined, {}, undefined, undefined, retriever
+      );
+      const prepared = await context.prepareTurn("Draft release notes", "system");
+      const request = JSON.stringify(prepared.messages);
+      assert.match(request, /Prefer concise release notes/u);
+      assert.doesNotMatch(request, /Long lower-ranked background/u);
+      const status = await context.status();
+      assert.deepEqual(status.memoryInjectedSummaries, [first.content]);
+      assert.equal(status.budget.components?.find((item) => item.id === "stable memory")?.disposition, "trimmed");
+      assert.deepEqual(status.budget.omitted, ["stable memory (trimmed)"]);
+      assert.ok((status.budget.usedTokens ?? Infinity) <= 650 - (status.budget.reserveTokens ?? 0));
     } finally {
       local.close();
       if (previousRoot === undefined) delete process.env[BINY_AGENT_DIR_ENV];
@@ -920,7 +966,8 @@ async function testSessionReplayAndAgentResume(): Promise<void> {
     const eventsAfterSwitch = parseSessionEvents(await fs.readFile(filePath, "utf8"));
     assert.deepEqual(eventsAfterSwitch.slice(0, eventsBeforeSwitch.length), eventsBeforeSwitch);
     assert.equal(
-      eventsAfterSwitch.slice(eventsBeforeSwitch.length).every((event) => event.type === "turn_status"),
+      eventsAfterSwitch.slice(eventsBeforeSwitch.length).every((event) => event.type === "turn_status"
+        || (event.type === "message_metadata" && event.metadata?.memoryExtracted === true)),
       true
     );
     await agent.close();
@@ -1686,8 +1733,9 @@ async function testFailedCurrentSessionResumeKeepsRecorderUsable(): Promise<void
     assert.equal((await agent.runTask("continue in a healthy session")).output, "ok");
     await agent.close();
     const fallbackEvents = await readSessionEvents(fallbackSession.sessionFile);
-    assert.deepEqual(fallbackEvents.map((event) => event.type), ["user_message", "agent_message", "assistant_message", "turn_status"]);
-    assert.equal(fallbackEvents.at(-1)?.type === "turn_status" ? fallbackEvents.at(-1).status : undefined, "completed");
+    assert.deepEqual(fallbackEvents.map((event) => event.type), ["user_message", "agent_message", "assistant_message", "turn_status", "message_metadata"]);
+    assert.equal(fallbackEvents.find((event) => event.type === "turn_status")?.status, "completed");
+    assert.equal(fallbackEvents.at(-1)?.type === "message_metadata" ? fallbackEvents.at(-1).metadata?.memoryExtracted : undefined, true);
   });
 }
 
@@ -1844,7 +1892,8 @@ async function testMemoryExactDurableContentAndWriter(): Promise<void> {
       tags: ["context", "refresh"],
       rationale: "Use deterministic SQLite memory."
     });
-    assert.equal(duplicate.written, false);
+    assert.equal(duplicate.written, true, "显式写入保留同文的独立事实");
+    assert.notEqual(duplicate.entry?.id, first.entry?.id);
 
     assert.ok(first.path);
     const database = new DatabaseSync(path.join(globalAgentDir(), AGENT_DATABASE_FILE), { readOnly: true });
@@ -1857,10 +1906,10 @@ async function testMemoryExactDurableContentAndWriter(): Promise<void> {
     assert.match(redactSecrets("Authorization: Bearer abcdefghijklmnop"), /\[redacted\]/);
     assert.equal(redactSecrets("aws_secret_access_key=not-a-real-value"), "aws_secret_access_key=[redacted]");
     assert.equal(redactSecrets("-----BEGIN PRIVATE KEY-----\nnot-a-real-key\n-----END PRIVATE KEY-----"), "[redacted private key]");
-    assert.equal((await store.search("context refresh", ["src/agent/context/ContextMemory.ts"])).matches.length > 0, true);
+    assert.equal((await store.listMemoryEntries()).entries.some((entry) => entry.id === first.entry?.id), true);
     const abortedLookup = new AbortController();
     abortedLookup.abort();
-    await assert.rejects(store.search("context refresh", [], { limit: 3, signal: abortedLookup.signal }), /abort/i);
+    await assert.rejects(store.listMemoryEntries({ signal: abortedLookup.signal }), /abort/i);
   });
 }
 
@@ -1870,8 +1919,7 @@ async function testMemoryLifecycleAndUsagePersistence(): Promise<void> {
     config.context.memory.enabled = true;
     config.context.memory.useMemories = true;
     config.context.memory.generateMemories = true;
-    // 自动 ADD：没有可用 semantic embedding 时不写入事实库。
-    // 这个夹具不下载本地模型，因此专门验证后台抽取完成但写入 fail-closed。
+    // 没有可用 semantic embedding 时，连抽取模型也不请求。
     config.context.memory.embeddingModel = undefined;
     const provider = new ContextTestModel();
     await ensureAgentDirs(workspaceRoot);
@@ -1885,22 +1933,13 @@ async function testMemoryLifecycleAndUsagePersistence(): Promise<void> {
       recorder
     });
     await agent.initialize();
-    const extractionMessageIds: Array<string | undefined> = [];
-    const localMemory = agent.getLocalMemory();
-    const summarize = localMemory.summarizeAndStoreMemories.bind(localMemory);
-    localMemory.summarizeAndStoreMemories = async (messages, options) => {
-      extractionMessageIds.push(options.messageId);
-      return summarize(messages, options);
-    };
     // 记忆库现在是单一全局库：同一 agent 目录里先前测试写入的条目会一直保留，
     // 因此这里断言"失败闭合的回合不新增条目"，而不是断言绝对计数为 0。
     const baseline = await agent.getLocalMemory().getOverview();
     await agent.runTask(`Remember this successful context workflow: ${"grounded details ".repeat(20)}`);
-    await waitForMemoryExtraction(provider, 1);
     await agent.runTask("Remember that this workflow also applies to the next completed answer.");
-    await waitForMemoryExtraction(provider, 2);
-    const overview = await agent.getLocalMemory().getOverview();
     await agent.close();
+    const overview = await agent.getLocalMemory().getOverview();
     const recordedEvents = await readSessionEvents(recorder.filePath);
     const assistantIds = recordedEvents.flatMap((event) => event.type === "assistant_message" && event.messageId ? [event.messageId] : []);
     const userIds = recordedEvents.flatMap((event) => event.type === "user_message" && event.messageId ? [event.messageId] : []);
@@ -1909,7 +1948,7 @@ async function testMemoryLifecycleAndUsagePersistence(): Promise<void> {
     "canonical user messages preserve their original timezone for later date parsing");
     assert.equal(assistantIds.length, 2);
     assert.equal(new Set(assistantIds).size, 2);
-    assert.deepEqual(extractionMessageIds, assistantIds);
+    assert.equal(provider.memoryExtractionCalls, 0, "无 embedding 时不应启动抽取模型");
     for (const id of assistantIds) {
       const metadata = sessionMessageMetadata(recordedEvents, id);
       assert.equal(metadata.memoryExtracted, true);
@@ -1918,9 +1957,8 @@ async function testMemoryLifecycleAndUsagePersistence(): Promise<void> {
       assert.equal(metadata.createdMemories, undefined);
       assert.equal(metadata.deletedMemories, undefined);
     }
-    assert.equal(extractionMessageIds.some((id) => id !== undefined && userIds.includes(id)), false);
-    // 有信息量的成功回合会直接尝试写入 active memory，不再经过候选队列；
-    // 但语义能力不可用时，按自动记忆的 fail-closed 规则跳过 ADD。
+    assert.equal(userIds.length, 2);
+    // 缺少 embedding 的回合仍会记完成标记，但不会写入新事实。
     assert.equal(overview.entryCount, baseline.entryCount);
 
     const shortProvider = new ContextTestModel();
@@ -1934,9 +1972,9 @@ async function testMemoryLifecycleAndUsagePersistence(): Promise<void> {
     });
     await shortAgent.initialize();
     await shortAgent.runTask("hi");
-    await waitForMemoryExtraction(shortProvider, 1);
-    const afterShortTurn = await shortAgent.getLocalMemory().getOverview();
     await shortAgent.close();
+    const afterShortTurn = await shortAgent.getLocalMemory().getOverview();
+    assert.equal(shortProvider.memoryExtractionCalls, 0);
     assert.equal(afterShortTurn.entryCount, overview.entryCount);
 
     const automaticRecorder = new SessionRecorder(workspaceRoot, "temporal-automatic-source");
@@ -1978,6 +2016,7 @@ async function testMemoryMetadataDetailsFromCompletedExtraction(): Promise<void>
     const recorder = new SessionRecorder(workspaceRoot, "memory-details");
     const agent = new AgentSession({ workspaceRoot, config, model: new ContextTestModel().model, toolRegistry: new ToolRegistry(), permissionManager: new PermissionManager({ ...config.permission, source: "test" }), recorder });
     await agent.initialize();
+    agent.getEmbeddingRuntime = async () => ({}) as Awaited<ReturnType<AgentSession["getEmbeddingRuntime"]>>;
     const changes = {
       created: [{ id: "created-memory", content: "The user prefers concise updates." }],
       deleted: [{ id: "deleted-memory", content: "The previous project deadline is obsolete." }]
@@ -1993,8 +2032,10 @@ async function testMemoryMetadataDetailsFromCompletedExtraction(): Promise<void>
       return [];
     };
     let callbackFinished = false;
+    let capturedOriginAnchors: Array<{ messageId: string; sentAt: string; timeZone: string }> | undefined;
     // 用已落库条目隔离验证抽取完成回调，不依赖下载向量模型。
     memory.summarizeAndStoreMemories = async (_messages, options) => {
+      capturedOriginAnchors = options.originAnchors;
       await options.onMemoryWritten?.(written.entry!);
       callbackFinished = true;
       return changes;
@@ -2007,18 +2048,18 @@ async function testMemoryMetadataDetailsFromCompletedExtraction(): Promise<void>
     const assistant = events.find((event) => event.type === "assistant_message" && event.messageId !== undefined);
     assert.ok(assistant?.type === "assistant_message" && assistant.messageId);
     const metadata = sessionMessageMetadata(events, assistant.messageId);
+    const originalUserMessage = events.find((event) => event.type === "user_message" && event.messageId && event.time);
+    assert.ok(originalUserMessage?.type === "user_message" && originalUserMessage.messageId);
+    assert.deepEqual(capturedOriginAnchors, [{
+      messageId: originalUserMessage.messageId,
+      sentAt: originalUserMessage.time,
+      timeZone: typeof originalUserMessage.metadata?.sentAtTimeZone === "string"
+        ? originalUserMessage.metadata.sentAtTimeZone : "unknown"
+    }]);
     assert.equal(metadata.memoryExtracted, true);
     assert.deepEqual(metadata.createdMemories, changes.created.map((entry) => ({ ...entry, type: "created" })));
     assert.deepEqual(metadata.deletedMemories, changes.deleted.map((entry) => ({ ...entry, type: "deleted" })));
   });
-}
-
-async function waitForMemoryExtraction(provider: ContextTestModel, count: number): Promise<void> {
-  const deadline = Date.now() + 2_000;
-  while (provider.memoryExtractionCalls < count && Date.now() < deadline) {
-    await new Promise<void>((resolve) => setTimeout(resolve, 10));
-  }
-  assert.equal(provider.memoryExtractionCalls >= count, true, "background memory extraction did not finish");
 }
 
 async function testAutomaticMemoryRecallRequiresEmbedding(): Promise<void> {
@@ -2060,7 +2101,7 @@ async function testAutomaticMemoryRecallRequiresEmbedding(): Promise<void> {
   });
 }
 
-async function testMemoryEntryManagementAndCjkSearch(): Promise<void> {
+async function testMemoryEntryManagement(): Promise<void> {
   await withTempWorkspace(async (workspaceRoot) => {
     const provider = new ContextTestModel();
     const store = new LocalMemory(workspaceRoot, () => provider.model);
@@ -2074,11 +2115,6 @@ async function testMemoryEntryManagementAndCjkSearch(): Promise<void> {
       content: "wttr.in 请求失败时最多重试三次并按指数退避。",
       tags: ["retry"]
     });
-
-    // 中文查询没有空格分界，必须靠 bigram 命中记忆内容。
-    const matches = await store.search("天气怎么获取", []);
-    assert.equal(matches.matches.length > 0, true);
-    assert.match(matches.matches[0]?.entry.content ?? "", /wttr\.in/u);
 
     // 记忆库是单一全局库，可能包含同 agent 目录里先前测试写入的条目；
     // 这里只断言本测试写入的两条记忆，避免与其他用例的条目互相耦合。
@@ -2117,7 +2153,7 @@ async function testMemoryStorageBoundaries(): Promise<void> {
       await fs.mkdir(path.dirname(memoryDir), { recursive: true });
 
       await fs.symlink(outsideRoot, memoryDir);
-      await assert.rejects(store.search("outside-memory", []), /real directory, not a symbolic link/);
+      await assert.rejects(store.listMemoryEntries(), /real directory, not a symbolic link/);
       await assert.rejects(store.writeEntry(entry), /real directory, not a symbolic link/);
       assert.equal(await fs.readFile(victim, "utf8"), victimContent);
 
@@ -2214,6 +2250,57 @@ async function testCrystalFailedAndCancelledTurns(): Promise<void> {
       assert.deepEqual(seen, [input]);
     });
   }
+}
+
+async function testTemporalCluesFromDurableFailedAndCancelledMessages(): Promise<void> {
+  for (const status of ["failed", "cancelled"] as const) {
+    await withTempWorkspace(async (workspaceRoot) => {
+      await ensureAgentDirs(workspaceRoot);
+      const config = testConfig();
+      config.context.memory.useMemories = false;
+      config.context.memory.generateMemories = false;
+      const recorder = new SessionRecorder(workspaceRoot, `temporal-${status}`);
+      const model: AgentModel = { provider: "test", modelId: "temporal-failure", stream: async () => { throw new Error("Model unavailable"); } };
+      const agent = new AgentSession({ workspaceRoot, config, model, toolRegistry: new ToolRegistry(), permissionManager: new PermissionManager({ ...config.permission, source: "test" }), recorder });
+      await agent.initialize();
+      const controller = new AbortController();
+      if (status === "cancelled") controller.abort();
+      try {
+        assert.equal((await agent.runTask(`2026-10-13 ${status} appointment`, { abortSignal: controller.signal })).status, status);
+      } finally {
+        await agent.close();
+      }
+      const events = await readSessionEvents(recorder.filePath);
+      assert.equal(events.filter((event) => event.type === "user_message" && !event.auditOnly).length, 1);
+      const temporal = new TemporalMemoryIndex();
+      try {
+        assert.equal(temporal.queryClues({ startDate: "2026-10-13", endDate: "2026-10-14", sessionId: recorder.sessionId }).clues.length, 1,
+          "a durable original message is indexed even when the turn does not complete");
+      } finally {
+        temporal.close();
+      }
+    });
+  }
+  await withTempWorkspace(async (workspaceRoot) => {
+    await ensureAgentDirs(workspaceRoot);
+    const config = testConfig();
+    const recorder = new SessionRecorder(workspaceRoot, "temporal-admitted");
+    const agent = new AgentSession({ workspaceRoot, config, model: new ContextTestModel().model,
+      toolRegistry: new ToolRegistry(), permissionManager: new PermissionManager({ ...config.permission, source: "test" }), recorder });
+    await agent.initialize();
+    try {
+      await agent.admitUserMessage("2026-10-14 admitted appointment", { runId: "run-1", turnId: "turn-1", messageId: "message-1" });
+    } finally {
+      await agent.close();
+    }
+    const temporal = new TemporalMemoryIndex();
+    try {
+      assert.equal(temporal.queryClues({ startDate: "2026-10-14", endDate: "2026-10-15", sessionId: recorder.sessionId }).clues.length, 1,
+        "Host admission indexes a durable original message before model execution");
+    } finally {
+      temporal.close();
+    }
+  });
 }
 
 async function testCrystalSemanticDotProduct(): Promise<void> {

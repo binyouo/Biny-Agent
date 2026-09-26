@@ -8,6 +8,7 @@ import { load as loadSqliteVec } from "sqlite-vec";
 import type { AgentModel } from "../src/agent/core/types.js";
 import {
   LocalMemory,
+  formatMemoryMatches,
   type MemoryEntry,
   type MemoryEntryInput
 } from "../src/agent/context/LocalMemory.js";
@@ -16,26 +17,39 @@ import { MemoryVectorIndex } from "../src/agent/context/MemoryVectorIndex.js";
 import { MemoryStorage } from "../src/agent/context/memoryStorage.js";
 import { AGENT_DATABASE_FILE } from "../src/config/paths.js";
 import { sleepMergePrompt } from "../src/agent/context/sleepMergePrompt.js";
-import { memoryExtractionPrompt, temporaryMemoryCleanupPrompt, parseMemoryOperations } from "../src/agent/context/memoryExtraction.js";
+import { memoryExtractionPrompt, memoryTimeAnchorInstruction, temporaryMemoryCleanupPrompt, parseMemoryOperations } from "../src/agent/context/memoryExtraction.js";
 import { BINY_AGENT_DIR_ENV } from "../src/config/paths.js";
 import type { LocalEmbeddingManager } from "../src/llm/embedding/LocalEmbeddingRuntime.js";
-import type { EmbeddingModelDescriptor, EmbeddingModelRuntime } from "../src/llm/embedding/types.js";
+import type { EmbeddingModelDescriptor, EmbeddingModelRef, EmbeddingModelRuntime } from "../src/llm/embedding/types.js";
+import { selectMemoryEmbeddingModel } from "../src/llm/embedding/selectMemoryModel.js";
 
 async function main(): Promise<void> {
   testMemoryExtractionProtocol();
   await testSingleStoreAndEdit();
+  await testClearThreadOnlyDeletesActiveFacts();
+  await testArchivedEntriesUseBoundedPages();
+  await testArchiveListUsesMostRecentArchiveFirst();
   await testSharedLibraryAcrossWorkspaces();
   await testConcurrentWritesAndUsageProjection();
   await testRecallUsageAtomicityAndConcurrency();
   await testExactDuplicateNormalization();
+  await testExactDuplicateRespectsUserId();
+  await testExplicitDuplicateWritesRemainDistinct();
+  await testAutomaticNonDuplicateKeepsDistinctSourceTimes();
   await testAutomaticSemanticDedup();
+  await testAutomaticSemanticSearchRecordsScopedCandidateAccess();
+  await testAutomaticSemanticDedupRespectsUserId();
   await testAutomaticDedupFailureContract();
   await testSemanticDeleteAndTemporaryCleanup();
+  await testExtractionDeletesOnlyOwnUserId();
+  await testSemanticDeleteRejectsMovedUserId();
   await testSemanticDeleteResponseProtocol();
   await testTemporaryCleanupRequiresExactCandidateIds();
   await testTemporaryCleanupFailureKeepsMemories();
   await testPersonMemoryRouting();
   await testSummarizationUsesToolModelAndRequiresCompleteTurn();
+  await testExtractionPreservesOriginalMessageTime();
+  await testRecallFormatsSourceTimeWithoutConflatingSaveTime();
   await testExtractionUsesOnlyConversationText();
   await testAutomaticSummarySkipsWithoutSemanticEmbedding();
   await testDirectExtractionWritesFlatEntries();
@@ -45,8 +59,13 @@ async function main(): Promise<void> {
   await testTemporaryMemoryExpiry();
   await testSleepSingleNamespaceExactAndExpired();
   await testSleepCoversSharedLibraryFromAnyWorkspace();
-  await testSleepSimilaritySingleNamespace();
+  await testSleepSimilarityScansEachUserNamespace();
+  await testSleepNamespaceProgressIsBounded();
+  await testSleepNamespaceScanFailureStopsLaterNamespaces();
+  await testSleepSimilarityDoesNotMergeDifferentUsers();
   await testSleepSimilarityBoundaries();
+  await testSleepExactDuplicatesRespectSourceTime();
+  await testSleepAnchoredSimilarityRequiresModelDecision();
   await testSleepStrongPairDoesNotArchiveWeakClusterMember();
   await testSleepDoesNotArchiveEditedSourceFromOldScan();
   await testSleepDoesNotArchiveIntoDeletedSurvivor();
@@ -54,9 +73,11 @@ async function main(): Promise<void> {
   await testSecondInstanceStartsFromLatestCompletedHistory();
   await testStaleSleepOwnerCannotCommitAfterTakeover();
   await testSleepSynthesisArchivesCluster();
+  await testSleepIgnoresUnrequestedSynthesisExpiry();
   await testSleepSynthesisFailureKeepsSources();
   await testSleepInvalidDeleteIsSafe();
   await testSleepRunRecord();
+  await testSleepProgressPersistsAcrossInstances();
   await testSleepPreviewDoesNotMutate();
   await testSleepBatchOrdering();
   await testSleepWeightedSurvivor();
@@ -65,9 +86,47 @@ async function main(): Promise<void> {
   await testSemanticSearchTreatsUnbuiltIndexAsEmptyCandidates();
   await testFactsAndVectorsShareDatabase();
   await testInitialEmbeddingGeneration();
+  await testSleepUsesCurrentStoredVectorsWhenRuntimeUnavailable();
   await testMemoryVectorProjectionLifecycle();
   await testLocalMemoryMutationKeepsIndexInSync();
   console.log("memory tests passed");
+}
+
+async function testArchivedEntriesUseBoundedPages(): Promise<void> {
+  await withIsolatedMemory(async (workspaceRoot) => {
+    const memory = new LocalMemory(workspaceRoot);
+    try {
+      for (let index = 0; index < 26; index += 1) {
+        const written = await memory.writeEntry({ content: `Archived page item ${index + 1}`, source: "manual" });
+        assert.ok(written.entry);
+        await memory.archiveEntry(written.entry.id, true);
+      }
+      const first = await memory.listArchivedEntries({ offset: 0, limit: 25 });
+      const second = await memory.listArchivedEntries({ offset: 25, limit: 25 });
+      assert.equal(first.total, 26);
+      assert.equal(first.entries.length, 25);
+      assert.equal(second.total, 26);
+      assert.equal(second.entries.length, 1);
+      assert.equal(new Set([...first.entries, ...second.entries].map((entry) => entry.id)).size, 26);
+      assert.equal((await memory.listArchivedEntries()).entries.length, 26, "CLI 全量路径保持可用");
+    } finally {
+      memory.close();
+    }
+  });
+}
+
+async function testArchiveListUsesMostRecentArchiveFirst(): Promise<void> {
+  await withIsolatedMemory(async (workspaceRoot) => {
+    const memory = new LocalMemory(workspaceRoot);
+    try {
+      const old = (await memory.writeEntry({ content: "Older high-priority archive", importance: 1 })).entry!;
+      const recent = (await memory.writeEntry({ content: "Recent low-priority archive", importance: 0.1 })).entry!;
+      const oldArchive = (await memory.archiveEntry(old.id, true, { now: new Date("2026-08-01T00:00:00.000Z") })).entry!;
+      const recentArchive = (await memory.archiveEntry(recent.id, true, { now: new Date("2026-08-02T00:00:00.000Z") })).entry!;
+      assert.deepEqual((await memory.listArchivedEntries()).entries.map((entry) => entry.id),
+        [recentArchive.id, oldArchive.id], "归档列表以归档时间而非重要度排序");
+    } finally { memory.close(); }
+  });
 }
 
 function testMemoryExtractionProtocol(): void {
@@ -172,6 +231,40 @@ async function testSingleStoreAndEdit(): Promise<void> {
 }
 
 /** 共享 agent 目录：记忆是单一全局库，任何工作区写入的记忆对其他工作区直接可见、可召回。 */
+async function testClearThreadOnlyDeletesActiveFacts(): Promise<void> {
+  await withIsolatedMemory(async (workspaceRoot) => {
+    const removed: string[][] = [];
+    const memory = new LocalMemory(
+      workspaceRoot, unusedModel, undefined, 3, undefined, undefined,
+      { indexEntry: async () => undefined, removeEntries: (ids) => { removed.push([...ids]); } }
+    );
+    try {
+      const a1 = await memory.writeEntry({ content: "First active fact for thread A.", threadId: "thread_A" });
+      const a2 = await memory.writeEntry({ content: "Second active fact for thread A.", threadId: "thread_A" });
+      const b1 = await memory.writeEntry({ content: "Active fact for thread B.", threadId: "thread_B" });
+      const archivedSource = await memory.writeEntry({ content: "Archived fact for thread A.", threadId: "thread_A" });
+      assert.ok(a1.entry && a2.entry && b1.entry && archivedSource.entry);
+      const archived = await memory.archiveEntry(archivedSource.entry.id, true);
+      assert.ok(archived.entry);
+      removed.length = 0;
+      const beforeRevision = (await memory.getOverview()).storeRevision;
+      const cleared = await memory.clearThreadEntries("thread_A");
+      assert.equal(cleared.deletedEntries, 2);
+      assert.equal(cleared.revision, beforeRevision + 1);
+      assert.deepEqual(new Set(removed.flat()), new Set([a1.entry.id, a2.entry.id]));
+      assert.deepEqual((await memory.listMemoryEntries()).entries.map((entry) => entry.id), [b1.entry.id]);
+      assert.deepEqual((await memory.listArchivedEntries()).entries.map((entry) => entry.id), [archived.entry.id]);
+      const noMatch = await memory.clearThreadEntries("thread_A");
+      assert.equal(noMatch.deletedEntries, 0);
+      assert.equal(noMatch.revision, cleared.revision);
+      await assert.rejects(memory.clearThreadEntries("  "), /threadId/u);
+      assert.equal((await memory.listMemoryEntries()).total, 1);
+    } finally {
+      memory.close();
+    }
+  });
+}
+
 async function testSharedLibraryAcrossWorkspaces(): Promise<void> {
   await withSharedAgent(async (agentRoot) => {
     const firstWorkspace = await mkdtemp(path.join(os.tmpdir(), "biny-memory-first-"));
@@ -185,10 +278,10 @@ async function testSharedLibraryAcrossWorkspaces(): Promise<void> {
       const second = new LocalMemory(secondWorkspace, unusedModel);
       const overview = await second.getOverview();
       assert.equal(overview.entryCount, 1);
-      // 去掉 origin 门禁后不再需要 selector：另一工作区写入的条目默认就在列表和词法搜索里。
-      assert.equal((await second.listMemoryEntries()).entries.length, 1);
-      const searched = await second.search("release publish", []);
-      assert.equal(searched.matches.length, 1, "无门禁下跨工作区记忆可直接召回");
+      // 去掉 origin 门禁后不再需要 selector：另一工作区写入的条目直接可见。
+      const shared = await second.listMemoryEntries();
+      assert.equal(shared.entries.length, 1);
+      assert.match(shared.entries[0]?.content ?? "", /first workspace release/u);
 
       const own = await second.writeEntry(projectEntry(
         "Run typecheck before publishing the second workspace release."
@@ -274,8 +367,8 @@ async function testRecallUsageAtomicityAndConcurrency(): Promise<void> {
       ]);
       const entries = (await storage.listEntries()).entries;
       assert.deepEqual(entries.map((entry) => entry.accessCount), [2, 2]);
-      assert.equal(entries.find((entry) => entry.id === first.id)?.updatedAt, first.updatedAt);
-      assert.equal(entries.find((entry) => entry.id === second.id)?.updatedAt, second.updatedAt);
+      assert.equal(entries.find((entry) => entry.id === first.id)?.updatedAt, entries[0]?.lastAccessedAt);
+      assert.equal(entries.find((entry) => entry.id === second.id)?.updatedAt, entries[1]?.lastAccessedAt);
       assert.equal(entries[0]?.lastAccessedAt, entries[1]?.lastAccessedAt);
       assert.equal((await storage.getOverview()).storeRevision, initialRevision);
     } finally {
@@ -295,9 +388,9 @@ async function testExactDuplicateNormalization(): Promise<void> {
     const duplicate = await storage.writeEntry(projectEntry(
       "Keep the café rule. It must be checked before release."
     ));
-    assert.equal(duplicate.written, false, "only NFC and whitespace-normalized content determines an exact duplicate");
-    assert.equal(duplicate.entry?.id, first.entry?.id);
-    assert.equal((await storage.getOverview()).entryCount, 1);
+    assert.equal(duplicate.written, true, "显式新增保留原始事实，Sleep 再整理规范化同文");
+    assert.notEqual(duplicate.entry?.id, first.entry?.id);
+    assert.equal((await storage.getOverview()).entryCount, 2);
 
     for (const content of [
       "keep the café rule. It must be checked before release.",
@@ -312,13 +405,73 @@ async function testExactDuplicateNormalization(): Promise<void> {
     const memory = new LocalMemory(workspaceRoot, unusedModel);
     try {
       const preview = await memory.previewMaintenance({ useLlm: false });
-      assert.deepEqual(preview.archiveProposed, []);
+      assert.equal(preview.archiveProposed?.filter((entry) => entry.reason === "exact_dup").length, 1);
       await memory.runMemoryMaintenance({ useLlm: false });
       assert.equal((await storage.getOverview()).entryCount, 5);
     } finally {
       memory.close();
       storage.close();
     }
+  });
+}
+
+async function testExactDuplicateRespectsUserId(): Promise<void> {
+  await withIsolatedMemory(async (workspaceRoot) => {
+    const memory = new LocalMemory(workspaceRoot, unusedModel);
+    try {
+      const content = "The same preference belongs to separate explicit users.";
+      const first = await memory.writeEntry({ content, userId: "user-a" });
+      const second = await memory.writeEntry({ content, userId: "user-b" });
+      const global = await memory.writeEntry({ content });
+      assert.equal(first.written, true);
+      assert.equal(second.written, true, "另一个显式 userId 不能复用前一个用户的事实 ID");
+      assert.equal(global.written, true, "全局事实也不能复用某个用户的事实 ID");
+      assert.equal((await memory.listMemoryEntries()).total, 3);
+      const preview = await memory.previewMaintenance({ useLlm: false });
+      assert.deepEqual(preview.archiveProposed, [], "Sleep exact 不能跨 userId 归档");
+      await memory.runMemoryMaintenance({ useLlm: false });
+      assert.equal((await memory.listMemoryEntries()).total, 3);
+    } finally {
+      memory.close();
+    }
+  });
+}
+
+async function testExplicitDuplicateWritesRemainDistinct(): Promise<void> {
+  await withIsolatedMemory(async (workspaceRoot) => {
+    const memory = new LocalMemory(workspaceRoot);
+    try {
+      const content = "The release checklist must be reviewed before publishing.";
+      const first = await memory.writeEntry({ content, threadId: "thread-one" });
+      const second = await memory.writeEntry({ content, threadId: "thread-two" });
+      assert.equal(first.written, true);
+      assert.equal(second.written, true, "显式新增事实不因正文相同而复用已有条目");
+      assert.notEqual(second.entry?.id, first.entry?.id);
+      assert.equal((await memory.listMemoryEntries()).total, 2);
+    } finally { memory.close(); }
+  });
+}
+
+async function testAutomaticNonDuplicateKeepsDistinctSourceTimes(): Promise<void> {
+  await withIsolatedMemory(async (workspaceRoot) => {
+    const candidates: MemoryEntry[] = [];
+    const model = jsonMemoryModel(() => JSON.stringify({ isDuplicate: false }));
+    const memory = new LocalMemory(workspaceRoot, () => model, undefined, 3, undefined, undefined, undefined,
+      async () => candidates);
+    try {
+      const content = "The release is scheduled for Friday.";
+      const first = await memory.writeAutoEntry({ content, originAnchors: [
+        { messageId: "source-one", sentAt: "2026-08-01T09:00:00.000Z", timeZone: "Asia/Shanghai" }
+      ] }, { requireSemantic: true });
+      assert.ok(first.entry);
+      candidates.push(first.entry);
+      const second = await memory.writeAutoEntry({ content, originAnchors: [
+        { messageId: "source-two", sentAt: "2026-08-08T09:00:00.000Z", timeZone: "Asia/Shanghai" }
+      ] }, { requireSemantic: true });
+      assert.equal(second.written, true, "模型确认来源时间不同后，SQLite 不得再次按正文压掉事实");
+      assert.notEqual(second.entry?.id, first.entry.id);
+      assert.equal((await memory.listMemoryEntries()).total, 2);
+    } finally { memory.close(); }
   });
 }
 
@@ -361,6 +514,81 @@ async function testAutomaticSemanticDedup(): Promise<void> {
     }
     memory.close();
     seed.close();
+  });
+}
+
+async function testAutomaticSemanticSearchRecordsScopedCandidateAccess(): Promise<void> {
+  await withIsolatedMemory(async (workspaceRoot) => {
+    const seed = new LocalMemory(workspaceRoot, unusedModel);
+    const own = (await seed.writeEntry({ content: "User A prefers compact release summaries.", userId: "user-a" })).entry!;
+    const other = (await seed.writeEntry({ content: "User B prefers compact release summaries.", userId: "user-b" })).entry!;
+    const ownSecond = (await seed.writeEntry({ content: "User A checks release notes before publishing.", userId: "user-a" })).entry!;
+    const memory = new LocalMemory(
+      workspaceRoot,
+      () => jsonMemoryModel(() => JSON.stringify({ isDuplicate: false })),
+      undefined, 3, undefined, undefined, undefined,
+      async () => [own, other, ownSecond]
+    );
+    try {
+      const written = await memory.writeAutoEntry({
+        content: "User A also prefers release summaries with a short checklist.", userId: "user-a"
+      }, { requireSemantic: true });
+      assert.equal(written.written, true);
+      const entries = (await memory.listMemoryEntries()).entries;
+      assert.equal(entries.find((entry) => entry.id === own.id)?.accessCount, 1);
+      assert.equal(entries.find((entry) => entry.id === ownSecond.id)?.accessCount, 1);
+      assert.equal(entries.find((entry) => entry.id === other.id)?.accessCount, 0, "scope-excluded hits do not count");
+      for (const id of [own.id, ownSecond.id]) {
+        const entry = entries.find((candidate) => candidate.id === id)!;
+        assert.ok(entry.lastAccessedAt);
+        assert.equal(entry.updatedAt, entry.lastAccessedAt);
+      }
+      const cancelled = new AbortController();
+      const cancelledMemory = new LocalMemory(
+        workspaceRoot, unusedModel, undefined, 3, undefined, undefined, undefined,
+        async () => {
+          cancelled.abort(new Error("Cancelled after candidate search"));
+          return [own];
+        }
+      );
+      try {
+        await assert.rejects(cancelledMemory.writeAutoEntry({
+          content: "User A considers a different release checklist item.", userId: "user-a"
+        }, { requireSemantic: true, signal: cancelled.signal }), /Cancelled after candidate search/u);
+        assert.equal((await memory.listMemoryEntries()).entries.find((entry) => entry.id === own.id)?.accessCount, 1);
+      } finally {
+        cancelledMemory.close();
+      }
+    } finally {
+      memory.close();
+      seed.close();
+    }
+  });
+}
+
+async function testAutomaticSemanticDedupRespectsUserId(): Promise<void> {
+  await withIsolatedMemory(async (workspaceRoot) => {
+    const seed = new LocalMemory(workspaceRoot, unusedModel);
+    const other = await seed.writeEntry({ content: "User A has a long-term preference for compact release summaries.", userId: "user-a" });
+    assert.ok(other.entry);
+    const scopes: Array<string | null | undefined> = [];
+    const model = jsonMemoryModel(() => JSON.stringify({ isDuplicate: true, duplicateOf: 1 }));
+    const memory = new LocalMemory(workspaceRoot, () => model, undefined, 3, undefined, undefined, undefined,
+      async (_query, options) => { scopes.push(options.userId); return [other.entry!]; });
+    try {
+      const forB = await memory.writeAutoEntry({
+        content: "User B prefers compact release summaries for long-term work.", userId: "user-b"
+      }, { requireSemantic: true });
+      const global = await memory.writeAutoEntry({
+        content: "The global workflow favors concise release summaries."
+      }, { requireSemantic: true });
+      assert.equal(forB.written, true, "A 的语义候选不能阻止 B 写入");
+      assert.equal(global.written, true, "显式用户的语义候选不能阻止全局事实写入");
+      assert.deepEqual(scopes, ["user-b", null], "候选检索必须在 top-K 前收到明确命名空间");
+    } finally {
+      memory.close();
+      seed.close();
+    }
   });
 }
 
@@ -473,6 +701,66 @@ async function testSemanticDeleteAndTemporaryCleanup(): Promise<void> {
     assert.equal((await memory.getOverview()).entryCount, 0);
     memory.close();
     seed.close();
+  });
+}
+
+async function testExtractionDeletesOnlyOwnUserId(): Promise<void> {
+  await withIsolatedMemory(async (workspaceRoot) => {
+    const seed = new LocalMemory(workspaceRoot, unusedModel);
+    const foreignPermanent = await seed.writeEntry({ content: "User A old release rule.", userId: "user-a" });
+    const ownPermanent = await seed.writeEntry({ content: "Default user old release rule." });
+    const foreignTemporary = await seed.writeEntry({ content: "User A temporary release note.", userId: "user-a", durability: "temporary" });
+    const ownTemporary = await seed.writeEntry({ content: "Default user temporary release note.", durability: "temporary" });
+    assert.ok(foreignPermanent.entry && ownPermanent.entry && foreignTemporary.entry && ownTemporary.entry);
+    const model = jsonMemoryModel((prompt) => {
+      if (prompt.includes("Extract memories from this conversation:")) return JSON.stringify([{ operation: "delete", content: "old release rule" }]);
+      if (prompt.startsWith("The user wants to delete memories about:")) return "[1]";
+      if (prompt.startsWith("Current date and time:")) return JSON.stringify([foreignTemporary.entry!.id, ownTemporary.entry!.id]);
+      return "[]";
+    });
+    const scopes: Array<string | null | undefined> = [];
+    const memory = new LocalMemory(workspaceRoot, () => model, undefined, 3, undefined, undefined, undefined,
+      async (_query, options) => {
+        scopes.push(options.userId);
+        return options.minimumSimilarity === 0
+          ? [foreignPermanent.entry!, ownPermanent.entry!]
+          : [foreignTemporary.entry!, ownTemporary.entry!];
+      });
+    try {
+      await memory.summarizeAndStoreMemories([
+        { role: "user", content: "Forget the old release rule; the temporary release note is no longer relevant." },
+        { role: "assistant", content: "I will update the remembered release context." }
+      ], { sessionId: "scope-delete", turnId: "turn", runId: "run", externalContext: false, excludeExternalContext: false });
+      const remaining = (await memory.listMemoryEntries()).entries;
+      assert.deepEqual(new Set(remaining.map((entry) => entry.id)), new Set([foreignPermanent.entry.id, foreignTemporary.entry.id]));
+      assert.deepEqual(scopes, [null, null], "自动删除候选也须在 top-K 前限定默认 userId");
+      await memory.summarizeAndStoreMemories([
+        { role: "user", content: "Forget my old release rule and temporary release note." },
+        { role: "assistant", content: "I will update your release context." }
+      ], { sessionId: "scope-delete-a", turnId: "turn-a", runId: "run-a", userId: "user-a", externalContext: false, excludeExternalContext: false });
+      assert.equal((await memory.listMemoryEntries()).total, 0);
+      assert.deepEqual(scopes, [null, null, "user-a", "user-a"], "显式 userId 也须贯穿语义删除与临时清理");
+    } finally {
+      memory.close();
+      seed.close();
+    }
+  });
+}
+
+async function testSemanticDeleteRejectsMovedUserId(): Promise<void> {
+  await withIsolatedMemory(async (workspaceRoot) => {
+    const storage = new MemoryStorage(workspaceRoot);
+    try {
+      const source = await storage.writeEntry({ content: "Scoped deletion source fact.", userId: "user-a" });
+      assert.ok(source.entry);
+      await storage.updateEntry(source.entry.id, { userId: "user-b" });
+      await assert.rejects(storage.deleteEntry(source.entry.id, { expectedEntries: [source.entry] }), /stale/u);
+      const active = (await storage.listEntries()).entries;
+      assert.equal(active.length, 1);
+      assert.equal(active[0]?.userId, "user-b");
+    } finally {
+      storage.close();
+    }
   });
 }
 
@@ -695,7 +983,77 @@ async function testExtractionUsesOnlyConversationText(): Promise<void> {
       ], { sessionId: "text-session", turnId: "text-turn", runId: "text-run", externalContext: false, excludeExternalContext: false });
       assert.equal(prompts.length, 1);
       assert.equal(prompts[0], "Extract memories from this conversation:\n\n"
-        + `user: ${longText}\n\nassistant: visible first\nvisible second\n\nuser:   final question  \n\nassistant: final answer`);
+        + "assistant: visible first\nvisible second\n\nuser:   final question  \n\nassistant: final answer",
+        "先按完整消息流取最后四条，再排除工具正文；较早的用户文本不应被补入窗口");
+    } finally {
+      memory.close();
+    }
+  });
+}
+
+async function testRecallFormatsSourceTimeWithoutConflatingSaveTime(): Promise<void> {
+  await withIsolatedMemory(async (workspaceRoot) => {
+    const memory = new LocalMemory(workspaceRoot, unusedModel);
+    try {
+      const result = await memory.writeEntry({
+        content: "The release was planned for October 1.", tags: ["release"],
+        originAnchors: [{ messageId: "source_2", sentAt: "2026-09-12T08:00:00.000Z", timeZone: "unknown" }]
+      }, { now: new Date("2026-09-25T10:00:00.000Z") });
+      const entry = result.entry!;
+      const prompt = formatMemoryMatches([{ entry, excerpt: entry.content, path: `memory://${entry.id}`, score: 0.9 }]);
+      assert.match(prompt, /tags: release/u);
+      assert.match(prompt, /saved-at: 2026-09-25T10:00:00.000Z/u);
+      assert.match(prompt, /source_2/u);
+      assert.match(prompt, /2026-09-12T08:00:00.000Z/u);
+      assert.match(prompt, /timeZone":"unknown/u);
+      assert.match(prompt, /saved-at is NOT event\/due\/completion time/u);
+      assert.match(prompt, /original message sent-at/u);
+      assert.match(prompt, /only a subset of relevant memories/iu);
+      assert.match(prompt, /recall_memory/u);
+      const temporary = (await memory.writeEntry({
+        content: "The user may visit Paris next month.", durability: "temporary",
+        expiresAt: "2026-10-25T00:00:00.000Z"
+      })).entry!;
+      const temporaryPrompt = formatMemoryMatches([{ entry: temporary, excerpt: temporary.content }]);
+      assert.match(temporaryPrompt, /temporary/u, "短期事实注入必须明确标记暂时性");
+      assert.match(temporaryPrompt, /may be outdated/u, "短期事实应提醒模型核对时效");
+      assert.doesNotMatch(prompt, /may be outdated/u, "长期事实不应被误标为短期");
+    } finally {
+      memory.close();
+    }
+  });
+}
+
+async function testExtractionPreservesOriginalMessageTime(): Promise<void> {
+  await withIsolatedMemory(async (workspaceRoot) => {
+    const prompts: string[] = [];
+    const model = jsonMemoryModel((prompt) => prompt.startsWith("Extract memories from this conversation:")
+      ? JSON.stringify([{ operation: "add", content: "The user plans to ship a release on 2026-10-01.", durability: "temporary" }])
+      : "[]", prompts);
+    const memory = new LocalMemory(
+      workspaceRoot, () => model, undefined, 3, undefined, undefined, undefined, async () => []
+    );
+    const anchors = [{ messageId: "source_1", sentAt: "2026-09-20T10:30:00+08:00", timeZone: "unknown" }];
+    try {
+      const result = await memory.summarizeAndStoreMemories([
+        { role: "user", content: "Next month I plan to ship a release." },
+        { role: "assistant", content: "I will remember the deadline." }
+      ], {
+        sessionId: "time-session", turnId: "time-turn", runId: "time-run", messageId: "source_1",
+        originAnchors: anchors, externalContext: false, excludeExternalContext: false
+      });
+      assert.equal(result.created.length, 1);
+      const entry = (await memory.listMemoryEntries()).entries[0]!;
+      assert.deepEqual(entry.originAnchors, [{ messageId: "source_1", sentAt: "2026-09-20T02:30:00.000Z", timeZone: "unknown" }]);
+      assert.ok(prompts[0]?.includes("2026-09-20T02:30:00.000Z"));
+      assert.ok(prompts[0]?.includes("timeZone: unknown"));
+      assert.ok(memoryTimeAnchorInstruction.includes("memory creation/access/update time"));
+      await memory.updateEntry(entry.id, { tags: ["deadline"] });
+      assert.deepEqual((await memory.listMemoryEntries()).entries[0]?.originAnchors, entry.originAnchors);
+      const archived = await memory.archiveEntry(entry.id, true);
+      assert.deepEqual(archived.entry?.originAnchors, entry.originAnchors);
+      const restored = await memory.archiveEntry(archived.entry!.id, false);
+      assert.deepEqual(restored.entry?.originAnchors, entry.originAnchors);
     } finally {
       memory.close();
     }
@@ -734,18 +1092,21 @@ async function testAutomaticSummarySkipsWithoutSemanticEmbedding(): Promise<void
 /** 提取协议只产出扁平 content；audience/origin 映射已删除，所有 add 都进入单一命名空间。 */
 async function testDirectExtractionWritesFlatEntries(): Promise<void> {
   await withIsolatedMemory(async (workspaceRoot) => {
+    const semanticCandidates: MemoryEntry[] = [];
     const memory = new LocalMemory(
       workspaceRoot,
-      () => jsonMemoryModel(() => JSON.stringify([
-        { operation: "add", content: "Completed root turn established a durable release workflow for this workspace.", durability: "permanent" },
-        { operation: "add", content: "The user prefers durable summaries to remain concise and directly actionable.", durability: "permanent" }
-      ])),
+      () => jsonMemoryModel((prompt) => prompt.startsWith('New memory to add: "')
+        ? JSON.stringify({ isDuplicate: true, duplicateOf: 1 })
+        : JSON.stringify([
+          { operation: "add", content: "Completed root turn established a durable release workflow for this workspace.", durability: "permanent" },
+          { operation: "add", content: "The user prefers durable summaries to remain concise and directly actionable.", durability: "permanent" }
+        ])),
       undefined,
       3,
       undefined,
       undefined,
       undefined,
-      async () => []
+      async () => semanticCandidates
     );
     const result = await memory.summarizeAndStoreMemories(
       [
@@ -769,7 +1130,8 @@ async function testDirectExtractionWritesFlatEntries(): Promise<void> {
     assert.equal(entries.every((entry) => entry.threadId === "session-1"), true);
     assert.equal(entries.every((entry) => entry.durability === "permanent"), true);
 
-    // 同一响应再次到达时由事实库做 exact dedup，不产生第二份记忆。
+    // 再次提取相同事实时，由语义候选与模型判断重复，不依赖 SQLite 静默去重。
+    semanticCandidates.push(...entries);
     const duplicate = await memory.summarizeAndStoreMemories(
       [
         { role: "user", content: "The same durable workflow and preference still apply." },
@@ -806,6 +1168,14 @@ async function testDirectExtractionWritesFlatEntries(): Promise<void> {
 async function testSleepRunRecord(): Promise<void> {
   await withIsolatedMemory(async (workspaceRoot) => {
     const memory = new LocalMemory(workspaceRoot, unusedModel);
+    const old = await memory.writeEntry(projectEntry(
+      "An archived release note must survive a failed similarity scan."
+    ), { now: new Date("2026-06-01T00:00:00.000Z") });
+    assert.ok(old.entry);
+    const oldArchive = await memory.archiveEntry(old.entry.id, true, {
+      now: new Date("2026-06-01T00:00:01.000Z")
+    });
+    assert.ok(oldArchive.entry);
     await memory.writeEntry(projectEntry(
       "A completed task summary with enough durable content for sleep processing."
     ), { now: new Date("2026-08-01T00:00:00.000Z") });
@@ -823,8 +1193,55 @@ async function testSleepRunRecord(): Promise<void> {
     assert.equal(status.lastRun?.status, "failed");
     assert.equal(status.lastRun?.error, "index unavailable");
     assert.equal(status.lastRun?.examined, 0, "索引失败时不能把条目数计入 examined");
+    assert.deepEqual(status.lastRun?.progressEvents?.map((event) => event.stage), ["exact", "expired", "similarity"],
+      "失败运行不宣称执行了物理归档清理");
     assert.equal(typeof status.lastRun?.id, "string");
+    assert.equal((await memory.listArchivedEntries()).entries.some((entry) => entry.id === oldArchive.entry!.id), true,
+      "失败的 Sleep 不能同时清除超过保留期的归档事实");
     memory.close();
+  });
+}
+
+/** 另一 Runtime 在相似扫描等待期间也能读到此前阶段的累计计数。 */
+async function testSleepProgressPersistsAcrossInstances(): Promise<void> {
+  await withIsolatedMemory(async (workspaceRoot) => {
+    const sleeper = new LocalMemory(workspaceRoot, unusedModel);
+    const observer = new LocalMemory(workspaceRoot, unusedModel);
+    let releaseScan: () => void = () => undefined;
+    let run: Promise<unknown> | undefined;
+    try {
+      const duplicateText = "A durable fact duplicated for the Sleep progress contract.";
+      await sleeper.writeEntry(projectEntry(duplicateText));
+      await sleeper.writeEntry(projectEntry(duplicateText));
+      await sleeper.writeEntry({ ...projectEntry("An expired temporary fact."), durability: "temporary", expiresAt: "2020-01-01T00:00:00.000Z" });
+      await sleeper.writeEntry(projectEntry("A separate durable fact makes the similarity scan observable."));
+      let scanStarted: () => void = () => undefined;
+      const started = new Promise<void>((resolve) => { scanStarted = resolve; });
+      const paused = new Promise<void>((resolve) => { releaseScan = resolve; });
+      run = sleeper.runMemoryMaintenance({ now: new Date("2026-08-02T00:00:00.000Z"), useLlm: false }, {
+        findSimilarPairs: async () => { scanStarted(); await paused; return { examined: 2, pairs: [] }; }
+      });
+      await started;
+      const visible = await observer.loadMaintenanceStatus();
+      assert.equal(visible.state, "running");
+      assert.equal(visible.progressStage, "similarity");
+      assert.equal(visible.lastRun?.status, "running");
+      assert.equal(visible.lastRun?.archivedExact, 1);
+      assert.equal(visible.lastRun?.archivedExpired, 1);
+      assert.deepEqual(visible.lastRun?.progressEvents?.map((event) => event.stage), ["exact", "expired"]);
+      releaseScan();
+      await run;
+      const finished = await observer.loadMaintenanceStatus();
+      assert.equal(finished.state, "idle");
+      assert.equal(finished.progressStage, undefined);
+      assert.deepEqual(finished.lastRun?.progressEvents?.map((event) => event.stage), ["exact", "expired", "similarity", "purge"]);
+      assert.equal(finished.lastRun?.progressEvents?.[2]?.examined, 2);
+    } finally {
+      releaseScan();
+      await run?.catch(() => undefined);
+      sleeper.close();
+      observer.close();
+    }
   });
 }
 
@@ -908,9 +1325,7 @@ async function testTemporaryMemoryExpiry(): Promise<void> {
 }
 
 /**
- * 扁平单库：同一事实无论 userId、durability 如何都在同一命名空间。
- * 旧模型按 user/workspace 分桶并用 dedupAcrossUserIds 门控 exact 合并；现在写入期
- * 全局同文去重，绕过写入期的同文行（如 updateEntry 产生）由 Sleep exact 层无条件合并。
+ * 扁平单库允许显式同文并存；Sleep exact 另区分 userId、temporary 的未知来源与持久事实。
  */
 async function testSleepSingleNamespaceExactAndExpired(): Promise<void> {
   await withIsolatedMemory(async (workspaceRoot) => {
@@ -926,17 +1341,17 @@ async function testSleepSingleNamespaceExactAndExpired(): Promise<void> {
       "The team keeps a deterministic release checklist for publishing changes."
     ), { now: new Date("2026-08-01T01:00:00.000Z") });
     assert.ok(first.entry && second.entry);
-    // updateEntry 不做写入期去重：用它构造一组跨 userId 的同文行，供 Sleep exact 层合并。
+    // updateEntry 不做写入期去重：即使形成同文行，temporary 与 permanent 也不能直接合并。
     const duplicate = await memory.updateEntry(second.entry.id, {
       content: summary,
-      userId: "__default_user__"
+      userId: "release-user"
     }, { now: new Date("2026-08-01T02:00:00.000Z") });
     assert.equal(duplicate.written, true);
 
     const beforePreview = await memory.listMemoryEntries();
     const preview = await memory.previewMaintenance({ useLlm: false });
     assert.equal(preview.skipped, undefined);
-    assert.deepEqual(preview.archiveProposed?.map((item) => item.reason), ["exact_dup", "expired"]);
+    assert.deepEqual(preview.archiveProposed?.map((item) => item.reason), ["expired"]);
     assert.deepEqual(await memory.listMemoryEntries(), beforePreview);
 
     const result = await memory.runMemoryMaintenance({ useLlm: false });
@@ -945,13 +1360,13 @@ async function testSleepSingleNamespaceExactAndExpired(): Promise<void> {
     const archived = (await memory.listArchivedEntries()).entries;
     assert.equal(archived.length, 1);
     assert.equal(archived[0]?.originalId, first.entry.id);
-    assert.equal(archived[0]?.archivedReason, "exact_dup");
-    assert.equal(archived[0]?.mergedInto, second.entry.id);
+    assert.equal(archived[0]?.archivedReason, "expired");
+    assert.equal(archived[0]?.mergedInto, undefined);
     memory.close();
   });
 }
 
-/** 单一命名空间：跨工作区同文在写入期即被全局去重；Sleep 从任一工作区都扫描共享库全部条目。 */
+/** 单一命名空间：跨工作区显式同文可并存；Sleep 从任一工作区扫描并整理共享库。 */
 async function testSleepCoversSharedLibraryFromAnyWorkspace(): Promise<void> {
   await withSharedAgent(async (_agentRoot) => {
     const workspaceA = await mkdtemp(path.join(os.tmpdir(), "biny-memory-sleep-a-"));
@@ -962,21 +1377,21 @@ async function testSleepCoversSharedLibraryFromAnyWorkspace(): Promise<void> {
       const summary = "Keep the release checks consistent between the two shared-library workspaces.";
       const first = await memoryA.writeEntry(projectEntry(summary), { now: new Date("2026-08-01T00:00:00.000Z") });
       assert.ok(first.entry);
-      // 旧模型按工作区分桶允许同文并存；扁平单库下另一工作区写入同文会命中同一条。
+      // 显式写入各自保留事实，Sleep 统一整理跨工作区的同文条目。
       const duplicate = await memoryB.writeEntry(projectEntry(summary));
-      assert.equal(duplicate.written, false);
-      assert.equal(duplicate.entry?.id, first.entry.id);
+      assert.equal(duplicate.written, true);
+      assert.notEqual(duplicate.entry?.id, first.entry.id);
       const second = await memoryB.writeEntry(projectEntry(
         "Workspace B adds a distinct typecheck rule to the shared library."
       ), { now: new Date("2026-08-01T01:00:00.000Z") });
       assert.equal(second.written, true);
-      assert.equal(second.revision, 2, "两个工作区写入推进同一个 revision");
+      assert.equal(second.revision, 3, "两个工作区写入推进同一个 revision");
 
       const result = await memoryA.runMemoryMaintenance({ useLlm: false });
       assert.equal(result.failed, 0);
-      assert.equal(result.scanned, 2, "Sleep 从工作区 A 扫描共享库全部条目");
+      assert.equal(result.scanned, 3, "Sleep 从工作区 A 扫描共享库全部条目");
       assert.equal((await memoryA.listMemoryEntries()).entries.length, 2);
-      assert.equal((await memoryA.listArchivedEntries()).entries.length, 0);
+      assert.equal((await memoryA.listArchivedEntries()).entries.length, 1);
     } finally {
       memoryA.close();
       memoryB.close();
@@ -986,8 +1401,8 @@ async function testSleepCoversSharedLibraryFromAnyWorkspace(): Promise<void> {
   });
 }
 
-/** 扁平单库：相似度扫描一次覆盖全部条目，不再按 user 拆分命名空间。 */
-async function testSleepSimilaritySingleNamespace(): Promise<void> {
+/** 共享单库里的向量扫描按精确 userId 分桶，未绑定用户的事实单独成桶。 */
+async function testSleepSimilarityScansEachUserNamespace(): Promise<void> {
   await withIsolatedMemory(async (workspaceRoot) => {
     const memory = new LocalMemory(workspaceRoot, unusedModel);
     const entries: MemoryEntry[] = [];
@@ -996,27 +1411,87 @@ async function testSleepSimilaritySingleNamespace(): Promise<void> {
       ["user-a", "User A keeps a deterministic release rule for publishing."],
       ["user-a", "User A keeps a deterministic release note for archiving."],
       ["user-b", "User B keeps a deterministic release rule for publishing."],
-      ["user-b", "User B keeps a deterministic release note for archiving."]
+      ["user-b", "User B keeps a deterministic release note for archiving."],
+      [undefined, "The shared workspace keeps a separate release reference."]
     ] as const) {
       const result = await memory.writeEntry({ ...projectEntry(content), userId });
       assert.ok(result.entry);
       entries.push(result.entry);
-
     }
-    const calls: number[] = [];
+    const calls: Array<string | undefined> = [];
+    const index = {
+      indexEntry: async () => undefined,
+      findSimilarPairs: async (namespace: MemoryEntry[]) => {
+        assert.ok(namespace.length > 0);
+        const userId = namespace[0]!.userId;
+        assert.ok(namespace.every((entry) => entry.userId === userId), "每次只交给派生索引同一精确 userId 的事实");
+        calls.push(userId);
+        return { examined: namespace.length, pairs: namespace.length < 2 ? [] : [
+          { leftId: namespace[0]!.id, rightId: namespace[1]!.id, similarity: 0.99 }
+        ] };
+      }
+    };
+    const preview = await memory.previewMaintenance({ useLlm: false }, index);
+    assert.equal(preview.skipped, undefined);
+    assert.deepEqual(new Set(calls), new Set(["user-a", "user-b", undefined]));
+    assert.equal(preview.examined, entries.length, "预览累计所有命名空间，包括单条默认命名空间");
+    assert.equal(preview.archiveProposed?.filter((entry) => entry.reason === "similarity_merge").length, 2);
+    calls.length = 0;
+    const result = await memory.runMemoryMaintenance({ useLlm: false }, {
+      ...index
+    });
+    assert.equal(result.failed, 0);
+    assert.deepEqual(new Set(calls), new Set(["user-a", "user-b", undefined]));
+    assert.equal(memory.maintenanceStatus().lastRun?.examined, entries.length);
+    assert.equal((await memory.listMemoryEntries()).entries.length, 3);
+    memory.close();
+  });
+}
+
+async function testSleepNamespaceProgressIsBounded(): Promise<void> {
+  await withIsolatedMemory(async (workspaceRoot) => {
+    const memory = new LocalMemory(workspaceRoot, unusedModel);
+    for (let index = 0; index < 70; index += 1) {
+      await memory.writeEntry({ ...projectEntry(`A distinct reference for namespace ${index}.`), userId: `user-${index}` });
+    }
+    const result = await memory.runMemoryMaintenance({ useLlm: false }, {
+      indexEntry: async () => undefined,
+      findSimilarPairs: async (namespace) => ({ examined: namespace.length, pairs: [] })
+    });
+    assert.equal(result.failed, 0);
+    const observer = new LocalMemory(workspaceRoot, unusedModel);
+    const run = (await observer.loadMaintenanceStatus()).lastRun;
+    assert.equal(run?.examined, 70);
+    assert.equal(run?.progressEvents?.length, 64, "持久阶段日志不随用户数量无界增长");
+    assert.deepEqual(run?.progressEvents?.slice(0, 2).map((event) => event.stage), ["exact", "expired"]);
+    assert.equal(run?.progressEvents?.at(-1)?.stage, "purge");
+    assert.equal(run?.progressEvents?.at(-2)?.examined, 70);
+    assert.equal(run?.progressEvents?.at(-1)?.sequence, 73);
+    observer.close();
+    memory.close();
+  });
+}
+
+async function testSleepNamespaceScanFailureStopsLaterNamespaces(): Promise<void> {
+  await withIsolatedMemory(async (workspaceRoot) => {
+    const memory = new LocalMemory(workspaceRoot, unusedModel);
+    for (const userId of ["user-a", "user-b", "user-c"]) {
+      await memory.writeEntry({ ...projectEntry(`A distinct rule for ${userId}.`), userId });
+    }
+    const calls: string[] = [];
     const result = await memory.runMemoryMaintenance({ useLlm: false }, {
       indexEntry: async () => undefined,
       findSimilarPairs: async (namespace) => {
-        calls.push(namespace.length);
-        const first = namespace[0]!;
-        const second = namespace[1]!;
-        return { examined: namespace.length, pairs: [{ leftId: first.id, rightId: second.id, similarity: 0.99 }] };
+        calls.push(namespace[0]!.userId!);
+        throw new Error("namespace scan unavailable");
       }
     });
-    assert.equal(result.failed, 0);
-    assert.deepEqual(calls, [entries.length], "相似度扫描一次覆盖全库，不按 user 分桶");
-    assert.equal(memory.maintenanceStatus().lastRun?.examined, entries.length);
-    assert.equal((await memory.listMemoryEntries()).entries.length, 3);
+    assert.equal(result.failed, 1);
+    assert.equal(calls.length, 1, "扫描失败后不继续其它命名空间");
+    const run = (await memory.loadMaintenanceStatus()).lastRun;
+    assert.equal(run?.status, "failed");
+    assert.deepEqual(run?.progressEvents?.map((event) => event.stage), ["exact", "expired", "similarity"]);
+    assert.equal(run?.progressEvents?.at(-1)?.namespaceUserId, calls[0]);
     memory.close();
   });
 }
@@ -1026,7 +1501,7 @@ async function testSleepSimilarityBoundaries(): Promise<void> {
     const prompts: string[] = [];
     const model = jsonMemoryModel((prompt) => {
       const ids = memoryClusterIds(prompt);
-      return ids.length === 3
+      return ids.length === 3 || prompt.includes("The temporary rule repeats")
         ? JSON.stringify({ delete: [], synthesize: [] })
         : JSON.stringify({ delete: [ids[0]], synthesize: [] });
     }, prompts);
@@ -1058,22 +1533,91 @@ async function testSleepSimilarityBoundaries(): Promise<void> {
       ] })
     });
     assert.equal(result.failed, 0);
-    assert.equal(prompts.length, 2, "0.95 must be deterministic; the chain must reach one LLM cluster");
+    assert.equal(prompts.length, 3, "temporary facts require a model decision even above the direct similarity threshold");
     const active = (await memory.listMemoryEntries()).entries;
     assert.equal(active.some((entry) => entry.id === permanent.id), true, "permanent memory wins survivor selection");
-    assert.equal(active.some((entry) => entry.id === temporary.id), false);
+    assert.equal(active.some((entry) => entry.id === temporary.id), true);
     assert.equal(active.filter((entry) => [chainA.id, chainB.id, chainC.id].includes(entry.id)).length, 3);
     const activePair = active.find((entry) => [pairA.id, pairB.id].includes(entry.id));
     assert.ok(activePair);
     const archived = (await memory.listArchivedEntries()).entries;
-    const similarityArchived = archived.find((entry) => entry.originalId === temporary.id);
-    assert.equal(similarityArchived?.archivedReason, "similarity_merge");
-    assert.ok(similarityArchived?.archivedBy?.startsWith(result.startedAt + "-"));
-    assert.equal(similarityArchived?.mergedInto, permanent.id);
+    assert.equal(archived.some((entry) => entry.originalId === temporary.id), false);
     const llmArchived = archived.find((entry) => [pairA.id, pairB.id].includes(entry.originalId ?? ""));
     assert.equal(llmArchived?.archivedReason, "llm_merge");
     assert.equal(llmArchived?.mergedInto, activePair.id);
     memory.close();
+  });
+}
+
+async function testSleepAnchoredSimilarityRequiresModelDecision(): Promise<void> {
+  await withIsolatedMemory(async (workspaceRoot) => {
+    const prompts: string[] = [];
+    const model = jsonMemoryModel(() => JSON.stringify({ delete: [], synthesize: [] }), prompts);
+    const memory = new LocalMemory(workspaceRoot, () => model);
+    try {
+      const anchor = { messageId: "source-message", sentAt: "2026-08-01T09:00:00.000Z", timeZone: "Asia/Shanghai" };
+      const anchored = (await memory.writeEntry({ ...projectEntry("Release scheduled for Friday."), originAnchors: [anchor] })).entry!;
+      const unanchored = (await memory.writeEntry(projectEntry("Release planned for the end of the week."))).entry!;
+      const index = { findSimilarPairs: async () => ({ examined: 2, pairs: [
+        { leftId: anchored.id, rightId: unanchored.id, similarity: 0.98 }
+      ] }) };
+      const preview = await memory.previewMaintenance({}, index);
+      assert.equal(preview.archiveProposed?.some((entry) => entry.reason === "similarity_merge"), false);
+      assert.equal(prompts.length, 1);
+      const result = await memory.runMemoryMaintenance({}, index);
+      assert.equal(result.failed, 0);
+      assert.equal(prompts.length, 2);
+      assert.deepEqual(new Set((await memory.listMemoryEntries()).entries.map((entry) => entry.id)),
+        new Set([anchored.id, unanchored.id]));
+      assert.equal((await memory.listArchivedEntries()).entries.length, 0);
+    } finally { memory.close(); }
+  });
+}
+
+async function testSleepExactDuplicatesRespectSourceTime(): Promise<void> {
+  await withIsolatedMemory(async (workspaceRoot) => {
+    const memory = new LocalMemory(workspaceRoot);
+    try {
+      const first = (await memory.writeEntry({
+        content: "The release is scheduled for Friday.",
+        originAnchors: [{ messageId: "source-one", sentAt: "2026-08-01T09:00:00.000Z", timeZone: "Asia/Shanghai" }]
+      })).entry!;
+      const second = (await memory.writeEntry({
+        content: "An unrelated draft fact.",
+        originAnchors: [{ messageId: "source-two", sentAt: "2026-08-08T09:00:00.000Z", timeZone: "Asia/Shanghai" }]
+      })).entry!;
+      await memory.updateEntry(second.id, { content: first.content });
+      const preview = await memory.previewMaintenance({ useLlm: false });
+      assert.equal(preview.archiveProposed?.some((entry) => entry.reason === "exact_dup"), false);
+      await memory.runMemoryMaintenance({ useLlm: false });
+      assert.deepEqual(new Set((await memory.listMemoryEntries()).entries.map((entry) => entry.id)),
+        new Set([first.id, second.id]));
+    } finally { memory.close(); }
+  });
+}
+
+async function testSleepSimilarityDoesNotMergeDifferentUsers(): Promise<void> {
+  await withIsolatedMemory(async (workspaceRoot) => {
+    const memory = new LocalMemory(workspaceRoot, unusedModel);
+    try {
+      const first = await memory.writeEntry({ content: "A plan belongs to user A.", userId: "user-a" });
+      const second = await memory.writeEntry({ content: "A nearly identical plan belongs to user B.", userId: "user-b" });
+      assert.ok(first.entry && second.entry);
+      const index = {
+        indexEntry: async () => undefined,
+        findSimilarPairs: async () => ({ examined: 2, pairs: [
+          { leftId: first.entry!.id, rightId: second.entry!.id, similarity: 0.99 }
+        ] })
+      };
+      const preview = await memory.previewMaintenance({ useLlm: false }, index);
+      assert.deepEqual(preview.archiveProposed?.filter((item) => item.reason === "similarity_merge"), []);
+      const run = await memory.runMemoryMaintenance({ useLlm: false }, index);
+      assert.equal(run.failed, 0);
+      assert.equal((await memory.listMemoryEntries()).total, 2);
+      assert.equal((await memory.listArchivedEntries()).total, 0);
+    } finally {
+      memory.close();
+    }
   });
 }
 
@@ -1505,7 +2049,9 @@ async function testSleepPreviewDoesNotMutate(): Promise<void> {
       assert.deepEqual(preview.synthesisProposed?.[0]?.sourceIds, [first.entry.id]);
       const promptPrefix = "Cluster of related memories:\n";
       assert.ok(prompts[0]?.startsWith(promptPrefix));
-      assert.deepEqual(prompts[0]!.slice(promptPrefix.length).split("\n").sort(), [first.entry, second.entry].map((entry) => `- id: "${entry.id}", content: "${entry.content}"`).sort());
+      assert.deepEqual(prompts[0]!.slice(promptPrefix.length).split("\n").sort(), [first.entry, second.entry].map((entry) =>
+        `- id: "${entry.id}", content: "${entry.content}" [Memory saved-at: ${entry.createdAt}; original message time/timezone unknown; saved-at is NOT event/due/completion time.]`
+      ).sort());
       const deterministic = await memory.previewMaintenance({ useLlm: false }, {
         findSimilarPairs: async () => ({ examined: 2, pairs: [{ leftId: first.entry!.id, rightId: second.entry!.id, similarity: 0.98 }] })
       });
@@ -1531,9 +2077,12 @@ async function testSleepSynthesisArchivesCluster(): Promise<void> {
     }));
     const memory = new LocalMemory(workspaceRoot, () => model);
 
-    const first = await memory.writeEntry({ ...projectEntry("The first source fact is part of the synthesized memory cluster."), durability: "temporary", accessCount: 7, importance: 5, tags: ["first", "shared"], threadId: "T_A", messageId: "M_A" });
+    const first = await memory.writeEntry({ ...projectEntry("The first source fact is part of the synthesized memory cluster."), durability: "temporary", accessCount: 7, importance: 5, tags: ["first", "shared"], threadId: "T_A", messageId: "M_A", originAnchors: [{ messageId: "M_A", sentAt: "2026-09-10T02:00:00.000Z", timeZone: "unknown" }] });
 
-    const second = await memory.writeEntry({ ...projectEntry("The second source fact is part of the synthesized memory cluster."), accessCount: 3, importance: 1, tags: ["shared", "second"], threadId: "T_B", messageId: "M_B" });
+    const second = await memory.writeEntry({ ...projectEntry("The second source fact is part of the synthesized memory cluster."), accessCount: 3, importance: 1, tags: ["shared", "second"], threadId: "T_B", messageId: "M_B", originAnchors: [
+      { messageId: "M_A", sentAt: "2026-09-10T02:00:00.000Z", timeZone: "unknown" },
+      { messageId: "M_B", sentAt: "2026-09-11T03:00:00.000Z", timeZone: "Asia/Shanghai" }
+    ] });
 
     assert.ok(first.entry && second.entry);
     const preparation = { calls: 0, commits: 0 };
@@ -1572,21 +2121,61 @@ async function testSleepSynthesisArchivesCluster(): Promise<void> {
     assert.ok(synthesis);
     assert.equal(synthesis.source, "auto");
     assert.equal(synthesis.accessCount, 7);
-    assert.equal(synthesis.importance, 5, "synthesis 取簇内最高 importance");
+    assert.equal(synthesis.importance, 1, "synthesis 继承按 Sleep 排名选中的 survivor importance");
     assert.equal(synthesis.threadId, "T_B");
     assert.equal(synthesis.messageId, "M_B");
     assert.deepEqual(synthesis.tags, ["sleep-merged", "first", "shared", "second"]);
+    assert.deepEqual(synthesis.originAnchors, [
+      { messageId: "M_A", sentAt: "2026-09-10T02:00:00.000Z", timeZone: "unknown" },
+      { messageId: "M_B", sentAt: "2026-09-11T03:00:00.000Z", timeZone: "Asia/Shanghai" }
+    ]);
     const archived = (await memory.listArchivedEntries()).entries;
     assert.equal(archived.length, 0, "synthesis without delete keeps the old cluster active");
     const database = new DatabaseSync(path.join(agentRoot, AGENT_DATABASE_FILE), { readOnly: true });
     try {
       const row = database.prepare("SELECT metadata FROM memories WHERE id = ?").get(synthesis.id) as { metadata?: string } | undefined;
       assert.match(row?.metadata ?? "", /"source":"auto"/u);
-      assert.equal(JSON.parse(row!.metadata!).importance, 5);
+      assert.equal(JSON.parse(row!.metadata!).importance, 1);
     } finally {
       database.close();
     }
     memory.close();
+  });
+}
+
+async function testSleepIgnoresUnrequestedSynthesisExpiry(): Promise<void> {
+  await withIsolatedMemory(async (workspaceRoot) => {
+    // Given: 模型在合成提议里越过协议额外返回过期时间。
+    const memory = new LocalMemory(workspaceRoot, () => jsonMemoryModel(() => JSON.stringify({
+      delete: [],
+      synthesize: [{
+        content: "A temporary synthesis of the two ongoing planning facts.",
+        durability: "temporary",
+        expiresAt: "2000-01-01T00:00:00.000Z"
+      }]
+    })));
+    try {
+      const first = await memory.writeEntry(projectEntry("The ongoing planning work has a first stable detail."));
+      const second = await memory.writeEntry(projectEntry("The ongoing planning work has a second related detail."));
+      assert.ok(first.entry && second.entry);
+      const now = new Date("2026-09-26T12:00:00.000Z");
+      await memory.runMemoryMaintenance({ now, temporaryTtl: 3650 }, {
+        prepareSynthesis: async () => () => undefined,
+        findSimilarPairs: async () => ({ examined: 2, pairs: [{
+          leftId: first.entry!.id, rightId: second.entry!.id, similarity: 0.8
+        }] })
+      });
+      const synthesis = (await memory.listMemoryEntries()).entries.find((entry) => entry.tags.includes("sleep-merged"));
+      assert.ok(synthesis);
+      assert.equal(synthesis.durability, "temporary");
+      assert.equal(synthesis.expiresAt, undefined, "Sleep must ignore model fields outside its synthesis contract");
+
+      // When: 下一轮 Sleep 检查临时事实；Then: 不因模型多给的旧时间立即归档。
+      await memory.runMemoryMaintenance({ now: new Date(now.getTime() + 60_000), temporaryTtl: 3650, useLlm: false });
+      assert.ok((await memory.getEntry(synthesis.id))?.archivedAt === undefined);
+    } finally {
+      memory.close();
+    }
   });
 }
 
@@ -1875,7 +2464,7 @@ async function testInitialEmbeddingGeneration(): Promise<void> {
     const accessed = (await memory.listMemoryEntries()).entries[0]!;
     assert.equal(accessed.accessCount, 1);
     assert.ok(accessed.lastAccessedAt);
-    assert.equal(accessed.updatedAt, created.entry.updatedAt, "访问统计不能改写事实更新时间");
+    assert.equal(accessed.updatedAt, accessed.lastAccessedAt, "搜索访问更新事实时间");
     assert.equal(accessed.revision, created.entry.revision);
     assert.equal(readVectorRevision(), vectorRevision, "访问统计不能改写向量对应的事实版本");
     assert.equal((await service.status()).pendingEntries, 0, "访问统计不能使向量投影失效");
@@ -1930,6 +2519,78 @@ async function testInitialEmbeddingGeneration(): Promise<void> {
     assert.equal((await service.findSimilarPairs(entries, 0.75)).examined, 64);
     service.close();
     memory.close();
+  });
+}
+
+async function testSleepUsesCurrentStoredVectorsWhenRuntimeUnavailable(): Promise<void> {
+  await withIsolatedMemory(async (workspaceRoot, agentRoot) => {
+    const memory = new LocalMemory(workspaceRoot, unusedModel);
+    const first = (await memory.writeEntry(projectEntry("The release checklist belongs to the project."))).entry!;
+    const second = (await memory.writeEntry(projectEntry("The project release has a checklist."))).entry!;
+    const ref = { kind: "provider", provider: "test", model: "sleep-cached" } as const;
+    const descriptor: EmbeddingModelDescriptor = {
+      ref, fingerprint: "sha256:sleep-cached", displayName: "Sleep cached vectors",
+      dimensions: 3, recommendedThreshold: 0.8, source: "provider"
+    };
+    let runtimeAvailable = true;
+    let providerAvailable = true;
+    let configuredRef: EmbeddingModelRef = ref;
+    let configured = descriptor;
+    const runtime: EmbeddingModelRuntime = {
+      descriptor, fingerprint: descriptor.fingerprint,
+      embed: async ({ texts }) => ({
+        embeddings: texts.map(() => new Float32Array([1, 0, 0])),
+        dimensions: 3, fingerprint: descriptor.fingerprint, model: ref
+      })
+    };
+    const service = new MemoryEmbeddingService({
+      localMemory: memory,
+      localManager: { list: async () => [] } as unknown as LocalEmbeddingManager,
+      getVectorIndex: () => new MemoryVectorIndex(agentRoot),
+      getReadOnlyVectorIndex: () => MemoryVectorIndex.openReadOnly(agentRoot),
+      getActiveModel: () => selectMemoryEmbeddingModel(configuredRef, [{ ...configured, available: providerAvailable }]),
+      getConfiguredModel: () => configuredRef,
+      getProviderModels: () => [{ ...configured, available: providerAvailable }],
+      getRuntime: async () => runtimeAvailable ? runtime : undefined
+    });
+    try {
+      await service.rebuild();
+      runtimeAvailable = false;
+      providerAvailable = false;
+      const entries = (await memory.listMemoryEntries()).entries;
+      const cachedScan = await service.findSimilarPairs(entries, 0.95);
+      assert.equal(cachedScan.examined, 2);
+      assert.equal(cachedScan.pairs.length, 1);
+      assert.deepEqual(new Set([cachedScan.pairs[0]!.leftId, cachedScan.pairs[0]!.rightId]),
+        new Set([first.id, second.id]));
+      assert.equal(cachedScan.pairs[0]!.similarity, 1);
+      const preview = await memory.previewMaintenance({ useLlm: false }, service);
+      assert.equal(preview.examined, 2);
+      assert.equal(preview.archiveProposed?.some((item) => item.reason === "similarity_merge"), true);
+      configuredRef = { kind: "auto" };
+      assert.equal((await service.findSimilarPairs(entries, 0.95)).examined, 2,
+        "Auto may reuse its known projection while every configured provider is unavailable");
+      providerAvailable = true;
+      configured = { ...descriptor, fingerprint: "sha256:new-auto-selection" };
+      assert.deepEqual(await service.findSimilarPairs(entries, 0.95), { examined: 0, pairs: [] },
+        "Auto must not reuse the old projection after selecting another vector space");
+      configured = descriptor;
+      providerAvailable = false;
+      configuredRef = { kind: "provider", provider: "test", model: "another-model" };
+      assert.deepEqual(await service.findSimilarPairs(entries, 0.95), { examined: 0, pairs: [] },
+        "An explicit model switch cannot reuse the prior provider projection");
+      configuredRef = ref;
+      configured = { ...descriptor, fingerprint: "sha256:another-model" };
+      assert.deepEqual(await service.findSimilarPairs(entries, 0.95), { examined: 0, pairs: [] },
+        "A configured model change cannot reuse the old projection");
+      configured = descriptor;
+      await memory.updateEntry(second.id, { content: "The project release checklist was revised." });
+      assert.deepEqual(await service.findSimilarPairs((await memory.listMemoryEntries()).entries, 0.95),
+        { examined: 1, pairs: [] }, "A stale entry revision cannot reuse its prior vector");
+    } finally {
+      service.close();
+      memory.close();
+    }
   });
 }
 
@@ -2104,7 +2765,7 @@ function jsonMemoryModel(response: (prompt: string) => string, prompts: string[]
         assert.equal(options?.maxOutputTokens, undefined);
       }
       if (prompt.startsWith("Extract memories from this conversation:")) {
-        assert.equal(context.systemPrompt, memoryExtractionPrompt);
+        assert.equal(context.systemPrompt, memoryExtractionPrompt + "\n\n" + memoryTimeAnchorInstruction);
         assert.equal(context.messages.length, 1);
         assert.equal(context.messages[0]?.role, "user");
         assert.equal(options?.maxOutputTokens, undefined);

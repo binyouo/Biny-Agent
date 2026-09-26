@@ -7,7 +7,7 @@ import type {
   MemoryDurability,
   MemoryEntry,
   MemoryEntryInput,
-  MemoryMatch,
+  MemoryOriginAnchor,
   MemorySearchScope
 } from "./memoryTypes.js";
 
@@ -25,12 +25,6 @@ export interface StoredEntryFields {
   archivedReason?: MemoryEntry["archivedReason"];
   mergedInto?: string;
   archivedBy?: string;
-}
-
-export interface RankedMemoryEntry {
-  entry: MemoryEntry;
-  score: number;
-  excerpt: string;
 }
 
 export function sanitizeMemoryEntryInput(input: MemoryEntryInput): MemoryEntryInput {
@@ -56,6 +50,8 @@ export function sanitizeMemoryEntryInput(input: MemoryEntryInput): MemoryEntryIn
     userId: sanitizeOptionalIdentifier(input.userId),
     activitySource: input.activitySource,
     activitySessionId: sanitizeOptionalIdentifier(input.activitySessionId),
+    originAnchors: normalizeMemoryOriginAnchors(input.originAnchors),
+    metadataExtra: sanitizeMetadataExtra(input.metadataExtra),
     accessCount: input.accessCount,
     archivedAt: input.archivedAt,
     archivedReason: input.archivedReason,
@@ -89,46 +85,47 @@ export function createStoredMemoryEntry(input: MemoryEntryInput, fields: StoredE
     messageId: safe.messageId,
     userId: safe.userId,
     activitySource: safe.activitySource,
-    activitySessionId: safe.activitySessionId
+    activitySessionId: safe.activitySessionId,
+    originAnchors: safe.originAnchors,
+    metadataExtra: safe.metadataExtra
   };
 }
 
-/** tag 后过滤：匹配任意给定标签；空列表表示不过滤。 */
-export function entryHasAnyTag(entry: Pick<MemoryEntry, "tags">, filter: readonly string[] | undefined): boolean {
-  if (!filter?.length) return true;
-  const owned = new Set(entry.tags.map((tag) => tag.toLowerCase()));
-  return filter.some((tag) => owned.has(tag.trim().toLowerCase()));
+function sanitizeMetadataExtra(value: Record<string, unknown> | undefined): Record<string, unknown> | undefined {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Memory metadataExtra must be an object.");
+  const serialized = JSON.stringify(value);
+  if (serialized === undefined) throw new Error("Memory metadataExtra must contain JSON values.");
+  const parsed: unknown = JSON.parse(serialized);
+  return parsed as Record<string, unknown>;
 }
 
-/** 显式搜索的 thread 与 tag 范围取交集，不按存储中的 userId 切分事实。 */
+export function normalizeMemoryOriginAnchors(value: MemoryOriginAnchor[] | undefined): MemoryOriginAnchor[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value)) throw new Error("Memory origin anchors must be an array.");
+  const unique = new Map<string, MemoryOriginAnchor>();
+  for (const anchor of value.slice(0, 32)) {
+    if (!anchor || typeof anchor !== "object" || typeof anchor.messageId !== "string"
+      || typeof anchor.sentAt !== "string" || typeof anchor.timeZone !== "string") continue;
+    const messageId = sanitizeOptionalIdentifier(anchor.messageId);
+    const parsedTime = Date.parse(anchor.sentAt);
+    if (!messageId || !Number.isFinite(parsedTime)) continue;
+    let timeZone = anchor.timeZone.trim() || "unknown";
+    if (timeZone !== "unknown") {
+      try { new Intl.DateTimeFormat("en", { timeZone }); } catch { timeZone = "unknown"; }
+    }
+    const safe = { messageId, sentAt: new Date(parsedTime).toISOString(), timeZone };
+    unique.set(JSON.stringify(safe), safe);
+  }
+  return [...unique.values()];
+}
+
+/** 向量 top-K 之后的事实范围过滤。 */
 export function entryMatchesMemorySearchScope(entry: MemoryEntry, scope: MemorySearchScope): boolean {
   if (scope.threadId !== undefined && entry.threadId !== scope.threadId) return false;
-  return entryHasAnyTag(entry, scope.tags);
-}
-
-/** 确定性词法打分：标签命中权重最高，其次是正文包含；新条目有轻微新鲜度加成。 */
-export function rankMemoryEntries(entries: MemoryEntry[], query: string, now: Date): RankedMemoryEntry[] {
-  const queryTerms = tokenizeMemoryText(query);
-  return entries.map((entry) => {
-    const content = entry.content.toLowerCase();
-    const tags = entry.tags.map((tag) => tag.toLowerCase());
-    let score = entry.importance * 4;
-    for (const term of queryTerms) {
-      if (tags.some((tag) => tag === term)) score += 18;
-      else if (tags.some((tag) => tag.includes(term) || term.includes(tag))) score += 9;
-      if (content.includes(term)) score += 6;
-      if (entry.rationale?.toLowerCase().includes(term)) score += 3;
-    }
-    const ageMs = Math.max(0, now.getTime() - Date.parse(entry.updatedAt));
-    score += Math.max(0, 8 - ageMs / (90 * 24 * 60 * 60 * 1_000) * 8);
-    return { entry, score, excerpt: entry.content.slice(0, 500) };
-  }).filter(({ score, entry }) => queryTerms.length === 0 || score > entry.importance * 4 + 0.01)
-    .sort((left, right) => (
-      right.score - left.score
-      || right.entry.importance - left.entry.importance
-      || right.entry.updatedAt.localeCompare(left.entry.updatedAt)
-      || left.entry.id.localeCompare(right.entry.id)
-    ));
+  if (scope.userIds?.length && entry.userId !== undefined && !scope.userIds.includes(entry.userId)) return false;
+  if (!scope.userIds?.length && scope.userId !== undefined && entry.userId !== undefined && entry.userId !== scope.userId) return false;
+  return !scope.tags?.length || scope.tags.some((tag) => entry.tags.includes(tag));
 }
 
 export function normalizeImportance(value: number | undefined): number {
@@ -136,12 +133,8 @@ export function normalizeImportance(value: number | undefined): number {
   return value;
 }
 
-export function memoryEntryEquals(left: MemoryEntry, right: MemoryEntryInput): boolean {
-  return memoryEntryExactKey(left) === memoryEntryExactKey(right);
-}
-
-export function memoryEntryExactKey(entry: Pick<MemoryEntry, "content"> | Pick<MemoryEntryInput, "content">): string {
-  return normalizeMemoryContent(entry.content);
+export function memoryEntryExactKey(entry: Pick<MemoryEntry, "content" | "userId"> | Pick<MemoryEntryInput, "content" | "userId">): string {
+  return JSON.stringify([entry.userId ?? null, normalizeMemoryContent(entry.content)]);
 }
 
 export function tokenizeMemoryText(value: string): string[] {
@@ -153,15 +146,6 @@ export function tokenizeMemoryText(value: string): string[] {
     for (let index = 0; index + 1 < run.length; index += 1) cjk.push(run.slice(index, index + 2));
   }
   return [...new Set([...ascii, ...cjk])].slice(0, 64);
-}
-
-export function memoryMatchFromRanked(ranked: RankedMemoryEntry, relativePath: string): MemoryMatch {
-  return {
-    entry: ranked.entry,
-    path: relativePath,
-    excerpt: ranked.excerpt,
-    score: ranked.score
-  };
 }
 
 function sanitizeStringArray(values: string[] | undefined, maxItems: number, maxChars: number): string[] {

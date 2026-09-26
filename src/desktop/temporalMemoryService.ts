@@ -1,6 +1,6 @@
 /** Desktop 使用原始会话的日期投影，并把来源定位到已登记项目。 */
 import path from "node:path";
-import { realpathSync } from "node:fs";
+import { realpath } from "node:fs/promises";
 import { projectSessionsDir } from "../config/paths.js";
 import { globalAgentDir } from "../config/paths.js";
 import { listAllSessionFiles, sessionIdFromFile } from "../session/store.js";
@@ -57,17 +57,33 @@ export { parseTemporalSourceUri } from "../session/temporalSourceUri.js";
 export class DesktopTemporalMemoryService {
   private readonly index: TemporalMemoryIndex;
   private readonly root: string;
+  private readonly pendingQueries = new Set<Promise<DesktopTemporalPage>>();
+  private closed = false;
   constructor(root?: string) { this.root = root ?? globalAgentDir(); this.index = new TemporalMemoryIndex(this.root); }
-  close(): void { this.index.close(); }
+  async close(): Promise<void> {
+    this.closed = true;
+    if (this.pendingQueries.size) await Promise.allSettled(this.pendingQueries);
+    this.index.close();
+  }
 
-  async query(query: DesktopTemporalQuery, projects: Array<{ id: string; path: string }>,
+  query(query: DesktopTemporalQuery, projects: Array<{ id: string; path: string }>,
+    scheduledSources: Array<{ projectId: string; automations: ScheduledAutomation[] }> = []): Promise<DesktopTemporalPage> {
+    if (this.closed) return Promise.reject(new Error("Temporal memory service is closed."));
+    const request = this.queryPage(query, projects, scheduledSources).finally(() => { this.pendingQueries.delete(request); });
+    this.pendingQueries.add(request);
+    return request;
+  }
+
+  private async queryPage(query: DesktopTemporalQuery, projects: Array<{ id: string; path: string }>,
     scheduledSources: Array<{ projectId: string; automations: ScheduledAutomation[] }> = []): Promise<DesktopTemporalPage> {
     await this.index.refreshAll();
     const page = this.index.queryClues(query);
     const projectRoots = projects.map((project) => ({ id: project.id, sessions: projectSessionsDir(project.path, { env: { ...process.env, BINY_AGENT_DIR: this.root } }) }));
     const projectBySession = new Map<string, string | undefined>();
-    for (const file of await listAllSessionFiles(this.root)) {
-      const canonicalFile = realpathSync(file);
+    const visibleSessions = new Set(page.clues.map((clue) => clue.sessionId));
+    for (const file of visibleSessions.size ? await listAllSessionFiles(this.root) : []) {
+      if (!visibleSessions.has(sessionIdFromFile(file))) continue;
+      const canonicalFile = await realpath(file);
       const owner = projectRoots.find((project) => canonicalFile.startsWith(`${project.sessions}${path.sep}`));
       if (owner) {
         const sessionId = sessionIdFromFile(file);

@@ -82,7 +82,8 @@ export function readMemoryEntryInput(value: unknown): MemoryEntryInput {
     durability: readMemoryDurability(record.durability),
     expiresAt: optionalString(record.expiresAt),
     threadId: optionalString(record.threadId),
-    messageId: optionalString(record.messageId)
+    messageId: optionalString(record.messageId),
+    metadataExtra: readMemoryMetadataExtra(record.metadataExtra)
   };
 }
 
@@ -99,8 +100,15 @@ export function readMemoryEntryPatch(value: unknown): MemoryEntryPatch {
     rationale: optionalString(record.rationale),
     importance,
     durability: readMemoryDurability(record.durability),
-    expiresAt: optionalString(record.expiresAt)
+    expiresAt: optionalString(record.expiresAt),
+    metadataExtra: readMemoryMetadataExtra(record.metadataExtra)
   };
+}
+
+function readMemoryMetadataExtra(value: unknown): Record<string, unknown> | undefined {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Memory metadataExtra must be an object.");
+  return value as Record<string, unknown>;
 }
 
 export function readMemoryDurability(value: unknown): MemoryDurability | undefined {

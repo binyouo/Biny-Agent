@@ -4,11 +4,14 @@
  */
 import { createHash } from "node:crypto";
 import { lstatSync, mkdirSync, readFileSync } from "node:fs";
-import { readFile } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
+import { setImmediate as yieldToEventLoop } from "node:timers/promises";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { globalAgentDir } from "../config/paths.js";
+import { readSessionCatalogRecordForFile, readSessionCatalogRecordForFileSync } from "./catalog.js";
 import { dateReferenceKeyFingerprint, parseDateReference } from "./dateReference.js";
+import { activeSessionMessageIds } from "./messageTree.js";
 import { listAllSessionFiles, sessionIdFromFile } from "./store.js";
 import type { SessionEvent } from "./events.js";
 
@@ -42,6 +45,8 @@ export interface TemporalExtractor {
   extractClues?(source: TemporalSource, signal?: AbortSignal): Promise<unknown>;
   extractFacts?(source: TemporalSource, chunk: string, chunkOffset: number, signal?: AbortSignal): Promise<unknown>;
 }
+
+export const temporalClueModelTextLimit = 6_000;
 
 export interface TemporalQuery {
   startDate: string;
@@ -249,6 +254,12 @@ function isOriginalUserMessage(event: SessionEvent): event is Extract<SessionEve
   return !event.content.startsWith('[System Event - CronJob "');
 }
 
+function activeTreeIds(events: readonly SessionEvent[]): ReadonlySet<string> | undefined {
+  // 旧 JSONL 没有父子关系，不能把最后一条扁平消息误当成唯一活动路径。
+  return events.some((event) => (event.type === "user_message" || event.type === "agent_message")
+    && event.parentMessageId !== undefined) ? activeSessionMessageIds(events) : undefined;
+}
+
 function queryBounds(query: TemporalQuery): { limit: number; offset: number } {
   if (!validDay(query.startDate) || !validDay(query.endDate) || query.startDate >= query.endDate) throw new Error("Invalid date range.");
   const limit = query.limit ?? 50;
@@ -259,22 +270,55 @@ function queryBounds(query: TemporalQuery): { limit: number; offset: number } {
 
 export class TemporalMemoryIndex {
   private database: DatabaseSync | undefined;
+  private refreshFlight?: Promise<void>;
+  private readonly scannedFiles = new Map<string, { signature: string; ids: string[] }>();
+  private scanVersion?: string;
 
   constructor(private readonly root = globalAgentDir(), private readonly extractor: TemporalExtractor = {}) {}
 
   close(): void {
     this.database?.close();
     this.database = undefined;
+    this.scannedFiles.clear();
+    this.scanVersion = undefined;
   }
 
   async refreshAll(signal?: AbortSignal): Promise<void> {
+    // 无取消信号的只读消费者共享当前扫描；独立取消的调用不能取消其他消费者。
+    if (!signal) {
+      this.refreshFlight ??= this.scanAll().finally(() => { this.refreshFlight = undefined; });
+      return await this.refreshFlight;
+    }
+    if (this.refreshFlight) await this.refreshFlight;
+    await this.scanAll(signal);
+  }
+
+  private async scanAll(signal?: AbortSignal): Promise<void> {
+    const db = this.open();
+    const version = JSON.stringify([db.prepare("PRAGMA data_version").get(), dateReferenceKeyFingerprint(this.root)]);
+    if (version !== this.scanVersion) this.scannedFiles.clear();
+    this.scanVersion = version;
     const files = await listAllSessionFiles(this.root);
+    const currentFiles = new Set(files);
+    for (const file of this.scannedFiles.keys()) if (!currentFiles.has(file)) this.scannedFiles.delete(file);
     const present = new Set<string>();
+    const canCache = !this.extractor.extractClues && !this.extractor.extractFacts;
     for (const file of files) {
       signal?.throwIfAborted();
-      for (const id of await this.indexSessionFile(sessionIdFromFile(file), file, signal)) present.add(id);
+      const sessionId = sessionIdFromFile(file);
+      // catalog 是无痕状态权威；即使 JSONL 未变化，也必须在复用派生索引前重读。
+      if (await this.sessionIsIncognito(sessionId, file)) {
+        this.removeSession(sessionId, file);
+        continue;
+      }
+      const before = await sessionFileSignature(file);
+      const cached = canCache ? this.scannedFiles.get(file) : undefined;
+      const ids = cached?.signature === before ? cached.ids : await this.indexSessionFile(sessionId, file, signal);
+      for (const id of ids) present.add(id);
+      // 编辑/追加可能发生在读取中；只缓存整个扫描期间没有变化的文件。
+      if (canCache && await sessionFileSignature(file) === before) this.scannedFiles.set(file, { signature: before, ids });
+      else this.scannedFiles.delete(file);
     }
-    const db = this.open();
     db.exec("BEGIN IMMEDIATE");
     try {
       for (const row of db.prepare("SELECT id FROM temporal_sources").all() as Array<{ id: string }>) {
@@ -286,25 +330,38 @@ export class TemporalMemoryIndex {
 
   /** 完整扫描单个文件，按原文 hash 只重算变化的消息；半行留待下一轮。 */
   async indexSessionFile(sessionId: string, filePath: string, signal?: AbortSignal): Promise<string[]> {
+    this.scannedFiles.delete(filePath);
+    if (await this.sessionIsIncognito(sessionId, filePath)) {
+      this.removeSession(sessionId, filePath);
+      return [];
+    }
+    this.open().prepare("INSERT INTO temporal_session_files(session_id,file_path) VALUES(?,?) ON CONFLICT(session_id) DO UPDATE SET file_path=excluded.file_path")
+      .run(sessionId, filePath);
+    const beforeSignature = await sessionFileSignature(filePath);
     const raw = await readFile(filePath, "utf8");
     const present: string[] = [];
     let ordinal = 0;
+    let complete = true;
     const events: Array<{ event: SessionEvent; ordinal: number }> = [];
     for (const line of raw.split("\n")) {
       if (!line.trim()) continue;
       let event: SessionEvent;
-      try { event = JSON.parse(line) as SessionEvent; } catch { break; }
+      try { event = JSON.parse(line) as SessionEvent; } catch { complete = false; break; }
       ordinal += 1;
       events.push({ event, ordinal });
+      if (ordinal % 500 === 0) { signal?.throwIfAborted(); await yieldToEventLoop(); }
     }
     const selectedSlots = new Map<string, string>();
     const latestSlots = new Map<string, string>();
+    const activeIds = activeTreeIds(events.map(({ event }) => event));
     for (const { event } of events) {
       if (event.type === "message_version_selected") selectedSlots.set(event.slotId, event.messageId);
       if (isOriginalUserMessage(event) && event.slotId && event.messageId) latestSlots.set(event.slotId, event.messageId);
     }
     for (const { event, ordinal: eventOrdinal } of events) {
+      if (eventOrdinal % 100 === 0) { signal?.throwIfAborted(); await yieldToEventLoop(); }
       if (!isOriginalUserMessage(event)) continue;
+      if (activeIds && event.messageId && !activeIds.has(event.messageId)) continue;
       if (event.slotId && event.messageId && (selectedSlots.get(event.slotId) ?? latestSlots.get(event.slotId)) !== event.messageId) continue;
       const messageId = event.messageId ?? `line-${String(eventOrdinal)}`;
       const source: TemporalSource = {
@@ -328,8 +385,9 @@ export class TemporalMemoryIndex {
           const result = await this.extractor.extractClues(source, signal);
           signal?.throwIfAborted();
           if (Array.isArray(result) && result.length <= 50 && result.every((clue) => isGroundedClue(clue, source, this.root))) {
-            const references = clues.filter((clue) => clue.expression.includes("biny://date/"));
-            clues = [...result.filter((clue) => !references.some((reference) => reference.offset === clue.offset)), ...references]
+            const retainedGrammar = clues.filter((clue) => clue.expression.includes("biny://date/")
+              || clue.offset + clue.expression.length > temporalClueModelTextLimit);
+            clues = [...result.filter((clue) => !retainedGrammar.some((grammar) => grammar.offset === clue.offset)), ...retainedGrammar]
               .sort((left, right) => left.offset - right.offset);
             parser = "model";
           }
@@ -356,6 +414,10 @@ export class TemporalMemoryIndex {
         db.prepare("DELETE FROM temporal_sources WHERE id = ?").run(id);
         continue;
       }
+      if (await this.sessionIsIncognito(sessionId, filePath)) {
+        this.removeSession(sessionId, filePath);
+        return [];
+      }
       db.exec("BEGIN IMMEDIATE");
       try {
         db.prepare("INSERT INTO temporal_sources(id,session_id,message_id,source_hash,sent_at,time_zone,parser,facts_indexed) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET source_hash=excluded.source_hash,sent_at=excluded.sent_at,time_zone=excluded.time_zone,parser=excluded.parser,facts_indexed=excluded.facts_indexed")
@@ -380,11 +442,35 @@ export class TemporalMemoryIndex {
         db.exec("COMMIT");
       } catch (error) { db.exec("ROLLBACK"); throw error; }
     }
+    if (await this.sessionIsIncognito(sessionId, filePath)) {
+      this.removeSession(sessionId, filePath);
+      return [];
+    }
+    if (complete && await sessionFileSignature(filePath) === beforeSignature) {
+      const db = this.open();
+      db.prepare("DELETE FROM temporal_sources WHERE session_id = ? AND id NOT IN (SELECT value FROM json_each(?))")
+        .run(sessionId, JSON.stringify(present));
+    }
     return present;
+  }
+
+  private async sessionIsIncognito(sessionId: string, filePath: string): Promise<boolean> {
+    try { return (await readSessionCatalogRecordForFile(filePath, sessionId))?.isIncognito === true; }
+    catch (error) {
+      // catalog 无法验证时不能继续展示上次从该会话提取的跨会话材料。
+      this.removeSession(sessionId, filePath);
+      throw error;
+    }
+  }
+
+  private removeSession(sessionId: string, filePath: string): void {
+    this.scannedFiles.delete(filePath);
+    this.open().prepare("DELETE FROM temporal_sources WHERE session_id = ?").run(sessionId);
   }
 
   queryClues(query: TemporalQuery): { clues: TemporalClueHit[]; unread: number; hasMore: boolean; nextOffset: number | null; coverage: string } {
     const { limit, offset } = queryBounds(query);
+    this.evictUnavailableSources();
     const db = this.open();
     const rows = db.prepare(
       "SELECT c.*,s.sent_at,s.time_zone,EXISTS(SELECT 1 FROM temporal_seen v WHERE v.clue_id=c.id AND v.day=?) AS seen " +
@@ -414,6 +500,7 @@ export class TemporalMemoryIndex {
 
   queryFacts(query: TemporalQuery): { facts: TemporalFactHit[]; hasMore: boolean; nextOffset: number | null; coverage: string } {
     const { limit, offset } = queryBounds(query);
+    this.evictUnavailableSources();
     const rows = this.open().prepare(
       "SELECT f.*,s.sent_at,s.time_zone FROM temporal_facts f JOIN temporal_sources s ON s.id=f.source_id " +
       "WHERE ((f.event_date>=? AND f.event_date<?) OR (f.due_date>=? AND f.due_date<?) OR (f.completed_date>=? AND f.completed_date<?)) " +
@@ -472,10 +559,28 @@ export class TemporalMemoryIndex {
     } catch (error) { db.exec("ROLLBACK"); throw error; }
   }
 
+  private evictUnavailableSources(): void {
+    const db = this.open();
+    const rows = db.prepare("SELECT DISTINCT s.session_id, f.file_path FROM temporal_sources s LEFT JOIN temporal_session_files f ON f.session_id=s.session_id")
+      .all() as Array<{ session_id: string; file_path: string | null }>;
+    for (const row of rows) {
+      try {
+        // 老索引尚无可验证的 JSONL 路径，必须先重建，不能盲信其派生内容。
+        if (!row.file_path || readSessionCatalogRecordForFileSync(row.file_path, row.session_id)?.isIncognito) {
+          this.removeSession(row.session_id, row.file_path ?? "");
+        }
+      } catch {
+        // catalog/路径损坏时只撤销对应派生索引；其他会话仍可读取。
+        this.removeSession(row.session_id, row.file_path ?? "");
+      }
+    }
+  }
+
   private sourceStillCurrent(filePath: string, messageId: string, ordinal: number, sourceHash: string, referenceKeyVersion: string | undefined): boolean {
     try {
       const selectedSlots = new Map<string, string>();
       const latestSlots = new Map<string, string>();
+      const events: SessionEvent[] = [];
       let matching: Extract<SessionEvent, { type: "user_message" }> | undefined;
       let lineNumber = 0;
       for (const line of readFileSync(filePath, "utf8").split("\n")) {
@@ -483,12 +588,15 @@ export class TemporalMemoryIndex {
         lineNumber += 1;
         let event: SessionEvent;
         try { event = JSON.parse(line) as SessionEvent; } catch { return false; }
+        events.push(event);
         if (event.type === "message_version_selected") selectedSlots.set(event.slotId, event.messageId);
         if (!isOriginalUserMessage(event)) continue;
         if (event.slotId && event.messageId) latestSlots.set(event.slotId, event.messageId);
         if ((event.messageId ?? `line-${String(lineNumber)}`) === messageId && lineNumber === ordinal) matching = event;
       }
       if (!matching) return false;
+      const activeIds = activeTreeIds(events);
+      if (activeIds && matching.messageId && !activeIds.has(matching.messageId)) return false;
       if (matching.slotId && matching.messageId
         && (selectedSlots.get(matching.slotId) ?? latestSlots.get(matching.slotId)) !== matching.messageId) return false;
       if (referenceKeyVersion !== undefined && dateReferenceKeyFingerprint(this.root) !== referenceKeyVersion) return false;
@@ -512,6 +620,7 @@ export class TemporalMemoryIndex {
     db.exec("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000; PRAGMA foreign_keys=ON");
     db.exec(`
       CREATE TABLE IF NOT EXISTS temporal_sources(id TEXT PRIMARY KEY,session_id TEXT NOT NULL,message_id TEXT NOT NULL,source_hash TEXT NOT NULL,sent_at TEXT,time_zone TEXT,parser TEXT NOT NULL,facts_indexed INTEGER NOT NULL DEFAULT 0);
+      CREATE TABLE IF NOT EXISTS temporal_session_files(session_id TEXT PRIMARY KEY,file_path TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS temporal_clues(id TEXT PRIMARY KEY,source_id TEXT NOT NULL REFERENCES temporal_sources(id) ON DELETE CASCADE,session_id TEXT NOT NULL,message_id TEXT NOT NULL,expression TEXT NOT NULL,date TEXT,end_date TEXT,time TEXT,offset INTEGER NOT NULL,quote TEXT NOT NULL,ignored INTEGER NOT NULL DEFAULT 0);
       CREATE INDEX IF NOT EXISTS temporal_clues_date ON temporal_clues(date,session_id);
       CREATE TABLE IF NOT EXISTS temporal_seen(day TEXT NOT NULL,clue_id TEXT NOT NULL REFERENCES temporal_clues(id) ON DELETE CASCADE,PRIMARY KEY(day,clue_id));
@@ -523,4 +632,10 @@ export class TemporalMemoryIndex {
     this.database = db;
     return db;
   }
+}
+
+/** 同长重写和原位替换也必须使索引失效；不只比较 mtime 或文件大小。 */
+async function sessionFileSignature(file: string): Promise<string> {
+  const info = await stat(file, { bigint: true });
+  return `${info.dev}:${info.ino}:${info.size}:${info.mtimeNs}:${info.ctimeNs}`;
 }

@@ -1,7 +1,8 @@
 import { z } from "zod";
-import { defaultEmbeddingModelRef, type EmbeddingModelRef } from "../llm/embedding/types.js";
+import type { EmbeddingModelRef } from "../llm/embedding/types.js";
 
 export const embeddingModelRefSchema: z.ZodType<EmbeddingModelRef> = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("auto") }).strict(),
   z.object({
     kind: z.literal("local"),
     model: z.literal("multilingual-e5-small")
@@ -28,11 +29,6 @@ const rawMemoryPolicySchema = z.object({
   // 嵌入模型默认本地 multilingual-e5-small（可下载）；云端需 provider 已配置并经隐私确认。
   embeddingModel: embeddingModelRefSchema.optional(),
   similarityThreshold: z.number().min(0).max(1).default(0.1),
-  // key 是 provider alias + endpoint 的不可逆摘要；不保存 URL、凭据或记忆正文。
-  cloudEmbeddingConsents: z.record(z.object({
-    endpointHash: z.string().min(16).max(128),
-    confirmedAt: z.string().datetime()
-  }).strict()).default({}),
   // 外部网页、MCP/Plugin 与子代理结果默认不进入自动记忆候选。
   excludeExternalContext: z.boolean().default(true),
   // 自动注入条数上限（概览之外的条目召回）。
@@ -54,7 +50,7 @@ export const memoryPolicySchema = rawMemoryPolicySchema.transform((policy): Memo
   // 缺少总开关的旧配置按两个自动开关的 OR 推导；显式关闭总开关时由迁移结果保留关闭语义。
   enabled: policy.enabled ?? (policy.useMemories || policy.generateMemories),
   // 历史配置可能已经有 context.memory，但没有 embeddingModel；默认仍必须是本地 E5。
-  embeddingModel: policy.embeddingModel ?? { ...defaultEmbeddingModelRef }
+  embeddingModel: policy.embeddingModel ?? { kind: "auto" }
 })).default({
   enabled: true,
   useMemories: true,
@@ -63,9 +59,8 @@ export const memoryPolicySchema = rawMemoryPolicySchema.transform((policy): Memo
   memoryModel: undefined,
   rewriteModel: undefined,
   extractModel: undefined,
-  embeddingModel: { kind: "local", model: "multilingual-e5-small" },
+  embeddingModel: { kind: "auto" },
   similarityThreshold: 0.1,
-  cloudEmbeddingConsents: {},
   excludeExternalContext: true,
   maxRecalled: 5,
   sleepEnabled: true,

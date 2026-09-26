@@ -128,7 +128,7 @@ export async function runRuntimeHostProcess(argv: readonly string[] = process.ar
 function browserAutomationFromEnvironment(): BrowserAutomationEndpoint | undefined {
   const endpoint = process.env.BINY_BROWSER_CONTROL_ENDPOINT;
   const token = process.env.BINY_BROWSER_CONTROL_TOKEN;
-  return endpoint && token ? { endpoint, token } : undefined;
+  return endpoint && token ? { endpoint, token, projectId: process.env.BINY_BROWSER_PROJECT_ID } : undefined;
 }
 
 function parseOptions(argv: readonly string[]): RuntimeHostProcessOptions {

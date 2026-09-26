@@ -94,14 +94,23 @@ export class MemoryVectorIndex {
   }
 
   /** 用同一 transaction 替换全部向量，避免保留半成品索引。 */
-  replaceAll(modelFingerprint: string, dimensions: number, inputs: readonly MemoryVectorInput[]): void {
+  replaceAll(
+    modelFingerprint: string,
+    dimensions: number,
+    inputs: readonly MemoryVectorInput[],
+    storedModelId?: string
+  ): void {
     this.assertOpen();
     validateFingerprint(modelFingerprint);
+    if (storedModelId !== undefined) validateFingerprint(storedModelId);
     validateDimensions(dimensions);
     const prepared = prepareInputs(inputs, dimensions);
     if (!this.vectorExtensionAvailable) throw new Error("SQLite vector extension is unavailable.");
     const now = new Date().toISOString();
     this.transaction(() => {
+      if (prepared.length === 0 && this.database.prepare("SELECT id FROM memories LIMIT 1").get() !== undefined) {
+        throw new Error("Memory changed before embedding projection commit.");
+      }
       if (prepared.some((input) => !this.isCurrentEntry(input))) {
         throw new Error("Memory changed before embedding projection commit.");
       }
@@ -115,7 +124,34 @@ export class MemoryVectorIndex {
         embedding_created_at: now,
         embedding_completed_at: now
       });
+      if (storedModelId !== undefined) this.writeMetadata({ embedding_model_id: storedModelId });
+      else this.database.prepare("DELETE FROM memory_metadata WHERE key = ?").run("embedding_model_id");
     });
+  }
+
+  /** 未知维度且没有活动事实时，原子清除旧模型投影，不能将旧维度冒充新模型维度。 */
+  clearEmptyProjection(storedModelId?: string): void {
+    this.assertOpen();
+    if (storedModelId !== undefined) validateFingerprint(storedModelId);
+    if (!this.vectorExtensionAvailable) throw new Error("SQLite vector extension is unavailable.");
+    this.transaction(() => {
+      if (this.database.prepare("SELECT id FROM memories LIMIT 1").get() !== undefined) {
+        throw new Error("Memory changed before embedding projection commit.");
+      }
+      this.database.exec("DELETE FROM memory_embeddings");
+      this.database.exec("DELETE FROM memory_embedding_versions");
+      this.database.prepare("DELETE FROM memory_metadata WHERE key IN (?, ?, ?, ?)")
+        .run("embedding_model", "embedding_dimensions", "embedding_created_at", "embedding_completed_at");
+      if (storedModelId !== undefined) this.writeMetadata({ embedding_model_id: storedModelId });
+      else this.database.prepare("DELETE FROM memory_metadata WHERE key = ?").run("embedding_model_id");
+    });
+  }
+
+  /** 上次成功完整重建的模型 ID；与用于向量空间校验的 fingerprint 分开保存。 */
+  storedModelId(): string | null {
+    this.assertOpen();
+    if (!this.hasSchema()) return null;
+    return this.readMetadata("embedding_model_id") ?? null;
   }
 
   /** 模型/维度不匹配返回 false 以请求重建；过期条目直接丢弃，不能覆盖当前投影。 */

@@ -290,9 +290,9 @@ async function testMemoryTopicLifecycle(): Promise<void> {
     assert.match(shown, /pnpm typecheck/);
 
     const searchCalls: Array<{ query: string; paths: string[]; limit: number | undefined }> = [];
-    const searchMemory = async (query: string, paths: string[], options: Parameters<LocalMemory["search"]>[2]) => {
+    const searchMemory: NonNullable<Parameters<typeof runMemoryCommand>[2]> = async (query, paths, options) => {
       searchCalls.push({ query, paths, limit: options.limit });
-      return await memory.search(query, paths, options);
+      return await fakeMemorySearch(memory);
     };
     const searched = await runMemoryCommand(memory, ["search", "typecheck"], searchMemory);
     assert.match(searched, /pnpm typecheck/);
@@ -333,7 +333,10 @@ async function testMemoryTools(): Promise<void> {
   const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "biny-memory-tools-"));
   try {
     const memory = new LocalMemory(workspaceRoot, unusedModel);
-    const [saveTool, recallTool] = createMemoryTools(() => memory);
+    const [saveTool, recallTool] = createMemoryTools(
+      () => memory,
+      async () => await fakeMemorySearch(memory)
+    );
     assert.equal(saveTool?.name, "save_memory");
     assert.equal(recallTool?.name, "recall_memory");
     assert.equal(saveTool.risk, "write");
@@ -362,6 +365,10 @@ async function testMemoryTools(): Promise<void> {
     assert.ok(!("isError" in limitedExecution));
     const limited = await limitedExecution.execute({ toolCallId: "recall-2" }) as { matches: unknown[] };
     assert.equal(limited.matches.length, 1);
+    const unavailableTool = createMemoryTools(() => memory)[1]!;
+    const unavailableExecution = await unavailableTool.resolveExecution({ query: "release main" });
+    assert.ok(!("isError" in unavailableExecution));
+    await assert.rejects(unavailableExecution.execute({ toolCallId: "recall-unavailable" }), /Semantic memory search is unavailable/u);
   } finally {
     await rm(workspaceRoot, { recursive: true, force: true });
   }
@@ -441,6 +448,17 @@ async function testGlobalInstructionFile(): Promise<void> {
     await rm(workspaceRoot, { recursive: true, force: true });
     await rm(globalDir, { recursive: true, force: true });
   }
+}
+
+async function fakeMemorySearch(memory: LocalMemory) {
+  const snapshot = await memory.listMemoryEntries();
+  return {
+    matches: snapshot.entries.slice(0, 1).map((entry) => ({
+      entry, path: `memory://${entry.id}`, excerpt: entry.content, score: 0.9
+    })),
+    storeRevision: snapshot.storeRevision,
+    report: { omitted: [] }
+  };
 }
 
 await main();

@@ -68,7 +68,7 @@ const definitions: ProviderDefinition[] = [
   definition("kimi", "https://api.moonshot.ai/v1", "MOONSHOT_API_KEY", { reasoningProtocol: "moonshotai", modelDefaults: reasoningProviderDefaults() }),
   definition("qwen", "https://dashscope.aliyuncs.com/compatible-mode/v1", "DASHSCOPE_API_KEY", { reasoningProtocol: "alibaba", modelDefaults: reasoningProviderDefaults() }),
   definition("zai", "https://api.z.ai/api/paas/v4", "ZAI_API_KEY", { modelDefaults: reasoningProviderDefaults() }),
-  definition("openrouter", "https://openrouter.ai/api/v1", "OPENROUTER_API_KEY"),
+  definition("openrouter", "https://openrouter.ai/api/v1", "OPENROUTER_API_KEY", { embedding: openRouterEmbeddingDefinition() }),
   definition("ollama", "http://127.0.0.1:11434/v1", undefined, { requiresApiKey: false }),
   definition("openai-compatible", undefined, undefined, {
     embedding: { wire: "openai-compatible", models: [] },
@@ -147,6 +147,16 @@ function openAiEmbeddingDefinition(): NonNullable<ProviderDefinition["embedding"
         recommendedThreshold: 0.3
       }
     ]
+  };
+}
+
+function openRouterEmbeddingDefinition(): NonNullable<ProviderDefinition["embedding"]> {
+  return {
+    wire: "openai-compatible",
+    models: openAiEmbeddingDefinition().models.map((model) => ({
+      ...model,
+      id: `openai/${model.id}`
+    }))
   };
 }
 

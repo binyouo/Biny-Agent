@@ -11,8 +11,9 @@ const root = await mkdtemp(path.join(os.tmpdir(), "biny-temporal-"));
 const sessionDirectory = path.join(root, "sessions", "project");
 const file = path.join(sessionDirectory, "thread-1.jsonl");
 const line = (value: Record<string, unknown>): string => `${JSON.stringify(value)}\n`;
-const runCli = async (...args: string[]): Promise<string> => (await promisify(execFile)("pnpm", ["exec", "tsx", "src/cli/index.ts", "memory", ...args], {
-  cwd: process.cwd(), env: { ...process.env, BINY_AGENT_DIR: root }, timeout: 30_000
+const runCli = async (...args: string[]): Promise<string> => (await promisify(execFile)(process.execPath,
+  ["--import", import.meta.resolve("tsx"), path.resolve("src/cli/index.ts"), "memory", ...args], {
+  cwd: root, env: { ...process.env, BINY_AGENT_DIR: root, DEEPSEEK_API_KEY: "" }, timeout: 30_000
 })).stdout;
 const message = (id: string, content: string, extra: Record<string, unknown> = {}): Record<string, unknown> => ({
   type: "user_message", messageId: id, content, time: "2026-09-24T03:00:00.000Z",

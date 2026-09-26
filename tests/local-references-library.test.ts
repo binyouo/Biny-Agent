@@ -18,6 +18,8 @@ try {
   const events = [
     { type: "user_message", messageId: "m-old", slotId: "slot-1", content: "旧版问题" },
     { type: "user_message", messageId: "m-new", slotId: "slot-1", content: "新版问题" },
+    { type: "tool_call", tool: "Read", toolCallId: "call-1", args: { path: "notes.txt", apiKey: "TOOL_SECRET_VALUE" }, time: "2026-09-25T00:00:00Z" },
+    { type: "tool_result", tool: "Read", toolCallId: "call-1", result: "真实文件", time: "2026-09-25T00:00:01Z" },
     { type: "message_version_selected", slotId: "slot-1", messageId: "m-new" }
   ];
   await writeFile(file, events.map((event) => JSON.stringify(event) + "\n").join(""));
@@ -34,6 +36,10 @@ try {
   assert.equal((await service.referenceForMessage("thread-1", "m-new", "project-1")).uri, "biny://thread/thread-1/message/slot-1");
   assert.equal((await service.resolve("biny://thread/thread-1", "project-1")).kind, "thread");
   assert.equal((await service.resolve("biny://file/notes.txt", "project-1")).content, "真实文件");
+  const call = (await service.search("Read", "project-1", "tool-call"))[0];
+  assert.equal(call?.uri, "biny://thread/thread-1/tool/call-1");
+  assert.match((await service.resolve(call!.uri, "project-1")).content, /notes\.txt/u);
+  assert.doesNotMatch((await service.resolve(call!.uri, "project-1")).content, /TOOL_SECRET_VALUE/u);
   assert.equal((await service.resolve(`biny://memory/${saved.entry.id}`, "project-1")).content, "长期事实");
   assert.deepEqual((await service.search("新版", "project-1")).map((item) => item.kind), ["message"]);
   assert.equal((await service.search("notes", "project-1")).some((item) => item.kind === "file"), true);

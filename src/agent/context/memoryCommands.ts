@@ -30,7 +30,7 @@ export async function runMemoryCommand(
   const action = args[0]?.toLowerCase() ?? "list";
 
   if (action === "list") {
-    const result = await memory.listMemoryEntries({ limit: 200 });
+    const result = await memory.listMemoryEntries({ limit: 100 });
     if (!result.entries.length) return `Local memory is empty. Use ${"/memory add <note>"}.`;
     return [
       `Memory entries (${String(result.entries.length)}):`,
@@ -44,7 +44,8 @@ export async function runMemoryCommand(
   if (action === "show") {
     const selector = args.slice(1).join(" ").trim();
     if (!selector) return "Usage: /memory show <id>";
-    const result = await memory.listMemoryEntries({ limit: 500 });
+    // 管理操作必须覆盖完整事实库；列表展示的条数上限不能限制按 ID 定位。
+    const result = await memory.listMemoryEntries();
     const entries = selectEntries(result.entries, selector);
     return entries.length ? entries.map(formatEntryDetail).join("\n\n") : `No memory entry named ${selector}.`;
   }
@@ -64,7 +65,7 @@ export async function runMemoryCommand(
   if (action === "forget" || action === "delete") {
     const selector = args.slice(1).join(" ").trim();
     if (!selector) return "Usage: /memory forget <id-or-text>";
-    const snapshot = await memory.listMemoryEntries({ limit: 500 });
+    const snapshot = await memory.listMemoryEntries();
     const targets = selectEntries(snapshot.entries, selector);
     if (!targets.length) return `No memory entry named ${selector}.`;
     let deleted = 0;
@@ -85,10 +86,9 @@ export async function runMemoryCommand(
     const query = tokens.filter((_, index) => !tagTokenIndexes.includes(index)).join(" ").trim();
     if (!query && !tags.length) return "Usage: /memory search <query> [tags:a,b]";
     const options: MemorySearchOptions = { tags: tags.length ? tags : undefined, limit: 8 };
-    const result = searchMemory
-      ? await searchMemory(query, [], options)
-      : await memory.search(query, [], options);
-    if (!searchMemory) await memory.recordRecallUsage(result.matches.map((match) => match.entry.id));
+    if (!searchMemory) return "Semantic memory search is unavailable.";
+    const result = await searchMemory(query, [], options);
+    if (result.report.degraded) return `Semantic memory search unavailable: ${result.report.degraded}`;
     if (!result.matches.length) return `No memory matches for: ${query}`;
     return [
       `Memory matches for "${query}":`,

@@ -8,18 +8,20 @@ import { globalAgentDir, projectSessionsDir } from "../config/paths.js";
 import { createFileConfigStore } from "../config/store.js";
 import type { AgentConfig } from "../config/schema.js";
 import { loadSkills } from "../extensions/skills.js";
-import { activeSessionMessageIds, sessionMessageTree } from "./messageTree.js";
-import { listAllSessionFiles, sessionIdFromFile } from "./store.js";
+import { loadSubagentDefinitions } from "../extensions/agents.js";
+import { activeSessionEventsForPath, activeSessionMessageIds, sessionMessageTree } from "./messageTree.js";
+import { sessionIdFromFile } from "./store.js";
 import { validateDateReferenceRange, type DateReferenceRange } from "./dateReference.js";
 import type { SessionEvent } from "./events.js";
 import { LocalReferenceGraph } from "./referenceGraph.js";
+import { redactSensitiveValue } from "../utils/secrets.js";
 
 export type LocalReferenceKind = "date" | "project" | "file" | "thread" | "message" | "memory" | "snippet" | "scratch"
-  | "skill" | "mcp" | "model" | "provider" | "tool" | "task" | "cron" | "crystal" | "bundle" | "mission" | "plan";
+  | "skill" | "agent" | "mcp" | "model" | "provider" | "tool" | "tool-call" | "task" | "cron" | "crystal" | "bundle" | "mission" | "plan";
 export type ParsedLocalReference =
   | { kind: "date"; range: DateReferenceRange }
-  | { kind: Exclude<LocalReferenceKind, "date" | "message">; id: string }
-  | { kind: "message"; threadId: string; id: string };
+  | { kind: Exclude<LocalReferenceKind, "date" | "message" | "tool-call">; id: string }
+  | { kind: "message" | "tool-call"; threadId: string; id: string };
 export interface LocalReferenceResult {
   kind: LocalReferenceKind;
   uri: string;
@@ -33,7 +35,7 @@ export interface LocalReferenceProject { id: string; path: string; name: string 
 
 const labels: Record<LocalReferenceKind, string> = {
   date: "日期", project: "项目", file: "文件", thread: "会话", message: "消息", memory: "记忆", snippet: "片段", scratch: "临时引用",
-  skill: "技能", mcp: "MCP", model: "模型", provider: "服务商", tool: "工具", task: "任务", cron: "定时任务",
+  skill: "技能", agent: "子代理", mcp: "MCP", model: "模型", provider: "服务商", tool: "工具", "tool-call": "工具调用", task: "任务", cron: "定时任务",
   crystal: "结晶", bundle: "结晶包", mission: "目标", plan: "计划"
 };
 export const localReferenceKinds = Object.entries(labels).map(([kind, label]) => ({ kind: kind as LocalReferenceKind, label }));
@@ -56,15 +58,18 @@ export function parseLocalReferenceUri(uri: string): ParsedLocalReference {
   if (kind === "thread" && raw.length === 3 && raw[1] === "message") {
     return { kind: "message", threadId: segment(raw[0]!), id: segment(raw[2]!) };
   }
+  if (kind === "thread" && raw.length === 3 && raw[1] === "tool") {
+    return { kind: "tool-call", threadId: segment(raw[0]!), id: segment(raw[2]!) };
+  }
   if (kind === "date" && raw.length === 3) {
     let timeZone: string;
     try { timeZone = decodeURIComponent(raw[2]!); } catch { throw new Error("Invalid reference encoding."); }
     if (!timeZone || timeZone.length > 100 || /[\u0000-\u001f\\%]/u.test(timeZone)) throw new Error("Invalid reference time zone.");
     return { kind: "date", range: validateDateReferenceRange({ startDate: segment(raw[0]!), endDate: segment(raw[1]!), timeZone }) };
   }
-  if (kind !== undefined && kind in labels && kind !== "date" && kind !== "message" && raw.length >= 1) {
+  if (kind !== undefined && kind in labels && kind !== "date" && kind !== "message" && kind !== "tool-call" && raw.length >= 1) {
     if (kind !== "file" && raw.length !== 1) throw new Error("Invalid reference URI.");
-    return { kind: kind as Exclude<LocalReferenceKind, "date" | "message">, id: raw.map(segment).join("/") };
+    return { kind: kind as Exclude<LocalReferenceKind, "date" | "message" | "tool-call">, id: raw.map(segment).join("/") };
   }
   throw new Error("Unsupported reference kind.");
 }
@@ -74,9 +79,9 @@ export function localReferenceUri(reference: ParsedLocalReference): string {
     validateDateReferenceRange(reference.range);
     return `biny://date/${encoded(reference.range.startDate)}/${encoded(reference.range.endDate)}/${encoded(reference.range.timeZone)}`;
   }
-  if (reference.kind === "message") {
+  if (reference.kind === "message" || reference.kind === "tool-call") {
     segment(encoded(reference.threadId)); segment(encoded(reference.id));
-    return `biny://thread/${encoded(reference.threadId)}/message/${encoded(reference.id)}`;
+    return `biny://thread/${encoded(reference.threadId)}/${reference.kind === "message" ? "message" : "tool"}/${encoded(reference.id)}`;
   }
   const parts = reference.id.split("/");
   if (reference.kind !== "file" && parts.length !== 1) throw new Error("Invalid reference identifier.");
@@ -110,6 +115,23 @@ function visibleMessages(events: SessionEvent[]): Array<{ slotId: string; messag
   });
 }
 
+function visibleToolCalls(events: SessionEvent[], threadId: string, projectId: string): LocalReferenceResult[] {
+  const active = activeSessionEventsForPath(events);
+  const results = new Map<string, Extract<SessionEvent, { type: "tool_result" }>>();
+  for (const event of active) if (event.type === "tool_result" && !event.auditOnly && event.toolCallId) {
+    results.set(event.toolCallId, event);
+  }
+  return active.flatMap((event) => {
+    if (event.type !== "tool_call" || event.auditOnly || !event.toolCallId) return [];
+    const result = results.get(event.toolCallId);
+    const content = JSON.stringify({ tool: event.tool, args: redactSensitiveValue(event.args), result: redactSensitiveValue(result?.result),
+      executionStatus: result?.executionStatus ?? "pending" }).slice(0, 64 * 1024);
+    return [{ kind: "tool-call" as const,
+      uri: localReferenceUri({ kind: "tool-call", threadId, id: event.toolCallId }), label: event.tool.slice(0, 80),
+      content, projectId, threadId }];
+  });
+}
+
 export class LocalReferenceService {
   private readonly root: string;
   private readonly projects: LocalReferenceProject[];
@@ -132,19 +154,45 @@ export class LocalReferenceService {
     return project;
   }
 
-  private async sessions(project: LocalReferenceProject): Promise<Array<{ id: string; events: SessionEvent[] }>> {
+  private async sessionFiles(project: LocalReferenceProject): Promise<Array<{ id: string; file: string }>> {
     const directory = projectSessionsDir(project.path, { env: { ...process.env, BINY_AGENT_DIR: this.root } });
-    const files = await listAllSessionFiles(this.root);
+    try {
+      const stat = await lstat(directory);
+      if (!stat.isDirectory() || stat.isSymbolicLink() || await realpath(directory) !== directory) {
+        throw new Error("Project session storage is not a real directory.");
+      }
+    } catch (cause) {
+      if ((cause as NodeJS.ErrnoException).code === "ENOENT") return [];
+      throw cause;
+    }
+    const rows: Array<{ id: string; file: string }> = [];
+    const walk = async (current: string): Promise<void> => {
+      for (const entry of await readdir(current, { withFileTypes: true })) {
+        // 仅在当前项目目录内枚举；符号链接和目录替换不能引入其他项目内容。
+        if (entry.isSymbolicLink()) continue;
+        const file = path.join(current, entry.name);
+        if (entry.isDirectory()) {
+          if (await realpath(file) === file) await walk(file);
+          continue;
+        }
+        if (!entry.isFile() || !entry.name.endsWith(".jsonl")) continue;
+        if (await realpath(file) !== file || !(await lstat(file)).isFile()) continue;
+        rows.push({ id: sessionIdFromFile(file), file });
+      }
+    };
+    await walk(directory);
+    return rows.sort((left, right) => left.file.localeCompare(right.file));
+  }
+
+  private async sessions(project: LocalReferenceProject): Promise<Array<{ id: string; events: SessionEvent[] }>> {
     const rows: Array<{ id: string; events: SessionEvent[] }> = [];
-    for (const file of files) {
-      const canonical = await realpath(file);
-      if (!canonical.startsWith(`${directory}${path.sep}`) || !(await lstat(file)).isFile()) continue;
+    for (const { id, file } of await this.sessionFiles(project)) {
       const events: SessionEvent[] = [];
       for (const line of (await readFile(file, "utf8")).split("\n")) {
         if (!line.trim()) continue;
         try { events.push(JSON.parse(line) as SessionEvent); } catch { break; }
       }
-      rows.push({ id: sessionIdFromFile(file), events });
+      rows.push({ id, events });
     }
     return rows;
   }
@@ -179,15 +227,23 @@ export class LocalReferenceService {
         return { kind: "memory", uri, label: entry.content.slice(0, 80), content: entry.content, projectId };
       } finally { store.close(); }
     }
-    if (!["thread", "message"].includes(ref.kind)) {
+    if (!["thread", "message", "tool-call"].includes(ref.kind)) {
       const existing = (await this.existingEntries(projectId, ref.kind)).find((item) => item.uri === uri);
       if (!existing) throw new Error("Reference object is not available.");
       return existing;
     }
-    const threadId = ref.kind === "message" ? ref.threadId : ref.id;
+    const threadId = ref.kind === "message" || ref.kind === "tool-call" ? ref.threadId : ref.id;
+    if (ref.kind === "thread") {
+      if (!(await this.sessionFiles(project)).some((item) => item.id === threadId)) throw new Error("Conversation is not available.");
+      return { kind: "thread", uri, label: threadId, content: threadId, projectId, threadId };
+    }
     const session = (await this.sessions(project)).find((item) => item.id === threadId);
     if (!session) throw new Error("Conversation is not available.");
-    if (ref.kind === "thread") return { kind: "thread", uri, label: threadId, content: threadId, projectId, threadId };
+    if (ref.kind === "tool-call") {
+      const call = visibleToolCalls(session.events, threadId, projectId).find((item) => item.uri === uri);
+      if (!call) throw new Error("Tool call is not available.");
+      return call;
+    }
     const message = visibleMessages(session.events).find((item) => item.slotId === ref.id);
     if (!message) throw new Error("Message is not available.");
     return { kind: "message", uri, label: message.content.slice(0, 80), content: message.content,
@@ -201,18 +257,40 @@ export class LocalReferenceService {
     const needle = query.trim().toLocaleLowerCase();
     const matches = (value: string): boolean => !needle || value.toLocaleLowerCase().includes(needle);
     const results: LocalReferenceResult[] = [];
+    let pinned: LocalReferenceResult[] = [];
     const pinGraph = new LocalReferenceGraph(this.root, this);
-    try { results.push(...(await pinGraph.pins(projectId, limit)).filter((item) => (!kind || item.kind === kind) && matches(item.label))); }
+    try {
+      pinned = (await pinGraph.pins(projectId, limit)).filter((item) => (!kind || item.kind === kind) && matches(item.label));
+      results.push(...pinned);
+    }
     finally { pinGraph.close(); }
     if (!kind || kind === "date") {
       const parts = new Intl.DateTimeFormat("en-US", { timeZone, year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(new Date());
       const part = (type: string): string => parts.find((item) => item.type === type)?.value ?? "";
-      const day = needle || `${part("year")}-${part("month")}-${part("day")}`;
+      const today = `${part("year")}-${part("month")}-${part("day")}`;
+      const addDays = (day: string, count: number): string => {
+        const date = new Date(`${day}T00:00:00.000Z`);
+        date.setUTCDate(date.getUTCDate() + count);
+        return date.toISOString().slice(0, 10);
+      };
+      const weekday = new Date(`${today}T00:00:00.000Z`).getUTCDay();
+      const weekStart = addDays(today, -((weekday + 6) % 7));
+      const nextMonday = addDays(weekStart, 7);
+      const presets = [
+        { label: "今天", startDate: today, endDate: addDays(today, 1) },
+        { label: "本周", startDate: weekStart, endDate: nextMonday },
+        { label: "下周一", startDate: nextMonday, endDate: addDays(nextMonday, 1) }
+      ];
+      for (const preset of presets) if (!needle || matches(preset.label)) {
+        const range = { startDate: preset.startDate, endDate: preset.endDate, timeZone };
+        results.push({ kind: "date", uri: localReferenceUri({ kind: "date", range }), label: preset.label,
+          content: JSON.stringify(range), projectId });
+      }
+      const day = needle;
       if (/^\d{4}-\d{2}-\d{2}$/u.test(day)) {
         const next = new Date(`${day}T00:00:00.000Z`);
         if (!Number.isNaN(next.getTime()) && next.toISOString().slice(0, 10) === day) {
-          next.setUTCDate(next.getUTCDate() + 1);
-          const range = { startDate: day, endDate: next.toISOString().slice(0, 10), timeZone };
+          const range = { startDate: day, endDate: addDays(day, 1), timeZone };
           results.push({ kind: "date", uri: localReferenceUri({ kind: "date", range }), label: day,
             content: JSON.stringify(range), projectId });
         }
@@ -222,53 +300,98 @@ export class LocalReferenceService {
       results.push({ kind: "project", uri: localReferenceUri({ kind: "project", id: project.id }), label: project.name, content: project.path, projectId });
     }
     if (!kind || kind === "file") {
+      let fileMatches = 0;
       const walk = async (directory: string, prefix = "", depth = 0): Promise<void> => {
-        if (depth > 8 || results.length >= limit) return;
+        if (depth > 8 || fileMatches >= limit) return;
         for (const entry of await readdir(directory, { withFileTypes: true })) {
           if (entry.name.startsWith(".") || entry.name === "node_modules") continue;
+          if (!needle && !kind && entry.isDirectory() && ["out", "dist", "release", "coverage", ".next"].includes(entry.name)) continue;
           const relative = prefix ? `${prefix}/${entry.name}` : entry.name;
           if (entry.isDirectory()) await walk(path.join(directory, entry.name), relative, depth + 1);
-          else if (entry.isFile() && matches(relative)) results.push({ kind: "file", uri: localReferenceUri({ kind: "file", id: relative }),
-            label: relative, content: relative, projectId });
-          if (results.length >= limit) break;
+          else if (entry.isFile() && matches(relative)) {
+            results.push({ kind: "file", uri: localReferenceUri({ kind: "file", id: relative }),
+              label: relative, content: relative, projectId });
+            fileMatches += 1;
+          }
+          if (fileMatches >= limit) break;
         }
       };
       await walk(project.path);
     }
-    if (!kind || kind === "thread" || kind === "message") {
-      for (const session of await this.sessions(project)) {
-        if ((!kind || kind === "thread") && matches(session.id)) results.push({ kind: "thread",
-          uri: localReferenceUri({ kind: "thread", id: session.id }), label: session.id, content: session.id, projectId, threadId: session.id });
+    if (!kind || kind === "thread" || kind === "message" || kind === "tool-call") {
+      let threadMatches = 0;
+      let messageMatches = 0;
+      let toolCallMatches = 0;
+      const sessions = kind === "thread"
+        ? (await this.sessionFiles(project)).map((item) => ({ id: item.id, events: [] as SessionEvent[] }))
+        : await this.sessions(project);
+      for (const session of sessions) {
+        if ((!kind || kind === "thread") && threadMatches < limit && matches(session.id)) {
+          results.push({ kind: "thread", uri: localReferenceUri({ kind: "thread", id: session.id }),
+            label: session.id, content: session.id, projectId, threadId: session.id });
+          threadMatches += 1;
+        }
         if (!kind || kind === "message") for (const message of visibleMessages(session.events)) {
-          if (matches(message.content)) results.push({ kind: "message",
+          if (messageMatches < limit && matches(message.content)) {
+            results.push({ kind: "message",
             uri: localReferenceUri({ kind: "message", threadId: session.id, id: message.slotId }),
             label: message.content.slice(0, 80), content: message.content, projectId, threadId: session.id, messageId: message.messageId });
+            messageMatches += 1;
+          }
         }
-        if (results.length >= limit) break;
+        if (!kind || kind === "tool-call") for (const call of visibleToolCalls(session.events, session.id, projectId)) {
+          if (toolCallMatches < limit && (matches(call.label) || matches(call.content))) {
+            results.push(call);
+            toolCallMatches += 1;
+          }
+        }
+        if ((kind === "thread" && threadMatches >= limit) || (kind === "message" && messageMatches >= limit)
+          || (kind === "tool-call" && toolCallMatches >= limit)
+          || (!kind && threadMatches >= limit && messageMatches >= limit && toolCallMatches >= limit)) break;
       }
     }
     if (!kind || kind === "memory") {
       const store = new MemoryStorage(project.path, { agentDir: this.root });
+      let memoryMatches = 0;
       try { for (const entry of (await store.listEntries({ limit: 1000 })).entries) {
         if (matches(entry.content)) results.push({ kind: "memory", uri: localReferenceUri({ kind: "memory", id: entry.id }),
           label: entry.content.slice(0, 80), content: entry.content, projectId });
-        if (results.length >= limit) break;
+        if (matches(entry.content)) memoryMatches += 1;
+        if (memoryMatches >= limit) break;
       } } finally { store.close(); }
     }
-    if (!kind || ["skill", "mcp", "model", "provider", "tool", "task", "cron", "crystal", "bundle", "mission", "plan"].includes(kind)) {
-      results.push(...(await this.existingEntries(projectId, kind)).filter((item) => matches(item.label) || matches(item.content)).slice(0, limit));
+    if (!kind || ["skill", "agent", "mcp", "model", "provider", "tool", "task", "cron", "crystal", "bundle", "mission", "plan"].includes(kind)) {
+      results.push(...(await this.existingEntries(projectId, kind)).filter((item) => matches(item.label) || matches(item.content)));
     }
-    if (results.length < limit && (!kind || kind === "snippet" || kind === "scratch")) {
+    if (!kind || kind === "snippet" || kind === "scratch") {
       const graph = new LocalReferenceGraph(this.root, this);
       try {
         for (const storedKind of ["snippet", "scratch"] as const) {
           if (kind && kind !== storedKind) continue;
-          results.push(...await graph.searchStored(needle, projectId, storedKind, limit - results.length));
-          if (results.length >= limit) break;
+          results.push(...await graph.searchStored(needle, projectId, storedKind, limit));
         }
       } finally { graph.close(); }
     }
-    return [...new Map(results.map((item) => [item.uri, item])).values()].slice(0, limit);
+    const unique = [...new Map(results.map((item) => [item.uri, item])).values()];
+    if (kind) return unique.slice(0, limit);
+    const visiblePins = pinned.slice(0, Math.min(8, limit));
+    const pinUris = new Set(visiblePins.map((item) => item.uri));
+    // 空查询也要给每个实际有对象的种类一次展示机会，不能让文件占满总上限。
+    const groups = new Map<LocalReferenceKind, LocalReferenceResult[]>();
+    for (const item of unique) if (!pinUris.has(item.uri)) groups.set(item.kind, [...(groups.get(item.kind) ?? []), item]);
+    const ordered = [...groups.keys()].sort((left, right) => localReferenceKinds.findIndex((item) => item.kind === left)
+      - localReferenceKinds.findIndex((item) => item.kind === right));
+    const balanced: LocalReferenceResult[] = [];
+    while (balanced.length < limit - visiblePins.length && ordered.length) {
+      for (const current of [...ordered]) {
+        const next = groups.get(current)?.shift();
+        if (next) balanced.push(next);
+        else ordered.splice(ordered.indexOf(current), 1);
+        if (balanced.length >= limit - visiblePins.length) break;
+      }
+    }
+    return [...visiblePins, ...balanced.sort((left, right) => localReferenceKinds.findIndex((item) => item.kind === left.kind)
+      - localReferenceKinds.findIndex((item) => item.kind === right.kind))];
   }
 
   async allMessages(projectId: string): Promise<LocalReferenceResult[]> {
@@ -289,10 +412,10 @@ export class LocalReferenceService {
     const project = this.project(projectId);
     const result: LocalReferenceResult[] = [];
     const add = (entryKind: LocalReferenceKind, id: string, label: string, content: string): void => {
-      result.push({ kind: entryKind, uri: localReferenceUri({ kind: entryKind as Exclude<LocalReferenceKind, "date" | "message">, id }),
+      result.push({ kind: entryKind, uri: localReferenceUri({ kind: entryKind as Exclude<LocalReferenceKind, "date" | "message" | "tool-call">, id }),
         label: label.slice(0, 80), content: content.slice(0, 64 * 1024), projectId });
     };
-    if (!kind || ["provider", "model", "mcp", "skill"].includes(kind)) {
+    if (!kind || ["provider", "model", "mcp", "skill", "agent"].includes(kind)) {
       const config = await this.loadConfig(project.path);
       if (!kind || kind === "provider") for (const [alias, provider] of Object.entries(config.providers)) {
         add("provider", alias, provider.displayName ?? alias, `${alias} (${provider.type})`);
@@ -304,6 +427,12 @@ export class LocalReferenceService {
       if (!kind || kind === "skill") {
         const bundle = await loadSkills({ workspaceRoot: project.path, projectPaths: config.extensions.skills });
         for (const skill of bundle.skills) add("skill", skill.ref, skill.name, skill.description);
+      }
+      if ((!kind || kind === "agent") && config.extensions.subagent.enabled) {
+        const definitions = await loadSubagentDefinitions({ workspaceRoot: project.path,
+          projectPaths: config.extensions.subagent.agentPaths });
+        for (const definition of definitions) add("agent", definition.name, definition.name,
+          `${definition.description}\n${definition.prompt}`);
       }
     }
     if (!kind || kind === "crystal" || kind === "bundle") {
@@ -319,7 +448,13 @@ export class LocalReferenceService {
       } finally { store.close(); }
     }
     if (this.runtimeEntries && (!kind || ["tool", "task", "cron", "mission", "plan"].includes(kind))) {
-      for (const entry of await this.runtimeEntries(projectId)) {
+      let entries: Awaited<ReturnType<NonNullable<typeof this.runtimeEntries>>>;
+      try { entries = await this.runtimeEntries(projectId); }
+      catch (cause) {
+        if (kind) throw cause;
+        entries = [];
+      }
+      for (const entry of entries) {
         if (kind && entry.kind !== kind) continue;
         if (!["tool", "task", "cron", "mission", "plan"].includes(entry.kind)) continue;
         add(entry.kind, entry.id, entry.label, entry.content);

@@ -159,11 +159,13 @@ async function testSessionPersistence(): Promise<void> {
   const previousGlobal = process.env[BINY_AGENT_DIR_ENV];
   process.env[BINY_AGENT_DIR_ENV] = path.join(root, "global");
   let calls = 0;
-  const model: AgentModel = { provider: "test", modelId: "test", stream: async () => {
-    calls++;
+  const model: AgentModel = { provider: "test", modelId: "test", stream: async (context) => {
+    const last = context.messages.at(-1);
+    const conversationRequest = last?.role === "user" && (last.originalContent === "hi" || last.originalContent === "continue");
+    if (conversationRequest) calls++;
     return (async function* (): AsyncGenerator<ModelStreamEvent> {
       yield { type: "text-delta", text: "ok" };
-      yield { type: "finish", reason: "stop", usage: { inputTokens: calls === 1 ? 100 : 900, cacheReadTokens: calls === 1 ? 0 : 900 } };
+      yield { type: "finish", reason: "stop", usage: { inputTokens: calls <= 1 ? 100 : 900, cacheReadTokens: calls <= 1 ? 0 : 900 } };
     })();
   } };
   const config = configSchema.parse({

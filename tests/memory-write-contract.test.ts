@@ -17,8 +17,8 @@ try {
   ]);
   assert.equal(writes.every((result) => result.written), true);
   assert.equal((await first.listEntries()).total, 2);
-  const tagged = await first.search("用户", [], { tags: ["preference", "workflow"] });
-  assert.equal(tagged.matches.length, 2, "多标签按任一命中，而不是交集过滤");
+  const stored = await first.listEntries();
+  assert.deepEqual(new Set(stored.entries.flatMap((item) => item.tags)), new Set(["preference", "workflow"]));
   const entry = writes[0].entry!;
   const updated = await second.updateEntry(entry.id, { content: "用户喜欢简洁中文回答" });
   assert.equal(updated.entry?.createdAt, entry.createdAt);

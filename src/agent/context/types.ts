@@ -122,9 +122,4 @@ export interface ContextStatus {
   memoryOverviewChars?: number;
 }
 
-export interface MemoryMatch {
-  path: string;
-  excerpt: string;
-  tags?: string[];
-  score: number;
-}
+export type MemoryMatch = import("./memoryTypes.js").MemoryMatch;
