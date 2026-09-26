@@ -3220,7 +3220,7 @@ function resolveConfiguredModelAlias(config: AgentConfig, aliasOrReference: stri
  * refresh token 始终不跨桥。
  */
 function describeWebSearchSettings(search: AgentConfig["web"]["search"]): DesktopWebSearchSettings {
-  return { enabled: search.enabled, provider: search.provider, visibleBrowsing: search.visibleBrowsing, timeoutMs: search.timeoutMs, maxResults: search.maxResults };
+  return { provider: search.provider, visibleBrowsing: search.visibleBrowsing, timeoutMs: search.timeoutMs, maxResults: search.maxResults };
 }
 
 function describeSettingsConfigSnapshot(

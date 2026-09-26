@@ -25,10 +25,13 @@ async function main(): Promise<void> {
   testBlockedAddressClassification();
   await testUrlPolicyRefusesInternalTargets();
   testHtmlExtraction();
+  await testFetchExtractsArticleInsteadOfPageChrome();
+  await testFetchKeepsShortNonArticleHtmlReadable();
   await testFetchesTextAndPages();
   await testRedirectToInternalTargetIsRefused();
   await testByteLimitTruncatesInsteadOfHanging();
   await testBrowserFetchPropagatesByteLimitTruncation();
+  await testBrowserFetchExtractsRenderedArticle();
   await testErrorResponseBodyIsCancelled();
   await testFetchUsesOnlyMatchingCookiesPerRedirect();
   console.log("web fetch tests passed");
@@ -75,8 +78,41 @@ function testHtmlExtraction(): void {
   assert.equal(/- one/.test(text), true);
 }
 
+/** 网页阅读优先给正文，站点导航、页脚和推荐列表不应淹没文章内容。 */
+async function testFetchExtractsArticleInsteadOfPageChrome(): Promise<void> {
+  const article = "The central claim is supported by the evidence in this report. ".repeat(16);
+  const html = `<html><head><title>Example News — Site</title></head><body>
+    <script>document.body.innerHTML = '<p>Injected script output</p>';</script>
+    <nav>Global navigation ${"menu item ".repeat(80)}</nav>
+    <main><article><h1>Readable article headline</h1><p>${article}</p>
+      <p>The final paragraph explains the result.</p></article></main>
+    <aside>Related stories ${"unrelated recommendation ".repeat(80)}</aside>
+    <footer>Site footer ${"footer link ".repeat(40)}</footer>
+  </body></html>`;
+  await withFetch(async () => new Response(html, { status: 200, headers: { "content-type": "text/html" } }), async () => {
+    const tool = createWebFetchTool(undefined, undefined, testWebFetchDependencies);
+    const result = await run(tool, { url: "https://example.com/article", length: 20_000 });
+    assert.match(result.content, /central claim is supported/);
+    assert.doesNotMatch(result.content, /Global navigation|Related stories|Site footer|Injected script output/);
+  });
+}
+
+/** Readability 不认为是文章的短页面仍由简单文本转换保留。 */
+async function testFetchKeepsShortNonArticleHtmlReadable(): Promise<void> {
+  const html = "<html><head><title>Service notice</title></head><body><h1>Maintenance</h1><p>Back at 18:00 UTC.</p></body></html>";
+  await withFetch(async () => new Response(html, { status: 200, headers: { "content-type": "text/html" } }), async () => {
+    const tool = createWebFetchTool(undefined, undefined, testWebFetchDependencies);
+    const result = await run(tool, { url: "https://example.com/status", length: 1_000 });
+    assert.equal(result.title, "Service notice");
+    assert.match(result.content, /Maintenance/);
+    assert.match(result.content, /Back at 18:00 UTC/);
+  });
+}
+
 async function testFetchesTextAndPages(): Promise<void> {
-  const body = "<html><title>T</title><body><p>" + "word ".repeat(200) + "</p></body></html>";
+  const body = "<html><title>T</title><body><article><h1>Document</h1><p>Opening section. "
+    + "a".repeat(200) + " Middle section. " + "b".repeat(200) + " Closing section. " + "c".repeat(200)
+    + "</p></article></body></html>";
   await withFetch(async () => new Response(body, { status: 200, headers: { "content-type": "text/html" } }), async () => {
     const tool = createWebFetchTool(undefined, undefined, testWebFetchDependencies);
     const first = await run(tool, { url: "https://example.com/doc", length: 40 });
@@ -159,6 +195,50 @@ async function testBrowserFetchPropagatesByteLimitTruncation(): Promise<void> {
     const result = await run(tool, { url: "https://example.com/doc" });
     assert.equal(result.content, "browser text");
     assert.equal(result.truncatedAtByteLimit, true);
+  } finally {
+    await new Promise<void>((resolve, reject) => {
+      server.close((error) => error ? reject(error) : resolve());
+    });
+    await rm(directory, { recursive: true, force: true });
+  }
+}
+
+/** Desktop 提供的是已渲染 HTML；正文提取应与直接 HTTP 的输出契约一致。 */
+async function testBrowserFetchExtractsRenderedArticle(): Promise<void> {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "biny-web-fetch-rendered-"));
+  const socketPath = path.join(directory, "browser.sock");
+  const html = `<html><head><title>Rendered site</title></head><body>
+    <nav>Rendered navigation ${"link ".repeat(80)}</nav>
+    <article><h1>Rendered article</h1><p>${"Rendered article body with useful detail. ".repeat(20)}</p></article>
+    <aside>Rendered recommendations ${"unrelated item ".repeat(80)}</aside>
+  </body></html>`;
+  const server = createServer((socket) => {
+    let requestText = "";
+    socket.setEncoding("utf8");
+    socket.on("data", (chunk: string) => {
+      requestText += chunk;
+      const newline = requestText.indexOf("\n");
+      if (newline < 0) return;
+      const request = JSON.parse(requestText.slice(0, newline)) as { id: string };
+      socket.end(`${JSON.stringify({
+        id: request.id,
+        ok: true,
+        result: { body: html, finalUrl: "https://example.com/rendered", status: 200, contentType: "text/html", truncatedAtByteLimit: false }
+      })}\n`);
+    });
+  });
+
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(socketPath, resolve);
+  });
+  try {
+    const tool = createWebFetchTool(undefined, { enabled: false }, {
+      browser: { endpoint: socketPath, token: "test-token" }
+    });
+    const result = await run(tool, { url: "https://example.com/rendered", length: 20_000 });
+    assert.match(result.content, /Rendered article body with useful detail/);
+    assert.doesNotMatch(result.content, /Rendered navigation|Rendered recommendations/);
   } finally {
     await new Promise<void>((resolve, reject) => {
       server.close((error) => error ? reject(error) : resolve());

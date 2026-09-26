@@ -32,15 +32,18 @@ function testWebSearchPermission(): void {
 function testWebSearchRegistration(): void {
   const registry = createToolRegistry(
     { workspaceRoot: "/tmp", ignore: [] },
-    { ...defaultConfig.web.search, enabled: true }
+    defaultConfig.web.search,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    { endpoint: "/tmp/browser.sock", token: "test-token" }
   );
   assert.equal(registry.get("WebSearch").name, "WebSearch");
 
-  const disabledRegistry = createToolRegistry({ workspaceRoot: "/tmp", ignore: [] }, {
-    ...defaultConfig.web.search,
-    enabled: false
-  });
-  assert.throws(() => disabledRegistry.get("WebSearch"), /Unknown tool: WebSearch/);
+  const withoutBrowser = createToolRegistry({ workspaceRoot: "/tmp", ignore: [] }, defaultConfig.web.search);
+  assert.throws(() => withoutBrowser.get("WebSearch"), /Unknown tool: WebSearch/);
 }
 
 testGoogleParser();

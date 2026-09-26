@@ -6,7 +6,7 @@ import type { Tool } from "../types.js";
 import { requestBrowser, type BrowserAutomationEndpoint } from "../browser.js";
 import { decodeHtmlEntities } from "./html.js";
 
-const defaultConfig: WebSearchConfig = { enabled: true, provider: "google", visibleBrowsing: false, timeoutMs: 10_000, maxResults: 5 };
+const defaultConfig: WebSearchConfig = { provider: "google", visibleBrowsing: false, timeoutMs: 10_000, maxResults: 5 };
 
 const recencyValues = ["day", "week", "month", "year"] as const;
 type SearchRecency = (typeof recencyValues)[number];

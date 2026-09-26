@@ -113,7 +113,8 @@ export function createToolRegistry(
   if (managedProcessService) {
     for (const tool of createManagedProcessTools(managedProcessService)) registry.register(tool);
   }
-  if (browser || webSearchConfig?.enabled !== false) registry.register(createWebSearchTool(webSearchConfig, webCookiesConfig, browser));
+  // WebSearch 的实现依赖 Desktop 浏览器；没有执行端时不注册一个调用必然失败的工具。
+  if (browser) registry.register(createWebSearchTool(webSearchConfig, webCookiesConfig, browser));
   if (browser || webFetchConfig?.enabled !== false) registry.register(createWebFetchTool(webFetchConfig, webCookiesConfig, { browser, visibleBrowsing: webSearchConfig?.visibleBrowsing }));
   return registry;
 }

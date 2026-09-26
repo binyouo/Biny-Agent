@@ -36,10 +36,25 @@ export function SettingsWebSearch({ onOpenBrowser, onExportCookies, onImportCook
     <section id="web-search-provider" tabIndex={-1}>
       <h3>搜索引擎</h3>
       <label htmlFor="web-search-engine">选择搜索引擎</label>
-      <NativeSelect id="web-search-engine" value={search.provider} onChange={(event) => setWebSearch({ ...search, enabled: true, provider: event.target.value as "google" | "xiaohongshu" })}>
+      <NativeSelect id="web-search-engine" value={search.provider} onChange={(event) => setWebSearch({ ...search, provider: event.target.value as "google" | "xiaohongshu" })}>
         <option value="google">Google</option><option value="xiaohongshu">小红书</option>
       </NativeSelect>
       <p>选择用于网络搜索的搜索引擎。Google 适用于通用搜索，小红书适用于中文生活方式和购物内容。</p>
+      <div className="web-search-options-grid">
+        <div>
+          <label htmlFor="web-search-timeout">搜索等待时间</label>
+          <NativeSelect id="web-search-timeout" value={String(search.timeoutMs)} onChange={(event) => setWebSearch({ ...search, timeoutMs: Number(event.target.value) })}>
+            {[1_000, 5_000, 10_000, 15_000, 30_000, 60_000].map((milliseconds) => <option key={milliseconds} value={milliseconds}>{milliseconds / 1_000} 秒</option>)}
+            {[1_000, 5_000, 10_000, 15_000, 30_000, 60_000].includes(search.timeoutMs) ? null : <option value={search.timeoutMs}>{search.timeoutMs / 1_000} 秒（当前）</option>}
+          </NativeSelect>
+        </div>
+        <div>
+          <label htmlFor="web-search-max-results">最多返回结果</label>
+          <NativeSelect id="web-search-max-results" value={String(search.maxResults)} onChange={(event) => setWebSearch({ ...search, maxResults: Number(event.target.value) })}>
+            {Array.from({ length: 10 }, (_, index) => index + 1).map((count) => <option key={count} value={count}>{count} 条</option>)}
+          </NativeSelect>
+        </div>
+      </div>
     </section>
     <section>
       <h3>Google 搜索设置</h3>

@@ -1,10 +1,9 @@
 /**
  * HTML 转纯文本模块。
  *
- * 抓回来的网页要变成模型能读的文本：脚本样式整块丢掉，块级标签换成换行，其余标签剥掉，
- * 实体解码。目标是可读，不是还原排版。
+ * Readability 负责识别文章正文；识别失败时用轻量文本转换保住短页和非文章页的可读内容。
+ * 返回给模型的始终是文本，不暴露网页提供的 HTML。
  */
-
 const strippedBlocks = /<(script|style|noscript|template|svg)\b[^>]*>[\s\S]*?<\/\1\s*>/gi;
 const lineBreakTags = /<(?:br|\/p|\/div|\/li|\/h[1-6]|\/tr|\/section|\/article|\/header|\/footer)\b[^>]*>/gi;
 const listItemTags = /<li\b[^>]*>/gi;
@@ -19,6 +18,49 @@ export function htmlToText(html: string): string {
       .replace(/<[^>]*>/g, "")
   )
     // 逐行收紧空白，再把三行以上的空行压成一个段落间隔。
+    .split("\n")
+    .map((line) => line.replace(/[^\S\n]+/g, " ").trim())
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+export interface ReadableHtmlDocument {
+  title?: string;
+  text: string;
+}
+
+/** 在无脚本、无子资源加载的 DOM 中提取正文，解析失败时保留原来的纯文本回退。 */
+export async function extractReadableHtml(html: string, url: string): Promise<ReadableHtmlDocument> {
+  const fallback = { title: htmlTitle(html), text: htmlToText(html) };
+  if (!html.trim()) return fallback;
+
+  // 只有实际读取 HTML 时才载入 DOM 与正文提取依赖，避免拖慢 CLI/Desktop 启动。
+  const [{ Readability }, { JSDOM }] = await Promise.all([
+    import("@mozilla/readability"),
+    import("jsdom")
+  ]);
+  let closeDom: (() => void) | undefined;
+  try {
+    const dom = new JSDOM(html, { url });
+    closeDom = () => dom.window.close();
+    const article = new Readability(dom.window.document).parse();
+    const text = normalizeReadableText(article?.textContent ?? "");
+    if (!text) return fallback;
+    const title = article?.title?.replace(/\s+/g, " ").trim() || fallback.title;
+    return { title, text };
+  } catch {
+    // 网页 HTML 不可信且可能畸形；Readability 失败时继续返回不含标签的旧式文本结果。
+    return fallback;
+  } finally {
+    closeDom?.();
+  }
+}
+
+function normalizeReadableText(text: string): string {
+  return text
+    .replace(/\r\n?/g, "\n")
+    .replace(/\u00a0/g, " ")
     .split("\n")
     .map((line) => line.replace(/[^\S\n]+/g, " ").trim())
     .join("\n")

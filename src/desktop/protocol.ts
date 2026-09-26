@@ -1038,7 +1038,6 @@ export type DesktopWebSearchProvider = WebSearchConfig["provider"];
  * 网络搜索偏好；网站登录凭据保存在 Electron 分区，不进入设置快照。
  */
 export interface DesktopWebSearchSettings {
-  enabled: boolean;
   provider: DesktopWebSearchProvider;
   visibleBrowsing: boolean;
   timeoutMs: number;

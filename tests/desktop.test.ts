@@ -2696,11 +2696,10 @@ async function testDesktopWebSearchSettings(): Promise<void> {
     const settings = new DesktopSettingsTransaction(state, agents);
 
     const initial = await settings.snapshot(project.id);
-    assert.equal(initial.webSearch.enabled, false);
     assert.equal(initial.webSearch.provider, "google");
     assert.equal(initial.webSearch.visibleBrowsing, false);
     const saved = (await commitDesktopSettings(settings, project.id, {
-      webSearch: { enabled: true, provider: "xiaohongshu", visibleBrowsing: true, timeoutMs: 8_000, maxResults: 6 }
+      webSearch: { provider: "xiaohongshu", visibleBrowsing: true, timeoutMs: 8_000, maxResults: 6 }
     })).webSearch;
     assert.equal(saved.provider, "xiaohongshu");
     assert.equal(saved.visibleBrowsing, true);

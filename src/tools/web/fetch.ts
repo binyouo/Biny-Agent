@@ -12,7 +12,7 @@ import { ToolAccesses } from "../access.js";
 import type { Tool } from "../types.js";
 import { assertFetchableUrl, type HostnameResolver } from "./addressPolicy.js";
 import { cookieHeaderFor, defaultCookieJarPath, readCookieJar, type StoredCookie } from "./cookieJar.js";
-import { htmlTitle, htmlToText } from "./html.js";
+import { extractReadableHtml } from "./html.js";
 
 const defaultLength = 24_000;
 const maxLength = 200_000;
@@ -54,7 +54,7 @@ export function createWebFetchTool(
   const cookieJarPath = cookies?.enabled === false ? undefined : cookies?.path ?? defaultCookieJarPath();
   return {
     name: "WebFetch",
-    description: `Fetch a public http(s) URL and return its readable text. HTML is converted to text. Returns at most ${String(maxLength)} characters; page through longer documents with offset.`,
+    description: `Fetch a public http(s) URL and return its readable text. HTML pages use article extraction with a plain-text fallback. Returns at most ${String(maxLength)} characters; page through longer documents with offset.`,
     promptSnippet: "Fetch readable text from a public HTTP or HTTPS URL",
     promptGuidelines: ["Use WebFetch to inspect a known URL and page through truncated documents with offset"],
     parameters: {
@@ -93,7 +93,10 @@ export function createWebFetchTool(
             jar,
             resolveHostname: dependencies?.resolveHostname
           }, signal);
-          const text = isHtml(fetched.contentType) ? htmlToText(fetched.body) : fetched.body;
+          const readable = isHtml(fetched.contentType)
+            ? await extractReadableHtml(fetched.body, fetched.finalUrl)
+            : { title: undefined, text: fetched.body };
+          const text = readable.text;
           const offset = Math.min(args.offset ?? 0, text.length);
           const content = text.slice(offset, offset + (args.length ?? defaultLength));
           const truncatedAtByteLimit = "truncatedAtByteLimit" in fetched
@@ -104,7 +107,7 @@ export function createWebFetchTool(
             finalUrl: fetched.finalUrl,
             status: fetched.status,
             contentType: fetched.contentType,
-            title: isHtml(fetched.contentType) ? htmlTitle(fetched.body) : undefined,
+            title: readable.title,
             totalCharacters: text.length,
             offset,
             content,

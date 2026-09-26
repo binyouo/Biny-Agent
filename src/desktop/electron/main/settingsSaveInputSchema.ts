@@ -54,7 +54,6 @@ export const modelConfigurationSchema = z.object({
   makeDefault: z.boolean().optional()
 });
 const webSearchSettingsSchema = z.object({
-  enabled: z.boolean(),
   provider: z.enum(["google", "xiaohongshu"]),
   visibleBrowsing: z.boolean(),
   timeoutMs: z.number().int().min(1_000).max(60_000),

@@ -61,7 +61,7 @@ test("WebSearch 经浏览器控制 socket 返回结果，关闭侧栏时使用�
     const endpoint = await browser.startAutomationServer(path.join(root, "b.sock"));
     await assert.rejects(requestBrowser(endpoint, "read_dom", {}), /未打开|不可用/);
     assert.equal(Window.instances.length, 0, "读取不能创建首页并冒充用户当前浏览器");
-    const registry = createToolRegistry({ workspaceRoot: root, ignore: [] }, { ...defaultConfig.web.search, enabled: false, visibleBrowsing: true }, undefined, defaultConfig.web.fetch, undefined, { enabled: false }, undefined, { ...endpoint, projectId: "p" });
+    const registry = createToolRegistry({ workspaceRoot: root, ignore: [] }, { ...defaultConfig.web.search, visibleBrowsing: true }, undefined, defaultConfig.web.fetch, undefined, { enabled: false }, undefined, { ...endpoint, projectId: "p" });
     const tool = registry.get<WebSearchArgs, WebSearchResponse>("WebSearch");
     assert.equal(registry.get("WebFetch").name, "WebFetch", "Desktop 浏览器连接直接提供搜索和抓取");
     const execution = await tool.resolveExecution({ query: "test" });
