@@ -10,6 +10,7 @@
 import { setTimeout as delay } from "node:timers/promises";
 import type { ActivityStore, ActivityOcrEmbeddingSource } from "./store.js";
 import type { EmbeddingModelRuntime } from "../llm/embedding/types.js";
+import { listLocalEmbeddingModels } from "../llm/embedding/LocalEmbeddingRuntime.js";
 import { cosineSimilarity } from "../llm/embedding/vector.js";
 
 /** 每轮最多补齐 32 帧，剩余帧下轮续接。 */
@@ -73,6 +74,11 @@ export async function precomputeActivityEmbeddings(
 ): Promise<ActivityEmbeddingPrecomputeResult> {
   await deps.checkpoint?.();
   deps.signal?.throwIfAborted();
+  // 固定本地模型的指纹由同一模型描述符计算；空轮先查库，避免反复探测或加载权重。
+  const localModel = listLocalEmbeddingModels().find(({ ref }) => ref.kind === "local" && ref.model === "multilingual-e5-small")!;
+  if (!deps.store.listOcrEmbeddingSources(localModel.fingerprint, 1).length) {
+    return { ok: true, embedded: 0, model: "multilingual-e5-small", dimensions: localModel.dimensions ?? 0 };
+  }
   const runtime = await resolveActivityEmbeddingRuntime(deps.getEmbeddingRuntime);
   await deps.checkpoint?.();
   deps.signal?.throwIfAborted();

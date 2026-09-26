@@ -40,7 +40,7 @@ export interface ActivitySummaryStats {
   apps: ActivitySummaryApplication[];
   hours: ActivitySummaryHour[];
   keyMoments: ActivitySummaryKeyMoment[];
-  /** 日报与日结共用 SQLite 行；刷新日结时保留已生成日报。 */
+  /** 日报与日结共用 SQLite 行；刷新日结后旧日报须重新生成。 */
   report?: string;
   reportGeneratedAt?: number;
   reportStats?: ActivityReportStats;
@@ -153,13 +153,6 @@ export function refreshActivitySummary(
   now = new Date()
 ): ActivitySummaryRecord {
   const summary = buildActivitySummary(store, kind, dateKey, now);
-  const previous = store.getSummary(kind, dateKey)?.stats;
-  if (previous?.report !== undefined) {
-    summary.stats.report = previous.report;
-    summary.stats.reportGeneratedAt = previous.reportGeneratedAt;
-    summary.stats.reportStats = previous.reportStats;
-    summary.stats.reportState = previous.reportState;
-  }
   store.upsertSummary(summary);
   return summary;
 }
@@ -215,13 +208,6 @@ export async function refreshActivitySummaryWithNarrative(
   await options.checkpoint?.();
   options.signal?.throwIfAborted();
   const result: ActivitySummaryRecord = { ...base, summary, model };
-  const previous = store.getSummary(kind, dateKey)?.stats;
-  if (previous?.report !== undefined) {
-    result.stats.report = previous.report;
-    result.stats.reportGeneratedAt = previous.reportGeneratedAt;
-    result.stats.reportStats = previous.reportStats;
-    result.stats.reportState = previous.reportState;
-  }
   store.upsertSummary(result);
   return result;
 }

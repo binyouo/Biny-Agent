@@ -28,6 +28,7 @@ export async function narrateActivityReport(
   await options.checkpoint?.();
   options.signal?.throwIfAborted();
   if (report.cached || options.skeleton || !options.model || report.sessionCount === 0) return report;
+  const fallback = { ...report, narrativeModel: options.model.modelId };
   try {
     const generated = await generateNativeText(
       options.model,
@@ -37,19 +38,19 @@ export async function narrateActivityReport(
     await options.checkpoint?.();
     options.signal?.throwIfAborted();
     const markdown = generated.text.trim();
-    if (!validNarrative(markdown, report.markdown)) return report;
+    if (!validNarrative(markdown, report.markdown)) return fallback;
     const narrated = { ...report, markdown, narrativeModel: options.model.modelId };
     if (options.store) persistActivityReport(options.store, narrated);
     return narrated;
   } catch {
     await options.checkpoint?.();
     options.signal?.throwIfAborted();
-    return report;
+    return fallback;
   }
 }
 
 function validNarrative(output: string, skeleton: string): boolean {
-  if (output.length > 20_000 || !/^# [^\n]+/u.test(output) || !/^## [^\n]+/mu.test(output)) return false;
+  if (output.length <= 80 || output.length > 20_000 || !/^# [^\n]+/u.test(output) || !/^## [^\n]+/mu.test(output)) return false;
   for (const pattern of [/\bPR\s*#\d+\b/giu, /\bv\d+(?:\.\d+)+\b/giu, /https?:\/\/[^\s)]+/giu]) {
     const supported = new Set(skeleton.match(pattern) ?? []);
     if ((output.match(pattern) ?? []).some((value) => !supported.has(value))) return false;

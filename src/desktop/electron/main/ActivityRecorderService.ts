@@ -116,6 +116,7 @@ const STORE_SNAPSHOT_TTL_MS = 30_000;
 
 export interface ActivityRecorderServiceOptions {
   captureTimers?: {setInterval:typeof setInterval;clearInterval:typeof clearInterval};
+  sessionIdleTimers?: {setTimeout:typeof setTimeout;clearTimeout:typeof clearTimeout};
   now?: () => number;
   /** 输入监听失效时独立读取前台 bundle；失败或空值禁止截图。 */
   readFrontmostBundle?: () => Promise<string | undefined>;
@@ -147,6 +148,7 @@ export interface ActivityRecorderServiceOptions {
 
 export class ActivityRecorderService {
   private readonly captureTimerScheduler: {setInterval:typeof setInterval;clearInterval:typeof clearInterval};
+  private readonly sessionIdleTimers: {setTimeout:typeof setTimeout;clearTimeout:typeof clearTimeout};
   private readonly now: () => number;
   private readonly readFrontmostBundle: () => Promise<string | undefined>;
   private readonly hasScreenRecordingPermission: () => Promise<boolean>;
@@ -181,6 +183,7 @@ export class ActivityRecorderService {
   private configWatcher?: FSWatcher;
   private configRefreshTimer?: ReturnType<typeof setTimeout>;
   private sessionIdleTimer?: ReturnType<typeof setTimeout>;
+  private sessionIdleEpoch = 0;
   private snapshotRotationInitialTimer?: ReturnType<typeof setTimeout>;
   private snapshotRotationTimer?: ReturnType<typeof setInterval>;
   private settings?: ActivitySettings;
@@ -226,6 +229,7 @@ export class ActivityRecorderService {
 
   constructor(options: ActivityRecorderServiceOptions) {
     this.captureTimerScheduler = options.captureTimers ?? {setInterval,clearInterval};
+    this.sessionIdleTimers = options.sessionIdleTimers ?? {setTimeout,clearTimeout};
     this.now = options.now ?? Date.now;
     this.readFrontmostBundle = options.readFrontmostBundle ?? readMacFrontmostBundle;
     this.hasScreenRecordingPermission = options.hasScreenRecordingPermission ?? checkMacScreenRecordingPermission;
@@ -1203,9 +1207,12 @@ export class ActivityRecorderService {
   private scheduleSessionIdleClose(): void {
     this.clearSessionIdleTimer();
     const idleTimeoutMs = Math.max(10_000, this.settings?.idleTimeoutMs ?? 30_000);
-    this.sessionIdleTimer = setTimeout(() => {
+    const epoch = this.sessionIdleEpoch;
+    const sessionId = this.sessionId;
+    this.sessionIdleTimer = this.sessionIdleTimers.setTimeout(() => {
       void this.enqueue(async () => {
-        if (!this.sessionId) return;
+        // 输入可能已经排在关闭任务前面；它刷新计时器后，旧截止不得关闭新状态。
+        if (!this.sessionId || this.sessionId !== sessionId || this.sessionIdleEpoch !== epoch) return;
         this.endCurrentSession(toIso(Date.now()));
         this.publish();
       });
@@ -1213,7 +1220,8 @@ export class ActivityRecorderService {
   }
 
   private clearSessionIdleTimer(): void {
-    if (this.sessionIdleTimer !== undefined) clearTimeout(this.sessionIdleTimer);
+    this.sessionIdleEpoch += 1;
+    if (this.sessionIdleTimer !== undefined) this.sessionIdleTimers.clearTimeout(this.sessionIdleTimer);
     this.sessionIdleTimer = undefined;
   }
 

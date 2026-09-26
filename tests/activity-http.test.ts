@@ -2,14 +2,17 @@ import assert from "node:assert/strict";
 import { mkdir, mkdtemp, rm, stat, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { defaultActivitySettings, type ActivitySettings } from "../src/activity/settings.js";
 import { handleActivityHttpRequest, startActivityHttpServer } from "../src/activity/httpServer.js";
 import { ActivityStore } from "../src/activity/store.js";
+import { AGENT_DATABASE_FILE } from "../src/config/paths.js";
 import type { AgentModel, ModelStreamEvent } from "../src/agent/core/types.js";
 
 
 await testHttpRequiresTokenAndKeepsSnapshotsInsideStore();
 await testActivityHttpServerExposesLoopbackQueries();
+await testActivitySessionsDeepPagination();
 await testActivityStatusProjectsRunningHost();
 await testActivityHttpReportDoesNotProjectMemoryCallbacks();
 await testSuggestionsResponseAndForceQuery();
@@ -17,6 +20,37 @@ await testDigestMaxAnalyzedQuery();
 await testActivitySummaryReadsWithoutGeneratingAndManualAnalysisRetries();
 await testActivityRestSummaryAndReportProjection();
 await testHttpCancellationDiscardsLateAnalysis();
+
+async function testActivitySessionsDeepPagination(): Promise<void> {
+  const root = await mkdtemp(path.join(os.tmpdir(), "biny-activity-http-pages-"));
+  const store = new ActivityStore();
+  try {
+    await store.open(root, root);
+    const database = new DatabaseSync(path.join(root, AGENT_DATABASE_FILE));
+    try {
+      const insert = database.prepare("INSERT INTO activity_sessions (id, started_at) VALUES (?, ?)");
+      database.exec("BEGIN");
+      for (let index = 0; index < 10_002; index += 1) {
+        insert.run(`page-${String(index).padStart(5, "0")}`, 1_700_000_000_000 + index);
+      }
+      database.exec("COMMIT");
+    } finally {
+      database.close();
+    }
+    const deps = { agentDir: root, loadSettings: async () => ({ ...defaultActivitySettings, outputDirectory: root }) };
+    const read = async (offset: number) => await handleActivityHttpRequest({
+      method: "GET", pathname: "/api/activity-recorder/sessions",
+      searchParams: new URLSearchParams(`offset=${offset}&limit=1`)
+    }, deps);
+    const earlier = (await read(10_000)).body as { sessions: Array<{ id: string }> };
+    const later = (await read(10_001)).body as { sessions: Array<{ id: string }> };
+    assert.deepEqual(earlier.sessions.map((row) => row.id), ["page-00001"]);
+    assert.deepEqual(later.sessions.map((row) => row.id), ["page-00000"], "超过 10000 条仍能翻到最后一页");
+  } finally {
+    await store.close();
+    await rm(root, { recursive: true, force: true });
+  }
+}
 
 async function testActivityRestSummaryAndReportProjection(): Promise<void> {
   const root = await mkdtemp(path.join(os.tmpdir(), "biny-activity-rest-projection-"));
@@ -395,20 +429,32 @@ async function testActivityHttpServerExposesLoopbackQueries(): Promise<void> {
       { agentDir: root, loadSettings: async () => settings }
     );
     assert.equal(active.status, 409);
-    store.endSession(sessionId, "2026-08-31T10:00:00.000Z");
-    const deletionApi = await startActivityHttpServer({ agentDir: root, loadSettings: async () => settings });
+    const frameId = store.search("中文")[0]?.id;
+    assert.ok(frameId);
+    store.upsertOcrEmbedding(frameId, "delete-session-test", new Float32Array([1, 0]), new Date().toISOString());
+    const database = new DatabaseSync(path.join(root, "agent.sqlite"));
     try {
-      const deleted = await fetch(`http://${deletionApi.host}:${deletionApi.port}/api/activity-recorder/sessions/${sessionId}`, {
-        method: "DELETE", headers: { Authorization: `Bearer ${deletionApi.token}` }
-      });
-      assert.equal(deleted.status, 200);
-      assert.deepEqual(await deleted.json(), { ok: true });
+      assert.equal(database.prepare("SELECT COUNT(*) AS n FROM activity_ocr_frames WHERE session_id = ? AND embedding IS NOT NULL").get(sessionId)!.n, 1);
+      store.endSession(sessionId, "2026-08-31T10:00:00.000Z");
+      const deletionApi = await startActivityHttpServer({ agentDir: root, loadSettings: async () => settings });
+      try {
+        const deleted = await fetch(`http://${deletionApi.host}:${deletionApi.port}/api/activity-recorder/sessions/${sessionId}`, {
+          method: "DELETE", headers: { Authorization: `Bearer ${deletionApi.token}` }
+        });
+        assert.equal(deleted.status, 200);
+        assert.deepEqual(await deleted.json(), { ok: true });
+      } finally {
+        await deletionApi.close();
+      }
+      assert.equal(store.getSessionDetail(sessionId), undefined);
+      assert.deepEqual(store.search("中文"), []);
+      assert.equal(database.prepare("SELECT COUNT(*) AS n FROM activity_snapshots WHERE session_id = ?").get(sessionId)!.n, 0);
+      assert.equal(database.prepare("SELECT COUNT(*) AS n FROM activity_ocr_frames WHERE session_id = ?").get(sessionId)!.n, 0,
+        "删除会话须连同 OCR 派生向量一起删除");
+      await assert.rejects(stat(snapshotPath), { code: "ENOENT" });
     } finally {
-      await deletionApi.close();
+      database.close();
     }
-    assert.equal(store.getSessionDetail(sessionId), undefined);
-    assert.deepEqual(store.search("中文"), []);
-    await assert.rejects(stat(snapshotPath), { code: "ENOENT" });
   } finally {
     await store.close();
   }

@@ -723,7 +723,7 @@ async function testReportNarrativeAndSkeleton(): Promise<void> {
     const sessionId = seedEndedSession(store, todayAt(14), todayAt(15), 1);
     store.recordAnalysis(analysisRow(sessionId, { project: "biny", summary: "检查 PR #123 的构建结果" }));
     const skeleton = await buildActivityReport(deps(store), "today", { skeletonOnly: true });
-    const { model, calls } = scriptedModel(["# 2026-08-26 工作日记\n\n## biny\n我检查了 PR #123 的构建结果。"]);
+    const { model, calls } = scriptedModel(["# 2026-08-26 工作日记\n\n## biny\n我检查了 PR #123 的构建结果，并整理了这次会话已经保存的活动证据、分析标题与时间线；报告只陈述骨架已有的信息，不把观察写成发布结果。"]);
     const narrative = await narrateActivityReport(skeleton, { model });
     assert.match(narrative.markdown, /我检查了 PR #123/u);
     assert.equal(narrative.narrativeModel, model.modelId);

@@ -33,6 +33,8 @@ export interface ActivityHttpApiDependencies {
   getEmbeddingRuntime?(): Promise<EmbeddingModelRuntime | undefined>;
   writeMemories?: ActivityAnalyzerDeps["writeMemories"];
   onAnalyzed?: ActivityAnalyzerDeps["onAnalyzed"];
+  /** 服务持有显式分析后的投影及 ActivityStore 清理，关闭时收齐。 */
+  scheduleProjection?: (task: Promise<void>) => void;
   crystal?: CrystalHttpDependencies;
   getRuntimeSnapshot?(): ActivityRuntimeSnapshot | Promise<ActivityRuntimeSnapshot>;
   /** REST 专属前台状态；IPC 快照继续使用自身的展示模型。 */
@@ -156,6 +158,7 @@ export async function handleActivityHttpRequest(
     signal.throwIfAborted();
     const store = new ActivityStore();
     await store.open(settings.outputDirectory, deps.agentDir ?? globalAgentDir());
+    let backgroundProjection: Promise<void> | undefined;
     try {
       const operation = createActivityOperation(store, settings, deps.loadSettings, signal);
       await operation.checkpoint();
@@ -195,7 +198,12 @@ export async function handleActivityHttpRequest(
             model: await deps.getModel?.(),
             ...operation,
             writeMemories: deps.writeMemories,
-            onAnalyzed: deps.onAnalyzed
+            onAnalyzed: deps.onAnalyzed,
+            deferProjection: deps.scheduleProjection === undefined ? undefined : (task) => {
+              backgroundProjection = task.then(undefined, () => {
+                if (!signal.aborted) console.error("[ActivityAnalyzer] projection failed");
+              });
+            }
           }, resolvedSessionId, true);
         // REST 返回保存后的 session 元数据，分析结果由状态字段表达。
         return { status: 200, body: store.getHttpSessionDetail(resolvedSessionId)?.session };
@@ -303,7 +311,11 @@ export async function handleActivityHttpRequest(
       }
       return notFound();
     } finally {
-      await store.close();
+      if (backgroundProjection && deps.scheduleProjection) {
+        deps.scheduleProjection(backgroundProjection.finally(async () => await store.close()));
+      } else {
+        await store.close();
+      }
     }
   } catch (error) {
     if (error instanceof Error && error.name === "AbortError") return { status: 409, body: { error: "Activity 请求已取消。" } };
@@ -319,8 +331,23 @@ export async function startActivityHttpServer(
   const token = options.token ?? randomBytes(32).toString("base64url");
   let port = options.port ?? 0;
   const shutdown = new AbortController();
+  const responses = new Set<Promise<void>>();
+  const projections = new Set<Promise<void>>();
+  const scheduleProjection = (task: Promise<void>): void => {
+    const managed = task.catch(() => {
+      console.error("[ActivityHttp] projection cleanup failed");
+    }).finally(() => { projections.delete(managed); });
+    projections.add(managed);
+  };
   const server = createServer((request, response) => {
-    void respond(request, response, deps, shutdown.signal, token, port);
+    const managed = respond(request, response, { ...deps, scheduleProjection }, shutdown.signal, token, port)
+      .catch(() => {
+        if (!response.destroyed) {
+          response.statusCode = 500;
+          response.end(JSON.stringify({ error: "Activity 请求失败。" }));
+        }
+      }).finally(() => { responses.delete(managed); });
+    responses.add(managed);
   });
   await new Promise<void>((resolve, reject) => {
     const onError = (error: Error): void => {
@@ -342,11 +369,15 @@ export async function startActivityHttpServer(
     host,
     port,
     token,
-    close: async () => await new Promise<void>((resolve, reject) => {
-      shutdown.abort();
-      server.close((error) => error ? reject(error) : resolve());
-      server.closeAllConnections();
-    })
+    close: async () => {
+      await new Promise<void>((resolve, reject) => {
+        shutdown.abort();
+        server.close((error) => error ? reject(error) : resolve());
+        server.closeAllConnections();
+      });
+      while (responses.size) await Promise.all(responses);
+      while (projections.size) await Promise.all(projections);
+    }
   };
 }
 
@@ -572,7 +603,7 @@ function epochMilliseconds(value: string | null): number | undefined | null {
 function boundedOffset(value: string | null): number {
   if (!value) return 0;
   const parsed = Number(value);
-  return Number.isSafeInteger(parsed) && parsed >= 0 ? Math.min(parsed, 10_000) : 0;
+  return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : 0;
 }
 
 function badRequest(message: string): ActivityHttpResponse {

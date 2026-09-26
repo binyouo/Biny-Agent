@@ -66,6 +66,14 @@ try {
   assert.match(withToday, /Terminal/u, "正在使用的应用进入问候概况");
   assert.match(withToday, /Today|今天/iu, "今天的活动统计进入问候概况");
   assert.match(withToday, /主要应用：.*Terminal/u, "今天的主要应用也进入活动概况");
+
+  for (let index = 0; index < 50; index += 1) {
+    const startedAt = new Date(now.getTime() - 8 * 60_000 + index * 1_000);
+    const later = store.startSession(startedAt.toISOString());
+    store.endSession(later, new Date(startedAt.getTime() + 500).toISOString());
+  }
+  assert.match(recentActivityForGreeting(store, "你好", now) ?? "", /当前活动：Terminal/u,
+    "较旧的开放会话不能被最近 50 个已结束会话挤出当前活动");
 } finally {
   await store.close();
   await rm(root, { recursive: true, force: true });

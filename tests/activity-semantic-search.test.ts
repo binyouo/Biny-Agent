@@ -11,12 +11,15 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { precomputeActivityEmbeddings, searchActivitySemantic } from "../src/activity/semanticSearch.js";
 import { ActivityStore, type ActivitySessionAnalysis } from "../src/activity/store.js";
+import { listLocalEmbeddingModels } from "../src/llm/embedding/LocalEmbeddingRuntime.js";
 import type { EmbeddingModelRuntime, EmbeddingResult } from "../src/llm/embedding/types.js";
 
 const FINGERPRINT = "test-fingerprint";
+const CURRENT_FINGERPRINT = listLocalEmbeddingModels().find(({ ref }) => ref.kind === "local" && ref.model === "multilingual-e5-small")!.fingerprint;
 const NOW = new Date(2026, 7, 26, 15, 0, 0);
 
 await testSemanticSearchFallsBackWhenNoRuntime();
+await testEmptyPrecomputeSkipsRuntime();
 await testLateEmbeddingDoesNotPersist();
 await testLongOcrUsesOneFrameVector();
 await testOcrFramesDiscardLateResults();
@@ -141,6 +144,67 @@ async function testSemanticSearchFallsBackWhenNoRuntime(): Promise<void> {
     if (result.ok) return;
     assert.equal(result.reason, "no_runtime");
     assert.match(result.message, /biny activity search/u);
+  });
+}
+
+async function testEmptyPrecomputeSkipsRuntime(): Promise<void> {
+  await withStore(async (store) => {
+    let runtimeCalls = 0;
+    const getEmbeddingRuntime = async () => { runtimeCalls += 1; return undefined; };
+    const empty = await precomputeActivityEmbeddings({ store, getEmbeddingRuntime });
+    assert.ok(empty.ok && empty.embedded === 0);
+    assert.equal(empty.model, "multilingual-e5-small");
+    assert.equal(empty.dimensions, 384);
+    assert.equal(runtimeCalls, 0, "没有待索引 OCR 时不加载本地模型");
+
+    const controller = new AbortController();
+    controller.abort();
+    await assert.rejects(precomputeActivityEmbeddings({ store, getEmbeddingRuntime, signal: controller.signal }), { name: "AbortError" });
+    assert.equal(runtimeCalls, 0, "取消检查仍先于空队列返回");
+
+    const sessionId = store.startSession(todayAt(9));
+    await store.recordFallbackCapture({
+      sessionId, occurredAt: todayAt(9), eventType: "fallback_capture",
+      rawOcrText: "待索引正文", jpeg: Buffer.from("test-jpeg")
+    });
+    const result = await precomputeActivityEmbeddings({ store, getEmbeddingRuntime });
+    assert.equal(result.ok, false, "确有待索引帧时继续报告模型不可用");
+    assert.equal(runtimeCalls, 1);
+  });
+
+  await withStore(async (store) => {
+    const sessionId = store.startSession(todayAt(9));
+    await store.recordFallbackCapture({
+      sessionId, occurredAt: todayAt(9), eventType: "fallback_capture",
+      rawOcrText: "已索引正文", jpeg: Buffer.from("test-jpeg")
+    });
+    const frame = store.listOcrEmbeddingSources(CURRENT_FINGERPRINT)[0]!;
+    store.upsertOcrEmbedding(frame.id, CURRENT_FINGERPRINT, vec([1, 0, 0, 0]), todayAt(9));
+    let runtimeCalls = 0;
+    const result = await precomputeActivityEmbeddings({
+      store,
+      getEmbeddingRuntime: async () => { runtimeCalls += 1; return undefined; }
+    });
+    assert.ok(result.ok && result.embedded === 0, "当前模型指纹的帧已索引，空轮成功结束");
+    assert.equal(result.model, "multilingual-e5-small");
+    assert.equal(result.dimensions, 384);
+    assert.equal(runtimeCalls, 0, "完整已索引轮不检查模型缓存或加载运行时");
+
+    store.upsertOcrEmbedding(frame.id, "obsolete-fingerprint", vec([1, 0, 0, 0]), todayAt(9));
+    const runtime = ruleRuntime([{ match: /已索引/u, vector: vec([0, 1, 0, 0]) }]);
+    const freshRuntime = {
+      ...runtime,
+      fingerprint: CURRENT_FINGERPRINT,
+      descriptor: { ...runtime.descriptor, fingerprint: CURRENT_FINGERPRINT }
+    };
+    const rebuilt = await precomputeActivityEmbeddings({
+      store,
+      getEmbeddingRuntime: async () => { runtimeCalls += 1; return freshRuntime; }
+    });
+    assert.ok(rebuilt.ok);
+    assert.equal(rebuilt.embedded, 1, "旧模型指纹仍触发重建");
+    assert.equal(runtimeCalls, 1);
+    assert.deepEqual(store.listOcrEmbeddingRows(CURRENT_FINGERPRINT)[0]?.embedding, vec([0, 1, 0, 0]));
   });
 }
 

@@ -10,6 +10,7 @@ import { writeDailyActivityNote } from "../src/activity/dailyNotes.js";
 import { defaultConfig, type AgentConfig } from "../src/config/schema.js";
 import { BINY_AGENT_DIR_ENV } from "../src/config/paths.js";
 import type { EmbeddingModelRuntime } from "../src/llm/embedding/types.js";
+import { LocalEmbeddingManager } from "../src/llm/embedding/LocalEmbeddingRuntime.js";
 import { PermissionManager } from "../src/permission/PermissionManager.js";
 import { readSessionEvents } from "../src/session/events.js";
 import { SessionRecorder } from "../src/session/recorder.js";
@@ -59,6 +60,31 @@ try {
       "上一轮 Activity 引用不得保留在对话历史");
   } finally {
     await agent.close();
+  }
+
+  const originalIsReady = LocalEmbeddingManager.prototype.isReady;
+  const originalCreateRuntime = LocalEmbeddingManager.prototype.createRuntime;
+  let coldStartCalls = 0;
+  let localModelReady = false;
+  LocalEmbeddingManager.prototype.isReady = () => localModelReady;
+  LocalEmbeddingManager.prototype.createRuntime = async () => { coldStartCalls += 1; return fakeRuntime(); };
+  const coldRequests: ModelStreamContext[] = [];
+  const coldAgent = new AgentSession({ workspaceRoot: workspace, config, model: captureModel(coldRequests),
+    toolRegistry: new ToolRegistry(), permissionManager: new PermissionManager({ ...config.permission, source: "test" }),
+    recorder: new SessionRecorder(workspace) });
+  try {
+    await coldAgent.initialize();
+    assert.equal((await coldAgent.runTask("上次登录排查结论是什么")).status, "completed");
+    assert.equal(coldStartCalls, 0, "未加载的 Activity 向量模型不应为旁路引用冷启动");
+    assert.doesNotMatch(requestText(coldRequests.at(-1)?.messages ?? []), /登录排查完成/u);
+    localModelReady = true;
+    assert.equal((await coldAgent.runTask("上次登录排查结论是什么")).status, "completed");
+    assert.equal(coldStartCalls, 1, "已加载的模型仍可参与本轮 Activity 引用");
+    assert.match(requestText(coldRequests.at(-1)?.messages ?? []), /登录排查完成/u);
+  } finally {
+    await coldAgent.close();
+    LocalEmbeddingManager.prototype.isReady = originalIsReady;
+    LocalEmbeddingManager.prototype.createRuntime = originalCreateRuntime;
   }
 
   const date = new Date();

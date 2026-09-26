@@ -27,6 +27,7 @@ await testMissingHistogramColumnMigration();
 await testSessionClosePersistsDuration();
 await testStorageLimitKeepsEventSemantics();
 await testStorageLimitEvictsOldestAcrossTiers();
+await testStorageLimitContinuesAfterCandidatePage();
 await testStorageLimitKeepsRecordWhenFileCannotBeDeleted();
 await testSnapshotTierRetriesAfterCompressionFailure();
 await testBrowserTabUrlStructuredStorageAndSearch();
@@ -415,6 +416,7 @@ async function testEventAndFallbackStorage(): Promise<void> {
 async function testSnapshotOrphanRecovery(): Promise<void> {
   const root = await mkdtemp(path.join(os.tmpdir(), "biny-activity-orphan-"));
   const store = new ActivityStore();
+  let service: ActivityRecorderService | undefined;
   try {
     await store.open(root, root);
     await store.close();
@@ -425,10 +427,20 @@ async function testSnapshotOrphanRecovery(): Promise<void> {
     await writeFile(path.join(root, ".capture-tmp", "stale.tmp"), Buffer.from("stale"));
     await store.open(root, root);
     assert.ok(await stat(orphanPath), "普通开库不触发文件清理");
-    await store.reconcileSnapshotFiles();
+    await store.close();
+    service = new ActivityRecorderService({
+      agentDir: root,
+      configStore: { load: async () => ({
+        ...defaultConfig,
+        activity: { ...defaultActivitySettings, enabled: false, outputDirectory: root }
+      }) } as AgentConfigStore,
+      inputMonitorPath: undefined
+    });
+    await service.initialize();
     await assert.rejects(stat(orphanPath));
     await assert.rejects(stat(path.join(root, ".capture-tmp", "stale.tmp")));
   } finally {
+    await service?.stop();
     await store.close();
     await rm(root, { recursive: true, force: true });
   }
@@ -641,6 +653,47 @@ async function testStorageLimitEvictsOldestAcrossTiers(): Promise<void> {
       const remaining = store.getSessionDetail(sessionId)!.snapshots;
       assert.deepEqual(remaining.map(row => row.storageTier).sort(), ["cold", "warm"],
         "容量淘汰按截图时间排序，旧 hot 应先于较新的 cold 淘汰");
+    } finally {
+      database.close();
+    }
+  } finally {
+    await store.close();
+    await rm(root, { recursive: true, force: true });
+  }
+}
+
+async function testStorageLimitContinuesAfterCandidatePage(): Promise<void> {
+  const root = await mkdtemp(path.join(os.tmpdir(), "biny-activity-capacity-pages-"));
+  const store = new ActivityStore();
+  try {
+    await store.open(root, root);
+    const now = new Date();
+    const base = now.getTime() - 10_000;
+    const sessionId = store.startSession(new Date(base).toISOString());
+    const jpeg = Buffer.alloc(3_000, 1);
+    const count = 1_100;
+    for (let index = 0; index < count; index += 1) {
+      await store.recordFallbackCapture({
+        sessionId,
+        occurredAt: new Date(base + index).toISOString(),
+        eventType: "fallback_capture",
+        jpeg
+      });
+    }
+    const database = new DatabaseSync(path.join(root, "agent.sqlite"));
+    try {
+      const before = database.prepare("SELECT COUNT(*) AS n, SUM(bytes) AS bytes FROM activity_snapshots").get() as { n: number; bytes: number };
+      assert.equal(before.n, count);
+      assert.ok(before.bytes > 1024 * 1024);
+      const oldest = database.prepare("SELECT file_path FROM activity_snapshots ORDER BY captured_at ASC, id ASC LIMIT 1").get() as { file_path: string };
+      await store.rotateSnapshots(1, now);
+      const after = database.prepare("SELECT COUNT(*) AS n, SUM(bytes) AS bytes, MIN(captured_at) AS oldest FROM activity_snapshots").get() as {
+        n: number; bytes: number; oldest: string
+      };
+      assert.ok(count - after.n > 500, "容量淘汰必须处理第二页候选");
+      assert.ok(after.bytes <= Math.floor(1024 * 1024 * 0.75), "超过上限后应降至低水位");
+      assert.equal(after.oldest, new Date(base + count - after.n).toISOString(), "剩余截图必须是全局最新的连续后缀");
+      await assert.rejects(stat(path.join(root, oldest.file_path)), { code: "ENOENT" });
     } finally {
       database.close();
     }

@@ -28,11 +28,10 @@ export function recentActivityForGreeting(store: ActivityStore, input: string, n
       session.analysis.summary !== ACTIVITY_ANALYSIS_FAILED_SUMMARY)
     .slice(0, 5);
   const lines: string[] = [];
-  const recent = store.snapshot(50).recentSessions;
-  const active = recent.find((session) => session.endedAt === undefined);
+  const active = store.listOpenHttpSessions(1)[0];
   if (active) {
-    const apps = active.applications.slice(0, 3).join(", ") || "未知应用";
-    const minutes = Math.max(0, Math.round((now.getTime() - Date.parse(active.startedAt)) / 60_000));
+    const apps = active.appNames.slice(0, 3).join(", ") || "未知应用";
+    const minutes = Math.max(0, Math.round((now.getTime() - active.startedAt) / 60_000));
     lines.push(`当前活动：${apps}（${minutes} 分钟，${active.eventCount} 个事件，${active.snapshotCount} 张截图）`);
   }
   const dateKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;

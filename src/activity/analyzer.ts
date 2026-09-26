@@ -164,6 +164,8 @@ export interface ActivityAnalyzerDeps {
   ) => Promise<void>;
   /** 分析完成后的统一主题投影；重复调用必须由下游锚点去重。 */
   onAnalyzed?: (analysis: ActivitySessionAnalysis, session: ActivityPendingAnalysisSession, signal?: AbortSignal) => Promise<void>;
+  /** 有资源所有者时收集投影任务；未提供时调用方等待投影完成。 */
+  deferProjection?: (task: Promise<void>) => void;
 }
 
 export interface ActivitySweepResult {
@@ -416,7 +418,11 @@ export async function analyzeActivitySession(
     inputHash
   };
   store.recordAnalysis(analysis);
-  if (parsed.worth) await projectActivityAnalysis(deps, analysis, session, memoryCandidates);
+  if (parsed.worth) {
+    const projection = projectActivityAnalysis(deps, analysis, session, memoryCandidates);
+    if (deps.deferProjection) deps.deferProjection(projection);
+    else await projection;
+  }
   deps.signal?.throwIfAborted();
   return { status: "analyzed", analysis, cached: false };
 }
@@ -457,21 +463,37 @@ export async function analyzePendingActivitySessions(
   deps.store.mergePendingAdjacent();
   const pending = deps.store.listSessionsPendingAnalysis(limit);
   const result: ActivitySweepResult = { evaluated: pending.length, analyzed: 0, trivial: 0, blocked: 0, errors: 0 };
-  for (const session of pending) {
-    deps.signal?.throwIfAborted();
-    try {
-      const outcome = await analyzeActivitySession(deps, session.id);
-      if (outcome.status === "analyzed") result.analyzed += 1;
-      else if (outcome.status === "trivial") result.trivial += 1;
-      else if (outcome.status === "skipped") result.blocked += 1;
-      else if (outcome.status === "error") result.errors += 1;
-    } catch {
-      deps.signal?.throwIfAborted();
-      result.errors += 1;
+  const projections: Promise<void>[] = [];
+  const scopedDeps: ActivityAnalyzerDeps = {
+    ...deps,
+    deferProjection: (task) => {
+      // 立即安装拒绝处理器，避免任务先于本轮分析完成而形成 unhandled rejection。
+      projections.push(task.then(undefined, () => {
+        if (!deps.signal?.aborted) console.error("[ActivityAnalyzer] projection failed");
+      }));
     }
-    // 积压会话逐条处理，给前台交互与模型服务留出间隔；停止时直接取消等待。
-    if (session !== pending.at(-1)) await delay(3_000, undefined, { signal: deps.signal });
+  };
+  try {
+    for (const session of pending) {
+      deps.signal?.throwIfAborted();
+      try {
+        const outcome = await analyzeActivitySession(scopedDeps, session.id);
+        if (outcome.status === "analyzed") result.analyzed += 1;
+        else if (outcome.status === "trivial") result.trivial += 1;
+        else if (outcome.status === "skipped") result.blocked += 1;
+        else if (outcome.status === "error") result.errors += 1;
+      } catch {
+        deps.signal?.throwIfAborted();
+        result.errors += 1;
+      }
+      // 积压会话逐条处理，给前台交互与模型服务留出间隔；停止时直接取消等待。
+      if (session !== pending.at(-1)) await delay(3_000, undefined, { signal: deps.signal });
+    }
+  } finally {
+    // 调用方在返回后关闭 ActivityStore；取消和异常退出也要先收齐在途写入。
+    await Promise.all(projections);
   }
+  deps.signal?.throwIfAborted();
   return result;
 }
 
