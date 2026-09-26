@@ -13,7 +13,6 @@ import type { AgentConfig, McpServerConfig } from "./schema.js";
 import { configDocumentRevision } from "./versioned.js";
 
 export const BINY_KEYCHAIN_SERVICE = "com.biny.agent";
-export const WEB_SEARCH_CREDENTIAL_ACCOUNT = "web-search:apiKey";
 export const CREDENTIAL_TRANSACTION_JOURNAL = ".credentials.transaction.json";
 
 export type ProviderCredentialKind = "apiKey" | "refreshToken";
@@ -166,12 +165,11 @@ export async function loadStoredCredentials(config: AgentConfig, store: Credenti
   // 每次 store.get 都是一次独立的 `security` 子进程；顺序 await 会把凭据水合拖成 O(n) 次
   // 子进程往返，是切换模型卡顿的来源之一。这里一次性并行发起全部读取，拿到结果后再按
   // 「有值才覆盖」落回配置，返回形状与优先级语义保持不变。
-  const [providerCredentials, webSearchApiKey, mcpEnvValues, mcpHeaderValues] = await Promise.all([
+  const [providerCredentials, mcpEnvValues, mcpHeaderValues] = await Promise.all([
     Promise.all(providers.map(async ([alias]) => ({
       apiKey: await store.get(providerCredentialAccount(alias, "apiKey")),
       refreshToken: await store.get(providerCredentialAccount(alias, "refreshToken"))
     }))),
-    store.get(WEB_SEARCH_CREDENTIAL_ACCOUNT),
     Promise.all(mcpServers.map(async (server) => await readReferencedCredentials(store, server.credentialRefs?.env))),
     Promise.all(mcpServers.map(async (server) => await readReferencedCredentials(store, server.credentialRefs?.headers)))
   ]);
@@ -180,7 +178,6 @@ export async function loadStoredCredentials(config: AgentConfig, store: Credenti
     if (apiKey) provider.apiKey = apiKey;
     if (provider.oauth && refreshToken) provider.oauth.refreshToken = refreshToken;
   });
-  if (webSearchApiKey) next.web.search.apiKey = webSearchApiKey;
   mcpServers.forEach((server, index) => {
     applyReferencedCredentials(server, "env", mcpEnvValues[index]!);
     applyReferencedCredentials(server, "headers", mcpHeaderValues[index]!);
@@ -212,7 +209,6 @@ function applyReferencedCredentials(
 
 export async function saveStoredCredentials(config: AgentConfig, store: CredentialStore, previous?: AgentConfig): Promise<void> {
   const values: Array<{ account: string; value: string | undefined }> = [
-    { account: WEB_SEARCH_CREDENTIAL_ACCOUNT, value: config.web.search.apiKey },
     ...mcpCredentialValues(config, previous ?? config)
   ];
   for (const [alias, provider] of Object.entries(config.providers)) {
@@ -230,7 +226,6 @@ export async function saveStoredCredentials(config: AgentConfig, store: Credenti
       if (old?.apiKey && !current?.apiKey) await store.delete(providerCredentialAccount(alias, "apiKey"));
       if (old?.oauth?.refreshToken && !current?.oauth?.refreshToken) await store.delete(providerCredentialAccount(alias, "refreshToken"));
     }
-    if (previous.web.search.apiKey && !config.web.search.apiKey) await store.delete(WEB_SEARCH_CREDENTIAL_ACCOUNT);
     const currentMcpAccounts = new Set(mcpCredentialAccounts(config));
     for (const account of mcpCredentialAccounts(previous)) {
       if (!currentMcpAccounts.has(account)) await store.delete(account);
@@ -477,7 +472,6 @@ async function prepareCredentialTransaction(
 
 function storedCredentialValues(config: AgentConfig, previous: AgentConfig): Map<string, string | undefined> {
   const values = new Map<string, string | undefined>();
-  values.set(WEB_SEARCH_CREDENTIAL_ACCOUNT, config.web.search.apiKey);
   const aliases = new Set([...Object.keys(previous.providers), ...Object.keys(config.providers)]);
   for (const alias of aliases) {
     const provider = config.providers[alias];

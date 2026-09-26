@@ -90,7 +90,19 @@ export type SkillExtractionConfig = z.infer<typeof skillExtractionSchema>;
  * 聊天采样参数（全局）。temperature 缺省不下发请求体（跟随模型/provider 默认）；
  * maxOutputTokens 缺省跟随模型别名配置，显式配置后全局覆盖。
  */
+export const chatResponseSettingsSchema = z.object({
+  streaming: z.boolean().optional(),
+  showTokenUsage: z.boolean().optional(),
+  markdown: z.boolean().optional(),
+  singleDollarMath: z.boolean().optional(),
+  collapseThinking: z.boolean().optional(),
+  openLinksInBrowser: z.boolean().optional()
+}).strict();
+export type ChatResponseSettings = z.infer<typeof chatResponseSettingsSchema>;
+
 export const chatParamsSchema = z.object({
+  /** Desktop 展示偏好；不改变 Provider 流式协议或已落盘的消息内容。 */
+  response: chatResponseSettingsSchema.optional(),
   /** 实验开关：覆盖协议自动选择，让 Read/Edit 使用行哈希。 */
   hashlineEdit: z.boolean().optional(),
   /** Prompt 缓存标记：按协议给 system 和请求尾部打断言点以命中服务商缓存；严格网关不认时可关闭。 */
@@ -184,9 +196,8 @@ const contextSchema = z.object({
     memoryModel: undefined,
     rewriteModel: undefined,
     extractModel: undefined,
-    embeddingModel: { kind: "local", model: "multilingual-e5-small" },
+    embeddingModel: { kind: "auto" },
     similarityThreshold: 0.1,
-    cloudEmbeddingConsents: {},
     excludeExternalContext: true,
     maxRecalled: 5
   }
@@ -466,16 +477,14 @@ const extensionsSchema = z.object({
 
 const webSearchSchema = z.object({
   enabled: z.boolean().default(false),
-  provider: z.enum(["duckduckgo", "google", "tavily", "brave", "anysearch"]).default("anysearch"),
-  apiKey: z.string().min(1).optional(),
-  apiKeyEnv: z.string().min(1).optional(),
+  provider: z.enum(["google", "xiaohongshu"]).default("google"),
+  visibleBrowsing: z.boolean().default(false),
   timeoutMs: z.number().int().min(1_000).max(60_000).default(10_000),
   maxResults: z.number().int().min(1).max(10).default(5)
 }).default({
   enabled: false,
-  provider: "anysearch",
-  apiKey: undefined,
-  apiKeyEnv: undefined,
+  provider: "google",
+  visibleBrowsing: false,
   timeoutMs: 10_000,
   maxResults: 5
 });
@@ -565,9 +574,8 @@ const webSchema = z.object({
 }).default({
   search: {
     enabled: false,
-    provider: "anysearch",
-    apiKey: undefined,
-    apiKeyEnv: undefined,
+    provider: "google",
+    visibleBrowsing: false,
     timeoutMs: 10_000,
     maxResults: 5
   },
@@ -904,9 +912,8 @@ export const defaultConfig: AgentConfig = {
       memoryModel: undefined,
       rewriteModel: undefined,
       extractModel: undefined,
-      embeddingModel: { kind: "local", model: "multilingual-e5-small" },
+      embeddingModel: { kind: "auto" },
       similarityThreshold: 0.1,
-      cloudEmbeddingConsents: {},
       excludeExternalContext: true,
       maxRecalled: 5,
       sleepEnabled: true,
@@ -922,9 +929,8 @@ export const defaultConfig: AgentConfig = {
   web: {
     search: {
       enabled: false,
-      provider: "anysearch",
-      apiKey: undefined,
-      apiKeyEnv: undefined,
+      provider: "google",
+      visibleBrowsing: false,
       timeoutMs: 10_000,
       maxResults: 5
     },

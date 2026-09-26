@@ -403,7 +403,6 @@ function preserveOverrideLeaves(
 
 function withoutCredentials(config: AgentConfig): AgentConfig {
   const safe = structuredClone(config);
-  safe.web.search.apiKey = undefined;
   for (const provider of Object.values(safe.providers)) {
     provider.apiKey = undefined;
     if (provider.oauth) provider.oauth.refreshToken = undefined;

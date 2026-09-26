@@ -13,7 +13,6 @@ import {
   loadStoredCredentials,
   MacKeychainCredentialStore,
   rollbackDeferredCredentialTransaction,
-  WEB_SEARCH_CREDENTIAL_ACCOUNT,
   providerCredentialAccount,
   saveConfigAndStoredCredentials
 } from "../src/config/credentials.js";
@@ -192,7 +191,7 @@ function testMemoryEmbeddingDefaultsToE5(): void {
       memory: { ...defaultConfig.context.memory, embeddingModel: undefined }
     }
   });
-  assert.deepEqual(parsed.context.memory.embeddingModel, { kind: "local", model: "multilingual-e5-small" });
+  assert.deepEqual(parsed.context.memory.embeddingModel, { kind: "auto" });
 }
 
 function testRemovedModelFormatsRequireManualUpdate(): void {
@@ -510,9 +509,9 @@ function testConfigRevisionMatchesJsonRoundTrip(): void {
   assert.equal(configDocumentRevision(explicitUndefined), configDocumentRevision(persistedShape));
 
   const searchCredential = structuredClone(defaultConfig);
-  searchCredential.web.search.apiKey = "test-only-search-key";
+  searchCredential.providers.deepseek!.apiKey = "test-only-search-key";
   const searchDocument = structuredClone(searchCredential);
-  delete searchDocument.web.search.apiKey;
+  delete searchDocument.providers.deepseek!.apiKey;
   assert.equal(configDocumentRevision(searchCredential), configDocumentRevision(searchDocument));
 }
 
@@ -553,7 +552,7 @@ async function testCredentialTransactionCompensatesPartialWrites(): Promise<void
   const journalPath = path.join(root, ".credentials.transaction.json");
   const providerAccount = providerCredentialAccount("deepseek", "apiKey");
   const values = new Map<string, string>([
-    [WEB_SEARCH_CREDENTIAL_ACCOUNT, "old-web-secret"],
+    ["web-search:apiKey", "old-web-secret"],
     [providerAccount, "old-provider-secret"]
   ]);
   let failProviderWrite = true;
@@ -572,10 +571,8 @@ async function testCredentialTransactionCompensatesPartialWrites(): Promise<void
     }
   };
   const previous = structuredClone(defaultConfig);
-  previous.web.search.apiKey = "old-web-secret";
   previous.providers.deepseek!.apiKey = "old-provider-secret";
   const next = structuredClone(previous);
-  next.web.search.apiKey = "new-web-secret";
   next.providers.deepseek!.apiKey = "new-provider-secret";
 
   try {
@@ -590,7 +587,7 @@ async function testCredentialTransactionCompensatesPartialWrites(): Promise<void
       ),
       /injected Keychain failure/u
     );
-    assert.equal(values.get(WEB_SEARCH_CREDENTIAL_ACCOUNT), "old-web-secret");
+    assert.equal(values.get("web-search:apiKey"), "old-web-secret");
     assert.equal(values.get(providerAccount), "old-provider-secret");
     assert.equal([...values.keys()].some((account) => account.startsWith("settings-tx:")), false);
     await assert.rejects(fs.access(journalPath), /ENOENT/u);
@@ -611,7 +608,7 @@ async function testCredentialTransactionCompensatesPartialWrites(): Promise<void
       ),
       /injected config failure/u
     );
-    assert.equal(values.get(WEB_SEARCH_CREDENTIAL_ACCOUNT), "old-web-secret");
+    assert.equal(values.get("web-search:apiKey"), "old-web-secret");
     assert.equal(values.get(providerAccount), "old-provider-secret");
     assert.equal([...values.keys()].some((account) => account.startsWith("settings-tx:")), false);
     await assert.rejects(fs.access(journalPath), /ENOENT/u);
@@ -817,8 +814,8 @@ async function testVersionedActivityEmbeddingFieldsMigrateToMemory(): Promise<vo
 
     const loaded = await loadConfigFile(root);
     assert.equal("embeddingConsents" in (loaded.activity as Record<string, unknown>), false, "activity 段的嵌入字段必须被清除");
-    assert.deepEqual(loaded.context.memory.cloudEmbeddingConsents, consents, "已版本化文档的 embeddingConsents 也要迁回 memory.*");
-    assert.deepEqual(loaded.context.memory.embeddingModel, { kind: "local", model: "multilingual-e5-small" });
+    assert.equal("cloudEmbeddingConsents" in loaded.context.memory, false);
+    assert.deepEqual(loaded.context.memory.embeddingModel, { kind: "auto" });
   } finally {
     await fs.rm(root, { recursive: true, force: true });
   }

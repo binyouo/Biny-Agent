@@ -5,7 +5,7 @@
  * 才通过安全原子写入路径替换磁盘文档。
  */
 export const GLOBAL_CONFIG_FORMAT = "biny-config" as const;
-export const GLOBAL_CONFIG_VERSION = 1 as const;
+export const GLOBAL_CONFIG_VERSION = 2 as const;
 export const PROJECT_SETTINGS_FORMAT = "biny-project-settings" as const;
 export const PROJECT_SETTINGS_VERSION = 2 as const;
 
@@ -16,20 +16,33 @@ export interface ConfigMigrationResult {
 export function migrateGlobalConfigDocument(value: unknown): ConfigMigrationResult {
   if (!isRecord(value)) return { document: value };
   const document = structuredClone(value);
-  if (value.format === undefined && value.configVersion === undefined) {
+  const legacyVersion = value.format === undefined && value.configVersion === undefined
+    || value.format === GLOBAL_CONFIG_FORMAT && value.configVersion === 1;
+  if (legacyVersion) {
     document.format = GLOBAL_CONFIG_FORMAT;
     document.configVersion = GLOBAL_CONFIG_VERSION;
     migrateMemoryPolicy(document);
     migrateLegacySubagentDefault(document);
+    migrateDefaultMemoryEmbedding(document);
   } else if (value.format === GLOBAL_CONFIG_FORMAT && value.configVersion === GLOBAL_CONFIG_VERSION) {
     migrateLegacySubagentDefault(document);
   }
   // 嵌入字段曾在配置已版本化之后短暂写进 activity.*，版本门内的迁移够不到这批文件；
   // 严格 schema 不认识这两个键，所以这段清理必须对所有版本无条件执行。
   migrateActivityEmbeddingPolicy(document);
+  const web = isRecord(document.web) ? document.web : undefined;
+  const search = web && isRecord(web.search) ? web.search : undefined;
+  if (search) {
+    // API 搜索服务已移除；存量配置统一迁到 Google，保存时落盘，旧钥匙串项不再读取。
+    if (["anysearch", "duckduckgo", "tavily", "brave"].includes(String(search.provider))) search.provider = "google";
+    delete search.apiKey;
+    delete search.apiKeyEnv;
+  }
   // 本地 embedding 只保留默认 E5。旧配置里的其它内置模型迁到同一向量空间，避免升级后
   // 因为收窄模型枚举而无法读取配置；provider embedding 不在这里改写。
   migrateMemoryEmbeddingPolicy(document);
+  const memory = isRecord(document.context) && isRecord(document.context.memory) ? document.context.memory : undefined;
+  if (memory) delete memory.cloudEmbeddingConsents;
   // 已移除的记忆策略仍可能存在于已版本化的配置；严格 schema 解析前必须无条件清理。
   migrateRemovedMemoryPolicyFields(document);
   // 情绪分析是 Biny 内置机制，不作为用户配置暴露；严格 schema 解析前移除旧字段。
@@ -100,6 +113,11 @@ function migrateActivityEmbeddingPolicy(document: Record<string, unknown>): void
   const hasEmbeddingConsents = activity.embeddingConsents !== undefined;
   if (!hasEmbeddingModel && !hasEmbeddingConsents) return;
 
+  if (!hasEmbeddingModel) {
+    delete activity.embeddingConsents;
+    return;
+  }
+
   let context = isRecord(document.context) ? document.context : undefined;
   let memory = context && isRecord(context.memory) ? context.memory : undefined;
   if (!memory) {
@@ -113,9 +131,6 @@ function migrateActivityEmbeddingPolicy(document: Record<string, unknown>): void
   }
   if (hasEmbeddingModel && memory.embeddingModel === undefined) {
     memory.embeddingModel = activity.embeddingModel;
-  }
-  if (hasEmbeddingConsents && memory.cloudEmbeddingConsents === undefined) {
-    memory.cloudEmbeddingConsents = activity.embeddingConsents;
   }
   delete activity.embeddingModel;
   delete activity.embeddingConsents;
@@ -140,7 +155,15 @@ function migrateMemoryEmbeddingPolicy(document: Record<string, unknown>): void {
   const embeddingModel = isRecord(memory.embeddingModel) ? memory.embeddingModel : undefined;
   if (memory.embeddingModel === undefined
     || (embeddingModel?.kind === "local" && typeof embeddingModel.model === "string" && embeddingModel.model !== "multilingual-e5-small")) {
-    memory.embeddingModel = { kind: "local", model: "multilingual-e5-small" };
+    memory.embeddingModel = { kind: "auto" };
+  }
+}
+
+function migrateDefaultMemoryEmbedding(document: Record<string, unknown>): void {
+  const context = isRecord(document.context) ? document.context : undefined;
+  const memory = context && isRecord(context.memory) ? context.memory : undefined;
+  if (memory && isRecord(memory.embeddingModel) && memory.embeddingModel.kind === "local") {
+    memory.embeddingModel = { kind: "auto" };
   }
 }
 

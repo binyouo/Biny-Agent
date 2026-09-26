@@ -273,6 +273,5 @@ export function createFileConfigStore(workspaceRoot: string, options: FileConfig
 }
 
 function hasInlineCredentials(config: AgentConfig): boolean {
-  return Boolean(config.web.search.apiKey)
-    || Object.values(config.providers).some((provider) => Boolean(provider.apiKey || provider.oauth?.refreshToken));
+  return Object.values(config.providers).some((provider) => Boolean(provider.apiKey || provider.oauth?.refreshToken));
 }

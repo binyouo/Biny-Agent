@@ -35,7 +35,7 @@ export async function doctorCommand(workspaceRoot: string): Promise<void> {
 async function credentialStatus(): Promise<string> {
   try {
     const config = await loadGlobalConfig();
-    return Object.values(config.providers).some((provider) => Boolean(provider.apiKey)) || Boolean(config.web.search.apiKey)
+    return Object.values(config.providers).some((provider) => Boolean(provider.apiKey))
       ? `warning: inline API key found in ${CONFIG_FILE}; use apiKeyEnv and rotate the key`
       : "no inline API keys";
   } catch (error) {
