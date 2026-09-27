@@ -10,8 +10,9 @@ import { ensureAgentDirs } from "../src/session/store.js";
 async function main(): Promise<void> {
   testCacheHitReturnsSameParse();
   testFingerprintGrowthInvalidates();
+  testFileIdentityAndChangeTimeInvalidate();
   testIncompleteReadsAreNotCached();
-  await testListingSharesCacheWithOpen();
+  await testListingAndOpenAfterAppend();
   console.log("session parse cache tests passed");
 }
 
@@ -54,6 +55,23 @@ function testFingerprintGrowthInvalidates(): void {
   }
 }
 
+function testFileIdentityAndChangeTimeInvalidate(): void {
+  clearSessionParseCache();
+  try {
+    let parses = 0;
+    const load = (): { events: SessionEvent[]; complete: boolean } => {
+      parses++;
+      return { events: [], complete: true };
+    };
+    const fingerprint = { size: 10, mtimeMs: 1, ctimeMs: 1, dev: 1, ino: 1 };
+    cachedSessionEvents("/tmp/replaced.jsonl", fingerprint, load);
+    cachedSessionEvents("/tmp/replaced.jsonl", { ...fingerprint, ctimeMs: 2 }, load);
+    cachedSessionEvents("/tmp/replaced.jsonl", { ...fingerprint, ctimeMs: 2, ino: 2 }, load);
+    cachedSessionEvents("/tmp/replaced.jsonl", { ...fingerprint, ctimeMs: 2, ino: 2, dev: 2 }, load);
+    assert.equal(parses, 4, "identity and ctime must invalidate even when size and mtime match");
+  } finally { clearSessionParseCache(); }
+}
+
 /** 超限截断等"没看全文件"的解析不进缓存，避免被误发给需要完整事件的读取方。 */
 function testIncompleteReadsAreNotCached(): void {
   clearSessionParseCache();
@@ -74,10 +92,10 @@ function testIncompleteReadsAreNotCached(): void {
 }
 
 /**
- * 联动路径：listSessionSummaries 解析过的文件，openSession 的 readStoredSessionEvents 直接命中；
+ * 联动路径：列表摘要和打开会话使用独立缓存；重复打开直接命中完整事件缓存。
  * 追加内容后指纹失效，重新解析并拿到新事件。
  */
-async function testListingSharesCacheWithOpen(): Promise<void> {
+async function testListingAndOpenAfterAppend(): Promise<void> {
   clearSessionParseCache();
   const root = await mkdtemp(path.join(os.tmpdir(), "biny-session-parse-cache-"));
   try {

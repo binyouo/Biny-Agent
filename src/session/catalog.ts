@@ -8,6 +8,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { constants, promises as fs, type Stats } from "node:fs";
 import type { FileHandle } from "node:fs/promises";
 import path from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { DatabaseSync } from "node:sqlite";
 import { projectSessionsDir } from "../config/paths.js";
 import {
@@ -16,7 +17,7 @@ import {
   type ChatPersonalizationOverride
 } from "../personalization/index.js";
 import { listSessionSummaries, readSessionSummary, type SessionSummary } from "./events.js";
-import { ensureAgentDirs } from "./store.js";
+import { ensureAgentDirs, listSessionFiles } from "./store.js";
 
 const catalogVersion = 1 as const;
 const defaultPageSize = 32;
@@ -230,7 +231,7 @@ export async function updateSessionCatalogMetadata(
     assertCatalogRecord(next);
     if (existing && catalogMetadataEquals(existing, next)) return existing;
     await writeAtomically(target, `${JSON.stringify(next)}\n`);
-    refreshSessionIndex(workspaceRoot);
+    void refreshSessionIndex(workspaceRoot);
     return next;
   });
 }
@@ -267,12 +268,18 @@ export async function listSessionCatalog(workspaceRoot: string): Promise<Session
   const summaries = await listSessionSummaries(workspaceRoot);
   if (!summaries.length) return [];
   const directory = await readCatalogDirectory(workspaceRoot);
-  const items = await Promise.all(summaries.map(async (summary) => {
-    const id = summary.fileName.replace(/\.jsonl$/u, "");
-    const record = directory === undefined
-      ? undefined
-      : await readCatalogFile(catalogFilePath(directory, id)).catch(() => undefined);
-    return toCatalogItem(summary, record);
+  const items = new Array<SessionCatalogItem>(summaries.length);
+  let nextIndex = 0;
+  await Promise.all(Array.from({ length: Math.min(8, summaries.length) }, async () => {
+    while (nextIndex < summaries.length) {
+      const index = nextIndex++;
+      const summary = summaries[index]!;
+      const id = summary.fileName.replace(/\.jsonl$/u, "");
+      const record = directory === undefined
+        ? undefined
+        : await readCatalogFile(catalogFilePath(directory, id)).catch(() => undefined);
+      items[index] = toCatalogItem(summary, record);
+    }
   }));
   const parentCounts = new Map<string, number>();
   for (const item of items) {
@@ -288,7 +295,29 @@ export async function getSessionCatalogItem(
   sessionId: string
 ): Promise<SessionCatalogItem | undefined> {
   assertSessionId(sessionId);
-  return (await listSessionCatalog(workspaceRoot)).find((item) => item.id === sessionId);
+  const files = new Set(await listSessionFiles(workspaceRoot));
+  if (!files.has(`${sessionId}.jsonl`)) return undefined;
+  const summary = await readSessionSummary(workspaceRoot, `${sessionId}.jsonl`).catch(() => undefined);
+  if (!summary) return undefined;
+  const directory = await readCatalogDirectory(workspaceRoot);
+  const record = directory === undefined ? undefined : await readCatalogFile(catalogFilePath(directory, sessionId)).catch(() => undefined);
+  const item = toCatalogItem(summary, record);
+  if (directory !== undefined) {
+    // hasChildren 只需验证声明了该父节点的会话；无关 JSONL 不参与单条读取。
+    const entries = await fs.readdir(directory);
+    for (const entry of entries) {
+      if (!entry.endsWith(".json")) continue;
+      const id = entry.slice(0, -5);
+      if (!files.has(`${id}.jsonl`)) continue;
+      const child = await readCatalogFile(catalogFilePath(directory, id)).catch(() => undefined);
+      if (child?.parentSessionId !== sessionId) continue;
+      if (await readSessionSummary(workspaceRoot, `${id}.jsonl`).catch(() => undefined)) {
+        item.hasChildren = true;
+        break;
+      }
+    }
+  }
+  return item;
 }
 
 export async function readSessionTree(workspaceRoot: string): Promise<SessionTreeNode[]> {
@@ -362,18 +391,26 @@ export function buildSessionTree(items: readonly SessionCatalogItem[]): SessionT
 
   const roots = items.filter((item) => !item.parentSessionId || item.parentSessionId === item.id || !byId.has(item.parentSessionId));
   const visited = new Set<string>();
-  const build = (item: SessionCatalogItem, ancestors: ReadonlySet<string>): SessionTreeNode => {
+  const build = (item: SessionCatalogItem): SessionTreeNode => {
+    const root: SessionTreeNode = { session: item, children: [] };
     visited.add(item.id);
-    const nextAncestors = new Set(ancestors).add(item.id);
-    const childNodes = (children.get(item.id) ?? [])
-      .filter((child) => !nextAncestors.has(child.id))
-      .map((child) => build(child, nextAncestors));
-    return { session: item, children: childNodes };
+    const stack = [root];
+    while (stack.length) {
+      const node = stack.pop()!;
+      for (const child of children.get(node.session.id) ?? []) {
+        if (visited.has(child.id)) continue;
+        visited.add(child.id);
+        const childNode: SessionTreeNode = { session: child, children: [] };
+        node.children.push(childNode);
+        stack.push(childNode);
+      }
+    }
+    return root;
   };
-  const tree = roots.sort(compareCatalogItems).map((item) => build(item, new Set()));
-  // 正常数据不会走到这里；若 catalog 中存在环路，把未遍历节点提升到根，保证列表可见。
+  const tree = roots.sort(compareCatalogItems).map(build);
+  // 环中的首个节点提升到根，visited 让每个会话只展示一次。
   for (const item of [...items].sort(compareCatalogItems)) {
-    if (!visited.has(item.id)) tree.push(build(item, new Set()));
+    if (!visited.has(item.id)) tree.push(build(item));
   }
   return tree;
 }
@@ -618,26 +655,45 @@ async function withCatalogRecordLock<T>(
   const turn = new Promise<void>((resolve) => {
     releaseTurn = resolve;
   });
-  catalogLockQueues.set(databasePath, predecessor.then(() => turn));
+  const queued = predecessor.then(() => turn);
+  catalogLockQueues.set(databasePath, queued);
   await predecessor;
   try {
     return await withCatalogDatabaseLock(databasePath, operation);
   } finally {
     releaseTurn();
+    if (catalogLockQueues.get(databasePath) === queued) catalogLockQueues.delete(databasePath);
   }
 }
 
 async function withCatalogDatabaseLock<T>(databasePath: string, operation: () => Promise<T>): Promise<T> {
   const identity = await ensureCatalogLockDatabase(databasePath);
-  const database = new DatabaseSync(databasePath, { timeout: catalogLockTimeoutMs });
+  const database = new DatabaseSync(databasePath, { timeout: 0 });
   let transactionOpen = false;
+  const execute = async (statement: "BEGIN IMMEDIATE" | "COMMIT"): Promise<void> => {
+    const deadline = performance.now() + catalogLockTimeoutMs;
+    for (;;) {
+      try {
+        database.exec(statement);
+        return;
+      } catch (error) {
+        // SQLite BUSY 才能重试；磁盘、权限或数据库损坏必须原样报告。
+        if (!(error instanceof Error) || !("errcode" in error)
+          || typeof error.errcode !== "number" || (error.errcode & 0xff) !== 5) throw error;
+        const remaining = deadline - performance.now();
+        if (remaining <= 0) throw error;
+        await delay(Math.min(20, remaining));
+        await assertCatalogLockDatabase(databasePath, identity);
+      }
+    }
+  };
   try {
     await assertCatalogLockDatabase(databasePath, identity);
-    database.exec("BEGIN IMMEDIATE");
+    await execute("BEGIN IMMEDIATE");
     transactionOpen = true;
     await assertCatalogLockDatabase(databasePath, identity);
     const result = await operation();
-    database.exec("COMMIT");
+    await execute("COMMIT");
     transactionOpen = false;
     return result;
   } catch (error) {

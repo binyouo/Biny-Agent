@@ -1,11 +1,9 @@
 /**
  * Session 解析缓存。
  *
- * session 文件是 append-only：只要 (size, mtimeMs) 这组指纹不变，文件内容就不变。这里按真实
- * 路径缓存解析后的 `SessionEvent[]`，指纹一变即整条作废，因此不需要任何显式失效钩子。
- *
- * 缓存的是"读字节 + JSON.parse + zod 校验"这一步的结果；调用方的安全校验（绑定检查、
- * O_NOFOLLOW、repairTailForAppend）仍在缓存之外照常执行。
+ * 按真实路径及文件身份、大小、修改时间、状态变更时间缓存解析结果。
+ * 指纹变化即失效；路径和文件描述符的安全校验仍由读取入口执行。
+ * 列表摘要使用独立缓存，避免扫描历史淘汰活动会话的完整事件。
  *
  * 进程内单机缓存：桌面主进程、RuntimeHost 等各自进程各持一份，不跨进程共享。
  */
@@ -16,10 +14,13 @@ const maxCachedSessions = 32;
 /** 累计源字节上限：少数超大 session 时由它封顶，防止长会话把内存撑爆。 */
 const maxCachedSourceBytes = 64 * 1024 * 1024;
 
-/** 命中判断用的文件指纹；append-only 下 (size, mtimeMs) 不变即内容不变。 */
+/** 命中判断用的文件指纹；append-only 下 (dev, ino, size, mtimeMs, ctimeMs) 不变即内容不变。 */
 export interface SessionFileFingerprint {
   size: number;
   mtimeMs: number;
+  ctimeMs?: number;
+  dev?: number;
+  ino?: number;
 }
 
 interface SessionParseCacheEntry {
@@ -33,14 +34,14 @@ interface SessionParseCacheEntry {
 const cache = new Map<string, SessionParseCacheEntry>();
 let cachedSourceBytes = 0;
 
-export function sessionFileFingerprint(stat: Pick<SessionFileFingerprint, "size" | "mtimeMs">): SessionFileFingerprint {
-  return { size: stat.size, mtimeMs: stat.mtimeMs };
+export function sessionFileFingerprint(stat: SessionFileFingerprint): SessionFileFingerprint {
+  return { size: stat.size, mtimeMs: stat.mtimeMs, ctimeMs: stat.ctimeMs, dev: stat.dev, ino: stat.ino };
 }
 
-function lookup(filePath: string, fingerprint: SessionFileFingerprint): SessionEvent[] | undefined {
+export function lookupSessionEvents(filePath: string, fingerprint: SessionFileFingerprint): SessionEvent[] | undefined {
   const entry = cache.get(filePath);
   if (!entry) return undefined;
-  if (entry.fingerprint.size !== fingerprint.size || entry.fingerprint.mtimeMs !== fingerprint.mtimeMs) {
+  if (!sameSessionFingerprint(entry.fingerprint, fingerprint)) {
     // append-only：指纹一旦过期就永远不会再命中，顺手摘掉，避免陈旧条目白占内存。
     cache.delete(filePath);
     cachedSourceBytes -= entry.weight;
@@ -83,7 +84,7 @@ export function cachedSessionEvents(
   fingerprint: SessionFileFingerprint,
   load: () => { events: SessionEvent[]; complete: boolean }
 ): SessionEvent[] {
-  const cached = lookup(filePath, fingerprint);
+  const cached = lookupSessionEvents(filePath, fingerprint);
   if (cached) return cached;
   const { events, complete } = load();
   if (complete) store(filePath, fingerprint, events);
@@ -94,4 +95,9 @@ export function cachedSessionEvents(
 export function clearSessionParseCache(): void {
   cache.clear();
   cachedSourceBytes = 0;
+}
+
+export function sameSessionFingerprint(left: SessionFileFingerprint, right: SessionFileFingerprint): boolean {
+  return left.size === right.size && left.mtimeMs === right.mtimeMs
+    && left.ctimeMs === right.ctimeMs && left.dev === right.dev && left.ino === right.ino;
 }

@@ -10,6 +10,7 @@ import { chmodSync, constants, lstatSync, mkdirSync, promises as fs, readdirSync
 import type { FileHandle } from "node:fs/promises";
 import path from "node:path";
 import { globalAgentDir, legacyProjectStateDirName, projectSessionsDir, projectStateDirName, workspaceAgentDir } from "../config/paths.js";
+import { sameSessionFingerprint } from "./parseCache.js";
 import { readSessionTail } from "./limits.js";
 
 const sessionMetadataConcurrency = 8;
@@ -136,6 +137,12 @@ export async function listSessionFiles(workspaceRoot: string): Promise<string[]>
   return (await listSessionFileEntries(location)).map((entry) => entry.fileName);
 }
 
+/** 返回经项目目录与文件绑定检查的会话路径，供批量修复避免逐项重新定位工作区。 */
+export async function listSessionFilePaths(workspaceRoot: string): Promise<string[]> {
+  const location = await resolveSessionStorage(workspaceRoot);
+  return (await listSessionFileEntries(location)).map((entry) => entry.filePath);
+}
+
 /** 枚举全局 session 分区，供每日工作日志补写漏掉的聊天回合。 */
 export async function listAllSessionFiles(agentDir?: string): Promise<string[]> {
   const root = path.join(path.resolve(agentDir ?? globalAgentDir()), "sessions");
@@ -151,6 +158,32 @@ export async function readSessionSnapshot(workspaceRoot: string, session: string
   const location = await resolveSessionStorage(workspaceRoot);
   const filePath = await resolveSessionFileAt(location, session);
   return await readSessionSnapshotAt(location, filePath);
+}
+
+/** 缓存命中仍打开文件并校验目录、链接数和文件身份；只有稳定指纹才能跳过正文读取。 */
+export async function readSessionSnapshotOrCached<T>(
+  workspaceRoot: string,
+  session: string | undefined,
+  lookup: (filePath: string, stat: Stats) => T | undefined
+): Promise<{ cached: T; snapshot?: never } | { snapshot: SessionFileSnapshot; cached?: never }> {
+  const location = await resolveSessionStorage(workspaceRoot);
+  const filePath = await resolveSessionFileAt(location, session);
+  const handle = await openSessionHandle(location, filePath);
+  try {
+    const before = await assertSessionBinding(location, filePath, handle);
+    const cached = lookup(filePath, before);
+    if (cached !== undefined) {
+      const after = await assertSessionBinding(location, filePath, handle);
+      if (sameSessionFingerprint(before, after)) return { cached };
+    }
+    const initial = await assertSessionBinding(location, filePath, handle);
+    const { bytes, truncated } = await readSessionTail(handle, path.basename(filePath));
+    await assertSessionBinding(location, filePath, handle);
+    // 按读取前的指纹缓存：并发追加后下一次必定失效，不能把旧正文标成新版本。
+    return { snapshot: { filePath, fileName: path.basename(filePath), bytes, stat: initial, truncated } };
+  } finally {
+    await handle.close();
+  }
 }
 
 export async function duplicateSessionFile(workspaceRoot: string, sourceSession: string, targetSessionId: string): Promise<string> {

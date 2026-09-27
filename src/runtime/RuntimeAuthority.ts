@@ -9,12 +9,12 @@ import { createHash, randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import path from "node:path";
-import { ensureAgentDirs, agentDir, listSessionFiles, resolveSessionFile, sessionIdFromFile } from "../session/store.js";
-import { readSessionEvents } from "../session/events.js";
+import { ensureAgentDirs, agentDir, listSessionFilePaths, resolveSessionFile, sessionIdFromFile } from "../session/store.js";
+import { readSessionEvents, readSessionEventsForBackfill } from "../session/events.js";
 import type { SessionEvent } from "../session/recorder.js";
 import { assertRuntimeEventSequence, validateRuntimeEventStream, type RuntimeEventIdentity, type RuntimeEventSink } from "../session/runtimeEvent.js";
 
-const schemaVersion = 9;
+const schemaVersion = 11;
 const busyTimeoutMs = 5_000;
 const defaultPageSize = 100;
 const maxPageSize = 1_000;
@@ -503,10 +503,11 @@ export class RuntimeEventAuthority implements RuntimeEventSink {
     const ids = [...new Set(toolCallIds)];
     if (!ids.length || ids.some((toolCallId) => !toolCallId)) return [];
     const placeholders = ids.map(() => "?").join(", ");
+    // 多 ID 的排序可能让优化器退回工作区扫描；恢复查询固定走 toolCallId 索引。
     const rows = this.database.prepare(`
       SELECT event_id, workspace_id, session_id, invocation_id, run_id, turn_id,
              event_seq, sequence, event_type, payload_json, created_at
-      FROM runtime_events
+      FROM runtime_events INDEXED BY runtime_events_toolcall_idx
       WHERE workspace_id = ?
         AND event_type IN ('session.tool_call', 'session.tool_execution', 'session.tool_result')
         AND json_extract(payload_json, '$.toolCallId') IN (${placeholders})
@@ -613,13 +614,11 @@ export class RuntimeEventAuthority implements RuntimeEventSink {
 
   /** 将变化过的 JSONL 事实幂等投影到 authority，修复进程崩溃留下的缺口。 */
   private async reconcileSessionProjections(): Promise<void> {
-    const sessions = await listSessionFiles(this.persistenceRoot);
-    for (const fileName of sessions) {
-      const sessionId = sessionIdFromFile(fileName);
-      let filePath: string;
+    const sessions = await listSessionFilePaths(this.persistenceRoot);
+    for (const filePath of sessions) {
+      const sessionId = sessionIdFromFile(filePath);
       let before: Awaited<ReturnType<typeof fs.stat>>;
       try {
-        filePath = await resolveSessionFile(this.persistenceRoot, sessionId);
         before = await fs.stat(filePath);
       } catch {
         // 列目录到解析之间文件可能已被并发清理（草稿回收/删除会话）；
@@ -629,12 +628,25 @@ export class RuntimeEventAuthority implements RuntimeEventSink {
       const fileSize = before.size;
       const modifiedAtMs = Math.trunc(before.mtimeMs);
       const backfill = this.database.prepare(
-        "SELECT file_size, modified_at_ms FROM runtime_backfills WHERE session_id = ?"
+        "SELECT file_size, modified_at_ms, file_mtime_ms, changed_at_ms, file_dev, file_ino, event_count, content_hash FROM runtime_backfills WHERE session_id = ?"
       ).get(sessionId) as Record<string, unknown> | undefined;
-      if (Number(backfill?.file_size) === fileSize && Number(backfill?.modified_at_ms) === modifiedAtMs) continue;
+      const hasDigest = typeof backfill?.content_hash === "string" && /^[a-f0-9]{64}$/u.test(backfill.content_hash);
+      const unchanged = hasDigest
+        ? Number(backfill?.file_size) === fileSize
+          && Number(backfill?.file_mtime_ms) === before.mtimeMs
+          && Number(backfill?.changed_at_ms) === before.ctimeMs
+          && backfill?.file_dev === String(before.dev)
+          && backfill?.file_ino === String(before.ino)
+        : Number(backfill?.file_size) === fileSize && Number(backfill?.modified_at_ms) === modifiedAtMs;
+      if (unchanged) continue;
       let events: SessionEvent[];
+      let contentHash: string;
+      let prefixHash: string | undefined;
       try {
-        events = await readSessionEvents(filePath);
+        const read = await readSessionEventsForBackfill(filePath, Number(backfill?.file_size));
+        events = read.events;
+        contentHash = read.contentHash;
+        prefixHash = read.prefixHash;
       } catch {
         // 坏的旧尾部仍交给 session 恢复逻辑处理；authority 不凭损坏数据伪造事实。
         continue;
@@ -653,13 +665,17 @@ export class RuntimeEventAuthority implements RuntimeEventSink {
         // 读事件期间文件被并发删除时不记录水位；下次 open 会再次完成投影。
         continue;
       }
-      if (after.size !== fileSize || Math.trunc(after.mtimeMs) !== modifiedAtMs) {
-        // 启动期间仍在追加的文件不记录水位；下次 open 会再次完成投影。
+      if (after.size !== fileSize || after.mtimeMs !== before.mtimeMs
+        || after.ctimeMs !== before.ctimeMs || after.dev !== before.dev || after.ino !== before.ino) {
+        // 读事件期间文件发生变化时不记录水位；下次 open 再核对。
         continue;
       }
+      const previousCount = Number(backfill?.event_count);
+      const unchangedPrefix = hasDigest && prefixHash === backfill?.content_hash
+        && Number.isSafeInteger(previousCount) && previousCount >= 0 && previousCount <= events.length;
       this.transaction(() => {
-        let imported = 0;
-        for (const [index, event] of events.entries()) {
+        for (let index = unchangedPrefix ? previousCount : 0; index < events.length; index++) {
+          const event = events[index]!;
           const runtime = event.runtime;
           const runId = runtime
             ? runtime.runId ?? `session:${sessionId}`
@@ -678,14 +694,23 @@ export class RuntimeEventAuthority implements RuntimeEventSink {
             createdAt: event.time ?? new Date(0).toISOString()
           });
           this.reconcileTerminalRunInTransaction(sessionId, event, runtime, runId, turnId, eventId);
-          imported += 1;
         }
-        this.database.prepare("INSERT OR REPLACE INTO runtime_backfills (session_id, completed_at, event_count, file_size, modified_at_ms) VALUES (?, ?, ?, ?, ?)").run(
+        this.database.prepare(`
+          INSERT OR REPLACE INTO runtime_backfills
+            (session_id, completed_at, event_count, file_size, modified_at_ms,
+             file_mtime_ms, changed_at_ms, file_dev, file_ino, content_hash)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(
           sessionId,
           new Date().toISOString(),
-          imported,
+          events.length,
           fileSize,
-          modifiedAtMs
+          modifiedAtMs,
+          before.mtimeMs,
+          before.ctimeMs,
+          String(before.dev),
+          String(before.ino),
+          contentHash
         );
       });
     }
@@ -749,6 +774,9 @@ export class RuntimeEventAuthority implements RuntimeEventSink {
             created_at TEXT NOT NULL,
             UNIQUE (workspace_id, sequence)
           );
+          CREATE INDEX IF NOT EXISTS runtime_events_toolcall_idx
+          ON runtime_events (workspace_id, json_extract(payload_json, '$.toolCallId'), sequence)
+          WHERE event_type IN ('session.tool_call', 'session.tool_execution', 'session.tool_result');
           CREATE INDEX IF NOT EXISTS runtime_events_run_idx ON runtime_events (workspace_id, run_id, sequence);
           CREATE INDEX IF NOT EXISTS runtime_events_session_idx ON runtime_events (workspace_id, session_id, sequence);
           CREATE UNIQUE INDEX IF NOT EXISTS runtime_events_session_event_seq_idx ON runtime_events (workspace_id, session_id, event_seq) WHERE event_seq IS NOT NULL;
@@ -957,7 +985,12 @@ export class RuntimeEventAuthority implements RuntimeEventSink {
             completed_at TEXT NOT NULL,
             event_count INTEGER NOT NULL,
             file_size INTEGER,
-            modified_at_ms INTEGER
+            modified_at_ms INTEGER,
+            file_mtime_ms REAL,
+            changed_at_ms REAL,
+            file_dev TEXT,
+            file_ino TEXT,
+            content_hash TEXT
           );
         `);
         this.database.exec(`PRAGMA user_version = ${String(schemaVersion)};`);
@@ -1099,6 +1132,27 @@ export class RuntimeEventAuthority implements RuntimeEventSink {
             this.database.exec("ALTER TABLE capability_invocations ADD COLUMN dispatch_state TEXT NOT NULL DEFAULT 'dispatched'");
           }
           this.database.exec("PRAGMA user_version = 9");
+        });
+      }
+      if (currentRevision < 10) {
+        this.transaction(() => {
+          this.database.exec(`CREATE INDEX IF NOT EXISTS runtime_events_toolcall_idx
+          ON runtime_events (workspace_id, json_extract(payload_json, '$.toolCallId'), sequence)
+          WHERE event_type IN ('session.tool_call', 'session.tool_execution', 'session.tool_result');
+            PRAGMA user_version = 10;`);
+        });
+      }
+      if (currentRevision < 11) {
+        this.transaction(() => {
+          for (const [column, type] of [
+            ["file_mtime_ms", "REAL"], ["changed_at_ms", "REAL"],
+            ["file_dev", "TEXT"], ["file_ino", "TEXT"], ["content_hash", "TEXT"]
+          ] as const) {
+            if (!this.hasColumn("runtime_backfills", column)) {
+              this.database.exec(`ALTER TABLE runtime_backfills ADD COLUMN ${column} ${type}`);
+            }
+          }
+          this.database.exec("PRAGMA user_version = 11");
         });
       }
     }

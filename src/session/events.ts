@@ -5,7 +5,9 @@
  * 最后一条 assistant 消息、事件数量和时间信息，供 `sessions` 列表与历史恢复界面使用。
  */
 import { constants, promises as fs, type Stats } from "node:fs";
+import { createHash } from "node:crypto";
 import type { FileHandle } from "node:fs/promises";
+import path from "node:path";
 import { z } from "zod";
 import { committedFileChangeSchema } from "../tools/file/fileChange.js";
 import {
@@ -14,8 +16,8 @@ import {
   maxSessionFileBytes,
   readBoundedSessionHandle
 } from "./limits.js";
-import { cachedSessionEvents, sessionFileFingerprint } from "./parseCache.js";
-import { listSessionFiles, readSessionSnapshot } from "./store.js";
+import { cachedSessionEvents, lookupSessionEvents, sameSessionFingerprint, sessionFileFingerprint, type SessionFileFingerprint } from "./parseCache.js";
+import { listSessionFiles, readSessionSnapshotOrCached } from "./store.js";
 import type { SessionEvent, SessionTurnStatusEvent } from "./recorder.js";
 export type { SessionEvent } from "./recorder.js";
 import { publicAssistantMessage, publicUserMessage } from "./publicMessage.js";
@@ -263,24 +265,50 @@ export interface SessionSummary {
   updatedAt: string;
 }
 
-export async function readSessionEvents(filePath: string): Promise<SessionEvent[]> {
-  // session 文件采用 JSONL，一行一个事件；空行忽略，坏行带行号报错。
+async function readValidatedSessionBytes(filePath: string): Promise<Buffer> {
   const handle = await fs.open(filePath, constants.O_RDONLY | noFollowFlag());
   try {
     await assertStandaloneSessionBinding(filePath, handle);
-    const raw = (await readBoundedSessionHandle(handle, filePath)).toString("utf8");
+    const bytes = await readBoundedSessionHandle(handle, filePath);
     await assertStandaloneSessionBinding(filePath, handle);
-    return parseSessionEvents(raw);
+    return bytes;
   } finally {
     await handle.close();
   }
+}
+
+export async function readSessionEvents(filePath: string): Promise<SessionEvent[]> {
+  return parseSessionEvents((await readValidatedSessionBytes(filePath)).toString("utf8"));
+}
+
+/** 返回完整源文件及已投影前缀的摘要，供修复路径证明旧事实没有被改写。 */
+export async function readSessionEventsForBackfill(
+  filePath: string,
+  previousBytes: number
+): Promise<{ events: SessionEvent[]; contentHash: string; prefixHash?: string }> {
+  const bytes = await readValidatedSessionBytes(filePath);
+  return {
+    events: parseSessionEvents(bytes.toString("utf8")),
+    contentHash: createHash("sha256").update(bytes).digest("hex"),
+    prefixHash: Number.isSafeInteger(previousBytes) && previousBytes >= 0 && previousBytes <= bytes.length
+      ? createHash("sha256").update(bytes.subarray(0, previousBytes)).digest("hex")
+      : undefined
+  };
 }
 
 export async function readStoredSessionEvents(
   workspaceRoot: string,
   session: string | undefined
 ): Promise<{ filePath: string; events: SessionEvent[]; truncated: boolean; sizeBytes: number; summary?: SessionSummary }> {
-  const snapshot = await readSessionSnapshot(workspaceRoot, session);
+  const result = await readSessionSnapshotOrCached(workspaceRoot, session, (filePath, stat) => {
+    const events = lookupSessionEvents(filePath, sessionFileFingerprint(stat));
+    return events === undefined ? undefined : {
+      filePath, events, truncated: false, sizeBytes: stat.size,
+      summary: summarizeSessionEvents(path.basename(filePath), events, stat)
+    };
+  });
+  if (result.cached !== undefined) return result.cached;
+  const snapshot = result.snapshot;
   // 与 resume 共用同一份解析缓存：只有完整读到文件且没丢事件时才进缓存（超限截断的结果
   // 不能复用，否则会把"只看到尾部"的视角发给需要完整事件的读取方）。
   // 缓存命中的一定是完整解析（截断结果从不进缓存），所以命中时 eventsTruncated 保持 false 是对的。
@@ -304,15 +332,38 @@ export async function readSessionSummary(
   workspaceRoot: string,
   session: string | undefined
 ): Promise<SessionSummary | undefined> {
-  const snapshot = await readSessionSnapshot(workspaceRoot, session);
-  // 与打开路径一致用 truncate 模式：事件数超限的会话按尾部降级，而不是在列表和改元数据
-  // 路径上凭空消失。没看全文件的解析不进缓存，避免把截断视角发给需要完整事件的读取方。
-  const events = cachedSessionEvents(snapshot.filePath, sessionFileFingerprint(snapshot.stat), () => {
-    const parsed = parseSessionEventsDetailed(snapshot.bytes.toString("utf8"), { overflow: "truncate" });
-    return { events: parsed.events, complete: !snapshot.truncated && !parsed.truncated };
+  const result = await readSessionSnapshotOrCached(workspaceRoot, session, (filePath, stat) => {
+    const entry = summaryCache.get(filePath);
+    if (!entry) return undefined;
+    if (!sameSessionFingerprint(entry.fingerprint, sessionFileFingerprint(stat))) {
+      summaryCache.delete(filePath);
+      summaryCacheBytes -= entry.weight;
+      return undefined;
+    }
+    return { summary: entry.summary === undefined ? undefined : structuredClone(entry.summary) };
   });
-  return summarizeSessionEvents(snapshot.fileName, events, snapshot.stat);
+  if (result.cached !== undefined) return result.cached.summary;
+  const snapshot = result.snapshot;
+  const parsed = parseSessionEventsDetailed(snapshot.bytes.toString("utf8"), { overflow: "truncate" });
+  const summary = summarizeSessionEvents(snapshot.fileName, parsed.events, snapshot.stat);
+  const weight = Buffer.byteLength(JSON.stringify(summary) ?? "") + 256;
+  const previous = summaryCache.get(snapshot.filePath);
+  if (previous) summaryCacheBytes -= previous.weight;
+  summaryCache.delete(snapshot.filePath);
+  summaryCache.set(snapshot.filePath, { fingerprint: sessionFileFingerprint(snapshot.stat), summary: structuredClone(summary), weight });
+  summaryCacheBytes += weight;
+  while (summaryCache.size > 4096 || summaryCacheBytes > 8 * 1024 * 1024) {
+    const oldest = summaryCache.keys().next();
+    if (oldest.done) break;
+    summaryCacheBytes -= summaryCache.get(oldest.value)!.weight;
+    summaryCache.delete(oldest.value);
+  }
+  return summary;
 }
+
+// 摘要独立缓存，列表扫描不占用恢复路径的完整事件缓存。容量与字节数同时有界。
+const summaryCache = new Map<string, { fingerprint: SessionFileFingerprint; summary: SessionSummary | undefined; weight: number }>();
+let summaryCacheBytes = 0;
 
 export function summarizeSessionEvents(
   fileName: string,
@@ -323,11 +374,18 @@ export function summarizeSessionEvents(
     && !(event.auditOnly && (event.metadata?.queuedDelivery === "steer" || event.metadata?.queuedDelivery === "queue")));
   if (!firstUser) return undefined;
   const firstUserMessage = publicUserMessage(firstUser.content);
-  const lastAssistant = [...events].reverse().find((event): event is Extract<SessionEvent, { type: "assistant_message" }> => event.type === "assistant_message" && Boolean(event.content));
+  let lastAssistant: Extract<SessionEvent, { type: "assistant_message" }> | undefined;
+  let lastTurnStatus: SessionTurnStatusEvent | undefined;
+  let lastTime: string | undefined;
+  for (let index = events.length - 1; index >= 0; index--) {
+    const event = events[index]!;
+    if (!lastAssistant && event.type === "assistant_message" && event.content) lastAssistant = event;
+    if (!lastTurnStatus && event.type === "turn_status") lastTurnStatus = event;
+    if (lastTime === undefined && typeof event.time === "string") lastTime = event.time;
+    if (lastAssistant && lastTurnStatus && lastTime !== undefined) break;
+  }
   const lastAssistantMessage = publicAssistantMessage(lastAssistant?.content ?? "");
-  const lastTurnStatus = [...events].reverse().find((event): event is SessionTurnStatusEvent => event.type === "turn_status");
   const firstTime = events.find((event) => typeof event.time === "string")?.time;
-  const lastTime = [...events].reverse().find((event) => typeof event.time === "string")?.time;
   return {
     fileName,
     firstUserMessage,
@@ -366,6 +424,7 @@ export function parseSessionEventsDetailed(raw: string, options: ParseSessionEve
   }
   const events: SessionEvent[] = [];
   let truncated = false;
+  let head = 0;
   let lineNumber = 0;
   let lineStart = 0;
   while (lineStart <= raw.length) {
@@ -395,18 +454,21 @@ export function parseSessionEventsDetailed(raw: string, options: ParseSessionEve
         throw new Error(`Session cannot contain more than ${String(maxSessionEvents)} events.`);
       }
       // 保留最近的事件：恢复会话时有用的是尾部，不是开头。
-      events.shift();
       truncated = true;
     }
     const event = validateSessionEvent(parsed, lineNumber);
     if (!validateRuntimeEventRecord(event.runtime)) {
       throw new Error(`Invalid runtime event metadata at line ${String(lineNumber)}.`);
     }
-    events.push(event);
+    if (events.length < maxSessionEvents) events.push(event);
+    else {
+      events[head] = event;
+      head = (head + 1) % maxSessionEvents;
+    }
     if (!terminated) break;
     lineStart = lineEnd + 1;
   }
-  return { events, truncated };
+  return { events: head === 0 ? events : [...events.slice(head), ...events.slice(0, head)], truncated };
 }
 
 export function runtimeEventIdentity(event: SessionEvent): RuntimeEventIdentity | undefined {
@@ -453,14 +515,7 @@ export async function listSessionSummaries(workspaceRoot: string): Promise<Sessi
       const fileName = fileNames[index];
       if (!fileName) continue;
       try {
-        const snapshot = await readSessionSnapshot(workspaceRoot, fileName);
-        // 未变更的文件直接命中解析缓存，只对新增/变大的文件重新跑逐事件的 zod 校验。
-        // 与打开路径一致用 truncate 模式：事件数超限的会话按尾部降级，仍应出现在列表里。
-        const events = cachedSessionEvents(snapshot.filePath, sessionFileFingerprint(snapshot.stat), () => {
-          const parsed = parseSessionEventsDetailed(snapshot.bytes.toString("utf8"), { overflow: "truncate" });
-          return { events: parsed.events, complete: !snapshot.truncated && !parsed.truncated };
-        });
-        summaries[index] = summarizeSessionEvents(fileName, events, snapshot.stat);
+        summaries[index] = await readSessionSummary(workspaceRoot, fileName);
       } catch {
         // Opening a corrupt session directly still reports the precise error;
         // listing healthy sessions remains available for recovery.
