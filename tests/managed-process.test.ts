@@ -30,6 +30,7 @@ async function main(): Promise<void> {
     await testManagedHttpProcessOutlivesFiniteCommandTimeout(workspaceRoot, serverScript);
     await testTcpAndLogReadiness(workspaceRoot, serverScript);
     await testRuntimeCloseCleansProcessGroup(workspaceRoot, serverScript);
+    await testExecutionEnvironmentOwnedProcessSurvivesRuntimeClose(workspaceRoot, serverScript);
     await testAbortedStartCleansProcess(workspaceRoot, serverScript);
     await testManagedCwdRejectsSymlinkEscape(workspaceRoot);
     await testCanonicalAbsoluteCwdUnderSymlinkWorkspaceRoot();
@@ -257,6 +258,50 @@ async function testRuntimeCloseCleansProcessGroup(workspaceRoot: string, serverS
   assert.equal(await waitFor(() => !isManagedProcessAlive(started.pid), 1_000), true);
   assert.equal(await waitFor(() => !isPidAlive(serverPid), 1_000), true, "runtime close must clean descendants, not only the shell");
   assert.equal((await service.status(started.processId)).state, "stopped");
+}
+
+async function testExecutionEnvironmentOwnedProcessSurvivesRuntimeClose(
+  workspaceRoot: string,
+  serverScript: string
+): Promise<void> {
+  const service = new ManagedProcessService({
+    workspaceRoot,
+    persistenceRoot: workspaceRoot,
+    processLifetime: "execution-environment",
+    terminationGraceMs: 200,
+    killSettleMs: 200
+  });
+  const port = await unusedPort();
+  const url = `http://127.0.0.1:${String(port)}/health`;
+  const start = runnable(createRunCommandTool({ workspaceRoot, ignore: [] }, undefined, {}, service).resolveExecution({
+    command: nodeCommand(serverScript, port),
+    background: true,
+    url,
+    readiness: { type: "http", url, expectedStatus: 200, timeoutMs: 5_000, intervalMs: 25 }
+  }));
+
+  let processId: string | undefined;
+  try {
+    const result = await start.execute({ toolCallId: "start-environment-owned-http" });
+    assert.equal(result.background, true);
+    if (!result.background) throw new Error("Expected a background Bash result.");
+    processId = result.process.processId;
+
+    const cleanup = await service.close();
+    assert.equal(cleanup[0]?.status, "transferred");
+    assert.equal((await fetch(url)).status, 200);
+    assert.match(
+      await readFile(path.join(agentDir(workspaceRoot), "processes", "lifecycle.jsonl"), "utf8"),
+      /"event":"process_ownership_transferred"/
+    );
+
+    const stopped = await service.stop(processId, "execution environment cleanup");
+    assert.equal(stopped.state, "stopped");
+    assert.equal(await waitFor(() => !isManagedProcessAlive(result.process.pid), 1_000), true);
+  } finally {
+    if (processId) await service.stop(processId, "test cleanup").catch(() => undefined);
+    await service.close();
+  }
 }
 
 async function testAbortedStartCleansProcess(workspaceRoot: string, serverScript: string): Promise<void> {

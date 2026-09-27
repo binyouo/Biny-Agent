@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import subprocess
@@ -16,10 +17,13 @@ from harbor.models.agent.context import AgentContext
 from scripts.evals.harbor.biny_agent import (
     BinyAgent,
     ensure_package,
+    managed_process_lifetime,
     make_config,
+    task_time_budget,
     write_evaluation_provenance,
 )
 from scripts.evals.harbor.fast_verifier import _patch_test_script
+from scripts.evals.harbor.fast_verifier import _fast_eligible
 
 
 class EvaluationConfigurationTests(unittest.TestCase):
@@ -46,6 +50,25 @@ class EvaluationConfigurationTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             make_config("deepseek-v4.1-flash", {"BINY_EVAL_CONTEXT_WINDOW": "0"})
 
+    def test_reasoning_override_updates_model_and_provider_capabilities(self) -> None:
+        with patch.dict(os.environ, {}, clear=True):
+            disabled = make_config("deepseek-v4.1-flash")
+        enabled = make_config(
+            "deepseek-v4.1-flash", {"BINY_EVAL_REASONING": "1"}
+        )
+
+        self.assertFalse(disabled["thinking"]["enabled"])
+        self.assertFalse(
+            disabled["providers"]["commandcode"]["compatibility"]["supportsReasoning"]
+        )
+        self.assertTrue(enabled["thinking"]["enabled"])
+        self.assertTrue(
+            enabled["providers"]["commandcode"]["compatibility"]["supportsReasoning"]
+        )
+        self.assertTrue(
+            enabled["models"]["deepseek-v4.1-flash"]["capabilities"]["reasoning"]
+        )
+
     def test_effective_configuration_is_written_for_each_trial(self) -> None:
         with patch.dict(os.environ, {}, clear=True):
             config = make_config("deepseek-v4.1-flash")
@@ -54,7 +77,11 @@ class EvaluationConfigurationTests(unittest.TestCase):
             )
             with tempfile.TemporaryDirectory() as directory:
                 path = write_evaluation_provenance(
-                    Path(directory), "deepseek-v4.1-flash", config, None
+                    Path(directory),
+                    "deepseek-v4.1-flash",
+                    config,
+                    None,
+                    "a" * 64,
                 )
                 saved_text = path.read_text(encoding="utf-8")
                 saved = json.loads(saved_text)
@@ -63,6 +90,25 @@ class EvaluationConfigurationTests(unittest.TestCase):
         self.assertEqual(saved["contextWindow"], 1_000_000)
         self.assertIsNone(saved["agentExecTimeoutSec"])
         self.assertEqual(saved["agentExecTimeoutSource"], "harbor-trial-deadline")
+        self.assertEqual(saved["binyPackageSha256"], "a" * 64)
+        self.assertEqual(saved["managedProcessLifetime"], "runtime")
+        self.assertRegex(saved["configSha256"], r"^[0-9a-f]{64}$")
+        self.assertRegex(saved["packageSourceFingerprint"], r"^[0-9a-f]{64}$")
+        self.assertIn("platform", saved["runtime"])
+        self.assertIn("nodeVersion", saved["runtime"])
+        repo_root = Path(__file__).resolve().parents[1]
+        self.assertEqual(
+            saved["adapterSha256"],
+            hashlib.sha256(
+                (repo_root / "scripts/evals/harbor/biny_agent.py").read_bytes()
+            ).hexdigest(),
+        )
+        self.assertEqual(
+            saved["fastVerifierSha256"],
+            hashlib.sha256(
+                (repo_root / "scripts/evals/harbor/fast_verifier.py").read_bytes()
+            ).hexdigest(),
+        )
         self.assertEqual(
             saved["binyConfig"]["providers"]["commandcode"]["baseUrl"],
             "https://example.com/provider/v1",
@@ -72,6 +118,52 @@ class EvaluationConfigurationTests(unittest.TestCase):
 
 
 class HarborPackageTests(unittest.TestCase):
+    def test_package_cache_rebuilds_when_archive_or_bundled_asset_changes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "src"
+            source.mkdir()
+            (root / "package.json").write_text('{"name":"@biny012/biny"}\n', encoding="utf-8")
+            source_file = source / "entry.ts"
+            source_file.write_text("export {};\n", encoding="utf-8")
+            asset = source / "bundled-skills" / "example" / "SKILL.md"
+            asset.parent.mkdir(parents=True)
+            asset.write_text("first version\n", encoding="utf-8")
+            for path in (root / "package.json", source_file, asset):
+                os.utime(path, ns=(1_000_000_000, 1_000_000_000))
+
+            cache = root / ".agent" / "harbor"
+            cache.mkdir(parents=True)
+            packed_paths: list[Path] = []
+
+            def pack(command, **kwargs):
+                package_path = cache / "biny012-biny-0.0.1-beta.1.tgz"
+                package_path.write_bytes(f"package-{len(packed_paths) + 1}".encode())
+                packed_paths.append(package_path)
+                return SimpleNamespace(stdout="packed")
+
+            with (
+                patch("scripts.evals.harbor.biny_agent.REPO_ROOT", root),
+                patch("scripts.evals.harbor.biny_agent.PACKAGE_CACHE", cache),
+                patch(
+                    "scripts.evals.harbor.biny_agent.PACKAGE_FILE_LOCK",
+                    cache / ".lock",
+                ),
+                patch("scripts.evals.harbor.biny_agent.subprocess.run", side_effect=pack),
+            ):
+                first = ensure_package()
+                self.assertEqual(ensure_package(), first)
+
+                first.write_bytes(b"corrupted package")
+                self.assertEqual(ensure_package(), first)
+
+                asset.write_text("second version\n", encoding="utf-8")
+                os.utime(asset, ns=(1_000_000_000, 1_000_000_000))
+                second = ensure_package()
+
+        self.assertEqual(first, second)
+        self.assertEqual(len(packed_paths), 3)
+
     def test_package_build_failure_preserves_pnpm_output(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -105,6 +197,29 @@ class HarborPackageTests(unittest.TestCase):
 
 
 class HarborRunSettingsTests(unittest.TestCase):
+    def test_managed_process_lifetime_is_owned_by_disposable_trial_environment(self) -> None:
+        self.assertEqual(managed_process_lifetime(), "execution-environment")
+
+    def test_task_time_budget_uses_task_timeout_multiplier_and_reserve(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            task_file = root / "tasks" / "compile-compcert" / "task.toml"
+            task_file.parent.mkdir(parents=True)
+            task_file.write_text("[agent]\ntimeout_sec = 100.0\n", encoding="utf-8")
+            logs_dir = root / "job" / "compile-compcert__trial" / "agent"
+            deadline = task_time_budget(
+                logs_dir,
+                "compile-compcert__trial__agent",
+                {
+                    "BINY_EVAL_TASKS_DIR": str(root / "tasks"),
+                    "BINY_EVAL_AGENT_TIMEOUT_MULTIPLIER": "2",
+                    "BINY_EVAL_FINALIZATION_RESERVE_RATIO": "0.15",
+                },
+                now_ms=1_000_000,
+            )
+
+        self.assertEqual(deadline, (1_200_000, 30_000))
+
     def test_run_script_uses_pass_at_one_attempt_and_timeout_defaults(self) -> None:
         repo_root = Path(__file__).resolve().parents[1]
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -151,6 +266,111 @@ class HarborRunSettingsTests(unittest.TestCase):
 
 
 class FastVerifierTests(unittest.TestCase):
+    def test_preloaded_runner_requires_the_same_requested_python_minor(self) -> None:
+        compatible = [
+            "uvx \\",
+            "  -p 3.13 \\",
+            "  -w pytest==8.4.1 \\",
+            "  -w pytest-json-ctrf==0.3.5 \\",
+            "  pytest --ctrf /logs/verifier/ctrf.json /tests/test_outputs.py -rA",
+        ]
+        incompatible = [line.replace("3.13", "3.12") for line in compatible]
+
+        self.assertTrue(_fast_eligible(compatible))
+        self.assertFalse(_fast_eligible(incompatible))
+
+    def test_patched_pip_install_branch_is_valid_shell_in_fast_and_fallback_modes(self) -> None:
+        script = """#!/bin/bash
+pip install pytest==8.4.1 pytest-json-ctrf==0.3.5
+uvx \\
+  -p 3.13 \\
+  -w pytest==8.4.1 \\
+  -w pytest-json-ctrf==0.3.5 \\
+  pytest --ctrf /logs/verifier/ctrf.json /tests/test_outputs.py -rA
+"""
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "test.sh"
+            path.write_text(script, encoding="utf-8")
+            with patch(
+                "scripts.evals.harbor.fast_verifier._PYTEST_BIN",
+                "/usr/local/bin/biny-verifier-pytest",
+            ):
+                _patch_test_script(path)
+            syntax = subprocess.run(
+                ["bash", "-n", str(path)], capture_output=True, text=True, check=False
+            )
+
+        self.assertEqual(syntax.returncode, 0, syntax.stderr)
+
+    def test_fast_verifier_preserves_task_pythonpath(self) -> None:
+        script = """#!/bin/bash
+apt-get update
+apt-get install -y curl
+curl -LsSf https://astral.sh/uv/0.9.5/install.sh | sh
+source $HOME/.local/bin/env
+uvx \\
+  -p 3.13 \\
+  -w pytest==8.4.1 \\
+  -w pytest-json-ctrf==0.3.5 \\
+  pytest --ctrf /logs/verifier/ctrf.json /tests/test_outputs.py -rA
+"""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            preloaded = bin_dir / "biny-verifier-pytest"
+            preloaded.write_text(
+                '#!/bin/sh\nprintf "%s" "${PYTHONPATH-}" > "$BINY_TEST_PYTHONPATH"\n',
+                encoding="utf-8",
+            )
+            preloaded.chmod(0o755)
+            path = root / "test.sh"
+            path.write_text(script, encoding="utf-8")
+            captured_path = root / "pythonpath.txt"
+            verifier_logs = root / "verifier-logs"
+
+            python_probe = bin_dir / "biny-verifier-python"
+            python_probe.write_text(
+                '#!/bin/sh\nprintf \'{"executable":"%s","pythonpath":"%s"}\\n\' "$0" "${PYTHONPATH-}"\n',
+                encoding="utf-8",
+            )
+            python_probe.chmod(0o755)
+
+            with patch(
+                "scripts.evals.harbor.fast_verifier._PYTEST_BIN", str(preloaded)
+            ), patch(
+                "scripts.evals.harbor.fast_verifier._PYTHON_BIN", str(python_probe)
+            ):
+                _patch_test_script(path)
+
+            env = os.environ.copy()
+            env.update(
+                {
+                    "PATH": f"{bin_dir}:{env['PATH']}",
+                    "PYTHONPATH": "/task/python/site-packages",
+                    "BINY_TEST_PYTHONPATH": str(captured_path),
+                    "BINY_VERIFIER_LOG_DIR": str(verifier_logs),
+                }
+            )
+            result = subprocess.run(
+                ["bash", str(path)],
+                cwd=root,
+                env=env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            actual_pythonpath = captured_path.read_text(encoding="utf-8")
+            runtime_fingerprint = json.loads(
+                (verifier_logs / "fast-runtime.jsonl").read_text(encoding="utf-8").splitlines()[0]
+            )
+
+        self.assertEqual(actual_pythonpath, "/task/python/site-packages")
+        self.assertEqual(runtime_fingerprint["executable"], str(python_probe))
+        self.assertEqual(runtime_fingerprint["pythonpath"], "/task/python/site-packages")
+
     def test_mteb_verifier_keeps_uv_fallback_when_preloaded_python_is_absent(self) -> None:
         script = """#!/bin/bash
 apt-get update
@@ -363,6 +583,38 @@ uvx \\
 
 
 class HarborClassificationTests(unittest.TestCase):
+    def test_reward_without_verifier_trial_output_is_not_scored(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            job = Path(directory)
+            (job / "result.json").write_text(
+                json.dumps(
+                    {
+                        "n_total_trials": 1,
+                        "finished_at": "2026-09-25T00:00:00Z",
+                        "stats": {
+                            "n_running_trials": 0,
+                            "n_pending_trials": 0,
+                            "reward_stats": {"reward": {"1.0": ["missing-output__trial"]}},
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            repo_root = Path(__file__).resolve().parents[1]
+            result = subprocess.run(
+                [sys.executable, str(repo_root / "scripts/evals/harbor/classify_job.py"), str(job)],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            rows = json.loads((job / "_status.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["reward"], 1.0)
+        self.assertEqual(rows[0]["score"], "unscored")
+        self.assertEqual(rows[0]["verifierValidity"], "unknown")
+
     def test_verifier_environment_failures_are_not_model_assertion_failures(self) -> None:
         cases = {
             "mteb-leaderboard": (
@@ -452,16 +704,22 @@ class HarborClassificationTests(unittest.TestCase):
         rows_by_task = {row["task"].split("__")[0]: row for row in statuses}
         by_task = {task: row["status"] for task, row in rows_by_task.items()}
         self.assertEqual(by_task["mteb-leaderboard"], "infra_failed")
+        self.assertEqual(rows_by_task["mteb-leaderboard"]["verifierValidity"], "invalid")
         self.assertEqual(by_task["qemu-alpine-ssh"], "infra_failed")
+        self.assertEqual(rows_by_task["qemu-alpine-ssh"]["verifierValidity"], "invalid")
         self.assertEqual(by_task["install-windows-3.11"], "subject_failed")
+        self.assertEqual(rows_by_task["install-windows-3.11"]["verifierValidity"], "valid")
         self.assertEqual(by_task["compile-compcert"], "timeout")
         self.assertEqual(rows_by_task["compile-compcert"]["reward"], 0.0)
-        self.assertEqual(rows_by_task["compile-compcert"]["score"], "fail")
+        self.assertEqual(rows_by_task["compile-compcert"]["score"], "unscored")
+        self.assertEqual(rows_by_task["compile-compcert"]["verifierValidity"], "unknown")
         self.assertEqual(by_task["cobol-modernization"], "completed")
         self.assertEqual(by_task["regex-chess"], "timeout")
         self.assertEqual(rows_by_task["regex-chess"]["reward"], 1.0)
         self.assertEqual(rows_by_task["regex-chess"]["score"], "pass")
-        self.assertIn("官方 verifier Pass@1: 2/4 = 50.0%", result.stdout)
+        self.assertEqual(rows_by_task["regex-chess"]["verifierValidity"], "valid")
+        self.assertIn("官方 verifier Pass@1: 2/3 = 66.7%", result.stdout)
+        self.assertIn("verifier 环境无效明细", result.stdout)
 
 
 class AgentExecutionTests(unittest.IsolatedAsyncioTestCase):
@@ -495,6 +753,56 @@ class AgentExecutionTests(unittest.IsolatedAsyncioTestCase):
 
             command = str(environment.calls[1]["command"])
             self.assertIn("biny run --json --", command)
+
+    async def test_run_passes_execution_environment_process_owner(self) -> None:
+        with tempfile.TemporaryDirectory() as directory, patch.dict(
+            os.environ,
+            {"BINY_MANAGED_PROCESS_LIFETIME": "unexpected"},
+            clear=True,
+        ):
+            agent = BinyAgent(Path(directory), model_name="deepseek-v4.1-flash")
+            agent._managed_process_lifetime = "execution-environment"
+            environment = FakeEnvironment()
+
+            await agent.run("complete the task", environment, AgentContext())
+
+        self.assertEqual(
+            environment.calls[1]["env"]["BINY_MANAGED_PROCESS_LIFETIME"],
+            "execution-environment",
+        )
+
+    async def test_run_passes_trial_deadline_and_records_structured_outcome(self) -> None:
+        with tempfile.TemporaryDirectory() as directory, patch.dict(
+            os.environ,
+            {
+                "BINY_EVAL_TASKS_DIR": f"{directory}/tasks",
+                "BINY_EVAL_AGENT_TIMEOUT_MULTIPLIER": "2",
+                "BINY_EVAL_FINALIZATION_RESERVE_RATIO": "0.15",
+            },
+            clear=True,
+        ), patch("scripts.evals.harbor.biny_agent.time.time", return_value=1_800_000_000):
+            root = Path(directory)
+            task_file = root / "tasks" / "compile-compcert" / "task.toml"
+            task_file.parent.mkdir(parents=True)
+            task_file.write_text("[agent]\ntimeout_sec = 100.0\n", encoding="utf-8")
+            logs_dir = root / "job" / "compile-compcert__trial" / "agent"
+            agent = BinyAgent(logs_dir, model_name="deepseek-v4.1-flash")
+            agent.session_id = "compile-compcert__trial__agent"
+            environment = FakeEnvironment()
+
+            await agent.run("finish before deadline", environment, AgentContext())
+
+            command = str(environment.calls[1]["command"])
+            self.assertIn("--deadline-at-ms", command)
+            self.assertIn("--finalization-reserve-ms 30000", command)
+            self.assertEqual(
+                environment.calls[1]["env"]["BINY_RUN_FINALIZATION_RESERVE_MS"],
+                "30000",
+            )
+            saved = json.loads((logs_dir / "biny-result.json").read_text())
+
+        self.assertEqual(saved["deadline_at_ms"], 1_800_000_000_000 + 200_000)
+        self.assertEqual(saved["finalization_reserve_ms"], 30_000)
 
     async def test_run_honors_explicit_command_timeout_override(self) -> None:
         with tempfile.TemporaryDirectory() as directory, patch.dict(

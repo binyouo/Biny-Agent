@@ -41,6 +41,7 @@ export async function runTaskClosure(input: {
   executor: TaskCommandExecutor;
   retrySafety?: TaskRetrySafety;
   signal?: AbortSignal;
+  canRepair?: () => boolean;
   executeAttempt(prompt: string, attempt: TaskAttemptRecord): Promise<string>;
 }): Promise<TaskClosureResult> {
   const initial = input.taskRuns.get(input.taskRunId);
@@ -263,6 +264,16 @@ export async function runTaskClosure(input: {
         verification: evidence,
         artifacts,
         failure: { failureClass: "verification_failed", message: reason }
+      });
+      return { status: "incomplete", output, evidence, reason };
+    }
+    if (input.canRepair?.() === false) {
+      const reason = "Verification failed and the work budget is exhausted; no repair attempt started.";
+      input.taskRuns.transition(input.taskRunId, "incomplete", {
+        attemptId: attempt.attemptId,
+        verification: evidence,
+        artifacts,
+        failure: { failureClass: "work_budget_exhausted", message: reason }
       });
       return { status: "incomplete", output, evidence, reason };
     }

@@ -401,6 +401,9 @@ program
   .option("--headless", "run without interactive permission prompts")
   .option("--isolated", "run in a dedicated git worktree session")
   .option("--attachment <path>", "attach a workspace image (repeatable)", collectStringOption, [])
+  .option("--verification <json>", "deterministic verification contract JSON")
+  .option("--deadline-at-ms <timestamp>", "external Unix deadline in milliseconds", parsePositiveInteger)
+  .option("--finalization-reserve-ms <milliseconds>", "reserve time for final checks and handoff", parseNonNegativeInteger)
   .option("--json", "print one machine-readable JSON result")
   .argument("<input...>", "task text")
   .action((input: string[], options: RunCommandOptions) => wrap(async () => { await runCommand(workspaceRoot, input.join(" "), options); })());

@@ -9,6 +9,7 @@ import path from "node:path";
 import { createFileConfigStore, type AgentConfigStore } from "../config/store.js";
 import type { AgentConfig } from "../config/schema.js";
 import { AgentSession } from "../agent/AgentSession.js";
+import type { AgentTurnOutcome, AgentPermissionRequest, AgentPermissionResult } from "../agent/types.js";
 import { ModelManager } from "../llm/ModelManager.js";
 import { resolveToolModel } from "../llm/toolModel.js";
 import { runSkillExtraction } from "../agent/skillExtraction.js";
@@ -43,7 +44,7 @@ import {
   type SubagentTaskRunOptions,
   type SubmittedSubagentTask
 } from "./SubagentTaskManager.js";
-import { ManagedProcessService } from "./ManagedProcessService.js";
+import { ManagedProcessService, type ManagedProcessLifetime } from "./ManagedProcessService.js";
 import { subagentAccessMode } from "./subagentAccess.js";
 import { modelReasoningConfig } from "../ai/capabilities.js";
 import { attachmentRoot, ensureAttachmentRoot } from "../attachments/store.js";
@@ -65,6 +66,7 @@ import {
   isTaskVerificationPermissionResult,
   pendingTaskVerificationApproval,
   readTaskDefinition,
+  type TaskVerificationContract,
   recoverTaskCheckExecution,
   taskCheckRecoveryToolCallIds,
   taskCheckToolCallId,
@@ -111,6 +113,19 @@ export interface CommandRuntime {
     task: TaskRunWithAttempts;
     completion: Promise<TaskClosureResult>;
   }>;
+  /** 一次性主任务通过同一份 TaskRun 验收闭环执行，不把回合完成当作产物已验证。 */
+  runTaskWithVerification(input: {
+    prompt: string;
+    verification: TaskVerificationContract;
+    signal?: AbortSignal;
+    /** Stops model work before the full run deadline so verification can use the reserve. */
+    attemptSignal?: AbortSignal;
+    confirmPermission?: (request: AgentPermissionRequest) => Promise<AgentPermissionResult>;
+  }): Promise<{
+    taskRunId: string;
+    closure: TaskClosureResult;
+    turnOutcome?: AgentTurnOutcome;
+  }>;
   cancelTaskRun(taskRunId: string, reason?: string): TaskRunWithAttempts;
   startPlanDraft(graphId: string, revision: number, signal?: AbortSignal): Promise<unknown>;
   /** Task 验收只允许通过与 Agent 相同的 Bash 权限、调度、审计和取消链执行。 */
@@ -145,6 +160,8 @@ const backgroundOwners = new Set<{ start(): void; stop(): void }>();
 
 export interface CommandRuntimeOptions {
   persistenceRoot?: string;
+  /** Defaults to Runtime ownership; only a disposable enclosing environment may outlive it. */
+  processLifetime?: ManagedProcessLifetime;
   configStore?: AgentConfigStore;
   attachmentRoot?: string;
   /** Host 为新 session 预先分配的 id；历史 session 仍由 InteractiveAgentRuntime.resumeSession 载入。 */
@@ -184,7 +201,11 @@ export async function createCommandRuntime(workspaceRoot: string, options: Comma
   const graphs = await GoalGraphStore.open(persistenceRoot, runtimeAuthority);
   const capabilities = await CapabilityStore.open(persistenceRoot, runtimeAuthority);
   const recorder = new SessionRecorder(persistenceRoot, options.sessionId, undefined, runtimeAuthority.asSink());
-  const managedProcesses = new ManagedProcessService({ workspaceRoot, persistenceRoot });
+  const managedProcesses = new ManagedProcessService({
+    workspaceRoot,
+    persistenceRoot,
+    processLifetime: options.processLifetime
+  });
   await managedProcesses.initialize();
   const toolRegistry = createToolRegistry(
     { workspaceRoot, ignore: config.workspace.ignore, attachmentRoot: projectAttachmentRoot },
@@ -221,6 +242,9 @@ export async function createCommandRuntime(workspaceRoot: string, options: Comma
   const durableTaskControllers = new Map<string, AbortController>();
   let startTaskRun: CommandRuntime["startTaskRun"] = async () => {
     throw new Error("TaskRun execution is not initialized.");
+  };
+  let runTaskWithVerification: CommandRuntime["runTaskWithVerification"] = async () => {
+    throw new Error("Verified one-shot task execution is not initialized.");
   };
   let cancelTaskRun: CommandRuntime["cancelTaskRun"] = () => {
     throw new Error("TaskRun cancellation is not initialized.");
@@ -781,6 +805,82 @@ export async function createCommandRuntime(workspaceRoot: string, options: Comma
     return completion;
   };
 
+  runTaskWithVerification = async (input) => {
+    if (agent.getInfo().planning) throw new Error("Planning mode forbids verified task execution.");
+    const attemptSignal = input.attemptSignal ?? input.signal;
+    const task = taskRuns.create({
+      task: { prompt: input.prompt, verification: input.verification }
+    });
+    let turnOutcome: AgentTurnOutcome | undefined;
+    try {
+      const closure = await runTaskClosure({
+        taskRuns,
+        taskRunId: task.taskRunId,
+        workspaceRoot,
+        ignore: config.workspace.ignore,
+        executor: { executeTaskCheck: async (checkInput) => await executeTaskCheck(checkInput) },
+        signal: input.signal,
+        canRepair: () => attemptSignal?.aborted !== true,
+        executeAttempt: async (prompt, attempt) => {
+          turnOutcome = await agent.runTask(prompt, {
+            abortSignal: attemptSignal,
+            confirmPermission: input.confirmPermission,
+            runId: attempt.runId,
+            turnId: attempt.turnId
+          });
+          if (attemptSignal?.aborted && !input.signal?.aborted) return turnOutcome.output;
+          if (turnOutcome.status === "completed") return turnOutcome.output;
+
+          const status = closureStatusForTurn(turnOutcome.status);
+          const current = taskRuns.get(task.taskRunId);
+          if (current && !isTaskRunTerminal(current.status)) {
+            taskRuns.transition(task.taskRunId, status, {
+              attemptId: attempt.attemptId,
+              artifacts: { output: turnOutcome.output },
+              failure: {
+                failureClass: turnOutcome.stopReason,
+                message: turnOutcome.error ?? `Agent turn ended with ${turnOutcome.status}.`
+              }
+            });
+          }
+          throw new VerifiedTaskTurnStopped(status, turnOutcome);
+        }
+      });
+      return { taskRunId: task.taskRunId, closure, turnOutcome };
+    } catch (error) {
+      if (error instanceof VerifiedTaskTurnStopped) {
+        return {
+          taskRunId: task.taskRunId,
+          closure: {
+            status: error.closureStatus,
+            output: error.outcome.output,
+            reason: error.outcome.error ?? `Agent turn ended with ${error.outcome.status}.`
+          },
+          turnOutcome: error.outcome
+        };
+      }
+      const latest = taskRuns.get(task.taskRunId);
+      if (latest && !isTaskRunTerminal(latest.status)) {
+        taskRuns.transition(task.taskRunId, "failed", {
+          attemptId: latest.attempts.at(-1)?.attemptId,
+          failure: {
+            failureClass: "verified_run_failed",
+            message: error instanceof Error ? error.message : String(error)
+          }
+        });
+      }
+      return {
+        taskRunId: task.taskRunId,
+        closure: {
+          status: input.signal?.aborted ? "cancelled" : "incomplete",
+          output: turnOutcome?.output,
+          reason: error instanceof Error ? error.message : String(error)
+        },
+        turnOutcome
+      };
+    }
+  };
+
   const runtime: CommandRuntime = {
     workspaceRoot,
     persistenceRoot,
@@ -830,6 +930,7 @@ export async function createCommandRuntime(workspaceRoot: string, options: Comma
     },
     startSubagentTask,
     startTaskRun,
+    runTaskWithVerification,
     cancelTaskRun,
     async startPlanDraft(graphId, revision, signal) {
       const graph = graphs.inspectGraph(graphId);
@@ -963,6 +1064,21 @@ function finishTaskAttempt(
   } catch {
     // Worker 结果已由 Session 事件记录；过时回调不能覆盖更新的 TaskRun 状态。
   }
+}
+
+class VerifiedTaskTurnStopped extends Error {
+  constructor(
+    readonly closureStatus: TaskClosureResult["status"],
+    readonly outcome: AgentTurnOutcome
+  ) {
+    super(outcome.error ?? `Agent turn ended with ${outcome.status}.`);
+  }
+}
+
+function closureStatusForTurn(status: AgentTurnOutcome["status"]): TaskClosureResult["status"] {
+  if (status === "cancelled" || status === "aborted") return "cancelled";
+  if (status === "blocked") return "blocked";
+  return "incomplete";
 }
 
 function taskRunToolResult(task: TaskRunWithAttempts | undefined, result?: TaskClosureResult): Record<string, unknown> {

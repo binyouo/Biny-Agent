@@ -3,8 +3,9 @@
  *
  * Unlike `Bash`, managed processes have no command deadline. They write
  * directly to a durable log file and stay addressable by an opaque process ID
- * until they exit or the owning runtime closes. Runtime owns every process and
- * always cleans up live process groups when it closes.
+ * until they exit or the owning runtime closes. Runtime owns every process by
+ * default. Callers may explicitly assign lifetime to an enclosing disposable
+ * execution environment.
  */
 import { randomUUID } from "node:crypto";
 import { spawn, type ChildProcess } from "node:child_process";
@@ -63,7 +64,7 @@ export interface ManagedProcessReadinessResult {
 }
 
 export interface ManagedProcessCleanupResult {
-  status: "pending" | "stopped" | "not_needed" | "failed";
+  status: "pending" | "stopped" | "not_needed" | "failed" | "transferred";
   at?: string;
   reason?: string;
   message?: string;
@@ -116,9 +117,12 @@ export interface ManagedProcessOutput {
 export interface ManagedProcessServiceOptions {
   workspaceRoot: string;
   persistenceRoot?: string;
+  processLifetime?: ManagedProcessLifetime;
   terminationGraceMs?: number;
   killSettleMs?: number;
 }
+
+export type ManagedProcessLifetime = "runtime" | "execution-environment";
 
 interface ManagedProcessRecord {
   snapshot: ManagedProcessSnapshot;
@@ -145,6 +149,7 @@ export class ManagedProcessService {
   private readonly persistenceRoot: string;
   private readonly processRoot: string;
   private readonly lifecycleLogPath: string;
+  private readonly processLifetime: ManagedProcessLifetime;
   private readonly terminationGraceMs: number;
   private readonly killSettleMs: number;
   private readonly records = new Map<string, ManagedProcessRecord>();
@@ -158,6 +163,7 @@ export class ManagedProcessService {
     this.persistenceRoot = persistenceRoot;
     this.processRoot = path.join(agentDir(persistenceRoot), "processes");
     this.lifecycleLogPath = path.join(this.processRoot, "lifecycle.jsonl");
+    this.processLifetime = options.processLifetime ?? "runtime";
     this.terminationGraceMs = options.terminationGraceMs ?? defaultTerminationGraceMs;
     this.killSettleMs = options.killSettleMs ?? defaultKillSettleMs;
     if (![this.terminationGraceMs, this.killSettleMs].every((value) => Number.isFinite(value) && value >= 0)) {
@@ -396,6 +402,17 @@ export class ManagedProcessService {
             };
             await this.recordLifecycle("cleanup_not_needed", record.snapshot);
           }
+          return { ...record.snapshot.cleanup };
+        }
+        if (this.processLifetime === "execution-environment") {
+          const at = new Date().toISOString();
+          record.child.unref();
+          record.snapshot.cleanup = {
+            status: "transferred",
+            at,
+            reason: "execution environment owns process lifetime"
+          };
+          await this.recordLifecycle("process_ownership_transferred", record.snapshot);
           return { ...record.snapshot.cleanup };
         }
         const stopped = await this.stop(record.snapshot.processId, "runtime close");

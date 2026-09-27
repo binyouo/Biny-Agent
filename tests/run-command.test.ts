@@ -4,7 +4,16 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { defaultConfig } from "../src/config/schema.js";
 import type { AgentConfigStore } from "../src/config/store.js";
-import { applyRunConfig, createRunConfigStore, loadRunAttachments, validateRunOptions } from "../src/cli/commands/run.js";
+import {
+  applyRunConfig,
+  createRunConfigStore,
+  loadRunAttachments,
+  parseRunVerification,
+  resolveRunDeadlineBudget,
+  runVerificationApproval,
+  validateRunOptions,
+  withRunTaskGuidance
+} from "../src/cli/commands/run.js";
 import { attachmentFilePath, attachmentRoot } from "../src/attachments/store.js";
 import { appendCapped } from "../src/tools/shell/runCommand.js";
 
@@ -38,6 +47,76 @@ assert.throws(
   () => validateRunOptions({ isolated: true, model: "deepseek-v4-pro" }),
   /--isolated.*cannot be combined with --model/
 );
+assert.throws(
+  () => validateRunOptions({ isolated: true, verification: JSON.stringify({
+    version: 1,
+    objective: "verify artifact",
+    checks: [{ id: "present", command: "test -f result.txt", definitionPaths: [] }],
+    artifactPaths: ["result.txt"],
+    allowedRepairPaths: ["result.txt"],
+    maxAttempts: 1
+  }) }),
+  /--isolated.*--verification/
+);
+assert.throws(
+  () => validateRunOptions({ isolated: true, deadlineAtMs: 10_000 }),
+  /--isolated.*deadline options/
+);
+assert.throws(
+  () => validateRunOptions({ verification: "{bad json" }),
+  /verification.*valid JSON/
+);
+assert.throws(
+  () => validateRunOptions({ deadlineAtMs: 1_000, finalizationReserveMs: 1_000 }),
+  /deadline.*greater than finalization reserve/
+);
+const verification = {
+  version: 1,
+  objective: "Create the requested artifact",
+  checks: [{ id: "artifact-exists", command: "test -f result.txt", definitionPaths: [] }],
+  artifactPaths: ["result.txt"],
+  allowedRepairPaths: ["result.txt"],
+  maxAttempts: 2
+};
+const parsedVerification = parseRunVerification(JSON.stringify(verification));
+assert.equal(parsedVerification?.objective, verification.objective);
+assert.equal(parsedVerification?.checks[0]?.id, "artifact-exists");
+const pendingApproval = runVerificationApproval({
+  contractVersion: 1,
+  status: "blocked",
+  taskRunId: "task-123",
+  attemptId: "attempt-1",
+  contractFingerprint: "contract-hash",
+  artifactFingerprint: "artifact-hash",
+  definitionFingerprint: "definition-hash",
+  artifactPaths: ["result.txt"],
+  checks: [{
+    checkId: "artifact-exists",
+    command: "test -f result.txt",
+    status: "blocked",
+    toolCallId: "tool-call-1",
+    resultEventId: "event-1",
+    eventReferences: [],
+    approvalRequired: true
+  }]
+}, parsedVerification!);
+assert.match(pendingApproval?.approvalId ?? "", /^task-approval:[a-f0-9]{64}$/u);
+assert.deepEqual(
+  pendingApproval && { checkId: pendingApproval.checkId, command: pendingApproval.command, cwd: pendingApproval.cwd },
+  { checkId: "artifact-exists", command: "test -f result.txt", cwd: "." }
+);
+assert.equal(
+  resolveRunDeadlineBudget(100_000, 15_000, 40_000).workRemainingMs,
+  45_000
+);
+assert.equal(resolveRunDeadlineBudget(100_000, 15_000, 40_000).workDeadlineAtMs, 85_000);
+const guided = withRunTaskGuidance("Create result.txt", 100_000, 15_000, true, 40_000);
+assert.match(guided, /deterministic verification contract|确定性验收契约/u);
+assert.match(guided, /60 秒/u);
+assert.match(guided, /15 秒/u);
+const contractGuidance = withRunTaskGuidance("Create result.txt", undefined, 0, verification);
+assert.match(contractGuidance, /test -f result\.txt/u);
+assert.match(contractGuidance, /result\.txt/u);
 
 await testRunConfigStoreKeepsOverridesEphemeral();
 await testRunImageAttachments();

@@ -57,6 +57,7 @@ async function main(): Promise<void> {
   await testGraphVerificationRepairAndDownstreamUnlock();
   await testFailedVerificationDoesNotUnlockDownstream();
   await testRepairLimitStopsAttempts();
+  await testWorkDeadlineVerifiesCandidateWithoutStartingRepair();
   await testUnavailableEnvironmentDoesNotRepair();
   await testCancellationAndLateEvidenceCannotComplete();
   await testSubagentCompletionStopsAtVerifying();
@@ -184,6 +185,37 @@ async function testRepairLimitStopsAttempts(): Promise<void> {
     assert.match(result.reason ?? "", /limit is 2/u);
     assert.equal(fixture.tasks.get(task.taskRunId)?.attempts.length, 2);
     assert.equal(workerCalls, 2);
+  } finally {
+    await fixture.close();
+  }
+}
+
+async function testWorkDeadlineVerifiesCandidateWithoutStartingRepair(): Promise<void> {
+  const fixture = await createFixture("full-access");
+  try {
+    const contract = verificationContract(2);
+    const task = fixture.tasks.create({ task: { prompt: "keep the best candidate", verification: contract } });
+    let workerCalls = 0;
+    const result = await runTaskClosure({
+      taskRuns: fixture.tasks,
+      taskRunId: task.taskRunId,
+      workspaceRoot: fixture.root,
+      ignore: verificationIgnore,
+      executor: fixture.executor,
+      canRepair: () => false,
+      executeAttempt: async () => {
+        workerCalls += 1;
+        await writeFile(path.join(fixture.root, "artifact.txt"), "bad\n", "utf8");
+        return "best candidate before work deadline";
+      }
+    });
+
+    assert.equal(result.status, "incomplete");
+    assert.match(result.reason ?? "", /work budget is exhausted/u);
+    assert.equal(result.evidence?.status, "failed");
+    assert.equal(workerCalls, 1, "an expired work budget must not start a repair attempt");
+    assert.equal(fixture.tasks.get(task.taskRunId)?.attempts.length, 1);
+    assert.equal(fixture.tasks.get(task.taskRunId)?.status, "incomplete");
   } finally {
     await fixture.close();
   }

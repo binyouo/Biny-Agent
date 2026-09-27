@@ -17,10 +17,15 @@ import json
 import logging
 import os
 from pathlib import Path
+import platform
 import shlex
+import stat
 import subprocess
+import sys
 import tarfile
 import threading
+import time
+import tomllib
 from typing import Any, AsyncIterator
 from urllib.parse import urlsplit, urlunsplit
 
@@ -46,7 +51,8 @@ DEFAULT_MODEL = PRESETS["defaultAlias"]
 # 当前依赖树包含要求 Node >=22.19.0 的包；旧版本会把安装/启动错误误计为任务失败。
 NODE_VERSION = "22.19.0"
 NODE_MIN_MAJOR, NODE_MIN_MINOR = (int(part) for part in NODE_VERSION.split(".")[:2])
-ADAPTER_VERSION = "0.2.3"
+ADAPTER_VERSION = "0.2.5"
+DEFAULT_FINALIZATION_RESERVE_RATIO = 0.15
 PROVIDER_ENV_NAMES = (
     "COMMANDCODE_API_KEY",
     "SUB2API_API_KEY",
@@ -201,8 +207,16 @@ class BinyAgent(BaseAgent):
         model_alias = resolve_model_alias(self.model_name)
         config = make_config(model_alias, self.extra_env)
         agent_exec_timeout = _agent_exec_timeout({**os.environ, **self.extra_env})
+        # Harbor owns each trial environment. The container is stopped after the
+        # verifier (shared mode) or immediately after the agent (separate mode).
+        self._managed_process_lifetime = managed_process_lifetime()
         write_evaluation_provenance(
-            self.logs_dir, model_alias, config, agent_exec_timeout
+            self.logs_dir,
+            model_alias,
+            config,
+            agent_exec_timeout,
+            package_sha256,
+            self._managed_process_lifetime,
         )
         await write_remote_text(
             environment,
@@ -257,6 +271,25 @@ class BinyAgent(BaseAgent):
         context: AgentContext,
     ) -> None:
         cwd = await task_workdir(environment)
+        run_env = agent_environment(self.extra_env)
+        run_env.pop("BINY_MANAGED_PROCESS_LIFETIME", None)
+        process_lifetime = managed_process_lifetime()
+        run_env["BINY_MANAGED_PROCESS_LIFETIME"] = process_lifetime
+        # Harbor 已按 task.agent.timeout_sec 和 multiplier 包住整个 run；默认不在
+        # environment.exec 再加第二道固定上限。只有显式设置此变量才增加内部 timeout。
+        agent_exec_timeout = _agent_exec_timeout({**os.environ, **self.extra_env})
+        # 让 biny 把 /opt/biny-global 当作全局配置/agent 目录，从而读到我们在 setup 写下的 model。
+        run_env["BINY_AGENT_DIR"] = "/opt/biny-global"
+        time_budget = task_time_budget(self.logs_dir, self.session_id)
+        command_flags = "--json"
+        if time_budget is not None:
+            deadline_at_ms, reserve_ms = time_budget
+            run_env["BINY_RUN_DEADLINE_AT_MS"] = str(deadline_at_ms)
+            run_env["BINY_RUN_FINALIZATION_RESERVE_MS"] = str(reserve_ms)
+            command_flags += (
+                f" --deadline-at-ms {deadline_at_ms}"
+                f" --finalization-reserve-ms {reserve_ms}"
+            )
         encoded_instruction = base64.b64encode(instruction.encode("utf-8")).decode("ascii")
         command = (
             "export PATH=/opt/node/bin:$PATH; "
@@ -265,14 +298,8 @@ class BinyAgent(BaseAgent):
             # "--" 必须有：有的题 instruction 正好以 markdown 的 "- " 开头
             # （实测 pytorch-model-recovery），不加就会被 commander 当成选项，
             # 报 "error: unknown option '- You are given ...'"，整题作废。
-            'biny run --json -- "$(cat .agent/harbor-instruction.txt)"'
+            f'biny run {command_flags} -- "$(cat .agent/harbor-instruction.txt)"'
         )
-        run_env = agent_environment(self.extra_env)
-        # Harbor 已按 task.agent.timeout_sec 和 multiplier 包住整个 run；默认不在
-        # environment.exec 再加第二道固定上限。只有显式设置此变量才增加内部 timeout。
-        agent_exec_timeout = _agent_exec_timeout({**os.environ, **self.extra_env})
-        # 让 biny 把 /opt/biny-global 当作全局配置/agent 目录，从而读到我们在 setup 写下的 model。
-        run_env["BINY_AGENT_DIR"] = "/opt/biny-global"
         result = await environment.exec(
             command,
             cwd=cwd,
@@ -283,6 +310,18 @@ class BinyAgent(BaseAgent):
         record = {
             "model": resolve_model_alias(self.model_name),
             "agent_exec_timeout_sec": agent_exec_timeout,
+            "deadline_at_ms": (
+                time_budget[0] if time_budget is not None else None
+            ),
+            "finalization_reserve_ms": (
+                time_budget[1] if time_budget is not None else None
+            ),
+            "deadline_source": (
+                "task.agent.timeout_sec * BINY_EVAL_AGENT_TIMEOUT_MULTIPLIER"
+                if time_budget is not None
+                else "unavailable-task-timeout-metadata"
+            ),
+            "managed_process_lifetime": process_lifetime,
             "return_code": result.return_code,
             "stdout": result.stdout or "",
             "stderr": result.stderr or "",
@@ -296,6 +335,10 @@ class BinyAgent(BaseAgent):
             "agent": "biny",
             "model": record["model"],
             "agent_exec_timeout_sec": agent_exec_timeout,
+            "deadline_at_ms": record["deadline_at_ms"],
+            "finalization_reserve_ms": record["finalization_reserve_ms"],
+            "deadline_source": record["deadline_source"],
+            "managed_process_lifetime": process_lifetime,
             "return_code": result.return_code,
             "stdout_tail": (result.stdout or "")[-8_000:],
             "stderr_tail": (result.stderr or "")[-8_000:],
@@ -322,16 +365,23 @@ def ensure_package() -> Path:
                     key=lambda path: path.stat().st_mtime,
                     reverse=True,
                 )
-                package_json = REPO_ROOT / "package.json"
-                newest_source = max(
-                    package_json.stat().st_mtime,
-                    *(
-                        path.stat().st_mtime
-                        for path in (REPO_ROOT / "src").rglob("*.ts")
-                    ),
-                )
-                if existing and existing[0].stat().st_mtime >= newest_source:
-                    return existing[0]
+                source_fingerprint = _package_source_fingerprint(REPO_ROOT)
+                for package_path in existing:
+                    try:
+                        manifest = json.loads(
+                            _package_manifest_path(package_path).read_text(
+                                encoding="utf-8"
+                            )
+                        )
+                    except (OSError, json.JSONDecodeError):
+                        continue
+                    if not isinstance(manifest, dict):
+                        continue
+                    if (
+                        manifest.get("sourceFingerprint") == source_fingerprint
+                        and manifest.get("packageSha256") == _sha256_file(package_path)
+                    ):
+                        return package_path
 
                 try:
                     subprocess.run(
@@ -358,9 +408,99 @@ def ensure_package() -> Path:
                 )
                 if not packages:
                     raise RuntimeError(f"pnpm pack did not create a package in {PACKAGE_CACHE}")
-                return packages[0]
+                package_path = packages[0]
+                if _package_source_fingerprint(REPO_ROOT) != source_fingerprint:
+                    raise RuntimeError("Biny package inputs changed while pnpm pack was running.")
+                _write_package_manifest(
+                    package_path,
+                    source_fingerprint,
+                    _sha256_file(package_path),
+                )
+                return package_path
         finally:
             fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
+def _package_source_fingerprint(repo_root: Path) -> str:
+    """Hash package/build inputs so resource edits cannot reuse an old tarball."""
+
+    input_paths = (
+        "package.json",
+        "pnpm-lock.yaml",
+        ".gitignore",
+        ".npmignore",
+        ".npmrc",
+        "tsconfig.json",
+        "src",
+        "benchmarks",
+        "native/calendar-reader",
+        "scripts/clean-dist.mjs",
+        "scripts/build-calendar-sidecar.mjs",
+        "scripts/copy-bundled-skills.mjs",
+        "scripts/copy-browser-extension.mjs",
+    )
+    files: set[Path] = set()
+    for relative in input_paths:
+        path = repo_root / relative
+        if path.is_dir():
+            files.update(
+                item
+                for item in path.rglob("*")
+                if item.is_file()
+                and item.name != ".DS_Store"
+                and item.suffix != ".pyc"
+                and "__pycache__" not in item.parts
+            )
+        elif path.is_file():
+            files.add(path)
+
+    digest = hashlib.sha256()
+    digest.update(f"{platform.system()}\0{platform.machine()}\0".encode())
+    for path in sorted(files, key=lambda item: item.relative_to(repo_root).as_posix()):
+        relative = path.relative_to(repo_root).as_posix()
+        digest.update(relative.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(str(stat.S_IMODE(path.stat().st_mode)).encode("ascii"))
+        digest.update(b"\0")
+        with path.open("rb") as source_file:
+            for chunk in iter(lambda: source_file.read(1024 * 1024), b""):
+                digest.update(chunk)
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def _package_manifest_path(package_path: Path) -> Path:
+    return package_path.with_name(f"{package_path.name}.manifest.json")
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source_file:
+        for chunk in iter(lambda: source_file.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _write_package_manifest(
+    package_path: Path, source_fingerprint: str, package_sha256: str
+) -> None:
+    manifest_path = _package_manifest_path(package_path)
+    temporary_path = manifest_path.with_name(f".{manifest_path.name}.{os.getpid()}.tmp")
+    try:
+        temporary_path.write_text(
+            json.dumps(
+                {
+                    "sourceFingerprint": source_fingerprint,
+                    "packageSha256": package_sha256,
+                },
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        temporary_path.replace(manifest_path)
+    finally:
+        temporary_path.unlink(missing_ok=True)
 
 
 def ensure_node_archive(architecture: str) -> Path:
@@ -451,6 +591,11 @@ def model_provider(model_alias: str, runtime_env: dict[str, str] | None = None) 
 
 def make_config(model_alias: str, runtime_env: dict[str, str] | None = None) -> dict[str, Any]:
     provider = model_provider(model_alias, runtime_env)
+    is_reasoning_model = provider["type"] != "openai-compatible"
+    if ENV_DRIVEN["reasoning"] in {**os.environ, **(runtime_env or {})}:
+        is_reasoning_model = _env_flag(
+            ENV_DRIVEN["reasoning"], is_reasoning_model, runtime_env
+        )
     provider_config: dict[str, Any] = {
         "type": provider["type"],
         "baseUrl": provider["baseUrl"],
@@ -459,15 +604,14 @@ def make_config(model_alias: str, runtime_env: dict[str, str] | None = None) -> 
     if provider["type"] == "openai-compatible":
         provider_config["apiBackend"] = provider["apiBackend"]
     if provider["type"] == "openai-compatible":
-        provider_config["compatibility"] = {"supportsReasoning": False}
+        provider_config["compatibility"] = {
+            "supportsReasoning": is_reasoning_model
+        }
     # 配置 schema 将 Provider 重试次数限制在 6；超出上限会使每道任务在启动时校验失败。
     # 这里使用允许的最大次数，降低临时请求故障导致整题失败的概率。
     provider_config["retry"] = {"maxAttempts": 6, "initialDelayMs": 1000, "maxDelayMs": 15000}
     # deepseek-v4-flash 这类模型没有真实 thinking；强行走 reasoning 会让模型空想而不动手，
     # 这是此前评测空转/高步数的温床。openai-compatible Provider 一律关闭全局 thinking。
-    is_reasoning_model = not (provider["type"] == "openai-compatible")
-    if os.environ.get(ENV_DRIVEN["reasoning"]) is not None:
-        is_reasoning_model = _env_flag(ENV_DRIVEN["reasoning"], is_reasoning_model)
     model_capabilities = {"tools": True, "streaming": True}
     model_config: dict[str, Any] = {
         "provider": provider["alias"],
@@ -599,11 +743,64 @@ def _find_runtime_cache(package: Path) -> Path | None:
     return None
 
 
-def _env_flag(name: str, default: bool) -> bool:
-    raw = os.environ.get(name)
+def _env_flag(
+    name: str, default: bool, runtime_env: dict[str, str] | None = None
+) -> bool:
+    raw = (runtime_env or {}).get(name, os.environ.get(name))
     if raw is None:
         return default
     return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def task_time_budget(
+    logs_dir: Path,
+    session_id: str | None,
+    environ: dict[str, str] | None = None,
+    now_ms: int | None = None,
+) -> tuple[int, int] | None:
+    """Resolve this trial's effective agent deadline from its task config."""
+
+    env = {**os.environ, **(environ or {})}
+    trial_name = logs_dir.parent.name
+    task_name = trial_name.split("__", maxsplit=1)[0]
+    if not task_name and session_id:
+        task_name = session_id.split("__", maxsplit=1)[0]
+    if not task_name:
+        return None
+    tasks_root = Path(
+        env.get("BINY_EVAL_TASKS_DIR")
+        or REPO_ROOT / ".agent" / "harbor" / "tb21-tasks-full" / "tasks"
+    )
+    task_file = tasks_root / task_name / "task.toml"
+    try:
+        task_config = tomllib.loads(task_file.read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError):
+        return None
+    configured_timeout = task_config.get("agent", {}).get("timeout_sec")
+    if not isinstance(configured_timeout, (int, float)) or isinstance(
+        configured_timeout, bool
+    ) or configured_timeout <= 0:
+        return None
+    try:
+        multiplier = float(env.get("BINY_EVAL_AGENT_TIMEOUT_MULTIPLIER", "1"))
+        reserve_ratio = float(
+            env.get(
+                "BINY_EVAL_FINALIZATION_RESERVE_RATIO",
+                str(DEFAULT_FINALIZATION_RESERVE_RATIO),
+            )
+        )
+    except ValueError as error:
+        raise ValueError("Harbor timeout multiplier and reserve ratio must be numeric") from error
+    if multiplier <= 0:
+        raise ValueError("BINY_EVAL_AGENT_TIMEOUT_MULTIPLIER must be positive")
+    if not 0.1 <= reserve_ratio <= 0.2:
+        raise ValueError(
+            "BINY_EVAL_FINALIZATION_RESERVE_RATIO must be between 0.1 and 0.2"
+        )
+    budget_ms = int(configured_timeout * multiplier * 1_000)
+    reserve_ms = int(budget_ms * reserve_ratio)
+    start_ms = int(time.time() * 1_000) if now_ms is None else now_ms
+    return start_ms + budget_ms, reserve_ms
 
 
 def _context_window(
@@ -646,11 +843,20 @@ def _agent_exec_timeout(runtime_env: dict[str, str]) -> int | None:
     return timeout
 
 
+def managed_process_lifetime() -> str:
+    """A disposable Harbor trial environment owns services beyond one CLI run."""
+
+    return "execution-environment"
+
+
 def write_evaluation_provenance(
     logs_dir: Path,
     model_alias: str,
     config: dict[str, Any],
     agent_exec_timeout_sec: int | None,
+    package_sha256: str | None = None,
+    process_lifetime: str = "runtime",
+    package_source_fingerprint: str | None = None,
 ) -> Path:
     """Save effective per-trial limits without persisting endpoint URL credentials."""
 
@@ -660,8 +866,14 @@ def write_evaluation_provenance(
         base_url = provider.get("baseUrl")
         if isinstance(base_url, str) and base_url:
             provider["baseUrl"] = _redact_base_url(base_url)
+    canonical_config = json.dumps(
+        safe_config, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    lock_file = REPO_ROOT / "pnpm-lock.yaml"
     record = {
         "adapterVersion": ADAPTER_VERSION,
+        "adapterSha256": _sha256_file(Path(__file__)),
+        "fastVerifierSha256": _sha256_file(Path(__file__).with_name("fast_verifier.py")),
         "modelAlias": model_alias,
         "contextWindow": model["contextWindow"],
         "agentExecTimeoutSec": agent_exec_timeout_sec,
@@ -670,6 +882,18 @@ def write_evaluation_provenance(
             if agent_exec_timeout_sec is not None
             else "harbor-trial-deadline"
         ),
+        "binyPackageSha256": package_sha256,
+        "packageSourceFingerprint": package_source_fingerprint
+        or _package_source_fingerprint(REPO_ROOT),
+        "pnpmLockSha256": _sha256_file(lock_file) if lock_file.is_file() else None,
+        "configSha256": hashlib.sha256(canonical_config).hexdigest(),
+        "managedProcessLifetime": process_lifetime,
+        "runtime": {
+            "platform": platform.platform(),
+            "architecture": platform.machine(),
+            "pythonVersion": sys.version.split()[0],
+            "nodeVersion": NODE_VERSION,
+        },
         "binyConfig": safe_config,
     }
     logs_dir.mkdir(parents=True, exist_ok=True)

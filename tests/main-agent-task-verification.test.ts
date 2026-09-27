@@ -24,7 +24,7 @@ async function main(): Promise<void> {
   let rootStatusRequests = 0;
   let expectingStatusResult = false;
   let taskRunId = "";
-  let phase: "initial" | "status" | "simple" = "initial";
+  let phase: "initial" | "status" | "simple" | "direct" = "initial";
   const seenRootTools = new Set<string>();
   globalThis.fetch = (async (_input, init): Promise<Response> => {
     const body = JSON.parse(String(init?.body ?? "{}")) as {
@@ -41,6 +41,7 @@ async function main(): Promise<void> {
     }));
     const isWorker = system.includes("focused, bounded worker inside Biny");
     if (system.includes("tool search assistant")) {
+      if (phase === "direct") return streamText('{"tools":["Bash"]}');
       return streamText(lastText.includes("TaskStatus") ? '{"tools":["TaskStatus"]}' : '{"tools":["Task"]}');
     }
     if (system.includes("选择需要的工具")) return streamText('{"tools":[]}');
@@ -84,6 +85,12 @@ async function main(): Promise<void> {
     if (phase === "status" && rootStatusRequests === 0 && availableToolNames.has("TaskStatus")) {
       rootStatusRequests += 1;
       return streamToolCall("verified-task-status", "TaskStatus", { taskRunId });
+    }
+    if (phase === "direct" && last?.role === "tool") return streamText("candidate ready");
+    if (phase === "direct" && availableToolNames.has("Bash")) {
+      return streamToolCall("verified-run-write", "Bash", {
+        command: "printf 'one-shot\\n' > one-shot-artifact.txt"
+      });
     }
     if (phase === "simple") return streamText("普通回答");
     const toolResult = last?.role === "tool" ? JSON.stringify(last.content) : serializedMessages;
@@ -203,6 +210,66 @@ async function main(): Promise<void> {
     assert.equal(completed.attempts.length, 1);
     assert.equal((completed.attempts[0]?.verification as { status?: string }).status, "passed");
 
+    // One-shot 主任务必须走同一 TaskRun 验收状态机；未批准的检查保持 needs_approval，
+    // 审批后恢复同一候选并运行检查，不再重复调用模型或重写产物。
+    phase = "direct";
+    const directContract = {
+      version: 1 as const,
+      objective: "one-shot artifact exists",
+      checks: [{ id: "artifact-exists", command: "test -f one-shot-artifact.txt", definitionPaths: [] }],
+      artifactPaths: ["one-shot-artifact.txt"],
+      allowedRepairPaths: ["one-shot-artifact.txt"],
+      maxAttempts: 1
+    };
+    const direct = await recoveredCommands.runTaskWithVerification({
+      prompt: "Write one-shot-artifact.txt.",
+      verification: directContract,
+      confirmPermission: async (request) => ({
+        approved: true,
+        action: "allow_once",
+        scope: "once",
+        confirmation: request.requireFullYes ? "yes" : undefined
+      })
+    });
+    assert.equal(direct.turnOutcome?.status, "completed");
+    assert.equal(direct.closure.status, "needs_approval");
+    assert.equal(recoveredCommands.taskRuns.get(direct.taskRunId)?.status, "needs_approval");
+    const directApproval = pendingTaskVerificationApproval(direct.closure.evidence);
+    assert.ok(directApproval);
+    await approveTaskVerification({
+      taskRuns: recoveredCommands.taskRuns,
+      taskRunId: direct.taskRunId,
+      approvalId: directApproval.approvalId,
+      workspaceRoot: root,
+      ignore: recoveredCommands.config.workspace.ignore
+    });
+    const directResumed = await recoveredCommands.startTaskRun(direct.taskRunId);
+    const directCompleted = await directResumed.completion;
+    assert.equal(directCompleted.status, "completed");
+    assert.equal(directCompleted.evidence?.status, "passed");
+    assert.equal(await readFile(path.join(root, "one-shot-artifact.txt"), "utf8"), "one-shot\n");
+
+    const workCutoff = new AbortController();
+    workCutoff.abort(new DOMException("Work budget exhausted.", "TimeoutError"));
+    const verifiedBestCandidate = await recoveredCommands.runTaskWithVerification({
+      prompt: "The work budget is already exhausted.",
+      verification: directContract,
+      attemptSignal: workCutoff.signal
+    });
+    assert.equal(verifiedBestCandidate.closure.status, "needs_approval");
+    assert.equal(verifiedBestCandidate.closure.evidence?.status, "blocked");
+    const bestCandidateApproval = pendingTaskVerificationApproval(verifiedBestCandidate.closure.evidence);
+    assert.ok(bestCandidateApproval);
+    await approveTaskVerification({
+      taskRuns: recoveredCommands.taskRuns,
+      taskRunId: verifiedBestCandidate.taskRunId,
+      approvalId: bestCandidateApproval.approvalId,
+      workspaceRoot: root,
+      ignore: recoveredCommands.config.workspace.ignore
+    });
+    const verifiedBestCandidateResume = await recoveredCommands.startTaskRun(verifiedBestCandidate.taskRunId);
+    assert.equal((await verifiedBestCandidateResume.completion).status, "completed");
+
     const recoveredRuntime = new InteractiveAgentRuntime(recoveredCommands);
     approveVisiblePermissions(recoveredRuntime);
     phase = "status";
@@ -212,13 +279,13 @@ async function main(): Promise<void> {
     assert.match(statusOutcome.output ?? "", /按原验收条件通过/u);
     assert.equal(rootStatusRequests, 1);
     assert.equal(seenRootTools.has("TaskStatus"), true);
-    assert.equal(recoveredCommands.taskRuns.list({ limit: 10 }).tasks.length, 1, "TaskStatus must not duplicate the TaskRun");
+    assert.equal(recoveredCommands.taskRuns.list({ limit: 10 }).tasks.length, 3, "TaskStatus must not duplicate the TaskRun");
     assert.equal(workerRequests, 2);
 
     phase = "simple";
     const simpleOutcome = await recoveredRuntime.submitPrompt("简单回答：1+1 等于几？").completion;
     assert.equal(simpleOutcome.output, "普通回答");
-    assert.equal(recoveredCommands.taskRuns.list({ limit: 10 }).tasks.length, 1, "ordinary chat must not be promoted to TaskRun or Graph");
+    assert.equal(recoveredCommands.taskRuns.list({ limit: 10 }).tasks.length, 3, "ordinary chat must not be promoted to TaskRun or Graph");
     assert.equal(recoveredCommands.graphs.listGraphs().length, 0);
     await recoveredRuntime.close();
   } finally {
