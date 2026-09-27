@@ -926,14 +926,6 @@ async function testAutomaticCleanupFailureKeepsCompletedWrites(): Promise<void> 
       assert.equal((await memory.listMemoryEntries()).entries.some((entry) => entry.id === result.created[0]?.id), true);
       assert.equal((await memory.getEntry(temporary.id))?.id, temporary.id);
 
-      let wrote = false;
-      await assert.rejects(memory.summarizeAndStoreMemories(messages, {
-        ...options, turnId: "incognito-turn", runId: "incognito-run",
-        onMemoryWritten: async () => { wrote = true; },
-        beforeWrite: async () => {
-          if (wrote) throw new Error("Automatic memory extraction stopped for incognito session.");
-        }
-      }), /incognito session/u);
     } finally {
       database.close();
       memory.close();

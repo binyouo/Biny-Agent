@@ -156,8 +156,6 @@ function DesktopApp(): React.JSX.Element {
   const [contextBudget, setContextBudget] = useState<ContextBudgetStatus>();
   const [draftMemoryOverride, setDraftMemoryOverride] = useState<boolean>();
   const [memoryToggleBusy, setMemoryToggleBusy] = useState(false);
-  const [incognitoOverride, setIncognitoOverride] = useState<boolean>();
-  const [incognitoToggleBusy, setIncognitoToggleBusy] = useState(false);
   const [renameTarget, setRenameTarget] = useState<RenameTarget>();
   const [slashResult, setSlashResult] = useState<DesktopSlashResult>();
   const [toast, setToast] = useState<string>();
@@ -471,7 +469,6 @@ function DesktopApp(): React.JSX.Element {
     if (loadRequestRef.current !== request) return false;
     memoryToggleRequestRef.current += 1;
     setMemoryToggleBusy(false);
-    setIncognitoToggleBusy(false);
     if (showLoader) setLoading(true);
     try {
       const nextDocument = await window.biny.openSession(projectId, sessionId);
@@ -489,7 +486,6 @@ function DesktopApp(): React.JSX.Element {
       setSelectedSessionId(sessionId);
       setDraftProjectId(undefined);
       setDraftMemoryOverride(undefined);
-      setIncognitoOverride(undefined);
       // 上下文用量属于某一个会话，换会话就作废，等新会话跑出 context.updated 再显示。
       setContextBudget(undefined);
       setDocument(nextDocument);
@@ -532,7 +528,6 @@ function DesktopApp(): React.JSX.Element {
     }
     memoryToggleRequestRef.current += 1;
     setMemoryToggleBusy(false);
-    setIncognitoToggleBusy(false);
     setPage("chat");
     setRuntimePanelOpen(false);
     projectRef.current = snapshot.project.id;
@@ -542,7 +537,6 @@ function DesktopApp(): React.JSX.Element {
     setSelectedSessionId(undefined);
     setDraftProjectId(undefined);
     setDraftMemoryOverride(undefined);
-    setIncognitoOverride(undefined);
     setDocument(undefined);
     setWriterConflict(undefined);
     setContextBudget(undefined);
@@ -560,7 +554,6 @@ function DesktopApp(): React.JSX.Element {
       contextBudget,
       document: documentRef.current,
       draftMemoryOverride,
-      incognitoOverride,
       draftProjectId,
       page,
       runtimePanelOpen,
@@ -582,7 +575,6 @@ function DesktopApp(): React.JSX.Element {
       memoryToggleRequestRef.current += 1;
       setMemoryToggleBusy(false);
       setDraftMemoryOverride(undefined);
-      setIncognitoOverride(undefined);
       setDocument(undefined);
       setWriterConflict(undefined);
       setContextBudget(undefined);
@@ -599,7 +591,6 @@ function DesktopApp(): React.JSX.Element {
       setSelectedSessionId(target.sessionId);
       setDraftProjectId(undefined);
       setDraftMemoryOverride(undefined);
-      setIncognitoOverride(undefined);
       setContextBudget(undefined);
       setDocument({ session: targetSummary, events: [], liveEvents: [] });
       setWriterConflict(undefined);
@@ -634,7 +625,6 @@ function DesktopApp(): React.JSX.Element {
         setRuntimePanelOpen(previousView.runtimePanelOpen);
         setDraftProjectId(previousView.draftProjectId);
         setDraftMemoryOverride(previousView.draftMemoryOverride);
-        setIncognitoOverride(previousView.incognitoOverride);
         setContextBudget(previousView.contextBudget);
         setDocument(previousView.document);
         setWriterConflict(previousView.writerConflict);
@@ -646,7 +636,7 @@ function DesktopApp(): React.JSX.Element {
     } finally {
       if (loadRequestRef.current === request) setLoading(false);
     }
-  }, [adoptWorkspace, contextBudget, draftMemoryOverride, draftProjectId, incognitoOverride, openSession, page, runtimePanelOpen, sidebarSessions, workspace, writerConflict]);
+  }, [adoptWorkspace, contextBudget, draftMemoryOverride, draftProjectId, openSession, page, runtimePanelOpen, sidebarSessions, workspace, writerConflict]);
 
   useEffect(() => {
     let active = true;
@@ -978,8 +968,7 @@ function DesktopApp(): React.JSX.Element {
       idempotencyKey,
       undefined,
       capabilitySelection,
-      undefined,
-      previousSessionId === undefined ? incognitoOverride === true : undefined
+      undefined
     );
     // 新输入已被 Runtime 接收，旧断点不再是当前会话可继续的任务。
     setDocument((current) => current?.session.id === receipt.sessionId && current.recovery
@@ -1004,7 +993,6 @@ function DesktopApp(): React.JSX.Element {
     setSelectedSessionId(receipt.sessionId);
     setDraftProjectId(undefined);
     setDraftMemoryOverride(undefined);
-    setIncognitoOverride(undefined);
     if (receipt.sessionId !== previousSessionId) {
       const target: DesktopNavigationTarget = { projectId, sessionId: receipt.sessionId };
       const currentTarget = previousNavigation.entries[previousNavigation.index];
@@ -1017,7 +1005,7 @@ function DesktopApp(): React.JSX.Element {
       setDocument({ session: summary, events: [], liveEvents: [] });
     }
     return receipt;
-  }, [commitNavigation, document, draftMemoryOverride, draftProjectId, incognitoOverride, openSession, workspace?.sessions]);
+  }, [commitNavigation, document, draftMemoryOverride, draftProjectId, openSession, workspace?.sessions]);
 
   const retryWriterConflict = useCallback(async (): Promise<void> => {
     const projectId = projectRef.current;
@@ -1542,8 +1530,7 @@ function DesktopApp(): React.JSX.Element {
     : resolveChatPersonalization(memoryPolicy, currentChatPersonalization);
   const globalMemoryEnabled = resolvedPersonalization?.memoryEnabled === true;
   const confirmedChatMemoryEnabled = resolvedPersonalization?.useMemories === true;
-  const incognitoEnabled = incognitoOverride ?? selectedSession?.isIncognito ?? false;
-  const chatMemoryEnabled = !incognitoEnabled && globalMemoryEnabled && (draftMemoryOverride ?? confirmedChatMemoryEnabled);
+  const chatMemoryEnabled = globalMemoryEnabled && (draftMemoryOverride ?? confirmedChatMemoryEnabled);
   const memoryState: ComposerMemoryState = resolvedPersonalization === undefined
     ? "unknown"
     : chatMemoryEnabled ? "enabled" : "disabled";
@@ -1551,9 +1538,7 @@ function DesktopApp(): React.JSX.Element {
     ? "请先打开一个项目。"
     : memoryPolicy === undefined
       ? undefined
-      : incognitoEnabled
-          ? "无痕聊天不会自动读取或写入长期记忆。"
-          : !globalMemoryEnabled
+      : !globalMemoryEnabled
           ? "全局记忆已在设置中关闭，请先开启记忆功能。"
           : memoryToggleBusy
             ? "正在确认当前聊天的记忆状态…"
@@ -1562,7 +1547,6 @@ function DesktopApp(): React.JSX.Element {
               : undefined;
   const memoryToggleDisabled = !workspace?.project
     || memoryPolicy === undefined
-    || incognitoEnabled
     || !globalMemoryEnabled
     || memoryToggleBusy
     || runtimeBusy;
@@ -1570,7 +1554,7 @@ function DesktopApp(): React.JSX.Element {
     const projectId = projectRef.current;
     const sessionId = selectedRef.current;
     const current = selectedSession?.personalization ?? defaultChatPersonalizationOverride;
-    if (!projectId || !memoryPolicy || !memoryPolicy.enabled || memoryToggleBusy || incognitoEnabled) return;
+    if (!projectId || !memoryPolicy || !memoryPolicy.enabled || memoryToggleBusy) return;
     if (!sessionId) {
       const enabled = !(draftMemoryOverride ?? memoryPolicy.useMemories);
       setDraftMemoryOverride(enabled);
@@ -1610,46 +1594,7 @@ function DesktopApp(): React.JSX.Element {
     } finally {
       if (isCurrentRequest()) setMemoryToggleBusy(false);
     }
-  }, [chatMemoryEnabled, draftMemoryOverride, incognitoEnabled, memoryPolicy, memoryToggleBusy, mergeProjectSnapshot, selectedSession]);
-  const incognitoToggleDisabledReason = !workspace?.project
-    ? "请先打开一个项目。"
-    : incognitoToggleBusy
-      ? "正在确认当前聊天的无痕状态…"
-      : runtimeBusy
-        ? "当前运行或后台维护尚未结束，请稍后再切换无痕状态。"
-        : undefined;
-  const toggleSessionIncognito = useCallback(async (): Promise<void> => {
-    const projectId = projectRef.current;
-    const sessionId = selectedRef.current;
-    if (!projectId || incognitoToggleBusy || runtimeBusy) return;
-    const next = !incognitoEnabled;
-    if (!sessionId) {
-      setIncognitoOverride(next);
-      if (next) setDraftMemoryOverride(undefined);
-      setToast(next ? "当前新聊天已开启无痕" : "当前新聊天已关闭无痕");
-      return;
-    }
-    if (!selectedSession?.metadataRevision) {
-      setWarning("当前聊天状态尚未同步，请稍后再试。");
-      return;
-    }
-    setIncognitoToggleBusy(true);
-    try {
-      const snapshot = await window.biny.saveSessionIncognito(projectId, sessionId, next, selectedSession.metadataRevision);
-      if (projectRef.current !== projectId || selectedRef.current !== sessionId) return;
-      mergeProjectSnapshot(snapshot);
-      setToast(next ? "当前聊天已开启无痕" : "当前聊天已关闭无痕");
-    } catch (error) {
-      if (projectRef.current === projectId && selectedRef.current === sessionId) {
-        if (/Session catalog revision conflict/u.test(errorMessage(error))) {
-          await openSession(projectId, sessionId, false).catch(() => undefined);
-        }
-        setWarning(errorMessage(error));
-      }
-    } finally {
-      setIncognitoToggleBusy(false);
-    }
-  }, [incognitoEnabled, incognitoToggleBusy, mergeProjectSnapshot, openSession, runtimeBusy, selectedSession]);
+  }, [chatMemoryEnabled, draftMemoryOverride, memoryPolicy, memoryToggleBusy, mergeProjectSnapshot, selectedSession]);
   const prefillComposer = useCallback((input: string): void => {
     setComposerDraft(input);
     setFocusToken((value) => value + 1);
@@ -1788,10 +1733,6 @@ function DesktopApp(): React.JSX.Element {
       memoryToggleBusy={memoryToggleBusy}
       memoryToggleDisabled={memoryToggleDisabled}
       memoryToggleDisabledReason={memoryToggleDisabledReason}
-      incognitoEnabled={incognitoEnabled}
-      incognitoToggleBusy={incognitoToggleBusy}
-      incognitoToggleDisabled={!workspace?.project || incognitoToggleBusy || runtimeBusy}
-      incognitoToggleDisabledReason={incognitoToggleDisabledReason}
       contextUsage={contextUsage}
       focusToken={focusToken}
       prefillInput={composerDraft}
@@ -1818,7 +1759,6 @@ function DesktopApp(): React.JSX.Element {
         await window.biny.cancelRun(projectId, selectedRunId);
       }}
       onToggleMemory={toggleChatMemory}
-      onToggleIncognito={toggleSessionIncognito}
       onSwitchModel={async (alias, thinking) => {
         clearGenerationError();
         await switchModel(alias, thinking);

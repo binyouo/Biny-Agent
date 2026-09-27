@@ -153,7 +153,6 @@ export const desktopIpc = {
   clearCookies: "desktop:browser:cookies:clear",
   personalizationOverview: "desktop:personalization:overview",
   saveChatPersonalization: "desktop:personalization:save-chat",
-  saveSessionIncognito: "desktop:session:incognito",
   memoryOverview: "desktop:memory:overview",
   memoryStats: "desktop:memory:stats",
   memoryEntries: "desktop:memory:entries",
@@ -426,7 +425,6 @@ export interface DesktopSessionSummary {
   createdAt: string;
   updatedAt: string;
   pinned: boolean;
-  isIncognito: boolean;
   status: DesktopSessionStatus;
   resumable?: boolean;
   /** 分支关系来自 session catalog；旧会话没有 parent 时视为根会话。 */
@@ -1596,8 +1594,7 @@ export interface DesktopApi {
     idempotencyKey?: string,
     promptContext?: string,
     capabilitySelection?: AgentCapabilitySelection,
-    draftPlanning?: boolean,
-    draftIncognito?: boolean
+    draftPlanning?: boolean
   ): Promise<DesktopRunReceipt>;
   mutateQueuedMessage(
     projectId: string,
@@ -1650,7 +1647,6 @@ export interface DesktopApi {
   clearCookies(): Promise<DesktopCookieJarStatus>;
   personalizationOverview(projectId: string, sessionId?: string): Promise<DesktopPersonalizationOverview>;
   saveChatPersonalization(projectId: string, sessionId: string, input: DesktopChatPersonalizationOverride, expectedRevision: string): Promise<DesktopWorkspaceSnapshot>;
-  saveSessionIncognito(projectId: string, sessionId: string, isIncognito: boolean, expectedRevision: string): Promise<DesktopWorkspaceSnapshot>;
   memoryOverview(projectId: string): Promise<DesktopMemoryOverview>;
   /** 记忆库统计（不含条目内容）；条目增删后用于刷新头部与翻页控件。 */
   memoryStats(projectId: string): Promise<DesktopMemoryStats>;

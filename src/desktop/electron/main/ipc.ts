@@ -535,7 +535,7 @@ export function registerDesktopIpc(context: IpcContext): void {
     return await context.agents.importSession(parsedProjectId, sourcePath);
   });
 
-  handleRecoveryGated(desktopIpc.sendPrompt, async (_event, projectId: unknown, sessionId: unknown, input: unknown, attachments: unknown, delivery: unknown, personalization: unknown, idempotencyKey: unknown, promptContext: unknown, capabilitySelection: unknown, draftPlanning: unknown, draftIncognito: unknown) => {
+  handleRecoveryGated(desktopIpc.sendPrompt, async (_event, projectId: unknown, sessionId: unknown, input: unknown, attachments: unknown, delivery: unknown, personalization: unknown, idempotencyKey: unknown, promptContext: unknown, capabilitySelection: unknown, draftPlanning: unknown) => {
     return await context.agents.sendPrompt(
       idSchema.parse(projectId),
       sessionId === undefined ? undefined : idSchema.parse(sessionId),
@@ -546,8 +546,7 @@ export function registerDesktopIpc(context: IpcContext): void {
       idempotencyKeySchema.parse(idempotencyKey),
       promptContextSchema.parse(promptContext),
       capabilitySelection === undefined ? undefined : agentCapabilitySelectionSchema.parse(capabilitySelection),
-      z.boolean().optional().parse(draftPlanning),
-      z.boolean().optional().parse(draftIncognito)
+      z.boolean().optional().parse(draftPlanning)
     );
   });
 
@@ -843,15 +842,6 @@ export function registerDesktopIpc(context: IpcContext): void {
       idSchema.parse(projectId),
       idSchema.parse(sessionId),
       chatPersonalizationSchema.parse(input),
-      configRevisionSchema.parse(expectedRevision)
-    );
-  });
-
-  handleRecoveryGated(desktopIpc.saveSessionIncognito, async (_event, projectId: unknown, sessionId: unknown, isIncognito: unknown, expectedRevision: unknown) => {
-    return await context.agents.saveSessionIncognito(
-      idSchema.parse(projectId),
-      idSchema.parse(sessionId),
-      z.boolean().parse(isIncognito),
       configRevisionSchema.parse(expectedRevision)
     );
   });

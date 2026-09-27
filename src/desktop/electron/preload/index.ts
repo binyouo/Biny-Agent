@@ -57,7 +57,7 @@ const api: DesktopApi = {
   deleteSession: async (projectId, sessionId) => await ipcRenderer.invoke(desktopIpc.deleteSession, projectId, sessionId),
   exportSession: async (projectId, sessionId, format) => await ipcRenderer.invoke(desktopIpc.exportSession, projectId, sessionId, format),
   importSession: async (projectId) => await ipcRenderer.invoke(desktopIpc.importSession, projectId),
-  sendPrompt: async (projectId, sessionId, input, attachments, delivery, personalization, idempotencyKey, promptContext, capabilitySelection, draftPlanning, draftIncognito) => await ipcRenderer.invoke(
+  sendPrompt: async (projectId, sessionId, input, attachments, delivery, personalization, idempotencyKey, promptContext, capabilitySelection, draftPlanning) => await ipcRenderer.invoke(
     desktopIpc.sendPrompt,
     projectId,
     sessionId,
@@ -68,8 +68,7 @@ const api: DesktopApi = {
     idempotencyKey,
     promptContext,
     capabilitySelection,
-    draftPlanning,
-    draftIncognito
+    draftPlanning
   ),
   mutateQueuedMessage: async (projectId, sessionId, action, mutation) => await ipcRenderer.invoke(
     desktopIpc.mutateQueuedMessage,
@@ -130,7 +129,6 @@ const api: DesktopApi = {
   clearCookies: async () => await ipcRenderer.invoke(desktopIpc.clearCookies),
   personalizationOverview: async (projectId, sessionId) => await ipcRenderer.invoke(desktopIpc.personalizationOverview, projectId, sessionId),
   saveChatPersonalization: async (projectId, sessionId, input, expectedRevision) => await ipcRenderer.invoke(desktopIpc.saveChatPersonalization, projectId, sessionId, input, expectedRevision),
-  saveSessionIncognito: async (projectId, sessionId, isIncognito, expectedRevision) => await ipcRenderer.invoke(desktopIpc.saveSessionIncognito, projectId, sessionId, isIncognito, expectedRevision),
   memoryOverview: async (projectId) => await ipcRenderer.invoke(desktopIpc.memoryOverview, projectId),
   memoryStats: async (projectId) => await ipcRenderer.invoke(desktopIpc.memoryStats, projectId),
   memoryEntries: async (projectId, offset, limit, includeArchived) => await ipcRenderer.invoke(desktopIpc.memoryEntries, projectId, offset, limit, includeArchived),

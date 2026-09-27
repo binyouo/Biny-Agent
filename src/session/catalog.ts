@@ -5,7 +5,7 @@
  * parent/root/branchPoint。旧会话没有 catalog 文件时按根会话处理，不在读取列表时回写迁移数据。
  */
 import { createHash, randomUUID } from "node:crypto";
-import { constants, lstatSync, readFileSync, realpathSync, promises as fs, type Stats } from "node:fs";
+import { constants, promises as fs, type Stats } from "node:fs";
 import type { FileHandle } from "node:fs/promises";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -36,7 +36,6 @@ export type SessionIsolation = "shared" | "worktree";
 
 export interface SessionCatalogRecord {
   planning?: boolean;
-  isIncognito?: boolean;
   version: typeof catalogVersion;
   sessionId: string;
   rootSessionId: string;
@@ -60,7 +59,6 @@ export interface SessionCatalogItem {
   rootSessionId: string;
   parentSessionId?: string;
   branchPoint?: SessionBranchPoint;
-  isIncognito: boolean;
   title?: string;
   pinned?: boolean;
   archived?: boolean;
@@ -99,7 +97,6 @@ export interface SessionTreeNode {
 
 export interface SessionCatalogMetadataPatch {
   planning?: boolean;
-  isIncognito?: boolean;
   title?: string;
   pinned?: boolean;
   archived?: boolean;
@@ -158,7 +155,6 @@ export async function registerSessionBranch(
       : cloneChatPersonalizationOverride(parent.personalization),
     isolation: parent?.isolation,
     planning: parent?.planning,
-    isIncognito: parent?.isIncognito,
     createdAt: now,
     updatedAt: now
   });
@@ -225,7 +221,6 @@ export async function updateSessionCatalogMetadata(
         : patch.unread,
       labels: patch.labels === undefined ? base.labels : [...patch.labels],
       planning: patch.planning ?? base.planning,
-      isIncognito: patch.isIncognito ?? base.isIncognito,
       personalization: patch.personalization === undefined
         ? base.personalization
         : cloneChatPersonalizationOverride(patch.personalization),
@@ -248,79 +243,6 @@ export async function readSessionCatalogRecord(
   const directory = await readCatalogDirectory(workspaceRoot);
   if (!directory) return undefined;
   return await readCatalogFile(catalogFilePath(directory, sessionId));
-}
-
-/** 只凭已验证的 JSONL 路径读取同分区的 catalog，不从 sessionId 猜测工作区。 */
-export async function readSessionCatalogRecordForFile(
-  sessionFilePath: string,
-  sessionId: string
-): Promise<SessionCatalogRecord | undefined> {
-  return readSessionCatalogRecordForFileSync(sessionFilePath, sessionId);
-}
-
-/** 同步查询端使用的 catalog 门禁；未知/损坏状态抛错，由查询者 fail closed。 */
-export function readSessionCatalogRecordForFileSync(
-  sessionFilePath: string,
-  sessionId: string
-): SessionCatalogRecord | undefined {
-  assertSessionId(sessionId);
-  const filePath = path.resolve(sessionFilePath);
-  if (path.basename(filePath) !== `${sessionId}.jsonl`) throw new Error("Session file does not match session id.");
-  const stat = lstatSync(filePath);
-  if (stat.isSymbolicLink() || !stat.isFile() || stat.nlink !== 1) {
-    throw new Error("Session file must be a single-link regular file.");
-  }
-  // 以调用方发现的 session 文件路径为权威。找到最近的 sessions/<project> 分区，
-  // 避免从 sessionId 反查其他项目；/var -> /private/var 等系统别名位于分区外可接受。
-  let directory = path.dirname(filePath);
-  const descendants: string[] = [];
-  while (path.basename(directory) !== "sessions" && path.dirname(directory) !== directory) {
-    descendants.unshift(directory);
-    directory = path.dirname(directory);
-  }
-  if (path.basename(directory) !== "sessions") {
-    throw new Error("Session file is outside a project session partition.");
-  }
-  const sessionsStat = lstatSync(directory);
-  if (sessionsStat.isSymbolicLink() || !sessionsStat.isDirectory()) {
-    throw new Error("Session storage must be a real directory.");
-  }
-  const canonicalSessions = realpathSync(directory);
-  for (const candidate of descendants) {
-    const entry = lstatSync(candidate);
-    if (entry.isSymbolicLink() || !entry.isDirectory()
-      || realpathSync(candidate) !== path.join(canonicalSessions, path.relative(directory, candidate))) {
-      throw new Error("Project session storage must be a real directory.");
-    }
-  }
-  // 旧布局允许 JSONL 直接平铺在 sessions 根；缺 catalog 即非无痕。
-  const partitionDirectory = descendants[0] ?? directory;
-  const catalogDirectory = path.join(realpathSync(partitionDirectory), catalogDirectoryName);
-  try {
-    const catalogStat = lstatSync(catalogDirectory);
-    if (catalogStat.isSymbolicLink() || !catalogStat.isDirectory() || realpathSync(catalogDirectory) !== catalogDirectory) {
-      throw new Error("Session catalog directory must be a real directory.");
-    }
-  } catch (error) {
-    if (isNotFound(error)) return undefined;
-    throw error;
-  }
-  const target = catalogFilePath(catalogDirectory, sessionId);
-  try {
-    const recordStat = lstatSync(target);
-    if (recordStat.isSymbolicLink() || !recordStat.isFile() || recordStat.nlink !== 1
-      || realpathSync(target) !== target) {
-      throw new Error("Session catalog record must be a single-link regular file.");
-    }
-    const parsed: unknown = JSON.parse(readFileSync(target, "utf8"));
-    if (!isCatalogRecord(parsed) || parsed.sessionId !== sessionId) {
-      throw new Error("Invalid session catalog record.");
-    }
-    return parsed;
-  } catch (error) {
-    if (isNotFound(error)) return undefined;
-    throw error;
-  }
 }
 
 export async function deleteSessionCatalogRecord(workspaceRoot: string, sessionId: string): Promise<void> {
@@ -499,7 +421,6 @@ function catalogRevision(items: readonly SessionCatalogItem[]): string {
     rootSessionId: item.rootSessionId,
     parentSessionId: item.parentSessionId,
     branchPoint: item.branchPoint,
-    isIncognito: item.isIncognito,
     title: item.title,
     pinned: item.pinned,
     archived: item.archived,
@@ -609,7 +530,6 @@ async function writeSessionIndexFile(workspaceRoot: string, items: readonly Sess
         updatedAt: item.summary.updatedAt,
         eventCount: item.summary.eventCount,
         isolation: item.isolation,
-        isIncognito: item.isIncognito
       }))
     };
     await writeAtomically(path.join(sessionsDirectory, sessionIndexFileName), `${JSON.stringify(payload, null, 2)}\n`);
@@ -618,11 +538,33 @@ async function writeSessionIndexFile(workspaceRoot: string, items: readonly Sess
   }
 }
 
-/** fire-and-forget 的全量索引刷新：从 catalog 现算，不持有任何 catalog 记录锁。 */
-export function refreshSessionIndex(workspaceRoot: string): void {
-  void listSessionCatalog(workspaceRoot)
-    .then((items) => writeSessionIndexFile(workspaceRoot, items))
-    .catch(() => undefined);
+const indexRefreshes = new Map<string, { dirty: boolean; completion: Promise<void> }>();
+
+/** 同一工作区串行发布；刷新期间的新请求合并成下一轮，不能丢掉后到的写入。 */
+export async function refreshSessionIndex(workspaceRoot: string): Promise<void> {
+  try {
+    const root = await fs.realpath(path.resolve(workspaceRoot));
+    const active = indexRefreshes.get(root);
+    if (active) {
+      active.dirty = true;
+      return await active.completion;
+    }
+    const state = { dirty: true, completion: Promise.resolve() };
+    indexRefreshes.set(root, state);
+    state.completion = (async () => {
+      try {
+        while (state.dirty) {
+          state.dirty = false;
+          await writeSessionIndexFile(root, await listSessionCatalog(root));
+        }
+      } finally {
+        indexRefreshes.delete(root);
+      }
+    })();
+    await state.completion;
+  } catch {
+    // 派生索引的失败不影响已提交的会话事实；后续请求可重新构建。
+  }
 }
 
 function catalogFilePath(directory: string, sessionId: string): string {
@@ -671,9 +613,6 @@ async function withCatalogRecordLock<T>(
 ): Promise<T> {
   // 同一进程先异步排队，避免后来的同步 BEGIN IMMEDIATE 阻塞事件循环，导致前一个异步
   // operation 无法完成。operation 内不得再次调用同 session 的 catalog mutator，否则会等待自身。
-  //
-  // 队列只进不出（用完不 delete）：链表靠闭包串起来，删除映射项在并发入队时会丢掉后来者。
-  // 键的数量受本进程内不同 session 数限制，没有泄漏风险。
   const lockDirectory = await ensureCatalogLockDirectory(directory);
   const databasePath = path.join(lockDirectory, `${sessionId}.sqlite`);
   const predecessor = catalogLockQueues.get(databasePath) ?? Promise.resolve();
@@ -821,7 +760,6 @@ function isCatalogRecord(value: unknown): value is SessionCatalogRecord {
   if (typeof value.sessionId !== "string" || typeof value.rootSessionId !== "string") return false;
   if (value.parentSessionId !== undefined && typeof value.parentSessionId !== "string") return false;
   if (value.branchPoint !== undefined && !isBranchPoint(value.branchPoint)) return false;
-  if (value.isIncognito !== undefined && typeof value.isIncognito !== "boolean") return false;
   if (value.title !== undefined && typeof value.title !== "string") return false;
   if (value.pinned !== undefined && typeof value.pinned !== "boolean") return false;
   if (value.archived !== undefined && typeof value.archived !== "boolean") return false;

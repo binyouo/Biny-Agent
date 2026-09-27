@@ -634,8 +634,7 @@ export class DesktopAgentManager {
     idempotencyKey?: string,
     promptContext?: string,
     capabilitySelection?: AgentCapabilitySelection,
-    draftPlanning?: boolean,
-    draftIncognito?: boolean
+    draftPlanning?: boolean
   ): Promise<DesktopRunReceipt> {
     return await this.runIdempotently(projectId, "send", idempotencyKey, async () => await this.sendPromptOnce(
       projectId,
@@ -647,8 +646,7 @@ export class DesktopAgentManager {
       promptContext,
       capabilitySelection,
       draftPlanning,
-      idempotencyKey?.trim() || undefined,
-      draftIncognito
+      idempotencyKey?.trim() || undefined
     ));
   }
 
@@ -662,14 +660,13 @@ export class DesktopAgentManager {
     promptContext?: string,
     capabilitySelection?: AgentCapabilitySelection,
     draftPlanning?: boolean,
-    messageId?: string,
-    draftIncognito?: boolean
+    messageId?: string
   ): Promise<DesktopRunReceipt> {
     const sendPerfStartedAt = perfNow();
     const selectedBeforeSend = this.state.selectedSessionId(projectId);
     const requestedSessionId = sessionId ?? this.draftSessionIds.get(projectId);
     const runtimeForPromptPerfStartedAt = perfNow();
-    const { managed, snapshot } = await this.runtimeForPrompt(projectId, requestedSessionId, personalization, sessionId === undefined ? draftIncognito : undefined);
+    const { managed, snapshot } = await this.runtimeForPrompt(projectId, requestedSessionId, personalization);
     const runtime = managed.runtime;
     const targetSessionId = snapshot.info.sessionId;
     if (sessionId === undefined && draftPlanning !== undefined) {
@@ -781,16 +778,11 @@ export class DesktopAgentManager {
   private async runtimeForPrompt(
     projectId: string,
     sessionId: string | undefined,
-    personalization?: DesktopChatPersonalizationOverride,
-    draftIncognito?: boolean
+    personalization?: DesktopChatPersonalizationOverride
   ): Promise<{ managed: ManagedRuntime; snapshot: InteractiveRuntimeSnapshot }> {
     const primary = await this.ensureRuntime(projectId);
     if (primary.runtime instanceof RuntimeHostClient) {
       const target = await primary.runtime.ensureSession({ sessionId, writeIntent: true, focus: false });
-      if (draftIncognito === true) {
-        const state = await primary.runtime.getPersonalizationState(target.sessionId);
-        await primary.runtime.updateSessionIncognito(true, state.catalogRevision, target.sessionId);
-      }
       if (personalization !== undefined) {
         const state = await primary.runtime.getPersonalizationState(target.sessionId);
         await primary.runtime.updateChatPersonalization(personalization, state.catalogRevision, target.sessionId);
@@ -805,10 +797,6 @@ export class DesktopAgentManager {
       await primary.runtime.resumeSession(sessionId);
     } else if (sessionId === undefined) {
       await this.ensureDraftRuntime(projectId);
-    }
-    if (draftIncognito === true) {
-      const state = await primary.commands!.agent.getPersonalizationState();
-      await primary.runtime.runExclusiveOperation("personalization", async () => await primary.commands!.agent.updateSessionIncognito(true, state.catalogRevision));
     }
     if (personalization !== undefined) await this.updateManagedChatPersonalization(primary, personalization);
     return { managed: primary, snapshot: primary.runtime.getSnapshot() };
@@ -1516,24 +1504,6 @@ export class DesktopAgentManager {
       await managed.commands.agent.updateChatPersonalization(input, revision);
     } else {
       await requireRemoteRuntime(managed.runtime).updateChatPersonalization(input, revision, sessionId);
-    }
-    return await this.workspaceSnapshot(projectId);
-  }
-
-  async saveSessionIncognito(
-    projectId: string,
-    sessionId: string,
-    isIncognito: boolean,
-    expectedRevision: string
-  ): Promise<DesktopWorkspaceSnapshot> {
-    this.assertNoRunningTasks("任务运行期间不能修改当前聊天的无痕状态。");
-    const revision = (await this.resolvePendingSessionRead(projectId, sessionId, expectedRevision)) ?? expectedRevision;
-    const managed = await this.runtimeForSession(projectId, sessionId, "任务运行期间不能修改当前聊天的无痕状态。");
-    this.assertNoRunningTasks("任务运行期间不能修改当前聊天的无痕状态。");
-    if (managed.commands) {
-      await managed.runtime.runExclusiveOperation("personalization", async () => await managed.commands!.agent.updateSessionIncognito(isIncognito, revision));
-    } else {
-      await requireRemoteRuntime(managed.runtime).updateSessionIncognito(isIncognito, revision, sessionId);
     }
     return await this.workspaceSnapshot(projectId);
   }

@@ -59,7 +59,6 @@ export function operationLane(operation: string, payload: Record<string, unknown
   // 队列只等 submit 返回运行句柄，不等待模型执行完成。
   if (
     operation === "session.ensure"
-    || operation === "session.incognito"
     || operation === "session.close"
     || operation === "session.claim"
     || operation === "session.release"

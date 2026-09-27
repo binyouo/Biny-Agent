@@ -9,7 +9,6 @@ import { setImmediate as yieldToEventLoop } from "node:timers/promises";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { globalAgentDir } from "../config/paths.js";
-import { readSessionCatalogRecordForFile, readSessionCatalogRecordForFileSync } from "./catalog.js";
 import { dateReferenceKeyFingerprint, parseDateReference } from "./dateReference.js";
 import { activeSessionMessageIds } from "./messageTree.js";
 import { listAllSessionFiles, sessionIdFromFile } from "./store.js";
@@ -306,11 +305,6 @@ export class TemporalMemoryIndex {
     for (const file of files) {
       signal?.throwIfAborted();
       const sessionId = sessionIdFromFile(file);
-      // catalog 是无痕状态权威；即使 JSONL 未变化，也必须在复用派生索引前重读。
-      if (await this.sessionIsIncognito(sessionId, file)) {
-        this.removeSession(sessionId, file);
-        continue;
-      }
       const before = await sessionFileSignature(file);
       const cached = canCache ? this.scannedFiles.get(file) : undefined;
       const ids = cached?.signature === before ? cached.ids : await this.indexSessionFile(sessionId, file, signal);
@@ -331,10 +325,6 @@ export class TemporalMemoryIndex {
   /** 完整扫描单个文件，按原文 hash 只重算变化的消息；半行留待下一轮。 */
   async indexSessionFile(sessionId: string, filePath: string, signal?: AbortSignal): Promise<string[]> {
     this.scannedFiles.delete(filePath);
-    if (await this.sessionIsIncognito(sessionId, filePath)) {
-      this.removeSession(sessionId, filePath);
-      return [];
-    }
     this.open().prepare("INSERT INTO temporal_session_files(session_id,file_path) VALUES(?,?) ON CONFLICT(session_id) DO UPDATE SET file_path=excluded.file_path")
       .run(sessionId, filePath);
     const beforeSignature = await sessionFileSignature(filePath);
@@ -414,10 +404,6 @@ export class TemporalMemoryIndex {
         db.prepare("DELETE FROM temporal_sources WHERE id = ?").run(id);
         continue;
       }
-      if (await this.sessionIsIncognito(sessionId, filePath)) {
-        this.removeSession(sessionId, filePath);
-        return [];
-      }
       db.exec("BEGIN IMMEDIATE");
       try {
         db.prepare("INSERT INTO temporal_sources(id,session_id,message_id,source_hash,sent_at,time_zone,parser,facts_indexed) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET source_hash=excluded.source_hash,sent_at=excluded.sent_at,time_zone=excluded.time_zone,parser=excluded.parser,facts_indexed=excluded.facts_indexed")
@@ -442,25 +428,12 @@ export class TemporalMemoryIndex {
         db.exec("COMMIT");
       } catch (error) { db.exec("ROLLBACK"); throw error; }
     }
-    if (await this.sessionIsIncognito(sessionId, filePath)) {
-      this.removeSession(sessionId, filePath);
-      return [];
-    }
     if (complete && await sessionFileSignature(filePath) === beforeSignature) {
       const db = this.open();
       db.prepare("DELETE FROM temporal_sources WHERE session_id = ? AND id NOT IN (SELECT value FROM json_each(?))")
         .run(sessionId, JSON.stringify(present));
     }
     return present;
-  }
-
-  private async sessionIsIncognito(sessionId: string, filePath: string): Promise<boolean> {
-    try { return (await readSessionCatalogRecordForFile(filePath, sessionId))?.isIncognito === true; }
-    catch (error) {
-      // catalog 无法验证时不能继续展示上次从该会话提取的跨会话材料。
-      this.removeSession(sessionId, filePath);
-      throw error;
-    }
   }
 
   private removeSession(sessionId: string, filePath: string): void {
@@ -565,12 +538,14 @@ export class TemporalMemoryIndex {
       .all() as Array<{ session_id: string; file_path: string | null }>;
     for (const row of rows) {
       try {
-        // 老索引尚无可验证的 JSONL 路径，必须先重建，不能盲信其派生内容。
-        if (!row.file_path || readSessionCatalogRecordForFileSync(row.file_path, row.session_id)?.isIncognito) {
+        const filePath = row.file_path ? path.resolve(row.file_path) : undefined;
+        const sessionFile = filePath ? lstatSync(filePath) : undefined;
+        if (!filePath || path.basename(filePath) !== `${row.session_id}.jsonl`
+          || !sessionFile?.isFile() || sessionFile.isSymbolicLink() || sessionFile.nlink !== 1) {
           this.removeSession(row.session_id, row.file_path ?? "");
         }
       } catch {
-        // catalog/路径损坏时只撤销对应派生索引；其他会话仍可读取。
+        // 路径损坏时只撤销对应派生索引；其他会话仍可读取。
         this.removeSession(row.session_id, row.file_path ?? "");
       }
     }

@@ -67,11 +67,6 @@ export class DesktopThreadBriefService {
           const root = await this.options.projects.dataRoot(project);
           const entries = await listSessionCatalog(root);
           for (const entry of entries) {
-            // listSessionCatalog 会容忍坏 catalog 以保留普通历史；派生摘要入口须单独 fail closed。
-            let catalog;
-            try { catalog = await readSessionCatalogRecord(root, entry.id); }
-            catch { continue; }
-            if (entry.isIncognito || catalog?.isIncognito) continue;
             history.push({ sessionId: entry.id, projectId: project.id,
               title: entry.title ?? entry.summary.firstUserMessage.slice(0, 120), createdAt: entry.summary.createdAt });
           }
@@ -168,7 +163,7 @@ export class DesktopThreadBriefService {
       const root = await this.options.projects.dataRoot(project);
       const file = await resolveSessionFile(root, sessionId).catch(() => undefined);
       if (!file || sessionIdFromFile(file) !== sessionId) continue;
-      return (await readSessionCatalogRecord(root, sessionId))?.isIncognito !== true;
+      return true;
     }
     return false;
   }
@@ -179,7 +174,7 @@ export class DesktopThreadBriefService {
     const root = await this.options.projects.dataRoot(project);
     const file = await resolveSessionFile(root, thread.sessionId).catch(() => undefined);
     if (!file || sessionIdFromFile(file) !== thread.sessionId) return false;
-    return (await readSessionCatalogRecord(root, thread.sessionId))?.isIncognito !== true;
+    return true;
   }
 
   private async isVisibleSuggestion(suggestion: { threads: readonly BriefThreadReference[] }): Promise<boolean> {
@@ -194,7 +189,6 @@ export class DesktopThreadBriefService {
       const file = await resolveSessionFile(root, sessionId).catch(() => undefined);
       if (!file || sessionIdFromFile(file) !== sessionId) continue;
       const catalog = await readSessionCatalogRecord(root, sessionId);
-      if (catalog?.isIncognito) return undefined;
       // 自动路径先看控制面时间，旧对话不能为了判断是否要摘要而先读一遍正文。
       const createdAt = catalog?.createdAt ?? (await stat(file)).birthtime.toISOString();
       if (minimumCreatedAt && createdAt < minimumCreatedAt) return undefined;

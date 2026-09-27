@@ -187,8 +187,6 @@ The previous turn was paused before completion. Running processes may still be a
 
 export interface AgentSessionOptions {
   workspaceRoot: string;
-  /** 仅用于首次创建的空草稿；initialize 在任何回合前将其持久化。 */
-  initialIsIncognito?: boolean;
   persistenceRoot?: string;
   configStore?: AgentConfigStore;
   config: AgentConfig;
@@ -616,19 +614,8 @@ export class AgentSession {
   }
 
   async initialize(): Promise<void> {
-    let record = await readSessionCatalogRecord(this.persistenceRoot(), this.recorder.sessionId);
-    if (this.options.initialIsIncognito && this.recorder.isUnrecordedDraft() && record === undefined) {
-      const now = new Date().toISOString();
-      record = await writeSessionCatalogRecord(this.persistenceRoot(), {
-        version: 1, sessionId: this.recorder.sessionId, rootSessionId: this.recorder.sessionId,
-        isIncognito: true, createdAt: now, updatedAt: now
-      }, { expectedRevision: SESSION_CATALOG_MISSING_REVISION });
-    }
+    const record = await readSessionCatalogRecord(this.persistenceRoot(), this.recorder.sessionId);
     this.planning = record?.planning ?? false;
-    if (record?.isIncognito) {
-      this.activePersonalization = { ...this.activePersonalization, useMemories: false, contributeMemories: false };
-      this.contextMemory.setPersonalization({}, false);
-    }
     await this.contextMemory.initialize();
     await this.identityStorage.initialize();
     await this.soulStorage.initialize();
@@ -1150,7 +1137,6 @@ export class AgentSession {
     // 用户消息持久化后即可解析日期。串行化同一会话的规则索引与成功回合的模型升级，
     // 防止后完成的旧扫描覆盖较新的投影；失败只影响可重建的派生索引。
     const task = this.temporalIndexFlight.then(async () => {
-      if ((await readSessionCatalogRecord(this.persistenceRoot(), recorder.sessionId))?.isIncognito) return;
       const modelExtractor = model ? createTemporalModelExtractor(model) : undefined;
       const index = new TemporalMemoryIndex(undefined, { extractClues: modelExtractor?.extractClues });
       try { await index.indexSessionFile(recorder.sessionId, recorder.filePath); }
@@ -1363,39 +1349,6 @@ export class AgentSession {
   /** 三端共享的读模型；正文只在 global/chat 配置中，resolved 元数据可安全投影到 session。 */
   async getPersonalizationState(): Promise<AgentPersonalizationState> {
     return (await this.readPersonalizationState()).state;
-  }
-
-  async getSessionIncognito(): Promise<boolean> {
-    return (await readSessionCatalogRecord(this.persistenceRoot(), this.recorder.sessionId))?.isIncognito ?? false;
-  }
-
-  /** 先落盘再改变本会话自动记忆门禁；CAS 防止过期界面覆盖当前状态。 */
-  async updateSessionIncognito(isIncognito: boolean, expectedRevision: string): Promise<boolean> {
-    const release = this.beginOperation("incognito update");
-    try {
-      // 同进程已接纳的旁路记忆任务必须先收敛，再提交无痕标记；否则写入可能
-      // 越过用户看到的状态切换。跨进程任务另在写入前重读持久标记。
-      if (isIncognito) await Promise.allSettled([...this.pendingMemoryTasks]);
-      const existing = await readSessionCatalogRecord(this.persistenceRoot(), this.recorder.sessionId);
-      if (existing) {
-        await updateSessionCatalogMetadata(this.persistenceRoot(), this.recorder.sessionId, { isIncognito }, expectedRevision);
-      } else if (this.recorder.isUnrecordedDraft()) {
-        const now = new Date().toISOString();
-        await writeSessionCatalogRecord(this.persistenceRoot(), {
-          version: 1, sessionId: this.recorder.sessionId, rootSessionId: this.recorder.sessionId,
-          isIncognito, createdAt: now, updatedAt: now
-        }, { expectedRevision });
-      } else {
-        await updateSessionCatalogMetadata(this.persistenceRoot(), this.recorder.sessionId, { isIncognito }, expectedRevision);
-      }
-      const snapshot = await this.readPersonalizationState();
-      this.activeConfig = snapshot.config;
-      this.activePersonalization = snapshot.state.resolved;
-      this.contextMemory.setPersonalization({}, snapshot.state.resolved.useMemories);
-      return isIncognito;
-    } finally {
-      release();
-    }
   }
 
   /** 更新当前聊天覆盖。catalog 的内容哈希是跨进程 CAS，过期界面不能覆盖新值。 */
@@ -2876,7 +2829,7 @@ export class AgentSession {
           const memoryTask = (async () => {
             const memoryEvents = await readSessionEvents(memoryRecorder.filePath);
             if (memoryMessageId && sessionMessageMetadata(memoryEvents, memoryMessageId).memoryExtracted) return;
-            if (!contributeMemories || (await readSessionCatalogRecord(this.persistenceRoot(), memoryRecorder.sessionId))?.isIncognito) {
+            if (!contributeMemories) {
               await markMemoryHandled({ created: [], deleted: [] });
               return;
             }
@@ -2893,10 +2846,6 @@ export class AgentSession {
               });
             // 自动抽取依赖后续语义写入；先确认 embedding 可用，避免无意义地发送对话给抽取模型。
             const embeddingAvailable = await this.getEmbeddingRuntime().then(Boolean, () => false);
-            if ((await readSessionCatalogRecord(this.persistenceRoot(), memoryRecorder.sessionId))?.isIncognito) {
-              await markMemoryHandled({ created: [], deleted: [] });
-              return;
-            }
             const changes = embeddingAvailable ? await this.localMemory.summarizeAndStoreMemories(finalMessages, {
               sessionId: memoryRecorder.sessionId,
               turnId: runOptions.turnId!,
@@ -2904,12 +2853,7 @@ export class AgentSession {
               runId: runOptions.runId!,
               externalContext: Boolean(runOptions.attachments?.length) || this.usedExternalContext(finalMessages),
               excludeExternalContext,
-              originAnchors,
-              beforeWrite: async () => {
-                if ((await readSessionCatalogRecord(this.persistenceRoot(), memoryRecorder.sessionId))?.isIncognito) {
-                  throw new Error("Automatic memory extraction stopped for incognito session.");
-                }
-              }
+              originAnchors
             }) : { created: [], deleted: [] };
             await markMemoryHandled(changes);
           })().catch(() => undefined).finally(() => this.pendingMemoryTasks.delete(memoryTask));
@@ -3100,7 +3044,7 @@ export class AgentSession {
    * 只能在空闲时调用——由 InteractiveAgentRuntime 的 maintenance 临界区保证没有进行中的回合。
    * 返回新会话的 sessionId。
    */
-  async startNewSession(options: { isIncognito?: boolean } = {}): Promise<string> {
+  async startNewSession(): Promise<string> {
     const release = this.beginOperation("new session");
     const previousRecorder = this.recorder;
     let nextRecorder: SessionRecorder | undefined;
@@ -3109,13 +3053,6 @@ export class AgentSession {
       await ensureAgentDirs(this.persistenceRoot());
       // 先打开新会话的 recorder，再收尾旧会话；若这里失败，当前会话保持原样。
       nextRecorder = new SessionRecorder(this.persistenceRoot(), undefined, undefined, this.options.runtimeEventSink);
-      if (options.isIncognito) {
-        const now = new Date().toISOString();
-        await writeSessionCatalogRecord(this.persistenceRoot(), {
-          version: 1, sessionId: nextRecorder.sessionId, rootSessionId: nextRecorder.sessionId,
-          isIncognito: true, createdAt: now, updatedAt: now
-        }, { expectedRevision: SESSION_CATALOG_MISSING_REVISION });
-      }
       // 旧会话可能还有旁路用量（记忆/子代理）没落盘，先补写进旧会话再收尾，不丢账单。
       // 这与 close() 的收尾一致；此刻 recorder 仍是旧会话，contextMemory 仍是旧上下文。
       const pendingRelated = this.takeRelatedUsage();
@@ -3142,9 +3079,6 @@ export class AgentSession {
         this.activeConfig.context.memory,
         defaultChatPersonalizationOverride
       );
-      if (options.isIncognito) {
-        this.activePersonalization = { ...this.activePersonalization, useMemories: false, contributeMemories: false };
-      }
       this.contextMemory.setPersonalization(
         {},
         this.activePersonalization.useMemories
@@ -3913,11 +3847,6 @@ export class AgentSession {
       snapshot.config.context.memory,
       override
     );
-    // 无痕是会话级强制门禁，不允许聊天或全局个性化将自动读写重新开启。
-    if (record?.isIncognito) {
-      resolved.useMemories = false;
-      resolved.contributeMemories = false;
-    }
     return {
       config: snapshot.config,
       state: {

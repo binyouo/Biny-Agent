@@ -874,10 +874,6 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
     return await this.request("personalization.update-chat", { patch, expectedRevision, sessionId });
   }
 
-  async updateSessionIncognito(isIncognito: boolean, expectedRevision: string, sessionId = this.focusedSessionId): Promise<boolean> {
-    return await this.request("session.incognito", { isIncognito, expectedRevision, sessionId });
-  }
-
   async updateGlobalPersonalization(
     update: GlobalPersonalizationUpdate,
     expectedRevision: string

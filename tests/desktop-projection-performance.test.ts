@@ -9,7 +9,7 @@ const at = "2026-09-26T00:00:00.000Z";
 function session(index: number): DesktopSessionSummary {
   return { id: `s${index}`, projectId: `p${index % 4}`, fileName: `s${index}.jsonl`, title: `Task ${index}`,
     firstUserMessage: "hi", lastAssistantMessage: "", eventCount: 2, createdAt: at, updatedAt: at,
-    pinned: false, isIncognito: false, status: "running" };
+    pinned: false, status: "running" };
 }
 function envelope(event: DesktopAgentEventEnvelope["event"], projectId = "p0"): DesktopAgentEventEnvelope {
   return { projectId, event, snapshot: { revision: 1, info: {} as DesktopAgentEventEnvelope["snapshot"]["info"], permissionMode: "ask", state: { kind: "idle" } } };

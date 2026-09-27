@@ -16,7 +16,6 @@ import { pendingPermission } from "../src/runtime/agentEvents.js";
 import { RuntimeHostClient, startRuntimeHost } from "../src/runtime/RuntimeHost.js";
 import { readSessionEvents } from "../src/session/events.js";
 import { sessionFilePath } from "../src/session/store.js";
-import { readSessionCatalogRecord } from "../src/session/catalog.js";
 
 const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "biny-desktop-parallel-")));
 const previousAgentDir = process.env.BINY_AGENT_DIR;
@@ -86,8 +85,6 @@ try {
     manager.sendPrompt(project.id, undefined, "parallel-probe-B", [], undefined, undefined, "pending-message-b")
   ]);
   assert.notEqual(a.sessionId, b.sessionId);
-  assert.equal((await readSessionCatalogRecord(await projects.dataRoot(project), a.sessionId))?.isIncognito, true);
-  assert.equal((await readSessionCatalogRecord(await projects.dataRoot(project), b.sessionId))?.isIncognito ?? false, false);
   assert.equal(a.messageId, "pending-message-a");
   assert.equal(b.messageId, "pending-message-b");
   assert.deepEqual(await manager.sendPrompt(project.id, undefined, "parallel-probe-A", [], undefined, undefined, "pending-message-a"), a);

@@ -316,7 +316,6 @@ export function syntheticSession(projectId: string, sessionId: string, input: st
     createdAt: now,
     updatedAt: now,
     pinned: false,
-    isIncognito: false,
     status: "running",
     resumable: undefined
   };

@@ -18,7 +18,6 @@ import { formatContextUsage, type ContextUsage } from "../usagePresentation.js";
 import { AttachmentList } from "./composer/AttachmentList.js";
 import type { PendingAttachment } from "./composer/AttachmentList.js";
 import { ComposerActionButton } from "./composer/ComposerActionButton.js";
-import { IncognitoToggle } from "./composer/IncognitoToggle.js";
 import { CapabilitiesMenu } from "./composer/CapabilitiesMenu.js";
 import { explicitCapabilityCount } from "./composer/capabilitySelectionView.js";
 import { ModelPickerMenu } from "./composer/ModelPickerMenu.js";
@@ -50,10 +49,6 @@ interface ComposerProps {
   memoryToggleBusy: boolean;
   memoryToggleDisabled: boolean;
   memoryToggleDisabledReason?: string;
-  incognitoEnabled: boolean;
-  incognitoToggleBusy: boolean;
-  incognitoToggleDisabled: boolean;
-  incognitoToggleDisabledReason?: string;
   running: boolean;
   recovery?: DesktopSessionDocument["recovery"];
   onResume(): Promise<void>;
@@ -80,7 +75,6 @@ interface ComposerProps {
   onSlashCommand(command: string): Promise<void>;
   onStop(): Promise<void>;
   onToggleMemory(): Promise<void>;
-  onToggleIncognito(): Promise<void>;
   onSwitchModel(alias: string, thinking: ThinkingSelection): Promise<void>;
   onSaveAttachment(file: File): Promise<DesktopAttachment>;
   /** 打开 MCP 设置页（能力菜单的 MCP 区跳转入口）。 */
@@ -115,10 +109,6 @@ export const Composer = memo(function Composer({
   memoryToggleBusy,
   memoryToggleDisabled,
   memoryToggleDisabledReason,
-  incognitoEnabled,
-  incognitoToggleBusy,
-  incognitoToggleDisabled,
-  incognitoToggleDisabledReason,
   running,
   recovery,
   onResume,
@@ -142,7 +132,6 @@ export const Composer = memo(function Composer({
   onSlashCommand,
   onStop,
   onToggleMemory,
-  onToggleIncognito,
   onSwitchModel,
   onSaveAttachment,
   onOpenMcpSettings,
@@ -728,13 +717,6 @@ export const Composer = memo(function Composer({
             </div>
           </div>
           <div className="biny-composer-footer-end">
-            <IncognitoToggle
-              enabled={incognitoEnabled}
-              busy={incognitoToggleBusy}
-              disabled={incognitoToggleDisabled}
-              disabledReason={incognitoToggleDisabledReason}
-              onToggle={onToggleIncognito}
-            />
             <div className="composer-menu-anchor">
               <ComposerActionButton
                 aria-pressed={memoryState === "unknown" ? undefined : memoryState === "enabled"}

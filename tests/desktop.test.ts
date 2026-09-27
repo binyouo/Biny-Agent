@@ -2759,17 +2759,7 @@ async function testDesktopPersonalizationCasAndChatOverride(): Promise<void> {
     const markedWorkspace = await agents.markSessionRead(project.id, recorder.sessionId, document.session.metadataRevision);
     const markedSummary = markedWorkspace.sessions.find((session) => session.id === recorder.sessionId);
     assert.ok(markedSummary?.metadataRevision);
-    const incognitoWorkspace = await agents.saveSessionIncognito(project.id, recorder.sessionId, true, markedSummary.metadataRevision);
-    const incognitoSummary = incognitoWorkspace.sessions.find((session) => session.id === recorder.sessionId);
-    assert.equal(incognitoSummary?.isIncognito, true);
-    assert.ok(incognitoSummary?.metadataRevision);
-    assert.notEqual(incognitoSummary.metadataRevision, markedSummary.metadataRevision);
-    await assert.rejects(
-      agents.saveSessionIncognito(project.id, recorder.sessionId, false, markedSummary.metadataRevision),
-      /Session catalog revision conflict/u
-    );
     const override = {
-
       useMemories: false,
       contributeMemories: "inherit" as const
     };
@@ -2777,18 +2767,18 @@ async function testDesktopPersonalizationCasAndChatOverride(): Promise<void> {
       project.id,
       recorder.sessionId,
       override,
-      incognitoSummary.metadataRevision
+      markedSummary.metadataRevision
     );
     const summary = workspace.sessions.find((session) => session.id === recorder.sessionId);
     assert.deepEqual(summary?.personalization, override);
-    assert.notEqual(summary?.metadataRevision, incognitoSummary.metadataRevision);
+    assert.notEqual(summary?.metadataRevision, markedSummary.metadataRevision);
 
     const current = await agents.personalizationOverview(project.id, recorder.sessionId);
     assert.deepEqual(current.chat?.override, override);
     assert.equal(current.chat?.effective.useMemories, false);
     assert.equal(current.chat?.effective.contributeMemories, false);
     await assert.rejects(
-      agents.saveChatPersonalization(project.id, recorder.sessionId, override, incognitoSummary.metadataRevision),
+      agents.saveChatPersonalization(project.id, recorder.sessionId, override, markedSummary.metadataRevision),
       /Session catalog revision conflict/u
     );
   } finally {

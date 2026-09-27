@@ -982,8 +982,6 @@ export class LocalMemory {
       signal?: AbortSignal;
       now?: Date;
       onMemoryWritten?: (entry: MemoryEntry) => Promise<void>;
-      /** 自动写入前重验会话门禁；用于跨进程无痕切换期间终止后续变更。 */
-      beforeWrite?: () => Promise<void>;
     }
   ): Promise<{ created: ExtractedMemory[]; deleted: ExtractedMemory[] }> {
     options.signal?.throwIfAborted();
@@ -1021,9 +1019,8 @@ export class LocalMemory {
     const deleted: ExtractedMemory[] = [];
     for (const { content: description } of operations.filter((operation) => operation.operation === "delete")) {
       options.signal?.throwIfAborted();
-      await options.beforeWrite?.();
       try {
-        deleted.push(...await this.deleteMemoryByDescription(description, options.signal, now, options.userId ?? null, options.beforeWrite));
+        deleted.push(...await this.deleteMemoryByDescription(description, options.signal, now, options.userId ?? null));
       } catch {
         options.signal?.throwIfAborted();
         // 单个删除失败不应丢掉同一响应里的其它合法 add；下次成功回合仍可重新判断。
@@ -1033,7 +1030,6 @@ export class LocalMemory {
     const created: ExtractedMemory[] = [];
     for (const proposal of operations.filter((operation) => operation.operation === "add")) {
       options.signal?.throwIfAborted();
-      await options.beforeWrite?.();
       try {
         const content = proposal.content.trim();
         if (!content) continue;
@@ -1050,8 +1046,7 @@ export class LocalMemory {
         // Generate an embedding before every automatic ADD. If the
         // semantic path is unavailable, skip this candidate instead of
         // silently weakening the write-time dedup guarantee.
-        const result = await this.writeAutoEntry(input, { signal: options.signal, now, requireSemantic: true,
-          checkpoint: options.beforeWrite });
+        const result = await this.writeAutoEntry(input, { signal: options.signal, now, requireSemantic: true });
         if (result.written) {
           created.push({ id: result.entry!.id, content: result.entry!.content });
           await options.onMemoryWritten?.(result.entry!);
@@ -1061,13 +1056,11 @@ export class LocalMemory {
         // 模型返回的单条坏记忆只跳过这一条，不阻止其它条目提交。
       }
     }
-    await options.beforeWrite?.();
     deleted.push(...await this.cleanupTemporaryMemories(
       formatMemoryExtractionMessages(recentMessages),
       now,
       options.signal,
-      options.userId ?? null,
-      options.beforeWrite
+      options.userId ?? null
     ));
     return { created, deleted };
   }
@@ -1125,8 +1118,7 @@ export class LocalMemory {
     }
   }
 
-  private async deleteMemoryByDescription(description: string, signal: AbortSignal | undefined, now: Date, userId: string | null,
-    beforeWrite?: () => Promise<void>): Promise<ExtractedMemory[]> {
+  private async deleteMemoryByDescription(description: string, signal: AbortSignal | undefined, now: Date, userId: string | null): Promise<ExtractedMemory[]> {
     if (!description.trim()) return [];
     const candidates = await this.findSemanticMemoryEntries(description.trim(), 10, 0, signal, userId);
     if (!candidates?.length) return [];
@@ -1136,7 +1128,6 @@ export class LocalMemory {
       signal?.throwIfAborted();
       const entry = candidates[index - 1];
       if (!entry) continue;
-      await beforeWrite?.();
       try {
         const result = await this.deleteEntryById(entry.id, { signal, now, expectedEntries: [entry] });
         if (result.deleted) deleted.push({ id: entry.id, content: entry.content });
@@ -1174,8 +1165,7 @@ export class LocalMemory {
     }
   }
 
-  private async cleanupTemporaryMemories(conversation: string, now: Date, signal: AbortSignal | undefined, userId: string | null,
-    beforeWrite?: () => Promise<void>): Promise<ExtractedMemory[]> {
+  private async cleanupTemporaryMemories(conversation: string, now: Date, signal: AbortSignal | undefined, userId: string | null): Promise<ExtractedMemory[]> {
     let candidates: MemoryEntry[] | undefined;
     try {
       candidates = await this.findSemanticMemoryEntries(conversation, 20, 0.3, signal, userId);
@@ -1183,7 +1173,6 @@ export class LocalMemory {
       signal?.throwIfAborted();
       if (error instanceof Error && error.name === "AbortError") throw error;
       // 清理候选读取或访问统计失败不能丢掉此前已提交的自动 add/delete 结果。
-      // beforeWrite 在外层和每次真正删除前单独执行，门禁失败仍向上传播。
       return [];
     }
     const temporary = candidates?.filter((entry) => entry.durability === "temporary") ?? [];
@@ -1216,7 +1205,6 @@ export class LocalMemory {
       const entry = temporary.find((candidate) => candidate.id === id);
       if (!entry) continue;
       signal?.throwIfAborted();
-      await beforeWrite?.();
       try {
         const result = await this.deleteEntryById(entry.id, { signal, now, expectedEntries: [entry] });
         if (result.deleted) deleted.push({ id: entry.id, content: entry.content });
