@@ -44,7 +44,7 @@ test("CLI JSON failures have a code and do not expose raw validation details", a
   try {
     for (const [args, expected] of [[['tabs'], 'unavailable'], [['read', 'bad-id', '1'], 'invalid']] as const) {
       let failure: { code?: number; stdout?: string; stderr?: string } | undefined;
-      try { await exec(process.execPath, [path.resolve("dist/cli/index.js"), "browser", ...args, "--json"], { env: { ...process.env, BINY_AGENT_DIR: root }, timeout: 10000 }); }
+      try { await exec(process.execPath, ["--no-warnings", path.resolve("dist/cli/index.js"), "browser", ...args, "--json"], { env: { ...process.env, BINY_AGENT_DIR: root }, timeout: 10000 }); }
       catch (error) { failure = error as typeof failure; }
       assert.equal(failure?.code, 1);
       assert.equal(failure?.stderr, "");
