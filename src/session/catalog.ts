@@ -387,7 +387,6 @@ function toCatalogItem(summary: SessionSummary, record: SessionCatalogRecord | u
     rootSessionId: record?.rootSessionId ?? id,
     parentSessionId: record?.parentSessionId,
     branchPoint: record?.branchPoint,
-    isIncognito: record?.isIncognito ?? false,
     title: record?.title,
     pinned: record?.pinned,
     archived: record?.archived,
@@ -593,7 +592,6 @@ function catalogMetadataEquals(left: SessionCatalogRecord, right: SessionCatalog
     && left.archived === right.archived
     && left.unread === right.unread
     && left.planning === right.planning
-    && left.isIncognito === right.isIncognito
     && optionalStringArraysEqual(left.labels, right.labels)
     && JSON.stringify(left.personalization) === JSON.stringify(right.personalization)
     && left.isolation === right.isolation;
@@ -750,7 +748,6 @@ function assertCatalogRecord(record: SessionCatalogRecord): void {
   assertSessionId(record.rootSessionId);
   if (record.parentSessionId !== undefined) assertSessionId(record.parentSessionId);
   if (record.branchPoint !== undefined) assertBranchPoint(record.branchPoint);
-  if (record.isIncognito !== undefined && typeof record.isIncognito !== "boolean") throw new Error("Invalid session incognito state.");
   assertCatalogMetadata(record);
   if (!record.createdAt || !record.updatedAt) throw new Error("Session catalog timestamps are required.");
 }
