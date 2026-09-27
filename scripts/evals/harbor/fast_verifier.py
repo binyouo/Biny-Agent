@@ -12,6 +12,7 @@ Terminal-Bench 的 ``tests/test.sh`` 会在真正的 pytest 前重复执行 ``ap
 from __future__ import annotations
 
 import re
+import shlex
 import shutil
 import tempfile
 from pathlib import Path
@@ -21,6 +22,9 @@ from harbor.verifier.verifier import Verifier
 
 
 _PYTEST_BIN = "/usr/local/bin/biny-verifier-pytest"
+_PYTHON_BIN = "/opt/biny-verifier-python/bin/python3.13"
+_PYTHON_VERSION = "3.13"
+_VERIFIER_LOG_DIR = "/logs/verifier"
 
 # 随包预置的 Python 包（包名 -> 确切版本）。带版本号比对是刻意的：
 # 只要任务 pin 的版本和预置的不一致，就不走离线路径，避免版本漂移悄悄改变判分。
@@ -154,12 +158,19 @@ def _fast_eligible(lines: list[str]) -> bool:
             continue
         if _UVX_START.match(line):
             parts, index = _consume_logical(lines, index)
-            specs = " ".join(re.findall(r"-w\s+(\S+)", " ".join(parts)))
+            joined = " ".join(parts)
+            specs = " ".join(re.findall(r"-w\s+(\S+)", joined))
+            python_version = re.search(r"(?:^|\s)(?:-p|--python)\s+(\S+)", joined)
             pytest_line = next(
                 (item.strip() for item in parts if item.strip().startswith("pytest ")),
                 None,
             )
-            if pytest_line is None or not _only_bundled(specs):
+            if (
+                pytest_line is None
+                or python_version is None
+                or python_version.group(1) != _PYTHON_VERSION
+                or not _only_bundled(specs)
+            ):
                 return False
             continue
         index += 1
@@ -193,14 +204,7 @@ def _patch_test_script(path: Path) -> None:
             "  export BINY_FAST_VERIFIER=1",
         ]
     )
-    if eligible:
-        # pytest 来自预置目录，把它排在任务镜像的 site-packages 前面，
-        # 避免同名包被镜像里的旧版本抢先导入。
-        output.append(
-            "  export PYTHONPATH=/opt/biny-verifier-python/lib/python3.13/site-packages"
-            ":/usr/local/lib/python3.13/site-packages${PYTHONPATH:+:$PYTHONPATH}"
-        )
-    else:
+    if not eligible:
         # 未完全覆盖的任务仍需 uv 在线安装额外依赖，但 Python 本身已随工具链预置。
         output.append("  export UV_OFFLINE=false")
     output.extend(
@@ -213,7 +217,6 @@ def _patch_test_script(path: Path) -> None:
             "fi",
         ]
     )
-
     while index < len(lines):
         line = lines[index]
         stripped = line.strip()
@@ -293,6 +296,7 @@ def _patch_test_script(path: Path) -> None:
                 [
                     'if [ "${BINY_FAST_VERIFIER:-0}" = 1 ]; then',
                     "  # pytest 和 ctrf 已随预置工具链安装",
+                    "  :",
                     "else",
                     *[f"  {part.strip()}" for part in parts],
                     "fi",
@@ -310,6 +314,7 @@ def _patch_test_script(path: Path) -> None:
                 # 预置环境万一不可用（例如镜像 glibc 低于预置 Python 的基线），
                 # 退回脚本原本的联网解析，而不是让判分命令直接消失。
                 output.append('if [ "${BINY_FAST_VERIFIER:-0}" = 1 ]; then')
+                _append_fast_runtime_probe(output)
                 output.append(f"  {_PYTEST_BIN} {pytest_line[len('pytest '):]}")
                 output.append("else")
                 for item in parts:
@@ -326,3 +331,41 @@ def _patch_test_script(path: Path) -> None:
         index += 1
 
     path.write_text("\n".join(output) + "\n", encoding="utf-8")
+
+
+def _append_fast_runtime_probe(output: list[str]) -> None:
+    output.extend(
+        [
+            f'  _biny_verifier_log_dir="${{BINY_VERIFIER_LOG_DIR:-{_VERIFIER_LOG_DIR}}}"',
+            '  mkdir -p "$_biny_verifier_log_dir"',
+            f'  "{_PYTHON_BIN}" -c {shlex.quote(_runtime_probe_source())} '
+            '>> "$_biny_verifier_log_dir/fast-runtime.jsonl" 2>&1 || true',
+        ]
+    )
+
+
+def _runtime_probe_source() -> str:
+    """Record the effective interpreter, imports and environment used by the fast path."""
+
+    return "\n".join(
+        [
+            "import importlib.metadata as metadata",
+            "import importlib.util",
+            "import json",
+            "import os",
+            "import platform",
+            "import sys",
+            "modules = {'pytest': 'pytest', 'ctrf': 'ctrf', 'numpy': 'numpy', 'pillow': 'PIL', 'chess': 'chess'}",
+            "versions = {}",
+            "origins = {}",
+            "for name, module in modules.items():",
+            "    try:",
+            "        versions[name] = metadata.version('pytest-json-ctrf' if name == 'ctrf' else name)",
+            "    except metadata.PackageNotFoundError:",
+            "        versions[name] = None",
+            "    spec = importlib.util.find_spec(module)",
+            "    origins[name] = spec.origin if spec else None",
+            "json.dump({'runner': 'preloaded', 'executable': sys.executable, 'pythonVersion': sys.version.split()[0], 'platform': platform.platform(), 'architecture': platform.machine(), 'pythonpath': os.environ.get('PYTHONPATH'), 'sysPath': sys.path, 'packageVersions': versions, 'moduleOrigins': origins}, sys.stdout, sort_keys=True)",
+            "sys.stdout.write('\\n')",
+        ]
+    )

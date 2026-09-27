@@ -140,7 +140,12 @@ def main():
             ):
                 reward_conflict = True
 
-            if reward_conflict or verifier_signs or reward not in (0.0, 1.0):
+            verifier_validity = (
+                "invalid" if verifier_signs
+                else "valid" if ran and not reward_conflict and reward in (0.0, 1.0)
+                else "unknown"
+            )
+            if verifier_validity != "valid":
                 score = "unscored"
             else:
                 score = "pass" if reward == 1.0 else "fail"
@@ -174,9 +179,17 @@ def main():
                 st, why = "indeterminate", "没有可信 verifier reward"
             overall[st] += 1
             if st == "infra_failed":
-                for s in signs:
+                for s in signs + verifier_signs:
                     infra_reasons[s] += 1
-            row = {"task": b, "status": st, "reward": reward, "score": score, "reason": why}
+            row = {
+                "task": b,
+                "status": st,
+                "reward": reward,
+                "score": score,
+                "verifierValidity": verifier_validity,
+                "verifierReason": "；".join(verifier_signs) if verifier_signs else None,
+                "reason": why,
+            }
             rows.append(row)
             job_rows.append(row)
 
@@ -192,9 +205,7 @@ def main():
                 reward = 0.0
             else:
                 reward = None
-            score = "unscored" if reward_conflict or reward is None else (
-                "pass" if reward == 1.0 else "fail"
-            )
+            score = "unscored"
             if reward_conflict:
                 status = "ambiguous"
             elif b in tmo:
@@ -211,6 +222,8 @@ def main():
                 "status": status,
                 "reward": reward,
                 "score": score,
+                "verifierValidity": "unknown",
+                "verifierReason": "缺少 verifier task 目录，无法确认测试是否执行",
                 "reason": (
                     "result.json 有记录但缺少 task 目录；verifier reward=%s"
                     % ("缺失" if reward is None else f"{reward:g}")
@@ -252,6 +265,11 @@ def main():
         "verifier 计分: pass=%d fail=%d unscored=%d"
         % (passed_count, failed_count, len(rows) - len(scored_rows))
     )
+    validity_counts = Counter(row["verifierValidity"] for row in rows)
+    print(
+        "verifier 有效性: valid=%d invalid=%d unknown=%d"
+        % (validity_counts["valid"], validity_counts["invalid"], validity_counts["unknown"])
+    )
     timeout_passes = sum(
         row["status"] == "timeout" and row["score"] == "pass" for row in rows
     )
@@ -264,6 +282,12 @@ def main():
         print("\n基础设施失败原因分布")
         for k, v in infra_reasons.most_common():
             print("  %-34s %d" % (k, v))
+
+    invalid_verifiers = [row for row in rows if row["verifierValidity"] == "invalid"]
+    if invalid_verifiers:
+        print("\nverifier 环境无效明细")
+        for row in invalid_verifiers:
+            print("  %-44s %s" % (row["task"], row["verifierReason"] or "环境证据无效"))
 
     print("\ninfra_failed 明细")
     for row in rows:

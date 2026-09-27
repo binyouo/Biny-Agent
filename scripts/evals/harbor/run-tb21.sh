@@ -11,6 +11,10 @@ set -euo pipefail
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)
 harbor_dir="$repo_root/scripts/evals/harbor"
+tasks_dir="${BINY_EVAL_TASKS_DIR:-$repo_root/.agent/harbor/tb21-tasks-full/tasks}"
+export BINY_EVAL_TASKS_DIR="$tasks_dir"
+export BINY_EVAL_AGENT_TIMEOUT_MULTIPLIER="${BINY_EVAL_AGENT_TIMEOUT_MULTIPLIER:-1}"
+export BINY_EVAL_FINALIZATION_RESERVE_RATIO="${BINY_EVAL_FINALIZATION_RESERVE_RATIO:-0.15}"
 
 # 密钥文件（可选）：评测密钥不落 git，用 chmod 600 的文件来喂。
 if [[ -n "${BINY_EVAL_KEY_FILE:-}" ]]; then
@@ -46,7 +50,7 @@ export PYTHONPATH="$repo_root${PYTHONPATH:+:$PYTHONPATH}"
 
 exec harbor run \
   --jobs-dir "${BINY_EVAL_JOBS_DIR:-/Volumes/T7/biny-evals/jobs}" \
-  --path .agent/harbor/tb21-tasks-full/tasks \
+  --path "$tasks_dir" \
   --agent scripts.evals.harbor.biny_agent:BinyAgent \
   --verifier scripts.evals.harbor.fast_verifier:FastVerifier \
   --n-attempts "${BINY_EVAL_ATTEMPTS:-1}" \
