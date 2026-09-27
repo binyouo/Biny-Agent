@@ -4,11 +4,11 @@
 
 **Metric:** end-to-end pass@1，由 Terminal-Bench 官方 verifier 判定
 
-**Status:** completed — 89/89 格有 verifier 结果
+**Status:** 原始 Pass@1 评测完成；badcase 重跑记录更新至 2026-09-27
 
 **产物:** `/Volumes/T7/biny-evals/jobs/biny-dsv41-tb21-*`（git-excluded）
 
-**逐题结果:** [`terminal-bench-2.1-deepseek-v4.1-flash-biny.csv`](./terminal-bench-2.1-deepseek-v4.1-flash-biny.csv)
+**原始逐题结果:** [`terminal-bench-2.1-deepseek-v4.1-flash-biny.csv`](./terminal-bench-2.1-deepseek-v4.1-flash-biny.csv)（截至 2026-09-24；最新 badcase 补测见本报告上节）
 
 ---
 
@@ -23,9 +23,33 @@
 - **end-to-end pass@1 = 58/89 = 65.2%**（每格只取第一次模型评分）
 - 28 道被 verifier 判定未通过，另有 2 道首评判 0 后重跑通过（**pass@2，不计入**）
 - 1 道（`train-fasttext`）的 0 来自**判分器自身 setup 失败**，测试从未运行 —— 详见可比性声明
-- 完整轨迹与每轮结果见文末逐题表
+- 截至 2026-09-27，跨轮去重后 **75/89 = 84.3%** 的题目至少有一轮 verifier reward=1；这是 best-of-runs 统计，**不是 Pass@1 或公开排行榜分数**
+- 原始 Pass@1 逐题结果见文末；本次新增 badcase 重跑见下节
 
-## 结果明细
+## Badcase 重跑与跨轮去重成绩（截至 2026-09-27）
+
+| 口径 | 通过题数 | 占 89 题 | 说明 |
+| --- | ---: | ---: | --- |
+| 原始官方口径 Pass@1 | 58 | 65.2% | 保持不变；每题只取第一次有效模型评分 |
+| 既有跨轮唯一通过 | 60 | 67.4% | 含原先两道 pass@2 题 |
+| 当前跨轮唯一通过 | **75** | **84.3%** | 至少一个已完成 verifier 给出 reward=1 |
+| 相对既有跨轮结果新增 | **15** | **+16.9 个百分点** | 同题跨多轮只计一次 |
+
+该 84.3% 汇总多轮模型与环境结果，不能作为单轮 Pass@1，也不能直接与公开排行榜比较。新增的 15 道题如下：
+
+| 来源 | 新增通过题目 | 本轮结果 |
+| --- | --- | ---: |
+| `biny-dsv41-tb21-infra-replacements-20260925-v3-concurrent2` | `gpt2-codegolf`、`qemu-alpine-ssh` | 新增 2；`largest-eigenval` 的 reward=1 已在旧累计中 |
+| `biny-dsv41-failure-rerun-27-conc3-20260926` | `bn-fit-modify`、`break-filter-js-from-html`、`compile-compcert`、`dna-assembly`、`fix-ocaml-gc`、`hf-model-inference`、`llm-inference-batching-scheduler`、`mteb-leaderboard`、`pypi-server`、`qemu-startup`、`torch-pipeline-parallelism`、`winning-avg-corewars` | 12/27 reward=1；15/27 reward=0；无 trial 异常 |
+| `biny-dsv41-max-reasoning-failure-rerun-13-conc3-20260927` | `dna-insert` | 1/13 reward=1；12/13 reward=0；无 trial 异常 |
+
+服务生命周期类 badcase 中，`hf-model-inference`、`pypi-server`、`qemu-startup` 在 27 题重跑中由旧 reward=0 变为 reward=1，即目标类别 **3/4** 通过；`kv-store-grpc` 仍为 0，verifier Python 环境缺少 `grpc`。这 3/4 是本次运行中与生命周期修复直接相关的实测结果；不能把全部 15 道新增通过都归因于代码，因为普通重跑还包含模型采样和基础设施波动。
+
+MAX reasoning 轮与普通 reasoning 轮的 Biny 包 SHA256（`5ea232c0…`）和源码指纹（`d6b99494…`）相同，改变的是 reasoning 配置。因此 `dna-insert` 的 1/13 结果单独记录为配置实验，不计作代码提交带来的确定性提升。
+
+`gpt2-codegolf` 和 `qemu-alpine-ssh` 的 verifier reward 都是 1，但 Agent 达到超时；这里按 verifier 已确认产物通过计入跨轮 union，同时保留超时事实。`fix-ocaml-gc` 的本轮 verifier 40/40 通过；`sam-cell-seg` 仍为 0，测试因缺少 `libGL.so.1` 在收集阶段失败。
+
+## 原始 Pass@1 结果明细（截至 2026-09-24）
 
 | 结论 | 数量 | 占比 | 定义 |
 | --- | ---: | ---: | --- |
@@ -103,7 +127,7 @@
 
 - **无 token / 成本数据**：harbor 的 `n_input_tokens` / `cost_usd` 全为 null，故本报告不含经济性分析。
 
-## 逐题结果
+## 原始逐题结果（截至 2026-09-24）
 
 | 题目 | 结论 | 说明 | 各轮评分 |
 | --- | --- | --- | --- |
