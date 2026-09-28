@@ -31,7 +31,10 @@ test("Trace 呈现真实失败和缺失指标，上下文菜单按实际调用�
   const html = renderToStaticMarkup(React.createElement(ExecutionTraceContent, { turn: turn! }));
   assert.match(html, /未记录模型请求明细/); assert.doesNotMatch(html, /failed proof|pwd|<details|未关联到模型步骤/);
   const menu = renderToStaticMarkup(React.createElement(MessageContextMenu, { tools: ["Bash", "Bash", "Skill"], skills: ["s", "s"] }));
-  assert.match(menu, /上下文/); assert.match(menu, /2 个工具/); assert.match(menu, /1 个技能/);
+  assert.match(menu, /上下文/);
+  assert.match(menu, /1 个工具/);
+  assert.match(menu, /1 个技能/);
+  assert.doesNotMatch(menu, /Skill/);
 });
 test("请求步骤从本次 canonical 输出取得工具和正文，不把上批工具当成本次调用", () => {
   const metrics = { requestId: "step", provider: "p", modelId: "m", startedAt: "2026-09-25T12:52:00Z", durationMs: 2000, attempts: [], eventCount: 1, finishReason: "tool-calls" as const, requestContext: { runId: "r", operation: "agent" as const, relatedToolCallIds: ["previous"] } };

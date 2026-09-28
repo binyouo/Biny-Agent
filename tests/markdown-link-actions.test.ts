@@ -23,7 +23,9 @@ test("网页链接默认外部打开，选中文字才显示两种浏览器入�
     await React.act(() => link.dispatchEvent(new dom.window.MouseEvent('mouseover', { bubbles: true })));
     assert.equal(document.querySelector('.markdown-link-actions'), null);
     const range = document.createRange(); range.selectNodeContents(link);
-    dom.window.getSelection()!.addRange(range);
+    const selection = dom.window.getSelection()!;
+    selection.removeAllRanges();
+    selection.addRange(range);
     await React.act(() => link.dispatchEvent(new dom.window.MouseEvent('mouseup', { bubbles: true })));
 
     const buttons = [...document.querySelectorAll('button')];

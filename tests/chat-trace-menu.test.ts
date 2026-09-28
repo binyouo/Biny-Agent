@@ -25,7 +25,10 @@ test("上下文菜单支持键盘展开、显示真实清单并用 Escape 收起
     assert.equal(button.getAttribute("aria-expanded"), "true");
     const panel = document.querySelector('[aria-label="本轮上下文"]')!;
     assert.equal(panel.parentElement, document.body, "浮层脱离菜单动画的 transform 包含块");
-    assert.match(panel.textContent!, /Bash/); assert.match(panel.textContent!, /技能调用/); assert.match(panel.textContent!, /references/);
+    assert.match(panel.textContent!, /Bash/);
+    assert.match(panel.textContent!, /1 个技能/u);
+    assert.match(panel.textContent!, /references/u);
+    assert.doesNotMatch(panel.textContent!, /技能调用/u);
     assert.match(panel.textContent!, /记忆召回/u);
     assert.match(panel.textContent!, /向量索引尚未建立/u);
     assert.match(panel.textContent!, /配置嵌入模型并重建索引/u);
