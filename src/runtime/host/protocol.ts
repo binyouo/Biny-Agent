@@ -18,6 +18,8 @@ export const runtimeHostMaxFrameBytes = 8 * 1024 * 1024;
 export const runtimeHostReconnectDelayMs = 250;
 export const runtimeHostMaxUnixSocketPathLength = 90;
 export const runtimeHostStartupTimeoutMs = 8_000;
+/** Client 握手（连接 + hello + 初始 subscribe）的有界等待；owner 事件循环卡死时必须能失败，不能无限挂起。 */
+export const runtimeHostHandshakeTimeoutMs = 10_000;
 export const runtimeHostJournalFile = "runtime-host-events.jsonl";
 export const runtimeHostMemoryMaintenanceIntervalMs = 60 * 1_000;
 export const runtimeHostDirectoryName = "biny-runtime-host";

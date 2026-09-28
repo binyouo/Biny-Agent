@@ -122,6 +122,20 @@ export class LocalReferenceGraph {
     return await this.captureSnippet(sourceUri, start, start + quote.length, projectId);
   }
 
+  /** Markdown 视图选区是展示文本快照；来源消息仍需在当前项目和活动路径中可解析。 */
+  async captureSelectionQuote(sourceUri: string, quote: string, projectId: string): Promise<LocalReferenceResult> {
+    const text = quote.trim();
+    if (!text || text.length > 4_000) throw new Error("Invalid quote selection.");
+    if (parseLocalReferenceUri(sourceUri).kind !== "message") throw new Error("Snippet source must be a message.");
+    const source = await this.service.resolve(sourceUri, projectId);
+    // -1/-1 distinguishes immutable UI text from captureSnippet's verified raw-source interval.
+    const id = createHash("sha256").update(`${projectId}\0${sourceUri}\0-1\0-1\0${text}`).digest("hex");
+    this.open().prepare("INSERT OR IGNORE INTO ref_snippets(id,project_id,source_uri,start_offset,end_offset,quote) VALUES(?,?,?,?,?,?)")
+      .run(id, projectId, sourceUri, -1, -1, text);
+    return { kind: "snippet", uri: localReferenceUri({ kind: "snippet", id }), label: text.slice(0, 80), content: text,
+      projectId, threadId: source.threadId, messageId: source.messageId };
+  }
+
   async createScratch(content: string, projectId: string, now = new Date(), ttlMs = 24 * 60 * 60_000): Promise<LocalReferenceResult> {
     await this.service.search("", projectId, "project", 1);
     if (!content.trim() || content.length > 4_000 || !Number.isInteger(ttlMs) || ttlMs < 1 || ttlMs > 30 * 86_400_000) {
@@ -147,7 +161,11 @@ export class LocalReferenceGraph {
         .get(ref.id, projectId) as { source_uri: string; start_offset: number; end_offset: number; quote: string } | undefined;
       if (!row) throw new Error("Snippet is not available.");
       const source = await this.service.resolve(row.source_uri, projectId);
-      if (source.content.slice(row.start_offset, row.end_offset) !== row.quote) throw new Error("Snippet source has changed.");
+      if (row.start_offset !== -1 || row.end_offset !== -1) {
+        if (row.start_offset < 0 || row.end_offset <= row.start_offset || source.content.slice(row.start_offset, row.end_offset) !== row.quote) {
+          throw new Error("Snippet source has changed.");
+        }
+      }
       return { kind: "snippet", uri, label: row.quote.slice(0, 80), content: row.quote,
         projectId, threadId: source.threadId, messageId: source.messageId };
     }

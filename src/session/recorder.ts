@@ -431,7 +431,6 @@ function redactSessionEvent(event: SessionEvent): SessionEvent {
   if (event.type === "tool_execution") {
     return {
       ...event,
-      tool: redactSecrets(event.tool),
       change: event.change === undefined ? undefined : redactSensitiveValue(event.change) as CommittedFileChange,
       evidence: event.evidence === undefined ? undefined : redactSecrets(event.evidence)
     };

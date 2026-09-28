@@ -88,6 +88,8 @@ export interface HostClientOptions {
   surface?: HostSurface;
   /** owner 退出后，client 是否有足够 composition root 重新选举 Host。 */
   spawnOptions?: RuntimeHostSpawnOptions;
+  /** 握手（连接 + hello + 初始 subscribe）的有界等待；owner 无响应时必须能失败。默认见 protocol.ts。 */
+  handshakeTimeoutMs?: number;
 }
 
 export interface RuntimeHostInfo {

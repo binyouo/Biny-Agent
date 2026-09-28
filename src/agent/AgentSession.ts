@@ -2758,7 +2758,8 @@ export class AgentSession {
               content,
               lastAssistant?.stopReason,
               completedStepsBeforeRun + observedSteps,
-              usageRecord
+              usageRecord,
+              notification !== undefined
             )),
         notification
       };
@@ -4079,7 +4080,8 @@ function nativeTurnOutcome(
   output: string,
   finishReason: string | undefined,
   steps: number,
-  usage?: SessionUsage
+  usage?: SessionUsage,
+  hasNotification = false
 ): AgentTurnOutcome {
   if (hardStepLimitReached) {
     return {
@@ -4129,6 +4131,18 @@ function nativeTurnOutcome(
   }
   if (finishReason === undefined) {
     return { status: "failed", stopReason: "missing_terminal_event", steps, output, usage, error: "Agent Loop ended without a model terminal event." };
+  }
+  if (finishReason === "stop" && !output.trim() && !hasNotification) {
+    return {
+      status: "incomplete",
+      stopReason: "provider_error",
+      finishReason,
+      steps,
+      output,
+      usage,
+      error: "模型结束响应时没有输出可展示的正文。",
+      resumable: true
+    };
   }
   if (finishReason !== "stop") {
     return {

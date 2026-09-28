@@ -29,6 +29,7 @@ import type { ChatPersonalizationOverridePatch, AgentPersonalizationState, Globa
 import {
   runtimeHostEventHistoryLimit as eventHistoryLimit,
   runtimeHostCapabilities,
+  runtimeHostHandshakeTimeoutMs,
   runtimeHostProtocolVersion as protocolVersion,
   decodeHostFrame,
   encodeHostFrame,
@@ -91,6 +92,7 @@ interface RuntimeHostClientOptions extends HostClientOptions {
 interface PendingRequest<T> {
   resolve(value: T): void;
   reject(error: Error): void;
+  timeout?: ReturnType<typeof setTimeout>;
 }
 
 interface PendingCompletion {
@@ -127,11 +129,13 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
   private reconnectInProgress = false;
   private ownerRestartPromise: Promise<void> | undefined;
   private environmentTakeoverHandshake: boolean;
+  private readonly handshakeTimeoutMs: number;
 
   private constructor(private readonly options: RuntimeHostClientOptions) {
     this.persistenceRoot = options.registration.persistenceRoot;
     this.clientId = options.clientId ?? `client-${randomUUID()}`;
     this.environmentTakeoverHandshake = options.environmentTakeover === true;
+    this.handshakeTimeoutMs = options.handshakeTimeoutMs ?? runtimeHostHandshakeTimeoutMs;
   }
 
   static async connect(options: RuntimeHostClientOptions): Promise<RuntimeHostClient> {
@@ -1003,23 +1007,30 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
 
   private async open(): Promise<void> {
     await this.openSocket();
-    const result = await this.request<{
-      hostEpoch: string;
-      persistenceRoot: string;
-      snapshot: InteractiveRuntimeSnapshot;
-      sessions: RuntimeHostSessionSummary[];
-      sequence: number;
-      capabilities: string[];
-    }>("subscribe", { afterSequence: undefined, sessions: undefined });
-    this.capabilities = result.capabilities;
-    this.focusedSessionId = result.snapshot.info.sessionId;
-    this.applySnapshot(result.snapshot, result.sequence, result.hostEpoch, true);
-    this.applySessionSummaries(result.sessions);
-    if (!this.snapshot) {
-      const snapshot = await this.request<{ snapshot: InteractiveRuntimeSnapshot; sessions: RuntimeHostSessionSummary[]; sequence: number }>("snapshot", {});
-      this.focusedSessionId = snapshot.snapshot.info.sessionId;
-      this.applySnapshot(snapshot.snapshot, snapshot.sequence, undefined, true);
-      this.applySessionSummaries(snapshot.sessions);
+    // hello 之后仍可能有界失败（owner 半死：应答了握手却不再处理请求）；
+    // 初始请求失败要关闭 client，避免留下半开的 socket 让调用方误以为连接可用。
+    try {
+      const result = await this.request<{
+        hostEpoch: string;
+        persistenceRoot: string;
+        snapshot: InteractiveRuntimeSnapshot;
+        sessions: RuntimeHostSessionSummary[];
+        sequence: number;
+        capabilities: string[];
+      }>("subscribe", { afterSequence: undefined, sessions: undefined }, this.handshakeTimeoutMs);
+      this.capabilities = result.capabilities;
+      this.focusedSessionId = result.snapshot.info.sessionId;
+      this.applySnapshot(result.snapshot, result.sequence, result.hostEpoch, true);
+      this.applySessionSummaries(result.sessions);
+      if (!this.snapshot) {
+        const snapshot = await this.request<{ snapshot: InteractiveRuntimeSnapshot; sessions: RuntimeHostSessionSummary[]; sequence: number }>("snapshot", {}, this.handshakeTimeoutMs);
+        this.focusedSessionId = snapshot.snapshot.info.sessionId;
+        this.applySnapshot(snapshot.snapshot, snapshot.sequence, undefined, true);
+        this.applySessionSummaries(snapshot.sessions);
+      }
+    } catch (error) {
+      await this.close().catch(() => undefined);
+      throw error;
     }
   }
 
@@ -1036,11 +1047,19 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
       const fail = (error: Error): void => {
         if (!settled) {
           settled = true;
+          clearTimeout(handshakeTimer);
           this.pending.delete(helloRequestId);
           this.readyPromise = undefined;
           reject(error);
         }
       };
+      // 握手必须有界：owner 进程存活但事件循环卡死时，socket 能连上却永远不回 hello；
+      // 无界等待会让 TUI/Desktop 的启动流程永久停在「runtime 未就绪」，重启也无法恢复。
+      const handshakeTimer = setTimeout(() => {
+        fail(new Error(`Runtime Host handshake timed out after ${String(this.handshakeTimeoutMs)}ms; the owner process may be busy or unresponsive.`));
+        socket.destroy();
+      }, this.handshakeTimeoutMs);
+      handshakeTimer.unref?.();
       socket.on("connect", () => {
         const registrationIdentity = this.options.registration.configRoot !== undefined
           && this.options.registration.agentRoot !== undefined
@@ -1081,6 +1100,7 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
       this.pending.set(helloRequestId, {
         resolve: (value) => {
           settled = true;
+          clearTimeout(handshakeTimer);
           this.environmentTakeoverHandshake = false;
           const result = value as { hostEpoch: string; persistenceRoot: string; sequence: number; capabilities: string[]; negotiatedCapabilities?: string[] };
           this.hostEpoch = result.hostEpoch;
@@ -1159,11 +1179,18 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
     const previousHostEpoch = this.hostEpoch;
     this.options.registration = registration;
     await this.openSocket();
-    const result = await this.request<{ hostEpoch: string; snapshot: InteractiveRuntimeSnapshot; sessions: RuntimeHostSessionSummary[]; sequence: number; replayed: boolean; capabilities: string[] }>("subscribe", {
-      afterSequence: this.sequence,
-      afterHostEpoch: previousHostEpoch,
-      sessions: undefined
-    });
+    let result: { hostEpoch: string; snapshot: InteractiveRuntimeSnapshot; sessions: RuntimeHostSessionSummary[]; sequence: number; replayed: boolean; capabilities: string[] };
+    try {
+      result = await this.request("subscribe", {
+        afterSequence: this.sequence,
+        afterHostEpoch: previousHostEpoch,
+        sessions: undefined
+      }, this.handshakeTimeoutMs);
+    } catch (error) {
+      // 重连的 socket 可能已经半死（握手能过、请求无人应答）；销毁后下一次尝试才会重建连接。
+      this.socket?.destroy();
+      throw error;
+    }
     this.capabilities = result.capabilities;
     if (this.focusedSessionId === undefined) this.focusedSessionId = result.snapshot.info.sessionId;
     this.applySnapshot(result.snapshot, result.sequence, result.hostEpoch, this.focusedSessionId === result.snapshot.info.sessionId);
@@ -1328,15 +1355,31 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
     }
   }
 
-  private request<T>(operation: string, payload: unknown): Promise<T> {
+  private request<T>(operation: string, payload: unknown, timeoutMs?: number): Promise<T> {
     if (this.closed) return Promise.reject(new Error("Runtime Host client is closed."));
     return this.openSocket().then(() => new Promise<T>((resolve, reject) => {
       const requestId = randomUUID();
-      this.pending.set(requestId, { resolve: resolve as (value: unknown) => void, reject });
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const settle = (settlement: { ok: true; value: unknown } | { ok: false; error: Error }): void => {
+        if (timer) clearTimeout(timer);
+        if (settlement.ok) resolve(settlement.value as T);
+        else reject(settlement.error);
+      };
+      this.pending.set(requestId, {
+        resolve: (value) => settle({ ok: true, value }),
+        reject: (error) => settle({ ok: false, error })
+      });
+      if (timeoutMs !== undefined) {
+        timer = setTimeout(() => {
+          this.pending.delete(requestId);
+          reject(new Error(`Runtime Host request "${operation}" timed out after ${String(timeoutMs)}ms.`));
+        }, timeoutMs);
+        timer.unref?.();
+      }
       const socket = this.socket;
       if (!socket || socket.destroyed) {
         this.pending.delete(requestId);
-        reject(new Error("Runtime Host is disconnected."));
+        settle({ ok: false, error: new Error("Runtime Host is disconnected.") });
         return;
       }
       this.send(socket, { kind: "request", requestId, operation, payload });

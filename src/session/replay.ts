@@ -68,6 +68,7 @@ export async function replayStoredSession(workspaceRoot: string, session: string
 }
 
 export function replaySessionEvents(recordedEvents: SessionEvent[], options: SessionReplayOptions = {}): SessionReplay {
+  recordedEvents = restoreRedactedExecutionTools(recordedEvents);
   const runtimeHighWater = validateRuntimeEventStream(recordedEvents);
   validateCanonicalToolPairing(recordedEvents);
   const expectedRuntimeHighWater = options.expectedRuntimeHighWater;
@@ -120,6 +121,19 @@ export function replaySessionEvents(recordedEvents: SessionEvent[], options: Ses
     messageTree: sessionMessageTree(events),
     runtimeHighWater
   };
+}
+
+function restoreRedactedExecutionTools(events: SessionEvent[]): SessionEvent[] {
+  const calls = new Map<string, Extract<SessionEvent, { type: "tool_call" }>>();
+  return events.map((event) => {
+    if (event.type === "tool_call" && event.toolCallId) calls.set(event.toolCallId, event);
+    if (event.type !== "tool_execution" || event.tool !== "[redacted]") return event;
+    const call = calls.get(event.toolCallId);
+    // 旧写入器将 skill_lookup 等协议标识误当密钥；只修复可由原调用证明的整名脱敏。
+    if (!call || !/^(?:sk|rk|pk|ghp|github_pat|AIza|AKIA)[-_A-Za-z0-9]{8,}$/u.test(call.tool)
+      || call.sequence !== event.sequence || call.runtime?.turnId !== event.runtime?.turnId) return event;
+    return { ...event, tool: call.tool };
+  });
 }
 
 /**
