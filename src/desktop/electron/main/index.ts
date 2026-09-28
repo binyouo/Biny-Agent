@@ -25,6 +25,7 @@ import { DesktopCrystalService } from "./DesktopCrystalService.js";
 import { DesktopStateStore } from "./DesktopStateStore.js";
 import { DesktopSettingsCloseCoordinator } from "./DesktopSettingsCloseCoordinator.js";
 import { DesktopSettingsTransaction } from "./DesktopSettingsTransaction.js";
+import { handleDesktopActivation, waitForDesktopQuitCleanup } from "./DesktopQuitLifecycle.js";
 import { DesktopTerminalManager } from "./DesktopTerminalManager.js";
 import { DesktopUserDataStore } from "./DesktopUserDataStore.js";
 import { globalAgentDir, globalConfigDir } from "../../../config/paths.js";
@@ -93,6 +94,7 @@ async function startDesktopApplication(): Promise<void> {
   let activityTray: Tray | undefined;
   let refreshActivityTray: ((state?: ActivityServiceState) => void) | undefined;
   let preparingQuit = false;
+  let quitCommitted = false;
   let quickChatWindow: QuickChatWindowController | undefined;
   const quickChatContext = new QuickChatContextService({
     cacheDirectory: path.join(userDataRoot, "cache", "quick-chat"),
@@ -108,6 +110,7 @@ async function startDesktopApplication(): Promise<void> {
     return quickChatWindow;
   };
   const toggleQuickChat = async (): Promise<void> => {
+    if (quitCommitted) return;
     const window = ensureQuickChatWindow();
     if (window.isVisible()) {
       if (window.isClickThrough()) {
@@ -344,8 +347,10 @@ async function startDesktopApplication(): Promise<void> {
   };
 
   const handleHandoff = async (handoff: DesktopLaunchHandoff): Promise<void> => {
+    if (quitCommitted) return;
     try {
       const target = await prepareHandoff(handoff);
+      if (quitCommitted) return;
       if (!mainWindow || mainWindow.isDestroyed()) createWindow();
       mainWindow?.show();
       mainWindow?.focus();
@@ -392,6 +397,7 @@ async function startDesktopApplication(): Promise<void> {
       activityTray = new Tray(icon);
       activityTray.setToolTip("Biny 活动记录");
       const openMainWindow = (): void => {
+        if (quitCommitted) return;
         if (!mainWindow || mainWindow.isDestroyed()) createWindow();
         mainWindow?.show();
         mainWindow?.focus();
@@ -443,10 +449,10 @@ async function startDesktopApplication(): Promise<void> {
   }
 
   app.on("activate", () => {
-    if (!mainWindow || mainWindow.isDestroyed()) createWindow();
-    else mainWindow.show();
+    handleDesktopActivation(quitCommitted, mainWindow, createWindow);
   });
   app.on("second-instance", (_event, commandLine) => {
+    if (quitCommitted) return;
     if (!mainWindow || mainWindow.isDestroyed()) createWindow();
     mainWindow?.show();
     mainWindow?.focus();
@@ -467,8 +473,7 @@ async function startDesktopApplication(): Promise<void> {
     if (preparingQuit) return;
     preparingQuit = true;
     void (async () => {
-      // 确认阶段（设置草稿、运行中任务）允许取消并还原 preparingQuit；一旦确认退出，
-      // 清理链的任何异常都不能让 app.exit 落空，否则应用会永远退不掉。
+      // 运行中任务的确认允许取消；确认退出后屏蔽新窗口，并限制服务清理的等待时长。
       let confirmed = false;
       try {
         const settingsDecision = await settingsClose.request(mainWindow?.webContents, "quit");
@@ -487,27 +492,35 @@ async function startDesktopApplication(): Promise<void> {
           if (response.response !== 0) return;
         }
         confirmed = true;
-        if (hadRunningTasks) await agents.pauseAllForExit();
-        await threadBriefs.close();
-        terminals.disposeAll();
-        await staticPreview.disposeAll();
-        // 全局快捷键与悬浮窗是真正的资源，退出前必须释放，避免占用快捷键或残留窗口。
+        quitCommitted = true;
+        // 先移除所有可见入口；异步清理期间不留可重新激活的窗口或图标。
+        mainWindow?.hide();
+        if (process.platform === "darwin") app.dock?.hide();
         globalShortcut.unregisterAll();
         activityTray?.destroy();
         activityTray = undefined;
         quickChatWindow?.destroy();
-        await activityApi.close().catch(() => undefined);
-        await activity.stop();
-        await activityEmbeddingModels.close();
-        activityMemoryPipeline.close();
-        await browser.dispose();
-        await mcp.dispose();
-        mainWindow?.destroy();
-        await temporalMemory.close();
-        await Promise.race([
-          agents.closeAll(),
-          new Promise<void>((resolve) => setTimeout(resolve, 5_000))
-        ]);
+        const cleanupResult = await waitForDesktopQuitCleanup(async () => {
+          if (hadRunningTasks) await agents.pauseAllForExit();
+          await threadBriefs.close();
+          terminals.disposeAll();
+          await staticPreview.disposeAll();
+          await activityApi.close().catch(() => undefined);
+          await activity.stop();
+          await activityEmbeddingModels.close();
+          activityMemoryPipeline.close();
+          await browser.dispose();
+          await mcp.dispose();
+          mainWindow?.destroy();
+          await temporalMemory.close();
+          await Promise.race([
+            agents.closeAll(),
+            new Promise<void>((resolve) => setTimeout(resolve, 5_000))
+          ]);
+        }, 5_000);
+        if (cleanupResult === "timed-out") {
+          console.warn("[DesktopQuit] Cleanup exceeded 5 seconds; exiting with remaining resources.");
+        }
       } finally {
         if (confirmed) app.exit(0);
         else preparingQuit = false;

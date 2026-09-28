@@ -15,7 +15,7 @@ import type { TimelineTurn } from "../sessionTimeline.js";
 import { desktopWorktreeView } from "../worktreePresentation.js";
 import { Icon } from "./Icon.js";
 import { spawnTitleDeleteDust } from "./titleDust.js";
-import { ThreadResourcesButton } from "./workspace/ThreadResourcesButton.js";
+import { WorkspaceFilesButton } from "./workspace/WorkspaceFilesButton.js";
 import { GenerationErrorBanner } from "./chat/GenerationErrorBanner.js";
 import { MessageTimeline } from "./MessageTimeline.js";
 import { RuntimePanel } from "./RuntimePanel.js";
@@ -23,6 +23,7 @@ import { RecipeReadyBanner } from "./RecipeReadyBanner.js";
 import { SkillExtractionCard } from "./SkillExtractionCard.js";
 import { ChatScroll } from "./workspace/ChatScroll.js";
 import { PlanPanel } from "./workspace/PlanPanel.js";
+import { TodoProgressPanel } from "./workspace/TodoProgressPanel.js";
 
 /** 发送消息的临时投影；真实消息或队列接管后由 App 清掉。 */
 export interface PendingPrompt {
@@ -45,6 +46,7 @@ interface WorkspaceProps {
   runtimeProjection?: DesktopRuntimeProjection;
   planProjection?: DesktopPlanProjection;
   onOpenProject(): void;
+  onOpenFiles(): void;
   onPreviewFile(path: string): void;
   runtimePanelOpen: boolean;
   onRuntimePanelOpenChange(open: boolean): void;
@@ -63,7 +65,7 @@ interface WorkspaceProps {
   onOpenExternal(url: string): void;
   onReferenceMessage(messageId: string): void;
   onShowMessageReferences(messageId: string): void;
-  onCaptureQuote(messageId: string, quote: string): void;
+  onAddQuoteToConversation(messageId: string, quote: string): Promise<void>;
   onResolvePermission(requestId: string, result: PermissionResult): Promise<void>;
   onRetry(targetMessageId: string, input: string, idempotencyKey: string): Promise<void>;
   onSwitchVersion(messageId: string, direction: "prev" | "next"): Promise<void>;
@@ -86,11 +88,13 @@ interface WorkspaceProps {
   onRuntimeRefresh(): Promise<void>;
   /** 顶栏的项目/分支选择器胶囊（含菜单），由 App 装配；无项目时缺省。 */
   workspaceContext?: React.ReactNode;
-  /** 工具入口与按产出显示的右上角资源按钮相互独立。 */
+  /** 右侧收起态的工具入口。 */
   inspectorRail?: React.ReactNode;
+  inspectorOpen: boolean;
   /** 发送消息的临时投影；真实事件到达后由 App 清掉。 */
   pendingPrompt?: PendingPrompt;
   skillDescriptions?: ReadonlyMap<string, string>;
+  skillLabels?: ReadonlyMap<string, string>;
   /** 顶部工具条：自动化/技能入口（搜索与新建任务在侧栏 chrome）。 */
   onOpenRuntime(): void;
   onOpenExtensions(): void;
@@ -109,6 +113,7 @@ export function Workspace({
   runtimeProjection,
   planProjection,
   onOpenProject,
+  onOpenFiles,
   onPreviewFile,
   runtimePanelOpen,
   onRuntimePanelOpenChange,
@@ -124,7 +129,7 @@ export function Workspace({
   onOpenExternal,
   onReferenceMessage,
   onShowMessageReferences,
-  onCaptureQuote,
+  onAddQuoteToConversation,
   onResolvePermission,
   onRetry,
   onSwitchVersion,
@@ -143,8 +148,10 @@ export function Workspace({
   onRuntimeRefresh,
   pendingPrompt,
   skillDescriptions,
+  skillLabels,
   workspaceContext,
   inspectorRail,
+  inspectorOpen,
   onOpenRuntime: _onOpenRuntime,
   onOpenExtensions: _onOpenExtensions,
   children
@@ -218,7 +225,7 @@ export function Workspace({
             ) : null}
           </div>
           <div className="biny-chat-actions">
-            <ThreadResourcesButton key={`${projectId}:${sessionId}`} turns={turns} onPreviewFile={onPreviewFile} onOpenExternal={onOpenExternal} />
+            {projectId ? <WorkspaceFilesButton inspectorOpen={inspectorOpen} onOpenFiles={onOpenFiles} /> : null}
           </div>
         </header>
         <RuntimePanel
@@ -253,7 +260,7 @@ export function Workspace({
                 onOpenExternal={onOpenExternal}
                 onReferenceMessage={onReferenceMessage}
                 onShowMessageReferences={onShowMessageReferences}
-                onCaptureQuote={onCaptureQuote}
+                onAddQuoteToConversation={onAddQuoteToConversation}
                 onPreviewFile={onPreviewFile}
                 onResolvePermission={onResolvePermission}
                 onRollbackFiles={onRollbackFiles}
@@ -265,6 +272,7 @@ export function Workspace({
                 pendingFloatFromComposer={pendingFloatFromComposer}
                 runtimeActiveRunId={runtimeActiveRunId}
                 skillDescriptions={skillDescriptions}
+                skillLabels={skillLabels}
                 thinking={streaming || thinking}
                 projectId={projectId}
                 turns={turns}
@@ -275,7 +283,10 @@ export function Workspace({
           )}
         </div>
         <div className={`biny-chat-composer${visiblePendingPrompt && turns.length === 0 ? " is-entering" : ""}`}>
-            {sessionId && !writerConflict ? <PlanPanel sessionId={sessionId} planning={planning === true} busy={running} projection={planProjection} onMutation={onRuntimeMutation} onError={onRuntimeError} /> : null}
+            {sessionId && !writerConflict ? <>
+              <TodoProgressPanel sessionId={sessionId} projection={planProjection} />
+              <PlanPanel sessionId={sessionId} planning={planning === true} busy={running} projection={planProjection} onMutation={onRuntimeMutation} onError={onRuntimeError} />
+            </> : null}
             {recipeNotices && recipeNotices.length > 0 && projectId ? (
               <div className="biny-recipe-ready-notices">
                 <RecipeReadyBanner

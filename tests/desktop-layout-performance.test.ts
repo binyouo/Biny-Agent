@@ -30,15 +30,17 @@ test("侧栏 30 帧宽度变化不提交 React，窗口缩放和最终侧栏宽�
   const { useWorkspaceInspector } = await import("../src/desktop/renderer/src/components/workspace/useWorkspaceInspector.js");
   let inspector!: ReturnType<typeof useWorkspaceInspector>;
   let commits = 0;
+  let fileCommits = 0;
   const options = { changes: [], tools: [], filePanelResizing: false, filePanelWidth: 600, sidebarFlowWidth: 260,
     projectId: "p", source: "p:s", onFilePanelResizeEnd() {}, onFilePanelResizeStart() {}, onFilePanelWidthChange() {},
-    onListDirectory: async () => ({ path: ".", entries: [] }), onOpenFile() {}, onOpenBrowser: async () => {}, onFixPreview() {},
+    onListDirectory: async () => ({ path: ".", entries: Array.from({ length: 400 }, (_, index) => ({ kind: "file" as const, name: `file-${index}.ts`, path: `file-${index}.ts` })) }), onOpenFile() {}, onOpenBrowser: async () => {}, onFixPreview() {},
     onSwitchBranch: async () => {}, onReadFile: async () => { throw new Error("unused"); }, onWarning() {} };
   function Harness(): React.ReactNode {
     inspector = useWorkspaceInspector(options);
     React.useLayoutEffect(() => { commits++; });
     return React.createElement("div", { className: "biny-app-shell" },
-      React.createElement("div", { className: "biny-sidebar-block" }), inspector.dock);
+      React.createElement("div", { className: "biny-sidebar-block" }),
+      React.createElement(React.Profiler, { id: "files", onRender: () => { fileCommits++; } }, inspector.dock));
   }
   const root = createRoot(document.getElementById("root")!);
   const render = async (): Promise<void> => { await React.act(() => root.render(React.createElement(Harness))); };
@@ -68,6 +70,33 @@ test("侧栏 30 帧宽度变化不提交 React，窗口缩放和最终侧栏宽�
     options.sidebarFlowWidth = 260;
     await render();
     assert.equal(inspector.layout.width, 280, "仍需为聊天保留 360px");
+    // 文件面板已经访问后，开合插值不能重排文件树或改写用户选择的树宽。
+    width = 1800;
+    options.sidebarFlowWidth = 0;
+    await render();
+    await resize(shell);
+    assert.equal(document.querySelectorAll('[role="treeitem"]').length, 400);
+    const body = document.querySelector<HTMLElement>(".file-browser-body")!;
+    let animatedPanel = 600;
+    Object.defineProperty(body, "clientWidth", { get: () => animatedPanel });
+    await resize(body);
+    const fileBaseline = fileCommits;
+    for (let index = 0; index < 30; index++) {
+      animatedPanel = 600 - index * 20;
+      await resize(body);
+    }
+    animatedPanel = 600;
+    await resize(body);
+    console.log(JSON.stringify({ workload: "30 file panel animation resize notifications", commits: fileCommits - fileBaseline }));
+    assert.equal(fileCommits - fileBaseline, 0, "文件区不应订阅动画中间宽度");
+    assert.equal(document.querySelector<HTMLElement>(".file-browser-tree")!.style.width, "200px", "收放不得缩小已保存的文件树宽度");
+    assert.equal(body.classList.contains("is-tree-hidden"), false);
+    options.filePanelWidth = 400;
+    await render();
+    assert.equal(body.classList.contains("is-browser-only"), true, "真实目标宽度变窄仍切换文件列表布局");
+    options.filePanelWidth = 600;
+    await render();
+    assert.equal(document.querySelector<HTMLElement>(".file-browser-tree")!.style.width, "200px");
   } finally {
     await React.act(() => root.unmount());
     assert.equal(observers.size, 0);

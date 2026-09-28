@@ -423,6 +423,7 @@
 
 /* 展开体：左导轨。相位之间留 6px；思考相位自带标题行。 */
 .chat-activity-rail {
+  min-width: 0;
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -443,26 +444,44 @@
   color: color-mix(in srgb, var(--biny-text) 85%, transparent);
 }
 
+/* Markdown 段落自己管理换行，容器不能保留节点之间的空白文本。 */
 .chat-activity-thinking {
-  font-size: 13px;
-  line-height: 1.4;
+  min-width: 0;
+  font-size: calc(13px * var(--font-scale, 1));
   line-height: 1.65;
   color: var(--biny-text-tertiary);
-  white-space: pre;
-  overflow-x: auto;
-  overflow-wrap: normal;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
-/* 思考流也按 Markdown 展示，尤其是模型在分析阶段输出的代码片段。 */
 .biny-chat-scroll .chat-activity-thinking .markdown-body {
-  max-width: 78ch;
+  max-width: 100%;
   font-size: inherit;
   line-height: inherit;
-  color: inherit;
+  color: var(--biny-text-tertiary);
+  overflow-wrap: anywhere;
 }
 
 .biny-chat-scroll .chat-activity-thinking .markdown-body p {
-  margin-bottom: 0.65em;
+  margin: 0 0 0.65em;
+  color: inherit;
+}
+
+.biny-chat-scroll .chat-activity-thinking .markdown-body :is(ul, ol) {
+  margin-block: 0.65em;
+}
+
+.biny-chat-scroll .chat-activity-thinking .markdown-body :is(strong, h1, h2, h3, h4, h5, h6) {
+  color: var(--biny-text-secondary);
+}
+
+.biny-chat-scroll .chat-activity-thinking .markdown-body :is(h1, h2, h3, h4, h5, h6) {
+  margin: 0.8em 0 0.3em;
+  font-size: 1em;
+}
+
+.biny-chat-scroll .chat-activity-thinking .markdown-body > :last-child {
+  margin-bottom: 0;
 }
 
 .biny-chat-scroll .chat-activity-thinking .markdown-code-block {
@@ -476,6 +495,7 @@
 }
 
 .chat-tool-row {
+  min-height: 28px;
   display: flex;
   align-items: baseline;
   gap: 6px;
@@ -572,6 +592,7 @@
 }
 
 .chat-tool-row-chevron {
+  opacity: 0;
   display: inline-flex;
   flex: none;
   align-self: center;
@@ -579,13 +600,23 @@
   transition: transform 150ms ease;
 }
 
+.chat-tool-row:hover .chat-tool-row-chevron,
+.chat-tool-row:focus-visible .chat-tool-row-chevron,
+.chat-tool-row.is-open .chat-tool-row-chevron {
+  opacity: 1;
+}
+
 .chat-tool-row.is-open .chat-tool-row-chevron {
   transform: rotate(180deg);
 }
 
-.chat-tool-row-detail {
-  padding-top: 4px;
+.chat-tool-row-detail { min-width: 0; padding: 2px 0 6px; }
+.chat-tool-row:focus-visible,
+.chat-command-result pre:focus-visible {
+  outline: 2px solid var(--biny-control-active);
+  outline-offset: -2px;
 }
+
 
 
 
@@ -673,11 +704,10 @@
   background: color-mix(in srgb, var(--biny-surface-hover) 20%, transparent);
   color: var(--biny-text-secondary);
   font-size: 13px;
-  line-height: 1.4;
   line-height: 1.65;
-  white-space: pre;
+  white-space: pre-wrap;
   overflow-x: auto;
-  overflow-wrap: normal;
+  overflow-wrap: anywhere;
   text-align: left;
 }
 
@@ -729,9 +759,9 @@
   font-family: var(--font-mono);
   font-size: calc(12px * var(--font-scale, 1));
   line-height: 1.55;
-  white-space: pre;
+  white-space: pre-wrap;
   overflow-x: auto;
-  overflow-wrap: normal;
+  overflow-wrap: anywhere;
   scrollbar-width: thin;
 }
 
@@ -777,7 +807,7 @@
   outline-offset: -2px;
 }
 
-.biny-chat-scroll :is(.copyable-code-block, .tool-output-surface, .command-log-output, .code-card, .markdown-code-block):hover .copy-button,
+.biny-chat-scroll :is(.copyable-code-block, .tool-output-surface, .code-card, .markdown-code-block):hover .copy-button,
 .biny-chat-scroll .copy-button.is-copied {
   opacity: 1;
 }
@@ -814,105 +844,54 @@
   flex: none;
 }
 
-/* 输出终端盒：折叠时按行裁切（运行中跟尾、落定取头），展开后限高滚动。 */
-.command-log-output {
-  border: 1px solid var(--biny-border);
-  border-radius: 8px;
-  background: color-mix(in srgb, var(--biny-surface-hover) 38%, transparent);
+/* 活动详情共用低对比面板；命令输出可独立滚动，摘要行始终可见。 */
+.chat-command {
+  min-width: 0;
+  margin-block: 4px;
   overflow: hidden;
-}
-
-.command-log-output.is-error {
-  border-color: color-mix(in srgb, var(--biny-danger) 35%, transparent);
-}
-
-.command-log-output-scroll {
-  position: relative;
-  overflow: hidden;
-}
-
-.command-log-output.is-expanded .command-log-output-scroll {
-  max-height: 60vh;
-  overflow: auto;
-  scrollbar-width: thin;
-}
-
-.command-log-output-scroll pre {
-  margin: 0;
-  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--biny-border) 65%, transparent);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--biny-surface-soft) 35%, transparent);
   font-family: var(--font-mono);
   font-size: calc(12px * var(--font-scale, 1));
-  line-height: 1.55;
-  white-space: pre;
-  overflow-x: auto;
-  overflow-wrap: normal;
-  color: var(--biny-text-secondary);
 }
-
-.command-log-output-copy {
-  position: absolute;
-  top: 6px;
-  right: 6px;
-}
-
-.command-log-expand {
-  display: block;
-  width: 100%;
-  padding: 6px 12px;
-  border: none;
-  border-top: 1px solid color-mix(in srgb, var(--biny-border) 65%, transparent);
-  background: none;
-  font-size: calc(11.5px * var(--font-scale, 1));
-  text-align: left;
-  color: var(--biny-focus);
-  cursor: pointer;
-}
-
-.biny-chat-scroll .command-log-expand:hover {
-  text-decoration: underline;
-}
-
-.command-log-exit {
+.chat-command-input,
+.chat-command-result { position: relative; min-width: 0; }
+.chat-command pre {
   margin: 0;
-  padding: 6px 12px;
-  border-top: 1px solid color-mix(in srgb, var(--biny-danger) 25%, transparent);
-  font-size: calc(11.5px * var(--font-scale, 1));
-  color: var(--biny-danger);
+  padding: 8px 40px 8px 12px;
+  font: inherit;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
-
-/* 运行徽标：标题行内的琥珀脉冲点（复用动宾行的脉冲节奏）。 */
-.command-log-live {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  margin-left: 8px;
-  font-weight: 400;
-  letter-spacing: 0;
-  text-transform: none;
+.chat-command-input { color: var(--biny-text-secondary); }
+.chat-command-result {
+  border-top: 1px solid color-mix(in srgb, var(--biny-border) 50%, transparent);
   color: var(--biny-text-tertiary);
 }
-
-.command-log-live-dot {
-  width: 6px;
-  height: 6px;
-  flex: none;
-  border-radius: 50%;
-  background: color-mix(in srgb, var(--biny-warning) 80%, transparent);
-  animation: chat-tool-run-pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+.chat-command-result pre {
+  max-height: 288px;
+  overflow: auto;
+  scrollbar-width: thin;
+  overscroll-behavior: contain;
 }
-
-.command-log-empty {
-  display: inline-flex;
+.chat-command .copy-button { position: absolute; top: 6px; right: 6px; min-width: 24px; min-height: 24px; }
+.biny-chat-scroll .chat-command:hover .copy-button,
+.biny-chat-scroll .chat-command:focus-within .copy-button { opacity: 1; }
+.chat-command-status {
+  display: flex;
   align-items: center;
   gap: 6px;
-  padding: 10px 12px;
-  font-size: calc(12px * var(--font-scale, 1));
+  padding: 6px 12px;
+  border-top: 1px solid color-mix(in srgb, var(--biny-border) 50%, transparent);
+  font-family: var(--font-sans);
+  font-size: calc(11px * var(--font-scale, 1));
   color: var(--biny-text-tertiary);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
-
-.stderr-output {
-  color: var(--biny-danger);
-}
+.chat-command-status.is-error { color: var(--biny-danger); }
 
 .biny-chat-scroll .expand-output {
   align-self: flex-start;
@@ -920,7 +899,7 @@
   border: none;
   background: none;
   font-size: calc(12px * var(--font-scale, 1));
-  color: var(--biny-focus);
+  color: var(--biny-text-secondary);
   cursor: pointer;
 }
 
@@ -1275,7 +1254,7 @@
 }
 
 .chat-codeview.is-expanded .chat-codeview-body {
-  max-height: none;
+  max-height: 60vh;
 }
 
 .chat-codeview-gutter {
@@ -1863,12 +1842,13 @@
 
 .chat-io-card {
   border: 1px solid var(--biny-border);
-  border-radius: var(--biny-radius-card, 10px);
-  background: var(--biny-surface-soft);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--biny-surface-soft) 35%, transparent);
   overflow: hidden;
 }
 
 .chat-io-section {
+  position: relative;
   display: flex;
   align-items: baseline;
   gap: 10px;
@@ -1886,6 +1866,7 @@
 }
 
 .chat-io-text {
+  margin: 0;
   flex: 1;
   min-width: 0;
   max-height: 200px;
@@ -1893,16 +1874,26 @@
   font-family: var(--font-mono);
   font-size: calc(12px * var(--font-scale, 1));
   line-height: 1.55;
-  white-space: pre;
+  white-space: pre-wrap;
   overflow-x: auto;
-  overflow-wrap: normal;
+  overflow-wrap: anywhere;
   color: var(--biny-text-secondary);
   scrollbar-width: thin;
 }
 
-.chat-io-text[data-error] {
+.chat-io-label[data-error] {
   color: var(--biny-danger);
 }
+
+.chat-io-section .copy-button { flex: none; min-width: 24px; min-height: 24px; }
+.biny-chat-scroll .chat-io-card:hover .copy-button,
+.biny-chat-scroll .chat-io-card:focus-within .copy-button { opacity: 1; }
+.chat-io-text:focus-visible,
+.chat-codeview-body:focus-visible,
+.diff-code:focus-visible { outline: 2px solid var(--biny-control-active); outline-offset: -2px; }
+.chat-io-text,
+.chat-codeview-body,
+.diff-code { overscroll-behavior: contain; }
 
 .chat-io-divider {
   height: 1px;
@@ -1983,6 +1974,12 @@
   display: flex;
   flex-direction: column;
   gap: 8px;
+}
+
+.biny-chat-scroll .execution-empty-response {
+  padding-block: 2px 4px;
+  color: var(--biny-text-tertiary);
+  font-size: calc(12px * var(--font-scale, 1));
 }
 
 .biny-chat-scroll .execution-step {
@@ -2086,8 +2083,8 @@
 }
 
 .biny-chat-scroll .user-bubble .markdown-body a {
-  color: var(--biny-chat-user-fg);
-  text-decoration: underline;
+  color: var(--biny-focus);
+  text-decoration: none;
 }
 
 .biny-chat-scroll .user-message-actions {
@@ -2384,12 +2381,10 @@
 
 .biny-chat-scroll .markdown-body a {
   color: var(--biny-focus);
-  text-decoration: underline;
-  text-decoration-color: color-mix(in srgb, var(--biny-focus) 35%, transparent);
-  text-underline-offset: 0.2em;
+  text-decoration: none;
 }
 
-.biny-chat-scroll .markdown-body a:hover { text-decoration-color: currentColor; }
+.biny-chat-scroll .markdown-body a:hover { color: color-mix(in srgb, var(--biny-focus) 78%, var(--biny-text)); }
 
 /* 行内代码维持正文节奏，不把每个标识符做成醒目的小卡片。 */
 .biny-chat-scroll .markdown-body :not(pre) > code {
@@ -3096,3 +3091,28 @@
 .biny-chat-scroll .markdown-body h5 { font-size: 1em; }
 .biny-chat-scroll .markdown-body h6 { font-size: .875em; }
 .biny-chat-scroll .markdown-body :is(h1, h2, h3, h4, h5, h6) { margin: 24px 0 8px; }
+
+.markdown-link-actions {
+  position: fixed;
+  z-index: 2200;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  width: min(280px, calc(100vw - 16px));
+  padding: 6px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-raised);
+  color: var(--text);
+  box-shadow: 0 4px 16px var(--shadow);
+  font-size: 12px;
+}
+.markdown-link-address { padding: 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-secondary); }
+.markdown-link-actions button { min-height: 30px; padding: 5px 8px; border: 0; border-radius: 4px; background: transparent; color: inherit; text-align: left; cursor: pointer; }
+.markdown-link-actions button:hover { background: var(--surface-hover); }
+.markdown-link-actions button:focus-visible { outline: 2px solid var(--text); outline-offset: -2px; }
+.markdown-link-actions.is-context-menu { width: min(248px, calc(100vw - 16px)); gap: 1px; padding: 5px; }
+.markdown-link-actions.is-context-menu button { min-height: 32px; padding: 6px 9px; }
+.markdown-link-menu-heading { padding: 6px 9px 4px; color: var(--text-secondary); font-size: 11px; }
+.markdown-link-menu-separator { height: 1px; margin: 4px 3px; background: var(--border); }
+.markdown-link-feedback { position: fixed; z-index: 2201; max-width: min(240px, calc(100vw - 16px)); padding: 7px 10px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface-raised); color: var(--text); box-shadow: 0 4px 16px var(--shadow); font-size: 12px; pointer-events: none; }

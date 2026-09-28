@@ -35,3 +35,30 @@ test("静态预览提供 HTML 和资源，拒绝目录逃逸与外部符号链�
     assert.match(await (await fetch(nested.url)).text(), /Nested/);
   } finally { await preview.disposeAll(); await rm(dir, { recursive: true, force: true }); }
 });
+
+
+test("文件交互预览复用同项目服务并解析相对资源，同时阻止隐藏文件和越界读取", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "biny-html-preview-"));
+  const root = path.join(dir, "site");
+  const { mkdir } = await import("node:fs/promises");
+  await mkdir(root); await mkdir(path.join(root, "pages"));
+  await writeFile(path.join(root, "pages", "game.html"), '<script src="./game.js"></script>');
+  await writeFile(path.join(root, "pages", "game.js"), "document.body.textContent = 'ready'");
+  await writeFile(path.join(root, "pages", "other.html"), "Other page");
+  await writeFile(path.join(root, ".env"), "SECRET=local");
+  await writeFile(path.join(dir, "outside.html"), "outside");
+  await symlink(path.join(dir, "outside.html"), path.join(root, "escape.html"));
+  const preview = new StaticPreviewServer();
+  try {
+    const game = await preview.htmlPreviewUrl("project", root, "pages/game.html");
+    assert.match(await (await fetch(game.url)).text(), /game\.js/);
+    assert.match(await (await fetch(new URL("game.js", game.url))).text(), /ready/);
+    const other = await preview.htmlPreviewUrl("project", root, "pages/other.html");
+    assert.equal(new URL(other.url).origin, new URL(game.url).origin);
+    assert.equal(await (await fetch(other.url)).text(), "Other page");
+    assert.equal(preview.status("project"), undefined, "文件预览不占用运行预览服务");
+    assert.equal((await fetch(new URL("/.env", game.url))).status, 403);
+    await assert.rejects(preview.htmlPreviewUrl("project", root, "escape.html"), /项目目录/);
+    await assert.rejects(preview.htmlPreviewUrl("project", root, "../outside.html"), /项目内/);
+  } finally { await preview.disposeAll(); await rm(dir, { recursive: true, force: true }); }
+});

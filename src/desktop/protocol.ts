@@ -10,6 +10,7 @@
 import type { DesktopThreadBriefRequest, DesktopThreadBriefSnapshot } from "./threadBriefProtocol.js";
 import type { DesktopCrystalRequest, DesktopCrystalSnapshot } from "./crystalProtocol.js";
 import type { planStatus } from "../extensions/plan.js";
+import type { TodoItem } from "../session/todoStore.js";
 import type { AgentCapabilitySelection, CapabilitySelectionMode } from "../agent/capabilitySelection.js";
 import type { ActivitySettings, ActivitySettingsInput, ActivitySettingsPatch } from "../activity/settings.js";
 import type { ActivityRuntimeSnapshot } from "../activity/types.js";
@@ -166,6 +167,7 @@ export const desktopIpc = {
   referenceBacklinks: "desktop:references:backlinks",
   referenceCaptureSnippet: "desktop:references:snippet",
   referenceCaptureQuote: "desktop:references:quote",
+  referenceCaptureSelectionQuote: "desktop:references:selection-quote",
   referenceForMessage: "desktop:references:message",
   referenceDateDetail: "desktop:references:date-detail",
   referenceDateCalendar: "desktop:references:date-calendar",
@@ -218,6 +220,7 @@ export const desktopIpc = {
   resolveDroppedFile: "desktop:attachment:resolve-path",
   listWorkspaceDirectory: "desktop:file:list-directory",
   readWorkspaceFile: "desktop:file:read",
+  htmlPreviewUrl: "desktop:file:html-preview-url",
   readInlineImage: "desktop:file:read-image",
   openWorkspaceFile: "desktop:file:open",
   openExternal: "desktop:external:open",
@@ -1461,6 +1464,8 @@ export interface DesktopRuntimeProjection {
 export interface DesktopPlanProjection {
   sessionId: string;
   plans: Array<ReturnType<typeof planStatus>>;
+  /** 普通多步任务的当前会话清单；由 TodoWrite 更新并在工具完成后刷新。 */
+  todos?: TodoItem[];
 }
 
 export type DesktopWorktreeLifecycleStatus = "active" | "merged" | "conflicted" | "orphaned" | "kept";
@@ -1662,6 +1667,7 @@ export interface DesktopApi {
   referenceBacklinks(projectId: string, uri: string): Promise<LocalReferenceLink[]>;
   referenceCaptureSnippet(projectId: string, sourceUri: string, start: number, end: number): Promise<LocalReferenceResult>;
   referenceCaptureQuote(projectId: string, sourceUri: string, quote: string): Promise<LocalReferenceResult>;
+  referenceCaptureSelectionQuote(projectId: string, sourceUri: string, quote: string): Promise<LocalReferenceResult>;
   referenceForMessage(projectId: string, threadId: string, messageId: string): Promise<LocalReferenceResult>;
   referenceDateDetail(projectId: string, uri: string): Promise<DateReferenceDetail>;
   referenceDateCalendar(projectId: string, uri: string): Promise<NativeCalendarResult>;
@@ -1713,8 +1719,9 @@ export interface DesktopApi {
   resolveDroppedFile(file: File): string;
   listWorkspaceDirectory(projectId: string, relativePath: string): Promise<DesktopWorkspaceDirectory>;
   readWorkspaceFile(projectId: string, relativePath: string): Promise<DesktopWorkspaceFilePreview>;
+  htmlPreviewUrl(projectId: string, relativePath: string): Promise<{ url: string }>;
   /** 读取消息里引用的本地图片，返回 data URL；不是图片、太大或读不到时返回 undefined。 */
-  readInlineImage(projectId: string, relativePath: string): Promise<string | undefined>;
+  readInlineImage(projectId: string, relativePath: string, thumbnail?: boolean): Promise<string | undefined>;
   openWorkspaceFile(projectId: string, relativePath: string): Promise<void>;
   openExternal(url: string): Promise<void>;
   openSystemSettings(pane: DesktopSystemSettingsPane): Promise<void>;

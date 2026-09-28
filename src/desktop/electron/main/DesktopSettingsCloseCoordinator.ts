@@ -1,5 +1,5 @@
 /**
- * 设置草稿与主窗口关闭之间的有界握手。
+ * 设置草稿与主窗口关闭之间的有界握手。应用退出会丢弃渲染层草稿，不等待关闭确认。
  *
  * 主进程只保存脱敏的 dirty/canSave 状态。真正的三选一确认由 Renderer 现有设置详情层完成；
  * Renderer 崩溃、窗口销毁或超时都按取消处理，避免主进程无限等待或误丢草稿。
@@ -44,7 +44,7 @@ export class DesktopSettingsCloseCoordinator {
     renderer: SettingsCloseRenderer | undefined,
     intent: DesktopSettingsCloseIntent
   ): Promise<DesktopSettingsCloseDecision> {
-    if (!this.state.dirty) return "proceed";
+    if (!this.state.dirty || intent === "quit") return "proceed";
     if (this.pending) return await this.pending.promise;
     if (!renderer || renderer.isDestroyed()) return "cancel";
 

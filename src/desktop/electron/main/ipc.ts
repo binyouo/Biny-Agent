@@ -910,6 +910,11 @@ export function registerDesktopIpc(context: IpcContext): void {
     try { return await graph.captureQuote(z.string().max(4096).parse(uri), z.string().min(1).max(4000).parse(quote), idSchema.parse(projectId)); }
     finally { graph.close(); }
   });
+  handleRecoveryGated(desktopIpc.referenceCaptureSelectionQuote, async (_event, projectId: unknown, uri: unknown, quote: unknown) => {
+    const graph = new LocalReferenceGraph(globalAgentDir(), referenceService());
+    try { return await graph.captureSelectionQuote(z.string().max(4096).parse(uri), z.string().trim().min(1).max(4000).parse(quote), idSchema.parse(projectId)); }
+    finally { graph.close(); }
+  });
   handleRecoveryGated(desktopIpc.referenceForMessage, async (_event, projectId: unknown, threadId: unknown, messageId: unknown) => {
     return await referenceService().referenceForMessage(
       idSchema.parse(threadId), idSchema.parse(messageId), idSchema.parse(projectId));
@@ -1214,9 +1219,15 @@ export function registerDesktopIpc(context: IpcContext): void {
     return await context.projects.readWorkspaceFile(project, z.string().min(1).max(2_000).parse(relativePath));
   });
 
-  handle(desktopIpc.readInlineImage, async (_event, projectId: unknown, relativePath: unknown) => {
+  handle(desktopIpc.htmlPreviewUrl, async (event, projectId: unknown, relativePath: unknown) => {
+    assertBrowserSender(event);
     const project = context.projects.requireProject(idSchema.parse(projectId));
-    return await context.projects.readInlineImage(project, z.string().min(1).max(2_000).parse(relativePath));
+    return await context.staticPreview.htmlPreviewUrl(project.id, project.path, z.string().min(1).max(2_000).parse(relativePath));
+  });
+
+  handle(desktopIpc.readInlineImage, async (_event, projectId: unknown, relativePath: unknown, thumbnail: unknown) => {
+    const project = context.projects.requireProject(idSchema.parse(projectId));
+    return await context.projects.readInlineImage(project, z.string().min(1).max(2_000).parse(relativePath), z.boolean().optional().parse(thumbnail));
   });
 
   handle(desktopIpc.listWorkspaceDirectory, async (_event, projectId: unknown, relativePath: unknown) => {

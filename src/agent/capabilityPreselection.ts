@@ -1,4 +1,4 @@
-/** 回合开始前固定基础编码工具，只用辅助模型筛选扩展能力与 Skill；不授予权限或执行工具。 */
+/** 回合开始前固定基础编码工具与任务清单，只用辅助模型筛选其他扩展能力与 Skill；不授予权限或执行工具。 */
 import { z } from "zod";
 import type { AgentMessage, AgentModel } from "./core/types.js";
 import type { AgentConfig } from "../config/schema.js";
@@ -32,7 +32,7 @@ export async function preselectCapabilities(options: CapabilityPreselectionInput
   const skillsMode = options.selection?.skills ?? options.config.chat.defaultSkillSelection;
   if (toolsMode !== "auto" && skillsMode !== "auto") return { tools: toolsMode, skills: skillsMode };
   const tools = options.tools;
-  const optionalTools = tools.filter((tool) => !stableCodingToolNames.has(tool.name) && tool.name !== "read_tool_result" && tool.name !== "read_checkpoint_evidence" && tool.name !== toolSearchToolName);
+  const optionalTools = tools.filter((tool) => !stableCodingToolNames.has(tool.name) && tool.name !== "read_tool_result" && tool.name !== "read_checkpoint_evidence" && tool.name !== toolSearchToolName && tool.name !== "TodoWrite");
   const skills = options.skills;
   const selectedTools = new Set(
     toolsMode === "auto"
@@ -101,6 +101,8 @@ export async function preselectCapabilities(options: CapabilityPreselectionInput
   options.signal?.throwIfAborted();
   if (toolsMode === "auto") {
     if (tools.some((tool) => tool.name === toolSearchToolName)) selectedTools.add(toolSearchToolName);
+    // 不让辅助筛选模型决定主 Agent 是否能看到多步任务清单；单步任务仍由主 Agent 按工具提示跳过。
+    if (tools.some((tool) => tool.name === "TodoWrite")) selectedTools.add("TodoWrite");
     for (const pair of [["WebSearch", "WebFetch"], ["Bash", "BashOutput", "KillShell"]]) {
       if (pair.some((name) => selectedTools.has(name))) for (const name of pair) if (tools.some((tool) => tool.name === name)) selectedTools.add(name);
     }

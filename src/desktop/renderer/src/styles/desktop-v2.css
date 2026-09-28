@@ -2999,7 +2999,10 @@ select option:disabled {
 .message-references-list { display: flex; flex-direction: column; max-height: 50vh; overflow-y: auto; }
 .message-references-list button { display: flex; justify-content: space-between; gap: 12px; border: 0; border-bottom: 1px solid var(--border); padding: 10px 0; color: var(--text-primary); background: transparent; text-align: left; cursor: pointer; }
 .message-references-list span { color: var(--text-secondary); }
-.message-selection-reference { position: fixed; z-index: 180; border: 1px solid var(--border); border-radius: 6px; padding: 5px 9px; color: var(--text-primary); background: var(--color-background-popover); box-shadow: 0 3px 12px rgb(0 0 0 / 12%); cursor: pointer; }
+.message-selection-reference { position: fixed; z-index: 2200; display: inline-flex; align-items: center; gap: 6px; min-height: 32px; border: 1px solid var(--border); border-radius: 8px; padding: 5px 10px; color: var(--text-primary); background: var(--color-background-popover); box-shadow: 0 3px 12px rgb(0 0 0 / 12%); white-space: nowrap; cursor: pointer; }
+.message-selection-reference:hover { background: var(--surface-hover); }
+.message-selection-reference:disabled { cursor: wait; opacity: .8; }
+.message-selection-reference:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
 .markdown-reference-invalid { color: var(--text-secondary); }
 .reference-detail-content { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .activity-memory-entries { display: flex; flex-direction: column; gap: 8px; }
@@ -4850,6 +4853,31 @@ select option:disabled {
   font-size: calc(var(--plan-unit) * .875);
   line-height: calc(var(--plan-unit) * 1.25);
 }
+.biny-todo-progress {
+  --todo-unit: calc(13px * var(--font-scale, 1));
+  color: light-dark(#1a1a1a, #dcdfe4);
+  margin-bottom: calc(var(--todo-unit) * .5);
+  border: 1px solid color-mix(in srgb, light-dark(#e2e8f0, #3e4451) 50%, transparent);
+  border-radius: calc(var(--todo-unit) * .625);
+  background: color-mix(in srgb, light-dark(#f1f5f9, #3b404c) 30%, transparent);
+  overflow: hidden;
+  font-size: calc(var(--todo-unit) * .875);
+  line-height: calc(var(--todo-unit) * 1.25);
+}
+.biny-todo-progress-heading { display: flex; align-items: center; justify-content: space-between; padding: calc(var(--todo-unit) * .75) var(--todo-unit); color: light-dark(#64748b, #8b92a4); }
+.biny-todo-progress-count { color: light-dark(#16a765, #42cf82); font-weight: 550; }
+.biny-todo-progress-list { display: grid; gap: calc(var(--todo-unit) * .625); max-height: min(30vh, 280px); overflow: auto; margin: 0; padding: 0 var(--todo-unit) calc(var(--todo-unit) * .75); list-style: none; }
+.biny-todo-progress-item { display: flex; align-items: flex-start; gap: calc(var(--todo-unit) * .625); min-width: 0; }
+.biny-todo-progress-marker { display: grid; width: var(--todo-unit); height: var(--todo-unit); flex: 0 0 var(--todo-unit); place-items: center; color: light-dark(#7b8494, #8b92a4); }
+.biny-todo-progress-marker > span { width: calc(var(--todo-unit) * .75); height: calc(var(--todo-unit) * .75); border: 1.5px solid currentColor; border-radius: 50%; opacity: .5; }
+.biny-todo-progress-item.is-completed .biny-todo-progress-marker { color: light-dark(#16a765, #42cf82); }
+.biny-todo-progress-item.is-in_progress .biny-todo-progress-marker { color: light-dark(#d18b18, #edb64a); }
+.biny-todo-progress-item.is-in_progress .biny-todo-progress-text { color: light-dark(#1a1a1a, #f2f3f5); }
+.biny-todo-progress-item.is-completed .biny-todo-progress-text { color: light-dark(#64748b, #8b92a4); text-decoration: line-through; }
+.biny-todo-progress-text { min-width: 0; overflow-wrap: anywhere; }
+.biny-todo-progress-spinner { animation: biny-todo-progress-spin 1s linear infinite; }
+@keyframes biny-todo-progress-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .biny-todo-progress-spinner { animation: none; } }
 .biny-plan-card { border: 1px solid color-mix(in srgb, var(--plan-border) 50%, transparent); border-radius: calc(var(--plan-unit) * .625); background: color-mix(in srgb, var(--plan-muted) 30%, transparent); overflow: hidden; }
 .biny-plan-card svg { width: var(--plan-unit); height: var(--plan-unit); flex-shrink: 0; }
 .biny-plan-heading { all: unset; box-sizing: border-box; display: flex; align-items: center; justify-content: space-between; width: 100%; padding: calc(var(--plan-unit) * .75) var(--plan-unit); cursor: pointer; transition: background-color 150ms cubic-bezier(.4, 0, .2, 1); }

@@ -35,10 +35,10 @@ test("收起和展开过程中标题与按钮共用带最小安全宽度的边�
   });
 });
 
-test("最终层叠样式同时保留左右侧栏的宽度过渡", () => {
+test("左侧共享插值不再携带右侧动画变量", () => {
   withStyles('', (get) => {
     const transition = get(".biny-root").transition;
-    for (const property of ["--biny-sidebar-animated-visual-width", "--biny-sidebar-animated-flow-width", "--biny-inspector-animated-flow-width"]) {
+    for (const property of ["--biny-sidebar-animated-visual-width", "--biny-sidebar-animated-flow-width"]) {
       assert.ok(transition.includes(property), `${property} 必须平滑插值`);
     }
   });
@@ -95,4 +95,20 @@ test("侧栏几何和卡片显隐采用 500ms 对称缓入缓出，预览保持�
     assert.equal(get(".biny-sidebar").width, "var(--biny-sidebar-animated-visual-width)");
     assert.equal(get(".is-peek-overlay").width, "var(--biny-sidebar-content-width)");
   });
+});
+
+
+test("文件预览保持目标宽度，动画变量不向正文和文件内容传播", () => {
+  const dom = new JSDOM(`<style>${css}</style><div class="biny-root">
+    <div class="biny-chat-scroll-content"></div><div class="biny-sidebar-card"></div>
+    <div class="desktop-inspector"></div></div>`);
+  try {
+    for (const selector of [".biny-chat-scroll-content", ".biny-sidebar-card", ".desktop-inspector"]) {
+      const style = dom.window.getComputedStyle(dom.window.document.querySelector(selector)!);
+      for (const property of ["--biny-sidebar-animated-visual-width", "--biny-sidebar-animated-flow-width"]) {
+        assert.equal(style.getPropertyValue(property), "0px", `${selector} 隔离 ${property}`);
+      }
+    }
+    assert.equal(dom.window.getComputedStyle(dom.window.document.querySelector(".desktop-inspector")!).width, "var(--biny-inspector-content-width)");
+  } finally { dom.window.close(); }
 });

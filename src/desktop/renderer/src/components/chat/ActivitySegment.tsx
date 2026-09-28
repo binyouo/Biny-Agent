@@ -17,7 +17,7 @@ import { useChatResponseSettings } from "../../chatResponseSettings.js";
  *
  * 待授权优先展示其所在相位；整个活动段结束后收起，不在工具间空档重置。
  */
-import React, { memo, useMemo, useState } from "react";
+import React, { memo, useCallback, useId, useMemo, useRef, useState } from "react";
 import type { PermissionResult } from "../../../../../permission/PermissionManager.js";
 import {
   activityToolRow,
@@ -80,6 +80,12 @@ export const ActivitySegment = memo(function ActivitySegment({
   );
   const phases = useMemo(() => buildActivityPhases(items), [items]);
   const segmentKey = steps[0]?.id ?? "activity";
+  const [openTools, setOpenTools] = useState<ReadonlySet<string>>(() => new Set());
+  const toggleTool = useCallback((id: string) => setOpenTools(current => {
+    const next = new Set(current);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    return next;
+  }), []);
   const isLive = (phase: ActivityPhase): boolean => running && phase.items.some(({ step }) =>
     step.kind === "reasoning" ? !step.completed : step.kind === "tool" && (step.tool.status === "running" || step.tool.status === "waiting")
   );
@@ -118,7 +124,9 @@ export const ActivitySegment = memo(function ActivitySegment({
   if (selection.running !== running || selection.collapsed !== collapseThinking) setSelection({ running, collapsed: collapseThinking, phase: defaultPhase, timeline: !collapseThinking && allThinking });
   // 悬停「+N」时液滴展开；用户选中的相位落在隐藏区时保持展开（溢出展开态）。
   const [overflowExpanded, setOverflowExpanded] = useState(false);
-  const timelineMode = !running && selection.running === running && selection.timeline;
+  // 活动期间始终呈现完整轨道，让较早的思考和工具步骤留在当前进度旁边；
+  // 落定后再恢复按偏好收起的单相位/时间线选择。
+  const timelineMode = running || (selection.running === running && selection.timeline);
   const selectedPhase = pendingPhaseIndex >= 0 ? pendingPhaseIndex
     : running ? phases.length - 1 : selection.running === running ? selection.phase : null;
   const railOpen = timelineMode || selectedPhase !== null;
@@ -153,6 +161,8 @@ export const ActivitySegment = memo(function ActivitySegment({
               key={`${segmentKey}-avatar-overflow`}
               onMouseEnter={() => { if (!running) setOverflowExpanded(true); }}
               onMouseLeave={() => setOverflowExpanded(false)}
+              onFocus={() => setOverflowExpanded(true)}
+              onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) setOverflowExpanded(false); }}
             >
               <button
                 aria-label={`${String(hiddenCount)} 个更早阶段`}
@@ -172,6 +182,7 @@ export const ActivitySegment = memo(function ActivitySegment({
                     className={`chat-phase-avatar is-droplet${dropletExpanded ? " is-open" : ""}${isOpen ? " is-active" : ""}${hiddenCount > 12 ? " is-flip" : ""}`}
                     data-activity-toggle=""
                     disabled={running}
+                    tabIndex={dropletExpanded ? 0 : -1}
                     key={`${segmentKey}-avatar-h-${String(hi)}`}
                     onClick={() => openPhase(hi)}
                     style={{
@@ -269,6 +280,8 @@ export const ActivitySegment = memo(function ActivitySegment({
                     onPreviewFile={onPreviewFile}
                     onResolvePermission={onResolvePermission}
                     phase={phase}
+                    openTools={openTools}
+                    onToggleTool={toggleTool}
                     projectId={projectId}
                     segmentKey={segmentKey}
                   />
@@ -282,6 +295,8 @@ export const ActivitySegment = memo(function ActivitySegment({
                 onPreviewFile={onPreviewFile}
                 onResolvePermission={onResolvePermission}
                 phase={openPhaseOrNull}
+                openTools={openTools}
+                onToggleTool={toggleTool}
                 projectId={projectId}
                 segmentKey={segmentKey}
               />
@@ -295,6 +310,8 @@ export const ActivitySegment = memo(function ActivitySegment({
 /** 一个相位的展开体：思考相位平铺文本；工具相位渲染动宾行 + 行内详情。 */
 const PhaseBody = memo(function PhaseBody({
   phase,
+  openTools,
+  onToggleTool,
   segmentKey,
   projectId,
   onPreviewFile,
@@ -302,6 +319,8 @@ const PhaseBody = memo(function PhaseBody({
   onResolvePermission,
 }: {
   phase: ActivityPhase;
+  openTools: ReadonlySet<string>;
+  onToggleTool(id: string): void;
   segmentKey: string;
   projectId: string;
   onPreviewFile(path: string): void;
@@ -338,6 +357,8 @@ const PhaseBody = memo(function PhaseBody({
             onResolvePermission={onResolvePermission}
             projectId={projectId}
             tool={step.tool}
+            open={openTools.has(step.tool.id)}
+            onToggle={() => onToggleTool(step.tool.id)}
           />
         );
       })}
@@ -348,27 +369,39 @@ const PhaseBody = memo(function PhaseBody({
 /** 轨道里的工具动宾行：动词加重、宾语弱化截断、± 行数、行内展开完整详情。 */
 export const ActivityToolRow = memo(function ActivityToolRow({
   tool,
+  open: controlledOpen,
+  onToggle,
   projectId,
   onPreviewFile,
   onOpenExternal,
   onResolvePermission,
 }: {
   tool: TimelineTool;
+  open?: boolean;
+  onToggle?(): void;
   projectId: string;
   onPreviewFile(path: string): void;
   onOpenExternal(url: string): void;
   onResolvePermission(requestId: string, result: PermissionResult): Promise<void>;
 }): React.JSX.Element {
   const row = activityToolRow(tool);
-  const [open, setOpen] = useState(["Bash", "Write", "Edit"].includes(tool.tool));
+  const [localOpen, setLocalOpen] = useState(false);
+  const open = controlledOpen ?? localOpen;
+  const toggle = (): void => { if (onToggle) onToggle(); else setLocalOpen(current => !current); };
+  const detailId = useId();
+  const buttonRef = useRef<HTMLButtonElement>(null);
   const running = row.running;
   return (
-    <div data-activity-anchor="" className={`chat-tool-row-wrap${tool.permission ? " has-permission" : ""}`}>
+    <div data-activity-anchor="" className={`chat-tool-row-wrap${tool.permission ? " has-permission" : ""}`} onKeyDown={(event) => {
+      if (event.key === "Escape" && open) { event.stopPropagation(); toggle(); buttonRef.current?.focus(); }
+    }}>
       <button
         aria-expanded={open}
+        aria-controls={detailId}
+        ref={buttonRef}
         className={`chat-tool-row${open ? " is-open" : ""}`}
         data-activity-toggle=""
-        onClick={() => setOpen((current) => !current)}
+        onClick={toggle}
         type="button"
       >
         {running ? <span aria-hidden="true" className="chat-tool-run-dot" /> : null}
@@ -383,7 +416,7 @@ export const ActivityToolRow = memo(function ActivityToolRow({
         <span className="chat-tool-row-chevron"><Icon name="chevron" size={14} /></span>
       </button>
       <Collapse className="chat-tool-row-collapse" open={open}>
-        <div className="chat-tool-row-detail">
+        <div className="chat-tool-row-detail" id={detailId}>
           <ToolActivityDetail
             onOpenExternal={onOpenExternal}
             onPreviewFile={onPreviewFile}

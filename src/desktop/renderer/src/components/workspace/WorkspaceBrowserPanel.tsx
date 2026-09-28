@@ -260,7 +260,21 @@ export function WorkspaceBrowserPanel({ projectId, active, expanded, onToggleExp
     const schedule = (): void => { if (!frame) frame = requestAnimationFrame(sync); };
     sync();
     const observer = new ResizeObserver(schedule); observer.observe(element);
-    const overlays = new MutationObserver(schedule); overlays.observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ["open", "aria-hidden", "class", "style"] });
+    const overlaySelector = 'dialog, [role="dialog"], [aria-modal="true"]';
+    const containsOverlay = (node: Node): boolean => node instanceof Element
+      && (node.matches(overlaySelector) || Boolean(node.querySelector(overlaySelector)));
+    const overlays = new MutationObserver((records) => {
+      // 输入光标每帧写 style，图片消息也会增删 DOM；它们都不影响原生网页的遮挡。
+      for (const record of records) {
+        if (record.type === "attributes") {
+          const target = record.target;
+          if (target instanceof Element && (target.closest(overlaySelector) || target.querySelector(overlaySelector)
+            || record.attributeName === "role" || record.attributeName === "aria-modal")) { schedule(); return; }
+        } else if ([...record.addedNodes, ...record.removedNodes].some(containsOverlay)) { schedule(); return; }
+      }
+    });
+    overlays.observe(document.body, { subtree: true, childList: true, attributes: true,
+      attributeFilter: ["open", "role", "aria-modal", "aria-hidden", "class", "style"] });
     window.addEventListener("resize", schedule); document.addEventListener("visibilitychange", schedule);
     return () => {
       disposed = true; observer.disconnect(); overlays.disconnect(); cancelAnimationFrame(frame);

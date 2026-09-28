@@ -27,7 +27,7 @@ import { ProviderBrandGlyph } from "./ProviderBrandGlyph.js";
 import { isResumeInput } from "./composer/resumeInput.js";
 import { SendOrStopButton } from "./composer/SendOrStopButton.js";
 import { PromptInput } from "./composer/PromptInput.js";
-import { materializeDraftReferences, normalizeDraftReferences, reconcileDraftReferenceChange,
+import { insertDraftReference, materializeDraftReferences, normalizeDraftReferences, reconcileDraftReferenceChange,
   referenceDraftHistoryStep, type DraftReferenceToken, type ReferenceDraft, type ReferenceDraftTransition } from "./composer/referenceCompletion.js";
 import type { QueuedRunMessageSnapshot } from "../../../../runtime/agentEvents.js";
 import { QueuedMessages } from "./composer/QueuedMessages.js";
@@ -36,6 +36,7 @@ export type ComposerMemoryState = "unknown" | "enabled" | "disabled";
 
 export interface ComposerHandle {
   appendText(text: string): void;
+  appendReference(reference: Pick<LocalReferenceResult, "kind" | "label" | "uri">): void;
 }
 
 interface ComposerProps {
@@ -178,6 +179,18 @@ export const Composer = memo(function Composer({
       const value = `${current.value}${current.value && !/\s$/u.test(current.value) ? " " : ""}${text} `;
       rememberDraft(normalizeDraftReferences(value, current.tokens));
       window.requestAnimationFrame(() => inputRef.current?.focus());
+    },
+    appendReference(reference) {
+      const current = draftRef.current;
+      const value = `${current.value}${current.value && !/\s$/u.test(current.value) ? " " : ""}`;
+      const position = value.length;
+      const next = insertDraftReference(value, { start: position, end: position, query: "" }, reference, current.tokens);
+      rememberDraft({ value: next.value, tokens: next.tokens });
+      window.requestAnimationFrame(() => {
+        const input = inputRef.current;
+        input?.focus();
+        input?.setSelectionRange(next.cursor, next.cursor);
+      });
     }
   }), [rememberDraft]);
   const fileInputRef = useRef<HTMLInputElement>(null);

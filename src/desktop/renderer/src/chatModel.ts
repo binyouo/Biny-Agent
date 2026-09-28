@@ -380,7 +380,7 @@ export function activityToolRow(tool: TimelineTool): ActivityToolRowModel {
       return row;
     case "Bash": {
       row.verb = args?.background === true ? "启动" : "执行";
-      row.object = tool.description ?? (stringArg(tool, "command") ?? "").slice(0, 80) ?? "…";
+      row.object = stringArg(tool, "description")?.trim() || tool.description?.trim() || (stringArg(tool, "command") ?? tool.command?.command ?? "").trim().slice(0, 80) || "Shell 命令";
       return row;
     }
     case "KillShell":

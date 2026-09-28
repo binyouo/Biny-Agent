@@ -23,6 +23,7 @@ import { FileLinkCard } from "./FileLinkCard.js";
 import { MarkdownTable } from "./MarkdownTable.js";
 import { MarkdownImage } from "./MarkdownImage.js";
 import { Icon } from "./Icon.js";
+import { MarkdownWebLink } from "./MarkdownWebLink.js";
 import { createMarkdownBlockParser } from "../markdownBlocks.js";
 import type { PluggableList } from "unified";
 
@@ -62,7 +63,6 @@ export const MarkdownContent = memo(function MarkdownContent({
   onOpenExternal
 }: MarkdownContentProps): React.JSX.Element {
   const { markdown, singleDollarMath, openLinksInBrowser } = useChatResponseSettings();
-  const [linkError, setLinkError] = useState<string>();
   const parseBlocks = useMemo(() => createMarkdownBlockParser(), []);
   const [wasStreaming, setWasStreaming] = useState(streaming);
   useEffect(() => { if (streaming) setWasStreaming(true); }, [streaming]);
@@ -104,16 +104,8 @@ export const MarkdownContent = memo(function MarkdownContent({
       }
       const externalUrl = href && /^https?:\/\//i.test(href) ? href : undefined;
       const isAnchor = !externalUrl && Boolean(href?.startsWith("#"));
-      const onClick = externalUrl
-        ? (event: React.MouseEvent) => {
-          event.preventDefault();
-          if (openLinksInBrowser && !event.metaKey && !event.ctrlKey) {
-            setLinkError(undefined);
-            void window.biny.openBrowser(externalUrl).catch(() => setLinkError("无法打开内置浏览器，请重试链接。"));
-          } else onOpenExternal(externalUrl);
-        }
-        : undefined;
-      return <a {...props} onClick={onClick} rel="noreferrer" target={isAnchor ? undefined : "_blank"} title={externalUrl ? "在浏览器中打开" : undefined}>{children}</a>;
+      if (externalUrl) return <MarkdownWebLink href={externalUrl} internalByDefault={openLinksInBrowser} onOpenExternal={onOpenExternal}>{children}</MarkdownWebLink>;
+      return <a {...props} rel="noreferrer" target={isAnchor ? undefined : "_blank"}>{children}</a>;
     },
     code({ className, children }) {
       // 围栏代码块由下面的 pre 接管，这里只剩行内代码。
@@ -142,7 +134,6 @@ export const MarkdownContent = memo(function MarkdownContent({
   if (!markdown) return <div className={`markdown-body is-plain-text${variant ? ` ${variant}` : ""}`}>{content}</div>;
   return (
     <div className={variant ? `markdown-body ${variant}` : "markdown-body"}>
-      {linkError ? <p role="alert">{linkError}</p> : null}
       {blocks.map((block, index) => <MarkdownBlock key={index} content={block} components={components} remarkPlugins={remarkPlugins} />)}
     </div>
   );

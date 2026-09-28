@@ -24,6 +24,18 @@ export class StaticPreviewServer {
     return current ? { url: current.url } : undefined;
   }
 
+  /** 文件面板使用独立端口；同一项目的多个 HTML 共享服务，但每次都校验目标文件。 */
+  async htmlPreviewUrl(projectId: string, root: string, entry: string): Promise<{ url: string }> {
+    if (!/\.html?$/iu.test(entry) || entry.split(/[\\/]/u).some((part) => part.startsWith("."))) throw new Error("只能预览项目内的 HTML 文件。");
+    const realRoot = await fs.realpath(root);
+    const realEntry = await fs.realpath(path.join(realRoot, entry));
+    if (!inside(realRoot, realEntry) || !(await fs.stat(realEntry)).isFile()) throw new Error("预览入口不在项目目录内。");
+    const server = await this.start(`file:${projectId}`, realRoot, entry);
+    const url = new URL(server.url);
+    url.pathname = `/${entry.split("/").map(encodeURIComponent).join("/")}`;
+    return { url: url.href };
+  }
+
   async start(projectId: string, root: string, entry: string): Promise<{ url: string }> {
     if (this.disposed) throw new Error("预览服务已关闭。");
     const existing = this.running.get(projectId);
@@ -47,7 +59,7 @@ export class StaticPreviewServer {
         let decoded: string;
         try { decoded = decodeURIComponent(rawPath); }
         catch { response.writeHead(400).end(); return; }
-        if (decoded.includes("\0") || decoded.includes("\\") || decoded.split("/").includes("..")) { response.writeHead(403).end(); return; }
+        if (decoded.includes("\0") || decoded.includes("\\") || decoded.split("/").some((part) => part.startsWith("."))) { response.writeHead(403).end(); return; }
         const relative = decoded === "/" ? entry : decoded.replace(/^\/+/, "");
         const target = path.join(realRoot, relative);
         let resolved: string;

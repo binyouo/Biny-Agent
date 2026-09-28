@@ -123,25 +123,36 @@
 
 
 /* 三列共享真实布局轨道，详情栏不得通过定位或最小内容宽度盖住聊天。 */
-.biny-root .biny-app-shell { display: grid; grid-template-columns: var(--biny-sidebar-animated-flow-width, 0px) minmax(0, 1fr) var(--biny-inspector-animated-flow-width, 0px); }
+.biny-root .biny-app-shell { display: grid; grid-template-columns: var(--biny-sidebar-animated-flow-width, 0px) minmax(0, 1fr) auto; }
 .biny-root .biny-sidebar-block { grid-column: 1; grid-row: 1; }
 .biny-root .biny-content-shell { grid-column: 2; grid-row: 1; min-width: 0; width: auto; }
-.biny-root .biny-app-shell > .desktop-inspector-wrap { grid-column: 3; grid-row: 1; position: relative; inset: auto; width: 100%; max-width: none; min-width: 0; transform: none; }
-/* 左右栏的共享宽度过渡统一在 biny.css 声明，避免覆盖另一侧的动画。 */
+.biny-root .biny-app-shell > .desktop-inspector-wrap { grid-column: 3; grid-row: 1; position: relative; inset: auto; width: var(--biny-inspector-flow-width, 0px); max-width: none; min-width: 0; border-left-width: 0; transform: none; }
+/* 宽度和透明度只在右栏外壳过渡，避免每帧更改根节点的继承变量。 */
 .biny-root .biny-app-shell > .desktop-inspector-wrap {
   animation: none;
-  transition: opacity 180ms ease;
+  transition: width 300ms ease-out, opacity 300ms ease-out;
 }
 .biny-root .biny-app-shell > .desktop-inspector-wrap.is-closed {
   opacity: 0;
   pointer-events: none;
 }
+.biny-root .biny-chat-scroll { transition: padding-right 300ms ease-out; }
+.biny-root[data-inspector-resizing="true"] .biny-chat-scroll,
+.biny-root[data-sidebar-resizing="true"] .biny-chat-scroll,
+.biny-root[data-inspector-focused="true"] .biny-chat-scroll,
+.biny-root[data-inspector-resizing="true"] .biny-app-shell > .desktop-inspector-wrap,
+.biny-root[data-sidebar-resizing="true"] .biny-app-shell > .desktop-inspector-wrap,
+.biny-root[data-inspector-focused="true"] .biny-app-shell > .desktop-inspector-wrap {
+  transition: none;
+}
 /* rail 固定在窗口右缘，避免开合时跟着面板左缘穿过聊天正文。 */
 .biny-root .biny-inspector-rail { right: 10px; }
 @starting-style {
+  .biny-root .biny-app-shell > .desktop-inspector-wrap.is-open { width: 0px; opacity: 0; }
   .biny-root .biny-inspector-rail.is-visible { opacity: 0; transform: translateX(88px); }
 }
 @media (prefers-reduced-motion: reduce) {
+  .biny-root .biny-chat-scroll,
   .biny-inspector-view-content,
   .biny-inspector-view-content[data-active="true"],
   .biny-root .biny-inspector-rail,
@@ -153,31 +164,12 @@
 }
 .biny-root .biny-workspace-chat .biny-workspace-main { --biny-chat-content-width: calc(100% - 32px); width: 100%; min-width: 0; flex: 1 1 auto; }
 /* 收起态工具条占用独立的右侧留白，不覆盖右对齐消息；输入框仍使用完整宽度。
-   rail 滑出退场期间（is-visible 已移除）立即收回留白。 */
+   留白与右栏占位使用同一曲线，避免正文先瞬间扩宽再被面板压窄。 */
 .biny-root .biny-workspace-main:has(> .biny-inspector-rail.is-visible) .biny-chat-scroll { padding-right: 48px; }
 .biny-root .biny-chat-scroll-content, .biny-root .message-timeline, .biny-root .assistant-message { min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
 
-/* 产出菜单是临时顶层浮层，不参与详情栏的宽度与打开状态。 */
-.biny-resource-trigger { position: relative; width: 28px; height: 28px; opacity: .75; }
-.biny-resource-trigger:hover, .biny-resource-trigger.is-active { opacity: 1; background: var(--biny-surface-hover); }
-.biny-resource-count { position: absolute; right: -2px; top: -2px; min-width: 14px; padding: 0 3px; border-radius: 9px; background: var(--biny-focus); color: var(--biny-surface); font: 600 9px/14px -apple-system, BlinkMacSystemFont, sans-serif; }
-.biny-thread-resources { position: fixed; inset: 52px calc(var(--biny-inspector-animated-flow-width, 0px) + 12px) auto auto; margin: 0; padding: 6px; width: min(288px, calc(100vw - 24px)); box-sizing: border-box; overflow: visible; border: 1px solid var(--biny-border); border-radius: 12px; background: var(--biny-surface-elevated); color: var(--biny-text); box-shadow: 0 8px 28px var(--biny-shadow-heavy); font: 13px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; -webkit-app-region: no-drag; }
-.biny-thread-resources::backdrop { background: transparent; }
-.biny-resource-scroll { max-height: 70vh; overflow-y: auto; }
-.biny-thread-resources h2 { margin: 0; padding: 8px 8px 4px; color: var(--biny-text-secondary); font-size: 11px; font-weight: 500; letter-spacing: .04em; }
-.biny-resource-row { display: flex; align-items: center; gap: 10px; width: 100%; min-width: 0; padding: 6px 8px; border: 0; border-radius: 6px; background: transparent; color: inherit; text-align: left; font: inherit; cursor: pointer; }
-.biny-resource-row:hover, .biny-resource-row[aria-expanded="true"], .biny-resource-row:focus-visible { background: var(--biny-surface-selected); }
-.biny-resource-icon { display: grid; place-items: center; flex: 0 0 28px; height: 28px; border-radius: 6px; background: var(--biny-surface-hover); color: var(--biny-focus); }
-.biny-resource-label { display: flex; flex: 1; min-width: 0; flex-direction: column; gap: 2px; }
-.biny-resource-label strong, .biny-resource-label small { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-.biny-resource-label strong { font-size: 13px; font-weight: 500; }
-.biny-resource-label small { color: var(--biny-text-secondary); font-size: 12px; }
-.biny-resource-more { width: 100%; padding: 6px 8px 6px 46px; border: 0; border-radius: 6px; background: transparent; color: var(--biny-text-secondary); text-align: left; font: inherit; font-size: 12px; cursor: pointer; }
-.biny-resource-more:hover { background: var(--biny-surface-hover); }
-.biny-resource-actions { position: absolute; right: calc(100% + 6px); top: 30px; width: 190px; padding: 4px; border: 1px solid var(--biny-border); border-radius: 8px; background: var(--biny-surface-elevated); box-shadow: 0 4px 16px var(--biny-shadow-heavy); }
-.biny-resource-actions button { display: flex; align-items: center; gap: 8px; width: 100%; padding: 8px; border: 0; border-radius: 5px; background: transparent; color: inherit; font: inherit; cursor: pointer; }
-.biny-resource-actions button:hover { background: var(--biny-surface-hover); }
-.biny-resource-actions small { display: block; padding: 8px; color: var(--biny-danger); }
+.biny-files-trigger { width: 28px; height: 28px; opacity: .75; }
+.biny-files-trigger:hover { opacity: 1; }
 .biny-output-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(256px, 100%), 1fr)); gap: 8px; margin-top: 16px; min-width: 0; }
 .biny-root .biny-output-cards .markdown-file-link { display: flex; align-items: center; gap: 10px; width: 100%; max-width: none; min-width: 0; box-sizing: border-box; margin: 0; padding: 8px 10px; border: 1px solid var(--biny-border); border-radius: 10px; background: transparent; text-align: left; font: 13px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
 .biny-root .biny-output-cards .markdown-file-link:hover { background: var(--biny-surface-hover); }
@@ -188,7 +180,6 @@
 .biny-output-location { flex-shrink: 0; padding: 0 5px; border: 1px solid var(--biny-border); border-radius: 8px; color: var(--biny-text-secondary); font-size: 9px; }
 .biny-output-location::before { content: ""; display: inline-block; width: 4px; height: 4px; margin-right: 4px; border-radius: 50%; background: var(--biny-focus); }
 .biny-output-cards .markdown-file-link-dir { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--biny-text-secondary); font-size: 12px; }
-@media (max-width: 720px) { .biny-resource-actions { position: static; width: auto; margin-top: 6px; box-shadow: none; } }
 
 /* 服务商总开关与连接测试同处标题区，反馈就地显示。 */
 .provider-master-toggle { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; margin-left: auto; font-size: 12px; color: var(--biny-text-secondary); }
@@ -289,3 +280,14 @@
 .inspector-browser-slot { position: relative; flex: 1; min-width: 0; min-height: 0; overflow: hidden; }
 .inspector-browser-slot > .inspector-empty, .file-browser-content > .inspector-empty { box-sizing: border-box; height: 100%; }
 .inspector-browser-progress { flex: 0 0 2px; background: var(--biny-focus); }
+
+/* 外壳负责开合裁切，文件树和预览只按最终可用宽度排版。 */
+.biny-root .desktop-inspector { box-sizing: border-box; width: var(--biny-inspector-content-width); border-left: 1px solid var(--biny-border); }
+
+/* 共享几何只供外壳使用，阻断每帧变量变化向大量高亮 token 和历史正文继承。 */
+.biny-root .biny-chat-scroll-content,
+.biny-root .biny-sidebar-card,
+.biny-root .desktop-inspector {
+  --biny-sidebar-animated-visual-width: 0px;
+  --biny-sidebar-animated-flow-width: 0px;
+}

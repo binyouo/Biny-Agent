@@ -13,7 +13,6 @@ import type { TimelineCommand, TimelineTool } from "../sessionTimeline.js";
 import { projectWebSearchView, type WebSearchResultView, type WebSearchView } from "../webSearchPresentation.js";
 import { CopyButton } from "./CopyButton.js";
 import { Icon } from "./Icon.js";
-import { MarkdownCodeBlock } from "./MarkdownCodeBlock.js";
 import { CodeView } from "./chat/CodeView.js";
 import { IoCard } from "./chat/IoCard.js";
 
@@ -33,7 +32,7 @@ export const ToolActivityDetail = memo(function ToolActivityDetail({ projectId, 
 
   return (
     <div className="tool-details" data-project-id={projectId}>
-      {command ? <CommandLog command={command} running={tool.status === "running" && (!tool.permission || tool.permission.resolved)} /> : null}
+      {command ? <CommandLog command={command} error={errorText} status={tool.permission && !tool.permission.resolved ? "waiting" : tool.status} running={tool.status === "running" && (!tool.permission || tool.permission.resolved)} /> : null}
       {tool.fileChange ? <section className="tool-section">
         <h4 className="tool-section-label">{tool.fileChange.server ? `远端变更 · ${tool.fileChange.server}` : "已提交变更"}</h4>
         <pre><code>{tool.fileChange.operation} {tool.fileChange.path}{tool.fileChange.destinationPath ? ` → ${tool.fileChange.destinationPath}` : ""}</code></pre>
@@ -49,7 +48,7 @@ export const ToolActivityDetail = memo(function ToolActivityDetail({ projectId, 
         </section>
       ) : null}
       {!command && !diff && !webSearch && !tool.fileChange ? <ToolPayload onPreviewFile={onPreviewFile} tool={tool} /> : null}
-      {errorText ? (
+      {errorText && !command ? (
         <section className="tool-section">
           <h4 className="tool-section-label">错误</h4>
           <div className="copyable-code-block is-error">
@@ -209,80 +208,36 @@ function resolvedPermissionLabel(action: PermissionAction | undefined, approved:
   return approved ? "已允许" : "已拒绝";
 }
 
-/** 输出折叠态展示的行数（流式输出折叠上限）。 */
-const OUTPUT_COLLAPSED_LINES = 10;
-
-interface OutputLine {
-  text: string;
-  stderr: boolean;
-}
-
-/** stdout / stderr 拼成逐行数组：折叠按行切片，stderr 行保留染色。 */
-function commandOutputLines(command: TimelineCommand): OutputLine[] {
-  const lines: OutputLine[] = [];
-  for (const line of command.stdout.split("\n")) lines.push({ text: line, stderr: false });
-  // stdout 以换行收尾时 split 出的末尾空行不是真实空行，接 stderr 前去掉
-  if (command.stderr && lines.length > 0 && lines.at(-1)?.text === "") lines.pop();
-  if (command.stderr) for (const line of command.stderr.split("\n")) lines.push({ text: line, stderr: true });
-  if (lines.length > 0 && lines.at(-1)?.text === "") lines.pop();
-  return lines;
-}
-
-/**
- * 命令执行详情（命令卡结构）：
- * 「命令」小节 = 虚线边框 bash 代码卡；「输出」小节 = 边框终端盒 + 运行徽标。
- * 输出按行折叠：运行中跟随尾部（长命令的实时日志在末尾），落定后从头部折叠，
- * 展开后限高滚动，不再用测高展开的老方案。
- */
-function CommandLog({ command, running }: { command: TimelineCommand; running: boolean }): React.JSX.Element {
-  const [expanded, setExpanded] = useState(false);
-  const scrollRef = useRef<HTMLDivElement>(null);
-  const lines = commandOutputLines(command);
-  const output = lines.map((line) => line.text).join("\n");
-  const hasOutput = lines.length > 0;
-  const hiddenCount = Math.max(0, lines.length - OUTPUT_COLLAPSED_LINES);
-  const visibleLines = expanded ? lines : running ? lines.slice(-OUTPUT_COLLAPSED_LINES) : lines.slice(0, OUTPUT_COLLAPSED_LINES);
-  const failed = command.exitCode !== undefined && command.exitCode !== 0;
+/** 活动行已经提供标题；详情只保留命令、原始输出和一次状态反馈。 */
+function CommandLog({ command, error, status, running }: { command: TimelineCommand; error?: string; status: TimelineTool["status"]; running: boolean }): React.JSX.Element {
+  const scrollRef = useRef<HTMLPreElement>(null);
+  const followOutput = useRef(true);
+  const output = [command.stdout, command.stderr].filter(Boolean).join(command.stdout.endsWith("\n") ? "" : "\n");
+  const failed = status === "failed" || status === "denied" || (command.exitCode !== undefined && command.exitCode !== 0);
+  const statusText = status === "waiting" ? "等待确认" : status === "cancelled" || status === "aborted" ? "已停止" : status === "skipped" ? "已跳过" : status === "unknown" ? "执行状态未知" : failed ? command.exitCode !== undefined ? `退出码 ${String(command.exitCode)}` : "执行失败" : output ? "已完成" : "已完成，无输出";
   useEffect(() => {
-    if (!running || !expanded || !scrollRef.current) return;
-    scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-  }, [output, running, expanded]);
+    const element = scrollRef.current;
+    if (running && element && followOutput.current) element.scrollTop = element.scrollHeight;
+  }, [output, running]);
 
   return (
-    <>
-      {command.command ? (
-        <section className="tool-section">
-          <h4 className="tool-section-label">命令</h4>
-          <MarkdownCodeBlock code={command.command} dashed language="bash" />
-        </section>
-      ) : null}
-      {hasOutput || running ? (
-        <section className="tool-section">
-          <h4 className="tool-section-label">
-            输出
-            {running && hasOutput ? <span className="command-log-live"><span className="command-log-live-dot" />运行中</span> : null}
-          </h4>
-          {hasOutput ? (
-            <div className={`command-log-output${failed ? " is-error" : ""}${expanded ? " is-expanded" : ""}`}>
-              <div className="command-log-output-scroll" ref={scrollRef}>
-                <pre><code>{visibleLines.map((line, index) => (
-                  <span className={line.stderr ? "stderr-output" : undefined} key={index}>{line.text}{"\n"}</span>
-                ))}</code></pre>
-                <CopyButton className="command-log-output-copy" label="复制输出" value={output} />
-              </div>
-              {hiddenCount > 0 ? (
-                <button className="command-log-expand" onClick={() => setExpanded(!expanded)} type="button">
-                  {expanded ? "收起输出" : `展开全部输出（还有 ${String(hiddenCount)} 行）`}
-                </button>
-              ) : null}
-              {failed ? <p className="command-log-exit">退出码 {String(command.exitCode)}</p> : null}
-            </div>
-          ) : (
-            <div className="command-log-empty"><span className="command-log-live-dot" />等待输出…</div>
-          )}
-        </section>
-      ) : null}
-    </>
+    <div className="chat-command">
+      {command.command ? <div className="chat-command-input">
+        <pre><span aria-hidden="true">$ </span>{command.command}</pre>
+        <CopyButton label="复制命令" value={command.command} />
+      </div> : null}
+      {output ? <div className="chat-command-result">
+        <pre aria-label="命令输出" tabIndex={0} ref={scrollRef} onScroll={(event) => {
+          const element = event.currentTarget;
+          followOutput.current = element.scrollHeight - element.scrollTop - element.clientHeight < 32;
+        }}>{output}</pre>
+        <CopyButton label="复制输出" value={output} />
+      </div> : null}
+      <div className={`chat-command-status${failed || error ? " is-error" : ""}`}>
+        {running ? <><span aria-hidden="true" className="chat-tool-run-dot" />{output ? "运行中" : "等待输出…"}</>
+          : error ? error : statusText}
+      </div>
+    </div>
   );
 }
 
@@ -356,8 +311,8 @@ function DiffView({ diff, info, onPreviewFile }: { diff: string; info: DiffInfo;
         <span className="diff-stats"><span className="diff-add">+{info.additions}</span><span className="diff-delete">-{info.deletions}</span></span>
         <CopyButton label="复制 Diff" value={diff} />
       </header>
-      <pre className="diff-code"><code>{visibleLines.map((line, index) => <DiffLine key={`${String(index)}-${line.text.slice(0, 20)}`} line={line} />)}</code></pre>
-      {lines.length > visibleLines.length ? <button className="expand-output" onClick={() => setShowAll(true)} type="button">展开全部 {lines.length} 行</button> : null}
+      <pre aria-label="文件变更" tabIndex={0} className="diff-code"><code>{visibleLines.map((line, index) => <DiffLine key={`${String(index)}-${line.text.slice(0, 20)}`} line={line} />)}</code></pre>
+      {lines.length > 500 ? <button aria-expanded={showAll} className="expand-output" onClick={() => setShowAll(current => !current)} type="button">{showAll ? "收起变更" : `展开全部 ${String(lines.length)} 行`}</button> : null}
     </section>
   );
 }
@@ -390,7 +345,7 @@ function ToolPayload({ tool, onPreviewFile }: { tool: TimelineTool; onPreviewFil
       </section>
     );
   }
-  // 通用工具按 DSH 的 IN/OUT 卡片展示：IN = pretty 参数、OUT = 结果（或运行中的进度）。
+  // 参数与结果分区，运行时在结果区展示进度。
   const input = friendlyResult(tool.args);
   const output = friendlyResult(tool.result) ?? (progress || undefined);
   if (input === undefined && output === undefined) return <></>;

@@ -18,6 +18,7 @@ import type { AgentAttachment } from "../../../agent/AgentSession.js";
 import { generateText } from "ai";
 import type { LanguageModelV4CallOptions } from "@ai-sdk/provider";
 import { planStatus } from "../../../extensions/plan.js";
+import { TodoStore } from "../../../session/todoStore.js";
 import { assertPlanningOperationAllowed } from "../../../agent/planningPolicy.js";
 import type { AgentCapabilitySelection } from "../../../agent/capabilitySelection.js";
 import type {
@@ -2248,10 +2249,15 @@ export class DesktopAgentManager {
 
   async planProjection(projectId: string, sessionId: string): Promise<import("../../protocol.js").DesktopPlanProjection> {
     const { runtime, commands } = await this.ensureRuntime(projectId);
+    const project = this.projects.requireProject(projectId);
+    const persistenceRoot = await this.projects.dataRoot(project);
+    await resolveSessionFile(persistenceRoot, sessionId);
+    const todos = new TodoStore(persistenceRoot, sessionId);
+    await todos.initialize();
     const plans = commands
       ? commands.graphs.listGraphs().filter((graph) => graph.mode === "supervised" && graph.supervisorSessionId === sessionId).map((graph) => planStatus(commands, graph.graphId, sessionId))
       : await requireRemoteRuntime(runtime).planList(sessionId);
-    return { sessionId, plans };
+    return { sessionId, plans, todos: todos.list() };
   }
 
   /** 日期列表只需持久化任务；不得为其他项目加载模型、工具或启动调度器。 */

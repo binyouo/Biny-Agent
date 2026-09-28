@@ -83,6 +83,7 @@ export type IconName =
   | "plug"
   | "power"
   | "puzzle"
+  | "quote"
   | "pull-request"
   | "refresh"
   | "remote"
@@ -216,8 +217,9 @@ function pathFor(name: IconName): React.JSX.Element {
     case "plug": return <><path {...common} d="M12 22v-5" /><path {...common} d="M15 8V2" /><path {...common} d="M17 8a1 1 0 0 1 1 1v4a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4V9a1 1 0 0 1 1-1z" /><path {...common} d="M9 8V2" /></>;
     case "power": return <><path {...common} d="M12 2v10" /><path {...common} d="M18.4 6.6a9 9 0 1 1-12.8 0" /></>;
     case "puzzle": return <path {...common} d="M15.39 4.39a1 1 0 0 0 1.68-.474 2.5 2.5 0 1 1 3.014 3.015 1 1 0 0 0-.474 1.68l1.683 1.682a2.414 2.414 0 0 1 0 3.414L19.61 15.39a1 1 0 0 1-1.68-.474 2.5 2.5 0 1 0-3.014 3.015 1 1 0 0 1 .474 1.68l-1.683 1.682a2.414 2.414 0 0 1-3.414 0L8.61 19.61a1 1 0 0 0-1.68.474 2.5 2.5 0 1 1-3.014-3.015 1 1 0 0 0 .474-1.68l-1.683-1.682a2.414 2.414 0 0 1 0-3.414L4.39 8.61a1 1 0 0 1 1.68.474 2.5 2.5 0 1 0 3.014-3.015 1 1 0 0 1-.474-1.68l1.683-1.682a2.414 2.414 0 0 1 3.414 0z" />;
+    case "quote": return <><path {...common} d="M3 11h6v7H2v-5c0-4.2 1.8-6.5 5.5-7.5M15 11h6v7h-7v-5c0-4.2 1.8-6.5 5.5-7.5" /></>;
     case "pull-request": return <><circle {...common} cx="7" cy="5" r="2" /><circle {...common} cx="7" cy="19" r="2" /><circle {...common} cx="17" cy="19" r="2" /><path {...common} d="M7 7v10M14 5h1a2 2 0 0 1 2 2v10M14 2l-3 3 3 3" /></>;
-    case "refresh": return <><path {...common} d="M20 11a8 8 0 1 0 1 4" /><path {...common} d="M20 5v6h-6" /></>;
+    case "refresh": return <><path {...common} d="M21 12a9 9 0 1 1-2.636-6.364L21 8" /><path {...common} d="M21 3v5h-5" /></>;
     case "remote": return <><rect {...common} height="14" rx="2" width="20" x="2" y="3" /><path {...common} d="M8 21h8M12 17v4" /></>;
     case "search": return <><path {...common} d="m21 21-4.34-4.34" /><circle {...common} cx="11" cy="11" r="8" /></>;
     case "server": return <><rect {...common} height="6" rx="1.5" width="16" x="4" y="3" /><rect {...common} height="6" rx="1.5" width="16" x="4" y="15" /><path {...common} d="M8 6h.01M8 18h.01M12 6h5M12 18h5" /></>;

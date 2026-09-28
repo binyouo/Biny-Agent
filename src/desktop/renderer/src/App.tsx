@@ -112,6 +112,15 @@ function DesktopApp(): React.JSX.Element {
   const [composerSkillWarnings, setComposerSkillWarnings] = useState<string[]>([]);
   const [composerSkills, setComposerSkills] = useState<DesktopSkillCatalogEntry[]>([]);
   const skillDescriptions = useMemo(() => new Map(composerSkills.map((skill) => [skill.name, skill.description])), [composerSkills]);
+  const skillLabels = useMemo(() => {
+    const labels = new Map<string, string>();
+    for (const skill of composerSkills) {
+      labels.set(skill.id, skill.name);
+      labels.set(skill.ref, skill.name);
+      labels.set(skill.name, skill.name);
+    }
+    return labels;
+  }, [composerSkills]);
   const [composerTools, setComposerTools] = useState<DesktopToolCatalogEntry[]>([]);
   const [composerCatalogNonce, setComposerCatalogNonce] = useState(0);
   const [document, setDocument] = useState<DesktopSessionDocument>();
@@ -1616,16 +1625,28 @@ function DesktopApp(): React.JSX.Element {
     try { setMessageReferencesUri((await window.biny.referenceForMessage(projectId, sessionId, messageId)).uri); }
     catch (error) { setWarning(errorMessage(error)); }
   }, []);
-  const captureQuote = useCallback(async (messageId: string, quote: string): Promise<void> => {
+  const addQuoteToConversation = useCallback(async (messageId: string, quote: string): Promise<void> => {
     const projectId = projectRef.current;
     const sessionId = selectedRef.current;
-    if (!projectId || !sessionId) return;
+    if (!projectId || !sessionId) {
+      setWarning("请在已打开的对话中选择文字，再添加到对话。");
+      return;
+    }
     try {
       const source = await window.biny.referenceForMessage(projectId, sessionId, messageId);
-      const result = await window.biny.referenceCaptureQuote(projectId, source.uri, quote);
-      const label = result.label.replace(/[\]\n\r]/gu, " ").slice(0, 80) || "片段";
-      composerRef.current?.appendText(`@[${label}](${result.uri})`);
-    } catch (error) { setWarning(errorMessage(error)); }
+      const result = await window.biny.referenceCaptureSelectionQuote(projectId, source.uri, quote);
+      if (projectRef.current !== projectId || selectedRef.current !== sessionId) return;
+      const labelCharacters = Array.from(result.label.replace(/[\]\n\r]/gu, " ").replace(/\s+/gu, " ").trim());
+      const label = `${labelCharacters.slice(0, 48).join("")}${labelCharacters.length > 48 ? "…" : ""}` || "引用内容";
+      const composer = composerRef.current;
+      if (!composer) {
+        setWarning("聊天输入框尚未就绪，引用未添加，请重试。");
+        return;
+      }
+      composer.appendReference({ kind: result.kind, label, uri: result.uri });
+    } catch (error) {
+      if (projectRef.current === projectId && selectedRef.current === sessionId) setWarning(errorMessage(error));
+    }
   }, []);
   // 深链路由：MarkdownContent 叶子渲染直接调用 hub，这里统一解析并导航。
   const openDeepLink = useCallback(async (url: string, requestedProjectId?: string): Promise<void> => {
@@ -1933,10 +1954,12 @@ function DesktopApp(): React.JSX.Element {
         onOpenExternal={openExternalLink}
         onReferenceMessage={referenceMessage}
         onShowMessageReferences={showMessageReferences}
-        onCaptureQuote={captureQuote}
+        onAddQuoteToConversation={addQuoteToConversation}
         onOpenProject={() => void openProject()}
+        onOpenFiles={inspector.openFiles}
         onPreviewFile={inspector.previewFile}
         inspectorRail={inspector.rail}
+        inspectorOpen={inspector.layout.open}
         onResolvePermission={resolvePermission}
         onRollbackFiles={rollbackFiles}
         onRetry={retryTimelinePrompt}
@@ -1972,6 +1995,7 @@ function DesktopApp(): React.JSX.Element {
         workspaceContext={workspaceContext}
         pendingPrompt={pendingPrompt}
         skillDescriptions={skillDescriptions}
+        skillLabels={skillLabels}
         onOpenRuntime={openRuntimePanel}
         onOpenExtensions={openExtensions}
       >

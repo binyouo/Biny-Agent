@@ -16,12 +16,6 @@
   initial-value: 0px;
 }
 
-@property --biny-inspector-animated-flow-width {
-  syntax: "<length>";
-  inherits: true;
-  initial-value: 0px;
-}
-
 :root {
   --biny-surface: var(--surface);
   --biny-surface-elevated: var(--surface-raised);
@@ -33,6 +27,7 @@
   --biny-text-secondary: var(--text-secondary);
   --biny-text-tertiary: var(--text-tertiary);
   --biny-focus: var(--accent);
+  --biny-control-active: var(--text);
   --biny-send-bg: var(--surface-raised);
   --biny-send-icon: var(--text);
   --biny-pill: var(--surface-raised);
@@ -182,6 +177,7 @@
   --biny-text-secondary: var(--biny-light-text-secondary);
   --biny-text-tertiary: var(--biny-light-text-tertiary);
   --biny-focus: var(--biny-light-focus);
+  --biny-control-active: var(--biny-light-text);
   --biny-send-bg: var(--biny-light-send-bg);
   --biny-send-icon: var(--biny-light-send-icon);
   --biny-pill: var(--biny-light-pill);
@@ -293,11 +289,9 @@
   /* 侧栏、主区轨道和顶部按钮共用插值；标题直接从同一宽度推导，避免独立时钟错位。 */
   --biny-sidebar-animated-visual-width: var(--biny-sidebar-visual-width, 0px);
   --biny-sidebar-animated-flow-width: var(--biny-sidebar-flow-width, 0px);
-  --biny-inspector-animated-flow-width: var(--biny-inspector-flow-width, 0px);
   transition:
     --biny-sidebar-animated-visual-width var(--biny-sidebar-transition),
-    --biny-sidebar-animated-flow-width var(--biny-sidebar-transition),
-    --biny-inspector-animated-flow-width 300ms cubic-bezier(0.4, 0, 0.2, 1);
+    --biny-sidebar-animated-flow-width var(--biny-sidebar-transition);
   position: relative;
   display: block;
   width: 100%;
@@ -326,6 +320,7 @@
   --biny-text-secondary: var(--biny-dark-text-secondary);
   --biny-text-tertiary: var(--biny-dark-text-tertiary);
   --biny-focus: #7aade8;
+  --biny-control-active: #ffffff;
   --biny-send-bg: var(--biny-dark-text);
   --biny-send-icon: var(--biny-dark-sidebar-surface);
   --biny-pill: var(--biny-dark-surface-hover);
@@ -368,6 +363,7 @@
     --biny-text-secondary: var(--biny-dark-text-secondary);
     --biny-text-tertiary: var(--biny-dark-text-tertiary);
     --biny-focus: #7aade8;
+    --biny-control-active: #ffffff;
     --biny-send-bg: var(--biny-dark-text);
     --biny-send-icon: var(--biny-dark-sidebar-surface);
     --biny-pill: var(--biny-dark-surface-hover);
@@ -401,16 +397,16 @@
  * 文字可读；挂在 desktop 层覆盖 legacy，portal 到 body 的浮层继续走全局规则。
  */
 .desktop-root.biny-root ::selection {
-  background: color-mix(in srgb, var(--biny-focus) 26%, var(--biny-surface-elevated));
+  background: color-mix(in srgb, var(--biny-text) 18%, var(--biny-surface-elevated));
 }
 
 :root[data-theme="dark"] .desktop-root.biny-root ::selection {
-  background: color-mix(in srgb, var(--biny-focus) 45%, var(--biny-surface-elevated));
+  background: color-mix(in srgb, var(--biny-text) 24%, var(--biny-surface-elevated));
 }
 
 @media (prefers-color-scheme: dark) {
   :root[data-theme="system"] .desktop-root.biny-root ::selection {
-    background: color-mix(in srgb, var(--biny-focus) 45%, var(--biny-surface-elevated));
+    background: color-mix(in srgb, var(--biny-text) 24%, var(--biny-surface-elevated));
   }
 }
 
@@ -525,9 +521,9 @@
 .biny-app-shell > .desktop-inspector-wrap {
   order: 1;
   position: relative;
-  flex: 0 0 var(--biny-inspector-animated-flow-width);
+  flex: 0 0 var(--biny-inspector-flow-width);
   box-sizing: border-box;
-  width: var(--biny-inspector-animated-flow-width);
+  width: var(--biny-inspector-flow-width);
   min-width: 0;
   /* 左侧栏也在同一个 flex 流里；先扣掉它，才能真正给 Chat 主区保留 320px。 */
   max-width: max(320px, calc(100% - var(--biny-sidebar-animated-flow-width, 0px) - 320px));
@@ -597,7 +593,7 @@
 
 .desktop-inspector-resizer:hover::after,
 .desktop-inspector-resizer:focus-visible::after {
-  background: var(--biny-focus);
+  background: var(--biny-control-active);
 }
 
 .desktop-inspector-resizer:hover::before,
@@ -676,7 +672,7 @@
   /* 顶栏高 48px，菜单与分隔线之间保留 12px。 */
   top: 60px;
   right: min(
-    calc(var(--biny-inspector-animated-flow-width, 0px) + 10px),
+    calc(var(--biny-inspector-flow-width, 0px) + 10px),
     calc(100vw - var(--biny-sidebar-animated-visual-width, 0px) - 52px)
   );
   display: flex;
@@ -690,19 +686,17 @@
   background: var(--biny-surface-soft);
   -webkit-app-region: no-drag;
   app-region: no-drag;
-  /* 滑出态（hidden）：x→88 + blur5，.3s ease(.4,0,1,1)（opacity/filter .22s），
-     结束 visibility hidden；JS 侧 340ms 后卸载。 */
+  /* 只过渡合成层属性；浏览器网页和图片同时显示时不增加模糊滤镜的逐帧绘制。 */
   opacity: 0;
-  transform: translateX(88px);
-  filter: blur(5px);
+  transform: translateX(24px);
+  filter: none;
   visibility: hidden;
   pointer-events: none;
   transition:
-    transform 0.3s cubic-bezier(0.4, 0, 1, 1),
-    opacity 0.22s cubic-bezier(0.4, 0, 1, 1),
-    filter 0.22s cubic-bezier(0.4, 0, 1, 1),
+    transform 0.2s cubic-bezier(0.4, 0, 1, 1),
+    opacity 0.18s cubic-bezier(0.4, 0, 1, 1),
     right var(--biny-sidebar-transition),
-    visibility 0s linear 0.3s;
+    visibility 0s linear 0.2s;
 }
 
 .biny-inspector-rail.is-visible {
@@ -710,13 +704,10 @@
   visibility: visible;
   opacity: 1;
   transform: translateX(0);
-  filter: blur(0);
-  /* 滑入态（visible）：x 88→0 + blur 5→0 .78s ease(.22,1,.36,1)；
-     opacity .36s、filter .52s，各自独立插值（ease(.16,1,.3,1)）。 */
+  filter: none;
   transition:
-    transform 0.78s cubic-bezier(0.22, 1, 0.36, 1),
-    opacity 0.36s cubic-bezier(0.16, 1, 0.3, 1),
-    filter 0.52s cubic-bezier(0.16, 1, 0.3, 1),
+    transform 0.3s cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 0.2s cubic-bezier(0.16, 1, 0.3, 1),
     right var(--biny-sidebar-transition),
     visibility 0s;
 }
@@ -787,7 +778,7 @@
   font: inherit;
   font-size: 12px;
   cursor: pointer;
-  transition: background 140ms ease, color 140ms ease;
+  transition: background 140ms ease, color 140ms ease, transform 140ms ease;
 }
 
 .biny-inspector-tab.is-compact {
@@ -806,6 +797,8 @@
   background: var(--biny-surface-hover);
   color: var(--biny-text);
 }
+
+.biny-inspector-tab:active { transform: scale(0.96); }
 
 .biny-inspector-tab.is-active {
   background: var(--biny-surface-selected);
@@ -1422,9 +1415,12 @@
 }
 
 .biny-sidebar-resizer:hover::after,
-.biny-sidebar-resizer:focus-visible::after,
+.biny-sidebar-resizer:focus-visible::after {
+  background: color-mix(in srgb, var(--biny-border-strong) 50%, transparent);
+}
+
 .biny-sidebar.is-resizing .biny-sidebar-resizer::after {
-  background: var(--biny-focus);
+  background: color-mix(in srgb, var(--biny-border-strong) 70%, transparent);
 }
 
 .biny-sidebar-card {
@@ -2025,7 +2021,7 @@
   height: 2px;
   border-radius: 2px;
   content: "";
-  background: var(--biny-focus);
+  background: var(--biny-control-active);
 }
 
 .biny-project-group.is-drop-before::before {
@@ -4069,8 +4065,8 @@ button.capability-check[aria-checked="true"] {
   border-radius: 1px;
   pointer-events: none;
   visibility: hidden;
-  background: var(--biny-focus);
-  box-shadow: 0 0 4px color-mix(in srgb, var(--biny-focus) 40%, transparent);
+  background: var(--biny-control-active);
+  box-shadow: 0 0 4px color-mix(in srgb, var(--biny-control-active) 40%, transparent);
   will-change: transform, opacity;
   transition: transform 120ms cubic-bezier(0.22, 1, 0.36, 1);
 }
@@ -4095,11 +4091,11 @@ button.capability-check[aria-checked="true"] {
   contain: paint;
 }
 .biny-breathing-caret-trail[data-direction="right"] {
-  background: linear-gradient(to right, transparent, var(--biny-focus));
+  background: linear-gradient(to right, transparent, var(--biny-control-active));
   transform-origin: 100% 50%;
 }
 .biny-breathing-caret-trail[data-direction="left"] {
-  background: linear-gradient(to left, transparent, var(--biny-focus));
+  background: linear-gradient(to left, transparent, var(--biny-control-active));
   transform-origin: 0 50%;
 }
 @media (prefers-reduced-motion: reduce), (forced-colors: active) {
@@ -4557,6 +4553,29 @@ button.capability-check[aria-checked="true"] {
   color: var(--biny-text);
 }
 
+.biny-files-trigger {
+  min-width: 0;
+  overflow: hidden;
+  flex: 0 0 auto;
+  visibility: visible;
+  transition: background 160ms ease, color 160ms ease,
+    width 180ms cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 140ms ease-out, transform 180ms cubic-bezier(0.22, 1, 0.36, 1),
+    visibility 0s;
+}
+
+.biny-files-trigger.is-inspector-open {
+  width: 0;
+  opacity: 0;
+  transform: translateX(8px) scale(0.9);
+  visibility: hidden;
+  pointer-events: none;
+  transition: background 160ms ease, color 160ms ease,
+    width 180ms cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 140ms ease-out, transform 180ms cubic-bezier(0.22, 1, 0.36, 1),
+    visibility 0s linear 180ms;
+}
+
 .biny-usage-control {
   position: relative;
   display: inline-flex;
@@ -4897,16 +4916,23 @@ button.capability-check[aria-checked="true"] {
 }
 
 .biny-root .file-browser-path {
-  min-height: 38px;
+  min-height: 32px;
   align-items: center;
-  padding: 0 8px 0 10px;
+  padding: 0 6px 0 12px;
   border-bottom-color: var(--biny-border);
-  background: var(--biny-sidebar-surface);
+  background: var(--biny-surface-elevated);
 }
 
 .biny-root .file-browser-current-path {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
   padding-top: 0;
 }
+.biny-root .file-browser-path-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.biny-root .file-browser-current-path > button { display: grid; flex: 0 0 22px; width: 22px; height: 22px; place-items: center; border: 0; border-radius: 4px; background: transparent; color: var(--biny-text-secondary); cursor: pointer; }
+.biny-root .file-browser-current-path > button:hover { background: var(--biny-surface-hover); color: var(--biny-text); }
 
 .biny-root .file-browser-path-actions {
   margin-top: 0;
@@ -4916,6 +4942,7 @@ button.capability-check[aria-checked="true"] {
   width: 100%;
   border-right: 0;
 }
+.biny-root .file-browser-body.is-browser-only .file-browser-content { display: none; }
 
 /* 树与预览之间的分隔把手：贴在树右缘，hover 亮起（与 dock 把手同语言）。 */
 .file-browser-tree-resizer {
@@ -4940,7 +4967,7 @@ button.capability-check[aria-checked="true"] {
 }
 
 .file-browser-tree-resizer:hover::after {
-  background: var(--biny-focus);
+  background: var(--biny-control-active);
 }
 
 /* 拖树宽期间禁止选中文本，避免指针扫过预览区时高亮乱闪。 */
@@ -4949,8 +4976,20 @@ button.capability-check[aria-checked="true"] {
 }
 
 .biny-root .file-browser-content {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
   background: var(--biny-surface);
 }
+.biny-root .file-browser-preview-scroll { flex: 1; min-height: 0; overflow: auto; }
+.biny-root .file-browser-tree { padding-top: 0; }
+.file-preview-run { display: inline-flex; align-items: center; gap: 5px; border: 0; border-radius: 5px; padding: 4px 6px; background: transparent; color: var(--biny-text-secondary); font: inherit; cursor: pointer; }
+.file-preview-run:hover, .file-preview-run:focus-visible { background: var(--biny-surface-hover); color: var(--biny-text); }
+.biny-root .file-preview-image { overflow: auto; }
+.biny-root .file-preview-image img { transform-origin: center; }
+.biny-root .file-preview-meta-actions > button { display: grid; width: 22px; height: 22px; flex: 0 0 22px; place-items: center; border: 0; border-radius: 4px; background: transparent; color: var(--biny-text-secondary); cursor: pointer; }
+.biny-root .file-preview-meta-actions > button:hover:not(:disabled) { background: var(--biny-surface-hover); color: var(--biny-text); }
+.biny-root .file-preview-meta-actions > button:disabled { opacity: .35; cursor: default; }
 
 /* 代码预览横向滚动时行号 gutter 必须钉在窗格左缘：sticky 的活动范围是父容器，
    所以让 .file-preview-body 撑到内容宽（而不是窗格宽），溢出发生在 body 层，
@@ -5646,7 +5685,10 @@ button.capability-check[aria-checked="true"] {
   .biny-send-button,
   .biny-runtime-panel-icon,
   .biny-runtime-row-action,
-  .biny-composer-status-button {
+  .biny-composer-status-button,
+  .biny-files-trigger,
+  .biny-inspector-tab,
+  .biny-inspector-rail-btn {
     transition: none !important;
   }
 

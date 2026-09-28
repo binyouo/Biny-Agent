@@ -1,5 +1,5 @@
 /* eslint-disable react-refresh/only-export-components -- Inspector 请求状态与私有视图必须共享同一生命周期。 */
-/** 文件详情与工作区工具的并排面板；产出菜单独立于面板开合状态。 */
+/** 文件详情与工作区工具的并排面板；顶栏和右缘文件入口共用 openFiles。 */
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { DesktopWorkspaceDirectory, DesktopWorkspaceFilePreview } from "../../../../protocol.js";
 import {
@@ -103,6 +103,8 @@ export function useWorkspaceInspector({
   const [inspectorOpen, setInspectorOpen] = useState(false);
   const [pinned, setPinned] = useState(false);
   const previousSource = useRef({ source, projectId });
+  const currentProjectIdRef = useRef(projectId);
+  useLayoutEffect(() => { currentProjectIdRef.current = projectId; }, [projectId]);
   const [visitedViews, setVisitedViews] = useState<Set<InspectorView>>(() => new Set());
   const [compactTabs, setCompactTabs] = useState(false);
   const tabStripRef = useRef<HTMLElement>(null);
@@ -198,10 +200,10 @@ export function useWorkspaceInspector({
     setInspectorView("files");
     setVisitedViews((current) => new Set(current).add("files"));
     setInspectorOpen(true);
-    setPreview({ source, path, status: "loading", file: undefined, error: undefined });
+    setPreview({ source, path, status: "loading", file: undefined, error: undefined, revision: request });
     void onReadFile(path).then((file) => {
       if (previewRequestRef.current !== request) return;
-      setPreview({ source, path: file.path, status: "ready", file, error: undefined });
+      setPreview({ source, path: file.path, status: "ready", file, error: undefined, revision: request });
     }).catch((error: unknown) => {
       if (previewRequestRef.current !== request) return;
       setPreview({ source, path, status: "error", file: undefined, error: errorMessage(error) });
@@ -214,6 +216,17 @@ export function useWorkspaceInspector({
     setPreview(undefined);
     if (!directoryStates.has(".")) loadDirectory(".");
   }, [directoryStates, loadDirectory]);
+
+  const runHtml = useCallback((path: string): void => {
+    if (!projectId) return;
+    void (async () => {
+      const { url } = await window.biny.htmlPreviewUrl(projectId, path);
+      if (currentProjectIdRef.current !== projectId) return;
+      await window.biny.browserAction(projectId, { type: "new", url });
+      if (currentProjectIdRef.current !== projectId) return;
+      openInspector("browser");
+    })().catch((error: unknown) => onWarning(errorMessage(error)));
+  }, [onWarning, openInspector, projectId]);
 
   const toggleDirectory = useCallback((relativePath: string): void => {
     const normalizedPath = normalizeWorkspacePath(relativePath);
@@ -280,7 +293,7 @@ export function useWorkspaceInspector({
     if (activePreview) previewFile(activePreview.path);
   };
   const toolContent = (view: InspectorView): React.JSX.Element | null => !projectId ? null : view === "terminal" ? <TerminalView projectId={projectId} active={inspectorOpen && inspectorView === "terminal"} />
-    : view === "files" ? <FilePreviewPanel directoryStates={directoryStates} expandedDirectories={expandedDirectories} onOpenFile={onOpenFile} onPreviewFile={previewFile} onShowFiles={showFileBrowser} onToggleDirectory={toggleDirectory} preview={activePreview} projectId={projectId} onRefresh={refreshFiles} onCollapse={() => setExpandedDirectories(new Set())} />
+    : view === "files" ? <FilePreviewPanel width={Math.max(0, panelWidth - 1)} directoryStates={directoryStates} expandedDirectories={expandedDirectories} onOpenFile={onOpenFile} onPreviewFile={previewFile} onRunHtml={runHtml} onShowFiles={showFileBrowser} onToggleDirectory={toggleDirectory} preview={activePreview} projectId={projectId} onRefresh={refreshFiles} onCollapse={() => setExpandedDirectories(new Set())} />
       : view === "changes" ? <SessionChangesPanel changes={changes} onPreviewFile={previewFile} />
         : view === "commit" ? <WorkspaceCommitPanel projectId={projectId} active={effectiveOpen && inspectorView === "commit"} onCount={setGitChangeCount} onSwitchBranch={onSwitchBranch} onPreviewFile={previewFile} />
           : view === "browser" ? <WorkspaceBrowserPanel projectId={projectId} active={effectiveOpen && inspectorView === "browser"} expanded={focused} onToggleExpanded={() => setBrowserExpanded((value) => !value)} onAttachReference={onAttachBrowserReference ? (value) => { setBrowserExpanded(false); onAttachBrowserReference(value); } : undefined} onWarning={onWarning} onOpenTerminal={() => openInspector("terminal")} onFixPreview={onFixPreview} />
@@ -318,6 +331,7 @@ export function useWorkspaceInspector({
   const inspector = visitedViews.size > 0 && projectId ? (
     <div
       ref={panelRef}
+      style={{ "--biny-inspector-content-width": `${panelWidth}px` } as React.CSSProperties}
       className={`desktop-inspector-wrap is-${effectiveOpen ? "open" : "closed"}${filePanelResizing ? " is-resizing" : ""}`}
       inert={!inspectorOpen}
       aria-hidden={!inspectorOpen}

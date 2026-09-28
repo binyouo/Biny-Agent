@@ -176,6 +176,39 @@ test("只有工具产出的成功轮次保留活动记录，清单移入更多�
   assert.doesNotMatch(markup, /条记忆|个技能/u);
 });
 
+test("空回复的完成轮次说明没有正文，版本切换器只出现一次", () => {
+  const turns = buildSessionTimeline([], [
+    ...start,
+    { ...base, type: "tool.started", toolCallId: "search", tool: "ToolSearch", args: { query: "桌面应用 UI 操作" } },
+    { ...base, type: "tool.failed", toolCallId: "search", tool: "ToolSearch", error: "No matching tools." },
+    { ...base, type: "run.completed", durationMs: 1_000 }
+  ]).map((turn) => ({ ...turn, assistantMessageId: "assistant-version", versionIndex: 2, versionCount: 3 }));
+  const markup = renderTurns(turns);
+  assert.match(markup, /本轮已结束，但没有生成回复正文/u);
+  assert.equal(markup.match(/message-version-switcher/gu)?.length, 1);
+});
+
+test("只有思考、没有正文的可恢复终态保留失败原因", () => {
+  const reason = "模型结束响应时没有输出可展示的正文。";
+  const turns = buildSessionTimeline([], [
+    ...start,
+    { ...base, type: "reasoning.delta", content: "先检查一下。" },
+    { ...base, type: "reasoning.completed" },
+    {
+      ...base,
+      type: "run.incomplete",
+      durationMs: 12_000,
+      reason,
+      resumable: true,
+      stopReason: "provider_error",
+      steps: 1
+    }
+  ]);
+  const markup = renderTurns(turns);
+  assert.match(markup, /先检查一下。/u);
+  assert.match(markup, new RegExp(reason, "u"));
+});
+
 test("成功回复没有思考内容：展示正文但不凭总耗时补出思考", () => {
   const markup = renderTurns(buildSessionTimeline([
     { type: "user_message", content: "检查项目", time: base.timestamp },

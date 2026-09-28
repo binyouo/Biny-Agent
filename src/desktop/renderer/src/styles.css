@@ -1199,7 +1199,7 @@ button:disabled { opacity: 0.42; }
 .file-browser-path-actions { display: flex; flex: 0 0 auto; align-items: center; gap: 2px; margin-top: 38px; }
 .file-browser-body { display: flex; min-height: 0; flex: 1; }
 .file-browser-content { min-width: 0; flex: 1; overflow: auto; background: var(--surface); }
-/* 树在左、预览在右（ArtifactSidebar 式分栏）；树宽由内联 style 控制，这里只是缺省值。 */
+/* 树在左、预览在右；树宽由内联 style 控制，这里只是缺省值。 */
 .file-browser-tree { width: 200px; min-width: 0; flex: 0 0 auto; overflow: auto; padding: 8px 0 14px; border-right: 1px solid var(--border); background: var(--surface); }
 .file-browser-body.is-tree-hidden .file-browser-tree { width: 0; border-right-color: transparent; pointer-events: none; }
 .file-tree-level { display: flex; flex-direction: column; }

@@ -29,6 +29,7 @@ const defaultKillSettleMs = 1_000;
 
 export interface RunCommandArgs {
   command: string;
+  description?: string;
   cwd?: string;
   timeoutMs?: number;
   background?: boolean;
@@ -88,6 +89,7 @@ export function createRunCommandTool(
   const sandboxOptions: SandboxOptions = { mode: sandbox?.mode ?? "off", allowNetwork: sandbox?.allowNetwork ?? true };
   const schema = z.object({
     command: z.string().min(1),
+    description: z.string().trim().max(200).optional(),
     cwd: z.string().min(1).optional(),
     timeoutMs: z.number().int().min(1).max(600_000).optional(),
     background: z.boolean().optional(),
@@ -114,11 +116,12 @@ export function createRunCommandTool(
     name: "Bash",
     description: "Run a shell command in the workspace. Foreground commands have a bounded timeout; set background for servers and other long-running commands, then use BashOutput or KillShell with the returned process ID.",
     promptSnippet: "Run a finite command or start a managed background process",
-    promptGuidelines: ["Use background instead of &, nohup, or disown for long-running commands; pass a workspace-relative cwd for commands in a subdirectory"],
+    promptGuidelines: ["Provide a brief description of the command purpose in the user's language", "Use background instead of &, nohup, or disown for long-running commands; pass a workspace-relative cwd for commands in a subdirectory"],
     parameters: {
       type: "object",
       properties: {
         command: { type: "string", minLength: 1, description: "Shell command to run in the workspace." },
+        description: { type: "string", maxLength: 200, description: "Brief task description in the user's language for the activity row, for example Check project files. Describe the purpose, not the shell syntax." },
         cwd: { type: "string", minLength: 1, description: "Optional workspace-relative working directory." },
         timeoutMs: { type: "integer", minimum: 1, maximum: 600_000, description: "Foreground timeout in milliseconds; defaults to 120000." },
         background: { type: "boolean", description: "Start a runtime-managed background process instead of waiting for completion." },
@@ -145,7 +148,7 @@ export function createRunCommandTool(
       return {
         accesses: ToolAccesses.readWriteTree(commandCwd),
         display: { kind: "command", command: args.command, cwd: commandCwd, language: "bash" },
-        description: `${args.background === true ? "Start background" : "Run"} ${preview}`,
+        description: args.description?.trim() || `${args.background === true ? "Start background" : "Run"} ${preview}`,
         approvalRule: `Bash(${args.command})`,
         async execute({ signal, onUpdate, deniedPaths }) {
           const currentCwd = resolveWorkspaceDirectory(context.workspaceRoot, args.cwd ?? inferredCwd ?? ".", context.ignore);

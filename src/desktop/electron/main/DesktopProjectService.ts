@@ -809,7 +809,7 @@ export class DesktopProjectService {
    * 读出来转码。附件在全局按项目隔离的运行目录而非工作区可见文件，所以要按 `@attachments/` 前缀分流。
    * 这是展示用的旁路加载，任何失败都返回 undefined 让界面退回文件名，不往上抛错。
    */
-  async readInlineImage(project: DesktopProject, relativePath: string): Promise<string | undefined> {
+  async readInlineImage(project: DesktopProject, relativePath: string, thumbnail = false): Promise<string | undefined> {
     const mediaType = imageMediaTypes[relativePath.toLowerCase().split(".").at(-1) ?? ""];
     if (!mediaType) return undefined;
     try {
@@ -819,6 +819,11 @@ export class DesktopProjectService {
       if (!filePath) return undefined;
       const stat = await fs.stat(filePath);
       if (!stat.isFile() || stat.size > inlineImageLimit) return undefined;
+      if (thumbnail) {
+        const { default: sharp } = await import("sharp");
+        const resized = await sharp(filePath).rotate().resize(320, 320, { fit: "inside", withoutEnlargement: true }).webp({ quality: 72 }).toBuffer();
+        return `data:image/webp;base64,${resized.toString("base64")}`;
+      }
       return `data:${mediaType};base64,${(await fs.readFile(filePath)).toString("base64")}`;
     } catch {
       return undefined;

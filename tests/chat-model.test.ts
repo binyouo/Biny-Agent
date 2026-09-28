@@ -607,25 +607,33 @@ test("CompactionDivider 渲染压缩药丸并省略缺失段", () => {
   assert.doesNotMatch(minimal, /节省约/u);
 });
 
-test("ActivitySegment 运行时只展开最新阶段，锁定阶段切换并保留工具详情操作", () => {
-  const running = renderToStaticMarkup(createElement(ActivitySegment, {
+test("ActivitySegment 运行时展开完整的思考与工具时间线", () => {
+  const segmentProps = {
     steps: [
-      reasoningStep("r1", { completed: false, durationMs: undefined }),
-      toolStep("t1", "Read", "success", { args: { path: "a.ts" } }),
-      toolStep("t2", "Grep", "running", { args: { pattern: "x" } }),
+      reasoningStep("r1", { content: "先检查相关文件", completed: true, durationMs: 400 }),
+      toolStep("t1", "Read", "success", { args: { path: "previous.ts" } }),
+      reasoningStep("r2", { content: "再确认当前调用", completed: false, durationMs: undefined }),
+      toolStep("t2", "Grep", "running", { args: { pattern: "current-call" } }),
     ],
-    running: true,
     projectId: "p1",
     onPreviewFile: () => undefined,
     onOpenExternal: () => undefined,
     onResolvePermission: noopAsync,
-  }));
+  };
+  const running = renderToStaticMarkup(createElement(ActivitySegment, { ...segmentProps, running: true }));
   assert.match(running, /role="status">探索中/u);
+  assert.match(running, /先检查相关文件/u);
+  assert.match(running, /previous\.ts/u);
+  assert.match(running, /再确认当前调用/u);
+  assert.match(running, /current-call/u);
   // 最新执行相位头像挂活相标记（呼吸光环动画的稳定钩子）。
   assert.match(running, /disabled="" class="chat-phase-avatar is-active is-alive"/u);
   assert.match(running, /biny-collapse is-open chat-activity-collapse/u);
   assert.match(running, /class="chat-tool-row" data-activity-toggle/u);
-  assert.doesNotMatch(running, /chat-activity-chevron|chat-activity-mode|分析中/u);
+
+  const completed = renderToStaticMarkup(createElement(ActivitySegment, { ...segmentProps, running: false }));
+  assert.match(completed, /class="biny-collapse chat-activity-collapse"/u);
+  assert.doesNotMatch(completed, /class="biny-collapse is-open chat-activity-collapse"/u);
 });
 
 test("ActivitySegment 工具落定后不另加跟进状态", () => {
@@ -734,4 +742,11 @@ test("已有会话的发送占位追加在历史后，同文消息按身份接�
   assert.match(pending, /aria-label="发送中"/u);
   assert.ok(pending.indexOf("之前的回复") < pending.indexOf('data-message-id="new-user"'));
   assert.doesNotMatch(render(true), /aria-label="发送中"/u);
+});
+
+test("命令摘要优先使用调用方任务描述，空白描述回退命令", () => {
+  const base = toolStep("summary", "Bash", "success", { args: { command: "pwd; ls -a", description: "检查项目目录" } }).tool;
+  assert.equal(activityToolRow({ ...base, description: "Run pwd; ls -a" }).object, "检查项目目录");
+  assert.equal(activityToolRow({ ...base, args: { command: "pwd", description: "  " }, description: "" }).object, "pwd");
+  assert.equal(activityToolRow({ ...base, args: {}, description: "" }).object, "Shell 命令");
 });

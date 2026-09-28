@@ -10,12 +10,12 @@ test("浏览器隐藏时释放全局观察器，重开恢复尺寸与模态遮�
   const resizeObservers = new Set<Observer>();
   const mutationObservers = new Set<Observer>();
   class Observer {
-    constructor(readonly callback: () => void, readonly set: Set<Observer>) { set.add(this); }
+    constructor(readonly callback: (records: MutationRecord[]) => void, readonly set: Set<Observer>) { set.add(this); }
     observe(): void {}
     disconnect(): void { this.set.delete(this); }
   }
   class ResizeObserver extends Observer { constructor(callback: () => void) { super(callback, resizeObservers); } }
-  class MutationObserver extends Observer { constructor(callback: () => void) { super(callback, mutationObservers); } }
+  class MutationObserver extends Observer { constructor(callback: (records: MutationRecord[]) => void) { super(callback, mutationObservers); } }
   let sequence = 0;
   const frames = new Map<number, FrameRequestCallback>();
   for (const [key, value] of Object.entries({ window: dom.window, document: dom.window.document, React,
@@ -57,7 +57,7 @@ test("浏览器隐藏时释放全局观察器，重开恢复尺寸与模态遮�
     assert.equal(resizeObservers.size + mutationObservers.size, 0, "隐藏面板不能监听整页变化");
     const baseline = measurements;
     for (let index = 0; index < 100; index++) {
-      for (const observer of mutationObservers) observer.callback();
+      for (const observer of mutationObservers) observer.callback([]);
       await flush();
     }
     assert.equal(measurements, baseline);
@@ -68,11 +68,11 @@ test("浏览器隐藏时释放全局观察器，重开恢复尺寸与模态遮�
     dialog.setAttribute("role", "dialog");
     dialog.getClientRects = () => ({ length: 1 }) as DOMRectList;
     document.body.append(dialog);
-    for (const observer of mutationObservers) observer.callback();
+    for (const observer of mutationObservers) observer.callback([{ type: "childList", addedNodes: [dialog], removedNodes: [] } as unknown as MutationRecord]);
     await flush();
     assert.equal(bounds.at(-1), undefined, "弹窗出现仍隐藏原生网页");
     dialog.remove();
-    for (const observer of mutationObservers) observer.callback();
+    for (const observer of mutationObservers) observer.callback([{ type: "childList", addedNodes: [], removedNodes: [dialog] } as unknown as MutationRecord]);
     await flush();
     assert.ok(bounds.at(-1));
   } finally {

@@ -123,6 +123,7 @@ testSidebarLayoutState();
 await testDesktopThemePreference();
 await testDesktopActiveViewPersistence();
 await testDesktopDragRegionStyles();
+await testDesktopSidebarResizerContrast();
 await testDesktopUserMessageEnterDoesNotShadowFullRow();
 await testDesktopMemorySharedStore();
 await testDesktopSettingsTransaction();
@@ -193,6 +194,20 @@ async function testDesktopDragRegionStyles(): Promise<void> {
   assert.match(toolbar, /-webkit-app-region:\s*drag;/, "聊天工具栏必须保留原生窗口拖动区");
   assert.ok(scroll, "聊天滚动层样式必须存在");
   assert.doesNotMatch(scroll, /(?:-webkit-)?app-region:\s*no-drag;/, "全高滚动层不能覆盖顶部窗口拖动区");
+}
+
+async function testDesktopSidebarResizerContrast(): Promise<void> {
+  const css = await readFile(new URL("../src/desktop/renderer/src/styles/biny.css", import.meta.url), "utf8");
+  const idle = css.match(/^\.biny-sidebar-resizer::after[ \t]*\{(?<body>[^}]*)\}/mu)?.groups?.body;
+  const hover = css.match(/^\.biny-sidebar-resizer:hover::after,\s*\n\.biny-sidebar-resizer:focus-visible::after[ \t]*\{(?<body>[^}]*)\}/mu)?.groups?.body;
+  const resizing = css.match(/^\.biny-sidebar\.is-resizing \.biny-sidebar-resizer::after[ \t]*\{(?<body>[^}]*)\}/mu)?.groups?.body;
+
+  assert.ok(idle, "侧栏拉伸条默认样式必须存在");
+  assert.match(idle, /background:\s*transparent;/, "侧栏拉伸条静止时应保持低干扰");
+  assert.ok(hover, "侧栏拉伸条悬停和键盘焦点样式必须存在");
+  assert.match(hover, /background:\s*color-mix\(in srgb, var\(--biny-border-strong\) 50%, transparent\);/, "悬停态应使用半透明边框色");
+  assert.ok(resizing, "侧栏拉伸条拖动样式必须存在");
+  assert.match(resizing, /background:\s*color-mix\(in srgb, var\(--biny-border-strong\) 70%, transparent\);/, "拖动时应比悬停态更清晰");
 }
 
 async function testDesktopUserMessageEnterDoesNotShadowFullRow(): Promise<void> {
@@ -1328,6 +1343,14 @@ async function testInlineImageReading(): Promise<void> {
 
     assert.equal(await projects.readInlineImage(project, "shot.gif"), `data:image/gif;base64,${pixel.toString("base64")}`);
     assert.equal(await projects.readInlineImage(project, attachment.path), `data:image/gif;base64,${pixel.toString("base64")}`);
+    const sharp = (await import("sharp")).default;
+    const large = await sharp({ create: { width: 1600, height: 1200, channels: 3, background: "#808080" } }).png().toBuffer();
+    await writeFile(path.join(workspaceRoot, "large.png"), large);
+    const thumbnail = await projects.readInlineImage(project, "large.png", true);
+    assert.match(thumbnail ?? "", /^data:image\/webp;base64,/u);
+    const dimensions = await sharp(Buffer.from(thumbnail!.split(",")[1]!, "base64")).metadata();
+    assert.ok((dimensions.width ?? 0) <= 320 && (dimensions.height ?? 0) <= 320);
+    assert.equal((await sharp(large).metadata()).width, 1600, "原始图片仍可供全尺寸预览读取");
     // 非图片、越界路径和不存在的文件都只是「没图」，不能抛错打断消息渲染。
     assert.equal(await projects.readInlineImage(project, "notes.txt"), undefined);
     assert.equal(await projects.readInlineImage(project, "../outside.png"), undefined);

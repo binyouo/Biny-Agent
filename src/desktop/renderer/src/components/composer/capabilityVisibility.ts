@@ -21,7 +21,7 @@ export function shouldShowToolInCapabilityMenu(tool: Pick<DesktopToolCatalogEntr
 
 /** 工具菜单固定顺序；目录返回顺序不能成为用户界面的排序依据。 */
 const TOOL_ORDER = [
-  "Glob", "Grep", "Read", "Edit", "Write", "NotebookEdit",
+  "Glob", "Grep", "Read", "Edit", "Write",
   "Bash", "BashOutput", "KillShell",
   "BrowserOpen", "BrowserReadDom", "BrowserClick", "BrowserType", "BrowserPress",
   "ChromeRelayStatus", "ChromeRelayListTabs", "ChromeRelayRead", "ChromeRelayNavigate", "ChromeRelayClick", "ChromeRelayType", "ChromeRelayPress",

@@ -62,7 +62,7 @@ const TOOL_PRESENTATIONS: Record<string, ToolPresentation> = {
   Bash: { group: "shell", label: "执行命令", detail: "执行有限命令或启动托管的后台命令。" },
   BashOutput: { group: "shell", label: "后台输出", detail: "列出后台命令或分页读取状态和输出。" },
   KillShell: { group: "shell", label: "停止命令", detail: "停止后台命令的整个进程组。" },
-  TodoWrite: { group: "planning", label: "待办同步", detail: "执行计划时更新共享待办列表。" },
+  TodoWrite: { group: "planning", label: "待办同步", detail: "更新当前多步任务清单并展示进度。" },
   Task: { group: "planning", label: "任务委派", detail: "启动子代理处理多步骤任务。" },
   Skill: { group: "planning", label: "技能调用", detail: "调用已启用的技能或工作流。" },
   ToolSearch: { group: "planning", label: "工具搜索", detail: "按名称或描述发现可用工具。" }

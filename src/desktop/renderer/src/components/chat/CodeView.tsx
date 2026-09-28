@@ -58,7 +58,7 @@ export const CodeView = memo(function CodeView({
         )}
         <CopyButton className="copy-button" label="复制代码" showLabel value={code} />
       </div>
-      <div className="chat-codeview-body">
+      <div aria-label="文件内容" tabIndex={0} className="chat-codeview-body">
         {showLineNumbers ? (
           <div aria-hidden="true" className="chat-codeview-gutter">
             {lines.map((_, index) => <span key={index}>{index + 1}</span>)}
@@ -66,9 +66,9 @@ export const CodeView = memo(function CodeView({
         ) : null}
         <pre className="chat-codeview-pre"><code className="shiki" dangerouslySetInnerHTML={{ __html: highlighted.html }} /></pre>
       </div>
-      {collapsible && !expanded ? (
-        <button className="expand-output" onClick={() => setExpanded(true)} type="button">
-          展开全部 {lines.length} 行
+      {collapsible ? (
+        <button aria-expanded={expanded} className="expand-output" onClick={() => setExpanded(current => !current)} type="button">
+          {expanded ? "收起代码" : `展开 ${String(lines.length)} 行代码`}
         </button>
       ) : null}
     </div>

@@ -10,26 +10,30 @@ import { useEffect, useState } from "react";
 const cacheLimit = 32;
 const cache = new Map<string, Promise<string | undefined>>();
 
-export function useInlineImage(projectId: string, path: string): string | undefined {
-  const [source, setSource] = useState<string>();
+export function useInlineImageState(projectId: string, path: string, thumbnail = false): { source?: string; loading: boolean } {
+  const [state, setState] = useState<{ source?: string; loading: boolean }>({ loading: Boolean(path) });
   useEffect(() => {
-    setSource(undefined);
+    setState({ loading: Boolean(path) });
     if (!path) return;
     let active = true;
-    const key = `${projectId}:${path}`;
+    const key = `${projectId}:${path}:${thumbnail ? "thumb" : "full"}`;
     let pending = cache.get(key);
     if (!pending) {
-      pending = window.biny.readInlineImage(projectId, path).catch(() => undefined);
+      pending = window.biny.readInlineImage(projectId, path, thumbnail).catch(() => undefined);
       // 先淘汰最早写入的，再放新的：Map 的迭代顺序就是插入顺序。
       if (cache.size >= cacheLimit) cache.delete(cache.keys().next().value ?? "");
       cache.set(key, pending);
     }
     void pending.then((value) => {
-      if (active) setSource(value);
+      if (active) setState({ source: value, loading: false });
     });
     return () => {
       active = false;
     };
-  }, [projectId, path]);
-  return source;
+  }, [projectId, path, thumbnail]);
+  return state;
+}
+
+export function useInlineImage(projectId: string, path: string, thumbnail = false): string | undefined {
+  return useInlineImageState(projectId, path, thumbnail).source;
 }

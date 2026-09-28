@@ -32,6 +32,7 @@ interface MessageTimelineProps {
   projectId: string;
   turns: TimelineTurn[];
   skillDescriptions?: ReadonlyMap<string, string>;
+  skillLabels?: ReadonlyMap<string, string>;
   pendingUserMessage?: PendingUserMessage;
   /** 首条提交自空态切入：pending 气泡以上浮 FLIP 进入（submittedPreview 原文参数）。 */
   pendingFloatFromComposer?: boolean;
@@ -41,7 +42,7 @@ interface MessageTimelineProps {
   onOpenExternal(url: string): void;
   onReferenceMessage(messageId: string): void;
   onShowMessageReferences(messageId: string): void;
-  onCaptureQuote(messageId: string, quote: string): void;
+  onAddQuoteToConversation(messageId: string, quote: string): Promise<void>;
   onResolvePermission(requestId: string, result: PermissionResult): Promise<void>;
   thinking: boolean;
   onRetry(targetMessageId: string, input: string, idempotencyKey: string): Promise<void>;
@@ -76,27 +77,63 @@ function turnIsRunning(turn: TimelineTurn, runtimeActiveRunId: string | undefine
   return runtimeActiveRunId !== undefined && turn.status === "idle" && turn.id === runtimeActiveRunId;
 }
 
-export const MessageTimeline = memo(function MessageTimeline({ sessionId, projectId, turns, skillDescriptions, pendingUserMessage, pendingFloatFromComposer, runtimeActiveRunId, onPreviewFile, onOpenExternal, onReferenceMessage, onShowMessageReferences, onCaptureQuote, onResolvePermission, thinking, onRetry, onSwitchVersion, onEditRequest, editInFlight, onCreateBranch, onRollbackFiles, onDeleteUserMessage }: MessageTimelineProps): React.JSX.Element {
+export const MessageTimeline = memo(function MessageTimeline({ sessionId, projectId, turns, skillDescriptions, skillLabels, pendingUserMessage, pendingFloatFromComposer, runtimeActiveRunId, onPreviewFile, onOpenExternal, onReferenceMessage, onShowMessageReferences, onAddQuoteToConversation, onResolvePermission, thinking, onRetry, onSwitchVersion, onEditRequest, editInFlight, onCreateBranch, onRollbackFiles, onDeleteUserMessage }: MessageTimelineProps): React.JSX.Element {
   // 重试会先把目标之后的消息从视图中撤掉，再等待新回合流入；这里保留同样的乐观投影。
   // 编辑的重写投影来自 App（editInFlight），提交入口在底部输入框，不经过本组件状态。
   const [optimisticRewrite, setOptimisticRewrite] = useState<OptimisticRewrite>();
   const [quoteSelection, setQuoteSelection] = useState<{ messageId: string; quote: string; top: number; left: number }>();
-  const captureSelection = (event: React.MouseEvent<HTMLDivElement>): void => {
+  const [addingQuote, setAddingQuote] = useState(false);
+  const timelineRef = useRef<HTMLDivElement>(null);
+  const updateQuoteSelection = useCallback((): void => {
     const selection = window.getSelection();
-    if (!selection || selection.isCollapsed || !selection.rangeCount) { setQuoteSelection(undefined); return; }
+    const timeline = timelineRef.current;
+    if (!selection || selection.isCollapsed || !selection.rangeCount || !timeline) { setQuoteSelection(undefined); return; }
     const range = selection.getRangeAt(0);
     const element = (node: Node): Element | null => node instanceof Element ? node : node.parentElement;
     const start = element(range.startContainer)?.closest(".markdown-body");
     const end = element(range.endContainer)?.closest(".markdown-body");
     const message = start?.closest<HTMLElement>("article[data-message-id]");
-    if (!start || start !== end || !message?.dataset.messageId || !event.currentTarget.contains(message)) {
-      setQuoteSelection(undefined); return;
-    }
-    const quote = selection.toString();
-    if (!quote.trim() || quote.length > 4_000) { setQuoteSelection(undefined); return; }
+    if (!start || start !== end || !message?.dataset.messageId || !timeline.contains(message)) { setQuoteSelection(undefined); return; }
+    const quote = selection.toString().trim();
+    if (!quote || quote.length > 4_000) { setQuoteSelection(undefined); return; }
     const bounds = range.getBoundingClientRect();
-    setQuoteSelection({ messageId: message.dataset.messageId, quote, top: bounds.top, left: bounds.left });
-  };
+    if ((bounds.width === 0 && bounds.height === 0) || bounds.bottom < 0 || bounds.top > window.innerHeight
+      || bounds.right < 0 || bounds.left > window.innerWidth) { setQuoteSelection(undefined); return; }
+    const next = {
+      messageId: message.dataset.messageId,
+      quote,
+      top: Math.max(8, Math.min(bounds.top - 38, window.innerHeight - 42)),
+      left: Math.max(8, Math.min(bounds.left, window.innerWidth - 124))
+    };
+    setQuoteSelection((current) => current?.messageId === next.messageId && current.quote === next.quote
+      && Math.abs(current.top - next.top) < 1 && Math.abs(current.left - next.left) < 1 ? current : next);
+  }, []);
+  useEffect(() => {
+    let selectionTimer: number | undefined;
+    const scheduleSelectionUpdate = (): void => {
+      if (selectionTimer !== undefined) window.clearTimeout(selectionTimer);
+      selectionTimer = window.setTimeout(updateQuoteSelection, 120);
+    };
+    const closeOutside = (event: PointerEvent): void => {
+      const target = event.target;
+      if (target instanceof Node && !timelineRef.current?.contains(target)
+        && !(target instanceof Element && target.closest(".message-selection-reference"))) setQuoteSelection(undefined);
+    };
+    const escape = (event: KeyboardEvent): void => { if (event.key === "Escape") setQuoteSelection(undefined); };
+    document.addEventListener("selectionchange", scheduleSelectionUpdate);
+    document.addEventListener("pointerdown", closeOutside);
+    document.addEventListener("keydown", escape);
+    window.addEventListener("scroll", updateQuoteSelection, true);
+    window.addEventListener("resize", updateQuoteSelection);
+    return () => {
+      document.removeEventListener("selectionchange", scheduleSelectionUpdate);
+      if (selectionTimer !== undefined) window.clearTimeout(selectionTimer);
+      document.removeEventListener("pointerdown", closeOutside);
+      document.removeEventListener("keydown", escape);
+      window.removeEventListener("scroll", updateQuoteSelection, true);
+      window.removeEventListener("resize", updateQuoteSelection);
+    };
+  }, [updateQuoteSelection]);
 
   const startOptimisticRewrite = useCallback((turn: TimelineTurn, mode: OptimisticRewrite["mode"], user = turn.user): void => {
     setOptimisticRewrite({
@@ -205,12 +242,13 @@ export const MessageTimeline = memo(function MessageTimeline({ sessionId, projec
   const busy = thinking || Boolean(rewrite) || displayedTurns.some((turn) => turnIsRunning(turn, runtimeActiveRunId));
   // 失败状态跟随对应消息，切会话、重启后仍可定位和重试。
   return (
-    <div className="message-timeline" onMouseUp={captureSelection}>
+    <div className="message-timeline" ref={timelineRef} onMouseUp={updateQuoteSelection}>
       {displayedTurns.map((turn, index) => (
         <Turn
           busy={busy}
           entrySheenOnly={firstTurnSheenOnly && index === 0}
           skillDescriptions={skillDescriptions}
+          skillLabels={skillLabels}
           key={turn.id}
           onCreateBranch={onCreateBranch}
           onDeleteUserMessage={onDeleteUserMessage}
@@ -242,11 +280,15 @@ export const MessageTimeline = memo(function MessageTimeline({ sessionId, projec
         />
       ) : null}
       {thinking && !displayedTurns.some((turn) => turnIsRunning(turn, runtimeActiveRunId)) ? <RunStatus /> : null}
-      {quoteSelection ? createPortal(<button className="message-selection-reference" style={{ top: quoteSelection.top - 36, left: quoteSelection.left }}
+      {quoteSelection ? createPortal(<button aria-label="将选中文字添加到对话" aria-busy={addingQuote} className="message-selection-reference" disabled={addingQuote} style={{ top: quoteSelection.top, left: quoteSelection.left }}
         onMouseDown={(event) => event.preventDefault()} onClick={() => {
-          onCaptureQuote(quoteSelection.messageId, quoteSelection.quote);
-          setQuoteSelection(undefined);
-        }} type="button">引用片段</button>, document.body) : null}
+          if (addingQuote) return;
+          setAddingQuote(true);
+          void onAddQuoteToConversation(quoteSelection.messageId, quoteSelection.quote).finally(() => {
+            setAddingQuote(false);
+            setQuoteSelection(undefined);
+          });
+        }} type="button"><Icon name="quote" size={14} />{addingQuote ? "正在添加…" : "添加到对话"}</button>, document.body) : null}
     </div>
   );
 });
@@ -338,6 +380,7 @@ const Turn = memo(function Turn({
   busy,
   entrySheenOnly,
   skillDescriptions,
+  skillLabels,
   projectId,
   runtimeActiveRunId,
   turn,
@@ -360,6 +403,7 @@ const Turn = memo(function Turn({
   /** FLIP 落定后的首条用户消息只播扫光（原文 animateUserEntry "sheen-only"）。 */
   entrySheenOnly?: boolean;
   skillDescriptions?: ReadonlyMap<string, string>;
+  skillLabels?: ReadonlyMap<string, string>;
   projectId: string;
   /** Runtime snapshot 里当前会话的活动 run；回合状态停在 idle 时以它兜底。 */
   runtimeActiveRunId?: string;
@@ -417,6 +461,8 @@ const Turn = memo(function Turn({
     () => running ? [] : listChangedFiles(turn).filter((file) => file.status === "completed"),
     [running, turn]
   );
+  const emptyCompletedTurn = !running && turn.status === "completed" && !turn.assistant.trim();
+  const emptyIncompleteTurn = !running && turn.status === "incomplete" && !turn.assistant.trim();
   return (
     <section className={`timeline-turn is-${turn.status}`}>
       {turn.user ? (
@@ -439,7 +485,7 @@ const Turn = memo(function Turn({
         />
       ) : null}
       {/* 运行中保留状态反馈；结束后不凭空补出助手内容。 */}
-      {running || executionSteps.length > 0 || turn.assistant.trim() || completedChangedFiles.length > 0 ? (
+      {running || executionSteps.length > 0 || turn.assistant.trim() || completedChangedFiles.length > 0 || emptyCompletedTurn || emptyIncompleteTurn ? (
       <article className="chat-message desktop-assistant-message" data-message-id={turn.assistantMessageId} data-sender="assistant" tabIndex={-1}>
         <div className="agent-response">
         {executionSteps.length ? (
@@ -453,6 +499,8 @@ const Turn = memo(function Turn({
             thinkingSeconds={turn.reasoningDurationMs !== undefined ? Math.max(1, Math.round(turn.reasoningDurationMs / 1000)) : undefined}
           />
         ) : null}
+        {emptyCompletedTurn ? <div className="execution-empty-response" role="status">本轮已结束，但没有生成回复正文。</div> : null}
+        {emptyIncompleteTurn ? <div className="execution-empty-response" role="status">{turn.error || "本轮未完成，尚未生成回复正文。"}</div> : null}
         {!executionSteps.some((step) => step.kind === "assistant") && turn.assistant ? <TypewriterMarkdown active={running} content={turn.assistant} onOpenExternal={onOpenExternal} onPreviewFile={onPreviewFile} projectId={projectId} /> : null}
         {running ? <RunStatus turn={turn} /> : null}
 
@@ -466,6 +514,7 @@ const Turn = memo(function Turn({
             sessionId={sessionId}
             turn={turn}
             skillDescriptions={skillDescriptions}
+            skillLabels={skillLabels}
             content={turn.assistant}
             finishReason={turn.finishReason}
             metrics={turnMetrics(turn)}
@@ -486,7 +535,7 @@ const Turn = memo(function Turn({
         </div>
       </article>
       ) : null}
-      {!running && !turn.assistant.trim() && turn.versionCount && turn.versionCount > 1 && turn.versionIndex !== undefined ? (
+      {!running && !(turn.status === "completed" && turn.tools.length > 0) && !turn.assistant.trim() && turn.versionCount && turn.versionCount > 1 && turn.versionIndex !== undefined ? (
         <VersionSwitcher onSwitchVersion={switchVersion} versionCount={turn.versionCount} versionIndex={turn.versionIndex} />
       ) : null}
     </section>
@@ -733,11 +782,12 @@ function plainTextFromMarkdown(content: string): string {
  *  （LLM 用时 / 首 token / 解码吞吐）常显。更多菜单与用量悬浮卡都走 portal
  *  fixed 定位：用量项悬停出详情卡（80ms 悬停意图防抖），结束原因带语义色点，
  *  复制成功后图标变勾并延迟收菜单。 */
-function AssistantActions({ projectId, sessionId, turn, skillDescriptions, content, timestamp, metrics, runMs, usage, finishReason, onCreateBranch, onReference, onShowReferences, onRegenerate, onSwitchVersion, versionIndex, versionCount }: {
+function AssistantActions({ projectId, sessionId, turn, skillDescriptions, skillLabels, content, timestamp, metrics, runMs, usage, finishReason, onCreateBranch, onReference, onShowReferences, onRegenerate, onSwitchVersion, versionIndex, versionCount }: {
   projectId?: string;
   sessionId?: string;
   turn: TimelineTurn;
   skillDescriptions?: ReadonlyMap<string, string>;
+  skillLabels?: ReadonlyMap<string, string>;
   content: string;
   timestamp?: string;
   metrics?: TurnMetrics;
@@ -873,7 +923,14 @@ function AssistantActions({ projectId, sessionId, turn, skillDescriptions, conte
           role="menu"
           style={menuPosition.style}
         >
-          <MessageContextMenu tools={turn.tools.map((tool) => tool.tool)} skills={turn.skills} descriptions={skillDescriptions} memoryRecallDegraded={turn.memoryRecallDegraded} />
+          <MessageContextMenu
+            tools={turn.tools.map((tool) => tool.tool)}
+            skills={turn.skills}
+            skillSelection={turn.capabilitySelection?.skills}
+            skillLabels={skillLabels}
+            descriptions={skillDescriptions}
+            memoryRecallDegraded={turn.memoryRecallDegraded}
+          />
           {hasInfoSection ? (
             <>
               {usageRows.length ? (
