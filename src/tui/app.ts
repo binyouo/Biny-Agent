@@ -133,6 +133,9 @@ export class BinyTui {
   private commands: CommandRuntime | undefined;
   private runtimeHost: RuntimeHostServer | undefined;
   private runtimeSnapshot: InteractiveRuntimeSnapshot | undefined;
+  /** 最近一次 runtime 启动失败的真实原因；重试成功后清除，供未就绪提示透出。 */
+  private startupError: string | undefined;
+  private startRuntimePromise: Promise<void> | undefined;
 
   private readonly headerContainer = new Container();
   private readonly chatContainer = new TranscriptView();
@@ -186,6 +189,11 @@ export class BinyTui {
     this.editorContainer.addChild(this.editor);
   }
 
+  /** 测试与诊断的稳定观察口：TUI 当前展示状态（transcript、sessionId 等），不暴露运行时对象。 */
+  get tuiState(): TuiState {
+    return this.state;
+  }
+
   /** 启动界面并等待退出。 */
   async run(): Promise<TuiExitSummary | undefined> {
     this.ui.addChild(this.headerContainer);
@@ -227,7 +235,7 @@ export class BinyTui {
     });
     this.ui.start();
 
-    await this.startRuntime();
+    await this.ensureRuntimeStarted();
     // Ctrl+C 可能在 runtime 初始化期间到达；此时 exit 没有等待者可唤醒，
     // 初始化完成后必须直接结束，不能再把 TUI 留在半关闭状态。
     if (this.exiting) return this.exitSummary;
@@ -237,6 +245,18 @@ export class BinyTui {
       this.resolveExit = resolve;
     });
     return this.exitSummary;
+  }
+
+  /**
+   * runtime 缺失时的统一恢复入口：启动（或重试启动）runtime，同一时间只允许一次在飞。
+   * 启动失败的错误保留在 startupError 里由调用方透出；成功后 runtime 与快照就绪。
+   */
+  private ensureRuntimeStarted(): Promise<void> {
+    if (this.runtime) return Promise.resolve();
+    this.startRuntimePromise ??= this.startRuntime().finally(() => {
+      this.startRuntimePromise = undefined;
+    });
+    return this.startRuntimePromise;
   }
 
   private async startRuntime(): Promise<void> {
@@ -310,6 +330,7 @@ export class BinyTui {
       }
       this.runtime = runtime;
       this.commands = commands;
+      this.startupError = undefined;
       // 补全器要的是不带斜杠的命令名，它自己会补上 `/`；带斜杠会补出 `//resume`。
       // 提前设置 autocomplete：即使模型未配置或 skills 加载失败，slash 命令补全也必须可用。
       try {
@@ -364,6 +385,7 @@ export class BinyTui {
     } catch (error) {
       // Runtime 启动失败（例如模型 provider 缺 API Key）时，slash 补全和命令选择器
       // 仍应可用，否则用户连命令列表和 /exit 都打不开。skills 拿不到就退化为纯命令集。
+      this.startupError = describeError(error);
       this.setAutocompleteProvider([], this.workspaceRoot);
       this.notify(`TUI startup failed: ${describeError(error)}`);
     }
@@ -561,21 +583,27 @@ export class BinyTui {
   private async submit(text: string): Promise<void> {
     const value = text.trim();
     if (!value && !this.pendingAttachments.length) return;
-    const runtime = this.runtime;
     // TUI 在 runtime 启动完成前（或启动失败时）已经可以接收键盘输入；
     // slash 命令里有一部分（命令选择器、/clear、/exit）不依赖 runtime，照常路由过去，
-    // 避免「runtime 没起来 → 连 /exit 都打不出来」。普通消息仍保留在编辑器里等 runtime。
-    if (!runtime) {
-      if (value.startsWith("/")) {
-        try {
-          await this.handleSlashCommand(value);
-        } catch (error) {
-          this.showTextViewer("Command Error", describeError(error));
-        }
-        return;
+    // 避免「runtime 没起来 → 连 /exit 都打不出来」。依赖 runtime 的命令在 handleSlashCommand
+    // 内部先走同一条恢复路径。
+    if (!this.runtime && value.startsWith("/")) {
+      try {
+        await this.handleSlashCommand(value);
+      } catch (error) {
+        this.showTextViewer("Command Error", describeError(error));
       }
+      return;
+    }
+    // runtime 未就绪不再只能重启 TUI：普通消息提交前先重试启动（有界，见 client 握手超时）；
+    // 仍失败则保留输入并透出真实原因，而不是反复提示「检查模型配置后重启」。
+    if (!this.runtime) await this.ensureRuntimeStarted();
+    const runtime = this.runtime;
+    if (!runtime) {
       this.setEditorText(text);
-      this.notify("Runtime 尚未就绪，无法发送消息。请检查模型配置（API Key）后重启 TUI。");
+      this.notify(this.startupError
+        ? `Runtime 尚未就绪：${this.startupError}。消息已保留在输入框，可稍后重试或 /exit 退出。`
+        : "Runtime 尚未就绪，无法发送消息。");
       this.ui.requestRender();
       return;
     }
@@ -892,7 +920,7 @@ export class BinyTui {
   // ---------------------------------------------------------------- slash
 
   private async handleSlashCommand(value: string): Promise<void> {
-    const runtime = this.runtime;
+    let runtime = this.runtime;
     const commands = this.commands;
     // 容忍多打的斜杠：`//resume` 只可能是想写 `/resume`。
     const [command = "", ...args] = value.trim().replace(/^\/+/, "/").split(/\s+/);
@@ -929,8 +957,15 @@ export class BinyTui {
     }
 
     if (!runtime) {
-      this.notify(`Runtime 尚未就绪，${command} 暂不可用。请检查模型配置（API Key）后重启 TUI。`);
-      return;
+      // 依赖 runtime 的命令同样先重试启动；有界失败后透出真实原因，不再只提示重启 TUI。
+      await this.ensureRuntimeStarted();
+      runtime = this.runtime;
+      if (!runtime) {
+        this.notify(this.startupError
+          ? `Runtime 尚未就绪，${command} 暂不可用：${this.startupError}`
+          : `Runtime 尚未就绪，${command} 暂不可用。`);
+        return;
+      }
     }
 
     if (command === "/new") {
