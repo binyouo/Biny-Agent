@@ -73,3 +73,11 @@ pnpm build
 ```
 
 TUI 改动可在目标项目中运行 `biny tui` 或 `biny chat` 验收；启动前先运行 `pnpm build:cli`。
+
+## CI 与发布
+
+GitHub Actions 会在 Pull Request 和 `main` / `master` 分支 push 时运行依赖审计、类型检查、lint、标准测试、Runtime E2E 和 CLI/Desktop 构建。发布时，在仓库 Actions 页面运行 **Prepare release** 并输入版本号；流程会更新版本、创建 tag，然后触发该 tag 的验证、macOS arm64/x64 打包和 GitHub Release 上传。也可以运行 **Release macOS app** 并输入已有 tag 来重建发布包。
+
+正式发布需要在仓库的 Actions secrets 中配置 `MACOS_CERTIFICATE_BASE64`、`MACOS_CERTIFICATE_PASSWORD`、`APPLE_ID`、`APPLE_APP_SPECIFIC_PASSWORD` 和 `APPLE_TEAM_ID`，供 macOS 应用签名与公证使用。
+
+Pull Request 的自动代码审查由仓库规则集触发，目标分支为 `main`，每次新提交都会重新审查；草稿 PR 不触发。审查结果以评论提供，不作为合并批准，仍需维护者判断。此功能要求 PR 作者具备代码审查访问权限且额度可用；规则集配置位于 GitHub 仓库 Settings → Rulesets。

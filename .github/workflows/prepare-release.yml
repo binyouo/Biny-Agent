@@ -9,6 +9,7 @@ on:
         type: string
 
 permissions:
+  actions: write
   contents: write
 
 concurrency:
@@ -71,3 +72,10 @@ jobs:
           git tag -a "$TAG" -m "Release $TAG"
           git push origin "HEAD:$DEFAULT_BRANCH"
           git push origin "$TAG"
+
+      - name: Start desktop release workflow
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.release.outputs.tag }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: gh workflow run release-desktop.yml --ref "$DEFAULT_BRANCH" --field tag="$TAG"
