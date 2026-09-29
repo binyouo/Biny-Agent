@@ -592,6 +592,7 @@ def model_provider(model_alias: str, runtime_env: dict[str, str] | None = None) 
 def make_config(model_alias: str, runtime_env: dict[str, str] | None = None) -> dict[str, Any]:
     provider = model_provider(model_alias, runtime_env)
     is_reasoning_model = provider["type"] != "openai-compatible"
+    reasoning_effort = _reasoning_effort(runtime_env)
     if ENV_DRIVEN["reasoning"] in {**os.environ, **(runtime_env or {})}:
         is_reasoning_model = _env_flag(
             ENV_DRIVEN["reasoning"], is_reasoning_model, runtime_env
@@ -626,15 +627,15 @@ def make_config(model_alias: str, runtime_env: dict[str, str] | None = None) -> 
         model_config["thinkingLevelMap"] = {"off": "none", "high": "high", "max": "max"}
         model_config["reasoning"] = {
             "efforts": ["high", "max"],
-            "defaultEffort": "high",
+            "defaultEffort": reasoning_effort,
             "mapping": {"high": "high", "max": "max"},
         }
     # Terminal-Bench 是工具调用密集型任务，放宽步数和时长预算。
     agent_config = {
-        "softStepLimit": 256,
-        "hardStepLimit": 1024,
+        "softStepLimit": 100_000,
+        "hardStepLimit": 100_000,
         # 工具调用数不单独限次，交由 Harbor 的 task.toml 时限终止长任务。
-        "maxToolCalls": 65_536,
+        "maxToolCalls": 100_000,
         "maxRepeatedActions": 3,
         "maxConcurrentTools": 4,
         "maxQueuedToolCalls": 128,
@@ -655,15 +656,16 @@ def make_config(model_alias: str, runtime_env: dict[str, str] | None = None) -> 
         "defaultModel": model_alias,
         "providers": {provider["alias"]: provider_config},
         "models": {model_alias: model_config},
-        "thinking": {"enabled": is_reasoning_model, "effort": "high"},
+        "thinking": {"enabled": is_reasoning_model, "effort": reasoning_effort},
         "agent": agent_config,
         "permission": permission_config,
         "workspace": {
             "ignore": ["node_modules", ".git", ".agent", ".env", ".DS_Store"],
         },
         "context": {
-            "maxTurnToolResultBytes": 131_072,
-            "instructionsMaxBytes": 32 * 1024,
+            "maxTurnToolResultBytes": 16 * 1024 * 1024,
+            "instructionsMaxBytes": 128 * 1024,
+            "compaction": {"enabled": False},
             "memory": {"enabled": False},
         },
         "web": {"search": {"enabled": False}},
@@ -752,6 +754,17 @@ def _env_flag(
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _reasoning_effort(runtime_env: dict[str, str] | None = None) -> str:
+    raw = (runtime_env or {}).get(
+        "BINY_EVAL_REASONING_EFFORT",
+        os.environ.get("BINY_EVAL_REASONING_EFFORT", "high"),
+    )
+    effort = raw.strip().lower()
+    if effort not in {"high", "max"}:
+        raise ValueError("BINY_EVAL_REASONING_EFFORT must be high or max")
+    return effort
+
+
 def task_time_budget(
     logs_dir: Path,
     session_id: str | None,
@@ -793,9 +806,9 @@ def task_time_budget(
         raise ValueError("Harbor timeout multiplier and reserve ratio must be numeric") from error
     if multiplier <= 0:
         raise ValueError("BINY_EVAL_AGENT_TIMEOUT_MULTIPLIER must be positive")
-    if not 0.1 <= reserve_ratio <= 0.2:
+    if not 0 <= reserve_ratio <= 0.2:
         raise ValueError(
-            "BINY_EVAL_FINALIZATION_RESERVE_RATIO must be between 0.1 and 0.2"
+            "BINY_EVAL_FINALIZATION_RESERVE_RATIO must be between 0 and 0.2"
         )
     budget_ms = int(configured_timeout * multiplier * 1_000)
     reserve_ms = int(budget_ms * reserve_ratio)

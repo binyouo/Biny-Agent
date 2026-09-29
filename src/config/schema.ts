@@ -20,9 +20,9 @@ import {
 import { GLOBAL_CONFIG_FORMAT, GLOBAL_CONFIG_VERSION } from "./migrations.js";
 
 const agentSchema = z.object({
-  softStepLimit: z.number().int().min(1).max(1_024).default(32),
-  hardStepLimit: z.number().int().min(1).max(1_024).default(96),
-  maxToolCalls: z.number().int().min(1).max(65_536).optional(),
+  softStepLimit: z.number().int().min(1).max(100_000).default(32),
+  hardStepLimit: z.number().int().min(1).max(100_000).default(96),
+  maxToolCalls: z.number().int().min(1).max(100_000).optional(),
   maxRepeatedActions: z.number().int().min(1).max(32).default(3),
   maxConcurrentTools: z.number().int().min(1).max(32).default(4),
   maxQueuedToolCalls: z.number().int().min(1).max(1_024).default(64)

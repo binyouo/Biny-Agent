@@ -34,7 +34,12 @@ class EvaluationConfigurationTests(unittest.TestCase):
         self.assertEqual(
             config["models"]["deepseek-v4.1-flash"]["contextWindow"], 1_000_000
         )
-        self.assertEqual(config["agent"]["maxToolCalls"], 65_536)
+        self.assertEqual(config["agent"]["softStepLimit"], 100_000)
+        self.assertEqual(config["agent"]["hardStepLimit"], 100_000)
+        self.assertEqual(config["agent"]["maxToolCalls"], 100_000)
+        self.assertEqual(config["context"]["compaction"], {"enabled": False})
+        self.assertEqual(config["context"]["maxTurnToolResultBytes"], 16 * 1024 * 1024)
+        self.assertEqual(config["context"]["instructionsMaxBytes"], 128 * 1024)
 
     def test_context_window_environment_override_takes_precedence(self) -> None:
         config = make_config(
@@ -68,6 +73,31 @@ class EvaluationConfigurationTests(unittest.TestCase):
         self.assertTrue(
             enabled["models"]["deepseek-v4.1-flash"]["capabilities"]["reasoning"]
         )
+
+    def test_reasoning_effort_override_selects_max(self) -> None:
+        config = make_config(
+            "deepseek-v4.1-flash",
+            {
+                "BINY_EVAL_REASONING": "1",
+                "BINY_EVAL_REASONING_EFFORT": "max",
+            },
+        )
+
+        self.assertEqual(config["thinking"], {"enabled": True, "effort": "max"})
+        self.assertEqual(
+            config["models"]["deepseek-v4.1-flash"]["reasoning"]["defaultEffort"],
+            "max",
+        )
+
+    def test_invalid_reasoning_effort_override_fails(self) -> None:
+        with self.assertRaises(ValueError):
+            make_config(
+                "deepseek-v4.1-flash",
+                {
+                    "BINY_EVAL_REASONING": "1",
+                    "BINY_EVAL_REASONING_EFFORT": "xhigh",
+                },
+            )
 
     def test_effective_configuration_is_written_for_each_trial(self) -> None:
         with patch.dict(os.environ, {}, clear=True):
@@ -219,6 +249,26 @@ class HarborRunSettingsTests(unittest.TestCase):
             )
 
         self.assertEqual(deadline, (1_200_000, 30_000))
+
+    def test_task_time_budget_can_use_the_entire_native_timeout(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            task_file = root / "tasks" / "compile-compcert" / "task.toml"
+            task_file.parent.mkdir(parents=True)
+            task_file.write_text("[agent]\ntimeout_sec = 100.0\n", encoding="utf-8")
+            logs_dir = root / "job" / "compile-compcert__trial" / "agent"
+            deadline = task_time_budget(
+                logs_dir,
+                "compile-compcert__trial__agent",
+                {
+                    "BINY_EVAL_TASKS_DIR": str(root / "tasks"),
+                    "BINY_EVAL_AGENT_TIMEOUT_MULTIPLIER": "1",
+                    "BINY_EVAL_FINALIZATION_RESERVE_RATIO": "0",
+                },
+                now_ms=1_000_000,
+            )
+
+        self.assertEqual(deadline, (1_100_000, 0))
 
     def test_run_script_uses_pass_at_one_attempt_and_timeout_defaults(self) -> None:
         repo_root = Path(__file__).resolve().parents[1]

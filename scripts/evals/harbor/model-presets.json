@@ -1,5 +1,5 @@
 {
-  "_comment": "模型/provider 预设表。BINY_EVAL_* 可覆盖对应字段；用 BINY_EVAL_MODEL 时切到环境变量驱动模式。",
+  "_comment": "模型/provider 预设表。BINY_EVAL_* 可覆盖对应字段；用 BINY_EVAL_MODEL 时切到环境变量驱动模式。推理可由 BINY_EVAL_REASONING 开启，并用 BINY_EVAL_REASONING_EFFORT 选 high 或 max。",
   "defaultAlias": "deepseek-v4-flash",
   "presets": {
     "deepseek-v4.1-flash": {

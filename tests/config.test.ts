@@ -94,6 +94,25 @@ function testRunBudget(): void {
     maxToolCalls: 200,
     maxRepeatedActions: 5
   });
+  const benchmarkBudget = configSchema.parse({
+    ...defaultConfig,
+    agent: {
+      ...defaultConfig.agent,
+      softStepLimit: 100_000,
+      hardStepLimit: 100_000,
+      maxToolCalls: 100_000
+    }
+  });
+  assert.deepEqual(resolveRunBudget(benchmarkBudget.agent), {
+    softStepLimit: 100_000,
+    hardStepLimit: 100_000,
+    maxToolCalls: 100_000,
+    maxRepeatedActions: 3
+  });
+  assert.throws(() => configSchema.parse({
+    ...defaultConfig,
+    agent: { ...defaultConfig.agent, hardStepLimit: 100_001 }
+  }));
   assert.throws(() => configSchema.parse({
     ...defaultConfig,
     agent: { ...defaultConfig.agent, maxProviderRetries: 2 }
