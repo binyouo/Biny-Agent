@@ -283,11 +283,3 @@
 
 /* 外壳负责开合裁切，文件树和预览只按最终可用宽度排版。 */
 .biny-root .desktop-inspector { box-sizing: border-box; width: var(--biny-inspector-content-width); border-left: 1px solid var(--biny-border); }
-
-/* 共享几何只供外壳使用，阻断每帧变量变化向大量高亮 token 和历史正文继承。 */
-.biny-root .biny-chat-scroll-content,
-.biny-root .biny-sidebar-card,
-.biny-root .desktop-inspector {
-  --biny-sidebar-animated-visual-width: 0px;
-  --biny-sidebar-animated-flow-width: 0px;
-}

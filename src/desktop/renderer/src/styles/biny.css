@@ -6,13 +6,13 @@
  */
 @property --biny-sidebar-animated-visual-width {
   syntax: "<length>";
-  inherits: true;
+  inherits: false;
   initial-value: 0px;
 }
 
 @property --biny-sidebar-animated-flow-width {
   syntax: "<length>";
-  inherits: true;
+  inherits: false;
   initial-value: 0px;
 }
 
@@ -286,12 +286,6 @@
   --biny-sidebar-transition: 500ms cubic-bezier(0.4, 0, 0.2, 1);
   --biny-sidebar-content-fade-duration: 180ms;
   --biny-sidebar-content-fade: var(--biny-sidebar-content-fade-duration) ease;
-  /* 侧栏、主区轨道和顶部按钮共用插值；标题直接从同一宽度推导，避免独立时钟错位。 */
-  --biny-sidebar-animated-visual-width: var(--biny-sidebar-visual-width, 0px);
-  --biny-sidebar-animated-flow-width: var(--biny-sidebar-flow-width, 0px);
-  transition:
-    --biny-sidebar-animated-visual-width var(--biny-sidebar-transition),
-    --biny-sidebar-animated-flow-width var(--biny-sidebar-transition);
   position: relative;
   display: block;
   width: 100%;
@@ -411,6 +405,9 @@
 }
 
 .biny-app-shell {
+  /* 目标宽度同次更新，各布局元素同节奏插值；逐帧值不继承到文件与消息子树。 */
+  --biny-sidebar-animated-flow-width: var(--biny-sidebar-flow-width, 0px);
+  transition: --biny-sidebar-animated-flow-width var(--biny-sidebar-transition);
   display: flex;
   position: relative;
   flex-direction: row;
@@ -480,12 +477,12 @@
 /* 左右分隔条拖拽时直接跟手，松开后再恢复统一的流宽度动画；拖拽过程中也不能选中正文。 */
 .desktop-root.biny-root[data-inspector-resizing="true"],
 .desktop-root.biny-root[data-sidebar-resizing="true"] {
-  transition: none;
   user-select: none;
 }
 
 /* peek 抽屉已经离屏，交换回普通 collapsed 流布局时必须跳过第二段宽度动画。 */
-.desktop-root.biny-root[data-sidebar-transition="peek-exited"] {
+.desktop-root.biny-root:is([data-inspector-resizing="true"], [data-sidebar-resizing="true"], [data-sidebar-transition="peek-exited"])
+  :is(.biny-app-shell, .biny-sidebar-pin-spacer, .biny-sidebar, .biny-sidebar-topbar-floating, .biny-chat-toolbar) {
   transition: none;
 }
 
@@ -525,8 +522,6 @@
   box-sizing: border-box;
   width: var(--biny-inspector-flow-width);
   min-width: 0;
-  /* 左侧栏也在同一个 flex 流里；先扣掉它，才能真正给 Chat 主区保留 320px。 */
-  max-width: max(320px, calc(100% - var(--biny-sidebar-animated-flow-width, 0px) - 320px));
   overflow: hidden;
   z-index: 102;
   border-left: 1px solid var(--biny-border);
@@ -671,10 +666,7 @@
   z-index: 103;
   /* 顶栏高 48px，菜单与分隔线之间保留 12px。 */
   top: 60px;
-  right: min(
-    calc(var(--biny-inspector-flow-width, 0px) + 10px),
-    calc(100vw - var(--biny-sidebar-animated-visual-width, 0px) - 52px)
-  );
+  right: 10px;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -1285,6 +1277,8 @@
 
 /* Peek 固定展开时先由这个流内占位条推动主区，避免 fixed 侧栏切回流布局时发生二次回弹。 */
 .biny-sidebar-pin-spacer {
+  --biny-sidebar-animated-flow-width: var(--biny-sidebar-flow-width, 0px);
+  transition: --biny-sidebar-animated-flow-width var(--biny-sidebar-transition);
   box-sizing: border-box;
   width: 0;
   min-width: 0;
@@ -1367,6 +1361,8 @@
 }
 
 .biny-sidebar {
+  --biny-sidebar-animated-visual-width: var(--biny-sidebar-visual-width, 0px);
+  transition: --biny-sidebar-animated-visual-width var(--biny-sidebar-transition);
   /* 左栏所有“指向后出现操作”的反馈共用同一节奏，避免项目和会话行各自抢拍。 */
   --biny-sidebar-hover-duration: 120ms;
   --biny-sidebar-row-duration: 160ms;
@@ -1505,6 +1501,8 @@
 
 /* 顶部按钮命中层只负责拖拽和交互，底色分别由侧栏卡与聊天工具栏提供。 */
 .biny-sidebar-topbar-floating {
+  --biny-sidebar-animated-visual-width: var(--biny-sidebar-visual-width, 0px);
+  transition: --biny-sidebar-animated-visual-width var(--biny-sidebar-transition);
   position: fixed;
   z-index: 100;
   top: 0;
@@ -4395,7 +4393,11 @@ button.capability-check[aria-checked="true"] {
   /* 聊天区离开顶部时叠加阴影 + 发丝线。 */
   border-bottom: 1px solid transparent;
   background: var(--biny-surface);
-  transition: opacity var(--biny-sidebar-content-fade),
+  --biny-sidebar-animated-visual-width: var(--biny-sidebar-visual-width, 0px);
+  --biny-sidebar-animated-flow-width: var(--biny-sidebar-flow-width, 0px);
+  transition: --biny-sidebar-animated-visual-width var(--biny-sidebar-transition),
+    --biny-sidebar-animated-flow-width var(--biny-sidebar-transition),
+    opacity var(--biny-sidebar-content-fade),
     box-shadow 0.2s ease-out, border-color 0.2s ease-out;
   /* 整条顶部默认用于拖动；右侧操作容器单独退出拖动区。 */
   -webkit-app-region: drag;

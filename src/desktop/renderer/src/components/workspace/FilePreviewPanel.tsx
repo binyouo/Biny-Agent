@@ -5,7 +5,7 @@
  * data URL 内联显示；二进制/超限给「使用系统应用打开」兜底。文件树支持懒加载展开
  * 和名称过滤。这里只做展示与本地交互，数据请求全部由 useWorkspaceInspector 的回调注入。
  */
-import { useDeferredValue, useState } from "react";
+import { memo, useDeferredValue, useState } from "react";
 import { IconButton } from "@astryxdesign/core/IconButton";
 import type {
   DesktopWorkspaceDirectoryEntry,
@@ -39,7 +39,7 @@ const MAX_TREE_WIDTH = 400;
 const DEFAULT_TREE_WIDTH = 200;
 const MIN_PREVIEW_WIDTH = 160;
 
-export function FilePreviewPanel({ width, preview, directoryStates, expandedDirectories, projectId, onOpenFile, onPreviewFile, onRunHtml, onShowFiles, onToggleDirectory, onRefresh, onCollapse }: {
+export const FilePreviewPanel = memo(function FilePreviewPanel({ width, preview, directoryStates, expandedDirectories, projectId, onOpenFile, onPreviewFile, onRunHtml, onShowFiles, onToggleDirectory, onRefresh, onCollapse }: {
   width: number;
   preview?: FilePreviewState;
   directoryStates: ReadonlyMap<string, FileDirectoryState>;
@@ -129,12 +129,12 @@ export function FilePreviewPanel({ width, preview, directoryStates, expandedDire
       </div>
     </aside>
   );
-}
+});
 
 /** 可内联显示的图片扩展名（与主进程 readInlineImage 的 media type 表一致）。 */
 const imageExtensions = new Set(["avif", "bmp", "gif", "ico", "jpeg", "jpg", "png", "svg", "webp"]);
 
-function FilePreviewContent({ preview, projectId, onOpenFile, onPreviewFile, onRunHtml }: {
+const FilePreviewContent = memo(function FilePreviewContent({ preview, projectId, onOpenFile, onPreviewFile, onRunHtml }: {
   preview: FilePreviewState;
   projectId: string;
   onOpenFile(path: string): void;
@@ -171,7 +171,7 @@ function FilePreviewContent({ preview, projectId, onOpenFile, onPreviewFile, onR
     {file.truncated && mode === "code" ? <div className="inspector-progress">文件过大，仅显示已读取的部分。</div> : null}
     {mode === "code" ? <CodeFilePreview file={file} /> : <div className="inspector-result-scroll"><MarkdownContent content={file.content} projectId={projectId} onPreviewFile={(target) => onPreviewFile(target.startsWith("/") ? target : `${path.includes("/") ? path.slice(0, path.lastIndexOf("/") + 1) : ""}${target}`)} onOpenExternal={(url) => { void window.biny.openExternal(url).catch((error: unknown) => setOpenError(String(error))); }} /></div>}
   </div>;
-}
+});
 
 /** 文本/代码预览：语言 + 大小元信息行，正文是行号 gutter + 高亮代码。 */
 function CodeFilePreview({ file, onRunHtml }: { file: DesktopWorkspaceFilePreview; onRunHtml?(path: string): void }): React.JSX.Element {
@@ -251,7 +251,7 @@ function PreviewState({ icon, text, error, children }: { icon: "file" | "warning
   );
 }
 
-function FileTree({ path, query, directoryStates, expandedDirectories, onToggleDirectory, onPreviewFile, selectedPath, showHidden, depth = 0 }: {
+const FileTree = memo(function FileTree({ path, query, directoryStates, expandedDirectories, onToggleDirectory, onPreviewFile, selectedPath, showHidden, depth = 0 }: {
   path: string;
   query: string;
   directoryStates: ReadonlyMap<string, FileDirectoryState>;
@@ -292,7 +292,7 @@ function FileTree({ path, query, directoryStates, expandedDirectories, onToggleD
       })}
     </div>
   );
-}
+});
 
 function extensionOf(path: string): string {
   return path.split(".").at(-1)?.toLocaleLowerCase() ?? "";

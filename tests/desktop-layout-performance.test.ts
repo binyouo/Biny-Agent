@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { registerHooks } from "node:module";
 
-test("侧栏 30 帧宽度变化不提交 React，窗口缩放和最终侧栏宽度仍约束右栏", async () => {
+test("侧栏开合与宽度变化不重复遍历文件内容，窗口缩放仍约束右栏", async (context) => {
+  context.mock.timers.enable({ apis: ["setTimeout"] });
   const imports = registerHooks({ load(url, context, next) {
     if (url.includes("/@xterm/xterm/")) return { format: "module", source: "export class Terminal {}", shortCircuit: true };
     if (url.includes("/@xterm/addon-fit/")) return { format: "module", source: "export class FitAddon {}", shortCircuit: true };
@@ -31,10 +32,19 @@ test("侧栏 30 帧宽度变化不提交 React，窗口缩放和最终侧栏宽�
   let inspector!: ReturnType<typeof useWorkspaceInspector>;
   let commits = 0;
   let fileCommits = 0;
+  let fileNameReads = 0;
+  let previewMetadataReads = 0;
+  let directoryRevision = 0;
+  let fileRevision = 0;
+  const snapshot = () => ({ fileNameReads, previewMetadataReads });
   const options = { changes: [], tools: [], filePanelResizing: false, filePanelWidth: 600, sidebarFlowWidth: 260,
     projectId: "p", source: "p:s", onFilePanelResizeEnd() {}, onFilePanelResizeStart() {}, onFilePanelWidthChange() {},
-    onListDirectory: async () => ({ path: ".", entries: Array.from({ length: 400 }, (_, index) => ({ kind: "file" as const, name: `file-${index}.ts`, path: `file-${index}.ts` })) }), onOpenFile() {}, onOpenBrowser: async () => {}, onFixPreview() {},
-    onSwitchBranch: async () => {}, onReadFile: async () => { throw new Error("unused"); }, onWarning() {} };
+    onListDirectory: async () => ({ path: ".", entries: Array.from({ length: 400 }, (_, index) => {
+      const name = `file-${index}${directoryRevision ? "-updated" : ""}.ts`;
+      return { kind: "file" as const, get name() { fileNameReads++; return name; }, path: `file-${index}.ts` };
+    }) }), onOpenFile() {}, onOpenBrowser: async () => {}, onFixPreview() {},
+    onSwitchBranch: async () => {}, onReadFile: async (path: string) => ({ path, content: `const revision = ${fileRevision};`, binary: false, truncated: false,
+      get bytes() { previewMetadataReads++; return 20; } }), onWarning() {} };
   function Harness(): React.ReactNode {
     inspector = useWorkspaceInspector(options);
     React.useLayoutEffect(() => { commits++; });
@@ -97,6 +107,36 @@ test("侧栏 30 帧宽度变化不提交 React，窗口缩放和最终侧栏宽�
     options.filePanelWidth = 600;
     await render();
     assert.equal(document.querySelector<HTMLElement>(".file-browser-tree")!.style.width, "200px");
+    // 已读取的文件在左右栏开合时保持内容与滚动位置；只重新计算外层布局。
+    width = 1400;
+    await resize(shell);
+    await React.act(async () => inspector.previewFile("file-1.ts"));
+    const tree = document.querySelector<HTMLElement>(".file-browser-tree")!;
+    tree.scrollTop = 560;
+    const readsBeforeToggle = snapshot();
+    for (let index = 0; index < 5; index++) {
+      await React.act(() => document.querySelector<HTMLButtonElement>('[aria-label="收起工作区工具"]')!.click());
+      await React.act(() => inspector.openFiles());
+      options.sidebarFlowWidth = 260;
+      await render();
+      options.sidebarFlowWidth = 0;
+      await render();
+    }
+    const readsAfterToggle = snapshot();
+    console.log(JSON.stringify({ workload: "5 left/right sidebar open-close cycles with 400 files and a preview",
+      fileNameReads: readsAfterToggle.fileNameReads - readsBeforeToggle.fileNameReads,
+      previewMetadataReads: readsAfterToggle.previewMetadataReads - readsBeforeToggle.previewMetadataReads }));
+    assert.deepEqual(readsAfterToggle, readsBeforeToggle, "开合不能重新遍历未变化的文件树或重建预览");
+    assert.equal(tree.scrollTop, 560);
+    assert.equal(document.querySelector('[role="treeitem"][aria-selected="true"]')?.textContent?.includes("file-1.ts"), true);
+    assert.match(document.querySelector(".file-preview-code")!.textContent!, /revision = 0/u);
+    directoryRevision++;
+    fileRevision++;
+    await React.act(async () => document.querySelector<HTMLButtonElement>('[aria-label="刷新文件"]')!.click());
+    assert.ok(fileNameReads > readsAfterToggle.fileNameReads, "真实文件变化仍需更新树");
+    assert.ok(previewMetadataReads > readsAfterToggle.previewMetadataReads, "刷新仍需显示新的文件内容");
+    assert.equal(document.querySelector('[role="treeitem"][aria-selected="true"]')?.textContent?.includes("file-1-updated.ts"), true);
+    assert.match(document.querySelector(".file-preview-code")!.textContent!, /revision = 1/u);
   } finally {
     await React.act(() => root.unmount());
     assert.equal(observers.size, 0);

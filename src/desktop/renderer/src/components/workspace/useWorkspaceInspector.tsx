@@ -1,5 +1,5 @@
 /* eslint-disable react-refresh/only-export-components -- Inspector 请求状态与私有视图必须共享同一生命周期。 */
-/** 文件详情与工作区工具的并排面板；顶栏和右缘文件入口共用 openFiles。 */
+/** 文件详情与工作区工具的并排面板；右缘文件入口打开文件树。 */
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { DesktopWorkspaceDirectory, DesktopWorkspaceFilePreview } from "../../../../protocol.js";
 import {
@@ -287,13 +287,14 @@ export function useWorkspaceInspector({
     return () => window.removeEventListener("keydown", handleShortcut);
   }, [openBrowser, openRailAction, projectId]);
 
-  const refreshFiles = (): void => {
+  const refreshFiles = useCallback((): void => {
     loadDirectory(".");
     for (const path of expandedDirectories) loadDirectory(path);
     if (activePreview) previewFile(activePreview.path);
-  };
+  }, [activePreview, expandedDirectories, loadDirectory, previewFile]);
+  const collapseDirectories = useCallback((): void => setExpandedDirectories(new Set()), []);
   const toolContent = (view: InspectorView): React.JSX.Element | null => !projectId ? null : view === "terminal" ? <TerminalView projectId={projectId} active={inspectorOpen && inspectorView === "terminal"} />
-    : view === "files" ? <FilePreviewPanel width={Math.max(0, panelWidth - 1)} directoryStates={directoryStates} expandedDirectories={expandedDirectories} onOpenFile={onOpenFile} onPreviewFile={previewFile} onRunHtml={runHtml} onShowFiles={showFileBrowser} onToggleDirectory={toggleDirectory} preview={activePreview} projectId={projectId} onRefresh={refreshFiles} onCollapse={() => setExpandedDirectories(new Set())} />
+    : view === "files" ? <FilePreviewPanel width={Math.max(0, panelWidth - 1)} directoryStates={directoryStates} expandedDirectories={expandedDirectories} onOpenFile={onOpenFile} onPreviewFile={previewFile} onRunHtml={runHtml} onShowFiles={showFileBrowser} onToggleDirectory={toggleDirectory} preview={activePreview} projectId={projectId} onRefresh={refreshFiles} onCollapse={collapseDirectories} />
       : view === "changes" ? <SessionChangesPanel changes={changes} onPreviewFile={previewFile} />
         : view === "commit" ? <WorkspaceCommitPanel projectId={projectId} active={effectiveOpen && inspectorView === "commit"} onCount={setGitChangeCount} onSwitchBranch={onSwitchBranch} onPreviewFile={previewFile} />
           : view === "browser" ? <WorkspaceBrowserPanel projectId={projectId} active={effectiveOpen && inspectorView === "browser"} expanded={focused} onToggleExpanded={() => setBrowserExpanded((value) => !value)} onAttachReference={onAttachBrowserReference ? (value) => { setBrowserExpanded(false); onAttachBrowserReference(value); } : undefined} onWarning={onWarning} onOpenTerminal={() => openInspector("terminal")} onFixPreview={onFixPreview} />
@@ -368,7 +369,7 @@ export function useWorkspaceInspector({
                   className={`biny-inspector-tab${active ? " is-active" : ""}${compactTabs ? " is-compact" : ""}`}
                   key={view}
                   onClick={() => openInspector(view)}
-                  title={view === "files" ? undefined : inspectorViewMetadata[view].label}
+                  title={inspectorViewMetadata[view].label}
                   type="button"
                 >
                   <Icon name={inspectorViewMetadata[view].icon} size={compactTabs ? 16 : 14} />
@@ -409,7 +410,6 @@ export function useWorkspaceInspector({
             key={view}
             onClick={() => openRailAction(view)}
             tabIndex={railVisible ? 0 : -1}
-            tooltip={view !== "files"}
           >
             <Icon name={inspectorViewMetadata[view].icon} size={16} />
             {view === "changes" && changeCount > 0 ? <span className="biny-inspector-badge is-corner">{changeCount > 99 ? "99+" : changeCount}</span> : null}

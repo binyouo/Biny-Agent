@@ -11,7 +11,7 @@ const css = ["biny", "inspector"].map((name) => readFileSync(
 
 function withStyles(attributes: string, check: (get: (selector: string) => CSSStyleDeclaration) => void): void {
   const dom = new JSDOM(`<style>${css}</style><div class="desktop-root biny-root" ${attributes}>
-    <div class="biny-workspace-main"><header class="biny-chat-toolbar"></header>
+    <div class="biny-app-shell"><div class="biny-workspace-main"><header class="biny-chat-toolbar"></header>
       <div class="biny-chat-body"><div class="biny-chat-scroll"></div></div></div>
     <div class="biny-sidebar-pin-spacer"></div>
     <aside class="biny-sidebar"><div class="biny-sidebar-card"></div></aside>
@@ -19,7 +19,7 @@ function withStyles(attributes: string, check: (get: (selector: string) => CSSSt
     <aside class="biny-sidebar is-peek-overlay"></aside>
     <aside class="biny-sidebar is-peek-overlay is-peek-peeking"></aside>
     <aside class="biny-sidebar is-peek-overlay is-peek-pinning"></aside>
-    <div class="biny-sidebar-topbar-floating"><div class="biny-sidebar-topbar-hit-layer"></div></div>
+    <div class="biny-sidebar-topbar-floating"><div class="biny-sidebar-topbar-hit-layer"></div></div></div>
   </div>`);
   try {
     check((selector) => dom.window.getComputedStyle(dom.window.document.querySelector(selector)!));
@@ -35,18 +35,30 @@ test("收起和展开过程中标题与按钮共用带最小安全宽度的边�
   });
 });
 
-test("左侧共享插值不再携带右侧动画变量", () => {
+const motionConsumers = {
+  "--biny-sidebar-animated-visual-width": [".biny-sidebar", ".biny-sidebar-topbar-floating", ".biny-chat-toolbar"],
+  "--biny-sidebar-animated-flow-width": [".biny-app-shell", ".biny-sidebar-pin-spacer", ".biny-chat-toolbar"]
+};
+
+test("逐帧插值只作用于布局元素，不继承到文件和消息子树", () => {
   withStyles('', (get) => {
-    const transition = get(".biny-root").transition;
-    for (const property of ["--biny-sidebar-animated-visual-width", "--biny-sidebar-animated-flow-width"]) {
-      assert.ok(transition.includes(property), `${property} 必须平滑插值`);
+    assert.doesNotMatch(get(".biny-root").transition, /--biny-sidebar-animated-/u);
+    for (const [property, selectors] of Object.entries(motionConsumers)) {
+      const registration = css.match(new RegExp(`@property ${property}\\s*\\{([^}]+)\\}`, "u"))?.[1];
+      assert.match(registration ?? "", /inherits:\s*false/u, `${property} 不能逐帧传播到整个窗口`);
+      for (const selector of selectors) {
+        assert.ok(get(selector).transition.includes(property), `${selector} 必须保持同步插值`);
+        assert.ok(get(selector).getPropertyValue(property).includes("var("), `${selector} 必须接收目标宽度`);
+      }
     }
   });
 });
 
 for (const attributes of ['data-sidebar-resizing="true"', 'data-inspector-resizing="true"', 'data-sidebar-transition="peek-exited"']) {
   test(`即时布局不受后加载的 Inspector 过渡覆盖：${attributes}`, () => {
-    withStyles(attributes, (get) => assert.equal(get(".biny-root").transition, "none"));
+    withStyles(attributes, (get) => {
+      for (const selector of new Set(Object.values(motionConsumers).flat())) assert.equal(get(selector).transition, "none");
+    });
   });
 }
 
@@ -98,7 +110,7 @@ test("侧栏几何和卡片显隐采用 500ms 对称缓入缓出，预览保持�
 });
 
 
-test("文件预览保持目标宽度，动画变量不向正文和文件内容传播", () => {
+test("文件预览保持目标宽度，内容子树无需再覆盖动画变量", () => {
   const dom = new JSDOM(`<style>${css}</style><div class="biny-root">
     <div class="biny-chat-scroll-content"></div><div class="biny-sidebar-card"></div>
     <div class="desktop-inspector"></div></div>`);
@@ -106,7 +118,7 @@ test("文件预览保持目标宽度，动画变量不向正文和文件内容�
     for (const selector of [".biny-chat-scroll-content", ".biny-sidebar-card", ".desktop-inspector"]) {
       const style = dom.window.getComputedStyle(dom.window.document.querySelector(selector)!);
       for (const property of ["--biny-sidebar-animated-visual-width", "--biny-sidebar-animated-flow-width"]) {
-        assert.equal(style.getPropertyValue(property), "0px", `${selector} 隔离 ${property}`);
+        assert.equal(style.getPropertyValue(property), "", `${selector} 不声明局部动画`);
       }
     }
     assert.equal(dom.window.getComputedStyle(dom.window.document.querySelector(".desktop-inspector")!).width, "var(--biny-inspector-content-width)");
