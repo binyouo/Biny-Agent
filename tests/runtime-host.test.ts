@@ -39,7 +39,8 @@ const snapshot = {
     skills: []
   },
   permissionMode: "ask",
-  state: { kind: "idle" }
+  state: { kind: "idle" },
+  resourceReadiness: { revision: 1, state: "loading" }
 } as unknown as InteractiveRuntimeSnapshot;
 
 interface FakeRuntime extends InteractiveRuntimeHandle {
@@ -269,6 +270,14 @@ async function main(): Promise<void> {
     void completion.catch(() => undefined);
     return { task: taskRuns.get(taskRunId)!, completion };
   };
+  const resumeTaskRun: CommandRuntime["resumeTaskRun"] = async (taskRunId) => {
+    const task = taskRuns.get(taskRunId);
+    if (!task) throw new Error(`TaskRun ${taskRunId} does not exist.`);
+    const active = taskPromises.get(taskRunId);
+    if (active) return { task, completion: active };
+    if (task.status === "verifying") return await startTaskRun(taskRunId);
+    throw new Error("TaskRun resume requires a live Worker or persisted verification candidate.");
+  };
   const commands = {
     agent: {
       switchModel: async (_alias: string, thinking?: string) => {
@@ -347,6 +356,7 @@ async function main(): Promise<void> {
     taskRuns,
     startSubagentTask,
     startTaskRun,
+    resumeTaskRun,
     cancelTaskRun: (taskRunId, reason = "TaskRun cancelled.") => {
       const task = taskRuns.get(taskRunId);
       if (!task) throw new Error(`TaskRun ${taskRunId} does not exist.`);
@@ -382,7 +392,10 @@ async function main(): Promise<void> {
   const client = await connectRuntimeHost(workspace, { clientId: "test-client", surface: "tui" });
   assert.ok(client);
   const recovered = await client.taskGet("task-host-recovered") as { status?: string };
-  assert.equal(recovered.status, "queued", "Host 启动时必须把遗留中的 TaskRun 重新排队");
+  assert.equal(recovered.status, "blocked", "没有可恢复 checkpoint 的 Worker 不得在 Host 重启后重新排队");
+  const startsBeforeUnsafeAdmission = taskStarts;
+  await client.taskStart("task-host-recovered");
+  assert.equal(taskStarts, startsBeforeUnsafeAdmission, "不安全恢复不得重复派发 Worker");
   const unsafeRecovered = await client.taskGet("task-host-verification-running") as { status?: string };
   assert.equal(unsafeRecovered.status, "blocked", "启用验收的 running Attempt 在重启后不得无证据重放 Worker");
 
@@ -395,6 +408,9 @@ async function main(): Promise<void> {
   assert.equal(firstStart.accepted, true);
   assert.equal(duplicateStart.accepted, true);
   assert.equal(taskStarts, 1, "重复 start 请求必须复用同一执行 Promise");
+  const resumedStart = await client.taskResume("task-host-success");
+  assert.equal(resumedStart.accepted, true, "resume 必须接管当前仍在运行的同一 Worker");
+  assert.equal(taskStarts, 1, "resume 当前执行不得创建第二个 Worker");
   taskCompletions.get("task-host-success")?.resolve("task output");
   const completedTask = await waitForTaskStatus(async () => await client.taskGet("task-host-success"), "completed");
   assert.deepEqual((completedTask.attempts as Array<{ artifacts?: unknown }>)[0]?.artifacts, { output: "task output" });
@@ -464,6 +480,9 @@ async function main(): Promise<void> {
   assert.equal(client.hostInfo?.capabilities.includes("memory"), true);
   assert.equal(client.hostInfo?.capabilities.includes("telos.v1"), false);
   assert.equal(client.hostInfo?.capabilities.includes("memory.v2"), false);
+  const hostStatus = await client.getHostStatus();
+  assert.equal(hostStatus.journal.state, "healthy", "Host exposes journal persistence health through a query operation");
+  assert.equal(hostStatus.journal.persistedSequence >= 0, true);
 
   const isolatedAgentRoot = path.join(workspace, "isolated-agent");
   const isolatedConfigRoot = path.join(workspace, "isolated-config");

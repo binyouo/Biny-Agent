@@ -437,6 +437,7 @@ export class AutomationStore {
 }
 
 export interface AutomationSchedulerOptions {
+  onActivity?(): void;
   getRuntime: () => InteractiveRuntimeHandle;
   /** 重建 runtime 后数据库连接会替换；scheduler 必须取当前 authority projection。 */
   getStore?: () => AutomationStore;
@@ -452,6 +453,7 @@ export class AutomationScheduler {
   private readonly tickMs: number;
   private timer: ReturnType<typeof setInterval> | undefined;
   private fireTail: Promise<void> = Promise.resolve();
+  private pendingFires = 0;
   private closed = false;
 
   constructor(private readonly options: AutomationSchedulerOptions) {
@@ -483,6 +485,10 @@ export class AutomationScheduler {
     this.closed = true;
     if (this.timer) clearInterval(this.timer);
     this.timer = undefined;
+  }
+
+  hasActiveWork(): boolean {
+    return this.pendingFires > 0;
   }
 
   private async executeFire(fire: AutomationPendingFire): Promise<void> {
@@ -550,7 +556,12 @@ export class AutomationScheduler {
   }
 
   private enqueueFire(fire: AutomationPendingFire): Promise<void> {
-    const execution = this.fireTail.then(() => this.executeFire(fire), () => this.executeFire(fire));
+    this.pendingFires += 1;
+    this.options.onActivity?.();
+    const execution = this.fireTail.then(() => this.executeFire(fire), () => this.executeFire(fire)).finally(() => {
+      this.pendingFires -= 1;
+      this.options.onActivity?.();
+    });
     this.fireTail = execution.then(() => undefined, () => undefined);
     return execution;
   }

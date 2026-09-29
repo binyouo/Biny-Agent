@@ -147,9 +147,10 @@ export class DesktopProjectService {
    * 刷新项目的实时信息（分支、是否有未提交改动）。目录已不存在时标记 `missing` 但保留记录，
    * 让用户能在列表里看到并自行移除，而不是悄悄消失。
    */
-  async inspectProject(project: DesktopProject): Promise<DesktopProject> {
+  async inspectProject(project: DesktopProject, refreshGit = true): Promise<DesktopProject> {
     const missing = !await directoryExists(project.path);
     if (missing) return { ...project, branch: undefined, dirty: false, missing: true };
+    if (!refreshGit) return { ...project, missing: false };
     const [branch, status] = await Promise.all([
       gitOutput(project.path, ["branch", "--show-current"]),
       gitOutput(project.path, ["status", "--porcelain", "--ignore-submodules=all"])

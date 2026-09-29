@@ -16,6 +16,7 @@ import {
 import type { RuntimeHostFactory } from "./types.js";
 
 export interface RuntimeHostBusinessComposition {
+  hasActiveWork(): boolean;
   start(): void;
   startMemoryMaintenance(): void;
   stop(): void;
@@ -30,6 +31,7 @@ export interface RuntimeHostBusinessComposition {
 }
 
 export interface RuntimeHostBusinessCompositionOptions {
+  onActivity?(): void;
   getRuntime(): InteractiveRuntimeHandle;
   getCommands(): CommandRuntime;
   isBusy?: () => boolean;
@@ -51,7 +53,8 @@ export function createRuntimeHostBusinessComposition(
   const memoryMaintenance: RuntimeHostMemoryMaintenance = createRuntimeHostMemoryMaintenance({
     getRuntime: options.getRuntime,
     getCommands: options.getCommands,
-    isBusy: options.isBusy
+    isBusy: options.isBusy,
+    onActivity: options.onActivity
   });
   let stopped = false;
   let unsubscribeGraphs: (() => void) | undefined;
@@ -62,6 +65,7 @@ export function createRuntimeHostBusinessComposition(
     unsubscribeGraphs = commands.graphs?.subscribe(() => { if (!stopped) options.onGraphChange?.(); });
     automationScheduler = commands.automationStore
       ? new AutomationScheduler({
+        onActivity: options.onActivity,
         getRuntime: options.getRuntime,
         getStore: () => options.getCommands().automationStore,
         createFreshRuntime: options.createRuntime === undefined
@@ -72,6 +76,7 @@ export function createRuntimeHostBusinessComposition(
       : undefined;
     graphSupervisor = commands.graphs
       ? new GraphSupervisor({
+        onActivity: options.onActivity,
         getStore: () => options.getCommands().graphs,
         getRuntime: options.getRuntime,
         getTaskRuns: () => options.getCommands().taskRuns,
@@ -88,6 +93,7 @@ export function createRuntimeHostBusinessComposition(
   createSchedulers();
 
   return {
+    hasActiveWork: () => memoryMaintenance.hasActiveWork() || Boolean(automationScheduler?.hasActiveWork()) || Boolean(graphSupervisor?.hasActiveWork()),
     start(): void {
       if (stopped) return;
       automationScheduler?.start();

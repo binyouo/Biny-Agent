@@ -31,6 +31,7 @@ async function main(): Promise<void> {
   await testAtomicRuntimeProjectionRollback();
   await testCanonicalTerminalAuthorityProjection();
   await testTerminalCommitOrdering();
+  await testFirstMessageAdmissionDoesNotWaitForOptionalResources();
   await testCancellationAfterCanonicalTerminalDoesNotLeaveBusySnapshot();
   await testDuplicateRunRetryDoesNotExecute();
   await testProviderFaultsBecomeTerminal();
@@ -253,6 +254,44 @@ async function testTerminalCommitOrdering(): Promise<void> {
     assert.equal(log.indexOf("ledger-finish") > log.indexOf("canonical-terminal"), true);
     assert.equal(hostEvents.indexOf("run.completed") >= 0, true);
     assert.equal(log.indexOf("host-terminal") > log.indexOf("ledger-finish"), true);
+    await runtime.close();
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+}
+
+async function testFirstMessageAdmissionDoesNotWaitForOptionalResources(): Promise<void> {
+  const root = await mkdtemp(path.join(os.tmpdir(), "biny-runtime-fault-resource-loading-"));
+  try {
+    let capturedRunId: string | undefined;
+    let startedSkills: string[] | undefined;
+    const commands = createFakeCommandRuntime(root, async function* (_input, options) {
+      assert.equal(options.runId, "run-resource-loading");
+      yield { type: "status", status: "completed" };
+      yield done({ status: "completed", stopReason: "model_stop", finishReason: "stop", steps: 1, output: "ready" });
+    }, []);
+    const resourceHooks = commands as unknown as {
+      assertResourceBaselineReady(): void;
+      captureRunResourceSnapshot(runId: string): void;
+      runSkillPaths(runId: string): string[];
+    };
+    resourceHooks.assertResourceBaselineReady = () => {
+      throw new Error("Optional MCP/Skill baseline is still loading.");
+    };
+    resourceHooks.captureRunResourceSnapshot = (runId) => { capturedRunId = runId; };
+    resourceHooks.runSkillPaths = (runId) => runId === "run-resource-loading" ? ["snapshot-skill"] : [];
+    const runtime = new InteractiveAgentRuntime(commands);
+    runtime.subscribe((update) => {
+      if (update.event?.type === "run.started") startedSkills = update.event.skills;
+    });
+    const submitted = runtime.submitPrompt("answer while optional resources load", [], {
+      runId: "run-resource-loading",
+      messageId: "message-resource-loading"
+    });
+    const outcome = await submitted.completion;
+    assert.equal(outcome.status, "completed");
+    assert.equal(capturedRunId, "run-resource-loading", "the turn must capture capabilities at admission");
+    assert.deepEqual(startedSkills, ["snapshot-skill"], "run.started must report its captured Skill snapshot");
     await runtime.close();
   } finally {
     await rm(root, { recursive: true, force: true });

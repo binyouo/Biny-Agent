@@ -188,7 +188,7 @@ async function main(): Promise<void> {
     const approvedAttempt = approvedTask.attempts[0]!;
     assert.equal(approvedAttempt.attemptId, pending.attemptId);
     assert.equal(((approvedAttempt.artifacts as { verificationApprovals?: unknown[] }).verificationApprovals ?? []).length, 1);
-    const resumed = await recoveredCommands.startTaskRun(taskRunId);
+    const resumed = await recoveredCommands.resumeTaskRun(taskRunId);
     const resumedOutcome = await resumed.completion;
     const resumedTask = recoveredCommands.taskRuns.get(taskRunId)!;
     assert.equal(resumedOutcome.status, "completed", JSON.stringify({
@@ -243,7 +243,7 @@ async function main(): Promise<void> {
       workspaceRoot: root,
       ignore: recoveredCommands.config.workspace.ignore
     });
-    const directResumed = await recoveredCommands.startTaskRun(direct.taskRunId);
+    const directResumed = await recoveredCommands.resumeTaskRun(direct.taskRunId);
     const directCompleted = await directResumed.completion;
     assert.equal(directCompleted.status, "completed");
     assert.equal(directCompleted.evidence?.status, "passed");
@@ -267,7 +267,7 @@ async function main(): Promise<void> {
       workspaceRoot: root,
       ignore: recoveredCommands.config.workspace.ignore
     });
-    const verifiedBestCandidateResume = await recoveredCommands.startTaskRun(verifiedBestCandidate.taskRunId);
+    const verifiedBestCandidateResume = await recoveredCommands.resumeTaskRun(verifiedBestCandidate.taskRunId);
     assert.equal((await verifiedBestCandidateResume.completion).status, "completed");
 
     const recoveredRuntime = new InteractiveAgentRuntime(recoveredCommands);

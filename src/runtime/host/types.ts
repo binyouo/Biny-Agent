@@ -9,6 +9,7 @@ import type { InteractiveAgentHost } from "../InteractiveAgentRuntime.js";
 import type { RuntimeHostClient } from "./client.js";
 import type { RuntimeHostResourceRegistry } from "./resources.js";
 import type { BrowserAutomationEndpoint } from "../../tools/browser.js";
+import type { RuntimeHostJournalStatus } from "./journal.js";
 
 export type HostSurface = CommandSurface | "cli";
 
@@ -50,6 +51,10 @@ export interface RuntimeHostPaths {
   rootHash: string;
 }
 
+export interface RuntimeHostLock {
+  close(): Promise<void>;
+}
+
 export interface RuntimeHostSpawnOptions {
   /** 临时 Host 空闲后退出；显式常驻服务不随客户端离开而停止。 */
   lifecycleMode?: "ephemeral" | "service";
@@ -62,6 +67,8 @@ export interface RuntimeHostSpawnOptions {
   resumeInterrupted?: boolean;
   /** Electron 打包时由主进程显式提供；CLI/TUI 会自动推导 source/dist 路径。 */
   entryPath?: string;
+  /** Desktop 用同一个 Electron 应用入口启动 headless Host，使 safeStorage 在 Host 进程可用。 */
+  electronAppPath?: string;
   /** Desktop 可见浏览器的控制端点；CLI/TUI 不注入浏览器能力。 */
   browserAutomation?: BrowserAutomationEndpoint;
 }
@@ -86,6 +93,8 @@ export interface HostClientOptions {
   configDir?: string;
   clientId?: string;
   surface?: HostSurface;
+  /** 观察客户端不因连接本身阻止空闲回收；回收通知后由下一次显式操作重新连接。 */
+  keepAlive?: boolean;
   /** owner 退出后，client 是否有足够 composition root 重新选举 Host。 */
   spawnOptions?: RuntimeHostSpawnOptions;
   /** 握手（连接 + hello + 初始 subscribe）的有界等待；owner 无响应时必须能失败。默认见 protocol.ts。 */
@@ -99,6 +108,10 @@ export interface RuntimeHostInfo {
   persistenceRoot: string;
   protocolRevision: number;
   capabilities: readonly string[];
+}
+
+export interface RuntimeHostStatus extends RuntimeHostInfo {
+  journal: RuntimeHostJournalStatus;
 }
 
 /** Runtime Host 重建 runtime 时使用的 composition root。 */
@@ -115,6 +128,8 @@ export interface RuntimeHostStartOptions {
   resumeInterrupted?: boolean;
   /** Host 发现身份必须包含配置根，避免同一工作区的隔离实例复用错误 owner。 */
   configDir?: string;
+  /** Client 面向 Desktop 的浏览器控制能力变化通知；新 session factory 同步读取当前 endpoint。 */
+  onBrowserAutomationChange?: (endpoint: BrowserAutomationEndpoint | undefined) => void;
   /** 常驻 runtime 的缓存目标；忙碌或被占用的会话可以超过目标，不能因此拒绝新会话。 */
   sessionRuntimeCacheTarget?: number;
   shutdownDrainMs?: number;

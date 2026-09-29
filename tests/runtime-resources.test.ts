@@ -36,7 +36,6 @@ try {
 
   await first.start();
   assert.equal(first.snapshot().state, "ready");
-  assert.equal(first.isReadyForSubmission(), true);
   assert.deepEqual(first.readiness(), { revision: first.snapshot().revision, state: "ready" });
   assert.ok(Buffer.byteLength(JSON.stringify(first.readiness())) < 100, "高频就绪摘要不应包含能力目录");
   const revision = first.snapshot().revision;

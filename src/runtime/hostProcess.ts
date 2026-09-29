@@ -6,7 +6,7 @@
  */
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { createFileConfigStore } from "../config/store.js";
+import { createFileConfigStore, type AgentConfigStore } from "../config/store.js";
 import { createInteractiveAgentHost, type InteractiveAgentHost } from "./InteractiveAgentRuntime.js";
 import { WorktreeManager } from "./host/worktree.js";
 import {
@@ -27,11 +27,20 @@ export interface RuntimeHostProcessOptions {
   attachmentRoot?: string;
   sessionId?: string;
   resumeInterrupted: boolean;
+  browserAutomationBootstrap: boolean;
 }
 
-export async function runRuntimeHostProcess(argv: readonly string[] = process.argv.slice(2)): Promise<void> {
+export interface RuntimeHostProcessDependencies {
+  createConfigStore?: (workspaceRoot: string, configDir?: string) => AgentConfigStore;
+}
+
+export async function runRuntimeHostProcess(
+  argv: readonly string[] = process.argv.slice(2),
+  dependencies: RuntimeHostProcessDependencies = {}
+): Promise<void> {
   const options = parseOptions(argv);
   let server: RuntimeHostServer | undefined = undefined;
+  let browserAutomation: BrowserAutomationEndpoint | undefined = undefined;
   let shuttingDown = false;
   let shutdownDeadline: ReturnType<typeof setTimeout> | undefined;
   let checkingIdle = false;
@@ -63,20 +72,29 @@ export async function runRuntimeHostProcess(argv: readonly string[] = process.ar
   };
   process.once("SIGINT", shutdown);
   process.once("SIGTERM", shutdown);
-  if (options.lifecycleMode === "ephemeral" && process.channel) {
+  if (process.channel) {
     process.once("disconnect", () => {
+      if (options.browserAutomationBootstrap) {
+        browserAutomation = undefined;
+        try {
+          server?.setBrowserAutomation(undefined);
+        } catch {
+          console.error("Runtime Host could not remove a disconnected Desktop browser capability.");
+        }
+      }
       // 还没 ready 就失去启动者时，给初始化一个有界的收尾机会。
-      if (!server) armShutdownDeadline();
-      else void checkIdle();
+      if (!server && options.lifecycleMode === "ephemeral") armShutdownDeadline();
+      else if (options.lifecycleMode === "ephemeral") void checkIdle();
     });
     process.channel.unref();
   }
   const selectedSession = options.sessionId
     ?? (options.resumeInterrupted ? await findLatestInterruptedSession(options.persistenceRoot) : undefined);
-  const configStore = createFileConfigStore(options.workspaceRoot, {
-    globalDir: options.configDir
-  });
-  const browserAutomation = browserAutomationFromEnvironment();
+  const configStore = dependencies.createConfigStore?.(options.workspaceRoot, options.configDir)
+    ?? createFileConfigStore(options.workspaceRoot, { globalDir: options.configDir });
+  browserAutomation = options.browserAutomationBootstrap
+    ? await receiveBrowserAutomationBootstrap()
+    : undefined;
   const createRuntime: RuntimeHostFactory = async (sessionId?: string, factoryOptions?: RuntimeHostFactoryOptions): Promise<InteractiveAgentHost> => {
     const fresh = factoryOptions?.fresh === true;
     const host = await createInteractiveAgentHost(factoryOptions?.workspaceRoot ?? options.workspaceRoot, {
@@ -89,6 +107,7 @@ export async function runRuntimeHostProcess(argv: readonly string[] = process.ar
       resourceBoot: factoryOptions?.resourceBoot ?? (factoryOptions?.resourceRegistry === undefined ? "blocking" : "background")
     });
     try {
+      host.commands.setBrowserAutomation?.(browserAutomation);
       if (sessionId !== undefined && !fresh) await host.runtime.resumeSession(sessionId);
       return host;
     } catch (error) {
@@ -110,7 +129,8 @@ export async function runRuntimeHostProcess(argv: readonly string[] = process.ar
     createRuntime,
     resumeInterrupted: options.resumeInterrupted,
     configDir: options.configDir,
-    onClosing: armShutdownDeadline
+    onClosing: armShutdownDeadline,
+    onBrowserAutomationChange: (endpoint) => { browserAutomation = endpoint; }
   });
   if (shuttingDown) closeOwner();
   else {
@@ -125,19 +145,57 @@ export async function runRuntimeHostProcess(argv: readonly string[] = process.ar
   await new Promise<void>(() => undefined);
 }
 
-function browserAutomationFromEnvironment(): BrowserAutomationEndpoint | undefined {
-  const endpoint = process.env.BINY_BROWSER_CONTROL_ENDPOINT;
-  const token = process.env.BINY_BROWSER_CONTROL_TOKEN;
-  return endpoint && token ? { endpoint, token, projectId: process.env.BINY_BROWSER_PROJECT_ID } : undefined;
+function receiveBrowserAutomationBootstrap(): Promise<BrowserAutomationEndpoint | undefined> {
+  if (!process.channel) return Promise.reject(new Error("Runtime Host browser bootstrap requires its private IPC channel."));
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const timer = setTimeout(() => finish(new Error("Runtime Host browser bootstrap timed out.")), 8_000);
+    const finish = (error?: Error, endpoint?: BrowserAutomationEndpoint): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      process.off("message", onMessage);
+      process.off("disconnect", onDisconnect);
+      if (error) reject(error);
+      else resolve(endpoint);
+    };
+    const onMessage = (message: unknown): void => {
+      if (!isBrowserBootstrapMessage(message)) return;
+      finish(undefined, message.browserAutomation);
+    };
+    const onDisconnect = (): void => finish(undefined);
+    process.on("message", onMessage);
+    process.once("disconnect", onDisconnect);
+  });
+}
+
+function isBrowserBootstrapMessage(
+  value: unknown
+): value is { type: "biny.runtime-host.bootstrap"; browserAutomation: BrowserAutomationEndpoint } {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  const endpoint = record.browserAutomation;
+  if (record.type !== "biny.runtime-host.bootstrap" || typeof endpoint !== "object" || endpoint === null || Array.isArray(endpoint)) return false;
+  const browser = endpoint as Record<string, unknown>;
+  return typeof browser.endpoint === "string"
+    && browser.endpoint.length > 0
+    && typeof browser.token === "string"
+    && browser.token.length > 0
+    && (browser.projectId === undefined || typeof browser.projectId === "string");
 }
 
 function parseOptions(argv: readonly string[]): RuntimeHostProcessOptions {
   const values = new Map<string, string>();
   let resumeInterrupted = false;
+  let browserAutomationBootstrap = false;
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
     if (argument === "--resume-interrupted") {
       resumeInterrupted = true;
+      continue;
+    }
+    if (argument === "--browser-automation-bootstrap") {
+      browserAutomationBootstrap = true;
       continue;
     }
     if (!argument?.startsWith("--")) throw new Error(`Unknown Runtime Host argument: ${argument ?? ""}`);
@@ -161,7 +219,8 @@ function parseOptions(argv: readonly string[]): RuntimeHostProcessOptions {
     configDir: values.get("config-dir"),
     attachmentRoot: values.get("attachment-root"),
     sessionId: values.get("session-id"),
-    resumeInterrupted
+    resumeInterrupted,
+    browserAutomationBootstrap
   };
 }
 

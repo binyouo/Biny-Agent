@@ -306,7 +306,6 @@ export function publicErrorCode(error: unknown): string | undefined {
   if (error instanceof SessionWriterConflictError) return error.code;
   if (typeof error === "object" && error !== null && "code" in error && typeof error.code === "string" && [
     "host_draining",
-    "resource_baseline_pending",
     "worktree_unavailable",
     "worktree_dirty",
     "worktree_merge_conflict",

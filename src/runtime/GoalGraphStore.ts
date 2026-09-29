@@ -969,6 +969,7 @@ export class GoalGraphStore {
 }
 
 export interface GraphSupervisorOptions {
+  onActivity?(): void;
   store?: GoalGraphStore;
   getStore?: () => GoalGraphStore;
   runtime?: InteractiveRuntimeHandle;
@@ -991,6 +992,10 @@ export class GraphSupervisor {
   private stopped = false;
 
   constructor(private readonly options: GraphSupervisorOptions) {}
+
+  hasActiveWork(): boolean {
+    return this.scanning || this.active > 0;
+  }
 
   start(): void {
     if (this.started || this.stopped) return;
@@ -1017,10 +1022,12 @@ export class GraphSupervisor {
   async tick(): Promise<void> {
     if (this.stopped || this.active || this.scanning) return;
     this.scanning = true;
+    this.options.onActivity?.();
     try {
       await this.scan();
     } finally {
       this.scanning = false;
+      this.options.onActivity?.();
     }
   }
 
@@ -1048,6 +1055,7 @@ export class GraphSupervisor {
         store.finishSupervisorWake(claimed.wakeId, "blocked");
       }).finally(() => {
         this.active -= 1;
+        this.options.onActivity?.();
         this.requestTick();
       });
       return;
@@ -1069,6 +1077,7 @@ export class GraphSupervisor {
         this.active += 1;
         void this.executeNode(graphId, node, claim).catch(() => undefined).finally(() => {
           this.active -= 1;
+          this.options.onActivity?.();
           this.requestTick();
         });
         return;

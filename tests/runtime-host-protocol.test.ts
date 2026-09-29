@@ -8,6 +8,7 @@ import {
   isHelloFrame,
   isRequestFrame,
   isResponseFrame,
+  isRetiredFrame,
   runtimeHostProtocolVersion
 } from "../src/runtime/host/protocol.js";
 
@@ -34,6 +35,10 @@ const hello = {
 assert.deepEqual(decodeHostFrame(encodeHostFrame(request).trim()), request);
 assert.equal(isRequestFrame(request), true);
 assert.equal(isHelloFrame(hello), true);
+assert.equal(isHelloFrame({ ...hello, keepAlive: false }), true);
+assert.equal(isHelloFrame({ ...hello, keepAlive: "false" }), false);
+assert.equal(isRetiredFrame({ kind: "retired", hostEpoch: "epoch", reason: "idle" }), true);
+assert.equal(isRetiredFrame({ kind: "retired", hostEpoch: "epoch", reason: "crashed" }), false);
 assert.equal(isResponseFrame({ kind: "response", requestId: "request-1", ok: true }), true);
 assert.equal(isEventFrame({ kind: "event", hostEpoch: "epoch", sequence: 1, update: {} }), false);
 assert.throws(() => decodeHostFrame("not-json"), /Invalid Runtime Host JSON frame/u);

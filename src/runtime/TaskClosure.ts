@@ -95,7 +95,17 @@ export async function runTaskClosure(input: {
       : { status: "blocked", output: artifacts.output, reason: "Persisted TaskRun verification no longer matches the current contract, definitions, or artifacts." };
   }
   let resumeAttempt = initial.status === "verifying" ? initial.attempts.at(-1) : undefined;
-  let repairEvidence: TaskVerificationEvidence | undefined;
+  const latestAttempt = initial.attempts.at(-1);
+  const latestEvent = input.taskRuns.events(input.taskRunId).at(-1);
+  const persistedRepairEvidence = initial.status === "queued"
+    && latestAttempt?.status === "failed"
+    && latestEvent?.eventType === "task.verification.repair"
+    && latestEvent.attemptId === latestAttempt.attemptId
+    && isTaskVerificationEvidence(latestAttempt.verification)
+    && latestAttempt.verification.status === "failed"
+    ? latestAttempt.verification
+    : undefined;
+  let repairEvidence: TaskVerificationEvidence | undefined = persistedRepairEvidence;
   let definitionFingerprint = persistedDefinitionFingerprint(initial.attempts);
 
   // 报告完成只证明有可读取的产出，不创建 passed 验收证据；内容判断留给监督回合。

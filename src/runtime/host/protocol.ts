@@ -30,6 +30,7 @@ export const runtimeHostCapabilities = [
   "runtime.run.admission",
   "runtime.run.reconnect",
   "runtime.run.continuation",
+  "runtime.client-owned-control",
   "runtime.start-draft",
   "runtime.session-pool",
   "workspace.worktree",
@@ -38,7 +39,9 @@ export const runtimeHostCapabilities = [
   "agent.graph",
   "capability.channel",
   "personalization",
-  "memory"
+  "memory",
+  "browser.automation.lease",
+  "host.idle-retirement"
 ] as const;
 
 /**
@@ -69,6 +72,13 @@ export interface HostHelloFrame {
   clientId: string;
   surface: HostSurface;
   capabilities: string[];
+  keepAlive?: boolean;
+}
+
+export interface HostRetiredFrame {
+  kind: "retired";
+  hostEpoch: string;
+  reason: "idle";
 }
 
 export interface HostRequestFrame {
@@ -122,6 +132,7 @@ export interface HostCapabilityOfferFrame {
 
 export type HostFrame =
   | HostHelloFrame
+  | HostRetiredFrame
   | HostRequestFrame
   | HostResponseFrame
   | HostEventFrame
@@ -153,7 +164,13 @@ export function isHelloFrame(value: unknown): value is HostHelloFrame {
     && typeof record.clientId === "string"
     && Array.isArray(record.capabilities)
     && record.capabilities.every((capability) => typeof capability === "string")
+    && (record.keepAlive === undefined || typeof record.keepAlive === "boolean")
     && isSurface(record.surface);
+}
+
+export function isRetiredFrame(value: unknown): value is HostRetiredFrame {
+  const record = asRecord(value);
+  return record.kind === "retired" && typeof record.hostEpoch === "string" && record.reason === "idle";
 }
 
 export function isRequestFrame(value: unknown): value is HostRequestFrame {

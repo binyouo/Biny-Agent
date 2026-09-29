@@ -7,6 +7,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { spawn, type ChildProcess } from "node:child_process";
 import { constants, promises as fs, type Stats } from "node:fs";
 import type { FileHandle } from "node:fs/promises";
+import { DatabaseSync } from "node:sqlite";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -22,6 +23,7 @@ import { runtimeHostSpawnCircuitFor } from "./reconnect.js";
 import { RuntimeHostProtocolMismatchError } from "./errors.js";
 import type {
   HostRegistration,
+  RuntimeHostLock,
   RuntimeHostPaths,
   RuntimeHostSpawnOptions
 } from "./types.js";
@@ -53,11 +55,40 @@ export function spawnRuntimeHostProcess(
   const endpoint = runtimeHostPaths(persistenceRoot).endpoint;
   const circuitError = runtimeHostSpawnCircuitFor(endpoint).failureError();
   if (circuitError) throw circuitError;
-  const entryPath = options.entryPath ?? process.env.BINY_RUNTIME_HOST_ENTRY ?? runtimeHostEntryPath();
+  const plan = runtimeHostLaunchPlan(persistenceRoot, options);
   const moduleRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
+  const child = spawn(plan.executable, plan.args, {
+    cwd: moduleRoot,
+    detached: true,
+    // 控制 socket 可以重连；这条 IPC 仅代表启动者寿命，不能与业务连接混为一谈。
+    stdio: ["ignore", "ignore", "ignore", "ipc"],
+    env: plan.env
+  });
+  if (options.browserAutomation !== undefined) {
+    child.send({ type: "biny.runtime-host.bootstrap", browserAutomation: options.browserAutomation }, (error) => {
+      if (error) void terminateSpawnedHost(child);
+    });
+  }
+  child.unref();
+  child.channel?.unref();
+  return child;
+}
+
+export interface RuntimeHostLaunchPlan {
+  executable: string;
+  args: string[];
+  env: NodeJS.ProcessEnv;
+}
+
+/** 共享可验证的启动边界；浏览器令牌只经私有 IPC，不进入 argv 或继承环境。 */
+export function runtimeHostLaunchPlan(
+  persistenceRoot: string,
+  options: RuntimeHostSpawnOptions,
+  environment: Pick<NodeJS.Process, "platform" | "execPath"> = process
+): RuntimeHostLaunchPlan {
+  const entryPath = options.entryPath ?? process.env.BINY_RUNTIME_HOST_ENTRY ?? runtimeHostEntryPath();
   const nodeArgs = entryPath.endsWith(".ts") ? ["--import", "tsx", entryPath] : [entryPath];
-  const child = spawn(process.execPath, [
-    ...nodeArgs,
+  const hostArgs = [
     "--workspace-root",
     path.resolve(options.workspaceRoot),
     "--persistence-root",
@@ -67,25 +98,26 @@ export function spawnRuntimeHostProcess(
     ...(options.configDir === undefined ? [] : ["--config-dir", path.resolve(options.configDir)]),
     ...(options.attachmentRoot === undefined ? [] : ["--attachment-root", path.resolve(options.attachmentRoot)]),
     ...(options.sessionId === undefined ? [] : ["--session-id", options.sessionId]),
-    ...(options.resumeInterrupted === true ? ["--resume-interrupted"] : [])
-  ], {
-    cwd: moduleRoot,
-    detached: true,
-    // 控制 socket 可以重连；这条 IPC 仅代表启动者寿命，不能与业务连接混为一谈。
-    stdio: ["ignore", "ignore", "ignore", "ipc"],
-    env: {
-      ...process.env,
-      ...(options.browserAutomation === undefined ? {} : {
-        BINY_BROWSER_CONTROL_ENDPOINT: options.browserAutomation.endpoint,
-        BINY_BROWSER_CONTROL_TOKEN: options.browserAutomation.token,
-        BINY_BROWSER_PROJECT_ID: options.browserAutomation.projectId
-      }),
-      ...(process.versions.electron === undefined ? {} : { ELECTRON_RUN_AS_NODE: "1" })
-    }
-  });
-  child.unref();
-  child.channel?.unref();
-  return child;
+    ...(options.resumeInterrupted === true ? ["--resume-interrupted"] : []),
+    ...(options.browserAutomation === undefined ? [] : ["--browser-automation-bootstrap"])
+  ];
+  const env: NodeJS.ProcessEnv = { ...process.env };
+  delete env.BINY_BROWSER_CONTROL_ENDPOINT;
+  delete env.BINY_BROWSER_CONTROL_TOKEN;
+  delete env.BINY_BROWSER_PROJECT_ID;
+  if (options.electronAppPath !== undefined) {
+    delete env.ELECTRON_RUN_AS_NODE;
+    const executableName = path.basename(environment.execPath);
+    return {
+      executable: environment.platform === "darwin"
+        ? path.resolve(path.dirname(environment.execPath), "../Frameworks", `${executableName} Helper.app`, "Contents/MacOS", `${executableName} Helper`)
+        : environment.execPath,
+      args: [path.resolve(options.electronAppPath), "--biny-runtime-host", ...hostArgs],
+      env
+    };
+  }
+  if (process.versions.electron !== undefined) env.ELECTRON_RUN_AS_NODE = "1";
+  return { executable: environment.execPath, args: [...nodeArgs, ...hostArgs], env };
 }
 
 export function runtimeHostEntryPath(): string {
@@ -254,57 +286,204 @@ export async function writeRegistration(registration: HostRegistration): Promise
   }
 }
 
-export async function acquireHostLock(paths: RuntimeHostPaths, persistenceRoot: string): Promise<FileHandle> {
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    try {
-      const handle = await fs.open(paths.lockPath, hostWriteNewFlags(), 0o600);
-      await handle.chmod(0o600);
-      // registration 要等 server initialize/listen 之后才落盘；先把 pid 写进 lock，
-      // 让竞争进程在这个窗口内也能判活，而不是把存活 owner 的 lock/socket 当 stale 清掉。
-      await handle.writeFile(`${String(process.pid)}\n`, "utf8");
-      await handle.sync();
-      return handle;
-    } catch (error) {
-      if (!isAlreadyExists(error)) throw error;
-      const registration = await readRegistration(paths);
-      const ownerPid = registration?.pid ?? await readLockPid(paths.lockPath);
-      if (ownerPid !== undefined && isProcessAlive(ownerPid)) {
-        if (registration && registration.protocolVersion !== protocolVersion) {
-          throw new RuntimeHostProtocolMismatchError(registration.protocolVersion, protocolVersion, ownerPid);
-        }
-        throw new Error(`Runtime Host is already running for ${path.resolve(persistenceRoot)}.`);
+class RuntimeHostLockBusyError extends Error {}
+
+export async function acquireHostLock(paths: RuntimeHostPaths, persistenceRoot: string): Promise<RuntimeHostLock> {
+  const ownerLock = await acquireHostLockGate(paths, persistenceRoot);
+  try {
+    const registration = await readRegistration(paths);
+    const lockStat = await statIfPresent(paths.lockPath);
+    const lockPid = lockStat ? await readLockPid(paths.lockPath) : undefined;
+
+    if (registration && isProcessAlive(registration.pid)) {
+      if (registration.protocolVersion !== protocolVersion) {
+        throw new RuntimeHostProtocolMismatchError(registration.protocolVersion, protocolVersion, registration.pid);
       }
-      await removeStaleRegistration(registration ?? {
-        protocolVersion,
-        endpoint: paths.endpoint,
-        registrationPath: paths.registrationPath,
-        lockPath: paths.lockPath,
-        rootHash: paths.rootHash,
-        persistenceRoot: path.resolve(persistenceRoot),
-        configRoot: undefined,
-        agentRoot: undefined,
-        hostEpoch: "",
-        token: "",
-        pid: 0,
-        createdAt: ""
-      });
+      throw alreadyRunningError(persistenceRoot);
     }
+    if (lockStat && lockPid === undefined) {
+      // An absent/partial PID can mean that another process has just created the
+      // legacy marker and has not published its identity yet. Never infer staleness.
+      throw new Error("Runtime Host lock exists without a valid owner PID; refusing to remove it.");
+    }
+    if (lockPid !== undefined && isProcessAlive(lockPid)) throw alreadyRunningError(persistenceRoot);
+
+    if (registration || lockStat) {
+      await removeStaleRegistrationArtifacts(registration ?? registrationForPaths(paths, persistenceRoot));
+    }
+    await removeAbandonedHostLockTemps(paths);
+    await publishHostLock(paths.lockPath, process.pid);
+    return ownerLock;
+  } catch (error) {
+    await ownerLock.close().catch(() => undefined);
+    throw error;
   }
-  throw new Error("Unable to acquire Runtime Host lock.");
 }
 
-/** lock 文件内容是 owner pid；读不出有效 pid 时按无法证明存活处理。 */
+function alreadyRunningError(persistenceRoot: string): Error {
+  return new Error(`Runtime Host is already running or starting for ${path.resolve(persistenceRoot)}.`);
+}
+
+/** The SQLite write transaction is the kernel-released, process-wide owner election gate. */
+async function acquireHostLockGate(paths: RuntimeHostPaths, persistenceRoot: string): Promise<RuntimeHostLock> {
+  const databasePath = `${paths.lockPath}.authority.sqlite`;
+  await ensurePrivateHostLockDatabase(databasePath);
+  const database = new DatabaseSync(databasePath, { timeout: 0 });
+  try {
+    database.exec("BEGIN IMMEDIATE");
+    database.exec("PRAGMA user_version = 1");
+  } catch (error) {
+    try { database.exec("ROLLBACK"); } catch { /* BEGIN may not have succeeded. */ }
+    database.close();
+    if (isSqliteBusy(error)) throw new RuntimeHostLockBusyError(alreadyRunningError(persistenceRoot).message);
+    throw error;
+  }
+  let closed = false;
+  return {
+    async close(): Promise<void> {
+      if (closed) return;
+      closed = true;
+      try {
+        database.exec("ROLLBACK");
+      } finally {
+        database.close();
+      }
+    }
+  };
+}
+
+async function ensurePrivateHostLockDatabase(databasePath: string): Promise<void> {
+  try {
+    const handle = await fs.open(
+      databasePath,
+      constants.O_CREAT | constants.O_EXCL | constants.O_RDWR | hostNoFollowFlag(),
+      0o600
+    );
+    await handle.close();
+  } catch (error) {
+    if (!isAlreadyExists(error)) throw error;
+  }
+  const stat = await fs.lstat(databasePath);
+  if (!isPrivateHostFile(stat)) throw new Error("Runtime Host lock authority must be a private, owned file.");
+  await fs.chmod(databasePath, 0o600);
+}
+
+function isSqliteBusy(error: unknown): boolean {
+  return error instanceof Error && /database (?:table )?is locked/u.test(error.message);
+}
+
+async function publishHostLock(lockPath: string, pid: number): Promise<void> {
+  const temporaryPath = `${lockPath}.${randomUUID()}.tmp`;
+  let handle: FileHandle | undefined;
+  try {
+    handle = await fs.open(temporaryPath, hostWriteNewFlags(), 0o600);
+    await handle.writeFile(`${String(pid)}\n`, "utf8");
+    await handle.chmod(0o600);
+    await handle.sync();
+    // link() publishes a fully written file and fails atomically if another
+    // implementation wins the legacy lock path while this owner is starting.
+    await fs.link(temporaryPath, lockPath);
+  } finally {
+    await handle?.close().catch(() => undefined);
+    await fs.rm(temporaryPath, { force: true }).catch(() => undefined);
+  }
+}
+
+async function removeAbandonedHostLockTemps(paths: RuntimeHostPaths): Promise<void> {
+  const prefix = `${path.basename(paths.lockPath)}.`;
+  const entries = await fs.readdir(path.dirname(paths.lockPath));
+  for (const entry of entries) {
+    if (!entry.startsWith(prefix) || !/^[0-9a-f-]{36}\.tmp$/u.test(entry.slice(prefix.length))) continue;
+    const temporaryPath = path.join(path.dirname(paths.lockPath), entry);
+    const stat = await statIfPresent(temporaryPath);
+    if (stat?.isFile() && stat.nlink <= 2 && (stat.mode & 0o077) === 0 && isOwnedByCurrentUser(stat)) {
+      await fs.rm(temporaryPath, { force: true });
+    }
+  }
+}
+
+/** lock 文件内容是 owner pid；可见的空文件不等于 stale，调用方必须 fail closed。 */
 export async function readLockPid(lockPath: string): Promise<number | undefined> {
-  const raw = await readPrivateHostFile(lockPath);
-  if (raw === undefined) return undefined;
-  const pid = Number(raw.trim());
-  return Number.isSafeInteger(pid) && pid > 0 ? pid : undefined;
+  let handle: FileHandle | undefined;
+  try {
+    handle = await fs.open(lockPath, constants.O_RDONLY | hostNoFollowFlag());
+    const stat = await handle.stat();
+    if (
+      !stat.isFile()
+      || (stat.nlink !== 1 && stat.nlink !== 2)
+      || (stat.mode & 0o077) !== 0
+      || !isOwnedByCurrentUser(stat)
+    ) return undefined;
+    const pid = Number((await handle.readFile("utf8")).trim());
+    return Number.isSafeInteger(pid) && pid > 0 ? pid : undefined;
+  } catch (error) {
+    if (isNotFound(error)) return undefined;
+    throw error;
+  } finally {
+    await handle?.close().catch(() => undefined);
+  }
+}
+
+async function statIfPresent(filePath: string): Promise<Stats | undefined> {
+  try {
+    return await fs.lstat(filePath);
+  } catch (error) {
+    if (isNotFound(error)) return undefined;
+    throw error;
+  }
 }
 
 export async function removeStaleRegistration(registration: HostRegistration): Promise<void> {
+  const paths: RuntimeHostPaths = {
+    endpoint: registration.endpoint,
+    registrationPath: registration.registrationPath,
+    lockPath: registration.lockPath,
+    rootHash: registration.rootHash
+  };
+  let ownerLock: RuntimeHostLock;
+  try {
+    ownerLock = await acquireHostLockGate(paths, registration.persistenceRoot);
+  } catch (error) {
+    if (error instanceof RuntimeHostLockBusyError) return;
+    throw error;
+  }
+  try {
+    const current = await readRegistration(paths);
+    if (current && current.hostEpoch !== registration.hostEpoch) return;
+    if (current && isProcessAlive(current.pid)) return;
+    const lockStat = await statIfPresent(paths.lockPath);
+    if (lockStat) {
+      const lockPid = await readLockPid(paths.lockPath);
+      if (lockPid === undefined || isProcessAlive(lockPid)) return;
+    }
+    await removeStaleRegistrationArtifacts(current ?? registration);
+    await removeAbandonedHostLockTemps(paths);
+  } finally {
+    await ownerLock.close();
+  }
+}
+
+async function removeStaleRegistrationArtifacts(registration: HostRegistration): Promise<void> {
   await fs.rm(registration.registrationPath, { force: true });
   await removeSocketIfStale(registration.endpoint);
   await fs.rm(registration.lockPath, { force: true });
+}
+
+function registrationForPaths(paths: RuntimeHostPaths, persistenceRoot: string): HostRegistration {
+  return {
+    protocolVersion,
+    endpoint: paths.endpoint,
+    registrationPath: paths.registrationPath,
+    lockPath: paths.lockPath,
+    rootHash: paths.rootHash,
+    persistenceRoot: path.resolve(persistenceRoot),
+    configRoot: undefined,
+    agentRoot: undefined,
+    hostEpoch: "",
+    token: "",
+    pid: 0,
+    createdAt: ""
+  };
 }
 
 export async function removeRegistration(registration: HostRegistration): Promise<void> {

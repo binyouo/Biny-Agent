@@ -55,8 +55,25 @@ app.setAboutPanelOptions({
 
 const initialHandoff = parseDesktopLaunchHandoff(process.argv);
 let pendingReferenceOpen = parseDesktopReferenceLaunch(process.argv);
+const runtimeHostLaunchIndex = process.argv.indexOf("--biny-runtime-host");
 
-if (!app.requestSingleInstanceLock()) {
+if (runtimeHostLaunchIndex >= 0) {
+  // Host 是独立 Electron 主进程，不创建窗口或启动桌面服务；safeStorage 可直接读取同一凭据文件。
+  app.disableHardwareAcceleration();
+  void app.whenReady().then(async () => {
+    if (process.platform === "darwin") {
+      app.setActivationPolicy("prohibited");
+      app.dock?.hide();
+    }
+    const { runRuntimeHostProcess } = await import("../../../runtime/hostProcess.js");
+    await runRuntimeHostProcess(process.argv.slice(runtimeHostLaunchIndex + 1), {
+      createConfigStore: (_workspaceRoot, configDir) => new DesktopConfigStore(configDir ?? globalConfigDir())
+    });
+  }).catch((error: unknown) => {
+    console.error(error instanceof Error ? error.stack ?? error.message : String(error));
+    app.exit(1);
+  });
+} else if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
   void startDesktopApplication().catch((error: unknown) => {
@@ -69,7 +86,7 @@ if (!app.requestSingleInstanceLock()) {
 
 async function startDesktopApplication(): Promise<void> {
   await app.whenReady();
-  // Desktop 默认在主进程内运行 Agent；CLI/TUI 等可独立启动的入口仍复用这个 Node Host 入口。
+  // 仅没有 Electron 凭据依赖的入口使用 Node Host；Desktop 独立 Host 复用应用入口。
   process.env.BINY_RUNTIME_HOST_ENTRY ??= path.join(
     app.getAppPath(),
     app.isPackaged ? "dist/runtime/hostProcess.js" : "src/runtime/hostProcess.ts"
@@ -183,7 +200,7 @@ async function startDesktopApplication(): Promise<void> {
         silent: true
       }).show();
     }
-  }, async (url) => await shell.openExternal(url), undefined, net.fetch.bind(net) as unknown as typeof globalThis.fetch, browserAutomation);
+  }, async (url) => await shell.openExternal(url), undefined, net.fetch.bind(net) as unknown as typeof globalThis.fetch, browserAutomation, app.getAppPath());
   const mcp = new DesktopMcpService(
     configStore,
     projects,
@@ -278,7 +295,7 @@ async function startDesktopApplication(): Promise<void> {
       ? initialTarget.sessionId
       : undefined;
     const activeView = explicitSessionId === undefined ? state.activeView() : "chat";
-    // 聊天首屏需要实际模型/思考档位；扩展页仍只读配置，不因打开扩展而启动 Runtime。
+    // 首屏从配置取得模型和思考档位；已有 Host 可附着，首次浏览不创建执行者。
     const workspace = activeProjectId
       ? await (activeView === "extensions" ? agents.workspaceSnapshot(activeProjectId) : agents.prepareWorkspace(activeProjectId))
       : undefined;
@@ -473,7 +490,7 @@ async function startDesktopApplication(): Promise<void> {
     if (preparingQuit) return;
     preparingQuit = true;
     void (async () => {
-      // 运行中任务的确认允许取消；确认退出后屏蔽新窗口，并限制服务清理的等待时长。
+      // 运行中任务的确认允许取消；确认退出后屏蔽新窗口，并限制客户端清理的等待时长。
       let confirmed = false;
       try {
         const settingsDecision = await settingsClose.request(mainWindow?.webContents, "quit");
@@ -483,8 +500,8 @@ async function startDesktopApplication(): Promise<void> {
           const response = await showMessage(mainWindow, {
             type: "warning",
             title: "退出 Biny",
-            message: "退出后暂停任务并保留已保存的进度，重新打开后由你继续。",
-            buttons: ["暂停并退出", "取消"],
+            message: "退出后任务会由后台 Runtime Host 继续运行。需要桌面浏览器或人工授权的步骤可能等待你重新打开应用。",
+            buttons: ["在后台继续并退出", "取消"],
             defaultId: 1,
             cancelId: 1,
             noLink: true
@@ -501,7 +518,6 @@ async function startDesktopApplication(): Promise<void> {
         activityTray = undefined;
         quickChatWindow?.destroy();
         const cleanupResult = await waitForDesktopQuitCleanup(async () => {
-          if (hadRunningTasks) await agents.pauseAllForExit();
           await threadBriefs.close();
           terminals.disposeAll();
           await staticPreview.disposeAll();
@@ -509,6 +525,12 @@ async function startDesktopApplication(): Promise<void> {
           await activity.stop();
           await activityEmbeddingModels.close();
           activityMemoryPipeline.close();
+          try {
+            await agents.detachBrowserAutomation();
+          } catch {
+            // 即使本地 Host RPC 已断开，child IPC disconnect 和 Host client close 仍会撤销租约。
+            console.error("Desktop browser capability could not be detached before shutdown.");
+          }
           await browser.dispose();
           await mcp.dispose();
           mainWindow?.destroy();

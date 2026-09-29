@@ -14,8 +14,8 @@ import { RuntimeEventAuthority } from "../RuntimeAuthority.js";
 import {
   acquireHostLock,
   ensureRuntimeHostDirectory,
+  removeRegistration,
   removeSocketIfStale,
-  removeStaleRegistration,
   runtimeHostPaths,
   writeRegistration
 } from "./lifecycle.js";
@@ -72,6 +72,7 @@ export async function startRuntimeHost(
       sessionRuntimeCacheTarget: options.sessionRuntimeCacheTarget,
       shutdownDrainMs: options.shutdownDrainMs,
       onClosing: options.onClosing,
+      onBrowserAutomationChange: options.onBrowserAutomationChange,
       resourceRegistry
     });
     await server.initialize();
@@ -82,13 +83,19 @@ export async function startRuntimeHost(
     server.startMemoryMaintenance();
     return server;
   } catch (error) {
-    await server?.close().catch(() => undefined);
-    if (!server) {
+    if (server) {
+      // close() owns removal of registration/lock while its owner gate is still held.
+      // If drain fails, keep that gate until the process exits; never stale-clean it here.
+      await server.close().catch(() => undefined);
+    } else {
       await initial?.runtime.close().catch(() => undefined);
       await resourceRegistry.close().catch(() => undefined);
-      await lock.close().catch(() => undefined);
+      try {
+        await removeRegistration(registration);
+      } finally {
+        await lock.close().catch(() => undefined);
+      }
     }
-    await removeStaleRegistration(registration).catch(() => undefined);
     throw error;
   }
 }

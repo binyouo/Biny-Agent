@@ -197,11 +197,11 @@ export interface AgentSessionOptions {
   permissionManager: PermissionManager;
   recorder: SessionRecorder;
   modelManager?: ModelManager;
-  skillPrompt?: string | ((selection?: AgentCapabilitySelection["skills"]) => string | undefined | Promise<string | undefined>);
+  skillPrompt?: string | ((selection?: AgentCapabilitySelection["skills"], runId?: string) => string | undefined | Promise<string | undefined>);
   /** 具名子代理定义元数据段（Task 可用的 agent 列表）。 */
   subagentPrompt?: string;
-  skillPaths?: string[] | ((selection?: AgentCapabilitySelection["skills"]) => string[]);
-  selectCapabilities?: (input: CapabilityPreselectionInput) => Promise<AgentCapabilitySelection>;
+  skillPaths?: string[] | ((selection?: AgentCapabilitySelection["skills"], runId?: string) => string[]);
+  selectCapabilities?: (input: CapabilityPreselectionInput, runId?: string) => Promise<AgentCapabilitySelection>;
   /** MCP 服务器 initialize 返回的 instructions 汇总；重连后会变化，因此每回合实时读取。 */
   mcpPrompt?: () => string;
   /** 模型自己维护的计划清单；每回合实时读取，历史压缩不会让它丢失。 */
@@ -624,8 +624,8 @@ export class AgentSession {
   }
 
   /** 技能元数据、具名子代理清单与 MCP instructions 共同构成 system prompt 的扩展段。 */
-  private async extensionPrompt(capabilitySelection?: AgentCapabilitySelection): Promise<string | undefined> {
-    const selectedSkillPrompt = await this.skillPrompt(capabilitySelection?.skills);
+  private async extensionPrompt(capabilitySelection?: AgentCapabilitySelection, runId?: string): Promise<string | undefined> {
+    const selectedSkillPrompt = await this.skillPrompt(capabilitySelection?.skills, runId);
     const sections = [
       this.planning ? "Planning mode is enabled. Investigate with read-only tools and save a durable PlanDraft for user confirmation. Do not execute commands, modify workspace files, delegate, or start/update running plans. A draft is not executed work. Each task needs acceptance criteria and deterministic verification; add a read-only review block only when it adds useful independent scrutiny." : undefined,
       selectedSkillPrompt?.trim(),
@@ -636,12 +636,12 @@ export class AgentSession {
     return sections.length ? sections.join("\n\n") : undefined;
   }
 
-  private async skillPrompt(selection?: AgentCapabilitySelection["skills"]): Promise<string | undefined> {
-    return typeof this.options.skillPrompt === "function" ? await this.options.skillPrompt(selection) : this.options.skillPrompt;
+  private async skillPrompt(selection?: AgentCapabilitySelection["skills"], runId?: string): Promise<string | undefined> {
+    return typeof this.options.skillPrompt === "function" ? await this.options.skillPrompt(selection, runId) : this.options.skillPrompt;
   }
 
-  private skillPaths(selection?: AgentCapabilitySelection["skills"]): string[] {
-    const paths = typeof this.options.skillPaths === "function" ? this.options.skillPaths(selection) : this.options.skillPaths;
+  private skillPaths(selection?: AgentCapabilitySelection["skills"], runId?: string): string[] {
+    const paths = typeof this.options.skillPaths === "function" ? this.options.skillPaths(selection, runId) : this.options.skillPaths;
     return [...(paths ?? [])];
   }
 
@@ -721,7 +721,8 @@ export class AgentSession {
     personalization: ResolvedChatPersonalization,
     capabilitySelection: Promise<AgentCapabilitySelection | undefined>,
     signal: AbortSignal | undefined,
-    referenceHistory: readonly AgentMessage[]
+    referenceHistory: readonly AgentMessage[],
+    runId?: string
   ): Promise<PromptBundle> {
     const promptNow = new Date();
     // 人格文件和辅助上下文互不依赖，与能力筛选一起准备；只有最终拼装等待筛选结果。
@@ -758,7 +759,7 @@ export class AgentSession {
     }
     const bundle = buildPromptBundle({
       sessionId: this.recorder.sessionId,
-      extensionPrompt: await this.extensionPrompt(selection),
+      extensionPrompt: await this.extensionPrompt(selection, runId),
       tools: initialTools,
       soulPrompt,
       personalization,
@@ -817,7 +818,7 @@ export class AgentSession {
 
   private async prepareCapabilities(options: {
     input: string; selection?: AgentCapabilitySelection; signal?: AbortSignal;
-    messageId?: string; reuse?: boolean; history?: readonly AgentMessage[];
+    messageId?: string; reuse?: boolean; history?: readonly AgentMessage[]; runId?: string;
     events?: SessionEvent[];
   }): Promise<AgentCapabilitySelection | undefined> {
     if (!this.options.selectCapabilities) return options.selection;
@@ -843,7 +844,7 @@ export class AgentSession {
     const selected = await this.options.selectCapabilities({
       input: options.input, config: this.activeConfig, selection: options.selection, signal: options.signal,
       history, previousTools: [...new Set(previousTools)]
-    });
+    }, options.runId);
     options.signal?.throwIfAborted();
     recordPerfPhase("turn.capabilities", startedAt, { runId: this.recorder.runtimeContextSnapshot()?.runId });
     if (options.messageId) {
@@ -1516,7 +1517,8 @@ export class AgentSession {
       && node.eventIndex < (replacingUser ? userNode.eventIndex : target.eventIndex)).map((node) => node.message);
     const selection = this.prepareCapabilities({
       input: sourceInput, selection: options.capabilitySelection, signal: options.abortSignal,
-      messageId: replacingUser ? undefined : userNode.id, reuse: !replacingUser, history: referenceHistory, events: recordedEvents
+      messageId: replacingUser ? undefined : userNode.id, reuse: !replacingUser, history: referenceHistory, events: recordedEvents,
+      runId: options.runId
     });
     if (personalization.useMemories) yield { type: "preparation.updated", stage: "memory" };
     if (this.options.selectCapabilities && (options.capabilitySelection?.skills ?? this.activeConfig.chat.defaultSkillSelection) === "auto") {
@@ -1525,7 +1527,7 @@ export class AgentSession {
     if (this.options.selectCapabilities && (options.capabilitySelection?.tools ?? this.activeConfig.chat.defaultToolSelection) === "auto") {
       yield { type: "preparation.updated", stage: "tools" };
     }
-    const basePrompt = this.baseSystemPrompt(sourceInput, personalization, selection, options.abortSignal, referenceHistory)
+    const basePrompt = this.baseSystemPrompt(sourceInput, personalization, selection, options.abortSignal, referenceHistory, options.runId)
       .then((prompt) => appendExternalTurnContext(prompt, options.promptContext));
     yield { type: "preparation.updated", stage: "workspace" };
     const prepared = yield* this.prepareContext(
@@ -1672,7 +1674,7 @@ export class AgentSession {
         messageId: replacement?.messageId ?? options.messageId,
         parentMessageId: replacement?.parentMessageId,
         slotId: replacement?.slotId,
-        skills: this.skillPaths(),
+        skills: this.skillPaths(undefined, options.runId),
         contextUsage: this.contextMemory.getBudget(),
         contextState: this.checkpointPersistenceError ? undefined : this.contextMemory.persistedState()
       });
@@ -1863,7 +1865,7 @@ export class AgentSession {
         metadata: runOptions.source === undefined ? undefined : { source: runOptions.source },
         content: input,
         attachments: sessionAttachments(runOptions.attachments),
-        skills: this.skillPaths(runOptions.capabilitySelection?.skills),
+        skills: this.skillPaths(runOptions.capabilitySelection?.skills, runOptions.runId),
         contextUsage: this.contextMemory.getBudget(),
         contextState: this.checkpointPersistenceError ? undefined : this.contextMemory.persistedState(),
         preparationUsage: this.usageRecords.slice(usageBeforePreparation),
@@ -2002,7 +2004,7 @@ export class AgentSession {
       while (userIndex >= 0 && messages[userIndex]?.role !== "user") userIndex -= 1;
       const selection = this.prepareCapabilities({
         input, selection: runOptions.capabilitySelection, signal: abortSignal,
-        messageId: messageReferences[userIndex]?.id, reuse: true, history: messages
+        messageId: messageReferences[userIndex]?.id, reuse: true, history: messages, runId: runOptions.runId
       });
       if (this.activePersonalization.useMemories) yield { type: "preparation.updated", stage: "memory" };
       if (this.options.selectCapabilities && (runOptions.capabilitySelection?.skills ?? this.activeConfig.chat.defaultSkillSelection) === "auto") {
@@ -2038,7 +2040,8 @@ export class AgentSession {
         : this.contextMemory.getHistory();
       const selection = this.prepareCapabilities({
         input, selection: runOptions.capabilitySelection, signal: abortSignal, messageId: userMessageReference?.id, events,
-        history: nodes.filter((node) => activeIds.has(node.id) && node.id !== userMessageReference?.id).map((node) => node.message)
+        history: nodes.filter((node) => activeIds.has(node.id) && node.id !== userMessageReference?.id).map((node) => node.message),
+        runId: runOptions.runId
       });
       if (turnPersonalization.useMemories) yield { type: "preparation.updated", stage: "memory" };
       if (this.options.selectCapabilities && (runOptions.capabilitySelection?.skills ?? this.activeConfig.chat.defaultSkillSelection) === "auto") {
@@ -2048,7 +2051,7 @@ export class AgentSession {
         yield { type: "preparation.updated", stage: "tools" };
       }
       const systemPromptPerfStartedAt = perfNow();
-      const basePrompt = this.baseSystemPrompt(input, turnPersonalization, selection, abortSignal, referenceHistory)
+      const basePrompt = this.baseSystemPrompt(input, turnPersonalization, selection, abortSignal, referenceHistory, runtimeRunId)
         .then((prompt) => {
           recordPerfPhase("turn.baseSystemPrompt", systemPromptPerfStartedAt, { runId: runtimeRunId });
           return appendExternalTurnContext(prompt, runOptions.promptContext);
@@ -2562,7 +2565,7 @@ export class AgentSession {
           this.contextMemory.recordRequest({
             ...context,
             toolSources: new Map(this.options.toolRegistry.listEntries().map(({ tool, source }) => [tool.name, source])),
-            skillPrompt: (await this.skillPrompt(runOptions.capabilitySelection?.skills))?.trim()
+            skillPrompt: (await this.skillPrompt(runOptions.capabilitySelection?.skills, runOptions.runId))?.trim()
           });
           emitUpdate({ type: "context.updated", context: await this.contextStatus() });
         },

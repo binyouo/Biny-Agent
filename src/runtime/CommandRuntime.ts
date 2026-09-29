@@ -51,18 +51,22 @@ import { attachmentRoot, ensureAttachmentRoot } from "../attachments/store.js";
 import { AiRegistry } from "../llm/AiRegistry.js";
 import { RuntimeEventAuthority } from "./RuntimeAuthority.js";
 import { DurableTaskRunStore, isTaskRunTerminal, type TaskRetrySafety, type TaskRunWithAttempts } from "./TaskRunStore.js";
+import { evaluateTaskRetry } from "./TaskRetryPolicy.js";
 import { runTaskClosure, type TaskClosureResult } from "./TaskClosure.js";
 import { AutomationStore } from "./AutomationScheduler.js";
 import { GoalGraphStore } from "./GoalGraphStore.js";
 import { CapabilityStore } from "./CapabilityStore.js";
-import { RuntimeHostResourceScope, RuntimeResourceBaselinePendingError, type RuntimeHostResourceRegistry, type RuntimeResourceSnapshot, type RuntimeResourceReadiness } from "./host/resources.js";
+import { RuntimeHostResourceScope, type RuntimeHostResourceRegistry, type RuntimeResourceSnapshot, type RuntimeResourceReadiness } from "./host/resources.js";
 import { listEnabledGlobalPluginPaths, listEnabledProjectPluginPaths } from "../extensions/pluginRegistry.js";
 import { globalPluginRoot } from "../config/paths.js";
 import { HeartbeatScheduler } from "../agent/context/heartbeat.js";
 import { createBrowserTools, type BrowserAutomationEndpoint } from "../tools/browser.js";
+import { createWebFetchTool } from "../tools/web/fetch.js";
+import { createWebSearchTool } from "../tools/web/search.js";
 import { ToolExecutionCoordinator } from "../agent/toolExecutionCoordinator.js";
 import type { AgentSessionEvent, AgentToolEvent } from "../agent/types.js";
 import {
+  isTaskVerificationEvidence,
   isTaskVerificationPermissionResult,
   pendingTaskVerificationApproval,
   readTaskDefinition,
@@ -102,14 +106,24 @@ export interface CommandRuntime {
   refreshSkills(): Promise<void>;
   /** 刷新共享 MCP/Skill 代理；回合开始前调用，避免活动回合看到半套工具。 */
   refreshExtensionTools?(): void;
+  /** Desktop 客户端能力可在 Host 生命周期内挂载或撤销。 */
+  setBrowserAutomation?(endpoint?: BrowserAutomationEndpoint): void;
+  /** 固定本轮 Skill 可见集；后续资源变化只影响下一回合。 */
+  captureRunResourceSnapshot?(runId: string): void;
+  runSkillPaths?(runId: string): string[];
+  releaseRunResourceSnapshot?(runId: string): void;
   resourceSnapshot?(): RuntimeResourceReadiness;
-  assertResourceBaselineReady?(): void;
   subscribeResourceChanges?(listener: (snapshot: RuntimeResourceSnapshot) => void): () => void;
   /** 实时重新扫描具名子代理定义（会话期间可编辑生效）。 */
   listSubagentAgents(): Promise<SubagentDefinition[]>;
   startSubagentTask(task: string, options?: SubagentTaskRunOptions): SubmittedSubagentTask;
   /** Host、Desktop fallback 与模型可见 Task 共用的唯一 TaskRun 派发入口。 */
   startTaskRun(taskRunId: string, options?: { retrySafety?: TaskRetrySafety }): Promise<{
+    task: TaskRunWithAttempts;
+    completion: Promise<TaskClosureResult>;
+  }>;
+  /** Attach to a live TaskRun or continue only a persisted verification/retry boundary. */
+  resumeTaskRun(taskRunId: string): Promise<{
     task: TaskRunWithAttempts;
     completion: Promise<TaskClosureResult>;
   }>;
@@ -186,6 +200,10 @@ export async function createCommandRuntime(workspaceRoot: string, options: Comma
     ?? options.resourceRegistry?.acquire(workspaceRoot, config)
     ?? new RuntimeHostResourceScope(workspaceRoot, config);
   let skills: SkillBundle = resourceScope.skills;
+  const runSkillSnapshots = new Map<string, SkillBundle>();
+  const skillsForRun = (runId?: string): SkillBundle => runId === undefined
+    ? requireSkillBundle(skills)
+    : runSkillSnapshots.get(runId) ?? requireSkillBundle(skills);
   const ownsResourceScope = options.resourceScope === undefined && options.resourceRegistry === undefined;
   const resourceBoot = options.resourceBoot ?? (ownsResourceScope ? "blocking" : "background");
   const resourceStart = resourceScope.start();
@@ -217,9 +235,21 @@ export async function createCommandRuntime(workspaceRoot: string, options: Comma
     () => resolveToolModel(config),
     options.browserAutomation
   );
-  if (options.browserAutomation) {
-    for (const tool of createBrowserTools(options.browserAutomation)) toolRegistry.registerBuiltinTool(tool);
-  }
+  const browserToolNames = ["BrowserOpen", "BrowserReadDom", "BrowserClick", "BrowserType", "BrowserPress"];
+  const setBrowserAutomation = (endpoint?: BrowserAutomationEndpoint): void => {
+    for (const name of [...browserToolNames, "WebSearch", "WebFetch"]) toolRegistry.unregister(name);
+    if (endpoint) {
+      for (const tool of createBrowserTools(endpoint)) toolRegistry.registerBuiltinTool(tool);
+      toolRegistry.registerBuiltinTool(createWebSearchTool(config.web.search, config.web.cookies, endpoint));
+    }
+    if (endpoint || config.web.fetch.enabled !== false) {
+      toolRegistry.registerBuiltinTool(createWebFetchTool(config.web.fetch, config.web.cookies, {
+        browser: endpoint,
+        visibleBrowsing: config.web.search.visibleBrowsing
+      }));
+    }
+  };
+  setBrowserAutomation(options.browserAutomation);
   // 快照挂在工作区的 git 仓库上；非 git 目录下这项能力直接不可用。
   const checkpoints = config.checkpoints.enabled ? await CheckpointStore.open(workspaceRoot) : undefined;
   const todos = new TodoStore(persistenceRoot, recorder.sessionId);
@@ -230,6 +260,9 @@ export async function createCommandRuntime(workspaceRoot: string, options: Comma
   let agent: AgentSession | undefined;
   let modelManager: ModelManager | undefined;
   let subagentParentRunId: string | undefined;
+  const currentSkillBundle = (): SkillBundle => subagentParentRunId === undefined
+    ? requireSkillBundle(skills)
+    : skillsForRun(subagentParentRunId);
   let subagentDefinitions: SubagentDefinition[] = [];
   let registeredMcpTools: string[] = [];
   const durableSubagentBindings = new Map<string, {
@@ -242,6 +275,9 @@ export async function createCommandRuntime(workspaceRoot: string, options: Comma
   const durableTaskControllers = new Map<string, AbortController>();
   let startTaskRun: CommandRuntime["startTaskRun"] = async () => {
     throw new Error("TaskRun execution is not initialized.");
+  };
+  let resumeTaskRun: CommandRuntime["resumeTaskRun"] = async () => {
+    throw new Error("TaskRun resume is not initialized.");
   };
   let runTaskWithVerification: CommandRuntime["runTaskWithVerification"] = async () => {
     throw new Error("Verified one-shot task execution is not initialized.");
@@ -340,13 +376,13 @@ export async function createCommandRuntime(workspaceRoot: string, options: Comma
     // Desktop Host 的 MCP/Skill 启动在后台进行；私有 CLI/TUI runtime 仍在这里等待首个稳定快照。
     if (resourceBoot === "blocking") await resourceStart;
     skills = resourceScope.skills;
-    toolRegistry.registerUserTool(createSkillTool(() => requireSkillBundle(skills)));
-    toolRegistry.registerUserTool(createSkillResourceTool(() => requireSkillBundle(skills)));
-    toolRegistry.registerUserTool(createSkillLookupTool(() => requireSkillBundle(skills)));
+    toolRegistry.registerUserTool(createSkillTool(currentSkillBundle));
+    toolRegistry.registerUserTool(createSkillResourceTool(currentSkillBundle));
+    toolRegistry.registerUserTool(createSkillLookupTool(currentSkillBundle));
     toolRegistry.registerBuiltinTool(createSkillSearchTool({
       getInstalledNames: () => {
         const installed = new Set<string>();
-        for (const skill of requireSkillBundle(skills).skills) {
+        for (const skill of currentSkillBundle().skills) {
           installed.add(skill.name.toLocaleLowerCase());
           installed.add(path.basename(path.dirname(skill.filePath)).toLocaleLowerCase());
         }
@@ -453,7 +489,7 @@ export async function createCommandRuntime(workspaceRoot: string, options: Comma
       toolRegistry,
       permissionManager,
       recorder,
-      skillPrompt: (selection) => skillPromptForSelection(requireSkillBundle(skills), selection),
+      skillPrompt: (selection, runId) => skillPromptForSelection(skillsForRun(runId), selection),
       extractSkill: async ({ messageId, events, minToolCalls, onNotice }) => await runSkillExtraction({
         messageId,
         events,
@@ -464,9 +500,9 @@ export async function createCommandRuntime(workspaceRoot: string, options: Comma
         refreshSkills: async () => await refreshSkills(true)
       }),
       subagentPrompt: buildSubagentDefinitionsPrompt(subagentDefinitions),
-      skillPaths: (selection) => skillPathsForSelection(requireSkillBundle(skills), selection),
-      selectCapabilities: async (input) => await preselectCapabilities({
-        ...input, model: resolveToolModel(input.config), tools: toolRegistry.list(), skills: requireSkillBundle(skills).skills
+      skillPaths: (selection, runId) => skillPathsForSelection(skillsForRun(runId), selection),
+      selectCapabilities: async (input, runId) => await preselectCapabilities({
+        ...input, model: resolveToolModel(input.config), tools: toolRegistry.list(), skills: skillsForRun(runId).skills
       }),
       mcpPrompt: () => mcpHost.instructionsPrompt(),
       todoStore: todos,
@@ -615,17 +651,20 @@ export async function createCommandRuntime(workspaceRoot: string, options: Comma
 
     let current = task;
     if (current.status === "running") {
-      if (closureRequired) {
-        current = taskRuns.transition(taskRunId, "blocked", {
-          attemptId: current.attempts.at(-1)?.attemptId,
-          failure: {
-            failureClass: "unsafe_recovery",
-            message: "A TaskRun with required closure cannot replay an unproven running Attempt."
-          }
-        });
-        return { task: current, completion: Promise.resolve({ status: "blocked" }) };
-      }
-      current = taskRuns.requeue(taskRunId);
+      const reason = "This TaskRun has no live Worker or persisted checkpoint; replaying its unknown side effects is unsafe.";
+      current = taskRuns.transition(taskRunId, "blocked", {
+        attemptId: current.attempts.at(-1)?.attemptId,
+        failure: { failureClass: "unsafe_recovery", message: reason }
+      });
+      return { task: current, completion: Promise.resolve({ status: "blocked", reason }) };
+    }
+    if (current.status === "queued" && current.attempts.length > 0 && !hasSafeQueuedTaskContinuation(current, taskRuns.events(taskRunId))) {
+      const reason = "This queued TaskRun has no persisted retry or verification-repair admission; replaying its Worker is unsafe.";
+      current = taskRuns.transition(taskRunId, "blocked", {
+        attemptId: current.attempts.at(-1)?.attemptId,
+        failure: { failureClass: "unsafe_recovery", message: reason }
+      });
+      return { task: current, completion: Promise.resolve({ status: "blocked", reason }) };
     }
     if (current.status === "created") current = taskRuns.transition(taskRunId, "queued");
     const latest = taskRuns.get(taskRunId);
@@ -684,6 +723,25 @@ export async function createCommandRuntime(workspaceRoot: string, options: Comma
     durableTaskPromises.set(taskRunId, completion);
     void completion.catch(() => undefined);
     return { task: latest, completion };
+  };
+
+  resumeTaskRun = async (taskRunId) => {
+    const task = taskRuns.get(taskRunId);
+    if (!task) throw new Error(`TaskRun ${taskRunId} does not exist.`);
+    const existingPromise = durableTaskPromises.get(taskRunId);
+    if (existingPromise) return { task, completion: existingPromise };
+
+    const latest = task.attempts.at(-1);
+    const events = taskRuns.events(taskRunId);
+    const persistedVerification = task.status === "verifying"
+      && latest?.status === "verifying"
+      && latest.artifacts !== undefined;
+    const admittedQueuedContinuation = task.status === "queued"
+      && hasSafeQueuedTaskContinuation(task, events);
+    if (!persistedVerification && !admittedQueuedContinuation) {
+      throw new Error("TaskRun resume requires a live Worker, persisted verification candidate, or an admitted retry/repair boundary.");
+    }
+    return await startTaskRun(taskRunId);
   };
 
   cancelTaskRun = (taskRunId: string, reason = "TaskRun cancelled."): TaskRunWithAttempts => {
@@ -901,6 +959,11 @@ export async function createCommandRuntime(workspaceRoot: string, options: Comma
     extensionReport: (section?: ExtensionSection): string => formatExtensionReport(extensionStatus(), section),
     extensionStatus: (): ExtensionStatus => extensionStatus(),
     listSkills: (): SkillDefinition[] => [...requireSkillBundle(skills).skills],
+    captureRunResourceSnapshot: (runId: string): void => {
+      runSkillSnapshots.set(runId, structuredClone(requireSkillBundle(skills)));
+    },
+    runSkillPaths: (runId: string): string[] => skillPathsForSelection(skillsForRun(runId)),
+    releaseRunResourceSnapshot: (runId: string): void => { runSkillSnapshots.delete(runId); },
     listTools: (): RuntimeToolCatalogEntry[] => {
       const entries = toolRegistry.listEntries();
       const knownNames = new Set(entries.map(({ tool }) => tool.name));
@@ -919,10 +982,8 @@ export async function createCommandRuntime(workspaceRoot: string, options: Comma
     },
     refreshSkills,
     refreshExtensionTools,
+    setBrowserAutomation,
     resourceSnapshot: (): RuntimeResourceReadiness => resourceScope.readiness(),
-    assertResourceBaselineReady: (): void => {
-      if (!resourceScope.isReadyForSubmission()) throw new RuntimeResourceBaselinePendingError();
-    },
     subscribeResourceChanges: (listener: (snapshot: RuntimeResourceSnapshot) => void): (() => void) => resourceScope.subscribe(listener),
     listSubagentAgents: async (): Promise<SubagentDefinition[]> => {
       subagentDefinitions = await loadAgentDefinitions();
@@ -930,6 +991,7 @@ export async function createCommandRuntime(workspaceRoot: string, options: Comma
     },
     startSubagentTask,
     startTaskRun,
+    resumeTaskRun,
     runTaskWithVerification,
     cancelTaskRun,
     async startPlanDraft(graphId, revision, signal) {
@@ -1013,6 +1075,33 @@ function latestTaskCheckResult(
     if (event?.type === "tool_result" && event.toolCallId === toolCallId) return event;
   }
   return undefined;
+}
+
+function hasSafeQueuedTaskContinuation(
+  task: TaskRunWithAttempts,
+  events: ReturnType<DurableTaskRunStore["events"]>
+): boolean {
+  const attempt = task.attempts.at(-1);
+  const latestEvent = events.at(-1);
+  if (!attempt || attempt.status !== "failed" || !latestEvent) return false;
+  if (latestEvent.eventType === "task.retry") {
+    const decision = evaluateTaskRetry({ ...task, status: "failed" });
+    return decision.allowed && decision.attempt.attemptId === attempt.attemptId;
+  }
+  if (latestEvent.eventType !== "task.verification.repair") return false;
+  const evidence = attempt.verification;
+  const artifacts = typeof attempt.artifacts === "object" && attempt.artifacts !== null
+    ? attempt.artifacts as { output?: unknown; definitionFingerprint?: unknown; artifactFingerprint?: unknown }
+    : undefined;
+  return latestEvent.attemptId === attempt.attemptId
+    && isTaskVerificationEvidence(evidence)
+    && evidence.status === "failed"
+    && evidence.taskRunId === task.taskRunId
+    && evidence.attemptId === attempt.attemptId
+    && typeof artifacts?.output === "string"
+    && artifacts.output.trim().length > 0
+    && artifacts.definitionFingerprint === evidence.definitionFingerprint
+    && artifacts.artifactFingerprint === evidence.artifactFingerprint;
 }
 
 function isTaskCheckSessionEvent(

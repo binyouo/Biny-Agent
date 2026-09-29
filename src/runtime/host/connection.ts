@@ -49,6 +49,7 @@ export async function connectRuntimeHost(
       configDir: options.configDir,
       clientId: options.clientId,
       surface: options.surface,
+      keepAlive: options.keepAlive,
       spawnOptions: options.spawnOptions,
       environmentTakeover: !identityMatches
     });
@@ -78,6 +79,7 @@ export async function connectOrSpawnRuntimeHostWithOwnership(
   const attached = await connectRuntimeHost(persistenceRoot, {
     clientId: options.clientId,
     surface: options.surface,
+    keepAlive: options.keepAlive,
     spawnOptions
   });
   if (attached) return { client: attached };
@@ -90,6 +92,7 @@ export async function connectOrSpawnRuntimeHostWithOwnership(
     const raced = await connectRuntimeHost(persistenceRoot, {
       clientId: options.clientId,
       surface: options.surface,
+      keepAlive: options.keepAlive,
       spawnOptions
     });
     if (raced) return { client: raced };
@@ -140,6 +143,7 @@ async function waitForSpawnedRuntimeHost(
   const client = await connectRuntimeHost(persistenceRoot, {
     clientId: options.clientId,
     surface: options.surface,
+    keepAlive: options.keepAlive,
     spawnOptions: toSpawnOptions(options)
   });
   if (!client) throw new Error("Runtime Host registration disappeared before attach.");
@@ -156,6 +160,7 @@ function toSpawnOptions(options: SpawnRuntimeHostOptions): RuntimeHostSpawnOptio
     sessionId: options.sessionId,
     resumeInterrupted: options.resumeInterrupted,
     entryPath: options.entryPath,
+    electronAppPath: options.electronAppPath,
     browserAutomation: options.browserAutomation
   };
 }

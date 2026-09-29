@@ -2,8 +2,8 @@
  * Runtime Host 级共享扩展资源。
  *
  * MCP 连接和 Skill 元数据不是 session 状态：同一个 workspace 的多个 session
- * 应复用它们，但不同 workspace 或有效配置不能互相污染。这里同时提供首轮能力
- * 快照，用于 Desktop 在工具面稳定前阻止提交消息。
+ * 应复用它们，但不同 workspace 或有效配置不能互相污染。能力目录和 readiness 以
+ * revision 快照发布；慢速资源可以在对话已入账后继续加载。
  */
 import { createHash } from "node:crypto";
 import path from "node:path";
@@ -15,15 +15,6 @@ import { loadSkills, type SkillBundle, type SkillDefinition } from "../../extens
 import type { Tool } from "../../tools/types.js";
 
 export type RuntimeResourceState = "loading" | "ready" | "degraded";
-
-export class RuntimeResourceBaselinePendingError extends Error {
-  readonly code = "resource_baseline_pending";
-
-  constructor() {
-    super("MCP and Skill capabilities are still loading; wait for the resource baseline before sending.");
-    this.name = "RuntimeResourceBaselinePendingError";
-  }
-}
 
 export interface RuntimeResourceSnapshot {
   revision: number;
@@ -126,10 +117,6 @@ export class RuntimeHostResourceScope {
   subscribe(listener: (snapshot: RuntimeResourceSnapshot) => void): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
-  }
-
-  isReadyForSubmission(): boolean {
-    return this.state !== "loading";
   }
 
   createTools(): Tool[] {

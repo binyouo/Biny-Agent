@@ -735,8 +735,12 @@ async function testDesktopSafeStorageCredentialStore(): Promise<void> {
     // 新实例（模拟重启）能从加密文件读回，证明持久化有效。
     const reopened = new DesktopSafeStorageCredentialStore(root, () => cipher);
     assert.equal(await reopened.get("provider:deepseek:apiKey"), "sk-live-secret");
+    const runtimeStore = new DesktopSafeStorageCredentialStore(root, () => cipher);
+    assert.equal(await runtimeStore.get("provider:deepseek:apiKey"), "sk-live-secret");
+    await store.set("provider:deepseek:apiKey", "sk-rotated-secret");
+    assert.equal(await runtimeStore.get("provider:deepseek:apiKey"), "sk-rotated-secret", "detached Host must observe credentials rotated by Desktop");
     await reopened.delete("provider:deepseek:apiKey");
-    assert.equal(await reopened.get("provider:deepseek:apiKey"), undefined);
+    assert.equal(await runtimeStore.get("provider:deepseek:apiKey"), undefined, "detached Host must observe credentials revoked by Desktop");
     // 加密不可用时要明确报错，而不是静默失败。
     const unavailable = new DesktopSafeStorageCredentialStore(root, () => ({ ...cipher, isAvailable: () => false }));
     await assert.rejects(unavailable.set("provider:x:apiKey", "v"), /加密存储不可用/u);
@@ -1023,15 +1027,15 @@ async function testDesktopOpenSessionReturnsHistoryWhenRuntimeFails(): Promise<v
     agents = new DesktopAgentManager(state, projects, configStore, () => undefined);
     const firstDocument = await agents.openSession(project.id, first.sessionId);
     assert.equal(firstDocument.events.some((event) => event.type === "assistant_message" && event.content === "历史回复一"), true);
-    assert.match(firstDocument.runtimeError ?? "", /credentials|credential|key|密钥/iu);
+    assert.equal(firstDocument.runtimeError, undefined, "历史浏览不初始化 Provider");
 
     const secondDocument = await agents.openSession(project.id, second.sessionId);
     assert.equal(secondDocument.events.some((event) => event.type === "assistant_message" && event.content === "历史回复二"), true);
-    assert.match(secondDocument.runtimeError ?? "", /credentials|credential|key|密钥/iu);
+    assert.equal(secondDocument.runtimeError, undefined);
 
     const workspace = await agents.workspaceSnapshot(project.id);
     assert.equal(workspace.runtime, undefined);
-    assert.match(workspace.runtimeError ?? "", /credentials|credential|key|密钥/iu);
+    assert.equal(workspace.runtimeError, undefined);
     await assert.rejects(
       agents.sendPrompt(project.id, second.sessionId, "继续", []),
       /credentials|credential|key|密钥/iu
@@ -1062,8 +1066,10 @@ async function testDesktopOpenSessionReturnsWriterConflictReadOnlyDocument(): Pr
     owner.acquire(recorder.sessionId);
     agents = new DesktopAgentManager(state, projects, configStore, () => undefined);
     const conflictDocument = await agents.openSession(project.id, recorder.sessionId);
-    assert.equal(conflictDocument.writerConflict?.sessionId, recorder.sessionId, conflictDocument.runtimeError);
+    assert.equal(conflictDocument.writerConflict, undefined, "冷态历史读取不申请 writer");
+    assert.equal(conflictDocument.runtimeSnapshot, undefined);
     assert.equal(conflictDocument.events.some((event) => event.type === "assistant_message"), true);
+    await assert.rejects(agents.sendPrompt(project.id, recorder.sessionId, "继续", []), /writer|lease|占用|持有/iu);
 
     owner.close();
     owner = undefined;

@@ -25,6 +25,7 @@ import type { CommandRuntime } from "../CommandRuntime.js";
 import type { AutomationCreateInput } from "../AutomationScheduler.js";
 import type { GraphNodeInput } from "../GoalGraphStore.js";
 import type { CapabilityInvocation, CapabilityInvocationInput, CapabilityRegistration, CapabilityRegistrationInput } from "../CapabilityStore.js";
+import type { BrowserAutomationEndpoint } from "../../tools/browser.js";
 import type { ChatPersonalizationOverridePatch, AgentPersonalizationState, GlobalPersonalizationUpdate } from "../../personalization/index.js";
 import {
   runtimeHostEventHistoryLimit as eventHistoryLimit,
@@ -32,13 +33,13 @@ import {
   runtimeHostHandshakeTimeoutMs,
   runtimeHostProtocolVersion as protocolVersion,
   decodeHostFrame,
-  encodeHostFrame,
   isAgentRunOutcome,
   isCapabilityOfferFrame,
   isCompletionFrame,
   isEventFrame,
   isGapFrame,
   isResponseFrame,
+  isRetiredFrame,
   type HostFrame
 } from "./protocol.js";
 import {
@@ -76,12 +77,13 @@ import type {
   HostOperationResult,
   HostSurface,
   RuntimeHostInfo,
+  RuntimeHostStatus,
   RuntimeHostSessionSummary,
   RuntimeIsolation
 } from "./types.js";
 import type { WorktreeMergeResult, WorktreeRecord, WorktreeStatusView } from "./worktree.js";
-import { RuntimeResourceBaselinePendingError } from "./resources.js";
 import { RuntimeHostFrameDecoder } from "./framing.js";
+import { BoundedHostSocketWriter } from "./socket-writer.js";
 
 interface RuntimeHostClientOptions extends HostClientOptions {
   registration: HostRegistration;
@@ -104,6 +106,7 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
   readonly persistenceRoot: string;
   readonly clientId: string;
   private socket: net.Socket | undefined;
+  private socketWriter: BoundedHostSocketWriter | undefined;
   private decoder = new RuntimeHostFrameDecoder();
   private readyPromise: Promise<void> | undefined;
   private reconnectTimer: ReturnType<typeof setTimeout> | undefined;
@@ -125,9 +128,12 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
   private hostEpoch: string | undefined;
   private capabilities: readonly string[] = [];
   private closed = false;
+  private retired = false;
   private lastError: Error | undefined;
   private reconnectInProgress = false;
   private ownerRestartPromise: Promise<void> | undefined;
+  private browserAutomationConfigured = false;
+  private browserAutomationEndpoint: BrowserAutomationEndpoint | undefined;
   private environmentTakeoverHandshake: boolean;
   private readonly handshakeTimeoutMs: number;
 
@@ -156,6 +162,32 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
     };
   }
 
+  get isRetired(): boolean {
+    return this.retired;
+  }
+
+  async waitForRetirement(): Promise<void> {
+    if (!this.retired) return;
+    const deadline = Date.now() + this.handshakeTimeoutMs;
+    while ((await readRegistration(runtimeHostPaths(this.persistenceRoot)))?.hostEpoch === this.hostEpoch) {
+      if (Date.now() >= deadline) throw new Error("Runtime Host idle shutdown has not finished; ownership is still held.");
+      await new Promise<void>((resolve) => setTimeout(resolve, 20));
+    }
+  }
+
+  async getHostStatus(): Promise<RuntimeHostStatus> {
+    const status = await this.request<RuntimeHostStatus>("host.info", {});
+    if (!status.journal) throw new Error("Runtime Host does not report journal persistence status.");
+    return status;
+  }
+
+  async setBrowserAutomation(endpoint: BrowserAutomationEndpoint | undefined): Promise<boolean> {
+    if (this.options.surface !== "desktop") throw new Error("Only a Desktop client can manage the built-in browser capability.");
+    this.browserAutomationConfigured = true;
+    this.browserAutomationEndpoint = endpoint;
+    return await this.applyBrowserAutomationLease();
+  }
+
   submitPrompt(input: string, attachments: AgentAttachment[] = [], requestIds?: RuntimeRequestIds, promptContext?: string, capabilitySelection?: AgentCapabilitySelection): SubmittedAgentRun {
     return this.submitPromptForSession(this.focusedSessionId, input, attachments, requestIds, promptContext, capabilitySelection);
   }
@@ -170,7 +202,6 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
     capabilitySelection?: AgentCapabilitySelection
   ): SubmittedAgentRun {
     if (!input.trim()) throw new Error("Agent prompt cannot be empty.");
-    if (this.getSnapshot(sessionId).resourceReadiness?.state === "loading") throw new RuntimeResourceBaselinePendingError();
     const ids = normalizeRequestIds(requestIds);
     const completion = this.createCompletion(ids.runId);
     void this.request<{ runId: string; messageId: string }>("submit", {
@@ -220,7 +251,6 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
     capabilitySelection?: AgentCapabilitySelection
   ): Promise<HostOperationResult<{ runId: string; messageId: string }>> {
     if (!input.trim()) throw new Error("Agent prompt cannot be empty.");
-    if (this.getSnapshot(sessionId).resourceReadiness?.state === "loading") throw new RuntimeResourceBaselinePendingError();
     const ids = normalizeRequestIds(requestIds);
     return await this.request("run.submit", {
       input,
@@ -290,6 +320,13 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
     sessionId?: string
   ): Promise<HostOperationResult<{ runId: string }>> {
     return await this.request("run.cancel", { runId, reason, sessionId });
+  }
+
+  async pauseOwnedRunsForExit(): Promise<Array<{ sessionId: string; runId: string }>> {
+    if (!this.capabilities.includes("runtime.client-owned-control")) {
+      throw new Error("Runtime Host cannot safely pause only this client's runs.");
+    }
+    return await this.request("client.pause-owned-runs", {});
   }
 
   async answerPermissionRequest(requestId: string, result: PermissionResult, sessionId?: string): Promise<HostOperationResult<{ requestId: string }>> {
@@ -1041,6 +1078,8 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
     this.readyPromise = new Promise<void>((resolve, reject) => {
       const socket = net.createConnection(this.options.registration.endpoint);
       this.socket = socket;
+      const writer = new BoundedHostSocketWriter(socket);
+      this.socketWriter = writer;
       socket.setEncoding("utf8");
       const helloRequestId = randomUUID();
       let settled = false;
@@ -1078,6 +1117,7 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
           agentRoot: identity.agentRoot,
           clientId: this.clientId,
           surface: this.options.surface ?? "cli",
+          keepAlive: this.options.keepAlive,
           capabilities: [...runtimeHostCapabilities]
         });
       });
@@ -1087,15 +1127,17 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
         fail(error);
       });
       socket.once("close", () => {
+        writer.dispose();
         if (this.socket !== socket) return;
         if (!settled) fail(new Error("Runtime Host connection closed during handshake."));
         const error = new Error("Runtime Host connection closed.");
         this.rejectPendingRequests(error);
         this.decoder = new RuntimeHostFrameDecoder();
         this.socket = undefined;
+        if (this.socketWriter === writer) this.socketWriter = undefined;
         this.readyPromise = undefined;
         this.noteConnectionDropped();
-        if (!this.closed && !this.reconnectInProgress) this.scheduleReconnect();
+        if (!this.closed && !this.retired && !this.reconnectInProgress) this.scheduleReconnect();
       });
       this.pending.set(helloRequestId, {
         resolve: (value) => {
@@ -1137,7 +1179,7 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
   }
 
   private scheduleReconnect(): void {
-    if (this.reconnectTimer || this.closed) return;
+    if (this.reconnectTimer || this.closed || this.retired) return;
     // spawn 熔断已断开：host 连续即死，停止 respawn 风暴并把终结错误透出给调用方。
     const circuitError = runtimeHostSpawnCircuitFor(this.options.registration.endpoint).failureError();
     if (circuitError) {
@@ -1162,8 +1204,9 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
   }
 
   private async reconnect(): Promise<void> {
-    if (this.closed) return;
+    if (this.closed || this.retired) return;
     let registration = await readRegistration(runtimeHostPaths(this.persistenceRoot));
+    if (this.closed || this.retired) return;
     if (registration && !isProcessAlive(registration.pid)) {
       await removeStaleRegistration(registration);
       registration = undefined;
@@ -1171,11 +1214,13 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
     if (registration && !registrationMatchesCurrentEnvironment(registration, this.options.spawnOptions)) {
       throw new Error("Runtime Host belongs to a different Biny configuration environment.");
     }
+    if (this.closed || this.retired) return;
     if (!registration && this.options.spawnOptions) {
       const child = spawnRuntimeHostProcess(this.persistenceRoot, this.options.spawnOptions);
       registration = await waitForHostRegistration(this.persistenceRoot, child);
     }
     if (!registration) throw new Error("Runtime Host registration is not available.");
+    if (this.closed || this.retired) return;
     const previousHostEpoch = this.hostEpoch;
     this.options.registration = registration;
     await this.openSocket();
@@ -1192,10 +1237,17 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
       throw error;
     }
     this.capabilities = result.capabilities;
+    if (this.browserAutomationConfigured) await this.applyBrowserAutomationLease();
     if (this.focusedSessionId === undefined) this.focusedSessionId = result.snapshot.info.sessionId;
     this.applySnapshot(result.snapshot, result.sequence, result.hostEpoch, this.focusedSessionId === result.snapshot.info.sessionId);
     this.applySessionSummaries(result.sessions);
     await this.recoverCompletions();
+  }
+
+  private async applyBrowserAutomationLease(): Promise<boolean> {
+    if (!this.capabilities.includes("browser.automation.lease")) return false;
+    await this.request("browser.automation.set", { browserAutomation: this.browserAutomationEndpoint ?? null }, this.handshakeTimeoutMs);
+    return true;
   }
 
   private async recoverCompletions(): Promise<void> {
@@ -1306,6 +1358,15 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
   }
 
   private handleClientFrame(frame: unknown): void {
+    if (isRetiredFrame(frame)) {
+      if (frame.hostEpoch !== this.hostEpoch || !this.capabilities.includes("host.idle-retirement")) return;
+      this.retired = true;
+      if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = undefined;
+      // 正常回收不是连接故障；已发出的请求仍由 disconnect 明确失败，绝不重放。
+      this.socket?.destroy();
+      return;
+    }
     if (isResponseFrame(frame)) {
       const pending = this.pending.get(frame.requestId);
       if (!pending) return;
@@ -1357,6 +1418,7 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
 
   private request<T>(operation: string, payload: unknown, timeoutMs?: number): Promise<T> {
     if (this.closed) return Promise.reject(new Error("Runtime Host client is closed."));
+    if (this.retired) return Promise.reject(new Error("Runtime Host retired after becoming idle. Connect again before starting new work."));
     return this.openSocket().then(() => new Promise<T>((resolve, reject) => {
       const requestId = randomUUID();
       let timer: ReturnType<typeof setTimeout> | undefined;
@@ -1488,8 +1550,8 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
   }
 
   private send(socket: net.Socket, frame: HostFrame): void {
-    if (socket.destroyed) return;
-    socket.write(encodeHostFrame(frame));
+    if (this.socket !== socket || this.socketWriter === undefined) return;
+    this.socketWriter.send(frame);
   }
 }
 

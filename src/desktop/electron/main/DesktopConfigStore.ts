@@ -32,8 +32,7 @@ import {
 } from "../../../config/versioned.js";
 
 export class DesktopConfigStore implements AgentConfigStore {
-  /** safeStorage 解密只在 Electron 主进程可用，不能把这份 store 交给 detached Host。 */
-  readonly supportsDetachedRuntimeHost = false;
+  readonly supportsDetachedRuntimeHost: boolean;
   private writeTail = Promise.resolve();
   private currentRevision = 0;
 
@@ -42,7 +41,10 @@ export class DesktopConfigStore implements AgentConfigStore {
     // 桌面端默认用 safeStorage 凭据存储（系统 Keychain Services 派生密钥、加密落自管文件），
     // 避免 `security` CLI 的 ACL 授权卡死；测试仍可注入内存实现。
     private readonly credentials: CredentialStore = new DesktopSafeStorageCredentialStore(root)
-  ) {}
+  ) {
+    // 只有 Electron safeStorage 能力可在独立 Electron Host 中重用；测试/其他存储不作此承诺。
+    this.supportsDetachedRuntimeHost = credentials instanceof DesktopSafeStorageCredentialStore;
+  }
 
   async load(workspaceRoot = this.root): Promise<AgentConfig> {
     if (path.resolve(this.root) === path.resolve(globalConfigDir())) await migrateLegacyGlobalState();

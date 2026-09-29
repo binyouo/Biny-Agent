@@ -53,7 +53,7 @@ import {
 import { collectSessionChanges } from "./sessionChanges.js";
 import { listChangedFiles, type TimelineTurn } from "./sessionTimeline.js";
 import { splitAttachmentReferences, withAttachmentReferences } from "../../attachmentReferences.js";
-import { desktopApiVersionMismatchMessage, errorMessage } from "./app/desktopApi.js";
+import { desktopApiVersionMismatchMessage, errorMessage, readDesktopSession } from "./app/desktopApi.js";
 import {
   applyProjectOrder,
   eventsBeforeUserMessage,
@@ -470,7 +470,7 @@ function DesktopApp(): React.JSX.Element {
     sessionId: string,
     showLoader = true,
     activeRequest?: number,
-    nextWorkspace?: DesktopWorkspaceSnapshot,
+    nextWorkspace?: DesktopWorkspaceSnapshot | Promise<DesktopWorkspaceSnapshot>,
     activeView: DesktopActiveView = "chat"
   ): Promise<boolean> => {
     const request = activeRequest ?? loadRequestRef.current + 1;
@@ -480,14 +480,14 @@ function DesktopApp(): React.JSX.Element {
     setMemoryToggleBusy(false);
     if (showLoader) setLoading(true);
     try {
-      const nextDocument = await window.biny.openSession(projectId, sessionId);
+      const { document: nextDocument, workspace: resolvedWorkspace } = await readDesktopSession(window.biny, projectId, sessionId, nextWorkspace);
       if (loadRequestRef.current !== request) return false;
-      if (nextWorkspace) {
-        if (projectRef.current !== nextWorkspace.project.id) {
+      if (resolvedWorkspace) {
+        if (projectRef.current !== resolvedWorkspace.project.id) {
           permissionModeRequestRef.current += 1;
         }
-        projectRef.current = nextWorkspace.project.id;
-        mergeWorkspaceProject(nextWorkspace);
+        projectRef.current = resolvedWorkspace.project.id;
+        mergeWorkspaceProject(resolvedWorkspace);
       }
       setPage(activeView === "extensions" ? "extensions" : "chat");
       setRuntimePanelOpen(activeView === "runtime");
@@ -622,9 +622,7 @@ function DesktopApp(): React.JSX.Element {
       if (target.projectId === projectRef.current) {
         return await openSession(target.projectId, target.sessionId, false, request);
       }
-      const snapshot = await window.biny.selectProject(target.projectId);
-      if (loadRequestRef.current !== request) return false;
-      return await openSession(target.projectId, target.sessionId, false, request, snapshot);
+      return await openSession(target.projectId, target.sessionId, false, request, window.biny.selectProject(target.projectId));
     } catch (error) {
       if (loadRequestRef.current !== request) return false;
       if (targetSummary !== undefined) {

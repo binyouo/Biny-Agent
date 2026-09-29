@@ -48,6 +48,26 @@ const maintenance = createRuntimeHostMemoryMaintenance({
   getCommands: () => commands
 });
 
+let releaseInspection!: () => void;
+const inspectingCommands = {
+  agent: {
+    getPersonalizationState: async () => {
+      await new Promise<void>((resolve) => { releaseInspection = resolve; });
+      return { memory: { sleepEnabled: false } };
+    }
+  }
+} as unknown as CommandRuntime;
+const inspecting = createRuntimeHostMemoryMaintenance({ getRuntime: () => runtime, getCommands: () => inspectingCommands });
+const inspection = inspecting.runNow();
+try {
+  assert.equal(inspecting.hasActiveWork(), true, "异步准备阶段也必须计入 Host 驻留工作");
+} finally {
+  inspecting.stop();
+  releaseInspection();
+  await inspection;
+}
+assert.equal(inspecting.hasActiveWork(), false, "停止后的准备任务应释放驻留计数");
+
 maintenance.start();
 await new Promise<void>((resolve) => setTimeout(resolve, 25));
 assert.deepEqual(calls, ["load"]);

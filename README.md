@@ -62,6 +62,10 @@ pnpm dev -- browser --help
 
 Desktop 设置中可配置聊天与网络搜索。WebSearch 仅在 Desktop 浏览器执行端可用时启用；WebFetch 在配置允许时可直接读取 HTTP 页面。浏览器扩展在「设置 → 浏览器」中配对。
 
+浏览项目、工具目录和历史会话不会启动 Runtime Host；发送消息或执行需要运行时的操作才按项目数据目录启动或复用 Host。Desktop 启动的 Host 在无任务、后台进程或启用的调度职责时，空闲约 30 秒后退出；macOS 上不显示独立 Dock 图标。
+
+退出 Desktop 时，确认后运行中的任务会留在本机后台 Runtime Host 继续执行，任务结束且无其他驻留职责后回收。依赖内置浏览器或桌面人工授权的步骤可能等待重新打开应用；关闭主窗口时可选择暂停任务。
+
 ## Development
 
 ```bash

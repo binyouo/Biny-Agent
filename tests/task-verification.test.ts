@@ -730,17 +730,23 @@ async function testAttemptLimitSurvivesStoreReopen(): Promise<void> {
   tasks = await DurableTaskRunStore.open(root, authority);
   realExecutor = createRealTaskExecutor(root, "full-access", authority, "verification-reopen-2");
   try {
+    let resumedPrompt = "";
     const result = await runTaskClosure({
       taskRuns: tasks,
       taskRunId: task.taskRunId,
       workspaceRoot: root,
       ignore: verificationIgnore,
       executor: realExecutor.executor,
-      executeAttempt: async () => "candidate-2"
+      executeAttempt: async (prompt) => {
+        resumedPrompt = prompt;
+        return "candidate-2";
+      }
     });
     assert.equal(result.status, "incomplete");
     assert.match(result.reason ?? "", /limit is 2/u);
     assert.equal(tasks.get(task.taskRunId)?.attempts.length, 2);
+    assert.match(resumedPrompt, /定向修复 Attempt/u, "recovery must reuse the persisted repair checkpoint");
+    assert.match(resumedPrompt, /artifact\.txt/u, "recovery must retain the failed verification evidence");
   } finally {
     await realExecutor.recorder.close();
     tasks.close();

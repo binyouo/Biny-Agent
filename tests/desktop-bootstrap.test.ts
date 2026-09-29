@@ -14,7 +14,7 @@ import { SessionRecorder } from "../src/session/recorder.js";
 import { readSessionEvents } from "../src/session/events.js";
 import { ensureAgentDirs, sessionFilePath } from "../src/session/store.js";
 
-test("首屏返回时已带实际模型与上下文信息；初始化失败仍返回可读历史和错误", async () => {
+test("首屏从配置返回实际模型与思考档位；缺少凭据仍可浏览历史", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "biny-bootstrap-"));
   const state = new DesktopStateStore(path.join(root, "state.json"));
   const storage = new DesktopUserDataStore(path.join(root, "data"));
@@ -47,9 +47,9 @@ test("首屏返回时已带实际模型与上下文信息；初始化失败仍�
     assert.equal((await manager.workspaceSnapshot(project.id)).runtime, undefined);
 
     const ready = await manager.prepareWorkspace(project.id);
-    assert.equal(ready.runtime?.info.modelAlias, "selected");
-    assert.equal(ready.runtime?.info.thinking, "off");
-    assert.equal(ready.runtime?.state.kind, "idle");
+    assert.equal(ready.runtime, undefined);
+    assert.equal(ready.pickerModels[0]?.alias, "selected");
+    assert.equal(ready.pickerModels[0]?.defaultThinking, "off");
     assert.equal(ready.runtimeError, undefined);
     assert.equal(ready.models.find((model) => model.alias === "selected")?.contextWindow, 128_000);
     assert.ok(ready.sessions.some((session) => session.id === recorder.sessionId));
@@ -64,7 +64,7 @@ test("首屏返回时已带实际模型与上下文信息；初始化失败仍�
     const failed = await manager.prepareWorkspace(project.id);
     assert.equal(failed.runtime, undefined);
     assert.equal(failed.requiresModelConfiguration, true);
-    assert.ok(failed.runtimeError);
+    assert.equal(failed.runtimeError, undefined);
     assert.ok(failed.sessions.some((session) => session.id === recorder.sessionId));
     assert.deepEqual(await readSessionEvents(sessionFilePath(dataRoot, recorder.sessionId)), before);
   } finally {

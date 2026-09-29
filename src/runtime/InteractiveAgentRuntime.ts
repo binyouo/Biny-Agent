@@ -443,9 +443,8 @@ export class InteractiveAgentRuntime {
       throw new Error("Cannot submit a prompt while the runtime is busy.");
     }
     if (!input.trim() && !emptyTurn && !continuation) throw new Error("Agent prompt cannot be empty.");
-    // MCP/Skill 工具面在首个快照稳定前不可提交；检查发生在 writer lease、run ledger
-    // 和 user_message 之前，确保 Desktop 点击竞态不会留下半条会话记录。
-    this.commandRuntime.assertResourceBaselineReady?.();
+    // 可选扩展不阻塞用户消息入账。这里同步刷新当前 MCP 工具快照；Skill 扫描可在本轮
+    // 已被接收后继续完成，后续 turn 再看到更新后的能力目录。
     this.commandRuntime.refreshExtensionTools?.();
     // 能力校验交给 AgentSession。它会先把输入和附件引用写入 JSONL，再返回明确的
     // vision/audio 错误，避免用户粘贴的内容在失败时从会话历史里消失。
@@ -515,7 +514,15 @@ export class InteractiveAgentRuntime {
       sessionId, runId, messageId, input, status: run.status,
       startedAt: run.startedAt, retryOfMessageId: run.retryOfMessageId
     } };
-    const execution = this.executeRun(run, controller.signal);
+    let execution: Promise<AgentRunOutcome>;
+    try {
+      this.commandRuntime.captureRunResourceSnapshot?.(runId);
+      void this.commandRuntime.refreshSkills().catch(() => undefined);
+      execution = this.executeRun(run, controller.signal);
+    } catch (error) {
+      // Admission 已持久化；快照准备失败也必须经终态路径收敛，不能留下 active runtime。
+      execution = Promise.reject(error);
+    }
     const completion: Promise<AgentRunOutcome> = execution
       .catch(async (error: unknown) => {
         try {
@@ -525,6 +532,7 @@ export class InteractiveAgentRuntime {
         }
       })
       .finally(() => {
+        this.commandRuntime.releaseRunResourceSnapshot?.(runId);
         if (this.activeRun === run) {
           this.activeRun = undefined;
           if (this.activeRunController === controller) this.activeRunController = undefined;
@@ -1159,16 +1167,13 @@ export class InteractiveAgentRuntime {
         label: info.modelLabel,
         reasoning: info.reasoningLabel
       },
-      skills: info.skills ?? []
+      skills: this.commandRuntime.runSkillPaths?.(run.runId) ?? info.skills ?? []
     });
 
     // 首批事件是前台时间线进入运行态的信号；账本落盘属于后台持久化，不能阻挡用户消息先展示。
     await this.startRunLedger(run);
     try {
-      // 先发布运行状态，让界面在技能刷新等本地准备阶段立即进入忙碌态；准备完成后才调用模型。
-      const refreshSkillsPerfStartedAt = perfNow();
-      await this.commandRuntime.refreshSkills();
-      recordPerfPhase("runtime.refreshSkills", refreshSkillsPerfStartedAt, { runId: run.runId, sessionId: run.sessionId });
+      // Skill/MCP 清单已在 admission 时固定；慢速刷新只影响下一回合，不挡当前首个模型请求。
       recordPerfPhase("runtime.executeRun.pre", executePerfStartedAt, { runId: run.runId, sessionId: run.sessionId });
       let turn: AgentTurnOutcome | undefined;
       // 所有交互共用 AgentSession 的同一条回合执行链路。

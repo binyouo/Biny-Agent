@@ -324,7 +324,7 @@ export function registerDesktopIpc(context: IpcContext): void {
   });
 
   handle(desktopIpc.selectProject, async (_event, projectId: unknown) => {
-    return await context.agents.workspaceSnapshot(idSchema.parse(projectId));
+    return await context.agents.workspaceSnapshot(idSchema.parse(projectId), false);
   });
 
   handle(desktopIpc.commitSelection, async (_event, projectId: unknown, sessionId: unknown, activeView: unknown) => {
@@ -362,7 +362,7 @@ export function registerDesktopIpc(context: IpcContext): void {
   });
 
   handle(desktopIpc.refreshProject, async (_event, projectId: unknown) => {
-    return await context.agents.workspaceSnapshot(idSchema.parse(projectId));
+    return await context.agents.workspaceSnapshot(idSchema.parse(projectId), true);
   });
 
   handle(desktopIpc.projectGitStatus, async (_event, projectId: unknown) => await context.projects.projectGitStatus(idSchema.parse(projectId)));

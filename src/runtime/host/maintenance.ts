@@ -12,6 +12,7 @@ import type { MemoryEntry, MemoryMaintenanceStatus, MemorySleepPreview, MemorySl
 import { runtimeHostMemoryMaintenanceIntervalMs } from "./protocol.js";
 
 export interface RuntimeHostMemoryMaintenance {
+  hasActiveWork(): boolean;
   start(): void;
   stop(): void;
   handleRuntimeUpdate(update: AgentRuntimeUpdate): void;
@@ -22,6 +23,7 @@ export interface RuntimeHostMemoryMaintenance {
 }
 
 export interface RuntimeHostMemoryMaintenanceOptions {
+  onActivity?(): void;
   getRuntime(): InteractiveRuntimeHandle;
   getCommands(): CommandRuntime;
   isBusy?: () => boolean;
@@ -43,9 +45,21 @@ export function createRuntimeHostMemoryMaintenance(
   let embeddingFailureCount = 0;
   let embeddingRetryAt: number | undefined;
   let stopped = false;
+  let activeOperations = 0;
   const embeddingTimers = options.embeddingRebuildTimers ?? { setTimeout, clearTimeout };
 
-  const run = async (force = false): Promise<void> => {
+  const track = async <T>(operation: () => Promise<T>): Promise<T> => {
+    activeOperations += 1;
+    options.onActivity?.();
+    try {
+      return await operation();
+    } finally {
+      activeOperations -= 1;
+      options.onActivity?.();
+    }
+  };
+
+  const performRun = async (force = false): Promise<void> => {
     if (stopped || maintenancePromise || (options.isBusy?.() ?? (options.getRuntime().getSnapshot().state.kind !== "idle"))) return;
     const commands = options.getCommands();
     const agent = commands.agent as CommandRuntime["agent"] & {
@@ -149,7 +163,12 @@ export function createRuntimeHostMemoryMaintenance(
     await promise;
   };
 
+  const run = async (force = false): Promise<void> => {
+    if (!stopped) await track(async () => await performRun(force));
+  };
+
   const api: RuntimeHostMemoryMaintenance = {
+    hasActiveWork: () => activeOperations > 0 || embeddingRebuildTimer !== undefined || embeddingRebuildPromise !== undefined,
     runNow(): Promise<unknown> {
       return run(true);
     },
@@ -178,7 +197,7 @@ export function createRuntimeHostMemoryMaintenance(
       if (!agent) return;
       const localMemory = typeof agent.getLocalMemory === "function" ? agent.getLocalMemory() : undefined;
       if (localMemory) {
-        const promise = localMemory.loadMaintenanceStatus({});
+        const promise = track(async () => await localMemory.loadMaintenanceStatus({}));
         startupHeal = { commands, promise };
         void promise.catch(() => undefined);
       }
@@ -213,7 +232,7 @@ export function createRuntimeHostMemoryMaintenance(
         const commands = options.getCommands();
         const attempt = lastEmbeddingAttempt;
         let started = false;
-        const promise = Promise.resolve().then(async () => await options.getRuntime().runExclusiveOperation(
+        const promise = track(async () => await options.getRuntime().runExclusiveOperation(
           "memory",
           async (signal) => {
             if (stopped || options.getCommands() !== commands) return;
