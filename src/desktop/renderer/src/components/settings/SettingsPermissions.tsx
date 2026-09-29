@@ -11,18 +11,17 @@ export function SettingsPermissions(): React.JSX.Element {
   const update = (patch: Partial<DesktopPermissionSettings>): void => setPermission({ ...permission, ...patch });
 
   return (
-    <div className="settings-sections agent-permission-settings">
-      <section id="agent-permission-mode" tabIndex={-1}>
-        <div className="section-heading-row">
-          <div><h3>权限请求</h3><p>控制工具操作是否需要手动确认。</p></div>
-          <span className="settings-scope-badge">全局</span>
-        </div>
+    <div className="settings-preferences agent-permission-settings">
+      <section className="settings-preference-section" id="agent-permission-mode" tabIndex={-1}>
+        <h3>工具审批 · 适用于所有项目</h3>
+        <div className="settings-row-group">
         <SettingsSwitch
           checked={permission.mode === "full-access"}
           detail="开启后自动批准工具请求，无需逐次确认；项目明确拒绝的路径仍会拦截。"
           label="自动批准所有工具请求"
           onChange={(enabled) => update({ mode: enabled ? "full-access" : "ask" })}
         />
+        </div>
       </section>
     </div>
   );

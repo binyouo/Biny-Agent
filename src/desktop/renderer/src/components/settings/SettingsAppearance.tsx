@@ -2,7 +2,8 @@
 import { NativeSelect } from "../NativeSelect.js";
 import { useEffect, useState } from "react";
 import type { DesktopFontPreference, DesktopThemePreference } from "../../../../protocol.js";
-import { clampFontSize, MAX_FONT_SIZE, MIN_FONT_SIZE, SYSTEM_FONT_FAMILY } from "../../../../fontPreference.js";
+import { clampFontSize, DEFAULT_FONT_PREFERENCE, MAX_FONT_SIZE, MIN_FONT_SIZE, SYSTEM_FONT_FAMILY } from "../../../../fontPreference.js";
+import { SettingsSegmentedControl } from "./SettingsSegmentedControl.js";
 
 const fontFamilyOptions: Array<{ value: string; title: string }> = [
   { value: SYSTEM_FONT_FAMILY, title: "系统默认" },
@@ -14,11 +15,12 @@ const fontFamilyOptions: Array<{ value: string; title: string }> = [
   { value: "Yuanti SC", title: "圆体" }
 ];
 
-export function SettingsAppearance({ theme, onThemeChange, font, onFontChange }: {
+export function SettingsAppearance({ theme, onThemeChange, font, onFontChange, disabled }: {
   theme: DesktopThemePreference;
   onThemeChange(theme: DesktopThemePreference): void;
   font: DesktopFontPreference;
   onFontChange(font: DesktopFontPreference): void;
+  disabled?: boolean;
 }): React.JSX.Element {
   // 字号输入允许中间态（比如清空后再输入），失焦或回车时才夹取并提交。
   const [sizeText, setSizeText] = useState(String(font.size));
@@ -42,47 +44,60 @@ export function SettingsAppearance({ theme, onThemeChange, font, onFontChange }:
     ? fontFamilyOptions
     : [...fontFamilyOptions, { value: font.family, title: font.family }];
   return (
-    <div className="settings-sections appearance-settings">
-      <section className="appearance-card">
-        <div className="setting-row" id="appearance-theme">
-          <label htmlFor="appearance-theme-mode">主题</label>
-          <NativeSelect id="appearance-theme-mode" onChange={(event) => onThemeChange(event.target.value as DesktopThemePreference)} value={theme}>
-            <option value="system">跟随系统</option>
-            <option value="light">浅色</option>
-            <option value="dark">深色</option>
-          </NativeSelect>
-        </div>
-        <div className="setting-row" id="appearance-font">
-          <label htmlFor="appearance-font-family">界面字体</label>
-          <NativeSelect
-            id="appearance-font-family"
-            onChange={(event) => onFontChange({ ...font, family: event.target.value })}
-            value={font.family}
-          >
-            {familyOptions.map((option) => <option key={option.value} value={option.value}>{option.title}</option>)}
-          </NativeSelect>
-        </div>
-        <div className="setting-row">
-          <label htmlFor="appearance-font-size">字体大小</label>
-          <div className="font-size-row">
-            <input
-              className="font-size-input"
-              id="appearance-font-size"
-              max={MAX_FONT_SIZE}
-              min={MIN_FONT_SIZE}
-              onBlur={commitSize}
-              onChange={(event) => changeSize(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter") commitSize();
-              }}
-              step={1}
-              type="number"
-              value={sizeText}
-            />
-            <span className="font-size-unit">px</span>
+    <fieldset aria-label="通用偏好" className="settings-preferences appearance-settings" disabled={disabled}>
+      <section className="settings-preference-section">
+        <h3>外观</h3>
+        <div className="settings-row-group">
+          <div className="settings-preference-row" id="appearance-theme">
+            <div className="settings-row-copy"><strong>主题</strong><p>选择浅色、深色，或随系统切换。</p></div>
+            <SettingsSegmentedControl label="外观" value={theme} onChange={onThemeChange} options={[
+              { value: "system", label: "跟随系统" }, { value: "light", label: "浅色" }, { value: "dark", label: "深色" }
+            ]} />
           </div>
         </div>
       </section>
-    </div>
+      <section className="settings-preference-section">
+        <h3>字体与阅读</h3>
+        <div className="settings-row-group">
+          <div className="settings-preference-row" id="appearance-font">
+            <div className="settings-row-copy"><label htmlFor="appearance-font-family">界面字体</label><p>使用本机已安装的字体。</p></div>
+            <NativeSelect
+              id="appearance-font-family"
+              onChange={(event) => onFontChange({ ...font, family: event.target.value })}
+              value={font.family}
+            >
+              {familyOptions.map((option) => <option key={option.value} value={option.value}>{option.title}</option>)}
+            </NativeSelect>
+          </div>
+          <div className="settings-preference-row">
+            <div className="settings-row-copy"><label htmlFor="appearance-font-size">字体大小</label><p>同步调整界面文字与控件尺寸。</p></div>
+            <div className="font-size-row">
+              <input
+                className="font-size-input"
+                id="appearance-font-size"
+                max={MAX_FONT_SIZE}
+                min={MIN_FONT_SIZE}
+                onBlur={commitSize}
+                onChange={(event) => changeSize(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") commitSize();
+                }}
+                step={1}
+                type="number"
+                value={sizeText}
+              />
+              <span className="font-size-unit">px</span>
+            </div>
+          </div>
+          <div className="settings-font-preview" aria-label="字体预览">
+            <p style={{ fontFamily: font.family === SYSTEM_FONT_FAMILY ? undefined : `"${font.family.replaceAll('"', '')}", var(--font-sans-stack)`, fontSize: font.size }}>
+              这是一段文字预览，用于检查字号和阅读效果。<br /><span>The quick brown fox jumps over the lazy dog. 0123456789</span>
+            </p>
+            <button aria-label="恢复默认字体" className="settings-text-action" disabled={font.family === SYSTEM_FONT_FAMILY && font.size === DEFAULT_FONT_PREFERENCE.size}
+              onClick={() => onFontChange({ ...DEFAULT_FONT_PREFERENCE })} type="button">恢复默认</button>
+          </div>
+        </div>
+      </section>
+    </fieldset>
   );
 }

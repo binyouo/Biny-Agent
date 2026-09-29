@@ -57,6 +57,9 @@ export function SettingsDraftProvider({
   const [globalActivity, setGlobalActivity] = useState<DesktopActivitySettingsUpdate>();
   const globalActivityRef = useRef<DesktopActivitySettingsUpdate | undefined>(undefined);
   const [loadError, setLoadError] = useState<string>();
+  const [loading, setLoading] = useState(active);
+  const [loadAttempt, setLoadAttempt] = useState(0);
+  const [saveError, setSaveError] = useState<string>();
   const [saveState, setSaveState] = useState<SettingsSaveState>("clean");
   const credentialHandlesRef = useRef(new Set<string>());
   const snapshotRef = useRef<DesktopSettingsSnapshot | undefined>(undefined);
@@ -66,6 +69,7 @@ export function SettingsDraftProvider({
     snapshotRef.current = next;
     setSnapshot(next);
     setDraft(draftFromSnapshot(next));
+    setSaveError(undefined);
     setSaveState(next.pendingRecovery ? "recovery_required" : "clean");
     onThemePreview(next.themePreference);
     onFontPreview(next.fontPreference);
@@ -80,6 +84,8 @@ export function SettingsDraftProvider({
     setGlobalActivity(undefined);
     globalActivityRef.current = undefined;
     setLoadError(undefined);
+    setLoading(true);
+    setSaveError(undefined);
     setSaveState("clean");
     // 没有项目时只读取全局 Activity 快照，不伪造项目 ID，也不加载项目模型或会话。
     const request = projectId
@@ -92,19 +98,43 @@ export function SettingsDraftProvider({
     request
       .catch((error: unknown) => {
         if (!cancelled) setLoadError(error instanceof Error ? error.message : String(error));
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
       });
     return () => { cancelled = true; };
-  }, [active, adoptSnapshot, projectId, sessionId]);
+  }, [active, adoptSnapshot, loadAttempt, projectId, sessionId]);
+
+  const retryLoad = useCallback((): void => {
+    // 重试只用于初次读取失败；已存在的跨页草稿不能被刷新覆盖。
+    if (!loading && !snapshotRef.current) setLoadAttempt((attempt) => attempt + 1);
+  }, [loading]);
+
+  const saveGlobalPreference = useCallback(async (save: () => Promise<void>): Promise<void> => {
+    setSaveState("saving");
+    setSaveError(undefined);
+    try { await save(); }
+    catch (error) { setSaveError(error instanceof Error ? error.message : String(error)); }
+    finally { setSaveState("clean"); }
+  }, []);
 
   const setThemePreference = useCallback((value: DesktopThemePreference): void => {
+    if (!projectId) {
+      void saveGlobalPreference(async () => onThemePreview(await window.biny.setThemePreference(value)));
+      return;
+    }
     setDraft((current) => current ? { ...current, themePreference: value } : current);
     onThemePreview(value);
-  }, [onThemePreview]);
+  }, [onThemePreview, projectId, saveGlobalPreference]);
 
   const setFontPreference = useCallback((value: DesktopFontPreference): void => {
+    if (!projectId) {
+      void saveGlobalPreference(async () => onFontPreview(await window.biny.setFontPreference(value)));
+      return;
+    }
     setDraft((current) => current ? { ...current, fontPreference: value } : current);
     onFontPreview(value);
-  }, [onFontPreview]);
+  }, [onFontPreview, projectId, saveGlobalPreference]);
 
 
   const updateActivityImmediately = useCallback((patch: DesktopActivitySettingsPatch): Promise<void> => {
@@ -346,7 +376,8 @@ export function SettingsDraftProvider({
   }, [onCommitted, onNotify, saveState]);
 
   const saveAll = useCallback(async (): Promise<DesktopSettingsSaveResult | undefined> => {
-    if (!snapshot || !draft || runtimeBlocked || invalid || dirtyCount === 0 || saveState === "recovery_required") return undefined;
+    if (!snapshot || !draft || runtimeBlocked || invalid || dirtyCount === 0 || saveState === "recovery_required" || saveState === "saving" || saveState === "rolling_back") return undefined;
+    setSaveError(undefined);
     setSaveState("saving");
     // 看门狗：保存走单互斥事务，前序操作若撞上 Keychain security 超时可能长时间占用；
     // 超时不取消后端事务（它最终会自行落盘并清理），只把 UI 从「保存中」复位，避免死锁观感。
@@ -371,15 +402,20 @@ export function SettingsDraftProvider({
         onThemePreview(result.snapshot.themePreference);
         onFontPreview(result.snapshot.fontPreference);
         setSaveState("dirty");
-        onNotify(result.message ?? (result.conflicts?.length ? "设置已在其他位置更改，请检查冲突后重试" : "保存失败，已恢复原设置"));
+        const message = result.message ?? (result.conflicts?.length ? "设置已在其他位置更改，请检查冲突后重试" : "保存失败，已恢复原设置");
+        setSaveError(message);
+        onNotify(message);
       } else {
         setSaveState("recovery_required");
+        setSaveError(result.message);
         onNotify(result.message);
       }
       return result;
     } catch (error) {
       setSaveState("dirty");
-      onNotify(error instanceof Error ? error.message : String(error));
+      const message = error instanceof Error ? error.message : String(error);
+      setSaveError(message);
+      onNotify(message);
       return undefined;
     } finally {
       if (watchdog !== undefined) clearTimeout(watchdog);
@@ -391,6 +427,9 @@ export function SettingsDraftProvider({
     draft,
     activity: draft?.activity ?? globalActivity?.activity,
     loadError,
+    loading,
+    retryLoad,
+    saveError,
     dirtyCount,
     preferencesOnly,
     invalid,
@@ -423,6 +462,9 @@ export function SettingsDraftProvider({
     globalActivity,
     invalid,
     loadError,
+    loading,
+    retryLoad,
+    saveError,
     releaseCredential,
     removeModel,
     saveAll,

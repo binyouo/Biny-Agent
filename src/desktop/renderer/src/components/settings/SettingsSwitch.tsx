@@ -1,9 +1,7 @@
 /**
  * 设置内统一的布尔开关行：左侧标题与说明、右侧滑动开关。
  *
- * 开关几何与状态色按设计规范固定：轨道 1.5rem×2.75rem、圆头 1.25rem、
- * 选中位移 1.25rem；选中轨道用 --accent 蓝（状态指示，不跟随黑白操作主色），
- * 未选中为文字色的半透明灰。
+ * 开启态与主要操作共用黑白配色，未开启时使用中性灰轨道。
  */
 import React from "react";
 
@@ -20,6 +18,7 @@ export function SettingsSwitch({ checked, detail, disabled = false, label, onCha
   return (
     <button
       aria-checked={checked}
+      aria-label={label}
       className={`settings-switch-row${checked ? " is-checked" : ""}`}
       disabled={disabled}
       onClick={() => onChange(!checked)}

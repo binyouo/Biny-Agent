@@ -54,6 +54,9 @@ export interface SettingsDraftContextValue {
   /** Activity 是全局即时配置，无项目时也可读取和更新。 */
   activity?: DesktopActivitySettingsInput;
   loadError?: string;
+  loading: boolean;
+  retryLoad(): void;
+  saveError?: string;
   dirtyCount: number;
   preferencesOnly: boolean;
   invalid: boolean;

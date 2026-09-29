@@ -4,29 +4,40 @@ import type { SettingsSaveState } from "./SettingsDraftContext.js";
 export function SettingsPageFooter({
   dirtyCount,
   disabled,
+  unavailable,
+  blockedReason,
+  error,
   onCancel,
   onSave,
   state
 }: {
   dirtyCount: number;
   disabled: boolean;
+  unavailable?: string;
+  blockedReason?: string;
+  error?: string;
   onCancel(): void;
   onSave(): void;
   state: SettingsSaveState;
 }): React.JSX.Element {
-  const status = settingsSaveStatus(state, dirtyCount);
+  const status = unavailable ?? settingsSaveStatus(state, dirtyCount);
   const clean = dirtyCount === 0 && state === "clean";
   return (
     <footer className="settings-page-footer">
-      <span aria-live="polite" className={`settings-save-status is-${state}`} role="status">{status}</span>
+      <div className="settings-save-feedback">
+        {error ? <p className="settings-save-error" role="alert">{error}</p> : null}
+        <p aria-live="polite" className={`settings-save-status is-${state}`} id="settings-save-status" role="status">{status}{blockedReason ? <span>{blockedReason}</span> : null}</p>
+      </div>
       <span className="settings-footer-actions">
-        <button className="ghost-button" disabled={state === "saving" || state === "rolling_back"} onClick={onCancel} type="button">{clean ? "完成" : "取消"}</button>
+        <button className="ghost-button" disabled={state === "saving" || state === "rolling_back"} onClick={onCancel} type="button">{clean ? unavailable ? "关闭" : "完成" : "放弃未保存更改"}</button>
         {!clean ? <button
+          aria-describedby="settings-save-status"
+          className="settings-save-button"
           disabled={disabled || dirtyCount === 0 || state === "invalid" || state === "saving" || state === "rolling_back" || state === "recovery_required"}
           onClick={onSave}
           type="button"
         >
-          {state === "saving" ? "保存中…" : state === "rolling_back" ? "回滚中…" : "保存"}
+          {state === "saving" ? "保存中…" : state === "rolling_back" ? "回滚中…" : error ? "重试保存" : "保存全部更改"}
         </button> : null}
       </span>
     </footer>
@@ -34,10 +45,10 @@ export function SettingsPageFooter({
 }
 
 function settingsSaveStatus(state: SettingsSaveState, dirtyCount: number): string {
-  if (state === "invalid") return "校验失败";
+  if (state === "invalid") return "请检查填写的数值范围";
   if (state === "saving") return "保存中…";
   if (state === "rolling_back") return "回滚中…";
   if (state === "recovery_required") return "需要恢复设置后才能继续";
-  if (state === "dirty" || dirtyCount > 0) return "未保存的更改";
+  if (state === "dirty" || dirtyCount > 0) return `${dirtyCount} 组未保存更改`;
   return "所有更改已保存";
 }

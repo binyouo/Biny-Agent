@@ -73,7 +73,7 @@ pnpm dev -- activity --help
 pnpm dev -- browser --help
 ```
 
-Desktop 设置中可配置聊天与网络搜索。WebSearch 仅在 Desktop 浏览器执行端可用时启用；WebFetch 在配置允许时可直接读取 HTTP 页面。浏览器扩展在「设置 → 浏览器」中配对。
+Desktop 设置按用途分组：聊天中包含快速对话，模型中包含供应商与工具模型，扩展中包含技能、MCP 与插件，记忆与数据中包含活动记录和对话摘要。WebSearch 仅在 Desktop 浏览器执行端可用时启用；WebFetch 在配置允许时可直接读取 HTTP 页面。浏览器扩展在「设置 → 网络 → 浏览器」中配对。
 
 浏览项目、工具目录和历史会话不会启动 Runtime Host；发送消息或执行需要运行时的操作才按项目数据目录启动或复用 Host。Desktop 启动的 Host 在无任务、后台进程或启用的调度职责时，空闲约 30 秒后退出；macOS 上不显示独立 Dock 图标。
 

@@ -15,5 +15,6 @@
 @import "./chat.css" layer(desktop);
 @import "./inspector.css" layer(desktop);
 @import "./providers.css" layer(desktop);
+@import "./settings.css" layer(desktop);
 
 @import "./thread-brief.css" layer(desktop);

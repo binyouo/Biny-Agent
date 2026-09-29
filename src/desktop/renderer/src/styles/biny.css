@@ -10402,10 +10402,6 @@ button.capability-check[aria-checked="true"] {
 .desktop-settings-dialog .settings-modal :is(
   .settings-secondary-button,
   .ghost-button,
-  .text-button,
-  .danger-text-button,
-  button.settings-link,
-  .chat-temperature-reset,
   .activity-secondary-button,
   .provider-test-button,
   .provider-delete-button,
@@ -10414,9 +10410,7 @@ button.capability-check[aria-checked="true"] {
   .biny-mcp-clipboard-button,
   .biny-mcp-link-action,
   .settings-extension-list-heading button,
-  .settings-plugin-action,
-  .settings-skill-content-toggle,
-  .activity-memory-disclosure
+  .settings-plugin-action
 ) {
   border: 1px solid var(--st-action-border);
   border-radius: var(--st-button-radius);
@@ -10429,10 +10423,6 @@ button.capability-check[aria-checked="true"] {
 .desktop-settings-dialog .settings-modal :is(
   .settings-secondary-button,
   .ghost-button,
-  .text-button,
-  .danger-text-button,
-  button.settings-link,
-  .chat-temperature-reset,
   .activity-secondary-button,
   .provider-test-button,
   .provider-delete-button,
@@ -10441,9 +10431,7 @@ button.capability-check[aria-checked="true"] {
   .biny-mcp-clipboard-button,
   .biny-mcp-link-action,
   .settings-extension-list-heading button,
-  .settings-plugin-action,
-  .settings-skill-content-toggle,
-  .activity-memory-disclosure
+  .settings-plugin-action
 ):hover:not(:disabled) {
   border-color: var(--st-action-border-hover);
   background: var(--surface-hover);
@@ -10461,7 +10449,7 @@ button.capability-check[aria-checked="true"] {
 }
 
 .desktop-settings-dialog .settings-modal :is(
-  .settings-page-footer button:not(:last-child),
+  .settings-page-footer button:not(.settings-save-button),
   .settings-confirm-actions button:not(:last-child)
 ) {
   border-color: var(--st-action-border);
@@ -10470,7 +10458,7 @@ button.capability-check[aria-checked="true"] {
 }
 
 .desktop-settings-dialog .settings-modal :is(
-  .settings-page-footer button:not(:last-child),
+  .settings-page-footer button:not(.settings-save-button),
   .settings-confirm-actions button:not(:last-child)
 ):hover:not(:disabled) {
   border-color: var(--st-action-border-hover);
@@ -10488,6 +10476,21 @@ button.capability-check[aria-checked="true"] {
   min-height: var(--st-button-height);
   padding: 0 var(--st-button-padding);
   white-space: nowrap;
+  cursor: pointer;
+}
+
+.desktop-settings-dialog .settings-modal :is(
+  .text-button,
+  .danger-text-button,
+  button.settings-link,
+  .chat-temperature-reset,
+  .biny-mcp-link-action,
+  .activity-memory-disclosure,
+  .settings-skill-content-toggle
+):hover:not(:disabled) {
+  color: var(--text);
+  background: var(--surface-hover);
+  text-decoration: none;
 }
 
 .desktop-settings-dialog .settings-modal :is(
@@ -10515,6 +10518,10 @@ button.capability-check[aria-checked="true"] {
 ):hover:not(:disabled) {
   border-color: var(--red);
   background: var(--red-bg);
+}
+
+.desktop-settings-dialog .settings-modal .danger-text-button:not(:hover) {
+  border-color: transparent;
 }
 
 .desktop-settings-dialog .settings-modal :is(

@@ -6,7 +6,7 @@ export function SettingsCheckbox({ checked, disabled, label, detail, onChange }:
 }): React.JSX.Element {
   const id = useId();
   return <label className="chat-settings-checkbox">
-    <input aria-describedby={id} type="checkbox" checked={checked} disabled={disabled} onChange={(event) => onChange(event.target.checked)} />
+    <input aria-label={label} aria-describedby={id} type="checkbox" checked={checked} disabled={disabled} onChange={(event) => onChange(event.target.checked)} />
     <span><strong>{label}</strong><small id={id}>{detail}</small></span>
   </label>;
 }

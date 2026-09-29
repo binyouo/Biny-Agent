@@ -84,26 +84,49 @@ interface SettingsOverlayProps {
   onCancelModelLogin(provider: DesktopModelLoginProvider, authRequestId: string): Promise<void>;
 }
 
-export type SettingsTab = "通用" | "聊天" | "快速对话" | "模型" | "MCP 服务器" | "技能" | "插件" | "权限" | "活动记录" | "数据" | "记忆" | "网络搜索" | "浏览器" | "关于";
+export type SettingsTab = "通用" | "聊天" | "快速对话" | "模型" | "MCP 服务器" | "技能" | "插件" | "权限" | "活动记录" | "数据" | "记忆" | "网络搜索" | "浏览器" | "关于" | "工具模型";
 
-const settingsNav: Array<{ icon: IconName; tab: SettingsTab; label: string; group?: string }> = [
-  { icon: "sun", tab: "通用", label: "通用", group: "偏好" },
-  { icon: "message", tab: "聊天", label: "聊天" },
-  { icon: "compose", tab: "快速对话", label: "快速对话" },
-  { icon: "network", tab: "模型", label: "模型供应商", group: "能力与连接" },
-  { icon: "plug", tab: "MCP 服务器", label: "MCP 服务器" },
-  { icon: "wand", tab: "技能", label: "技能" },
-  { icon: "puzzle", tab: "插件", label: "插件" },
-  { icon: "search", tab: "网络搜索", label: "网络搜索" },
-  { icon: "globe", tab: "浏览器", label: "浏览器" },
-  { icon: "brain", tab: "记忆", label: "记忆", group: "数据与权限" },
-  { icon: "activity", tab: "活动记录", label: "活动记录" },
-  { icon: "archive", tab: "数据", label: "数据" },
-  { icon: "shield", tab: "权限", label: "权限" },
-  { icon: "help", tab: "关于", label: "关于" }
+const settingsNav: Array<{ icon: IconName; label: string; tabs: SettingsTab[] }> = [
+  { icon: "sun", label: "通用", tabs: ["通用"] },
+  { icon: "message", label: "聊天", tabs: ["聊天", "快速对话"] },
+  { icon: "network", label: "模型", tabs: ["模型", "工具模型"] },
+  { icon: "puzzle", label: "扩展", tabs: ["技能", "MCP 服务器", "插件"] },
+  { icon: "globe", label: "网络", tabs: ["网络搜索", "浏览器"] },
+  { icon: "brain", label: "记忆与数据", tabs: ["记忆", "活动记录", "数据"] },
+  { icon: "shield", label: "权限", tabs: ["权限"] },
+  { icon: "help", label: "关于", tabs: ["关于"] }
 ];
-
-const settingsTabValues = new Set<SettingsTab>(settingsNav.map((item) => item.tab));
+const settingsTabLabels: Partial<Record<SettingsTab, string>> = { 模型: "模型供应商", 数据: "对话摘要", 聊天: "聊天偏好" };
+const settingsPages: Record<SettingsTab, { description: string; keywords: string }> = {
+  通用: { description: "调整外观与阅读体验，修改时即时预览。", keywords: "主题 外观 字体 字号 浅色 深色 系统" },
+  聊天: { description: "设置回复的显示方式，以及新对话的默认能力。", keywords: "流式 令牌 token Markdown 数学公式 思考 链接 默认工具 技能 温度 采样 压缩 Hashline" },
+  快速对话: { description: "随时唤起小窗，让简短的问题留在手边。", keywords: "快捷键 悬浮 小窗 失焦 隐藏 前台 上下文 点击穿透" },
+  模型: { description: "管理模型连接、登录凭据和可用模型。", keywords: "供应商 服务商 API Key 密钥 base URL 登录 默认模型" },
+  工具模型: { description: "设置标题生成、记忆整理等后台任务使用的模型。", keywords: "工具 筛选 模型 后台 标题" },
+  技能: { description: "管理可用技能与项目中的启用范围。", keywords: "skill 导入 安装 版本 启用" },
+  "MCP 服务器": { description: "连接外部工具与数据源。", keywords: "mcp 服务器 连接 授权 OAuth 工具" },
+  插件: { description: "安装和管理扩展能力。", keywords: "plugin 市场 安装 启停 卸载" },
+  网络搜索: { description: "设置搜索来源与网页访问方式。", keywords: "搜索引擎 联网 Cookie 登录 结果 超时" },
+  浏览器: { description: "连接日常浏览器，管理扩展配对。", keywords: "Chrome 扩展 配对 撤销" },
+  记忆: { description: "管理长期记忆、检索与后台整理。", keywords: "记忆 memory 向量 embedding 模型 下载 索引 睡眠 清理" },
+  活动记录: { description: "控制本机活动采集与保存范围。", keywords: "屏幕 截图 录制 OCR 采集 隐私 存储 排除" },
+  数据: { description: "管理对话摘要及其生成方式。", keywords: "对话 摘要 数据 自动 总结" },
+  权限: { description: "设置工具操作是否需要手动批准。", keywords: "安全 审批 确认 自动 批准 工具权限" },
+  关于: { description: "版本信息与项目链接。", keywords: "版本 更新 帮助" }
+};
+const settingsTabValues = new Set<SettingsTab>(settingsNav.flatMap((item) => item.tabs));
+const immediateSaveHints: Partial<Record<SettingsTab, string>> = {
+  快速对话: "快速对话偏好立即保存。关闭设置不会撤销已保存的修改。",
+  模型: "模型配置立即保存。关闭设置不会撤销已保存的修改。",
+  工具模型: "模型选择立即保存。关闭设置不会撤销已保存的修改。",
+  数据: "对话摘要设置立即保存。关闭设置不会撤销已保存的修改。",
+  活动记录: "采集设置立即保存，开始或停止采集即时生效。",
+  浏览器: "配对与撤销操作即时生效。",
+  "MCP 服务器": "服务器在各自弹窗中保存；连接和授权操作即时生效。",
+  插件: "安装、启停与卸载操作即时生效。",
+  技能: "启用范围需点击底部保存；导入、版本恢复等操作即时生效。",
+  记忆: "配置需点击底部保存；记忆编辑、清理和模型下载等操作即时执行。"
+};
 
 function normalizeSettingsTab(value: SettingsTab | string | undefined): SettingsTab {
   return value !== undefined && settingsTabValues.has(value as SettingsTab) ? value as SettingsTab : "通用";
@@ -189,13 +212,18 @@ function SettingsOverlayContent({
   const [tab, setTab] = useState<SettingsTab>("通用");
   const [memoryVisited, setMemoryVisited] = useState(false);
   const [message, setMessage] = useState<string>();
-  const [dismissedLoadError, setDismissedLoadError] = useState<string>();
+  const [search, setSearch] = useState("");
   const [closeGuardOpen, setCloseGuardOpen] = useState(false);
   const [detailHost, setDetailHost] = useState<HTMLElement | null>(null);
   const activeTab = normalizeSettingsTab(tab);
-  const activePage = settingsNav.find((item) => item.tab === activeTab)!;
+  const activePage = settingsNav.find((item) => item.tabs.includes(activeTab))!;
   const activeTabRef = useRef<SettingsTab>(activeTab);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const titleRef = useRef<HTMLHeadingElement>(null);
+  const searchRef = useRef<HTMLInputElement>(null);
+  const searchQuery = search.trim().toLocaleLowerCase();
+  const searchResults = settingsNav.flatMap((group) => group.tabs.map((value) => ({ value, group: group.label })))
+    .filter(({ value }) => `${value} ${settingsTabLabels[value] ?? ""} ${settingsPages[value].description} ${settingsPages[value].keywords}`.toLocaleLowerCase().includes(searchQuery));
   useEffect(() => {
     if (activeTab !== tab) {
       activeTabRef.current = activeTab;
@@ -229,6 +257,7 @@ function SettingsOverlayContent({
     if (!open) return;
     setMessage(undefined);
     if (targetTab) {
+      setSearch("");
       const nextTab = normalizeSettingsTab(targetTab);
       activeTabRef.current = nextTab;
       setTab(nextTab);
@@ -266,9 +295,13 @@ function SettingsOverlayContent({
     if (closeRequest) await onResolveCloseRequest(closeRequest.requestId, "cancelled");
   };
   const extensionSettings = activeTab === "MCP 服务器" || activeTab === "技能" || activeTab === "插件";
-  // 设置页提示统一走顶部药丸 toast：loadError 带警告图标优先展示，其余为纯文字提示。
-  const visibleLoadError = settingsDraft.loadError && settingsDraft.loadError !== dismissedLoadError ? settingsDraft.loadError : undefined;
-  const settingsToast = visibleLoadError ?? message;
+  const needsProject = !workspace && ["聊天", "网络搜索", "工具模型", "模型", "技能", "MCP 服务器", "插件", "记忆", "数据"].includes(activeTab);
+  const loadBlocked = Boolean((workspace && !["快速对话", "浏览器", "关于"].includes(activeTab) || activeTab === "活动记录" || activeTab === "权限") && (settingsDraft.loading || settingsDraft.loadError));
+  const openSearchResult = (nextTab: SettingsTab): void => {
+    setSearch("");
+    selectTab(nextTab);
+    titleRef.current?.focus();
+  };
   return (
     <ActivityRuntimeProvider active={activeTab === "活动记录" || activeTab === "权限"}>
       <Dialog
@@ -288,32 +321,61 @@ function SettingsOverlayContent({
             <strong>设置</strong>
             <span>Biny</span>
           </div>
+          <div className="settings-search">
+            <Icon name="search" size={15} />
+            <input aria-label="搜索设置" placeholder="搜索设置" ref={searchRef} type="search" value={search}
+              onChange={(event) => setSearch(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.nativeEvent.isComposing) return;
+                if (event.key === "Escape" && search) { event.preventDefault(); event.stopPropagation(); setSearch(""); }
+                if (event.key === "Enter" && searchQuery && searchResults[0]) { event.preventDefault(); openSearchResult(searchResults[0].value); }
+              }} />
+            {search ? <button aria-label="清除设置搜索" onClick={() => { setSearch(""); searchRef.current?.focus(); }} type="button"><Icon name="close" size={13} /></button> : null}
+          </div>
+          {searchQuery ? <nav aria-label="设置搜索结果" className="settings-search-results">
+            <p className="settings-search-count" role="status">{searchResults.length ? `${searchResults.length} 个相关页面` : "没有找到相关设置"}</p>
+            {searchResults.map(({ value, group }) => <button key={value} onClick={() => openSearchResult(value)} type="button">
+              <strong>{settingsTabLabels[value] ?? value}</strong><small>{group}</small>
+            </button>)}
+            {!searchResults.length ? <p className="settings-search-empty">试试“字体”“模型”或“流式”。</p> : null}
+          </nav> :
           <nav aria-label="设置分类" className="settings-nav-list">
-            {settingsNav.map((item) => (
-              <Fragment key={item.tab}>
-                {item.group ? <h3 className="settings-nav-group">{item.group}</h3> : null}
-                <button aria-current={activeTab === item.tab ? "page" : undefined} className={activeTab === item.tab ? "is-selected" : ""} onClick={() => selectTab(item.tab)} type="button">
-                  <span aria-hidden="true" className="settings-nav-icon"><Icon name={item.icon} size={18} /></span>
-                  <span className="settings-nav-label">{item.label}</span>
-                </button>
-              </Fragment>
-            ))}
-          </nav>
+            {settingsNav.map((item, index) => <Fragment key={item.label}>
+              {index === 0 || index === 2 || index === 5 || index === 6 ? <p className="settings-nav-group">{index === 0 ? "偏好" : index === 2 ? "能力" : index === 5 ? "本地数据" : "系统"}</p> : null}
+              <button key={item.label} aria-current={item.tabs.includes(activeTab) ? "page" : undefined}
+                className={item.tabs.includes(activeTab) ? "is-selected" : ""} onClick={() => { if (!item.tabs.includes(activeTab)) selectTab(item.tabs[0]!); }} type="button">
+                <span aria-hidden="true" className="settings-nav-icon"><Icon name={item.icon} size={18} /></span>
+                <span className="settings-nav-label">{item.label}</span>
+              </button>
+            </Fragment>)}
+          </nav>}
         </aside>
         <main className={`settings-content${extensionSettings ? " is-extension-settings" : ""}`}>
           <header className="settings-titlebar">
             <div>
-              <h2>{activePage.label}</h2>
+              <h2 ref={titleRef} tabIndex={-1}>{settingsTabLabels[activeTab] ?? activeTab}</h2>
+              <p>{settingsPages[activeTab].description}</p>
             </div>
             <button aria-label="关闭设置" className="icon-button settings-close-button" onClick={requestCancel} title="关闭设置 · Esc" type="button">
               <Icon name="close" size={18} />
             </button>
           </header>
+          {activePage.tabs.length > 1 ? <div className="settings-subnav" role="group" aria-label={`${activePage.label}分类`}>
+            {activePage.tabs.map((item) => <button key={item} type="button" aria-pressed={activeTab === item}
+              className={activeTab === item ? "is-selected" : ""} onClick={() => selectTab(item)}>
+              {settingsTabLabels[item] ?? item}
+            </button>)}
+          </div> : null}
+          <p className="settings-save-hint">{immediateSaveHints[activeTab] ?? (activeTab === "关于" ? "" : activeTab === "通用" ? workspace ? "修改即时预览，点击底部保存后保留。" : "外观偏好即时保存，适用于所有项目。" : "修改后点击底部保存，可与其他页面的更改一起提交。")}</p>
           <div className={`settings-scroll${extensionSettings ? " is-extension" : activeTab === "模型" ? " is-providers" : ""}`} ref={scrollRef}>
-          {activeTab === "通用" ? <SettingsToolModel onTest={onTestModelConfiguration} /> : null}
+          {loadBlocked ? <div className="settings-load-state" aria-busy={settingsDraft.loading}>
+            {settingsDraft.loadError ? <><div role="alert"><h3>无法加载设置</h3><p>{settingsDraft.loadError}</p></div>
+              <button aria-label="重新加载设置" className="settings-secondary-button" onClick={settingsDraft.retryLoad} type="button">重新加载</button></> : <p role="status">正在加载设置…</p>}
+          </div> : needsProject ? <div className="settings-load-state"><h3>先打开一个项目</h3><p>返回主界面选择项目后，即可读取和修改这些设置。</p></div> : <>
+          {activeTab === "工具模型" ? <SettingsToolModel onTest={onTestModelConfiguration} /> : null}
           {activeTab === "模型" ? <ProviderSettings
             active={open}
-            loading={!settingsDraft.snapshot && !settingsDraft.loadError}
+            loading={settingsDraft.loading}
             models={settingsModels}
             connections={settingsDraft.snapshot?.models.connections ?? workspace?.connections ?? []}
             catalogs={settingsDraft.snapshot?.models.catalogs ?? {}}
@@ -337,6 +399,7 @@ function SettingsOverlayContent({
             }}
           /> : null}
           {activeTab === "通用" ? <SettingsAppearance
+            disabled={settingsDraft.saveState === "saving" || settingsDraft.saveState === "rolling_back" || settingsDraft.saveState === "recovery_required"}
             theme={settingsDraft.draft?.themePreference ?? themePreference}
             onThemeChange={settingsDraft.setThemePreference}
             font={settingsDraft.draft?.fontPreference ?? fontPreference}
@@ -387,8 +450,12 @@ function SettingsOverlayContent({
             onClearCookies={onClearCookies}
             sessionRunning={runtimeBusy}
           /> : null}
+          </>}
           </div>
           <SettingsPageFooter
+            unavailable={!workspace && activeTab === "通用" ? settingsDraft.saveState === "saving" ? "正在保存外观偏好…" : "外观偏好即时保存" : settingsDraft.loading ? "正在加载设置…" : settingsDraft.loadError ? "设置尚未加载" : !settingsDraft.draft ? "本页操作即时保存" : undefined}
+            blockedReason={settingsDraft.dirtyCount > 0 && runtimeBusy && !settingsDraft.preferencesOnly ? "任务运行中，共享设置暂不能保存。更改已保留。" : undefined}
+            error={settingsDraft.saveError ?? settingsDraft.snapshot?.pendingRecovery?.message}
             dirtyCount={settingsDraft.dirtyCount}
             disabled={settingsDraft.invalid || settingsDraft.draft === undefined || (runtimeBusy && !settingsDraft.preferencesOnly)}
             onCancel={requestCancel}
@@ -397,12 +464,11 @@ function SettingsOverlayContent({
           />
         </main>
       </section>
-      {settingsToast ? (
+      {message ? (
         <TopToast
-          icon={visibleLoadError ? "warning" : undefined}
-          key={settingsToast}
-          message={settingsToast}
-          onDismiss={() => (visibleLoadError ? setDismissedLoadError(visibleLoadError) : setMessage(undefined))}
+          key={message}
+          message={message}
+          onDismiss={() => setMessage(undefined)}
         />
       ) : null}
       {closeGuardOpen ? (

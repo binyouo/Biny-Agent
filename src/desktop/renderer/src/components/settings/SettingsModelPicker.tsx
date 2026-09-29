@@ -5,7 +5,7 @@
  * grouped combobox 形态：触发器显示当前模型和 provider，展开后支持搜索、分组
  * 和 provider 图标。选项仍然是普通 button，避免引入一套新的菜单依赖。
  */
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useFluidHoverItems } from "../../useFluidHoverItems.js";
 import { FluidHoverHighlight } from "../FluidHoverHighlight.js";
 import { Icon } from "../Icon.js";
@@ -31,6 +31,8 @@ export function SettingsModelPicker({
 }): React.JSX.Element {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
+  const searchRef = useRef<HTMLInputElement>(null);
+  useEffect(() => { if (open) searchRef.current?.focus(); }, [open]);
   // 流动悬停：选项列表按选择器自动注册；未配置的禁用项对悬停不可见。
   const listRef = useRef<HTMLDivElement>(null);
   const hover = useFluidHoverItems(listRef, ".settings-model-picker-option");
@@ -90,7 +92,7 @@ export function SettingsModelPicker({
         <label className="settings-model-picker-search">
           <Icon name="search" size={14} />
           <input
-            autoFocus
+            ref={searchRef}
             aria-label="搜索模型或服务商"
             onChange={(event) => setQuery(event.target.value)}
             placeholder="搜索模型或服务商"
