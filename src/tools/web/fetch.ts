@@ -82,6 +82,7 @@ export function createWebFetchTool(
         description: `Fetch ${target.toString()}`,
         approvalRule: `WebFetch(${target.origin})`,
         async execute({ signal }) {
+          signal?.throwIfAborted();
           const jar = !dependencies?.browser && cookieJarPath ? await readCookieJar(cookieJarPath) : [];
           const fetched = dependencies?.browser
             ? await requestBrowser(dependencies.browser, "web_read", { url: target.href, projectId: dependencies.browser.projectId, visible: dependencies.visibleBrowsing, timeoutMs, maxBytes, maxRedirects, allowPrivateNetwork }, signal) as BrowserFetchedDocument
@@ -153,17 +154,25 @@ async function fetchDocument(url: URL, limits: FetchLimits, signal?: AbortSignal
     timedOut = true;
     controller.abort();
   }, limits.timeoutMs);
-  const abort = (): void => controller.abort();
-  if (signal?.aborted) controller.abort();
+  const abort = (): void => controller.abort(signal?.reason);
+  if (signal?.aborted) abort();
   signal?.addEventListener("abort", abort, { once: true });
+  let rejectOnAbort!: () => void;
+  const interrupted = new Promise<never>((_resolve, reject) => {
+    rejectOnAbort = () => reject(controller.signal.reason);
+    if (controller.signal.aborted) rejectOnAbort();
+    else controller.signal.addEventListener("abort", rejectOnAbort, { once: true });
+  });
 
   try {
     let current = url;
     for (let redirect = 0; redirect <= limits.maxRedirects; redirect += 1) {
-      await assertFetchableUrl(current, {
+      // 系统 DNS 不接受 AbortSignal；取消后结束等待，迟到的解析不能再发起 HTTP 请求。
+      await Promise.race([assertFetchableUrl(current, {
         allowPrivateNetwork: limits.allowPrivateNetwork,
         resolveHostname: limits.resolveHostname
-      });
+      }), interrupted]);
+      controller.signal.throwIfAborted();
       const headers: Record<string, string> = {
         accept: "text/html,text/plain,application/json;q=0.9,*/*;q=0.8",
         "user-agent": "Biny/WebFetch"
@@ -204,6 +213,7 @@ async function fetchDocument(url: URL, limits: FetchLimits, signal?: AbortSignal
   } finally {
     clearTimeout(timer);
     signal?.removeEventListener("abort", abort);
+    controller.signal.removeEventListener("abort", rejectOnAbort);
   }
 }
 

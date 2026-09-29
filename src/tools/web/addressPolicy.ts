@@ -57,37 +57,28 @@ async function resolveHostnameWithSystemDns(hostname: string): Promise<string[]>
 
 export function blockedAddressReason(address: string): string | undefined {
   const version = net.isIP(address);
-  if (version === 4) return blockedIpv4Reason(address);
-  if (version === 6) return blockedIpv6Reason(address);
-  return "which is not a valid IP address";
+  if (!version) return "which is not a valid IP address";
+  return blockedNetworks.find(({ blockList }) => blockList.check(address, version === 4 ? "ipv4" : "ipv6"))?.reason;
 }
 
-function blockedIpv4Reason(address: string): string | undefined {
-  const octets = address.split(".").map((part) => Number.parseInt(part, 10));
-  const [a = 0, b = 0] = octets;
-  if (a === 0) return "an unspecified address";
-  if (a === 127) return "a loopback address";
-  if (a === 10) return "a private network address";
-  if (a === 172 && b >= 16 && b <= 31) return "a private network address";
-  if (a === 192 && b === 168) return "a private network address";
-  if (a === 169 && b === 254) return "a link-local address (cloud instance metadata lives here)";
-  if (a === 100 && b >= 64 && b <= 127) return "a carrier-grade NAT address";
-  if (a === 192 && b === 0) return "a reserved address";
-  if (a >= 224) return "a multicast or reserved address";
-  return undefined;
-}
-
-function blockedIpv6Reason(address: string): string | undefined {
-  const lower = address.toLowerCase();
-  if (lower === "::" || lower === "::0") return "an unspecified address";
-  if (lower === "::1") return "a loopback address";
-  // IPv4-mapped（::ffff:127.0.0.1）必须按内嵌的 v4 地址判定，否则是条绕过通道。
-  const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/.exec(lower);
-  if (mapped?.[1]) return blockedIpv4Reason(mapped[1]);
-  if (/^f[cd]/.test(lower)) return "a unique local address";
-  if (lower.startsWith("fe8") || lower.startsWith("fe9") || lower.startsWith("fea") || lower.startsWith("feb")) {
-    return "a link-local address";
-  }
-  if (lower.startsWith("ff")) return "a multicast address";
-  return undefined;
-}
+// 按地址字节匹配，避免 URL 将点分 IPv4 映射成十六进制 IPv6 后绕过字符串判断。
+const blockedNetworks = ([
+  ["0.0.0.0", 8, "ipv4", "an unspecified address"],
+  ["127.0.0.0", 8, "ipv4", "a loopback address"],
+  ["10.0.0.0", 8, "ipv4", "a private network address"],
+  ["172.16.0.0", 12, "ipv4", "a private network address"],
+  ["192.168.0.0", 16, "ipv4", "a private network address"],
+  ["169.254.0.0", 16, "ipv4", "a link-local address (cloud instance metadata lives here)"],
+  ["100.64.0.0", 10, "ipv4", "a carrier-grade NAT address"],
+  ["192.0.0.0", 16, "ipv4", "a reserved address"],
+  ["224.0.0.0", 3, "ipv4", "a multicast or reserved address"],
+  ["::", 128, "ipv6", "an unspecified address"],
+  ["::1", 128, "ipv6", "a loopback address"],
+  ["fc00::", 7, "ipv6", "a unique local address"],
+  ["fe80::", 10, "ipv6", "a link-local address"],
+  ["ff00::", 8, "ipv6", "a multicast address"]
+] as const).map(([subnet, prefix, family, reason]) => {
+  const blockList = new net.BlockList();
+  blockList.addSubnet(subnet, prefix, family);
+  return { blockList, reason };
+});

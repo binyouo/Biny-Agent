@@ -42,16 +42,19 @@ function testBlockedAddressClassification(): void {
   for (const address of [
     "127.0.0.1", "0.0.0.0", "10.1.2.3", "172.16.0.1", "172.31.255.255",
     "192.168.1.1", "169.254.169.254", "100.64.0.1", "224.0.0.1",
-    "::1", "::", "fd00::1", "fe80::1", "ff02::1", "::ffff:127.0.0.1", "::ffff:169.254.169.254"
+    "::1", "::", "fd00::1", "fe80::1", "ff02::1", "::ffff:127.0.0.1", "::ffff:169.254.169.254",
+    "::ffff:7f00:1", "::ffff:a9fe:a9fe", "0:0:0:0:0:ffff:c0a8:101", "0:0:0:0:0:0:0:1", "0:0:0:0:0:0:0:0"
   ]) {
     assert.equal(typeof blockedAddressReason(address), "string", `${address} must be refused`);
   }
-  for (const address of ["8.8.8.8", "1.1.1.1", "172.32.0.1", "192.169.0.1", "2606:4700::1111"]) {
+  for (const address of ["8.8.8.8", "1.1.1.1", "172.32.0.1", "192.169.0.1", "2606:4700::1111", "::ffff:808:808"]) {
     assert.equal(blockedAddressReason(address), undefined, `${address} must be allowed`);
   }
 }
 
 async function testUrlPolicyRefusesInternalTargets(): Promise<void> {
+  await assert.rejects(assertFetchableUrl(new URL("http://[::ffff:127.0.0.1]/")), /loopback/);
+  await assert.rejects(assertFetchableUrl(new URL("http://[::ffff:169.254.169.254]/latest/meta-data/")), /link-local/);
   await assert.rejects(assertFetchableUrl(new URL("http://127.0.0.1:8080/x")), /loopback/);
   await assert.rejects(assertFetchableUrl(new URL("http://169.254.169.254/latest/meta-data/")), /link-local/);
   await assert.rejects(assertFetchableUrl(new URL("file:///etc/passwd")), /http and https/);

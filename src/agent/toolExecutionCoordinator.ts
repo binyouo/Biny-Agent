@@ -163,8 +163,8 @@ export class ToolExecutionCoordinator {
   private producedToolResultBytes = 0;
   private readonly diagnostics: DiagnosticsRunner | undefined;
   private readonly hooks: HookRunner;
-  /** 本回合是否已建过快照；每回合只建一个，建在第一次真正改动之前。 */
-  private checkpointTaken = false;
+  /** 本回合共享的快照完成信号；所有写入等待同一次快照。 */
+  private checkpointPromise?: Promise<void>;
   private accountedToolCallCount = 0;
   private readonly accountedActionCounts = new Map<string, number>();
   private readonly actionResults = new Map<string, string>();
@@ -969,13 +969,16 @@ export class ToolExecutionCoordinator {
    * 建快照失败不能挡住工具执行 —— 没有 git 仓库是常态，为此拒绝干活是本末倒置。
    */
   private async ensureCheckpoint(risk: ToolRisk | undefined, toolName: string): Promise<void> {
-    if (this.context.planning || this.checkpointTaken || risk !== "write" || !this.context.createCheckpoint) return;
-    this.checkpointTaken = true;
-    try {
-      await this.context.createCheckpoint(`before ${toolName}`);
-    } catch {
-      // 快照不可用时静默继续；/undo 会告诉用户没有可回退的点。
-    }
+    if (this.context.planning || risk !== "write" || !this.context.createCheckpoint) return;
+    // 不同路径的写工具可并发，但都须等本回合快照完成，不能把“已开始”当成“已完成”。
+    this.checkpointPromise ??= Promise.resolve().then(async () => {
+      try {
+        await this.context.createCheckpoint?.(`before ${toolName}`);
+      } catch {
+        // 快照不可用时仍允许写入；/undo 会说明没有可回退的点。
+      }
+    });
+    await this.checkpointPromise;
   }
 
   /**

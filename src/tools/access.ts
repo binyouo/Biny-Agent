@@ -78,7 +78,7 @@ function pathOverlaps(left: Extract<ToolResourceAccess, { kind: "file" }>, right
 
 function isWithin(parent: string, child: string): boolean {
   const relative = path.relative(parent, child);
-  return Boolean(relative) && !relative.startsWith("..") && !path.isAbsolute(relative);
+  return Boolean(relative) && relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
 }
 
 function normalizeAccessPath(value: string): string {
