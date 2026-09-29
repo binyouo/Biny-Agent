@@ -4,6 +4,8 @@ import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { defaultConfig } from "../src/config/schema.js";
+import { createCredentialStore } from "../src/config/credentials.js";
+import { createFileConfigStore } from "../src/config/store.js";
 import { preselectCapabilities } from "../src/agent/capabilityPreselection.js";
 import { createCommandRuntime } from "../src/runtime/CommandRuntime.js";
 import { UserInputRequests, userInputQuestionsSchema } from "../src/runtime/userInput.js";
@@ -71,16 +73,25 @@ test("真实运行时只在交互回合暴露提问工具，回合结束撤销�
   const root = await mkdtemp(path.join(os.tmpdir(), "biny-user-input-"));
   const saved = process.env.BINY_AGENT_DIR;
   process.env.BINY_AGENT_DIR = path.join(root, "state");
-  const runtime = await createCommandRuntime(root);
   try {
-    assert.equal(runtime.listTools().some((tool) => tool.name === "AskUserQuestion"), false);
-    assert.equal(typeof runtime.setUserInputRun, "function", "运行时缺少交互提问的回合入口");
-    runtime.setUserInputRun!({ sessionId: "s", runId: "r" });
-    assert.equal(runtime.listTools().some((tool) => tool.name === "AskUserQuestion"), true);
-    runtime.setUserInputRun!();
-    assert.equal(runtime.listTools().some((tool) => tool.name === "AskUserQuestion"), false);
+    const configStore = createFileConfigStore(root, { globalDir: path.join(root, "state"), credentialStore: createCredentialStore("linux") });
+    const config = structuredClone(defaultConfig);
+    config.defaultModel = "test-model";
+    config.providers = { test: { type: "openai-compatible", baseUrl: "http://127.0.0.1:1/v1", requiresApiKey: false } };
+    config.models = { "test-model": { ...defaultConfig.models[defaultConfig.defaultModel]!, provider: "test", model: "test-model" } };
+    await configStore.save(config);
+    const runtime = await createCommandRuntime(root, { configStore });
+    try {
+      assert.equal(runtime.listTools().some((tool) => tool.name === "AskUserQuestion"), false);
+      assert.equal(typeof runtime.setUserInputRun, "function", "运行时缺少交互提问的回合入口");
+      runtime.setUserInputRun!({ sessionId: "s", runId: "r" });
+      assert.equal(runtime.listTools().some((tool) => tool.name === "AskUserQuestion"), true);
+      runtime.setUserInputRun!();
+      assert.equal(runtime.listTools().some((tool) => tool.name === "AskUserQuestion"), false);
+    } finally {
+      await runtime.close();
+    }
   } finally {
-    await runtime.close();
     if (saved === undefined) delete process.env.BINY_AGENT_DIR; else process.env.BINY_AGENT_DIR = saved;
     await rm(root, { recursive: true, force: true });
   }
