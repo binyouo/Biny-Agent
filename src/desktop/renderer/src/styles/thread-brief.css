@@ -29,7 +29,7 @@
 .biny-project-suggestion-banner small { margin-top: 3px; color: var(--biny-text-secondary); font-size: 11px; }
 .biny-project-suggestion-banner > button { flex-shrink: 0; }
 .biny-project-suggestion-dialog { width: min(560px, calc(100vw - 40px)); max-height: 85vh; overflow-y: auto; padding: 24px; margin: auto; border: 1px solid var(--biny-border); border-radius: 14px; background: var(--biny-surface-elevated); color: var(--biny-text); font: inherit; }
-.biny-project-suggestion-dialog::backdrop { background: var(--biny-backdrop, rgb(0 0 0 / 40%)); }
+.biny-project-suggestion-dialog::backdrop { background: var(--biny-overlay); }
 .biny-project-suggestion-dialog header, .biny-project-suggestion-dialog footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .biny-project-suggestion-dialog h2 { font-size: 17px; margin: 0; }
 .biny-project-suggestion-dialog p, .biny-project-suggestion-dialog small, .biny-project-suggestion-dialog li { color: var(--biny-text-secondary); font-size: 12px; }

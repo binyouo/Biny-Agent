@@ -1,8 +1,7 @@
 /**
  * 桌面端视觉层。
  *
- * 颜色和尺寸集中在根节点 token；选择器全部挂在根节点下，旧的消息、设置和检查器样式仍
- * 可安全复用，不会污染 Renderer 的其他浮层。
+ * 配色由 theme.css 提供；此处维护产品外壳、侧栏和输入区的布局与控件状态。
  */
 @property --biny-sidebar-animated-visual-width {
   syntax: "<length>";
@@ -17,42 +16,6 @@
 }
 
 :root {
-  --biny-surface: var(--surface);
-  --biny-surface-elevated: var(--surface-raised);
-  --biny-surface-soft: var(--surface-soft);
-  --biny-surface-hover: rgba(0, 0, 0, 0.05);
-  --biny-sidebar-surface: var(--sidebar);
-  --biny-border: var(--border);
-  --biny-text: var(--text);
-  --biny-text-secondary: var(--text-secondary);
-  --biny-text-tertiary: var(--text-tertiary);
-  --biny-focus: var(--accent);
-  --biny-control-active: var(--text);
-  --biny-send-bg: var(--surface-raised);
-  --biny-send-icon: var(--text);
-  --biny-pill: var(--surface-raised);
-  --biny-border-strong: var(--border-strong);
-  --biny-surface-selected: rgba(0, 0, 0, 0.08);
-  --biny-danger: var(--red);
-  --biny-danger-bg: var(--red-bg);
-  --biny-success: var(--green);
-  --biny-success-bg: var(--green-bg);
-  --biny-warning: var(--amber);
-  --biny-warning-bg: var(--amber-bg);
-  --biny-code: var(--code);
-  --biny-placeholder: var(--text-tertiary);
-  --biny-selection-surface: rgba(0, 0, 0, 0.08);
-  --biny-selection-text: var(--mark-ink);
-  --biny-selection-muted: var(--text-secondary);
-  --biny-shadow-color: var(--shadow);
-  --biny-shadow-soft: var(--shadow);
-  --biny-shadow-heavy: var(--shadow);
-  --biny-shadow-sidebar: var(--shadow);
-  --biny-sidebar-border: color-mix(in srgb, var(--border-strong) 75%, transparent);
-  --biny-overlay: rgb(0 0 0 / 20%);
-  --biny-overlay-hover: rgb(0 0 0 / 8%);
-  --biny-overlay-pressed: rgb(0 0 0 / 14%);
-  --biny-shadow: 0 1px 2px var(--shadow);
   /* 扩展、发现和 MCP 页面共用这组节奏，避免每个卡片自行拼接间距。 */
   --biny-space-2: 8px;
   --biny-space-3: 12px;
@@ -73,213 +36,10 @@
   --page-exit-enabled: 1;
   --page-slide-ease: cubic-bezier(0.22, 1, 0.36, 1);
   --page-fade-ease: cubic-bezier(0.22, 1, 0.36, 1);
-  --biny-composer-radius: 18px;
-  --color-overlay: var(--biny-overlay);
-  --color-overlay-hover: var(--biny-overlay-hover);
-  --color-overlay-pressed: var(--biny-overlay-pressed);
-}
-
-:root[data-theme="dark"] {
-  --biny-overlay: rgb(0 0 0 / 42%);
-  --biny-overlay-hover: rgb(0 0 0 / 16%);
-  --biny-overlay-pressed: rgb(0 0 0 / 24%);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root[data-theme="system"] {
-    --biny-overlay: rgb(0 0 0 / 42%);
-    --biny-overlay-hover: rgb(0 0 0 / 16%);
-    --biny-overlay-pressed: rgb(0 0 0 / 24%);
-  }
+  --biny-composer-radius: 14px;
 }
 
 .desktop-root.biny-root {
-  /* 每个语义层都单独映射，浅色模式不能依赖深色 token 的透明度反转。 */
-  --biny-light-surface: #ffffff;
-  --biny-light-surface-elevated: #ffffff;
-  --biny-light-surface-soft: #f3f3f3;
-  /* 悬停用半透明深色，避免浅色模式堆叠多层近似白色的实底。 */
-  --biny-light-surface-hover: rgba(26, 28, 31, 0.05);
-  --biny-light-surface-selected: #ededed;
-  /* 左侧栏使用独立的浅色卡片底，主区与窗口底板共用主体色。 */
-  --biny-light-sidebar-surface: #f9f9f9;
-  --biny-light-backplate: #ffffff;
-  --biny-light-border: #e8e8e8;
-  --biny-light-border-strong: #d5d5d5;
-  --biny-light-text: #1a1c1f;
-  --biny-light-text-secondary: #5d5d5d;
-  --biny-light-text-tertiary: #6b6b6b;
-  --biny-light-focus: #0169cc;
-  --biny-light-send-bg: #1a1c1f;
-  --biny-light-send-icon: #ffffff;
-  --biny-light-pill: #ffffff;
-  /* 用户消息用中性底色区分，避免与功能状态争用强调色。 */
-  --biny-light-chat-user-bg: #ededed;
-  --biny-light-chat-user-fg: #1a1c1f;
-  --biny-light-danger: #c92e2e;
-  --biny-light-danger-bg: rgb(201 46 46 / 10%);
-  --biny-light-success: #16803c;
-  --biny-light-success-bg: rgb(22 128 60 / 10%);
-  --biny-light-warning: #a15c00;
-  --biny-light-warning-bg: rgb(161 92 0 / 10%);
-  --biny-light-code: #f9f9f9;
-  --biny-light-placeholder: #6b6b6b;
-  /* 会话选中态比悬停深一档，依靠明度区分。 */
-  --biny-light-selection-surface: #ededed;
-  --biny-light-selection-text: #ffffff;
-  --biny-light-selection-muted: #1d2025;
-  --biny-light-shadow-color: rgb(0 0 0 / 6%);
-  --biny-light-shadow-soft: rgb(0 0 0 / 8%);
-  --biny-light-shadow-heavy: rgb(0 0 0 / 16%);
-  --biny-light-shadow-sidebar: rgb(0 0 0 / 12%);
-  --biny-dark-surface-soft: #232323;
-  --biny-dark-surface-selected: #333333;
-  --biny-dark-border-strong: #484848;
-  --biny-dark-text-tertiary: #9b9b9b;
-  --biny-dark-danger: #ff6764;
-  --biny-dark-danger-bg: rgb(255 103 100 / 12%);
-  --biny-dark-success: #40c977;
-  --biny-dark-success-bg: rgb(64 201 119 / 12%);
-  --biny-dark-warning: #e8b35c;
-  --biny-dark-warning-bg: rgb(232 179 92 / 12%);
-  --biny-dark-code: #232323;
-  --biny-dark-placeholder: #9b9b9b;
-  --biny-dark-selection-surface: #333333;
-  --biny-dark-selection-text: #1c1c1c;
-  --biny-dark-selection-muted: rgb(255 255 255 / 78%);
-  /* 中性明度分层：侧栏退后、正文居中、输入与浮层抬起，消息气泡再亮一档。 */
-  --biny-dark-chat-user-bg: #333333;
-  --biny-dark-chat-user-fg: #ededed;
-  --biny-dark-shadow-color: rgb(0 0 0 / 20%);
-  --biny-dark-shadow-soft: rgb(0 0 0 / 16%);
-  --biny-dark-shadow-heavy: rgb(0 0 0 / 32%);
-  --biny-dark-shadow-sidebar: rgb(0 0 0 / 36%);
-  --biny-dark-surface: #1c1c1c;
-  --biny-dark-surface-elevated: #292929;
-  --biny-dark-surface-hover: #303030;
-  /* 侧栏略深、正文居中、输入与浮层略亮，使用同一灰阶表达层级。 */
-  --biny-dark-sidebar-surface: #171717;
-  --biny-dark-backplate: #1c1c1c;
-  --biny-dark-border: #303030;
-  --biny-dark-text: #ededed;
-  --biny-dark-text-secondary: #b5b5b5;
-  --biny-surface: var(--biny-light-surface);
-  --biny-surface-elevated: var(--biny-light-surface-elevated);
-  --biny-surface-soft: var(--biny-light-surface-soft);
-  --biny-surface-hover: var(--biny-light-surface-hover);
-  --biny-surface-selected: var(--biny-light-surface-selected);
-  --biny-sidebar-surface: var(--biny-light-sidebar-surface);
-  --biny-backplate: var(--biny-light-backplate);
-  --biny-border: var(--biny-light-border);
-  --biny-border-real: var(--biny-light-border);
-  --biny-border-strong: var(--biny-light-border-strong);
-  --biny-text: var(--biny-light-text);
-  --biny-text-secondary: var(--biny-light-text-secondary);
-  --biny-text-tertiary: var(--biny-light-text-tertiary);
-  --biny-focus: var(--biny-light-focus);
-  --biny-control-active: var(--biny-light-text);
-  --biny-send-bg: var(--biny-light-send-bg);
-  --biny-send-icon: var(--biny-light-send-icon);
-  --biny-pill: var(--biny-light-pill);
-  --biny-chat-user-bg: var(--biny-light-chat-user-bg);
-  --biny-chat-user-fg: var(--biny-light-chat-user-fg);
-  --biny-danger: var(--biny-light-danger);
-  --biny-danger-bg: var(--biny-light-danger-bg);
-  --biny-success: var(--biny-light-success);
-  --biny-success-bg: var(--biny-light-success-bg);
-  --biny-warning: var(--biny-light-warning);
-  --biny-warning-bg: var(--biny-light-warning-bg);
-  --biny-code: var(--biny-light-code);
-  --biny-placeholder: var(--biny-light-placeholder);
-  --biny-selection-surface: var(--biny-light-selection-surface);
-  --biny-selection-text: var(--biny-light-selection-text);
-  --biny-selection-muted: var(--biny-light-selection-muted);
-  --biny-shadow-color: var(--biny-light-shadow-color);
-  --biny-shadow-soft: var(--biny-light-shadow-soft);
-  --biny-shadow-heavy: var(--biny-light-shadow-heavy);
-  --biny-shadow-sidebar: var(--biny-light-shadow-sidebar);
-  --biny-sidebar-border: color-mix(in srgb, var(--biny-border-strong) 75%, transparent);
-  --biny-overlay: rgb(0 0 0 / 20%);
-  --biny-overlay-hover: rgb(0 0 0 / 8%);
-  --biny-overlay-pressed: rgb(0 0 0 / 14%);
-  --biny-shadow: 0 1px 2px var(--biny-shadow-color);
-  --accent: var(--biny-focus);
-  --bg: var(--biny-surface);
-  --sidebar: var(--biny-sidebar-surface);
-  --surface: var(--biny-surface);
-  --surface-raised: var(--biny-surface-elevated);
-  --surface-soft: var(--biny-surface-soft);
-  --surface-hover: var(--biny-surface-hover);
-  --surface-selected: var(--biny-surface-selected);
-  --user-bubble: var(--biny-surface-hover);
-  --composer-surface: var(--biny-surface-elevated);
-  --text: var(--biny-text);
-  --text-secondary: var(--biny-text-secondary);
-  --text-tertiary: var(--biny-text-tertiary);
-  --border: var(--biny-border);
-  --border-strong: var(--biny-border-strong);
-  --shadow: var(--biny-shadow-color);
-  --green: var(--biny-success);
-  --green-bg: var(--biny-success-bg);
-  --red: var(--biny-danger);
-  --red-bg: var(--biny-danger-bg);
-  --amber: var(--biny-warning);
-  --amber-bg: var(--biny-warning-bg);
-  --blue: var(--biny-focus);
-  --code: var(--biny-code);
-  --mark-ink: var(--biny-selection-text);
-  --danger: var(--biny-danger);
-  --color-background-body: var(--biny-surface);
-  --color-background-surface: var(--biny-surface-elevated);
-  --color-background-card: var(--biny-surface-elevated);
-  --color-background-popover: var(--biny-surface-elevated);
-  --color-background-muted: var(--biny-surface);
-  --color-background-gray: var(--biny-surface-hover);
-  --color-accent: var(--biny-focus);
-  --color-accent-muted: var(--biny-surface-selected);
-  --color-neutral: color-mix(in srgb, var(--biny-border) 55%, transparent);
-  --color-overlay: var(--biny-overlay);
-  --color-overlay-hover: var(--biny-overlay-hover);
-  --color-overlay-pressed: var(--biny-overlay-pressed);
-  --color-text-primary: var(--biny-text);
-  --color-text-secondary: var(--biny-text-secondary);
-  --color-text-disabled: var(--biny-text-tertiary);
-  --color-text-accent: var(--biny-focus);
-  --color-text-red: var(--biny-danger);
-  --color-text-yellow: var(--biny-warning);
-  --color-icon-accent: var(--biny-focus);
-  --color-icon-primary: var(--biny-text);
-  --color-icon-secondary: var(--biny-text-secondary);
-  --color-icon-disabled: var(--biny-text-tertiary);
-  --color-success: var(--biny-success);
-  --color-success-muted: var(--biny-success-bg);
-  --color-error: var(--biny-danger);
-  --color-error-muted: var(--biny-danger-bg);
-  --color-warning: var(--biny-warning);
-  --color-warning-muted: var(--biny-warning-bg);
-  --color-border: var(--biny-border);
-  --color-border-emphasized: var(--biny-border-strong);
-  --color-shadow: var(--biny-shadow-color);
-  --color-background-red: var(--biny-danger-bg);
-  --color-border-red: var(--biny-danger);
-  --color-icon-red: var(--biny-danger);
-  --color-background-yellow: var(--biny-warning-bg);
-  --color-border-yellow: var(--biny-warning);
-  --color-icon-yellow: var(--biny-warning);
-  --color-background-green: var(--biny-success-bg);
-  --color-border-green: var(--biny-success);
-  --color-icon-green: var(--biny-success);
-  --color-background-blue: var(--biny-surface-selected);
-  --color-border-blue: var(--biny-focus);
-  --color-icon-blue: var(--biny-focus);
-  --color-text-blue: var(--biny-focus);
-  --color-background-gray: var(--biny-surface-hover);
-  --color-border-gray: var(--biny-border);
-  --color-icon-gray: var(--biny-text-secondary);
-  --color-text-gray: var(--biny-text-secondary);
-  --shadow-low: var(--biny-shadow);
-  --shadow-med: 0 8px 24px var(--biny-shadow-heavy);
-  --shadow-high: 0 16px 40px var(--biny-shadow-heavy);
   /* chrome 按钮簇（侧栏开关/搜索/新建）的收起态兜底宽度：80px 红绿灯区 + 3×28px 按钮 + 2×9px 间距 + 12px 右 padding。 */
   --biny-sidebar-chrome-width: 194px;
   --biny-chat-toolbar-inline-padding: 18px;
@@ -297,111 +57,6 @@
   font-family: var(--font-sans);
   font-size: calc(var(--app-font-size, 14) * 1px);
   line-height: 1.4;
-}
-
-:root[data-theme="dark"] .desktop-root.biny-root {
-  --biny-surface: var(--biny-dark-surface);
-  --biny-backplate: var(--biny-dark-backplate);
-  --biny-surface-elevated: var(--biny-dark-surface-elevated);
-  --biny-surface-soft: var(--biny-dark-surface-soft);
-  --biny-surface-hover: var(--biny-dark-surface-hover);
-  --biny-surface-selected: var(--biny-dark-surface-selected);
-  --biny-sidebar-surface: var(--biny-dark-sidebar-surface);
-  --biny-border: var(--biny-dark-border);
-  --biny-border-real: var(--biny-dark-border);
-  --biny-border-strong: var(--biny-dark-border-strong);
-  --biny-text: var(--biny-dark-text);
-  --biny-text-secondary: var(--biny-dark-text-secondary);
-  --biny-text-tertiary: var(--biny-dark-text-tertiary);
-  --biny-focus: #7aade8;
-  --biny-control-active: #ffffff;
-  --biny-send-bg: var(--biny-dark-text);
-  --biny-send-icon: var(--biny-dark-sidebar-surface);
-  --biny-pill: var(--biny-dark-surface-hover);
-  --biny-chat-user-bg: var(--biny-dark-chat-user-bg);
-  --biny-chat-user-fg: var(--biny-dark-chat-user-fg);
-  --biny-danger: var(--biny-dark-danger);
-  --biny-danger-bg: var(--biny-dark-danger-bg);
-  --biny-success: var(--biny-dark-success);
-  --biny-success-bg: var(--biny-dark-success-bg);
-  --biny-warning: var(--biny-dark-warning);
-  --biny-warning-bg: var(--biny-dark-warning-bg);
-  --biny-code: var(--biny-dark-code);
-  --biny-placeholder: var(--biny-dark-placeholder);
-  --biny-selection-surface: var(--biny-dark-selection-surface);
-  --biny-selection-text: var(--biny-dark-selection-text);
-  --biny-selection-muted: var(--biny-dark-selection-muted);
-  --biny-shadow-color: var(--biny-dark-shadow-color);
-  --biny-shadow-soft: var(--biny-dark-shadow-soft);
-  --biny-shadow-heavy: var(--biny-dark-shadow-heavy);
-  --biny-shadow-sidebar: var(--biny-dark-shadow-sidebar);
-  --biny-overlay: rgb(0 0 0 / 42%);
-  --biny-overlay-hover: rgb(0 0 0 / 16%);
-  --biny-overlay-pressed: rgb(0 0 0 / 24%);
-  --biny-shadow: 0 1px 2px rgb(0 0 0 / 14%);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root[data-theme="system"] .desktop-root.biny-root {
-    --biny-surface: var(--biny-dark-surface);
-    --biny-backplate: var(--biny-dark-backplate);
-    --biny-surface-elevated: var(--biny-dark-surface-elevated);
-    --biny-surface-soft: var(--biny-dark-surface-soft);
-    --biny-surface-hover: var(--biny-dark-surface-hover);
-    --biny-surface-selected: var(--biny-dark-surface-selected);
-    --biny-sidebar-surface: var(--biny-dark-sidebar-surface);
-    --biny-border: var(--biny-dark-border);
-    --biny-border-real: var(--biny-dark-border);
-    --biny-border-strong: var(--biny-dark-border-strong);
-    --biny-text: var(--biny-dark-text);
-    --biny-text-secondary: var(--biny-dark-text-secondary);
-    --biny-text-tertiary: var(--biny-dark-text-tertiary);
-    --biny-focus: #7aade8;
-    --biny-control-active: #ffffff;
-    --biny-send-bg: var(--biny-dark-text);
-    --biny-send-icon: var(--biny-dark-sidebar-surface);
-    --biny-pill: var(--biny-dark-surface-hover);
-    --biny-chat-user-bg: var(--biny-dark-chat-user-bg);
-    --biny-chat-user-fg: var(--biny-dark-chat-user-fg);
-    --biny-danger: var(--biny-dark-danger);
-    --biny-danger-bg: var(--biny-dark-danger-bg);
-    --biny-success: var(--biny-dark-success);
-    --biny-success-bg: var(--biny-dark-success-bg);
-    --biny-warning: var(--biny-dark-warning);
-    --biny-warning-bg: var(--biny-dark-warning-bg);
-    --biny-code: var(--biny-dark-code);
-    --biny-placeholder: var(--biny-dark-placeholder);
-    --biny-selection-surface: var(--biny-dark-selection-surface);
-    --biny-selection-text: var(--biny-dark-selection-text);
-    --biny-selection-muted: var(--biny-dark-selection-muted);
-    --biny-shadow-color: var(--biny-dark-shadow-color);
-    --biny-shadow-soft: var(--biny-dark-shadow-soft);
-    --biny-shadow-heavy: var(--biny-dark-shadow-heavy);
-    --biny-shadow-sidebar: var(--biny-dark-shadow-sidebar);
-    --biny-overlay: rgb(0 0 0 / 42%);
-    --biny-overlay-hover: rgb(0 0 0 / 16%);
-    --biny-overlay-pressed: rgb(0 0 0 / 24%);
-    --biny-shadow: 0 1px 2px rgb(0 0 0 / 14%);
-  }
-}
-
-/*
- * 文字选区：legacy 层的全局 ::selection 用 accent 半透明叠底，深色表面上混出的
- * 高亮与背景几乎无差异（选中像没选中）。这里按主题换成实色混合，保证高亮可辨、
- * 文字可读；挂在 desktop 层覆盖 legacy，portal 到 body 的浮层继续走全局规则。
- */
-.desktop-root.biny-root ::selection {
-  background: color-mix(in srgb, var(--biny-text) 18%, var(--biny-surface-elevated));
-}
-
-:root[data-theme="dark"] .desktop-root.biny-root ::selection {
-  background: color-mix(in srgb, var(--biny-text) 24%, var(--biny-surface-elevated));
-}
-
-@media (prefers-color-scheme: dark) {
-  :root[data-theme="system"] .desktop-root.biny-root ::selection {
-    background: color-mix(in srgb, var(--biny-text) 24%, var(--biny-surface-elevated));
-  }
 }
 
 .biny-app-shell {
@@ -501,9 +156,7 @@
   overflow: visible;
 }
 
-/* 三栏由同一个 flex 容器管理：左侧栏、Chat 工作区和右侧 Inspector 只改变自身宽度。
-   主区 plate 与窗口 backplate 共用主体色，左侧栏由独立卡片承载；
-   顶部通高到窗口上缘，分隔只靠卡片边界和 Inspector 左描边。 */
+/* 三栏由同一个 flex 容器管理；正文使用独立表面色，顶部通高到窗口上缘。 */
 .biny-content-shell {
   order: 0;
   min-width: 0;
@@ -739,7 +392,7 @@
 
 .biny-inspector-rail-btn.is-active {
   background: var(--biny-surface-selected);
-  color: var(--biny-text);
+  color: var(--biny-accent);
 }
 
 /* dock 头部的横向 tab 行：占满头部剩余宽度，窄面板时 tab 收成纯图标。 */
@@ -794,7 +447,7 @@
 
 .biny-inspector-tab.is-active {
   background: var(--biny-surface-selected);
-  color: var(--biny-text);
+  color: var(--biny-accent);
 }
 
 /* tab/rail 徽标：变更文件数（tab 上跟在标签后，rail 上挂在按钮右上角）。 */
@@ -807,7 +460,7 @@
   padding: 0 4px;
   border-radius: 999px;
   background: var(--biny-focus);
-  color: #ffffff;
+  color: var(--accent-foreground);
   font-size: 9.5px;
   font-weight: 600;
   line-height: 1;
@@ -1367,8 +1020,6 @@
   --biny-sidebar-hover-duration: 120ms;
   --biny-sidebar-row-duration: 160ms;
   --biny-sidebar-hover-ease: cubic-bezier(0.2, 0, 0, 1);
-  --biny-sidebar-edge-light: color-mix(in srgb, white 14%, transparent);
-  --biny-sidebar-row-shadow: 0 2px 5px -2px var(--biny-shadow-sidebar);
   position: relative;
   z-index: 3;
   display: flex;
@@ -1430,16 +1081,10 @@
   flex-direction: column;
   box-sizing: border-box;
   overflow: hidden;
-  /* 仅保留紧贴卡片的轻阴影，避免右缘形成宽黑带。 */
   border: 1px solid var(--biny-sidebar-border);
-  border-radius: 16px;
-  background: linear-gradient(165deg,
-    color-mix(in srgb, var(--biny-surface-elevated) 40%, var(--biny-sidebar-surface)),
-    var(--biny-sidebar-surface) 42%);
-  box-shadow:
-    inset 0 1px 0 var(--biny-sidebar-edge-light),
-    inset 1px 0 0 var(--biny-sidebar-edge-light),
-    0 1px 4px -2px var(--biny-shadow-sidebar);
+  border-radius: 12px;
+  background: var(--biny-sidebar-surface);
+  box-shadow: 0 1px 3px var(--biny-shadow-color);
   margin-inline: 10px;
   /* 保持独立合成层，开合只改变透明度，避免末尾位移归零时重新合成造成闪边。 */
   transform: translateZ(0);
@@ -1607,8 +1252,8 @@
 
 /* 菜单已打开的按钮保持选中底色，hover 不再把它盖回浅灰。 */
 .biny-composer-action[data-active="true"] {
-  background: var(--biny-surface-selected);
-  color: var(--biny-text);
+  background: var(--biny-accent-soft);
+  color: var(--biny-accent);
 }
 
 .biny-composer-action:active:not(:disabled):not([aria-disabled="true"]) {
@@ -1709,8 +1354,7 @@
   align-items: center;
   padding: 6px 8px;
   border-top: 1px solid var(--biny-sidebar-border);
-  background: color-mix(in srgb, var(--biny-sidebar-surface) 80%, var(--biny-surface-elevated));
-  box-shadow: inset 0 1px 0 var(--biny-sidebar-edge-light);
+  background: var(--biny-sidebar-surface);
 }
 
 .biny-sidebar-footer .biny-sidebar-settings-item {
@@ -2050,8 +1694,7 @@
 }
 
 .biny-project-row-wrap.is-active {
-  background: var(--biny-surface-selected, var(--biny-surface-hover));
-  box-shadow: inset 0 1px 0 var(--biny-sidebar-edge-light), var(--biny-sidebar-row-shadow);
+  background: var(--biny-surface-selected);
 }
 
 .biny-project-row {
@@ -2230,11 +1873,7 @@
 }
 
 .biny-sidebar-session-tree-row.is-selected {
-  background: linear-gradient(180deg,
-    color-mix(in srgb, var(--biny-surface-elevated) 35%, var(--biny-selection-surface)),
-    var(--biny-selection-surface));
-  box-shadow: inset 0 1px 0 var(--biny-sidebar-edge-light),
-    inset 0 0 0 1px var(--biny-sidebar-border), var(--biny-sidebar-row-shadow);
+  background: var(--biny-selection-surface);
 }
 
 .biny-sidebar-session-entry {
@@ -2362,6 +2001,7 @@
 }
 
 .biny-sidebar-session-tree-row.is-selected .biny-sidebar-session-title {
+  color: var(--biny-accent);
   font-weight: 600;
 }
 
@@ -2856,10 +2496,15 @@
   border: 1px solid var(--biny-border);
   border-radius: var(--biny-composer-radius);
   background: var(--biny-surface-elevated);
-  box-shadow: none;
+  box-shadow: 0 2px 8px var(--biny-shadow-color);
   color: var(--biny-text);
   -webkit-app-region: no-drag;
   app-region: no-drag;
+}
+
+.biny-composer:has(textarea:focus-visible) {
+  border-color: var(--biny-focus);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--biny-focus) 12%, transparent);
 }
 
 
@@ -3670,7 +3315,7 @@ button.capability-check[aria-checked="true"] {
   justify-content: center;
   flex: 0 0 auto;
   border: 0;
-  border-radius: 50%;
+  border-radius: 10px;
   background: var(--biny-send-bg);
   color: var(--biny-send-icon);
   cursor: pointer;
@@ -3683,6 +3328,7 @@ button.capability-check[aria-checked="true"] {
 }
 
 .biny-send-button:not(:disabled):not([aria-disabled="true"]):hover {
+  background: var(--accent-hover);
   transform: translateY(-1px);
 }
 
@@ -3756,7 +3402,7 @@ button.capability-check[aria-checked="true"] {
   .attachment-card button:focus-visible, .attachment-image-dialog button:focus-visible { outline-color: Highlight; }
 }
 .attachment-image-dialog { width: min(900px, 90vw); max-height: 90vh; padding: 16px; border: 1px solid var(--biny-border); border-radius: 16px; background: var(--biny-surface); color: var(--biny-text); }
-.attachment-image-dialog::backdrop { background: rgb(0 0 0 / 55%); }
+.attachment-image-dialog::backdrop { background: var(--image-overlay); }
 .attachment-image-dialog header { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 12px; }
 .attachment-image-dialog header span { overflow-wrap: anywhere; }
 .attachment-image-dialog button { display: grid; place-items: center; flex-shrink: 0; padding: 6px; border: 0; border-radius: 6px; background: transparent; color: inherit; cursor: pointer; }
@@ -4406,7 +4052,7 @@ button.capability-check[aria-checked="true"] {
 
 .biny-chat-toolbar.is-scrolled {
   border-bottom-color: color-mix(in srgb, var(--biny-border) 50%, transparent);
-  box-shadow: 0 2px 8px rgb(0 0 0 / 15%);
+  box-shadow: 0 2px 8px var(--biny-shadow-color);
 }
 
 .biny-chat-navigation {
@@ -5625,6 +5271,7 @@ button.capability-check[aria-checked="true"] {
 
 @media (prefers-reduced-motion: reduce) {
   .desktop-root.biny-root,
+  .biny-app-shell,
   .biny-sidebar,
   .biny-sidebar-card,
   .biny-sidebar-pin-spacer,
@@ -5759,6 +5406,8 @@ button.capability-check[aria-checked="true"] {
 }
 
 .biny-extension-tabs button.is-active {
+  color: var(--biny-accent);
+  background: var(--biny-accent-soft);
   font-weight: 650;
 }
 
@@ -7542,7 +7191,7 @@ button.capability-check[aria-checked="true"] {
   color: var(--biny-text);
   background: var(--biny-surface);
   font-weight: 650;
-  box-shadow: 0 1px 2px rgb(0 0 0 / 12%);
+  box-shadow: 0 1px 2px var(--shadow-soft);
 }
 
 .biny-mcp-tabs button span {
@@ -7774,7 +7423,7 @@ button.capability-check[aria-checked="true"] {
   border: 1px solid var(--biny-border);
   border-radius: var(--biny-radius-card);
   background: var(--biny-surface-elevated);
-  box-shadow: 0 1px 2px rgb(0 0 0 / 8%);
+  box-shadow: 0 1px 2px var(--shadow-soft);
 }
 
 .biny-mcp-market-card,
@@ -8531,8 +8180,8 @@ button.capability-check[aria-checked="true"] {
 }
 
 .biny-mcp-test-result.is-error {
-  color: var(--biny-warning);
-  background: var(--biny-warning-bg);
+  color: var(--biny-danger);
+  background: var(--biny-danger-bg);
 }
 
 .biny-mcp-test-result div {
@@ -9060,7 +8709,7 @@ button.capability-check[aria-checked="true"] {
   height: 18px;
   border-radius: 50%;
   background: var(--biny-surface-elevated);
-  box-shadow: 0 1px 3px rgb(0 0 0 / 22%);
+  box-shadow: 0 1px 3px var(--shadow-heavy);
   transition: transform 140ms ease;
 }
 
@@ -9147,7 +8796,7 @@ button.capability-check[aria-checked="true"] {
 }
 
 .settings-plugin-tabs button.is-active {
-  box-shadow: 0 1px 2px rgb(0 0 0 / 12%);
+  box-shadow: 0 1px 2px var(--shadow-soft);
 }
 
 .settings-plugin-toolbar > .settings-plugin-action:first-of-type {
@@ -9779,19 +9428,19 @@ button.capability-check[aria-checked="true"] {
 /* 上下文设置页：压缩阈值滑块与高级区 */
 .compaction-threshold-field { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
 .compaction-threshold-field span { display: flex; justify-content: space-between; align-items: baseline; }
-.compaction-threshold-field em { font-style: normal; color: var(--muted-foreground); font-variant-numeric: tabular-nums; }
+.compaction-threshold-field em { font-style: normal; color: var(--text-secondary); font-variant-numeric: tabular-nums; }
 .compaction-threshold-field input[type="range"] { width: 100%; accent-color: var(--accent); }
-.compaction-hint { display: block; margin-top: 6px; color: var(--muted-foreground); }
+.compaction-hint { display: block; margin-top: 6px; color: var(--text-secondary); }
 .compaction-model-select { min-width: 240px; }
 .compaction-advanced { margin-top: 4px; }
-.compaction-advanced > summary { cursor: pointer; color: var(--muted-foreground); user-select: none; }
-.compaction-advanced > summary:hover { color: var(--foreground); }
+.compaction-advanced > summary { cursor: pointer; color: var(--text-secondary); user-select: none; }
+.compaction-advanced > summary:hover { color: var(--text); }
 
 /* 聊天参数页：温度滑块刻度与重置。刻度容器必须与滑轨同宽（均为 100%）；
    中点刻度绝对定位钉在 50% 才能对准 thumb 在 1.0 时的中心，两端贴边而不做
    translateX(-50%)，否则文本会探出卡片内边距。 */
 .compaction-threshold-field .chat-temperature-scale { position: relative; display: block; height: 13px; }
-.chat-temperature-scale i { position: absolute; top: 0; font-style: normal; color: var(--muted-foreground); font-size: 11px; line-height: 13px; }
+.chat-temperature-scale i { position: absolute; top: 0; font-style: normal; color: var(--text-secondary); font-size: 11px; line-height: 13px; }
 .chat-temperature-scale i:first-child { left: 0; }
 .chat-temperature-scale i:nth-child(2) { left: 50%; transform: translateX(-50%); }
 .chat-temperature-scale i:last-child { right: 0; }
@@ -10073,7 +9722,7 @@ button.capability-check[aria-checked="true"] {
 .desktop-settings-dialog .settings-modal .biny-mcp-search:focus-within,
 .desktop-settings-dialog .settings-modal .settings-extension-search:focus-within {
   border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
-  box-shadow: 0 0 0 3px var(--st-ring, rgb(0 0 0 / 10%));
+  box-shadow: 0 0 0 3px var(--st-ring, var(--shadow-soft));
   outline: none;
 }
 
@@ -10093,9 +9742,9 @@ button.capability-check[aria-checked="true"] {
   padding: 0 calc(var(--st-control-px, 11.7px) - 0.15 * var(--st-rem, 13px));
   border: 1px solid transparent;
   border-radius: var(--st-radius, 12px);
-  color: var(--st-on-primary, #fff);
+  color: var(--st-on-primary, var(--accent-foreground));
   background: var(--st-primary, var(--accent));
-  box-shadow: 0 1px 2px rgb(0 0 0 / 5%);
+  box-shadow: 0 1px 2px var(--shadow);
   font-size: calc(0.875 * var(--st-rem, 13px));
   font-weight: 500;
   transition: background-color 0.15s var(--st-ease, ease), border-color 0.15s var(--st-ease, ease), color 0.15s var(--st-ease, ease), box-shadow 0.15s var(--st-ease, ease);
@@ -10129,7 +9778,7 @@ button.capability-check[aria-checked="true"] {
   border-radius: var(--st-radius, 12px);
   color: var(--text);
   background: transparent;
-  box-shadow: 0 1px 2px rgb(0 0 0 / 5%);
+  box-shadow: 0 1px 2px var(--shadow);
   font-size: calc(0.875 * var(--st-rem, 13px));
   font-weight: 500;
   transition: background-color 0.15s var(--st-ease, ease), border-color 0.15s var(--st-ease, ease), color 0.15s var(--st-ease, ease), box-shadow 0.15s var(--st-ease, ease);
@@ -10149,7 +9798,7 @@ button.capability-check[aria-checked="true"] {
 .desktop-settings-dialog .settings-modal .biny-mcp-danger-button,
 .desktop-settings-dialog .settings-modal .settings-plugin-danger-button {
   border-color: color-mix(in srgb, var(--red) 35%, transparent);
-  color: var(--red);
+  color: var(--red-text);
 }
 
 .desktop-settings-dialog .settings-modal .biny-mcp-danger-button:hover:not(:disabled),
@@ -10196,7 +9845,7 @@ button.capability-check[aria-checked="true"] {
 
 .desktop-settings-dialog .settings-modal .biny-mcp-row-actions button.is-danger {
   border-color: color-mix(in srgb, var(--red) 35%, transparent);
-  color: var(--red);
+  color: var(--red-text);
 }
 
 .desktop-settings-dialog .settings-modal .biny-mcp-row-actions button.is-danger:hover:not(:disabled) {
@@ -10218,16 +9867,17 @@ button.capability-check[aria-checked="true"] {
   width: calc(16px * var(--font-scale, 1));
   height: calc(16px * var(--font-scale, 1));
   border-radius: 999px;
-  background: #fff;
-  box-shadow: 0 1px 2px rgb(0 0 0 / 12%);
+  background: var(--switch-thumb);
+  box-shadow: 0 1px 2px var(--shadow-soft);
   transition: transform 0.15s var(--st-ease, ease);
 }
 
 .desktop-settings-dialog .settings-modal .settings-extension-switch.is-on {
-  background: #309cff;
+  background: var(--accent);
 }
 
 .desktop-settings-dialog .settings-modal .settings-extension-switch.is-on span {
+  background: var(--accent-foreground);
   transform: translateX(calc(12px * var(--font-scale, 1)));
 }
 
@@ -10376,7 +10026,7 @@ button.capability-check[aria-checked="true"] {
 .web-search-cookie-actions { margin-top: 30px; padding-top: 18px; border-top: 1px solid var(--border); }
 .web-search-cookie-actions h4 { margin: 0; }
 
-/* 设置中的操作按钮始终有边界；导航、开关、标签、选项卡和纯图标控件保留各自形态。 */
+/* 次要操作保留细边框，辅助操作只在悬停时显底色，避免与保存、连接争夺注意力。 */
 .desktop-settings-dialog .settings-modal :is(
   .settings-secondary-button,
   .ghost-button,
@@ -10386,15 +10036,17 @@ button.capability-check[aria-checked="true"] {
   .biny-mcp-secondary-button,
   .biny-mcp-row-actions button,
   .biny-mcp-clipboard-button,
-  .biny-mcp-link-action,
   .settings-extension-list-heading button,
   .settings-plugin-action
 ) {
+  box-sizing: border-box;
+  min-height: var(--st-button-height);
   border: 1px solid var(--st-action-border);
   border-radius: var(--st-button-radius);
   color: var(--text);
   background: var(--st-action-bg);
-  box-shadow: 0 1px 2px rgb(0 0 0 / 8%);
+  box-shadow: none;
+  font-size: var(--st-button-font-size);
   cursor: pointer;
 }
 
@@ -10407,7 +10059,6 @@ button.capability-check[aria-checked="true"] {
   .biny-mcp-secondary-button,
   .biny-mcp-row-actions button,
   .biny-mcp-clipboard-button,
-  .biny-mcp-link-action,
   .settings-extension-list-heading button,
   .settings-plugin-action
 ):hover:not(:disabled) {
@@ -10418,7 +10069,7 @@ button.capability-check[aria-checked="true"] {
 .desktop-settings-dialog .settings-modal .login-code-actions > button:last-child {
   border-color: var(--st-action-border);
   background: var(--st-action-bg);
-  box-shadow: 0 1px 2px rgb(0 0 0 / 8%);
+  box-shadow: none;
 }
 
 .desktop-settings-dialog .settings-modal .login-code-actions > button:last-child:hover:not(:disabled) {
@@ -10432,7 +10083,7 @@ button.capability-check[aria-checked="true"] {
 ) {
   border-color: var(--st-action-border);
   background: var(--st-action-bg);
-  box-shadow: 0 1px 2px rgb(0 0 0 / 8%);
+  box-shadow: none;
 }
 
 .desktop-settings-dialog .settings-modal :is(
@@ -10448,11 +10099,19 @@ button.capability-check[aria-checked="true"] {
   .danger-text-button,
   button.settings-link,
   .chat-temperature-reset,
+  .biny-mcp-link-action,
   .activity-memory-disclosure,
   .settings-skill-content-toggle
 ) {
   min-height: var(--st-button-height);
-  padding: 0 var(--st-button-padding);
+  padding: 0 calc(8px * var(--font-scale, 1));
+  border: 1px solid transparent;
+  border-radius: var(--st-button-radius);
+  color: var(--text-secondary);
+  background: transparent;
+  box-shadow: none;
+  font-size: var(--st-button-font-size);
+  line-height: 1.4;
   white-space: nowrap;
   cursor: pointer;
 }
@@ -10480,9 +10139,9 @@ button.capability-check[aria-checked="true"] {
   .biny-mcp-danger-button,
   .settings-plugin-danger-button
 ) {
-  border-color: color-mix(in srgb, var(--red) 58%, var(--surface-raised));
-  color: var(--red);
-  background: color-mix(in srgb, var(--red) 7%, var(--surface-raised));
+  border-color: var(--border);
+  color: var(--red-text);
+  background: transparent;
 }
 
 .desktop-settings-dialog .settings-modal :is(
@@ -10495,6 +10154,7 @@ button.capability-check[aria-checked="true"] {
   .settings-plugin-danger-button
 ):hover:not(:disabled) {
   border-color: var(--red);
+  color: var(--red-text);
   background: var(--red-bg);
 }
 
@@ -10508,6 +10168,7 @@ button.capability-check[aria-checked="true"] {
   .danger-text-button,
   button.settings-link,
   .chat-temperature-reset,
+  .biny-mcp-link-action,
   .activity-memory-disclosure,
   .settings-skill-content-toggle,
   .provider-test-button,

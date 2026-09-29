@@ -13,6 +13,7 @@ import { CopyButton } from "./CopyButton.js";
 import { DownloadButton } from "./MarkdownDownload.js";
 import { Icon } from "./Icon.js";
 import { MarkdownCodeBlock } from "./MarkdownCodeBlock.js";
+import { readThemeColors } from "../themeColors.js";
 
 /** 流式增量到达频繁，debounce 掉中间态，只在停顿后尝试渲染。 */
 const MERMAID_DEBOUNCE_MS = 300;
@@ -68,15 +69,22 @@ export function MermaidBlock({ code }: { code: string }): React.JSX.Element {
 type MermaidApi = (typeof import("mermaid"))["default"];
 
 let mermaidPromise: Promise<MermaidApi> | undefined;
-let initializedTheme: "dark" | "default" | undefined;
+let initializedTheme: string | undefined;
 let renderSequence = 0;
 
 async function renderMermaid(source: string, dark: boolean): Promise<string> {
   const mermaid = await (mermaidPromise ??= import("mermaid").then((module) => module.default));
-  const theme = dark ? "dark" : "default";
+  const themeVariables = { darkMode: dark, ...readThemeColors(document.body, {
+    background: "--bg", primaryColor: "--surface-soft", primaryTextColor: "--text", primaryBorderColor: "--border-strong",
+    lineColor: "--text-secondary", textColor: "--text", secondaryColor: "--accent-soft", secondaryTextColor: "--text",
+    secondaryBorderColor: "--accent", tertiaryColor: "--surface-raised", tertiaryTextColor: "--text", tertiaryBorderColor: "--border",
+    noteBkgColor: "--amber-bg", noteTextColor: "--amber-text", noteBorderColor: "--amber",
+    edgeLabelBackground: "--surface-raised", clusterBkg: "--surface-soft", clusterBorder: "--border", titleColor: "--text"
+  }) };
+  const theme = JSON.stringify(themeVariables);
   if (initializedTheme !== theme) {
     // startOnLoad=false + suppressErrorRendering：手动控制渲染，不往页面注入错误 SVG
-    mermaid.initialize({ startOnLoad: false, theme, suppressErrorRendering: true });
+    mermaid.initialize({ startOnLoad: false, theme: "base", themeVariables, suppressErrorRendering: true });
     initializedTheme = theme;
   }
   const id = `biny-mermaid-${++renderSequence}`;

@@ -51,5 +51,5 @@
 .crystal-welcome { align-self: center; display: grid; gap: 17px; padding: 48px; color: var(--text-secondary); line-height: 1.8; }
 .crystal-welcome h2 { font-size: 21px; color: var(--text); font-weight: 500; }
 .crystal-welcome p { font-size: 13px; }
-.crystal-error { color: var(--red); background: var(--red-bg); padding: 10px 18px; font-size: 13px; }
+.crystal-error { color: var(--red-text); background: var(--red-bg); padding: 10px 18px; font-size: 13px; }
 @media (max-width: 640px) { .crystal-layout { grid-template-columns: 180px minmax(0, 1fr); } .crystal-detail { padding: 18px; } .crystal-welcome { padding: 22px; } }

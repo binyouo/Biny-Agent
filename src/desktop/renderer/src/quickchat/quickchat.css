@@ -36,14 +36,14 @@ textarea,
 }
 
 .quickchat-root {
-  --quickchat-surface: var(--surface-raised, var(--color-background-surface, #ffffff));
-  --quickchat-soft: var(--surface-soft, var(--color-background-gray, #f5f6f8));
-  --quickchat-text: var(--text, var(--color-text-primary, #1a1c1f));
-  --quickchat-secondary: var(--text-secondary, var(--color-text-secondary, #6b6f76));
-  --quickchat-tertiary: var(--text-tertiary, var(--color-text-tertiary, #92969e));
-  --quickchat-border: var(--border, var(--color-border, #e5e7eb));
-  --quickchat-border-strong: var(--border-strong, var(--color-border-strong, #cfd4dc));
-  --quickchat-accent: var(--accent, var(--color-accent, #339cff));
+  --quickchat-surface: var(--surface-raised);
+  --quickchat-soft: var(--surface-soft);
+  --quickchat-text: var(--text);
+  --quickchat-secondary: var(--text-secondary);
+  --quickchat-tertiary: var(--text-tertiary);
+  --quickchat-border: var(--border);
+  --quickchat-border-strong: var(--border-strong);
+  --quickchat-accent: var(--accent);
   display: flex;
   position: relative;
   isolation: isolate;
@@ -57,7 +57,7 @@ textarea,
   border: 1px solid color-mix(in srgb, var(--quickchat-border) 84%, transparent);
   border-radius: 18px;
   background: color-mix(in srgb, var(--quickchat-surface) 94%, transparent);
-  box-shadow: 0 18px 55px rgb(0 0 0 / 22%);
+  box-shadow: 0 18px 55px var(--shadow-heavy);
   color: var(--quickchat-text);
   backdrop-filter: blur(24px) saturate(1.15);
 }
@@ -318,8 +318,8 @@ textarea,
   max-width: 82%;
   padding: 8px 12px;
   border-radius: 12px 12px 4px 12px;
-  background: var(--quickchat-accent);
-  color: #fff;
+  background: var(--user-bubble);
+  color: var(--text);
   white-space: pre-wrap;
 }
 
@@ -433,8 +433,8 @@ textarea,
 }
 
 .quickchat-error {
-  border-color: color-mix(in srgb, var(--red, #d54848) 42%, var(--quickchat-border));
-  color: var(--red, #d54848);
+  border-color: color-mix(in srgb, var(--red) 42%, var(--quickchat-border));
+  color: var(--red-text);
 }
 
 .quickchat-composer {
@@ -494,10 +494,11 @@ textarea,
   justify-content: center;
   border-radius: 8px;
   background: var(--quickchat-accent);
-  color: #fff;
+  color: var(--accent-foreground);
 }
 
-.quickchat-send:hover:not(:disabled) { filter: brightness(1.06); }
+.quickchat-send:hover:not(:disabled) { background: var(--accent-hover); }
+.quickchat-send:disabled { color: var(--text-tertiary); background: var(--surface-soft); }
 
 @media (prefers-reduced-motion: reduce) {
   .quickchat-typing i { animation: none; }

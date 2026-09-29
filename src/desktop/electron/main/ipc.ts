@@ -1496,7 +1496,7 @@ function applyNativeThemePreference(preference: DesktopThemePreference): void {
 
 function themeBackgroundColor(preference: DesktopThemePreference): string {
   const dark = preference === "dark" || (preference === "system" && nativeTheme.shouldUseDarkColors);
-  return dark ? "#1c1c1c" : "#ffffff";
+  return dark ? "#1a1a1e" : "#f4f4f6";
 }
 
 /** 先移除同名 handler 再注册：重复注册会被 Electron 直接拒绝（开发期热重载会遇到）。 */

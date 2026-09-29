@@ -3,6 +3,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import type { DesktopTerminalTab } from "../../../protocol.js";
+import { readThemeColors } from "../themeColors.js";
 import { Icon } from "./Icon.js";
 import "@xterm/xterm/css/xterm.css";
 
@@ -91,10 +92,18 @@ function TerminalScreen({ projectId, slotId, active, onHandle }: { projectId: st
     let terminalId: string | undefined;
     let disposed = false;
     const applyTheme = (): void => {
-      const styles = getComputedStyle(container);
-      term.options.theme = { background: styles.getPropertyValue("--code").trim(), foreground: styles.getPropertyValue("--text").trim(), cursor: styles.getPropertyValue("--text").trim() };
+      term.options.theme = readThemeColors(container, {
+        background: "--code", foreground: "--text", cursor: "--accent", cursorAccent: "--code",
+        selectionBackground: "--text-selection", selectionForeground: "--text",
+        black: "--text-secondary", red: "--red-text", green: "--green-text", yellow: "--amber-text",
+        blue: "--syntax-function", magenta: "--syntax-keyword", cyan: "--syntax-type", white: "--text",
+        brightBlack: "--text-tertiary", brightRed: "--red-text", brightGreen: "--green-text", brightYellow: "--amber-text",
+        brightBlue: "--syntax-function", brightMagenta: "--syntax-operator", brightCyan: "--syntax-type", brightWhite: "--text"
+      });
     };
     applyTheme();
+    const themeMedia = window.matchMedia("(prefers-color-scheme: dark)");
+    themeMedia.addEventListener("change", applyTheme);
     const themeObserver = new MutationObserver(applyTheme);
     themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ["class", "style", "data-theme"] });
     const fitVisible = (): void => { if (activeRef.current && container.clientWidth > 40 && container.clientHeight > 40) fit.fit(); };
@@ -120,7 +129,7 @@ function TerminalScreen({ projectId, slotId, active, onHandle }: { projectId: st
       fitVisible();
       if (activeRef.current) term.focus();
     }).catch((reason: unknown) => { if (!disposed) setError(String(reason)); });
-    return () => { disposed = true; observer.disconnect(); themeObserver.disconnect(); unsubscribe(); data.dispose(); resize.dispose(); term.dispose(); terminalRef.current = undefined; fitRef.current = undefined; };
+    return () => { disposed = true; observer.disconnect(); themeObserver.disconnect(); themeMedia.removeEventListener("change", applyTheme); unsubscribe(); data.dispose(); resize.dispose(); term.dispose(); terminalRef.current = undefined; fitRef.current = undefined; };
   }, [projectId, slotId, restartToken]);
   useEffect(() => {
     if (!active) return;

@@ -44,7 +44,7 @@
 .file-browser-current-path > svg, .file-browser-current-path > button { flex-shrink: 0; }
 .file-browser-current-path button { display: grid; place-items: center; width: 28px; height: 28px; border: 0; border-radius: 5px; background: transparent; color: inherit; }
 .file-tree-row { min-height: 29px; }
-.file-tree-row.is-selected { background: var(--biny-surface-selected); color: var(--biny-text); }
+.file-tree-row.is-selected { background: var(--biny-surface-selected); color: var(--biny-accent); }
 .inspector-review, .inspector-sidechat, .inspector-terminals { display: flex; flex-direction: column; width: 100%; height: 100%; min-height: 0; background: var(--biny-surface); }
 .inspector-result-scroll { flex: 1; min-height: 0; overflow: auto; padding: 14px; scrollbar-gutter: stable; }
 .inspector-result-scroll .markdown-body { font-size: 13px; line-height: 1.65; overflow-wrap: anywhere; }
@@ -145,8 +145,6 @@
 .biny-root[data-inspector-focused="true"] .biny-app-shell > .desktop-inspector-wrap {
   transition: none;
 }
-/* rail 固定在窗口右缘，避免开合时跟着面板左缘穿过聊天正文。 */
-.biny-root .biny-inspector-rail { right: 10px; }
 @starting-style {
   .biny-root .biny-app-shell > .desktop-inspector-wrap.is-open { width: 0px; opacity: 0; }
   .biny-root .biny-inspector-rail.is-visible { opacity: 0; transform: translateX(88px); }
@@ -266,7 +264,7 @@
 .inspector-profile-anchor { position: relative; flex: 0 0 auto; }
 .inspector-profile-anchor > button { display: grid; place-items: center; width: 28px; height: 28px; padding: 0; border: 0; border-radius: 5px; color: inherit; background: transparent; cursor: pointer; }
 .inspector-profile-anchor > button:hover, .inspector-profile-anchor > button[aria-expanded="true"] { color: var(--biny-text); background: var(--biny-surface-hover); }
-.inspector-profile-picker { position: absolute; z-index: 20; top: calc(100% + 8px); left: 0; width: min(320px, calc(100vw - 48px)); max-height: 360px; overflow: auto; padding: 12px; border: 1px solid var(--biny-border); border-radius: 10px; background: var(--biny-surface-elevated); box-shadow: 0 12px 30px rgb(0 0 0 / .25); color: var(--biny-text); }
+.inspector-profile-picker { position: absolute; z-index: 20; top: calc(100% + 8px); left: 0; width: min(320px, calc(100vw - 48px)); max-height: 360px; overflow: auto; padding: 12px; border: 1px solid var(--biny-border); border-radius: 10px; background: var(--biny-surface-elevated); box-shadow: 0 12px 30px var(--shadow-heavy); color: var(--biny-text); }
 .inspector-profile-picker > strong { font-size: 13px; }
 .inspector-profile-picker > p { margin: 6px 0 10px; color: var(--biny-text-secondary); font-size: 12px; line-height: 1.5; }
 .inspector-profile-picker > small { display: block; padding: 8px 0; color: var(--biny-text-secondary); }

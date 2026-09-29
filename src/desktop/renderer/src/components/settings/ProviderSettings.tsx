@@ -1455,7 +1455,7 @@ function ConnectedProviderPanel({
             {catalog.badge ? <span className="provider-panel-badge">{catalog.badge}</span> : null}
             {status
               ? <span className={`status-pill is-${status.tone}`}>{status.label}</span>
-              : <span className="status-pill is-accent">{group.models.some((model) => model.showInPicker !== false) ? "已启用" : "未启用"}</span>}
+              : <span className={`status-pill${group.models.some((model) => model.showInPicker !== false) ? " is-ok" : " is-muted"}`}>{group.models.some((model) => model.showInPicker !== false) ? "已启用" : "未启用"}</span>}
           </h3>
           <p>{catalog.description}</p>
         </div>

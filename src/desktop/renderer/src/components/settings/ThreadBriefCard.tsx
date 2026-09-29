@@ -1,4 +1,4 @@
-/** 设置 → 数据中的配置卡片；开关即时保存，数字失焦保存，不提供摘要浏览入口。 */
+/** 设置 → 记忆与数据 → 对话摘要中的配置卡片；开关即时保存，数字失焦保存，不提供摘要浏览入口。 */
 import React, { useEffect, useRef, useState } from "react";
 import type { ThreadBriefSettings } from "../../../../../session/threadBriefTypes.js";
 import { useThreadBrief } from "../../threadBrief/context.js";
