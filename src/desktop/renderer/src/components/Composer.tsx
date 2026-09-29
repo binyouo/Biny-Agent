@@ -6,7 +6,7 @@ import type { LocalReferenceResult } from "../../../../session/localReferences.j
  * Agent 执行仍沿用原有数据流。输入与补全的局部交互由 PromptInput 负责。
  */
 import { useTooltip } from "@astryxdesign/core/Tooltip";
-import { memo, useCallback, useEffect, useImperativeHandle, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useImperativeHandle, useRef, useState, useSyncExternalStore } from "react";
 import type { AgentSessionInfo } from "../../../../agent/AgentSession.js";
 import type { AgentCapabilitySelection } from "../../../../agent/capabilitySelection.js";
 import type { ModelChoice } from "../../../../llm/ModelManager.js";
@@ -28,8 +28,9 @@ import { isResumeInput } from "./composer/resumeInput.js";
 import { SendOrStopButton } from "./composer/SendOrStopButton.js";
 import { PromptInput } from "./composer/PromptInput.js";
 import { insertDraftReference, materializeDraftReferences, normalizeDraftReferences, reconcileDraftReferenceChange,
-  referenceDraftHistoryStep, type DraftReferenceToken, type ReferenceDraft, type ReferenceDraftTransition } from "./composer/referenceCompletion.js";
+  referenceDraftHistoryStep, type ReferenceDraft, type ReferenceDraftTransition } from "./composer/referenceCompletion.js";
 import type { QueuedRunMessageSnapshot } from "../../../../runtime/agentEvents.js";
+import { ComposerDraftState } from "./composer/composerDraft.js";
 import { QueuedMessages } from "./composer/QueuedMessages.js";
 
 export type ComposerMemoryState = "unknown" | "enabled" | "disabled";
@@ -42,6 +43,8 @@ export interface ComposerHandle {
 interface ComposerProps {
   ref?: React.Ref<ComposerHandle>;
   project?: DesktopProject;
+  drafts: Map<string, ComposerDraftState>;
+  draftKey: string;
   runtimeInfo?: AgentSessionInfo;
   models: ModelChoice[];
   /** 已解析好的上下文用量；取不到真实数字时为空，此时不展示用量。 */
@@ -103,6 +106,8 @@ function selectionFromDefaults(defaults: DesktopCapabilityDefaults): AgentCapabi
 export const Composer = memo(function Composer({
   ref,
   project,
+  drafts,
+  draftKey,
   runtimeInfo,
   models,
   contextUsage,
@@ -141,47 +146,71 @@ export const Composer = memo(function Composer({
   onWarning,
   onSubmitError
 }: ComposerProps): React.JSX.Element {
-  const [input, setInput] = useState("");
-  const [referenceTokens, setReferenceTokens] = useState<DraftReferenceToken[]>([]);
-  const draftRef = useRef<ReferenceDraft>({ value: "", tokens: [] });
-  const historyRef = useRef<ReferenceDraftTransition[]>([]);
+  const [draftState] = useState(() => {
+    let state = drafts.get(draftKey);
+    if (!state) { state = new ComposerDraftState(); drafts.set(draftKey, state); }
+    return state;
+  });
+  const snapshot = useSyncExternalStore(draftState.subscribe, draftState.getSnapshot, draftState.getSnapshot);
+  const [editDraft, setEditDraft] = useState<ReferenceDraft>({ value: "", tokens: [] });
+  const editDraftRef = useRef(editDraft);
+  const editHistory = useRef<ReferenceDraftTransition[]>([]);
+  const editing = editingMessage !== undefined;
+  const input = editing ? editDraft.value : snapshot.draft.value;
+  const referenceTokens = editing ? editDraft.tokens : snapshot.draft.tokens;
+  const currentDraft = (): ReferenceDraft => editing ? editDraftRef.current : draftState.getSnapshot().draft;
+  const clearHistory = (): void => {
+    if (editing) editHistory.current = [];
+    else draftState.update({ history: [] });
+  };
   const setDraft = useCallback((draft: ReferenceDraft): void => {
-    draftRef.current = draft;
-    setInput(draft.value);
-    setReferenceTokens(draft.tokens);
-  }, []);
+    if (editing) { editDraftRef.current = draft; setEditDraft(draft); }
+    else draftState.update({ draft });
+  }, [draftState, editing]);
   const rememberDraft = useCallback((draft: ReferenceDraft): void => {
-    historyRef.current.push({ before: draftRef.current, after: draft });
-    if (historyRef.current.length > 100) historyRef.current.shift();
-    setDraft(draft);
-  }, [setDraft]);
-  const changeDraft = useCallback((value: string, inputType?: string): void => {
-    const previous = draftRef.current;
+    if (editing) {
+      editHistory.current = [...editHistory.current, { before: editDraftRef.current, after: draft }].slice(-100);
+      editDraftRef.current = draft;
+      setEditDraft(draft);
+    } else {
+      draftState.update((current) => ({ draft, history: [...current.history, { before: current.draft, after: draft }].slice(-100) }));
+    }
+  }, [draftState, editing]);
+  const changeDraft = (value: string, inputType?: string): void => {
+    const previous = currentDraft();
     if (inputType === "historyUndo" || inputType === "historyRedo") {
-      const restored = referenceDraftHistoryStep(previous, value, inputType === "historyUndo" ? "undo" : "redo", historyRef.current);
+      const history = editing ? editHistory.current : draftState.getSnapshot().history;
+      const restored = referenceDraftHistoryStep(previous, value, inputType === "historyUndo" ? "undo" : "redo", history);
       if (restored) { setDraft(restored); return; }
     }
     const tokens = reconcileDraftReferenceChange(previous.value, value, previous.tokens);
     rememberDraft(normalizeDraftReferences(value, tokens));
-  }, [rememberDraft, setDraft]);
-  const [attachments, setAttachments] = useState<DesktopAttachment[]>([]);
-  const [pendingAttachments, setPendingAttachments] = useState<PendingAttachment[]>([]);
+  };
+  const attachments = editing ? [] : snapshot.attachments;
+  const pendingAttachments = editing ? [] : snapshot.pendingAttachments;
+  const setAttachments = (change: DesktopAttachment[] | ((current: DesktopAttachment[]) => DesktopAttachment[])): void => {
+    draftState.update((current) => ({ attachments: typeof change === "function" ? change(current.attachments) : change }));
+  };
+  const setPendingAttachments = (change: PendingAttachment[] | ((current: PendingAttachment[]) => PendingAttachment[])): void => {
+    draftState.update((current) => ({ pendingAttachments: typeof change === "function" ? change(current.pendingAttachments) : change }));
+  };
   const [capabilitySelection, setCapabilitySelection] = useState<AgentCapabilitySelection>(() => selectionFromDefaults(capabilityDefaults));
   const [menu, setMenu] = useState<ComposerMenu>(null);
-  const [busy, setBusy] = useState(false);
+  const [localBusy, setBusy] = useState(false);
+  const busy = localBusy || snapshot.submitting || (!editing && snapshot.pendingAttachments.some((item) => item.status === "uploading"));
   const [stopPending, setStopPending] = useState(false);
   const [optimisticModel, setOptimisticModel] = useState<PendingModelSelection>();
   const inputRef = useRef<HTMLTextAreaElement>(null);
   // 侧栏引用只追加到当前草稿，不经过回填或提交路径。
   useImperativeHandle(ref, () => ({
     appendText(text) {
-      const current = draftRef.current;
+      const current = editing ? editDraftRef.current : draftState.getSnapshot().draft;
       const value = `${current.value}${current.value && !/\s$/u.test(current.value) ? " " : ""}${text} `;
       rememberDraft(normalizeDraftReferences(value, current.tokens));
       window.requestAnimationFrame(() => inputRef.current?.focus());
     },
     appendReference(reference) {
-      const current = draftRef.current;
+      const current = editing ? editDraftRef.current : draftState.getSnapshot().draft;
       const value = `${current.value}${current.value && !/\s$/u.test(current.value) ? " " : ""}`;
       const position = value.length;
       const next = insertDraftReference(value, { start: position, end: position, query: "" }, reference, current.tokens);
@@ -192,7 +221,9 @@ export const Composer = memo(function Composer({
         input?.setSelectionRange(next.cursor, next.cursor);
       });
     }
-  }), [rememberDraft]);
+  }), [draftState, editing, rememberDraft]);
+  const mounted = useRef(true);
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const capabilityAnchorRef = useRef<HTMLDivElement>(null);
   const modelAnchorRef = useRef<HTMLDivElement>(null);
@@ -200,30 +231,14 @@ export const Composer = memo(function Composer({
   const modelSwitchPromiseRef = useRef<Promise<void> | undefined>(undefined);
   const modelSwitchRequestRef = useRef(0);
   const submitFlightRef = useRef(false);
-  const attachmentRequests = useRef(new Set<string>());
-  const attachmentGeneration = useRef(0);
   const addingFiles = useRef(false);
   const [draggingFiles, setDraggingFiles] = useState(false);
   const defaultToolSelection = capabilityDefaults.tools;
   const defaultSkillSelection = capabilityDefaults.skills;
 
   useEffect(() => {
-    historyRef.current = [];
-    modelSwitchRequestRef.current += 1;
-    setOptimisticModel(undefined);
-    modelSwitchPromiseRef.current = undefined;
-    modelSwitchQueueRef.current = Promise.resolve();
-    setDraft({ value: "", tokens: [] });
-    setAttachments([]);
-    setPendingAttachments([]);
-    attachmentRequests.current.clear();
-    attachmentGeneration.current += 1;
-    addingFiles.current = false;
-    setBusy(false);
-    setDraggingFiles(false);
     setCapabilitySelection(selectionFromDefaults({ tools: defaultToolSelection, skills: defaultSkillSelection }));
-    setMenu(null);
-  }, [defaultSkillSelection, defaultToolSelection, project?.id, setDraft]);
+  }, [defaultSkillSelection, defaultToolSelection]);
 
   useEffect(() => {
     if (focusToken) inputRef.current?.focus();
@@ -231,17 +246,15 @@ export const Composer = memo(function Composer({
 
   useEffect(() => {
     if (prefillInput === undefined) return;
-    historyRef.current = [];
-    setDraft(normalizeDraftReferences(prefillInput, []));
+    draftState.update({ history: [], draft: normalizeDraftReferences(prefillInput, []) });
     inputRef.current?.focus();
-  }, [prefillInput, setDraft]);
+  }, [prefillInput, draftState]);
 
   // 编辑模式：横幅常驻 + 新的编辑请求（nonce）到达时回填一次文本并聚焦。
-  const editing = editingMessage !== undefined;
   const editNonce = editingMessage?.nonce;
   useEffect(() => {
     if (editNonce === undefined) return;
-    historyRef.current = [];
+    clearHistory();
     setDraft(normalizeDraftReferences(editingMessage?.value ?? "", []));
     inputRef.current?.focus();
     // eslint-disable-next-line react-hooks/exhaustive-deps -- 只对新的编辑请求响应，回填取当帧闭包
@@ -277,7 +290,7 @@ export const Composer = memo(function Composer({
 
   const runSlash = async (command: string): Promise<void> => {
     if (!project || busy) return;
-    historyRef.current = [];
+    clearHistory();
     setDraft({ value: "", tokens: [] });
     setBusy(true);
     try {
@@ -290,8 +303,8 @@ export const Composer = memo(function Composer({
     }
   };
 
-  const submit = async (): Promise<void> => {
-    const draft = draftRef.current;
+  const submit = async (delivery?: "steer" | "queue"): Promise<void> => {
+    const draft = currentDraft();
     const value = materializeDraftReferences(draft.value, draft.tokens).trim() || (attachments.length ? "请分析这些附件。" : "");
     const resume = Boolean(recovery) && !running && !editing && isResumeInput(draft.value, attachments.length + pendingAttachments.length);
     if (!project || (!value && !resume) || busy || submitFlightRef.current || sessionWriterConflict
@@ -301,12 +314,12 @@ export const Composer = memo(function Composer({
       submitFlightRef.current = true;
       setBusy(true);
       try {
-        historyRef.current = [];
+        clearHistory();
         setDraft({ value: "", tokens: [] });
         await onSubmitEdit(value);
       } catch (submitError) {
         setDraft(draft);
-        onSubmitError(errorMessage(submitError));
+        if (mounted.current) onSubmitError(errorMessage(submitError));
       } finally {
         setBusy(false);
         submitFlightRef.current = false;
@@ -317,6 +330,7 @@ export const Composer = memo(function Composer({
       return;
     }
     submitFlightRef.current = true;
+    draftState.update({ submitting: true });
     try {
       const pendingModelSwitch = modelSwitchPromiseRef.current;
       if (pendingModelSwitch) {
@@ -337,29 +351,30 @@ export const Composer = memo(function Composer({
       }
       if (sessionWriterConflict) return;
       const sentAttachments = attachments;
+      const sentHistory = draftState.getSnapshot().history;
       setBusy(true);
       try {
         // /skills:name 技能调用不再展开正文：原文提交，模型按 <available_skills> 指引
         // 调用 Skill 工具按需加载全文（渐进式披露）。
         // 模型标签已经即时更新，但真正的 Runtime 切换仍需完成后才能发送，
         // 否则用户紧接着按 Enter 时可能把消息发给旧模型。
-        historyRef.current = [];
+        clearHistory();
         setDraft({ value: "", tokens: [] });
         setAttachments([]);
         if (resume) {
           if (!recovery?.canContinue) throw new Error(recovery?.message ?? "当前任务无法继续。");
           await onResume();
         } else {
-          await onSend(value, sentAttachments, undefined, globalThis.crypto.randomUUID(), capabilitySelection);
+          await onSend(value, sentAttachments, delivery, globalThis.crypto.randomUUID(), capabilitySelection);
         }
       } catch (submitError) {
-        setDraft(draft);
-        setAttachments(sentAttachments);
-        onSubmitError(errorMessage(submitError));
+        draftState.update({ draft, attachments: sentAttachments, history: sentHistory });
+        if (mounted.current) onSubmitError(errorMessage(submitError));
       } finally {
         setBusy(false);
       }
     } finally {
+      draftState.update({ submitting: false });
       submitFlightRef.current = false;
       // 等 busy 状态提交到 DOM 后再聚焦，避免 focus 落在仍被禁用的编辑器上。
       window.requestAnimationFrame(() => inputRef.current?.focus());
@@ -367,9 +382,8 @@ export const Composer = memo(function Composer({
   };
 
   const addFiles = async (files: File[]): Promise<void> => {
-    if (!project || !files.length || busy || addingFiles.current || submitFlightRef.current || sessionWriterConflict) return;
+    if (editing || !project || !files.length || busy || addingFiles.current || submitFlightRef.current || sessionWriterConflict) return;
     addingFiles.current = true;
-    const generation = attachmentGeneration.current;
     setBusy(true);
     try {
       const existing = new Set([
@@ -388,10 +402,10 @@ export const Composer = memo(function Composer({
       if (attachments.length + pendingAttachments.length + incoming.length > MAX_COMPOSER_ATTACHMENTS) {
         throw new Error(`最多添加 ${String(MAX_COMPOSER_ATTACHMENTS)} 个附件。`);
       }
-      const uploadItems = incoming.map((file, index) => ({
+      const uploadItems = incoming.map((file) => ({
         file,
         pending: {
-          id: `${String(Date.now())}-${String(index)}-${file.name}`,
+          id: globalThis.crypto.randomUUID(),
           mimeType: file.type,
           name: file.name,
           size: file.size,
@@ -399,25 +413,22 @@ export const Composer = memo(function Composer({
         }
       }));
       setPendingAttachments((current) => [...current, ...uploadItems.map((item) => item.pending)]);
-      for (const item of uploadItems) attachmentRequests.current.add(item.pending.id);
       const results = await Promise.all(uploadItems.map(async ({ file, pending }) => {
         try {
           const saved = await onSaveAttachment(file);
-          if (generation !== attachmentGeneration.current || !attachmentRequests.current.has(pending.id)) return { pending };
+          if (!draftState.getSnapshot().pendingAttachments.some((item) => item.id === pending.id)) return { pending };
           return { pending, saved };
         } catch (uploadError) {
-          if (generation !== attachmentGeneration.current || !attachmentRequests.current.has(pending.id)) return { pending };
+          if (!draftState.getSnapshot().pendingAttachments.some((item) => item.id === pending.id)) return { pending };
           const message = errorMessage(uploadError);
           setPendingAttachments((current) => current.map((item) => item.id === pending.id ? { ...item, error: message, status: "error" } : item));
           return { error: message, pending };
         }
       }));
-      if (generation !== attachmentGeneration.current) return;
-      const activeResults = results.filter((result) => attachmentRequests.current.has(result.pending.id));
-      const completedIds = new Set(activeResults.filter((result) => "saved" in result).map((result) => result.pending.id));
+      const activeResults = results.filter((result) => draftState.getSnapshot().pendingAttachments.some((item) => item.id === result.pending.id));
+      const completedIds = new Set<string>(activeResults.filter((result) => "saved" in result).map((result) => result.pending.id));
       setPendingAttachments((current) => current.filter((item) => !completedIds.has(item.id)));
       const saved = activeResults.flatMap((result): DesktopAttachment[] => {
-        attachmentRequests.current.delete(result.pending.id);
         const uploaded = "saved" in result ? result.saved : undefined;
         return uploaded ? [uploaded] : [];
       });
@@ -427,10 +438,8 @@ export const Composer = memo(function Composer({
     } catch (attachmentError) {
       onWarning(errorMessage(attachmentError));
     } finally {
-      if (generation === attachmentGeneration.current) {
-        addingFiles.current = false;
-        setBusy(false);
-      }
+      addingFiles.current = false;
+      setBusy(false);
     }
   };
 
@@ -558,7 +567,7 @@ export const Composer = memo(function Composer({
       onDragOver={(event) => {
         if (!event.dataTransfer.types.includes("Files")) return;
         event.preventDefault();
-        if (project && !busy && !sessionWriterConflict) setDraggingFiles(true);
+        if (!editing && project && !busy && !sessionWriterConflict) setDraggingFiles(true);
       }}
       onDragLeave={(event) => {
         if (!(event.relatedTarget instanceof Node) || !event.currentTarget.contains(event.relatedTarget)) setDraggingFiles(false);
@@ -578,8 +587,6 @@ export const Composer = memo(function Composer({
           <button
             aria-label="取消编辑"
             onClick={() => {
-              historyRef.current = [];
-              setDraft({ value: "", tokens: [] });
               onCancelEdit();
             }}
             title="取消编辑"
@@ -610,7 +617,6 @@ export const Composer = memo(function Composer({
               attachments={attachments}
               onRemove={(index) => setAttachments((current) => current.filter((_, itemIndex) => itemIndex !== index))}
               onRemovePending={(id) => {
-                attachmentRequests.current.delete(id);
                 setPendingAttachments((current) => current.filter((attachment) => attachment.id !== id));
               }}
               pending={pendingAttachments}
@@ -646,8 +652,8 @@ export const Composer = memo(function Composer({
             <div className="composer-menu-anchor">
               <ComposerActionButton
                 className="biny-composer-add"
-                disabled={!project || busy || sessionWriterConflict}
-                disabledReason={!project ? "请先打开项目" : sessionWriterConflict ? "会话已在另一个应用中打开" : busy ? "正在处理附件，请稍候" : undefined}
+                disabled={editing || !project || busy || sessionWriterConflict}
+                disabledReason={editing ? "编辑历史消息时保留原草稿附件" : !project ? "请先打开项目" : sessionWriterConflict ? "会话已在另一个应用中打开" : busy ? "正在处理附件，请稍候" : undefined}
                 label="添加附件"
                 onClick={() => { setMenu(null); fileInputRef.current?.click(); }}
                 tooltip="添加附件"
@@ -800,6 +806,7 @@ export const Composer = memo(function Composer({
               disabledReason={sendDisabledReason}
               hasDraft={hasDraft}
               onSend={() => void submit()}
+              onSteer={editing ? undefined : () => void submit("steer")}
               onStop={() => void requestStop()}
               running={running}
               stopPending={stopPending}

@@ -1,4 +1,5 @@
 import { ChatResponseContext } from "./chatResponseSettings.js";
+import type { ComposerDraftState } from "./components/composer/composerDraft.js";
 import type { ChatResponseSettings } from "../../../config/schema.js";
 /**
  * Desktop 渲染进程的装配根。
@@ -141,6 +142,7 @@ function DesktopApp(): React.JSX.Element {
   const [chatResponse, setChatResponse] = useState<ChatResponseSettings>();
   const [fontPreference, setFontPreference] = useState<DesktopFontPreference>(DEFAULT_FONT_PREFERENCE);
   const [focusToken, setFocusToken] = useState(0);
+  const [composerDrafts] = useState(() => new Map<string, ComposerDraftState>());
   const [composerDraft, setComposerDraft] = useState<string>();
   const composerRef = useRef<ComposerHandle>(null);
   /** 发送前的乐观用户消息；真实 message.user 到达后按 messageId 移除。 */
@@ -149,7 +151,6 @@ function DesktopApp(): React.JSX.Element {
   const [draftProjectId, setDraftProjectId] = useState<string>();
   const [projectBranches, setProjectBranches] = useState<DesktopGitBranch[]>([]);
   const [branchesLoading, setBranchesLoading] = useState(false);
-  const [deletedUserMessages, setDeletedUserMessages] = useState<Set<string>>(() => new Set());
   const [searchOpen, setSearchOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [timeCluesOpen, setTimeCluesOpen] = useState(false);
@@ -1175,17 +1176,6 @@ function DesktopApp(): React.JSX.Element {
     setGenerationError(undefined);
   }, [selectedSessionId, workspace?.project.id]);
 
-  const deleteUserMessage = useCallback((turnId: string): void => {
-    const scope = `${projectRef.current ?? "none"}:${selectedRef.current ?? "draft"}`;
-    const key = `${scope}:${turnId}`;
-    setDeletedUserMessages((current) => {
-      const next = new Set(current);
-      next.add(key);
-      return next;
-    });
-    setToast("已删除这条用户消息");
-  }, []);
-
   const createBranch = useCallback(async (): Promise<void> => {
     const projectId = projectRef.current;
     const sessionId = selectedRef.current;
@@ -1470,20 +1460,17 @@ function DesktopApp(): React.JSX.Element {
   const openTurnBranch = useCallback((): void => {
     void createBranch();
   }, [createBranch]);
-  const messageScope = `${workspace?.project.id ?? "none"}:${document?.session.id ?? "draft"}`;
-  const visibleTurns = useMemo(() => turns
-    .map((turn) => deletedUserMessages.has(`${messageScope}:${turn.id}`) ? { ...turn, user: "" } : turn)
-    .filter((turn) => turn.user || turn.assistant || turn.tools.length || turn.error), [deletedUserMessages, messageScope, turns]);
+
   // 替换回合出现（同 userMessageIndex 且文本一致）后才撤掉编辑乐观投影，避免旧消息闪回。
   useEffect(() => {
     const pending = editInFlight;
     if (!pending) return;
-    const replaced = visibleTurns.some((turn) => turn.id !== pending.turnId
+    const replaced = turns.some((turn) => turn.id !== pending.turnId
       && pending.userMessageIndex !== undefined
       && turn.userMessageIndex === pending.userMessageIndex
       && turn.user === pending.user);
     if (replaced) setEditInFlight(undefined);
-  }, [editInFlight, visibleTurns]);
+  }, [editInFlight, turns]);
 
   // 并行池化后按「选中会话自己的 runtime」取运行态；主 runtime 只有在确实绑定该会话时
   // 才能作为回退，避免切换会话时把上一个会话的 thinking 状态带进当前页面。
@@ -1745,6 +1732,9 @@ function DesktopApp(): React.JSX.Element {
   const composer = (
     <>
     <Composer
+      key={`${workspace?.project.id ?? "none"}:${selectedSessionId ?? "draft"}`}
+      draftKey={`${workspace?.project.id ?? "none"}:${selectedSessionId ?? "draft"}`}
+      drafts={composerDrafts}
       onInspectReference={inspector.previewReference}
       ref={composerRef}
       sessionWriterConflict={writerConflict !== undefined}
@@ -1944,7 +1934,6 @@ function DesktopApp(): React.JSX.Element {
       /> : <Workspace
         loading={loading}
         onCreateBranch={openTurnBranch}
-        onDeleteUserMessage={deleteUserMessage}
         onEditRequest={requestEditMessage}
         editInFlight={editInFlight}
         generationError={generationError}
@@ -1954,10 +1943,8 @@ function DesktopApp(): React.JSX.Element {
         onShowMessageReferences={showMessageReferences}
         onAddQuoteToConversation={addQuoteToConversation}
         onOpenProject={() => void openProject()}
-        onOpenFiles={inspector.openFiles}
         onPreviewFile={inspector.previewFile}
         inspectorRail={inspector.rail}
-        inspectorOpen={inspector.layout.open}
         onResolvePermission={resolvePermission}
         onRollbackFiles={rollbackFiles}
         onRetry={retryTimelinePrompt}
@@ -1985,7 +1972,7 @@ function DesktopApp(): React.JSX.Element {
         running={selectedRunning}
         runtimeActiveRunId={selectedRunId}
         planning={selectedRuntimeSnapshot?.info.planning === true}
-        turns={visibleTurns}
+        turns={turns}
         writerConflict={writerConflict}
         onRuntimeError={reportRuntimeError}
         onRuntimeMutation={mutateRuntime}

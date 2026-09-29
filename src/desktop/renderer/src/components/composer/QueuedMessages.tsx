@@ -22,6 +22,8 @@ export function QueuedMessages({ messages, running, onRemove, onMove, onSteer, o
   const [editing, setEditing] = useState<{ messageId: string; content: string }>();
   const [draggingId, setDraggingId] = useState<string>();
   const [busyIds, setBusyIds] = useState<ReadonlySet<string>>(() => new Set());
+  const composing = useRef(false);
+  const editPending = useRef(false);
   const lastMoveRef = useRef<string | undefined>(undefined);
 
   if (!messages.length) return null;
@@ -43,10 +45,17 @@ export function QueuedMessages({ messages, running, onRemove, onMove, onSteer, o
 
   const commitEdit = async (): Promise<void> => {
     const current = editing;
-    if (!current) return;
+    if (!current || editPending.current) return;
     const content = current.content.trim();
-    setEditing(undefined);
-    await run(current.messageId, async () => await onUpdate(current.messageId, content));
+    editPending.current = true;
+    try {
+      await onUpdate(current.messageId, content);
+      setEditing((latest) => latest?.messageId === current.messageId && latest.content === current.content ? undefined : latest);
+    } catch (error) {
+      onError(error instanceof Error ? error.message : String(error));
+    } finally {
+      editPending.current = false;
+    }
   };
 
   return (
@@ -54,13 +63,14 @@ export function QueuedMessages({ messages, running, onRemove, onMove, onSteer, o
       <header className="biny-queued-messages-header">
         <span><Icon name="timer" size={17} />{messages.length} 条待发送消息</span>
         <button
-          aria-label="立即发送待发送消息"
-          disabled={busyIds.has("all")}
+          aria-label="停止当前任务并发送队列"
+          className="biny-queued-send-now"
+          disabled={!running || busyIds.has("all")}
           onClick={() => { void run("all", onSendNow); }}
-          title="立即发送待发送消息"
+          title="停止当前任务并发送队列"
           type="button"
         >
-          <Icon name="arrow-up" size={17} />
+          <Icon name="arrow-up" size={17} /><span>停止并发送</span>
         </button>
       </header>
       <div className="biny-queued-message-list">
@@ -111,9 +121,12 @@ export function QueuedMessages({ messages, running, onRemove, onMove, onSteer, o
                 <textarea
                   aria-label="编辑待发送消息"
                   autoFocus
-                  onBlur={() => { void commitEdit(); }}
+                  onBlur={() => { if (!composing.current) void commitEdit(); }}
+                  onCompositionStart={() => { composing.current = true; }}
+                  onCompositionEnd={() => { composing.current = false; }}
                   onChange={(event) => setEditing({ messageId: message.messageId, content: event.target.value })}
                   onKeyDown={(event) => {
+                    if (composing.current || event.nativeEvent.isComposing || event.keyCode === 229) return;
                     if (event.key === "Escape") {
                       event.preventDefault();
                       setEditing(undefined);

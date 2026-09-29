@@ -15,7 +15,6 @@ import type { TimelineTurn } from "../sessionTimeline.js";
 import { desktopWorktreeView } from "../worktreePresentation.js";
 import { Icon } from "./Icon.js";
 import { spawnTitleDeleteDust } from "./titleDust.js";
-import { WorkspaceFilesButton } from "./workspace/WorkspaceFilesButton.js";
 import { GenerationErrorBanner } from "./chat/GenerationErrorBanner.js";
 import { MessageTimeline } from "./MessageTimeline.js";
 import { RuntimePanel } from "./RuntimePanel.js";
@@ -46,7 +45,6 @@ interface WorkspaceProps {
   runtimeProjection?: DesktopRuntimeProjection;
   planProjection?: DesktopPlanProjection;
   onOpenProject(): void;
-  onOpenFiles(): void;
   onPreviewFile(path: string): void;
   runtimePanelOpen: boolean;
   onRuntimePanelOpenChange(open: boolean): void;
@@ -82,7 +80,6 @@ interface WorkspaceProps {
   onDismissGenerationError(): void;
   onCreateBranch(): void;
   onRollbackFiles(turn: TimelineTurn): void;
-  onDeleteUserMessage(turnId: string): void;
   onRuntimeError(error: unknown): void;
   onRuntimeMutation(operation: DesktopRuntimeMutation, payload: Record<string, unknown>): Promise<void>;
   onRuntimeRefresh(): Promise<void>;
@@ -90,7 +87,6 @@ interface WorkspaceProps {
   workspaceContext?: React.ReactNode;
   /** 右侧收起态的工具入口。 */
   inspectorRail?: React.ReactNode;
-  inspectorOpen: boolean;
   /** 发送消息的临时投影；真实事件到达后由 App 清掉。 */
   pendingPrompt?: PendingPrompt;
   skillDescriptions?: ReadonlyMap<string, string>;
@@ -113,7 +109,6 @@ export function Workspace({
   runtimeProjection,
   planProjection,
   onOpenProject,
-  onOpenFiles,
   onPreviewFile,
   runtimePanelOpen,
   onRuntimePanelOpenChange,
@@ -142,7 +137,6 @@ export function Workspace({
   onDismissGenerationError,
   onCreateBranch,
   onRollbackFiles,
-  onDeleteUserMessage,
   onRuntimeError,
   onRuntimeMutation,
   onRuntimeRefresh,
@@ -151,7 +145,6 @@ export function Workspace({
   skillLabels,
   workspaceContext,
   inspectorRail,
-  inspectorOpen,
   onOpenRuntime: _onOpenRuntime,
   onOpenExtensions: _onOpenExtensions,
   children
@@ -224,9 +217,6 @@ export function Workspace({
               </button>
             ) : null}
           </div>
-          <div className="biny-chat-actions">
-            {projectId ? <WorkspaceFilesButton inspectorOpen={inspectorOpen} onOpenFiles={onOpenFiles} /> : null}
-          </div>
         </header>
         <RuntimePanel
           onClose={() => onRuntimePanelOpenChange(false)}
@@ -254,7 +244,6 @@ export function Workspace({
               <MessageTimeline
                 sessionId={sessionId}
                 onCreateBranch={onCreateBranch}
-                onDeleteUserMessage={onDeleteUserMessage}
                 editInFlight={editInFlight}
                 onEditRequest={onEditRequest}
                 onOpenExternal={onOpenExternal}

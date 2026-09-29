@@ -8,6 +8,7 @@ export function SendOrStopButton({
   disabledReason,
   hasDraft,
   onSend,
+  onSteer,
   onStop,
   running,
   resume = false,
@@ -18,6 +19,7 @@ export function SendOrStopButton({
   disabledReason?: string;
   hasDraft: boolean;
   onSend(): void;
+  onSteer?(): void;
   onStop(): void;
   running: boolean;
   resume?: boolean;
@@ -47,6 +49,12 @@ export function SendOrStopButton({
             <Icon name="pause" size={15} />
           </ComposerActionButton>
         </span>
+      ) : null}
+      {running && hasDraft && onSteer ? (
+        <ComposerActionButton className="biny-steer-button" label="立即插话" tooltip="把这条消息补充到当前任务"
+          disabled={disabled} disabledReason={disabledReason} onClick={onSteer}>
+          <Icon name="corner-down-right" size={15} /><span>插话</span>
+        </ComposerActionButton>
       ) : null}
       {showSend ? (
         <span className="biny-send-button-anchor">

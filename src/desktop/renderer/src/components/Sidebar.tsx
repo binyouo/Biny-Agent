@@ -25,7 +25,7 @@ const PROJECT_SESSION_COLLAPSE_LIMIT = 5;
 const DIALOGUE_SESSION_COLLAPSE_LIMIT = 10;
 
 type SidebarSectionName = "pinned" | "projects" | "dialogue";
-type ProjectSort = "priority" | "recent" | "manual";
+type ProjectSort = "recent" | "manual";
 type ProjectDragPlacement = "before" | "after";
 type FloatingMenuAnchor = { readonly current: HTMLElement | null };
 interface ProjectDragState {
@@ -113,7 +113,7 @@ export const Sidebar = memo(function Sidebar({
   const [sessionMenu, setSessionMenu] = useState<{ session: DesktopSessionSummary; point: { x: number; y: number } }>();
   // 关闭时数据保留在 sessionMenu 里，让退场动画期间菜单内容不消失。
   const [sessionMenuVisible, setSessionMenuVisible] = useState(false);
-  const [projectSort, setProjectSort] = useState<ProjectSort>("priority");
+  const [projectSort, setProjectSort] = useState<ProjectSort>("manual");
   const [dragState, setDragState] = useState<ProjectDragState | undefined>(undefined);
   const dragStateRef = useRef<ProjectDragState | undefined>(undefined);
   const projectOrganizationButtonRef = useRef<HTMLButtonElement>(null);
@@ -950,7 +950,6 @@ function SidebarOrganizationMenu({ anchorRef, open, sort, onSortChange }: { anch
     <FloatingSidebarMenu anchorRef={anchorRef} ariaLabel="项目排序菜单" className="is-narrow" open={open}>
       <div className="biny-sidebar-menu-heading">排序方式</div>
       {([
-        ["priority", "优先级"],
         ["recent", "最近打开"],
         ["manual", "手动排序"]
       ] as const).map(([value, label]) => (
@@ -1036,7 +1035,6 @@ function FloatingSidebarMenu({ anchorRef, ariaLabel, className = "", children, o
 function sortProjects(projects: DesktopProject[], sort: ProjectSort): DesktopProject[] {
   const ordered = [...projects];
   if (sort === "manual") return ordered;
-  if (sort === "priority") return ordered.sort((left, right) => left.pinned === right.pinned ? 0 : left.pinned ? -1 : 1);
   return ordered.sort((left, right) => right.lastOpenedAt.localeCompare(left.lastOpenedAt) || left.name.localeCompare(right.name));
 }
 

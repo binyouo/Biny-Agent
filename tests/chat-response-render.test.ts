@@ -33,7 +33,7 @@ const timeline = (streaming: boolean): string => renderToStaticMarkup(React.crea
 }, React.createElement(MessageTimeline, {
   projectId: "test", turns, thinking: true, runtimeActiveRunId: "run", onPreviewFile: noop,
   onOpenExternal: noop, onResolvePermission: noopAsync, onRetry: noopAsync, onSwitchVersion: noopAsync,
-  onEditRequest: noop, onCreateBranch: noop, onRollbackFiles: noop, onDeleteUserMessage: noop
+  onEditRequest: noop, onCreateBranch: noop, onRollbackFiles: noop,
 })));
 assert.match(timeline(true), /partial answer/);
 assert.doesNotMatch(timeline(false), /partial answer/);

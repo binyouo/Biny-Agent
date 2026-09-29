@@ -93,7 +93,7 @@ test("追加消息队列展示数量并提供编辑、插话和删除入口", ()
   assert.match(markup, /1 条待发送消息/u);
   assert.match(markup, /补充背景/u);
   assert.match(markup, /插话/u);
-  assert.match(markup, /立即发送待发送消息/u);
+  assert.match(markup, /停止当前任务并发送队列/u);
   assert.match(markup, /拖动以重新排序/u);
   assert.match(markup, /aria-label="删除"/u);
 });
@@ -736,7 +736,6 @@ test("已有会话的发送占位追加在历史后，同文消息按身份接�
     onResolvePermission: async () => undefined, onRetry: async () => undefined,
     onSwitchVersion: async () => undefined, onEditRequest: () => undefined,
     onCreateBranch: () => undefined, onRollbackFiles: () => undefined,
-    onDeleteUserMessage: () => undefined
   }));
   const pending = render(false);
   assert.match(pending, /aria-label="发送中"/u);

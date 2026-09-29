@@ -168,8 +168,6 @@
 .biny-root .biny-workspace-main:has(> .biny-inspector-rail.is-visible) .biny-chat-scroll { padding-right: 48px; }
 .biny-root .biny-chat-scroll-content, .biny-root .message-timeline, .biny-root .assistant-message { min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
 
-.biny-files-trigger { width: 28px; height: 28px; opacity: .75; }
-.biny-files-trigger:hover { opacity: 1; }
 .biny-output-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(256px, 100%), 1fr)); gap: 8px; margin-top: 16px; min-width: 0; }
 .biny-root .biny-output-cards .markdown-file-link { display: flex; align-items: center; gap: 10px; width: 100%; max-width: none; min-width: 0; box-sizing: border-box; margin: 0; padding: 8px 10px; border: 1px solid var(--biny-border); border-radius: 10px; background: transparent; text-align: left; font: 13px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
 .biny-root .biny-output-cards .markdown-file-link:hover { background: var(--biny-surface-hover); }

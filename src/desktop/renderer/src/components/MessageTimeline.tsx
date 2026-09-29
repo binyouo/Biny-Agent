@@ -53,7 +53,6 @@ interface MessageTimelineProps {
   editInFlight?: { turnId: string; user: string; userMessageIndex?: number };
   onCreateBranch(): void;
   onRollbackFiles(turn: TimelineTurn): void;
-  onDeleteUserMessage(turnId: string): void;
 }
 
 interface PendingUserMessage {
@@ -77,7 +76,7 @@ function turnIsRunning(turn: TimelineTurn, runtimeActiveRunId: string | undefine
   return runtimeActiveRunId !== undefined && turn.status === "idle" && turn.id === runtimeActiveRunId;
 }
 
-export const MessageTimeline = memo(function MessageTimeline({ sessionId, projectId, turns, skillDescriptions, skillLabels, pendingUserMessage, pendingFloatFromComposer, runtimeActiveRunId, onPreviewFile, onOpenExternal, onReferenceMessage, onShowMessageReferences, onAddQuoteToConversation, onResolvePermission, thinking, onRetry, onSwitchVersion, onEditRequest, editInFlight, onCreateBranch, onRollbackFiles, onDeleteUserMessage }: MessageTimelineProps): React.JSX.Element {
+export const MessageTimeline = memo(function MessageTimeline({ sessionId, projectId, turns, skillDescriptions, skillLabels, pendingUserMessage, pendingFloatFromComposer, runtimeActiveRunId, onPreviewFile, onOpenExternal, onReferenceMessage, onShowMessageReferences, onAddQuoteToConversation, onResolvePermission, thinking, onRetry, onSwitchVersion, onEditRequest, editInFlight, onCreateBranch, onRollbackFiles }: MessageTimelineProps): React.JSX.Element {
   // 重试会先把目标之后的消息从视图中撤掉，再等待新回合流入；这里保留同样的乐观投影。
   // 编辑的重写投影来自 App（editInFlight），提交入口在底部输入框，不经过本组件状态。
   const [optimisticRewrite, setOptimisticRewrite] = useState<OptimisticRewrite>();
@@ -251,7 +250,6 @@ export const MessageTimeline = memo(function MessageTimeline({ sessionId, projec
           skillLabels={skillLabels}
           key={turn.id}
           onCreateBranch={onCreateBranch}
-          onDeleteUserMessage={onDeleteUserMessage}
           onEditRequest={onEditRequest}
           onPreviewFile={onPreviewFile}
           onOpenExternal={onOpenExternal}
@@ -396,7 +394,6 @@ const Turn = memo(function Turn({
   onEditRequest,
   onCreateBranch,
   onRollbackFiles,
-  onDeleteUserMessage
 }: {
   sessionId?: string;
   busy: boolean;
@@ -420,7 +417,6 @@ const Turn = memo(function Turn({
   onEditRequest(turn: TimelineTurn): void;
   onCreateBranch(): void;
   onRollbackFiles(turn: TimelineTurn): void;
-  onDeleteUserMessage(turnId: string): void;
 }): React.JSX.Element {
   const running = turnIsRunning(turn, runtimeActiveRunId);
   const retryPromiseRef = useRef<Promise<void> | undefined>(undefined);
@@ -472,7 +468,6 @@ const Turn = memo(function Turn({
           entrySheenOnly={entrySheenOnly === true}
           hasChangedFiles={listChangedFiles(turn).length > 0}
           onCreateBranch={onCreateBranch}
-          onDelete={() => onDeleteUserMessage(turn.id)}
           onEdit={() => onEditRequest(turn)}
           onOpenExternal={onOpenExternal}
           onReference={turn.userMessageId ? () => onReferenceMessage(turn.userMessageId!) : undefined}
@@ -688,7 +683,6 @@ function UserMessage({
   entrySheenOnly,
   hasChangedFiles,
   onCreateBranch,
-  onDelete,
   onEdit,
   onOpenExternal,
   onPreviewFile,
@@ -705,7 +699,6 @@ function UserMessage({
   entrySheenOnly?: boolean;
   hasChangedFiles: boolean;
   onCreateBranch(): void;
-  onDelete(): void;
   onEdit(): void;
   onOpenExternal(url: string): void;
   onPreviewFile(path: string): void;
@@ -719,22 +712,11 @@ function UserMessage({
 }): React.JSX.Element {
   // 更多菜单走 portal fixed 定位（与助手菜单共用 hook），内联渲染会把消息列表往下挤。
   const { open: menuOpen, position: menuPosition, anchorRef: moreAnchorRef, menuRef, toggle, close: closeMenu } = useAnchoredMenu({ width: 208, estimatedHeight: 180 });
-  // 删除烟化（message-smoke-out 原文）：先播 .6s 烟化动画，750ms 后再真正删除。
-  const [smokingOut, setSmokingOut] = useState(false);
-  const smokeTimerRef = useRef<number | undefined>(undefined);
-  useEffect(() => () => {
-    if (smokeTimerRef.current !== undefined) window.clearTimeout(smokeTimerRef.current);
-  }, []);
-  const requestDelete = (): void => {
-    if (smokingOut) return;
-    setSmokingOut(true);
-    smokeTimerRef.current = window.setTimeout(onDelete, 750);
-  };
   // 发送时追加给模型的附件清单不该原样显示，拆出来渲染成附件卡片。
   const message = useMemo(() => splitAttachmentReferences(content), [content]);
   const clock = time ? <MessageClock time={Date.parse(time)} /> : null;
   return (
-    <article className={`chat-message user-message${entrySheenOnly ? " is-sheen-only" : ""}${smokingOut ? " message-smoke-out" : ""}`} data-message-id={messageId} data-sender="user" tabIndex={-1}>
+    <article className={`chat-message user-message${entrySheenOnly ? " is-sheen-only" : ""}`} data-message-id={messageId} data-sender="user" tabIndex={-1}>
       <div className="user-bubble">
         {message.text ? <MarkdownContent content={message.text} onOpenExternal={onOpenExternal} onPreviewFile={onPreviewFile} projectId={projectId} /> : null}
         {message.attachments.length ? <MessageAttachments attachments={message.attachments} projectId={projectId} /> : null}
@@ -754,8 +736,6 @@ function UserMessage({
           {onReference ? <button className="message-menu-item" onClick={() => { onReference(); closeMenu(); }} role="menuitem" type="button"><Icon name="at" size={14} /><span>引用消息</span></button> : null}
           {onShowReferences ? <button className="message-menu-item" onClick={() => { onShowReferences(); closeMenu(); }} role="menuitem" type="button"><Icon name="network" size={14} /><span>查看引用来源</span></button> : null}
           <button className="message-menu-item" disabled={!hasChangedFiles} onClick={() => { onRollbackFiles(); closeMenu(); }} role="menuitem" title={hasChangedFiles ? "回滚本条消息产生的文件修改" : "当前消息没有可回滚的文件修改"} type="button"><Icon name="arrow-left" size={14} /><span>回滚文件</span></button>
-          <div className="message-menu-separator" />
-          <button className="message-menu-item is-danger" onClick={() => { closeMenu(); requestDelete(); }} role="menuitem" type="button"><Icon name="trash" size={14} /><span>删除消息</span></button>
         </div>,
         document.body
       ) : null}

@@ -4555,28 +4555,7 @@ button.capability-check[aria-checked="true"] {
   color: var(--biny-text);
 }
 
-.biny-files-trigger {
-  min-width: 0;
-  overflow: hidden;
-  flex: 0 0 auto;
-  visibility: visible;
-  transition: background 160ms ease, color 160ms ease,
-    width 180ms cubic-bezier(0.22, 1, 0.36, 1),
-    opacity 140ms ease-out, transform 180ms cubic-bezier(0.22, 1, 0.36, 1),
-    visibility 0s;
-}
 
-.biny-files-trigger.is-inspector-open {
-  width: 0;
-  opacity: 0;
-  transform: translateX(8px) scale(0.9);
-  visibility: hidden;
-  pointer-events: none;
-  transition: background 160ms ease, color 160ms ease,
-    width 180ms cubic-bezier(0.22, 1, 0.36, 1),
-    opacity 140ms ease-out, transform 180ms cubic-bezier(0.22, 1, 0.36, 1),
-    visibility 0s linear 180ms;
-}
 
 .biny-usage-control {
   position: relative;
@@ -5688,7 +5667,6 @@ button.capability-check[aria-checked="true"] {
   .biny-runtime-panel-icon,
   .biny-runtime-row-action,
   .biny-composer-status-button,
-  .biny-files-trigger,
   .biny-inspector-tab,
   .biny-inspector-rail-btn {
     transition: none !important;
@@ -10541,4 +10519,27 @@ button.capability-check[aria-checked="true"] {
 
 .desktop-settings-dialog .settings-modal button:disabled {
   cursor: default;
+}
+
+.biny-steer-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--biny-surface-selected);
+  color: var(--biny-text);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.biny-steer-button[aria-disabled="true"] { opacity: .45; cursor: default; }
+
+.biny-queued-messages-header > .biny-queued-send-now {
+  width: auto;
+  flex-basis: auto;
+  gap: 4px;
+  padding: 0 8px;
+  font-size: 12px;
 }

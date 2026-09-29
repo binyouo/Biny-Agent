@@ -32,7 +32,6 @@ function renderTurns(turns: TimelineTurn[], thinking = false, runtimeActiveRunId
     onEditRequest: noop,
     onCreateBranch: noop,
     onRollbackFiles: noop,
-    onDeleteUserMessage: noop
   }));
 }
 

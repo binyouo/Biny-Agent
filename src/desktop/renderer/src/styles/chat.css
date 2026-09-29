@@ -2909,11 +2909,9 @@
 }
 
 
-/* ============ 保留的复刻动画（标题打字机/工作点阵/删除烟化） ============ */
+/* ============ 保留的复刻动画（标题打字机/工作点阵） ============ */
 
 :root {
-  --message-smoke-duration: 0.6s;
-  --message-smoke-lift: 20px;
   --message-menu-pop-duration: 0.32s;
   --message-menu-pop-curve: cubic-bezier(0.22, 1, 0.36, 1);
 }
@@ -2923,10 +2921,6 @@
 @keyframes threadTrailShrink { 0% { opacity: 0.8; transform: scaleX(1); } 100% { opacity: 0; transform: scaleX(0); } }
 @keyframes threadTrailGrow { 0% { opacity: 0.7; transform: scaleX(1); } 100% { opacity: 0; transform: scaleX(0); } }
 @keyframes workingDotBlink { 0%, 12.5%, 100% { opacity: 0.9; } 6% { opacity: 0.12; } }
-@keyframes messageSmokeLift {
-  0% { opacity: 1; transform: translate3d(0, 0, 0) scale(1); }
-  100% { opacity: 0; transform: translate3d(0, calc(-1 * var(--message-smoke-lift)), 0) scale(1.1); filter: blur(8px); }
-}
 
 /* 生成中标题呼吸 */
 .thread-title-thinking { animation: 1.6s ease-in-out infinite threadTitleThinking; }
@@ -2997,11 +2991,6 @@
 .working-dot-grid > span:nth-child(4) { animation-delay: 1.5s; }
 
 /* 消息删除烟化 */
-.message-smoke-out {
-  pointer-events: none;
-  animation: messageSmokeLift var(--message-smoke-duration) cubic-bezier(0.25, 0.1, 0.25, 1) forwards;
-  will-change: transform, opacity, filter;
-}
 
 @media (prefers-reduced-motion: reduce) {
   .thread-title-caret,
@@ -3009,7 +2998,6 @@
   .thread-title-caret.trail-grow::before,
   .working-dot-grid > span { animation: none !important; }
   .working-dot-grid > span { opacity: 0.55; }
-  .message-smoke-out { animation: none !important; opacity: 0; }
 }
 
 /* 关闭 Markdown 时保留原始文本换行，不把模型文本交给 HTML。 */
