@@ -12,6 +12,7 @@ import path from "node:path";
 import { z } from "zod";
 import { globalConfigDir, globalPluginRoot, projectBinyDir } from "../config/paths.js";
 import { getSharedProxyAwareFetch } from "../network/proxyFetch.js";
+import { withLocalFileWriteLock } from "../utils/localFileLock.js";
 
 export const BINY_PLUGIN_REGISTRY_URL = "https://raw.githubusercontent.com/Thinkya1/Biny/main/plugins/registry.json";
 const githubApiBase = "https://api.github.com";
@@ -153,15 +154,6 @@ export async function writeGlobalPluginManifest(manifest: ProjectPluginManifest)
   const parsed = managedPluginManifestSchema.parse(manifest);
   const root = await ensureGlobalPluginRoot();
   await writeJsonAtomic(path.join(root, "manifest.json"), parsed);
-}
-
-// 清单的读-改-写整体串行：并发安装/启停/卸载共享同一条链，避免后写覆盖先读。
-let pluginWriteQueue: Promise<unknown> = Promise.resolve();
-
-function enqueuePluginWrite<T>(operation: () => Promise<T>): Promise<T> {
-  const run = pluginWriteQueue.then(() => operation());
-  pluginWriteQueue = run.catch(() => undefined);
-  return run;
 }
 
 export async function readPluginRegistryCache(workspaceRoot: string): Promise<PluginRegistryCache | undefined> {
@@ -321,13 +313,14 @@ async function installManagedPlugin(options: {
       installedAt: new Date().toISOString(),
       error: undefined
     };
-    // 目录轮换与清单更新进入串行队列：并发安装其他 Plugin 时不会读到过期清单再整体覆盖。
-    await enqueuePluginWrite(async () => {
+    // 同一安装根的目录轮换与清单更新跨进程互斥；下载阶段不持锁。
+    await withLocalFileWriteLock(pluginsRoot, ".manifest.lock", async () => {
       const existing = await options.readManifest();
       const old = existing.plugins.find((plugin) => plugin.id === options.plugin.id);
       if (old?.enabled) manifestEntry.enabled = true;
       const backupDirectory = path.join(pluginsRoot, `.backup-${options.plugin.id}-${randomUUID()}`);
       let hadOldDirectory = false;
+      let installedReplacement = false;
       try {
         try {
           const oldStat = await fs.lstat(targetDirectory);
@@ -338,16 +331,22 @@ async function installManagedPlugin(options: {
           if (!isNotFound(error)) throw error;
         }
         await fs.rename(tempDirectory, targetDirectory);
+        installedReplacement = true;
         await options.writeManifest({
           format: 1,
           plugins: [...existing.plugins.filter((plugin) => plugin.id !== options.plugin.id), manifestEntry]
         });
-        if (hadOldDirectory) await fs.rm(backupDirectory, { recursive: true, force: true });
       } catch (error) {
-        await fs.rm(targetDirectory, { recursive: true, force: true }).catch(() => undefined);
-        if (hadOldDirectory) await fs.rename(backupDirectory, targetDirectory).catch(() => undefined);
+        try {
+          if (installedReplacement) await fs.rm(targetDirectory, { recursive: true, force: true });
+          if (hadOldDirectory) await fs.rename(backupDirectory, targetDirectory);
+        } catch (rollbackError) {
+          throw new AggregateError([error, rollbackError], `Plugin 安装失败，恢复原目录也失败；请检查备份：${backupDirectory}`);
+        }
         throw error;
       }
+      // 清单已提交；清理旧备份失败不能再回滚新目录，否则清单与文件版本会错位。
+      if (hadOldDirectory) await fs.rm(backupDirectory, { recursive: true, force: true });
     });
     return manifestEntry;
   } catch (error) {
@@ -435,7 +434,7 @@ async function setManagedPluginEnabled(options: {
   readManifest(): Promise<ProjectPluginManifest>;
   writeManifest(manifest: ProjectPluginManifest): Promise<void>;
 }): Promise<ManagedPlugin> {
-  return await enqueuePluginWrite(async () => {
+  return await withLocalFileWriteLock(options.root, ".manifest.lock", async () => {
     const manifest = await options.readManifest();
     const plugin = manifest.plugins.find((candidate) => candidate.id === options.pluginId);
     if (!plugin) throw new Error(`Plugin 不存在：${options.pluginId}`);
@@ -473,16 +472,27 @@ async function uninstallManagedPlugin(options: {
   readManifest(): Promise<ProjectPluginManifest>;
   writeManifest(manifest: ProjectPluginManifest): Promise<void>;
 }): Promise<void> {
-  await enqueuePluginWrite(async () => {
+  await withLocalFileWriteLock(options.root, ".manifest.lock", async () => {
     const manifest = await options.readManifest();
     const plugin = manifest.plugins.find((candidate) => candidate.id === options.pluginId);
     if (!plugin) throw new Error(`Plugin 不存在：${options.pluginId}`);
     const directory = await assertContainedDirectory(options.root, path.join(options.root, plugin.directory));
-    await fs.rm(directory, { recursive: true, force: true });
-    await options.writeManifest({
-      format: 1,
-      plugins: manifest.plugins.filter((candidate) => candidate.id !== options.pluginId)
-    });
+    const backupDirectory = path.join(options.root, `.uninstall-${options.pluginId}-${randomUUID()}`);
+    await fs.rename(directory, backupDirectory);
+    try {
+      await options.writeManifest({
+        format: 1,
+        plugins: manifest.plugins.filter((candidate) => candidate.id !== options.pluginId)
+      });
+    } catch (error) {
+      try {
+        await fs.rename(backupDirectory, directory);
+      } catch (rollbackError) {
+        throw new AggregateError([error, rollbackError], `Plugin 卸载失败，恢复原目录也失败；请检查备份：${backupDirectory}`);
+      }
+      throw error;
+    }
+    await fs.rm(backupDirectory, { recursive: true, force: true });
   });
 }
 
