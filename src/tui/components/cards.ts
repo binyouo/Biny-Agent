@@ -46,7 +46,7 @@ export class CardComponent extends Container implements TranscriptItemComponent 
 /** 纯渲染函数：把卡片数据按宽度渲染成带 ANSI 的行，供组件和测试使用。 */
 export function renderCardLines(item: CardTranscriptItem, expanded: boolean, width: number): string[] {
   const safeWidth = Math.max(1, Math.floor(width));
-  const commandLine = theme.fg("accent", theme.bold(item.command));
+  const commandLine = theme.fg("accent", theme.bold(truncateToWidth(item.command, safeWidth, "…")));
   const visibleRows = visibleCardRows(item.data, expanded);
 
   // 极窄终端放弃边框，退回 label: value 平铺。
@@ -77,14 +77,14 @@ export function renderCardLines(item: CardTranscriptItem, expanded: boolean, wid
     topBorder(item.title, safeWidth),
     ...body,
     bottomBorder(safeWidth),
-    ...(detailHint(item.data, visibleRows.length, expanded) ? [detailHint(item.data, visibleRows.length, expanded)!] : [])
+    ...(detailHint(item.data, visibleRows.length, expanded) ? [truncateToWidth(detailHint(item.data, visibleRows.length, expanded)!, safeWidth, "…")] : [])
   ];
 }
 
 function topBorder(title: string, width: number): string {
   const maxTitle = Math.max(0, width - 6);
   const truncated = truncateToWidth(title, maxTitle, "…");
-  const fill = Math.max(0, width - 5 - truncated.length);
+  const fill = Math.max(0, width - 5 - visibleWidth(truncated));
   return `╭─ ${theme.fg("accent", theme.bold(truncated))} ${"─".repeat(fill)}╮`;
 }
 

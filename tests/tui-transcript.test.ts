@@ -293,7 +293,7 @@ function testSlashCommandParity(): void {
   const tuiCommands = slashCommandsForSurface("tui");
   const desktopCommands = slashCommandsForSurface("desktop");
   const desktopNames = new Set(desktopCommands.map((command) => command.name));
-  assert.equal(tuiCommands.length, 27);
+  assert.equal(tuiCommands.length, 28);
   for (const removed of ["/help", "/approvals", "/quit"]) {
     assert.equal(tuiCommands.some((command) => command.name === removed), false);
   }

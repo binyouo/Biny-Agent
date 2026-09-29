@@ -10,9 +10,10 @@ export async function tuiCommand(
   workspaceRoot: string,
   version?: string,
   initialSession?: string,
-  launchMode: TuiLaunchMode = "new"
+  launchMode: TuiLaunchMode = "new",
+  themeName?: string
 ): Promise<void> {
   // 界面框架只在真正启动 TUI 时加载；`biny chat` 也只是转到这个入口。
   const { startTui } = await import("../../tui/index.js");
-  await startTui(workspaceRoot, version, initialSession, launchMode);
+  await startTui(workspaceRoot, version, initialSession, launchMode, themeName);
 }

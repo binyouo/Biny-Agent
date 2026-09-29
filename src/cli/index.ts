@@ -7,7 +7,7 @@
  * 不直接承载 agent、工具或 TUI 的业务流程。
  */
 import { createRequire } from "node:module";
-import { Command, InvalidArgumentError } from "commander";
+import { Command, InvalidArgumentError, Option } from "commander";
 import { initCommand } from "./commands/init.js";
 import { registerBrowserCommands } from "./commands/browser.js";
 import { registerCrystalCommands } from "./commands/crystal.js";
@@ -104,7 +104,18 @@ const cliArgv = process.argv[2] === "--"
 // 版本号来自 package.json，界面头部和 `--version` 用同一个来源。
 const { version: cliVersion } = createRequire(import.meta.url)("../../package.json") as { version: string };
 
-program.name("biny").description("Biny local desktop assistant").version(cliVersion);
+program.name("biny").description("Biny — local-first agent for your terminal and desktop").version(cliVersion)
+  .addOption(new Option("--theme <name>", "terminal colors for interactive sessions").choices(["dark", "light"]))
+  .configureHelp({ sortSubcommands: true, showGlobalOptions: true })
+  .showHelpAfterError("Run biny <command> --help for usage.")
+  .addHelpText("before", [
+    "Quick start:",
+    "  biny                         Start a new terminal chat",
+    "  biny resume                  Choose a previous session",
+    '  biny run "task" --headless   Run once without interactive prompts',
+    "  biny tui --theme light       Use colors for a light terminal",
+    ""
+  ].join("\n"));
 registerCrystalCommands(program);
 registerSoulCommands(program);
 registerFatigueCommands(program);
@@ -148,8 +159,9 @@ program.command("doctor").description("Check local environment").action(wrap(() 
 program
   .command("chat")
   .description("Start a new interactive chat")
-  .action(() => wrap(() => chatCommand(workspaceRoot, cliVersion))());
-program.command("tui").description("Start terminal UI mode").action(wrap(() => tuiCommand(workspaceRoot, cliVersion)));
+  .action(() => wrap(() => chatCommand(workspaceRoot, cliVersion, program.opts<{ theme?: string }>().theme))());
+program.command("tui").description("Start terminal UI mode")
+  .action(wrap(() => tuiCommand(workspaceRoot, cliVersion, undefined, "new", program.opts<{ theme?: string }>().theme)));
 program
   .command("runtime-host")
   .description("Run the shared Runtime Host process")
@@ -432,14 +444,15 @@ program
   .command("resume")
   .description("Resume an existing session in the TUI")
   .argument("[session]", "session id or .jsonl path; omit to choose from the session picker")
-  .action((session: string | undefined) => wrap(() => resumeCommand(workspaceRoot, cliVersion, session))());
+  .action((session: string | undefined) => wrap(() => resumeCommand(workspaceRoot, cliVersion, session, program.opts<{ theme?: string }>().theme))());
 
 
-if (cliArgv.length <= 2) {
-  await wrap(() => tuiCommand(workspaceRoot, cliVersion))();
-} else {
-  await program.parseAsync(cliArgv);
+// 仅根选项启动 TUI；存在命令名时保留解析器的拼写建议和未知命令错误。
+const rootArguments = program.parseOptions(cliArgv.slice(2));
+if (rootArguments.operands.length === 0 && rootArguments.unknown.length === 0) {
+  program.action(wrap(() => tuiCommand(workspaceRoot, cliVersion, undefined, "new", program.opts<{ theme?: string }>().theme)));
 }
+await program.parseAsync(cliArgv);
 
 function wrap(fn: () => Promise<void>): () => Promise<void> {
   // 所有命令都经过 wrap，保证异步异常不会打印冗长堆栈到普通用户界面。

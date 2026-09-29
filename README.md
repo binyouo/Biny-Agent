@@ -51,6 +51,8 @@ pnpm dev -- chat
 pnpm dev -- run "梳理这个仓库，并说明最优先的风险点"
 ```
 
+TUI 默认使用深色主题；浅色终端可运行 `biny tui --theme light`，也可用 `/theme` 或 `/theme dark|light` 在当前界面切换。选项较多的列表支持按名称和描述搜索，空格用于输入，方向键选择、Enter 确认、Esc 返回。交互入口需要终端输入和输出；脚本或管道任务使用 `biny run "任务" --headless --json`。
+
 可从同一工作区的终端读取或回答当前等待中的问题（支持文本与 JSON 输出）：
 
 ```bash

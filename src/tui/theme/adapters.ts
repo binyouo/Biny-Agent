@@ -51,7 +51,7 @@ export function markdownTheme(): MarkdownTheme {
 export function selectListTheme(): SelectListTheme {
   return {
     selectedPrefix: (text) => theme.fg("accent", text),
-    selectedText: (text) => theme.fg("accent", text),
+    selectedText: (text) => theme.bg("selectedBg", theme.fg("text", theme.bold(text))),
     description: (text) => theme.fg("muted", text),
     scrollInfo: (text) => theme.fg("muted", text),
     noMatch: (text) => theme.fg("muted", text)

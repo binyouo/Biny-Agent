@@ -64,7 +64,7 @@ import { isSessionWriterConflictError } from "../runtime/SessionLease.js";
 import { sessionEventsToTranscript } from "./sessionTranscript.js";
 import { modelThinkingOptions, selectedThinkingForModel } from "./modelOptions.js";
 import { createInitialTuiState, tuiReducer } from "./reducer.js";
-import { editorTheme, theme } from "./theme/index.js";
+import { availableThemes, editorTheme, getTheme, setTheme, theme } from "./theme/index.js";
 import { formatSessionAge } from "./transcriptText.js";
 import type { PermissionChoice, TuiLaunchMode, TuiState, TuiStatus } from "./types.js";
 import type { AgentAttachment } from "../agent/AgentSession.js";
@@ -953,6 +953,28 @@ export class BinyTui {
       this.dispatch({ type: "transcript.replaced", items: [] });
       this.chatContainer.reset();
       this.ui.requestRender();
+      return;
+    }
+
+    if (command === "/theme") {
+      const names = availableThemes();
+      const apply = (name: string): void => {
+        setTheme(name);
+        this.editor.borderColor = theme.thinkingBorder(this.thinking);
+        this.ui.invalidate();
+        this.ui.requestRender();
+      };
+      if (args.length) {
+        if (args.length !== 1 || !names.includes(args[0]!)) this.notify("Usage: /theme dark|light");
+        else apply(args[0]!);
+      } else {
+        this.showSelect({
+          title: "Terminal theme",
+          items: names.map((name) => ({ value: name, label: name === "dark" ? "Dark" : "Light" })),
+          selectedIndex: names.indexOf(getTheme().name),
+          onSelect: (item) => apply(item.value)
+        });
+      }
       return;
     }
 

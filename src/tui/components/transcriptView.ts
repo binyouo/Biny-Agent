@@ -21,6 +21,15 @@ export class TranscriptView extends Container {
   private readonly components = new Map<string, TranscriptItemComponent>();
   private readonly lastItems = new Map<string, TranscriptItem>();
 
+  override invalidate(): void {
+    // 一些组件保存已着色的文本；切换主题时同时更新文本，保留展开等本地状态。
+    for (const [id, component] of this.components) {
+      const item = this.lastItems.get(id);
+      if (item) component.update(item);
+    }
+    super.invalidate();
+  }
+
   /** 把最新状态同步进组件树，返回是否有实际变化。 */
   sync(transcript: TranscriptState): boolean {
     const items = [...transcript.committed, ...transcript.active];

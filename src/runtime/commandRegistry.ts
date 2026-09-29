@@ -20,6 +20,7 @@ export const SLASH_COMMANDS: readonly SlashCommandDefinition[] = [
   { name: "/usage", description: "Show model token usage and cost", category: "system", surfaces: terminalOnly },
   { name: "/compact", description: "Compact older conversation history", category: "system", acceptsArgs: true, surfaces: allInteractive },
   { name: "/model", description: "Choose a model and its supported thinking effort", category: "system", surfaces: terminalOnly },
+  { name: "/theme", description: "Choose terminal colors (dark or light)", category: "system", acceptsArgs: true, surfaces: terminalOnly },
   { name: "/status", description: "Show model, context, permissions and extensions", category: "system", surfaces: terminalOnly },
   { name: "/mcp", description: "List MCP servers and tools, or reconnect a server", category: "extension", acceptsArgs: true, surfaces: terminalOnly },
   { name: "/skills", description: "List available project and global skills", category: "extension", surfaces: terminalOnly },

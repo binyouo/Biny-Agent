@@ -7,13 +7,19 @@
 import { ProcessTerminal, TUI } from "@earendil-works/pi-tui";
 import { BinyTui } from "./app.js";
 import type { TuiLaunchMode } from "./types.js";
+import { setTheme } from "./theme/index.js";
 
 export async function startTui(
   workspaceRoot: string,
   version?: string,
   initialSession?: string,
-  launchMode: TuiLaunchMode = "new"
+  launchMode: TuiLaunchMode = "new",
+  themeName = "dark"
 ): Promise<void> {
+  if (!process.stdin.isTTY || !process.stdout.isTTY) {
+    throw new Error('Biny TUI requires an interactive terminal for stdin and stdout. Use biny run "task" --headless for scripts, or biny --help for commands.');
+  }
+  setTheme(themeName);
   const terminal = new ProcessTerminal();
   const ui = new TUI(terminal);
   const app = new BinyTui(ui, workspaceRoot, version, initialSession, launchMode);

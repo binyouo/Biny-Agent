@@ -81,7 +81,7 @@ export function footerLayout(data: FooterData, width: number): {
   const workspace = truncateToWidth(workspaceParts.join(" "), safeWidth, "…");
 
   const percent = contextPercent(data.contextUsedTokens, data.contextMaxTokens);
-  const context = formatContextUsage(data.contextUsedTokens, data.contextMaxTokens, data.contextSource);
+  const context = truncateToWidth(formatContextUsage(data.contextUsedTokens, data.contextMaxTokens, data.contextSource), safeWidth, "…");
 
   const metaParts: string[] = [data.permissionMode];
   if (data.cacheHitRate !== undefined) metaParts.push(`CH ${String(Math.round(data.cacheHitRate * 100))}%`);

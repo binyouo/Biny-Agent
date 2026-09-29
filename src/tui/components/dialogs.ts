@@ -8,6 +8,7 @@
 import { permissionPresentation } from "../../permission/presentation.js";
 import {
   Container,
+  Input,
   matchesKey,
   SelectList,
   Text,
@@ -51,30 +52,61 @@ class DialogFrame implements Component {
 
 /** 通用列表选择弹层。 */
 export class SelectDialog extends Container {
-  private readonly list: SelectList;
+  private list: SelectList;
+  private readonly search?: Input;
+  private readonly listContainer = new Container();
 
-  constructor(options: {
+  get focused(): boolean { return this.search?.focused ?? false; }
+  set focused(value: boolean) { if (this.search) this.search.focused = value; }
+
+  constructor(private readonly options: {
     title: string;
     hint?: string;
     items: SelectItem[];
     selectedIndex?: number;
     maxVisible?: number;
+    searchable?: boolean;
     onSelect: (item: SelectItem) => void;
     onCancel: () => void;
   }) {
     super();
-    this.list = new SelectList(options.items, options.maxVisible ?? 10, selectListTheme());
+    this.list = this.createList(options.items);
     this.list.setSelectedIndex(options.selectedIndex ?? 0);
-    this.list.onSelect = options.onSelect;
-    this.list.onCancel = options.onCancel;
     this.addChild(new DialogFrame(options.title, "", "top"));
+    if (options.searchable ?? options.items.length > 7) {
+      this.search = new Input();
+      this.addChild(new Text(theme.fg("muted", "Type to filter by name or description"), 1, 0));
+      this.addChild(this.search);
+    }
     this.addChild(new Text("", 0, 0));
-    this.addChild(this.list);
+    this.listContainer.addChild(this.list);
+    this.addChild(this.listContainer);
     this.addChild(new DialogFrame("", options.hint ?? "↑↓ navigate · enter select · esc/ctrl+c cancel", "bottom"));
   }
 
   handleInput(data: string): void {
-    this.list.handleInput(data);
+    if (!this.search || (["up", "down", "enter", "escape", "ctrl+c"] as const).some((key) => matchesKey(data, key))) {
+      this.list.handleInput(data);
+      return;
+    }
+    const previous = this.search.getValue();
+    this.search.handleInput(data);
+    if (this.search.getValue() === previous) return;
+    const terms = this.search.getValue().toLocaleLowerCase().trim().split(/\s+/u).filter(Boolean);
+    const items = this.options.items.filter((item) => {
+      const text = `${item.value} ${item.label} ${item.description ?? ""}`.toLocaleLowerCase();
+      return terms.every((term) => text.includes(term));
+    });
+    this.list = this.createList(items);
+    this.listContainer.clear();
+    this.listContainer.addChild(items.length ? this.list : new Text(theme.fg("muted", "No matches · change the search or press Esc"), 1, 0));
+  }
+
+  private createList(items: SelectItem[]): SelectList {
+    const list = new SelectList(items, this.options.maxVisible ?? 10, selectListTheme());
+    list.onSelect = this.options.onSelect;
+    list.onCancel = this.options.onCancel;
+    return list;
   }
 }
 

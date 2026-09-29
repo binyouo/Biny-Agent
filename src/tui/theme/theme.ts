@@ -56,12 +56,14 @@ export class Theme {
 
   /** 前景着色。 */
   fg(token: ThemeColor, text: string): string {
-    return `${this.ansi.get(token) ?? ""}${text}${resetForeground}`;
+    const prefix = this.ansi.get(token) ?? "";
+    return `${prefix}${text.replaceAll(resetForeground, prefix).replaceAll("\u001B[0m", `\u001B[0m${prefix}`)}${resetForeground}`;
   }
 
   /** 背景着色。 */
   bg(token: ThemeBg, text: string): string {
-    return `${this.ansi.get(token) ?? ""}${text}${resetBackground}`;
+    const prefix = this.ansi.get(token) ?? "";
+    return `${prefix}${text.replaceAll(resetBackground, prefix).replaceAll("\u001B[0m", `\u001B[0m${prefix}`)}${resetBackground}`;
   }
 
   bold(text: string): string {
@@ -234,7 +236,7 @@ export function getTheme(): Theme {
 
 /** 切换内置主题；未知主题名回落到 dark。 */
 export function setTheme(name: string): Theme {
-  activeTheme = new Theme(builtInThemes[name] ?? darkTheme);
+  activeTheme = new Theme(Object.hasOwn(builtInThemes, name) ? builtInThemes[name]! : darkTheme);
   for (const listener of themeListeners) listener();
   return activeTheme;
 }
