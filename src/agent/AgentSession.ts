@@ -809,10 +809,10 @@ export class AgentSession {
     const mode = capabilitySelection?.tools ?? this.activeConfig.chat.defaultToolSelection;
     const evidenceTool = this.options.toolRegistry.list().some((tool) => tool.name === "read_checkpoint_evidence")
       ? ["read_checkpoint_evidence"] : [];
-    if (this.planning && mode === "auto") return new Set([...(resolved ?? stableCodingToolNames), toolSearchToolName, "PlanDraft", "PlanStatus", "read_tool_result", ...evidenceTool]);
+    if (this.planning && mode === "auto") return new Set([...(resolved ?? stableCodingToolNames), toolSearchToolName, "PlanDraft", "PlanStatus", "AskUserQuestion", "read_tool_result", ...evidenceTool]);
     if (resolved || mode !== "auto" || this.options.toolRegistry.list().length <= 40) return resolved;
     // auto 筛选器缺失或异常时绝不能把大目录整体下发；保留基础编码能力和自助发现入口。
-    const fallback = new Set([...stableCodingToolNames, toolSearchToolName, "read_tool_result", ...evidenceTool]);
+    const fallback = new Set([...stableCodingToolNames, toolSearchToolName, "AskUserQuestion", "read_tool_result", ...evidenceTool]);
     return new Set(this.options.toolRegistry.list().map((tool) => tool.name).filter((name) => fallback.has(name)));
   }
 

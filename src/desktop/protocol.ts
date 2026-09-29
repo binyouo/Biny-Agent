@@ -37,6 +37,7 @@ import type { IdentityPolicy } from "../config/schema.js";
 import type { ModelChoice, ModelRuntimeInfo, ThinkingSelection } from "../llm/ModelManager.js";
 import type { MemoryPolicy } from "../personalization/index.js";
 import type { PermissionMode, PermissionResult } from "../permission/PermissionManager.js";
+import type { UserInputResponse } from "../runtime/userInput.js";
 import type { AgentHostEvent, AgentRuntimeUpdate, InteractiveRuntimeSnapshot } from "../runtime/agentEvents.js";
 import { slashCommandsForSurface, type SlashCommandDefinition } from "../runtime/commandRegistry.js";
 import type { SessionBranchPoint, SessionIsolation } from "../session/catalog.js";
@@ -119,6 +120,7 @@ export const desktopIpc = {
   cancelRun: "desktop:agent:cancel",
   runSlashCommand: "desktop:agent:slash",
   resolvePermission: "desktop:permission:resolve",
+  answerUserInput: "desktop:input:answer",
   setPermissionMode: "desktop:permission:mode",
   switchModel: "desktop:model:switch",
   testModelConfiguration: "desktop:model:test-configuration",
@@ -1616,6 +1618,7 @@ export interface DesktopApi {
   runSlashCommand(projectId: string, sessionId: string | undefined, command: string): Promise<DesktopSlashResult>;
   runInspectorCommand(projectId: string, owner: string, kind: "review" | "side-chat", input: string, history: import("./inspectorTask.js").InspectorMessage[]): Promise<DesktopSlashResult>;
   resolvePermission(projectId: string, requestId: string, result: PermissionResult): Promise<void>;
+  answerUserInput(projectId: string, sessionId: string, runId: string, toolCallId: string, response: UserInputResponse): Promise<void>;
   setPermissionMode(projectId: string, mode: PermissionMode): Promise<DesktopWorkspaceSnapshot>;
   switchModel(projectId: string, alias: string, thinking: ThinkingSelection): Promise<ModelRuntimeInfo>;
   testModelConfiguration(projectId: string, configuration: DesktopModelConfigurationInput): Promise<DesktopModelConnectionTestResult>;

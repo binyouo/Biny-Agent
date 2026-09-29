@@ -51,6 +51,17 @@ pnpm dev -- chat
 pnpm dev -- run "梳理这个仓库，并说明最优先的风险点"
 ```
 
+可从同一工作区的终端读取或回答当前等待中的问题（支持文本与 JSON 输出）：
+
+```bash
+biny input list --session <session-id> --json
+biny input answer <tool-call-id> --session <session-id> --run <run-id> --question place --text "放到下载目录"
+biny input answer <tool-call-id> --session <session-id> --run <run-id> --answers '[{"id":"place","selected":[],"text":"放到下载目录"}]' --json
+biny input answer <tool-call-id> --session <session-id> --run <run-id> --skip
+```
+
+问题 ID 和运行 ID 以 `input list` 的结果为准；已结束或取消的问题不能再回答。
+
 查看命令和具体功能的用法：
 
 ```bash

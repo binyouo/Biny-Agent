@@ -148,7 +148,7 @@ export function readRequestIds(payload: Record<string, unknown>): RuntimeRequest
   const continuationSource = optionalString(payload.continuationSource);
   const retryOfMessageId = optionalString(payload.retryOfMessageId);
   const replaceUserMessageId = optionalString(payload.replaceUserMessageId);
-  return { runId, messageId, turnId, parentRunId, continuationSource, retryOfMessageId, replaceUserMessageId };
+  return { runId, messageId, turnId, parentRunId, continuationSource, retryOfMessageId, replaceUserMessageId, allowUserInput: payload.allowUserInput === true };
 }
 
 export function readOptionalRunStatus(value: unknown): RuntimeRunStatus | undefined {

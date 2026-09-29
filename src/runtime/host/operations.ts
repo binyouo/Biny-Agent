@@ -74,6 +74,7 @@ export function operationLane(operation: string, payload: Record<string, unknown
     || operation === "permission"
     || operation === "run.cancel"
     || operation === "run.permission"
+    || operation === "input.answer"
     || operation === "submit"
     || operation === "start-interrupted"
     || operation === "run.submit"
@@ -86,6 +87,7 @@ export function operationLane(operation: string, payload: Record<string, unknown
   if (operation === "diary.refresh" || operation === "reflection.run" || operation === "heartbeat.run") return "admission";
   if (
     operation === "snapshot"
+    || operation === "input.list"
     || operation === "plan.list"
     || operation === "session.list"
     || operation === "worktree.list"

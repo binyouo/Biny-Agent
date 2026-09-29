@@ -56,6 +56,7 @@ import type { MemoryEmbeddingRuntimeStatus } from "../../../agent/context/Memory
 import { FileModelsStore, restoreProviderCatalogs, type ModelsStore } from "../../../llm/ModelsStore.js";
 import { listConfiguredModelChoices, listPickerModelChoices, modelRuntimeInfo, type ModelRuntimeInfo, type ThinkingSelection } from "../../../llm/ModelManager.js";
 import type { PermissionMode, PermissionResult } from "../../../permission/PermissionManager.js";
+import type { UserInputResponse } from "../../../runtime/userInput.js";
 import type { BrowserAutomationEndpoint } from "../../../tools/browser.js";
 import { createToolRegistry } from "../../../tools/registry.js";
 import { executeRuntimeCommand } from "../../../runtime/commands.js";
@@ -747,7 +748,7 @@ export class DesktopAgentManager {
         messageId: accepted.result.messageId
       };
     }
-    const submitted = runtime.submitPrompt(prompt, nativeAttachments, requestIds, promptContext, capabilitySelection);
+    const submitted = runtime.submitPrompt(prompt, nativeAttachments, { ...requestIds, allowUserInput: true }, promptContext, capabilitySelection);
     if (this.draftSessionIds.get(projectId) === targetSessionId) this.draftSessionIds.delete(projectId);
     if (this.state.selectedSessionId(projectId) === selectedBeforeSend) await this.state.setSelectedSession(projectId, info.sessionId);
     this.observeRunCompletion(projectId, submitted.completion);
@@ -913,7 +914,7 @@ export class DesktopAgentManager {
         await this.state.setSelectedSession(projectId, sessionId);
         return { sessionId, runId: accepted.result.runId, messageId: accepted.result.messageId };
       }
-      const submitted = runtime.submitPrompt(prompt, nativeAttachments, requestIds);
+      const submitted = runtime.submitPrompt(prompt, nativeAttachments, { ...requestIds, allowUserInput: true });
       await this.state.setSelectedSession(projectId, sessionId);
       this.observeRunCompletion(projectId, submitted.completion);
       return { sessionId, runId: submitted.runId, messageId: submitted.messageId };
@@ -969,7 +970,7 @@ export class DesktopAgentManager {
         messageId: accepted.result.messageId
       };
     }
-    const submitted = runtime.submitPrompt(prompt, nativeAttachments, requestIds);
+    const submitted = runtime.submitPrompt(prompt, nativeAttachments, { ...requestIds, allowUserInput: true });
     await this.state.setSelectedSession(projectId, sessionId);
     this.observeRunCompletion(projectId, submitted.completion);
     return {
@@ -1027,6 +1028,18 @@ export class DesktopAgentManager {
       return;
     }
     owner.runtime.answerPermission(requestId, result);
+  }
+
+  async answerUserInput(projectId: string, sessionId: string, runId: string, toolCallId: string, response: UserInputResponse): Promise<void> {
+    const owner = this.runtimeEntries(projectId).find((entry) => entry.runtime instanceof RuntimeHostClient
+      || entry.runtime.getSnapshot().info.sessionId === sessionId);
+    if (!owner) throw new Error("Project runtime is not active.");
+    if (owner.runtime instanceof RuntimeHostClient) {
+      await owner.runtime.answerUserInput(sessionId, runId, toolCallId, response);
+    } else {
+      if (!owner.commands?.userInput) throw new Error("User input is unavailable in this runtime.");
+      owner.commands.userInput.answer(sessionId, runId, toolCallId, response);
+    }
   }
 
   async setPermissionMode(projectId: string, mode: PermissionMode): Promise<DesktopWorkspaceSnapshot> {

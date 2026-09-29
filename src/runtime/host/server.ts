@@ -799,6 +799,13 @@ export class RuntimeHostServer {
       const managed = await this.runtimeEntry(frame.operation, payload);
       return { snapshot: managed.runtime.getSnapshot(), sessions: this.sessionSummaries(), sequence: this.sequence };
     }
+    if (frame.operation === "input.list" || frame.operation === "input.answer") {
+      const sessionId = requiredString(payload.sessionId, "sessionId");
+      const requests = this.registry.get(sessionId)?.commands.userInput;
+      if (frame.operation === "input.list") return requests?.list() ?? [];
+      if (!requests) throw new Error("User input request is no longer pending in this session.");
+      return requests.answer(sessionId, requiredString(payload.runId, "runId"), requiredString(payload.toolCallId, "toolCallId"), payload.response);
+    }
     const managed = await this.runtimeEntry(frame.operation, payload);
     const runtime = managed.runtime;
     const commands = managed.commands;

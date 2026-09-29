@@ -19,6 +19,8 @@ import { readSessionEvents } from "../session/events.js";
 import { ensureAgentDirs } from "../session/store.js";
 import { createToolRegistry } from "../tools/registry.js";
 import { createTodoTool } from "../tools/todo.js";
+import { createAskUserQuestionTool } from "../tools/askUserQuestion.js";
+import { UserInputRequests } from "./userInput.js";
 
 import { TodoStore } from "../session/todoStore.js";
 import { CheckpointStore } from "../session/checkpointStore.js";
@@ -95,6 +97,8 @@ export interface CommandRuntime {
   graphs: GoalGraphStore;
   capabilities: CapabilityStore;
   subagents: SubagentTaskManager | undefined;
+  userInput?: UserInputRequests;
+  setUserInputRun?(run?: { sessionId: string; runId: string }): void;
   extensionReport(section?: ExtensionSection): string;
   /** 扩展实时状态的快照；`/status` 等命令的卡片和文本报告共用。 */
   extensionStatus(): ExtensionStatus;
@@ -255,6 +259,7 @@ export async function createCommandRuntime(workspaceRoot: string, options: Comma
   const todos = new TodoStore(persistenceRoot, recorder.sessionId);
   await todos.initialize();
   toolRegistry.registerBuiltinTool(createTodoTool(todos));
+  const userInput = new UserInputRequests();
   const permissionManager = new PermissionManager({ ...config.permission, source: "global config.json + project .biny/settings.json" });
   const mcpHost = resourceScope.mcp;
   let agent: AgentSession | undefined;
@@ -954,6 +959,12 @@ export async function createCommandRuntime(workspaceRoot: string, options: Comma
     graphs,
     capabilities,
     subagents: subagentTaskManager,
+    userInput,
+    setUserInputRun(run) {
+      userInput.setRun(run);
+      toolRegistry.unregister("AskUserQuestion");
+      if (run) toolRegistry.registerBuiltinTool(createAskUserQuestionTool(userInput));
+    },
     hasBackgroundWork: () => heartbeat.status().running
       || Boolean(subagentTaskManager?.listSnapshots().some((task) => task.status === "queued" || task.status === "running")),
     extensionReport: (section?: ExtensionSection): string => formatExtensionReport(extensionStatus(), section),
@@ -1027,6 +1038,7 @@ export async function createCommandRuntime(workspaceRoot: string, options: Comma
       subagentParentRunId = parentRunId;
     },
     close: async () => {
+      userInput.setRun();
       try {
         const wasOwner = backgroundOwners.values().next().value === backgroundOwner;
         backgroundOwner.stop();

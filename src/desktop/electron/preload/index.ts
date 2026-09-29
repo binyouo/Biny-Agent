@@ -86,6 +86,7 @@ const api: DesktopApi = {
   runSlashCommand: async (projectId, sessionId, command) => await ipcRenderer.invoke(desktopIpc.runSlashCommand, projectId, sessionId, command),
   runInspectorCommand: async (projectId, owner, kind, input, history) => await ipcRenderer.invoke(desktopIpc.runInspectorCommand, projectId, owner, kind, input, history),
   resolvePermission: async (projectId, requestId, result) => await ipcRenderer.invoke(desktopIpc.resolvePermission, projectId, requestId, result),
+  answerUserInput: async (projectId, sessionId, runId, toolCallId, response) => await ipcRenderer.invoke(desktopIpc.answerUserInput, projectId, sessionId, runId, toolCallId, response),
   setPermissionMode: async (projectId, mode) => await ipcRenderer.invoke(desktopIpc.setPermissionMode, projectId, mode),
   switchModel: async (projectId, alias, thinking) => await ipcRenderer.invoke(desktopIpc.switchModel, projectId, alias, thinking),
   testModelConfiguration: async (projectId, configuration) => await ipcRenderer.invoke(desktopIpc.testModelConfiguration, projectId, configuration),

@@ -23,6 +23,7 @@ import { desktopCrystalRequestSchema } from "../../crystalProtocol.js";
 import type { DesktopThreadBriefService } from "./DesktopThreadBriefService.js";
 import type { DesktopCrystalService } from "./DesktopCrystalService.js";
 import { agentCapabilitySelectionSchema } from "../../../agent/capabilitySelection.js";
+import { userInputResponseSchema } from "../../../runtime/userInput.js";
 import {
   chatPersonalizationSchema,
   configRevisionSchema,
@@ -626,6 +627,10 @@ export function registerDesktopIpc(context: IpcContext): void {
 
   handleRecoveryGated(desktopIpc.resolvePermission, async (_event, projectId: unknown, requestId: unknown, result: unknown) => {
     await context.agents.resolvePermission(idSchema.parse(projectId), idSchema.parse(requestId), permissionResultSchema.parse(result));
+  });
+
+  handleRecoveryGated(desktopIpc.answerUserInput, async (_event, projectId: unknown, sessionId: unknown, runId: unknown, toolCallId: unknown, response: unknown) => {
+    await context.agents.answerUserInput(idSchema.parse(projectId), idSchema.parse(sessionId), idSchema.parse(runId), idSchema.parse(toolCallId), userInputResponseSchema.parse(response));
   });
 
   handleRecoveryGated(desktopIpc.setPermissionMode, async (_event, projectId: unknown, mode: unknown) => {

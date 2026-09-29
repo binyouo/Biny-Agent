@@ -17,6 +17,7 @@ import type { LocalEmbeddingModelId } from "../../llm/embedding/types.js";
 import type { MemoryEmbeddingRuntimeStatus } from "../../agent/context/MemoryEmbeddingService.js";
 import type { ModelChoice, ModelRuntimeInfo, ThinkingSelection } from "../../llm/ModelManager.js";
 import type { PermissionMode, PermissionResult } from "../../permission/PermissionManager.js";
+import type { PendingUserInput, UserInputResponse, UserInputResult } from "../userInput.js";
 import type { SessionSummary } from "../../session/events.js";
 import type { UsageSummary } from "../../session/metadata.js";
 import { sessionIdFromFile } from "../../session/store.js";
@@ -210,6 +211,7 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
       runId: ids.runId,
       messageId: ids.messageId,
       turnId: ids.turnId,
+      allowUserInput: this.options.surface === "desktop",
       parentRunId: ids.parentRunId,
       continuationSource: ids.continuationSource,
       retryOfMessageId: ids.retryOfMessageId,
@@ -258,6 +260,7 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
       runId: ids.runId,
       messageId: ids.messageId,
       turnId: ids.turnId,
+      allowUserInput: this.options.surface === "desktop",
       parentRunId: ids.parentRunId,
       continuationSource: ids.continuationSource,
       retryOfMessageId: ids.retryOfMessageId,
@@ -333,6 +336,14 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
     return await this.request("run.permission", { requestId, result, sessionId, writeIntent: true, expectedRevision: this.currentRevision(sessionId) });
   }
 
+  async pendingUserInput(sessionId: string): Promise<PendingUserInput[]> {
+    return await this.request("input.list", { sessionId });
+  }
+
+  async answerUserInput(sessionId: string, runId: string, toolCallId: string, response: UserInputResponse): Promise<UserInputResult> {
+    return await this.request("input.answer", { sessionId, runId, toolCallId, response });
+  }
+
   async continueRun(sourceRunId: string, requestIds?: RuntimeRequestIds, sessionId?: string): Promise<HostOperationResult<{ runId: string; messageId: string }>> {
     const ids = normalizeRequestIds(requestIds);
     return await this.request("run.continue", {
@@ -340,6 +351,7 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
       runId: ids.runId,
       messageId: ids.messageId,
       turnId: ids.turnId,
+      allowUserInput: this.options.surface === "desktop",
       sessionId,
       writeIntent: true,
       expectedRevision: this.currentRevision(sessionId)
@@ -605,6 +617,7 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
         runId: ids.runId,
         messageId: ids.messageId,
         turnId: ids.turnId,
+        allowUserInput: this.options.surface === "desktop",
         parentRunId: ids.parentRunId,
         continuationSource: ids.continuationSource,
         mode,

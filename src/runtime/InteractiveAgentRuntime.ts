@@ -47,6 +47,8 @@ export interface SubmittedAgentRun {
  * `runId`/`messageId`，客户端不需要先等待一轮 RPC 才能更新界面。
  */
 export interface RuntimeRequestIds {
+  /** 只有能展示并回答结构化问题的客户端才启用。 */
+  allowUserInput?: boolean;
   runId?: string;
   messageId?: string;
   turnId?: string;
@@ -125,6 +127,7 @@ interface BackgroundOperation {
 }
 
 interface AgentRun extends ActiveRunSnapshot {
+  allowUserInput: boolean;
   turnId: string;
   startedAtMs: number;
   continuation: boolean;
@@ -393,7 +396,7 @@ export class InteractiveAgentRuntime {
         input || "请分析这些附件。",
         attachments,
         false,
-        { parentRunId: previousRun.runId, continuationSource: "message_queue" },
+        { parentRunId: previousRun.runId, continuationSource: "message_queue", allowUserInput: previousRun.allowUserInput },
         undefined,
         undefined,
         previousRun.capabilitySelection
@@ -456,6 +459,7 @@ export class InteractiveAgentRuntime {
     const messageId = requestIds?.messageId ?? randomUUID();
     const startedAtMs = Date.now();
     const run: AgentRun = {
+      allowUserInput: requestIds?.allowUserInput === true,
       sessionId,
       runId,
       turnId,
@@ -1174,6 +1178,8 @@ export class InteractiveAgentRuntime {
     await this.startRunLedger(run);
     try {
       // Skill/MCP 清单已在 admission 时固定；慢速刷新只影响下一回合，不挡当前首个模型请求。
+      this.commandRuntime.setUserInputRun?.(run.allowUserInput && run.source === undefined && !run.supervision
+        ? { sessionId: run.sessionId, runId: run.runId } : undefined);
       recordPerfPhase("runtime.executeRun.pre", executePerfStartedAt, { runId: run.runId, sessionId: run.sessionId });
       let turn: AgentTurnOutcome | undefined;
       // 所有交互共用 AgentSession 的同一条回合执行链路。
@@ -1255,6 +1261,7 @@ export class InteractiveAgentRuntime {
       return this.failRun(run, durationMs, message);
     } finally {
       this.pendingPermission = undefined;
+      this.commandRuntime.setUserInputRun?.();
       this.commandRuntime.setSubagentParentRunId(undefined);
       this.tools.clear();
     }

@@ -14,6 +14,7 @@ import { registerCrystalCommands } from "./commands/crystal.js";
 import { referenceKindsCommand, referenceSearchCommand, referenceResolveCommand, referenceGraphCommand,
   referenceTokenCommand, referenceContextCommand, referenceOpenCommand } from "./commands/references.js";
 import { registerFatigueCommands } from "./commands/fatigue.js";
+import { registerUserInputCommands } from "./commands/userInput.js";
 import { registerSoulCommands } from "./commands/soul.js";
 import { doctorCommand } from "./commands/doctor.js";
 import { runCommand, type RunCommandOptions } from "./commands/run.js";
@@ -107,6 +108,7 @@ program.name("biny").description("Biny local desktop assistant").version(cliVers
 registerCrystalCommands(program);
 registerSoulCommands(program);
 registerFatigueCommands(program);
+registerUserInputCommands(program);
 registerSkillCommands(program, workspaceRoot);
 registerBrowserCommands(program);
 
