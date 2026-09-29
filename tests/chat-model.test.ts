@@ -474,8 +474,8 @@ test("activityToolRow 覆盖记忆/技能/浏览器/任务工具", () => {
   assert.equal(search.verb, "搜索技能");
   const open = activityToolRow(toolStep("t", "BrowserOpen", "success", { args: { url: "https://example.com" } }).tool);
   assert.deepEqual({ verb: open.verb, object: open.object }, { verb: "打开", object: "https://example.com" });
-  const task = activityToolRow(toolStep("t", "Task", "success", { args: { description: "梳理构建产物" } }).tool);
-  assert.deepEqual({ verb: task.verb, object: task.object }, { verb: "派发任务", object: "梳理构建产物" });
+  const task = activityToolRow(toolStep("t", "Task", "success", { args: { task: "梳理构建产物" } }).tool);
+  assert.deepEqual({ verb: task.verb, object: task.object }, { verb: "委派子代理", object: "梳理构建产物" });
 });
 
 test("activityPhaseKindOf 记忆检索归探索、记忆保存归修改", () => {

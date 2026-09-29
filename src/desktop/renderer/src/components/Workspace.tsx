@@ -273,7 +273,7 @@ export function Workspace({
         </div>
         <div className={`biny-chat-composer${visiblePendingPrompt && turns.length === 0 ? " is-entering" : ""}`}>
             {sessionId && !writerConflict ? <>
-              <TodoProgressPanel sessionId={sessionId} projection={planProjection} />
+              <TodoProgressPanel sessionId={sessionId} projection={planProjection} running={running} />
               <PlanPanel sessionId={sessionId} planning={planning === true} busy={running} projection={planProjection} onMutation={onRuntimeMutation} onError={onRuntimeError} />
             </> : null}
             {recipeNotices && recipeNotices.length > 0 && projectId ? (

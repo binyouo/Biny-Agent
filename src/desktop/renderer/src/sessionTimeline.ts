@@ -53,6 +53,7 @@ export interface TimelineCommand {
 
 export interface TimelineTool {
   id: string;
+  runId?: string;
   tool: string;
   args: unknown;
   result?: unknown;
@@ -392,6 +393,7 @@ function buildHistoricalTurns(events: SessionEvent[]): TimelineTurn[] {
       appendHistoricalAssistant(turn, event.assistantContent, true);
       const tool: TimelineTool = {
         id: event.toolCallId ?? `history-tool-${String(turn.tools.length)}`,
+        runId: event.runtime?.runId,
         tool: toolName,
         args: event.args,
         status: "running",
@@ -583,6 +585,7 @@ function buildVersionedHistoricalTurns(events: SessionEvent[]): TimelineTurn[] {
       appendHistoricalAssistant(turn, event.assistantContent, true);
       const tool: TimelineTool = {
         id: event.toolCallId ?? `history-tool-${String(turn.tools.length)}`,
+        runId: event.runtime?.runId,
         tool: toolName,
         args: event.args,
         status: "running",
@@ -694,6 +697,7 @@ function createLiveTimelineFold(initialUserMessageIndex: number): LiveTimelineFo
     }
     const tool: TimelineTool = {
       id: event.toolCallId,
+      runId: event.runId,
       tool: toolName,
       args: {},
       status: "waiting",

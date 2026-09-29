@@ -437,8 +437,8 @@ export function activityToolRow(tool: TimelineTool): ActivityToolRowModel {
       row.object = tool.description ?? "";
       return row;
     case "Task":
-      row.verb = "派发任务";
-      row.object = stringArg(tool, "description") ?? stringArg(tool, "prompt")?.slice(0, 80) ?? "…";
+      row.verb = "委派子代理";
+      row.object = stringArg(tool, "task") ?? "…";
       return row;
     default: {
       row.verb = tool.tool.replace(/[_-]+/g, " ");

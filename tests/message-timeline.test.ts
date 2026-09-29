@@ -18,8 +18,29 @@ const failure: AgentHostEvent = { ...base, timestamp: "2026-09-11T00:00:12.000Z"
 const noop = (): void => undefined;
 const noopAsync = (): Promise<void> => Promise.resolve();
 
+test("普通模式澄清卡直接显示选项和自由输入，历史答案可回放", () => {
+  const args = { questions: [{ id: "place", question: "项目放在哪里？", options: [{ label: "桌面" }, { label: "下载目录" }] }] };
+  const events: AgentHostEvent[] = [
+    { ...base, type: "message.user", messageId: "ask", content: "做个应用" },
+    { ...base, type: "tool.started", toolCallId: "question", tool: "AskUserQuestion", args }
+  ];
+  const pending = renderTurns(buildSessionTimeline([], events), true, "run");
+  assert.match(pending, /user-input-card/);
+  assert.match(pending, /项目放在哪里？/);
+  assert.match(pending, /type="radio"/);
+  assert.match(pending, /textarea/);
+  assert.doesNotMatch(pending, /checked=""/);
+  const done = renderTurns(buildSessionTimeline([], [...events, {
+    ...base, type: "tool.completed", toolCallId: "question", tool: "AskUserQuestion", durationMs: 20,
+    result: { questions: args.questions, response: { status: "answered", answers: [{ id: "place", selected: [], text: "工作目录" }] } }
+  }]));
+  assert.match(done, /工作目录/);
+  assert.match(done, /已回答/);
+});
+
 function renderTurns(turns: TimelineTurn[], thinking = false, runtimeActiveRunId?: string): string {
   return renderToStaticMarkup(createElement(MessageTimeline, {
+    sessionId: "session",
     projectId: "project",
     turns,
     thinking,
@@ -34,6 +55,16 @@ function renderTurns(turns: TimelineTurn[], thinking = false, runtimeActiveRunId
     onRollbackFiles: noop,
   }));
 }
+
+test("只从历史重建的待答问题按当前运行快照恢复，不能把旧问题激活", () => {
+  const history: SessionEvent[] = [
+    { type: "user_message", content: "做个工具", messageId: "history-user", time: base.timestamp, runtime: { eventId: "question-e1", eventSeq: 1, runId: "active-question-run" } },
+    { type: "tool_call", tool: "AskUserQuestion", toolCallId: "pending-question", args: { questions: [{ id: "target", question: "放在哪里？" }] }, time: base.timestamp, runtime: { eventId: "question-e2", eventSeq: 2, runId: "active-question-run" } }
+  ];
+  const turns = buildSessionTimeline(history, []);
+  assert.ok(renderTurns(turns, true, "active-question-run").includes('class="user-input-card" open=""'), "历史卡应由当前运行身份恢复等待状态");
+  assert.ok(!renderTurns(turns, true, "another-run").includes('class="user-input-card" open=""'), "新运行不得激活历史卡");
+});
 
 test("模型尚未输出就失败：只保留用户消息，不生成助手错误回复", () => {
   const turns = buildSessionTimeline([], [...start, failure]);

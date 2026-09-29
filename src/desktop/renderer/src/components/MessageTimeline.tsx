@@ -26,6 +26,8 @@ import { MessageContextMenu } from "./chat/MessageContextMenu.js";
 import { ExecutionTraceDialog } from "./chat/ExecutionTraceDialog.js";
 import { ChangesSummary } from "./chat/ChangesSummary.js";
 import { RunStatus } from "./chat/RunStatus.js";
+import { SubagentActivity } from "./chat/SubagentActivity.js";
+import { UserInputCard } from "./chat/UserInputCard.js";
 
 interface MessageTimelineProps {
   sessionId?: string;
@@ -73,7 +75,8 @@ interface OptimisticRewrite {
 /** live 回合的 id 是 runId；状态停在 idle 说明 run.started 被丢过，由 runtime 的活动 run 兜底。 */
 function turnIsRunning(turn: TimelineTurn, runtimeActiveRunId: string | undefined): boolean {
   if (turn.status === "running" || turn.status === "waiting_permission") return true;
-  return runtimeActiveRunId !== undefined && turn.status === "idle" && turn.id === runtimeActiveRunId;
+  return runtimeActiveRunId !== undefined && ((turn.status === "idle" && turn.id === runtimeActiveRunId)
+    || turn.tools.some((tool) => tool.runId === runtimeActiveRunId && (tool.status === "running" || tool.status === "waiting")));
 }
 
 export const MessageTimeline = memo(function MessageTimeline({ sessionId, projectId, turns, skillDescriptions, skillLabels, pendingUserMessage, pendingFloatFromComposer, runtimeActiveRunId, onPreviewFile, onOpenExternal, onReferenceMessage, onShowMessageReferences, onAddQuoteToConversation, onResolvePermission, thinking, onRetry, onSwitchVersion, onEditRequest, editInFlight, onCreateBranch, onRollbackFiles }: MessageTimelineProps): React.JSX.Element {
@@ -485,6 +488,7 @@ const Turn = memo(function Turn({
         <div className="agent-response">
         {executionSteps.length ? (
           <ExecutionTimeline
+            sessionId={sessionId}
             onPreviewFile={onPreviewFile}
             onOpenExternal={onOpenExternal}
             onResolvePermission={onResolvePermission}
@@ -556,6 +560,7 @@ const TypewriterMarkdown = memo(function TypewriterMarkdown({ active, content, o
 });
 
 function ExecutionTimeline({
+  sessionId,
   onPreviewFile,
   onOpenExternal,
   onResolvePermission,
@@ -564,6 +569,7 @@ function ExecutionTimeline({
   steps,
   thinkingSeconds
 }: {
+  sessionId?: string;
   onPreviewFile(path: string): void;
   onOpenExternal(url: string): void;
   onResolvePermission(requestId: string, result: PermissionResult): Promise<void>;
@@ -577,7 +583,7 @@ function ExecutionTimeline({
   return (
     <div className="execution-timeline">
       {entries.map((entry, index) => {
-        // 思考 + 工具（无论几个）一律进活动段：单步骤呈现为一枚相位头像 + 一行摘要。
+        // 普通工具和思考聚合进活动段；委派与提问保留独立入口。
         if (Array.isArray(entry)) {
           return (
             <ActivitySegment
@@ -620,7 +626,9 @@ function ExecutionTimeline({
             </div>
           );
         }
-        if (step.kind === "tool") return null;
+        if (step.kind === "tool") return step.tool.tool === "AskUserQuestion"
+          ? <UserInputCard key={`${sessionId}:${step.tool.runId}:${step.id}`} tool={step.tool} projectId={projectId} sessionId={sessionId} running={running} />
+          : <SubagentActivity key={step.id} tool={step.tool} projectId={projectId} onPreviewFile={onPreviewFile} onOpenExternal={onOpenExternal} onResolvePermission={onResolvePermission} />;
         if (step.summary) {
           return (
             <ActivitySummaryStep
@@ -642,7 +650,7 @@ function ExecutionTimeline({
  * 把连续的可聚合步骤（工具调用 + 思考）收成一组；其余步骤原样保留顺序。
  *
  * 思考不把工具组切断：reasoning 步骤与相邻 tool 步骤进同一个活动段。压缩标记
- * （notice === "compaction"）、assistant 正文/摘要、用户插话仍然是分组断点。
+ * （notice === "compaction"）、委派、提问、assistant 正文/摘要、用户插话是分组断点。
  * 单个步骤也保留为活动段，使思考或工具调用与多步骤活动使用同一套展开行为。
  */
 function groupExecutionSteps(steps: TimelineStep[]): Array<TimelineStep | ActivitySegmentStep[]> {
@@ -660,7 +668,7 @@ function groupExecutionSteps(steps: TimelineStep[]): Array<TimelineStep | Activi
 }
 
 function isGroupableStep(step: TimelineStep): step is ActivitySegmentStep {
-  if (step.kind === "tool") return true;
+  if (step.kind === "tool") return step.tool.tool !== "Task" && step.tool.tool !== "AskUserQuestion";
   return step.kind === "reasoning" && step.notice !== "compaction";
 }
 

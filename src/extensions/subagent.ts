@@ -1,4 +1,5 @@
 import { promises as fs } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import type { AgentConfig } from "../config/schema.js";
 import { vercelAgentLoopContinue } from "../agent/core/vercelAgentLoop.js";
@@ -173,12 +174,22 @@ export function createSubagentTool(options: SubagentOptions, taskManager: Subage
               verification: args.verification
             }, context);
           }
-          return await taskManager.run(args.task, {
-            parentRunId: options.getParentRunId?.() ?? context.toolCallId,
-            signal: context.signal,
-            accessMode: options.getAccessMode(),
-            agent: args.agent
+          const taskId = randomUUID();
+          const unsubscribe = taskManager.subscribe((snapshot) => {
+            if (snapshot.taskId !== taskId) return;
+            context.onUpdate?.({ kind: "status", customKind: "subagent", customData: {
+              taskId, status: snapshot.status, agent: snapshot.agent
+            } });
           });
+          try {
+            return await taskManager.run(args.task, {
+              taskId,
+              parentRunId: options.getParentRunId?.() ?? context.toolCallId,
+              signal: context.signal,
+              accessMode: options.getAccessMode(),
+              agent: args.agent
+            });
+          } finally { unsubscribe(); }
         }
       };
     }

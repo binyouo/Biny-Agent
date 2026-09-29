@@ -3104,3 +3104,33 @@
 .markdown-link-menu-heading { padding: 6px 9px 4px; color: var(--text-secondary); font-size: 11px; }
 .markdown-link-menu-separator { height: 1px; margin: 4px 3px; background: var(--border); }
 .markdown-link-feedback { position: fixed; z-index: 2201; max-width: min(240px, calc(100vw - 16px)); padding: 7px 10px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface-raised); color: var(--text); box-shadow: 0 4px 16px var(--shadow); font-size: 12px; pointer-events: none; }
+
+/* 委派与需求澄清保留独立入口，展开内容沿用工具详情的有界滚动。 */
+.chat-subagent, .user-input-card { border: 1px solid var(--biny-border); border-radius: 10px; margin: 8px 0; min-width: 0; font-size: .92em; }
+.chat-subagent-summary, .user-input-card > summary { display: flex; align-items: center; gap: 8px; min-height: 40px; padding: 8px 12px; cursor: pointer; list-style: none; }
+.chat-subagent-summary::-webkit-details-marker, .user-input-card > summary::-webkit-details-marker { display: none; }
+.chat-subagent-summary > svg, .user-input-card > summary > svg { flex: none; }
+.chat-subagent-summary > svg:last-child, .user-input-card > summary > svg:last-child { margin-left: auto; transform: rotate(-90deg); }
+.chat-subagent details[open] > summary > svg:last-child, .user-input-card[open] > summary > svg:last-child { transform: none; }
+.chat-subagent-name { flex: none; font-weight: 550; }
+.chat-subagent-task { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chat-subagent-status, .chat-subagent-duration { flex: none; color: var(--biny-text-secondary); font-size: .88em; }
+.chat-subagent-detail { padding: 0 12px 12px; }
+.user-input-card form { padding: 0 12px 12px; }
+.user-input-card fieldset { border: 0; margin: 0 0 14px; padding: 0; min-width: 0; }
+.user-input-card legend { font-weight: 550; padding: 4px 0 10px; overflow-wrap: anywhere; }
+.user-input-option { display: flex; gap: 10px; align-items: flex-start; padding: 10px; border: 1px solid var(--biny-border); border-radius: 8px; margin-bottom: 6px; cursor: pointer; }
+.user-input-option:has(input:checked) { border-color: var(--biny-accent); background: color-mix(in srgb, var(--biny-accent) 10%, transparent); }
+.user-input-option input { margin-top: 3px; accent-color: var(--biny-accent); flex: none; }
+.user-input-option > span { min-width: 0; overflow-wrap: anywhere; }
+.user-input-option small { display: block; opacity: .7; margin-top: 3px; }
+.user-input-custom { display: grid; gap: 6px; margin-top: 10px; font-size: .92em; }
+.user-input-custom textarea { width: 100%; box-sizing: border-box; resize: vertical; min-height: 60px; max-height: 200px; border: 1px solid var(--biny-border); border-radius: 6px; background: transparent; color: inherit; padding: 8px; font: inherit; }
+.user-input-answer { white-space: pre-wrap; overflow-wrap: anywhere; }
+.user-input-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.user-input-actions button { min-height: 32px; padding: 5px 12px; border: 1px solid var(--biny-border); border-radius: 6px; background: transparent; color: inherit; cursor: pointer; font: inherit; }
+.user-input-actions button[type=submit] { background: var(--biny-accent); color: var(--accent-foreground); }
+.user-input-actions button:disabled { opacity: .45; cursor: default; }
+.user-input-card :focus-visible, .chat-subagent summary:focus-visible { outline: 2px solid var(--biny-accent); outline-offset: -2px; }
+.user-input-error { color: var(--biny-danger); overflow-wrap: anywhere; }
+@container (max-width: 480px) { .chat-subagent-summary { flex-wrap: wrap; } .chat-subagent-task { order: 2; flex-basis: 100%; } }

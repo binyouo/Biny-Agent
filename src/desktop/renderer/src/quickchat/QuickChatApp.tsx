@@ -18,6 +18,8 @@ import { DEFAULT_FONT_PREFERENCE, SYSTEM_FONT_FAMILY } from "../../../fontPrefer
 import { Icon } from "../components/Icon.js";
 import { MarkdownContent } from "../components/MarkdownContent.js";
 import { ModelPickerMenu } from "../components/composer/ModelPickerMenu.js";
+import { UserInputCard } from "../components/chat/UserInputCard.js";
+import type { TimelineTool } from "../sessionTimeline.js";
 import "./quickchat.css";
 
 const MAX_INPUT_LENGTH = 4_000;
@@ -31,6 +33,8 @@ interface QuickChatMessage {
   activity?: string;
   streaming: boolean;
   withScreenContext?: boolean;
+  questions?: TimelineTool[];
+  questionSessionId?: string;
 }
 
 interface QuickChatState {
@@ -47,6 +51,7 @@ type QuickChatAction =
   | { type: "reasoning-delta"; runId: string; content: string }
   | { type: "reasoning-completed"; runId: string }
   | { type: "tool-started"; runId: string; tool: string }
+  | { type: "question-event"; runId: string; event: Extract<AgentHostEvent, { type: "tool.started" | "tool.completed" | "tool.failed" }> }
   | { type: "finish-run"; runId: string; fallback?: string };
 
 let messageCounter = 0;
@@ -105,6 +110,21 @@ function reduceQuickChat(state: QuickChatState, action: QuickChatAction): QuickC
     case "tool-started":
       withAssistant[index] = { ...existing, activity: "正在调用 " + action.tool, streaming: true };
       return { messages: withAssistant };
+    case "question-event": {
+      const event = action.event;
+      const questions = [...existing.questions ?? []];
+      const previous = questions.findIndex((tool) => tool.id === event.toolCallId);
+      const tool: TimelineTool = previous >= 0 ? { ...questions[previous]! } : { id: event.toolCallId, runId: event.runId, tool: "AskUserQuestion", status: "running", args: {}, updates: [] };
+      if (event.type === "tool.started") tool.args = event.args;
+      else {
+        tool.result = event.result;
+        tool.status = event.type === "tool.failed" ? "failed" : "success";
+        if (event.type === "tool.failed") tool.error = event.error;
+      }
+      if (previous >= 0) questions[previous] = tool; else questions.push(tool);
+      withAssistant[index] = { ...existing, questions, questionSessionId: event.sessionId, activity: undefined };
+      return { messages: withAssistant };
+    }
     case "finish-run":
       withAssistant[index] = {
         ...existing,
@@ -478,6 +498,7 @@ export function QuickChatApp(): React.JSX.Element {
                     </details>
                   ) : null}
                   {message.activity ? <div className="quickchat-activity">{message.activity}</div> : null}
+                  {message.questions?.map((tool) => <UserInputCard key={tool.id} tool={tool} projectId={projectId ?? ""} sessionId={message.questionSessionId} running={message.id === activeRunId} />)}
                   {message.content ? (
                     <MarkdownContent
                       content={message.content}
@@ -576,6 +597,10 @@ function handleQuickChatEvent(
   }
   if (event.type === "reasoning.completed") {
     dispatch({ type: "reasoning-completed", runId: event.runId });
+    return;
+  }
+  if ((event.type === "tool.started" || event.type === "tool.completed" || event.type === "tool.failed") && event.tool === "AskUserQuestion") {
+    dispatch({ type: "question-event", runId: event.runId, event });
     return;
   }
   if (event.type === "tool.started") {
