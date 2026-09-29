@@ -350,9 +350,11 @@ function pkceChallenge(verifier: string): string {
 
 /** state 校验用常量时间比较，避免通过比较耗时逐字节猜出正确值。 */
 function constantTimeEqual(left: string, right: string): boolean {
-  // timingSafeEqual 要求两个 Buffer 等长，长度不同只能先返回 false。
-  if (left.length !== right.length) return false;
-  return timingSafeEqual(Buffer.from(left), Buffer.from(right));
+  const leftBytes = Buffer.from(left);
+  const rightBytes = Buffer.from(right);
+  // 外部回调可能包含多字节字符；比较字节长度后才可交给 timingSafeEqual。
+  if (leftBytes.length !== rightBytes.length) return false;
+  return timingSafeEqual(leftBytes, rightBytes);
 }
 
 function deferredCallback(): { promise: Promise<{ code: string; state: string } | undefined>; resolve(value: { code: string; state: string } | undefined): void } {
@@ -368,7 +370,14 @@ function deferredCallback(): { promise: Promise<{ code: string; state: string } 
 async function startCodexCallbackServer(expectedState: string, resolveCallback: (value: { code: string; state: string } | undefined) => void): Promise<Server> {
   return await new Promise<Server>((resolve, reject) => {
     const server = createServer((request, response) => {
-      const callbackUrl = new URL(request.url ?? "/", `http://${CODEX_CALLBACK_HOST}:${String(CODEX_CALLBACK_PORT)}`);
+      let callbackUrl: URL;
+      try {
+        callbackUrl = new URL(request.url ?? "/", `http://${CODEX_CALLBACK_HOST}:${String(CODEX_CALLBACK_PORT)}`);
+      } catch {
+        response.writeHead(400, { "content-type": "text/html; charset=utf-8" });
+        response.end("<p>授权回调无效，请返回 Biny 重新登录。</p>");
+        return;
+      }
       const code = callbackUrl.searchParams.get("code");
       const state = callbackUrl.searchParams.get("state");
       if (callbackUrl.pathname !== "/auth/callback" || !code || !state || !constantTimeEqual(state, expectedState)) {

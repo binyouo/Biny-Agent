@@ -37,8 +37,9 @@ async function defaultCipher(): Promise<SafeStorageCipher> {
 export class DesktopSafeStorageCredentialStore implements CredentialStore {
   readonly persistent = true;
   private readonly filePath: string;
-  /** 进程内缓存：解密一次后常驻内存，保存路径全程不再触碰磁盘加解密。 */
+  /** 同步其它 Electron 进程的轮换/撤销；同一文件版本内只解密一次。 */
   private cache: Record<string, string> | undefined;
+  private cacheRevision: string | undefined;
   private writeTail = Promise.resolve();
 
   constructor(
@@ -81,7 +82,8 @@ export class DesktopSafeStorageCredentialStore implements CredentialStore {
   }
 
   private async readAll(): Promise<Record<string, string>> {
-    if (this.cache !== undefined) return { ...this.cache };
+    const revision = await this.readFileRevision();
+    if (this.cache !== undefined && this.cacheRevision === revision) return { ...this.cache };
     const cipher = await this.cipher();
     if (!cipher.isAvailable()) {
       throw new Error("系统加密存储不可用，无法读取模型凭据。");
@@ -89,13 +91,16 @@ export class DesktopSafeStorageCredentialStore implements CredentialStore {
     let raw: string;
     try {
       raw = await fs.readFile(this.filePath, "utf8");
-    } catch {
+    } catch (error) {
+      if (!isMissingFile(error)) throw error;
       this.cache = {};
+      this.cacheRevision = "missing";
       return {};
     }
     const trimmed = raw.trim();
     if (!trimmed) {
       this.cache = {};
+      this.cacheRevision = revision;
       return {};
     }
     let parsed: Record<string, string>;
@@ -110,6 +115,7 @@ export class DesktopSafeStorageCredentialStore implements CredentialStore {
       throw new Error(`模型凭据解密失败：${error instanceof Error ? error.message : String(error)}`);
     }
     this.cache = parsed;
+    this.cacheRevision = revision;
     return { ...parsed };
   }
 
@@ -124,6 +130,21 @@ export class DesktopSafeStorageCredentialStore implements CredentialStore {
     await fs.writeFile(temporary, encrypted.toString("base64"), { encoding: "utf8", mode: 0o600 });
     await fs.chmod(temporary, 0o600);
     await fs.rename(temporary, this.filePath);
-    this.cache = { ...all };
+    this.cache = undefined;
+    this.cacheRevision = undefined;
   }
+
+  private async readFileRevision(): Promise<string> {
+    try {
+      const stat = await fs.stat(this.filePath, { bigint: true });
+      return `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}`;
+    } catch (error) {
+      if (!isMissingFile(error)) throw error;
+      return "missing";
+    }
+  }
+}
+
+function isMissingFile(error: unknown): boolean {
+  return typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT";
 }
