@@ -2,11 +2,55 @@ Third-party notices
 
 Built-in appearance palettes
 
-The palette data in src/appearance/catalog.ts is adapted from the theme tables distributed with NvChad/Base46:
+Of the 74 entries in src/appearance/catalog.ts, 69 have matching theme tables adapted from NvChad/Base46 v3.0:
 https://github.com/NvChad/base46/tree/v3.0/lua/base46/themes
 
-Base46's repository includes the MIT license for nvim-base16.lua and the Base16 MIT license:
-https://github.com/NvChad/base46/blob/v3.0/LICENSE
-https://github.com/NvChad/base46/blob/v3.0/base16-LICENSE
+The entries named win98, winxp, longhorn, longhorn-dark, and paper do not have matching files in that Base46 v3.0 theme directory.
+
+The upstream repository includes the following MIT licenses.
+
+License for nvim-base16.lua
+Source: https://github.com/NvChad/base46/blob/v3.0/LICENSE
+
+nvim-base16.lua is a library for modifying themes with Lua
+Copyright © 2019 Ashkan Kiani
+Permission is hereby granted, free of charge, to any person obtaining
+a copy of this software and associated documentation files (the "Software"),
+to deal in the Software without restriction, including without limitation
+the rights to use, copy, modify, merge, publish, distribute, sublicense,
+and/or sell copies of the Software, and to permit persons to whom the
+Software is furnished to do so, subject to the following conditions:
+The above copyright notice and this permission notice shall be included
+in all copies or substantial portions of the Software.
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES
+OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
+DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE
+OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+Base16 Vim license
+Source: https://github.com/NvChad/base46/blob/v3.0/base16-LICENSE
+
+Base16 Vim is released under the MIT License:
+
+Copyright (C) 2012 [Chris Kempson](http://chriskempson.com)
+Permission is hereby granted, free of charge, to any person obtaining
+a copy of this software and associated documentation files (the
+"Software"), to deal in the Software without restriction, including
+without limitation the rights to use, copy, modify, merge, publish,
+distribute, sublicense, and/or sell copies of the Software, and to
+permit persons to whom the Software is furnished to do so, subject to
+the following conditions:
+The above copyright notice and this permission notice shall be
+included in all copies or substantial portions of the Software.
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES
+OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE
+LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
+WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 Some upstream theme files identify their individual source themes; consult those files for theme-specific credits.
