@@ -29,7 +29,7 @@ import type {
   CapabilityRegistrationInput,
   CapabilityStore
 } from "../CapabilityStore.js";
-import { cancelRuntimeGraph, executeRuntimeCommand } from "../commands.js";
+import { cancelRuntimeGraph, executeRuntimeCommand, runtimeCommandOperation } from "../commands.js";
 import { SessionWriterConflictError } from "../SessionLease.js";
 import { agentDir } from "../../session/store.js";
 import {
@@ -141,6 +141,7 @@ export class RuntimeHostServer {
   private readonly sessionWriterOwners = new Map<string, { clientId: string; surface: HostSurface }>();
   private readonly history: Array<{ sequence: number; update: AgentRuntimeUpdate }> = [];
   private sequence = 0;
+  private eventSequenceError: RangeError | undefined;
   private readonly dispatcher = new OperationDispatcher();
   private readonly businessComposition: RuntimeHostBusinessComposition;
   private readonly conversationMirror: ConversationMarkdownMirror;
@@ -308,7 +309,16 @@ export class RuntimeHostServer {
   }
 
   get status(): RuntimeHostStatus {
-    return { ...this.info, journal: this.journal.status(this.sequence) };
+    const journal = this.journal.status(this.sequence);
+    return {
+      ...this.info,
+      journal: this.eventSequenceError === undefined ? journal : {
+        state: "degraded",
+        sequence: this.sequence,
+        persistedSequence: journal.persistedSequence,
+        error: this.eventSequenceError.message
+      }
+    };
   }
 
   /** 载入最近的持久事件；session JSONL 和 turnStore 仍是恢复事实来源。 */
@@ -316,6 +326,7 @@ export class RuntimeHostServer {
     if (this.initialized) return;
     const loaded = await this.journal.initialize();
     this.sequence = loaded.sequence;
+    this.assertEventSequenceAvailable();
     this.history.push(...loaded.records);
     await this.worktrees.reconcile();
     await this.recoverTaskRuns();
@@ -676,10 +687,10 @@ export class RuntimeHostServer {
   private async execute(connection: HostConnection, frame: HostRequestFrame): Promise<unknown> {
     if (this.closePromise) throw new Error("Runtime Host is shutting down.");
     const payload = asRecord(frame.payload);
-    if (connection.exitingForPause && isRuntimeHostAdmissionOperation(frame.operation)) {
-      throw new Error("This Runtime Host client is exiting and cannot start new work.");
-    }
-    if (isRuntimeHostAdmissionOperation(frame.operation)) this.admission.assertAdmission();
+    const admissionOperation = frame.operation === "command"
+      ? runtimeCommandOperation(requiredString(payload.input, "input")) ?? frame.operation
+      : frame.operation;
+    this.assertRequestAdmission(connection, admissionOperation);
     if (frame.operation === "session.list") return this.sessionSummaries();
     if (frame.operation === "client.pause-owned-runs") return await this.pauseOwnedRunsForExit(connection);
     if (frame.operation === "session.ensure") {
@@ -896,8 +907,9 @@ export class RuntimeHostServer {
         }, runtime);
       case "run.queue.mutate": {
         this.assertRevision(payload, runtime);
-        if (payload.writeIntent === true) await this.ensureSessionWriter(connection, runtime);
         const action = requiredString(payload.action, "action");
+        if (action === "send-all" || action === "steer") this.assertEventSequenceAvailable();
+        if (payload.writeIntent === true) await this.ensureSessionWriter(connection, runtime);
         if (action === "send-all") {
           if (!runtime.sendQueuedRunMessagesNow) throw new Error("Queued message controls are unavailable.");
           await runtime.sendQueuedRunMessagesNow();
@@ -1255,6 +1267,7 @@ export class RuntimeHostServer {
         if (payload.writeIntent === true) await this.ensureSessionWriter(connection, runtime);
         this.assertRevision(payload, runtime);
         const source = readSurface(payload.source ?? connection.surface);
+        this.assertRequestAdmission(connection, admissionOperation);
         const result = await executeRuntimeCommand(
           runtime,
           commands,
@@ -1444,6 +1457,15 @@ export class RuntimeHostServer {
       default:
         throw new Error(`Unknown Runtime Host operation: ${frame.operation}`);
     }
+  }
+
+  private assertRequestAdmission(connection: HostConnection, operation: string): void {
+    if (!isRuntimeHostAdmissionOperation(operation)) return;
+    if (connection.exitingForPause) {
+      throw new Error("This Runtime Host client is exiting and cannot start new work.");
+    }
+    this.assertEventSequenceAvailable();
+    this.admission.assertAdmission();
   }
 
   private async executeAdmission<T>(execute: () => Promise<T>, runtime = this.runtime): Promise<HostOperationResult<T>> {
@@ -1765,8 +1787,10 @@ export class RuntimeHostServer {
   }
 
   private publish(update: AgentRuntimeUpdate): void {
+    this.assertEventSequenceAvailable();
     this.sequence += 1;
     const sequence = this.sequence;
+    if (sequence === Number.MAX_SAFE_INTEGER) this.markEventSequenceExhausted();
     this.history.push({ sequence, update });
     if (this.history.length > eventHistoryLimit) this.history.splice(0, this.history.length - eventHistoryLimit);
     void this.journal.persist(sequence, () => this.history);
@@ -1775,6 +1799,19 @@ export class RuntimeHostServer {
         this.sendEvent(connection, sequence, update);
       }
     }
+  }
+
+  private assertEventSequenceAvailable(): void {
+    if (this.sequence >= Number.MAX_SAFE_INTEGER) throw this.markEventSequenceExhausted();
+  }
+
+  private markEventSequenceExhausted(): RangeError {
+    if (this.eventSequenceError === undefined) {
+      this.eventSequenceError = new RangeError("Runtime Host event sequence is exhausted; no further events can be allocated.");
+      this.admission.beginDrain();
+      this.businessComposition.stop();
+    }
+    return this.eventSequenceError;
   }
 
   private publishSnapshot(runtime = this.runtime): void {

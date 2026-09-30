@@ -36,6 +36,19 @@ export interface RuntimeCommandResult {
   card?: CommandCardData;
 }
 
+/** Resolve Goal/Graph commands to their RPC operation for Host admission. */
+export function runtimeCommandOperation(input: string): string | undefined {
+  const { command, args } = parseRuntimeCommand(input);
+  if (command === "/goal") return `goal.${args[0]?.toLowerCase() ?? "get"}`;
+  if (command === "/graph") return `graph.${args[0]?.toLowerCase() ?? "inspect"}`;
+  return undefined;
+}
+
+function parseRuntimeCommand(input: string): { command: string; args: string[] } {
+  const [command = "", ...args] = input.trim().replace(/^\/+/, "/").split(/\s+/);
+  return { command, args };
+}
+
 /**
  * 执行不依赖具体界面布局的命令。返回 undefined 表示该命令应由前端本地处理。
  */
@@ -45,7 +58,7 @@ export async function executeRuntimeCommand(
   input: string,
   source: CommandSurface
 ): Promise<RuntimeCommandResult | undefined> {
-  const [command = "", ...args] = input.trim().replace(/^\/+/, "/").split(/\s+/);
+  const { command, args } = parseRuntimeCommand(input);
   if (command === "/status") {
     const snapshot = runtime.getSnapshot();
     const info = snapshot.info;
