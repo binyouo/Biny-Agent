@@ -44,7 +44,7 @@ export function sessionMessageMetadata(events: readonly SessionEvent[], messageI
 }
 
 /** 新格式保留 canonical 消息的父子关系；旧事件没有 ID 时由时间线继续按扁平事件展示。 */
-export function sessionMessageTree(events: SessionEvent[]): SessionMessageNode[] {
+export function sessionMessageTree(events: readonly SessionEvent[]): SessionMessageNode[] {
   return events.flatMap((event, eventIndex): SessionMessageNode[] => {
     if (event.type === "user_message" && !event.auditOnly) {
       if (!event.messageId) return [];
@@ -71,8 +71,10 @@ export function sessionMessageTree(events: SessionEvent[]): SessionMessageNode[]
 }
 
 /** 取得当前消息树的活动路径，版本切换标记优先于事件顺序。 */
-export function activeSessionMessageIds(events: readonly SessionEvent[]): ReadonlySet<string> {
-  const nodes = sessionMessageTree([...events]);
+export function activeSessionMessageIds(
+  events: readonly SessionEvent[],
+  nodes: readonly SessionMessageNode[] = sessionMessageTree(events)
+): ReadonlySet<string> {
   if (!nodes.length) return new Set<string>();
   const selectedSlots = new Map<string, string>();
   for (const event of events) {
@@ -124,11 +126,12 @@ export function activeSessionMessageIds(events: readonly SessionEvent[]): Readon
 /** 保留活动消息对应的工具、终态和扁平投影，避免旧版本在回放时重新出现。 */
 export function activeSessionEventsForPath(events: readonly SessionEvent[]): SessionEvent[] {
   const recordedEvents = [...events];
-  const messageTreeIds = new Set(sessionMessageTree(recordedEvents).map((node) => node.id));
-  const activeIds = activeSessionMessageIds(recordedEvents);
+  const nodes = sessionMessageTree(recordedEvents);
+  const messageTreeIds = new Set(nodes.map((node) => node.id));
+  const activeIds = activeSessionMessageIds(recordedEvents, nodes);
   if (!activeIds.size) return recordedEvents;
   const activeRuns = new Set(
-    sessionMessageTree(recordedEvents)
+    nodes
       .filter((node) => activeIds.has(node.id))
       .map((node) => recordedEvents[node.eventIndex]?.runtime?.runId)
       .filter((runId): runId is string => runId !== undefined)

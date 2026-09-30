@@ -11,12 +11,13 @@ import path from "node:path";
 import { z } from "zod";
 import { committedFileChangeSchema } from "../tools/file/fileChange.js";
 import {
+  assertSessionFileSize,
   maxSessionEventLineBytes,
   maxSessionEvents,
   maxSessionFileBytes,
   readBoundedSessionHandle
 } from "./limits.js";
-import { cachedSessionEvents, lookupSessionEvents, sameSessionFingerprint, sessionFileFingerprint, type SessionFileFingerprint } from "./parseCache.js";
+import { cachedSessionEvents, lookupSessionEvents, previousSessionParse, sameSessionFingerprint, sessionFileFingerprint, type SessionFileFingerprint } from "./parseCache.js";
 import { listSessionFiles, readSessionSnapshotOrCached } from "./store.js";
 import type { SessionEvent, SessionTurnStatusEvent } from "./recorder.js";
 export type { SessionEvent } from "./recorder.js";
@@ -277,8 +278,52 @@ async function readValidatedSessionBytes(filePath: string): Promise<Buffer> {
   }
 }
 
+/** Complete validated snapshots are shared; consumers must not mutate their events. */
 export async function readSessionEvents(filePath: string): Promise<SessionEvent[]> {
-  return parseSessionEvents((await readValidatedSessionBytes(filePath)).toString("utf8"));
+  const handle = await fs.open(filePath, constants.O_RDONLY | noFollowFlag());
+  try {
+    // Always validate the descriptor/path binding, including on zero-byte cache hits.
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const before = sessionFileFingerprint(await assertStandaloneSessionBinding(filePath, handle));
+      assertSessionFileSize(before.size, filePath);
+      const previous = previousSessionParse(filePath);
+      const cached = lookupSessionEvents(filePath, before);
+      if (cached !== undefined) {
+        const after = sessionFileFingerprint(await assertStandaloneSessionBinding(filePath, handle));
+        assertSessionFileSize(after.size, filePath);
+        if (sameSessionFingerprint(before, after)) return cached;
+        continue;
+      }
+      const bytes = await readBoundedSessionHandle(handle, filePath);
+      const after = sessionFileFingerprint(await assertStandaloneSessionBinding(filePath, handle));
+      if (!sameSessionFingerprint(before, after) || bytes.length !== after.size) continue;
+      const source = previous?.source;
+      // Size growth is not proof of append-only: an external writer may rewrite the
+      // prefix and append in one operation. Verify every old byte before reusing it.
+      // This deliberately saves JSON/Zod work, not prefix I/O, on changed files.
+      const appended = previous !== undefined && source !== undefined
+        && source.bytes.at(-1) === 0x0a
+        && previous.fingerprint.dev === after.dev && previous.fingerprint.ino === after.ino
+        && bytes.length >= source.bytes.length
+        && bytes.subarray(0, source.bytes.length).equals(source.bytes);
+      const offset = appended ? source.bytes.length : 0;
+      const raw = bytes.subarray(offset).toString("utf8");
+      return cachedSessionEvents(filePath, after, () => ({
+        events: parseSessionEventsWithPrefix(raw, {}, appended ? previous.events : [], appended ? source.newlineCount : 0).events,
+        complete: true,
+        source: { bytes, newlineCount: (appended ? source.newlineCount : 0) + countNewlines(bytes, offset) }
+      }));
+    }
+    throw new Error(`Session changed repeatedly while reading: ${filePath}`);
+  } finally {
+    await handle.close();
+  }
+}
+
+function countNewlines(bytes: Buffer, offset: number): number {
+  let count = 0;
+  for (let index = bytes.indexOf(0x0a, offset); index !== -1; index = bytes.indexOf(0x0a, index + 1)) count += 1;
+  return count;
 }
 
 /** 返回完整源文件及已投影前缀的摘要，供修复路径证明旧事实没有被改写。 */
@@ -417,15 +462,24 @@ export function parseSessionEvents(raw: string, options: ParseSessionEventsOptio
 
 /** 与 parseSessionEvents 相同，但额外暴露是否发生了事件数截断，供读取路径如实上报。 */
 export function parseSessionEventsDetailed(raw: string, options: ParseSessionEventsOptions = {}): ParsedSessionEvents {
+  return parseSessionEventsWithPrefix(raw, options, [], 0);
+}
+
+function parseSessionEventsWithPrefix(
+  raw: string,
+  options: ParseSessionEventsOptions,
+  prefix: readonly SessionEvent[],
+  precedingLines: number
+): ParsedSessionEvents {
   const overflow = options.overflow ?? "reject";
   const totalBytes = Buffer.byteLength(raw, "utf8");
   if (totalBytes > maxSessionFileBytes && overflow === "reject") {
     throw new Error(`Session exceeds the maximum size of ${String(maxSessionFileBytes)} bytes.`);
   }
-  const events: SessionEvent[] = [];
+  const events: SessionEvent[] = [...prefix];
   let truncated = false;
   let head = 0;
-  let lineNumber = 0;
+  let lineNumber = precedingLines;
   let lineStart = 0;
   while (lineStart <= raw.length) {
     const newlineIndex = raw.indexOf("\n", lineStart);
@@ -533,7 +587,7 @@ function sessionTime(value: string): number {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
-async function assertStandaloneSessionBinding(filePath: string, handle: FileHandle): Promise<void> {
+async function assertStandaloneSessionBinding(filePath: string, handle: FileHandle): Promise<Stats> {
   const descriptorStat = await handle.stat();
   const pathStat = await fs.lstat(filePath);
   if (
@@ -547,6 +601,7 @@ async function assertStandaloneSessionBinding(filePath: string, handle: FileHand
   ) {
     throw new Error(`Session must be a single-link regular .jsonl file: ${filePath}`);
   }
+  return descriptorStat;
 }
 
 function noFollowFlag(): number {

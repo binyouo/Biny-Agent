@@ -2,12 +2,12 @@
 import { z } from "zod";
 import type { AgentMessage, AgentModel } from "./core/types.js";
 import type { AgentConfig } from "../config/schema.js";
-import type { Tool } from "../tools/types.js";
 import type { SkillDefinition } from "../extensions/skills.js";
 import { generateNativeText, parseNativeJson } from "../llm/nativeJson.js";
 import { redactSecrets } from "../utils/secrets.js";
 import type { AgentCapabilitySelection } from "./capabilitySelection.js";
 import { toolSearchToolName } from "../tools/toolSearch.js";
+import { boundAutomaticTools, type AutomaticToolBudget, type PreselectionTool } from "./automaticToolBudget.js";
 
 export interface CapabilityPreselectionInput {
   input: string;
@@ -15,6 +15,9 @@ export interface CapabilityPreselectionInput {
   config: AgentConfig;
   selection?: AgentCapabilitySelection;
   previousTools: readonly string[];
+  automaticToolBudget?: Partial<AutomaticToolBudget>;
+  /** Fresh automatic choices only; inherited retention must not renew its own age. */
+  onAutomaticToolsSelected?: (names: readonly string[]) => void;
   signal?: AbortSignal;
 }
 
@@ -24,7 +27,7 @@ export const stableCodingToolNames = new Set(["Read", "Glob", "Grep", "Write", "
 
 export async function preselectCapabilities(options: CapabilityPreselectionInput & {
   model?: AgentModel;
-  tools: readonly Pick<Tool, "name" | "description" | "source" | "capability">[];
+  tools: readonly PreselectionTool[];
   skills: readonly Pick<SkillDefinition, "id" | "name" | "description">[];
 }): Promise<AgentCapabilitySelection> {
   options.signal?.throwIfAborted();
@@ -39,7 +42,7 @@ export async function preselectCapabilities(options: CapabilityPreselectionInput
       ? tools.filter((tool) => stableCodingToolNames.has(tool.name) || tool.name === "read_checkpoint_evidence").map((tool) => tool.name)
       : []
   );
-  for (const name of options.previousTools) if (tools.some((tool) => tool.name === name)) selectedTools.add(name);
+  const currentTools = new Set<string>();
   const selectedSkills = new Set<string>();
   // 显式点名的技能不依赖模型猜测；选择器故障也不能丢掉用户明确指定的能力。
   for (const skill of skills) {
@@ -68,7 +71,7 @@ export async function preselectCapabilities(options: CapabilityPreselectionInput
             signal: options.signal, timeoutMs: 15_000, maxOutputTokens: 2048, reasoning: "off"
           });
           const parsed = toolsResponseSchema.parse(parseNativeJson(result.text));
-          for (const name of parsed.tools) if (optionalTools.some((tool) => tool.name === name)) selectedTools.add(name);
+          for (const name of parsed.tools) if (optionalTools.some((tool) => tool.name === name)) currentTools.add(name);
         } catch {
           options.signal?.throwIfAborted();
           // 保留历史能力，不把筛选失败变成启用全部工具。
@@ -104,16 +107,23 @@ export async function preselectCapabilities(options: CapabilityPreselectionInput
     // 不让辅助筛选模型决定主 Agent 是否能看到多步任务清单；单步任务仍由主 Agent 按工具提示跳过。
     if (tools.some((tool) => tool.name === "TodoWrite")) selectedTools.add("TodoWrite");
     if (tools.some((tool) => tool.name === "AskUserQuestion")) selectedTools.add("AskUserQuestion");
-    for (const pair of [["WebSearch", "WebFetch"], ["Bash", "BashOutput", "KillShell"]]) {
-      if (pair.some((name) => selectedTools.has(name))) for (const name of pair) if (tools.some((tool) => tool.name === name)) selectedTools.add(name);
-    }
-    const mcpServers = new Set(tools.filter((tool) => tool.source === "mcp" && selectedTools.has(tool.name)).map((tool) => tool.capability).filter(Boolean));
-    for (const tool of tools) if (tool.source === "mcp" && tool.capability && mcpServers.has(tool.capability)) selectedTools.add(tool.name);
     if (selectedSkills.size || (skillsMode !== "auto" && skillsMode !== "none" && skillsMode.length > 0)) {
       for (const name of ["Skill", "read_skill_resource", "skill_lookup"]) if (tools.some((tool) => tool.name === name)) selectedTools.add(name);
     }
     // 输出归档是所有工具共用的运行时协议，不能因筛选而让模型无法取回被截断的结果。
     if (selectedTools.size && tools.some((tool) => tool.name === "read_tool_result")) selectedTools.add("read_tool_result");
   }
-  return { tools: toolsMode === "auto" ? [...selectedTools] : toolsMode, skills: skillsMode === "auto" ? [...selectedSkills] : skillsMode };
+  const boundedTools = toolsMode === "auto" ? boundAutomaticTools({
+      tools, required: selectedTools, current: [...currentTools], previous: options.previousTools,
+      budget: options.automaticToolBudget
+    }) : toolsMode;
+  if (toolsMode === "auto" && Array.isArray(boundedTools)) {
+    const fresh = new Set(currentTools);
+    if (fresh.has("WebSearch") || fresh.has("WebFetch")) { fresh.add("WebSearch"); fresh.add("WebFetch"); }
+    options.onAutomaticToolsSelected?.(boundedTools.filter((name) => fresh.has(name)));
+  }
+  return {
+    tools: boundedTools,
+    skills: skillsMode === "auto" ? [...selectedSkills] : skillsMode
+  };
 }

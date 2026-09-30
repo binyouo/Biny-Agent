@@ -125,7 +125,7 @@ export interface TaskCandidateArtifacts {
   verificationApprovals?: TaskVerificationApproval[];
 }
 
-export type TaskWorkspaceSnapshot = Record<string, string>;
+export type TaskWorkspaceSnapshot = Readonly<Record<string, string>>;
 
 export interface TaskDefinition {
   prompt: string;
@@ -210,8 +210,10 @@ export function taskVerificationFingerprint(contract: TaskVerificationContract):
 export async function fingerprintTaskVerificationDefinitions(
   workspaceRoot: string,
   contract: TaskVerificationContract,
-  ignore: readonly string[]
+  ignore: readonly string[],
+  signal?: AbortSignal
 ): Promise<string> {
+  signal?.throwIfAborted();
   const paths = [...new Set(contract.checks.flatMap((check) => check.definitionPaths))].sort();
   const hash = createHash("sha256");
   hash.update(`contract\0${taskVerificationFingerprint(contract)}\0`);
@@ -219,18 +221,22 @@ export async function fingerprintTaskVerificationDefinitions(
     const absolute = requestedPath === "."
       ? resolveWorkspaceDirectory(workspaceRoot, requestedPath, [...ignore])
       : resolveWorkspacePath(workspaceRoot, requestedPath, [...ignore]);
-    await hashArtifactPath(hash, workspaceRoot, absolute, [...ignore]);
+    await hashArtifactPath(hash, workspaceRoot, absolute, ignore, signal);
   }
+  signal?.throwIfAborted();
   return hash.digest("hex");
 }
 
 export async function captureTaskWorkspaceSnapshot(
   workspaceRoot: string,
-  ignore: readonly string[]
+  ignore: readonly string[],
+  signal?: AbortSignal
 ): Promise<TaskWorkspaceSnapshot> {
-  const snapshot: TaskWorkspaceSnapshot = {};
-  await snapshotWorkspacePath(snapshot, workspaceRoot, workspaceRoot, ignore);
-  return snapshot;
+  signal?.throwIfAborted();
+  const snapshot: Record<string, string> = {};
+  await snapshotWorkspacePath(snapshot, workspaceRoot, workspaceRoot, ignore, signal);
+  signal?.throwIfAborted();
+  return Object.freeze(snapshot);
 }
 
 export function compareTaskWorkspaceSnapshots(
@@ -252,15 +258,18 @@ export function compareTaskWorkspaceSnapshots(
 export async function fingerprintTaskArtifacts(
   workspaceRoot: string,
   artifactPaths: readonly string[],
-  ignore: readonly string[]
+  ignore: readonly string[],
+  signal?: AbortSignal
 ): Promise<string> {
+  signal?.throwIfAborted();
   const hash = createHash("sha256");
   for (const requestedPath of [...artifactPaths].sort()) {
     const absolute = requestedPath === "."
       ? resolveWorkspaceDirectory(workspaceRoot, requestedPath, [...ignore])
       : resolveWorkspacePath(workspaceRoot, requestedPath, [...ignore]);
-    await hashArtifactPath(hash, workspaceRoot, absolute, [...ignore]);
+    await hashArtifactPath(hash, workspaceRoot, absolute, ignore, signal);
   }
+  signal?.throwIfAborted();
   return hash.digest("hex");
 }
 
@@ -274,10 +283,15 @@ export async function verifyTaskCandidate(input: {
   expectedArtifactFingerprint?: string;
   approvals?: readonly TaskVerificationApproval[];
   repairScope?: TaskRepairScopeEvidence;
+  /** Fresh, frozen post-worker snapshot; final comparison guards the entire interval through verification. */
+  candidateWorkspaceSnapshot?: TaskWorkspaceSnapshot;
   executor: TaskCommandExecutor;
   signal?: AbortSignal;
 }): Promise<TaskVerificationEvidence> {
   const contractFingerprint = taskVerificationFingerprint(input.contract);
+  const cancelled = (artifactFingerprint = "unavailable", checks: TaskCheckEvidence[] = []): TaskVerificationEvidence =>
+    evidence(input, contractFingerprint, artifactFingerprint, input.definitionFingerprint, checks, "cancelled", "Task verification was cancelled.", input.repairScope);
+  if (input.signal?.aborted) return cancelled();
   if (input.repairScope?.violationPaths.length) {
     return emptyEvidence(
       input,
@@ -291,8 +305,10 @@ export async function verifyTaskCandidate(input: {
   const currentDefinitionFingerprint = await fingerprintTaskVerificationDefinitions(
     input.workspaceRoot,
     input.contract,
-    input.ignore
+    input.ignore,
+    input.signal
   ).catch(() => undefined);
+  if (input.signal?.aborted) return cancelled();
   if (currentDefinitionFingerprint === undefined || currentDefinitionFingerprint !== input.definitionFingerprint) {
     return emptyEvidence(
       input,
@@ -305,10 +321,12 @@ export async function verifyTaskCandidate(input: {
   }
   let artifactFingerprint: string;
   try {
-    artifactFingerprint = await fingerprintTaskArtifacts(input.workspaceRoot, input.contract.artifactPaths, input.ignore);
+    artifactFingerprint = await fingerprintTaskArtifacts(input.workspaceRoot, input.contract.artifactPaths, input.ignore, input.signal);
   } catch (error) {
+    if (input.signal?.aborted) return cancelled();
     return emptyEvidence(input, contractFingerprint, input.definitionFingerprint, "blocked", `Cannot fingerprint candidate artifacts: ${errorMessage(error)}`, input.repairScope);
   }
+  if (input.signal?.aborted) return cancelled(artifactFingerprint);
   if (input.expectedArtifactFingerprint !== undefined && input.expectedArtifactFingerprint !== artifactFingerprint) {
     return evidence(
       input,
@@ -321,7 +339,9 @@ export async function verifyTaskCandidate(input: {
       input.repairScope
     );
   }
-  const verificationWorkspace = await captureTaskWorkspaceSnapshot(input.workspaceRoot, input.ignore).catch(() => undefined);
+  const verificationWorkspace = input.candidateWorkspaceSnapshot
+    ?? await captureTaskWorkspaceSnapshot(input.workspaceRoot, input.ignore, input.signal).catch(() => undefined);
+  if (input.signal?.aborted) return cancelled(artifactFingerprint);
   if (verificationWorkspace === undefined) {
     return emptyEvidence(
       input,
@@ -395,7 +415,8 @@ export async function verifyTaskCandidate(input: {
       return evidence(input, contractFingerprint, artifactFingerprint, input.definitionFingerprint, checks, classified.status, classified.reason, input.repairScope);
     }
   }
-  const afterFingerprint = await fingerprintTaskArtifacts(input.workspaceRoot, input.contract.artifactPaths, input.ignore).catch(() => undefined);
+  const afterFingerprint = await fingerprintTaskArtifacts(input.workspaceRoot, input.contract.artifactPaths, input.ignore, input.signal).catch(() => undefined);
+  if (input.signal?.aborted) return cancelled(artifactFingerprint, checks);
   if (afterFingerprint === undefined || afterFingerprint !== artifactFingerprint) {
     return evidence(
       input,
@@ -411,8 +432,10 @@ export async function verifyTaskCandidate(input: {
   const afterDefinitionFingerprint = await fingerprintTaskVerificationDefinitions(
     input.workspaceRoot,
     input.contract,
-    input.ignore
+    input.ignore,
+    input.signal
   ).catch(() => undefined);
+  if (input.signal?.aborted) return cancelled(artifactFingerprint, checks);
   if (afterDefinitionFingerprint === undefined || afterDefinitionFingerprint !== input.definitionFingerprint) {
     return evidence(
       input,
@@ -425,7 +448,8 @@ export async function verifyTaskCandidate(input: {
       input.repairScope
     );
   }
-  const afterWorkspace = await captureTaskWorkspaceSnapshot(input.workspaceRoot, input.ignore).catch(() => undefined);
+  const afterWorkspace = await captureTaskWorkspaceSnapshot(input.workspaceRoot, input.ignore, input.signal).catch(() => undefined);
+  if (input.signal?.aborted) return cancelled(artifactFingerprint, checks);
   if (afterWorkspace === undefined) {
     return evidence(input, contractFingerprint, artifactFingerprint, input.definitionFingerprint, checks, "blocked", "Cannot prove that the workspace stayed stable during verification.", input.repairScope);
   }
@@ -442,6 +466,7 @@ export async function verifyTaskCandidate(input: {
       input.repairScope
     );
   }
+  if (input.signal?.aborted) return cancelled(artifactFingerprint, checks);
   const failed = checks.find((check) => check.status === "failed");
   return evidence(
     input,
@@ -461,15 +486,17 @@ export async function canReuseTaskVerification(input: {
   definitionFingerprint: string;
   workspaceRoot: string;
   ignore: readonly string[];
+  signal?: AbortSignal;
 }): Promise<boolean> {
+  if (input.signal?.aborted) return false;
   if (!isTaskVerificationEvidence(input.evidence) || input.evidence.status !== "passed") return false;
   if (input.evidence.contractFingerprint !== taskVerificationFingerprint(input.contract)) return false;
-  const currentDefinitionFingerprint = await fingerprintTaskVerificationDefinitions(input.workspaceRoot, input.contract, input.ignore).catch(() => undefined);
+  const currentDefinitionFingerprint = await fingerprintTaskVerificationDefinitions(input.workspaceRoot, input.contract, input.ignore, input.signal).catch(() => undefined);
   if (currentDefinitionFingerprint === undefined
     || currentDefinitionFingerprint !== input.definitionFingerprint
     || input.evidence.definitionFingerprint !== input.definitionFingerprint) return false;
-  const current = await fingerprintTaskArtifacts(input.workspaceRoot, input.contract.artifactPaths, input.ignore).catch(() => undefined);
-  return current !== undefined && current === input.evidence.artifactFingerprint;
+  const current = await fingerprintTaskArtifacts(input.workspaceRoot, input.contract.artifactPaths, input.ignore, input.signal).catch(() => undefined);
+  return !input.signal?.aborted && current !== undefined && current === input.evidence.artifactFingerprint;
 }
 
 export function isTaskVerificationEvidence(value: unknown): value is TaskVerificationEvidence {
@@ -769,12 +796,15 @@ async function hashArtifactPath(
   hash: ReturnType<typeof createHash>,
   workspaceRoot: string,
   absolute: string,
-  ignore: readonly string[]
+  ignore: readonly string[],
+  signal?: AbortSignal
 ): Promise<void> {
+  signal?.throwIfAborted();
   const relative = path.relative(workspaceRoot, absolute) || ".";
   let metadata;
   try {
     metadata = await lstat(absolute);
+    signal?.throwIfAborted();
   } catch (error) {
     if (isErrorCode(error, "ENOENT")) {
       hash.update(`missing\0${relative}\0`);
@@ -784,16 +814,18 @@ async function hashArtifactPath(
   }
   if (metadata.isSymbolicLink()) {
     hash.update(`symlink\0${relative}\0${await readlink(absolute)}\0`);
+    signal?.throwIfAborted();
     return;
   }
   if (metadata.isDirectory()) {
     hash.update(`directory\0${relative}\0`);
     const entries = await readdir(absolute, { withFileTypes: true });
+    signal?.throwIfAborted();
     for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
       const child = path.join(absolute, entry.name);
       const childRelative = path.relative(workspaceRoot, child);
       if (isIgnoredPath(childRelative, [...ignore])) continue;
-      await hashArtifactPath(hash, workspaceRoot, child, ignore);
+      await hashArtifactPath(hash, workspaceRoot, child, ignore, signal);
     }
     return;
   }
@@ -803,35 +835,40 @@ async function hashArtifactPath(
   }
   hash.update(`file\0${relative}\0${String(metadata.size)}\0`);
   await new Promise<void>((resolve, reject) => {
-    const stream = createReadStream(absolute);
+    const stream = createReadStream(absolute, { signal });
     stream.on("data", (chunk) => { hash.update(chunk); });
     stream.once("end", resolve);
     stream.once("error", reject);
   });
+  signal?.throwIfAborted();
   hash.update("\0");
 }
 
 async function snapshotWorkspacePath(
-  snapshot: TaskWorkspaceSnapshot,
+  snapshot: Record<string, string>,
   workspaceRoot: string,
   absolute: string,
-  ignore: readonly string[]
+  ignore: readonly string[],
+  signal?: AbortSignal
 ): Promise<void> {
+  signal?.throwIfAborted();
   const relative = path.relative(workspaceRoot, absolute) || ".";
   let metadata;
   try {
     metadata = await lstat(absolute);
+    signal?.throwIfAborted();
   } catch (error) {
     if (isErrorCode(error, "ENOENT")) return;
     throw error;
   }
   if (metadata.isDirectory()) {
     const entries = await readdir(absolute, { withFileTypes: true });
+    signal?.throwIfAborted();
     for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
       const child = path.join(absolute, entry.name);
       const childRelative = path.relative(workspaceRoot, child);
       if (isIgnoredPath(childRelative, [...ignore])) continue;
-      await snapshotWorkspacePath(snapshot, workspaceRoot, child, ignore);
+      await snapshotWorkspacePath(snapshot, workspaceRoot, child, ignore, signal);
     }
     return;
   }
@@ -839,12 +876,13 @@ async function snapshotWorkspacePath(
   if (metadata.isSymbolicLink()) hash.update(`symlink\0${await readlink(absolute)}`);
   else if (metadata.isFile()) {
     await new Promise<void>((resolve, reject) => {
-      const stream = createReadStream(absolute);
+      const stream = createReadStream(absolute, { signal });
       stream.on("data", (chunk) => { hash.update(chunk); });
       stream.once("end", resolve);
       stream.once("error", reject);
     });
   } else hash.update(`special\0${String(metadata.mode)}`);
+  signal?.throwIfAborted();
   snapshot[normalizeRelativePath(relative)] = hash.digest("hex");
 }
 

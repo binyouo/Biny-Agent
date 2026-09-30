@@ -43,7 +43,7 @@ import {
 import type { ToolRegistry } from "../tools/registry.js";
 import { vercelAgentLoopContinue } from "./core/vercelAgentLoop.js";
 import { EventQueue } from "./core/EventQueue.js";
-import { publicAssistantMessage } from "../session/publicMessage.js";
+import { PublicAssistantStream, publicAssistantMessage } from "../session/publicMessage.js";
 import type {
   AgentAssistantMessage,
   AgentModel,
@@ -172,6 +172,7 @@ import { checkpointClaims } from "../session/checkpointClaims.js";
 import type { CheckpointEvidenceArgs } from "../extensions/checkpointEvidence.js";
 import type { CapabilityPreselectionInput } from "./capabilityPreselection.js";
 import { stableCodingToolNames } from "./capabilityPreselection.js";
+import { recentAutomaticToolNames } from "./automaticToolHistory.js";
 import {
   toolSearchResultNames,
   toolSearchResultNamesFromMessages,
@@ -820,6 +821,7 @@ export class AgentSession {
     input: string; selection?: AgentCapabilitySelection; signal?: AbortSignal;
     messageId?: string; reuse?: boolean; history?: readonly AgentMessage[]; runId?: string;
     events?: SessionEvent[];
+    activeMessageIds?: ReadonlySet<string>;
   }): Promise<AgentCapabilitySelection | undefined> {
     if (!this.options.selectCapabilities) return options.selection;
     let events = options.events;
@@ -831,26 +833,25 @@ export class AgentSession {
       const saved = agentCapabilitySelectionSchema.safeParse(sessionMessageMetadata(events, options.messageId).capabilitySelection);
       if (saved.success && (options.selection === undefined || JSON.stringify(options.selection) === JSON.stringify(saved.data))) return saved.data;
     }
-    const active = activeSessionMessageIds(events);
-    const history = options.history ?? sessionMessageTree(events)
+    const nodes = options.activeMessageIds && options.history ? [] : sessionMessageTree(events);
+    const active = options.activeMessageIds ?? activeSessionMessageIds(events, nodes);
+    const history = options.history ?? nodes
       .filter((node) => active.has(node.id) && node.id !== options.messageId).map((node) => node.message);
-    const previousTools = events.flatMap((event) => {
-      if ((event.type !== "user_message" && event.type !== "message_metadata") || !event.messageId || !active.has(event.messageId) || event.messageId === options.messageId) return [];
-      if (event.metadata?.automaticToolSelection !== true) return [];
-      const saved = agentCapabilitySelectionSchema.safeParse(event.metadata.capabilitySelection);
-      return saved.success && Array.isArray(saved.data.tools) ? saved.data.tools : [];
-    });
+    const previousTools = recentAutomaticToolNames(events, active, options.messageId);
     const startedAt = perfNow();
+    let freshAutomaticTools: readonly string[] | undefined;
     const selected = await this.options.selectCapabilities({
       input: options.input, config: this.activeConfig, selection: options.selection, signal: options.signal,
-      history, previousTools: [...new Set(previousTools)]
+      history, previousTools: [...new Set(previousTools)],
+      onAutomaticToolsSelected: (tools) => { freshAutomaticTools = tools; }
     }, options.runId);
     options.signal?.throwIfAborted();
     recordPerfPhase("turn.capabilities", startedAt, { runId: this.recorder.runtimeContextSnapshot()?.runId });
     if (options.messageId) {
       await this.recorder.recordAndFlush({ type: "message_metadata", messageId: options.messageId, metadata: {
         capabilitySelection: selected,
-        automaticToolSelection: (options.selection?.tools ?? this.activeConfig.chat.defaultToolSelection) === "auto"
+        automaticToolSelection: (options.selection?.tools ?? this.activeConfig.chat.defaultToolSelection) === "auto",
+        automaticToolFreshSelection: freshAutomaticTools ?? (Array.isArray(selected.tools) ? selected.tools : [])
       } });
     }
     return selected;
@@ -2033,13 +2034,14 @@ export class AgentSession {
       // 本轮共享一份持久消息快照；筛选和引用解析不再各自重读整份 JSONL。
       await this.recorder.flush();
       const events = await readSessionEvents(this.recorder.filePath);
-      const activeIds = activeSessionMessageIds(events);
       const nodes = sessionMessageTree(events);
+      const activeIds = activeSessionMessageIds(events, nodes);
       const referenceHistory = nodes.length
         ? nodes.filter((node) => activeIds.has(node.id)).map((node) => node.message)
         : this.contextMemory.getHistory();
       const selection = this.prepareCapabilities({
         input, selection: runOptions.capabilitySelection, signal: abortSignal, messageId: userMessageReference?.id, events,
+        activeMessageIds: activeIds,
         history: nodes.filter((node) => activeIds.has(node.id) && node.id !== userMessageReference?.id).map((node) => node.message),
         runId: runOptions.runId
       });
@@ -2619,7 +2621,7 @@ export class AgentSession {
       // 核心 loop 已在完成事件前提交 step；这里仅把工具进度与核心显示事件汇合。
       try {
         let nextLoopEvent = loop.next();
-        let streamedVisibleContent = "";
+        const publicStream = new PublicAssistantStream();
         while (true) {
           const next = await pendingEvents.waitForEventOr(nextLoopEvent);
           yield* pendingEvents.drain();
@@ -2627,14 +2629,10 @@ export class AgentSession {
           if (next.done) break;
           const event = next.value;
           if (event.type === "message_update") {
-            stepAssistantContent = agentMessageText(event.message);
             if (event.event.type === "text-delta") {
-              const visibleContent = publicAssistantMessage(stepAssistantContent);
-              if (visibleContent.startsWith(streamedVisibleContent)) {
-                const visibleDelta = visibleContent.slice(streamedVisibleContent.length);
-                if (visibleDelta) yield { type: "assistant.delta", content: visibleDelta };
-              }
-              streamedVisibleContent = visibleContent;
+              stepAssistantContent += event.event.text;
+              const visibleDelta = publicStream.push(event.event.text);
+              if (visibleDelta) yield { type: "assistant.delta", content: visibleDelta };
             } else if (event.event.type === "reasoning-start") {
               if (!reasoningActive) {
                 reasoningActive = true;
@@ -2654,9 +2652,15 @@ export class AgentSession {
           } else if (event.type === "turn_start") {
             // 每个 provider step 都重新开始计数，后续 tool_call 才能携带对应的 Thought。
             stepAssistantContent = "";
-            streamedVisibleContent = "";
+            publicStream.reset();
             stepReasoningOutput = "";
             stepReasoningBlocks = undefined;
+          } else if (event.type === "message_end" && event.message.role === "assistant") {
+            if (event.message.stopReason !== "error" && event.message.stopReason !== "aborted") {
+              // persistStep 已完成 canonical 清理；这里只补齐保守扣留的公开尾部。
+              const visibleDelta = publicStream.finish(agentMessageText(event.message));
+              if (visibleDelta) yield { type: "assistant.delta", content: visibleDelta };
+            }
           } else if (event.type === "message_end" && event.message.role === "user") {
               const queued = messageQueues.delivered.get(event.message);
               if (queued) {

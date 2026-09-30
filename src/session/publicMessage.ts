@@ -90,3 +90,222 @@ function stripReasoningEnvelope(content: string): string {
   }
   return output;
 }
+
+const reasoningOpenTags = ["<think>", "<thinking>"];
+const reasoningCloseTags = ["</think>", "</thinking>"];
+const reasoningTags = [...reasoningOpenTags, ...reasoningCloseTags];
+const notificationCloseTag = "</biny_notification>";
+const maxStreamPrefix = 256;
+
+type StreamLineMode = "prefix" | "text" | "fence-prefix" | "fence-run" | "thinking";
+
+/**
+ * Append-only streaming projection. Each source character is consumed once; only
+ * an unfinished tag/line prefix is retained, never the accumulated response.
+ *
+ * The canonical projector is not monotone: whitespace preceding a later <think>
+ * disappears, and a standalone closing tag is ambiguous until its next character.
+ * We therefore withhold those prefixes. An exceptional >256-character ambiguous
+ * prefix defers the rest of this step to finish(), bounding the streaming buffer.
+ * finish receives the already-canonical step text (the caller still owns it).
+ */
+export class PublicAssistantStream {
+  private mode: StreamLineMode = "prefix";
+  private prefix = "";
+  private allowEnvelope = true;
+  private thinkingSuffix = "";
+  private fence: { marker: string; length: number } | undefined;
+  private fenceIndent = 0;
+  private fenceRun = 0;
+  private fenceMarker = "";
+  private openingFence = false;
+  private notification = false;
+  private notificationSuffix = "";
+  private publicNotificationSuffix = "";
+  private stopped = false;
+  private deferred = false;
+  private finished = false;
+  private emittedLength = 0;
+
+  reset(): void {
+    this.mode = "prefix";
+    this.prefix = "";
+    this.allowEnvelope = true;
+    this.thinkingSuffix = "";
+    this.fence = undefined;
+    this.fenceIndent = 0;
+    this.fenceRun = 0;
+    this.fenceMarker = "";
+    this.openingFence = false;
+    this.notification = false;
+    this.notificationSuffix = "";
+    this.publicNotificationSuffix = "";
+    this.stopped = false;
+    this.deferred = false;
+    this.finished = false;
+    this.emittedLength = 0;
+  }
+
+  push(delta: string): string {
+    if (this.finished) throw new Error("Reset the assistant stream before starting another message.");
+    if (this.stopped || this.deferred) return "";
+    const output: string[] = [];
+    for (const character of delta) {
+      this.consume(character, output);
+      if (this.stopped || this.deferred) break;
+    }
+    const visible = output.join("");
+    this.emittedLength += visible.length;
+    return visible;
+  }
+
+  /** Flush safe ambiguity only against the completed canonical projection. */
+  finish(canonical: string): string {
+    if (this.finished) return "";
+    this.finished = true;
+    const remaining = canonical.slice(this.emittedLength);
+    this.emittedLength = canonical.length;
+    this.prefix = "";
+    this.thinkingSuffix = "";
+    this.notificationSuffix = "";
+    this.publicNotificationSuffix = "";
+    return remaining;
+  }
+
+  private consume(character: string, output: string[]): void {
+    if (this.mode === "thinking") {
+      this.thinkingSuffix += character;
+      if (reasoningCloseTags.includes(this.thinkingSuffix)) {
+        this.thinkingSuffix = "";
+        this.mode = "prefix";
+        // The canonical parser recognizes only one envelope per source line.
+        this.allowEnvelope = false;
+      } else {
+        while (this.thinkingSuffix && !reasoningCloseTags.some((tag) => tag.startsWith(this.thinkingSuffix))) {
+          this.thinkingSuffix = this.thinkingSuffix.slice(1);
+        }
+      }
+      return;
+    }
+    if (this.mode === "fence-run") {
+      if (character === this.fenceMarker) {
+        this.fenceRun += 1;
+        this.updateFence();
+        this.publish(character, output);
+        return;
+      }
+      this.mode = "text";
+    }
+    if (this.mode === "fence-prefix") {
+      if (character === " " && this.fenceIndent < 3) {
+        this.fenceIndent += 1;
+        this.publish(character, output);
+        return;
+      }
+      if (character === "`" || character === "~") {
+        this.mode = "fence-run";
+        this.fenceMarker = character;
+        this.fenceRun = 1;
+        this.openingFence = false;
+        this.publish(character, output);
+        return;
+      }
+      this.mode = "text";
+    }
+    if (this.mode === "text") {
+      this.publish(character, output);
+      if (character === "\n") this.startLine();
+      return;
+    }
+
+    this.prefix += character;
+    if (this.prefix.length > maxStreamPrefix) {
+      // Arbitrary mixed whitespace cannot be losslessly retained in a fixed-size
+      // suffix. The final canonical message will supply this rare deferred tail.
+      this.prefix = "";
+      this.deferred = true;
+      return;
+    }
+    const fragment = this.prefix.trim();
+    const closing = reasoningCloseTags.find((tag) => this.prefix.trimStart().startsWith(tag));
+    if (this.allowEnvelope && closing && this.prefix.trimStart().length > closing.length
+      && /\s/u.test(this.prefix.trimStart()[closing.length]!)) {
+      this.prefix = "";
+      this.stopped = true;
+      return;
+    }
+    if (character === "\n") {
+      this.publish(this.prefix, output);
+      this.prefix = "";
+      this.startLine();
+      return;
+    }
+    if (this.allowEnvelope && reasoningOpenTags.includes(fragment) && character === ">") {
+      this.prefix = "";
+      this.mode = "thinking";
+      return;
+    }
+    if (!fragment || reasoningTags.some((tag) => tag.startsWith(fragment))) return;
+    if (this.allowEnvelope && /^ {0,3}[`~]$/u.test(this.prefix)) {
+      this.mode = "fence-run";
+      this.fenceMarker = character;
+      this.fenceRun = 1;
+      this.openingFence = true;
+    } else {
+      this.mode = "text";
+    }
+    this.publish(this.prefix, output);
+    this.prefix = "";
+  }
+
+  private updateFence(): void {
+    if (this.fenceRun < 3) return;
+    if (this.openingFence) {
+      this.fence = { marker: this.fenceMarker, length: this.fenceRun };
+    } else if (this.fence?.marker === this.fenceMarker && this.fenceRun >= this.fence.length) {
+      this.fence = undefined;
+    }
+  }
+
+  private startLine(): void {
+    this.mode = this.fence ? "fence-prefix" : "prefix";
+    this.allowEnvelope = true;
+    this.fenceIndent = 0;
+  }
+
+  /** Notification filtering follows reasoning filtering, including across removals. */
+  private publish(text: string, output: string[]): void {
+    for (const character of text) {
+      const tag = this.notification ? notificationCloseTag : notificationOpenTag;
+      this.notificationSuffix += character;
+      if (this.notificationSuffix === tag) {
+        this.notification = !this.notification;
+        this.notificationSuffix = "";
+        continue;
+      }
+      while (this.notificationSuffix && !tag.startsWith(this.notificationSuffix)) {
+        if (!this.notification) this.publishNotificationCharacter(this.notificationSuffix[0]!, output);
+        this.notificationSuffix = this.notificationSuffix.slice(1);
+        if (this.stopped) return;
+      }
+    }
+  }
+
+  /**
+   * Canonical block removal is followed by an unmatched-open/suffix guard.
+   * Removing a block can join previously separate fragments into another tag;
+   * that assembled tag must truncate the output, not be removed recursively.
+   */
+  private publishNotificationCharacter(character: string, output: string[]): void {
+    this.publicNotificationSuffix += character;
+    if (this.publicNotificationSuffix === notificationOpenTag) {
+      this.publicNotificationSuffix = "";
+      this.stopped = true;
+      return;
+    }
+    while (this.publicNotificationSuffix && !notificationOpenTag.startsWith(this.publicNotificationSuffix)) {
+      output.push(this.publicNotificationSuffix[0]!);
+      this.publicNotificationSuffix = this.publicNotificationSuffix.slice(1);
+    }
+  }
+}

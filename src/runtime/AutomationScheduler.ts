@@ -449,11 +449,23 @@ export interface AutomationSchedulerOptions {
   tickMs?: number;
 }
 
+interface QueuedAutomationFire {
+  fire: AutomationPendingFire;
+  completion: Promise<void>;
+  resolve(): void;
+  reject(error: unknown): void;
+}
+
+const maxConcurrentAutomationFires = 4;
+
 export class AutomationScheduler {
   private readonly tickMs: number;
   private timer: ReturnType<typeof setInterval> | undefined;
-  private fireTail: Promise<void> = Promise.resolve();
-  private pendingFires = 0;
+  private readonly pendingFires = new Map<string, QueuedAutomationFire>();
+  private readonly fireQueue: QueuedAutomationFire[] = [];
+  private readonly activeAutomations = new Set<string>();
+  private readonly activeSessions = new Set<string>();
+  private activeFires = 0;
   private closed = false;
 
   constructor(private readonly options: AutomationSchedulerOptions) {
@@ -464,18 +476,22 @@ export class AutomationScheduler {
   start(): void {
     if (this.timer || this.closed) return;
     this.store().recoverInFlight();
-    this.timer = setInterval(() => { void this.tick().catch(() => undefined); }, this.tickMs);
+    const poll = (): void => {
+      // Timer ticks discover work without retaining another completion waiter for
+      // every queued fire. Each fire has one shared promise until it settles.
+      try { this.queueDueFires(); } catch { /* Retry discovery on the next tick. */ }
+    };
+    this.timer = setInterval(poll, this.tickMs);
     this.timer.unref?.();
-    void this.tick().catch(() => undefined);
+    poll();
   }
 
   async tick(): Promise<void> {
-    if (this.closed) return;
-    const fires = this.store().claimDue(new Date());
-    await Promise.all(fires.map((fire) => this.enqueueFire(fire)));
+    await Promise.all(this.queueDueFires());
   }
 
   async runNow(automationId: string): Promise<AutomationPendingFire> {
+    if (this.closed) throw new Error("Automation scheduler is stopped.");
     const fire = this.store().forceFire(automationId);
     await this.enqueueFire(fire);
     return this.store().listPending(automationId).find((candidate) => candidate.fireId === fire.fireId) ?? fire;
@@ -485,13 +501,20 @@ export class AutomationScheduler {
     this.closed = true;
     if (this.timer) clearInterval(this.timer);
     this.timer = undefined;
+    // Only submitted/in-preparation work remains active while Host drains.
+    // Unclaimed queued fires stay durable for the next scheduler owner.
+    for (const queued of this.fireQueue.splice(0)) {
+      this.pendingFires.delete(queued.fire.fireId);
+      queued.resolve();
+    }
   }
 
   hasActiveWork(): boolean {
-    return this.pendingFires > 0;
+    return this.pendingFires.size > 0;
   }
 
   private async executeFire(fire: AutomationPendingFire): Promise<void> {
+    if (this.closed) return;
     let store = this.store();
     const claimed = store.claimFire(fire.fireId);
     if (!claimed) return;
@@ -536,6 +559,12 @@ export class AutomationScheduler {
         store.deferFire(claimed.fireId, new Date(Date.now() + deferDelay(automation)), "Target session is in planning mode; fire deferred.");
         return;
       }
+      // Runtime creation/resume can await while Host begins draining. Recheck
+      // admission immediately before submission, with no asynchronous gap.
+      if (this.closed || (this.options.canStartRun && !this.options.canStartRun())) {
+        this.store().deferFire(claimed.fireId, new Date(Date.now() + deferDelay(automation)), "Runtime Host stopped accepting automation runs; fire deferred.");
+        return;
+      }
       const submitted = target.submitPrompt(
         automation.executionTemplate.prompt,
         [],
@@ -543,6 +572,7 @@ export class AutomationScheduler {
       );
       store.bindFireRun(claimed.fireId, submitted.runId);
       const outcome = await submitted.completion;
+      store = this.store();
       if (outcome.status === "completed") store.completeFire(claimed.fireId, submitted.runId);
       else store.failFire(claimed.fireId, outcome.error ?? "Automation run ended as " + outcome.status + ".");
     } catch (error) {
@@ -556,14 +586,63 @@ export class AutomationScheduler {
   }
 
   private enqueueFire(fire: AutomationPendingFire): Promise<void> {
-    this.pendingFires += 1;
+    if (this.closed) return Promise.resolve();
+    const existing = this.pendingFires.get(fire.fireId);
+    if (existing) return existing.completion;
+    let resolve!: () => void;
+    let reject!: (error: unknown) => void;
+    const completion = new Promise<void>((accept, fail) => { resolve = accept; reject = fail; });
+    const queued: QueuedAutomationFire = { fire, completion, resolve, reject };
+    this.pendingFires.set(fire.fireId, queued);
+    this.fireQueue.push(queued);
+    // Timer discovery has no caller awaiting the result; explicit callers still
+    // receive the original promise and observe a rejection normally.
+    void completion.catch(() => undefined);
     this.options.onActivity?.();
-    const execution = this.fireTail.then(() => this.executeFire(fire), () => this.executeFire(fire)).finally(() => {
-      this.pendingFires -= 1;
-      this.options.onActivity?.();
-    });
-    this.fireTail = execution.then(() => undefined, () => undefined);
-    return execution;
+    this.dispatchQueuedFires();
+    return completion;
+  }
+
+  private queueDueFires(): Promise<void>[] {
+    if (this.closed) return [];
+    return this.store().claimDue(new Date()).map((fire) => this.enqueueFire(fire));
+  }
+
+  private dispatchQueuedFires(): void {
+    // Without a runtime factory every fire shares the same mutable runtime,
+    // including resumeSession(), so that compatibility path remains serial.
+    const limit = this.options.createFreshRuntime ? maxConcurrentAutomationFires : 1;
+    for (let index = 0; !this.closed && this.activeFires < limit && index < this.fireQueue.length;) {
+      const queued = this.fireQueue[index]!;
+      const automation = this.store().get(queued.fire.automationId);
+      const sessionId = automation?.executionTemplate.sessionId
+        ?? (automation?.triggerType === "heartbeat" ? this.options.getRuntime().getSnapshot().info.sessionId : undefined);
+      // Serializing an automation preserves maxFires and failure policy: a
+      // second claim must see the first fire's committed outcome/counter.
+      if (this.activeAutomations.has(queued.fire.automationId) || (sessionId !== undefined && this.activeSessions.has(sessionId))) {
+        index += 1;
+        continue;
+      }
+      this.fireQueue.splice(index, 1);
+      this.activeFires += 1;
+      this.activeAutomations.add(queued.fire.automationId);
+      if (sessionId !== undefined) this.activeSessions.add(sessionId);
+      const settle = (): void => {
+        this.activeFires -= 1;
+        this.activeAutomations.delete(queued.fire.automationId);
+        if (sessionId !== undefined) this.activeSessions.delete(sessionId);
+        this.pendingFires.delete(queued.fire.fireId);
+        this.options.onActivity?.();
+        this.dispatchQueuedFires();
+      };
+      void this.executeFire(queued.fire).then(() => {
+        settle();
+        queued.resolve();
+      }, (error: unknown) => {
+        settle();
+        queued.reject(error);
+      });
+    }
   }
 
   private store(): AutomationStore {
