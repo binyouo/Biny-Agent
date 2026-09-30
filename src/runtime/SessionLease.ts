@@ -21,8 +21,13 @@ import {
   type Stats
 } from "node:fs";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { agentDir, ensureAgentDirs } from "../session/store.js";
 
+// Keep the v1 envelope readable by older binaries, so a normally published live
+// writer is still protected there. The authority field identifies gated owners.
+// Old binaries' unsafe partial/stale reclaim cannot be made safe by this reader;
+// all concurrently competing writers must be upgraded for the full guarantee.
 const leaseVersion = 1;
 const maxLeaseBytes = 16 * 1024;
 const leasePrefix = "session-";
@@ -39,6 +44,18 @@ interface LeaseRecord {
   pid: number;
   sessionId: string;
   createdAt: string;
+  authority?: FileIdentity;
+}
+
+interface LeaseAuthority {
+  identity: FileIdentity;
+  assertBinding(): void;
+  close(): void;
+}
+
+interface OwnedLease {
+  identity: FileIdentity;
+  authority: LeaseAuthority;
 }
 
 /**
@@ -49,22 +66,30 @@ interface LeaseRecord {
  */
 export class SessionWriterConflictError extends Error {
   readonly code = "session_writer_conflict" as const;
+  readonly sessionId: string;
+  readonly ownerPid?: number;
+  readonly ownerSurface?: string;
 
   constructor(
-    readonly sessionId: string,
-    readonly ownerPid?: number,
-    readonly ownerSurface?: string,
+    sessionId: string,
+    ownerPid?: number,
+    ownerSurface?: string,
     message = `Session ${sessionId} is already owned by another writer.`
   ) {
     super(message);
+    this.sessionId = sessionId;
+    this.ownerPid = ownerPid;
+    this.ownerSurface = ownerSurface;
     this.name = "SessionWriterConflictError";
   }
 }
 
 export class SessionLeaseError extends SessionWriterConflictError {
+  readonly pid: number;
+
   constructor(
-    readonly pid: number,
-    readonly sessionId: string
+    pid: number,
+    sessionId: string
   ) {
     super(
       sessionId,
@@ -72,6 +97,7 @@ export class SessionLeaseError extends SessionWriterConflictError {
       undefined,
       `Session ${sessionId} is already owned by process ${String(pid)}.`
     );
+    this.pid = pid;
     this.name = "SessionLeaseError";
   }
 }
@@ -83,13 +109,22 @@ export function isSessionWriterConflictError(error: unknown): error is SessionWr
 
 export class SessionLease {
   private closed = false;
+  private readonly store: SessionLeaseStore;
+  readonly sessionId: string;
+  private readonly identity: FileIdentity;
+  private readonly runtimeId: string;
 
   constructor(
-    private readonly store: SessionLeaseStore,
-    readonly sessionId: string,
-    private readonly identity: FileIdentity,
-    private readonly runtimeId: string
-  ) {}
+    store: SessionLeaseStore,
+    sessionId: string,
+    identity: FileIdentity,
+    runtimeId: string
+  ) {
+    this.store = store;
+    this.sessionId = sessionId;
+    this.identity = identity;
+    this.runtimeId = runtimeId;
+  }
 
   close(): void {
     if (this.closed) return;
@@ -100,14 +135,21 @@ export class SessionLease {
 
 export class SessionLeaseStore {
   readonly runtimeId = randomUUID();
-  private readonly leases = new Map<string, FileIdentity>();
+  private readonly leases = new Map<string, OwnedLease>();
   private closed = false;
+  readonly persistenceRoot: string;
+  private readonly directoryPath: string;
+  private readonly directoryIdentity: FileIdentity;
 
   private constructor(
-    readonly persistenceRoot: string,
-    private readonly directoryPath: string,
-    private readonly directoryIdentity: FileIdentity
-  ) {}
+    persistenceRoot: string,
+    directoryPath: string,
+    directoryIdentity: FileIdentity
+  ) {
+    this.persistenceRoot = persistenceRoot;
+    this.directoryPath = directoryPath;
+    this.directoryIdentity = directoryIdentity;
+  }
 
   static async open(persistenceRoot: string): Promise<SessionLeaseStore> {
     await ensureAgentDirs(persistenceRoot);
@@ -133,62 +175,154 @@ export class SessionLeaseStore {
     assertSessionId(sessionId);
     if (this.leases.has(sessionId)) throw new Error(`Session ${sessionId} is already leased by this runtime.`);
     const leasePath = this.leasePath(sessionId);
-    let identity: FileIdentity | undefined;
-    for (let attempt = 0; attempt < 4; attempt += 1) {
-      try {
-        identity = this.createLease(leasePath, sessionId);
-        break;
-      } catch (error) {
-        if (!isErrorCode(error, "EEXIST")) throw error;
-        let existing: LeaseRecord;
+    const authority = this.acquireAuthority(leasePath, sessionId);
+    try {
+      let identity: FileIdentity | undefined;
+      for (let attempt = 0; attempt < 4; attempt += 1) {
+        authority.assertBinding();
         try {
-          existing = this.readLease(leasePath, sessionId);
-        } catch {
-          // createLease 的崩溃窗口会留下 0 字节/半截 JSON 锁。它不是有效的归属证明，
-          // 按 stale 回收后重试，否则该 session 会被永远无法解析的锁永久锁死。
+          identity = this.createLease(leasePath, sessionId, authority.identity);
+          authority.assertBinding();
+          break;
+        } catch (error) {
+          if (!isErrorCode(error, "EEXIST")) throw error;
+          let existing: LeaseRecord;
+          try {
+            existing = this.readLease(leasePath, sessionId);
+          } catch {
+            // Only the elected owner can observe/reclaim a partial publication.
+            // A live publisher holds the same gate even before writing its first byte.
+            authority.assertBinding();
+            this.retireStaleLease(leasePath);
+            continue;
+          }
+          if (!existing.authority && isProcessAlive(existing.pid)) {
+            // Legacy writers did not take the kernel gate; preserve their live marker.
+            throw new SessionLeaseError(existing.pid, sessionId);
+          }
+          if (existing.authority && !sameIdentity(existing.authority, authority.identity)) {
+            throw new Error("Session lease authority changed; refusing to reclaim the owner marker.");
+          }
+          // For gated markers, the unchanged kernel gate proves the old owner released or
+          // crashed. Its recorded PID may now belong to an unrelated process.
+          authority.assertBinding();
           this.retireStaleLease(leasePath);
-          continue;
         }
-        if (isProcessAlive(existing.pid)) throw new SessionLeaseError(existing.pid, sessionId);
-        this.retireStaleLease(leasePath);
       }
+      if (!identity) throw new Error(`Could not acquire the session lease for ${sessionId}.`);
+      this.leases.set(sessionId, { identity, authority });
+      return new SessionLease(this, sessionId, identity, this.runtimeId);
+    } catch (error) {
+      authority.close();
+      throw error;
     }
-    if (!identity) throw new Error(`Could not acquire the session lease for ${sessionId}.`);
-    this.leases.set(sessionId, identity);
-    return new SessionLease(this, sessionId, identity, this.runtimeId);
   }
 
   close(): void {
     if (this.closed) return;
     this.closed = true;
-    for (const [sessionId, identity] of this.leases) {
-      this.release(sessionId, this.runtimeId, identity);
+    for (const [sessionId, owned] of this.leases) {
+      this.release(sessionId, this.runtimeId, owned.identity);
     }
   }
 
   release(sessionId: string, runtimeId: string, identity: FileIdentity): void {
     const owned = this.leases.get(sessionId);
-    if (!owned || runtimeId !== this.runtimeId || !sameIdentity(owned, identity)) return;
+    if (!owned || runtimeId !== this.runtimeId || !sameIdentity(owned.identity, identity)) return;
     this.leases.delete(sessionId);
     try {
+      owned.authority.assertBinding();
       const leasePath = this.leasePath(sessionId);
       const currentIdentity = this.fileIdentityAtPath(leasePath);
       if (!sameIdentity(currentIdentity, identity)) return;
       if (this.readLease(leasePath, sessionId).runtimeId !== runtimeId) return;
       unlinkSync(leasePath);
     } catch {
-      // 替换后的未知锁绝不能删除；残留锁只会在原进程退出后被后续运行回收。
+      // Never delete an unknown replacement. Always release the kernel gate below,
+      // including when the marker or directory has disappeared or been replaced.
+    } finally {
+      owned.authority.close();
     }
   }
 
-  private createLease(leasePath: string, sessionId: string): FileIdentity {
+  private acquireAuthority(leasePath: string, sessionId: string): LeaseAuthority {
+    const databasePath = `${leasePath}.authority.sqlite`;
+    this.assertDirectoryBinding();
+    try {
+      // The stable authority inode is NEVER renamed, retired, or deleted. A new
+      // inode would be a different kernel lock and could elect a second writer.
+      const descriptor = openSync(databasePath, constants.O_CREAT | constants.O_EXCL | constants.O_RDWR | constants.O_NOFOLLOW, 0o600);
+      closeSync(descriptor);
+    } catch (error) {
+      if (!isErrorCode(error, "EEXIST")) throw error;
+    }
+    const identity = this.authorityIdentityAtPath(databasePath);
+    const assertBinding = (): void => {
+      if (!sameIdentity(identity, this.authorityIdentityAtPath(databasePath))) {
+        throw new Error("Session lease authority changed during runtime.");
+      }
+    };
+    const database = new DatabaseSync(databasePath, { timeout: 0 });
+    try {
+      assertBinding();
+      // One dedicated, empty database per session; never a business/global DB.
+      // No writes or journal side files are needed: BEGIN IMMEDIATE itself owns
+      // a kernel lock until close/crash. MEMORY also prevents journal creation.
+      // timeout=0 is essential: a second store in this process must not wait for
+      // its own event loop to close the first lease. Only active leases retain FDs.
+      database.exec("PRAGMA journal_mode = MEMORY; BEGIN IMMEDIATE");
+      assertBinding();
+    } catch (error) {
+      database.close();
+      if (isSqliteBusy(error)) {
+        let existing: LeaseRecord | undefined;
+        try { existing = this.readLease(leasePath, sessionId); } catch { /* Publication may not have started. */ }
+        if (existing) throw new SessionLeaseError(existing.pid, sessionId);
+        throw new SessionWriterConflictError(sessionId);
+      }
+      throw error;
+    }
+    let closed = false;
+    return {
+      identity,
+      assertBinding,
+      close(): void {
+        if (closed) return;
+        closed = true;
+        try { database.exec("ROLLBACK"); } finally { database.close(); }
+      }
+    };
+  }
+
+  private authorityIdentityAtPath(databasePath: string): FileIdentity {
+    this.assertDirectoryBinding();
+    const stat = lstatSync(databasePath);
+    assertSafeLeaseFile(stat, path.basename(databasePath));
+    const uid = process.getuid?.();
+    if (stat.size !== 0 || (stat.mode & 0o077) !== 0 || (uid !== undefined && stat.uid !== uid)) {
+      throw new Error("Session lease authority must be an empty, private, owned file.");
+    }
+    // This gate never writes SQLite data. Any side file is unexpected; fail
+    // closed rather than let SQLite inspect a forged journal/WAL outside it.
+    for (const suffix of ["-journal", "-wal", "-shm"]) {
+      try { lstatSync(`${databasePath}${suffix}`); } catch (error) {
+        if (isErrorCode(error, "ENOENT")) continue;
+        throw error;
+      }
+      throw new Error("Session lease authority has an unexpected SQLite side file.");
+    }
+    return identityOf(stat);
+  }
+
+  private createLease(leasePath: string, sessionId: string, authority: FileIdentity): FileIdentity {
     this.assertDirectoryBinding();
     const content = Buffer.from(JSON.stringify({
       version: leaseVersion,
       runtimeId: this.runtimeId,
       pid: process.pid,
       sessionId,
-      createdAt: new Date().toISOString()
+      createdAt: new Date().toISOString(),
+      authority
     } satisfies LeaseRecord));
     let descriptor: number | undefined;
     try {
@@ -233,12 +367,15 @@ export class SessionLeaseStore {
     ) {
       throw new Error("Session lease is malformed.");
     }
+    const authority = parseFileIdentity(record.authority);
+    if (record.authority !== undefined && !authority) throw new Error("Session lease authority is malformed.");
     return {
-      version: leaseVersion,
+      version: record.version,
       runtimeId: record.runtimeId,
       pid: record.pid,
       sessionId: expectedSessionId,
-      createdAt: record.createdAt
+      createdAt: record.createdAt,
+      authority
     };
   }
 
@@ -325,6 +462,17 @@ function identityOf(stat: Pick<Stats, "dev" | "ino">): FileIdentity {
 
 function sameIdentity(left: FileIdentity, right: FileIdentity): boolean {
   return left.device === right.device && left.inode === right.inode;
+}
+
+function parseFileIdentity(value: unknown): FileIdentity | undefined {
+  if (typeof value !== "object" || value === null || !("device" in value) || !("inode" in value)) return undefined;
+  if (typeof value.device !== "number" || !Number.isSafeInteger(value.device)
+    || typeof value.inode !== "number" || !Number.isSafeInteger(value.inode)) return undefined;
+  return { device: value.device, inode: value.inode };
+}
+
+function isSqliteBusy(error: unknown): boolean {
+  return error instanceof Error && /database (?:table )?is locked/u.test(error.message);
 }
 
 function writeAll(descriptor: number, bytes: Buffer): void {

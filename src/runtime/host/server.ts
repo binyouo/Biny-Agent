@@ -52,7 +52,7 @@ import {
   type HostFrame,
   type HostRequestFrame
 } from "./protocol.js";
-import { OperationDispatcher, operationLane, operationLaneKey, memoryQueryActions } from "./operations.js";
+import { OperationCompletion, OperationDispatcher, operationLane, operationLaneKey, memoryQueryActions } from "./operations.js";
 import { SessionRuntimeRegistry, type ManagedSessionRuntime } from "./registry.js";
 import {
   RuntimeHostAdmission,
@@ -143,6 +143,8 @@ export class RuntimeHostServer {
   private readonly history: Array<{ sequence: number; update: AgentRuntimeUpdate }> = [];
   private sequence = 0;
   private readonly dispatcher = new OperationDispatcher();
+  /** 日报/反思继续串行写同一份记忆，但模型等待不能占据 Host 的请求准入队列。 */
+  private readonly reflectionDispatcher = new OperationDispatcher();
   private readonly businessComposition: RuntimeHostBusinessComposition;
   private readonly conversationMirror: ConversationMarkdownMirror;
   private readonly journal: RuntimeHostEventJournal;
@@ -1037,15 +1039,26 @@ export class RuntimeHostServer {
           return record;
         }, runtime);
       case "diary.refresh":
-      case "reflection.run":
-        return await this.executeAdmission(async () => await commands.refreshDailyDiary(
-          requiredString(payload.dateKey, "dateKey"),
-          { force: payload.force === true }
-        ), runtime);
+      case "reflection.run": {
+        const sessionId = managed.sessionId;
+        return new OperationCompletion(this.reflectionDispatcher.dispatch("mutation", async () => {
+          // 前一次模型调用期间可能已关闭 Host 或重建 session；未开跑的请求不能使用旧 commands。
+          if (this.closePromise) throw new Error("Runtime Host is shutting down.");
+          if (connection.exitingForPause) throw new Error("This Runtime Host client is exiting and cannot start new work.");
+          this.admission.assertAdmission();
+          const current = await this.runtimeEntry(frame.operation, { sessionId });
+          assertPlanningOperationAllowed(current.runtime.getSnapshot().info.planning, frame.operation);
+          return await this.executeAdmission(async () => await current.commands.refreshDailyDiary(
+            requiredString(payload.dateKey, "dateKey"), { force: payload.force === true }
+          ), current.runtime);
+        }));
+      }
       case "heartbeat.status":
         return commands.heartbeat.status();
       case "heartbeat.run":
-        return await this.executeAdmission(async () => ({ triggered: await commands.heartbeat.triggerNow(), status: commands.heartbeat.status() }), runtime);
+        return await this.executeAdmission(async () => new OperationCompletion(commands.heartbeat.triggerNow().then(
+          (triggered) => ({ triggered, status: commands.heartbeat.status() })
+        )), runtime);
       case "task.start":
         return await this.executeAdmission(async () => {
           const started = await this.startTaskRun(requiredString(payload.taskRunId, "taskRunId"), commands, {
@@ -1059,8 +1072,7 @@ export class RuntimeHostServer {
           const started = await this.startTaskRun(taskRunId, commands, {
             retrySafety: readTaskRetrySafety(payload.retrySafety)
           });
-          await started.completion;
-          return commands.taskRuns.get(taskRunId);
+          return new OperationCompletion(started.completion.then(() => commands.taskRuns.get(taskRunId)));
         }, runtime);
       case "task.cancel":
         return await this.executeControl(async () => {
@@ -1069,20 +1081,30 @@ export class RuntimeHostServer {
           return commands.cancelTaskRun(taskRunId, reason);
         }, runtime);
       case "task.approve":
-        return await this.executeAdmission(async () => await runtime.runExclusiveOperation("subagent", async () => {
-          const taskRunId = requiredString(payload.taskRunId, "taskRunId");
-          await approveTaskVerification({
-            taskRuns: commands.taskRuns,
-            taskRunId,
-            approvalId: requiredString(payload.approvalId, "approvalId"),
-            workspaceRoot: commands.workspaceRoot || this.registration.persistenceRoot,
-            ignore: commands.config?.workspace.ignore ?? []
+        return await this.executeAdmission(async () => {
+          let admitted!: () => void;
+          let rejectAdmission!: (error: unknown) => void;
+          const admission = new Promise<void>((resolve, reject) => { admitted = resolve; rejectAdmission = reject; });
+          const completion = runtime.runExclusiveOperation("subagent", async () => {
+            const taskRunId = requiredString(payload.taskRunId, "taskRunId");
+            await approveTaskVerification({
+              taskRuns: commands.taskRuns,
+              taskRunId,
+              approvalId: requiredString(payload.approvalId, "approvalId"),
+              workspaceRoot: commands.workspaceRoot || this.registration.persistenceRoot,
+              ignore: commands.config?.workspace.ignore ?? []
+            });
+            const started = await this.startTaskRun(taskRunId, commands);
+            // 权限校验、持久审批和派发仍在准入队列内；会话独占持续到验收结束。
+            admitted();
+            const result = await started.completion;
+            commands.graphs.projectTaskClosure(taskRunId, result);
+            return commands.taskRuns.get(taskRunId);
           });
-          const started = await this.startTaskRun(taskRunId, commands);
-          const result = await started.completion;
-          commands.graphs.projectTaskClosure(taskRunId, result);
-          return commands.taskRuns.get(taskRunId);
-        }), runtime);
+          void completion.catch(rejectAdmission);
+          await admission;
+          return new OperationCompletion(completion);
+        }, runtime);
       case "task.resume":
         return await this.executeAdmission(async () => {
           const started = await commands.resumeTaskRun(requiredString(payload.taskRunId, "taskRunId"));
@@ -1452,10 +1474,17 @@ export class RuntimeHostServer {
     }
   }
 
-  private async executeAdmission<T>(execute: () => Promise<T>, runtime = this.runtime): Promise<HostOperationResult<T>> {
+  private async executeAdmission<T>(
+    execute: () => Promise<T | OperationCompletion<T>>,
+    runtime = this.runtime
+  ): Promise<HostOperationResult<T> | OperationCompletion<HostOperationResult<T>>> {
     try {
       this.admission.assertAdmission();
       const result = await execute();
+      if (result instanceof OperationCompletion) {
+        // 与普通操作保持相同的最终成功/失败封装及完成时 revision，不再次准入已启动的工作。
+        return new OperationCompletion(this.executeControl(async () => await result.completion, runtime));
+      }
       return { accepted: true, sessionId: runtime.getSnapshot().info.sessionId, revision: runtime.getSnapshot().revision, result };
     } catch (error) {
       return {

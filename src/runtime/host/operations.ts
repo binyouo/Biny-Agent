@@ -8,6 +8,17 @@ import { sessionIdFromFile } from "../../session/store.js";
 
 export const memoryQueryActions = new Set(["overview", "stats", "service-status", "stored-embedding-model", "tool-model", "list", "get", "search", "archive-list", "archive-chains", "sleep-status", "sleep-http-status", "sleep-runs", "sleep-preview"]);
 
+/** 准入已结束，RPC 仍需等待的结果；不能直接返回 Promise，否则它会继续占用因果队列。 */
+export class OperationCompletion<T> {
+  readonly completion: Promise<T>;
+
+  constructor(completion: Promise<T>) {
+    this.completion = completion;
+    // 排队结果传到调用方前，后台执行也可能失败；最终错误仍由原 completion 传回。
+    void completion.catch(() => undefined);
+  }
+}
+
 export class OperationDispatcher {
   private readonly tails: Record<Exclude<OperationLane, "query">, Promise<void>> = {
     mutation: Promise.resolve(),
@@ -21,13 +32,14 @@ export class OperationDispatcher {
     return this.runTails.has(sessionId);
   }
 
-  dispatch<T>(lane: OperationLane, work: () => Promise<T>, key?: string): Promise<T> {
+  dispatch<T>(lane: OperationLane, work: () => Promise<T | OperationCompletion<T>>, key?: string): Promise<T> {
+    const complete = (result: T | OperationCompletion<T>): T | Promise<T> => result instanceof OperationCompletion ? result.completion : result;
     // 查询不占因果写队列：wait-idle 或远端 MCP 读取不能挡住其他会话的快照和订阅。
-    if (lane === "query") return Promise.resolve().then(work);
+    if (lane === "query") return Promise.resolve().then(work).then(complete);
     if (lane !== "run" || key === undefined) {
       const result = this.tails[lane].then(work, work);
       this.tails[lane] = result.then(() => undefined, () => undefined);
-      return result;
+      return result.then(complete);
     }
     const previous = this.runTails.get(key) ?? Promise.resolve();
     const result = previous.then(work, work);
@@ -36,7 +48,7 @@ export class OperationDispatcher {
     void tail.then(() => {
       if (this.runTails.get(key) === tail) this.runTails.delete(key);
     });
-    return result;
+    return result.then(complete);
   }
 }
 
@@ -83,7 +95,7 @@ export function operationLane(operation: string, payload: Record<string, unknown
     || operation === "run.queue"
     || operation === "run.queue.mutate"
   ) return "run";
-  if (operation === "task.start" || operation === "task.run" || operation === "task.retry") return "admission";
+  if (operation === "task.start" || operation === "task.run" || operation === "task.retry" || operation === "task.approve") return "admission";
   if (operation === "diary.refresh" || operation === "reflection.run" || operation === "heartbeat.run") return "admission";
   if (
     operation === "snapshot"
@@ -121,7 +133,7 @@ export function operationLane(operation: string, payload: Record<string, unknown
     || operation === "capability.get"
     || operation === "host.info"
   ) return "query";
-  if (operation === "memory.sleep.cancel" || operation === "memory.embedding.cancel-download" || operation === "memory.embedding.cancel-rebuild") return "control";
+  if (operation === "task.cancel" || operation === "memory.sleep.cancel" || operation === "memory.embedding.cancel-download" || operation === "memory.embedding.cancel-rebuild") return "control";
   if (operation === "capability.cancel" || operation === "capability.fail" || operation === "capability.release" || operation === "capability.reject") return "control";
   if (operation === "goal.pause" || operation === "goal.cancel" || operation === "graph.pause" || operation === "graph.cancel") return "control";
   if (operation === "capability.register" || operation === "capability.replace" || operation === "capability.invoke" || operation === "capability.accept" || operation === "capability.start" || operation === "capability.result" || operation === "capability.chunk" || operation === "capability.admit" || operation === "graph.start" || operation === "graph.resume" || operation === "goal.resume") return "admission";

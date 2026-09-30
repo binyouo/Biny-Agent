@@ -16,7 +16,7 @@ import type { AgentPermissionEventRequest, AgentRunModel, AgentHostEvent } from 
 import type { PermissionAction } from "../../../permission/PermissionManager.js";
 import { activitySummaryText } from "../../../runtime/activitySummary.js";
 import { agentCapabilitySelectionSchema, type AgentCapabilitySelection } from "../../../agent/capabilitySelection.js";
-import { activeSessionEventsForPath, sessionMessageMetadata } from "../../../session/messageTree.js";
+import { activeSessionEventsForPath, sessionMessageMetadataForIds } from "../../../session/messageTree.js";
 import type { SessionEvent } from "../../../session/recorder.js";
 import type { ModelRequestMetrics } from "../../../agent/core/types.js";
 import type { SessionUsage } from "../../../session/metadata.js";
@@ -309,6 +309,7 @@ function historicalPrefix(events: SessionEvent[], liveEvents: AgentHostEvent[]):
 }
 
 function buildHistoricalTurns(events: SessionEvent[]): TimelineTurn[] {
+  const metadataById = historicalUserMetadata(events, events);
   const turns: TimelineTurn[] = [];
   let current: TimelineTurn | undefined;
   let anonymousIndex = 0;
@@ -335,7 +336,7 @@ function buildHistoricalTurns(events: SessionEvent[]): TimelineTurn[] {
       current.user = publicUserMessage(event.content);
       current.userMessageIndex = userMessageIndex;
       current.userMessageId = event.messageId;
-      current.capabilitySelection = selectedCapabilities(events, event.messageId);
+      current.capabilitySelection = selectedCapabilities(metadataById, event.messageId);
       userMessageIndex += 1;
       turns.push(current);
       continue;
@@ -456,6 +457,7 @@ interface HistoricalVersionRecord {
 /** 新消息树的历史投影：同一 user turn 下只展示活动版本，工具事件按 runId 回填。 */
 function buildVersionedHistoricalTurns(events: SessionEvent[]): TimelineTurn[] {
   const activeEvents = activeSessionEventsForPath(events);
+  const metadataById = historicalUserMetadata(events, activeEvents);
   const turns: TimelineTurn[] = [];
   const turnsByUserId = new Map<string, TimelineTurn>();
   const turnsByRunId = new Map<string, TimelineTurn>();
@@ -526,7 +528,7 @@ function buildVersionedHistoricalTurns(events: SessionEvent[]): TimelineTurn[] {
       current.user = publicUserMessage(event.content);
       current.userMessageIndex = event.messageId === undefined ? activeUserIndex : userIndexes.get(event.messageId) ?? activeUserIndex;
       current.userMessageId = event.messageId;
-      current.capabilitySelection = selectedCapabilities(events, event.messageId);
+      current.capabilitySelection = selectedCapabilities(metadataById, event.messageId);
       activeUserIndex += 1;
       turns.push(current);
       if (event.messageId) turnsByUserId.set(event.messageId, current);
@@ -1388,10 +1390,19 @@ function changedFileOperation(tool: TimelineTool): TimelineChangedFile["operatio
   return undefined;
 }
 
+/** 只索引本次历史投影会查询的 user ID，避免长工具回合为全部 assistant 消息复制 metadata。 */
+function historicalUserMetadata(events: SessionEvent[], projectedEvents: SessionEvent[]): ReadonlyMap<string, Record<string, unknown>> {
+  const userIds = new Set<string>();
+  for (const event of projectedEvents) {
+    if (event.type === "user_message" && !event.auditOnly && event.messageId) userIds.add(event.messageId);
+  }
+  return sessionMessageMetadataForIds(events, userIds);
+}
+
 /** 预选结果是消息元数据，不能用启动时全部可用技能冒充本轮选择。 */
-function selectedCapabilities(events: SessionEvent[], messageId?: string): AgentCapabilitySelection | undefined {
+function selectedCapabilities(metadataById: ReadonlyMap<string, Record<string, unknown>>, messageId?: string): AgentCapabilitySelection | undefined {
   if (!messageId) return undefined;
-  const selected = agentCapabilitySelectionSchema.safeParse(sessionMessageMetadata(events, messageId).capabilitySelection);
+  const selected = agentCapabilitySelectionSchema.safeParse(metadataById.get(messageId)?.capabilitySelection);
   return selected.success ? selected.data : undefined;
 }
 

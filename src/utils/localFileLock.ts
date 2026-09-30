@@ -1,43 +1,150 @@
-/** 本地文件写入的跨进程互斥：校验文件身份，只回收确认已退出进程持有的锁。 */
+/** 本地文件写入的跨进程互斥：独立内核锁覆盖 owner 判定、发布、业务操作和释放。 */
 import { randomBytes } from "node:crypto";
-import { constants, promises as fs, type Stats } from "node:fs";
+import { closeSync, constants, lstatSync, openSync, promises as fs, realpathSync, type Stats } from "node:fs";
 import type { FileHandle } from "node:fs/promises";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 
 const lockTimeoutMs = 5_000;
 const lockPollMs = 25;
+const maxLockBytes = 16 * 1024;
+
+interface FileIdentity {
+  dev: number;
+  ino: number;
+}
+
+interface LockAuthority {
+  identity: FileIdentity;
+  assertBinding(): void;
+  close(): void;
+}
+
+interface OwnerRecord {
+  pid?: unknown;
+  nonce?: unknown;
+  authority?: unknown;
+}
 
 export async function withLocalFileWriteLock<T>(root: string, lockFileName: string, operation: () => Promise<T>): Promise<T> {
   if (!lockFileName || lockFileName === "." || lockFileName === ".." || path.basename(lockFileName) !== lockFileName) throw new Error("Lock name must be a file name.");
   await ensureRealDirectory(root);
-  const lockPath = path.join(await fs.realpath(path.resolve(root)), lockFileName);
+  const directory = await fs.realpath(path.resolve(root));
+  const directoryIdentity = await fs.lstat(directory);
+  const lockPath = path.join(directory, lockFileName);
   const deadline = Date.now() + lockTimeoutMs;
-  let handle: FileHandle | undefined;
-  while (!handle) {
-    try {
-      handle = await fs.open(lockPath, writeNewFlags(), 0o600);
-      await handle.writeFile(`${JSON.stringify({ pid: process.pid, nonce: randomBytes(8).toString("hex") })}\n`, "utf8");
-      await handle.chmod(0o600);
-      await handle.sync();
-    } catch (error) {
-      if (!isAlreadyExists(error)) throw error;
-      if (await removeDeadOwnerLock(lockPath)) continue;
-      if (Date.now() >= deadline) throw new Error("Timed out waiting for the local file write lock.");
-      await new Promise<void>((resolve) => setTimeout(resolve, lockPollMs));
-    }
+  let authority: LockAuthority | undefined;
+  while (!authority) {
+    authority = tryAcquireAuthority(lockPath, directoryIdentity);
+    if (!authority) await waitForLock(deadline);
   }
 
-  const identity = await assertLockBinding(lockPath, handle);
+  let handle: FileHandle | undefined;
+  const nonce = randomBytes(8).toString("hex");
   try {
-    return await operation();
-  } finally {
-    try {
-      await assertLockBinding(lockPath, handle, identity);
-      await fs.unlink(lockPath);
-    } finally {
-      await handle.close().catch(() => undefined);
+    while (!handle) {
+      authority.assertBinding();
+      try {
+        handle = await fs.open(lockPath, writeNewFlags(), 0o600);
+      } catch (error) {
+        if (!isAlreadyExists(error)) throw error;
+        if (await removeDeadOwnerLock(lockPath, authority)) continue;
+        await waitForLock(deadline);
+      }
     }
+    // Keep pid/nonce readable by old binaries. Their fully published live markers
+    // remain protected, but the full race guarantee requires all writers upgraded.
+    await handle.writeFile(`${JSON.stringify({ pid: process.pid, nonce, authority: authority.identity })}\n`, "utf8");
+    await handle.chmod(0o600);
+    await handle.sync();
+    const identity = await assertLockBinding(lockPath, handle);
+    authority.assertBinding();
+    try {
+      return await operation();
+    } finally {
+      authority.assertBinding();
+      await assertLockBinding(lockPath, handle, identity);
+      await assertOwnerNonce(lockPath, nonce);
+      authority.assertBinding();
+      await fs.unlink(lockPath);
+    }
+  } finally {
+    // Also runs when publication/binding validation fails before operation starts.
+    // Closing the marker is safe; never open/close the SQLite inode through an
+    // unrelated fd while it is locked (POSIX close can release process locks).
+    await handle?.close().catch(() => undefined);
+    authority.close();
   }
+}
+
+async function waitForLock(deadline: number): Promise<void> {
+  if (Date.now() >= deadline) throw new Error("Timed out waiting for the local file write lock.");
+  // A synchronous SQLite busy_timeout could deadlock two callers in this process.
+  // Retry after yielding so the owner can finish its operation and release.
+  await new Promise<void>((resolve) => setTimeout(resolve, lockPollMs));
+}
+
+function tryAcquireAuthority(lockPath: string, directoryIdentity: FileIdentity): LockAuthority | undefined {
+  const directory = path.dirname(lockPath);
+  const databasePath = `${lockPath}.authority.sqlite`;
+  const assertDirectory = (): void => {
+    const stat = lstatSync(directory);
+    if (stat.isSymbolicLink() || !stat.isDirectory() || !sameIdentity(stat, directoryIdentity)
+      || realpathSync(directory) !== directory) throw new Error("Local file lock directory changed during access.");
+  };
+  assertDirectory();
+  try {
+    // This permanent zero-byte inode is the lock authority, never its JSON marker.
+    // Never unlink/replace it, including on release, timeout, or crash recovery.
+    const descriptor = openSync(databasePath, constants.O_CREAT | constants.O_EXCL | constants.O_RDWR | noFollowFlag(), 0o600);
+    closeSync(descriptor);
+  } catch (error) {
+    if (!isAlreadyExists(error)) throw error;
+  }
+  const identityAtPath = (): FileIdentity => {
+    assertDirectory();
+    const stat = lstatSync(databasePath);
+    const uid = process.getuid?.();
+    if (stat.isSymbolicLink() || !stat.isFile() || stat.nlink !== 1 || stat.size !== 0
+      || (stat.mode & 0o077) !== 0 || (uid !== undefined && stat.uid !== uid)) {
+      throw new Error("Local file lock authority must be an empty, private, owned single-link file.");
+    }
+    for (const suffix of ["-journal", "-wal", "-shm"]) {
+      try { lstatSync(`${databasePath}${suffix}`); } catch (error) {
+        if (isNotFound(error)) continue;
+        throw error;
+      }
+      throw new Error("Local file lock authority has an unexpected SQLite side file.");
+    }
+    return { dev: stat.dev, ino: stat.ino };
+  };
+  const identity = identityAtPath();
+  const assertBinding = (): void => {
+    if (!sameIdentity(identity, identityAtPath())) throw new Error("Local file lock authority changed during access.");
+  };
+  const database = new DatabaseSync(databasePath, { timeout: 0 });
+  try {
+    assertBinding();
+    // A dedicated, empty SQLite database per lock, with no data writes or side
+    // files. Its write transaction is only a kernel-released election gate; this
+    // does not hold any config/activity/business database transaction open.
+    database.exec("PRAGMA journal_mode = MEMORY; BEGIN IMMEDIATE");
+    assertBinding();
+  } catch (error) {
+    database.close();
+    if (error instanceof Error && /database (?:table )?is locked/u.test(error.message)) return undefined;
+    throw error;
+  }
+  let closed = false;
+  return {
+    identity,
+    assertBinding,
+    close(): void {
+      if (closed) return;
+      closed = true;
+      try { database.exec("ROLLBACK"); } finally { database.close(); }
+    }
+  };
 }
 
 async function ensureRealDirectory(root: string): Promise<void> {
@@ -55,30 +162,59 @@ async function ensureRealDirectory(root: string): Promise<void> {
   await fs.chmod(root, 0o700);
 }
 
-async function removeDeadOwnerLock(lockPath: string): Promise<boolean> {
+async function removeDeadOwnerLock(lockPath: string, authority: LockAuthority): Promise<boolean> {
+  authority.assertBinding();
   const initial = await safeLockStat(lockPath);
   if (!initial) return true;
-  let raw: string;
+  let owner: OwnerRecord | undefined;
   try {
-    raw = await fs.readFile(lockPath, "utf8");
+    owner = await readOwnerRecord(lockPath);
   } catch (error) {
     if (isNotFound(error)) return true;
     throw error;
   }
-  let pid: number | undefined;
-  try {
-    const value = JSON.parse(raw) as { pid?: unknown };
-    if (Number.isSafeInteger(value.pid) && Number(value.pid) > 0) pid = Number(value.pid);
-  } catch {
-    // 不删除无法验证所有者的锁文件；调用方会得到有界超时，而不是越权清理。
+  const ownerAuthority = parseIdentity(owner?.authority);
+  if (owner?.authority !== undefined && (!ownerAuthority || !sameIdentity(ownerAuthority, authority.identity))) {
+    throw new Error("Local file lock authority changed; refusing to reclaim the owner marker.");
   }
-  if (pid === undefined || processIsAlive(pid)) return false;
+  if (!ownerAuthority && Number.isSafeInteger(owner?.pid) && Number(owner?.pid) > 0 && processIsAlive(Number(owner?.pid))) return false;
+  // The unchanged kernel gate proves a gated or partially published owner no
+  // longer holds this lock. Do not rely on its PID, which may have been reused.
   const current = await safeLockStat(lockPath);
   if (!current || !sameIdentity(initial, current)) return false;
+  authority.assertBinding();
   await fs.unlink(lockPath).catch((error: unknown) => {
     if (!isNotFound(error)) throw error;
   });
   return true;
+}
+
+async function readOwnerRecord(lockPath: string): Promise<OwnerRecord | undefined> {
+  const handle = await fs.open(lockPath, constants.O_RDONLY | noFollowFlag());
+  try {
+    const identity = await assertLockBinding(lockPath, handle);
+    const stat = await handle.stat();
+    if (stat.size > maxLockBytes) throw new Error("Local file lock owner marker is too large.");
+    const raw = await handle.readFile("utf8");
+    await assertLockBinding(lockPath, handle, identity);
+    let value: unknown;
+    try { value = JSON.parse(raw) as unknown; } catch { return undefined; }
+    if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
+    return value as OwnerRecord;
+  } finally {
+    await handle.close();
+  }
+}
+
+async function assertOwnerNonce(lockPath: string, nonce: string): Promise<void> {
+  if ((await readOwnerRecord(lockPath))?.nonce !== nonce) throw new Error("Local file lock owner changed during access.");
+}
+
+function parseIdentity(value: unknown): FileIdentity | undefined {
+  if (typeof value !== "object" || value === null || !("dev" in value) || !("ino" in value)) return undefined;
+  if (typeof value.dev !== "number" || !Number.isSafeInteger(value.dev)
+    || typeof value.ino !== "number" || !Number.isSafeInteger(value.ino)) return undefined;
+  return { dev: value.dev, ino: value.ino };
 }
 
 async function safeLockStat(lockPath: string): Promise<Stats | undefined> {
@@ -121,7 +257,11 @@ function processIsAlive(pid: number): boolean {
 
 function writeNewFlags(): number {
   return constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY
-    | (typeof constants.O_NOFOLLOW === "number" ? constants.O_NOFOLLOW : 0);
+    | noFollowFlag();
+}
+
+function noFollowFlag(): number {
+  return typeof constants.O_NOFOLLOW === "number" ? constants.O_NOFOLLOW : 0;
 }
 
 function sameIdentity(left: Pick<Stats, "dev" | "ino">, right: Pick<Stats, "dev" | "ino">): boolean {
