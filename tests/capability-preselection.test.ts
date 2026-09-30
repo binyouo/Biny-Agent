@@ -1,4 +1,4 @@
-/** 自动筛选的能力边界、配套工具、历史累积、显式选择和失败处理。 */
+/** 自动筛选的能力边界、配套工具、受限历史、显式选择和失败处理。 */
 import assert from "node:assert/strict";
 import { preselectCapabilities } from "../src/agent/capabilityPreselection.js";
 import type { AgentModel, ModelStreamEvent } from "../src/agent/core/types.js";
@@ -27,7 +27,7 @@ const options = {
 };
 const result = await preselectCapabilities(options);
 assert.equal(calls, 2, "工具与技能分别调用同一辅助模型");
-assert.deepEqual(new Set(result.tools), new Set(["ToolSearch", "Read", "Write", "WebSearch", "WebFetch", "Task", "mcp_docs_read", "mcp_docs_search", "Skill", "read_skill_resource", "skill_lookup"]));
+assert.deepEqual(new Set(result.tools), new Set(["ToolSearch", "Read", "Write", "WebSearch", "WebFetch", "Task", "mcp_docs_read", "Skill", "read_skill_resource", "skill_lookup"]));
 assert.deepEqual(result.skills, ["review-id"]);
 const before = calls;
 assert.deepEqual(await preselectCapabilities({ ...options, selection: { tools: ["Write"], skills: "none" } }), { tools: ["Write"], skills: "none" });

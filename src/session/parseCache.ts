@@ -11,7 +11,7 @@ import type { SessionEvent } from "./recorder.js";
 
 /** 缓存条数上限：大量小 session 时由它封顶。 */
 const maxCachedSessions = 32;
-/** 累计源字节上限：少数超大 session 时由它封顶，防止长会话把内存撑爆。 */
+/** 按源字节估算的权重上限；额外保留的验证原文另计一次，限制大 session 的缓存占用。 */
 const maxCachedSourceBytes = 64 * 1024 * 1024;
 
 /** 命中判断用的文件指纹；append-only 下 (dev, ino, size, mtimeMs, ctimeMs) 不变即内容不变。 */
@@ -26,13 +26,25 @@ export interface SessionFileFingerprint {
 interface SessionParseCacheEntry {
   fingerprint: SessionFileFingerprint;
   events: SessionEvent[];
+  source?: SessionParseSource;
   /** 以源字节数计的权重，用于按内存上限淘汰。 */
   weight: number;
+}
+
+/** Only complete, validated byte snapshots may establish an append prefix. */
+export interface SessionParseSource {
+  bytes: Buffer;
+  newlineCount: number;
 }
 
 // Map 的插入顺序即 LRU 顺序：命中时摘除重插到尾部，淘汰从头部开始。
 const cache = new Map<string, SessionParseCacheEntry>();
 let cachedSourceBytes = 0;
+
+/** A stale entry is only a candidate: the reader must verify its entire prefix. */
+export function previousSessionParse(filePath: string): Readonly<SessionParseCacheEntry> | undefined {
+  return cache.get(filePath);
+}
 
 export function sessionFileFingerprint(stat: SessionFileFingerprint): SessionFileFingerprint {
   return { size: stat.size, mtimeMs: stat.mtimeMs, ctimeMs: stat.ctimeMs, dev: stat.dev, ino: stat.ino };
@@ -53,14 +65,15 @@ export function lookupSessionEvents(filePath: string, fingerprint: SessionFileFi
   return entry.events;
 }
 
-function store(filePath: string, fingerprint: SessionFileFingerprint, events: SessionEvent[]): void {
-  const weight = Math.max(0, fingerprint.size);
+function store(filePath: string, fingerprint: SessionFileFingerprint, events: SessionEvent[], source?: SessionParseSource): void {
+  // Charge retained source bytes separately from the existing parsed-event weight.
+  const weight = Math.max(0, fingerprint.size) + (source?.bytes.length ?? 0);
   const existing = cache.get(filePath);
   if (existing) {
     cachedSourceBytes -= existing.weight;
     cache.delete(filePath);
   }
-  cache.set(filePath, { fingerprint, events, weight });
+  cache.set(filePath, { fingerprint, events, source, weight });
   cachedSourceBytes += weight;
   while (cache.size > maxCachedSessions || cachedSourceBytes > maxCachedSourceBytes) {
     const oldest = cache.keys().next();
@@ -82,12 +95,12 @@ function store(filePath: string, fingerprint: SessionFileFingerprint, events: Se
 export function cachedSessionEvents(
   filePath: string,
   fingerprint: SessionFileFingerprint,
-  load: () => { events: SessionEvent[]; complete: boolean }
+  load: () => { events: SessionEvent[]; complete: boolean; source?: SessionParseSource }
 ): SessionEvent[] {
   const cached = lookupSessionEvents(filePath, fingerprint);
   if (cached) return cached;
-  const { events, complete } = load();
-  if (complete) store(filePath, fingerprint, events);
+  const { events, complete, source } = load();
+  if (complete) store(filePath, fingerprint, events, source);
   return events;
 }
 
