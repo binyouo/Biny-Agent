@@ -45,6 +45,7 @@ export interface SubagentTaskManagerOptions {
   shutdownDrainMs?: number;
   /** 将内存调度快照投影到 durable TaskRun；观察者失败不能破坏调度。 */
   onSnapshot?(snapshot: SubagentTaskSnapshot): void;
+  persistCompletion?(snapshot: SubagentTaskSnapshot, output: string): Promise<void> | void;
   execute(task: string, context: { taskId: string; parentRunId: string; signal: AbortSignal; deadline: string; accessMode: SubagentAccessMode; agent?: string }): Promise<string>;
 }
 
@@ -246,7 +247,7 @@ export class SubagentTaskManager {
         agent: task.agent
       });
       if (task.controller.signal.aborted) this.fail(task, abortError(task));
-      else this.complete(task, output);
+      else await this.complete(task, output);
     } catch (error) {
       this.fail(task, error instanceof Error ? error : new Error(String(error)));
     } finally {
@@ -268,8 +269,10 @@ export class SubagentTaskManager {
     if (wasQueued) this.drain();
   }
 
-  private complete(task: ManagedSubagentTask, output: string): void {
+  private async complete(task: ManagedSubagentTask, output: string): Promise<void> {
     if (isTerminal(task.status)) return;
+    await this.options.persistCompletion?.({ ...publicSnapshot(task), status: "completed" }, output);
+    if (isTerminal(task.status) || task.controller.signal.aborted) return;
     task.status = "completed";
     task.completedAt = new Date().toISOString();
     this.cleanup(task);

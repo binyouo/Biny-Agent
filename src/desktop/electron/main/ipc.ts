@@ -46,6 +46,8 @@ import { DesktopMcpService } from "./DesktopMcpService.js";
 import { DesktopProjectService } from "./DesktopProjectService.js";
 import { DesktopSkillService } from "./DesktopSkillService.js";
 import { DesktopStateStore } from "./DesktopStateStore.js";
+import type { AppearancePreviewCoordinator } from "../../appearanceCoordinator.js";
+import { appearancePreferenceSchema } from "../../../appearance/preferences.js";
 import { DesktopSettingsTransaction } from "./DesktopSettingsTransaction.js";
 import { DesktopTerminalManager } from "./DesktopTerminalManager.js";
 import { StaticPreviewServer } from "./StaticPreviewServer.js";
@@ -70,6 +72,7 @@ import { TemporalMemoryIndex } from "../../../session/temporalMemory.js";
 import { resolveSessionFile } from "../../../session/store.js";
 
 interface IpcContext {
+  appearance: AppearancePreviewCoordinator;
   crystals: DesktopCrystalService;
   temporalMemory: DesktopTemporalMemoryService;
   threadBriefs: DesktopThreadBriefService;
@@ -184,7 +187,7 @@ const memoryEntryPatchSchema = z.object({
   rationale: z.string().trim().min(1).max(1_000).optional()
 }).strict();
 const runtimeMutationSchema = z.enum([
-  "plan.mode", "plan.start",
+  "plan.start",
   "task.create", "task.start", "task.run", "task.cancel", "task.approve", "task.resume", "task.retry",
   "automation.create", "automation.pause", "automation.resume", "automation.run", "automation.delete",
   "goal.create", "goal.pause", "goal.resume", "goal.cancel",
@@ -446,6 +449,10 @@ export function registerDesktopIpc(context: IpcContext): void {
     return await context.agents.openSession(idSchema.parse(projectId), idSchema.parse(sessionId));
   });
 
+  handleRecoveryGated(desktopIpc.retryRuntime, async (_event, projectId: unknown, sessionId: unknown) => {
+    return await context.agents.retryRuntime(idSchema.parse(projectId), idSchema.optional().parse(sessionId));
+  });
+
   handle(desktopIpc.listSessionTreePage, async (_event, projectId: unknown, options: unknown) => {
     return await context.agents.listSessionTreePage(idSchema.parse(projectId), sessionTreePageOptionsSchema.parse(options) ?? {});
   });
@@ -536,7 +543,7 @@ export function registerDesktopIpc(context: IpcContext): void {
     return await context.agents.importSession(parsedProjectId, sourcePath);
   });
 
-  handleRecoveryGated(desktopIpc.sendPrompt, async (_event, projectId: unknown, sessionId: unknown, input: unknown, attachments: unknown, delivery: unknown, personalization: unknown, idempotencyKey: unknown, promptContext: unknown, capabilitySelection: unknown, draftPlanning: unknown) => {
+  handleRecoveryGated(desktopIpc.sendPrompt, async (_event, projectId: unknown, sessionId: unknown, input: unknown, attachments: unknown, delivery: unknown, personalization: unknown, idempotencyKey: unknown, promptContext: unknown, capabilitySelection: unknown) => {
     return await context.agents.sendPrompt(
       idSchema.parse(projectId),
       sessionId === undefined ? undefined : idSchema.parse(sessionId),
@@ -546,8 +553,7 @@ export function registerDesktopIpc(context: IpcContext): void {
       chatPersonalizationSchema.optional().parse(personalization),
       idempotencyKeySchema.parse(idempotencyKey),
       promptContextSchema.parse(promptContext),
-      capabilitySelection === undefined ? undefined : agentCapabilitySelectionSchema.parse(capabilitySelection),
-      z.boolean().optional().parse(draftPlanning)
+      capabilitySelection === undefined ? undefined : agentCapabilitySelectionSchema.parse(capabilitySelection)
     );
   });
 
@@ -1068,6 +1074,7 @@ export function registerDesktopIpc(context: IpcContext): void {
         window.setBackgroundColor(themeBackgroundColor(preference));
       }
     }
+    if (result.snapshot) context.appearance.committed();
     return result;
   });
 
@@ -1441,6 +1448,7 @@ export function registerDesktopIpc(context: IpcContext): void {
     if (window && !window.isDestroyed()) {
       window.setBackgroundColor(themeBackgroundColor(preference));
     }
+    context.appearance.committed();
     return preference;
   });
 
@@ -1448,7 +1456,38 @@ export function registerDesktopIpc(context: IpcContext): void {
     const parsed = fontPreferenceSchema.parse(font);
     const preference = { family: parsed.family, size: clampFontSize(parsed.size) };
     await context.state.setFontPreference(preference);
+    context.appearance.committed();
     return preference;
+  });
+
+  handleRecoveryGated(desktopIpc.setAppearancePreference, async (_event, value: unknown) => {
+    const preference = appearancePreferenceSchema.parse(value);
+    await context.state.setAppearancePreference(preference as ReturnType<DesktopStateStore["appearancePreference"]>);
+    context.appearance.committed();
+    return preference;
+  });
+
+  const appearanceOwners = new Set<number>();
+  handle(desktopIpc.previewAppearance, async (event, value: unknown) => {
+    const parsed = z.object({ themePreference: themePreferenceSchema, fontPreference: fontPreferenceSchema, appearancePreference: appearancePreferenceSchema }).strict().nullable().parse(value);
+    const owner = event.sender.id;
+    if (parsed && !appearanceOwners.has(owner)) {
+      appearanceOwners.add(owner);
+      event.sender.once("destroyed", () => { appearanceOwners.delete(owner); context.appearance.release(owner); });
+    }
+    context.appearance.preview(owner, parsed as Parameters<AppearancePreviewCoordinator["preview"]>[1]);
+  });
+
+  handle(desktopIpc.windowAction, async (event, value: unknown) => {
+    const action = z.enum(["minimize", "maximize", "close"]).parse(value);
+    const window = BrowserWindow.fromWebContents(event.sender);
+    if (!window || window.isDestroyed()) return;
+    if (action === "minimize") window.minimize();
+    else if (action === "maximize") {
+      if (process.platform === "darwin") window.setFullScreen(!window.isFullScreen());
+      else if (window.isMaximized()) window.unmaximize();
+      else window.maximize();
+    } else window.close();
   });
 
   // —— QuickChat 悬浮窗：显隐切换、前台上下文、点击穿透和偏好 ——
@@ -1496,7 +1535,7 @@ function applyNativeThemePreference(preference: DesktopThemePreference): void {
 
 function themeBackgroundColor(preference: DesktopThemePreference): string {
   const dark = preference === "dark" || (preference === "system" && nativeTheme.shouldUseDarkColors);
-  return dark ? "#1a1a1e" : "#f4f4f6";
+  return dark ? "#1a1a1a" : "#f5f5f5";
 }
 
 /** 先移除同名 handler 再注册：重复注册会被 Electron 直接拒绝（开发期热重载会遇到）。 */

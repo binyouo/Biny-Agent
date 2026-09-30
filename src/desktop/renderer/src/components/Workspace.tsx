@@ -6,9 +6,9 @@
  */
 import { ProjectSuggestionBanner } from "../threadBrief/ProjectSuggestionBanner.js";
 import type { PermissionResult } from "../../../../permission/PermissionManager.js";
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { ThinkingOrb } from "thinking-orbs";
-import type { DesktopProject, DesktopRuntimeMutation, DesktopRuntimeProjection, DesktopPlanProjection, DesktopSessionLimits, DesktopSessionWriterConflict } from "../../../protocol.js";
+import type { DesktopProject, DesktopRuntimeError, DesktopRuntimeMutation, DesktopRuntimeProjection, DesktopPlanProjection, DesktopSessionLimits, DesktopSessionWriterConflict } from "../../../protocol.js";
 import type { RecipeNotice, SkillExtractionCardState } from "../app/useDesktopEventBridge.js";
 import { hasSubmittedUserMessage } from "../chatModel.js";
 import type { TimelineTurn } from "../sessionTimeline.js";
@@ -23,6 +23,7 @@ import { SkillExtractionCard } from "./SkillExtractionCard.js";
 import { ChatScroll } from "./workspace/ChatScroll.js";
 import { PlanPanel } from "./workspace/PlanPanel.js";
 import { TodoProgressPanel } from "./workspace/TodoProgressPanel.js";
+import { RuntimeRecoveryBanner } from "./workspace/RuntimeRecoveryBanner.js";
 
 /** 发送消息的临时投影；真实消息或队列接管后由 App 清掉。 */
 export interface PendingPrompt {
@@ -41,7 +42,7 @@ interface WorkspaceProps {
   sessionIsolation?: "shared" | "worktree";
   turns: TimelineTurn[];
   loading: boolean;
-  runtimeError?: string;
+  runtimeError?: DesktopRuntimeError;
   runtimeProjection?: DesktopRuntimeProjection;
   planProjection?: DesktopPlanProjection;
   onOpenProject(): void;
@@ -52,7 +53,6 @@ interface WorkspaceProps {
   running: boolean;
   /** Runtime snapshot 里当前会话的活动 run；时间线用它兜底丢了 run.started 的 live 回合。 */
   runtimeActiveRunId?: string;
-  planning?: boolean;
   /** 当前会话的 Recipe 提示卡；固定在输入框上方，不随消息流滚走。 */
   recipeNotices?: RecipeNotice[];
   onDismissRecipe?(notice: RecipeNotice): void;
@@ -67,7 +67,7 @@ interface WorkspaceProps {
   onResolvePermission(requestId: string, result: PermissionResult): Promise<void>;
   onRetry(targetMessageId: string, input: string, idempotencyKey: string): Promise<void>;
   onSwitchVersion(messageId: string, direction: "prev" | "next"): Promise<void>;
-  onRetryWriterConflict(): Promise<void>;
+  onRetryRuntime(): Promise<void>;
   writerConflict?: DesktopSessionWriterConflict;
   /** 会话体量接近持久化上限时的预警信息；未接近时缺省。 */
   sessionLimits?: DesktopSessionLimits;
@@ -78,7 +78,7 @@ interface WorkspaceProps {
   /** 当前要展示的生成错误文本（由实时失败事件驱动）；空值 = 不展示。 */
   generationError?: string;
   onDismissGenerationError(): void;
-  onCreateBranch(): void;
+  onCreateBranch(): Promise<void>;
   onRollbackFiles(turn: TimelineTurn): void;
   onRuntimeError(error: unknown): void;
   onRuntimeMutation(operation: DesktopRuntimeMutation, payload: Record<string, unknown>): Promise<void>;
@@ -115,7 +115,6 @@ export function Workspace({
   thinking,
   running,
   runtimeActiveRunId,
-  planning,
   recipeNotices,
   skillExtraction,
   onDismissSkillExtraction,
@@ -128,7 +127,7 @@ export function Workspace({
   onResolvePermission,
   onRetry,
   onSwitchVersion,
-  onRetryWriterConflict,
+  onRetryRuntime,
   writerConflict,
   sessionLimits,
   onEditRequest,
@@ -166,6 +165,9 @@ export function Workspace({
     : runtimeProjection?.worktrees.find((worktree) => worktree.sessionId === sessionId);
   const worktreeView = sessionIsolation === "worktree" ? desktopWorktreeView(selectedWorktree) : undefined;
   const hasConversation = (turns.length > 0 || streaming) && Boolean(projectId);
+  const branchFromTimeline = useCallback((): void => {
+    void onCreateBranch().catch(onRuntimeError);
+  }, [onCreateBranch, onRuntimeError]);
   // 首条提交的上浮 FLIP：pending 投影出现且上一帧还没有会话内容时置位一次，
   // 气泡从输入框位置上浮到时间线槽位（起点在 MessageTimeline 内实时解析）。
   const [prevHadConversation, setPrevHadConversation] = useState(false);
@@ -239,11 +241,12 @@ export function Workspace({
               <button aria-label="忽略" className="biny-session-limit-dismiss" onClick={() => setLimitBannerDismissedFor(sessionId)} type="button">×</button>
             </div>
           ) : null}
-          {loading ? <LoadingState /> : runtimeError ? <RuntimeError error={runtimeError} onOpenProject={onOpenProject} /> : hasConversation && projectId ? (
+          {loading ? <LoadingState /> : hasConversation && projectId ? (
             <ChatScroll onScrolledChange={setChatScrolled} sessionId={sessionId} streaming={streaming}>
               <MessageTimeline
                 sessionId={sessionId}
-                onCreateBranch={onCreateBranch}
+                readOnly={Boolean(writerConflict || runtimeError)}
+                onCreateBranch={branchFromTimeline}
                 editInFlight={editInFlight}
                 onEditRequest={onEditRequest}
                 onOpenExternal={onOpenExternal}
@@ -271,10 +274,10 @@ export function Workspace({
             <div className="biny-chat-empty"><Icon name="message" size={20} /><span>开始一段新的对话</span></div>
           )}
         </div>
-        <div className={`biny-chat-composer${visiblePendingPrompt && turns.length === 0 ? " is-entering" : ""}`}>
-            {sessionId && !writerConflict ? <>
+        <div className={`biny-chat-composer${writerConflict || runtimeError ? " has-runtime-recovery" : ""}${visiblePendingPrompt && turns.length === 0 ? " is-entering" : ""}`}>
+            {sessionId && !writerConflict && !runtimeError ? <>
               <TodoProgressPanel sessionId={sessionId} projection={planProjection} running={running} />
-              <PlanPanel sessionId={sessionId} planning={planning === true} busy={running} projection={planProjection} onMutation={onRuntimeMutation} onError={onRuntimeError} />
+              <PlanPanel sessionId={sessionId} busy={running} projection={planProjection} onMutation={onRuntimeMutation} onError={onRuntimeError} />
             </> : null}
             {recipeNotices && recipeNotices.length > 0 && projectId ? (
               <div className="biny-recipe-ready-notices">
@@ -287,10 +290,17 @@ export function Workspace({
             ) : null}
             <ProjectSuggestionBanner key={sessionId} sessionId={sessionId} />
             {skillExtraction ? <SkillExtractionCard state={skillExtraction} onDismiss={() => onDismissSkillExtraction?.()} /> : null}
-            {generationError ? (
+            {generationError && !writerConflict && !runtimeError ? (
               <GenerationErrorBanner error={generationError} model={generationError === lastTurn?.error ? lastTurn?.model?.label : undefined} onDismiss={onDismissGenerationError} />
             ) : null}
-            {writerConflict ? <SessionWriterConflictBanner onRetry={onRetryWriterConflict} /> : children}
+            {writerConflict || runtimeError ? <RuntimeRecoveryBanner
+              key={`${projectId}:${sessionId}:${writerConflict ? "conflict" : runtimeError?.kind}`}
+              writerConflict={writerConflict}
+              runtimeError={writerConflict ? undefined : runtimeError}
+              onRetry={onRetryRuntime}
+              onCreateBranch={sessionId === undefined ? undefined : onCreateBranch}
+              onOpenProject={onOpenProject}
+            /> : children}
         </div>
       </div>
       {streaming ? <span className="biny-streaming-state" aria-hidden="true" /> : null}
@@ -468,40 +478,5 @@ function ThreadTitleText({ running, title }: { running: boolean; title: string }
         />
       ) : null}
     </span>
-  );
-}
-
-function RuntimeError({ error, onOpenProject }: { error: string; onOpenProject(): void }): React.JSX.Element {
-  return (
-    <div className="biny-runtime-error" role="alert">
-      <Icon name="warning" size={22} />
-      <h2>Agent Runtime 无法启动</h2>
-      <p>{error}</p>
-      <small>若另一个 Biny/CLI 会话正在占用项目，请先退出该会话；其他错误请检查共享配置后重试。</small>
-      <button onClick={onOpenProject} type="button">打开其他项目</button>
-    </div>
-  );
-}
-
-function SessionWriterConflictBanner({ onRetry }: { onRetry(): Promise<void> }): React.JSX.Element {
-  const [retrying, setRetrying] = useState(false);
-  const retry = async (): Promise<void> => {
-    if (retrying) return;
-    setRetrying(true);
-    try {
-      await onRetry();
-    } finally {
-      setRetrying(false);
-    }
-  };
-  return (
-    <div aria-live="polite" className="biny-session-writer-conflict" role="alert">
-      <Icon name="lock" size={17} />
-      <div className="biny-session-writer-conflict-copy">
-        <strong>已在另一个应用中打开</strong>
-        <span>请先在那边关闭会话，才能在这里继续。</span>
-      </div>
-      <button disabled={retrying} onClick={() => void retry()} type="button">{retrying ? "重试中…" : "重试"}</button>
-    </div>
   );
 }

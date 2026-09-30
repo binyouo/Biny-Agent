@@ -22,11 +22,11 @@ import { cachedSessionEvents, sessionFileFingerprint } from "../session/parseCac
 import { SessionRecorder, type ReasoningBlock, type SessionEvent } from "../session/recorder.js";
 import { TemporalMemoryIndex, parseTemporalClues } from "../session/temporalMemory.js";
 import { createTemporalModelExtractor } from "../session/temporalModelExtractor.js";
-import { activeSessionEventsForPath, activeSessionMessageIds, replaySessionEvents, sessionMessageTree, type SessionMessageReference, type SessionReplay } from "../session/replay.js";
+import { activeSessionEventsForPath, activeSessionMessageIds, replaySessionEvents, sessionMessageTree, type SessionMessageReference, type SessionReplay, type SessionReplayOptions } from "../session/replay.js";
 import { tryReadSessionSnapshot, writeSessionSnapshot, snapshotToReplay, type SessionSnapshotData } from "../session/sessionSnapshot.js";
 import { runtimeEventsForRun, type RuntimeEventSink, type RuntimeHighWater } from "../session/runtimeEvent.js";
 import { pausedTurnAvailable, resolveContinuationPlan } from "../session/recoveryPlan.js";
-import type { CapabilityStore } from "../runtime/CapabilityStore.js";
+import { CapabilityIdempotencyConflictError, type CapabilityStore } from "../runtime/CapabilityStore.js";
 import {
   TurnStore,
   type InterruptedTurn,
@@ -294,7 +294,6 @@ export type AgentPromptOptions = Pick<
 export type { AgentAttachment } from "../attachments/store.js";
 
 export interface AgentSessionInfo {
-  planning?: boolean;
   workspaceRoot: string;
   sessionId: string;
   sessionFile: string;
@@ -615,8 +614,6 @@ export class AgentSession {
   }
 
   async initialize(): Promise<void> {
-    const record = await readSessionCatalogRecord(this.persistenceRoot(), this.recorder.sessionId);
-    this.planning = record?.planning ?? false;
     await this.contextMemory.initialize();
     await this.identityStorage.initialize();
     await this.soulStorage.initialize();
@@ -628,7 +625,6 @@ export class AgentSession {
   private async extensionPrompt(capabilitySelection?: AgentCapabilitySelection, runId?: string): Promise<string | undefined> {
     const selectedSkillPrompt = await this.skillPrompt(capabilitySelection?.skills, runId);
     const sections = [
-      this.planning ? "Planning mode is enabled. Investigate with read-only tools and save a durable PlanDraft for user confirmation. Do not execute commands, modify workspace files, delegate, or start/update running plans. A draft is not executed work. Each task needs acceptance criteria and deterministic verification; add a read-only review block only when it adds useful independent scrutiny." : undefined,
       selectedSkillPrompt?.trim(),
       this.options.subagentPrompt?.trim(),
       this.options.mcpPrompt?.().trim(),
@@ -810,7 +806,6 @@ export class AgentSession {
     const mode = capabilitySelection?.tools ?? this.activeConfig.chat.defaultToolSelection;
     const evidenceTool = this.options.toolRegistry.list().some((tool) => tool.name === "read_checkpoint_evidence")
       ? ["read_checkpoint_evidence"] : [];
-    if (this.planning && mode === "auto") return new Set([...(resolved ?? stableCodingToolNames), toolSearchToolName, "PlanDraft", "PlanStatus", "AskUserQuestion", "read_tool_result", ...evidenceTool]);
     if (resolved || mode !== "auto" || this.options.toolRegistry.list().length <= 40) return resolved;
     // auto 筛选器缺失或异常时绝不能把大目录整体下发；保留基础编码能力和自助发现入口。
     const fallback = new Set([...stableCodingToolNames, toolSearchToolName, "AskUserQuestion", "read_tool_result", ...evidenceTool]);
@@ -949,11 +944,33 @@ export class AgentSession {
     const events = await readSessionEvents(this.recorder.filePath);
     const replay = replaySessionEvents(events, {
       sessionId: this.recorder.sessionId,
-      expectedRuntimeHighWater
+      expectedRuntimeHighWater,
+      resolveToolOutcome: this.resolveDurableToolOutcome
     });
     for (const event of replay.recoveredToolResults) await this.recorder.recordAndFlush(event);
     return replay;
   }
+
+  private readonly resolveDurableToolOutcome: NonNullable<SessionReplayOptions["resolveToolOutcome"]> = (call) => {
+    let invocation;
+    try {
+      invocation = this.options.capabilities?.findHostToolInvocation(call);
+    } catch (error) {
+      if (!(error instanceof CapabilityIdempotencyConflictError)) throw error;
+      return { executionStatus: "unknown", outcomeUnknownReason: "operation_identity_ambiguous", result: { error: error.message } };
+    }
+    if (!invocation) return undefined;
+    const evidence = `capability:${invocation.invocationId}`;
+    if (invocation.status === "result") return { executionStatus: "succeeded", result: invocation.result, evidence };
+    if (invocation.status === "failed") return { executionStatus: "failed", result: { error: invocation.error ?? "Capability failed." }, evidence };
+    if (invocation.status === "cancelled" && invocation.dispatchState === "not_dispatched") return { executionStatus: "cancelled", result: { status: "cancelled", message: "Capability was cancelled before dispatch." }, evidence };
+    return {
+      executionStatus: "unknown",
+      result: { error: invocation.error ?? "Capability outcome is not durably settled; do not repeat its side effects." },
+      outcomeUnknownReason: invocation.outcomeUnknownReason ?? "unsettled_previous_invocation",
+      evidence
+    };
+  };
 
   /**
    * 从被打断的地方继续同一个回合。
@@ -2956,9 +2973,10 @@ export class AgentSession {
       // 指纹不匹配或快照损坏时自动回退到完整重放，并在重放后异步写入新快照。
       const fingerprint = sessionFileFingerprint(resumeStat);
       const snapshot: SessionSnapshotData | undefined = await tryReadSessionSnapshot(resumeRecorder.filePath, fingerprint);
+      const snapshotReplay = snapshot ? snapshotToReplay(snapshot) : undefined;
       let replay: SessionReplay;
-      if (snapshot) {
-        replay = snapshotToReplay(snapshot);
+      if (snapshotReplay && (!this.options.capabilities || snapshotReplay.recoveredToolResults.length === 0)) {
+        replay = snapshotReplay;
         // 预热 parse 缓存，让后续依赖 events 的操作（如摘要）也能命中。
         cachedSessionEvents(resumeRecorder.filePath, fingerprint, () => ({
           events: parseSessionEvents(resumeRecorder.readText()),
@@ -2970,7 +2988,7 @@ export class AgentSession {
             events: parseSessionEvents(resumeRecorder.readText()),
             complete: true
           })),
-          { sessionId: resumeRecorder.sessionId }
+          { sessionId: resumeRecorder.sessionId, resolveToolOutcome: this.resolveDurableToolOutcome }
         );
         // 写完快照就完事，不阻塞 resume。
         writeSessionSnapshot(resumeRecorder.filePath, fingerprint, replay).catch(() => {});
@@ -3021,7 +3039,6 @@ export class AgentSession {
       this.contextMessageReferences = replay.messageReferences.map((reference) => ({ ...reference }));
       this.nextSessionMessageIndex = Math.max(replay.totalMessageCount, replay.messageTree.length);
       await this.options.todoStore?.useSession(replacementRecorder.sessionId);
-      this.planning = catalogRecord?.planning ?? false;
       this.recorder = replacementRecorder;
       this.turnStore = new TurnStore(this.persistenceRoot(), replacementRecorder.sessionId);
       const personalization = await this.readPersonalizationState();
@@ -3094,7 +3111,6 @@ export class AgentSession {
       this.contextMessageReferences = [];
       this.nextSessionMessageIndex = 0;
       await this.options.todoStore?.useSession(nextRecorder.sessionId);
-      this.planning = false;
       this.recorder = nextRecorder;
       this.turnStore = new TurnStore(this.persistenceRoot(), nextRecorder.sessionId);
       return nextRecorder.sessionId;
@@ -3403,7 +3419,6 @@ export class AgentSession {
       workspaceRoot: this.options.workspaceRoot,
       sessionId: this.recorder.sessionId,
       sessionFile: this.recorder.filePath,
-      planning: this.planning,
       ...model,
       skills: this.skillPaths()
     };
@@ -3411,23 +3426,6 @@ export class AgentSession {
 
   getPermissionMode(): PermissionMode {
     return this.options.permissionManager.getStatus().mode;
-  }
-
-  private planning = false;
-
-  /** 仅由宿主用户操作调用，模型不能自行退出只读规划。 */
-  async setPlanning(planning: boolean): Promise<void> {
-    const release = this.beginOperation("planning mode");
-    try {
-      const existing = await readSessionCatalogRecord(this.persistenceRoot(), this.recorder.sessionId);
-      if (existing) {
-        await updateSessionCatalogMetadata(this.persistenceRoot(), this.recorder.sessionId, { planning }, sessionCatalogRecordRevision(existing));
-      } else {
-        const now = new Date().toISOString();
-        await writeSessionCatalogRecord(this.persistenceRoot(), { version: 1, sessionId: this.recorder.sessionId, rootSessionId: this.recorder.sessionId, planning, createdAt: now, updatedAt: now }, { expectedRevision: SESSION_CATALOG_MISSING_REVISION });
-      }
-      this.planning = planning;
-    } finally { release(); }
   }
 
   /** 装配期 AgentSession 先于宿主 Runtime 构造；宿主构造完成后再用 setter 接上事件通道。 */
@@ -3805,7 +3803,6 @@ export class AgentSession {
     const model = this.options.modelManager?.getModel() ?? this.options.model;
     if (!model) throw new Error("Model runtime is not configured.");
     return {
-      planning: this.planning,
       workspaceRoot: this.options.workspaceRoot,
       config: this.options.config,
       model,

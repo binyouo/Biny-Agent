@@ -59,49 +59,49 @@ const semanticColors: ThemeDefinition["colors"] = {
 export const darkTheme: ThemeDefinition = {
   name: "dark",
   vars: {
-    text: "#ededf1",
-    subtext: "#b9b9c1",
-    dim: "#a2a2ad",
-    border: "#50505c",
-    borderMuted: "#333339",
-    accent: "#a5b4fc",
-    mauve: "#c4b5fd",
+    text: "#ededed",
+    subtext: "#b8b8b8",
+    dim: "#a3a3a3",
+    border: "#525252",
+    borderMuted: "#3b3b3b",
+    accent: "#74b6fb",
+    mauve: "#74b6fb",
     green: "#6fd99b",
     red: "#f28b82",
     yellow: "#f2b544",
     teal: "#67e8f9",
     blue: "#93c5fd",
     peach: "#f2b544",
-    surface: "#232327",
-    selectedBg: "#33345a",
+    surface: "#242424",
+    selectedBg: "#343434",
     errorBg: "#45272a"
   },
   colors: { ...semanticColors },
-  export: { pageBg: "#1a1a1e", cardBg: "#232327", infoBg: "#2d2d33" }
+  export: { pageBg: "#1a1a1a", cardBg: "#242424", infoBg: "#2b2b2b" }
 };
 
 export const lightTheme: ThemeDefinition = {
   name: "light",
   vars: {
-    text: "#1c1c21",
-    subtext: "#4b4b53",
-    dim: "#676772",
-    border: "#c8c8d2",
-    borderMuted: "#e3e3e8",
-    accent: "#4f46e5",
-    mauve: "#7c3aed",
+    text: "#171717",
+    subtext: "#525252",
+    dim: "#616161",
+    border: "#bdbdbd",
+    borderMuted: "#dedede",
+    accent: "#0f5fa8",
+    mauve: "#0f5fa8",
     green: "#137644",
     red: "#bf3343",
     yellow: "#96520a",
     teal: "#0e7490",
     blue: "#1d4ed8",
     peach: "#b45309",
-    surface: "#f1f1f4",
-    selectedBg: "#ecebfb",
+    surface: "#f0f0f0",
+    selectedBg: "#e9e9e9",
     errorBg: "#fbe9e9"
   },
   colors: { ...semanticColors },
-  export: { pageBg: "#f4f4f6", cardBg: "#ffffff", infoBg: "#f9f9fb" }
+  export: { pageBg: "#f5f5f5", cardBg: "#ffffff", infoBg: "#fafafa" }
 };
 
 export const builtInThemes: Record<string, ThemeDefinition> = {

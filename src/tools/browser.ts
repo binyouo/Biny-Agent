@@ -10,7 +10,7 @@ import net from "node:net";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { ToolAccesses } from "./access.js";
-import type { Tool } from "./types.js";
+import { ToolOutcomeUnknownError, type Tool, type ToolOutcomeUnknownReason } from "./types.js";
 import { redactSensitiveValue } from "../utils/secrets.js";
 
 const requestTimeoutMs = 20_000;
@@ -176,6 +176,7 @@ function browserExecution(
     // DesktopBrowserService 当前为一个可见 BrowserWindow；只串行化这个浏览器上下文，
     // 不再用 all() 阻塞文件、终端和其它互不相关的工具。
     accesses: ToolAccesses.browser(endpoint.endpoint),
+    retrySafety: method === "read_dom" ? "safe" as const : "unsafe" as const,
     display: { kind: "generic" as const, summary: description, detail: browserDisplayDetail(method, detail) },
     description,
     approvalRule: `browser_${method}`,
@@ -202,15 +203,17 @@ export async function requestBrowser(
     const socket = net.createConnection(endpoint.endpoint);
     let buffer = "";
     let settled = false;
-    const timer = setTimeout(() => finish(new Error("Browser automation timed out.")), method === "web_read" && typeof args.timeoutMs === "number" ? args.timeoutMs + 5_000 : requestTimeoutMs);
-    const abort = (): void => finish(new Error("Browser action cancelled."));
-    const finish = (error?: Error, value?: unknown): void => {
+    let dispatched = false;
+    const mutation = ["navigate", "click", "fill", "press"].includes(method);
+    const timer = setTimeout(() => finish(new Error("Browser automation timed out."), undefined, "timeout"), method === "web_read" && typeof args.timeoutMs === "number" ? args.timeoutMs + 5_000 : requestTimeoutMs);
+    const abort = (): void => finish(new Error("Browser action cancelled."), undefined, "cancelled");
+    const finish = (error?: Error, value?: unknown, reason: ToolOutcomeUnknownReason = "transport_error"): void => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
       signal?.removeEventListener("abort", abort);
       socket.destroy();
-      if (error) reject(error);
+      if (error) reject(dispatched && mutation ? new ToolOutcomeUnknownError(reason, error.message) : error);
       else resolve(value);
     };
     signal?.addEventListener("abort", abort, { once: true });
@@ -238,6 +241,8 @@ export async function requestBrowser(
     });
     socket.once("close", () => { if (!settled) finish(new Error("Browser connection closed before a result.")); });
     socket.once("connect", () => {
+      if (signal?.aborted) { abort(); return; }
+      dispatched = true;
       socket.write(`${JSON.stringify({ id, token: endpoint.token, method, args })}\n`);
     });
   });

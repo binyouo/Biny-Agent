@@ -895,10 +895,6 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
     }
   }
 
-  async setPlanning(sessionId: string, planning: boolean): Promise<AgentSessionInfo> {
-    return await this.request("plan.mode", { sessionId, planning });
-  }
-
   async startPlanDraft(sessionId: string, graphId: string, revision: number): Promise<unknown> {
     return await this.request("plan.start", { sessionId, graphId, revision });
   }

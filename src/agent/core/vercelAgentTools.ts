@@ -2,7 +2,7 @@
 import { jsonSchema, tool, type ToolSet } from "ai";
 import { openai } from "@ai-sdk/openai";
 import type { JSONSchema7 } from "@ai-sdk/provider";
-import type { VercelLoopState } from "./vercelAgentLoop.js";
+import { assistantSnapshot, type VercelLoopState } from "./vercelAgentLoop.js";
 import type { AgentToolResult } from "./types.js";
 import { errorMessage, isRecord } from "./vercelAgentUtils.js";
 import { normalizeToolParameters, openAiCompatibleToolParameters } from "../../tools/schema.js";
@@ -30,6 +30,7 @@ export function createVercelTools(state: VercelLoopState): ToolSet {
           });
           let result: AgentToolResult;
           try {
+            await state.config.beforeToolExecution?.(assistantSnapshot(state));
             result = await agentTool.execute(
               options.toolCallId,
               args,

@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import type { AgentConfig } from "../config/schema.js";
 import { vercelAgentLoopContinue } from "../agent/core/vercelAgentLoop.js";
-import type { AgentAssistantMessage, AgentTool, AgentUsage } from "../agent/core/types.js";
+import type { AgentAssistantMessage, AgentTool, AgentToolResult, AgentUsage } from "../agent/core/types.js";
 import type { ModelSettings } from "../llm/modelFactory.js";
 import { calculateUsageCost, type ModelUsageObserver } from "../observability/usage.js";
 import { SubagentTaskIncompleteError, type SubagentTaskManager } from "../runtime/SubagentTaskManager.js";
@@ -11,13 +11,14 @@ import type { SubagentAccessMode } from "../runtime/SubagentTaskManager.js";
 import type { TaskVerificationContract } from "../runtime/taskVerification.js";
 import { usageSnapshot } from "../session/metadata.js";
 import { ToolAccesses } from "../tools/access.js";
-import type { ToolRegistry } from "../tools/registry.js";
+import { ToolRegistry } from "../tools/registry.js";
 import { ToolScheduler } from "../tools/scheduler.js";
 import { resolveEditingMode, routeEditingTools, type EditingMode } from "../tools/file/editingMode.js";
 import type { ToolContext, ToolExecutionContext } from "../tools/types.js";
 import { createToolOperationId, type RunnableToolExecution, type Tool } from "../tools/types.js";
 import { isProtectedCredentialPath, redactSecrets } from "../utils/secrets.js";
 import { findSubagentDefinition, type SubagentDefinition } from "./agents.js";
+import { WorkerSession, type WorkerExecution } from "../runtime/WorkerSession.js";
 
 const subagentParameters = {
   type: "object" as const,
@@ -236,8 +237,26 @@ export async function runSubagentTask(
   task: string,
   signal?: AbortSignal,
   accessMode: SubagentAccessMode = "read-only",
-  agentName?: string
+  agentName?: string,
+  execution?: WorkerExecution
 ): Promise<string> {
+  const prepared = await prepareSubagentTask(options, task, accessMode, agentName, execution);
+  try { return await prepared.run(signal); }
+  finally { await prepared.close(); }
+}
+
+export interface PreparedSubagentTask {
+  run(signal?: AbortSignal): Promise<string>;
+  close(): Promise<void>;
+}
+
+export async function prepareSubagentTask(
+  input: SubagentOptions, task: string, accessMode: SubagentAccessMode,
+  agentName?: string, execution?: WorkerExecution
+): Promise<PreparedSubagentTask> {
+  const toolRegistry = new ToolRegistry();
+  for (const entry of input.toolRegistry.listEntries()) toolRegistry.register(entry.tool, entry.source);
+  const options = { ...input, config: structuredClone(input.config), toolRegistry };
   const settings = options.config.extensions.subagent;
   const definition = await resolveSubagentDefinition(options, agentName);
   const modelSettings = options.getModelSettings(definition?.model);
@@ -246,7 +265,47 @@ export async function runSubagentTask(
   const allowedTools = definition?.tools
     ? settings.allowedTools.filter((toolName) => definition.tools?.includes(toolName))
     : settings.allowedTools;
-  return await runNativeSubagentTask(options, task, modelSettings, modelAlias, definition, signal, accessMode, allowedTools);
+  const instructions = buildSubagentSystemPrompt(accessMode, definition);
+  const entries = createSubagentTools(options.toolRegistry, allowedTools, {
+    accessMode, editing: { mode: resolveEditingMode(options.config.chat.hashlineEdit, modelSettings.applyPatchProtocol), context: { workspaceRoot: options.workspaceRoot, ignore: options.config.workspace.ignore } }
+  });
+  const session = execution ? await WorkerSession.open(execution, task, options.workspaceRoot, {
+    modelAlias, provider: modelSettings.model.provider, providerAlias: modelSettings.model.providerAlias,
+    modelId: modelSettings.model.modelId, reasoning: modelSettings.reasoning, providerOptions: modelSettings.providerOptions,
+    providerType: options.config.providers[modelSettings.model.providerAlias ?? ""]?.type,
+    providerBaseUrl: options.config.providers[modelSettings.model.providerAlias ?? ""]?.baseUrl,
+    maxOutputTokens: subagentMaxOutputTokens(options.config, modelSettings.maxOutputTokens, modelAlias),
+    maxSteps: settings.maxSteps, maxCostUsd: settings.maxCostUsd, pricing: options.config.models[modelAlias]?.pricing,
+    permission: options.config.permission, sandbox: options.config.sandbox,
+    accessMode, allowedTools, tools: entries.map((tool) => ({ name: tool.name, parameters: tool.parameters, description: tool.description })),
+    ignore: options.config.workspace.ignore
+  }, instructions) : undefined;
+  let started = false;
+  let closed = false;
+  let running: Promise<string> | undefined;
+  return {
+    async run(signal) {
+      if (started || closed) throw new Error("Prepared Worker execution has already started or closed.");
+      started = true;
+      running = (async () => {
+        if (session?.output !== undefined) return session.output;
+        if (session?.usages.length) enforceSubagentCostBudget(options.config, sumNativeUsage(session.usages), modelAlias);
+        if (session?.finalHandoff !== undefined) {
+          const output = redactSecrets(session.finalHandoff);
+          await session.complete(output);
+          return output;
+        }
+        if (session && subagentCostBudgetReached(options.config, session.usages, modelAlias)) throw new SubagentTaskIncompleteError("cost_budget", "");
+        return await runNativeSubagentTask(options, task, modelSettings, modelAlias, definition, signal, accessMode, allowedTools, session);
+      })();
+      return await running;
+    },
+    async close() {
+      closed = true;
+      await running?.catch(() => undefined);
+      await session?.close();
+    }
+  };
 }
 
 async function runNativeSubagentTask(
@@ -257,7 +316,8 @@ async function runNativeSubagentTask(
   definition: SubagentDefinition | undefined,
   signal: AbortSignal | undefined,
   accessMode: SubagentAccessMode,
-  allowedTools: readonly string[]
+  allowedTools: readonly string[],
+  session?: WorkerSession
 ): Promise<string> {
   const model = modelSettings.model;
   if (model.supportsTools === false) {
@@ -268,10 +328,11 @@ async function runNativeSubagentTask(
     maxQueuedTasks: options.config.agent.maxQueuedToolCalls
   });
   const tools = createSubagentTools(options.toolRegistry, allowedTools, {
-    accessMode, scheduler,
+    accessMode, scheduler, session,
     editing: { mode: resolveEditingMode(options.config.chat.hashlineEdit, modelSettings.applyPatchProtocol), context: { workspaceRoot: options.workspaceRoot, ignore: options.config.workspace.ignore } }
   });
   const instructions = buildSubagentSystemPrompt(accessMode, definition);
+  const previousUsages = session?.usages ?? [];
   const usages: AgentUsage[] = [];
   const assistantTexts: string[] = [];
   let lastAssistant: AgentAssistantMessage | undefined;
@@ -279,7 +340,7 @@ async function runNativeSubagentTask(
   let stopReason: string | undefined;
   const loop = vercelAgentLoopContinue({
     systemPrompt: instructions,
-    messages: [{ role: "user", content: task }],
+    messages: session?.messages ?? [{ role: "user", content: task }],
     tools
   }, {
     model,
@@ -292,11 +353,15 @@ async function runNativeSubagentTask(
       providerOptions: modelSettings.providerOptions,
       timeoutMs: modelSettings.timeoutMs
     },
-    maxSteps: options.config.extensions.subagent.maxSteps,
+    maxSteps: Math.max(1, options.config.extensions.subagent.maxSteps - (session?.startedSteps ?? 0)),
+    onRequestContext: async () => { await session?.beforeRequest(options.config.extensions.subagent.maxSteps); },
+    beforeToolExecution: (message) => { session?.setAssistant(message); },
+    persistStep: async (turn) => { await session?.persistStep(turn); },
     shouldStopAfterTurn: async (turn) => {
+      session?.assertCanContinue();
       lastAssistant = turn.message;
       if (turn.message.usage) usages.push(turn.message.usage);
-      if (subagentCostBudgetReached(options.config, usages, modelAlias)) return true;
+      if (subagentCostBudgetReached(options.config, [...previousUsages, ...usages], modelAlias)) return true;
       return !turn.message.content.some((part) => part.type === "toolCall");
     }
   }, signal);
@@ -309,12 +374,13 @@ async function runNativeSubagentTask(
       if (text) assistantTexts.push(text);
     }
   }
+  session?.assertCanContinue();
   if (signal?.aborted) throw abortReason(signal);
   if (fatalError) throw new Error(fatalError);
   const usage = usages.length ? sumNativeUsage(usages) : undefined;
   if (usage) {
     await options.onUsage?.(usage, "subagent", modelAlias);
-    enforceSubagentCostBudget(options.config, usage, modelAlias);
+    enforceSubagentCostBudget(options.config, sumNativeUsage([...previousUsages, ...usages]), modelAlias);
   }
   if (!lastAssistant) throw new Error("Subagent produced no assistant message.");
   const output = agentMessageText(lastAssistant);
@@ -324,7 +390,9 @@ async function runNativeSubagentTask(
   if (lastAssistant.stopReason !== undefined && !["stop", "other"].includes(lastAssistant.stopReason)) {
     throw new SubagentTaskIncompleteError(lastAssistant.stopReason, redactSecrets(output));
   }
-  return redactSecrets(output);
+  const safeOutput = redactSecrets(output);
+  await session?.complete(safeOutput);
+  return safeOutput;
 }
 
 /** 子代理工作协议：子代理是有边界的执行工，不继承主 Agent 的全部身份和权限。 */
@@ -385,17 +453,20 @@ export function createSubagentTools(
       parameters: entry.parameters,
       executionMode: entry.risk === "read" ? "parallel" : "sequential",
       execute: async (toolCallId, args, signal) => {
-        const parsed = entry.schema.parse(args);
-        assertSafeToolInput(entry.name, parsed, accessMode);
-        const resolved = await entry.resolveExecution(parsed);
-        if ("isError" in resolved) {
-          return { content: [{ type: "text", text: stringifySubagentValue(resolved.result) }], details: resolved.result, isError: true };
-        }
-        try {
-          const result = await executeNativeSubagentTool(entry.name, resolved, toolCallId, signal, options.scheduler);
+        const execute = async (beforeDispatch?: () => Promise<void>): Promise<AgentToolResult> => {
+          const parsed = entry.schema.parse(args);
+          assertSafeToolInput(entry.name, parsed, accessMode);
+          const resolved = await entry.resolveExecution(parsed);
+          if ("isError" in resolved) {
+            return { content: [{ type: "text", text: stringifySubagentValue(resolved.result) }], details: resolved.result, isError: true };
+          }
+          const result = await executeNativeSubagentTool(entry.name, resolved, toolCallId, signal, options.scheduler, beforeDispatch, createToolOperationId(options.session?.sessionId ?? "subagent", toolCallId));
           const sanitized = sanitizeToolResult(entry.name, result);
           return { content: [{ type: "text", text: stringifySubagentValue(sanitized) }], details: sanitized };
-        } catch (error) {
+        };
+        if (options.session) return await options.session.executeTool(entry.name, toolCallId, args, entry.risk === "read" ? "safe" : "unsafe", execute);
+        try { return await execute(); }
+        catch (error) {
           return { content: [{ type: "text", text: error instanceof Error ? error.message : String(error) }], isError: true };
         }
       }
@@ -409,7 +480,9 @@ async function executeNativeSubagentTool(
   execution: RunnableToolExecution,
   toolCallId: string,
   signal: AbortSignal | undefined,
-  scheduler?: ToolScheduler<unknown>
+  scheduler?: ToolScheduler<unknown>,
+  beforeDispatch?: () => Promise<void>,
+  operationId = createToolOperationId("subagent", toolCallId)
 ): Promise<unknown> {
   const execute = async (): Promise<unknown> => {
     if (toolName === "Read") {
@@ -421,7 +494,9 @@ async function executeNativeSubagentTool(
         }
       }
     }
-    return await execution.execute({ toolCallId, operationId: createToolOperationId("subagent", toolCallId), signal });
+    signal?.throwIfAborted();
+    await beforeDispatch?.();
+    return await execution.execute({ toolCallId, operationId, signal });
   };
   return scheduler
     ? await scheduler.schedule({ accesses: execution.accesses ?? ToolAccesses.all(), signal, start: execute })
@@ -468,6 +543,7 @@ export interface CreateSubagentToolsOptions {
   editing?: { mode: EditingMode; context: ToolContext };
   accessMode?: SubagentAccessMode;
   scheduler?: ToolScheduler<unknown>;
+  session?: WorkerSession;
 }
 
 export function createReadOnlyTools(registry: ToolRegistry, allowedTools: readonly string[]): AgentTool[] {

@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import type { DesktopFontPreference, DesktopThemePreference } from "../../../../protocol.js";
 import { clampFontSize, DEFAULT_FONT_PREFERENCE, MAX_FONT_SIZE, MIN_FONT_SIZE, SYSTEM_FONT_FAMILY } from "../../../../fontPreference.js";
 import { SettingsSegmentedControl } from "./SettingsSegmentedControl.js";
+import type { AppearanceDensity } from "../../../../../appearance/types.js";
 
 const fontFamilyOptions: Array<{ value: string; title: string }> = [
   { value: SYSTEM_FONT_FAMILY, title: "系统默认" },
@@ -15,11 +16,13 @@ const fontFamilyOptions: Array<{ value: string; title: string }> = [
   { value: "Yuanti SC", title: "圆体" }
 ];
 
-export function SettingsAppearance({ theme, onThemeChange, font, onFontChange, disabled }: {
+export function SettingsAppearance({ theme, onThemeChange, font, onFontChange, density, onDensityChange, disabled }: {
   theme: DesktopThemePreference;
   onThemeChange(theme: DesktopThemePreference): void;
   font: DesktopFontPreference;
   onFontChange(font: DesktopFontPreference): void;
+  density?: AppearanceDensity;
+  onDensityChange?(density: AppearanceDensity): void;
   disabled?: boolean;
 }): React.JSX.Element {
   // 字号输入允许中间态（比如清空后再输入），失焦或回车时才夹取并提交。
@@ -58,6 +61,7 @@ export function SettingsAppearance({ theme, onThemeChange, font, onFontChange, d
       </section>
       <section className="settings-preference-section">
         <h3>字体与阅读</h3>
+        {onDensityChange ? <div className="settings-preference-row"><div className="settings-row-copy"><label>界面密度</label><p>调整控件高度、间距和行高。</p></div><SettingsSegmentedControl label="界面密度" value={density ?? "compact"} onChange={onDensityChange} options={[{ value: "compact", label: "紧凑" }, { value: "comfortable", label: "舒适" }, { value: "spacious", label: "宽松" }]} /></div> : null}
         <div className="settings-row-group">
           <div className="settings-preference-row" id="appearance-font">
             <div className="settings-row-copy"><label htmlFor="appearance-font-family">界面字体</label><p>使用本机已安装的字体。</p></div>

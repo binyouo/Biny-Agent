@@ -5,10 +5,10 @@ import type { Tool } from "./types.js";
 export function createAskUserQuestionTool(requests: UserInputRequests): Tool<UserInputQuestions, UserInputResult> {
   return {
     name: "AskUserQuestion",
-    description: "Ask one to four focused questions when missing requirements or a decision only the user can provide would materially change the work. Available in ordinary conversations and planning mode. Waits for an explicit answer or skip. Every question supports free text, with optional choices.",
+    description: "Ask one to four focused questions when missing requirements or a decision only the user can provide would materially change the work. Waits for an explicit answer or skip. Every question supports free text, with optional choices.",
     promptSnippet: "Clarify consequential missing requirements with the user, in any interactive mode",
     promptGuidelines: [
-      "Before making a consequential assumption about an unclear goal, scope, destination, or irreversible choice, inspect available context and use AskUserQuestion for facts or preferences only the user can supply. Planning mode is not required.",
+      "Before making a consequential assumption about an unclear goal, scope, destination, or irreversible choice, inspect available context and use AskUserQuestion for facts or preferences only the user can supply.",
       "Ask only questions that materially change the result. Prefer a small set of concrete choices with short tradeoffs; always allow a custom answer. Do not ask about facts you can inspect yourself, obvious defaults, or routine implementation details.",
       "Do not request confirmation again for work the user already authorized. A clarification answer is not a tool permission grant.",
       "If the user skips, do not invent an answer or interpret silence as approval. Continue independent authorized work; state a safe assumption only for optional details, and report a blocker when a necessary decision remains missing."

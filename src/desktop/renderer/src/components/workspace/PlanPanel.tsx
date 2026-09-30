@@ -4,8 +4,8 @@ import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import type { DesktopRuntimeMutation, DesktopPlanProjection } from "../../../../protocol.js";
 import { presentPlan, type Plan, type PlanNode } from "./planPresentation.js";
 
-export function PlanPanel({ sessionId, planning, busy, projection, onMutation, onError }: {
-  sessionId: string; planning: boolean; busy: boolean; projection?: DesktopPlanProjection;
+export function PlanPanel({ sessionId, busy, projection, onMutation, onError }: {
+  sessionId: string; busy: boolean; projection?: DesktopPlanProjection;
   onMutation(operation: DesktopRuntimeMutation, payload: Record<string, unknown>): Promise<void>;
   onError(error: unknown): void;
 }): React.JSX.Element | null {
@@ -22,7 +22,6 @@ export function PlanPanel({ sessionId, planning, busy, projection, onMutation, o
     {/* 用户确认和命令审批是本产品的执行边界，不把控制项混入任务状态行。 */}
     {plan.status === "draft" ? <div className="biny-plan-actions">
       <button type="button" disabled={busy || pending} onClick={() => { void change("plan.start", { graphId: plan.graphId, revision: plan.revision }); }}>确认并开始</button>
-      {planning ? <button type="button" disabled={busy || pending} onClick={() => { void change("plan.mode", { planning: false }); }}>退出规划</button> : null}
     </div> : null}
     {plan.pendingApprovals.map((approval) => <details className="biny-plan-approval" key={approval.approvalId}>
       <summary>等待验收授权 · {approval.key}</summary>

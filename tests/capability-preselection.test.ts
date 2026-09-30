@@ -79,4 +79,11 @@ await preselectCapabilities({ ...options, model: isolatedModel, selection: { too
 assert.equal(isolatedCalls, 1, "显式关闭技能时只分析工具");
 await preselectCapabilities({ ...options, model: isolatedModel, tools: tools.filter((tool) => ["Read", "Write"].includes(tool.name)), skills: [] });
 assert.equal(isolatedCalls, 1, "只有基础工具时不调用模型");
+const recallTools = ["save_memory", "recall_memory", "search_history"].map((name) => ({ name, description: name, source: "builtin" as const }));
+const recallOptions = { ...options, tools: [...tools, ...recallTools], skills: [], previousTools: [] };
+const ordinarySelection = await preselectCapabilities({ ...recallOptions, model: undefined, input: "修复解析器" });
+assert.equal(Array.isArray(ordinarySelection.tools) && ordinarySelection.tools.some((name) => recallTools.some((tool) => tool.name === name)), false, "注册记忆和历史工具不等于每回合注入定义");
+answer = JSON.stringify({ tools: ["recall_memory", "search_history"] });
+const recallSelection = await preselectCapabilities({ ...recallOptions, input: "上次讨论的约束是什么" });
+assert.equal(Array.isArray(recallSelection.tools) && recallSelection.tools.includes("recall_memory") && recallSelection.tools.includes("search_history"), true, "按需选择仍能启用记忆和历史检索");
 console.log("capability preselection tests passed");

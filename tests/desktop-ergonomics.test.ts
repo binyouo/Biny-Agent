@@ -12,7 +12,7 @@ async function harness() {
   const dom = new JSDOM('<!doctype html><div id="root"></div>', { url: "https://desktop.local", pretendToBeVisual: true });
   const React = await import("react");
   Object.assign(dom.window, { matchMedia: () => ({ matches: true, addEventListener() {}, removeEventListener() {} }),
-    biny: { updateSettingsDraftState: async () => {}, activitySettings: async () => { throw new Error("offline"); },
+    biny: { updateSettingsDraftState: async () => {}, previewAppearance: async () => {}, activitySettings: async () => { throw new Error("offline"); },
       quickChatSettings: async () => ({ autoHideOnBlur: true, injectScreenContext: false, clickThrough: false }),
       activityStatus: async () => { throw new Error("offline"); }, activityPermissions: async () => { throw new Error("offline"); } } });
   dom.window.HTMLElement.prototype.scrollTo = () => {};

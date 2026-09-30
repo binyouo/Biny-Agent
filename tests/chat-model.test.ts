@@ -506,8 +506,7 @@ const noopAsync = (): Promise<void> => Promise.resolve();
 
 test("能力菜单隐藏记忆、技能内部工具和原始 MCP 工具", () => {
   assert.equal(shouldShowToolInCapabilityMenu({ name: "Read", source: "builtin" }), true);
-  assert.equal(shouldShowToolInCapabilityMenu({ name: "ToolSearch", source: "builtin" }), true);
-  for (const name of ["recall_memory", "save_memory", "skill_search", "skill_install", "read_skill_resource", "TaskStatus", "PlanStatus"]) {
+  for (const name of ["ToolSearch", "search_history", "recall_memory", "save_memory", "read_checkpoint_evidence", "skill_lookup", "skill_search", "skill_install", "read_skill_resource", "TaskStatus", "PlanStatus"]) {
     assert.equal(shouldShowToolInCapabilityMenu({ name, source: "builtin" }), false, name);
   }
   assert.equal(shouldShowToolInCapabilityMenu({ name: "mcp_Context7_get-library-docs", source: "mcp" }), false);

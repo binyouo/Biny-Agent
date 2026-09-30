@@ -8,3 +8,15 @@ export class RuntimeHostProtocolMismatchError extends Error {
     this.name = "RuntimeHostProtocolMismatchError";
   }
 }
+
+export class RuntimeHostStartupError extends Error {
+  readonly code: "runtime_host_startup_timeout" | "runtime_host_startup_failed";
+
+  constructor(readonly reason: "timeout" | "process_exit", detail: number) {
+    super(reason === "timeout"
+      ? `Runtime Host did not become ready within ${String(detail)}ms.`
+      : `Runtime Host process exited before attach (code ${String(detail)}).`);
+    this.code = reason === "timeout" ? "runtime_host_startup_timeout" : "runtime_host_startup_failed";
+    this.name = "RuntimeHostStartupError";
+  }
+}

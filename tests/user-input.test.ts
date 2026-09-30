@@ -10,7 +10,6 @@ import { preselectCapabilities } from "../src/agent/capabilityPreselection.js";
 import { createCommandRuntime } from "../src/runtime/CommandRuntime.js";
 import { UserInputRequests, userInputQuestionsSchema } from "../src/runtime/userInput.js";
 import { createAskUserQuestionTool } from "../src/tools/askUserQuestion.js";
-import { planningToolAllowed } from "../src/agent/planningPolicy.js";
 
 test("普通模式自动筛选保留澄清入口，用户显式关闭工具仍然有效", async () => {
   const options = {
@@ -53,9 +52,9 @@ test("回答按会话和回合隔离，校验选项、完整性与重复提交�
   await endedRejection;
 });
 
-test("多选按题目 id 对应；题目和选项不能歧义，计划模式保留澄清能力", async () => {
+test("多选按题目 id 对应；题目和选项不能歧义", async () => {
   const requests = new UserInputRequests();
-  assert.equal(planningToolAllowed(createAskUserQuestionTool(requests), "builtin"), true);
+  assert.equal(createAskUserQuestionTool(requests).name, "AskUserQuestion", "提问工具仍作为独立交互能力注册");
   assert.equal(userInputQuestionsSchema.safeParse({ questions: [{ id: "x", question: "选择", options: [{ label: "重复" }, { label: "重复" }] }] }).success, false);
   assert.equal(userInputQuestionsSchema.safeParse({ questions: [{ id: "x", question: "一" }, { id: "x", question: "二" }] }).success, false);
   const input = userInputQuestionsSchema.parse({ questions: [

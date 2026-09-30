@@ -23,6 +23,7 @@ import {
 import { settingsSaveInputSchema } from "../src/desktop/electron/main/settingsSaveInputSchema.js";
 import { DesktopStateStore } from "../src/desktop/electron/main/DesktopStateStore.js";
 import { runtimeMutationStartsWork } from "../src/desktop/electron/main/settingsRuntimeGate.js";
+import { DEFAULT_APPEARANCE } from "../src/appearance/preferences.js";
 
 type FailurePoint =
   | "prepare_config"
@@ -325,6 +326,7 @@ class FailPreferenceRollbackEvidenceTransaction extends DesktopSettingsTransacti
 }
 
 await testCommitAndJournalRedaction();
+await testAppearanceTransaction();
 await testActivitySettingsUseConfigCas();
 await testChatParamsOnlySaveCommits();
 await testPermissionOnlySaveCommits();
@@ -345,6 +347,26 @@ await testStartupRecoveryRunsBeforeTaskAdmission();
 testSettingsSaveInputAcceptsCompactionAndChatParams();
 testRuntimeMutationRecoveryClassification();
 console.log("settings transaction tests passed");
+
+async function testAppearanceTransaction(): Promise<void> {
+  await withFixture(async ({ root, state, agents }) => {
+    const transaction = new DesktopSettingsTransaction(state, agents);
+    const initial = await transaction.snapshot("project");
+    const appearancePreference = { ...DEFAULT_APPEARANCE, lightTheme: "win98", darkTheme: "longhorn-dark", density: "comfortable" as const };
+    const result = await transaction.save("project", { expectedPreferenceRevision: initial.preferenceRevision, expectedConfigRevision: initial.configRevision, appearancePreference, themePreference: "light" });
+    assert.equal(result.status, "committed", JSON.stringify(result));
+    assert.deepEqual(result.snapshot.appearancePreference, appearancePreference);
+    assert.ok(result.appliedFields.includes("appearancePreference"));
+    const reloaded = new DesktopStateStore(path.join(root, "desktop-state.json"));
+    await reloaded.load();
+    assert.deepEqual(reloaded.appearancePreference(), appearancePreference);
+    assert.equal(agents.configRevision, initial.configRevision);
+    const conflict = await transaction.save("project", { expectedPreferenceRevision: initial.preferenceRevision, expectedConfigRevision: initial.configRevision, appearancePreference: { ...appearancePreference, lightTheme: "winxp" } });
+    assert.equal(conflict.status, "rolled_back");
+    assert.equal(conflict.conflicts?.[0]?.segment, "preferences");
+    assert.deepEqual(state.appearancePreference(), appearancePreference);
+  });
+}
 
 async function testActivitySettingsUseConfigCas(): Promise<void> {
   await withFixture(async ({ state, agents }) => {
@@ -571,6 +593,7 @@ async function testSegmentFailureCompensation(): Promise<void> {
         expectedPreferenceRevision: initial.preferenceRevision,
         expectedConfigRevision: initial.configRevision,
         themePreference: "dark",
+        appearancePreference: { ...DEFAULT_APPEARANCE, darkTheme: "longhorn-dark", lightTheme: "winxp" },
         memory: {
           ...initial.memory,
           useMemories: !initial.memory.useMemories
@@ -579,6 +602,7 @@ async function testSegmentFailureCompensation(): Promise<void> {
       });
       assert.equal(result.status, "rolled_back", failure);
       assert.equal(state.themePreference(), "system", failure);
+      assert.deepEqual(state.appearancePreference(), DEFAULT_APPEARANCE, failure);
       assert.equal(agents.configRevision, "config:0", failure);
       assert.equal(agents.chatRevision, "missing", failure);
       await assert.rejects(fs.access(state.settingsTransactionJournalPath()), { code: "ENOENT" });

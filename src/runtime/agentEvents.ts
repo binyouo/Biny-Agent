@@ -19,7 +19,6 @@ export type AgentBlockedReason = BlockedReason;
 export type RuntimeOperation =
   | "resume"
   | "draft"
-  | "planning"
   | "compact"
   | "switch_model"
   | "refresh_model"
@@ -29,6 +28,7 @@ export type RuntimeOperation =
   | "memory"
   | "soul"
   | "personalization"
+  | "plan"
   | "model_catalog"
   | "checkpoint"
   | "message_version";

@@ -11,7 +11,7 @@
   color: var(--text-tertiary);
   background: var(--surface-raised);
 }
-.settings-search:focus-within { outline: 2px solid var(--border-strong); outline-offset: 2px; }
+.settings-search:focus-within { border-color: var(--border-strong); }
 .settings-search > svg { flex: none; }
 .settings-search input {
   width: 100%;
@@ -85,7 +85,7 @@
 }
 .settings-preferences select { width: 220px; flex: 0 1 220px; }
 .settings-preferences :is(select, input[type="number"]):hover { background: var(--surface-hover); }
-.settings-preferences :is(select, input[type="number"]):focus-visible { outline: 2px solid var(--border-strong); outline-offset: 2px; }
+.settings-preferences :is(select, input[type="number"]):focus-visible { border-color: var(--border-strong); outline: none; }
 .settings-preferences .font-size-row { display: flex; align-items: center; gap: 8px; flex: none; }
 .settings-preferences .font-size-input { width: 72px; text-align: center; }
 .settings-preferences .font-size-unit { color: var(--text-tertiary); font-size: calc(12px * var(--font-scale, 1)); }

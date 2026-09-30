@@ -48,6 +48,7 @@ const api: DesktopApi = {
   startDraft: async (projectId) => await ipcRenderer.invoke(desktopIpc.startDraft, projectId),
   readSessionTrace: async (projectId, sessionId) => await readRequest(desktopIpc.readSessionTrace, projectId, sessionId),
   openSession: async (projectId, sessionId) => await ipcRenderer.invoke(desktopIpc.openSession, projectId, sessionId),
+  retryRuntime: async (projectId, sessionId) => await ipcRenderer.invoke(desktopIpc.retryRuntime, projectId, sessionId),
   listSessionTreePage: async (projectId, options) => await ipcRenderer.invoke(desktopIpc.listSessionTreePage, projectId, options),
   renameSession: async (projectId, sessionId, title, expectedRevision) => await ipcRenderer.invoke(desktopIpc.renameSession, projectId, sessionId, title, expectedRevision),
   pinSession: async (projectId, sessionId, pinned, expectedRevision) => await ipcRenderer.invoke(desktopIpc.pinSession, projectId, sessionId, pinned, expectedRevision),
@@ -57,7 +58,7 @@ const api: DesktopApi = {
   deleteSession: async (projectId, sessionId) => await ipcRenderer.invoke(desktopIpc.deleteSession, projectId, sessionId),
   exportSession: async (projectId, sessionId, format) => await ipcRenderer.invoke(desktopIpc.exportSession, projectId, sessionId, format),
   importSession: async (projectId) => await ipcRenderer.invoke(desktopIpc.importSession, projectId),
-  sendPrompt: async (projectId, sessionId, input, attachments, delivery, personalization, idempotencyKey, promptContext, capabilitySelection, draftPlanning) => await ipcRenderer.invoke(
+  sendPrompt: async (projectId, sessionId, input, attachments, delivery, personalization, idempotencyKey, promptContext, capabilitySelection) => await ipcRenderer.invoke(
     desktopIpc.sendPrompt,
     projectId,
     sessionId,
@@ -67,8 +68,7 @@ const api: DesktopApi = {
     personalization,
     idempotencyKey,
     promptContext,
-    capabilitySelection,
-    draftPlanning
+    capabilitySelection
   ),
   mutateQueuedMessage: async (projectId, sessionId, action, mutation) => await ipcRenderer.invoke(
     desktopIpc.mutateQueuedMessage,
@@ -280,6 +280,14 @@ const api: DesktopApi = {
   setFilePanelWidth: async (width) => await ipcRenderer.invoke(desktopIpc.setFilePanelWidth, width),
   setThemePreference: async (theme) => await ipcRenderer.invoke(desktopIpc.setThemePreference, theme),
   setFontPreference: async (font) => await ipcRenderer.invoke(desktopIpc.setFontPreference, font),
+  setAppearancePreference: async (preference) => await ipcRenderer.invoke(desktopIpc.setAppearancePreference, preference),
+  previewAppearance: async (snapshot) => await ipcRenderer.invoke(desktopIpc.previewAppearance, snapshot),
+  onAppearanceChanged: (callback) => {
+    const listener = (_event: Electron.IpcRendererEvent, snapshot: Parameters<typeof callback>[0]): void => callback(snapshot);
+    ipcRenderer.on(desktopIpc.appearanceChanged, listener);
+    return () => ipcRenderer.off(desktopIpc.appearanceChanged, listener);
+  },
+  windowAction: async (action) => await ipcRenderer.invoke(desktopIpc.windowAction, action),
   toggleQuickChat: async () => await ipcRenderer.invoke(desktopIpc.quickChatToggle),
   hideQuickChat: async () => await ipcRenderer.invoke(desktopIpc.quickChatHide),
   closeQuickChat: async () => await ipcRenderer.invoke(desktopIpc.quickChatClose),

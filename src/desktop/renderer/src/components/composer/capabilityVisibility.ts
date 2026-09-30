@@ -3,6 +3,10 @@ import type { DesktopSkillCatalogEntry, DesktopToolCatalogEntry } from "../../..
 /** 由 Runtime 自动协调的内部工具，不作为当前消息的用户能力单独展示。 */
 const HIDDEN_TOOL_NAMES = new Set([
   "read_tool_result",
+  "read_checkpoint_evidence",
+  "ToolSearch",
+  "search_history",
+  "skill_lookup",
   "read_skill_resource",
   "skill_search",
   "skill_install",
@@ -26,7 +30,7 @@ const TOOL_ORDER = [
   "BrowserOpen", "BrowserReadDom", "BrowserClick", "BrowserType", "BrowserPress",
   "ChromeRelayStatus", "ChromeRelayListTabs", "ChromeRelayRead", "ChromeRelayNavigate", "ChromeRelayClick", "ChromeRelayType", "ChromeRelayPress",
   "WebFetch", "WebSearch",
-  "Task", "TodoWrite", "Skill", "ToolSearch"
+  "Task", "TodoWrite", "Skill"
 ];
 const TOOL_ORDER_INDEX = new Map(TOOL_ORDER.map((name, index) => [name, index]));
 

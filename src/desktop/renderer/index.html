@@ -18,7 +18,25 @@
           if (theme !== "dark" && theme !== "light" && theme !== "system") {
             theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
           }
-          document.documentElement.dataset.theme = theme;
+          var cache = null;
+          try { cache = JSON.parse(localStorage.getItem("biny:appearance-cache") || "null"); } catch (error) { cache = null; }
+          var preference = theme;
+          if (preference === "system") theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+          var variant = cache && cache.version === 1 && cache.variants && cache.variants[theme];
+          var root = document.documentElement;
+          root.dataset.theme = theme;
+          root.dataset.themePreference = preference;
+          root.dataset.appearanceSkin = variant ? variant.skin : "default";
+          if (variant && variant.themeId) root.dataset.base46Theme = variant.themeId;
+          if (variant && variant.variables) Object.entries(variant.variables).forEach(function (entry) {
+            if (/^--[a-z0-9-]+$/.test(entry[0]) && typeof entry[1] === "string" && !/url\s*\(|[;{}<>]/i.test(entry[1])) root.style.setProperty(entry[0], entry[1]);
+          });
+          if (cache && cache.snapshot && cache.snapshot.fontPreference) {
+            var font = cache.snapshot.fontPreference;
+            if (Number.isFinite(font.size) && font.size >= 10 && font.size <= 32) root.style.setProperty("--app-font-size", String(font.size));
+            if (typeof font.family === "string" && font.family !== "system") root.style.setProperty("--font-sans", JSON.stringify(font.family) + ", var(--font-sans-stack)");
+            else if (variant && variant.skin !== "default") root.style.setProperty("--font-sans", "Tahoma, 'MS Sans Serif', Arial, sans-serif");
+          }
         } catch (error) { /* 保底失败无妨：JS 启动后会重新同步。 */ }
       })();
     </script>

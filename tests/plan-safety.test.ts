@@ -1,13 +1,12 @@
 /** 规划限制及候选绑定走真实工具协调器、文件和 TaskRun 存储；不调用模型。 */
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { ToolExecutionCoordinator } from "../src/agent/toolExecutionCoordinator.js";
 import { defaultConfig } from "../src/config/schema.js";
 import { PermissionManager } from "../src/permission/PermissionManager.js";
 import { SessionRecorder } from "../src/session/recorder.js";
-import { readSessionEvents } from "../src/session/events.js";
 import { ensureAgentDirs } from "../src/session/store.js";
 import { createToolRegistry } from "../src/tools/registry.js";
 import { RuntimeEventAuthority } from "../src/runtime/RuntimeAuthority.js";
@@ -87,26 +86,6 @@ try {
   assert.equal(tasks.get(cancelled.taskRunId)?.status, "cancelled");
 
   await writeFile(path.join(root, "a.txt"), "good");
-  const planningConfig = structuredClone(config);
-  planningConfig.hooks.beforeTool = [{ command: "touch hook-ran", tools: [], extensions: [], timeoutMs: 1000 }];
-  planningConfig.hooks.afterTool = planningConfig.hooks.beforeTool;
-  const planner = new ToolExecutionCoordinator({ workspaceRoot: root, config: planningConfig, recorder, toolRegistry: registry, planning: true }, permissions, () => undefined);
-  assert.ok(!planner.createAgentTools().some((tool) => ["Bash", "Write", "Edit"].includes(tool.name)));
-  planner.allowTools(["Bash", "Write"]);
-  assert.ok(!planner.createAgentTools().some((tool) => tool.name === "Write"), "ToolSearch expansion cannot expose writes");
-  await planner.handleInvalidToolCall("Write", "forged-write", { path: "a.txt", content: "changed" });
-  await planner.handleInvalidToolCall("Bash", "forged-bash", { command: "touch executed" });
-  const read = planner.createAgentTools().find((tool) => tool.name === "Read")!;
-  assert.equal((await read.execute("read", { path: "a.txt" })).isError, false);
-  await planner.waitForIdle();
-  await recorder.flush();
-  assert.equal(await readFile(path.join(root, "a.txt"), "utf8"), "good");
-  await assert.rejects(readFile(path.join(root, "executed")), /ENOENT/u);
-  await assert.rejects(readFile(path.join(root, "hook-ran")), /ENOENT/u);
-  const events = await readSessionEvents(recorder.filePath);
-  assert.ok(events.some((event) => event.type === "tool_call" && event.toolCallId === "forged-write"));
-  assert.ok(events.some((event) => event.type === "tool_result" && event.toolCallId === "forged-write" && event.executionStatus === "failed"));
-
   const executor: TaskCommandExecutor = { async executeTaskCheck(input) {
     const coordinator = new ToolExecutionCoordinator({ workspaceRoot: root, config, recorder, toolRegistry: registry, runId: input.taskRunId, turnId: input.attemptId }, permissions, () => undefined);
     const toolCallId = `${input.attemptId}:${input.checkId}`;

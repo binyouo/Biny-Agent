@@ -68,7 +68,6 @@ export interface PlanToolOptions {
   graphs: GoalGraphStore;
   taskRuns: DurableTaskRunStore;
   stopGraph?: (graphId: string, reason?: string) => GraphRecord;
-  isPlanning?: () => boolean;
 }
 
 export function createPlanTools(options: PlanToolOptions): Tool[] {
@@ -120,7 +119,6 @@ function createPlanStartTool(options: PlanToolOptions): Tool<z.infer<typeof plan
         approvalRule: "PlanStart",
         async execute(context): Promise<unknown> {
           const sessionId = requireSessionId(context);
-          if (options.isPlanning?.()) throw new Error("Planning mode forbids starting work; ask the user to start the draft.");
           if ("graphId" in args) {
             options.graphs.startSupervisedDraft(args.graphId, sessionId, args.revision);
             options.graphs.createWake(args.graphId, "plan_started");
@@ -226,7 +224,6 @@ function createPlanUpdateTool(options: PlanToolOptions, inspectedRuns: Set<strin
           if (!inspectedRuns.has(inspectedRunKey(context, args.graphId))) {
             throw new Error("PlanStatus must be called for this graph before PlanUpdate in the same Agent run.");
           }
-          if (options.isPlanning?.()) throw new Error("Planning mode only permits draft changes.");
           if (args.action === "add") {
             const graph = options.graphs.inspectGraph(args.graphId);
             const constraints = typeof graph.payload === "object" && graph.payload !== null && Array.isArray((graph.payload as { constraints?: unknown }).constraints)

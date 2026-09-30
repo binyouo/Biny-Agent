@@ -19,3 +19,4 @@
 @import "./settings.css" layer(desktop);
 
 @import "./thread-brief.css" layer(desktop);
+@import "./appearance.css" layer(desktop);

@@ -783,7 +783,6 @@ select option:disabled {
 .model-menu .model-search:focus-within {
   color: var(--text-secondary);
   border-color: color-mix(in srgb, var(--text-secondary) 54%, var(--border));
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--text) 7%, transparent);
 }
 
 .model-menu .model-options-scroll {
@@ -1211,6 +1210,11 @@ select option:disabled {
   flex-direction: column;
   gap: var(--spacing-4);
   padding: var(--spacing-4);
+}
+
+.desktop-dialog-content .astryx-text-input:focus-within {
+  border-color: var(--accent);
+  box-shadow: none;
 }
 
 .desktop-dialog-form {
@@ -1799,7 +1803,6 @@ select option:disabled {
 .desktop-settings-dialog .settings-modal .settings-sections textarea:focus-visible,
 .desktop-settings-dialog .settings-modal .settings-sections select:focus-visible {
   border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
-  box-shadow: 0 0 0 3px var(--st-ring);
   outline: none;
 }
 
@@ -2791,7 +2794,6 @@ select option:disabled {
 .activity-field > textarea:focus-visible,
 .activity-number-input:has(input:focus-visible) {
   border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 12%, transparent);
 }
 
 .activity-number-input {
@@ -2879,7 +2881,6 @@ select option:disabled {
 
 .activity-sensitive-apps:focus-visible {
   border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 12%, transparent);
 }
 
 .activity-storage-note {
@@ -3192,7 +3193,6 @@ select option:disabled {
 .desktop-settings-dialog .settings-modal .chat-instructions-field textarea:focus,
 .desktop-settings-dialog .settings-modal .provider-search:focus-within {
   border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
-  box-shadow: 0 0 0 3px var(--st-ring);
   outline: none;
 }
 
@@ -3521,7 +3521,6 @@ select option:disabled {
 .desktop-settings-dialog .settings-modal .settings-model-picker-trigger:focus-visible,
 .desktop-settings-dialog .settings-modal .settings-model-picker[open] > summary {
   border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
-  box-shadow: 0 0 0 3px var(--st-ring);
   outline: none;
 }
 
@@ -4792,7 +4791,7 @@ select option:disabled {
   font-size: calc(0.8125 * var(--st-rem));
 }
 .provider-dialog input:focus-visible,
-.provider-dialog select:focus-visible,
+.provider-dialog select:focus-visible { border-color: var(--accent); outline: none; }
 .provider-dialog summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .provider-dialog .model-profile-thinking-fields > label { grid-template-columns: calc(4 * var(--st-rem)) minmax(0, 1fr); font-size: calc(0.75 * var(--st-rem)); }
 

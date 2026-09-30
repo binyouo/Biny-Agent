@@ -625,7 +625,7 @@ function assistantFromStep(step: StepResult<ToolSet>): AgentAssistantMessage {
   };
 }
 
-function assistantSnapshot(state: VercelLoopState): AgentAssistantMessage {
+export function assistantSnapshot(state: VercelLoopState): AgentAssistantMessage {
   const content: AgentAssistantMessage["content"] = [];
   if (state.currentText) content.push({ type: "text", text: state.currentText });
   for (const reasoning of state.currentReasoning.values()) {

@@ -10,7 +10,7 @@ import type { ChatResponseSettings } from "../../../config/schema.js";
  */
 import { useThreadBrief } from "./threadBrief/context.js";
 import { hasSubmittedUserMessage } from "./chatModel.js";
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { AgentCapabilitySelection } from "../../../agent/capabilitySelection.js";
 import type { ContextBudgetStatus } from "../../../agent/context/types.js";
 import type { PermissionResult } from "../../../permission/PermissionManager.js";
@@ -20,7 +20,6 @@ import type {
   DesktopActiveView,
   DesktopAttachment,
   DesktopChatPersonalizationOverride,
-  DesktopFontPreference,
   DesktopGitBranch,
   DesktopMenuAction,
   DesktopProject,
@@ -37,13 +36,14 @@ import type {
   DesktopSkillCatalogEntry,
   DesktopToolCatalogEntry,
   DesktopSlashResult,
-  DesktopThemePreference,
   DesktopWorkspaceDirectory,
   DesktopWorkspaceSnapshot
 } from "../../protocol.js";
 import { DEFAULT_FILE_PANEL_WIDTH } from "../../filePanelSizing.js";
 import { DEFAULT_SIDEBAR_WIDTH } from "../../sidebarSizing.js";
-import { DEFAULT_FONT_PREFERENCE, SYSTEM_FONT_FAMILY } from "../../fontPreference.js";
+import { AppearanceProvider } from "./AppearanceProvider.js";
+import { useDesktopAppearance } from "./useDesktopAppearance.js";
+import { normalizeAppearancePreference } from "../../../appearance/preferences.js";
 import {
   createNavigationState,
   pushNavigation,
@@ -133,14 +133,11 @@ function DesktopApp(): React.JSX.Element {
   const [starting, setStarting] = useState(true);
   const [filePanelWidth, setFilePanelWidth] = useState(DEFAULT_FILE_PANEL_WIDTH);
   const [filePanelResizing, setFilePanelResizing] = useState(false);
-  // index.html 会在 CSS 加载前写入首帧主题；首次渲染必须沿用它，否则 Astryx Theme
-  // 仍按 system 初始化，而 Biny 自有 token 已经按启动参数切到另一套颜色。
-  const [themePreference, setThemePreference] = useState<DesktopThemePreference>(() => {
-    const theme = window.document.documentElement.dataset.theme;
-    return theme === "light" || theme === "dark" || theme === "system" ? theme : "system";
-  });
   const [chatResponse, setChatResponse] = useState<ChatResponseSettings>();
-  const [fontPreference, setFontPreference] = useState<DesktopFontPreference>(DEFAULT_FONT_PREFERENCE);
+  const [appearanceError, setAppearanceError] = useState<string>();
+  const appearance = useDesktopAppearance(setAppearanceError);
+  const { themePreference, fontPreference, appearancePreference } = appearance.snapshot;
+  const { changeThemePreference, changeFontPreference, changeAppearancePreference, bootstrap: bootstrapAppearance, adopt: adoptAppearance } = appearance;
   const [focusToken, setFocusToken] = useState(0);
   const [composerDrafts] = useState(() => new Map<string, ComposerDraftState>());
   const [composerDraft, setComposerDraft] = useState<string>();
@@ -500,7 +497,6 @@ function DesktopApp(): React.JSX.Element {
       setContextBudget(undefined);
       setDocument(nextDocument);
       setWriterConflict(nextDocument.writerConflict);
-      if (nextDocument.runtimeError) setWarning(nextDocument.runtimeError);
       setSidebarSessions((current) => mergeProjectSessionPage(current, projectId, [nextDocument.session]));
       setWorkspace((current) => current?.project.id === projectId
         ? {
@@ -655,9 +651,8 @@ function DesktopApp(): React.JSX.Element {
       setSidebarSessions(bootstrap.sidebarSessions);
       setSidebarExpandedWidth(bootstrap.sidebarWidth ?? DEFAULT_SIDEBAR_WIDTH);
       setFilePanelWidth(bootstrap.filePanelWidth ?? DEFAULT_FILE_PANEL_WIDTH);
-      setThemePreference(bootstrap.themePreference ?? "system");
+      bootstrapAppearance(bootstrap);
       setChatResponse(bootstrap.chatResponse);
-      setFontPreference(bootstrap.fontPreference ?? DEFAULT_FONT_PREFERENCE);
       setPage(bootstrap.activeView === "extensions" ? "extensions" : "chat");
       setRuntimePanelOpen(bootstrap.activeView === "runtime" && Boolean(bootstrap.workspace));
       if (bootstrap.workspace) {
@@ -688,7 +683,7 @@ function DesktopApp(): React.JSX.Element {
       if (active) setStarting(false);
     });
     return () => { active = false; };
-  }, [commitNavigation, mergeWorkspaceProject, openSession, setSidebarExpandedWidth]);
+  }, [bootstrapAppearance, commitNavigation, mergeWorkspaceProject, openSession, setSidebarExpandedWidth]);
 
   // 生成错误横幅（会话瞬态）：由事件桥在 live 失败事件到达时置位、新一轮开始（run.started）
   // 时清除，与 document 的重放/终态刷新完全解耦——历史重放永不弹，横幅也不会被刷新闪退掉。
@@ -975,8 +970,7 @@ function DesktopApp(): React.JSX.Element {
       previousSessionId === undefined && draftMemoryOverride !== undefined ? draftPersonalization : undefined,
       idempotencyKey,
       undefined,
-      capabilitySelection,
-      undefined
+      capabilitySelection
     );
     // 新输入已被 Runtime 接收，旧断点不再是当前会话可继续的任务。
     setDocument((current) => current?.session.id === receipt.sessionId && current.recovery
@@ -1015,16 +1009,33 @@ function DesktopApp(): React.JSX.Element {
     return receipt;
   }, [commitNavigation, document, draftMemoryOverride, draftProjectId, openSession, workspace?.sessions]);
 
-  const retryWriterConflict = useCallback(async (): Promise<void> => {
+  const retryRuntime = useCallback(async (): Promise<void> => {
     const projectId = projectRef.current;
     const sessionId = selectedRef.current;
-    if (!projectId || !sessionId) return;
-    try {
-      await openSession(projectId, sessionId, false);
-    } catch (error) {
-      setWarning(errorMessage(error));
+    if (!projectId) return;
+    const request = loadRequestRef.current;
+    if (typeof window.biny.retryRuntime !== "function") throw new Error(desktopApiVersionMismatchMessage);
+    const result = await window.biny.retryRuntime(projectId, sessionId);
+    if (loadRequestRef.current !== request || projectRef.current !== projectId || selectedRef.current !== sessionId) return;
+    mergeProjectSnapshot(result.workspace);
+    setDocument(result.document);
+    setWriterConflict(result.document?.writerConflict);
+    setGenerationError(undefined);
+  }, [mergeProjectSnapshot]);
+
+  const refreshRuntimeFailure = useCallback(async (projectId: string, sessionId?: string): Promise<void> => {
+    const request = loadRequestRef.current;
+    const [snapshot, nextDocument] = await Promise.all([
+      window.biny.refreshProject(projectId),
+      sessionId === undefined ? undefined : window.biny.openSession(projectId, sessionId)
+    ]);
+    if (loadRequestRef.current !== request || projectRef.current !== projectId || selectedRef.current !== sessionId) return;
+    mergeProjectSnapshot(snapshot);
+    if (nextDocument) {
+      setDocument(nextDocument);
+      setWriterConflict(nextDocument.writerConflict);
     }
-  }, [openSession]);
+  }, [mergeProjectSnapshot]);
 
   const continueInterrupted = useCallback(async (): Promise<void> => {
     const projectId = projectRef.current;
@@ -1040,16 +1051,22 @@ function DesktopApp(): React.JSX.Element {
       } else {
         await openSession(projectId, sessionId, false);
       }
+    } catch (error) {
+      if (projectRef.current === projectId && selectedRef.current === sessionId) {
+        await refreshRuntimeFailure(projectId, sessionId).catch(() => undefined);
+      }
+      throw error;
     } finally {
       resumeFlightRef.current = false;
     }
-  }, [openSession]);
+  }, [openSession, refreshRuntimeFailure]);
 
   // 发送直接进入聊天布局；临时用户消息覆盖 IPC/事件桥的空窗，真实事件到达后自动替换。
   const sendPromptWithTransition = useCallback(async (input: string, attachments: DesktopAttachment[], delivery?: "steer" | "queue", idempotencyKey?: string, capabilitySelection?: AgentCapabilitySelection): Promise<void> => {
     setGenerationError(undefined);
     const pendingProjectId = selectedRef.current === undefined ? draftProjectId ?? projectRef.current : projectRef.current;
     const pendingId = idempotencyKey ?? globalThis.crypto.randomUUID();
+    const pendingSessionId = selectedRef.current;
     if (pendingProjectId) {
       setPendingPrompt({
         id: pendingId,
@@ -1068,9 +1085,12 @@ function DesktopApp(): React.JSX.Element {
       }
     } catch (error) {
       if (pendingProjectId) setPendingPrompt((current) => current?.id === pendingId ? undefined : current);
+      if (pendingProjectId && projectRef.current === pendingProjectId && selectedRef.current === pendingSessionId) {
+        await refreshRuntimeFailure(pendingProjectId, pendingSessionId).catch(() => undefined);
+      }
       throw error;
     }
-  }, [draftProjectId, sendPrompt]);
+  }, [draftProjectId, refreshRuntimeFailure, sendPrompt]);
 
   const runSlashCommand = useCallback(async (command: string): Promise<void> => {
     const projectId = selectedRef.current === undefined ? draftProjectId ?? projectRef.current : projectRef.current;
@@ -1103,6 +1123,9 @@ function DesktopApp(): React.JSX.Element {
       receipt = await edit(projectId, sessionId, userMessageIndex, input, attachments, idempotencyKey);
     } catch (error) {
       if (projectRef.current === projectId && selectedRef.current === sessionId && previousDocument) setDocument(previousDocument);
+      if (projectRef.current === projectId && selectedRef.current === sessionId) {
+        await refreshRuntimeFailure(projectId, sessionId).catch(() => undefined);
+      }
       throw error;
     }
     setSelectedSessionId(receipt.sessionId);
@@ -1121,7 +1144,7 @@ function DesktopApp(): React.JSX.Element {
       ? eventsBeforeUserMessage(previousDocument.events, userMessageIndex)
       : [];
     setDocument({ session: summary, events: prefixEvents, liveEvents: [] });
-  }, [commitNavigation, workspace?.sessions]);
+  }, [commitNavigation, refreshRuntimeFailure, workspace?.sessions]);
 
   const editUserMessage = useCallback(async (input: string, userMessageIndex: number, idempotencyKey?: string): Promise<void> => {
     const sessionId = selectedRef.current;
@@ -1184,13 +1207,16 @@ function DesktopApp(): React.JSX.Element {
       return;
     }
     const previousNavigation = navigationRef.current;
+    const request = loadRequestRef.current;
     try {
       const snapshot = await window.biny.duplicateSession(projectId, sessionId);
+      if (loadRequestRef.current !== request || projectRef.current !== projectId || selectedRef.current !== sessionId) return;
       await adoptWorkspace(snapshot, snapshot.selectedSessionId);
       if (snapshot.selectedSessionId) commitNavigation(pushNavigation(previousNavigation, { projectId, sessionId: snapshot.selectedSessionId }));
       setToast("已创建会话分支");
     } catch (error) {
-      setWarning(errorMessage(error));
+      if (loadRequestRef.current === request && projectRef.current === projectId && selectedRef.current === sessionId) setWarning(errorMessage(error));
+      throw error;
     }
   }, [adoptWorkspace, commitNavigation]);
 
@@ -1199,36 +1225,13 @@ function DesktopApp(): React.JSX.Element {
     setWarning(files.length ? "当前消息的文件变更没有安全快照，暂不自动回滚" : "当前消息没有可回滚的文件");
   }, []);
 
-  useEffect(() => {
-    window.document.documentElement.dataset.theme = themePreference;
-  }, [themePreference]);
-
-  const changeThemePreference = useCallback((theme: DesktopThemePreference): void => {
-    setThemePreference(theme);
-  }, []);
-
-  // 字号通过 --app-font-size 驱动样式表里的 --font-scale 等比缩放全部文字；
-  // 自定义字体族插到默认字体栈前面，缺字时仍能落到系统 CJK 字体。
-  useLayoutEffect(() => {
-    // 字体影响文字和控件尺寸，必须在首屏绘制前应用，避免淡入后再改变布局。
-    const style = window.document.documentElement.style;
-    style.setProperty("--app-font-size", String(fontPreference.size));
-    if (fontPreference.family === SYSTEM_FONT_FAMILY) style.removeProperty("--font-sans");
-    else style.setProperty("--font-sans", `"${fontPreference.family.replaceAll('"', "")}", var(--font-sans-stack)`);
-  }, [fontPreference]);
-
-  const changeFontPreference = useCallback((font: DesktopFontPreference): void => {
-    setFontPreference(font);
-  }, []);
-
   const settingsCommitted = useCallback((snapshot: DesktopSettingsSnapshot): void => {
     setChatResponse(snapshot.chatParams.response);
-    setThemePreference(snapshot.themePreference);
-    setFontPreference(snapshot.fontPreference);
+    adoptAppearance({ themePreference: snapshot.themePreference, fontPreference: snapshot.fontPreference, appearancePreference: normalizeAppearancePreference(snapshot.appearancePreference) });
     void window.biny.refreshProject(snapshot.projectId)
       .then(mergeProjectSnapshot)
       .catch((error: unknown) => setWarning(errorMessage(error)));
-  }, [mergeProjectSnapshot]);
+  }, [adoptAppearance, mergeProjectSnapshot]);
 
   const toggleProjectPinned = useCallback(async (projectId: string, pinned: boolean): Promise<void> => {
     try {
@@ -1432,10 +1435,13 @@ function DesktopApp(): React.JSX.Element {
       const receipt = await retry(projectId, sessionId, targetMessageId, input, [], idempotencyKey);
       setSelectedSessionId(receipt.sessionId);
     } catch (error) {
-      if (projectRef.current === projectId && selectedRef.current === sessionId) setGenerationError(errorMessage(error));
+      if (projectRef.current === projectId && selectedRef.current === sessionId) {
+        await refreshRuntimeFailure(projectId, sessionId).catch(() => undefined);
+        if (projectRef.current === projectId && selectedRef.current === sessionId) setGenerationError(errorMessage(error));
+      }
       throw error;
     }
-  }, []);
+  }, [refreshRuntimeFailure]);
   const switchTimelineVersion = useCallback(async (messageId: string, direction: "prev" | "next"): Promise<void> => {
     const projectId = projectRef.current;
     const sessionId = selectedRef.current;
@@ -1449,7 +1455,6 @@ function DesktopApp(): React.JSX.Element {
       if (projectRef.current !== projectId || selectedRef.current !== sessionId) return;
       setDocument(nextDocument);
       setWriterConflict(nextDocument.writerConflict);
-      if (nextDocument.runtimeError) setWarning(nextDocument.runtimeError);
     } catch (error) {
       setWarning(errorMessage(error));
     }
@@ -1457,8 +1462,8 @@ function DesktopApp(): React.JSX.Element {
   const openExternalLink = useCallback((url: string): void => {
     void window.biny.openExternal(url).catch((error) => setWarning(errorMessage(error)));
   }, []);
-  const openTurnBranch = useCallback((): void => {
-    void createBranch();
+  const openTurnBranch = useCallback(async (): Promise<void> => {
+    await createBranch();
   }, [createBranch]);
 
   // 替换回合出现（同 userMessageIndex 且文本一致）后才撤掉编辑乐观投影，避免旧消息闪回。
@@ -1786,7 +1791,8 @@ function DesktopApp(): React.JSX.Element {
   );
 
   return (
-    <ChatResponseContext value={chatResponse}><DesktopShell
+    <AppearanceProvider snapshot={appearance.snapshot} onError={setAppearanceError}><ChatResponseContext value={chatResponse}><DesktopShell
+      windowTitle={sessionSummary?.title ?? workspace?.project.name ?? "Biny"}
       starting={starting}
       overlays={(
         <>
@@ -1845,6 +1851,8 @@ function DesktopApp(): React.JSX.Element {
             targetTab={settingsTargetTab}
             themePreference={themePreference}
             fontPreference={fontPreference}
+            appearancePreference={appearancePreference}
+            onAppearancePreference={changeAppearancePreference}
             version={version}
             workspace={workspace}
           />
@@ -1949,13 +1957,11 @@ function DesktopApp(): React.JSX.Element {
         onRollbackFiles={rollbackFiles}
         onRetry={retryTimelinePrompt}
         onSwitchVersion={switchTimelineVersion}
-        onRetryWriterConflict={retryWriterConflict}
+        onRetryRuntime={retryRuntime}
         onRuntimePanelOpenChange={changeRuntimePanelOpen}
         project={workspace?.project}
         projectId={workspace?.project.id}
-        // 历史正文可以在 Runtime 失败时正常展示；openSession 已将该错误放入 warning，
-        // 这里不能再把它传给 Workspace，否则 Workspace 会用错误页覆盖可读的聊天记录。
-        runtimeError={document === undefined && selectedSessionId === undefined ? workspace?.runtimeError : undefined}
+        runtimeError={document?.runtimeError ?? workspace?.runtimeError}
         runtimePanelOpen={runtimePanelOpen}
         runtimeProjection={workspace?.runtimeProjection}
         planProjection={planProjection}
@@ -1971,7 +1977,6 @@ function DesktopApp(): React.JSX.Element {
         thinking={selectedThinking}
         running={selectedRunning}
         runtimeActiveRunId={selectedRunId}
-        planning={selectedRuntimeSnapshot?.info.planning === true}
         turns={turns}
         writerConflict={writerConflict}
         onRuntimeError={reportRuntimeError}
@@ -1986,6 +1991,7 @@ function DesktopApp(): React.JSX.Element {
       >
         {composer}
       </Workspace>}
-    </DesktopShell></ChatResponseContext>
+      {appearanceError ? <div className="biny-appearance-error" role="alert">{appearanceError}<button type="button" onClick={() => setAppearanceError(undefined)}>关闭</button></div> : null}
+    </DesktopShell></ChatResponseContext></AppearanceProvider>
   );
 }

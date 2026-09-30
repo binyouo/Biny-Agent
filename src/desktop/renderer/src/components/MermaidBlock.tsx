@@ -109,7 +109,7 @@ function useIsDarkTheme(): boolean {
     const media = window.matchMedia("(prefers-color-scheme: dark)");
     const update = () => setDark(currentIsDark());
     const observer = new MutationObserver(update);
-    observer.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme", "data-base46-theme", "style"] });
     media.addEventListener("change", update);
     return () => {
       observer.disconnect();

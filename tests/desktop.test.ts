@@ -1074,7 +1074,9 @@ async function testDesktopOpenSessionReturnsWriterConflictReadOnlyDocument(): Pr
     owner.close();
     owner = undefined;
     const retriedDocument = await agents.openSession(project.id, recorder.sessionId);
-    assert.equal(retriedDocument.writerConflict, undefined);
+    assert.equal(retriedDocument.writerConflict?.sessionId, recorder.sessionId, "只读历史不验证已知 writer 冲突是否解除");
+    const recovered = await agents.retryRuntime(project.id, recorder.sessionId);
+    assert.equal(recovered.document?.writerConflict, undefined, "显式重试重新验证 writer ownership");
   } finally {
     await agents?.closeAll();
     owner?.close();

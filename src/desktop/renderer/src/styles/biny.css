@@ -162,8 +162,8 @@
   min-width: 0;
   min-height: 0;
   flex: 1 1 0;
-  margin: 0 8px 8px;
-  border-radius: 18px;
+  margin: 0;
+  border-radius: 0;
   overflow: hidden;
   background: var(--biny-surface);
 }
@@ -901,7 +901,6 @@
 
 .biny-inspector-side-chat-form textarea:focus {
   border-color: var(--biny-focus);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--biny-focus) 18%, transparent);
 }
 
 .biny-inspector-side-chat-form button {
@@ -1082,7 +1081,7 @@
   box-sizing: border-box;
   overflow: hidden;
   border: 1px solid var(--biny-sidebar-border);
-  border-radius: 12px;
+  border-radius: 16px;
   background: var(--biny-sidebar-surface);
   box-shadow: 0 1px 3px var(--biny-shadow-color);
   margin-inline: 10px;
@@ -2496,17 +2495,11 @@
   border: 1px solid var(--biny-border);
   border-radius: var(--biny-composer-radius);
   background: var(--biny-surface-elevated);
-  box-shadow: 0 2px 8px var(--biny-shadow-color);
+  box-shadow: none;
   color: var(--biny-text);
   -webkit-app-region: no-drag;
   app-region: no-drag;
 }
-
-.biny-composer:has(textarea:focus-visible) {
-  border-color: var(--biny-focus);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--biny-focus) 12%, transparent);
-}
-
 
 .biny-composer-footer-start > .composer-menu-anchor {
   flex: none;
@@ -4524,7 +4517,6 @@ button.capability-check[aria-checked="true"] {
 
 .biny-chat-toolbar button,
 .biny-chat-composer,
-.biny-runtime-error,
 .biny-status-state,
 .desktop-inspector-wrap {
   -webkit-app-region: no-drag;
@@ -5040,66 +5032,139 @@ button.capability-check[aria-checked="true"] {
   opacity: .45;
 }
 
-.biny-session-writer-conflict {
+.biny-runtime-recovery-container {
+  width: 100%;
+  container-name: biny-runtime-recovery;
+  container-type: inline-size;
+}
+
+.biny-chat-composer.has-runtime-recovery {
+  width: var(--biny-chat-content-width);
+  max-width: calc(100% - 24px);
+}
+
+.biny-runtime-recovery {
+  position: relative;
   display: flex;
-  min-height: 72px;
+  width: 100%;
+  box-sizing: border-box;
   align-items: center;
   gap: 12px;
-  padding: 0 16px;
-  border: 1px solid var(--biny-border);
-  border-radius: 10px;
-  background: var(--biny-surface-elevated);
-  color: var(--biny-text-secondary);
-  box-shadow: 0 2px 8px var(--biny-shadow-soft);
+  padding: 16px 12px 16px 20px;
+  overflow: hidden;
+  border: 0;
+  border-radius: 24px;
+  background: var(--biny-surface);
+  color: var(--biny-text);
+  font-size: 14px;
+  line-height: 20px;
+  text-wrap: pretty;
+  user-select: none;
+  box-shadow: 0 0 0 0.5px var(--biny-border-strong),
+    0 0 2px color-mix(in srgb, var(--biny-shadow-color) 5%, transparent),
+    0 4px 6px color-mix(in srgb, var(--biny-shadow-color) 2%, transparent);
 }
 
-.biny-session-writer-conflict > svg {
+.biny-runtime-recovery > svg {
   flex: 0 0 auto;
-  color: var(--biny-warning);
+  color: var(--biny-text);
 }
 
-.biny-session-writer-conflict-copy {
+.biny-runtime-recovery-copy {
   display: flex;
   min-width: 0;
   flex: 1;
   flex-direction: column;
-  gap: 3px;
+  gap: 2px;
 }
 
-.biny-session-writer-conflict-copy strong {
+.biny-runtime-recovery-copy h3 {
+  margin: 0;
   color: var(--biny-text);
-  font-size: 13px;
+  font-size: inherit;
   font-weight: 600;
+  line-height: 20px;
 }
 
-.biny-session-writer-conflict-copy span {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 12px;
+.biny-runtime-recovery-copy span {
+  overflow-wrap: anywhere;
+  color: var(--biny-text-secondary);
+  line-height: 1.625;
 }
 
-.biny-session-writer-conflict button {
+.biny-runtime-recovery button {
   flex: 0 0 auto;
-  min-width: 58px;
-  min-height: 32px;
-  padding: 0 12px;
-  border: 0;
-  border-radius: 8px;
-  background: var(--biny-surface-hover);
+  padding: 2px 8px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: transparent;
   color: var(--biny-text);
   cursor: pointer;
   font: inherit;
+  line-height: 18px;
+  white-space: nowrap;
+}
+
+.biny-runtime-recovery button:hover:not(:disabled) {
+  background: var(--biny-surface-hover);
+}
+
+.biny-runtime-recovery button:focus-visible {
+  outline: 2px solid var(--biny-accent);
+  outline-offset: 2px;
+}
+
+.biny-runtime-recovery button:disabled {
+  cursor: default;
+  opacity: 0.4;
+}
+
+.biny-runtime-recovery-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 8px;
+  border-inline-start: 1px solid var(--biny-border);
+  padding-inline-start: 12px;
+}
+
+@container biny-runtime-recovery (max-width: 400px) {
+  .biny-runtime-recovery {
+    flex-wrap: wrap;
+    align-items: flex-start;
+    gap: 8px;
+  }
+
+  .biny-runtime-recovery-actions {
+    width: 100%;
+    flex-shrink: 1;
+    flex-wrap: wrap;
+    justify-content: center;
+    border-inline-start: 0;
+    border-top: 1px solid var(--biny-border);
+    padding-top: 8px;
+    padding-inline-start: 0;
+  }
+}
+
+.biny-runtime-recovery details {
+  margin-top: 6px;
   font-size: 12px;
 }
 
-.biny-session-writer-conflict button:hover:not(:disabled) {
-  background: var(--biny-border);
+.biny-runtime-recovery summary {
+  cursor: pointer;
 }
 
-.biny-session-writer-conflict button:disabled {
-  cursor: wait;
-  opacity: 0.58;
+.biny-runtime-recovery details p {
+  max-height: 120px;
+  margin: 8px 0 0;
+  overflow: auto;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.biny-runtime-recovery-copy .biny-runtime-recovery-failure {
+  color: var(--biny-danger);
 }
 
 .biny-composer-status {
@@ -5175,43 +5240,6 @@ button.capability-check[aria-checked="true"] {
   justify-content: center;
   gap: 8px;
   color: var(--biny-text-secondary);
-}
-
-.biny-runtime-error {
-  display: flex;
-  width: min(560px, calc(100% - 48px));
-  height: 100%;
-  margin: 0 auto;
-  align-items: center;
-  justify-content: center;
-  flex-direction: column;
-  gap: 10px;
-  text-align: center;
-}
-
-.biny-runtime-error svg {
-  color: var(--biny-danger);
-}
-
-.biny-runtime-error h2,
-.biny-runtime-error p,
-.biny-runtime-error small {
-  margin: 0;
-}
-
-.biny-runtime-error p,
-.biny-runtime-error small {
-  color: var(--biny-text-secondary);
-}
-
-.biny-runtime-error button {
-  min-height: 30px;
-  padding: 0 14px;
-  border: 1px solid var(--biny-border);
-  border-radius: 16px;
-  background: var(--biny-surface-elevated);
-  color: var(--biny-text);
-  cursor: pointer;
 }
 
 .biny-streaming-state {
@@ -5427,7 +5455,6 @@ button.capability-check[aria-checked="true"] {
 
 .biny-extension-search:focus-within {
   border-color: var(--biny-focus);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--biny-focus) 14%, transparent);
 }
 
 .biny-extension-search input {
@@ -6682,7 +6709,6 @@ button.capability-check[aria-checked="true"] {
 
 .biny-discovery-search:focus-within {
   border-color: var(--biny-focus);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--biny-focus) 13%, transparent);
 }
 
 .biny-discovery-search input {
@@ -7220,7 +7246,6 @@ button.capability-check[aria-checked="true"] {
 
 .biny-mcp-search:focus-within {
   border-color: var(--biny-focus);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--biny-focus) 14%, transparent);
 }
 
 .biny-mcp-search input {
@@ -8014,7 +8039,6 @@ button.capability-check[aria-checked="true"] {
 .biny-mcp-field select:focus,
 .biny-mcp-secret-row input:focus {
   border-color: var(--biny-focus);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--biny-focus) 14%, transparent);
 }
 
 .biny-mcp-field input::placeholder,
@@ -8508,7 +8532,6 @@ button.capability-check[aria-checked="true"] {
 
 .settings-extension-search:focus-within {
   border-color: var(--biny-focus);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--biny-focus) 14%, transparent);
 }
 
 .settings-extension-search input {
@@ -9175,7 +9198,6 @@ button.capability-check[aria-checked="true"] {
 
 .biny-mcp-install-fields > select:focus {
   border-color: var(--biny-focus);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--biny-focus) 14%, transparent);
 }
 
 .biny-mcp-install-prerequisites,
@@ -9722,7 +9744,6 @@ button.capability-check[aria-checked="true"] {
 .desktop-settings-dialog .settings-modal .biny-mcp-search:focus-within,
 .desktop-settings-dialog .settings-modal .settings-extension-search:focus-within {
   border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
-  box-shadow: 0 0 0 3px var(--st-ring, var(--shadow-soft));
   outline: none;
 }
 

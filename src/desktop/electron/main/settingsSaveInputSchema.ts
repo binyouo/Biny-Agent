@@ -5,6 +5,7 @@
  * 模块是为了让测试可以直接 import——ipc.ts 顶层引了 electron，只能在主进程里加载。
  */
 import { z } from "zod";
+import { appearancePreferenceSchema } from "../../../appearance/preferences.js";
 import { activitySettingsInputSchema } from "../../../activity/settings.js";
 import {
   chatParamsSchema,
@@ -89,6 +90,7 @@ export const settingsSaveInputSchema = z.object({
   expectedConfigRevision: configRevisionSchema,
   themePreference: themePreferenceSchema.optional(),
   fontPreference: fontPreferenceSchema.optional(),
+  appearancePreference: appearancePreferenceSchema.optional(),
   activity: activitySettingsInputSchema.optional(),
   identity: identitySettingsSchema.optional(),
   memory: memorySettingsSchema.optional(),

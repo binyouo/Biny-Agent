@@ -5,6 +5,8 @@
  * 预览，Activity 则通过独立 CAS 通道即时落盘，其余设置仍由 saveAll 进入主进程事务。
  */
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { normalizeAppearancePreference } from "../../../../../appearance/preferences.js";
+import type { AppearancePreference } from "../../../../../appearance/types.js";
 import type { ModelProfile } from "../../../../../config/schema.js";
 import type {
   DesktopActivitySettingsInput,
@@ -36,6 +38,7 @@ export function SettingsDraftProvider({
   children,
   onCommitted,
   onFontPreview,
+  onAppearancePreview,
   onNotify,
   onThemePreview,
   projectId,
@@ -46,6 +49,7 @@ export function SettingsDraftProvider({
   children: React.ReactNode;
   onCommitted(snapshot: DesktopSettingsSnapshot): void;
   onFontPreview(value: DesktopFontPreference): void;
+  onAppearancePreview?(value: AppearancePreference): void;
   onNotify(message: string): void;
   onThemePreview(value: DesktopThemePreference): void;
   projectId?: string;
@@ -53,6 +57,7 @@ export function SettingsDraftProvider({
   sessionRunning: boolean;
 }): React.JSX.Element {
   const [snapshot, setSnapshot] = useState<DesktopSettingsSnapshot>();
+  useEffect(() => () => { void window.biny.previewAppearance(null).catch((error: unknown) => onNotify(`恢复外观失败：${error instanceof Error ? error.message : String(error)}`)); }, [onNotify]);
   const [draft, setDraft] = useState<DesktopSettingsDraft>();
   const [globalActivity, setGlobalActivity] = useState<DesktopActivitySettingsUpdate>();
   const globalActivityRef = useRef<DesktopActivitySettingsUpdate | undefined>(undefined);
@@ -73,7 +78,8 @@ export function SettingsDraftProvider({
     setSaveState(next.pendingRecovery ? "recovery_required" : "clean");
     onThemePreview(next.themePreference);
     onFontPreview(next.fontPreference);
-  }, [onFontPreview, onThemePreview]);
+    onAppearancePreview?.(normalizeAppearancePreference(next.appearancePreference));
+  }, [onAppearancePreview, onFontPreview, onThemePreview]);
 
   useEffect(() => {
     if (!active) return;
@@ -135,6 +141,15 @@ export function SettingsDraftProvider({
     setDraft((current) => current ? { ...current, fontPreference: value } : current);
     onFontPreview(value);
   }, [onFontPreview, projectId, saveGlobalPreference]);
+
+  const setAppearancePreference = useCallback((value: AppearancePreference): void => {
+    if (!projectId) {
+      void saveGlobalPreference(async () => onAppearancePreview?.(await window.biny.setAppearancePreference(value)));
+      return;
+    }
+    setDraft((current) => current ? { ...current, appearancePreference: value } : current);
+    onAppearancePreview?.(value);
+  }, [onAppearancePreview, projectId, saveGlobalPreference]);
 
 
   const updateActivityImmediately = useCallback((patch: DesktopActivitySettingsPatch): Promise<void> => {
@@ -401,6 +416,7 @@ export function SettingsDraftProvider({
         // 但不能丢掉草稿本身，用户仍可修正冲突后再次保存。
         onThemePreview(result.snapshot.themePreference);
         onFontPreview(result.snapshot.fontPreference);
+        onAppearancePreview?.(normalizeAppearancePreference(result.snapshot.appearancePreference));
         setSaveState("dirty");
         const message = result.message ?? (result.conflicts?.length ? "设置已在其他位置更改，请检查冲突后重试" : "保存失败，已恢复原设置");
         setSaveError(message);
@@ -420,7 +436,7 @@ export function SettingsDraftProvider({
     } finally {
       if (watchdog !== undefined) clearTimeout(watchdog);
     }
-  }, [active, adoptSnapshot, dirtyCount, draft, invalid, onCommitted, onFontPreview, onNotify, onThemePreview, runtimeBlocked, saveState, snapshot]);
+  }, [active, adoptSnapshot, dirtyCount, draft, invalid, onAppearancePreview, onCommitted, onFontPreview, onNotify, onThemePreview, runtimeBlocked, saveState, snapshot]);
 
   const value = useMemo<SettingsDraftContextValue>(() => ({
     snapshot,
@@ -436,6 +452,7 @@ export function SettingsDraftProvider({
     saveState,
     setThemePreference,
     setFontPreference,
+    setAppearancePreference,
     updateActivityImmediately,
     setIdentity,
     setMemory,
@@ -476,6 +493,7 @@ export function SettingsDraftProvider({
     setCompaction,
     setModelProfile,
     setFontPreference,
+    setAppearancePreference,
     setMemory,
     setPermission,
     updateActivityImmediately,
@@ -495,6 +513,7 @@ function draftFromSnapshot(snapshot: DesktopSettingsSnapshot): DesktopSettingsDr
   return {
     themePreference: snapshot.themePreference,
     fontPreference: { ...snapshot.fontPreference },
+    appearancePreference: normalizeAppearancePreference(snapshot.appearancePreference),
     activity: activityInputFromSnapshot(snapshot.activity),
     identity: structuredClone(snapshot.identity),
     memory: structuredClone(snapshot.memory),
@@ -539,6 +558,7 @@ function countDirtyFields(snapshot: DesktopSettingsSnapshot, draft: DesktopSetti
   let count = 0;
   if (draft.themePreference !== snapshot.themePreference) count += 1;
   if (!sameJson(draft.fontPreference, snapshot.fontPreference)) count += 1;
+  if (!sameJson(draft.appearancePreference, normalizeAppearancePreference(snapshot.appearancePreference))) count += 1;
   return count + countNonPreferenceDirtyFields(snapshot, draft);
 }
 
@@ -593,6 +613,7 @@ function saveInput(snapshot: DesktopSettingsSnapshot, draft: DesktopSettingsDraf
     expectedConfigRevision: snapshot.configRevision,
     themePreference: draft.themePreference === snapshot.themePreference ? undefined : draft.themePreference,
     fontPreference: sameJson(draft.fontPreference, snapshot.fontPreference) ? undefined : draft.fontPreference,
+    appearancePreference: sameJson(draft.appearancePreference, normalizeAppearancePreference(snapshot.appearancePreference)) ? undefined : draft.appearancePreference,
     activity: sameJson(draft.activity, activityInputFromSnapshot(snapshot.activity)) ? undefined : draft.activity,
     identity: sameJson(draft.identity, snapshot.identity) ? undefined : draft.identity,
     memory: sameJson(draft.memory, snapshot.memory) ? undefined : draft.memory,

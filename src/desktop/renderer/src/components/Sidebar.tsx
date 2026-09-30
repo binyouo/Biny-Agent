@@ -20,6 +20,8 @@ import { FluidHoverHighlight } from "./FluidHoverHighlight.js";
 import { Icon, type IconName } from "./Icon.js";
 import { ThreadBriefSessionMenu, ThreadBriefSessionState } from "../threadBrief/ThreadBriefSessionState.js";
 import { WorkingIndicator } from "./WorkingIndicator.js";
+import { useAppearance } from "../appearanceContext.js";
+import { RetroFolderIcon } from "./WindowChrome.js";
 
 const PROJECT_SESSION_COLLAPSE_LIMIT = 5;
 const DIALOGUE_SESSION_COLLAPSE_LIMIT = 10;
@@ -861,6 +863,7 @@ const ProjectRow = memo(function ProjectRow({
   onDragCancel(): void;
 }): React.JSX.Element {
   const menuButtonRef = useRef<HTMLButtonElement>(null);
+  const appearance = useAppearance();
   const suppressClickRef = useRef(false);
   return (
     <div
@@ -897,7 +900,7 @@ const ProjectRow = memo(function ProjectRow({
         role="button"
         tabIndex={0}
       >
-        <Icon name={sessionsExpanded ? "folder-open" : "folder"} size={16} />
+        {appearance.skin !== "default" ? <RetroFolderIcon /> : <Icon name={sessionsExpanded ? "folder-open" : "folder"} size={16} />}
         <span className="biny-project-row-label">{project.name}</span>
         {project.missing ? <span className="biny-project-status is-failed" title="路径不可用" /> : null}
       </div>

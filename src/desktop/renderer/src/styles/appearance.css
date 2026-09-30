@@ -1,0 +1,60 @@
+:root[data-ui-density] .biny-root { line-height: var(--ui-density-line-height); }
+:root[data-ui-density] .settings-row-group { gap: var(--ui-density-control-gap); }
+:root[data-ui-density] .settings-preference-section { margin-block-end: var(--ui-density-stack-gap); }
+:root[data-ui-density] .settings-preference-row { padding-block: var(--ui-density-control-padding-y); }
+:root[data-ui-density] :is(.settings-preference-row, .theme-page-toolbar, .theme-editor) :is(input:not([type="radio"]):not([type="checkbox"]):not([type="color"]), select) { min-height: var(--ui-density-control-height-default); }
+:root[data-ui-density] .biny-sidebar-session-item { min-height: var(--ui-density-control-height-sm); }
+.theme-page-toolbar { display: flex; flex-wrap: wrap; gap: 8px; margin-block-end: 20px; }
+.theme-page-toolbar input[type="search"] { flex: 1; min-width: 180px; }
+.theme-page-toolbar :is(input, button), .theme-editor :is(input, select, button) { padding: 6px 10px; color: var(--text); background: var(--surface-raised); border: 1px solid var(--border); border-radius: 6px; }
+.theme-mode-section { margin-block: 24px; }
+.theme-mode-section > p { color: var(--text-secondary); font-size: 12px; margin-block: 4px 12px; }
+.theme-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+@container settings-main (min-width: 600px) { .theme-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+@container settings-main (min-width: 820px) { .theme-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
+.settings-theme-page { container: settings-main / inline-size; }
+.theme-card { position: relative; display: flex; flex-direction: column; align-items: flex-start; width: 100%; gap: 8px; padding: 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--text); text-align: start; font-size: 12px; cursor: pointer; }
+.theme-card > span:not(.theme-card-check) { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.theme-card:hover { background: var(--surface-hover); }
+.theme-card[aria-pressed="true"] { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent); box-shadow: 0 0 0 1px var(--accent); }
+.theme-card-check { position: absolute; inset-inline-end: 8px; inset-block-start: 8px; display: grid; place-items: center; width: 20px; height: 20px; border-radius: 50%; color: var(--accent-foreground); background: var(--accent); }
+.theme-swatches { display: flex; gap: 4px; padding-right: 18px; }
+.theme-swatches > span { width: 16px; height: 16px; border-radius: 2px; border: 1px solid color-mix(in srgb, var(--text) 10%, transparent); }
+.theme-default-swatches > span { border: 1px dashed color-mix(in srgb, var(--text-secondary) 50%, transparent); }
+.theme-card-actions { display: flex; gap: 8px; padding: 5px 2px; }
+.theme-card-actions button { border: 0; background: none; color: var(--text-secondary); font-size: 11px; cursor: pointer; }
+.theme-card-actions button:hover { color: var(--accent); }
+.theme-trail-option { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 13px; }
+.theme-trail-option span { flex-basis: 100%; color: var(--text-secondary); font-size: 12px; padding-left: 22px; }
+.theme-delete-dialog h2 { margin-block-end: 12px; }
+.theme-delete-dialog p { margin-block: 12px; }
+.theme-delete-dialog [role="alert"] { color: var(--red-text); }
+.theme-delete-dialog footer { display: flex; justify-content: flex-end; gap: 8px; margin-block-start: 20px; }
+.theme-delete-dialog button { padding: 6px 12px; border: 1px solid var(--border); border-radius: 6px; color: var(--text); background: var(--surface-raised); }
+.theme-delete-dialog button[aria-label="确认删除主题"] { color: var(--accent-foreground); background: var(--accent); }
+.theme-editor { width: min(780px, 90vw); max-height: 90vh; padding: 0; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); color: var(--text); box-shadow: 0 12px 40px var(--shadow-heavy); }
+.theme-editor::backdrop { background: var(--dialog-overlay); }
+.theme-editor form { display: flex; flex-direction: column; max-height: 90vh; }
+.theme-editor :is(header, footer) { display: flex; align-items: center; gap: 10px; padding: 14px 20px; flex: none; }
+.theme-editor header { justify-content: space-between; border-bottom: 1px solid var(--border); }
+.theme-editor footer { justify-content: flex-end; border-top: 1px solid var(--border); }
+.theme-editor footer p { margin-right: auto; color: var(--red-text); }
+.theme-editor .primary { color: var(--accent-foreground); background: var(--accent); }
+.theme-editor-scroll { overflow: auto; padding: 20px; display: flex; flex-direction: column; gap: 16px; }
+.theme-name-field { display: flex; align-items: center; gap: 10px; }
+.theme-name-field input { flex: 1; min-width: 0; }
+.theme-color-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 16px; }
+.theme-presets { display: flex; flex-wrap: wrap; gap: 8px; }
+.theme-color-field { display: flex; align-items: center; min-width: 0; gap: 6px; }
+.theme-color-field > span { flex: 1; font-size: 12px; }
+.theme-color-field input[type="color"] { width: 30px; height: 28px; padding: 1px; flex: none; }
+.theme-color-field input:not([type="color"]) { width: 84px; font-family: var(--font-mono); min-height: 28px; font-size: 12px; }
+.theme-preview { border: 1px solid; border-radius: 6px; overflow: hidden; font-size: 12px; }
+.theme-preview-title { padding: 8px 12px; border-bottom: 1px solid; font-weight: 600; }
+.theme-preview-body { display: flex; min-height: 180px; }
+.theme-preview-sidebar { display: flex; flex-direction: column; gap: 12px; width: 140px; flex: none; padding: 12px; }
+.theme-preview-chat { padding: 12px; flex: 1; min-width: 0; }
+.theme-preview-chat :is(p, pre) { padding: 8px; margin: 0 0 8px; border-radius: 4px; }
+.theme-preview-controls { display: flex; align-items: center; justify-content: space-between; }
+.biny-appearance-error { position: fixed; bottom: 16px; left: 16px; z-index: 2000; padding: 10px; background: var(--surface-raised); color: var(--red-text); border: 1px solid var(--border); }
+@media (max-width: 650px) { .theme-color-fields { grid-template-columns: 1fr; } .theme-preview-sidebar { width: 100px; } }

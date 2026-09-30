@@ -555,10 +555,6 @@ export class AutomationScheduler {
         // createFreshRuntime(sessionId) 中直接创建/取得目标条目，不会在这里改写 session。
         await target.resumeSession(targetSessionId);
       }
-      if (target.getSnapshot().info.planning) {
-        store.deferFire(claimed.fireId, new Date(Date.now() + deferDelay(automation)), "Target session is in planning mode; fire deferred.");
-        return;
-      }
       // Runtime creation/resume can await while Host begins draining. Recheck
       // admission immediately before submission, with no asynchronous gap.
       if (this.closed || (this.options.canStartRun && !this.options.canStartRun())) {

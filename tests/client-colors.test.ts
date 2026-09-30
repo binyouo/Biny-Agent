@@ -18,7 +18,7 @@ const quickchat = read("quickchat/quickchat.css");
 function declaration(source: string, selector: string, property: string): string | undefined {
   let value: string | undefined;
   for (const entry of source.matchAll(/([^{}]+)\{([^{}]+)\}/gu)) {
-    const selectors = entry[1]!.replace(/\/\*[\s\S]*?\*\//gu, "").trim().split(/,\s*/u);
+    const selectors = entry[1]!.replace(/\/\*[\s\S]*?\*\//gu, "").trim().split(/,(?![^()]*\))\s*/u);
     if (!selectors.includes(selector)) continue;
     const declarations = new Map([...entry[2]!.matchAll(/(?:^|;)\s*([\w-]+)\s*:\s*([^;]+)/gu)]
       .map((item) => [item[1]!, item[2]!.trim()]));
@@ -52,8 +52,8 @@ function contrast(foreground: string, background: string): number {
 
 test("shared light and dark palettes separate emphasis from health indicators", () => {
   for (const [mode, accent, green, selected] of [
-    ["light", "#4f46e5", "#189a58", "#ecebfb"],
-    ["dark", "#a5b4fc", "#6fd99b", "#33345a"]
+    ["light", "#0f5fa8", "#189a58", "#e9e9e9"],
+    ["dark", "#74b6fb", "#6fd99b", "#343434"]
   ] as const) {
     assert.equal(color("--accent", mode), accent);
     assert.equal(color("--green", mode), green);
@@ -63,6 +63,35 @@ test("shared light and dark palettes separate emphasis from health indicators", 
     assert.equal(color("--color-text-green", mode), color("--green-text", mode));
   }
   assert.match(layers, /@import "\.\/theme\.css" layer\(desktop\)/u);
+});
+
+test("default chrome uses neutral surfaces and ink with blue rather than violet emphasis", () => {
+  for (const mode of ["light", "dark"] as const) {
+    for (const token of ["--bg", "--sidebar", "--surface", "--surface-raised", "--surface-soft", "--surface-hover", "--surface-selected", "--code", "--user-bubble", "--text", "--text-secondary", "--text-tertiary", "--border", "--border-subtle", "--border-strong", "--accent-foreground"]) {
+      const channels = color(token, mode).slice(1).match(/../gu)!.map(channel => Number.parseInt(channel, 16));
+      assert.equal(channels[0], channels[1], `${mode}: ${token}`);
+      assert.equal(channels[1], channels[2], `${mode}: ${token}`);
+    }
+    for (const token of ["--accent", "--accent-hover", "--accent-soft", "--text-selection"]) {
+      const channels = color(token, mode).slice(1).match(/../gu)!.map(channel => Number.parseInt(channel, 16));
+      assert.ok(channels[0]! < channels[1]! && channels[1]! < channels[2]!, `${mode}: ${token} is blue`);
+    }
+    assert.ok(contrast(color("--surface-raised", mode), "#000000") > contrast(color("--bg", mode), "#000000"), `${mode}: reading surfaces sit above the canvas`);
+  }
+  for (const file of ["../electron/main/window.ts", "../electron/main/ipc.ts", "../electron/main/index.ts"]) {
+    const source = readFileSync(new URL(file, new URL("../", renderer)), "utf8");
+    assert.ok(source.includes(color("--bg", "light")), file);
+    assert.ok(source.includes(color("--bg", "dark")), file);
+    assert.doesNotMatch(source, /#f4f4f6|#1a1a1e/iu, file);
+  }
+});
+
+test("inset sidebar surface stays inside the card rather than coloring the window gutter", () => {
+  for (const mode of ["light", "dark"] as const) {
+    assert.equal(color("--biny-backplate", mode), color("--biny-surface", mode), `${mode}: the gutter belongs to the main canvas`);
+    assert.equal(color("--biny-sidebar-surface", mode), color("--sidebar", mode));
+    assert.notEqual(color("--biny-sidebar-surface", mode), color("--biny-backplate", mode));
+  }
 });
 
 test("provider, session, extension and execution states keep their semantic colors", () => {
@@ -98,12 +127,94 @@ test("quick chat uses the same message surfaces and primary-button foreground", 
   assert.match(read("App.tsx"), /QuickChatApp/u);
 });
 
+test("focused text fields and input wrappers do not add edge halos", () => {
+  for (const entry of [...styles, { name: "quickchat", source: quickchat }]) {
+    for (const rule of entry.source.matchAll(/([^{}]+)\{([^{}]+)\}/gu)) {
+      const selector = rule[1]!.replace(/\/\*[\s\S]*?\*\//gu, "").trim();
+      if (!selector.includes(":focus")) continue;
+      if (/button:focus-visible|settings-switch-row:focus-visible|settings-model-picker-option:focus-visible|input\[type="range"\]/u.test(selector)) continue;
+      const shadow = /(?:^|;)\s*box-shadow:\s*([^;]+)/u.exec(rule[2]!);
+      if (shadow) assert.doesNotMatch(shadow[1]!, /\b0(?:px)?\s+0(?:px)?\s+0(?:px)?\s+\S+/u, `${entry.name}: ${selector}`);
+    }
+  }
+});
+
+test("search, preference and dialog fields use focus borders without outer outlines", () => {
+  for (const selector of [
+    ".settings-search:focus-within",
+    '.settings-preferences :is(select, input[type="number"]):focus-visible',
+    ".provider-dialog input:focus-visible",
+    ".provider-dialog select:focus-visible",
+    ".inspector-browser-address:focus-within",
+    ".user-message-editor:focus-within"
+  ]) {
+    assert.ok(declaration(desktop, selector, "border-color"), selector);
+    const outline = declaration(desktop, selector, "outline");
+    assert.ok(outline === undefined || outline === "none" || outline === "0", `${selector}: ${outline}`);
+  }
+  assert.ok(declaration(quickchat, ".quickchat-input:focus", "border-color"));
+  assert.equal(declaration(desktop, ".desktop-dialog-content .astryx-text-input:focus-within", "box-shadow"), "none");
+  assert.ok(declaration(desktop, ".desktop-dialog-content .astryx-text-input:focus-within", "border-color"));
+});
+
+test("client chat input has no outer shadow on its actual composer surface", () => {
+  assert.match(read("components/Composer.tsx"), /<form\s+className=\{`biny-composer/u);
+  assert.match(read("components/composer/PromptInput.tsx"), /<textarea[\s\S]*?className=\{`biny-prompt-textarea/u);
+  assert.equal(declaration(desktop, ".biny-composer", "box-shadow"), "none");
+  assert.equal(declaration(desktop, ".biny-prompt-textarea", "outline"), "0");
+});
+
+test("client chat input retains its neutral border when the textarea receives focus", () => {
+  const border = declaration(desktop, ".biny-composer", "border");
+  assert.equal(border, "1px solid var(--biny-border)");
+  for (const selector of [
+    ".biny-composer:has(textarea:focus-visible)",
+    ".biny-composer:focus-within",
+    ".biny-composer:focus-visible",
+    ".biny-composer:focus"
+  ]) {
+    assert.equal(declaration(desktop, selector, "border") ?? border, border, selector);
+    assert.equal(declaration(desktop, selector, "border-color") ?? "var(--biny-border)", "var(--biny-border)", selector);
+    assert.equal(declaration(desktop, selector, "box-shadow") ?? declaration(desktop, ".biny-composer", "box-shadow"), "none", selector);
+    assert.ok([undefined, "none", "0"].includes(declaration(desktop, selector, "outline")), selector);
+  }
+});
+
+test("other input focus preserves normal elevation rather than replacing it with a glow", () => {
+  for (const [base, focused] of [
+    [".user-message-editor", ".user-message-editor:focus-within"],
+    [".desktop-settings-dialog .settings-modal .settings-model-picker-trigger", ".desktop-settings-dialog .settings-modal .settings-model-picker-trigger:focus-visible"]
+  ]) {
+    const shadow = declaration(desktop, base!, "box-shadow");
+    assert.ok(shadow, base);
+    assert.equal(declaration(desktop, focused!, "box-shadow") ?? shadow, shadow, focused);
+  }
+});
+
+test("removing field halos retains keyboard focus indicators on action controls", () => {
+  for (const selector of [
+    ".biny-composer-action:focus-visible",
+    ".settings-search button:focus-visible",
+    ".provider-dialog summary:focus-visible"
+  ]) assert.match(declaration(desktop, selector, "outline") ?? "", /^\d+px solid var\(--(?:biny-focus|accent)\)$/u, selector);
+});
+
 test("all product styles use the shared palette rather than local literals or missing aliases", () => {
-  const productStyles = readdirSync(new URL("styles/", renderer)).filter((name) => name.endsWith(".css") && name !== "theme.css")
+  const productStyles = readdirSync(new URL("styles/", renderer)).filter((name) => name.endsWith(".css") && !["theme.css", "retro.css"].includes(name))
     .map((name) => ({ name, source: read(`styles/${name}`) }));
   for (const entry of [...productStyles, { name: "legacy", source: read("styles.css") }, { name: "quickchat", source: quickchat }]) {
     assert.doesNotMatch(entry.source, /#[\da-f]{3,8}\b|\brgba?\(|\bhsla?\(/iu, entry.name);
     assert.doesNotMatch(entry.source, /var\(--(?:foreground|muted-foreground|text-primary|yellow|biny-backdrop)\b/u, entry.name);
+  }
+});
+
+test("optional desktop skin palettes remain scoped to their explicit skin selectors", () => {
+  for (const file of ["styles/retro.css", "styles/retro-layout.css"]) {
+    const rules = [...read(file).matchAll(/([^{}]+)\{([^{}]*)\}/gu)];
+    assert.ok(rules.length > 0);
+    for (const rule of rules) {
+      assert.match(rule[1]!, /:root[^{}]*\[data-appearance-skin=['"](?:win98|winxp|longhorn|longhorn-dark)['"]\]/u, file);
+    }
   }
 });
 
@@ -124,8 +235,8 @@ test("readable text, status labels and primary controls retain sufficient contra
 
 test("terminal UI palettes share the neutral surfaces and emphasis family", () => {
   for (const [definition, page, surface, accent, selected] of [
-    [lightTheme, "#f4f4f6", "#f1f1f4", "#4f46e5", "#ecebfb"],
-    [darkTheme, "#1a1a1e", "#232327", "#a5b4fc", "#33345a"]
+    [lightTheme, "#f5f5f5", "#f0f0f0", "#0f5fa8", "#e9e9e9"],
+    [darkTheme, "#1a1a1a", "#242424", "#74b6fb", "#343434"]
   ] as const) {
     const terminal = new Theme(definition, "truecolor");
     assert.equal(definition.export?.pageBg, page);

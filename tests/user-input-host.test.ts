@@ -62,7 +62,7 @@ test("普通模式经 Host 提问、CLI 回答、模型继续并落盘；取消�
   let client = connected;
   try {
     const sessionId = client.getSnapshot().info.sessionId;
-    assert.notEqual(client.getSnapshot().info.planning, true);
+    assert.equal("planning" in client.getSnapshot().info, false, "interactive session snapshots do not expose the removed planning mode");
     const waitForQuestion = (): Promise<void> => new Promise((resolve, reject) => {
       const timer = setTimeout(() => { unsubscribe(); reject(new Error("No question within 10 seconds")); }, 10000);
       const unsubscribe = client.subscribe((update) => {
@@ -102,7 +102,6 @@ test("普通模式经 Host 提问、CLI 回答、模型继续并落盘；取消�
     const textAnswer = await execFile(process.execPath, ["--import", loader, cli, "input", "answer", textRequest.toolCallId, "--session", sessionId, "--run", textRequest.runId, "--question", "place", "--text", "下载目录"], { cwd: root, env: process.env, timeout: 10000 });
     assert.equal(textAnswer.stdout.trim(), "Answers submitted.");
     assert.equal((await textRun.completion).status, "completed");
-    await client.setPlanning(sessionId, true);
     const cancelReady = waitForQuestion();
     const cancelling = client.submitPrompt("再确认一次，然后测试停止");
     void cancelling.completion.catch(() => undefined);

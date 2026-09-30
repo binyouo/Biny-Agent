@@ -13,6 +13,7 @@ function withStyles(attributes: string, check: (get: (selector: string) => CSSSt
   const dom = new JSDOM(`<style>${css}</style><div class="desktop-root biny-root" ${attributes}>
     <div class="biny-app-shell"><div class="biny-workspace-main"><header class="biny-chat-toolbar"></header>
       <div class="biny-chat-body"><div class="biny-chat-scroll"></div></div></div>
+    <main class="biny-content-shell"></main><div class="biny-sidebar-block"></div>
     <div class="biny-sidebar-pin-spacer"></div>
     <aside class="biny-sidebar"><div class="biny-sidebar-card"></div></aside>
     <aside class="biny-sidebar is-hidden"><div class="biny-sidebar-card"></div></aside>
@@ -67,6 +68,28 @@ test("减少动态效果保留即时布局", () => {
 });
 
 for (const mode of ["collapsed", "expanded", "peek"]) {
+  test(`侧栏外侧不叠加深色轨道或主区留白：${mode}`, () => {
+    withStyles(`data-sidebar-mode="${mode}"`, (get) => {
+      assert.equal(get(".biny-root").background, "var(--biny-backplate)");
+      assert.equal(get(".biny-app-shell").background, "var(--biny-backplate)");
+      assert.equal(get(".biny-sidebar-card").background, "var(--biny-sidebar-surface)");
+      for (const selector of [".biny-sidebar-block", ".biny-sidebar", ".is-peek-overlay", ".biny-sidebar-pin-spacer", ".biny-sidebar-topbar-floating"]) {
+        assert.doesNotMatch(get(selector).background, /var\(/u, `${selector} 不绘制主题底色`);
+        assert.equal(get(selector).backgroundColor, "rgba(0, 0, 0, 0)", `${selector} 只负责布局与交互`);
+      }
+      const content = get(".biny-content-shell");
+      assert.equal(content.margin, "0px", "主区不在侧栏的 10px 缝隙外重复留白");
+      assert.equal(content.borderRadius, "0px", "主画布不再露出另一层圆角底板");
+      const card = get(".biny-sidebar-card");
+      assert.equal(card.borderRadius, "16px");
+      assert.equal(card.marginInline, "10px");
+      assert.equal(card.overflow, "hidden");
+      assert.equal(card.boxSizing, "border-box");
+      assert.equal(card.width, "max(0px, calc(var(--biny-sidebar-content-width) - 20px))");
+      assert.equal(get(".biny-sidebar.is-hidden .biny-sidebar-card").opacity, "0");
+    });
+  });
+
   test(`顶栏在正文之外占位，滚动内容不能穿过顶部控制区：${mode}`, () => {
     withStyles(`data-sidebar-mode="${mode}"`, (get) => {
       assert.equal(get(".biny-workspace-main").flexDirection, "column");
@@ -79,6 +102,36 @@ for (const mode of ["collapsed", "expanded", "peek"]) {
     });
   });
 }
+
+test("结构皮肤切回普通皮肤后恢复卡片边界，主区不增加额外底板", () => {
+  const renderer = new URL("../src/desktop/renderer/src/", import.meta.url);
+  const layers = readFileSync(new URL("styles/layers.css", renderer), "utf8");
+  const sources = [...layers.matchAll(/@import "(\.\.?\/[^"]+\.css)"/gu)]
+    .map(entry => readFileSync(new URL(entry[1]!, new URL("styles/layers.css", renderer)), "utf8"));
+  sources.push(...["retro", "retro-layout"].map(name => readFileSync(new URL(`styles/${name}.css`, renderer), "utf8")));
+  const dom = new JSDOM('<div class="desktop-root biny-root"><div class="biny-app-shell"><main class="biny-content-shell"></main><aside class="biny-sidebar"><div class="biny-sidebar-card"></div></aside></div></div>');
+  try {
+    for (const source of sources) {
+      const style = dom.window.document.createElement("style");
+      style.textContent = source;
+      dom.window.document.head.append(style);
+    }
+    const root = dom.window.document.documentElement;
+    const computed = (selector: string): CSSStyleDeclaration => dom.window.getComputedStyle(dom.window.document.querySelector(selector)!);
+    for (const skin of ["win98", "winxp", "longhorn", "longhorn-dark"]) {
+      root.dataset.appearanceSkin = skin;
+      assert.equal(computed(".biny-sidebar-card").borderRadius, "0px", skin);
+      assert.equal(computed(".biny-sidebar").padding, "0px", skin);
+      root.dataset.appearanceSkin = "default";
+      assert.equal(computed(".biny-sidebar-card").borderRadius, "16px", skin);
+      assert.equal(computed(".biny-sidebar-card").marginInline, "10px", skin);
+      assert.equal(computed(".biny-sidebar").padding, "10px 0px", skin);
+      assert.equal(computed(".biny-content-shell").margin, "0px", skin);
+      assert.equal(computed(".biny-content-shell").borderRadius, "0px", skin);
+      assert.equal(computed(".biny-root").getPropertyValue("--biny-backplate"), "var(--surface)", skin);
+    }
+  } finally { dom.window.close(); }
+});
 
 test("展开固定前后不叠加外层阴影或占位底色，卡片保持原宽度淡入", () => {
   withStyles('', (get) => {

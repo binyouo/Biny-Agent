@@ -382,6 +382,35 @@ export class DurableTaskRunStore {
     });
   }
 
+  resumeWorkerAttempt(taskRunId: string, attemptId: string, expectedRevision: number): TaskRunWithAttempts {
+    this.assertOpen();
+    const task = this.requireWithAttempts(taskRunId);
+    const attempt = task.attempts.at(-1);
+    if (task.status !== "blocked" || task.revision !== expectedRevision || attempt?.attemptId !== attemptId
+      || attempt.status !== "blocked" || (attempt.failure as { failureClass?: string } | undefined)?.failureClass !== "worker_interrupted") {
+      throw new Error("Worker Attempt is not at an explicitly resumable interruption boundary.");
+    }
+    const now = new Date().toISOString();
+    const eventId = `task:${taskRunId}:revision:${String(task.revision + 1)}`;
+    const payload = { taskRunId, attemptId, status: "running", continuation: true };
+    return this.authority.runEventTransaction({
+      eventId, sessionId: task.sessionId ?? `task:${taskRunId}`, invocationId: attempt.runId,
+      runId: attempt.runId, turnId: attempt.turnId, eventType: "task.worker.resumed", payload, createdAt: now
+    }, () => {
+      const update = this.database.prepare(`
+        UPDATE task_runs SET status = 'running', terminal_event_id = NULL, updated_at = ?, revision = revision + 1
+        WHERE task_run_id = ? AND status = 'blocked' AND revision = ?
+      `).run(now, taskRunId, expectedRevision);
+      if (update.changes !== 1) throw new Error("Worker Attempt changed during continuation admission.");
+      this.database.prepare("UPDATE task_attempts SET status = 'running', failure_json = NULL, updated_at = ? WHERE attempt_id = ? AND task_run_id = ?").run(now, attemptId, taskRunId);
+      this.database.prepare(`
+        INSERT INTO task_events (event_id, task_run_id, attempt_id, event_type, payload_json, created_at)
+        VALUES (?, ?, ?, 'task.worker.resumed', ?, ?)
+      `).run(eventId, taskRunId, attemptId, stringify(payload), now);
+      return this.requireWithAttempts(taskRunId);
+    });
+  }
+
   /** 只有失败任务可以显式重试；新 attempt 会在执行入口创建。 */
   retry(taskRunId: string): TaskRunWithAttempts {
     const task = this.require(taskRunId);
@@ -405,7 +434,8 @@ export class DurableTaskRunStore {
 
   syncSubagentSnapshot(
     snapshot: SubagentTaskSnapshot,
-    binding: { taskRunId?: string; attemptId?: string; completedStatus?: "completed" | "verifying" } = {}
+    binding: { taskRunId?: string; attemptId?: string; completedStatus?: "completed" | "verifying" } = {},
+    output?: string
   ): TaskRunWithAttempts {
     const taskRunId = binding.taskRunId ?? snapshot.taskId;
     const existing = this.read(taskRunId);
@@ -427,8 +457,11 @@ export class DurableTaskRunStore {
       : snapshot.status === "completed"
         ? binding.completedStatus ?? "completed"
         : snapshot.status;
+    if (status === "queued" && task.status === "running") return this.requireWithAttempts(taskRunId);
+    const artifacts = attempt.artifacts as Record<string, unknown> | undefined;
     return this.transition(taskRunId, status, {
       attemptId: attempt.attemptId,
+      artifacts: snapshot.status === "completed" && output !== undefined ? { ...artifacts, output } : artifacts,
       failure: snapshot.error === undefined ? undefined : { message: snapshot.error }
     });
   }

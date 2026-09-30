@@ -14,6 +14,7 @@ import { registerCrystalCommands } from "./commands/crystal.js";
 import { referenceKindsCommand, referenceSearchCommand, referenceResolveCommand, referenceGraphCommand,
   referenceTokenCommand, referenceContextCommand, referenceOpenCommand } from "./commands/references.js";
 import { registerFatigueCommands } from "./commands/fatigue.js";
+import { registerThemeCommands } from "./commands/theme.js";
 import { registerUserInputCommands } from "./commands/userInput.js";
 import { registerSoulCommands } from "./commands/soul.js";
 import { doctorCommand } from "./commands/doctor.js";
@@ -122,6 +123,7 @@ registerFatigueCommands(program);
 registerUserInputCommands(program);
 registerSkillCommands(program, workspaceRoot);
 registerBrowserCommands(program);
+registerThemeCommands(program);
 
 const ref = program.command("ref").description("Search and resolve local @ references");
 ref.command("kinds").option("--json", "print JSON").action((options: { json?: boolean }) => wrap(() => referenceKindsCommand(workspaceRoot, options))());

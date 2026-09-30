@@ -19,11 +19,11 @@ const graphs = await GoalGraphStore.open(root, authority);
 const taskRuns = await DurableTaskRunStore.open(root, authority);
 try {
   const render = (plans: Plan[], busy = false, sessionId = "session") => renderToStaticMarkup(createElement(PlanPanel, {
-    sessionId, planning: false, busy,
+    sessionId, busy,
     projection: { sessionId: "session", plans },
     onMutation: async () => undefined, onError: () => undefined
   }));
-  assert.equal(render([]), "", "no plan must leave no persistent planning control above the composer");
+  assert.equal(render([]), "", "no plan leaves no plan card above the composer");
   const graph = graphs.createSupervisedGraph({ supervisorSessionId: "session", nodes: planTasksToNodes([
     { key: "analysis", title: "分析", task: "read inputs", acceptance: ["Cite sources"] },
     { key: "implementation", title: "实现", task: "write output", acceptance: ["Checks pass"], verification: { version: 1, objective: "valid output", checks: [{ id: "test", command: "true", definitionPaths: [] }], artifactPaths: ["output.txt"], allowedRepairPaths: ["output.txt"], maxAttempts: 1 } }

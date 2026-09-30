@@ -14,7 +14,9 @@ import type {
   DesktopQuickChatScreenContext,
   DesktopQuickChatSettings
 } from "../../../protocol.js";
-import { DEFAULT_FONT_PREFERENCE, SYSTEM_FONT_FAMILY } from "../../../fontPreference.js";
+import { AppearanceProvider } from "../AppearanceProvider.js";
+import { useDesktopAppearance } from "../useDesktopAppearance.js";
+import { WindowChrome } from "../components/WindowChrome.js";
 import { Icon } from "../components/Icon.js";
 import { MarkdownContent } from "../components/MarkdownContent.js";
 import { ModelPickerMenu } from "../components/composer/ModelPickerMenu.js";
@@ -150,6 +152,8 @@ export function QuickChatApp(): React.JSX.Element {
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | undefined>(undefined);
+  const appearance = useDesktopAppearance(setError);
+  const bootstrapAppearance = appearance.bootstrap;
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const modelAnchorRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -168,13 +172,8 @@ export function QuickChatApp(): React.JSX.Element {
 
   useEffect(() => {
     if (!bootstrap) return;
-    document.documentElement.dataset.theme = bootstrap.themePreference ?? "system";
-    const font = bootstrap.fontPreference ?? DEFAULT_FONT_PREFERENCE;
-    const style = document.documentElement.style;
-    style.setProperty("--app-font-size", String(font.size));
-    if (font.family === SYSTEM_FONT_FAMILY) style.removeProperty("--font-sans");
-    else style.setProperty("--font-sans", `"${font.family.replaceAll('"', "")}", var(--font-sans-stack)`);
-  }, [bootstrap]);
+    bootstrapAppearance(bootstrap);
+  }, [bootstrapAppearance, bootstrap]);
 
   useEffect(() => {
     let cancelled = false;
@@ -396,7 +395,8 @@ export function QuickChatApp(): React.JSX.Element {
   }, [busy]);
 
   return (
-    <div className="quickchat-root">
+    <AppearanceProvider snapshot={appearance.snapshot} onError={setError}><div className="quickchat-root">
+      <WindowChrome title="Biny · 快速对话" />
       <header className="quickchat-titlebar">
         <div className="quickchat-title" aria-label="Quick Chat">
           <span className="quickchat-title-mark"><Icon name="spark" size={14} /></span>
@@ -562,7 +562,7 @@ export function QuickChatApp(): React.JSX.Element {
           </button>
         </div>
       </footer>
-    </div>
+    </div></AppearanceProvider>
   );
 }
 

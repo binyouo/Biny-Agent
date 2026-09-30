@@ -9,7 +9,10 @@
 import { permissionPresentation } from "../../../permission/presentation.js";
 import { redactSecrets } from "../../../utils/secrets.js";
 import path from "node:path";
-import { app, BrowserWindow, dialog, globalShortcut, Menu, nativeImage, net, Notification, powerMonitor, shell, systemPreferences, Tray } from "electron";
+import { app, BrowserWindow, dialog, globalShortcut, Menu, nativeImage, nativeTheme, net, Notification, powerMonitor, shell, systemPreferences, Tray } from "electron";
+import { AppearancePreviewCoordinator } from "../../appearanceCoordinator.js";
+import { attachWindowTrail } from "./windowTrail.js";
+import { resolveAppearance } from "../../../appearance/resolve.js";
 import type { DesktopBootstrap, DesktopSessionHandoff } from "../../protocol.js";
 import { desktopIpc } from "../../protocol.js";
 import { DesktopAgentManager } from "./DesktopAgentManager.js";
@@ -148,6 +151,21 @@ async function startDesktopApplication(): Promise<void> {
     // QuickChat 隐藏时渲染层不消费事件；窗口已创建则无论显隐都推，让它在下次唤醒前攒好状态。
     quickChatWindow?.send(channel, payload);
   };
+  const appearance = new AppearancePreviewCoordinator({
+    read: () => ({ themePreference: state.themePreference(), appearancePreference: state.appearancePreference(), fontPreference: state.fontPreference() }),
+    publish: (snapshot) => {
+      if (nativeTheme.themeSource !== snapshot.themePreference) nativeTheme.themeSource = snapshot.themePreference;
+      const resolved = resolveAppearance(snapshot.appearancePreference, snapshot.themePreference, nativeTheme.shouldUseDarkColors);
+      const background = resolved.variables["--background"] ?? (resolved.mode === "dark" ? "#1a1a1a" : "#f5f5f5");
+      for (const window of BrowserWindow.getAllWindows()) {
+        if (window.isDestroyed() || (window !== mainWindow && window.getTitle() !== "Biny Quick Chat")) continue;
+        window.setBackgroundColor(background);
+        if (process.platform === "darwin" && window === mainWindow) window.setWindowButtonVisibility(resolved.skin === "default");
+      }
+      broadcastToWindows(desktopIpc.appearanceChanged, snapshot);
+    }
+  });
+  nativeTheme.on("updated", () => appearance.refresh());
   const threadBriefs = new DesktopThreadBriefService({
     configStore, state, projects,
     onChange: () => broadcastToWindows(desktopIpc.threadBriefChanged, {}),
@@ -320,9 +338,10 @@ async function startDesktopApplication(): Promise<void> {
       workspace: visibleWorkspace,
       sidebarWidth: state.sidebarWidth(),
       filePanelWidth: state.filePanelWidth(),
-      themePreference: state.themePreference(),
+      themePreference: appearance.snapshot().themePreference,
       chatResponse: (await configStore.load()).chat.response,
-      fontPreference: state.fontPreference()
+      fontPreference: appearance.snapshot().fontPreference,
+      appearancePreference: appearance.snapshot().appearancePreference
     };
   };
 
@@ -350,7 +369,10 @@ async function startDesktopApplication(): Promise<void> {
 
   const createWindow = (): BrowserWindow => {
     settingsClose.reset();
-    mainWindow = createDesktopWindow(state, decideWindowClose);
+    mainWindow = createDesktopWindow(state, decideWindowClose, () => appearance.snapshot());
+    const trailWindow = mainWindow;
+    attachWindowTrail(trailWindow, () => { const snapshot = appearance.snapshot(); return resolveAppearance(snapshot.appearancePreference, snapshot.themePreference, nativeTheme.shouldUseDarkColors).win98Trail; });
+    appearance.refresh();
     browser.attachDesktopWindow(mainWindow);
     mainWindow.webContents.once("did-finish-load", () => {
       if (pendingReferenceOpen) mainWindow?.webContents.send(desktopIpc.referenceOpen, pendingReferenceOpen);
@@ -379,6 +401,7 @@ async function startDesktopApplication(): Promise<void> {
   };
 
   registerDesktopIpc({
+    appearance,
     temporalMemory,
     crystals,
     threadBriefs,

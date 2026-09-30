@@ -2201,7 +2201,6 @@
 
 .user-message-editor:focus-within {
   border-color: color-mix(in srgb, var(--biny-focus) 65%, var(--biny-border));
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--biny-focus) 16%, transparent), var(--biny-shadow);
 }
 
 .biny-chat-scroll .user-message-editor textarea {

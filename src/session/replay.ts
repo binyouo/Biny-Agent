@@ -11,7 +11,7 @@
 import path from "node:path";
 import { parseFileChange, type CommittedFileChange } from "../tools/file/fileChange.js";
 import type { AgentMessage, AgentReasoningContent, ModelRequestMetrics } from "../agent/core/types.js";
-import { createToolOperationId, type ToolExecutionState, type ToolOutcomeUnknownReason } from "../tools/types.js";
+import { createToolOperationId, type ToolExecutionState, type ToolOutcomeUnknownReason, type ToolRetrySafety } from "../tools/types.js";
 import { readSessionEvents, readStoredSessionEvents } from "./events.js";
 import { activeSessionEventsForPath, sessionMessageTree, type SessionMessageNode, type SessionMessageReference } from "./messageTree.js";
 import type { ReasoningBlock, SessionContextCheckpoint, SessionContextState, SessionContextUsage, SessionEvent, SessionUsage } from "./recorder.js";
@@ -47,6 +47,7 @@ export interface SessionReplayOptions {
   includeCompactedMessages?: boolean;
   sessionId?: string;
   expectedRuntimeHighWater?: RuntimeHighWater;
+  resolveToolOutcome?: (call: { tool: string; sessionId: string; turnId: string; toolCallId: string; operationId: string; request: unknown }) => Pick<Extract<SessionEvent, { type: "tool_result" }>, "result" | "executionStatus" | "outcomeUnknownReason" | "evidence"> | undefined;
 }
 
 export interface SessionDiscardedToolCall {
@@ -269,6 +270,9 @@ interface RecoveryLedgerEntry {
   discarded?: boolean;
   change?: CommittedFileChange;
   fileChangeIsResult?: boolean;
+  retrySafety?: ToolRetrySafety;
+  request?: unknown;
+  turnId?: string;
 }
 
 interface RecoveryLedger {
@@ -337,7 +341,9 @@ function interruptedToolResults(events: SessionEvent[], options: SessionReplayOp
       if (event.message.role === "assistant") {
         for (const part of event.message.content) {
           if (part.type !== "toolCall") continue;
-          ensureEntry(part.name, part.id, undefined, index);
+          const entry = ensureEntry(part.name, part.id, undefined, index);
+          entry.request = part.arguments;
+          entry.turnId = event.runtime?.turnId ?? entry.turnId;
         }
       } else {
         const found = findEntry(event.message.toolCallId, event.message.toolName, undefined);
@@ -349,7 +355,9 @@ function interruptedToolResults(events: SessionEvent[], options: SessionReplayOp
       continue;
     }
     if (event.type === "tool_call") {
-      ensureEntry(event.tool, event.toolCallId, event.sequence, index, event.auditOnly);
+      const entry = ensureEntry(event.tool, event.toolCallId, event.sequence, index, event.auditOnly);
+      entry.request = event.args;
+      entry.turnId = event.runtime?.turnId ?? entry.turnId;
       continue;
     }
     if (event.type === "tool_execution") {
@@ -366,6 +374,7 @@ function interruptedToolResults(events: SessionEvent[], options: SessionReplayOp
       }
       found[1].operationId = event.operationId;
       found[1].state = event.state;
+      found[1].retrySafety = event.retrySafety ?? found[1].retrySafety;
       found[1].outcomeUnknownReason = event.outcomeUnknownReason ?? found[1].outcomeUnknownReason;
       found[1].evidence = event.evidence;
       found[1].lifecycleSeen = true;
@@ -405,6 +414,13 @@ function interruptedToolResults(events: SessionEvent[], options: SessionReplayOp
     if (!call || call.hasResult) continue;
     const state = call.lifecycleSeen ? call.state ?? "unknown" : "unknown";
     const operationId = call.operationId;
+    const durableOutcome = call.lifecycleSeen && call.toolCallId && call.turnId && options.sessionId && call.request !== undefined
+      ? options.resolveToolOutcome?.({ tool: call.tool, sessionId: options.sessionId, turnId: call.turnId, toolCallId: call.toolCallId, operationId, request: call.request })
+      : undefined;
+    if (durableOutcome) {
+      results.push({ type: "tool_result", tool: call.tool, toolCallId: call.toolCallId, sequence: call.sequence, operationId, recovered: true, ...durableOutcome });
+      continue;
+    }
     if (state === "not_started") {
       discarded.push({
         tool: call.tool,
@@ -429,9 +445,11 @@ function interruptedToolResults(events: SessionEvent[], options: SessionReplayOp
       });
       continue;
     }
+    const retryableRead = call.retrySafety === "safe" && !call.change
+      && (state === "admitted" || state === "running" || state === "cancel_requested");
     const executionStatus = call.change && call.fileChangeIsResult || state === "succeeded"
       ? "succeeded"
-      : state === "cancelled"
+      : state === "cancelled" || retryableRead
         ? "cancelled"
         : state === "failed"
           ? "failed"
@@ -439,7 +457,7 @@ function interruptedToolResults(events: SessionEvent[], options: SessionReplayOp
     const result = executionStatus === "succeeded"
       ? { status: "recovered-success", recovered: true, executionStatus, operationId, evidence: call.evidence, change: call.change }
       : executionStatus === "cancelled"
-        ? { status: "cancelled", interrupted: true, recovered: true, executionStatus, operationId, evidence: call.evidence }
+        ? { status: "cancelled", interrupted: true, recovered: true, executionStatus, operationId, evidence: call.evidence, retryable: retryableRead, message: retryableRead ? "Read interrupted without a persisted result; read again if still needed." : undefined }
         : executionStatus === "failed"
           ? { error: "Tool call failed before its result was persisted.", interrupted: true, recovered: true, executionStatus, operationId, evidence: call.evidence, change: call.change }
           : { error: "Tool call was interrupted; completion status is unknown.", interrupted: true, recovered: true, executionStatus: "unknown" as const, operationId, change: call.change };
@@ -591,6 +609,7 @@ function projectSessionConversation(
     recoveredToolResults?: ReadonlyArray<Extract<SessionEvent, { type: "tool_result" }>>;
   } = {}
 ): SessionConversationProjection {
+  events = completeCanonicalStepResults(events);
   const messages: AgentMessage[] = [];
   const references: SessionMessageReference[] = [];
   const pendingCalls: Array<{ id: string; name: string; args: unknown }> = [];
@@ -782,6 +801,26 @@ function projectSessionConversation(
   flushPendingCalls();
   appendRecoveredResultsForOpenCalls();
   return { messages, references };
+}
+
+function completeCanonicalStepResults(events: SessionEvent[]): SessionEvent[] {
+  const canonicalResults = new Set(events.flatMap((event) => event.type === "agent_message" && event.message.role === "toolResult" ? [event.message.toolCallId] : []));
+  const auditedResults = new Map(events.flatMap((event) => event.type === "tool_result" && event.toolCallId && !event.auditOnly ? [[event.toolCallId, event] as const] : []));
+  return events.flatMap((event): SessionEvent[] => {
+    if (event.type !== "agent_message" || event.message.role !== "assistant") return [event];
+    const missing = event.message.content.flatMap((part): SessionEvent[] => {
+      if (part.type !== "toolCall" || canonicalResults.has(part.id)) return [];
+      const result = auditedResults.get(part.id);
+      if (!result || result.tool !== part.name) return [];
+      canonicalResults.add(part.id);
+      return [{ type: "agent_message", message: {
+        role: "toolResult", toolCallId: part.id, toolName: part.name,
+        content: [{ type: "text", text: stringifyResult(result.result) }], details: result.result,
+        isError: result.executionStatus !== undefined && result.executionStatus !== "succeeded"
+      } }];
+    });
+    return [event, ...missing];
+  });
 }
 
 /**

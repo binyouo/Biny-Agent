@@ -19,7 +19,6 @@ import { generateText } from "ai";
 import type { LanguageModelV4CallOptions } from "@ai-sdk/provider";
 import { planStatus } from "../../../extensions/plan.js";
 import { TodoStore } from "../../../session/todoStore.js";
-import { assertPlanningOperationAllowed } from "../../../agent/planningPolicy.js";
 import type { AgentCapabilitySelection } from "../../../agent/capabilitySelection.js";
 import type {
   MemoryArchiveEntriesResult,
@@ -77,7 +76,9 @@ import {
   type RuntimeHostFactory,
   type RuntimeHostServer
 } from "../../../runtime/RuntimeHost.js";
-import { isSessionWriterConflictError, SessionLeaseError } from "../../../runtime/SessionLease.js";
+import { isSessionWriterConflictError } from "../../../runtime/SessionLease.js";
+import { RuntimeHostProtocolMismatchError, RuntimeHostStartupError } from "../../../runtime/host/errors.js";
+import { RuntimeHostSpawnCircuitOpenError } from "../../../runtime/host/reconnect.js";
 import {
   deleteSessionCatalogRecord,
   readSessionCatalogRecord,
@@ -134,6 +135,8 @@ import type {
   DesktopRecipeSuggestion,
   DesktopRunReceipt,
   DesktopRuntimeMutation,
+  DesktopRuntimeError,
+  DesktopRuntimeRetryResult,
   DesktopRuntimeProjection,
   DesktopSessionDocument,
   DesktopSessionWriterConflict,
@@ -224,7 +227,8 @@ export class DesktopAgentManager {
   private readonly runtimes = new Map<string, ManagedRuntime>();
   private readonly runtimeInitializations = new Map<string, Promise<ManagedRuntime | undefined>>();
   private readonly liveEvents = new Map<string, Map<string, AgentHostEvent[]>>();
-  private readonly runtimeErrors = new Map<string, string>();
+  private readonly runtimeErrors = new Map<string, DesktopRuntimeError>();
+  private readonly writerConflicts = new Map<string, DesktopSessionWriterConflict>();
   /** Renderer 用 undefined 表示空白草稿；主进程仍需记住它实际对应的 session runtime。 */
   private readonly draftSessionIds = new Map<string, string>();
   /** 侧栏工作使用独立 session，不能占用或污染主对话。并发初始化共用一个 promise。 */
@@ -287,9 +291,36 @@ export class DesktopAgentManager {
     try {
       await this.getRuntime(projectId, false);
     } catch (error) {
-      this.runtimeErrors.set(projectId, formatRuntimeInitializationError(error));
+      this.recordRuntimeFailure(projectId, error);
     }
     return await this.workspaceSnapshot(projectId, false);
+  }
+
+  async retryRuntime(projectId: string, sessionId?: string): Promise<DesktopRuntimeRetryResult> {
+    const project = this.projects.requireProject(projectId);
+    if (sessionId !== undefined) await this.projects.openSession(project, sessionId, [], new Map());
+    try {
+      if (sessionId === undefined) await this.ensureRuntime(projectId);
+      else await this.resolveSessionRuntime(projectId, sessionId, false);
+      this.runtimeErrors.delete(projectId);
+    } catch (error) {
+      this.recordRuntimeFailure(projectId, error);
+    }
+    const document = sessionId === undefined ? undefined : await this.openSession(projectId, sessionId);
+    return { workspace: await this.workspaceSnapshot(projectId, false), document };
+  }
+
+  private recordRuntimeFailure(projectId: string, error: unknown): void {
+    if (isSessionWriterConflictError(error)) {
+      this.writerConflicts.set(`${projectId}\0${error.sessionId}`, {
+        sessionId: error.sessionId,
+        ownerSurface: error.ownerSurface === "desktop" || error.ownerSurface === "tui" || error.ownerSurface === "cli"
+          ? error.ownerSurface
+          : undefined
+      });
+      return;
+    }
+    this.runtimeErrors.set(projectId, formatRuntimeInitializationError(error));
   }
 
   async workspaceSnapshot(projectId: string, refreshGit = true): Promise<DesktopWorkspaceSnapshot> {
@@ -546,11 +577,12 @@ export class DesktopAgentManager {
     const historicalDocument = await this.projects.openSession(project, sessionId, [], new Map());
     let document = historicalDocument;
     let managed: ManagedRuntime | undefined;
-    let runtimeError: string | undefined;
-    let writerConflict: DesktopSessionWriterConflict | undefined;
+    let runtimeError = this.runtimeErrors.get(projectId);
+    let writerConflict = this.writerConflicts.get(`${projectId}\0${sessionId}`);
     let runtimeSnapshot: InteractiveRuntimeSnapshot | undefined;
     try {
       managed = await this.getRuntime(projectId, false);
+      runtimeError = this.runtimeErrors.get(projectId);
       const remote = managed?.runtime instanceof RuntimeHostClient ? managed.runtime : undefined;
       if (remote && remote.runtimeSnapshots().some((entry) => entry.sessionId === sessionId)) {
         const previousSessionId = remote.getFocusedSessionId();
@@ -564,12 +596,8 @@ export class DesktopAgentManager {
       }
     } catch (error) {
       if (isSessionWriterConflictError(error)) {
-        writerConflict = {
-          sessionId,
-          ownerSurface: error.ownerSurface === "desktop" || error.ownerSurface === "tui" || error.ownerSurface === "cli"
-            ? error.ownerSurface
-            : undefined
-        };
+        this.recordRuntimeFailure(projectId, error);
+        writerConflict = this.writerConflicts.get(`${projectId}\0${sessionId}`);
       } else {
         runtimeError = formatRuntimeInitializationError(error);
         this.runtimeErrors.set(projectId, runtimeError);
@@ -588,7 +616,6 @@ export class DesktopAgentManager {
       }
       // 只读导航不申请长期 writer claim；发送、编辑和恢复操作会在各自的写入口按需申请。
     }
-    if (runtimeError === undefined) this.runtimeErrors.delete(projectId);
     // 已读标记只影响侧栏状态，不应阻塞会话正文首屏。后续元数据写入会先等待这次
     // 后台更新，并把同一份 revision 传给 catalog CAS，避免用户紧接着置顶/改名时误冲突。
     this.scheduleSessionRead(project, sessionId, document.session.metadataRevision);
@@ -660,21 +687,24 @@ export class DesktopAgentManager {
     personalization?: DesktopChatPersonalizationOverride,
     idempotencyKey?: string,
     promptContext?: string,
-    capabilitySelection?: AgentCapabilitySelection,
-    draftPlanning?: boolean
+    capabilitySelection?: AgentCapabilitySelection
   ): Promise<DesktopRunReceipt> {
-    return await this.runIdempotently(projectId, "send", idempotencyKey, async () => await this.sendPromptOnce(
-      projectId,
-      sessionId,
-      input,
-      attachments,
-      delivery,
-      personalization,
-      promptContext,
-      capabilitySelection,
-      draftPlanning,
-      idempotencyKey?.trim() || undefined
-    ));
+    try {
+      return await this.runIdempotently(projectId, "send", idempotencyKey, async () => await this.sendPromptOnce(
+        projectId,
+        sessionId,
+        input,
+        attachments,
+        delivery,
+        personalization,
+        promptContext,
+        capabilitySelection,
+        idempotencyKey?.trim() || undefined
+      ));
+    } catch (error) {
+      if (isSessionWriterConflictError(error)) this.recordRuntimeFailure(projectId, error);
+      throw error;
+    }
   }
 
   private async sendPromptOnce(
@@ -686,7 +716,6 @@ export class DesktopAgentManager {
     personalization?: DesktopChatPersonalizationOverride,
     promptContext?: string,
     capabilitySelection?: AgentCapabilitySelection,
-    draftPlanning?: boolean,
     messageId?: string
   ): Promise<DesktopRunReceipt> {
     const sendPerfStartedAt = perfNow();
@@ -696,10 +725,6 @@ export class DesktopAgentManager {
     const { managed, snapshot } = await this.runtimeForPrompt(projectId, requestedSessionId, personalization);
     const runtime = managed.runtime;
     const targetSessionId = snapshot.info.sessionId;
-    if (sessionId === undefined && draftPlanning !== undefined) {
-      if (runtime instanceof RuntimeHostClient) await runtime.setPlanning(targetSessionId, draftPlanning);
-      else await runtime.runExclusiveOperation("planning", async () => await managed.commands!.agent.setPlanning(draftPlanning));
-    }
     const project = this.projects.requireProject(projectId);
     recordPerfPhase("desktop.runtimeForPrompt", runtimeForPromptPerfStartedAt, { projectId }, project.path);
     const prompt = withAttachmentReferences(input, attachments);
@@ -807,41 +832,51 @@ export class DesktopAgentManager {
     sessionId: string | undefined,
     personalization?: DesktopChatPersonalizationOverride
   ): Promise<{ managed: ManagedRuntime; snapshot: InteractiveRuntimeSnapshot }> {
-    const primary = await this.ensureRuntime(projectId);
-    if (primary.runtime instanceof RuntimeHostClient) {
-      const target = await primary.runtime.ensureSession({ sessionId, writeIntent: true, focus: false });
-      if (personalization !== undefined) {
-        const state = await primary.runtime.getPersonalizationState(target.sessionId);
-        await primary.runtime.updateChatPersonalization(personalization, state.catalogRevision, target.sessionId);
+    try {
+      const primary = await this.ensureRuntime(projectId);
+      if (primary.runtime instanceof RuntimeHostClient) {
+        const target = await primary.runtime.ensureSession({ sessionId, writeIntent: true, focus: false });
+        this.writerConflicts.delete(`${projectId}\0${target.sessionId}`);
+        if (personalization !== undefined) {
+          const state = await primary.runtime.getPersonalizationState(target.sessionId);
+          await primary.runtime.updateChatPersonalization(personalization, state.catalogRevision, target.sessionId);
+        }
+        return { managed: primary, snapshot: primary.runtime.getSnapshot(target.sessionId) };
       }
-      return { managed: primary, snapshot: primary.runtime.getSnapshot(target.sessionId) };
-
-    }
-    if (sessionId !== undefined && primary.runtime.getSnapshot().info.sessionId !== sessionId) {
-      if (runtimeIsBusy(primary.runtime.getSnapshot())) {
-        throw new Error("当前项目的 Runtime Host 正在运行，无法在同进程 fallback 中并行打开另一个会话。");
+      if (sessionId !== undefined && primary.runtime.getSnapshot().info.sessionId !== sessionId) {
+        if (runtimeIsBusy(primary.runtime.getSnapshot())) {
+          throw new Error("当前项目的 Runtime Host 正在运行，无法在同进程 fallback 中并行打开另一个会话。");
+        }
+        await primary.runtime.resumeSession(sessionId);
+      } else if (sessionId === undefined) {
+        await this.ensureDraftRuntime(projectId);
       }
-      await primary.runtime.resumeSession(sessionId);
-    } else if (sessionId === undefined) {
-      await this.ensureDraftRuntime(projectId);
+      if (personalization !== undefined) await this.updateManagedChatPersonalization(primary, personalization);
+      return { managed: primary, snapshot: primary.runtime.getSnapshot() };
+    } catch (error) {
+      this.recordRuntimeFailure(projectId, error);
+      throw error;
     }
-    if (personalization !== undefined) await this.updateManagedChatPersonalization(primary, personalization);
-    return { managed: primary, snapshot: primary.runtime.getSnapshot() };
   }
 
   /** 找到或准备 Host 注册表中的目标 session runtime。 */
-  private async resolveSessionRuntime(projectId: string, sessionId: string): Promise<ManagedRuntime> {
-    const primary = await this.ensureRuntime(projectId);
-    if (primary.runtime instanceof RuntimeHostClient) {
-      await primary.runtime.ensureSession({ sessionId, writeIntent: true });
+  private async resolveSessionRuntime(projectId: string, sessionId: string, focus = true): Promise<ManagedRuntime> {
+    try {
+      const primary = await this.ensureRuntime(projectId);
+      if (primary.runtime instanceof RuntimeHostClient) {
+        await primary.runtime.ensureSession({ sessionId, writeIntent: true, focus });
+      } else if (primary.runtime.getSnapshot().info.sessionId !== sessionId) {
+        if (runtimeIsBusy(primary.runtime.getSnapshot())) {
+          throw new Error("当前项目的 Runtime Host 正在运行，无法在同进程 fallback 中并行打开另一个会话。");
+        }
+        await primary.runtime.resumeSession(sessionId);
+      }
+      this.writerConflicts.delete(`${projectId}\0${sessionId}`);
       return primary;
+    } catch (error) {
+      this.recordRuntimeFailure(projectId, error);
+      throw error;
     }
-    if (primary.runtime.getSnapshot().info.sessionId === sessionId) return primary;
-    if (!runtimeIsBusy(primary.runtime.getSnapshot())) {
-      await primary.runtime.resumeSession(sessionId);
-      return primary;
-    }
-    throw new Error("当前项目的 Runtime Host 正在运行，无法在同进程 fallback 中并行打开另一个会话。");
   }
 
   async resumeInterruptedTurn(projectId: string, sessionId: string): Promise<DesktopRunReceipt | undefined> {
@@ -2354,18 +2389,11 @@ export class DesktopAgentManager {
   async runtimeMutation(projectId: string, operation: DesktopRuntimeMutation, payload: Record<string, unknown> = {}): Promise<unknown> {
     const { runtime, commands, host } = await this.ensureRuntime(projectId);
     if (!commands) return await executeRemoteRuntimeMutation(requireRemoteRuntime(runtime), operation, payload);
-    assertPlanningOperationAllowed(runtime.getSnapshot().info.planning, operation);
-    if (operation === "plan.mode" || operation === "plan.start") {
+    if (operation === "plan.start") {
       if (payload.sessionId !== runtime.getSnapshot().info.sessionId) throw new Error("计划操作必须在原会话执行。");
-      return await runtime.runExclusiveOperation("planning", async (signal) => {
-        if (operation === "plan.start") {
-          if (!Number.isSafeInteger(payload.revision)) throw new Error("缺少草稿版本。");
-          return await commands.startPlanDraft(requiredPayloadString(payload.graphId, "graphId"), payload.revision as number, signal);
-        }
-        if (typeof payload.planning !== "boolean") throw new Error("缺少规划模式。");
-        if (payload.planning && commands.graphs.listGraphs().some((graph) => graph.supervisorSessionId === payload.sessionId && graph.status === "running")) throw new Error("请先停止正在执行的计划。");
-        await commands.agent.setPlanning(payload.planning);
-        return runtime.getSnapshot().info;
+      return await runtime.runExclusiveOperation("plan", async (signal) => {
+        if (!Number.isSafeInteger(payload.revision)) throw new Error("缺少草稿版本。");
+        return await commands.startPlanDraft(requiredPayloadString(payload.graphId, "graphId"), payload.revision as number, signal);
       });
     }
     if (operation === "worktree.merge" || operation === "worktree.remove") {
@@ -2549,6 +2577,10 @@ export class DesktopAgentManager {
     // 移除项目同时清理展示缓存；后台任务是否需要驻留由 Host 判断。
     this.liveEvents.delete(projectId);
     this.draftSessionIds.delete(projectId);
+    this.runtimeErrors.delete(projectId);
+    for (const key of this.writerConflicts.keys()) {
+      if (key.startsWith(`${projectId}\0`)) this.writerConflicts.delete(key);
+    }
     const managed = this.runtimes.get(projectId);
     if (!managed) return;
     await this.closeManagedRuntime(managed);
@@ -2699,7 +2731,7 @@ export class DesktopAgentManager {
         await this.rebuildManagedRuntime(projectId, managed);
         this.runtimeErrors.delete(projectId);
       } catch (error) {
-        this.runtimeErrors.set(projectId, error instanceof Error ? error.message : String(error));
+        this.recordRuntimeFailure(projectId, error);
       }
     }
   }
@@ -2762,9 +2794,7 @@ export class DesktopAgentManager {
     try {
       return await initialization;
     } catch (error) {
-      const message = formatRuntimeInitializationError(error);
-      this.runtimeErrors.set(projectId, message);
-      if (error instanceof SessionLeaseError) throw new Error(message);
+      this.recordRuntimeFailure(projectId, error);
       throw error;
     } finally {
       if (this.runtimeInitializations.get(projectId) === initialization) this.runtimeInitializations.delete(projectId);
@@ -2781,7 +2811,7 @@ export class DesktopAgentManager {
       (error: unknown) => {
         // busy admission 拒绝只是竞态信号，run 从未开始；锁死项目视图会把正在正常跑的任务也挡在门外。
         if (isBusyAdmissionError(error)) return;
-        this.runtimeErrors.set(projectId, error instanceof Error ? error.message : String(error));
+        this.recordRuntimeFailure(projectId, error);
       }
     );
   }
@@ -3434,10 +3464,6 @@ function remainingTimeout(deadline: number): number {
 }
 
 async function executeRemoteRuntimeMutation(runtime: RuntimeHostClient, operation: DesktopRuntimeMutation, payload: Record<string, unknown>): Promise<unknown> {
-  if (operation === "plan.mode") {
-    if (typeof payload.planning !== "boolean") throw new Error("缺少规划模式。");
-    return await runtime.setPlanning(requiredPayloadString(payload.sessionId, "sessionId"), payload.planning);
-  }
   if (operation === "plan.start") {
     if (!Number.isSafeInteger(payload.revision)) throw new Error("缺少草稿版本。");
     return await runtime.startPlanDraft(requiredPayloadString(payload.sessionId, "sessionId"), requiredPayloadString(payload.graphId, "graphId"), payload.revision as number);
@@ -3572,11 +3598,14 @@ function isBusyAdmissionError(error: unknown): boolean {
   return error instanceof Error && error.message.includes("while the runtime is busy");
 }
 
-function formatRuntimeInitializationError(error: unknown): string {
-  if (error instanceof SessionLeaseError) {
-    return `当前项目正在被另一个 Biny/CLI 会话占用（进程 ${String(error.pid)}）。请先退出该会话，或切换到其他项目后重试。`;
-  }
-  return error instanceof Error ? error.message : String(error);
+function formatRuntimeInitializationError(error: unknown): DesktopRuntimeError {
+  return {
+    kind: error instanceof RuntimeHostStartupError && error.reason === "timeout"
+      ? "startup_timeout"
+      : error instanceof RuntimeHostProtocolMismatchError ? "protocol_mismatch" : "startup_failed",
+    message: error instanceof Error ? error.message : String(error),
+    retryable: !(error instanceof RuntimeHostProtocolMismatchError || error instanceof RuntimeHostSpawnCircuitOpenError)
+  };
 }
 
 function compactJsonError(body: string): string | undefined {

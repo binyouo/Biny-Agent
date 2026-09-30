@@ -308,7 +308,7 @@ export const Composer = memo(function Composer({
     const value = materializeDraftReferences(draft.value, draft.tokens).trim() || (attachments.length ? "请分析这些附件。" : "");
     const resume = Boolean(recovery) && !running && !editing && isResumeInput(draft.value, attachments.length + pendingAttachments.length);
     if (!project || (!value && !resume) || busy || submitFlightRef.current || sessionWriterConflict
-      || modelSetupRequired || resourceState === "loading" || memoryToggleBusy || pendingAttachments.length) return;
+      || modelSetupRequired || memoryToggleBusy || pendingAttachments.length) return;
     // 编辑模式：提交直接走「替换原消息并重新生成」，不携带附件，也不走模型切换/斜杠命令链路。
     if (editing) {
       submitFlightRef.current = true;
@@ -511,14 +511,12 @@ export const Composer = memo(function Composer({
   const attachmentCount = attachments.length + pendingAttachments.length;
   const hasDraft = Boolean(input.trim() || attachments.length);
   const resumeAction = Boolean(recovery) && !running && !editing && isResumeInput(input, attachmentCount);
-  const sendDisabled = (resumeAction && !recovery?.canContinue) || memoryToggleBusy || resourceState === "loading"
+  const sendDisabled = (resumeAction && !recovery?.canContinue) || memoryToggleBusy
     || (!hasDraft && !resumeAction) || !project || sessionWriterConflict || modelSetupRequired || busy || pendingAttachments.length > 0;
   const sendDisabledReason = !project
     ? "请先打开一个项目。"
       : modelSetupRequired
         ? "还没有可用的模型连接，请先配置模型。"
-        : resourceState === "loading"
-          ? "正在准备 MCP / 技能能力，请稍候再发送。"
         : memoryToggleBusy
           ? "正在确认当前聊天的记忆状态，请稍候。"
         : sessionWriterConflict
@@ -670,12 +668,12 @@ export const Composer = memo(function Composer({
                 data-composer-menu="capabilities"
                 disabled={capabilitySwitchDisabled}
                 disabledReason={capabilitySwitchDisabledReason}
-                label={resourceState === "loading" ? "工具与技能，正在准备" : resourceState === "degraded" ? "工具与技能，部分能力不可用" : "工具与技能"}
+                label={resourceState === "degraded" ? "工具与技能，部分能力不可用" : "工具与技能"}
                 onClick={() => setMenu(menu === "capabilities" ? null : "capabilities")}
-                tooltip={menu === "capabilities" ? undefined : resourceState === "loading" ? "正在准备工具与技能" : resourceState === "degraded" ? "部分能力不可用，点击查看" : "工具与技能"}
+                tooltip={menu === "capabilities" ? undefined : resourceState === "degraded" ? "部分能力不可用，点击查看" : "工具与技能"}
               >
                 <span className="capabilities-trigger-icon">
-                  {resourceState === "loading" ? <span className="capabilities-spinner" /> : <Icon name="sliders" size={15} />}
+                  <Icon name="sliders" size={15} />
                   {resourceState === "degraded" ? <span className="capabilities-status-dot" /> : null}
                 </span>
                 {/* 有显式选择时展示数量，auto / all 不计数，保持图标简洁。 */}

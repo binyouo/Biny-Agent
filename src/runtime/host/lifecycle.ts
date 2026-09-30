@@ -20,7 +20,7 @@ import {
   runtimeHostStartupTimeoutMs as hostStartupTimeoutMs
 } from "./protocol.js";
 import { runtimeHostSpawnCircuitFor } from "./reconnect.js";
-import { RuntimeHostProtocolMismatchError } from "./errors.js";
+import { RuntimeHostProtocolMismatchError, RuntimeHostStartupError } from "./errors.js";
 import type {
   HostRegistration,
   RuntimeHostLock,
@@ -138,7 +138,7 @@ export async function waitForHostRegistration(
       circuit.recordFailure();
       const circuitError = circuit.failureError();
       if (circuitError) throw circuitError;
-      throw new Error(`Runtime Host process exited before attach (code ${String(child.exitCode)}).`);
+      throw new RuntimeHostStartupError("process_exit", child.exitCode);
     }
     const registration = await readRegistration(runtimeHostPaths(persistenceRoot));
     if (registration) {
@@ -155,7 +155,7 @@ export async function waitForHostRegistration(
     circuit.recordFailure();
     const circuitError = circuit.failureError();
     if (circuitError) throw circuitError;
-    throw new Error(`Runtime Host process exited before attach (code ${String(child.exitCode)}).`);
+    throw new RuntimeHostStartupError("process_exit", child.exitCode);
   }
   // 候选进程可能仍存活但已经失去注册能力（例如加载 provider 卡死）。超时后必须回收
   // 这个候选，否则每次重连都会留下一个 detached Host，最终与 launchd KeepAlive 叠加成进程风暴。
@@ -168,7 +168,7 @@ export async function waitForHostRegistration(
   circuit.recordFailure();
   const circuitError = circuit.failureError();
   if (circuitError) throw circuitError;
-  throw new Error(`Runtime Host did not become ready within ${String(timeoutMs)}ms.`);
+  throw new RuntimeHostStartupError("timeout", timeoutMs);
 }
 
 /** 超时候选只允许短暂优雅退出，随后强制回收；不会触碰 registration 中的其他 owner。 */

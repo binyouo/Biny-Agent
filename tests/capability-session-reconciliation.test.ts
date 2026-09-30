@@ -1,0 +1,84 @@
+import assert from "node:assert/strict";
+import { mkdtemp, rm, stat } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import test from "node:test";
+import { AgentSession } from "../src/agent/AgentSession.js";
+import { defaultConfig } from "../src/config/schema.js";
+import { PermissionManager } from "../src/permission/PermissionManager.js";
+import { CapabilityStore } from "../src/runtime/CapabilityStore.js";
+import { RuntimeEventAuthority } from "../src/runtime/RuntimeAuthority.js";
+import { readSessionEvents } from "../src/session/events.js";
+import { SessionRecorder } from "../src/session/recorder.js";
+import { sessionFileFingerprint } from "../src/session/parseCache.js";
+import { replaySessionEvents } from "../src/session/replay.js";
+import { tryReadSessionSnapshot, writeSessionSnapshot } from "../src/session/sessionSnapshot.js";
+import { ensureAgentDirs } from "../src/session/store.js";
+import { ToolRegistry } from "../src/tools/registry.js";
+import { createToolOperationId } from "../src/tools/types.js";
+
+test("cold session recovery restores an already durable capability result exactly once", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "biny-result-reconciliation-"));
+  await ensureAgentDirs(root);
+  let authority = await RuntimeEventAuthority.open(root, { backfillLegacySessions: false });
+  let capabilities = await CapabilityStore.open(root, authority);
+  const sessionId = "durable-result";
+  const toolCallId = "call";
+  const operationId = createToolOperationId(sessionId, toolCallId);
+  const expectedResult = { receipt: "receipt-123", value: 13 };
+  const recorder = new SessionRecorder(root, sessionId, undefined, authority.asSink());
+  recorder.setRuntimeContext({ runId: "run", turnId: "turn" });
+  await recorder.recordAndFlush({ type: "agent_message", message: { role: "assistant", content: [{ type: "toolCall", id: toolCallId, name: "external_write", arguments: { value: 13 } }] } });
+  await recorder.recordAndFlush({ type: "tool_call", tool: "external_write", toolCallId, args: { value: 13 }, auditOnly: true });
+  await recorder.recordAndFlush({ type: "tool_execution", tool: "external_write", toolCallId, sequence: 1, operationId, state: "admitted", retrySafety: "unsafe" });
+  let executions = 0;
+  await capabilities.executeHostCapability({ capabilityName: "host:mcp:external_write", schema: { type: "object" }, sessionId, turnId: "turn", toolCallId, offerId: operationId, request: { value: 13 } }, async () => { executions += 1; return expectedResult; });
+  await recorder.close();
+  const fingerprint = sessionFileFingerprint(await stat(recorder.filePath));
+  await writeSessionSnapshot(recorder.filePath, fingerprint, replaySessionEvents(await readSessionEvents(recorder.filePath), { sessionId }));
+  assert.equal((await tryReadSessionSnapshot(recorder.filePath, fingerprint))?.recoveredToolResults[0]?.executionStatus, "unknown", "a cached protocol repair is not execution authority");
+  capabilities.close();
+  authority.close();
+  authority = await RuntimeEventAuthority.open(root, { backfillLegacySessions: false });
+  capabilities = await CapabilityStore.open(root, authority);
+  const config = structuredClone(defaultConfig);
+  config.context.memory.useMemories = false;
+  config.context.memory.generateMemories = false;
+  const agent = new AgentSession({ workspaceRoot: root, config, toolRegistry: new ToolRegistry(), permissionManager: new PermissionManager(config.permission), recorder: new SessionRecorder(root, undefined, undefined, authority.asSink()), runtimeEventSink: authority.asSink(), capabilities });
+  try {
+    await agent.initialize();
+    const identity = { tool: "external_write", sessionId, turnId: "turn", toolCallId, operationId, request: { value: 13 } };
+    assert.equal(capabilities.findHostToolInvocation(identity)?.status, "result");
+    for (const mismatch of [{ sessionId: "other" }, { turnId: "other" }, { toolCallId: "other" }, { request: { value: 14 } }]) {
+      assert.throws(() => capabilities.findHostToolInvocation({ ...identity, ...mismatch }), { code: "idempotency_conflict" });
+    }
+    assert.equal(capabilities.findHostToolInvocation({ ...identity, tool: "other" }), undefined);
+    const resumed = await agent.resume(sessionId);
+    const restoredMessage = resumed.messages.find((message) => message.role === "toolResult" && message.toolCallId === toolCallId);
+    assert.match(JSON.stringify(restoredMessage), /receipt-123/u);
+    await agent.resume(sessionId);
+    const results = (await readSessionEvents(recorder.filePath)).filter((event) => event.type === "tool_result");
+    assert.equal(results.length, 1);
+    assert.equal(results[0]?.executionStatus, "succeeded");
+    assert.deepEqual(results[0]?.result, expectedResult);
+    assert.equal(executions, 1);
+    const currentRecorder = agent.getSessionRecorder();
+    const ambiguousCallId = "old-safe-read";
+    const ambiguousOperationId = createToolOperationId(sessionId, ambiguousCallId);
+    currentRecorder.setRuntimeContext({ runId: "read-run", turnId: "read-turn" });
+    await currentRecorder.recordAndFlush({ type: "agent_message", message: { role: "assistant", content: [{ type: "toolCall", id: ambiguousCallId, name: "external_inspect", arguments: { value: 13 } }] } });
+    await currentRecorder.recordAndFlush({ type: "tool_call", tool: "external_inspect", toolCallId: ambiguousCallId, args: { value: 13 }, auditOnly: true });
+    await currentRecorder.recordAndFlush({ type: "tool_execution", tool: "external_inspect", toolCallId: ambiguousCallId, sequence: 2, operationId: ambiguousOperationId, state: "admitted", retrySafety: "safe" });
+    await capabilities.executeHostCapability({ capabilityName: "host:mcp:external_inspect", schema: { type: "object" }, sessionId, turnId: "read-turn", toolCallId: ambiguousCallId, offerId: ambiguousOperationId, request: { value: 14 } }, async () => ({ value: 14 }));
+    await agent.resume(sessionId);
+    const ambiguousResult = (await readSessionEvents(recorder.filePath)).find((event) => event.type === "tool_result" && event.toolCallId === ambiguousCallId);
+    assert.equal(ambiguousResult?.type === "tool_result" ? ambiguousResult.executionStatus : undefined, "unknown", "operation identity conflict must override a legacy safe-read hint");
+    await capabilities.executeHostCapability({ capabilityName: "host:plugin:external_write", schema: { type: "object" }, sessionId, turnId: "turn", toolCallId, offerId: operationId, request: { value: 13 } }, async () => expectedResult);
+    assert.throws(() => capabilities.findHostToolInvocation(identity), { code: "idempotency_conflict" }, "ambiguous authority cannot resolve an operation");
+  } finally {
+    await agent.close();
+    capabilities.close();
+    authority.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});

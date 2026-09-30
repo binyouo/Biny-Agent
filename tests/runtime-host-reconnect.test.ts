@@ -124,7 +124,12 @@ const backoff = { minMs: runtimeHostReconnectMinMs, maxMs: runtimeHostReconnectM
   try {
     await assert.rejects(
       waitForHostRegistration(persistenceRoot, child, 40),
-      /did not become ready within 40ms/u
+      (error: unknown) => {
+        assert.ok(error instanceof Error);
+        assert.match(error.message, /did not become ready within 40ms/u);
+        assert.equal("code" in error ? error.code : undefined, "runtime_host_startup_timeout");
+        return true;
+      }
     );
     assert.equal(isProcessAlive(child.pid ?? 0), false, "启动超时后候选进程必须被终止");
   } finally {

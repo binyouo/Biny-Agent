@@ -1536,7 +1536,7 @@ function createRealTaskExecutor(
 
 function graphRuntime(run: (prompt: string) => Promise<string>): InteractiveRuntimeHandle {
   return {
-    getSnapshot: () => ({ revision: 0, state: { kind: "idle" }, info: { sessionId: "verification-test", planning: false } }),
+    getSnapshot: () => ({ revision: 0, state: { kind: "idle" }, info: { sessionId: "verification-test" } }),
     submitPrompt: (prompt, _attachments, ids) => ({
       runId: ids?.runId ?? randomUUID(),
       messageId: randomUUID(),

@@ -165,11 +165,11 @@ async function testBusyCheckpointDoesNotBlockOtherGraphs(): Promise<void> {
   let busy = true;
   const outcome = { runId: "boundary-run", status: "completed", stopReason: "model_stop", steps: 1, output: "done", durationMs: 1 };
   const idleRuntime = {
-    getSnapshot: () => ({ state: { kind: "idle" }, info: { sessionId: "idle-session", planning: false } }),
+    getSnapshot: () => ({ state: { kind: "idle" }, info: { sessionId: "idle-session" } }),
     submitPrompt: () => ({ completion: Promise.resolve(outcome) })
   } as unknown as InteractiveRuntimeHandle;
   const ownerRuntime = {
-    getSnapshot: () => ({ state: { kind: busy ? "runs" : "idle" }, info: { sessionId: "owner", planning: false } }),
+    getSnapshot: () => ({ state: { kind: busy ? "runs" : "idle" }, info: { sessionId: "owner" } }),
     submitSupervisionTurn: () => ({ completion: Promise.resolve(outcome) })
   } as unknown as InteractiveRuntimeHandle;
   const supervisor = new GraphSupervisor({ store: graphs, runtime: idleRuntime, resolveSupervisorRuntime: async () => ownerRuntime });
@@ -401,7 +401,6 @@ async function testHostPlanApprovalRestartAndDelivery(planning = false, independ
     await mkdir(path.join(root, ".verification-state"));
     host = await startRuntimeHost(root, factory);
     client = await connectRuntimeHost(root, { clientId: "plan-test", surface: "cli" });
-    if (planning) await client.setPlanning(sessionId!, true);
     const outcome = await client.submitPrompt(independent
       ? "请在后台分别生成并验收两个独立文件，遇到审批及时告诉我。"
       : "请先生成第一个文件并验收，再生成第二个文件；后台继续，最后在这里交付。").completion;
@@ -411,20 +410,14 @@ async function testHostPlanApprovalRestartAndDelivery(planning = false, independ
       assert.equal(draft.status, "draft");
       assert.equal(commands!.taskRuns.list().tasks.length, 0, "draft never dispatches workers");
       assert.deepEqual(workerWrites, []);
-      await assert.rejects(client.graphStart(draft.graphId), /Planning mode/u);
       await client.close(); client = undefined;
       await host.close(); host = undefined;
       host = await startRuntimeHost(root, factory);
       client = await connectRuntimeHost(root, { clientId: "plan-draft-restarted", surface: "cli" });
-      assert.equal(commands!.agent.getInfo().planning, true, "planning survives Host restart");
+      assert.equal("planning" in commands!.agent.getInfo(), false, "removed planning mode is not restored into a session");
       await assert.rejects(client.startPlanDraft(sessionId!, draft.graphId, draft.revision + 1), /stale/u);
-      await client.setPermissionMode("read-only");
-      await assert.rejects(client.startPlanDraft(sessionId!, draft.graphId, draft.revision), /read.only/iu);
-      assert.equal(commands!.agent.getInfo().planning, true, "denied start restores planning mode");
       assert.equal(commands!.graphs.inspectGraph(draft.graphId).status, "draft");
-      await client.setPermissionMode("ask");
       await client.startPlanDraft(sessionId!, draft.graphId, draft.revision);
-      assert.equal(commands!.agent.getInfo().planning, false);
       await assert.rejects(client.startPlanDraft(sessionId!, draft.graphId, draft.revision), /stale|busy/u);
     }
     await waitUntil(() => reports.length >= 1, 15_000).catch((error: unknown) => {
@@ -561,7 +554,6 @@ async function testHostReadOnlyReportPlan(): Promise<void> {
     await writeFile(path.join(root, "source.txt"), "source fact");
     host = await startRuntimeHost(root, factory);
     client = await connectRuntimeHost(root, { clientId: "report-test", surface: "cli" });
-    await client.setPlanning(sessionId!, true);
     assert.equal((await client.submitPrompt("请先规划一个可在后台持续、重启后恢复的本地资料分析任务：读取来源，再综合结论，不修改文件。").completion).status, "completed");
     const draft = (await client.planList(sessionId!))[0]!;
     graphId = draft.graphId;

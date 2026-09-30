@@ -31,6 +31,7 @@ import { UserInputCard } from "./chat/UserInputCard.js";
 
 interface MessageTimelineProps {
   sessionId?: string;
+  readOnly?: boolean;
   projectId: string;
   turns: TimelineTurn[];
   skillDescriptions?: ReadonlyMap<string, string>;
@@ -79,7 +80,7 @@ function turnIsRunning(turn: TimelineTurn, runtimeActiveRunId: string | undefine
     || turn.tools.some((tool) => tool.runId === runtimeActiveRunId && (tool.status === "running" || tool.status === "waiting")));
 }
 
-export const MessageTimeline = memo(function MessageTimeline({ sessionId, projectId, turns, skillDescriptions, skillLabels, pendingUserMessage, pendingFloatFromComposer, runtimeActiveRunId, onPreviewFile, onOpenExternal, onReferenceMessage, onShowMessageReferences, onAddQuoteToConversation, onResolvePermission, thinking, onRetry, onSwitchVersion, onEditRequest, editInFlight, onCreateBranch, onRollbackFiles }: MessageTimelineProps): React.JSX.Element {
+export const MessageTimeline = memo(function MessageTimeline({ sessionId, readOnly = false, projectId, turns, skillDescriptions, skillLabels, pendingUserMessage, pendingFloatFromComposer, runtimeActiveRunId, onPreviewFile, onOpenExternal, onReferenceMessage, onShowMessageReferences, onAddQuoteToConversation, onResolvePermission, thinking, onRetry, onSwitchVersion, onEditRequest, editInFlight, onCreateBranch, onRollbackFiles }: MessageTimelineProps): React.JSX.Element {
   // 重试会先把目标之后的消息从视图中撤掉，再等待新回合流入；这里保留同样的乐观投影。
   // 编辑的重写投影来自 App（editInFlight），提交入口在底部输入框，不经过本组件状态。
   const [optimisticRewrite, setOptimisticRewrite] = useState<OptimisticRewrite>();
@@ -87,6 +88,7 @@ export const MessageTimeline = memo(function MessageTimeline({ sessionId, projec
   const [addingQuote, setAddingQuote] = useState(false);
   const timelineRef = useRef<HTMLDivElement>(null);
   const updateQuoteSelection = useCallback((): void => {
+    if (readOnly) { setQuoteSelection(undefined); return; }
     const selection = window.getSelection();
     const timeline = timelineRef.current;
     if (!selection || selection.isCollapsed || !selection.rangeCount || !timeline) { setQuoteSelection(undefined); return; }
@@ -109,7 +111,7 @@ export const MessageTimeline = memo(function MessageTimeline({ sessionId, projec
     };
     setQuoteSelection((current) => current?.messageId === next.messageId && current.quote === next.quote
       && Math.abs(current.top - next.top) < 1 && Math.abs(current.left - next.left) < 1 ? current : next);
-  }, []);
+  }, [readOnly]);
   useEffect(() => {
     let selectionTimer: number | undefined;
     const scheduleSelectionUpdate = (): void => {
@@ -248,6 +250,7 @@ export const MessageTimeline = memo(function MessageTimeline({ sessionId, projec
       {displayedTurns.map((turn, index) => (
         <Turn
           busy={busy}
+          readOnly={readOnly}
           entrySheenOnly={firstTurnSheenOnly && index === 0}
           skillDescriptions={skillDescriptions}
           skillLabels={skillLabels}
@@ -281,7 +284,7 @@ export const MessageTimeline = memo(function MessageTimeline({ sessionId, projec
         />
       ) : null}
       {thinking && !displayedTurns.some((turn) => turnIsRunning(turn, runtimeActiveRunId)) ? <RunStatus /> : null}
-      {quoteSelection ? createPortal(<button aria-label="将选中文字添加到对话" aria-busy={addingQuote} className="message-selection-reference" disabled={addingQuote} style={{ top: quoteSelection.top, left: quoteSelection.left }}
+      {!readOnly && quoteSelection ? createPortal(<button aria-label="将选中文字添加到对话" aria-busy={addingQuote} className="message-selection-reference" disabled={addingQuote} style={{ top: quoteSelection.top, left: quoteSelection.left }}
         onMouseDown={(event) => event.preventDefault()} onClick={() => {
           if (addingQuote) return;
           setAddingQuote(true);
@@ -379,6 +382,7 @@ function optimisticRewriteTurn(turn: TimelineTurn, user: string): TimelineTurn {
 const Turn = memo(function Turn({
   sessionId,
   busy,
+  readOnly,
   entrySheenOnly,
   skillDescriptions,
   skillLabels,
@@ -400,6 +404,7 @@ const Turn = memo(function Turn({
 }: {
   sessionId?: string;
   busy: boolean;
+  readOnly: boolean;
   /** FLIP 落定后的首条用户消息只播扫光（原文 animateUserEntry "sheen-only"）。 */
   entrySheenOnly?: boolean;
   skillDescriptions?: ReadonlyMap<string, string>;
@@ -424,7 +429,7 @@ const Turn = memo(function Turn({
   const running = turnIsRunning(turn, runtimeActiveRunId);
   const retryPromiseRef = useRef<Promise<void> | undefined>(undefined);
   const retry = useCallback((): Promise<void> => {
-    if (running || busy) return Promise.resolve();
+    if (readOnly || running || busy) return Promise.resolve();
     const targetMessageId = turn.assistantMessageId ?? turn.userMessageId;
     if (!turn.user || !targetMessageId) return Promise.resolve();
     const existing = retryPromiseRef.current;
@@ -443,12 +448,12 @@ const Turn = memo(function Turn({
       }
     );
     return pending;
-  }, [busy, onRetry, onRetrySettled, onRetryStart, running, turn]);
+  }, [busy, onRetry, onRetrySettled, onRetryStart, readOnly, running, turn]);
   const switchVersion = useCallback((direction: "prev" | "next"): Promise<void> => {
-    if (!turn.assistantMessageId) return Promise.resolve();
+    if (readOnly || !turn.assistantMessageId) return Promise.resolve();
     return onSwitchVersion(turn.assistantMessageId, direction);
-  }, [onSwitchVersion, turn.assistantMessageId]);
-  const canRetry = !running && !busy && Boolean(turn.user && (turn.assistantMessageId ?? turn.userMessageId));
+  }, [onSwitchVersion, readOnly, turn.assistantMessageId]);
+  const canRetry = !readOnly && !running && !busy && Boolean(turn.user && (turn.assistantMessageId ?? turn.userMessageId));
   // 开始事件不证明收到过思考；等待由状态行展示，避免出现点开后为空的活动记录。
   const executionSteps = turn.steps.filter((step) => {
     if (step.kind === "reasoning") return step.notice || step.content.trim();
@@ -471,13 +476,13 @@ const Turn = memo(function Turn({
           entrySheenOnly={entrySheenOnly === true}
           hasChangedFiles={listChangedFiles(turn).length > 0}
           onCreateBranch={onCreateBranch}
-          onEdit={() => onEditRequest(turn)}
+          onEdit={readOnly ? undefined : () => onEditRequest(turn)}
           onOpenExternal={onOpenExternal}
-          onReference={turn.userMessageId ? () => onReferenceMessage(turn.userMessageId!) : undefined}
+          onReference={!readOnly && turn.userMessageId ? () => onReferenceMessage(turn.userMessageId!) : undefined}
           onShowReferences={turn.userMessageId ? () => onShowMessageReferences(turn.userMessageId!) : undefined}
           onPreviewFile={onPreviewFile}
           onRegenerate={canRetry ? retry : undefined}
-          onRollbackFiles={() => onRollbackFiles(turn)}
+          onRollbackFiles={readOnly ? undefined : () => onRollbackFiles(turn)}
           projectId={projectId}
           time={turn.timestamp}
         />
@@ -518,10 +523,10 @@ const Turn = memo(function Turn({
             finishReason={turn.finishReason}
             metrics={turnMetrics(turn)}
             onCreateBranch={onCreateBranch}
-            onReference={turn.assistantMessageId ? () => onReferenceMessage(turn.assistantMessageId!) : undefined}
+            onReference={!readOnly && turn.assistantMessageId ? () => onReferenceMessage(turn.assistantMessageId!) : undefined}
             onShowReferences={turn.assistantMessageId ? () => onShowMessageReferences(turn.assistantMessageId!) : undefined}
             onRegenerate={canRetry ? retry : undefined}
-            onSwitchVersion={turn.versionCount && turn.versionCount > 1 ? switchVersion : undefined}
+            onSwitchVersion={!readOnly && turn.versionCount && turn.versionCount > 1 ? switchVersion : undefined}
             runMs={turn.durationMs}
             timestamp={turn.timestamp}
             usage={turn.usage}
@@ -534,7 +539,7 @@ const Turn = memo(function Turn({
         </div>
       </article>
       ) : null}
-      {!running && !(turn.status === "completed" && turn.tools.length > 0) && !turn.assistant.trim() && turn.versionCount && turn.versionCount > 1 && turn.versionIndex !== undefined ? (
+      {!readOnly && !running && !(turn.status === "completed" && turn.tools.length > 0) && !turn.assistant.trim() && turn.versionCount && turn.versionCount > 1 && turn.versionIndex !== undefined ? (
         <VersionSwitcher onSwitchVersion={switchVersion} versionCount={turn.versionCount} versionIndex={turn.versionIndex} />
       ) : null}
     </section>
@@ -707,11 +712,11 @@ function UserMessage({
   entrySheenOnly?: boolean;
   hasChangedFiles: boolean;
   onCreateBranch(): void;
-  onEdit(): void;
+  onEdit?(): void;
   onOpenExternal(url: string): void;
   onPreviewFile(path: string): void;
   onRegenerate?(): Promise<void>;
-  onRollbackFiles(): void;
+  onRollbackFiles?(): void;
   onReference?(): void;
   onShowReferences?(): void;
   projectId: string;
@@ -733,7 +738,7 @@ function UserMessage({
         {clock}
         <button aria-label="复制消息" className="user-message-action" onClick={() => copyText(message.text)} title="复制消息" type="button"><Icon name="copy" size={16} /></button>
         {onRegenerate ? <button aria-label="重新生成" className="user-message-action" onClick={() => { void onRegenerate(); }} title="重新生成" type="button"><Icon name="refresh" size={16} /></button> : null}
-        <button aria-label="编辑消息" className="user-message-action" onClick={onEdit} title="编辑消息" type="button"><Icon name="edit" size={16} /></button>
+        {onEdit ? <button aria-label="编辑消息" className="user-message-action" onClick={onEdit} title="编辑消息" type="button"><Icon name="edit" size={16} /></button> : null}
         <button aria-expanded={menuOpen} aria-haspopup="menu" aria-label="更多消息操作" className="user-message-action" onClick={toggle} ref={moreAnchorRef} title="更多" type="button"><Icon name="more" size={16} /></button>
       </div>
       {menuOpen && menuPosition ? createPortal(
@@ -743,7 +748,7 @@ function UserMessage({
           <button className="message-menu-item" onClick={() => { onCreateBranch(); closeMenu(); }} role="menuitem" type="button"><Icon name="branch" size={14} /><span>创建分支</span></button>
           {onReference ? <button className="message-menu-item" onClick={() => { onReference(); closeMenu(); }} role="menuitem" type="button"><Icon name="at" size={14} /><span>引用消息</span></button> : null}
           {onShowReferences ? <button className="message-menu-item" onClick={() => { onShowReferences(); closeMenu(); }} role="menuitem" type="button"><Icon name="network" size={14} /><span>查看引用来源</span></button> : null}
-          <button className="message-menu-item" disabled={!hasChangedFiles} onClick={() => { onRollbackFiles(); closeMenu(); }} role="menuitem" title={hasChangedFiles ? "回滚本条消息产生的文件修改" : "当前消息没有可回滚的文件修改"} type="button"><Icon name="arrow-left" size={14} /><span>回滚文件</span></button>
+          {onRollbackFiles ? <button className="message-menu-item" disabled={!hasChangedFiles} onClick={() => { onRollbackFiles(); closeMenu(); }} role="menuitem" title={hasChangedFiles ? "回滚本条消息产生的文件修改" : "当前消息没有可回滚的文件修改"} type="button"><Icon name="arrow-left" size={14} /><span>回滚文件</span></button> : null}
         </div>,
         document.body
       ) : null}

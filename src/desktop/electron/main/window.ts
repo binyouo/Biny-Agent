@@ -12,21 +12,25 @@ import { fileURLToPath } from "node:url";
 import { BrowserWindow, nativeTheme, screen } from "electron";
 import type { DesktopThemePreference } from "../../protocol.js";
 import { DesktopStateStore } from "./DesktopStateStore.js";
+import { resolveAppearance } from "../../../appearance/resolve.js";
+import type { AppearanceSnapshot } from "../../../appearance/types.js";
 
 export type WindowCloseDecision = "close" | "cancel";
 
 /** 窗口底色要和渲染层主体色一致，否则加载过程中会闪一下异色底。 */
 function themeBackgroundColor(preference: DesktopThemePreference = "system"): string {
   const dark = preference === "dark" || (preference === "system" && nativeTheme.shouldUseDarkColors);
-  return dark ? "#1a1a1e" : "#f4f4f6";
+  return dark ? "#1a1a1a" : "#f5f5f5";
 }
 
 export function createDesktopWindow(
   state: DesktopStateStore,
-  decideClose: () => Promise<WindowCloseDecision>
+  decideClose: () => Promise<WindowCloseDecision>,
+  getAppearance: () => AppearanceSnapshot = () => ({ themePreference: state.themePreference(), appearancePreference: state.appearancePreference(), fontPreference: state.fontPreference() })
 ): BrowserWindow {
   const preference = state.themePreference();
   nativeTheme.themeSource = preference;
+  const appearance = resolveAppearance(state.appearancePreference(), preference, nativeTheme.shouldUseDarkColors);
   const savedBounds = visibleBounds(state.windowBounds());
   // macOS 也保持主题底色，避免 ready-to-show 后切透明时露出与渲染层不同步的白色原生底。
   const window = new BrowserWindow({
@@ -37,7 +41,8 @@ export function createDesktopWindow(
     minWidth: 800,
     minHeight: 600,
     show: false,
-    backgroundColor: themeBackgroundColor(preference),
+    backgroundColor: appearance.variables["--background"] ?? themeBackgroundColor(preference),
+    roundedCorners: appearance.skin !== "win98",
     title: "Biny",
     titleBarStyle: "hidden",
     // macOS 不使用系统 vibrancy，窗口底色固定跟随主题；局部浮层仍由渲染层 CSS 自己处理。
@@ -59,7 +64,9 @@ export function createDesktopWindow(
 
   const syncBackgroundColor = (): void => {
     if (window.isDestroyed()) return;
-    window.setBackgroundColor(themeBackgroundColor(state.themePreference()));
+    const snapshot = getAppearance();
+    const current = resolveAppearance(snapshot.appearancePreference, snapshot.themePreference, nativeTheme.shouldUseDarkColors);
+    window.setBackgroundColor(current.variables["--background"] ?? themeBackgroundColor(snapshot.themePreference));
   };
   nativeTheme.on("updated", syncBackgroundColor);
   window.once("ready-to-show", () => {

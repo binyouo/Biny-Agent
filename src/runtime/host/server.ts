@@ -5,7 +5,6 @@
  */
 import { randomUUID } from "node:crypto";
 import { planStatus } from "../../extensions/plan.js";
-import { assertPlanningOperationAllowed } from "../../agent/planningPolicy.js";
 import net from "node:net";
 import { performance } from "node:perf_hooks";
 import { RuntimeHostProtocolMismatchError } from "./errors.js";
@@ -345,11 +344,17 @@ export class RuntimeHostServer {
             ? this.commands
             : (await this.registry.ensure(task.sessionId, await this.factoryOptionsForSession(task.sessionId))).commands;
           if (task.status === "running" || legacyUnsafeQueue) {
+            const resumable = task.status === "running" && await owner.canResumeWorkerTask?.(task.taskRunId);
             owner.taskRuns.transition(task.taskRunId, "blocked", {
               attemptId: latestAttempt?.attemptId,
+              artifacts: latestAttempt?.artifacts,
+              verification: latestAttempt?.verification,
+              highWaterSequence: latestAttempt?.highWaterSequence,
               failure: {
-                failureClass: "unsafe_recovery",
-                message: "Host restarted without a live Worker or persisted checkpoint; unknown side effects were not replayed."
+                failureClass: resumable ? "worker_interrupted" : "unsafe_recovery",
+                message: resumable
+                  ? "Worker was interrupted with a durable checkpoint; explicit task resume is required."
+                  : "Host restarted without a safe Worker checkpoint; unknown side effects were not replayed."
               }
             });
             continue;
@@ -809,26 +814,15 @@ export class RuntimeHostServer {
     const managed = await this.runtimeEntry(frame.operation, payload);
     const runtime = managed.runtime;
     const commands = managed.commands;
-    assertPlanningOperationAllowed(runtime.getSnapshot().info.planning, frame.operation);
     switch (frame.operation) {
       case "plan.list": {
         const sessionId = runtime.getSnapshot().info.sessionId;
         return commands.graphs.listGraphs().filter((graph) => graph.mode === "supervised" && graph.supervisorSessionId === sessionId)
           .map((graph) => planStatus(commands, graph.graphId, sessionId));
       }
-      case "plan.mode":
-        if (typeof payload.planning !== "boolean") throw new Error("planning must be boolean.");
-        await this.ensureSessionWriter(connection, runtime);
-        await runtime.runExclusiveOperation("planning", async () => {
-          if (payload.planning && commands.graphs.listGraphs().some((graph) => graph.mode === "supervised" && graph.supervisorSessionId === runtime.getSnapshot().info.sessionId && graph.status === "running")) {
-            throw new Error("Stop the running plan before enabling planning mode.");
-          }
-          await commands.agent.setPlanning(payload.planning as boolean);
-        });
-        return runtime.getSnapshot().info;
       case "plan.start":
         await this.ensureSessionWriter(connection, runtime);
-        return await runtime.runExclusiveOperation("planning", async (signal) => {
+        return await runtime.runExclusiveOperation("plan", async (signal) => {
           const revision = optionalSafeInteger(payload.revision);
           if (revision === undefined) throw new Error("Draft revision is required.");
           return await commands.startPlanDraft(requiredString(payload.graphId, "graphId"), revision, signal);

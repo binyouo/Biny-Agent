@@ -108,7 +108,7 @@ export class McpToolHost {
       const managed: ManagedMcpServer = { name: serverName, rawConfig, config: rawConfig, transport, status, tools: [] };
       this.servers.set(serverName, managed);
       if (!rawConfig.enabled) continue;
-      pending.push(this.startServer(managed).catch((error: unknown) => {
+      pending.push(this.reconnect(managed).catch((error: unknown) => {
         // 单个服务器失败只影响自己：记录原因，其他服务器与 runtime 照常启动。
         status.lastError = errorText(error);
         status.authRequired = error instanceof McpAuthRequiredError;

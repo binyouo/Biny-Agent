@@ -68,6 +68,10 @@ try {
   mock.timers.enable({ apis: ["setTimeout"] });
   try {
     const starting = slow.start();
+    await slow.refreshSkills();
+    assert.equal(slow.snapshot().state, "ready", "本地目录准备完成后，MCP 首连不能继续占用全局 loading");
+    assert.equal(slow.snapshot().mcp.pending, true);
+    assert.equal(slow.start(), starting, "多个会话应加入同一次启动，不重建连接");
     mock.timers.tick(10_000);
     await starting;
     assert.equal(slow.snapshot().state, "ready", "仍在连接不应被标记为 degraded");

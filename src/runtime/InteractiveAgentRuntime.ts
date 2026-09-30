@@ -1861,12 +1861,12 @@ function publicOperationName(operation: RuntimeOperation): string {
   if (operation === "model_catalog") return "model catalog refresh";
   if (operation === "resume") return "session resume";
   if (operation === "draft") return "a new session";
-  if (operation === "planning") return "a planning update";
   if (operation === "compact") return "conversation compaction";
   if (operation === "mcp") return "MCP reconnection";
   if (operation === "memory") return "a memory command";
   if (operation === "soul") return "a Soul command";
   if (operation === "personalization") return "personalization settings";
+  if (operation === "plan") return "a plan update";
   if (operation === "checkpoint") return "checkpoint restore";
   if (operation === "message_version") return "message version switching";
   return "a subagent task";

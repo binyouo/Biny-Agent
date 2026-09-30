@@ -574,6 +574,32 @@ export class CapabilityStore {
     return row ? this.toInvocation(row) : undefined;
   }
 
+  findHostToolInvocation(input: {
+    tool: string;
+    sessionId: string;
+    turnId: string;
+    toolCallId: string;
+    operationId: string;
+    request: unknown;
+  }): CapabilityInvocation | undefined {
+    this.assertOpen();
+    const registrations = this.list("host").filter((registration) => registration.ownerType === "host"
+      && [`host:mcp:${input.tool}`, `host:plugin:${input.tool}`].includes(registration.capabilityName));
+    const matches = registrations.flatMap((registration) => this.findInvocationsByOffer(registration.registrationId, input.operationId));
+    if (matches.length === 0) return undefined;
+    if (matches.length !== 1) throw new CapabilityIdempotencyConflictError(input.operationId, "Multiple capabilities claim the same tool operation.");
+    const invocation = matches[0]!;
+    this.assertSameOperationIdentity(invocation, {
+      registrationId: invocation.registrationId,
+      offerId: input.operationId,
+      sessionId: input.sessionId,
+      turnId: input.turnId,
+      toolCallId: input.toolCallId,
+      request: input.request
+    }, requestIdentityHash(input.request));
+    return invocation;
+  }
+
   close(): void {
     if (this.closed) return;
     this.closed = true;

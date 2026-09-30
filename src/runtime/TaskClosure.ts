@@ -6,6 +6,7 @@
  */
 import { isTaskRunTerminal, type DurableTaskRunStore, type TaskAttemptRecord, type TaskRetrySafety, type TaskRunStatus } from "./TaskRunStore.js";
 import { planReviewResultSchema, type PlanReviewResult } from "./planWork.js";
+import { z } from "zod";
 import {
   captureTaskWorkspaceSnapshot,
   canReuseTaskVerification,
@@ -34,6 +35,16 @@ export interface TaskClosureResult {
   review?: PlanReviewResult;
 }
 
+const workerAttemptSchema = z.object({
+  prompt: z.string().min(1), beforeWorkspace: z.record(z.string(), z.string()).optional(),
+  definitionFingerprint: z.string().optional(), accessMode: z.enum(["read-only", "workspace"]).optional(), agent: z.string().optional()
+}).strict();
+
+export function readWorkerAttemptCheckpoint(artifacts: unknown): z.infer<typeof workerAttemptSchema> | undefined {
+  const parsed = workerAttemptSchema.safeParse((artifacts as { workerExecution?: unknown } | undefined)?.workerExecution);
+  return parsed.success ? parsed.data : undefined;
+}
+
 export async function runTaskClosure(input: {
   taskRuns: DurableTaskRunStore;
   taskRunId: string;
@@ -43,6 +54,7 @@ export async function runTaskClosure(input: {
   retrySafety?: TaskRetrySafety;
   signal?: AbortSignal;
   canRepair?: () => boolean;
+  resumeWorker?: boolean;
   executeAttempt(prompt: string, attempt: TaskAttemptRecord): Promise<string>;
 }): Promise<TaskClosureResult> {
   try {
@@ -108,6 +120,8 @@ async function executeTaskClosure(input: Parameters<typeof runTaskClosure>[0]): 
       : { status: "blocked", output: artifacts.output, reason: "Persisted TaskRun verification no longer matches the current contract, definitions, or artifacts." };
   }
   let resumeAttempt = initial.status === "verifying" ? initial.attempts.at(-1) : undefined;
+  let workerAttempt = input.resumeWorker && initial.status === "running" ? initial.attempts.at(-1) : undefined;
+  if (input.resumeWorker && !workerAttempt) throw new Error("Worker continuation requires the current running Attempt.");
   const latestAttempt = initial.attempts.at(-1);
   const latestEvent = input.taskRuns.events(input.taskRunId).at(-1);
   const persistedRepairEvidence = initial.status === "queued"
@@ -154,7 +168,7 @@ async function executeTaskClosure(input: Parameters<typeof runTaskClosure>[0]): 
     if (!current) throw new Error(`TaskRun ${input.taskRunId} disappeared.`);
     if (isTerminalForClosure(current.status)) return terminalResult(current.status);
 
-    const attempt = resumeAttempt ?? input.taskRuns.createAttempt(input.taskRunId, {
+    const attempt = resumeAttempt ?? workerAttempt ?? input.taskRuns.createAttempt(input.taskRunId, {
       parentRunId: current.parentRunId,
       retrySafety: input.retrySafety ?? "unknown"
     });
@@ -200,19 +214,30 @@ async function executeTaskClosure(input: Parameters<typeof runTaskClosure>[0]): 
       }
       input.signal?.throwIfAborted();
     } else {
-      const beforeWorkspace = contract
+      const workerCheckpoint = workerAttempt ? readWorkerAttemptCheckpoint(attempt.artifacts) : undefined;
+      if (workerAttempt && (!workerCheckpoint || (contract && (!workerCheckpoint.beforeWorkspace || !workerCheckpoint.definitionFingerprint)))) {
+        return blockUnsafeRecovery(input.taskRuns, input.taskRunId, attempt.attemptId, "Missing original Worker execution or verification baseline.");
+      }
+      if (workerAttempt && contract && workerCheckpoint?.definitionFingerprint !== await fingerprintTaskVerificationDefinitions(input.workspaceRoot, contract, input.ignore, input.signal)) {
+        return blockUnsafeRecovery(input.taskRuns, input.taskRunId, attempt.attemptId, "Verification definition inputs changed; Worker continuation cannot change the original acceptance standard.");
+      }
+      const beforeWorkspace = workerCheckpoint?.beforeWorkspace ?? (contract
         ? await captureTaskWorkspaceSnapshot(input.workspaceRoot, input.ignore, input.signal)
-        : undefined;
+        : undefined);
+      if (workerCheckpoint?.definitionFingerprint) definitionFingerprint = workerCheckpoint.definitionFingerprint;
       definitionFingerprint ??= contract
         ? await fingerprintTaskVerificationDefinitions(input.workspaceRoot, contract, input.ignore, input.signal)
         : undefined;
       const basePrompt = definition.constraints?.length
         ? `${definition.prompt}\n\n用户约束：\n${definition.constraints.map((constraint) => `- ${constraint}`).join("\n")}`
         : definition.prompt;
-      const prompt = repairEvidence === undefined
+      const prompt = workerCheckpoint?.prompt ?? (repairEvidence === undefined
         ? basePrompt
-        : repairPrompt(basePrompt, contract!, repairEvidence, current.attempts.length);
-      input.taskRuns.transition(input.taskRunId, "running", { attemptId: attempt.attemptId });
+        : repairPrompt(basePrompt, contract!, repairEvidence, current.attempts.length));
+      input.taskRuns.transition(input.taskRunId, "running", { attemptId: attempt.attemptId, artifacts: {
+        workerExecution: { prompt, beforeWorkspace, definitionFingerprint }
+      } });
+      workerAttempt = undefined;
       input.signal?.throwIfAborted();
       output = await input.executeAttempt(prompt, attempt);
       input.signal?.throwIfAborted();

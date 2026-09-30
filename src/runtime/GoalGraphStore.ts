@@ -611,6 +611,7 @@ export class GoalGraphStore {
         const terminalStatus = runtimeRun?.terminalStatus ?? (task !== undefined && isTaskRunTerminal(task.status) ? task.status : undefined);
         const definition = task === undefined ? undefined : readTaskDefinition(task.task);
         const closureRequired = Boolean(definition?.verification || definition?.review || definition?.reportOnly);
+        if (task?.status === "blocked" && (attempt?.failure as { failureClass?: string } | undefined)?.failureClass === "worker_interrupted") continue;
         if (task?.status === "needs_approval") {
           // 权限等待已经持久化；保留 running 节点与 claim，等待 task.approve 精确恢复同一 Attempt。
           continue;
@@ -1047,7 +1048,7 @@ export class GraphSupervisor {
       }
       const runtime = await this.supervisorRuntime(wake.sessionId);
       if (this.stopped) return;
-      if (runtime.getSnapshot().state.kind !== "idle" || runtime.getSnapshot().info.planning) continue;
+      if (runtime.getSnapshot().state.kind !== "idle") continue;
       const claimed = store.claimSupervisorWake(wake.wakeId);
       if (!claimed) continue;
       this.active += 1;
@@ -1068,7 +1069,7 @@ export class GraphSupervisor {
         ? this.runtime()
         : await this.supervisorRuntime(graph.supervisorSessionId);
       if (this.stopped) return;
-      if (runtime.getSnapshot().state.kind !== "idle" || runtime.getSnapshot().info.planning) continue;
+      if (runtime.getSnapshot().state.kind !== "idle") continue;
       for (const node of ready) {
         const claim = store.claimIntent(graphId, node.nodeId, randomUUID(), "graph:" + graphId + ":" + node.nodeId);
         if (!claim) continue;
@@ -1142,7 +1143,7 @@ export class GraphSupervisor {
       : this.runtime();
     try {
       // runtime 忙于交互会话或其他 run 不是节点执行失败：退回 ready，等后续 tick 重新 claim。
-      if (runtime.getSnapshot().state.kind !== "idle" || runtime.getSnapshot().info.planning) {
+      if (runtime.getSnapshot().state.kind !== "idle") {
         store.recoverNode(graphId, node.nodeId, "ready", "Runtime is busy; node execution deferred.");
         return;
       }

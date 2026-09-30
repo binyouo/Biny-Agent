@@ -232,7 +232,7 @@
 .inspector-browser-history, .inspector-browser-actions { display: flex; align-items: center; flex: 0 0 auto; gap: 2px; }
 .inspector-browser-history { border-left: 1px solid var(--biny-border); padding-left: 6px; }
 .inspector-browser-address { display: flex; align-items: center; flex: 1 1 180px; min-width: 140px; gap: 4px; padding-left: 10px; border: 1px solid var(--biny-border); border-radius: 9px; background: var(--biny-surface-elevated); }
-.inspector-browser-address:focus-within { border-color: var(--biny-focus); box-shadow: 0 0 0 1px var(--biny-focus); }
+.inspector-browser-address:focus-within { border-color: var(--biny-focus); }
 .inspector-browser-address > svg { flex-shrink: 0; }
 .inspector-browser-address input { min-height: 34px; padding: 0 4px; outline: none; }
 .inspector-browser-navigation .inspector-profile-anchor > button { width: 36px; height: 36px; }

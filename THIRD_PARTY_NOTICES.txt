@@ -1,0 +1,12 @@
+Third-party notices
+
+Built-in appearance palettes
+
+The palette data in src/appearance/catalog.ts is adapted from the theme tables distributed with NvChad/Base46:
+https://github.com/NvChad/base46/tree/v3.0/lua/base46/themes
+
+Base46's repository includes the MIT license for nvim-base16.lua and the Base16 MIT license:
+https://github.com/NvChad/base46/blob/v3.0/LICENSE
+https://github.com/NvChad/base46/blob/v3.0/base16-LICENSE
+
+Some upstream theme files identify their individual source themes; consult those files for theme-specific credits.

@@ -8,22 +8,25 @@
  */
 import { useEffect, useState } from "react";
 import { escapeHtml, highlightFencedCode, highlightWorkspaceFile, languageForFence, languageForPath, type HighlightedCode } from "./syntaxHighlight.js";
+import { useAppearance } from "./appearanceContext.js";
+import type { ThemePalette } from "../../../appearance/types.js";
 
 /** 代码持续变化期间的高亮去抖间隔；打字机流式场景下等于「停顿才上色」。 */
 const HIGHLIGHT_DEBOUNCE_MS = 300;
 
 export function useHighlightedCode(code: string, language?: string, filePath?: string): HighlightedCode {
-  const [state, setState] = useState<{ code: string; highlighted: HighlightedCode } | undefined>();
+  const { palette } = useAppearance();
+  const [state, setState] = useState<{ code: string; language?: string; filePath?: string; palette?: ThemePalette; highlighted: HighlightedCode } | undefined>();
 
   useEffect(() => {
     let active = true;
     const timer = window.setTimeout(() => {
       const request = filePath
-        ? highlightWorkspaceFile(filePath, code)
-        : highlightFencedCode(code, language);
+        ? highlightWorkspaceFile(filePath, code, palette)
+        : highlightFencedCode(code, language, palette);
       request
         .then((highlighted) => {
-          if (active) setState({ code, highlighted });
+          if (active) setState({ code, language, filePath, palette, highlighted });
         })
         .catch(() => {});
     }, HIGHLIGHT_DEBOUNCE_MS);
@@ -31,8 +34,8 @@ export function useHighlightedCode(code: string, language?: string, filePath?: s
       active = false;
       window.clearTimeout(timer);
     };
-  }, [code, language, filePath]);
+  }, [code, language, filePath, palette]);
 
-  if (state && state.code === code) return state.highlighted;
+  if (state && state.code === code && state.language === language && state.filePath === filePath && state.palette === palette) return state.highlighted;
   return { html: escapeHtml(code), language: filePath ? languageForPath(filePath) : languageForFence(language) };
 }

@@ -433,7 +433,7 @@ async function testGraphSupervisorDefersOnBusyRuntime(): Promise<void> {
   const isolatedGraphs = await GoalGraphStore.open(workspace, isolatedAuthority);
   try {
     const busySnapshot = { revision: 0, state: { kind: "runs" } } as unknown as ReturnType<InteractiveRuntimeHandle["getSnapshot"]>;
-    const idleSnapshot = { revision: 0, state: { kind: "idle" }, info: { sessionId: "graph-test", planning: false } } as unknown as ReturnType<InteractiveRuntimeHandle["getSnapshot"]>;
+    const idleSnapshot = { revision: 0, state: { kind: "idle" }, info: { sessionId: "graph-test" } } as unknown as ReturnType<InteractiveRuntimeHandle["getSnapshot"]>;
     let behavior: "busy_snapshot" | "busy_throw" | "explode" = "busy_snapshot";
     const runtime = {
       getSnapshot: () => behavior === "busy_snapshot" ? busySnapshot : idleSnapshot,

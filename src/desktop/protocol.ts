@@ -8,6 +8,7 @@
  * 通道名统一用 `desktop:<领域>:<动作>` 的形式，便于排查。
  */
 import type { DesktopThreadBriefRequest, DesktopThreadBriefSnapshot } from "./threadBriefProtocol.js";
+import type { AppearancePreference, AppearanceSnapshot } from "../appearance/types.js";
 import type { DesktopCrystalRequest, DesktopCrystalSnapshot } from "./crystalProtocol.js";
 import type { planStatus } from "../extensions/plan.js";
 import type { TodoItem } from "../session/todoStore.js";
@@ -99,6 +100,7 @@ export const desktopIpc = {
   startDraft: "desktop:session:draft",
   readSessionTrace: "desktop:session:trace",
   openSession: "desktop:session:open",
+  retryRuntime: "desktop:runtime:retry",
   sessionHandoff: "desktop:session:handoff",
   referenceOpen: "desktop:references:open",
   listSessionTreePage: "desktop:session:tree-page",
@@ -231,6 +233,10 @@ export const desktopIpc = {
   setFilePanelWidth: "desktop:ui:file-panel-width",
   setThemePreference: "desktop:ui:theme",
   setFontPreference: "desktop:ui:font",
+  setAppearancePreference: "desktop:ui:appearance",
+  previewAppearance: "desktop:ui:appearance-preview",
+  appearanceChanged: "desktop:ui:appearance-changed",
+  windowAction: "desktop:window:action",
   quickChatToggle: "desktop:quickchat:toggle",
   quickChatHide: "desktop:quickchat:hide",
   quickChatClose: "desktop:quickchat:close",
@@ -294,6 +300,8 @@ export const desktopIpc = {
 } as const;
 
 export type DesktopThemePreference = "system" | "light" | "dark";
+export type DesktopAppearancePreference = AppearancePreference;
+export type DesktopAppearanceSnapshot = AppearanceSnapshot;
 export type DesktopSystemSettingsPane = "screen-recording" | "accessibility";
 export type DesktopActiveView = "chat" | "runtime" | "extensions";
 
@@ -475,9 +483,20 @@ export interface DesktopSessionDocument {
   /** session 仍可读，但当前 Desktop 没有 writer ownership 时的只读冲突。 */
   writerConflict?: DesktopSessionWriterConflict;
   /** 历史正文已成功读取，但当前 Desktop Runtime 初始化/聚焦失败时返回。 */
-  runtimeError?: string;
+  runtimeError?: DesktopRuntimeError;
   /** 从持久断点和日志推导；打开会话只展示，继续执行必须由用户触发。 */
   recovery?: { canContinue: boolean; message: string };
+}
+
+export interface DesktopRuntimeError {
+  kind: "startup_timeout" | "startup_failed" | "protocol_mismatch";
+  message: string;
+  retryable: boolean;
+}
+
+export interface DesktopRuntimeRetryResult {
+  workspace: DesktopWorkspaceSnapshot;
+  document?: DesktopSessionDocument;
 }
 
 /** 会话文件体量与事件数接近上限时的预警投影。 */
@@ -525,7 +544,7 @@ export interface DesktopWorkspaceSnapshot {
   runtime?: InteractiveRuntimeSnapshot;
   /** 并行会话的运行时快照（sessionId → snapshot，含主 runtime 绑定的 session）；多 session 并行时渲染层按 session 取运行态。 */
   sessionRuntimes?: Record<string, InteractiveRuntimeSnapshot>;
-  runtimeError?: string;
+  runtimeError?: DesktopRuntimeError;
   /** 首屏记忆开关使用的只读策略投影；读取它不应初始化或切换 Runtime。 */
   memory?: DesktopMemorySettings;
   /** 跨 Desktop/TUI 共享的已保存权限模式；Runtime 启动时会先与这个持久化值对齐。 */
@@ -576,6 +595,7 @@ export interface DesktopBootstrap {
   filePanelWidth: number;
   themePreference: DesktopThemePreference;
   fontPreference: DesktopFontPreference;
+  appearancePreference?: DesktopAppearancePreference;
 }
 
 /** 发送提示或排队运行中消息后的回执。 */
@@ -1316,6 +1336,7 @@ export interface DesktopSettingsSnapshot {
   configRevision: string;
   themePreference: DesktopThemePreference;
   fontPreference: DesktopFontPreference;
+  appearancePreference?: DesktopAppearancePreference;
   activity: ActivitySettings;
   identity: DesktopIdentitySettings;
   memory: DesktopMemorySettings;
@@ -1376,6 +1397,7 @@ export interface DesktopSettingsSaveInput {
   expectedConfigRevision: string;
   themePreference?: DesktopThemePreference;
   fontPreference?: DesktopFontPreference;
+  appearancePreference?: DesktopAppearancePreference;
   /** 外发策略不属于 renderer 可写入的输入；主进程会保留当前策略并仅更新采集参数。 */
   activity?: ActivitySettingsInput;
   identity?: DesktopIdentitySettings;
@@ -1481,7 +1503,6 @@ export interface DesktopWorktreeStatus {
 }
 
 export type DesktopRuntimeMutation =
-  | "plan.mode"
   | "plan.start"
   | "task.create"
   | "task.start"
@@ -1580,6 +1601,7 @@ export interface DesktopApi {
   startDraft(projectId: string): Promise<DesktopWorkspaceSnapshot>;
   readSessionTrace(projectId: string, sessionId: string): Promise<SessionEvent[]>;
   openSession(projectId: string, sessionId: string): Promise<DesktopSessionDocument>;
+  retryRuntime(projectId: string, sessionId?: string): Promise<DesktopRuntimeRetryResult>;
   listSessionTreePage(projectId: string, options?: DesktopSessionTreePageOptions): Promise<DesktopSessionTreePage>;
   renameSession(projectId: string, sessionId: string, title: string, expectedRevision?: string): Promise<DesktopWorkspaceSnapshot>;
   pinSession(projectId: string, sessionId: string, pinned: boolean, expectedRevision?: string): Promise<DesktopWorkspaceSnapshot>;
@@ -1600,8 +1622,7 @@ export interface DesktopApi {
     personalization?: DesktopChatPersonalizationOverride,
     idempotencyKey?: string,
     promptContext?: string,
-    capabilitySelection?: AgentCapabilitySelection,
-    draftPlanning?: boolean
+    capabilitySelection?: AgentCapabilitySelection
   ): Promise<DesktopRunReceipt>;
   mutateQueuedMessage(
     projectId: string,
@@ -1732,6 +1753,10 @@ export interface DesktopApi {
   setFilePanelWidth(width: number): Promise<void>;
   setThemePreference(theme: DesktopThemePreference): Promise<DesktopThemePreference>;
   setFontPreference(font: DesktopFontPreference): Promise<DesktopFontPreference>;
+  setAppearancePreference(preference: DesktopAppearancePreference): Promise<DesktopAppearancePreference>;
+  previewAppearance(snapshot: DesktopAppearanceSnapshot | null): Promise<void>;
+  onAppearanceChanged(callback: (snapshot: DesktopAppearanceSnapshot) => void): () => void;
+  windowAction(action: "minimize" | "maximize" | "close"): Promise<void>;
   /** QuickChat 悬浮窗的显隐切换；由设置页或调试入口触发，正常交互走全局快捷键。 */
   toggleQuickChat(): Promise<void>;
   hideQuickChat(): Promise<void>;

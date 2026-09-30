@@ -40,6 +40,7 @@ export class RuntimeHostResourceScope {
   private readonly listeners = new Set<(snapshot: RuntimeResourceSnapshot) => void>();
   private readonly mcpHost = new McpToolHost();
   private skillBundle: SkillBundle = defaultSkillBundle;
+  private skillsReady = false;
   private state: RuntimeResourceState = "loading";
   private revision = 0;
   private mcpPending = false;
@@ -79,11 +80,15 @@ export class RuntimeHostResourceScope {
 
   start(): Promise<void> {
     if (this.baselinePromise) return this.baselinePromise;
-    const skillPromise = this.refreshSkills();
+    const skillPromise = this.refreshSkills().then(() => {
+      this.skillsReady = true;
+      this.refreshState();
+      this.publish();
+    });
     const mcpPromise = this.startMcp();
     this.baselinePromise = Promise.all([skillPromise, mcpPromise]).then(
       () => {
-        this.state = this.isDegraded() ? "degraded" : "ready";
+        this.refreshState();
         this.publish();
       },
       () => {
@@ -188,16 +193,13 @@ export class RuntimeHostResourceScope {
     ]);
     if (timer) clearTimeout(timer);
     if (!finished && timedOut) {
-      // 连接尝试继续在后台运行；后续成功会通过 MCP revision 进入下一回合。
-      // 网络连接尚未完成不等于能力退化。此时允许普通对话继续，MCP 状态会保留
-      // 「连接中」，等首轮连接结束后再判断是否真的失败。
-      this.state = "ready";
       this.mcpPending = true;
+      this.refreshState();
       this.publish();
       void connecting.then(
         () => {
           this.mcpPending = false;
-          this.state = this.isDegraded() ? "degraded" : "ready";
+          this.refreshState();
           this.publish();
         },
         () => {
@@ -217,9 +219,7 @@ export class RuntimeHostResourceScope {
   }
 
   private refreshState(): void {
-    // baseline 未完成时保留 loading；超时后 mcpPending 仍表示后台连接未决，
-    // 等连接 Promise 完成后再决定 ready/degraded，避免中间快照覆盖最终状态。
-    if (this.state === "loading" || this.mcpPending) return;
+    if (!this.skillsReady) return;
     this.state = this.isDegraded() ? "degraded" : "ready";
   }
 

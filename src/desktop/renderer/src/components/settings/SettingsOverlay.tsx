@@ -19,6 +19,9 @@ import { SettingsToolModel } from "./SettingsToolModel.js";
 import { stagedModelChoices } from "./providerModelProjection.js";
 import { SettingsAbout } from "./SettingsAbout.js";
 import { SettingsAppearance } from "./SettingsAppearance.js";
+import { SettingsThemes } from "./SettingsThemes.js";
+import { DEFAULT_APPEARANCE } from "../../../../../appearance/preferences.js";
+import type { AppearancePreference } from "../../../../../appearance/types.js";
 import { ActivityRuntimeProvider } from "./ActivityRuntimeContext.js";
 import { SettingsChatPage } from "./SettingsChatPage.js";
 import { ThreadBriefCard } from "./ThreadBriefCard.js";
@@ -32,6 +35,7 @@ import { SettingsQuickChat } from "./SettingsQuickChat.js";
 import { SettingsPageFooter } from "./SettingsPageFooter.js";
 import { SettingsPermissions } from "./SettingsPermissions.js";
 import { SettingsExtensionsView } from "./SettingsExtensionsView.js";
+import { useAppearance } from "../../appearanceContext.js";
 
 interface SettingsOverlayProps {
   open: boolean;
@@ -43,6 +47,8 @@ interface SettingsOverlayProps {
   onThemePreference(theme: DesktopThemePreference): void;
   fontPreference: DesktopFontPreference;
   onFontPreference(font: DesktopFontPreference): void;
+  appearancePreference?: AppearancePreference;
+  onAppearancePreference?(preference: AppearancePreference): void;
   onSettingsCommitted(snapshot: DesktopSettingsSnapshot): void;
   onNotify(message: string): void;
   closeRequest?: DesktopSettingsCloseRequest;
@@ -84,10 +90,10 @@ interface SettingsOverlayProps {
   onCancelModelLogin(provider: DesktopModelLoginProvider, authRequestId: string): Promise<void>;
 }
 
-export type SettingsTab = "通用" | "聊天" | "快速对话" | "模型" | "MCP 服务器" | "技能" | "插件" | "权限" | "活动记录" | "数据" | "记忆" | "网络搜索" | "浏览器" | "关于" | "工具模型";
+export type SettingsTab = "通用" | "配色" | "聊天" | "快速对话" | "模型" | "MCP 服务器" | "技能" | "插件" | "权限" | "活动记录" | "数据" | "记忆" | "网络搜索" | "浏览器" | "关于" | "工具模型";
 
 const settingsNav: Array<{ icon: IconName; label: string; tabs: SettingsTab[] }> = [
-  { icon: "sun", label: "通用", tabs: ["通用"] },
+  { icon: "sun", label: "通用", tabs: ["通用", "配色"] },
   { icon: "message", label: "聊天", tabs: ["聊天", "快速对话"] },
   { icon: "network", label: "模型", tabs: ["模型", "工具模型"] },
   { icon: "puzzle", label: "扩展", tabs: ["技能", "MCP 服务器", "插件"] },
@@ -98,6 +104,7 @@ const settingsNav: Array<{ icon: IconName; label: string; tabs: SettingsTab[] }>
 ];
 const settingsTabLabels: Partial<Record<SettingsTab, string>> = { 模型: "模型供应商", 数据: "对话摘要", 聊天: "聊天偏好" };
 const settingsPages: Record<SettingsTab, { description: string; keywords: string }> = {
+  配色: { description: "选择配色与界面皮肤，修改时即时预览。", keywords: "配色 主题 Windows 98 XP Longhorn 自定义" },
   通用: { description: "调整外观与阅读体验，修改时即时预览。", keywords: "主题 外观 字体 字号 浅色 深色 系统" },
   聊天: { description: "设置回复的显示方式，以及新对话的默认能力。", keywords: "流式 令牌 token Markdown 数学公式 思考 链接 默认工具 技能 温度 采样 压缩 Hashline" },
   快速对话: { description: "随时唤起小窗，让简短的问题留在手边。", keywords: "快捷键 悬浮 小窗 失焦 隐藏 前台 上下文 点击穿透" },
@@ -151,6 +158,7 @@ export function SettingsOverlay(props: SettingsOverlayProps): React.JSX.Element 
       active={open}
       onCommitted={onSettingsCommitted}
       onFontPreview={onFontPreference}
+      onAppearancePreview={props.onAppearancePreference}
       onNotify={onNotify}
       onThemePreview={onThemePreference}
       projectId={workspace?.project.id}
@@ -170,6 +178,7 @@ function SettingsOverlayContent({
   targetTab,
   themePreference,
   fontPreference,
+  appearancePreference,
   onNotify: _onNotify,
   onClose,
   onTestModelConfiguration,
@@ -207,6 +216,7 @@ function SettingsOverlayContent({
   closeRequest,
   onResolveCloseRequest
 }: SettingsOverlayProps): React.JSX.Element | null {
+  const appearance = useAppearance();
   const settingsDraft = useSettingsDraft();
   const runtimeBusy = sessionRunning || settingsDraft.snapshot?.hasRunningTasks === true;
   const [tab, setTab] = useState<SettingsTab>("通用");
@@ -315,7 +325,7 @@ function SettingsOverlayContent({
         maxHeight="calc(100dvh - 80px)"
       >
       <SettingsDetailHostContext.Provider value={detailHost}>
-      <section className={`settings-modal${extensionSettings ? " is-extension-settings" : ""}`} ref={setDetailHost}>
+      <section className={`settings-modal${extensionSettings ? " is-extension-settings" : ""}${appearance.skin !== "default" ? " is-retro-settings" : ""}`} ref={setDetailHost}>
         <aside className="settings-tabs">
           <div className="settings-sidebar-strip">
             <strong>设置</strong>
@@ -404,8 +414,15 @@ function SettingsOverlayContent({
             onThemeChange={settingsDraft.setThemePreference}
             font={settingsDraft.draft?.fontPreference ?? fontPreference}
             onFontChange={settingsDraft.setFontPreference}
+            density={(settingsDraft.draft?.appearancePreference ?? appearancePreference ?? DEFAULT_APPEARANCE).density}
+            onDensityChange={density => settingsDraft.setAppearancePreference({ ...(settingsDraft.draft?.appearancePreference ?? appearancePreference ?? DEFAULT_APPEARANCE), density })}
           /> : null}
           {activeTab === "数据" ? <ThreadBriefCard /> : null}
+          {activeTab === "配色" ? <SettingsThemes
+            preference={settingsDraft.draft?.appearancePreference ?? appearancePreference ?? DEFAULT_APPEARANCE}
+            onChange={settingsDraft.setAppearancePreference}
+            disabled={settingsDraft.saveState === "saving" || settingsDraft.saveState === "rolling_back" || settingsDraft.saveState === "recovery_required"}
+          /> : null}
           {activeTab === "活动记录" ? <SettingsActivity /> : null}
           {activeTab === "聊天" ? <SettingsChatPage /> : null}
           {activeTab === "权限" ? <SettingsPermissions /> : null}

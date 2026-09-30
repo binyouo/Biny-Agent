@@ -464,7 +464,6 @@ textarea,
 
 .quickchat-input:focus {
   border-color: color-mix(in srgb, var(--quickchat-accent) 62%, var(--quickchat-border));
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--quickchat-accent) 12%, transparent);
 }
 
 .quickchat-input:disabled { cursor: not-allowed; opacity: 0.58; }

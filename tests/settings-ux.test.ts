@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { registerHooks } from "node:module";
 import { defaultConfig } from "../src/config/schema.js";
+import type { AppearanceSnapshot } from "../src/appearance/types.js";
 import type { DesktopSettingsSaveInput, DesktopSettingsSnapshot } from "../src/desktop/protocol.js";
 
 function snapshot(): DesktopSettingsSnapshot {
@@ -28,7 +29,7 @@ async function harness(api: Record<string, unknown> = {}) {
   const React = await import("react");
   Object.assign(dom.window, {
     matchMedia: () => ({ matches: true, addEventListener() {}, removeEventListener() {} }),
-    biny: { updateSettingsDraftState: async () => {}, releaseSettingsCredentials: async () => {},
+    biny: { updateSettingsDraftState: async () => {}, releaseSettingsCredentials: async () => {}, previewAppearance: async () => {},
       settingsSnapshot: async () => snapshot(), ...api }
   });
   dom.window.HTMLElement.prototype.scrollTo = () => {};
@@ -60,12 +61,16 @@ async function harness(api: Record<string, unknown> = {}) {
       element.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
     });
   };
-  const overlay = async (extra: Record<string, unknown> = {}) => {
+  const overlay = async (extra: Record<string, unknown> = {}, appearance?: AppearanceSnapshot) => {
     const { SettingsOverlay } = await import("../src/desktop/renderer/src/components/settings/SettingsOverlay.js");
     const props = { open: true, version: "test", workspace: { project: { id: "project", name: "Project" }, models: [], connections: [] },
       themePreference: "system", fontPreference: { family: "system", size: 14 }, sessionRunning: false,
       onNotify() {}, onThemePreference() {}, onFontPreference() {}, onSettingsCommitted() {}, onClose() {}, ...extra };
-    await render(React.createElement(SettingsOverlay, props as unknown as React.ComponentProps<typeof SettingsOverlay>));
+    const node = React.createElement(SettingsOverlay, props as unknown as React.ComponentProps<typeof SettingsOverlay>);
+    if (appearance) {
+      const { AppearanceProvider } = await import("../src/desktop/renderer/src/AppearanceProvider.js");
+      await render(React.createElement(AppearanceProvider, { snapshot: appearance, children: node }));
+    } else await render(node);
   };
   return { React, dom, render, click, input, overlay, async close() {
     await React.act(() => root.unmount()); dom.window.close(); imports.deregister();
@@ -220,5 +225,94 @@ test("关闭的模型选择菜单不抢占设置页焦点", async () => {
     const { SettingsModelPicker } = await import("../src/desktop/renderer/src/components/settings/SettingsModelPicker.js");
     await h.render(h.React.createElement(SettingsModelPicker, { ariaLabel: "模型", groups: [], placeholder: "选择模型", onChange() {} }));
     assert.notEqual(document.activeElement, document.querySelector('[aria-label="搜索模型或服务商"]'));
+  } finally { await h.close(); }
+});
+
+test("删除自定义主题先确认，取消或保存失败均不丢失主题", async () => {
+  const h = await harness();
+  try {
+    const { SettingsThemes } = await import("../src/desktop/renderer/src/components/settings/SettingsThemes.js");
+    const { BUILTIN_PALETTES, DEFAULT_APPEARANCE, cloneAppearanceTheme } = await import("../src/appearance/index.js");
+    const custom = cloneAppearanceTheme(BUILTIN_PALETTES.nord, "test-theme", "测试配色");
+    const preference = { ...structuredClone(DEFAULT_APPEARANCE), darkTheme: "custom:test-theme", customThemes: [custom] };
+    const before = structuredClone(preference);
+    const writes: typeof preference[] = [];
+    let failSave = false;
+    await h.render(h.React.createElement(SettingsThemes, { preference, onChange(next) {
+      if (failSave) throw new Error("主题偏好暂时不可写");
+      writes.push(next as typeof preference);
+    } }));
+    await h.click('[aria-label="删除 测试配色"]');
+    assert.deepEqual(writes, []);
+    assert.ok(document.querySelector('dialog[aria-label="删除主题"]')?.textContent?.includes("测试配色"));
+    await h.click('dialog[aria-label="删除主题"] [aria-label="取消删除主题"]');
+    assert.deepEqual(writes, []);
+    assert.deepEqual(preference, before);
+    await h.click('[aria-label="删除 测试配色"]');
+    failSave = true;
+    await h.click('dialog[aria-label="删除主题"] [aria-label="确认删除主题"]');
+    assert.deepEqual(writes, []);
+    assert.match(document.querySelector('dialog[aria-label="删除主题"] [role="alert"]')?.textContent ?? "", /暂时不可写/u);
+    failSave = false;
+    await h.click('dialog[aria-label="删除主题"] [aria-label="确认删除主题"]');
+    assert.equal(writes.length, 1);
+    assert.deepEqual(writes[0]?.customThemes, []);
+    assert.equal(writes[0]?.darkTheme, null);
+    assert.equal(writes[0]?.lightTheme, preference.lightTheme);
+    assert.deepEqual(preference, before);
+  } finally { await h.close(); }
+});
+
+test("窗口拖影选项只在选中对应结构皮肤时出现", async () => {
+  const h = await harness();
+  try {
+    const { SettingsThemes } = await import("../src/desktop/renderer/src/components/settings/SettingsThemes.js");
+    const { DEFAULT_APPEARANCE } = await import("../src/appearance/index.js");
+    const preference = structuredClone(DEFAULT_APPEARANCE);
+    await h.render(h.React.createElement(SettingsThemes, { preference, onChange() {} }));
+    assert.equal(document.querySelector(".theme-trail-option") === null, true);
+    await h.render(h.React.createElement(SettingsThemes, { preference: { ...preference, lightTheme: "win98" }, onChange() {} }));
+    assert.equal(document.querySelector<HTMLInputElement>('.theme-trail-option input')?.checked, true);
+    await h.render(h.React.createElement(SettingsThemes, { preference: { ...preference, lightTheme: "winxp", win98Trail: false }, onChange() {} }));
+    assert.equal(document.querySelector(".theme-trail-option") === null, true);
+  } finally { await h.close(); }
+});
+
+test("打开设置时切换结构皮肤保留当前分页、未保存修改和内容节点", async () => {
+  const h = await harness();
+  try {
+    const { DEFAULT_APPEARANCE } = await import("../src/appearance/index.js");
+    const noop = () => {};
+    const props = { onNotify: noop, onThemePreference: noop, onFontPreference: noop, onAppearancePreference: noop, onSettingsCommitted: noop, onClose: noop };
+    const initial: AppearanceSnapshot = { themePreference: "dark", appearancePreference: structuredClone(DEFAULT_APPEARANCE), fontPreference: { family: "system", size: 14 } };
+    await h.overlay(props, initial);
+    await h.click('.settings-nav-list button:nth-of-type(2)');
+    const streaming = document.querySelector<HTMLInputElement>('[aria-label="启用流式响应"]');
+    assert.ok(streaming);
+    assert.equal(streaming.type, "checkbox");
+    const original = streaming.checked;
+    await h.click('[aria-label="启用流式响应"]');
+    const content = document.querySelector(".settings-content");
+    assert.ok(content);
+    const unsaved = document.querySelector<HTMLInputElement>('[aria-label="启用流式响应"]')?.checked;
+    assert.equal(typeof unsaved, "boolean");
+    assert.notEqual(unsaved, original);
+    assert.match(document.querySelector('.settings-page-footer')?.textContent ?? "", /未保存/u);
+    for (const skin of ["win98", "winxp", "longhorn", "longhorn-dark"]) {
+      const appearancePreference = { ...structuredClone(DEFAULT_APPEARANCE), lightTheme: skin === "longhorn-dark" ? null : skin, darkTheme: skin === "longhorn-dark" ? skin : null };
+      await h.overlay(props, { ...initial, themePreference: skin === "longhorn-dark" ? "dark" : "light", appearancePreference });
+      assert.equal(document.documentElement.dataset.appearanceSkin, skin);
+      assert.equal(document.querySelector(".settings-modal")?.classList.contains("is-retro-settings"), true, skin);
+      assert.equal(document.querySelector(".settings-content"), content, skin);
+      assert.equal(document.querySelector('.settings-titlebar h2')?.textContent, "聊天偏好", skin);
+      assert.equal(document.querySelector<HTMLInputElement>('[aria-label="启用流式响应"]')?.checked, unsaved, skin);
+      assert.match(document.querySelector('.settings-page-footer')?.textContent ?? "", /未保存/u);
+    }
+    await h.overlay(props, initial);
+    assert.equal(document.documentElement.dataset.appearanceSkin, "default");
+    assert.equal(document.querySelector(".settings-modal")?.classList.contains("is-retro-settings"), false);
+    assert.equal(document.querySelector(".settings-content"), content);
+    assert.equal(document.querySelector('.settings-titlebar h2')?.textContent, "聊天偏好");
+    assert.equal(document.querySelector<HTMLInputElement>('[aria-label="启用流式响应"]')?.checked, unsaved);
   } finally { await h.close(); }
 });

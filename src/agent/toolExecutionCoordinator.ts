@@ -6,7 +6,6 @@
  */
 import { createHash } from "node:crypto";
 import { ZodError } from "zod";
-import { planningToolAllowed } from "./planningPolicy.js";
 import { routeEditingTools, type EditingMode } from "../tools/file/editingMode.js";
 import { confirmPermissionRequest } from "../permission/confirm.js";
 import { isFullYesConfirmation } from "../permission/confirmation.js";
@@ -229,7 +228,6 @@ export class ToolExecutionCoordinator {
   /** Model-facing tool envelope. */
   createAgentTools(editing?: { mode: EditingMode; attachmentRoot?: string }): AgentTool[] {
     let entries = this.context.toolRegistry.listEntries()
-      .filter(({ tool, source }) => !this.context.planning || planningToolAllowed(tool, source))
       .filter(({ tool: registered }) => !this.allowedToolNames || this.allowedToolNames.has(registered.name));
     if (editing) {
       entries = routeEditingTools(entries, { workspaceRoot: this.context.workspaceRoot, ignore: this.context.config.workspace.ignore, attachmentRoot: editing.attachmentRoot }, editing.mode);
@@ -507,10 +505,6 @@ export class ToolExecutionCoordinator {
         // call auditable through its tool_result without duplicating UI errors.
         return await finish({ error: message, duplicateToolCallId: true }, message, "failed");
       }
-      if (this.context.planning && !planningToolAllowed(toolDefinition, source)) {
-        const message = "Planning mode forbids execution and workspace mutation. Ask the user to start the plan.";
-        return await finish({ error: message }, message, "failed");
-      }
       if (signal?.aborted) {
         this.emit({ type: "tool.started", toolCallId: call.id, tool: call.name, args: call.args, operationId });
         const message = abortedToolMessage(call.name, signal.reason);
@@ -535,7 +529,7 @@ export class ToolExecutionCoordinator {
             this.emit({ type: "tool.started", toolCallId: call.id, tool: call.name, args: call.args, operationId });
             return await finish(prepared.result, prepared.errorMessage, prepared.executionStatus ?? "failed");
           }
-          retrySafety = prepared.execution.retrySafety ?? (toolDefinition.risk === "read" ? "safe" : "unknown");
+          retrySafety = prepared.execution.retrySafety ?? (source === "builtin" && toolDefinition.risk === "read" ? "safe" : "unknown");
           updateState(latestState, latestEvidence);
 
           this.emit({
@@ -940,7 +934,7 @@ export class ToolExecutionCoordinator {
    * 需要知道为什么被拦，否则只会原样重试。
    */
   private async runBeforeToolHooks(tool: string, args: unknown, signal?: AbortSignal): Promise<ToolExecutionOutcome | undefined> {
-    if (this.context.planning || !this.hooks.hasHooks("beforeTool")) return undefined;
+    if (!this.hooks.hasHooks("beforeTool")) return undefined;
     const outcomes = await this.hooks.run("beforeTool", { tool, path: mutatedFilePath(args) ?? "" }, signal);
     const failed = outcomes.find((outcome) => outcome.exitCode !== 0);
     if (!failed) return undefined;
@@ -950,7 +944,7 @@ export class ToolExecutionCoordinator {
 
   /** 执行后钩子的输出只作为附加信息；它的退出码不改变这次调用的成败。 */
   private async attachAfterToolHooks(tool: string, args: unknown, result: unknown, signal?: AbortSignal): Promise<unknown> {
-    if (this.context.planning || !this.hooks.hasHooks("afterTool")) return result;
+    if (!this.hooks.hasHooks("afterTool")) return result;
     try {
       const outcomes = await this.hooks.run("afterTool", { tool, path: mutatedFilePath(args) ?? "" }, signal);
       if (!outcomes.length) return result;
@@ -969,7 +963,7 @@ export class ToolExecutionCoordinator {
    * 建快照失败不能挡住工具执行 —— 没有 git 仓库是常态，为此拒绝干活是本末倒置。
    */
   private async ensureCheckpoint(risk: ToolRisk | undefined, toolName: string): Promise<void> {
-    if (this.context.planning || risk !== "write" || !this.context.createCheckpoint) return;
+    if (risk !== "write" || !this.context.createCheckpoint) return;
     // 不同路径的写工具可并发，但都须等本回合快照完成，不能把“已开始”当成“已完成”。
     this.checkpointPromise ??= Promise.resolve().then(async () => {
       try {
@@ -994,7 +988,7 @@ export class ToolExecutionCoordinator {
     errorMessage: string | undefined,
     signal?: AbortSignal
   ): Promise<unknown> {
-    if (this.context.planning || !this.diagnostics || errorMessage || risk !== "write") return result;
+    if (!this.diagnostics || errorMessage || risk !== "write") return result;
     const targetPath = mutatedFilePath(args);
     if (!targetPath) return result;
     try {

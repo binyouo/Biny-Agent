@@ -32,7 +32,7 @@ import type { ToolRisk, ToolSource } from "../tools/types.js";
 import { perfNow, recordPerfPhase } from "../observability/perfTiming.js";
 import { loadPlugins, loadPluginsFromRoot } from "../extensions/plugins.js";
 import type { McpToolHost } from "../extensions/mcp.js";
-import { createSubagentTool, createTaskStatusTool, runSubagentTask as executeSubagentTask, type SubagentOptions } from "../extensions/subagent.js";
+import { createSubagentTool, createTaskStatusTool, prepareSubagentTask, runSubagentTask as executeSubagentTask, type PreparedSubagentTask, type SubagentOptions } from "../extensions/subagent.js";
 import { createPlanTools } from "../extensions/plan.js";
 import { buildSubagentDefinitionsPrompt, loadSubagentDefinitions, type SubagentDefinition } from "../extensions/agents.js";
 import { createHistoryTools } from "../extensions/history.js";
@@ -54,7 +54,9 @@ import { AiRegistry } from "../llm/AiRegistry.js";
 import { RuntimeEventAuthority } from "./RuntimeAuthority.js";
 import { DurableTaskRunStore, isTaskRunTerminal, type TaskRetrySafety, type TaskRunWithAttempts } from "./TaskRunStore.js";
 import { evaluateTaskRetry } from "./TaskRetryPolicy.js";
-import { runTaskClosure, type TaskClosureResult } from "./TaskClosure.js";
+import { readWorkerAttemptCheckpoint, runTaskClosure, type TaskClosureResult } from "./TaskClosure.js";
+import { isSessionWriterConflictError } from "./SessionLease.js";
+import { readWorkerSessionCheckpoint } from "./WorkerSession.js";
 import { AutomationStore } from "./AutomationScheduler.js";
 import { GoalGraphStore } from "./GoalGraphStore.js";
 import { CapabilityStore } from "./CapabilityStore.js";
@@ -131,6 +133,7 @@ export interface CommandRuntime {
     task: TaskRunWithAttempts;
     completion: Promise<TaskClosureResult>;
   }>;
+  canResumeWorkerTask?(taskRunId: string): Promise<boolean>;
   /** 一次性主任务通过同一份 TaskRun 验收闭环执行，不把回合完成当作产物已验证。 */
   runTaskWithVerification(input: {
     prompt: string;
@@ -278,6 +281,8 @@ export async function createCommandRuntime(workspaceRoot: string, options: Comma
   const taskCheckPromises = new Map<string, Promise<TaskCommandExecution>>();
   const durableTaskPromises = new Map<string, Promise<TaskClosureResult>>();
   const durableTaskControllers = new Map<string, AbortController>();
+  const workerContinuations = new Map<string, PreparedSubagentTask>();
+  const workerResumeAdmissions = new Map<string, ReturnType<CommandRuntime["resumeTaskRun"]>>();
   let startTaskRun: CommandRuntime["startTaskRun"] = async () => {
     throw new Error("TaskRun execution is not initialized.");
   };
@@ -373,7 +378,26 @@ export async function createCommandRuntime(workspaceRoot: string, options: Comma
       onSnapshot: (snapshot) => {
         taskRuns.syncSubagentSnapshot(snapshot, durableSubagentBindings.get(snapshot.taskId));
       },
-      execute: async (task, context) => await executeSubagentTask(subagentOptions, task, context.signal, context.accessMode, context.agent)
+      persistCompletion: (snapshot, output) => {
+        taskRuns.syncSubagentSnapshot(snapshot, durableSubagentBindings.get(snapshot.taskId), output);
+      },
+      execute: async (task, context) => {
+        const prepared = workerContinuations.get(context.taskId);
+        if (prepared) return await prepared.run(context.signal);
+        const binding = durableSubagentBindings.get(context.taskId);
+        const durable = taskRuns.get(binding?.taskRunId ?? context.taskId);
+        const attempt = durable?.attempts.at(-1);
+        if (durable && attempt && durable.status === "running") {
+          const artifacts = attempt.artifacts as Record<string, unknown> | undefined;
+          taskRuns.transition(durable.taskRunId, "running", { attemptId: attempt.attemptId, artifacts: {
+            ...artifacts, workerExecution: { ...readWorkerAttemptCheckpoint(artifacts), prompt: task, accessMode: context.accessMode, agent: context.agent }
+          } });
+        }
+        return await executeSubagentTask(subagentOptions, task, context.signal, context.accessMode, context.agent, {
+          persistenceRoot, taskId: attempt?.attemptId ?? context.taskId,
+          parentSessionId: durable?.sessionId, runtimeEventSink: runtimeAuthority.asSink()
+        });
+      }
     })
     : undefined;
   const loadedPlugins: string[] = [];
@@ -434,7 +458,6 @@ export async function createCommandRuntime(workspaceRoot: string, options: Comma
       for (const tool of createPlanTools({
         graphs,
         taskRuns,
-        isPlanning: () => agent?.getInfo().planning === true,
         stopGraph: (graphId, reason) => {
           const current = graphs.inspectGraph(graphId);
           const activeTaskRunIds = current.nodes.flatMap((node) => node.status === "running" && node.taskRunId !== undefined ? [node.taskRunId] : []);
@@ -584,12 +607,12 @@ export async function createCommandRuntime(workspaceRoot: string, options: Comma
   });
 
   const startSubagentTask = (task: string, taskOptions?: SubagentTaskRunOptions): SubmittedSubagentTask => {
-    if (agent.getInfo().planning) throw new Error("Planning mode forbids delegation.");
     if (!config.extensions.subagent.enabled) throw new Error("Subagent extension is disabled in config.json.");
     if (!subagentTaskManager) throw new Error("Subagent runtime is unavailable.");
     const taskId = taskOptions?.taskId ?? randomUUID();
+    const auditCallId = workerContinuations.has(taskId) ? randomUUID() : taskId;
     agent.recordHostedUserMessage(task);
-    const sequence = agent.recordHostedToolCall("Task", taskOptions?.agent ? { task, agent: taskOptions.agent } : { task }, taskId);
+    const sequence = agent.recordHostedToolCall("Task", taskOptions?.agent ? { task, agent: taskOptions.agent } : { task }, auditCallId);
     let submitted: SubmittedSubagentTask;
     try {
       taskOptions?.signal?.throwIfAborted();
@@ -611,19 +634,19 @@ export async function createCommandRuntime(workspaceRoot: string, options: Comma
     } catch (error) {
       durableSubagentBindings.delete(taskId);
       const failure = error instanceof Error ? error : new Error(String(error));
-      agent.recordHostedToolResult("Task", { error: failure.message }, taskId, sequence);
+      agent.recordHostedToolResult("Task", { error: failure.message }, auditCallId, sequence);
       throw failure;
     }
 
     const completion = submitted.completion.then(
       (result) => {
-        agent.recordHostedToolResult("Task", result, taskId, sequence);
+        agent.recordHostedToolResult("Task", result, auditCallId, sequence);
         agent.recordHostedAssistantMessage(result);
         return result;
       },
       (error: unknown) => {
         const failure = error instanceof Error ? error : new Error(String(error));
-        agent.recordHostedToolResult("Task", { error: failure.message }, taskId, sequence);
+        agent.recordHostedToolResult("Task", { error: failure.message }, auditCallId, sequence);
         throw failure;
       }
     ).finally(() => {
@@ -636,11 +659,11 @@ export async function createCommandRuntime(workspaceRoot: string, options: Comma
     return { ...submitted, completion };
   };
 
-  startTaskRun = async (
+  const dispatchTaskRun = async (
     taskRunId: string,
-    taskOptions: { retrySafety?: TaskRetrySafety } = {}
+    taskOptions: { retrySafety?: TaskRetrySafety } = {},
+    workerContinuation?: PreparedSubagentTask
   ): Promise<{ task: TaskRunWithAttempts; completion: Promise<TaskClosureResult> }> => {
-    if (agent.getInfo().planning) throw new Error("Planning mode forbids TaskRun execution.");
     const task = taskRuns.get(taskRunId);
     if (!task) throw new Error(`TaskRun ${taskRunId} does not exist.`);
     const existingPromise = durableTaskPromises.get(taskRunId);
@@ -655,7 +678,7 @@ export async function createCommandRuntime(workspaceRoot: string, options: Comma
     }
 
     let current = task;
-    if (current.status === "running") {
+    if (current.status === "running" && !workerContinuation) {
       const reason = "This TaskRun has no live Worker or persisted checkpoint; replaying its unknown side effects is unsafe.";
       current = taskRuns.transition(taskRunId, "blocked", {
         attemptId: current.attempts.at(-1)?.attemptId,
@@ -683,12 +706,15 @@ export async function createCommandRuntime(workspaceRoot: string, options: Comma
       ignore: config.workspace.ignore,
       executor: { executeTaskCheck: async (checkInput) => await executeTaskCheck(checkInput) },
       retrySafety: taskOptions.retrySafety,
+      resumeWorker: workerContinuation !== undefined,
       signal: controller.signal,
       executeAttempt: async (prompt, attempt) => {
         let submitted;
+        const workerTaskId = closureRequired ? attempt.attemptId : taskRunId;
+        if (workerContinuation) workerContinuations.set(workerTaskId, workerContinuation);
         try {
           submitted = startSubagentTask(prompt, {
-            taskId: closureRequired ? attempt.attemptId : taskRunId,
+            taskId: workerTaskId,
             taskRunId,
             attemptId: attempt.attemptId,
             completedStatus: closureRequired ? "verifying" : "completed",
@@ -719,8 +745,14 @@ export async function createCommandRuntime(workspaceRoot: string, options: Comma
             }
           });
           throw failure;
+        } finally {
+          workerContinuations.delete(workerTaskId);
+          await workerContinuation?.close();
         }
       }
+    }).then((result) => {
+      if (workerContinuation) graphs.projectTaskClosure(taskRunId, result);
+      return result;
     }).finally(() => {
       if (durableTaskPromises.get(taskRunId) === completion) durableTaskPromises.delete(taskRunId);
       if (durableTaskControllers.get(taskRunId) === controller) durableTaskControllers.delete(taskRunId);
@@ -729,12 +761,15 @@ export async function createCommandRuntime(workspaceRoot: string, options: Comma
     void completion.catch(() => undefined);
     return { task: latest, completion };
   };
+  startTaskRun = async (taskRunId, taskOptions) => await dispatchTaskRun(taskRunId, taskOptions);
 
   resumeTaskRun = async (taskRunId) => {
     const task = taskRuns.get(taskRunId);
     if (!task) throw new Error(`TaskRun ${taskRunId} does not exist.`);
     const existingPromise = durableTaskPromises.get(taskRunId);
     if (existingPromise) return { task, completion: existingPromise };
+    const existingAdmission = workerResumeAdmissions.get(taskRunId);
+    if (existingAdmission) return await existingAdmission;
 
     const latest = task.attempts.at(-1);
     const events = taskRuns.events(taskRunId);
@@ -743,6 +778,40 @@ export async function createCommandRuntime(workspaceRoot: string, options: Comma
       && latest.artifacts !== undefined;
     const admittedQueuedContinuation = task.status === "queued"
       && hasSafeQueuedTaskContinuation(task, events);
+    const parkedWorker = task.status === "blocked" && (latest?.failure as { failureClass?: string } | undefined)?.failureClass === "worker_interrupted";
+    if ((task.status === "running" || parkedWorker) && latest && config.extensions.subagent.enabled) {
+      const checkpoint = readWorkerAttemptCheckpoint(latest.artifacts);
+      if (checkpoint) {
+        const admission = (async () => {
+          const definition = readTaskDefinition(task.task);
+          let prepared: PreparedSubagentTask | undefined;
+          try {
+            prepared = await prepareSubagentTask(subagentOptions, checkpoint.prompt,
+              definition.review || definition.reportOnly || subagentAccessMode(permissionManager) === "read-only" ? "read-only" : checkpoint.accessMode ?? "workspace", definition.agent ?? checkpoint.agent, {
+                persistenceRoot, taskId: latest.attemptId, parentSessionId: task.sessionId,
+                resume: true, runtimeEventSink: runtimeAuthority.asSink()
+              });
+            const current = taskRuns.get(taskRunId);
+            if (current?.status !== task.status || current.revision !== task.revision || current.attempts.at(-1)?.attemptId !== latest.attemptId) throw new Error("Worker Attempt changed during continuation admission.");
+            if (parkedWorker) taskRuns.resumeWorkerAttempt(taskRunId, latest.attemptId, task.revision);
+            const submitted = await dispatchTaskRun(taskRunId, {}, prepared);
+            void submitted.completion.finally(async () => { await prepared?.close(); }).catch(() => undefined);
+            return submitted;
+          } catch (error) {
+            await prepared?.close();
+            const current = taskRuns.get(taskRunId);
+            if (!isSessionWriterConflictError(error) && current?.status === "running" && current.attempts.at(-1)?.attemptId === latest.attemptId) {
+              taskRuns.transition(taskRunId, "blocked", { attemptId: latest.attemptId, artifacts: latest.artifacts,
+                failure: { failureClass: "unsafe_recovery", message: error instanceof Error ? error.message : String(error) } });
+            }
+            throw error;
+          }
+        })();
+        workerResumeAdmissions.set(taskRunId, admission);
+        try { return await admission; }
+        finally { if (workerResumeAdmissions.get(taskRunId) === admission) workerResumeAdmissions.delete(taskRunId); }
+      }
+    }
     if (!persistedVerification && !admittedQueuedContinuation) {
       throw new Error("TaskRun resume requires a live Worker, persisted verification candidate, or an admitted retry/repair boundary.");
     }
@@ -775,7 +844,6 @@ export async function createCommandRuntime(workspaceRoot: string, options: Comma
     approval?: TaskVerificationApproval;
     signal?: AbortSignal;
   }): Promise<TaskCommandExecution> => {
-    if (agent.getInfo().planning) throw new Error("Planning mode forbids verification commands.");
     const checkRecorder = agent.getSessionRecorder();
     await checkRecorder.flush();
     const currentSessionEvents = await readSessionEvents(checkRecorder.filePath);
@@ -869,7 +937,6 @@ export async function createCommandRuntime(workspaceRoot: string, options: Comma
   };
 
   runTaskWithVerification = async (input) => {
-    if (agent.getInfo().planning) throw new Error("Planning mode forbids verified task execution.");
     const attemptSignal = input.attemptSignal ?? input.signal;
     const task = taskRuns.create({
       task: { prompt: input.prompt, verification: input.verification }
@@ -1003,6 +1070,16 @@ export async function createCommandRuntime(workspaceRoot: string, options: Comma
     startSubagentTask,
     startTaskRun,
     resumeTaskRun,
+    async canResumeWorkerTask(taskRunId) {
+      const task = taskRuns.get(taskRunId);
+      const attempt = task?.attempts.at(-1);
+      const admission = readWorkerAttemptCheckpoint(attempt?.artifacts);
+      if (!task || !attempt || !admission) return false;
+      try {
+        const { checkpoint, facts } = await readWorkerSessionCheckpoint(persistenceRoot, attempt.attemptId);
+        return checkpoint.prompt === admission.prompt && facts.parentSessionId === task.sessionId;
+      } catch { return false; }
+    },
     runTaskWithVerification,
     cancelTaskRun,
     async startPlanDraft(graphId, revision, signal) {
@@ -1010,27 +1087,19 @@ export async function createCommandRuntime(workspaceRoot: string, options: Comma
       if (graph.mode !== "supervised" || graph.supervisorSessionId !== agent.getInfo().sessionId || graph.status !== "draft" || graph.revision !== revision) {
         throw new Error("Plan draft is stale, started, or belongs to another session.");
       }
-      const wasPlanning = agent.getInfo().planning === true;
-      // 点击开始只授权这个已展示版本的 PlanStart；仍经过策略 deny、审计及工具调度，
-      // 不产生 Bash/验收检查的授权。调用方持有会话维护锁。
-      await agent.setPlanning(false);
-      try {
-        const coordinator = new ToolExecutionCoordinator({
-          workspaceRoot, config, recorder: agent.getSessionRecorder(), toolRegistry, permissionManager,
-          confirmPermission: async (request) => ({ approved: !request.requireFullYes, action: "allow_once", scope: "once" }),
-          runId: `plan-start:${graphId}:${String(revision)}`
-        }, permissionManager, () => undefined, () => ({}), new Set(["PlanStart"]), { maxToolCalls: 1, maxRepeatedActions: 1 });
-        const tool = coordinator.createAgentTools().find((entry) => entry.name === "PlanStart");
-        if (!tool) throw new Error("PlanStart is unavailable.");
-        const result = await tool.execute(randomUUID(), { graphId, revision }, signal);
-        await coordinator.waitForIdle();
-        await agent.getSessionRecorder().flush();
-        if (result.isError) throw new Error(JSON.stringify(result.details));
-        return result.details;
-      } catch (error) {
-        if (graphs.inspectGraph(graphId).status === "draft") await agent.setPlanning(wasPlanning);
-        throw error;
-      }
+      // 仍通过同一个 PlanStart 工具入口，保留权限、审计和调度检查。
+      const coordinator = new ToolExecutionCoordinator({
+        workspaceRoot, config, recorder: agent.getSessionRecorder(), toolRegistry, permissionManager,
+        confirmPermission: async (request) => ({ approved: !request.requireFullYes, action: "allow_once", scope: "once" }),
+        runId: `plan-start:${graphId}:${String(revision)}`
+      }, permissionManager, () => undefined, () => ({}), new Set(["PlanStart"]), { maxToolCalls: 1, maxRepeatedActions: 1 });
+      const tool = coordinator.createAgentTools().find((entry) => entry.name === "PlanStart");
+      if (!tool) throw new Error("PlanStart is unavailable.");
+      const result = await tool.execute(randomUUID(), { graphId, revision }, signal);
+      await coordinator.waitForIdle();
+      await agent.getSessionRecorder().flush();
+      if (result.isError) throw new Error(JSON.stringify(result.details));
+      return result.details;
     },
     executeTaskCheck,
     refreshDailyDiary: async (dateKey: string, refreshOptions: { force?: boolean } = {}): Promise<unknown> => await agent.refreshDailyDiary(dateKey, refreshOptions),

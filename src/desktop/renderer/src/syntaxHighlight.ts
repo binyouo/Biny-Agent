@@ -3,18 +3,21 @@
  *
  * 全渲染进程共享一个按需初始化的 highlighter；语言按需 `loadLanguage`，
  * 未预载的语法由打包器自然切成独立 chunk，用到才拉取。主题一次高亮同时输出
- * github-light / github-dark 两组颜色 CSS 变量，明暗切换纯靠 CSS，不重新高亮。
+ * one-light / one-dark-pro 两组颜色 CSS 变量，明暗切换纯靠 CSS，不重新高亮。
  *
  * 渲染的是模型输出，一切外部内容都当不可信处理：Shiki 自带转义；识别不出语言、
  * 超长或高亮抛错时，退回自行转义的纯文本——结果要作为 HTML 插进 DOM，不能把
  * 未转义的文件内容直接交出去。
  */
 import { bundledLanguages } from "shiki/langs";
-import type { BundledLanguage, Highlighter } from "shiki";
+import { bundledThemes } from "shiki/themes";
+import type { BundledLanguage, Highlighter, ThemeRegistration } from "shiki";
+import { createSyntaxTheme } from "../../../appearance/palette.js";
+import type { ThemePalette } from "../../../appearance/types.js";
 
 /** 双主题输出 `--shiki-light` / `--shiki-dark` 变量，由全局 CSS 按 data-theme 取值。 */
-const LIGHT_THEME = "github-light";
-const DARK_THEME = "github-dark";
+const LIGHT_THEME = "one-light";
+const DARK_THEME = "one-dark-pro";
 
 let highlighterPromise: Promise<Highlighter> | undefined;
 const languageLoads = new Map<string, Promise<void>>();
@@ -22,7 +25,17 @@ const languageLoads = new Map<string, Promise<void>>();
 function getHighlighter(): Promise<Highlighter> {
   // 首屏不编译未使用的语法；没有代码块的页面无需加载高亮引擎。
   highlighterPromise ??= import("shiki").then(({ createHighlighter, createJavaScriptRegexEngine }) => createHighlighter({
-    themes: [LIGHT_THEME, DARK_THEME],
+    themes: [LIGHT_THEME, DARK_THEME].map(name => async () => {
+      const registration: ThemeRegistration = (await bundledThemes[name as typeof LIGHT_THEME | typeof DARK_THEME]()).default;
+      const foreground = registration.colors?.["editor.foreground"] ?? registration.fg;
+      return {
+        ...registration,
+        tokenColors: (registration.tokenColors ?? []).map(rule => {
+          const scopes = Array.isArray(rule.scope) ? rule.scope : rule.scope ? [rule.scope] : [];
+          return scopes.some(scope => scope.startsWith("markup.quote")) ? { ...rule, settings: { foreground } } : rule;
+        })
+      };
+    }),
     langs: [],
     engine: createJavaScriptRegexEngine({ forgiving: true })
   })).catch((error: unknown) => { highlighterPromise = undefined; throw error; });
@@ -84,16 +97,16 @@ const languageByFence: Record<string, string> = {
   svg: "xml"
 };
 
-export function highlightWorkspaceFile(filePath: string, content: string): Promise<HighlightedCode> {
-  return highlight(content, languageForPath(filePath));
+export function highlightWorkspaceFile(filePath: string, content: string, palette?: ThemePalette): Promise<HighlightedCode> {
+  return highlight(content, languageForPath(filePath), palette);
 }
 
 /** 高亮 Markdown 围栏代码块；`fence` 是 ``` 后面那段语言标注。 */
-export function highlightFencedCode(content: string, fence?: string): Promise<HighlightedCode> {
-  return highlight(content, languageForFence(fence));
+export function highlightFencedCode(content: string, fence?: string, palette?: ThemePalette): Promise<HighlightedCode> {
+  return highlight(content, languageForFence(fence), palette);
 }
 
-async function highlight(content: string, language?: string): Promise<HighlightedCode> {
+async function highlight(content: string, language?: string, palette?: ThemePalette): Promise<HighlightedCode> {
   if (!language || content.length > highlightLimit || !(language in bundledLanguages)) {
     return { html: escapeHtml(content), language };
   }
@@ -110,9 +123,18 @@ async function highlight(content: string, language?: string): Promise<Highlighte
       }
       await pending;
     }
+    let themeName: string | undefined;
+    if (palette) {
+      const registration = createSyntaxTheme(palette);
+      const encoded = JSON.stringify(registration);
+      let hash = 2166136261;
+      for (const character of encoded) hash = Math.imul(hash ^ character.charCodeAt(0), 16777619);
+      themeName = `${registration.name}-${(hash >>> 0).toString(16)}`;
+      if (!highlighter.getLoadedThemes().includes(themeName)) await highlighter.loadTheme({ ...registration, name: themeName });
+    }
     const html = highlighter.codeToHtml(content, {
       lang,
-      themes: { light: LIGHT_THEME, dark: DARK_THEME },
+      themes: { light: themeName ?? LIGHT_THEME, dark: themeName ?? DARK_THEME },
       defaultColor: false
     });
     return { html: stripPreWrapper(html), language };

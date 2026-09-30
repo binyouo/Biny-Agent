@@ -234,9 +234,9 @@ export function CapabilitiesMenu({ anchorRef, onOpenMcpSettings, onRefreshCatalo
         <div aria-label={tab === "tools" ? "工具列表" : "技能列表"} className="capabilities-scroll" ref={listRef} role="group" {...listHover.handlers}>
           <FluidHoverHighlight hover={listHover} className="has-option-radius" />
           <CapabilityGroups groups={activeGroups} value={value} onToggle={toggleEntry} onToggleGroup={toggleGroupEntries} />
-          {resourceState === "loading" ? <p className="capabilities-loading" role="status"><span className="capabilities-spinner" />正在准备工具与技能…</p> : null}
+          {tab === "skills" && resourceState === "loading" ? <p className="capabilities-loading" role="status"><span className="capabilities-spinner" />正在读取本地技能目录…</p> : null}
           {tab === "skills" && skillWarnings?.length ? <div className="capabilities-diagnostics" role="status">{skillWarnings.map((warning, index) => <p key={index}>{warning}</p>)}</div> : null}
-          {!hasItems && resourceState !== "loading" ? <p className="capabilities-empty">{query.trim() ? "没有匹配的能力" : tab === "tools" ? "当前项目没有可用工具" : "当前项目没有启用的技能"}</p> : null}
+          {!hasItems && (tab === "tools" || resourceState !== "loading") ? <p className="capabilities-empty">{query.trim() ? "没有匹配的能力" : tab === "tools" ? "当前项目没有可用工具" : "当前项目没有启用的技能"}</p> : null}
         </div>
         {tab === "tools" ? (
           <div className="capabilities-mcp">
@@ -245,7 +245,6 @@ export function CapabilitiesMenu({ anchorRef, onOpenMcpSettings, onRefreshCatalo
                 <Icon className="is-chevron" name="chevron" size={12} />
                 <Icon name="plug" size={13} />
                 <span>MCP 服务器</span>
-                {resourceState === "loading" ? <span className="capabilities-spinner" /> : null}
                 {mcpServerSelection.selected > 0 ? <span className="capabilities-mcp-count">{mcpServerSelection.selected}</span> : null}
               </button>
               <div className="capabilities-mcp-actions">
