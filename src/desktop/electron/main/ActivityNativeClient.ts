@@ -6,6 +6,7 @@ import { mkdir, readFile, unlink } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import { promisify } from "node:util";
+import { desktopCaptureSchedule } from "../../../computer/captureSchedule.js";
 const executeFile = promisify(execFile);
 
 export class ActivityNativeClient {
@@ -18,6 +19,9 @@ export class ActivityNativeClient {
     this.socketPath = path.join(os.tmpdir(), `biny-cu-${process.pid}-${createHash("sha256").update(directory).digest("hex").slice(0, 8)}.sock`);
   }
   async capture(maxWidth: number, quality: number): Promise<Buffer> {
+    return await desktopCaptureSchedule.run("activity", () => this.capturePassive(maxWidth, quality));
+  }
+  private async capturePassive(maxWidth: number, quality: number): Promise<Buffer> {
     await mkdir(this.tempDirectory, { recursive: true });
     const output = path.join(this.tempDirectory, `${randomUUID()}.jpg`);
     try {

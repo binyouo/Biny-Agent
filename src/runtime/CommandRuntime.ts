@@ -242,7 +242,7 @@ export async function createCommandRuntime(workspaceRoot: string, options: Comma
     () => resolveToolModel(config),
     options.browserAutomation
   );
-  const browserToolNames = ["BrowserOpen", "BrowserReadDom", "BrowserClick", "BrowserType", "BrowserPress"];
+  const browserToolNames = ["BrowserOpen", "BrowserReadDom", "BrowserClick", "BrowserType", "BrowserPress", "ComputerList", "ComputerObserve", "ComputerAction"];
   const setBrowserAutomation = (endpoint?: BrowserAutomationEndpoint): void => {
     for (const name of [...browserToolNames, "WebSearch", "WebFetch"]) toolRegistry.unregister(name);
     if (endpoint) {

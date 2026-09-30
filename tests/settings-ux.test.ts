@@ -27,10 +27,13 @@ async function harness(api: Record<string, unknown> = {}) {
   const { JSDOM } = await import("jsdom");
   const dom = new JSDOM('<!doctype html><div id="root"></div>', { url: "https://desktop.local", pretendToBeVisual: true });
   const React = await import("react");
+  const confirmations: string[] = [];
+  dom.window.confirm = message => { confirmations.push(message ?? ""); return false; };
   Object.assign(dom.window, {
     matchMedia: () => ({ matches: true, addEventListener() {}, removeEventListener() {} }),
     biny: { updateSettingsDraftState: async () => {}, releaseSettingsCredentials: async () => {}, previewAppearance: async () => {},
-      settingsSnapshot: async () => snapshot(), ...api }
+      settingsSnapshot: async () => snapshot(), onActivityEvent: () => () => {}, activitySnapshot: async () => { throw new Error("offline"); },
+      activityPermissions: async () => { throw new Error("offline"); }, ...api }
   });
   dom.window.HTMLElement.prototype.scrollTo = () => {};
   dom.window.HTMLDialogElement.prototype.showModal = function () { this.open = true; };
@@ -72,7 +75,7 @@ async function harness(api: Record<string, unknown> = {}) {
       await render(React.createElement(AppearanceProvider, { snapshot: appearance, children: node }));
     } else await render(node);
   };
-  return { React, dom, render, click, input, overlay, async close() {
+  return { React, dom, confirmations, render, click, input, overlay, async close() {
     await React.act(() => root.unmount()); dom.window.close(); imports.deregister();
     for (const [key, descriptor] of saved) {
       if (descriptor) Object.defineProperty(globalThis, key, descriptor); else Reflect.deleteProperty(globalThis, key);
@@ -122,6 +125,30 @@ test("搜索按设置内容定位子页，空结果可清除，跨页草稿继�
     await h.click('.settings-nav-list button');
     assert.equal(document.querySelector<HTMLInputElement>('input[value="dark"]')?.checked, true);
     assert.match(document.querySelector('.settings-page-footer')?.textContent ?? "", /未保存/u);
+  } finally { await h.close(); }
+});
+
+test("独立页面切换保留未保存主题和关闭确认，Activity Record 搜索别名仍定位中文页面", async () => {
+  const h = await harness({ quickChatSettings: async () => ({ autoHideOnBlur: true, injectScreenContext: false, clickThrough: false }) });
+  try {
+    await h.overlay();
+    await h.click('input[value="dark"]');
+    const quick = [...document.querySelectorAll<HTMLButtonElement>(".settings-nav-list button")].find(button => button.textContent === "快速对话");
+    assert.ok(quick); quick.focus();
+    await h.React.act(() => quick.click());
+    assert.equal(document.querySelector(".settings-titlebar h2")?.textContent, "快速对话");
+    assert.equal(document.activeElement, quick);
+    await h.input('[aria-label="搜索设置"]', "Activity Record");
+    assert.match(document.querySelector('[aria-label="设置搜索结果"]')?.textContent ?? "", /活动记录/u);
+    await h.click('[aria-label="设置搜索结果"] button');
+    assert.equal(document.querySelector(".settings-titlebar h2")?.textContent, "活动记录");
+    await h.click(".settings-nav-list button");
+    assert.equal(document.querySelector<HTMLInputElement>('input[value="dark"]')?.checked, true);
+    assert.match(document.querySelector(".settings-page-footer")?.textContent ?? "", /未保存/u);
+    await h.click('[aria-label="关闭设置"]');
+    assert.equal(h.confirmations.length, 1);
+    assert.match(h.confirmations[0] ?? "", /未保存|关闭/u);
+    assert.match(document.querySelector(".settings-page-footer")?.textContent ?? "", /未保存/u);
   } finally { await h.close(); }
 });
 

@@ -47,8 +47,11 @@ import { QuickChatContextService } from "./QuickChatContextService.js";
 import { createQuickChatWindow, type QuickChatWindowController } from "./quickChatWindow.js";
 import { createDesktopWindow, type WindowCloseDecision } from "./window.js";
 import { parseDesktopReferenceLaunch } from "./desktopReferenceLaunch.js";
+import { createComputerUseService } from "./computerUseService.js";
+import { applyCuaQaProfile } from "./cuaQaProfile.js";
 
-app.setName("Biny");
+const cuaQa = applyCuaQaProfile(app);
+app.setName(cuaQa ? "Biny Cua QA" : "Biny");
 app.setAboutPanelOptions({
   applicationName: "Biny",
   applicationVersion: app.getVersion(),
@@ -196,6 +199,7 @@ async function startDesktopApplication(): Promise<void> {
   const agents = new DesktopAgentManager(state, projects, configStore, (projectId, update, meta) => {
     broadcastToWindows(desktopIpc.event, { projectId, ...update, ...meta });
     const event = update.event;
+    if (event?.type === "run.completed" && event.sessionId) computerUse?.controller.release(event.sessionId);
     if (event?.type === "run.completed" && event.sessionId) {
       void threadBriefs.engine.enqueue(event.sessionId).catch((error: unknown) => {
         console.warn("[ThreadBrief]", redactSecrets(error instanceof Error ? error.message : String(error)));
@@ -263,6 +267,10 @@ async function startDesktopApplication(): Promise<void> {
   // 恢复检查必须早于 IPC 注册和窗口开放；无法自动恢复时保留应用可用来展示设置错误，
   // 但同一个 transaction 实例会阻止所有新工作入口。
   await settings.recoverAtStartup();
+  const computerUse = createComputerUseService(browser, () => mainWindow, () => settings.assertRuntimeReady());
+  const pauseComputer = (): void => { if (computerUse?.controller.status().state !== "disabled") computerUse?.controller.control("pause"); };
+  powerMonitor.on("lock-screen", pauseComputer);
+  powerMonitor.on("suspend", pauseComputer);
   const prepareHandoff = async (handoff: DesktopLaunchHandoff): Promise<DesktopSessionHandoff> => {
     const project = await projects.createProject(handoff.workspaceRoot);
     await state.commitSelection(project.id, handoff.sessionId, "chat");
@@ -379,6 +387,7 @@ async function startDesktopApplication(): Promise<void> {
       pendingReferenceOpen = undefined;
     });
     mainWindow.on("closed", () => {
+      pauseComputer();
       mainWindow = undefined;
       // 关闭窗口后托盘继续承载 Activity；重新打开时创建新的主窗口。
     });
@@ -542,6 +551,7 @@ async function startDesktopApplication(): Promise<void> {
         quickChatWindow?.destroy();
         const cleanupResult = await waitForDesktopQuitCleanup(async () => {
           await threadBriefs.close();
+          await computerUse?.close();
           terminals.disposeAll();
           await staticPreview.disposeAll();
           await activityApi.close().catch(() => undefined);

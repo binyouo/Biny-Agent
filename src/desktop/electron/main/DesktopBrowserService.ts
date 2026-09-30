@@ -34,6 +34,7 @@ import {
   type StoredCookie
 } from "../../../tools/web/cookieJar.js";
 import { listBrowserProfiles, readBrowserProfileCookies } from "./browserProfileCookies.js";
+import { ToolOutcomeUnknownError } from "../../../tools/types.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -48,6 +49,8 @@ interface EmbeddedTab { view: WebContentsView; state: DesktopBrowserTab; navigat
 interface EmbeddedProject { revision: number; tabs: Map<string, EmbeddedTab>; activeId?: string }
 
 export class DesktopBrowserService {
+  private computerUse?: (method: string, args: Record<string, unknown>, signal: AbortSignal) => Promise<unknown>;
+  attachComputerUse(handler: (method: string, args: Record<string, unknown>, signal: AbortSignal) => Promise<unknown>): void { this.computerUse = handler; }
   private relay?: BrowserRelay;
   private relayStarting?: Promise<void>;
 
@@ -561,14 +564,14 @@ export class DesktopBrowserService {
       socket.once("close", abort);
       let result: unknown;
       try {
-        result = await this.enqueueAutomation(() => {
+        result = method.startsWith("computer_") && this.computerUse ? await this.computerUse(method, args, controller.signal) : await this.enqueueAutomation(() => {
           controller.signal.throwIfAborted();
           return method === "web_read" ? this.readWebPage(args, controller.signal) : this.executeAutomation(method, args);
         });
       } finally { socket.off("close", abort); }
       socket.write(`${JSON.stringify({ id, ok: true, result })}\n`);
     } catch (error) {
-      socket.write(`${JSON.stringify({ id, ok: false, error: error instanceof Error ? error.message : String(error) })}\n`);
+      socket.write(`${JSON.stringify({ id, ok: false, error: error instanceof Error ? error.message : String(error), outcomeUnknown: error instanceof ToolOutcomeUnknownError })}\n`);
     }
   }
 

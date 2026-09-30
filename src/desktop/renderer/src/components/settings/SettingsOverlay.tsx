@@ -6,6 +6,7 @@
  */
 import { SettingsWebSearch } from "./SettingsWebSearch.js";
 import { SettingsBrowser } from "./SettingsBrowser.js";
+import { SettingsComputerUse } from "./SettingsComputerUse.js";
 import { Fragment, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Dialog } from "@astryxdesign/core/Dialog";
 import type { LocalEmbeddingModelId } from "../../../../../llm/embedding/types.js";
@@ -90,13 +91,13 @@ interface SettingsOverlayProps {
   onCancelModelLogin(provider: DesktopModelLoginProvider, authRequestId: string): Promise<void>;
 }
 
-export type SettingsTab = "通用" | "配色" | "聊天" | "快速对话" | "模型" | "MCP 服务器" | "技能" | "插件" | "权限" | "活动记录" | "数据" | "记忆" | "网络搜索" | "浏览器" | "关于" | "工具模型";
+export type SettingsTab = "通用" | "配色" | "聊天" | "快速对话" | "模型" | "MCP 服务器" | "技能" | "插件" | "权限" | "活动记录" | "数据" | "记忆" | "网络搜索" | "浏览器" | "Computer Use" | "关于" | "工具模型";
 
 const settingsNav: Array<{ label: string; pages: Array<{ icon: IconName; tab: SettingsTab }> }> = [
   { label: "偏好", pages: [{ icon: "sun", tab: "通用" }, { icon: "message", tab: "聊天" }, { icon: "message", tab: "快速对话" }] },
   { label: "能力", pages: [{ icon: "network", tab: "模型" }, { icon: "network", tab: "工具模型" }, { icon: "puzzle", tab: "技能" }, { icon: "puzzle", tab: "MCP 服务器" }, { icon: "puzzle", tab: "插件" }, { icon: "globe", tab: "网络搜索" }, { icon: "globe", tab: "浏览器" }] },
   { label: "本地数据", pages: [{ icon: "brain", tab: "记忆" }, { icon: "eye", tab: "活动记录" }, { icon: "message", tab: "数据" }] },
-  { label: "系统", pages: [{ icon: "shield", tab: "权限" }, { icon: "help", tab: "关于" }] }
+  { label: "系统", pages: [{ icon: "shield", tab: "权限" }, { icon: "cpu", tab: "Computer Use" }, { icon: "help", tab: "关于" }] }
 ];
 const settingsRouteEntries = [
   ...settingsNav.flatMap((group) => group.pages.map((page) => ({ value: page.tab, group: group.label }))),
@@ -115,8 +116,9 @@ const settingsPages: Record<SettingsTab, { description: string; keywords: string
   插件: { description: "安装和管理扩展能力。", keywords: "plugin 市场 安装 启停 卸载" },
   网络搜索: { description: "设置搜索来源与网页访问方式。", keywords: "搜索引擎 联网 Cookie 登录 结果 超时" },
   浏览器: { description: "连接日常浏览器，管理扩展配对。", keywords: "Chrome 扩展 配对 撤销" },
+  "Computer Use": { description: "管理本机桌面控制、权限与动作后预览。", keywords: "Cua computer use 桌面 截图 点击 输入 辅助功能 屏幕录制 画中画 PiP" },
   记忆: { description: "管理长期记忆、检索与后台整理。", keywords: "记忆 memory 向量 embedding 模型 下载 索引 睡眠 清理" },
-  活动记录: { description: "控制本机活动采集与保存范围。", keywords: "屏幕 截图 录制 OCR 采集 隐私 存储 排除" },
+  活动记录: { description: "控制本机活动采集与保存范围。", keywords: "Activity Record 活动记录 屏幕 截图 录制 OCR 采集 隐私 存储 排除" },
   数据: { description: "管理对话摘要及其生成方式。", keywords: "对话 摘要 数据 自动 总结" },
   权限: { description: "设置工具操作是否需要手动批准。", keywords: "安全 审批 确认 自动 批准 工具权限" },
   关于: { description: "版本信息与项目链接。", keywords: "版本 更新 帮助" }
@@ -129,6 +131,7 @@ const immediateSaveHints: Partial<Record<SettingsTab, string>> = {
   数据: "对话摘要设置立即保存。关闭设置不会撤销已保存的修改。",
   活动记录: "采集设置立即保存，开始或停止采集即时生效。",
   浏览器: "配对与撤销操作即时生效。",
+  "Computer Use": "控制与开关即时生效；每次观察和动作仍需批准。",
   "MCP 服务器": "服务器在各自弹窗中保存；连接和授权操作即时生效。",
   插件: "安装、启停与卸载操作即时生效。",
   技能: "启用范围需点击底部保存；导入、版本恢复等操作即时生效。",
@@ -305,7 +308,7 @@ function SettingsOverlayContent({
   };
   const extensionSettings = activeTab === "MCP 服务器" || activeTab === "技能" || activeTab === "插件";
   const needsProject = !workspace && ["聊天", "网络搜索", "工具模型", "模型", "技能", "MCP 服务器", "插件", "记忆", "数据"].includes(activeTab);
-  const loadBlocked = Boolean((workspace && !["快速对话", "浏览器", "关于"].includes(activeTab) || activeTab === "活动记录" || activeTab === "权限") && (settingsDraft.loading || settingsDraft.loadError));
+  const loadBlocked = Boolean((workspace && !["快速对话", "浏览器", "Computer Use", "关于"].includes(activeTab) || activeTab === "活动记录" || activeTab === "权限") && (settingsDraft.loading || settingsDraft.loadError));
   const openSearchResult = (nextTab: SettingsTab): void => {
     setSearch("");
     selectTab(nextTab);
@@ -453,6 +456,7 @@ function SettingsOverlayContent({
           {activeTab === "插件" ? <SettingsExtensionsView kind="plugins" onError={_onNotify} projectId={workspace?.project.id} /> : null}
           {activeTab === "关于" ? <SettingsAbout version={version} /> : null}
           {activeTab === "浏览器" ? <SettingsBrowser /> : null}
+          {activeTab === "Computer Use" ? <SettingsComputerUse /> : null}
           {activeTab === "网络搜索" ? <SettingsWebSearch
             onOpenBrowser={onOpenBrowser}
             onExportCookies={onExportCookies}

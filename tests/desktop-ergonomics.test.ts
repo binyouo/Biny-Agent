@@ -14,7 +14,7 @@ async function harness() {
   Object.assign(dom.window, { matchMedia: () => ({ matches: true, addEventListener() {}, removeEventListener() {} }),
     biny: { updateSettingsDraftState: async () => {}, previewAppearance: async () => {}, activitySettings: async () => { throw new Error("offline"); },
       quickChatSettings: async () => ({ autoHideOnBlur: true, injectScreenContext: false, clickThrough: false }),
-      activityStatus: async () => { throw new Error("offline"); }, activityPermissions: async () => { throw new Error("offline"); } } });
+      onActivityEvent: () => () => {}, activitySnapshot: async () => { throw new Error("offline"); }, activityPermissions: async () => { throw new Error("offline"); } } });
   dom.window.HTMLElement.prototype.scrollTo = () => {};
   dom.window.HTMLDialogElement.prototype.showModal = function () { this.open = true; };
   dom.window.HTMLDialogElement.prototype.close = function () { this.open = false; };
@@ -163,21 +163,22 @@ test("聊天草稿在切项目、切会话和取消历史编辑后保留，默�
   } finally { await h.close(); }
 });
 
-test("设置页分别导航，快速对话深链直接定位对应页面", async () => {
+test("16个设置页面独立导航，旧配色深链和搜索仍然有效", async () => {
   const h = await harness();
   try {
     const { SettingsOverlay } = await import("../src/desktop/renderer/src/components/settings/SettingsOverlay.js");
     const props = { open: true, version: "test", themePreference: "system", fontPreference: { family: "system", size: 14 }, sessionRunning: false,
       onNotify() {}, onThemePreference() {}, onFontPreference() {}, onSettingsCommitted() {}, onClose() {} };
     await h.render(h.React.createElement(SettingsOverlay, props as unknown as React.ComponentProps<typeof SettingsOverlay>));
-    assert.deepEqual([...document.querySelectorAll('.settings-nav-list button')].map(node => node.textContent), [
-      "通用", "聊天偏好", "快速对话", "模型供应商", "工具模型", "技能", "MCP 服务器", "插件", "网络搜索", "浏览器",
-      "记忆", "活动记录", "对话摘要", "权限", "关于"
-    ]);
-    await h.render(h.React.createElement(SettingsOverlay, { ...props, targetTab: "快速对话" } as unknown as React.ComponentProps<typeof SettingsOverlay>));
-    assert.equal(document.querySelector('.settings-nav-list [aria-current="page"]')?.textContent, "快速对话");
-    assert.equal(document.querySelector('[aria-label="聊天分类"]'), null);
-    assert.equal(document.querySelector('.settings-titlebar h2')?.textContent, "快速对话");
+    const pages = [["通用", "通用"], ["聊天", "聊天偏好"], ["快速对话", "快速对话"], ["模型", "模型供应商"], ["工具模型", "工具模型"], ["技能", "技能"], ["MCP 服务器", "MCP 服务器"], ["插件", "插件"], ["网络搜索", "网络搜索"], ["浏览器", "浏览器"], ["记忆", "记忆"], ["活动记录", "活动记录"], ["数据", "对话摘要"], ["权限", "权限"], ["Computer Use", "Computer Use"], ["关于", "关于"]];
+    assert.deepEqual([...document.querySelectorAll('.settings-nav-list button')].map(node => node.textContent), pages.map(page => page[1]));
+    assert.deepEqual([...document.querySelectorAll('.settings-nav-group')].map(node => node.textContent), ["偏好", "能力", "本地数据", "系统"]);
+    for (const [route, label] of pages) {
+      await h.render(h.React.createElement(SettingsOverlay, { ...props, targetTab: route } as unknown as React.ComponentProps<typeof SettingsOverlay>));
+      assert.equal(document.querySelector('.settings-nav-list [aria-current="page"]')?.textContent, label, route);
+      assert.equal(document.querySelector('.settings-titlebar h2')?.textContent, label, route);
+      assert.equal(document.querySelector('.settings-subnav'), null, route);
+    }
     await h.render(h.React.createElement(SettingsOverlay, { ...props, targetTab: "配色" } as unknown as React.ComponentProps<typeof SettingsOverlay>));
     assert.equal(document.querySelector('.settings-titlebar h2')?.textContent, "配色");
     const search = document.querySelector<HTMLInputElement>('[aria-label="搜索设置"]')!;

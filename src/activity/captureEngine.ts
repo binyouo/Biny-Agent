@@ -1,6 +1,7 @@
 /** 主进程截图选择和变化检测。 */
 import type { ActivitySettings } from "./settings.js";
-export interface ActivityFrame { jpeg: Buffer; width: number; height: number; pixels: Buffer; contentHash?: string; histogram?: number[]; histogramChange?: number; pixelDiff?: number }
+import { CaptureBusyError, desktopCaptureSchedule } from "../computer/captureSchedule.js";
+export interface ActivityFrame { jpeg: Buffer; width: number; height: number; pixels: Buffer; contentHash?: string; histogram?: number[]; histogramChange?: number; pixelDiff?: number; privacyEpoch?: number }
 export interface ActivityCaptureDependencies {
   now?(): number;
   native(maxWidth: number, quality: number): Promise<Buffer>;
@@ -19,10 +20,17 @@ export class ActivityCaptureEngine {
   resetBaseline(): void { this.previous = undefined; }
   async capture(settings: ActivitySettings, trigger: string): Promise<ActivityFrame | undefined> {
     const now = this.deps.now?.() ?? Date.now();
+    const privacyEpoch = desktopCaptureSchedule.activityEpoch();
+    if (!desktopCaptureSchedule.canPersistActivity(privacyEpoch)) return undefined;
     if (now < this.nextAllowedAt || now - this.lastAttempt < settings.captureDebounceMs) return undefined;
     this.lastAttempt = now;
-    try { return await this.captureFrame(settings, trigger); }
+    try {
+      const frame = await this.captureFrame(settings, trigger);
+      if (!desktopCaptureSchedule.canPersistActivity(privacyEpoch)) { this.resetBaseline(); return undefined; }
+      return frame ? { ...frame, privacyEpoch } : undefined;
+    }
     catch (error) {
+      if (error instanceof CaptureBusyError) return undefined;
       this.failures = Math.min(this.failures + 1, 16);
       this.nextAllowedAt = now + Math.min(30000, 500 * 2 ** (this.failures - 1));
       throw error;
@@ -34,7 +42,7 @@ export class ActivityCaptureEngine {
     const quality = compareOnly ? 40 : settings.jpegQuality;
     if (!this.nativeFailed) {
       try { bytes = await this.deps.native(width, quality); }
-      catch { this.nativeFailed = true; }
+      catch (error) { if (error instanceof CaptureBusyError) throw error; this.nativeFailed = true; }
     }
     bytes ??= await this.deps.desktop(width);
     const frame = await this.deps.frame(bytes, quality);

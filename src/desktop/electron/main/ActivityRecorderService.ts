@@ -7,6 +7,7 @@ import { spawn, execFile, type ChildProcessWithoutNullStreams } from "node:child
 import { promisify } from "node:util";
 import { ActivityCaptureEngine, type ActivityFrame } from "../../../activity/captureEngine.js";
 import { ActivityNativeClient } from "./ActivityNativeClient.js";
+import { desktopCaptureSchedule } from "../../../computer/captureSchedule.js";
 import { createInterface, type Interface } from "node:readline";
 import type { AgentConfigStore } from "../../../config/store.js";
 import { globalAgentDir } from "../../../config/paths.js";
@@ -80,6 +81,7 @@ interface CaptureMessage {
   histogram?: number[];
   histogramChange?: number;
   pixelDiff?: number;
+  privacyEpoch?: number;
 }
 
 interface OcrMessage {
@@ -981,6 +983,7 @@ export class ActivityRecorderService {
       const frame = await this.captureEngine.capture(settings, trigger);
       if (epoch !== this.captureEpoch) { this.captureEngine.resetBaseline(); return; }
       if (!frame) return;
+      if (frame.privacyEpoch === undefined || !desktopCaptureSchedule.canPersistActivity(frame.privacyEpoch)) { this.captureEngine.resetBaseline(); return; }
       if (independentBundle && await this.verifiedIndependentBundle(epoch, settings) !== independentBundle) {
         this.captureEngine.resetBaseline(); return;
       }
@@ -989,10 +992,11 @@ export class ActivityRecorderService {
       const persisted = await this.enqueue(async () => {
         if (epoch !== this.captureEpoch) return false;
         if (independentBundle && await this.verifiedIndependentBundle(epoch, settings) !== independentBundle) return false;
+        if (frame.privacyEpoch === undefined || !desktopCaptureSchedule.canPersistActivity(frame.privacyEpoch)) return false;
         return await this.persistFallbackCapture({ type: "capture", occurredAt, application, bundleId, windowTitle,
           jpegBase64: frame.jpeg.toString("base64"), width: frame.width, height: frame.height, captureTrigger: trigger, captureId,
           contentHash: frame.contentHash, histogram: frame.histogram,
-          histogramChange: frame.histogramChange, pixelDiff: frame.pixelDiff });
+          histogramChange: frame.histogramChange, pixelDiff: frame.pixelDiff, privacyEpoch: frame.privacyEpoch });
       });
       if (!persisted) { this.captureEngine.resetBaseline(); return; }
       if (independentBundle) this.setState("error", "Activity 输入监听不可用；仅屏幕截图继续。");
@@ -1133,6 +1137,7 @@ export class ActivityRecorderService {
   }
 
   private async persistFallbackCapture(message: CaptureMessage): Promise<boolean> {
+    if (message.privacyEpoch !== undefined && !desktopCaptureSchedule.canPersistActivity(message.privacyEpoch)) return false;
     if (!this.settings?.enabled || this.screenLocked || !this.screenRecordingGranted || this.state === "stopped" || this.state === "paused"
       || (this.foregroundBundle !== undefined && this.settings.sensitiveApplications.includes(this.foregroundBundle))) return false;
     try {

@@ -1,7 +1,11 @@
 /** ScreenCaptureKit 失败时的桌面备用截图；只传本机内存，不落临时图、不请求额外权限。 */
-import { desktopCapturer, screen, systemPreferences } from "electron";
+import { desktopCapturer, screen, systemPreferences, nativeImage } from "electron";
+import { desktopCaptureSchedule } from "../../../computer/captureSchedule.js";
 
 export async function captureActivityDesktopScreen(maxWidth: number): Promise<Buffer> {
+  return await desktopCaptureSchedule.run("activity", () => capturePassiveDesktopScreen(maxWidth));
+}
+async function capturePassiveDesktopScreen(maxWidth: number): Promise<Buffer> {
   if (systemPreferences.getMediaAccessStatus("screen") !== "granted") throw new Error("未获屏幕录制权限。");
   const display = screen.getPrimaryDisplay();
   const width = Math.min(maxWidth, Math.round(display.size.width * display.scaleFactor));
@@ -15,7 +19,6 @@ export async function captureActivityDesktopScreen(maxWidth: number): Promise<Bu
 
 /** 图像处理留在 Electron 主进程，采集与分层压缩使用同一个 nativeImage 实现。 */
 export async function encodeActivityFrame(bytes: Buffer, quality: number): Promise<import("../../../activity/captureEngine.js").ActivityFrame> {
-  const { nativeImage } = await import("electron");
   const image = nativeImage.createFromBuffer(bytes);
   if (image.isEmpty()) throw new Error("截图图像为空");
   const size = image.getSize();
@@ -23,7 +26,6 @@ export async function encodeActivityFrame(bytes: Buffer, quality: number): Promi
 }
 
 export async function recompressActivitySnapshot(file: string, target: { width: number; height: number; quality: number }): Promise<{ data: Buffer; width: number; height: number }> {
-  const { nativeImage } = await import("electron");
   const image = nativeImage.createFromPath(file);
   if (image.isEmpty()) throw new Error("截图图像无法读取");
   const size = image.getSize();

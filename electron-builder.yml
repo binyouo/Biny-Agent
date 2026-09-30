@@ -2,11 +2,16 @@ appId: com.biny.desktop
 productName: Biny
 asar: true
 asarUnpack:
+  - out/main/cuaWorker.js
+  - out/main/chunks/**/*
+  - node_modules/zod/**/*
   - node_modules/onnxruntime-node/**/*
   - node_modules/onnxruntime-web/**/*.wasm
   - node_modules/@huggingface/transformers/**/*.wasm
   - node_modules/sharp/**/*
   - node_modules/@img/**/*
+  - node_modules/@trycua/**/*
+  - node_modules/@ubjs/**/*
 directories:
   output: release
   buildResources: build
@@ -15,6 +20,13 @@ files:
   - dist/**/*
   - package.json
 extraResources:
+  - from: THIRD_PARTY_NOTICES.txt
+    to: THIRD_PARTY_NOTICES.txt
+  - from: native/cua-driver
+    to: native/cua-driver
+    filter:
+      - '*.txt'
+      - node-runtime-NOTICE.md
   - from: out/native/activity-input-monitor
     to: native/activity-input-monitor
   - from: out/native/activity-ocr

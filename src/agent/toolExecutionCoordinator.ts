@@ -52,7 +52,7 @@ import type {
   AgentSessionEvent,
   AgentToolEvent
 } from "./types.js";
-import type { AgentTool, AgentToolResult } from "./core/types.js";
+import type { AgentImageContent, AgentTool, AgentToolResult } from "./core/types.js";
 
 interface ToolExecutionOutcome {
   result: unknown;
@@ -171,6 +171,8 @@ export class ToolExecutionCoordinator {
   /** 首个预算拒绝决定本轮终态，后续并行调用不得覆盖更早发生的事实。 */
   private budgetRejection: ToolBudgetRejection | undefined;
   private readonly uncertainExecutions = new Map<string, string>();
+  private readonly toolImages = new Map<string, AgentImageContent>();
+  private imageBytes = 0;
 
   constructor(
     private readonly context: AgentRuntimeContext,
@@ -250,8 +252,11 @@ export class ToolExecutionCoordinator {
             source
           ));
           const error = failedToolResultMessage(result);
+          const image = this.toolImages.get(toolCallId);
+          this.toolImages.delete(toolCallId);
+          if (image) this.imageBytes -= Buffer.byteLength(image.data, "base64");
           return {
-            content: [{ type: "text", text: serializeToolResult(result) }],
+            content: [{ type: "text", text: serializeToolResult(result) }, ...(!error && image ? [image] : [])],
             details: result,
             isError: Boolean(error)
           };
@@ -1091,6 +1096,14 @@ export class ToolExecutionCoordinator {
             turnId: this.context.turnId,
             signal: executionSignal,
             onDispatched,
+            onImage: (image) => {
+              if (executionSignal?.aborted || this.toolImages.has(call.id)) return false;
+              const bytes = Buffer.byteLength(image.data, "base64");
+              if (bytes > 1024 * 1024 || this.imageBytes + bytes > 2 * 1024 * 1024) return false;
+              this.imageBytes += bytes;
+              this.toolImages.set(call.id, { ...image });
+              return true;
+            },
             onUpdate: (update) => {
               if (!executionSignal?.aborted) this.emit({ type: "tool.progress", toolCallId: call.id, tool: call.name, update });
             },

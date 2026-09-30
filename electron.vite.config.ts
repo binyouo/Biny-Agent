@@ -9,7 +9,12 @@ export default defineConfig({
   main: {
     build: {
       rollupOptions: {
-        input: path.join(root, "src/desktop/electron/main/index.ts")
+        // Preserve the SDK package boundary: its native library resolver is relative to the package.
+        external: ["@trycua/cua-driver"],
+        input: {
+          index: path.join(root, "src/desktop/electron/main/index.ts"),
+          cuaWorker: path.join(root, "src/computer/cuaWorker.ts")
+        }
       }
     }
   },

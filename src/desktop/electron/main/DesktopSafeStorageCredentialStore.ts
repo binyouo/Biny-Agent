@@ -84,10 +84,6 @@ export class DesktopSafeStorageCredentialStore implements CredentialStore {
   private async readAll(): Promise<Record<string, string>> {
     const revision = await this.readFileRevision();
     if (this.cache !== undefined && this.cacheRevision === revision) return { ...this.cache };
-    const cipher = await this.cipher();
-    if (!cipher.isAvailable()) {
-      throw new Error("系统加密存储不可用，无法读取模型凭据。");
-    }
     let raw: string;
     try {
       raw = await fs.readFile(this.filePath, "utf8");
@@ -96,6 +92,12 @@ export class DesktopSafeStorageCredentialStore implements CredentialStore {
       this.cache = {};
       this.cacheRevision = "missing";
       return {};
+    }
+    // Only an actual ENOENT read skips Keychain. A file created after stat must
+    // still pass the same security check; other filesystem errors propagate.
+    const cipher = await this.cipher();
+    if (!cipher.isAvailable()) {
+      throw new Error("系统加密存储不可用，无法读取模型凭据。");
     }
     const trimmed = raw.trim();
     if (!trimmed) {

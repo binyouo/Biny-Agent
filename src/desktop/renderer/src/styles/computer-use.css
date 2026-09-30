@@ -1,0 +1,26 @@
+/* Layout only: cards, buttons, switches, type and colors inherit Biny settings. */
+.computer-use-settings .cu-card { display: flex; flex-direction: column; gap: var(--st-stack-gap); }
+.computer-use-settings .cu-heading { display: flex; align-items: center; gap: var(--st-control-gap); }
+.computer-use-settings .cu-heading svg, .computer-use-settings .cu-muted { color: var(--text-secondary); }
+.computer-use-settings .cu-section { display: flex; flex-direction: column; gap: var(--st-card-gap); }
+.computer-use-settings h4 { margin: 0; color: var(--text-secondary); font-size: calc(.875 * var(--st-rem)); font-weight: 500; }
+.computer-use-settings .cu-helper, .computer-use-settings .cu-permission, .computer-use-settings .cu-diagnostics { border: 1px solid var(--border-subtle); border-radius: var(--st-radius); background: var(--surface); padding: var(--st-control-py) var(--st-control-px); }
+.computer-use-settings .cu-helper { display: flex; align-items: center; gap: var(--st-control-gap); min-width: 0; }
+.computer-use-settings .cu-helper > svg { color: var(--text-tertiary); flex-shrink: 0; }
+.computer-use-settings .cu-helper[data-loaded="true"] > svg, .computer-use-settings .cu-permission-state.is-granted { color: var(--green-text); }
+.computer-use-settings .cu-permission-state.is-denied { color: var(--red-text); }
+.computer-use-settings .cu-helper code { flex: 1; min-width: 0; overflow-wrap: anywhere; font-family: var(--font-mono); font-size: calc(.8 * var(--st-rem)); background: none; padding: 0; color: var(--text); }
+.computer-use-settings .cu-helper > span { flex-shrink: 0; color: var(--text-secondary); font-size: calc(.8 * var(--st-rem)); }
+.computer-use-settings .cu-permission-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--st-card-gap); }
+.computer-use-settings .cu-permission { display: flex; align-items: center; justify-content: space-between; gap: var(--st-control-gap); }
+.computer-use-settings .cu-permission-state { display: inline-flex; color: var(--text-tertiary); }
+.computer-use-settings .cu-button-row { display: flex; align-items: center; flex-wrap: wrap; gap: var(--st-control-gap); }
+.computer-use-settings .cu-diagnostics { white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--font-mono); font-size: calc(.8 * var(--st-rem)); margin: 0; max-height: 240px; overflow: auto; }
+.computer-use-settings .cu-controls { display: flex; flex-direction: column; gap: var(--st-card-gap); }
+.computer-use-settings details { padding-top: var(--st-card-gap); }
+.computer-use-settings summary { cursor: pointer; color: var(--text-secondary); }
+.computer-use-settings .cu-foreground { display: flex; align-items: center; gap: var(--st-control-gap); margin: var(--st-card-gap) 0; }
+.computer-use-settings .cu-approvals header { display: flex; align-items: center; justify-content: space-between; gap: var(--st-card-gap); }
+.computer-use-settings .cu-approvals h3 > span { font-size: calc(.8 * var(--st-rem)); font-weight: 400; color: var(--text-secondary); }
+.computer-use-settings .cu-sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+@container settings (max-width: 560px) { .computer-use-settings .cu-permission-grid { grid-template-columns: 1fr; } }

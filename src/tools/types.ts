@@ -84,6 +84,8 @@ export interface ToolExecutionContext {
   /** MCP 在发出远端请求前调用；中断早于此边界时可确认没有派发副作用。 */
   onDispatched?: () => void;
   onUpdate?: (update: ToolUpdate) => void;
+  /** Explicit tool images only; preview frames never call this. */
+  onImage?: (image: { type: "image"; data: string; mimeType: string }) => boolean;
   onExecutionState?: (state: ToolExecutionState, evidence?: string) => void;
   onFileChangeCommitted?: (change: CommittedFileChange) => Promise<void>;
   approvedFile?: ApprovedFileSnapshot;

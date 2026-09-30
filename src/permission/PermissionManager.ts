@@ -137,6 +137,11 @@ export class PermissionManager {
       return { decision: "deny", reason: "Permission mode is read only." };
     }
 
+    // Logged-in desktop surfaces need explicit per-call approval, including full-access coding sessions.
+    if (request.toolName === "ComputerObserve" || request.toolName === "ComputerAction") {
+      return { decision: "ask", canRemember: false, reason: "Authorize this exact desktop observation/action. Screenshots may be sent to the current model; external effects cannot be undone by Biny." };
+    }
+
     // 完全访问明确跳过交互批准；显式拒绝路径仍由上方规则拦截。
     if (this.mode === "full-access") {
       return { decision: "allow", reason: "Allowed by full access mode." };

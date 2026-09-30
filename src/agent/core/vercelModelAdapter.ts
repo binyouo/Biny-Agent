@@ -16,6 +16,7 @@ import type {
   LanguageModelV4Content,
   LanguageModelV4StreamPart
 } from "@ai-sdk/provider";
+import { boundComputerFrames } from "../../computer/modelFrames.js";
 import { stableSystemPromptForCache } from "../prompts.js";
 import { classifyModelRequestError } from "../../llm/modelErrors.js";
 import {
@@ -200,9 +201,9 @@ async function* streamModel(
   while (true) {
     signal?.throwIfAborted();
     try {
-      const messages = state.config.transformContext
+      const messages = boundComputerFrames(state.config.transformContext
         ? await state.config.transformContext(state.context.messages, signal)
-        : state.context.messages;
+        : state.context.messages);
       if (!state.model.stream) throw new Error("Vercel model is unavailable for the injected AgentModel.");
       const streamModel = state.model.stream.bind(state.model);
       const streamOptions: ModelStreamOptions = {
@@ -346,7 +347,7 @@ async function collectGenerateResult(
 }
 
 export function toModelMessages(messages: AgentMessage[], nativePatch = false): ModelMessage[] {
-  return messages.map((message) => {
+  return boundComputerFrames(messages).map((message) => {
     if (message.role === "user") {
       if (typeof message.content === "string") return { role: "user", content: message.content };
       return {
@@ -380,7 +381,11 @@ export function toModelMessages(messages: AgentMessage[], nativePatch = false): 
         toolName: message.toolName,
         output: message.isError
           ? { type: "error-text", value: stringify(message.content) }
-          : { type: "text", value: message.content.map((part) => part.type === "text" ? part.text : "[binary content]").join("\n") }
+          : message.content.some((part) => part.type === "image")
+            ? { type: "content", value: message.content.map((part) => part.type === "text"
+              ? { type: "text", text: part.text }
+              : { type: "file", mediaType: part.mimeType, data: { type: "data", data: part.data } }) }
+            : { type: "text", value: message.content.map((part) => part.type === "text" ? part.text : "[binary content]").join("\n") }
       }]
     };
   });
