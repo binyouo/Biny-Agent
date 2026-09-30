@@ -92,15 +92,15 @@ interface SettingsOverlayProps {
 
 export type SettingsTab = "通用" | "配色" | "聊天" | "快速对话" | "模型" | "MCP 服务器" | "技能" | "插件" | "权限" | "活动记录" | "数据" | "记忆" | "网络搜索" | "浏览器" | "关于" | "工具模型";
 
-const settingsNav: Array<{ icon: IconName; label: string; tabs: SettingsTab[] }> = [
-  { icon: "sun", label: "通用", tabs: ["通用", "配色"] },
-  { icon: "message", label: "聊天", tabs: ["聊天", "快速对话"] },
-  { icon: "network", label: "模型", tabs: ["模型", "工具模型"] },
-  { icon: "puzzle", label: "扩展", tabs: ["技能", "MCP 服务器", "插件"] },
-  { icon: "globe", label: "网络", tabs: ["网络搜索", "浏览器"] },
-  { icon: "brain", label: "记忆与数据", tabs: ["记忆", "活动记录", "数据"] },
-  { icon: "shield", label: "权限", tabs: ["权限"] },
-  { icon: "help", label: "关于", tabs: ["关于"] }
+const settingsNav: Array<{ label: string; pages: Array<{ icon: IconName; tab: SettingsTab }> }> = [
+  { label: "偏好", pages: [{ icon: "sun", tab: "通用" }, { icon: "message", tab: "聊天" }, { icon: "message", tab: "快速对话" }] },
+  { label: "能力", pages: [{ icon: "network", tab: "模型" }, { icon: "network", tab: "工具模型" }, { icon: "puzzle", tab: "技能" }, { icon: "puzzle", tab: "MCP 服务器" }, { icon: "puzzle", tab: "插件" }, { icon: "globe", tab: "网络搜索" }, { icon: "globe", tab: "浏览器" }] },
+  { label: "本地数据", pages: [{ icon: "brain", tab: "记忆" }, { icon: "eye", tab: "活动记录" }, { icon: "message", tab: "数据" }] },
+  { label: "系统", pages: [{ icon: "shield", tab: "权限" }, { icon: "help", tab: "关于" }] }
+];
+const settingsRouteEntries = [
+  ...settingsNav.flatMap((group) => group.pages.map((page) => ({ value: page.tab, group: group.label }))),
+  { value: "配色" as const, group: "偏好" }
 ];
 const settingsTabLabels: Partial<Record<SettingsTab, string>> = { 模型: "模型供应商", 数据: "对话摘要", 聊天: "聊天偏好" };
 const settingsPages: Record<SettingsTab, { description: string; keywords: string }> = {
@@ -121,7 +121,7 @@ const settingsPages: Record<SettingsTab, { description: string; keywords: string
   权限: { description: "设置工具操作是否需要手动批准。", keywords: "安全 审批 确认 自动 批准 工具权限" },
   关于: { description: "版本信息与项目链接。", keywords: "版本 更新 帮助" }
 };
-const settingsTabValues = new Set<SettingsTab>(settingsNav.flatMap((item) => item.tabs));
+const settingsTabValues = new Set<SettingsTab>(settingsRouteEntries.map(({ value }) => value));
 const immediateSaveHints: Partial<Record<SettingsTab, string>> = {
   快速对话: "快速对话偏好立即保存。关闭设置不会撤销已保存的修改。",
   模型: "模型配置立即保存。关闭设置不会撤销已保存的修改。",
@@ -226,13 +226,12 @@ function SettingsOverlayContent({
   const [closeGuardOpen, setCloseGuardOpen] = useState(false);
   const [detailHost, setDetailHost] = useState<HTMLElement | null>(null);
   const activeTab = normalizeSettingsTab(tab);
-  const activePage = settingsNav.find((item) => item.tabs.includes(activeTab))!;
   const activeTabRef = useRef<SettingsTab>(activeTab);
   const scrollRef = useRef<HTMLDivElement>(null);
   const titleRef = useRef<HTMLHeadingElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const searchQuery = search.trim().toLocaleLowerCase();
-  const searchResults = settingsNav.flatMap((group) => group.tabs.map((value) => ({ value, group: group.label })))
+  const searchResults = settingsRouteEntries
     .filter(({ value }) => `${value} ${settingsTabLabels[value] ?? ""} ${settingsPages[value].description} ${settingsPages[value].keywords}`.toLocaleLowerCase().includes(searchQuery));
   useEffect(() => {
     if (activeTab !== tab) {
@@ -350,13 +349,13 @@ function SettingsOverlayContent({
             {!searchResults.length ? <p className="settings-search-empty">试试“字体”“模型”或“流式”。</p> : null}
           </nav> :
           <nav aria-label="设置分类" className="settings-nav-list">
-            {settingsNav.map((item, index) => <Fragment key={item.label}>
-              {index === 0 || index === 2 || index === 5 || index === 6 ? <p className="settings-nav-group">{index === 0 ? "偏好" : index === 2 ? "能力" : index === 5 ? "本地数据" : "系统"}</p> : null}
-              <button key={item.label} aria-current={item.tabs.includes(activeTab) ? "page" : undefined}
-                className={item.tabs.includes(activeTab) ? "is-selected" : ""} onClick={() => { if (!item.tabs.includes(activeTab)) selectTab(item.tabs[0]!); }} type="button">
-                <span aria-hidden="true" className="settings-nav-icon"><Icon name={item.icon} size={18} /></span>
-                <span className="settings-nav-label">{item.label}</span>
-              </button>
+            {settingsNav.map((group) => <Fragment key={group.label}>
+              <p className="settings-nav-group">{group.label}</p>
+              {group.pages.map((page) => <button key={page.tab} aria-current={activeTab === page.tab ? "page" : undefined}
+                className={activeTab === page.tab ? "is-selected" : ""} onClick={() => selectTab(page.tab)} type="button">
+                <span aria-hidden="true" className="settings-nav-icon"><Icon name={page.icon} size={18} /></span>
+                <span className="settings-nav-label">{settingsTabLabels[page.tab] ?? page.tab}</span>
+              </button>)}
             </Fragment>)}
           </nav>}
         </aside>
@@ -370,12 +369,6 @@ function SettingsOverlayContent({
               <Icon name="close" size={18} />
             </button>
           </header>
-          {activePage.tabs.length > 1 ? <div className="settings-subnav" role="group" aria-label={`${activePage.label}分类`}>
-            {activePage.tabs.map((item) => <button key={item} type="button" aria-pressed={activeTab === item}
-              className={activeTab === item ? "is-selected" : ""} onClick={() => selectTab(item)}>
-              {settingsTabLabels[item] ?? item}
-            </button>)}
-          </div> : null}
           <p className="settings-save-hint">{immediateSaveHints[activeTab] ?? (activeTab === "关于" ? "" : activeTab === "通用" ? workspace ? "修改即时预览，点击底部保存后保留。" : "外观偏好即时保存，适用于所有项目。" : "修改后点击底部保存，可与其他页面的更改一起提交。")}</p>
           <div className={`settings-scroll${extensionSettings ? " is-extension" : activeTab === "模型" ? " is-providers" : ""}`} ref={scrollRef}>
           {loadBlocked ? <div className="settings-load-state" aria-busy={settingsDraft.loading}>
