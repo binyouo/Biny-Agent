@@ -26,6 +26,12 @@ interface OwnerRecord {
   authority?: unknown;
 }
 
+// Only acquisition may discard this observation and retry. Publication and
+// release still treat a missing/replaced marker as a binding failure.
+class OwnerMarkerChangedError extends Error {
+  constructor() { super("Local file lock changed during access."); }
+}
+
 export async function withLocalFileWriteLock<T>(root: string, lockFileName: string, operation: () => Promise<T>): Promise<T> {
   if (!lockFileName || lockFileName === "." || lockFileName === ".." || path.basename(lockFileName) !== lockFileName) throw new Error("Lock name must be a file name.");
   await ensureRealDirectory(root);
@@ -171,6 +177,13 @@ async function removeDeadOwnerLock(lockPath: string, authority: LockAuthority): 
     owner = await readOwnerRecord(lockPath);
   } catch (error) {
     if (isNotFound(error)) return true;
+    if (error instanceof OwnerMarkerChangedError) {
+      // Legacy owners do not hold the kernel gate and can remove their marker
+      // while it is being read. Never reclaim from that stale observation or
+      // trust a replacement's contents; re-open it on the next bounded poll.
+      authority.assertBinding();
+      return false;
+    }
     throw error;
   }
   const ownerAuthority = parseIdentity(owner?.authority);
@@ -239,10 +252,22 @@ async function assertLockBinding(
 ): Promise<Pick<Stats, "dev" | "ino">> {
   const descriptor = await handle.stat();
   const target = await safeLockStat(lockPath);
-  if (!target || !descriptor.isFile() || descriptor.nlink !== 1 || !sameIdentity(descriptor, target)) {
+  // Reject unsafe descriptors and target paths before classifying normal
+  // unlink/replacement as turnover. In particular, extra hardlinks and symlinks
+  // must never become retryable merely because the inode binding also changed.
+  if (!descriptor.isFile() || (descriptor.nlink !== 0 && descriptor.nlink !== 1)) {
     throw new Error("Local file lock changed during access.");
   }
   if (expected && !sameIdentity(expected, descriptor)) throw new Error("Local file lock changed during access.");
+  if (!target || descriptor.nlink === 0 || !sameIdentity(descriptor, target)) {
+    // The first fstat can predate the path change. Check the still-open inode
+    // again so newly added hardlinks cannot be hidden by removing its old name.
+    const current = await handle.stat();
+    if ((current.nlink !== 0 && current.nlink !== 1) || !sameIdentity(descriptor, current)) {
+      throw new Error("Local file lock changed during access.");
+    }
+    throw new OwnerMarkerChangedError();
+  }
   return { dev: descriptor.dev, ino: descriptor.ino };
 }
 
