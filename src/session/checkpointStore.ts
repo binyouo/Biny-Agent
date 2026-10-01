@@ -26,7 +26,7 @@ const checkpointRefPrefix = "refs/biny/checkpoints";
  * agent 自己的状态目录必须整个排除在快照之外。它进了快照，恢复就会覆盖会话日志、计划清单，
  * 乃至记录着"要恢复到哪个快照"的索引文件本身 —— 撤销会把自己的依据一起抹掉。
  */
-const excludeAgentState = [":(exclude).biny", ":(exclude).agent"];
+const agentStatePaths = [".biny", ".agent"];
 const maxCheckpoints = 50;
 
 export interface Checkpoint {
@@ -46,7 +46,13 @@ export interface RestoreSummary {
 }
 
 export class CheckpointStore {
-  private constructor(private readonly workspaceRoot: string, private readonly gitDir: string) {}
+  private readonly workspaceRoot: string;
+  private readonly gitDir: string;
+
+  private constructor(workspaceRoot: string, gitDir: string) {
+    this.workspaceRoot = workspaceRoot;
+    this.gitDir = gitDir;
+  }
 
   /** 不是 git 仓库时返回 undefined —— 快照能力就是不可用，不去伪造一个。 */
   static async open(workspaceRoot: string): Promise<CheckpointStore | undefined> {
@@ -62,6 +68,7 @@ export class CheckpointStore {
     // pid+毫秒在并发下同毫秒会撞名，加随机成分保证临时索引互不污染。
     // 放在 Git 目录内，使 split-index 相对引用的 sharedindex 仍能被副本找到。
     const temporaryIndex = path.join(this.gitDir, `biny-checkpoint-index-${process.pid}-${Date.now().toString(36)}-${randomUUID()}`);
+    const temporaryPaths = `${temporaryIndex}.paths`;
     try {
       // 从真实 index 复制文件集合，再在副本上更新工作区内容。空 index 会漏掉
       // 已跟踪但后来命中 .gitignore 的路径，使恢复误把它们当成新增文件。
@@ -73,7 +80,30 @@ export class CheckpointStore {
         if (!isMissingFile(error)) throw error;
         await this.git(["read-tree", "--empty"], env);
       }
-      await this.git(["add", "-A", "--", ".", ...excludeAgentState], env);
+      const files = await this.trackedFilesNow(env);
+      const statePaths = await this.excludedStatePaths([...files]);
+      // --sparse 也清除稀疏范围外的状态；只改 index 副本，不改变用户暂存区。
+      await this.git(["rm", "-r", "--cached", "-f", "--ignore-unmatch", "--sparse", "--", ...statePaths], env);
+      const skipped = new Set((await this.gitPaths(["ls-files", "-t", "-z", "--", "."], env))
+        .filter((entry) => entry.startsWith("S ")).map((entry) => entry.slice(2)));
+      const updatedFiles: string[] = [];
+      for (const file of withoutStateFiles([...files], statePaths)) {
+        if (skipped.has(file)) {
+          try {
+            await fs.lstat(path.join(this.workspaceRoot, file));
+          } catch (error) {
+            // 缺失的 skip-worktree 文件是稀疏投影，不是用户删除；保留复制的缓存条目。
+            if (isMissingFile(error)) continue;
+            throw error;
+          }
+        }
+        updatedFiles.push(file);
+      }
+      if (updatedFiles.length) {
+        // 显式清单避免 ignored 目录的排除 pathspec 报错；文件名按 NUL 分隔且不解释为 pathspec。
+        await fs.writeFile(temporaryPaths, `${updatedFiles.join("\0")}\0`, { mode: 0o600 });
+        await this.git(["--literal-pathspecs", "add", "-A", "--sparse", `--pathspec-from-file=${temporaryPaths}`, "--pathspec-file-nul"], env);
+      }
       const tree = (await this.git(["write-tree"], env)).trim();
       const commit = (await this.git([
         "commit-tree", tree,
@@ -90,6 +120,7 @@ export class CheckpointStore {
       return checkpoint;
     } finally {
       await fs.rm(temporaryIndex, { force: true });
+      await fs.rm(temporaryPaths, { force: true });
     }
   }
 
@@ -109,8 +140,11 @@ export class CheckpointStore {
       ?? (id === "latest" ? checkpoints[checkpoints.length - 1] : undefined);
     if (!checkpoint) throw new Error(`No such checkpoint: ${id}`);
 
-    const snapshotFiles = new Set(await this.filesInCommit(checkpoint.commit));
-    const currentFiles = await this.trackedFilesNow();
+    const snapshot = await this.filesInCommit(checkpoint.commit);
+    const current = await this.trackedFilesNow();
+    const statePaths = await this.excludedStatePaths([...snapshot, ...current]);
+    const snapshotFiles = new Set(withoutStateFiles(snapshot, statePaths));
+    const currentFiles = new Set(withoutStateFiles([...current], statePaths));
     const addedSinceCheckpoint = [...currentFiles].filter((file) => !snapshotFiles.has(file)).sort();
 
     // 先把新增文件挪走，再落回快照内容。顺序反过来的话，新增文件会被后面的写入覆盖判断漏掉。
@@ -139,6 +173,7 @@ export class CheckpointStore {
     try {
       const env = { ...process.env, GIT_INDEX_FILE: restoreIndex };
       await this.git(["read-tree", checkpoint.commit], env);
+      await this.git(["rm", "-r", "--cached", "-f", "--ignore-unmatch", "--sparse", "--", ...statePaths], env);
       await this.git(["checkout-index", "-a", "-f"], env);
     } finally {
       await fs.rm(restoreIndex, { force: true });
@@ -156,14 +191,55 @@ export class CheckpointStore {
     return await this.gitPaths(["ls-tree", "-r", "-z", "--name-only", commit]);
   }
 
-  private async trackedFilesNow(): Promise<Set<string>> {
+  private async trackedFilesNow(env?: NodeJS.ProcessEnv): Promise<Set<string>> {
     // -c 已跟踪 + -o 未跟踪，--exclude-standard 让 .gitignore 生效，和建快照时的范围一致。
-    return new Set(await this.gitPaths(["ls-files", "-co", "-z", "--exclude-standard", "--", ".", ...excludeAgentState]));
+    return new Set(await this.gitPaths(["ls-files", "-co", "-z", "--exclude-standard", "--", "."], env));
   }
 
-  private async gitPaths(args: string[]): Promise<string[]> {
+  private async excludedStatePaths(files: readonly string[]): Promise<string[]> {
+    const excluded = new Set(agentStatePaths);
+    let caseInsensitive: boolean | undefined;
+    for (const directory of new Set(files.map((file) => file.split("/")[0] ?? ""))) {
+      const canonical = agentStatePaths.find((state) => state !== directory && state.toLowerCase() === directory.toLowerCase());
+      if (!canonical) continue;
+      const [state, alias] = await Promise.all([canonical, directory].map(async (name) => {
+        try {
+          // 比较目录项本身，不跟随普通用户符号链接的目标。
+          return await fs.lstat(path.join(this.workspaceRoot, name), { bigint: true });
+        } catch (error) {
+          if (isMissingFile(error)) return undefined;
+          throw error;
+        }
+      }));
+      if (state && alias && state.dev === alias.dev && state.ino === alias.ino
+        || !state && !alias && (caseInsensitive ??= await this.caseInsensitiveRoot())) {
+        excluded.add(directory);
+      }
+    }
+    return [...excluded];
+  }
+
+  private async caseInsensitiveRoot(): Promise<boolean> {
+    // 稀疏投影中两个拼写都可能缺失；空目录探针核实当前根目录的实际 lookup 规则。
+    // 空目录不会进入 Git 文件清单，不用 core.ignorecase 猜测文件系统行为。
+    const probe = await fs.mkdtemp(path.join(this.workspaceRoot, ".biny-checkpoint-case-"));
+    try {
+      const original = await fs.stat(probe, { bigint: true });
+      try {
+        const alias = await fs.stat(path.join(path.dirname(probe), path.basename(probe).toUpperCase()), { bigint: true });
+        return original.dev === alias.dev && original.ino === alias.ino;
+      } catch (error) {
+        if (isMissingFile(error)) return false;
+        throw error;
+      }
+    } finally {
+      await fs.rmdir(probe);
+    }
+  }
+
+  private async gitPaths(args: string[], env?: NodeJS.ProcessEnv): Promise<string[]> {
     // -z 禁止 Git 对非 ASCII、换行和边界空格做引用/转义；文件名不可 trim。
-    const { stdout } = await run("git", args, { cwd: this.workspaceRoot, encoding: "buffer", maxBuffer: 64 * 1024 * 1024 });
+    const { stdout } = await run("git", args, { cwd: this.workspaceRoot, env, encoding: "buffer", maxBuffer: 64 * 1024 * 1024 });
     return stdout.toString("utf8").split("\0").filter(Boolean);
   }
 
@@ -193,6 +269,10 @@ export class CheckpointStore {
     });
     return stdout;
   }
+}
+
+function withoutStateFiles(files: readonly string[], directories: readonly string[]): string[] {
+  return files.filter((file) => !directories.some((directory) => file === directory || file.startsWith(`${directory}/`)));
 }
 
 function isMissingFile(error: unknown): boolean {
