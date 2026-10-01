@@ -448,3 +448,208 @@ await test("restart keeps uncertain dispatched fires behind approval and recover
     await f.close();
   }
 });
+
+await test("expiry stops new scheduled and manual fires at the cutoff", async (t) => {
+  const start = Date.parse("2030-01-01T00:00:00.000Z");
+  t.mock.timers.enable({ apis: ["Date"], now: new Date(start) });
+  const f = await fixture();
+  try {
+    const expiresAt = new Date(start + 500).toISOString();
+    f.create("missed-once", undefined, { expiresAt });
+    f.create("missed-interval", undefined, {
+      triggerType: "interval", schedule: { intervalMs: 100 }, expiresAt
+    });
+    t.mock.timers.setTime(start + 500);
+    assert.deepEqual(f.store.claimDue(new Date(start + 499)), [], "stale discovery time cannot create a fire at the cutoff");
+    assert.deepEqual(f.store.claimDue(), []);
+    assert.equal(f.store.get("missed-once")?.status, "expired");
+    assert.equal(f.store.get("missed-interval")?.status, "expired");
+    assert.throws(() => f.store.forceFire("missed-once"), /expired/u);
+    assert.throws(() => f.store.forceFire("missed-interval"), /expired/u);
+  } finally {
+    await f.close();
+  }
+});
+
+for (const triggerType of ["once", "interval"] as const) {
+  await test(`${triggerType} pending fire created before expiry remains claimable`, async (t) => {
+    const start = Date.parse("2030-01-01T00:00:00.000Z");
+    t.mock.timers.enable({ apis: ["Date"], now: new Date(start) });
+    const f = await fixture();
+    try {
+      f.create(triggerType, undefined, {
+        triggerType,
+        schedule: triggerType === "once"
+          ? { at: new Date(start + 100).toISOString() }
+          : { intervalMs: 100 },
+        expiresAt: new Date(start + 500).toISOString()
+      });
+      t.mock.timers.setTime(start + 100);
+      const [fire] = f.store.claimDue();
+      assert.ok(fire);
+      t.mock.timers.setTime(start + 500);
+      assert.equal(f.store.claimDue().some((candidate) => candidate.fireId === fire.fireId), true);
+      assert.equal(f.store.get(triggerType)?.status, "expired");
+      assert.equal(f.store.claimFire(fire.fireId)?.status, "running");
+      f.store.completeFire(fire.fireId, `${triggerType}-run`);
+      assert.equal(f.store.listPending(triggerType)[0]?.status, "completed");
+      assert.throws(() => f.store.forceFire(triggerType), /expired/u);
+    } finally {
+      await f.close();
+    }
+  });
+}
+
+await test("busy deferred fire survives expiry, but a paused definition cannot claim it", async (t) => {
+  const start = Date.parse("2030-01-01T00:00:00.000Z");
+  t.mock.timers.enable({ apis: ["Date"], now: new Date(start) });
+  let accepting = false;
+  const f = await fixture({ canStartRun: () => accepting });
+  try {
+    f.create("deferred", "target", {
+      triggerType: "interval", schedule: { intervalMs: 100 },
+      expiresAt: new Date(start + 500).toISOString()
+    });
+    t.mock.timers.setTime(start + 100);
+    await f.tick();
+    assert.equal(f.store.listPending("deferred")[0]?.status, "deferred");
+    t.mock.timers.setTime(start + 1_100);
+    f.store.pause("deferred");
+    assert.deepEqual(f.store.claimDue(), []);
+    assert.equal(f.store.get("deferred")?.status, "paused");
+    assert.equal(f.store.claimFire(f.store.listPending("deferred")[0]!.fireId), undefined);
+    f.store.resume("deferred");
+    accepting = true;
+    f.runtimeFor("target").release();
+    await f.tick();
+    assert.deepEqual(f.runtimeFor("target").submissions, ["deferred"]);
+    assert.equal(f.store.listPending("deferred")[0]?.status, "completed");
+  } finally {
+    await f.close();
+  }
+});
+
+await test("queued fire and running fire finish after expiry without new admission", async (t) => {
+  const start = Date.parse("2030-01-01T00:00:00.000Z");
+  t.mock.timers.enable({ apis: ["Date"], now: new Date(start) });
+  const f = await fixture();
+  try {
+    const expiresAt = new Date(start + 500).toISOString();
+    f.create("running", "shared", { expiresAt });
+    f.create("queued", "shared", { expiresAt });
+    void f.tick();
+    await flush();
+    assert.equal(f.store.listPending("running")[0]?.status, "running");
+    assert.equal(f.store.listPending("queued")[0]?.status, "pending");
+    t.mock.timers.setTime(start + 500);
+    f.store.claimDue();
+    f.runtimeFor("shared").release();
+    await flush();
+    assert.deepEqual(f.runtimeFor("shared").submissions, ["running", "queued"]);
+    assert.equal(f.store.listPending().filter((fire) => fire.status === "completed").length, 2);
+    assert.equal(f.store.listPending().length, 2);
+  } finally {
+    await f.close();
+  }
+});
+
+await test("restart recovers a pre-expiry pending fire after the cutoff", async (t) => {
+  const start = Date.parse("2030-01-01T00:00:00.000Z");
+  t.mock.timers.enable({ apis: ["Date"], now: new Date(start) });
+  const f = await fixture();
+  try {
+    f.create("restart", "target", {
+      triggerType: "interval", schedule: { intervalMs: 100 },
+      expiresAt: new Date(start + 500).toISOString()
+    });
+    t.mock.timers.setTime(start + 100);
+    assert.equal(f.store.claimDue().length, 1);
+    t.mock.timers.setTime(start + 500);
+    f.runtimeFor("target").release();
+    f.scheduler.start();
+    await flush();
+    assert.deepEqual(f.runtimeFor("target").submissions, ["restart"]);
+    assert.equal(f.store.listPending("restart")[0]?.status, "completed");
+    assert.equal(f.store.get("restart")?.status, "expired");
+  } finally {
+    await f.close();
+  }
+});
+
+await test("expiry does not override pause, delete, or the fire-count budget", async (t) => {
+  const start = Date.parse("2030-01-01T00:00:00.000Z");
+  t.mock.timers.enable({ apis: ["Date"], now: new Date(start) });
+  const f = await fixture();
+  try {
+    const expiresAt = new Date(start + 500).toISOString();
+    f.create("paused", undefined, { expiresAt });
+    const pausedFire = f.store.forceFire("paused");
+    f.store.pause("paused");
+    f.create("capped-expired", undefined, {
+      schedule: { at: new Date(start + 10_000).toISOString() },
+      maxFires: 1, expiresAt
+    });
+    const first = f.store.forceFire("capped-expired", new Date(start + 1).toISOString());
+    const second = f.store.forceFire("capped-expired", new Date(start + 2).toISOString());
+    t.mock.timers.setTime(start + 500);
+    f.store.claimDue();
+    assert.equal(f.store.get("paused")?.status, "paused");
+    assert.equal(f.store.claimFire(pausedFire.fireId), undefined);
+    assert.equal(f.store.claimFire(first.fireId)?.status, "running");
+    f.store.completeFire(first.fireId, "first-run");
+    assert.equal(f.store.claimFire(second.fireId), undefined);
+    f.store.delete("paused");
+    assert.equal(f.store.listPending("paused").length, 0);
+  } finally {
+    await f.close();
+  }
+});
+
+await test("invalid expiry is rejected and legacy invalid expiry cannot admit fires", async () => {
+  const f = await fixture();
+  try {
+    assert.throws(() => f.create("invalid", undefined, { expiresAt: "not-a-date" }), /expiresAt|expiry/u);
+    assert.equal(f.store.get("invalid"), undefined);
+    f.create("legacy", undefined, { expiresAt: new Date(Date.now() + 60_000).toISOString() });
+    const accepted = f.store.forceFire("legacy");
+    f.authority.databaseHandle().prepare("UPDATE automations SET expires_at = ? WHERE automation_id = ?").run("not-a-date", "legacy");
+    assert.throws(() => f.store.forceFire("legacy"), /expiresAt|expiry/u);
+    assert.equal(f.store.claimFire(accepted.fireId), undefined);
+    assert.deepEqual(f.store.claimDue(), []);
+    assert.equal(f.store.get("legacy")?.status, "paused");
+    assert.equal(f.store.listPending("legacy")[0]?.status, "pending");
+    const statusEvent = f.authority.databaseHandle().prepare(
+      "SELECT payload_json FROM runtime_events WHERE event_type = 'automation.status' ORDER BY sequence DESC LIMIT 1"
+    ).get() as { payload_json: string } | undefined;
+    assert.match(statusEvent?.payload_json ?? "", /Invalid automation expiresAt timestamp/u);
+  } finally {
+    await f.close();
+  }
+});
+
+for (const trigger of ["manual", "scheduled"] as const) {
+  await test(`${trigger} fire rechecks expiry inside the authority transaction`, async (t) => {
+    const start = Date.parse("2030-01-01T00:00:00.000Z");
+    t.mock.timers.enable({ apis: ["Date"], now: new Date(start) });
+    const f = await fixture();
+    try {
+      f.create(trigger, undefined, { expiresAt: new Date(start + 500).toISOString() });
+      t.mock.timers.setTime(start + 499);
+      const original = f.authority.runEventTransaction.bind(f.authority);
+      f.authority.runEventTransaction = ((input: Parameters<typeof original>[0], execute: Parameters<typeof original>[1]) => {
+        if (input.eventType === "automation.fire.pending") t.mock.timers.setTime(start + 500);
+        return original(input, execute);
+      }) as typeof f.authority.runEventTransaction;
+      if (trigger === "manual") assert.throws(() => f.store.forceFire(trigger), /expired/u);
+      else assert.deepEqual(f.store.claimDue(), []);
+      assert.equal(f.store.listPending(trigger).length, 0);
+      assert.equal(f.store.get(trigger)?.status, trigger === "manual" ? "active" : "expired");
+      const pendingEvents = f.authority.databaseHandle().prepare(
+        "SELECT COUNT(*) AS count FROM runtime_events WHERE event_type = 'automation.fire.pending'"
+      ).get() as { count: number };
+      assert.equal(pendingEvents.count, 0, "rejected fire cannot leave a pending event");
+    } finally {
+      await f.close();
+    }
+  });
+}

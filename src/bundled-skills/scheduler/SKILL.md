@@ -78,6 +78,7 @@ biny heartbeat show --json
 
 - Resolve time, timezone, prompt, target session, mode, expiry, and failure expectations before creating durable state. Never guess an ambiguous time.
 - A trigger is not proof of execution. A run is not proof of completion. Use runtime records, TaskRun state, tool results, and delivery evidence.
+- `--expires-at` stops new fires at the deadline. Fires durably created before it may still start or finish afterward, subject to pause, deletion, and fire-count limits; it is not an Agent run timeout.
 - Biny's current automation interface targets a local session; do not add unsupported external delivery targets or claim a message was sent.
 - Deletion and material changes to a long-lived job need explicit user intent. Preserve the exact rejection or unavailable-runtime error.
 - If the scheduler is busy or the target session is unavailable, report the deferred, failed, or pending state instead of saying the action happened.
