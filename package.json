@@ -79,6 +79,7 @@
     "@mozilla/readability": "^0.6.0",
     "@openai/agents-core": "0.3.9",
     "@stylexjs/stylex": "0.19.0",
+    "@trycua/cua-driver": "0.30.4",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/xterm": "^6.0.0",
     "ai": "^7.0.93",
@@ -132,7 +133,6 @@
   "packageManager": "pnpm@10.6.5",
   "optionalDependencies": {
     "@mariozechner/clipboard": "0.3.9",
-    "@trycua/cua-driver": "0.30.4",
     "sqlite-vec-darwin-arm64": "0.1.9",
     "sqlite-vec-darwin-x64": "0.1.9",
     "sqlite-vec-linux-arm64": "0.1.9",

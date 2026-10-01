@@ -55,28 +55,27 @@ export function SettingsComputerUse(): React.JSX.Element {
   return <div className="settings-sections computer-use-settings">
     <section className="cu-card">
       <h3 className="cu-heading"><Icon name="cpu" size={17} />Computer Use</h3>
-      <p className="cu-description">让 Biny 观察指定 Mac 窗口并执行受支持的桌面动作。默认使用后台操作，支持程度取决于应用与动作；不支持时会明确拒绝。每次观察和动作都需批准，主动截图会发送给当前模型，不自动写入活动记忆。</p>
-      {diagnostic?.actionLimits?.map(limit => <p className="cu-description" data-action-limit={limit.action} key={limit.code} role="status">{limit.message}</p>)}
-      <div className="cu-section"><h4>HELPER · SDK WORKER</h4><div className="cu-helper" data-loaded={diagnostic?.sdkLoaded ?? false}>
+      <p className="cu-description">让 Biny 在后台操作受支持的 Mac 应用。需要辅助功能与屏幕录制权限。</p>
+      <div className="cu-section"><h4>桌面控制组件</h4><div className="cu-helper" data-loaded={diagnostic?.sdkLoaded ?? false}>
         <Icon name={diagnostic?.sdkLoaded ? "circle-check" : "help"} size={17} />
-        <code>{diagnostic?.workerPath ?? "尚未读取本机 SDK Worker 路径"}</code><span>{diagnostic?.driverVersion ? `v${diagnostic.driverVersion}` : `要求 v${diagnostic?.expectedVersion ?? "0.30.4"}`}</span>
+        <strong>{!diagnostic ? "正在检查…" : diagnostic.sdkLoaded ? "已安装" : "组件不可用"}</strong><span>{diagnostic?.driverVersion ? `v${diagnostic.driverVersion}` : `要求 v${diagnostic?.expectedVersion ?? "0.30.4"}`}</span>
       </div></div>
       <div className="cu-section"><h4>权限</h4><div className="cu-permission-grid">
         <PermissionRow name="accessibility" label="辅助功能" state={permission?.accessibility ?? "unknown"} />
         <PermissionRow name="screenRecording" label="屏幕录制" state={permission?.screenRecording ?? "unknown"} />
       </div><div className="cu-button-row">
-        <button type="button" className="settings-secondary-button" disabled={unavailable} onClick={() => void perform(() => readDiagnostic(() => api.requestAccessibility()))}><Icon name="shield" size={14} />触发 AX 授权弹窗</button>
+        <button type="button" className="settings-secondary-button" disabled={unavailable} onClick={() => void perform(() => readDiagnostic(() => api.requestAccessibility()))}><Icon name="shield" size={14} />授权辅助功能</button>
         <button type="button" className="settings-secondary-button" disabled={unavailable} onClick={() => void perform(async () => { await readDiagnostic(); await updateStatus(() => api.status()); })}><Icon name="refresh" size={14} />刷新</button>
-        <button type="button" className="settings-secondary-button" disabled={unavailable} onClick={() => void perform(async () => { setTested(true); await readDiagnostic(() => api.testSetup()); await updateStatus(() => api.status()); })}><Icon name="eye" size={14} />测试我的配置</button>
+        <button type="button" className="settings-secondary-button" disabled={unavailable} onClick={() => void perform(async () => { setTested(false); await readDiagnostic(() => api.testSetup()); await updateStatus(() => api.status()); if (mounted.current) setTested(true); })}><Icon name="eye" size={14} />测试我的配置</button>
       </div>
-      {tested || diagnostic?.error || error || status?.diagnostic ? <pre className="cu-diagnostics" role={diagnostic?.error || error ? "alert" : "status"}>{diagnosticText}</pre> : null}
+      {error || diagnostic?.error || status?.diagnostic ? <p className="cu-feedback" role="alert">{!available ? restartMessage : "桌面控制暂不可用，请查看诊断详情。"}</p> : tested ? <p className="cu-feedback" role="status">{diagnostic?.sdkLoaded && permission?.accessibility === "granted" && permission?.screenRecording === "granted" ? "配置检查通过" : "请完成组件安装与权限授权。"}</p> : null}
       </div>
       <div className="settings-row-group cu-toggles">
-        <SettingsSwitch label="按应用严格审批" checked disabled detail="保持 Biny 严格策略：每次观察与动作都需明确批准，按应用授权不能替代逐次审批。此开关不可关闭。" onChange={() => undefined} />
-        <SettingsSwitch label="记录操作日志" checked={status?.actionLogging ?? false} disabled={unavailable || !status} detail="仅在内存保留最近 50 条动作名称、目标 ID、结果和时长；停止或关闭即清空。不记录输入文本、元素内容或截图。" onChange={value => void perform(() => updateStatus(() => api.logging(value)))} />
-        <SettingsSwitch label="画中画" checked={status?.preview ?? false} disabled={unavailable || !status} detail="悬浮窗口不抢焦点，仅使用同一 Cua 主动观察帧，观察和动作后更新。预览打开期间暂停 Activity 截图，关闭后恢复原有记录规则。" onChange={value => void perform(() => updateStatus(() => api.preview(value)))} />
+        <SettingsSwitch label="按应用严格审批" checked disabled detail="每次观察和操作都需批准。截图会发送给当前模型。" onChange={() => undefined} />
+        <SettingsSwitch label="记录操作日志" checked={status?.actionLogging ?? false} disabled={unavailable || !status} detail="临时保留最近 50 条操作记录，停止后清空。" onChange={value => void perform(() => updateStatus(() => api.logging(value)))} />
+        <SettingsSwitch label="画中画" checked={status?.preview ?? false} disabled={unavailable || !status} detail="在悬浮窗口查看操作画面；开启时暂停活动截图。" onChange={value => void perform(() => updateStatus(() => api.preview(value)))} />
       </div>
-      <div className="cu-controls"><p role="status">{status ? `${stateLabels[status.state]} · ${outcomeLabels[status.lastOutcome]}` : "正在读取控制状态…"}</p><div className="cu-button-row">
+      <details className="cu-controls"><summary>控制与高级选项</summary><p role="status">{status ? `${stateLabels[status.state]} · ${outcomeLabels[status.lastOutcome]}` : "正在读取控制状态…"}</p><div className="cu-button-row">
         <button type="button" className="settings-secondary-button" disabled={unavailable || status?.state !== "disabled"} onClick={() => void perform(async () => { await updateStatus(() => api.enable()); await readDiagnostic(); })}><Icon name="power" size={14} />启用桌面控制</button>
         <button type="button" className="settings-secondary-button" disabled={unavailable || status?.state !== "ready"} onClick={() => control("pause")}><Icon name="pause" size={14} />暂停</button>
         <button type="button" className="settings-secondary-button" disabled={unavailable || !status || status.state === "ready" || status.state === "disabled"} onClick={() => control("resume")}><Icon name="play" size={14} />继续（需重新观察）</button>
@@ -86,11 +85,11 @@ export function SettingsComputerUse(): React.JSX.Element {
       <details><summary>前台操作与诊断日志</summary><label className="cu-foreground"><input type="checkbox" disabled={unavailable || !status} checked={status?.foregroundAllowed ?? false} onChange={event => void perform(() => updateStatus(() => api.foreground(event.target.checked)))} />允许明确批准的前台动作（可能改变焦点）</label>
         <p className="cu-muted">日志共 {diagnostic?.audit.length ?? 0} 条，点击“刷新”读取最新元数据。</p>
         {diagnostic?.audit.length ? <pre className="cu-diagnostics">{diagnostic.audit.map(entry => `${new Date(entry.at).toLocaleTimeString()} ${entry.action} PID ${entry.target.pid} / ${entry.target.windowId} ${outcomeLabels[entry.outcome]} ${entry.durationMs}ms`).join("\n")}</pre> : null}
-      </details></div>
-    </section>
-    <section className="cu-card cu-approvals"><header><h3 className="cu-heading"><Icon name="shield" size={17} />已批准的应用 <span>({diagnostic ? diagnostic.approvals.length : "未读取"})</span></h3>
-      <button type="button" className="settings-secondary-button cu-icon-button" aria-label="刷新批准应用" disabled={unavailable} onClick={() => void perform(() => readDiagnostic())}><Icon name="refresh" size={14} /></button></header>
-      <p className="cu-description">{!diagnostic ? "正在读取批准策略…" : diagnostic.approvals.length === 0 ? "没有持久批准的应用。Biny 逐次审批每个观察和动作，不自动保存应用授权。" : diagnostic.approvals.map(app => `${app.appName} (${app.bundleId})`).join("、")}</p>
+      </details></details>
+      <details className="cu-technical-details"><summary>诊断详情</summary>
+        {diagnostic?.actionLimits?.map(limit => <p className="cu-description" data-action-limit={limit.action} key={limit.code}>{limit.message}</p>)}
+        <pre className="cu-diagnostics">{diagnosticText}{diagnostic ? `\n组件：${diagnostic.workerPath}` : ""}</pre>
+      </details>
     </section>
   </div>;
 }

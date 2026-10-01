@@ -36,6 +36,12 @@ test("desktop settings handle missing bridge and expose enable, pause/takeover/s
       const button = [...dom.window.document.querySelectorAll("button")].find(button => button.textContent === label)!;
       assert.equal(button.disabled, false); await act(async () => { button.click(); });
     };
+    let finishTest!: (value: Awaited<ReturnType<ComputerDesktopApi["testSetup"]>>) => void;
+    api.testSetup = () => new Promise(resolve => { finishTest = resolve; });
+    await click("测试我的配置");
+    assert.equal(dom.window.document.querySelector(".cu-feedback") === null, true, "pending configuration test must not report a result");
+    await act(async () => { finishTest(await api.diagnostics()); });
+    assert.ok(dom.window.document.querySelector(".cu-feedback"));
     await click("启用桌面控制"); await click("暂停"); await click("继续（需重新观察）"); await click("人工接管"); await click("继续（需重新观察）");
     const checkbox = dom.window.document.querySelector<HTMLButtonElement>('[role="switch"][aria-label="画中画"]')!;
     await act(async () => { checkbox.click(); }); await act(async () => { checkbox.click(); });
@@ -67,20 +73,26 @@ test("Computer Use cards show independent unknown permissions and dispatch real 
   } });
   try {
     await act(async () => { root.render(createElement(SettingsComputerUse)); });
-    assert.equal(dom.window.document.querySelectorAll(".cu-card").length, 2);
+    assert.equal(dom.window.document.querySelectorAll(".cu-card").length, 1);
     assert.match(dom.window.document.querySelector('[data-permission="accessibility"]')?.textContent ?? "", /未知/);
     assert.match(dom.window.document.querySelector('[data-permission="screenRecording"]')?.textContent ?? "", /未授权/);
     assert.doesNotMatch(dom.window.document.querySelector(".cu-helper")?.textContent ?? "", /已就绪|运行中/);
     assert.match(dom.window.document.querySelector('[data-action-limit="scroll"]')?.textContent ?? "", /滚动暂不可用/);
+    const details = dom.window.document.querySelector<HTMLDetailsElement>(".cu-technical-details")!;
+    assert.ok(details, "technical diagnostics belong in a collapsed disclosure");
+    assert.equal(details.open, false);
+    assert.ok(details.querySelector("pre"));
+    assert.ok(details.querySelector('[data-action-limit="scroll"]'));
+    assert.doesNotMatch(dom.window.document.querySelector(".cu-helper")?.textContent ?? "", /synthetic|worker\.js/);
     const strict = dom.window.document.querySelector<HTMLButtonElement>('[role="switch"][aria-label="按应用严格审批"]')!;
     assert.equal(strict.disabled, true); assert.equal(strict.getAttribute("aria-checked"), "true");
-    for (const label of ["触发 AX 授权弹窗", "刷新", "测试我的配置", "记录操作日志"]) {
+    for (const label of ["授权辅助功能", "刷新", "测试我的配置", "记录操作日志"]) {
       const button = [...dom.window.document.querySelectorAll("button")].find(button => button.textContent?.trim() === label || button.getAttribute("aria-label") === label)!;
       assert.ok(button, label); await act(async () => { button.click(); });
     }
     assert.ok(calls.includes("grant")); assert.ok(calls.includes("test")); assert.ok(calls.includes("logging:true"));
     assert.match(dom.window.document.querySelector("pre")?.textContent ?? "", /driver_sdk_missing_or_crashed/);
-    assert.match(dom.window.document.querySelector(".cu-approvals")?.textContent ?? "", /已批准的应用.*0/);
+    assert.equal(dom.window.document.querySelector(".cu-approvals"), null);
   } finally {
     await act(async () => { root.unmount(); }); dom.window.close();
     for (const [key, descriptor] of saved) { if (descriptor) Object.defineProperty(globalThis, key, descriptor); else Reflect.deleteProperty(globalThis, key); }

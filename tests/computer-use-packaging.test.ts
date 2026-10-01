@@ -19,3 +19,9 @@ test("packaged native worker resolves from the physical ASAR-unpacked tree", asy
   assert.match(config, /from: THIRD_PARTY_NOTICES\.txt[\s\S]*to: THIRD_PARTY_NOTICES\.txt/);
   assert.match(await readFile(new URL("../native/cua-driver/MPL-2.0.txt", import.meta.url), "utf8"), /^Mozilla Public License Version 2\.0/m);
 });
+
+test("desktop SDK is required so failed installation cannot silently omit the worker dependency", async () => {
+  const manifest = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
+  assert.equal(manifest.dependencies["@trycua/cua-driver"], "0.30.4");
+  assert.equal(manifest.optionalDependencies["@trycua/cua-driver"], undefined);
+});

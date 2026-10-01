@@ -1,5 +1,5 @@
-/* Layout only: cards, buttons, switches, type and colors inherit Biny settings. */
-.computer-use-settings .cu-card { display: flex; flex-direction: column; gap: var(--st-stack-gap); }
+/* 桌面控制设置使用紧凑卡片，技术细节按需展开。 */
+.desktop-settings-dialog .settings-modal .computer-use-settings .cu-card { display: flex; flex-direction: column; padding: calc(20px * var(--font-scale, 1)); gap: calc(20px * var(--font-scale, 1)); }
 .computer-use-settings .cu-heading { display: flex; align-items: center; gap: var(--st-control-gap); }
 .computer-use-settings .cu-heading svg, .computer-use-settings .cu-muted { color: var(--text-secondary); }
 .computer-use-settings .cu-section { display: flex; flex-direction: column; gap: var(--st-card-gap); }
@@ -9,7 +9,7 @@
 .computer-use-settings .cu-helper > svg { color: var(--text-tertiary); flex-shrink: 0; }
 .computer-use-settings .cu-helper[data-loaded="true"] > svg, .computer-use-settings .cu-permission-state.is-granted { color: var(--green-text); }
 .computer-use-settings .cu-permission-state.is-denied { color: var(--red-text); }
-.computer-use-settings .cu-helper code { flex: 1; min-width: 0; overflow-wrap: anywhere; font-family: var(--font-mono); font-size: calc(.8 * var(--st-rem)); background: none; padding: 0; color: var(--text); }
+.computer-use-settings .cu-helper strong { flex: 1; min-width: 0; overflow-wrap: anywhere; font-weight: 400; font-size: calc(.875 * var(--st-rem)); color: var(--text); }
 .computer-use-settings .cu-helper > span { flex-shrink: 0; color: var(--text-secondary); font-size: calc(.8 * var(--st-rem)); }
 .computer-use-settings .cu-permission-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--st-card-gap); }
 .computer-use-settings .cu-permission { display: flex; align-items: center; justify-content: space-between; gap: var(--st-control-gap); }
@@ -20,7 +20,19 @@
 .computer-use-settings details { padding-top: var(--st-card-gap); }
 .computer-use-settings summary { cursor: pointer; color: var(--text-secondary); }
 .computer-use-settings .cu-foreground { display: flex; align-items: center; gap: var(--st-control-gap); margin: var(--st-card-gap) 0; }
-.computer-use-settings .cu-approvals header { display: flex; align-items: center; justify-content: space-between; gap: var(--st-card-gap); }
-.computer-use-settings .cu-approvals h3 > span { font-size: calc(.8 * var(--st-rem)); font-weight: 400; color: var(--text-secondary); }
 .computer-use-settings .cu-sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 @container settings (max-width: 560px) { .computer-use-settings .cu-permission-grid { grid-template-columns: 1fr; } }
+
+.computer-use-settings .cu-description { margin: 0; color: var(--text-secondary); line-height: 1.6; }
+.computer-use-settings .cu-helper, .computer-use-settings .cu-permission { min-height: calc(36px * var(--font-scale, 1)); }
+.desktop-settings-dialog .settings-modal .computer-use-settings .settings-secondary-button { min-height: calc(30px * var(--font-scale, 1)); height: auto; padding: 6px 12px; gap: 6px; font-size: calc(12px * var(--font-scale, 1)); font-weight: 500; border-radius: 8px; box-shadow: none; }
+.computer-use-settings .cu-feedback { margin: 0; font-size: calc(12px * var(--font-scale, 1)); color: var(--text-secondary); }
+.computer-use-settings .cu-feedback[role="alert"] { color: var(--red-text); }
+.computer-use-settings .cu-technical-details { border-top: 1px solid var(--border-subtle); }
+.computer-use-settings details > summary { font-size: calc(12px * var(--font-scale, 1)); }
+.computer-use-settings details[open] > summary { margin-bottom: 12px; }
+.computer-use-settings details .cu-description { margin-bottom: 12px; }
+
+.computer-use-settings .cu-toggles { display: grid; gap: 10px; }
+.desktop-settings-dialog .settings-modal .computer-use-settings .settings-switch-row { padding: 12px; border: 1px solid var(--border-subtle); border-radius: var(--st-radius); background: var(--surface); }
+.desktop-settings-dialog .settings-modal .computer-use-settings .settings-switch-copy strong { font-size: calc(13px * var(--font-scale, 1)); }
