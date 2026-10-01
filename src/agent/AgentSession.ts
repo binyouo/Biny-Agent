@@ -2343,7 +2343,18 @@ export class AgentSession {
     }
 
     const hashlineEdit = this.activeConfig.chat.hashlineEdit;
-    const editingTools = (settings: ModelSettings) => settings.model.supportsTools === false ? [] : coordinator.createAgentTools({ mode: resolveEditingMode(hashlineEdit, settings.applyPatchProtocol), attachmentRoot: this.options.attachmentRoot });
+    const editingTools = (settings: ModelSettings) => {
+      if (settings.model.supportsTools === false) return [];
+      const editing = { mode: resolveEditingMode(hashlineEdit, settings.applyPatchProtocol), attachmentRoot: this.options.attachmentRoot };
+      if (this.activeConfig.agent.toolExecutionMode === "code_mode" && allowedToolNames?.size === 0) return [];
+      const directTools = coordinator.createAgentTools(editing);
+      if (this.activeConfig.agent.toolExecutionMode !== "code_mode") return directTools;
+      const search = directTools.find((tool) => tool.name === toolSearchToolName);
+      return [coordinator.createCodeModeTool(editing), ...(search ? [{
+        ...search,
+        promptSnippet: "Discover selected tools for the next model step. In Code Mode, only reviewed built-in read tools can then run inside exec; switch to direct mode for other actions."
+      }] : [])];
+    };
     let loopContext: AgentContext;
     try {
       const initialTools = editingTools(activeModelSettings);
@@ -3767,7 +3778,7 @@ export class AgentSession {
     if (this.checkpointPersistenceError) throw this.checkpointPersistenceError;
     const lingering = this.lingeringExternalTools.values().next().value as { tool: string; toolCallId: string } | undefined;
     if (lingering) {
-      throw new Error(`Cannot start ${operation}: this agent session is quarantined while cancelled external tool ${lingering.tool} (${lingering.toolCallId}) is still settling.`);
+      throw new Error(`Cannot start ${operation}: this agent session is quarantined while tool ${lingering.tool} (${lingering.toolCallId}) is still settling.`);
     }
   }
 
