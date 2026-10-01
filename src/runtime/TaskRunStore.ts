@@ -308,8 +308,8 @@ export class DurableTaskRunStore {
       );
       if (attempt) {
         this.database.prepare(`
-          UPDATE task_attempts SET status = ?, high_water_sequence = ?, verification_json = ?,
-            artifacts_json = ?, failure_json = ?, updated_at = ? WHERE attempt_id = ?
+          UPDATE task_attempts SET status = ?, high_water_sequence = COALESCE(?, high_water_sequence), verification_json = COALESCE(?, verification_json),
+            artifacts_json = COALESCE(?, artifacts_json), failure_json = ?, updated_at = ? WHERE attempt_id = ?
         `).run(
           status,
           input.highWaterSequence ?? null,
