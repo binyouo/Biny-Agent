@@ -3,6 +3,7 @@ import type { SettingsSaveState } from "./SettingsDraftContext.js";
 
 export function SettingsPageFooter({
   dirtyCount,
+  hint,
   disabled,
   unavailable,
   blockedReason,
@@ -12,6 +13,7 @@ export function SettingsPageFooter({
   state
 }: {
   dirtyCount: number;
+  hint?: string;
   disabled: boolean;
   unavailable?: string;
   blockedReason?: string;
@@ -27,18 +29,19 @@ export function SettingsPageFooter({
       <div className="settings-save-feedback">
         {error ? <p className="settings-save-error" role="alert">{error}</p> : null}
         <p aria-live="polite" className={`settings-save-status is-${state}`} id="settings-save-status" role="status">{status}{blockedReason ? <span>{blockedReason}</span> : null}</p>
+        {hint ? <small className="settings-save-scope">{hint}</small> : null}
       </div>
       <span className="settings-footer-actions">
-        <button className="ghost-button" disabled={state === "saving" || state === "rolling_back"} onClick={onCancel} type="button">{clean ? unavailable ? "关闭" : "完成" : "放弃未保存更改"}</button>
-        {!clean ? <button
+        <button className="ghost-button" disabled={state === "saving" || state === "rolling_back"} onClick={onCancel} type="button">{clean ? "关闭" : "取消"}</button>
+        <button
           aria-describedby="settings-save-status"
           className="settings-save-button"
           disabled={disabled || dirtyCount === 0 || state === "invalid" || state === "saving" || state === "rolling_back" || state === "recovery_required"}
           onClick={onSave}
           type="button"
         >
-          {state === "saving" ? "保存中…" : state === "rolling_back" ? "回滚中…" : error ? "重试保存" : "保存全部更改"}
-        </button> : null}
+          {state === "saving" ? "保存中…" : state === "rolling_back" ? "回滚中…" : error ? "重试保存" : "保存"}
+        </button>
       </span>
     </footer>
   );

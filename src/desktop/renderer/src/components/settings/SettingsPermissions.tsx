@@ -13,7 +13,7 @@ export function SettingsPermissions(): React.JSX.Element {
   return (
     <div className="settings-preferences agent-permission-settings">
       <section className="settings-preference-section" id="agent-permission-mode" tabIndex={-1}>
-        <h3>工具审批 · 适用于所有项目</h3>
+        <h3>工具审批</h3><p className="settings-section-note">适用于所有项目。</p>
         <div className="settings-row-group">
         <SettingsSwitch
           checked={permission.mode === "full-access"}

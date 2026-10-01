@@ -48,13 +48,13 @@ export function SettingsThemes({ preference, onChange, disabled }: { preference:
   };
   return <div className="settings-theme-page"><fieldset className="settings-appearance-fieldset" disabled={disabled}>
     <div className="theme-page-toolbar"><input type="search" aria-label="搜索主题" placeholder="搜索主题…" value={search} onChange={event => setSearch(event.target.value)} />
-      <button type="button" onClick={() => setEditor({ type: "dark" })}>创建主题</button><button type="button" onClick={() => fileInput.current?.click()}>导入 JSON / Lua</button>
+      <button type="button" onClick={() => setEditor({ type: "dark" })}>创建主题</button><button type="button" onClick={() => fileInput.current?.click()}>导入主题</button>
       <input ref={fileInput} type="file" accept=".json,.lua" hidden onChange={event => { void importFile(event.target.files?.[0]); }} /></div>
     {error && !pendingDelete ? <p role="alert">{error}</p> : null}
     {(["dark", "light"] as const).map(type => {
       const field = type === "dark" ? "darkTheme" : "lightTheme";
       const selected = preference[field];
-      return <section className="theme-mode-section" key={type}><h3>{type === "dark" ? "深色主题" : "浅色主题"}</h3><p>用于{type === "dark" ? "深色" : "浅色"}外观；另一种外观的选择独立保留。</p><div className="theme-grid">
+      return <section className="theme-mode-section" key={type}><h3>{type === "dark" ? "深色主题" : "浅色主题"}</h3><div className="theme-grid">
         <button type="button" className="theme-card theme-card-default" aria-pressed={selected === null} onClick={() => change({ ...preference, [field]: null })}><div className="theme-swatches theme-default-swatches"><span /><span /><span /></div><span>默认</span>{selected === null ? <span className="theme-card-check" aria-hidden="true">✓</span> : null}</button>
         {themes.filter(theme => theme.type === type).map(theme => {
           const palette = getAppearancePalette(theme.id, preference.customThemes)!;

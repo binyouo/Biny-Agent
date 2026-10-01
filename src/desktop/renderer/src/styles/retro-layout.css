@@ -39,9 +39,10 @@
   flex-direction: row;
   flex-wrap: wrap;
   align-items: flex-end;
+  margin: 0;
   padding: 0;
   box-shadow: none !important;
-  border-right: 0;
+  border: 0;
 }
 :root:is([data-appearance-skin="win98"], [data-appearance-skin="winxp"], [data-appearance-skin="longhorn"], [data-appearance-skin="longhorn-dark"]) .is-retro-settings .settings-sidebar-strip { display: none; }
 :root:is([data-appearance-skin="win98"], [data-appearance-skin="winxp"], [data-appearance-skin="longhorn"], [data-appearance-skin="longhorn-dark"]) .is-retro-settings .settings-search { max-width: 240px; margin: 4px; }

@@ -1088,7 +1088,7 @@ export function ProviderSettings({
             </header>
             <div className="provider-enable-card">
               <strong>启用 {catalog.label}</strong>
-              <p>先用默认模型建立连接，密钥可以之后再填。{catalog.requiresApiKey ? "正式使用前需要在下方粘贴 API Key。" : "该服务无需密钥。"}</p>
+              <p>{catalog.requiresApiKey ? "正式使用前需要在下方粘贴 API Key。" : "该服务无需密钥。"}</p>
               <button className="settings-primary-button" disabled={saving} onClick={() => void enableProvider(catalog)} type="button">
                 {saving ? "启用中…" : "启用服务商"}
               </button>
@@ -1785,7 +1785,7 @@ function ModelsSection({
           添加
         </button>
       </div>
-      <p className="provider-models-hint">手动添加模型，或用「获取」按钮从 API 加载</p>
+      <p className="provider-models-hint">手动添加，或从服务商获取模型。</p>
       <label className="provider-model-search">
         <Icon name="search" size={13} />
         <input aria-label="搜索模型" onChange={(event) => onQuery(event.target.value)} placeholder="搜索模型…" value={query} />

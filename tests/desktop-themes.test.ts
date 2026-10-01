@@ -133,6 +133,7 @@ test("retro settings navigation stays horizontal and releases space for the acti
       const tabs = computed(".settings-tabs");
       assert.equal(tabs.flexDirection, "row", skin);
       assert.equal(tabs.height, "auto", skin);
+      assert.equal(tabs.marginTop, "0px", skin);
       assert.equal(tabs.minWidth, "0px", skin);
       assert.equal(tabs.maxWidth, "none", skin);
       assert.equal(tabs.flexGrow, "0", skin);
@@ -150,7 +151,9 @@ test("retro settings navigation stays horizontal and releases space for the acti
       dom.window.document.documentElement.dataset.appearanceSkin = "default";
       settings.classList.remove("is-retro-settings");
       assert.equal(computed(".settings-tabs").flexDirection, "column", skin);
-      assert.equal(computed(".settings-tabs").height, "100%", skin);
+      assert.equal(computed(".settings-tabs").height, "calc(100% - 16px)", skin);
+      assert.equal(computed(".settings-tabs").marginTop, "8px", skin);
+      assert.equal(computed(".settings-tabs").borderRadius, "16px", skin);
       assert.equal(computed(".settings-tabs").minWidth, "208px", skin);
       assert.equal(computed(".settings-nav-list").flexDirection, "column", skin);
     }

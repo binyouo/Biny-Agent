@@ -57,11 +57,12 @@ export function SettingsAppearance({ theme, onThemeChange, font, onFontChange, d
               { value: "system", label: "跟随系统" }, { value: "light", label: "浅色" }, { value: "dark", label: "深色" }
             ]} />
           </div>
+        {onDensityChange ? <div className="settings-preference-row"><div className="settings-row-copy"><label>界面密度</label><p>调整控件高度、间距和行高。</p></div><SettingsSegmentedControl label="界面密度" value={density ?? "compact"} onChange={onDensityChange} options={[{ value: "compact", label: "紧凑" }, { value: "comfortable", label: "舒适" }, { value: "spacious", label: "宽松" }]} /></div> : null}
         </div>
       </section>
       <section className="settings-preference-section">
         <h3>字体与阅读</h3>
-        {onDensityChange ? <div className="settings-preference-row"><div className="settings-row-copy"><label>界面密度</label><p>调整控件高度、间距和行高。</p></div><SettingsSegmentedControl label="界面密度" value={density ?? "compact"} onChange={onDensityChange} options={[{ value: "compact", label: "紧凑" }, { value: "comfortable", label: "舒适" }, { value: "spacious", label: "宽松" }]} /></div> : null}
+
         <div className="settings-row-group">
           <div className="settings-preference-row" id="appearance-font">
             <div className="settings-row-copy"><label htmlFor="appearance-font-family">界面字体</label><p>使用本机已安装的字体。</p></div>

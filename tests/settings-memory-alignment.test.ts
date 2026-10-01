@@ -75,6 +75,7 @@ test("仅剩归档事实时可清空全部，合成失败说明正确且归档�
     await act(async () => { root.render(createElement(SettingsDetailHostContext.Provider, { value: dialogHost },
       createElement(SettingsDraftContext.Provider, { value: context }, createElement(SettingsMemory, props)))); });
     const button = [...document.querySelectorAll("button")].find((element) => element.textContent?.includes("清空全部"));
+    assert.ok(document.getElementById("memory-list")!.compareDocumentPosition(document.getElementById("memory-retrieval")!) & dom.window.Node.DOCUMENT_POSITION_FOLLOWING);
     assert.ok(button);
     assert.equal(button.disabled, false, "归档仍有事实时清空全部必须可执行");
     assert.match(document.body.textContent ?? "", /合成失败.*来源保留/u);

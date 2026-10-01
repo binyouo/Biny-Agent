@@ -59,6 +59,10 @@ test("权限刷新读取实时系统权限，不沿用采集器的上次状态�
   };
   try {
     await render();
+    const capture = document.getElementById("activity-capture");
+    assert.equal(capture?.tagName, "DETAILS");
+    assert.equal(capture?.hasAttribute("open"), false);
+    assert.ok(capture?.querySelector("#activity-debounce"));
     assert.match(document.getElementById("activity-permissions")?.textContent ?? "", /屏幕录制需授权/u);
     granted = true;
     const refresh = document.querySelector<HTMLButtonElement>("button[aria-label='刷新 macOS 权限状态']");

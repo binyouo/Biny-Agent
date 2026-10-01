@@ -1,13 +1,13 @@
 :root[data-ui-density] .biny-root { line-height: var(--ui-density-line-height); }
 :root[data-ui-density] .settings-row-group { gap: var(--ui-density-control-gap); }
-:root[data-ui-density] .settings-preference-section { margin-block-end: var(--ui-density-stack-gap); }
 :root[data-ui-density] .settings-preference-row { padding-block: var(--ui-density-control-padding-y); }
 :root[data-ui-density] :is(.settings-preference-row, .theme-page-toolbar, .theme-editor) :is(input:not([type="radio"]):not([type="checkbox"]):not([type="color"]), select) { min-height: var(--ui-density-control-height-default); }
 :root[data-ui-density] .biny-sidebar-session-item { min-height: var(--ui-density-control-height-sm); }
 .theme-page-toolbar { display: flex; flex-wrap: wrap; gap: 8px; margin-block-end: 20px; }
 .theme-page-toolbar input[type="search"] { flex: 1; min-width: 180px; }
 .theme-page-toolbar :is(input, button), .theme-editor :is(input, select, button) { padding: 6px 10px; color: var(--text); background: var(--surface-raised); border: 1px solid var(--border); border-radius: 6px; }
-.theme-mode-section { margin-block: 24px; }
+.theme-mode-section { margin-block: 16px; padding: var(--st-card-padding); border: 1px solid var(--border); border-radius: var(--st-radius); background: var(--st-card); }
+.theme-mode-section > h3 { margin: 0 0 14px; font-size: calc(14px * var(--font-scale, 1)); font-weight: 600; }
 .theme-mode-section > p { color: var(--text-secondary); font-size: 12px; margin-block: 4px 12px; }
 .theme-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
 @container settings-main (min-width: 600px) { .theme-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }

@@ -219,7 +219,7 @@ function SettingsActivityForm({ activity, onChange, onRefreshRuntime, onRefreshP
         </div>
       </ActivitySection> : null}
 
-      <ActivitySection id="activity-capture" icon="activity" title="采集">
+      <ActivitySection collapsible id="activity-capture" icon="activity" title="采集参数">
         <div className="activity-field-grid">
           <ActivityNumberField disabled={!activity.enabled} id="activity-debounce" label="截图防抖" hint="范围：3000–30000" unit="ms" max={30_000} min={3_000} step={100} value={activity.captureDebounceMs} onCommit={(value) => updateActivity({ captureDebounceMs: value })} />
           <ActivityNumberField disabled={!activity.enabled} id="activity-heartbeat" label="心跳间隔" hint="画面不变时仍按此间隔保留时间锚点" unit="ms" max={300_000} min={60_000} step={1_000} value={activity.heartbeatMs} onCommit={(value) => updateActivity({ heartbeatMs: value })} />
@@ -340,7 +340,8 @@ function activityErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "Activity 操作失败，请稍后重试。";
 }
 
-function ActivitySection({ action, children, icon, id, title }: { action?: React.ReactNode; children: React.ReactNode; icon: IconName; id: string; title: string }): React.JSX.Element {
+function ActivitySection({ action, children, collapsible, icon, id, title }: { collapsible?: boolean; action?: React.ReactNode; children: React.ReactNode; icon: IconName; id: string; title: string }): React.JSX.Element {
+  if (collapsible) return <details className="activity-card settings-disclosure" id={id} tabIndex={-1}><summary><Icon name={icon} size={15} />{title}</summary><div className="settings-disclosure-body">{children}</div></details>;
   return (
     <section className="activity-card" id={id} tabIndex={-1}>
       <div className="activity-section-heading">

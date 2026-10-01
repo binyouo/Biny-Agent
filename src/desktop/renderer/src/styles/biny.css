@@ -8376,8 +8376,8 @@ button.capability-check[aria-checked="true"] {
 
 /* 设置中的扩展页沿用统一的设置外壳，只补充扩展列表的独立滚动。 */
 .desktop-settings-dialog .settings-modal.is-extension-settings {
-  --settings-extension-control-height: 34px;
-  --settings-extension-tabs-height: 36px;
+  --settings-extension-control-height: var(--st-control-h);
+  --settings-extension-tabs-height: calc(var(--st-control-h) + 4px);
 }
 
 /* 扩展页（MCP / 技能 / 插件）与其他设置页共用同一内容列宽，
@@ -8415,7 +8415,7 @@ button.capability-check[aria-checked="true"] {
 }
 
 .settings-modal.is-extension-settings .biny-mcp-tabs button {
-  min-width: 112px;
+  min-width: 88px;
   height: 30px;
   padding: 0 12px;
   border-radius: 5px;
@@ -8607,7 +8607,7 @@ button.capability-check[aria-checked="true"] {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 12px;
-  padding: 18px 20px 16px;
+  padding: 14px 16px;
 }
 
 .settings-skill-card.is-disabled {
@@ -8804,7 +8804,7 @@ button.capability-check[aria-checked="true"] {
 }
 
 .settings-plugin-tabs button {
-  min-width: 112px;
+  min-width: 88px;
   height: 30px;
   padding: 0 12px;
   border-radius: 7px;
@@ -8869,7 +8869,7 @@ button.capability-check[aria-checked="true"] {
   min-height: 100px;
   align-items: flex-start;
   gap: 12px;
-  padding: 18px 20px 16px;
+  padding: 14px 16px;
 }
 
 .settings-plugin-card-icon {

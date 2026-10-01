@@ -9,11 +9,11 @@ import { SettingsCheckbox } from "./SettingsCheckbox.js";
 import { useSettingsDraft } from "./SettingsDraftContext.js";
 
 const responseOptions: Array<{ key: keyof ChatResponseSettings; label: string; detail: string }> = [
-  { key: "streaming", label: "启用流式响应", detail: "生成时逐步显示回复；关闭后，每段回复生成完成后一次显示。" },
-  { key: "showTokenUsage", label: "显示令牌使用情况", detail: "在回复菜单中显示本轮的令牌用量统计。" },
+  { key: "streaming", label: "启用流式响应", detail: "逐步显示生成内容，关闭后整段显示。" },
+  { key: "showTokenUsage", label: "显示令牌使用情况", detail: "在回复菜单中查看本轮用量。" },
   { key: "markdown", label: "启用 Markdown 渲染", detail: "显示标题、列表、代码、表格与公式；关闭后显示原始文本。" },
   { key: "singleDollarMath", label: "渲染单美元符号数学公式", detail: "将 $x+y$ 识别为公式。关闭可避免金额文本被误识别，双美元公式仍正常显示。" },
-  { key: "collapseThinking", label: "默认折叠思考过程", detail: "思考结束后默认收起，仍可手动展开查看；工具操作和权限确认保持可见。" },
+  { key: "collapseThinking", label: "默认折叠思考过程", detail: "思考结束后收起，可手动展开；工具操作与审批始终可见。" },
   { key: "openLinksInBrowser", label: "在内置浏览器打开链接", detail: "回复中的网页链接在内置浏览器打开；按住 Cmd/Ctrl 点击则使用系统浏览器。" }
 ];
 

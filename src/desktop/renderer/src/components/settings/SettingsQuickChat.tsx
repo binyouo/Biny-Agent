@@ -65,14 +65,14 @@ export function SettingsQuickChat(): React.JSX.Element {
           <span className="quickchat-shortcut-icon"><Icon name="compose" size={16} /></span>
           <span className="quickchat-shortcut-copy">
             <strong>全局快捷键</strong>
-            <small>随时按下唤醒或收起悬浮小窗。</small>
+            <small>唤起或收起快速对话。</small>
           </span>
           <kbd className="quickchat-kbd">{navigator.userAgent.includes("Mac") ? "⌘ ⇧ Space" : "Ctrl ⇧ Space"}</kbd>
         </div></div>
       </section>
 
       <section className="settings-preference-section" id="quickchat-behavior" tabIndex={-1}>
-        <h3>行为</h3>
+        <h3>悬浮窗口</h3>
         <div className="settings-row-group" aria-busy={saving}>
           <SettingsSwitch
             disabled={saving}

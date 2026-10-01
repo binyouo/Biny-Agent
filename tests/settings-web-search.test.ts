@@ -17,7 +17,8 @@ test("网络搜索呈现五个设置区和两种引擎，移除 API 服务控件
     const html = renderToStaticMarkup(React.createElement(SettingsDraftContext.Provider, { value: context }, React.createElement(SettingsWebSearch, {
       onOpenBrowser: async () => undefined, onExportCookies: cookies, onImportCookies: cookies, onClearCookies: cookies, sessionRunning: false
     })));
-    for (const title of ["可视化 Agent 浏览", "搜索引擎", "Google 搜索设置", "小红书设置", "WebFetch 浏览器"]) assert.ok(html.includes(title));
+    for (const title of ["可视化 Agent 浏览", "搜索引擎", "Google 搜索设置", "小红书设置", "网站登录"]) assert.ok(html.includes(title));
+    assert.match(html, /<details class="settings-disclosure web-search-cookie-actions"><summary>Cookie 管理<\/summary>/u);
     assert.equal((html.match(/<section/g) ?? []).length, 5);
     assert.ok(html.includes('value="google"'));
     assert.ok(html.includes('value="xiaohongshu"'));

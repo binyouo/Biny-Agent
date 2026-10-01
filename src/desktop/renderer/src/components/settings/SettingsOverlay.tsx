@@ -7,7 +7,7 @@
 import { SettingsWebSearch } from "./SettingsWebSearch.js";
 import { SettingsBrowser } from "./SettingsBrowser.js";
 import { SettingsComputerUse } from "./SettingsComputerUse.js";
-import { Fragment, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Dialog } from "@astryxdesign/core/Dialog";
 import type { LocalEmbeddingModelId } from "../../../../../llm/embedding/types.js";
 import type { MemorySleepRun } from "../../../../../agent/context/memoryTypes.js";
@@ -93,16 +93,15 @@ interface SettingsOverlayProps {
 
 export type SettingsTab = "通用" | "配色" | "聊天" | "快速对话" | "模型" | "MCP 服务器" | "技能" | "插件" | "权限" | "活动记录" | "数据" | "记忆" | "网络搜索" | "浏览器" | "Computer Use" | "关于" | "工具模型";
 
-const settingsNav: Array<{ label: string; pages: Array<{ icon: IconName; tab: SettingsTab }> }> = [
-  { label: "偏好", pages: [{ icon: "sun", tab: "通用" }, { icon: "message", tab: "聊天" }, { icon: "message", tab: "快速对话" }] },
-  { label: "能力", pages: [{ icon: "network", tab: "模型" }, { icon: "network", tab: "工具模型" }, { icon: "puzzle", tab: "技能" }, { icon: "puzzle", tab: "MCP 服务器" }, { icon: "puzzle", tab: "插件" }, { icon: "globe", tab: "网络搜索" }, { icon: "globe", tab: "浏览器" }] },
-  { label: "本地数据", pages: [{ icon: "brain", tab: "记忆" }, { icon: "eye", tab: "活动记录" }, { icon: "message", tab: "数据" }] },
-  { label: "系统", pages: [{ icon: "shield", tab: "权限" }, { icon: "cpu", tab: "Computer Use" }, { icon: "help", tab: "关于" }] }
+const settingsNav: Array<{ icon: IconName; tab: SettingsTab }> = [
+  { icon: "sun", tab: "通用" }, { icon: "network", tab: "模型" }, { icon: "cpu", tab: "工具模型" },
+  { icon: "message", tab: "聊天" }, { icon: "message", tab: "快速对话" },
+  { icon: "brain", tab: "记忆" }, { icon: "activity", tab: "活动记录" }, { icon: "cpu", tab: "Computer Use" },
+  { icon: "server", tab: "MCP 服务器" }, { icon: "wand", tab: "技能" }, { icon: "puzzle", tab: "插件" },
+  { icon: "search", tab: "网络搜索" }, { icon: "globe", tab: "浏览器" }, { icon: "sun", tab: "配色" },
+  { icon: "file", tab: "数据" }, { icon: "shield", tab: "权限" }, { icon: "help", tab: "关于" }
 ];
-const settingsRouteEntries = [
-  ...settingsNav.flatMap((group) => group.pages.map((page) => ({ value: page.tab, group: group.label }))),
-  { value: "配色" as const, group: "偏好" }
-];
+const settingsRouteEntries = settingsNav.map(page => ({ value: page.tab }));
 const settingsTabLabels: Partial<Record<SettingsTab, string>> = { 模型: "模型供应商", 数据: "对话摘要", 聊天: "聊天偏好" };
 const settingsPages: Record<SettingsTab, { description: string; keywords: string }> = {
   配色: { description: "选择配色与界面皮肤，修改时即时预览。", keywords: "配色 主题 Windows 98 XP Longhorn 自定义" },
@@ -125,17 +124,11 @@ const settingsPages: Record<SettingsTab, { description: string; keywords: string
 };
 const settingsTabValues = new Set<SettingsTab>(settingsRouteEntries.map(({ value }) => value));
 const immediateSaveHints: Partial<Record<SettingsTab, string>> = {
-  快速对话: "快速对话偏好立即保存。关闭设置不会撤销已保存的修改。",
-  模型: "模型配置立即保存。关闭设置不会撤销已保存的修改。",
-  工具模型: "模型选择立即保存。关闭设置不会撤销已保存的修改。",
-  数据: "对话摘要设置立即保存。关闭设置不会撤销已保存的修改。",
-  活动记录: "采集设置立即保存，开始或停止采集即时生效。",
-  浏览器: "配对与撤销操作即时生效。",
-  "Computer Use": "控制与开关即时生效；每次观察和动作仍需批准。",
-  "MCP 服务器": "服务器在各自弹窗中保存；连接和授权操作即时生效。",
-  插件: "安装、启停与卸载操作即时生效。",
-  技能: "启用范围需点击底部保存；导入、版本恢复等操作即时生效。",
-  记忆: "配置需点击底部保存；记忆编辑、清理和模型下载等操作即时执行。"
+  快速对话: "本页修改即时保存", 模型: "连接与模型配置即时保存", 工具模型: "模型选择即时保存",
+  数据: "本页修改即时保存", 活动记录: "采集设置即时保存", 浏览器: "连接操作即时生效",
+  "Computer Use": "控制与开关即时生效", "MCP 服务器": "服务器配置单独保存",
+  插件: "安装与启停即时生效", 技能: "启用范围需保存，导入操作即时生效",
+  记忆: "配置需保存，记忆管理操作即时生效", 网络搜索: "搜索偏好需保存，登录操作即时生效"
 };
 
 function normalizeSettingsTab(value: SettingsTab | string | undefined): SettingsTab {
@@ -331,7 +324,6 @@ function SettingsOverlayContent({
         <aside className="settings-tabs">
           <div className="settings-sidebar-strip">
             <strong>设置</strong>
-            <span>Biny</span>
           </div>
           <div className="settings-search">
             <Icon name="search" size={15} />
@@ -346,33 +338,28 @@ function SettingsOverlayContent({
           </div>
           {searchQuery ? <nav aria-label="设置搜索结果" className="settings-search-results">
             <p className="settings-search-count" role="status">{searchResults.length ? `${searchResults.length} 个相关页面` : "没有找到相关设置"}</p>
-            {searchResults.map(({ value, group }) => <button key={value} onClick={() => openSearchResult(value)} type="button">
-              <strong>{settingsTabLabels[value] ?? value}</strong><small>{group}</small>
+            {searchResults.map(({ value }) => <button key={value} onClick={() => openSearchResult(value)} type="button">
+              <strong>{settingsTabLabels[value] ?? value}</strong>
             </button>)}
             {!searchResults.length ? <p className="settings-search-empty">试试“字体”“模型”或“流式”。</p> : null}
           </nav> :
           <nav aria-label="设置分类" className="settings-nav-list">
-            {settingsNav.map((group) => <Fragment key={group.label}>
-              <p className="settings-nav-group">{group.label}</p>
-              {group.pages.map((page) => <button key={page.tab} aria-current={activeTab === page.tab ? "page" : undefined}
-                className={activeTab === page.tab ? "is-selected" : ""} onClick={() => selectTab(page.tab)} type="button">
-                <span aria-hidden="true" className="settings-nav-icon"><Icon name={page.icon} size={18} /></span>
-                <span className="settings-nav-label">{settingsTabLabels[page.tab] ?? page.tab}</span>
-              </button>)}
-            </Fragment>)}
+            {settingsNav.map(page => <button key={page.tab} aria-current={activeTab === page.tab ? "page" : undefined}
+              className={activeTab === page.tab ? "is-selected" : ""} onClick={() => selectTab(page.tab)} type="button">
+              <span aria-hidden="true" className="settings-nav-icon"><Icon name={page.icon} size={18} /></span>
+              <span className="settings-nav-label">{settingsTabLabels[page.tab] ?? page.tab}</span>
+            </button>)}
           </nav>}
         </aside>
         <main className={`settings-content${extensionSettings ? " is-extension-settings" : ""}`}>
           <header className="settings-titlebar">
             <div>
-              <h2 ref={titleRef} tabIndex={-1}>{settingsTabLabels[activeTab] ?? activeTab}</h2>
-              <p>{settingsPages[activeTab].description}</p>
+              <h2 ref={titleRef} tabIndex={-1}><Icon name={settingsNav.find(page => page.tab === activeTab)!.icon} size={18} />{settingsTabLabels[activeTab] ?? activeTab}</h2>
             </div>
             <button aria-label="关闭设置" className="icon-button settings-close-button" onClick={requestCancel} title="关闭设置 · Esc" type="button">
               <Icon name="close" size={18} />
             </button>
           </header>
-          <p className="settings-save-hint">{immediateSaveHints[activeTab] ?? (activeTab === "关于" ? "" : activeTab === "通用" ? workspace ? "修改即时预览，点击底部保存后保留。" : "外观偏好即时保存，适用于所有项目。" : "修改后点击底部保存，可与其他页面的更改一起提交。")}</p>
           <div className={`settings-scroll${extensionSettings ? " is-extension" : activeTab === "模型" ? " is-providers" : ""}`} ref={scrollRef}>
           {loadBlocked ? <div className="settings-load-state" aria-busy={settingsDraft.loading}>
             {settingsDraft.loadError ? <><div role="alert"><h3>无法加载设置</h3><p>{settingsDraft.loadError}</p></div>
@@ -467,6 +454,7 @@ function SettingsOverlayContent({
           </>}
           </div>
           <SettingsPageFooter
+            hint={immediateSaveHints[activeTab]}
             unavailable={!workspace && activeTab === "通用" ? settingsDraft.saveState === "saving" ? "正在保存外观偏好…" : "外观偏好即时保存" : settingsDraft.loading ? "正在加载设置…" : settingsDraft.loadError ? "设置尚未加载" : !settingsDraft.draft ? "本页操作即时保存" : undefined}
             blockedReason={settingsDraft.dirtyCount > 0 && runtimeBusy && !settingsDraft.preferencesOnly ? "任务运行中，共享设置暂不能保存。更改已保留。" : undefined}
             error={settingsDraft.saveError ?? settingsDraft.snapshot?.pendingRecovery?.message}

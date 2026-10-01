@@ -1,6 +1,5 @@
 /* 只为数据设置卡片、输入框上方建议和确认草稿提供主题内样式。 */
-/* 参考卡片：16px 内边距、24px 卡片分组间距、12px 控件行距；只替换主题色。 */
-.desktop-settings-dialog .settings-modal .biny-thread-brief-settings { display: flex; flex-direction: column; gap: 24px; border: 1px solid var(--biny-border); border-radius: 12px; padding: 16px; background: var(--st-card); color: var(--biny-text); }
+.desktop-settings-dialog .settings-modal .biny-thread-brief-settings { display: flex; flex-direction: column; gap: var(--st-card-gap); border: 1px solid var(--biny-border); border-radius: var(--st-radius); padding: var(--st-card-padding); background: var(--st-card); color: var(--biny-text); }
 .desktop-settings-dialog .settings-modal .biny-thread-brief-settings header { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
 .desktop-settings-dialog .settings-modal .biny-thread-brief-settings header > svg { flex-shrink: 0; color: var(--biny-text-secondary); }
 .desktop-settings-dialog .settings-modal .biny-thread-brief-settings header h3 { margin: 0; font-size: 14px; font-weight: 500; }
@@ -8,15 +7,8 @@
 .desktop-settings-dialog .settings-modal .biny-thread-brief-settings header button { display: inline-flex; align-items: center; gap: 4px; height: 24px; margin-left: auto; padding: 0 8px; border: 1px solid var(--st-action-border); border-radius: 6px; background: var(--st-action-bg); color: var(--biny-text-secondary); font-size: 12px; }
 .desktop-settings-dialog .settings-modal .biny-thread-brief-settings header button:hover { border-color: var(--st-action-border-hover); background: var(--biny-surface-hover); }
 .desktop-settings-dialog .settings-modal .biny-thread-brief-settings p { margin: 0; color: var(--biny-text-secondary); font-size: 12px; line-height: 16px; }
-.desktop-settings-dialog .settings-modal .biny-thread-brief-settings .biny-brief-description { margin-bottom: 12px; }
+.desktop-settings-dialog .settings-modal .biny-thread-brief-settings .biny-brief-description { margin-bottom: 4px; }
 .biny-brief-controls { display: flex; flex-direction: column; gap: 12px; }
-.desktop-settings-dialog .settings-modal .biny-thread-brief-settings .settings-switch-row { align-items: flex-start; justify-content: flex-start; gap: 8px; padding: 0; }
-.desktop-settings-dialog .settings-modal .biny-thread-brief-settings .settings-switch { order: -1; }
-.desktop-settings-dialog .settings-modal .biny-thread-brief-settings .settings-switch-row:disabled { opacity: 1; cursor: default; }
-.desktop-settings-dialog .settings-modal .biny-thread-brief-settings .settings-switch-row:disabled .settings-switch { opacity: .5; }
-.desktop-settings-dialog .settings-modal .biny-thread-brief-settings .settings-switch-copy { gap: 0; }
-.desktop-settings-dialog .settings-modal .biny-thread-brief-settings .settings-switch-copy strong,
-.desktop-settings-dialog .settings-modal .biny-thread-brief-settings .settings-switch-copy small { font-size: 12px; line-height: 16px; font-weight: 400; }
 .desktop-settings-dialog .settings-modal .biny-thread-brief-settings .biny-brief-budget { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; font-size: 12px; color: var(--biny-text-secondary); }
 .biny-brief-budget > span { width: 80px; flex-shrink: 0; }
 .biny-brief-budget label { display: flex; align-items: center; gap: 4px; font-size: 11px; }

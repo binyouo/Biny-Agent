@@ -42,7 +42,7 @@ export function SettingsToolModel({ onTest }: { onTest(configuration: DesktopMod
     <div className="settings-sections">
       <section id="tool-model" tabIndex={-1}>
         <h3>工具模型</h3>
-        <p>在保证生成质量的前提下尽可能快的模型，用于工具与技能筛选、会话标题、记忆、结晶和活动分析等辅助任务。</p>
+        <p>用于标题、记忆、工具筛选和活动分析等后台任务。</p>
         <div className="tool-model-row">
           <SettingsModelPicker
             ariaLabel="工具模型"

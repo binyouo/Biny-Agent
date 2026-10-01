@@ -178,7 +178,9 @@ test("保存失败保留草稿并就地显示原因，重试提交同一组更�
   } });
   try {
     await h.overlay();
+    assert.equal(document.querySelector<HTMLButtonElement>('.settings-save-button')?.disabled, true);
     await h.click('input[value="dark"]');
+    assert.equal(document.querySelector('.settings-footer-actions button')?.textContent, "取消");
     await h.click('.settings-save-button');
     assert.match(document.querySelector('.settings-page-footer [role="alert"]')?.textContent ?? "", /磁盘暂时不可写/u);
     assert.equal(document.querySelector<HTMLInputElement>('input[value="dark"]')?.checked, true);
@@ -313,7 +315,7 @@ test("打开设置时切换结构皮肤保留当前分页、未保存修改和�
     const props = { onNotify: noop, onThemePreference: noop, onFontPreference: noop, onAppearancePreference: noop, onSettingsCommitted: noop, onClose: noop };
     const initial: AppearanceSnapshot = { themePreference: "dark", appearancePreference: structuredClone(DEFAULT_APPEARANCE), fontPreference: { family: "system", size: 14 } };
     await h.overlay(props, initial);
-    await h.click('.settings-nav-list button:nth-of-type(2)');
+    await h.click('.settings-nav-list button:nth-of-type(4)');
     const streaming = document.querySelector<HTMLInputElement>('[aria-label="启用流式响应"]');
     assert.ok(streaming);
     assert.equal(streaming.type, "checkbox");
