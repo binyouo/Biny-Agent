@@ -1,5 +1,6 @@
 /** Activity 本地事实存储：kind/data 事件、独立截图、OCR 帧和会话分析。 */
 import { randomUUID } from "node:crypto";
+import { lstatSync, realpathSync, renameSync } from "node:fs";
 import { chmod, lstat, mkdir, readdir, realpath, rename, rm, unlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -1884,88 +1885,118 @@ export class ActivityStore {
   async rotateSnapshots(maxStorageMb: number, now = new Date(), recompress?: ActivitySnapshotCompressor): Promise<void> {
     const database = this.requireDatabase();
     const root = this.requireRoot();
-    await withLocalFileWriteLock(root, ".activity.files.lock", async () => {
-      const processTier = async (
-        tier: ActivitySnapshotStorageTier,
-        nextTier: ActivitySnapshotStorageTier,
-        thresholdMs: number,
-        target: { width: number; height: number; quality: number }
-      ): Promise<void> => {
-        const rows = database.prepare(`
-          SELECT id, file_path, bytes, storage_tier, captured_at
-          FROM activity_snapshots
-          WHERE storage_tier = ?
-          ORDER BY captured_at ASC, id ASC
-          LIMIT 500
-        `).all(tier) as Array<Record<string, unknown>>;
-        for (const row of rows) {
-          const capturedAt = Date.parse(String(row.captured_at));
-          const ageMs = Number.isFinite(capturedAt) ? now.getTime() - capturedAt : 0;
-          if (ageMs <= thresholdMs) continue;
-          const snapshotId = String(row.id);
+    // macOS 的 /var 等祖先可能是系统目录别名；仅拒绝 Activity 根目录以下的路径绕行。
+    const canonicalRoot = await realpath(root);
+    // 编码只产出内存 Buffer，不创建锁外 staging 文件。这样清空/孤儿清理不必
+    // 追踪在途编码；短提交锁内才创建并立即发布临时文件。
+    const isCurrentStore = (): boolean => this.database === database && this.root === root;
+    const processTier = async (
+      tier: ActivitySnapshotStorageTier,
+      nextTier: ActivitySnapshotStorageTier,
+      thresholdMs: number,
+      target: { width: number; height: number; quality: number }
+    ): Promise<void> => {
+      const rows = await withLocalFileWriteLock(root, ".activity.files.lock", async () => {
+        if (!isCurrentStore()) return [];
+        return database.prepare(`
+          SELECT id FROM activity_snapshots WHERE storage_tier = ?
+          ORDER BY captured_at ASC, id ASC LIMIT 500
+        `).all(tier) as Array<{ id: string }>;
+      });
+      for (const { id: snapshotId } of rows) {
+        if (!isCurrentStore()) return;
+        const candidate = await withLocalFileWriteLock(root, ".activity.files.lock", async () => {
+          if (!isCurrentStore()) return undefined;
+          const row = database.prepare(`
+            SELECT file_path, bytes, storage_tier, captured_at FROM activity_snapshots WHERE id = ?
+          `).get(snapshotId) as { file_path: string | null; bytes: number; storage_tier: string; captured_at: string } | undefined;
+          if (!row || row.storage_tier !== tier) return undefined;
+          const capturedAt = Date.parse(row.captured_at);
+          if (!Number.isFinite(capturedAt) || now.getTime() - capturedAt <= thresholdMs) return undefined;
           const relativePath = nullableString(row.file_path);
-          const originalBytes = Number(row.bytes);
-          if (!relativePath || originalBytes <= 0) {
+          const absolutePath = relativePath ? safeStoredSnapshotPath(root, relativePath) : undefined;
+          if (!absolutePath || Number(row.bytes) <= 0) {
             this.updateSnapshotTier(snapshotId, nextTier);
-            continue;
+            return undefined;
           }
-          const absolutePath = safeStoredSnapshotPath(root, relativePath);
-          if (!absolutePath) {
-            this.updateSnapshotTier(snapshotId, nextTier);
-            continue;
-          }
-          if (!recompress) continue;
-          let encoded: Awaited<ReturnType<ActivitySnapshotCompressor>>;
+          if (!recompress) return undefined;
+          const canonicalPath = path.resolve(canonicalRoot, path.relative(root, absolutePath));
+          let identity: SnapshotFileIdentity | undefined;
           try {
-            encoded = await recompress(absolutePath, target);
-          } catch (error) {
-            // 原文件已丢失时无法通过重试恢复压缩；仍推进保留档位，使残留记录按期限清理。
-            // Electron nativeImage 对缺图也可能只抛普通 Error，不能仅看错误码。
-            let sourceMissing = false;
-            try {
-              await lstat(absolutePath);
-            } catch (sourceError) {
-              sourceMissing = (sourceError as NodeJS.ErrnoException).code === "ENOENT";
-            }
-            if (sourceMissing) {
-              this.updateSnapshotTier(snapshotId, nextTier);
-              continue;
-            }
-            // 单张坏图不应阻断同轮其他图片及保留期/容量清理；原档位留待下轮重试。
-            console.warn("[ActivityStore] snapshot recompression failed; retry next rotation:",
-              error instanceof Error ? error.name : typeof error);
-            continue;
+            identity = await snapshotFileIdentity(absolutePath, canonicalPath);
+          } catch {
+            // 非普通文件或链接不参与编码，也不能阻断其他图的轮转。
+            return undefined;
           }
-          // 只有在新 JPEG 更小的时候替换文件；否则仍然完成 tier 降级，避免反复重压缩。
-          if (encoded.data.byteLength >= originalBytes) {
+          if (!isCurrentStore()) return undefined;
+          if (!identity) {
             this.updateSnapshotTier(snapshotId, nextTier);
-            continue;
+            return undefined;
           }
-          const temporaryPath = path.join(path.dirname(absolutePath), `.${path.basename(absolutePath)}.${randomUUID()}.tmp`);
-          try {
-            await writeFile(temporaryPath, encoded.data, { mode: 0o600 });
-            await chmod(temporaryPath, 0o600);
-            await rename(temporaryPath, absolutePath);
-          } catch (error) {
-            await unlink(temporaryPath).catch(() => undefined);
-            // 仅隔离这张图的文件操作；数据库故障仍向调用方报告。
-            console.warn("[ActivityStore] snapshot replacement failed; retry next rotation:",
-              error instanceof Error ? error.name : typeof error);
-            continue;
-          }
-          this.updateSnapshotStorage(
-            snapshotId,
-            encoded.data.byteLength,
-            encoded.width,
-            encoded.height,
-            nextTier
-          );
+          return { ...row, absolutePath, canonicalPath, identity, generation: this.clearRevision() };
+        });
+        if (!candidate || !recompress) continue;
+        let encoded: Awaited<ReturnType<ActivitySnapshotCompressor>> | undefined;
+        try {
+          encoded = await recompress(candidate.absolutePath, target);
+        } catch (error) {
+          console.warn("[ActivityStore] snapshot recompression failed; retry next rotation:",
+            error instanceof Error ? error.name : typeof error);
         }
-      };
+        if (!isCurrentStore()) return;
+        await withLocalFileWriteLock(root, ".activity.files.lock", async () => {
+          if (!isCurrentStore() || this.clearRevision() !== candidate.generation) return;
+          const current = database.prepare(`
+            SELECT file_path, bytes, storage_tier, captured_at FROM activity_snapshots WHERE id = ?
+          `).get(snapshotId) as { file_path: string | null; bytes: number; storage_tier: string; captured_at: string } | undefined;
+          // 另一次轮转、删除或路径更换使结果失效，不能把旧图写回已经清空的数据集。
+          if (!current || current.file_path !== candidate.file_path || current.bytes !== candidate.bytes
+            || current.storage_tier !== candidate.storage_tier || current.captured_at !== candidate.captured_at) return;
+          let identity: SnapshotFileIdentity | undefined;
+          try {
+            identity = await snapshotFileIdentity(candidate.absolutePath, candidate.canonicalPath);
+          } catch { return; }
+          if (!isCurrentStore()) return;
+          if (!identity) {
+            this.updateSnapshotTier(snapshotId, nextTier);
+            return;
+          }
+          if (!sameSnapshotFile(identity, candidate.identity) || !encoded) return;
+          if (encoded.data.byteLength >= candidate.bytes) {
+            this.updateSnapshotTier(snapshotId, nextTier);
+            return;
+          }
+          const temporaryPath = path.join(path.dirname(candidate.absolutePath), `.${path.basename(candidate.absolutePath)}.${randomUUID()}.tmp`);
+          try {
+            try {
+              await writeFile(temporaryPath, encoded.data, { mode: 0o600, flag: "wx" });
+              await chmod(temporaryPath, 0o600);
+              if (!isCurrentStore()) return;
+              // 外部非协作写入不受应用锁约束；发布前再次验证文件身份和内容时间戳。
+              const beforePublish = snapshotFileIdentitySync(candidate.absolutePath, candidate.canonicalPath);
+              if (!isCurrentStore() || !beforePublish || !sameSnapshotFile(beforePublish, candidate.identity)) return;
+              // 文件发布和同步 SQLite 更新之间不让出事件循环，close/open 不会穿过此边界。
+              renameSync(temporaryPath, candidate.absolutePath);
+            } catch (error) {
+              console.warn("[ActivityStore] snapshot replacement failed; retry next rotation:",
+                error instanceof Error ? error.name : typeof error);
+              return;
+            }
+            // 数据库错误不伪装成可忽略的 codec/file 错误。
+            this.updateSnapshotStorage(snapshotId, encoded.data.byteLength, encoded.width, encoded.height, nextTier);
+          } finally {
+            await unlink(temporaryPath).catch(() => undefined);
+          }
+        });
+      }
+    };
 
-      await processTier("hot", "warm", SNAPSHOT_WARM_AGE_MS, SNAPSHOT_WARM_SIZE);
-      await processTier("warm", "cold", SNAPSHOT_COLD_AGE_MS, SNAPSHOT_COLD_SIZE);
-
+    await processTier("hot", "warm", SNAPSHOT_WARM_AGE_MS, SNAPSHOT_WARM_SIZE);
+    if (!isCurrentStore()) return;
+    await processTier("warm", "cold", SNAPSHOT_COLD_AGE_MS, SNAPSHOT_COLD_SIZE);
+    if (!isCurrentStore()) return;
+    await withLocalFileWriteLock(root, ".activity.files.lock", async () => {
+      if (!isCurrentStore()) return;
       const coldRows = database.prepare(`
         SELECT id, file_path, bytes
         FROM activity_snapshots
@@ -1978,6 +2009,7 @@ export class ActivityStore {
           String(row.id),
           nullableString(row.file_path)
         );
+        if (!isCurrentStore()) return;
       }
 
       const maxBytes = Math.max(1, Math.trunc(maxStorageMb)) * 1024 * 1024;
@@ -1998,6 +2030,7 @@ export class ActivityStore {
         for (const row of candidates) {
           if (remainingBytes <= targetBytes) break;
           await this.deleteSnapshot(String(row.id), nullableString(row.file_path));
+          if (!isCurrentStore()) return;
           remainingBytes -= Math.max(0, Number(row.bytes));
         }
       }
@@ -2023,8 +2056,10 @@ export class ActivityStore {
   }
 
   private async deleteSnapshot(snapshotId: ActivityRecordId, relativePath: string | undefined): Promise<void> {
+    const database = this.requireDatabase();
+    const root = this.requireRoot();
     if (relativePath) {
-      const absolutePath = safeStoredSnapshotPath(this.requireRoot(), relativePath);
+      const absolutePath = safeStoredSnapshotPath(root, relativePath);
       if (absolutePath) {
         try {
           await unlink(absolutePath);
@@ -2034,7 +2069,8 @@ export class ActivityStore {
         }
       }
     }
-    const database = this.requireDatabase();
+    // unlink 可能与 close/open 交错，旧轮转不得在重新打开的数据库上删除记录。
+    if (this.database !== database || this.root !== root) return;
     database.prepare("DELETE FROM activity_snapshots WHERE id = ?").run(snapshotId);
   }
 
@@ -2458,4 +2494,45 @@ function safeStoredSnapshotPath(root: string, relativePath: string): string | un
   const absolutePath = path.resolve(absoluteRoot, relativePath);
   if (absolutePath === absoluteRoot || absolutePath.startsWith(`${absoluteRoot}${path.sep}`)) return absolutePath;
   return undefined;
+}
+
+/** 同 inode 的原地写入也会使编码失效；纳秒时间戳避免只比较大小/mtime 的漏检。 */
+interface SnapshotFileIdentity {
+  dev: bigint;
+  ino: bigint;
+  size: bigint;
+  mtimeNs: bigint;
+  ctimeNs: bigint;
+}
+
+async function snapshotFileIdentity(filePath: string, canonicalPath: string): Promise<SnapshotFileIdentity | undefined> {
+  try {
+    const stat = await lstat(filePath, { bigint: true });
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1n || await realpath(filePath) !== canonicalPath) {
+      throw new Error("Snapshot must be a canonical single-link regular file.");
+    }
+    return { dev: stat.dev, ino: stat.ino, size: stat.size, mtimeNs: stat.mtimeNs, ctimeNs: stat.ctimeNs };
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw error;
+  }
+}
+
+function sameSnapshotFile(left: SnapshotFileIdentity, right: SnapshotFileIdentity): boolean {
+  return left.dev === right.dev && left.ino === right.ino && left.size === right.size
+    && left.mtimeNs === right.mtimeNs && left.ctimeNs === right.ctimeNs;
+}
+
+/** 最终检查与 rename/SQLite 提交之间不 await，避免同进程 source 替换穿过检查。 */
+function snapshotFileIdentitySync(filePath: string, canonicalPath: string): SnapshotFileIdentity | undefined {
+  try {
+    const stat = lstatSync(filePath, { bigint: true });
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1n || realpathSync(filePath) !== canonicalPath) {
+      throw new Error("Snapshot must be a canonical single-link regular file.");
+    }
+    return { dev: stat.dev, ino: stat.ino, size: stat.size, mtimeNs: stat.mtimeNs, ctimeNs: stat.ctimeNs };
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw error;
+  }
 }

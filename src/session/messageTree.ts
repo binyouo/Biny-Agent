@@ -33,12 +33,38 @@ export function sessionMessageMetadata(events: readonly SessionEvent[], messageI
       metadata = { ...event.metadata };
     }
     if (!exists || event.type !== "message_metadata" || event.messageId !== messageId) continue;
-    const previousUsage = metadata.usage;
-    metadata = { ...metadata, ...event.metadata };
-    // usage 只合并自身一层；其他嵌套字段由新补丁整体替换。
-    if (previousUsage || event.metadata.usage) {
-      metadata.usage = { ...Object(previousUsage || {}), ...Object(event.metadata.usage || {}) };
+    metadata = mergeMessageMetadata(metadata, event.metadata);
+  }
+  return metadata;
+}
+
+/** 一次扫描只投影本次需要的消息；结果属于调用方，不缓存可原地追加的事件数组。 */
+export function sessionMessageMetadataForIds(
+  events: readonly SessionEvent[],
+  messageIds: ReadonlySet<string>
+): ReadonlyMap<string, Record<string, unknown>> {
+  const metadataById = new Map<string, Record<string, unknown>>();
+  if (!messageIds.size) return metadataById;
+  for (const event of events) {
+    if (event.type === "message_metadata") {
+      const previous = metadataById.get(event.messageId);
+      // 首条真实消息之前的补丁无效，重复消息也不能重置已合并的 metadata。
+      if (previous !== undefined) metadataById.set(event.messageId, mergeMessageMetadata(previous, event.metadata));
+    } else if ((event.type === "user_message" || event.type === "agent_message" || event.type === "assistant_message")
+      && !("auditOnly" in event && event.auditOnly) && event.messageId !== undefined
+      && messageIds.has(event.messageId) && !metadataById.has(event.messageId)) {
+      metadataById.set(event.messageId, { ...event.metadata });
     }
+  }
+  return metadataById;
+}
+
+function mergeMessageMetadata(previous: Record<string, unknown>, patch: Record<string, unknown>): Record<string, unknown> {
+  const previousUsage = previous.usage;
+  const metadata = { ...previous, ...patch };
+  // usage 只合并自身一层；其他嵌套字段由新补丁整体替换。
+  if (previousUsage || patch.usage) {
+    metadata.usage = { ...Object(previousUsage || {}), ...Object(patch.usage || {}) };
   }
   return metadata;
 }
