@@ -100,8 +100,8 @@ export async function forkSession(
 /**
  * 向前找到最近一个不会切断工具调用配对的位置。
  *
- * 从请求点往回退，直到该前缀里每个 tool_call 都有配对的 tool_result。用户消息和 assistant
- * 消息会清空待配对集合，和重放时的规则保持一致。
+ * 从请求点往回退，直到该前缀里每个 tool_call 都有配对的 tool_result。
+ * 消息回执或后续对话不是工具结果，不能使尚未配对的调用变成安全截断点。
  */
 function safeCutPoint(events: readonly SessionEvent[], requested: number): number {
   for (let cut = requested; cut > 0; cut -= 1) {
@@ -113,10 +113,6 @@ function safeCutPoint(events: readonly SessionEvent[], requested: number): numbe
 function hasUnmatchedToolCalls(events: readonly SessionEvent[]): boolean {
   const open = new Set<string>();
   for (const [index, event] of events.entries()) {
-    if (event.type === "user_message" || event.type === "assistant_message") {
-      open.clear();
-      continue;
-    }
     if (event.type === "tool_call") {
       open.add(event.toolCallId ?? `sequence-${String(event.sequence ?? index)}`);
       continue;
