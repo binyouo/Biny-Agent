@@ -317,11 +317,10 @@ export function synchronizeCredentialRevisions(config: AgentConfig, previous: Ag
 }
 
 /**
- * 锁外快速判断是否可能存在待恢复/待清理的凭据事务。
+ * 检查当前是否存在待恢复/待清理的凭据事务。
  *
- * 真实 Keychain 账号只在 journal 存在期间被改写（staging 写入的是事务专用临时 account），
- * 因此「无 journal」即可让纯读完全绕开全局写锁；一旦见到 journal，调用方必须进全局写锁后
- * 再调 recoverStoredCredentialTransaction 重查并恢复。
+ * 这只是瞬时状态，不能证明后续读取安全：writer 可在检查之后创建并清理整个 journal。
+ * 配置文档读取、事务恢复和凭据水合仍须在同一个全局配置锁内完成。
  */
 export async function hasPendingCredentialTransaction(journalPath: string): Promise<boolean> {
   return (await readCredentialJournal(journalPath)) !== undefined;
