@@ -38,8 +38,8 @@ for (const executableName of ["Biny", "Electron", "Biny Desktop"]) {
     workspaceRoot: "/workspace/project",
     electronAppPath: `${contents}/Resources/app.asar`
   }, { platform: "darwin", execPath: `${contents}/MacOS/${executableName}` });
-  assert.equal(plan.executable, `${contents}/Frameworks/${executableName} Helper.app/Contents/MacOS/${executableName} Helper`,
-    "macOS Host must launch through the background Helper bundle, not a foreground app hidden after startup");
+  assert.equal(plan.executable, `${contents}/MacOS/${executableName}`,
+    "Host requires the Electron main executable so Chromium services can start");
   assert.equal(plan.env.ELECTRON_RUN_AS_NODE, undefined);
 }
 

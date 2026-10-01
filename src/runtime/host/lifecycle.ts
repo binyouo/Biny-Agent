@@ -107,11 +107,9 @@ export function runtimeHostLaunchPlan(
   delete env.BINY_BROWSER_PROJECT_ID;
   if (options.electronAppPath !== undefined) {
     delete env.ELECTRON_RUN_AS_NODE;
-    const executableName = path.basename(environment.execPath);
     return {
-      executable: environment.platform === "darwin"
-        ? path.resolve(path.dirname(environment.execPath), "../Frameworks", `${executableName} Helper.app`, "Contents/MacOS", `${executableName} Helper`)
-        : environment.execPath,
+      // Chromium Helper 只能承载子进程；作为主进程启动会在 GPU/网络服务初始化后崩溃。
+      executable: environment.execPath,
       args: [path.resolve(options.electronAppPath), "--biny-runtime-host", ...hostArgs],
       env
     };
