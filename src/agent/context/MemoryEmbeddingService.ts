@@ -60,7 +60,7 @@ export interface MemoryEmbeddingRuntimeStatus {
 }
 
 export interface MemoryEmbeddingServiceOptions {
-  localMemory: LocalMemory;
+  localMemory: Pick<LocalMemory, "listMemoryEntries" | "getOverview">;
   localManager: LocalEmbeddingManager;
   getVectorIndex: () => MemoryVectorIndex;
   getReadOnlyVectorIndex: () => MemoryVectorIndex | undefined;

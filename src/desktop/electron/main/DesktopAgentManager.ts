@@ -51,7 +51,9 @@ import { ModelRuntime } from "../../../llm/ModelRuntime.js";
 import { LocalEmbeddingManager, listLocalEmbeddingModels } from "../../../llm/embedding/LocalEmbeddingRuntime.js";
 import { listProviderEmbeddingModels } from "../../../llm/embedding/ProviderEmbeddingRuntime.js";
 import type { EmbeddingModelDescriptor, LocalEmbeddingModelId } from "../../../llm/embedding/types.js";
-import type { MemoryEmbeddingRuntimeStatus } from "../../../agent/context/MemoryEmbeddingService.js";
+import { selectMemoryEmbeddingModel } from "../../../llm/embedding/selectMemoryModel.js";
+import { MemoryVectorIndex } from "../../../agent/context/MemoryVectorIndex.js";
+import { MemoryEmbeddingService, type MemoryEmbeddingRuntimeStatus } from "../../../agent/context/MemoryEmbeddingService.js";
 import { FileModelsStore, restoreProviderCatalogs, type ModelsStore } from "../../../llm/ModelsStore.js";
 import { listConfiguredModelChoices, listPickerModelChoices, modelRuntimeInfo, type ModelRuntimeInfo, type ThinkingSelection } from "../../../llm/ModelManager.js";
 import type { PermissionMode, PermissionResult } from "../../../permission/PermissionManager.js";
@@ -1665,7 +1667,7 @@ export class DesktopAgentManager {
         : await requireRemoteRuntime(managed.runtime).memoryEmbeddingStatus();
       return describeMemoryEmbeddingStatus(status);
     }
-    // runtime 未驻留时不触发冷启动：返回降级状态（索引细节待会话建立后补齐）；运行中的下载/重建此时不存在。
+    // 冷态读取同一持久化投影，不启动模型或为状态查询建立索引。
     return describeMemoryEmbeddingStatus(await this.readEmbeddingStatusFromDisk(project.path));
   }
 
@@ -1861,10 +1863,13 @@ export class DesktopAgentManager {
   }
 
   async memorySleepStatus(projectId: string): Promise<MemoryMaintenanceStatus> {
-    this.projects.requireProject(projectId);
-    const { runtime, commands } = await this.ensureRuntime(projectId);
-    if (commands) return await commands.agent.getLocalMemory().loadMaintenanceStatus();
-    return await requireRemoteRuntime(runtime).memory<MemoryMaintenanceStatus>("sleep-status", {});
+    const project = this.projects.requireProject(projectId);
+    const managed = this.residentRuntime(projectId);
+    if (managed?.commands) return await managed.commands.agent.getLocalMemory().loadMaintenanceStatus();
+    if (managed) return await requireRemoteRuntime(managed.runtime).memory<MemoryMaintenanceStatus>("sleep-status", {});
+    const storage = new MemoryStorage(project.path);
+    try { return await storage.readMaintenanceStatus(); }
+    finally { storage.close(); }
   }
 
   async memorySleepRuns(projectId: string): Promise<import("../../../agent/context/memoryTypes.js").MemorySleepRun[]> {
@@ -3120,32 +3125,27 @@ export class DesktopAgentManager {
     return { entries: result.entries, total: result.total, storeRevision: result.storeRevision };
   }
 
-  /** runtime 未驻留时的降级 embedding 状态：只检查缓存元数据，不加载模型权重或打开向量索引。 */
+  /** 冷态复用只读索引统计，不加载模型权重或创建向量投影。 */
   private async readEmbeddingStatusFromDisk(workspaceRoot: string): Promise<MemoryEmbeddingRuntimeStatus> {
     const config = (await this.requireVersionedConfig().loadVersioned!(workspaceRoot)).config;
-    const activeModel = config.context.memory.embeddingModel;
-    // 只检查本地缓存元数据，不加载任何模型权重；这样未驻留 runtime 的设置页也能显示
-    // 「已下载/待下载」，而不是把所有状态都误报成未知。
     const localManager = new LocalEmbeddingManager(path.join(globalAgentDir(), "models", "embeddings"));
-    const localModels = await localManager.list();
-    const descriptors = [
-      ...localModels.map(({ descriptor, installed }) => ({ ...descriptor, installed })),
-      ...describeEmbeddingModels(config).filter((descriptor) => descriptor.source === "provider")
-    ];
     const storage = new MemoryStorage(workspaceRoot);
-    const totalEntries = (await storage.getOverview()).entryCount;
-    // 不打开向量索引（会 mkdir+migrate），所以索引进度未知：active 视为无，全部待处理。
-    return {
-      activeModel,
-      models: descriptors,
-      localModels,
-      index: {},
-      totalEntries,
-      indexedEntries: 0,
-      pendingEntries: totalEntries,
-      needsRebuild: config.needsEmbeddingRebuild === true,
-      degradedReason: "打开会话后显示索引进度与运行中操作"
-    };
+    const providerModels = describeEmbeddingModels(config).filter(descriptor => descriptor.source === "provider");
+    const service = new MemoryEmbeddingService({
+      localMemory: {
+        listMemoryEntries: options => storage.listEntries(options),
+        getOverview: options => storage.getOverview(options)
+      },
+      localManager,
+      getVectorIndex: () => { throw new Error("Settings status cannot create an embedding index."); },
+      getReadOnlyVectorIndex: () => MemoryVectorIndex.openReadOnly(globalAgentDir()),
+      getActiveModel: () => selectMemoryEmbeddingModel(config.context.memory.embeddingModel, providerModels),
+      getProviderModels: () => providerModels,
+      getRuntime: async () => undefined,
+      getNeedsRebuild: () => config.needsEmbeddingRebuild === true
+    });
+    try { return await service.status(); }
+    finally { service.close(); storage.close(); await localManager.close(); }
   }
 
   private buildConfigWithAuthenticatedLogin(current: AgentConfig, authenticated: AuthenticatedModelLogin): AgentConfig {
