@@ -1041,7 +1041,6 @@ export class RuntimeHostServer {
           if (connection.exitingForPause) throw new Error("This Runtime Host client is exiting and cannot start new work.");
           this.admission.assertAdmission();
           const current = await this.runtimeEntry(frame.operation, { sessionId });
-          assertPlanningOperationAllowed(current.runtime.getSnapshot().info.planning, frame.operation);
           return await this.executeAdmission(async () => await current.commands.refreshDailyDiary(
             requiredString(payload.dateKey, "dateKey"), { force: payload.force === true }
           ), current.runtime);
