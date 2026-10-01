@@ -77,6 +77,7 @@ export class AutomationTargetBusyError extends Error {
 }
 
 class AutomationClaimRejectedError extends Error {}
+class AutomationCreationExpiredError extends Error {}
 
 interface AutomationRow {
   automation_id: unknown;
@@ -200,22 +201,35 @@ export class AutomationStore {
 
   forceFire(automationId: string, scheduledAt = new Date().toISOString()): AutomationPendingFire {
     const automation = this.require(automationId);
-    if (automation.status === "expired" || (automation.expiresAt !== undefined && Date.parse(automation.expiresAt) <= Date.now())) {
+    const now = new Date().toISOString();
+    const expiry = automation.expiresAt === undefined ? undefined : Date.parse(automation.expiresAt);
+    if (expiry !== undefined && !Number.isFinite(expiry)) throw new Error(`Automation ${automationId} has invalid expiresAt.`);
+    if (automation.status === "expired" || (expiry !== undefined && expiry <= Date.parse(now))) {
       throw new Error(`Automation ${automationId} has expired.`);
     }
     if (automation.status === "completed" && automation.maxFires !== undefined && automation.fireCount >= automation.maxFires) {
       throw new Error(`Automation ${automationId} reached its maximum fire count.`);
     }
     const fireId = randomUUID();
-    const now = new Date().toISOString();
     this.withAutomationEvent(automation, "automation.fire.pending", { fireId, scheduledAt }, now, () => {
-      this.database.prepare("INSERT INTO automation_pending_fires (fire_id, automation_id, scheduled_at, status, created_at) VALUES (?, ?, ?, 'pending', ?)").run(fireId, automation.automationId, scheduledAt, now);
+      const admittedAt = new Date().toISOString();
+      if (expiry !== undefined && expiry <= Date.parse(admittedAt)) throw new Error(`Automation ${automationId} has expired.`);
+      this.database.prepare("INSERT INTO automation_pending_fires (fire_id, automation_id, scheduled_at, status, created_at) VALUES (?, ?, ?, 'pending', ?)").run(fireId, automation.automationId, scheduledAt, admittedAt);
     });
     return this.requireFire(fireId);
   }
 
   claimDue(now = new Date(), limit = 32): AutomationPendingFire[] {
     this.assertOpen();
+    // once 已产生 fire 后没有 next_fire_at；定义仍须按自身截止时间过期。
+    const expiring = this.database.prepare(
+      "SELECT automation_id, expires_at FROM automations WHERE workspace_id = ? AND status = 'active' AND expires_at IS NOT NULL"
+    ).all(this.authority.workspaceId) as Array<{ automation_id: string; expires_at: string }>;
+    for (const automation of expiring) {
+      const expiry = Date.parse(automation.expires_at);
+      if (!Number.isFinite(expiry)) this.updateStatus(automation.automation_id, "paused", "Invalid automation expiresAt timestamp.");
+      else if (expiry <= Math.max(now.getTime(), Date.now())) this.updateStatus(automation.automation_id, "expired");
+    }
     const fires: AutomationPendingFire[] = [];
     const recoverable = this.database.prepare(
       "SELECT fire_id, automation_id, scheduled_at, claim_token, claimed_at, status, run_id, error, created_at FROM automation_pending_fires WHERE status IN ('pending', 'deferred') AND scheduled_at <= ? ORDER BY scheduled_at ASC LIMIT ?"
@@ -223,7 +237,7 @@ export class AutomationStore {
     for (const row of recoverable) {
       const fireId = stringValue(row.fire_id);
       const automation = this.require(stringValue(row.automation_id));
-      if (automation.status !== "active") continue;
+      if (!canClaimFire(automation, toFire(row))) continue;
       const status = pendingStatus(row.status);
       if (status === "deferred") {
         const createdAt = new Date().toISOString();
@@ -241,10 +255,6 @@ export class AutomationStore {
     for (const candidate of candidates) {
       const automationId = stringValue(candidate.automation_id);
       const automation = this.require(automationId);
-      if (automation.expiresAt !== undefined && Date.parse(automation.expiresAt) <= now.getTime()) {
-        this.updateStatus(automationId, "expired");
-        continue;
-      }
       if (automation.maxFires !== undefined && automation.fireCount >= automation.maxFires) {
         this.updateStatus(automationId, "completed");
         continue;
@@ -252,13 +262,25 @@ export class AutomationStore {
       const scheduledAt = stringValue(candidate.next_fire_at);
       const fireId = randomUUID();
       const createdAt = new Date().toISOString();
+      if (automation.expiresAt !== undefined && Date.parse(automation.expiresAt) <= Date.parse(createdAt)) {
+        this.updateStatus(automationId, "expired");
+        continue;
+      }
       try {
         this.withAutomationEvent(automation, "automation.fire.pending", { fireId, scheduledAt }, createdAt, () => {
-          this.database.prepare("INSERT OR IGNORE INTO automation_pending_fires (fire_id, automation_id, scheduled_at, status, created_at) VALUES (?, ?, ?, 'pending', ?)").run(fireId, automationId, scheduledAt, createdAt);
+          const admittedAt = new Date().toISOString();
+          if (automation.expiresAt !== undefined && Date.parse(automation.expiresAt) <= Date.parse(admittedAt)) {
+            throw new AutomationCreationExpiredError();
+          }
+          this.database.prepare("INSERT OR IGNORE INTO automation_pending_fires (fire_id, automation_id, scheduled_at, status, created_at) VALUES (?, ?, ?, 'pending', ?)").run(fireId, automationId, scheduledAt, admittedAt);
           const next = advanceFireAt(automation, new Date(scheduledAt));
-          this.database.prepare("UPDATE automations SET next_fire_at = ?, revision = revision + 1, updated_at = ? WHERE automation_id = ?").run(next ?? null, createdAt, automationId);
+          this.database.prepare("UPDATE automations SET next_fire_at = ?, revision = revision + 1, updated_at = ? WHERE automation_id = ?").run(next ?? null, admittedAt, automationId);
         });
       } catch (error) {
+        if (error instanceof AutomationCreationExpiredError) {
+          this.updateStatus(automationId, "expired");
+          continue;
+        }
         // 单个 automation 推进失败（如只在闰日命中的 cron 触发后 366 天内没有下一次）不能
         // 中断整轮 claim，否则它按 next_fire_at 永远排在最前，让后面的 automation 全部停摆。
         this.updateStatus(automationId, "paused", error instanceof Error ? error.message : String(error));
@@ -276,6 +298,7 @@ export class AutomationStore {
     const pending = this.requireFire(fireId);
     if (pending.status !== "pending" && pending.status !== "deferred") return undefined;
     const automation = this.require(pending.automationId);
+    if (!canClaimFire(automation, pending)) return undefined;
     try {
       this.withAutomationEvent(automation, "automation.fire.claimed", { fireId, claimToken }, now, () => {
         const result = this.database.prepare(`
@@ -287,7 +310,7 @@ export class AutomationStore {
               SELECT 1 FROM automations
               WHERE automation_id = automation_pending_fires.automation_id
                 AND workspace_id = ?
-                AND status = 'active'
+                AND status IN ('active', 'expired')
                 AND (max_fires IS NULL OR fire_count < max_fires)
             )
         `).run(claimToken, now, fireId, this.authority.workspaceId);
@@ -656,6 +679,7 @@ function normalizeAutomationInput(input: AutomationCreateInput): AutomationCreat
   if ((input.triggerType === "interval" || input.triggerType === "heartbeat") && (!Number.isSafeInteger(input.schedule.intervalMs) || (input.schedule.intervalMs ?? 0) < 100)) throw new Error("Interval automation requires intervalMs >= 100.");
   if (input.triggerType === "once" && input.schedule.at !== undefined && Number.isNaN(Date.parse(input.schedule.at))) throw new Error("Once automation at must be an ISO timestamp.");
   if (input.schedule.jitterMs !== undefined && (!Number.isSafeInteger(input.schedule.jitterMs) || input.schedule.jitterMs < 0)) throw new Error("Automation jitterMs must be a non-negative integer.");
+  if (input.expiresAt !== undefined && !Number.isFinite(Date.parse(input.expiresAt))) throw new Error("Automation expiresAt must be a valid timestamp.");
   return { ...input, name: input.name.trim(), executionTemplate };
 }
 
@@ -736,6 +760,16 @@ function jitter(maximum = 0): number {
 
 function deferDelay(automation: AutomationRecord): number {
   return Math.max(1_000, Math.min(automation.schedule.intervalMs ?? 5_000, 60_000));
+}
+
+function canClaimFire(automation: AutomationRecord, fire: AutomationPendingFire): boolean {
+  const expiry = automation.expiresAt === undefined ? undefined : Date.parse(automation.expiresAt);
+  if (expiry !== undefined && (!Number.isFinite(expiry) || Date.parse(fire.createdAt) >= expiry)) return false;
+  if (automation.status === "active") return true;
+  // 定义到期只阻止新 fire，不撤销截止前已落库的执行权。
+  return automation.status === "expired"
+    && expiry !== undefined
+    && Date.parse(fire.createdAt) < expiry;
 }
 
 function toAutomation(row: AutomationRow): AutomationRecord {
