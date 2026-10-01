@@ -75,13 +75,17 @@ export class RuntimeHostEventJournal {
       if (!line.trim()) continue;
       try {
         const value = JSON.parse(line) as Partial<RuntimeHostJournalRecord>;
-        if (!Number.isSafeInteger(value.sequence) || (value.sequence ?? 0) <= 0 || !isRuntimeUpdate(value.update)) {
+        if (!Number.isSafeInteger(value.sequence) || (value.sequence ?? 0) <= 0) {
           malformed = true;
           continue;
         }
         const sequence = value.sequence as number;
-        if (records.at(-1)?.sequence !== undefined && sequence !== records.at(-1)!.sequence + 1) malformed = true;
         highWaterSequence = Math.max(highWaterSequence, sequence);
+        if (!isRuntimeUpdate(value.update)) {
+          malformed = true;
+          continue;
+        }
+        if (records.at(-1)?.sequence !== undefined && sequence !== records.at(-1)!.sequence + 1) malformed = true;
         records.push({ sequence, update: value.update });
       } catch {
         malformed = true;
