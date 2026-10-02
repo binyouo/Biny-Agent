@@ -2333,7 +2333,8 @@ export class AgentSession {
         initialToolCallCount: runOptions.initialToolBudget?.accountedToolCalls,
         initialRepeatedActions: runOptions.initialToolBudget?.repeatedActions
       },
-      persistToolResultCheckpoint
+      persistToolResultCheckpoint,
+      () => this.activeConfig.agent.toolExecutionMode
     );
     coordinatorRef.current = coordinator;
     if (runOptions.continueFrom?.length) {
@@ -2350,9 +2351,18 @@ export class AgentSession {
       const directTools = coordinator.createAgentTools(editing);
       if (this.activeConfig.agent.toolExecutionMode !== "code_mode") return directTools;
       const search = directTools.find((tool) => tool.name === toolSearchToolName);
+      const searchProperties = search?.parameters.type === "object" ? search.parameters.properties : undefined;
       return [coordinator.createCodeModeTool(editing), ...(search ? [{
         ...search,
-        promptSnippet: "Discover selected tools for the next model step. In Code Mode, only reviewed built-in read tools can then run inside exec; switch to direct mode for other actions."
+        description: "Search reviewed built-in read tools available inside Code Mode exec, including shared memory and cross-project conversation history. Other tools, including writes, MCP, web, and desktop tools, require direct mode.",
+        promptSnippet: "Discover a reviewed built-in read tool for the next exec step. Memory recall searches the shared library; history search spans projects. Code Mode cannot run writes, MCP, web, or desktop tools; switch to direct mode for those actions.",
+        parameters: {
+          ...search.parameters,
+          properties: {
+            query: searchProperties?.query ?? { type: "string" as const },
+            maxResults: searchProperties?.maxResults ?? { type: "integer" as const }
+          }
+        }
       }] : [])];
     };
     let loopContext: AgentContext;

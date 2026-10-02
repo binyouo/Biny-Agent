@@ -6,6 +6,7 @@
  */
 import { createHash } from "node:crypto";
 import { z } from "zod";
+import { codeModeNestedToolNames } from "../agent/codeMode.js";
 import type { AgentMessage, AgentModel } from "../agent/core/types.js";
 import { generateNativeText } from "../llm/nativeJson.js";
 import { redactSecrets } from "../utils/secrets.js";
@@ -98,7 +99,9 @@ export function createToolSearchTool(
           const type = args.type ?? "all";
           const limit = args.maxResults ?? defaultMaxResults;
           const candidates = getTools()
-            .filter(({ tool, source }) => tool.name !== toolSearchToolName && (type === "all" || source === type))
+            .filter(({ tool, source }) => tool.name !== toolSearchToolName
+              && (type === "all" || source === type)
+              && (context.toolDiscoveryMode !== "code_mode" || (source === "builtin" && codeModeNestedToolNames.has(tool.name))))
             .map(({ tool, source }) => ({
               name: tool.name,
               description: redactSecrets(tool.description).slice(0, 400),
