@@ -45,7 +45,7 @@ import { resolveWorkspacePath, toWorkspaceRelative } from "../workspace/resolveP
 import type { ReasoningBlock, SessionEvent } from "../session/recorder.js";
 import { archiveToolResult, serializeToolResult, toolResultPreview } from "../session/toolResultArchive.js";
 import { projectSingleToolResultForModel } from "./toolResultProjection.js";
-import { codeModeCatalog, codeModeNestedToolNames, codeModePolicy, executeCodeModeCell } from "./codeMode.js";
+import { codeModeCatalog, codeModeNestedToolNames, codeModePolicy, executeCodeModeCell, type CodeModeLimits } from "./codeMode.js";
 import type {
   AgentPermissionRequest,
   AgentPermissionResult,
@@ -271,7 +271,7 @@ export class ToolExecutionCoordinator {
 
   /** Outer Code Mode admission is separate from the child scheduler: a cell
    * holding its only slot would deadlock when maxConcurrentTools is one. */
-  createCodeModeTool(editing?: { mode: EditingMode; attachmentRoot?: string }, executionPolicy?: Readonly<typeof codeModePolicy>): AgentTool {
+  createCodeModeTool(editing?: { mode: EditingMode; attachmentRoot?: string }, executionPolicy?: CodeModeLimits): AgentTool {
     const builtin = new Set(this.context.toolRegistry.listEntries()
       .filter((entry) => entry.source === "builtin")
       .map((entry) => entry.tool.name));

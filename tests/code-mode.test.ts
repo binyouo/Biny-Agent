@@ -252,7 +252,7 @@ try {
   assert.equal(importEscape.ok, false);
   assert.match(importEscape.error ?? "", /could not load module/u);
 
-  const shortPolicy = { ...codeModePolicy, timeoutMs: 1_000 };
+  const shortPolicy = { ...codeModePolicy, timeoutMs: 1_000, hostCallTimeoutMs: 1_000, maxCellDurationMs: 2_000 };
   let permissionWaitAborted = false;
   const waitingForPermission: AgentTool = {
     name: "Read", description: "Read after permission", parameters: { type: "object", properties: {}, required: [], additionalProperties: false },

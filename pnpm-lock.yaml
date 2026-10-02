@@ -12,6 +12,14 @@ overrides:
   hono: 4.12.34
   '@hono/node-server': 2.0.11
 
+patchedDependencies:
+  '@ai-sdk/code-mode@1.0.50':
+    hash: 9a7d638863eacf50354422bcaf796d859f54854a1d536670dbc6c3a84f280df9
+    path: patches/@ai-sdk-code-mode@1.0.50.patch
+  run@2.1.6:
+    hash: 4fef79be9cad7c4c0ee14a1c750e578d392c09251553ccc750f737c50cafd5ad
+    path: patches/run@2.1.6.patch
+
 importers:
 
   .:
@@ -21,7 +29,7 @@ importers:
         version: 4.0.49(zod@3.25.76)
       '@ai-sdk/code-mode':
         specifier: 1.0.50
-        version: 1.0.50(ai@7.0.93(zod@3.25.76))(typescript@5.9.3)
+        version: 1.0.50(patch_hash=9a7d638863eacf50354422bcaf796d859f54854a1d536670dbc6c3a84f280df9)(ai@7.0.93(zod@3.25.76))(typescript@5.9.3)
       '@ai-sdk/google':
         specifier: 4.0.17
         version: 4.0.17(zod@3.25.76)
@@ -71,7 +79,7 @@ importers:
         specifier: ^6.0.0
         version: 6.0.0
       ai:
-        specifier: ^7.0.93
+        specifier: 7.0.93
         version: 7.0.93(zod@3.25.76)
       best-effort-json-parser:
         specifier: 1.2.1
@@ -182,6 +190,9 @@ importers:
       electron-vite:
         specifier: ^5.0.0
         version: 5.0.0(vite@7.3.6(@types/node@22.19.21)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.23.1)(yaml@2.9.0))
+      esbuild:
+        specifier: 0.28.1
+        version: 0.28.1
       eslint:
         specifier: ^10.7.0
         version: 10.7.0(jiti@2.7.0)
@@ -4270,10 +4281,10 @@ snapshots:
       '@ai-sdk/provider-utils': 5.0.36(zod@3.25.76)
       zod: 3.25.76
 
-  '@ai-sdk/code-mode@1.0.50(ai@7.0.93(zod@3.25.76))(typescript@5.9.3)':
+  '@ai-sdk/code-mode@1.0.50(patch_hash=9a7d638863eacf50354422bcaf796d859f54854a1d536670dbc6c3a84f280df9)(ai@7.0.93(zod@3.25.76))(typescript@5.9.3)':
     dependencies:
       ai: 7.0.93(zod@3.25.76)
-      run: 2.1.6(typescript@5.9.3)
+      run: 2.1.6(patch_hash=4fef79be9cad7c4c0ee14a1c750e578d392c09251553ccc750f737c50cafd5ad)(typescript@5.9.3)
     transitivePeerDependencies:
       - typescript
 
@@ -8140,7 +8151,7 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  run@2.1.6(typescript@5.9.3):
+  run@2.1.6(patch_hash=4fef79be9cad7c4c0ee14a1c750e578d392c09251553ccc750f737c50cafd5ad)(typescript@5.9.3):
     optionalDependencies:
       typescript: 5.9.3
 

@@ -1,0 +1,77 @@
+diff --git a/src/run-code-mode.ts b/src/run-code-mode.ts
+index 95435bd..e2ce4fa 100644
+--- a/src/run-code-mode.ts
++++ b/src/run-code-mode.ts
+@@ -70,6 +70,9 @@ let invocationCounter = 0;
+  */
+ export async function runCodeMode(input: RunCodeModeInput): Promise<unknown> {
+   const policy = resolveExecutionPolicy(input.options?.executionPolicy);
++  if (policy.executionTimeoutMs !== undefined && !supportsExecutionTimeoutBudget()) {
++    throw new CodeModeProtocolError('Cumulative execution budgets require the exact run@2.1.6 runtime timing patch.');
++  }
+   assertSourceSize(input.js, policy.maxSourceBytes);
+ 
+   const toolNames = Object.keys(input.tools).sort();
+@@ -160,6 +163,7 @@ export async function runCodeMode(input: RunCodeModeInput): Promise<unknown> {
+ 
+ interface ResolvedExecutionPolicy {
+   timeoutMs: number;
++  executionTimeoutMs?: number;
+   memoryLimitBytes: number;
+   maxStackSizeBytes: number;
+   maxResultBytes: number;
+@@ -171,11 +175,25 @@ interface ResolvedExecutionPolicy {
+   maxInFlightBridgeRequests: number;
+ }
+ 
++function supportsExecutionTimeoutBudget(): boolean {
++  return (createRunner as typeof createRunner & { executionTimeoutBudgetVersion?: unknown }).executionTimeoutBudgetVersion === 1;
++}
++
++// Advertise support only when the underlying runtime advertises the same contract.
++if (supportsExecutionTimeoutBudget()) {
++  Object.defineProperty(runCodeMode, 'executionTimeoutBudgetVersion', {
++    value: 1,
++    writable: false,
++    configurable: false,
++  });
++}
++
+ function resolveExecutionPolicy(
+   policy: CodeModeExecutionPolicy = {},
+ ): ResolvedExecutionPolicy {
+   return {
+     timeoutMs: policy.timeoutMs ?? DEFAULT_TIMEOUT_MS,
++    ...(policy.executionTimeoutMs === undefined ? {} : { executionTimeoutMs: policy.executionTimeoutMs }),
+     memoryLimitBytes: policy.memoryLimitBytes ?? DEFAULT_MEMORY_LIMIT_BYTES,
+     maxStackSizeBytes: policy.maxStackSizeBytes ?? DEFAULT_STACK_LIMIT_BYTES,
+     maxResultBytes: policy.maxResultBytes ?? DEFAULT_MAX_RESULT_BYTES,
+@@ -363,6 +381,7 @@ function toRunLimits(
+ ): RunLimits {
+   return {
+     timeoutMs: policy.timeoutMs,
++    ...(policy.executionTimeoutMs === undefined ? {} : { executionTimeoutMs: policy.executionTimeoutMs }),
+     memoryLimitBytes: policy.memoryLimitBytes,
+     maxStackSizeBytes: policy.maxStackSizeBytes,
+     maxResultBytes: expandedSerializationLimit(policy.maxResultBytes),
+@@ -679,6 +698,7 @@ function toCodeModeRuntimeError(error: unknown): unknown {
+ function translateLimitPath(message: string): string {
+   const paths: Record<string, string> = {
+     'limits.timeoutMs': 'executionPolicy.timeoutMs',
++    'limits.executionTimeoutMs': 'executionPolicy.executionTimeoutMs',
+     'limits.memoryLimitBytes': 'executionPolicy.memoryLimitBytes',
+     'limits.maxStackSizeBytes': 'executionPolicy.maxStackSizeBytes',
+     'limits.maxResultBytes': 'executionPolicy.maxResultBytes',
+diff --git a/src/types.ts b/src/types.ts
+index b317e9d..d58e583 100644
+--- a/src/types.ts
++++ b/src/types.ts
+@@ -162,6 +162,8 @@ export type CodeModeApprovalInterrupt =
+ export interface CodeModeExecutionPolicy {
+   /** @defaultValue `30_000` */
+   timeoutMs?: number;
++  /** Optional cumulative synchronous QuickJS budget; timeoutMs remains the wall cap. */
++  executionTimeoutMs?: number;
+   /** @defaultValue `64 * 1024 * 1024` */
+   memoryLimitBytes?: number;
+   /** @defaultValue `2 * 1024 * 1024` */

@@ -51,6 +51,9 @@ jobs:
       - name: Test
         run: pnpm test
 
+      - name: Validate bundled Code Mode runtime
+        run: pnpm build:desktop && pnpm test:code-mode-package
+
   build:
     name: Build ${{ matrix.arch }}
     needs: validate
@@ -102,6 +105,7 @@ jobs:
       - name: Build macOS package
         run: |
           pnpm build:desktop
+          pnpm test:code-mode-package
           pnpm exec electron-builder --mac dmg zip --${{ matrix.arch }} --publish never
 
       - uses: actions/upload-artifact@v7

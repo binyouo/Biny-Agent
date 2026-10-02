@@ -1,0 +1,58 @@
+Patched Code Mode runtime modification notice
+
+This distribution contains locally modified versions of run 2.1.6 and
+@ai-sdk/code-mode 1.0.50. The modifications are not upstream published releases.
+The existing ai 7.0.93 dependency is unchanged by the runtime timing patch.
+
+run changes add an optional cumulative synchronous QuickJS execution-time budget,
+exclude bridge/host waits from that budget, retain the independent wall-clock
+limit, and expose executionTimeoutBudgetVersion 1 for fail-closed compatibility.
+The worker is rebuilt from the patched run source with its embedded serializer
+and the unchanged quickjs-wasi 3.6.0 WebAssembly artifact.
+
+@ai-sdk/code-mode changes forward executionTimeoutMs to run, extend policy and
+error-path types, and reject the option unless the underlying run runtime
+advertises the exact timing contract. These changes regenerate package output
+and source maps and are bundled into the application's CLI and Desktop runtime.
+
+Original upstream copyright, license, and attribution notices are retained in
+THIRD_PARTY_NOTICES.txt and patches/runtime-timing/licenses/. The complete Apache
+License, Version 2.0 is in patches/runtime-timing/licenses/APACHE-2.0.txt. This
+notice does not replace or alter those licenses. In built distributions, the
+source-input directory is copied to dist/code-mode-runtime-provenance/.
+
+Upstream run source:
+  Repository: https://github.com/vercel-labs/run.git
+  Tag: run@2.1.6
+  Commit: 2e86a992aae3d24d16d5a5a0224ff8d778358830
+
+Patched source files (paths relative to their recorded source inputs):
+
+run:
+  packages/run/src/run.ts
+  packages/run/src/runtime/execution-budget.ts
+  packages/run/src/runtime/manager.ts
+  packages/run/src/runtime/protocol-validation.ts
+  packages/run/src/runtime/protocol.test.ts
+  packages/run/src/runtime/protocol.ts
+  packages/run/src/runtime/worker-message.test.ts
+  packages/run/src/runtime/worker.ts
+  packages/run/src/types.ts
+  packages/run/src/utils/options.ts
+  Patch: patches/runtime-timing/run-2.1.6-source.diff
+  Patch SHA-256: fdcb65a1f0ffd53d88feaf4ee847c3578314f2bd115d405d69d3b87feac1f324
+
+@ai-sdk/code-mode:
+  src/run-code-mode.ts
+  src/types.ts
+  Patch: patches/runtime-timing/code-mode-1.0.50-source.diff
+  Patch SHA-256: 97b45a50a5b62c86ad99f4df3eaba7214c8eaf1b46a0f94aab05c16d880a1f07
+
+Intended application outputs:
+  CLI: dist/agent/codeMode.js
+  Desktop: out/main/index.js and any out/main/chunks/ file containing Code Mode
+
+These paths describe intended bundle locations. The static source-input
+manifest is source-provenance.json. The separate generated provenance.json
+contains measured CLI output hashes; Desktop main build hashes are recorded in
+out/main/code-mode-runtime-provenance.json.
