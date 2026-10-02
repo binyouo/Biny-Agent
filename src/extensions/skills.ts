@@ -474,24 +474,28 @@ export function createSkillResourceTool(source: SkillBundleSource): Tool {
       const resolved = resolveSkill(currentBundle(source), parsed.data.skill);
       if (typeof resolved === "string") return { isError: true as const, result: resolved, errorMessage: resolved };
       let resourcePath: string;
+      let resourceSnapshot: SkillFileSnapshot;
       try {
         resourcePath = resolveSkillResourcePath(resolved, parsed.data.path);
-        await assertReadableSkillResource(resolved, resourcePath);
+        resourceSnapshot = await assertReadableSkillResource(resolved, resourcePath);
       } catch (error) {
         const message = errorMessage(error);
         return { isError: true as const, result: message, errorMessage: message };
       }
       return {
         accesses: ToolAccesses.readFile(resourcePath),
+        // This contract only reads bounded text and closes its descriptor before settling.
+        // A cooperative abort has no side effect to inspect; unresolved reads still quarantine.
+        retrySafety: "safe" as const,
         display: { kind: "file_io" as const, operation: "read" as const, path: parsed.data.path },
         description: `Read ${parsed.data.path} from skill ${resolved.name}`,
         approvalRule: `read_skill_resource:${resolved.name}:${parsed.data.path}`,
-        async execute(): Promise<unknown> {
+        async execute({ signal }): Promise<unknown> {
           return {
             skill: resolved.name,
             skillPath: resolved.path,
             path: parsed.data.path,
-            content: await readSkillResourceFresh(resolved, resourcePath)
+            content: await readSkillResourceFresh(resolved, resourcePath, resourceSnapshot, signal)
           };
         }
       };
@@ -749,7 +753,7 @@ function resolveSkillResourcePath(skill: SkillDefinition, resource: string): str
   return target;
 }
 
-async function assertReadableSkillResource(skill: SkillDefinition, resourcePath: string): Promise<void> {
+async function assertReadableSkillResource(skill: SkillDefinition, resourcePath: string): Promise<SkillFileSnapshot> {
   const stat = await fs.lstat(resourcePath, { bigint: true });
   if (stat.isSymbolicLink()) throw new Error(`Skill resource cannot be a symbolic link: ${resourcePath}`);
   if (!stat.isFile()) throw new Error(`Skill resource is not a file: ${resourcePath}`);
@@ -758,16 +762,19 @@ async function assertReadableSkillResource(skill: SkillDefinition, resourcePath:
   if (stat.size > BigInt(maxSkillResourceBytes)) {
     throw new Error(`Skill resource exceeds ${String(maxSkillResourceBytes)} bytes: ${resourcePath}`);
   }
+  return skillSnapshot(stat);
 }
 
-async function readSkillResourceFresh(skill: SkillDefinition, resourcePath: string): Promise<string> {
-  await assertReadableSkillResource(skill, resourcePath);
-  const stat = await fs.lstat(resourcePath, { bigint: true });
+async function readSkillResourceFresh(skill: SkillDefinition, resourcePath: string, snapshot: SkillFileSnapshot, signal?: AbortSignal): Promise<string> {
+  signal?.throwIfAborted();
+  const current = await assertReadableSkillResource(skill, resourcePath);
+  if (!sameSkillSnapshot(snapshot, current)) throw new Error(`Skill resource changed after the tool call was prepared: ${resourcePath}`);
   const content = await readBoundedSkillFile(
     path.dirname(skill.filePath),
-    { path: resourcePath, rootPath: path.dirname(skill.filePath), snapshot: skillSnapshot(stat) },
+    { path: resourcePath, rootPath: path.dirname(skill.filePath), snapshot },
     maxSkillResourceBytes,
-    true
+    true,
+    signal
   );
   if (content.includes("\0")) throw new Error(`Skill resource is binary and cannot be read as text: ${resourcePath}`);
   return content;
@@ -895,11 +902,13 @@ async function readBoundedSkillFile(
   rootPath: string,
   candidate: SkillFileCandidate,
   maxBytes: number,
-  rejectOverflow = false
+  rejectOverflow = false,
+  signal?: AbortSignal
 ): Promise<string> {
+  signal?.throwIfAborted();
   let handle: FileHandle;
   try {
-    handle = await fs.open(candidate.path, constants.O_RDONLY | noFollowFlag());
+    handle = await fs.open(candidate.path, constants.O_RDONLY | noFollowFlag() | (constants.O_NONBLOCK ?? 0));
   } catch (error) {
     if (isSymbolicLinkError(error)) throw new Error(`Skill file changed to a symbolic link before it could be read: ${candidate.path}`);
     throw error;
@@ -911,8 +920,10 @@ async function readBoundedSkillFile(
     const readLimit = maxBytes + 4;
     let bytesRead = 0;
     while (bytesRead < readLimit) {
+      signal?.throwIfAborted();
       const chunk = Buffer.allocUnsafe(Math.min(16 * 1024, readLimit - bytesRead));
       const result = await handle.read(chunk, 0, chunk.length, bytesRead);
+      signal?.throwIfAborted();
       if (result.bytesRead === 0) break;
       chunks.push(chunk.subarray(0, result.bytesRead));
       bytesRead += result.bytesRead;

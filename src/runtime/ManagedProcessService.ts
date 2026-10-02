@@ -9,18 +9,18 @@
  */
 import { randomUUID } from "node:crypto";
 import { spawn, type ChildProcess } from "node:child_process";
-import { closeSync, openSync } from "node:fs";
-import { appendFile, open, realpath, stat, writeFile } from "node:fs/promises";
+import { constants } from "node:fs";
+import { appendFile, open, realpath, stat } from "node:fs/promises";
 import net from "node:net";
 import path from "node:path";
 import { agentDir, ensureAgentDirs } from "../session/store.js";
+import { bindManagedProcessLog, readManagedProcessLog, type ManagedProcessLogBinding } from "./managedProcessLog.js";
 
 const defaultReadinessTimeoutMs = 30_000;
 const defaultReadinessIntervalMs = 250;
 const defaultProbeTimeoutMs = 2_000;
 const defaultTerminationGraceMs = 2_000;
 const defaultKillSettleMs = 1_000;
-const maxReadOutputBytes = 256 * 1024;
 const maxReadinessLogBytes = 1024 * 1024;
 
 export type ManagedProcessState = "starting" | "running" | "exited" | "failed" | "stopped";
@@ -126,6 +126,7 @@ export type ManagedProcessLifetime = "runtime" | "execution-environment";
 
 interface ManagedProcessRecord {
   snapshot: ManagedProcessSnapshot;
+  logBinding: ManagedProcessLogBinding;
   child: ChildProcess;
   stopRequested: boolean;
 }
@@ -185,25 +186,28 @@ export class ManagedProcessService {
 
     const processId = randomUUID();
     const cwd = await resolveManagedCwd(this.workspaceRoot, options.cwd);
-    const logPath = path.join(this.processRoot, `${processId}.log`);
+    const logPath = path.join(await realpath(this.processRoot), `${processId}.log`);
     const startedAt = new Date().toISOString();
-    await writeFile(logPath, `[biny] ${startedAt} starting managed process ${processId}\n`, "utf8");
-
-    const logFd = openSync(logPath, "a");
+    const logFile = await open(logPath, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_APPEND | (constants.O_NOFOLLOW ?? 0));
+    let logBinding: ManagedProcessLogBinding;
     let child: ChildProcess;
+    let spawned: Promise<void>;
     try {
+      await logFile.writeFile(`[biny] ${startedAt} starting managed process ${processId}\n`, "utf8");
+      logBinding = await bindManagedProcessLog(logPath, logFile);
       child = spawn(options.command, {
         cwd,
         shell: true,
         detached: process.platform !== "win32",
-        stdio: ["ignore", logFd, logFd],
+        stdio: ["ignore", logFile.fd, logFile.fd],
         windowsHide: true
       });
-    } catch (error) {
-      closeSync(logFd);
-      throw error;
+      // Closing a FileHandle yields to the event loop; install spawn/error listeners first.
+      spawned = waitForSpawn(child, options.signal);
+      void spawned.catch(() => undefined);
+    } finally {
+      await logFile.close();
     }
-    closeSync(logFd);
 
     const pid = child.pid;
     if (pid === undefined) {
@@ -232,12 +236,12 @@ export class ManagedProcessService {
         : undefined,
       cleanup: { status: "pending" }
     };
-    const record: ManagedProcessRecord = { snapshot, child, stopRequested: false };
+    const record: ManagedProcessRecord = { snapshot, logBinding, child, stopRequested: false };
     this.records.set(processId, record);
     this.observeChild(record);
 
     try {
-      await waitForSpawn(child, options.signal);
+      await spawned;
       snapshot.state = "running";
       child.unref();
       await this.recordLifecycle("started", snapshot);
@@ -279,41 +283,12 @@ export class ManagedProcessService {
     return snapshots.sort((left, right) => left.startedAt.localeCompare(right.startedAt));
   }
 
-  async readOutput(processId: string, options: ReadManagedProcessOutputOptions = {}): Promise<ManagedProcessOutput> {
-    const record = this.requireRecord(processId);
-    const maxBytes = options.maxBytes ?? 64 * 1024;
-    const requestedOffset = options.offset ?? 0;
-    if (!Number.isSafeInteger(maxBytes) || maxBytes < 1 || maxBytes > maxReadOutputBytes) {
-      throw new RangeError(`maxBytes must be an integer between 1 and ${String(maxReadOutputBytes)}.`);
-    }
-    if (!Number.isSafeInteger(requestedOffset) || requestedOffset < 0) {
-      throw new RangeError("offset must be a non-negative integer.");
-    }
+  outputPath(processId: string): string {
+    return this.requireRecord(processId).logBinding.path;
+  }
 
-    const file = await open(record.snapshot.logPath, "r");
-    try {
-      const metadata = await file.stat();
-      const totalBytes = metadata.size;
-      const startOffset = options.fromEnd === true
-        ? Math.max(0, totalBytes - maxBytes)
-        : Math.min(requestedOffset, totalBytes);
-      const bytesToRead = Math.min(maxBytes, totalBytes - startOffset);
-      const buffer = Buffer.alloc(bytesToRead);
-      const { bytesRead } = await file.read(buffer, 0, bytesToRead, startOffset);
-      const nextOffset = startOffset + bytesRead;
-      return {
-        processId,
-        logPath: record.snapshot.logPath,
-        content: buffer.subarray(0, bytesRead).toString("utf8"),
-        startOffset,
-        nextOffset,
-        totalBytes,
-        omittedBefore: startOffset > 0,
-        hasMore: nextOffset < totalBytes
-      };
-    } finally {
-      await file.close();
-    }
+  async readOutput(processId: string, options: ReadManagedProcessOutputOptions = {}, signal?: AbortSignal): Promise<ManagedProcessOutput> {
+    return { processId, ...await readManagedProcessLog(this.requireRecord(processId).logBinding, options, signal) };
   }
 
   async stop(processId: string, reason = "KillShell requested"): Promise<ManagedProcessSnapshot> {

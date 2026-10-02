@@ -293,7 +293,7 @@ export class ToolExecutionCoordinator {
       codeModeNestedToolNames.has(entry.name) && reviewed.has(entry.name));
     return {
       name: "exec",
-      description: "Run isolated JavaScript with selected host-owned read-only Biny tools, including memory/history, task status, and local skill metadata when available. Nested calls use normal permissions. Skill activation, resource reads, and task/process creation require direct mode. No direct filesystem, network, process, imports, writes, or desktop access. Return a JSON-serializable value.",
+      description: "Run isolated JavaScript with selected host-owned read-only Biny tools, including memory/history, task status, managed process output, and local skill metadata/resources when available. Nested calls use normal permissions. Skill activation and task/process creation or mutation require direct mode. No direct filesystem, network, process, imports, writes, or desktop access. Return a JSON-serializable value.",
       promptSnippet: `Run isolated JavaScript with selected read-only tools.* calls. The only nested tools available now are:\n${codeModeCatalog(visible) || "(none selected)"}`,
       promptGuidelines: ["Inside exec, use only the listed tools.* functions. Return the result. Never retry an entire cell after a partial failure; inspect child outcomes first."],
       parameters: { type: "object", properties: { code: { type: "string", minLength: 1, maxLength: 65_536 } }, required: ["code"], additionalProperties: false },
@@ -1354,7 +1354,7 @@ export class ToolExecutionCoordinator {
     execution: RunnableToolExecution,
     toolRisk: ToolRisk | undefined
   ): Promise<AgentPermissionRequest> {
-    const permissionArgs = this.canonicalPermissionArgs(args, execution);
+    const permissionArgs = this.canonicalPermissionArgs(args, execution, call.name);
     const permissionContext = analyzePermissionRequest({
       toolName: call.name,
       args: permissionArgs,
@@ -1377,8 +1377,16 @@ export class ToolExecutionCoordinator {
     };
   }
 
-  private canonicalPermissionArgs(args: unknown, execution: RunnableToolExecution): unknown {
+  private canonicalPermissionArgs(args: unknown, execution: RunnableToolExecution, toolName: string): unknown {
     if (execution.fileChange?.server) return args;
+    if (toolName === "read_skill_resource" || toolName === "BashOutput") {
+      const target = execution.accesses?.find((access) => access.kind === "file" && access.operation === "read" && !access.recursive);
+      if (target?.kind === "file" && typeof args === "object" && args !== null) {
+        // Resource arguments are skill-relative; logs have only an opaque process ID.
+        // Permissions must see the host-resolved absolute file, including global skill roots.
+        return { ...args, path: target.path };
+      }
+    }
     if (typeof args !== "object" || args === null || !("path" in args) || typeof args.path !== "string") return args;
     if (args.path.startsWith("@attachments/")) return args;
     const declaredPath = execution.accesses?.find((access) => access.kind === "file")?.path;

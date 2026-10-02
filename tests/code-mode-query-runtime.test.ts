@@ -21,7 +21,7 @@ interface ModelPlan {
   step: number;
 }
 
-await test("CommandRuntime admits only host-owned TaskStatus and skill_lookup queries without changing their state or permissions", { timeout: 60_000 }, async () => {
+await test("CommandRuntime admits only exact host-owned read queries without changing their state or permissions", { timeout: 60_000 }, async () => {
   const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "biny-code-mode-query-runtime-")));
   const workspaceRoot = path.join(root, "workspace");
   const home = path.join(root, "home");
@@ -49,7 +49,7 @@ await test("CommandRuntime admits only host-owned TaskStatus and skill_lookup qu
   let plan: ModelPlan | undefined;
   let commands: CommandRuntime | undefined;
   let resources: RuntimeHostResourceScope | undefined;
-  const selectedTools = ["TaskStatus", "skill_lookup", "Task", "Skill"];
+  const selectedTools = ["TaskStatus", "skill_lookup", "BashOutput", "read_skill_resource", "Task", "Skill"];
   const model: AgentModel = {
     provider: "fixture", modelId: "query-runtime-fixture", supportsTools: true,
     async stream(context) {
@@ -103,6 +103,7 @@ await test("CommandRuntime admits only host-owned TaskStatus and skill_lookup qu
   try {
     await mkdir(path.dirname(skillFile), { recursive: true });
     await writeFile(skillFile, initialSkill);
+    await writeFile(path.join(path.dirname(skillFile), "reference.txt"), "Local resource fixture");
     resources = new RuntimeHostResourceScope(workspaceRoot, configuration);
     const open = async (config: AgentConfig): Promise<CommandRuntime> => await createCommandRuntime(workspaceRoot, {
       sessionId, resourceScope: resources, resourceBoot: "blocking",
@@ -217,6 +218,13 @@ await test("CommandRuntime admits only host-owned TaskStatus and skill_lookup qu
     await nested("skill-before", "return await tools.skill_lookup({query:'quartz',limit:1});", (value) => {
       assertLookup(value, "quartz", "quartz metadata before refresh");
     });
+    await nested("resource-read", "return await tools.read_skill_resource({skill:'query-fixture',path:'reference.txt'});", (value) => {
+      assert.equal(record(value).content, "Local resource fixture");
+      assert.equal(record(value).path, "reference.txt");
+    });
+    await nested("empty-managed-output", "return await tools.BashOutput({});", (value) => {
+      assert.deepEqual(record(value).processes, []);
+    });
     const updatedSkill = skillMarkdown("query-fixture", "sapphire metadata after refresh");
     await writeFile(skillFile, updatedSkill);
     // Force the real shared resource refresh without a 30-second cache-expiry sleep.
@@ -243,6 +251,8 @@ await test("CommandRuntime admits only host-owned TaskStatus and skill_lookup qu
     for (const catalog of catalogs) {
       assert.match(catalog, /TaskStatus:/u);
       assert.match(catalog, /skill_lookup:/u);
+      assert.match(catalog, /BashOutput:/u);
+      assert.match(catalog, /read_skill_resource:/u);
       assert.doesNotMatch(catalog, /(?:^|\n)Task:|(?:^|\n)Skill:/u);
     }
     assert.equal(await readFile(skillFile, "utf8"), updatedSkill, "querying must leave skill instructions untouched");
@@ -255,7 +265,9 @@ await test("CommandRuntime admits only host-owned TaskStatus and skill_lookup qu
     const catalogsBeforeDirect = catalogs.length;
     await run({ mode: "direct", calls: [
       { id: "direct-status", name: "TaskStatus", arguments: { taskRunId: "fixture-completed" } },
-      { id: "direct-lookup", name: "skill_lookup", arguments: { query: "sapphire", limit: 1 } }
+      { id: "direct-lookup", name: "skill_lookup", arguments: { query: "sapphire", limit: 1 } },
+      { id: "direct-resource", name: "read_skill_resource", arguments: { skill: "query-fixture", path: "reference.txt" } },
+      { id: "direct-output", name: "BashOutput", arguments: {} }
     ], inspect(results) {
       const status = results.find((result) => result.toolName === "TaskStatus");
       const lookup = results.find((result) => result.toolName === "skill_lookup");
@@ -265,6 +277,8 @@ await test("CommandRuntime admits only host-owned TaskStatus and skill_lookup qu
       assert.equal(record(status.details).status, "completed");
       assert.deepEqual(record(status.details).verification, evidenceByTask.get("fixture-completed"));
       assertLookup(lookup.details, "sapphire", "sapphire metadata after refresh");
+      assert.equal(record(results.find((result) => result.toolName === "read_skill_resource")?.details).content, "Local resource fixture");
+      assert.deepEqual(record(results.find((result) => result.toolName === "BashOutput")?.details).processes, []);
     } });
     assert.equal(catalogs.length, catalogsBeforeDirect, "direct mode must retain its existing tools without a Code Mode envelope");
     assert.deepEqual(taskSnapshot(commands), durableBefore);
@@ -274,18 +288,23 @@ await test("CommandRuntime admits only host-owned TaskStatus and skill_lookup qu
     assert.equal(permissions.filter(({ request }) => request.toolName === "TaskStatus").length, 14, "each status read must pass normal admission and the serialized permission gate");
     assert.equal(permissions.filter(({ request }) => request.toolName === "skill_lookup").length, 8, "each metadata read must pass normal admission and the serialized permission gate");
     for (const { request, evaluation } of permissions) {
-      assert.ok(["TaskStatus", "skill_lookup"].includes(request.toolName));
+      assert.ok(["TaskStatus", "skill_lookup", "BashOutput", "read_skill_resource"].includes(request.toolName));
       assert.equal(request.actionType, "read");
-      assert.equal(request.riskLevel, "medium");
+      const metadataQuery = request.toolName === "TaskStatus" || request.toolName === "skill_lookup";
+      assert.equal(request.riskLevel, metadataQuery ? "medium" : "low");
       assert.equal(request.sessionId, sessionId);
-      assert.equal(evaluation.decision, "ask");
-      assert.equal(evaluation.reason, request.reason);
+      assert.equal(evaluation.decision, metadataQuery ? "ask" : "allow");
+      if (metadataQuery) assert.equal(evaluation.reason, request.reason);
       if (request.toolName === "TaskStatus") {
         assert.match(request.approvalRule ?? "", /^[0-9a-f]{64}$/u);
         assert.equal(request.reason, "Reads persisted TaskRun status and evidence without changing execution state.");
-      } else {
+      } else if (request.toolName === "skill_lookup") {
         assert.match(request.approvalRule ?? "", /^[0-9a-f]{64}$/u);
         assert.match(request.reason ?? "", /^Search installed skills for (?:quartz|sapphire)$/u);
+      } else if (request.toolName === "read_skill_resource") {
+        assert.equal(request.targetPath, path.join(path.dirname(skillFile), "reference.txt"));
+      } else {
+        assert.equal(request.targetPath, undefined, "process listing reads no file contents");
       }
     }
     for (const [manager, baseline] of permissionBaselines) assert.deepEqual(manager.getStatus(), baseline,
@@ -334,7 +353,7 @@ function isolatedConfig(): AgentConfig {
 }
 
 function assertQueryCatalog(commands: CommandRuntime): void {
-  for (const [name, source] of [["TaskStatus", "subagent"], ["skill_lookup", "skill"]] as const) {
+  for (const [name, source] of [["TaskStatus", "subagent"], ["skill_lookup", "skill"], ["BashOutput", "builtin"], ["read_skill_resource", "skill"]] as const) {
     const entries = commands.listTools().filter((entry) => entry.name === name);
     assert.equal(entries.length, 1);
     assert.equal(entries[0]?.source, source, "host query admission must preserve existing extension provenance");
