@@ -6,17 +6,16 @@
  */
 import { createHash } from "node:crypto";
 import { z } from "zod";
-import { codeModeNestedToolNames } from "../agent/codeMode.js";
 import type { AgentMessage, AgentModel } from "../agent/core/types.js";
 import { generateNativeText } from "../llm/nativeJson.js";
 import { redactSecrets } from "../utils/secrets.js";
 import { ToolAccesses } from "./access.js";
-import type { RegisteredTool } from "./registry.js";
+import { isCodeModeReadTool, type RegisteredTool } from "./registry.js";
 import type { Tool, ToolSource } from "./types.js";
 
 export const toolSearchToolName = "ToolSearch";
 /** 修改目录披露格式、选择 prompt 或验证语义时同步递增。 */
-const toolSearchProtocolVersion = "1";
+const toolSearchProtocolVersion = "2";
 const defaultMaxResults = 8;
 const maxResults = 20;
 const cacheTtlMs = 30 * 60 * 1000;
@@ -71,6 +70,8 @@ export function createToolSearchTool(
 ): Tool<ToolSearchArgs, ToolSearchResult> {
   // 模块级缓存按工具实例隔离，避免不同 runtime、工作区或安全域共享辅助模型结果。
   const cacheNamespace = `tool-search-${String(++nextSearchInstanceId)}`;
+  const registrationIds = new WeakMap<RegisteredTool, number>();
+  let nextRegistrationId = 0;
   return {
     name: toolSearchToolName,
     description: "Semantically search currently registered built-in, MCP, Skill, plugin, and subagent tools. Matching tools become available on the next model step; call this when the current tool set cannot complete the request.",
@@ -98,10 +99,12 @@ export function createToolSearchTool(
         async execute(context) {
           const type = args.type ?? "all";
           const limit = args.maxResults ?? defaultMaxResults;
-          const candidates = getTools()
-            .filter(({ tool, source }) => tool.name !== toolSearchToolName
-              && (type === "all" || source === type)
-              && (context.toolDiscoveryMode !== "code_mode" || (source === "builtin" && codeModeNestedToolNames.has(tool.name))))
+          const codeMode = context.toolDiscoveryMode === "code_mode";
+          const registrations = getTools()
+            .filter((entry) => entry.tool.name !== toolSearchToolName
+              && (type === "all" || entry.source === type)
+              && (!codeMode || isCodeModeReadTool(entry)));
+          const candidates = registrations
             .map(({ tool, source }) => ({
               name: tool.name,
               description: redactSecrets(tool.description).slice(0, 400),
@@ -112,9 +115,25 @@ export function createToolSearchTool(
           if (!model) {
             return failedResult(args.query, "tool_search_model_unavailable", "No tool model configured.");
           }
-          const cacheKey = searchCacheKey(cacheNamespace, model, args.query, type, limit, candidates);
+          // Code Mode authority belongs to exact current registrations. A
+          // replacement with identical serialized metadata cannot reuse it.
+          const authority = codeMode ? registrations.map((entry) => {
+            let id = registrationIds.get(entry);
+            if (id === undefined) { id = ++nextRegistrationId; registrationIds.set(entry, id); }
+            return id;
+          }).join(",") : "direct";
+          const cacheKey = searchCacheKey(`${cacheNamespace}:${authority}`, model, args.query, type, limit, candidates);
+          const currentResult = (result: ToolSearchResult): ToolSearchResult => {
+            const cloned = cloneSearchResult(result, args.query);
+            if (!codeMode || cloned.status !== "completed") return cloned;
+            const current = getTools();
+            cloned.tools = cloned.tools.filter((match) => registrations.some((entry) => entry.tool.name === match.name
+              && current.includes(entry) && isCodeModeReadTool(entry)));
+            cloned.found = cloned.tools.length;
+            return cloned;
+          };
           const cached = getCachedSearch(cacheKey);
-          if (cached) return cloneSearchResult(cached, args.query);
+          if (cached) return currentResult(cached);
           const inFlightKey = `${cacheKey}\0${signalKey(context.signal)}`;
           let request = inFlightSearches.get(inFlightKey);
           if (!request) {
@@ -126,7 +145,7 @@ export function createToolSearchTool(
           }
           const result = await request;
           if (result.status === "completed") setCachedSearch(cacheKey, result);
-          return cloneSearchResult(result, args.query);
+          return currentResult(result);
         }
       };
     }

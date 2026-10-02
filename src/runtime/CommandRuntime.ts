@@ -407,7 +407,7 @@ export async function createCommandRuntime(workspaceRoot: string, options: Comma
     skills = resourceScope.skills;
     toolRegistry.registerUserTool(createSkillTool(currentSkillBundle));
     toolRegistry.registerUserTool(createSkillResourceTool(currentSkillBundle));
-    toolRegistry.registerUserTool(createSkillLookupTool(currentSkillBundle));
+    toolRegistry.registerHostReadQuery(createSkillLookupTool(currentSkillBundle), "skill_lookup");
     toolRegistry.registerBuiltinTool(createSkillSearchTool({
       getInstalledNames: () => {
         const installed = new Set<string>();
@@ -454,7 +454,7 @@ export async function createCommandRuntime(workspaceRoot: string, options: Comma
     recordPerfPhase("host.modelManagerCreate", modelManagerPerfStartedAt, undefined, workspaceRoot);
     if (config.extensions.subagent.enabled) {
       toolRegistry.registerSubagentTool(createSubagentTool(subagentOptions, subagentTaskManager!));
-      toolRegistry.registerSubagentTool(createTaskStatusTool(subagentOptions));
+      toolRegistry.registerHostReadQuery(createTaskStatusTool(subagentOptions), "TaskStatus");
       for (const tool of createPlanTools({
         graphs,
         taskRuns,
