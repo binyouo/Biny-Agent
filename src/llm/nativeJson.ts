@@ -1,6 +1,6 @@
 import { streamText } from "ai";
 import { randomUUID } from "node:crypto";
-import type { LanguageModelV4CallOptions } from "@ai-sdk/provider";
+import type { LanguageModelV4, LanguageModelV4CallOptions, LanguageModelV4StreamPart } from "@ai-sdk/provider";
 import type { AgentMessage, AgentModel, AgentUsage, ModelRequestContext, ModelRequestObserver } from "../agent/core/types.js";
 import { fromVercelUsage, toModelMessages } from "../agent/core/vercelModelAdapter.js";
 
@@ -15,6 +15,8 @@ export interface NativeTextGenerationOptions {
   timeoutMs?: number;
   /** 首个事件和相邻流事件的最长等待；有持续进展时不消耗这个空闲期限。 */
   idleTimeoutMs?: number;
+  /** Await provider requests and local stream cleanup after abort/timeout; this cannot prove remote I/O stopped. */
+  awaitModelSettlementOnAbort?: boolean;
   onRequestMetrics?: ModelRequestObserver;
   requestContext?: ModelRequestContext;
 }
@@ -49,15 +51,23 @@ export async function generateNativeText(
   let onAbort: (() => void) | undefined;
   try {
     onProgress();
-    const aborted = new Promise<never>((_resolve, reject) => {
+    const aborted = options.awaitModelSettlementOnAbort ? undefined : new Promise<never>((_resolve, reject) => {
       onAbort = () => reject(signal?.reason);
       signal?.addEventListener("abort", onAbort, { once: true });
     });
-    // 辅助任务没有工具副作用；不等待忽略取消的 Provider，迟到流也不得产出有效结果。
+    // 默认辅助任务不等待忽略取消的 Provider；需要完整生命周期的调用方显式选择等待。
     const result = model.vercelModel === undefined
       ? consumeInjectedText(model, messages, { ...options, signal }, onProgress)
       : consumeVercelText(model, messages, { ...model.vercelOptions, ...options, signal }, onProgress);
-    return await Promise.race([result, aborted]);
+    if (aborted !== undefined) return await Promise.race([result, aborted]);
+    try {
+      const settled = await result;
+      signal?.throwIfAborted();
+      return settled;
+    } catch (error) {
+      signal?.throwIfAborted();
+      throw error;
+    }
   } finally {
     if (timer) clearTimeout(timer);
     if (idleTimer) clearTimeout(idleTimer);
@@ -72,12 +82,15 @@ async function consumeVercelText(
   onProgress: () => void
 ): Promise<NativeTextGenerationResult> {
   const startedAtMs = Date.now();
+  const tracked = options.awaitModelSettlementOnAbort
+    ? trackProviderModel(model.vercelModel!, options.signal)
+    : undefined;
   try {
     // 辅助请求也走流式：相当一部分 OpenAI 兼容代理只支持 SSE，非流式请求会拿到
     // 无法按 JSON 解析的响应体（Invalid JSON response），Vercel 统一重构前的
     // model.stream 路径没有这个问题。
     const result = streamText({
-      model: model.vercelModel!,
+      model: tracked?.model ?? model.vercelModel!,
       system: options.systemPrompt,
       messages: toModelMessages(messages),
       abortSignal: options.signal,
@@ -108,7 +121,116 @@ async function consumeVercelText(
   } catch (error) {
     await reportVercelMetrics(model, options, startedAtMs, undefined, error);
     throw error;
+  } finally {
+    // fullStream may close synthetically on abort without closing the provider stream.
+    // Strict callers also await request settlement and the real local reader's cleanup.
+    await tracked?.settle(options.signal?.reason);
   }
+}
+
+function trackProviderModel(provider: LanguageModelV4, signal?: AbortSignal): {
+  model: LanguageModelV4;
+  settle: (reason: unknown) => Promise<void>;
+} {
+  const settlements: Promise<void>[] = [];
+  const cancellations: Array<(reason: unknown) => Promise<void>> = [];
+  const cleanupErrors: unknown[] = [];
+  let consumptionEnded = false;
+  let endReason: unknown;
+  return {
+    model: {
+      specificationVersion: provider.specificationVersion,
+      provider: provider.provider,
+      modelId: provider.modelId,
+      supportedUrls: provider.supportedUrls,
+      doGenerate: (options) => provider.doGenerate(options),
+      doStream: async (options) => {
+        signal?.throwIfAborted();
+        options.abortSignal?.throwIfAborted();
+        if (consumptionEnded) throw new Error("Auxiliary model consumption has already ended.");
+        let complete!: () => void;
+        settlements.push(new Promise<void>((resolve) => { complete = resolve; }));
+        try {
+          const result = await provider.doStream(options);
+          const requestSignal = signal && options.abortSignal
+            ? AbortSignal.any([signal, options.abortSignal]) : signal ?? options.abortSignal;
+          const tracked = trackProviderStream(result.stream, requestSignal, complete, (error) => { cleanupErrors.push(error); });
+          cancellations.push(tracked.cancel);
+          if (consumptionEnded) void tracked.cancel(endReason).catch(() => undefined);
+          return { ...result, stream: tracked.stream };
+        } catch (error) {
+          complete();
+          throw error;
+        }
+      }
+    },
+    settle: async (reason) => {
+      consumptionEnded = true;
+      endReason = reason;
+      await Promise.allSettled(cancellations.map((cancel) => cancel(reason)));
+      // Requests still waiting for doStream register their stream cleanup when they return.
+      await Promise.all(settlements);
+      // A rejected cancel hook is locally settled, but never evidence that cleanup or remote I/O succeeded.
+      if (cleanupErrors.length) throw new AggregateError(cleanupErrors, "Auxiliary provider stream cleanup failed.");
+    }
+  };
+}
+
+function trackProviderStream(
+  source: ReadableStream<LanguageModelV4StreamPart>,
+  signal: AbortSignal | undefined,
+  complete: () => void,
+  onFailure: (error: unknown) => void
+): { stream: ReadableStream<LanguageModelV4StreamPart>; cancel: (reason: unknown) => Promise<void> } {
+  const reader = source.getReader();
+  let reading: Promise<ReadableStreamReadResult<LanguageModelV4StreamPart>> | undefined;
+  let finishing: Promise<void> | undefined;
+  let cancellation: Promise<void> | undefined;
+  let finished = false;
+  let cancelled = false;
+  const finish = (): Promise<void> => finishing ??= (async () => {
+    finished = true;
+    signal?.removeEventListener("abort", onAbort);
+    try {
+      await reading?.catch(() => undefined);
+      reader.releaseLock();
+    } catch (error) { onFailure(error); throw error; }
+    finally { complete(); }
+  })();
+  const cancel = (reason: unknown): Promise<void> => {
+    if (cancellation !== undefined) return cancellation;
+    if (finished) return finish();
+    cancelled = true;
+    cancellation = (async () => {
+      try { await reader.cancel(reason); }
+      catch (error) { onFailure(error); throw error; }
+      finally { await finish(); }
+    })();
+    // Abort events cannot await async cancellation hooks; strict consumption waits separately.
+    void cancellation.catch(() => undefined);
+    return cancellation;
+  };
+  const onAbort = (): void => { void cancel(signal?.reason); };
+  void reader.closed.then(() => {
+    if (cancellation === undefined) void finish().catch(() => undefined);
+  }, () => {
+    if (cancellation === undefined) void finish().catch(() => undefined);
+  });
+  const stream = new ReadableStream<LanguageModelV4StreamPart>({
+    async pull(controller) {
+      if (finished || cancelled) { controller.close(); return; }
+      try {
+        reading = reader.read();
+        const next = await reading;
+        if (next.done || cancelled) controller.close();
+        else controller.enqueue(next.value);
+      } catch (error) { controller.error(error); }
+    },
+    cancel
+  });
+  if (signal?.aborted) onAbort();
+  else signal?.addEventListener("abort", onAbort, { once: true });
+  return { stream, cancel };
 }
 
 async function reportVercelMetrics(
@@ -156,7 +278,7 @@ async function consumeInjectedText(
   let finishReason: string | undefined;
   if (!model.stream) throw new Error("Vercel model is unavailable for this text request.");
   const streamModel = model.stream.bind(model);
-  const { systemPrompt, ...streamOptions } = options;
+  const { systemPrompt, awaitModelSettlementOnAbort: _awaitModelSettlementOnAbort, ...streamOptions } = options;
   for await (const event of await streamModel({ systemPrompt, messages, tools: [] }, streamOptions)) {
     options.signal?.throwIfAborted();
     onProgress();

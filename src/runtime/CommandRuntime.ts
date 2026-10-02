@@ -486,10 +486,11 @@ export async function createCommandRuntime(workspaceRoot: string, options: Comma
     }
     for (const tool of createHistoryTools({
       getIndex: () => (agent ? agent.getSessionSearchIndex() : undefined),
-      flushCurrentSession: async () => {
+      flushCurrentSession: async (signal) => {
+        signal?.throwIfAborted();
         const currentAgent = agent;
         if (!currentAgent) return;
-        await currentAgent.flushSessionSearchIndex();
+        await currentAgent.flushSessionSearchIndex(signal);
       }
     })) {
       toolRegistry.registerBuiltinTool(tool);
