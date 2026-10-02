@@ -26,6 +26,7 @@ import { DiagnosticsRunner, formatDiagnostics } from "../tools/diagnostics.js";
 import { HookRunner } from "../tools/hooks.js";
 import { validateJsonSchema } from "../tools/schema.js";
 import { ToolScheduler } from "../tools/scheduler.js";
+import { isCodeModeReadTool } from "../tools/registry.js";
 import type {
   ApprovedFileSnapshot,
   Tool,
@@ -45,7 +46,7 @@ import { resolveWorkspacePath, toWorkspaceRelative } from "../workspace/resolveP
 import type { ReasoningBlock, SessionEvent } from "../session/recorder.js";
 import { archiveToolResult, serializeToolResult, toolResultPreview } from "../session/toolResultArchive.js";
 import { projectSingleToolResultForModel } from "./toolResultProjection.js";
-import { codeModeCatalog, codeModeNestedToolNames, codeModePolicy, executeCodeModeCell } from "./codeMode.js";
+import { codeModeCatalog, codeModeNestedToolNames, codeModePolicy, executeCodeModeCell, type CodeModeLimits } from "./codeMode.js";
 import type {
   AgentPermissionRequest,
   AgentPermissionResult,
@@ -107,6 +108,8 @@ interface ToolCallExecutionOptions {
   toolCallId: string;
   abortSignal?: AbortSignal;
   auditOnly?: boolean;
+  /** Revalidate the exact nested registration after asynchronous admission/approval. */
+  assertCurrentRegistration?: () => void;
 }
 
 /**
@@ -233,53 +236,64 @@ export class ToolExecutionCoordinator {
   }
 
   /** Model-facing tool envelope. */
-  createAgentTools(editing?: { mode: EditingMode; attachmentRoot?: string }, options?: { auditOnly?: boolean }): AgentTool[] {
+  createAgentTools(editing?: { mode: EditingMode; attachmentRoot?: string }, options?: { auditOnly?: boolean; codeModeReadOnly?: boolean }): AgentTool[] {
     let entries = this.context.toolRegistry.listEntries()
       .filter(({ tool: registered }) => !this.allowedToolNames || this.allowedToolNames.has(registered.name));
+    const originalRegistrations = new Map(entries.map((entry) => [entry.tool.name, entry] as const));
     if (editing) {
       entries = routeEditingTools(entries, { workspaceRoot: this.context.workspaceRoot, ignore: this.context.config.workspace.ignore, attachmentRoot: editing.attachmentRoot }, editing.mode);
     }
     return entries
-      .map(({ tool: registered, source }) => ({
-        name: registered.name,
-        providerTool: registered.providerTool,
-        promptSnippet: registered.promptSnippet,
-        promptGuidelines: registered.promptGuidelines,
-        description: registered.description,
-        parameters: registered.parameters,
-        // 写入工具的准备、权限确认和实际执行必须保持同一顺序，避免并发预览互相失效。
-        executionMode: registered.risk === "write" ? "sequential" as const : "parallel" as const,
-        execute: async (toolCallId: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<AgentToolResult> => {
-          const result = await this.trackExecution(this.execute(
-            registered,
-            args,
-            { toolCallId, abortSignal: signal, auditOnly: options?.auditOnly },
-            source
-          ), toolCallId);
-          const error = failedToolResultMessage(result);
-          const image = this.toolImages.get(toolCallId);
-          this.toolImages.delete(toolCallId);
-          if (image) this.imageBytes -= Buffer.byteLength(image.data, "base64");
-          return {
-            content: [{ type: "text", text: serializeToolResult(result) }, ...(!error && image ? [image] : [])],
-            details: result,
-            isError: Boolean(error)
-          };
-        }
-      }));
+      .map((registration) => {
+        const { tool: registered, source } = registration;
+        const originalRegistration = originalRegistrations.get(registered.name)!;
+        return ({
+          name: registered.name,
+          providerTool: registered.providerTool,
+          promptSnippet: registered.promptSnippet,
+          promptGuidelines: registered.promptGuidelines,
+          description: registered.description,
+          parameters: registered.parameters,
+          // 写入工具的准备、权限确认和实际执行必须保持同一顺序，避免并发预览互相失效。
+          executionMode: registered.risk === "write" ? "sequential" as const : "parallel" as const,
+          execute: async (toolCallId: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<AgentToolResult> => {
+            const result = await this.trackExecution(this.execute(
+              registered,
+              args,
+              { toolCallId, abortSignal: signal, auditOnly: options?.auditOnly,
+                assertCurrentRegistration: options?.codeModeReadOnly ? () => {
+                  if (!this.context.toolRegistry.listEntries().includes(originalRegistration) || !isCodeModeReadTool(originalRegistration)
+                    || this.allowedToolNames && !this.allowedToolNames.has(registered.name)) {
+                    throw new Error(`Tool ${registered.name} is no longer available in this cell.`);
+                  }
+                } : undefined },
+              source
+            ), toolCallId);
+            const error = failedToolResultMessage(result);
+            const image = this.toolImages.get(toolCallId);
+            this.toolImages.delete(toolCallId);
+            if (image) this.imageBytes -= Buffer.byteLength(image.data, "base64");
+            return {
+              content: [{ type: "text", text: serializeToolResult(result) }, ...(!error && image ? [image] : [])],
+              details: result,
+              isError: Boolean(error)
+            };
+          }
+        });
+      });
   }
 
   /** Outer Code Mode admission is separate from the child scheduler: a cell
    * holding its only slot would deadlock when maxConcurrentTools is one. */
-  createCodeModeTool(editing?: { mode: EditingMode; attachmentRoot?: string }, executionPolicy?: Readonly<typeof codeModePolicy>): AgentTool {
-    const builtin = new Set(this.context.toolRegistry.listEntries()
-      .filter((entry) => entry.source === "builtin")
+  createCodeModeTool(editing?: { mode: EditingMode; attachmentRoot?: string }, executionPolicy?: CodeModeLimits): AgentTool {
+    const reviewed = new Set(this.context.toolRegistry.listEntries()
+      .filter(isCodeModeReadTool)
       .map((entry) => entry.tool.name));
     const visible = this.createAgentTools(editing).filter((entry) =>
-      codeModeNestedToolNames.has(entry.name) && builtin.has(entry.name));
+      codeModeNestedToolNames.has(entry.name) && reviewed.has(entry.name));
     return {
       name: "exec",
-      description: "Run isolated JavaScript with selected read-only Biny tools, including shared memory and cross-project conversation history when available. Nested calls use normal permissions. No direct filesystem, network, process, imports, writes, or desktop access. Switch to direct mode for other actions. Return a JSON-serializable value.",
+      description: "Run isolated JavaScript with selected host-owned read-only Biny tools, including memory/history, task status, managed process output, and local skill metadata/resources when available. Nested calls use normal permissions. Skill activation and task/process creation or mutation require direct mode. No direct filesystem, network, process, imports, writes, or desktop access. Return a JSON-serializable value.",
       promptSnippet: `Run isolated JavaScript with selected read-only tools.* calls. The only nested tools available now are:\n${codeModeCatalog(visible) || "(none selected)"}`,
       promptGuidelines: ["Inside exec, use only the listed tools.* functions. Return the result. Never retry an entire cell after a partial failure; inspect child outcomes first."],
       parameters: { type: "object", properties: { code: { type: "string", minLength: 1, maxLength: 65_536 } }, required: ["code"], additionalProperties: false },
@@ -320,9 +334,11 @@ export class ToolExecutionCoordinator {
           this.codeModeCellActive = true;
           try {
             const current = new Map(this.context.toolRegistry.listEntries().map((entry) => [entry.tool.name, entry] as const));
-            const children = this.createAgentTools(editing, { auditOnly: true }).filter((entry) =>
-              codeModeNestedToolNames.has(entry.name) && current.get(entry.name)?.source === "builtin");
-            const original = new Map(children.map((entry) => [entry.name, current.get(entry.name)?.tool] as const));
+            const children = this.createAgentTools(editing, { auditOnly: true, codeModeReadOnly: true }).filter((entry) => {
+              const registration = current.get(entry.name);
+              return codeModeNestedToolNames.has(entry.name) && registration && isCodeModeReadTool(registration);
+            });
+            const original = new Map(children.map((entry) => [entry.name, current.get(entry.name)] as const));
             await this.recordAndFlush({ type: "tool_execution", tool: "exec", toolCallId, sequence, operationId, state: "running", retrySafety: "unsafe" });
             result = await executeCodeModeCell({
               code: args.code, parentToolCallId: toolCallId, tools: children, signal, executionPolicy,
@@ -333,7 +349,7 @@ export class ToolExecutionCoordinator {
                 }
               },
               isCurrent: (name) => this.context.toolRegistry.listEntries().some((entry) =>
-                entry.source === "builtin" && entry.tool.name === name && entry.tool === original.get(name)
+                isCodeModeReadTool(entry) && entry.tool.name === name && entry === original.get(name)
                 && (!this.allowedToolNames || this.allowedToolNames.has(name)))
             });
             if (!(result as { ok: boolean }).ok) {
@@ -611,6 +627,7 @@ export class ToolExecutionCoordinator {
         const message = abortedToolMessage(call.name, signal.reason);
         return await finish({ status: "skipped", error: message }, message, "cancelled");
       }
+      options.assertCurrentRegistration?.();
       const budgetRejection = this.admitToolCall(call);
       if (budgetRejection) {
         this.budgetRejection ??= budgetRejection;
@@ -624,6 +641,7 @@ export class ToolExecutionCoordinator {
         signal,
         start: async () => {
           signal?.throwIfAborted();
+          options.assertCurrentRegistration?.();
           await persistState("running");
           const prepared = await this.prepareToolCall(toolDefinition, call, source, signal);
           if (!prepared.ok) {
@@ -723,6 +741,7 @@ export class ToolExecutionCoordinator {
               // 这是工具副作用前的持久边界：记录成功后才允许进入 executeResolvedTool。
               // 崩溃发生在这里之后时，恢复不能再假设工具没有运行。
               await persistState("admitted");
+              options.assertCurrentRegistration?.();
               return await this.executeResolvedTool(
                 call,
                 prepared.execution,
@@ -1335,7 +1354,7 @@ export class ToolExecutionCoordinator {
     execution: RunnableToolExecution,
     toolRisk: ToolRisk | undefined
   ): Promise<AgentPermissionRequest> {
-    const permissionArgs = this.canonicalPermissionArgs(args, execution);
+    const permissionArgs = this.canonicalPermissionArgs(args, execution, call.name);
     const permissionContext = analyzePermissionRequest({
       toolName: call.name,
       args: permissionArgs,
@@ -1358,8 +1377,16 @@ export class ToolExecutionCoordinator {
     };
   }
 
-  private canonicalPermissionArgs(args: unknown, execution: RunnableToolExecution): unknown {
+  private canonicalPermissionArgs(args: unknown, execution: RunnableToolExecution, toolName: string): unknown {
     if (execution.fileChange?.server) return args;
+    if (toolName === "read_skill_resource" || toolName === "BashOutput") {
+      const target = execution.accesses?.find((access) => access.kind === "file" && access.operation === "read" && !access.recursive);
+      if (target?.kind === "file" && typeof args === "object" && args !== null) {
+        // Resource arguments are skill-relative; logs have only an opaque process ID.
+        // Permissions must see the host-resolved absolute file, including global skill roots.
+        return { ...args, path: target.path };
+      }
+    }
     if (typeof args !== "object" || args === null || !("path" in args) || typeof args.path !== "string") return args;
     if (args.path.startsWith("@attachments/")) return args;
     const declaredPath = execution.accesses?.find((access) => access.kind === "file")?.path;

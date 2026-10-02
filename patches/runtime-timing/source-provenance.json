@@ -1,0 +1,278 @@
+{
+  "schemaVersion": 1,
+  "purpose": "Stable source-input provenance for locally patched Code Mode distribution; not a final build attestation.",
+  "applicationBaseCommit": "ab25d1af8ff930b99905706a5e9412c76134ea2c",
+  "sourceIdentityPath": "patches/runtime-timing/identity.json",
+  "upstream": {
+    "url": "https://github.com/vercel-labs/run.git",
+    "tag": "run@2.1.6",
+    "commit": "2e86a992aae3d24d16d5a5a0224ff8d778358830",
+    "lockfileSha256": "c0b4d390fcbe2df5e16ce79c93fdfebf64d1657eeb71a1669f47ef2a5173c356"
+  },
+  "packages": {
+    "run": {
+      "version": "2.1.6",
+      "filename": "run-2.1.6.tgz",
+      "integrity": "sha512-Ulhok3ygbOFEPhL4wWl3RH8yY2arntmJ/Xhi9KI6MzNKNIn/OwazV7cTtxniTkD1lpztcaxkUsCz0hPDblT8DA==",
+      "archiveSha256": "50023a51370f24d2a88726caa866fa2d59c79bbf7e8431f93a55f785d68983fd",
+      "repository": {
+        "type": "git",
+        "url": "git+https://github.com/vercel-labs/run.git",
+        "directory": "packages/run"
+      },
+      "license": "Apache-2.0",
+      "upstreamLicenseSha256": "4bd6464daafb3cc689d914b91952313b69be04138e83c3cfc47a486835c06e83",
+      "locallyModified": true
+    },
+    "@ai-sdk/code-mode": {
+      "version": "1.0.50",
+      "filename": "ai-sdk-code-mode-1.0.50.tgz",
+      "integrity": "sha512-Xu+xUTSVfdwOshHVbBLUwxd2q1kpaVzWWAL4MJ1FCmjdEztKaPWKj2wXwPx/L5hSVhTSQBRpfOCxqdDrsW5InQ==",
+      "archiveSha256": "664f2e92b404c3b82af8bac4523e48f58f129afc80000dd237f8bd1a9efbdb36",
+      "repository": {
+        "type": "git",
+        "url": "https://github.com/vercel/ai",
+        "directory": "packages/code-mode"
+      },
+      "license": "Apache-2.0",
+      "upstreamLicenseSha256": "b4f9adb7c568904834d0dd6cc98d16c390d21ca32fc17ae7a267715269bd5529",
+      "locallyModified": true
+    },
+    "ai": {
+      "version": "7.0.93",
+      "filename": "ai-7.0.93.tgz",
+      "integrity": "sha512-CJss6zb9mlltk/mCr8qom20NBnqEQxVawkqwtT62tCwsxilZpXfHNRMRwcS3XRpzdP1kEluVuDBUayYWEEd95g==",
+      "archiveSha256": "500708f038dd72e3443dba1c36b9e8a54c5df27d28b8250e33ddcfcae654c281",
+      "repository": {
+        "type": "git",
+        "url": "https://github.com/vercel/ai",
+        "directory": "packages/ai"
+      },
+      "license": "Apache-2.0",
+      "upstreamLicenseSha256": "b4f9adb7c568904834d0dd6cc98d16c390d21ca32fc17ae7a267715269bd5529",
+      "locallyModified": false
+    }
+  },
+  "sourcePatches": [
+    {
+      "package": "run",
+      "path": "patches/runtime-timing/run-2.1.6-source.diff",
+      "sha256": "fdcb65a1f0ffd53d88feaf4ee847c3578314f2bd115d405d69d3b87feac1f324",
+      "modifiedSourceFiles": [
+        "packages/run/src/run.ts",
+        "packages/run/src/runtime/execution-budget.ts",
+        "packages/run/src/runtime/manager.ts",
+        "packages/run/src/runtime/protocol-validation.ts",
+        "packages/run/src/runtime/protocol.test.ts",
+        "packages/run/src/runtime/protocol.ts",
+        "packages/run/src/runtime/worker-message.test.ts",
+        "packages/run/src/runtime/worker.ts",
+        "packages/run/src/types.ts",
+        "packages/run/src/utils/options.ts"
+      ]
+    },
+    {
+      "package": "@ai-sdk/code-mode",
+      "path": "patches/runtime-timing/code-mode-1.0.50-source.diff",
+      "sha256": "97b45a50a5b62c86ad99f4df3eaba7214c8eaf1b46a0f94aab05c16d880a1f07",
+      "modifiedSourceFiles": [
+        "src/run-code-mode.ts",
+        "src/types.ts"
+      ]
+    }
+  ],
+  "toolchain": {
+    "pnpm": "10.33.4",
+    "tsup": "8.5.1",
+    "typescript": "5.8.3",
+    "esbuild": "0.28.1",
+    "tsupEsbuild": "0.27.7",
+    "quickjs-wasi": "3.6.0",
+    "devalue": "5.8.2"
+  },
+  "embeddedDependencies": {
+    "devalue": {
+      "version": "5.8.2",
+      "license": "MIT",
+      "repository": "https://github.com/sveltejs/devalue",
+      "integrity": "sha512-DObPPAfdtFbXjxLqK8s2Xk9ZuWz5+ZoFEhC7J76es4GU/rEiXwHTmbImoCdyoCOcBH1UF3+Cz6Z2sYD4hyl5TA==",
+      "licensePath": "patches/runtime-timing/licenses/DEVALUE-MIT.txt"
+    },
+    "quickjs-wasi": {
+      "version": "3.6.0",
+      "license": "MIT",
+      "repository": "https://github.com/vercel-labs/quickjs-wasi",
+      "integrity": "sha512-/CNzMq42B8ThzUpzjLSF8K50ntVLV3RREyT8zr4wHaP2CZSHFhPkqg3E1GULmTerehf8Bo+UguQ+4LoOMCTC6A==",
+      "wasmSha256": "b006d95d9475edf7c6648cc3eb391d3b780efdd99022fbfbb470f2359da460ff",
+      "locallyModified": false,
+      "noticePath": "patches/runtime-timing/licenses/RUN-THIRD-PARTY-NOTICES.txt"
+    },
+    "QuickJS": {
+      "license": "MIT",
+      "sourceIdentity": "QuickJS runtime embedded by quickjs-wasi 3.6.0; attribution copied from exact run@2.1.6 source notices.",
+      "noticePath": "patches/runtime-timing/licenses/RUN-THIRD-PARTY-NOTICES.txt"
+    }
+  },
+  "embeddedWasmSha256": "b006d95d9475edf7c6648cc3eb391d3b780efdd99022fbfbb470f2359da460ff",
+  "baselineWorkerSha256": "9c7a6cd9e2a982e15f1d460390805f9157f04247dd72c4fcd887f92fced1da74",
+  "patchedDistSha256": {
+    "run": {
+      "continuation-codec.js": "6eae6bfd27cdd7243c4b9542df7853abaaa40e164bf175ba6c8f84ae30df07b8",
+      "continuation-codec.js.map": "94ce317749265be7193713cd613841196b790a3c0c3c4e65619d371f1073bedf",
+      "continuation-validation.js": "c389b91c4daea718f3b97a51a9d223b49565b45406257f4000269ce95c85f1e4",
+      "continuation-validation.js.map": "cf9c6d7bb180b3c50f97895a8c29e55049e494f1bfb36d871ce9d86243437789",
+      "errors.js": "16ae5ba42cb10a0b93e22613a3c9e038e9a73bd6041e18fd74718b2f3e0de1c8",
+      "errors.js.map": "151ede188fa9ee636e97ca7a92ce8a7f5650fe61224a360fa626a9202f1f9d1b",
+      "errors/run-aborted-error.js": "5156893a885c821f92c5601144693ef8657d8f4f515f744dd09b414c831780b0",
+      "errors/run-aborted-error.js.map": "b0818345418a4510c96e4cd1b2503ba0702897ee5a3b2b3f182e64737c146edc",
+      "errors/run-bridge-limit-error.js": "ef849ca010afcabc1ae72d22ca0f4c3126c6357355110b145ac61eb8e83f8e1e",
+      "errors/run-bridge-limit-error.js.map": "0fc0b9947f33d1ec45b7f3d5f382bfbf9adb4ecd65c2e4ac60a8be31297fa4aa",
+      "errors/run-concurrency-error.js": "8de1432af67c2179c71578c33d75f1d30a9a05b41e8fd902188feeef525e1c60",
+      "errors/run-concurrency-error.js.map": "545ee198ab6a65d3fbc8bef87fc737a086d2f339a58a33bf33ec924775c07d14",
+      "errors/run-detached-bridge-request-error.js": "354bb5361313dc30bc99b4ccd861a2da8712bd47c5e6e7ebb663b4ecf19cfceb",
+      "errors/run-detached-bridge-request-error.js.map": "017478eb2e46be2f6326516d32c5edd09b04a903af02a957f9f6f8b3fd981ab2",
+      "errors/run-error.js": "11ff90eb04dc29933380ff2534680a50243e3828d97cbcd5baa359bf63fc327d",
+      "errors/run-error.js.map": "f0e4715322e0a4b7eddd349b50c6a5fddf61914e7acec932c83e28f50716e6ad",
+      "errors/run-host-function-error.js": "213f84233507913a7019e746fe677d3a537c108bc1b31bbe9a2d3324d2cf35cc",
+      "errors/run-host-function-error.js.map": "163344510380441a39870b09f20d6cf13bc621a15a1bcc8ed83a10e17f29cf33",
+      "errors/run-protocol-error.js": "74ace4bf9bf51d9e8304afc8236971c291ec4e100b3888090975d53bdac6c3fb",
+      "errors/run-protocol-error.js.map": "1f9e420dbecb7f8e639ab5bfdfad0ff38f4752d4a4bf61b07e32399f1b832a46",
+      "errors/run-source-too-large-error.js": "90a6b40f9417008f1064141a4503f423bd0a2b5ba8f00449a296a5bc71c6c560",
+      "errors/run-source-too-large-error.js.map": "88b7bacda0adac8045bfccf7da791e7e9a73fcf696517c2557ceda38275ea71d",
+      "errors/run-timeout-error.js": "12d123bc2e78e61608562e40ad4740ee55dea645ade1a8ead5c84fdff61c9e15",
+      "errors/run-timeout-error.js.map": "8c757d46344c8909776603d555cc9eeee8d5c65d0a71c205b98d39cfb57b5927",
+      "host-function-context.js": "a69f50dd809a1ad2963e4bdc652ac78e87d2c88adcee36e737b1ebefe4bf3c4a",
+      "host-function-context.js.map": "48cf6dab27ccd842b6c2dae926d6da83fe2f30fc4e04c3d9417186ab7a08ac3e",
+      "host-function-invocation.js": "eac1a55cfa960bd53ff79202974d9c9d4381971f37a98e7555c5d60335fca2de",
+      "host-function-invocation.js.map": "8ecda116ccd504430be4f8958f2dfa93cc7854dee59ec9806378e0eac6167327",
+      "index.d.ts": "7b98eaa226b10f815709d3ecae72623b55311a1cc5c8cdd298f9e78dd8f86f2e",
+      "index.js": "f15829eb7fc16fdab6aab270004def580ec319c0e3fe434e8d2b6478d133b52e",
+      "index.js.map": "76aff97f5a1c24f1ae76c9163d1a654a111559b930114eb0690a94c8dfec3c29",
+      "interrupt.js": "fc62e352a95bdee6da61269aabddb848c0927031af5cd32f88146c5d5e354142",
+      "interrupt.js.map": "37056d9e3cbe70ed1f00bac33854bb2a625126d48973e7dafc9fe1b18fcdcd73",
+      "is-interrupted.js": "e19683a8eab3eef2049384de6375680cfd047b48938fc76411c6607acbfb6954",
+      "is-interrupted.js.map": "801b7309145ee4c31dba50325d5f14e10fb0d287c0273b96bffd39de12e80243",
+      "run.js": "fc3913f06f6d0604b0d355fde7565d3a0a27db0a784b90c2b0ff71e934d3c88e",
+      "run.js.map": "406b47132b297f64c20a855a4b38b62ebac18c16c7c6e8c227c85d411476173c",
+      "runtime/execution-budget.js": "4dd306dafd7b67a299633e955013650d4f78829662de78550a13f9857588d3d9",
+      "runtime/execution-budget.js.map": "3d71013ada4bc76bef68a7a972084d963e6f4f295bc5565839e0ef384b70802a",
+      "runtime/guest-serde-source.js": "c5a7c70177da564e5ccf0d6138f44e56eac924f08090d89f97fd6b44a61e42a9",
+      "runtime/guest-sources.js": "40b0b8e891d4cfc25b29563ce46019309fe1fa35f9a6e49989baa2d79f04e7c1",
+      "runtime/guest-sources.js.map": "3704790509c9ecc2fa53d2da211b0517b19199d3e3e9c574735c5f50bda52e85",
+      "runtime/manager.js": "946fe9e38e2d0d5a141e7776a2aeac5d776346f31154a9eddf40aba72eed0185",
+      "runtime/manager.js.map": "0ca6046abf84c1abe388c32f6f45930b60b8c73b4e8d1d557761d42b381e42f8",
+      "runtime/max-workers.js": "5cc40a16f3a3709dc9d5c198476079b27c023eb109438e3911ca8be16c243cc1",
+      "runtime/max-workers.js.map": "287d72fe20ce3586cffffb6da726f5c63b2489a25171bfde2d76f171d214552f",
+      "runtime/protocol-validation.js": "f0b8b3e0dcee1322d713b97bbbc0a4198fd81aabc30c3f1a6ba381b69cbce6f2",
+      "runtime/protocol-validation.js.map": "89cea9b7724c9661461f779a090f23a245c88262479b7fc5cf9fc3b8911db527",
+      "runtime/protocol.js": "f35bf86853847bf36236bae3071143eb3bbae1a9d7ba9d6159756d1982123fb1",
+      "runtime/protocol.js.map": "cba81f7ad4d5b1b629bf43823f1082e73a10d0c3114c937515e7f8c1047629b3",
+      "runtime/source-stack.js": "c5efce057a03921003489085c9a8548969da62604cfaf1ba3f44a1e2713d5ca6",
+      "runtime/source-stack.js.map": "bf41e492110670686eee8a21a3da26587f12e557393985e36de78c11a551c8b7",
+      "runtime/sync-bridge-protocol.js": "788861da923a2706778d59af0419ffb6af421d6e85f83b0ecaacc9cf8932fd4b",
+      "runtime/sync-bridge-protocol.js.map": "b7044b0af61b50657e62860e01729669da35ee17ce3a612f0dc2cb5055e05e5b",
+      "runtime/worker-source.d.ts": "f48e2ab0477896ff7deb2ae54536d5f8eee1a901c5d759258c44cf982d2f7f0a",
+      "runtime/worker-source.js": "06f6ee6c2abcd7c5f4c0bd2e307b78ab2e08be1a9b9f2ed6209f94fa4ff5e195",
+      "types.js": "f44aa358fe8dac67c4d5394af5e1f83dd1edee79405f2f53f1575bf3b90bc56a",
+      "types.js.map": "cba81f7ad4d5b1b629bf43823f1082e73a10d0c3114c937515e7f8c1047629b3",
+      "utils/object-validation.js": "826d9da5cebc42b38f4811514297feca9db118f8dbd32a256837b7a16288c408",
+      "utils/object-validation.js.map": "9bc8e8746bdd1b4ae54e65f386166bd9105fbc5656294c627f84a1da4e2b21d0",
+      "utils/options.js": "0b9cbf3b00a23dad921847a558079a703862614d05c7c4088979d4a2e9c7e0d8",
+      "utils/options.js.map": "24eb60c44e711f8225dbe0855c914e6b3483fe5ff755831f1d93729799a0a20d",
+      "utils/parse-json.js": "a17db31eed2cf1480afc2c1016390c30d992862946aa0d68d3ad898754fe88ab",
+      "utils/parse-json.js.map": "70aae117b9404beedb86b288be02244764ce3e4a1fbf5865c186232ebe6f1209",
+      "utils/promise-with-resolvers.js": "32dbccf0453266b8b053816be11a8f4d425b5a6ef78e7557d0c5309309b3277e",
+      "utils/promise-with-resolvers.js.map": "decd3dee8d70aa65b67d9d5d4c5d915bb5aee5296fa0982dde7911f2f1e1a917",
+      "utils/serde.js": "3b91bd39bf451829e4a1a941ff90a92568b84907dd2b9761e34945f31972eecf",
+      "utils/serde.js.map": "30a22a2a2d650d8a2aa6ea2252530c82909f72128973acfa75afd37ef2dbef2c",
+      "utils/serialization.js": "b4809792fa1c4558730a0a097fdd04b65e4b06bf11a53610d034529622c5a64a",
+      "utils/serialization.js.map": "4708aa4de70cae7af500de3ded681f1058d4a6b937f7ec1a39b2fd51c36ecb59",
+      "utils/source-cache.js": "c033ec518eb53bb2791772be4648db89adf58f84dd1535343f8217604947d0c8",
+      "utils/source-cache.js.map": "ccde3c3912561ada864fdd26187910971310f3880200aafd92c1183e7057d644"
+    },
+    "@ai-sdk/code-mode": {
+      "approval-continuation.js": "fd5abd1672341d50156d365dced94784d9b472caf488e321a9b1bba7144958b0",
+      "approval-continuation.js.map": "f1819c0c1fe6a7c1bf1fd25525a2211e8039689054e905f8e858b4eed9754660",
+      "approval.js": "da262520c99571a447efa11a4f1a508ad76c20b7559f8aecd30e1849e119d404",
+      "approval.js.map": "aadf96a10d397d86981ace0cce64cc83f0458b5eac29ea1d585c5075dc395188",
+      "code-mode-tool.js": "4cb8ab16ea9fe870f6868eedcfbdc219eca276bc2d724bb7280927283f75441c",
+      "code-mode-tool.js.map": "56fab8849fd2b573dd0155782d64ae5fb5928bfd7ac342b53da20174351e7d21",
+      "continuation-capability.js": "959f55a9242e6f9cd269210048acfad81ee3f670ad6660739c4ce248e27f1f33",
+      "continuation-capability.js.map": "1691da31ffc90f8559321d2fb0b07a61ac8a7c96b7b1fa08c08e652ad0fcbaa1",
+      "direct-tool-call.js": "d5823281bc739b224a0184c34263439da3a3aa005c5ff4e322da43c4f02cf933",
+      "direct-tool-call.js.map": "1bf264d58d34910ca80e7eaa74407f0e3e8d518f5d308697cad6ef864e481505",
+      "errors.js": "7612a822e204848336aebd39e98ba060ffdd3a6b56a6b11d188df4d104b84d08",
+      "errors.js.map": "4930aa4cada53dba53b3972c9e3a2f76f182ac347f45092343cbf4635e50880d",
+      "host-interrupt.js": "8693bde2337e9ae0f060c7fec2be4f938d8e5cb1a1e0b7ab498f94bf691e80fe",
+      "host-interrupt.js.map": "5f1d879e98ecce51d70e9041f04544bd218563e44249dfda4d2bc6a06bbce270",
+      "index.d.ts": "404a6ac16002ec9906f53020166e9da6ed371749c2173f05f38c7f4c112abbf1",
+      "index.js": "fb442eb409af885453cb59b0d4c6320d758a53d93b5f55ba49c225fad0d32164",
+      "index.js.map": "23afb90ac715e951d9fbe2f59b0fcd6fef2e3c75df6afc98506527577f0a0cdc",
+      "interrupt-continuation.js": "3f3c372e8a107601088d76505f9722c89b37611811b8bf89283d0ad399b4b382",
+      "interrupt-continuation.js.map": "0cbd9d3e783736958ae8b3ab176ecb4f95d86a1c37c6a36eb44dbb7b18967c39",
+      "run-code-mode.js": "adc9b1b968299118cc3acf67e3746803a51a55ca0a440d154883f051404f4910",
+      "run-code-mode.js.map": "aef104d75fd1322a49c904b817fcddd020c52a94d905b2212000b2b511fa501c",
+      "tool-invocation.js": "c97bd698573352eb557852781a643e722084c1a63c837ba732ad62a1f4ccda77",
+      "tool-invocation.js.map": "051e4c9025d9b34ffbead3630a8a48fb4af1621ae63ccce217e456bcfeb57397",
+      "tool-prompt.js": "67cdde86d2f59997acf09c7f399a6adcba8d4c5e3b543b903a857e220d19e2ac",
+      "tool-prompt.js.map": "5e89d591ff6a29390e2d96ea313a9f63cc7126a54cb14958130bdc050ff35575",
+      "types.js": "f44aa358fe8dac67c4d5394af5e1f83dd1edee79405f2f53f1575bf3b90bc56a",
+      "types.js.map": "cba81f7ad4d5b1b629bf43823f1082e73a10d0c3114c937515e7f8c1047629b3",
+      "utils/serialization.js": "9e0d3ebf7a51541e97c0ad5970cc0091106a8ad38a03c32c7c613f99c2ef7acf",
+      "utils/serialization.js.map": "f1f0c22fb8fbdb3ecec4c3a46bc0b737bf3704db6a1f8516d0899775a190319c"
+    }
+  },
+  "legalInputs": {
+    "patches/runtime-timing/licenses/APACHE-2.0.txt": {
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+    },
+    "patches/runtime-timing/licenses/VERCEL-APACHE-NOTICE.txt": {
+      "sha256": "4bd6464daafb3cc689d914b91952313b69be04138e83c3cfc47a486835c06e83"
+    },
+    "patches/runtime-timing/licenses/RUN-THIRD-PARTY-NOTICES.txt": {
+      "sha256": "2f9a406c7f1779c22edf78634cf39f1e0608d8745a8d5e7fcb1f276f0f65fb29"
+    },
+    "patches/runtime-timing/licenses/DEVALUE-MIT.txt": {
+      "sha256": "e399db7e952e45cae84f1b53d72ba8dbad2daaa7ab8cd1f0ab72fea5ab73b225"
+    }
+  },
+  "modificationNotice": {
+    "path": "patches/runtime-timing/MODIFICATIONS.txt",
+    "sha256": "be36edefa086b52c2af31b267161af675cebc9d865a7ee18c584e1e0754acf95"
+  },
+  "upstreamNoticeSource": {
+    "repositoryPath": "packages/run/THIRD_PARTY_NOTICES.md",
+    "commit": "2e86a992aae3d24d16d5a5a0224ff8d778358830",
+    "sha256": "2f9a406c7f1779c22edf78634cf39f1e0608d8745a8d5e7fcb1f276f0f65fb29"
+  },
+  "intendedRuntimeBundles": [
+    {
+      "target": "cli",
+      "path": "dist/agent/codeMode.js",
+      "contains": "Bundled patched @ai-sdk/code-mode and run, including embedded worker source and WASM"
+    },
+    {
+      "target": "desktop",
+      "path": "out/main/index.js",
+      "relatedBundlePattern": "out/main/chunks/*",
+      "contains": "Patched Code Mode runtime in Electron main output or shared main chunks"
+    }
+  ],
+  "verification": {
+    "pristineArchiveIntegrity": "All three SHA-512 archive integrities verified against identity.json.",
+    "patchedPackageOutput": "All 72 run and 29 @ai-sdk/code-mode output SHA-256 values verified against the patched timing checkout.",
+    "embeddedWasm": "SHA-256 verified against quickjs-wasi 3.6.0 package quickjs.wasm."
+  },
+  "distributionLayout": {
+    "sourceInputDirectory": "patches/runtime-timing",
+    "shippedInputDirectory": "dist/code-mode-runtime-provenance",
+    "staticSourceManifest": "source-provenance.json",
+    "generatedArtifactManifest": "provenance.json",
+    "desktopGeneratedArtifactManifest": "out/main/code-mode-runtime-provenance.json"
+  },
+  "thirdPartyNotice": {
+    "path": "THIRD_PARTY_NOTICES.txt",
+    "sha256": "7261d2fbff6cb5e1a5a653ed280429a66c007d436be9e6e0033c243c18b0b695",
+    "retainsExistingAppearanceNotices": true
+  }
+}

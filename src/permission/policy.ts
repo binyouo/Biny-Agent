@@ -98,6 +98,7 @@ export function analyzePermissionRequest(input: AnalyzePermissionInput): Permiss
       ...base(input),
       actionType: "read",
       riskLevel: "low",
+      targetPath: targetPath || undefined,
       reason: "inspects runtime-owned managed processes"
     };
   }
@@ -175,6 +176,7 @@ export function analyzePermissionRequest(input: AnalyzePermissionInput): Permiss
       ...base(input),
       actionType: "read",
       riskLevel: "low",
+      targetPath: input.toolName === "read_skill_resource" ? targetPath || undefined : undefined,
       reason: "loads validated local skill instructions"
     };
   }

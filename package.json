@@ -18,13 +18,14 @@
   },
   "files": [
     "dist",
-    "benchmarks"
+    "benchmarks",
+    "THIRD_PARTY_NOTICES.txt"
   ],
   "scripts": {
     "clean": "node scripts/clean-dist.mjs",
     "sync:model-metadata": "node scripts/sync-model-metadata.mjs",
     "build": "pnpm build:desktop",
-    "build:cli": "node scripts/clean-dist.mjs && tsc -p tsconfig.json && node scripts/build-calendar-sidecar.mjs && node scripts/copy-bundled-skills.mjs dist/bundled-skills && node scripts/copy-browser-extension.mjs dist/browser-extension",
+    "build:cli": "node scripts/clean-dist.mjs && tsc -p tsconfig.json && node scripts/build-code-mode-runtime.mjs && node scripts/build-calendar-sidecar.mjs && node scripts/copy-bundled-skills.mjs dist/bundled-skills && node scripts/copy-browser-extension.mjs dist/browser-extension",
     "build:calendar-sidecar": "node scripts/build-calendar-sidecar.mjs",
     "build:activity-sidecar": "node scripts/build-activity-sidecar.mjs",
     "test:activity-macos-smoke": "node scripts/activity-macos-smoke.mjs",
@@ -42,12 +43,14 @@
     "lint": "eslint electron.vite.config.ts scripts src tests",
     "test:models": "node --test scripts/sync-model-metadata.test.mjs",
     "test:runtime-host": "node scripts/run-tests.mjs runtime-host",
-    "test:standard": "pnpm test:models && node scripts/run-tests.mjs --standard",
+    "test:standard": "pnpm test:models && pnpm test:code-mode-runtime && node scripts/run-tests.mjs --standard",
     "test:e2e": "pnpm build:cli && node scripts/run-tests.mjs --e2e",
     "test": "pnpm test:standard && pnpm test:e2e",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.desktop.json",
     "start": "node dist/cli/index.js",
-    "prepack": "pnpm build:cli"
+    "prepack": "pnpm build:cli",
+    "test:code-mode-runtime": "node scripts/dependency-patches/runtime-timing-fixtures.mjs",
+    "test:code-mode-package": "node scripts/code-mode-packaged-runtime.test.mjs"
   },
   "pnpm": {
     "onlyBuiltDependencies": [
@@ -62,6 +65,10 @@
       "ip-address": "10.3.1",
       "hono": "4.12.34",
       "@hono/node-server": "2.0.11"
+    },
+    "patchedDependencies": {
+      "run@2.1.6": "patches/run@2.1.6.patch",
+      "@ai-sdk/code-mode@1.0.50": "patches/@ai-sdk-code-mode@1.0.50.patch"
     }
   },
   "dependencies": {
@@ -83,7 +90,7 @@
     "@trycua/cua-driver": "0.30.4",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/xterm": "^6.0.0",
-    "ai": "^7.0.93",
+    "ai": "7.0.93",
     "best-effort-json-parser": "1.2.1",
     "commander": "^13.1.0",
     "framer-motion": "^13.2.0",
@@ -122,6 +129,7 @@
     "electron": "^43.2.0",
     "electron-builder": "^26.15.3",
     "electron-vite": "^5.0.0",
+    "esbuild": "0.28.1",
     "eslint": "^10.7.0",
     "eslint-plugin-react-hooks": "^7.1.1",
     "eslint-plugin-react-refresh": "^0.5.3",

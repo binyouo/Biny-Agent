@@ -15,7 +15,7 @@ import { createReadToolResultTool } from "./file/readToolResult.js";
 import { createListFilesTool } from "./file/listFiles.js";
 import { createSearchFilesTool } from "./search/searchFiles.js";
 import { createRunCommandTool } from "./shell/runCommand.js";
-import { createManagedProcessTools } from "./process/managedProcesses.js";
+import { createBashOutputTool, createKillShellTool } from "./process/managedProcesses.js";
 import { createWebFetchTool } from "./web/fetch.js";
 import { createWebSearchTool } from "./web/search.js";
 import { createToolSearchTool } from "./toolSearch.js";
@@ -23,9 +23,36 @@ import { createBrowserRelayTools } from "./browserRelay.js";
 import type { AgentModel } from "../agent/core/types.js";
 import type { ManagedProcessService } from "../runtime/ManagedProcessService.js";
 
+/** Explicit host-owned read contracts, never inferred from extension metadata. */
+export type HostReadQuery = "TaskStatus" | "skill_lookup" | "BashOutput" | "read_skill_resource";
+const hostReadQueryContracts: Record<HostReadQuery, { source: ToolSource; capability: string }> = {
+  TaskStatus: { source: "subagent", capability: "subagent.workspace" },
+  skill_lookup: { source: "skill", capability: "skills" },
+  BashOutput: { source: "builtin", capability: "shell.output" },
+  read_skill_resource: { source: "skill", capability: "skills" }
+};
+const hostReadQueryRegistrations = new WeakMap<RegisteredTool, {
+  identity: HostReadQuery;
+  resolveExecution: Tool["resolveExecution"];
+  parameters: Tool["parameters"];
+  schema: Tool["schema"];
+}>();
+const reviewedBuiltinReads = new Set(["Read", "Glob", "Grep", "read_tool_result", "recall_memory", "search_history"]);
+
+/** Shared by discovery and execution. Serialized/tool-supplied hints grant no authority. */
+export function isCodeModeReadTool(entry: RegisteredTool): boolean {
+  if (reviewedBuiltinReads.has(entry.tool.name)) return entry.source === "builtin";
+  const authority = hostReadQueryRegistrations.get(entry);
+  if (!authority || entry.tool.name !== authority.identity) return false;
+  const contract = hostReadQueryContracts[authority.identity];
+  return entry.source === contract.source && entry.tool.risk === "read" && entry.tool.capability === contract.capability
+    && entry.tool.resolveExecution === authority.resolveExecution && entry.tool.parameters === authority.parameters
+    && entry.tool.schema === authority.schema;
+}
+
 export interface RegisteredTool {
-  source: ToolSource;
-  tool: Tool;
+  readonly source: ToolSource;
+  readonly tool: Tool;
 }
 
 export class ToolRegistry {
@@ -36,7 +63,19 @@ export class ToolRegistry {
     if (this.tools.has(tool.name)) {
       throw new Error(`Tool already registered: ${tool.name}`);
     }
-    this.tools.set(tool.name, { source, tool });
+    this.tools.set(tool.name, Object.freeze({ source, tool }));
+  }
+
+  /** Host assembly only. Plugin/MCP/user registration never calls this route. */
+  registerHostReadQuery(tool: Tool, identity: HostReadQuery): void {
+    const contract = hostReadQueryContracts[identity];
+    if (!Object.hasOwn(hostReadQueryContracts, identity) || tool.name !== identity || tool.risk !== "read" || tool.capability !== contract.capability) {
+      throw new Error(`Invalid host read-query contract: ${identity}`);
+    }
+    this.register(tool, contract.source);
+    hostReadQueryRegistrations.set(this.tools.get(tool.name)!, {
+      identity, resolveExecution: tool.resolveExecution, parameters: tool.parameters, schema: tool.schema
+    });
   }
 
   registerBuiltinTool(tool: Tool): void {
@@ -111,7 +150,8 @@ export function createToolRegistry(
   registry.register(createEditFileTool(context));
   registry.register(createRunCommandTool(context, sandboxConfig, {}, managedProcessService));
   if (managedProcessService) {
-    for (const tool of createManagedProcessTools(managedProcessService)) registry.register(tool);
+    registry.registerHostReadQuery(createBashOutputTool(managedProcessService), "BashOutput");
+    registry.register(createKillShellTool(managedProcessService));
   }
   // WebSearch 的实现依赖 Desktop 浏览器；没有执行端时不注册一个调用必然失败的工具。
   if (browser) registry.register(createWebSearchTool(webSearchConfig, webCookiesConfig, browser));

@@ -54,3 +54,149 @@ OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
 WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 Some upstream theme files identify their individual source themes; consult those files for theme-specific credits.
+
+
+Patched Code Mode runtime
+
+This distribution embeds locally patched run 2.1.6 and @ai-sdk/code-mode 1.0.50
+and uses the existing ai 7.0.93 dependency. These packages are licensed under
+Apache-2.0. The embedded components include devalue 5.8.2,
+quickjs-wasi 3.6.0, and QuickJS, whose notices are reproduced below.
+
+Upstream projects (exact package identities are recorded below):
+  run: https://github.com/vercel-labs/run/tree/2e86a992aae3d24d16d5a5a0224ff8d778358830
+  @ai-sdk/code-mode: https://github.com/vercel/ai/tree/main/packages/code-mode
+  ai: https://github.com/vercel/ai/tree/main/packages/ai
+
+The exact source and package identities are recorded in
+patches/runtime-timing/source-provenance.json and patches/runtime-timing/identity.json.
+The full Apache License, Version 2.0 is included in
+patches/runtime-timing/licenses/APACHE-2.0.txt. In built distributions, these
+source inputs, license files, and modification notice are included under
+dist/code-mode-runtime-provenance/. The generated provenance.json in that
+directory records the actual CLI output hash; the Desktop main build records
+its output hashes in out/main/code-mode-runtime-provenance.json.
+
+Modification notice: run and @ai-sdk/code-mode have been changed locally to add
+an optional cumulative synchronous QuickJS execution budget, exclude bridge/host
+waits from that budget, preserve the independent wall-clock cap, and fail closed
+if the exact runtime timing contract is unavailable. The patched worker and SDK
+outputs are included in the CLI and Desktop bundles. See
+patches/runtime-timing/MODIFICATIONS.txt and the accompanying source diffs for
+the complete modified-file list. The embedded QuickJS WASM is unchanged.
+
+Upstream Vercel Apache-2.0 notice (run, @ai-sdk/code-mode, and ai)
+
+Copyright 2023 Vercel, Inc.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+
+Upstream run embedded third-party notices
+
+# Third-party notices
+
+`run` embeds the `devalue` serializer and a QuickJS WebAssembly runtime built by the
+[`quickjs-wasi`](https://github.com/vercel-labs/quickjs-wasi) project.
+The following packages are used to build the published JavaScript and embedded
+WebAssembly artifact:
+
+| Package        | Version | License |
+| -------------- | ------- | ------- |
+| `devalue`      | 5.8.2   | MIT     |
+| `quickjs-wasi` | 3.6.0   | MIT     |
+
+The release verification script rejects unreviewed changes to these embedded
+dependencies.
+
+## devalue
+
+Copyright (c) 2018-19 [devalue contributors](https://github.com/sveltejs/devalue/graphs/contributors)
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+## quickjs-wasi
+
+The MIT License
+
+Copyright (c) quickjs-wasi contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+## QuickJS
+
+QuickJS Javascript Engine
+
+Copyright (c) 2017-2026 Fabrice Bellard
+Copyright (c) 2017-2025 Charlie Gordon
+Copyright (c) 2023-2026 Ben Noordhuis
+Copyright (c) 2023-2026 Saúl Ibarra Corretgé
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
+THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+Original devalue 5.8.2 package license
+
+Copyright (c) 2018-19 [these people](https://github.com/rich-harris/devalue/graphs/contributors)
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.

@@ -42,6 +42,14 @@ export const sessionSearchRefreshMaxAgeMs = 1_000;
 export interface SessionSearchRefreshOptions {
   /** 跳过此窗口内已成功完成的全目录刷新；省略时始终检查文件系统。 */
   maxAgeMs?: number;
+  signal?: AbortSignal;
+}
+
+interface SessionSearchRefreshFlight {
+  controller: AbortController;
+  promise: Promise<void>;
+  waiters: number;
+  settled: boolean;
 }
 
 interface IndexStateRow {
@@ -51,7 +59,7 @@ interface IndexStateRow {
 
 export class SessionSearchIndex {
   private database: DatabaseSync | undefined;
-  private refreshFlight: Promise<void> | undefined;
+  private refreshFlight: SessionSearchRefreshFlight | undefined;
   private lastFullRefreshAt: number | undefined;
 
   constructor(private readonly agentDir: string | (() => string) = globalAgentDir) {}
@@ -73,7 +81,16 @@ export class SessionSearchIndex {
 
   /** 按需补齐旧会话；并发调用共享一次扫描，调用方可声明可接受的新鲜窗口。 */
   async refreshAll(options: SessionSearchRefreshOptions = {}): Promise<void> {
-    if (this.refreshFlight) return await this.refreshFlight;
+    const signal = options.signal;
+    signal?.throwIfAborted();
+    const pending = this.refreshFlight;
+    if (pending) {
+      if (!pending.controller.signal.aborted) return await this.joinRefresh(pending, signal);
+      // 上一次扫描已失去全部调用方；等 reader 清理后再启动，不能复用被取消的扫描。
+      try { await this.joinRefresh(pending, signal); }
+      catch { signal?.throwIfAborted(); }
+      return await this.refreshAll(options);
+    }
     const maxAgeMs = options.maxAgeMs;
     if (
       this.lastFullRefreshAt !== undefined
@@ -82,21 +99,58 @@ export class SessionSearchIndex {
       && maxAgeMs > 0
       && performance.now() - this.lastFullRefreshAt < maxAgeMs
     ) return;
-    const refresh = this.scanAll();
-    this.refreshFlight = refresh;
-    try {
-      await refresh;
+    const controller = new AbortController();
+    const flight: SessionSearchRefreshFlight = { controller, promise: Promise.resolve(), waiters: 0, settled: false };
+    // 先登记调用方，再开始扫描，避免同步依赖触发取消时留下无人等待的后台工作。
+    flight.promise = Promise.resolve().then(() => this.scanAll(controller.signal)).then(() => {
+      controller.signal.throwIfAborted();
       this.lastFullRefreshAt = performance.now();
-    } finally {
-      if (this.refreshFlight === refresh) this.refreshFlight = undefined;
-    }
+    }).finally(() => {
+      flight.settled = true;
+      if (this.refreshFlight === flight) this.refreshFlight = undefined;
+    });
+    this.refreshFlight = flight;
+    return await this.joinRefresh(flight, signal);
   }
 
-  private async scanAll(): Promise<void> {
+  private joinRefresh(flight: SessionSearchRefreshFlight, signal?: AbortSignal): Promise<void> {
+    signal?.throwIfAborted();
+    flight.waiters += 1;
+    return new Promise<void>((resolve, reject) => {
+      let waiting = true;
+      const release = (): boolean => {
+        if (!waiting) return false;
+        waiting = false;
+        signal?.removeEventListener("abort", onAbort);
+        flight.waiters -= 1;
+        return true;
+      };
+      const onAbort = (): void => {
+        if (!release()) return;
+        const reason: unknown = signal?.reason;
+        if (!flight.waiters && !flight.settled) {
+          flight.controller.abort(reason);
+          // 唯一调用方取消时等 I/O 边界与文件关闭；共享扫描仍有调用方时只退出自身等待。
+          void flight.promise.then(() => reject(reason), () => reject(reason));
+        } else reject(reason);
+      };
+      signal?.addEventListener("abort", onAbort, { once: true });
+      void flight.promise.then(() => {
+        if (release()) resolve();
+      }, (error: unknown) => {
+        if (release()) reject(error);
+      });
+    });
+  }
+
+  private async scanAll(signal?: AbortSignal): Promise<void> {
+    signal?.throwIfAborted();
     const root = typeof this.agentDir === "function" ? this.agentDir() : this.agentDir;
-    for (const file of await listAllSessionFiles(root)) {
-      await this.indexSessionFile(sessionIdFromFile(file), file);
+    for (const file of await listAllSessionFiles(root, signal)) {
+      signal?.throwIfAborted();
+      await this.indexSessionFile(sessionIdFromFile(file), file, signal);
     }
+    signal?.throwIfAborted();
   }
 
   /** 按原文子串检索，不把正则元字符或中文单字交给 FTS 分词器。 */
@@ -119,7 +173,8 @@ export class SessionSearchIndex {
    * 增量索引一个会话 JSONL：只解析上次索引偏移之后的完整行。半行（正在写入）会留到
    * 下次再处理；文件被截断或轮转时回退为重建该会话的索引。
    */
-  async indexSessionFile(sessionId: string, filePath: string): Promise<number> {
+  async indexSessionFile(sessionId: string, filePath: string, signal?: AbortSignal): Promise<number> {
+    signal?.throwIfAborted();
     const database = this.open();
     const previous = database.prepare(
       "SELECT byte_offset FROM session_index_state WHERE session_id = ?"
@@ -129,13 +184,23 @@ export class SessionSearchIndex {
     try {
       fileSize = (await stat(filePath)).size;
     } catch {
+      signal?.throwIfAborted();
       return 0;
     }
+    signal?.throwIfAborted();
     if (fileSize < previousOffset) {
       // 文件被截断或重写：丢弃旧索引与偏移状态后从头重建，否则会无限递归。
-      database.prepare("DELETE FROM session_transcripts WHERE session_id = ?").run(sessionId);
-      database.prepare("DELETE FROM session_index_state WHERE session_id = ?").run(sessionId);
-      return await this.indexSessionFile(sessionId, filePath);
+      database.exec("BEGIN IMMEDIATE");
+      try {
+        database.prepare("DELETE FROM session_transcripts WHERE session_id = ?").run(sessionId);
+        database.prepare("DELETE FROM session_index_state WHERE session_id = ?").run(sessionId);
+        signal?.throwIfAborted();
+        database.exec("COMMIT");
+      } catch (error) {
+        try { database.exec("ROLLBACK"); } catch { /* 保留原始错误。 */ }
+        throw error;
+      }
+      return await this.indexSessionFile(sessionId, filePath, signal);
     }
     if (fileSize === previousOffset) return 0;
 
@@ -145,7 +210,8 @@ export class SessionSearchIndex {
     const insert = database.prepare(
       "INSERT INTO session_transcripts (session_id, message_id, role, time, body, tokens) VALUES (?, ?, ?, ?, ?, ?)"
     );
-    for await (const batch of readAppendedEventBatches(filePath, previousOffset)) {
+    for await (const batch of readAppendedEventBatches(filePath, previousOffset, signal)) {
+      signal?.throwIfAborted();
       database.exec("BEGIN IMMEDIATE");
       try {
         // 每批都核对已提交偏移；另一个连接推进后，释放当前 reader 再从新位置继续。
@@ -156,6 +222,7 @@ export class SessionSearchIndex {
           break;
         }
         for (const { event, endOffset } of batch) {
+          signal?.throwIfAborted();
           offset = endOffset;
           if (event?.type !== "user_message" && event?.type !== "assistant_message") continue;
           const content = event.type === "assistant_message" ? publicAssistantMessage(event.content) : event.content;
@@ -170,10 +237,12 @@ export class SessionSearchIndex {
           );
           indexed += 1;
         }
+        signal?.throwIfAborted();
         database.prepare(
           "INSERT INTO session_index_state (session_id, byte_offset, updated_at) VALUES (?, ?, ?) " +
           "ON CONFLICT(session_id) DO UPDATE SET byte_offset = excluded.byte_offset, updated_at = excluded.updated_at"
         ).run(sessionId, offset, new Date().toISOString());
+        signal?.throwIfAborted();
         database.exec("COMMIT");
       } catch (error) {
         try {
@@ -184,12 +253,14 @@ export class SessionSearchIndex {
         throw error;
       }
     }
-    if (retry) return await this.indexSessionFile(sessionId, filePath);
+    signal?.throwIfAborted();
+    if (retry) return await this.indexSessionFile(sessionId, filePath, signal);
     return indexed;
   }
 
   /** 全文检索会话原文；query 为空或索引为空时返回空数组。 */
-  search(query: string, options: { limit?: number; sessionIds?: readonly string[] } = {}): SessionTranscriptHit[] {
+  search(query: string, options: { limit?: number; sessionIds?: readonly string[]; signal?: AbortSignal } = {}): SessionTranscriptHit[] {
+    options.signal?.throwIfAborted();
     const tokens = tokenizeMemoryText(query).slice(0, 24);
     if (!tokens.length) return [];
     const limit = Math.max(1, Math.min(200, Math.trunc(options.limit ?? 8)));
@@ -208,6 +279,7 @@ export class SessionSearchIndex {
         "ORDER BY rank LIMIT ?"
       ).all(match, JSON.stringify(options.sessionIds), limit)) as Array<Record<string, unknown>>;
     return rows.flatMap((row) => {
+      options.signal?.throwIfAborted();
       // 旧索引可能带协议；先清理完整正文，不能等 snippet 把标签截断后再过滤。
       const body = typeof row.body === "string" ? row.body : "";
       const publicBody = row.role === "assistant" ? publicAssistantMessage(body) : body;
@@ -261,11 +333,15 @@ export class SessionSearchIndex {
 /** 分块读取追加数据；每批仅保留有限事件，半行等下次追加后再读。 */
 async function* readAppendedEventBatches(
   filePath: string,
-  startOffset: number
+  startOffset: number,
+  signal?: AbortSignal
 ): AsyncGenerator<Array<{ event?: SessionEvent; endOffset: number }>> {
+  signal?.throwIfAborted();
   const handle = await open(filePath, "r");
   try {
+    signal?.throwIfAborted();
     const { size } = await handle.stat();
+    signal?.throwIfAborted();
     if (size <= startOffset) {
       yield [];
       return;
@@ -279,12 +355,15 @@ async function* readAppendedEventBatches(
     let yieldedBatch = false;
     let batch: Array<{ event?: SessionEvent; endOffset: number }> = [];
     while (offset < size) {
+      signal?.throwIfAborted();
       const read = await handle.read(buffer, 0, Math.min(buffer.length, size - offset), offset);
+      signal?.throwIfAborted();
       if (read.bytesRead === 0) break;
       const chunk = buffer.subarray(0, read.bytesRead);
       let lineStart = 0;
       let newline = chunk.indexOf(0x0a, lineStart);
       while (newline !== -1) {
+        signal?.throwIfAborted();
         const segment = chunk.subarray(lineStart, newline);
         const completeLineBytes = lineBytes + segment.length;
         const oversized = lineTooLarge || completeLineBytes > maxSessionEventLineBytes;
@@ -297,6 +376,7 @@ async function* readAppendedEventBatches(
         batchBytes += completeLineBytes + 1;
         if (batch.length >= sessionSearchBatchEvents || batchBytes >= sessionSearchBatchBytes) {
           yield batch;
+          signal?.throwIfAborted();
           yieldedBatch = true;
           batch = [];
           batchBytes = 0;
@@ -319,6 +399,7 @@ async function* readAppendedEventBatches(
       }
       offset += read.bytesRead;
     }
+    signal?.throwIfAborted();
     if (batch.length || !yieldedBatch) yield batch;
   } finally {
     await handle.close();

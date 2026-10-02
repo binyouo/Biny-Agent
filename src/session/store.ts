@@ -144,9 +144,10 @@ export async function listSessionFilePaths(workspaceRoot: string): Promise<strin
 }
 
 /** 枚举全局 session 分区，供每日工作日志补写漏掉的聊天回合。 */
-export async function listAllSessionFiles(agentDir?: string): Promise<string[]> {
+export async function listAllSessionFiles(agentDir?: string, signal?: AbortSignal): Promise<string[]> {
+  signal?.throwIfAborted();
   const root = path.join(path.resolve(agentDir ?? globalAgentDir()), "sessions");
-  return await listJsonlFiles(root);
+  return await listJsonlFiles(root, signal);
 }
 
 export async function resolveSessionFile(workspaceRoot: string, session: string | undefined): Promise<string> {
@@ -726,20 +727,24 @@ async function listSessionFileEntries(location: SessionStorageLocation): Promise
   return safeFiles.sort((left, right) => left.fileName.localeCompare(right.fileName));
 }
 
-async function listJsonlFiles(directory: string): Promise<string[]> {
+async function listJsonlFiles(directory: string, signal?: AbortSignal): Promise<string[]> {
+  signal?.throwIfAborted();
   let entries;
   try {
     entries = await fs.readdir(directory, { withFileTypes: true });
   } catch (error) {
+    signal?.throwIfAborted();
     if (hasErrorCode(error, "ENOENT")) return [];
     throw error;
   }
+  signal?.throwIfAborted();
   const files: string[] = [];
   for (const entry of entries) {
+    signal?.throwIfAborted();
     if (entry.isSymbolicLink()) continue;
     const filePath = path.join(directory, entry.name);
     if (entry.isDirectory()) {
-      files.push(...await listJsonlFiles(filePath));
+      files.push(...await listJsonlFiles(filePath, signal));
     } else if (entry.isFile() && entry.name.endsWith(".jsonl")) {
       files.push(filePath);
     }

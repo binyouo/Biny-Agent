@@ -406,8 +406,8 @@ export async function createCommandRuntime(workspaceRoot: string, options: Comma
     if (resourceBoot === "blocking") await resourceStart;
     skills = resourceScope.skills;
     toolRegistry.registerUserTool(createSkillTool(currentSkillBundle));
-    toolRegistry.registerUserTool(createSkillResourceTool(currentSkillBundle));
-    toolRegistry.registerUserTool(createSkillLookupTool(currentSkillBundle));
+    toolRegistry.registerHostReadQuery(createSkillResourceTool(currentSkillBundle), "read_skill_resource");
+    toolRegistry.registerHostReadQuery(createSkillLookupTool(currentSkillBundle), "skill_lookup");
     toolRegistry.registerBuiltinTool(createSkillSearchTool({
       getInstalledNames: () => {
         const installed = new Set<string>();
@@ -454,7 +454,7 @@ export async function createCommandRuntime(workspaceRoot: string, options: Comma
     recordPerfPhase("host.modelManagerCreate", modelManagerPerfStartedAt, undefined, workspaceRoot);
     if (config.extensions.subagent.enabled) {
       toolRegistry.registerSubagentTool(createSubagentTool(subagentOptions, subagentTaskManager!));
-      toolRegistry.registerSubagentTool(createTaskStatusTool(subagentOptions));
+      toolRegistry.registerHostReadQuery(createTaskStatusTool(subagentOptions), "TaskStatus");
       for (const tool of createPlanTools({
         graphs,
         taskRuns,
@@ -486,10 +486,11 @@ export async function createCommandRuntime(workspaceRoot: string, options: Comma
     }
     for (const tool of createHistoryTools({
       getIndex: () => (agent ? agent.getSessionSearchIndex() : undefined),
-      flushCurrentSession: async () => {
+      flushCurrentSession: async (signal) => {
+        signal?.throwIfAborted();
         const currentAgent = agent;
         if (!currentAgent) return;
-        await currentAgent.flushSessionSearchIndex();
+        await currentAgent.flushSessionSearchIndex(signal);
       }
     })) {
       toolRegistry.registerBuiltinTool(tool);

@@ -505,7 +505,7 @@ export class AgentSession {
       getReadOnlyVectorIndex: openReadOnlyMemoryIndex,
       getThreshold: () => this.activeConfig.context.memory.similarityThreshold,
       queryRewriteEnabled: () => this.activePersonalization.queryRewrite,
-      rewriteQuery: async (query, signal) => {
+      rewriteQuery: async (query, signal, rewriteOptions) => {
         const result = await generateNativeText(this.memoryModelFor("rewriteModel"), [{
           role: "user",
           content: query
@@ -518,6 +518,7 @@ export class AgentSession {
           ].join("\n"),
           signal,
           timeoutMs: 3_000,
+          awaitModelSettlementOnAbort: rewriteOptions?.awaitModelSettlementOnAbort,
           maxOutputTokens: 128,
           reasoning: "off",
           onRequestMetrics: onModelRequest,
@@ -1147,8 +1148,9 @@ export class AgentSession {
   }
 
   /** 把当前会话 JSONL 的新增消息增量刷入检索索引。 */
-  async flushSessionSearchIndex(): Promise<void> {
-    await this.sessionSearchIndex.indexSessionFile(this.recorder.sessionId, this.recorder.filePath);
+  async flushSessionSearchIndex(signal?: AbortSignal): Promise<void> {
+    signal?.throwIfAborted();
+    await this.sessionSearchIndex.indexSessionFile(this.recorder.sessionId, this.recorder.filePath, signal);
   }
 
   private scheduleTemporalIndex(model?: AgentModel): void {

@@ -1,0 +1,838 @@
+diff --git a/packages/run/src/run.ts b/packages/run/src/run.ts
+index c8d5198..b888623 100644
+--- a/packages/run/src/run.ts
++++ b/packages/run/src/run.ts
+@@ -273,6 +273,13 @@ export const createRunner = <TOKEN = string>(
+   };
+ };
+ 
++// The integration can fail closed if this exact timing patch is absent.
++Object.defineProperty(createRunner, 'executionTimeoutBudgetVersion', {
++  value: 1,
++  writable: false,
++  configurable: false,
++});
++
+ let defaultRunner:
+   | {
+       continuationSecret: string | undefined;
+diff --git a/packages/run/src/runtime/execution-budget.ts b/packages/run/src/runtime/execution-budget.ts
+new file mode 100644
+index 0000000..b466f11
+--- /dev/null
++++ b/packages/run/src/runtime/execution-budget.ts
+@@ -0,0 +1,60 @@
++import { performance } from 'node:perf_hooks';
++import { RunTimeoutError } from '../errors.js';
++
++/** One invocation's cumulative synchronous VM-entry budget, never reset by a bridge. */
++export class ExecutionBudget {
++  private elapsedMs = 0;
++  private startedAt: number | undefined;
++  private depth = 0;
++  private timedOut = false;
++
++  constructor(private readonly limitMs: number) {}
++
++  isExpired(): boolean {
++    const activeMs =
++      this.startedAt === undefined ? 0 : performance.now() - this.startedAt;
++    this.timedOut ||= this.elapsedMs + activeMs > this.limitMs;
++    return this.timedOut;
++  }
++
++  assertActive(): void {
++    if (this.isExpired()) {
++      throw new RunTimeoutError(this.limitMs);
++    }
++  }
++
++  measure<T>(operation: () => T): T {
++    this.assertActive();
++    if (this.depth === 0) {
++      this.startedAt = performance.now();
++    }
++    this.depth += 1;
++    try {
++      const result = operation();
++      this.assertActive();
++      return result;
++    } catch (error) {
++      this.assertActive();
++      throw error;
++    } finally {
++      this.depth -= 1;
++      if (this.depth === 0) {
++        this.elapsedMs += performance.now() - this.startedAt!;
++        this.startedAt = undefined;
++        this.isExpired();
++      }
++    }
++  }
++
++  /** Excludes only an actual synchronous blocking host wait, never a pending Promise. */
++  waitForHost<T>(operation: () => T): T {
++    const startedAt = performance.now();
++    try {
++      return operation();
++    } finally {
++      if (this.startedAt !== undefined) {
++        this.startedAt += performance.now() - startedAt;
++      }
++    }
++  }
++}
+diff --git a/packages/run/src/runtime/manager.ts b/packages/run/src/runtime/manager.ts
+index 40e93a7..cb35b2b 100644
+--- a/packages/run/src/runtime/manager.ts
++++ b/packages/run/src/runtime/manager.ts
+@@ -893,9 +893,13 @@ function startWorkerRun({
+     invocationId,
+     moduleLoader: moduleLoader !== undefined,
+     options: {
+-      executionTimeoutMs: getWorkerExecutionTimeoutMs(
+-        normalizedOptions.timeoutMs,
+-      ),
++      executionTimeoutMs:
++        normalizedOptions.executionTimeoutMs ??
++        getWorkerExecutionTimeoutMs(normalizedOptions.timeoutMs),
++      executionTimeoutMode:
++        normalizedOptions.executionTimeoutMs === undefined
++          ? 'wall'
++          : 'execution',
+       maxBridgeRequests: normalizedOptions.maxBridgeRequests,
+       maxConsoleOutputBytes: normalizedOptions.maxConsoleOutputBytes,
+       maxHostFunctionInputBytes: normalizedOptions.maxHostFunctionInputBytes,
+diff --git a/packages/run/src/runtime/protocol-validation.ts b/packages/run/src/runtime/protocol-validation.ts
+index 718bfb8..030d152 100644
+--- a/packages/run/src/runtime/protocol-validation.ts
++++ b/packages/run/src/runtime/protocol-validation.ts
+@@ -52,6 +52,7 @@ const isRunOptions = (value: unknown): boolean => {
+   try {
+     assertExactKeys(value, [
+       'executionTimeoutMs',
++      'executionTimeoutMode',
+       'maxBridgeRequests',
+       'maxConsoleOutputBytes',
+       'maxHostFunctionInputBytes',
+@@ -63,9 +64,15 @@ const isRunOptions = (value: unknown): boolean => {
+   } catch {
+     return false;
+   }
+-  return Object.values(value).every(
+-    item => Number.isSafeInteger(item) && (item as number) > 0,
+-  );
++  if (
++    value.executionTimeoutMode !== 'wall' &&
++    value.executionTimeoutMode !== 'execution'
++  ) {
++    return false;
++  }
++  return Object.entries(value)
++    .filter(([key]) => key !== 'executionTimeoutMode')
++    .every(([, item]) => Number.isSafeInteger(item) && (item as number) > 0);
+ };
+ 
+ const isDeterminism = (value: unknown): boolean => {
+diff --git a/packages/run/src/runtime/protocol.test.ts b/packages/run/src/runtime/protocol.test.ts
+index 5bbd474..a41ade2 100644
+--- a/packages/run/src/runtime/protocol.test.ts
++++ b/packages/run/src/runtime/protocol.test.ts
+@@ -6,6 +6,7 @@ import {
+ 
+ const WORKER_OPTIONS = {
+   executionTimeoutMs: 950,
++  executionTimeoutMode: 'wall',
+   maxBridgeRequests: 256,
+   maxConsoleOutputBytes: 64 * 1024,
+   maxHostFunctionInputBytes: 1024 * 1024,
+diff --git a/packages/run/src/runtime/protocol.ts b/packages/run/src/runtime/protocol.ts
+index 63cbae9..83177dc 100644
+--- a/packages/run/src/runtime/protocol.ts
++++ b/packages/run/src/runtime/protocol.ts
+@@ -25,6 +25,7 @@ export interface WorkerRunMessage {
+     | 'maxHostFunctionInputBytes'
+   > & {
+     executionTimeoutMs: number;
++    executionTimeoutMode: 'wall' | 'execution';
+   };
+ }
+ 
+diff --git a/packages/run/src/runtime/worker-message.test.ts b/packages/run/src/runtime/worker-message.test.ts
+index c6c3388..f0d3b27 100644
+--- a/packages/run/src/runtime/worker-message.test.ts
++++ b/packages/run/src/runtime/worker-message.test.ts
+@@ -22,6 +22,7 @@ const createRunMessage = (
+   moduleLoader: false,
+   options: {
+     executionTimeoutMs: 950,
++    executionTimeoutMode: 'wall',
+     maxBridgeRequests: 256,
+     maxConsoleOutputBytes: 64 * 1024,
+     maxHostFunctionInputBytes: 1024 * 1024,
+diff --git a/packages/run/src/runtime/worker.ts b/packages/run/src/runtime/worker.ts
+index 516b385..8420e1b 100644
+--- a/packages/run/src/runtime/worker.ts
++++ b/packages/run/src/runtime/worker.ts
+@@ -16,6 +16,7 @@ import { parseJson } from '../utils/parse-json.js';
+ import { createPromiseWithResolvers } from '../utils/promise-with-resolvers.js';
+ import { buildGuestRuntimeSetupSource, wrapUserCode } from './guest-sources.js';
+ import { normalizeUserSourceStack } from './source-stack.js';
++import { ExecutionBudget } from './execution-budget.js';
+ import type { WorkerBridgeResponse, WorkerRunMessage } from './protocol.js';
+ import { assertMainToWorkerMessage } from './protocol-validation.js';
+ import {
+@@ -61,6 +62,13 @@ let pendingInvocationFailure:
+   | { invocationId: string; error: unknown }
+   | undefined;
+ const MAX_SAFE_WASI_STACK_LIMIT_BYTES = 512 * 1024;
++const executionBudgets = new WeakMap<QuickJS, ExecutionBudget>();
++let activeExecutionBudget: ExecutionBudget | undefined;
++
++function withQuickJSSlice<T>(context: QuickJS, operation: () => T): T {
++  const budget = executionBudgets.get(context);
++  return budget === undefined ? operation() : budget.measure(operation);
++}
+ 
+ parentPort.on('message', async (value: unknown) => {
+   try {
+@@ -195,13 +203,21 @@ async function run(message: WorkerRunMessage): Promise<void> {
+ 
+ async function execute(message: WorkerRunMessage): Promise<string> {
+   const deadline = Date.now() + message.options.executionTimeoutMs;
++  const executionBudget =
++    message.options.executionTimeoutMode === 'execution'
++      ? new ExecutionBudget(message.options.executionTimeoutMs)
++      : undefined;
+   let interruptChecks = 0;
+   let cancelled = false;
+   let executionTimedOut = false;
+   const quickJSOptions: Parameters<typeof createQuickJSContext>[0] = {
+     interruptHandler: () => {
+       interruptChecks += 1;
+-      const timedOut = interruptChecks > 10_000 || Date.now() > deadline;
++      const timedOut =
++        interruptChecks > 10_000 ||
++        (executionBudget === undefined
++          ? Date.now() > deadline
++          : executionBudget.isExpired());
+       executionTimedOut ||= timedOut;
+       return cancelled || timedOut;
+     },
+@@ -216,6 +232,10 @@ async function execute(message: WorkerRunMessage): Promise<string> {
+     };
+   }
+   const context = await createQuickJSContext(quickJSOptions);
++  if (executionBudget !== undefined) {
++    executionBudgets.set(context, executionBudget);
++    activeExecutionBudget = executionBudget;
++  }
+   let bridgeFunctions:
+     | {
+         invokeHostFunction: JSValueHandle;
+@@ -279,6 +299,7 @@ async function execute(message: WorkerRunMessage): Promise<string> {
+       serializeJsonPayloadHandle,
+       getTrustedErrorCodeHandle,
+       () => {
++        executionBudget?.assertActive();
+         if (cancelled) {
+           throw new Error('Worker execution cancelled by host');
+         }
+@@ -294,11 +315,16 @@ async function execute(message: WorkerRunMessage): Promise<string> {
+     if (messageFailure !== undefined) {
+       throw messageFailure.error;
+     }
+-    if (executionTimedOut) {
+-      throw new RunTimeoutError(message.options.timeoutMs);
++    if (executionTimedOut || executionBudget?.isExpired()) {
++      throw new RunTimeoutError(
++        executionBudget === undefined
++          ? message.options.timeoutMs
++          : message.options.executionTimeoutMs,
++      );
+     }
+     throw error;
+   } finally {
++    activeExecutionBudget = undefined;
+     if (activeCancellation?.invocationId === message.invocationId) {
+       activeCancellation = undefined;
+     }
+@@ -339,29 +365,41 @@ function initializeGuestRuntime(
+   );
+   let setupFunction: JSValueHandle;
+   try {
+-    setupFunction = context.evalCode(setupSource, 'run-setup.js');
++    setupFunction = withQuickJSSlice(context, () =>
++      context.evalCode(setupSource, 'run-setup.js'),
++    );
+   } catch (error) {
+     throw toError(dumpQuickJSError(context, error));
+   }
+   try {
+     let setupResult: JSValueHandle;
+     try {
+-      setupResult = context.callFunction(
+-        setupFunction,
+-        context.undefined,
+-        invokeHostFunction,
+-        invokeSyncHostFunction,
+-        determinismHandle,
++      setupResult = withQuickJSSlice(context, () =>
++        context.callFunction(
++          setupFunction,
++          context.undefined,
++          invokeHostFunction,
++          invokeSyncHostFunction,
++          determinismHandle,
++        ),
+       );
+     } catch (error) {
+       throw toError(dumpQuickJSError(context, error));
+     }
+     try {
+       return {
+-        getTrustedErrorCode: setupResult.getProp('getTrustedErrorCode'),
+-        registerTrustedError: setupResult.getProp('registerTrustedError'),
+-        resetDateNow: setupResult.getProp('resetDateNow'),
+-        serializeJsonPayload: setupResult.getProp('serializeJsonPayload'),
++        getTrustedErrorCode: withQuickJSSlice(context, () =>
++          setupResult.getProp('getTrustedErrorCode'),
++        ),
++        registerTrustedError: withQuickJSSlice(context, () =>
++          setupResult.getProp('registerTrustedError'),
++        ),
++        resetDateNow: withQuickJSSlice(context, () =>
++          setupResult.getProp('resetDateNow'),
++        ),
++        serializeJsonPayload: withQuickJSSlice(context, () =>
++          setupResult.getProp('serializeJsonPayload'),
++        ),
+       };
+     } finally {
+       setupResult.dispose();
+@@ -387,10 +425,8 @@ async function evaluateUserSource(
+   if (message.sourceType === 'module') {
+     let modulePromise: JSValueHandle;
+     try {
+-      modulePromise = context.evalCode(
+-        message.source,
+-        '<entry>',
+-        EvalFlags.TYPE_MODULE,
++      modulePromise = withQuickJSSlice(context, () =>
++        context.evalCode(message.source, '<entry>', EvalFlags.TYPE_MODULE),
+       );
+     } catch (error) {
+       throw toUserSourceError(dumpQuickJSError(context, error), message.source);
+@@ -426,12 +462,16 @@ async function evaluateUserSource(
+   }
+   const wrapped = wrapUserCode(message.source);
+   try {
+-    context.evalCode(wrapped, 'run.js').dispose();
++    withQuickJSSlice(context, () =>
++      context.evalCode(wrapped, 'run.js'),
++    ).dispose();
+   } catch (error) {
+     throw toUserSourceError(dumpQuickJSError(context, error), message.source);
+   }
+ 
+-  const promiseHandle = context.global.getProp('__runResult');
++  const promiseHandle = withQuickJSSlice(context, () =>
++    context.global.getProp('__runResult'),
++  );
+   const resolvedResult = await resolveQuickJSPromise(
+     context,
+     promiseHandle,
+@@ -525,12 +565,14 @@ function serializeQuickJSJsonPayload(
+ ): string {
+   let result: JSValueHandle;
+   try {
+-    result = context.callFunction(serialize, context.undefined, value);
++    result = withQuickJSSlice(context, () =>
++      context.callFunction(serialize, context.undefined, value),
++    );
+   } catch (error) {
+     throw toError(dumpQuickJSError(context, error));
+   }
+   try {
+-    return result.toString();
++    return withQuickJSSlice(context, () => result.toString());
+   } finally {
+     result.dispose();
+   }
+@@ -543,7 +585,8 @@ function installConsole(
+   const outputBudget = { remainingBytes: maxOutputBytes };
+   let boundedFormatter: JSValueHandle;
+   try {
+-    boundedFormatter = context.evalCode(`
++    boundedFormatter = withQuickJSSlice(context, () =>
++      context.evalCode(`
+       (value, maxChars) => {
+         let rendered;
+         try {
+@@ -557,11 +600,12 @@ function installConsole(
+             : '\\\\u' + character.charCodeAt(0).toString(16).padStart(4, '0')
+         );
+       }
+-    `);
++    `),
++    );
+   } catch (error) {
+     throw toError(dumpQuickJSError(context, error));
+   }
+-  const consoleHandle = context.newObject();
++  const consoleHandle = withQuickJSSlice(context, () => context.newObject());
+   const handles = [
+     [
+       'log',
+@@ -606,9 +650,13 @@ function installConsole(
+   ] as const;
+ 
+   for (const [name, handle] of handles) {
+-    context.setProp(consoleHandle, name, handle);
++    withQuickJSSlice(context, () =>
++      context.setProp(consoleHandle, name, handle),
++    );
+   }
+-  context.setProp(context.global, 'console', consoleHandle);
++  withQuickJSSlice(context, () =>
++    context.setProp(context.global, 'console', consoleHandle),
++  );
+ 
+   for (const [, handle] of handles) {
+     handle.dispose();
+@@ -624,28 +672,30 @@ function createConsoleFunction(
+   outputBudget: { remainingBytes: number },
+   boundedFormatter: JSValueHandle,
+ ): JSValueHandle {
+-  return context.newFunction(name, (...args: JSValueHandle[]) => {
+-    if (outputBudget.remainingBytes === 0) {
+-      return context.undefined;
+-    }
+-    const maxBytesPerArgument = Math.max(
+-      1,
+-      Math.floor(outputBudget.remainingBytes / Math.max(1, args.length)),
+-    );
+-    const values = args.map(arg =>
+-      formatConsoleArg(context, boundedFormatter, arg, maxBytesPerArgument),
+-    );
+-    const line = formatWithOptions({ colors: false, depth: 0 }, ...values);
+-    const output = `${line}\n`;
+-    const outputBytes = Buffer.byteLength(output);
+-    if (outputBytes > outputBudget.remainingBytes) {
+-      outputBudget.remainingBytes = 0;
++  return withQuickJSSlice(context, () =>
++    context.newFunction(name, (...args: JSValueHandle[]) => {
++      if (outputBudget.remainingBytes === 0) {
++        return context.undefined;
++      }
++      const maxBytesPerArgument = Math.max(
++        1,
++        Math.floor(outputBudget.remainingBytes / Math.max(1, args.length)),
++      );
++      const values = args.map(arg =>
++        formatConsoleArg(context, boundedFormatter, arg, maxBytesPerArgument),
++      );
++      const line = formatWithOptions({ colors: false, depth: 0 }, ...values);
++      const output = `${line}\n`;
++      const outputBytes = Buffer.byteLength(output);
++      if (outputBytes > outputBudget.remainingBytes) {
++        outputBudget.remainingBytes = 0;
++        return context.undefined;
++      }
++      outputBudget.remainingBytes -= outputBytes;
++      writeSync(stream === 'stderr' ? 2 : 1, output);
+       return context.undefined;
+-    }
+-    outputBudget.remainingBytes -= outputBytes;
+-    writeSync(stream === 'stderr' ? 2 : 1, output);
+-    return context.undefined;
+-  });
++    }),
++  );
+ }
+ 
+ function formatConsoleArg(
+@@ -654,17 +704,21 @@ function formatConsoleArg(
+   arg: JSValueHandle,
+   remainingBytes: number,
+ ): string {
+-  const maxCharsHandle = context.newNumber(remainingBytes);
++  const maxCharsHandle = withQuickJSSlice(context, () =>
++    context.newNumber(remainingBytes),
++  );
+   try {
+-    const result = context.callFunction(
+-      boundedFormatter,
+-      context.undefined,
+-      arg,
+-      maxCharsHandle,
++    const result = withQuickJSSlice(context, () =>
++      context.callFunction(
++        boundedFormatter,
++        context.undefined,
++        arg,
++        maxCharsHandle,
++      ),
+     );
+-    const value = result.toString();
++    const value = withQuickJSSlice(context, () => result.toString());
+     result.dispose();
+-    if (context.typeof(arg) === 'object') {
++    if (withQuickJSSlice(context, () => context.typeof(arg)) === 'object') {
+       try {
+         return formatWithOptions({ colors: false, depth: 4 }, parseJson(value));
+       } catch {
+@@ -688,55 +742,65 @@ function createBridgeFunctions(
+   invokeHostFunction: JSValueHandle;
+   invokeSyncHostFunction: JSValueHandle;
+ } {
+-  const invokeHostFunction = context.newFunction(
+-    '__runInvokeHostFunction',
+-    (hostFunctionNameHandle: JSValueHandle, inputJsonHandle: JSValueHandle) => {
+-      admitBridgeRequestAttempt(message);
+-      const hostFunctionName = hostFunctionNameHandle.toString();
+-      const inputJson = inputJsonHandle.toString();
+-      assertBridgeRequestSize(
+-        message,
+-        hostFunctionName,
+-        inputJson,
+-        'Host function',
+-      );
+-      return requestHost(
+-        context,
+-        message.invocationId,
+-        {
++  const invokeHostFunction = withQuickJSSlice(context, () =>
++    context.newFunction(
++      '__runInvokeHostFunction',
++      (
++        hostFunctionNameHandle: JSValueHandle,
++        inputJsonHandle: JSValueHandle,
++      ) => {
++        admitBridgeRequestAttempt(message);
++        const hostFunctionName = hostFunctionNameHandle.toString();
++        const inputJson = inputJsonHandle.toString();
++        assertBridgeRequestSize(
++          message,
+           hostFunctionName,
+           inputJson,
+-        },
+-        getResetDateNow(),
+-        getRegisterTrustedError(),
+-      );
+-    },
++          'Host function',
++        );
++        return requestHost(
++          context,
++          message.invocationId,
++          {
++            hostFunctionName,
++            inputJson,
++          },
++          getResetDateNow(),
++          getRegisterTrustedError(),
++        );
++      },
++    ),
+   );
+ 
+-  const invokeSyncHostFunction = context.newFunction(
+-    '__runInvokeSyncHostFunction',
+-    (hostFunctionNameHandle: JSValueHandle, inputJsonHandle: JSValueHandle) => {
+-      admitBridgeRequestAttempt(message);
+-      const hostFunctionName = hostFunctionNameHandle.toString();
+-      const inputJson = inputJsonHandle.toString();
+-      assertBridgeRequestSize(
+-        message,
+-        hostFunctionName,
+-        inputJson,
+-        'Host function',
+-      );
+-      const response = requestSyncHost(
+-        message,
+-        SyncBridgeRequestKind.HostFunction,
+-        hostFunctionName,
+-        inputJson,
+-      );
+-      return context.newString(
+-        response.success
+-          ? `\u0001${response.payload}`
+-          : `\u0000${JSON.stringify(response.error)}`,
+-      );
+-    },
++  const invokeSyncHostFunction = withQuickJSSlice(context, () =>
++    context.newFunction(
++      '__runInvokeSyncHostFunction',
++      (
++        hostFunctionNameHandle: JSValueHandle,
++        inputJsonHandle: JSValueHandle,
++      ) => {
++        admitBridgeRequestAttempt(message);
++        const hostFunctionName = hostFunctionNameHandle.toString();
++        const inputJson = inputJsonHandle.toString();
++        assertBridgeRequestSize(
++          message,
++          hostFunctionName,
++          inputJson,
++          'Host function',
++        );
++        const response = requestSyncHost(
++          message,
++          SyncBridgeRequestKind.HostFunction,
++          hostFunctionName,
++          inputJson,
++        );
++        return context.newString(
++          response.success
++            ? `\u0001${response.payload}`
++            : `\u0000${JSON.stringify(response.error)}`,
++        );
++      },
++    ),
+   );
+ 
+   return { invokeHostFunction, invokeSyncHostFunction };
+@@ -863,7 +927,13 @@ function requestSyncHost(
+   while (
+     Atomics.load(header, SyncBridgeHeader.State) === SyncBridgeState.Request
+   ) {
+-    Atomics.wait(header, SyncBridgeHeader.State, SyncBridgeState.Request);
++    const wait = () =>
++      Atomics.wait(header, SyncBridgeHeader.State, SyncBridgeState.Request);
++    if (activeExecutionBudget === undefined) {
++      wait();
++    } else {
++      activeExecutionBudget.waitForHost(wait);
++    }
+   }
+   if (
+     Atomics.load(header, SyncBridgeHeader.State) !== SyncBridgeState.Response
+@@ -906,7 +976,7 @@ function requestHost(
+   aggregateBridgeRequestCounter += 1;
+   bridgeRequestCounter += 1;
+   const requestId = `${invocationId}:bridge-${bridgeRequestCounter}`;
+-  const deferred = context.newPromise();
++  const deferred = withQuickJSSlice(context, () => context.newPromise());
+   pendingBridgeRequests.set(requestId, {
+     context,
+     deferred,
+@@ -934,17 +1004,19 @@ function resolveBridgeResponse(
+ ): void {
+   resetGuestDateNow(context, resetDateNow, message.dateNowMs);
+   if (message.success) {
+-    const value = context.newString(message.valueJson ?? '');
+-    deferred.resolve(value);
++    const value = withQuickJSSlice(context, () =>
++      context.newString(message.valueJson ?? ''),
++    );
++    withQuickJSSlice(context, () => deferred.resolve(value));
+     value.dispose();
+-    context.executePendingJobs();
++    withQuickJSSlice(context, () => context.executePendingJobs());
+     return;
+   }
+   const error = createBridgeErrorHandle(context, message.error);
+   registerBridgeError(context, registerTrustedError, error, message.error);
+-  deferred.reject(error);
++  withQuickJSSlice(context, () => deferred.reject(error));
+   error.dispose();
+-  context.executePendingJobs();
++  withQuickJSSlice(context, () => context.executePendingJobs());
+ }
+ 
+ function registerBridgeError(
+@@ -959,9 +1031,15 @@ function registerBridgeError(
+   const name = jsToHandle(context, serializedError?.name);
+   const code = jsToHandle(context, serializedError?.code);
+   try {
+-    context
+-      .callFunction(registerTrustedError, context.undefined, error, name, code)
+-      .dispose();
++    withQuickJSSlice(context, () =>
++      context.callFunction(
++        registerTrustedError,
++        context.undefined,
++        error,
++        name,
++        code,
++      ),
++    ).dispose();
+   } catch (registrationError) {
+     throw toError(dumpQuickJSError(context, registrationError));
+   } finally {
+@@ -978,10 +1056,12 @@ function resetGuestDateNow(
+   if (resetDateNow === undefined) {
+     return;
+   }
+-  const value = context.newNumber(dateNowMs);
++  const value = withQuickJSSlice(context, () => context.newNumber(dateNowMs));
+   try {
+     try {
+-      context.callFunction(resetDateNow, context.undefined, value).dispose();
++      withQuickJSSlice(context, () =>
++        context.callFunction(resetDateNow, context.undefined, value),
++      ).dispose();
+     } catch (error) {
+       throw toError(dumpQuickJSError(context, error));
+     }
+@@ -995,28 +1075,30 @@ function jsToHandle(context: QuickJS, value: unknown): JSValueHandle {
+     return context.null;
+   }
+   if (typeof value === 'string') {
+-    return context.newString(value);
++    return withQuickJSSlice(context, () => context.newString(value));
+   }
+   if (typeof value === 'number') {
+-    return context.newNumber(value);
++    return withQuickJSSlice(context, () => context.newNumber(value));
+   }
+   if (typeof value === 'boolean') {
+     return value ? context.true : context.false;
+   }
+   if (Array.isArray(value)) {
+-    const result = context.newArray();
++    const result = withQuickJSSlice(context, () => context.newArray());
+     for (const [index, item] of value.entries()) {
+       const handle = jsToHandle(context, item);
+-      context.setProp(result, String(index), handle);
++      withQuickJSSlice(context, () =>
++        context.setProp(result, String(index), handle),
++      );
+       handle.dispose();
+     }
+     return result;
+   }
+   if (typeof value === 'object') {
+-    const result = context.newObject();
++    const result = withQuickJSSlice(context, () => context.newObject());
+     for (const [key, item] of Object.entries(value)) {
+       const handle = jsToHandle(context, item);
+-      context.setProp(result, key, handle);
++      withQuickJSSlice(context, () => context.setProp(result, key, handle));
+       handle.dispose();
+     }
+     return result;
+@@ -1025,7 +1107,7 @@ function jsToHandle(context: QuickJS, value: unknown): JSValueHandle {
+ }
+ 
+ function drainPendingJobs(context: QuickJS): void {
+-  context.executePendingJobs();
++  withQuickJSSlice(context, () => context.executePendingJobs());
+ }
+ 
+ async function resolveQuickJSPromise(
+@@ -1033,7 +1115,9 @@ async function resolveQuickJSPromise(
+   promiseHandle: JSValueHandle,
+   assertActive: () => void,
+ ) {
+-  const resolved = context.resolvePromise(promiseHandle);
++  const resolved = withQuickJSSlice(context, () =>
++    context.resolvePromise(promiseHandle),
++  );
+   const notSettled = Symbol('not-settled');
+   for (;;) {
+     assertActive();
+@@ -1127,16 +1211,16 @@ function readTrustedErrorCode(
+ ): string | undefined {
+   let result: JSValueHandle;
+   try {
+-    result = context.callFunction(
+-      getTrustedErrorCode,
+-      context.undefined,
+-      error,
++    result = withQuickJSSlice(context, () =>
++      context.callFunction(getTrustedErrorCode, context.undefined, error),
+     );
+   } catch (readError) {
+     throw toError(dumpQuickJSError(context, readError));
+   }
+   try {
+-    return context.typeof(result) === 'string' ? result.toString() : undefined;
++    return withQuickJSSlice(context, () => context.typeof(result)) === 'string'
++      ? withQuickJSSlice(context, () => result.toString())
++      : undefined;
+   } finally {
+     result.dispose();
+   }
+@@ -1146,7 +1230,9 @@ function createBridgeErrorHandle(
+   context: QuickJS,
+   error: WorkerBridgeResponse['error'],
+ ): JSValueHandle {
+-  return context.newError(error?.message ?? 'Host bridge request failed.');
++  return withQuickJSSlice(context, () =>
++    context.newError(error?.message ?? 'Host bridge request failed.'),
++  );
+ }
+ 
+ function dumpQuickJSError(context: QuickJS, error: unknown): unknown {
+@@ -1164,20 +1250,25 @@ function dumpQuickJSErrorHandle(
+   context: QuickJS,
+   handle: JSValueHandle,
+ ): unknown {
+-  const dumped = context.dump(handle);
++  const dumped = withQuickJSSlice(context, () => context.dump(handle));
+   if (!(dumped instanceof Error)) {
+     return dumped;
+   }
+ 
+   for (const property of ['code', 'details'] as const) {
+-    const descriptor = handle.getOwnPropertyDescriptor(property);
++    const descriptor = withQuickJSSlice(context, () =>
++      handle.getOwnPropertyDescriptor(property),
++    );
+     if (descriptor?.value === undefined) {
+       descriptor?.get?.dispose();
+       descriptor?.set?.dispose();
+       continue;
+     }
+     try {
+-      const value = context.dump(descriptor.value);
++      const descriptorValue = descriptor.value;
++      const value = withQuickJSSlice(context, () =>
++        context.dump(descriptorValue),
++      );
+       if (property === 'code') {
+         Object.defineProperty(dumped, 'code', { enumerable: true, value });
+       } else {
+diff --git a/packages/run/src/types.ts b/packages/run/src/types.ts
+index c4e4ce5..951816e 100644
+--- a/packages/run/src/types.ts
++++ b/packages/run/src/types.ts
+@@ -65,6 +65,8 @@ export type HostFunctionManifest = ReadonlyMap<string, ReadonlySet<string>>;
+ export interface RunLimits {
+   /** @default `30_000` */
+   timeoutMs?: number;
++  /** Optional cumulative synchronous QuickJS budget; timeoutMs remains the wall cap. */
++  executionTimeoutMs?: number;
+   /** @default `64 * 1024 * 1024` */
+   memoryLimitBytes?: number;
+   /** @default `2 * 1024 * 1024` */
+@@ -289,6 +291,7 @@ export interface InternalRunInput extends RunInput<unknown> {
+ /** @internal */
+ export interface NormalizedRunOptions {
+   timeoutMs: number;
++  executionTimeoutMs?: number;
+   memoryLimitBytes: number;
+   maxStackSizeBytes: number;
+   maxResultBytes: number;
+diff --git a/packages/run/src/utils/options.ts b/packages/run/src/utils/options.ts
+index 7606a03..f85d882 100644
+--- a/packages/run/src/utils/options.ts
++++ b/packages/run/src/utils/options.ts
+@@ -32,6 +32,15 @@ const positiveInteger = (
+ export const normalizeOptions = (
+   limits: RunLimits = {},
+ ): NormalizedRunOptions => ({
++  ...(limits.executionTimeoutMs === undefined
++    ? {}
++    : {
++        executionTimeoutMs: positiveInteger(
++          limits.executionTimeoutMs,
++          DEFAULT_TIMEOUT_MS,
++          'limits.executionTimeoutMs',
++        ),
++      }),
+   maxBridgeRequests: positiveInteger(
+     limits.maxBridgeRequests,
+     DEFAULT_MAX_BRIDGE_REQUESTS,
