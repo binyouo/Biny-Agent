@@ -20,6 +20,8 @@ import {
 import { GLOBAL_CONFIG_FORMAT, GLOBAL_CONFIG_VERSION } from "./migrations.js";
 
 const agentSchema = z.object({
+  /** Opt-in read-only Code Mode; direct retains the complete normal tool surface. */
+  toolExecutionMode: z.enum(["direct", "code_mode"]).default("direct"),
   softStepLimit: z.number().int().min(1).max(100_000).default(32),
   hardStepLimit: z.number().int().min(1).max(100_000).default(96),
   maxToolCalls: z.number().int().min(1).max(100_000).optional(),
@@ -27,6 +29,7 @@ const agentSchema = z.object({
   maxConcurrentTools: z.number().int().min(1).max(32).default(4),
   maxQueuedToolCalls: z.number().int().min(1).max(1_024).default(64)
 }).strict().default({
+  toolExecutionMode: "direct",
   softStepLimit: 32,
   hardStepLimit: 96,
   maxToolCalls: undefined,
@@ -859,6 +862,7 @@ export const defaultConfig: AgentConfig = {
   },
   thinking: { enabled: false, effort: "high" },
   agent: {
+    toolExecutionMode: "direct",
     softStepLimit: 32,
     hardStepLimit: 96,
     maxToolCalls: undefined,

@@ -19,6 +19,9 @@ importers:
       '@ai-sdk/anthropic':
         specifier: 4.0.49
         version: 4.0.49(zod@3.25.76)
+      '@ai-sdk/code-mode':
+        specifier: 1.0.50
+        version: 1.0.50(ai@7.0.93(zod@3.25.76))(typescript@5.9.3)
       '@ai-sdk/google':
         specifier: 4.0.17
         version: 4.0.17(zod@3.25.76)
@@ -230,6 +233,12 @@ packages:
     engines: {node: '>=22'}
     peerDependencies:
       zod: ^3.25.76 || ^4.1.8
+
+  '@ai-sdk/code-mode@1.0.50':
+    resolution: {integrity: sha512-Xu+xUTSVfdwOshHVbBLUwxd2q1kpaVzWWAL4MJ1FCmjdEztKaPWKj2wXwPx/L5hSVhTSQBRpfOCxqdDrsW5InQ==}
+    engines: {node: '>=22.13.0'}
+    peerDependencies:
+      ai: 7.0.93
 
   '@ai-sdk/gateway@4.0.75':
     resolution: {integrity: sha512-HOnhw3oXtBnboBF7kAKipjToCN6+5w6EuukiUKiULcxBitS+vbHRRv9IUBcq+Z1wkXcJjfywKrt5r++I6OYyXg==}
@@ -3691,6 +3700,15 @@ packages:
     resolution: {integrity: sha512-nLTrUKm2UyiL7rlhapu/Zl45FwNgkZGaCpZbIHajDYgwlJCOzLSk+cIPAnsEqV955GjILJnKbdQC1nVPz+gAYQ==}
     engines: {node: '>= 18'}
 
+  run@2.1.6:
+    resolution: {integrity: sha512-Ulhok3ygbOFEPhL4wWl3RH8yY2arntmJ/Xhi9KI6MzNKNIn/OwazV7cTtxniTkD1lpztcaxkUsCz0hPDblT8DA==}
+    engines: {node: '>=20.19.0'}
+    peerDependencies:
+      typescript: '>=5.1.6 <7'
+    peerDependenciesMeta:
+      typescript:
+        optional: true
+
   rw@1.3.3:
     resolution: {integrity: sha512-PdhdWy89SiZogBLaw42zdeqtRJ//zFd2PgQavcICDUgJT5oW10QCRKbJ6bg4r0/UY2M6BWd5tkxuGFRvCkgfHQ==}
 
@@ -4251,6 +4269,13 @@ snapshots:
       '@ai-sdk/provider': 4.0.10
       '@ai-sdk/provider-utils': 5.0.36(zod@3.25.76)
       zod: 3.25.76
+
+  '@ai-sdk/code-mode@1.0.50(ai@7.0.93(zod@3.25.76))(typescript@5.9.3)':
+    dependencies:
+      ai: 7.0.93(zod@3.25.76)
+      run: 2.1.6(typescript@5.9.3)
+    transitivePeerDependencies:
+      - typescript
 
   '@ai-sdk/gateway@4.0.75(zod@3.25.76)':
     dependencies:
@@ -8114,6 +8139,10 @@ snapshots:
       path-to-regexp: 8.4.2
     transitivePeerDependencies:
       - supports-color
+
+  run@2.1.6(typescript@5.9.3):
+    optionalDependencies:
+      typescript: 5.9.3
 
   rw@1.3.3: {}
 

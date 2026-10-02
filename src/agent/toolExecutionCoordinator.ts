@@ -45,6 +45,7 @@ import { resolveWorkspacePath, toWorkspaceRelative } from "../workspace/resolveP
 import type { ReasoningBlock, SessionEvent } from "../session/recorder.js";
 import { archiveToolResult, serializeToolResult, toolResultPreview } from "../session/toolResultArchive.js";
 import { projectSingleToolResultForModel } from "./toolResultProjection.js";
+import { codeModeCatalog, codeModeNestedToolNames, codeModePolicy, executeCodeModeCell } from "./codeMode.js";
 import type {
   AgentPermissionRequest,
   AgentPermissionResult,
@@ -105,6 +106,7 @@ export interface AgentStepContext {
 interface ToolCallExecutionOptions {
   toolCallId: string;
   abortSignal?: AbortSignal;
+  auditOnly?: boolean;
 }
 
 /**
@@ -149,7 +151,8 @@ export interface ToolBudgetRejection {
 export class ToolExecutionCoordinator {
   private readonly admissionScheduler: ToolScheduler<unknown>;
   private readonly scheduler: ToolScheduler<ToolExecutionOutcome>;
-  private readonly pendingExecutions = new Set<Promise<unknown>>();
+  private readonly pendingExecutions = new Map<Promise<unknown>, string>();
+  private readonly quarantinedCodeModeChildIds = new Set<string>();
   private readonly observedToolCallCounts = new Map<string, number>();
   private readonly duplicateToolCallIds = new Set<string>();
   private readonly duplicateExecutionCounts = new Map<string, number>();
@@ -173,6 +176,7 @@ export class ToolExecutionCoordinator {
   private readonly uncertainExecutions = new Map<string, string>();
   private readonly toolImages = new Map<string, AgentImageContent>();
   private imageBytes = 0;
+  private codeModeCellActive = false;
 
   constructor(
     private readonly context: AgentRuntimeContext,
@@ -228,7 +232,7 @@ export class ToolExecutionCoordinator {
   }
 
   /** Model-facing tool envelope. */
-  createAgentTools(editing?: { mode: EditingMode; attachmentRoot?: string }): AgentTool[] {
+  createAgentTools(editing?: { mode: EditingMode; attachmentRoot?: string }, options?: { auditOnly?: boolean }): AgentTool[] {
     let entries = this.context.toolRegistry.listEntries()
       .filter(({ tool: registered }) => !this.allowedToolNames || this.allowedToolNames.has(registered.name));
     if (editing) {
@@ -248,9 +252,9 @@ export class ToolExecutionCoordinator {
           const result = await this.trackExecution(this.execute(
             registered,
             args,
-            { toolCallId, abortSignal: signal },
+            { toolCallId, abortSignal: signal, auditOnly: options?.auditOnly },
             source
-          ));
+          ), toolCallId);
           const error = failedToolResultMessage(result);
           const image = this.toolImages.get(toolCallId);
           this.toolImages.delete(toolCallId);
@@ -264,9 +268,99 @@ export class ToolExecutionCoordinator {
       }));
   }
 
+  /** Outer Code Mode admission is separate from the child scheduler: a cell
+   * holding its only slot would deadlock when maxConcurrentTools is one. */
+  createCodeModeTool(editing?: { mode: EditingMode; attachmentRoot?: string }, executionPolicy?: Readonly<typeof codeModePolicy>): AgentTool {
+    const builtin = new Set(this.context.toolRegistry.listEntries()
+      .filter((entry) => entry.source === "builtin")
+      .map((entry) => entry.tool.name));
+    const visible = this.createAgentTools(editing).filter((entry) =>
+      codeModeNestedToolNames.has(entry.name) && builtin.has(entry.name));
+    return {
+      name: "exec",
+      description: "Run isolated JavaScript to combine selected read-only Biny tools. No filesystem, network, process, imports, writes, or desktop access. Switch to direct mode for other actions. Return a JSON-serializable value.",
+      promptSnippet: `Run isolated JavaScript with selected read-only tools.* calls. The only nested tools available now are:\n${codeModeCatalog(visible) || "(none selected)"}`,
+      promptGuidelines: ["Inside exec, use only the listed tools.* functions. Return the result. Never retry an entire cell after a partial failure; inspect child outcomes first."],
+      parameters: { type: "object", properties: { code: { type: "string", minLength: 1, maxLength: 65_536 } }, required: ["code"], additionalProperties: false },
+      executionMode: "sequential",
+      execute: async (toolCallId, args, signal) => {
+        const sequence = this.nextSequence();
+        const operationId = createToolOperationId(this.context.recorder.sessionId, toolCallId);
+        const step = this.getStepContext();
+        await this.recordAndFlush({ type: "tool_call", tool: "exec", toolCallId, args, sequence,
+          assistantContent: step.assistantContent, reasoningContent: step.reasoningContent,
+          reasoningProviderOptions: step.reasoningProviderOptions, reasoningBlocks: step.reasoningBlocks });
+        await this.recordAndFlush({ type: "tool_execution", tool: "exec", toolCallId, sequence, operationId, state: "not_started", retrySafety: "unsafe" });
+        this.emit({ type: "tool.started", tool: "exec", toolCallId, args: { sourceBytes: Buffer.byteLength(String(args.code ?? "")) }, operationId });
+        let result: unknown;
+        let error: string | undefined;
+        let status: ToolExecutionResultStatus = "succeeded";
+        if (this.duplicateToolCallIds.has(toolCallId)) {
+          error = `Duplicate exec tool call id: ${toolCallId}`;
+          result = { ok: false, error, childCalls: [] };
+          status = "failed";
+        } else if (typeof args.code !== "string" || !args.code.length || Buffer.byteLength(args.code) > codeModePolicy.maxSourceBytes) {
+          error = "exec requires non-empty code of at most 64 KiB.";
+          result = { ok: false, error, childCalls: [] };
+          status = "failed";
+        } else if (signal?.aborted) {
+          error = "exec was cancelled before starting.";
+          result = { ok: false, error, childCalls: [] };
+          status = "cancelled";
+        } else if (this.uncertainExecutions.size > 0) {
+          error = "A previous tool outcome is unknown. Inspect it before running another Code Mode cell.";
+          result = { ok: false, error, childCalls: [] };
+          status = "failed";
+        } else if (this.codeModeCellActive) {
+          error = "Another Code Mode cell is still running.";
+          result = { ok: false, error, childCalls: [] };
+          status = "failed";
+        } else {
+          this.codeModeCellActive = true;
+          try {
+            const current = new Map(this.context.toolRegistry.listEntries().map((entry) => [entry.tool.name, entry] as const));
+            const children = this.createAgentTools(editing, { auditOnly: true }).filter((entry) =>
+              codeModeNestedToolNames.has(entry.name) && current.get(entry.name)?.source === "builtin");
+            const original = new Map(children.map((entry) => [entry.name, current.get(entry.name)?.tool] as const));
+            await this.recordAndFlush({ type: "tool_execution", tool: "exec", toolCallId, sequence, operationId, state: "running", retrySafety: "unsafe" });
+            result = await executeCodeModeCell({
+              code: args.code, parentToolCallId: toolCallId, tools: children, signal, executionPolicy,
+              onUnsettled: (operations) => {
+                for (const { toolCallId: id, settlement } of operations) {
+                  this.quarantinedCodeModeChildIds.add(id);
+                  this.context.quarantineExternalTool?.("Code Mode child", id, settlement);
+                }
+              },
+              isCurrent: (name) => this.context.toolRegistry.listEntries().some((entry) =>
+                entry.source === "builtin" && entry.tool.name === name && entry.tool === original.get(name)
+                && (!this.allowedToolNames || this.allowedToolNames.has(name)))
+            });
+            if (!(result as { ok: boolean }).ok) {
+              error = (result as { error?: string }).error ?? "Code Mode execution failed.";
+              status = (result as { outcomeUnknown?: boolean }).outcomeUnknown || this.uncertainExecutions.size
+                ? "unknown" : signal?.aborted ? "cancelled" : "failed";
+              if (status === "unknown") this.uncertainExecutions.set(operationId, "exec");
+            }
+          } finally {
+            this.codeModeCellActive = false;
+          }
+        }
+        await this.recordAndFlush({ type: "tool_execution", tool: "exec", toolCallId, sequence, operationId,
+          state: status === "succeeded" ? "succeeded" : status === "cancelled" ? "cancelled" : status === "unknown" ? "unknown" : "failed", retrySafety: "unsafe", evidence: error,
+          outcomeUnknownReason: status === "unknown" ? "unsettled_previous_invocation" : undefined });
+        const modelResult = await this.finishSyntheticCall({ id: toolCallId, name: "exec", args }, sequence,
+          { ...(result as object), operationId, executionStatus: status }, error,
+          { executionStatus: status, operationId, outcomeUnknownReason: status === "unknown" ? "unsettled_previous_invocation" : undefined });
+        return { content: [{ type: "text", text: serializeToolResult(modelResult) }], details: modelResult, isError: status !== "succeeded" };
+      }
+    };
+  }
+
   async waitForIdle(): Promise<void> {
     while (this.pendingExecutions.size > 0) {
-      await Promise.allSettled([...this.pendingExecutions]);
+      const waitable = [...this.pendingExecutions].filter(([, id]) => !this.quarantinedCodeModeChildIds.has(id)).map(([execution]) => execution);
+      if (!waitable.length) return;
+      await Promise.allSettled(waitable);
     }
   }
 
@@ -389,7 +483,8 @@ export class ToolExecutionCoordinator {
       assistantContent: stepContext.assistantContent,
       reasoningContent: stepContext.reasoningContent,
       reasoningProviderOptions: stepContext.reasoningProviderOptions,
-      reasoningBlocks: stepContext.reasoningBlocks
+      reasoningBlocks: stepContext.reasoningBlocks,
+      auditOnly: options.auditOnly
     });
     let latestState: ToolExecutionState = "not_started";
     let latestEvidence: string | undefined;
@@ -494,7 +589,7 @@ export class ToolExecutionCoordinator {
             executionStatus: status,
             operationId,
             evidence: latestEvidence,
-            auditOnly: auditOnly || neverStarted && status === "cancelled",
+            auditOnly: options.auditOnly || auditOnly || neverStarted && status === "cancelled",
             outcomeUnknownReason
           }
         );
@@ -1383,11 +1478,11 @@ export class ToolExecutionCoordinator {
     return `${toolCallId}:duplicate:${String(count)}:${String(sequence)}`;
   }
 
-  private trackExecution<T>(execution: Promise<T>): Promise<T> {
-    this.pendingExecutions.add(execution);
+  private trackExecution<T>(execution: Promise<T>, toolCallId: string): Promise<T> {
+    this.pendingExecutions.set(execution, toolCallId);
     void execution.then(
-      () => this.pendingExecutions.delete(execution),
-      () => this.pendingExecutions.delete(execution)
+      () => { this.pendingExecutions.delete(execution); this.quarantinedCodeModeChildIds.delete(toolCallId); },
+      () => { this.pendingExecutions.delete(execution); this.quarantinedCodeModeChildIds.delete(toolCallId); }
     );
     return execution;
   }
