@@ -455,8 +455,11 @@ export class TemporalMemoryIndex {
       query.sessionIds === undefined ? null : JSON.stringify(query.sessionIds), query.endDate, query.startDate, limit + 1, offset) as Array<Record<string, unknown>>;
     const unread = query.today ? Number((db.prepare(
       "SELECT COUNT(*) AS total FROM temporal_clues c WHERE c.ignored=0 AND c.date<=? AND COALESCE(c.end_date,c.date)>=? " +
-      "AND NOT EXISTS(SELECT 1 FROM temporal_seen v WHERE v.clue_id=c.id AND v.day=?)"
-    ).get(query.today, query.today, query.today) as { total: number }).total) : 0;
+      "AND NOT EXISTS(SELECT 1 FROM temporal_seen v WHERE v.clue_id=c.id AND v.day=?) " +
+      "AND (? IS NULL OR c.session_id=?) AND (? IS NULL OR c.session_id IN (SELECT value FROM json_each(?)))"
+    ).get(query.today, query.today, query.today, query.sessionId ?? null, query.sessionId ?? null,
+      query.sessionIds === undefined ? null : JSON.stringify(query.sessionIds),
+      query.sessionIds === undefined ? null : JSON.stringify(query.sessionIds)) as { total: number }).total) : 0;
     return {
       clues: rows.slice(0, limit).map((row) => ({
         id: String(row.id), sessionId: String(row.session_id), messageId: String(row.message_id),
