@@ -73,6 +73,8 @@ export interface ApprovedFileSnapshot {
 }
 
 export interface ToolExecutionContext {
+  /** Host-selected discovery surface; tool arguments cannot widen Code Mode's catalog. */
+  toolDiscoveryMode?: "code_mode";
   /** 当前审批权威的显式路径禁令；命令子进程必须通过系统沙箱执行这些限制。 */
   deniedPaths?: readonly string[];
   toolCallId: string;

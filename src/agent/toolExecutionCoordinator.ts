@@ -185,7 +185,8 @@ export class ToolExecutionCoordinator {
     private readonly getStepContext: () => AgentStepContext = () => ({}),
     allowedToolNames?: ReadonlySet<string>,
     private readonly executionBudget?: ToolExecutionBudget,
-    private readonly onToolResultPersisted?: () => Promise<void>
+    private readonly onToolResultPersisted?: () => Promise<void>,
+    private readonly getToolExecutionMode?: () => "direct" | "code_mode"
   ) {
     this.allowedToolNames = allowedToolNames ? new Set(allowedToolNames) : undefined;
     if (executionBudget) {
@@ -278,7 +279,7 @@ export class ToolExecutionCoordinator {
       codeModeNestedToolNames.has(entry.name) && builtin.has(entry.name));
     return {
       name: "exec",
-      description: "Run isolated JavaScript to combine selected read-only Biny tools. No filesystem, network, process, imports, writes, or desktop access. Switch to direct mode for other actions. Return a JSON-serializable value.",
+      description: "Run isolated JavaScript with selected read-only Biny tools, including shared memory and cross-project conversation history when available. Nested calls use normal permissions. No direct filesystem, network, process, imports, writes, or desktop access. Switch to direct mode for other actions. Return a JSON-serializable value.",
       promptSnippet: `Run isolated JavaScript with selected read-only tools.* calls. The only nested tools available now are:\n${codeModeCatalog(visible) || "(none selected)"}`,
       promptGuidelines: ["Inside exec, use only the listed tools.* functions. Return the result. Never retry an entire cell after a partial failure; inspect child outcomes first."],
       parameters: { type: "object", properties: { code: { type: "string", minLength: 1, maxLength: 65_536 } }, required: ["code"], additionalProperties: false },
@@ -1183,6 +1184,7 @@ export class ToolExecutionCoordinator {
         let pending: Promise<unknown>;
         try {
           pending = execution.execute({
+            toolDiscoveryMode: (this.getToolExecutionMode?.() ?? this.context.config.agent.toolExecutionMode) === "code_mode" ? "code_mode" : undefined,
             deniedPaths: this.permissionManager.getDeniedPaths(),
             toolCallId: call.id,
             operationId: operationId ?? createToolOperationId(this.context.recorder.sessionId, call.id),

@@ -23,8 +23,8 @@ export interface SearchHistoryDeps {
 export function createHistoryTools(deps: SearchHistoryDeps): Tool[] {
   return [{
     name: "search_history",
-    description: "Full-text search past conversation transcripts (what was actually said, not extracted facts). Use when the user references an earlier conversation, decision or wording and the memory library has no matching entry.",
-    promptSnippet: "Search past conversation transcripts by keyword",
+    description: "Full-text search past conversation transcripts across projects (what was actually said, not extracted facts). Use when the user references an earlier conversation, decision or wording and the memory library has no matching entry.",
+    promptSnippet: "Search past conversations across projects by keyword",
     parameters: {
       type: "object",
       properties: {
