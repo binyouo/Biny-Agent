@@ -125,11 +125,14 @@ function createRecallMemoryTool(
         display: { kind: "generic" as const, summary: "Recall memory", detail: query },
         description: `Search memory for: ${query}`,
         approvalRule: "recall_memory",
-        async execute(): Promise<unknown> {
+        async execute({ signal }): Promise<unknown> {
+          signal?.throwIfAborted();
           const memory = getMemory();
           if (!memory) throw new Error("Local memory is unavailable.");
           if (!searchMemory) throw new Error("Semantic memory search is unavailable.");
-          return await searchMemory(query, [], { tags, threadId, limit: limit ?? 5, threshold: threshold ?? 0.3 });
+          const result = await searchMemory(query, [], { tags, threadId, limit: limit ?? 5, threshold: threshold ?? 0.3, signal });
+          signal?.throwIfAborted();
+          return result;
         }
       };
     }

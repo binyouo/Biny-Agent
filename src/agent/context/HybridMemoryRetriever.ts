@@ -48,7 +48,7 @@ export interface HybridMemoryRetrieverOptions {
   getReadOnlyVectorIndex: () => MemoryVectorSearchIndex | undefined;
   /** 命中条目必须达到的最低相似度。 */
   getThreshold: (fingerprint: string, recommended: number) => number;
-  rewriteQuery?: (query: string, signal?: AbortSignal) => Promise<string>;
+  rewriteQuery?: (query: string, signal?: AbortSignal, options?: { awaitModelSettlementOnAbort: boolean }) => Promise<string>;
   queryRewriteEnabled?: () => boolean;
   allowEntry?: (entry: MemoryEntry) => boolean;
   closeVectorIndex?: boolean;
@@ -100,6 +100,7 @@ export class HybridMemoryRetriever {
     const listPerfStartedAt = perfNow();
     const snapshot = await this.options.localMemory.listMemoryEntries({ signal: options.signal });
     recordPerfPhase("memory.listEntries", listPerfStartedAt);
+    options.signal?.throwIfAborted();
     const safeQuery = redactSecrets(query).trim();
     if (!snapshot.entries.length || options.limit < 1) return {
       ...emptySearchResult(snapshot), originalQuery: safeQuery
@@ -112,8 +113,10 @@ export class HybridMemoryRetriever {
         && (options.allowEntry?.(entry) ?? true)).map((entry) => entry.id))
       : undefined;
     const semanticPerfStartedAt = perfNow();
-    const semantic = await this.semanticSearch(safeQuery, options.limit, options.signal, options.threshold, options.rewriteQuery, eligibleEntryIds);
+    const semantic = await this.semanticSearch(safeQuery, options.limit, options.signal, options.threshold, options.rewriteQuery,
+      eligibleEntryIds, options.automatic !== true);
     recordPerfPhase("memory.semantic", semanticPerfStartedAt, { available: semantic.available });
+    options.signal?.throwIfAborted();
     const byId = new Map(snapshot.entries.map((entry) => [entry.id, entry]));
     // 手动查询在 top-K 后过滤且不补位；自动召回在向量查询前已经限定可注入集合。
     const selected = semantic.results.filter(({ entryId }) => {
@@ -123,7 +126,9 @@ export class HybridMemoryRetriever {
         && (this.options.allowEntry?.(entry) ?? true)
         && (options.allowEntry?.(entry) ?? true);
     });
+    options.signal?.throwIfAborted();
     if (selected.length) await this.options.localMemory.recordRecallUsage(selected.map(({ entryId }) => entryId), { signal: options.signal });
+    options.signal?.throwIfAborted();
 
     return {
       ...rankHybridMemory({
@@ -143,14 +148,20 @@ export class HybridMemoryRetriever {
     };
   }
 
-  private async rewrite(query: string, signal?: AbortSignal): Promise<string> {
+  private async rewrite(query: string, signal?: AbortSignal, awaitModelSettlementOnAbort = true): Promise<string> {
+    signal?.throwIfAborted();
     if (!query || !this.options.rewriteQuery) return query;
     const timeout = AbortSignal.timeout(queryRewriteTimeoutMs);
     const rewriteSignal = signal === undefined ? timeout : AbortSignal.any([signal, timeout]);
     const startedAt = perfNow();
     try {
-      const rewritten = (await raceWithAbort(this.options.rewriteQuery(query, rewriteSignal), rewriteSignal))
+      const operation = this.options.rewriteQuery(query, rewriteSignal, { awaitModelSettlementOnAbort });
+      // Manual recall keeps the tool pending so Code Mode can quarantine an ignored abort.
+      // Automatic prompt preparation retains its existing responsive cancellation behavior.
+      const rewritten = (await (awaitModelSettlementOnAbort ? operation : raceWithAbort(operation, rewriteSignal)))
         .trim().replace(/\s+/gu, " ").slice(0, 1_000);
+      rewriteSignal.throwIfAborted();
+      signal?.throwIfAborted();
       return rewritten || query;
     } catch {
       signal?.throwIfAborted();
@@ -178,8 +189,10 @@ export class HybridMemoryRetriever {
     signal?: AbortSignal,
     thresholdOverride?: number,
     rewriteOverride?: boolean,
-    entryIds?: ReadonlySet<string>
+    entryIds?: ReadonlySet<string>,
+    awaitRewriteSettlementOnAbort = true
   ): Promise<{ available: boolean; results: MemoryVectorSearchResult[]; rewrittenQuery?: string; degraded?: MemoryRecallDegraded }> {
+    signal?.throwIfAborted();
     if (!query) return { available: false, results: [] };
     let rewritten = query;
     let rewrittenQuery: string | undefined;
@@ -188,12 +201,15 @@ export class HybridMemoryRetriever {
       // 先排除缺失、空或不兼容的索引，再启动改写和 embedding；自动召回仍保持 fail closed，
       // 但每个失败点都带出降级原因，供界面主动提示而不是静默为空。
       const index = this.vectorIndex ?? this.options.getReadOnlyVectorIndex();
+      signal?.throwIfAborted();
       if (!index) return { available: false, results: [], degraded: "no_vector_index" };
       this.vectorIndex = index;
       const active = index.status().active;
+      signal?.throwIfAborted();
       if (!active || active.vectorCount < 1) return { available: false, results: [], degraded: "no_vector_index" };
       failureReason = "no_embedding_runtime";
       const runtime = await this.options.getEmbeddingRuntime();
+      signal?.throwIfAborted();
       if (!runtime) return { available: false, results: [], degraded: "no_embedding_runtime" };
       if (
         active.modelFingerprint !== runtime.descriptor.fingerprint
@@ -201,9 +217,10 @@ export class HybridMemoryRetriever {
       ) return { available: false, results: [], degraded: "model_mismatch" };
       signal?.throwIfAborted();
       if (rewriteOverride ?? this.options.queryRewriteEnabled?.() ?? true) {
-        rewritten = await this.rewrite(query, signal);
+        rewritten = await this.rewrite(query, signal, awaitRewriteSettlementOnAbort);
         rewrittenQuery = rewritten;
       }
+      signal?.throwIfAborted();
       const embedded = await runtime.embed({ texts: [rewritten], inputType: "query", signal });
       signal?.throwIfAborted();
       const queryVector = embedded.embeddings[0];
@@ -223,6 +240,7 @@ export class HybridMemoryRetriever {
         minimumSimilarity: threshold,
         entryIds
       });
+      signal?.throwIfAborted();
       return { available: true, rewrittenQuery, results };
     } catch (error) {
       signal?.throwIfAborted();
@@ -307,10 +325,20 @@ function emptySearchResult(snapshot: MemoryEntriesResult): MemorySearchResult {
 }
 
 function raceWithAbort<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
-  if (signal.aborted) return Promise.reject(signal.reason);
   return new Promise<T>((resolve, reject) => {
-    const abort = (): void => reject(signal.reason);
-    signal.addEventListener("abort", abort, { once: true });
-    void promise.then(resolve, reject).finally(() => signal.removeEventListener("abort", abort));
+    const abort = (): void => {
+      signal.removeEventListener("abort", abort);
+      reject(signal.reason);
+    };
+    // Observe late settlement even when the rewrite callback aborted synchronously.
+    void promise.then((value) => {
+      signal.removeEventListener("abort", abort);
+      resolve(value);
+    }, (error: unknown) => {
+      signal.removeEventListener("abort", abort);
+      reject(error);
+    });
+    if (signal.aborted) abort();
+    else signal.addEventListener("abort", abort, { once: true });
   });
 }

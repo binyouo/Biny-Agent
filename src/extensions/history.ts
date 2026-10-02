@@ -17,7 +17,7 @@ const searchHistorySchema = z.object({
 export interface SearchHistoryDeps {
   getIndex: () => SessionSearchIndex | undefined;
   /** 检索前先增量刷新当前会话，保证本回合消息立即可搜。 */
-  flushCurrentSession?: () => Promise<void>;
+  flushCurrentSession?: (signal?: AbortSignal) => Promise<void>;
 }
 
 export function createHistoryTools(deps: SearchHistoryDeps): Tool[] {
@@ -50,12 +50,17 @@ export function createHistoryTools(deps: SearchHistoryDeps): Tool[] {
         display: { kind: "generic" as const, summary: "Search history", detail: query },
         description: `Search conversation transcripts for: ${query}`,
         approvalRule: "search_history",
-        async execute(): Promise<unknown> {
+        async execute({ signal }): Promise<unknown> {
+          signal?.throwIfAborted();
           const index = deps.getIndex();
+          signal?.throwIfAborted();
           if (!index) throw new Error("Session history search is unavailable.");
-          await deps.flushCurrentSession?.();
-          await index.refreshAll({ maxAgeMs: sessionSearchRefreshMaxAgeMs });
-          const hits = index.search(query, { limit: limit ?? 8 });
+          await deps.flushCurrentSession?.(signal);
+          signal?.throwIfAborted();
+          await index.refreshAll({ maxAgeMs: sessionSearchRefreshMaxAgeMs, signal });
+          signal?.throwIfAborted();
+          const hits = index.search(query, { limit: limit ?? 8, signal });
+          signal?.throwIfAborted();
           return { query, hits };
         }
       };
