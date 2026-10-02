@@ -134,6 +134,9 @@ jobs:
       - name: Build desktop
         run: pnpm build:desktop
 
+      - name: Test packaged Code Mode runtime
+        run: pnpm test:code-mode-package
+
   validate:
     name: Validate
     if: ${{ always() }}
