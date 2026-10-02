@@ -2,8 +2,9 @@ import { CodeModeToolError, experimental_runCodeMode } from "@ai-sdk/code-mode";
 import { jsonSchema, tool } from "ai";
 import type { AgentTool, AgentToolResult } from "./core/types.js";
 
-/** Code Mode is deliberately limited to reviewed, built-in, read-only tools. */
-export const codeModeNestedToolNames = new Set(["Read", "Glob", "Grep", "read_tool_result", "recall_memory", "search_history"]);
+/** Names are a VM surface bound; host registration provenance is checked separately. */
+export const codeModeNestedToolNames = new Set(["Read", "Glob", "Grep", "read_tool_result", "recall_memory", "search_history",
+  "TaskStatus", "skill_lookup"]);
 
 export const codeModePolicy = Object.freeze({
   /** Cumulative synchronous VM execution, excluding host/approval waits. */
