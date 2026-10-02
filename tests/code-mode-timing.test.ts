@@ -1,6 +1,6 @@
 /** VM execution and normal host/approval waits have independent finite budgets. */
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { performance } from "node:perf_hooks";
@@ -14,6 +14,7 @@ import { PermissionManager } from "../src/permission/PermissionManager.js";
 import { SessionRecorder } from "../src/session/recorder.js";
 import { ensureAgentDirs } from "../src/session/store.js";
 import { ToolRegistry } from "../src/tools/registry.js";
+import { exerciseCodeModeApprovalGate } from "../scripts/code-mode-approval-fixture.mjs";
 
 const policy = { ...codeModePolicy, timeoutMs: 100, hostCallTimeoutMs: 1_000, maxCellDurationMs: 2_000 };
 const value = (details: unknown): AgentToolResult => ({ content: [], details });
@@ -143,51 +144,10 @@ for (const pendingHost of [false, true]) {
 // Exercise Biny's real approval gate, audit path and scheduler after a long wait.
 {
   const root = await mkdtemp(path.join(os.tmpdir(), "biny-code-mode-approval-timing-"));
-  await ensureAgentDirs(root);
-  const recorder = new SessionRecorder(root, "approval-timing");
-  const registry = new ToolRegistry();
-  let calls = 0;
-  let approvals = 0;
-  registry.register({ name: "search_history", description: "Read fixture history", risk: "read", capability: "memory.read",
-    parameters: { type: "object", properties: { query: { type: "string" } }, required: ["query"], additionalProperties: false },
-    schema: z.object({ query: z.string() }),
-    resolveExecution: () => ({ approvalRule: "search_history", async execute() { calls++; return { hits: [] }; } }) });
-  const config = structuredClone(defaultConfig);
-  config.agent.toolExecutionMode = "code_mode";
-  config.permission.mode = "ask";
-  config.permission.allowTools = [];
   try {
-    const coordinator = new ToolExecutionCoordinator({ workspaceRoot: root, config, recorder, toolRegistry: registry,
-      confirmPermission: async () => { approvals++; await delay(250); return { approved: true, scope: "once" }; } },
-    new PermissionManager(config.permission), () => undefined, () => ({}), new Set(["search_history"]));
-    const result = await coordinator.createCodeModeTool(undefined, policy).execute("approved-after-wait", {
-      code: "return (await tools.search_history({query:'fixture'})).hits.length;"
-    });
-    assert.equal(result.isError, false, JSON.stringify(result.details));
-    assert.equal((result.details as { value?: number }).value, 0);
-    assert.equal(approvals, 1);
-    assert.equal(calls, 1);
-    await coordinator.waitForIdle();
-    await recorder.flush();
-    const events = (await readFile(recorder.filePath, "utf8")).trim().split("\n")
-      .map((line) => JSON.parse(line) as { type: string; toolCallId?: string; auditOnly?: boolean });
-    assert.equal(events.filter((event) => event.type === "tool_call" && event.toolCallId === "approved-after-wait:nested:1").length, 1);
-    assert.equal(events.filter((event) => event.type === "tool_result" && event.toolCallId === "approved-after-wait:nested:1" && event.auditOnly).length, 1);
-
-    // A real approval may resolve after its host deadline, but cannot dispatch late.
-    const deadlineCoordinator = new ToolExecutionCoordinator({ workspaceRoot: root, config, recorder, toolRegistry: registry,
-      confirmPermission: async () => { approvals++; await delay(300); return { approved: true, scope: "once" }; } },
-    new PermissionManager(config.permission), () => undefined, () => ({}), new Set(["search_history"]));
-    const beforeDeadline = calls;
-    const deniedByTime = await deadlineCoordinator.createCodeModeTool(undefined, { ...policy, hostCallTimeoutMs: 150 }).execute("approval-deadline", {
-      code: "return await tools.search_history({query:'late approval'});"
-    });
-    assert.equal(deniedByTime.isError, true);
-    assert.match((deniedByTime.details as { error?: string }).error ?? "", /host\/approval deadline/u);
-    await delay(350);
-    assert.equal(calls, beforeDeadline, "a late approval must not execute the cancelled tool");
-    await deadlineCoordinator.waitForIdle();
-  } finally { await recorder.close(); await rm(root, { recursive: true, force: true }); }
+    await exerciseCodeModeApprovalGate({ workspace: root, policy, idPrefix: "source",
+      ToolExecutionCoordinator, defaultConfig, PermissionManager, SessionRecorder, ensureAgentDirs, ToolRegistry, z });
+  } finally { await rm(root, { recursive: true, force: true }); }
 }
 
 console.log("code mode timing tests passed");

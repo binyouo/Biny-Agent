@@ -1,0 +1,5 @@
+# A unified diff uses one space for a blank context line. Preserve that syntax.
+# Exempt only blank-at-eol in these reviewed diff artifacts, never source files.
+/patches/@ai-sdk-code-mode@1.0.50.patch whitespace=-blank-at-eol
+/patches/runtime-timing/code-mode-1.0.50-source.diff whitespace=-blank-at-eol
+/patches/runtime-timing/run-2.1.6-source.diff whitespace=-blank-at-eol

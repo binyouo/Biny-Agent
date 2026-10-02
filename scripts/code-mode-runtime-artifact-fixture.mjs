@@ -1,11 +1,12 @@
 /** Plain-Node behavioral probe. Every application import is compiled artifact code. */
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { createRequire, register } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
+import { exerciseCodeModeApprovalGate } from "./code-mode-approval-fixture.mjs";
 
 function argument(name, fallback) {
   const index = process.argv.indexOf(name);
@@ -206,46 +207,8 @@ try {
           compiled("session/recorder.js"), compiled("session/store.js"), compiled("tools/registry.js")]);
         const requireFrom = createRequire(path.join(root, "package.json"));
         const { z } = requireFrom("zod");
-        const workspace = path.join(temporary, "approval-workspace");
-        await mkdir(workspace, { recursive: true });
-        await ensureAgentDirs(workspace);
-        const recorder = new SessionRecorder(workspace, "artifact-approval");
-        const registry = new ToolRegistry();
-        let calls = 0;
-        let approvals = 0;
-        registry.register({ name: "search_history", description: "Fixture history", risk: "read", capability: "memory.read",
-          parameters: { type: "object", properties: { query: { type: "string" } }, required: ["query"], additionalProperties: false },
-          schema: z.object({ query: z.string() }), resolveExecution: () => ({ approvalRule: "search_history", execute: async () => { calls++; return { hits: [] }; } }) });
-        const config = structuredClone(defaultConfig);
-        config.agent.toolExecutionMode = "code_mode";
-        config.permission.mode = "ask";
-        config.permission.allowTools = [];
-        const coordinator = approvalDelay => new ToolExecutionCoordinator({ workspaceRoot: workspace, config, recorder, toolRegistry: registry,
-          confirmPermission: async () => { approvals++; await delay(approvalDelay); return { approved: true, scope: "once" }; } },
-        new PermissionManager(config.permission), () => undefined, () => ({}), new Set(["search_history"]));
-        try {
-          const approved = coordinator(250);
-          const result = await approved.createCodeModeTool(undefined, policy).execute("artifact-approved", {
-            code: "return (await tools.search_history({query:'fixture'})).hits.length;" });
-          assert.equal(result.isError, false, JSON.stringify(result.details));
-          assert.equal(result.details.value, 0);
-          assert.equal(approvals, 1);
-          assert.equal(calls, 1);
-          await approved.waitForIdle();
-          await recorder.flush();
-          const events = (await readFile(recorder.filePath, "utf8")).trim().split("\n").map(line => JSON.parse(line));
-          assert.equal(events.filter(event => event.type === "tool_call" && event.toolCallId === "artifact-approved:nested:1").length, 1);
-          assert.equal(events.filter(event => event.type === "tool_result" && event.toolCallId === "artifact-approved:nested:1" && event.auditOnly).length, 1);
-          const late = coordinator(300);
-          const timedOut = await late.createCodeModeTool(undefined, { ...policy, hostCallTimeoutMs: 150 }).execute("artifact-approval-deadline", {
-            code: "return await tools.search_history({query:'late'});" });
-          assert.equal(timedOut.isError, true);
-          assert.match(timedOut.details.error, /host\/approval deadline/u);
-          await delay(350);
-          await late.waitForIdle();
-          assert.equal(approvals, 2);
-          assert.equal(calls, 1, "Late permission cannot dispatch the cancelled child");
-        } finally { await recorder.close(); }
+        await exerciseCodeModeApprovalGate({ workspace: path.join(temporary, "approval-workspace"), policy, idPrefix: "artifact",
+          ToolExecutionCoordinator, defaultConfig, PermissionManager, SessionRecorder, ensureAgentDirs, ToolRegistry, z });
       });
     }
 

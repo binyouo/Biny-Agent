@@ -80,12 +80,14 @@ try {
     localModelReady = true;
     assert.equal((await coldAgent.runTask("上次登录排查结论是什么")).status, "completed");
     assert.equal(coldStartCalls, 1, "已加载的模型仍可参与本轮 Activity 引用");
-    assert.match(requestText(coldRequests.at(-1)?.messages ?? []), /登录排查完成/u);
   } finally {
     await coldAgent.close();
     LocalEmbeddingManager.prototype.isReady = originalIsReady;
     LocalEmbeddingManager.prototype.createRuntime = originalCreateRuntime;
   }
+  // close 等待后台称呼抽取结束；旁路请求不能覆盖主聊天请求的捕获。
+  assert.match(requestText(coldRequests.at(-1)?.messages ?? []), /登录排查完成/u);
+  assert.equal(coldRequests.length, 2, "只捕获两轮主聊天请求，不包含后台模型调用");
 
   const date = new Date();
   const dateKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
@@ -118,8 +120,10 @@ function requestText(messages: readonly AgentMessage[]): string {
 }
 
 function captureModel(requests: ModelStreamContext[]): AgentModel {
-  return { provider: "fixture", modelId: "activity-chat-runtime", stream: async (context) => {
-    requests.push({ ...context, messages: [...context.messages] });
+  return { provider: "fixture", modelId: "activity-chat-runtime", stream: async (context, options) => {
+    if (options?.requestContext?.operation === "agent") {
+      requests.push({ ...context, messages: [...context.messages] });
+    }
     return (async function* (): AsyncGenerator<ModelStreamEvent> {
       yield { type: "text-delta", text: "收到" };
       yield { type: "finish", reason: "stop" };
