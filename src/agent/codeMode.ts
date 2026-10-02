@@ -4,7 +4,7 @@ import type { AgentTool, AgentToolResult } from "./core/types.js";
 
 /** Names are a VM surface bound; host registration provenance is checked separately. */
 export const codeModeNestedToolNames = new Set(["Read", "Glob", "Grep", "read_tool_result", "recall_memory", "search_history",
-  "TaskStatus", "skill_lookup"]);
+  "TaskStatus", "skill_lookup", "BashOutput", "read_skill_resource"]);
 
 export const codeModePolicy = Object.freeze({
   /** Cumulative synchronous VM execution, excluding host/approval waits. */

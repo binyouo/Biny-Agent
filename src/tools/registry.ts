@@ -15,7 +15,7 @@ import { createReadToolResultTool } from "./file/readToolResult.js";
 import { createListFilesTool } from "./file/listFiles.js";
 import { createSearchFilesTool } from "./search/searchFiles.js";
 import { createRunCommandTool } from "./shell/runCommand.js";
-import { createManagedProcessTools } from "./process/managedProcesses.js";
+import { createBashOutputTool, createKillShellTool } from "./process/managedProcesses.js";
 import { createWebFetchTool } from "./web/fetch.js";
 import { createWebSearchTool } from "./web/search.js";
 import { createToolSearchTool } from "./toolSearch.js";
@@ -24,10 +24,12 @@ import type { AgentModel } from "../agent/core/types.js";
 import type { ManagedProcessService } from "../runtime/ManagedProcessService.js";
 
 /** Explicit host-owned read contracts, never inferred from extension metadata. */
-export type HostReadQuery = "TaskStatus" | "skill_lookup";
+export type HostReadQuery = "TaskStatus" | "skill_lookup" | "BashOutput" | "read_skill_resource";
 const hostReadQueryContracts: Record<HostReadQuery, { source: ToolSource; capability: string }> = {
   TaskStatus: { source: "subagent", capability: "subagent.workspace" },
-  skill_lookup: { source: "skill", capability: "skills" }
+  skill_lookup: { source: "skill", capability: "skills" },
+  BashOutput: { source: "builtin", capability: "shell.output" },
+  read_skill_resource: { source: "skill", capability: "skills" }
 };
 const hostReadQueryRegistrations = new WeakMap<RegisteredTool, {
   identity: HostReadQuery;
@@ -148,7 +150,8 @@ export function createToolRegistry(
   registry.register(createEditFileTool(context));
   registry.register(createRunCommandTool(context, sandboxConfig, {}, managedProcessService));
   if (managedProcessService) {
-    for (const tool of createManagedProcessTools(managedProcessService)) registry.register(tool);
+    registry.registerHostReadQuery(createBashOutputTool(managedProcessService), "BashOutput");
+    registry.register(createKillShellTool(managedProcessService));
   }
   // WebSearch 的实现依赖 Desktop 浏览器；没有执行端时不注册一个调用必然失败的工具。
   if (browser) registry.register(createWebSearchTool(webSearchConfig, webCookiesConfig, browser));

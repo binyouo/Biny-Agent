@@ -121,12 +121,14 @@ export function createBashOutputTool(service: ManagedProcessService): Tool<BashO
       if (!inspecting && (args.offset !== undefined || args.maxBytes !== undefined || args.fromEnd !== undefined)) {
         throw new Error("BashOutput pagination options require processId.");
       }
+      const logPath = args.processId === undefined ? undefined : service.outputPath(args.processId);
       return {
-        accesses: ToolAccesses.none(),
+        accesses: logPath === undefined ? ToolAccesses.none() : ToolAccesses.readFile(logPath),
         display: { kind: "generic", summary: inspecting ? `Read background Bash output ${args.processId}` : "List background Bash processes" },
         description: inspecting ? `Read background Bash output ${args.processId}` : "List background Bash processes",
         approvalRule: inspecting ? `BashOutput(${args.processId})` : "BashOutput",
-        async execute() {
+        async execute({ signal }) {
+          signal?.throwIfAborted();
           if (args.processId === undefined) {
             return { processes: await service.list({ includeExited: args.includeExited }), process: undefined, output: undefined };
           }
@@ -136,7 +138,7 @@ export function createBashOutputTool(service: ManagedProcessService): Tool<BashO
               offset: args.offset,
               maxBytes: args.maxBytes,
               fromEnd: args.fromEnd
-            })
+            }, signal)
           ]);
           return { processes: undefined, process, output };
         }

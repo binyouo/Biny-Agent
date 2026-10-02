@@ -406,7 +406,7 @@ export async function createCommandRuntime(workspaceRoot: string, options: Comma
     if (resourceBoot === "blocking") await resourceStart;
     skills = resourceScope.skills;
     toolRegistry.registerUserTool(createSkillTool(currentSkillBundle));
-    toolRegistry.registerUserTool(createSkillResourceTool(currentSkillBundle));
+    toolRegistry.registerHostReadQuery(createSkillResourceTool(currentSkillBundle), "read_skill_resource");
     toolRegistry.registerHostReadQuery(createSkillLookupTool(currentSkillBundle), "skill_lookup");
     toolRegistry.registerBuiltinTool(createSkillSearchTool({
       getInstalledNames: () => {
