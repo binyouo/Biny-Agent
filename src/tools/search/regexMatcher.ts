@@ -26,10 +26,11 @@ export class RegexExecutionError extends Error {
   }
 }
 
-// Static, self-contained CJS works in both compiled CLI and bundled Desktop.
+// Static, self-contained source works in CJS/ESM, compiled CLI and bundled Desktop.
 // Query and file text are data, never interpolated into executable source.
 const workerSource = `
-const { parentPort, workerData } = require("node:worker_threads");
+void (async () => {
+const { parentPort, workerData } = await import("node:worker_threads");
 const expression = new RegExp(workerData.query, workerData.flags);
 parentPort.on("message", ({ lines, window }) => {
   const indexes = [];
@@ -50,6 +51,7 @@ parentPort.on("message", ({ lines, window }) => {
   parentPort.postMessage(indexes);
 });
 parentPort.postMessage("ready");
+})();
 `;
 
 interface PendingRequest {
@@ -96,8 +98,9 @@ export class CancellableRegexMatcher {
     try {
       worker = new Worker(workerSource, {
         eval: true,
-        // Do not inherit Host preloads or --input-type module overrides.
+        // This pure matcher needs no Host launch flags, preloads or environment.
         execArgv: [],
+        env: {},
         workerData: { query, flags },
         resourceLimits: { maxOldGenerationSizeMb: 64, stackSizeMb: 4 }
       });

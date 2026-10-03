@@ -114,7 +114,7 @@ export async function visitBoundUtf8Lines(
         }
         lineNumber += 1;
         const continuation = visit(pending, lineNumber);
-        if (continuation instanceof Promise) await continuation;
+        if ((continuation instanceof Promise ? await continuation : continuation) === false) completed = false;
       }
     }
     if (completed && drain && await drain() === false) completed = false;

@@ -1,7 +1,7 @@
 /** Benign regex semantics plus deterministic hostile worker lifecycle boundaries. */
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { syncBuiltinESMExports } from "node:module";
 import os from "node:os";
 import path from "node:path";
@@ -100,9 +100,51 @@ test("reader awaits buffered matching before validating the file snapshot and cl
     await assert.rejects(visitBoundUtf8Lines(target, () => undefined, undefined, async () => {
       if (!changed) { changed = true; await writeFile(target, "externally changed"); }
     }), /File changed while it was being read/u);
+    assert.equal((await visitBoundUtf8Lines(target, async () => false)).completed, false, "EOF honors async visitor stop");
     const controller = new AbortController();
     await assert.rejects(visitBoundUtf8Lines(target, async () => { controller.abort(); }, controller.signal), { name: "AbortError" });
     await rm(target);
+  });
+});
+
+test("the exact native payload remains valid when a launcher selects ESM worker mode", async () => {
+  const OriginalWorker = workerThreads.Worker;
+  class ModuleWorker extends OriginalWorker {
+    constructor(source: string, options: workerThreads.WorkerOptions) {
+      super(source, { ...options, execArgv: ["--input-type=module"] });
+    }
+  }
+  workerThreads.Worker = ModuleWorker;
+  syncBuiltinESMExports();
+  let matcher: CancellableRegexMatcher | undefined;
+  try {
+    matcher = await CancellableRegexMatcher.create("x", "u");
+    assert.deepEqual(await matcher.match(["x", "ordinary"], window), [0, undefined]);
+  } finally {
+    await matcher?.close();
+    workerThreads.Worker = OriginalWorker;
+    syncBuiltinESMExports();
+  }
+});
+
+test("Host NODE_OPTIONS preloads and module-input flags do not enter the pure matcher", async () => {
+  await fixture(async (root) => {
+    const preload = path.join(root, "host-preload.cjs");
+    const sentinel = path.join(root, "must-not-run.txt");
+    await writeFile(preload, `require("node:fs").writeFileSync(${JSON.stringify(sentinel)}, "unexpected Host bootstrap");`);
+    const previous = process.env.NODE_OPTIONS;
+    try {
+      for (const options of [`--require=${preload}`, "--input-type=module"]) {
+        process.env.NODE_OPTIONS = options;
+        const matcher = await CancellableRegexMatcher.create("x", "u");
+        try { assert.deepEqual(await matcher.match(["x"], window), [0]); }
+        finally { await matcher.close(); }
+      }
+      await assert.rejects(access(sentinel), { code: "ENOENT" });
+    } finally {
+      if (previous === undefined) delete process.env.NODE_OPTIONS;
+      else process.env.NODE_OPTIONS = previous;
+    }
   });
 });
 
@@ -181,7 +223,8 @@ test("host stays responsive; abort/error/exit/deadline settle once and release w
     const controller = new AbortController();
     const matcher = await CancellableRegexMatcher.create("x", "u", controller.signal);
     const worker = FakeWorker.instances.at(-1)!;
-    assert.deepEqual(worker.options.execArgv, [], "Host preloads/module-input overrides must not enter the worker");
+    assert.deepEqual(worker.options.execArgv, [], "Host launch flags must not enter the worker");
+    assert.deepEqual(worker.options.env, {}, "Host environment/preloads must not enter the worker");
     const pending = matcher.match(["ordinary line"], window);
     const reason = new Error("cancel this exact search");
     setImmediate(() => controller.abort(reason));
