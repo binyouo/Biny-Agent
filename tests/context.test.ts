@@ -1733,7 +1733,7 @@ async function testFailedCurrentSessionResumeKeepsRecorderUsable(): Promise<void
     assert.equal((await agent.runTask("continue in a healthy session")).output, "ok");
     await agent.close();
     const fallbackEvents = await readSessionEvents(fallbackSession.sessionFile);
-    assert.deepEqual(fallbackEvents.map((event) => event.type), ["user_message", "model_request", "agent_message", "assistant_message", "turn_status", "message_metadata"]);
+    assert.deepEqual(fallbackEvents.map((event) => event.type), ["user_message", "message_metadata", "model_request", "agent_message", "assistant_message", "turn_status", "message_metadata"]);
     const request = fallbackEvents.find((event) => event.type === "model_request");
     assert.ok(request?.type === "model_request", "the fallback session must preserve local injected model request metrics");
     assert.equal(request.metrics.provider, "context-test");
