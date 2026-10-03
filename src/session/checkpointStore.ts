@@ -19,6 +19,7 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { agentDir, ensureAgentDirs } from "./store.js";
+import { withLocalFileWriteLock } from "../utils/localFileLock.js";
 
 const run = promisify(execFile);
 const checkpointRefPrefix = "refs/biny/checkpoints";
@@ -248,17 +249,43 @@ export class CheckpointStore {
   }
 
   private async appendIndexEntry(checkpoint: Checkpoint): Promise<void> {
-    const checkpoints = [...await this.list(), checkpoint];
-    const dropped = checkpoints.slice(0, Math.max(0, checkpoints.length - maxCheckpoints));
-    const retained = checkpoints.slice(-maxCheckpoints);
     await ensureAgentDirs(this.workspaceRoot);
-    const target = this.indexPath();
-    await fs.writeFile(`${target}.tmp`, `${JSON.stringify({ version: 1, checkpoints: retained })}\n`, { encoding: "utf8", mode: 0o600 });
-    await fs.rename(`${target}.tmp`, target);
-    // 过期的快照连 ref 一起删掉，否则那些提交会永远留在仓库里。
-    for (const entry of dropped) {
-      await this.git(["update-ref", "-d", `${checkpointRefPrefix}/${entry.id}`]).catch(() => undefined);
+    // 会话各自拥有 coordinator，索引却按工作区共享；锁必须覆盖完整读改写并跨进程。
+    await withLocalFileWriteLock(agentDir(this.workspaceRoot), "checkpoints.json.lock", async () => {
+      // 查询可以容错，发布不能把读失败当空索引，否则会覆盖已有撤销入口。
+      const checkpoints = [...await this.readIndex(), checkpoint];
+      const dropped = checkpoints.slice(0, Math.max(0, checkpoints.length - maxCheckpoints));
+      const retained = checkpoints.slice(-maxCheckpoints);
+      const target = this.indexPath();
+      const temporary = `${target}.${randomUUID()}.tmp`;
+      try {
+        await fs.writeFile(temporary, `${JSON.stringify({ version: 1, checkpoints: retained })}\n`, { encoding: "utf8", mode: 0o600, flag: "wx" });
+        await fs.rename(temporary, target);
+      } finally {
+        await fs.rm(temporary, { force: true }).catch(() => undefined);
+      }
+      // 过期的快照连 ref 一起删掉，否则那些提交会永远留在仓库里。
+      for (const entry of dropped) {
+        await this.git(["update-ref", "-d", `${checkpointRefPrefix}/${entry.id}`]).catch(() => undefined);
+      }
+    });
+  }
+
+  private async readIndex(): Promise<Checkpoint[]> {
+    let raw: string;
+    try {
+      raw = await fs.readFile(this.indexPath(), "utf8");
+    } catch (error) {
+      if (isMissingFile(error)) return [];
+      throw error;
     }
+    const parsed: unknown = JSON.parse(raw);
+    if (typeof parsed !== "object" || parsed === null || !Array.isArray((parsed as { checkpoints?: unknown }).checkpoints)) {
+      throw new Error("Invalid checkpoint index.");
+    }
+    const entries = (parsed as { checkpoints: unknown[] }).checkpoints;
+    if (!entries.every(isCheckpoint)) throw new Error("Invalid checkpoint index entry.");
+    return entries;
   }
 
   private async git(args: string[], env?: NodeJS.ProcessEnv): Promise<string> {
