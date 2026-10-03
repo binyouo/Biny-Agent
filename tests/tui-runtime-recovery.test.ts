@@ -17,6 +17,7 @@ import { startRuntimeHost } from "../src/runtime/RuntimeHost.js";
 import { runtimeHostPaths } from "../src/runtime/host/lifecycle.js";
 import { runtimeHostProtocolVersion } from "../src/runtime/host/protocol.js";
 import { BinyTui } from "../src/tui/app.js";
+import { readSessionEvents } from "../src/session/events.js";
 
 function createFakeTerminal(): Terminal {
   return {
@@ -74,7 +75,10 @@ try {
 
   // Given runtime 启动失败（owner 存活但 endpoint 不可用），When 提交普通消息，
   // Then 输入保留，通知里透出真实失败原因，而不是只给「检查模型配置后重启」的误导提示。
-  await submit("第一次发送");
+  const failedSend = submit("第一次发送");
+  app["editor"].setText("下一条草稿");
+  await failedSend;
+  assert.equal(app["editor"].getText(), "第一次发送\n下一条草稿", "启动失败时保留原消息和新草稿");
   const firstRound = notifications(app);
   assert.ok(firstRound.some((content) => content.includes("尚未就绪")), "应提示 runtime 未就绪");
   assert.ok(
@@ -95,6 +99,7 @@ try {
     heartbeat: { ...defaultConfig.heartbeat, enabled: false }
   }, { globalDir: globalConfigDir() });
   const configStore = createFileConfigStore(workspaceRoot, { globalDir: globalConfigDir() });
+  let rejectDraft = true;
   host = await startRuntimeHost(workspaceRoot, (resourceRegistry) => createInteractiveAgentHost(workspaceRoot, {
     persistenceRoot: workspaceRoot,
     configStore,
@@ -102,9 +107,25 @@ try {
     resourceBoot: "background"
   }), {
     workspaceRoot,
+    createRuntime: async (sessionId, options) => {
+      if (options?.fresh && rejectDraft) {
+        rejectDraft = false;
+        throw new Error("New session initialization failed.");
+      }
+      return await createInteractiveAgentHost(workspaceRoot, {
+        persistenceRoot: workspaceRoot, configStore, sessionId,
+        resourceRegistry: options?.resourceRegistry, resourceBoot: "background"
+      });
+    },
     configDir: globalConfigDir(),
     resumeInterrupted: false
   });
+
+  await submit("初始化失败时不应误发");
+  assert.ok(notifications(app).some(content => content.includes("尚未就绪") && content.includes("New session initialization failed")));
+  assert.equal(app.tuiState.sessionId, "");
+  const primaryEvents = await readSessionEvents(host.getCurrentRuntime().getSnapshot().info.sessionFile);
+  assert.equal(primaryEvents.some(event => event.type === "user_message"), false, "failed initialization must not submit to the existing primary session");
 
   // When 再次提交（不重启 TUI），Then runtime 重试启动成功，消息进入正常提交流程：
   // session.started 生效（sessionId 非空），且不再新增「尚未就绪」通知。

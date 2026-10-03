@@ -28,7 +28,6 @@ import {
   memoryPolicySelectOptions,
   runtimeStatus,
   selectDialogRow,
-  shouldConfirmAutocompleteOnEnter,
   skillSlashCommandItems
 } from "../src/tui/app.js";
 import type { PermissionChoice, ToolTranscriptItem, TranscriptState, TuiPermissionRequest, TuiState } from "../src/tui/types.js";
@@ -146,7 +145,6 @@ async function main(): Promise<void> {
   testSkillSlashCommandItems();
   testSkillUserMessageHidesInstructions();
   testDoubleCtrlCGuard();
-  testAutocompleteEnterOnlyConfirmsSkillSelection();
   await testSlashAutocompleteInsertsSingleSlash();
   testThemeTokensResolveToAnsi();
   testTranscriptViewSyncsIncrementally();
@@ -208,14 +206,6 @@ function testDoubleCtrlCGuard(): void {
   assert.equal(ctrlCAction(0, 100), "cancel");
   assert.equal(ctrlCAction(1_000, 1_499), "exit");
   assert.equal(ctrlCAction(1_000, 1_500), "cancel");
-}
-
-function testAutocompleteEnterOnlyConfirmsSkillSelection(): void {
-  assert.equal(shouldConfirmAutocompleteOnEnter("\r", true, "/skill:demo"), true);
-  assert.equal(shouldConfirmAutocompleteOnEnter("\n", true, "/skill"), true);
-  assert.equal(shouldConfirmAutocompleteOnEnter("\r", true, "/model"), false);
-  assert.equal(shouldConfirmAutocompleteOnEnter("\r", false, "/skill:demo"), false);
-  assert.equal(shouldConfirmAutocompleteOnEnter("\t", true, "/skill:demo"), false);
 }
 
 function testModelThinkingOptionsUseModelCapabilities(): void {

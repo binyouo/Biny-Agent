@@ -37,6 +37,7 @@ import {
   type RuntimeHostFactoryOptions,
   type RuntimeHostServer
 } from "../runtime/RuntimeHost.js";
+import { RuntimeHostStartupError } from "../runtime/host/errors.js";
 import {
   isTerminalRunEvent,
   pendingPermission,
@@ -136,6 +137,8 @@ export class BinyTui {
   /** 最近一次 runtime 启动失败的真实原因；重试成功后清除，供未就绪提示透出。 */
   private startupError: string | undefined;
   private startRuntimePromise: Promise<void> | undefined;
+  /** 只串行等待发送准入，模型执行仍由 Runtime 的事件流投影。 */
+  private promptSubmissionQueue: Promise<void> = Promise.resolve();
 
   private readonly headerContainer = new Container();
   private readonly chatContainer = new TranscriptView();
@@ -211,20 +214,14 @@ export class BinyTui {
     };
     this.ui.setFocus(this.editor);
     this.ui.addInputListener((data) => {
-      if (shouldConfirmAutocompleteOnEnter(data, this.editor.isShowingAutocomplete(), this.editor.getText())) {
-        // pi-tui 的 Editor 对 slash 补全会在 Enter 确认后继续 fall through 到 submit。
-        // 在 TUI 边界把这次 Enter 转成 Tab，只完成插入，下一次 Enter 才是用户发送。
+      if (!this.overlay && this.editor.isShowingAutocomplete() && matchesKey(data, "enter") && /^\/\S*$/u.test(this.editor.getText())) {
+        // 先由框架补全当前选项；必填参数命令留在编辑器，其余同次 Enter 执行。
         this.editor.handleInput("\t");
-        // 全局监听器消费了原始 Enter，TUI 不会再自动请求重绘；补全后的文本要立即可见。
-        this.ui.requestRender();
-        return { consume: true };
-      }
-      // 自动补全弹出且输入仅为 "/" 时，按 Enter 应弹出命令选择器（SelectDialog），
-      // 而不是让 Editor 自动补全选中第一个命令并执行。
-      if (this.editor.isShowingAutocomplete() && matchesKey(data, "enter") && this.editor.getText().trim() === "/") {
-        this.dismissAutocomplete();
-        this.ui.requestRender();
-        return undefined;
+        const command = this.editor.getText().trim().split(/\s+/u)[0];
+        if (TUI_SLASH_COMMANDS.find((entry) => entry.name === command)?.requiresArgs) {
+          this.ui.requestRender();
+          return { consume: true };
+        }
       }
       if (this.editor.isShowingAutocomplete() && matchesKey(data, "escape")) {
         // 忙碌时 Escape 默认会取消 Agent；补全弹层打开时应先关闭弹层，不能误取消当前任务。
@@ -252,6 +249,7 @@ export class BinyTui {
    * 启动失败的错误保留在 startupError 里由调用方透出；成功后 runtime 与快照就绪。
    */
   private ensureRuntimeStarted(): Promise<void> {
+    if (this.startRuntimePromise) return this.startRuntimePromise;
     if (this.runtime) return Promise.resolve();
     this.startRuntimePromise ??= this.startRuntime().finally(() => {
       this.startRuntimePromise = undefined;
@@ -262,6 +260,7 @@ export class BinyTui {
   private async startRuntime(): Promise<void> {
     try {
       let attached: RuntimeHostClient | undefined;
+      let attachFailure: unknown;
       try {
         attached = await connectOrSpawnRuntimeHost(this.workspaceRoot, {
           workspaceRoot: this.workspaceRoot,
@@ -271,7 +270,8 @@ export class BinyTui {
           clientId: `tui-${process.pid}`,
           surface: "tui"
         });
-      } catch {
+      } catch (error) {
+        attachFailure = error;
         // 无配置或独立 Host 启动失败时，保留当前进程内的最小 fallback。
       }
       let runtime: InteractiveRuntimeHandle;
@@ -315,15 +315,14 @@ export class BinyTui {
           }
         } catch (error) {
           await this.runtimeHost?.close();
-          const retry = await connectOrSpawnRuntimeHost(this.workspaceRoot, {
-            workspaceRoot: this.workspaceRoot,
+          this.runtimeHost = undefined;
+          // 这里只重读并发启动者的 owner，不再启动相同的失败候选。
+          const retry = await connectRuntimeHost(this.workspaceRoot, {
             configDir: globalConfigDir(),
-            sessionId: this.initialSession,
-            resumeInterrupted: false,
             clientId: `tui-${process.pid}`,
             surface: "tui"
           });
-          if (!retry) throw error;
+          if (!retry) throw attachFailure instanceof RuntimeHostStartupError ? error : (attachFailure ?? error);
           runtime = retry;
           commands = undefined;
         }
@@ -383,6 +382,15 @@ export class BinyTui {
       void this.refreshContextUsage();
       void this.refreshUsage();
     } catch (error) {
+      // 已连接也不代表会话初始化成功；失败时释放客户端，避免下一次误发到旧 primary。
+      const failedRuntime = this.runtime;
+      this.runtime = undefined;
+      this.commands = undefined;
+      this.runtimeSnapshot = undefined;
+      this.unsubscribe?.();
+      this.unsubscribe = undefined;
+      this.ownedSessionIds.clear();
+      if (failedRuntime instanceof RuntimeHostClient) await failedRuntime.close().catch(() => undefined);
       // Runtime 启动失败（例如模型 provider 缺 API Key）时，slash 补全和命令选择器
       // 仍应可用，否则用户连命令列表和 /exit 都打不开。skills 拿不到就退化为纯命令集。
       this.startupError = describeError(error);
@@ -478,7 +486,7 @@ export class BinyTui {
     }
   }
 
-  private setAutocompleteProvider(skills: readonly SkillDefinition[], workspaceRoot: string): void {
+  private setAutocompleteProvider(skills: readonly Pick<SkillDefinition, "name" | "description">[], workspaceRoot: string): void {
     const provider = new CombinedAutocompleteProvider(
       [
         ...TUI_AUTOCOMPLETE_COMMANDS.map((command) => ({
@@ -580,27 +588,33 @@ export class BinyTui {
 
   // ---------------------------------------------------------------- 输入分发
 
-  private async submit(text: string): Promise<void> {
+  /** 提交文本与附件；消息接收或命令路由完成时返回，执行结果由事件流更新。 */
+  submit(text: string, attachments = this.pendingAttachments): Promise<void> {
     const value = text.trim();
-    if (!value && !this.pendingAttachments.length) return;
-    // TUI 在 runtime 启动完成前（或启动失败时）已经可以接收键盘输入；
-    // slash 命令里有一部分（命令选择器、/clear、/exit）不依赖 runtime，照常路由过去，
-    // 避免「runtime 没起来 → 连 /exit 都打不出来」。依赖 runtime 的命令在 handleSlashCommand
-    // 内部先走同一条恢复路径。
-    if (!this.runtime && value.startsWith("/")) {
-      try {
-        await this.handleSlashCommand(value);
-      } catch (error) {
-        this.showTextViewer("Command Error", describeError(error));
-      }
-      return;
+    if (value.startsWith("/") && !isSkillInvocationText(value)) {
+      this.editor.addToHistory(value);
+      void appendInputHistory(this.workspaceRoot, value)
+        .catch((error) => this.notify(`写入输入历史失败：${describeError(error)}`));
+      return this.handleSlashCommand(value).catch((error) => this.showTextViewer("Command Error", describeError(error)));
     }
+    this.setPendingAttachments([]);
+    const submission = this.promptSubmissionQueue.then(() => this.submitPrompt(text, attachments));
+    this.promptSubmissionQueue = submission.catch((error) => {
+      this.restoreSubmittedInput(text, attachments);
+      this.dispatch({ type: "error.message", message: describeError(error) });
+    });
+    return this.promptSubmissionQueue;
+  }
+
+  private async submitPrompt(text: string, attachments: AgentAttachment[]): Promise<void> {
+    const value = text.trim();
+    if (!value && !attachments.length) return;
     // runtime 未就绪不再只能重启 TUI：普通消息提交前先重试启动（有界，见 client 握手超时）；
     // 仍失败则保留输入并透出真实原因，而不是反复提示「检查模型配置后重启」。
-    if (!this.runtime) await this.ensureRuntimeStarted();
+    await this.ensureRuntimeStarted();
     const runtime = this.runtime;
     if (!runtime) {
-      this.setEditorText(text);
+      this.restoreSubmittedInput(text, attachments);
       this.notify(this.startupError
         ? `Runtime 尚未就绪：${this.startupError}。消息已保留在输入框，可稍后重试或 /exit 退出。`
         : "Runtime 尚未就绪，无法发送消息。");
@@ -616,31 +630,11 @@ export class BinyTui {
         await pendingModelSwitch;
       } catch {
         // applyModel 已经展示具体失败原因；Editor 提交时已清空输入，这里恢复，避免误发到旧模型。
-        this.setEditorText(text);
+        this.restoreSubmittedInput(text, attachments);
         return;
       }
     }
     const prompt = value || "请分析这个附件。";
-    const attachments = this.pendingAttachments;
-    this.setPendingAttachments([]);
-    this.setEditorText("");
-    this.editor.addToHistory(prompt);
-    void appendInputHistory(this.workspaceRoot, prompt)
-      .catch((error) => this.notify(`写入输入历史失败：${describeError(error)}`));
-
-    // /skill:name、/skills:name 是技能调用而非 slash 命令，保留原文走普通提交；
-    // 正文由模型按 <available_skills> 指引调用 Skill 工具按需加载（渐进式披露）。
-    if (value.startsWith("/") && !isSkillInvocationText(value)) {
-      // slash 命令不消费附件；保留它们给用户执行命令后继续编辑并发送。
-      this.setPendingAttachments(attachments);
-      try {
-        await this.handleSlashCommand(value);
-      } catch (error) {
-        this.showTextViewer("Command Error", describeError(error));
-      }
-      return;
-    }
-
     try {
       await this.ensureSessionWriteAccess(sessionId);
       if (runtimeIsBusy(runtime instanceof RuntimeHostClient ? runtime.getSnapshot(sessionId) : runtime.getSnapshot())) {
@@ -649,21 +643,26 @@ export class BinyTui {
           if (!queued.accepted) throw new Error(queued.reason);
         } else await runtime.enqueue(withAttachmentReferences(prompt, attachments), attachments);
         this.notify("消息已加入待发送队列，将在当前任务结束后继续处理。");
-        return;
+      } else if (runtime instanceof RuntimeHostClient) {
+        const accepted = await runtime.submitRunForSession(sessionId, withAttachmentReferences(prompt, attachments), attachments);
+        if (!accepted.accepted) throw new Error(accepted.reason ?? "Runtime Host did not accept the message.");
+      } else {
+        void runtime.submitPrompt(withAttachmentReferences(prompt, attachments), attachments).completion
+          .catch((error) => this.dispatch({ type: "error.message", message: describeError(error) }));
       }
-      await (runtime instanceof RuntimeHostClient
-        ? runtime.submitPromptForSession(sessionId, withAttachmentReferences(prompt, attachments), attachments)
-        : runtime.submitPrompt(withAttachmentReferences(prompt, attachments), attachments)).completion;
+      this.editor.addToHistory(prompt);
+      void appendInputHistory(this.workspaceRoot, prompt)
+        .catch((error) => this.notify(`写入输入历史失败：${describeError(error)}`));
     } catch (error) {
       if (isSessionWriterConflictError(error)) {
         await this.showSessionWriterConflict(error.sessionId, error.ownerSurface);
+        this.restoreSubmittedInput(text, attachments);
         return;
       }
-      this.setPendingAttachments([...attachments, ...this.pendingAttachments]);
-      this.setEditorText(prompt);
+      this.restoreSubmittedInput(text, attachments);
       this.dispatch({ type: "error.message", message: describeError(error) });
     } finally {
-      await this.refreshContextUsage();
+      void this.refreshContextUsage();
     }
   }
 
@@ -798,6 +797,12 @@ export class BinyTui {
 
   private setEditorText(text: string): void {
     this.editor.setText(text);
+  }
+
+  private restoreSubmittedInput(text: string, attachments: AgentAttachment[]): void {
+    const draft = this.editor.getExpandedText();
+    this.setEditorText([text, draft].filter(Boolean).join("\n"));
+    this.setPendingAttachments([...attachments, ...this.pendingAttachments]);
   }
 
   private dismissAutocomplete(): void {
@@ -935,10 +940,12 @@ export class BinyTui {
           label: entry.name,
           description: entry.description
         })),
-        hint: "↑↓ navigate · enter insert · esc/ctrl+c cancel",
+        hint: "↑↓ navigate · enter run · esc/ctrl+c cancel",
         onSelect: (item) => {
-          this.setEditorText(`${item.value} `);
-          this.ui.requestRender();
+          if (TUI_SLASH_COMMANDS.find((entry) => entry.name === item.value)?.requiresArgs) {
+            this.setEditorText(`${item.value} `);
+            this.ui.requestRender();
+          } else void this.submit(item.value);
         }
       });
       return;
@@ -978,7 +985,7 @@ export class BinyTui {
       return;
     }
 
-    if (!runtime) {
+    if (!runtime || this.startRuntimePromise) {
       // 依赖 runtime 的命令同样先重试启动；有界失败后透出真实原因，不再只提示重启 TUI。
       await this.ensureRuntimeStarted();
       runtime = this.runtime;
@@ -1632,7 +1639,6 @@ export class BinyTui {
     );
     this.editorContainer.addChild(this.sessionWriterConflictView);
     this.ui.setFocus(this.sessionWriterConflictView);
-    this.setPendingAttachments([]);
     this.chatContainer.reset();
     try {
       const stored = await readStoredSessionEvents(this.commands?.persistenceRoot ?? this.workspaceRoot, sessionId);
@@ -1713,15 +1719,6 @@ export class BinyTui {
       this.resolveExit?.();
     }
   }
-}
-
-/** Skill 补全沿用两步交互，普通 slash 命令则由 Editor 在同一次 Enter 中提交。 */
-export function shouldConfirmAutocompleteOnEnter(
-  data: string,
-  autocompleteVisible: boolean,
-  inputText: string
-): boolean {
-  return autocompleteVisible && /^\/skill(?::|$)/u.test(inputText.trimStart()) && matchesKey(data, "enter");
 }
 
 /** 判断两次 Ctrl+C 是否处于 pi 的 500ms 退出窗口内。 */
