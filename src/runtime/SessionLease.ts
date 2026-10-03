@@ -64,22 +64,35 @@ interface OwnedLease {
  * 这个错误在 Runtime Host 和本地 SessionLease 两条路径上共用，
  * 让 Desktop/TUI 不需要解析一段不稳定的自然语言错误。
  */
-export class SessionWriterConflictError extends Error {
+export interface SessionWriterConflictInfo {
+  sessionId: string;
+  ownerPid?: number;
+  ownerSurface?: string;
+  conflictKind?: "execution" | "external_writer";
+  runId?: string;
+}
+
+export class SessionWriterConflictError extends Error implements SessionWriterConflictInfo {
   readonly code = "session_writer_conflict" as const;
   readonly sessionId: string;
   readonly ownerPid?: number;
   readonly ownerSurface?: string;
+  readonly conflictKind: "execution" | "external_writer";
+  readonly runId?: string;
 
   constructor(
     sessionId: string,
     ownerPid?: number,
     ownerSurface?: string,
-    message = `Session ${sessionId} is already owned by another writer.`
+    message = `Session ${sessionId} is already owned by another writer. Other sessions remain available.`,
+    detail: Pick<SessionWriterConflictInfo, "conflictKind" | "runId"> = {}
   ) {
     super(message);
     this.sessionId = sessionId;
     this.ownerPid = ownerPid;
     this.ownerSurface = ownerSurface;
+    this.conflictKind = detail.conflictKind ?? "external_writer";
+    this.runId = detail.runId;
     this.name = "SessionWriterConflictError";
   }
 }
@@ -95,7 +108,7 @@ export class SessionLeaseError extends SessionWriterConflictError {
       sessionId,
       pid,
       undefined,
-      `Session ${sessionId} is already owned by process ${String(pid)}.`
+      `Session ${sessionId} is already owned by process ${String(pid)}. Wait for that writer to finish or close the session there, then retry. Other sessions remain available.`
     );
     this.pid = pid;
     this.name = "SessionLeaseError";

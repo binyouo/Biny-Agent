@@ -53,7 +53,7 @@ import {
   type HostFrame,
   type HostRequestFrame
 } from "./protocol.js";
-import { OperationCompletion, OperationDispatcher, operationLane, operationLaneKey, memoryQueryActions } from "./operations.js";
+import { OperationCompletion, OperationDispatcher, operationLane, operationLaneKey, memoryQueryActions, commandWritesSession } from "./operations.js";
 import { SessionRuntimeRegistry, type ManagedSessionRuntime } from "./registry.js";
 import {
   RuntimeHostAdmission,
@@ -139,8 +139,8 @@ function readBrowserAutomationEndpoint(value: unknown): BrowserAutomationEndpoin
 export class RuntimeHostServer {
   private readonly server = net.createServer((socket) => this.accept(socket));
   private readonly connections = new Set<HostConnection>();
-  /** 一个 owner Runtime 只能同时切换一条 live session；ownership 绑定到具体 client。 */
-  private readonly sessionWriterOwners = new Map<string, { clientId: string; surface: HostSurface }>();
+  /** 按会话保护正在准入、执行和收尾的写入；空闲浏览不保留客户端占用。 */
+  private readonly sessionWriterOwners = new Map<string, { clientId: string; surface: HostSurface; pendingCompletions: number }>();
   /** 目标的发起者跨回合保留；不能用长期 writer lease 表示持续工作的归属。 */
   private readonly sessionGoalOwners = new Map<string, { clientId: string; goalId: string }>();
   private primaryGoalSchedulingReady = true;
@@ -574,7 +574,7 @@ export class RuntimeHostServer {
     this.idleSince = undefined;
     this.businessComposition.handleRuntimeUpdate(update);
     if (managed && update.snapshot.state.kind === "idle") {
-      this.releaseIdleSessionWriter(update.snapshot.info.sessionId, managed);
+      void this.releaseIdleSessionWriter(update.snapshot.info.sessionId, managed).catch(() => undefined);
     }
     this.publish(update);
   }
@@ -583,14 +583,14 @@ export class RuntimeHostServer {
    * writer claim 只保护实际写入和运行窗口。Runtime 回到 idle 后继续长期持有 claim，
    * 会让已经结束的会话无法被 LRU 回收，最终把内部缓存上限错误暴露成用户会话上限。
    */
-  private releaseIdleSessionWriter(sessionId: string, managed: ManagedSessionRuntime): void {
+  private async releaseIdleSessionWriter(sessionId: string, managed: ManagedSessionRuntime): Promise<void> {
     const owner = this.sessionWriterOwners.get(sessionId);
-    if (!owner) return;
-    this.sessionWriterOwners.delete(sessionId);
-    void managed.runtime.releaseSessionClaim(sessionId).catch(() => {
-      // 释放失败时恢复所有权，避免另一 surface 在底层 lease 仍存在时被误判为可写。
-      if (!this.sessionWriterOwners.has(sessionId)) this.sessionWriterOwners.set(sessionId, owner);
-    });
+    if (!owner || owner.pendingCompletions > 0) return;
+    // idle 快照可能先于 completion 的资源收尾；原执行真正排空之前仍保留占用。
+    await managed.runtime.waitForIdle();
+    if (managed.runtime.getSnapshot().state.kind !== "idle" || this.sessionWriterOwners.get(sessionId) !== owner || owner.pendingCompletions > 0) return;
+    await managed.runtime.releaseSessionClaim(sessionId);
+    if (this.sessionWriterOwners.get(sessionId) === owner) this.sessionWriterOwners.delete(sessionId);
   }
 
   private read(connection: HostConnection, chunk: string): void {
@@ -674,10 +674,35 @@ export class RuntimeHostServer {
         payload.sessionId = randomUUID();
       }
       const request = { ...frame, payload };
+      const sessionKey = operationLaneKey(frame.operation, payload, this.registry.primary().sessionId);
       const result = await this.dispatcher.dispatch(
         operationLane(frame.operation, payload),
-        async () => await this.execute(connection, request),
-        operationLaneKey(frame.operation, payload, this.registry.primary().sessionId)
+        async () => {
+          let detached = false;
+          try {
+            const result = await this.execute(connection, request);
+            const owner = sessionKey === undefined ? undefined : this.sessionWriterOwners.get(sessionKey);
+            if (result instanceof OperationCompletion && sessionKey !== undefined && owner?.clientId === connection.clientId) {
+              // RPC 等最终结果，准入队列不等模型；准备阶段也保留 owner，避免 idle 快照提前放行。
+              owner.pendingCompletions += 1;
+              detached = true;
+              return new OperationCompletion(result.completion.finally(async () => {
+                owner.pendingCompletions -= 1;
+                if (this.sessionWriterOwners.get(sessionKey) === owner) await this.releaseSessionWriter(connection, sessionKey);
+              }));
+            }
+            return result;
+          } finally {
+            // 在同会话队列放行下一请求之前释放短写入权，不能留到响应发送之后。
+            if (!detached && sessionKey !== undefined) {
+              const managed = this.registry.get(sessionKey);
+              if (managed?.runtime.getSnapshot().state.kind === "idle") {
+                await this.releaseSessionWriter(connection, sessionKey);
+              }
+            }
+          }
+        },
+        sessionKey
       );
       this.send(connection, { kind: "response", requestId: frame.requestId, ok: true, result });
     } catch (error) {
@@ -768,11 +793,11 @@ export class RuntimeHostServer {
       if (writeIntent) {
         this.assertSessionWriterAvailable(connection, managed.sessionId);
         // 新 session 还没有 JSONL 时，runtime 尚未能建立文件 lease；先登记连接 owner，
-        // 首次 submit 会建立执行 lease，断开时仍可由 releaseSessionWriters 清掉这份意图。
+        // 首次 submit 会建立执行 lease，本次探测结束前就清掉这份短期意图。
         if (sessionFileExists) {
           await this.claimSessionWriter(connection, managed.sessionId);
         } else {
-          this.sessionWriterOwners.set(managed.sessionId, { clientId: connection.clientId, surface: connection.surface });
+          this.sessionWriterOwners.set(managed.sessionId, { clientId: connection.clientId, surface: connection.surface, pendingCompletions: 0 });
         }
       }
       return {
@@ -900,11 +925,11 @@ export class RuntimeHostServer {
         }, runtime);
       case "plan.start":
         await this.ensureSessionWriter(connection, runtime);
-        return await runtime.runExclusiveOperation("plan", async (signal) => {
+        return new OperationCompletion(runtime.runExclusiveOperation("plan", async (signal) => {
           const revision = optionalSafeInteger(payload.revision);
           if (revision === undefined) throw new Error("Draft revision is required.");
           return await commands.startPlanDraft(requiredString(payload.graphId, "graphId"), revision, signal);
-        });
+        }));
       case "subscribe":
         return this.subscribeConnection(
           connection,
@@ -914,7 +939,7 @@ export class RuntimeHostServer {
         );
       case "submit": {
         this.assertRevision(payload, runtime);
-        if (payload.writeIntent === true) await this.ensureSessionWriter(connection, runtime);
+        await this.ensureSessionWriter(connection, runtime);
         this.admission.assertAdmission();
         const ids = readRequestIds(payload);
         const submitted = runtime.submitPrompt(
@@ -933,7 +958,7 @@ export class RuntimeHostServer {
       case "run.submit":
         return await this.executeAdmission(async () => {
           this.assertRevision(payload, runtime);
-          if (payload.writeIntent === true) await this.ensureSessionWriter(connection, runtime);
+          await this.ensureSessionWriter(connection, runtime);
           this.admission.assertAdmission();
           const ids = readRequestIds(payload);
           const submitted = runtime.submitPrompt(
@@ -948,7 +973,7 @@ export class RuntimeHostServer {
         }, runtime);
       case "queue": {
         this.assertRevision(payload, runtime);
-        if (payload.writeIntent === true) await this.ensureSessionWriter(connection, runtime);
+        await this.ensureSessionWriter(connection, runtime);
         this.admission.assertAdmission();
         const ids = readRequestIds(payload);
         const input = requiredString(payload.input, "input");
@@ -962,7 +987,7 @@ export class RuntimeHostServer {
       case "run.queue":
         return await this.executeAdmission(async () => {
           this.assertRevision(payload, runtime);
-          if (payload.writeIntent === true) await this.ensureSessionWriter(connection, runtime);
+          await this.ensureSessionWriter(connection, runtime);
           this.admission.assertAdmission();
           const ids = readRequestIds(payload);
           const input = requiredString(payload.input, "input");
@@ -976,7 +1001,7 @@ export class RuntimeHostServer {
         this.assertRevision(payload, runtime);
         const action = requiredString(payload.action, "action");
         if (action === "send-all" || action === "steer") this.assertEventSequenceAvailable();
-        if (payload.writeIntent === true) await this.ensureSessionWriter(connection, runtime);
+        await this.ensureSessionWriter(connection, runtime);
         if (action === "send-all") {
           if (!runtime.sendQueuedRunMessagesNow) throw new Error("Queued message controls are unavailable.");
           await runtime.sendQueuedRunMessagesNow();
@@ -1021,7 +1046,7 @@ export class RuntimeHostServer {
         return await runtime.resumeSession(requiredString(payload.session, "session"));
       case "message.version":
         return await this.executeControl(async () => {
-          if (payload.writeIntent === true) await this.ensureSessionWriter(connection, runtime);
+          await this.ensureSessionWriter(connection, runtime);
           this.assertRevision(payload, runtime);
           const direction = payload.direction === "prev" || payload.direction === "next" ? payload.direction : undefined;
           if (direction === undefined) throw new Error("Message version direction must be prev or next.");
@@ -1030,7 +1055,7 @@ export class RuntimeHostServer {
         }, runtime);
       case "start-interrupted": {
         this.assertRevision(payload, runtime);
-        if (payload.writeIntent === true) await this.ensureSessionWriter(connection, runtime);
+        await this.ensureSessionWriter(connection, runtime);
         this.admission.assertAdmission();
         if (payload.mode !== undefined && payload.mode !== "exact" && payload.mode !== "newTurn") {
           throw new Error("Invalid interrupted turn mode.");
@@ -1072,7 +1097,7 @@ export class RuntimeHostServer {
         }, runtime);
       case "run.continue":
         return await this.executeAdmission(async () => {
-          if (payload.writeIntent === true) await this.ensureSessionWriter(connection, runtime);
+          await this.ensureSessionWriter(connection, runtime);
           this.admission.assertAdmission();
           return await this.continueRun(payload, runtime, commands);
         }, runtime);
@@ -1350,31 +1375,33 @@ export class RuntimeHostServer {
         }
         return undefined;
       case "compact":
-        if (payload.writeIntent === true) await this.ensureSessionWriter(connection, runtime);
+        await this.ensureSessionWriter(connection, runtime);
         this.assertRevision(payload, runtime);
-        return await runtime.compactConversation(optionalString(payload.hint));
+        return new OperationCompletion(runtime.compactConversation(optionalString(payload.hint)));
       case "command": {
-        if (payload.writeIntent === true) await this.ensureSessionWriter(connection, runtime);
+        if (commandWritesSession(requiredString(payload.input, "input"))) await this.ensureSessionWriter(connection, runtime);
         this.assertRevision(payload, runtime);
         const source = readSurface(payload.source ?? connection.surface);
         this.assertRequestAdmission(connection, admissionOperation);
-        const result = await executeRuntimeCommand(
+        const execution = executeRuntimeCommand(
           runtime,
           commands,
           requiredString(payload.input, "input"),
           source === "desktop" ? "desktop" : "tui"
-        );
-        if (admissionOperation.startsWith("session.goal.")) {
-          const sessionId = runtime.getSnapshot().info.sessionId;
-          const goal = commands.sessionGoals.get(sessionId);
-          if (connection.clientId && goal && (admissionOperation === "session.goal.set" || admissionOperation === "session.goal.resume")) {
-            this.sessionGoalOwners.set(sessionId, { clientId: connection.clientId, goalId: goal.goalId });
+        ).then((result) => {
+          if (admissionOperation.startsWith("session.goal.")) {
+            const sessionId = runtime.getSnapshot().info.sessionId;
+            const goal = commands.sessionGoals.get(sessionId);
+            if (connection.clientId && goal && (admissionOperation === "session.goal.set" || admissionOperation === "session.goal.resume")) {
+              this.sessionGoalOwners.set(sessionId, { clientId: connection.clientId, goalId: goal.goalId });
+            }
+            if (admissionOperation === "session.goal.clear") this.sessionGoalOwners.delete(sessionId);
+            this.businessComposition.scheduleGoals();
+            this.publishSnapshot(runtime);
           }
-          if (admissionOperation === "session.goal.clear") this.sessionGoalOwners.delete(sessionId);
-          this.businessComposition.scheduleGoals();
-          this.publishSnapshot(runtime);
-        }
-        return result;
+          return result;
+        });
+        return operationLane(frame.operation, payload) === "run" ? new OperationCompletion(execution) : await execution;
       }
       case "agent.context":
         return await commands.agent.contextStatus();
@@ -1535,7 +1562,7 @@ export class RuntimeHostServer {
           if (sessionId !== undefined) await this.claimSessionWriter(connection, sessionId);
           const result = await this.restartRuntime(sessionId);
           if (sessionId !== undefined) {
-            this.sessionWriterOwners.set(sessionId, { clientId: connection.clientId, surface: connection.surface });
+            this.sessionWriterOwners.set(sessionId, { clientId: connection.clientId, surface: connection.surface, pendingCompletions: 0 });
           }
           return result;
         }
@@ -1593,7 +1620,8 @@ export class RuntimeHostServer {
         sessionId: runtime.getSnapshot().info.sessionId,
         revision: runtime.getSnapshot().revision,
         reason: publicError(error),
-        errorCode: publicErrorCode(error)
+        errorCode: publicErrorCode(error),
+        errorData: publicErrorData(error)
       };
     }
   }
@@ -1616,7 +1644,8 @@ export class RuntimeHostServer {
         sessionId: runtime.getSnapshot().info.sessionId,
         revision: runtime.getSnapshot().revision,
         reason: publicError(error),
-        errorCode: publicErrorCode(error)
+        errorCode: publicErrorCode(error),
+        errorData: publicErrorData(error)
       };
     }
   }
@@ -1829,7 +1858,7 @@ export class RuntimeHostServer {
     if (foreignOwner?.clientId === connection.clientId) return;
     const managed = this.registry.get(sessionId) ?? await this.registry.ensure(sessionId, await this.factoryOptionsForSession(sessionId));
     await managed.runtime.claimSession(sessionId);
-    this.sessionWriterOwners.set(sessionId, { clientId: connection.clientId, surface: connection.surface });
+    this.sessionWriterOwners.set(sessionId, { clientId: connection.clientId, surface: connection.surface, pendingCompletions: 0 });
   }
 
   /** 写入型协议即使没有先显式打开 session，也必须先进入同 session writer 互斥。 */
@@ -1842,11 +1871,14 @@ export class RuntimeHostServer {
   private assertSessionWriterAvailable(connection: HostConnection, sessionId: string): void {
     const owner = this.sessionWriterOwners.get(sessionId);
     if (!owner || owner.clientId === connection.clientId) return;
+    const snapshot = this.registry.get(sessionId)?.runtime.getSnapshot();
+    const runId = snapshot?.state.kind === "runs" ? snapshot.state.activeRun.runId : undefined;
     throw new SessionWriterConflictError(
       sessionId,
       this.registration.pid,
       owner.surface,
-      `Session ${sessionId} is already open in another ${owner.surface} client.`
+      `Session ${sessionId} has an active execution from ${owner.surface}${runId === undefined ? "" : ` (run ${runId})`}. Wait for it to finish, then retry, or create another session. Other sessions in this workspace remain available.`,
+      { conflictKind: "execution", runId }
     );
   }
 
@@ -1857,9 +1889,11 @@ export class RuntimeHostServer {
     }
     const sessionId = sessionIdFromFile(session);
     const owner = this.sessionWriterOwners.get(sessionId);
-    if (!owner || owner.clientId !== connection.clientId) return;
-    this.sessionWriterOwners.delete(sessionId);
-    await this.registry.get(sessionId)?.runtime.releaseSessionClaim(sessionId);
+    if (!owner || owner.clientId !== connection.clientId || owner.pendingCompletions > 0) return;
+    const managed = this.registry.get(sessionId);
+    // 客户端离开不代表副作用已经收敛；运行结束的 idle 更新才释放执行占用。
+    if (managed?.runtime.getSnapshot().state.kind !== "idle") return;
+    await this.releaseIdleSessionWriter(sessionId, managed);
   }
 
   private async releaseSessionWriters(clientId: string): Promise<void> {
@@ -1868,8 +1902,9 @@ export class RuntimeHostServer {
       .filter(([, owner]) => owner.clientId === clientId)
       .map(([sessionId]) => sessionId);
     for (const sessionId of owned) {
-      this.sessionWriterOwners.delete(sessionId);
-      await this.registry.get(sessionId)?.runtime.releaseSessionClaim(sessionId);
+      const managed = this.registry.get(sessionId);
+      if (managed?.runtime.getSnapshot().state.kind !== "idle" || this.dispatcher.hasPendingSession(sessionId)) continue;
+      await this.releaseIdleSessionWriter(sessionId, managed);
     }
   }
 

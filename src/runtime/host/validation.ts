@@ -16,7 +16,7 @@ import type { TaskRetrySafety } from "../TaskRunStore.js";
 import type { AutomationCreateInput } from "../AutomationScheduler.js";
 import type { GraphNodeInput } from "../GoalGraphStore.js";
 import type { HostResponseFrame } from "./protocol.js";
-import type { HostSurface, RuntimeIsolation } from "./types.js";
+import type { HostOperationResult, HostSurface, RuntimeIsolation } from "./types.js";
 import type { LocalEmbeddingModelId } from "../../llm/embedding/types.js";
 import type { ThinkingSelection } from "../../llm/ModelManager.js";
 import { SessionWriterConflictError } from "../SessionLease.js";
@@ -319,7 +319,9 @@ export function publicErrorData(error: unknown): unknown {
   return {
     sessionId: error.sessionId,
     ownerPid: error.ownerPid,
-    ownerSurface: error.ownerSurface
+    ownerSurface: error.ownerSurface,
+    conflictKind: error.conflictKind,
+    runId: error.runId
   };
 }
 
@@ -330,12 +332,24 @@ export function errorFromHostFrame(frame: HostResponseFrame): Error {
       typeof data.sessionId === "string" ? data.sessionId : "unknown",
       typeof data.ownerPid === "number" ? data.ownerPid : undefined,
       typeof data.ownerSurface === "string" ? data.ownerSurface : undefined,
-      frame.error ?? "Session is already open in another application."
+      frame.error ?? "Session is already owned by another writer.",
+      {
+        conflictKind: data.conflictKind === "execution" ? "execution" : "external_writer",
+        runId: typeof data.runId === "string" ? data.runId : undefined
+      }
     );
   }
   const error = new Error(frame.error ?? "Runtime Host request failed.");
   if (frame.errorCode !== undefined) Object.assign(error, { code: frame.errorCode });
   return error;
+}
+
+export function errorFromHostOperation(result: HostOperationResult): Error {
+  return errorFromHostFrame({
+    kind: "response", requestId: "", ok: false,
+    error: result.reason ?? "Runtime Host did not accept the request.",
+    errorCode: result.errorCode, errorData: result.errorData
+  });
 }
 
 export function asError(error: unknown): Error {

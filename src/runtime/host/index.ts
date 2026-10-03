@@ -1,4 +1,5 @@
 export * from "./types.js";
+export { errorFromHostOperation } from "./validation.js";
 export * from "./errors.js";
 export * from "./protocol.js";
 export * from "./credentials.js";

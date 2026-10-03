@@ -121,7 +121,7 @@ async function taskCompletionDoesNotHoldAdmission(): Promise<void> {
     assert.equal(result.accepted, true);
     const other = await bounded(f.request<{ sessionId: string }>("session.ensure", { sessionId: "session-b", writeIntent: true }), "unrelated session admission");
     assert.equal(other.sessionId, "session-b");
-    await assert.rejects(f.request("session.ensure", { sessionId: "session-b", writeIntent: true }, "foreign"), /already open/u);
+    assert.equal((await f.request<{ sessionId: string }>("session.ensure", { sessionId: "session-b", writeIntent: true }, "foreign")).sessionId, "session-b");
     await assert.rejects(f.request("task.get", { taskRunId: task.taskRunId, sessionId: "session-b" }), /belongs to session/u);
     await bounded(f.request("snapshot", { sessionId: "session-b" }), "unrelated session query");
     assert.equal(finished, false, "task.run still waits for its final result");

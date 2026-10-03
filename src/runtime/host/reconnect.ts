@@ -47,11 +47,12 @@ export const runtimeHostSpawnCircuitThreshold = 3;
 
 /** spawn 熔断越限时抛出的终结错误；client/host 据此停止 respawn 而不是无限重试。 */
 export class RuntimeHostSpawnCircuitOpenError extends Error {
-  constructor(readonly endpoint: string, readonly attempts: number) {
+  constructor(readonly endpoint: string, readonly attempts: number, lastFailure?: Error) {
     super(
       `Runtime Host process died immediately ${String(attempts)} times in a row; giving up spawning. `
-      + "Fix the underlying crash, then restart the host: `biny daemon uninstall && biny daemon install` "
-      + "or quit the stale Biny Desktop/TUI process."
+      + "Inspect the startup details, fix the cause, then reopen Biny or restart the affected CLI/TUI client."
+      + (lastFailure === undefined ? "" : `\nLast startup failure: ${lastFailure.message}`),
+      { cause: lastFailure }
     );
     this.name = "RuntimeHostSpawnCircuitOpenError";
   }
@@ -59,7 +60,7 @@ export class RuntimeHostSpawnCircuitOpenError extends Error {
 
 export interface RuntimeHostSpawnCircuit {
   /** 进程起来后立刻退出/握手失败计一次；返回当前连续失败数。 */
-  recordFailure(): number;
+  recordFailure(error?: Error): number;
   /** 一次成功握手（host 真正 ready）清零连续失败计数。 */
   recordSuccess(): void;
   /** 越限（连续失败 ≥ threshold）时返回应抛出的终结错误，否则 undefined。 */
@@ -78,20 +79,23 @@ export function createRuntimeHostSpawnCircuit(
   threshold: number = runtimeHostSpawnCircuitThreshold
 ): RuntimeHostSpawnCircuit {
   let consecutiveFailures = 0;
+  let lastFailure: Error | undefined;
   return {
     get consecutiveFailures() {
       return consecutiveFailures;
     },
-    recordFailure(): number {
+    recordFailure(error?: Error): number {
       consecutiveFailures += 1;
+      lastFailure = error;
       return consecutiveFailures;
     },
     recordSuccess(): void {
       consecutiveFailures = 0;
+      lastFailure = undefined;
     },
     failureError(): RuntimeHostSpawnCircuitOpenError | undefined {
       return consecutiveFailures >= threshold
-        ? new RuntimeHostSpawnCircuitOpenError(endpoint, consecutiveFailures)
+        ? new RuntimeHostSpawnCircuitOpenError(endpoint, consecutiveFailures, lastFailure)
         : undefined;
     }
   };

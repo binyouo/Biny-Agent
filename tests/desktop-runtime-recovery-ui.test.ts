@@ -26,15 +26,37 @@ const props: React.ComponentProps<typeof Workspace> = {
 test("会话占用只替换输入区，保留历史标题并同时提供重试和创建分支", () => {
   const html = renderToStaticMarkup(React.createElement(Workspace, { ...props, writerConflict: { sessionId: "session" } }));
   assert.match(html, /可读历史/u);
-  assert.match(html, /已在另一个应用中打开/u);
+  assert.match(html, /此会话的写入权被占用/u);
   assert.match(html, /创建聊天分支/u);
-  assert.match(html, /重试/u);
-  assert.match(html, /<h3>已在另一个应用中打开<\/h3>/u);
-  assert.match(html, /<span>请先在那边关闭会话，才能在这里继续。<\/span>/u);
+  assert.match(html, /刷新状态/u);
+  assert.match(html, /其他会话仍可使用/u);
   assert.match(html, /<aside[^>]*class="biny-runtime-recovery"[^>]*role="alert"/u);
   assert.match(html, /class="biny-chat-composer has-runtime-recovery"/u);
   assert.doesNotMatch(html, /textarea|Agent Runtime 无法启动/u);
-  assert.doesNotMatch(html, /也可以|技术详情|重试中|创建中/u);
+  assert.doesNotMatch(html, /已在另一个应用中打开|重试中|创建中/u);
+});
+
+test("执行冲突说明入口、会话和运行身份，并给出等待和分支选项", () => {
+  const html = renderToStaticMarkup(React.createElement(Workspace, { ...props, writerConflict: {
+    sessionId: "session-A", conflictKind: "execution", ownerSurface: "tui", ownerPid: 1234, runId: "run-A"
+  } }));
+  assert.match(html, /此会话正在执行/u);
+  assert.match(html, /终端 TUI/u);
+  assert.match(html, /本轮结束/u);
+  assert.match(html, /同目录的其他会话仍可使用/u);
+  assert.match(html, /session-A/u);
+  assert.match(html, /run-A/u);
+  assert.match(html, /1234/u);
+  assert.doesNotMatch(html, /请先在那边关闭会话/u);
+});
+
+test("Host 不可达提示指向运行时进程，不能误报另一个会话占用", () => {
+  const html = renderToStaticMarkup(React.createElement(Workspace, { ...props,
+    runtimeError: { kind: "host_unavailable", message: "Host PID 1234 is alive but endpoint is unavailable", retryable: true }
+  }));
+  assert.match(html, /运行时连接不可用/u);
+  assert.match(html, /后台运行时进程/u);
+  assert.doesNotMatch(html, /另一个应用中打开|关闭会话/u);
 });
 
 test("恢复提示使用薄描边圆角、透明操作和按容器宽度切换的分隔线", async () => {

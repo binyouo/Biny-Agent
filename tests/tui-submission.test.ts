@@ -55,6 +55,7 @@ test("command picker executes the chosen command without a second submission", a
 test("TUI serializes admissions, queues follow-ups and preserves the next draft", { timeout: 15_000 }, async () => {
   const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "biny-tui-submit-")));
   let firstResponse: ServerResponse | undefined;
+  let competingResponse: ServerResponse | undefined;
   const sendReply = (response: ServerResponse, content: string): void => {
     response.writeHead(200, { "Content-Type": "text/event-stream" });
     response.end(`data: ${JSON.stringify({ choices: [{ index: 0, delta: { content }, finish_reason: null }] })}\n\ndata: ${JSON.stringify({ choices: [{ index: 0, delta: {}, finish_reason: "stop" }] })}\n\ndata: [DONE]\n\n`);
@@ -62,6 +63,10 @@ test("TUI serializes admissions, queues follow-ups and preserves the next draft"
   const provider = createServer(async (request, response) => {
     let body = "";
     for await (const chunk of request) body += String(chunk);
+    if (body.includes("competing-execution") && !competingResponse) {
+      competingResponse = response;
+      return;
+    }
     const content = body.includes("tui-send-probe") ? "tui-send-reply" : "[]";
     if (content === "tui-send-reply" && !firstResponse) firstResponse = response;
     else sendReply(response, content);
@@ -222,7 +227,9 @@ test("TUI serializes admissions, queues follow-ups and preserves the next draft"
     const competitor = await connectRuntimeHost(root, { clientId: "other-writer", surface: "cli" });
     assert.ok(competitor);
     try {
-      await competitor.ensureSession({ sessionId: app.tuiState.sessionId, writeIntent: true });
+      const competing = await competitor.submitRunForSession(app.tuiState.sessionId, "competing-execution");
+      assert.ok(competing.accepted && competing.result);
+      await waitUntil(() => competingResponse !== undefined);
       const rejected = app.submit("rejected message", [{ name: "original.png", mimeType: "image/png", data: "b3JpZ2luYWw=" }]);
       editor.setText("newer draft");
       await rejected;
@@ -230,6 +237,15 @@ test("TUI serializes admissions, queues follow-ups and preserves the next draft"
       assert.match(attachments.render(80).join("\n"), /\[Image #1\]/u);
       const afterRejection = await readSessionEvents(app.tuiState.sessionFile);
       assert.equal(afterRejection.some((event) => event.type === "user_message" && event.content.includes("rejected message")), false);
+      const notice = composer.children.find((component) => component instanceof SessionWriterConflictComponent);
+      assert.ok(notice instanceof SessionWriterConflictComponent);
+      const lines = notice.render(80).join("\n");
+      assert.ok(lines.includes(competing.result.runId), "运行身份在常见终端宽度下必须完整可见");
+      assert.ok(lines.includes(String(process.pid)), "占用进程在常见终端宽度下必须可见");
+      assert.match(lines, /命令行/u);
+      await competitor.cancelRunRequest(competing.result.runId, "cancelled", app.tuiState.sessionId);
+      await competitor.waitForIdle();
+      competingResponse?.destroy();
     } finally { await competitor.close(); }
     const conflict = composer.children.find((component) => component instanceof SessionWriterConflictComponent);
     assert.ok(conflict instanceof SessionWriterConflictComponent);

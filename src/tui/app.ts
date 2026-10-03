@@ -31,6 +31,7 @@ import type { CommandRuntime } from "../runtime/CommandRuntime.js";
 import {
   connectOrSpawnRuntimeHost,
   connectRuntimeHost,
+  errorFromHostOperation,
   startRuntimeHost,
   RuntimeHostClient,
   type RuntimeHostFactory,
@@ -61,7 +62,7 @@ import { readGitBranch } from "./runtime/gitBranch.js";
 import { openDesktopSession } from "./runtime/desktopHandoff.js";
 import { sessionIdFromFile } from "../session/store.js";
 import { readStoredSessionEvents } from "../session/events.js";
-import { isSessionWriterConflictError } from "../runtime/SessionLease.js";
+import { isSessionWriterConflictError, type SessionWriterConflictInfo } from "../runtime/SessionLease.js";
 import { sessionEventsToTranscript } from "./sessionTranscript.js";
 import { modelThinkingOptions, selectedThinkingForModel } from "./modelOptions.js";
 import { createInitialTuiState, tuiReducer } from "./reducer.js";
@@ -144,7 +145,7 @@ export class BinyTui {
   private readonly chatContainer = new TranscriptView();
   private readonly editorContainer = new Container();
   private readonly pendingAttachmentsView = new PendingAttachmentsComponent();
-  private sessionWriterConflict: { sessionId: string; ownerSurface?: string } | undefined;
+  private sessionWriterConflict: SessionWriterConflictInfo | undefined;
   private readonly ownedSessionIds = new Set<string>();
   private sessionWriterConflictView: SessionWriterConflictComponent | undefined;
   private readonly status: StatusIndicatorComponent;
@@ -640,12 +641,12 @@ export class BinyTui {
       if (runtimeIsBusy(runtime instanceof RuntimeHostClient ? runtime.getSnapshot(sessionId) : runtime.getSnapshot())) {
         if (runtime instanceof RuntimeHostClient) {
           const queued = await runtime.queueRunMessageForSession(sessionId, withAttachmentReferences(prompt, attachments), "queue", attachments);
-          if (!queued.accepted) throw new Error(queued.reason);
+          if (!queued.accepted) throw errorFromHostOperation(queued);
         } else await runtime.enqueue(withAttachmentReferences(prompt, attachments), attachments);
         this.notify("消息已加入待发送队列，将在当前任务结束后继续处理。");
       } else if (runtime instanceof RuntimeHostClient) {
         const accepted = await runtime.submitRunForSession(sessionId, withAttachmentReferences(prompt, attachments), attachments);
-        if (!accepted.accepted) throw new Error(accepted.reason ?? "Runtime Host did not accept the message.");
+        if (!accepted.accepted) throw errorFromHostOperation(accepted);
       } else {
         void runtime.submitPrompt(withAttachmentReferences(prompt, attachments), attachments).completion
           .catch((error) => this.dispatch({ type: "error.message", message: describeError(error) }));
@@ -655,7 +656,7 @@ export class BinyTui {
         .catch((error) => this.notify(`写入输入历史失败：${describeError(error)}`));
     } catch (error) {
       if (isSessionWriterConflictError(error)) {
-        await this.showSessionWriterConflict(error.sessionId, error.ownerSurface);
+        await this.showSessionWriterConflict(error);
         this.restoreSubmittedInput(text, attachments);
         return;
       }
@@ -745,7 +746,7 @@ export class BinyTui {
       await this.ensureSessionWriteAccess(sessionId);
       if (runtime instanceof RuntimeHostClient) {
         const queued = await runtime.queueRunMessageForSession(sessionId, withAttachmentReferences(prompt, attachments), "steer", attachments);
-        if (!queued.accepted) throw new Error(queued.reason);
+        if (!queued.accepted) throw errorFromHostOperation(queued);
       } else await runtime.steer(withAttachmentReferences(prompt, attachments), attachments);
       this.setPendingAttachments([]);
       this.setEditorText("");
@@ -755,14 +756,14 @@ export class BinyTui {
       this.notify("消息已加入 steer 队列，将在当前模型步骤和工具批次结束后处理。");
     } catch (error) {
       if (isSessionWriterConflictError(error)) {
-        await this.showSessionWriterConflict(error.sessionId, error.ownerSurface);
+        await this.showSessionWriterConflict(error);
         return;
       }
       this.dispatch({ type: "error.message", message: describeError(error) });
     }
   }
 
-  /** Remote Host 的写入口先取得当前 session 的长期 claim，避免 TUI 只靠瞬时执行 lease。 */
+  /** Remote Host 的写入口检查可写性；实际提交仍由 Host 在同会话队列内重新仲裁。 */
   private async ensureSessionWriteAccess(sessionId: string): Promise<void> {
     const runtime = this.runtime;
     if (!(runtime instanceof RuntimeHostClient)) return;
@@ -1553,7 +1554,7 @@ export class BinyTui {
       snapshot = await runtime.focusSession(sessionId);
     } catch (error) {
       if (!isSessionWriterConflictError(error)) throw error;
-      await this.showSessionWriterConflict(sessionId, error.ownerSurface);
+      await this.showSessionWriterConflict(error);
       return;
     }
     const { info } = snapshot;
@@ -1580,12 +1581,12 @@ export class BinyTui {
     });
     if (snapshot.state.kind === "idle") {
       try {
-        // 切换到空闲 session 时提前取得长期 claim，避免用户看到可写编辑器后才发现
-        // 另一个 surface 已经占用同一会话；运行中的 session 继续保持只观察/排队语义。
+        // 切换到空闲 session 时检查外部 writer；检查结束即释放，浏览不长期占用。
+        // 运行中的 session 继续保持只观察/排队语义。
         await runtime.claimSession(sessionId);
       } catch (error) {
         if (!isSessionWriterConflictError(error)) throw error;
-        await this.showSessionWriterConflict(sessionId, error.ownerSurface);
+        await this.showSessionWriterConflict(error);
         return;
       }
     }
@@ -1621,12 +1622,13 @@ export class BinyTui {
       await this.refreshUsage();
     } catch (error) {
       if (!isSessionWriterConflictError(error)) throw error;
-      await this.showSessionWriterConflict(session, error.ownerSurface);
+      await this.showSessionWriterConflict(error);
     }
   }
 
-  private async showSessionWriterConflict(sessionId: string, ownerSurface?: string): Promise<void> {
-    this.sessionWriterConflict = { sessionId, ownerSurface };
+  private async showSessionWriterConflict(conflict: SessionWriterConflictInfo): Promise<void> {
+    const sessionId = conflict.sessionId;
+    this.sessionWriterConflict = conflict;
     this.editorContainer.removeChild(this.pendingAttachmentsView);
     this.editorContainer.removeChild(this.editor);
     this.sessionWriterConflictView = new SessionWriterConflictComponent(

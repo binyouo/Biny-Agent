@@ -152,7 +152,7 @@ test("恢复目标会话后释放先前空闲会话的写入权，不把别的�
   assert.ok(client);
   try {
     await client.claimSession(sessionId);
-    await assert.rejects(client.claimSession(recorder.sessionId), /writer|owned/iu);
+    await client.claimSession(recorder.sessionId);
   } finally {
     await client.close();
   }

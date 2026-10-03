@@ -493,7 +493,7 @@ export interface DesktopSessionDocument {
 }
 
 export interface DesktopRuntimeError {
-  kind: "startup_timeout" | "startup_failed" | "protocol_mismatch";
+  kind: "startup_timeout" | "startup_failed" | "protocol_mismatch" | "host_unavailable";
   message: string;
   retryable: boolean;
 }
@@ -515,6 +515,9 @@ export interface DesktopSessionLimits {
 export interface DesktopSessionWriterConflict {
   sessionId: string;
   ownerSurface?: "desktop" | "tui" | "cli";
+  ownerPid?: number;
+  conflictKind?: "execution" | "external_writer";
+  runId?: string;
 }
 
 /** TUI 通过 `/app` 显式交给 Desktop 打开的项目会话。 */

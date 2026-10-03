@@ -6,7 +6,7 @@
 import type { ChildProcess } from "node:child_process";
 import path from "node:path";
 import { RuntimeHostClient } from "./client.js";
-import { RuntimeHostProtocolMismatchError } from "./errors.js";
+import { RuntimeHostProtocolMismatchError, RuntimeHostUnavailableError } from "./errors.js";
 import {
   ensureRuntimeHostDirectory,
   isConnectionRefused,
@@ -65,7 +65,7 @@ export async function connectRuntimeHost(
     }
   } catch (error) {
     if (!isConnectionRefused(error)) throw error;
-    if (isProcessAlive(registration.pid)) throw new Error(`Runtime Host PID ${String(registration.pid)} is alive but its endpoint is unavailable. No replacement was started.`);
+    if (isProcessAlive(registration.pid)) throw new RuntimeHostUnavailableError(registration.pid);
     await removeStaleRegistration(registration);
     return undefined;
   }

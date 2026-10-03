@@ -4,6 +4,7 @@
  * 连接发现、候选启动和文件生命周期由独立模块提供；这里仅维护请求、事件和 completion 状态。
  */
 import { randomUUID } from "node:crypto";
+import { commandWritesSession } from "./operations.js";
 import type { planStatus } from "../../extensions/plan.js";
 import net from "node:net";
 import type { AgentAttachment, AgentSessionInfo, ResumedAgentSession } from "../../agent/AgentSession.js";
@@ -56,6 +57,7 @@ import {
   asRecord,
   asError,
   errorFromHostFrame,
+  errorFromHostOperation,
   isRuntimeRevisionConflict,
   isTransientHostError,
   normalizeRequestIds,
@@ -829,7 +831,7 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
       writeIntent: true,
       expectedRevision: this.currentRevision(sessionId)
     });
-    if (!result.accepted) throw new Error(result.reason ?? "Runtime Host did not accept message version switching.");
+    if (!result.accepted) throw errorFromHostOperation(result);
   }
 
   startBackgroundOperation<T extends { completion: Promise<unknown> }>(
@@ -1593,12 +1595,4 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
     if (this.socket !== socket || this.socketWriter === undefined) return;
     this.socketWriter.send(frame);
   }
-}
-
-function commandWritesSession(input: string): boolean {
-  const [command, action] = input.trim().replace(/^\/+/, "/").split(/\s+/u);
-  if (command === "/inspect") return true;
-  if (command === "/compact") return true;
-  return command === "/soul"
-    && (action === "set" || action === "append-trait" || action === "reset" || action === "delete");
 }

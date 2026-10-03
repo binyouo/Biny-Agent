@@ -12,11 +12,26 @@ export class RuntimeHostProtocolMismatchError extends Error {
 export class RuntimeHostStartupError extends Error {
   readonly code: "runtime_host_startup_timeout" | "runtime_host_startup_failed";
 
-  constructor(readonly reason: "timeout" | "process_exit", detail: number) {
+  constructor(readonly reason: "timeout" | "process_exit", detail: number | null, diagnostic?: {
+    pid?: number;
+    signal?: NodeJS.Signals;
+    stderr?: string;
+  }) {
     super(reason === "timeout"
       ? `Runtime Host did not become ready within ${String(detail)}ms.`
-      : `Runtime Host process exited before attach (code ${String(detail)}).`);
+        + (diagnostic?.stderr ? `\nStartup details:\n${diagnostic.stderr}` : "")
+      : `Runtime Host process${diagnostic?.pid === undefined ? "" : ` ${String(diagnostic.pid)}`} exited before attach (${diagnostic?.signal === undefined ? `code ${String(detail)}` : `signal ${diagnostic.signal}`}).`
+        + (diagnostic?.stderr ? `\nStartup details:\n${diagnostic.stderr}` : ""));
     this.code = reason === "timeout" ? "runtime_host_startup_timeout" : "runtime_host_startup_failed";
     this.name = "RuntimeHostStartupError";
+  }
+}
+
+export class RuntimeHostUnavailableError extends Error {
+  readonly code = "runtime_host_unavailable";
+
+  constructor(readonly pid: number) {
+    super(`Runtime Host PID ${String(pid)} is alive but its endpoint is unavailable. This is a Host connection failure, not a session writer conflict. No replacement was started. Check the Host process before retrying.`);
+    this.name = "RuntimeHostUnavailableError";
   }
 }

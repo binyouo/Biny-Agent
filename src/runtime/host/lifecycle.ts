@@ -13,6 +13,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { globalAgentDir, globalConfigDir } from "../../config/paths.js";
+import { redactSecrets } from "../../utils/redaction.js";
 import { asRecord } from "./protocol.js";
 import {
   runtimeHostDirectoryName,
@@ -28,6 +29,33 @@ import type {
   RuntimeHostPaths,
   RuntimeHostSpawnOptions
 } from "./types.js";
+
+const startupOutput = new WeakMap<ChildProcess, { bytes: Buffer; truncated: boolean }>();
+const startupOutputLimit = 16 * 1024;
+
+function captureStartupOutput(child: ChildProcess): void {
+  const state = { bytes: Buffer.alloc(0), truncated: false };
+  startupOutput.set(child, state);
+  child.stderr?.on("data", (chunk: Buffer | string) => {
+    const bytes = Buffer.concat([state.bytes, Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)]);
+    state.truncated ||= bytes.length > startupOutputLimit;
+    state.bytes = Buffer.from(bytes.subarray(Math.max(0, bytes.length - startupOutputLimit)));
+  });
+  (child.stderr as (NodeJS.ReadableStream & { unref?(): void }) | null)?.unref?.();
+}
+
+function startupError(child: ChildProcess, reason: "timeout" | "process_exit", detail: number | null): RuntimeHostStartupError {
+  const state = startupOutput.get(child);
+  let output = state?.bytes.toString("utf8") ?? "";
+  // 丢弃截断后的首个残行，避免只剩密钥尾部而无法识别和脱敏。
+  if (state?.truncated) output = output.includes("\n") ? output.slice(output.indexOf("\n") + 1) : "";
+  output = redactSecrets(output).replace(/[\u0000-\u0008\u000b-\u001f\u007f]/gu, "").trim();
+  return new RuntimeHostStartupError(reason, detail, {
+    pid: child.pid,
+    signal: child.signalCode ?? undefined,
+    stderr: output.length > 4_000 ? `${output.slice(0, 4_000)}\n[truncated]` : output || undefined
+  });
+}
 
 export function runtimeHostPaths(persistenceRoot: string): RuntimeHostPaths {
   const resolvedRoot = path.resolve(persistenceRoot);
@@ -62,9 +90,10 @@ export function spawnRuntimeHostProcess(
     cwd: moduleRoot,
     detached: true,
     // 控制 socket 可以重连；这条 IPC 仅代表启动者寿命，不能与业务连接混为一谈。
-    stdio: ["ignore", "ignore", "ignore", "ipc"],
+    stdio: ["ignore", "ignore", "pipe", "ipc"],
     env: plan.env
   });
+  captureStartupOutput(child);
   if (options.browserAutomation !== undefined) {
     child.send({ type: "biny.runtime-host.bootstrap", browserAutomation: options.browserAutomation }, (error) => {
       if (error) void terminateSpawnedHost(child);
@@ -157,12 +186,13 @@ export async function waitForHostRegistration(
   const circuit = runtimeHostSpawnCircuitFor(runtimeHostPaths(persistenceRoot).endpoint);
   const startedAt = Date.now();
   while (Date.now() - startedAt < timeoutMs) {
-    if (child.exitCode !== null) {
+    if (child.exitCode !== null || child.signalCode !== null) {
       // 进程起来后立刻退出（spawn-即死）：计入熔断，越限即抛终结错误停止 respawn。
-      circuit.recordFailure();
+      const failure = startupError(child, "process_exit", child.exitCode);
+      circuit.recordFailure(failure);
       const circuitError = circuit.failureError();
       if (circuitError) throw circuitError;
-      throw new RuntimeHostStartupError("process_exit", child.exitCode);
+      throw failure;
     }
     const registration = await readRegistration(runtimeHostPaths(persistenceRoot));
     if (registration) {
@@ -175,11 +205,12 @@ export async function waitForHostRegistration(
     }
     await new Promise<void>((resolve) => setTimeout(resolve, 50));
   }
-  if (child.exitCode !== null) {
-    circuit.recordFailure();
+  if (child.exitCode !== null || child.signalCode !== null) {
+    const failure = startupError(child, "process_exit", child.exitCode);
+    circuit.recordFailure(failure);
     const circuitError = circuit.failureError();
     if (circuitError) throw circuitError;
-    throw new RuntimeHostStartupError("process_exit", child.exitCode);
+    throw failure;
   }
   // 候选进程可能仍存活但已经失去注册能力（例如加载 provider 卡死）。超时后必须回收
   // 这个候选，否则每次重连都会留下一个 detached Host，最终与 launchd KeepAlive 叠加成进程风暴。
@@ -189,10 +220,11 @@ export async function waitForHostRegistration(
     return finalRegistration;
   }
   await terminateSpawnedHost(child);
-  circuit.recordFailure();
+  const failure = startupError(child, "timeout", timeoutMs);
+  circuit.recordFailure(failure);
   const circuitError = circuit.failureError();
   if (circuitError) throw circuitError;
-  throw new RuntimeHostStartupError("timeout", timeoutMs);
+  throw failure;
 }
 
 /** 超时候选只允许短暂优雅退出，随后强制回收；不会触碰 registration 中的其他 owner。 */

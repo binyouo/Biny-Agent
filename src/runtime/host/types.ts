@@ -20,6 +20,7 @@ export interface HostOperationResult<T = unknown> {
   result?: T;
   reason?: string;
   errorCode?: string;
+  errorData?: unknown;
 }
 
 export interface RuntimeHostSessionSummary {

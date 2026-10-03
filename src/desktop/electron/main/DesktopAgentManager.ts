@@ -73,6 +73,7 @@ import { buildInspectorTask, type InspectorMessage } from "../../inspectorTask.j
 import {
   connectOrSpawnRuntimeHostWithOwnership,
   connectRuntimeHost,
+  errorFromHostOperation,
   startRuntimeHost,
   RuntimeHostClient,
   type HostOperationResult,
@@ -80,7 +81,7 @@ import {
   type RuntimeHostServer
 } from "../../../runtime/RuntimeHost.js";
 import { isSessionWriterConflictError } from "../../../runtime/SessionLease.js";
-import { RuntimeHostProtocolMismatchError, RuntimeHostStartupError } from "../../../runtime/host/errors.js";
+import { RuntimeHostProtocolMismatchError, RuntimeHostStartupError, RuntimeHostUnavailableError } from "../../../runtime/host/errors.js";
 import { RuntimeHostSpawnCircuitOpenError } from "../../../runtime/host/reconnect.js";
 import {
   deleteSessionCatalogRecord,
@@ -320,7 +321,10 @@ export class DesktopAgentManager {
         sessionId: error.sessionId,
         ownerSurface: error.ownerSurface === "desktop" || error.ownerSurface === "tui" || error.ownerSurface === "cli"
           ? error.ownerSurface
-          : undefined
+          : undefined,
+        ownerPid: error.ownerPid,
+        conflictKind: error.conflictKind,
+        runId: error.runId
       });
       return;
     }
@@ -747,7 +751,7 @@ export class DesktopAgentManager {
             result: delivery === "steer" ? await runtime.steer(prompt, nativeAttachments, requestIds) : await runtime.enqueue(prompt, nativeAttachments, requestIds)
           };
       if (!queued.accepted || queued.result === undefined) {
-        throw new Error(queued.reason ?? "Runtime Host did not accept the queued message.");
+        throw errorFromHostOperation(queued);
       }
       if (this.draftSessionIds.get(projectId) === targetSessionId) this.draftSessionIds.delete(projectId);
       if (this.state.selectedSessionId(projectId) === selectedBeforeSend) await this.state.setSelectedSession(projectId, targetSessionId);
@@ -768,7 +772,7 @@ export class DesktopAgentManager {
         promptContext,
         capabilitySelection
       );
-      if (!accepted.accepted || accepted.result === undefined) throw rejectedHostOperation(accepted.reason, accepted.errorCode);
+      if (!accepted.accepted || accepted.result === undefined) throw errorFromHostOperation(accepted);
       if (this.draftSessionIds.get(projectId) === targetSessionId) this.draftSessionIds.delete(projectId);
       if (this.state.selectedSessionId(projectId) === selectedBeforeSend) await this.state.setSelectedSession(projectId, info.sessionId);
       recordPerfPhase("desktop.sendPrompt", sendPerfStartedAt, { projectId, queued: false }, project.path);
@@ -950,7 +954,7 @@ export class DesktopAgentManager {
       const requestIds = { retryOfMessageId: targetMessageId };
       if (runtime instanceof RuntimeHostClient) {
         const accepted = await runtime.submitRunForSession(sessionId, prompt, nativeAttachments, requestIds);
-        if (!accepted.accepted || accepted.result === undefined) throw rejectedHostOperation(accepted.reason, accepted.errorCode);
+        if (!accepted.accepted || accepted.result === undefined) throw errorFromHostOperation(accepted);
         await this.state.setSelectedSession(projectId, sessionId);
         return { sessionId, runId: accepted.result.runId, messageId: accepted.result.messageId };
       }
@@ -1002,7 +1006,7 @@ export class DesktopAgentManager {
     };
     if (runtime instanceof RuntimeHostClient) {
       const accepted = await runtime.submitRunForSession(sessionId, prompt, nativeAttachments, requestIds);
-      if (!accepted.accepted || accepted.result === undefined) throw rejectedHostOperation(accepted.reason, accepted.errorCode);
+      if (!accepted.accepted || accepted.result === undefined) throw errorFromHostOperation(accepted);
       await this.state.setSelectedSession(projectId, sessionId);
       return {
         sessionId,
@@ -3580,14 +3584,8 @@ function toDesktopWorktreeStatus(status: WorktreeStatusView): DesktopWorktreeSta
 
 async function unwrapHostOperationResult<T>(operation: Promise<HostOperationResult<T>>): Promise<T | undefined> {
   const result = await operation;
-  if (!result.accepted) throw new Error(result.reason ?? "Runtime operation was rejected.");
+  if (!result.accepted) throw errorFromHostOperation(result);
   return result.result;
-}
-
-function rejectedHostOperation(reason: string | undefined, code: string | undefined): Error {
-  const error = new Error(reason ?? "Runtime Host did not accept the request.");
-  if (code !== undefined) Object.assign(error, { code });
-  return error;
 }
 
 function requiredPayloadString(value: unknown, name: string): string {
@@ -3669,7 +3667,8 @@ function formatRuntimeInitializationError(error: unknown): DesktopRuntimeError {
   return {
     kind: error instanceof RuntimeHostStartupError && error.reason === "timeout"
       ? "startup_timeout"
-      : error instanceof RuntimeHostProtocolMismatchError ? "protocol_mismatch" : "startup_failed",
+      : error instanceof RuntimeHostProtocolMismatchError ? "protocol_mismatch"
+      : error instanceof RuntimeHostUnavailableError ? "host_unavailable" : "startup_failed",
     message: error instanceof Error ? error.message : String(error),
     retryable: !(error instanceof RuntimeHostProtocolMismatchError || error instanceof RuntimeHostSpawnCircuitOpenError)
   };

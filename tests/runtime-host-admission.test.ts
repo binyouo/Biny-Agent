@@ -93,11 +93,11 @@ try {
   slowRelease.resolve();
   await slow;
 
-  // 写入者冲突不能因常驻会话快速路径被绕过；只读连接仍可读取。
+  // 空闲会话的可写性探测不长期占用写入权；只读连接仍可读取。
   await client.ensureSession({ sessionId: target.sessionId, writeIntent: true });
   other = await connectRuntimeHost(root, { configDir, clientId: "other-surface", surface: "tui" });
   assert.ok(other);
-  await assert.rejects(other.ensureSession({ sessionId: target.sessionId, writeIntent: true }), /already open/u);
+  assert.equal((await other.ensureSession({ sessionId: target.sessionId, writeIntent: true })).sessionId, target.sessionId);
   assert.equal((await other.ensureSession({ sessionId: target.sessionId })).sessionId, target.sessionId);
   await assert.rejects(client.ensureSession({ sessionId: target.sessionId, isolation: "worktree" }), /already configured for shared/u);
 

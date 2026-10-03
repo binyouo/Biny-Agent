@@ -29,12 +29,20 @@ export function RuntimeRecoveryBanner({ writerConflict, runtimeError, onRetry, o
       setAction(undefined);
     }
   };
-  const title = writerConflict ? "已在另一个应用中打开"
+  const executing = writerConflict?.conflictKind === "execution";
+  const owner = writerConflict?.ownerSurface === "tui" ? "终端 TUI"
+    : writerConflict?.ownerSurface === "cli" ? "命令行"
+    : writerConflict?.ownerSurface === "desktop" ? "桌面端" : "另一个执行入口";
+  const title = writerConflict ? executing ? "此会话正在执行" : "此会话的写入权被占用"
     : runtimeError?.kind === "startup_timeout" ? "运行时启动超时"
     : runtimeError?.kind === "protocol_mismatch" ? "运行时版本不一致"
+    : runtimeError?.kind === "host_unavailable" ? "运行时连接不可用"
     : "暂时无法启动运行时";
-  const description = writerConflict ? "请先在那边关闭会话，才能在这里继续。"
+  const description = writerConflict ? executing
+    ? `${owner}正在执行此会话。等待本轮结束后刷新状态，或创建聊天分支继续；同目录的其他会话仍可使用。`
+    : `${writerConflict.ownerPid === undefined ? "另一个进程" : `进程 ${String(writerConflict.ownerPid)}`}持有此会话的写入权。等待它完成或在该进程中关闭会话后刷新状态。其他会话仍可使用。`
     : runtimeError?.kind === "protocol_mismatch" ? "确认旧运行时没有正在执行的任务后，将它退出，再重新打开 Biny。历史记录仍可查看。"
+    : runtimeError?.kind === "host_unavailable" ? "已发现后台运行时进程，但暂时无法连接。请检查技术详情中的进程状态，再重试连接；历史和未发送的输入仍会保留。"
     : runtimeError?.retryable === false ? "运行时连续启动失败，已停止自动尝试。请检查技术详情，修复原因后重新打开 Biny。历史记录仍可查看。"
     : "历史记录和未发送的输入仍会保留。重试只重新连接运行时，不会自动发送消息。";
   return (
@@ -49,10 +57,13 @@ export function RuntimeRecoveryBanner({ writerConflict, runtimeError, onRetry, o
           <h3>{title}</h3>
           <span>{description}</span>
           {runtimeError ? <details><summary>技术详情</summary><p>{runtimeError.message}</p></details> : null}
+          {writerConflict ? <details><summary>占用详情</summary>
+            <p>会话：{writerConflict.sessionId}{writerConflict.runId ? `；运行：${writerConflict.runId}` : ""}{writerConflict.ownerPid === undefined ? "" : `；${executing ? "运行时" : "占用"}进程：${String(writerConflict.ownerPid)}`}</p>
+          </details> : null}
           {failure ? <span className="biny-runtime-recovery-failure">{failure}</span> : null}
         </div>
         <div className="biny-runtime-recovery-actions">
-          {writerConflict || runtimeError?.retryable ? <button disabled={action !== undefined} onClick={() => void run("retry", onRetry)} type="button">重试</button> : null}
+          {writerConflict || runtimeError?.retryable ? <button disabled={action !== undefined} onClick={() => void run("retry", onRetry)} type="button">{writerConflict ? "刷新状态" : "重试"}</button> : null}
           {writerConflict && onCreateBranch ? <button disabled={action !== undefined} onClick={() => void run("branch", onCreateBranch)} type="button">创建聊天分支</button> : null}
           {!writerConflict ? <button disabled={action !== undefined} onClick={onOpenProject} type="button">打开其他项目</button> : null}
         </div>

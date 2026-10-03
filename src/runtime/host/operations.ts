@@ -9,6 +9,13 @@ import { runtimeCommandOperation } from "../commands.js";
 
 export const memoryQueryActions = new Set(["overview", "stats", "service-status", "stored-embedding-model", "tool-model", "list", "get", "search", "archive-list", "archive-chains", "sleep-status", "sleep-http-status", "sleep-runs", "sleep-preview"]);
 
+export function commandWritesSession(input: string): boolean {
+  const [command, action] = input.trim().replace(/^\/+/, "/").split(/\s+/u);
+  if (command === "/inspect" || command === "/compact") return true;
+  return command === "/soul"
+    && (action === "set" || action === "append-trait" || action === "reset" || action === "delete");
+}
+
 /** 准入已结束，RPC 仍需等待的结果；不能直接返回 Promise，否则它会继续占用因果队列。 */
 export class OperationCompletion<T> {
   readonly completion: Promise<T>;
@@ -71,6 +78,7 @@ export function operationLane(operation: string, payload: Record<string, unknown
     if (commandOperation?.startsWith("session.goal.") || commandOperation?.startsWith("goal.")) {
       return operationLane(commandOperation, payload);
     }
+    if (commandWritesSession(payload.input)) return "run";
   }
   if (operation === "memory" && memoryQueryActions.has(String(payload.action))) return "query";
   // 会话的创建、替换、写入者和准入共用短因果队列；重建与权限写入不能交错，
@@ -101,6 +109,9 @@ export function operationLane(operation: string, payload: Record<string, unknown
     || operation === "queue"
     || operation === "run.queue"
     || operation === "run.queue.mutate"
+    || operation === "message.version"
+    || operation === "compact"
+    || operation === "plan.start"
     || operation === "session.goal.set"
     || operation === "session.goal.resume"
     || operation === "session.goal.pause"

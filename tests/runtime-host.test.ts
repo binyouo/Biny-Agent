@@ -825,14 +825,16 @@ async function main(): Promise<void> {
   const secondClient = await connectRuntimeHost(workspace, { clientId: "test-client-2", surface: "desktop" });
   assert.ok(secondClient);
   assert.equal(secondClient.getSnapshot().info.sessionId, "session-host-test");
+  runtime.publish({ snapshot: { ...currentSnapshot, state: { kind: "runs", activeRun: { runId: "owned-run", status: "thinking" } } } });
   await client.claimSession("session-host-test");
   const foreignSubmit = await secondClient.submitRun("must be rejected by the session writer claim");
   assert.equal(foreignSubmit.accepted, false, "另一个 client 不能绕过已登记的 session writer claim");
   assert.equal(foreignSubmit.errorCode, "session_writer_conflict");
   await assert.rejects(
     secondClient.claimSession("session-host-test"),
-    /already open in another tui client/u
+    /active execution from tui/u
   );
+  runtime.publish({ snapshot: { ...currentSnapshot, state: { kind: "idle" } } });
   await client.releaseSessionClaim("session-host-test");
   const replayedTypes: string[] = [];
   const unsubscribeReplay = secondClient.subscribe((replayed) => {
@@ -877,7 +879,7 @@ async function main(): Promise<void> {
   await fs.chmod(hostPaths.registrationPath, 0o600);
   await assert.rejects(
     connectRuntimeHost(workspace, { clientId: "incompatible-client", surface: "tui" }),
-    /protocol 2 is incompatible with 8/u
+    /protocol 2 is incompatible with 9/u
   );
   assert.deepEqual(JSON.parse(await readFile(hostPaths.registrationPath, "utf8")), incompatibleRegistration);
   await fs.rm(hostPaths.registrationPath);

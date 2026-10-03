@@ -130,12 +130,14 @@ try {
 
     const writeSession = await client.ensureSession({ writeIntent: true });
     writeSessionId = writeSession.sessionId;
-    assert.equal(owners.get(writeSession.sessionId)?.clientId, client.clientId, "writeIntent 必须登记连接级 session owner");
+    assert.equal(owners.has(writeSession.sessionId), false, "空闲 writeIntent 探测不能留下 writer owner");
     const writeRuntime = createdRuntimes.get(writeSession.sessionId);
     assert.ok(writeRuntime);
     writeRuntime.setState("runs");
+    await client.claimSession(writeSession.sessionId);
     assert.equal(owners.get(writeSession.sessionId)?.clientId, client.clientId, "运行期间必须保留 writer owner");
     writeRuntime.setState("idle");
+    await client.releaseSessionClaim(writeSession.sessionId);
     assert.equal(owners.has(writeSession.sessionId), false, "Runtime 回到 idle 后必须释放 writer owner，允许 LRU 回收空闲会话");
 
     await client.focusSession(created.sessionId);
