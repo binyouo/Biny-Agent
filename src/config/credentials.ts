@@ -1,8 +1,9 @@
 /**
  * 统一模型凭据存储。
  *
- * macOS 上 CLI、TUI 和 Electron 都通过 `security` 访问同一个 Keychain service/account；其他平台
- * 不落盘，模型凭据只从配置声明的环境变量读取。凭据值不会进入普通 IPC、session 或 config.json；
+ * macOS 命令行存储通过 `security` 访问 Keychain；Desktop 与独立 Electron Host 使用
+ * DesktopSafeStorageCredentialStore 的加密文件。引用必须在当前入口使用的存储中保存。
+ * 不支持持久存储的平台使用配置声明的环境变量。凭据值不会进入普通 IPC、session 或 config.json；
  * 模型设置页查看时通过受控的按需 IPC 读取。
  */
 import { createHash, randomUUID } from "node:crypto";

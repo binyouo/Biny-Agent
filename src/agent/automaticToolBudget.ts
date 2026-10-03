@@ -13,7 +13,7 @@ export const defaultAutomaticToolBudget: Readonly<AutomaticToolBudget> = Object.
   maxTools: 32, maxSchemaCharacters: 64_000, maxPreviousTools: 8
 });
 
-export type PreselectionTool = Pick<Tool, "name" | "description" | "source" | "capability"> & Partial<Pick<Tool, "parameters">>;
+export type PreselectionTool = Pick<Tool, "name" | "description" | "source" | "capability"> & Partial<Pick<Tool, "parameters" | "exposure">>;
 
 export function boundAutomaticTools(options: {
   tools: readonly PreselectionTool[];

@@ -5,6 +5,7 @@
  * `ModelStreamEvent`，Agent Loop 就可以独立处理消息、工具和事件生命周期。
  */
 import type { JsonSchema } from "../../tools/schema.js";
+import type { ToolNamespace } from "../../tools/types.js";
 import type { ActivityModelRuntime } from "../../activity/types.js";
 import type { ActivityDataResidency } from "../../activity/settings.js";
 import type { ReasoningEffort } from "../../config/schema.js";
@@ -90,6 +91,8 @@ export interface ModelRequestContext {
   sessionId?: string;
   runId?: string;
   turnId?: string;
+  sessionGoalId?: string;
+  sessionGoalRevision?: number;
   step?: number;
   operation?: ModelRequestOperation;
   promptEpoch?: number;
@@ -151,6 +154,8 @@ export interface AgentTool {
   label?: string;
   description: string;
   parameters: JsonSchema;
+  outputSchema?: JsonSchema;
+  namespace?: ToolNamespace;
   executionMode?: "parallel" | "sequential";
   execute(
     toolCallId: string,
@@ -197,6 +202,8 @@ export interface AgentModel {
   provider: string;
   providerAlias?: string;
   modelId: string;
+  /** 辅助文本请求在同一取消/超时边界内准备凭据，返回续期后的独立模型。 */
+  prepareTextRequest?(signal?: AbortSignal): Promise<AgentModel>;
   /** ProviderRuntime 创建的模型同时保留 Vercel 实例，辅助文本调用也复用同一条 provider 链路。 */
   vercelModel?: LanguageModelV4;
   /** 与 Vercel 实例配套的模型级默认参数；调用方显式传入的辅助参数优先。 */

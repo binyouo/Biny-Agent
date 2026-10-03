@@ -220,7 +220,7 @@ function workerOptions(root: string, registry: ToolRegistry, model: AgentModel):
   const config = structuredClone(defaultConfig);
   config.extensions.subagent.allowedTools = ["Write"];
   config.extensions.subagent.maxSteps = 6;
-  return { workspaceRoot: root, config, toolRegistry: registry, getAccessMode: () => "workspace", getModelSettings: () => ({ model, contextWindow: undefined }) };
+  return { workspaceRoot: root, config, toolRegistry: registry, getModelSettings: () => ({ model, contextWindow: undefined }) };
 }
 
 function registryWithWrite(root: string, execute: () => Promise<void>): ToolRegistry {

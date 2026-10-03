@@ -57,7 +57,7 @@ await test("CommandRuntime admits only exact host-owned read queries without cha
       assert.ok(plan, "only explicitly scripted model requests are permitted");
       const active = plan;
       assert.deepEqual(context.tools.map((tool) => tool.name).sort(),
-        active.mode === "code_mode" ? ["exec"] : [...selectedTools].sort());
+        active.mode === "code_mode" ? [...selectedTools, "exec"].sort() : [...selectedTools].sort());
       assert.doesNotMatch(context.systemPrompt ?? "", /DO_NOT_ACTIVATE_FIXTURE/u,
         "skill_lookup must not activate a skill or inject its instructions");
       let response: ModelStreamEvent[];

@@ -66,6 +66,7 @@ export type AgentHostEvent =
   | (AgentEventBase & { type: "context.updated"; context: ContextStatus })
   | (AgentEventBase & { type: "compact.started"; hint?: string })
   | (AgentEventBase & { type: "compact.completed"; summary: string; context: ContextStatus })
+  | (AgentEventBase & { type: "compact.failed"; error: string; cancelled: boolean })
   | (AgentEventBase & { type: "run.completed"; durationMs: number; stopReason?: AgentTurnStopReason; finishReason?: string; steps?: number; usage?: SessionUsage; notification?: string })
   | (AgentEventBase & {
       type: "run.blocked";

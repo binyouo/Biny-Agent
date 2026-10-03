@@ -1,13 +1,13 @@
 import { promises as fs } from "node:fs";
-import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import type { AgentConfig } from "../config/schema.js";
 import { vercelAgentLoopContinue } from "../agent/core/vercelAgentLoop.js";
-import type { AgentAssistantMessage, AgentTool, AgentToolResult, AgentUsage } from "../agent/core/types.js";
+import type { AgentAssistantMessage, AgentMessage, AgentTool, AgentToolResult, AgentUsage, ModelRequestContext, ModelRequestObserver } from "../agent/core/types.js";
 import type { ModelSettings } from "../llm/modelFactory.js";
 import { calculateUsageCost, type ModelUsageObserver } from "../observability/usage.js";
-import { SubagentTaskIncompleteError, type SubagentTaskManager } from "../runtime/SubagentTaskManager.js";
+import { SubagentTaskIncompleteError } from "../runtime/SubagentTaskManager.js";
 import type { SubagentAccessMode } from "../runtime/SubagentTaskManager.js";
+import type { TaskCommunication, WorkerCommunication } from "../runtime/TaskCommunication.js";
 import type { TaskVerificationContract } from "../runtime/taskVerification.js";
 import { usageSnapshot } from "../session/metadata.js";
 import { ToolAccesses } from "../tools/access.js";
@@ -16,6 +16,7 @@ import { ToolScheduler } from "../tools/scheduler.js";
 import { resolveEditingMode, routeEditingTools, type EditingMode } from "../tools/file/editingMode.js";
 import type { ToolContext, ToolExecutionContext } from "../tools/types.js";
 import { createToolOperationId, type RunnableToolExecution, type Tool } from "../tools/types.js";
+import { isToolModelVisible } from "../tools/exposure.js";
 import { isProtectedCredentialPath, redactSecrets } from "../utils/secrets.js";
 import { findSubagentDefinition, type SubagentDefinition } from "./agents.js";
 import { WorkerSession, type WorkerExecution } from "../runtime/WorkerSession.js";
@@ -25,6 +26,7 @@ const subagentParameters = {
   properties: {
     task: { type: "string" as const, description: "A focused repository task for the subagent, including implementation and finite validation when needed." },
     agent: { type: "string" as const, description: "Optional named subagent definition to run this task with (see the named subagents list). Omit for the default bounded subagent." },
+    background: { type: "boolean" as const, description: "Return the durable taskRunId immediately, continue your own work, then use TaskStatus to wait for or inspect the child result." },
     constraints: {
       type: "array" as const,
       items: { type: "string" as const },
@@ -95,18 +97,12 @@ export const taskVerificationSchema = z.object({
 const subagentSchema = z.object({
   task: z.string().min(1).max(20_000),
   agent: z.string().trim().min(1).max(64).optional(),
+  background: z.boolean().optional(),
   constraints: z.array(z.string().trim().min(1)).max(100).optional(),
   verification: taskVerificationSchema.optional()
 }).strict();
 
 export type SubagentToolInput = z.infer<typeof subagentSchema>;
-
-export interface VerifiedSubagentTaskInput {
-  task: string;
-  agent?: string;
-  constraints?: string[];
-  verification: TaskVerificationContract;
-}
 
 const safeBuiltinCapabilities = new Set([
   "filesystem.read",
@@ -129,17 +125,19 @@ export interface SubagentOptions {
   config: AgentConfig;
   /** 不带别名时返回 subagent 默认模型设置；带别名时返回该模型别名的设置。 */
   getModelSettings: (modelAlias?: string) => ModelSettings;
-  getAccessMode: () => SubagentAccessMode;
-  getParentRunId?: () => string | undefined;
   /** 每次委派时重新读取具名定义，允许会话期间编辑生效。 */
   loadAgentDefinitions?: () => Promise<SubagentDefinition[]>;
   toolRegistry: ToolRegistry;
   onUsage?: ModelUsageObserver;
-  runVerifiedTask?: (input: VerifiedSubagentTaskInput, context: ToolExecutionContext) => Promise<unknown>;
-  readTaskResult?: (taskRunId: string, context: ToolExecutionContext) => Promise<unknown>;
+  onRequestMetrics?: ModelRequestObserver;
+  goalBudgetStopped?: (context: ModelRequestContext | undefined) => boolean;
+  runTask?: (input: SubagentToolInput, context: ToolExecutionContext) => Promise<unknown>;
+  readTaskResult?: (input: { taskRunId: string; waitMs?: number; afterRevision?: number }, context: ToolExecutionContext) => Promise<unknown>;
+  communication?: TaskCommunication;
+  cancelTask?: (taskRunId: string, reason?: string) => unknown;
 }
 
-export function createSubagentTool(options: SubagentOptions, taskManager: SubagentTaskManager): Tool<SubagentToolInput, unknown> {
+export function createSubagentTool(options: SubagentOptions): Tool<SubagentToolInput, unknown> {
   return {
     name: "Task",
     description: "Launch a focused, bounded worker. Add verification only when the delegated work has explicit deterministic acceptance checks; a normal Worker return then remains a candidate until those checks pass.",
@@ -147,6 +145,7 @@ export function createSubagentTool(options: SubagentOptions, taskManager: Subage
     promptGuidelines: [
       "Keep simple one-step requests in the current run; delegate when isolation, specialist focus, or independent execution will help.",
       "Give the worker a concrete goal, relevant constraints, and a finite deliverable; summarize its result to the user when it returns.",
+      "Use background for independent tasks. Retain each taskRunId; use TaskMessage for corrections, TaskStatus with waitMs for updates, and TaskCancel for work no longer needed.",
       "Preserve user-specified acceptance conditions exactly. Put them in verification.checks; do not replace them with easier inferred checks.",
       "If a verified task returns needs_approval, report the exact approvalId, command, cwd, and reason. Do not claim completion or approve it yourself."
     ],
@@ -166,69 +165,79 @@ export function createSubagentTool(options: SubagentOptions, taskManager: Subage
         description: "Runs a bounded workspace subagent with an explicit local-tool allowlist and restricted validation commands.",
         approvalRule: "Task",
         async execute(context): Promise<unknown> {
-          if (args.verification) {
-            if (!options.runVerifiedTask) throw new Error("Verified TaskRun execution is unavailable in this runtime.");
-            return await options.runVerifiedTask({
-              task: args.task,
-              agent: args.agent,
-              constraints: args.constraints,
-              verification: args.verification
-            }, context);
-          }
-          const taskId = randomUUID();
-          const unsubscribe = taskManager.subscribe((snapshot) => {
-            if (snapshot.taskId !== taskId) return;
-            context.onUpdate?.({ kind: "status", customKind: "subagent", customData: {
-              taskId, status: snapshot.status, agent: snapshot.agent
-            } });
-          });
-          try {
-            return await taskManager.run(args.task, {
-              taskId,
-              parentRunId: options.getParentRunId?.() ?? context.toolCallId,
-              signal: context.signal,
-              accessMode: options.getAccessMode(),
-              agent: args.agent
-            });
-          } finally { unsubscribe(); }
+          if (!options.runTask) throw new Error("Task execution is unavailable in this runtime.");
+          return await options.runTask(args, context);
         }
       };
     }
   };
 }
 
-export function createTaskStatusTool(options: SubagentOptions): Tool<{ taskRunId: string }, unknown> {
+export function createTaskStatusTool(options: SubagentOptions): Tool<{ taskRunId: string; waitMs?: number; afterRevision?: number }, unknown> {
   return {
     name: "TaskStatus",
-    description: "Read the durable status and verification evidence for a TaskRun created by this session. This never resumes, retries, approves, or creates work.",
-    promptSnippet: "Read a previously delegated verified task result",
+    description: "Read a task created by this session, including output, revision, messages and verification evidence. waitMs waits up to 60000ms for a revision change or terminal/blocked status; afterRevision is the last revision you saw. A wait timeout leaves the child running. This never resumes, retries, approves, or creates work.",
+    promptSnippet: "Read or wait for a delegated task result",
     promptGuidelines: [
       "Use TaskStatus when a previous verified Task call returned needs_approval or another non-terminal status.",
-      "Report completed only when the returned status is completed and verification evidence is passed."
+      "For verified tasks, report completion only when the status is completed and verification evidence is passed. Ordinary completion means the worker returned; check its claims against the available evidence."
     ],
     parameters: {
       type: "object",
-      properties: { taskRunId: { type: "string", description: "The TaskRun id returned by Task." } },
+      properties: {
+        taskRunId: { type: "string", description: "The TaskRun id returned by Task." },
+        waitMs: { type: "number", description: "Wait for an update for at most 60000ms; defaults to zero." },
+        afterRevision: { type: "number", description: "The last task revision observed." }
+      },
       required: ["taskRunId"],
       additionalProperties: false
     },
-    schema: z.object({ taskRunId: z.string().trim().min(1) }).strict(),
+    schema: z.object({ taskRunId: z.string().trim().min(1), waitMs: z.number().int().min(0).max(60_000).optional(), afterRevision: z.number().int().nonnegative().optional() }).strict(),
     source: "subagent",
     capability: "subagent.workspace",
     risk: "read",
     resolveExecution(args) {
       return {
         accesses: ToolAccesses.none(),
-        display: { kind: "generic", summary: "Read verified task status", detail: args.taskRunId },
+        display: { kind: "generic", summary: "Read task status", detail: args.taskRunId },
         description: "Reads persisted TaskRun status and evidence without changing execution state.",
         approvalRule: "TaskStatus",
         async execute(context): Promise<unknown> {
           if (!options.readTaskResult) throw new Error("TaskRun status is unavailable in this runtime.");
-          return await options.readTaskResult(args.taskRunId, context);
+          return await options.readTaskResult(args, context);
         }
       };
     }
   };
+}
+
+export function createTaskControlTools(options: SubagentOptions): Tool[] {
+  return ["TaskMessage", "TaskCancel"].map((name) => {
+    const isMessage = name === "TaskMessage";
+    return {
+      name,
+      description: isMessage
+        ? "Persist a correction or context for an active child task created by this session. Delivery occurs between child model steps and does not interrupt a dispatched tool. Terminal, verifying, or finishing tasks reject new messages."
+        : "Cancel a child task created by this session. Dispatched tool side effects are not undone.",
+      parameters: { type: "object", properties: {
+        taskRunId: { type: "string" }, message: { type: "string", description: isMessage ? "Message to the child, at most 8000 characters." : "Optional cancellation reason." }
+      }, required: isMessage ? ["taskRunId", "message"] : ["taskRunId"], additionalProperties: false },
+      schema: z.object({ taskRunId: z.string().trim().min(1), message: isMessage ? z.string().trim().min(1).max(8_000) : z.string().trim().min(1).max(8_000).optional() }).strict(),
+      source: "subagent", capability: "subagent.workspace", risk: "execute",
+      resolveExecution(args: { taskRunId: string; message?: string }) {
+        return { accesses: ToolAccesses.none(), display: { kind: "generic", summary: name, detail: args.taskRunId },
+          description: name, approvalRule: name,
+          async execute(context: ToolExecutionContext): Promise<unknown> {
+            if (!options.communication) throw new Error("Task communication is unavailable.");
+            options.communication.read(args.taskRunId);
+            if (isMessage) return options.communication.send(args.taskRunId, args.message!, context.toolCallId);
+            if (!options.cancelTask) throw new Error("Task cancellation is unavailable.");
+            return options.cancelTask(args.taskRunId, args.message);
+          }
+        };
+      }
+    };
+  });
 }
 
 /** Executes one already-admitted child task. Concurrency and deadlines belong to SubagentTaskManager. */
@@ -269,6 +278,7 @@ export async function prepareSubagentTask(
   const entries = createSubagentTools(options.toolRegistry, allowedTools, {
     accessMode, editing: { mode: resolveEditingMode(options.config.chat.hashlineEdit, modelSettings.applyPatchProtocol), context: { workspaceRoot: options.workspaceRoot, ignore: options.config.workspace.ignore } }
   });
+  if (execution?.communication) entries.push(createWorkerReportTool(execution.communication));
   const session = execution ? await WorkerSession.open(execution, task, options.workspaceRoot, {
     modelAlias, provider: modelSettings.model.provider, providerAlias: modelSettings.model.providerAlias,
     modelId: modelSettings.model.modelId, reasoning: modelSettings.reasoning, providerOptions: modelSettings.providerOptions,
@@ -280,6 +290,8 @@ export async function prepareSubagentTask(
     accessMode, allowedTools, tools: entries.map((tool) => ({ name: tool.name, parameters: tool.parameters, description: tool.description })),
     ignore: options.config.workspace.ignore
   }, instructions) : undefined;
+  try { await session?.replayModelRequestUsage(options.onRequestMetrics); }
+  catch (error) { await session?.close(); throw error; }
   let started = false;
   let closed = false;
   let running: Promise<string> | undefined;
@@ -290,13 +302,18 @@ export async function prepareSubagentTask(
       running = (async () => {
         if (session?.output !== undefined) return session.output;
         if (session?.usages.length) enforceSubagentCostBudget(options.config, sumNativeUsage(session.usages), modelAlias);
-        if (session?.finalHandoff !== undefined) {
+        if (session && execution?.communication) {
+          const pending = execution.communication.pending();
+          await session.receiveMessages(pending);
+          execution.communication.delivered(pending.map((message) => message.id));
+        }
+        if (session?.finalHandoff !== undefined && (execution?.communication?.seal() ?? true)) {
           const output = redactSecrets(session.finalHandoff);
           await session.complete(output);
           return output;
         }
         if (session && subagentCostBudgetReached(options.config, session.usages, modelAlias)) throw new SubagentTaskIncompleteError("cost_budget", "");
-        return await runNativeSubagentTask(options, task, modelSettings, modelAlias, definition, signal, accessMode, allowedTools, session);
+        return await runNativeSubagentTask(options, task, modelSettings, modelAlias, definition, signal, accessMode, allowedTools, session, execution?.communication);
       })();
       return await running;
     },
@@ -317,7 +334,8 @@ async function runNativeSubagentTask(
   signal: AbortSignal | undefined,
   accessMode: SubagentAccessMode,
   allowedTools: readonly string[],
-  session?: WorkerSession
+  session?: WorkerSession,
+  communication?: WorkerCommunication
 ): Promise<string> {
   const model = modelSettings.model;
   if (model.supportsTools === false) {
@@ -331,6 +349,7 @@ async function runNativeSubagentTask(
     accessMode, scheduler, session,
     editing: { mode: resolveEditingMode(options.config.chat.hashlineEdit, modelSettings.applyPatchProtocol), context: { workspaceRoot: options.workspaceRoot, ignore: options.config.workspace.ignore } }
   });
+  if (communication) tools.push(createWorkerReportTool(communication, session));
   const instructions = buildSubagentSystemPrompt(accessMode, definition);
   const previousUsages = session?.usages ?? [];
   const usages: AgentUsage[] = [];
@@ -338,6 +357,8 @@ async function runNativeSubagentTask(
   let lastAssistant: AgentAssistantMessage | undefined;
   let fatalError: string | undefined;
   let stopReason: string | undefined;
+  let usageFailure: Error | undefined;
+  const requestContext = session?.requestContext();
   const loop = vercelAgentLoopContinue({
     systemPrompt: instructions,
     messages: session?.messages ?? [{ role: "user", content: task }],
@@ -351,38 +372,68 @@ async function runNativeSubagentTask(
       maxOutputTokens: subagentMaxOutputTokens(options.config, modelSettings.maxOutputTokens, modelAlias),
       reasoning: modelSettings.reasoning,
       providerOptions: modelSettings.providerOptions,
-      timeoutMs: modelSettings.timeoutMs
+      timeoutMs: modelSettings.timeoutMs,
+      requestContext,
+      onRequestMetrics: async (metrics) => {
+        if (metrics.usage) usages.push(metrics.usage);
+        try {
+          await session?.recordModelRequest(metrics);
+        } finally {
+          try { await options.onRequestMetrics?.(metrics); }
+          catch (error) { usageFailure = error instanceof Error ? error : new Error(String(error)); }
+        }
+      }
     },
     maxSteps: Math.max(1, options.config.extensions.subagent.maxSteps - (session?.startedSteps ?? 0)),
-    onRequestContext: async () => { await session?.beforeRequest(options.config.extensions.subagent.maxSteps); },
+    onRequestContext: async () => {
+      if (usageFailure) throw usageFailure;
+      if (options.goalBudgetStopped?.(requestContext)) throw new SubagentTaskIncompleteError("goal_budget", "");
+      await session?.beforeRequest(options.config.extensions.subagent.maxSteps);
+    },
     beforeToolExecution: (message) => { session?.setAssistant(message); },
     persistStep: async (turn) => { await session?.persistStep(turn); },
+    getSteeringMessages: async (): Promise<AgentMessage[]> => {
+      const pending = communication?.pending() ?? [];
+      if (!pending.length) return [];
+      if (!session) throw new Error("Task messages require a durable Worker session.");
+      const messages = await session.receiveMessages(pending);
+      communication?.delivered(pending.map((message) => message.id));
+      return messages;
+    },
     shouldStopAfterTurn: async (turn) => {
       session?.assertCanContinue();
+      if (usageFailure) throw usageFailure;
       lastAssistant = turn.message;
-      if (turn.message.usage) usages.push(turn.message.usage);
+      if (options.goalBudgetStopped?.(requestContext)) { stopReason = "goal_budget"; return true; }
       if (subagentCostBudgetReached(options.config, [...previousUsages, ...usages], modelAlias)) return true;
-      return !turn.message.content.some((part) => part.type === "toolCall");
+      return !turn.message.content.some((part) => part.type === "toolCall") && (communication?.seal() ?? true);
     }
   }, signal);
-  for await (const event of loop) {
-    if (event.type === "error" && event.fatal) fatalError = event.error;
-    if (event.type === "error" && event.reason === "step_limit") stopReason = "step_limit";
-    if (event.type === "turn_end") {
-      lastAssistant = event.message;
-      const text = agentMessageText(event.message);
-      if (text) assistantTexts.push(text);
+  try {
+    for await (const event of loop) {
+      if (event.type === "error" && event.fatal) fatalError = event.error;
+      if (event.type === "error" && event.reason === "step_limit") stopReason = "step_limit";
+      if (event.type === "turn_end") {
+        lastAssistant = event.message;
+        const text = agentMessageText(event.message);
+        if (text) assistantTexts.push(text);
+      }
     }
+  } finally {
+    const usage = usages.length ? sumNativeUsage(usages) : undefined;
+    if (usage) await options.onUsage?.(usage, "subagent", modelAlias);
   }
   session?.assertCanContinue();
+  if (usageFailure) throw usageFailure;
   if (signal?.aborted) throw abortReason(signal);
   if (fatalError) throw new Error(fatalError);
   const usage = usages.length ? sumNativeUsage(usages) : undefined;
   if (usage) {
-    await options.onUsage?.(usage, "subagent", modelAlias);
     enforceSubagentCostBudget(options.config, sumNativeUsage([...previousUsages, ...usages]), modelAlias);
   }
   if (!lastAssistant) throw new Error("Subagent produced no assistant message.");
+  if (stopReason === "step_limit") throw new SubagentTaskIncompleteError("step_limit", redactSecrets(assistantTexts.join("\n\n")));
+  if (communication?.pending().length) throw new SubagentTaskIncompleteError("messages_pending", "Worker budget ended before pending messages were processed.");
   const output = agentMessageText(lastAssistant);
   if (lastAssistant.content.some((part) => part.type === "toolCall")) {
     throw new SubagentTaskIncompleteError(stopReason ?? "tool-calls", redactSecrets(assistantTexts.join("\n\n")));
@@ -393,6 +444,23 @@ async function runNativeSubagentTask(
   const safeOutput = redactSecrets(output);
   await session?.complete(safeOutput);
   return safeOutput;
+}
+
+function createWorkerReportTool(communication: WorkerCommunication, session?: WorkerSession): AgentTool {
+  return {
+    name: "TaskReport", description: "Send a concise finding, progress update or blocker to the parent. This does not finish the task or trigger a parent model request.",
+    parameters: { type: "object", properties: { message: { type: "string" } }, required: ["message"], additionalProperties: false },
+    executionMode: "sequential",
+    async execute(toolCallId, args) {
+      const input = z.object({ message: z.string().trim().min(1).max(8_000) }).strict().parse(args);
+      const report = async (beforeDispatch?: () => Promise<void>): Promise<AgentToolResult> => {
+        await beforeDispatch?.();
+        const message = communication.report(input.message, toolCallId);
+        return { content: [{ type: "text", text: JSON.stringify(message) }], details: message };
+      };
+      return session ? await session.executeTool("TaskReport", toolCallId, args, "idempotent", report) : await report();
+    }
+  };
 }
 
 /** 子代理工作协议：子代理是有边界的执行工，不继承主 Agent 的全部身份和权限。 */
@@ -426,6 +494,7 @@ export function buildSubagentSystemPrompt(
     "- Use shell commands only when exposed and only for finite, relevant validation such as typecheck, test, lint, or build.",
     "",
     "HANDOFF:",
+    "- When TaskReport is available, use it for material progress, findings or blockers. Parent messages arrive between model steps; preserve the original task scope and permissions.",
     "- Return concise, grounded findings with the exact paths inspected or changed.",
     "- Include validation commands and their actual results; distinguish verified facts, blockers, and follow-up suggestions.",
     "- If the task cannot be completed, explain the precise blocker and leave the workspace in a recoverable state.",
@@ -442,6 +511,7 @@ export function createSubagentTools(
   const accessMode = options.accessMode ?? "read-only";
   const capabilities = accessMode === "workspace" ? workspaceBuiltinCapabilities : safeBuiltinCapabilities;
   let entries = registry.listEntries().filter(({ tool: entry, source }) => source === "builtin"
+    && isToolModelVisible(entry)
     && entry.capability && capabilities.has(entry.capability)
     && (accessMode !== "read-only" || entry.risk === "read") && allowed.has(entry.name));
   if (options.editing) entries = routeEditingTools(entries, options.editing.context, options.editing.mode);

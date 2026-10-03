@@ -23,6 +23,7 @@ import type { CommandRuntime } from "./CommandRuntime.js";
 import type { InteractiveRuntimeHandle } from "./InteractiveAgentRuntime.js";
 import type { CommandSurface } from "./commandRegistry.js";
 import { isTaskRunTerminal, type TaskRunStatus } from "./TaskRunStore.js";
+import type { SessionGoalStatus } from "./SessionGoalStore.js";
 import type {
   AgentPersonalizationState,
   ChatPersonalizationOverridePatch
@@ -34,13 +35,44 @@ export interface RuntimeCommandResult {
   content: string;
   /** TUI 渲染报告卡片的结构化数据；CLI / Desktop 忽略，继续用 `content`。 */
   card?: CommandCardData;
+  compaction?: { outcome: "compacted" | "unchanged" };
+  sessionGoal?: {
+    action: "get" | "set" | "pause" | "resume" | "clear";
+    status?: SessionGoalStatus;
+  };
 }
 
 /** Resolve Goal/Graph commands to their RPC operation for Host admission. */
 export function runtimeCommandOperation(input: string): string | undefined {
   const { command, args } = parseRuntimeCommand(input);
-  if (command === "/goal") return `goal.${args[0]?.toLowerCase() ?? "get"}`;
+  if (command === "/goal") {
+    const goal = parseGoalCommand(input);
+    return goal === undefined ? undefined : `${goal.scope === "session" ? "session.goal" : "goal"}.${goal.action}`;
+  }
   if (command === "/graph") return `graph.${args[0]?.toLowerCase() ?? "inspect"}`;
+  return undefined;
+}
+
+type GoalCommand =
+  | { scope: "session"; action: "get" | "pause" | "resume" | "clear" }
+  | { scope: "session"; action: "set"; objective: string }
+  | { scope: "workspace"; action: "get" | "pause" | "resume" | "cancel"; goalId: string };
+
+function parseGoalCommand(input: string): GoalCommand | undefined {
+  const match = /^\/goal(?:\s+([^\s]+)(?:\s+([\s\S]*))?)?$/u.exec(input.trim().replace(/^\/+/, "/"));
+  if (!match) return undefined;
+  const action = match[1]?.toLowerCase() ?? "show";
+  const argument = match[2]?.trim();
+  if (action === "set" && argument) return { scope: "session", action, objective: argument };
+  if (!argument && (action === "show" || action === "pause" || action === "resume" || action === "clear")) {
+    return { scope: "session", action: action === "show" ? "get" : action };
+  }
+  if (argument && !/\s/u.test(argument) && (action === "get" || action === "pause" || action === "resume" || action === "cancel")) {
+    return { scope: "workspace", action, goalId: argument };
+  }
+  if (!["show", "set", "pause", "resume", "clear", "get", "cancel"].includes(action)) {
+    return { scope: "session", action: "set", objective: input.trim().replace(/^\/+/, "/").slice("/goal".length).trim() };
+  }
   return undefined;
 }
 
@@ -101,14 +133,30 @@ export async function executeRuntimeCommand(
     throw new Error("Usage: /automation list | pause <id> | resume <id> | run <id> | delete <id>");
   }
   if (command === "/goal") {
-    const action = args[0]?.toLowerCase() ?? "get";
-    const goalId = action === "get" ? args[1] ?? args[0] : args[1];
-    if (!goalId) throw new Error("Usage: /goal get <id> | pause <id> | resume <id> | cancel <id>");
-    if (action === "get") return result(command, "Goal", JSON.stringify(services.graphs.getGoal(goalId), null, 2));
-    if (action === "pause") return result(command, "Goal", JSON.stringify(services.graphs.updateGoal(goalId, "paused"), null, 2));
-    if (action === "resume") return result(command, "Goal", JSON.stringify(services.graphs.updateGoal(goalId, "active"), null, 2));
-    if (action === "cancel") return result(command, "Goal", JSON.stringify(services.graphs.updateGoal(goalId, "cancelled"), null, 2));
-    throw new Error("Usage: /goal get <id> | pause <id> | resume <id> | cancel <id>");
+    const goal = parseGoalCommand(input);
+    if (!goal) throw new Error("Usage: /goal [<objective> | show | set <objective> | pause | resume | clear]; workspace Goal: get | pause | resume | cancel <id>");
+    if (goal.scope === "workspace") {
+      const record = goal.action === "get" ? services.graphs.getGoal(goal.goalId)
+        : services.graphs.updateGoal(goal.goalId, goal.action === "pause" ? "paused" : goal.action === "resume" ? "active" : "cancelled");
+      return result(command, "Workspace Goal", JSON.stringify(record, null, 2));
+    }
+    const sessionId = runtime.getSnapshot().info.sessionId;
+    const current = services.sessionGoals.get(sessionId);
+    const expected = current === undefined ? undefined : { goalId: current.goalId, revision: current.revision };
+    if (goal.action === "clear") {
+      services.sessionGoals.clear(sessionId, expected);
+      if (current?.status === "active") runtime.cancelCurrentRun("paused");
+      return { ...result(command, "当前目标", "已清除当前会话目标。"), sessionGoal: { action: "clear" } };
+    }
+    const record = goal.action === "get" ? current
+      : goal.action === "set" ? services.sessionGoals.set(sessionId, goal.objective, { expected })
+        : goal.action === "pause" ? services.sessionGoals.pause(sessionId, expected)
+          : services.sessionGoals.resume(sessionId, expected);
+    if (goal.action === "pause" && current?.status === "active") runtime.cancelCurrentRun("paused");
+    return {
+      ...result(command, "当前目标", record === undefined ? "当前会话没有目标。使用 /goal <目标> 开始。" : JSON.stringify(record, null, 2)),
+      sessionGoal: { action: goal.action, status: record?.status }
+    };
   }
   if (command === "/graph") {
     const action = args[0]?.toLowerCase() ?? "inspect";
@@ -205,7 +253,18 @@ export async function executeRuntimeCommand(
     return result(command, "Code Review", await runForegroundSubagent(runtime, services, task) || "No review findings.");
   }
   if (command === "/compact") {
-    return result(command, "Compact", await runtime.compactConversation(args.join(" ").trim() || undefined));
+    const before = (await services.agent.contextStatus()).compaction;
+    const compactedMessages = before.compactedMessages;
+    const lastCompactedAt = before.lastCompactedAt;
+    const content = await runtime.compactConversation(args.join(" ").trim() || undefined);
+    const after = (await services.agent.contextStatus()).compaction;
+    return {
+      ...result(command, "Compact", content),
+      compaction: {
+        outcome: after.compactedMessages !== compactedMessages || after.lastCompactedAt !== lastCompactedAt
+          ? "compacted" : "unchanged"
+      }
+    };
   }
   if (command === "/undo") {
     const checkpointStore = services.checkpoints;

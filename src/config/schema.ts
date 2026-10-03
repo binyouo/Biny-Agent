@@ -20,8 +20,8 @@ import {
 import { GLOBAL_CONFIG_FORMAT, GLOBAL_CONFIG_VERSION } from "./migrations.js";
 
 const agentSchema = z.object({
-  /** Opt-in read-only Code Mode; direct retains the complete normal tool surface. */
-  toolExecutionMode: z.enum(["direct", "code_mode"]).default("direct"),
+  /** code_mode adds an isolated script tool alongside ordinary tool calls. */
+  toolExecutionMode: z.enum(["direct", "code_mode"]).default("code_mode"),
   softStepLimit: z.number().int().min(1).max(100_000).default(32),
   hardStepLimit: z.number().int().min(1).max(100_000).default(96),
   maxToolCalls: z.number().int().min(1).max(100_000).optional(),
@@ -29,7 +29,7 @@ const agentSchema = z.object({
   maxConcurrentTools: z.number().int().min(1).max(32).default(4),
   maxQueuedToolCalls: z.number().int().min(1).max(1_024).default(64)
 }).strict().default({
-  toolExecutionMode: "direct",
+  toolExecutionMode: "code_mode",
   softStepLimit: 32,
   hardStepLimit: 96,
   maxToolCalls: undefined,
@@ -362,6 +362,8 @@ const modelPricingSchema = z.object({
 });
 
 const mcpServerSchema = z.object({
+  exposure: z.enum(["direct", "codemode", "deferred", "hidden"]).optional(),
+  toolExposure: z.record(z.string().min(1).regex(/^[^*]+\*?$|^\*$/u), z.enum(["direct", "codemode", "deferred", "hidden"])).optional(),
   /** 按服务端原始工具名显式启用固定契约，不依据远端 annotations 自动启用。 */
   toolContracts: z.record(z.literal("file-change-v1")).optional(),
   /** 用于凭据 account 稳定关联；旧配置没有该字段时在下一次桌面保存时补齐。 */
@@ -655,6 +657,7 @@ const canonicalConfigSchema = z.object({
     ignore: z.array(z.string())
   }),
   activity: activitySettingsSchema,
+  computer: z.object({ enabled: z.boolean().default(false) }).strict().default({ enabled: false }),
   crystal: crystalSettingsSchema,
   context: contextSchema,
   chat: chatParamsSchema,
@@ -829,6 +832,7 @@ export const defaultConfig: AgentConfig = {
   format: GLOBAL_CONFIG_FORMAT,
   configVersion: GLOBAL_CONFIG_VERSION,
   needsEmbeddingRebuild: false,
+  computer: { enabled: false },
   defaultModel: "deepseek-v4-flash",
   toolModel: undefined,
   providers: {
@@ -862,7 +866,7 @@ export const defaultConfig: AgentConfig = {
   },
   thinking: { enabled: false, effort: "high" },
   agent: {
-    toolExecutionMode: "direct",
+    toolExecutionMode: "code_mode",
     softStepLimit: 32,
     hardStepLimit: 96,
     maxToolCalls: undefined,

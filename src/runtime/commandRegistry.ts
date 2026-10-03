@@ -28,7 +28,7 @@ export const SLASH_COMMANDS: readonly SlashCommandDefinition[] = [
   { name: "/subagent", description: "Run or manage a subagent (start/status/cancel/agents)", category: "extension", requiresArgs: true, acceptsArgs: true, surfaces: allInteractive },
   { name: "/tasks", description: "Inspect durable background TaskRuns", category: "runtime", acceptsArgs: true, surfaces: allInteractive },
   { name: "/automation", description: "List or control local automations", category: "runtime", acceptsArgs: true, surfaces: allInteractive },
-  { name: "/goal", description: "Inspect or control a durable goal", category: "runtime", requiresArgs: true, acceptsArgs: true, surfaces: allInteractive },
+  { name: "/goal", description: "Show, set, pause, resume or clear the current session goal", category: "runtime", acceptsArgs: true, surfaces: allInteractive },
   { name: "/graph", description: "Inspect or control an Agent Graph", category: "runtime", requiresArgs: true, acceptsArgs: true, surfaces: allInteractive },
   { name: "/capabilities", description: "Inspect Host and client capabilities", category: "runtime", acceptsArgs: true, surfaces: allInteractive },
   { name: "/review", description: "Review current changes with a read-only subagent", category: "extension", acceptsArgs: true, surfaces: allInteractive },

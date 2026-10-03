@@ -19,8 +19,19 @@ export interface SubscriptionOAuthTokens {
   accountId?: string;
 }
 
+export class SubscriptionOAuthRefreshError extends Error {
+  readonly loginRejected: boolean;
+  constructor(readonly statusCode: number, provider: string) {
+    const rejected = statusCode === 400 || statusCode === 401 || statusCode === 403;
+    super(rejected ? `${provider} 登录授权已失效（HTTP ${String(statusCode)}），请重新登录。`
+      : `${provider} 登录续期失败（HTTP ${String(statusCode)}），请稍后重试。`);
+    this.name = "SubscriptionOAuthRefreshError";
+    this.loginRejected = rejected;
+  }
+}
+
 /**
- * 回合前只在当前 provider 的凭据临近过期时调用。登录授权仍由宿主 UI 负责，
+ * 模型请求前只对实际使用且需要续期的 Provider 调用。登录授权仍由宿主 UI 负责，
  * 这里只维护模型请求必须共用的 refresh_token 协议。
  */
 export async function refreshSubscriptionOAuthTokens(
@@ -40,7 +51,7 @@ export async function refreshSubscriptionOAuthTokens(
       }),
       signal
     }, fetcher);
-    if (!response.ok) throw new Error(`Claude 登录已过期（HTTP ${String(response.status)}），请重新登录。`);
+    if (!response.ok) throw new SubscriptionOAuthRefreshError(response.status, "订阅账号");
     return mergeRefreshedSubscriptionOAuthTokens(tokens, await response.json(), "Claude");
   }
 
@@ -55,7 +66,7 @@ export async function refreshSubscriptionOAuthTokens(
     body: body.toString(),
     signal
   }, fetcher);
-  if (!response.ok) throw new Error(`Codex 登录已过期（HTTP ${String(response.status)}），请重新登录。`);
+  if (!response.ok) throw new SubscriptionOAuthRefreshError(response.status, "订阅账号");
   const refreshed = mergeRefreshedSubscriptionOAuthTokens(tokens, await response.json(), "Codex");
   return {
     ...refreshed,

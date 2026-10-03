@@ -6,8 +6,10 @@ import type { BrowserAutomationEndpoint } from "./browser.js";
  * 工具来源信息让内置、MCP、skill、plugin 和 subagent 工具复用同一调用路径。
  */
 import type { ToolDefinition } from "./definition.js";
+import type { JsonSchema } from "./schema.js";
 import type { SandboxConfig, WebCookiesConfig, WebFetchConfig, WebSearchConfig } from "../config/schema.js";
-import type { Tool, ToolContext, ToolSource } from "./types.js";
+import type { Tool, ToolContext, ToolExposure, ToolNamespace, ToolRisk, ToolSource } from "./types.js";
+import { getToolExposure, isToolModelVisible } from "./exposure.js";
 import { createReadFileTool } from "./file/readFile.js";
 import { createWriteFileTool } from "./file/writeFile.js";
 import { createEditFileTool } from "./file/editFile.js";
@@ -20,7 +22,7 @@ import { createWebFetchTool } from "./web/fetch.js";
 import { createWebSearchTool } from "./web/search.js";
 import { createToolSearchTool } from "./toolSearch.js";
 import { createBrowserRelayTools } from "./browserRelay.js";
-import type { AgentModel } from "../agent/core/types.js";
+import type { ToolModelCandidate } from "../llm/toolModel.js";
 import type { ManagedProcessService } from "../runtime/ManagedProcessService.js";
 
 /** Explicit host-owned read contracts, never inferred from extension metadata. */
@@ -53,6 +55,14 @@ export function isCodeModeReadTool(entry: RegisteredTool): boolean {
 export interface RegisteredTool {
   readonly source: ToolSource;
   readonly tool: Tool;
+}
+
+export interface ToolCatalogDefinition extends ToolDefinition {
+  outputSchema?: JsonSchema;
+  source: ToolSource;
+  risk?: ToolRisk;
+  exposure: ToolExposure;
+  namespace?: ToolNamespace;
 }
 
 export class ToolRegistry {
@@ -116,10 +126,23 @@ export class ToolRegistry {
   }
 
   listDefinitions(): ToolDefinition[] {
-    return this.list().map((tool) => ({
+    return this.list().filter(isToolModelVisible).map((tool) => ({
       name: tool.name,
       description: tool.description,
       parameters: tool.parameters
+    }));
+  }
+
+  listCatalogDefinitions(): ToolCatalogDefinition[] {
+    return this.listEntries().map(({ source, tool }) => ({
+      name: tool.name,
+      description: tool.description,
+      parameters: tool.parameters,
+      outputSchema: tool.outputSchema,
+      source,
+      risk: tool.risk,
+      exposure: getToolExposure(tool),
+      namespace: tool.namespace
     }));
   }
 
@@ -135,13 +158,13 @@ export function createToolRegistry(
   webFetchConfig?: WebFetchConfig,
   sandboxConfig?: SandboxConfig,
   webCookiesConfig?: WebCookiesConfig,
-  getToolSearchModel?: () => AgentModel | undefined,
+  getToolSearchModels?: () => readonly ToolModelCandidate[],
   browser?: BrowserAutomationEndpoint
 ): ToolRegistry {
   // 这里集中注册内置工具；外部扩展在 CommandRuntime 装配完成后追加到同一 registry。
   const registry = new ToolRegistry();
   for (const tool of createBrowserRelayTools(undefined, context)) registry.register(tool);
-  registry.register(createToolSearchTool(() => registry.listEntries(), getToolSearchModel));
+  registry.register(createToolSearchTool(() => registry.listEntries(), getToolSearchModels));
   registry.register(createReadFileTool(context));
   registry.register(createReadToolResultTool(context));
   registry.register(createListFilesTool(context));

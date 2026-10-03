@@ -19,6 +19,7 @@ import { RuntimeEventAuthority } from "../src/runtime/RuntimeAuthority.js";
 import { runtimeHostPaths, spawnRuntimeHost, type RuntimeHostClient } from "../src/runtime/RuntimeHost.js";
 import { approveTaskVerification, runTaskClosure } from "../src/runtime/TaskClosure.js";
 import { DurableTaskRunStore } from "../src/runtime/TaskRunStore.js";
+import { TaskCommunication } from "../src/runtime/TaskCommunication.js";
 import {
   fingerprintTaskVerificationDefinitions,
   isTaskVerificationPermissionResult,
@@ -889,7 +890,8 @@ async function testPermissionApprovalResumesSameAttempt(): Promise<void> {
   try {
     await writeFile(path.join(fixture.root, "artifact.txt"), "good\n", "utf8");
     const contract = verificationContract(1);
-    const task = fixture.tasks.create({ task: { prompt: "produce once, then wait for check approval", verification: contract } });
+    const task = fixture.tasks.create({ sessionId: "parent", task: { prompt: "produce once, then wait for check approval", verification: contract, communication: true } });
+    const communication = new TaskCommunication(fixture.tasks, "parent");
     let workerCalls = 0;
     const waiting = await runTaskClosure({
       taskRuns: fixture.tasks,
@@ -897,13 +899,18 @@ async function testPermissionApprovalResumesSameAttempt(): Promise<void> {
       workspaceRoot: fixture.root,
       ignore: verificationIgnore,
       executor: fixture.executor,
-      executeAttempt: async () => {
+      executeAttempt: async (_prompt, attempt) => {
         workerCalls += 1;
+        const worker = communication.worker(task.taskRunId, attempt.attemptId);
+        worker.report("candidate is ready for verification", "candidate-ready");
+        assert.equal(worker.seal(), true);
         return "candidate";
       }
     });
     assert.equal(waiting.status, "needs_approval");
     assert.equal(fixture.tasks.get(task.taskRunId)?.status, "needs_approval");
+    const reports = communication.messages(task.taskRunId);
+    assert.equal(reports[0]?.content, "candidate is ready for verification");
 
     await approveTaskVerification({
       taskRuns: fixture.tasks,
@@ -944,6 +951,7 @@ async function testPermissionApprovalResumesSameAttempt(): Promise<void> {
     assert.equal(completed.status, "completed", JSON.stringify(completed));
     assert.equal(workerCalls, 1);
     assert.equal(fixture.tasks.get(task.taskRunId)?.attempts.length, 1);
+    assert.deepEqual(communication.messages(task.taskRunId), reports, "approval and resumed verification preserve child reports");
   } finally {
     await fixture.close();
   }

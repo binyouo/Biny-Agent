@@ -155,13 +155,13 @@ try {
     assert.doesNotMatch(active.createCodeModeTool().promptSnippet ?? "", new RegExp(`${name}:`, "u"));
   }
   const discovery = makeRegistry(); let searches = 0;
-  discovery.registerBuiltinTool(createToolSearchTool(() => discovery.listEntries(), () => ({ provider: "fixture", modelId: "file-query-selector", supportsTools: false,
+  discovery.registerBuiltinTool(createToolSearchTool(() => discovery.listEntries(), () => [{ model: { provider: "fixture", modelId: "file-query-selector", supportsTools: false,
     async stream() { searches++; return (async function* (): AsyncGenerator<ModelStreamEvent> {
       yield { type: "text-delta", text: JSON.stringify({ tools: [...selected, "Bash", "Skill", "WebFetch", "KillShell"] }) }; yield { type: "finish", reason: "stop" };
     })(); }
-  })));
+  }, failureDomain: "file-query-fixture" }]));
   const discovered = coordinator(discovery, { tools: new Set(["ToolSearch"]) });
-  const search = discovered.createAgentTools().find((tool) => tool.name === "ToolSearch")!;
+  const search = discovered.createAgentTools(undefined, { toolDiscoveryNames: new Set(discovery.list().map((tool) => tool.name)) }).find((tool) => tool.name === "ToolSearch")!;
   const first = await search.execute("file-search", { query: "read file resources and process output" });
   assert.deepEqual(toolSearchResultNames(first.details), [...selected]);
   discovered.allowTools(toolSearchResultNames(first.details));

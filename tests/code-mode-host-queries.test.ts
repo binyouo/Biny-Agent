@@ -48,7 +48,7 @@ const statusOptions: SubagentOptions = {
   getModelSettings: () => { throw new Error("A status read cannot request a model."); },
   getAccessMode: () => "read-only",
   runVerifiedTask: async () => { throw new Error("A status read cannot start a task."); },
-  readTaskResult: async (taskRunId) => {
+  readTaskResult: async ({ taskRunId }) => {
     statusCalls++;
     return { taskRunId, status: "needs_approval", verification: { status: "pending" } };
   }
@@ -82,12 +82,12 @@ function deferred<T = void>() {
   const promise = new Promise<T>((done) => { resolve = done; });
   return { promise, resolve };
 }
-const model = (callback: (prompt: string) => Promise<void> | void): AgentModel => ({
+const model = (callback: (prompt: string) => Promise<void> | void, names = ["TaskStatus", "skill_lookup", "Skill", "read_skill_resource", "BashOutput", "Task"]): AgentModel => ({
   provider: "fixture", modelId: "host-query-selector", supportsTools: false,
   async stream(context) {
     await callback(context.systemPrompt ?? "");
     return (async function* (): AsyncGenerator<ModelStreamEvent> {
-      yield { type: "text-delta", text: JSON.stringify({ tools: ["TaskStatus", "skill_lookup", "Skill", "read_skill_resource", "BashOutput", "Task"] }) };
+      yield { type: "text-delta", text: JSON.stringify({ tools: names }) };
       yield { type: "finish", reason: "stop" };
     })();
   }
@@ -207,10 +207,10 @@ try {
   // Discovery caches and in-flight results are bound to exact host registrations.
   const discovery = makeRegistry();
   let searches = 0; const prompts: string[] = [];
-  const searchTool = createToolSearchTool(() => discovery.listEntries(), () => model((prompt) => { searches++; prompts.push(prompt); }));
+  const searchTool = createToolSearchTool(() => discovery.listEntries(), () => [{ model: model((prompt) => { searches++; prompts.push(prompt); }), failureDomain: "host-query-fixture" }]);
   discovery.registerBuiltinTool(searchTool);
   const searchCoordinator = coordinator(discovery, "query-discovery", { tools: new Set(["ToolSearch"]) });
-  const search = searchCoordinator.createAgentTools().find((tool) => tool.name === "ToolSearch")!;
+  const search = searchCoordinator.createAgentTools(undefined, { toolDiscoveryNames: new Set(discovery.list().map((tool) => tool.name)) }).find((tool) => tool.name === "ToolSearch")!;
   assert.doesNotMatch(searchCoordinator.createCodeModeTool().promptSnippet ?? "", /TaskStatus:|skill_lookup:/u);
   const first = await search.execute("query-search-1", { query: "read local metadata or task status" });
   assert.deepEqual(toolSearchResultNames(first.details), [...selected]);
@@ -235,12 +235,12 @@ try {
   assert.doesNotMatch(resumed.createCodeModeTool().promptSnippet ?? "", /TaskStatus:/u);
 
   const inFlightRegistry = makeRegistry(); const searchEntered = deferred(); const releaseSearch = deferred();
-  const inFlightSearch = createToolSearchTool(() => inFlightRegistry.listEntries(), () => model(async () => {
+  const inFlightSearch = createToolSearchTool(() => inFlightRegistry.listEntries(), () => [{ model: model(async () => {
     searchEntered.resolve(); await releaseSearch.promise;
-  }));
+  }), failureDomain: "host-query-fixture" }]);
   const resolved = await inFlightSearch.resolveExecution({ query: "task and skill reads" });
   assert.ok(!("isError" in resolved));
-  const stale = resolved.execute({ toolCallId: "in-flight", operationId: "in-flight", toolDiscoveryMode: "code_mode" });
+  const stale = resolved.execute({ toolCallId: "in-flight", operationId: "in-flight", toolDiscoveryNames: new Set(inFlightRegistry.list().map((tool) => tool.name)) });
   await searchEntered.promise;
   for (const name of selected) {
     const tool = inFlightRegistry.get(name); inFlightRegistry.unregister(name);
@@ -251,14 +251,14 @@ try {
 
   // The main model receives discovered host queries only on the next step.
   const flowRegistry = makeRegistry();
-  flowRegistry.registerBuiltinTool(createToolSearchTool(() => flowRegistry.listEntries(), () => model(() => undefined)));
+  flowRegistry.registerBuiltinTool(createToolSearchTool(() => flowRegistry.listEntries(), () => [{ model: model(() => undefined, [...selected]), failureDomain: "host-query-fixture" }]));
   let steps = 0;
   const flow = new AgentSession({ workspaceRoot: root, config, toolRegistry: flowRegistry,
     permissionManager: new PermissionManager(config.permission), recorder: new SessionRecorder(root, "host-query-agent-discovery"),
     selectCapabilities: async () => ({ tools: ["ToolSearch"], skills: "none" }),
     model: { provider: "fixture", modelId: "host-query-main-flow", supportsTools: true, async stream(context) {
       steps++;
-      assert.deepEqual(context.tools.map((tool) => tool.name).sort(), ["ToolSearch", "exec"]);
+      assert.deepEqual(context.tools.map((tool) => tool.name).sort(), steps === 1 ? ["ToolSearch", "exec"] : ["TaskStatus", "ToolSearch", "exec", "skill_lookup"]);
       const catalog = context.tools.find((tool) => tool.name === "exec")?.promptSnippet ?? "";
       if (steps === 1) assert.doesNotMatch(catalog, /TaskStatus:|skill_lookup:/u);
       else assert.match(catalog, /TaskStatus:|skill_lookup:/u);
@@ -273,7 +273,8 @@ try {
   });
   try {
     await flow.initialize();
-    assert.equal((await flow.runTask("Find read-only status and skill queries", { emotionAnalysis: false })).status, "completed");
+    const outcome = await flow.runTask("Find read-only status and skill queries", { emotionAnalysis: false, selection: { tools: ["ToolSearch"], skills: "none" } });
+    assert.equal(outcome.status, "completed", JSON.stringify(outcome));
     assert.equal(steps, 3);
   } finally { await flow.close(); }
 

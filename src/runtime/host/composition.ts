@@ -7,6 +7,7 @@
 import { AutomationScheduler } from "../AutomationScheduler.js";
 import type { CommandRuntime } from "../CommandRuntime.js";
 import { GraphSupervisor } from "../GoalGraphStore.js";
+import { SessionGoalRunner } from "../SessionGoalRunner.js";
 import type { InteractiveRuntimeHandle } from "../InteractiveAgentRuntime.js";
 import type { AgentRuntimeUpdate } from "../agentEvents.js";
 import {
@@ -28,6 +29,7 @@ export interface RuntimeHostBusinessComposition {
   runAutomation(automationId: string): Promise<unknown>;
   recoverGraphs(): void;
   scheduleGraphs(): void;
+  scheduleGoals(): void;
 }
 
 export interface RuntimeHostBusinessCompositionOptions {
@@ -41,8 +43,10 @@ export interface RuntimeHostBusinessCompositionOptions {
   resolveSessionCommands?: (sessionId: string) => Promise<CommandRuntime>;
   sessionExists?: (sessionId: string) => Promise<boolean>;
   canStartAutomationRun?: () => boolean;
+  canStartGoalRun?: () => boolean;
   restartRuntime(): Promise<void>;
   onGraphChange?(): void;
+  admitGoal?<T>(sessionId: string, execute: () => Promise<T>): Promise<T>;
 }
 
 export function createRuntimeHostBusinessComposition(
@@ -50,6 +54,7 @@ export function createRuntimeHostBusinessComposition(
 ): RuntimeHostBusinessComposition {
   let automationScheduler: AutomationScheduler | undefined;
   let graphSupervisor: GraphSupervisor | undefined;
+  let goalRunner: SessionGoalRunner | undefined;
   const memoryMaintenance: RuntimeHostMemoryMaintenance = createRuntimeHostMemoryMaintenance({
     getRuntime: options.getRuntime,
     getCommands: options.getCommands,
@@ -88,16 +93,29 @@ export function createRuntimeHostBusinessComposition(
         supervisorSessionExists: options.sessionExists
       })
       : undefined;
+    goalRunner = commands.sessionGoals && options.resolveSessionRuntime && options.resolveSessionCommands && options.admitGoal
+      ? new SessionGoalRunner({
+        getCommands: options.getCommands,
+        resolveRuntime: options.resolveSessionRuntime,
+        resolveCommands: options.resolveSessionCommands,
+        sessionExists: options.sessionExists,
+        canStart: () => !stopped && (options.canStartGoalRun?.() ?? options.canStartAutomationRun?.() ?? true),
+        admit: options.admitGoal,
+        onActivity: options.onActivity,
+        onChange: options.onGraphChange
+      })
+      : undefined;
   };
 
   createSchedulers();
 
   return {
-    hasActiveWork: () => memoryMaintenance.hasActiveWork() || Boolean(automationScheduler?.hasActiveWork()) || Boolean(graphSupervisor?.hasActiveWork()),
+    hasActiveWork: () => memoryMaintenance.hasActiveWork() || Boolean(automationScheduler?.hasActiveWork()) || Boolean(graphSupervisor?.hasActiveWork()) || Boolean(goalRunner?.hasActiveWork()),
     start(): void {
       if (stopped) return;
       automationScheduler?.start();
       graphSupervisor?.start();
+      goalRunner?.start();
     },
     startMemoryMaintenance(): void {
       memoryMaintenance.start();
@@ -105,6 +123,7 @@ export function createRuntimeHostBusinessComposition(
     stop(): void {
       automationScheduler?.stop();
       graphSupervisor?.stop();
+      goalRunner?.stop();
       memoryMaintenance.stop();
       stopped = true;
       unsubscribeGraphs?.();
@@ -113,6 +132,7 @@ export function createRuntimeHostBusinessComposition(
       memoryMaintenance.handleRuntimeUpdate(update);
       if (update.snapshot.state.kind === "idle" || update.event?.type === "tool.completed") {
         graphSupervisor?.requestTick();
+        goalRunner?.requestTick();
       }
     },
     scheduleMemoryEmbeddingRebuild(): void {
@@ -138,6 +158,9 @@ export function createRuntimeHostBusinessComposition(
     },
     scheduleGraphs(): void {
       graphSupervisor?.requestTick();
+    },
+    scheduleGoals(): void {
+      goalRunner?.requestTick();
     }
   };
 }

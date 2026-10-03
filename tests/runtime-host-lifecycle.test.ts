@@ -1,5 +1,10 @@
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { createRequire } from "node:module";
+import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   runtimeHostLaunchPlan,
   runtimeHostEntryPath,
@@ -41,6 +46,34 @@ for (const executableName of ["Biny", "Electron", "Biny Desktop"]) {
   assert.equal(plan.executable, `${contents}/MacOS/${executableName}`,
     "Host requires the Electron main executable so Chromium services can start");
   assert.equal(plan.env.ELECTRON_RUN_AS_NODE, undefined);
+}
+
+// Given Desktop encrypted credentials and a Node caller, When electing a cold
+// owner, Then launch the existing headless Electron entry to read those credentials.
+const configRoot = await mkdtemp(path.join(os.tmpdir(), "biny-host-cipher-launch-"));
+try {
+  const nodePlan = runtimeHostLaunchPlan("/workspace/data", { workspaceRoot: "/workspace/project", configDir: configRoot });
+  assert.equal(nodePlan.executable, process.execPath);
+  await writeFile(path.join(configRoot, "credentials.enc"), "encrypted-fixture", { mode: 0o600 });
+  const moduleRoot = path.resolve(fileURLToPath(new URL("../", import.meta.url)));
+  try {
+    const cipherPlan = runtimeHostLaunchPlan("/workspace/data", {
+      workspaceRoot: "/workspace/project", configDir: configRoot
+    }, { platform: "darwin", execPath: process.execPath });
+    assert.notEqual(cipherPlan.executable, process.execPath);
+    assert.equal(cipherPlan.args[1], "--biny-runtime-host");
+    if (existsSync(path.join(moduleRoot, "out/main/index.js"))) {
+      assert.equal(cipherPlan.executable, createRequire(import.meta.url)("electron"));
+      assert.equal(cipherPlan.args[0], moduleRoot);
+    }
+    assert.equal(cipherPlan.env.ELECTRON_RUN_AS_NODE, undefined);
+    assert.ok(!cipherPlan.args.includes("encrypted-fixture"));
+  } catch (error) {
+    if (existsSync(path.join(moduleRoot, "out/main/index.js"))) throw error;
+    assert.match(String(error), /需要可启动的 Biny Desktop/u, "unbuilt installations must give an actionable startup error");
+  }
+} finally {
+  await rm(configRoot, { recursive: true, force: true });
 }
 
 console.log("runtime-host lifecycle tests passed");

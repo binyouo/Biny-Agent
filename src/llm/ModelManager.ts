@@ -16,7 +16,8 @@ import {
 } from "./ModelRegistry.js";
 import type { AgentModel } from "../agent/core/types.js";
 import { ModelRuntime } from "./ModelRuntime.js";
-import type { ModelSettings } from "./ProviderRuntime.js";
+import type { ModelSettings, ProviderCredentialPersistence } from "./ProviderRuntime.js";
+import { createProviderCredentialPersistence } from "./modelFactory.js";
 import { AiRegistry } from "./AiRegistry.js";
 import { FileModelsStore, restoreProviderCatalogs, type ModelsStore } from "./ModelsStore.js";
 import type { ThinkingSelection } from "./modelThinking.js";
@@ -46,6 +47,7 @@ export class ModelManager {
   private activeSettings: ModelSettings;
   private runtime: ModelRuntime;
   private observedConfigRevision: number | undefined;
+  private readonly providerCredentials: ProviderCredentialPersistence;
 
   constructor(
     private readonly workspaceRoot: string,
@@ -55,7 +57,8 @@ export class ModelManager {
     private readonly modelsStore?: ModelsStore,
     catalogs: readonly [string, ModelCatalogEntry[]][] = []
   ) {
-    this.runtime = new ModelRuntime(config, catalogs, ai, modelsStore);
+    this.providerCredentials = createProviderCredentialPersistence(configStore, workspaceRoot);
+    this.runtime = new ModelRuntime(config, catalogs, ai, modelsStore, undefined, this.providerCredentials);
     this.activeSettings = this.runtime.createModelSettings();
     this.observedConfigRevision = configStore.revision?.();
   }
@@ -103,19 +106,31 @@ export class ModelManager {
   }
 
   /**
-   * 所有 AgentSession 回合共用的轻量准备：进程内配置变更才重读磁盘，
-   * 当前 OAuth provider 临近过期才联网续期，其余 prompt 只做同步配置校验。
+   * AgentSession 在回合入口重读配置；同回合后续步骤传 reloadConfig=false，
+   * 只校验当前 Provider 并在 OAuth 临近过期时续期，不切换回合的模型选择。
    */
-  async preparePrompt(signal?: AbortSignal): Promise<void> {
+  async preparePrompt(signal?: AbortSignal, reloadConfig = true): Promise<void> {
     signal?.throwIfAborted();
     const revision = this.configStore.revision?.();
-    if (revision !== undefined && revision !== this.observedConfigRevision) {
+    if (reloadConfig && revision !== undefined && revision !== this.observedConfigRevision) {
       await this.refreshFromDisk();
+    }
+
+    const providerAlias = resolveModelConfig(this.config).providerAlias;
+    const provider = this.config.providers[providerAlias];
+    if (provider?.authMode === "oauth-bearer") {
+      const latest = await this.providerCredentials.read?.(providerAlias, provider, signal);
+      if (latest && (latest.apiKey !== provider.apiKey || latest.oauth?.refreshToken !== provider.oauth?.refreshToken
+        || latest.oauth?.expiresAt !== provider.oauth?.expiresAt)) {
+        const observedRevision = this.observedConfigRevision;
+        this.applyConfig({ ...this.config, providers: { ...this.config.providers, [providerAlias]: latest } });
+        // 凭据更新不代表已读取并准入其它客户端保存的后续模型选择。
+        this.observedConfigRevision = observedRevision;
+      }
     }
 
     const refreshed = await this.runtime.refreshActiveCredential(signal);
     if (refreshed) {
-      const providerAlias = resolveModelConfig(this.config).providerAlias;
       const effective = await updateConfig(this.configStore, this.workspaceRoot, (persisted) => configSchema.parse({
         ...persisted,
         providers: {
@@ -123,7 +138,13 @@ export class ModelManager {
           [providerAlias]: refreshed
         }
       }));
-      this.applyConfig(effective);
+      // 凭据续期不能将运行中保存的新模型选择带进当前回合。
+      const observedRevision = this.observedConfigRevision;
+      this.applyConfig(reloadConfig ? effective : {
+        ...this.config,
+        providers: { ...this.config.providers, [providerAlias]: effective.providers[providerAlias]! }
+      });
+      if (!reloadConfig) this.observedConfigRevision = observedRevision;
     }
 
     this.runtime.validate();
@@ -134,36 +155,7 @@ export class ModelManager {
   }
 
   async switchModel(alias: string, thinking?: ThinkingSelection): Promise<ModelRuntimeInfo> {
-    const catalogs = this.runtime.catalogsSnapshot();
-    const effective = await updateConfig(this.configStore, this.workspaceRoot, (persisted) => {
-      const persistedRuntime = new ModelRuntime(persisted, catalogs, this.ai, this.modelsStore);
-      // 解析允许先找到模型，再由 Provider 工厂给出具体的 endpoint/credential 错误；
-      // 这样 CLI/TUI 不会把缺少哪个环境变量的信息吞掉。
-      const resolved = persistedRuntime.resolve(alias);
-      const modelAlias = resolved.alias;
-      const model = resolved.model;
-      // 除了修复旧的推理字段外，只保存原始配置或动态模型的最小 alias；`resolved.model` 已包含
-      // 目录/Provider 补齐的元数据，直接写回会把自动推导的 contextWindow 伪装成用户覆盖。
-      const persistedModel = persisted.models[modelAlias] ?? {
-        provider: resolved.providerAlias,
-        model: model.model
-      };
-      const candidateModel = modelConfigForSwitch(persistedModel, model);
-      const selection = resolveThinkingSelection({ ...persisted, models: { ...persisted.models, [modelAlias]: model } }, modelAlias, thinking);
-      const effort = selection === "off"
-        ? modelReasoningConfig(model)?.defaultEffort ?? persisted.thinking.effort
-        : selection;
-      const candidate = configSchema.parse({
-        ...persisted,
-        defaultModel: modelAlias,
-        models: { ...persisted.models, [modelAlias]: candidateModel },
-        thinking: { enabled: selection !== "off", effort }
-      });
-
-      // Validate endpoint and credentials before allowing this version to be written.
-      new ModelRuntime(candidate, catalogs, this.ai, this.modelsStore).createModelSettings();
-      return candidate;
-    });
+    const effective = await saveModelSelection(this.workspaceRoot, this.configStore, alias, thinking, this.runtime.catalogsSnapshot(), this.ai, this.modelsStore);
     // 项目覆盖的 defaultModel/thinking 仍然优先；保存后重新读取有效配置，避免内存状态
     // 短暂显示一个实际上被项目覆盖遮住的模型。
     this.applyConfig(effective);
@@ -177,13 +169,55 @@ export class ModelManager {
   }
 
   private applyConfig(nextConfig: AgentConfig): void {
-    const nextRuntime = new ModelRuntime(nextConfig, this.runtime.catalogsSnapshot(), this.ai, this.modelsStore);
+    const nextRuntime = new ModelRuntime(nextConfig, this.runtime.catalogsSnapshot(), this.ai, this.modelsStore, undefined, this.providerCredentials);
     const nextSettings = nextRuntime.createModelSettings();
-    Object.assign(this.config, nextConfig);
+    // 自动模式在磁盘中省略 toolModel，仍需清除上一回合的显式选择。
+    Object.assign(this.config, nextConfig, { toolModel: nextConfig.toolModel });
     this.runtime = nextRuntime;
     this.activeSettings = nextSettings;
     this.observedConfigRevision = this.configStore.revision?.();
   }
+}
+
+/** 只验证并保存选择，不修改驻留 Agent 的当前回合配置。 */
+export async function saveModelSelection(
+  workspaceRoot: string,
+  configStore: AgentConfigStore,
+  alias: string,
+  thinking?: ThinkingSelection,
+  catalogs: readonly [string, ModelCatalogEntry[]][] = [],
+  ai: AiRegistry = new AiRegistry(),
+  modelsStore?: ModelsStore
+): Promise<AgentConfig> {
+  return await updateConfig(configStore, workspaceRoot, (persisted) => {
+    const persistedRuntime = new ModelRuntime(persisted, catalogs, ai, modelsStore);
+    // 解析允许先找到模型，再由 Provider 工厂给出具体的 endpoint/credential 错误；
+    // 这样 CLI/TUI 不会把缺少哪个环境变量的信息吞掉。
+    const resolved = persistedRuntime.resolve(alias);
+    const modelAlias = resolved.alias;
+    const model = resolved.model;
+    // 除了修复旧的推理字段外，只保存原始配置或动态模型的最小 alias；`resolved.model` 已包含
+    // 目录/Provider 补齐的元数据，直接写回会把自动推导的 contextWindow 伪装成用户覆盖。
+    const persistedModel = persisted.models[modelAlias] ?? {
+      provider: resolved.providerAlias,
+      model: model.model
+    };
+    const candidateModel = modelConfigForSwitch(persistedModel, model);
+    const selection = resolveThinkingSelection({ ...persisted, models: { ...persisted.models, [modelAlias]: model } }, modelAlias, thinking);
+    const effort = selection === "off"
+      ? modelReasoningConfig(model)?.defaultEffort ?? persisted.thinking.effort
+      : selection;
+    const candidate = configSchema.parse({
+      ...persisted,
+      defaultModel: modelAlias,
+      models: { ...persisted.models, [modelAlias]: candidateModel },
+      thinking: { enabled: selection !== "off", effort }
+    });
+
+    // Validate endpoint and credentials before allowing this version to be written.
+    new ModelRuntime(candidate, catalogs, ai, modelsStore).createModelSettings();
+    return candidate;
+  });
 }
 
 /**

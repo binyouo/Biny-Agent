@@ -1,8 +1,8 @@
 /**
  * Runtime / Task / Automation / Goal / Graph / Daemon 管理命令。
  *
- * 这些命令不直接打开 SQLite，也不创建第二套状态；它们统一 attach 到当前 workspace
- * 的 Unix-socket Runtime Host。没有 owner 时才按现有 Host 规则启动 detached owner。
+ * 写操作统一 attach 到 workspace 的 Runtime Host；会话目标查询读取同一持久投影，
+ * 不因查看目标启动 owner 或继续后台执行。
  */
 import { execFile as execFileCallback } from "node:child_process";
 import { promises as fs } from "node:fs";
@@ -14,6 +14,8 @@ import { runRuntimeHostProcess } from "../../runtime/hostProcess.js";
 import { agentDir, ensureAgentDirs } from "../../session/store.js";
 import type { AutomationCreateInput } from "../../runtime/AutomationScheduler.js";
 import type { GraphNodeInput } from "../../runtime/GoalGraphStore.js";
+import { RuntimeEventAuthority } from "../../runtime/RuntimeAuthority.js";
+import { SessionGoalStore } from "../../runtime/SessionGoalStore.js";
 
 const execFile = promisify(execFileCallback);
 
@@ -133,6 +135,14 @@ export async function taskGetCommand(workspaceRoot: string, taskRunId: string, o
   await hostAction(workspaceRoot, options, async (client) => await client.taskGet(taskRunId));
 }
 
+export async function taskMessageCommand(workspaceRoot: string, taskRunId: string, message: string, options: JsonOption & { session: string; messageId?: string }): Promise<void> {
+  await hostAction(workspaceRoot, options, async (client) => await client.taskMessage(taskRunId, options.session, message, options.messageId));
+}
+
+export async function taskWaitCommand(workspaceRoot: string, taskRunId: string, options: JsonOption & { session: string; waitMs?: number; afterRevision?: number }): Promise<void> {
+  await hostAction(workspaceRoot, options, async (client) => await client.taskWait(taskRunId, options.session, options.waitMs, options.afterRevision));
+}
+
 export async function taskListCommand(workspaceRoot: string, options: JsonOption & { status?: string; limit?: number } = {}): Promise<void> {
   await hostAction(workspaceRoot, options, async (client) => await client.taskList({ status: options.status, limit: options.limit }));
 }
@@ -156,6 +166,46 @@ export async function goalActionCommand(workspaceRoot: string, action: "get" | "
     if (action === "resume") return await client.goalResume(goalId);
     return await client.goalCancel(goalId);
   });
+}
+
+export async function sessionGoalSetCommand(workspaceRoot: string, objective: string, options: JsonOption & { session?: string; tokenBudget?: number } = {}): Promise<void> {
+  const sessionId = requireGoalSession(options.session);
+  if (!objective.trim()) throw new Error("Goal objective must not be empty.");
+  if (options.tokenBudget !== undefined && (!Number.isSafeInteger(options.tokenBudget) || options.tokenBudget <= 0)) throw new Error("Goal token budget must be a positive safe integer.");
+  await hostAction(workspaceRoot, options, async (client) => {
+    const goal = await client.sessionGoalGet(sessionId);
+    return await client.sessionGoalSet(sessionId, objective, { tokenBudget: options.tokenBudget, expected: goal === undefined ? undefined : { goalId: goal.goalId, revision: goal.revision } });
+  });
+}
+
+export async function sessionGoalActionCommand(workspaceRoot: string, action: "show" | "pause" | "resume" | "clear", options: JsonOption & { session?: string } = {}): Promise<void> {
+  const sessionId = requireGoalSession(options.session);
+  if (action === "show") {
+    let record;
+    if (await fileExists(path.join(agentDir(workspaceRoot), "runtime.sqlite"))) {
+      const authority = await RuntimeEventAuthority.open(workspaceRoot, { backfillLegacySessions: false });
+      try {
+        const goals = await SessionGoalStore.open(workspaceRoot, authority);
+        try { record = goals.get(sessionId); }
+        finally { goals.close(); }
+      } finally { authority.close(); }
+    }
+    console.log(options.json ? JSON.stringify(record ?? null) : record === undefined ? "No goal for this session." : formatPlain(record));
+    return;
+  }
+  await hostAction(workspaceRoot, options, async (client) => {
+    const goal = await client.sessionGoalGet(sessionId);
+    const expected = goal === undefined ? undefined : { goalId: goal.goalId, revision: goal.revision };
+    if (action === "pause") return await client.sessionGoalPause(sessionId, expected);
+    if (action === "resume") return await client.sessionGoalResume(sessionId, expected);
+    const cleared = await client.sessionGoalClear(sessionId, expected);
+    return cleared.accepted ? { ...cleared, result: { sessionId, cleared: true } } : cleared;
+  });
+}
+
+function requireGoalSession(sessionId?: string): string {
+  if (!sessionId?.trim()) throw new Error("A session goal requires --session <id>.");
+  return sessionId.trim();
 }
 
 export async function graphCreateCommand(workspaceRoot: string, options: JsonOption & { goalId?: string; graphId?: string; nodes: string; payload?: string } ): Promise<void> {

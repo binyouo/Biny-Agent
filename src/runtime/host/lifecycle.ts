@@ -5,8 +5,9 @@
  */
 import { createHash, randomUUID } from "node:crypto";
 import { spawn, type ChildProcess } from "node:child_process";
-import { constants, promises as fs, type Stats } from "node:fs";
+import { constants, existsSync, promises as fs, type Stats } from "node:fs";
 import type { FileHandle } from "node:fs/promises";
+import { createRequire } from "node:module";
 import { DatabaseSync } from "node:sqlite";
 import os from "node:os";
 import path from "node:path";
@@ -114,8 +115,33 @@ export function runtimeHostLaunchPlan(
       env
     };
   }
+  if (environment.platform === "darwin" && process.versions.electron === undefined
+    && existsSync(path.join(options.configDir ?? globalConfigDir(), "credentials.enc"))) {
+    const desktop = desktopCredentialHostLaunch();
+    delete env.ELECTRON_RUN_AS_NODE;
+    return { executable: desktop.executable, args: [desktop.appPath, "--biny-runtime-host", ...hostArgs], env };
+  }
   if (process.versions.electron !== undefined) env.ELECTRON_RUN_AS_NODE = "1";
   return { executable: environment.execPath, args: [...nodeArgs, ...hostArgs], env };
+}
+
+/** 加密凭据留在 Electron owner 内，Node 客户端只通过现有 Host 协议提交消息。 */
+function desktopCredentialHostLaunch(): { executable: string; appPath: string } {
+  const moduleRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
+  if (existsSync(path.join(moduleRoot, "out/main/index.js"))) {
+    try {
+      const executable = createRequire(import.meta.url)("electron") as unknown;
+      if (typeof executable === "string" && existsSync(executable)) return { executable, appPath: moduleRoot };
+    } catch (error) {
+      if (asRecord(error).code !== "MODULE_NOT_FOUND") throw error;
+    }
+  }
+  for (const app of [path.join("/Applications", "Biny.app"), path.join(os.homedir(), "Applications", "Biny.app")]) {
+    const executable = path.join(app, "Contents/MacOS/Biny");
+    const appPath = path.join(app, "Contents/Resources/app.asar");
+    if (existsSync(executable) && existsSync(appPath)) return { executable, appPath };
+  }
+  throw new Error("模型凭据保存在 Desktop 加密存储中，需要可启动的 Biny Desktop。开发工作区请先运行 pnpm build；命令行安装请安装 Biny Desktop 到 Applications。");
 }
 
 export function runtimeHostEntryPath(): string {

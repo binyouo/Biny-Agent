@@ -2,12 +2,15 @@
  * 运行时工具发现模块。
  *
  * 主模型只看到当前回合的最小工具集；能力不足时可按名称、描述、来源和 capability 搜索
- * 注册表。搜索结果只用于下一模型步骤扩展 schema，真正调用仍经过统一权限与审计链。
+ * 注册表。点名工具先从本地目录解析，语义查询才使用辅助模型；真正调用仍经过统一权限与审计链。
  */
 import { createHash } from "node:crypto";
 import { z } from "zod";
-import type { AgentMessage, AgentModel } from "../agent/core/types.js";
-import { generateNativeText } from "../llm/nativeJson.js";
+import { codeModeNestedToolNames } from "../agent/codeMode.js";
+import { getToolExposure, isToolModelVisible } from "./exposure.js";
+import type { AgentMessage } from "../agent/core/types.js";
+import type { ToolModelCandidate } from "../llm/toolModel.js";
+import { generateToolModelText, toolModelFailureScope, ToolModelCandidatesExhaustedError, type ToolModelAttempt } from "../llm/toolModelRequest.js";
 import { redactSecrets } from "../utils/secrets.js";
 import { ToolAccesses } from "./access.js";
 import { isCodeModeReadTool, type RegisteredTool } from "./registry.js";
@@ -15,7 +18,7 @@ import type { Tool, ToolSource } from "./types.js";
 
 export const toolSearchToolName = "ToolSearch";
 /** 修改目录披露格式、选择 prompt 或验证语义时同步递增。 */
-const toolSearchProtocolVersion = "2";
+const toolSearchProtocolVersion = "6";
 const defaultMaxResults = 8;
 const maxResults = 20;
 const cacheTtlMs = 30 * 60 * 1000;
@@ -45,9 +48,13 @@ export interface ToolSearchResult {
   reasoning?: string;
   code?: ToolSearchErrorCode;
   error?: string;
+  retryable?: boolean;
+  model?: Pick<ToolModelAttempt, "provider" | "providerAlias" | "modelId">;
+  modelAttempts?: readonly ToolModelAttempt[];
 }
 
 export type ToolSearchErrorCode =
+  | "mcp_discovery_timeout"
   | "tool_search_model_unavailable"
   | "tool_search_timeout"
   | "tool_search_invalid_response"
@@ -66,7 +73,7 @@ let nextSignalId = 0;
 
 export function createToolSearchTool(
   getTools: () => readonly RegisteredTool[],
-  getModel: () => AgentModel | undefined = () => undefined
+  getModels: () => readonly ToolModelCandidate[] = () => []
 ): Tool<ToolSearchArgs, ToolSearchResult> {
   // 模块级缓存按工具实例隔离，避免不同 runtime、工作区或安全域共享辅助模型结果。
   const cacheNamespace = `tool-search-${String(++nextSearchInstanceId)}`;
@@ -74,7 +81,8 @@ export function createToolSearchTool(
   let nextRegistrationId = 0;
   return {
     name: toolSearchToolName,
-    description: "Semantically search currently registered built-in, MCP, Skill, plugin, and subagent tools. Matching tools become available on the next model step; call this when the current tool set cannot complete the request.",
+    exposure: "model-only",
+    description: "Search currently registered built-in, MCP, Skill, plugin, and subagent tools. Exact tool names resolve locally; other queries use semantic selection. Matching tools become available on the next model step; call this when the current tool set cannot complete the request.",
     promptSnippet: "Discover additional registered tools when the current tool set is insufficient",
     promptGuidelines: ["Use ToolSearch only when the current tools cannot complete the request; describe the missing capability precisely"],
     parameters: {
@@ -97,13 +105,21 @@ export function createToolSearchTool(
         description: `Search registered tools for ${args.query}`,
         approvalRule: toolSearchToolName,
         async execute(context) {
+          context.signal?.throwIfAborted();
           const type = args.type ?? "all";
           const limit = args.maxResults ?? defaultMaxResults;
-          const codeMode = context.toolDiscoveryMode === "code_mode";
+          const discovery = type === "all" || type === "mcp"
+            ? await context.prepareToolDiscovery?.(args.query, context.signal) : undefined;
+          context.signal?.throwIfAborted();
+          const codeMode = context.toolDiscoveryNames !== undefined;
           const registrations = getTools()
             .filter((entry) => entry.tool.name !== toolSearchToolName
               && (type === "all" || entry.source === type)
-              && (!codeMode || isCodeModeReadTool(entry)));
+              && (!codeMode || isCodeModeReadTool(entry) || entry.source === "mcp" && !codeModeNestedToolNames.has(entry.tool.name))
+              && (context.toolDiscoveryNames
+                ? context.toolDiscoveryNames.has(entry.tool.name) && getToolExposure(entry.tool) !== "hidden" && getToolExposure(entry.tool) !== "model-only"
+                : isToolModelVisible(entry.tool))
+              && (!context.toolDiscoveryNamespace || entry.tool.namespace?.name === context.toolDiscoveryNamespace));
           const candidates = registrations
             .map(({ tool, source }) => ({
               name: tool.name,
@@ -111,24 +127,32 @@ export function createToolSearchTool(
               source,
               capability: tool.capability
             }));
-          const model = getModel();
-          if (!model) {
-            return failedResult(args.query, "tool_search_model_unavailable", "No tool model configured.");
+          const explicitNames = explicitToolNames(args.query, candidates).slice(0, limit);
+          if (explicitNames.length) {
+            const byName = new Map(candidates.map((candidate) => [candidate.name, candidate]));
+            return { status: "completed", query: args.query, found: explicitNames.length, tools: explicitNames.map((name) => byName.get(name)!) };
           }
-          // Code Mode authority belongs to exact current registrations. A
-          // replacement with identical serialized metadata cannot reuse it.
-          const authority = codeMode ? registrations.map((entry) => {
+          if (discovery?.timedOut) {
+            return failedResult(args.query, "mcp_discovery_timeout", "MCP discovery is still pending. Try again after the connection is ready.", true);
+          }
+          const models = getModels();
+          if (!models.length) {
+            return failedResult(args.query, "tool_search_model_unavailable", "No tool model configured.", false);
+          }
+          // 发现缓存按当前注册身份隔离，相同元数据的替换工具不能复用旧准入。
+          const authority = registrations.map((entry) => {
             let id = registrationIds.get(entry);
             if (id === undefined) { id = ++nextRegistrationId; registrationIds.set(entry, id); }
             return id;
-          }).join(",") : "direct";
-          const cacheKey = searchCacheKey(`${cacheNamespace}:${authority}`, model, args.query, type, limit, candidates);
+          }).join(",");
+          const cacheKey = searchCacheKey(`${cacheNamespace}:${authority}`, models, args.query, type, limit, candidates);
           const currentResult = (result: ToolSearchResult): ToolSearchResult => {
             const cloned = cloneSearchResult(result, args.query);
-            if (!codeMode || cloned.status !== "completed") return cloned;
+            if (cloned.status !== "completed") return cloned;
             const current = getTools();
             cloned.tools = cloned.tools.filter((match) => registrations.some((entry) => entry.tool.name === match.name
-              && current.includes(entry) && isCodeModeReadTool(entry)));
+              && current.includes(entry) && (!codeMode || isCodeModeReadTool(entry)
+                || entry.source === "mcp" && !codeModeNestedToolNames.has(entry.tool.name))));
             cloned.found = cloned.tools.length;
             return cloned;
           };
@@ -137,7 +161,7 @@ export function createToolSearchTool(
           const inFlightKey = `${cacheKey}\0${signalKey(context.signal)}`;
           let request = inFlightSearches.get(inFlightKey);
           if (!request) {
-            request = searchWithModel(model, candidates, args.query, type, limit, context.signal);
+            request = searchWithModels(models, candidates, args.query, type, limit, context.signal);
             inFlightSearches.set(inFlightKey, request);
             void request.finally(() => {
               if (inFlightSearches.get(inFlightKey) === request) inFlightSearches.delete(inFlightKey);
@@ -152,8 +176,24 @@ export function createToolSearchTool(
   };
 }
 
-async function searchWithModel(
-  model: AgentModel,
+/** 点名只匹配完整、大小写一致的注册名，避免把近似名称当成工具身份。 */
+export function explicitToolNames(query: string, tools: readonly { name: string }[]): string[] {
+  const matches = tools.flatMap(({ name }) => {
+    if (!name) return [];
+    let offset = query.indexOf(name);
+    while (offset >= 0) {
+      const before = query[offset - 1];
+      const after = query[offset + name.length];
+      if ((!before || !/[A-Za-z0-9_-]/u.test(before)) && (!after || !/[A-Za-z0-9_-]/u.test(after))) return [{ name, offset }];
+      offset = query.indexOf(name, offset + name.length);
+    }
+    return [];
+  });
+  return matches.sort((left, right) => left.offset - right.offset).map(({ name }) => name);
+}
+
+async function searchWithModels(
+  models: readonly ToolModelCandidate[],
   candidates: readonly ToolSearchMatch[],
   query: string,
   type: ToolSearchArgs["type"] | "all",
@@ -163,12 +203,12 @@ async function searchWithModel(
   try {
     // 工具目录会披露给辅助模型；description 必须先脱敏，并始终按不可信目录数据处理。
     const messages: AgentMessage[] = [{ role: "user", content: `Search query: ${JSON.stringify(query)}` }];
-    const response = await generateNativeText(model, messages, {
+    const response = await generateToolModelText(models, messages, {
       systemPrompt: toolSearchPrompt(candidates, type, limit),
       signal,
-      // 辅助搜索请求交给 SDK 重试瞬时 provider 故障，不再设独立硬超时，
-      // 取消边界统一由调用方的 abort signal 负责。
+      // 瞬时故障由原模型重试，账户失败再尝试其他连接；整个候选链共享截止时间。
       maxRetries: 2,
+      timeoutMs: 30_000,
       maxOutputTokens: 2048,
       reasoning: "off"
     });
@@ -188,12 +228,17 @@ async function searchWithModel(
       query,
       found: selected.length,
       tools: selected,
-      reasoning: parsed.reasoning
+      reasoning: parsed.reasoning,
+      model: { provider: response.model.provider, providerAlias: response.model.providerAlias, modelId: response.model.modelId },
+      modelAttempts: response.attempts
     };
   } catch (error) {
     signal?.throwIfAborted();
     const code = toolSearchErrorCode(error);
-    return failedResult(query, code, error instanceof Error ? error.message : String(error));
+    return {
+      ...failedResult(query, code, redactSecrets(error instanceof Error ? error.message : String(error)), !(error instanceof ToolModelCandidatesExhaustedError) && toolModelFailureScope(error) === undefined),
+      modelAttempts: error instanceof ToolModelCandidatesExhaustedError ? error.attempts : undefined
+    };
   }
 }
 
@@ -231,6 +276,12 @@ export function toolSearchResultNames(value: unknown): string[] {
   });
 }
 
+export function isToolSearchTerminalFailure(value: unknown): value is ToolSearchResult & { status: "failed"; retryable: false } {
+  if (typeof value !== "object" || value === null) return false;
+  const result = value as { status?: unknown; retryable?: unknown };
+  return result.status === "failed" && result.retryable === false;
+}
+
 /** 从持久化 continuation 恢复成功发现的精确工具名；实际白名单仍由当前注册表校验。 */
 export function toolSearchResultNamesFromMessages(messages: readonly AgentMessage[]): string[] {
   const names = messages.flatMap((message) => message.role === "toolResult"
@@ -254,7 +305,7 @@ function toolSearchPrompt(candidates: readonly ToolSearchMatch[], type: ToolSear
 
 function searchCacheKey(
   namespace: string,
-  model: AgentModel,
+  models: readonly ToolModelCandidate[],
   query: string,
   type: string,
   limit: number,
@@ -264,9 +315,7 @@ function searchCacheKey(
   return [
     namespace,
     toolSearchProtocolVersion,
-    model.provider,
-    model.providerAlias ?? "",
-    model.modelId,
+    JSON.stringify(models.map(({ model, failureDomain }) => [model.provider, model.providerAlias, model.modelId, failureDomain])),
     normalizeQuery(query),
     type,
     String(limit),
@@ -295,8 +344,8 @@ function setCachedSearch(key: string, result: ToolSearchResult): void {
   }
 }
 
-function failedResult(query: string, code: ToolSearchErrorCode, error: string): ToolSearchResult {
-  return { status: "failed", query, found: 0, tools: [], code, error };
+function failedResult(query: string, code: ToolSearchErrorCode, error: string, retryable: boolean): ToolSearchResult {
+  return { status: "failed", query, found: 0, tools: [], code, error, retryable };
 }
 
 function toolSearchErrorCode(error: unknown): ToolSearchErrorCode {
@@ -323,6 +372,8 @@ function cloneSearchResult(result: ToolSearchResult, query: string): ToolSearchR
   return {
     ...result,
     query,
-    tools: result.tools.map((tool) => ({ ...tool }))
+    tools: result.tools.map((tool) => ({ ...tool })),
+    model: result.model ? { ...result.model } : undefined,
+    modelAttempts: result.modelAttempts?.map((attempt) => ({ ...attempt }))
   };
 }

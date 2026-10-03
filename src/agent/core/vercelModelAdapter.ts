@@ -208,6 +208,8 @@ async function* streamModel(
       const streamModel = state.model.stream.bind(state.model);
       const streamOptions: ModelStreamOptions = {
         ...state.modelOptions,
+        // 外层 SDK 回调统一记账，注入模型不能再报告第二份请求用量。
+        onRequestMetrics: undefined,
         signal,
         maxOutputTokens: options.maxOutputTokens ?? state.modelOptions?.maxOutputTokens,
         temperature: options.temperature ?? state.modelOptions?.temperature,

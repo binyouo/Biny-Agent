@@ -9,10 +9,17 @@ import { createHash } from "node:crypto";
 import type { ToolAccessList } from "./access.js";
 import type { FileSnapshot } from "./file/safeFileIo.js";
 import type { PreparedFileChange, CommittedFileChange } from "./file/fileChange.js";
-import type { JsonObjectSchema } from "./schema.js";
+import type { JsonObjectSchema, JsonSchema } from "./schema.js";
 
 export type ToolSource = "builtin" | "mcp" | "skill" | "plugin" | "subagent";
 export type ToolRisk = "read" | "write" | "execute";
+export type ToolExposure = "direct" | "model-only" | "codemode" | "deferred" | "hidden";
+
+export interface ToolNamespace {
+  name: string;
+  description?: string;
+  instructions?: string;
+}
 
 /** 工具执行状态与模型消息协议解耦；side_effect_committed 只表示审计证据，不是终态。 */
 export type ToolExecutionState =
@@ -74,7 +81,11 @@ export interface ApprovedFileSnapshot {
 
 export interface ToolExecutionContext {
   /** Host-selected discovery surface; tool arguments cannot widen Code Mode's catalog. */
-  toolDiscoveryMode?: "code_mode";
+  toolDiscoveryNames?: ReadonlySet<string>;
+  toolDiscoveryNamespace?: string;
+  prepareToolDiscovery?: (query?: string, signal?: AbortSignal) => Promise<{ pending: string[]; timedOut: boolean }>;
+  /** 脚本子调用保留 MCP 内容块与结构化结果，由执行边界选择，模型参数不能设置。 */
+  mcpResultMode?: "envelope";
   /** 当前审批权威的显式路径禁令；命令子进程必须通过系统沙箱执行这些限制。 */
   deniedPaths?: readonly string[];
   toolCallId: string;
@@ -120,7 +131,11 @@ export interface Tool<TArgs = unknown, TResult = unknown> {
   /** 仅当该工具在当前模型步骤可用时注入的操作规则。 */
   promptGuidelines?: string[];
   parameters: JsonObjectSchema;
+  outputSchema?: JsonSchema;
   schema: z.ZodType<TArgs, z.ZodTypeDef, unknown>;
+  /** 暴露控制声明与发现入口，不替代权限或脚本准入检查；省略时为 direct。 */
+  exposure?: ToolExposure;
+  namespace?: ToolNamespace;
   source?: ToolSource;
   capability?: string;
   risk?: ToolRisk;

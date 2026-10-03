@@ -182,7 +182,7 @@ async function crashAtToolBoundary(root: string, mode: string): Promise<void> {
     executor: { executeTaskCheck: async () => assert.fail("crash must precede verification") },
     executeAttempt: async (prompt, attempt) => {
       const output = await runSubagentTask({ workspaceRoot: root, config: configuration, toolRegistry: registry,
-        getAccessMode: () => "workspace", getModelSettings: () => createModelSettings(configuration)
+        getModelSettings: () => createModelSettings(configuration)
       }, prompt, undefined, "workspace", undefined, {
         persistenceRoot: root, taskId: attempt.attemptId, parentSessionId: "parent-session", runtimeEventSink: authority.asSink()
       });

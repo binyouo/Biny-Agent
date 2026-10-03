@@ -66,6 +66,7 @@ import {
   type PromptBundle,
   refreshRuntimeTurnContext,
   refreshRuntimeSystemPrompt,
+  refreshSessionGoalPrompt,
   messagesForTelemetry,
   stripTransientTurnContext,
   systemPromptForTelemetry
@@ -127,7 +128,7 @@ import type { SessionContextCheckpoint, SessionContextCheckpointState, SessionUs
 import { sessionContextCheckpointFields } from "../session/metadata.js";
 import { defaultModelContextWindow } from "../ai/capabilities.js";
 import { modelCapabilities, modelContextBudget } from "../ai/capabilities.js";
-import { createModelForConfig } from "../llm/modelFactory.js";
+import { createModelForConfig, createProviderCredentialPersistence } from "../llm/modelFactory.js";
 import { resolveEditingMode } from "../tools/file/editingMode.js";
 import { resolveMemoryModelAlias, resolveToolModelAlias, type MemoryModelField } from "../llm/toolModel.js";
 import { generateSessionTitle } from "../session/title.js";
@@ -144,6 +145,8 @@ import { messageText } from "./modelMessages.js";
 import { projectToolResultsForModel } from "./toolResultProjection.js";
 import { archiveToolResult } from "../session/toolResultArchive.js";
 import { TodoStore } from "../session/todoStore.js";
+import type { SessionGoalExpectation, SessionGoalStore } from "../runtime/SessionGoalStore.js";
+import { recordSessionGoalRequestUsage } from "../runtime/sessionGoalUsage.js";
 import { freshRecipeSuggestions, RecipeStateStore } from "../session/recipes.js";
 import { resolveRunBudget, type RunBudget } from "./runBudget.js";
 import { undeliveredMessageNotices } from "../session/queuedMessages.js";
@@ -167,16 +170,19 @@ import type {
   MemorySimilarSearchOptions,
   MemorySimilarityScan
 } from "./context/memoryTypes.js";
-import { agentCapabilitySelectionSchema, resolveCapabilityNames, type AgentCapabilitySelection } from "./capabilitySelection.js";
+import { agentCapabilitySelectionSchema, capabilitySelectionValueSchema, resolveCapabilityNames, type AgentCapabilitySelection } from "./capabilitySelection.js";
+import { getToolExposure, isToolModelVisible } from "../tools/exposure.js";
 import { checkpointClaims } from "../session/checkpointClaims.js";
 import type { CheckpointEvidenceArgs } from "../extensions/checkpointEvidence.js";
 import type { CapabilityPreselectionInput } from "./capabilityPreselection.js";
 import { stableCodingToolNames } from "./capabilityPreselection.js";
 import { recentAutomaticToolNames } from "./automaticToolHistory.js";
 import {
+  isToolSearchTerminalFailure,
   toolSearchResultNames,
   toolSearchResultNamesFromMessages,
-  toolSearchToolName
+  toolSearchToolName,
+  type ToolSearchResult
 } from "../tools/toolSearch.js";
 
 const interruptedTurnMarker = `<turn_aborted>
@@ -203,12 +209,14 @@ export interface AgentSessionOptions {
   subagentPrompt?: string;
   skillPaths?: string[] | ((selection?: AgentCapabilitySelection["skills"], runId?: string) => string[]);
   selectCapabilities?: (input: CapabilityPreselectionInput, runId?: string) => Promise<AgentCapabilitySelection>;
+  prepareToolDiscovery?: AgentRuntimeContext["prepareToolDiscovery"];
   /** MCP 服务器 initialize 返回的 instructions 汇总；重连后会变化，因此每回合实时读取。 */
   mcpPrompt?: () => string;
   /** 模型自己维护的计划清单；每回合实时读取，历史压缩不会让它丢失。 */
   todoPrompt?: () => string | undefined;
   /** Todo 真值源；session resume 与模型计划工具共用同一个实例。 */
   todoStore?: TodoStore;
+  sessionGoals?: SessionGoalStore;
   /** 回合内首次改动工作区前建快照，供 /undo 回退；不在 git 仓库时省略。 */
   createCheckpoint?: (label: string) => Promise<unknown>;
   /** 会话恢复时按虚拟路径重新读取项目级附件。 */
@@ -282,6 +290,8 @@ export interface AgentRunOptions {
   promptContext?: string;
   /** 当前回合临时选择的工具与 Skill；未提供时读取 chat 默认值。 */
   capabilitySelection?: AgentCapabilitySelection;
+  /** 原始工具选择与自动筛选的模型声明名单分离；续跑从消息元数据恢复。 */
+  toolAccessSelection?: AgentCapabilitySelection["tools"];
   /** 是否允许普通根回合完成后触发低频 context 情绪分析；内部自动任务显式关闭。 */
   emotionAnalysis?: boolean;
 }
@@ -325,6 +335,7 @@ interface TurnArgs {
   systemPrompt?: string;
   messages: AgentMessage[];
   messageReferences: Array<SessionMessageReference | undefined>;
+  selectionMessageId?: string;
   runOptions: AgentRunOptions & {
     initialToolBudget?: ToolExecutionBudgetSnapshot;
     previousTerminals?: InterruptedTurnTerminal[];
@@ -377,6 +388,9 @@ export class AgentSession {
   private readonly memoryEmbeddingService: MemoryEmbeddingService;
   private readonly crystalService: CrystalService;
   private usageRecords: SessionUsage[] = [];
+  private sessionGoalRequest?: SessionGoalExpectation & { runId: string; generation: number };
+  private runSessionGoalId?: string;
+  private sessionGoalUsageFailure?: Error;
   private modelRequestRecords: ModelRequestMetrics[] = [];
   private unpersistedRelatedUsage: SessionUsage[] = [];
   private recorder: SessionRecorder;
@@ -426,10 +440,11 @@ export class AgentSession {
     };
     // 所有辅助任务从同一份回合配置解析模型；仅记忆允许专用覆盖。
     // 不按 alias 永久缓存 adapter，避免同名供应商更新凭据后仍使用旧配置。
+    const providerCredentials = options.configStore ? createProviderCredentialPersistence(options.configStore, options.workspaceRoot) : undefined;
     const auxiliaryModel = (alias: string | undefined): AgentModel | undefined => {
       if (!alias) return undefined;
       const activeAlias = options.modelManager?.getInfo().modelAlias ?? this.activeConfig.defaultModel;
-      return alias === activeAlias ? getModel() : createModelForConfig(this.activeConfig, alias);
+      return alias === activeAlias ? getModel() : createModelForConfig(this.activeConfig, alias, providerCredentials);
     };
     this.toolModel = () => {
       const alias = resolveToolModelAlias(this.activeConfig);
@@ -708,9 +723,9 @@ export class AgentSession {
 
   /** 只把当前模型步骤真正可见的工具元数据交给提示词构建器。 */
   private promptTools(toolNames?: readonly string[]) {
-    if (!toolNames) return this.options.toolRegistry.list();
+    if (!toolNames) return this.options.toolRegistry.list().filter(isToolModelVisible);
     const active = new Set(toolNames);
-    return this.options.toolRegistry.list().filter((tool) => active.has(tool.name));
+    return this.options.toolRegistry.list().filter((tool) => active.has(tool.name) && isToolModelVisible(tool));
   }
 
   /** 重新生成也要使用和普通回合相同的稳定系统提示词，只替换消息上下文。 */
@@ -807,9 +822,14 @@ export class AgentSession {
     const mode = capabilitySelection?.tools ?? this.activeConfig.chat.defaultToolSelection;
     const evidenceTool = this.options.toolRegistry.list().some((tool) => tool.name === "read_checkpoint_evidence")
       ? ["read_checkpoint_evidence"] : [];
-    if (resolved || mode !== "auto" || this.options.toolRegistry.list().length <= 40) return resolved;
+    const goalTools = this.options.sessionGoals?.get(this.recorder.sessionId)?.status === "active"
+      ? ["GoalGet", "GoalUpdate"] : [];
+    if (resolved || mode !== "auto" || this.options.toolRegistry.list().length <= 40) {
+      return resolved && mode !== "none" ? new Set([...resolved, ...goalTools]) : resolved ?? (mode === "auto"
+        ? new Set(this.options.toolRegistry.list().filter((tool) => getToolExposure(tool) === "direct" || getToolExposure(tool) === "model-only").map((tool) => tool.name)) : undefined);
+    }
     // auto 筛选器缺失或异常时绝不能把大目录整体下发；保留基础编码能力和自助发现入口。
-    const fallback = new Set([...stableCodingToolNames, toolSearchToolName, "AskUserQuestion", "read_tool_result", ...evidenceTool]);
+    const fallback = new Set([...stableCodingToolNames, toolSearchToolName, "AskUserQuestion", "read_tool_result", ...evidenceTool, ...goalTools]);
     return new Set(this.options.toolRegistry.list().map((tool) => tool.name).filter((name) => fallback.has(name)));
   }
 
@@ -818,16 +838,32 @@ export class AgentSession {
     messageId?: string; reuse?: boolean; history?: readonly AgentMessage[]; runId?: string;
     events?: SessionEvent[];
     activeMessageIds?: ReadonlySet<string>;
+    onToolAccessSelection?: (selection: AgentCapabilitySelection["tools"]) => void;
   }): Promise<AgentCapabilitySelection | undefined> {
-    if (!this.options.selectCapabilities) return options.selection;
+    let toolAccessSelection = options.selection?.tools ?? this.activeConfig.chat.defaultToolSelection;
+    options.onToolAccessSelection?.(toolAccessSelection);
     let events = options.events;
     if (!events) {
       await this.recorder.flush();
       events = await readSessionEvents(this.recorder.filePath);
     }
     if (options.reuse && options.messageId) {
-      const saved = agentCapabilitySelectionSchema.safeParse(sessionMessageMetadata(events, options.messageId).capabilitySelection);
-      if (saved.success && (options.selection === undefined || JSON.stringify(options.selection) === JSON.stringify(saved.data))) return saved.data;
+      const metadata = sessionMessageMetadata(events, options.messageId);
+      const saved = agentCapabilitySelectionSchema.safeParse(metadata.capabilitySelection);
+      if (saved.success && (options.selection === undefined || JSON.stringify(options.selection) === JSON.stringify(saved.data))) {
+        const original = capabilitySelectionValueSchema.safeParse(metadata.toolAccessSelection);
+        toolAccessSelection = original.success ? original.data : metadata.automaticToolSelection === true ? "auto" : saved.data.tools;
+        options.onToolAccessSelection?.(toolAccessSelection);
+        return saved.data;
+      }
+    }
+    if (!this.options.selectCapabilities) {
+      if (options.messageId) await this.recorder.recordAndFlush({ type: "message_metadata", messageId: options.messageId, metadata: {
+        capabilitySelection: options.selection ?? { tools: toolAccessSelection, skills: this.activeConfig.chat.defaultSkillSelection },
+        toolAccessSelection,
+        automaticToolSelection: toolAccessSelection === "auto"
+      } });
+      return options.selection;
     }
     const nodes = options.activeMessageIds && options.history ? [] : sessionMessageTree(events);
     const active = options.activeMessageIds ?? activeSessionMessageIds(events, nodes);
@@ -836,21 +872,35 @@ export class AgentSession {
     const previousTools = recentAutomaticToolNames(events, active, options.messageId);
     const startedAt = perfNow();
     let freshAutomaticTools: readonly string[] | undefined;
-    const selected = await this.options.selectCapabilities({
-      input: options.input, config: this.activeConfig, selection: options.selection, signal: options.signal,
-      history, previousTools: [...new Set(previousTools)],
-      onAutomaticToolsSelected: (tools) => { freshAutomaticTools = tools; }
-    }, options.runId);
-    options.signal?.throwIfAborted();
-    recordPerfPhase("turn.capabilities", startedAt, { runId: this.recorder.runtimeContextSnapshot()?.runId });
-    if (options.messageId) {
-      await this.recorder.recordAndFlush({ type: "message_metadata", messageId: options.messageId, metadata: {
-        capabilitySelection: selected,
-        automaticToolSelection: (options.selection?.tools ?? this.activeConfig.chat.defaultToolSelection) === "auto",
-        automaticToolFreshSelection: freshAutomaticTools ?? (Array.isArray(selected.tools) ? selected.tools : [])
-      } });
+    const selectionController = new AbortController();
+    const forwardAbort = (): void => selectionController.abort(options.signal?.reason);
+    options.signal?.addEventListener("abort", forwardAbort, { once: true });
+    if (options.signal?.aborted) forwardAbort();
+    try {
+      const selected = await this.options.selectCapabilities({
+        input: options.input, config: this.activeConfig, selection: options.selection, signal: selectionController.signal,
+        history, previousTools: [...new Set(previousTools)],
+        requestContext: this.sideModelRequestContext(), onRequestMetrics: async (metrics) => {
+          await this.recordModelRequest(metrics);
+          // 候选切换也属于新的请求；目标预算停止后不能继续辅助采样。
+          if (this.sessionGoalBudgetStopped()) selectionController.abort(this.sessionGoalUsageFailure ?? new Error("The session goal budget stopped further auxiliary model work."));
+        },
+        onAutomaticToolsSelected: (tools) => { freshAutomaticTools = tools; }
+      }, options.runId);
+      selectionController.signal.throwIfAborted();
+      recordPerfPhase("turn.capabilities", startedAt, { runId: this.recorder.runtimeContextSnapshot()?.runId });
+      if (options.messageId) {
+        await this.recorder.recordAndFlush({ type: "message_metadata", messageId: options.messageId, metadata: {
+          capabilitySelection: selected,
+          toolAccessSelection: selected.tools === "none" ? "none" : toolAccessSelection,
+          automaticToolSelection: (options.selection?.tools ?? this.activeConfig.chat.defaultToolSelection) === "auto",
+          automaticToolFreshSelection: freshAutomaticTools ?? (Array.isArray(selected.tools) ? selected.tools : [])
+        } });
+      }
+      return selected;
+    } finally {
+      options.signal?.removeEventListener("abort", forwardAbort);
     }
-    return selected;
   }
 
   /** 每次 provider 请求前重新读取情绪，但只替换动态 prompt，不触发上下文重建。 */
@@ -1537,6 +1587,7 @@ export class AgentSession {
       && node.eventIndex < (replacingUser ? userNode.eventIndex : target.eventIndex)).map((node) => node.message);
     const selection = this.prepareCapabilities({
       input: sourceInput, selection: options.capabilitySelection, signal: options.abortSignal,
+      onToolAccessSelection: (selection) => { options.toolAccessSelection = selection; },
       messageId: replacingUser ? undefined : userNode.id, reuse: !replacingUser, history: referenceHistory, events: recordedEvents,
       runId: options.runId
     });
@@ -1837,6 +1888,9 @@ export class AgentSession {
     } = {}
   ): AsyncGenerator<AgentSessionEvent> {
     const release = this.beginOperation("agent turn");
+    this.sessionGoalUsageFailure = undefined;
+    const initialGoal = this.options.sessionGoals?.get(this.recorder.sessionId);
+    this.runSessionGoalId = initialGoal?.status === "active" ? initialGoal.goalId : undefined;
     const messageQueues: ActiveRunMessageQueues = {
       steering: [],
       queued: [],
@@ -1969,7 +2023,9 @@ export class AgentSession {
     }
     const preparePromptPerfStartedAt = perfNow();
     try {
-      await this.options.modelManager?.preparePrompt(abortSignal);
+      // 每个新回合读取跨客户端保存的选择；工具步骤之间只续期当前模型的凭据。
+      await this.options.modelManager?.refreshFromDisk();
+      await this.options.modelManager?.preparePrompt(abortSignal, false);
     } catch (error) {
       recordUserMessage();
       const outcome = abortSignal.aborted
@@ -2002,6 +2058,7 @@ export class AgentSession {
     let systemPrompt: string | undefined;
     let messages: AgentMessage[];
     let messageReferences: Array<SessionMessageReference | undefined>;
+    let selectionMessageId: string | undefined;
     if (runOptions.continueFrom?.length) {
       // 续跑用的是被打断那一刻的 context，重新组装会丢掉已完成步骤的工具结果。
       messages = [...runOptions.continueFrom];
@@ -2021,10 +2078,17 @@ export class AgentSession {
         userMessageRecorded = true;
       }
       let userIndex = messages.length - 1;
-      while (userIndex >= 0 && messages[userIndex]?.role !== "user") userIndex -= 1;
+      while (userIndex >= 0 && (messages[userIndex]?.role !== "user" || messageReferences[userIndex]?.id === undefined)) userIndex -= 1;
+      const selectionEvents = await readSessionEvents(this.recorder.filePath);
+      const origin = selectionEvents.find((event) => event.type === "user_message" && !event.auditOnly && event.runtime?.turnId === runtimeTurnId);
+      if (origin?.type === "user_message" && origin.messageId) {
+        userIndex = messageReferences.findIndex((reference) => reference?.id === origin.messageId);
+      }
+      selectionMessageId = userIndex >= 0 ? messageReferences[userIndex]?.id : origin?.type === "user_message" ? origin.messageId : undefined;
       const selection = this.prepareCapabilities({
         input, selection: runOptions.capabilitySelection, signal: abortSignal,
-        messageId: messageReferences[userIndex]?.id, reuse: true, history: messages, runId: runOptions.runId
+        onToolAccessSelection: (selection) => { runOptions.toolAccessSelection = selection; },
+        messageId: selectionMessageId, reuse: true, history: messages, runId: runOptions.runId, events: selectionEvents
       });
       if (this.activePersonalization.useMemories) yield { type: "preparation.updated", stage: "memory" };
       if (this.options.selectCapabilities && (runOptions.capabilitySelection?.skills ?? this.activeConfig.chat.defaultSkillSelection) === "auto") {
@@ -2040,7 +2104,9 @@ export class AgentSession {
     // 这样即使模型不支持图片、上下文构建失败或进程随后中断，恢复会话时仍能看到这次输入。
     try {
       const personalizationPerfStartedAt = perfNow();
-      const snapshot = await this.readPersonalizationState();
+      const snapshot = await this.readPersonalizationState(this.options.modelManager
+        ? { config: structuredClone(this.options.config) }
+        : undefined);
       recordPerfPhase("turn.personalization", personalizationPerfStartedAt, { runId: runtimeRunId });
       this.activeConfig = snapshot.config;
       this.activePersonalization = snapshot.state.resolved;
@@ -2050,6 +2116,7 @@ export class AgentSession {
         turnPersonalization.useMemories
       );
       recordUserMessage();
+      selectionMessageId = userMessageReference?.id;
       // 本轮共享一份持久消息快照；筛选和引用解析不再各自重读整份 JSONL。
       await this.recorder.flush();
       const events = await readSessionEvents(this.recorder.filePath);
@@ -2059,7 +2126,8 @@ export class AgentSession {
         ? nodes.filter((node) => activeIds.has(node.id)).map((node) => node.message)
         : this.contextMemory.getHistory();
       const selection = this.prepareCapabilities({
-        input, selection: runOptions.capabilitySelection, signal: abortSignal, messageId: userMessageReference?.id, events,
+        input, selection: runOptions.capabilitySelection, signal: abortSignal,
+        onToolAccessSelection: (selection) => { runOptions.toolAccessSelection = selection; }, messageId: userMessageReference?.id, events,
         activeMessageIds: activeIds,
         history: nodes.filter((node) => activeIds.has(node.id) && node.id !== userMessageReference?.id).map((node) => node.message),
         runId: runOptions.runId
@@ -2186,6 +2254,7 @@ export class AgentSession {
       systemPrompt,
       messages,
       messageReferences,
+      selectionMessageId,
       runOptions,
       abortSignal,
       runBudget,
@@ -2211,6 +2280,8 @@ export class AgentSession {
         // 正文先获得模型请求机会，标题在回合结束后生成，不抢占首字响应。
         if (ordinaryRootMessage && this.options.onTitleGenerated) this.scheduleTitle();
         this.recorder.setRuntimeContext(undefined);
+        this.sessionGoalRequest = undefined;
+        this.runSessionGoalId = undefined;
         release();
       }
     }
@@ -2263,17 +2334,27 @@ export class AgentSession {
     let activeModelSettings = modelSettings;
     this.contextMemory.observePromptModel(activeModelSettings.model.provider, activeModelSettings.model.modelId);
     let relatedToolCallIds: string[] = [];
-    const modelRequestContext = (step: number): ModelRequestContext => ({
-      sessionId: this.recorder.sessionId,
-      runId: args.runOptions.runId,
-      turnId: args.runOptions.turnId,
-      step,
-      operation: "agent",
-      promptEpoch: this.contextMemory.getPromptEpoch(),
-      promptEpochReason: this.contextMemory.getPromptEpochReason(),
-      promptEpochCreatedAt: this.contextMemory.getPromptEpochCreatedAt(),
-      relatedToolCallIds: [...relatedToolCallIds]
-    });
+    const modelRequestContext = (step: number): ModelRequestContext => {
+      const goal = this.options.sessionGoals?.get(this.recorder.sessionId);
+      if (this.sessionGoalBudgetStopped()) throw this.sessionGoalUsageFailure ?? new Error("The session goal budget stopped further model work. Inspect GoalGet before resuming.");
+      if (goal?.status === "active") this.runSessionGoalId = goal.goalId;
+      this.sessionGoalRequest = goal?.status === "active" && runOptions.runId !== undefined
+        ? { goalId: goal.goalId, revision: goal.revision, generation: goal.generation, runId: runOptions.runId } : undefined;
+      activeRequestContext.systemPrompt = refreshSessionGoalPrompt(activeRequestContext.systemPrompt, goal);
+      return {
+        sessionId: this.recorder.sessionId,
+        runId: args.runOptions.runId,
+        turnId: args.runOptions.turnId,
+        sessionGoalId: goal?.goalId === this.runSessionGoalId ? goal?.goalId : undefined,
+        sessionGoalRevision: goal?.status === "active" ? goal.revision : undefined,
+        step,
+        operation: "agent",
+        promptEpoch: this.contextMemory.getPromptEpoch(),
+        promptEpochReason: this.contextMemory.getPromptEpochReason(),
+        promptEpochCreatedAt: this.contextMemory.getPromptEpochCreatedAt(),
+        relatedToolCallIds: [...relatedToolCallIds]
+      };
+    };
 
     const permissionManager = this.options.permissionManager;
     const confirmPermission = runOptions.confirmPermission;
@@ -2291,6 +2372,7 @@ export class AgentSession {
       pendingEvents.push(event);
     };
     let observedSteps = 0;
+    let toolDiscoveryFailure: ToolSearchResult | undefined;
     let toolResultCheckpointBarrier = Promise.resolve();
     const coordinatorRef: { current?: ToolExecutionCoordinator } = {};
     const persistToolResultCheckpoint = (): Promise<void> => {
@@ -2336,36 +2418,28 @@ export class AgentSession {
         initialRepeatedActions: runOptions.initialToolBudget?.repeatedActions
       },
       persistToolResultCheckpoint,
-      () => this.activeConfig.agent.toolExecutionMode
+      resolveCapabilityNames(runOptions.capabilitySelection?.tools === "none" ? "none" : runOptions.toolAccessSelection, this.activeConfig.chat.defaultToolSelection, this.options.toolRegistry.list().map((tool) => tool.name))
     );
     coordinatorRef.current = coordinator;
     if (runOptions.continueFrom?.length) {
       // ToolSearch 的成功结果已经属于 continuation 事实；重建 coordinator 后恢复 schema，
       // allowTools 会再次按当前注册表精确校验，已注销或伪造名称保持不可见。
-      coordinator.allowTools(toolSearchResultNamesFromMessages(runOptions.continueFrom));
+      const start = messageReferences.findIndex((reference) => reference?.id !== undefined && reference.id === args.selectionMessageId);
+      if (runOptions.capabilitySelection?.tools !== "none" && runOptions.toolAccessSelection !== "none" && start >= 0) {
+        coordinator.allowTools(toolSearchResultNamesFromMessages(runOptions.continueFrom.slice(start + 1)));
+      }
     }
 
     const hashlineEdit = this.activeConfig.chat.hashlineEdit;
     const editingTools = (settings: ModelSettings) => {
       if (settings.model.supportsTools === false) return [];
       const editing = { mode: resolveEditingMode(hashlineEdit, settings.applyPatchProtocol), attachmentRoot: this.options.attachmentRoot };
-      if (this.activeConfig.agent.toolExecutionMode === "code_mode" && allowedToolNames?.size === 0) return [];
       const directTools = coordinator.createAgentTools(editing);
+      const none = runOptions.capabilitySelection?.tools === "none" || runOptions.toolAccessSelection === "none"
+        || Array.isArray(runOptions.toolAccessSelection) && runOptions.toolAccessSelection.length === 0;
+      if (none) return [];
       if (this.activeConfig.agent.toolExecutionMode !== "code_mode") return directTools;
-      const search = directTools.find((tool) => tool.name === toolSearchToolName);
-      const searchProperties = search?.parameters.type === "object" ? search.parameters.properties : undefined;
-      return [coordinator.createCodeModeTool(editing), ...(search ? [{
-        ...search,
-        description: "Search reviewed built-in read tools available inside Code Mode exec, including shared memory and cross-project conversation history. Other tools, including writes, MCP, web, and desktop tools, require direct mode.",
-        promptSnippet: "Discover a reviewed built-in read tool for the next exec step. Memory recall searches the shared library; history search spans projects. Code Mode cannot run writes, MCP, web, or desktop tools; switch to direct mode for those actions.",
-        parameters: {
-          ...search.parameters,
-          properties: {
-            query: searchProperties?.query ?? { type: "string" as const },
-            maxResults: searchProperties?.maxResults ?? { type: "integer" as const }
-          }
-        }
-      }] : [])];
+      return [...directTools, coordinator.createCodeModeTool(editing)];
     };
     let loopContext: AgentContext;
     try {
@@ -2505,6 +2579,9 @@ export class AgentSession {
               toolResult,
               this.recordCanonicalMessage({ type: "agent_message", message: toolResult })
             );
+            if (toolResult.toolName === toolSearchToolName && isToolSearchTerminalFailure(toolResult.details)) {
+              toolDiscoveryFailure = toolResult.details;
+            }
           }
           await this.recorder.flush();
           observedSteps += 1;
@@ -2547,16 +2624,18 @@ export class AgentSession {
           }
           emitUpdate({ type: "context.updated", context: await this.contextStatus() });
         },
-        // 工具预算拒绝已经是确定的运行时终态。若继续请求模型，它只能再次调用已被拒绝的工具，
-        // 既不会产生新事实，还会把一次明确失败放大成数百次空转。
-        shouldStopAfterTurn: () => coordinator.getBudgetRejection() !== undefined,
+        // 预算拒绝和不可恢复的发现故障都不能靠继续请求模型取得新事实。
+        shouldStopAfterTurn: () => {
+          if (this.sessionGoalUsageFailure) throw this.sessionGoalUsageFailure;
+          return coordinator.getBudgetRejection() !== undefined || toolDiscoveryFailure !== undefined || this.sessionGoalBudgetStopped();
+        },
         prepareNextTurn: async ({ context, toolResults }) => {
           coordinator.assertCanContinue();
           const discovered = toolResults
             .filter((result) => result.toolName === toolSearchToolName && !result.isError)
             .flatMap((result) => toolSearchResultNames(result.details));
           coordinator.allowTools(discovered);
-          await this.options.modelManager?.preparePrompt(abortSignal);
+          await this.options.modelManager?.preparePrompt(abortSignal, false);
           const settings = this.options.modelManager?.getModelSettings() ?? activeModelSettings;
           activeModelSettings = settings;
           this.contextMemory.observePromptModel(activeModelSettings.model.provider, activeModelSettings.model.modelId);
@@ -2800,14 +2879,22 @@ export class AgentSession {
               completedStepsBeforeRun + observedSteps,
               usageRecord
             )
-          : nativeTurnOutcome(
-              hardStepLimitReached,
-              content,
-              lastAssistant?.stopReason,
-              completedStepsBeforeRun + observedSteps,
-              usageRecord,
-              notification !== undefined
-            )),
+          : toolDiscoveryFailure
+            ? toolDiscoveryTurnOutcome(
+                toolDiscoveryFailure,
+                content,
+                lastAssistant?.stopReason,
+                completedStepsBeforeRun + observedSteps,
+                usageRecord
+              )
+            : nativeTurnOutcome(
+                hardStepLimitReached,
+                content,
+                lastAssistant?.stopReason,
+                completedStepsBeforeRun + observedSteps,
+                usageRecord,
+                notification !== undefined
+              )),
         notification
       };
       if (content && (outcome.status === "completed" || outcome.status === "incomplete" || outcome.status === "blocked")) {
@@ -3170,17 +3257,40 @@ export class AgentSession {
   }
 
   private sideModelRequestContext(): ModelRequestContext | undefined {
-    if (this.activeOperation !== "agent turn") return undefined;
+    if (this.activeOperation !== "agent turn" && this.activeOperation !== "conversation compaction") return undefined;
     const runtime = this.recorder.runtimeContextSnapshot();
-    return runtime === undefined
-      ? undefined
-      : {
-        runId: runtime.runId,
-        turnId: runtime.turnId,
-        promptEpoch: this.contextMemory.getPromptEpoch(),
-        promptEpochReason: this.contextMemory.getPromptEpochReason(),
-        promptEpochCreatedAt: this.contextMemory.getPromptEpochCreatedAt()
-      };
+    const goal = this.options.sessionGoals?.get(this.recorder.sessionId);
+    return {
+      sessionId: this.recorder.sessionId,
+      runId: runtime?.runId,
+      turnId: runtime?.turnId,
+      sessionGoalId: goal?.status === "active" ? goal.goalId : undefined,
+      sessionGoalRevision: goal?.status === "active" ? goal.revision : undefined,
+      promptEpoch: this.contextMemory.getPromptEpoch(),
+      promptEpochReason: this.contextMemory.getPromptEpochReason(),
+      promptEpochCreatedAt: this.contextMemory.getPromptEpochCreatedAt()
+    };
+  }
+
+  currentSessionGoalRequest(): (SessionGoalExpectation & { runId: string; generation: number }) | undefined {
+    return this.sessionGoalRequest === undefined ? undefined : { ...this.sessionGoalRequest };
+  }
+
+  sessionGoalUnavailableReason(): string | undefined {
+    const model = this.options.modelManager?.getModel() ?? this.options.model;
+    if (!model) return "No model is configured for this session.";
+    if (model.supportsTools === false) return "The selected model cannot call GoalUpdate.";
+    if (this.activeConfig.chat.defaultToolSelection === "none") return "Session tools are disabled; GoalUpdate cannot record completion.";
+    if (!this.options.toolRegistry.list().some((tool) => tool.name === "GoalUpdate")) return "GoalUpdate is unavailable in this session.";
+    return undefined;
+  }
+
+  private sessionGoalBudgetStopped(): boolean {
+    if (this.sessionGoalUsageFailure) return true;
+    const goal = this.options.sessionGoals?.get(this.recorder.sessionId);
+    if (!goal || goal.goalId !== this.runSessionGoalId) return false;
+    if (goal.status === "completed") return false;
+    return goal.status === "budget_limited" || Boolean(goal.tokenBudget !== undefined && !goal.usageKnown);
   }
 
   usageReport(): string {
@@ -3540,6 +3650,11 @@ export class AgentSession {
       requestContext
     };
     this.modelRequestRecords.push(recordedMetrics);
+    try {
+      recordSessionGoalRequestUsage(this.options.sessionGoals, recordedMetrics);
+    } catch (error) {
+      this.sessionGoalUsageFailure = error instanceof Error ? error : new Error(String(error));
+    }
     if (this.modelRequestRecords.length > 2_000) this.modelRequestRecords.shift();
     const runtime = requestContext.runId !== undefined && requestContext.turnId !== undefined
       ? { runId: requestContext.runId, turnId: requestContext.turnId }
@@ -3832,6 +3947,7 @@ export class AgentSession {
       recorder: this.recorder,
       contextMemory: this.contextMemory,
       toolRegistry: this.options.toolRegistry,
+      prepareToolDiscovery: this.options.prepareToolDiscovery,
       permissionManager: this.options.permissionManager,
       confirmPermission: runOptions.confirmPermission,
       createCheckpoint: this.options.createCheckpoint,
@@ -3859,7 +3975,7 @@ export class AgentSession {
   }
 
   private async readPersonalizationState(
-    supplied?: { config: AgentConfig; revision: string }
+    supplied?: { config: AgentConfig; revision?: string }
   ): Promise<{ state: AgentPersonalizationState; config: AgentConfig }> {
     const store = this.options.configStore;
     const snapshot = supplied ?? (store?.loadVersioned
@@ -4201,6 +4317,27 @@ function toolBudgetTurnOutcome(
     output,
     usage,
     error: rejection.error,
+    resumable: true
+  };
+}
+
+function toolDiscoveryTurnOutcome(
+  failure: ToolSearchResult,
+  output: string,
+  finishReason: string | undefined,
+  steps: number,
+  usage?: SessionUsage
+): AgentTurnOutcome {
+  return {
+    status: "blocked",
+    stopReason: "blocked",
+    finishReason,
+    steps,
+    output,
+    usage,
+    error: `工具发现服务不可用：${redactSecrets(failure.error ?? failure.code ?? "unknown error")}`,
+    blockedReason: failure.code === "tool_search_model_unavailable" ? "missing_dependency" : "external_service_failure",
+    requiredAction: "请修复工具发现模型配置、凭据或额度后，手动继续本轮任务。",
     resumable: true
   };
 }

@@ -7,6 +7,7 @@
  * 每服务器请求超时与配置中的 ${ENV} 展开。
  */
 import { promises as fs } from "node:fs";
+import { createHash } from "node:crypto";
 import path from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client";
 import { StdioClientTransport, type StdioServerParameters } from "@modelcontextprotocol/sdk/client/stdio.js";
@@ -19,8 +20,8 @@ import type { AgentConfig, McpServerConfig } from "../config/schema.js";
 import { prepareMcpFileChange, readMcpFileChange } from "./mcpFileChange.js";
 import { FileChangeUncertainError } from "../tools/file/fileChange.js";
 import type { ToolRegistry } from "../tools/registry.js";
-import type { JsonObjectSchema } from "../tools/schema.js";
-import { ToolOutcomeUnknownError, type Tool, type ToolRisk } from "../tools/types.js";
+import type { JsonObjectSchema, JsonSchema } from "../tools/schema.js";
+import { ToolOutcomeUnknownError, type Tool, type ToolExposure, type ToolRisk } from "../tools/types.js";
 import { ToolAccesses } from "../tools/access.js";
 import { z } from "zod";
 import { McpOAuthProvider, McpAuthRequiredError } from "./mcpOAuth.js";
@@ -63,6 +64,7 @@ interface ListedMcpTool {
   name: string;
   description?: string;
   inputSchema: Record<string, unknown>;
+  outputSchema?: Record<string, unknown>;
   annotations?: { readOnlyHint?: boolean; destructiveHint?: boolean };
 }
 
@@ -79,6 +81,7 @@ interface ManagedMcpServer {
   refreshing?: Promise<void>;
   /** 刷新期间又收到 tools/list_changed 时，完成当前轮后补刷一次。 */
   refreshDirty?: boolean;
+  toolProxies: Map<string, { signature: string; tool: Tool }>;
 }
 
 export class McpToolHost {
@@ -87,6 +90,7 @@ export class McpToolHost {
   private workspaceRoot = "";
   private closing = false;
   private readonly listeners = new Set<() => void>();
+  private readonly genericTools = new Map<string, { signature: string; tools: Tool[] }>();
 
   async connectConfiguredServers(workspaceRoot: string, config: AgentConfig, registry?: ToolRegistry): Promise<void> {
     this.registry = registry;
@@ -105,7 +109,7 @@ export class McpToolHost {
         promptNames: [],
         hasResources: false
       };
-      const managed: ManagedMcpServer = { name: serverName, rawConfig, config: rawConfig, transport, status, tools: [] };
+      const managed: ManagedMcpServer = { name: serverName, rawConfig, config: rawConfig, transport, status, tools: [], toolProxies: new Map() };
       this.servers.set(serverName, managed);
       if (!rawConfig.enabled) continue;
       pending.push(this.reconnect(managed).catch((error: unknown) => {
@@ -123,7 +127,16 @@ export class McpToolHost {
   createTools(): Tool[] {
     return [...this.servers.values()]
       .filter((server) => server.status.connected)
-      .flatMap((server) => server.tools.map((tool) => createMcpTool(this, server.name, tool, server.config.toolContracts?.[tool.name])));
+      .flatMap((server) => server.tools.map((tool) => this.serverToolProxy(server, tool, server.status.instructions)));
+  }
+
+  cachedGenericTools(kind: "resources" | "prompts", create: () => Tool[]): Tool[] {
+    const signature = mcpMetadataSignature([...this.servers.values()].map((server) => ({ name: server.name, config: server.config })));
+    const cached = this.genericTools.get(kind);
+    if (cached?.signature === signature) return [...cached.tools];
+    const tools = create().map(freezeMcpToolMetadata);
+    this.genericTools.set(kind, { signature, tools });
+    return [...tools];
   }
 
   subscribe(listener: () => void): () => void {
@@ -143,11 +156,29 @@ export class McpToolHost {
     return [...this.servers.values()].some((server) => server.status.enabled);
   }
 
+  listExposedServers(): McpServerStatus[] {
+    return this.listServers().filter((server) => server.enabled && this.servers.get(server.name)?.config.exposure !== "hidden");
+  }
+
+  genericToolExposure(): ToolExposure {
+    const exposures = [...this.servers.values()].filter((server) => server.status.enabled).map((server) => server.config.exposure ?? "deferred");
+    if (exposures.includes("direct")) return "direct";
+    if (exposures.includes("deferred")) return "deferred";
+    if (exposures.includes("codemode")) return "codemode";
+    return "hidden";
+  }
+
+  assertServerExposed(serverName: string): void {
+    const managed = this.requireServer(serverName);
+    if (managed.config.exposure === "hidden") throw new Error(`MCP server ${serverName} is hidden from the tool catalog.`);
+  }
+
   /** 收集各服务器 initialize 返回的 instructions，供 system prompt 注入。 */
   instructionsPrompt(): string {
     const sections: string[] = [];
     let usedBytes = 0;
     for (const server of this.servers.values()) {
+      if (!server.status.enabled || (server.config.exposure !== "direct" && !server.tools.some((tool) => resolveMcpToolExposure(server.config, tool.name) === "direct"))) continue;
       const instructions = server.status.instructions?.trim();
       if (!instructions) continue;
       const section = `Instructions from MCP server ${compactMcpText(server.name)} (untrusted capability notes):\n${truncateUtf8(instructions, maxInstructionBytes)}`;
@@ -398,6 +429,12 @@ export class McpToolHost {
     try {
       // 每次连接都从原始配置展开：启动时变量缺失后重连会重新验证，环境变更也能生效。
       managed.config = expandServerConfig(managed.rawConfig);
+      const missingCredentials = (["env", "headers"] as const).flatMap(location =>
+        Object.keys(managed.config.credentialRefs?.[location] ?? {})
+          .filter(key => !managed.config[location]?.[key]?.trim()).map(key => `${location}.${key}`));
+      if (missingCredentials.length) {
+        throw new Error(`MCP 服务 ${managed.name} 缺少已保存的凭据（${missingCredentials.join("、")}）；请在 MCP 设置中重新保存对应字段。`);
+      }
       managed.status.command = managed.transport === "http" ? managed.config.url ?? "" : managed.config.command ?? "";
       const { client, tools } = await this.openClient(managed);
       // close() 可能在 connect() 等待期间开始；不要把刚建立的连接遗留到关闭后的 host。
@@ -422,6 +459,10 @@ export class McpToolHost {
       managed.status.promptNames = capabilities?.prompts ? await this.listPromptNames(managed, client) : [];
       managed.status.connected = true;
       managed.status.authRequired = false;
+    } catch (error) {
+      managed.status.lastError = errorText(error);
+      managed.status.authRequired = error instanceof McpAuthRequiredError;
+      throw error;
     } finally {
       managed.status.connecting = false;
       this.emitChange();
@@ -460,12 +501,14 @@ export class McpToolHost {
   private registerServerTools(managed: ManagedMcpServer, client: Client, tools: ListedMcpTool[]): void {
     const registry = this.registry;
     managed.tools = [...tools];
+    const currentNames = new Set(tools.map((tool) => tool.name));
+    for (const name of managed.toolProxies.keys()) if (!currentNames.has(name)) managed.toolProxies.delete(name);
     for (const toolName of managed.status.toolNames) registry?.unregister(toolName);
     const toolNames: string[] = [];
     const warnings: string[] = [];
     for (const mcpTool of tools) {
       try {
-        if (registry) registry.registerMcpTool(createMcpTool(this, managed.name, mcpTool, managed.config.toolContracts?.[mcpTool.name]));
+        if (registry) registry.registerMcpTool(this.serverToolProxy(managed, mcpTool, client.getInstructions()));
         toolNames.push(`mcp_${normalizeName(managed.name)}_${normalizeName(mcpTool.name)}`);
       } catch (error) {
         // 归一化后重名（同名工具或跨服务器冲突）的工具跳过注册并记录警告，
@@ -476,6 +519,15 @@ export class McpToolHost {
     managed.status.toolNames = toolNames;
     managed.status.lastError = warnings.length ? warnings.join("; ") : undefined;
     this.emitChange();
+  }
+
+  private serverToolProxy(managed: ManagedMcpServer, definition: ListedMcpTool, instructions?: string): Tool {
+    const signature = mcpMetadataSignature({ definition, config: managed.config, instructions });
+    const cached = managed.toolProxies.get(definition.name);
+    if (cached?.signature === signature) return cached.tool;
+    const tool = freezeMcpToolMetadata(createMcpTool(this, managed.name, definition, managed.config, instructions));
+    managed.toolProxies.set(definition.name, { signature, tool });
+    return tool;
   }
 
   private emitChange(): void {
@@ -563,6 +615,7 @@ export class McpToolHost {
 
 /** 通用 resources 工具：列出并读取任意已连接 MCP 服务器暴露的资源。 */
 export function createMcpResourceTools(host: McpToolHost): Tool[] {
+  return host.cachedGenericTools("resources", (): Tool[] => {
   const listArgsSchema = z.object({ server: z.string().trim().min(1).optional() });
   const readArgsSchema = z.object({ server: z.string().trim().min(1), uri: z.string().trim().min(1) });
   return [
@@ -582,6 +635,8 @@ export function createMcpResourceTools(host: McpToolHost): Tool[] {
       schema: listArgsSchema,
       source: "mcp",
       capability: "mcp:resources",
+      exposure: host.genericToolExposure(),
+      namespace: { name: "mcp:resources" },
       risk: "read",
       resolveExecution(args: unknown) {
         const parsed = listArgsSchema.safeParse(args ?? {});
@@ -593,7 +648,12 @@ export function createMcpResourceTools(host: McpToolHost): Tool[] {
           display: { kind: "generic" as const, summary: parsed.data.server ? `MCP resources of ${parsed.data.server}` : "MCP resources" },
           approvalRule: "mcp:resources:list",
           async execute(): Promise<unknown> {
-            return await host.listServerResources(parsed.data.server);
+            if (parsed.data.server) {
+              host.assertServerExposed(parsed.data.server);
+              return await host.listServerResources(parsed.data.server);
+            }
+            return (await Promise.all(host.listExposedServers().filter((server) => server.hasResources)
+              .map((server) => host.listServerResources(server.name)))).flat();
           }
         };
       }
@@ -618,6 +678,8 @@ export function createMcpResourceTools(host: McpToolHost): Tool[] {
       schema: readArgsSchema,
       source: "mcp",
       capability: "mcp:resources",
+      exposure: host.genericToolExposure(),
+      namespace: { name: "mcp:resources" },
       risk: "read",
       resolveExecution(args: unknown) {
         const parsed = readArgsSchema.safeParse(args);
@@ -629,12 +691,14 @@ export function createMcpResourceTools(host: McpToolHost): Tool[] {
           display: { kind: "generic" as const, summary: `MCP resource ${parsed.data.uri}`, detail: { server: parsed.data.server } },
           approvalRule: `mcp:resources:read:${parsed.data.server}`,
           async execute(context: { signal?: AbortSignal }): Promise<unknown> {
+            host.assertServerExposed(parsed.data.server);
             return await host.readServerResource(parsed.data.server, parsed.data.uri, context.signal);
           }
         };
       }
     }
   ];
+  });
 }
 
 function transportKind(serverConfig: McpServerConfig): McpTransportKind {
@@ -683,7 +747,8 @@ function expandServerConfig(serverConfig: McpServerConfig): McpServerConfig {
   };
 }
 
-function createMcpTool(host: McpToolHost, serverName: string, definition: ListedMcpTool, contract?: "file-change-v1"): Tool {
+function createMcpTool(host: McpToolHost, serverName: string, definition: ListedMcpTool, serverConfig: McpServerConfig, instructions?: string): Tool {
+  const contract = serverConfig.toolContracts?.[definition.name];
   const name = `mcp_${normalizeName(serverName)}_${normalizeName(definition.name)}`;
   const isIndexedSearch = definition.name === "zvec_grep_search";
   const capabilitySummary = compactMcpText(definition.description ?? definition.name);
@@ -720,9 +785,12 @@ function createMcpTool(host: McpToolHost, serverName: string, definition: Listed
         : [])
     ],
     parameters,
+    outputSchema: definition.outputSchema ? structuredClone(definition.outputSchema) as unknown as JsonSchema : undefined,
     schema: z.unknown(),
     source: "mcp",
     capability: `mcp:${serverName}`,
+    exposure: resolveMcpToolExposure(serverConfig, definition.name),
+    namespace: { name: serverName, description: serverConfig.description, instructions: instructions ? truncateUtf8(instructions, maxInstructionBytes) : undefined },
     risk,
     resolveExecution(args: unknown) {
       const fileChange = contract ? prepareMcpFileChange(serverName, args) : undefined;
@@ -735,7 +803,11 @@ function createMcpTool(host: McpToolHost, serverName: string, definition: Listed
         description: definition.description ?? `Call MCP tool ${definition.name}`,
         approvalRule: `mcp:${serverName}:${definition.name}`,
         async execute(context): Promise<unknown> {
-          if (!fileChange) return await host.callServerTool(serverName, definition.name, asArguments(args), context.signal, false, context.onDispatched);
+          if (!fileChange) {
+            const envelope = context.mcpResultMode === "envelope";
+            const result = await host.callServerTool(serverName, definition.name, asArguments(args), context.signal, envelope, context.onDispatched);
+            return envelope ? normalizeMcpEnvelope(result) : result;
+          }
           try {
             const result = await host.callServerTool(
               serverName,
@@ -756,6 +828,17 @@ function createMcpTool(host: McpToolHost, serverName: string, definition: Listed
       };
     }
   };
+}
+
+function resolveMcpToolExposure(config: McpServerConfig, toolName: string): ToolExposure {
+  const overrides = config.toolExposure ?? {};
+  if (Object.hasOwn(overrides, toolName)) return overrides[toolName]!;
+  const patterns = Object.entries(overrides).filter(([pattern]) => pattern.endsWith("*") && !pattern.slice(0, -1).includes("*"))
+    .sort(([left], [right]) => right.length - left.length || left.localeCompare(right));
+  for (const [pattern, exposure] of patterns) {
+    if (toolName.startsWith(pattern.slice(0, -1))) return exposure;
+  }
+  return config.exposure ?? "deferred";
 }
 
 function compactMcpText(value: string): string {
@@ -794,6 +877,27 @@ function normalizeMcpResult(result: unknown): unknown {
   return result;
 }
 
+function normalizeMcpEnvelope(result: unknown): unknown {
+  if (!isRecord(result) || !Array.isArray(result.content)) return result;
+  return {
+    ...result,
+    content: result.content.filter(isRecord).map((part) => {
+      if (part.type === "image" || part.type === "audio") {
+        const data = typeof part.data === "string" ? part.data : "";
+        return { type: part.type, mimeType: part.mimeType, bytes: Math.floor(data.length * 3 / 4), note: "binary content omitted" };
+      }
+      if (part.type === "resource" && isRecord(part.resource)) {
+        if (typeof part.resource.text === "string") {
+          return { ...part, resource: { ...part.resource, text: truncateUtf8(part.resource.text, maxResourceTextBytes) } };
+        }
+        const blob = typeof part.resource.blob === "string" ? part.resource.blob : "";
+        return { type: "resource", resource: { uri: part.resource.uri, mimeType: part.resource.mimeType, bytes: Math.floor(blob.length * 3 / 4), note: "binary content omitted" } };
+      }
+      return part;
+    }),
+  };
+}
+
 function asArguments(value: unknown): Record<string, unknown> {
   return isRecord(value) ? value : {};
 }
@@ -801,6 +905,25 @@ function asArguments(value: unknown): Record<string, unknown> {
 function normalizeName(value: string): string {
   const normalized = value.replace(/[^A-Za-z0-9_-]+/g, "_").replace(/^_+|_+$/g, "");
   return normalized.slice(0, 42) || "tool";
+}
+
+function mcpMetadataSignature(value: unknown): string {
+  const serialized = JSON.stringify(value, (_key, entry: unknown) => isRecord(entry)
+    ? Object.fromEntries(Object.entries(entry).sort(([left], [right]) => left.localeCompare(right))) : entry);
+  return createHash("sha256").update(serialized).digest("hex");
+}
+
+function freezeMcpToolMetadata(tool: Tool): Tool {
+  const freeze = (value: unknown): void => {
+    if (typeof value !== "object" || value === null || Object.isFrozen(value)) return;
+    for (const child of Object.values(value)) freeze(child);
+    Object.freeze(value);
+  };
+  freeze(tool.parameters);
+  freeze(tool.outputSchema);
+  freeze(tool.namespace);
+  freeze(tool.promptGuidelines);
+  return Object.freeze(tool);
 }
 
 function truncateUtf8(value: string, maxBytes: number): string {

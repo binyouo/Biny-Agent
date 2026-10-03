@@ -11,13 +11,14 @@ import type { AgentConfig } from "../config/schema.js";
 import { AgentSession } from "../agent/AgentSession.js";
 import type { AgentTurnOutcome, AgentPermissionRequest, AgentPermissionResult } from "../agent/types.js";
 import { ModelManager } from "../llm/ModelManager.js";
-import { resolveToolModel } from "../llm/toolModel.js";
+import { resolveToolModel, resolveToolModelCandidates } from "../llm/toolModel.js";
 import { runSkillExtraction } from "../agent/skillExtraction.js";
 import { preselectCapabilities } from "../agent/capabilityPreselection.js";
 import { SessionRecorder, type SessionEvent } from "../session/recorder.js";
 import { readSessionEvents } from "../session/events.js";
 import { ensureAgentDirs } from "../session/store.js";
-import { createToolRegistry } from "../tools/registry.js";
+import { createToolRegistry, type ToolCatalogDefinition } from "../tools/registry.js";
+import { getToolExposure, isToolModelVisible } from "../tools/exposure.js";
 import { createTodoTool } from "../tools/todo.js";
 import { createAskUserQuestionTool } from "../tools/askUserQuestion.js";
 import { UserInputRequests } from "./userInput.js";
@@ -32,14 +33,16 @@ import type { ToolRisk, ToolSource } from "../tools/types.js";
 import { perfNow, recordPerfPhase } from "../observability/perfTiming.js";
 import { loadPlugins, loadPluginsFromRoot } from "../extensions/plugins.js";
 import type { McpToolHost } from "../extensions/mcp.js";
-import { createSubagentTool, createTaskStatusTool, prepareSubagentTask, runSubagentTask as executeSubagentTask, type PreparedSubagentTask, type SubagentOptions } from "../extensions/subagent.js";
+import { createSubagentTool, createTaskStatusTool, createTaskControlTools, prepareSubagentTask, runSubagentTask as executeSubagentTask, type PreparedSubagentTask, type SubagentOptions } from "../extensions/subagent.js";
+import { TaskCommunication } from "./TaskCommunication.js";
 import { createPlanTools } from "../extensions/plan.js";
+import { createSessionGoalTools } from "../extensions/sessionGoal.js";
 import { buildSubagentDefinitionsPrompt, loadSubagentDefinitions, type SubagentDefinition } from "../extensions/agents.js";
 import { createHistoryTools } from "../extensions/history.js";
 import { createCheckpointEvidenceTool } from "../extensions/checkpointEvidence.js";
 import { createMemoryTools } from "../extensions/memory.js";
 import { createToolCounts, formatExtensionReport, type ExtensionSection, type ExtensionStatus } from "../extensions/report.js";
-import { createModelSettings, type ModelSettings } from "../llm/modelFactory.js";
+import { createModelSettings, createProviderCredentialPersistence, type ModelSettings } from "../llm/modelFactory.js";
 import {
   SubagentTaskIncompleteError,
   SubagentTaskManager,
@@ -59,6 +62,8 @@ import { isSessionWriterConflictError } from "./SessionLease.js";
 import { readWorkerSessionCheckpoint } from "./WorkerSession.js";
 import { AutomationStore } from "./AutomationScheduler.js";
 import { GoalGraphStore } from "./GoalGraphStore.js";
+import { SessionGoalStore } from "./SessionGoalStore.js";
+import { recordSessionGoalRequestUsage } from "./sessionGoalUsage.js";
 import { CapabilityStore } from "./CapabilityStore.js";
 import { RuntimeHostResourceScope, type RuntimeHostResourceRegistry, type RuntimeResourceSnapshot, type RuntimeResourceReadiness } from "./host/resources.js";
 import { listEnabledGlobalPluginPaths, listEnabledProjectPluginPaths } from "../extensions/pluginRegistry.js";
@@ -97,8 +102,10 @@ export interface CommandRuntime {
   automationStore: AutomationStore;
   heartbeat: HeartbeatScheduler;
   graphs: GoalGraphStore;
+  sessionGoals: SessionGoalStore;
   capabilities: CapabilityStore;
   subagents: SubagentTaskManager | undefined;
+  taskCommunication?: TaskCommunication;
   userInput?: UserInputRequests;
   setUserInputRun?(run?: { sessionId: string; runId: string }): void;
   extensionReport(section?: ExtensionSection): string;
@@ -173,6 +180,10 @@ export interface RuntimeToolCatalogEntry {
   description: string;
   source: ToolSource;
   risk?: ToolRisk;
+  exposure?: ToolCatalogDefinition["exposure"];
+  namespace?: ToolCatalogDefinition["namespace"];
+  parameters?: ToolCatalogDefinition["parameters"];
+  outputSchema?: ToolCatalogDefinition["outputSchema"];
 }
 
 // 日报和心跳是进程级后台工作；增加 Session 不能增加相同工作的计时器。
@@ -203,6 +214,7 @@ export async function createCommandRuntime(workspaceRoot: string, options: Comma
   const projectAttachmentRoot = options.attachmentRoot ?? attachmentRoot(persistenceRoot);
   const configStore = options.configStore ?? createFileConfigStore(persistenceRoot);
   const config = await configStore.load(workspaceRoot);
+  const providerCredentials = createProviderCredentialPersistence(configStore, workspaceRoot);
   const resourceScope = options.resourceScope
     ?? options.resourceRegistry?.acquire(workspaceRoot, config)
     ?? new RuntimeHostResourceScope(workspaceRoot, config);
@@ -224,8 +236,10 @@ export async function createCommandRuntime(workspaceRoot: string, options: Comma
   const taskRuns = await DurableTaskRunStore.open(persistenceRoot, runtimeAuthority);
   const automationStore = await AutomationStore.open(persistenceRoot, runtimeAuthority);
   const graphs = await GoalGraphStore.open(persistenceRoot, runtimeAuthority);
+  const sessionGoals = await SessionGoalStore.open(persistenceRoot, runtimeAuthority);
   const capabilities = await CapabilityStore.open(persistenceRoot, runtimeAuthority);
   const recorder = new SessionRecorder(persistenceRoot, options.sessionId, undefined, runtimeAuthority.asSink());
+  const taskCommunication = new TaskCommunication(taskRuns, recorder.sessionId);
   const managedProcesses = new ManagedProcessService({
     workspaceRoot,
     persistenceRoot,
@@ -239,7 +253,7 @@ export async function createCommandRuntime(workspaceRoot: string, options: Comma
     config.web.fetch,
     config.sandbox,
     config.web.cookies,
-    () => resolveToolModel(config),
+    () => resolveToolModelCandidates(config, providerCredentials),
     options.browserAutomation
   );
   const browserToolNames = ["BrowserOpen", "BrowserReadDom", "BrowserClick", "BrowserType", "BrowserPress", "ComputerList", "ComputerObserve", "ComputerAction"];
@@ -282,6 +296,7 @@ export async function createCommandRuntime(workspaceRoot: string, options: Comma
   const durableTaskPromises = new Map<string, Promise<TaskClosureResult>>();
   const durableTaskControllers = new Map<string, AbortController>();
   const workerContinuations = new Map<string, PreparedSubagentTask>();
+  const workerGoalBindings = new Map<string, { parentSessionId: string; parentRunId: string; sessionGoalId?: string }>();
   const workerResumeAdmissions = new Map<string, ReturnType<CommandRuntime["resumeTaskRun"]>>();
   let startTaskRun: CommandRuntime["startTaskRun"] = async () => {
     throw new Error("TaskRun execution is not initialized.");
@@ -296,9 +311,19 @@ export async function createCommandRuntime(workspaceRoot: string, options: Comma
     throw new Error("TaskRun cancellation is not initialized.");
   };
   const refreshExtensionTools = (): void => {
-    for (const name of registeredMcpTools) toolRegistry.unregister(name);
+    const previous = new Set(registeredMcpTools);
+    const registered = new Map(toolRegistry.listEntries().map((entry) => [entry.tool.name, entry]));
     registeredMcpTools = [];
     for (const tool of [...resourceScope.createTools(), ...resourceScope.createResourceTools()]) {
+      const existing = registered.get(tool.name);
+      if (previous.has(tool.name) && existing?.source === "mcp") {
+        previous.delete(tool.name);
+        if (existing.tool === tool) {
+          registeredMcpTools.push(tool.name);
+          continue;
+        }
+        toolRegistry.unregister(tool.name);
+      }
       try {
         toolRegistry.registerMcpTool(tool);
         registeredMcpTools.push(tool.name);
@@ -310,6 +335,9 @@ export async function createCommandRuntime(workspaceRoot: string, options: Comma
       } catch {
         // session 内的 plugin/builtin 同名工具优先，单个 MCP 工具不影响其它能力。
       }
+    }
+    for (const name of previous) {
+      if (registered.get(name)?.source === "mcp") toolRegistry.unregister(name);
     }
   };
   const refreshSkills = async (force = false): Promise<void> => {
@@ -331,12 +359,18 @@ export async function createCommandRuntime(workspaceRoot: string, options: Comma
     workspaceRoot,
     config,
     getModelSettings: (modelAlias?: string) => subagentModelSettings(config, requireModelManager(modelManager), modelAlias),
-    getAccessMode: () => subagentAccessMode(permissionManager),
-    getParentRunId: () => subagentParentRunId,
     loadAgentDefinitions,
     toolRegistry,
     onUsage: async (usage, operation, modelAlias) => agent?.observeModelUsage(usage, operation, modelAlias),
-    runVerifiedTask: async (input, context) => {
+    onRequestMetrics: async (metrics) => recordSessionGoalRequestUsage(sessionGoals, metrics),
+    goalBudgetStopped: (context) => {
+      if (!context?.sessionId || !context.sessionGoalId) return false;
+      const goal = sessionGoals.get(context.sessionId);
+      return goal?.goalId === context.sessionGoalId && (goal.status === "budget_limited" || Boolean(goal.tokenBudget !== undefined && !goal.usageKnown));
+    },
+    communication: taskCommunication,
+    cancelTask: (taskRunId, reason) => cancelTaskRun(taskRunId, reason),
+    runTask: async (input, context) => {
       const sessionId = context.sessionId ?? recorder.sessionId;
       const taskRunId = `agent-task:${sessionId}:${context.toolCallId}`;
       taskRuns.create({
@@ -346,6 +380,7 @@ export async function createCommandRuntime(workspaceRoot: string, options: Comma
         task: {
           prompt: input.task,
           constraints: input.constraints,
+          communication: true,
           agent: input.agent,
           verification: input.verification
         }
@@ -354,20 +389,33 @@ export async function createCommandRuntime(workspaceRoot: string, options: Comma
         try { cancelTaskRun(taskRunId, "Parent Agent run was cancelled."); } catch { /* 终态或并发取消以持久化状态为准。 */ }
       };
       context.signal?.addEventListener("abort", abort, { once: true });
+      const unsubscribe = subagentTaskManager?.subscribe((snapshot) => {
+        const binding = durableSubagentBindings.get(snapshot.taskId);
+        if (snapshot.taskId !== taskRunId && binding?.taskRunId !== taskRunId) return;
+        context.onUpdate?.({ kind: "status", customKind: "subagent", customData: {
+          taskId: taskRunId, status: snapshot.status, agent: snapshot.agent
+        } });
+      });
+      let detached = false;
       try {
+        context.signal?.throwIfAborted();
         const started = await startTaskRun(taskRunId);
+        if (input.background) {
+          // 父回合正常结束不撤销已准入任务；显式取消仍通过 TaskCancel / Host 传递。
+          void started.completion.finally(() => context.signal?.removeEventListener("abort", abort)).catch(() => undefined);
+          detached = true;
+          return taskRunToolResult(taskRuns.get(taskRunId));
+        }
         const result = await started.completion;
         return taskRunToolResult(taskRuns.get(taskRunId), result);
       } finally {
-        context.signal?.removeEventListener("abort", abort);
+        unsubscribe?.();
+        if (!detached) context.signal?.removeEventListener("abort", abort);
       }
     },
-    readTaskResult: async (taskRunId, context) => {
-      const task = taskRuns.get(taskRunId);
-      if (!task) throw new Error(`TaskRun ${taskRunId} does not exist.`);
-      const sessionId = context.sessionId ?? recorder.sessionId;
-      if (task.sessionId !== sessionId) throw new Error(`TaskRun ${taskRunId} belongs to another session.`);
-      return taskRunToolResult(task);
+    readTaskResult: async (input, context) => {
+      const task = await taskCommunication.wait(input.taskRunId, input.waitMs, input.afterRevision, context.signal);
+      return { ...taskRunToolResult(task), messages: taskCommunication.messages(input.taskRunId) };
     }
   };
   const subagentTaskManager = config.extensions.subagent.enabled
@@ -376,10 +424,19 @@ export async function createCommandRuntime(workspaceRoot: string, options: Comma
       maxPendingSubagents: config.extensions.subagent.maxPendingSubagents,
       timeoutMs: config.extensions.subagent.timeoutMs,
       onSnapshot: (snapshot) => {
+        if (snapshot.status === "queued" && !workerGoalBindings.has(snapshot.taskId)) {
+          const binding = durableSubagentBindings.get(snapshot.taskId);
+          const parentSessionId = taskRuns.get(binding?.taskRunId ?? snapshot.taskId)?.sessionId ?? agent?.getInfo().sessionId ?? recorder.sessionId;
+          const goal = sessionGoals.get(parentSessionId);
+          workerGoalBindings.set(snapshot.taskId, { parentSessionId, parentRunId: snapshot.parentRunId, sessionGoalId: goal?.status === "active" ? goal.goalId : undefined });
+        }
         taskRuns.syncSubagentSnapshot(snapshot, durableSubagentBindings.get(snapshot.taskId));
+        taskCommunication.notify(durableSubagentBindings.get(snapshot.taskId)?.taskRunId ?? snapshot.taskId);
+        if (snapshot.status !== "queued" && snapshot.status !== "running") workerGoalBindings.delete(snapshot.taskId);
       },
       persistCompletion: (snapshot, output) => {
         taskRuns.syncSubagentSnapshot(snapshot, durableSubagentBindings.get(snapshot.taskId), output);
+        taskCommunication.notify(durableSubagentBindings.get(snapshot.taskId)?.taskRunId ?? snapshot.taskId);
       },
       execute: async (task, context) => {
         const prepared = workerContinuations.get(context.taskId);
@@ -390,12 +447,16 @@ export async function createCommandRuntime(workspaceRoot: string, options: Comma
         if (durable && attempt && durable.status === "running") {
           const artifacts = attempt.artifacts as Record<string, unknown> | undefined;
           taskRuns.transition(durable.taskRunId, "running", { attemptId: attempt.attemptId, artifacts: {
-            ...artifacts, workerExecution: { ...readWorkerAttemptCheckpoint(artifacts), prompt: task, accessMode: context.accessMode, agent: context.agent }
+            ...artifacts, workerExecution: { ...readWorkerAttemptCheckpoint(artifacts), prompt: task, accessMode: context.accessMode, agent: context.agent,
+              communication: durable.sessionId === recorder.sessionId }
           } });
         }
         return await executeSubagentTask(subagentOptions, task, context.signal, context.accessMode, context.agent, {
           persistenceRoot, taskId: attempt?.attemptId ?? context.taskId,
-          parentSessionId: durable?.sessionId, runtimeEventSink: runtimeAuthority.asSink()
+          parentRunId: workerGoalBindings.get(context.taskId)?.parentRunId,
+          sessionGoalId: workerGoalBindings.get(context.taskId)?.sessionGoalId,
+          parentSessionId: durable?.sessionId ?? workerGoalBindings.get(context.taskId)?.parentSessionId, runtimeEventSink: runtimeAuthority.asSink(),
+          communication: durable?.sessionId === recorder.sessionId && attempt ? taskCommunication.worker(durable.taskRunId, attempt.attemptId) : undefined
         });
       }
     })
@@ -452,9 +513,13 @@ export async function createCommandRuntime(workspaceRoot: string, options: Comma
     const modelManagerPerfStartedAt = perfNow();
     modelManager = await ModelManager.create(workspaceRoot, config, configStore, ai);
     recordPerfPhase("host.modelManagerCreate", modelManagerPerfStartedAt, undefined, workspaceRoot);
+    for (const tool of createSessionGoalTools(sessionGoals, () => agent?.getInfo().sessionId ?? recorder.sessionId, () => agent?.currentSessionGoalRequest())) {
+      toolRegistry.registerBuiltinTool(tool);
+    }
     if (config.extensions.subagent.enabled) {
-      toolRegistry.registerSubagentTool(createSubagentTool(subagentOptions, subagentTaskManager!));
+      toolRegistry.registerSubagentTool(createSubagentTool(subagentOptions));
       toolRegistry.registerHostReadQuery(createTaskStatusTool(subagentOptions), "TaskStatus");
+      for (const tool of createTaskControlTools(subagentOptions)) toolRegistry.registerSubagentTool(tool);
       for (const tool of createPlanTools({
         graphs,
         taskRuns,
@@ -525,16 +590,22 @@ export async function createCommandRuntime(workspaceRoot: string, options: Comma
         minToolCalls,
         onNotice,
         installedSkills: requireSkillBundle(skills).skills,
-        model: resolveToolModel(config),
+        model: resolveToolModel(config, providerCredentials),
         refreshSkills: async () => await refreshSkills(true)
       }),
       subagentPrompt: buildSubagentDefinitionsPrompt(subagentDefinitions),
       skillPaths: (selection, runId) => skillPathsForSelection(skillsForRun(runId), selection),
       selectCapabilities: async (input, runId) => await preselectCapabilities({
-        ...input, model: resolveToolModel(input.config), tools: toolRegistry.list(), skills: skillsForRun(runId).skills
+        ...input, models: resolveToolModelCandidates(input.config, providerCredentials), tools: toolRegistry.list().filter(isToolModelVisible), skills: skillsForRun(runId).skills
       }),
+      prepareToolDiscovery: async (query, signal) => {
+        const result = await resourceScope.waitForMcpDiscovery({ query, signal });
+        refreshExtensionTools();
+        return { pending: result.pending, timedOut: result.timedOut };
+      },
       mcpPrompt: () => mcpHost.instructionsPrompt(),
       todoStore: todos,
+      sessionGoals,
       createCheckpoint: checkpoints ? async (label) => await checkpoints.create(label) : undefined,
       attachmentRoot: projectAttachmentRoot,
       runtimeEventSink: runtimeAuthority.asSink(),
@@ -565,7 +636,9 @@ export async function createCommandRuntime(workspaceRoot: string, options: Comma
     await recorder.close();
     automationStore.close();
     graphs.close();
+    sessionGoals.close();
     capabilities.close();
+    taskCommunication.close();
     taskRuns.close();
     runtimeAuthority.close();
     throw error;
@@ -721,7 +794,7 @@ export async function createCommandRuntime(workspaceRoot: string, options: Comma
             completedStatus: closureRequired ? "verifying" : "completed",
             parentRunId: latest.parentRunId,
             signal: controller.signal,
-            accessMode: definition.review || definition.reportOnly ? "read-only" : "workspace",
+            accessMode: definition.review || definition.reportOnly ? "read-only" : definition.verification ? "workspace" : subagentAccessMode(permissionManager),
             agent: definition.agent
           });
         } catch (error) {
@@ -755,6 +828,7 @@ export async function createCommandRuntime(workspaceRoot: string, options: Comma
       if (workerContinuation) graphs.projectTaskClosure(taskRunId, result);
       return result;
     }).finally(() => {
+      taskCommunication.notify(taskRunId);
       if (durableTaskPromises.get(taskRunId) === completion) durableTaskPromises.delete(taskRunId);
       if (durableTaskControllers.get(taskRunId) === controller) durableTaskControllers.delete(taskRunId);
     });
@@ -790,7 +864,8 @@ export async function createCommandRuntime(workspaceRoot: string, options: Comma
             prepared = await prepareSubagentTask(subagentOptions, checkpoint.prompt,
               definition.review || definition.reportOnly || subagentAccessMode(permissionManager) === "read-only" ? "read-only" : checkpoint.accessMode ?? "workspace", definition.agent ?? checkpoint.agent, {
                 persistenceRoot, taskId: latest.attemptId, parentSessionId: task.sessionId,
-                resume: true, runtimeEventSink: runtimeAuthority.asSink()
+                resume: true, runtimeEventSink: runtimeAuthority.asSink(),
+                communication: checkpoint.communication && task.sessionId === recorder.sessionId ? taskCommunication.worker(taskRunId, latest.attemptId) : undefined
               });
             const current = taskRuns.get(taskRunId);
             if (current?.status !== task.status || current.revision !== task.revision || current.attempts.at(-1)?.attemptId !== latest.attemptId) throw new Error("Worker Attempt changed during continuation admission.");
@@ -1025,8 +1100,10 @@ export async function createCommandRuntime(workspaceRoot: string, options: Comma
     automationStore,
     heartbeat,
     graphs,
+    sessionGoals,
     capabilities,
     subagents: subagentTaskManager,
+    taskCommunication,
     userInput,
     setUserInputRun(run) {
       userInput.setRun(run);
@@ -1034,6 +1111,7 @@ export async function createCommandRuntime(workspaceRoot: string, options: Comma
       if (run) toolRegistry.registerBuiltinTool(createAskUserQuestionTool(userInput));
     },
     hasBackgroundWork: () => heartbeat.status().running
+      || durableTaskPromises.size > 0
       || Boolean(subagentTaskManager?.listSnapshots().some((task) => task.status === "queued" || task.status === "running")),
     extensionReport: (section?: ExtensionSection): string => formatExtensionReport(extensionStatus(), section),
     extensionStatus: (): ExtensionStatus => extensionStatus(),
@@ -1048,13 +1126,15 @@ export async function createCommandRuntime(workspaceRoot: string, options: Comma
       const knownNames = new Set(entries.map(({ tool }) => tool.name));
       const extensionTools = [...resourceScope.createTools(), ...resourceScope.createResourceTools()]
         .filter((tool) => !knownNames.has(tool.name))
-        .map((tool) => ({ name: tool.name, description: tool.description, source: "mcp" as const, risk: tool.risk }));
+        .map((tool) => ({ name: tool.name, description: tool.description, source: "mcp" as const, risk: tool.risk,
+          exposure: getToolExposure(tool), namespace: tool.namespace, parameters: tool.parameters, outputSchema: tool.outputSchema }));
       return [
         ...entries.map(({ source, tool }) => ({
           name: tool.name,
           description: tool.description,
           source,
-          risk: tool.risk
+          risk: tool.risk,
+          exposure: getToolExposure(tool), namespace: tool.namespace, parameters: tool.parameters, outputSchema: tool.outputSchema
         })),
         ...extensionTools
       ];
@@ -1128,11 +1208,13 @@ export async function createCommandRuntime(workspaceRoot: string, options: Comma
             } finally {
               try {
                 graphs.close();
+                sessionGoals.close();
               } finally {
                 try {
                   capabilities.close();
                 } finally {
                   try {
+                    taskCommunication.close();
                     taskRuns.close();
                   } finally {
                     runtimeAuthority.close();
@@ -1266,6 +1348,7 @@ function taskRunToolResult(task: TaskRunWithAttempts | undefined, result?: TaskC
   return {
     taskRunId: task.taskRunId,
     status: task.status,
+    revision: task.revision,
     attemptId: attempt?.attemptId,
     attempts: task.attempts.length,
     output: result?.output ?? (typeof artifacts?.output === "string" ? artifacts.output : undefined),

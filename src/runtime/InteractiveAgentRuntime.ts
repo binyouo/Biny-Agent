@@ -88,6 +88,8 @@ export interface InteractiveAgentHost {
 /** Desktop、TUI 和 Unix socket 客户端共享的最小交互运行时形状。 */
 export interface InteractiveRuntimeHandle {
   submitPrompt(input: string, attachments?: AgentAttachment[], requestIds?: RuntimeRequestIds, promptContext?: string, capabilitySelection?: AgentCapabilitySelection): SubmittedAgentRun;
+  /** Host 内部目标推进回合，不生成可见用户输入。 */
+  submitFollowupTurn?(requestIds: RuntimeRequestIds): SubmittedAgentRun;
   /** Host 内部监督回合：输入只进入本轮上下文，不写成新的 user_message。 */
   submitSupervisionTurn?(input: string, requestIds: RuntimeRequestIds, promptContext?: string): SubmittedAgentRun;
   steer(input: string, attachments?: AgentAttachment[], requestIds?: RuntimeRequestIds): Promise<QueuedAgentMessage>;
@@ -255,6 +257,10 @@ export class InteractiveAgentRuntime {
     capabilitySelection?: AgentCapabilitySelection
   ): SubmittedAgentRun {
     return this.startRun(input, attachments, false, requestIds, undefined, promptContext, capabilitySelection);
+  }
+
+  submitFollowupTurn(requestIds: RuntimeRequestIds): SubmittedAgentRun {
+    return this.startRun("继续推进当前会话目标，按完整目标逐项核对当前事实与完成证据。", [], false, requestIds, undefined, undefined, undefined, true);
   }
 
   submitSupervisionTurn(input: string, requestIds: RuntimeRequestIds, promptContext?: string): SubmittedAgentRun {
@@ -481,7 +487,7 @@ export class InteractiveAgentRuntime {
       replaceUserMessageId: requestIds?.replaceUserMessageId,
       replacementUserMessageId: requestIds?.replaceUserMessageId === undefined ? undefined : randomUUID(),
       supervision,
-      source: /^(?:automation:|graph:|plan-wake:)/u.test(requestIds?.continuationSource ?? "") ? "auto" : undefined
+      source: /^(?:automation:|graph:|plan-wake:|goal:)/u.test(requestIds?.continuationSource ?? "") ? "auto" : undefined
     };
     const controller = new AbortController();
     try {
@@ -751,11 +757,21 @@ export class InteractiveAgentRuntime {
           type: "compact.started",
           hint: hint === undefined ? undefined : redactSecrets(hint)
         });
-        const rawSummary = await this.commandRuntime.agent.compactConversation(hint, controller.signal);
-        const summary = redactSecrets(rawSummary);
-        const context = await this.commandRuntime.agent.contextStatus();
-        this.emit({ ...this.eventBase(run), type: "compact.completed", summary, context });
-        return summary;
+        try {
+          const rawSummary = await this.commandRuntime.agent.compactConversation(hint, controller.signal);
+          const summary = redactSecrets(rawSummary);
+          const context = await this.commandRuntime.agent.contextStatus();
+          this.emit({ ...this.eventBase(run), type: "compact.completed", summary, context });
+          return summary;
+        } catch (error) {
+          this.emit({
+            ...this.eventBase(run),
+            type: "compact.failed",
+            error: redactSecrets(error instanceof Error ? error.message : String(error)),
+            cancelled: controller.signal.aborted
+          });
+          throw error;
+        }
       },
       controller
     );

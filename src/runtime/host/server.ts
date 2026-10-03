@@ -4,6 +4,7 @@
  * 生命周期由 lifecycle/bootstrap 负责，业务调度器由 composition 负责，线协议由 protocol 负责。
  */
 import { randomUUID } from "node:crypto";
+import { TaskCommunication } from "../TaskCommunication.js";
 import { planStatus } from "../../extensions/plan.js";
 import net from "node:net";
 import { performance } from "node:perf_hooks";
@@ -31,6 +32,7 @@ import type {
 } from "../CapabilityStore.js";
 import { cancelRuntimeGraph, executeRuntimeCommand, runtimeCommandOperation } from "../commands.js";
 import { SessionWriterConflictError } from "../SessionLease.js";
+import type { SessionGoalExpected } from "../SessionGoalStore.js";
 import { agentDir } from "../../session/store.js";
 import {
   authenticateRuntimeHostHello
@@ -139,6 +141,9 @@ export class RuntimeHostServer {
   private readonly connections = new Set<HostConnection>();
   /** 一个 owner Runtime 只能同时切换一条 live session；ownership 绑定到具体 client。 */
   private readonly sessionWriterOwners = new Map<string, { clientId: string; surface: HostSurface }>();
+  /** 目标的发起者跨回合保留；不能用长期 writer lease 表示持续工作的归属。 */
+  private readonly sessionGoalOwners = new Map<string, { clientId: string; goalId: string }>();
+  private primaryGoalSchedulingReady = true;
   private readonly history: Array<{ sequence: number; update: AgentRuntimeUpdate }> = [];
   private sequence = 0;
   private eventSequenceError: RangeError | undefined;
@@ -254,6 +259,12 @@ export class RuntimeHostServer {
         || (await listSessionFiles(this.registration.persistenceRoot)).includes(`${sessionId}.jsonl`),
       isBusy: () => this.registry.list().some((entry) => runtimeIsBusy(entry.runtime.getSnapshot())),
       canStartAutomationRun: () => !this.admission.isDraining(),
+      canStartGoalRun: () => !this.admission.isDraining() && this.primaryGoalSchedulingReady,
+      admitGoal: async (sessionId, execute) => await this.dispatcher.dispatch("run", async () => {
+        this.assertEventSequenceAvailable();
+        this.admission.assertAdmission();
+        return await execute();
+      }, sessionId),
       restartRuntime: async () => {
         await this.restartRuntime(undefined);
       }
@@ -426,7 +437,8 @@ export class RuntimeHostServer {
         || commands.automationStore?.list().some((entry) => entry.status === "active")
         || commands.graphs?.listGraphs().some((entry) => entry.status === "running")
         || commands.graphs?.listGoals().some((entry) => entry.status === "active");
-      if (activeWork || scheduledWork) {
+      const activeGoals = commands.sessionGoals?.list({ status: "active" }).length;
+      if (activeWork || scheduledWork || activeGoals) {
         this.idleSince = undefined;
         return false;
       }
@@ -483,6 +495,7 @@ export class RuntimeHostServer {
       }
       // 执行者真正退出时由 Runtime 释放 lease，不能在取消刚发出时提前放行新 writer。
       this.sessionWriterOwners.clear();
+      this.sessionGoalOwners.clear();
       const runtimeClose = this.registry.closeAll();
       let shutdownTimedOut = false;
       let shutdownTimer: ReturnType<typeof setTimeout> | undefined;
@@ -693,6 +706,11 @@ export class RuntimeHostServer {
       ? runtimeCommandOperation(requiredString(payload.input, "input")) ?? frame.operation
       : frame.operation;
     this.assertRequestAdmission(connection, admissionOperation);
+    if (frame.operation === "session.goal.get") {
+      const sessionId = optionalString(payload.sessionId) ?? this.registry.primary().sessionId;
+      const store = this.registry.get(sessionId)?.commands.sessionGoals ?? this.commands.sessionGoals;
+      return store.get(sessionId);
+    }
     if (frame.operation === "session.list") return this.sessionSummaries();
     if (frame.operation === "client.pause-owned-runs") return await this.pauseOwnedRunsForExit(connection);
     if (frame.operation === "session.ensure") {
@@ -824,6 +842,21 @@ export class RuntimeHostServer {
       if (!requests) throw new Error("User input request is no longer pending in this session.");
       return requests.answer(sessionId, requiredString(payload.runId, "runId"), requiredString(payload.toolCallId, "toolCallId"), payload.response);
     }
+    if (frame.operation === "task.message" || frame.operation === "task.wait") {
+      const sessionId = requiredString(payload.sessionId, "sessionId");
+      const resident = this.registry.get(sessionId);
+      const communication = resident?.commands.taskCommunication ?? new TaskCommunication(this.commands.taskRuns, sessionId);
+      const taskRunId = requiredString(payload.taskRunId, "taskRunId");
+      communication.read(taskRunId);
+      if (frame.operation === "task.message") {
+        if (!resident?.commands.taskCommunication) throw new Error("Task has no resident Worker; use explicit task resume before sending messages.");
+        return communication.send(taskRunId, requiredString(payload.message, "message"), optionalString(payload.messageId));
+      }
+      try {
+        const task = await communication.wait(taskRunId, payload.waitMs as number | undefined, payload.afterRevision as number | undefined);
+        return { task, messages: communication.messages(taskRunId) };
+      } finally { if (!resident?.commands.taskCommunication) communication.close(); }
+    }
     const managed = await this.runtimeEntry(frame.operation, payload);
     const runtime = managed.runtime;
     const commands = managed.commands;
@@ -833,6 +866,38 @@ export class RuntimeHostServer {
         return commands.graphs.listGraphs().filter((graph) => graph.mode === "supervised" && graph.supervisorSessionId === sessionId)
           .map((graph) => planStatus(commands, graph.graphId, sessionId));
       }
+      case "session.goal.set":
+        return await this.executeAdmission(async () => {
+          const goal = commands.sessionGoals.set(runtime.getSnapshot().info.sessionId, requiredString(payload.objective, "objective"), {
+            tokenBudget: readGoalTokenBudget(payload.tokenBudget), expected: readGoalExpected(payload.expected)
+          });
+          if (connection.clientId) this.sessionGoalOwners.set(goal.sessionId, { clientId: connection.clientId, goalId: goal.goalId });
+          this.businessComposition.scheduleGoals();
+          this.publishSnapshot(runtime);
+          return goal;
+        }, runtime);
+      case "session.goal.resume":
+        return await this.executeAdmission(async () => {
+          const goal = commands.sessionGoals.resume(runtime.getSnapshot().info.sessionId, readGoalExpected(payload.expected));
+          if (connection.clientId) this.sessionGoalOwners.set(goal.sessionId, { clientId: connection.clientId, goalId: goal.goalId });
+          this.businessComposition.scheduleGoals();
+          this.publishSnapshot(runtime);
+          return goal;
+        }, runtime);
+      case "session.goal.pause":
+      case "session.goal.clear":
+        return await this.executeControl(async () => {
+          const sessionId = runtime.getSnapshot().info.sessionId;
+          const expected = readGoalExpected(payload.expected);
+          const previous = commands.sessionGoals.get(sessionId);
+          const goal = frame.operation === "session.goal.pause"
+            ? commands.sessionGoals.pause(sessionId, expected)
+            : commands.sessionGoals.clear(sessionId, expected);
+          if (previous?.status === "active") runtime.cancelCurrentRun("paused");
+          if (frame.operation === "session.goal.clear") this.sessionGoalOwners.delete(sessionId);
+          this.publishSnapshot(runtime);
+          return goal;
+        }, runtime);
       case "plan.start":
         await this.ensureSessionWriter(connection, runtime);
         return await runtime.runExclusiveOperation("plan", async (signal) => {
@@ -978,9 +1043,11 @@ export class RuntimeHostServer {
       }
       case "cancel": {
         // 取消可绕过滞后的 revision，但必须绑定具体 run，不能让迟到请求影响后续运行。
+        const reason = readCancellationReason(payload.reason);
+        this.pauseGoalForRun(runtime, commands, requiredString(payload.runId, "runId"));
         return runtime.cancelRun(
           requiredString(payload.runId, "runId"),
-          readCancellationReason(payload.reason)
+          reason
         );
       }
       case "permission":
@@ -991,7 +1058,9 @@ export class RuntimeHostServer {
         return await this.executeControl(async () => {
           // 取消与运行状态更新并发到达时，不用 revision 拒绝同一 run，但不允许旧请求取消新 run。
           const runId = requiredString(payload.runId, "runId");
-          const accepted = runtime.cancelRun(runId, readCancellationReason(payload.reason));
+          const reason = readCancellationReason(payload.reason);
+          this.pauseGoalForRun(runtime, commands, runId);
+          const accepted = runtime.cancelRun(runId, reason);
           if (!accepted) throw new Error(`Run ${runId} is not active.`);
           return { runId };
         }, runtime);
@@ -1295,6 +1364,16 @@ export class RuntimeHostServer {
           requiredString(payload.input, "input"),
           source === "desktop" ? "desktop" : "tui"
         );
+        if (admissionOperation.startsWith("session.goal.")) {
+          const sessionId = runtime.getSnapshot().info.sessionId;
+          const goal = commands.sessionGoals.get(sessionId);
+          if (connection.clientId && goal && (admissionOperation === "session.goal.set" || admissionOperation === "session.goal.resume")) {
+            this.sessionGoalOwners.set(sessionId, { clientId: connection.clientId, goalId: goal.goalId });
+          }
+          if (admissionOperation === "session.goal.clear") this.sessionGoalOwners.delete(sessionId);
+          this.businessComposition.scheduleGoals();
+          this.publishSnapshot(runtime);
+        }
         return result;
       }
       case "agent.context":
@@ -1487,6 +1566,13 @@ export class RuntimeHostServer {
     }
     this.assertEventSequenceAvailable();
     this.admission.assertAdmission();
+  }
+
+  private pauseGoalForRun(runtime: InteractiveRuntimeHandle, commands: CommandRuntime, runId: string): void {
+    const snapshot = runtime.getSnapshot();
+    if (snapshot.state.kind !== "runs" || snapshot.state.activeRun.runId !== runId) return;
+    const goal = commands.sessionGoals?.get(snapshot.info.sessionId);
+    if (goal?.status === "active") commands.sessionGoals.pause(goal.sessionId, goal);
   }
 
   private async executeAdmission<T>(
@@ -1788,18 +1874,35 @@ export class RuntimeHostServer {
   }
 
   private async pauseOwnedRunsForExit(connection: HostConnection): Promise<Array<{ sessionId: string; runId: string }>> {
-    const ownedSessionIds = [...this.sessionWriterOwners.entries()]
+    const writerSessions = [...this.sessionWriterOwners.entries()]
       .filter(([, owner]) => owner.clientId === connection.clientId)
       .map(([sessionId]) => sessionId);
+    const goalSessions = [...this.sessionGoalOwners.entries()]
+      .filter(([, owner]) => owner.clientId === connection.clientId)
+      .map(([sessionId]) => sessionId);
+    const ownedSessionIds = [...new Set([...writerSessions, ...goalSessions])];
     const paused = await Promise.all(ownedSessionIds.map(async (sessionId) => await this.dispatcher.dispatch(
       "run",
       async () => {
         // Queue behind earlier writes for this session, then recheck ownership before touching its run.
-        if (this.sessionWriterOwners.get(sessionId)?.clientId !== connection.clientId) return undefined;
+        const goalOwner = this.sessionGoalOwners.get(sessionId);
+        const writerOwned = this.sessionWriterOwners.get(sessionId)?.clientId === connection.clientId;
+        if (!writerOwned && goalOwner?.clientId !== connection.clientId) return undefined;
         const managed = this.registry.get(sessionId);
+        const goals = managed?.commands.sessionGoals ?? this.commands.sessionGoals;
+        const goal = goals?.get(sessionId);
+        const goalOwned = goalOwner?.goalId === goal?.goalId
+          ? goalOwner?.clientId === connection.clientId
+          : writerOwned;
+        if (goal?.status === "active" && goalOwned) {
+          goals.pause(sessionId, goal);
+          if (managed) this.publishSnapshot(managed.runtime);
+        }
         const snapshot = managed?.runtime.getSnapshot();
         if (!managed || snapshot?.state.kind !== "runs") return undefined;
         const runId = snapshot.state.activeRun.runId;
+        const goalRun = managed.commands.runtimeAuthority.getRun(runId)?.continuationSource?.startsWith("goal:");
+        if (goalRun ? !goalOwned : !writerOwned) return undefined;
         if (!managed.runtime.cancelRun(runId, "paused")) return undefined;
         return { sessionId, runId };
       },
@@ -1936,7 +2039,9 @@ export class RuntimeHostServer {
     });
     const managed = await this.registry.replacePrimary(next);
     this.sessionWriterOwners.delete(previousSessionId);
+    this.primaryGoalSchedulingReady = true;
     this.businessComposition.recoverGraphs();
+    this.businessComposition.scheduleGoals();
     this.publishSnapshot(managed.runtime);
     return managed.runtime.getSnapshot();
   }
@@ -1950,14 +2055,17 @@ export class RuntimeHostServer {
       throw new Error(`Cannot rebuild the Runtime Host while session ${target.sessionId} is busy.`);
     }
     const previousSessionId = target.sessionId;
+    if (target.primary) this.primaryGoalSchedulingReady = false;
     // 旧实例先停止并释放 session lease，新实例才能以相同身份恢复；关闭同时拒绝新 submit。
     await target.runtime.close();
     const factoryOptions = await this.factoryOptionsForSession(previousSessionId);
     const next = await this.createRuntime(previousSessionId, factoryOptions);
     const managed = await this.registry.replace(previousSessionId, next);
+    if (managed.primary) this.primaryGoalSchedulingReady = true;
     const owner = this.sessionWriterOwners.get(previousSessionId);
     if (owner) await managed.runtime.claimSession(previousSessionId);
     this.businessComposition.recoverGraphs();
+    this.businessComposition.scheduleGoals();
     this.publishSnapshot(managed.runtime);
     return { snapshot: managed.runtime.getSnapshot(), sequence: this.sequence };
   }
@@ -1999,4 +2107,18 @@ export class RuntimeHostServer {
 function readCancellationReason(value: unknown): AgentTurnCancellationReason {
   if (value === "interrupted" || value === "replaced" || value === "cancelled" || value === "paused" || value === "host_shutdown") return value;
   throw new Error("Cancellation reason must be interrupted, replaced, cancelled, paused, or host_shutdown.");
+}
+
+function readGoalExpected(value: unknown): SessionGoalExpected | undefined {
+  if (value === undefined) return undefined;
+  const record = asRecord(value);
+  const revision = optionalSafeInteger(record.revision);
+  if (revision === undefined) throw new Error("Goal expected revision must be a non-negative safe integer.");
+  return { goalId: requiredString(record.goalId, "goalId"), revision };
+}
+
+function readGoalTokenBudget(value: unknown): number | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0) throw new Error("Goal token budget must be a positive safe integer.");
+  return value;
 }

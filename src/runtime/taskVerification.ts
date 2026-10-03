@@ -123,6 +123,7 @@ export interface TaskCandidateArtifacts {
   repairScope: TaskRepairScopeEvidence;
   artifactFingerprint?: string;
   verificationApprovals?: TaskVerificationApproval[];
+  communication?: unknown;
 }
 
 export type TaskWorkspaceSnapshot = Readonly<Record<string, string>>;

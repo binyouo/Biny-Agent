@@ -34,6 +34,13 @@ export async function generateNativeText(
   options: NativeTextGenerationOptions = {}
 ): Promise<NativeTextGenerationResult> {
   options.signal?.throwIfAborted();
+  const startedAtMs = Date.now();
+  let reported = false;
+  const onRequestMetrics: ModelRequestObserver | undefined = options.onRequestMetrics === undefined ? undefined : async (metrics) => {
+    if (reported) return;
+    reported = true;
+    await options.onRequestMetrics?.(metrics);
+  };
   const timeout = options.timeoutMs === undefined && options.idleTimeoutMs === undefined ? undefined : new AbortController();
   const timer = timeout && options.timeoutMs !== undefined
     ? setTimeout(() => timeout.abort(new DOMException("Auxiliary model request timed out.", "TimeoutError")), options.timeoutMs)
@@ -56,9 +63,13 @@ export async function generateNativeText(
       signal?.addEventListener("abort", onAbort, { once: true });
     });
     // 默认辅助任务不等待忽略取消的 Provider；需要完整生命周期的调用方显式选择等待。
-    const result = model.vercelModel === undefined
-      ? consumeInjectedText(model, messages, { ...options, signal }, onProgress)
-      : consumeVercelText(model, messages, { ...model.vercelOptions, ...options, signal }, onProgress);
+    const result = (async () => {
+      const prepared = await model.prepareTextRequest?.(signal) ?? model;
+      signal?.throwIfAborted();
+      return prepared.vercelModel === undefined
+        ? await consumeInjectedText(prepared, messages, { ...options, signal, onRequestMetrics }, onProgress)
+        : await consumeVercelText(prepared, messages, { ...prepared.vercelOptions, ...options, signal, onRequestMetrics }, onProgress);
+    })();
     if (aborted !== undefined) return await Promise.race([result, aborted]);
     try {
       const settled = await result;
@@ -68,6 +79,10 @@ export async function generateNativeText(
       signal?.throwIfAborted();
       throw error;
     }
+  } catch (error) {
+    // 外层取消可能先于忽略 signal 的 Provider 返回；先结算未知用量，迟到结果不得重复计账。
+    await reportVercelMetrics(model, { ...options, onRequestMetrics }, startedAtMs, undefined, error);
+    throw error;
   } finally {
     if (timer) clearTimeout(timer);
     if (idleTimer) clearTimeout(idleTimer);
@@ -82,6 +97,7 @@ async function consumeVercelText(
   onProgress: () => void
 ): Promise<NativeTextGenerationResult> {
   const startedAtMs = Date.now();
+  let usage: AgentUsage | undefined;
   const tracked = options.awaitModelSettlementOnAbort
     ? trackProviderModel(model.vercelModel!, options.signal)
     : undefined;
@@ -102,7 +118,6 @@ async function consumeVercelText(
     });
     // result.text 的拒绝不携带原始错误（NoOutputGeneratedError），错误保真必须直接消费 fullStream。
     let text = "";
-    let usage: AgentUsage | undefined;
     let finishReason: string | undefined;
     let failure: unknown;
     for await (const part of result.fullStream) {
@@ -119,7 +134,7 @@ async function consumeVercelText(
     await reportVercelMetrics(model, options, startedAtMs, usage, undefined);
     return { text, usage, finishReason };
   } catch (error) {
-    await reportVercelMetrics(model, options, startedAtMs, undefined, error);
+    await reportVercelMetrics(model, options, startedAtMs, usage, error);
     throw error;
   } finally {
     // fullStream may close synthetically on abort without closing the provider stream.
@@ -272,25 +287,32 @@ async function consumeInjectedText(
   options: NativeTextGenerationOptions,
   onProgress: () => void
 ): Promise<NativeTextGenerationResult> {
+  const startedAtMs = Date.now();
   options.signal?.throwIfAborted();
   let text = "";
   let usage: AgentUsage | undefined;
   let finishReason: string | undefined;
   if (!model.stream) throw new Error("Vercel model is unavailable for this text request.");
   const streamModel = model.stream.bind(model);
-  const { systemPrompt, awaitModelSettlementOnAbort: _awaitModelSettlementOnAbort, ...streamOptions } = options;
-  for await (const event of await streamModel({ systemPrompt, messages, tools: [] }, streamOptions)) {
-    options.signal?.throwIfAborted();
-    onProgress();
-    if (event.type === "text-delta") text += event.text;
-    else if (event.type === "finish") {
-      usage = event.usage;
-      finishReason = event.reason;
+  const { systemPrompt, onRequestMetrics: _observer, awaitModelSettlementOnAbort: _awaitModelSettlementOnAbort, ...streamOptions } = options;
+  try {
+    for await (const event of await streamModel({ systemPrompt, messages, tools: [] }, streamOptions)) {
+      options.signal?.throwIfAborted();
+      onProgress();
+      if (event.type === "text-delta") text += event.text;
+      else if (event.type === "finish") {
+        usage = event.usage;
+        finishReason = event.reason;
+      }
+      else if (event.type === "error") throw event.error instanceof Error ? event.error : new Error(String(event.error));
     }
-    else if (event.type === "error") throw event.error instanceof Error ? event.error : new Error(String(event.error));
+    options.signal?.throwIfAborted();
+    await reportVercelMetrics(model, options, startedAtMs, usage, undefined);
+    return { text, usage, finishReason };
+  } catch (error) {
+    await reportVercelMetrics(model, options, startedAtMs, usage, error);
+    throw error;
   }
-  options.signal?.throwIfAborted();
-  return { text, usage, finishReason };
 }
 
 export function nativeJsonMessages(systemPrompt: string, prompt: string): AgentMessage[] {

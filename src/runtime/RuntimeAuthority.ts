@@ -1,7 +1,7 @@
 /**
  * Workspace 级 Runtime authority。
  *
- * Runtime Host、Task、Automation 和 Graph 都需要一份可以跨进程恢复的事实来源。
+ * Runtime Host、Task、Automation、Graph 和会话目标共用可跨进程恢复的事实来源。
  * 这里使用 Node 内置 node:sqlite，不依赖 native npm 数据库；session JSONL 是
  * 会话事实来源，authority 只保存可重建的运行投影和后台运行域事实。
  */
@@ -14,7 +14,7 @@ import { readSessionEvents, readSessionEventsForBackfill } from "../session/even
 import type { SessionEvent } from "../session/recorder.js";
 import { assertRuntimeEventSequence, validateRuntimeEventStream, type RuntimeEventIdentity, type RuntimeEventSink } from "../session/runtimeEvent.js";
 
-const schemaVersion = 11;
+const schemaVersion = 12;
 const busyTimeoutMs = 5_000;
 const defaultPageSize = 100;
 const maxPageSize = 1_000;
@@ -993,6 +993,7 @@ export class RuntimeEventAuthority implements RuntimeEventSink {
             content_hash TEXT
           );
         `);
+        this.createSessionGoalSchema();
         this.database.exec(`PRAGMA user_version = ${String(schemaVersion)};`);
       });
     } else {
@@ -1155,7 +1156,47 @@ export class RuntimeEventAuthority implements RuntimeEventSink {
           this.database.exec("PRAGMA user_version = 11");
         });
       }
+      if (currentRevision < 12) {
+        this.transaction(() => {
+          this.createSessionGoalSchema();
+          this.database.exec("PRAGMA user_version = 12");
+        });
+      }
     }
+  }
+
+  private createSessionGoalSchema(): void {
+    this.database.exec(`
+      CREATE INDEX IF NOT EXISTS agent_runs_continuation_source_idx
+        ON agent_runs (workspace_id, session_id, continuation_source);
+      CREATE TABLE IF NOT EXISTS session_goals (
+        workspace_id TEXT NOT NULL,
+        session_id TEXT NOT NULL,
+        goal_id TEXT NOT NULL UNIQUE,
+        objective TEXT NOT NULL,
+        status TEXT NOT NULL,
+        token_budget INTEGER,
+        tokens_used INTEGER NOT NULL DEFAULT 0,
+        time_used_ms INTEGER NOT NULL DEFAULT 0,
+        usage_known INTEGER NOT NULL DEFAULT 1,
+        generation INTEGER NOT NULL DEFAULT 1,
+        revision INTEGER NOT NULL DEFAULT 0,
+        evidence_json TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (workspace_id, session_id)
+      );
+      CREATE INDEX IF NOT EXISTS session_goals_status_idx ON session_goals (workspace_id, status);
+      CREATE TABLE IF NOT EXISTS session_goal_usage (
+        workspace_id TEXT NOT NULL,
+        goal_id TEXT NOT NULL,
+        usage_id TEXT NOT NULL,
+        session_id TEXT NOT NULL,
+        payload_json TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (workspace_id, goal_id, usage_id)
+      );
+    `);
   }
 
   private hasColumn(table: string, column: string): boolean {

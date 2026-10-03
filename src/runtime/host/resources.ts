@@ -32,6 +32,12 @@ export interface RuntimeResourceSnapshot {
 /** 高频运行快照只需要就绪状态；能力目录通过 skills / mcp 查询读取。 */
 export type RuntimeResourceReadiness = Pick<RuntimeResourceSnapshot, "revision" | "state">;
 
+export interface McpDiscoveryReadiness {
+  servers: McpServerStatus[];
+  pending: string[];
+  timedOut: boolean;
+}
+
 const defaultSkillBundle: SkillBundle = { skills: [], paths: [], prompt: "", warnings: [], conflicts: [], errors: [] };
 const mcpBaselineBudgetMs = 10_000;
 const skillCacheTtlMs = 30_000;
@@ -48,6 +54,7 @@ export class RuntimeHostResourceScope {
   private skillRefreshPromise: Promise<void> | undefined;
   private skillsLoadedAt: number | undefined;
   private closePromise: Promise<void> | undefined;
+  private readonly discoveryClosed = new AbortController();
   private references = 0;
 
   constructor(
@@ -128,6 +135,53 @@ export class RuntimeHostResourceScope {
     return this.mcpHost.createTools();
   }
 
+  async waitForMcpDiscovery(input: { query?: string; signal?: AbortSignal } = {}): Promise<McpDiscoveryReadiness> {
+    input.signal?.throwIfAborted();
+    if (this.discoveryClosed.signal.aborted) throw new Error("MCP resource scope is closed.");
+    const servers = this.mcpHost.listServers();
+    const targets = referencedMcpServers(servers, input.query);
+    for (const server of servers) {
+      const config = this.config.extensions.mcp[server.name];
+      if (config?.exposure === "hidden" && !Object.values(config.toolExposure ?? {}).some((exposure) => exposure !== "hidden")) targets.delete(server.name);
+    }
+    const readiness = (timedOut = false): McpDiscoveryReadiness => {
+      const current = this.mcpHost.listServers().filter((server) => targets.has(server.name));
+      return {
+        servers: current,
+        pending: current.filter((server) => server.enabled && !server.connected && server.connecting).map((server) => server.name),
+        timedOut,
+      };
+    };
+    const current = readiness();
+    if (!current.pending.length) return current;
+    return await new Promise<McpDiscoveryReadiness>((resolve, reject) => {
+      let settled = false;
+      const finish = (result?: McpDiscoveryReadiness, error?: unknown): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        unsubscribe();
+        input.signal?.removeEventListener("abort", cancelled);
+        this.discoveryClosed.signal.removeEventListener("abort", closed);
+        if (error !== undefined) reject(error);
+        else resolve(result!);
+      };
+      const cancelled = (): void => finish(undefined, input.signal?.reason ?? new DOMException("Discovery was cancelled.", "AbortError"));
+      const closed = (): void => finish(undefined, new Error("MCP resource scope is closed."));
+      const check = (): void => {
+        const next = readiness();
+        if (!next.pending.length) finish(next);
+      };
+      const unsubscribe = this.subscribe(check);
+      const timer = setTimeout(() => finish(readiness(true)), mcpBaselineBudgetMs);
+      input.signal?.addEventListener("abort", cancelled, { once: true });
+      this.discoveryClosed.signal.addEventListener("abort", closed, { once: true });
+      if (input.signal?.aborted) cancelled();
+      else if (this.discoveryClosed.signal.aborted) closed();
+      else check();
+    });
+  }
+
   createResourceTools(): Tool[] {
     return this.mcpHost.hasEnabledServers() ? [...createMcpResourceTools(this.mcpHost), ...createMcpPromptTools(this.mcpHost)] : [];
   }
@@ -144,6 +198,7 @@ export class RuntimeHostResourceScope {
 
   async close(): Promise<void> {
     if (this.closePromise) return await this.closePromise;
+    this.discoveryClosed.abort();
     this.closePromise = this.mcpHost.close();
     await this.closePromise;
   }
@@ -268,4 +323,23 @@ function resourceScopeKey(workspaceRoot: string, config: AgentConfig): string {
     }))
     .digest("hex");
   return `${path.resolve(workspaceRoot)}\0${digest}`;
+}
+
+function referencedMcpServers(servers: McpServerStatus[], query?: string): Set<string> {
+  const referenced = new Set<string>();
+  const tokens = query?.trim().split(/[\s,;()，；]+/u) ?? [];
+  for (const rawToken of tokens) {
+    const token = rawToken.replace(/^[`'"[]+|[`'"\]]+$/gu, "");
+    const matches = servers.map((server) => {
+      const normalized = server.name.replace(/[^A-Za-z0-9_-]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 42) || "tool";
+      const exact = token === server.name || token === `mcp:${server.name}` || token === `mcp_${normalized}`;
+      const specificity = exact ? Infinity : token.startsWith(`${server.name}.`) ? server.name.length
+        : token.startsWith(`mcp_${normalized}_`) ? normalized.length : 0;
+      return { server, specificity };
+    }).filter((match) => match.specificity > 0);
+    // 前缀重叠时，工具名只指向最具体的服务器；泛化语义查询仍等待全部未决连接。
+    const longest = Math.max(...matches.map((match) => match.specificity));
+    for (const { server } of matches.filter((match) => match.specificity === longest)) referenced.add(server.name);
+  }
+  return referenced.size ? referenced : new Set(servers.map((server) => server.name));
 }

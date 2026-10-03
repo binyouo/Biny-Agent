@@ -1,8 +1,11 @@
 /** 后台文本任务共用的工具模型：显式选择优先，否则从已配置且可用的模型中自动选择。 */
 import type { AgentModel } from "../agent/core/types.js";
 import type { AgentConfig } from "../config/schema.js";
+import { createHash } from "node:crypto";
 import { ModelRegistry } from "./ModelRegistry.js";
-import { ProviderRegistry } from "./ProviderRuntime.js";
+import { ProviderRegistry, type ProviderCredentialPersistence } from "./ProviderRuntime.js";
+import { resolveProviderRequestRoute } from "./providerRequest.js";
+import { openAiCodexHeaders } from "./subscriptionAuth.js";
 
 // 稳定的辅助模型偏好；只匹配用户已配置的型号，不创建别名，也不探测远端目录。
 const toolModelPreferences: Record<string, readonly string[]> = {
@@ -13,8 +16,47 @@ const toolModelPreferences: Record<string, readonly string[]> = {
   custom: [],
   plugin: []
 };
+const transportHeaders = new Set(["user-agent", "accept", "accept-encoding", "content-type", "connection", "cache-control", "pragma", "openai-beta"]);
 
 export type MemoryModelField = "memoryModel" | "rewriteModel" | "extractModel";
+
+export interface ToolModelCandidate {
+  model: AgentModel;
+  failureDomain: string;
+}
+
+export function resolveToolModelCandidates(config: AgentConfig, credentials?: ProviderCredentialPersistence): readonly ToolModelCandidate[] {
+  const providers = new ProviderRegistry(config, [], undefined, undefined, undefined, credentials);
+  return toolModelAliases(config).flatMap((alias) => {
+    try {
+      const { provider, model } = providers.forModel(alias);
+      const apiKey = provider.config.apiKey
+        ?? process.env[provider.config.apiKeyEnv ?? provider.definition.apiKeyEnv ?? ""];
+      const { apiBackend } = resolveProviderRequestRoute(model, provider.config, provider.definition);
+      const anthropic = apiBackend === "anthropic_messages" || provider.config.type === "anthropic" || provider.config.type === "claude-subscription";
+      const authHeader = anthropic && provider.config.authMode !== "oauth-bearer" ? "x-api-key"
+        : apiBackend === "google_generative_ai" || provider.config.type === "google-native" ? "x-goog-api-key" : "Authorization";
+      const headers = new Headers({
+        ...(apiKey === undefined ? {} : { [authHeader]: authHeader === "Authorization" ? `Bearer ${apiKey}` : apiKey }),
+        ...(provider.config.type === "openai-codex" ? openAiCodexHeaders(apiKey) : {}),
+        ...provider.config.headers,
+        ...model.headers
+      });
+      const baseUrl = (model.baseUrl ?? provider.config.baseUrl ?? provider.definition.baseUrl!).replace(/\/$/u, "");
+      const endpoint = new URL(anthropic && baseUrl === "https://api.anthropic.com" ? `${baseUrl}/v1` : baseUrl);
+      endpoint.hash = "";
+      const failureDomain = createHash("sha256").update(JSON.stringify({
+        endpoint: endpoint.toString(),
+        oauthRefreshToken: provider.config.authMode === "oauth-bearer" ? provider.config.oauth?.refreshToken : undefined,
+        headers: [...headers].filter(([name]) => !transportHeaders.has(name)).sort(([left], [right]) => left.localeCompare(right))
+      })).digest("hex");
+      return [{ model: providers.createModelSettings(alias).model, failureDomain }];
+    } catch {
+      // 配置失效不产生可执行候选；显式选择只有这一项，不会越过用户指定的连接。
+      return [];
+    }
+  });
+}
 
 /** 记忆可覆盖全局辅助模型；清空覆盖后回到全局选择，不随聊天模型切换。 */
 export function resolveMemoryModelAlias(config: AgentConfig, field: MemoryModelField = "memoryModel"): string | undefined {
@@ -25,10 +67,14 @@ export function resolveMemoryModelAlias(config: AgentConfig, field: MemoryModelF
 }
 
 export function resolveToolModelAlias(config: AgentConfig): string | undefined {
+  return toolModelAliases(config)[0];
+}
+
+function toolModelAliases(config: AgentConfig): string[] {
   const registry = new ModelRegistry(config);
   if (config.toolModel) {
     const selected = registry.resolve(config.toolModel);
-    return selected?.source === "configured" && registry.isAvailable(selected) ? selected.alias : undefined;
+    return selected?.source === "configured" && registry.isAvailable(selected) ? [selected.alias] : [];
   }
   const providerOrder = Object.keys(toolModelPreferences);
   const priority = (provider: string, model: string): [number, number, number] => {
@@ -47,14 +93,14 @@ export function resolveToolModelAlias(config: AgentConfig): string | undefined {
     const b = priority(right.providerAlias, right.model.model);
     return a[0] - b[0] || a[1] - b[1] || a[2] - b[2];
   });
-  return candidates[0]?.alias;
+  return candidates.map((candidate) => candidate.alias);
 }
 
-export function resolveToolModel(config: AgentConfig): AgentModel | undefined {
+export function resolveToolModel(config: AgentConfig, credentials?: ProviderCredentialPersistence): AgentModel | undefined {
   const alias = resolveToolModelAlias(config);
   if (!alias) return undefined;
   try {
-    return new ProviderRegistry(config).createModelSettings(alias).model;
+    return new ProviderRegistry(config, [], undefined, undefined, undefined, credentials).createModelSettings(alias).model;
   } catch {
     // 显式模型失效时不偷偷切换；配置修正后，下一轮后台任务重新解析。
     return undefined;

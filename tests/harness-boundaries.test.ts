@@ -184,7 +184,7 @@ async function testSubagentStopsAndExplicitBudget(): Promise<void> {
       yield { type: "finish", reason: calls < 9 ? "tool-calls" : "stop" } as const;
     })()
   };
-  const options = { workspaceRoot: root, config: selected, toolRegistry: registry, getAccessMode: () => "read-only" as const, getModelSettings: () => ({ model, contextWindow: undefined }) };
+  const options = { workspaceRoot: root, config: selected, toolRegistry: registry, getModelSettings: () => ({ model, contextWindow: undefined }) };
   for (const word of ["审阅", "审计", "检查"]) {
     calls = 0;
     assert.equal(await runSubagentTask(options, `${word}权限链路`), "partial-9");

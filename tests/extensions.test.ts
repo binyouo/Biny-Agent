@@ -786,7 +786,7 @@ rl.on("line", (line) => {
     ...defaultConfig,
     extensions: {
       ...defaultConfig.extensions,
-      mcp: { demo: { command: process.execPath, args: [serverPath], cwd: ".", stderr: "ignore", enabled: true, timeoutMs: 10_000 } }
+      mcp: { demo: { command: process.execPath, args: [serverPath], cwd: ".", stderr: "ignore", enabled: true, timeoutMs: 10_000, exposure: "direct" } }
     }
   });
   const registry = new ToolRegistry();

@@ -29,7 +29,7 @@ const piReserveTokens = 16_384;
 const piKeepRecentTokens = 20_000;
 const defaultSummaryTokens = 4_096;
 const turnContextEndMarker = "<!-- biny-turn-context:end -->";
-const compactionPromptVersion = 2;
+const compactionPromptVersion = 3;
 
 class CompactionSummaryError extends Error {
   constructor(readonly kind: SessionCompactionFailure["kind"]) {
@@ -744,7 +744,11 @@ export class ContextMemory {
     } | undefined> {
     const previousSummary = this.summary;
     const systemPrompt = buildCompactionSystemPrompt(previousSummary !== undefined, plan.splitTurn);
-    const shorterPrompt = `${systemPrompt}\nThe previous attempt hit the output limit. Write a substantially shorter checkpoint from the same sources. Keep the required headings, evidence citations, latest constraints and unfinished work; remove repetition and secondary detail.`;
+    const repairPrompts = {
+      output_truncated: `${systemPrompt}\nThe previous attempt hit the output limit. Write a substantially shorter checkpoint from the same sources. Keep the required headings, evidence citations, latest constraints and unfinished work; remove repetition and secondary detail.`,
+      invalid_structure: `${systemPrompt}\nThe previous checkpoint was rejected: invalid_structure. Rewrite it from the same sources using every required heading exactly as shown, including the three Progress subheadings. Write one list item per line with its evidence citation; do not add an introduction or change the heading names.`,
+      invalid_evidence: `${systemPrompt}\nThe previous checkpoint was rejected: invalid_evidence. Rewrite it from the same sources. End every non-placeholder list item with a literal HTML comment in the form <!-- evidence:source-id[,source-id...] -->, replacing source-id only with IDs present in the supplied source records. Do not invent or repair source IDs. Omit unsupported claims; use (none recorded), (none verified), or (unknown) for empty sections.`
+    };
     const previousSources = previousCheckpointSources(this.checkpoint, previousSummary);
     try {
       const budget = this.compactionOptions.resolveSummaryBudget?.(summaryModel)
@@ -753,8 +757,8 @@ export class ContextMemory {
       if (!budget) throw new CompactionSummaryError("input_budget");
       const outputTokens = Math.min(maxSummaryTokens, budget.maxOutputTokens ?? maxSummaryTokens);
       const inputLimit = Math.min(budget.maxInputTokens, (budget.effectiveContextWindow ?? budget.contextWindow) - outputTokens - (budget.protocolSafetyMarginTokens ?? 32));
-      // 为唯一一次截断修复预留指令空间，重试不再裁掉材料或改变可引用来源。
-      const promptOverhead = estimateTokens(shorterPrompt) + estimateTokens(buildCompactionDataPrompt("", previousSummary, previousSources.text, hint)) + 8;
+      // 截断与契约错误共用一次修复机会；预留最长修复指令，保持材料和可引用来源不变。
+      const promptOverhead = Math.max(...Object.values(repairPrompts).map(estimateTokens)) + estimateTokens(buildCompactionDataPrompt("", previousSummary, previousSources.text, hint)) + 8;
       if (outputTokens <= 0 || inputLimit <= promptOverhead) throw new CompactionSummaryError("input_budget");
       const compactedMessages = stripTransientTurnContext(plan.compacted);
       const transcript = boundedCompactionTranscript(compactedMessages, inputLimit - promptOverhead);
@@ -781,16 +785,17 @@ export class ContextMemory {
         if (result.usage) await this.onUsage(result.usage, "compaction");
         return result;
       };
-      let result = await generateSummary(systemPrompt);
-      if (result.finishReason === "length") result = await generateSummary(shorterPrompt);
-      if (result.finishReason === "length") throw new CompactionSummaryError("output_truncated");
-      if (result.finishReason !== "stop") throw new CompactionSummaryError("incomplete_response");
-      const summary = cleanModelSummary(result.text);
-      if (!summary) throw new CompactionSummaryError("invalid_structure");
-      if (summary) {
-        const bounded = truncateStructuredSummary(redactSecrets(summary), outputTokens);
-        const parsed = checkpointFromCitedSummary(bounded, sourceCatalog);
-        if (parsed) {
+      let instructions = systemPrompt;
+      for (let attempt = 0; ; attempt += 1) {
+        const result = await generateSummary(instructions);
+        try {
+          if (result.finishReason === "length") throw new CompactionSummaryError("output_truncated");
+          if (result.finishReason !== "stop") throw new CompactionSummaryError("incomplete_response");
+          const summary = cleanModelSummary(result.text);
+          if (!summary) throw new CompactionSummaryError("invalid_structure");
+          const bounded = truncateStructuredSummary(redactSecrets(summary), outputTokens);
+          const parsed = checkpointFromCitedSummary(bounded, sourceCatalog);
+          if (!parsed) throw new CompactionSummaryError("invalid_evidence");
           const withFiles = appendFileOperationSummary(parsed.summary, plan.compacted, previousSummary);
           const fileClaims = fileOperationClaims(withFiles, parsed.state, plan.compacted, this.checkpoint);
           return {
@@ -798,9 +803,12 @@ export class ContextMemory {
             state: fileClaims.state,
             evidence: [...parsed.evidence, ...fileClaims.evidence]
           };
+        } catch (error) {
+          if (attempt !== 0 || !(error instanceof CompactionSummaryError)
+            || (error.kind !== "output_truncated" && error.kind !== "invalid_structure" && error.kind !== "invalid_evidence")) throw error;
+          instructions = repairPrompts[error.kind];
         }
       }
-      throw new CompactionSummaryError("invalid_evidence");
     } catch (error) {
       signal?.throwIfAborted();
       const now = this.compactionOptions.now?.() ?? Date.now();
@@ -1238,12 +1246,24 @@ function checkpointRawItems(summary: string): Record<SessionContextCheckpointFie
     const match = `${summary}\n## __END__`.match(new RegExp(`^## ${escapeRegExp(heading)}\\s*$([\\s\\S]*?)(?=^## )`, "mu"));
     return match?.[1]?.trim() ?? "";
   };
-  const items = (value: string): string[] => value
-    .split("\n")
-    .map((line) => line.trim())
-    .filter((line) => /^(?:[-*]|\d+\.)\s+/u.test(line))
-    .map((line) => line.replace(/^(?:[-*]|\d+\.)\s+/u, "").replace(/^\[[ xX]\]\s*/u, "").trim())
-    .filter(Boolean);
+  const items = (value: string): string[] => {
+    const result: string[] = [];
+    let currentItem: number | undefined;
+    for (const line of value.split("\n")) {
+      const trimmed = line.trim();
+      if (/^(?:[-*]|\d+\.)\s+/u.test(trimmed)) {
+        const item = trimmed.replace(/^(?:[-*]|\d+\.)\s+/u, "").replace(/^\[[ xX]\]\s*/u, "").trim();
+        currentItem = item ? result.push(item) - 1 : undefined;
+      } else if (currentItem !== undefined && /^[\t ]+/u.test(line)
+        && trimmed.startsWith("<!--") && !trimmed.replace(evidenceCitationPattern, "").trim()) {
+        // Markdown 列表允许 citation 缩进续行；只合并紧邻条目的完整 evidence 标记。
+        result[currentItem] += ` ${trimmed}`;
+      } else {
+        currentItem = undefined;
+      }
+    }
+    return result;
+  };
   const progress = section("Progress");
   const progressSection = (heading: "Done" | "In Progress" | "Blocked"): string => {
     const match = `${progress}\n### __END__`.match(new RegExp(`^### ${escapeRegExp(heading)}\\s*$([\\s\\S]*?)(?=^### )`, "mu"));

@@ -13,6 +13,8 @@ import { PermissionManager } from "../permission/PermissionManager.js";
 import { analyzePermissionRequest } from "../permission/policy.js";
 import { createToolPermissionRequest } from "../tools/display/ToolDisplay.js";
 import { ToolAccesses } from "../tools/access.js";
+import { getToolExposure, isToolModelVisible, isToolScriptCallable } from "../tools/exposure.js";
+import { toolSearchToolName, type ToolSearchResult } from "../tools/toolSearch.js";
 import { assertMatchingFileChange, FileChangeUncertainError, parseFileChange, type CommittedFileChange } from "../tools/file/fileChange.js";
 import {
   maxEditFileBytes,
@@ -108,6 +110,9 @@ interface ToolCallExecutionOptions {
   toolCallId: string;
   abortSignal?: AbortSignal;
   auditOnly?: boolean;
+  script?: boolean;
+  toolDiscoveryNames?: ReadonlySet<string>;
+  toolDiscoveryNamespace?: string;
   /** Revalidate the exact nested registration after asynchronous admission/approval. */
   assertCurrentRegistration?: () => void;
 }
@@ -189,9 +194,10 @@ export class ToolExecutionCoordinator {
     allowedToolNames?: ReadonlySet<string>,
     private readonly executionBudget?: ToolExecutionBudget,
     private readonly onToolResultPersisted?: () => Promise<void>,
-    private readonly getToolExecutionMode?: () => "direct" | "code_mode"
+    executionToolNames?: ReadonlySet<string>
   ) {
     this.allowedToolNames = allowedToolNames ? new Set(allowedToolNames) : undefined;
+    this.executionToolNames = executionToolNames ? new Set(executionToolNames) : undefined;
     if (executionBudget) {
       assertPositiveSafeInteger(executionBudget.maxToolCalls, "maxToolCalls");
       assertPositiveSafeInteger(executionBudget.maxRepeatedActions, "maxRepeatedActions");
@@ -221,24 +227,32 @@ export class ToolExecutionCoordinator {
   }
 
   private readonly allowedToolNames?: Set<string>;
+  private readonly executionToolNames?: Set<string>;
 
   /** 只扩展到当前注册表中真实存在的工具；权限、预算和审计不会随 schema 扩展而放宽。 */
   allowTools(names: readonly string[]): string[] {
     if (!this.allowedToolNames) return [];
-    const registered = new Set(this.context.toolRegistry.list().map((tool) => tool.name));
+    const registered = new Set(this.context.toolRegistry.list().filter(isToolModelVisible).map((tool) => tool.name));
     const added: string[] = [];
     for (const name of names) {
       if (!registered.has(name) || this.allowedToolNames.has(name)) continue;
       this.allowedToolNames.add(name);
+      this.executionToolNames?.add(name);
       added.push(name);
     }
     return added;
   }
 
   /** Model-facing tool envelope. */
-  createAgentTools(editing?: { mode: EditingMode; attachmentRoot?: string }, options?: { auditOnly?: boolean; codeModeReadOnly?: boolean }): AgentTool[] {
+  createAgentTools(editing?: { mode: EditingMode; attachmentRoot?: string }, options?: {
+    auditOnly?: boolean; script?: boolean; toolDiscoveryNames?: ReadonlySet<string>; toolDiscoveryNamespace?: string;
+  }): AgentTool[] {
     let entries = this.context.toolRegistry.listEntries()
-      .filter(({ tool: registered }) => !this.allowedToolNames || this.allowedToolNames.has(registered.name));
+      .filter((entry) => options?.script
+        ? (!this.executionToolNames || this.executionToolNames.has(entry.tool.name))
+          && (entry.source === "mcp" && !codeModeNestedToolNames.has(entry.tool.name) || isCodeModeReadTool(entry))
+          && isToolScriptCallable(entry.tool, !this.allowedToolNames || this.allowedToolNames.has(entry.tool.name))
+        : isToolModelVisible(entry.tool) && (!this.allowedToolNames || this.allowedToolNames.has(entry.tool.name)));
     const originalRegistrations = new Map(entries.map((entry) => [entry.tool.name, entry] as const));
     if (editing) {
       entries = routeEditingTools(entries, { workspaceRoot: this.context.workspaceRoot, ignore: this.context.config.workspace.ignore, attachmentRoot: editing.attachmentRoot }, editing.mode);
@@ -254,16 +268,20 @@ export class ToolExecutionCoordinator {
           promptGuidelines: registered.promptGuidelines,
           description: registered.description,
           parameters: registered.parameters,
+          outputSchema: registered.outputSchema,
+          namespace: registered.namespace,
           // 写入工具的准备、权限确认和实际执行必须保持同一顺序，避免并发预览互相失效。
           executionMode: registered.risk === "write" ? "sequential" as const : "parallel" as const,
           execute: async (toolCallId: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<AgentToolResult> => {
             const result = await this.trackExecution(this.execute(
               registered,
               args,
-              { toolCallId, abortSignal: signal, auditOnly: options?.auditOnly,
-                assertCurrentRegistration: options?.codeModeReadOnly ? () => {
-                  if (!this.context.toolRegistry.listEntries().includes(originalRegistration) || !isCodeModeReadTool(originalRegistration)
-                    || this.allowedToolNames && !this.allowedToolNames.has(registered.name)) {
+              { toolCallId, abortSignal: signal, auditOnly: options?.auditOnly, script: options?.script,
+                toolDiscoveryNames: options?.toolDiscoveryNames, toolDiscoveryNamespace: options?.toolDiscoveryNamespace,
+                assertCurrentRegistration: options?.script ? () => {
+                  if (!this.context.toolRegistry.listEntries().includes(originalRegistration) || !(originalRegistration.source === "mcp" && !codeModeNestedToolNames.has(registered.name) || isCodeModeReadTool(originalRegistration))
+                    || this.executionToolNames && !this.executionToolNames.has(registered.name)
+                    || !isToolScriptCallable(registered, !this.allowedToolNames || this.allowedToolNames.has(registered.name))) {
                     throw new Error(`Tool ${registered.name} is no longer available in this cell.`);
                   }
                 } : undefined },
@@ -286,16 +304,15 @@ export class ToolExecutionCoordinator {
   /** Outer Code Mode admission is separate from the child scheduler: a cell
    * holding its only slot would deadlock when maxConcurrentTools is one. */
   createCodeModeTool(editing?: { mode: EditingMode; attachmentRoot?: string }, executionPolicy?: CodeModeLimits): AgentTool {
-    const reviewed = new Set(this.context.toolRegistry.listEntries()
-      .filter(isCodeModeReadTool)
-      .map((entry) => entry.tool.name));
-    const visible = this.createAgentTools(editing).filter((entry) =>
-      codeModeNestedToolNames.has(entry.name) && reviewed.has(entry.name));
+    const visible = this.createAgentTools(editing, { script: true }).filter((entry) => {
+      const registered = this.context.toolRegistry.get(entry.name);
+      return codeModeNestedToolNames.has(entry.name) && getToolExposure(registered) === "direct";
+    });
     return {
       name: "exec",
-      description: "Run isolated JavaScript with selected host-owned read-only Biny tools, including memory/history, task status, managed process output, and local skill metadata/resources when available. Nested calls use normal permissions. Skill activation and task/process creation or mutation require direct mode. No direct filesystem, network, process, imports, writes, or desktop access. Return a JSON-serializable value.",
-      promptSnippet: `Run isolated JavaScript with selected read-only tools.* calls. The only nested tools available now are:\n${codeModeCatalog(visible) || "(none selected)"}`,
-      promptGuidelines: ["Inside exec, use only the listed tools.* functions. Return the result. Never retry an entire cell after a partial failure; inspect child outcomes first."],
+      description: "Run isolated JavaScript with admitted tools.* calls. Use searchTools(query, {limit, namespace}), describeTool(name), and describeNamespace(name) to discover tools and read schemas on demand. Nested calls use normal permissions and budgets. No direct filesystem, network, process or imports. Return a JSON-serializable value.",
+      promptSnippet: `Compose tool calls in isolated JavaScript. Discover MCP tools with searchTools, describeTool and describeNamespace. Selected host-owned read tools:\n${codeModeCatalog(visible) || "(none selected)"}`,
+      promptGuidelines: ["Return only the result needed by the user. Use standard tool calls when scripting is unnecessary. Never retry an entire cell after a partial failure; inspect child outcomes first."],
       parameters: { type: "object", properties: { code: { type: "string", minLength: 1, maxLength: 65_536 } }, required: ["code"], additionalProperties: false },
       executionMode: "sequential",
       execute: async (toolCallId, args, signal) => {
@@ -334,23 +351,44 @@ export class ToolExecutionCoordinator {
           this.codeModeCellActive = true;
           try {
             const current = new Map(this.context.toolRegistry.listEntries().map((entry) => [entry.tool.name, entry] as const));
-            const children = this.createAgentTools(editing, { auditOnly: true, codeModeReadOnly: true }).filter((entry) => {
-              const registration = current.get(entry.name);
-              return codeModeNestedToolNames.has(entry.name) && registration && isCodeModeReadTool(registration);
-            });
-            const original = new Map(children.map((entry) => [entry.name, current.get(entry.name)] as const));
+            const children = this.createAgentTools(editing, { auditOnly: true, script: true });
+            const original = new WeakMap(children.map((entry) => [entry, current.get(entry.name)] as const));
             await this.recordAndFlush({ type: "tool_execution", tool: "exec", toolCallId, sequence, operationId, state: "running", retrySafety: "unsafe" });
             result = await executeCodeModeCell({
-              code: args.code, parentToolCallId: toolCallId, tools: children, signal, executionPolicy,
+              code: args.code, parentToolCallId: toolCallId, tools: [], admittedTools: children, signal, executionPolicy,
+              prepareTools: async (query, discoverySignal) => {
+                if (!query || !codeModeNestedToolNames.has(query) || current.get(query)?.source !== "builtin") {
+                  const discovery = await this.context.prepareToolDiscovery?.(query, discoverySignal);
+                  if (discovery?.timedOut) throw new Error("MCP discovery is still pending. Try again after the connection is ready.");
+                }
+                discoverySignal?.throwIfAborted();
+                const refreshed = new Map(this.context.toolRegistry.listEntries().map((entry) => [entry.tool.name, entry] as const));
+                const admitted = this.createAgentTools(editing, { auditOnly: true, script: true });
+                for (const entry of admitted) original.set(entry, refreshed.get(entry.name));
+                return admitted;
+              },
+              searchTools: async (query, options) => {
+                const search = this.context.toolRegistry.listEntries().find((entry) => entry.tool.name === toolSearchToolName);
+                if (!search || search.source !== "builtin") throw new Error("Tool discovery is not available.");
+                const names = new Set(options.tools.map((tool) => tool.name));
+                const found = await this.trackExecution(this.execute(search.tool, { query, maxResults: options.limit }, {
+                  toolCallId: options.toolCallId, abortSignal: options.signal, auditOnly: true, script: true,
+                  toolDiscoveryNames: names, toolDiscoveryNamespace: options.namespace
+                }, search.source), options.toolCallId) as ToolSearchResult;
+                if (found.status !== "completed") throw new Error(found.error ?? "Tool discovery failed.");
+                return found.tools;
+              },
               onUnsettled: (operations) => {
                 for (const { toolCallId: id, settlement } of operations) {
                   this.quarantinedCodeModeChildIds.add(id);
                   this.context.quarantineExternalTool?.("Code Mode child", id, settlement);
                 }
               },
-              isCurrent: (name) => this.context.toolRegistry.listEntries().some((entry) =>
-                isCodeModeReadTool(entry) && entry.tool.name === name && entry === original.get(name)
-                && (!this.allowedToolNames || this.allowedToolNames.has(name)))
+              isCurrent: (name, wrapper) => this.context.toolRegistry.listEntries().some((entry) =>
+                entry.tool.name === name && entry === original.get(wrapper)
+                && (entry.source === "mcp" && !codeModeNestedToolNames.has(name) || isCodeModeReadTool(entry))
+                && (!this.executionToolNames || this.executionToolNames.has(name))
+                && isToolScriptCallable(entry.tool, !this.allowedToolNames || this.allowedToolNames.has(name)))
             });
             if (!(result as { ok: boolean }).ok) {
               error = (result as { error?: string }).error ?? "Code Mode execution failed.";
@@ -358,6 +396,10 @@ export class ToolExecutionCoordinator {
                 ? "unknown" : signal?.aborted ? "cancelled" : "failed";
               if (status === "unknown") this.uncertainExecutions.set(operationId, "exec");
             }
+          } catch (failure) {
+            error = failure instanceof Error ? failure.message : String(failure);
+            status = signal?.aborted ? "cancelled" : "failed";
+            result = { ok: false, error, childCalls: [] };
           } finally {
             this.codeModeCellActive = false;
           }
@@ -421,7 +463,8 @@ export class ToolExecutionCoordinator {
   }
 
   async handleInvalidToolCall(toolName: string, toolCallId: string, input: unknown, signal?: AbortSignal): Promise<unknown> {
-    if (this.allowedToolNames && !this.allowedToolNames.has(toolName)) {
+    const registeredEntry = this.context.toolRegistry.list().find((tool) => tool.name === toolName);
+    if (this.allowedToolNames && !this.allowedToolNames.has(toolName) || registeredEntry && !isToolModelVisible(registeredEntry)) {
       const call = { id: toolCallId, name: toolName, args: input };
       const sequence = this.nextSequence();
       const operationId = createToolOperationId(this.context.recorder.sessionId, toolCallId);
@@ -607,6 +650,7 @@ export class ToolExecutionCoordinator {
             operationId,
             evidence: latestEvidence,
             auditOnly: options.auditOnly || auditOnly || neverStarted && status === "cancelled",
+            scriptResult: options.script,
             outcomeUnknownReason
           }
         );
@@ -776,7 +820,8 @@ export class ToolExecutionCoordinator {
                     updateState("unknown", "File commit evidence could not be persisted.");
                     throw new FileChangeUncertainError(`File side effect occurred, but commit evidence could not be recorded: ${formatToolError(call.name, error)}`);
                   }
-                }
+                },
+                options
               );
             }
           });
@@ -826,9 +871,10 @@ export class ToolExecutionCoordinator {
       operationId?: string;
       evidence?: string;
       auditOnly?: boolean;
+      scriptResult?: boolean;
     } = {}
   ): Promise<unknown> {
-    const modelResult = await this.applyToolResultBudget(call, sequence, result);
+    const modelResult = metadata.scriptResult ? result : await this.applyToolResultBudget(call, sequence, result);
     // 模型侧预算只改变返回值；session、实时界面和归档都以工具实际产出的结果为事实。
     // 否则一次预算溢出会把“模型看见的引用”误当成工具真正返回的内容，后续恢复只能看到二次包装。
     const persistedResult = await this.outlineToolResultForPersistence(call, sequence, result);
@@ -1182,7 +1228,8 @@ export class ToolExecutionCoordinator {
     onExecutionState?: (state: ToolExecutionState, evidence?: string) => void,
     onStarted?: () => void,
     capabilitySchema?: unknown,
-    onFileChangeCommitted?: (change: CommittedFileChange) => Promise<void>
+    onFileChangeCommitted?: (change: CommittedFileChange) => Promise<void>,
+    options?: ToolCallExecutionOptions
   ): Promise<ToolExecutionOutcome> {
     const startedAt = Date.now();
     let executionPromise: Promise<unknown> | undefined;
@@ -1203,7 +1250,10 @@ export class ToolExecutionCoordinator {
         let pending: Promise<unknown>;
         try {
           pending = execution.execute({
-            toolDiscoveryMode: (this.getToolExecutionMode?.() ?? this.context.config.agent.toolExecutionMode) === "code_mode" ? "code_mode" : undefined,
+            toolDiscoveryNames: options?.toolDiscoveryNames,
+            toolDiscoveryNamespace: options?.toolDiscoveryNamespace,
+            prepareToolDiscovery: options?.script ? undefined : this.context.prepareToolDiscovery,
+            mcpResultMode: options?.script && source === "mcp" ? "envelope" : undefined,
             deniedPaths: this.permissionManager.getDeniedPaths(),
             toolCallId: call.id,
             operationId: operationId ?? createToolOperationId(this.context.recorder.sessionId, call.id),
@@ -1664,6 +1714,8 @@ function failedToolResultMessage(result: unknown, seen = new Set<object>()): str
   const record = result as Record<string, unknown>;
   const nestedFailure = record.result !== result ? failedToolResultMessage(record.result, seen) : undefined;
   const failed = typeof record.error === "string"
+    || record.error === true
+    || record.isError === true
     || (typeof record.exitCode === "number" && record.exitCode !== 0)
     || record.approved === false
     || record.status === "denied"

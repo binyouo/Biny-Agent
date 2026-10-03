@@ -118,6 +118,7 @@ export interface AgentRuntimeContext {
   recorder: SessionRecorder;
   contextMemory?: ContextMemory;
   toolRegistry: ToolRegistry;
+  prepareToolDiscovery?: (query?: string, signal?: AbortSignal) => Promise<{ pending: string[]; timedOut: boolean }>;
   permissionManager?: PermissionManager;
   confirmPermission?: (request: AgentPermissionRequest) => Promise<AgentPermissionResult>;
   /** 回合内首次改动工作区前建快照；未提供或抛错时工具照常执行。 */

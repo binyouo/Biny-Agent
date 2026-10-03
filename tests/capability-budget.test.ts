@@ -21,7 +21,7 @@ const model: AgentModel = {
 };
 const input = {
   input: "Read the latest document", history: [], previousTools: catalog.map((tool) => tool.name),
-  config: defaultConfig, tools: [...foundation, ...catalog], skills: [], model,
+  config: defaultConfig, tools: [...foundation, ...catalog], skills: [], models: [{ model, failureDomain: "test-selector" }],
   automaticToolBudget: { maxTools: 2, maxSchemaCharacters: 1000, maxPreviousTools: 1 }
 };
 const result = await preselectCapabilities(input);
@@ -50,7 +50,7 @@ assert.deepEqual((await preselectCapabilities({ ...input, tools: [...input.tools
 assert.equal((await preselectCapabilities({ ...input, selection: { tools: "all", skills: "none" } })).tools, "all");
 assert.equal((await preselectCapabilities({ ...input, selection: { tools: "none", skills: "none" } })).tools, "none");
 
-const noModel = await preselectCapabilities({ ...input, model: undefined });
+const noModel = await preselectCapabilities({ ...input, models: [] });
 assert.ok(Array.isArray(noModel.tools));
 assert.equal(noModel.tools.filter((name) => name.startsWith("mcp_")).length, 1, "selector failure fallback has its own retention cap");
 selection = [];

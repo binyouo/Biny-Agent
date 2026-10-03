@@ -5,6 +5,7 @@
  */
 import type { OperationLane } from "./types.js";
 import { sessionIdFromFile } from "../../session/store.js";
+import { runtimeCommandOperation } from "../commands.js";
 
 export const memoryQueryActions = new Set(["overview", "stats", "service-status", "stored-embedding-model", "tool-model", "list", "get", "search", "archive-list", "archive-chains", "sleep-status", "sleep-http-status", "sleep-runs", "sleep-preview"]);
 
@@ -53,7 +54,7 @@ export class OperationDispatcher {
 }
 
 export function operationLaneKey(operation: string, payload: Record<string, unknown>, primarySessionId = "primary"): string | undefined {
-  if (operationLane(operation) !== "run") return undefined;
+  if (operationLane(operation, payload) !== "run") return undefined;
   const session = typeof payload.sessionId === "string" && payload.sessionId.trim()
     ? payload.sessionId
     : typeof payload.session === "string" && payload.session.trim()
@@ -65,6 +66,12 @@ export function operationLaneKey(operation: string, payload: Record<string, unkn
 }
 
 export function operationLane(operation: string, payload: Record<string, unknown> = {}): OperationLane {
+  if (operation === "command" && typeof payload.input === "string") {
+    const commandOperation = runtimeCommandOperation(payload.input);
+    if (commandOperation?.startsWith("session.goal.") || commandOperation?.startsWith("goal.")) {
+      return operationLane(commandOperation, payload);
+    }
+  }
   if (operation === "memory" && memoryQueryActions.has(String(payload.action))) return "query";
   // 会话的创建、替换、写入者和准入共用短因果队列；重建与权限写入不能交错，
   // 但一个会话的生命周期不应排在其它会话的 MCP/记忆维护之后。
@@ -94,12 +101,17 @@ export function operationLane(operation: string, payload: Record<string, unknown
     || operation === "queue"
     || operation === "run.queue"
     || operation === "run.queue.mutate"
+    || operation === "session.goal.set"
+    || operation === "session.goal.resume"
+    || operation === "session.goal.pause"
+    || operation === "session.goal.clear"
   ) return "run";
   if (operation === "task.start" || operation === "task.run" || operation === "task.retry" || operation === "task.approve") return "admission";
   if (operation === "diary.refresh" || operation === "reflection.run" || operation === "heartbeat.run") return "admission";
   if (
     operation === "snapshot"
     || operation === "input.list"
+    || operation === "session.goal.get"
     || operation === "plan.list"
     || operation === "session.list"
     || operation === "worktree.list"
@@ -121,6 +133,7 @@ export function operationLane(operation: string, payload: Record<string, unknown
     || operation === "task.get"
     || operation === "task.list"
     || operation === "task.events"
+    || operation === "task.wait"
     || operation === "heartbeat.status"
     || operation === "automation.list"
     || operation === "automation.pending"
@@ -133,7 +146,7 @@ export function operationLane(operation: string, payload: Record<string, unknown
     || operation === "capability.get"
     || operation === "host.info"
   ) return "query";
-  if (operation === "task.cancel" || operation === "memory.sleep.cancel" || operation === "memory.embedding.cancel-download" || operation === "memory.embedding.cancel-rebuild") return "control";
+  if (operation === "task.message" || operation === "task.cancel" || operation === "memory.sleep.cancel" || operation === "memory.embedding.cancel-download" || operation === "memory.embedding.cancel-rebuild") return "control";
   if (operation === "capability.cancel" || operation === "capability.fail" || operation === "capability.release" || operation === "capability.reject") return "control";
   if (operation === "goal.pause" || operation === "goal.cancel" || operation === "graph.pause" || operation === "graph.cancel") return "control";
   if (operation === "capability.register" || operation === "capability.replace" || operation === "capability.invoke" || operation === "capability.accept" || operation === "capability.start" || operation === "capability.result" || operation === "capability.chunk" || operation === "capability.admit" || operation === "graph.start" || operation === "graph.resume" || operation === "goal.resume") return "admission";

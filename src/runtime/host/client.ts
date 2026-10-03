@@ -25,6 +25,7 @@ import type { RuntimeCommandResult } from "../commands.js";
 import type { CommandRuntime } from "../CommandRuntime.js";
 import type { AutomationCreateInput } from "../AutomationScheduler.js";
 import type { GraphNodeInput } from "../GoalGraphStore.js";
+import type { SessionGoalRecord, SessionGoalExpected } from "../SessionGoalStore.js";
 import type { CapabilityInvocation, CapabilityInvocationInput, CapabilityRegistration, CapabilityRegistrationInput } from "../CapabilityStore.js";
 import type { BrowserAutomationEndpoint } from "../../tools/browser.js";
 import type { ChatPersonalizationOverridePatch, AgentPersonalizationState, GlobalPersonalizationUpdate } from "../../personalization/index.js";
@@ -418,6 +419,14 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
     return await this.request("task.get", { taskRunId });
   }
 
+  async taskMessage(taskRunId: string, sessionId: string, message: string, messageId?: string): Promise<unknown> {
+    return await this.request("task.message", { taskRunId, sessionId, message, messageId });
+  }
+
+  async taskWait(taskRunId: string, sessionId: string, waitMs = 0, afterRevision?: number): Promise<unknown> {
+    return await this.request("task.wait", { taskRunId, sessionId, waitMs, afterRevision });
+  }
+
   async taskList(options: { status?: string; limit?: number; cursor?: number } = {}): Promise<unknown> {
     return await this.request("task.list", options);
   }
@@ -456,6 +465,26 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
 
   async goalCreate(title: string, payload?: unknown, goalId?: string): Promise<HostOperationResult<unknown>> {
     return await this.request("goal.create", { title, payload, goalId });
+  }
+
+  async sessionGoalGet(sessionId?: string): Promise<SessionGoalRecord | undefined> {
+    return await this.request("session.goal.get", { sessionId });
+  }
+
+  async sessionGoalSet(sessionId: string, objective: string, options: { tokenBudget?: number; expected?: SessionGoalExpected } = {}): Promise<HostOperationResult<SessionGoalRecord>> {
+    return await this.request("session.goal.set", { sessionId, objective, tokenBudget: options.tokenBudget, expected: options.expected });
+  }
+
+  async sessionGoalPause(sessionId: string, expected?: SessionGoalExpected): Promise<HostOperationResult<SessionGoalRecord>> {
+    return await this.request("session.goal.pause", { sessionId, expected });
+  }
+
+  async sessionGoalResume(sessionId: string, expected?: SessionGoalExpected): Promise<HostOperationResult<SessionGoalRecord>> {
+    return await this.request("session.goal.resume", { sessionId, expected });
+  }
+
+  async sessionGoalClear(sessionId: string, expected?: SessionGoalExpected): Promise<HostOperationResult<undefined>> {
+    return await this.request("session.goal.clear", { sessionId, expected });
   }
 
   async goalGet(goalId: string): Promise<unknown> {
@@ -824,7 +853,9 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
     this.listeners.add(listener);
     if (this.pendingUpdates.length) {
       const updates = this.pendingUpdates.splice(0);
-      for (const update of updates) listener(update);
+      for (const update of updates) {
+        if (update.snapshot.info.sessionId === this.focusedSessionId) listener(update);
+      }
     }
     return () => this.listeners.delete(listener);
   }

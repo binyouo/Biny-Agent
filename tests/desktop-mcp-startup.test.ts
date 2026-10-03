@@ -42,6 +42,13 @@ try {
   assert.equal(render({ sessionWriterConflict: true }).querySelector('button[aria-label="发送消息"]')?.getAttribute("aria-disabled"), "true");
   assert.equal(render({ modelSetupRequired: true }).querySelector('button[aria-label="发送消息"]')?.getAttribute("aria-disabled"), "true");
   assert.equal(render({ memoryToggleBusy: true }).querySelector('button[aria-label="发送消息"]')?.getAttribute("aria-disabled"), "true");
+  for (const selector of ['[data-composer-menu="capabilities"]', '[data-composer-menu="model"]']) {
+    const control = render({ running: true, runtimeBusy: true }).querySelector(selector);
+    assert.ok(control, selector);
+    assert.notEqual(control.getAttribute("aria-disabled"), "true", "运行中允许为后续回合选择模型与能力");
+    assert.equal(control.hasAttribute("disabled"), false);
+    assert.equal(render({ sessionWriterConflict: true }).querySelector(selector)?.getAttribute("aria-disabled"), "true");
+  }
 } finally {
   imports.deregister();
   if (previousReact) Object.defineProperty(globalThis, "React", previousReact);

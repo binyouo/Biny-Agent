@@ -7,7 +7,7 @@ import type { ModelCatalogEntry } from "../ai/types.js";
 import type { AgentConfig, ProviderConfig } from "../config/schema.js";
 import { ModelRegistry, type ModelChoice, type RegisteredModel } from "./ModelRegistry.js";
 import { ModelResolver } from "./ModelResolver.js";
-import { ProviderRegistry, type ModelSettings } from "./ProviderRuntime.js";
+import { ProviderRegistry, type ModelSettings, type ProviderCredentialPersistence } from "./ProviderRuntime.js";
 import { AiRegistry } from "./AiRegistry.js";
 import type { ModelsStore } from "./ModelsStore.js";
 import { createProxyAwareFetch } from "../network/proxyFetch.js";
@@ -21,9 +21,10 @@ export class ModelRuntime {
     catalogs: readonly [string, ModelCatalogEntry[]][] = [],
     ai: AiRegistry = new AiRegistry(),
     modelsStore?: ModelsStore,
-    fetcher: typeof globalThis.fetch = createProxyAwareFetch()
+    fetcher: typeof globalThis.fetch = createProxyAwareFetch(),
+    credentials?: ProviderCredentialPersistence
   ) {
-    this.providers = new ProviderRegistry(config, catalogs, ai, modelsStore, fetcher);
+    this.providers = new ProviderRegistry(config, catalogs, ai, modelsStore, fetcher, credentials);
     this.models = new ModelRegistry(config, this.providers);
     for (const [providerAlias] of Object.entries(config.providers)) {
       this.models.registerCatalog(providerAlias, this.providers.require(providerAlias).getModels());

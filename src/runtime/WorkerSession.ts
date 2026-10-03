@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, promises as fs } from "node:fs";
 import { z } from "zod";
-import type { AgentAssistantMessage, AgentMessage, AgentToolResult, AgentLoopTurnContext, AgentUsage } from "../agent/core/types.js";
+import type { AgentAssistantMessage, AgentMessage, AgentToolResult, AgentLoopTurnContext, AgentUsage, ModelRequestContext, ModelRequestMetrics, ModelRequestObserver } from "../agent/core/types.js";
 import { readSessionEvents } from "../session/events.js";
 import { SessionRecorder } from "../session/recorder.js";
 import { replaySessionEvents } from "../session/replay.js";
@@ -10,13 +10,17 @@ import { TurnStore } from "../session/turnStore.js";
 import type { RuntimeEventSink } from "../session/runtimeEvent.js";
 import { createToolOperationId, type ToolRetrySafety } from "../tools/types.js";
 import { SessionLeaseStore, type SessionLease } from "./SessionLease.js";
+import type { TaskMessage, WorkerCommunication } from "./TaskCommunication.js";
 
 export interface WorkerExecution {
   taskId: string;
   persistenceRoot: string;
   parentSessionId?: string;
+  parentRunId?: string;
+  sessionGoalId?: string;
   resume?: boolean;
   runtimeEventSink?: RuntimeEventSink;
+  communication?: WorkerCommunication;
 }
 
 const usageSchema = z.object({
@@ -27,6 +31,7 @@ const usageSchema = z.object({
 });
 const workerFactsSchema = z.object({
   version: z.literal(1), taskId: z.string(), parentSessionId: z.string().optional(),
+  parentRunId: z.string().optional(), sessionGoalId: z.string().optional(),
   workspaceRoot: z.string(), policy: z.string(), startedSteps: z.number().int().nonnegative(),
   usages: z.array(usageSchema), status: z.enum(["running", "completed"]), output: z.string().optional()
 }).strict();
@@ -64,6 +69,7 @@ export class WorkerSession {
   private failure?: Error;
   private assistant?: AgentAssistantMessage;
   private readonly callIds = new Set<string>();
+  private readonly receivedMessageIds = new Set<string>();
   private readonly pendingTools = new Set<Promise<AgentToolResult>>();
   private closed = false;
   private closePromise?: Promise<void>;
@@ -94,6 +100,7 @@ export class WorkerSession {
       const checkpoint = await turns.load();
       const facts: WorkerFacts = {
         version: 1, taskId: execution.taskId, parentSessionId: execution.parentSessionId,
+        parentRunId: execution.parentRunId, sessionGoalId: execution.sessionGoalId,
         workspaceRoot: await fs.realpath(workspaceRoot), policy: createHash("sha256").update(JSON.stringify(policy)).digest("hex"),
         startedSteps: 0, usages: [], status: "running"
       };
@@ -109,6 +116,7 @@ export class WorkerSession {
         session = new WorkerSession(execution, task, systemPrompt, replay.messages, stored, leases, lease);
         session.recorder.restoreToolCallSequence(events.reduce((maximum, event) => event.type === "tool_call" && typeof event.sequence === "number" ? Math.max(maximum, event.sequence) : maximum, 0));
         for (const event of events) if (event.type === "tool_call" && event.toolCallId) session.callIds.add(event.toolCallId);
+        for (const event of events) if (event.type === "user_message" && event.messageId) session.receivedMessageIds.add(event.messageId);
         for (const result of replay.recoveredToolResults) await session.recorder.recordAndFlush(result);
         await session.save();
       } else {
@@ -128,6 +136,21 @@ export class WorkerSession {
   get startedSteps(): number { return this.facts.startedSteps; }
   get usages(): AgentUsage[] { return [...this.facts.usages]; }
   get output(): string | undefined { return this.facts.status === "completed" ? this.facts.output : undefined; }
+  requestContext(): ModelRequestContext {
+    return { sessionId: this.facts.parentSessionId, runId: this.facts.parentRunId, sessionGoalId: this.facts.sessionGoalId, operation: "subagent" };
+  }
+
+  async recordModelRequest(metrics: ModelRequestMetrics): Promise<void> {
+    // 请求事实仍须保存，即使工具已使 Worker 隔离；失败不能抹掉已发生的模型费用。
+    await this.recorder.recordAndFlush({ type: "model_request", metrics });
+  }
+
+  async replayModelRequestUsage(observer: ModelRequestObserver | undefined): Promise<void> {
+    if (!observer) return;
+    for (const event of await readSessionEvents(this.recorder.filePath)) {
+      if (event.type === "model_request") await observer(event.metrics);
+    }
+  }
   get finalHandoff(): string | undefined {
     const message = this.messages.at(-1);
     return message?.role === "assistant" && !message.content.some((part) => part.type === "toolCall")
@@ -136,6 +159,21 @@ export class WorkerSession {
   }
 
   setAssistant(message: AgentAssistantMessage): void { this.assistant = message; }
+
+  async receiveMessages(messages: TaskMessage[]): Promise<AgentMessage[]> {
+    const accepted: AgentMessage[] = [];
+    await this.enqueue(async () => {
+      for (const message of messages) {
+        if (this.receivedMessageIds.has(message.id)) continue;
+        const content = `Message from the parent Agent:\n${message.content}`;
+        await this.recorder.recordAndFlush({ type: "user_message", messageId: message.id, content });
+        this.receivedMessageIds.add(message.id);
+        accepted.push({ role: "user", content });
+      }
+      if (accepted.length) await this.saveFromReplay();
+    });
+    return accepted;
+  }
 
   async beforeRequest(maxSteps: number): Promise<void> {
     await this.enqueue(async () => {

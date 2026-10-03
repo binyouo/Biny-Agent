@@ -64,3 +64,89 @@ for (const query of ["index", "sleep"] as const) test(`cold memory ${query} read
     await rm(root, { recursive: true, force: true });
   }
 });
+
+for (const storeState of ["populated", "empty"] as const) test(`cold memory settings requests read ${storeState === "populated" ? "a populated" : "an empty"} store without initializing a runtime`, { timeout: 15_000 }, async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "biny-cold-memory-settings-"));
+  const previous = process.env.BINY_AGENT_DIR;
+  process.env.BINY_AGENT_DIR = root;
+  let agents: DesktopAgentManager | undefined;
+  let storage: MemoryStorage | undefined;
+  try {
+    const userData = new DesktopUserDataStore(root); await userData.initialize();
+    const state = new DesktopStateStore(path.join(root, "desktop.json")); await state.load();
+    const configStore = createFileConfigStore(root, { globalDir: root, credentialStore: {
+      persistent: true, get: async () => undefined, set: async () => undefined, delete: async () => undefined
+    } });
+    const config = structuredClone(defaultConfig);
+    config.providers = { isolated: { type: "openai", apiKeyEnv: "BINY_COLD_TEST_UNUSED_KEY" } };
+    config.models = { isolated: { provider: "isolated", model: "isolated" } };
+    config.defaultModel = "isolated";
+    config.context.memory.embeddingModel = { kind: "local", model: "multilingual-e5-small" };
+    await configStore.save(config);
+    const projects = new DesktopProjectService(state, userData, configStore);
+    const project = await projects.createProject(root);
+    storage = new MemoryStorage(root);
+    let finalId: string | undefined;
+    let sourceArchiveId: string | undefined;
+    let manualArchiveId: string | undefined;
+    if (storeState === "populated") {
+      const final = await storage.writeEntry({ content: "Current durable fact", source: "manual" });
+      const intermediate = await storage.writeEntry({ content: "Earlier durable fact", source: "manual" });
+      const source = await storage.writeEntry({ content: "Oldest durable fact", source: "manual" });
+      const manual = await storage.writeEntry({ content: "Manually archived fact", source: "manual" });
+      assert.ok(final.entry && intermediate.entry && source.entry && manual.entry);
+      finalId = final.entry.id;
+      await storage.archiveEntries([intermediate.entry.id], "llm_merge", {
+        mergedInto: finalId, now: new Date("2030-01-01T00:00:00.000Z")
+      });
+      const manualArchive = await storage.archiveEntries([manual.entry.id], "manual", {
+        now: new Date("2030-01-01T00:00:01.000Z")
+      });
+      const sourceArchive = await storage.archiveEntries([source.entry.id], "llm_merge", {
+        mergedInto: intermediate.entry.id, now: new Date("2030-01-01T00:00:02.000Z")
+      });
+      assert.ok(sourceArchive.entries[0] && manualArchive.entries[0]);
+      sourceArchiveId = sourceArchive.entries[0].id;
+      manualArchiveId = manualArchive.entries[0].id;
+    }
+    // 配置快照仍能只读；只有 Runtime 初始化使用的公开 load 边界被拒绝。
+    configStore.load = async () => { throw new Error("Cold settings reads must not initialize a Runtime Host."); };
+    agents = new DesktopAgentManager(state, projects, configStore, () => undefined);
+    const [stats, entries, sleep, runs, archive, embedding] = await Promise.all([
+      agents.memoryStats(project.id),
+      agents.memoryEntries(project.id, 0, 20),
+      agents.memorySleepStatus(project.id),
+      agents.memorySleepRuns(project.id),
+      agents.archivedMemoryEntries(project.id, 0, 25, true),
+      agents.memoryEmbeddingStatus(project.id)
+    ]);
+    const activeTotal = storeState === "populated" ? 1 : 0;
+    const archiveTotal = storeState === "populated" ? 3 : 0;
+    assert.equal(stats.totalEntries, activeTotal);
+    assert.equal(stats.memoryStats.manualAdded, activeTotal);
+    assert.equal(entries.total, activeTotal);
+    assert.equal(entries.entries.length, activeTotal);
+    assert.deepEqual(sleep, await storage.readMaintenanceStatus());
+    assert.deepEqual(runs, []);
+    assert.equal(embedding.totalEntries, activeTotal);
+    assert.equal(archive.total, archiveTotal);
+    assert.equal(archive.entries.length, archiveTotal);
+    assert.equal(archive.offset, 0);
+    assert.equal(archive.limit, 25);
+    if (sourceArchiveId) {
+      assert.equal(archive.entries[0]?.id, sourceArchiveId);
+      assert.deepEqual(archive.chains?.[sourceArchiveId], { finalId, depth: 1 });
+    } else assert.equal(archive.chains, undefined);
+    const secondPage = await agents.archivedMemoryEntries(project.id, 1, 1);
+    assert.equal(secondPage.total, archiveTotal);
+    assert.deepEqual(secondPage.entries.map(entry => entry.id), manualArchiveId ? [manualArchiveId] : []);
+    assert.equal(secondPage.chains, undefined);
+    assert.equal((await agents.archivedMemoryEntries(project.id, 0, 1_000)).chains, undefined);
+    await assert.rejects(agents.archivedMemoryEntries(project.id, 0, 26, true), /每页至多 25 条/);
+  } finally {
+    await agents?.closeAll();
+    storage?.close();
+    if (previous === undefined) delete process.env.BINY_AGENT_DIR; else process.env.BINY_AGENT_DIR = previous;
+    await rm(root, { recursive: true, force: true });
+  }
+});

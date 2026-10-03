@@ -139,10 +139,27 @@ try {
     assert.equal(owners.has(writeSession.sessionId), false, "Runtime 回到 idle 后必须释放 writer owner，允许 LRU 回收空闲会话");
 
     await client.focusSession(created.sessionId);
+    const previousRuntime = createdRuntimes.get(created.sessionId);
+    assert.ok(previousRuntime);
+    previousRuntime.setState("runs");
+    await client.listRuntimeSessions();
     primary.setState("runs");
     const draft = await client.startDraft();
     assert.equal(client.getFocusedSessionId(), draft.sessionId, "创建草稿后客户端必须聚焦新 session");
     assert.equal(client.getSnapshot().info.sessionId, draft.sessionId);
+    const draftRuntime = createdRuntimes.get(draft.sessionId);
+    assert.ok(draftRuntime);
+    draftRuntime.setState("runs");
+    await client.listRuntimeSessions();
+    const deliveredSessions: string[] = [];
+    const stopListening = client.subscribe((update) => deliveredSessions.push(update.snapshot.info.sessionId));
+    previousRuntime.setState("idle");
+    await client.listRuntimeSessions();
+    stopListening();
+    assert.ok(deliveredSessions.includes(draft.sessionId), "当前会话的缓存事件仍应交付");
+    assert.ok(deliveredSessions.every((sessionId) => sessionId === draft.sessionId),
+      "首次订阅不能向新草稿交付此前聚焦会话的缓存事件");
+    draftRuntime.setState("idle");
     assert.equal(createdFactoryOptions.at(-1)?.isolation, "shared", "并行会话默认共享目录");
     assert.equal(createdFactoryOptions.at(-1)?.resourceRegistry, hostResourceRegistry, "Draft Runtime 必须复用 Host 级资源注册表");
     assert.equal(draft.workspaceRoot, workspaceRoot);

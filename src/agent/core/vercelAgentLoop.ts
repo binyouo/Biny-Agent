@@ -335,12 +335,8 @@ function streamModelStep(state: VercelLoopState) {
       ...vercelCallSettings(state),
       activeTools: state.context.tools.map((candidate) => candidate.name) as Array<keyof ToolSet>
     }),
-    onLanguageModelCallStart: state.vercelModel === undefined
-      ? undefined
-      : (event) => { beginDirectModelRequest(state, event.callId); },
-    onLanguageModelCallEnd: state.vercelModel === undefined
-      ? undefined
-      : async (event) => { await recordDirectModelRequest(state, event); }
+    onLanguageModelCallStart: (event) => { beginDirectModelRequest(state, event.callId); },
+    onLanguageModelCallEnd: async (event) => { await recordDirectModelRequest(state, event); }
   });
 }
 

@@ -209,7 +209,7 @@ function testSchedulerConfigDefaultsAndValidation(): void {
   input.agent = { softStepLimit: 8 };
   const parsed = configSchema.parse(input);
   assert.deepEqual(parsed.agent, {
-    toolExecutionMode: "direct",
+    toolExecutionMode: "code_mode",
     softStepLimit: 8,
     hardStepLimit: 96,
     maxRepeatedActions: 3,

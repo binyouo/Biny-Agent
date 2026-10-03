@@ -37,7 +37,8 @@ export interface TaskClosureResult {
 
 const workerAttemptSchema = z.object({
   prompt: z.string().min(1), beforeWorkspace: z.record(z.string(), z.string()).optional(),
-  definitionFingerprint: z.string().optional(), accessMode: z.enum(["read-only", "workspace"]).optional(), agent: z.string().optional()
+  definitionFingerprint: z.string().optional(), accessMode: z.enum(["read-only", "workspace"]).optional(), agent: z.string().optional(),
+  communication: z.boolean().optional()
 }).strict();
 
 export function readWorkerAttemptCheckpoint(artifacts: unknown): z.infer<typeof workerAttemptSchema> | undefined {
@@ -140,7 +141,9 @@ async function executeTaskClosure(input: Parameters<typeof runTaskClosure>[0]): 
     if (input.signal?.aborted) return cancelCurrentTask(input);
     if (!isCurrentAttempt(input.taskRuns, input.taskRunId, attempt.attemptId)) return { status: "cancelled", reason: "A stale report result was ignored." };
     if (typeof output !== "string" || !output.trim()) return blockUnsafeRecovery(input.taskRuns, input.taskRunId, attempt.attemptId, "Read-only report output is empty or missing.");
-    input.taskRuns.transition(input.taskRunId, "completed", { attemptId: attempt.attemptId, artifacts: { output } });
+    input.taskRuns.transition(input.taskRunId, "completed", { attemptId: attempt.attemptId, artifacts: {
+      ...input.taskRuns.get(input.taskRunId)?.attempts.at(-1)?.artifacts as Record<string, unknown>, output
+    } });
     return { status: "completed", output };
   };
 
@@ -235,6 +238,7 @@ async function executeTaskClosure(input: Parameters<typeof runTaskClosure>[0]): 
         ? basePrompt
         : repairPrompt(basePrompt, contract!, repairEvidence, current.attempts.length));
       input.taskRuns.transition(input.taskRunId, "running", { attemptId: attempt.attemptId, artifacts: {
+        ...input.taskRuns.get(input.taskRunId)?.attempts.at(-1)?.artifacts as Record<string, unknown>,
         workerExecution: { prompt, beforeWorkspace, definitionFingerprint }
       } });
       workerAttempt = undefined;
@@ -249,13 +253,18 @@ async function executeTaskClosure(input: Parameters<typeof runTaskClosure>[0]): 
         if (reviewCandidate) {
           return await completeReview(output, attempt);
         }
-        input.taskRuns.transition(input.taskRunId, "completed", { attemptId: attempt.attemptId, artifacts: { output } });
+        const settled = input.taskRuns.get(input.taskRunId)!;
+        const existing = settled.attempts.at(-1)?.artifacts as Record<string, unknown> | undefined;
+        input.taskRuns.transition(input.taskRunId, "completed", { attemptId: attempt.attemptId,
+          artifacts: settled.status === "completed" ? { ...existing, output } : { output, communication: existing?.communication }
+        });
         return { status: "completed", output };
       }
       // Reuse this immutable baseline immediately: the final full-workspace comparison
       // also detects changes between candidate capture and the first verification check.
       candidateWorkspaceSnapshot = await captureTaskWorkspaceSnapshot(input.workspaceRoot, input.ignore, input.signal);
       candidateArtifacts = {
+        ...input.taskRuns.get(input.taskRunId)?.attempts.at(-1)?.artifacts as Record<string, unknown>,
         output,
         definitionFingerprint: definitionFingerprint!,
         repairScope: compareTaskWorkspaceSnapshots(beforeWorkspace!, candidateWorkspaceSnapshot, contract.allowedRepairPaths)
@@ -469,6 +478,7 @@ function readCandidateArtifacts(artifacts: unknown): TaskCandidateArtifacts | un
     || !isStringArray(repairScope.violationPaths)) return undefined;
   return {
     output: record.output,
+    communication: record.communication,
     definitionFingerprint: record.definitionFingerprint,
     repairScope: {
       enforcement: "post_execution_change_guard",

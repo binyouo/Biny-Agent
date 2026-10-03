@@ -57,6 +57,8 @@ import {
   goalActionCommand,
   goalCreateCommand,
   goalListCommand,
+  sessionGoalActionCommand,
+  sessionGoalSetCommand,
   graphActionCommand,
   graphCreateCommand,
   graphListCommand,
@@ -64,6 +66,8 @@ import {
   taskCreateCommand,
   taskEventsCommand,
   taskGetCommand,
+  taskMessageCommand,
+  taskWaitCommand,
   taskListCommand
 } from "./commands/runtimeManagement.js";
 import {
@@ -230,6 +234,12 @@ for (const [name, action] of [["start", "start"], ["cancel", "cancel"], ["approv
 }
 task.command("run").argument("<taskRunId>", "TaskRun id").option("--retry-safety <safety>", "safe, idempotent, unsafe, or unknown").option("--json", "print JSON").action((taskRunId: string, options: { retrySafety?: string; json?: boolean }) => wrap(() => taskActionCommand(workspaceRoot, "run", taskRunId, options))());
 task.command("get").argument("<taskRunId>", "TaskRun id").option("--json", "print JSON").action((taskRunId: string, options: { json?: boolean }) => wrap(() => taskGetCommand(workspaceRoot, taskRunId, options))());
+task.command("message").argument("<taskRunId>", "TaskRun id").argument("<message...>", "message to the active child")
+  .requiredOption("--session <id>", "owning session id").option("--message-id <id>", "stable message identity for a retry").option("--json", "print JSON")
+  .action((taskRunId: string, message: string[], options: { session: string; messageId?: string; json?: boolean }) => wrap(() => taskMessageCommand(workspaceRoot, taskRunId, message.join(" "), options))());
+task.command("wait").argument("<taskRunId>", "TaskRun id").requiredOption("--session <id>", "owning session id")
+  .option("--wait-ms <ms>", "wait up to 60000ms for an update", Number, 0).option("--after-revision <revision>", "last observed revision", Number).option("--json", "print JSON")
+  .action((taskRunId: string, options: { session: string; waitMs?: number; afterRevision?: number; json?: boolean }) => wrap(() => taskWaitCommand(workspaceRoot, taskRunId, options))());
 task.command("list").option("--status <status>", "TaskRun status").option("--limit <count>", "maximum rows", parsePositiveInteger).option("--json", "print JSON").action((options: { status?: string; limit?: number; json?: boolean }) => wrap(() => taskListCommand(workspaceRoot, options))());
 task.command("events").argument("<taskRunId>", "TaskRun id").option("--limit <count>", "maximum events", parsePositiveInteger).option("--json", "print JSON").action((taskRunId: string, options: { limit?: number; json?: boolean }) => wrap(() => taskEventsCommand(workspaceRoot, taskRunId, options))());
 
@@ -287,11 +297,21 @@ todo.command("show").option("--session <id>", "session id; defaults to latest").
 todo.command("replace").requiredOption("--todos <json>", "complete Todo list JSON").option("--session <id>", "session id; defaults to latest").option("--json", "print JSON").action((options: { todos: string; session?: string; json?: boolean }) => wrap(() => todoReplaceCommand(workspaceRoot, options.session, options.todos, options))());
 todo.command("clear").requiredOption("--yes", "confirm clear").option("--session <id>", "session id; defaults to latest").option("--json", "print JSON").action((options: { yes?: boolean; session?: string; json?: boolean }) => wrap(() => todoClearCommand(workspaceRoot, options.session, options))());
 
-const goal = program.command("goal").description("Manage durable goals");
-goal.command("list").option("--json", "print JSON").action((options: { json?: boolean }) => wrap(() => goalListCommand(workspaceRoot, options))());
-goal.command("create").argument("<title>", "goal title").option("--payload <json>", "JSON payload").option("--goal-id <id>", "explicit goal id").option("--json", "print JSON").action((title: string, options: { payload?: string; goalId?: string; json?: boolean }) => wrap(() => goalCreateCommand(workspaceRoot, title, options))());
-for (const [name, action] of [["get", "get"], ["pause", "pause"], ["resume", "resume"], ["cancel", "cancel"]] as const) {
-  goal.command(name).argument("<goalId>", "goal id").option("--json", "print JSON").action((goalId: string, options: { json?: boolean }) => wrap(() => goalActionCommand(workspaceRoot, action, goalId, options))());
+const goal = program.command("goal").description("Manage session goals or workspace Graph goals");
+goal.command("show").requiredOption("--session <id>", "session id").option("--json", "print JSON").action((options: { session: string; json?: boolean }) => wrap(() => sessionGoalActionCommand(workspaceRoot, "show", options))());
+goal.command("set").argument("<objective>", "complete goal objective").requiredOption("--session <id>", "session id").option("--token-budget <tokens>", "optional token budget", parsePositiveInteger).option("--json", "print JSON").action((objective: string, options: { session: string; tokenBudget?: number; json?: boolean }) => wrap(() => sessionGoalSetCommand(workspaceRoot, objective, options))());
+goal.command("clear").requiredOption("--session <id>", "session id").option("--json", "print JSON").action((options: { session: string; json?: boolean }) => wrap(() => sessionGoalActionCommand(workspaceRoot, "clear", options))());
+goal.command("list").description("List workspace Graph goals").option("--json", "print JSON").action((options: { json?: boolean }) => wrap(() => goalListCommand(workspaceRoot, options))());
+goal.command("create").description("Create a workspace Graph goal without starting a session").argument("<title>", "goal title").option("--payload <json>", "JSON payload").option("--goal-id <id>", "explicit goal id").option("--json", "print JSON").action((title: string, options: { payload?: string; goalId?: string; json?: boolean }) => wrap(() => goalCreateCommand(workspaceRoot, title, options))());
+for (const [name, action] of [["get", "get"], ["cancel", "cancel"]] as const) {
+  goal.command(name).argument("<goalId>", "workspace Graph goal id").option("--json", "print JSON").action((goalId: string, options: { json?: boolean }) => wrap(() => goalActionCommand(workspaceRoot, action, goalId, options))());
+}
+for (const action of ["pause", "resume"] as const) {
+  goal.command(action).argument("[goalId]", "workspace goal id").option("--session <id>", "session goal id").option("--json", "print JSON").action((goalId: string | undefined, options: { session?: string; json?: boolean }) => wrap(async () => {
+    if (goalId !== undefined && options.session !== undefined) throw new Error("Choose a workspace Goal ID or --session, not both.");
+    if (goalId !== undefined) await goalActionCommand(workspaceRoot, action, goalId, options);
+    else await sessionGoalActionCommand(workspaceRoot, action, options);
+  })());
 }
 
 const graph = program.command("graph").description("Manage durable Agent Graphs");

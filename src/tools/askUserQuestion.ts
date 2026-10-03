@@ -5,6 +5,7 @@ import type { Tool } from "./types.js";
 export function createAskUserQuestionTool(requests: UserInputRequests): Tool<UserInputQuestions, UserInputResult> {
   return {
     name: "AskUserQuestion",
+    exposure: "model-only",
     description: "Ask one to four focused questions when missing requirements or a decision only the user can provide would materially change the work. Waits for an explicit answer or skip. Every question supports free text, with optional choices.",
     promptSnippet: "Clarify consequential missing requirements with the user, in any interactive mode",
     promptGuidelines: [

@@ -16,7 +16,7 @@ import type { AgentConfig, ModelAliasConfig, ModelApiBackend, ModelCompatibility
 import { resolveNativePatchProtocol } from "../tools/file/editingMode.js";
 import { createVercelLanguageModel } from "./vercelModel.js";
 import { resolveProviderRequestRoute } from "./providerRequest.js";
-import { openAiCodexHeaders, refreshSubscriptionOAuthTokens } from "./subscriptionAuth.js";
+import { openAiCodexHeaders, refreshSubscriptionOAuthTokens, SubscriptionOAuthRefreshError } from "./subscriptionAuth.js";
 import { AiRegistry } from "./AiRegistry.js";
 import { modelCatalogCacheKey, readProviderCatalog, type ModelsStore } from "./ModelsStore.js";
 import { createProxyAwareFetch } from "../network/proxyFetch.js";
@@ -29,6 +29,26 @@ import {
 } from "./embedding/index.js";
 
 const oauthRefreshWindowMs = 5 * 60 * 1_000;
+
+export type ProviderCredentialWriter = (
+  providerAlias: string,
+  previous: ProviderConfig,
+  renewed: ProviderConfig,
+  signal?: AbortSignal
+) => Promise<ProviderConfig>;
+
+export interface ProviderCredentialPersistence {
+  read?(providerAlias: string, previous: ProviderConfig, signal?: AbortSignal): Promise<ProviderConfig>;
+  write: ProviderCredentialWriter;
+}
+
+export class ProviderAuthenticationError extends Error {
+  readonly retryable = false;
+  constructor(readonly providerAlias: string, readonly code: string, detail: string, cause?: unknown) {
+    super(`Provider ${providerAlias}：${detail}`, { cause });
+    this.name = "ProviderAuthenticationError";
+  }
+}
 
 export interface ModelSettings {
   applyPatchProtocol?: "openai-structured";
@@ -65,6 +85,8 @@ export class ConfiguredProviderRuntime implements ProviderRuntime {
   readonly definition: ProviderDefinition;
   private readonly baselineModels: ModelCatalogEntry[];
   private liveModels: ModelCatalogEntry[] = [];
+  private preparedCredentials?: ProviderConfig;
+  private credentialPreparation?: Promise<ProviderConfig>;
 
   constructor(
     readonly id: string,
@@ -72,7 +94,8 @@ export class ConfiguredProviderRuntime implements ProviderRuntime {
     private readonly ai: AiRegistry,
     baselineModels: readonly ModelCatalogEntry[] = [],
     private readonly modelsStore?: ModelsStore,
-    private readonly fetcher: typeof globalThis.fetch = createProxyAwareFetch()
+    private readonly fetcher: typeof globalThis.fetch = createProxyAwareFetch(),
+    private readonly credentialPersistence?: ProviderCredentialPersistence
   ) {
     this.definition = providerDefinition(config.type, ai.providers);
     // 协议类型不代表套餐：官方订阅/地区端点使用自身快照，避免继承普通 API 的容量和目录。
@@ -157,6 +180,10 @@ export class ConfiguredProviderRuntime implements ProviderRuntime {
   isConfigured(model?: ModelAliasConfig): boolean {
     const endpoint = model?.baseUrl ?? this.config.baseUrl ?? this.definition.baseUrl;
     if (!endpoint || !isHttpEndpoint(endpoint)) return false;
+    if (this.config.authMode === "oauth-bearer") {
+      return Boolean(this.config.oauth?.refreshToken
+        || this.resolveApiKey() && this.config.oauth && this.config.oauth.expiresAt > Date.now());
+    }
     if (!(this.config.requiresApiKey ?? this.definition.requiresApiKey)) return true;
     return this.resolveApiKey() !== undefined;
   }
@@ -218,7 +245,16 @@ export class ConfiguredProviderRuntime implements ProviderRuntime {
     if (parsed.username || parsed.password) {
       throw new Error(`Model endpoint for provider ${this.id} must not contain credentials in the URL.`);
     }
-    if ((this.config.requiresApiKey ?? this.definition.requiresApiKey) && !this.resolveApiKey()) {
+    if (this.config.authMode === "oauth-bearer") {
+      if (!this.config.oauth?.refreshToken) {
+        if (this.config.oauth && this.config.oauth.expiresAt <= Date.now()) {
+          throw new ProviderAuthenticationError(this.id, "oauth_credentials_expired", "登录已过期且没有刷新令牌，请重新登录。");
+        }
+        if (!this.resolveApiKey()) {
+          throw new ProviderAuthenticationError(this.id, "oauth_credentials_missing", "登录凭据缺失，请重新登录。");
+        }
+      }
+    } else if ((this.config.requiresApiKey ?? this.definition.requiresApiKey) && !this.resolveApiKey()) {
       throw new Error(missingKeyMessage(this.id, this.config.apiKeyEnv, this.definition.apiKeyEnv));
     }
   }
@@ -265,6 +301,9 @@ export class ConfiguredProviderRuntime implements ProviderRuntime {
       provider: this.config.type,
       providerAlias: this.id,
       modelId: normalizedModel.model,
+      prepareTextRequest: this.config.authMode === "oauth-bearer"
+        ? async (signal) => await this.prepareTextModel(agentConfig, model, executable, signal)
+        : undefined,
       runtime: "provider",
       dataResidency: normalizedModel.dataResidency ?? this.config.dataResidency,
       supportsTools: capabilities.tools,
@@ -295,19 +334,27 @@ export class ConfiguredProviderRuntime implements ProviderRuntime {
     if (
       this.config.authMode !== "oauth-bearer"
       || !oauth?.refreshToken
-      || oauth.expiresAt - Date.now() > oauthRefreshWindowMs
+      || this.resolveApiKey() && oauth.expiresAt - Date.now() > oauthRefreshWindowMs
     ) return undefined;
     const extensionHandler = this.ai.credentialHandler(oauth.provider);
     if (extensionHandler) return await extensionHandler(this.config, signal);
     if (oauth.provider !== "claude-code" && oauth.provider !== "openai-codex") {
       throw new Error(`No credential refresh handler registered for ${oauth.provider}.`);
     }
-    const refreshed = await refreshSubscriptionOAuthTokens(oauth.provider, {
-      accessToken: this.config.apiKey ?? "",
-      refreshToken: oauth.refreshToken,
-      expiresAt: oauth.expiresAt,
-      accountId: oauth.accountId
-    }, signal, this.fetcher);
+    let refreshed;
+    try {
+      refreshed = await refreshSubscriptionOAuthTokens(oauth.provider, {
+        accessToken: this.resolveApiKey() ?? "",
+        refreshToken: oauth.refreshToken,
+        expiresAt: oauth.expiresAt,
+        accountId: oauth.accountId
+      }, signal, this.fetcher);
+    } catch (error) {
+      if (error instanceof SubscriptionOAuthRefreshError && error.loginRejected) {
+        throw new ProviderAuthenticationError(this.id, "oauth_refresh_rejected", "登录授权已失效，无法续期，请重新登录。", error);
+      }
+      throw error;
+    }
     return {
       ...this.config,
       apiKey: refreshed.accessToken,
@@ -318,6 +365,39 @@ export class ConfiguredProviderRuntime implements ProviderRuntime {
         accountId: refreshed.accountId
       }
     };
+  }
+
+  private async prepareTextModel(agentConfig: AgentConfig, model: ModelAliasConfig, executable: AgentModel, signal?: AbortSignal): Promise<AgentModel> {
+    signal?.throwIfAborted();
+    // 同一 Provider 的多个型号共享续期结果；不修改调用方持有的回合配置。
+    const pending = this.credentialPreparation ??= (async () => {
+      let previous = this.preparedCredentials ?? this.config;
+      previous = await this.credentialPersistence?.read?.(this.id, previous, signal) ?? previous;
+      signal?.throwIfAborted();
+      const provider = previous === this.config ? this : this.withCredentials(previous);
+      const renewed = await provider.refreshCredential(signal);
+      if (!renewed) {
+        signal?.throwIfAborted();
+        provider.validate(model);
+        this.preparedCredentials = previous;
+        return previous;
+      }
+      // 服务端已确认令牌轮换时必须保存新凭据；取消只阻止后续模型请求。
+      const saved = this.credentialPersistence ? await this.credentialPersistence.write(this.id, previous, renewed) : renewed;
+      this.preparedCredentials = saved;
+      return saved;
+    })();
+    let prepared: ProviderConfig;
+    try { prepared = await pending; }
+    finally { if (this.credentialPreparation === pending) this.credentialPreparation = undefined; }
+    signal?.throwIfAborted();
+    return prepared === this.config ? executable : this.withCredentials(prepared).createModelSettings(agentConfig, model).model;
+  }
+
+  private withCredentials(config: ProviderConfig): ConfiguredProviderRuntime {
+    const provider = new ConfiguredProviderRuntime(this.id, config, this.ai, this.baselineModels, this.modelsStore, this.fetcher, this.credentialPersistence);
+    provider.restoreModels(this.liveModels);
+    return provider;
   }
 
   private resolveApiKey(): string | undefined {
@@ -377,11 +457,12 @@ export class ProviderRegistry {
     catalogs: readonly [string, ModelCatalogEntry[]][] = [],
     private readonly ai: AiRegistry = new AiRegistry(),
     modelsStore?: ModelsStore,
-    private readonly fetcher: typeof globalThis.fetch = createProxyAwareFetch()
+    private readonly fetcher: typeof globalThis.fetch = createProxyAwareFetch(),
+    private readonly credentialPersistence?: ProviderCredentialPersistence
   ) {
     for (const [id, provider] of Object.entries(config.providers)) {
       const registration = ai.providers.get(provider.type);
-      this.providers.set(id, new ConfiguredProviderRuntime(id, provider, ai, registration?.models, modelsStore, fetcher));
+      this.providers.set(id, new ConfiguredProviderRuntime(id, provider, ai, registration?.models, modelsStore, fetcher, credentialPersistence));
     }
     for (const [id, models] of catalogs) this.providers.get(id)?.restoreModels(models);
   }

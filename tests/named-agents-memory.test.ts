@@ -202,7 +202,6 @@ async function testSubagentBudgetExhaustionRejectsWithPartialFindings(): Promise
       workspaceRoot,
       config,
       getModelSettings: () => createModelSettings(config),
-      getAccessMode: () => "read-only",
       toolRegistry: registry
     };
 
