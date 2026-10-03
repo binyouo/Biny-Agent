@@ -16,7 +16,7 @@ function canonical(messageId: string, content: string, sentAt: string | undefine
     message: { role: "assistant", content: [{ type: "text", text: content }] } };
 }
 
-function flat(messageId: string, content: string, sentAt: string | undefined = time): SessionEvent {
+function flat(messageId: string, content: string, sentAt: string | undefined = time): Extract<SessionEvent, { type: "assistant_message" }> {
   return { type: "assistant_message", messageId, content, time: sentAt };
 }
 
