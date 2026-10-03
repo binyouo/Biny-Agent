@@ -1,0 +1,50 @@
+import assert from "node:assert/strict";
+import { test } from "node:test";
+
+test("图表增量更新保留 SVG root、插值布局并服从减少动态效果", async () => {
+  const { JSDOM } = await import("jsdom");
+  const dom = new JSDOM("<div id='host'></div>", { pretendToBeVisual: true });
+  Object.assign(globalThis, { document: dom.window.document, DOMParser: dom.window.DOMParser });
+  let reduced = false;
+  Object.assign(dom.window, { matchMedia: () => ({ matches: reduced }) });
+  let now = 0;
+  let nextFrame = 0;
+  let cancelled = 0;
+  const frames = new Map<number, FrameRequestCallback>();
+  const animations: { frames: Keyframe[]; duration: number }[] = [];
+  Object.defineProperty(dom.window.performance, "now", { value: () => now });
+  dom.window.requestAnimationFrame = callback => { frames.set(++nextFrame, callback); return nextFrame; };
+  dom.window.cancelAnimationFrame = id => { frames.delete(id); };
+  Object.defineProperty(dom.window.SVGElement.prototype, "getBBox", { value(this: SVGElement) { return { x: Number(this.getAttribute("x") ?? 0), y: 0, width: Number(this.getAttribute("width") ?? 10), height: 10 }; } });
+  Object.defineProperty(dom.window.SVGElement.prototype, "animate", { value(_frames: Keyframe[], options: KeyframeAnimationOptions) { animations.push({ frames: _frames, duration: Number(options.duration) }); return { cancel() { cancelled++; } }; } });
+  const { updateDiagramSvg, cancelDiagramMorph } = await import("../src/desktop/renderer/src/components/diagram/diagramMorph.js");
+  const host = document.getElementById("host")!;
+  const first = '<svg xmlns="http://www.w3.org/2000/svg" width="20" height="10" viewBox="0 0 20 10"><rect data-id="A" x="0" width="10"/><polyline data-from="A" data-to="B" points="0,0 10,10"/></svg>';
+  const second = '<svg xmlns="http://www.w3.org/2000/svg" width="40" height="20" viewBox="0 0 40 20"><rect data-id="A" x="20" width="10"/><polyline data-from="A" data-to="B" points="0,0 20,20"/><text data-id="B">New node</text></svg>';
+  try {
+    updateDiagramSvg(host, first);
+    const root = host.querySelector("svg")!;
+    updateDiagramSvg(host, second);
+    assert.equal(host.querySelector("svg"), root);
+    assert.equal(root.querySelector("text")?.textContent, "New node");
+    assert.ok(animations.some(animation => animation.frames.some(frame => frame.opacity === 0)));
+    assert.ok(animations.some(animation => animation.frames.some(frame => frame.transform === "translate(-20px, 0px)")));
+    assert.ok(animations.every(animation => animation.duration === 200));
+    const frame = [...frames.values()][0]!;
+    frames.clear(); now = 100; frame(now);
+    assert.equal(root.getAttribute("width"), "37.5");
+    assert.equal(root.querySelector("polyline")?.getAttribute("points"), "0,0 18.75,18.75");
+    cancelDiagramMorph(host);
+    assert.equal(root.getAttribute("width"), "40");
+    assert.equal(root.querySelector("polyline")?.getAttribute("points"), "0,0 20,20");
+    assert.equal(frames.size, 0);
+    assert.ok(cancelled >= 2);
+    reduced = true;
+    const before = animations.length;
+    updateDiagramSvg(host, first);
+    assert.equal(host.querySelector("svg"), root);
+    assert.equal(root.getAttribute("width"), "20");
+    assert.equal(animations.length, before);
+    assert.equal(frames.size, 0);
+  } finally { dom.window.close(); }
+});

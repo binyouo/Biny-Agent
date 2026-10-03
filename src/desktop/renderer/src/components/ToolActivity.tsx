@@ -15,6 +15,7 @@ import { CopyButton } from "./CopyButton.js";
 import { Icon } from "./Icon.js";
 import { CodeView } from "./chat/CodeView.js";
 import { IoCard } from "./chat/IoCard.js";
+import { toolResultImages } from "../toolImagePresentation.js";
 
 interface ToolActivityDetailProps {
   projectId: string;
@@ -347,7 +348,8 @@ function ToolPayload({ tool, onPreviewFile }: { tool: TimelineTool; onPreviewFil
   }
   // 参数与结果分区，运行时在结果区展示进度。
   const input = friendlyResult(tool.args);
-  const output = friendlyResult(tool.result) ?? (progress || undefined);
+  const images = toolResultImages(tool.result);
+  const output = (images ? images.caption : friendlyResult(tool.result)) ?? (progress || undefined);
   if (input === undefined && output === undefined) return <></>;
   return (
     <IoCard

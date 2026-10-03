@@ -48,3 +48,11 @@ test("后置链接与脚注定义保留全文作用域；删除、替换、未�
   assert.deepEqual(splitMarkdownBlocks(""), [""]);
   assert.deepEqual(splitMarkdownBlocks("替换内容"), ["替换内容"]);
 });
+
+test("HTML 容器跨段落时保持文档作用域，流式不能把结束标签拆到另一个渲染块", () => {
+  const content = "开头\n\n<details>\n<summary>详情</summary>\n\n**正文**\n\n</details>\n\n尾段";
+  assert.deepEqual(splitMarkdownBlocks(content), [content]);
+  const parse = createMarkdownBlockParser();
+  assert.deepEqual(parse("开头\n\n尾段"), ["开头\n\n", "尾段"]);
+  assert.deepEqual(parse(content), [content]);
+});

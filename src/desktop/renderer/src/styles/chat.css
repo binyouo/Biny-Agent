@@ -637,20 +637,25 @@
   display: flex;
   flex-direction: column;
   align-items: center;
-  padding: 16px 16px;
+  padding: 8px 16px;
 }
 
 .biny-chat-scroll .chat-compaction-pill {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 12px;
-  padding: 8px 16px;
+  justify-content: center;
+  width: fit-content;
+  max-width: 100%;
+  gap: 8px;
+  padding: 4px 10px;
   border: 1px solid color-mix(in srgb, var(--biny-border) 50%, transparent);
   border-radius: 999px;
   background: color-mix(in srgb, var(--biny-surface-hover) 50%, transparent);
   color: var(--biny-text-tertiary);
   font: inherit;
   font-size: calc(12px * var(--font-scale, 1));
+  line-height: calc(16px * var(--font-scale, 1));
   cursor: default;
   transition: background 150ms ease, color 150ms ease;
 }
@@ -668,6 +673,7 @@
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  white-space: nowrap;
 }
 
 .chat-compaction-segment > svg {
@@ -691,7 +697,51 @@
   transform: rotate(180deg);
 }
 
-/* 压缩摘要正文：药丸下方居中铺开的可滚动卡。 */
+/* 压缩进度复用聊天内容列，文字扫光只覆盖标签本身。 */
+.chat-compaction-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  padding: 8px 0;
+  color: var(--biny-text-secondary);
+  font-size: calc(13px * var(--font-scale, 1));
+  line-height: 20px;
+}
+.biny-chat-composer > .chat-compaction-status { padding: 8px 12px; }
+.chat-compaction-status-label { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.chat-compaction-status.is-pending .chat-compaction-status-label {
+  flex: 0 1 auto;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.chat-compaction-status > svg { flex: none; }
+.chat-compaction-status.is-failed { color: var(--biny-danger); }
+.chat-compaction-status > button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 24px;
+  height: 24px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+.chat-compaction-status > button:hover { background: var(--biny-surface-hover); }
+.chat-compaction-status > button:focus-visible { outline: 2px solid var(--biny-focus); outline-offset: -2px; }
+.chat-compaction-status > button.chat-compaction-retry {
+  width: auto;
+  padding-inline: 8px;
+  border: 1px solid var(--biny-border);
+  font: inherit;
+  white-space: nowrap;
+}
+
+/* 压缩摘要正文：分隔条下方居中铺开的可滚动卡。 */
 .chat-compaction-body {
   width: 100%;
   max-width: 42rem;
@@ -705,7 +755,7 @@
   color: var(--biny-text-secondary);
   font-size: 13px;
   line-height: 1.65;
-  white-space: pre-wrap;
+  white-space: normal;
   overflow-x: auto;
   overflow-wrap: anywhere;
   text-align: left;
@@ -2289,213 +2339,6 @@
   cursor: default;
 }
 
-/* ============ Markdown 正文 ============ */
-
-.biny-chat-scroll .markdown-body {
-  max-width: 78ch;
-  min-width: 0;
-  font-size: calc(14px * var(--font-scale, 1));
-  line-height: 1.75;
-  color: var(--biny-text);
-  overflow-wrap: break-word;
-}
-
-.biny-chat-scroll .markdown-body > :first-child { margin-top: 0; }
-.biny-chat-scroll .markdown-body > :last-child { margin-bottom: 0; }
-
-.biny-chat-scroll .markdown-body p {
-  margin: 0 0 0.9em;
-  font-size: inherit;
-  line-height: inherit;
-}
-
-.biny-chat-scroll .markdown-body :is(h1, h2, h3, h4, h5, h6) {
-  margin: 1.5em 0 0.55em;
-  line-height: 1.4;
-  font-weight: 650;
-  text-wrap: pretty;
-}
-
-.biny-chat-scroll .markdown-body h1 { font-size: 1.5em; }
-.biny-chat-scroll .markdown-body h2 { font-size: 1.3em; }
-.biny-chat-scroll .markdown-body h3 { font-size: 1.12em; }
-.biny-chat-scroll .markdown-body :is(h4, h5, h6) { font-size: 1em; }
-.biny-chat-scroll .markdown-body strong { font-weight: 650; }
-.biny-chat-scroll .markdown-body em { font-style: italic; }
-
-/* 全局 reset 会清除列表标记；正文显式恢复语义，嵌套和任务列表分别处理。 */
-.biny-chat-scroll .markdown-body :is(ul, ol) {
-  margin: 0.4em 0 1em;
-  padding-left: 1.55em;
-  list-style-position: outside;
-}
-
-.biny-chat-scroll .markdown-body ul { list-style-type: disc; }
-.biny-chat-scroll .markdown-body ol { list-style-type: decimal; }
-.biny-chat-scroll .markdown-body ul ul { list-style-type: circle; }
-.biny-chat-scroll .markdown-body ol ol { list-style-type: lower-alpha; }
-.biny-chat-scroll .markdown-body li { padding-left: 0.2em; margin: 0.35em 0; }
-.biny-chat-scroll .markdown-body li > p { margin: 0.35em 0; }
-.biny-chat-scroll .markdown-body li > :is(ul, ol) { margin-block: 0.25em; }
-.biny-chat-scroll .markdown-body li::marker { color: var(--biny-text-secondary); font-weight: 500; }
-.biny-chat-scroll .markdown-body .contains-task-list { padding-left: 0; list-style: none; }
-.biny-chat-scroll .markdown-body .task-list-item { padding-left: 0; list-style: none; }
-.biny-chat-scroll .markdown-body .task-list-item input { margin-right: 0.55em; accent-color: var(--biny-focus); }
-
-.biny-chat-scroll .markdown-body blockquote {
-  margin: 1em 0;
-  padding: 0.2em 0 0.2em 1em;
-  border-left: 4px solid var(--biny-border);
-  font-style: italic;
-  color: var(--biny-text-secondary);
-}
-
-.biny-chat-scroll .markdown-body blockquote > :last-child { margin-bottom: 0; }
-
-.biny-chat-scroll .markdown-body hr {
-  margin: 1.5em 0;
-  border: none;
-  border-top: 1px solid var(--biny-border);
-}
-
-.biny-chat-scroll .markdown-body a {
-  color: var(--biny-focus);
-  text-decoration: none;
-}
-
-.biny-chat-scroll .markdown-body a:hover { color: color-mix(in srgb, var(--biny-focus) 78%, var(--biny-text)); }
-
-/* 行内代码维持正文节奏，不把每个标识符做成醒目的小卡片。 */
-.biny-chat-scroll .markdown-body :not(pre) > code {
-  padding: 0.12em 0.35em;
-  border-radius: 4px;
-  background: var(--biny-surface-soft);
-  font-family: var(--font-mono);
-  font-size: 0.88em;
-  color: var(--biny-text);
-  overflow-wrap: anywhere;
-}
-
-/* 表格 */
-.biny-chat-scroll .markdown-table {
-  max-width: 100%;
-  overflow-x: auto;
-  margin: 0 0 10px;
-  scrollbar-width: thin;
-}
-
-.biny-chat-scroll .markdown-body table {
-  width: 100%;
-  border: 1px solid var(--biny-border);
-  border-collapse: collapse;
-  font-size: calc(14px * var(--font-scale, 1));
-}
-
-.biny-chat-scroll .markdown-body th,
-.biny-chat-scroll .markdown-body td {
-  padding: 8px 16px;
-  border-bottom: 1px solid var(--biny-border);
-}
-
-.biny-chat-scroll .markdown-body th {
-  background: var(--biny-surface-soft);
-  font-weight: 600;
-}
-
-/* 图片 */
-.biny-chat-scroll .markdown-image {
-  max-width: 100%;
-  height: auto;
-  border-radius: 10px;
-  border: 1px solid var(--biny-border);
-  vertical-align: middle;
-}
-
-
-
-.biny-chat-scroll .markdown-image-fallback {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 3px 10px;
-  border: 1px solid var(--biny-border);
-  border-radius: 999px;
-  font-size: calc(12px * var(--font-scale, 1));
-  color: var(--biny-text-secondary);
-}
-
-/* ============ 代码块（高亮 + 语言标签 + 复制） ============ */
-
-.markdown-code-block {
-  margin: 0.75em 0 1em;
-  border: 1px solid var(--biny-border);
-  border-radius: var(--biny-radius-card, 10px);
-  background: var(--biny-surface-soft);
-  overflow: hidden;
-}
-
-/* 命令执行详情里的命令卡：虚线边框 + 更弱底色。 */
-.markdown-code-block.is-dashed {
-  border-style: dashed;
-  border-color: color-mix(in srgb, var(--biny-border) 62%, transparent);
-  background: color-mix(in srgb, var(--biny-surface-hover) 32%, transparent);
-}
-
-.markdown-code-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  min-height: 30px;
-  padding: 4px 8px 4px 14px;
-  border-bottom: 1px solid color-mix(in srgb, var(--biny-border) 65%, transparent);
-  background: color-mix(in srgb, var(--biny-surface-hover) 38%, transparent);
-}
-
-.biny-chat-scroll .markdown-code-copy {
-  position: static;
-  flex: none;
-  padding: 4px;
-  border-radius: 6px;
-  line-height: 1;
-  opacity: 0.7;
-}
-
-.biny-chat-scroll .markdown-code-copy:hover,
-.biny-chat-scroll .markdown-code-copy:focus-visible { opacity: 1; }
-
-.markdown-code-language {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-family: var(--font-mono);
-  font-size: calc(11px * var(--font-scale, 1));
-  color: var(--biny-text-tertiary);
-  text-transform: lowercase;
-  user-select: none;
-}
-
-/* 代码保留原始缩进与长行，由代码块自身横向滚动。 */
-.markdown-code-block pre {
-  margin: 0;
-  padding: 12px 14px;
-  white-space: pre;
-  overflow-x: auto;
-  overflow-wrap: normal;
-  font-family: var(--font-mono);
-  font-size: 13px;
-  line-height: 1.4;
-  line-height: 1.6;
-  scrollbar-width: thin;
-}
-
-.markdown-code-block pre code {
-  font-family: inherit;
-  background: transparent;
-  padding: 0;
-  border: none;
-}
-
 /* ============ 文件链接卡片（消息内指向本地路径的 Markdown 链接） ============ */
 /* 对齐 ；hover 提亮。 */
 
@@ -2581,19 +2424,6 @@
   overflow-y: hidden;
   padding: 2px 0;
 }
-
-/* mermaid 图表卡片 */
-.markdown-mermaid {
-  margin: 0 0 10px;
-  padding: 12px;
-  border: 1px solid var(--biny-border);
-  border-radius: var(--biny-radius-card, 10px);
-  background: var(--biny-surface-soft);
-  overflow-x: auto;
-  text-align: center;
-}
-
-.markdown-mermaid svg { max-width: 100%; height: auto; }
 
 /* ============ 动效降级 ============ */
 
@@ -3018,47 +2848,21 @@
 .execution-trace-empty { padding: 24px 0; font-size: 12px; }
 .execution-trace-empty button { display: block; margin-top: 8px; }
 
-/* 正文资源操作工具条独立于横向滚动区，避免控件被裁切。 */
-.markdown-table-block { margin: 16px 0; min-width: 0; }
-.markdown-block-actions { display: flex; align-items: center; justify-content: flex-end; gap: 4px; margin-bottom: 8px; }
-.markdown-code-header .markdown-block-actions { margin-bottom: 0; }
-.biny-chat-scroll .markdown-body tbody { background: color-mix(in srgb, var(--biny-surface-soft) 40%, transparent); }
-.biny-chat-scroll .markdown-body th { white-space: nowrap; background: var(--biny-surface-soft); }
-.markdown-action-menu { position: relative; }
-.markdown-action-menu > summary { list-style: none; cursor: pointer; padding: 5px; color: var(--biny-text-secondary); border-radius: 4px; }
-.markdown-action-menu > summary::-webkit-details-marker { display: none; }
-.markdown-action-menu > div { position: absolute; right: 0; top: 100%; z-index: 5; min-width: 120px; padding: 4px; border: 1px solid var(--biny-border); border-radius: 6px; background: var(--biny-surface-elevated); box-shadow: 0 4px 12px var(--biny-shadow-soft); }
-.markdown-action-menu > div button { display: flex; position: static; width: 100%; align-items: center; padding: 8px 12px; gap: 6px; text-align: left; font-size: 13px; opacity: 1; }
-.markdown-download { display: inline-flex; align-items: center; justify-content: center; padding: 5px; border: 0; border-radius: 4px; background: transparent; color: var(--biny-text-secondary); cursor: pointer; }
-.markdown-download:disabled { opacity: .5; cursor: wait; }
-.markdown-action-menu summary:hover, .markdown-action-menu button:hover, .markdown-download:hover { background: var(--biny-surface-hover); color: var(--biny-text); }
-.markdown-action-menu summary:focus-visible, .markdown-download:focus-visible, .markdown-table:focus-visible { outline: 2px solid var(--biny-focus); outline-offset: 2px; }
-.markdown-image-frame { position: relative; display: inline-block; max-width: 100%; margin: 16px 0; border-radius: 8px; }
-.markdown-image-frame.is-loading { min-width: 80px; min-height: 48px; background: var(--biny-surface-soft); }
-.markdown-image-frame.is-ready .markdown-image { animation: markdown-image-appear 200ms ease-out; }
-.markdown-image-actions { position: absolute; bottom: 8px; right: 8px; opacity: 0; transition: opacity 200ms ease; }
-.markdown-image-actions .markdown-download { width: 32px; height: 32px; border: 1px solid var(--biny-border); background: var(--biny-surface-elevated); }
-.markdown-image-frame:hover .markdown-image-actions, .markdown-image-frame:focus-within .markdown-image-actions { opacity: 1; }
-.markdown-image-frame.is-error { color: var(--biny-text-secondary); padding-right: 44px; }
-.markdown-resource-error { color: var(--biny-danger); font-size: 12px; }
-@keyframes markdown-image-appear { from { opacity: 0; } to { opacity: 1; } }
-@media (prefers-reduced-motion: reduce) {
-  .markdown-image-frame.is-ready .markdown-image { animation: none; }
-  .markdown-image-actions { transition: none; }
+.biny-chat-scroll .chat-compaction-body .markdown-body {
+  max-width: none;
+  font-size: calc(12px * var(--font-scale, 1));
+  line-height: 1.5;
+  color: inherit;
 }
-
-.markdown-diagram { margin: 16px 0; border: 1px solid var(--biny-border); border-radius: 12px; padding: 16px; }
-.markdown-diagram-viewport { overflow: auto; max-height: 65vh; }
-.markdown-block-actions > button { display: inline-flex; align-items: center; justify-content: center; border: 0; border-radius: 4px; background: transparent; color: var(--biny-text-secondary); padding: 5px; cursor: pointer; font-size: 12px; }
-.markdown-block-actions > button:hover { color: var(--biny-text); background: var(--biny-surface-hover); }
-.markdown-block-actions > button:disabled { opacity: .4; cursor: default; }
-.biny-chat-scroll .markdown-body h1 { font-size: 1.875em; }
-.biny-chat-scroll .markdown-body h2 { font-size: 1.5em; }
-.biny-chat-scroll .markdown-body h3 { font-size: 1.25em; }
-.biny-chat-scroll .markdown-body h4 { font-size: 1.125em; }
-.biny-chat-scroll .markdown-body h5 { font-size: 1em; }
-.biny-chat-scroll .markdown-body h6 { font-size: .875em; }
-.biny-chat-scroll .markdown-body :is(h1, h2, h3, h4, h5, h6) { margin: 24px 0 8px; }
+.biny-chat-scroll .chat-compaction-body .markdown-body :is(h1, h2, h3, h4, h5, h6) {
+  margin: 8px 0 4px;
+  font-size: calc(14px * var(--font-scale, 1));
+  font-weight: 600;
+}
+.biny-chat-scroll .chat-compaction-body .markdown-body :is(p, ul, ol) { margin: 4px 0; }
+.biny-chat-scroll .chat-compaction-body .markdown-body li { margin: 2px 0; }
+.biny-chat-scroll .chat-compaction-body .markdown-body > :first-child { margin-top: 0; }
+.biny-chat-scroll .chat-compaction-body .markdown-body > :last-child { margin-bottom: 0; }
 
 .markdown-link-actions {
   position: fixed;

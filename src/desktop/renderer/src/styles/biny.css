@@ -8393,6 +8393,68 @@ button.capability-check[aria-checked="true"] {
   padding-bottom: 0;
 }
 
+.desktop-settings-dialog .settings-modal .settings-scroll.is-extension > .settings-extension-view.is-skills {
+  display: block;
+  overflow: auto;
+  scrollbar-gutter: stable;
+}
+
+.settings-extension-view.is-skills > .settings-extension-scroll {
+  min-height: 0;
+  overflow: visible;
+}
+
+.settings-skill-extraction {
+  margin-bottom: 20px;
+  padding: 16px;
+  border: 1px solid var(--biny-border);
+  border-radius: 12px;
+  background: var(--biny-surface-elevated);
+}
+
+.settings-skill-extraction-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.settings-skill-extraction-heading h3,
+.settings-skill-extraction-heading p {
+  margin: 0;
+}
+
+.settings-skill-extraction-heading h3 {
+  color: var(--biny-text);
+  font-size: calc(14px * var(--font-scale));
+}
+
+.settings-skill-extraction-heading p {
+  margin-top: 6px;
+  color: var(--biny-text-secondary);
+  font-size: calc(12px * var(--font-scale));
+  line-height: 1.55;
+}
+
+.settings-skill-extraction-heading input {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+  accent-color: var(--biny-focus);
+  cursor: pointer;
+}
+
+.settings-skill-extraction-hint {
+  margin: 10px 0 0;
+  color: var(--biny-text-tertiary);
+  font-size: calc(11px * var(--font-scale));
+  line-height: 1.55;
+}
+
+.settings-skill-extraction .compaction-threshold-field {
+  margin-top: 18px;
+}
+
 /* MCP、技能和插件共用设置页的控件密度，避免页面切换时出现明显缩放跳变。 */
 .settings-modal.is-extension-settings .biny-mcp-toolbar {
   width: 100%;
@@ -8493,6 +8555,8 @@ button.capability-check[aria-checked="true"] {
 
 .settings-extension-list-heading > div {
   gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
 
 .settings-extension-list-heading button,
@@ -8585,6 +8649,16 @@ button.capability-check[aria-checked="true"] {
   font-size: calc(13px * var(--font-scale));
 }
 
+.settings-extension-group-title h3 {
+  margin: 0;
+  font: inherit;
+  font-weight: 600;
+}
+
+.settings-skill-group + .settings-skill-group {
+  margin-top: 24px;
+}
+
 .settings-extension-group-title span {
   padding: 3px 7px;
   border-radius: 999px;
@@ -8626,7 +8700,6 @@ button.capability-check[aria-checked="true"] {
 }
 
 .settings-skill-card-heading h4,
-.settings-skill-card-heading span,
 .settings-skill-card-main > p {
   margin: 0;
 }
@@ -8640,13 +8713,6 @@ button.capability-check[aria-checked="true"] {
   font-weight: 650;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.settings-skill-card-heading span {
-  flex: 0 0 auto;
-  white-space: nowrap;
-  color: var(--biny-text-tertiary);
-  font-size: calc(11px * var(--font-scale));
 }
 
 .settings-skill-card-main > p {
@@ -8669,6 +8735,14 @@ button.capability-check[aria-checked="true"] {
   justify-content: space-between;
   gap: 12px;
   margin-top: 16px;
+}
+
+.settings-skill-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
 }
 
 .settings-skill-content-toggle {
@@ -8698,9 +8772,9 @@ button.capability-check[aria-checked="true"] {
 }
 
 .settings-skill-path {
-  flex: 1 1 240px;
+  flex: 0 1 52%;
   min-width: 0;
-  max-width: none;
+  margin-left: auto;
   padding: 6px 9px;
   overflow: hidden;
   border-radius: 8px;
@@ -8709,8 +8783,8 @@ button.capability-check[aria-checked="true"] {
   font-family: var(--font-mono);
   font-size: calc(10px * var(--font-scale));
   line-height: 1.35;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 .settings-extension-switch {
@@ -9312,7 +9386,7 @@ button.capability-check[aria-checked="true"] {
 
 @media (max-width: 980px) {
   .settings-skill-card {
-    padding-inline: 32px;
+    padding-inline: 16px;
   }
 
   .settings-plugin-toolbar {
@@ -9331,17 +9405,20 @@ button.capability-check[aria-checked="true"] {
 
   .settings-skill-card {
     grid-template-columns: minmax(0, 1fr) auto;
-    padding: 24px;
+    padding: 14px 16px;
   }
 
   .settings-skill-card-footer {
     align-items: flex-start;
-    flex-direction: column-reverse;
+    flex-direction: column;
     gap: 12px;
   }
 
   .settings-skill-path {
+    flex: 0 1 auto;
+    width: 100%;
     max-width: 100%;
+    margin-left: 0;
   }
 
   .settings-plugin-tabs:not(.settings-plugin-scope-tabs) {
@@ -9786,8 +9863,7 @@ button.capability-check[aria-checked="true"] {
 .desktop-settings-dialog .settings-modal .biny-mcp-link-action,
 .desktop-settings-dialog .settings-modal .settings-extension-list-heading button,
 .desktop-settings-dialog .settings-modal .settings-plugin-action,
-.desktop-settings-dialog .settings-modal .settings-plugin-danger-button,
-.desktop-settings-dialog .settings-modal .settings-skill-content-toggle {
+.desktop-settings-dialog .settings-modal .settings-plugin-danger-button {
   display: inline-flex;
   height: auto;
   min-height: var(--st-control-h-sm, 26px);
@@ -9810,8 +9886,7 @@ button.capability-check[aria-checked="true"] {
 .desktop-settings-dialog .settings-modal .biny-mcp-clipboard-button:hover:not(:disabled),
 .desktop-settings-dialog .settings-modal .biny-mcp-link-action:hover:not(:disabled),
 .desktop-settings-dialog .settings-modal .settings-extension-list-heading button:hover:not(:disabled),
-.desktop-settings-dialog .settings-modal .settings-plugin-action:hover:not(:disabled),
-.desktop-settings-dialog .settings-modal .settings-skill-content-toggle:hover:not(:disabled) {
+.desktop-settings-dialog .settings-modal .settings-plugin-action:hover:not(:disabled) {
   background: var(--surface-hover);
 }
 

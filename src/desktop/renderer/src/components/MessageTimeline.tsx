@@ -21,6 +21,7 @@ import { MarkdownContent } from "./MarkdownContent.js";
 import { useTypewriter } from "./useTypewriter.js";
 import { ActivitySegment, type ActivitySegmentStep } from "./chat/ActivitySegment.js";
 import { CompactionDivider } from "./chat/CompactionDivider.js";
+import { CompactionStatus } from "./chat/CompactionStatus.js";
 import { MessageClock } from "./chat/MessageClock.js";
 import { MessageContextMenu } from "./chat/MessageContextMenu.js";
 import { ExecutionTraceDialog } from "./chat/ExecutionTraceDialog.js";
@@ -48,6 +49,7 @@ interface MessageTimelineProps {
   onAddQuoteToConversation(messageId: string, quote: string): Promise<void>;
   onResolvePermission(requestId: string, result: PermissionResult): Promise<void>;
   thinking: boolean;
+  compacting?: boolean;
   onRetry(targetMessageId: string, input: string, idempotencyKey: string): Promise<void>;
   onSwitchVersion(messageId: string, direction: "prev" | "next"): Promise<void>;
   /** 点「编辑」：把消息文本交给底部输入框，提交由 Composer 走 App 回调。 */
@@ -80,7 +82,7 @@ function turnIsRunning(turn: TimelineTurn, runtimeActiveRunId: string | undefine
     || turn.tools.some((tool) => tool.runId === runtimeActiveRunId && (tool.status === "running" || tool.status === "waiting")));
 }
 
-export const MessageTimeline = memo(function MessageTimeline({ sessionId, readOnly = false, projectId, turns, skillDescriptions, skillLabels, pendingUserMessage, pendingFloatFromComposer, runtimeActiveRunId, onPreviewFile, onOpenExternal, onReferenceMessage, onShowMessageReferences, onAddQuoteToConversation, onResolvePermission, thinking, onRetry, onSwitchVersion, onEditRequest, editInFlight, onCreateBranch, onRollbackFiles }: MessageTimelineProps): React.JSX.Element {
+export const MessageTimeline = memo(function MessageTimeline({ sessionId, readOnly = false, projectId, turns, skillDescriptions, skillLabels, pendingUserMessage, pendingFloatFromComposer, runtimeActiveRunId, onPreviewFile, onOpenExternal, onReferenceMessage, onShowMessageReferences, onAddQuoteToConversation, onResolvePermission, thinking, compacting = false, onRetry, onSwitchVersion, onEditRequest, editInFlight, onCreateBranch, onRollbackFiles }: MessageTimelineProps): React.JSX.Element {
   // 重试会先把目标之后的消息从视图中撤掉，再等待新回合流入；这里保留同样的乐观投影。
   // 编辑的重写投影来自 App（editInFlight），提交入口在底部输入框，不经过本组件状态。
   const [optimisticRewrite, setOptimisticRewrite] = useState<OptimisticRewrite>();
@@ -243,13 +245,14 @@ export const MessageTimeline = memo(function MessageTimeline({ sessionId, readOn
     }, pending.user)];
   }, [rewrite, turns]);
 
-  const busy = thinking || Boolean(rewrite) || displayedTurns.some((turn) => turnIsRunning(turn, runtimeActiveRunId));
+  const busy = compacting || thinking || Boolean(rewrite) || displayedTurns.some((turn) => turnIsRunning(turn, runtimeActiveRunId));
   // 失败状态跟随对应消息，切会话、重启后仍可定位和重试。
   return (
     <div className="message-timeline" ref={timelineRef} onMouseUp={updateQuoteSelection}>
       {displayedTurns.map((turn, index) => (
         <Turn
           busy={busy}
+          suppressRunStatus={compacting}
           readOnly={readOnly}
           entrySheenOnly={firstTurnSheenOnly && index === 0}
           skillDescriptions={skillDescriptions}
@@ -283,7 +286,9 @@ export const MessageTimeline = memo(function MessageTimeline({ sessionId, readOn
           projectId={projectId}
         />
       ) : null}
-      {thinking && !displayedTurns.some((turn) => turnIsRunning(turn, runtimeActiveRunId)) ? <RunStatus /> : null}
+      {compacting
+        ? <CompactionStatus state={{ status: "pending", message: "正在压缩上下文" }} />
+        : thinking && !displayedTurns.some((turn) => turnIsRunning(turn, runtimeActiveRunId)) ? <RunStatus /> : null}
       {!readOnly && quoteSelection ? createPortal(<button aria-label="将选中文字添加到对话" aria-busy={addingQuote} className="message-selection-reference" disabled={addingQuote} style={{ top: quoteSelection.top, left: quoteSelection.left }}
         onMouseDown={(event) => event.preventDefault()} onClick={() => {
           if (addingQuote) return;
@@ -382,6 +387,7 @@ function optimisticRewriteTurn(turn: TimelineTurn, user: string): TimelineTurn {
 const Turn = memo(function Turn({
   sessionId,
   busy,
+  suppressRunStatus,
   readOnly,
   entrySheenOnly,
   skillDescriptions,
@@ -404,6 +410,7 @@ const Turn = memo(function Turn({
 }: {
   sessionId?: string;
   busy: boolean;
+  suppressRunStatus: boolean;
   readOnly: boolean;
   /** FLIP 落定后的首条用户消息只播扫光（原文 animateUserEntry "sheen-only"）。 */
   entrySheenOnly?: boolean;
@@ -465,7 +472,8 @@ const Turn = memo(function Turn({
     () => running ? [] : listChangedFiles(turn).filter((file) => file.status === "completed"),
     [running, turn]
   );
-  const emptyCompletedTurn = !running && turn.status === "completed" && !turn.assistant.trim();
+  const emptyCompletedTurn = !running && turn.status === "completed" && !turn.assistant.trim()
+    && !executionSteps.some((step) => step.kind === "reasoning" && step.notice === "compaction");
   const emptyIncompleteTurn = !running && turn.status === "incomplete" && !turn.assistant.trim();
   return (
     <section className={`timeline-turn is-${turn.status}`}>
@@ -506,7 +514,7 @@ const Turn = memo(function Turn({
         {emptyCompletedTurn ? <div className="execution-empty-response" role="status">本轮已结束，但没有生成回复正文。</div> : null}
         {emptyIncompleteTurn ? <div className="execution-empty-response" role="status">{turn.error || "本轮未完成，尚未生成回复正文。"}</div> : null}
         {!executionSteps.some((step) => step.kind === "assistant") && turn.assistant ? <TypewriterMarkdown active={running} content={turn.assistant} onOpenExternal={onOpenExternal} onPreviewFile={onPreviewFile} projectId={projectId} /> : null}
-        {running ? <RunStatus turn={turn} /> : null}
+        {running && !suppressRunStatus ? <RunStatus turn={turn} /> : null}
 
         {!running && completedChangedFiles.length > 0 ? (
           <ChangesSummary files={completedChangedFiles} onPreviewFile={onPreviewFile} />
@@ -607,8 +615,8 @@ function ExecutionTimeline({
         if (step.kind === "reasoning") {
           // 上下文压缩标记渲染为独立的压缩分隔条（居中药丸）。
           if (step.notice === "compaction") {
-            const notice = parseCompactionNotice(step.status);
-            return <CompactionDivider count={notice.count} key={step.id} savedTokens={notice.savedTokens} summary={step.content || undefined} />;
+            const notice = step.compaction ?? parseCompactionNotice(step.status);
+            return <CompactionDivider count={notice.count} key={step.id} savedTokens={notice.savedTokens} summary={step.content || undefined} projectId={projectId} onPreviewFile={onPreviewFile} onOpenExternal={onOpenExternal} />;
           }
           // 孤立思考也走活动段（纯思考段：一枚头像 + 「已思考 N 秒」）。
           return (

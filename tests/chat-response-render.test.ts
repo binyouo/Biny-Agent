@@ -2,6 +2,7 @@
 import assert from "node:assert/strict";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
+import { JSDOM } from "jsdom";
 import { MarkdownContent } from "../src/desktop/renderer/src/components/MarkdownContent.js";
 import { ChatResponseContext } from "../src/desktop/renderer/src/chatResponseSettings.js";
 import type { ChatResponseSettings } from "../src/config/schema.js";
@@ -35,6 +36,12 @@ const timeline = (streaming: boolean): string => renderToStaticMarkup(React.crea
   onOpenExternal: noop, onResolvePermission: noopAsync, onRetry: noopAsync, onSwitchVersion: noopAsync,
   onEditRequest: noop, onCreateBranch: noop, onRollbackFiles: noop,
 })));
-assert.match(timeline(true), /partial answer/);
-assert.doesNotMatch(timeline(false), /partial answer/);
+const visibleTimeline = (streaming: boolean): string => {
+  const dom = new JSDOM(timeline(streaming));
+  const content = dom.window.document.body.textContent ?? "";
+  dom.window.close();
+  return content;
+};
+assert.match(visibleTimeline(true), /partial answer/);
+assert.doesNotMatch(visibleTimeline(false), /partial answer/);
 console.log("chat streaming preference tests passed");

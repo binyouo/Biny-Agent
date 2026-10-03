@@ -19,6 +19,8 @@ import { TerminalView } from "../TerminalView.js";
 import { FilePreviewPanel, type FileDirectoryState, type FilePreviewState } from "./FilePreviewPanel.js";
 import { SessionChangesPanel } from "./SessionChangesPanel.js";
 import { WorkspaceToolsPanel } from "./WorkspaceUtilityPanels.js";
+import { RenderingPreviewPanel } from "./RenderingPreviewPanel.js";
+import type { RenderingPreview } from "../RenderingPreviewContext.js";
 
 interface UseWorkspaceInspectorOptions {
   /** 当前会话 Agent 改过的文件（「变更」视图数据 + tab/rail 徽标计数）。 */
@@ -44,7 +46,7 @@ interface UseWorkspaceInspectorOptions {
   onWarning(message: string): void;
 }
 
-type InspectorView = "files" | "changes" | "commit" | "terminal" | "browser" | "tools" | "references";
+type InspectorView = "files" | "changes" | "commit" | "terminal" | "browser" | "tools" | "references" | "rendering";
 
 const inspectorViewMetadata: Record<InspectorView, { icon: IconName; label: string }> = {
   files: { icon: "list-tree", label: "文件" },
@@ -53,13 +55,14 @@ const inspectorViewMetadata: Record<InspectorView, { icon: IconName; label: stri
   terminal: { icon: "terminal", label: "终端" },
   browser: { icon: "globe", label: "浏览器" },
   tools: { icon: "wrench", label: "工具" },
-  references: { icon: "search", label: "引用" }
+  references: { icon: "search", label: "引用" },
+  rendering: { icon: "chart", label: "预览" }
 };
 
 /** 所有面板入口只切换视图，模型任务由面板中的明确操作触发。 */
 type RailAction = InspectorView | "browser";
 
-const inspectorViews = Object.keys(inspectorViewMetadata) as InspectorView[];
+const defaultInspectorViews = (Object.keys(inspectorViewMetadata) as InspectorView[]).filter(view => view !== "rendering");
 
 export function useWorkspaceInspector({
   changes,
@@ -95,6 +98,7 @@ export function useWorkspaceInspector({
   showBrowser(): void;
   previewFile(path: string): void;
   previewReference(reference: LocalReferenceResult): void;
+  previewRendering(preview: RenderingPreview): void;
   toggleTerminal(): void;
 } {
   const previewRequestRef = useRef(0);
@@ -103,6 +107,11 @@ export function useWorkspaceInspector({
   const [inspectorOpen, setInspectorOpen] = useState(false);
   const [pinned, setPinned] = useState(false);
   const previousSource = useRef({ source, projectId });
+  const renderingOpener = useRef<HTMLElement>(undefined);
+  const [rendering, setRendering] = useState<{ scope: string; projectId: string; previews: RenderingPreview[]; activeId: string }>();
+  const [renderingWidth, setRenderingWidth] = useState(420);
+  const [renderingResizing, setRenderingResizing] = useState(false);
+  const [renderingExpanded, setRenderingExpanded] = useState(false);
   const currentProjectIdRef = useRef(projectId);
   useLayoutEffect(() => { currentProjectIdRef.current = projectId; }, [projectId]);
   const [visitedViews, setVisitedViews] = useState<Set<InspectorView>>(() => new Set());
@@ -114,9 +123,10 @@ export function useWorkspaceInspector({
   const availableWidth = Math.max(0, viewportWidth - sidebarFlowWidth);
   const [browserExpanded, setBrowserExpanded] = useState(false);
   const [inspectorView, setInspectorView] = useState<InspectorView>("files");
-  const focused = browserExpanded && inspectorView === "browser" && inspectorOpen;
+  const renderingView = inspectorView === "rendering";
+  const focused = inspectorOpen && (renderingView ? renderingExpanded : browserExpanded && inspectorView === "browser");
   // 右栏只能使用聊天区之外的空间；保留用户拖拽宽度作为偏好，不把临时收窄写回设置。
-  const panelWidth = focused ? availableWidth : Math.min(filePanelWidth, Math.max(0, Math.min(availableWidth * 0.45, availableWidth - 360)));
+  const panelWidth = focused ? availableWidth : renderingView ? Math.min(renderingWidth, availableWidth) : Math.min(filePanelWidth, Math.max(0, Math.min(availableWidth * 0.45, availableWidth - 360)));
   const [gitChangeCount, setGitChangeCount] = useState<number>();
   const [reference, setReference] = useState<LocalReferenceResult>();
   const [preview, setPreview] = useState<FilePreviewState>();
@@ -124,6 +134,8 @@ export function useWorkspaceInspector({
   const [expandedDirectories, setExpandedDirectories] = useState<Set<string>>(() => new Set());
   const effectiveOpen = inspectorOpen && Boolean(projectId);
   const activePreview = preview?.source === source ? preview : undefined;
+  const activeRendering = rendering?.scope === source && rendering.projectId === projectId ? rendering : undefined;
+  const inspectorViews = activeRendering ? [...defaultInspectorViews, "rendering" as const] : defaultInspectorViews;
 
   useLayoutEffect(() => {
     const previous = previousSource.current;
@@ -134,12 +146,22 @@ export function useWorkspaceInspector({
     previewRequestRef.current += 1;
     directoryRequestIdRef.current += 1;
     directoryRequestRef.current.clear();
-    if (projectChanged || !pinned) setInspectorOpen(false);
+    if (projectChanged || !pinned || renderingView) setInspectorOpen(false);
+    setRendering(undefined);
+    setRenderingExpanded(false);
+    setRenderingResizing(false);
+    renderingOpener.current = undefined;
     setPreview(undefined);
     setReference(undefined);
     setDirectoryStates(new Map());
     setExpandedDirectories(new Set());
-  }, [pinned, projectId, source]);
+  }, [pinned, projectId, renderingView, source]);
+
+  useLayoutEffect(() => {
+    if (effectiveOpen) return;
+    if (renderingOpener.current?.isConnected) renderingOpener.current.focus();
+    renderingOpener.current = undefined;
+  }, [effectiveOpen]);
 
   const loadDirectory = useCallback((relativePath: string): void => {
     const normalizedPath = normalizeWorkspacePath(relativePath);
@@ -185,6 +207,29 @@ export function useWorkspaceInspector({
     setReference(value);
     openInspector("references");
   }, [openInspector]);
+
+  const previewRendering = useCallback((value: RenderingPreview): void => {
+    if (!projectId || previousSource.current.source !== source || previousSource.current.projectId !== projectId) return;
+    if (document.activeElement instanceof HTMLElement && !document.activeElement.closest(".rendering-preview-panel")) renderingOpener.current = document.activeElement;
+    setRendering(previous => {
+      const previews = previous?.scope === source && previous.projectId === projectId ? previous.previews : [];
+      return { scope: source, projectId, previews: previews.some(preview => preview.id === value.id) ? previews.map(preview => preview.id === value.id ? { ...value } : preview) : [...previews, { ...value }], activeId: value.id };
+    });
+    setRenderingExpanded(false);
+    openInspector("rendering");
+  }, [openInspector, projectId, source]);
+
+  const closeRendering = (id: string): void => {
+    if (!activeRendering) return;
+    const previews = activeRendering.previews.filter(preview => preview.id !== id);
+    if (!previews.length) {
+      setRendering(undefined);
+      setRenderingExpanded(false);
+      setInspectorOpen(false);
+      return;
+    }
+    setRendering({ ...activeRendering, previews, activeId: activeRendering.activeId === id ? previews[0]!.id : activeRendering.activeId });
+  };
 
   const toggleTerminal = useCallback((): void => {
     if (inspectorOpen && inspectorView === "terminal") {
@@ -293,7 +338,8 @@ export function useWorkspaceInspector({
     if (activePreview) previewFile(activePreview.path);
   }, [activePreview, expandedDirectories, loadDirectory, previewFile]);
   const collapseDirectories = useCallback((): void => setExpandedDirectories(new Set()), []);
-  const toolContent = (view: InspectorView): React.JSX.Element | null => !projectId ? null : view === "terminal" ? <TerminalView projectId={projectId} active={inspectorOpen && inspectorView === "terminal"} />
+  const toolContent = (view: InspectorView): React.JSX.Element | null => !projectId ? null : view === "rendering" ? activeRendering ? <RenderingPreviewPanel previews={activeRendering.previews} activeId={activeRendering.activeId} expanded={renderingExpanded} active={effectiveOpen && renderingView} onSelect={activeId => setRendering(previous => previous ? { ...previous, activeId } : previous)} onClosePreview={closeRendering} onToggleExpanded={() => setRenderingExpanded(value => !value)} onClose={() => { setRenderingExpanded(false); setInspectorOpen(false); }} /> : null
+    : view === "terminal" ? <TerminalView projectId={projectId} active={inspectorOpen && inspectorView === "terminal"} />
     : view === "files" ? <FilePreviewPanel width={Math.max(0, panelWidth - 1)} directoryStates={directoryStates} expandedDirectories={expandedDirectories} onOpenFile={onOpenFile} onPreviewFile={previewFile} onRunHtml={runHtml} onShowFiles={showFileBrowser} onToggleDirectory={toggleDirectory} preview={activePreview} projectId={projectId} onRefresh={refreshFiles} onCollapse={collapseDirectories} />
       : view === "changes" ? <SessionChangesPanel changes={changes} onPreviewFile={previewFile} />
         : view === "commit" ? <WorkspaceCommitPanel projectId={projectId} active={effectiveOpen && inspectorView === "commit"} onCount={setGitChangeCount} onSwitchBranch={onSwitchBranch} onPreviewFile={previewFile} />
@@ -333,18 +379,21 @@ export function useWorkspaceInspector({
     <div
       ref={panelRef}
       style={{ "--biny-inspector-content-width": `${panelWidth}px` } as React.CSSProperties}
-      className={`desktop-inspector-wrap is-${effectiveOpen ? "open" : "closed"}${filePanelResizing ? " is-resizing" : ""}`}
+      className={`desktop-inspector-wrap is-${effectiveOpen ? "open" : "closed"}${(renderingView ? renderingResizing : filePanelResizing) ? " is-resizing" : ""}${renderingView ? " is-rendering" : ""}${renderingView && renderingExpanded && effectiveOpen ? " is-rendering-fullscreen" : ""}`}
       inert={!inspectorOpen}
       aria-hidden={!inspectorOpen}
     >
       <FilePanelResizer
-        onResizeEnd={onFilePanelResizeEnd}
-        onResizeStart={onFilePanelResizeStart}
-        onWidthChange={onFilePanelWidthChange}
+        onResizeEnd={renderingView ? () => setRenderingResizing(false) : onFilePanelResizeEnd}
+        onResizeStart={renderingView ? () => setRenderingResizing(true) : onFilePanelResizeStart}
+        onWidthChange={renderingView ? setRenderingWidth : onFilePanelWidthChange}
         width={panelWidth}
+        renderingMaxWidth={renderingView ? availableWidth : undefined}
+        scope={`${source}:${inspectorView}`}
+        active={effectiveOpen && !focused}
       />
       <aside aria-label="工作区工具" className="desktop-inspector" role="complementary">
-        <header className="desktop-inspector-header">
+        <header className="desktop-inspector-header" hidden={renderingView} inert={renderingView}>
           <nav aria-label="工具切换" className="biny-inspector-tabs" role="tablist" ref={tabStripRef} onKeyDown={(event) => {
             if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
             const index = inspectorViews.indexOf(inspectorView);
@@ -354,7 +403,7 @@ export function useWorkspaceInspector({
             event.currentTarget.querySelectorAll<HTMLButtonElement>(':scope > button')[next]?.focus();
           }}>
             <div className="inspector-tab-measure" aria-hidden="true" ref={tabMeasureRef}>{inspectorViews.map((view) => <span key={view}><Icon name={inspectorViewMetadata[view].icon} size={14} />{inspectorViewMetadata[view].label}{view === "changes" && changeCount > 0 ? "99+" : ""}</span>)}</div>
-            {(Object.keys(inspectorViewMetadata) as InspectorView[]).map((view) => {
+            {inspectorViews.map((view) => {
               const active = inspectorView === view;
               const count = view === "commit" ? gitChangeCount ?? 0 : view === "changes" ? changeCount : 0;
               const badge = count > 0 ? (count > 99 ? "99+" : String(count)) : undefined;
@@ -420,7 +469,7 @@ export function useWorkspaceInspector({
     layout: {
       open: inspectorOpen && Boolean(projectId),
       focused,
-      resizing: filePanelResizing,
+      resizing: renderingView ? renderingResizing : filePanelResizing,
       width: panelWidth
     },
     filesOpen: inspectorOpen && inspectorView === "files",
@@ -429,45 +478,60 @@ export function useWorkspaceInspector({
     showBrowser,
     previewFile,
     previewReference,
+    previewRendering,
     toggleTerminal
   };
 }
 
-function FilePanelResizer({ width, onWidthChange, onResizeStart, onResizeEnd }: {
+function FilePanelResizer({ width, onWidthChange, onResizeStart, onResizeEnd, renderingMaxWidth, scope, active }: {
   width: number;
+  renderingMaxWidth?: number;
+  scope: string;
+  active: boolean;
   onWidthChange(width: number): void;
   onResizeStart(): void;
   onResizeEnd(width: number): void;
 }): React.JSX.Element {
+  const cancelResize = useRef<(() => void) | undefined>(undefined);
+  useEffect(() => () => cancelResize.current?.(), [active, scope]);
+  const clampWidth = (next: number, layoutRoot: HTMLElement | null): number => renderingMaxWidth !== undefined ? Math.min(renderingMaxWidth, Math.max(300, next)) : clampFilePanelWidthForLayout(next, layoutRoot);
   const resizeWithKeyboard = (direction: -1 | 1, resizer: HTMLDivElement): void => {
     const layoutRoot = resizer.closest<HTMLElement>(".biny-app-shell");
-    const currentWidth = resizer.parentElement?.getBoundingClientRect().width ?? width;
-    const next = clampFilePanelWidthForLayout(currentWidth + direction * 16, layoutRoot);
+    const currentWidth = resizer.parentElement?.getBoundingClientRect().width || width;
+    const next = clampWidth(currentWidth + direction * 16, layoutRoot);
     onWidthChange(next);
     onResizeEnd(next);
   };
   const startResize = (event: React.PointerEvent<HTMLDivElement>): void => {
+    if (!active) return;
     event.preventDefault();
     event.stopPropagation();
     event.currentTarget.setPointerCapture(event.pointerId);
+    cancelResize.current?.();
     onResizeStart();
     const layoutRoot = event.currentTarget.closest<HTMLElement>(".biny-app-shell");
     const startX = event.clientX;
-    const startWidth = event.currentTarget.parentElement?.getBoundingClientRect().width ?? width;
+    const startWidth = event.currentTarget.parentElement?.getBoundingClientRect().width || width;
     let currentWidth = startWidth;
-    let active = true;
+    let resizing = true;
     const move = (moveEvent: PointerEvent): void => {
-      currentWidth = clampFilePanelWidthForLayout(startWidth + startX - moveEvent.clientX, layoutRoot);
+      currentWidth = clampWidth(startWidth + startX - moveEvent.clientX, layoutRoot);
       onWidthChange(currentWidth);
     };
-    const stop = (): void => {
-      if (!active) return;
-      active = false;
+    const clean = (): void => {
+      if (!resizing) return;
+      resizing = false;
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", stop);
       window.removeEventListener("pointercancel", stop);
+      cancelResize.current = undefined;
+    };
+    const stop = (): void => {
+      if (!resizing) return;
+      clean();
       onResizeEnd(currentWidth);
     };
+    cancelResize.current = clean;
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", stop, { once: true });
     window.addEventListener("pointercancel", stop, { once: true });
@@ -476,8 +540,8 @@ function FilePanelResizer({ width, onWidthChange, onResizeStart, onResizeEnd }: 
     <div
       aria-label="调整检查器宽度"
       aria-orientation="vertical"
-      aria-valuemax={MAX_FILE_PANEL_WIDTH}
-      aria-valuemin={MIN_FILE_PANEL_WIDTH}
+      aria-valuemax={renderingMaxWidth ?? MAX_FILE_PANEL_WIDTH}
+      aria-valuemin={renderingMaxWidth !== undefined ? Math.min(300, renderingMaxWidth) : MIN_FILE_PANEL_WIDTH}
       aria-valuenow={Math.round(width)}
       className="desktop-inspector-resizer"
       onKeyDown={(event) => {

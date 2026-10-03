@@ -8,9 +8,9 @@ const parser = unified().use(remarkParse).use(remarkGfm).use(remarkMath).freeze(
 
 function parseBlocks(content: string): { blocks: string[]; documentScope: boolean } {
   const tree = parser.parse(content);
-  // 链接/脚注可在后续任意块定义，包含这些定义的文档需要共享解析作用域。
+  // 引用定义及跨段落 HTML 容器必须共享解析作用域。
   const hasDefinition = (node: { type: string; children?: readonly { type: string }[] }): boolean =>
-    node.type === "definition" || node.type === "footnoteDefinition" || Boolean(node.children?.some(hasDefinition));
+    node.type === "definition" || node.type === "footnoteDefinition" || node.type === "html" || Boolean(node.children?.some(hasDefinition));
   const documentScope = hasDefinition(tree);
   if (tree.children.length < 2 || documentScope) return { blocks: [content], documentScope };
   const starts = tree.children.map((node, index) => {

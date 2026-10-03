@@ -1,0 +1,54 @@
+.markdown-image-frame {
+  --image-unit: calc(13px * var(--font-scale, 1));
+  position: relative;
+  display: inline-block;
+  max-width: 100%;
+  margin: 0;
+  border-radius: calc(var(--image-unit) * .625 - 2px);
+  vertical-align: middle;
+}
+.markdown-image-frame.is-loading { min-width: 0; min-height: 0; background: transparent; }
+.markdown-image-skeleton { display: block; max-width: 100%; border-radius: calc(var(--image-unit) * .625 - 2px); background: var(--biny-surface-soft); }
+.markdown-image-frame.is-loading .markdown-image { position: absolute; inset: 0; visibility: hidden; }
+.biny-chat-scroll .markdown-image-frame .markdown-image,
+.markdown-image-frame .markdown-image { display: block; max-width: 100%; height: auto; margin: 0; border: 0; border-radius: calc(var(--image-unit) * .625 - 2px); animation: none; }
+.biny-chat-scroll .markdown-image-frame .markdown-image.is-local,
+.markdown-image-frame .markdown-image.is-local { max-height: 60vh; width: auto; }
+.markdown-image.is-previewable { cursor: pointer; transition: opacity 150ms ease; }
+.markdown-image.is-previewable:hover { opacity: .9; }
+.markdown-image.is-previewable:focus-visible { outline: 2px solid var(--biny-focus); outline-offset: 3px; }
+.markdown-image-frame.is-error { padding-right: 0; }
+.markdown-image-error { display: inline-flex; align-items: center; gap: calc(var(--image-unit) * .25); border-radius: calc(var(--image-unit) * .625 - 2px); padding: calc(var(--image-unit) * .25) calc(var(--image-unit) * .5); color: var(--biny-danger); background: color-mix(in srgb, var(--biny-danger) 10%, transparent); font-size: calc(var(--image-unit) * .875); }
+.markdown-image-error button { text-decoration: underline; cursor: pointer; }
+.markdown-image-actions { position: absolute; right: calc(var(--image-unit) * .5); bottom: calc(var(--image-unit) * .5); opacity: 0; transition: opacity 200ms ease; }
+.markdown-image-frame:hover .markdown-image-actions,
+.markdown-image-frame:focus-within .markdown-image-actions { opacity: 1; }
+.markdown-image-actions .markdown-download { display: grid; place-items: center; width: calc(var(--image-unit) * 2); height: calc(var(--image-unit) * 2); border: 1px solid var(--biny-border); border-radius: calc(var(--image-unit) * .625 - 2px); background: color-mix(in srgb, var(--biny-surface) 90%, transparent); backdrop-filter: blur(4px); box-shadow: 0 1px 2px var(--shadow-soft); cursor: pointer; }
+.markdown-image-menu { --image-unit: calc(13px * var(--font-scale, 1)); position: fixed; z-index: 2050; display: grid; min-width: min(200px, calc(100vw - 24px)); max-width: calc(100vw - 24px); max-height: calc(100vh - 24px); overflow-y: auto; padding: calc(var(--image-unit) * .25); border: 1px solid var(--biny-border); border-radius: calc(var(--image-unit) * .625 + 4px); color: var(--biny-text); background: color-mix(in srgb, var(--biny-surface-elevated) 95%, transparent); backdrop-filter: blur(24px); box-shadow: 0 4px 8px var(--shadow-heavy); }
+.markdown-image-menu > button { display: flex; align-items: center; gap: calc(var(--image-unit) * .5); width: 100%; height: calc(var(--image-unit) * 2.25); padding: 0 calc(var(--image-unit) * .75); border: 0; border-radius: calc(var(--image-unit) * .625 - 2px); color: inherit; background: none; font-size: calc(var(--image-unit) * .866667); text-align: left; cursor: pointer; }
+.markdown-image-menu svg { width: calc(var(--image-unit) * .875); height: calc(var(--image-unit) * .875); }
+.markdown-image-menu > button:hover,
+.markdown-image-menu > button:focus-visible { outline: none; background: var(--biny-surface-soft); }
+.markdown-image-menu .markdown-resource-error { padding: calc(var(--image-unit) * .25) calc(var(--image-unit) * .75); }
+.markdown-image-lightbox { position: fixed; inset: 0; z-index: 2100; display: flex; flex-direction: column; overflow: hidden; color: var(--image-preview-text); background: var(--image-preview-bg); -webkit-app-region: no-drag; }
+.chat-tool-images { display: grid; gap: 8px; min-width: 0; margin-top: 8px; }
+.chat-tool-images .markdown-image-frame { justify-self: start; max-width: 100%; }
+.markdown-image-lightbox-toolbar { position: relative; z-index: 1; display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px 16px; background: var(--image-preview-toolbar); }
+.markdown-image-lightbox-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; }
+.markdown-image-lightbox-controls { display: flex; flex-shrink: 0; align-items: center; gap: 8px; }
+.markdown-image-lightbox-controls > span { min-width: 40px; font-size: 12px; text-align: center; }
+.markdown-image-lightbox-controls button { display: grid; place-items: center; width: 32px; height: 32px; padding: 0; border-radius: 6px; color: var(--image-preview-text); background: none; cursor: pointer; }
+.markdown-image-lightbox-controls button:hover:not(:disabled),
+.markdown-image-lightbox-controls button:focus-visible { outline: none; color: var(--image-preview-text-strong); background: var(--image-preview-hover); }
+.markdown-image-lightbox-controls button:focus-visible { box-shadow: 0 0 0 2px var(--image-preview-focus); }
+.markdown-image-lightbox-viewport { display: flex; flex: 1; min-height: 0; align-items: center; justify-content: center; overflow: hidden; padding: 16px; touch-action: none; cursor: grab; }
+.markdown-image-lightbox-viewport.is-dragging { cursor: grabbing; }
+.markdown-image-lightbox-viewport > img { display: block; max-width: calc(100% - 120px); max-height: 100%; border-radius: 8px; object-fit: contain; user-select: none; }
+@media (max-width: 480px) {
+  .markdown-image-lightbox-toolbar { gap: 8px; padding: 8px; }
+  .markdown-image-lightbox-controls { gap: 2px; }
+  .markdown-image-lightbox-viewport > img { max-width: 100%; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .markdown-image.is-previewable, .markdown-image-actions { transition: none; }
+}

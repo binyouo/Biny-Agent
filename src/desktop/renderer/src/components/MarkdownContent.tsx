@@ -6,29 +6,52 @@ import { useChatResponseSettings } from "../chatResponseSettings.js";
  * 图片和 `@attachments/` 附件走主进程转 data URL 内联显示；公式走 KaTeX，mermaid 围栏
  * 交给懒加载的 MermaidBlock。
  *
- * 渲染的是模型输出，一切外部内容都当不可信处理：只有经高亮库转义过的高亮结果会用
- * `dangerouslySetInnerHTML`，其余节点都交给 React 转义。
+ * 模型 HTML 在公式处理前净化；代码及图表各自校验后才插入，普通正文由 React 转义。
  */
-import React, { isValidElement, memo, useEffect, useMemo, useState } from "react";
-import Markdown, { defaultUrlTransform, type Components } from "react-markdown";
+import React, { createContext, isValidElement, lazy, memo, Suspense, useContext, useEffect, useMemo, useState } from "react";
+import Markdown, { defaultUrlTransform, type Components, type ExtraProps } from "react-markdown";
 import rehypeKatex from "rehype-katex";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import remarkBreaks from "remark-breaks";
+import remarkCjkFriendly from "remark-cjk-friendly";
+import remarkCjkStrikethrough from "remark-cjk-friendly-gfm-strikethrough";
+import rehypeRaw from "rehype-raw";
+import rehypeSanitize, { defaultSchema } from "rehype-sanitize";
 import { useInlineImage } from "../inlineImage.js";
 import { openDeepLink } from "../deepLinks.js";
-import { MermaidBlock } from "./MermaidBlock.js";
 import { MarkdownCodeBlock } from "./MarkdownCodeBlock.js";
 import { FileLinkCard } from "./FileLinkCard.js";
 import { MarkdownTable } from "./MarkdownTable.js";
 import { MarkdownImage } from "./MarkdownImage.js";
 import { Icon } from "./Icon.js";
 import { MarkdownWebLink } from "./MarkdownWebLink.js";
+import { InfographicBlock } from "./InfographicBlock.js";
+import { PatternBlock } from "./PatternBlock.js";
+import { MarkdownMedia } from "./MarkdownMedia.js";
 import { createMarkdownBlockParser } from "../markdownBlocks.js";
 import type { PluggableList } from "unified";
 
-const rehypePlugins: PluggableList = [[rehypeKatex, { throwOnError: false, errorColor: "var(--biny-danger)" }]];
-const transformUrl = (url: string): string => url.startsWith("biny://") ? url : defaultUrlTransform(url);
+// 先清理模型 HTML，再让公式渲染器生成受信任的 MathML；脚本和嵌入网页不能进入宿主正文。
+const rehypePlugins: PluggableList = [rehypeRaw, [rehypeSanitize, {
+  ...defaultSchema,
+  tagNames: [...defaultSchema.tagNames ?? [], "mark", "video", "audio", "source"],
+  attributes: { ...defaultSchema.attributes,
+    code: [...defaultSchema.attributes?.code ?? [], ["className", /^language-./, "math-inline", "math-display"]],
+    video: ["src", "controls", "poster", "width", "height", "preload", "loop", "muted"], audio: ["src", "controls", "preload", "loop", "muted"], source: ["src", "type"] },
+  protocols: { ...defaultSchema.protocols, href: [...defaultSchema.protocols?.href ?? [], "biny", "file"], src: [...defaultSchema.protocols?.src ?? [], "file", "data"] }
+}], [rehypeKatex, { throwOnError: false, errorColor: "var(--biny-text-secondary)", trust: false }]];
+const StreamingContext = createContext(false);
+const WordRevealContext = createContext(false);
+const MermaidBlock = lazy(() => import("./MermaidBlock.js").then(module => ({ default: module.MermaidBlock })));
+const transformUrl: NonNullable<React.ComponentProps<typeof Markdown>["urlTransform"]> = (url, key, node) => {
+  if (key === "href" && (url.startsWith("biny://") || url.startsWith("file://"))) return url;
+  if (key === "src" && node.tagName === "img" && (url.startsWith("file://") || /^data:image\/(?:png|jpe?g|gif|webp|avif|svg\+xml);/i.test(url))) return url;
+  if ((key === "src" && ["video", "audio", "source"].includes(node.tagName)) || (key === "poster" && node.tagName === "video")) {
+    return /^file:\/\//i.test(url) || /^[A-Za-z]:[\\/]/.test(url) ? url : defaultUrlTransform(url);
+  }
+  return defaultUrlTransform(url);
+};
 
 // 块内容相同就跳过 Markdown → HAST → React；不增加 DOM 包裹，保留原有段落间距。
 const MarkdownBlock = memo(function MarkdownBlock({ content, components, remarkPlugins }: {
@@ -70,7 +93,8 @@ export const MarkdownContent = memo(function MarkdownContent({
   const partitioned = streaming || wasStreaming;
   const blocks = useMemo(() => partitioned ? parseBlocks(content) : [content], [content, parseBlocks, partitioned]);
   const remarkPlugins = useMemo(
-    () => (breaks ? [remarkGfm, remarkBreaks, [remarkMath, { singleDollarTextMath: singleDollarMath }]] : [remarkGfm, [remarkMath, { singleDollarTextMath: singleDollarMath }]]) as PluggableList,
+    () => [[remarkGfm, { singleTilde: false }], remarkCjkFriendly, [remarkCjkStrikethrough, { singleTilde: false }],
+      ...(breaks ? [remarkBreaks] : []), [remarkMath, { singleDollarTextMath: singleDollarMath }]] as PluggableList,
     [breaks, singleDollarMath]
   );
   // components 里的函数会被 react-markdown 直接当作 React 元素类型；
@@ -78,6 +102,12 @@ export const MarkdownContent = memo(function MarkdownContent({
   // 配合入场动画表现为持续闪烁（.markdown-table 横向滚动位置也会被不断重置），
   // 因此必须用 useMemo 稳定组件身份，让 React 原地更新 DOM。
   const components = useMemo<Components>(() => ({
+    p: function Paragraph({ node: _node, children, ...props }) {
+      const reveal = useContext(WordRevealContext);
+      const visible = React.Children.toArray(children).filter(child => child !== "");
+      if (visible.length === 1 && isValidElement<{ node?: { tagName?: string } }>(visible[0]) && visible[0].props.node?.tagName === "img") return <>{children}</>;
+      return <p {...props}>{reveal ? revealWords(children) : children}</p>;
+    },
     a({ node: _node, children, ...props }) {
       const href = props.href;
       const path = localPathFromHref(href);
@@ -120,24 +150,54 @@ export const MarkdownContent = memo(function MarkdownContent({
       if (!source) return null;
       return <MarkdownImage key={source} alt={alt ?? ""} src={source} title={title} />;
     },
-    pre({ children }) {
+    video({ node, src, poster, width, height, loop, muted, children }) {
+      return <MarkdownMedia kind="video" projectId={projectId} src={src} sources={mediaSources(node)} poster={poster}
+        width={width} height={height} loop={loop} muted={muted}>{children}</MarkdownMedia>;
+    },
+    audio({ node, src, loop, muted, children }) {
+      return <MarkdownMedia kind="audio" projectId={projectId} src={src} sources={mediaSources(node)} loop={loop} muted={muted}>{children}</MarkdownMedia>;
+    },
+    source() { return null; },
+    pre: function Pre({ children }) {
+      const isStreaming = useContext(StreamingContext);
       const block = fencedCode(children);
       // 图表单独渲染；解析失败时 MermaidBlock 自己回退成普通代码块
-      if (block.language?.toLowerCase() === "mermaid") return <MermaidBlock code={block.code} />;
-      return <MarkdownCodeBlock code={block.code} language={block.language} />;
+      if (block.language?.toLowerCase() === "mermaid") return <Suspense fallback={<MarkdownCodeBlock code={block.code} language="mermaid" />}><MermaidBlock code={block.code} isStreaming={isStreaming} /></Suspense>;
+      if (block.language?.toLowerCase() === "infographic") return <InfographicBlock code={block.code} isStreaming={isStreaming} />;
+      if (["strudel", "tidal"].includes(block.language?.toLowerCase() ?? "")) return <PatternBlock code={block.code} isStreaming={isStreaming} />;
+      return <MarkdownCodeBlock code={block.code} language={block.language} isStreaming={isStreaming} />;
     },
-    table({ children }) {
+    table: function Table({ children }) {
+      const isStreaming = useContext(StreamingContext);
       // 宽表格自己横向滚动，不能把整条消息撑宽。
-      return <MarkdownTable>{children}</MarkdownTable>;
+      return <MarkdownTable streaming={isStreaming}>{children}</MarkdownTable>;
     }
   }), [onOpenExternal, onPreviewFile, projectId, openLinksInBrowser]);
   if (!markdown) return <div className={`markdown-body is-plain-text${variant ? ` ${variant}` : ""}`}>{content}</div>;
   return (
-    <div className={variant ? `markdown-body ${variant}` : "markdown-body"}>
+    <StreamingContext.Provider value={streaming}><WordRevealContext.Provider value={partitioned}><div className={variant ? `markdown-body ${variant}` : "markdown-body"} data-streaming={streaming || undefined}>
       {blocks.map((block, index) => <MarkdownBlock key={index} content={block} components={components} remarkPlugins={remarkPlugins} />)}
-    </div>
+    </div></WordRevealContext.Provider></StreamingContext.Provider>
   );
 });
+
+function mediaSources(node?: ExtraProps["node"]): { src?: string; type?: string }[] {
+  return node?.children.flatMap(child => child.type === "element" && child.tagName === "source"
+    ? [{ src: typeof child.properties.src === "string" ? child.properties.src : undefined, type: typeof child.properties.type === "string" ? child.properties.type : undefined }] : []) ?? [];
+}
+
+const wordSegments = new Intl.Segmenter("zh", { granularity: "word" });
+function revealWords(node: React.ReactNode): React.ReactNode {
+  if (typeof node === "string") return [...wordSegments.segment(node)].map(({ segment }, index) => /\s/u.test(segment)
+    ? <React.Fragment key={index}>{segment}</React.Fragment> : <span key={index} className="markdown-stream-word">{segment}</span>);
+  if (Array.isArray(node)) return node.map((child, index) => <React.Fragment key={index}>{revealWords(child)}</React.Fragment>);
+  if (isValidElement<{ className?: string; children?: React.ReactNode; node?: { tagName?: string } }>(node)) {
+    const tag = typeof node.type === "string" ? node.type : node.props.node?.tagName;
+    if ((tag && ["code", "pre", "math", "svg", "img"].includes(tag)) || node.props.className?.includes("katex")) return node;
+    if (node.props.children !== undefined) return React.cloneElement(node, undefined, revealWords(node.props.children));
+  }
+  return node;
+}
 
 function LocalReferenceLink({ href, projectId, children }: { href: string; projectId: string; children: React.ReactNode }): React.JSX.Element {
   const [valid, setValid] = useState<boolean>();
@@ -157,7 +217,7 @@ function LocalReferenceLink({ href, projectId, children }: { href: string; proje
 function InlineImage({ alt, path, projectId }: { alt: string; path: string; projectId: string }): React.JSX.Element {
   const source = useInlineImage(projectId, path);
   if (!source) return <span className="markdown-image-fallback"><Icon name="file" size={12} /><span>{alt || path}</span></span>;
-  return <MarkdownImage key={source} src={source} alt={alt || path.split("/").pop() || "图片"} />;
+  return <MarkdownImage key={source} src={source} alt={alt || path.split("/").pop() || "图片"} local />;
 }
 
 /** 从 `pre` 的子节点里取回围栏代码块的原文和语言标注。 */

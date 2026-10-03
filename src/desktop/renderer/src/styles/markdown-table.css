@@ -1,0 +1,97 @@
+.markdown-table-block {
+  --markdown-table-unit: calc(13px * var(--font-scale, 1));
+  display: flex;
+  flex-direction: column;
+  gap: calc(var(--markdown-table-unit) * .5);
+  margin: var(--markdown-table-unit) 0;
+  min-width: 0;
+}
+
+.markdown-table-block > .markdown-table-actions {
+  gap: calc(var(--markdown-table-unit) * .25);
+  margin: 0;
+}
+
+.biny-chat-scroll .markdown-table-block > .markdown-table,
+.markdown-table-block > .markdown-table {
+  max-width: 100%;
+  margin: 0;
+  overflow-x: auto;
+  scrollbar-width: auto;
+}
+
+.biny-chat-scroll .markdown-body .markdown-table-block table,
+.markdown-table-block table {
+  width: 100%;
+  border: 1px solid var(--biny-border);
+  border-collapse: collapse;
+  font-size: calc(var(--markdown-table-unit) * .875);
+  line-height: calc(var(--markdown-table-unit) * 1.25);
+}
+
+.biny-chat-scroll .markdown-body .markdown-table-block th,
+.biny-chat-scroll .markdown-body .markdown-table-block td,
+.markdown-table-block th,
+.markdown-table-block td {
+  padding: calc(var(--markdown-table-unit) * .5) var(--markdown-table-unit);
+  border: 0;
+  font-size: calc(var(--markdown-table-unit) * .875);
+  line-height: calc(var(--markdown-table-unit) * 1.25);
+}
+
+.markdown-table-block tr { border-bottom: 1px solid var(--biny-border); }
+.biny-chat-scroll .markdown-body .markdown-table-block thead,
+.markdown-table-block thead { background: color-mix(in oklab, var(--biny-surface-soft) 80%, transparent); }
+.biny-chat-scroll .markdown-body .markdown-table-block tbody,
+.markdown-table-block tbody { background: color-mix(in oklab, var(--biny-surface-soft) 40%, transparent); }
+.biny-chat-scroll .markdown-body .markdown-table-block th,
+.markdown-table-block th { white-space: nowrap; text-align: left; font-weight: 600; background: transparent; }
+
+.markdown-table-action { position: relative; }
+.markdown-table-trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: calc(var(--markdown-table-unit) * .25);
+  border: 0;
+  background: transparent;
+  color: var(--biny-text-secondary);
+  cursor: pointer;
+  transition: color 150ms cubic-bezier(.4, 0, .2, 1);
+}
+.markdown-table-trigger:hover { color: var(--biny-text); }
+.markdown-table-trigger:disabled,
+.markdown-table-menu button:disabled { opacity: .5; cursor: not-allowed; }
+.markdown-table-trigger:focus-visible,
+.markdown-table-menu button:focus-visible { outline: 2px solid var(--biny-focus); outline-offset: 2px; }
+.markdown-table-menu {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  z-index: 10;
+  min-width: 120px;
+  margin-top: calc(var(--markdown-table-unit) * .25);
+  overflow: hidden;
+  border: 1px solid var(--biny-border);
+  border-radius: calc(var(--markdown-table-unit) * .625 - 2px);
+  background: var(--bg);
+  box-shadow: 0 10px 15px -3px var(--biny-shadow-soft), 0 4px 6px -4px var(--biny-shadow-soft);
+}
+.markdown-table-menu button {
+  display: block;
+  width: 100%;
+  padding: calc(var(--markdown-table-unit) * .5) calc(var(--markdown-table-unit) * .75);
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--biny-text);
+  font-size: calc(var(--markdown-table-unit) * .875);
+  line-height: calc(var(--markdown-table-unit) * 1.25);
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 150ms cubic-bezier(.4, 0, .2, 1);
+}
+.markdown-table-menu button:hover { background: color-mix(in oklab, var(--biny-surface-soft) 40%, transparent); }
+@media (prefers-reduced-motion: reduce) {
+  .markdown-table-trigger, .markdown-table-menu button { transition: none; }
+}

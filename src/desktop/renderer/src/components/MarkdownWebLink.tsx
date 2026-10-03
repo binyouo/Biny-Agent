@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { copyToClipboard } from "../copyToClipboard.js";
+import { Icon } from "./Icon.js";
 
 type LinkOverlay = { kind: "selection" | "context"; left: number; top: number };
 type LinkFeedback = { message: string; left: number; top: number };
@@ -18,6 +19,11 @@ export function MarkdownWebLink({ href, children, internalByDefault, onOpenExter
   const menuItems = useRef<Array<HTMLButtonElement | null>>([]);
   const [overlay, setOverlay] = useState<LinkOverlay>();
   const [feedback, setFeedback] = useState<LinkFeedback>();
+  const text = linkText(children);
+  const url = parseWebUrl(href);
+  const host = url?.hostname.replace(/^www\./i, "");
+  const bare = url && text !== undefined && normalizeUrlText(text) === normalizeUrlText(href);
+  const label = bare ? describeUrl(url) : children;
   const selected = useCallback((): boolean => {
     const selection = window.getSelection();
     return Boolean(anchor.current && selection && !selection.isCollapsed && selection.toString().trim()
@@ -116,14 +122,14 @@ export function MarkdownWebLink({ href, children, internalByDefault, onOpenExter
     items[next]?.focus();
   };
   return <>
-    <a href={href} ref={anchor} rel="noreferrer" onMouseUp={() => setOverlay(selectionPosition())}
+    <a href={href} ref={anchor} className="markdown-web-link" title={bare ? undefined : href} rel="noreferrer" onMouseUp={() => setOverlay(selectionPosition())}
       onKeyUp={(event) => { if (event.key !== "Escape") setOverlay(selectionPosition()); }}
       onContextMenu={showContextMenu}
       onClick={(event) => {
         event.preventDefault();
         if (!selected()) void open(internalByDefault && !event.metaKey && !event.ctrlKey);
       }}>
-      {children}
+      {text?.trim() && host ? <span className="markdown-link-label"><SiteFavicon key={host} host={host} />{label}</span> : label}
     </a>
     {overlay ? createPortal(<div ref={panel}
       className={`markdown-link-actions${overlay.kind === "context" ? " is-context-menu" : ""}`}
@@ -149,4 +155,44 @@ export function MarkdownWebLink({ href, children, internalByDefault, onOpenExter
     </div>, document.body) : null}
     {feedback ? createPortal(<span className="markdown-link-feedback" role="status" style={{ left: feedback.left, top: feedback.top }}>{feedback.message}</span>, document.body) : null}
   </>;
+}
+
+const faviconMisses = new Set<string>();
+function parseWebUrl(href: string): URL | undefined {
+  try { return new URL(href); } catch { return undefined; }
+}
+function SiteFavicon({ host }: { host: string }): React.JSX.Element {
+  const sources = [`https://www.google.com/s2/favicons?domain=${encodeURIComponent(host)}&sz=32`, `https://${host}/favicon.ico`];
+  const [index, setIndex] = useState(() => faviconMisses.has(host) ? sources.length : 0);
+  if (index >= sources.length) return <span className="markdown-link-favicon is-fallback" aria-hidden="true"><Icon name="globe" size={14} /></span>;
+  return <img className="markdown-link-favicon" src={sources[index]} alt="" loading="lazy" decoding="async" draggable={false} referrerPolicy="no-referrer"
+    onError={() => { if (index + 1 >= sources.length) faviconMisses.add(host); setIndex(value => value + 1); }} />;
+}
+function linkText(node: ReactNode): string | undefined {
+  if (node === null || node === undefined || typeof node === "boolean") return "";
+  if (typeof node === "string" || typeof node === "number") return String(node);
+  if (Array.isArray(node)) {
+    const parts = node.map(linkText);
+    return parts.some(part => part === undefined) ? undefined : parts.join("");
+  }
+  if (React.isValidElement<{ src?: string; children?: ReactNode }>(node)) return node.type === "img" || node.props.src ? undefined : linkText(node.props.children);
+  return "";
+}
+function decodeUrlText(text: string): string {
+  try { return decodeURIComponent(text); } catch { return text; }
+}
+function normalizeUrlText(text: string): string {
+  return decodeUrlText(text.trim()).replace(/^https?:\/\//i, "").replace(/^www\./i, "").replace(/\/+$/, "").toLowerCase();
+}
+function describeUrl(url: URL): string {
+  const host = url.hostname.replace(/^www\./i, "");
+  const parts = url.pathname.split("/").filter(Boolean).map(decodeUrlText).filter(part => !/^index\.[a-z]+$/i.test(part));
+  if (!parts.length) return host;
+  const full = `${host}/${parts.join("/")}`;
+  if (full.length <= 48) return full;
+  const tail = parts.at(-1)!;
+  const clipped = tail.length > 28 ? `${tail.slice(0, 27)}…` : tail;
+  if (parts.length === 1) return `${host}/${clipped}`;
+  const withHead = `${host}/${parts[0]}/${parts.length > 2 ? "…/" : ""}${clipped}`;
+  return withHead.length <= 48 ? withHead : `${host}/…/${clipped}`;
 }

@@ -5,7 +5,7 @@ import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MarkdownContent } from "../src/desktop/renderer/src/components/MarkdownContent.js";
 Object.assign(globalThis, { React });
-test("表格提供复制与下载，图片提供原图下载，代码提供下载", () => {
+test("表格提供复制与下载，图片提供原图下载，代码提供复制", () => {
   const html = renderToStaticMarkup(React.createElement(MarkdownContent, {
     projectId: "p", onPreviewFile() {}, onOpenExternal() {},
     content: '| 名称 | 分数 |\n| :--- | ---: |\n| a | **42** |\n\n![示意图](https://example.com/a.gif)\n\n```js\nconst a = 1;\n```'
@@ -15,7 +15,7 @@ test("表格提供复制与下载，图片提供原图下载，代码提供下�
   assert.match(html, /text-align:right/);
   assert.match(html, /下载图片/);
   assert.match(html, /a.gif/);
-  assert.match(html, /下载代码/);
+  assert.match(html, /复制代码/);
 });
 
 test("表格复制取当前单元格、CSV 转义正确；图片失败能重试", async () => {
@@ -31,10 +31,11 @@ test("表格复制取当前单元格、CSV 转义正确；图片失败能重试"
     projectId: "p", onPreviewFile() {}, onOpenExternal() {},
     content: '| 名称 | 分数 |\n| --- | --- |\n| a,"b" | 42 |\n\n![图](https://example.com/test.gif)'
   })));
+  flushSync(() => (document.querySelector('button[aria-label="复制表格"]') as HTMLButtonElement).click());
   const copy = document.querySelector('button[aria-label="CSV"]') as HTMLButtonElement;
   copy.click();
   await new Promise<void>(resolve => queueMicrotask(resolve));
-  assert.equal(copied, '名称,分数\r\n"a,""b""",42');
+  assert.equal(copied, '名称,分数\n"a,""b""",42');
   const img = document.querySelector("img")!;
   flushSync(() => img.dispatchEvent(new dom.window.Event("error")));
   assert.match(document.body.textContent!, /加载失败/);

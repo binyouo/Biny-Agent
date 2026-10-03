@@ -2,7 +2,7 @@
  * 右侧 Inspector 的文件面板。
  *
  * 左侧文件树可收起、宽度可拖拽，右侧独立阅读文件。文本/代码走高亮 + 行号 gutter；图片走主进程
- * data URL 内联显示；二进制/超限给「使用系统应用打开」兜底。文件树支持懒加载展开
+ * data URL 内联显示；音视频读取本地流地址，其他二进制/超限给「使用系统应用打开」兜底。文件树支持懒加载展开
  * 和名称过滤。这里只做展示与本地交互，数据请求全部由 useWorkspaceInspector 的回调注入。
  */
 import { memo, useDeferredValue, useState } from "react";
@@ -17,6 +17,8 @@ import { CopyButton } from "../CopyButton.js";
 import { MarkdownContent } from "../MarkdownContent.js";
 import { Icon } from "../Icon.js";
 import { FileTypeMarker } from "./FileTypeMarker.js";
+import { FileMediaPreview } from "./FileMediaPreview.js";
+import { workspaceMediaKind } from "./workspaceMediaType.js";
 
 export interface FilePreviewState {
   source: string;
@@ -152,6 +154,7 @@ const FilePreviewContent = memo(function FilePreviewContent({ preview, projectId
   const path = file.path;
   const extension = extensionOf(path);
   if (imageExtensions.has(extension)) return <ImagePreview path={path} projectId={projectId} onOpenFile={onOpenFile} />;
+  if (workspaceMediaKind(path)) return <FileMediaPreview path={path} projectId={projectId} onOpenFile={onOpenFile} />;
   if (file.binary) {
     return <PreviewState icon="file" text="这是二进制文件，请使用系统应用打开。">
       <button className="file-preview-open" onClick={() => onOpenFile(path)} type="button">使用系统应用打开</button>

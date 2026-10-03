@@ -1,0 +1,129 @@
+/* 图表自然尺寸居中，长图在静止时适应视口；缩放后用拖动查看局部。 */
+.markdown-diagram {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  min-width: 0;
+  min-height: 120px;
+  margin: 16px 0;
+  padding: 0;
+  border: 1px solid var(--biny-border);
+  border-radius: 12px;
+  background: var(--bg);
+  overflow: visible;
+  user-select: none;
+}
+.markdown-diagram-viewport {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  min-width: 0;
+  min-height: 120px;
+  max-height: none;
+  overflow: hidden;
+  border-radius: inherit;
+  touch-action: none;
+}
+.markdown-diagram .markdown-mermaid {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+  margin: 0;
+  padding: 16px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  overflow: visible;
+  transform-origin: center;
+  transition: transform 75ms;
+}
+.markdown-diagram .markdown-mermaid.is-dragging { transition: none; }
+.markdown-diagram .markdown-mermaid svg { display: block; max-width: 100%; max-height: 68vh; height: auto; }
+.markdown-diagram-actions {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--biny-border);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--bg) 80%, transparent);
+  backdrop-filter: blur(2px);
+  opacity: 0;
+  transition: opacity 150ms;
+  cursor: default;
+}
+.markdown-diagram:hover .markdown-diagram-actions,
+.markdown-diagram:focus-within .markdown-diagram-actions,
+.markdown-diagram-actions:has(details[open]),
+.markdown-diagram.is-expanded .markdown-diagram-actions { opacity: 1; }
+.markdown-diagram-actions > button,
+.markdown-diagram-actions > .markdown-action-menu > summary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--biny-text-secondary);
+  cursor: pointer;
+}
+.markdown-diagram-actions > button:hover,
+.markdown-diagram-actions > .markdown-action-menu > summary:hover { color: var(--biny-text); background: var(--biny-surface-hover); }
+.markdown-diagram-actions > button:disabled { opacity: .4; cursor: default; }
+.markdown-diagram-actions button:focus-visible,
+.markdown-diagram-viewport:focus-visible { outline: 2px solid var(--biny-focus); outline-offset: 2px; }
+.markdown-diagram-scale { min-width: 40px; color: var(--biny-text-secondary); font-size: 12px; font-variant-numeric: tabular-nums; text-align: center; }
+.markdown-diagram-action-divider { width: 1px; height: 16px; margin: 0 2px; background: var(--biny-border); }
+.markdown-diagram.is-expanded { height: min(75vh, 800px); min-height: 240px; margin: 0; }
+.markdown-diagram.is-expanded .markdown-diagram-viewport { height: 100%; }
+.markdown-diagram.is-expanded .markdown-mermaid { min-height: 100%; }
+@media (hover: none) { .markdown-diagram-actions { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) {
+  .markdown-diagram .markdown-mermaid,
+  .markdown-diagram-actions { transition: none; }
+}
+
+/* 渲染详情使用右栏真实布局；两个视图持续挂载，切换源码不会丢失缩放。 */
+.rendering-preview-panel { display: flex; flex-direction: column; width: 100%; height: 100%; min-width: 0; min-height: 0; background: var(--bg); }
+.rendering-preview-header { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 4px 12px; min-height: 48px; padding: 8px 12px; box-sizing: border-box; border-bottom: 1px solid var(--biny-border); flex-shrink: 0; }
+.rendering-preview-title { flex: 1; min-width: 64px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--biny-text); font-size: 14px; font-weight: 500; }
+.rendering-preview-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; min-width: 0; }
+.rendering-preview-toggle { display: flex; border: 1px solid var(--biny-border); border-radius: 6px; padding: 2px; margin-right: 8px; }
+.rendering-preview-actions button { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; padding: 0; border: 0; border-radius: 4px; background: transparent; color: var(--biny-text-secondary); cursor: pointer; }
+.rendering-preview-actions button:hover, .rendering-preview-toggle button[aria-pressed="true"] { background: var(--biny-surface-hover); color: var(--biny-text); }
+.rendering-preview-actions button:focus-visible { outline: 2px solid var(--biny-focus); outline-offset: 2px; }
+.rendering-preview-content, .rendering-preview-source { position: relative; flex: 1; min-width: 0; min-height: 0; overflow: hidden; }
+.rendering-preview-source { overflow: auto; padding: 16px; }
+.rendering-preview-content[hidden], .rendering-preview-source[hidden], .desktop-inspector-header[hidden] { display: none; }
+.rendering-preview-content > .markdown-diagram.is-expanded { height: 100%; min-height: 0; border: 0; border-radius: 0; }
+.rendering-preview-content > .markdown-diagram.is-expanded .markdown-diagram-actions > button { width: 28px; height: 28px; }
+.rendering-preview-content > .markdown-diagram.is-expanded .markdown-mermaid svg { max-height: 100%; }
+.biny-root .biny-app-shell > .desktop-inspector-wrap.is-rendering-fullscreen { position: fixed; inset: 0; width: 100vw; height: 100vh; max-width: none; z-index: 110; margin: 0; padding: 0; border: 0; border-radius: 0; transform: none; transition: none; }
+.desktop-inspector-wrap.is-rendering-fullscreen .desktop-inspector-resizer { display: none; }
+.rendering-preview-tabs { display: flex; align-items: center; flex-shrink: 0; gap: 2px; padding: 4px 8px; border-bottom: 1px solid var(--biny-border); overflow-x: auto; scrollbar-width: none; }
+.rendering-preview-tabs::-webkit-scrollbar { display: none; }
+.rendering-preview-tab { display: flex; align-items: center; gap: 6px; padding: 4px 8px; border-radius: 6px; white-space: nowrap; }
+.rendering-preview-tab:hover { background: color-mix(in srgb, var(--biny-surface-hover) 50%, transparent); }
+.rendering-preview-tab[data-active="true"] { background: var(--biny-surface-hover); }
+.rendering-preview-tab button { display: inline-flex; align-items: center; gap: 6px; padding: 0; border: 0; background: transparent; color: var(--biny-text-secondary); cursor: pointer; }
+.rendering-preview-tab [role="tab"] span { max-width: 100px; overflow: hidden; text-overflow: ellipsis; font-size: 12px; }
+.rendering-preview-tab button:focus-visible { outline: 2px solid var(--biny-focus); outline-offset: 2px; }
+.rendering-preview-tab .rendering-preview-tab-close { justify-content: center; width: 16px; height: 16px; border-radius: 2px; opacity: 0; transition: opacity 150ms; }
+.rendering-preview-tab[data-active="true"] .rendering-preview-tab-close { opacity: .5; }
+.rendering-preview-tab:hover .rendering-preview-tab-close, .rendering-preview-tab:focus-within .rendering-preview-tab-close { opacity: 1; }
+.rendering-preview-tab-close:hover { background: color-mix(in srgb, var(--biny-text-secondary) 20%, transparent); }
+.rendering-preview-items { position: relative; flex: 1; min-width: 0; min-height: 0; }
+.rendering-preview-item { position: absolute; inset: 0; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.rendering-preview-item[hidden] { display: none; }
+@media (prefers-reduced-motion: reduce) { .rendering-preview-tab .rendering-preview-tab-close { transition: none; } }
