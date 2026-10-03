@@ -22,11 +22,12 @@ import { cachedSessionEvents, sessionFileFingerprint } from "../session/parseCac
 import { SessionRecorder, type ReasoningBlock, type SessionEvent } from "../session/recorder.js";
 import { TemporalMemoryIndex, parseTemporalClues } from "../session/temporalMemory.js";
 import { createTemporalModelExtractor } from "../session/temporalModelExtractor.js";
-import { activeSessionEventsForPath, activeSessionMessageIds, replaySessionEvents, sessionMessageTree, type SessionMessageReference, type SessionReplay, type SessionReplayOptions } from "../session/replay.js";
+import { activeSessionEventsForPath, activeSessionMessageIds, replaySessionEvents, sessionMessageTree, type SessionMessageReference, type SessionReplay } from "../session/replay.js";
 import { tryReadSessionSnapshot, writeSessionSnapshot, snapshotToReplay, type SessionSnapshotData } from "../session/sessionSnapshot.js";
 import { runtimeEventsForRun, type RuntimeEventSink, type RuntimeHighWater } from "../session/runtimeEvent.js";
 import { pausedTurnAvailable, resolveContinuationPlan } from "../session/recoveryPlan.js";
-import { CapabilityIdempotencyConflictError, type CapabilityStore } from "../runtime/CapabilityStore.js";
+import type { CapabilityStore } from "../runtime/CapabilityStore.js";
+import { CapabilityOutcomeResolver } from "../session/capabilityOutcomeResolver.js";
 import {
   TurnStore,
   type InterruptedTurn,
@@ -998,30 +999,14 @@ export class AgentSession {
       expectedRuntimeHighWater,
       resolveToolOutcome: this.resolveDurableToolOutcome
     });
-    for (const event of replay.recoveredToolResults) await this.recorder.recordAndFlush(event);
+    for (const event of replay.recoveredToolResults) {
+      await this.recorder.recordAndFlush(event, undefined, this.capabilityOutcomeResolver.redactionOptionsFor(event.result));
+    }
     return replay;
   }
 
-  private readonly resolveDurableToolOutcome: NonNullable<SessionReplayOptions["resolveToolOutcome"]> = (call) => {
-    let invocation;
-    try {
-      invocation = this.options.capabilities?.findHostToolInvocation(call);
-    } catch (error) {
-      if (!(error instanceof CapabilityIdempotencyConflictError)) throw error;
-      return { executionStatus: "unknown", outcomeUnknownReason: "operation_identity_ambiguous", result: { error: error.message } };
-    }
-    if (!invocation) return undefined;
-    const evidence = `capability:${invocation.invocationId}`;
-    if (invocation.status === "result") return { executionStatus: "succeeded", result: invocation.result, evidence };
-    if (invocation.status === "failed") return { executionStatus: "failed", result: { error: invocation.error ?? "Capability failed." }, evidence };
-    if (invocation.status === "cancelled" && invocation.dispatchState === "not_dispatched") return { executionStatus: "cancelled", result: { status: "cancelled", message: "Capability was cancelled before dispatch." }, evidence };
-    return {
-      executionStatus: "unknown",
-      result: { error: invocation.error ?? "Capability outcome is not durably settled; do not repeat its side effects." },
-      outcomeUnknownReason: invocation.outcomeUnknownReason ?? "unsettled_previous_invocation",
-      evidence
-    };
-  };
+  private readonly capabilityOutcomeResolver = new CapabilityOutcomeResolver(() => this.options.capabilities);
+  private readonly resolveDurableToolOutcome = this.capabilityOutcomeResolver.resolve;
 
   /**
    * 从被打断的地方继续同一个回合。
@@ -3117,7 +3102,9 @@ export class AgentSession {
         previousClosed = true;
         await previousRecorder.close();
       }
-      for (const event of replay.recoveredToolResults) await replacementRecorder.recordAndFlush(event);
+      for (const event of replay.recoveredToolResults) {
+        await replacementRecorder.recordAndFlush(event, undefined, this.capabilityOutcomeResolver.redactionOptionsFor(event.result));
+      }
       const resumeEvents = cachedSessionEvents(resumeRecorder.filePath, fingerprint, () => ({
         events: parseSessionEvents(resumeRecorder.readText()),
         complete: true
