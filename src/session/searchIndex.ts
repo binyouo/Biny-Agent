@@ -34,6 +34,7 @@ export interface SessionSearchIndexStatus {
 }
 
 const sqliteBusyTimeoutMs = 5_000;
+const sessionSearchIndexVersion = 1;
 const sessionSearchReadChunkBytes = 64 * 1024;
 const sessionSearchBatchBytes = 256 * 1024;
 const sessionSearchBatchEvents = 128;
@@ -233,7 +234,8 @@ export class SessionSearchIndex {
             event.type === "user_message" ? "user" : "assistant",
             event.time ?? null,
             content,
-            tokenizeMemoryText(content).join(" ")
+            // 完整行已受 1 MiB 上限约束；正文词数预算不能沿用记忆的 64 词截断。
+            tokenizeMemoryText(content, maxSessionEventLineBytes).join(" ")
           );
           indexed += 1;
         }
@@ -316,15 +318,43 @@ export class SessionSearchIndex {
       // 目录缺失或路径不可写时把真实路径带出来，避免裸的 unable to open database file。
       throw new Error(`Failed to open session search index at ${databasePath}: ${String(error)}`);
     }
-    database.exec("PRAGMA journal_mode = WAL;");
-    database.exec(
-      "CREATE TABLE IF NOT EXISTS session_index_state (" +
-      "session_id TEXT PRIMARY KEY NOT NULL, byte_offset INTEGER NOT NULL, updated_at TEXT NOT NULL" +
-      "); " +
-      "CREATE VIRTUAL TABLE IF NOT EXISTS session_transcripts USING fts5(" +
-      "session_id UNINDEXED, message_id UNINDEXED, role UNINDEXED, time UNINDEXED, body, tokens" +
-      ");"
-    );
+    try {
+      if (database.prepare("PRAGMA journal_mode").get()?.journal_mode !== "wal") {
+        database.exec("PRAGMA journal_mode = WAL;");
+      }
+      const version = Number(database.prepare("PRAGMA user_version").get()?.user_version ?? 0);
+      const tables = Number(database.prepare(
+        "SELECT COUNT(*) AS count FROM sqlite_schema WHERE type = 'table' " +
+        "AND name IN ('session_index_state', 'session_transcripts')"
+      ).get()?.count ?? 0);
+      // 已升级且结构完整的缓存只读打开，不抢占另一个 WAL 连接的写锁。
+      if (version < sessionSearchIndexVersion || tables !== 2) {
+        database.exec("BEGIN IMMEDIATE");
+        database.exec(
+          "CREATE TABLE IF NOT EXISTS session_index_state (" +
+          "session_id TEXT PRIMARY KEY NOT NULL, byte_offset INTEGER NOT NULL, updated_at TEXT NOT NULL" +
+          "); " +
+          "CREATE VIRTUAL TABLE IF NOT EXISTS session_transcripts USING fts5(" +
+          "session_id UNINDEXED, message_id UNINDEXED, role UNINDEXED, time UNINDEXED, body, tokens" +
+          ");"
+        );
+        // 等写锁时另一个连接可能已完成升级；必须在锁内重新核对版本。
+        const lockedVersion = Number(database.prepare("PRAGMA user_version").get()?.user_version ?? 0);
+        if (lockedVersion < sessionSearchIndexVersion) {
+          // 仅失效可重建的检索行与配套偏移；原始 JSONL、记忆和其它数据都保持不变。
+          // 两者必须一起提交，否则已到 EOF 的旧会话永远不会补齐被截掉的词。
+          database.exec(
+            "DELETE FROM session_transcripts; DELETE FROM session_index_state; " +
+            `PRAGMA user_version = ${String(sessionSearchIndexVersion)};`
+          );
+        }
+        database.exec("COMMIT");
+      }
+    } catch (error) {
+      try { database.exec("ROLLBACK"); } catch { /* 保留原始错误。 */ }
+      database.close();
+      throw error;
+    }
     this.database = database;
     return database;
   }
