@@ -67,7 +67,7 @@ export class DateReferenceDetailService {
         const content = event.type === "agent_message"
           ? event.message.role === "assistant" ? event.message.content.filter((part) => part.type === "text").map((part) => part.text).join("\n") : undefined
           : event.content;
-        if (!content) continue;
+        if (!content?.trim()) continue;
         const day = instantDay(event.time, range.timeZone);
         if (!day) continue;
         const previous = messages.get(event.messageId);

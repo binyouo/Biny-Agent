@@ -78,6 +78,19 @@ const fallback = await query([[
 assert.deepEqual(fallback.conversations.map((hit) => hit.quote), ["dated legacy", "valid timestamp", "nonempty legacy"],
   "unusable canonical records must not hide usable legacy projections");
 
+for (const parts of [["", ""], ["  ", "\t "]]) {
+  const blankCanonical: SessionEvent = { type: "agent_message", messageId: "a1", time,
+    message: { role: "assistant", content: parts.map((text) => ({ type: "text", text })) } };
+  const legacyWithWhitespace = flat("a1", "  nonempty legacy\n");
+  for (const events of [[blankCanonical, legacyWithWhitespace], [legacyWithWhitespace, blankCanonical]]) {
+    assert.deepEqual((await query([events])).conversations.map((hit) => hit.quote), ["  nonempty legacy\n"],
+      "whitespace-only canonical text must permit the legacy fallback in either order without trimming its quote");
+  }
+}
+const blankFlat = await query([[flat("blank-1", " \t "), flat("blank-2", "\n"), flat("a1", "  "), flat("a1", "  visible legacy\n")]]);
+assert.deepEqual(blankFlat.conversations.map((hit) => [hit.messageId, hit.quote]), [["a1", "  visible legacy\n"]],
+  "whitespace-only flat records must not create hits or suppress a later usable quote");
+
 const invalid = await query([[
   flat("", "empty ID"), flat("   ", "blank ID"), { type: "assistant_message", content: "missing ID", time },
   { ...flat("undated", "missing time"), time: undefined }, flat("invalid", "invalid time", "invalid"), flat("empty", ""),
