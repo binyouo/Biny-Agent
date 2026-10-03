@@ -144,3 +144,79 @@ test("failed legacy invalidation rolls back derived rows, offsets and cache vers
     await rm(root, { recursive: true, force: true });
   }
 });
+
+for (const read of ["status", "search"] as const) {
+  test(`cold current-cache ${read} reads a WAL snapshot while another connection writes`, async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "biny-search-cjk-wal-read-"));
+    const file = path.join(root, "thread.jsonl");
+    const warm = new SessionSearchIndex(root);
+    const cold = new SessionSearchIndex(root);
+    let writer: DatabaseSync | undefined;
+    try {
+      await writeFile(file, row(lateCjkBody, "committed"));
+      await warm.indexSessionFile("thread", file);
+      warm.close();
+      writer = new DatabaseSync(path.join(root, "search", "sessions.sqlite"));
+      writer.exec("BEGIN IMMEDIATE");
+      writer.prepare("INSERT INTO session_transcripts (session_id, message_id, role, body, tokens) VALUES (?, ?, ?, ?, ?)")
+        .run("thread", "uncommitted", "user", lateCjkBody, tokenizeMemoryText(lateCjkBody, maxSessionEventLineBytes).join(" "));
+      if (read === "status") assert.deepEqual(cold.status(), { indexedSessions: 1, indexedMessages: 1 });
+      else assert.deepEqual(cold.search("部署回滚").map((hit) => hit.messageId), ["committed"]);
+      writer.exec("COMMIT");
+      assert.equal(cold.status().indexedMessages, 2, "next read observes the writer's committed changes");
+    } finally {
+      try { writer?.exec("ROLLBACK"); } catch { /* Writer may already have committed. */ }
+      writer?.close();
+      warm.close();
+      cold.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+}
+
+test("migration rechecks the cache version after another connection upgrades during cold open", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "biny-search-cjk-upgrade-race-"));
+  const file = path.join(root, "sessions", "legacy.jsonl");
+  const original = row(lateCjkBody, "legacy-message");
+  const index = new SessionSearchIndex(root);
+  let second: DatabaseSync | undefined;
+  let raced = false;
+  try {
+    await mkdir(path.dirname(file), { recursive: true });
+    await writeFile(file, original);
+    await seedLegacyIndex(root, file, lateCjkBody);
+    second = new DatabaseSync(path.join(root, "search", "sessions.sqlite"));
+    second.exec("PRAGMA journal_mode = WAL");
+    const originalPrepare = DatabaseSync.prototype.prepare;
+    t.mock.method(DatabaseSync.prototype, "prepare", function (this: DatabaseSync, sql: string) {
+      const statement = originalPrepare.call(this, sql);
+      if (sql === "PRAGMA user_version" && this !== second && !raced) {
+        const originalGet = statement.get;
+        t.mock.method(statement, "get", (...args: Parameters<typeof statement.get>) => {
+          const previous = Reflect.apply(originalGet, statement, args);
+          raced = true;
+          // Another connection finishes migration after preflight but before this opener takes its lock.
+          second!.exec("BEGIN IMMEDIATE; DELETE FROM session_transcripts; DELETE FROM session_index_state;");
+          second!.prepare("INSERT INTO session_transcripts (session_id, message_id, role, body, tokens) VALUES (?, ?, ?, ?, ?)")
+            .run("legacy", "legacy-message", "user", lateCjkBody, tokenizeMemoryText(lateCjkBody, maxSessionEventLineBytes).join(" "));
+          second!.prepare("INSERT INTO session_index_state VALUES (?, ?, ?)")
+            .run("legacy", Buffer.byteLength(original), "2026-10-03T00:00:00.000Z");
+          second!.exec("PRAGMA user_version = 1; COMMIT");
+          return previous;
+        });
+      }
+      return statement;
+    });
+    assert.deepEqual(index.status(), { indexedSessions: 1, indexedMessages: 1 }, "second opener must not discard the completed rebuild");
+    assert.ok(raced);
+    assert.equal(index.search("部署回滚")[0]?.messageId, "legacy-message");
+    assert.equal(await index.indexSessionFile("legacy", file), 0);
+    assert.equal(second.prepare("SELECT value FROM unrelated_data").get()?.value, "preserve me");
+    assert.equal(await readFile(file, "utf8"), original);
+  } finally {
+    t.mock.restoreAll();
+    second?.close();
+    index.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
