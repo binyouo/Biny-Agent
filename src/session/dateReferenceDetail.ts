@@ -60,17 +60,25 @@ export class DateReferenceDetailService {
     const conversations: DateConversationHit[] = [];
     for (const { file, projectId, sessionId } of ownedFiles) {
       signal?.throwIfAborted();
+      const messages = new Map<string, { hit: DateConversationHit; day: string; canonical: boolean }>();
       for (const event of activeSessionEventsForPath(await readSessionEvents(file))) {
         if (event.type !== "user_message" && event.type !== "assistant_message" && event.type !== "agent_message") continue;
-        if (("auditOnly" in event && event.auditOnly === true) || typeof event.messageId !== "string" || typeof event.time !== "string") continue;
+        if (("auditOnly" in event && event.auditOnly === true) || typeof event.messageId !== "string" || !event.messageId.trim() || typeof event.time !== "string") continue;
         const content = event.type === "agent_message"
           ? event.message.role === "assistant" ? event.message.content.filter((part) => part.type === "text").map((part) => part.text).join("\n") : undefined
           : event.content;
-        if (!content) continue;
+        if (!content?.trim()) continue;
         const day = instantDay(event.time, range.timeZone);
-        if (day && day >= range.startDate && day < range.endDate) conversations.push({
-          projectId, sessionId, messageId: event.messageId, time: event.time, quote: content.slice(0, 300)
+        if (!day) continue;
+        const previous = messages.get(event.messageId);
+        const canonical = event.type === "agent_message";
+        // 同一消息的扁平投影可能稍后跨日写入；先选权威源，再判断日期及结果上限。
+        if (!previous || (!previous.canonical && canonical)) messages.set(event.messageId, {
+          hit: { projectId, sessionId, messageId: event.messageId, time: event.time, quote: content.slice(0, 300) }, day, canonical
         });
+      }
+      for (const { hit, day } of messages.values()) {
+        if (day >= range.startDate && day < range.endDate) conversations.push(hit);
       }
     }
     conversations.sort((left, right) => left.time.localeCompare(right.time) || left.sessionId.localeCompare(right.sessionId));
