@@ -96,6 +96,8 @@ export class CancellableRegexMatcher {
     try {
       worker = new Worker(workerSource, {
         eval: true,
+        // Do not inherit Host preloads or --input-type module overrides.
+        execArgv: [],
         workerData: { query, flags },
         resourceLimits: { maxOldGenerationSizeMb: 64, stackSizeMb: 4 }
       });

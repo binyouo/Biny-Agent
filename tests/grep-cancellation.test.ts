@@ -157,8 +157,10 @@ class FakeWorker extends EventEmitter {
   static autoReady = true;
   terminateCalls = 0;
   sent: unknown[] = [];
-  constructor() {
+  readonly options: workerThreads.WorkerOptions;
+  constructor(_source: string, options: workerThreads.WorkerOptions) {
     super();
+    this.options = options;
     FakeWorker.instances.push(this);
     if (FakeWorker.autoReady) setImmediate(() => this.emit("message", "ready"));
   }
@@ -179,6 +181,7 @@ test("host stays responsive; abort/error/exit/deadline settle once and release w
     const controller = new AbortController();
     const matcher = await CancellableRegexMatcher.create("x", "u", controller.signal);
     const worker = FakeWorker.instances.at(-1)!;
+    assert.deepEqual(worker.options.execArgv, [], "Host preloads/module-input overrides must not enter the worker");
     const pending = matcher.match(["ordinary line"], window);
     const reason = new Error("cancel this exact search");
     setImmediate(() => controller.abort(reason));
