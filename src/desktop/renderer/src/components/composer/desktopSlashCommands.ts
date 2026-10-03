@@ -13,6 +13,7 @@ export const DESKTOP_COMPOSER_COMMAND_NAMES = [
   "/compact",
   "/subagent",
   "/review",
+  "/goal",
   "/undo"
 ] as const;
 
@@ -42,6 +43,12 @@ const COMMAND_PRESENTATIONS: Record<typeof DESKTOP_COMPOSER_COMMAND_NAMES[number
     description: "让子代理审查当前工作区的变更和风险",
     hint: "重点",
     icon: "search"
+  },
+  "/goal": {
+    group: "任务",
+    description: "设置当前会话目标，持续执行直到完成或暂停",
+    hint: "目标 | show | set 目标 | pause | resume | clear",
+    icon: "pin"
   },
   "/undo": {
     group: "工作区",
@@ -134,4 +141,10 @@ export function buildDesktopComposerItems(skills: readonly DesktopSkillCatalogEn
 
 export function desktopCommandForName(name: string): DesktopSlashCommand | undefined {
   return DESKTOP_SLASH_COMMANDS.find((command) => command.name === name);
+}
+
+export function desktopGoalCommandAllowsNoModel(input: string): boolean {
+  const [name, action, ...args] = input.trim().split(/\s+/u);
+  return name === "/goal" && args.length === 0
+    && (action === undefined || ["show", "pause", "clear"].includes(action.toLowerCase()));
 }

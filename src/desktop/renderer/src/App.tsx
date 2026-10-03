@@ -67,6 +67,7 @@ import {
   syntheticSession
 } from "./app/desktopState.js";
 import { useDesktopEventBridge } from "./app/useDesktopEventBridge.js";
+import { useCompactionCommand } from "./app/useCompactionCommand.js";
 import type { RecipeNotice, SkillExtractionCardState } from "./app/useDesktopEventBridge.js";
 import { useSessionTimeline } from "./app/useSessionTimeline.js";
 import { useDesktopSettingsActions } from "./app/useDesktopSettingsActions.js";
@@ -87,6 +88,8 @@ import { MessageReferencesDialog } from "./components/overlays/MessageReferences
 import { DateReferenceDetailDialog } from "./components/overlays/DateReferenceDetailDialog.js";
 import { SettingsOverlay, type SettingsTab } from "./components/settings/SettingsOverlay.js";
 import { useWorkspaceInspector } from "./components/workspace/useWorkspaceInspector.js";
+import { RenderingPreviewContext } from "./components/RenderingPreviewContext.js";
+import { sessionGoalSlashFeedback } from "./components/workspace/sessionGoalControl.js";
 import { parseBinyDeepLink, setDeepLinkHandler } from "./deepLinks.js";
 import { QuickChatApp } from "./quickchat/QuickChatApp.js";
 
@@ -399,8 +402,20 @@ function DesktopApp(): React.JSX.Element {
   const mutateRuntime = useCallback(async (operation: DesktopRuntimeMutation, payload: Record<string, unknown>): Promise<void> => {
     const projectId = projectRef.current;
     if (!projectId) throw new Error("当前没有打开的项目。");
-    await window.biny.runtimeMutation(projectId, operation, payload);
-    if (operation.startsWith("plan.")) await refreshPlans();
+    const navigationRequest = loadRequestRef.current;
+    const goalRequestIsCurrent = (): boolean => projectRef.current === projectId && selectedRef.current === payload.sessionId && loadRequestRef.current === navigationRequest;
+    try {
+      await window.biny.runtimeMutation(projectId, operation, payload);
+    } catch (error) {
+      if (operation.startsWith("session.goal.") && goalRequestIsCurrent()) {
+        try { await refreshPlans(); }
+        catch (refreshError) { if (goalRequestIsCurrent()) setWarning(errorMessage(refreshError)); }
+      }
+      throw error;
+    }
+    if (operation.startsWith("session.goal.")) {
+      if (goalRequestIsCurrent()) await refreshPlans();
+    } else if (operation.startsWith("plan.")) await refreshPlans();
     else await refreshRuntimeProjection();
   }, [refreshRuntimeProjection, refreshPlans]);
 
@@ -459,7 +474,6 @@ function DesktopApp(): React.JSX.Element {
   } = useDesktopSettingsActions({
     mergeProjectSnapshot,
     projectIdRef: projectRef,
-    setContextBudget,
     setWorkspace
   });
 
@@ -692,6 +706,22 @@ function DesktopApp(): React.JSX.Element {
   const clearGenerationError = useCallback((): void => {
     setGenerationError(undefined);
   }, []);
+  const compactionCommand = useCompactionCommand({
+    projectId: selectedSessionId === undefined ? draftProjectId ?? workspace?.project.id : workspace?.project.id,
+    sessionId: selectedSessionId,
+    execute: executeCompactionCommand
+  });
+  const failCompaction = compactionCommand.fail;
+  const startCompaction = compactionCommand.start;
+  const runCompaction = compactionCommand.run;
+  const reportCompactionStarted = useCallback((runId: string): void => {
+    const projectId = selectedRef.current === undefined ? draftProjectId ?? projectRef.current : projectRef.current;
+    if (projectId) startCompaction(projectId, selectedRef.current, runId);
+  }, [draftProjectId, startCompaction]);
+  const reportCompactionFailure = useCallback((error: string, cancelled: boolean, runId?: string): void => {
+    const projectId = selectedRef.current === undefined ? draftProjectId ?? projectRef.current : projectRef.current;
+    if (projectId) failCompaction(projectId, selectedRef.current, error, cancelled, runId);
+  }, [draftProjectId, failCompaction]);
 
   useEffect(() => { void refreshPlans().catch(reportEventError); }, [selectedSessionId, workspace?.project.id, refreshPlans, reportEventError]);
 
@@ -710,7 +740,9 @@ function DesktopApp(): React.JSX.Element {
     setSidebarSessions,
     setWorkspace,
     onGenerationStarted: clearGenerationError,
-    onGenerationError: setGenerationError
+    onGenerationError: setGenerationError,
+    onCompactionStarted: reportCompactionStarted,
+    onCompactionFailed: reportCompactionFailure
   });
 
   useEffect(() => window.biny.onSessionHandoff((target) => {
@@ -1095,8 +1127,42 @@ function DesktopApp(): React.JSX.Element {
   const runSlashCommand = useCallback(async (command: string): Promise<void> => {
     const projectId = selectedRef.current === undefined ? draftProjectId ?? projectRef.current : projectRef.current;
     if (!projectId) throw new Error("请先打开一个项目。");
-    setSlashResult(await window.biny.runSlashCommand(projectId, selectedRef.current, command));
-  }, [draftProjectId]);
+    if (command.trim().split(/\s+/, 1)[0] === "/compact") {
+      setSlashResult(undefined);
+      await runCompaction(projectId, selectedRef.current, command);
+      return;
+    }
+    const previousSessionId = selectedRef.current;
+    const navigationRequest = loadRequestRef.current;
+    const previousNavigation = navigationRef.current;
+    try {
+      const result = await window.biny.runSlashCommand(projectId, previousSessionId, command);
+      if (loadRequestRef.current !== navigationRequest) return;
+      if (result.sessionGoal) {
+        if (previousSessionId === undefined && result.sessionId !== undefined) {
+          const snapshot = await window.biny.refreshProject(projectId);
+          if (loadRequestRef.current !== navigationRequest) return;
+          const opened = await openSession(projectId, result.sessionId, false, navigationRequest, snapshot);
+          if (!opened || loadRequestRef.current !== navigationRequest) return;
+          const target: DesktopNavigationTarget = { projectId, sessionId: result.sessionId };
+          const currentTarget = previousNavigation.entries[previousNavigation.index];
+          commitNavigation(currentTarget?.projectId === projectId && currentTarget.sessionId === undefined
+            ? replaceNavigation(previousNavigation, target)
+            : pushNavigation(previousNavigation, target));
+        }
+        await refreshPlans();
+      }
+      const feedback = sessionGoalSlashFeedback(result, loadRequestRef.current === navigationRequest);
+      if (feedback.result) setSlashResult(feedback.result);
+      if (feedback.notice) {
+        setSlashResult(undefined);
+        setToast(feedback.notice);
+      }
+    } catch (error) {
+      if (loadRequestRef.current !== navigationRequest) return;
+      throw error;
+    }
+  }, [draftProjectId, refreshPlans, openSession, commitNavigation, runCompaction]);
 
   const editPrompt = useCallback(async (
     input: string,
@@ -1515,6 +1581,8 @@ function DesktopApp(): React.JSX.Element {
   const selectedRunId = selectedActiveRun?.runId ?? selectedPendingPermission?.runId;
   const selectedRunning = Boolean(activeSessionId && activeSessionId === selectedSessionId);
   const selectedThinking = selectedActiveRun?.status === "thinking";
+  const runtimeCompacting = selectedRuntimeSnapshot?.state.kind === "maintenance" && selectedRuntimeSnapshot.state.operation === "compact";
+  const compacting = compactionCommand.state?.status === "pending" || runtimeCompacting;
   const queuedMessages = selectedRuntimeSnapshot?.queuedMessages ?? [];
   // 全局忙 = 任一 runtime 非空闲（配置/模型/权限等全局操作仍需等全部静下来）。
   const runtimeBusy = Boolean(
@@ -1780,18 +1848,19 @@ function DesktopApp(): React.JSX.Element {
       onWarning={setWarning}
       project={workspace?.project}
       running={selectedRunning}
+      compacting={compacting}
       runtimeBusy={runtimeBusy}
       queuedMessages={queuedMessages}
       resourceState={selectedRuntimeSnapshot?.resourceReadiness?.state}
       resourceRevision={selectedRuntimeSnapshot?.resourceReadiness?.revision}
       skillWarnings={composerSkillWarnings}
-      runtimeInfo={selectedRuntimeSnapshot?.info}
+      runtimeInfo={workspace?.selectedModel ?? selectedRuntimeSnapshot?.info}
     />
     </>
   );
 
   return (
-    <AppearanceProvider snapshot={appearance.snapshot} onError={setAppearanceError}><ChatResponseContext value={chatResponse}><DesktopShell
+    <AppearanceProvider snapshot={appearance.snapshot} onError={setAppearanceError}><ChatResponseContext value={chatResponse}><RenderingPreviewContext value={inspector.previewRendering}><DesktopShell
       windowTitle={sessionSummary?.title ?? workspace?.project.name ?? "Biny"}
       starting={starting}
       overlays={(
@@ -1976,6 +2045,10 @@ function DesktopApp(): React.JSX.Element {
         onDismissSkillExtraction={() => setSkillExtraction(undefined)}
         thinking={selectedThinking}
         running={selectedRunning}
+        compacting={compacting}
+        compactionState={compactionCommand.state}
+        onDismissCompaction={compactionCommand.dismiss}
+        onRetryCompaction={() => void compactionCommand.retry()}
         runtimeActiveRunId={selectedRunId}
         turns={turns}
         writerConflict={writerConflict}
@@ -1992,6 +2065,10 @@ function DesktopApp(): React.JSX.Element {
         {composer}
       </Workspace>}
       {appearanceError ? <div className="biny-appearance-error" role="alert">{appearanceError}<button type="button" onClick={() => setAppearanceError(undefined)}>关闭</button></div> : null}
-    </DesktopShell></ChatResponseContext></AppearanceProvider>
+    </DesktopShell></RenderingPreviewContext></ChatResponseContext></AppearanceProvider>
   );
+}
+
+async function executeCompactionCommand(projectId: string, sessionId: string | undefined, command: string): Promise<DesktopSlashResult> {
+  return await window.biny.runSlashCommand(projectId, sessionId, command);
 }

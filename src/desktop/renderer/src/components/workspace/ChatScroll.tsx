@@ -12,7 +12,7 @@ function distanceFromBottom(element: HTMLElement): number {
   return element.scrollHeight - element.scrollTop - element.clientHeight;
 }
 
-export function ChatScroll({ children, onScrolledChange, sessionId, streaming }: { children: React.ReactNode; onScrolledChange(scrolled: boolean): void; sessionId?: string; streaming: boolean }): React.JSX.Element {
+export function ChatScroll({ children, followBottom = false, onScrolledChange, sessionId, streaming }: { children: React.ReactNode; followBottom?: boolean; onScrolledChange(scrolled: boolean): void; sessionId?: string; streaming: boolean }): React.JSX.Element {
   const [scrollActive, setScrollActive] = useState(false);
   const [jumpVisible, setJumpVisible] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -21,6 +21,7 @@ export function ChatScroll({ children, onScrolledChange, sessionId, streaming }:
   const scrollFrameRef = useRef<number | undefined>(undefined);
   // 「钉在底部」用 ref 不用 state：流式期间滚动事件极频繁，贴底状态翻转不该触发重渲染。
   const pinnedRef = useRef(true);
+  const lastScrollTopRef = useRef(0);
   const scrollAnchorRef = useRef<{ element: HTMLElement; top: number; until: number } | undefined>(undefined);
   const anchorFrameRef = useRef<number | undefined>(undefined);
 
@@ -34,6 +35,7 @@ export function ChatScroll({ children, onScrolledChange, sessionId, streaming }:
     if (!container || !pinnedRef.current || scrollAnchorRef.current) return;
     const bottom = Math.max(0, container.scrollHeight - container.clientHeight);
     if (Math.abs(container.scrollTop - bottom) > 1) container.scrollTop = bottom;
+    lastScrollTopRef.current = container.scrollTop;
   };
 
   // 切会话从头贴底；内容随后异步长高，由下面的观察器持续贴住。
@@ -47,6 +49,16 @@ export function ChatScroll({ children, onScrolledChange, sessionId, streaming }:
       scrollAnchorRef.current = undefined;
     };
   }, [sessionId]);
+
+  useLayoutEffect(() => {
+    if (!followBottom) return;
+    if (anchorFrameRef.current !== undefined) cancelAnimationFrame(anchorFrameRef.current);
+    anchorFrameRef.current = undefined;
+    scrollAnchorRef.current = undefined;
+    pinnedRef.current = true;
+    setJumpVisible(false);
+    scrollToPinnedBottom();
+  }, [followBottom]);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -125,8 +137,14 @@ export function ChatScroll({ children, onScrolledChange, sessionId, streaming }:
     const distance = distanceFromBottom(container);
     // 标题栏底缘阴影仅在聊天区离开顶部时显示。
     onScrolledChange(container.scrollTop > 0);
-    if (!scrollAnchorRef.current) pinnedRef.current = distance < PIN_DISTANCE;
-    if (distance > JUMP_BUTTON_DISTANCE) setJumpVisible(true);
+    // 内容增长可能先于自动滚动的 scroll 事件到达；离底距离增大并不表示用户上翻。
+    if (!scrollAnchorRef.current) {
+      if (distance < PIN_DISTANCE) pinnedRef.current = true;
+      else if (container.scrollTop < lastScrollTopRef.current) pinnedRef.current = false;
+    }
+    lastScrollTopRef.current = container.scrollTop;
+    if (pinnedRef.current) setJumpVisible(false);
+    else if (distance > JUMP_BUTTON_DISTANCE) setJumpVisible(true);
     else if (distance < PIN_DISTANCE) setJumpVisible(false);
   };
 
@@ -136,7 +154,7 @@ export function ChatScroll({ children, onScrolledChange, sessionId, streaming }:
     if (!container) return;
     releaseAnchor();
     pinnedRef.current = true;
-    container.scrollTop = container.scrollHeight;
+    scrollToPinnedBottom();
     setJumpVisible(false);
   };
 

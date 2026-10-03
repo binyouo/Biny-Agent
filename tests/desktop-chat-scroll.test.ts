@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-test("内容更新只在一帧内贴底一次；离底不抢滚动，切换会话恢复，卸载取消", async () => {
+test("回底后持续跟随内容增长；用户上翻暂停，切换会话恢复，卸载取消", async () => {
   const { JSDOM } = await import("jsdom");
   const dom = new JSDOM("<div id='root'></div>");
   const React = await import("react");
@@ -44,11 +44,14 @@ test("内容更新只在一帧内贴底一次；离底不抢滚动，切换会�
     await render("历史");
     await frame();
     const scroll = document.querySelector<HTMLElement>(".biny-chat-scroll")!;
+    const jump = document.querySelector<HTMLButtonElement>(".biny-jump-bottom")!;
+    let height = 1000;
+    let viewport = 200;
     let top = 0;
     let writes = 0;
     Object.defineProperties(scroll, {
-      scrollHeight: { get: () => 1000 }, clientHeight: { get: () => 200 },
-      scrollTop: { get: () => top, set: (value: number) => { top = Math.min(800, value); writes++; } }
+      scrollHeight: { get: () => height }, clientHeight: { get: () => viewport },
+      scrollTop: { get: () => top, set: (value: number) => { top = Math.max(0, Math.min(height - viewport, value)); writes++; } }
     });
     await render("历史\n新增正文");
     await React.act(() => { for (const fn of [...resizes, ...mutations]) fn(); });
@@ -63,9 +66,60 @@ test("内容更新只在一帧内贴底一次；离底不抢滚动，切换会�
     await React.act(() => { for (const fn of resizes) fn(); });
     await frame();
     assert.equal(writes, 0);
+    assert.equal(jump.getAttribute("aria-hidden"), "false");
+
+    // Given 用户正在查看历史；When 点击回底后，新增内容先于延迟的 scroll 事件到达。
+    await React.act(() => jump.click());
+    assert.equal(top, 800);
+    assert.equal(jump.getAttribute("aria-hidden"), "true");
+    height = 1300;
+    await render("继续生成的新正文");
+    await React.act(() => {
+      scroll.dispatchEvent(new dom.window.Event("scroll"));
+      for (const fn of resizes) fn();
+    });
+    await frame();
+    assert.equal(top, 1100, "回底后的 scroll 事件不能因内容增长而解除跟随");
+    assert.equal(jump.getAttribute("aria-hidden"), "true");
+
+    // 自动贴底也会产生 scroll；下一批输出先到时仍须跟随。
+    height = 1700;
+    await render("下一批正文和工具进度");
+    await React.act(() => {
+      for (const fn of resizes) fn();
+      scroll.dispatchEvent(new dom.window.Event("scroll"));
+    });
+    await frame();
+    assert.equal(top, 1500);
+
+    // Then 用户再次上翻时保持阅读位置，新增内容与视口变化均不抢回。
+    top = 900;
+    await React.act(() => scroll.dispatchEvent(new dom.window.Event("scroll")));
+    height = 2000;
+    viewport = 300;
+    writes = 0;
+    await render("上翻期间继续生成");
+    await React.act(() => { for (const fn of resizes) fn(); });
+    await frame();
+    assert.equal(top, 900);
+    assert.equal(writes, 0);
+    assert.equal(jump.getAttribute("aria-hidden"), "false");
+
+    // 手动滚回底部恢复跟随，后续视口缩小仍保持最新内容可见。
+    top = height - viewport;
+    await React.act(() => scroll.dispatchEvent(new dom.window.Event("scroll")));
+    viewport = 180;
+    await React.act(() => { for (const fn of resizes) fn(); });
+    await frame();
+    assert.equal(top, 1820);
+    assert.equal(jump.getAttribute("aria-hidden"), "true");
+
+    top = 100;
+    await React.act(() => scroll.dispatchEvent(new dom.window.Event("scroll")));
+    writes = 0;
     await render("另一会话", "b");
     await frame();
-    assert.equal(top, 800);
+    assert.equal(top, 1820);
     assert.equal(writes, 1);
     await React.act(() => { for (const fn of resizes) fn(); });
   } finally {

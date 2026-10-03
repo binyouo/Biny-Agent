@@ -39,8 +39,12 @@ test("委派执行从工具进度发出排队、执行和终态，结果保持�
   const updates: ToolUpdate[] = [];
   try {
     const tool = createSubagentTool({ workspaceRoot: "/tmp", config: defaultConfig, toolRegistry: new ToolRegistry(),
-      getModelSettings() { throw new Error("Model must stay behind the injected worker boundary"); }, getAccessMode: () => "read-only"
-    }, manager);
+      getModelSettings() { throw new Error("Model must stay behind the injected worker boundary"); },
+      async runTask(input, context) {
+        const unsubscribe = manager.subscribe((snapshot) => context.onUpdate?.({ kind: "status", customKind: "subagent", customData: { status: snapshot.status } }));
+        try { return await manager.run(input.task); } finally { unsubscribe(); }
+      }
+    });
     const execution = await tool.resolveExecution(tool.schema.parse({ task: "检查缓存" }));
     assert.ok("execute" in execution);
     assert.equal(await execution.execute({ toolCallId: "parent", operationId: "operation", onUpdate: (update) => updates.push(update) }), "检查完成");
@@ -49,6 +53,16 @@ test("委派执行从工具进度发出排队、执行和终态，结果保持�
 });
 test("子代理摘要读取实际 task 参数", () => {
   assert.equal(activityToolRow(task).object, "检查缓存的失效边界");
+});
+
+test("后台启动的工具结果表示已委派，不把启动时的快照当作实时任务状态", () => {
+  const html = renderToStaticMarkup(React.createElement(SubagentActivity, {
+    tool: { ...task, args: { task: "检查缓存", background: true }, status: "success", result: { status: "running", taskRunId: "child" } },
+    projectId: "p", onPreviewFile() {}, onOpenExternal() {}, async onResolvePermission() {}
+  }));
+  const dom = new JSDOM(html);
+  try { assert.equal(dom.window.document.querySelector('[role="status"]')!.textContent, "已委派"); }
+  finally { dom.window.close(); }
 });
 
 test("无效子代理参数和未知状态仍可查看错误详情，不中断时间线", () => {

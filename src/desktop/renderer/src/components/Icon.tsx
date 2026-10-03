@@ -99,6 +99,7 @@ export type IconName =
   | "play"
   | "sun"
   | "terminal"
+  | "target"
   | "timer"
   | "trash"
   | "volume"
@@ -237,6 +238,7 @@ function pathFor(name: IconName): React.JSX.Element {
     case "stop": return <rect fill="currentColor" height="9" rx="2" width="9" x="7.5" y="7.5" />;
     case "sun": return <><circle {...common} cx="12" cy="12" r="4" /><path {...common} d="M12 2.5V5M12 19v2.5M2.5 12H5M19 12h2.5M5.3 5.3 7 7M17 17l1.7 1.7M18.7 5.3 17 7M7 17l-1.7 1.7" /></>;
     case "terminal": return <><rect {...common} height="16" rx="2" width="19" x="2.5" y="4" /><path {...common} d="m6 9 3 3-3 3M12 15h5" /></>;
+    case "target": return <><path {...common} d="M20 11a8 8 0 1 1-7-7M16 12a4 4 0 1 1-4-4M12 12l8-8M17 4h3v3" /></>;
     case "timer": return <><line {...common} x1="10" x2="14" y1="2" y2="2" /><line {...common} x1="12" x2="15" y1="14" y2="11" /><circle {...common} cx="12" cy="14" r="8" /></>;
     case "trash": return <><path {...common} d="M3 6h18" /><path {...common} d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6" /><path {...common} d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /><path {...common} d="M10 11v6M14 11v6" /></>;
     case "volume": return <><path {...common} d="M11 5 6.5 9H3.5v6h3L11 19V5Z" /><path {...common} d="M14.5 9.5a3.5 3.5 0 0 1 0 5M17 7a7 7 0 0 1 0 10" /></>;

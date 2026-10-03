@@ -44,7 +44,7 @@ import { globalAgentDir, globalConfigDir } from "../../../config/paths.js";
 import { createProjectSkillKey } from "../../../extensions/skillRef.js";
 import { synchronizeCredentialRevisions, type DeferredCredentialTransactionStatus } from "../../../config/credentials.js";
 import { configSchema, type AgentConfig, type ProviderConfig } from "../../../config/schema.js";
-import { updateConfig, type AgentConfigStore } from "../../../config/store.js";
+import type { AgentConfigStore } from "../../../config/store.js";
 import { configDocumentRevision } from "../../../config/versioned.js";
 import { createModelSettings, validateModelConfiguration } from "../../../llm/modelFactory.js";
 import { ModelRuntime } from "../../../llm/ModelRuntime.js";
@@ -55,12 +55,13 @@ import { selectMemoryEmbeddingModel } from "../../../llm/embedding/selectMemoryM
 import { MemoryVectorIndex } from "../../../agent/context/MemoryVectorIndex.js";
 import { MemoryEmbeddingService, type MemoryEmbeddingRuntimeStatus } from "../../../agent/context/MemoryEmbeddingService.js";
 import { FileModelsStore, restoreProviderCatalogs, type ModelsStore } from "../../../llm/ModelsStore.js";
-import { listConfiguredModelChoices, listPickerModelChoices, modelRuntimeInfo, type ModelRuntimeInfo, type ThinkingSelection } from "../../../llm/ModelManager.js";
+import { listConfiguredModelChoices, listPickerModelChoices, modelRuntimeInfo, saveModelSelection, type ModelRuntimeInfo, type ThinkingSelection } from "../../../llm/ModelManager.js";
 import type { PermissionMode, PermissionResult } from "../../../permission/PermissionManager.js";
 import type { UserInputResponse } from "../../../runtime/userInput.js";
 import type { BrowserAutomationEndpoint } from "../../../tools/browser.js";
 import { createToolRegistry } from "../../../tools/registry.js";
-import { executeRuntimeCommand } from "../../../runtime/commands.js";
+import { executeRuntimeCommand, runtimeCommandOperation } from "../../../runtime/commands.js";
+import type { SessionGoalExpected } from "../../../runtime/SessionGoalStore.js";
 import {
   createInteractiveAgentHost,
   type AgentRunOutcome,
@@ -376,6 +377,7 @@ export class DesktopAgentManager {
       // 用户就应能继续输入并切换过去，不能被“需要配置模型”状态锁死。
       requiresModelConfiguration: !config || pickerModels.length === 0,
       pickerModels,
+      selectedModel: config && pickerModels.some((model) => model.alias === config.defaultModel) ? modelRuntimeInfo(config, catalogs) : undefined,
       models,
       connections: config ? describeModelConnections(config) : [],
       runtimeProjection
@@ -1093,47 +1095,12 @@ export class DesktopAgentManager {
   }
 
   async switchModel(projectId: string, alias: string, thinking: ThinkingSelection): Promise<ModelRuntimeInfo> {
-    const sessionId = this.draftSessionIds.get(projectId) ?? this.state.selectedSessionId(projectId);
     const project = this.projects.requireProject(projectId);
     const config = await this.configStore.load(project.path);
-    if (!this.runtimes.has(projectId) && this.configStore.supportsDetachedRuntimeHost === false) {
-      // Desktop safeStorage 的凭据只在主进程可读；模型选择只是控制面操作，不应为了
-      // 改一个下拉项启动一个拿不到凭据的 detached Host。先验证并持久化选中的可用模型，
-      // 真正发送消息时再在主进程按新默认模型启动。
-      this.assertNoRunningTasks("任务运行期间不能切换默认模型。");
-      const catalogs = await restoreProviderCatalogs(Object.keys(config.providers), this.modelsStore, config.providers);
-      const effective = await updateConfig(this.configStore, project.path, (persisted) => {
-        const targetRuntime = new ModelRuntime(persisted, catalogs);
-        const resolved = targetRuntime.resolve(alias);
-        const candidate = configSchema.parse({
-          ...persisted,
-          defaultModel: resolved.alias,
-          models: {
-            ...persisted.models,
-            [resolved.alias]: persisted.models[resolved.alias] ?? {
-              provider: resolved.providerAlias,
-              model: resolved.model.model
-            }
-          },
-          thinking: {
-            enabled: thinking !== "off",
-            effort: thinking === "off" ? persisted.thinking.effort : thinking
-          }
-        });
-        new ModelRuntime(candidate, catalogs).createModelSettings();
-        return candidate;
-      });
-      this.runtimeErrors.delete(projectId);
-      return modelRuntimeInfo(effective, catalogs);
-    }
-    const { runtime, commands } = await this.ensureRuntime(projectId);
-    if (commands) {
-      return await runtime.runExclusiveOperation(
-        "switch_model",
-        async () => await commands.agent.switchModel(alias, thinking)
-      );
-    }
-    return await requireRemoteRuntime(runtime).switchModel(alias, thinking, sessionId);
+    const catalogs = await restoreProviderCatalogs(Object.keys(config.providers), this.modelsStore, config.providers);
+    const effective = await saveModelSelection(project.path, this.configStore, alias, thinking, catalogs);
+    this.runtimeErrors.delete(projectId);
+    return modelRuntimeInfo(effective, catalogs);
   }
 
   async settingsConfigSnapshot(projectId: string): Promise<DesktopSettingsConfigSnapshot> {
@@ -1166,7 +1133,6 @@ export class DesktopAgentManager {
       || input.chatParams !== undefined
       || input.permission !== undefined
       || input.webSearch !== undefined
-      || input.models !== undefined
       || input.skills !== undefined) {
       this.assertNoRunningTasks("任务运行期间不能提交全局设置。");
     }
@@ -1357,6 +1323,9 @@ export class DesktopAgentManager {
     }
 
     synchronizeCredentialRevisions(next, current.config);
+    if (!isModelSelectionChange(current.config, next)) {
+      this.assertNoRunningTasks("任务运行期间不能修改供应商或共享设置。");
+    }
 
     return {
       projectId,
@@ -1370,7 +1339,9 @@ export class DesktopAgentManager {
   }
 
   async commitSettingsConfig(prepared: PreparedDesktopSettingsConfig, transactionId: string): Promise<void> {
-    this.assertNoRunningTasks("任务运行期间不能提交全局设置。");
+    if (!isModelSelectionChange(prepared.before, prepared.after)) {
+      this.assertNoRunningTasks("任务运行期间不能提交全局设置。");
+    }
     const saved = await this.requireSettingsTransactionConfig().saveVersionedDeferred!(
       prepared.after,
       prepared.beforeRevision,
@@ -1934,9 +1905,21 @@ export class DesktopAgentManager {
   }
 
   async archivedMemoryEntries(projectId: string, offset: number, limit: number, includeChains = false): Promise<DesktopMemoryArchivePage> {
-    this.projects.requireProject(projectId);
+    const project = this.projects.requireProject(projectId);
     if (includeChains && limit > 25) throw new Error("归档合并链仅支持每页至多 25 条。");
-    const { runtime, commands } = await this.ensureRuntime(projectId);
+    const managed = this.residentRuntime(projectId);
+    if (!managed) {
+      const storage = new MemoryStorage(project.path);
+      try {
+        const result = await storage.listArchivedEntries({ offset, limit });
+        const entryIds = result.entries.filter((entry) => entry.mergedInto).map((entry) => entry.id);
+        const chains = !includeChains || entryIds.length === 0 ? undefined : await storage.resolveArchiveChains(entryIds);
+        return { revision: result.storeRevision, entries: result.entries as DesktopMemoryEntry[], chains, total: result.total, offset, limit };
+      } finally {
+        storage.close();
+      }
+    }
+    const { runtime, commands } = managed;
     const result = commands
       ? await commands.agent.getLocalMemory().listArchivedEntries({ offset, limit })
       : await requireRemoteRuntime(runtime).memory<MemoryArchiveEntriesResult>("archive-list", { offset, limit });
@@ -2018,7 +2001,9 @@ export class DesktopAgentManager {
 
   /** 设置事务只提交配置；驻留 Runtime 的刷新仍在后台进行，向量索引按自身状态收敛。 */
   settingsCommitted(prepared: PreparedDesktopSettingsConfig): void {
-    if (prepared.beforeRevision !== prepared.targetRevision) this.scheduleIdleManagedRuntimeRebuild();
+    if (prepared.beforeRevision !== prepared.targetRevision && !isModelSelectionChange(prepared.before, prepared.after)) {
+      this.scheduleIdleManagedRuntimeRebuild();
+    }
   }
 
   /**
@@ -2281,15 +2266,25 @@ export class DesktopAgentManager {
    * 与 TUI 相同），结果同样只进弹层、不写入会话。
    */
   async runSlashCommand(projectId: string, sessionId: string | undefined, input: string): Promise<DesktopSlashResult> {
-    await this.requireConfiguredModel(projectId);
+    const operation = runtimeCommandOperation(input);
+    if (operation?.startsWith("session.goal.") && sessionId === undefined && operation !== "session.goal.set") {
+      if (operation === "session.goal.get" || operation === "session.goal.clear") return {
+        command: "/goal", title: "当前目标", content: "当前会话没有目标。使用 /goal <目标> 开始。",
+        sessionGoal: { action: operation === "session.goal.get" ? "get" : "clear" }
+      };
+      throw new Error("请先用 /goal set <目标> 设置当前会话目标。");
+    }
+    if (!["session.goal.get", "session.goal.pause", "session.goal.clear", "goal.get", "goal.pause", "goal.cancel"].includes(operation ?? "")) await this.requireConfiguredModel(projectId);
     const managed = await this.ensureRuntime(projectId);
     if (managed.runtime instanceof RuntimeHostClient) {
+      if (operation === "session.goal.set" && sessionId === undefined) sessionId = (await managed.runtime.ensureSession({ writeIntent: true })).sessionId;
       if (sessionId !== undefined) await managed.runtime.focusSession(sessionId);
       const result = await managed.runtime.executeCommand(input, "desktop", sessionId);
       if (!result) throw new Error(`未知命令：${input.trim().split(/\s+/, 1)[0] ?? input}`);
-      return result;
+      return operation?.startsWith("session.goal.") ? { ...result, sessionId: sessionId ?? managed.runtime.getSnapshot().info.sessionId } : result;
     }
     const { runtime, commands } = managed;
+    if (operation === "session.goal.set" && sessionId === undefined) sessionId = (await runtime.startDraft()).sessionId;
     if (sessionId !== undefined && runtime.getSnapshot().info.sessionId !== sessionId) {
       if (runtimeIsBusy(runtime.getSnapshot())) throw new Error("当前项目的 Runtime Host 正在运行，无法在同进程 fallback 中切换会话。");
       await runtime.resumeSession(sessionId);
@@ -2298,7 +2293,7 @@ export class DesktopAgentManager {
       ? await executeRuntimeCommand(runtime, commands, input, "desktop")
       : undefined;
     if (!result) throw new Error(`未知命令：${input.trim().split(/\s+/, 1)[0] ?? input}`);
-    return result;
+    return operation?.startsWith("session.goal.") ? { ...result, sessionId: runtime.getSnapshot().info.sessionId } : result;
   }
 
   async runInspectorCommand(projectId: string, owner: string, kind: "review" | "side-chat", input: string, history: InspectorMessage[]): Promise<DesktopSlashResult> {
@@ -2335,7 +2330,8 @@ export class DesktopAgentManager {
     const plans = commands
       ? commands.graphs.listGraphs().filter((graph) => graph.mode === "supervised" && graph.supervisorSessionId === sessionId).map((graph) => planStatus(commands, graph.graphId, sessionId))
       : await requireRemoteRuntime(runtime).planList(sessionId);
-    return { sessionId, plans, todos: todos.list() };
+    const goal = commands ? commands.sessionGoals.get(sessionId) : await requireRemoteRuntime(runtime).sessionGoalGet(sessionId);
+    return { sessionId, plans, todos: todos.list(), goal };
   }
 
   /** 日期列表只需持久化任务；不得为其他项目加载模型、工具或启动调度器。 */
@@ -2394,6 +2390,16 @@ export class DesktopAgentManager {
   async runtimeMutation(projectId: string, operation: DesktopRuntimeMutation, payload: Record<string, unknown> = {}): Promise<unknown> {
     const { runtime, commands, host } = await this.ensureRuntime(projectId);
     if (!commands) return await executeRemoteRuntimeMutation(requireRemoteRuntime(runtime), operation, payload);
+    if (operation.startsWith("session.goal.")) {
+      const sessionId = requiredPayloadString(payload.sessionId, "sessionId");
+      if (sessionId !== runtime.getSnapshot().info.sessionId) throw new Error("会话目标操作必须在原会话执行。");
+      const expected = sessionGoalExpected(payload.expected);
+      if (operation === "session.goal.set") return commands.sessionGoals.set(sessionId, requiredPayloadString(payload.objective, "objective"), { tokenBudget: sessionGoalTokenBudget(payload.tokenBudget), expected });
+      if (operation === "session.goal.pause") return commands.sessionGoals.pause(sessionId, expected);
+      if (operation === "session.goal.resume") return commands.sessionGoals.resume(sessionId, expected);
+      commands.sessionGoals.clear(sessionId, expected);
+      return undefined;
+    }
     if (operation === "plan.start") {
       if (payload.sessionId !== runtime.getSnapshot().info.sessionId) throw new Error("计划操作必须在原会话执行。");
       return await runtime.runExclusiveOperation("plan", async (signal) => {
@@ -3464,6 +3470,14 @@ function remainingTimeout(deadline: number): number {
 }
 
 async function executeRemoteRuntimeMutation(runtime: RuntimeHostClient, operation: DesktopRuntimeMutation, payload: Record<string, unknown>): Promise<unknown> {
+  if (operation.startsWith("session.goal.")) {
+    const sessionId = requiredPayloadString(payload.sessionId, "sessionId");
+    const expected = sessionGoalExpected(payload.expected);
+    if (operation === "session.goal.set") return await unwrapHostOperationResult(runtime.sessionGoalSet(sessionId, requiredPayloadString(payload.objective, "objective"), { tokenBudget: sessionGoalTokenBudget(payload.tokenBudget), expected }));
+    if (operation === "session.goal.pause") return await unwrapHostOperationResult(runtime.sessionGoalPause(sessionId, expected));
+    if (operation === "session.goal.resume") return await unwrapHostOperationResult(runtime.sessionGoalResume(sessionId, expected));
+    return await unwrapHostOperationResult(runtime.sessionGoalClear(sessionId, expected));
+  }
   if (operation === "plan.start") {
     if (!Number.isSafeInteger(payload.revision)) throw new Error("缺少草稿版本。");
     return await runtime.startPlanDraft(requiredPayloadString(payload.sessionId, "sessionId"), requiredPayloadString(payload.graphId, "graphId"), payload.revision as number);
@@ -3540,6 +3554,21 @@ function rejectedHostOperation(reason: string | undefined, code: string | undefi
 
 function requiredPayloadString(value: unknown, name: string): string {
   if (typeof value !== "string" || !value.trim()) throw new Error(`Desktop runtime field ${name} must be a non-empty string.`);
+  return value;
+}
+
+function sessionGoalExpected(value: unknown): SessionGoalExpected | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error("会话目标版本无效。");
+  const record = value as Record<string, unknown>;
+  const goalId = requiredPayloadString(record.goalId, "expected.goalId");
+  if (typeof record.revision !== "number" || !Number.isSafeInteger(record.revision) || record.revision < 0) throw new Error("会话目标版本无效。");
+  return { goalId, revision: record.revision };
+}
+
+function sessionGoalTokenBudget(value: unknown): number | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0) throw new Error("目标 token 预算必须是正整数。");
   return value;
 }
 
@@ -3650,4 +3679,10 @@ async function loadNativeAttachments(root: string, attachments: DesktopAttachmen
     }
   }
   return native;
+}
+
+/** 选择只在回合入口读取；连接、凭据和其它共享资源仍要求空闲。 */
+function isModelSelectionChange(before: AgentConfig, after: AgentConfig): boolean {
+  return configDocumentRevision({ ...after, defaultModel: before.defaultModel, thinking: before.thinking, toolModel: before.toolModel })
+    === configDocumentRevision(before);
 }

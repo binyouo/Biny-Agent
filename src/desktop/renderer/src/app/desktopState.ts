@@ -263,35 +263,11 @@ export function updateRuntimeInfo(
   info: ModelRuntimeInfo
 ): DesktopWorkspaceSnapshot | undefined {
   if (!workspace) return workspace;
-  const nextWorkspace = {
+  return {
     ...workspace,
-    // Runtime 尚未启动时没有 runtime.info；把已确认的模型移到首位，避免
-    // 清理 optimistic 状态后 Composer 又退回旧的 defaultModel 投影。
+    selectedModel: info,
     models: moveModelToFront(workspace.models, info.modelAlias),
     pickerModels: moveModelToFront(workspace.pickerModels, info.modelAlias)
-  };
-  if (!workspace.runtime) return nextWorkspace;
-  return {
-    ...nextWorkspace,
-    runtime: {
-      ...workspace.runtime,
-      info: {
-        ...workspace.runtime.info,
-        modelAlias: info.modelAlias,
-        provider: info.provider,
-        modelLabel: info.modelLabel,
-        reasoningLabel: info.reasoningLabel,
-        thinking: info.thinking,
-        contextWindow: info.contextWindow,
-        contextWindowIsFallback: info.contextWindowIsFallback,
-        maxInputTokens: info.maxInputTokens,
-        // 切模型后保留有效窗口/预留元数据，否则用量展示退回原始窗口，把输出预留摊进额度。
-        effectiveContextWindow: info.effectiveContextWindow,
-        effectiveContextWindowPercent: info.effectiveContextWindowPercent,
-        contextReserveTokens: info.contextReserveTokens,
-        autoCompactTokenLimit: info.autoCompactTokenLimit
-      }
-    }
   };
 }
 

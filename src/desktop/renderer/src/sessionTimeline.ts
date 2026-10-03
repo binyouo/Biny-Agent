@@ -85,6 +85,7 @@ export interface TimelineReasoningStep {
   completed?: boolean;
   /** 上下文压缩标记：渲染为独立的压缩通知行而非思考行。 */
   notice?: "compaction";
+  compaction?: { count?: number; savedTokens?: number };
 }
 
 export interface TimelineAssistantStep {
@@ -180,32 +181,33 @@ export interface TimelineChangedFile {
   status: "writing" | "completed";
 }
 
-/**
- * 合并同一帧里的 reasoning 增量。
- *
- * 思考预览需要在模型输出时出现，但不能把一帧内的几十个小片段原样塞进 React
- * 状态。只合并连续增量，遇到其他事件就重新开始，既保留事件顺序，也把每帧的
- * 时间线更新压缩成一个字符串。
- */
-export function liveTimelineEvents(events: AgentHostEvent[]): AgentHostEvent[] {
-  const result: AgentHostEvent[] = [];
-  const lastReasoningDelta = new Map<string, number>();
+type LiveTextDelta = Extract<AgentHostEvent, { type: "reasoning.delta" | "assistant.delta" }>;
+const liveTextChunkCharacters = 16 * 1024;
+
+/** 小块归并保留完整文本，也限制增量投影校验前缀时需要扫描的长度。 */
+export function mergeLiveTimelineEvent(previous: AgentHostEvent | undefined, next: AgentHostEvent): LiveTextDelta | undefined {
+  if ((next.type !== "reasoning.delta" && next.type !== "assistant.delta")
+    || previous?.type !== next.type
+    || previous.sessionId !== next.sessionId
+    || previous.runId !== next.runId
+    || previous.content.length + next.content.length > liveTextChunkCharacters) return undefined;
+  return { ...next, content: previous.content + next.content, timestamp: previous.timestamp };
+}
+
+export function appendLiveTimelineEvents(current: AgentHostEvent[], events: AgentHostEvent[]): AgentHostEvent[] {
+  if (!events.length) return current;
+  const result = [...current];
   for (const event of events) {
-    if (event.type !== "reasoning.delta") {
-      lastReasoningDelta.delete(event.runId);
-      result.push(event);
-      continue;
-    }
-    const previousIndex = lastReasoningDelta.get(event.runId);
-    const previous = previousIndex === undefined ? undefined : result[previousIndex];
-    if (previousIndex !== undefined && previous?.type === "reasoning.delta") {
-      result[previousIndex] = { ...previous, content: previous.content + event.content, timestamp: event.timestamp };
-      continue;
-    }
-    lastReasoningDelta.set(event.runId, result.length);
-    result.push(event);
+    const merged = mergeLiveTimelineEvent(result.at(-1), event);
+    if (merged) result[result.length - 1] = merged;
+    else result.push(event);
   }
   return result;
+}
+
+/** 归并连续文本增量；工具、运行和会话边界仍按原序保留。 */
+export function liveTimelineEvents(events: AgentHostEvent[]): AgentHostEvent[] {
+  return appendLiveTimelineEvents([], events);
 }
 
 /** 合并实时思考增量；终态刷新后仍会从 session 回放同一份完整内容。 */
@@ -216,6 +218,27 @@ function appendLiveReasoning(existing: string, next: string): string {
 /** 完全空的轮次（只有元信息、没有任何可展示内容）不进时间线。 */
 function isVisibleTimelineTurn(turn: TimelineTurn): boolean {
   return Boolean(turn.user || turn.assistant || turn.steps.length || turn.tools.length || turn.error);
+}
+
+function checkpointTimelineStep(checkpoint: Extract<SessionEvent, { type: "context_checkpoint" }>): TimelineReasoningStep {
+  return {
+    kind: "reasoning",
+    id: `checkpoint:${checkpoint.createdAt}`,
+    content: checkpoint.summary,
+    completed: true,
+    notice: "compaction",
+    compaction: {
+      count: checkpoint.coveredMessageCount,
+      savedTokens: checkpoint.tokensAfter === undefined ? undefined : Math.max(0, checkpoint.tokensBefore - checkpoint.tokensAfter)
+    }
+  };
+}
+
+function manualCheckpointTurn(checkpoint: Extract<SessionEvent, { type: "context_checkpoint" }>): TimelineTurn {
+  const turn = emptyTurn(`checkpoint:${checkpoint.createdAt}`, checkpoint.time ?? checkpoint.createdAt);
+  turn.status = "completed";
+  turn.steps.push(checkpointTimelineStep(checkpoint));
+  return turn;
 }
 
 /** 合成完整时间线；末尾过滤掉完全空的轮次（只有元信息、没有任何可展示内容）。 */
@@ -428,7 +451,15 @@ function buildHistoricalTurns(events: SessionEvent[]): TimelineTurn[] {
       if (tool && event.change) applyCommittedChange(tool, event.change, event.operationId);
       continue;
     }
-    if (event.type === "context_checkpoint") continue;
+    if (event.type === "context_checkpoint") {
+      if (event.reason === "manual") {
+        turns.push(manualCheckpointTurn(event));
+        current = undefined;
+      } else {
+        ensureTurn(event.time).steps.push(checkpointTimelineStep(event));
+      }
+      continue;
+    }
     if (event.type === "model_request") { appendModelRequest(ensureTurn(event.time), event.metrics); continue; }
     if (event.type === "message_version_selected") continue;
     if (event.type === "message_metadata") continue;
@@ -621,7 +652,16 @@ function buildVersionedHistoricalTurns(events: SessionEvent[]): TimelineTurn[] {
       continue;
     }
     if (event.type === "model_request") { appendModelRequest(turnForEvent(event, event.time), event.metrics); continue; }
-    if (event.type === "agent_message" || event.type === "context_checkpoint" || event.type === "message_version_selected" || event.type === "message_metadata" || event.type === "turn_interrupted") continue;
+    if (event.type === "context_checkpoint") {
+      if (event.reason === "manual") {
+        turns.push(manualCheckpointTurn(event));
+        current = undefined;
+      } else {
+        turnForEvent(event, event.time).steps.push(checkpointTimelineStep(event));
+      }
+      continue;
+    }
+    if (event.type === "agent_message" || event.type === "message_version_selected" || event.type === "message_metadata" || event.type === "turn_interrupted") continue;
     const turn = turnForEvent(event, event.time);
     turn.error = event.message;
     turn.durationMs = elapsedMs(turn.timestamp, event.time) ?? turn.durationMs;
@@ -1132,6 +1172,7 @@ export function createSessionTimelineProjector(): SessionTimelineProjector {
   let historyTurns: TimelineTurn[] = [];
   let fold: LiveTimelineFold | undefined;
   let processedLive = 0;
+  let processedTail: AgentHostEvent | undefined;
   let attachRequests = attachLiveRequestMetrics([]);
 
   const rebuild = (events: SessionEvent[], liveEvents: AgentHostEvent[]): void => {
@@ -1144,27 +1185,42 @@ export function createSessionTimelineProjector(): SessionTimelineProjector {
     for (const event of liveEvents) nextFold.apply(event);
     fold = nextFold;
     processedLive = liveEvents.length;
+    processedTail = liveEvents.at(-1);
   };
 
   return {
     update({ sessionId: nextSessionId, events, liveEvents }): TimelineTurn[] {
       const firstUser = liveEvents.find((event) => event.type === "message.user");
+      const nextTail = liveEvents[processedLive - 1];
+      const changedTail = processedTail !== nextTail;
+      const tailSuffix = changedTail && processedTail !== undefined && nextTail !== undefined
+        && (processedTail.type === "reasoning.delta" || processedTail.type === "assistant.delta")
+        && (nextTail.type === "reasoning.delta" || nextTail.type === "assistant.delta")
+        && processedTail.type === nextTail.type
+        && processedTail.sessionId === nextTail.sessionId
+        && processedTail.runId === nextTail.runId
+        && nextTail.content.startsWith(processedTail.content)
+        ? { ...nextTail, content: nextTail.content.slice(processedTail.content.length) }
+        : undefined;
       const mustReset = fold === undefined
         || nextSessionId !== sessionId
         || events !== eventsRef
         || liveEvents.length < processedLive
-        || firstUser !== firstLiveUser;
+        || firstUser !== firstLiveUser
+        || (changedTail && tailSuffix === undefined);
       if (mustReset) {
         sessionId = nextSessionId;
         eventsRef = events;
         firstLiveUser = firstUser;
         rebuild(events, liveEvents);
-      } else if (liveEvents.length > processedLive && fold !== undefined) {
+      } else if (fold !== undefined) {
+        if (tailSuffix) fold.apply(tailSuffix);
         for (let index = processedLive; index < liveEvents.length; index += 1) {
           const event = liveEvents[index];
           if (event) fold.apply(event);
         }
         processedLive = liveEvents.length;
+        processedTail = liveEvents.at(-1);
       }
       const liveTurns = (fold ? fold.snapshot() : []).filter(isVisibleTimelineTurn);
       return mergeLiveRetryTurns(historyTurns, liveTurns.map(attachRequests)).filter(isVisibleTimelineTurn);

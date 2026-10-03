@@ -1,7 +1,7 @@
 /**
  * Desktop Agent 事件桥。
  *
- * 主进程为所有项目共用一条事件通道。本 hook 负责按帧批处理、按项目/会话过滤、刷新终态快照，
+ * 主进程为所有项目共用一条事件通道。本 hook 负责有界批处理、按项目/会话过滤、刷新终态快照，
  * 并把结果写回 React 状态；组件无需理解事件时序或处理流式输出的高频更新。
  */
 import { useEffect, type Dispatch, type RefObject, type SetStateAction } from "react";
@@ -16,7 +16,8 @@ import type {
   DesktopWorkspaceSnapshot
 } from "../../../protocol.js";
 import { createSessionEventBuffer } from "./sessionEventBuffer.js";
-import { liveTimelineEvents } from "../sessionTimeline.js";
+import { appendLiveTimelineEvents, liveTimelineEvents } from "../sessionTimeline.js";
+import { createDesktopEventBatcher } from "./desktopEventBatcher.js";
 import { applyUpdatesToSidebarSessions, applyUpdatesToWorkspace, hasContextStatus } from "./desktopState.js";
 
 /** 聊天内 Recipe 提示卡的数据；从 `recipe.ready` host event 提取。 */
@@ -54,6 +55,8 @@ interface DesktopEventBridgeOptions {
   onGenerationStarted(): void;
   /** 当前会话生成失败（run.failed / run.incomplete / run.blocked）：弹出输入框上方的错误横幅。 */
   onGenerationError(message: string): void;
+  onCompactionStarted?(runId: string): void;
+  onCompactionFailed?(error: string, cancelled: boolean, runId: string): void;
 }
 
 export function useDesktopEventBridge({
@@ -71,19 +74,20 @@ export function useDesktopEventBridge({
   setSidebarSessions,
   setWorkspace,
   onGenerationStarted,
-  onGenerationError
+  onGenerationError,
+  onCompactionStarted,
+  onCompactionFailed
 }: DesktopEventBridgeOptions): void {
   useEffect(() => {
-    const eventQueue: DesktopAgentEventEnvelope[] = [];
     const refreshTimers = new Map<string, ReturnType<typeof setTimeout>>();
-    let eventFrame: number | undefined;
     const pendingEvents = createSessionEventBuffer<DesktopAgentEventEnvelope>();
 
     const scheduleRefresh = (projectId: string, sessionId: string): void => {
-      const existing = refreshTimers.get(projectId);
+      const scope = JSON.stringify([projectId, sessionId]);
+      const existing = refreshTimers.get(scope);
       if (existing) clearTimeout(existing);
       const timer = setTimeout(() => {
-        refreshTimers.delete(projectId);
+        refreshTimers.delete(scope);
         void window.biny.refreshProject(projectId).then(async (snapshot) => {
           mergeProjectSnapshot(snapshot);
           if (activeProjectIdRef.current === projectId && selectedSessionIdRef.current === sessionId) {
@@ -95,13 +99,10 @@ export function useDesktopEventBridge({
           }
         }).catch(onError);
       }, 260);
-      refreshTimers.set(projectId, timer);
+      refreshTimers.set(scope, timer);
     };
 
-    const flushEvents = (): void => {
-      eventFrame = undefined;
-      const batch = eventQueue.splice(0);
-      if (!batch.length) return;
+    const flushEvents = (batch: DesktopAgentEventEnvelope[]): void => {
       setSidebarSessions((current) => applyUpdatesToSidebarSessions(current, batch));
       const activeProjectId = activeProjectIdRef.current;
       const projectBatch = activeProjectId
@@ -165,7 +166,7 @@ export function useDesktopEventBridge({
           const timelineEvents = liveTimelineEvents(timelineSource);
           if (timelineEvents.length) {
             setDocument((current) => current?.session.id === currentSessionId
-              ? { ...current, liveEvents: [...current.liveEvents, ...timelineEvents] }
+              ? { ...current, liveEvents: appendLiveTimelineEvents(current.liveEvents, timelineEvents) }
               : current);
           }
           const contextEvents = currentEvents.filter(hasContextStatus);
@@ -180,29 +181,29 @@ export function useDesktopEventBridge({
             }
             if (event.type === "run.failed") onGenerationError(event.error.trim() || "生成失败，请重试。");
             if (event.type === "run.incomplete" || event.type === "run.blocked") onGenerationError(event.reason.trim() || "生成失败，请重试。");
+            if (event.type === "compact.started") onCompactionStarted?.(event.runId);
+            if (event.type === "compact.failed") onCompactionFailed?.(event.error, event.cancelled, event.runId);
           }
         }
       }
 
-      const completedProjects = new Map<string, string>();
+      const completedSessions = new Map<string, { projectId: string; sessionId: string }>();
       for (const envelope of batch) {
         const event = envelope.event;
-        if (event && (isTerminalRunEvent(event) || event.type === "session.title")) {
-          completedProjects.set(envelope.projectId, event.sessionId);
+        if (event && (isTerminalRunEvent(event) || event.type === "session.title" || event.type === "compact.completed" || event.type === "compact.failed")) {
+          completedSessions.set(JSON.stringify([envelope.projectId, event.sessionId]), { projectId: envelope.projectId, sessionId: event.sessionId });
         }
       }
-      for (const [projectId, sessionId] of completedProjects) scheduleRefresh(projectId, sessionId);
+      for (const { projectId, sessionId } of completedSessions.values()) scheduleRefresh(projectId, sessionId);
     };
 
-    const unsubscribe = window.biny.onAgentEvent((envelope) => {
-      eventQueue.push(envelope);
-      eventFrame ??= window.requestAnimationFrame(flushEvents);
-    });
+    const batcher = createDesktopEventBatcher(flushEvents);
+    const unsubscribe = window.biny.onAgentEvent(batcher.push);
     return () => {
       unsubscribe();
-      if (eventFrame !== undefined) window.cancelAnimationFrame(eventFrame);
+      batcher.dispose();
       for (const timer of refreshTimers.values()) clearTimeout(timer);
       refreshTimers.clear();
     };
-  }, [activeProjectIdRef, documentRef, mergeProjectSnapshot, onError, selectedSessionIdRef, setContextBudget, setDocument, setRecipeNotices, setSkillExtraction, setSidebarSessions, setWorkspace, setWriterConflict, onGenerationError, onGenerationStarted, onRuntimeProjectionChanged]);
+  }, [activeProjectIdRef, documentRef, mergeProjectSnapshot, onError, selectedSessionIdRef, setContextBudget, setDocument, setRecipeNotices, setSkillExtraction, setSidebarSessions, setWorkspace, setWriterConflict, onGenerationError, onGenerationStarted, onCompactionStarted, onCompactionFailed, onRuntimeProjectionChanged]);
 }

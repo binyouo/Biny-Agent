@@ -23,7 +23,10 @@ import { SkillExtractionCard } from "./SkillExtractionCard.js";
 import { ChatScroll } from "./workspace/ChatScroll.js";
 import { PlanPanel } from "./workspace/PlanPanel.js";
 import { TodoProgressPanel } from "./workspace/TodoProgressPanel.js";
+import { SessionGoalPanel } from "./workspace/SessionGoalPanel.js";
 import { RuntimeRecoveryBanner } from "./workspace/RuntimeRecoveryBanner.js";
+import type { CompactionCommandState } from "../app/useCompactionCommand.js";
+import { CompactionStatus } from "./chat/CompactionStatus.js";
 
 /** 发送消息的临时投影；真实消息或队列接管后由 App 清掉。 */
 export interface PendingPrompt {
@@ -51,6 +54,10 @@ interface WorkspaceProps {
   onRuntimePanelOpenChange(open: boolean): void;
   thinking: boolean;
   running: boolean;
+  compacting?: boolean;
+  compactionState?: CompactionCommandState;
+  onDismissCompaction?(): void;
+  onRetryCompaction?(): void;
   /** Runtime snapshot 里当前会话的活动 run；时间线用它兜底丢了 run.started 的 live 回合。 */
   runtimeActiveRunId?: string;
   /** 当前会话的 Recipe 提示卡；固定在输入框上方，不随消息流滚走。 */
@@ -114,6 +121,10 @@ export function Workspace({
   onRuntimePanelOpenChange,
   thinking,
   running,
+  compacting = false,
+  compactionState,
+  onDismissCompaction,
+  onRetryCompaction,
   runtimeActiveRunId,
   recipeNotices,
   skillExtraction,
@@ -164,7 +175,7 @@ export function Workspace({
     ? undefined
     : runtimeProjection?.worktrees.find((worktree) => worktree.sessionId === sessionId);
   const worktreeView = sessionIsolation === "worktree" ? desktopWorktreeView(selectedWorktree) : undefined;
-  const hasConversation = (turns.length > 0 || streaming) && Boolean(projectId);
+  const hasConversation = (turns.length > 0 || streaming || compacting) && Boolean(projectId);
   const branchFromTimeline = useCallback((): void => {
     void onCreateBranch().catch(onRuntimeError);
   }, [onCreateBranch, onRuntimeError]);
@@ -242,8 +253,9 @@ export function Workspace({
             </div>
           ) : null}
           {loading ? <LoadingState /> : hasConversation && projectId ? (
-            <ChatScroll onScrolledChange={setChatScrolled} sessionId={sessionId} streaming={streaming}>
+            <ChatScroll followBottom={compactionState?.status === "pending"} onScrolledChange={setChatScrolled} sessionId={sessionId} streaming={streaming || compacting}>
               <MessageTimeline
+                compacting={compacting}
                 sessionId={sessionId}
                 readOnly={Boolean(writerConflict || runtimeError)}
                 onCreateBranch={branchFromTimeline}
@@ -276,6 +288,7 @@ export function Workspace({
         </div>
         <div className={`biny-chat-composer${writerConflict || runtimeError ? " has-runtime-recovery" : ""}${visiblePendingPrompt && turns.length === 0 ? " is-entering" : ""}`}>
             {sessionId && !writerConflict && !runtimeError ? <>
+              <SessionGoalPanel key={`${sessionId}:${planProjection?.goal?.goalId ?? ""}`} sessionId={sessionId} projection={planProjection} onMutation={onRuntimeMutation} onError={onRuntimeError} />
               <TodoProgressPanel sessionId={sessionId} projection={planProjection} running={running} />
               <PlanPanel sessionId={sessionId} busy={running} projection={planProjection} onMutation={onRuntimeMutation} onError={onRuntimeError} />
             </> : null}
@@ -290,6 +303,7 @@ export function Workspace({
             ) : null}
             <ProjectSuggestionBanner key={sessionId} sessionId={sessionId} />
             {skillExtraction ? <SkillExtractionCard state={skillExtraction} onDismiss={() => onDismissSkillExtraction?.()} /> : null}
+            {compactionState && compactionState.status !== "pending" ? <CompactionStatus state={compactionState} onDismiss={onDismissCompaction} onRetry={onRetryCompaction} /> : null}
             {generationError && !writerConflict && !runtimeError ? (
               <GenerationErrorBanner error={generationError} model={generationError === lastTurn?.error ? lastTurn?.model?.label : undefined} onDismiss={onDismissGenerationError} />
             ) : null}

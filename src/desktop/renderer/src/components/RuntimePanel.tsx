@@ -123,7 +123,7 @@ export function RuntimePanel({ open, onClose, projection, selectedSessionId, wor
         })}
       </RuntimeSection>
 
-      <RuntimeSection title="Goal / Graph" empty="暂无 Goal 或 Graph">
+      <RuntimeSection title="工作区目标 / Graph" empty="暂无工作区目标或 Graph">
         {goals.map((goal) => {
           const id = recordId(goal, "goalId", "id");
           if (!id) return null;

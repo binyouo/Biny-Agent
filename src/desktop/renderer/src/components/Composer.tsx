@@ -7,7 +7,7 @@ import type { LocalReferenceResult } from "../../../../session/localReferences.j
  */
 import { useTooltip } from "@astryxdesign/core/Tooltip";
 import { memo, useCallback, useEffect, useImperativeHandle, useRef, useState, useSyncExternalStore } from "react";
-import type { AgentSessionInfo } from "../../../../agent/AgentSession.js";
+import type { ModelRuntimeInfo } from "../../../../llm/ModelManager.js";
 import type { AgentCapabilitySelection } from "../../../../agent/capabilitySelection.js";
 import type { ModelChoice } from "../../../../llm/ModelManager.js";
 import { modelThinkingSelections, thinkingSelectionForModel, type ThinkingSelection } from "../../../../llm/modelThinking.js";
@@ -27,6 +27,7 @@ import { ProviderBrandGlyph } from "./ProviderBrandGlyph.js";
 import { isResumeInput } from "./composer/resumeInput.js";
 import { SendOrStopButton } from "./composer/SendOrStopButton.js";
 import { PromptInput } from "./composer/PromptInput.js";
+import { desktopGoalCommandAllowsNoModel } from "./composer/desktopSlashCommands.js";
 import { insertDraftReference, materializeDraftReferences, normalizeDraftReferences, reconcileDraftReferenceChange,
   referenceDraftHistoryStep, type ReferenceDraft, type ReferenceDraftTransition } from "./composer/referenceCompletion.js";
 import type { QueuedRunMessageSnapshot } from "../../../../runtime/agentEvents.js";
@@ -45,7 +46,7 @@ interface ComposerProps {
   project?: DesktopProject;
   drafts: Map<string, ComposerDraftState>;
   draftKey: string;
-  runtimeInfo?: AgentSessionInfo;
+  runtimeInfo?: ModelRuntimeInfo;
   models: ModelChoice[];
   /** 已解析好的上下文用量；取不到真实数字时为空，此时不展示用量。 */
   contextUsage?: ContextUsage;
@@ -54,6 +55,7 @@ interface ComposerProps {
   memoryToggleDisabled: boolean;
   memoryToggleDisabledReason?: string;
   running: boolean;
+  compacting?: boolean;
   recovery?: DesktopSessionDocument["recovery"];
   onResume(): Promise<void>;
   runtimeBusy: boolean;
@@ -116,9 +118,9 @@ export const Composer = memo(function Composer({
   memoryToggleDisabled,
   memoryToggleDisabledReason,
   running,
+  compacting = false,
   recovery,
   onResume,
-  runtimeBusy,
   queuedMessages,
   resourceState,
   resourceRevision,
@@ -197,7 +199,7 @@ export const Composer = memo(function Composer({
   const [capabilitySelection, setCapabilitySelection] = useState<AgentCapabilitySelection>(() => selectionFromDefaults(capabilityDefaults));
   const [menu, setMenu] = useState<ComposerMenu>(null);
   const [localBusy, setBusy] = useState(false);
-  const busy = localBusy || snapshot.submitting || (!editing && snapshot.pendingAttachments.some((item) => item.status === "uploading"));
+  const busy = compacting || localBusy || snapshot.submitting || (!editing && snapshot.pendingAttachments.some((item) => item.status === "uploading"));
   const [stopPending, setStopPending] = useState(false);
   const [optimisticModel, setOptimisticModel] = useState<PendingModelSelection>();
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -308,7 +310,7 @@ export const Composer = memo(function Composer({
     const value = materializeDraftReferences(draft.value, draft.tokens).trim() || (attachments.length ? "请分析这些附件。" : "");
     const resume = Boolean(recovery) && !running && !editing && isResumeInput(draft.value, attachments.length + pendingAttachments.length);
     if (!project || (!value && !resume) || busy || submitFlightRef.current || sessionWriterConflict
-      || modelSetupRequired || memoryToggleBusy || pendingAttachments.length) return;
+      || (modelSetupRequired && (editing || !desktopGoalCommandAllowsNoModel(value))) || memoryToggleBusy || pendingAttachments.length) return;
     // 编辑模式：提交直接走「替换原消息并重新生成」，不携带附件，也不走模型切换/斜杠命令链路。
     if (editing) {
       submitFlightRef.current = true;
@@ -511,16 +513,19 @@ export const Composer = memo(function Composer({
   const attachmentCount = attachments.length + pendingAttachments.length;
   const hasDraft = Boolean(input.trim() || attachments.length);
   const resumeAction = Boolean(recovery) && !running && !editing && isResumeInput(input, attachmentCount);
+  const modelConnectionRequired = modelSetupRequired && (editing || !desktopGoalCommandAllowsNoModel(input));
   const sendDisabled = (resumeAction && !recovery?.canContinue) || memoryToggleBusy
-    || (!hasDraft && !resumeAction) || !project || sessionWriterConflict || modelSetupRequired || busy || pendingAttachments.length > 0;
+    || (!hasDraft && !resumeAction) || !project || sessionWriterConflict || modelConnectionRequired || busy || pendingAttachments.length > 0;
   const sendDisabledReason = !project
     ? "请先打开一个项目。"
-      : modelSetupRequired
+      : modelConnectionRequired
         ? "还没有可用的模型连接，请先配置模型。"
         : memoryToggleBusy
           ? "正在确认当前聊天的记忆状态，请稍候。"
         : sessionWriterConflict
           ? "会话已在另一个应用中打开，请先在那里关闭后重试。"
+        : compacting
+          ? "正在压缩上下文，请稍候。"
         : busy
           ? "当前附件或命令正在处理，请稍候。"
           : pendingAttachments.length
@@ -532,29 +537,23 @@ export const Composer = memo(function Composer({
             : undefined;
   const placeholder = running ? "补充要求…" : "输入消息…";
   const modelSwitchPending = Boolean(optimisticModel);
-  const modelSwitchDisabled = sessionWriterConflict || running || runtimeBusy || busy;
+  const modelSwitchDisabled = !project || sessionWriterConflict || busy;
   const modelSwitchDisabledReason = !project
     ? "请先打开一个项目。"
     : sessionWriterConflict
       ? "会话已在另一个应用中打开。"
-      : running
-        ? "当前对话正在运行，等结束后再切换模型。"
-        : runtimeBusy
-          ? "Runtime 正在处理其他操作，请稍候再切换模型。"
-        : busy
-          ? "当前附件或命令正在处理，请稍候。"
-          : undefined;
-  // MCP 重连会令 Runtime 暂忙；菜单仍需保持可见，才能展示连接进度。选择只影响下一条消息。
-  const capabilitySwitchDisabled = !project || running || busy || sessionWriterConflict;
+      : busy
+        ? "当前附件或命令正在处理，请稍候。"
+        : undefined;
+  // MCP 重连会令 Runtime 暂忙；菜单仍需保持可见，才能展示连接进度。选择用于后续新回合。
+  const capabilitySwitchDisabled = !project || busy || sessionWriterConflict;
   const capabilitySwitchDisabledReason = !project
     ? "请先打开一个项目。"
     : sessionWriterConflict
       ? "会话已在另一个应用中打开。"
-      : running
-        ? "回复结束后可切换工具"
-        : busy
-          ? "当前附件或命令正在处理，请稍候。"
-          : undefined;
+      : busy
+        ? "当前附件或命令正在处理，请稍候。"
+        : undefined;
   useEffect(() => {
     if (capabilitySwitchDisabled && menu === "capabilities") setMenu(null);
   }, [capabilitySwitchDisabled, menu]);
@@ -670,7 +669,7 @@ export const Composer = memo(function Composer({
                 disabledReason={capabilitySwitchDisabledReason}
                 label={resourceState === "degraded" ? "工具与技能，部分能力不可用" : "工具与技能"}
                 onClick={() => setMenu(menu === "capabilities" ? null : "capabilities")}
-                tooltip={menu === "capabilities" ? undefined : resourceState === "degraded" ? "部分能力不可用，点击查看" : "工具与技能"}
+                tooltip={menu === "capabilities" ? undefined : running ? "工具与技能选择用于后续回合" : resourceState === "degraded" ? "部分能力不可用，点击查看" : "工具与技能"}
               >
                 <span className="capabilities-trigger-icon">
                   <Icon name="sliders" size={15} />
@@ -709,7 +708,7 @@ export const Composer = memo(function Composer({
                 aria-haspopup="menu"
                 label={thinkingAvailable && currentThinking ? `${modelName} · ${thinkingLabel(currentThinking)}` : modelName}
                 onClick={() => setMenu(menu === "model" ? null : "model")}
-                tooltip={menu === "model" ? undefined : "模型与推理强度"}
+                tooltip={menu === "model" ? undefined : running ? "模型与推理强度用于后续回合" : "模型与推理强度"}
               >
                 {selectedModel ? <span className="model-trigger-brand"><ProviderBrandGlyph type={selectedModelCatalog?.iconTone ?? selectedModel.providerType} /></span> : null}
                 <span>{modelName}</span>

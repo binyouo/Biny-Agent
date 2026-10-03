@@ -430,9 +430,10 @@ function testDesktopRendererStateProjection(): void {
     contextWindow: 1_000_000,
     maxInputTokens: 950_000
   });
-  assert.equal(switched.runtime?.info.modelAlias, "deepseek-v4-flash");
-  assert.equal(switched.runtime?.info.contextWindow, 1_000_000);
-  assert.equal(switched.runtime?.info.maxInputTokens, 950_000);
+  assert.equal(switched.selectedModel?.modelAlias, "deepseek-v4-flash");
+  assert.equal(switched.runtime, projected.runtime, "模型选择不修改执行快照");
+  assert.equal(switched.selectedModel?.contextWindow, 1_000_000);
+  assert.equal(switched.selectedModel?.maxInputTokens, 950_000);
 
   const withoutRuntime: DesktopWorkspaceSnapshot = {
     ...workspace,
@@ -1785,6 +1786,20 @@ async function testDesktopGlobalWriteGateAndRuntimeRefresh(): Promise<void> {
     assert.equal(preferenceResult.status, "committed", JSON.stringify(preferenceResult));
     assert.deepEqual(preferenceResult.appliedFields, ["themePreference"]);
     assert.equal(state.themePreference(), "dark", "主题偏好不应被运行中的任务阻止保存");
+    const modelSnapshot = await commitDesktopSettings(settings, first.id, {
+      models: { upserts: [], removeAliases: [], toolModel: { alias: "test-model" }, defaultModel: { alias: "test-model", thinking: "high" } }
+    });
+    assert.equal(modelSnapshot.models.toolModel, "test-model");
+    assert.equal(modelSnapshot.models.thinking, "high");
+    await commitDesktopSettings(settings, first.id, { models: { upserts: [], removeAliases: [], toolModel: {} } });
+    assert.equal((await configStore.load()).toolModel, undefined, "运行中也能恢复工具模型自动选择");
+    const connectionBase = await settings.snapshot(first.id);
+    const rejectedConnection = await settings.save(first.id, {
+      expectedPreferenceRevision: connectionBase.preferenceRevision,
+      expectedConfigRevision: connectionBase.configRevision,
+      models: { upserts: [], removeAliases: [], customProviders: [{ alias: "active", displayName: "Changed connection" }] }
+    });
+    assert.equal(rejectedConnection.status, "rolled_back", "连接修改仍要求空闲，不能混入模型选择保存");
     agents.hasRunningTasks = originalHasRunningTasks;
   } finally {
     await agents?.closeAll();
@@ -2587,15 +2602,10 @@ async function testDesktopReconcilesPersistedPermissionWithExistingHost(): Promi
     const { configStore, projects, state } = await createDesktopTestServices(desktopRoot);
     const project = await projects.createProject(workspaceRoot);
     const dataRoot = await projects.dataRoot(project);
-    const commands = fakeCommandRuntime();
-    let hostPermissionMode: "ask" | "read-only" | "auto" | "full-access" = "ask";
-    // 本例覆盖可独立运行的配置；Electron 凭据配置下切模型只更新控制面，不启动 Runtime。
+    const beforeAttach = await configStore.load(project.path);
+    await configStore.save({ ...beforeAttach, permission: { ...beforeAttach.permission, mode: "ask" } }, project.path);
+    const { runtime, commands } = await createInteractiveAgentHost(project.path, { persistenceRoot: dataRoot, configStore });
     configStore.supportsDetachedRuntimeHost = true;
-    commands.agent.getPermissionMode = () => hostPermissionMode;
-    commands.agent.setPermissionMode = async (mode) => {
-      hostPermissionMode = mode;
-    };
-    const runtime = new InteractiveAgentRuntime(commands);
     host = await startRuntimeHost(dataRoot, async () => ({ runtime: runtime, commands: commands }), { configDir: desktopRoot });
 
     const persisted = await configStore.load(project.path);
@@ -2603,10 +2613,11 @@ async function testDesktopReconcilesPersistedPermissionWithExistingHost(): Promi
     await configStore.save(persisted, project.path);
 
     agents = new DesktopAgentManager(state, projects, configStore, () => undefined);
-    // 任意需要 Runtime 的入口都会 attach 到上面的旧 Host；切模型本身不应改变权限，
-    // 只用来触发“客户端进入后接管已有 Runtime”的启动链路。
+    // 模型选择只更新配置；显式打开 Runtime 时才 attach 并同步已保存的权限。
     await agents.switchModel(project.id, "test-model", "off");
-    assert.equal(hostPermissionMode, "full-access");
+    assert.equal(commands.agent.getPermissionMode(), "ask");
+    await agents.retryRuntime(project.id);
+    assert.equal(commands.agent.getPermissionMode(), "full-access");
     assert.equal(runtime.getSnapshot().permissionMode, "full-access");
     assert.equal((await configStore.load(project.path)).permission.mode, "full-access");
   } finally {
@@ -4373,6 +4384,7 @@ function testDesktopComposerSlashItems(): void {
   assert.deepEqual(commandItems.map((item) => item.label), [
     "/compact",
     "/subagent",
+    "/goal",
     "/review",
     "/undo"
   ]);

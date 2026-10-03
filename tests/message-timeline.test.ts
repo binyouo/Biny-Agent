@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
+import { JSDOM } from "jsdom";
 import type { AgentHostEvent } from "../src/runtime/agentEvents.js";
 import { GenerationErrorBanner } from "../src/desktop/renderer/src/components/chat/GenerationErrorBanner.js";
 import { MessageTimeline } from "../src/desktop/renderer/src/components/MessageTimeline.js";
@@ -38,13 +39,14 @@ test("普通模式澄清卡直接显示选项和自由输入，历史答案可�
   assert.match(done, /已回答/);
 });
 
-function renderTurns(turns: TimelineTurn[], thinking = false, runtimeActiveRunId?: string): string {
+function renderTurns(turns: TimelineTurn[], thinking = false, runtimeActiveRunId?: string, pendingUserMessage?: { id: string; messageId: string; content: string }): string {
   return renderToStaticMarkup(createElement(MessageTimeline, {
     sessionId: "session",
     projectId: "project",
     turns,
     thinking,
     runtimeActiveRunId,
+    pendingUserMessage,
     onPreviewFile: noop,
     onOpenExternal: noop,
     onResolvePermission: noopAsync,
@@ -326,25 +328,60 @@ test("失败后正常再发一条消息：保留两条用户消息，不插入�
   assert.equal(markup.match(/data-sender="assistant"/gu)?.length, 1, "仅新一轮活动占用助手区域");
 });
 
-for (const [stage, label] of [["skills", "正在分析 Skill"], ["tools", "正在分析工具"], ["workspace", "正在准备 workspace"], ["memory", "正在检索记忆"], ["compacting", "正在压缩上下文"]] as const) {
-  test(`准备阶段实时显示并在完成或失败时清除：${stage}`, () => {
+for (const [stage, label] of [["memory", "正在检索记忆"], ["skills", "正在分析 Skill"], ["tools", "正在分析工具"], ["workspace", "Thinking..."], ["waiting", "Thinking..."]] as const) {
+  test(`展示有效准备阶段，省略工作区与模型等待提示：${stage}`, () => {
     const events: AgentHostEvent[] = [start[0]!, { ...base, type: "preparation.updated", stage }];
-    const pattern = new RegExp(label.replace(/\./gu, "\\."));
-    assert.match(renderTurns(buildSessionTimeline([], events), true), pattern);
+    const turns = buildSessionTimeline([], events);
+    assert.equal(turns[0]?.preparationStage, stage, "展示精简不改写运行事件投影");
+    const markup = renderTurns(turns, true);
+    assert.match(markup, new RegExp(`role="status"[^>]*>${label.replace(/\./gu, "\\.")}`, "u"));
+    assert.doesNotMatch(markup, /正在准备 workspace|正在等待模型|Sketching things out/u);
+    assert.equal((markup.match(/chat-run-status-orb/gu) ?? []).length, 1);
     const ready = buildSessionTimeline([], [...events, { ...base, type: "preparation.updated", stage: "ready" }]);
     assert.equal(ready[0]?.preparationStage, undefined);
-    assert.doesNotMatch(renderTurns(ready, true), pattern);
+    assert.match(renderTurns(ready, true), /role="status"[^>]*>Thinking\.\.\./u);
     const failed = buildSessionTimeline([], [...events, failure]);
     assert.equal(failed[0]?.preparationStage, undefined);
-    assert.doesNotMatch(renderTurns(failed), pattern);
+    assert.doesNotMatch(renderTurns(failed), /chat-run-status/u);
+    const cancelled = buildSessionTimeline([], [...events, { ...base, type: "run.cancelled", reason: "Stopped", durationMs: 1_000 }]);
+    assert.doesNotMatch(renderTurns(cancelled), /chat-run-status/u);
   });
 }
 
-test("首个运行事件前与只有用户消息时，始终显示准备反馈", () => {
-  assert.match(renderTurns([], true), /role="status"[^>]*>Thinking\.\.\./u);
-  const markup = renderTurns(buildSessionTimeline([], start.slice(0, 1)), true);
-  assert.match(markup, /data-sender="assistant"/u);
-  assert.equal((markup.match(/chat-run-status-orb/gu) ?? []).length, 1);
+test("临时发送投影接入真实用户消息后，思考提示和尺寸保持一致且不重复消息", () => {
+  const pending = { id: "pending", messageId: "user-message", content: "检查项目" };
+  for (const turns of [[], buildSessionTimeline([], start.slice(0, 1)), buildSessionTimeline([], start)]) {
+    const markup = renderTurns(turns, true, undefined, pending);
+    assert.match(markup, /role="status"[^>]*>Thinking\.\.\./u);
+    assert.doesNotMatch(markup, /Sketching things out|is-following/u);
+    assert.match(markup, /<canvas(?=[^>]*class="chat-run-status-orb")(?=[^>]*style="width:16px;height:16px)[^>]*>/u);
+    assert.equal((markup.match(/data-sender="user"/gu) ?? []).length, 1);
+    assert.equal((markup.match(/chat-run-status-orb/gu) ?? []).length, 1);
+  }
+});
+
+test("实际压缩上下文仍显示独立进度，完成后回到统一思考反馈", () => {
+  const events: AgentHostEvent[] = [start[0]!, { ...base, type: "preparation.updated", stage: "compacting" }];
+  assert.match(renderTurns(buildSessionTimeline([], events), true), /正在压缩上下文/u);
+  const ready = buildSessionTimeline([], [...events, { ...base, type: "preparation.updated", stage: "ready" }]);
+  assert.doesNotMatch(renderTurns(ready, true), /正在压缩上下文/u);
+  assert.match(renderTurns(ready, true), /role="status"[^>]*>Thinking\.\.\./u);
+});
+
+test("残留准备状态不能覆盖正文、思考、工具或待授权反馈", () => {
+  const activeEvents: AgentHostEvent[] = [
+    { ...base, type: "reasoning.delta", content: "正在检查配置" },
+    { ...base, type: "assistant.delta", content: "开始检查" },
+    { ...base, type: "tool.started", toolCallId: "read", tool: "Read", args: { path: "package.json" } }
+  ];
+  for (const event of activeEvents) {
+    for (const preparationStage of ["memory", "skills", "tools", "workspace", "waiting"] as const) {
+      const turns = buildSessionTimeline([], [...start, event]).map((turn) => ({ ...turn, preparationStage }));
+      assert.match(renderTurns(turns), /aria-hidden="true" class="chat-run-status[^"<>]*is-suppressed/u);
+    }
+  }
+  const turn = buildSessionTimeline([], start)[0]!;
+  assert.match(renderTurns([{ ...turn, status: "waiting_permission", preparationStage: "waiting" }]), /aria-hidden="true" class="chat-run-status[^"<>]*is-suppressed/u);
 });
 
 test("等待首个增量、思考增量、工具执行及工具间空档都有准确状态", () => {
@@ -367,7 +404,9 @@ test("等待首个增量、思考增量、工具执行及工具间空档都有�
   assert.doesNotMatch(markup, /is-suppressed/u);
   events.push({ ...base, type: "assistant.delta", content: "配置检查完成" });
   markup = renderTurns(buildSessionTimeline([], events));
-  assert.match(markup, /配置检查完成/u);
+  const dom = new JSDOM(markup);
+  assert.match(dom.window.document.body.textContent ?? "", /配置检查完成/u);
+  dom.window.close();
   assert.match(markup, /is-suppressed/u);
   events.push({ ...base, type: "run.cancelled", reason: "Stopped", durationMs: 1_000 });
   assert.doesNotMatch(renderTurns(buildSessionTimeline([], events)), /chat-run-status|思考中|探索中|Following the thread/u);

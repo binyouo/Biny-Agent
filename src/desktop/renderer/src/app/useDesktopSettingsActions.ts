@@ -5,7 +5,6 @@
  * 并只在服务端快照真正变化时回写根状态。
  */
 import { useCallback, useRef, type Dispatch, type RefObject, type SetStateAction } from "react";
-import type { ContextBudgetStatus } from "../../../../agent/context/types.js";
 import type { ThinkingSelection } from "../../../../llm/ModelManager.js";
 import type { LocalEmbeddingModelId } from "../../../../llm/embedding/types.js";
 import type {
@@ -21,14 +20,12 @@ import { updateRuntimeInfo } from "./desktopState.js";
 interface DesktopSettingsActionsOptions {
   projectIdRef: RefObject<string | undefined>;
   mergeProjectSnapshot(snapshot: DesktopWorkspaceSnapshot): void;
-  setContextBudget: Dispatch<SetStateAction<ContextBudgetStatus | undefined>>;
   setWorkspace: Dispatch<SetStateAction<DesktopWorkspaceSnapshot | undefined>>;
 }
 
 export function useDesktopSettingsActions({
   projectIdRef,
   mergeProjectSnapshot,
-  setContextBudget,
   setWorkspace
 }: DesktopSettingsActionsOptions) {
   const modelSwitchGenerationRef = useRef(0);
@@ -38,18 +35,15 @@ export function useDesktopSettingsActions({
     if (!projectId) return;
     const generation = ++modelSwitchGenerationRef.current;
     const info = await window.biny.switchModel(projectId, alias, thinking);
-    // 切换模型后上一轮会话的上下文预算是旧模型的，立即作废；新模型的实际用量
-    // 会在下一轮 `context.updated` 中重新建立。
-    setContextBudget(undefined);
+    // 当前回合的模型与上下文用量保持不变；新回合由 Runtime 事件更新实际预算。
     setWorkspace((current) => current?.project.id === projectId ? updateRuntimeInfo(current, info) : current);
-    // 切模型可能刚创建运行时；完整快照只负责补齐 Runtime/会话投影，不应阻塞
-    // 模型按钮的响应。旧请求的刷新不能覆盖后续更快完成的新切换。
+    // 完整快照补齐运行状态和已保存选择，不阻塞按钮；旧刷新不能覆盖后续的新选择。
     void window.biny.refreshProject(projectId)
       .then((snapshot) => {
         if (modelSwitchGenerationRef.current === generation) mergeProjectSnapshot(snapshot);
       })
       .catch(() => undefined);
-  }, [mergeProjectSnapshot, projectIdRef, setContextBudget, setWorkspace]);
+  }, [mergeProjectSnapshot, projectIdRef, setWorkspace]);
 
   const testModelConfiguration = useCallback(async (configuration: DesktopModelConfigurationInput) => {
     return await window.biny.testModelConfiguration(requireProject(projectIdRef.current), configuration);

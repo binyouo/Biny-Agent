@@ -50,9 +50,9 @@ class RecordingModel {
   readonly outputLimits: Array<number | undefined> = [];
 
   constructor(
-    private readonly response = citeCheckpoint(checkpointSummary),
+    private readonly response: string | readonly string[] = citeCheckpoint(checkpointSummary),
     private readonly failure?: Error,
-    private readonly finishReason: AgentStopReason | null = "stop"
+    private readonly finishReason: AgentStopReason | null | readonly (AgentStopReason | null)[] = "stop"
   ) {}
 
   readonly model: AgentModel = {
@@ -63,11 +63,16 @@ class RecordingModel {
       this.systemPrompts.push(context.systemPrompt);
       this.outputLimits.push(options?.maxOutputTokens);
       if (this.failure) throw this.failure;
+      const attempt = this.requests.length - 1;
+      const response = typeof this.response === "string" ? this.response : this.response[attempt] ?? this.response.at(-1)!;
+      const finishReason = typeof this.finishReason === "string" || this.finishReason === null
+        ? this.finishReason
+        : this.finishReason[Math.min(attempt, this.finishReason.length - 1)];
       return (async function* (): AsyncIterable<ModelStreamEvent> {
         options?.signal?.throwIfAborted();
         yield { type: "start" as const };
-        yield { type: "text-delta" as const, text: this.response };
-        if (this.finishReason !== null) yield { type: "finish" as const, reason: this.finishReason, usage: { inputTokens: 0, outputTokens: 1, totalTokens: 1 } };
+        yield { type: "text-delta" as const, text: response };
+        if (finishReason !== null && finishReason !== undefined) yield { type: "finish" as const, reason: finishReason, usage: { inputTokens: 0, outputTokens: 1, totalTokens: 1 } };
       }).call(this);
     }
   };
@@ -426,6 +431,85 @@ async function testSummaryProtocolAndVisibleSources(): Promise<void> {
   });
 }
 
+async function testSummaryContractRepair(): Promise<void> {
+  await withTempWorkspace(async (root) => {
+    const history = [userMessage(12_000), userMessage(12_000)];
+    const valid = citeCheckpoint(checkpointSummary);
+    // Given 正常结束但格式或来源不合约，When 用原材料修复一次，Then 只有合约通过后才能替换历史。
+    for (const [response, kind] of [
+      ["missing headings", "invalid_structure"],
+      [checkpointSummary, "invalid_evidence"],
+      [citeCheckpoint(checkpointSummary, "m999"), "invalid_evidence"]
+    ] as const) {
+      const provider = new RecordingModel([response, valid]);
+      const memory = makeMemory(root, provider, { keepRecentTokens: 1 });
+      memory.replaceHistory(history);
+      assert.equal((await memory.compact()).compacted, true, `${kind} 应允许一次有界契约修复`);
+      assert.equal(provider.requests.length, 2);
+      assert.deepEqual(provider.requests[1], provider.requests[0], "修复不能换材料或扩大可引用来源");
+      assert.deepEqual(provider.outputLimits, [provider.outputLimits[0], provider.outputLimits[0]]);
+      assert.match(provider.systemPrompts[1] ?? "", new RegExp(kind, "u"));
+      assert.equal(memory.snapshot().compactionFailure, undefined);
+      assert.equal(memory.getPromptEpoch(), 1);
+    }
+
+    // Given 第二次仍不合约，Then 保留历史、checkpoint 和 epoch，并且停止请求。
+    const provider = new RecordingModel(["missing headings", citeCheckpoint(checkpointSummary, "m999"), valid]);
+    const memory = makeMemory(root, provider, { keepRecentTokens: 1 });
+    const previousCheckpoint = {
+      summary: checkpointSummary,
+      firstKeptMessageIndex: 1,
+      tokensBefore: 5_000,
+      compactedMessages: 1,
+      createdAt: "2026-09-21T00:00:00.000Z"
+    };
+    memory.setCheckpoint(previousCheckpoint);
+    memory.replaceHistory(history);
+    const checkpointBefore = memory.snapshot().checkpoint;
+    await assert.rejects(memory.compact(), /invalid_evidence/u);
+    assert.equal(provider.requests.length, 2);
+    assert.deepEqual(memory.getHistory(), history);
+    assert.equal(memory.snapshot().summary, previousCheckpoint.summary);
+    assert.deepEqual(memory.snapshot().checkpoint, checkpointBefore);
+    assert.equal(memory.getPromptEpoch(), 0);
+    assert.equal(memory.snapshot().compactionFailure?.kind, "invalid_evidence");
+
+    // 截断修复与契约修复共用一次机会；失败顺序不能增加第三次请求。
+    for (const [responses, finishReasons, expected] of [
+      [["missing headings", valid, valid], ["stop", "length", "stop"], "output_truncated"],
+      [[valid, checkpointSummary, valid], ["length", "stop", "stop"], "invalid_evidence"]
+    ] as const) {
+      const boundedProvider = new RecordingModel(responses, undefined, finishReasons);
+      const bounded = makeMemory(root, boundedProvider, { keepRecentTokens: 1 });
+      bounded.replaceHistory(history);
+      await assert.rejects(bounded.compact(), new RegExp(expected, "u"));
+      assert.equal(boundedProvider.requests.length, 2);
+      assert.deepEqual(bounded.getHistory(), history);
+    }
+  });
+}
+
+async function testIndentedEvidenceContinuation(): Promise<void> {
+  await withTempWorkspace(async (root) => {
+    const history = [userMessage(12_000), userMessage(12_000)];
+    const continued = citeCheckpoint(checkpointSummary).replaceAll(" <!-- evidence:", "\n  <!-- evidence:");
+    const provider = new RecordingModel(continued);
+    const memory = makeMemory(root, provider, { keepRecentTokens: 1 });
+    memory.replaceHistory(history);
+    const compacted = await memory.compact();
+    assert.equal(compacted.compacted, true, "Markdown 列表缩进续行 citation 属于前一条目");
+    assert.equal(provider.requests.length, 1);
+    const goal = compacted.checkpoint?.evidence.find((claim) => claim.field === "goal" && claim.itemIndex === 0);
+    assert.deepEqual(goal?.references, [{ kind: "message", relativeMessageIndex: 0, role: "user" }]);
+    assert.doesNotMatch(memory.snapshot().summary ?? "", /evidence:/u);
+
+    const unknown = makeMemory(root, new RecordingModel(continued.replaceAll("evidence:m0", "evidence:m999")), { keepRecentTokens: 1 });
+    unknown.replaceHistory(history);
+    await assert.rejects(unknown.compact(), /invalid_evidence/u, "续行仍必须引用本次可见来源");
+    assert.deepEqual(unknown.getHistory(), history);
+  });
+}
+
 function testSchemaAndProjectOverrideParsing(): void {
   // 全局 schema：边界外拒绝，合法值通过。
   assert.throws(() => compactionSchema.parse({ enabled: true, triggerPercent: 0.3 }));
@@ -460,6 +544,8 @@ async function main(): Promise<void> {
     await testProjectedRequestControlsActiveCompaction();
     await testRequestAnchorAndPersistentFailure();
     await testSummaryProtocolAndVisibleSources();
+    await testIndentedEvidenceContinuation();
+    await testSummaryContractRepair();
     testSchemaAndProjectOverrideParsing();
     console.log("compaction-settings tests passed");
   } finally {
