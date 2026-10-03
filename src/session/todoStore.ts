@@ -26,6 +26,7 @@ export const maxTodoContentLength = 500;
 export class TodoStore {
   private items: TodoItem[] = [];
   private loaded = false;
+  private commitQueue: Promise<void> = Promise.resolve();
 
   constructor(private readonly workspaceRoot: string, private sessionId: string) {}
 
@@ -77,9 +78,9 @@ export class TodoStore {
         throw new RangeError(`Plan item content must be at most ${String(maxTodoContentLength)} characters.`);
       }
     }
-    this.items = items.map((item) => ({ content: item.content.trim(), status: item.status }));
-    await this.persist();
-    return this.list();
+    const nextItems = items.map((item) => ({ content: item.content.trim(), status: item.status }));
+    await this.persist(nextItems);
+    return nextItems.map((item) => ({ ...item }));
   }
 
   /** 注入 system prompt 的段落；清单为空时不占位。 */
@@ -99,14 +100,21 @@ export class TodoStore {
     return path.join(agentDir(this.workspaceRoot), "todos", `${this.sessionId}.json`);
   }
 
-  private async persist(): Promise<void> {
+  private async persist(items: TodoItem[]): Promise<void> {
     await ensureAgentDirs(this.workspaceRoot);
     const target = this.filePath();
     // 临时名带随机成分：并发 persist 共用固定名会互相截断对方的临时文件。
     const temporary = `${target}.${randomUUID()}.tmp`;
     try {
-      await fs.writeFile(temporary, `${JSON.stringify({ version: 1, items: this.items })}\n`, { encoding: "utf8", mode: 0o600 });
-      await fs.rename(temporary, target);
+      await fs.writeFile(temporary, `${JSON.stringify({ version: 1, items })}\n`, { encoding: "utf8", mode: 0o600 });
+      // 并发 rename 的磁盘完成顺序未必等于 Promise 恢复顺序；串行提交才能让内存与磁盘一致。
+      const commit = this.commitQueue.then(async () => {
+        await fs.rename(temporary, target);
+        this.items = items;
+      });
+      // 单次失败不能阻断后续提交；清理留在队列外，也不能重新发布旧版本。
+      this.commitQueue = commit.catch(() => undefined);
+      await commit;
     } finally {
       await fs.rm(temporary, { force: true }).catch(() => undefined);
     }
