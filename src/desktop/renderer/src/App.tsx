@@ -2010,6 +2010,7 @@ function DesktopApp(): React.JSX.Element {
         onOpenRuntime={openRuntimePanel}
       /> : <Workspace
         loading={loading}
+        onSendActivitySuggestion={async text => { await composerRef.current?.submitSuggestion(text); }}
         onCreateBranch={openTurnBranch}
         onEditRequest={requestEditMessage}
         editInFlight={editInFlight}

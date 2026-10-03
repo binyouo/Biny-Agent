@@ -33,7 +33,7 @@ async function testBrowserPollAfterInputMonitorExit(): Promise<void> {
     inputMonitorPath,
     readFrontmostBundle: async () => "company.thebrowser.Browser",
     hasScreenRecordingPermission: async () => true,
-    readBrowser: async (script) => { assert.match(script, /Arc/u); return "https://example.test/fallback\tRecovered tab"; },
+    readBrowser: async (script) => { assert.match(script, /tell application id "company\.thebrowser\.Browser"/u); return "https://example.test/fallback\tRecovered tab"; },
     captureDesktopScreen: async () => Buffer.from("fallback-jpeg"),
     encodeFrame: async jpeg => ({ jpeg, width: 1, height: 1, pixels: Buffer.from([0, 0, 0, 255]) }),
     captureTimers: {

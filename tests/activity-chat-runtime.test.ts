@@ -35,6 +35,9 @@ try {
   store.upsertOcrEmbedding(frame.id, "activity-runtime-fixture", new Float32Array([1, 0]), started);
   store.endSession(sessionId, new Date(Date.parse(started) + 20 * 60_000).toISOString());
   store.recordAnalysis(analysis(sessionId));
+  const activeId = store.startSession(new Date(Date.now() - 5 * 60_000).toISOString());
+  store.recordEvent({ sessionId: activeId, occurredAt: new Date(Date.now() - 60_000).toISOString(),
+    eventType: "app_focus", application: "Chat Client", bundleId: "org.example.editor" });
 
   const config = testConfig(activityDirectory);
   const requests: ModelStreamContext[] = [];
@@ -48,12 +51,21 @@ try {
   });
   try {
     await agent.initialize();
+    assert.equal((await agent.runTask("hi")).status, "completed");
+    const greeting = requestText(requests.at(-1)?.messages ?? []);
+    assert.match(greeting, /最近焦点记录：Chat Client \[org\.example\.editor\]/u);
+    assert.match(greeting, /约 20 分钟/u);
+    assert.ok(greeting.includes(started), "真实模型请求包含活动发生时间");
+    assert.match(requests.at(-1)?.systemPrompt ?? "", /may refer.*only when.*evidence/iu);
+    assert.doesNotMatch(greeting, /当前活动：|OCR_SECRET_831/u);
     assert.equal((await agent.runTask("上次登录排查结论是什么")).status, "completed");
     const first = requestText(requests.at(-1)?.messages ?? []);
     assert.match(first, /登录排查完成/u);
     assert.doesNotMatch(first, /OCR_SECRET_831/u);
+    assert.doesNotMatch(first, /org\.example\.editor/u, "问候焦点引用不会被下一轮继承");
     const events = await readSessionEvents(recorder.filePath);
-    assert.equal(events.find((event) => event.type === "user_message")?.content, "上次登录排查结论是什么");
+    assert.deepEqual(events.filter((event) => event.type === "user_message").map((event) => event.content),
+      ["hi", "上次登录排查结论是什么"], "持久化用户事件仅保存原始输入");
 
     assert.equal((await agent.runTask("问")).status, "completed");
     assert.doesNotMatch(requestText(requests.at(-1)?.messages ?? []), /登录排查完成/u,

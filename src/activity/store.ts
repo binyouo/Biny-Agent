@@ -1534,6 +1534,21 @@ export class ActivityStore {
     return rows.map(parseHttpSessionRow);
   }
 
+  getLatestApplicationFocus(sessionId: string, untilIso: string): { occurredAt: string; application?: string; bundleId?: string } | undefined {
+    const row = this.requireDatabase().prepare(`
+      SELECT timestamp, app_name, data FROM activity_events
+      WHERE session_id = ? AND kind = 'app_focus' AND timestamp <= ?
+      ORDER BY timestamp DESC, id DESC LIMIT 1
+    `).get(sessionId, activityEpochMilliseconds(untilIso)) as Record<string, unknown> | undefined;
+    if (!row) return undefined;
+    const data = parseJsonObject<Record<string, unknown>>(row.data);
+    return {
+      occurredAt: activityTimestampString(row.timestamp),
+      application: nullableString(row.app_name),
+      bundleId: typeof data?.bundleId === "string" ? data.bundleId : undefined
+    };
+  }
+
   listOpenHttpSessions(limit = 1): ActivityHttpSessionRecord[] {
     const rows = this.requireDatabase().prepare(`
       SELECT * FROM activity_sessions

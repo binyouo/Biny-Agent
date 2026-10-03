@@ -1,4 +1,4 @@
-/** 纯问候的近期活动参考，只从已经分析的会话抽取短摘要。 */
+/** 纯问候的近期活动参考，明确区分焦点记录、会话范围和历史分析。 */
 import { redactSecrets } from "../utils/secrets.js";
 import { ACTIVITY_ANALYSIS_FAILED_SUMMARY, ACTIVITY_TRIVIAL_SUMMARY } from "./analyzer.js";
 import type { ActivityStore } from "./store.js";
@@ -29,10 +29,15 @@ export function recentActivityForGreeting(store: ActivityStore, input: string, n
     .slice(0, 5);
   const lines: string[] = [];
   const active = store.listOpenHttpSessions(1)[0];
-  if (active) {
+  if (active && active.startedAt <= now.getTime()) {
+    const focus = store.getLatestApplicationFocus(active.id, now.toISOString());
+    if (focus && (focus.application || focus.bundleId)) {
+      const identity = [focus.application, focus.bundleId ? `[${focus.bundleId}]` : undefined].filter(Boolean).join(" ");
+      lines.push(`最近焦点记录：${identity}（${activityAge(focus.occurredAt, now)}，${focus.occurredAt}）`);
+    }
     const apps = active.appNames.slice(0, 3).join(", ") || "未知应用";
     const minutes = Math.max(0, Math.round((now.getTime() - active.startedAt) / 60_000));
-    lines.push(`当前活动：${apps}（${minutes} 分钟，${active.eventCount} 个事件，${active.snapshotCount} 张截图）`);
+    lines.push(`本次会话涉及应用：${apps}（会话已开始 ${minutes} 分钟，${active.eventCount} 个事件，${active.snapshotCount} 张截图）`);
   }
   const dateKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
   const today = buildActivitySummary(store, "daily", dateKey, now, 500).stats;
@@ -41,14 +46,21 @@ export function recentActivityForGreeting(store: ActivityStore, input: string, n
       .slice(0, 3)
       .map(({ app, durationMs }) => `${app}（${Math.round(durationMs / 60_000)} 分钟）`)
       .join("、");
-    lines.push(`今天：${Math.round(today.totalActiveMs / 60_000)} 分钟，共 ${today.sessionCount} 个会话${topApps ? `；主要应用：${topApps}` : ""}`);
+    lines.push(`今天：${Math.round(today.totalActiveMs / 60_000)} 分钟，共 ${today.sessionCount} 个会话${topApps ? `；主要应用：${topApps}（按系统应用名汇总的前台时长估算）` : ""}`);
   }
   for (const session of sessions) {
     const analysis = session.analysis!;
-    lines.push([analysis.project, analysis.title, analysis.description ?? analysis.summary]
+    const durationMinutes = Math.max(0, Math.round(((session.endedAt ? Date.parse(session.endedAt) : now.getTime()) - Date.parse(session.startedAt)) / 60_000));
+    const description = (analysis.description ?? analysis.summary).replace(/\s+/gu, " ").slice(0, 140);
+    lines.push(`- ${activityAge(session.startedAt, now)}，约 ${durationMinutes} 分钟（${session.startedAt}）：` + [analysis.project, analysis.title, description]
       .filter((value): value is string => Boolean(value?.trim()))
       .join(" · "));
   }
   if (!lines.length) return undefined;
   return redactSecrets(lines.join("\n")).slice(0, 900);
+}
+
+function activityAge(occurredAt: string, now: Date): string {
+  const minutes = Math.max(0, Math.round((now.getTime() - Date.parse(occurredAt)) / 60_000));
+  return minutes < 60 ? `${minutes} 分钟前` : `${Math.round(minutes / 60)} 小时前`;
 }

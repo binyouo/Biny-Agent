@@ -37,6 +37,7 @@ import { QueuedMessages } from "./composer/QueuedMessages.js";
 export type ComposerMemoryState = "unknown" | "enabled" | "disabled";
 
 export interface ComposerHandle {
+  submitSuggestion(text: string): Promise<void>;
   appendText(text: string): void;
   appendReference(reference: Pick<LocalReferenceResult, "kind" | "label" | "uri">): void;
 }
@@ -205,6 +206,9 @@ export const Composer = memo(function Composer({
   const inputRef = useRef<HTMLTextAreaElement>(null);
   // 侧栏引用只追加到当前草稿，不经过回填或提交路径。
   useImperativeHandle(ref, () => ({
+    async submitSuggestion(text) {
+      if (!editing) await submit(undefined, text);
+    },
     appendText(text) {
       const current = editing ? editDraftRef.current : draftState.getSnapshot().draft;
       const value = `${current.value}${current.value && !/\s$/u.test(current.value) ? " " : ""}${text} `;
@@ -223,7 +227,7 @@ export const Composer = memo(function Composer({
         input?.setSelectionRange(next.cursor, next.cursor);
       });
     }
-  }), [draftState, editing, rememberDraft]);
+  }));
   const mounted = useRef(true);
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -305,10 +309,12 @@ export const Composer = memo(function Composer({
     }
   };
 
-  const submit = async (delivery?: "steer" | "queue"): Promise<void> => {
-    const draft = currentDraft();
-    const value = materializeDraftReferences(draft.value, draft.tokens).trim() || (attachments.length ? "请分析这些附件。" : "");
-    const resume = Boolean(recovery) && !running && !editing && isResumeInput(draft.value, attachments.length + pendingAttachments.length);
+  const submit = async (delivery?: "steer" | "queue", suggestion?: string): Promise<void> => {
+    const originalDraft = currentDraft();
+    const draft = suggestion === undefined ? originalDraft : { value: suggestion, tokens: [] };
+    const sentAttachments = suggestion === undefined ? attachments : [];
+    const value = materializeDraftReferences(draft.value, draft.tokens).trim() || (sentAttachments.length ? "请分析这些附件。" : "");
+    const resume = suggestion === undefined && Boolean(recovery) && !running && !editing && isResumeInput(draft.value, attachments.length + pendingAttachments.length);
     if (!project || (!value && !resume) || busy || submitFlightRef.current || sessionWriterConflict
       || (modelSetupRequired && (editing || !desktopGoalCommandAllowsNoModel(value))) || memoryToggleBusy || pendingAttachments.length) return;
     // 编辑模式：提交直接走「替换原消息并重新生成」，不携带附件，也不走模型切换/斜杠命令链路。
@@ -352,7 +358,6 @@ export const Composer = memo(function Composer({
         return;
       }
       if (sessionWriterConflict) return;
-      const sentAttachments = attachments;
       const sentHistory = draftState.getSnapshot().history;
       setBusy(true);
       try {
@@ -370,7 +375,7 @@ export const Composer = memo(function Composer({
           await onSend(value, sentAttachments, delivery, globalThis.crypto.randomUUID(), capabilitySelection);
         }
       } catch (submitError) {
-        draftState.update({ draft, attachments: sentAttachments, history: sentHistory });
+        draftState.update({ draft: originalDraft, attachments, history: sentHistory });
         if (mounted.current) onSubmitError(errorMessage(submitError));
       } finally {
         setBusy(false);

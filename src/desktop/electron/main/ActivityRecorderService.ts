@@ -178,6 +178,10 @@ export class ActivityRecorderService {
   private lastSensitiveEventAt = -Infinity;
   private sensitiveMarkerQueued = false;
   private browserLastVisit?: string;
+  private browserPollRequest?: object;
+  private browserPollAbort = new AbortController();
+  private browserPollFailures = new Map<string, number>();
+  private browserPollDisabled = new Set<string>();
   private child?: ChildProcessWithoutNullStreams;
   private output?: Interface;
   private sessionId?: string;
@@ -237,7 +241,7 @@ export class ActivityRecorderService {
     this.hasScreenRecordingPermission = options.hasScreenRecordingPermission ?? checkMacScreenRecordingPermission;
     this.independentCaptureAvailable = process.platform === "darwin"
       || (options.readFrontmostBundle !== undefined && options.hasScreenRecordingPermission !== undefined);
-    this.readBrowser = options.readBrowser ?? (async script => (await promisify(execFile)("/usr/bin/osascript",["-e",script],{timeout:1500,maxBuffer:64*1024})).stdout);
+    this.readBrowser = options.readBrowser ?? (async script => (await promisify(execFile)("/usr/bin/osascript",["-e",script],{timeout:60_000,killSignal:"SIGKILL",maxBuffer:64*1024,signal:this.browserPollAbort.signal})).stdout);
     this.configStore = options.configStore;
     this.agentDir = options.agentDir ?? globalAgentDir();
     this.inputMonitorPath = options.inputMonitorPath;
@@ -726,6 +730,11 @@ export class ActivityRecorderService {
 
   private async stopInternal(): Promise<void> {
     this.captureEpoch++;
+    this.browserPollAbort.abort();
+    this.browserPollRequest = undefined;
+    this.browserPollFailures.clear();
+    this.browserPollDisabled.clear();
+    this.browserLastVisit = undefined;
     this.captureTimers.forEach(timer => this.captureTimerScheduler.clearInterval(timer));
     this.captureTimers = [];
     if (this.captureTimer) clearTimeout(this.captureTimer);
@@ -858,6 +867,7 @@ export class ActivityRecorderService {
         && this.settings?.sensitiveApplications.includes(message.bundleId);
       if (message.bundleId !== undefined && message.bundleId !== this.foregroundBundle) this.foregroundTitle = undefined;
       this.foregroundBundle = message.bundleId ?? this.foregroundBundle;
+      this.currentApplication = message.application ?? this.currentApplication;
       this.foregroundTitle = message.windowTitle ?? this.foregroundTitle;
       if (this.screenLocked && message.eventType !== "unlock" && message.eventType !== "lock") return;
       if (this.foregroundBundle && this.settings?.sensitiveApplications.includes(this.foregroundBundle)
@@ -922,7 +932,8 @@ export class ActivityRecorderService {
       this.fallbackAvailable = message.fallbackAvailable ?? message.screenRecordingGranted;
       // 状态报文可在 Electron 锁屏通知之后晚到；只有明确的 unlock/resume 事件才能放行截图。
       if (message.screenLocked === true) this.screenLocked = true;
-      this.currentApplication = message.currentApplication ?? undefined;
+      // 已知前台身份由输入事件维护，状态消息中的应用名不单独覆盖它。
+      if (!this.foregroundBundle) this.currentApplication = message.currentApplication ?? this.currentApplication;
       if (message.status === "paused") this.setState("paused", message.error);
       else if (message.status === "stopped") this.setState("stopped", message.error);
       else if (message.status === "unavailable") this.setState("unavailable", message.error);
@@ -935,6 +946,7 @@ export class ActivityRecorderService {
   }
 
   private startCaptureTimers(settings: ActivitySettings): void {
+    if (this.browserPollAbort.signal.aborted) this.browserPollAbort = new AbortController();
     this.captureTimers.forEach(timer => this.captureTimerScheduler.clearInterval(timer));
     this.captureTimers = [];
     this.captureTimers.push(this.captureTimerScheduler.setInterval(() => { void this.capture("heartbeat"); }, settings.heartbeatMs));
@@ -1060,17 +1072,21 @@ export class ActivityRecorderService {
   }
 
   private async pollBrowser(): Promise<void> {
-    if (!this.settings?.enabled || !this.sessionId || this.screenLocked || !this.foregroundBundle) return;
+    if (!this.settings?.enabled || !this.captureTimers.length || !this.sessionId || this.screenLocked || !this.foregroundBundle) return;
     const bundleId = this.foregroundBundle;
     if (this.settings?.sensitiveApplications.includes(bundleId)) return;
+    if (this.browserPollRequest || this.browserPollDisabled.has(bundleId)) return;
     const script = activityBrowserScript(bundleId);
     if (!script) return;
     const epoch = this.captureEpoch;
     const sessionId = this.sessionId;
     const application = this.currentApplication ?? bundleId;
+    const request = {};
+    this.browserPollRequest = request;
     try {
       const stdout = await this.readBrowser(script);
       if (epoch !== this.captureEpoch || sessionId !== this.sessionId) return;
+      this.browserPollFailures.delete(bundleId);
       const visit = parseActivityBrowserOutput(stdout);
       if (!visit) return;
       const key = JSON.stringify([bundleId,visit.url,visit.title]);
@@ -1082,7 +1098,16 @@ export class ActivityRecorderService {
         if (visit.title && !await this.persistEvent({...event,eventType:"window_title"})) return;
         this.browserLastVisit = key;
       });
-    } catch { /* 浏览器未授权或没有窗口时等下一次轮询。 */ }
+    } catch (error) {
+      if (this.browserPollRequest !== request || epoch !== this.captureEpoch || sessionId !== this.sessionId) return;
+      const failures = (this.browserPollFailures.get(bundleId) ?? 0) + 1;
+      this.browserPollFailures.set(bundleId, failures);
+      const timedOut = error instanceof Error && "killed" in error && error.killed === true;
+      if (timedOut || safeError(error).includes("-1743") || failures >= 3) this.browserPollDisabled.add(bundleId);
+    } finally {
+      // 旧采集生命周期的请求不能释放重启后新请求的门禁。
+      if (this.browserPollRequest === request) this.browserPollRequest = undefined;
+    }
   }
 
   private async persistEvent(message: InputEventMessage): Promise<boolean> {
@@ -1113,7 +1138,6 @@ export class ActivityRecorderService {
         fallbackReason: message.fallbackReason,
         inputEventCount: message.inputEventCount
       });
-      this.currentApplication = message.application ?? this.currentApplication;
       if (message.eventType === "lock") {
         this.screenLocked = true;
         // lock 必须在事件已经落库后才关闭 session，避免丢失锁屏边界。
@@ -1168,7 +1192,6 @@ export class ActivityRecorderService {
       if (message.captureId && stored.snapshotId !== undefined) {
         this.pendingOcrCaptures.set(message.captureId, stored.snapshotId);
       }
-      this.currentApplication = message.application ?? this.currentApplication;
       this.publish();
       return stored.snapshotId !== undefined;
     } catch (error) {
@@ -1497,7 +1520,7 @@ export function activityBrowserScript(bundleId: string): string | undefined {
   const app = browsers[bundleId]; if (!app) return undefined;
   const safari = bundleId.startsWith("com.apple.Safari");
   const tab = safari ? "current tab of front window" : "active tab of front window";
-  return `tell application "${app}"
+  return `tell application id "${bundleId}"
     if it is running then
       try
         return (URL of ${tab}) & tab & (${safari ? "name" : "title"} of ${tab})

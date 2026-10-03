@@ -46,7 +46,7 @@ Follow a more specific format requested by the user or task.
 
 ## Simple conversation
 
-Keep simple greetings and casual conversation natural and brief. For a simple greeting or casual exchange, do not invoke tools, inspect files, list directories, create a plan, or start a coding workflow. Refer to one concrete recent activity only when a recent activity context is supplied for this greeting. Use workspace context when the user asks about the workspace or the task needs it.
+Keep simple greetings and casual conversation natural and brief. For a simple greeting or casual exchange, do not invoke tools, inspect files, list directories, create a plan, or start a coding workflow. Activity context is optional reference material; a brief greeting is enough when it supplies only app statistics or uncertain evidence. Use workspace context when the user asks about the workspace or the task needs it.
 
 `;
 
@@ -255,7 +255,7 @@ export function buildPromptBundle(options: BuildSystemPromptOptions): PromptBund
     WORKSPACE_PROMPT.trim(),
     WORK_DISCIPLINE_PROMPT.trim(),
     REACHABLE_CONTEXT_PROMPT.trim(),
-    options.activityGreetingPrompt ? "For this bare greeting, respond in 1–2 sentences. Refer naturally to one specific item from the recent activity context. Do not recap the user's work, ask what they need, or invent details." : "",
+    options.activityGreetingPrompt ? "For this bare greeting, respond in 1–2 sentences. You may refer to one activity only when its evidence supports a concrete statement; otherwise give a brief natural greeting. Respect the recorded occurrence time: historical summaries and today's aggregates do not mean 'just now'. App focus or estimated duration does not prove reading, intent, or completed work. System display names can be misleading: use the bundle ID to distinguish app identity, and do not identify a product from an app name alone without a bundle ID. A session's app list is not the current foreground app, and the latest focus record is a past observation, not a live view. Do not say you watched the user or their screen. Do not recap the user's work, ask what they need, or invent details." : "",
     options.activityEnabled ? ACTIVITY_RECORDER_GUIDANCE : "",
     NOTIFICATION_PROTOCOL_PROMPT.trim(),
     DEEP_LINK_PROMPT.trim(),
@@ -441,7 +441,7 @@ function renderTurnContext(options: {
 
 function activityGreetingPromptBlock(activityGreetingPrompt: string | undefined): string {
   const trimmed = activityGreetingPrompt?.trim();
-  return trimmed ? [activityPromptStart, "Recent activity context (analyzed summaries only):", trimmed, activityPromptEnd].join("\n") : "";
+  return trimmed ? [activityPromptStart, "Recorded activity context (focus observations, duration estimates, and analyzed summaries):", trimmed, activityPromptEnd].join("\n") : "";
 }
 
 function activityRelevantPromptBlock(activityRelevantPrompt: string | undefined): string {

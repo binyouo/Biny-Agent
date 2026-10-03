@@ -5232,6 +5232,75 @@ button.capability-check[aria-checked="true"] {
   min-height: 128px;
 }
 
+.biny-activity-suggestions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: 100%;
+  padding-top: 24px;
+}
+
+.biny-activity-suggestions .suggestion-chip {
+  display: inline-flex;
+  max-width: 100%;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  padding: 4px 12px;
+  border: 1px solid color-mix(in srgb, var(--biny-border) 40%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--biny-surface-soft) 40%, transparent);
+  color: color-mix(in srgb, var(--biny-text) 80%, transparent);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 16px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transition: all 200ms ease-out;
+}
+
+.biny-activity-suggestions .suggestion-chip:hover {
+  transform: translateY(-1px);
+  border-color: color-mix(in srgb, var(--biny-border) 70%, transparent);
+  background: var(--biny-surface-soft);
+  color: var(--biny-text);
+  box-shadow: var(--biny-shadow);
+}
+
+.biny-activity-suggestions .suggestion-chip:focus-visible {
+  outline: 2px solid var(--biny-accent);
+  outline-offset: 2px;
+}
+
+.biny-activity-suggestions .suggestion-chip:active { transform: translateY(0) scale(.98); }
+.biny-activity-suggestions .suggestion-chip:disabled { pointer-events: none; opacity: .5; }
+.biny-activity-suggestion-placeholder {
+  width: 112px;
+  height: 28px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--biny-surface-soft) 50%, transparent);
+  animation: biny-activity-suggestion-pulse 2s cubic-bezier(.4, 0, .6, 1) infinite;
+}
+.biny-activity-suggestions .suggestion-chip,
+.biny-activity-suggestion-skeleton {
+  opacity: 0;
+  will-change: transform, opacity;
+  animation: biny-activity-suggestion-pop .42s cubic-bezier(.34, 1.56, .64, 1) forwards;
+}
+@keyframes biny-activity-suggestion-pop {
+  0% { opacity: 0; transform: translateY(6px) scale(.85); }
+  60% { transform: translateY(0) scale(1.04); }
+  100% { opacity: 1; transform: translateY(0) scale(1); }
+}
+@keyframes biny-activity-suggestion-pulse { 50% { opacity: .5; } }
+@media (prefers-reduced-motion: reduce) {
+  .biny-activity-suggestions .suggestion-chip,
+  .biny-activity-suggestion-skeleton,
+  .biny-activity-suggestion-placeholder { opacity: 1; animation: none; transition: none; transform: none; }
+}
+
 .biny-chat-empty,
 .biny-status-state {
   display: flex;

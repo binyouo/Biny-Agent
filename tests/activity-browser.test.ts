@@ -22,7 +22,7 @@ let output='https://example.test/page\tTitle 1';
 const config={...defaultConfig,activity:{...defaultConfig.activity,enabled:true,outputDirectory:path.join(root,'records')}};
 const service=new ActivityRecorderService({agentDir:root,inputMonitorPath:input,
  configStore:{load:async()=>config} as import('../src/config/store.js').AgentConfigStore,
- readBrowser:async script=>{assert.match(script,/Arc/u);return output;},
+ readBrowser:async script=>{assert.match(script,/tell application id "company\.thebrowser\.Browser"/u);return output;},
  captureTimers:{setInterval:((callback:()=>void,ms:number)=>{callbacks.set(ms,callback);return {unref(){}};}) as unknown as typeof setInterval,clearInterval:()=>{}}
 });
 let db:InstanceType<typeof DatabaseSync>|undefined;

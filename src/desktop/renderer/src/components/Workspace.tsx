@@ -27,6 +27,7 @@ import { SessionGoalPanel } from "./workspace/SessionGoalPanel.js";
 import { RuntimeRecoveryBanner } from "./workspace/RuntimeRecoveryBanner.js";
 import type { CompactionCommandState } from "../app/useCompactionCommand.js";
 import { CompactionStatus } from "./chat/CompactionStatus.js";
+import { ActivitySuggestions } from "./workspace/ActivitySuggestions.js";
 
 /** 发送消息的临时投影；真实消息或队列接管后由 App 清掉。 */
 export interface PendingPrompt {
@@ -101,6 +102,7 @@ interface WorkspaceProps {
   /** 顶部工具条：自动化/技能入口（搜索与新建任务在侧栏 chrome）。 */
   onOpenRuntime(): void;
   onOpenExtensions(): void;
+  onSendActivitySuggestion?(text: string): Promise<void>;
   children?: React.ReactNode;
 }
 
@@ -157,6 +159,7 @@ export function Workspace({
   inspectorRail,
   onOpenRuntime: _onOpenRuntime,
   onOpenExtensions: _onOpenExtensions,
+  onSendActivitySuggestion,
   children
 }: WorkspaceProps): React.JSX.Element {
   const visiblePendingPrompt = pendingPrompt && pendingPrompt.projectId === projectId
@@ -315,6 +318,8 @@ export function Workspace({
               onCreateBranch={sessionId === undefined ? undefined : onCreateBranch}
               onOpenProject={onOpenProject}
             /> : children}
+            {!loading && !hasConversation && !running && !visiblePendingPrompt && !writerConflict && !runtimeError && onSendActivitySuggestion
+              ? <ActivitySuggestions onSend={onSendActivitySuggestion} onError={onRuntimeError} /> : null}
         </div>
       </div>
       {streaming ? <span className="biny-streaming-state" aria-hidden="true" /> : null}

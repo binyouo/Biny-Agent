@@ -1,4 +1,4 @@
-/** 问候读取参考版的 48 小时活动概况；普通问题由独立语义召回处理。 */
+/** 问候读取 48 小时活动概况；普通问题由独立语义召回处理。 */
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
@@ -11,7 +11,7 @@ const root = await mkdtemp(path.join(os.tmpdir(), "biny-activity-greeting-"));
 const store = new ActivityStore();
 try {
   for (const greeting of ["您好", "在吗？", "good morning!", "こんにちは", "안녕하세요"]) {
-    assert.equal(isBareGreeting(greeting), true, `参考版支持的纯问候：${greeting}`);
+    assert.equal(isBareGreeting(greeting), true, `支持的纯问候：${greeting}`);
   }
   assert.equal(isBareGreeting("你好，帮我查问题"), false);
   await store.open(path.join(root, "activity-records"), root);
@@ -72,7 +72,7 @@ try {
     const later = store.startSession(startedAt.toISOString());
     store.endSession(later, new Date(startedAt.getTime() + 500).toISOString());
   }
-  assert.match(recentActivityForGreeting(store, "你好", now) ?? "", /当前活动：Terminal/u,
+  assert.match(recentActivityForGreeting(store, "你好", now) ?? "", /本次会话涉及应用：Terminal/u,
     "较旧的开放会话不能被最近 50 个已结束会话挤出当前活动");
 } finally {
   await store.close();
