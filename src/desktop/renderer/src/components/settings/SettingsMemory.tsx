@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import type { ModelChoice } from "../../../../../llm/ModelManager.js";
 import { defaultEmbeddingModelRef, embeddingModelRefKey, type EmbeddingModelRef, type LocalEmbeddingModelId } from "../../../../../llm/embedding/types.js";
 import type {
@@ -148,6 +148,7 @@ export function SettingsMemory({
   const [embeddingError, setEmbeddingError] = useState<string>();
   const [sleepAdvancedOpen, setSleepAdvancedOpen] = useState(false);
   const [archiveOpen, setArchiveOpen] = useState(false);
+  const disclosureId = useId();
   const [restoreNotice, setRestoreNotice] = useState<string | null>(null);
   const [archivePage, setArchivePage] = useState(0);
   const [pendingEmbeddingModel, setPendingEmbeddingModel] = useState<EmbeddingModelRef>();
@@ -711,8 +712,11 @@ export function SettingsMemory({
                 value={policy.archiveRetentionDays}
               />
             </div>
-            <button className="activity-memory-disclosure" onClick={() => setSleepAdvancedOpen((open) => !open)} type="button">{sleepAdvancedOpen ? "⌃" : "⌄"} 相似度与 LLM 合并参数</button>
-            {sleepAdvancedOpen ? <div className="activity-memory-advanced-content">
+            <button aria-controls={`${disclosureId}-sleep-advanced`} aria-expanded={sleepAdvancedOpen} className="activity-memory-disclosure" onClick={() => setSleepAdvancedOpen((open) => !open)} type="button">
+              <Icon className="activity-memory-disclosure-chevron" name="chevron" size={12} />
+              <span>相似度与 LLM 合并参数</span>
+            </button>
+            <div className="activity-memory-advanced-content" hidden={!sleepAdvancedOpen} id={`${disclosureId}-sleep-advanced`}>
               <MemoryRange
                 ariaLabel="相似度合并阈值"
                 description="余弦相似度高于此阈值的条目视为近似重复，直接合并，不调用 LLM。"
@@ -749,13 +753,17 @@ export function SettingsMemory({
                   value={policy.llmBatchSize}
                 />
               </> : null}
-            </div> : null}
+            </div>
             <div className="activity-memory-sleep-footer">
               <button className="ghost-button" disabled={exporting} onClick={() => { void exportSnapshot(); }} type="button">{exporting ? "正在导出…" : "导出记忆快照"}</button>
             </div>
-            <button className="activity-memory-disclosure" onClick={() => setArchiveOpen((open) => !open)} type="button">{archiveOpen ? "⌃" : "⌄"} 归档记忆（{archivedTotal}）</button>
+            <button aria-controls={`${disclosureId}-archive`} aria-expanded={archiveOpen} className="activity-memory-disclosure" onClick={() => setArchiveOpen((open) => !open)} type="button">
+              <Icon className="activity-memory-disclosure-chevron" name="chevron" size={12} />
+              <Icon name="archive" size={12} />
+              <span>归档记忆（{archivedTotal}）</span>
+            </button>
             {restoreNotice ? <p className="activity-memory-sleep-preview" role="status">{restoreNotice}</p> : null}
-            {archiveOpen ? <div className="activity-memory-archive-list">
+            <div className="activity-memory-archive-list" hidden={!archiveOpen} id={`${disclosureId}-archive`}>
               {archivedEntries.length === 0 ? <p>暂无归档记忆。</p> : archivedEntries.map((entry) => (
                 <article className="activity-memory-entry" key={entry.id}>
                   <div className="activity-memory-entry-content"><p>{entry.content}</p><small>{entry.archivedReason ?? "手动"} · {entry.archivedAt ? formatDate(entry.archivedAt) : ""}{entry.mergedInto ? (() => {
@@ -771,9 +779,13 @@ export function SettingsMemory({
                 <span>{visibleArchivePage + 1} / {archivePages}</span>
                 <button aria-label="下一页归档记忆" className="ghost-button" disabled={loading || visibleArchivePage + 1 >= archivePages} onClick={() => { void reload(currentPage, visibleArchivePage + 1); }} type="button">→</button>
               </div> : null}
-            </div> : null}
+            </div>
             {sleepRuns.length > 0 ? <details className="activity-memory-run-details">
-              <summary>近期运行（{sleepRuns.length}）</summary>
+              <summary className="activity-memory-disclosure">
+                <Icon className="activity-memory-disclosure-chevron" name="chevron" size={12} />
+                <Icon name="trash" size={12} />
+                <span>近期运行（{sleepRuns.length}）</span>
+              </summary>
               <div>{sleepRuns.map((run) => <p key={run.id}>{formatDate(run.startedAt)} · {run.status} · {run.trigger} · {run.archived} archived{run.synthesisFailed > 0 ? ` · ⚠ ${run.synthesisFailed} 合成失败` : ""}</p>)}</div>
             </details> : null}
           </div> : null}

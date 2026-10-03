@@ -137,10 +137,53 @@ jobs:
       - name: Test packaged Code Mode runtime
         run: pnpm test:code-mode-package
 
+  renderer:
+    name: Renderer UI
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 10.6.5
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies and Electron
+        run: pnpm install --frozen-lockfile && pnpm exec install-electron --no
+
+      - name: Install CJK screenshot fonts
+        run: sudo apt-get update && sudo apt-get install -y fonts-noto-cjk
+
+      - name: Build production-component fixture
+        env:
+          BINY_DISCLOSURE_BASE_REF: ${{ github.event.pull_request.base.sha }}
+        run: node scripts/build-memory-disclosure-fixture.mjs
+
+      - name: Test real rendering and native keyboard input
+        run: |
+          xvfb-run -a --server-args="-screen 0 1600x2400x24" pnpm exec electron --no-sandbox scripts/memory-disclosure-browser.test.mjs
+          node -e 'const r = require("./.memory-disclosure-results/results.json"); if (!r.passed || r.variants.length !== 4 || !r.input?.events.length) process.exit(1)'
+
+      - uses: actions/upload-artifact@v7
+        if: ${{ always() }}
+        with:
+          name: memory-disclosure-renderer
+          path: .memory-disclosure-results/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7
+
   validate:
     name: Validate
     if: ${{ always() }}
-    needs: [static, test, e2e, build]
+    needs: [static, test, e2e, build, renderer]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -150,12 +193,14 @@ jobs:
           TEST_RESULT: ${{ needs.test.result }}
           E2E_RESULT: ${{ needs.e2e.result }}
           BUILD_RESULT: ${{ needs.build.result }}
+          RENDERER_RESULT: ${{ needs.renderer.result }}
         run: |
-          if [[ "$STATIC_RESULT" != "success" || "$TEST_RESULT" != "success" || "$E2E_RESULT" != "success" || "$BUILD_RESULT" != "success" ]]; then
+          if [[ "$STATIC_RESULT" != "success" || "$TEST_RESULT" != "success" || "$E2E_RESULT" != "success" || "$BUILD_RESULT" != "success" || "$RENDERER_RESULT" != "success" ]]; then
             echo "Static checks: $STATIC_RESULT"
             echo "Tests: $TEST_RESULT"
             echo "Runtime E2E: $E2E_RESULT"
             echo "Build: $BUILD_RESULT"
+            echo "Renderer UI: $RENDERER_RESULT"
             exit 1
           fi
-          echo "Static checks, tests, runtime E2E, and builds all passed."
+          echo "Static checks, tests, runtime E2E, builds, and renderer UI all passed."
