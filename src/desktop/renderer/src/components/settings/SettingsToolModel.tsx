@@ -24,7 +24,7 @@ export function SettingsToolModel({ onTest }: { onTest(configuration: DesktopMod
     setSaving(true);
     setError(undefined);
     setTestResult(undefined);
-    void saveModels({ ...draft.models, toolModel: { alias } }).catch((reason: unknown) => {
+    void saveModels({ upserts: [], removeAliases: [], toolModel: { alias } }).catch((reason: unknown) => {
       setError(reason instanceof Error ? reason.message : "工具模型保存失败，请重试。");
     }).finally(() => setSaving(false));
   };
@@ -43,10 +43,11 @@ export function SettingsToolModel({ onTest }: { onTest(configuration: DesktopMod
       <section id="tool-model" tabIndex={-1}>
         <h3>工具模型</h3>
         <p>用于标题、记忆、工具筛选和活动分析等后台任务。</p>
+        {snapshot.hasRunningTasks ? <p>更改用于后续回合，当前回合继续使用原模型。</p> : null}
         <div className="tool-model-row">
           <SettingsModelPicker
             ariaLabel="工具模型"
-            disabled={saving || testing || snapshot.hasRunningTasks || saveState === "saving"}
+            disabled={saving || testing || saveState === "saving" || saveState === "rolling_back" || saveState === "recovery_required"}
             groups={modelPickerGroups(snapshot.models.configured)}
             inheritLabel="自动选择"
             onChange={selectModel}

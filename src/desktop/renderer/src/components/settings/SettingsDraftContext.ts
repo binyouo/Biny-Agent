@@ -80,6 +80,7 @@ export interface SettingsDraftContextValue {
   /**
    * 只提交 models 段的即时保存（复刻「零保存按钮」的服务商配置体验）。入参是完整的
    * models 段（草稿待提交项 + 本次变更），提交成功后 models 草稿清零，其余分页草稿不动。
+   * 单独保存 toolModel 只推进已保存选择，保留供应商模型草稿。
    */
   saveModels(models: DesktopSettingsModelsInput): Promise<DesktopSettingsSaveResult | undefined>;
   setModelProfile(providerAlias: string, modelId: string, profile: ModelProfile | undefined): void;

@@ -43,6 +43,12 @@ const EMPTY_REGISTRY: DesktopPluginRegistrySnapshot = {
   plugins: []
 };
 
+const SKILL_GROUPS = [
+  { scope: "builtin", label: "内置技能", icon: "cube" },
+  { scope: "global", label: "全局技能", icon: "wand" },
+  { scope: "project", label: "项目技能", icon: "folder-open" }
+] as const;
+
 export function SettingsExtensionsView({ kind, onError, projectId }: {
   kind: SettingsExtensionKind;
   onError(message: string): void;
@@ -257,6 +263,7 @@ export function SettingsExtensionsView({ kind, onError, projectId }: {
         skillContent={skillContent}
         contentLoadingId={contentLoadingId}
         skills={visibleSkills}
+        totalSkills={snapshot.skills.length}
         globalDefaults={settingsDraft.draft?.skills.globalDefaults ?? {}}
         projectOverrides={settingsDraft.draft?.skills.projectOverrides ?? {}}
         unmanagedSkills={snapshot.unmanagedSkills}
@@ -304,6 +311,7 @@ const SkillsSettingsContent = memo(function SkillsSettingsContent({
   query,
   skillContent,
   skills,
+  totalSkills,
   unmanagedSkills
 }: {
   onError(message: string): void;
@@ -324,47 +332,79 @@ const SkillsSettingsContent = memo(function SkillsSettingsContent({
   query: string;
   skillContent: Record<string, DesktopSkillFilePreview>;
   skills: DesktopSkillCatalogEntry[];
+  totalSkills: number;
   unmanagedSkills: DesktopSkillImportCandidate[];
 }): React.JSX.Element {
+  const groups = useMemo(() => SKILL_GROUPS.map((group) => ({
+    ...group,
+    skills: skills.filter((skill) => skill.scope === group.scope).sort((left, right) => left.name.localeCompare(right.name))
+  })).filter((group) => group.skills.length > 0), [skills]);
   return (
     <>
+      <SkillExtractionSettings />
       <div className="settings-extension-list-heading">
-        <span>{skills.length} 个技能可用</span>
+        <span>{query.trim() ? `${skills.length} / ${totalSkills} 个技能` : `${totalSkills} 个技能可用`}</span>
         <div>
-          <button onClick={onRefresh} type="button"><Icon name="refresh" size={16} />刷新</button>
+          <button disabled={loading} onClick={onRefresh} type="button"><Icon name="refresh" size={16} />{loading ? "刷新中…" : "刷新"}</button>
           {unmanagedSkills.length > 0 ? <button onClick={onImportExisting} type="button"><Icon name="archive" size={16} />导入已有 ({unmanagedSkills.length})</button> : null}
           {skills[0] ? <button onClick={() => onOpenDirectory(skills[0]!)} type="button"><Icon name="folder-open" size={16} />打开文件夹</button> : null}
         </div>
       </div>
       <label className="settings-extension-search">
         <Icon name="search" size={18} />
-        <input aria-label="搜索技能名称、描述或路径" onChange={(event) => onQuery(event.target.value)} placeholder="搜索技能名称、描述或路径…  ( / 或 ⌘F )" value={query} />
+        <input aria-label="搜索技能名称、描述或路径" onChange={(event) => onQuery(event.target.value)} placeholder="搜索技能名称、描述或路径…" value={query} />
         {query ? <button aria-label="清空搜索" onClick={() => onQuery("")} type="button"><Icon name="close" size={14} /></button> : null}
       </label>
       <section className="settings-extension-scroll" aria-label="技能列表">
-        <div className="settings-extension-group-title"><Icon name="cube" size={19} /><strong>技能目录</strong><span>{skills.length}</span></div>
-        {loading && !skills.length ? <ExtensionSettingsLoading /> : !skills.length ? <ExtensionSettingsEmpty icon="wand" title="没有匹配的技能" detail="换一个搜索词或刷新技能目录试试。" /> : skills.map((skill) => {
-          const activation = activationFor(skill, globalDefaults, projectOverrides);
-          return <SkillSettingsCard
-            onError={onError}
-            onVersionChanged={onVersionChanged}
-            activation={activation}
-            contentLoading={contentLoadingId === skill.id}
-            expanded={expandedSkillId === skill.id}
-            key={skill.id}
-            onInherit={() => onInherit(skill)}
-            onSetGlobal={() => onSetGlobal(skill)}
-            onOpenDirectory={() => onOpenDirectory(skill)}
-            onToggle={() => onToggle(skill)}
-            onToggleContent={() => onToggleContent(skill)}
-            preview={skillContent[skill.id]}
-            skill={skill}
-          />;
-        })}
+        {loading && !skills.length ? <ExtensionSettingsLoading /> : !skills.length ? <ExtensionSettingsEmpty icon="wand" title="没有匹配的技能" detail="换一个搜索词或刷新技能目录试试。" /> : groups.map((group) => (
+          <section className="settings-skill-group" aria-label={group.label} key={group.scope}>
+            <div className="settings-extension-group-title"><Icon name={group.icon} size={19} /><h3>{group.label}</h3><span>{group.skills.length}</span></div>
+            {group.skills.map((skill) => <SkillSettingsCard
+              onError={onError}
+              onVersionChanged={onVersionChanged}
+              activation={activationFor(skill, globalDefaults, projectOverrides)}
+              contentLoading={contentLoadingId === skill.id}
+              expanded={expandedSkillId === skill.id}
+              key={skill.id}
+              onInherit={() => onInherit(skill)}
+              onSetGlobal={() => onSetGlobal(skill)}
+              onOpenDirectory={() => onOpenDirectory(skill)}
+              onToggle={() => onToggle(skill)}
+              onToggleContent={() => onToggleContent(skill)}
+              preview={skillContent[skill.id]}
+              skill={skill}
+            />)}
+          </section>
+        ))}
       </section>
     </>
   );
 });
+
+function SkillExtractionSettings(): React.JSX.Element | null {
+  const { draft, setChatParams } = useSettingsDraft();
+  if (!draft) return null;
+  const extraction = draft.chatParams.skillExtraction;
+  const update = (patch: Partial<typeof extraction>): void => setChatParams({
+    ...draft.chatParams,
+    skillExtraction: { ...extraction, ...patch }
+  });
+  return <section className="settings-skill-extraction" id="skill-extraction" tabIndex={-1} aria-label="自动技能提取">
+    <div className="settings-skill-extraction-heading">
+      <div><h3>自动技能提取</h3><p>从长对话中自动提取可复用的技能</p></div>
+      <input aria-label="启用自动技能提取" checked={extraction.enabled} onChange={(event) => update({ enabled: event.target.checked })} type="checkbox" />
+    </div>
+    {extraction.enabled ? <>
+      <label className="compaction-threshold-field">
+        <span><strong>最少工具调用次数</strong><em>{extraction.minToolCalls}</em></span>
+        <input aria-label="最少工具调用次数" min={1} max={100} step={1} type="range" value={extraction.minToolCalls}
+          onChange={(event) => update({ minToolCalls: Number(event.target.value) })}
+          style={{ "--range-progress": `${((extraction.minToolCalls - 1) / 99) * 100}%` } as React.CSSProperties} />
+      </label>
+      <p className="settings-skill-extraction-hint">工具调用次数低于此值的对话将被跳过</p>
+    </> : null}
+  </section>;
+}
 
 const SkillSettingsCard = memo(function SkillSettingsCard({ onError, onVersionChanged, activation, contentLoading, expanded, onInherit, onSetGlobal, onOpenDirectory, onToggle, onToggleContent, preview, skill }: {
   onError(message: string): void;
@@ -381,22 +421,23 @@ const SkillSettingsCard = memo(function SkillSettingsCard({ onError, onVersionCh
   skill: DesktopSkillCatalogEntry;
 }): React.JSX.Element {
   const content = preview?.content ? stripFrontmatter(preview.content) : "";
-  const sourceLabel = activation.source === "project" ? "项目覆盖" : activation.source === "global" ? "全局默认" : "继承默认";
   return (
     <article className={`settings-skill-card${expanded ? " is-expanded" : ""}${activation.enabled ? "" : " is-disabled"}`}>
       <div className="settings-skill-card-main">
-        <div className="settings-skill-card-heading"><h4>{skill.name}</h4><span>{skill.scope === "builtin" ? "内置" : skill.scope === "global" ? "全局" : "项目"} · {sourceLabel}</span></div>
+        <div className="settings-skill-card-heading"><h4>{skill.name}</h4></div>
         <p>{skill.description || "暂无描述"}</p>
         <div className="settings-skill-card-footer">
-          <button aria-expanded={expanded} className="settings-skill-content-toggle" onClick={onToggleContent} type="button"><Icon name="chevron" size={15} />查看内容</button>
-          <button className="settings-skill-content-toggle" onClick={onOpenDirectory} type="button"><Icon name="folder-open" size={15} />目录</button>
-          {activation.projectOverride !== undefined ? <button className="settings-skill-content-toggle" onClick={onInherit} type="button">恢复继承</button> : null}
-          {activation.projectOverride !== undefined ? <button className="settings-skill-content-toggle" onClick={onSetGlobal} type="button">设为全局默认</button> : null}
-          <span className="settings-skill-path" title={skill.absolutePath}>{skill.absolutePath}</span>
+          <button aria-expanded={expanded} className="settings-skill-content-toggle" onClick={onToggleContent} type="button"><Icon name="chevron" size={15} />{expanded ? "收起内容" : "查看内容"}</button>
+          <code className="settings-skill-path" title={skill.absolutePath}>{skill.absolutePath}</code>
         </div>
       </div>
       <button aria-checked={activation.enabled} aria-label={`${activation.enabled ? "停用" : "启用"}技能 ${skill.name}`} className={`settings-extension-switch${activation.enabled ? " is-on" : ""}`} onClick={onToggle} role="switch" type="button"><span /></button>
       {expanded ? <div className="settings-skill-content" aria-label={`${skill.name} 内容`}>
+        <div className="settings-skill-card-actions">
+          <button className="settings-skill-content-toggle" onClick={onOpenDirectory} type="button"><Icon name="folder-open" size={15} />打开文件夹</button>
+          {activation.projectOverride !== undefined ? <button className="settings-skill-content-toggle" onClick={onInherit} type="button">恢复继承</button> : null}
+          {activation.projectOverride !== undefined ? <button className="settings-skill-content-toggle" onClick={onSetGlobal} type="button">设为全局默认</button> : null}
+        </div>
         <SkillVersionControls key={`version:${skill.id}`} skillId={skill.id} disabled={false} onChanged={onVersionChanged} onError={onError} />
         {contentLoading ? <span>正在读取内容…</span> : preview?.binary ? <span>无法预览二进制文件。</span> : <pre>{content || "暂无可显示内容。"}</pre>}
       </div> : null}

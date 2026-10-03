@@ -4824,6 +4824,20 @@ select option:disabled {
 }
 
 /* 计划卡片的间距按 13px 基准等比缩放，状态颜色共用全局语义。 */
+.biny-session-goal { color: var(--text); margin-bottom: 8px; font-size: calc(13px * var(--font-scale, 1)); }
+.biny-session-goal summary { display: inline-flex; gap: 6px; align-items: center; color: var(--text-secondary); padding: 4px 6px; border-radius: 6px; cursor: pointer; list-style: none; }
+.biny-session-goal summary::-webkit-details-marker { display: none; }
+.biny-session-goal summary:hover, .biny-session-goal details[open] summary { color: var(--text); background: var(--surface-soft); }
+.biny-session-goal summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.biny-session-goal summary svg { width: calc(18px * var(--font-scale, 1)); height: calc(18px * var(--font-scale, 1)); flex: none; }
+.biny-session-goal-details { margin-top: 6px; border: 1px solid var(--border); border-radius: 12px; padding: 10px 12px; }
+.biny-session-goal-details [role="status"] { color: var(--text-secondary); }
+.biny-session-goal-objective { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 180px; overflow: auto; margin: 10px 0; }
+.biny-session-goal-evidence, .biny-session-goal-usage { color: var(--text-secondary); overflow-wrap: anywhere; }
+.biny-session-goal-actions { display: flex; gap: 6px; justify-content: flex-end; margin-top: 8px; }
+.biny-session-goal-actions button { border: 1px solid var(--border); border-radius: 9999px; background: var(--surface-chip); color: var(--text); padding: 3px 10px; cursor: pointer; }
+.biny-session-goal-actions button:disabled { opacity: .5; cursor: default; }
+.biny-session-goal-error { color: var(--red); overflow-wrap: anywhere; }
 .biny-plan-panel {
   --plan-unit: calc(13px * var(--font-scale, 1));
   --plan-text: var(--text);

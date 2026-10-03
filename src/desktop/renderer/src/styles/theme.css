@@ -51,6 +51,12 @@
   --overlay: light-dark(rgb(0 0 0 / 20%), rgb(0 0 0 / 42%));
   --dialog-overlay: rgb(0 0 0 / 30%);
   --image-overlay: rgb(0 0 0 / 55%);
+  --image-preview-bg: rgb(0 0 0 / 95%);
+  --image-preview-toolbar: rgb(0 0 0 / 50%);
+  --image-preview-text: rgb(255 255 255 / 70%);
+  --image-preview-text-strong: #ffffff;
+  --image-preview-hover: rgb(255 255 255 / 10%);
+  --image-preview-focus: rgb(255 255 255 / 50%);
   --highlight-glint: light-dark(rgb(255 255 255 / 35%), rgb(255 255 255 / 8%));
   --overlay-hover: light-dark(rgb(0 0 0 / 8%), rgb(0 0 0 / 16%));
   --overlay-pressed: light-dark(rgb(0 0 0 / 14%), rgb(0 0 0 / 24%));

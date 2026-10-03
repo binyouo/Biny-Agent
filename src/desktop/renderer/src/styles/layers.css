@@ -15,6 +15,13 @@
 @import "./biny.css" layer(desktop);
 @import "./chat.css" layer(desktop);
 @import "./inspector.css" layer(desktop);
+@import "./workspace-media.css" layer(desktop);
+@import "./markdown-content.css" layer(desktop);
+@import "./markdown-table.css" layer(desktop);
+@import "./markdown-diagram.css" layer(desktop);
+@import "./markdown-image.css" layer(desktop);
+@import "./markdown-infographic.css" layer(desktop);
+@import "./markdown-pattern.css" layer(desktop);
 @import "./providers.css" layer(desktop);
 @import "./settings.css" layer(desktop);
 @import "./computer-use.css" layer(desktop);

@@ -349,6 +349,8 @@ export function SettingsDraftProvider({
       onNotify("存在未恢复的保存事务，请先处理再修改模型配置。");
       return undefined;
     }
+    const toolModelOnly = models.toolModel !== undefined && models.upserts.length === 0 && models.removeAliases.length === 0
+      && Object.keys(models).every((key) => key === "upserts" || key === "removeAliases" || key === "toolModel");
     const operation = modelsSaveTailRef.current.then(async (): Promise<DesktopSettingsSaveResult | undefined> => {
       // 队列执行时取最新基线：前一笔即时保存可能已经推进了 configRevision。
       const snapshotNow = snapshotRef.current;
@@ -366,7 +368,7 @@ export function SettingsDraftProvider({
         setSaveState(result.snapshot.pendingRecovery ? "recovery_required" : "clean");
         setDraft((current) => current ? {
           ...rebaseUneditedFields(current, snapshotNow, result.snapshot),
-          models: {
+          models: toolModelOnly ? current.models : {
             upserts: [],
             removeAliases: [],
             defaultModel: undefined,

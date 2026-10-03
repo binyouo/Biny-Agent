@@ -69,6 +69,8 @@ pnpm desktop:dev
 
 CLI 帮助：`pnpm dev -- --help`。
 
+Desktop 的“设置 → 技能”优先展示内置技能，并可关闭自动技能提取或调整调用阈值。自动提取会额外调用模型，把可复用流程直接保存为全局技能；修改设置后需点击“保存”。
+
 ## 继续了解
 
 - [Agent 执行与 Runtime](src/agent) · [Host 实现](src/runtime/host)

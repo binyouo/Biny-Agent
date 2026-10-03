@@ -8,7 +8,6 @@
  */
 import { useEffect, useRef, useState } from "react";
 import type { DesktopQuickChatSettings } from "../../../../protocol.js";
-import { Icon } from "../Icon.js";
 import { SettingsSwitch } from "./SettingsSwitch.js";
 
 export function SettingsQuickChat(): React.JSX.Element {
@@ -59,18 +58,6 @@ export function SettingsQuickChat(): React.JSX.Element {
 
   return (
     <div className="settings-preferences">
-      <section className="settings-preference-section" id="quickchat-shortcut" tabIndex={-1}>
-        <h3>快捷键</h3>
-        <div className="settings-row-group"><div className="quickchat-shortcut-row">
-          <span className="quickchat-shortcut-icon"><Icon name="compose" size={16} /></span>
-          <span className="quickchat-shortcut-copy">
-            <strong>全局快捷键</strong>
-            <small>唤起或收起快速对话。</small>
-          </span>
-          <kbd className="quickchat-kbd">{navigator.userAgent.includes("Mac") ? "⌘ ⇧ Space" : "Ctrl ⇧ Space"}</kbd>
-        </div></div>
-      </section>
-
       <section className="settings-preference-section" id="quickchat-behavior" tabIndex={-1}>
         <h3>悬浮窗口</h3>
         <div className="settings-row-group" aria-busy={saving}>

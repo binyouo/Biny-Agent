@@ -107,7 +107,6 @@
 .desktop-settings-dialog .settings-modal .settings-row-group .settings-switch-copy { gap: 4px; }
 .desktop-settings-dialog .settings-modal .settings-row-group .settings-switch-copy strong { font-size: calc(13px * var(--font-scale, 1)); }
 .desktop-settings-dialog .settings-modal .settings-row-group .settings-switch-copy small { font-size: calc(12px * var(--font-scale, 1)); }
-.settings-row-group .quickchat-shortcut-row { padding: 12px 14px; }
 
 .settings-advanced { min-width: 0; border: 1px solid var(--border); border-radius: 12px; background: var(--surface-raised); }
 .settings-advanced > summary { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px 14px; border-radius: 12px; list-style: none; cursor: pointer; }
@@ -163,6 +162,20 @@
 .settings-disclosure code { display: block; overflow-wrap: anywhere; white-space: normal; }
 .settings-disclosure-body { display: grid; gap: 12px; }
 .settings-install-guide ol { padding-left: 20px; line-height: 1.8; }
+.browser-connection-heading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; }
+.desktop-settings-dialog .settings-modal .browser-connection-heading h3 { display: flex; align-items: center; gap: 8px; margin: 0; font-size: calc(15px * var(--font-scale, 1)); font-weight: 550; }
+.browser-connection-settings .settings-button-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.browser-connection-status { display: flex; align-items: center; gap: 8px; overflow-wrap: anywhere; }
+.browser-connection-status > span { width: 8px; height: 8px; flex: none; border-radius: 50%; background: var(--text-tertiary); }
+.desktop-settings-dialog .settings-modal .browser-connection-status.is-connected { color: var(--green-text); }
+.browser-connection-status.is-connected > span { background: var(--green); }
+.browser-install-guide li code { display: inline; }
+.browser-extension-path { display: block; min-width: 0; padding: 10px 12px; border-radius: var(--st-radius); color: var(--text-secondary); background: var(--surface-soft); overflow-wrap: anywhere; user-select: text; }
+.browser-pairing-confirm { padding: 12px; border: 1px solid var(--border-strong); border-radius: var(--st-radius); background: var(--surface-soft); }
+.desktop-settings-dialog .settings-modal .browser-connection-settings .is-danger { color: var(--red-text); }
+.desktop-settings-dialog .settings-modal .browser-connection-settings .settings-primary-button { border-color: var(--st-primary); color: var(--st-on-primary); background: var(--st-primary); }
+.desktop-settings-dialog .settings-modal .browser-connection-settings .settings-primary-button:hover:not(:disabled) { background: var(--st-primary-hover); }
+.desktop-settings-dialog .settings-modal .browser-connection-settings .settings-primary-button:active:not(:disabled) { background: var(--st-primary-active); }
 .desktop-settings-dialog .settings-modal .settings-sections > details:not([open]) { display: block; }
 .desktop-settings-dialog .settings-modal .settings-sections > details > summary { padding-block: 0; }
 .desktop-settings-dialog .settings-modal .settings-sections > section > .settings-switch-row:only-child { border: 0; padding: 0; background: transparent; }

@@ -4,7 +4,7 @@ import { test } from "node:test";
 import { registerHooks } from "node:module";
 import { defaultConfig } from "../src/config/schema.js";
 import type { AppearanceSnapshot } from "../src/appearance/types.js";
-import type { DesktopSettingsSaveInput, DesktopSettingsSnapshot } from "../src/desktop/protocol.js";
+import type { DesktopSettingsSaveInput, DesktopSettingsSnapshot, DesktopSkillCatalogEntry, DesktopSkillCatalogSnapshot } from "../src/desktop/protocol.js";
 
 function snapshot(): DesktopSettingsSnapshot {
   const config = structuredClone(defaultConfig);
@@ -108,7 +108,7 @@ test("搜索按设置内容定位子页，空结果可清除，跨页草稿继�
     assert.match(document.querySelector('[aria-label="设置搜索结果"]')?.textContent ?? "", /聊天偏好/u);
     await h.click('[aria-label="设置搜索结果"] button');
     assert.equal(document.querySelector('.settings-titlebar h2')?.textContent, "聊天偏好");
-    assert.equal(document.activeElement, document.querySelector('.settings-titlebar h2'));
+    assert.ok(document.activeElement === document.querySelector('.settings-titlebar h2'), "搜索跳转后应聚焦页面标题");
     const advanced = document.querySelector<HTMLDetailsElement>('details.settings-advanced');
     assert.ok(advanced);
     assert.equal(advanced.open, false);
@@ -137,7 +137,8 @@ test("独立页面切换保留未保存主题和关闭确认，Activity Record �
     assert.ok(quick); quick.focus();
     await h.React.act(() => quick.click());
     assert.equal(document.querySelector(".settings-titlebar h2")?.textContent, "快速对话");
-    assert.equal(document.activeElement, quick);
+    assert.ok(document.querySelector("#quickchat-shortcut") === null, "移除没有配置入口的快捷键展示块");
+    assert.ok(document.activeElement === quick, "切换页面后应保留导航按钮焦点");
     await h.input('[aria-label="搜索设置"]', "Activity Record");
     assert.match(document.querySelector('[aria-label="设置搜索结果"]')?.textContent ?? "", /活动记录/u);
     await h.click('[aria-label="设置搜索结果"] button');
@@ -163,7 +164,7 @@ test("设置加载失败持续显示重试入口，重试期间不声称已保�
     await h.click('[aria-label="重新加载设置"]');
     assert.match(document.querySelector('.settings-page-footer')?.textContent ?? "", /加载/u);
     await h.React.act(async () => deferred.resolve(snapshot()));
-    assert.equal(document.querySelector('[aria-label="重新加载设置"]'), null);
+    assert.ok(document.querySelector('[aria-label="重新加载设置"]') === null, "加载成功后应移除重试入口");
     assert.equal(document.querySelectorAll('[role="radiogroup"][aria-label="外观"] input').length, 3);
     assert.equal(attempt, 2);
   } finally { await h.close(); }
@@ -187,7 +188,7 @@ test("保存失败保留草稿并就地显示原因，重试提交同一组更�
     await h.click('.settings-save-button');
     assert.equal(writes.length, 2);
     assert.equal(writes[1]?.themePreference, "dark");
-    assert.equal(document.querySelector('.settings-page-footer [role="alert"]'), null);
+    assert.ok(document.querySelector('.settings-page-footer [role="alert"]') === null, "保存成功后应清除页脚错误");
     assert.match(document.querySelector('.settings-page-footer')?.textContent ?? "", /所有更改已保存/u);
   } finally { await h.close(); }
 });
@@ -204,6 +205,44 @@ test("运行中允许保存外观，但共享设置更改明确说明禁用原�
     assert.equal(document.querySelector<HTMLButtonElement>('.settings-save-button')?.disabled, true);
     assert.match(document.querySelector('.settings-page-footer')?.textContent ?? "", /任务运行中/u);
     assert.match(document.querySelector('.settings-save-button')?.getAttribute("aria-describedby") ?? "", /settings-save-status/u);
+  } finally { await h.close(); }
+});
+
+test("运行中的工具模型选择仍可打开并即时保存，不夹带其它模型草稿", async () => {
+  const writes: DesktopSettingsSaveInput[] = [];
+  const running = { ...snapshot(), hasRunningTasks: true };
+  const h = await harness({ settingsSnapshot: async () => running, saveSettings: async (_project: string, input: DesktopSettingsSaveInput) => {
+    writes.push(input);
+    return { status: "committed", journalId: "test", appliedFields: ["models"], snapshot: running };
+  } });
+  try {
+    await h.overlay({ sessionRunning: true });
+    await h.input('[aria-label="搜索设置"]', "工具模型");
+    await h.click('[aria-label="设置搜索结果"] button');
+    const picker = document.querySelector('[aria-label="工具模型"]');
+    assert.ok(picker);
+    assert.notEqual(picker.getAttribute("aria-disabled"), "true");
+    await h.click('[aria-label="工具模型"]');
+    await h.click('.settings-model-picker-option');
+    assert.equal(writes.length, 1);
+    assert.deepEqual(writes[0]?.models, { upserts: [], removeAliases: [], toolModel: { alias: undefined } });
+    assert.match(document.querySelector('#tool-model')?.textContent ?? "", /后续回合/u);
+  } finally { await h.close(); }
+});
+
+test("工具模型即时保存保留未提交的供应商模型草稿", async () => {
+  const h = await harness({ saveSettings: async () => ({ status: "committed", journalId: "test", appliedFields: ["models"], snapshot: snapshot() }) });
+  try {
+    const { SettingsDraftProvider } = await import("../src/desktop/renderer/src/components/settings/SettingsDraftProvider.js");
+    const { useSettingsDraft } = await import("../src/desktop/renderer/src/components/settings/SettingsDraftContext.js");
+    let current!: ReturnType<typeof useSettingsDraft>;
+    function Probe() { current = useSettingsDraft(); return null; }
+    await h.render(h.React.createElement(SettingsDraftProvider, { active: true, projectId: "project", sessionRunning: true,
+      onCommitted() {}, onFontPreview() {}, onThemePreview() {}, onNotify() {}, children: h.React.createElement(Probe) }));
+    await h.React.act(() => current.removeModel("draft-model"));
+    assert.deepEqual(current.draft?.models.removeAliases, ["draft-model"]);
+    await h.React.act(async () => { await current.saveModels({ upserts: [], removeAliases: [], toolModel: {} }); });
+    assert.deepEqual(current.draft?.models.removeAliases, ["draft-model"], "只保存工具模型不应清空未提交的模型操作");
   } finally { await h.close(); }
 });
 
@@ -226,7 +265,7 @@ test("快速对话读取失败可重试，写入失败保留待保存值并提�
     assert.equal(document.querySelector<HTMLButtonElement>('[role="switch"]')?.disabled, false);
     await h.click('[aria-label="重试保存快速对话设置"]');
     assert.equal(writes, 2);
-    assert.equal(document.querySelector('[role="alert"]'), null);
+    assert.ok(document.querySelector('[role="alert"]') === null, "保存成功后应清除错误");
   } finally { await h.close(); }
 });
 
@@ -253,7 +292,7 @@ test("关闭的模型选择菜单不抢占设置页焦点", async () => {
   try {
     const { SettingsModelPicker } = await import("../src/desktop/renderer/src/components/settings/SettingsModelPicker.js");
     await h.render(h.React.createElement(SettingsModelPicker, { ariaLabel: "模型", groups: [], placeholder: "选择模型", onChange() {} }));
-    assert.notEqual(document.activeElement, document.querySelector('[aria-label="搜索模型或服务商"]'));
+    assert.ok(document.activeElement !== document.querySelector('[aria-label="搜索模型或服务商"]'), "页面加载不应抢占搜索框焦点");
   } finally { await h.close(); }
 });
 
@@ -332,7 +371,7 @@ test("打开设置时切换结构皮肤保留当前分页、未保存修改和�
       await h.overlay(props, { ...initial, themePreference: skin === "longhorn-dark" ? "dark" : "light", appearancePreference });
       assert.equal(document.documentElement.dataset.appearanceSkin, skin);
       assert.equal(document.querySelector(".settings-modal")?.classList.contains("is-retro-settings"), true, skin);
-      assert.equal(document.querySelector(".settings-content"), content, skin);
+      assert.ok(document.querySelector(".settings-content") === content, `${skin}: 切换皮肤不应重挂载设置内容`);
       assert.equal(document.querySelector('.settings-titlebar h2')?.textContent, "聊天偏好", skin);
       assert.equal(document.querySelector<HTMLInputElement>('[aria-label="启用流式响应"]')?.checked, unsaved, skin);
       assert.match(document.querySelector('.settings-page-footer')?.textContent ?? "", /未保存/u);
@@ -340,8 +379,88 @@ test("打开设置时切换结构皮肤保留当前分页、未保存修改和�
     await h.overlay(props, initial);
     assert.equal(document.documentElement.dataset.appearanceSkin, "default");
     assert.equal(document.querySelector(".settings-modal")?.classList.contains("is-retro-settings"), false);
-    assert.equal(document.querySelector(".settings-content"), content);
+    assert.ok(document.querySelector(".settings-content") === content, "恢复皮肤不应重挂载设置内容");
     assert.equal(document.querySelector('.settings-titlebar h2')?.textContent, "聊天偏好");
     assert.equal(document.querySelector<HTMLInputElement>('[aria-label="启用流式响应"]')?.checked, unsaved);
+  } finally { await h.close(); }
+});
+
+function skillCatalog(): DesktopSkillCatalogSnapshot {
+  const skill = (name: string, scope: DesktopSkillCatalogEntry["scope"]): DesktopSkillCatalogEntry => ({
+    id: name, ref: `${scope}:${name}`, name, scope, description: `Use ${name} for a repeatable workflow.`,
+    source: scope === "builtin" ? "builtin" : "biny", precedence: 0, engine: "biny", linkedEngines: ["biny"],
+    absolutePath: `/tmp/${scope}/${name}`, mdPath: `/tmp/${scope}/${name}/SKILL.md`,
+    files: [{ name: "SKILL.md", path: "SKILL.md", kind: "file", size: 100 }], frontmatter: { name }
+  });
+  const skills = [skill("project-workflow", "project"), skill("global-workflow", "global"), skill("report", "builtin"), skill("diary", "builtin")];
+  return { skills, inventory: skills, unmanagedSkills: [], plugins: [], managedSources: [], warnings: [], diagnostics: [] };
+}
+
+test("技能设置按内置、全局、项目展示，搜索保留来源分组与匹配数量", async () => {
+  const h = await harness({ skillCatalog: async () => skillCatalog() });
+  try {
+    await h.overlay();
+    await h.input('[aria-label="搜索设置"]', "skill");
+    await h.click('[aria-label="设置搜索结果"] button');
+    assert.deepEqual([...document.querySelectorAll('.settings-extension-group-title h3')].map(node => node.textContent), ["内置技能", "全局技能", "项目技能"]);
+    assert.deepEqual([...document.querySelectorAll('[aria-label="内置技能"] h4')].map(node => node.textContent), ["diary", "report"]);
+    assert.equal(document.querySelector('[aria-label="内置技能"] .settings-extension-group-title span')?.textContent, "2");
+    assert.match(document.querySelector('.settings-extension-list-heading')?.textContent ?? "", /4 个技能/u);
+    await h.input('[aria-label="搜索技能名称、描述或路径"]', "REPORT");
+    assert.deepEqual([...document.querySelectorAll('.settings-extension-group-title h3')].map(node => node.textContent), ["内置技能"]);
+    assert.match(document.querySelector('.settings-extension-list-heading')?.textContent ?? "", /1 \/ 4/u);
+    await h.input('[aria-label="搜索技能名称、描述或路径"]', "/tmp/global/");
+    assert.deepEqual([...document.querySelectorAll('.settings-extension-group-title h3')].map(node => node.textContent), ["全局技能"]);
+    await h.input('[aria-label="搜索技能名称、描述或路径"]', "no-matching-skill");
+    assert.equal(document.querySelectorAll('.settings-extension-group-title').length, 0);
+    assert.match(document.querySelector('[aria-label="技能列表"]')?.textContent ?? "", /没有匹配/u);
+  } finally { await h.close(); }
+});
+
+test("自动技能提取与技能开关进入统一草稿，保存时保留聊天参数与来源继承", async () => {
+  const initial = snapshot();
+  initial.chatParams.temperature = 0.3;
+  initial.skills.globalDefaults["builtin:diary"] = false;
+  const writes: DesktopSettingsSaveInput[] = [];
+  const h = await harness({ settingsSnapshot: async () => initial, skillCatalog: async () => skillCatalog(),
+    readSkillFile: async () => ({ path: "/tmp/builtin/diary/SKILL.md", content: "# Diary\nReusable workflow.", binary: false, truncated: false, bytes: 27 }),
+    skillVersion: async () => undefined,
+    saveSettings: async (_project: string, input: DesktopSettingsSaveInput) => {
+      writes.push(input);
+      return { status: "committed", journalId: "test", appliedFields: ["skills", "chatParams"], snapshot: { ...initial, chatParams: input.chatParams } };
+    } });
+  try {
+    await h.overlay();
+    await h.input('[aria-label="搜索设置"]', "自动技能提取");
+    await h.click('[aria-label="设置搜索结果"] button');
+    assert.equal(document.querySelector('.settings-titlebar h2')?.textContent, "技能");
+    assert.equal(document.querySelector<HTMLInputElement>('[aria-label="启用自动技能提取"]')?.checked, true);
+    assert.equal(document.querySelector<HTMLInputElement>('[aria-label="最少工具调用次数"]')?.value, "5");
+    assert.deepEqual([...document.querySelectorAll('#skill-extraction p')].map(node => node.textContent), [
+      "从长对话中自动提取可复用的技能", "工具调用次数低于此值的对话将被跳过"
+    ]);
+    assert.equal(document.querySelector('[aria-label="启用技能 diary"]')?.getAttribute("aria-checked"), "false");
+    await h.click('[aria-label="启用技能 diary"]');
+    assert.equal(document.querySelector('[aria-label="停用技能 diary"]')?.getAttribute("aria-checked"), "true");
+    const card = document.querySelector('[aria-label="停用技能 diary"]')?.closest('article');
+    assert.ok(card);
+    assert.deepEqual([...card.querySelectorAll('.settings-skill-card-footer button')].map(node => node.textContent), ["查看内容"]);
+    assert.equal(card.querySelector('.settings-skill-card-heading')?.textContent, "diary");
+    await h.click('[aria-label="内置技能"] .settings-skill-content-toggle');
+    assert.match(document.querySelector('[aria-label="diary 内容"]')?.textContent ?? "", /Reusable workflow/u);
+    const restore = [...document.querySelectorAll<HTMLButtonElement>('[aria-label="diary 内容"] button')].find(button => button.textContent === "恢复继承");
+    assert.ok(restore, "展开内容后仍可管理继承状态");
+    await h.React.act(() => restore.click());
+    assert.equal(document.querySelector('[aria-label="启用技能 diary"]')?.getAttribute("aria-checked"), "false");
+    await h.click('[aria-label="启用技能 diary"]');
+    await h.input('[aria-label="最少工具调用次数"]', "9");
+    await h.click('[aria-label="启用自动技能提取"]');
+    assert.ok(document.querySelector('[aria-label="最少工具调用次数"]') === null, "关闭后收起阈值控件");
+    assert.equal(writes.length, 0, "开关与阈值应等待统一保存");
+    await h.click('.settings-save-button');
+    assert.equal(writes.length, 1);
+    assert.deepEqual(writes[0]?.chatParams?.skillExtraction, { enabled: false, minToolCalls: 9 });
+    assert.equal(writes[0]?.chatParams?.temperature, 0.3);
+    assert.deepEqual(writes[0]?.skills, { globalDefaults: { "builtin:diary": false }, projectOverrides: { "builtin:diary": true } });
   } finally { await h.close(); }
 });

@@ -107,14 +107,14 @@ const settingsPages: Record<SettingsTab, { description: string; keywords: string
   配色: { description: "选择配色与界面皮肤，修改时即时预览。", keywords: "配色 主题 Windows 98 XP Longhorn 自定义" },
   通用: { description: "调整外观与阅读体验，修改时即时预览。", keywords: "主题 外观 字体 字号 浅色 深色 系统" },
   聊天: { description: "设置回复的显示方式，以及新对话的默认能力。", keywords: "流式 令牌 token Markdown 数学公式 思考 链接 默认工具 技能 温度 采样 压缩 Hashline" },
-  快速对话: { description: "随时唤起小窗，让简短的问题留在手边。", keywords: "快捷键 悬浮 小窗 失焦 隐藏 前台 上下文 点击穿透" },
+  快速对话: { description: "随时唤起小窗，让简短的问题留在手边。", keywords: "悬浮 小窗 失焦 隐藏 前台 上下文 点击穿透" },
   模型: { description: "管理模型连接、登录凭据和可用模型。", keywords: "供应商 服务商 API Key 密钥 base URL 登录 默认模型" },
   工具模型: { description: "设置标题生成、记忆整理等后台任务使用的模型。", keywords: "工具 筛选 模型 后台 标题" },
-  技能: { description: "管理可用技能与项目中的启用范围。", keywords: "skill 导入 安装 版本 启用" },
+  技能: { description: "管理可用技能、项目启用范围与自动技能提取。", keywords: "skill 导入 安装 版本 启用 自动技能提取 工具调用 阈值" },
   "MCP 服务器": { description: "连接外部工具与数据源。", keywords: "mcp 服务器 连接 授权 OAuth 工具" },
   插件: { description: "安装和管理扩展能力。", keywords: "plugin 市场 安装 启停 卸载" },
   网络搜索: { description: "设置搜索来源与网页访问方式。", keywords: "搜索引擎 联网 Cookie 登录 结果 超时" },
-  浏览器: { description: "连接日常浏览器，管理扩展配对。", keywords: "Chrome 扩展 配对 撤销" },
+  浏览器: { description: "连接日常浏览器，管理扩展配对。", keywords: "Chrome 扩展 安装 配对 重新生成 撤销 连接" },
   "Computer Use": { description: "管理本机桌面控制、权限与动作后预览。", keywords: "Cua computer use 桌面 截图 点击 输入 辅助功能 屏幕录制 画中画 PiP" },
   记忆: { description: "管理长期记忆、检索与后台整理。", keywords: "记忆 memory 向量 embedding 模型 下载 索引 睡眠 清理" },
   活动记录: { description: "控制本机活动采集与保存范围。", keywords: "Activity Record 活动记录 屏幕 截图 录制 OCR 采集 隐私 存储 排除" },
@@ -127,7 +127,7 @@ const immediateSaveHints: Partial<Record<SettingsTab, string>> = {
   快速对话: "本页修改即时保存", 模型: "连接与模型配置即时保存", 工具模型: "模型选择即时保存",
   数据: "本页修改即时保存", 活动记录: "采集设置即时保存", 浏览器: "连接操作即时生效",
   "Computer Use": "控制与开关即时生效", "MCP 服务器": "服务器配置单独保存",
-  插件: "安装与启停即时生效", 技能: "启用范围需保存，导入操作即时生效",
+  插件: "安装与启停即时生效", 技能: "启用范围与自动提取需保存，导入操作即时生效",
   记忆: "配置需保存，记忆管理操作即时生效", 网络搜索: "搜索偏好需保存，登录操作即时生效"
 };
 
