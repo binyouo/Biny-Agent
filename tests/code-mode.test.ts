@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { z } from "zod";
 import { codeModePolicy, executeCodeModeCell } from "../src/agent/codeMode.js";
 import { AgentSession } from "../src/agent/AgentSession.js";
@@ -23,7 +24,32 @@ import { createReadToolResultTool } from "../src/tools/file/readToolResult.js";
 import { createToolSearchTool } from "../src/tools/toolSearch.js";
 import { ToolOutcomeUnknownError } from "../src/tools/types.js";
 
-assert.equal(configSchema.parse(defaultConfig).agent.toolExecutionMode, "direct");
+async function waitForPersistedToolResult(filePath: string, toolCallId: string): Promise<void> {
+  const signal = AbortSignal.timeout(3_000);
+  while (true) {
+    const events = (await readFile(filePath, { encoding: "utf8", signal })).trim().split("\n")
+      .map((line) => JSON.parse(line) as { type: string; toolCallId?: string });
+    if (events.some((event) => event.type === "tool_result" && event.toolCallId === toolCallId)) return;
+    signal.throwIfAborted();
+    await delay(10, undefined, { signal });
+  }
+}
+
+async function waitForSessionReady(agent: AgentSession): Promise<void> {
+  const signal = AbortSignal.timeout(3_000);
+  while (true) {
+    try {
+      // 只读状态命令也受会话隔离保护；结果落盘后仍需等完整 settlement 解除隔离。
+      await agent.runPermissionCommand(["status"]);
+      return;
+    } catch (error) {
+      assert.match(error instanceof Error ? error.message : String(error), /quarantined while tool Code Mode child/u);
+    }
+    await delay(10, undefined, { signal });
+  }
+}
+
+assert.equal(configSchema.parse(defaultConfig).agent.toolExecutionMode, "code_mode");
 assert.equal(configSchema.parse({ ...defaultConfig, agent: { ...defaultConfig.agent, toolExecutionMode: "code_mode" } }).agent.toolExecutionMode, "code_mode");
 
 const root = await mkdtemp(path.join(os.tmpdir(), "biny-code-mode-"));
@@ -319,7 +345,8 @@ try {
     await lateCoordinator.waitForIdle();
     assert.ok(Date.now() - idleAt < 1_000, "quarantined child must not hang turn finalization");
     releaseLate();
-    await lateCoordinator.waitForIdle();
+    // waitForIdle 排除已隔离子调用，解除底层 gate 后仍须等目标结果实际落盘。
+    await waitForPersistedToolResult(lateRecorder.filePath, "parent-late:nested:1");
     await lateRecorder.flush();
     const lateEvents = (await readFile(lateRecorder.filePath, "utf8")).trim().split("\n")
       .map((line) => JSON.parse(line) as { type: string; toolCallId?: string; auditOnly?: boolean });
@@ -413,9 +440,12 @@ try {
     const outerArchivePath = (archived.details as { archivePath?: string }).archivePath;
     assert.ok(outerArchivePath, "outer result must retain its archive handle");
     const outerArchive = await readFile(resolveToolResultArchivePath(root, outerArchivePath), "utf8");
-    const childArchivePath = outerArchive.match(/\.biny\/tool-results\/tool-result-[0-9a-f]{64}\.json/u)?.[0];
-    assert.ok(childArchivePath, "nested result must retain its own archive handle");
-    assert.ok((await readFile(resolveToolResultArchivePath(root, childArchivePath), "utf8")).includes("xxxxx"));
+    assert.ok(outerArchive.includes("xxxxx"), "script receives the full child result within its own output limit");
+    const audit = JSON.parse((await readFile(archiveRecorder.filePath, "utf8")).trim().split("\n").find((line) => {
+      const event = JSON.parse(line); return event.type === "tool_result" && event.toolCallId === "parent-archive:nested:1";
+    })!);
+    assert.ok(audit.result.archivePath, "large child results still have a durable archive");
+    assert.ok((await readFile(resolveToolResultArchivePath(root, audit.result.archivePath), "utf8")).includes("xxxxx"));
   } finally { await archiveRecorder.close(); }
 
   const sessionConfig = configSchema.parse({ ...defaultConfig,
@@ -427,7 +457,7 @@ try {
   const model: AgentModel = { provider: "fixture", modelId: "code-mode-agent-session", supportsTools: true,
     async stream(context) {
       modelSteps++;
-      assert.deepEqual(context.tools.map((item) => item.name), ["exec"]);
+      assert.deepEqual(context.tools.map((item) => item.name), ["Read", "Write", "exec"]);
       const response: ModelStreamEvent[] = modelSteps === 1
         ? [{ type: "tool-call", id: "session-exec", name: "exec", arguments: { code: "const r = await tools.Read({path:'hello.txt'}); return r.content;" } }, { type: "finish", reason: "tool-calls" }]
         : [{ type: "text-delta", text: "read complete" }, { type: "finish", reason: "stop" }];
@@ -457,22 +487,22 @@ try {
   const selector: AgentModel = { provider: "fixture", modelId: "code-mode-selector", supportsTools: false,
     async stream(context) { return (async function* (): AsyncGenerator<ModelStreamEvent> {
       assert.match(context.systemPrompt ?? "", /Read/u);
-      assert.doesNotMatch(context.systemPrompt ?? "", /Write|mcp_read/u);
+      assert.match(context.systemPrompt ?? "", /Write|mcp_read/u);
       assert.match(context.systemPrompt ?? "", /recall_memory|search_history/u);
       yield { type: "text-delta", text: '{"tools":["Read","recall_memory","search_history","Write","mcp_read"]}' };
       yield { type: "finish", reason: "stop" };
     })(); }
   };
-  searchRegistry.register(createToolSearchTool(() => searchRegistry.listEntries(), () => selector));
+  searchRegistry.register(createToolSearchTool(() => searchRegistry.listEntries(), () => [{ model: selector, failureDomain: "test-selector" }]));
   const searchRecorder = new SessionRecorder(root, "code-mode-search-session");
   let searchSteps = 0;
   const searchFlow: AgentModel = { provider: "fixture", modelId: "code-mode-search-session", supportsTools: true,
     async stream(context) {
       searchSteps++;
-      assert.deepEqual(context.tools.map((item) => item.name).sort(), ["ToolSearch", "exec"]);
+      assert.deepEqual(context.tools.map((item) => item.name).sort(), searchSteps === 1 ? ["ToolSearch", "exec"] : ["Read", "ToolSearch", "Write", "exec", "mcp_read", "recall_memory", "search_history"]);
       const searchTool = context.tools.find((item) => item.name === "ToolSearch");
       assert.doesNotMatch(searchTool?.description ?? "", /Semantically search currently registered built-in, MCP/u);
-      assert.deepEqual(Object.keys(searchTool?.parameters.properties ?? {}).sort(), ["maxResults", "query"]);
+      assert.deepEqual(Object.keys(searchTool?.parameters.properties ?? {}).sort(), ["maxResults", "query", "type"]);
       const execCatalog = context.tools.find((item) => item.name === "exec")?.promptSnippet ?? "";
       if (searchSteps === 1) assert.doesNotMatch(execCatalog, /Read:|recall_memory:|search_history:/u);
       if (searchSteps >= 2) {
@@ -557,8 +587,10 @@ try {
     assert.match(blocked.error ?? "", /quarantined/u);
     assert.equal(crossRunCalls, 1, "a new run must not overlap or replay the unsettled child");
     releaseCrossRun();
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    assert.equal((await crossRunAgent.runTask("Third", { emotionAnalysis: false })).status, "completed");
+    await waitForPersistedToolResult(crossRunRecorder.filePath, "cross-run-first:nested:1");
+    await waitForSessionReady(crossRunAgent);
+    const recovered = await crossRunAgent.runTask("Third", { emotionAnalysis: false });
+    assert.equal(recovered.status, "completed", recovered.error);
     assert.equal(crossRunCalls, 1, "recovery must not replay the prior Code Mode cell");
   } finally { releaseCrossRun(); await crossRunAgent.close(); }
 
