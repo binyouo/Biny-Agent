@@ -266,6 +266,10 @@ async function* streamModel(
           yield { type: "reasoning-end", id: event.id, providerMetadata: providerMetadata(event.providerMetadata) };
           continue;
         }
+        if (event.type === "tool-input-start" || event.type === "tool-input-delta") {
+          yield event;
+          continue;
+        }
         if (event.type === "tool-call") {
           emittedOutput = true;
           yield {

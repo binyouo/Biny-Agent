@@ -41,6 +41,7 @@ Desktop、TUI 与 CLI chat 共用本机 Runtime Host；`biny run` 是一次性�
 | 能力 | Biny 提供 |
 | --- | --- |
 | 多端交互 | macOS Desktop、终端 TUI 与 CLI chat；`biny run` 支持脚本化的一次性任务。 |
+| 交互式可视化 | Desktop 聊天内流式生成 HTML/SVG widget，支持滑块、按钮和动态计算；`biny widget --html fragment.html --title "可视化" --out widget.html` 可生成独立页面，支持 `--json`。 |
 | 多层记忆 | 结合会话历史、项目上下文、临时与长期记忆，以及可检索的 Desktop Activity 线索；Sleep 周期会整理记忆、归档过期记忆并合并重复信息。 |
 | Activity Recorder | 记录桌面活动与 OCR 线索，支持回看、检索和生成活动摘要；新对话页提供近期活动建议，点击可直接开始对话；可从 Desktop 设置中暂停记录。 |
 | 长任务执行 | 持久化 TaskRun 与 attempt 状态，支持 worker 检查点续跑、重试决策和任务完成后的验证。 |

@@ -46,6 +46,7 @@ import { errorMessage, isRecord, providerMetadata, stringify } from "./vercelAge
 import { toolCallRepair } from "./toolCallRepair.js";
 import { applyCacheMarkers, markInstructions } from "./cacheMarkers.js";
 import { EventQueue } from "./EventQueue.js";
+import { parseWidgetPreview, WIDGET_MAX_HTML_LENGTH } from "../../widgets/widget.js";
 
 export interface VercelLoopState {
   context: AgentContext;
@@ -71,6 +72,7 @@ export interface VercelLoopState {
   currentText: string;
   currentReasoning: Map<string, { text: string; providerMetadata?: Record<string, unknown> }>;
   currentToolCalls: Array<{ id: string; name: string; arguments: Record<string, unknown> }>;
+  widgetInputs: Map<string, { text: string; publishedAt: number }>;
   directCall: DirectCallDiagnostics | undefined;
   directAttempts: Array<{ startedAtMs: number; durationMs?: number; error?: string }>;
   directPromptMessages: AgentMessage[] | undefined;
@@ -125,6 +127,7 @@ export async function* vercelAgentLoopContinue(
     currentText: "",
     currentReasoning: new Map(),
     currentToolCalls: [],
+    widgetInputs: new Map(),
     directCall: undefined,
     directAttempts: [],
     directPromptMessages: undefined,
@@ -482,6 +485,7 @@ function handleVercelStreamPart(state: VercelLoopState, part: {
     state.currentText = "";
     state.currentReasoning.clear();
     state.currentToolCalls = [];
+    state.widgetInputs.clear();
     return [{ type: "turn_start" }, { type: "message_start", message: emptyAssistant() }];
   }
   if (part.type === "text-delta" && typeof part.text === "string") {
@@ -525,7 +529,25 @@ function handleVercelStreamPart(state: VercelLoopState, part: {
       event: { type: "reasoning-end", id: part.id, providerMetadata: providerMetadata(part.providerMetadata) }
     }];
   }
+  if (part.type === "tool-input-start" && typeof part.id === "string") {
+    if (part.toolName === "WidgetRenderer" && state.widgetInputs.size < 32 && state.tools.some(tool => tool.name === "WidgetRenderer")) state.widgetInputs.set(part.id, { text: "", publishedAt: -Infinity });
+    return [];
+  }
+  if (part.type === "tool-input-delta" && typeof part.id === "string" && typeof part.delta === "string") {
+    const previous = state.widgetInputs.get(part.id);
+    if (previous === undefined) return [];
+    const input = previous.text + part.delta;
+    if (input.length > WIDGET_MAX_HTML_LENGTH + 8_000) { state.widgetInputs.delete(part.id); return []; }
+    previous.text = input;
+    if (performance.now() - previous.publishedAt < 150) return [];
+    const args = parseWidgetPreview(input);
+    if (!args) return [];
+    previous.publishedAt = performance.now();
+    state.outputProducedSinceStep = true;
+    return [{ type: "message_update", message: assistantSnapshot(state), event: { type: "tool-input-preview", id: part.id, name: "WidgetRenderer", arguments: args } }];
+  }
   if (part.type === "tool-call" && typeof part.toolCallId === "string" && typeof part.toolName === "string") {
+    state.widgetInputs.delete(part.toolCallId);
     state.outputProducedSinceStep = true;
     const input = isRecord(part.input) ? part.input : {};
     state.currentToolCalls.push({ id: part.toolCallId, name: part.toolName, arguments: input });

@@ -117,6 +117,9 @@ export function createDesktopWindow(
   });
 
   window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+  window.webContents.on("will-frame-navigate", (event) => {
+    if (!event.isMainFrame && event.url !== "about:srcdoc" && event.url !== "about:blank") event.preventDefault();
+  });
   window.webContents.on("will-navigate", (event, url) => {
     const developmentUrl = process.env.ELECTRON_RENDERER_URL;
     if (url.startsWith("file://") || (developmentUrl && url.startsWith(developmentUrl))) return;

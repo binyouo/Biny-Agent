@@ -532,7 +532,10 @@ export class DesktopAgentManager {
           projectEvents.delete(event.sessionId);
         } else {
           const sessionEvents = projectEvents.get(event.sessionId) ?? [];
-          sessionEvents.push(event);
+          const previous = sessionEvents.at(-1);
+          if (event.type === "tool.input" && previous?.type === "tool.input" && previous.runId === event.runId
+            && previous.toolCallId === event.toolCallId && previous.tool === event.tool) sessionEvents[sessionEvents.length - 1] = event;
+          else sessionEvents.push(event);
           // 实时事件只为「重新打开会话时补上本轮内容」，按会话保留最近 4000 条，防止长跑占满内存。
           if (sessionEvents.length > 4_000) sessionEvents.splice(0, sessionEvents.length - 4_000);
           projectEvents.set(event.sessionId, sessionEvents);

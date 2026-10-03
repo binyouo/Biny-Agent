@@ -231,6 +231,9 @@ export type ModelStreamEvent =
   | { type: "reasoning-start"; id: string; providerMetadata?: Record<string, unknown> }
   | { type: "reasoning-delta"; id: string; text: string; providerMetadata?: Record<string, unknown> }
   | { type: "reasoning-end"; id: string; providerMetadata?: Record<string, unknown> }
+  | { type: "tool-input-start"; id: string; toolName: string }
+  | { type: "tool-input-delta"; id: string; delta: string }
+  | { type: "tool-input-preview"; id: string; name: string; arguments: Record<string, unknown> }
   | { type: "tool-call"; id: string; name: string; arguments: Record<string, unknown>; invalid?: boolean }
   | { type: "finish"; reason: AgentStopReason; usage?: AgentUsage }
   | { type: "error"; error: unknown };

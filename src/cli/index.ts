@@ -9,6 +9,7 @@
 import { createRequire } from "node:module";
 import { Command, InvalidArgumentError, Option } from "commander";
 import { initCommand } from "./commands/init.js";
+import { widgetRenderCommand } from "./commands/widget.js";
 import { registerBrowserCommands } from "./commands/browser.js";
 import { registerCrystalCommands } from "./commands/crystal.js";
 import { referenceKindsCommand, referenceSearchCommand, referenceResolveCommand, referenceGraphCommand,
@@ -293,6 +294,13 @@ heartbeat.command("run").option("--json", "print JSON").action((options: { json?
 heartbeat.command("show").option("--json", "print JSON").action((options: { json?: boolean }) => wrap(() => heartbeatShowCommand(workspaceRoot, options))());
 
 const todo = program.command("todo").description("Manage the current session Todo list");
+program.command("widget").description("Render a self-contained interactive HTML/SVG widget")
+  .requiredOption("--html <file>", "HTML fragment file")
+  .requiredOption("--title <text>", "accessible widget title")
+  .option("--description <text>", "widget description")
+  .option("--out <file>", "save a standalone HTML document")
+  .option("--json", "print the widget and document as JSON")
+  .action((options: Parameters<typeof widgetRenderCommand>[0]) => wrap(() => widgetRenderCommand(options))());
 todo.command("show").option("--session <id>", "session id; defaults to latest").option("--json", "print JSON").action((options: { session?: string; json?: boolean }) => wrap(() => todoShowCommand(workspaceRoot, options.session, options))());
 todo.command("replace").requiredOption("--todos <json>", "complete Todo list JSON").option("--session <id>", "session id; defaults to latest").option("--json", "print JSON").action((options: { todos: string; session?: string; json?: boolean }) => wrap(() => todoReplaceCommand(workspaceRoot, options.session, options.todos, options))());
 todo.command("clear").requiredOption("--yes", "confirm clear").option("--session <id>", "session id; defaults to latest").option("--json", "print JSON").action((options: { yes?: boolean; session?: string; json?: boolean }) => wrap(() => todoClearCommand(workspaceRoot, options.session, options))());

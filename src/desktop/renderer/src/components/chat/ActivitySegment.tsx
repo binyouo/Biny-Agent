@@ -37,6 +37,7 @@ import { MarkdownContent } from "../MarkdownContent.js";
 import { ToolActivityDetail, ToolPermission } from "../ToolActivity.js";
 import { Collapse } from "../Collapse.js";
 import { ToolResultImages } from "./ToolResultImages.js";
+import { WidgetRenderer } from "../WidgetRenderer.js";
 
 /** 可进活动段的步骤：工具调用或思考相位。 */
 export type ActivitySegmentStep = TimelineToolStep | TimelineReasoningStep;
@@ -305,6 +306,7 @@ export const ActivitySegment = memo(function ActivitySegment({
         </div>
       </Collapse>
       {toolSteps.map(({ tool }) => <ToolResultImages key={tool.id} result={tool.result} />)}
+      {toolSteps.filter(({ tool }) => tool.tool === "WidgetRenderer").map(({ tool }) => <WidgetRenderer key={`widget-${tool.id}`} tool={tool} running={running} onOpenExternal={onOpenExternal} />)}
     </section>
   );
 });

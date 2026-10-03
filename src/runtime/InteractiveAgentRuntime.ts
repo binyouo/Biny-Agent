@@ -1559,6 +1559,11 @@ export class InteractiveAgentRuntime {
       return undefined;
     }
 
+    if (event.type === "tool.input") {
+      this.emit({ ...this.eventBase(run), ...event, args: redactSensitiveValue(event.args) });
+      return undefined;
+    }
+
     if (event.type === "tool.started") {
       run.status = "running";
       const args = redactSensitiveValue(event.args);

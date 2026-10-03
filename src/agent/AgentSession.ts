@@ -2733,7 +2733,9 @@ export class AgentSession {
           if (next.done) break;
           const event = next.value;
           if (event.type === "message_update") {
-            if (event.event.type === "text-delta") {
+            if (event.event.type === "tool-input-preview") {
+              yield { type: "tool.input", toolCallId: event.event.id, tool: event.event.name, args: event.event.arguments };
+            } else if (event.event.type === "text-delta") {
               stepAssistantContent += event.event.text;
               const visibleDelta = publicStream.push(event.event.text);
               if (visibleDelta) yield { type: "assistant.delta", content: visibleDelta };

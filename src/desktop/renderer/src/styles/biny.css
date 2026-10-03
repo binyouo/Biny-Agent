@@ -3,6 +3,12 @@
  *
  * 配色由 theme.css 提供；此处维护产品外壳、侧栏和输入区的布局与控件状态。
  */
+.chat-widget { width: 100%; margin: 8px 0; }
+.chat-widget > iframe { display: block; width: 100%; border: 0; background: transparent; }
+.chat-widget-actions { display: flex; align-items: center; gap: 8px; color: var(--biny-text-secondary); font-size: 12px; }
+.chat-widget-actions > button, .chat-widget > p > button { padding: 4px 8px; color: var(--biny-text); border: 1px solid var(--biny-border); border-radius: 8px; background: var(--biny-surface-soft); }
+.chat-widget > p[role='alert'] { color: var(--biny-danger); }
+
 @property --biny-sidebar-animated-visual-width {
   syntax: "<length>";
   inherits: false;

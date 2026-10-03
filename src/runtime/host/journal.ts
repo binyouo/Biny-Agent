@@ -100,13 +100,13 @@ export class RuntimeHostEventJournal {
     return { sequence: highWaterSequence, records };
   }
 
-  persist(sequence: number, readHistory: () => readonly RuntimeHostJournalRecord[]): Promise<void> {
+  persist(sequence: number, readHistory: () => readonly RuntimeHostJournalRecord[], rewrite = false): Promise<void> {
     this.tail = this.tail.then(async () => {
       if (sequence <= this.persistedSequence) return;
       const records = [...readHistory()];
       const record = records.find((item) => item.sequence === sequence);
       if (!record) throw new Error("Runtime Host event is missing from the in-memory replay history.");
-      const replaceJournal = this.lastError !== undefined
+      const replaceJournal = rewrite || this.lastError !== undefined
         || sequence % this.historyLimit === 0
         || sequence !== this.persistedSequence + 1;
       if (replaceJournal) {

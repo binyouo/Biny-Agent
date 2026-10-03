@@ -75,6 +75,7 @@ export function tuiReducer(state: TuiState, event: TuiAction): TuiState {
       return { ...state, turnStartedAt: undefined, lastWorkedMs: undefined };
     case "run.started":
     case "session.title":
+    case "tool.input":
       return state;
     case "run.completed": {
       const transcript = finalizeActiveCells(state.transcript, "skipped", "Interrupted before completion.");

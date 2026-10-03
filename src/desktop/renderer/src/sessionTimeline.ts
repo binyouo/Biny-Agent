@@ -185,7 +185,9 @@ type LiveTextDelta = Extract<AgentHostEvent, { type: "reasoning.delta" | "assist
 const liveTextChunkCharacters = 16 * 1024;
 
 /** 小块归并保留完整文本，也限制增量投影校验前缀时需要扫描的长度。 */
-export function mergeLiveTimelineEvent(previous: AgentHostEvent | undefined, next: AgentHostEvent): LiveTextDelta | undefined {
+export function mergeLiveTimelineEvent(previous: AgentHostEvent | undefined, next: AgentHostEvent): LiveTextDelta | Extract<AgentHostEvent, { type: "tool.input" }> | undefined {
+  if (next.type === "tool.input" && previous?.type === "tool.input" && previous.sessionId === next.sessionId
+    && previous.runId === next.runId && previous.toolCallId === next.toolCallId && previous.tool === next.tool) return { ...next, timestamp: previous.timestamp };
   if ((next.type !== "reasoning.delta" && next.type !== "assistant.delta")
     || previous?.type !== next.type
     || previous.sessionId !== next.sessionId
@@ -915,6 +917,10 @@ function createLiveTimelineFold(initialUserMessageIndex: number): LiveTimelineFo
         step.status = "分析完成";
         finishReasoning(event.runId, event.timestamp);
       }
+    } else if (event.type === "tool.input") {
+      const tool = toolFor(event, event.tool);
+      tool.args = event.args;
+      noteFirstToken(turn, event.timestamp);
     } else if (event.type === "tool.started") {
       finishReasoning(event.runId, event.timestamp);
       appendInvokedSkill(turn, event.tool, event.args);
@@ -1193,6 +1199,9 @@ export function createSessionTimelineProjector(): SessionTimelineProjector {
       const firstUser = liveEvents.find((event) => event.type === "message.user");
       const nextTail = liveEvents[processedLive - 1];
       const changedTail = processedTail !== nextTail;
+      const widgetTail = changedTail && nextTail?.type === "tool.input" && processedTail?.type === "tool.input"
+        && nextTail.sessionId === processedTail.sessionId && nextTail.runId === processedTail.runId
+        && nextTail.toolCallId === processedTail.toolCallId && nextTail.tool === processedTail.tool ? nextTail : undefined;
       const tailSuffix = changedTail && processedTail !== undefined && nextTail !== undefined
         && (processedTail.type === "reasoning.delta" || processedTail.type === "assistant.delta")
         && (nextTail.type === "reasoning.delta" || nextTail.type === "assistant.delta")
@@ -1207,13 +1216,14 @@ export function createSessionTimelineProjector(): SessionTimelineProjector {
         || events !== eventsRef
         || liveEvents.length < processedLive
         || firstUser !== firstLiveUser
-        || (changedTail && tailSuffix === undefined);
+        || (changedTail && tailSuffix === undefined && widgetTail === undefined);
       if (mustReset) {
         sessionId = nextSessionId;
         eventsRef = events;
         firstLiveUser = firstUser;
         rebuild(events, liveEvents);
       } else if (fold !== undefined) {
+        if (widgetTail) fold.apply(widgetTail);
         if (tailSuffix) fold.apply(tailSuffix);
         for (let index = processedLive; index < liveEvents.length; index += 1) {
           const event = liveEvents[index];

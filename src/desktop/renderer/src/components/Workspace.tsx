@@ -6,7 +6,7 @@
  */
 import { ProjectSuggestionBanner } from "../threadBrief/ProjectSuggestionBanner.js";
 import type { PermissionResult } from "../../../../permission/PermissionManager.js";
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ThinkingOrb } from "thinking-orbs";
 import type { DesktopProject, DesktopRuntimeError, DesktopRuntimeMutation, DesktopRuntimeProjection, DesktopPlanProjection, DesktopSessionLimits, DesktopSessionWriterConflict } from "../../../protocol.js";
 import type { RecipeNotice, SkillExtractionCardState } from "../app/useDesktopEventBridge.js";
@@ -17,6 +17,7 @@ import { Icon } from "./Icon.js";
 import { spawnTitleDeleteDust } from "./titleDust.js";
 import { GenerationErrorBanner } from "./chat/GenerationErrorBanner.js";
 import { MessageTimeline } from "./MessageTimeline.js";
+import { WidgetContext } from "./WidgetContext.js";
 import { RuntimePanel } from "./RuntimePanel.js";
 import { RecipeReadyBanner } from "./RecipeReadyBanner.js";
 import { SkillExtractionCard } from "./SkillExtractionCard.js";
@@ -39,6 +40,7 @@ export interface PendingPrompt {
 }
 
 interface WorkspaceProps {
+  onWidgetDraftPrompt?(text: string): void;
   project?: DesktopProject;
   projectId?: string;
   sessionId?: string;
@@ -160,8 +162,10 @@ export function Workspace({
   onOpenRuntime: _onOpenRuntime,
   onOpenExtensions: _onOpenExtensions,
   onSendActivitySuggestion,
+  onWidgetDraftPrompt,
   children
 }: WorkspaceProps): React.JSX.Element {
+  const widgetContext = useMemo(() => ({ onDraftPrompt: onWidgetDraftPrompt }), [onWidgetDraftPrompt]);
   const visiblePendingPrompt = pendingPrompt && pendingPrompt.projectId === projectId
     && (pendingPrompt.sessionId === undefined || pendingPrompt.sessionId === sessionId)
     && !hasSubmittedUserMessage(turns, pendingPrompt.messageId)
@@ -191,7 +195,7 @@ export function Workspace({
   }, [hasConversation]);
 
   return (
-    <div className="workspace biny-workspace biny-workspace-chat">
+    <WidgetContext.Provider value={widgetContext}><div className="workspace biny-workspace biny-workspace-chat">
       <div className="biny-workspace-main">
         {runtimePanelOpen ? null : inspectorRail}
         <header className={`biny-chat-toolbar${chatScrolled ? " is-scrolled" : ""}`}>
@@ -323,7 +327,7 @@ export function Workspace({
         </div>
       </div>
       {streaming ? <span className="biny-streaming-state" aria-hidden="true" /> : null}
-    </div>
+    </div></WidgetContext.Provider>
   );
 }
 

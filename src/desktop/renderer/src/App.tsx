@@ -145,6 +145,7 @@ function DesktopApp(): React.JSX.Element {
   const [composerDrafts] = useState(() => new Map<string, ComposerDraftState>());
   const [composerDraft, setComposerDraft] = useState<string>();
   const composerRef = useRef<ComposerHandle>(null);
+  const draftWidgetPrompt = useCallback((text: string) => composerRef.current?.appendText(text), []);
   /** 发送前的乐观用户消息；真实 message.user 到达后按 messageId 移除。 */
   const [pendingPrompt, setPendingPrompt] = useState<PendingPrompt>();
   /** 未发送草稿的目标项目；只改变输入框归属，不提前切换工作区。 */
@@ -2011,6 +2012,7 @@ function DesktopApp(): React.JSX.Element {
       /> : <Workspace
         loading={loading}
         onSendActivitySuggestion={async text => { await composerRef.current?.submitSuggestion(text); }}
+        onWidgetDraftPrompt={draftWidgetPrompt}
         onCreateBranch={openTurnBranch}
         onEditRequest={requestEditMessage}
         editInFlight={editInFlight}

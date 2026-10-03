@@ -21,6 +21,7 @@ import { createBashOutputTool, createKillShellTool } from "./process/managedProc
 import { createWebFetchTool } from "./web/fetch.js";
 import { createWebSearchTool } from "./web/search.js";
 import { createToolSearchTool } from "./toolSearch.js";
+import { createWidgetReadmeTool, createWidgetRendererTool } from "./widget.js";
 import { createBrowserRelayTools } from "./browserRelay.js";
 import type { ToolModelCandidate } from "../llm/toolModel.js";
 import type { ManagedProcessService } from "../runtime/ManagedProcessService.js";
@@ -165,6 +166,8 @@ export function createToolRegistry(
   const registry = new ToolRegistry();
   for (const tool of createBrowserRelayTools(undefined, context)) registry.register(tool);
   registry.register(createToolSearchTool(() => registry.listEntries(), getToolSearchModels));
+  registry.register(createWidgetReadmeTool());
+  registry.register(createWidgetRendererTool());
   registry.register(createReadFileTool(context));
   registry.register(createReadToolResultTool(context));
   registry.register(createListFilesTool(context));
