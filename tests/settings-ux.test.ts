@@ -83,6 +83,19 @@ async function harness(api: Record<string, unknown> = {}) {
   } };
 }
 
+test("摘要配置不出现在设置导航和搜索中，旧页面目标回到通用", async () => {
+  const h = await harness();
+  try {
+    await h.overlay({ targetTab: "数据" });
+    assert.equal(document.querySelector(".settings-titlebar h2")?.textContent, "通用");
+    assert.doesNotMatch(document.querySelector(".settings-nav-list")?.textContent ?? "", /对话摘要|数据/u);
+    assert.equal(document.querySelector(".biny-thread-brief-settings"), null);
+    await h.input('[aria-label="搜索设置"]', "对话摘要");
+    assert.equal(document.querySelector('[aria-label="设置搜索结果"] button'), null);
+    assert.match(document.querySelector('[role="status"]')?.textContent ?? "", /没有找到/u);
+  } finally { await h.close(); }
+});
+
 test("外观分段选择支持原生单选语义，自定义字体与字号重置可用", async () => {
   const h = await harness();
   try {

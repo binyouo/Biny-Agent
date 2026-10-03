@@ -25,7 +25,6 @@ import { DEFAULT_APPEARANCE } from "../../../../../appearance/preferences.js";
 import type { AppearancePreference } from "../../../../../appearance/types.js";
 import { ActivityRuntimeProvider } from "./ActivityRuntimeContext.js";
 import { SettingsChatPage } from "./SettingsChatPage.js";
-import { ThreadBriefCard } from "./ThreadBriefCard.js";
 import { SettingsActivity } from "./SettingsActivity.js";
 import { SettingsCloseGuard } from "./SettingsCloseGuard.js";
 import { SettingsDetailHostContext } from "./SettingsDetailHostContext.js";
@@ -91,7 +90,7 @@ interface SettingsOverlayProps {
   onCancelModelLogin(provider: DesktopModelLoginProvider, authRequestId: string): Promise<void>;
 }
 
-export type SettingsTab = "通用" | "配色" | "聊天" | "快速对话" | "模型" | "MCP 服务器" | "技能" | "插件" | "权限" | "活动记录" | "数据" | "记忆" | "网络搜索" | "浏览器" | "Computer Use" | "关于" | "工具模型";
+export type SettingsTab = "通用" | "配色" | "聊天" | "快速对话" | "模型" | "MCP 服务器" | "技能" | "插件" | "权限" | "活动记录" | "记忆" | "网络搜索" | "浏览器" | "Computer Use" | "关于" | "工具模型";
 
 const settingsNav: Array<{ icon: IconName; tab: SettingsTab }> = [
   { icon: "sun", tab: "通用" }, { icon: "network", tab: "模型" }, { icon: "cpu", tab: "工具模型" },
@@ -99,10 +98,10 @@ const settingsNav: Array<{ icon: IconName; tab: SettingsTab }> = [
   { icon: "brain", tab: "记忆" }, { icon: "activity", tab: "活动记录" }, { icon: "cpu", tab: "Computer Use" },
   { icon: "server", tab: "MCP 服务器" }, { icon: "wand", tab: "技能" }, { icon: "puzzle", tab: "插件" },
   { icon: "search", tab: "网络搜索" }, { icon: "globe", tab: "浏览器" }, { icon: "sun", tab: "配色" },
-  { icon: "file", tab: "数据" }, { icon: "shield", tab: "权限" }, { icon: "help", tab: "关于" }
+  { icon: "shield", tab: "权限" }, { icon: "help", tab: "关于" }
 ];
 const settingsRouteEntries = settingsNav.map(page => ({ value: page.tab }));
-const settingsTabLabels: Partial<Record<SettingsTab, string>> = { 模型: "模型供应商", 数据: "对话摘要", 聊天: "聊天偏好" };
+const settingsTabLabels: Partial<Record<SettingsTab, string>> = { 模型: "模型供应商", 聊天: "聊天偏好" };
 const settingsPages: Record<SettingsTab, { description: string; keywords: string }> = {
   配色: { description: "选择配色与界面皮肤，修改时即时预览。", keywords: "配色 主题 Windows 98 XP Longhorn 自定义" },
   通用: { description: "调整外观与阅读体验，修改时即时预览。", keywords: "主题 外观 字体 字号 浅色 深色 系统" },
@@ -118,14 +117,13 @@ const settingsPages: Record<SettingsTab, { description: string; keywords: string
   "Computer Use": { description: "管理本机桌面控制、权限与动作后预览。", keywords: "Cua computer use 桌面 截图 点击 输入 辅助功能 屏幕录制 画中画 PiP" },
   记忆: { description: "管理长期记忆、检索与后台整理。", keywords: "记忆 memory 向量 embedding 模型 下载 索引 睡眠 清理" },
   活动记录: { description: "控制本机活动采集与保存范围。", keywords: "Activity Record 活动记录 屏幕 截图 录制 OCR 采集 隐私 存储 排除" },
-  数据: { description: "管理对话摘要及其生成方式。", keywords: "对话 摘要 数据 自动 总结" },
   权限: { description: "设置工具操作是否需要手动批准。", keywords: "安全 审批 确认 自动 批准 工具权限" },
   关于: { description: "版本信息与项目链接。", keywords: "版本 更新 帮助" }
 };
 const settingsTabValues = new Set<SettingsTab>(settingsRouteEntries.map(({ value }) => value));
 const immediateSaveHints: Partial<Record<SettingsTab, string>> = {
   快速对话: "本页修改即时保存", 模型: "连接与模型配置即时保存", 工具模型: "模型选择即时保存",
-  数据: "本页修改即时保存", 活动记录: "采集设置即时保存", 浏览器: "连接操作即时生效",
+  活动记录: "采集设置即时保存", 浏览器: "连接操作即时生效",
   "Computer Use": "控制与开关即时生效", "MCP 服务器": "服务器配置单独保存",
   插件: "安装与启停即时生效", 技能: "启用范围与自动提取需保存，导入操作即时生效",
   记忆: "配置需保存，记忆管理操作即时生效", 网络搜索: "搜索偏好需保存，登录操作即时生效"
@@ -300,7 +298,7 @@ function SettingsOverlayContent({
     if (closeRequest) await onResolveCloseRequest(closeRequest.requestId, "cancelled");
   };
   const extensionSettings = activeTab === "MCP 服务器" || activeTab === "技能" || activeTab === "插件";
-  const needsProject = !workspace && ["聊天", "网络搜索", "工具模型", "模型", "技能", "MCP 服务器", "插件", "记忆", "数据"].includes(activeTab);
+  const needsProject = !workspace && ["聊天", "网络搜索", "工具模型", "模型", "技能", "MCP 服务器", "插件", "记忆"].includes(activeTab);
   const loadBlocked = Boolean((workspace && !["快速对话", "浏览器", "Computer Use", "关于"].includes(activeTab) || activeTab === "活动记录" || activeTab === "权限") && (settingsDraft.loading || settingsDraft.loadError));
   const openSearchResult = (nextTab: SettingsTab): void => {
     setSearch("");
@@ -400,7 +398,6 @@ function SettingsOverlayContent({
             density={(settingsDraft.draft?.appearancePreference ?? appearancePreference ?? DEFAULT_APPEARANCE).density}
             onDensityChange={density => settingsDraft.setAppearancePreference({ ...(settingsDraft.draft?.appearancePreference ?? appearancePreference ?? DEFAULT_APPEARANCE), density })}
           /> : null}
-          {activeTab === "数据" ? <ThreadBriefCard /> : null}
           {activeTab === "配色" ? <SettingsThemes
             preference={settingsDraft.draft?.appearancePreference ?? appearancePreference ?? DEFAULT_APPEARANCE}
             onChange={settingsDraft.setAppearancePreference}

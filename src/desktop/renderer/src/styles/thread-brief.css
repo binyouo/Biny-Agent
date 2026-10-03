@@ -1,19 +1,4 @@
-/* 只为数据设置卡片、输入框上方建议和确认草稿提供主题内样式。 */
-.desktop-settings-dialog .settings-modal .biny-thread-brief-settings { display: flex; flex-direction: column; gap: var(--st-card-gap); border: 1px solid var(--biny-border); border-radius: var(--st-radius); padding: var(--st-card-padding); background: var(--st-card); color: var(--biny-text); }
-.desktop-settings-dialog .settings-modal .biny-thread-brief-settings header { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
-.desktop-settings-dialog .settings-modal .biny-thread-brief-settings header > svg { flex-shrink: 0; color: var(--biny-text-secondary); }
-.desktop-settings-dialog .settings-modal .biny-thread-brief-settings header h3 { margin: 0; font-size: 14px; font-weight: 500; }
-.desktop-settings-dialog .settings-modal .biny-thread-brief-settings header small { font-size: 11px; color: var(--biny-text-secondary); }
-.desktop-settings-dialog .settings-modal .biny-thread-brief-settings header button { display: inline-flex; align-items: center; gap: 4px; height: 24px; margin-left: auto; padding: 0 8px; border: 1px solid var(--st-action-border); border-radius: 6px; background: var(--st-action-bg); color: var(--biny-text-secondary); font-size: 12px; }
-.desktop-settings-dialog .settings-modal .biny-thread-brief-settings header button:hover { border-color: var(--st-action-border-hover); background: var(--biny-surface-hover); }
-.desktop-settings-dialog .settings-modal .biny-thread-brief-settings p { margin: 0; color: var(--biny-text-secondary); font-size: 12px; line-height: 16px; }
-.desktop-settings-dialog .settings-modal .biny-thread-brief-settings .biny-brief-description { margin-bottom: 4px; }
-.biny-brief-controls { display: flex; flex-direction: column; gap: 12px; }
-.desktop-settings-dialog .settings-modal .biny-thread-brief-settings .biny-brief-budget { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; font-size: 12px; color: var(--biny-text-secondary); }
-.biny-brief-budget > span { width: 80px; flex-shrink: 0; }
-.biny-brief-budget label { display: flex; align-items: center; gap: 4px; font-size: 11px; }
-.desktop-settings-dialog .settings-modal .biny-brief-budget input { box-sizing: border-box; width: 64px; height: 28px; padding: 0 6px; text-align: center; font-size: 12px; color: var(--biny-text); }
-.desktop-settings-dialog .settings-modal .biny-thread-brief-settings .biny-brief-hint { font-size: 11px; }
+/* 对话待办状态、项目建议提示和确认草稿的样式。 */
 .biny-brief-session-status { display: inline-flex; flex-shrink: 0; color: var(--biny-focus); }
 .biny-project-suggestion-banner { display: flex; align-items: center; gap: 10px; max-width: 720px; margin: 0 auto 8px; padding: 8px 12px; border: 1px solid var(--biny-border); border-radius: 12px; background: var(--biny-surface-elevated); font-size: 12px; }
 .biny-project-suggestion-banner > div { flex: 1; min-width: 0; }
@@ -27,8 +12,8 @@
 .biny-project-suggestion-dialog p, .biny-project-suggestion-dialog small, .biny-project-suggestion-dialog li { color: var(--biny-text-secondary); font-size: 12px; }
 .biny-project-suggestion-dialog fieldset { border: 0; padding: 0; display: flex; flex-direction: column; gap: 16px; min-width: 0; }
 .biny-project-suggestion-dialog label { display: flex; flex-direction: column; gap: 6px; font-size: 13px; }
-.biny-project-suggestion-dialog input, .biny-project-suggestion-dialog textarea, .biny-brief-budget input { border: 1px solid var(--biny-border); border-radius: 6px; background: var(--biny-surface); color: inherit; padding: 6px 8px; font: inherit; min-width: 0; }
-.biny-project-suggestion-dialog button, .biny-project-suggestion-banner button, .biny-thread-brief-settings header button { border: 1px solid var(--biny-border); border-radius: 6px; background: var(--biny-surface); color: inherit; padding: 5px 8px; font-size: 12px; cursor: pointer; }
+.biny-project-suggestion-dialog input, .biny-project-suggestion-dialog textarea { border: 1px solid var(--biny-border); border-radius: 6px; background: var(--biny-surface); color: inherit; padding: 6px 8px; font: inherit; min-width: 0; }
+.biny-project-suggestion-dialog button, .biny-project-suggestion-banner button { border: 1px solid var(--biny-border); border-radius: 6px; background: var(--biny-surface); color: inherit; padding: 5px 8px; font-size: 12px; cursor: pointer; }
 .biny-project-suggestion-dialog button:disabled, .biny-project-suggestion-banner button:disabled { opacity: .5; cursor: default; }
 .biny-project-suggestion-dialog button:hover:not(:disabled), .biny-project-suggestion-banner button:hover:not(:disabled) { background: var(--biny-surface-hover); }
 .biny-suggestion-threads > div { display: flex; align-items: flex-start; gap: 8px; border: 1px solid var(--biny-border); padding: 8px; border-radius: 6px; margin-top: 5px; font-size: 12px; }
@@ -39,4 +24,4 @@
 .biny-suggestion-location input, .biny-suggestion-feedback input { flex: 1; }
 .biny-suggestion-feedback { border: 1px dashed var(--biny-border); border-radius: 8px; padding: 12px; }
 .biny-project-suggestion-dialog footer { justify-content: flex-end; margin-top: 20px; }
-.biny-project-suggestion-dialog [role="alert"], .biny-thread-brief-settings [role="alert"] { color: var(--biny-danger); }
+.biny-project-suggestion-dialog [role="alert"] { color: var(--biny-danger); }
