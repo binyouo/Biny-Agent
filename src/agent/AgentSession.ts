@@ -3092,7 +3092,12 @@ export class AgentSession {
       replacementRecorder.restoreToolCallSequence(
         snapshot ? snapshot.maxToolCallSequence : maxToolCallSequence(replay.events)
       );
-      const resumedActiveIds = activeSessionMessageIds(replay.events);
+      // 快照不携带 events；父链与版本选择必须从同一文件指纹对应的持久事件恢复。
+      const resumeEvents = cachedSessionEvents(resumeRecorder.filePath, fingerprint, () => ({
+        events: parseSessionEvents(resumeRecorder.readText()),
+        complete: true
+      }));
+      const resumedActiveIds = activeSessionMessageIds(resumeEvents);
       replacementRecorder.restoreMessageParent(
         replay.messageTree.filter((node) => resumedActiveIds.has(node.id)).at(-1)?.id
       );
@@ -3105,10 +3110,6 @@ export class AgentSession {
       for (const event of replay.recoveredToolResults) {
         await replacementRecorder.recordAndFlush(event, undefined, this.capabilityOutcomeResolver.redactionOptionsFor(event.result));
       }
-      const resumeEvents = cachedSessionEvents(resumeRecorder.filePath, fingerprint, () => ({
-        events: parseSessionEvents(resumeRecorder.readText()),
-        complete: true
-      }));
       for (const notice of undeliveredMessageNotices(resumeEvents)) await replacementRecorder.recordAndFlush(notice);
       this.options.permissionManager.resetSession();
       this.usageRecords = [...replay.usage];

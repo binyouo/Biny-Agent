@@ -5,12 +5,33 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { MessageTimeline } from "../src/desktop/renderer/src/components/MessageTimeline.js";
 import { buildSessionTimeline, createSessionTimelineProjector } from "../src/desktop/renderer/src/sessionTimeline.js";
 import type { SessionEvent } from "../src/session/events.js";
+import { replaySessionEvents } from "../src/session/replay.js";
 
 const checkpoint: Extract<SessionEvent, { type: "context_checkpoint" }> = {
   type: "context_checkpoint", reason: "manual", summary: "## Goal\n- Continue the task.",
   firstKeptMessageIndex: 2, compactedMessages: 8, coveredMessageCount: 2,
   tokensBefore: 2_000, tokensAfter: 500, createdAt: "2026-10-02T00:01:00.000Z"
 };
+
+test("压缩 canonical 对话只缩短模型上下文，聊天仍保留压缩前消息与回答", () => {
+  const events: SessionEvent[] = [
+    { type: "user_message", content: "早期请求", messageId: "first-user" },
+    { type: "agent_message", messageId: "first-answer", parentMessageId: "first-user", slotId: "first-user",
+      message: { role: "assistant", content: [{ type: "text", text: "早期回答" }], stopReason: "stop" } },
+    { type: "assistant_message", content: "早期回答", messageId: "first-answer", replyToMessageId: "first-user", slotId: "first-user" },
+    checkpoint,
+    { type: "user_message", content: "后续请求", messageId: "next-user", parentMessageId: "first-answer" },
+    { type: "agent_message", messageId: "next-answer", parentMessageId: "next-user", slotId: "next-user",
+      message: { role: "assistant", content: [{ type: "text", text: "后续回答" }], stopReason: "stop" } },
+    { type: "assistant_message", content: "后续回答", messageId: "next-answer", replyToMessageId: "next-user", slotId: "next-user" }
+  ];
+  const replay = replaySessionEvents(events);
+  assert.equal(replay.contextStartMessageIndex, 2);
+  assert.equal(replay.messages.some((message) => message.role === "user" && message.content === "早期请求"), false);
+  const turns = buildSessionTimeline(events, []).filter((turn) => turn.user);
+  assert.deepEqual(turns.map((turn) => [turn.user, turn.assistant]), [["早期请求", "早期回答"], ["后续请求", "后续回答"]]);
+  assert.deepEqual(createSessionTimelineProjector().update({ sessionId: "session", events, liveEvents: [] }).filter((turn) => turn.user), turns);
+});
 
 for (const versioned of [false, true]) {
   test(`manual checkpoint survives history projection (${versioned ? "message tree" : "legacy"})`, () => {

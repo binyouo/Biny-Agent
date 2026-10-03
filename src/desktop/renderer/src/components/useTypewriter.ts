@@ -9,17 +9,13 @@ import { startTransition, useCallback, useEffect, useRef, useState } from "react
  *  2. reveal 速度跟随到达速度：取「最近 3s 到达速率」与「全程平均速率」的较小者
  *     （经 EMA 平滑），永不透支缓冲区 → 不会卡住等 token；
  *  3. 同时保证缓冲能撑过观测到的最大到达间隔（safeCps），网络抖动不断流；
- *  4. 流结束后把剩余缓冲按到达速率 1.25 倍收尾（封顶 90cps、4 秒内 flush 完）；
+ *  4. 流结束后立即展示完整正文，取消动画；后台窗口无需等待动画帧；
  *  5. 单块追加超过 500 字符（恢复会话/粘贴）或内容被整体替换时直接同步，不做动画。
  */
 
 const DEFAULT_CPS = 50;
 const MIN_CPS = 15;
 const MAX_CPS = 300;
-const MIN_FLUSH_CPS = 18;
-const MAX_FLUSH_CPS = 90;
-const FLUSH_SPEEDUP = 1.25;
-const FLUSH_MAX_SECONDS = 4;
 const EMA_ALPHA = 0.15;
 const LARGE_APPEND = 500;
 const ARRIVAL_WINDOW_MS = 3000;
@@ -43,7 +39,6 @@ export function useTypewriter(content: string, streaming: boolean): string {
   const [displayed, setDisplayed] = useState(content);
   const displayedRef = useRef(content);
   const targetRef = useRef(content);
-  const streamingRef = useRef(streaming);
 
   const emaCpsRef = useRef(DEFAULT_CPS);
   const lastInputTsRef = useRef(0);
@@ -86,7 +81,6 @@ export function useTypewriter(content: string, streaming: boolean): string {
       const total = target.length;
       const cur = displayedRef.current.length;
       const backlog = total - cur;
-      const isStreaming = streamingRef.current;
 
       if (backlog <= 0) {
         // 追平后由下一次内容变化唤醒，等待 token 时不持续占用帧回调。
@@ -98,40 +92,25 @@ export function useTypewriter(content: string, streaming: boolean): string {
 
       const nowMs = performance.now();
 
-      let cps: number;
-      if (!isStreaming) {
-        // flush：流已结束，把剩余缓冲快速收尾
-        let recentArrivalCps = DEFAULT_CPS;
-        const log = arrivalLogRef.current;
-        const first = log[0];
-        if (log.length >= 2 && first) {
-          const windowMs = nowMs - first.t;
-          const windowChars = log.reduce((sum, a) => sum + a.c, 0);
-          if (windowMs > 50) recentArrivalCps = (windowChars * 1000) / windowMs;
-        }
-        const natural = Math.max(MIN_FLUSH_CPS, recentArrivalCps * FLUSH_SPEEDUP);
-        cps = clamp(Math.max(natural, backlog / FLUSH_MAX_SECONDS), MIN_FLUSH_CPS, MAX_FLUSH_CPS);
+      let arrivalCps: number;
+      const log = arrivalLogRef.current;
+      const first = log[0];
+      if (log.length >= 2 && first) {
+        const windowMs = nowMs - first.t;
+        const windowChars = log.reduce((sum, a) => sum + a.c, 0);
+        arrivalCps = windowMs > 50 ? (windowChars * 1000) / windowMs : MIN_CPS;
       } else {
-        let arrivalCps: number;
-        const log = arrivalLogRef.current;
-        const first = log[0];
-        if (log.length >= 2 && first) {
-          const windowMs = nowMs - first.t;
-          const windowChars = log.reduce((sum, a) => sum + a.c, 0);
-          arrivalCps = windowMs > 50 ? (windowChars * 1000) / windowMs : MIN_CPS;
-        } else {
-          arrivalCps = MIN_CPS;
-        }
-        const streamElapsedS = streamStartTsRef.current > 0 ? (nowMs - streamStartTsRef.current) / 1000 : 0;
-        const charsReceived = total - streamStartCountRef.current;
-        const effectiveCps = streamElapsedS > 1 && charsReceived > 10 ? charsReceived / streamElapsedS : arrivalCps;
-
-        const maxGapS = Math.max(0.5, maxGapMsRef.current / 1000);
-        const safety = 1.5 + stallCountRef.current * 0.2;
-        const safeCps = backlog / (maxGapS * safety);
-        const arrivalCap = Math.min(arrivalCps, effectiveCps, emaCpsRef.current);
-        cps = clamp(Math.min(safeCps, arrivalCap), MIN_CPS, MAX_CPS);
+        arrivalCps = MIN_CPS;
       }
+      const streamElapsedS = streamStartTsRef.current > 0 ? (nowMs - streamStartTsRef.current) / 1000 : 0;
+      const charsReceived = total - streamStartCountRef.current;
+      const effectiveCps = streamElapsedS > 1 && charsReceived > 10 ? charsReceived / streamElapsedS : arrivalCps;
+
+      const maxGapS = Math.max(0.5, maxGapMsRef.current / 1000);
+      const safety = 1.5 + stallCountRef.current * 0.2;
+      const safeCps = backlog / (maxGapS * safety);
+      const arrivalCap = Math.min(arrivalCps, effectiveCps, emaCpsRef.current);
+      const cps = clamp(Math.min(safeCps, arrivalCap), MIN_CPS, MAX_CPS);
 
       charAccumRef.current += cps * dt;
       if (ts - lastCommitTsRef.current < MIN_COMMIT_INTERVAL_MS) {
@@ -158,6 +137,10 @@ export function useTypewriter(content: string, streaming: boolean): string {
 
   // 内容增长：登记到达速率并启动 reveal 循环
   useEffect(() => {
+    if (!streaming) {
+      syncImmediate(content);
+      return;
+    }
     const prev = targetRef.current;
     if (content === prev) return;
 
@@ -208,16 +191,7 @@ export function useTypewriter(content: string, streaming: boolean): string {
       streamStartCountRef.current = content.length - appended;
     }
     startLoop();
-  }, [content, startLoop, syncImmediate]);
-
-  // streaming 标志同步给 rAF 循环；流结束但还有积压时立刻进入 flush
-  useEffect(() => {
-    streamingRef.current = streaming;
-    if (!streaming && targetRef.current.length > displayedRef.current.length) {
-      charAccumRef.current = 0;
-      startLoop();
-    }
-  }, [streaming, startLoop]);
+  }, [content, streaming, startLoop, syncImmediate]);
 
   // 卸载清理
   useEffect(() => () => {
