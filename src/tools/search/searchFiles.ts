@@ -12,6 +12,7 @@ import { ToolAccesses } from "../access.js";
 import { hashlineAnchor } from "../file/hashline.js";
 import { visitBoundUtf8Lines } from "../file/safeFileIo.js";
 import type { Tool, ToolContext } from "../types.js";
+import { CancellableRegexMatcher, maxRegexBatchLines, maxRegexQueryBytes, RegexExecutionError, regexBatchTargetBytes } from "./regexMatcher.js";
 
 export interface SearchFilesArgs {
   query: string;
@@ -78,7 +79,7 @@ export function createSearchFilesTool(context: ToolContext): Tool<SearchFilesArg
     parameters: {
       type: "object",
       properties: {
-        query: { type: "string", minLength: 1, description: "Literal text or regular expression to search for." },
+        query: { type: "string", minLength: 1, description: "Literal text or JavaScript regular expression (up to 64 KiB) to search for." },
         mode: { type: "string", enum: ["literal", "regex"], description: "Search interpretation. Defaults to literal." },
         path: { type: "string", minLength: 1, description: "Workspace-relative directory to search. Defaults to the workspace root." },
         glob: { type: "string", minLength: 1, description: "Optional glob matched against workspace-relative file paths." },
@@ -96,7 +97,14 @@ export function createSearchFilesTool(context: ToolContext): Tool<SearchFilesArg
     resolveExecution(args) {
       const searchRoot = resolveWorkspaceDirectory(context.workspaceRoot, args.path ?? ".", context.ignore);
       const relativeRoot = toWorkspaceRelative(context.workspaceRoot, searchRoot).split(path.sep).join("/");
-      const matcher = createMatcher(args.query, args.mode ?? "literal", args.caseSensitive ?? true);
+      const mode = args.mode ?? "literal";
+      const caseSensitive = args.caseSensitive ?? true;
+      // Preserve preparation-time syntax validation, but never execute regex on the Host.
+      if (mode === "regex") {
+        if (Buffer.byteLength(args.query, "utf8") > maxRegexQueryBytes) throw new RegexExecutionError("Grep regex exceeds its 64 KiB pattern limit.");
+        new RegExp(args.query, caseSensitive ? "u" : "iu");
+      }
+      const literalMatcher = mode === "literal" ? createLiteralMatcher(args.query, caseSensitive) : undefined;
       const glob = args.glob?.trim();
       if (args.glob !== undefined && !glob) throw new Error("Grep requires a non-empty glob.");
       if (glob) path.matchesGlob("validation-path", glob);
@@ -127,79 +135,106 @@ export function createSearchFilesTool(context: ToolContext): Tool<SearchFilesArg
           let hasMore = false;
           let stopSearch = false;
 
-          for (const file of candidates.slice(0, maxScannedFiles)) {
-            signal?.throwIfAborted();
-            scannedFiles += 1;
-            const before: SearchContextLine[] = [];
-            const pending: Array<{ match: SearchFilesMatch; remaining: number }> = [];
-            const matchesBeforeFile = matches.length;
-            const matchedLinesBeforeFile = matchedLines;
-            const hasMoreBeforeFile: boolean = hasMore;
-            try {
-              await visitBoundUtf8Lines(resolveWorkspacePath(context.workspaceRoot, file, context.ignore), (line, lineNumber) => {
-                for (const item of pending) {
-                  if (item.remaining < 1) continue;
-                  item.match.after.push({ line: lineNumber, text: line });
-                  item.remaining -= 1;
-                }
-                const hit = matcher(line);
-                if (hit !== undefined) {
-                  if (matchedLines >= offset + limit) {
-                    hasMore = true;
-                  } else if (matchedLines >= offset) {
-                    const match: SearchFilesMatch = {
-                      path: file,
-                      line: lineNumber,
-                      column: hit + 1,
-                      anchor: hashlineAnchor(line, lineNumber),
-                      text: line,
-                      before: [...before],
-                      after: []
-                    };
-                    matches.push(match);
-                    if (contextLines > 0) pending.push({ match, remaining: contextLines });
+          const regexMatcher = mode === "regex"
+            ? await CancellableRegexMatcher.create(args.query, caseSensitive ? "u" : "iu", signal)
+            : undefined;
+          try {
+            for (const file of candidates.slice(0, maxScannedFiles)) {
+              signal?.throwIfAborted();
+              scannedFiles += 1;
+              const before: SearchContextLine[] = [];
+              const pending: Array<{ match: SearchFilesMatch; remaining: number }> = [];
+              const matchesBeforeFile = matches.length;
+              const matchedLinesBeforeFile = matchedLines;
+              const hasMoreBeforeFile: boolean = hasMore;
+              try {
+                const visitLine = (line: string, lineNumber: number, hit: number | undefined): boolean | void => {
+                  for (const item of pending) {
+                    if (item.remaining < 1) continue;
+                    item.match.after.push({ line: lineNumber, text: line });
+                    item.remaining -= 1;
                   }
-                  matchedLines += 1;
-                }
-                before.push({ line: lineNumber, text: line });
-                if (before.length > contextLines) before.shift();
-                if (hasMore && pending.every((item) => item.remaining === 0)) {
-                  stopSearch = true;
-                  return false;
-                }
-              }, signal);
-            } catch (error) {
-              if (signal?.aborted) throw error;
-              matches.length = matchesBeforeFile;
-              matchedLines = matchedLinesBeforeFile;
-              hasMore = hasMoreBeforeFile;
-              stopSearch = false;
-              skippedFiles.push(file);
+                  if (hit !== undefined) {
+                    if (matchedLines >= offset + limit) {
+                      hasMore = true;
+                    } else if (matchedLines >= offset) {
+                      const match: SearchFilesMatch = {
+                        path: file,
+                        line: lineNumber,
+                        column: hit + 1,
+                        anchor: hashlineAnchor(line, lineNumber),
+                        text: line,
+                        before: [...before],
+                        after: []
+                      };
+                      matches.push(match);
+                      if (contextLines > 0) pending.push({ match, remaining: contextLines });
+                    }
+                    matchedLines += 1;
+                  }
+                  before.push({ line: lineNumber, text: line });
+                  if (before.length > contextLines) before.shift();
+                  if (hasMore && pending.every((item) => item.remaining === 0)) {
+                    stopSearch = true;
+                    return false;
+                  }
+                };
+                const batch: Array<{ text: string; line: number }> = [];
+                let batchBytes = 0;
+                const flushBatch = async (): Promise<boolean | void> => {
+                  if (!regexMatcher || !batch.length) return;
+                  const lines = batch.splice(0);
+                  batchBytes = 0;
+                  const indexes = await regexMatcher.match(lines.map((line) => line.text), {
+                    skipMatches: Math.max(0, offset - matchedLines),
+                    remainingMatches: Math.max(0, offset + limit - Math.max(offset, matchedLines)),
+                    contextLines,
+                    remainingContext: Math.max(0, ...pending.map((item) => item.remaining)),
+                    hasMore
+                  });
+                  for (const [index, hit] of indexes.entries()) {
+                    const line = lines[index]!;
+                    if (visitLine(line.text, line.line, hit) === false) return false;
+                  }
+                  if (indexes.length !== lines.length) throw new RegexExecutionError("Grep regex worker stopped before the pagination boundary.");
+                };
+                await visitBoundUtf8Lines(resolveWorkspacePath(context.workspaceRoot, file, context.ignore), (line, lineNumber) => {
+                  if (literalMatcher) return visitLine(line, lineNumber, literalMatcher(line));
+                  batch.push({ text: line, line: lineNumber });
+                  batchBytes += Buffer.byteLength(line, "utf8");
+                  if (batch.length >= maxRegexBatchLines || batchBytes >= regexBatchTargetBytes) return flushBatch();
+                }, signal, regexMatcher ? flushBatch : undefined);
+              } catch (error) {
+                if (signal?.aborted || error instanceof RegexExecutionError) throw error;
+                matches.length = matchesBeforeFile;
+                matchedLines = matchedLinesBeforeFile;
+                hasMore = hasMoreBeforeFile;
+                stopSearch = false;
+                skippedFiles.push(file);
+              }
+              if (stopSearch) break;
             }
-            if (stopSearch) break;
-          }
 
-          return {
-            matches,
-            offset,
-            limit,
-            hasMore,
-            nextOffset: hasMore ? offset + matches.length : undefined,
-            scannedFiles,
-            skippedFiles: skippedFiles.length > 0 ? skippedFiles : undefined,
-            fileLimitReached: fileLimitReached || undefined
-          };
+            return {
+              matches,
+              offset,
+              limit,
+              hasMore,
+              nextOffset: hasMore ? offset + matches.length : undefined,
+              scannedFiles,
+              skippedFiles: skippedFiles.length > 0 ? skippedFiles : undefined,
+              fileLimitReached: fileLimitReached || undefined
+            };
+          } finally {
+            await regexMatcher?.close();
+          }
         }
       };
     }
   };
 }
 
-function createMatcher(query: string, mode: "literal" | "regex", caseSensitive: boolean): (line: string) => number | undefined {
-  if (mode === "regex") {
-    const expression = new RegExp(query, caseSensitive ? "u" : "iu");
-    return (line) => expression.exec(line)?.index;
-  }
+function createLiteralMatcher(query: string, caseSensitive: boolean): (line: string) => number | undefined {
   const needle = caseSensitive ? query : query.toLocaleLowerCase();
   return (line) => {
     const index = (caseSensitive ? line : line.toLocaleLowerCase()).indexOf(needle);

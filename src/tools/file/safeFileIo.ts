@@ -57,11 +57,13 @@ const maxStreamedLineBytes = 1024 * 1024;
 /**
  * 按行流式读取普通文件；不会因为文件总体很大而把全文放进内存。
  * 回调返回 false 时安全停止，但仍会复核路径与已打开句柄是否指向同一版本。
+ * 可选 drain 用于批量异步访问：在读取边界、后续行校验失败之前和最终版本复核之前清空缓冲。
  */
 export async function visitBoundUtf8Lines(
   filePath: string,
-  visit: (line: string, lineNumber: number) => boolean | void,
-  signal?: AbortSignal
+  visit: (line: string, lineNumber: number) => boolean | void | Promise<boolean | void>,
+  signal?: AbortSignal,
+  drain?: () => boolean | void | Promise<boolean | void>
 ): Promise<Utf8LineVisitResult> {
   signal?.throwIfAborted();
   const handle = await openBoundRegularFile(filePath);
@@ -80,6 +82,7 @@ export async function visitBoundUtf8Lines(
       position += result.bytesRead;
       pending += decoder.write(chunk.subarray(0, result.bytesRead));
       if (Buffer.byteLength(pending, "utf8") > maxStreamedLineBytes && !pending.includes("\n")) {
+        if (drain && await drain() === false) { completed = false; break; }
         throw new Error(`File contains a line exceeding the ${String(maxStreamedLineBytes)}-byte streamed line limit.`);
       }
       let newline = pending.indexOf("\n");
@@ -88,16 +91,19 @@ export async function visitBoundUtf8Lines(
         const rawLine = pending.slice(0, newline);
         pending = pending.slice(newline + 1);
         if (Buffer.byteLength(rawLine, "utf8") > maxStreamedLineBytes) {
+          if (drain && await drain() === false) { completed = false; break; }
           throw new Error(`File contains a line exceeding the ${String(maxStreamedLineBytes)}-byte streamed line limit.`);
         }
         lineNumber += 1;
         const line = rawLine.endsWith("\r") ? rawLine.slice(0, -1) : rawLine;
-        if (visit(line, lineNumber) === false) {
+        const continuation = visit(line, lineNumber);
+        if ((continuation instanceof Promise ? await continuation : continuation) === false) {
           completed = false;
           break;
         }
         newline = pending.indexOf("\n");
       }
+      if (completed && drain && await drain() === false) completed = false;
       if (!completed) break;
     }
     if (completed) {
@@ -107,10 +113,14 @@ export async function visitBoundUtf8Lines(
           throw new Error(`File contains a line exceeding the ${String(maxStreamedLineBytes)}-byte streamed line limit.`);
         }
         lineNumber += 1;
-        visit(pending, lineNumber);
+        const continuation = visit(pending, lineNumber);
+        if (continuation instanceof Promise) await continuation;
       }
     }
+    if (completed && drain && await drain() === false) completed = false;
+    signal?.throwIfAborted();
     const current = await assertFileBinding(filePath, handle);
+    signal?.throwIfAborted();
     if (!sameFileSnapshot(initial, current)) throw new Error("File changed while it was being read.");
     return { snapshot: current, completed, linesVisited: lineNumber };
   } finally {
