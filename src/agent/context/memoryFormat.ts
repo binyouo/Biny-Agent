@@ -137,7 +137,8 @@ export function memoryEntryExactKey(entry: Pick<MemoryEntry, "content" | "userId
   return JSON.stringify([entry.userId ?? null, normalizeMemoryContent(entry.content)]);
 }
 
-export function tokenizeMemoryText(value: string): string[] {
+/** 记忆默认只保留 64 个词；有界的全文索引可显式提供更大的词数预算。 */
+export function tokenizeMemoryText(value: string, maxTokens = 64): string[] {
   const lower = value.toLowerCase();
   const ascii = lower.split(/[^a-z0-9_$./-]+/).filter((term) => term.length >= 2);
   const cjk: string[] = [];
@@ -145,7 +146,7 @@ export function tokenizeMemoryText(value: string): string[] {
     if (run.length === 1) cjk.push(run);
     for (let index = 0; index + 1 < run.length; index += 1) cjk.push(run.slice(index, index + 2));
   }
-  return [...new Set([...ascii, ...cjk])].slice(0, 64);
+  return [...new Set([...ascii, ...cjk])].slice(0, maxTokens);
 }
 
 function sanitizeStringArray(values: string[] | undefined, maxItems: number, maxChars: number): string[] {
