@@ -197,6 +197,7 @@ test("a real native worker blocked in matching is terminated before cancellation
 class FakeWorker extends EventEmitter {
   static instances: FakeWorker[] = [];
   static autoReady = true;
+  static termination: Promise<number> | undefined;
   terminateCalls = 0;
   sent: unknown[] = [];
   readonly options: workerThreads.WorkerOptions;
@@ -207,7 +208,7 @@ class FakeWorker extends EventEmitter {
     if (FakeWorker.autoReady) setImmediate(() => this.emit("message", "ready"));
   }
   postMessage(value: unknown): void { this.sent.push(value); }
-  async terminate(): Promise<number> { this.terminateCalls += 1; return 0; }
+  async terminate(): Promise<number> { this.terminateCalls += 1; return await (FakeWorker.termination ?? 0); }
 }
 
 // Only the worker boundary is replaced. No expensive crafted regex runs on the Host.
@@ -266,6 +267,40 @@ test("host stays responsive; abort/error/exit/deadline settle once and release w
     const reused = await CancellableRegexMatcher.create("x", "u");
     await reused.close();
 
+    await fixture(async (root) => {
+      await writeFile(path.join(root, "a.txt"), "x\n");
+      let finishTermination!: (code: number) => void;
+      FakeWorker.termination = new Promise<number>((resolve) => { finishTermination = resolve; });
+      const reserved = await Promise.all(Array.from({ length: 7 }, () => CancellableRegexMatcher.create("x", "u")));
+      const delayedAbort = new AbortController();
+      const delayedSearch = search(root, { query: "x", mode: "regex" }, delayedAbort.signal);
+      let settled = false;
+      void delayedSearch.then(() => { settled = true; }, () => { settled = true; });
+      const cancelled = assert.rejects(delayedSearch, { name: "AbortError" });
+      try {
+        const deadline = Date.now() + 1000;
+        while (!FakeWorker.instances.at(-1)?.sent.length) {
+          assert.ok(Date.now() < deadline, "Grep should dispatch its bounded batch");
+          await new Promise<void>((resolve) => setImmediate(resolve));
+        }
+        const delayedWorker = FakeWorker.instances.at(-1)!;
+        delayedAbort.abort();
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        assert.equal(settled, false, "Grep cancellation waits for underlying thread termination");
+        await assert.rejects(CancellableRegexMatcher.create("x", "u"), /worker limit reached/u);
+        assert.equal(delayedWorker.terminateCalls, 1);
+        finishTermination(0);
+        await cancelled;
+        assert.equal(delayedWorker.terminateCalls, 1);
+      } finally {
+        delayedAbort.abort();
+        finishTermination(0);
+        await cancelled;
+        await Promise.all(reserved.map((item) => item.close()));
+        FakeWorker.termination = undefined;
+      }
+    });
+
     FakeWorker.autoReady = false;
     const startupAbort = new AbortController();
     const startup = CancellableRegexMatcher.create("x", "u", startupAbort.signal);
@@ -276,5 +311,6 @@ test("host stays responsive; abort/error/exit/deadline settle once and release w
     workerThreads.Worker = original;
     syncBuiltinESMExports();
     FakeWorker.autoReady = true;
+    FakeWorker.termination = undefined;
   }
 });
