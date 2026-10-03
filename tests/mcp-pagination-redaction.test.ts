@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHmac } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -10,6 +11,8 @@ import { redactSensitiveValue } from "../src/utils/secrets.js";
 const cursor = Buffer.from(JSON.stringify({ page: 2, record: "fixture-page" })).toString("base64url");
 const schema = { type: "object", properties: { pageToken: { type: "string" } }, additionalProperties: false };
 const mcpResult = { context: "mcp-result" as const };
+const spacedJwtBody = `${Buffer.from('{ "alg": "HS256", "typ": "JWT" }').toString("base64url")}.${Buffer.from('{ "sub": "fixture" }').toString("base64url")}`;
+const spacedJwt = `${spacedJwtBody}.${createHmac("sha256", "fixture-only-key").update(spacedJwtBody).digest("base64url")}`;
 
 const root = await mkdtemp(path.join(os.tmpdir(), "biny-mcp-pagination-"));
 const previousAgentDir = process.env.BINY_AGENT_DIR;
@@ -57,7 +60,9 @@ try {
     "sk-fixtureCredential12345", "ghp_fixtureCredential12345", "AKIAFIXTURE12345678",
     "Bearer fixture-credential", "Basic Zml4dHVyZTpwYXNzd29yZA==",
     "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJmaXh0dXJlIn0.c2lnbmF0dXJl",
+    spacedJwt,
     "access_token=fixture-credential", '{"apiKey":"fixture-credential"}', "Cookie: session=fixture-credential",
+    '{"authorization":"fixture-credential"}', '{"cookie":"session=fixture-credential"}', '{"Proxy-Authorization":"fixture-credential"}',
     "-----BEGIN PRIVATE KEY-----\nfixture\n-----END PRIVATE KEY-----"
   ];
   for (const [index, value] of credentialValues.entries()) {
@@ -81,6 +86,7 @@ try {
     secretToken: "[redacted]", arbitraryToken: "[redacted]"
   };
   assert.deepEqual(JSON.parse(serializeToolResult(negative, mcpResult)), expectedSensitive);
+  assert.equal(JSON.parse(serializeToolResult({ nextPageToken: "page.two.fixture" }, mcpResult)).nextPageToken, "page.two.fixture", "ordinary dotted opaque continuations are preserved");
   const durableNegative = await store.executeHostCapability(input("negative"), async () => negative);
   assert.deepEqual(durableNegative, JSON.parse(JSON.stringify(expectedSensitive).replaceAll("[redacted]", "[REDACTED]")));
   assert.equal((redactSensitiveValue({ nextPageToken: cursor }) as Record<string, unknown>).nextPageToken, "[redacted]", "ordinary results do not opt in");

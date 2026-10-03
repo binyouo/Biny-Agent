@@ -55,9 +55,28 @@ export interface SensitiveValueRedactionOptions {
 export function redactMcpPaginationToken(value: string, replacement = "[redacted]"): string {
   return redactSecrets(value) !== value
     || /\bBasic\s+[A-Za-z0-9+/_=-]+/iu.test(value)
-    || /\beyJ[A-Za-z0-9_-]*\.eyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]+/u.test(value)
-    || /\b(?:authorization|proxy-authorization|cookie|set-cookie)\s*[:=]/iu.test(value)
+    || hasJwtCredentialShape(value)
+    || /\b(?:authorization|proxy-authorization|cookie|set-cookie)["']?\s*[:=]/iu.test(value)
     ? replacement : value;
+}
+
+function hasJwtCredentialShape(value: string): boolean {
+  // JWT JSON may contain whitespace, so its base64url segments need not begin
+  // with eyJ. Inspect the header/claims shape without treating ordinary dotted
+  // opaque continuations as credentials, and without verifying a signature.
+  const candidates = value.matchAll(/(?<![A-Za-z0-9_-])([A-Za-z0-9_-]+)\.([A-Za-z0-9_-]+)\.([A-Za-z0-9_-]+)(?![A-Za-z0-9_-])/gu);
+  for (const candidate of candidates) {
+    try {
+      const header: unknown = JSON.parse(Buffer.from(candidate[1]!, "base64url").toString("utf8"));
+      const claims: unknown = JSON.parse(Buffer.from(candidate[2]!, "base64url").toString("utf8"));
+      if (typeof header === "object" && header !== null && !Array.isArray(header)
+        && "alg" in header && typeof header.alg === "string" && header.alg.length > 0
+        && typeof claims === "object" && claims !== null && !Array.isArray(claims)) return true;
+    } catch {
+      // A non-JWT dotted continuation does not qualify for credential masking.
+    }
+  }
+  return false;
 }
 
 /**

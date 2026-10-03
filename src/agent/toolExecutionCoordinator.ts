@@ -47,6 +47,7 @@ import { createToolOperationId } from "../tools/types.js";
 import { resolveWorkspacePath, toWorkspaceRelative } from "../workspace/resolvePath.js";
 import type { ReasoningBlock, SessionEvent } from "../session/recorder.js";
 import { archiveToolResult, serializeToolResult, toolResultPreview } from "../session/toolResultArchive.js";
+import type { SensitiveValueRedactionOptions } from "../utils/secrets.js";
 import { projectSingleToolResultForModel } from "./toolResultProjection.js";
 import { codeModeCatalog, codeModeNestedToolNames, codeModePolicy, executeCodeModeCell, type CodeModeLimits } from "./codeMode.js";
 import type {
@@ -423,11 +424,11 @@ export class ToolExecutionCoordinator {
     }
   }
 
-  private recordAndFlush(event: SessionEvent): Promise<SessionEvent> {
+  private recordAndFlush(event: SessionEvent, resultRedactionOptions?: SensitiveValueRedactionOptions): Promise<SessionEvent> {
     const runtimeContext = this.context.runId !== undefined && this.context.turnId !== undefined
       ? { runId: this.context.runId, turnId: this.context.turnId }
       : this.context.recorder.runtimeContextSnapshot();
-    return this.context.recorder.recordAndFlush(event, runtimeContext);
+    return this.context.recorder.recordAndFlush(event, runtimeContext, resultRedactionOptions);
   }
 
   getExecutionBudgetSnapshot(): ToolExecutionBudgetSnapshot {
@@ -892,7 +893,7 @@ export class ToolExecutionCoordinator {
       operationId: metadata.operationId,
       evidence: metadata.evidence,
       auditOnly: metadata.auditOnly
-    });
+    }, { context: metadata.source === "mcp" ? "mcp-result" : undefined });
     try {
       await this.onToolResultPersisted?.();
     } catch {
