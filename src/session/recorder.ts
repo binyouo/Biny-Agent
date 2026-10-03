@@ -27,7 +27,7 @@ import {
 } from "node:fs";
 import { randomBytes } from "node:crypto";
 import path from "node:path";
-import { redactSecrets, redactSensitiveValue } from "../utils/secrets.js";
+import { redactSecrets, redactSensitiveValue, type SensitiveValueRedactionOptions } from "../utils/secrets.js";
 import { assertSessionFileSize } from "./limits.js";
 import { sessionFilePath } from "./store.js";
 import { projectSessionsDir } from "../config/paths.js";
@@ -156,13 +156,13 @@ export class SessionRecorder {
     return this.recordInternal(event, runtimeContext, true);
   }
 
-  private recordInternal(event: SessionEvent, runtimeContext: RuntimeEventContext | undefined, project = true): SessionEvent {
+  private recordInternal(event: SessionEvent, runtimeContext: RuntimeEventContext | undefined, project = true, resultRedactionOptions: SensitiveValueRedactionOptions = {}): SessionEvent {
     // 每个事件一行 JSON，便于追加写入，也方便后续按行读取和压缩。
     if (this.closed || this.closing) throw new Error(`Session recorder is already closed: ${this.sessionId}`);
     this.ensureRuntimeSequence();
     const linked = this.linkCanonicalMessage(event);
     const runtime = createRuntimeEventIdentity(this.runtimeSequence + 1, runtimeContext);
-    const safeEvent = redactSessionEvent({ ...linked, runtime });
+    const safeEvent = redactSessionEvent({ ...linked, runtime }, resultRedactionOptions);
     const createdAt = event.time ?? new Date().toISOString();
     const persistedEvent = { ...safeEvent, time: createdAt } as SessionEvent;
     const line = JSON.stringify(persistedEvent);
@@ -203,11 +203,13 @@ export class SessionRecorder {
   recordAndFlush(
     event: SessionEvent,
     /** 并发后台操作显式传自己的身份，避免临时改写 recorder 的共享上下文。 */
-    runtimeContext: RuntimeEventContext | undefined = this.runtimeContextSnapshot()
+    runtimeContext: RuntimeEventContext | undefined = this.runtimeContextSnapshot(),
+    /** Host-selected response context; never taken from tool data or event fields. */
+    resultRedactionOptions: SensitiveValueRedactionOptions = {}
   ): Promise<SessionEvent> {
     let recorded: SessionEvent;
     const current = this.persistenceBarrier.then(async () => {
-      recorded = this.recordInternal(event, runtimeContext, false);
+      recorded = this.recordInternal(event, runtimeContext, false, resultRedactionOptions);
       await this.flush();
       const runtime = recorded.runtime;
       if (runtime !== undefined) {
@@ -387,7 +389,7 @@ function redactReasoningBlocks(blocks: ReasoningBlock[] | undefined): ReasoningB
   });
 }
 
-function redactSessionEvent(event: SessionEvent): SessionEvent {
+function redactSessionEvent(event: SessionEvent, resultRedactionOptions: SensitiveValueRedactionOptions = {}): SessionEvent {
   if ("metadata" in event && event.metadata !== undefined) {
     event = { ...event, metadata: redactSensitiveValue(event.metadata) as Record<string, unknown> };
   }
@@ -426,7 +428,7 @@ function redactSessionEvent(event: SessionEvent): SessionEvent {
     };
   }
   if (event.type === "tool_result") {
-    return { ...event, result: redactSensitiveValue(event.result) };
+    return { ...event, result: redactSensitiveValue(event.result, resultRedactionOptions) };
   }
   if (event.type === "tool_execution") {
     return {
