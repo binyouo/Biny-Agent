@@ -10,7 +10,7 @@ import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { agentDir, ensureAgentDirs } from "./store.js";
-import { redactSecrets, redactSensitiveValue } from "../utils/secrets.js";
+import { redactSecrets, redactSensitiveValue, type SensitiveValueRedactionOptions } from "../utils/secrets.js";
 
 const archiveVersion = 1;
 const previewCharacters = 8_192;
@@ -46,10 +46,10 @@ export interface ToolResultArchiveEnvelope {
 }
 
 /** Returns a redacted, UTF-8 representation suitable for budget accounting. */
-export function serializeToolResult(result: unknown): string {
+export function serializeToolResult(result: unknown, options: SensitiveValueRedactionOptions = {}): string {
   if (typeof result === "string") return redactSecrets(result);
   try {
-    return JSON.stringify(redactSensitiveValue(result), jsonReplacer) ?? "null";
+    return JSON.stringify(redactSensitiveValue(result, options), jsonReplacer) ?? "null";
   } catch {
     return redactSecrets(String(result));
   }

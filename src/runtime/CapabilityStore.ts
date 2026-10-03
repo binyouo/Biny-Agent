@@ -10,6 +10,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { ToolOutcomeUnknownError, type ToolOutcomeUnknownReason } from "../tools/types.js";
 import type { RuntimeEventAuthority } from "./RuntimeAuthority.js";
+import { redactMcpPaginationToken } from "../utils/secrets.js";
 
 export type CapabilityOwnerType = "host" | "client";
 export type CapabilityRegistrationStatus = "registered" | "replaced" | "admitted" | "rejected" | "released";
@@ -492,7 +493,11 @@ export class CapabilityStore {
     if (invocation.status === "result") return invocation;
     assertInvocationCanFinish(invocation.status, invocationId);
     const now = new Date().toISOString();
-    const encoded = encode(redact(result), maxPayloadBytes);
+    const registration = this.requireRegistration(invocation.registrationId);
+    const context = registration.ownerType === "host" && registration.ownerId === "host"
+      && registration.capabilityName.startsWith("host:mcp:") ? "mcp-result" : undefined;
+    const redactedResult = redact(result, context);
+    const encoded = encode(redactedResult, maxPayloadBytes);
     return this.withEvent({
       eventId: "capability:" + invocationId + ":result",
       sessionId: invocation.sessionId ?? "capability:" + invocation.registrationId,
@@ -500,7 +505,7 @@ export class CapabilityStore {
       runId: invocationId,
       turnId: invocation.turnId ?? invocationId,
       eventType: "capability.invocation.result",
-      payload: { result: redact(result) },
+      payload: { result: redactedResult },
       createdAt: now
     }, () => {
       this.database.prepare("UPDATE capability_invocations SET status = 'result', result_json = ?, updated_at = ? WHERE invocation_id = ?").run(encoded, now, invocationId);
@@ -885,12 +890,17 @@ function matchesType(value: unknown, type: string): boolean {
   return typeof value === type;
 }
 
-function redact(value: unknown): unknown {
+function redact(value: unknown, context?: "mcp-result" | "mcp-structured-content"): unknown {
   if (Array.isArray(value)) return value.map((item) => redact(item));
   if (!value || typeof value !== "object") return value;
   const output: Record<string, unknown> = {};
   for (const [key, child] of Object.entries(value)) {
-    output[key] = /(api.?key|token|secret|password|authorization|cookie)/iu.test(key) ? "[REDACTED]" : redact(child);
+    if (context && key === "nextPageToken" && typeof child === "string") {
+      output[key] = redactMcpPaginationToken(child, "[REDACTED]");
+      continue;
+    }
+    const childContext = context === "mcp-result" && key === "structuredContent" ? "mcp-structured-content" : undefined;
+    output[key] = /(api.?key|token|secret|password|authorization|cookie)/iu.test(key) ? "[REDACTED]" : redact(child, childContext);
   }
   return output;
 }

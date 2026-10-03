@@ -292,7 +292,7 @@ export class ToolExecutionCoordinator {
             this.toolImages.delete(toolCallId);
             if (image) this.imageBytes -= Buffer.byteLength(image.data, "base64");
             return {
-              content: [{ type: "text", text: serializeToolResult(result) }, ...(!error && image ? [image] : [])],
+              content: [{ type: "text", text: serializeToolResult(result, { context: source === "mcp" ? "mcp-result" : undefined }) }, ...(!error && image ? [image] : [])],
               details: result,
               isError: Boolean(error)
             };
@@ -651,6 +651,7 @@ export class ToolExecutionCoordinator {
             evidence: latestEvidence,
             auditOnly: options.auditOnly || auditOnly || neverStarted && status === "cancelled",
             scriptResult: options.script,
+            source,
             outcomeUnknownReason
           }
         );
@@ -872,12 +873,13 @@ export class ToolExecutionCoordinator {
       evidence?: string;
       auditOnly?: boolean;
       scriptResult?: boolean;
+      source?: ToolSource;
     } = {}
   ): Promise<unknown> {
-    const modelResult = metadata.scriptResult ? result : await this.applyToolResultBudget(call, sequence, result);
+    const modelResult = metadata.scriptResult ? result : await this.applyToolResultBudget(call, sequence, result, metadata.source);
     // 模型侧预算只改变返回值；session、实时界面和归档都以工具实际产出的结果为事实。
     // 否则一次预算溢出会把“模型看见的引用”误当成工具真正返回的内容，后续恢复只能看到二次包装。
-    const persistedResult = await this.outlineToolResultForPersistence(call, sequence, result);
+    const persistedResult = await this.outlineToolResultForPersistence(call, sequence, result, metadata.source);
     await this.recordAndFlush({
       type: "tool_result",
       tool: call.name,
@@ -966,11 +968,13 @@ export class ToolExecutionCoordinator {
   private applyToolResultBudget(
     call: { id: string; name: string; args: unknown },
     sequence: number,
-    result: unknown
+    result: unknown,
+    source?: ToolSource
   ): Promise<unknown> {
     const current = this.toolResultBudgetTail.then(async () => {
       const budget = this.context.config.context.maxTurnToolResultBytes;
-      const rawOutput = serializeToolResult(result);
+      const redactionOptions = { context: source === "mcp" ? "mcp-result" as const : undefined };
+      const rawOutput = serializeToolResult(result, redactionOptions);
       const rawResultBytes = Buffer.byteLength(rawOutput, "utf8");
       const modelResult = await projectSingleToolResultForModel(call.name, call.args, result, {
         toolCallId: call.id,
@@ -985,7 +989,7 @@ export class ToolExecutionCoordinator {
           output
         })
       });
-      const output = serializeToolResult(modelResult);
+      const output = serializeToolResult(modelResult, redactionOptions);
       const resultBytes = Buffer.byteLength(output, "utf8");
       this.producedToolResultBytes += rawResultBytes;
       const remaining = Math.max(0, budget - this.inlineToolResultBytes);
@@ -1055,13 +1059,14 @@ export class ToolExecutionCoordinator {
   private async outlineToolResultForPersistence(
     call: { id: string; name: string },
     sequence: number,
-    modelResult: unknown
+    modelResult: unknown,
+    source?: ToolSource
   ): Promise<unknown> {
     // 工具本身若已经返回可取回的归档引用，不再重复包装它。
     if (typeof modelResult === "object" && modelResult !== null && (modelResult as { archived?: unknown }).archived === true) {
       return modelResult;
     }
-    const output = serializeToolResult(modelResult);
+    const output = serializeToolResult(modelResult, { context: source === "mcp" ? "mcp-result" : undefined });
     const resultBytes = Buffer.byteLength(output, "utf8");
     if (resultBytes <= inlineResultPersistMaxBytes) return modelResult;
     const preview = toolResultPreview(output, maxArchivedPreviewCharacters);
