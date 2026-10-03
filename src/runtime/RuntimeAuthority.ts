@@ -200,6 +200,27 @@ export class RuntimeEventAuthority implements RuntimeEventSink {
     }
   }
 
+  /** 浏览持久化投影不创建数据库、不迁移 schema，也不修复在途执行状态。 */
+  static async openReadOnly(persistenceRoot: string): Promise<RuntimeEventAuthority | undefined> {
+    const databasePath = path.join(agentDir(persistenceRoot), "runtime.sqlite");
+    try {
+      await fs.stat(databasePath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+      throw error;
+    }
+    const database = new DatabaseSync(databasePath, { readOnly: true, timeout: busyTimeoutMs });
+    const authority = new RuntimeEventAuthority(path.resolve(persistenceRoot), database, workspaceIdForRoot(persistenceRoot));
+    try {
+      const revision = authority.schemaRevision();
+      if (revision !== schemaVersion) throw new Error(`Runtime schema revision ${String(revision)} requires an explicit runtime startup before reading projections.`);
+      return authority;
+    } catch (error) {
+      authority.close();
+      throw error;
+    }
+  }
+
   /** 让 CommandRuntime 把自身的 SessionRecorder 绑定到同一 authority。 */
   asSink(): RuntimeEventSink {
     return this;

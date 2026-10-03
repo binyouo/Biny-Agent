@@ -1,6 +1,6 @@
 /** 浏览与执行分离；使用真实配置、目录、历史和 Host，外部模型不参与此测试。 */
 import assert from "node:assert/strict";
-import { access, mkdtemp, rm } from "node:fs/promises";
+import { access, mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -13,7 +13,12 @@ import { DesktopUserDataStore } from "../src/desktop/electron/main/DesktopUserDa
 import { runtimeHostPaths, startRuntimeHost } from "../src/runtime/RuntimeHost.js";
 import { createInteractiveAgentHost } from "../src/runtime/InteractiveAgentRuntime.js";
 import { SessionRecorder } from "../src/session/recorder.js";
-import { ensureAgentDirs } from "../src/session/store.js";
+import { agentDir, ensureAgentDirs } from "../src/session/store.js";
+import { RuntimeEventAuthority } from "../src/runtime/RuntimeAuthority.js";
+import { GoalGraphStore } from "../src/runtime/GoalGraphStore.js";
+import { SessionGoalStore } from "../src/runtime/SessionGoalStore.js";
+import { TodoStore } from "../src/session/todoStore.js";
+import { DurableTaskRunStore } from "../src/runtime/TaskRunStore.js";
 
 test("浏览多个项目、工具目录和历史不创建 Runtime Host", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "biny-desktop-host-browse-"));
@@ -46,6 +51,40 @@ test("浏览多个项目、工具目录和历史不创建 Runtime Host", async (
       const document = await manager.openSession(project.id, recorder.sessionId);
       assert.equal(document.runtimeSnapshot, undefined);
       assert.ok(document.events.some((event) => event.type === "user_message" && event.content === "已有历史"));
+      const todos = new TodoStore(dataRoot, recorder.sessionId);
+      await todos.replace([{ content: "保存的清单", status: "pending" }]);
+      assert.deepEqual(await manager.planProjection(project.id, recorder.sessionId), {
+        sessionId: recorder.sessionId, plans: [], todos: todos.list(), goal: undefined
+      });
+      const empty = await manager.runtimeProjection(project.id);
+      assert.deepEqual(empty.graphs, []);
+      assert.deepEqual(empty.tasks, { tasks: [], nextCursor: undefined, hasMore: false });
+      await assert.rejects(access(path.join(agentDir(dataRoot), "runtime.sqlite")), { code: "ENOENT" });
+
+      // Given 已落盘的目标和计划，When 冷态查询，Then 返回原事实且不创建执行者或改写数据库。
+      const authority = await RuntimeEventAuthority.open(dataRoot, { backfillLegacySessions: false });
+      const graphs = await GoalGraphStore.open(dataRoot, authority);
+      const goals = await SessionGoalStore.open(dataRoot, authority);
+      const tasks = await DurableTaskRunStore.open(dataRoot, authority);
+      const task = tasks.create({ sessionId: recorder.sessionId, task: { prompt: "已保存的任务" } });
+      const goal = goals.set(recorder.sessionId, "已保存的目标");
+      const graph = graphs.createSupervisedGraph({ supervisorSessionId: recorder.sessionId, nodes: [
+        { nodeKey: "read", prompt: "读取文件", intent: { prompt: "读取文件" } }
+      ], payload: { objective: "已保存的计划" } });
+      goals.close();
+      tasks.close();
+      graphs.close();
+      authority.close();
+      const before = await readFile(authority.databasePath);
+      const projection = await manager.planProjection(project.id, recorder.sessionId);
+      assert.deepEqual(JSON.parse(JSON.stringify(projection.goal)), JSON.parse(JSON.stringify(goal)));
+      assert.equal(projection.plans[0]?.graphId, graph.graphId);
+      assert.deepEqual(projection.todos, todos.list());
+      const savedRuntime = await manager.runtimeProjection(project.id);
+      assert.deepEqual(savedRuntime.graphs, [graph]);
+      assert.deepEqual(savedRuntime.tasks, { tasks: [{ ...task, attempts: [] }], nextCursor: undefined, hasMore: false });
+      await assert.rejects(manager.planProjection(project.id, "missing-session"));
+      assert.deepEqual(await readFile(authority.databasePath), before, "读取不得迁移或写入运行事实");
       await assert.rejects(access(runtimeHostPaths(dataRoot).registrationPath), { code: "ENOENT" });
       await assert.rejects(access(runtimeHostPaths(dataRoot).lockPath), { code: "ENOENT" });
     }
@@ -101,6 +140,9 @@ test("工作区快照读取途中 Host 回收，不得由后续投影查询重�
     await assert.rejects(access(runtimeHostPaths(dataRoot).registrationPath), { code: "ENOENT" }, "投影查询不得重新创建 owner");
     assert.equal(cold.runtime, undefined);
     assert.equal(cold.runtimeProjection, undefined);
+    const projection = await manager.runtimeProjection(project.id);
+    assert.ok(Array.isArray(projection.graphs));
+    await assert.rejects(access(runtimeHostPaths(dataRoot).registrationPath), { code: "ENOENT" });
   } finally {
     configStore.load = loadConfig;
     releaseRead();

@@ -61,7 +61,7 @@ import type { UserInputResponse } from "../../../runtime/userInput.js";
 import type { BrowserAutomationEndpoint } from "../../../tools/browser.js";
 import { createToolRegistry } from "../../../tools/registry.js";
 import { executeRuntimeCommand, runtimeCommandOperation } from "../../../runtime/commands.js";
-import type { SessionGoalExpected } from "../../../runtime/SessionGoalStore.js";
+import { SessionGoalStore, type SessionGoalExpected } from "../../../runtime/SessionGoalStore.js";
 import {
   createInteractiveAgentHost,
   type AgentRunOutcome,
@@ -102,7 +102,7 @@ import {
 } from "../../../personalization/index.js";
 import { activeRun, isTerminalRunEvent, pendingPermission, runtimeIsBusy, type AgentHostEvent, type AgentRuntimeUpdate, type InteractiveRuntimeSnapshot } from "../../../runtime/agentEvents.js";
 import { evaluateTaskRetry } from "../../../runtime/TaskRetryPolicy.js";
-import { isTaskRunTerminal, type TaskRetrySafety, type TaskRunWithAttempts } from "../../../runtime/TaskRunStore.js";
+import { DurableTaskRunStore, isTaskRunTerminal, type TaskRetrySafety, type TaskRunWithAttempts } from "../../../runtime/TaskRunStore.js";
 import { splitAttachmentReferences, withAttachmentReferences } from "../../attachmentReferences.js";
 import type {
   DesktopAttachment,
@@ -161,8 +161,9 @@ import type {
 } from "../../protocol.js";
 import type { McpServerDetails, McpServerStatus } from "../../../extensions/mcp.js";
 import type { AutomationCreateInput } from "../../../runtime/AutomationScheduler.js";
-import type { GraphNodeInput } from "../../../runtime/GoalGraphStore.js";
-import type { WorktreeStatusView } from "../../../runtime/host/worktree.js";
+import { GoalGraphStore, type GraphNodeInput } from "../../../runtime/GoalGraphStore.js";
+import { CapabilityStore } from "../../../runtime/CapabilityStore.js";
+import { WorktreeManager, type WorktreeStatusView } from "../../../runtime/host/worktree.js";
 import { DesktopProjectService } from "./DesktopProjectService.js";
 import { DesktopModelLoginService, type AuthenticatedModelLogin } from "./DesktopModelLoginService.js";
 import { DesktopStateStore } from "./DesktopStateStore.js";
@@ -2321,17 +2322,24 @@ export class DesktopAgentManager {
   }
 
   async planProjection(projectId: string, sessionId: string): Promise<import("../../protocol.js").DesktopPlanProjection> {
-    const { runtime, commands } = await this.ensureRuntime(projectId);
     const project = this.projects.requireProject(projectId);
     const persistenceRoot = await this.projects.dataRoot(project);
     await resolveSessionFile(persistenceRoot, sessionId);
     const todos = new TodoStore(persistenceRoot, sessionId);
     await todos.initialize();
-    const plans = commands
-      ? commands.graphs.listGraphs().filter((graph) => graph.mode === "supervised" && graph.supervisorSessionId === sessionId).map((graph) => planStatus(commands, graph.graphId, sessionId))
-      : await requireRemoteRuntime(runtime).planList(sessionId);
-    const goal = commands ? commands.sessionGoals.get(sessionId) : await requireRemoteRuntime(runtime).sessionGoalGet(sessionId);
-    return { sessionId, plans, todos: todos.list(), goal };
+    const authority = await RuntimeEventAuthority.openReadOnly(persistenceRoot);
+    if (!authority) return { sessionId, plans: [], todos: todos.list(), goal: undefined };
+    try {
+      const graphs = await GoalGraphStore.open(persistenceRoot, authority);
+      const taskRuns = await DurableTaskRunStore.open(persistenceRoot, authority);
+      const goals = await SessionGoalStore.open(persistenceRoot, authority);
+      authority.databaseHandle().exec("BEGIN");
+      const plans = graphs.listGraphs().filter((graph) => graph.mode === "supervised" && graph.supervisorSessionId === sessionId)
+        .map((graph) => planStatus({ graphs, taskRuns }, graph.graphId, sessionId));
+      return { sessionId, plans, todos: todos.list(), goal: goals.get(sessionId) };
+    } finally {
+      authority.close();
+    }
   }
 
   /** 日期列表只需持久化任务；不得为其他项目加载模型、工具或启动调度器。 */
@@ -2353,7 +2361,37 @@ export class DesktopAgentManager {
   }
 
   async runtimeProjection(projectId: string): Promise<DesktopRuntimeProjection> {
-    return await this.readRuntimeProjection(await this.ensureRuntime(projectId));
+    const managed = await this.getRuntime(projectId, false);
+    if (managed) {
+      try {
+        return await this.readRuntimeProjection(managed);
+      } catch (error) {
+        if (!(managed.runtime instanceof RuntimeHostClient && managed.runtime.isRetired)) throw error;
+      }
+    }
+    const project = this.projects.requireProject(projectId);
+    const persistenceRoot = await this.projects.dataRoot(project);
+    const worktrees = (await new WorktreeManager(project.path, persistenceRoot).status()).map(toDesktopWorktreeStatus);
+    const authority = await RuntimeEventAuthority.openReadOnly(persistenceRoot);
+    if (!authority) return { tasks: { tasks: [], nextCursor: undefined, hasMore: false }, automations: [], pendingFires: [], goals: [], graphs: [], capabilities: [], worktrees };
+    try {
+      const tasks = await DurableTaskRunStore.open(persistenceRoot, authority);
+      const automations = await AutomationStore.open(persistenceRoot, authority);
+      const graphs = await GoalGraphStore.open(persistenceRoot, authority);
+      const capabilities = await CapabilityStore.open(persistenceRoot, authority);
+      authority.databaseHandle().exec("BEGIN");
+      return {
+        tasks: tasks.list(),
+        automations: automations.list(),
+        pendingFires: automations.listPending(),
+        goals: graphs.listGoals(),
+        graphs: graphs.listGraphs(),
+        capabilities: capabilities.list(),
+        worktrees
+      };
+    } finally {
+      authority.close();
+    }
   }
 
   private async readRuntimeProjection({ runtime, commands }: ManagedRuntime): Promise<DesktopRuntimeProjection> {

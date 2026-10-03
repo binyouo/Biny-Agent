@@ -49,6 +49,7 @@ import { createDesktopWindow, type WindowCloseDecision } from "./window.js";
 import { parseDesktopReferenceLaunch } from "./desktopReferenceLaunch.js";
 import { createComputerUseService } from "./computerUseService.js";
 import { applyCuaQaProfile } from "./cuaQaProfile.js";
+import { startRuntimeHostApp } from "./runtimeHostStartup.js";
 
 const cuaQa = applyCuaQaProfile(app);
 app.setName(cuaQa ? "Biny Cua QA" : "Biny");
@@ -65,12 +66,7 @@ const runtimeHostLaunchIndex = process.argv.indexOf("--biny-runtime-host");
 
 if (runtimeHostLaunchIndex >= 0) {
   // Host 是独立 Electron 主进程，不创建窗口或启动桌面服务；safeStorage 可直接读取同一凭据文件。
-  app.disableHardwareAcceleration();
-  void app.whenReady().then(async () => {
-    if (process.platform === "darwin") {
-      app.setActivationPolicy("prohibited");
-      app.dock?.hide();
-    }
+  void startRuntimeHostApp(app, async () => {
     const { runRuntimeHostProcess } = await import("../../../runtime/hostProcess.js");
     await runRuntimeHostProcess(process.argv.slice(runtimeHostLaunchIndex + 1), {
       createConfigStore: (_workspaceRoot, configDir) => new DesktopConfigStore(configDir ?? globalConfigDir())
