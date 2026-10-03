@@ -8,7 +8,7 @@ import { app, BrowserWindow } from "electron";
 
 const output = path.resolve(".memory-disclosure-results");
 const results = { electron: process.versions.electron, chromium: process.versions.chrome,
-  source: JSON.parse(await readFile(".memory-disclosure-build/source.json", "utf8")), variants: [] };
+  variants: [] };
 let win;
 const evaluate = (fn, ...args) => win.webContents.executeJavaScript(`(${fn.toString()})(...${JSON.stringify(args)})`);
 async function painted() {
@@ -105,12 +105,22 @@ async function metrics() {
 app.disableHardwareAcceleration();
 // Closing the baseline window must not terminate Electron before the after assertions.
 app.on("window-all-closed", () => {});
-await app.whenReady();
+const watchdog = setTimeout(() => {
+  console.error(`Renderer acceptance timed out (Electron ready: ${app.isReady()})`);
+  app.exit(1);
+}, 120_000);
+// ESM entrypoint evaluation must finish before Electron can emit ready.
+app.whenReady().then(run).catch(error => { console.error(error); app.exit(1); });
+
+async function run() {
+console.log("Electron ready; starting renderer acceptance");
 await mkdir(output, { recursive: true });
+results.source = JSON.parse(await readFile(".memory-disclosure-build/source.json", "utf8"));
 try {
   for (const phase of ["before", "after"]) {
     const file = path.resolve(".memory-disclosure-build", phase, "index.html");
     if (phase === "before" && !(await access(file).then(() => true, () => false))) continue;
+    console.log(`Rendering ${phase} fixture`);
     win = new BrowserWindow({ width: 900, height: 2200, useContentSize: true, show: true,
       webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true } });
     await win.loadFile(file);
@@ -137,6 +147,7 @@ try {
       await capture("before-dark-100-expanded");
     } else {
       for (let i = 0; i < 3; i++) {
+        console.log(`Testing disclosure ${i + 1}: native Enter/Space and pointer input`);
         await check(i, false);
         await focus(i); await key("Enter"); await check(i, true);
         await key("Space"); await check(i, false);
@@ -182,6 +193,7 @@ try {
           assert.equal(geometry[2].listStyle, "none");
           assert.equal(geometry[2].marker, '""');
           results.variants.push({ theme, scale, geometry });
+          console.log(`Verified ${theme} ${scale * 100}% geometry`);
           await capture(`after-${theme}-${scale * 100}-expanded`);
         }
       }
@@ -203,6 +215,8 @@ try {
   console.error(error);
   if (win && !win.isDestroyed()) await writeFile(path.join(output, "failure.png"), (await win.webContents.capturePage()).toPNG());
 } finally {
+  clearTimeout(watchdog);
   await writeFile(path.join(output, "results.json"), JSON.stringify(results, null, 2));
   app.exit(results.passed ? 0 : 1);
+}
 }
