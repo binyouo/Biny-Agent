@@ -4,7 +4,7 @@ import { test } from "node:test";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { once } from "node:events";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { WebSocket } from "ws";
@@ -36,6 +36,31 @@ test("built CLI reports status, reads connected tabs and installs credential-fre
     const manifest = JSON.parse(await readFile(path.join(setup.extensionPath, "manifest.json"), "utf8"));
     assert.equal(manifest.manifest_version, 3);
     assert.ok(!JSON.stringify(setup).includes(new URL(relay.pairingUrl()).searchParams.get("token")!));
+    assert.match(setup.instructions, /chrome:\/\/extensions\/.*开发者模式.*加载已解压.*保存并连接/);
+    const cliHelp = await exec(process.execPath, [path.resolve("dist/cli/index.js"), "browser", "setup", "--help"], { env: { ...process.env, BINY_AGENT_DIR: root }, timeout: 10000 });
+    assert.match(cliHelp.stdout, /--open/);
+    const opener = path.join(root, "chrome-open-fake.mjs");
+    const opened = path.join(root, "chrome-open.json");
+    await writeFile(opener, `import childProcess from "node:child_process";
+import { syncBuiltinESMExports } from "node:module";
+import { writeFileSync } from "node:fs";
+const original = childProcess.execFile;
+childProcess.execFile = (command, args, options, callback) => {
+  if (command !== "/usr/bin/open") return original(command, args, options, callback);
+  writeFileSync(${JSON.stringify(opened)}, JSON.stringify({ command, args, timeout: options.timeout }));
+  queueMicrotask(() => callback(null, "", ""));
+};
+syncBuiltinESMExports();\n`);
+    const launch = () => exec(process.execPath, ["--import", opener, path.resolve("dist/cli/index.js"), "browser", "setup", "--open", "--json"], { cwd: root, env: { ...process.env, BINY_AGENT_DIR: root }, timeout: 10000 });
+    if (process.platform === "darwin") {
+      assert.equal(JSON.parse((await launch()).stdout).extensionPath, setup.extensionPath);
+      assert.deepEqual(JSON.parse(await readFile(opened, "utf8")), { command: "/usr/bin/open", args: ["-a", "Google Chrome", "chrome://extensions/"], timeout: 5000 });
+    } else {
+      await assert.rejects(launch(), error => {
+        const result = JSON.parse((error as { stdout: string }).stdout);
+        return result.code === "unavailable" && /macOS.*chrome:\/\/extensions/.test(result.error);
+      });
+    }
   } finally { await relay.close(); await rm(root, { recursive: true, force: true }); }
 });
 

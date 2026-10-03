@@ -17,11 +17,16 @@ export class ComputerUseController {
   private generation = 0;
   private active?: AbortController;
   private tail: Promise<void> = Promise.resolve();
-  private starting?: Promise<void>;
+  // 空闲后的物理进程重建由 driver 负责；这里仅记录是否完成首次显式启动。
+  private started = false;
+  private starting?: { promise: Promise<void>; generation: number; signal: AbortSignal };
   private entries: ComputerAuditEntry[] = [];
   private readonly driver: ComputerDriver;
-  private readonly options: { now?: () => number; preview?: (frame: ComputerPreview | undefined) => void };
-  constructor(driver: ComputerDriver, options: { now?: () => number; preview?: (frame: ComputerPreview | undefined) => void } = {}) { this.driver = driver; this.options = options; }
+  private readonly options: { enabled?: boolean; now?: () => number; preview?: (frame: ComputerPreview | undefined) => void };
+  constructor(driver: ComputerDriver, options: { enabled?: boolean; now?: () => number; preview?: (frame: ComputerPreview | undefined) => void } = {}) {
+    this.driver = driver; this.options = options;
+    if (options.enabled) this.snapshot.state = "ready";
+  }
   status(): ComputerStatus { return { ...this.snapshot }; }
   audit(): ComputerAuditEntry[] { return this.entries.map(entry => ({ ...entry, target: { ...entry.target } })); }
   setLogging(enabled: boolean): void { this.snapshot.actionLogging = enabled; if (!enabled) this.entries = []; }
@@ -32,17 +37,48 @@ export class ComputerUseController {
   }
   async enable(): Promise<void> {
     if (this.snapshot.state !== "disabled") return;
-    if (!this.starting) {
-      const generation = this.generation;
-      this.starting = this.driver.start().then(async () => {
-        if (generation !== this.generation) { await this.driver.stop(); throw new Error("computer_start_cancelled"); }
-        this.snapshot = { ...this.snapshot, state: "ready", diagnostic: undefined, lastOutcome: "not-dispatched" };
-      }).catch((error: unknown) => { if (generation === this.generation) this.snapshot.diagnostic = error instanceof Error ? error.message : String(error); throw error; }).finally(() => { this.starting = undefined; });
+    this.generation++;
+    this.snapshot = { ...this.snapshot, state: "ready", diagnostic: undefined, lastOutcome: "not-dispatched" };
+  }
+  private async ensureStarted(signal: AbortSignal, generation: number): Promise<void> {
+    signal.throwIfAborted();
+    if (this.started) return;
+    const previous = this.starting;
+    if (previous && (previous.generation !== generation || previous.signal.aborted)) {
+      // 等旧启动清理后再接纳新启动，避免迟到的 stop 关闭新请求正在使用的实例。
+      await this.waitForStartup(previous.promise.catch(() => undefined), signal);
+      signal.throwIfAborted();
+      if (generation !== this.generation) throw new Error("computer_start_cancelled");
+      return await this.ensureStarted(signal, generation);
     }
-    await this.starting;
+    if (!this.starting) {
+      const promise = this.driver.start().then(async () => {
+        if (signal.aborted || generation !== this.generation) {
+          await this.driver.stop();
+          throw new Error("computer_start_cancelled");
+        }
+        this.started = true;
+        this.snapshot.diagnostic = undefined;
+      }).catch((error: unknown) => {
+        if (!signal.aborted && generation === this.generation) this.snapshot.diagnostic = error instanceof Error ? error.message : String(error);
+        throw error;
+      }).finally(() => { if (this.starting?.promise === promise) this.starting = undefined; });
+      this.starting = { promise, generation, signal };
+    }
+    await this.waitForStartup(this.starting.promise, signal);
+  }
+  private async waitForStartup(startup: Promise<void>, signal: AbortSignal): Promise<void> {
+    let abort: (() => void) | undefined;
+    try {
+      await Promise.race([startup, new Promise<never>((_resolve, reject) => {
+        abort = () => reject(signal.reason ?? new DOMException("This operation was aborted", "AbortError"));
+        signal.addEventListener("abort", abort, { once: true });
+        if (signal.aborted) abort();
+      })]);
+    } finally { if (abort) signal.removeEventListener("abort", abort); }
   }
   async disable(): Promise<void> {
-    this.invalidate(); this.entries = []; this.snapshot = { ...this.snapshot, state: "disabled", owner: undefined, foregroundAllowed: false }; this.setPreview(false);
+    this.invalidate(); this.started = false; this.entries = []; this.snapshot = { ...this.snapshot, state: "disabled", owner: undefined, foregroundAllowed: false }; this.setPreview(false);
     await this.driver.stop();
   }
   control(control: "pause" | "resume" | "takeover"): void {
@@ -52,7 +88,7 @@ export class ComputerUseController {
   release(session: string): void { if (this.snapshot.owner === session) { this.invalidate(); this.snapshot.owner = undefined; } }
   setPreview(enabled: boolean): void { this.snapshot.preview = enabled; if (!enabled) this.options.preview?.(undefined); }
   setForeground(enabled: boolean): void { this.snapshot.foregroundAllowed = enabled; this.invalidate(); }
-  crashed(): void { this.invalidate(); this.snapshot.state = "disabled"; this.snapshot.owner = undefined; this.snapshot.diagnostic = "driver_exited"; this.snapshot.lastOutcome = "unknown"; }
+  crashed(): void { this.invalidate(); this.started = false; this.snapshot.state = "disabled"; this.snapshot.owner = undefined; this.snapshot.diagnostic = "driver_exited"; this.snapshot.lastOutcome = "unknown"; }
   private invalidate(): void { this.generation++; this.capture = undefined; this.active?.abort(); this.options.preview?.(undefined); }
   private now(): number { return (this.options.now ?? Date.now)(); }
   private enqueue<T>(session: string, signal: AbortSignal | undefined, operation: (signal: AbortSignal, generation: number) => Promise<T>): Promise<T> {
@@ -65,7 +101,12 @@ export class ComputerUseController {
       this.snapshot.owner = session;
       const controller = new AbortController(); this.active = controller;
       const abort = (): void => controller.abort(); signal?.addEventListener("abort", abort, { once: true });
-      try { return await operation(controller.signal, generation); }
+      try {
+        await this.ensureStarted(controller.signal, generation);
+        controller.signal.throwIfAborted();
+        if (generation !== this.generation || this.snapshot.state !== "ready") throw new Error("computer_start_cancelled");
+        return await operation(controller.signal, generation);
+      }
       finally { signal?.removeEventListener("abort", abort); if (this.active === controller) this.active = undefined; }
     });
     this.tail = run.then(() => undefined, () => undefined); return run;

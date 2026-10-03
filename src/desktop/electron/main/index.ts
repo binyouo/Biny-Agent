@@ -267,7 +267,7 @@ async function startDesktopApplication(): Promise<void> {
   // 恢复检查必须早于 IPC 注册和窗口开放；无法自动恢复时保留应用可用来展示设置错误，
   // 但同一个 transaction 实例会阻止所有新工作入口。
   await settings.recoverAtStartup();
-  const computerUse = createComputerUseService(browser, () => mainWindow, () => settings.assertRuntimeReady());
+  const computerUse = await createComputerUseService(browser, () => mainWindow, () => settings.assertRuntimeReady(), configStore);
   const pauseComputer = (): void => { if (computerUse?.controller.status().state !== "disabled") computerUse?.controller.control("pause"); };
   powerMonitor.on("lock-screen", pauseComputer);
   powerMonitor.on("suspend", pauseComputer);
@@ -442,7 +442,6 @@ async function startDesktopApplication(): Promise<void> {
       : path.join(app.getAppPath(), "build/icon-master.png"));
     if (!sourceIcon.isEmpty()) {
       const icon = sourceIcon.resize({ width: 18, height: 18 });
-      icon.setTemplateImage(true);
       activityTray = new Tray(icon);
       activityTray.setToolTip("Biny 活动记录");
       const openMainWindow = (): void => {

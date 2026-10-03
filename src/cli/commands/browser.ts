@@ -1,7 +1,7 @@
 /** 浏览器连接的文本/JSON CLI，与模型工具共享同一个本地服务。 */
 import type { Command } from "commander";
 import { requestBrowserRelay } from "../../browser/relayClient.js";
-import { prepareBrowserExtension } from "../../browser/extensionAssets.js";
+import { openChromeExtensionManager, prepareBrowserExtension } from "../../browser/extensionAssets.js";
 import { BrowserRelayError, type RelayMethod } from "../../browser/relayProtocol.js";
 import { redactSecrets } from "../../utils/secrets.js";
 import { transferBrowserFile } from "../../browser/transfers.js";
@@ -50,10 +50,11 @@ export function registerBrowserCommands(program: Command): void {
         console.log(JSON.stringify(result, null, options.json ? undefined : 2));
       } catch (error) { fail(error, options.json); }
     });
-  browser.command("setup").option("--json", "print JSON").action(async (options: { json?: boolean }) => {
+  browser.command("setup").option("--open", "open Chrome extension manager on macOS").option("--json", "print JSON").action(async (options: { open?: boolean; json?: boolean }) => {
     try {
       const extensionPath = await prepareBrowserExtension();
-      const instructions = "在 Chrome 扩展管理中开启开发者模式，加载此目录。Biny 设置 → 浏览器 → 复制配对地址，再粘贴到扩展设置。";
+      if (options.open) await openChromeExtensionManager();
+      const instructions = "在 chrome://extensions/ 开启开发者模式，通过「加载已解压的扩展程序」加载此目录。Biny 设置 → 浏览器 → 复制配对地址，再粘贴到扩展设置并选择「保存并连接」。";
       console.log(options.json ? JSON.stringify({ extensionPath, instructions }) : `${extensionPath}\n${instructions}`);
     } catch (error) { fail(error, options.json); }
   });

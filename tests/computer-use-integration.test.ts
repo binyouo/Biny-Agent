@@ -13,7 +13,7 @@ import { SessionRecorder } from "../src/session/recorder.js";
 import { ensureAgentDirs } from "../src/session/store.js";
 import { defaultConfig } from "../src/config/schema.js";
 import { ToolRegistry } from "../src/tools/registry.js";
-import { parseCuaReply, CuaWorkerDriver } from "../src/computer/cuaDriver.js";
+import { parseCuaReply, CuaProcessDriver } from "../src/computer/cuaDriver.js";
 import { CaptureSchedule, CaptureBusyError } from "../src/computer/captureSchedule.js";
 import { ActivityCaptureEngine } from "../src/activity/captureEngine.js";
 import { defaultActivitySettings } from "../src/activity/settings.js";
@@ -24,21 +24,22 @@ import { writeFile, mkdir } from "node:fs/promises";
 const cases: Array<{ name: string; run: () => void | Promise<void> }> = [];
 function test(name: string, run: () => void | Promise<void>): void { cases.push({ name, run }); }
 
-test("missing static SDK worker is diagnosed and startup stays disabled", async () => {
-  const root = await mkdtemp("/tmp/biny-cua-worker-missing-"); let exited = 0;
+test("missing static SDK process is diagnosed and startup stays disabled", async () => {
+  const root = await mkdtemp("/tmp/biny-cua-process-missing-"); let exited = 0;
   try {
-    const driver = new CuaWorkerDriver(() => { exited++; }, new URL(`file://${root}/missing-worker.mjs`));
+    const driver = new CuaProcessDriver(() => { exited++; }, new URL(`file://${root}/missing-process.mjs`));
     await assert.rejects(driver.start(), /driver_sdk_missing_or_crashed/);
     await driver.stop(); assert.equal(exited, 1);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
-test("static worker bridge forwards cancellation and permits clean stop/reopen", async () => {
+test("static process bridge forwards cancellation and permits clean stop/reopen", async () => {
   let exits = 0;
-  const driver = new CuaWorkerDriver(() => { exits++; }, new URL("./fixtures/cua-worker-fixture.mjs", import.meta.url));
+  const driver = new CuaProcessDriver(() => { exits++; }, new URL("./fixtures/cua-process-fixture.mjs", import.meta.url));
   await driver.start();
   try {
     const abort = new AbortController();
     const pending = driver.act("fixture", { pid: 42, windowId: "900", action: "press_key", captureId: "c1", delivery: "background", key: "Enter" }, abort.signal);
+    await driver.diagnostics();
     abort.abort();
     await assert.rejects(pending, /SDK signal aborted/);
     await driver.stop(); await driver.start();
@@ -46,15 +47,18 @@ test("static worker bridge forwards cancellation and permits clean stop/reopen",
   } finally { await driver.stop(); }
   assert.equal(exits, 0, "intentional stop must not report a crash");
 });
-test("stop closes native runtime while re-enable retains the process native callback host", async () => {
-  const driver = new CuaWorkerDriver(() => undefined, new URL("./fixtures/cua-worker-fixture.mjs", import.meta.url));
+test("stop retires the isolated host and re-enable creates a fresh instance", async () => {
+  const driver = new CuaProcessDriver(() => undefined, new URL("./fixtures/cua-process-fixture.mjs", import.meta.url));
   try {
     await driver.start();
     const before = (await driver.diagnostics()).data.hostInstance;
+    assert.equal(typeof before, "number");
+    process.kill(before as number, 0);
     await driver.stop();
+    assert.throws(() => process.kill(before as number, 0), { code: "ESRCH" }, "stop resolves only after the child PID exits");
     await assert.rejects(async () => driver.list("s", undefined, new AbortController().signal), /driver_not_connected/);
     await driver.start();
-    assert.equal((await driver.diagnostics()).data.hostInstance, before, "native callback host must survive an ordinary runtime stop/re-enable");
+    assert.notEqual((await driver.diagnostics()).data.hostInstance, before, "a stopped host must not retain native callbacks across re-enable");
   } finally { await driver.stop(); }
 });
 test("actual model projection retains only two recent Cua frames without mutating history", () => {
@@ -78,10 +82,12 @@ test("QA profile fails closed unless passive collection is disabled and isolates
     assert.equal(applyCuaQaProfile(app, env), true); assert.equal(selected, path.join(root, "desktop")); assert.equal(env.BINY_AGENT_DIR, path.join(root, "agent"));
   } finally { await rm(root, { recursive: true, force: true }); }
 });
-test("passive SDK diagnostics do not enable a worker runtime or bypass later start", async () => {
-  const driver = new CuaWorkerDriver(() => undefined, new URL("./fixtures/cua-worker-fixture.mjs", import.meta.url));
+test("passive SDK diagnostics exit the cold process without enabling runtime", async () => {
+  const driver = new CuaProcessDriver(() => undefined, new URL("./fixtures/cua-process-fixture.mjs", import.meta.url));
   try {
-    assert.equal((await driver.diagnostics()).data.method, "diagnostics");
+    const diagnostic = await driver.diagnostics();
+    assert.equal(diagnostic.data.method, "diagnostics");
+    assert.throws(() => process.kill(diagnostic.data.hostInstance as number, 0), { code: "ESRCH" });
     await assert.rejects(async () => driver.list("s", undefined, new AbortController().signal), /driver_not_connected/);
     await driver.start();
     assert.equal((await driver.list("s", undefined, new AbortController().signal)).data.method, "list");

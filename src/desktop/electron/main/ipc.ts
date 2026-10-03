@@ -24,6 +24,7 @@ import type { DesktopThreadBriefService } from "./DesktopThreadBriefService.js";
 import type { DesktopCrystalService } from "./DesktopCrystalService.js";
 import { agentCapabilitySelectionSchema } from "../../../agent/capabilitySelection.js";
 import { userInputResponseSchema } from "../../../runtime/userInput.js";
+import { runtimeCommandOperation } from "../../../runtime/commands.js";
 import {
   chatPersonalizationSchema,
   configRevisionSchema,
@@ -42,6 +43,7 @@ import { DesktopAgentManager } from "./DesktopAgentManager.js";
 import { ActivityRecorderService } from "./ActivityRecorderService.js";
 import type { ActivityPermissionStatus } from "../../../activity/httpServer.js";
 import { DesktopBrowserService } from "./DesktopBrowserService.js";
+import { openChromeExtensionManager, prepareBrowserExtension } from "../../../browser/extensionAssets.js";
 import { DesktopMcpService } from "./DesktopMcpService.js";
 import { DesktopProjectService } from "./DesktopProjectService.js";
 import { DesktopSkillService } from "./DesktopSkillService.js";
@@ -188,6 +190,7 @@ const memoryEntryPatchSchema = z.object({
 }).strict();
 const runtimeMutationSchema = z.enum([
   "plan.start",
+  "session.goal.set", "session.goal.pause", "session.goal.resume", "session.goal.clear",
   "task.create", "task.start", "task.run", "task.cancel", "task.approve", "task.resume", "task.retry",
   "automation.create", "automation.pause", "automation.resume", "automation.run", "automation.delete",
   "goal.create", "goal.pause", "goal.resume", "goal.cancel",
@@ -613,11 +616,14 @@ export function registerDesktopIpc(context: IpcContext): void {
     await context.agents.cancelRun(idSchema.parse(projectId), idSchema.parse(runId));
   });
 
-  handleRecoveryGated(desktopIpc.runSlashCommand, async (_event, projectId: unknown, sessionId: unknown, command: unknown) => {
+  handle(desktopIpc.runSlashCommand, async (_event, projectId: unknown, sessionId: unknown, command: unknown) => {
+    const operation = typeof command === "string" ? runtimeCommandOperation(command) : undefined;
+    if (!["session.goal.get", "session.goal.pause", "session.goal.clear", "goal.get", "goal.pause", "goal.cancel"].includes(operation ?? "")) await settings.assertRuntimeReady();
+    // 目标正文由领域层统一校验 20k；IPC 额外容纳命令前缀和空白，不截断正文。
     return await context.agents.runSlashCommand(
       idSchema.parse(projectId),
       sessionId === undefined ? undefined : idSchema.parse(sessionId),
-      z.string().trim().min(1).max(200).parse(command)
+      z.string().trim().min(1).max(operation === "session.goal.set" ? 21_000 : 200).parse(command)
     );
   });
 
@@ -747,12 +753,20 @@ export function registerDesktopIpc(context: IpcContext): void {
     assertBrowserSender(event);
     return context.browser.relayStatus();
   });
-  handle(desktopIpc.browserRelaySetup, async (event) => {
+  handle(desktopIpc.browserRelayInstall, async (event) => {
     assertBrowserSender(event);
-    const result = await context.browser.setupRelay();
-    const error = await shell.openPath(result.extensionPath);
-    if (error) throw new Error("配对地址已复制，但扩展目录无法打开，请运行 biny browser setup 查看路径。");
-    return result;
+    const extensionPath = await prepareBrowserExtension();
+    const error = await shell.openPath(extensionPath);
+    if (error) throw new Error("扩展目录无法打开，请运行 biny browser setup 查看路径，或点击「复制配对地址」查看目录。");
+    return { extensionPath };
+  });
+  handle(desktopIpc.browserRelayOpenChrome, async (event) => {
+    assertBrowserSender(event);
+    await openChromeExtensionManager();
+  });
+  handle(desktopIpc.browserRelaySetup, async (event, regenerate: unknown) => {
+    assertBrowserSender(event);
+    return await context.browser.setupRelay(z.boolean().optional().parse(regenerate));
   });
   handle(desktopIpc.browserRelayDisconnect, async (event) => {
     assertBrowserSender(event);
@@ -1235,6 +1249,13 @@ export function registerDesktopIpc(context: IpcContext): void {
     assertBrowserSender(event);
     const project = context.projects.requireProject(idSchema.parse(projectId));
     return await context.staticPreview.htmlPreviewUrl(project.id, project.path, z.string().min(1).max(2_000).parse(relativePath));
+  });
+
+  handle(desktopIpc.getWorkspaceMediaUrl, async (event, projectId: unknown, relativePath: unknown) => {
+    assertBrowserSender(event);
+    const id = idSchema.parse(projectId);
+    const requestedPath = z.string().min(1).max(2_000).parse(relativePath);
+    return await context.staticPreview.getWorkspaceMediaUrl(id, requestedPath, () => context.projects.workspaceFile(context.projects.requireProject(id), requestedPath));
   });
 
   handle(desktopIpc.readInlineImage, async (_event, projectId: unknown, relativePath: unknown, thumbnail: unknown) => {

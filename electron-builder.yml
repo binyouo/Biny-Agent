@@ -2,7 +2,7 @@ appId: com.biny.desktop
 productName: Biny
 asar: true
 asarUnpack:
-  - out/main/cuaWorker.js
+  - out/main/cuaProcess.js
   - out/main/chunks/**/*
   - node_modules/zod/**/*
   - node_modules/onnxruntime-node/**/*

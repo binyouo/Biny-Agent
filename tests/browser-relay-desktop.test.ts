@@ -21,6 +21,20 @@ test("Desktop serializes startup, copies pairing only to clipboard and revokes i
     assert.deepEqual(Object.keys(setup), ["extensionPath"]);
     assert.equal(JSON.parse(await readFile(path.join(setup.extensionPath, "manifest.json"), "utf8")).manifest_version, 3);
     const oldAddress = clipboard;
+    await service.setupRelay();
+    assert.equal(clipboard, oldAddress, "复制不轮换凭据");
+    await service.setupRelay(true);
+    assert.ok(clipboard !== oldAddress, "重新生成使旧地址失效");
+    const oldUrl = new URL(oldAddress);
+    const rejected = await fetch(`http://127.0.0.1:${oldUrl.port}/command`, {
+      method: "POST", headers: { authorization: `Bearer ${oldUrl.searchParams.get("token")}`, "content-type": "application/json" }, body: JSON.stringify({ method: "status", args: {} })
+    });
+    assert.equal(rejected.status, 403, "旧凭据无法读取服务");
+    await rejected.body?.cancel();
+    assert.deepEqual(await requestBrowserRelay("status"), { running: true, connected: false, browsers: [] });
+    const changing = service.setupRelay();
+    await assert.rejects(service.disconnectRelay(), /操作正在进行/);
+    await changing;
     await service.disconnectRelay();
     await service.setupRelay();
     assert.notEqual(clipboard, oldAddress);

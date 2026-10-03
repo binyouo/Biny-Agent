@@ -12,6 +12,7 @@ import type { AppearancePreference, AppearanceSnapshot } from "../appearance/typ
 import type { DesktopCrystalRequest, DesktopCrystalSnapshot } from "./crystalProtocol.js";
 import type { planStatus } from "../extensions/plan.js";
 import type { TodoItem } from "../session/todoStore.js";
+import type { SessionGoalRecord, SessionGoalStatus } from "../runtime/SessionGoalStore.js";
 import type { AgentCapabilitySelection, CapabilitySelectionMode } from "../agent/capabilitySelection.js";
 import type { ActivitySettings, ActivitySettingsInput, ActivitySettingsPatch } from "../activity/settings.js";
 import type { ActivityRuntimeSnapshot } from "../activity/types.js";
@@ -140,6 +141,8 @@ export const desktopIpc = {
   browserInspect: "desktop:browser:inspect",
   browserCapture: "desktop:browser:capture",
   browserRelayStatus: "desktop:browser:relay-status",
+  browserRelayInstall: "desktop:browser:relay-install",
+  browserRelayOpenChrome: "desktop:browser:relay-open-chrome",
   browserRelaySetup: "desktop:browser:relay-setup",
   browserRelayDisconnect: "desktop:browser:relay-disconnect",
   browserAction: "desktop:browser:action",
@@ -225,6 +228,7 @@ export const desktopIpc = {
   listWorkspaceDirectory: "desktop:file:list-directory",
   readWorkspaceFile: "desktop:file:read",
   htmlPreviewUrl: "desktop:file:html-preview-url",
+  getWorkspaceMediaUrl: "desktop:file:media-url",
   readInlineImage: "desktop:file:read-image",
   openWorkspaceFile: "desktop:file:open",
   openExternal: "desktop:external:open",
@@ -542,6 +546,8 @@ export interface DesktopWorkspaceSnapshot {
   sessionPage?: DesktopSessionTreePage;
   selectedSessionId?: string;
   runtime?: InteractiveRuntimeSnapshot;
+  /** 已保存的后续回合模型选择；运行中不改写当前回合的 runtime.info。 */
+  selectedModel?: ModelRuntimeInfo;
   /** 并行会话的运行时快照（sessionId → snapshot，含主 runtime 绑定的 session）；多 session 并行时渲染层按 session 取运行态。 */
   sessionRuntimes?: Record<string, InteractiveRuntimeSnapshot>;
   runtimeError?: DesktopRuntimeError;
@@ -1471,6 +1477,9 @@ export interface DesktopSlashResult {
   command: string;
   title: string;
   content: string;
+  compaction?: { outcome: "compacted" | "unchanged" };
+  sessionId?: string;
+  sessionGoal?: { action: "get" | "set" | "pause" | "resume" | "clear"; status?: SessionGoalStatus };
 }
 
 /** Desktop 后台面板使用的 authority 投影；渲染层不接触 SQLite 或 Host socket。 */
@@ -1490,6 +1499,7 @@ export interface DesktopPlanProjection {
   plans: Array<ReturnType<typeof planStatus>>;
   /** 普通多步任务的当前会话清单；由 TodoWrite 更新并在工具完成后刷新。 */
   todos?: TodoItem[];
+  goal?: SessionGoalRecord;
 }
 
 export type DesktopWorktreeLifecycleStatus = "active" | "merged" | "conflicted" | "orphaned" | "kept";
@@ -1504,6 +1514,10 @@ export interface DesktopWorktreeStatus {
 
 export type DesktopRuntimeMutation =
   | "plan.start"
+  | "session.goal.set"
+  | "session.goal.pause"
+  | "session.goal.resume"
+  | "session.goal.clear"
   | "task.create"
   | "task.start"
   | "task.run"
@@ -1662,7 +1676,9 @@ export interface DesktopApi {
   browserInspect(projectId: string, tabId: string, enabled: boolean): Promise<DesktopBrowserSnapshot>;
   browserCapture(projectId: string, tabId: string, selection?: boolean): Promise<LocalReferenceResult>;
   browserRelayStatus(): Promise<{ running: boolean; connected: boolean; browsers: Array<{ browserId: string; browserName: string }> }>;
-  browserRelaySetup(): Promise<{ extensionPath: string }>;
+  browserRelayInstall(): Promise<{ extensionPath: string }>;
+  browserRelayOpenChrome(): Promise<void>;
+  browserRelaySetup(regenerate?: boolean): Promise<{ extensionPath: string }>;
   browserRelayDisconnect(): Promise<void>;
   browserAction(projectId: string, action: DesktopBrowserAction): Promise<DesktopBrowserSnapshot>;
   browserBounds(projectId: string, tabId: string, bounds?: DesktopBrowserBounds): Promise<void>;
@@ -1744,6 +1760,7 @@ export interface DesktopApi {
   listWorkspaceDirectory(projectId: string, relativePath: string): Promise<DesktopWorkspaceDirectory>;
   readWorkspaceFile(projectId: string, relativePath: string): Promise<DesktopWorkspaceFilePreview>;
   htmlPreviewUrl(projectId: string, relativePath: string): Promise<{ url: string }>;
+  getWorkspaceMediaUrl(projectId: string, relativePath: string): Promise<{ url: string; mimeType: string }>;
   /** 读取消息里引用的本地图片，返回 data URL；不是图片、太大或读不到时返回 undefined。 */
   readInlineImage(projectId: string, relativePath: string, thumbnail?: boolean): Promise<string | undefined>;
   openWorkspaceFile(projectId: string, relativePath: string): Promise<void>;

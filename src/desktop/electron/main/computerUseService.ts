@@ -1,17 +1,29 @@
 import { ipcMain, systemPreferences, type BrowserWindow } from "electron";
 import { z } from "zod";
 import { ComputerUseController } from "../../../computer/controller.js";
-import { CuaWorkerDriver } from "../../../computer/cuaDriver.js";
+import { CuaProcessDriver } from "../../../computer/cuaDriver.js";
+import { updateConfig, type AgentConfigStore } from "../../../config/store.js";
 import { computerActionSchema, computerIpc, cuaVersion, windowTargetSchema, type ComputerDiagnostics, type ComputerStatus } from "../../../computer/protocol.js";
 import { ComputerPreviewWindow } from "./ComputerPreviewWindow.js";
 import type { DesktopBrowserService } from "./DesktopBrowserService.js";
 import { cuaActionLimits } from "../../../computer/nativeActionLimits.js";
 
-export function createComputerUseService(browser: DesktopBrowserService, getWindow: () => BrowserWindow | undefined, assertWorkAllowed: () => Promise<void>) {
+export async function createComputerUseService(browser: DesktopBrowserService, getWindow: () => BrowserWindow | undefined, assertWorkAllowed: () => Promise<void>, configStore: AgentConfigStore, createDriver = (onExit: () => void) => new CuaProcessDriver(onExit)) {
+  const config = await configStore.load();
   const preview = new ComputerPreviewWindow(control => { void controlComputer(control).catch(() => undefined); }, () => controller.setPreview(false));
-  const driver = new CuaWorkerDriver(() => controller.crashed());
-  const controller = new ComputerUseController(driver, { preview: frame => preview.update(frame, controller.status()) });
-  async function diagnostics(setupError?: string): Promise<ComputerDiagnostics> {
+  const driver = createDriver(() => controller.crashed());
+  const controller = new ComputerUseController(driver, { enabled: config.computer.enabled, preview: frame => preview.update(frame, controller.status()) });
+  let controlEpoch = 0;
+  let closed = false;
+  let setupTest: Promise<ComputerDiagnostics> | undefined;
+  const probes = new Set<CuaProcessDriver>();
+  const intentWrites = new Set<Promise<unknown>>();
+  async function persistIntent(enabled: boolean, epoch: number): Promise<void> {
+    const write = updateConfig(configStore, undefined, current => epoch === controlEpoch && (!enabled || !closed) ? { ...current, computer: { enabled } } : current);
+    intentWrites.add(write);
+    try { await write; } finally { intentWrites.delete(write); }
+  }
+  async function diagnostics(setupError?: string, source = driver): Promise<ComputerDiagnostics> {
     const permission = z.enum(["granted", "denied", "unknown"]);
     const screen = process.platform === "darwin" ? systemPreferences.getMediaAccessStatus("screen") : undefined;
     const result: ComputerDiagnostics = {
@@ -20,23 +32,43 @@ export function createComputerUseService(browser: DesktopBrowserService, getWind
       approvals: [], audit: controller.audit(), error: setupError, actionLimits: cuaActionLimits(process.platform, cuaVersion)
     };
     try {
-      const data = z.object({ sdkLoaded: z.boolean(), runtimeReady: z.boolean(), driverVersion: z.string().optional(), permissions: z.object({ accessibility: permission, screenRecording: permission }) }).parse((await driver.diagnostics()).data);
+      const data = z.object({ sdkLoaded: z.boolean(), runtimeReady: z.boolean(), driverVersion: z.string().optional(), permissions: z.object({ accessibility: permission, screenRecording: permission }) }).parse((await source.diagnostics()).data);
       return { ...result, ...data };
     } catch (error) {
       return { ...result, error: setupError ?? (error instanceof Error ? error.message : String(error)) };
     }
   }
   async function controlComputer(control: "pause" | "resume" | "takeover" | "stop"): Promise<ComputerStatus> {
-    if (control === "stop") { await controller.disable(); preview.close(); }
+    if (closed) throw new Error("Computer use service is closed");
+    if (control === "stop") {
+      const epoch = ++controlEpoch;
+      const results = await Promise.allSettled([
+        controller.disable(),
+        persistIntent(false, epoch)
+      ]);
+      preview.close();
+      const failures = results.filter(result => result.status === "rejected").map(result => result.reason);
+      if (failures.length === 1) throw failures[0];
+      if (failures.length > 1) throw new AggregateError(failures, "Computer use stop failed");
+    }
     else controller.control(control);
     preview.update(undefined, controller.status()); return controller.status();
   }
   const assertSender = (event: Electron.IpcMainInvokeEvent): void => {
+    if (closed) throw new Error("Computer use service is closed");
     const contents = getWindow()?.webContents;
     if (!contents || event.sender !== contents || event.senderFrame !== contents.mainFrame) throw new Error("Untrusted computer-use IPC sender");
   };
   ipcMain.handle(computerIpc.status, event => { assertSender(event); return controller.status(); });
-  ipcMain.handle(computerIpc.enable, async event => { assertSender(event); await assertWorkAllowed(); await controller.enable(); return controller.status(); });
+  ipcMain.handle(computerIpc.enable, async event => {
+    assertSender(event);
+    const epoch = ++controlEpoch;
+    await assertWorkAllowed();
+    if (closed || epoch !== controlEpoch) return controller.status();
+    await persistIntent(true, epoch);
+    if (!closed && epoch === controlEpoch) await controller.enable();
+    return controller.status();
+  });
   ipcMain.handle(computerIpc.control, async (event, value: unknown) => { assertSender(event); return await controlComputer(z.enum(["pause", "resume", "takeover", "stop"]).parse(value)); });
   ipcMain.handle(computerIpc.preview, (event, value: unknown) => { assertSender(event); const enabled = z.boolean().parse(value); controller.setPreview(enabled); if (enabled) preview.open(); else preview.close(); return controller.status(); });
   ipcMain.handle(computerIpc.foreground, (event, value: unknown) => { assertSender(event); controller.setForeground(z.boolean().parse(value)); return controller.status(); });
@@ -51,10 +83,19 @@ export function createComputerUseService(browser: DesktopBrowserService, getWind
   });
   ipcMain.handle(computerIpc.test, async event => {
     assertSender(event); await assertWorkAllowed();
-    try { await controller.enable(); return await diagnostics(); }
-    catch (error) { return await diagnostics(error instanceof Error ? error.message : String(error)); }
+    assertSender(event);
+    if (!setupTest) {
+      const probe = createDriver(() => undefined); probes.add(probe);
+      setupTest = (async () => {
+        try { await probe.start(); return await diagnostics(undefined, probe); }
+        catch (error) { return await diagnostics(error instanceof Error ? error.message : String(error), probe); }
+        finally { try { await probe.dispose(); } finally { probes.delete(probe); setupTest = undefined; } }
+      })();
+    }
+    return await setupTest;
   });
   browser.attachComputerUse(async (method, input, signal) => {
+    if (closed) throw new Error("Computer use service is closed");
     await assertWorkAllowed();
     const session = z.string().min(1).max(240).parse(input.session);
     const args = { ...input }; delete args.session;
@@ -64,8 +105,15 @@ export function createComputerUseService(browser: DesktopBrowserService, getWind
     throw new Error("Unsupported computer method");
   });
   return { controller, close: async () => {
+    closed = true;
     // Abort input before destroying the preview; a failing surface must not keep control alive.
-    try { await controller.disable(); }
-    finally { try { preview.close(); } finally { try { await driver.dispose(); } finally { for (const channel of Object.values(computerIpc)) ipcMain.removeHandler(channel); } } }
+    const cleanup: Promise<unknown>[] = [controller.disable()];
+    try { preview.close(); } catch (error) { cleanup.push(Promise.reject(error)); }
+    cleanup.push(driver.dispose(), ...[...probes].map(probe => probe.dispose()), ...intentWrites);
+    const results = await Promise.allSettled(cleanup);
+    for (const channel of Object.values(computerIpc)) ipcMain.removeHandler(channel);
+    const failures = results.filter(result => result.status === "rejected").map(result => result.reason);
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) throw new AggregateError(failures, "Computer use cleanup failed");
   } };
 }

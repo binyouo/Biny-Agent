@@ -42,7 +42,10 @@ test("desktop settings handle missing bridge and expose enable, pause/takeover/s
     assert.equal(dom.window.document.querySelector(".cu-feedback") === null, true, "pending configuration test must not report a result");
     await act(async () => { finishTest(await api.diagnostics()); });
     assert.ok(dom.window.document.querySelector(".cu-feedback"));
-    await click("启用桌面控制"); await click("暂停"); await click("继续（需重新观察）"); await click("人工接管"); await click("继续（需重新观察）");
+    const desktopControl = dom.window.document.querySelector<HTMLButtonElement>('[role="switch"][aria-label="桌面控制"]')!;
+    assert.ok(desktopControl, "desktop control enablement is directly visible");
+    await act(async () => { desktopControl.click(); });
+    await click("暂停"); await click("继续（需重新观察）"); await click("人工接管"); await click("继续（需重新观察）");
     const checkbox = dom.window.document.querySelector<HTMLButtonElement>('[role="switch"][aria-label="画中画"]')!;
     await act(async () => { checkbox.click(); }); await act(async () => { checkbox.click(); });
     await click("停止");
@@ -62,7 +65,7 @@ test("Computer Use cards show independent unknown permissions and dispatch real 
   const root = createRoot(dom.window.document.getElementById("root")!);
   const calls: string[] = [];
   let state: ComputerStatus = { state: "disabled", preview: false, foregroundAllowed: false, actionLogging: false, lastOutcome: "not-dispatched" };
-  const diagnostic = { workerPath: "/synthetic/app.asar.unpacked/out/main/cuaWorker.js", hostPath: "/synthetic/Biny", expectedVersion: "0.30.4", sdkLoaded: false, runtimeReady: false, permissions: { accessibility: "unknown", screenRecording: "denied" }, approvals: [], audit: [], actionLimits: [{ action: "scroll", code: "scroll_direction_unverified", message: "当前 macOS 滚动暂不可用；请人工滚动后重新观察。" }], error: "driver_sdk_missing_or_crashed: synthetic" };
+  const diagnostic = { workerPath: "/synthetic/app.asar.unpacked/out/main/cuaProcess.js", hostPath: "/synthetic/Biny", expectedVersion: "0.30.4", sdkLoaded: false, runtimeReady: false, permissions: { accessibility: "unknown", screenRecording: "denied" }, approvals: [], audit: [], actionLimits: [{ action: "scroll", code: "scroll_direction_unverified", message: "当前 macOS 滚动暂不可用；请人工滚动后重新观察。" }], error: "driver_sdk_missing_or_crashed: synthetic" };
   Object.assign(dom.window, { binyComputer: {
     status: async () => state,
     enable: async () => state, control: async () => state, preview: async () => state, foreground: async () => state,
@@ -84,7 +87,8 @@ test("Computer Use cards show independent unknown permissions and dispatch real 
     assert.ok(details.querySelector("pre"));
     assert.ok(details.querySelector('[data-action-limit="scroll"]'));
     assert.doesNotMatch(dom.window.document.querySelector(".cu-helper")?.textContent ?? "", /synthetic|worker\.js/);
-    const strict = dom.window.document.querySelector<HTMLButtonElement>('[role="switch"][aria-label="按应用严格审批"]')!;
+    const strict = dom.window.document.querySelector<HTMLButtonElement>('[role="switch"][aria-label="逐次审批"]')!;
+    assert.ok(strict);
     assert.equal(strict.disabled, true); assert.equal(strict.getAttribute("aria-checked"), "true");
     for (const label of ["授权辅助功能", "刷新", "测试我的配置", "记录操作日志"]) {
       const button = [...dom.window.document.querySelectorAll("button")].find(button => button.textContent?.trim() === label || button.getAttribute("aria-label") === label)!;

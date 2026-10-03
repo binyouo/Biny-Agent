@@ -17,7 +17,7 @@ export default defineConfig({
         external: ["@trycua/cua-driver"],
         input: {
           index: path.join(root, "src/desktop/electron/main/index.ts"),
-          cuaWorker: path.join(root, "src/computer/cuaWorker.ts")
+          cuaProcess: path.join(root, "src/computer/cuaProcess.ts")
         },
         output: {
           manualChunks: (id) => id === path.join(root, "src/agent/codeMode.ts") ? "code-mode-runtime" : undefined

@@ -4,7 +4,7 @@ import { Icon } from "../Icon.js";
 declare global { interface Window { binyComputer: ComputerDesktopApi } }
 import { SettingsSwitch } from "./SettingsSwitch.js";
 const restartMessage = "桌面控制组件尚未就绪，请完全退出并重新启动 Biny。";
-const stateLabels: Record<ComputerStatus["state"], string> = { disabled: "未启用", ready: "已就绪", paused: "已暂停", "taken-over": "人工接管中", unknown: "动作结果未知，先检查目标窗口" };
+const stateLabels: Record<ComputerStatus["state"], string> = { disabled: "未启用", ready: "已启用", paused: "已暂停", "taken-over": "人工接管中", unknown: "动作结果未知，先检查目标窗口" };
 const outcomeLabels: Record<ComputerStatus["lastOutcome"], string> = { "not-dispatched": "尚未派发", completed: "输入已完成", refused: "已拒绝", unverified: "效果未确认", unknown: "输入结果未知" };
 const permissionLabels: Record<ComputerPermissionState, string> = { granted: "已授权", denied: "未授权", unknown: "未知" };
 function PermissionRow({ name, label, state }: { name: string; label: string; state: ComputerPermissionState }): React.JSX.Element {
@@ -44,7 +44,7 @@ export function SettingsComputerUse(): React.JSX.Element {
   const unavailable = busy || !available;
   const permission = diagnostic?.permissions;
   const diagnosticText = [
-    diagnostic?.runtimeReady ? `✓ Cua Driver v${diagnostic.driverVersion} 运行时已创建` : diagnostic?.sdkLoaded ? `✓ SDK 已加载；要求 v${diagnostic.expectedVersion}，运行时尚未启用` : "✗ SDK 尚未加载",
+    diagnostic?.runtimeReady ? `✓ Cua Driver v${diagnostic.driverVersion} 运行时检查通过` : diagnostic?.sdkLoaded ? `✓ SDK 已加载；要求 v${diagnostic.expectedVersion}，运行时按需启动` : "✗ SDK 尚未加载",
     `辅助功能：${permissionLabels[permission?.accessibility ?? "unknown"]}`,
     `屏幕录制：${permissionLabels[permission?.screenRecording ?? "unknown"]}`,
     "配置测试只检查运行时、版本和权限，不截图、不输入。",
@@ -71,12 +71,12 @@ export function SettingsComputerUse(): React.JSX.Element {
       {error || diagnostic?.error || status?.diagnostic ? <p className="cu-feedback" role="alert">{!available ? restartMessage : "桌面控制暂不可用，请查看诊断详情。"}</p> : tested ? <p className="cu-feedback" role="status">{diagnostic?.sdkLoaded && permission?.accessibility === "granted" && permission?.screenRecording === "granted" ? "配置检查通过" : "请完成组件安装与权限授权。"}</p> : null}
       </div>
       <div className="settings-row-group cu-toggles">
-        <SettingsSwitch label="按应用严格审批" checked disabled detail="每次观察和操作都需批准。截图会发送给当前模型。" onChange={() => undefined} />
+        <SettingsSwitch label="桌面控制" checked={Boolean(status && status.state !== "disabled")} disabled={unavailable || !status} detail="保存启用选择，首次使用时启动；停止会关闭此选项。" onChange={value => void perform(async () => { await updateStatus(() => value ? api.enable() : api.control("stop")); await readDiagnostic(); })} />
+        <SettingsSwitch label="逐次审批" checked disabled detail="每次观察和操作都需批准。截图会发送给当前模型。" onChange={() => undefined} />
         <SettingsSwitch label="记录操作日志" checked={status?.actionLogging ?? false} disabled={unavailable || !status} detail="临时保留最近 50 条操作记录，停止后清空。" onChange={value => void perform(() => updateStatus(() => api.logging(value)))} />
         <SettingsSwitch label="画中画" checked={status?.preview ?? false} disabled={unavailable || !status} detail="在悬浮窗口查看操作画面；开启时暂停活动截图。" onChange={value => void perform(() => updateStatus(() => api.preview(value)))} />
       </div>
       <details className="cu-controls"><summary>控制与高级选项</summary><p role="status">{status ? `${stateLabels[status.state]} · ${outcomeLabels[status.lastOutcome]}` : "正在读取控制状态…"}</p><div className="cu-button-row">
-        <button type="button" className="settings-secondary-button" disabled={unavailable || status?.state !== "disabled"} onClick={() => void perform(async () => { await updateStatus(() => api.enable()); await readDiagnostic(); })}><Icon name="power" size={14} />启用桌面控制</button>
         <button type="button" className="settings-secondary-button" disabled={unavailable || status?.state !== "ready"} onClick={() => control("pause")}><Icon name="pause" size={14} />暂停</button>
         <button type="button" className="settings-secondary-button" disabled={unavailable || !status || status.state === "ready" || status.state === "disabled"} onClick={() => control("resume")}><Icon name="play" size={14} />继续（需重新观察）</button>
         <button type="button" className="settings-secondary-button" disabled={unavailable || !status || status.state === "disabled"} onClick={() => control("takeover")}>人工接管</button>

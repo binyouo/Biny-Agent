@@ -5,25 +5,154 @@ import { ComputerUseController, type ComputerDriver, type DriverReply } from "..
 const target = { pid: 42, windowId: "900" };
 const other = { pid: 43, windowId: "901" };
 const frame = (): DriverReply => ({ data: { pid: 42, window_id: 900, capture_id: "c1", screenshot_width: 100, screenshot_height: 80, screenshot_frame_valid: true }, images: [{ mimeType: "image/png", dataBase64: "aGVsbG8=" }] });
-function fixture() {
+function fixture(enabled = false) {
   const calls: string[] = [];
+  const lifecycle: string[] = [];
+  let start: ComputerDriver["start"] = async () => undefined;
   let action: ComputerDriver["act"] = async () => ({ data: { effect: "confirmed" }, images: [] });
   let observe: ComputerDriver["observe"] = async () => frame();
-  const driver: ComputerDriver = { start: async () => undefined, stop: async () => undefined, list: async () => ({ data: { apps: [] }, images: [] }), observe: (...args) => observe(...args), act: (...args) => { calls.push(args[1].action); return action(...args); } };
+  const driver: ComputerDriver = { start: async () => { lifecycle.push("start"); await start(); }, stop: async () => { lifecycle.push("stop"); }, list: async () => { lifecycle.push("list"); return { data: { apps: [] }, images: [] }; }, observe: (...args) => { lifecycle.push("observe"); return observe(...args); }, act: (...args) => { calls.push(args[1].action); return action(...args); } };
   let now = 0;
   const previews: unknown[] = [];
-  const controller = new ComputerUseController(driver, { now: () => now, preview: value => previews.push(value) });
-  return { controller, calls, previews, setAction: (value: typeof action) => { action = value; }, setObserve: (value: typeof observe) => { observe = value; }, advance: () => { now = 60_001; } };
+  const controller = new ComputerUseController(driver, { enabled, now: () => now, preview: value => previews.push(value) });
+  return { controller, calls, lifecycle, previews, setStart: (value: typeof start) => { start = value; }, setAction: (value: typeof action) => { action = value; }, setObserve: (value: typeof observe) => { observe = value; }, advance: () => { now = 60_001; } };
 }
 test("disabled and permission/missing/version failures do not admit calls", async () => {
   const f = fixture();
   await assert.rejects(f.controller.observe("s", target), /disabled/);
   for (const message of ["driver_missing", "driver_version_mismatch", "permission_required"]) {
-    const driver = { start: async () => { throw new Error(message); }, stop: async () => undefined } as ComputerDriver;
-    const c = new ComputerUseController(driver);
-    await assert.rejects(c.enable(), new RegExp(message));
-    assert.equal(c.status().state, "disabled");
+    const failed = fixture(); failed.setStart(async () => { throw new Error(message); });
+    await failed.controller.enable();
+    await assert.rejects(failed.controller.list("s"), new RegExp(message));
+    assert.equal(failed.controller.status().state, "ready", "startup failure must retain the enabled intent");
+    assert.equal(failed.controller.status().diagnostic, message);
+    assert.deepEqual(failed.lifecycle, ["start"], "startup failure cannot dispatch the requested operation");
+    failed.setStart(async () => undefined);
+    await failed.controller.list("s");
+    assert.equal(failed.controller.status().diagnostic, undefined);
   }
+});
+test("restored enabled intent and explicit enable are cold until an admitted first call", async () => {
+  const restored = fixture(true);
+  assert.equal(restored.controller.status().state, "ready");
+  assert.deepEqual(restored.lifecycle, [], "restoring intent cannot start a driver or capture a frame");
+  await Promise.all([restored.controller.list("s"), restored.controller.list("s"), restored.controller.observe("s", target)]);
+  assert.deepEqual(restored.lifecycle, ["start", "list", "list", "observe"], "concurrent first calls share one lazy startup");
+  const enabled = fixture();
+  await enabled.controller.enable(); await enabled.controller.enable();
+  assert.equal(enabled.controller.status().state, "ready");
+  assert.deepEqual(enabled.lifecycle, [], "enable only arms the capability");
+  await enabled.controller.list("s");
+  assert.deepEqual(enabled.lifecycle, ["start", "list"]);
+});
+test("missing intent, pre-cancelled calls and paused or taken-over control cannot start the driver", async () => {
+  const disabled = fixture();
+  await assert.rejects(disabled.controller.list("s"), /computer_disabled/u);
+  assert.deepEqual(disabled.lifecycle, []);
+  const restored = fixture(true);
+  const signal = AbortSignal.abort();
+  await assert.rejects(restored.controller.list("s", undefined, signal), /abort/iu);
+  assert.deepEqual(restored.lifecycle, []);
+  for (const control of ["pause", "takeover"] as const) {
+    restored.controller.control(control);
+    await restored.controller.enable();
+    await assert.rejects(restored.controller.list("s"), new RegExp(control === "pause" ? "computer_paused" : "computer_taken-over"));
+    assert.deepEqual(restored.lifecycle, []);
+  }
+});
+test("rearming cannot admit a request queued while the capability was disabled", async () => {
+  const f = fixture();
+  const denied = assert.rejects(f.controller.list("old"), /disabled|invalidated/u);
+  await f.controller.enable();
+  await denied;
+  assert.deepEqual(f.lifecycle, []);
+  assert.equal(f.controller.status().owner, undefined);
+  await f.controller.list("new");
+  assert.equal(f.controller.status().owner, "new");
+});
+test("cancelled startup rejects promptly and its late completion cannot dispatch input", { timeout: 2_000 }, async () => {
+  const f = fixture(true);
+  const entered = deferred(); const ready = deferred();
+  f.setStart(async () => { entered.resolve(); await ready.promise; });
+  const controller = new AbortController();
+  const request = f.controller.observe("s", target, controller.signal);
+  const rejected = assert.rejects(request, /abort|cancel/iu);
+  try {
+    await withTimeout(entered.promise);
+    controller.abort();
+    await withTimeout(rejected);
+    assert.equal(f.controller.status().state, "ready", "request cancellation cannot clear persisted enabled intent");
+    ready.resolve();
+    await waitFor(() => f.lifecycle.includes("stop"));
+    assert.deepEqual(f.lifecycle.filter(call => call === "observe" || call === "list"), []);
+    assert.deepEqual(f.calls, []);
+  } finally { ready.resolve(); await request.catch(() => undefined); }
+});
+test("disable during startup invalidates queued calls and late startup cannot re-enable", { timeout: 2_000 }, async () => {
+  const f = fixture(true);
+  const entered = deferred(); const ready = deferred();
+  f.setStart(async () => { entered.resolve(); await ready.promise; });
+  const request = f.controller.observe("s", target);
+  const rejected = assert.rejects(request, /abort|cancel|invalidated/iu);
+  try {
+    await withTimeout(entered.promise);
+    const queued = assert.rejects(f.controller.list("s"), /invalidated/u);
+    await withTimeout(f.controller.disable());
+    assert.equal(f.controller.status().state, "disabled");
+    await withTimeout(rejected); await withTimeout(queued);
+    const disabled = f.controller.status();
+    ready.resolve();
+    await waitFor(() => f.lifecycle.filter(call => call === "stop").length >= 2);
+    assert.deepEqual(f.controller.status(), disabled);
+    assert.deepEqual(f.lifecycle.filter(call => call === "observe" || call === "list"), []);
+    assert.deepEqual(f.calls, []);
+  } finally { ready.resolve(); await request.catch(() => undefined); }
+});
+test("takeover during startup cannot be undone by a late SDK callback", { timeout: 2_000 }, async () => {
+  const f = fixture(true);
+  const entered = deferred(); const ready = deferred();
+  f.setStart(async () => { entered.resolve(); await ready.promise; });
+  const request = f.controller.observe("s", target);
+  const rejected = assert.rejects(request, /abort|cancel|invalidated/iu);
+  try {
+    await withTimeout(entered.promise);
+    f.controller.control("takeover");
+    await withTimeout(rejected);
+    const takenOver = f.controller.status();
+    ready.resolve();
+    await waitFor(() => f.lifecycle.includes("stop"));
+    assert.deepEqual(f.controller.status(), takenOver);
+    await assert.rejects(f.controller.list("s"), /taken-over/u);
+    assert.deepEqual(f.lifecycle.filter(call => call === "observe" || call === "list"), []);
+  } finally { ready.resolve(); await request.catch(() => undefined); }
+});
+test("a new admitted request waits for cancelled startup cleanup before restarting", { timeout: 2_000 }, async () => {
+  const f = fixture(true);
+  const entered = deferred(); const ready = deferred();
+  f.setStart(async () => { entered.resolve(); await ready.promise; });
+  const signal = new AbortController();
+  const first = f.controller.list("s", undefined, signal.signal);
+  const rejected = assert.rejects(first, /abort|cancel/iu);
+  let next: Promise<DriverReply> | undefined;
+  try {
+    await withTimeout(entered.promise); signal.abort(); await withTimeout(rejected);
+    next = f.controller.list("s");
+    f.setStart(async () => undefined); ready.resolve();
+    await withTimeout(next);
+    assert.deepEqual(f.lifecycle, ["start", "stop", "start", "list"], "the cancelled startup cannot stop or dispatch the replacement operation");
+    assert.equal(f.controller.status().state, "ready");
+  } finally { ready.resolve(); await first.catch(() => undefined); await next?.catch(() => undefined); }
+});
+test("crash requires explicit rearm and clears the first-start cache", async () => {
+  const f = fixture(true);
+  await f.controller.list("old"); f.controller.crashed();
+  await assert.rejects(f.controller.list("new"), /disabled/u);
+  assert.equal(f.controller.status().lastOutcome, "unknown");
+  assert.deepEqual(f.lifecycle, ["start", "list"]);
+  await f.controller.enable();
+  assert.deepEqual(f.lifecycle, ["start", "list"], "rearm must remain cold");
+  await f.controller.list("new");
+  assert.deepEqual(f.lifecycle, ["start", "list", "start", "list"]);
 });
 test("exact session, target, TTL and one-use capture; action followed by observation", async () => {
   const f = fixture(); await f.controller.enable();
@@ -64,6 +193,9 @@ test("disconnect/crash outcome is unknown, no automatic replay, preview close/re
   f.setAction(async () => { throw new Error("connection closed"); });
   await assert.rejects(f.controller.act("s", { ...target, action: "click", captureId: "c1", x: 1, y: 2 }), /unknown/);
   assert.equal(f.controller.status().state, "unknown"); assert.equal(f.controller.status().lastOutcome, "unknown");
+  const lifecycle = [...f.lifecycle];
+  await f.controller.enable(); await assert.rejects(f.controller.list("s"), /unknown/u);
+  assert.deepEqual(f.lifecycle, lifecycle, "unknown outcomes cannot automatically resume or restart the driver");
   f.controller.control("resume"); await f.controller.observe("s", target); assert.notEqual(f.previews.at(-1), undefined);
   await f.controller.disable(); assert.equal(f.controller.status().owner, undefined);
 });
@@ -103,3 +235,22 @@ test("verification refusal does not turn confirmed delivery into an input failur
   assert.equal(result.data.doNotRepeat, true); assert.equal(f.controller.status().state, "paused");
   assert.deepEqual(result.data.observation, { available: false, reason: "capture_generation_mismatch" });
 });
+
+function deferred(): { promise: Promise<void>; resolve(): void } {
+  let resolve!: () => void;
+  const promise = new Promise<void>(done => { resolve = done; });
+  return { promise, resolve };
+}
+async function withTimeout<T>(promise: Promise<T>): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([promise, new Promise<T>((_resolve, reject) => { timer = setTimeout(() => reject(new Error("Controller lifecycle event timed out.")), 500); })]);
+  } finally { if (timer !== undefined) clearTimeout(timer); }
+}
+async function waitFor(predicate: () => boolean): Promise<void> {
+  const deadline = Date.now() + 500;
+  while (!predicate()) {
+    if (Date.now() >= deadline) throw new Error("Controller lifecycle event timed out.");
+    await new Promise<void>(resolve => setImmediate(resolve));
+  }
+}

@@ -53,6 +53,7 @@ export class DesktopBrowserService {
   attachComputerUse(handler: (method: string, args: Record<string, unknown>, signal: AbortSignal) => Promise<unknown>): void { this.computerUse = handler; }
   private relay?: BrowserRelay;
   private relayStarting?: Promise<void>;
+  private relayChanging = false;
 
   async startRelay(): Promise<void> {
     if (this.relay) return;
@@ -66,15 +67,24 @@ export class DesktopBrowserService {
 
   relayStatus(): RelayStatus { return this.relay?.status() ?? { running: false, connected: false, browsers: [] }; }
 
-  async setupRelay(): Promise<{ extensionPath: string }> {
-    await this.startRelay();
-    const extensionPath = await prepareBrowserExtension();
-    // 密钥只经用户明确点击进入系统剪贴板，不发给 renderer 或模型。
-    clipboard.writeText(this.relay!.pairingUrl());
-    return { extensionPath };
+  async setupRelay(regenerate = false): Promise<{ extensionPath: string }> {
+    return await this.changeRelay(async () => {
+      await this.startRelay();
+      const extensionPath = await prepareBrowserExtension();
+      if (regenerate) await this.relay!.disconnect();
+      // 密钥只经用户明确点击进入系统剪贴板，不发给 renderer 或模型。
+      clipboard.writeText(this.relay!.pairingUrl());
+      return { extensionPath };
+    });
   }
 
-  async disconnectRelay(): Promise<void> { await this.relay?.disconnect(); }
+  async disconnectRelay(): Promise<void> { await this.changeRelay(async () => { await this.relay?.disconnect(); }); }
+
+  private async changeRelay<T>(action: () => Promise<T>): Promise<T> {
+    if (this.relayChanging) throw new Error("浏览器配对操作正在进行，请等待完成后再试。");
+    this.relayChanging = true;
+    try { return await action(); } finally { this.relayChanging = false; }
+  }
   private window: BrowserWindow | undefined;
   private desktopWindow: BrowserWindow | undefined;
   private readonly embeddedProjects = new Map<string, EmbeddedProject>();

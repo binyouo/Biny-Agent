@@ -1,4 +1,4 @@
-/** Loaded only by the static ESM worker entry, never imported by the Electron main process. */
+/** Loaded only by the static ESM process entry, never imported by the Electron main process. */
 import * as CuaSdk from "@trycua/cua-driver";
 import { z } from "zod";
 import { cuaVersion, type ComputerAction, type WindowTarget } from "./protocol.js";

@@ -814,10 +814,7 @@ export class DesktopProjectService {
     const mediaType = imageMediaTypes[relativePath.toLowerCase().split(".").at(-1) ?? ""];
     if (!mediaType) return undefined;
     try {
-      const filePath = relativePath.startsWith(attachmentPathPrefix)
-        ? attachmentFilePath(this.storage.attachmentsRoot(project), relativePath)
-        : this.workspaceFile(project, relativePath);
-      if (!filePath) return undefined;
+      const filePath = this.workspaceFile(project, relativePath);
       const stat = await fs.stat(filePath);
       if (!stat.isFile() || stat.size > inlineImageLimit) return undefined;
       if (thumbnail) {
