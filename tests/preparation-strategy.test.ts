@@ -39,7 +39,7 @@ const checkpoint = (goal: string): string => [
   if (!/^(?:[-*]|\d+\.)\s+/u.test(line) || /^\((?:none|not recorded|none verified|unknown)\b/iu.test(item)) return line;
   return `${line} <!-- evidence:m0 -->`;
 }).join("\n");
-let response = checkpoint("summary detail ".repeat(200));
+let response = checkpoint("old request");
 const model: AgentModel = {
   provider: "test", modelId: "summary",
   stream: async (_context, options) => {
