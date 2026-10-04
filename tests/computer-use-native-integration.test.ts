@@ -103,3 +103,75 @@ test("the in-product act path reaches the verbs beyond the original four", async
     await driver.dispose();
   }
 });
+
+// driver 与服务端解析的是 daemon 的返回形状。这个契约已经错过两次
+// （嵌套 permissions、空 bundleId），所以把每条命令的形状一次钉住。
+test("every daemon command answers in the shape its caller parses", async () => {
+  const driver = new NativeProcessDriver(() => {}, {
+    binaryPath: new URL("../out/native/computer-use", import.meta.url).pathname
+  });
+  try {
+    // doctor：服务端读扁平的 accessibility / screenRecording + version / uptime / focusGuard
+    const doctor = (await driver.diagnostics()).data as Record<string, unknown>;
+    for (const key of ["accessibility", "screenRecording", "version", "uptime", "focusGuard"]) {
+      assert.ok(key in doctor, `doctor 必须给出 ${key}`);
+    }
+
+    // list_apps：服务端要求 {apps:[{pid:int,name,running}], bundleId 可选且不得为空串}
+    const apps = ((await driver.list("contract", undefined)).data.apps ?? []) as { pid?: unknown; name?: unknown; running?: unknown; bundleId?: unknown }[];
+    assert.ok(apps.length > 0, "至少要有一个运行中的应用");
+    for (const app of apps) {
+      assert.equal(typeof app.pid, "number");
+      assert.equal(typeof app.name, "string");
+      assert.equal(typeof app.running, "boolean");
+      if ("bundleId" in app) assert.ok(typeof app.bundleId === "string" && app.bundleId.length > 0, "bundleId 要么缺席，要么非空——空串会让整份列表解析失败");
+    }
+
+    const target = apps.find(app => /TextEdit|文本编辑/i.test(String(app.name)));
+    if (!target) return;
+
+    // observe：captureSchema 要的字段 + 一张可解码的图
+    const observation = await driver.observe("contract", { pid: target.pid as number } as never);
+    const capture = observation.data as Record<string, unknown>;
+    for (const key of ["pid", "window_id", "capture_id", "screenshot_width", "screenshot_height", "screenshot_frame_valid", "elements"]) {
+      assert.ok(key in capture, `observe 必须给出 ${key}`);
+    }
+    assert.equal(capture.screenshot_frame_valid, true);
+
+    const element = ((capture.elements ?? []) as { element_token?: string; role?: string }[])[0];
+    assert.ok(element?.element_token, "元素必须带可引用的 token");
+
+    // 值/文本类动作必须落在可编辑元素上：对窗口节点写值本来就该失败，
+    // 拿它当断言目标只会测出「正确拒绝」，测不出契约。
+    const editable = ((capture.elements ?? []) as { element_token?: string; role?: string }[])
+      .find(entry => entry.role === "AXTextArea" || entry.role === "AXTextField");
+
+    // 动作类：每个动词都要回一个可读的确认，而不是空对象
+    const acts: [string, Record<string, unknown>][] = [
+      ["click", { elementToken: element.element_token }],
+      ["press_key", { key: "Return" }],
+      ["drag", { x1: 200, y1: 300, x2: 220, y2: 300 }],
+      ["perform_secondary_action", { elementToken: element.element_token }]
+    ];
+    if (editable?.element_token) {
+      acts.push(
+        ["type_text", { elementToken: editable.element_token, text: "c" }],
+        ["scroll", { elementToken: editable.element_token, direction: "down", amount: 1 }],
+        ["set_value", { elementToken: editable.element_token, value: "contract" }],
+        ["select_text", { elementToken: editable.element_token, location: 0, length: 0 }]
+      );
+    }
+    for (const [action, extra] of acts) {
+      const reply = await driver.act("contract", { action, ...extra } as never);
+      assert.ok(!reply.errorCode, `${action} 不应报错：${reply.errorCode ?? ""}`);
+      assert.ok(Object.keys(reply.data).length > 0, `${action} 必须回一个确认体`);
+    }
+
+    // launch_app / capture_screen
+    const launched = await driver.launchApp("com.apple.TextEdit");
+    assert.equal(typeof (launched.data as { pid?: unknown }).pid, "number");
+    assert.equal(((await driver.captureScreen()).images ?? []).length, 1);
+  } finally {
+    await driver.dispose();
+  }
+});

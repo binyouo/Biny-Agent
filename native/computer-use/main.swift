@@ -382,12 +382,15 @@ DispatchQueue.global().async {
                             case "list_apps":
                                 var apps: [[String: Any]] = []
                                 for app in NSWorkspace.shared.runningApplications where app.activationPolicy == .regular {
-                                    apps.append([
+                                    var entry: [String: Any] = [
                                         "pid": Int(app.processIdentifier),
-                                        "bundleId": app.bundleIdentifier ?? "",
                                         "name": app.localizedName ?? "",
                                         "running": true,
-                                    ])
+                                    ]
+                                    // 没有 bundle id 的应用不要发空串：调用方按 min(1) 校验，
+                                    // 一个空值会让整份列表解析失败，而不是只缺一个标识。
+                                    if let bundle = app.bundleIdentifier, !bundle.isEmpty { entry["bundleId"] = bundle }
+                                    apps.append(entry)
                                 }
                                 reply(fd, ["id": id, "ok": true, "data": ["apps": apps] as [String: Any]])
                             case "capture_screen":
