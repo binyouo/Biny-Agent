@@ -9,7 +9,17 @@ export type JsonSchema =
   | JsonStringSchema
   | JsonNumberSchema
   | JsonBooleanSchema
-  | JsonArraySchema;
+  | JsonArraySchema
+  | JsonAnyOfSchema;
+
+/**
+ * 「任一分支通过即可」。用于值类型由控件决定的参数——
+ * 例如滑杆收数字、输入框收字符串，工具层无法提前判定是哪种。
+ */
+export interface JsonAnyOfSchema {
+  anyOf: JsonSchema[];
+  description?: string;
+}
 
 export interface JsonObjectSchema {
   type: "object";
@@ -57,7 +67,7 @@ export interface JsonSchemaValidationResult {
  * 缺失时补空数组，畸形值在本地带工具名和节点路径失败，不能静默改写。
  */
 export function normalizeToolParameters(toolName: string, parameters: JsonSchema): JsonObjectSchema {
-  if (typeof parameters !== "object" || parameters === null || Array.isArray(parameters) || parameters.type !== "object") {
+  if (typeof parameters !== "object" || parameters === null || Array.isArray(parameters) || !("type" in parameters) || parameters.type !== "object") {
     throw new Error(`Tool ${toolName} has invalid JSON Schema at parameters.type: expected object.`);
   }
   return normalizeSchemaNode(parameters, toolName, "parameters", new WeakSet<object>()) as JsonObjectSchema;
@@ -121,6 +131,15 @@ export function validateJsonSchema(schema: JsonSchema, value: unknown, path = "a
 }
 
 function validateValue(schema: JsonSchema, value: unknown, path: string, errors: string[]): void {
+  if ("anyOf" in schema) {
+    const matched = schema.anyOf.some(branch => {
+      const branchErrors: string[] = [];
+      validateValue(branch, value, path, branchErrors);
+      return branchErrors.length === 0;
+    });
+    if (!matched) errors.push(`${path} must match one of the allowed types`);
+    return;
+  }
   switch (schema.type) {
     case "object":
       validateObject(schema, value, path, errors);

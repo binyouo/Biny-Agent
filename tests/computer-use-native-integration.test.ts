@@ -73,3 +73,33 @@ test("set_value writes through the accessibility API and reads back", async () =
     await driver.dispose();
   }
 });
+
+// 产品内工具的动作面必须真能驱动 daemon 的全部动词，而不只是 schema 允许。
+test("the in-product act path reaches the verbs beyond the original four", async () => {
+  const driver = new NativeProcessDriver(() => {}, {
+    binaryPath: new URL("../out/native/computer-use", import.meta.url).pathname
+  });
+  try {
+    const listed = await driver.list("act-e2e", undefined);
+    const apps = (listed.data as { apps?: { name: string; pid: number }[] }).apps ?? [];
+    const target = apps.find(app => /TextEdit|文本编辑/i.test(app.name));
+    if (!target) return; // 没开就跳过，不伪造通过
+
+    const snapshot = await driver.observe("act-e2e", { pid: target.pid } as never);
+    const elements = (snapshot.data as { elements?: { element_token?: string; role?: string; value?: string }[] }).elements ?? [];
+    const area = elements.find(element => element.role === "AXTextArea");
+    assert.ok(area?.element_token, "需要一个可编辑文本区");
+
+    // 走 act()（产品内路径），不是 actRaw。
+    const marker = `act-set-${Date.now()}`;
+    const written = await driver.act("act-e2e", { action: "set_value", elementToken: area.element_token, value: marker } as never);
+    assert.ok(!written.errorCode, `act(set_value) 不应报错：${written.errorCode ?? ""}`);
+
+    const after = await driver.observe("act-e2e", { pid: target.pid } as never);
+    const reread = ((after.data as { elements?: { role?: string; value?: string }[] }).elements ?? [])
+      .find(element => element.role === "AXTextArea")?.value;
+    assert.equal(reread, marker, "产品内动作写进去的值必须能从 AX 树读回来");
+  } finally {
+    await driver.dispose();
+  }
+});

@@ -352,6 +352,18 @@ export class NativeProcessDriver implements ComputerDriver {
         return await this.call("press_key", withPid({ key: action.key }), signal);
       case "scroll":
         return await this.call("scroll", withPid({ direction: action.direction, amount: action.amount }), signal);
+      case "drag":
+        return await this.call("drag", withPid({ x1: action.x1, y1: action.y1, x2: action.x2, y2: action.y2 }), signal);
+      case "perform_secondary_action":
+        return await this.call("perform_secondary_action", withPid(action.elementToken ? { ref: action.elementToken } : { x: action.x, y: action.y }), signal);
+      case "set_value":
+        return await this.call("set_value", withPid({ ref: action.elementToken, value: action.value }), signal);
+      case "select_text":
+        return await this.call("select_text", withPid(
+          action.text !== undefined
+            ? { ref: action.elementToken, text: action.text }
+            : { ref: action.elementToken, location: action.location, length: action.length ?? 0 }
+        ), signal);
       default:
         throw new Error(`action_unsupported: ${String((action as { action: string }).action)}`);
     }
