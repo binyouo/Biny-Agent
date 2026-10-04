@@ -1,6 +1,10 @@
-import { ipcMain, systemPreferences, type BrowserWindow } from "electron";
+import { ipcMain, shell, systemPreferences, type BrowserWindow } from "electron";
 import { z } from "zod";
 import { existsSync } from "node:fs";
+import { execFile } from "node:child_process";
+import path from "node:path";
+import { ComputerPermissionOverlay, type OverlayRect } from "./ComputerPermissionOverlay.js";
+import { ACCESSIBILITY_SETTINGS_URL, findTargetRow, parseOcrLines } from "./computerPermissionGeometry.js";
 import { ComputerAppApprovals } from "../../../computer/appApprovals.js";
 import { ComputerUseController } from "../../../computer/controller.js";
 import { NativeProcessDriver } from "../../../computer/nativeDriver.js";
@@ -8,6 +12,30 @@ import { updateConfig, type AgentConfigStore } from "../../../config/store.js";
 import { computerActionSchema, computerIpc, windowTargetSchema, type ComputerDiagnostics, type ComputerStatus } from "../../../computer/protocol.js";
 import { ComputerPreviewWindow } from "./ComputerPreviewWindow.js";
 import type { DesktopBrowserService } from "./DesktopBrowserService.js";
+
+/** 授权引导用的浮层；停用服务时统一收掉。 */
+const guideOverlays = new Set<ComputerPermissionOverlay>();
+
+/**
+ * OCR 二进制是 daemon 的同级产物，但 daemon 现在发布为 .app —— 从 bundle 内部
+ * 往上找同级是找不到 activity-ocr 的。直接按「native 目录」的两种形态各试一次。
+ */
+function resolveOcrBinary(workerPath: string): string | undefined {
+  const fromWorker = path.dirname(workerPath);
+  const nativeDir = fromWorker.endsWith(path.join("Contents", "MacOS")) ? path.dirname(path.dirname(fromWorker)) : fromWorker;
+  const candidates = [path.join(nativeDir, "activity-ocr"), path.join(process.cwd(), "out", "native", "activity-ocr")];
+  return candidates.find(candidate => existsSync(candidate));
+}
+
+function runOcr(imagePath: string, workerPath: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const binary = resolveOcrBinary(workerPath);
+    if (!binary) { reject(new Error("ocr_unavailable")); return; }
+    execFile(binary, [imagePath, "zh-Hans", "en-US", "--coords"], { timeout: 20_000, maxBuffer: 4 * 1024 * 1024 }, (error, stdout) => {
+      if (error) reject(error); else resolve(stdout);
+    });
+  });
+}
 
 export async function createComputerUseService(browser: DesktopBrowserService, getWindow: () => BrowserWindow | undefined, assertWorkAllowed: () => Promise<void>, configStore: AgentConfigStore, createDriver = (onExit: () => void) => new NativeProcessDriver(onExit)) {
   const config = await configStore.load();
@@ -150,7 +178,32 @@ export async function createComputerUseService(browser: DesktopBrowserService, g
     // isTrustedAccessibilityClient(true) 会把辅助功能授给 Electron 宿主，
     // 而真正需要它的是独立签名的 helper —— 用户授完仍然不能用。
     await driver.grantAccessibility().catch(() => undefined);
-    return await diagnostics();
+    const result = await diagnostics();
+    // 系统弹窗被关掉、或用户在设置里找不到那一行时，把引导浮层指过去。
+    // 只在用户明确点了这个按钮之后才发生，不主动弹。
+    if (result.permissions.accessibility !== "granted") {
+      const overlay = new ComputerPermissionOverlay(undefined, { intervalMs: 1200 });
+      guideOverlays.add(overlay);
+      void (async () => {
+        try {
+          await shell.openExternal(ACCESSIBILITY_SETTINGS_URL);
+          await new Promise(resolve => setTimeout(resolve, 1500));
+          const locate = async (): Promise<OverlayRect | undefined> => {
+            const shot = await driver.captureScreen();
+            const path = (shot.data as { path?: string }).path;
+            if (!path) return undefined;
+            const output = await runOcr(path, driver.workerPath());
+            return findTargetRow(parseOcrLines(output), "Biny");
+          };
+          const rect = await locate();
+          if (!rect) { overlay.close(); guideOverlays.delete(overlay); return; }
+          overlay.track(locate);
+        } catch {
+          overlay.close(); guideOverlays.delete(overlay);
+        }
+      })();
+    }
+    return result;
   });
   ipcMain.handle(computerIpc.test, async event => {
     assertSender(event); await assertWorkAllowed();
@@ -180,6 +233,10 @@ export async function createComputerUseService(browser: DesktopBrowserService, g
     // Abort input before destroying the preview; a failing surface must not keep control alive.
     const cleanup: Promise<unknown>[] = [controller.disable()];
     try { preview.close(); } catch (error) { cleanup.push(Promise.reject(error)); }
+    // 授权引导浮层是「点一下才出现」的临时窗口，服务停用时必须一起收掉，
+    // 否则会一直浮在用户屏幕上。
+    for (const overlay of guideOverlays) { try { overlay.close(); } catch { /* 已经关掉了 */ } }
+    guideOverlays.clear();
     cleanup.push(driver.dispose(), ...[...probes].map(probe => probe.dispose()), ...intentWrites);
     const results = await Promise.allSettled(cleanup);
     for (const channel of Object.values(computerIpc)) ipcMain.removeHandler(channel);
