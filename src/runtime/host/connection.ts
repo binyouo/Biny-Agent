@@ -50,6 +50,7 @@ export async function connectRuntimeHost(
       clientId: options.clientId,
       surface: options.surface,
       keepAlive: options.keepAlive,
+      handshakeTimeoutMs: options.handshakeTimeoutMs,
       spawnOptions: options.spawnOptions,
       environmentTakeover: !identityMatches
     });
@@ -80,6 +81,7 @@ export async function connectOrSpawnRuntimeHostWithOwnership(
     clientId: options.clientId,
     surface: options.surface,
     keepAlive: options.keepAlive,
+    handshakeTimeoutMs: options.handshakeTimeoutMs,
     spawnOptions
   });
   if (attached) return { client: attached };
@@ -93,6 +95,7 @@ export async function connectOrSpawnRuntimeHostWithOwnership(
       clientId: options.clientId,
       surface: options.surface,
       keepAlive: options.keepAlive,
+      handshakeTimeoutMs: options.handshakeTimeoutMs,
       spawnOptions
     });
     if (raced) return { client: raced };
@@ -144,6 +147,7 @@ async function waitForSpawnedRuntimeHost(
     clientId: options.clientId,
     surface: options.surface,
     keepAlive: options.keepAlive,
+    handshakeTimeoutMs: options.handshakeTimeoutMs,
     spawnOptions: toSpawnOptions(options)
   });
   if (!client) throw new Error("Runtime Host registration disappeared before attach.");
