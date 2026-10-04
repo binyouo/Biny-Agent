@@ -3,7 +3,8 @@
 // daemon 是独立的 Swift 可执行文件（native/computer-use），不依赖任何第三方 SDK。
 import { spawn, type ChildProcess } from "node:child_process";
 import net from "node:net";
-import { existsSync } from "node:fs";
+import { StringDecoder } from "node:string_decoder";
+import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import crypto from "node:crypto";
@@ -16,6 +17,8 @@ const maxPending = 32;
 const requestTimeoutMs = 30_000;
 const shutdownTimeoutMs = 2_000;
 const idleTimeoutMs = 900_000;
+// 与 protocol.ts 的 maxComputerImageBytes 保持一致。
+const maxImageBytes = 1_048_576;
 
 interface PendingJob {
   resolve: (value: DriverReply) => void;
@@ -28,10 +31,11 @@ interface Host {
   child: ChildProcess;
   socket: net.Socket;
   socketPath: string;
-  buffer: string;
+  buffer: Buffer;
   closed: boolean;
   connected: boolean;
   stdout: string;
+  decoder: StringDecoder;
 }
 
 export interface NativeDriverOptions {
@@ -113,10 +117,10 @@ export class NativeProcessDriver implements ComputerDriver {
     });
     child.stderr?.resume();
     const socket = new net.Socket();
-    const host: Host = { child, socket, socketPath: this.socketPath, buffer: "", closed: false, connected: false, stdout: "" };
+    const host: Host = { child, socket, socketPath: this.socketPath, buffer: Buffer.alloc(0), closed: false, connected: false, stdout: "", decoder: new StringDecoder("utf8") };
     // 立刻开始收集 stdout：daemon 可能在监听器挂上之前就打出 "ready"。
     child.stdout?.on("data", (chunk: Buffer) => { host.stdout += chunk.toString(); });
-    socket.on("data", chunk => this.onData(host, chunk.toString("utf8")));
+    socket.on("data", chunk => this.onData(host, chunk));
     // 连接建立前的 error/close 属于正常启动时序，只有「连上之后又断」才算断连。
     socket.on("error", error => { if (host.connected) this.failAndRetire(host, `driver_socket_error: ${error.message}`); });
     socket.on("close", () => { if (host.connected && !host.closed) this.failAndRetire(host, "driver_process_disconnected; outcome may be unknown"); });
@@ -146,15 +150,17 @@ export class NativeProcessDriver implements ComputerDriver {
     });
   }
 
-  private onData(host: Host, chunk: string): void {
-    host.buffer += chunk;
+  private onData(host: Host, chunk: Buffer): void {
+    // 必须按字节累积：一次 recv 可能切在多字节 UTF-8 字符中间，
+    // 直接 toString 会插入 U+FFFD 并破坏 JSON（响应里都是中文标签）。
+    host.buffer = Buffer.concat([host.buffer, chunk]);
     if (host.buffer.length > maxIpcBytes) { this.failAndRetire(host, "driver_ipc_budget_exceeded"); return; }
-    let index = host.buffer.indexOf("\n");
+    let index = host.buffer.indexOf(10);
     while (index >= 0) {
-      const line = host.buffer.slice(0, index);
-      host.buffer = host.buffer.slice(index + 1);
-      this.onReply(line);
-      index = host.buffer.indexOf("\n");
+      const line = host.decoder.write(host.buffer.subarray(0, index));
+      host.buffer = host.buffer.subarray(index + 1);
+      if (line) this.onReply(line);
+      index = host.buffer.indexOf(10);
     }
   }
 
@@ -182,9 +188,26 @@ export class NativeProcessDriver implements ComputerDriver {
     if (Array.isArray(data.apps)) return { data, images: [] };
     if (data.screenshot && Array.isArray(data.elements)) {
       const windowId = typeof data.windowId === "number" ? data.windowId : Number(data.windowId ?? 0);
-      return { data: toCapture(data, windowId), images: [] };
+      // daemon 把截图落在磁盘上；读回来转成 ComputerImage，PiP 帧泵和模型帧都靠它。
+      const image = this.readImage(data.screenshot);
+      return { data: toCapture(data, windowId), images: image ? [image] : [] };
     }
     return { data, images: [] };
+  }
+
+  /** 把 daemon 写出的 jpeg 读成 ComputerImage；读不到就当没有，不阻断动作。 */
+  private readImage(path: unknown): { mimeType: "image/jpeg"; dataBase64: string } | undefined {
+    if (typeof path !== "string" || !path) return undefined;
+    try {
+      const bytes = readFileSync(path);
+      // 与 maxComputerImageBytes 对齐：超预算的帧直接丢弃，避免撑爆模型请求。
+      if (bytes.byteLength > maxImageBytes) return undefined;
+      const base64 = bytes.toString("base64");
+      if (base64.length > Math.ceil(maxImageBytes / 3) * 4) return undefined;
+      return { mimeType: "image/jpeg", dataBase64: base64 };
+    } catch {
+      return undefined;
+    }
   }
 
   private failHost(host: Host, reason: string): void {

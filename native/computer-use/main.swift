@@ -153,6 +153,39 @@ func windowScreenBounds(pid: Int) -> [String: Double]? {
     return nil
 }
 
+
+/// 在独立线程采集 AX 树，硬超时后放弃（卡住的 AX 调用无法取消，但也不会拖住调用方）。
+func collectAccessibility(pid: pid_t, maxDepth: Int, limit: Int, timeout: Double) async -> ([[String: Any]], [String: AXUIElement]) {
+    await withCheckedContinuation { continuation in
+        let state = NSLock()
+        var finished = false
+        var result: ([[String: Any]], [String: AXUIElement]) = ([], [:])
+        func finish(_ value: ([[String: Any]], [String: AXUIElement])) {
+            state.lock(); defer { state.unlock() }
+            if finished { return }
+            finished = true
+            continuation.resume(returning: value)
+        }
+        DispatchQueue.global(qos: .userInitiated).async {
+            let app = axApp(pid)
+            AXUIElementSetAttributeValue(app, "AXManualAccessibility" as CFString, kCFBooleanTrue)
+            AXUIElementSetAttributeValue(app, "AXEnhancedUserInterface" as CFString, kCFBooleanTrue)
+            var local: [[String: Any]] = []
+            var localTable: [String: AXUIElement] = [:]
+            var counter = 0
+            if let windows = axCopy(app, kAXWindowsAttribute as String) as? [AXUIElement], let main = windows.first {
+                if let frame = axFrame(main) { local.append(["ref": "e0", "role": "AXWindow", "frame": frame]) }
+                localTable["e0"] = main
+                axWalk(main, depth: 0, maxDepth: maxDepth, limit: limit, counter: &counter, table: &localTable, out: &local, deadline: Date().addingTimeInterval(2))
+            }
+            finish((local, localTable))
+        }
+        DispatchQueue.global().asyncAfter(deadline: .now() + timeout) { finish(([], [:])) }
+        _ = result
+        _ = state
+    }
+}
+
 func screenshot(_ parameters: [String: Any]) async throws -> [String: Any] {
     guard let output = parameters["out"] as? String else { throw NSError(domain: "capture", code: 64) }
     let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
@@ -263,23 +296,23 @@ DispatchQueue.global().async {
                             case "get_app_state":
                                 guard axTrusted() else { throw NSError(domain: "ax", code: 1, userInfo: [NSLocalizedDescriptionKey: "ax_not_granted"]) }
                                 let pid = try resolvePid(args)
-                                let app = axApp(pid)
-                                // Chromium/Electron 应用默认不暴露 AX 树，先显式打开。
-                                AXUIElementSetAttributeValue(app, "AXManualAccessibility" as CFString, kCFBooleanTrue)
-                                AXUIElementSetAttributeValue(app, "AXEnhancedUserInterface" as CFString, kCFBooleanTrue)
-                                var elements: [[String: Any]] = []
-                                var table: [String: AXUIElement] = [:]
-                                var counter = 0
                                 let maxDepth = args["max_depth"] as? Int ?? 20
                                 let limit = args["max_elements"] as? Int ?? 300
-                                if let windows = axCopy(app, kAXWindowsAttribute as String) as? [AXUIElement], let main = windows.first {
-                                    if let frame = axFrame(main) { elements.append(["ref": "e0", "role": "AXWindow", "frame": frame]) }
-                                    table["e0"] = main
-                                    axWalk(main, depth: 0, maxDepth: maxDepth, limit: limit, counter: &counter, table: &table, out: &elements, deadline: Date().addingTimeInterval(2))
-                                }
+                                // AX 是跨进程 IPC，卡住的调用无法从 Swift 并发里取消：
+                                // 用独立队列 + 信号量做真正的硬超时，超时就放弃 AX（截图仍返回）。
+                                let collected = await collectAccessibility(pid: pid, maxDepth: maxDepth, limit: limit, timeout: 4.0)
+                                let elements = collected.0
+                                let table = collected.1
                                 var shotArgs: [String: Any] = ["out": args["out"] ?? "/tmp/biny-cu-state-\(Int(Date().timeIntervalSince1970 * 1000)).jpg", "pid": Int(pid)]
                                 if let maxWidth = args["max_width"] { shotArgs["max_width"] = maxWidth }
-                                let shot = try await screenshot(shotArgs)
+                                // 截图同样可能挂在无响应的窗口上：限时 3 秒，超时就返回不带图的观察。
+                                let shot: [String: Any] = await withTaskGroup(of: [String: Any]?.self) { group in
+                                    group.addTask { try? await screenshot(shotArgs) }
+                                    group.addTask { try? await Task.sleep(nanoseconds: 3_000_000_000); return nil }
+                                    let first = await group.next() ?? nil
+                                    group.cancelAll()
+                                    return first ?? [:]
+                                }
                                 refTables[pid] = table
                                 // 记下截图坐标 → 屏幕坐标的映射，后续像素点击据此换算。
                                 if let f = shot["screenFrame"] as? [String: Double],
@@ -287,7 +320,7 @@ DispatchQueue.global().async {
                                     coordMaps[pid] = (Double(sw) / max(1, f["w"] ?? 1), f["x"] ?? 0, f["y"] ?? 0, Double(sw), Double(sh))
                                 }
                                 var data: [String: Any] = ["pid": Int(pid), "elements": elements]
-                                data["screenshot"] = shot["path"]
+                                if let path = shot["path"] { data["screenshot"] = path }
                                 data["screenshotWidth"] = shot["width"] ?? 0
                                 data["screenshotHeight"] = shot["height"] ?? 0
                                 data["windowId"] = Int(pid)
