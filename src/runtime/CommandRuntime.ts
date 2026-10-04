@@ -4,13 +4,14 @@
  * 每个 CLI/TUI 入口最终都会通过这里创建一个 AgentSession。这里是 composition
  * root，只装配配置、provider、工具和权限，不向宿主泄露可变 conversation 或 recorder。
  */
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
 import { createFileConfigStore, type AgentConfigStore } from "../config/store.js";
 import type { AgentConfig } from "../config/schema.js";
 import { AgentSession } from "../agent/AgentSession.js";
 import type { AgentTurnOutcome, AgentPermissionRequest, AgentPermissionResult } from "../agent/types.js";
 import { ModelManager } from "../llm/ModelManager.js";
+import type { ToolModelSelectionState } from "../llm/toolModelRequest.js";
 import { resolveToolModel, resolveToolModelCandidates } from "../llm/toolModel.js";
 import { runSkillExtraction } from "../agent/skillExtraction.js";
 import { preselectCapabilities } from "../agent/capabilityPreselection.js";
@@ -246,6 +247,17 @@ export async function createCommandRuntime(workspaceRoot: string, options: Comma
     processLifetime: options.processLifetime
   });
   await managedProcesses.initialize();
+  // 选择状态只属于本 Runtime；配置变更替换状态，迟到请求不能污染新配置。
+  let toolModelSelectionState: ToolModelSelectionState = { unavailableConnections: new Map() };
+  let toolModelConfigHash: string | undefined;
+  let toolModelConfig = config;
+  const selectionStateForConfig = (current: AgentConfig): ToolModelSelectionState => {
+    const hash = createHash("sha256").update(JSON.stringify({ toolModel: current.toolModel, providers: current.providers, models: current.models })).digest("hex");
+    if (hash !== toolModelConfigHash) toolModelSelectionState = { unavailableConnections: new Map() };
+    toolModelConfigHash = hash;
+    toolModelConfig = current;
+    return toolModelSelectionState;
+  };
   const toolRegistry = createToolRegistry(
     { workspaceRoot, ignore: config.workspace.ignore, attachmentRoot: projectAttachmentRoot },
     config.web.search,
@@ -253,8 +265,9 @@ export async function createCommandRuntime(workspaceRoot: string, options: Comma
     config.web.fetch,
     config.sandbox,
     config.web.cookies,
-    () => resolveToolModelCandidates(config, providerCredentials),
-    options.browserAutomation
+    () => resolveToolModelCandidates(toolModelConfig, providerCredentials),
+    options.browserAutomation,
+    () => selectionStateForConfig(toolModelConfig)
   );
   const browserToolNames = ["BrowserOpen", "BrowserReadDom", "BrowserClick", "BrowserType", "BrowserPress", "ComputerList", "ComputerObserve", "ComputerAction"];
   const setBrowserAutomation = (endpoint?: BrowserAutomationEndpoint): void => {
@@ -595,9 +608,12 @@ export async function createCommandRuntime(workspaceRoot: string, options: Comma
       }),
       subagentPrompt: buildSubagentDefinitionsPrompt(subagentDefinitions),
       skillPaths: (selection, runId) => skillPathsForSelection(skillsForRun(runId), selection),
-      selectCapabilities: async (input, runId) => await preselectCapabilities({
-        ...input, models: resolveToolModelCandidates(input.config, providerCredentials), tools: toolRegistry.list().filter(isToolModelVisible), skills: skillsForRun(runId).skills
-      }),
+      selectCapabilities: async (input, runId) => {
+        return await preselectCapabilities({
+          ...input, models: resolveToolModelCandidates(input.config, providerCredentials), tools: toolRegistry.list().filter(isToolModelVisible), skills: skillsForRun(runId).skills,
+          selectionState: selectionStateForConfig(input.config)
+        });
+      },
       prepareToolDiscovery: async (query, signal) => {
         const result = await resourceScope.waitForMcpDiscovery({ query, signal });
         refreshExtensionTools();

@@ -11,6 +11,7 @@ import type { ToolSearchResult } from "../src/tools/toolSearch.js";
 
 await testAutomaticToolModelFallback(false);
 await testAutomaticToolModelFallback(true);
+await testSelectionCooldown();
 console.log("tool model runtime e2e tests passed");
 
 async function testAutomaticToolModelFallback(hasHealthyCandidate: boolean): Promise<void> {
@@ -112,6 +113,75 @@ async function testAutomaticToolModelFallback(hasHealthyCandidate: boolean): Pro
     await runtime?.close();
     await provider.close();
     await healthyProvider.close();
+    if (oldAgentDir === undefined) delete process.env.BINY_AGENT_DIR;
+    else process.env.BINY_AGENT_DIR = oldAgentDir;
+    await rm(root, { recursive: true, force: true });
+  }
+}
+
+async function testSelectionCooldown(): Promise<void> {
+  const root = await mkdtemp(path.join(os.tmpdir(), "biny-selection-cooldown-"));
+  const oldAgentDir = process.env.BINY_AGENT_DIR;
+  process.env.BINY_AGENT_DIR = path.join(root, "global");
+  let runtime: CommandRuntime | undefined;
+  let auxiliaryRequests = 0;
+  let discover = false;
+  const provider = await startProviderServer(async (request, response) => {
+    const body = await requestJson(request);
+    if (body.model === "selector") {
+      auxiliaryRequests++;
+      response.writeHead(402, { "content-type": "application/json" });
+      response.end(JSON.stringify({ error: { message: "Insufficient Balance" } }));
+    } else if (discover) sendToolCall(response, "semantic-discovery", "ToolSearch", { query: "find a capability for inspecting a note" });
+    else sendText(response, "The turn completed.");
+  });
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(new Error("Selection cooldown test timed out.")), 15_000);
+  try {
+    let config = configSchema.parse({
+      ...defaultConfig, defaultModel: "chat", toolModel: "selector",
+      providers: { local: { type: "openai-compatible", baseUrl: provider.endpoint, requiresApiKey: false, retry: { maxAttempts: 1 } } },
+      models: {
+        selector: { provider: "local", model: "selector", capabilities: { tools: false, reasoning: false, streaming: true } },
+        chat: { provider: "local", model: "chat", capabilities: { tools: true, reasoning: false, streaming: true } }
+      },
+      thinking: { ...defaultConfig.thinking, enabled: false },
+      extensions: { ...defaultConfig.extensions, skills: [], subagent: { ...defaultConfig.extensions.subagent, enabled: false } },
+      checkpoints: { enabled: false },
+      context: { ...defaultConfig.context, memory: { ...defaultConfig.context.memory, useMemories: false, generateMemories: false } },
+      crystal: { ...defaultConfig.crystal, passiveEnabled: false, semanticScanEnabled: false },
+      activity: { ...defaultConfig.activity, enabled: false }, heartbeat: { ...defaultConfig.heartbeat, enabled: false }
+    });
+    runtime = await createCommandRuntime(root, { configStore: { load: async () => config, save: async () => undefined } });
+    const sessionFile = runtime.agent.getInfo().sessionFile;
+    const run = async () => {
+      const outcome = await runtime!.agent.runTask("Hello", { abortSignal: controller.signal, capabilitySelection: { tools: "auto", skills: "none" }, emotionAnalysis: false });
+      assert.equal(outcome.status, "completed");
+    };
+    await run();
+    assert.equal(auxiliaryRequests, 1);
+    await run();
+    assert.equal(auxiliaryRequests, 1, "A second real turn must skip the failed selection connection");
+    discover = true;
+    const discoveryOutcome = await runtime.agent.runTask("Find a note inspection capability", {
+      abortSignal: controller.signal, capabilitySelection: { tools: ["ToolSearch"], skills: "none" }, emotionAnalysis: false
+    });
+    assert.equal(discoveryOutcome.status, "blocked");
+    assert.equal(auxiliaryRequests, 1, "ToolSearch shares the connection failure recorded during preselection");
+    discover = false;
+    config = configSchema.parse({ ...config, providers: { local: { ...config.providers.local, retry: { maxAttempts: 2 } } } });
+    await run();
+    assert.equal(auxiliaryRequests, 2, "Changing provider configuration resets the runtime cooldown");
+    await runtime.close();
+    runtime = undefined;
+    const events = await readSessionEvents(sessionFile);
+    assert.equal(events.filter((event) => event.type === "turn_status" && event.status === "completed").length, 3);
+    assert.equal(events.filter((event) => event.type === "model_request" && event.metrics.modelId === "selector").length, 2, "Only actual attempts are persisted");
+  } finally {
+    clearTimeout(timer);
+    controller.abort();
+    await runtime?.close();
+    await provider.close();
     if (oldAgentDir === undefined) delete process.env.BINY_AGENT_DIR;
     else process.env.BINY_AGENT_DIR = oldAgentDir;
     await rm(root, { recursive: true, force: true });

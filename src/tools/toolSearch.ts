@@ -10,7 +10,7 @@ import { codeModeNestedToolNames } from "../agent/codeMode.js";
 import { getToolExposure, isToolModelVisible } from "./exposure.js";
 import type { AgentMessage } from "../agent/core/types.js";
 import type { ToolModelCandidate } from "../llm/toolModel.js";
-import { generateToolModelText, toolModelFailureScope, ToolModelCandidatesExhaustedError, type ToolModelAttempt } from "../llm/toolModelRequest.js";
+import { generateToolModelText, toolModelFailureScope, ToolModelCandidatesExhaustedError, type ToolModelAttempt, type ToolModelSelectionState } from "../llm/toolModelRequest.js";
 import { redactSecrets } from "../utils/secrets.js";
 import { ToolAccesses } from "./access.js";
 import { isCodeModeReadTool, type RegisteredTool } from "./registry.js";
@@ -73,7 +73,8 @@ let nextSignalId = 0;
 
 export function createToolSearchTool(
   getTools: () => readonly RegisteredTool[],
-  getModels: () => readonly ToolModelCandidate[] = () => []
+  getModels: () => readonly ToolModelCandidate[] = () => [],
+  getSelectionState?: () => ToolModelSelectionState
 ): Tool<ToolSearchArgs, ToolSearchResult> {
   // 模块级缓存按工具实例隔离，避免不同 runtime、工作区或安全域共享辅助模型结果。
   const cacheNamespace = `tool-search-${String(++nextSearchInstanceId)}`;
@@ -161,7 +162,7 @@ export function createToolSearchTool(
           const inFlightKey = `${cacheKey}\0${signalKey(context.signal)}`;
           let request = inFlightSearches.get(inFlightKey);
           if (!request) {
-            request = searchWithModels(models, candidates, args.query, type, limit, context.signal);
+            request = searchWithModels(models, candidates, args.query, type, limit, context.signal, getSelectionState?.());
             inFlightSearches.set(inFlightKey, request);
             void request.finally(() => {
               if (inFlightSearches.get(inFlightKey) === request) inFlightSearches.delete(inFlightKey);
@@ -198,13 +199,15 @@ async function searchWithModels(
   query: string,
   type: ToolSearchArgs["type"] | "all",
   limit: number,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  selectionState?: ToolModelSelectionState
 ): Promise<ToolSearchResult> {
   try {
     // 工具目录会披露给辅助模型；description 必须先脱敏，并始终按不可信目录数据处理。
     const messages: AgentMessage[] = [{ role: "user", content: `Search query: ${JSON.stringify(query)}` }];
     const response = await generateToolModelText(models, messages, {
       systemPrompt: toolSearchPrompt(candidates, type, limit),
+      selectionState,
       signal,
       // 瞬时故障由原模型重试，账户失败再尝试其他连接；整个候选链共享截止时间。
       maxRetries: 2,

@@ -6,6 +6,12 @@ import { generateNativeText, type NativeTextGenerationOptions, type NativeTextGe
 import type { ToolModelCandidate } from "./toolModel.js";
 import { ProviderAuthenticationError } from "./ProviderRuntime.js";
 
+/** 当前 Runtime 的辅助模型选择状态；连接标识不包含明文凭据。 */
+export interface ToolModelSelectionState {
+  unavailableConnections: Map<string, { retryAt: number; failures: number }>;
+  preferredCandidate?: string;
+}
+
 export interface ToolModelAttempt {
   provider: string;
   providerAlias?: string;
@@ -78,10 +84,17 @@ export function toolModelFailureScope(error: unknown): "connection" | "model" | 
 export async function generateToolModelText(
   candidates: readonly ToolModelCandidate[],
   messages: AgentMessage[],
-  options: NativeTextGenerationOptions = {}
+  options: NativeTextGenerationOptions & { selectionState?: ToolModelSelectionState } = {}
 ): Promise<NativeTextGenerationResult & { model: AgentModel; attempts: readonly ToolModelAttempt[] }> {
   options.signal?.throwIfAborted();
   if (candidates.length === 0) throw new ToolModelCandidatesExhaustedError([]);
+  const { selectionState, ...generationOptions } = options;
+  const unavailableConnections = selectionState?.unavailableConnections;
+  if (unavailableConnections) {
+    for (const [domain] of unavailableConnections) {
+      if (!candidates.some((candidate) => candidate.failureDomain === domain)) unavailableConnections.delete(domain);
+    }
+  }
   const controller = new AbortController();
   const onAbort = () => controller.abort(options.signal?.reason);
   options.signal?.addEventListener("abort", onAbort, { once: true });
@@ -91,14 +104,21 @@ export async function generateToolModelText(
   const failedConnections = new Set<string>();
   let lastError: unknown;
   try {
-    for (const { model, failureDomain } of candidates) {
+    const preferred = candidates.find((candidate) => candidateKey(candidate) === selectionState?.preferredCandidate);
+    const ordered = preferred ? [preferred, ...candidates.filter((candidate) => candidate !== preferred)] : candidates;
+    for (const candidate of ordered) {
+      const { model, failureDomain } = candidate;
       controller.signal.throwIfAborted();
-      if (failedConnections.has(failureDomain)) continue;
+      if (failedConnections.has(failureDomain) || (unavailableConnections?.get(failureDomain)?.retryAt ?? 0) > Date.now()) continue;
       const identity = { provider: model.provider, providerAlias: model.providerAlias, modelId: model.modelId };
       try {
-        const result = await generateNativeText(model, messages, { ...options, timeoutMs: undefined, signal: controller.signal });
+        const result = await generateNativeText(model, messages, { ...generationOptions, timeoutMs: undefined, signal: controller.signal });
         controller.signal.throwIfAborted();
         attempts.push({ ...identity, status: "completed" });
+        if (selectionState) {
+          selectionState.preferredCandidate = candidateKey(candidate);
+          unavailableConnections?.delete(failureDomain);
+        }
         return { ...result, model, attempts };
       } catch (error) {
         controller.signal.throwIfAborted();
@@ -106,7 +126,18 @@ export async function generateToolModelText(
         const scope = toolModelFailureScope(error);
         if (scope === undefined) throw error;
         lastError = error;
-        if (scope === "connection") failedConnections.add(failureDomain);
+        if (scope === "connection") {
+          failedConnections.add(failureDomain);
+          const previous = unavailableConnections?.get(failureDomain);
+          // 同一轮并行分析只推进一次退避；迟到失败不延长已经生效的冷却。
+          if (!previous || previous.retryAt <= Date.now()) {
+            const failures = (previous?.failures ?? 0) + 1;
+            unavailableConnections?.set(failureDomain, {
+              retryAt: Date.now() + Math.min(60_000 * 2 ** Math.min(failures - 1, 4), 900_000),
+              failures
+            });
+          }
+        }
       }
     }
     throw new ToolModelCandidatesExhaustedError(attempts, lastError);
@@ -114,4 +145,8 @@ export async function generateToolModelText(
     if (timer !== undefined) clearTimeout(timer);
     options.signal?.removeEventListener("abort", onAbort);
   }
+}
+
+function candidateKey(candidate: ToolModelCandidate): string {
+  return `${candidate.failureDomain}:${candidate.model.modelId}`;
 }

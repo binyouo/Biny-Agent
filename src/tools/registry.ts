@@ -23,6 +23,7 @@ import { createWebSearchTool } from "./web/search.js";
 import { createToolSearchTool } from "./toolSearch.js";
 import { createWidgetReadmeTool, createWidgetRendererTool } from "./widget.js";
 import { createBrowserRelayTools } from "./browserRelay.js";
+import type { ToolModelSelectionState } from "../llm/toolModelRequest.js";
 import type { ToolModelCandidate } from "../llm/toolModel.js";
 import type { ManagedProcessService } from "../runtime/ManagedProcessService.js";
 
@@ -160,12 +161,13 @@ export function createToolRegistry(
   sandboxConfig?: SandboxConfig,
   webCookiesConfig?: WebCookiesConfig,
   getToolSearchModels?: () => readonly ToolModelCandidate[],
-  browser?: BrowserAutomationEndpoint
+  browser?: BrowserAutomationEndpoint,
+  getToolModelSelectionState?: () => ToolModelSelectionState
 ): ToolRegistry {
   // 这里集中注册内置工具；外部扩展在 CommandRuntime 装配完成后追加到同一 registry。
   const registry = new ToolRegistry();
   for (const tool of createBrowserRelayTools(undefined, context)) registry.register(tool);
-  registry.register(createToolSearchTool(() => registry.listEntries(), getToolSearchModels));
+  registry.register(createToolSearchTool(() => registry.listEntries(), getToolSearchModels, getToolModelSelectionState));
   registry.register(createWidgetReadmeTool());
   registry.register(createWidgetRendererTool());
   registry.register(createReadFileTool(context));

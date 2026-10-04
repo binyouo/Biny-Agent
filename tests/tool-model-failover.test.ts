@@ -4,7 +4,7 @@ import test from "node:test";
 import type { AgentModel, ModelStreamEvent } from "../src/agent/core/types.js";
 import { configSchema, defaultConfig } from "../src/config/schema.js";
 import { resolveToolModelCandidates, type ToolModelCandidate } from "../src/llm/toolModel.js";
-import { generateToolModelText, toolModelFailureScope, ToolModelCandidatesExhaustedError } from "../src/llm/toolModelRequest.js";
+import { type ToolModelSelectionState, generateToolModelText, toolModelFailureScope, ToolModelCandidatesExhaustedError } from "../src/llm/toolModelRequest.js";
 
 function candidate(id: string, domain: string, operation: () => Promise<string>): ToolModelCandidate {
   const model: AgentModel = {
@@ -266,7 +266,7 @@ test("真实 provider 装配链能从余额失败切换并产出结果", async (
 });
 
 test("SDK 重试包装保留的最终 401、402、429 额度错误仍能切换", async (t) => {
-  const calls = new Map<string, number>();
+  const calls = new Map<string, { retryAt: number; failures: number }>();
   const server = createServer((request, response) => {
     request.resume();
     const route = request.url!;
@@ -303,4 +303,72 @@ test("SDK 重试包装保留的最终 401、402、429 额度错误仍能切换",
       assert.equal(calls.get(`/${status}/chat/completions`), 2, "SDK 预算耗尽后才切到另一连接");
     });
   }
+});
+
+test("automatic selection retains the successful candidate after the failed connection cooldown expires", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"] });
+  let failedCalls = 0;
+  const selectionState: ToolModelSelectionState = { unavailableConnections: new Map() };
+  const models = [
+    candidate("exhausted", "empty", async () => { failedCalls++; throw failure(402, "Insufficient Balance"); }),
+    candidate("healthy", "healthy", async () => "ok")
+  ];
+  await generateToolModelText(models, [], { selectionState });
+  assert.equal(failedCalls, 1);
+  t.mock.timers.tick(120_000);
+  const next = await generateToolModelText(models, [], { selectionState });
+  assert.equal(next.model.modelId, "healthy");
+  assert.equal(failedCalls, 1, "Healthy automatic choice must remain first even after the original candidate cooldown expires");
+  const changed = await generateToolModelText(models, [], { selectionState: { unavailableConnections: new Map() } });
+  assert.equal(changed.model.modelId, "healthy");
+  assert.equal(failedCalls, 2, "A different runtime or changed configuration starts its own selection");
+});
+
+test("repeated permanent failures back off instead of probing every minute", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"] });
+  const selectionState: ToolModelSelectionState = { unavailableConnections: new Map() };
+  let calls = 0;
+  const models = [candidate("exhausted", "empty", async () => { calls++; throw failure(402, "Insufficient Balance"); })];
+  const attempt = async () => { await assert.rejects(generateToolModelText(models, [], { selectionState }), ToolModelCandidatesExhaustedError); };
+  await attempt();
+  t.mock.timers.tick(60_000);
+  await attempt();
+  assert.equal(calls, 2);
+  t.mock.timers.tick(60_000);
+  await attempt();
+  assert.equal(calls, 2, "A repeated permanent failure waits two minutes before probing again");
+  t.mock.timers.tick(60_000);
+  await attempt();
+  assert.equal(calls, 3);
+  for (const interval of [240_000, 480_000, 900_000, 900_000]) {
+    assert.equal(selectionState.unavailableConnections.get("empty")!.retryAt - Date.now(), interval);
+    t.mock.timers.tick(interval);
+    await attempt();
+  }
+  assert.equal(selectionState.unavailableConnections.get("empty")!.retryAt - Date.now(), 900_000, "Backoff stays bounded at fifteen minutes");
+});
+
+
+test("preferred automatic candidate cannot override an explicitly supplied model", async () => {
+  const selectionState: ToolModelSelectionState = { unavailableConnections: new Map(), preferredCandidate: "healthy:healthy" };
+  let otherCalls = 0;
+  const healthy = candidate("healthy", "healthy", async () => { otherCalls++; return "ok"; });
+  await generateToolModelText([healthy], [], { selectionState });
+  const explicit = candidate("explicit", "explicit", async () => { throw failure(402, "Insufficient Balance"); });
+  await assert.rejects(generateToolModelText([explicit], [], { selectionState }), ToolModelCandidatesExhaustedError);
+  assert.equal(otherCalls, 1, "The preferred candidate must belong to the current supplied candidate list");
+});
+
+test("parallel analyses count one connection failure round for backoff", async () => {
+  const selectionState: ToolModelSelectionState = { unavailableConnections: new Map() };
+  let started = 0;
+  let release!: () => void;
+  const bothStarted = new Promise<void>((resolve) => { release = resolve; });
+  const models = [candidate("exhausted", "empty", async () => {
+    if (++started === 2) release();
+    await bothStarted;
+    throw failure(402, "Insufficient Balance");
+  })];
+  await Promise.all([1, 2].map(async () => { await assert.rejects(generateToolModelText(models, [], { selectionState }), ToolModelCandidatesExhaustedError); }));
+  assert.equal(selectionState.unavailableConnections.get("empty")?.failures, 1, "Concurrent tool and skill selection must not double the cooldown");
 });
