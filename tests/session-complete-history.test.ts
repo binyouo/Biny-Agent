@@ -89,6 +89,7 @@ test("完整历史超过展示预算明确报错，不返回伪完整的尾部",
   const recorder = new SessionRecorder(root);
   await recorder.close();
   try {
+    await writeFile(recorder.filePath, "");
     await truncate(recorder.filePath, maxSessionHistoryBytes + 1);
     await assert.rejects(readStoredSessionEvents(root, recorder.sessionId), /Session history exceeds the maximum size/);
   } finally { await rm(root, { recursive: true, force: true }); }
