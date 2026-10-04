@@ -99,8 +99,12 @@ test("Computer Use cards show independent unknown permissions and dispatch real 
     const approve = [...dom.window.document.querySelectorAll("button")].find(button => button.textContent === "批准应用")!;
     await act(async () => { approve.click(); });
     assert.ok(calls.includes("approve:test.notes"));
+    // 撤销要先过确认：Alma 的语义是不问就不动。
     const revoke = [...dom.window.document.querySelectorAll("button")].find(button => button.textContent === "撤销授权")!;
     await act(async () => { revoke.click(); });
+    assert.equal(calls.includes("revoke:test.notes"), false, "未确认前不得撤销");
+    const confirmRevoke = [...dom.window.document.querySelectorAll("[data-confirm-revoke] button")].find(button => button.textContent === "确认撤销")!;
+    await act(async () => { confirmRevoke.click(); });
     assert.ok(calls.includes("revoke:test.notes"));
     for (const label of ["授权辅助功能", "刷新", "测试我的配置", "记录操作日志"]) {
       const button = [...dom.window.document.querySelectorAll("button")].find(button => button.textContent?.trim() === label || button.getAttribute("aria-label") === label)!;
@@ -150,6 +154,108 @@ test("focus guard failure surfaces a warning, and staying armed does not", async
     await act(async () => { root.render(createElement(SettingsComputerUse, { key: "armed" })); });
     await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)); });
     assert.equal(dom.window.document.querySelector('[data-focus-guard="unavailable"]'), null, "守卫正常时不该有告警");
+  } finally {
+    await act(async () => { root.unmount(); });
+    for (const [key, descriptor] of saved) { if (descriptor) Object.defineProperty(globalThis, key, descriptor); else delete (globalThis as Record<string, unknown>)[key]; }
+    dom.window.close();
+  }
+});
+
+// 撤销授权不可逆：Alma 先弹确认（revokeTitle/revokeDesc1/revokeDesc2），
+// 确认前不能真的调 revoke；说明里还要内联助手路径（desc1 + <code> + desc2）。
+test("revoking asks first, and the helper path is shown inline", async () => {
+  const dom = new JSDOM("<div id='root'></div>");
+  const saved = new Map<string, PropertyDescriptor | undefined>();
+  for (const [key, value] of Object.entries({ window: dom.window, document: dom.window.document, navigator: dom.window.navigator, HTMLElement: dom.window.HTMLElement, React, IS_REACT_ACT_ENVIRONMENT: true })) {
+    saved.set(key, Object.getOwnPropertyDescriptor(globalThis, key)); Object.defineProperty(globalThis, key, { configurable: true, value });
+  }
+  const root = createRoot(dom.window.document.getElementById("root")!);
+  const revoked: string[] = [];
+  const diagnostic: ComputerDiagnostics = {
+    workerPath: "/opt/biny/computer-use.app/Contents/MacOS/computer-use",
+    helperPresent: true,
+    hostPath: "/synthetic/Biny", expectedVersion: "native", sdkLoaded: true, runtimeReady: true,
+    strictApproval: true,
+    permissions: { accessibility: "granted", screenRecording: "granted" },
+    approvals: [{ bundleId: "com.apple.TextEdit", appName: "文本编辑", useCount: 3, approvedAt: 1 }],
+    audit: []
+  };
+  const status: ComputerStatus = { state: "ready", preview: false, foregroundAllowed: false, lastOutcome: "not-dispatched" };
+  const api = {
+    status: async () => status, enable: async () => status, control: async () => status,
+    preview: async () => status, foreground: async () => status, logging: async () => status,
+    diagnostics: async () => diagnostic, requestAccessibility: async () => diagnostic,
+    testSetup: async () => diagnostic, strict: async () => diagnostic,
+    approve: async () => diagnostic,
+    revoke: async (bundleId: string) => { revoked.push(bundleId); return diagnostic; }
+  } as unknown as ComputerDesktopApi;
+  try {
+    Object.assign(dom.window, { binyComputer: api });
+    await act(async () => { root.render(createElement(SettingsComputerUse)); });
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)); });
+
+    // 说明里内联了助手路径
+    const path = dom.window.document.querySelector(".cu-path");
+    assert.equal(path?.textContent, diagnostic.workerPath, "说明里要给出真实助手路径，而不是笼统一句");
+
+    const revokeButton = [...dom.window.document.querySelectorAll("button")].find(b => b.textContent === "撤销授权")!;
+    await act(async () => { revokeButton.click(); });
+    assert.equal(revoked.length, 0, "点撤销不能立刻生效");
+    const confirm = dom.window.document.querySelector('[data-confirm-revoke="com.apple.TextEdit"]');
+    assert.ok(confirm, "应当先弹出确认");
+    assert.match(confirm!.textContent ?? "", /com\.apple\.TextEdit/, "确认里要写清是哪个应用");
+
+    const cancel = [...confirm!.querySelectorAll("button")].find(b => b.textContent === "取消")!;
+    await act(async () => { cancel.click(); });
+    assert.equal(revoked.length, 0, "取消后不能撤销");
+    assert.equal(dom.window.document.querySelector("[data-confirm-revoke]"), null, "取消后确认块要收起");
+
+    await act(async () => { revokeButton.click(); });
+    const confirmAgain = dom.window.document.querySelector("[data-confirm-revoke]")!;
+    const confirmButton = [...confirmAgain.querySelectorAll("button")].find(b => b.textContent === "确认撤销")!;
+    await act(async () => { confirmButton.click(); });
+    assert.deepEqual(revoked, ["com.apple.TextEdit"], "只有确认后才真的撤销");
+  } finally {
+    await act(async () => { root.unmount(); });
+    for (const [key, descriptor] of saved) { if (descriptor) Object.defineProperty(globalThis, key, descriptor); else delete (globalThis as Record<string, unknown>)[key]; }
+    dom.window.close();
+  }
+});
+
+// 「文件不在」和「还没启动」要给不同的话，否则会把人指去重装一个已经装好的组件。
+test("a present helper shows its path; only a missing one points at the build", async () => {
+  const dom = new JSDOM("<div id='root'></div>");
+  const saved = new Map<string, PropertyDescriptor | undefined>();
+  for (const [key, value] of Object.entries({ window: dom.window, document: dom.window.document, navigator: dom.window.navigator, HTMLElement: dom.window.HTMLElement, React, IS_REACT_ACT_ENVIRONMENT: true })) {
+    saved.set(key, Object.getOwnPropertyDescriptor(globalThis, key)); Object.defineProperty(globalThis, key, { configurable: true, value });
+  }
+  const root = createRoot(dom.window.document.getElementById("root")!);
+  const status: ComputerStatus = { state: "disabled", preview: false, foregroundAllowed: false, lastOutcome: "not-dispatched" };
+  let diagnostic = {
+    workerPath: "/opt/biny/computer-use.app/Contents/MacOS/computer-use", helperPresent: true,
+    hostPath: "/synthetic/Biny", expectedVersion: "native", sdkLoaded: false, runtimeReady: false,
+    strictApproval: false, permissions: { accessibility: "unknown", screenRecording: "unknown" }, approvals: [], audit: []
+  } as ComputerDiagnostics;
+  const api = {
+    status: async () => status, enable: async () => status, control: async () => status,
+    preview: async () => status, foreground: async () => status, logging: async () => status,
+    diagnostics: async () => diagnostic, requestAccessibility: async () => diagnostic,
+    testSetup: async () => diagnostic, strict: async () => diagnostic,
+    approve: async () => diagnostic, revoke: async () => diagnostic
+  } as unknown as ComputerDesktopApi;
+  try {
+    Object.assign(dom.window, { binyComputer: api });
+    await act(async () => { root.render(createElement(SettingsComputerUse)); });
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)); });
+    let path = dom.window.document.querySelector(".cu-path")?.textContent ?? "";
+    assert.equal(path, diagnostic.workerPath, "组件已在磁盘上就该显示路径，而不是叫人去重建");
+    assert.doesNotMatch(path, /build:activity-sidecar/);
+
+    diagnostic = { ...diagnostic, helperPresent: false };
+    await act(async () => { root.render(createElement(SettingsComputerUse, { key: "missing" })); });
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)); });
+    path = dom.window.document.querySelector(".cu-path")?.textContent ?? "";
+    assert.match(path, /build:activity-sidecar/, "真的不在才给构建命令");
   } finally {
     await act(async () => { root.unmount(); });
     for (const [key, descriptor] of saved) { if (descriptor) Object.defineProperty(globalThis, key, descriptor); else delete (globalThis as Record<string, unknown>)[key]; }

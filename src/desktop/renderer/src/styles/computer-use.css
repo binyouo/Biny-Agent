@@ -36,3 +36,20 @@
 .computer-use-settings .cu-toggles { display: grid; gap: 10px; }
 .desktop-settings-dialog .settings-modal .computer-use-settings .settings-switch-row { padding: 12px; border: 1px solid var(--border-subtle); border-radius: var(--st-radius); background: var(--surface); }
 .desktop-settings-dialog .settings-modal .computer-use-settings .settings-switch-copy strong { font-size: calc(13px * var(--font-scale, 1)); }
+
+/* 撤销是不可逆的：确认块沿用 Alma 的三段式（标题 + 带路径的说明 + 取消/确认）。 */
+.computer-use-settings .cu-confirm {
+  margin-top: 12px; padding: 14px;
+  border: 1px solid var(--red-text, var(--border-subtle));
+  border-radius: var(--st-radius); background: var(--surface);
+}
+.computer-use-settings .cu-confirm h4 { margin: 0 0 6px; font-size: calc(13px * var(--font-scale, 1)); }
+.computer-use-settings .cu-confirm .cu-muted { margin: 0 0 12px; font-size: calc(12px * var(--font-scale, 1)); color: var(--text-secondary); line-height: 1.6; }
+.computer-use-settings .cu-confirm-actions { display: flex; gap: 8px; justify-content: flex-end; }
+.computer-use-settings .cu-confirm-actions .is-danger { color: var(--red-text); border-color: var(--red-text); }
+/* 说明里内联的助手路径：等宽、可换行，长路径不把段落撑破。 */
+.computer-use-settings .cu-path {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: calc(11px * var(--font-scale, 1));
+  word-break: break-all;
+}

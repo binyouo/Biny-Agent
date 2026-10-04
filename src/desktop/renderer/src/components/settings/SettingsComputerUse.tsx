@@ -14,6 +14,8 @@ export function SettingsComputerUse(): React.JSX.Element {
   const [status, setStatus] = useState<ComputerStatus>();
   const [diagnostic, setDiagnostic] = useState<ComputerDiagnostics>();
   const [tested, setTested] = useState(false);
+  // 撤销是不可逆的：Alma 会先弹确认，这里同样先问再动。
+  const [confirmRevoke, setConfirmRevoke] = useState<string | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const mounted = useRef(false);
@@ -55,7 +57,13 @@ export function SettingsComputerUse(): React.JSX.Element {
   return <div className="settings-sections computer-use-settings">
     <section className="cu-card">
       <h3 className="cu-heading"><Icon name="cpu" size={17} />Computer Use</h3>
-      <p className="cu-description">让 Biny 在后台操作受支持的 Mac 应用。需要辅助功能与屏幕录制权限。</p>
+      <p className="cu-description">
+        让 Biny 在后台操作受支持的 Mac 应用，不抢你当前应用的焦点。需要原生 helper（
+        {diagnostic?.helperPresent === false
+          ? <code className="cu-path">未找到 — 运行 pnpm build:activity-sidecar</code>
+          : <code className="cu-path">{diagnostic?.workerPath ?? "正在解析路径…"}</code>}
+        ）以及下面的系统权限。
+      </p>
       <div className="cu-section"><h4>桌面控制组件</h4><div className="cu-helper" data-loaded={diagnostic?.sdkLoaded ?? false}>
         <Icon name={diagnostic?.sdkLoaded ? "circle-check" : "help"} size={17} />
         <strong>{!diagnostic ? "正在检查…" : diagnostic.sdkLoaded ? "已安装" : "组件不可用"}</strong><span>{diagnostic?.driverVersion ? `原生 daemon · v${diagnostic.driverVersion}${typeof diagnostic.uptimeSeconds === "number" ? ` · 已运行 ${Math.floor(diagnostic.uptimeSeconds / 60) >= 1 ? `${Math.floor(diagnostic.uptimeSeconds / 60)} 分钟` : `${diagnostic.uptimeSeconds} 秒`}` : ""}` : diagnostic?.expectedVersion ? `要求 ${diagnostic.expectedVersion}` : "原生 daemon"}</span>
@@ -93,7 +101,7 @@ export function SettingsComputerUse(): React.JSX.Element {
           const approved = Boolean(app.approvedAt && !app.revokedAt);
           return <div className="cu-permission" key={app.bundleId} data-app={app.bundleId}>
             <div><strong>{app.appName}</strong><p className="cu-muted">{app.bundleId} · {approved ? "已批准" : app.revokedAt ? "已撤销" : "待批准"} · 使用 {app.useCount} 次{app.lastUsedAt ? ` · 最近 ${new Date(app.lastUsedAt).toLocaleString()}` : ""}</p></div>
-            <button type="button" className="settings-secondary-button" disabled={unavailable} onClick={() => void perform(() => readDiagnostic(() => approved ? api.revoke(app.bundleId) : api.approve(app.bundleId)))}>{approved ? "撤销授权" : "批准应用"}</button>
+            <button type="button" className="settings-secondary-button" disabled={unavailable} onClick={() => { if (approved) setConfirmRevoke(app.bundleId); else void perform(() => readDiagnostic(() => api.approve(app.bundleId))); }}>{approved ? "撤销授权" : "批准应用"}</button>
           </div>;
         })}
       </section>
@@ -111,6 +119,23 @@ export function SettingsComputerUse(): React.JSX.Element {
         {diagnostic?.actionLimits?.map(limit => <p className="cu-description" data-action-limit={limit.action} key={limit.code}>{limit.message}</p>)}
         <pre className="cu-diagnostics">{diagnosticText}{diagnostic ? `\n组件：${diagnostic.workerPath}` : ""}</pre>
       </details>
+      {confirmRevoke ? (
+        <div className="cu-confirm" role="alertdialog" aria-modal="true" aria-label="撤销应用授权" data-confirm-revoke={confirmRevoke}>
+          <h4>撤销该应用的授权？</h4>
+          <p className="cu-muted">
+            撤销后 Biny 将不再被允许操控 <code className="cu-path">{confirmRevoke}</code>。
+            严格审批开启时需要重新批准才能再次操控。
+          </p>
+          <div className="cu-confirm-actions">
+            <button type="button" className="settings-secondary-button" onClick={() => setConfirmRevoke(null)}>取消</button>
+            <button
+              type="button"
+              className="settings-secondary-button is-danger"
+              onClick={() => void perform(async () => { const target = confirmRevoke; setConfirmRevoke(null); await readDiagnostic(() => api.revoke(target)); })}
+            >确认撤销</button>
+          </div>
+        </div>
+      ) : null}
     </section>
   </div>;
 }

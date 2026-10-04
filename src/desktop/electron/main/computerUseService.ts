@@ -1,5 +1,6 @@
 import { ipcMain, systemPreferences, type BrowserWindow } from "electron";
 import { z } from "zod";
+import { existsSync } from "node:fs";
 import { ComputerAppApprovals } from "../../../computer/appApprovals.js";
 import { ComputerUseController } from "../../../computer/controller.js";
 import { NativeProcessDriver } from "../../../computer/nativeDriver.js";
@@ -58,8 +59,11 @@ export async function createComputerUseService(browser: DesktopBrowserService, g
     const permission = z.enum(["granted", "denied", "unknown"]);
     const screen = process.platform === "darwin" ? systemPreferences.getMediaAccessStatus("screen") : undefined;
     const policy = await approvals.read();
+    // 「文件不在」和「还没启动」是两回事，别让用户去重装一个已经在的组件。
+    let helperPresent = false;
+    try { helperPresent = existsSync(driver.workerPath()); } catch { helperPresent = false; }
     const result: ComputerDiagnostics = {
-      workerPath: driver.workerPath(), hostPath: process.execPath, expectedVersion: "native", sdkLoaded: false, runtimeReady: false,
+      workerPath: driver.workerPath(), helperPresent, hostPath: process.execPath, expectedVersion: "native", sdkLoaded: false, runtimeReady: false,
       permissions: { accessibility: process.platform === "darwin" ? systemPreferences.isTrustedAccessibilityClient(false) ? "granted" : "denied" : "unknown", screenRecording: screen === "granted" ? "granted" : screen === "denied" || screen === "restricted" ? "denied" : "unknown" },
       strictApproval: policy.strictApproval, approvals: policy.apps, audit: controller.audit(), error: setupError, actionLimits: []
     };
