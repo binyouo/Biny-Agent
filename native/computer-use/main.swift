@@ -311,6 +311,27 @@ DispatchQueue.global().async {
                                 reply(fd, ["id": id, "ok": true, "data": ["ok": true] as [String: Any]] as [String: Any])
                             case "shot_display":
                                 reply(fd, ["id": id, "ok": true, "data": try await screenshot(args)])
+                            case "launch_app":
+                                // 后台拉起：绝不 activate，不抢用户焦点（Alma 的 launch_app 同样保证这点）。
+                                guard let bundle = args["bundle"] as? String else {
+                                    throw NSError(domain: "app", code: 64, userInfo: [NSLocalizedDescriptionKey: "launch_app requires a bundle id"])
+                                }
+                                if let running = NSRunningApplication.runningApplications(withBundleIdentifier: bundle).first {
+                                    reply(fd, ["id": id, "ok": true, "data": ["pid": Int(running.processIdentifier), "alreadyRunning": true] as [String: Any]])
+                                    return
+                                }
+                                let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundle)
+                                guard let appURL = url else {
+                                    throw NSError(domain: "app", code: 1, userInfo: [NSLocalizedDescriptionKey: "app_not_installed: \(bundle)"])
+                                }
+                                let config = NSWorkspace.OpenConfiguration()
+                                config.activates = false
+                                let launched: NSRunningApplication? = await withCheckedContinuation { continuation in
+                                    NSWorkspace.shared.openApplication(at: appURL, configuration: config) { app, _ in
+                                        continuation.resume(returning: app)
+                                    }
+                                }
+                                reply(fd, ["id": id, "ok": true, "data": ["pid": Int(launched?.processIdentifier ?? 0), "alreadyRunning": false] as [String: Any]])
                             case "doctor":
                                 reply(fd, ["id": id, "ok": true, "data": [
                                     "accessibility": axTrusted() ? "granted" : "denied",

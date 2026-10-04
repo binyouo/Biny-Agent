@@ -17,4 +17,10 @@ export function registerComputerCommands(program: Command): void {
   });
   for (const operation of ["approve", "revoke"] as const) computer.command(operation).argument("<bundle-id>", "known application identifier").option("--json", "print JSON")
     .action((bundleId: string, options: { json?: boolean }) => execute(async policy => await policy[operation](bundleId), options.json));
+  // 第二个出口：external MCP clients can drive the same capability over stdio.
+  // stdout carries the protocol, so nothing else may be printed here.
+  computer.command("mcp").description("Serve Computer Use over MCP on stdio").action(async () => {
+    const { runComputerUseMcpServer } = await import("../../computer/mcpServer.js");
+    await runComputerUseMcpServer();
+  });
 }

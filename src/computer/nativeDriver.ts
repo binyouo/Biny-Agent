@@ -289,6 +289,23 @@ export class NativeProcessDriver implements ComputerDriver {
     return this.stop();
   }
 
+  /** 后台拉起（不抢焦点）；已运行则原样返回 pid。供 MCP 出口使用。 */
+  launchApp(bundle: string): Promise<DriverReply> { return this.call("launch_app", { bundle }); }
+
+  /**
+   * 按原始 daemon 参数观察，不做 WindowTarget 折算。供 MCP 出口使用。
+   * 直接返回 call 的结果：shape() 已经把落盘的截图读成 image 了，
+   * 这里再按 data.screenshot 重读会踩到 shape 之后的形状（已被 toCapture 换过）而丢图。
+   */
+  observeRaw(args: Record<string, unknown>): Promise<DriverReply> {
+    return this.call("get_app_state", args);
+  }
+
+  /** 直接派发一个 daemon 动作，参数原样透传。供 MCP 出口使用。 */
+  actRaw(action: string, params: Record<string, unknown>, pid?: number): Promise<DriverReply> {
+    return this.call(action, pid === undefined ? params : { ...params, pid });
+  }
+
   /**
    * 整屏截图，用作观察失败时的回落（Alma 的帧泵同样是「优先抓窗口，失败回落整屏」）。
    * 走 daemon 的 capture_screen：只截图、不读 AX，因此不会被卡住的无障碍调用牵连，
