@@ -335,3 +335,58 @@ test("the setup test names the check that failed, not just that one did", async 
     dom.window.close();
   }
 });
+
+// 「控制与高级选项」里的两个交互此前从没被真实数据验过：
+// 前台动作开关（会改变焦点的显式批准）和审计日志列表。
+test("the advanced section wires the foreground switch and renders the audit trail", async () => {
+  const dom = new JSDOM("<div id='root'></div>");
+  const saved = new Map<string, PropertyDescriptor | undefined>();
+  for (const [key, value] of Object.entries({ window: dom.window, document: dom.window.document, navigator: dom.window.navigator, HTMLElement: dom.window.HTMLElement, React, IS_REACT_ACT_ENVIRONMENT: true })) {
+    saved.set(key, Object.getOwnPropertyDescriptor(globalThis, key)); Object.defineProperty(globalThis, key, { configurable: true, value });
+  }
+  const root = createRoot(dom.window.document.getElementById("root")!);
+  const foregroundCalls: boolean[] = [];
+  let status: ComputerStatus = { state: "ready", preview: false, foregroundAllowed: false, lastOutcome: "completed" };
+  const diagnostic: ComputerDiagnostics = {
+    workerPath: "/opt/biny/computer-use.app/Contents/MacOS/computer-use", helperPresent: true,
+    hostPath: "/synthetic/Biny", expectedVersion: "native", sdkLoaded: true, runtimeReady: true,
+    driverVersion: "native-1", uptimeSeconds: 7, focusGuard: "armed", strictApproval: false,
+    permissions: { accessibility: "granted", screenRecording: "granted" }, approvals: [],
+    audit: [
+      { at: 1_700_000_000_000, action: "click", target: { pid: 671, windowId: "10104" }, outcome: "completed", durationMs: 42 },
+      { at: 1_700_000_060_000, action: "type_text", target: { pid: 671, windowId: "10104" }, outcome: "unverified", durationMs: 130 }
+    ]
+  };
+  const api = {
+    status: async () => status, enable: async () => status,
+    control: async () => status, preview: async () => status,
+    foreground: async (value: boolean) => { foregroundCalls.push(value); status = { ...status, foregroundAllowed: value }; return status; },
+    logging: async () => status, diagnostics: async () => diagnostic,
+    requestAccessibility: async () => diagnostic, testSetup: async () => diagnostic,
+    strict: async () => diagnostic, approve: async () => diagnostic, revoke: async () => diagnostic
+  } as unknown as ComputerDesktopApi;
+  try {
+    Object.assign(dom.window, { binyComputer: api });
+    await act(async () => { root.render(createElement(SettingsComputerUse)); });
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)); });
+
+    // 审计日志：每条要能看出时间、动作、目标与结果
+    const trail = dom.window.document.querySelector(".cu-diagnostics")?.textContent ?? "";
+    assert.match(trail, /click/, "审计要记下动作名");
+    assert.match(trail, /671/, "审计要记下目标 pid");
+    assert.match(trail, /42ms/, "审计要记下耗时");
+    assert.match(trail, /type_text/, "第二条也要在");
+    assert.match(dom.window.document.body.textContent ?? "", /日志共 2 条/, "条数要如实报出");
+
+    // 前台动作开关：这是唯一允许动作改变用户焦点的开关，必须真的送达
+    const toggle = dom.window.document.querySelector<HTMLInputElement>(".cu-foreground input")!;
+    assert.ok(toggle, "前台动作开关要在");
+    assert.equal(toggle.checked, false, "默认不放开前台动作");
+    await act(async () => { toggle.click(); });
+    assert.deepEqual(foregroundCalls, [true], "点一下要真的把开关送出去");
+  } finally {
+    await act(async () => { root.unmount(); });
+    for (const [key, descriptor] of saved) { if (descriptor) Object.defineProperty(globalThis, key, descriptor); else delete (globalThis as Record<string, unknown>)[key]; }
+    dom.window.close();
+  }
+});
