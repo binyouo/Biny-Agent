@@ -16,4 +16,8 @@ test("preview window presents a live 3fps surface with takeover controls", async
   // 不抢焦点是 PiP 的前提：窗口必须不可聚焦且始终置顶。
   assert.match(source, /focusable: false/, "预览窗不能抢走用户焦点");
   assert.match(source, /alwaysOnTop: true/, "预览窗要浮在操控目标之上才「可注视」");
+  // Alma 的 PiP 是 vibrancy 材质的 hud 小窗：窗口要声明材质，页面不能再铺实色底。
+  assert.match(source, /vibrancy: "hud"/, "预览窗要用 HUD 材质");
+  assert.match(source, /backgroundColor: "#00000000"/, "窗口底色必须透明，否则材质透不出来");
+  assert.doesNotMatch(source, /body\{margin:0;background:#2/, "页面不能铺不透明底色，那会把材质盖掉");
 });
