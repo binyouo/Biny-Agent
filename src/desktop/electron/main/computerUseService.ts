@@ -68,13 +68,24 @@ export async function createComputerUseService(browser: DesktopBrowserService, g
       strictApproval: policy.strictApproval, approvals: policy.apps, audit: controller.audit(), error: setupError, actionLimits: []
     };
     try {
+      // daemon 的 doctor 返回的是扁平字段（accessibility / screenRecording），
+      // 不是嵌套的 permissions 对象。之前这里要求嵌套形状，导致每次 parse 都抛，
+      // 于是 helper 明明在跑也一律报「组件不可用」。
       const data = z.object({
         version: z.string().optional(), uptime: z.number().optional(),
         focusGuard: z.enum(["armed", "unavailable"]).optional(),
-        permissions: z.object({ accessibility: permission, screenRecording: permission })
+        accessibility: permission.optional(), screenRecording: permission.optional()
       }).passthrough().parse((await source.diagnostics()).data);
-      // daemon 存活即视为「已加载」；版本与 uptime 直接透给设置页。
-      return { ...result, sdkLoaded: true, runtimeReady: true, driverVersion: data.version, uptimeSeconds: data.uptime, focusGuard: data.focusGuard, ...data };
+      return {
+        ...result,
+        sdkLoaded: true, runtimeReady: true,
+        driverVersion: data.version, uptimeSeconds: data.uptime, focusGuard: data.focusGuard,
+        // daemon 自己的权限判断优先；它没报就沿用宿主进程的。
+        permissions: {
+          accessibility: data.accessibility ?? result.permissions.accessibility,
+          screenRecording: data.screenRecording ?? result.permissions.screenRecording
+        }
+      };
     } catch (error) {
       return { ...result, error: setupError ?? (error instanceof Error ? error.message : String(error)) };
     }

@@ -262,3 +262,25 @@ test("a present helper shows its path; only a missing one points at the build", 
     dom.window.close();
   }
 });
+
+// daemon 的 doctor 返回扁平字段（accessibility / screenRecording），
+// 而不是嵌套的 permissions 对象。曾经按嵌套形状解析 → 每次 parse 都抛，
+// helper 明明在跑也一律报「组件不可用」。这条钉住两边形状一致。
+test("a live daemon reads as installed, not as an unavailable component", async () => {
+  const { NativeProcessDriver } = await import("../src/computer/nativeDriver.js");
+  const driver = new NativeProcessDriver(() => undefined, {
+    binaryPath: new URL("../out/native/computer-use", import.meta.url).pathname
+  });
+  try {
+    const reply = await driver.diagnostics();
+    const data = reply.data as Record<string, unknown>;
+    // 服务端解析的就是这些键；少了任何一个都会让 parse 失败。
+    assert.equal(typeof data.version, "string", "doctor 必须给出 version");
+    assert.equal(typeof data.uptime, "number", "doctor 必须给出 uptime");
+    assert.ok(["granted", "denied"].includes(data.accessibility as string), "doctor 必须给出扁平的 accessibility");
+    assert.ok(["granted", "denied"].includes(data.screenRecording as string), "doctor 必须给出扁平的 screenRecording");
+    assert.equal(typeof data.focusGuard, "string", "doctor 必须给出 focusGuard");
+  } finally {
+    await driver.dispose();
+  }
+});
