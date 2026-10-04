@@ -93,7 +93,7 @@ import {
 } from "../../../session/catalog.js";
 import { readSessionEvents } from "../../../session/events.js";
 import { openRecipeSuggestions, recipeIds, RecipeStateStore, type RecipeId } from "../../../session/recipes.js";
-import { agentDir, resolveSessionFile } from "../../../session/store.js";
+import { resolveSessionFile } from "../../../session/store.js";
 import { AutomationStore, type AutomationRecord } from "../../../runtime/AutomationScheduler.js";
 import { RuntimeEventAuthority } from "../../../runtime/RuntimeAuthority.js";
 import {
@@ -2349,17 +2349,12 @@ export class DesktopAgentManager {
     }
   }
 
-  /** 日期列表只需持久化任务；不得为其他项目加载模型、工具或启动调度器。 */
+  /** 日期列表只需持久化任务；不得迁移数据库、加载模型或启动其他项目的调度器。 */
   async scheduledAutomations(projectId: string): Promise<AutomationRecord[]> {
     const project = this.projects.requireProject(projectId);
     if (project.missing) return [];
-    try {
-      await fs.stat(path.join(agentDir(project.path), "runtime.sqlite"));
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
-      throw error;
-    }
-    const authority = await RuntimeEventAuthority.open(project.path, { backfillLegacySessions: false });
+    const authority = await RuntimeEventAuthority.openReadOnly(project.path);
+    if (!authority) return [];
     try {
       const store = await AutomationStore.open(project.path, authority);
       try { return store.list(); }
