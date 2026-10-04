@@ -1,3 +1,6 @@
+import { existsSync } from "node:fs";
+import path from "node:path";
+
 // 权限引导浮层的几何与识别结果解析。
 //
 // 单独成模块且不 import electron：这些是纯计算，而它们算错的后果很具体——
@@ -57,4 +60,22 @@ export function findTargetRow(lines: OcrLine[], appName: string): OverlayRect | 
   // Vision 只框文字本身，不含控件留白和右侧开关；按识别框高度放大到「整行」。
   const height = Math.max(hit.rect.height, 22) * 2.2;
   return { x: hit.rect.x, y: hit.rect.y - height / 3, width: hit.rect.width, height };
+}
+
+/**
+ * OCR 二进制是 daemon 的同级产物。daemon 发布为 .app 之后，「同级」要从
+ * bundle 内部往上退到 native 目录，退少了就会得到一个
+ * `computer-use.app/activity-ocr` 这种不存在的路径，浮层于是永远收起。
+ */
+export function nativeDirFor(workerPath: string): string {
+  const fromWorker = path.dirname(workerPath);
+  // .../native/computer-use.app/Contents/MacOS → .../native
+  return fromWorker.endsWith(path.join("Contents", "MacOS"))
+    ? path.resolve(fromWorker, "..", "..", "..")
+    : fromWorker;
+}
+
+export function resolveOcrBinary(workerPath: string, cwd = process.cwd()): string | undefined {
+  const candidates = [path.join(nativeDirFor(workerPath), "activity-ocr"), path.join(cwd, "out", "native", "activity-ocr")];
+  return candidates.find(candidate => existsSync(candidate));
 }

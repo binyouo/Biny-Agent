@@ -4,7 +4,7 @@ import { existsSync } from "node:fs";
 import { execFile } from "node:child_process";
 import path from "node:path";
 import { ComputerPermissionOverlay, type OverlayRect } from "./ComputerPermissionOverlay.js";
-import { ACCESSIBILITY_SETTINGS_URL, findTargetRow, parseOcrLines } from "./computerPermissionGeometry.js";
+import { ACCESSIBILITY_SETTINGS_URL, findTargetRow, parseOcrLines, resolveOcrBinary } from "./computerPermissionGeometry.js";
 import { ComputerAppApprovals } from "../../../computer/appApprovals.js";
 import { ComputerUseController } from "../../../computer/controller.js";
 import { NativeProcessDriver } from "../../../computer/nativeDriver.js";
@@ -15,17 +15,6 @@ import type { DesktopBrowserService } from "./DesktopBrowserService.js";
 
 /** 授权引导用的浮层；停用服务时统一收掉。 */
 const guideOverlays = new Set<ComputerPermissionOverlay>();
-
-/**
- * OCR 二进制是 daemon 的同级产物，但 daemon 现在发布为 .app —— 从 bundle 内部
- * 往上找同级是找不到 activity-ocr 的。直接按「native 目录」的两种形态各试一次。
- */
-function resolveOcrBinary(workerPath: string): string | undefined {
-  const fromWorker = path.dirname(workerPath);
-  const nativeDir = fromWorker.endsWith(path.join("Contents", "MacOS")) ? path.dirname(path.dirname(fromWorker)) : fromWorker;
-  const candidates = [path.join(nativeDir, "activity-ocr"), path.join(process.cwd(), "out", "native", "activity-ocr")];
-  return candidates.find(candidate => existsSync(candidate));
-}
 
 function runOcr(imagePath: string, workerPath: string): Promise<string> {
   return new Promise((resolve, reject) => {

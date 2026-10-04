@@ -5,6 +5,7 @@ import {
   PERMISSION_OVERLAY_HEIGHT,
   PERMISSION_OVERLAY_WIDTH,
   findTargetRow,
+  nativeDirFor,
   overlayBounds,
   parseOcrLines
 } from "../src/desktop/electron/main/computerPermissionGeometry.js";
@@ -75,4 +76,19 @@ test("the guide window is an unfocusable floating panel", async () => {
   // locate 比 tick 间隔慢时（截屏+OCR 要一秒），没有重入保护就会堆成请求风暴。
   assert.match(source, /let running = false/, "跟踪必须防重入");
   assert.match(source, /辅助功能/);
+});
+
+// OCR 二进制是 daemon 的同级产物，而 daemon 发布为 .app —— 「同级」要从
+// bundle 内部往上退到 native 目录。退少了会得到一个不存在的路径，
+// 浮层于是永远收起，而且不报错。
+test("the ocr binary is located beside the daemon in both layouts", () => {
+  const dev = "/Users/think/CodingAgent/biny/out/native/computer-use";
+  assert.equal(nativeDirFor(dev), "/Users/think/CodingAgent/biny/out/native");
+
+  const packaged = "/Applications/Biny.app/Contents/Resources/native/computer-use.app/Contents/MacOS/computer-use";
+  assert.equal(
+    nativeDirFor(packaged),
+    "/Applications/Biny.app/Contents/Resources/native",
+    "打包后必须退到 native 目录，而不是 bundle 内部"
+  );
 });
