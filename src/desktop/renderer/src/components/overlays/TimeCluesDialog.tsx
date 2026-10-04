@@ -121,7 +121,12 @@ export function TimeCluesDialog({ open, currentSessionId, refreshKey, onClose, o
       <div aria-live="polite" className="time-clues-list">
         {busy && !page ? <p className="time-clues-status" role="status">正在读取…</p> : null}
         {error ? <p role="alert">读取时间线索失败：{error} <button onClick={() => void load(offset)} type="button">重试</button></p> : null}
-        {!busy && !error && page?.clues.length === 0 && page.scheduled.length === 0 ? <p className="time-clues-status">此范围没有时间线索。</p> : null}
+        {page?.scheduledWarnings?.length ? <div role="alert">
+          <p>部分项目的一次性任务未能读取，结果可能不完整。请检查对应项目后重试。</p>
+          <ul>{page.scheduledWarnings.map((warning) => <li key={warning.projectId}>{warning.projectName}</li>)}</ul>
+          <button disabled={busy} onClick={() => void load(offset)} type="button">重试</button>
+        </div> : null}
+        {!busy && !error && !page?.scheduledWarnings?.length && page?.clues.length === 0 && page.scheduled.length === 0 ? <p className="time-clues-status">此范围没有时间线索。</p> : null}
         {[...groups].map(([date, clues]) => <section className="time-clues-group" key={date}>
           <h3>{date === today ? `今天 · ${date}` : date || "日期未确定"}</h3>
           {clues.map((clue) => <article className="time-clues-row" key={clue.id}>

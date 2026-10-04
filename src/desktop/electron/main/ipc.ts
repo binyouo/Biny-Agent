@@ -60,7 +60,7 @@ import { exportSessionBundle, exportSessionClaudeCode } from "../../../session/t
 import { activitySettingsPatchSchema } from "../../../activity/settings.js";
 import { resolveActivityReportRange } from "../../../activity/analyzer.js";
 import { readDailyMemoryNote } from "../../../activity/dailyNotes.js";
-import { DesktopTemporalMemoryService } from "../../temporalMemoryService.js";
+import { DesktopTemporalMemoryService, readScheduledTemporalSources } from "../../temporalMemoryService.js";
 import { LocalReferenceGraph, LocalReferenceService, localReferenceKinds } from "../../../session/localReferences.js";
 import { globalAgentDir } from "../../../config/paths.js";
 import { runtimeReferenceEntries } from "../../../session/runtimeReferenceEntries.js";
@@ -892,11 +892,10 @@ export function registerDesktopIpc(context: IpcContext): void {
   handleRecoveryGated(desktopIpc.temporalClues, async (_event, query: unknown) => {
     const parsed = temporalQuerySchema.parse(query);
     const projects = context.state.projects();
-    const scheduled = parsed.includeScheduled !== false && (parsed.offset ?? 0) === 0 ? await Promise.all(projects.map(async (project) => ({
-      projectId: project.id,
-      automations: await context.agents.scheduledAutomations(project.id)
-    }))) : [];
-    return await context.temporalMemory.query(parsed, projects, scheduled);
+    const scheduled = await readScheduledTemporalSources(parsed, projects,
+      async (projectId) => await context.agents.scheduledAutomations(projectId));
+    const page = await context.temporalMemory.query(parsed, projects, scheduled.sources);
+    return scheduled.warnings.length ? { ...page, scheduledWarnings: scheduled.warnings } : page;
   });
   handleRecoveryGated(desktopIpc.temporalIgnoreClue, async (_event, id: unknown) =>
     context.temporalMemory.ignore(memoryEntryIdSchema.parse(id)));
