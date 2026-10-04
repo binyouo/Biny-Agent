@@ -1000,7 +1000,7 @@ export class ToolExecutionCoordinator {
         return modelResult;
       }
 
-      const envelope = await this.archivedToolResultEnvelope(call, sequence, result, rawOutput, rawResultBytes, remaining);
+      const envelope = await this.archivedToolResultEnvelope(call, sequence, result, rawOutput, rawResultBytes, remaining, modelResult);
       this.inlineToolResultBytes += Buffer.byteLength(serializeToolResult(envelope), "utf8");
       return envelope;
     });
@@ -1014,10 +1014,12 @@ export class ToolExecutionCoordinator {
     result: unknown,
     output: string,
     resultBytes: number,
-    remaining: number
+    remaining: number,
+    modelResult: unknown
   ): Promise<Record<string, unknown>> {
     // 预算耗尽后连摘要都不再放行，只留引用；否则每步一个 preview 仍会把窗口撑爆。
-    const preview = toolResultPreview(output, Math.min(remaining, maxArchivedPreviewCharacters));
+    const shell = call.name === "Bash" || call.name === "BashOutput";
+    const preview = toolResultPreview(shell ? serializeToolResult(modelResult) : output, Math.min(remaining, maxArchivedPreviewCharacters));
     const shared = {
       archived: true,
       resultBytes,
@@ -1044,9 +1046,13 @@ export class ToolExecutionCoordinator {
     } catch (error) {
       return {
         ...shared,
+        archived: shell ? false : shared.archived,
         archiveError: formatToolError(call.name, error),
-        result,
-        summary: "Tool result exceeded the turn output budget, but archiving failed. The original result is included under result and remains in session history."
+        ...(shell ? { archiveAvailable: false } : {}),
+        result: shell ? modelResult : result,
+        summary: shell
+          ? "Tool result exceeded the turn output budget, but archiving failed. Only bounded captured output is shown; read_tool_result is unavailable. The original result remains in session history."
+          : "Tool result exceeded the turn output budget, but archiving failed. The original result is included under result and remains in session history."
       };
     }
   }

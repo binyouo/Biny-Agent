@@ -66,7 +66,7 @@ export async function archiveToolResult(options: ArchiveToolResultOptions): Prom
   const archivePath = path.posix.join(archiveDirectory, archiveName);
   await ensureAgentDirs(options.workspaceRoot);
   const targetPath = path.join(agentDir(options.workspaceRoot), "tool-results", archiveName);
-  const payload = JSON.stringify({
+  const payload = `${JSON.stringify({
     version: archiveVersion,
     archivedAt: new Date().toISOString(),
     sessionId: options.sessionId,
@@ -74,9 +74,15 @@ export async function archiveToolResult(options: ArchiveToolResultOptions): Prom
     sequence: options.sequence,
     tool: options.tool,
     output
-  } satisfies ToolResultArchiveEnvelope);
+  } satisfies ToolResultArchiveEnvelope)}\n`;
+  // Match the reader's file limit, including JSON escaping and the final newline.
+  // Otherwise a successful write could hand the model an unreadable reference.
+  const payloadBytes = Buffer.byteLength(payload, "utf8");
+  if (payloadBytes > maxArchiveFileBytes) {
+    throw new Error(`Archived tool result is ${String(payloadBytes)} bytes, exceeding the ${String(maxArchiveFileBytes)}-byte read limit.`);
+  }
   try {
-    await fs.writeFile(targetPath, `${payload}\n`, { encoding: "utf8", mode: 0o600, flag: "wx" });
+    await fs.writeFile(targetPath, payload, { encoding: "utf8", mode: 0o600, flag: "wx" });
   } catch (error) {
     // 归档名是 (session, toolCallId, sequence) 的确定性摘要，重放同一次调用会命中已有文件。
     // 内容等价，视作归档成功而不是丢弃引用。
@@ -98,7 +104,7 @@ export function toolResultPreview(value: string, maxCharacters = previewCharacte
   const head = safePrefix(value, headLength);
   const tail = safeSuffix(value, tailLength);
   const omitted = Buffer.byteLength(value.slice(head.length, value.length - tail.length), "utf8");
-  return `${head}\n… [${String(omitted)} bytes omitted; full result archived] …\n${tail}`;
+  return `${head}\n… [${String(omitted)} bytes omitted] …\n${tail}`;
 }
 
 /**

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { projectSingleToolResultForModel, projectToolResultsForModel } from "../src/agent/toolResultProjection.js";
+import { shellOutputBudgetBytes } from "../src/agent/shellOutputProjection.js";
 import { runShellCommand } from "../src/tools/shell/runCommand.js";
 import type { AgentMessage, AgentToolResultMessage } from "../src/agent/core/types.js";
 
@@ -11,7 +12,7 @@ await testArchiveFailureKeepsOriginal();
 await testRunCommandTruncationMetadata();
 await testBashOutputProjectionKeepsPagination();
 await testBashProjectionBoundsBothStreams();
-await testRecentBashProjectionKeepsStreams();
+await testRecentBashProjectionIsBounded();
 
 console.log("tool result projection tests passed");
 
@@ -35,10 +36,10 @@ async function testBashProjectionBoundsBothStreams(): Promise<void> {
         stderrTruncated: true
       } : {})
     };
-    for (const mode of ["single", "history"] as const) {
+    for (const mode of ["single", "history", "recent"] as const) {
       const archived: string[] = [];
       const options = {
-        keepRecentResults: 0,
+        keepRecentResults: mode === "recent" ? 2 : 0,
         archiveResult: async ({ output }: { output: string }) => {
           archived.push(output);
           return { archivePath: `.biny/tool-results/tool-result-${"b".repeat(64)}.json`, resultBytes: Buffer.byteLength(output, "utf8") };
@@ -52,13 +53,19 @@ async function testBashProjectionBoundsBothStreams(): Promise<void> {
           toolResult("bounded-command", "Bash", original)
         ], options))[2]);
 
-      assert.ok(String(projected.stdout).length <= 6_000, `${mode} stdout must be bounded to 6,000 characters`);
-      assert.ok(String(projected.stderr).length <= 6_000, `${mode} stderr must be bounded to 6,000 characters`);
-      assert.equal(projected.stdout, "x".repeat(5_999), `${mode} stdout must contain only the safe tail`);
-      assert.equal(projected.stderr, "错误".repeat(3_000), `${mode} stderr must contain only the tail`);
+      assert.ok(Buffer.byteLength(String(projected.stdout)) + Buffer.byteLength(String(projected.stderr)) <= shellOutputBudgetBytes);
+      assert.ok(String(projected.stdout).startsWith("old stdout\n"));
+      assert.ok(String(projected.stdout).endsWith("x".repeat(100)));
+      assert.ok(String(projected.stderr).startsWith("old stderr\n"));
+      assert.ok(String(projected.stderr).endsWith("错误".repeat(100)));
+      assert.equal(String(projected.stdout).isWellFormed(), true);
+      assert.equal(String(projected.stderr).isWellFormed(), true);
       for (const stream of ["stdout", "stderr"] as const) {
         assert.equal(projected[`${stream}Truncated`], true);
-        assert.equal(projected[`${stream}TruncationDirection`], "tail");
+        assert.equal(projected[`${stream}TruncationDirection`], "head_and_tail");
+        assert.equal(projected[`${stream}CaptureTruncated`], captureMetadata);
+        assert.equal(projected[`${stream}CaptureOmittedBytes`], captureMetadata ? stream === "stdout" ? 1_000 : 2_000 : 0);
+        assert.equal(projected[`${stream}ProjectionTruncated`], true);
         assert.equal(projected[`${stream}RetainedBytes`], Buffer.byteLength(String(projected[stream]), "utf8"));
         assert.equal(projected[`${stream}Bytes`], original[`${stream}Bytes`] ?? Buffer.byteLength(original[stream], "utf8"));
       }
@@ -70,7 +77,7 @@ async function testBashProjectionBoundsBothStreams(): Promise<void> {
   }
 }
 
-async function testRecentBashProjectionKeepsStreams(): Promise<void> {
+async function testRecentBashProjectionIsBounded(): Promise<void> {
   const original = {
     status: "completed",
     exitCode: 0,
@@ -83,10 +90,9 @@ async function testRecentBashProjectionKeepsStreams(): Promise<void> {
     toolResult("recent-command", "Bash", original)
   ];
   const projected = resultDetails((await projectToolResultsForModel(messages))[2]);
-  assert.equal(projected.stdout, original.stdout);
-  assert.equal(projected.stderr, original.stderr);
-  assert.equal(projected.stdoutTruncated, false);
-  assert.equal(projected.stderrTruncated, false);
+  assert.ok(Buffer.byteLength(String(projected.stdout)) + Buffer.byteLength(String(projected.stderr)) <= shellOutputBudgetBytes);
+  assert.equal(projected.stdoutTruncated, true);
+  assert.equal(projected.stderrTruncated, true);
 }
 
 async function testFileAndCommandProjection(): Promise<void> {
@@ -101,10 +107,10 @@ async function testFileAndCommandProjection(): Promise<void> {
     toolResult("command-1", "Bash", {
       status: "completed",
       exitCode: 0,
-      stdout: "pnpm test\n" + "old output\n".repeat(1_000),
+      stdout: "pnpm test\n" + "old output\n".repeat(2_000),
       stderr: "",
-      stdoutBytes: 11_000,
-      stdoutRetainedBytes: 11_000,
+      stdoutBytes: 22_009,
+      stdoutRetainedBytes: 22_009,
       stdoutTruncated: false,
       stderrBytes: 0,
       stderrRetainedBytes: 0,

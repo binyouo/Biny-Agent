@@ -13,10 +13,11 @@ import type {
   AgentToolResultMessage
 } from "./core/types.js";
 import { serializeToolResult } from "../session/toolResultArchive.js";
+import { redactSecrets } from "../utils/secrets.js";
+import { projectShellStreams, shellOutputExcerpt, type ShellOutputExcerpt } from "./shellOutputProjection.js";
 
 const defaultProjectionThresholdBytes = 8 * 1024;
 const defaultKeepRecentResults = 2;
-const maxCommandStreamCharacters = 6_000;
 const maxReadContentCharacters = 10_000;
 const maxSearchMatchCharacters = 600;
 const maxSearchOutputBytes = 12 * 1024;
@@ -69,7 +70,7 @@ export interface ToolResultProjectionArchiveReference {
 export interface ToolResultProjectionOptions {
   /** 单结果超过该字节数才进入正文投影；专用的轻量字段清理不受此阈值限制。 */
   thresholdBytes?: number;
-  /** 最近结果保留正文，避免模型刚拿到的证据马上被折叠。 */
+  /** 最近结果保留正文；shell 结果始终遵守独立的模型输出字节上限。 */
   keepRecentResults?: number;
   archiveResult?: (
     request: ToolResultProjectionArchiveRequest
@@ -91,6 +92,7 @@ export async function projectSingleToolResultForModel(
   value: unknown,
   options: ToolResultProjectionOptions = {}
 ): Promise<unknown> {
+  value = shellResultForProjection(toolName, value);
   const message: AgentToolResultMessage = {
     role: "toolResult",
     toolCallId: options.toolCallId ?? "projection",
@@ -203,7 +205,7 @@ function collectToolResults(messages: AgentMessage[]): ToolResultEntry[] {
       continue;
     }
     const call = calls.get(message.toolCallId);
-    const value = toolResultValue(message);
+    const value = shellResultForProjection(message.toolName, toolResultValue(message));
     entries.push({
       index,
       message,
@@ -317,7 +319,12 @@ async function archiveEntry(
   entry: ToolResultEntry,
   options: ToolResultProjectionOptions
 ): Promise<{ archivePath?: string; error?: string }> {
-  const existing = archivePath(entry.value);
+  // Shell output can quote an unrelated archive path; that is not its own archive.
+  const shell = ["bash", "bashoutput"].includes(normalizedToolName(entry.message.toolName));
+  const direct = stringField(asRecord(entry.value), "archivePath");
+  const existing = shell
+    ? isArchivedValue(entry.value) && /^\.biny\/tool-results\/tool-result-[0-9a-f]{64}\.json$/u.test(direct) ? direct : undefined
+    : archivePath(entry.value);
   if (existing) return { archivePath: existing };
   if (!options.archiveResult) return {};
   try {
@@ -331,6 +338,21 @@ async function archiveEntry(
   } catch (error) {
     return { error: error instanceof Error ? error.message : String(error) };
   }
+}
+
+/** Restore the same captured value for projection, archiving and fingerprinting. */
+function shellResultForProjection(tool: string, value: unknown): unknown {
+  if (!["bash", "bashoutput"].includes(normalizedToolName(tool))) return value;
+  const seen = new Set<unknown>();
+  while (!seen.has(value)) {
+    seen.add(value);
+    const record = asRecord(value);
+    // A successful host archive is already an authoritative, bounded result.
+    if (isArchivedValue(value) || typeof record.archiveError !== "string"
+      || typeof record.result !== "object" || record.result === null) break;
+    value = record.result;
+  }
+  return value;
 }
 
 interface ValueProjection {
@@ -347,17 +369,22 @@ function projectValue(
   const large = Buffer.byteLength(entry.serialized, "utf8") > thresholdBytes;
   if (isArchivedValue(entry.value)) return { value: entry.value, archive: false };
 
+  if ((tool === "bash" || tool === "bashoutput") && asRecord(entry.value).modelProjection === "shell_excerpt") {
+    return { value: entry.value, archive: false };
+  }
+
   if (tool === "write" || tool === "edit" || Object.keys(asRecord(asRecord(entry.value).change)).length > 0) {
     return { value: projectFileChange(entry), archive: large };
   }
   if (tool === "bash") {
     if (asRecord(entry.value).background === true) return undefined;
-    const value = projectRunCommand(entry, aggressive && large);
-    return { value, archive: aggressive && large };
+    const value = projectRunCommand(entry);
+    return { value, archive: large || value.stdoutProjectionTruncated === true || value.stderrProjectionTruncated === true };
   }
   if (tool === "bashoutput") {
-    if (!aggressive || !large) return undefined;
-    return { value: projectBashOutput(entry), archive: true };
+    const value = projectBashOutput(entry);
+    if (!large && asRecord(value.output).contentTruncated !== true) return undefined;
+    return { value, archive: true };
   }
   if (tool === "read") {
     if (!aggressive || !large) return undefined;
@@ -398,43 +425,43 @@ function projectFileChange(entry: ToolResultEntry): Record<string, unknown> {
   return removeUndefined(projected);
 }
 
-function projectRunCommand(entry: ToolResultEntry, aggressive: boolean): Record<string, unknown> {
+function projectRunCommand(entry: ToolResultEntry): Record<string, unknown> {
   const record = asRecord(entry.value);
   const args = asRecord(entry.call?.args);
   const command = stringField(args, "command");
-  const rawStdout = stripCommandEcho(stringField(record, "stdout"), command);
-  const rawStderr = stripCommandEcho(stringField(record, "stderr"), command);
-  const stdout = aggressive ? tailText(rawStdout, maxCommandStreamCharacters) : rawStdout;
-  const stderr = aggressive ? tailText(rawStderr, maxCommandStreamCharacters) : rawStderr;
-  const stdoutBytes = numberField(record, "stdoutBytes") ?? Buffer.byteLength(rawStdout, "utf8");
-  const stderrBytes = numberField(record, "stderrBytes") ?? Buffer.byteLength(rawStderr, "utf8");
-  const stdoutTruncated = record.stdoutTruncated === true
-    || aggressive && Buffer.byteLength(stdout, "utf8") < Buffer.byteLength(rawStdout, "utf8");
-  const stderrTruncated = record.stderrTruncated === true
-    || aggressive && Buffer.byteLength(stderr, "utf8") < Buffer.byteLength(rawStderr, "utf8");
+  const rawStdout = stripCommandEcho(redactSecrets(stringField(record, "stdout")), command);
+  const rawStderr = stripCommandEcho(redactSecrets(stringField(record, "stderr")), command);
+  const streams = projectShellStreams(rawStdout, rawStderr);
+  const captureTruncated = record.stdoutTruncated === true || record.stderrTruncated === true;
+  const projected = streams.stdout.omittedBytes > 0 || streams.stderr.omittedBytes > 0;
   return removeUndefined({
     ...copyFields(record, [
-      "status",
-      "sandbox",
-      "exitCode",
-      "error",
-      "durationMs",
-      "outputLines"
+      "status", "sandbox", "exitCode", "error", "durationMs", "outputLines",
+      "executionStatus", "operationId", "outcomeUnknownReason", "evidence"
     ]),
-    stdout: stdout || undefined,
-    stderr: stderr || undefined,
-    stdoutBytes,
-    stdoutRetainedBytes: Buffer.byteLength(stdout, "utf8"),
-    stdoutTruncated,
-    stdoutTruncationDirection: stdoutTruncated ? "tail" : undefined,
-    stderrBytes,
-    stderrRetainedBytes: Buffer.byteLength(stderr, "utf8"),
-    stderrTruncated,
-    stderrTruncationDirection: stderrTruncated ? "tail" : undefined,
-    summary: stdoutTruncated || stderrTruncated || aggressive
-      ? commandSummary(record, stdoutTruncated, stderrTruncated)
-      : undefined
+    modelProjection: "shell_excerpt",
+    ...commandStreamFields("stdout", record, streams.stdout),
+    ...commandStreamFields("stderr", record, streams.stderr),
+    summary: projected || captureTruncated ? commandSummary(record, projected, captureTruncated) : undefined
   });
+}
+
+function commandStreamFields(stream: "stdout" | "stderr", record: Record<string, unknown>, excerpt: ShellOutputExcerpt): Record<string, unknown> {
+  const capturedBytes = numberField(record, `${stream}RetainedBytes`) ?? Buffer.byteLength(stringField(record, stream), "utf8");
+  const bytes = numberField(record, `${stream}Bytes`) ?? capturedBytes;
+  const captureTruncated = record[`${stream}Truncated`] === true;
+  const projectionTruncated = excerpt.omittedBytes > 0;
+  return {
+    [stream]: excerpt.text || undefined,
+    [`${stream}Bytes`]: bytes,
+    [`${stream}RetainedBytes`]: Buffer.byteLength(excerpt.text, "utf8"),
+    [`${stream}Truncated`]: captureTruncated || projectionTruncated,
+    [`${stream}TruncationDirection`]: projectionTruncated ? "head_and_tail" : captureTruncated ? "tail" : undefined,
+    [`${stream}CaptureTruncated`]: captureTruncated,
+    [`${stream}CaptureOmittedBytes`]: captureTruncated ? Math.max(0, bytes - capturedBytes) : 0,
+    [`${stream}ProjectionTruncated`]: projectionTruncated,
+    [`${stream}ProjectionOmittedBytes`]: excerpt.omittedBytes
+  };
 }
 
 function projectReadFile(entry: ToolResultEntry): Record<string, unknown> {
@@ -480,10 +507,12 @@ function projectReadFile(entry: ToolResultEntry): Record<string, unknown> {
 function projectBashOutput(entry: ToolResultEntry): Record<string, unknown> {
   const record = asRecord(entry.value);
   const output = asRecord(record.output);
-  const content = stringField(output, "content");
-  const displayed = tailText(content, maxCommandStreamCharacters);
-  const truncated = displayed.length < content.length;
+  const content = redactSecrets(stringField(output, "content"));
+  const excerpt = shellOutputExcerpt(content);
+  const displayed = excerpt.text;
+  const truncated = excerpt.omittedBytes > 0;
   return removeUndefined({
+    modelProjection: "shell_excerpt",
     processes: Array.isArray(record.processes) ? record.processes : undefined,
     process: Object.keys(asRecord(record.process)).length > 0 ? record.process : undefined,
     output: Object.keys(output).length > 0
@@ -493,10 +522,11 @@ function projectBashOutput(entry: ToolResultEntry): Record<string, unknown> {
           contentTruncated: truncated ? true : undefined,
           contentOriginalBytes: truncated ? Buffer.byteLength(content, "utf8") : undefined,
           contentRetainedBytes: truncated ? Buffer.byteLength(displayed, "utf8") : undefined,
-          contentTruncationDirection: truncated ? "tail" : undefined
+          contentTruncationDirection: truncated ? "head_and_tail" : undefined,
+          contentOmittedBytes: truncated ? excerpt.omittedBytes : undefined
         })
       : undefined,
-    summary: truncated ? "Only the tail of this output page is shown; the full result is available via read_tool_result." : undefined
+    summary: truncated ? "Only the head and tail of this output page are shown; the complete captured page can be read when an archivePath is present." : undefined
   });
 }
 
@@ -568,19 +598,22 @@ function attachProjectionMetadata(
   const record = asRecord(value);
   const base = Object.keys(record).length ? record : { result: value };
   const compactSummary = stringField(record, "summary");
-  const summary = compactSummary
-    ? `${compactSummary}${metadata.archivePath ? ` Full result: read_tool_result ${metadata.archivePath}.` : metadata.archiveError ? ` Archiving failed (${metadata.archiveError}); the complete result remains in session history.` : " The complete result remains in session history."}`
-    : metadata.archivePath
-      ? `Only a compact ${metadata.tool} result is shown; the full result is available via read_tool_result at ${metadata.archivePath}.`
-      : metadata.archiveError
-        ? `Only a compact ${metadata.tool} result is shown. Archiving failed (${metadata.archiveError}); the complete result remains in session history.`
-        : `Only a compact ${metadata.tool} result is shown; the complete result remains in session history.`;
+  const shell = ["bash", "bashoutput"].includes(normalizedToolName(metadata.tool));
+  const availability = metadata.archivePath
+    ? `${shell ? "Complete captured result" : "Full result"}: read_tool_result ${metadata.archivePath}.`
+    : metadata.archiveError
+      ? `Archiving failed (${metadata.archiveError}); read_tool_result is unavailable for this result. The complete result remains in session history.`
+      : "The complete result remains in session history; no archive reference is available.";
+  const summary = compactSummary ? `${compactSummary} ${availability}` : `Only a compact ${metadata.tool} result is shown. ${availability}`;
   return removeUndefined({
     ...base,
     archived: metadata.archivePath !== undefined,
     archivePath: metadata.archivePath,
     archiveError: metadata.archiveError,
-    result: metadata.archiveError ? metadata.originalValue : undefined,
+    // Shell excerpts stay bounded even when storage is unavailable. The coordinator
+    // persists the original independently; do not smuggle it back into model context.
+    result: metadata.archiveError && !shell ? metadata.originalValue : undefined,
+    archiveAvailable: shell ? metadata.archivePath !== undefined : undefined,
     resultBytes: metadata.originalBytes,
     retainedBytes: metadata.retainedBytes,
     resultFingerprint: createHash("sha256").update(serializeToolResult(metadata.originalValue ?? value)).digest("hex"),
@@ -751,14 +784,13 @@ function diffLineCounts(diff: string): { added?: number; deleted?: number } {
 
 function commandSummary(
   record: Record<string, unknown>,
-  stdoutTruncated: boolean,
-  stderrTruncated: boolean
+  projected: boolean,
+  captureTruncated: boolean
 ): string {
   const status = stringField(record, "status") || (numberField(record, "exitCode") === 0 ? "completed" : "failed");
   const exitCode = numberField(record, "exitCode");
   const exit = exitCode === undefined ? "unknown exit code" : `exit code ${String(exitCode)}`;
-  const streams = [stdoutTruncated ? "stdout tail" : "stdout", stderrTruncated ? "stderr tail" : "stderr"].join("/");
-  return `Shell command ${status}, ${exit}; showing ${streams}. Full output is available via read_tool_result when an archivePath is present.`;
+  return `Shell command ${status}, ${exit}.${projected ? " Oversized streams show their head and tail." : ""}${captureTruncated ? " Capture already discarded earlier output; the archive cannot recover bytes lost before projection." : ""}`;
 }
 
 function stripCommandEcho(value: string, command: string): string {
