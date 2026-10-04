@@ -87,6 +87,8 @@ try {
   assert.equal(tokenCount, 1);
   const provider = new McpOAuthProvider(config, store);
   assert.equal((await provider.tokens())?.access_token, "first-access");
+  assert.ok((await provider.credentialValues()).includes("first-access"));
+  assert.ok((await provider.credentialValues()).includes((await provider.tokens())!.refresh_token!));
   validAccessToken = "refreshed-access";
   const client = new Client({ name: "test", version: "1" });
   try {
@@ -94,6 +96,7 @@ try {
     assert.deepEqual((await client.listTools()).tools, []);
     assert.equal(refreshCount, 1);
     assert.equal((await new McpOAuthProvider(config, store).tokens())?.access_token, validAccessToken);
+    assert.ok((await provider.credentialValues()).includes(validAccessToken), "response scrubbing uses the refreshed token");
   } finally { await client.close(); }
   const beforeCancel = [...records.values()];
   const canceled = await logins.start(config);

@@ -114,7 +114,7 @@ function fixtureTool(): Tool<{ pageToken?: string }, unknown> {
           context.onDispatched?.();
           if (args.pageToken !== undefined) assert.equal(args.pageToken, cursor, "the second page receives the original cursor");
           const page = args.pageToken === undefined
-            ? { items: [{ id: "first", body: "first page body" }], nextPageToken: cursor, apiKey: "fixture-secret" }
+            ? { items: [{ id: "first", body: "first page body" }], nextPageToken: cursor, apiKey: "[redacted]" }
             : { items: [{ id: "second", body: "second page body" }] };
           return context.mcpResultMode === "envelope" ? { content: [{ type: "text", text: "fixture page" }], structuredContent: page } : page;
         }

@@ -26,6 +26,7 @@ import { ToolAccesses } from "../tools/access.js";
 import { z } from "zod";
 import { McpOAuthProvider, McpAuthRequiredError } from "./mcpOAuth.js";
 import { getSharedProxyAwareFetch } from "../network/proxyFetch.js";
+import { isSensitiveFieldName } from "../utils/secrets.js";
 
 export type McpTransportKind = "stdio" | "http";
 
@@ -77,6 +78,7 @@ interface ManagedMcpServer {
   status: McpServerStatus;
   tools: ListedMcpTool[];
   client?: Client;
+  authProvider?: McpOAuthProvider;
   connecting?: Promise<void>;
   refreshing?: Promise<void>;
   /** 刷新期间又收到 tools/list_changed 时，完成当前轮后补刷一次。 */
@@ -227,7 +229,8 @@ export class McpToolHost {
     if (!client) throw new Error(`MCP server ${serverName} is not connected: ${managed.status.lastError ?? "unknown error"}`);
     try {
       onDispatched?.();
-      const result = await client.callTool({ name: toolName, arguments: args }, undefined, this.requestOptions(managed, signal));
+      const result = await this.requestWithCredentials(managed, () =>
+        client.callTool({ name: toolName, arguments: args }, undefined, this.requestOptions(managed, signal)));
       return rawResult ? result : normalizeMcpResult(result);
     } catch (error) {
       if (signal?.aborted || !isConnectionError(error)) throw error;
@@ -260,7 +263,7 @@ export class McpToolHost {
       try {
         let cursor: string | undefined;
         for (let page = 0; page < maxResourceListPages; page += 1) {
-          const listed = await client.listResources(cursor === undefined ? undefined : { cursor }, this.requestOptions(managed));
+          const listed = await this.requestWithCredentials(managed, () => client.listResources(cursor === undefined ? undefined : { cursor }, this.requestOptions(managed)));
           for (const resource of listed.resources) {
             resources.push({
               server: managed.name,
@@ -285,7 +288,7 @@ export class McpToolHost {
     if (!managed.client || !managed.status.connected) await this.reconnect(managed);
     const client = managed.client;
     if (!client) throw new Error(`MCP server ${serverName} is not connected: ${managed.status.lastError ?? "unknown error"}`);
-    const result = await client.readResource({ uri }, this.requestOptions(managed, signal));
+    const result = await this.requestWithCredentials(managed, () => client.readResource({ uri }, this.requestOptions(managed, signal)));
     return {
       server: serverName,
       uri,
@@ -310,7 +313,7 @@ export class McpToolHost {
         let cursor: string | undefined;
         const seen = new Set<string>();
         for (let page = 0; page < maxResourceListPages; page += 1) {
-          const result = await client.listPrompts({ cursor }, this.requestOptions(managed, signal));
+          const result = await this.requestWithCredentials(managed, () => client.listPrompts({ cursor }, this.requestOptions(managed, signal)));
           prompts.push(...result.prompts.slice(0, 128 - prompts.length));
           cursor = result.nextCursor;
           if (!cursor || seen.has(cursor) || prompts.length >= 128) break;
@@ -330,7 +333,7 @@ export class McpToolHost {
     const client = managed.client;
     if (!client) throw new Error(`MCP server ${serverName} is not connected.`);
     // 模板通过普通工具结果返回，不提升为 system 消息，也不自动执行其中的操作。
-    const result = await client.getPrompt({ name, arguments: args }, this.requestOptions(managed, signal));
+    const result = await this.requestWithCredentials(managed, () => client.getPrompt({ name, arguments: args }, this.requestOptions(managed, signal)));
     let remaining = maxResourceTextBytes;
     const bounded = (text: string): string => {
       const value = truncateUtf8(text, Math.max(0, remaining));
@@ -381,6 +384,24 @@ export class McpToolHost {
     if (!managed) throw new Error(`Unknown MCP server: ${serverName}`);
     if (!managed.status.enabled) throw new Error(`MCP server ${serverName} is disabled in config.json.`);
     return managed;
+  }
+
+  private async requestWithCredentials<T>(managed: ManagedMcpServer, request: () => Promise<T>): Promise<T> {
+    const authProvider = managed.authProvider;
+    const credentials = [...mcpCredentialValues(managed.config), ...await authProvider?.credentialValues() ?? []];
+    try {
+      const result = await request();
+      // 刷新令牌后响应可能同时回显旧值与新值；在途请求始终使用自己的 provider。
+      credentials.push(...await authProvider?.credentialValues() ?? []);
+      return scrubMcpCredentials(result, credentials) as T;
+    } catch (error) {
+      credentials.push(...await authProvider?.credentialValues() ?? []);
+      const message = scrubMcpCredentials(errorText(error), credentials) as string;
+      if (error instanceof McpError) throw new McpError(error.code, message);
+      const safeError = new Error(message);
+      if (error instanceof Error) safeError.name = error.name;
+      throw safeError;
+    }
   }
 
   private requestOptions(managed: ManagedMcpServer, signal?: AbortSignal): RequestOptions {
@@ -562,6 +583,7 @@ export class McpToolHost {
       const url = new URL(serverConfig.url ?? "");
       const requestInit = serverConfig.headers ? { headers: serverConfig.headers } : undefined;
       const authProvider = serverConfig.oauth ? new McpOAuthProvider(serverConfig) : undefined;
+      managed.authProvider = authProvider;
       const fetch = getSharedProxyAwareFetch();
       if (serverConfig.transportProtocol === "sse") {
         return await this.tryConnect(managed, new SSEClientTransport(url, { requestInit, authProvider, fetch }));
@@ -719,6 +741,53 @@ function isConnectionError(error: unknown): boolean {
 
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function mcpCredentialValues(config: McpServerConfig): string[] {
+  const credentials: string[] = [];
+  const add = (value: string): void => { if (value) credentials.push(value); };
+  for (const [key, value] of Object.entries(config.headers ?? {})) {
+    if (["accept", "content-type", "user-agent"].includes(key.toLowerCase()) && !config.credentialRefs?.headers?.[key]) continue;
+    add(value);
+    const bearer = /^Bearer\s+(.+)$/iu.exec(value);
+    if (bearer) add(bearer[1]!);
+    if (key.toLowerCase() === "cookie") for (const cookie of value.split(";")) add(cookie.slice(cookie.indexOf("=") + 1).trim());
+    const basic = /^Basic\s+(.+)$/iu.exec(value);
+    if (basic) {
+      const decoded = Buffer.from(basic[1]!, "base64").toString("utf8");
+      add(decoded); add(decoded.slice(decoded.indexOf(":") + 1));
+    }
+  }
+  for (const [key, value] of Object.entries(config.env ?? {})) {
+    if (isSensitiveFieldName(key) || config.credentialRefs?.env?.[key]) add(value);
+  }
+  for (let index = 0; index < config.args.length; index += 1) {
+    const flag = /^--?([^=]+)(?:=([\s\S]*))?$/u.exec(config.args[index]!);
+    const next = config.args[index + 1];
+    if (flag && isSensitiveFieldName(flag[1]!)) add(flag[2] ?? (next?.startsWith("-") ? "" : next ?? ""));
+  }
+  if (config.url) {
+    const url = new URL(config.url);
+    add(url.password);
+    try { add(decodeURIComponent(url.password)); } catch { /* 保留 URL 中的原始凭据值。 */ }
+    for (const [key, value] of url.searchParams) if (isSensitiveFieldName(key)) add(value);
+  }
+  return [...new Set(credentials)].sort((a, b) => b.length - a.length);
+}
+
+/** 只匹配此连接实际使用的凭据；业务字段名、JWT 和文本示例不构成凭据证据。 */
+function scrubMcpCredentials(value: unknown, credentials: string[]): unknown {
+  if (typeof value === "string") {
+    // 短凭据不能局部替换，否则会把普通单词拆碎；命中时隐藏整个字符串。
+    if (credentials.some((secret) => secret.length < 4 && value.includes(secret))) return "[redacted]";
+    return [...new Set(credentials)].sort((a, b) => b.length - a.length)
+      .reduce((text, secret) => text.split(secret).join("[redacted]"), value);
+  }
+  if (Array.isArray(value)) return value.map((entry) => scrubMcpCredentials(entry, credentials));
+  if (typeof value !== "object" || value === null) return value;
+  return Object.fromEntries(Object.entries(value).map(([key, entry]) => [
+    scrubMcpCredentials(key, credentials), scrubMcpCredentials(entry, credentials)
+  ]));
 }
 
 /** 展开配置值里的 ${VAR} / ${VAR:-default} 环境变量引用。 */

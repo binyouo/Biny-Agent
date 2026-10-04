@@ -47,36 +47,8 @@ export function isProtectedCredentialPath(value: string): boolean {
 }
 
 export interface SensitiveValueRedactionOptions {
-  /** Only the host's MCP response boundary may select this context. */
+  /** MCP responses have already had connection credentials removed by the host. */
   context?: "mcp-result";
-}
-
-/** Keep opaque MCP continuations, but never credential-shaped strings. */
-export function redactMcpPaginationToken(value: string, replacement = "[redacted]"): string {
-  return redactSecrets(value) !== value
-    || /\bBasic\s+[A-Za-z0-9+/_=-]+/iu.test(value)
-    || hasJwtCredentialShape(value)
-    || /\b(?:authorization|proxy-authorization|cookie|set-cookie)["']?\s*[:=]/iu.test(value)
-    ? replacement : value;
-}
-
-function hasJwtCredentialShape(value: string): boolean {
-  // JWT JSON may contain whitespace, so its base64url segments need not begin
-  // with eyJ. Inspect the header/claims shape without treating ordinary dotted
-  // opaque continuations as credentials, and without verifying a signature.
-  const candidates = value.matchAll(/(?<![A-Za-z0-9_-])([A-Za-z0-9_-]+)\.([A-Za-z0-9_-]+)\.([A-Za-z0-9_-]+)(?![A-Za-z0-9_-])/gu);
-  for (const candidate of candidates) {
-    try {
-      const header: unknown = JSON.parse(Buffer.from(candidate[1]!, "base64url").toString("utf8"));
-      const claims: unknown = JSON.parse(Buffer.from(candidate[2]!, "base64url").toString("utf8"));
-      if (typeof header === "object" && header !== null && !Array.isArray(header)
-        && "alg" in header && typeof header.alg === "string" && header.alg.length > 0
-        && typeof claims === "object" && claims !== null && !Array.isArray(claims)) return true;
-    } catch {
-      // A non-JWT dotted continuation does not qualify for credential masking.
-    }
-  }
-  return false;
 }
 
 /**
@@ -89,10 +61,8 @@ export function redactSensitiveValue(value: unknown, options: SensitiveValueReda
   return redactSensitiveValueInternal(value, new WeakSet<object>(), options.context);
 }
 
-type RedactionContext = "mcp-result" | "mcp-structured-content";
-
-function redactSensitiveValueInternal(value: unknown, ancestors: WeakSet<object>, context?: RedactionContext): unknown {
-  if (typeof value === "string") return redactSecrets(value);
+function redactSensitiveValueInternal(value: unknown, ancestors: WeakSet<object>, context?: "mcp-result"): unknown {
+  if (typeof value === "string") return context ? value : redactSecrets(value);
   if (typeof value !== "object" || value === null) return value;
   // 工具结果可能带循环引用，用祖先集合断环；只在递归路径上记录，兄弟节点之间互不影响。
   if (ancestors.has(value)) return "[circular]";
@@ -100,16 +70,10 @@ function redactSensitiveValueInternal(value: unknown, ancestors: WeakSet<object>
   ancestors.add(value);
   try {
     if (Array.isArray(value)) {
-      return value.map((entry) => redactSensitiveValueInternal(entry, ancestors));
+      return value.map((entry) => redactSensitiveValueInternal(entry, ancestors, context));
     }
     return Object.fromEntries(Object.entries(value).map(([key, entry]) => {
-      // The exemption is exact, string-only, and limited to the response root
-      // (or its structuredContent envelope). It does not extend to record data.
-      if (context && key === "nextPageToken" && typeof entry === "string") {
-        return [key, redactMcpPaginationToken(entry)];
-      }
-      const childContext = context === "mcp-result" && key === "structuredContent" ? "mcp-structured-content" : undefined;
-      return [key, isSensitiveFieldName(key) ? "[redacted]" : redactSensitiveValueInternal(entry, ancestors, childContext)];
+      return [key, !context && isSensitiveFieldName(key) ? "[redacted]" : redactSensitiveValueInternal(entry, ancestors, context)];
     }));
   } finally {
     ancestors.delete(value);
@@ -117,7 +81,7 @@ function redactSensitiveValueInternal(value: unknown, ancestors: WeakSet<object>
 }
 
 /** 字段名判定：先去掉分隔符再小写，这样 `api-key`、`api_key`、`ApiKey` 都能一起命中。 */
-function isSensitiveFieldName(value: string): boolean {
+export function isSensitiveFieldName(value: string): boolean {
   const normalized = value.replace(/[^A-Za-z0-9]/g, "").toLowerCase();
   return normalized === "authorization"
     || normalized === "proxyauthorization"

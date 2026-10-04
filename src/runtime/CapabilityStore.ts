@@ -10,7 +10,6 @@ import { createHash, randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { ToolOutcomeUnknownError, type ToolOutcomeUnknownReason } from "../tools/types.js";
 import type { RuntimeEventAuthority } from "./RuntimeAuthority.js";
-import { redactMcpPaginationToken } from "../utils/secrets.js";
 
 export type CapabilityOwnerType = "host" | "client";
 export type CapabilityRegistrationStatus = "registered" | "replaced" | "admitted" | "rejected" | "released";
@@ -890,17 +889,14 @@ function matchesType(value: unknown, type: string): boolean {
   return typeof value === type;
 }
 
-function redact(value: unknown, context?: "mcp-result" | "mcp-structured-content"): unknown {
+function redact(value: unknown, context?: "mcp-result"): unknown {
+  // MCP 结果已在连接边界清理凭据；账本不能按字段名再次改写业务数据。
+  if (context) return value;
   if (Array.isArray(value)) return value.map((item) => redact(item));
   if (!value || typeof value !== "object") return value;
   const output: Record<string, unknown> = {};
   for (const [key, child] of Object.entries(value)) {
-    if (context && key === "nextPageToken" && typeof child === "string") {
-      output[key] = redactMcpPaginationToken(child, "[REDACTED]");
-      continue;
-    }
-    const childContext = context === "mcp-result" && key === "structuredContent" ? "mcp-structured-content" : undefined;
-    output[key] = /(api.?key|token|secret|password|authorization|cookie)/iu.test(key) ? "[REDACTED]" : redact(child, childContext);
+    output[key] = /(api.?key|token|secret|password|authorization|cookie)/iu.test(key) ? "[REDACTED]" : redact(child);
   }
   return output;
 }

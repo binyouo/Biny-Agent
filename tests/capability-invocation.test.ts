@@ -71,7 +71,7 @@ async function testRepeatedOfferReturnsDurableResult(): Promise<void> {
       executions += 1;
       markStarted();
       await sideEffectGate;
-      return { accepted: true, value: 7, access_token: "never-persist-this" };
+      return { accepted: true, value: 7, access_token: "business-access-value" };
     });
     await started;
     const concurrentExecution = fixture.store.executeHostCapability(input, async () => {
@@ -86,7 +86,7 @@ async function testRepeatedOfferReturnsDurableResult(): Promise<void> {
     });
 
     assert.equal(executions, 1, "concurrent and later replays of one offer must not repeat its side effect");
-    assert.equal(readString(first, "access_token"), "[REDACTED]", "the caller receives the durable redacted result");
+    assert.equal(readString(first, "access_token"), "business-access-value", "the caller receives the durable host-cleaned business result");
     assert.deepEqual(concurrent, first, "the concurrent replay must join the active operation");
     assert.deepEqual(replay, first, "the persisted replay must receive the previous result");
   } finally {

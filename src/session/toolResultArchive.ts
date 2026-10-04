@@ -47,11 +47,11 @@ export interface ToolResultArchiveEnvelope {
 
 /** Returns a redacted, UTF-8 representation suitable for budget accounting. */
 export function serializeToolResult(result: unknown, options: SensitiveValueRedactionOptions = {}): string {
-  if (typeof result === "string") return redactSecrets(result);
+  if (typeof result === "string") return options.context === "mcp-result" ? result : redactSecrets(result);
   try {
     return JSON.stringify(redactSensitiveValue(result, options), jsonReplacer) ?? "null";
   } catch {
-    return redactSecrets(String(result));
+    return options.context === "mcp-result" ? String(result) : redactSecrets(String(result));
   }
 }
 

@@ -31,7 +31,7 @@ try {
   await recorder.recordAndFlush({ type: "tool_call", tool, toolCallId, args: {}, auditOnly: true });
   await recorder.recordAndFlush({ type: "tool_execution", tool, toolCallId, sequence: 1, operationId, state: "succeeded" });
   const first = await capabilities.executeHostCapability({ capabilityName: `host:mcp:${tool}`, schema, sessionId, turnId: "fixture-turn", toolCallId, offerId: operationId, request: {} }, async () => ({
-    items: [{ id: "first", body: "first page body" }], nextPageToken: cursor, authorization: "fixture-auth", nested: { access_token: "fixture-access" }
+    items: [{ id: "first", body: "first page body" }], nextPageToken: cursor, authorization: "[redacted]", nested: { access_token: "[redacted]" }
   }));
   // The process stops after the inline result is flushed, before the canonical
   // agent_message/toolResult can be written. Context is a host argument only.
@@ -73,7 +73,7 @@ try {
   await recorder.recordAndFlush({ type: "tool_execution", tool, toolCallId: missingCallId, sequence: 1, operationId: missingOperationId, state: "admitted" });
   await capabilities.executeHostCapability({ capabilityName: `host:mcp:${tool}`, schema, sessionId: missingResultSession, turnId: "missing-result-turn", toolCallId: missingCallId, offerId: missingOperationId, request: {} }, async () => ({
     items: [{ id: "first", body: "recovered first page body" }], nextPageToken: cursor,
-    nested: { access_token: "fixture-access", authorization: "fixture-auth", cookie: "fixture-cookie" }
+    nested: { access_token: "[redacted]", authorization: "[redacted]", cookie: "[redacted]" }
   }));
   const missingFilePath = recorder.filePath;
   await recorder.close();
@@ -89,7 +89,7 @@ try {
   assert.equal(firstRecovery.recoveredToolResults.length, 1);
   const recoveryEvent = firstRecovery.recoveredToolResults[0]!;
   assert.equal(recoveryEvent.result, resolvedResult, "replay retains the exact trusted result object returned by the resolver");
-  assert.deepEqual((recoveryEvent.result as Record<string, unknown>).nested, { access_token: "[REDACTED]", authorization: "[REDACTED]", cookie: "[REDACTED]" });
+  assert.deepEqual((recoveryEvent.result as Record<string, unknown>).nested, { access_token: "[redacted]", authorization: "[redacted]", cookie: "[redacted]" });
   recorder = new SessionRecorder(root, missingResultSession, missingFilePath, authority.asSink());
   recorder.repairTailForAppend();
   for (const event of firstRecovery.recoveredToolResults) {

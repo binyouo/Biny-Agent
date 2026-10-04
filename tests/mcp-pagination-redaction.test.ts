@@ -56,7 +56,7 @@ try {
   assert.deepEqual(durableEnvelope, envelope);
   assert.deepEqual(JSON.parse(serializeToolResult(durableEnvelope, mcpResult)), envelope);
 
-  const credentialValues = [
+  const opaqueValues = [
     "sk-fixtureCredential12345", "ghp_fixtureCredential12345", "AKIAFIXTURE12345678",
     "Bearer fixture-credential", "Basic Zml4dHVyZTpwYXNzd29yZA==",
     "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJmaXh0dXJlIn0.c2lnbmF0dXJl",
@@ -65,13 +65,13 @@ try {
     '{"authorization":"fixture-credential"}', '{"cookie":"session=fixture-credential"}', '{"Proxy-Authorization":"fixture-credential"}',
     "-----BEGIN PRIVATE KEY-----\nfixture\n-----END PRIVATE KEY-----"
   ];
-  for (const [index, value] of credentialValues.entries()) {
+  for (const [index, value] of opaqueValues.entries()) {
     const result: { nextPageToken: string } = await store.executeHostCapability(input(`credential-${String(index)}`), async () => ({ nextPageToken: value }));
-    assert.equal(result.nextPageToken, "[REDACTED]", `credential-shaped continuation ${String(index)} must stay masked durably`);
-    assert.equal((redactSensitiveValue({ nextPageToken: value }, mcpResult) as Record<string, unknown>).nextPageToken, "[redacted]");
+    assert.equal(result.nextPageToken, value, "the ledger preserves host-cleaned opaque values regardless of their shape");
+    assert.equal((redactSensitiveValue({ nextPageToken: value }, mcpResult) as Record<string, unknown>).nextPageToken, value);
     const credentialEnvelope: { structuredContent: { nextPageToken: string } } = await store.executeHostCapability(input(`credential-envelope-${String(index)}`), async () => ({ structuredContent: { nextPageToken: value } }));
-    assert.equal(credentialEnvelope.structuredContent.nextPageToken, "[REDACTED]");
-    assert.equal(JSON.parse(serializeToolResult({ structuredContent: { nextPageToken: value } }, mcpResult)).structuredContent.nextPageToken, "[redacted]");
+    assert.equal(credentialEnvelope.structuredContent.nextPageToken, value);
+    assert.equal(JSON.parse(serializeToolResult({ structuredContent: { nextPageToken: value } }, mcpResult)).structuredContent.nextPageToken, value);
   }
   const negative = {
     nextPageToken: cursor,
@@ -79,21 +79,16 @@ try {
     authorization: "opaque-auth-value", cookie: "opaque-cookie-value", refreshToken: "opaque-refresh-value",
     secretToken: "opaque-secret-value", arbitraryToken: "opaque-arbitrary-value"
   };
-  const expectedSensitive = {
-    nextPageToken: cursor,
-    nested: { nextPageToken: "[redacted]", apiKey: "[redacted]", access_token: "[redacted]" },
-    authorization: "[redacted]", cookie: "[redacted]", refreshToken: "[redacted]",
-    secretToken: "[redacted]", arbitraryToken: "[redacted]"
-  };
-  assert.deepEqual(JSON.parse(serializeToolResult(negative, mcpResult)), expectedSensitive);
-  assert.equal(JSON.parse(serializeToolResult({ nextPageToken: "page.two.fixture" }, mcpResult)).nextPageToken, "page.two.fixture", "ordinary dotted opaque continuations are preserved");
+  assert.deepEqual(JSON.parse(serializeToolResult(negative, mcpResult)), negative);
+  assert.equal(JSON.parse(serializeToolResult({ nextPageToken: "page.two.fixture" }, mcpResult)).nextPageToken, "page.two.fixture");
   const durableNegative = await store.executeHostCapability(input("negative"), async () => negative);
-  assert.deepEqual(durableNegative, JSON.parse(JSON.stringify(expectedSensitive).replaceAll("[redacted]", "[REDACTED]")));
+  assert.deepEqual(durableNegative, negative);
+  assert.equal(serializeToolResult("token=business-example", mcpResult), "token=business-example");
   assert.equal((redactSensitiveValue({ nextPageToken: cursor }) as Record<string, unknown>).nextPageToken, "[redacted]", "ordinary results do not opt in");
   assert.equal(JSON.parse(serializeToolResult({ nextPageToken: cursor })).nextPageToken, "[redacted]");
-  assert.equal((redactSensitiveValue({ nextPageToken: { apiKey: "fixture" } }, mcpResult) as Record<string, unknown>).nextPageToken, "[redacted]", "non-string payloads cannot masquerade as a continuation");
-  assert.deepEqual(JSON.parse(serializeToolResult({ records: [{ nextPageToken: cursor }] }, mcpResult)), { records: [{ nextPageToken: "[redacted]" }] });
-  assert.deepEqual(JSON.parse(serializeToolResult({ metadata: { structuredContent: firstPayload } }, mcpResult)).metadata.structuredContent.nextPageToken, "[redacted]", "nested lookalike envelopes do not opt in");
+  assert.deepEqual(redactSensitiveValue({ nextPageToken: { apiKey: "fixture" } }, mcpResult), { nextPageToken: { apiKey: "fixture" } });
+  assert.deepEqual(JSON.parse(serializeToolResult({ records: [{ nextPageToken: cursor }] }, mcpResult)), { records: [{ nextPageToken: cursor }] });
+  assert.deepEqual(JSON.parse(serializeToolResult({ metadata: { structuredContent: firstPayload } }, mcpResult)).metadata.structuredContent.nextPageToken, cursor, "host-cleaned nested business data remains intact");
   const plugin = await store.executeHostCapability({ ...input("plugin"), capabilityName: "host:plugin:fixture-list" }, async () => ({ nextPageToken: cursor }));
   assert.equal(plugin.nextPageToken, "[REDACTED]");
   const clientRegistration = store.register({ ownerType: "client", ownerId: "fixture-client", capabilityName: "host:mcp:fixture-client", schema });

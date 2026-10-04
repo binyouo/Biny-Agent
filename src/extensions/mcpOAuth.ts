@@ -60,6 +60,11 @@ export class McpOAuthProvider implements OAuthClientProvider {
     // 动态注册的信息与令牌一起提交，取消登录不会留下半套本地凭据。
   }
   async tokens(): Promise<OAuthTokens | undefined> { return this.interactive ? undefined : (await this.read()).tokens; }
+  async credentialValues(): Promise<string[]> {
+    const record = await this.read();
+    return [record.tokens?.access_token, record.tokens?.refresh_token, record.client?.client_secret, this.verifier]
+      .filter((value): value is string => typeof value === "string" && value.length > 0);
+  }
   async saveTokens(tokens: OAuthTokens): Promise<void> {
     if (this.invalidated) throw new Error("MCP 登录已经取消。");
     this.record = { ...await this.read(), tokens: OAuthTokensSchema.parse(tokens) };
