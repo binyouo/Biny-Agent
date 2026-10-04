@@ -154,35 +154,49 @@ func windowScreenBounds(pid: Int) -> [String: Double]? {
 }
 
 
-/// 在独立线程采集 AX 树，硬超时后放弃（卡住的 AX 调用无法取消，但也不会拖住调用方）。
-func collectAccessibility(pid: pid_t, maxDepth: Int, limit: Int, timeout: Double) async -> ([[String: Any]], [String: AXUIElement]) {
-    await withCheckedContinuation { continuation in
-        let state = NSLock()
-        var finished = false
-        var result: ([[String: Any]], [String: AXUIElement]) = ([], [:])
-        func finish(_ value: ([[String: Any]], [String: AXUIElement])) {
-            state.lock(); defer { state.unlock() }
-            if finished { return }
-            finished = true
-            continuation.resume(returning: value)
+/// 用独立线程采集 AX 树，主线程轮询等待（不占用并发工作线程）。
+/// AX 调用一旦卡住就无法取消，所以只能「放弃等待」而不是「杀掉它」。
+func collectAccessibility(pid: pid_t, maxDepth: Int, limit: Int, timeout: Double) -> ([[String: Any]], [String: AXUIElement]) {
+    let box = AXCollectBox()
+    let thread = Thread {
+        let app = axApp(pid)
+        AXUIElementSetAttributeValue(app, "AXManualAccessibility" as CFString, kCFBooleanTrue)
+        AXUIElementSetAttributeValue(app, "AXEnhancedUserInterface" as CFString, kCFBooleanTrue)
+        var elements: [[String: Any]] = []
+        var table: [String: AXUIElement] = [:]
+        var counter = 0
+        if let windows = axCopy(app, kAXWindowsAttribute as String) as? [AXUIElement], let main = windows.first {
+            if let frame = axFrame(main) { elements.append(["ref": "e0", "role": "AXWindow", "frame": frame]) }
+            table["e0"] = main
+            axWalk(main, depth: 0, maxDepth: maxDepth, limit: limit, counter: &counter, table: &table, out: &elements, deadline: Date().addingTimeInterval(2))
         }
-        DispatchQueue.global(qos: .userInitiated).async {
-            let app = axApp(pid)
-            AXUIElementSetAttributeValue(app, "AXManualAccessibility" as CFString, kCFBooleanTrue)
-            AXUIElementSetAttributeValue(app, "AXEnhancedUserInterface" as CFString, kCFBooleanTrue)
-            var local: [[String: Any]] = []
-            var localTable: [String: AXUIElement] = [:]
-            var counter = 0
-            if let windows = axCopy(app, kAXWindowsAttribute as String) as? [AXUIElement], let main = windows.first {
-                if let frame = axFrame(main) { local.append(["ref": "e0", "role": "AXWindow", "frame": frame]) }
-                localTable["e0"] = main
-                axWalk(main, depth: 0, maxDepth: maxDepth, limit: limit, counter: &counter, table: &localTable, out: &local, deadline: Date().addingTimeInterval(2))
-            }
-            finish((local, localTable))
-        }
-        DispatchQueue.global().asyncAfter(deadline: .now() + timeout) { finish(([], [:])) }
-        _ = result
-        _ = state
+        box.store(elements, table)
+    }
+    thread.stackSize = 1 << 20
+    thread.start()
+    let deadline = Date().addingTimeInterval(timeout)
+    while Date() < deadline {
+        if box.done { break }
+        Thread.sleep(forTimeInterval: 0.02)
+    }
+    return box.take()
+}
+
+/// 采集结果的线程安全暂存。
+final class AXCollectBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var finished = false
+    private var elements: [[String: Any]] = []
+    private var table: [String: AXUIElement] = [:]
+    var done: Bool { lock.lock(); defer { lock.unlock() }; return finished }
+    func store(_ nextElements: [[String: Any]], _ nextTable: [String: AXUIElement]) {
+        lock.lock(); defer { lock.unlock() }
+        if finished { return }
+        elements = nextElements; table = nextTable; finished = true
+    }
+    func take() -> ([[String: Any]], [String: AXUIElement]) {
+        lock.lock(); defer { lock.unlock() }
+        return (elements, table)
     }
 }
 
@@ -298,9 +312,13 @@ DispatchQueue.global().async {
                                 let pid = try resolvePid(args)
                                 let maxDepth = args["max_depth"] as? Int ?? 20
                                 let limit = args["max_elements"] as? Int ?? 300
-                                // AX 是跨进程 IPC，卡住的调用无法从 Swift 并发里取消：
-                                // 用独立队列 + 信号量做真正的硬超时，超时就放弃 AX（截图仍返回）。
-                                let collected = await collectAccessibility(pid: pid, maxDepth: maxDepth, limit: limit, timeout: 4.0)
+                                // AX 是跨进程 IPC，卡住的调用无法取消：放到自己的工作线程，
+                                // 4 秒内没结果就放弃 AX（截图仍然返回，观察降级而不是挂死）。
+                                let collected: ([[String: Any]], [String: AXUIElement]) = await withCheckedContinuation { continuation in
+                                    DispatchQueue.global(qos: .userInitiated).async {
+                                        continuation.resume(returning: collectAccessibility(pid: pid, maxDepth: maxDepth, limit: limit, timeout: 4.0))
+                                    }
+                                }
                                 let elements = collected.0
                                 let table = collected.1
                                 var shotArgs: [String: Any] = ["out": args["out"] ?? "/tmp/biny-cu-state-\(Int(Date().timeIntervalSince1970 * 1000)).jpg", "pid": Int(pid)]

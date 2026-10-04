@@ -49,7 +49,7 @@ export class ComputerPreviewSurface {
       if (revision !== this.revision || window.isDestroyed() || this.window !== window) return;
       const states = { disabled: "已停止", ready: "已就绪", paused: "已暂停", "taken-over": "人工接管", unknown: "结果未知" };
       const outcomes = { "not-dispatched": "尚未派发", completed: "输入已完成", refused: "已拒绝", unverified: "效果未确认", unknown: "输入结果未知" };
-      const text = `${states[status.state]} · ${outcomes[status.lastOutcome]}${frame ? ` · PID ${frame.target.pid} / ${frame.target.windowId} · ${new Date(frame.capturedAt).toLocaleTimeString()}` : " · 等待新的主动观察"}`;
+      const text = `${states[status.state]} · ${outcomes[status.lastOutcome]}${frame ? ` · PID ${frame.target.pid} / ${frame.target.windowId} · ${new Date(frame.capturedAt).toLocaleTimeString()}` : " · 正在等待观察目标"}`;
       const src = frame ? `data:${frame.image.mimeType};base64,${frame.image.dataBase64}` : "";
       void window.webContents.executeJavaScript(`document.getElementById('status').textContent=${JSON.stringify(text)}; document.getElementById('frame').src=${JSON.stringify(src)}; const empty=document.getElementById('empty'); if(empty) empty.hidden=${Boolean(frame)};`).catch(() => undefined);
     };
