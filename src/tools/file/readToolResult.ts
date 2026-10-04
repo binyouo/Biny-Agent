@@ -33,6 +33,8 @@ export interface ReadToolResultResult {
   archivedAt: string;
   totalCharacters: number;
   offset: number;
+  /** Next UTF-16 code-unit offset; pass it unchanged for the next page. */
+  nextOffset: number;
   content: string;
   hasMore: boolean;
 }
@@ -40,15 +42,15 @@ export interface ReadToolResultResult {
 export function createReadToolResultTool(context: ToolContext): Tool<ReadToolResultArgs, ReadToolResultResult> {
   return {
     name: readToolResultToolName,
-    description: `Read a tool result archived out of the model context because it was large or superseded. Pass the archivePath reported in the result. Returns at most ${String(maxLength)} characters; page through longer results with offset.`,
+    description: `Read a tool result archived out of the model context because it was large or superseded. Pass the archivePath reported in the result. Returns at most ${String(maxLength)} UTF-16 code units; page through longer results with nextOffset as offset. Page boundaries preserve surrogate pairs.`,
     promptSnippet: "Read a paginated tool result archived outside the conversation",
     promptGuidelines: ["When a tool result reports an archivePath, use read_tool_result and continue paging until enough evidence is available"],
     parameters: {
       type: "object",
       properties: {
         archivePath: { type: "string", minLength: 1, description: "The .biny/tool-results reference reported by an archived tool result." },
-        offset: { type: "integer", minimum: 0, description: "Character offset to start from. Defaults to 0." },
-        length: { type: "integer", minimum: 1, maximum: maxLength, description: `Characters to return. Defaults to ${String(defaultLength)}.` }
+        offset: { type: "integer", minimum: 0, description: "UTF-16 code-unit offset to start from. Defaults to 0; an offset inside a surrogate pair rounds back to its start." },
+        length: { type: "integer", minimum: 1, maximum: maxLength, description: `UTF-16 code units to return. Defaults to ${String(defaultLength)}; a length of 1 may return a whole surrogate pair (2 units).` }
       },
       required: ["archivePath"],
       additionalProperties: false
@@ -71,20 +73,34 @@ export function createReadToolResultTool(context: ToolContext): Tool<ReadToolRes
         approvalRule: `read_tool_result(${args.archivePath})`,
         async execute({ signal }) {
           const envelope = await readToolResultArchive(context.workspaceRoot, args.archivePath, signal);
-          const offset = Math.min(args.offset ?? 0, envelope.output.length);
+          let offset = Math.min(args.offset ?? 0, envelope.output.length);
+          if (insideSurrogatePair(envelope.output, offset)) offset -= 1;
           const length = args.length ?? defaultLength;
-          const content = envelope.output.slice(offset, offset + length);
+          let nextOffset = Math.min(offset + length, envelope.output.length);
+          if (insideSurrogatePair(envelope.output, nextOffset)) {
+            // Even length: 1 must advance through an emoji instead of stalling.
+            nextOffset += nextOffset === offset + 1 ? 1 : -1;
+          }
+          const content = envelope.output.slice(offset, nextOffset);
           return {
             archivePath: args.archivePath,
             tool: envelope.tool,
             archivedAt: envelope.archivedAt,
             totalCharacters: envelope.output.length,
             offset,
+            nextOffset,
             content,
-            hasMore: offset + content.length < envelope.output.length
+            hasMore: nextOffset < envelope.output.length
           };
         }
       };
     }
   };
+}
+
+function insideSurrogatePair(value: string, offset: number): boolean {
+  if (offset <= 0 || offset >= value.length) return false;
+  const previous = value.charCodeAt(offset - 1);
+  const current = value.charCodeAt(offset);
+  return previous >= 0xd800 && previous <= 0xdbff && current >= 0xdc00 && current <= 0xdfff;
 }

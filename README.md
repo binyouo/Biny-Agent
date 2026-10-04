@@ -48,6 +48,12 @@ Desktop、TUI 与 CLI chat 共用本机 Runtime Host；`biny run` 是一次性�
 | 模型与扩展 | 接入多家模型服务商和 OpenAI-compatible 接口；通过 MCP、Plugins、Skills、Subagents 扩展工具与工作流。 |
 | 工具与操作控制 | 提供项目文件操作、受控命令和权限审批；Desktop 还可选 Computer Use 来观察桌面并操作指定窗口。 |
 
+### Shell 输出与归档
+
+`Bash` 发给模型的 stdout / stderr 分别展示，但共用 12 KiB UTF-8 正文预算（包含省略标记，并非 token 预算）；超出时保留头尾，并分别报告捕获阶段与模型投影阶段的丢失。`BashOutput` 的单页正文使用同一模型预算，原有后台日志分页位置不变。JSON 包装和元数据另计，回合总预算仍独立生效。
+
+被折叠的结果复用受限的工具归档，模型可用 `read_tool_result` 按 `nextOffset` 分页补读。归档保存打码后的完整**已捕获结果**；超出前台命令原有每流 8 MiB 捕获硬上限而丢失的字节无法恢复。归档继续受每文件 64 MiB 与最近 512 份保留策略约束；写入失败会明确报告无可回读引用，不把大段原文重新塞进模型上下文。Code Mode 查询仍在自身 bridge / result 限额内拿到程序化结果，不提前套用该 12 KiB 模型展示预算。
+
 ## 快速开始
 
 需要 Node.js 与 pnpm `10.6.5`。克隆仓库并初始化：

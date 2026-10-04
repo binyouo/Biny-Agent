@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { projectSingleToolResultForModel, projectToolResultsForModel } from "../src/agent/toolResultProjection.js";
+import { shellOutputBudgetBytes } from "../src/agent/shellOutputProjection.js";
 import { runShellCommand } from "../src/tools/shell/runCommand.js";
 import type { AgentMessage, AgentToolResultMessage } from "../src/agent/core/types.js";
 
@@ -10,8 +11,89 @@ await testUnknownFailureIsNotMerged();
 await testArchiveFailureKeepsOriginal();
 await testRunCommandTruncationMetadata();
 await testBashOutputProjectionKeepsPagination();
+await testBashProjectionBoundsBothStreams();
+await testRecentBashProjectionIsBounded();
 
 console.log("tool result projection tests passed");
+
+async function testBashProjectionBoundsBothStreams(): Promise<void> {
+  // No command echo: removing it must not be mistaken for bounding the streams.
+  // The stdout boundary also falls inside a surrogate pair.
+  const stdout = "old stdout\n".repeat(1_000) + "😀" + "x".repeat(5_999);
+  const stderr = "old stderr\n".repeat(1_000) + "错误".repeat(4_000);
+  for (const captureMetadata of [false, true]) {
+    const original = {
+      status: "completed",
+      exitCode: 0,
+      stdout,
+      stderr,
+      ...(captureMetadata ? {
+        stdoutBytes: Buffer.byteLength(stdout, "utf8") + 1_000,
+        stdoutRetainedBytes: Buffer.byteLength(stdout, "utf8"),
+        stdoutTruncated: true,
+        stderrBytes: Buffer.byteLength(stderr, "utf8") + 2_000,
+        stderrRetainedBytes: Buffer.byteLength(stderr, "utf8"),
+        stderrTruncated: true
+      } : {})
+    };
+    for (const mode of ["single", "history", "recent"] as const) {
+      const archived: string[] = [];
+      const options = {
+        keepRecentResults: mode === "recent" ? 2 : 0,
+        archiveResult: async ({ output }: { output: string }) => {
+          archived.push(output);
+          return { archivePath: `.biny/tool-results/tool-result-${"b".repeat(64)}.json`, resultBytes: Buffer.byteLength(output, "utf8") };
+        }
+      };
+      const projected = mode === "single"
+        ? await projectSingleToolResultForModel("Bash", { command: "pnpm test" }, original, options) as Record<string, unknown>
+        : resultDetails((await projectToolResultsForModel([
+          { role: "user", content: "inspect command output" },
+          assistantCall("bounded-command", "Bash", { command: "pnpm test" }),
+          toolResult("bounded-command", "Bash", original)
+        ], options))[2]);
+
+      assert.ok(Buffer.byteLength(String(projected.stdout)) + Buffer.byteLength(String(projected.stderr)) <= shellOutputBudgetBytes);
+      assert.ok(String(projected.stdout).startsWith("old stdout\n"));
+      assert.ok(String(projected.stdout).endsWith("x".repeat(100)));
+      assert.ok(String(projected.stderr).startsWith("old stderr\n"));
+      assert.ok(String(projected.stderr).endsWith("错误".repeat(100)));
+      assert.equal(String(projected.stdout).isWellFormed(), true);
+      assert.equal(String(projected.stderr).isWellFormed(), true);
+      for (const stream of ["stdout", "stderr"] as const) {
+        assert.equal(projected[`${stream}Truncated`], true);
+        assert.equal(projected[`${stream}TruncationDirection`], "head_and_tail");
+        assert.equal(projected[`${stream}CaptureTruncated`], captureMetadata);
+        assert.equal(projected[`${stream}CaptureOmittedBytes`], captureMetadata ? stream === "stdout" ? 1_000 : 2_000 : 0);
+        assert.equal(projected[`${stream}ProjectionTruncated`], true);
+        assert.equal(projected[`${stream}RetainedBytes`], Buffer.byteLength(String(projected[stream]), "utf8"));
+        assert.equal(projected[`${stream}Bytes`], original[`${stream}Bytes`] ?? Buffer.byteLength(original[stream], "utf8"));
+      }
+      assert.equal(projected.archived, true);
+      assert.deepEqual(archived.map((output) => JSON.parse(output)), [original]);
+      assert.equal(original.stdout, stdout);
+      assert.equal(original.stderr, stderr);
+    }
+  }
+}
+
+async function testRecentBashProjectionIsBounded(): Promise<void> {
+  const original = {
+    status: "completed",
+    exitCode: 0,
+    stdout: "recent stdout\n".repeat(1_000),
+    stderr: "recent stderr\n".repeat(1_000)
+  };
+  const messages: AgentMessage[] = [
+    { role: "user", content: "inspect command output" },
+    assistantCall("recent-command", "Bash", { command: "pnpm test" }),
+    toolResult("recent-command", "Bash", original)
+  ];
+  const projected = resultDetails((await projectToolResultsForModel(messages))[2]);
+  assert.ok(Buffer.byteLength(String(projected.stdout)) + Buffer.byteLength(String(projected.stderr)) <= shellOutputBudgetBytes);
+  assert.equal(projected.stdoutTruncated, true);
+  assert.equal(projected.stderrTruncated, true);
+}
 
 async function testFileAndCommandProjection(): Promise<void> {
   const messages: AgentMessage[] = [
@@ -25,10 +107,10 @@ async function testFileAndCommandProjection(): Promise<void> {
     toolResult("command-1", "Bash", {
       status: "completed",
       exitCode: 0,
-      stdout: "pnpm test\n" + "old output\n".repeat(1_000),
+      stdout: "pnpm test\n" + "old output\n".repeat(2_000),
       stderr: "",
-      stdoutBytes: 11_000,
-      stdoutRetainedBytes: 11_000,
+      stdoutBytes: 22_009,
+      stdoutRetainedBytes: 22_009,
       stdoutTruncated: false,
       stderrBytes: 0,
       stderrRetainedBytes: 0,
