@@ -16,7 +16,7 @@ import type { AgentPermissionEventRequest, AgentRunModel, AgentHostEvent } from 
 import type { PermissionAction } from "../../../permission/PermissionManager.js";
 import { activitySummaryText } from "../../../runtime/activitySummary.js";
 import { agentCapabilitySelectionSchema, type AgentCapabilitySelection } from "../../../agent/capabilitySelection.js";
-import { activeSessionEventsForPath, sessionMessageMetadataForIds } from "../../../session/messageTree.js";
+import { activeSessionMessageIds, activeSessionEventsForPath, sessionMessageMetadataForIds } from "../../../session/messageTree.js";
 import type { SessionEvent } from "../../../session/recorder.js";
 import type { ModelRequestMetrics } from "../../../agent/core/types.js";
 import type { SessionUsage } from "../../../session/metadata.js";
@@ -252,7 +252,7 @@ export function buildSessionTimeline(events: SessionEvent[], liveEvents: AgentHo
     : buildHistoricalTurns(history);
   // 实时轮次的用户消息序号要接着历史的算，「编辑消息」功能依赖这个序号定位。
   const historicalUserMessages = history.filter((event) => event.type === "user_message" && !event.auditOnly).length;
-  return mergeLiveRetryTurns(historicalTurns, buildLiveTurns(liveEvents, historicalUserMessages).map(attachLiveRequestMetrics(events)))
+  return mergeLiveRetryTurns(historicalTurns, buildLiveTurns(liveEvents, historicalUserMessages).map(attachLiveRequestMetrics(events)), activeSessionMessageIds(events))
     .map((turn) => publicTimelineTurn(turn))
     .filter(isVisibleTimelineTurn);
 }
@@ -1026,9 +1026,6 @@ function createLiveTimelineFold(initialUserMessageIndex: number): LiveTimelineFo
       turn.error = event.reason;
       turn.durationMs = event.durationMs;
       finishReasoning(event.runId, event.timestamp);
-      // 重试运行未产生 agent_message 时，run.started 写入的 assistantMessageId 是幻影 ID，
-      // 清掉让重试回退到 userMessageId，避免 "not on the active conversation path"。
-      if (turn.retryOfMessageId !== undefined) turn.assistantMessageId = undefined;
       turn.usage = event.usage;
       settleMetrics(turn);
       for (const tool of turn.tools) {
@@ -1043,9 +1040,6 @@ function createLiveTimelineFold(initialUserMessageIndex: number): LiveTimelineFo
       turn.error = event.reason;
       turn.durationMs = event.durationMs;
       finishReasoning(event.runId, event.timestamp);
-      // 重试运行未产生 agent_message 时，run.started 写入的 assistantMessageId 是幻影 ID，
-      // 清掉让重试回退到 userMessageId，避免 "not on the active conversation path"。
-      if (turn.retryOfMessageId !== undefined) turn.assistantMessageId = undefined;
       for (const tool of turn.tools) {
         if (tool.status !== "running" && tool.status !== "waiting") continue;
         tool.status = "unknown";
@@ -1058,9 +1052,6 @@ function createLiveTimelineFold(initialUserMessageIndex: number): LiveTimelineFo
       turn.error = event.error;
       turn.durationMs = event.durationMs;
       finishReasoning(event.runId, event.timestamp);
-      // 重试运行未产生 agent_message 时，run.started 写入的 assistantMessageId 是幻影 ID，
-      // 清掉让重试回退到 userMessageId，避免 "not on the active conversation path"。
-      if (turn.retryOfMessageId !== undefined) turn.assistantMessageId = undefined;
       settleMetrics(turn);
       for (const tool of turn.tools) {
         if (tool.status !== "running" && tool.status !== "waiting") continue;
@@ -1123,7 +1114,7 @@ function buildLiveTurns(events: AgentHostEvent[], initialUserMessageIndex: numbe
 }
 
 /** 重新生成没有新的 user 事件，实时 assistant 需要替换原回答所在的视觉位置。 */
-function mergeLiveRetryTurns(history: TimelineTurn[], live: TimelineTurn[]): TimelineTurn[] {
+function mergeLiveRetryTurns(history: TimelineTurn[], live: TimelineTurn[], activeIds: ReadonlySet<string>): TimelineTurn[] {
   const result = [...history];
   for (const liveTurn of live) {
     const targetId = liveTurn.retryOfMessageId;
@@ -1156,7 +1147,10 @@ function mergeLiveRetryTurns(history: TimelineTurn[], live: TimelineTurn[]): Tim
     // 重试会切换当前活动分支；目标之后的历史轮次属于旧分支，不能继续留在实时视图中。
     result.splice(targetIndex + 1);
   }
-  return result;
+  // 先合并连续重试，再校验最终轮次，避免清理旧 ID 后无法定位下一次重试。
+  return result.map(turn => turn.retryOfMessageId !== undefined && turn.assistantMessageId !== undefined
+    && !["running", "waiting_permission", "thinking"].includes(turn.status) && !activeIds.has(turn.assistantMessageId)
+    ? { ...turn, assistantMessageId: undefined } : turn);
 }
 
 /**
@@ -1176,6 +1170,7 @@ export function createSessionTimelineProjector(): SessionTimelineProjector {
   let eventsRef: SessionEvent[] | undefined;
   let firstLiveUser: AgentHostEvent | undefined;
   let historyTurns: TimelineTurn[] = [];
+  let activeIds: ReadonlySet<string> = new Set();
   let fold: LiveTimelineFold | undefined;
   let processedLive = 0;
   let processedTail: AgentHostEvent | undefined;
@@ -1183,6 +1178,7 @@ export function createSessionTimelineProjector(): SessionTimelineProjector {
 
   const rebuild = (events: SessionEvent[], liveEvents: AgentHostEvent[]): void => {
     events = traceOutputEvents(events);
+    activeIds = activeSessionMessageIds(events);
     const history = historicalPrefix(events, liveEvents);
     attachRequests = attachLiveRequestMetrics(events);
     historyTurns = (hasVersionMetadata(history) ? buildVersionedHistoricalTurns(history) : buildHistoricalTurns(history)).map((turn) => publicTimelineTurn(turn)).filter(isVisibleTimelineTurn);
@@ -1233,7 +1229,7 @@ export function createSessionTimelineProjector(): SessionTimelineProjector {
         processedTail = liveEvents.at(-1);
       }
       const liveTurns = (fold ? fold.snapshot() : []).filter(isVisibleTimelineTurn);
-      return mergeLiveRetryTurns(historyTurns, liveTurns.map(attachRequests)).filter(isVisibleTimelineTurn);
+      return mergeLiveRetryTurns(historyTurns, liveTurns.map(attachRequests), activeIds).filter(isVisibleTimelineTurn);
     }
   };
 }
