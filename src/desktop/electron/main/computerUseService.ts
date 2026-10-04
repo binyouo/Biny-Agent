@@ -27,14 +27,22 @@ export async function createComputerUseService(browser: DesktopBrowserService, g
     return app.bundleId;
   }, preview: frame => preview.update(frame, controller.status()),
   // PiP 3fps 帧泵：重新观察当前 capture 的窗口，把最新帧推给预览窗。
-  refreshPreview: async session => {
-    const state = controller.status();
-    if (state.state !== "ready" || !session || state.owner !== session) return;
+  // Alma 的帧泵独立于操控会话：有观察目标就抓它，没有就回落整屏，
+  // 这样面板一打开就有画面，而不是空等到第一次操控。
+  refreshPreview: async () => {
     const capture = controller.currentCapture();
-    if (!capture) return;
-    const reply = await controller.observe(session, capture.target, new AbortController().signal);
-    const image = (reply.images ?? [])[0];
-    if (image) preview.update({ image, target: capture.target, capturedAt: Date.now() }, controller.status());
+    try {
+      // 有活跃目标就抓它；否则回落整屏——面板开着就该有画面，
+      // 而且目标窗口本身可能无法被单独捕获（Electron 系应用实测如此）。
+      const target = capture?.target;
+      const reply = target
+        ? await driver.observe("preview", target, new AbortController().signal)
+        : await driver.captureScreen();
+      const image = (reply.images ?? [])[0];
+      if (image) preview.update({ image, target: target ?? { pid: 0, windowId: "screen" }, capturedAt: Date.now() }, controller.status());
+    } catch {
+      // 目标不可达时不打断面板：下一拍再试。
+    }
   } });
   let controlEpoch = 0;
   let closed = false;

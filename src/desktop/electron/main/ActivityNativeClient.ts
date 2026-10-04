@@ -3,6 +3,7 @@ import { spawn, execFile, type ChildProcess } from "node:child_process";
 import { connect, type Socket } from "node:net";
 import { randomUUID, createHash } from "node:crypto";
 import { mkdir, readFile, unlink } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { promisify } from "node:util";
@@ -54,7 +55,9 @@ export class ActivityNativeClient {
     this.starting = (async () => {
       try { await this.connectSocket(); return; } catch { /* 尚无共享 daemon，启动本进程持有的实例。 */ }
       await new Promise<void>((resolve, reject) => {
-        const child = spawn(path.join(this.directory, "computer-use"), ["daemon", "--socket", this.socketPath, "--idle-seconds", "900"], { stdio: ["ignore", "pipe", "ignore"] });
+        // daemon 随包发布为 .app（TCC 需要 bundle 身份）；开发期这里是软链。
+        const screenBinary = [path.join(this.directory, "computer-use"), path.join(this.directory, "computer-use.app", "Contents", "MacOS", "computer-use")].find(candidate => existsSync(candidate)) ?? path.join(this.directory, "computer-use");
+        const child = spawn(screenBinary, ["daemon", "--socket", this.socketPath, "--idle-seconds", "900"], { stdio: ["ignore", "pipe", "ignore"] });
         this.child = child;
         const timer = setTimeout(() => { child.kill(); reject(new Error("截图 daemon 启动超时")); }, 10000);
         child.once("error", error => { clearTimeout(timer); if (this.child === child) this.child = undefined; reject(error); });

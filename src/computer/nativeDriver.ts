@@ -89,12 +89,19 @@ export class NativeProcessDriver implements ComputerDriver {
     // 开发期（源码树）与打包期（app.asar.unpacked）两条路径。
     const here = path.dirname(fileURLToPath(import.meta.url));
     const resourcesPath = (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath;
+    // daemon 以 .app 形式发布：屏幕录制权限按 bundle 身份授予，裸二进制拿不到画面。
+    // 开发期 out/native/computer-use 是指进 bundle 的软链，打包后要走 .app 内部路径。
+    const inner = path.join("Contents", "MacOS", "computer-use");
     const candidates: string[] = [
       path.resolve(here, "../../out/native/computer-use"),
       path.resolve(here, "../../../out/native/computer-use"),
-      // 打包后 import.meta.url 指向 out/main/index.js；用工作目录兜底。
+      path.resolve(here, "../../out/native/computer-use.app", inner),
       path.resolve(process.cwd(), "out/native/computer-use"),
-      ...(resourcesPath ? [path.join(resourcesPath, "native", "computer-use")] : [])
+      path.resolve(process.cwd(), "out/native/computer-use.app", inner),
+      ...(resourcesPath ? [
+        path.join(resourcesPath, "native", "computer-use"),
+        path.join(resourcesPath, "native", "computer-use.app", inner)
+      ] : [])
     ];
     return candidates.find(candidate => existsSync(candidate)) ?? candidates[0]!;
   }
@@ -280,6 +287,18 @@ export class NativeProcessDriver implements ComputerDriver {
   dispose(): Promise<void> {
     this.disposed = true;
     return this.stop();
+  }
+
+  /**
+   * 整屏截图，用作观察失败时的回落（Alma 的帧泵同样是「优先抓窗口，失败回落整屏」）。
+   * 走 daemon 的 capture_screen：只截图、不读 AX，因此不会被卡住的无障碍调用牵连，
+   * 也不依赖目标 app 是否可被单独捕获。
+   */
+  async captureScreen(): Promise<DriverReply> {
+    const out = path.join(os.tmpdir(), `biny-cu-screen-${Date.now()}.jpg`);
+    const reply = await this.call("capture_screen", { out });
+    const image = this.readImage(out);
+    return { data: reply.data, images: image ? [image] : [] };
   }
 
   diagnostics(): Promise<DriverReply> { return this.call("doctor", {}); }

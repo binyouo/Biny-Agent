@@ -100,10 +100,11 @@ export class ComputerUseController {
   private startFramePump(): void {
     if (this.framePump || !this.options.refreshPreview) return;
     this.framePump = setInterval(() => {
-      if (!this.snapshot.preview || this.snapshot.state !== "ready") return;
+      // 面板就是「看 AI 在看什么」的窗口，开着就该有画面：不等桌面控制开关、
+      // 也不等第一次操控。Alma 的 PiP 会话同样独立于操控状态，默认可用。
+      if (!this.snapshot.preview) return;
       void this.options.refreshPreview?.(this.snapshot.owner).catch(() => undefined);
     }, this.frameIntervalMs);
-    if (typeof this.framePump === "object" && "unref" in this.framePump) this.framePump.unref();
   }
   private stopFramePump(): void {
     if (!this.framePump) return;

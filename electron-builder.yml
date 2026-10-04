@@ -26,8 +26,8 @@ extraResources:
     to: native/activity-input-monitor
   - from: out/native/activity-ocr
     to: native/activity-ocr
-  - from: out/native/computer-use
-    to: native/computer-use
+  - from: out/native/computer-use.app
+    to: native/computer-use.app
   - from: out/native/calendar-reader
     to: native/calendar-reader
   - from: build/icon-master.png

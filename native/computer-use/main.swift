@@ -156,43 +156,28 @@ func windowScreenBounds(pid: Int) -> [String: Double]? {
 
 
 /// 截图同样可能挂在无响应的窗口上：独立线程采集，主线程轮询到点就放弃。
-func captureWithDeadline(_ args: [String: Any], timeout: Double) async -> [String: Any] {
-    await withCheckedContinuation { continuation in
-        let box = ShotBox()
-        let thread = Thread {
-            let semaphore = DispatchSemaphore(value: 0)
-            var captured: [String: Any] = [:]
-            Task {
-                captured = (try? await screenshot(args)) ?? [:]
-                semaphore.signal()
-            }
-            _ = semaphore.wait(timeout: .now() + 10)
-            box.store(captured)
+/// 给异步工作加一个截止时间。
+/// 早期实现用 Thread + 信号量阻塞等待：帧泵每 333ms 调一次，每次都占住一个 OS 线程
+/// 最多 10 秒，线程只增不减，daemon 会越跑越慢直到截图彻底拿不到。
+/// 这里改成两个协作式 Task 竞争，完全不阻塞线程。
+func withDeadline(_ timeout: Double, fallback: [String: Any], work: @escaping () async -> [String: Any]) async -> [String: Any] {
+    let lock = NSLock()
+    var settled = false
+    return await withCheckedContinuation { continuation in
+        func finish(_ value: [String: Any]) {
+            lock.lock(); defer { lock.unlock() }
+            if settled { return }   // 双 resume 会让进程崩溃，必须守住。
+            settled = true
+            continuation.resume(returning: value)
         }
-        thread.stackSize = 1 << 20
-        thread.start()
-        DispatchQueue.global().async {
-            let deadline = Date().addingTimeInterval(timeout)
-            while Date() < deadline {
-                if box.done { break }
-                Thread.sleep(forTimeInterval: 0.02)
-            }
-            continuation.resume(returning: box.take())
+        Task { finish(await work()) }
+        Task {
+            try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
+            finish(fallback)
         }
     }
 }
 
-final class ShotBox: @unchecked Sendable {
-    private let lock = NSLock()
-    private var finished = false
-    private var value: [String: Any] = [:]
-    var done: Bool { lock.lock(); defer { lock.unlock() }; return finished }
-    func store(_ next: [String: Any]) { lock.lock(); defer { lock.unlock() }; if !finished { value = next; finished = true } }
-    func take() -> [String: Any] { lock.lock(); defer { lock.unlock() }; return value }
-}
-
-/// 用独立线程采集 AX 树，主线程轮询等待（不占用并发工作线程）。
-/// AX 调用一旦卡住就无法取消，所以只能「放弃等待」而不是「杀掉它」。
 func collectAccessibility(pid: pid_t, maxDepth: Int, limit: Int, timeout: Double) -> ([[String: Any]], [String: AXUIElement]) {
     let box = AXCollectBox()
     let thread = Thread {
@@ -344,6 +329,13 @@ DispatchQueue.global().async {
                                     ])
                                 }
                                 reply(fd, ["id": id, "ok": true, "data": ["apps": apps] as [String: Any]])
+                            case "capture_screen":
+                                // 纯截图，不碰 AX：PiP 面板的帧源走这条，避免被卡住的
+                                // 无障碍调用牵连（目标窗口也可能根本不能被单独捕获）。
+                                var shotArgs: [String: Any] = ["out": args["out"] ?? "/tmp/biny-cu-screen-\(Int(Date().timeIntervalSince1970 * 1000)).jpg"]
+                                if let maxWidth = args["max_width"] { shotArgs["max_width"] = maxWidth }
+                                let shot = await withDeadline(5.0, fallback: [:]) { (try? await screenshot(shotArgs)) ?? [:] }
+                                reply(fd, ["id": id, "ok": true, "data": shot])
                             case "get_app_state":
                                 guard axTrusted() else { throw NSError(domain: "ax", code: 1, userInfo: [NSLocalizedDescriptionKey: "ax_not_granted"]) }
                                 let pid = try resolvePid(args)
@@ -363,7 +355,7 @@ DispatchQueue.global().async {
                                 // 截图同样可能挂在无响应的窗口上：限时 3 秒，超时就返回不带图的观察。
                                 // 同理：TaskGroup 的 cancel 不会中断已在跑的 capture，
                                 // group.next() 仍会等它返回。放进独立线程 + 轮询才有真上限。
-                                let shot = await captureWithDeadline(shotArgs, timeout: 3.0)
+                                let shot = await withDeadline(3.0, fallback: [:]) { (try? await screenshot(shotArgs)) ?? [:] }
                                 refTables[pid] = table
                                 // 记下截图坐标 → 屏幕坐标的映射，后续像素点击据此换算。
                                 if let f = shot["screenFrame"] as? [String: Double],
