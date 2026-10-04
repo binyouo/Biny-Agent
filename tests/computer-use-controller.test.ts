@@ -254,3 +254,28 @@ async function waitFor(predicate: () => boolean): Promise<void> {
     await new Promise<void>(resolve => setImmediate(resolve));
   }
 }
+
+test("approval changes cancel waiting observations before screenshot dispatch", async () => {
+  const entered = deferred(); const release = deferred(); let screenshots = 0;
+  const driver: ComputerDriver = { start: async () => undefined, stop: async () => undefined,
+    list: async () => ({ data: { apps: [] }, images: [] }),
+    observe: async () => { screenshots++; return frame(); }, act: async () => ({ data: { effect: "confirmed" }, images: [] }) };
+  const controller = new ComputerUseController(driver, { enabled: true, authorize: async () => { entered.resolve(); await release.promise; return "test.notes"; } });
+  const request = controller.observe("s", target);
+  const rejected = assert.rejects(request, /abort|invalidated/iu);
+  await entered.promise;
+  controller.authorizationChanged();
+  release.resolve(); await rejected;
+  assert.equal(screenshots, 0);
+});
+
+test("PID reuse cannot deliver an old application's captured input even when both apps are authorized", async () => {
+  let appId = "test.notes"; let inputs = 0;
+  const driver: ComputerDriver = { start: async () => undefined, stop: async () => undefined,
+    list: async () => ({ data: { apps: [] }, images: [] }), observe: async () => frame(),
+    act: async () => { inputs++; return { data: { effect: "confirmed" }, images: [] }; } };
+  const controller = new ComputerUseController(driver, { enabled: true, authorize: async () => appId });
+  await controller.observe("s", target); appId = "test.other";
+  await assert.rejects(controller.act("s", { ...target, captureId: "c1", action: "press_key", key: "Enter" }), /capture_app_identity_changed/);
+  assert.equal(inputs, 0);
+});

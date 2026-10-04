@@ -52,7 +52,11 @@ test("desktop enablement stays cold and persists through restart; trusted IPC to
     cleanupBrowser = () => browser.dispose();
     let failNextStop = false;
     let onDispose = (): void => undefined;
+    let app = { pid: 42, name: "Notes", running: true, bundleId: "test.notes" as string | undefined };
     const factory = (onExit: () => void) => new class extends CuaProcessDriver {
+      override async list(...args: Parameters<CuaProcessDriver["list"]>) {
+        const result = await super.list(...args); return { ...result, data: { apps: [app] } };
+      }
       override async stop(): Promise<void> {
         await super.stop();
         if (failNextStop) { failNextStop = false; throw new Error("driver_process_did_not_exit"); }
@@ -88,11 +92,52 @@ test("desktop enablement stays cold and persists through restart; trusted IPC to
     process.kill(pid, 0);
     assert.match(await readFile(recorder.filePath, "utf8"), /"type":"tool_call"/);
     assert.match(await readFile(recorder.filePath, "utf8"), /"type":"tool_result"/);
+    const observe = coordinator.createAgentTools().find(tool => tool.name === "ComputerObserve")!;
+    const action = coordinator.createAgentTools().find(tool => tool.name === "ComputerAction")!;
+    await api.strict(true);
+    const denied = await observe.execute("unapproved", { pid: 42, windowId: "900" });
+    assert.equal(denied.isError, true, "严格应用审批不能被完全访问绕过");
+    assert.equal((await entries()).filter(entry => entry.method === "observe").length, 0);
+    assert.equal((await api.diagnostics()).approvals[0]?.bundleId, "test.notes");
+    await assert.rejects(api.approve("invented.app"), /unknown_app/);
+    await api.approve("test.notes");
+    assert.equal((await observe.execute("approved", { pid: 42, windowId: "900" })).isError, false);
+    assert.equal((await action.execute("approved-action", { pid: 42, windowId: "900", captureId: "fixture-capture", action: "press_key", key: "Enter" })).isError, false);
+    const actionsBeforeRevoke = (await entries()).filter(entry => entry.method === "act").length;
+    await api.revoke("test.notes");
+    assert.equal((await action.execute("revoked-action", { pid: 42, windowId: "900", captureId: "fixture-capture", action: "press_key", key: "Enter" })).isError, true);
+    assert.equal((await entries()).filter(entry => entry.method === "act").length, actionsBeforeRevoke);
+    assert.equal((await observe.execute("revoked-observe", { pid: 42, windowId: "900" })).isError, true);
+    await api.strict(false);
+    assert.equal((await observe.execute("auto-reapproved", { pid: 42, windowId: "900" })).isError, false);
+    await api.strict(true);
+    app = { ...app, bundleId: "test.other" };
+    const screenshots = (await entries()).filter(entry => entry.method === "observe").length;
+    assert.equal((await observe.execute("pid-reused", { pid: 42, windowId: "900" })).isError, true);
+    assert.equal((await entries()).filter(entry => entry.method === "observe").length, screenshots, "PID 复用不能继承原应用授权");
+    await api.strict(false); app = { ...app, bundleId: undefined };
+    assert.equal((await observe.execute("unknown-identity", { pid: 42, windowId: "900" })).isError, true);
+    assert.equal((await entries()).filter(entry => entry.method === "observe").length, screenshots);
+    app = { ...app, bundleId: "test.notes" };
+    await api.strict(true);
+    sender = { sender: host.webContents, senderFrame: {} };
+    await assert.rejects(api.strict(false), /Untrusted/);
+    await assert.rejects(api.approve("test.other"), /Untrusted/);
+    await assert.rejects(api.revoke("test.notes"), /Untrusted/);
+    sender = { sender: host.webContents, senderFrame: host.webContents.mainFrame };
+    const beforeStorageFailure = (await entries()).filter(entry => entry.method === "observe").length;
+    configReadGate = async () => { throw new Error("fixture_storage_unavailable"); };
+    assert.equal((await observe.execute("policy-store-unavailable", { pid: 42, windowId: "900" })).isError, true);
+    configReadGate = undefined;
+    assert.equal((await entries()).filter(entry => entry.method === "observe").length, beforeStorageFailure, "授权存储错误不能放行截图");
+    const methodsBeforePause = (await entries()).map(entry => entry.method);
     await api.control("pause");
     assert.equal((await list.execute("list-paused", {})).isError, true);
-    assert.deepEqual((await entries()).map(entry => entry.method), ["start", "list"]);
+    assert.deepEqual((await entries()).map(entry => entry.method), methodsBeforePause);
     await api.control("stop");
     assert.equal((await store.load()).computer.enabled, false);
+    assert.equal((await store.load()).computer.strictApproval, true);
+    assert.ok((await store.load()).computer.apps.find(app => app.bundleId === "test.notes")?.approvedAt, "停止保留应用授权");
     assert.throws(() => process.kill(pid, 0), /ESRCH/);
     await api.testSetup();
     assert.equal((await api.status()).state, "disabled", "testing configuration never grants control");

@@ -1,6 +1,9 @@
 import { contextBridge, ipcRenderer } from "electron";
 import { computerIpc, type ComputerDesktopApi } from "../../../computer/protocol.js";
 const api: ComputerDesktopApi = {
+  strict: async enabled => await ipcRenderer.invoke(computerIpc.strict, enabled),
+  approve: async bundleId => await ipcRenderer.invoke(computerIpc.approve, bundleId),
+  revoke: async bundleId => await ipcRenderer.invoke(computerIpc.revoke, bundleId),
   status: async () => await ipcRenderer.invoke(computerIpc.status),
   enable: async () => await ipcRenderer.invoke(computerIpc.enable),
   control: async value => await ipcRenderer.invoke(computerIpc.control, value),

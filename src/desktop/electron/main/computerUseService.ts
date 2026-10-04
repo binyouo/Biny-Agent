@@ -1,5 +1,6 @@
 import { ipcMain, systemPreferences, type BrowserWindow } from "electron";
 import { z } from "zod";
+import { ComputerAppApprovals } from "../../../computer/appApprovals.js";
 import { ComputerUseController } from "../../../computer/controller.js";
 import { CuaProcessDriver } from "../../../computer/cuaDriver.js";
 import { updateConfig, type AgentConfigStore } from "../../../config/store.js";
@@ -12,24 +13,38 @@ export async function createComputerUseService(browser: DesktopBrowserService, g
   const config = await configStore.load();
   const preview = new ComputerPreviewWindow(control => { void controlComputer(control).catch(() => undefined); }, () => controller.setPreview(false));
   const driver = createDriver(() => controller.crashed());
-  const controller = new ComputerUseController(driver, { enabled: config.computer.enabled, preview: frame => preview.update(frame, controller.status()) });
+  const approvals = new ComputerAppApprovals(configStore);
+  let approvalWrites = Promise.resolve();
+  const controller = new ComputerUseController(driver, { enabled: config.computer.enabled, authorize: async (session, target, signal) => {
+    await approvalWrites; signal.throwIfAborted();
+    const reply = await driver.list(session, undefined, signal);
+    if (reply.errorCode) throw new Error(reply.errorCode);
+    const apps = z.object({ apps: z.array(z.object({ pid: z.number().int().positive(), name: z.string().min(1).max(256), running: z.boolean(), bundleId: z.string().min(1).max(256).optional() }).passthrough()) }).passthrough().parse(reply.data).apps;
+    const matches = apps.filter(app => app.pid === target.pid && app.running);
+    const app = matches.length === 1 ? matches[0] : undefined;
+    if (!app?.bundleId) throw new Error("computer_app_identity_unavailable: 无法确认目标应用身份，不截图或输入。");
+    signal.throwIfAborted();
+    await approvals.authorize({ bundleId: app.bundleId, appName: app.name });
+    return app.bundleId;
+  }, preview: frame => preview.update(frame, controller.status()) });
   let controlEpoch = 0;
   let closed = false;
   let setupTest: Promise<ComputerDiagnostics> | undefined;
   const probes = new Set<CuaProcessDriver>();
   const intentWrites = new Set<Promise<unknown>>();
   async function persistIntent(enabled: boolean, epoch: number): Promise<void> {
-    const write = updateConfig(configStore, undefined, current => epoch === controlEpoch && (!enabled || !closed) ? { ...current, computer: { enabled } } : current);
+    const write = updateConfig(configStore, undefined, current => epoch === controlEpoch && (!enabled || !closed) ? { ...current, computer: { ...current.computer, enabled } } : current);
     intentWrites.add(write);
     try { await write; } finally { intentWrites.delete(write); }
   }
   async function diagnostics(setupError?: string, source = driver): Promise<ComputerDiagnostics> {
     const permission = z.enum(["granted", "denied", "unknown"]);
     const screen = process.platform === "darwin" ? systemPreferences.getMediaAccessStatus("screen") : undefined;
+    const policy = await approvals.read();
     const result: ComputerDiagnostics = {
       workerPath: driver.workerPath(), hostPath: process.execPath, expectedVersion: cuaVersion, sdkLoaded: false, runtimeReady: false,
       permissions: { accessibility: process.platform === "darwin" ? systemPreferences.isTrustedAccessibilityClient(false) ? "granted" : "denied" : "unknown", screenRecording: screen === "granted" ? "granted" : screen === "denied" || screen === "restricted" ? "denied" : "unknown" },
-      approvals: [], audit: controller.audit(), error: setupError, actionLimits: cuaActionLimits(process.platform, cuaVersion)
+      strictApproval: policy.strictApproval, approvals: policy.apps, audit: controller.audit(), error: setupError, actionLimits: cuaActionLimits(process.platform, cuaVersion)
     };
     try {
       const data = z.object({ sdkLoaded: z.boolean(), runtimeReady: z.boolean(), driverVersion: z.string().optional(), permissions: z.object({ accessibility: permission, screenRecording: permission }) }).parse((await source.diagnostics()).data);
@@ -73,6 +88,22 @@ export async function createComputerUseService(browser: DesktopBrowserService, g
   ipcMain.handle(computerIpc.preview, (event, value: unknown) => { assertSender(event); const enabled = z.boolean().parse(value); controller.setPreview(enabled); if (enabled) preview.open(); else preview.close(); return controller.status(); });
   ipcMain.handle(computerIpc.foreground, (event, value: unknown) => { assertSender(event); controller.setForeground(z.boolean().parse(value)); return controller.status(); });
   ipcMain.handle(computerIpc.logging, (event, value: unknown) => { assertSender(event); controller.setLogging(z.boolean().parse(value)); return controller.status(); });
+  async function changeApproval(update: () => Promise<void>): Promise<ComputerDiagnostics> {
+    controller.authorizationChanged();
+    const write = approvalWrites.then(update).finally(() => controller.authorizationChanged());
+    approvalWrites = write.catch(() => undefined);
+    intentWrites.add(write);
+    try { await write; } finally { intentWrites.delete(write); }
+    return await diagnostics();
+  }
+  ipcMain.handle(computerIpc.strict, async (event, value: unknown) => {
+    assertSender(event); const enabled = z.boolean().parse(value);
+    return await changeApproval(async () => await approvals.setStrict(enabled));
+  });
+  for (const operation of ["approve", "revoke"] as const) ipcMain.handle(computerIpc[operation], async (event, value: unknown) => {
+    assertSender(event); const bundle = z.string().min(1).max(256).parse(value);
+    return await changeApproval(async () => await approvals[operation](bundle));
+  });
   ipcMain.handle(computerIpc.diagnostics, async event => { assertSender(event); return await diagnostics(); });
   ipcMain.handle(computerIpc.accessibility, async event => {
     assertSender(event);

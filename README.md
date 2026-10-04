@@ -46,7 +46,7 @@ Desktop、TUI 与 CLI chat 共用本机 Runtime Host；`biny run` 是一次性�
 | Activity Recorder | 记录桌面活动与 OCR 线索，支持回看、检索和生成活动摘要；新对话页提供近期活动建议，点击可直接开始对话；可从 Desktop 设置中暂停记录。 |
 | 长任务执行 | 持久化 TaskRun 与 attempt 状态，支持 worker 检查点续跑、重试决策和任务完成后的验证。 |
 | 模型与扩展 | 接入多家模型服务商和 OpenAI-compatible 接口；通过 MCP、Plugins、Skills、Subagents 扩展工具与工作流。 |
-| 工具与操作控制 | 提供项目文件操作、受控命令和权限审批；Desktop 还可选 Computer Use 来观察桌面并操作指定窗口。 |
+| 工具与操作控制 | 提供项目文件操作、受控命令和权限审批；Desktop 还可选 Computer Use 来观察桌面并操作指定窗口；通过独立的严格应用审批开关和跨会话应用授权名单控制访问。 |
 
 ### Shell 输出与归档
 
@@ -84,3 +84,5 @@ Desktop 的“设置 → 技能”优先展示内置技能，并可关闭自动�
 - [会话存储](src/session) · [长期记忆与上下文](src/agent/context)
 - [工具与扩展](src/extensions) · [权限策略](src/permission) · [工具实现](src/tools)
 - [问题反馈与功能请求](https://github.com/binyouo/Biny-Agent/issues)
+
+Computer Use 应用授权在 Desktop「设置 → Computer Use」中管理。严格审批默认关闭，首次使用应用时自动保存授权；开启后只允许已批准的应用，不受全局工具自动批准覆盖。CLI 可用 `biny computer status --json` 查看记录，`biny computer strict on` 开启严格模式，`biny computer approve <bundle-id>` 批准已发现的应用，`biny computer revoke <bundle-id>` 撤销授权。

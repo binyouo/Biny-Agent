@@ -137,9 +137,9 @@ export class PermissionManager {
       return { decision: "deny", reason: "Permission mode is read only." };
     }
 
-    // Logged-in desktop surfaces need explicit per-call approval, including full-access coding sessions.
+    // 桌面观察与操作由执行端按真实应用身份审批；此处保留只读与拒绝路径约束。
     if (request.toolName === "ComputerObserve" || request.toolName === "ComputerAction") {
-      return { decision: "ask", canRemember: false, reason: "Authorize this exact desktop observation/action. Screenshots may be sent to the current model; external effects cannot be undone by Biny." };
+      return { decision: "allow", reason: "Desktop application approval is enforced by the execution service." };
     }
 
     // 完全访问明确跳过交互批准；显式拒绝路径仍由上方规则拦截。

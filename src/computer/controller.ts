@@ -10,7 +10,7 @@ export interface ComputerDriver {
   act(session: string, action: ComputerAction, signal: AbortSignal): Promise<DriverReply>;
 }
 const captureSchema = z.object({ pid: z.number().int(), window_id: z.number().int().safe(), capture_id: z.string().min(1), screenshot_width: z.number().int().positive(), screenshot_height: z.number().int().positive(), screenshot_frame_valid: z.literal(true), elements: z.array(z.object({ element_token: z.string().optional() }).passthrough()).optional() }).passthrough();
-interface Capture { id: string; target: WindowTarget; at: number; width: number; height: number; tokens: Set<string> }
+interface Capture { id: string; target: WindowTarget; at: number; width: number; height: number; tokens: Set<string>; appId?: string }
 export class ComputerUseController {
   private snapshot: ComputerStatus = { state: "disabled", preview: false, foregroundAllowed: false, lastOutcome: "not-dispatched" };
   private capture?: Capture;
@@ -22,8 +22,8 @@ export class ComputerUseController {
   private starting?: { promise: Promise<void>; generation: number; signal: AbortSignal };
   private entries: ComputerAuditEntry[] = [];
   private readonly driver: ComputerDriver;
-  private readonly options: { enabled?: boolean; now?: () => number; preview?: (frame: ComputerPreview | undefined) => void };
-  constructor(driver: ComputerDriver, options: { enabled?: boolean; now?: () => number; preview?: (frame: ComputerPreview | undefined) => void } = {}) {
+  private readonly options: { enabled?: boolean; now?: () => number; preview?: (frame: ComputerPreview | undefined) => void; authorize?: (session: string, target: WindowTarget, signal: AbortSignal) => Promise<string> };
+  constructor(driver: ComputerDriver, options: { enabled?: boolean; now?: () => number; preview?: (frame: ComputerPreview | undefined) => void; authorize?: (session: string, target: WindowTarget, signal: AbortSignal) => Promise<string> } = {}) {
     this.driver = driver; this.options = options;
     if (options.enabled) this.snapshot.state = "ready";
   }
@@ -86,6 +86,7 @@ export class ComputerUseController {
     this.invalidate(); this.snapshot.state = control === "resume" ? "ready" : control === "pause" ? "paused" : "taken-over";
   }
   release(session: string): void { if (this.snapshot.owner === session) { this.invalidate(); this.snapshot.owner = undefined; } }
+  authorizationChanged(): void { this.invalidate(); }
   setPreview(enabled: boolean): void { this.snapshot.preview = enabled; if (!enabled) this.options.preview?.(undefined); }
   setForeground(enabled: boolean): void { this.snapshot.foregroundAllowed = enabled; this.invalidate(); }
   crashed(): void { this.invalidate(); this.started = false; this.snapshot.state = "disabled"; this.snapshot.owner = undefined; this.snapshot.diagnostic = "driver_exited"; this.snapshot.lastOutcome = "unknown"; }
@@ -118,6 +119,8 @@ export class ComputerUseController {
   }
   private async captureWindow(session: string, target: WindowTarget, signal: AbortSignal, generation: number): Promise<DriverReply> {
     this.capture = undefined;
+    const appId = await this.options.authorize?.(session, target, signal);
+    signal.throwIfAborted(); if (generation !== this.generation) throw new Error("computer_authorization_invalidated");
     const reply = await this.driver.observe(session, target, signal);
     signal.throwIfAborted(); if (generation !== this.generation) throw new Error("computer_observation_invalidated");
     if (reply.errorCode) return reply;
@@ -126,7 +129,7 @@ export class ComputerUseController {
     const images = reply.images.map(image => computerImageSchema.parse(image));
     if (images.length !== 1) throw new Error("computer_observation_requires_one_image");
     const at = this.now();
-    this.capture = { id: data.capture_id, target: { ...target }, at, width: data.screenshot_width, height: data.screenshot_height, tokens: new Set(data.elements?.flatMap(element => element.element_token ? [element.element_token] : []) ?? []) };
+    this.capture = { id: data.capture_id, target: { ...target }, appId, at, width: data.screenshot_width, height: data.screenshot_height, tokens: new Set(data.elements?.flatMap(element => element.element_token ? [element.element_token] : []) ?? []) };
     if (this.snapshot.preview) this.options.preview?.({ image: images[0]!, target, capturedAt: at });
     return { ...reply, images };
   }
@@ -139,7 +142,10 @@ export class ComputerUseController {
       if (action.x !== undefined && (action.x >= capture.width || action.y === undefined || action.y >= capture.height)) throw new Error("capture_coordinates_out_of_bounds");
       if (action.elementToken && !capture.tokens.has(action.elementToken)) throw new Error("element_token_not_in_observation");
       if (action.delivery === "foreground" && !this.snapshot.foregroundAllowed) throw new Error("foreground_permission_required: ask user to switch or enable foreground delivery");
+      const appId = await this.options.authorize?.(session, capture.target, s);
+      if (appId !== capture.appId) { this.capture = undefined; throw new Error("capture_app_identity_changed: observe again"); }
       s.throwIfAborted();
+      if (generation !== this.generation) throw new Error("computer_authorization_invalidated");
       this.capture = undefined; this.snapshot.lastOutcome = "not-dispatched";
       let result: DriverReply;
       const at = this.now();

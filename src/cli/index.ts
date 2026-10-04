@@ -10,6 +10,7 @@ import { createRequire } from "node:module";
 import { Command, InvalidArgumentError, Option } from "commander";
 import { initCommand } from "./commands/init.js";
 import { widgetRenderCommand } from "./commands/widget.js";
+import { registerComputerCommands } from "./commands/computer.js";
 import { registerBrowserCommands } from "./commands/browser.js";
 import { registerCrystalCommands } from "./commands/crystal.js";
 import { referenceKindsCommand, referenceSearchCommand, referenceResolveCommand, referenceGraphCommand,
@@ -127,6 +128,7 @@ registerSoulCommands(program);
 registerFatigueCommands(program);
 registerUserInputCommands(program);
 registerSkillCommands(program, workspaceRoot);
+registerComputerCommands(program);
 registerBrowserCommands(program);
 registerThemeCommands(program);
 

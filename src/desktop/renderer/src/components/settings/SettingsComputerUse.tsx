@@ -19,7 +19,7 @@ export function SettingsComputerUse(): React.JSX.Element {
   const mounted = useRef(false);
   const pending = useRef(false);
   const api = window.binyComputer;
-  const available = [api?.status, api?.enable, api?.control, api?.preview, api?.foreground, api?.logging, api?.diagnostics, api?.requestAccessibility, api?.testSetup].every(method => typeof method === "function");
+  const available = [api?.status, api?.enable, api?.control, api?.preview, api?.foreground, api?.logging, api?.diagnostics, api?.requestAccessibility, api?.testSetup, api?.strict, api?.approve, api?.revoke].every(method => typeof method === "function");
   useEffect(() => {
     mounted.current = true;
     if (!available) { setError(restartMessage); return () => { mounted.current = false; }; }
@@ -72,10 +72,21 @@ export function SettingsComputerUse(): React.JSX.Element {
       </div>
       <div className="settings-row-group cu-toggles">
         <SettingsSwitch label="桌面控制" checked={Boolean(status && status.state !== "disabled")} disabled={unavailable || !status} detail="保存启用选择，首次使用时启动；停止会关闭此选项。" onChange={value => void perform(async () => { await updateStatus(() => value ? api.enable() : api.control("stop")); await readDiagnostic(); })} />
-        <SettingsSwitch label="逐次审批" checked disabled detail="每次观察和操作都需批准。截图会发送给当前模型。" onChange={() => undefined} />
+        <SettingsSwitch label="严格应用审批" checked={diagnostic?.strictApproval ?? false} disabled={unavailable || !diagnostic} detail="开启后仅允许已批准的应用；关闭时首次使用自动授权。应用授权跨会话保存，与全局工具自动批准独立。截图会发送给当前模型。" onChange={value => void perform(() => readDiagnostic(() => api.strict(value)))} />
         <SettingsSwitch label="记录操作日志" checked={status?.actionLogging ?? false} disabled={unavailable || !status} detail="临时保留最近 50 条操作记录，停止后清空。" onChange={value => void perform(() => updateStatus(() => api.logging(value)))} />
         <SettingsSwitch label="画中画" checked={status?.preview ?? false} disabled={unavailable || !status} detail="在悬浮窗口查看操作画面；开启时暂停活动截图。" onChange={value => void perform(() => updateStatus(() => api.preview(value)))} />
       </div>
+      <section className="cu-section cu-approvals"><h4>应用授权</h4>
+        <p className="cu-muted">严格模式下，首次使用被拦截的应用会列在这里等待批准。关闭严格审批后，已撤销的应用在下次使用时会自动重新授权。</p>
+        <button type="button" className="settings-secondary-button" disabled={unavailable} onClick={() => void perform(() => readDiagnostic())}>刷新应用授权</button>
+        {!diagnostic?.approvals.length ? <p className="cu-muted">尚无应用授权记录。</p> : diagnostic.approvals.map(app => {
+          const approved = Boolean(app.approvedAt && !app.revokedAt);
+          return <div className="cu-permission" key={app.bundleId} data-app={app.bundleId}>
+            <div><strong>{app.appName}</strong><p className="cu-muted">{app.bundleId} · {approved ? "已批准" : app.revokedAt ? "已撤销" : "待批准"} · 使用 {app.useCount} 次{app.lastUsedAt ? ` · 最近 ${new Date(app.lastUsedAt).toLocaleString()}` : ""}</p></div>
+            <button type="button" className="settings-secondary-button" disabled={unavailable} onClick={() => void perform(() => readDiagnostic(() => approved ? api.revoke(app.bundleId) : api.approve(app.bundleId)))}>{approved ? "撤销授权" : "批准应用"}</button>
+          </div>;
+        })}
+      </section>
       <details className="cu-controls"><summary>控制与高级选项</summary><p role="status">{status ? `${stateLabels[status.state]} · ${outcomeLabels[status.lastOutcome]}` : "正在读取控制状态…"}</p><div className="cu-button-row">
         <button type="button" className="settings-secondary-button" disabled={unavailable || status?.state !== "ready"} onClick={() => control("pause")}><Icon name="pause" size={14} />暂停</button>
         <button type="button" className="settings-secondary-button" disabled={unavailable || !status || status.state === "ready" || status.state === "disabled"} onClick={() => control("resume")}><Icon name="play" size={14} />继续（需重新观察）</button>

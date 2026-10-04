@@ -1,5 +1,16 @@
 import { z } from "zod";
 
+export const computerAppSchema = z.object({
+  bundleId: z.string().min(1).max(256), appName: z.string().min(1).max(256),
+  approvedAt: z.string().datetime().optional(), revokedAt: z.string().datetime().optional(),
+  lastUsedAt: z.string().datetime().optional(), useCount: z.number().int().nonnegative().default(0)
+}).strict();
+export type ComputerAppApproval = z.infer<typeof computerAppSchema>;
+export const computerSettingsSchema = z.object({
+  enabled: z.boolean().default(false), strictApproval: z.boolean().default(false),
+  apps: z.array(computerAppSchema).max(256).default([])
+}).strict().refine(value => new Set(value.apps.map(app => app.bundleId)).size === value.apps.length, "Duplicate computer application identity");
+
 export const cuaVersion = "0.30.4";
 export const maxComputerImageBytes = 1024 * 1024;
 export const windowTargetSchema = z.object({ pid: z.number().int().positive().max(2147483647), windowId: z.string().regex(/^[1-9][0-9]{0,19}$/) }).strict();
@@ -30,8 +41,8 @@ export interface ComputerDiagnostics {
   workerPath: string; hostPath: string; expectedVersion: string; driverVersion?: string;
   sdkLoaded: boolean; runtimeReady: boolean;
   permissions: { accessibility: ComputerPermissionState; screenRecording: ComputerPermissionState };
-  /** Biny permits each invocation separately; there are no persistent app grants. */
-  approvals: Array<{ bundleId: string; appName: string }>;
+  strictApproval: boolean;
+  approvals: ComputerAppApproval[];
   audit: ComputerAuditEntry[]; error?: string;
   actionLimits?: ComputerActionLimit[];
 }
@@ -47,5 +58,8 @@ export interface ComputerDesktopApi {
   diagnostics(): Promise<ComputerDiagnostics>;
   requestAccessibility(): Promise<ComputerDiagnostics>;
   testSetup(): Promise<ComputerDiagnostics>;
+  strict(enabled: boolean): Promise<ComputerDiagnostics>;
+  approve(bundleId: string): Promise<ComputerDiagnostics>;
+  revoke(bundleId: string): Promise<ComputerDiagnostics>;
 }
-export const computerIpc = { status: "desktop:computer:status", enable: "desktop:computer:enable", control: "desktop:computer:control", preview: "desktop:computer:preview", foreground: "desktop:computer:foreground", logging: "desktop:computer:logging", diagnostics: "desktop:computer:diagnostics", accessibility: "desktop:computer:accessibility", test: "desktop:computer:test" } as const;
+export const computerIpc = { strict: "desktop:computer:strict", approve: "desktop:computer:approve", revoke: "desktop:computer:revoke", status: "desktop:computer:status", enable: "desktop:computer:enable", control: "desktop:computer:control", preview: "desktop:computer:preview", foreground: "desktop:computer:foreground", logging: "desktop:computer:logging", diagnostics: "desktop:computer:diagnostics", accessibility: "desktop:computer:accessibility", test: "desktop:computer:test" } as const;

@@ -1,0 +1,34 @@
+import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { ComputerAppApprovals } from "../src/computer/appApprovals.js";
+import { createFileConfigStore } from "../src/config/store.js";
+const root = await mkdtemp(path.join(os.tmpdir(), "biny-app-grants-"));
+const store = createFileConfigStore(root, { globalDir: root, credentialStore: { persistent: false, get: async () => undefined, set: async () => undefined, delete: async () => undefined } });
+try {
+  const app = { bundleId: "test.notes", appName: "Notes" };
+  const policy = new ComputerAppApprovals(store);
+  await policy.authorize(app);
+  assert.equal((await policy.read()).apps[0]?.useCount, 1);
+  await policy.setStrict(true);
+  const restored = new ComputerAppApprovals(store);
+  await restored.authorize(app);
+  await assert.rejects(restored.authorize({ bundleId: "test.other", appName: "Other" }), /app_approval_required/);
+  assert.equal((await policy.read()).apps.find(value => value.bundleId === "test.other")?.approvedAt, undefined);
+  await policy.revoke(app.bundleId);
+  await assert.rejects(restored.authorize(app), /app_approval_required/);
+  await policy.approve(app.bundleId);
+  await restored.authorize(app);
+  await assert.rejects(policy.approve("invented.app"), /unknown_app/);
+  await policy.revoke(app.bundleId);
+  await policy.setStrict(false);
+  await restored.authorize(app);
+  assert.ok((await policy.read()).apps.find(value => value.bundleId === app.bundleId)?.approvedAt);
+  assert.equal((await store.load()).computer.enabled, false, "审批不启用控制能力");
+  await Promise.all([policy.authorize(app), restored.authorize(app)]);
+  const rows = (await policy.read()).apps;
+  assert.equal(rows.filter(value => value.bundleId === app.bundleId).length, 1);
+  assert.equal(rows.find(value => value.bundleId === app.bundleId)?.useCount, 6, "并发检查不丢失使用计数");
+} finally { await rm(root, { recursive: true, force: true }); }
+console.log("computer application approval tests passed");

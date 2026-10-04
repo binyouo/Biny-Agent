@@ -4,7 +4,7 @@ import { JSDOM } from "jsdom";
 import React, { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { SettingsComputerUse } from "../src/desktop/renderer/src/components/settings/SettingsComputerUse.js";
-import type { ComputerDesktopApi, ComputerStatus } from "../src/computer/protocol.js";
+import type { ComputerDesktopApi, ComputerStatus, ComputerDiagnostics } from "../src/computer/protocol.js";
 
 test("desktop settings handle missing bridge and expose enable, pause/takeover/stop and PiP controls", async () => {
   const dom = new JSDOM("<div id='root'></div>");
@@ -16,13 +16,14 @@ test("desktop settings handle missing bridge and expose enable, pause/takeover/s
   let state: ComputerStatus = { state: "disabled", preview: false, foregroundAllowed: false, lastOutcome: "not-dispatched" };
   const controls: string[] = [];
   const api: ComputerDesktopApi = {
+    strict: async () => await api.diagnostics(), approve: async () => await api.diagnostics(), revoke: async () => await api.diagnostics(),
     status: async () => ({ ...state }),
     enable: async () => { controls.push("enable"); state = { ...state, state: "ready" }; return state; },
     control: async control => { controls.push(control); state = { ...state, state: control === "resume" ? "ready" : control === "pause" ? "paused" : control === "takeover" ? "taken-over" : "disabled" }; return state; },
     preview: async preview => { controls.push(`preview:${preview}`); state = { ...state, preview }; return state; },
     foreground: async foregroundAllowed => { state = { ...state, foregroundAllowed }; return state; },
     logging: async actionLogging => { state = { ...state, actionLogging }; return state; },
-    diagnostics: async () => ({ workerPath: "/synthetic/worker.js", hostPath: "/synthetic/Biny", expectedVersion: "0.30.4", sdkLoaded: false, runtimeReady: false, permissions: { accessibility: "unknown", screenRecording: "unknown" }, approvals: [], audit: [] }),
+    diagnostics: async () => ({ workerPath: "/synthetic/worker.js", hostPath: "/synthetic/Biny", expectedVersion: "0.30.4", sdkLoaded: false, runtimeReady: false, strictApproval: false, permissions: { accessibility: "unknown", screenRecording: "unknown" }, approvals: [], audit: [] }),
     requestAccessibility: async () => api.diagnostics(),
     testSetup: async () => api.diagnostics()
   };
@@ -65,8 +66,11 @@ test("Computer Use cards show independent unknown permissions and dispatch real 
   const root = createRoot(dom.window.document.getElementById("root")!);
   const calls: string[] = [];
   let state: ComputerStatus = { state: "disabled", preview: false, foregroundAllowed: false, actionLogging: false, lastOutcome: "not-dispatched" };
-  const diagnostic = { workerPath: "/synthetic/app.asar.unpacked/out/main/cuaProcess.js", hostPath: "/synthetic/Biny", expectedVersion: "0.30.4", sdkLoaded: false, runtimeReady: false, permissions: { accessibility: "unknown", screenRecording: "denied" }, approvals: [], audit: [], actionLimits: [{ action: "scroll", code: "scroll_direction_unverified", message: "当前 macOS 滚动暂不可用；请人工滚动后重新观察。" }], error: "driver_sdk_missing_or_crashed: synthetic" };
+  const diagnostic: ComputerDiagnostics = { workerPath: "/synthetic/app.asar.unpacked/out/main/cuaProcess.js", hostPath: "/synthetic/Biny", expectedVersion: "0.30.4", sdkLoaded: false, runtimeReady: false, strictApproval: false, permissions: { accessibility: "unknown", screenRecording: "denied" }, approvals: [{ bundleId: "test.notes", appName: "Notes", useCount: 0 }], audit: [], actionLimits: [{ action: "scroll", code: "scroll_direction_unverified", message: "当前 macOS 滚动暂不可用；请人工滚动后重新观察。" }], error: "driver_sdk_missing_or_crashed: synthetic" };
   Object.assign(dom.window, { binyComputer: {
+    strict: async (value: boolean) => { calls.push(`strict:${value}`); diagnostic.strictApproval = value; return diagnostic; },
+    approve: async (bundleId: string) => { calls.push(`approve:${bundleId}`); diagnostic.approvals[0]!.approvedAt = new Date().toISOString(); return diagnostic; },
+    revoke: async (bundleId: string) => { calls.push(`revoke:${bundleId}`); diagnostic.approvals[0]!.revokedAt = new Date().toISOString(); return diagnostic; },
     status: async () => state,
     enable: async () => state, control: async () => state, preview: async () => state, foreground: async () => state,
     diagnostics: async () => { calls.push("diagnostics"); return diagnostic; },
@@ -87,16 +91,25 @@ test("Computer Use cards show independent unknown permissions and dispatch real 
     assert.ok(details.querySelector("pre"));
     assert.ok(details.querySelector('[data-action-limit="scroll"]'));
     assert.doesNotMatch(dom.window.document.querySelector(".cu-helper")?.textContent ?? "", /synthetic|worker\.js/);
-    const strict = dom.window.document.querySelector<HTMLButtonElement>('[role="switch"][aria-label="逐次审批"]')!;
-    assert.ok(strict);
-    assert.equal(strict.disabled, true); assert.equal(strict.getAttribute("aria-checked"), "true");
+    assert.equal(dom.window.document.querySelector('[role="switch"][aria-label="逐次审批"]'), null);
+    const strict = dom.window.document.querySelector<HTMLButtonElement>('[role="switch"][aria-label="严格应用审批"]')!;
+    assert.ok(strict); assert.equal(strict.disabled, false);
+    await act(async () => { strict.click(); });
+    assert.ok(calls.includes("strict:true"));
+    assert.match(dom.window.document.querySelector('[data-app="test.notes"]')?.textContent ?? "", /待批准/);
+    const approve = [...dom.window.document.querySelectorAll("button")].find(button => button.textContent === "批准应用")!;
+    await act(async () => { approve.click(); });
+    assert.ok(calls.includes("approve:test.notes"));
+    const revoke = [...dom.window.document.querySelectorAll("button")].find(button => button.textContent === "撤销授权")!;
+    await act(async () => { revoke.click(); });
+    assert.ok(calls.includes("revoke:test.notes"));
     for (const label of ["授权辅助功能", "刷新", "测试我的配置", "记录操作日志"]) {
       const button = [...dom.window.document.querySelectorAll("button")].find(button => button.textContent?.trim() === label || button.getAttribute("aria-label") === label)!;
       assert.ok(button, label); await act(async () => { button.click(); });
     }
     assert.ok(calls.includes("grant")); assert.ok(calls.includes("test")); assert.ok(calls.includes("logging:true"));
     assert.match(dom.window.document.querySelector("pre")?.textContent ?? "", /driver_sdk_missing_or_crashed/);
-    assert.equal(dom.window.document.querySelector(".cu-approvals"), null);
+    assert.ok(dom.window.document.querySelector(".cu-approvals"));
   } finally {
     await act(async () => { root.unmount(); }); dom.window.close();
     for (const [key, descriptor] of saved) { if (descriptor) Object.defineProperty(globalThis, key, descriptor); else Reflect.deleteProperty(globalThis, key); }

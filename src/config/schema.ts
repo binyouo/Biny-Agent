@@ -1,3 +1,4 @@
+import { computerSettingsSchema } from "../computer/protocol.js";
 /**
  * Runtime configuration schema.
  *
@@ -657,7 +658,7 @@ const canonicalConfigSchema = z.object({
     ignore: z.array(z.string())
   }),
   activity: activitySettingsSchema,
-  computer: z.object({ enabled: z.boolean().default(false) }).strict().default({ enabled: false }),
+  computer: computerSettingsSchema.default({ enabled: false, strictApproval: false, apps: [] }),
   crystal: crystalSettingsSchema,
   context: contextSchema,
   chat: chatParamsSchema,
@@ -832,7 +833,7 @@ export const defaultConfig: AgentConfig = {
   format: GLOBAL_CONFIG_FORMAT,
   configVersion: GLOBAL_CONFIG_VERSION,
   needsEmbeddingRebuild: false,
-  computer: { enabled: false },
+  computer: { enabled: false, strictApproval: false, apps: [] },
   defaultModel: "deepseek-v4-flash",
   toolModel: undefined,
   providers: {

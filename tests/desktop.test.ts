@@ -3768,7 +3768,8 @@ function testLiveRetryReplacesTargetTurn(): void {
   assert.equal(turns.length, 1);
   assert.equal(turns[0]?.user, "first prompt");
   assert.equal(turns[0]?.assistant, "new answer");
-  assert.equal(turns[0]?.assistantMessageId, "assistant-3");
+  assert.equal(turns[0]?.assistantMessageId, undefined);
+  assert.equal(turns[0]?.userMessageId, "user-1");
   assert.equal(turns[0]?.retryOfMessageId, "assistant-1");
   assert.equal(turns[0]?.versionIndex, 1);
   assert.equal(turns[0]?.versionCount, 2);

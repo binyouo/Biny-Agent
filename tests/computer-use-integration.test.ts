@@ -145,10 +145,10 @@ test("in-flight passive frames are discarded across preview open/close/reopen ep
   const newEpoch = schedule.activityEpoch();
   assert.equal(schedule.canPersistActivity(newEpoch), true);
 });
-test("Agent permission denial sends zero requests; approved frame reaches image content, never metadata/Activity", async () => {
+for (const mode of ["ask", "full-access"] as const) test(`Agent desktop permissions (${mode}) preserve transport and image audit boundaries`, async () => {
   const root = await mkdtemp("/tmp/biny-computer-agent-");
   const endpoint = { endpoint: path.join(root, "control.sock"), token: "fixture-secret" };
-  let requests = 0; let approved = false;
+  let requests = 0; let approvals = 0;
   const server = net.createServer(socket => { socket.setEncoding("utf8"); socket.on("data", (line: string) => {
     requests++; const request = JSON.parse(line) as { id: string; token: string; method: string; args: { session: string; key?: string } };
     assert.equal(request.token, endpoint.token); assert.ok(["computer_observe", "computer_action"].includes(request.method)); assert.equal(request.args.session, "computer-fixture");
@@ -157,27 +157,30 @@ test("Agent permission denial sends zero requests; approved frame reaches image 
   }); });
   await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(endpoint.endpoint, resolve); });
   await ensureAgentDirs(root);
-  const config = structuredClone(defaultConfig); config.permission.mode = "full-access";
+  const config = structuredClone(defaultConfig); config.permission.mode = mode;
   const registry = new ToolRegistry(); for (const tool of createComputerUseTools(endpoint)) registry.registerBuiltinTool(tool);
   const recorder = new SessionRecorder(root, "computer-fixture");
-  const coordinator = new ToolExecutionCoordinator({ workspaceRoot: root, config, recorder, toolRegistry: registry, confirmPermission: async () => ({ approved, action: approved ? "allow_once" : "deny" }) }, new PermissionManager(config.permission), () => undefined);
+  const coordinator = new ToolExecutionCoordinator({ workspaceRoot: root, config, recorder, toolRegistry: registry, confirmPermission: async () => { approvals++; return { approved: false }; } }, new PermissionManager(config.permission), () => undefined);
   try {
     const tool = coordinator.createAgentTools().find(value => value.name === "ComputerObserve")!;
     const args = { pid: 42, windowId: "900" };
-    assert.equal((await tool.execute("denied", args)).isError, true); assert.equal(requests, 0);
-    approved = true; const reply = await tool.execute("approved", args);
+
+    const reply = await tool.execute("approved", args);
     assert.deepEqual(reply.content.find(part => part.type === "image"), { type: "image", mimeType: "image/png", data: "aGVsbG8=" });
     assert.equal(JSON.stringify(reply.details).includes("aGVsbG8="), false);
     await assertProviderImageRequests(reply.content);
     await recorder.flush(); assert.equal((await readFile(recorder.filePath, "utf8")).includes("aGVsbG8="), false);
     assert.equal(requests, 1);
+    await tool.execute("remembered-observation", { ...args, windowId: "901" });
+    assert.equal(approvals, 0, "通用工具审批不覆盖独立应用审批");
     const action = coordinator.createAgentTools().find(value => value.name === "ComputerAction")!;
     const unverified = await action.execute("unverified", { ...args, action: "press_key", captureId: "c1", key: "Enter" });
     assert.equal(unverified.isError, true, "unverifiable input must not display generic tool success");
     assert.match(JSON.stringify(unverified.details), /doNotRepeat.*true/);
     const confirmed = await action.execute("confirmed-without-verification", { ...args, action: "press_key", captureId: "c2", key: "Tab" });
     assert.equal(confirmed.isError, false, "confirmed input with unavailable observation is completed and must not induce replay");
-    assert.equal(requests, 3);
+    assert.equal(requests, 4);
+    assert.equal(approvals, 0, "动作不进入通用工具确认");
     assert.equal(new PermissionManager({ mode: "read-only" }).evaluate({ toolName: "ComputerAction", actionType: "shell", riskLevel: "medium", sessionId: "s", projectRoot: root }).decision, "deny");
   } finally { await recorder.close(); await new Promise<void>(resolve => server.close(() => resolve())); await rm(root, { recursive: true, force: true }); }
 });
