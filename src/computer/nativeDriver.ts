@@ -88,6 +88,8 @@ export class NativeProcessDriver implements ComputerDriver {
     const candidates: string[] = [
       path.resolve(here, "../../out/native/computer-use"),
       path.resolve(here, "../../../out/native/computer-use"),
+      // 打包后 import.meta.url 指向 out/main/index.js；用工作目录兜底。
+      path.resolve(process.cwd(), "out/native/computer-use"),
       ...(resourcesPath ? [path.join(resourcesPath, "native", "computer-use")] : [])
     ];
     return candidates.find(candidate => existsSync(candidate)) ?? candidates[0]!;

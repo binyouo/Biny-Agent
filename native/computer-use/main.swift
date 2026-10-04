@@ -8,6 +8,8 @@ import CoreGraphics
 import Carbon.HIToolbox
 
 var refTables: [pid_t: [String: AXUIElement]] = [:]
+// 截图坐标 → 屏幕坐标的映射（pid → 比例与偏移）。
+var coordMaps: [pid_t: (scale: Double, ox: Double, oy: Double, sw: Double, sh: Double)] = [:]
 let startedAt = Date()
 let replyLock = NSRecursiveLock()
 func reply(_ fd: Int32, _ value: [String: Any]) {
@@ -58,17 +60,26 @@ func axChildren(_ element: AXUIElement) -> [AXUIElement] {
 func axWalk(_ root: AXUIElement, depth: Int, maxDepth: Int, limit: Int, counter: inout Int, table: inout [String: AXUIElement], out: inout [[String: Any]], deadline: Date) {
     guard depth <= maxDepth, counter < limit, Date() < deadline else { return }
     for child in axChildren(root) {
+        // 每次下探前都查预算：单个 AX 调用是跨进程 IPC，最坏情况会明显超时。
         guard counter < limit, Date() < deadline else { return }
+        // 每个子元素设独立超时：某个 app 的子树不应把整个请求拖死。
+        AXUIElementSetMessagingTimeout(child, 0.5)
         counter += 1
         let ref = "e\(counter)"
         table[ref] = child
         var entry: [String: Any] = ["ref": ref]
-        if let role = axString(child, kAXRoleAttribute as String) { entry["role"] = role }
-        if let title = axString(child, kAXTitleAttribute as String), !title.isEmpty { entry["title"] = title }
-        if let value = axCopy(child, kAXValueAttribute as String) as? String, !value.isEmpty { entry["value"] = value }
-        if let desc = axString(child, kAXDescriptionAttribute as String), !desc.isEmpty { entry["description"] = desc }
-        if let enabled = axCopy(child, kAXEnabledAttribute as String) as? Bool { entry["enabled"] = enabled }
-        if let frame = axFrame(child) { entry["frame"] = frame }
+        let role = axString(child, kAXRoleAttribute as String) ?? ""
+        entry["role"] = role
+        // 每个属性都是一次跨进程 IPC。纯容器（AXGroup/AXScrollArea 等）只取 role，
+        // 只有可交互或带语义的节点才值得把其余属性拉全——否则深树会把预算烧光。
+        let meaningful = !(role == "AXGroup" || role == "AXScrollArea" || role == "AXSplitGroup" || role == "AXLayoutArea" || role == "AXLayoutItem")
+        if meaningful {
+            if let title = axString(child, kAXTitleAttribute as String), !title.isEmpty { entry["title"] = title }
+            if let value = axCopy(child, kAXValueAttribute as String) as? String, !value.isEmpty { entry["value"] = value }
+            if let desc = axString(child, kAXDescriptionAttribute as String), !desc.isEmpty { entry["description"] = desc }
+            if let enabled = axCopy(child, kAXEnabledAttribute as String) as? Bool { entry["enabled"] = enabled }
+            if let frame = axFrame(child) { entry["frame"] = frame }
+        }
         out.append(entry)
         axWalk(child, depth: depth + 1, maxDepth: maxDepth, limit: limit, counter: &counter, table: &table, out: &out, deadline: deadline)
     }
@@ -130,6 +141,18 @@ func parseKeyCombo(_ combo: String) -> (CGKeyCode, CGEventFlags)? {
     return (keyCode, flags)
 }
 
+/// 目标应用主窗口在屏幕上的真实位置（CGEvent 坐标系）。
+func windowScreenBounds(pid: Int) -> [String: Double]? {
+    guard let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] else { return nil }
+    for window in list {
+        guard let owner = window[kCGWindowOwnerPID as String] as? Int, owner == pid,
+              let bounds = window[kCGWindowBounds as String] as? [String: CGFloat],
+              (window[kCGWindowLayer as String] as? Int ?? 0) == 0 else { continue }
+        return ["x": Double(bounds["X"] ?? 0), "y": Double(bounds["Y"] ?? 0), "w": Double(bounds["Width"] ?? 0), "h": Double(bounds["Height"] ?? 0)]
+    }
+    return nil
+}
+
 func screenshot(_ parameters: [String: Any]) async throws -> [String: Any] {
     guard let output = parameters["out"] as? String else { throw NSError(domain: "capture", code: 64) }
     let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
@@ -139,19 +162,24 @@ func screenshot(_ parameters: [String: Any]) async throws -> [String: Any] {
     if let pid = parameters["pid"] as? Int,
        content.applications.contains(where: { Int($0.processID) == pid }),
        let display = content.displays.first(where: { $0.displayID == CGMainDisplayID() }) ?? content.displays.first {
+        // 真实屏幕位置：AX 报的 frame 是 UI 坐标，跟 CGEvent 用的屏幕点不一致，必须用 CGWindowList。
+        let screenBounds = windowScreenBounds(pid: pid)
         // 只保留目标 app 的窗口：除它之外的应用全部排除。
         let others = content.applications.filter { Int($0.processID) != pid }
         let filter = SCContentFilter(display: display, excludingApplications: others, exceptingWindows: [])
         let rect = filter.contentRect
+        // 截图尺寸必须与窗口内容区一致，否则像素坐标无法换算回屏幕点。
         let width = min(Int(rect.width), max(1, parameters["max_width"] as? Int ?? 2560))
         config.width = width
         config.height = max(1, Int((rect.height * CGFloat(width) / max(1, rect.width)).rounded()))
+        // 窗口在屏幕上的真实位置（CGWindowList 的坐标就是 CGEvent 用的屏幕点）。
+        let contentFrame: [String: Double] = screenBounds ?? ["x": Double(rect.origin.x), "y": Double(rect.origin.y), "w": Double(rect.width), "h": Double(rect.height)]
         let image = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config)
         let bitmap = NSBitmapImageRep(cgImage: image)
         guard let data = bitmap.representation(using: .jpeg, properties: [.compressionFactor: parameters["quality"] as? Double ?? 0.55]) else { throw NSError(domain: "capture", code: 2) }
         try data.write(to: URL(fileURLWithPath: output), options: .atomic)
         return ["path": output, "width": config.width, "height": config.height,
-                "frame": ["x": Double(rect.origin.x), "y": Double(rect.origin.y), "w": Double(rect.width), "h": Double(rect.height)]]
+                "screenFrame": contentFrame, "frame": contentFrame]
     }
     guard let display = content.displays.first(where: { $0.displayID == CGMainDisplayID() }) ?? content.displays.first else { throw NSError(domain: "capture", code: 1) }
     let width = min(display.width, max(1, parameters["max_width"] as? Int ?? 2560))
@@ -162,7 +190,8 @@ func screenshot(_ parameters: [String: Any]) async throws -> [String: Any] {
     let bitmap = NSBitmapImageRep(cgImage: image)
     guard let data = bitmap.representation(using: .jpeg, properties: [.compressionFactor: parameters["quality"] as? Double ?? 0.55]) else { throw NSError(domain: "capture", code: 2) }
     try data.write(to: URL(fileURLWithPath: output), options: .atomic)
-    return ["path": output]
+    let frame = windowScreenBounds(pid: parameters["pid"] as? Int ?? 0)
+    return ["path": output, "width": config.width, "height": config.height, "screenFrame": frame as Any, "frame": frame as Any]
 }
 let activityLock = NSLock()
 var lastRequestAt = Date()
@@ -241,23 +270,29 @@ DispatchQueue.global().async {
                                 var elements: [[String: Any]] = []
                                 var table: [String: AXUIElement] = [:]
                                 var counter = 0
-                                let maxDepth = args["max_depth"] as? Int ?? 15
-                                let limit = args["max_elements"] as? Int ?? 200
+                                let maxDepth = args["max_depth"] as? Int ?? 20
+                                let limit = args["max_elements"] as? Int ?? 300
                                 if let windows = axCopy(app, kAXWindowsAttribute as String) as? [AXUIElement], let main = windows.first {
                                     if let frame = axFrame(main) { elements.append(["ref": "e0", "role": "AXWindow", "frame": frame]) }
                                     table["e0"] = main
-                                    axWalk(main, depth: 0, maxDepth: maxDepth, limit: limit, counter: &counter, table: &table, out: &elements, deadline: Date().addingTimeInterval(3))
+                                    axWalk(main, depth: 0, maxDepth: maxDepth, limit: limit, counter: &counter, table: &table, out: &elements, deadline: Date().addingTimeInterval(2))
                                 }
-                                refTables[pid] = table
                                 var shotArgs: [String: Any] = ["out": args["out"] ?? "/tmp/biny-cu-state-\(Int(Date().timeIntervalSince1970 * 1000)).jpg", "pid": Int(pid)]
                                 if let maxWidth = args["max_width"] { shotArgs["max_width"] = maxWidth }
                                 let shot = try await screenshot(shotArgs)
+                                refTables[pid] = table
+                                // 记下截图坐标 → 屏幕坐标的映射，后续像素点击据此换算。
+                                if let f = shot["screenFrame"] as? [String: Double],
+                                   let sw = shot["width"] as? Int, let sh = shot["height"] as? Int, sw > 0, sh > 0 {
+                                    coordMaps[pid] = (Double(sw) / max(1, f["w"] ?? 1), f["x"] ?? 0, f["y"] ?? 0, Double(sw), Double(sh))
+                                }
                                 var data: [String: Any] = ["pid": Int(pid), "elements": elements]
                                 data["screenshot"] = shot["path"]
                                 data["screenshotWidth"] = shot["width"] ?? 0
                                 data["screenshotHeight"] = shot["height"] ?? 0
                                 data["windowId"] = Int(pid)
                                 if let frame = shot["frame"] { data["windowFrame"] = frame }
+                                if let screenFrame = shot["screenFrame"] { data["screenFrame"] = screenFrame }
                                 reply(fd, ["id": id, "ok": true, "data": data as [String: Any]])
                             case "click":
                                 guard axTrusted() else { throw NSError(domain: "ax", code: 1, userInfo: [NSLocalizedDescriptionKey: "ax_not_granted"]) }
@@ -272,7 +307,13 @@ DispatchQueue.global().async {
                                     reply(fd, ["id": id, "ok": true, "data": ["clicked": ref] as [String: Any]] as [String: Any])
                                 } else if let x = args["x"] as? Double, let y = args["y"] as? Double {
                                     let pid = try resolvePid(args)
-                                    let point = CGPoint(x: x, y: y)
+                                    // 像素坐标为截图坐标：按最近一次快照的映射换算回屏幕点。
+                                    var sx = x, sy = y
+                                    if args["coord_space"] as? String != "screen", let m = coordMaps[pid] {
+                                        sx = m.ox + x / m.scale
+                                        sy = m.oy + y / m.scale
+                                    }
+                                    let point = CGPoint(x: sx, y: sy)
                                     postMouse(pid, .leftMouseDown, point); postMouse(pid, .leftMouseUp, point)
                                     reply(fd, ["id": id, "ok": true, "data": ["clicked": "@\(Int(x)),\(Int(y))"] as [String: Any]] as [String: Any])
                                 } else { throw NSError(domain: "click", code: 64, userInfo: [NSLocalizedDescriptionKey: "ref_stale"]) }
