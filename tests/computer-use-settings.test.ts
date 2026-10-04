@@ -114,3 +114,45 @@ test("Computer Use cards show independent unknown permissions and dispatch real 
     for (const [key, descriptor] of saved) { if (descriptor) Object.defineProperty(globalThis, key, descriptor); else Reflect.deleteProperty(globalThis, key); }
   }
 });
+
+// Alma 在守不住「阻止应用抢前台」的守卫时会亮一张告警卡，并指出
+// "通常意味着辅助功能权限需要重新授予——macOS 每次新构建都会重置它"。
+test("focus guard failure surfaces a warning, and staying armed does not", async () => {
+  const dom = new JSDOM("<div id='root'></div>");
+  const saved = new Map<string, PropertyDescriptor | undefined>();
+  for (const [key, value] of Object.entries({ window: dom.window, document: dom.window.document, navigator: dom.window.navigator, HTMLElement: dom.window.HTMLElement, React, IS_REACT_ACT_ENVIRONMENT: true })) {
+    saved.set(key, Object.getOwnPropertyDescriptor(globalThis, key)); Object.defineProperty(globalThis, key, { configurable: true, value });
+  }
+  const base: ComputerDiagnostics = {
+    workerPath: "/synthetic/native/computer-use", hostPath: "/synthetic/Biny", expectedVersion: "native",
+    sdkLoaded: true, runtimeReady: true, strictApproval: false,
+    permissions: { accessibility: "granted", screenRecording: "granted" }, approvals: [], audit: []
+  };
+  let diagnostic: ComputerDiagnostics = { ...base, focusGuard: "unavailable" };
+  const status: ComputerStatus = { state: "ready", preview: false, foregroundAllowed: false, lastOutcome: "not-dispatched" };
+  const api = {
+    status: async () => status, enable: async () => status, control: async () => status,
+    preview: async () => status, foreground: async () => status, logging: async () => status,
+    diagnostics: async () => diagnostic, requestAccessibility: async () => diagnostic,
+    testSetup: async () => diagnostic, strict: async () => diagnostic,
+    approve: async () => diagnostic, revoke: async () => diagnostic
+  } as unknown as ComputerDesktopApi;
+  const root = createRoot(dom.window.document.getElementById("root")!);
+  try {
+    Object.assign(dom.window, { binyComputer: api });
+    await act(async () => { root.render(createElement(SettingsComputerUse)); });
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)); });
+    const warning = dom.window.document.querySelector('[data-focus-guard="unavailable"]');
+    assert.ok(warning, "守卫未武装时必须亮出告警");
+    assert.match(warning!.textContent ?? "", /重新授予/, "告警要给出可行的修法，而不是只说坏了");
+
+    diagnostic = { ...base, focusGuard: "armed" };
+    await act(async () => { root.render(createElement(SettingsComputerUse, { key: "armed" })); });
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)); });
+    assert.equal(dom.window.document.querySelector('[data-focus-guard="unavailable"]'), null, "守卫正常时不该有告警");
+  } finally {
+    await act(async () => { root.unmount(); });
+    for (const [key, descriptor] of saved) { if (descriptor) Object.defineProperty(globalThis, key, descriptor); else delete (globalThis as Record<string, unknown>)[key]; }
+    dom.window.close();
+  }
+});

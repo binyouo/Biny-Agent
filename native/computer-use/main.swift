@@ -156,6 +156,22 @@ func windowScreenBounds(pid: Int) -> [String: Double]? {
 
 
 /// 截图同样可能挂在无响应的窗口上：独立线程采集，主线程轮询到点就放弃。
+/// 焦点守卫：很多 Cocoa/Electron 应用会在自己的点击处理里调
+/// `activateIgnoringOtherApps:` —— 那是我们控制不了的代码，会把用户的前台窗口抢走。
+/// 动作前记下当时的前台应用，动作后如果前台变成了目标应用，就切回去。
+/// 这是安全网，不是操控手段：我们从不主动把应用拿到前台。
+func withFocusGuard(_ pid: pid_t, _ body: () async -> Void) async {
+    let before = NSWorkspace.shared.frontmostApplication
+    let restore = (before?.processIdentifier == pid) ? nil : before
+    await body()
+    guard let restore else { return }
+    // 给目标应用的自激活留出落点，否则它会在我们还回去之后才抢。
+    try? await Task.sleep(nanoseconds: 30_000_000)
+    if NSWorkspace.shared.frontmostApplication?.processIdentifier == pid {
+        restore.activate(options: [])
+    }
+}
+
 /// 给异步工作加一个截止时间。
 /// 早期实现用 Thread + 信号量阻塞等待：帧泵每 333ms 调一次，每次都占住一个 OS 线程
 /// 最多 10 秒，线程只增不减，daemon 会越跑越慢直到截图彻底拿不到。
@@ -338,6 +354,8 @@ DispatchQueue.global().async {
                                     "screenRecording": screenTrusted() ? "granted" : "denied",
                                     "version": "native-1",
                                     "uptime": Int(Date().timeIntervalSince(startedAt)),
+                                    // 守卫要靠读前台应用并把它切回来，没有辅助功能权限就武装不起来。
+                                    "focusGuard": axTrusted() ? "armed" : "unavailable",
                                 ] as [String: Any]])
                             case "list_apps":
                                 var apps: [[String: Any]] = []
@@ -398,7 +416,9 @@ DispatchQueue.global().async {
                                     if status != .success {
                                         if let frame = axFrame(element) {
                                             let point = CGPoint(x: frame["x"]! + frame["w"]!/2, y: frame["y"]! + frame["h"]!/2)
-                                            postMouse(pid_t(pid), .leftMouseDown, point); postMouse(pid_t(pid), .leftMouseUp, point)
+                                            await withFocusGuard(pid_t(pid)) {
+                                                postMouse(pid_t(pid), .leftMouseDown, point); postMouse(pid_t(pid), .leftMouseUp, point)
+                                            }
                                         }
                                     }
                                     reply(fd, ["id": id, "ok": true, "data": ["clicked": ref] as [String: Any]] as [String: Any])
@@ -411,19 +431,21 @@ DispatchQueue.global().async {
                                         sy = m.oy + y / m.scale
                                     }
                                     let point = CGPoint(x: sx, y: sy)
-                                    postMouse(pid, .leftMouseDown, point); postMouse(pid, .leftMouseUp, point)
+                                    await withFocusGuard(pid) {
+                                        postMouse(pid, .leftMouseDown, point); postMouse(pid, .leftMouseUp, point)
+                                    }
                                     reply(fd, ["id": id, "ok": true, "data": ["clicked": "@\(Int(x)),\(Int(y))"] as [String: Any]] as [String: Any])
                                 } else { throw NSError(domain: "click", code: 64, userInfo: [NSLocalizedDescriptionKey: "ref_stale"]) }
                             case "type_text":
                                 let pid = try resolvePid(args)
                                 let text = args["text"] as? String ?? ""
-                                postUnicode(pid, text)
+                                await withFocusGuard(pid) { postUnicode(pid, text) }
                                 reply(fd, ["id": id, "ok": true, "data": ["typed": text.count] as [String: Any]] as [String: Any])
                             case "press_key":
                                 let pid = try resolvePid(args)
                                 let combo = args["key"] as? String ?? ""
                                 guard let (keyCode, flags) = parseKeyCombo(combo) else { throw NSError(domain: "key", code: 64, userInfo: [NSLocalizedDescriptionKey: "unknown_key"]) }
-                                postKey(pid, keyCode: keyCode, flags: flags)
+                                await withFocusGuard(pid) { postKey(pid, keyCode: keyCode, flags: flags) }
                                 reply(fd, ["id": id, "ok": true, "data": ["pressed": combo] as [String: Any]] as [String: Any])
                             case "scroll":
                                 let pid = try resolvePid(args)
@@ -437,8 +459,10 @@ DispatchQueue.global().async {
                                     default: return (.line, Int32(-amount))
                                     }
                                 }()
-                                if let event = CGEvent(scrollWheelEvent2Source: nil, units: CGScrollEventUnit(rawValue: axis.rawValue)!, wheelCount: 1, wheel1: (direction == "up" || direction == "down") ? sign : 0, wheel2: (direction == "left" || direction == "right") ? sign : 0, wheel3: 0) {
-                                    event.postToPid(pid)
+                                await withFocusGuard(pid) {
+                                    if let event = CGEvent(scrollWheelEvent2Source: nil, units: CGScrollEventUnit(rawValue: axis.rawValue)!, wheelCount: 1, wheel1: (direction == "up" || direction == "down") ? sign : 0, wheel2: (direction == "left" || direction == "right") ? sign : 0, wheel3: 0) {
+                                        event.postToPid(pid)
+                                    }
                                 }
                                 reply(fd, ["id": id, "ok": true, "data": ["scrolled": direction] as [String: Any]] as [String: Any])
                             default:

@@ -76,6 +76,16 @@ export function SettingsComputerUse(): React.JSX.Element {
         <SettingsSwitch label="记录操作日志" checked={status?.actionLogging ?? false} disabled={unavailable || !status} detail="临时保留最近 50 条操作记录，停止后清空。" onChange={value => void perform(() => updateStatus(() => api.logging(value)))} />
         <SettingsSwitch label="画中画" checked={status?.preview ?? false} disabled={unavailable || !status} detail="在悬浮窗口查看操作画面；开启时暂停活动截图。" onChange={value => void perform(() => updateStatus(() => api.preview(value)))} />
       </div>
+      {diagnostic?.focusGuard === "unavailable" ? (
+        <section className="cu-section" data-focus-guard="unavailable">
+          <h4>焦点保护未生效</h4>
+          <p className="cu-description">
+            没能武装「阻止应用抢占前台」的守卫，动作可能把你的当前窗口带走。
+            这通常意味着辅助功能权限需要重新授予——macOS 每次新构建都会重置它。
+            在上方重新授权后重试。
+          </p>
+        </section>
+      ) : null}
       <section className="cu-section cu-approvals"><h4>应用授权</h4>
         <p className="cu-muted">严格模式下，首次使用被拦截的应用会列在这里等待批准。关闭严格审批后，已撤销的应用在下次使用时会自动重新授权。</p>
         <button type="button" className="settings-secondary-button" disabled={unavailable} onClick={() => void perform(() => readDiagnostic())}>刷新应用授权</button>

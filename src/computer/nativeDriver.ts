@@ -74,6 +74,9 @@ export class NativeProcessDriver implements ComputerDriver {
   private enabled = false;
   private disposed = false;
   private idleTimer?: ReturnType<typeof setTimeout>;
+  // daemon 的 ref 表和坐标映射都是按 pid 存的，动作必须带上目标 pid。
+  // 观察时记下来，动作时默认用它。
+  private lastPid?: number;
   private readonly socketPath: string;
   private readonly binaryPath: string;
 
@@ -325,21 +328,25 @@ export class NativeProcessDriver implements ComputerDriver {
 
   async observe(_session: string, target: WindowTarget, signal?: AbortSignal): Promise<DriverReply> {
     const args: Record<string, unknown> = {};
-    if (typeof target.pid === "number") args.pid = target.pid;
+    if (typeof target.pid === "number") { args.pid = target.pid; this.lastPid = target.pid; }
     if (typeof (target as { bundleId?: string }).bundleId === "string") args.bundle = (target as { bundleId?: string }).bundleId;
     return await this.call("get_app_state", args, signal);
   }
 
   async act(_session: string, action: ComputerAction, signal?: AbortSignal): Promise<DriverReply> {
+    // daemon 按 pid 找 ref 表和坐标映射；动作不自己带 pid，用最近一次观察的目标。
+    const pid = this.lastPid;
+    const withPid = (params: Record<string, unknown>): Record<string, unknown> =>
+      pid === undefined ? params : { ...params, pid };
     switch (action.action) {
       case "click":
-        return await this.call("click", action.elementToken ? { ref: action.elementToken } : { x: action.x, y: action.y }, signal);
+        return await this.call("click", withPid(action.elementToken ? { ref: action.elementToken } : { x: action.x, y: action.y }), signal);
       case "type_text":
-        return await this.call("type_text", { text: action.text }, signal);
+        return await this.call("type_text", withPid({ text: action.text }), signal);
       case "press_key":
-        return await this.call("press_key", { key: action.key }, signal);
+        return await this.call("press_key", withPid({ key: action.key }), signal);
       case "scroll":
-        return await this.call("scroll", { direction: action.direction, amount: action.amount }, signal);
+        return await this.call("scroll", withPid({ direction: action.direction, amount: action.amount }), signal);
       default:
         throw new Error(`action_unsupported: ${String((action as { action: string }).action)}`);
     }

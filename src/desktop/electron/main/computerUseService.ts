@@ -66,10 +66,11 @@ export async function createComputerUseService(browser: DesktopBrowserService, g
     try {
       const data = z.object({
         version: z.string().optional(), uptime: z.number().optional(),
+        focusGuard: z.enum(["armed", "unavailable"]).optional(),
         permissions: z.object({ accessibility: permission, screenRecording: permission })
       }).passthrough().parse((await source.diagnostics()).data);
       // daemon 存活即视为「已加载」；版本与 uptime 直接透给设置页。
-      return { ...result, sdkLoaded: true, runtimeReady: true, driverVersion: data.version, uptimeSeconds: data.uptime, ...data };
+      return { ...result, sdkLoaded: true, runtimeReady: true, driverVersion: data.version, uptimeSeconds: data.uptime, focusGuard: data.focusGuard, ...data };
     } catch (error) {
       return { ...result, error: setupError ?? (error instanceof Error ? error.message : String(error)) };
     }

@@ -38,6 +38,8 @@ export interface ComputerAuditEntry { at: number; action: ComputerAction["action
 export interface ComputerActionLimit { action: ComputerAction["action"]; code: string; message: string }
 export interface ComputerDiagnostics {
   workerPath: string; hostPath: string; expectedVersion: string; driverVersion?: string; uptimeSeconds?: number;
+  /** 焦点守卫是否武装成功；未武装时动作可能把用户前台窗口带走。 */
+  focusGuard?: "armed" | "unavailable";
   sdkLoaded: boolean; runtimeReady: boolean;
   permissions: { accessibility: ComputerPermissionState; screenRecording: ComputerPermissionState };
   strictApproval: boolean;
