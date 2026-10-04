@@ -279,3 +279,36 @@ test("PID reuse cannot deliver an old application's captured input even when bot
   await assert.rejects(controller.act("s", { ...target, captureId: "c1", action: "press_key", key: "Enter" }), /capture_app_identity_changed/);
   assert.equal(inputs, 0);
 });
+
+// 前台交付是唯一允许动作改变用户焦点的模式，此前没有任何测试覆盖它的闸门。
+test("foreground delivery stays refused until the user turns it on, and closes again when they do not", async () => {
+  const f = fixture(); await f.controller.enable(); await f.controller.observe("s", target);
+
+  // 默认不放行：后台交付是默认，且不需要任何许可。
+  await f.controller.observe("s", target);
+  await f.controller.act("s", { ...target, action: "press_key", captureId: "c1", key: "Enter" });
+  assert.deepEqual(f.calls, ["press_key"], "默认的后台交付不该被闸门拦住");
+
+  // 同一个动作，声明成前台交付 → 必须拒绝，且绝不能派发。
+  await f.controller.observe("s", target);
+  await assert.rejects(
+    f.controller.act("s", { ...target, action: "press_key", captureId: "c1", key: "Enter", delivery: "foreground" }),
+    /foreground_permission_required/
+  );
+  assert.deepEqual(f.calls, ["press_key"], "被拒的前台动作不能落到驱动上");
+
+  // 用户显式放行后才通过。
+  f.controller.setForeground(true);
+  await f.controller.observe("s", target);
+  await f.controller.act("s", { ...target, action: "press_key", captureId: "c1", key: "Enter", delivery: "foreground" });
+  assert.deepEqual(f.calls, ["press_key", "press_key"], "放行后才派发");
+
+  // 关掉之后必须立刻恢复拒绝 —— 这个开关不能有粘性。
+  f.controller.setForeground(false);
+  await f.controller.observe("s", target);
+  await assert.rejects(
+    f.controller.act("s", { ...target, action: "press_key", captureId: "c1", key: "Enter", delivery: "foreground" }),
+    /foreground_permission_required/
+  );
+  assert.deepEqual(f.calls, ["press_key", "press_key"], "关闭后不得再派发前台动作");
+});
