@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-/** Cua includes app menu roots in window AX walks. Keep only the selected window tree. */
+/** App menu roots can leak into window AX walks. Keep only the selected window tree. */
 export function scopeWindowObservation(data: Record<string, unknown>): Record<string, unknown> {
   const element = z.object({ element_index: z.number().int(), parent_index: z.number().int().optional(), depth: z.number().int().optional(), role: z.string() }).passthrough();
   const elements = z.array(element).parse(data.elements);

@@ -21,9 +21,12 @@ export class ComputerUseController {
   private started = false;
   private starting?: { promise: Promise<void>; generation: number; signal: AbortSignal };
   private entries: ComputerAuditEntry[] = [];
+  // PiP 帧泵：预览开启时以 3fps 推送「可注视」的连续画面（Alma 设计：目的是可注视而非流畅）。
+  private framePump?: ReturnType<typeof setInterval>;
+  private readonly frameIntervalMs = 1000 / 3;
   private readonly driver: ComputerDriver;
-  private readonly options: { enabled?: boolean; now?: () => number; preview?: (frame: ComputerPreview | undefined) => void; authorize?: (session: string, target: WindowTarget, signal: AbortSignal) => Promise<string> };
-  constructor(driver: ComputerDriver, options: { enabled?: boolean; now?: () => number; preview?: (frame: ComputerPreview | undefined) => void; authorize?: (session: string, target: WindowTarget, signal: AbortSignal) => Promise<string> } = {}) {
+  private readonly options: { enabled?: boolean; now?: () => number; preview?: (frame: ComputerPreview | undefined) => void; refreshPreview?: (session: string | undefined) => Promise<void>; authorize?: (session: string, target: WindowTarget, signal: AbortSignal) => Promise<string> };
+  constructor(driver: ComputerDriver, options: { enabled?: boolean; now?: () => number; preview?: (frame: ComputerPreview | undefined) => void; refreshPreview?: (session: string | undefined) => Promise<void>; authorize?: (session: string, target: WindowTarget, signal: AbortSignal) => Promise<string> } = {}) {
     this.driver = driver; this.options = options;
     if (options.enabled) this.snapshot.state = "ready";
   }
@@ -78,7 +81,7 @@ export class ComputerUseController {
     } finally { if (abort) signal.removeEventListener("abort", abort); }
   }
   async disable(): Promise<void> {
-    this.invalidate(); this.started = false; this.entries = []; this.snapshot = { ...this.snapshot, state: "disabled", owner: undefined, foregroundAllowed: false }; this.setPreview(false);
+    this.invalidate(); this.started = false; this.entries = []; this.snapshot = { ...this.snapshot, state: "disabled", owner: undefined, foregroundAllowed: false }; this.setPreview(false); this.stopFramePump();
     await this.driver.stop();
   }
   control(control: "pause" | "resume" | "takeover"): void {
@@ -87,7 +90,26 @@ export class ComputerUseController {
   }
   release(session: string): void { if (this.snapshot.owner === session) { this.invalidate(); this.snapshot.owner = undefined; } }
   authorizationChanged(): void { this.invalidate(); }
-  setPreview(enabled: boolean): void { this.snapshot.preview = enabled; if (!enabled) this.options.preview?.(undefined); }
+  /** 当前有效期内的观察目标；PiP 帧泵用它决定重拍哪个窗口。 */
+  currentCapture(): { target: WindowTarget } | undefined { return this.capture; }
+  setPreview(enabled: boolean): void {
+    this.snapshot.preview = enabled;
+    if (enabled) this.startFramePump(); else this.stopFramePump();
+    if (!enabled) this.options.preview?.(undefined);
+  }
+  private startFramePump(): void {
+    if (this.framePump || !this.options.refreshPreview) return;
+    this.framePump = setInterval(() => {
+      if (!this.snapshot.preview || this.snapshot.state !== "ready") return;
+      void this.options.refreshPreview?.(this.snapshot.owner).catch(() => undefined);
+    }, this.frameIntervalMs);
+    if (typeof this.framePump === "object" && "unref" in this.framePump) this.framePump.unref();
+  }
+  private stopFramePump(): void {
+    if (!this.framePump) return;
+    clearInterval(this.framePump);
+    this.framePump = undefined;
+  }
   setForeground(enabled: boolean): void { this.snapshot.foregroundAllowed = enabled; this.invalidate(); }
   crashed(): void { this.invalidate(); this.started = false; this.snapshot.state = "disabled"; this.snapshot.owner = undefined; this.snapshot.diagnostic = "driver_exited"; this.snapshot.lastOutcome = "unknown"; }
   private invalidate(): void { this.generation++; this.capture = undefined; this.active?.abort(); this.options.preview?.(undefined); }

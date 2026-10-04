@@ -48,11 +48,9 @@ import { createQuickChatWindow, type QuickChatWindowController } from "./quickCh
 import { createDesktopWindow, type WindowCloseDecision } from "./window.js";
 import { parseDesktopReferenceLaunch } from "./desktopReferenceLaunch.js";
 import { createComputerUseService } from "./computerUseService.js";
-import { applyCuaQaProfile } from "./cuaQaProfile.js";
 import { startRuntimeHostApp } from "./runtimeHostStartup.js";
 
-const cuaQa = applyCuaQaProfile(app);
-app.setName(cuaQa ? "Biny Cua QA" : "Biny");
+app.setName("Biny");
 app.setAboutPanelOptions({
   applicationName: "Biny",
   applicationVersion: app.getVersion(),

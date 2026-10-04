@@ -48,3 +48,26 @@ test("failed preview destruction retains the privacy hold", async () => {
   await assert.rejects(schedule.run("activity", async () => "private"), CaptureBusyError);
   window.rejectDestroy = false; preview.close(); assert.equal(await schedule.run("activity", async () => "allowed"), "allowed");
 });
+
+// Alma 设计：PiP 是 3fps 的「可注视」画面，而非仅在动作后刷新一帧。
+test("preview drives a repeating 3fps refresh and stops when disabled", async () => {
+  let refreshes = 0;
+  const driver = {
+    start: async () => {}, stop: async () => {},
+    list: async () => ({ data: { apps: [] }, images: [] }),
+    observe: async () => ({ data: {}, images: [] }),
+    act: async () => ({ data: {}, images: [] }),
+  };
+  const { ComputerUseController } = await import("../src/computer/controller.js");
+  const controller = new ComputerUseController(driver as never, {
+    enabled: true,
+    refreshPreview: async () => { refreshes += 1; }
+  });
+  controller.setPreview(true);
+  await new Promise(resolve => setTimeout(resolve, 360));
+  controller.setPreview(false);
+  const afterStop = refreshes;
+  await new Promise(resolve => setTimeout(resolve, 200));
+  assert.ok(refreshes >= 1, `frame pump should fire at least once, got ${refreshes}`);
+  assert.equal(refreshes, afterStop, "frame pump must stop once preview is disabled");
+});

@@ -14,10 +14,8 @@ export default defineConfig({
       externalizeDeps: { exclude: ["@ai-sdk/code-mode", "run"] },
       rollupOptions: {
         // Preserve the SDK package boundary: its native library resolver is relative to the package.
-        external: ["@trycua/cua-driver"],
         input: {
           index: path.join(root, "src/desktop/electron/main/index.ts"),
-          cuaProcess: path.join(root, "src/computer/cuaProcess.ts")
         },
         output: {
           manualChunks: (id) => id === path.join(root, "src/agent/codeMode.ts") ? "code-mode-runtime" : undefined

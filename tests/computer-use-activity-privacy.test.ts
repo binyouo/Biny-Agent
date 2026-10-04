@@ -7,7 +7,7 @@ import { defaultActivitySettings } from "../src/activity/settings.js";
 import { desktopCaptureSchedule } from "../src/computer/captureSchedule.js";
 import type { AgentConfigStore } from "../src/config/store.js";
 
-const root = await mkdtemp("/tmp/biny-cua-activity-privacy-");
+const root = await mkdtemp("/tmp/biny-native-activity-privacy-");
 let entered!: () => void; let release!: () => void;
 let hold: Promise<void> | undefined;
 const settings = { ...defaultActivitySettings, enabled: true, captureDebounceMs: 0, outputDirectory: path.join(root, "records"), ocrEnabled: false };

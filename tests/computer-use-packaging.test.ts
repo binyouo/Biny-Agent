@@ -1,27 +1,26 @@
-import assert from "node:assert/strict";
 import { test } from "node:test";
+import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
-import { resolveCuaProcessEntry } from "../src/computer/workerEntry.js";
 
-test("packaged native process resolves from the physical ASAR-unpacked tree", async () => {
-  const packed = new URL("file:///Applications/Biny%20Cua%20QA.app/Contents/Resources/app.asar/out/main/cuaProcess.js");
-  assert.equal(resolveCuaProcessEntry(packed).href, "file:///Applications/Biny%20Cua%20QA.app/Contents/Resources/app.asar.unpacked/out/main/cuaProcess.js");
-  const development = new URL("file:///tmp/biny/out/main/cuaProcess.js");
-  assert.equal(resolveCuaProcessEntry(development).href, development.href);
-  const alreadyUnpacked = new URL("file:///tmp/app.asar.unpacked/out/main/cuaProcess.js");
-  assert.equal(resolveCuaProcessEntry(alreadyUnpacked).href, alreadyUnpacked.href);
+// 原生 daemon 的打包契约：二进制必须随安装包发布，且不再依赖第三方 SDK。
+test("native computer-use daemon ships as an unpacked resource", async () => {
   const config = await readFile(new URL("../electron-builder.yml", import.meta.url), "utf8");
-  assert.match(config, /asarUnpack:[\s\S]*out\/main\/cuaProcess\.js/);
-  assert.match(config, /out\/main\/chunks\/\*\*\/\*/);
-  assert.match(config, /node_modules\/zod\/\*\*\/\*/);
-  assert.match(config, /node-runtime-NOTICE\.md/);
-  assert.match(config, /- '\*\.txt'/);
+  assert.match(config, /from: out\/native\/computer-use/);
+  assert.match(config, /to: native\/computer-use/);
+  assert.doesNotMatch(config, /cuaProcess/);
+  assert.doesNotMatch(config, /@trycua/);
+  assert.doesNotMatch(config, /@ubjs/);
   assert.match(config, /from: THIRD_PARTY_NOTICES\.txt[\s\S]*to: THIRD_PARTY_NOTICES\.txt/);
-  assert.match(await readFile(new URL("../native/cua-driver/MPL-2.0.txt", import.meta.url), "utf8"), /^Mozilla Public License Version 2\.0/m);
 });
 
-test("desktop SDK is required so failed installation cannot silently omit the process dependency", async () => {
+test("third-party cua SDK is fully removed from the dependency manifest", async () => {
   const manifest = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
-  assert.equal(manifest.dependencies["@trycua/cua-driver"], "0.30.4");
-  assert.equal(manifest.optionalDependencies["@trycua/cua-driver"], undefined);
+  assert.equal(manifest.dependencies["@trycua/cua-driver"], undefined);
+  assert.equal(manifest.optionalDependencies?.["@trycua/cua-driver"], undefined);
+});
+
+test("build config no longer externalizes or bundles the cua process entry", async () => {
+  const config = await readFile(new URL("../electron.vite.config.ts", import.meta.url), "utf8");
+  assert.doesNotMatch(config, /@trycua/);
+  assert.doesNotMatch(config, /cuaProcess/);
 });

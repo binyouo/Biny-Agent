@@ -23,7 +23,7 @@ test("desktop settings handle missing bridge and expose enable, pause/takeover/s
     preview: async preview => { controls.push(`preview:${preview}`); state = { ...state, preview }; return state; },
     foreground: async foregroundAllowed => { state = { ...state, foregroundAllowed }; return state; },
     logging: async actionLogging => { state = { ...state, actionLogging }; return state; },
-    diagnostics: async () => ({ workerPath: "/synthetic/worker.js", hostPath: "/synthetic/Biny", expectedVersion: "0.30.4", sdkLoaded: false, runtimeReady: false, strictApproval: false, permissions: { accessibility: "unknown", screenRecording: "unknown" }, approvals: [], audit: [] }),
+    diagnostics: async () => ({ workerPath: "/synthetic/worker.js", hostPath: "/synthetic/Biny", expectedVersion: "native", sdkLoaded: false, runtimeReady: false, strictApproval: false, permissions: { accessibility: "unknown", screenRecording: "unknown" }, approvals: [], audit: [] }),
     requestAccessibility: async () => api.diagnostics(),
     testSetup: async () => api.diagnostics()
   };
@@ -66,7 +66,7 @@ test("Computer Use cards show independent unknown permissions and dispatch real 
   const root = createRoot(dom.window.document.getElementById("root")!);
   const calls: string[] = [];
   let state: ComputerStatus = { state: "disabled", preview: false, foregroundAllowed: false, actionLogging: false, lastOutcome: "not-dispatched" };
-  const diagnostic: ComputerDiagnostics = { workerPath: "/synthetic/app.asar.unpacked/out/main/cuaProcess.js", hostPath: "/synthetic/Biny", expectedVersion: "0.30.4", sdkLoaded: false, runtimeReady: false, strictApproval: false, permissions: { accessibility: "unknown", screenRecording: "denied" }, approvals: [{ bundleId: "test.notes", appName: "Notes", useCount: 0 }], audit: [], actionLimits: [{ action: "scroll", code: "scroll_direction_unverified", message: "当前 macOS 滚动暂不可用；请人工滚动后重新观察。" }], error: "driver_sdk_missing_or_crashed: synthetic" };
+  const diagnostic: ComputerDiagnostics = { workerPath: "/synthetic/native/computer-use/biny-computer-use", hostPath: "/synthetic/Biny", expectedVersion: "native", sdkLoaded: false, runtimeReady: false, strictApproval: false, permissions: { accessibility: "unknown", screenRecording: "denied" }, approvals: [{ bundleId: "test.notes", appName: "Notes", useCount: 0 }], audit: [], actionLimits: [], error: "driver_sdk_missing_or_crashed: synthetic" };
   Object.assign(dom.window, { binyComputer: {
     strict: async (value: boolean) => { calls.push(`strict:${value}`); diagnostic.strictApproval = value; return diagnostic; },
     approve: async (bundleId: string) => { calls.push(`approve:${bundleId}`); diagnostic.approvals[0]!.approvedAt = new Date().toISOString(); return diagnostic; },
@@ -84,12 +84,11 @@ test("Computer Use cards show independent unknown permissions and dispatch real 
     assert.match(dom.window.document.querySelector('[data-permission="accessibility"]')?.textContent ?? "", /未知/);
     assert.match(dom.window.document.querySelector('[data-permission="screenRecording"]')?.textContent ?? "", /未授权/);
     assert.doesNotMatch(dom.window.document.querySelector(".cu-helper")?.textContent ?? "", /已就绪|运行中/);
-    assert.match(dom.window.document.querySelector('[data-action-limit="scroll"]')?.textContent ?? "", /滚动暂不可用/);
+    assert.equal(dom.window.document.querySelector('[data-action-limit="scroll"]'), null, "原生实现不再声明 scroll 限制");
     const details = dom.window.document.querySelector<HTMLDetailsElement>(".cu-technical-details")!;
     assert.ok(details, "technical diagnostics belong in a collapsed disclosure");
     assert.equal(details.open, false);
     assert.ok(details.querySelector("pre"));
-    assert.ok(details.querySelector('[data-action-limit="scroll"]'));
     assert.doesNotMatch(dom.window.document.querySelector(".cu-helper")?.textContent ?? "", /synthetic|worker\.js/);
     assert.equal(dom.window.document.querySelector('[role="switch"][aria-label="逐次审批"]'), null);
     const strict = dom.window.document.querySelector<HTMLButtonElement>('[role="switch"][aria-label="严格应用审批"]')!;

@@ -33,7 +33,7 @@ export function planMacOsScroll(session: string, action: ComputerAction, observa
   if (!observation || observation.session !== session || observation.captureId !== action.captureId || observation.target.pid !== action.pid || observation.target.windowId !== action.windowId) return refuse("capture_target_mismatch_or_missing", "Observe this exact window again before scrolling.");
   if (now - observation.capturedAt >= 60_000) return refuse("capture_expired", "Observe again; the scroll frame expired.");
   const element = observation.elements.find(element => element.token === action.elementToken);
-  if (!element) return refuse("element_token_not_in_observation", "The scroll target must belong to the fresh Cua observation.");
+  if (!element) return refuse("element_token_not_in_observation", "The scroll target must belong to the fresh native observation.");
   // The release first attempts native AX text-area scrolling, then may fall back to a wheel.
   // Only a web target outside AXTextArea proves the wheel route before dispatch.
   if (!element.web || element.role === "AXTextArea") return refuse("scroll_route_unverified", "macOS scrolling is currently supported only for observed web scroll regions; scroll this native control manually and observe again.");

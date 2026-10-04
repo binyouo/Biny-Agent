@@ -2,14 +2,13 @@ import { ipcMain, systemPreferences, type BrowserWindow } from "electron";
 import { z } from "zod";
 import { ComputerAppApprovals } from "../../../computer/appApprovals.js";
 import { ComputerUseController } from "../../../computer/controller.js";
-import { CuaProcessDriver } from "../../../computer/cuaDriver.js";
+import { NativeProcessDriver } from "../../../computer/nativeDriver.js";
 import { updateConfig, type AgentConfigStore } from "../../../config/store.js";
-import { computerActionSchema, computerIpc, cuaVersion, windowTargetSchema, type ComputerDiagnostics, type ComputerStatus } from "../../../computer/protocol.js";
+import { computerActionSchema, computerIpc, windowTargetSchema, type ComputerDiagnostics, type ComputerStatus } from "../../../computer/protocol.js";
 import { ComputerPreviewWindow } from "./ComputerPreviewWindow.js";
 import type { DesktopBrowserService } from "./DesktopBrowserService.js";
-import { cuaActionLimits } from "../../../computer/nativeActionLimits.js";
 
-export async function createComputerUseService(browser: DesktopBrowserService, getWindow: () => BrowserWindow | undefined, assertWorkAllowed: () => Promise<void>, configStore: AgentConfigStore, createDriver = (onExit: () => void) => new CuaProcessDriver(onExit)) {
+export async function createComputerUseService(browser: DesktopBrowserService, getWindow: () => BrowserWindow | undefined, assertWorkAllowed: () => Promise<void>, configStore: AgentConfigStore, createDriver = (onExit: () => void) => new NativeProcessDriver(onExit)) {
   const config = await configStore.load();
   const preview = new ComputerPreviewWindow(control => { void controlComputer(control).catch(() => undefined); }, () => controller.setPreview(false));
   const driver = createDriver(() => controller.crashed());
@@ -26,11 +25,21 @@ export async function createComputerUseService(browser: DesktopBrowserService, g
     signal.throwIfAborted();
     await approvals.authorize({ bundleId: app.bundleId, appName: app.name });
     return app.bundleId;
-  }, preview: frame => preview.update(frame, controller.status()) });
+  }, preview: frame => preview.update(frame, controller.status()),
+  // PiP 3fps 帧泵：重新观察当前 capture 的窗口，把最新帧推给预览窗。
+  refreshPreview: async session => {
+    const state = controller.status();
+    if (state.state !== "ready" || !session || state.owner !== session) return;
+    const capture = controller.currentCapture();
+    if (!capture) return;
+    const reply = await controller.observe(session, capture.target, new AbortController().signal);
+    const image = (reply.images ?? [])[0];
+    if (image) preview.update({ image, target: capture.target, capturedAt: Date.now() }, controller.status());
+  } });
   let controlEpoch = 0;
   let closed = false;
   let setupTest: Promise<ComputerDiagnostics> | undefined;
-  const probes = new Set<CuaProcessDriver>();
+  const probes = new Set<NativeProcessDriver>();
   const intentWrites = new Set<Promise<unknown>>();
   async function persistIntent(enabled: boolean, epoch: number): Promise<void> {
     const write = updateConfig(configStore, undefined, current => epoch === controlEpoch && (!enabled || !closed) ? { ...current, computer: { ...current.computer, enabled } } : current);
@@ -42,9 +51,9 @@ export async function createComputerUseService(browser: DesktopBrowserService, g
     const screen = process.platform === "darwin" ? systemPreferences.getMediaAccessStatus("screen") : undefined;
     const policy = await approvals.read();
     const result: ComputerDiagnostics = {
-      workerPath: driver.workerPath(), hostPath: process.execPath, expectedVersion: cuaVersion, sdkLoaded: false, runtimeReady: false,
+      workerPath: driver.workerPath(), hostPath: process.execPath, expectedVersion: "native", sdkLoaded: false, runtimeReady: false,
       permissions: { accessibility: process.platform === "darwin" ? systemPreferences.isTrustedAccessibilityClient(false) ? "granted" : "denied" : "unknown", screenRecording: screen === "granted" ? "granted" : screen === "denied" || screen === "restricted" ? "denied" : "unknown" },
-      strictApproval: policy.strictApproval, approvals: policy.apps, audit: controller.audit(), error: setupError, actionLimits: cuaActionLimits(process.platform, cuaVersion)
+      strictApproval: policy.strictApproval, approvals: policy.apps, audit: controller.audit(), error: setupError, actionLimits: []
     };
     try {
       const data = z.object({ sdkLoaded: z.boolean(), runtimeReady: z.boolean(), driverVersion: z.string().optional(), permissions: z.object({ accessibility: permission, screenRecording: permission }) }).parse((await source.diagnostics()).data);

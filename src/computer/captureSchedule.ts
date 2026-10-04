@@ -1,4 +1,4 @@
-/** Shared admission only. Passive Activity images never become Cua observations. */
+/** Shared admission only. Passive Activity images never become native observations. */
 export class CaptureBusyError extends Error { constructor() { super("computer_capture_busy"); } }
 export class CaptureSchedule {
   private tail: Promise<void> = Promise.resolve();

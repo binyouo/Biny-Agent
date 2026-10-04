@@ -11,7 +11,6 @@ export const computerSettingsSchema = z.object({
   apps: z.array(computerAppSchema).max(256).default([])
 }).strict().refine(value => new Set(value.apps.map(app => app.bundleId)).size === value.apps.length, "Duplicate computer application identity");
 
-export const cuaVersion = "0.30.4";
 export const maxComputerImageBytes = 1024 * 1024;
 export const windowTargetSchema = z.object({ pid: z.number().int().positive().max(2147483647), windowId: z.string().regex(/^[1-9][0-9]{0,19}$/) }).strict();
 export type WindowTarget = z.infer<typeof windowTargetSchema>;
