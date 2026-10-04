@@ -312,3 +312,50 @@ test("foreground delivery stays refused until the user turns it on, and closes a
   );
   assert.deepEqual(f.calls, ["press_key", "press_key"], "关闭后不得再派发前台动作");
 });
+
+// Alma 的 PiP 是「操控期间亮着的监督窗」：动作经 activity 续命，停手 90s 自动收起
+// （notes/19 §5、notes/01）。用户的选择不该因此被改掉 —— 所以「偏好」和「此刻显示」
+// 必须是两件事，否则开关会自己跳回去。
+test("the preview lights up with activity, times out on its own, and re-arms on the next action", async () => {
+  const visible: boolean[] = [];
+  const calls: string[] = [];
+  const driver: ComputerDriver = {
+    start: async () => undefined, stop: async () => undefined,
+    list: async () => ({ data: { apps: [] }, images: [] }),
+    observe: async () => ({ data: { capture_id: "c1", pid: 1, window_id: 10, screenshot_width: 100, screenshot_height: 100, screenshot_frame_valid: true, elements: [] }, images: [{ mimeType: "image/jpeg", dataBase64: "aGVsbG8=" }] }),
+    act: async (...args) => { calls.push(args[1].action); return { data: { effect: "confirmed" }, images: [] }; }
+  };
+  const controller = new ComputerUseController(driver, {
+    enabled: true,
+    refreshPreview: async () => undefined,
+    setPreviewVisible: shown => visible.push(shown),
+    previewIdleMs: 40
+  });
+  const target = { pid: 1, windowId: "10" };
+  try {
+    // 用户打开 PiP → 立刻可见
+    controller.setPreview(true);
+    assert.deepEqual(visible, [true], "打开时应当立刻显示");
+    assert.equal(controller.status().preview, true);
+
+    // 停手之后自己收起 —— 但偏好还在
+    await new Promise(resolve => setTimeout(resolve, 90));
+    assert.deepEqual(visible, [true, false], "停手后监督窗应自动收起");
+    assert.equal(controller.status().preview, true, "自动收起不能改掉用户的开关");
+
+    // 下一次动作把它重新亮起来
+    await controller.observe("s", target);
+    await controller.act("s", { ...target, action: "press_key", captureId: "c1", key: "Return" });
+    assert.deepEqual(visible, [true, false, true], "新动作应把监督窗重新亮起");
+
+    // 用户手动关掉 → 收起且偏好归位
+    controller.setPreview(false);
+    assert.equal(controller.status().preview, false);
+    assert.equal(visible[visible.length - 1], false);
+    await new Promise(resolve => setTimeout(resolve, 90));
+    const afterClose = visible.length;
+    assert.equal(visible[afterClose - 1], false, "关掉之后不该再被定时器翻出来");
+  } finally {
+    controller.setPreview(false);
+  }
+});

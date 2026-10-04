@@ -44,6 +44,9 @@ export async function createComputerUseService(browser: DesktopBrowserService, g
     await approvals.authorize({ bundleId: app.bundleId, appName: app.name });
     return app.bundleId;
   }, preview: frame => preview.update(frame, controller.status()),
+  // 窗口的显示/隐藏由 controller 的「偏好 × 活动」模型驱动：
+  // 用户开着 PiP 时，操控期间亮着、停手 90s 自动收起，而偏好本身不变。
+  setPreviewVisible: visible => { if (visible) preview.open(); else preview.close(); },
   // PiP 3fps 帧泵：重新观察当前 capture 的窗口，把最新帧推给预览窗。
   // Alma 的帧泵独立于操控会话：有观察目标就抓它，没有就回落整屏，
   // 这样面板一打开就有画面，而不是空等到第一次操控。
@@ -139,7 +142,7 @@ export async function createComputerUseService(browser: DesktopBrowserService, g
     return controller.status();
   });
   ipcMain.handle(computerIpc.control, async (event, value: unknown) => { assertSender(event); return await controlComputer(z.enum(["pause", "resume", "takeover", "stop"]).parse(value)); });
-  ipcMain.handle(computerIpc.preview, (event, value: unknown) => { assertSender(event); const enabled = z.boolean().parse(value); controller.setPreview(enabled); if (enabled) preview.open(); else preview.close(); return controller.status(); });
+  ipcMain.handle(computerIpc.preview, (event, value: unknown) => { assertSender(event); const enabled = z.boolean().parse(value); controller.setPreview(enabled); return controller.status(); });
   ipcMain.handle(computerIpc.foreground, (event, value: unknown) => { assertSender(event); controller.setForeground(z.boolean().parse(value)); return controller.status(); });
   ipcMain.handle(computerIpc.logging, (event, value: unknown) => { assertSender(event); controller.setLogging(z.boolean().parse(value)); return controller.status(); });
   async function changeApproval(update: () => Promise<void>): Promise<ComputerDiagnostics> {

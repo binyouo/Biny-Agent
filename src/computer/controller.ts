@@ -24,10 +24,17 @@ export class ComputerUseController {
   // PiP 帧泵：预览开启时以 3fps 推送「可注视」的连续画面（Alma 设计：目的是可注视而非流畅）。
   private framePump?: ReturnType<typeof setInterval>;
   private readonly frameIntervalMs = 1000 / 3;
+  // 预览窗的「用户在设置里开着」和「此刻真的显示着」是两件事：
+  // Alma 的 PiP 是操控期间才亮起的监督窗，停手 90s 自动收起，
+  // 但用户的选择不该因此被改掉。
+  private previewShown = false;
+  private previewTimer?: ReturnType<typeof setTimeout>;
+  private readonly previewIdleMs: number;
   private readonly driver: ComputerDriver;
-  private readonly options: { enabled?: boolean; now?: () => number; preview?: (frame: ComputerPreview | undefined) => void; refreshPreview?: (session: string | undefined) => Promise<void>; authorize?: (session: string, target: WindowTarget, signal: AbortSignal) => Promise<string> };
-  constructor(driver: ComputerDriver, options: { enabled?: boolean; now?: () => number; preview?: (frame: ComputerPreview | undefined) => void; refreshPreview?: (session: string | undefined) => Promise<void>; authorize?: (session: string, target: WindowTarget, signal: AbortSignal) => Promise<string> } = {}) {
+  private readonly options: { enabled?: boolean; now?: () => number; preview?: (frame: ComputerPreview | undefined) => void; refreshPreview?: (session: string | undefined) => Promise<void>; authorize?: (session: string, target: WindowTarget, signal: AbortSignal) => Promise<string>; setPreviewVisible?: (visible: boolean) => void; previewIdleMs?: number };
+  constructor(driver: ComputerDriver, options: { enabled?: boolean; now?: () => number; preview?: (frame: ComputerPreview | undefined) => void; refreshPreview?: (session: string | undefined) => Promise<void>; authorize?: (session: string, target: WindowTarget, signal: AbortSignal) => Promise<string>; setPreviewVisible?: (visible: boolean) => void; previewIdleMs?: number } = {}) {
     this.driver = driver; this.options = options;
+    this.previewIdleMs = options.previewIdleMs ?? 90_000;
     if (options.enabled) this.snapshot.state = "ready";
   }
   status(): ComputerStatus { return { ...this.snapshot }; }
@@ -94,15 +101,45 @@ export class ComputerUseController {
   currentCapture(): { target: WindowTarget } | undefined { return this.capture; }
   setPreview(enabled: boolean): void {
     this.snapshot.preview = enabled;
-    if (enabled) this.startFramePump(); else this.stopFramePump();
-    if (!enabled) this.options.preview?.(undefined);
+    if (enabled) this.showPreview(); else this.hidePreview();
+  }
+  /**
+   * 记一次操控活动。Alma 的 PiP 是「操控期间亮着、停手 90s 收起」的监督窗，
+   * 所以每次动作都要把它续上——用户开着 PiP 时不该只在他手动切换的那一刻有画面。
+   */
+  noteActivity(): void {
+    if (!this.snapshot.preview) return;
+    this.showPreview();
+  }
+  private showPreview(): void {
+    this.previewShown = true;
+    this.options.setPreviewVisible?.(true);
+    this.startFramePump();
+    this.armPreviewIdle();
+  }
+  private hidePreview(): void {
+    this.previewShown = false;
+    this.clearPreviewIdle();
+    this.stopFramePump();
+    this.options.preview?.(undefined);
+    this.options.setPreviewVisible?.(false);
+  }
+  private armPreviewIdle(): void {
+    this.clearPreviewIdle();
+    this.previewTimer = setTimeout(() => { this.hidePreview(); }, this.previewIdleMs);
+    if (typeof this.previewTimer === "object" && "unref" in this.previewTimer) this.previewTimer.unref();
+  }
+  private clearPreviewIdle(): void {
+    if (!this.previewTimer) return;
+    clearTimeout(this.previewTimer);
+    this.previewTimer = undefined;
   }
   private startFramePump(): void {
     if (this.framePump || !this.options.refreshPreview) return;
     this.framePump = setInterval(() => {
       // 面板就是「看 AI 在看什么」的窗口，开着就该有画面：不等桌面控制开关、
       // 也不等第一次操控。Alma 的 PiP 会话同样独立于操控状态，默认可用。
-      if (!this.snapshot.preview) return;
+      if (!this.snapshot.preview || !this.previewShown) return;
       void this.options.refreshPreview?.(this.snapshot.owner).catch(() => undefined);
     }, this.frameIntervalMs);
   }
@@ -183,6 +220,8 @@ export class ComputerUseController {
       }
       const effect = result.data.effect;
       const status = result.errorCode || effect === "refused" ? "refused" : effect === "confirmed" ? "completed" : "unverified";
+      // 真的动到机器了才算活动；被拒的什么都没发生，不该把监督窗续命。
+      if (status !== "refused") this.noteActivity();
       this.record(action, at, status, generation);
       if (s.aborted || generation !== this.generation) return this.verificationUnavailable(result, status, "computer_verification_interrupted", generation);
       this.snapshot.lastOutcome = status;

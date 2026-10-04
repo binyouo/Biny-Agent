@@ -96,7 +96,7 @@ export function SettingsComputerUse(): React.JSX.Element {
         <SettingsSwitch label="桌面控制" checked={Boolean(status && status.state !== "disabled")} disabled={unavailable || !status} detail="保存启用选择，首次使用时启动；停止会关闭此选项。" onChange={value => void perform(async () => { await updateStatus(() => value ? api.enable() : api.control("stop")); await readDiagnostic(); })} />
         <SettingsSwitch label="严格应用审批" checked={diagnostic?.strictApproval ?? false} disabled={unavailable || !diagnostic} detail="开启后仅允许已批准的应用；关闭时首次使用自动授权。应用授权跨会话保存，与全局工具自动批准独立。截图会发送给当前模型。" onChange={value => void perform(() => readDiagnostic(() => api.strict(value)))} />
         <SettingsSwitch label="记录操作日志" checked={status?.actionLogging ?? false} disabled={unavailable || !status} detail="临时保留最近 50 条操作记录，停止后清空。" onChange={value => void perform(() => updateStatus(() => api.logging(value)))} />
-        <SettingsSwitch label="画中画" checked={status?.preview ?? false} disabled={unavailable || !status} detail="在悬浮窗口查看操作画面；开启时暂停活动截图。" onChange={value => void perform(() => updateStatus(() => api.preview(value)))} />
+        <SettingsSwitch label="画中画" checked={status?.preview ?? false} disabled={unavailable || !status} detail="操控期间在悬浮窗口显示画面，停手 90 秒后自动收起；开启时暂停活动截图。" onChange={value => void perform(() => updateStatus(() => api.preview(value)))} />
       </div>
       {diagnostic?.focusGuard === "unavailable" ? (
         <section className="cu-section" data-focus-guard="unavailable">
