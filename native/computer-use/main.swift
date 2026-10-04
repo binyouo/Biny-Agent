@@ -154,6 +154,43 @@ func windowScreenBounds(pid: Int) -> [String: Double]? {
 }
 
 
+
+/// 截图同样可能挂在无响应的窗口上：独立线程采集，主线程轮询到点就放弃。
+func captureWithDeadline(_ args: [String: Any], timeout: Double) async -> [String: Any] {
+    await withCheckedContinuation { continuation in
+        let box = ShotBox()
+        let thread = Thread {
+            let semaphore = DispatchSemaphore(value: 0)
+            var captured: [String: Any] = [:]
+            Task {
+                captured = (try? await screenshot(args)) ?? [:]
+                semaphore.signal()
+            }
+            _ = semaphore.wait(timeout: .now() + 10)
+            box.store(captured)
+        }
+        thread.stackSize = 1 << 20
+        thread.start()
+        DispatchQueue.global().async {
+            let deadline = Date().addingTimeInterval(timeout)
+            while Date() < deadline {
+                if box.done { break }
+                Thread.sleep(forTimeInterval: 0.02)
+            }
+            continuation.resume(returning: box.take())
+        }
+    }
+}
+
+final class ShotBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var finished = false
+    private var value: [String: Any] = [:]
+    var done: Bool { lock.lock(); defer { lock.unlock() }; return finished }
+    func store(_ next: [String: Any]) { lock.lock(); defer { lock.unlock() }; if !finished { value = next; finished = true } }
+    func take() -> [String: Any] { lock.lock(); defer { lock.unlock() }; return value }
+}
+
 /// 用独立线程采集 AX 树，主线程轮询等待（不占用并发工作线程）。
 /// AX 调用一旦卡住就无法取消，所以只能「放弃等待」而不是「杀掉它」。
 func collectAccessibility(pid: pid_t, maxDepth: Int, limit: Int, timeout: Double) -> ([[String: Any]], [String: AXUIElement]) {
@@ -324,13 +361,9 @@ DispatchQueue.global().async {
                                 var shotArgs: [String: Any] = ["out": args["out"] ?? "/tmp/biny-cu-state-\(Int(Date().timeIntervalSince1970 * 1000)).jpg", "pid": Int(pid)]
                                 if let maxWidth = args["max_width"] { shotArgs["max_width"] = maxWidth }
                                 // 截图同样可能挂在无响应的窗口上：限时 3 秒，超时就返回不带图的观察。
-                                let shot: [String: Any] = await withTaskGroup(of: [String: Any]?.self) { group in
-                                    group.addTask { try? await screenshot(shotArgs) }
-                                    group.addTask { try? await Task.sleep(nanoseconds: 3_000_000_000); return nil }
-                                    let first = await group.next() ?? nil
-                                    group.cancelAll()
-                                    return first ?? [:]
-                                }
+                                // 同理：TaskGroup 的 cancel 不会中断已在跑的 capture，
+                                // group.next() 仍会等它返回。放进独立线程 + 轮询才有真上限。
+                                let shot = await captureWithDeadline(shotArgs, timeout: 3.0)
                                 refTables[pid] = table
                                 // 记下截图坐标 → 屏幕坐标的映射，后续像素点击据此换算。
                                 if let f = shot["screenFrame"] as? [String: Double],
