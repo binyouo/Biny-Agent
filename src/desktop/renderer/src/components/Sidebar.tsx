@@ -938,7 +938,7 @@ function SessionContextMenu({ menu, onAction, onClose, open }: { menu?: { sessio
       <button onClick={() => onAction("rename")} role="menuitem" type="button"><Icon name="edit" size={15} /><span>重命名</span></button>
       <button onClick={() => onAction(session.pinned ? "unpin" : "pin")} role="menuitem" type="button"><Icon name="pin" size={15} /><span>{session.pinned ? "取消置顶" : "置顶"}</span></button>
       <button onClick={() => onAction(session.archived ? "unarchive" : "archive")} role="menuitem" type="button"><Icon name="archive" size={15} /><span>{session.archived ? "取消归档" : "归档"}</span></button>
-      <button onClick={() => onAction("duplicate")} role="menuitem" type="button"><Icon name="copy" size={15} /><span>复制会话</span></button>
+      <button onClick={() => onAction("duplicate")} role="menuitem" title="保留当前历史，创建可独立继续的子会话" type="button"><Icon name="copy" size={15} /><span>创建会话分支</span></button>
       <div className="biny-sidebar-menu-separator" />
       <button onClick={() => onAction("export-bundle")} role="menuitem" type="button"><Icon name="download" size={15} /><span>导出会话包…</span></button>
       <button onClick={() => onAction("export-claude")} role="menuitem" type="button"><Icon name="download" size={15} /><span>导出为 Claude Code…</span></button>

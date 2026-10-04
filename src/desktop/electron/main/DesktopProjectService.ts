@@ -561,14 +561,11 @@ export class DesktopProjectService {
     };
     // latestRun 只用于侧栏批量投影；打开正文不再为一个 session 扫描整个 run ledger。
     // 正文状态由 JSONL 的 turn_status 与当前 live events 投影，运行中的实时状态仍优先。
-    const session = desktopSessionSummary(
-      project.id,
-      item,
-      runtime,
-      liveEvents,
-      undefined,
-      undefined
-    );
+    const session = {
+      ...desktopSessionSummary(project.id, item, runtime, liveEvents, undefined),
+      // 正文读取未查询子树，不能用 false 覆盖侧栏已加载的目录事实。
+      hasChildren: undefined
+    };
     const sizeBytes = stored.sizeBytes;
     const eventCount = stored.events.length;
     let recovery: DesktopSessionDocument["recovery"];
@@ -629,8 +626,8 @@ export class DesktopProjectService {
     const targetSessionId = createSessionId();
     const dataRoot = await this.storage.ensureProjectData(project);
     const source = await readStoredSessionEvents(dataRoot, sessionId);
-    if (source.truncated) {
-      throw new Error("会话超过大小限制，无法安全复制；请先分叉或继续使用原会话。");
+    if (source.sizeBytes > maxSessionFileBytes) {
+      throw new Error("会话超过大小限制，无法安全创建分支；请继续使用原会话。");
     }
     const sourceEvents = source.events;
     const duplicatedEvents = rebaseForkedSessionEvents(sourceEvents);
@@ -726,7 +723,7 @@ export class DesktopProjectService {
     targetSessionId: string
   ): Promise<void> {
     await updateSessionCatalogMetadata(dataRoot, targetSessionId, {
-      title: source?.title === undefined ? undefined : `${source.title} 副本`,
+      title: source?.title === undefined ? undefined : `${source.title} 分支`,
       pinned: false,
       archived: false,
       unread: false,
@@ -892,8 +889,7 @@ function desktopSessionSummary(
   item: SessionCatalogItem,
   runtime: RuntimeSnapshotsInput,
   liveEvents: ReadonlyMap<string, AgentHostEvent[]>,
-  latestRun: SessionRunRecord | undefined,
-  hasChildren: boolean | undefined = item.hasChildren
+  latestRun: SessionRunRecord | undefined
 ): DesktopSessionSummary {
   const summary = item.summary;
   return {
@@ -913,7 +909,7 @@ function desktopSessionSummary(
     isolation: item.isolation,
     metadataRevision: item.metadataRevision,
     personalization: item.personalization,
-    hasChildren,
+    hasChildren: item.hasChildren,
     rootSessionId: item.rootSessionId,
     parentSessionId: item.parentSessionId,
     branchPoint: item.branchPoint,

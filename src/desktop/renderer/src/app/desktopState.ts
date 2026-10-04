@@ -151,16 +151,16 @@ export function replaceProjectSessionRoots(
   allProjectSessions: DesktopSessionSummary[]
 ): DesktopSessionSummary[] {
   const firstProjectIndex = sessions.findIndex((session) => session.projectId === projectId);
-  const existingSessionIds = new Set(
+  const currentProjectSessions = new Map(
     allProjectSessions
       .filter((session) => session.projectId === projectId)
-      .map((session) => session.id)
+      .map((session) => [session.id, session])
   );
   const childSessions = sessions.filter((session) => (
     session.projectId === projectId
     && session.parentSessionId !== undefined
-    && existingSessionIds.has(session.id)
-  ));
+    && currentProjectSessions.has(session.id)
+  )).map((session) => currentProjectSessions.get(session.id)!);
   const otherSessions = sessions.filter((session) => session.projectId !== projectId);
   const merged = new Map([...rootSessions, ...childSessions].map((session) => [session.id, session]));
   const insertAt = firstProjectIndex < 0 ? otherSessions.length : Math.min(firstProjectIndex, otherSessions.length);

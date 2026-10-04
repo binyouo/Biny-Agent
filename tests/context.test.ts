@@ -1651,7 +1651,7 @@ async function testSessionReadLimits(): Promise<void> {
     assert.equal(summaries.some((summary) => summary.fileName === path.basename(oversizedFile)), false);
 
     const oversizedLine = JSON.stringify({ type: "user_message", content: "x".repeat(maxSessionEventLineBytes) });
-    assert.throws(() => parseSessionEvents(`${oversizedLine}\n`), /event line 1 exceeds the maximum size/u);
+    assert.throws(() => parseSessionEvents(`${oversizedLine}\n`), /exceeds the maximum size/u);
     const eventLine = JSON.stringify({ type: "user_message", content: "bounded event" });
     const tooManyEvents = `${Array.from({ length: maxSessionEvents + 1 }, () => eventLine).join("\n")}\n`;
     assert.throws(() => parseSessionEvents(tooManyEvents), /cannot contain more than/u);

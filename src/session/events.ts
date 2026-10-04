@@ -15,10 +15,12 @@ import {
   maxSessionEventLineBytes,
   maxSessionEvents,
   maxSessionFileBytes,
+  maxSessionHistoryBytes,
+  readSessionEventLines,
   readBoundedSessionHandle
 } from "./limits.js";
 import { cachedSessionEvents, lookupSessionEvents, previousSessionParse, sameSessionFingerprint, sessionFileFingerprint, type SessionFileFingerprint } from "./parseCache.js";
-import { listSessionFiles, readSessionSnapshotOrCached } from "./store.js";
+import { listSessionFiles, readSessionFileOrCached } from "./store.js";
 import type { SessionEvent, SessionTurnStatusEvent } from "./recorder.js";
 export type { SessionEvent } from "./recorder.js";
 import { publicAssistantMessage, publicUserMessage } from "./publicMessage.js";
@@ -345,31 +347,40 @@ export async function readStoredSessionEvents(
   workspaceRoot: string,
   session: string | undefined
 ): Promise<{ filePath: string; events: SessionEvent[]; truncated: boolean; sizeBytes: number; summary?: SessionSummary }> {
-  const result = await readSessionSnapshotOrCached(workspaceRoot, session, (filePath, stat) => {
-    const events = lookupSessionEvents(filePath, sessionFileFingerprint(stat));
-    return events === undefined ? undefined : {
-      filePath, events, truncated: false, sizeBytes: stat.size,
-      summary: summarizeSessionEvents(path.basename(filePath), events, stat)
-    };
-  });
-  if (result.cached !== undefined) return result.cached;
-  const snapshot = result.snapshot;
-  // 与 resume 共用同一份解析缓存：只有完整读到文件且没丢事件时才进缓存（超限截断的结果
-  // 不能复用，否则会把"只看到尾部"的视角发给需要完整事件的读取方）。
-  // 缓存命中的一定是完整解析（截断结果从不进缓存），所以命中时 eventsTruncated 保持 false 是对的。
-  let eventsTruncated = false;
-  const events = cachedSessionEvents(snapshot.filePath, sessionFileFingerprint(snapshot.stat), () => {
-    const parsed = parseSessionEventsDetailed(snapshot.bytes.toString("utf8"), { overflow: "truncate" });
-    eventsTruncated = parsed.truncated;
-    return { events: parsed.events, complete: !snapshot.truncated && !parsed.truncated };
-  });
+  const result = await readSessionFileOrCached(workspaceRoot, session,
+    (filePath, stat) => lookupSessionEvents(filePath, sessionFileFingerprint(stat)),
+    async (handle, filePath, stat) => {
+      if (stat.size > maxSessionHistoryBytes) {
+        throw new Error(`Session history exceeds the maximum size of ${String(maxSessionHistoryBytes)} bytes: ${path.basename(filePath)}`);
+      }
+      const events: SessionEvent[] = [];
+      for await (const event of validatedHistoryEvents(handle, stat.size)) {
+        if (events.length >= maxSessionEvents) throw new Error(`Session cannot contain more than ${String(maxSessionEvents)} events.`);
+        events.push(event);
+      }
+      return events;
+    });
+  const events = cachedSessionEvents(result.filePath, sessionFileFingerprint(result.stat), () => ({ events: result.value, complete: true }));
   return {
-    filePath: snapshot.filePath,
+    filePath: result.filePath,
     events,
-    truncated: snapshot.truncated || eventsTruncated,
-    sizeBytes: snapshot.stat.size,
-    summary: summarizeSessionEvents(snapshot.fileName, events, snapshot.stat)
+    truncated: false,
+    sizeBytes: result.stat.size,
+    summary: summarizeSessionEvents(path.basename(result.filePath), events, result.stat)
   };
+}
+
+async function* validatedHistoryEvents(handle: FileHandle, size: number): AsyncGenerator<SessionEvent> {
+  let lineNumber = 0;
+  for await (const line of readSessionEventLines(handle, size)) {
+    lineNumber++;
+    try {
+      for (const event of parseSessionEvents(line)) yield event;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(message.replace(/at line 1\b|event line 1\b/g, (value) => value.replace("1", String(lineNumber))));
+    }
+  }
 }
 
 /** 只读取一个 session 的摘要，供打开会话和 catalog 缺失时的按需修复使用。 */
@@ -377,25 +388,37 @@ export async function readSessionSummary(
   workspaceRoot: string,
   session: string | undefined
 ): Promise<SessionSummary | undefined> {
-  const result = await readSessionSnapshotOrCached(workspaceRoot, session, (filePath, stat) => {
+  const result = await readSessionFileOrCached(workspaceRoot, session, (filePath, stat) => {
     const entry = summaryCache.get(filePath);
-    if (!entry) return undefined;
-    if (!sameSessionFingerprint(entry.fingerprint, sessionFileFingerprint(stat))) {
-      summaryCache.delete(filePath);
-      summaryCacheBytes -= entry.weight;
-      return undefined;
-    }
+    if (!entry || !sameSessionFingerprint(entry.fingerprint, sessionFileFingerprint(stat))) return undefined;
     return { summary: entry.summary === undefined ? undefined : structuredClone(entry.summary) };
+  }, async (handle, filePath, stat) => {
+    // 列表只保留摘要所需的消息，不累积图片和工具结果。
+    let firstUser: SessionEvent | undefined;
+    let lastAssistant: SessionEvent | undefined;
+    let lastTurnStatus: SessionTurnStatusEvent | undefined;
+    let firstTime: string | undefined;
+    let lastTime: string | undefined;
+    let eventCount = 0;
+    for await (const event of validatedHistoryEvents(handle, stat.size)) {
+      eventCount++;
+      firstTime ??= event.time;
+      lastTime = event.time ?? lastTime;
+      if (!firstUser && event.type === "user_message"
+        && !(event.auditOnly && (event.metadata?.queuedDelivery === "steer" || event.metadata?.queuedDelivery === "queue"))) firstUser = event;
+      if (event.type === "assistant_message" && event.content) lastAssistant = event;
+      if (event.type === "turn_status") lastTurnStatus = event;
+    }
+    const summaryEvents = [firstUser, lastAssistant, lastTurnStatus].filter((event): event is SessionEvent => event !== undefined);
+    const summary = summarizeSessionEvents(path.basename(filePath), summaryEvents, stat);
+    return { summary: summary ? { ...summary, eventCount, createdAt: firstTime ?? stat.birthtime.toISOString(), updatedAt: lastTime ?? stat.mtime.toISOString() } : undefined };
   });
-  if (result.cached !== undefined) return result.cached.summary;
-  const snapshot = result.snapshot;
-  const parsed = parseSessionEventsDetailed(snapshot.bytes.toString("utf8"), { overflow: "truncate" });
-  const summary = summarizeSessionEvents(snapshot.fileName, parsed.events, snapshot.stat);
+  const summary = result.value.summary;
   const weight = Buffer.byteLength(JSON.stringify(summary) ?? "") + 256;
-  const previous = summaryCache.get(snapshot.filePath);
+  const previous = summaryCache.get(result.filePath);
   if (previous) summaryCacheBytes -= previous.weight;
-  summaryCache.delete(snapshot.filePath);
-  summaryCache.set(snapshot.filePath, { fingerprint: sessionFileFingerprint(snapshot.stat), summary: structuredClone(summary), weight });
+  summaryCache.delete(result.filePath);
+  summaryCache.set(result.filePath, { fingerprint: sessionFileFingerprint(result.stat), summary: structuredClone(summary), weight });
   summaryCacheBytes += weight;
   while (summaryCache.size > 4096 || summaryCacheBytes > 8 * 1024 * 1024) {
     const oldest = summaryCache.keys().next();

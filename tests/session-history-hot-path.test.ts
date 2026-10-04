@@ -126,7 +126,7 @@ try {
     await fs.appendFile(file, event); await assert.rejects(readSessionEvents(file), /more than 50000 events/u);
     await fs.writeFile(file, event); await readSessionEvents(file);
     await fs.appendFile(file, "x".repeat(maxSessionEventLineBytes + 1));
-    await assert.rejects(readSessionEvents(file), /line 2 exceeds/u);
+    await assert.rejects(readSessionEvents(file), /exceeds the maximum size/u);
   });
   await test("prebuilt tree avoids reconstructing canonical nodes", async () => {
     let reads = 0;

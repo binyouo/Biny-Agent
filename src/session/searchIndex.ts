@@ -234,7 +234,7 @@ export class SessionSearchIndex {
             event.type === "user_message" ? "user" : "assistant",
             event.time ?? null,
             content,
-            // 完整行已受 1 MiB 上限约束；正文词数预算不能沿用记忆的 64 词截断。
+            // 完整行已受会话事件上限约束；正文词数预算不能沿用记忆的 64 词截断。
             tokenizeMemoryText(content, maxSessionEventLineBytes).join(" ")
           );
           indexed += 1;

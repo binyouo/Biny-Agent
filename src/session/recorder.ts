@@ -28,7 +28,7 @@ import {
 import { randomBytes } from "node:crypto";
 import path from "node:path";
 import { redactSecrets, redactSensitiveValue, type SensitiveValueRedactionOptions } from "../utils/secrets.js";
-import { assertSessionFileSize } from "./limits.js";
+import { assertSessionFileSize, maxSessionEventLineBytes } from "./limits.js";
 import { sessionFilePath } from "./store.js";
 import { projectSessionsDir } from "../config/paths.js";
 import type { SessionContextCheckpoint, SessionContextState, SessionContextUsage, SessionUsage } from "./metadata.js";
@@ -166,6 +166,9 @@ export class SessionRecorder {
     const createdAt = event.time ?? new Date().toISOString();
     const persistedEvent = { ...safeEvent, time: createdAt } as SessionEvent;
     const line = JSON.stringify(persistedEvent);
+    if (Buffer.byteLength(line, "utf8") > maxSessionEventLineBytes) {
+      throw new Error(`Session event exceeds the maximum size of ${String(maxSessionEventLineBytes)} bytes.`);
+    }
     if (!this.stream) {
       const descriptor = this.descriptor;
       if (descriptor === undefined) throw new Error(`Session recorder has no open descriptor: ${this.sessionId}`);
@@ -183,6 +186,9 @@ export class SessionRecorder {
       });
     }
     this.stream.write(`${line}\n`);
+    if (persistedEvent.type === "agent_message" || (persistedEvent.type === "user_message" && !persistedEvent.auditOnly)) {
+      this.lastMessageId = persistedEvent.messageId;
+    }
     this.recordedEvents += 1;
     this.runtimeSequence = runtime.eventSeq;
     this.lastRuntimeEvent = { ...runtime };
@@ -311,7 +317,6 @@ export class SessionRecorder {
       parentMessageId: event.parentMessageId ?? this.lastMessageId,
       slotId: event.slotId ?? messageId
     };
-    this.lastMessageId = messageId;
     return linked;
   }
 

@@ -16,6 +16,7 @@ import { readSessionEvents } from "../src/session/events.js";
 import { sessionFilePath } from "../src/session/store.js";
 import { readDesktopSession } from "../src/desktop/renderer/src/app/desktopApi.js";
 import type { DesktopWorkspaceSnapshot } from "../src/desktop/protocol.js";
+import { mergeProjectSessionPage, replaceProjectSessionRoots } from "../src/desktop/renderer/src/app/desktopState.js";
 
 async function fixture(context: TestContext) {
   const root = await mkdtemp(path.join(os.tmpdir(), "biny-session-navigation-"));
@@ -40,6 +41,48 @@ async function fixture(context: TestContext) {
   });
   return { root, project, projects, dataRoot, configDir, configStore, manager };
 }
+
+test("复制并打开父会话后保留子树展开能力", { timeout: 10_000 }, async (context) => {
+  const { project, dataRoot, manager } = await fixture(context);
+  const recorder = new SessionRecorder(dataRoot, "tree-root");
+  recorder.record({ type: "user_message", content: "保留会话树" });
+  await recorder.close();
+  const copied = await manager.duplicateSession(project.id, recorder.sessionId);
+  const childId = copied.selectedSessionId!;
+  const page = await manager.listSessionTreePage(project.id, { parentSessionId: recorder.sessionId, includeArchived: true });
+  let sidebar = mergeProjectSessionPage(copied.sessionPage!.sessions, project.id, page.sessions);
+  const document = await manager.openSession(project.id, recorder.sessionId);
+  sidebar = mergeProjectSessionPage(sidebar, project.id, [document.session]);
+  assert.equal(sidebar.find((session) => session.id === recorder.sessionId)?.hasChildren, true,
+    "opening history must not remove the parent arrow or its loaded subtree");
+  assert.equal(sidebar.find((session) => session.id === childId)?.parentSessionId, recorder.sessionId);
+});
+
+test("复制已加载的子会话后刷新其子树能力，删除仍清理旧节点", { timeout: 10_000 }, async (context) => {
+  const { project, dataRoot, manager } = await fixture(context);
+  const recorder = new SessionRecorder(dataRoot, "nested-root");
+  recorder.record({ type: "user_message", content: "多层会话分支" });
+  await recorder.close();
+  const first = await manager.duplicateSession(project.id, recorder.sessionId);
+  const childId = first.selectedSessionId!;
+  const children = await manager.listSessionTreePage(project.id, { parentSessionId: recorder.sessionId, includeArchived: true });
+  let sidebar = mergeProjectSessionPage(first.sessionPage!.sessions, project.id, children.sessions);
+  assert.equal(sidebar.find((session) => session.id === childId)?.hasChildren, false);
+  const second = await manager.duplicateSession(project.id, childId);
+  sidebar = replaceProjectSessionRoots(sidebar, project.id, second.sessionPage!.sessions, second.sessions);
+  assert.equal(sidebar.find((session) => session.id === childId)?.hasChildren, true,
+    "a loaded child must acquire an arrow when it becomes a parent");
+  const grandchildren = await manager.listSessionTreePage(project.id, { parentSessionId: childId, includeArchived: true });
+  sidebar = mergeProjectSessionPage(sidebar, project.id, grandchildren.sessions);
+  assert.equal(sidebar.find((session) => session.id === second.selectedSessionId)?.parentSessionId, childId);
+  const document = await manager.openSession(project.id, childId);
+  sidebar = mergeProjectSessionPage(sidebar, project.id, [document.session]);
+  assert.equal(sidebar.find((session) => session.id === childId)?.hasChildren, true);
+  const deleted = await manager.deleteSession(project.id, second.selectedSessionId!);
+  sidebar = replaceProjectSessionRoots(sidebar, project.id, deleted.sessionPage!.sessions, deleted.sessions);
+  assert.equal(sidebar.some((session) => session.id === second.selectedSessionId), false);
+  assert.equal(sidebar.find((session) => session.id === childId)?.hasChildren, false);
+});
 
 test("项目导航只检查目录存在，不重复执行 Git；显式刷新仍检查 Git", { timeout: 10_000 }, async (context) => {
   const { project, projects, manager } = await fixture(context);

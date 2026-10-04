@@ -161,27 +161,25 @@ export async function readSessionSnapshot(workspaceRoot: string, session: string
   return await readSessionSnapshotAt(location, filePath);
 }
 
-/** 缓存命中仍打开文件并校验目录、链接数和文件身份；只有稳定指纹才能跳过正文读取。 */
-export async function readSessionSnapshotOrCached<T>(
+/** 历史读取仍校验文件绑定；读取期间变化的文件不能发布成完整缓存。 */
+export async function readSessionFileOrCached<T>(
   workspaceRoot: string,
   session: string | undefined,
-  lookup: (filePath: string, stat: Stats) => T | undefined
-): Promise<{ cached: T; snapshot?: never } | { snapshot: SessionFileSnapshot; cached?: never }> {
+  lookup: (filePath: string, stat: Stats) => T | undefined,
+  load: (handle: FileHandle, filePath: string, stat: Stats) => Promise<T>
+): Promise<{ filePath: string; stat: Stats; value: T }> {
   const location = await resolveSessionStorage(workspaceRoot);
   const filePath = await resolveSessionFileAt(location, session);
   const handle = await openSessionHandle(location, filePath);
   try {
-    const before = await assertSessionBinding(location, filePath, handle);
-    const cached = lookup(filePath, before);
-    if (cached !== undefined) {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const before = await assertSessionBinding(location, filePath, handle);
+      const cached = lookup(filePath, before);
+      const value = cached ?? await load(handle, filePath, before);
       const after = await assertSessionBinding(location, filePath, handle);
-      if (sameSessionFingerprint(before, after)) return { cached };
+      if (sameSessionFingerprint(before, after)) return { filePath, stat: before, value };
     }
-    const initial = await assertSessionBinding(location, filePath, handle);
-    const { bytes, truncated } = await readSessionTail(handle, path.basename(filePath));
-    await assertSessionBinding(location, filePath, handle);
-    // 按读取前的指纹缓存：并发追加后下一次必定失效，不能把旧正文标成新版本。
-    return { snapshot: { filePath, fileName: path.basename(filePath), bytes, stat: initial, truncated } };
+    throw new Error(`Session changed repeatedly while reading history: ${path.basename(filePath)}`);
   } finally {
     await handle.close();
   }

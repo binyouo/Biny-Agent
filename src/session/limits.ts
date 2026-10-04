@@ -8,8 +8,12 @@ import type { FileHandle } from "node:fs/promises";
 import path from "node:path";
 
 export const maxSessionFileBytes = 16 * 1024 * 1024;
-export const maxSessionEventLineBytes = 1024 * 1024;
+// 图片等完整协议消息可超过 1 MiB；单行沿用会话预算，并为 JSONL 换行留一字节。
+export const maxSessionEventLineBytes = maxSessionFileBytes - 1;
 export const maxSessionEvents = 50_000;
+
+/** 完整历史在内存中的源字节预算；超过时明确报错，不能静默裁掉消息父链。 */
+export const maxSessionHistoryBytes = 128 * 1024 * 1024;
 
 const sessionReadChunkBytes = 64 * 1024;
 
@@ -88,4 +92,37 @@ export async function readSessionTail(handle: FileHandle, label: string): Promis
   const tail = Buffer.concat(chunks, totalBytes);
   const firstNewline = tail.indexOf(0x0a);
   return { bytes: firstNewline === -1 ? Buffer.alloc(0) : tail.subarray(firstNewline + 1), truncated: true };
+}
+
+/** 固定读取开始时的文件长度，按 JSONL 的 LF 分行；内存只保留一行与一个读取块。 */
+export async function* readSessionEventLines(handle: FileHandle, size: number): AsyncGenerator<string> {
+  if (!Number.isSafeInteger(size) || size < 0) throw new Error("Session has an unreadable size.");
+  let offset = 0;
+  let parts: Buffer[] = [];
+  let lineBytes = 0;
+  let lineNumber = 1;
+  while (offset < size) {
+    const buffer = Buffer.allocUnsafe(Math.min(sessionReadChunkBytes, size - offset));
+    const { bytesRead } = await handle.read(buffer, 0, buffer.length, offset);
+    if (bytesRead === 0) throw new Error("Session changed while reading history.");
+    offset += bytesRead;
+    let start = 0;
+    while (start < bytesRead) {
+      const newline = buffer.indexOf(0x0a, start);
+      const end = newline < 0 || newline >= bytesRead ? bytesRead : newline;
+      const part = buffer.subarray(start, end);
+      lineBytes += part.length;
+      if (lineBytes > maxSessionEventLineBytes) {
+        throw new Error(`Session event line ${String(lineNumber)} exceeds the maximum size of ${String(maxSessionEventLineBytes)} bytes.`);
+      }
+      parts.push(part);
+      if (end === bytesRead) break;
+      yield Buffer.concat(parts, lineBytes).toString("utf8") + "\n";
+      parts = [];
+      lineBytes = 0;
+      lineNumber++;
+      start = end + 1;
+    }
+  }
+  if (lineBytes) yield Buffer.concat(parts, lineBytes).toString("utf8");
 }
