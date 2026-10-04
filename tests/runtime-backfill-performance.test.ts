@@ -70,6 +70,36 @@ test("rewritten prefix takes the full conflict-check path without moving the wat
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
+test("rewritten message parent reports session, event and field without exposing content; restoring the original unblocks startup", async () => {
+  const { root, file } = await workspace();
+  const original = { type: "user_message", content: "private fixture request", messageId: "user-1",
+    runtime: { eventId: "parent-conflict", eventSeq: 1, runId: "run", turnId: "turn" } };
+  const row = (value: unknown): string => `${JSON.stringify(value)}\n`;
+  try {
+    await writeFile(file, row(original));
+    (await open(root)).close();
+    const previous = watermark(root);
+    await writeFile(file, row({ ...original, parentMessageId: "assistant-previous" }));
+    await assert.rejects(open(root), (error: unknown) => {
+      assert.ok(error instanceof Error);
+      assert.match(error.message, /already bound to another fact/u);
+      assert.match(error.message, /backfill-test/u);
+      assert.match(error.message, /parent-conflict/u);
+      assert.match(error.message, /payload\.parentMessageId/u);
+      assert.doesNotMatch(error.message, /private fixture request|assistant-previous/u);
+      return true;
+    });
+    assert.deepEqual(watermark(root), previous);
+    await writeFile(file, row(original));
+    const ready = await open(root);
+    try {
+      const saved = ready.readEvents({ sessionId: "backfill-test" }).events;
+      assert.equal(saved.length, 1);
+      assert.deepEqual(saved[0]?.payload, original);
+    } finally { ready.close(); }
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
 test("schema upgrade without an old content hash replays the next change conservatively", async () => {
   const { root, file } = await workspace();
   try {

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, readFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { test, type TestContext } from "node:test";
@@ -12,6 +12,9 @@ import { DesktopUserDataStore } from "../src/desktop/electron/main/DesktopUserDa
 import { SessionLeaseStore } from "../src/runtime/SessionLease.js";
 import { connectRuntimeHost } from "../src/runtime/RuntimeHost.js";
 import { RuntimeHostStartupError } from "../src/runtime/host/errors.js";
+import { currentRuntimeHostIdentity, ensureRuntimeHostDirectory, runtimeHostPaths, writeRegistration } from "../src/runtime/host/lifecycle.js";
+import { runtimeHostProtocolVersion } from "../src/runtime/host/protocol.js";
+import { runtimeHostSpawnCircuitFor } from "../src/runtime/host/reconnect.js";
 import { readSessionEvents } from "../src/session/events.js";
 import { SessionRecorder } from "../src/session/recorder.js";
 import { sessionFilePath } from "../src/session/store.js";
@@ -156,4 +159,54 @@ test("恢复目标会话后释放先前空闲会话的写入权，不把别的�
   } finally {
     await client.close();
   }
+});
+
+test("旧协议 owner 存活时保留它；owner 退出后在原窗口重试恢复且不提交消息", { timeout: 30_000 }, async (context) => {
+  const { project, dataRoot, manager, configDir, sessionId } = await fixture(context);
+  const before = await readSessionEvents(sessionFilePath(dataRoot, sessionId));
+  const paths = runtimeHostPaths(dataRoot);
+  await ensureRuntimeHostDirectory(path.dirname(paths.endpoint));
+  await writeRegistration({ ...paths, ...currentRuntimeHostIdentity({ configDir }),
+    protocolVersion: runtimeHostProtocolVersion - 1, persistenceRoot: dataRoot,
+    hostEpoch: "old-owner", token: "test-access-secret", pid: process.pid, createdAt: new Date().toISOString()
+  });
+  context.after(() => rm(paths.registrationPath, { force: true }));
+  const blocked = await manager.prepareWorkspace(project.id);
+  assert.equal(blocked.runtimeError?.kind, "protocol_mismatch");
+  assert.equal(blocked.runtimeError?.retryable, true);
+  const stillBlocked = await manager.retryRuntime(project.id, sessionId);
+  assert.equal(stillBlocked.workspace.runtimeError?.kind, "protocol_mismatch");
+  assert.equal(JSON.parse(await readFile(paths.registrationPath, "utf8")).hostEpoch, "old-owner");
+  assert.deepEqual(await readSessionEvents(sessionFilePath(dataRoot, sessionId)), before);
+  // 模拟原 owner 正常退出并撤下 registration；客户端不能擅自终止旧进程。
+  await rm(paths.registrationPath);
+  const ready = await manager.retryRuntime(project.id, sessionId);
+  assert.equal(ready.workspace.runtimeError, undefined);
+  assert.equal(ready.document?.runtimeSnapshot?.info.sessionId, sessionId);
+  assert.deepEqual(await readSessionEvents(sessionFilePath(dataRoot, sessionId)), before);
+});
+
+test("浏览不解除启动熔断；显式重试只复位当前项目并恢复历史而不运行模型", { timeout: 30_000 }, async (context) => {
+  const { project, dataRoot, manager, configStore, sessionId } = await fixture(context);
+  const before = await readSessionEvents(sessionFilePath(dataRoot, sessionId));
+  const circuit = runtimeHostSpawnCircuitFor(runtimeHostPaths(dataRoot).endpoint);
+  const otherCircuit = runtimeHostSpawnCircuitFor(runtimeHostPaths(path.join(dataRoot, "other")).endpoint);
+  for (let i = 0; i < 3; i++) { circuit.recordFailure(new Error("fixture startup failed")); otherCircuit.recordFailure(); }
+  const load = configStore.load.bind(configStore);
+  configStore.load = async (...args) => {
+    const failure = circuit.failureError();
+    if (failure) throw failure;
+    return await load(...args);
+  };
+  await assert.rejects(manager.sendPrompt(project.id, sessionId, "未接收输入", []), /3 times in a row/u);
+  const blocked = await manager.workspaceSnapshot(project.id, false);
+  assert.equal(blocked.runtimeError?.retryable, true);
+  assert.equal((await manager.openSession(project.id, sessionId)).runtimeError?.kind, "startup_failed");
+  assert.equal(circuit.consecutiveFailures, 3);
+  const ready = await manager.retryRuntime(project.id, sessionId);
+  assert.equal(ready.workspace.runtimeError, undefined);
+  assert.equal(ready.document?.runtimeSnapshot?.info.sessionId, sessionId);
+  assert.equal(circuit.consecutiveFailures, 0);
+  assert.equal(otherCircuit.consecutiveFailures, 3);
+  assert.deepEqual(await readSessionEvents(sessionFilePath(dataRoot, sessionId)), before);
 });

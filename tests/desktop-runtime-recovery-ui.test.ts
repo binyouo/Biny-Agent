@@ -104,14 +104,24 @@ test("启动超时保留正文，提示可重试而不是让用户关闭别的�
   assert.doesNotMatch(html, /若另一个|关闭会话|创建聊天分支|textarea/u);
 });
 
-test("版本冲突不提供无效重试，普通状态正常保留输入框", () => {
+test("版本冲突保留重试连接入口，说明旧任务结束后可以在当前窗口恢复", () => {
   const html = renderToStaticMarkup(React.createElement(Workspace, { ...props,
-    runtimeError: { kind: "protocol_mismatch", message: "protocol mismatch", retryable: false }
+    runtimeError: { kind: "protocol_mismatch", message: "protocol mismatch", retryable: true }
   }));
   assert.match(html, /运行时版本不一致/u);
-  assert.doesNotMatch(html, />重试</u);
+  assert.match(html, />重试</u);
+  assert.match(html, /重试连接/u);
+  assert.doesNotMatch(html, /重新打开 Biny/u);
   const ready = renderToStaticMarkup(React.createElement(Workspace, props));
   assert.match(ready, /textarea/u);
   assert.match(ready, /保留草稿/u);
   assert.doesNotMatch(ready, /技术详情|已在另一个应用中打开/u);
+});
+
+test("启动失败保留手动重试并明确不自动发送消息", () => {
+  const html = renderToStaticMarkup(React.createElement(Workspace, { ...props,
+    runtimeError: { kind: "startup_failed", message: "startup circuit open", retryable: true }
+  }));
+  assert.match(html, />重试</u);
+  assert.match(html, /不会自动发送消息/u);
 });

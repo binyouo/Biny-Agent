@@ -82,7 +82,8 @@ import {
 } from "../../../runtime/RuntimeHost.js";
 import { isSessionWriterConflictError } from "../../../runtime/SessionLease.js";
 import { RuntimeHostProtocolMismatchError, RuntimeHostStartupError, RuntimeHostUnavailableError } from "../../../runtime/host/errors.js";
-import { RuntimeHostSpawnCircuitOpenError } from "../../../runtime/host/reconnect.js";
+import { runtimeHostSpawnCircuitFor } from "../../../runtime/host/reconnect.js";
+import { runtimeHostPaths } from "../../../runtime/host/lifecycle.js";
 import {
   deleteSessionCatalogRecord,
   readSessionCatalogRecord,
@@ -304,6 +305,8 @@ export class DesktopAgentManager {
   async retryRuntime(projectId: string, sessionId?: string): Promise<DesktopRuntimeRetryResult> {
     const project = this.projects.requireProject(projectId);
     if (sessionId !== undefined) await this.projects.openSession(project, sessionId, [], new Map());
+    const persistenceRoot = await this.projects.dataRoot(project);
+    runtimeHostSpawnCircuitFor(runtimeHostPaths(persistenceRoot).endpoint).reset();
     try {
       if (sessionId === undefined) await this.ensureRuntime(projectId);
       else await this.resolveSessionRuntime(projectId, sessionId, false);
@@ -3668,7 +3671,7 @@ function formatRuntimeInitializationError(error: unknown): DesktopRuntimeError {
       : error instanceof RuntimeHostProtocolMismatchError ? "protocol_mismatch"
       : error instanceof RuntimeHostUnavailableError ? "host_unavailable" : "startup_failed",
     message: error instanceof Error ? error.message : String(error),
-    retryable: !(error instanceof RuntimeHostProtocolMismatchError || error instanceof RuntimeHostSpawnCircuitOpenError)
+    retryable: true
   };
 }
 

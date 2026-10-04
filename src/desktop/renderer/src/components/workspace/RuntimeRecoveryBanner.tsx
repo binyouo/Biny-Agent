@@ -41,9 +41,8 @@ export function RuntimeRecoveryBanner({ writerConflict, runtimeError, onRetry, o
   const description = writerConflict ? executing
     ? `${owner}正在执行此会话。等待本轮结束后刷新状态，或创建聊天分支继续；同目录的其他会话仍可使用。`
     : `${writerConflict.ownerPid === undefined ? "另一个进程" : `进程 ${String(writerConflict.ownerPid)}`}持有此会话的写入权。等待它完成或在该进程中关闭会话后刷新状态。其他会话仍可使用。`
-    : runtimeError?.kind === "protocol_mismatch" ? "确认旧运行时没有正在执行的任务后，将它退出，再重新打开 Biny。历史记录仍可查看。"
+    : runtimeError?.kind === "protocol_mismatch" ? "旧运行时仍在使用另一版本。等待旧任务结束并退出旧运行时后，点击重试连接；不会中断旧任务或自动发送消息。历史记录仍可查看。"
     : runtimeError?.kind === "host_unavailable" ? "已发现后台运行时进程，但暂时无法连接。请检查技术详情中的进程状态，再重试连接；历史和未发送的输入仍会保留。"
-    : runtimeError?.retryable === false ? "运行时连续启动失败，已停止自动尝试。请检查技术详情，修复原因后重新打开 Biny。历史记录仍可查看。"
     : "历史记录和未发送的输入仍会保留。重试只重新连接运行时，不会自动发送消息。";
   return (
     <div className="biny-runtime-recovery-container">

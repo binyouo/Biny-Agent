@@ -50,7 +50,7 @@ export class RuntimeHostSpawnCircuitOpenError extends Error {
   constructor(readonly endpoint: string, readonly attempts: number, lastFailure?: Error) {
     super(
       `Runtime Host process died immediately ${String(attempts)} times in a row; giving up spawning. `
-      + "Inspect the startup details, fix the cause, then reopen Biny or restart the affected CLI/TUI client."
+      + "Inspect the startup details, fix the cause, then explicitly retry in Biny or restart the affected CLI/TUI client."
       + (lastFailure === undefined ? "" : `\nLast startup failure: ${lastFailure.message}`),
       { cause: lastFailure }
     );
@@ -63,6 +63,8 @@ export interface RuntimeHostSpawnCircuit {
   recordFailure(error?: Error): number;
   /** 一次成功握手（host 真正 ready）清零连续失败计数。 */
   recordSuccess(): void;
+  /** 仅用户显式重试可以重新开启尝试；普通浏览和自动重连不得复位。 */
+  reset(): void;
   /** 越限（连续失败 ≥ threshold）时返回应抛出的终结错误，否则 undefined。 */
   failureError(): RuntimeHostSpawnCircuitOpenError | undefined;
   readonly consecutiveFailures: number;
@@ -90,6 +92,9 @@ export function createRuntimeHostSpawnCircuit(
       return consecutiveFailures;
     },
     recordSuccess(): void {
+      this.reset();
+    },
+    reset(): void {
       consecutiveFailures = 0;
       lastFailure = undefined;
     },

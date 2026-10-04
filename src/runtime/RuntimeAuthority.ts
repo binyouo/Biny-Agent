@@ -1242,15 +1242,30 @@ export class RuntimeEventAuthority implements RuntimeEventSink {
       const payloadMatches = current.eventType.startsWith("session.")
         ? sessionPayloadJson(current.payload) === sessionPayloadJson(input.payload)
         : json(current.payload) === json(input.payload);
-      if (
-        current.workspaceId !== this.workspaceId
-        || current.sessionId !== input.sessionId
-        || current.runId !== input.runId
-        || current.turnId !== input.turnId
-        || current.eventType !== input.eventType
-        || (current.eventSeq !== undefined && current.eventSeq !== input.eventSeq)
-        || !payloadMatches
-      ) throw new Error(`Runtime event id ${eventId} is already bound to another fact.`);
+      const conflictingFields = Object.entries({
+        workspaceId: current.workspaceId !== this.workspaceId,
+        sessionId: current.sessionId !== input.sessionId,
+        runId: current.runId !== input.runId,
+        turnId: current.turnId !== input.turnId,
+        eventType: current.eventType !== input.eventType,
+        eventSeq: current.eventSeq !== undefined && current.eventSeq !== input.eventSeq
+      }).filter(([, differs]) => differs).map(([field]) => field);
+      if (!payloadMatches) {
+        const saved = current.payload;
+        const incoming = input.payload;
+        // 只报告固定的字段名称；消息、工具参数和元数据值不能进入启动诊断。
+        const payloadFields = saved && incoming && typeof saved === "object" && typeof incoming === "object"
+          ? ["type", "content", "message", "messageId", "parentMessageId", "slotId", "runtime", "metadata"]
+            .filter((field) => json((saved as Record<string, unknown>)[field]) !== json((incoming as Record<string, unknown>)[field]))
+            .map((field) => `payload.${field}`)
+          : [];
+        conflictingFields.push(...(payloadFields.length ? payloadFields : ["payload"]));
+      }
+      if (conflictingFields.length) {
+        throw new Error(`Runtime event id ${eventId} is already bound to another fact. `
+          + `Session: ${input.sessionId}. Conflicting fields: ${conflictingFields.join(", ")}. `
+          + "Check the session JSONL against a verified backup; the saved event was not overwritten.");
+      }
       if (current.eventSeq === undefined && input.eventSeq !== undefined) {
         this.database.prepare("UPDATE runtime_events SET event_seq = ? WHERE event_id = ?").run(input.eventSeq, eventId);
         return { ...current, eventSeq: input.eventSeq };
