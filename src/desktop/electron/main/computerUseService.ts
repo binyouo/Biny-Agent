@@ -146,7 +146,10 @@ export async function createComputerUseService(browser: DesktopBrowserService, g
     assertSender(event);
     // Only this explicit button requests AX. Passive refresh never requests either grant.
     if (process.platform !== "darwin") throw new Error("Accessibility setup is available on macOS only");
-    systemPreferences.isTrustedAccessibilityClient(true);
+    // 弹窗必须由守护进程发起：TCC 授的是发起调用的那个进程。在宿主里调
+    // isTrustedAccessibilityClient(true) 会把辅助功能授给 Electron 宿主，
+    // 而真正需要它的是独立签名的 helper —— 用户授完仍然不能用。
+    await driver.grantAccessibility().catch(() => undefined);
     return await diagnostics();
   });
   ipcMain.handle(computerIpc.test, async event => {

@@ -349,6 +349,13 @@ DispatchQueue.global().async {
                                 reply(fd, ["id": id, "ok": true, "data": ["ok": true] as [String: Any]] as [String: Any])
                             case "shot_display":
                                 reply(fd, ["id": id, "ok": true, "data": try await screenshot(args)])
+                            case "grant":
+                                // 必须由守护进程自己发起：系统弹窗授的是「调用进程」——
+                                // 从 Electron 宿主发起就会把辅助功能授给宿主，而真正需要它的是
+                                // 这个独立签名的 helper（Alma 的 grant 同样落在 helper 上）。
+                                let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
+                                let granted = AXIsProcessTrustedWithOptions(options)
+                                reply(fd, ["id": id, "ok": true, "data": ["accessibility": granted ? "granted" : "denied", "prompted": !granted] as [String: Any]])
                             case "launch_app":
                                 // 后台拉起：绝不 activate，不抢用户焦点（Alma 的 launch_app 同样保证这点）。
                                 guard let bundle = args["bundle"] as? String else {

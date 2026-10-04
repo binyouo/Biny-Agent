@@ -292,6 +292,13 @@ export class NativeProcessDriver implements ComputerDriver {
     return this.stop();
   }
 
+  /**
+   * 让守护进程自己发起辅助功能授权弹窗。
+   * 系统弹窗授的是「调用进程」——从宿主发起会把权限授给宿主，
+   * 而需要它的是这个独立签名的 helper。
+   */
+  grantAccessibility(): Promise<DriverReply> { return this.call("grant", {}); }
+
   /** 后台拉起（不抢焦点）；已运行则原样返回 pid。供 MCP 出口使用。 */
   launchApp(bundle: string): Promise<DriverReply> { return this.call("launch_app", { bundle }); }
 

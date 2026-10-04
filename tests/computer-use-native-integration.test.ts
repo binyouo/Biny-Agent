@@ -167,6 +167,12 @@ test("every daemon command answers in the shape its caller parses", async () => 
       assert.ok(Object.keys(reply.data).length > 0, `${action} 必须回一个确认体`);
     }
 
+    // grant：必须能从守护进程侧发起 —— 系统弹窗授的是发起进程，
+    // 从宿主发起会把辅助功能授给宿主而不是 helper（用户授完仍然用不了）。
+    const grant = (await driver.grantAccessibility()).data as Record<string, unknown>;
+    assert.ok(["granted", "denied"].includes(grant.accessibility as string), "grant 必须回报辅助功能状态");
+    assert.equal(typeof grant.prompted, "boolean");
+
     // launch_app / capture_screen
     const launched = await driver.launchApp("com.apple.TextEdit");
     assert.equal(typeof (launched.data as { pid?: unknown }).pid, "number");
