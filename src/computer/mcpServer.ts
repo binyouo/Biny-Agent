@@ -125,7 +125,7 @@ export function createComputerUseMcpServer(driver: NativeProcessDriver): McpServ
     "type_text",
     {
       title: "Type text",
-      description: "Type text into the target app. Focus the destination first with click. Multi-byte text is delivered character by character. Returns the post-action screenshot.",
+      description: "Type text into the target app. Focus the destination first with click. Multi-byte text is delivered character by character. If the reply carries a keystrokes_may_be_dropped warning the app had nothing focused to receive them — treat it as not written. Returns the post-action screenshot.",
       inputSchema: { text: z.string().min(1).max(4000), pid: z.number().int().positive().optional() }
     },
     async ({ text, pid }) => {
@@ -140,7 +140,7 @@ export function createComputerUseMcpServer(driver: NativeProcessDriver): McpServ
     "press_key",
     {
       title: "Press key",
-      description: "Press a key or chord in xdotool syntax: cmd+s, ctrl+shift+t, Return, Escape, F1. Returns the post-action screenshot.",
+      description: "Press a key or chord in xdotool syntax: cmd+s, ctrl+shift+t, Return, Escape, F1. A keystrokes_may_be_dropped warning means the app had nothing focused to receive it. Returns the post-action screenshot.",
       inputSchema: { key: z.string().min(1).max(40), pid: z.number().int().positive().optional() }
     },
     async ({ key, pid }) => {

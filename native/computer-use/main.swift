@@ -260,6 +260,21 @@ func postDrag(_ pid: pid_t, from: CGPoint, to: CGPoint) {
     postMouse(pid, .leftMouseUp, to)
 }
 
+/// 目标应用是否处在能接收键盘输入的状态。
+///
+/// 后台应用被投递的按键常被系统直接丢弃，而 API 会照常报"已输入"——
+/// 这是最坏的一类失败：调用方以为写进去了。Alma 的守护进程会显式报这个
+/// （notes/19 §3：「目标是后台 app 且无 key window，按键被系统丢弃」）。
+func keyDeliveryWarning(_ pid: pid_t) -> String? {
+    if NSRunningApplication(processIdentifier: pid)?.isActive == true { return nil }  // 前台，正常路径
+    // 判据是「有没有聚焦的 UI 元素」，不是「有没有 key window」：
+    // 实测网易云与文本编辑都有 key window，区别在于前者没有 AXFocusedUIElement，
+    // 而它正是按键的去处。没有它，按键就是被系统丢掉。
+    let axApp = axApp(pid)
+    if axCopy(axApp, kAXFocusedUIElementAttribute as String) != nil { return nil }
+    return "keystrokes_may_be_dropped: 目标应用不在前台，且没有任何聚焦的 UI 元素，这些按键很可能已被系统丢弃。先重新观察确认目标状态，别把它当成写进去了。"
+}
+
 func screenshot(_ parameters: [String: Any]) async throws -> [String: Any] {
     guard let output = parameters["out"] as? String else { throw NSError(domain: "capture", code: 64) }
     let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
@@ -535,13 +550,17 @@ DispatchQueue.global().async {
                                 let pid = try resolvePid(args)
                                 let text = args["text"] as? String ?? ""
                                 await withFocusGuard(pid) { postUnicode(pid, text) }
-                                reply(fd, ["id": id, "ok": true, "data": ["typed": text.count] as [String: Any]] as [String: Any])
+                                var typed: [String: Any] = ["typed": text.count]
+                                if let warning = keyDeliveryWarning(pid) { typed["warning"] = warning }
+                                reply(fd, ["id": id, "ok": true, "data": typed])
                             case "press_key":
                                 let pid = try resolvePid(args)
                                 let combo = args["key"] as? String ?? ""
                                 guard let (keyCode, flags) = parseKeyCombo(combo) else { throw NSError(domain: "key", code: 64, userInfo: [NSLocalizedDescriptionKey: "unknown_key"]) }
                                 await withFocusGuard(pid) { postKey(pid, keyCode: keyCode, flags: flags) }
-                                reply(fd, ["id": id, "ok": true, "data": ["pressed": combo] as [String: Any]] as [String: Any])
+                                var pressed: [String: Any] = ["pressed": combo]
+                                if let warning = keyDeliveryWarning(pid) { pressed["warning"] = warning }
+                                reply(fd, ["id": id, "ok": true, "data": pressed])
                             case "scroll":
                                 let pid = try resolvePid(args)
                                 let direction = args["direction"] as? String ?? "down"

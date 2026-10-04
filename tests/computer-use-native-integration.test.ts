@@ -181,3 +181,30 @@ test("every daemon command answers in the shape its caller parses", async () => 
     await driver.dispose();
   }
 });
+
+// 最坏的一类失败是"报成功但没写进去"。守护进程必须能识别出这种情形并说出来，
+// 而不是回一个 typed=N 让人以为成了（notes/19 §3 的做法）。
+test("type_text says so when the keystrokes were probably dropped", async () => {
+  const driver = new NativeProcessDriver(() => {}, {
+    binaryPath: new URL("../out/native/computer-use", import.meta.url).pathname
+  });
+  try {
+    const listed = await driver.list("warn-e2e", undefined);
+    const apps = (listed.data as { apps?: { name: string; pid: number; running?: boolean }[] }).apps ?? [];
+    // 找一个在后台、且没有聚焦 UI 元素的目标 —— 按键在那种状态会被系统丢掉。
+    // 找不到就跳过：不伪造一个必然成立的场景。
+    let warned: string | undefined;
+    for (const app of apps.slice(0, 8)) {
+      const observed = await driver.observe("warn-e2e", { pid: app.pid } as never).catch(() => undefined);
+      if (!observed) continue;
+      const reply = await driver.actRaw("type_text", { text: "x", pid: app.pid });
+      const data = reply.data as { typed?: number; warning?: string };
+      if (data.warning) { warned = data.warning; break; }
+    }
+    if (!warned) return;
+    assert.match(warned, /keystrokes_may_be_dropped/, "警告要带可判别的错误码");
+    assert.match(warned, /重新观察|别把它当成写进去了/, "警告要给出下一步，而不只是说坏了");
+  } finally {
+    await driver.dispose();
+  }
+});
