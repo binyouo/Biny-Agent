@@ -1,7 +1,7 @@
 /** Benign regex semantics plus deterministic hostile worker lifecycle boundaries. */
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { access, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { syncBuiltinESMExports } from "node:module";
 import os from "node:os";
 import path from "node:path";
@@ -21,7 +21,7 @@ async function search(root: string, args: SearchFilesArgs, signal?: AbortSignal)
 }
 
 async function fixture(run: (root: string) => Promise<void>): Promise<void> {
-  const root = await mkdtemp(path.join(os.tmpdir(), "biny-grep-cancellation-"));
+  const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "biny-grep-cancellation-")));
   try { await run(root); } finally { await rm(root, { recursive: true, force: true }); }
 }
 
