@@ -16,7 +16,7 @@ export function createComputerUseTools(endpoint: BrowserAutomationEndpoint): Too
       resolveExecution: args => execution(endpoint, "list", z.object({ pid: windowTargetSchema.shape.pid.optional() }).strict().parse(args), false)
     },
     {
-      name: "ComputerObserve", description: "Observe one exact native window using Cua, returning an image, fresh capture_id and element tokens. This screenshot is sent to the current model only after the execution service checks the target application approval; it is not saved to Activity memory.", risk: "read", capability: "computer.observe",
+      name: "ComputerObserve", description: "Observe one exact native window, returning an image, fresh capture_id and element tokens. This screenshot is sent to the current model only after the execution service checks the target application approval; it is not saved to Activity memory.", risk: "read", capability: "computer.observe",
       parameters: { type: "object", properties: commonProperties, required: ["pid", "windowId"], additionalProperties: false }, schema: windowTargetSchema,
       resolveExecution: args => execution(endpoint, "observe", windowTargetSchema.parse(args), false)
     },
