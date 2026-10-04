@@ -86,6 +86,7 @@ interface ManagedMcpServer {
 
 export class McpToolHost {
   private readonly servers = new Map<string, ManagedMcpServer>();
+  private readonly openingClients = new Set<Client>();
   private registry?: ToolRegistry;
   private workspaceRoot = "";
   private closing = false;
@@ -360,7 +361,10 @@ export class McpToolHost {
 
   async close(): Promise<void> {
     this.closing = true;
-    const clients = [...this.servers.values()].map((server) => server.client).filter((client): client is Client => Boolean(client));
+    const clients = [...new Set([
+      ...this.openingClients,
+      ...[...this.servers.values()].map((server) => server.client).filter((client): client is Client => Boolean(client))
+    ])];
     await Promise.all(clients.map(async (client) => {
       try {
         await client.close();
@@ -598,10 +602,24 @@ export class McpToolHost {
   }
 
   private async tryConnect(managed: ManagedMcpServer, transport: Transport): Promise<{ client: Client; tools: ListedMcpTool[] }> {
+    if (this.closing) throw new Error(`MCP host is closing; cannot connect ${managed.name}.`);
     const client = new Client({ name: "biny", version: "0.1.0" });
+    // initialize 和首次 tools/list 完成前，连接尚未交给 managed.client，但仍归 host 负责关闭。
+    this.openingClients.add(client);
+    const closed = new Promise<never>((_resolve, reject) => {
+      // SSE 在收到 endpoint 前关闭时，SDK 的 connect() 不会自行结束。
+      client.onclose = () => {
+        if (this.closing) reject(new Error(`MCP host is closing; cannot connect ${managed.name}.`));
+      };
+    });
     try {
-      await client.connect(transport);
-      return { client, tools: await this.listAllTools(managed, client) };
+      return await Promise.race([
+        (async () => {
+          await client.connect(transport);
+          return { client, tools: await this.listAllTools(managed, client) };
+        })(),
+        closed
+      ]);
     } catch (error) {
       try {
         await client.close();
@@ -609,6 +627,9 @@ export class McpToolHost {
         // The original connection error is more useful than a close error.
       }
       throw error;
+    } finally {
+      client.onclose = undefined;
+      this.openingClients.delete(client);
     }
   }
 }
