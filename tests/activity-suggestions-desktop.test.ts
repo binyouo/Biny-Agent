@@ -2,6 +2,15 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { registerHooks } from "node:module";
 
+// 资源与样式的加载 hook 必须在任何组件 import 之前注册。
+// 组件图会走到 src/desktop/renderer/src/assets/*.png，而 tsx 不认识 .png：
+// 注册晚了（例如放在某个 test 体里、晚于 await import(Workspace)）就会
+// 直接抛 ERR_UNKNOWN_FILE_EXTENSION，整个文件挂掉。
+registerHooks({ load(url, context, next) {
+  if (/\.(svg|png)$/u.test(url)) return { format: "module", source: 'export default "asset";', shortCircuit: true };
+  return url.endsWith(".css") ? { format: "module", source: "export {};", shortCircuit: true } : next(url, context);
+} });
+
 test("new-chat suggestions load once, submit, and hide on empty results or errors", async (t) => {
   const { JSDOM } = await import("jsdom");
   const dom = new JSDOM('<!doctype html><div id="root"></div>', { url: "https://desktop.local", pretendToBeVisual: true });
@@ -25,8 +34,10 @@ test("new-chat suggestions load once, submit, and hide on empty results or error
   const { Workspace } = await import("../src/desktop/renderer/src/components/Workspace.js");
   const root = createRoot(document.getElementById("root")!);
   const submitted: string[] = [];
+  // 新会话页现在走 hero 态（heroStart），建议短语挂在 hero 块内；
+  // 不传 heroStart 就落到旧的「开始一段新的对话」分支，短语不会渲染。
   const props = { turns: [], loading: false, thinking: false, running: false,
-    runtimePanelOpen: false, onSendActivitySuggestion: async (text: string) => { submitted.push(text); }
+    runtimePanelOpen: false, heroStart: true, onSendActivitySuggestion: async (text: string) => { submitted.push(text); }
   } as unknown as React.ComponentProps<typeof Workspace>;
   try {
     await React.act(async () => root.render(React.createElement(Workspace, props)));
@@ -83,10 +94,6 @@ test("suggestion submission uses composer capabilities and guards without attach
     saved.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
     Object.defineProperty(globalThis, key, { configurable: true, value });
   }
-  const imports = registerHooks({ load(url, context, next) {
-    if (/\.(svg|png)$/u.test(url)) return { format: "module", source: 'export default "asset";', shortCircuit: true };
-    return url.endsWith(".css") ? { format: "module", source: "export {};", shortCircuit: true } : next(url, context);
-  } });
   Object.defineProperty(window, "matchMedia", { value: () => ({ matches: true, addEventListener() {}, removeEventListener() {} }) });
   Object.defineProperty(document, "fonts", { value: { addEventListener() {}, removeEventListener() {} } });
   const root = createRoot(document.getElementById("root")!);
@@ -130,7 +137,7 @@ test("suggestion submission uses composer capabilities and guards without attach
     assert.equal(sends.length, 2);
   } finally {
     await React.act(() => root.unmount());
-    imports.deregister(); dom.window.close();
+    dom.window.close();
     for (const [key, descriptor] of saved) {
       if (descriptor) Object.defineProperty(globalThis, key, descriptor);
       else Reflect.deleteProperty(globalThis, key);
