@@ -157,6 +157,84 @@ export function createComputerUseMcpServer(driver: NativeProcessDriver): McpServ
   );
 
   server.registerTool(
+    "drag",
+    {
+      title: "Drag",
+      description: "Mouse drag from one screenshot point to another. The accessibility API has no drag action, so this synthesises a press-move-release sequence.",
+      inputSchema: {
+        x1: z.number(), y1: z.number(), x2: z.number(), y2: z.number(),
+        pid: z.number().int().positive().optional()
+      }
+    },
+    async ({ x1, y1, x2, y2, pid }) => {
+      try {
+        const reply = await driver.actRaw("drag", { x1, y1, x2, y2 }, pid);
+        return { content: [{ type: "text" as const, text: asText(reply.data) }] };
+      } catch (error) { return fail(error); }
+    }
+  );
+
+  server.registerTool(
+    "perform_secondary_action",
+    {
+      title: "Open context menu",
+      description: "Right-click, or open the context menu of an element by ref. Tries the accessibility ShowMenu action first and falls back to a synthesised right-click.",
+      inputSchema: {
+        ref: z.string().min(1).optional(), x: z.number().optional(), y: z.number().optional(),
+        pid: z.number().int().positive().optional()
+      }
+    },
+    async ({ ref, x, y, pid }) => {
+      try {
+        if (!ref && (x === undefined || y === undefined)) throw new Error("perform_secondary_action requires either ref or x/y");
+        const reply = await driver.actRaw("perform_secondary_action", ref ? { ref } : { x: x as number, y: y as number }, pid);
+        return { content: [{ type: "text" as const, text: asText(reply.data) }] };
+      } catch (error) { return fail(error); }
+    }
+  );
+
+  server.registerTool(
+    "set_value",
+    {
+      title: "Set value",
+      description: "Write an element's value directly through the accessibility API, for sliders, steppers and text fields. Skips keystroke simulation.",
+      inputSchema: {
+        ref: z.string().min(1).describe("Element ref from the latest snapshot"),
+        value: z.union([z.string(), z.number(), z.boolean()]),
+        pid: z.number().int().positive().optional()
+      }
+    },
+    async ({ ref, value, pid }) => {
+      try {
+        const reply = await driver.actRaw("set_value", { ref, value }, pid);
+        return { content: [{ type: "text" as const, text: asText(reply.data) }] };
+      } catch (error) { return fail(error); }
+    }
+  );
+
+  server.registerTool(
+    "select_text",
+    {
+      title: "Select text",
+      description: "Select a run of text inside an editable element, or place the cursor at a character offset when no text is given.",
+      inputSchema: {
+        ref: z.string().min(1).describe("Element ref from the latest snapshot"),
+        text: z.string().min(1).optional(),
+        location: z.number().int().nonnegative().optional(),
+        length: z.number().int().nonnegative().optional(),
+        pid: z.number().int().positive().optional()
+      }
+    },
+    async ({ ref, text, location, length, pid }) => {
+      try {
+        if (text === undefined && location === undefined) throw new Error("select_text requires text or location");
+        const reply = await driver.actRaw("select_text", text !== undefined ? { ref, text } : { ref, location, length: length ?? 0 }, pid);
+        return { content: [{ type: "text" as const, text: asText(reply.data) }] };
+      } catch (error) { return fail(error); }
+    }
+  );
+
+  server.registerTool(
     "permissions",
     {
       title: "Permissions",

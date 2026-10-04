@@ -45,3 +45,31 @@ test("observe returns a decodable frame so the preview pump has something to pai
     await driver.dispose();
   }
 });
+
+// set_value 直写 AX，不模拟按键：写完必须能从无障碍树上读回来。
+test("set_value writes through the accessibility API and reads back", async () => {
+  const driver = new NativeProcessDriver(() => {}, {
+    binaryPath: new URL("../out/native/computer-use", import.meta.url).pathname
+  });
+  try {
+    const listed = await driver.list("value-e2e", undefined);
+    const apps = (listed.data as { apps?: { name: string; pid: number }[] }).apps ?? [];
+    const target = apps.find(app => /TextEdit|文本编辑/i.test(app.name));
+    if (!target) return; // 文本编辑没开就跳过，不伪造通过
+    const snapshot = await driver.observe("value-e2e", { pid: target.pid } as never);
+    const elements = (snapshot.data as { elements?: { element_token?: string; role?: string; value?: string }[] }).elements ?? [];
+    const area = elements.find(element => element.role === "AXTextArea");
+    assert.ok(area?.element_token, "需要一个可编辑文本区");
+
+    const marker = `ax-write-${Date.now()}`;
+    const written = await driver.actRaw("set_value", { ref: area.element_token, value: marker });
+    assert.ok(!written.errorCode, `set_value 不应报错：${written.errorCode ?? ""}`);
+
+    const after = await driver.observe("value-e2e", { pid: target.pid } as never);
+    const reread = ((after.data as { elements?: { role?: string; value?: string }[] }).elements ?? [])
+      .find(element => element.role === "AXTextArea")?.value;
+    assert.equal(reread, marker, "写进去的值必须能从 AX 树读回来");
+  } finally {
+    await driver.dispose();
+  }
+});

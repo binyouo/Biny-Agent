@@ -16,12 +16,14 @@ test("computer use is served over MCP with the documented verbs", async () => {
     await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
     const { tools } = await client.listTools();
     const names = tools.map(tool => tool.name).sort();
+    // Alma 的核心动词面：读、点、输入、滚动、拖拽、右键、直写、选文、权限。
     assert.deepEqual(names, [
-      "click", "get_app_state", "launch_app", "list_apps",
-      "permissions", "press_key", "scroll", "type_text"
+      "click", "drag", "get_app_state", "launch_app", "list_apps",
+      "perform_secondary_action", "permissions", "press_key", "scroll",
+      "select_text", "set_value", "type_text"
     ]);
     // 动作类工具必须声明 pid，否则调用方无法把动作定向到目标窗口。
-    for (const name of ["click", "type_text", "press_key", "scroll"]) {
+    for (const name of ["click", "type_text", "press_key", "scroll", "drag", "set_value", "select_text", "perform_secondary_action"]) {
       const tool = tools.find(entry => entry.name === name)!;
       assert.ok(tool.inputSchema, `${name} must declare an input schema`);
     }

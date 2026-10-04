@@ -238,6 +238,28 @@ final class AXCollectBox: @unchecked Sendable {
     }
 }
 
+
+/// 截图像素 → 屏幕点。coord_space=screen 时原样返回。
+func screenPoint(_ pid: pid_t, _ x: Double, _ y: Double, screenSpace: Bool) -> CGPoint {
+    var sx = x, sy = y
+    if !screenSpace, let m = coordMaps[pid] {
+        sx = m.ox + x / m.scale
+        sy = m.oy + y / m.scale
+    }
+    return CGPoint(x: sx, y: sy)
+}
+
+/// 拖拽：AX 没有拖这个动作，只能合成鼠标序列（按下 → 若干拖动点 → 抬起）。
+func postDrag(_ pid: pid_t, from: CGPoint, to: CGPoint) {
+    postMouse(pid, .leftMouseDown, from)
+    let steps = 8
+    for step in 1...steps {
+        let t = Double(step) / Double(steps)
+        postMouse(pid, .leftMouseDragged, CGPoint(x: from.x + (to.x - from.x) * t, y: from.y + (to.y - from.y) * t))
+    }
+    postMouse(pid, .leftMouseUp, to)
+}
+
 func screenshot(_ parameters: [String: Any]) async throws -> [String: Any] {
     guard let output = parameters["out"] as? String else { throw NSError(domain: "capture", code: 64) }
     let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
@@ -425,17 +447,80 @@ DispatchQueue.global().async {
                                 } else if let x = args["x"] as? Double, let y = args["y"] as? Double {
                                     let pid = try resolvePid(args)
                                     // 像素坐标为截图坐标：按最近一次快照的映射换算回屏幕点。
-                                    var sx = x, sy = y
-                                    if args["coord_space"] as? String != "screen", let m = coordMaps[pid] {
-                                        sx = m.ox + x / m.scale
-                                        sy = m.oy + y / m.scale
-                                    }
-                                    let point = CGPoint(x: sx, y: sy)
+                                    let point = screenPoint(pid, x, y, screenSpace: args["coord_space"] as? String == "screen")
                                     await withFocusGuard(pid) {
                                         postMouse(pid, .leftMouseDown, point); postMouse(pid, .leftMouseUp, point)
                                     }
                                     reply(fd, ["id": id, "ok": true, "data": ["clicked": "@\(Int(x)),\(Int(y))"] as [String: Any]] as [String: Any])
                                 } else { throw NSError(domain: "click", code: 64, userInfo: [NSLocalizedDescriptionKey: "ref_stale"]) }
+                            case "drag":
+                                // AX 没有拖这个动作，只能合成鼠标序列。
+                                guard let x1 = args["x1"] as? Double, let y1 = args["y1"] as? Double,
+                                      let x2 = args["x2"] as? Double, let y2 = args["y2"] as? Double else {
+                                    throw NSError(domain: "drag", code: 64, userInfo: [NSLocalizedDescriptionKey: "drag requires x1,y1,x2,y2"])
+                                }
+                                let pid = try resolvePid(args)
+                                let screenSpace = args["coord_space"] as? String == "screen"
+                                let from = screenPoint(pid, x1, y1, screenSpace: screenSpace)
+                                let to = screenPoint(pid, x2, y2, screenSpace: screenSpace)
+                                await withFocusGuard(pid) { postDrag(pid, from: from, to: to) }
+                                reply(fd, ["id": id, "ok": true, "data": ["dragged": "@\(Int(x1)),\(Int(y1))→@\(Int(x2)),\(Int(y2))"] as [String: Any]] as [String: Any])
+                            case "perform_secondary_action":
+                                // 右键 / 打开上下文菜单：优先走 AX 的 ShowMenu，退化成合成右键。
+                                let pid = try resolvePid(args)
+                                if let ref = args["ref"] as? String, let element = refTables[pid]?[ref] {
+                                    let status = AXUIElementPerformAction(element, kAXShowMenuAction as CFString)
+                                    if status != .success, let frame = axFrame(element) {
+                                        let point = CGPoint(x: frame["x"]! + frame["w"]!/2, y: frame["y"]! + frame["h"]!/2)
+                                        await withFocusGuard(pid) {
+                                            postMouse(pid, .rightMouseDown, point, .right); postMouse(pid, .rightMouseUp, point, .right)
+                                        }
+                                    }
+                                    reply(fd, ["id": id, "ok": true, "data": ["menu": ref] as [String: Any]] as [String: Any])
+                                } else if let x = args["x"] as? Double, let y = args["y"] as? Double {
+                                    let point = screenPoint(pid, x, y, screenSpace: args["coord_space"] as? String == "screen")
+                                    await withFocusGuard(pid) {
+                                        postMouse(pid, .rightMouseDown, point, .right); postMouse(pid, .rightMouseUp, point, .right)
+                                    }
+                                    reply(fd, ["id": id, "ok": true, "data": ["menu": "@\(Int(x)),\(Int(y))"] as [String: Any]] as [String: Any])
+                                } else { throw NSError(domain: "menu", code: 64, userInfo: [NSLocalizedDescriptionKey: "ref_stale"]) }
+                            case "set_value":
+                                // 直接写 AXValue：滑杆、步进器、输入框都能一步到位，不用模拟按键。
+                                guard let ref = args["ref"] as? String, let pid = args["pid"] as? Int,
+                                      let element = refTables[pid_t(pid)]?[ref], let value = args["value"] else {
+                                    throw NSError(domain: "value", code: 64, userInfo: [NSLocalizedDescriptionKey: "set_value requires ref and value"])
+                                }
+                                let status = AXUIElementSetAttributeValue(element, kAXValueAttribute as CFString, value as CFTypeRef)
+                                guard status == .success else {
+                                    throw NSError(domain: "value", code: 1, userInfo: [NSLocalizedDescriptionKey: "set_value_failed"])
+                                }
+                                reply(fd, ["id": id, "ok": true, "data": ["ref": ref, "value": "\(value)"] as [String: Any]] as [String: Any])
+                            case "select_text":
+                                // 选中一段文字，或在没有 text 时把光标放到 range 起点。
+                                guard let ref = args["ref"] as? String, let pid = args["pid"] as? Int,
+                                      let element = refTables[pid_t(pid)]?[ref] else {
+                                    throw NSError(domain: "select", code: 64, userInfo: [NSLocalizedDescriptionKey: "ref_stale"])
+                                }
+                                if let text = args["text"] as? String {
+                                    let status = AXUIElementSetAttributeValue(element, kAXSelectedTextAttribute as CFString, text as CFTypeRef)
+                                    guard status == .success else {
+                                        throw NSError(domain: "select", code: 1, userInfo: [NSLocalizedDescriptionKey: "select_text_failed"])
+                                    }
+                                    reply(fd, ["id": id, "ok": true, "data": ["selected": text] as [String: Any]] as [String: Any])
+                                } else if let location = args["location"] as? Int {
+                                    let length = args["length"] as? Int ?? 0
+                                    var range = CFRange(location: location, length: length)
+                                    guard let axRange = AXValueCreate(.cfRange, &range) else {
+                                        throw NSError(domain: "select", code: 1, userInfo: [NSLocalizedDescriptionKey: "select_range_failed"])
+                                    }
+                                    let status = AXUIElementSetAttributeValue(element, kAXSelectedTextRangeAttribute as CFString, axRange)
+                                    guard status == .success else {
+                                        throw NSError(domain: "select", code: 1, userInfo: [NSLocalizedDescriptionKey: "select_range_failed"])
+                                    }
+                                    reply(fd, ["id": id, "ok": true, "data": ["cursor": location] as [String: Any]] as [String: Any])
+                                } else {
+                                    throw NSError(domain: "select", code: 64, userInfo: [NSLocalizedDescriptionKey: "select_text requires text or location"])
+                                }
                             case "type_text":
                                 let pid = try resolvePid(args)
                                 let text = args["text"] as? String ?? ""

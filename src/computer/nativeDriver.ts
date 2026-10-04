@@ -304,9 +304,14 @@ export class NativeProcessDriver implements ComputerDriver {
     return this.call("get_app_state", args);
   }
 
-  /** 直接派发一个 daemon 动作，参数原样透传。供 MCP 出口使用。 */
+  /**
+   * 直接派发一个 daemon 动作，参数原样透传。供 MCP 出口使用。
+   * pid 缺省时回落到最近一次观察的目标——daemon 的 ref 表和坐标映射都按 pid 存，
+   * 让调用方「观察一次、连续动作」时不必每一步都重复 pid。
+   */
   actRaw(action: string, params: Record<string, unknown>, pid?: number): Promise<DriverReply> {
-    return this.call(action, pid === undefined ? params : { ...params, pid });
+    const target = pid ?? this.lastPid;
+    return this.call(action, target === undefined ? params : { ...params, pid: target });
   }
 
   /**
