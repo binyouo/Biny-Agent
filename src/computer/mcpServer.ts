@@ -25,6 +25,20 @@ export function createComputerUseMcpServer(driver: NativeProcessDriver): McpServ
   );
 
   const asText = (value: unknown): string => JSON.stringify(value, null, 1);
+  /**
+   * 动作回执：文字确认 + 动作后的新截图。
+   * Alma 的每个动作工具都这么做——模型执行完一步就能看到结果，
+   * 不必再 observe 一次（那会多花一个来回和一棵 AX 树）。
+   */
+  const withPostShot = async (pid: number | undefined, text: string): Promise<{ content: ({ type: "text"; text: string } | { type: "image"; data: string; mimeType: string })[] }> => {
+    const content: ({ type: "text"; text: string } | { type: "image"; data: string; mimeType: string })[] = [{ type: "text", text }];
+    try {
+      const shot = await driver.captureWindow(pid);
+      const image = (shot.images ?? [])[0];
+      if (image) content.push({ type: "image", data: image.dataBase64, mimeType: image.mimeType });
+    } catch { /* 截图拿不到不该让动作本身算失败 */ }
+    return { content };
+  };
   const fail = (error: unknown) => ({
     isError: true,
     content: [{ type: "text" as const, text: error instanceof Error ? error.message : String(error) }]
@@ -91,7 +105,7 @@ export function createComputerUseMcpServer(driver: NativeProcessDriver): McpServ
     {
       title: "Click",
       description:
-        "Click an element by ref from the latest get_app_state, or at absolute screenshot pixel (x, y). Refs go through the accessibility API; pixels are dispatched straight to the target process.",
+        "Click an element by ref from the latest get_app_state, or at absolute screenshot pixel (x, y). Refs go through the accessibility API; pixels are dispatched straight to the target process. Returns the post-action screenshot.",
       inputSchema: {
         ref: z.string().min(1).optional().describe("Element ref from the latest snapshot"),
         x: z.number().optional(), y: z.number().optional(),
@@ -102,7 +116,7 @@ export function createComputerUseMcpServer(driver: NativeProcessDriver): McpServ
       try {
         if (!ref && (x === undefined || y === undefined)) throw new Error("click requires either ref or x/y");
         const reply = await driver.actRaw("click", ref ? { ref: ref as string } : { x: x as number, y: y as number }, pid);
-        return { content: [{ type: "text" as const, text: asText(reply.data) }] };
+        return await withPostShot(pid, asText(reply.data));
       } catch (error) { return fail(error); }
     }
   );
@@ -111,13 +125,13 @@ export function createComputerUseMcpServer(driver: NativeProcessDriver): McpServ
     "type_text",
     {
       title: "Type text",
-      description: "Type text into the target app. Focus the destination first with click. Multi-byte text is delivered character by character.",
+      description: "Type text into the target app. Focus the destination first with click. Multi-byte text is delivered character by character. Returns the post-action screenshot.",
       inputSchema: { text: z.string().min(1).max(4000), pid: z.number().int().positive().optional() }
     },
     async ({ text, pid }) => {
       try {
         const reply = await driver.actRaw("type_text", { text }, pid);
-        return { content: [{ type: "text" as const, text: asText(reply.data) }] };
+        return await withPostShot(pid, asText(reply.data));
       } catch (error) { return fail(error); }
     }
   );
@@ -126,13 +140,13 @@ export function createComputerUseMcpServer(driver: NativeProcessDriver): McpServ
     "press_key",
     {
       title: "Press key",
-      description: "Press a key or chord in xdotool syntax: cmd+s, ctrl+shift+t, Return, Escape, F1.",
+      description: "Press a key or chord in xdotool syntax: cmd+s, ctrl+shift+t, Return, Escape, F1. Returns the post-action screenshot.",
       inputSchema: { key: z.string().min(1).max(40), pid: z.number().int().positive().optional() }
     },
     async ({ key, pid }) => {
       try {
         const reply = await driver.actRaw("press_key", { key }, pid);
-        return { content: [{ type: "text" as const, text: asText(reply.data) }] };
+        return await withPostShot(pid, asText(reply.data));
       } catch (error) { return fail(error); }
     }
   );
@@ -141,7 +155,7 @@ export function createComputerUseMcpServer(driver: NativeProcessDriver): McpServ
     "scroll",
     {
       title: "Scroll",
-      description: "Scroll the target app up, down, left or right by a number of lines.",
+      description: "Scroll the target app up, down, left or right by a number of lines. Returns the post-action screenshot.",
       inputSchema: {
         direction: z.enum(["up", "down", "left", "right"]),
         amount: z.number().int().min(1).max(10).optional(),
@@ -151,7 +165,7 @@ export function createComputerUseMcpServer(driver: NativeProcessDriver): McpServ
     async ({ direction, amount, pid }) => {
       try {
         const reply = await driver.actRaw("scroll", { direction, amount: amount ?? 3 }, pid);
-        return { content: [{ type: "text" as const, text: asText(reply.data) }] };
+        return await withPostShot(pid, asText(reply.data));
       } catch (error) { return fail(error); }
     }
   );
@@ -160,7 +174,7 @@ export function createComputerUseMcpServer(driver: NativeProcessDriver): McpServ
     "drag",
     {
       title: "Drag",
-      description: "Mouse drag from one screenshot point to another. The accessibility API has no drag action, so this synthesises a press-move-release sequence.",
+      description: "Mouse drag from one screenshot point to another. The accessibility API has no drag action, so this synthesises a press-move-release sequence. Returns the post-action screenshot.",
       inputSchema: {
         x1: z.number(), y1: z.number(), x2: z.number(), y2: z.number(),
         pid: z.number().int().positive().optional()
@@ -169,7 +183,7 @@ export function createComputerUseMcpServer(driver: NativeProcessDriver): McpServ
     async ({ x1, y1, x2, y2, pid }) => {
       try {
         const reply = await driver.actRaw("drag", { x1, y1, x2, y2 }, pid);
-        return { content: [{ type: "text" as const, text: asText(reply.data) }] };
+        return await withPostShot(pid, asText(reply.data));
       } catch (error) { return fail(error); }
     }
   );
@@ -178,7 +192,7 @@ export function createComputerUseMcpServer(driver: NativeProcessDriver): McpServ
     "perform_secondary_action",
     {
       title: "Open context menu",
-      description: "Right-click, or open the context menu of an element by ref. Tries the accessibility ShowMenu action first and falls back to a synthesised right-click.",
+      description: "Right-click, or open the context menu of an element by ref. Tries the accessibility ShowMenu action first and falls back to a synthesised right-click. Returns the post-action screenshot.",
       inputSchema: {
         ref: z.string().min(1).optional(), x: z.number().optional(), y: z.number().optional(),
         pid: z.number().int().positive().optional()
@@ -188,7 +202,7 @@ export function createComputerUseMcpServer(driver: NativeProcessDriver): McpServ
       try {
         if (!ref && (x === undefined || y === undefined)) throw new Error("perform_secondary_action requires either ref or x/y");
         const reply = await driver.actRaw("perform_secondary_action", ref ? { ref } : { x: x as number, y: y as number }, pid);
-        return { content: [{ type: "text" as const, text: asText(reply.data) }] };
+        return await withPostShot(pid, asText(reply.data));
       } catch (error) { return fail(error); }
     }
   );
@@ -197,7 +211,7 @@ export function createComputerUseMcpServer(driver: NativeProcessDriver): McpServ
     "set_value",
     {
       title: "Set value",
-      description: "Write an element's value directly through the accessibility API, for sliders, steppers and text fields. Skips keystroke simulation.",
+      description: "Write an element's value directly through the accessibility API, for sliders, steppers and text fields. Skips keystroke simulation. Returns the post-action screenshot.",
       inputSchema: {
         ref: z.string().min(1).describe("Element ref from the latest snapshot"),
         value: z.union([z.string(), z.number(), z.boolean()]),
@@ -207,7 +221,7 @@ export function createComputerUseMcpServer(driver: NativeProcessDriver): McpServ
     async ({ ref, value, pid }) => {
       try {
         const reply = await driver.actRaw("set_value", { ref, value }, pid);
-        return { content: [{ type: "text" as const, text: asText(reply.data) }] };
+        return await withPostShot(pid, asText(reply.data));
       } catch (error) { return fail(error); }
     }
   );
@@ -216,7 +230,7 @@ export function createComputerUseMcpServer(driver: NativeProcessDriver): McpServ
     "select_text",
     {
       title: "Select text",
-      description: "Select a run of text inside an editable element, or place the cursor at a character offset when no text is given.",
+      description: "Select a run of text inside an editable element, or place the cursor at a character offset when no text is given. Returns the post-action screenshot.",
       inputSchema: {
         ref: z.string().min(1).describe("Element ref from the latest snapshot"),
         text: z.string().min(1).optional(),
@@ -229,6 +243,21 @@ export function createComputerUseMcpServer(driver: NativeProcessDriver): McpServ
       try {
         if (text === undefined && location === undefined) throw new Error("select_text requires text or location");
         const reply = await driver.actRaw("select_text", text !== undefined ? { ref, text } : { ref, location, length: length ?? 0 }, pid);
+        return await withPostShot(pid, asText(reply.data));
+      } catch (error) { return fail(error); }
+    }
+  );
+
+  server.registerTool(
+    "grant",
+    {
+      title: "Request permissions",
+      description: "Poke macOS to raise its Accessibility prompt for the helper. Only call this when permissions reports Accessibility missing — it puts a dialog on the user's screen.",
+      inputSchema: {}
+    },
+    async () => {
+      try {
+        const reply = await driver.grantAccessibility();
         return { content: [{ type: "text" as const, text: asText(reply.data) }] };
       } catch (error) { return fail(error); }
     }

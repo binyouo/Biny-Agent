@@ -293,6 +293,17 @@ export class NativeProcessDriver implements ComputerDriver {
   }
 
   /**
+   * 只截目标窗口、不读无障碍树。动作后回图用 —— 调用方执行完一个动词
+   * 就能立刻看到结果，不必再 observe 一次（Alma 的每个动作工具都带回执截图）。
+   */
+  async captureWindow(pid?: number): Promise<DriverReply> {
+    const target = pid ?? this.lastPid;
+    if (target === undefined) return { data: {}, images: [] };
+    // max_elements=0：跳过遍历，只留窗口节点和截图。
+    return await this.observeRaw({ pid: target, max_elements: 0 });
+  }
+
+  /**
    * 让守护进程自己发起辅助功能授权弹窗。
    * 系统弹窗授的是「调用进程」——从宿主发起会把权限授给宿主，
    * 而需要它的是这个独立签名的 helper。
@@ -307,8 +318,14 @@ export class NativeProcessDriver implements ComputerDriver {
    * 直接返回 call 的结果：shape() 已经把落盘的截图读成 image 了，
    * 这里再按 data.screenshot 重读会踩到 shape 之后的形状（已被 toCapture 换过）而丢图。
    */
-  observeRaw(args: Record<string, unknown>): Promise<DriverReply> {
-    return this.call("get_app_state", args);
+  async observeRaw(args: Record<string, unknown>): Promise<DriverReply> {
+    if (typeof args.pid === "number") this.lastPid = args.pid;
+    const reply = await this.call("get_app_state", args);
+    // 调用方可能给的是 bundle 而不是 pid；守护进程一定会在回复里带上真实 pid，
+    // 从那里取 —— 动作和动作后的回执截图都靠它定位目标。
+    const observed = (reply.data as { pid?: unknown }).pid;
+    if (typeof observed === "number" && observed > 0) this.lastPid = observed;
+    return reply;
   }
 
   /**
