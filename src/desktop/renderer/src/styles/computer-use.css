@@ -53,3 +53,8 @@
   font-size: calc(11px * var(--font-scale, 1));
   word-break: break-all;
 }
+
+/* 「测试我的配置」的逐项结果：每行一项，失败项要能一眼扫到。 */
+.computer-use-settings .cu-checkup { display: grid; gap: 4px; margin: 0; padding: 0; list-style: none; }
+.computer-use-settings .cu-checkup li { font-size: calc(12px * var(--font-scale, 1)); color: var(--text-secondary); }
+.computer-use-settings .cu-checkup li[data-ok="false"] { color: var(--red-text); }

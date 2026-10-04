@@ -76,7 +76,21 @@ export function SettingsComputerUse(): React.JSX.Element {
         <button type="button" className="settings-secondary-button" disabled={unavailable} onClick={() => void perform(async () => { await readDiagnostic(); await updateStatus(() => api.status()); })}><Icon name="refresh" size={14} />刷新</button>
         <button type="button" className="settings-secondary-button" disabled={unavailable} onClick={() => void perform(async () => { setTested(false); await readDiagnostic(() => api.testSetup()); await updateStatus(() => api.status()); if (mounted.current) setTested(true); })}><Icon name="eye" size={14} />测试我的配置</button>
       </div>
-      {error || diagnostic?.error || status?.diagnostic ? <p className="cu-feedback" role="alert">{!available ? restartMessage : "桌面控制暂不可用，请查看诊断详情。"}</p> : tested ? <p className="cu-feedback" role="status">{diagnostic?.sdkLoaded && permission?.accessibility === "granted" && permission?.screenRecording === "granted" ? "配置检查通过" : "请完成组件安装与权限授权。"}</p> : null}
+      {error || diagnostic?.error || status?.diagnostic ? <p className="cu-feedback" role="alert">{!available ? restartMessage : "桌面控制暂不可用，请查看诊断详情。"}</p> : tested ? (
+        // Alma 的「测试我的配置」逐项报结果。一句"检查通过/请完成授权"会把三项
+        // （helper、辅助功能、屏幕录制）混在一起，而用户唯一需要知道的正是哪一项没过。
+        <ul className="cu-feedback cu-checkup" role="status">
+          <li data-check="helper" data-ok={Boolean(diagnostic?.sdkLoaded)}>
+            {diagnostic?.sdkLoaded ? `✓ 原生 daemon v${diagnostic.driverVersion ?? "?"} 运行中（已运行 ${diagnostic.uptimeSeconds ?? 0}s）` : "✗ 原生 daemon 未加载"}
+          </li>
+          <li data-check="accessibility" data-ok={permission?.accessibility === "granted"}>
+            {permission?.accessibility === "granted" ? "✓ 辅助功能已授权" : "✗ 辅助功能未授权"}
+          </li>
+          <li data-check="screenRecording" data-ok={permission?.screenRecording === "granted"}>
+            {permission?.screenRecording === "granted" ? "✓ 屏幕录制已授权" : "✗ 屏幕录制未授权"}
+          </li>
+        </ul>
+      ) : null}
       </div>
       <div className="settings-row-group cu-toggles">
         <SettingsSwitch label="桌面控制" checked={Boolean(status && status.state !== "disabled")} disabled={unavailable || !status} detail="保存启用选择，首次使用时启动；停止会关闭此选项。" onChange={value => void perform(async () => { await updateStatus(() => value ? api.enable() : api.control("stop")); await readDiagnostic(); })} />

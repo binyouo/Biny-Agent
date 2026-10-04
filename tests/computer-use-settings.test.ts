@@ -284,3 +284,54 @@ test("a live daemon reads as installed, not as an unavailable component", async 
     await driver.dispose();
   }
 });
+
+// 「测试我的配置」的价值就在于指出**哪一项**没过。一句笼统的
+// 「请完成组件安装与权限授权」把三项混在一起，等于把这个按钮废掉了。
+test("the setup test names the check that failed, not just that one did", async () => {
+  const dom = new JSDOM("<div id='root'></div>");
+  const saved = new Map<string, PropertyDescriptor | undefined>();
+  for (const [key, value] of Object.entries({ window: dom.window, document: dom.window.document, navigator: dom.window.navigator, HTMLElement: dom.window.HTMLElement, React, IS_REACT_ACT_ENVIRONMENT: true })) {
+    saved.set(key, Object.getOwnPropertyDescriptor(globalThis, key)); Object.defineProperty(globalThis, key, { configurable: true, value });
+  }
+  const root = createRoot(dom.window.document.getElementById("root")!);
+  // daemon 活着、辅助功能给了、屏幕录制没给 —— 报告必须指名道姓。
+  const diagnostic: ComputerDiagnostics = {
+    workerPath: "/opt/biny/computer-use.app/Contents/MacOS/computer-use", helperPresent: true,
+    hostPath: "/synthetic/Biny", expectedVersion: "native", sdkLoaded: true, runtimeReady: true,
+    driverVersion: "native-1", uptimeSeconds: 42, focusGuard: "armed",
+    strictApproval: false,
+    permissions: { accessibility: "granted", screenRecording: "denied" },
+    approvals: [], audit: []
+  };
+  const status: ComputerStatus = { state: "ready", preview: false, foregroundAllowed: false, lastOutcome: "not-dispatched" };
+  const api = {
+    status: async () => status, enable: async () => status, control: async () => status,
+    preview: async () => status, foreground: async () => status, logging: async () => status,
+    diagnostics: async () => diagnostic, requestAccessibility: async () => diagnostic,
+    testSetup: async () => diagnostic, strict: async () => diagnostic,
+    approve: async () => diagnostic, revoke: async () => diagnostic
+  } as unknown as ComputerDesktopApi;
+  try {
+    Object.assign(dom.window, { binyComputer: api });
+    await act(async () => { root.render(createElement(SettingsComputerUse)); });
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)); });
+    const test = [...dom.window.document.querySelectorAll("button")].find(button => button.textContent === "测试我的配置")!;
+    await act(async () => { test.click(); });
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)); });
+
+    const checks = [...dom.window.document.querySelectorAll(".cu-checkup li")];
+    assert.equal(checks.length, 3, "三项检查都要报出来");
+    const byName = new Map(checks.map(item => [item.getAttribute("data-check"), item]));
+    assert.equal(byName.get("helper")?.getAttribute("data-ok"), "true");
+    assert.match(byName.get("helper")?.textContent ?? "", /native-1/, "helper 一项要报出真实版本");
+    assert.match(byName.get("helper")?.textContent ?? "", /42/, "helper 一项要报出运行时长");
+    assert.equal(byName.get("accessibility")?.getAttribute("data-ok"), "true");
+    // 唯一没过的那项必须被点名
+    assert.equal(byName.get("screenRecording")?.getAttribute("data-ok"), "false");
+    assert.match(byName.get("screenRecording")?.textContent ?? "", /✗/, "没过的项要有明确标记");
+  } finally {
+    await act(async () => { root.unmount(); });
+    for (const [key, descriptor] of saved) { if (descriptor) Object.defineProperty(globalThis, key, descriptor); else delete (globalThis as Record<string, unknown>)[key]; }
+    dom.window.close();
+  }
+});
