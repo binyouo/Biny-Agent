@@ -30,6 +30,8 @@ interface Host {
   socketPath: string;
   buffer: string;
   closed: boolean;
+  connected: boolean;
+  stdout: string;
 }
 
 export interface NativeDriverOptions {
@@ -103,17 +105,19 @@ export class NativeProcessDriver implements ComputerDriver {
   }
 
   private spawnHost(): Host {
-    const child = spawn(this.binaryPath, ["--socket", this.socketPath, "--idle-seconds", "900"], {
+    // 与 ActivityNativeClient 共用同一个 daemon 约定：`daemon --socket <path>`，就绪时 stdout 打 "ready"。
+    const child = spawn(this.binaryPath, ["daemon", "--socket", this.socketPath, "--idle-seconds", "900"], {
       stdio: ["ignore", "pipe", "pipe"]
     });
-    child.stdout?.resume();
     child.stderr?.resume();
     const socket = new net.Socket();
-    socket.connect(this.socketPath);
-    const host: Host = { child, socket, socketPath: this.socketPath, buffer: "", closed: false };
+    const host: Host = { child, socket, socketPath: this.socketPath, buffer: "", closed: false, connected: false, stdout: "" };
+    // 立刻开始收集 stdout：daemon 可能在监听器挂上之前就打出 "ready"。
+    child.stdout?.on("data", (chunk: Buffer) => { host.stdout += chunk.toString(); });
     socket.on("data", chunk => this.onData(host, chunk.toString("utf8")));
-    socket.on("error", error => this.failAndRetire(host, `driver_socket_error: ${error.message}`));
-    socket.on("close", () => { if (!host.closed) this.failAndRetire(host, "driver_process_disconnected; outcome may be unknown"); });
+    // 连接建立前的 error/close 属于正常启动时序，只有「连上之后又断」才算断连。
+    socket.on("error", error => { if (host.connected) this.failAndRetire(host, `driver_socket_error: ${error.message}`); });
+    socket.on("close", () => { if (host.connected && !host.closed) this.failAndRetire(host, "driver_process_disconnected; outcome may be unknown"); });
     child.on("error", error => this.failAndRetire(host, `driver_sdk_missing_or_crashed: ${error.message}`));
     child.once("exit", (code, signal) => {
       host.closed = true;
@@ -121,6 +125,23 @@ export class NativeProcessDriver implements ComputerDriver {
       if (this.host === host) this.host = undefined;
     });
     return host;
+  }
+
+  /** 等 daemon 打出 "ready" 后连上 socket；这是唯一的连接入口。 */
+  private connectAfterReady(host: Host): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => { clearInterval(poll); reject(new Error("driver_sdk_missing_or_crashed: daemon did not become ready")); }, 8_000);
+      let connected = false;
+      const connectNow = (): void => {
+        if (host.closed || connected) return;
+        connected = true;
+        host.socket.once("connect", () => { host.connected = true; clearTimeout(timer); clearInterval(poll); resolve(); });
+        host.socket.connect(this.socketPath);
+      };
+      const poll = setInterval(() => { if (host.stdout.includes("ready")) connectNow(); }, 20);
+      host.child.once("error", error => { clearInterval(poll); clearTimeout(timer); reject(error); });
+      host.child.once("exit", code => { clearInterval(poll); clearTimeout(timer); reject(new Error(`driver_sdk_missing_or_crashed: daemon exited ${String(code)}`)); });
+    });
   }
 
   private onData(host: Host, chunk: string): void {
@@ -136,9 +157,9 @@ export class NativeProcessDriver implements ComputerDriver {
   }
 
   private onReply(line: string): void {
-    let parsed: { id?: string; ok?: boolean; data?: unknown; error?: { code?: string; message?: string } };
+    let parsed: { id?: string | number; ok?: boolean; data?: unknown; error?: { code?: string; message?: string } };
     try { parsed = JSON.parse(line); } catch { return; }
-    const id = typeof parsed.id === "string" ? parsed.id : undefined;
+    const id = parsed.id === undefined || parsed.id === null ? undefined : String(parsed.id);
     if (!id) return;
     const job = this.pending.get(id);
     if (!job) return;
@@ -200,8 +221,13 @@ export class NativeProcessDriver implements ComputerDriver {
   private async ensureHost(): Promise<void> {
     if (this.host) return;
     if (!this.starting) {
-      this.starting = (async () => { this.host = this.spawnHost(); await new Promise(resolve => setTimeout(resolve, 200)); })()
-        .finally(() => { this.starting = undefined; });
+      this.starting = (async () => {
+        const host = this.spawnHost();
+        await this.connectAfterReady(host);
+        if (this.host !== undefined) throw new Error("driver_sdk_missing_or_crashed: host retired during startup");
+        this.host = host;
+        this.armIdle();
+      })().finally(() => { this.starting = undefined; });
     }
     await this.starting;
   }

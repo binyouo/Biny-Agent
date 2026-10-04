@@ -37,7 +37,7 @@ export type ComputerPermissionState = "granted" | "denied" | "unknown";
 export interface ComputerAuditEntry { at: number; action: ComputerAction["action"]; target: WindowTarget; outcome: ComputerStatus["lastOutcome"]; durationMs: number }
 export interface ComputerActionLimit { action: ComputerAction["action"]; code: string; message: string }
 export interface ComputerDiagnostics {
-  workerPath: string; hostPath: string; expectedVersion: string; driverVersion?: string;
+  workerPath: string; hostPath: string; expectedVersion: string; driverVersion?: string; uptimeSeconds?: number;
   sdkLoaded: boolean; runtimeReady: boolean;
   permissions: { accessibility: ComputerPermissionState; screenRecording: ComputerPermissionState };
   strictApproval: boolean;

@@ -8,7 +8,8 @@ import CoreGraphics
 import Carbon.HIToolbox
 
 var refTables: [pid_t: [String: AXUIElement]] = [:]
-let replyLock = NSLock()
+let startedAt = Date()
+let replyLock = NSRecursiveLock()
 func reply(_ fd: Int32, _ value: [String: Any]) {
     replyLock.lock(); defer { replyLock.unlock() }
     guard var data = try? JSONSerialization.data(withJSONObject: value) else { return }
@@ -27,7 +28,12 @@ func axTrusted() -> Bool { return AXIsProcessTrusted() }
 func screenTrusted() -> Bool { return CGPreflightScreenCaptureAccess() }
 
 // MARK: - AX 元素查找
-func axApp(_ pid: pid_t) -> AXUIElement { return AXUIElementCreateApplication(pid) }
+func axApp(_ pid: pid_t) -> AXUIElement {
+    let element = AXUIElementCreateApplication(pid)
+    // 单个 AX 调用最多等 1 秒，避免大型应用（Chrome 等）把整个请求拖死。
+    AXUIElementSetMessagingTimeout(element, 1.0)
+    return element
+}
 func axCopy(_ element: AXUIElement, _ attribute: String) -> CFTypeRef? {
     var value: CFTypeRef?
     guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success else { return nil }
@@ -49,10 +55,10 @@ func axChildren(_ element: AXUIElement) -> [AXUIElement] {
 }
 
 // 遍历 AX 树，深度与元素数都有上限，并回填可点击元素的 ref 表
-func axWalk(_ root: AXUIElement, depth: Int, maxDepth: Int, limit: Int, counter: inout Int, table: inout [String: AXUIElement], out: inout [[String: Any]]) {
-    guard depth <= maxDepth, counter < limit else { return }
+func axWalk(_ root: AXUIElement, depth: Int, maxDepth: Int, limit: Int, counter: inout Int, table: inout [String: AXUIElement], out: inout [[String: Any]], deadline: Date) {
+    guard depth <= maxDepth, counter < limit, Date() < deadline else { return }
     for child in axChildren(root) {
-        guard counter < limit else { return }
+        guard counter < limit, Date() < deadline else { return }
         counter += 1
         let ref = "e\(counter)"
         table[ref] = child
@@ -64,7 +70,7 @@ func axWalk(_ root: AXUIElement, depth: Int, maxDepth: Int, limit: Int, counter:
         if let enabled = axCopy(child, kAXEnabledAttribute as String) as? Bool { entry["enabled"] = enabled }
         if let frame = axFrame(child) { entry["frame"] = frame }
         out.append(entry)
-        axWalk(child, depth: depth + 1, maxDepth: maxDepth, limit: limit, counter: &counter, table: &table, out: &out)
+        axWalk(child, depth: depth + 1, maxDepth: maxDepth, limit: limit, counter: &counter, table: &table, out: &out, deadline: deadline)
     }
 }
 
@@ -211,6 +217,8 @@ DispatchQueue.global().async {
                                 reply(fd, ["id": id, "ok": true, "data": [
                                     "accessibility": axTrusted() ? "granted" : "denied",
                                     "screenRecording": screenTrusted() ? "granted" : "denied",
+                                    "version": "native-1",
+                                    "uptime": Int(Date().timeIntervalSince(startedAt)),
                                 ] as [String: Any]])
                             case "list_apps":
                                 var apps: [[String: Any]] = []
@@ -227,6 +235,9 @@ DispatchQueue.global().async {
                                 guard axTrusted() else { throw NSError(domain: "ax", code: 1, userInfo: [NSLocalizedDescriptionKey: "ax_not_granted"]) }
                                 let pid = try resolvePid(args)
                                 let app = axApp(pid)
+                                // Chromium/Electron 应用默认不暴露 AX 树，先显式打开。
+                                AXUIElementSetAttributeValue(app, "AXManualAccessibility" as CFString, kCFBooleanTrue)
+                                AXUIElementSetAttributeValue(app, "AXEnhancedUserInterface" as CFString, kCFBooleanTrue)
                                 var elements: [[String: Any]] = []
                                 var table: [String: AXUIElement] = [:]
                                 var counter = 0
@@ -235,7 +246,7 @@ DispatchQueue.global().async {
                                 if let windows = axCopy(app, kAXWindowsAttribute as String) as? [AXUIElement], let main = windows.first {
                                     if let frame = axFrame(main) { elements.append(["ref": "e0", "role": "AXWindow", "frame": frame]) }
                                     table["e0"] = main
-                                    axWalk(main, depth: 0, maxDepth: maxDepth, limit: limit, counter: &counter, table: &table, out: &elements)
+                                    axWalk(main, depth: 0, maxDepth: maxDepth, limit: limit, counter: &counter, table: &table, out: &elements, deadline: Date().addingTimeInterval(3))
                                 }
                                 refTables[pid] = table
                                 var shotArgs: [String: Any] = ["out": args["out"] ?? "/tmp/biny-cu-state-\(Int(Date().timeIntervalSince1970 * 1000)).jpg", "pid": Int(pid)]

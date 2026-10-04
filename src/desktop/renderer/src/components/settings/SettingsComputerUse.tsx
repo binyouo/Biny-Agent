@@ -44,7 +44,7 @@ export function SettingsComputerUse(): React.JSX.Element {
   const unavailable = busy || !available;
   const permission = diagnostic?.permissions;
   const diagnosticText = [
-    diagnostic?.runtimeReady ? `✓ Cua Driver v${diagnostic.driverVersion} 运行时检查通过` : diagnostic?.sdkLoaded ? `✓ SDK 已加载；要求 v${diagnostic.expectedVersion}，运行时按需启动` : "✗ SDK 尚未加载",
+    diagnostic?.runtimeReady ? `✓ 原生运行时已就绪（v${diagnostic.driverVersion}）` : diagnostic?.sdkLoaded ? `✓ 原生 daemon 已加载；运行时按需启动` : "✗ 原生 daemon 尚未加载",
     `辅助功能：${permissionLabels[permission?.accessibility ?? "unknown"]}`,
     `屏幕录制：${permissionLabels[permission?.screenRecording ?? "unknown"]}`,
     "配置测试只检查运行时、版本和权限，不截图、不输入。",
@@ -58,7 +58,7 @@ export function SettingsComputerUse(): React.JSX.Element {
       <p className="cu-description">让 Biny 在后台操作受支持的 Mac 应用。需要辅助功能与屏幕录制权限。</p>
       <div className="cu-section"><h4>桌面控制组件</h4><div className="cu-helper" data-loaded={diagnostic?.sdkLoaded ?? false}>
         <Icon name={diagnostic?.sdkLoaded ? "circle-check" : "help"} size={17} />
-        <strong>{!diagnostic ? "正在检查…" : diagnostic.sdkLoaded ? "已安装" : "组件不可用"}</strong><span>{diagnostic?.driverVersion ? `v${diagnostic.driverVersion}` : `要求 v${diagnostic?.expectedVersion ?? "0.30.4"}`}</span>
+        <strong>{!diagnostic ? "正在检查…" : diagnostic.sdkLoaded ? "已安装" : "组件不可用"}</strong><span>{diagnostic?.driverVersion ? `原生 daemon · v${diagnostic.driverVersion}${typeof diagnostic.uptimeSeconds === "number" ? ` · 已运行 ${Math.floor(diagnostic.uptimeSeconds / 60) >= 1 ? `${Math.floor(diagnostic.uptimeSeconds / 60)} 分钟` : `${diagnostic.uptimeSeconds} 秒`}` : ""}` : diagnostic?.expectedVersion ? `要求 ${diagnostic.expectedVersion}` : "原生 daemon"}</span>
       </div></div>
       <div className="cu-section"><h4>权限</h4><div className="cu-permission-grid">
         <PermissionRow name="accessibility" label="辅助功能" state={permission?.accessibility ?? "unknown"} />

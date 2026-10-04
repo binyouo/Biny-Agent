@@ -56,8 +56,12 @@ export async function createComputerUseService(browser: DesktopBrowserService, g
       strictApproval: policy.strictApproval, approvals: policy.apps, audit: controller.audit(), error: setupError, actionLimits: []
     };
     try {
-      const data = z.object({ sdkLoaded: z.boolean(), runtimeReady: z.boolean(), driverVersion: z.string().optional(), permissions: z.object({ accessibility: permission, screenRecording: permission }) }).parse((await source.diagnostics()).data);
-      return { ...result, ...data };
+      const data = z.object({
+        version: z.string().optional(), uptime: z.number().optional(),
+        permissions: z.object({ accessibility: permission, screenRecording: permission })
+      }).passthrough().parse((await source.diagnostics()).data);
+      // daemon 存活即视为「已加载」；版本与 uptime 直接透给设置页。
+      return { ...result, sdkLoaded: true, runtimeReady: true, driverVersion: data.version, uptimeSeconds: data.uptime, ...data };
     } catch (error) {
       return { ...result, error: setupError ?? (error instanceof Error ? error.message : String(error)) };
     }
