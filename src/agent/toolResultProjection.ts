@@ -421,14 +421,14 @@ function projectRunCommand(entry: ToolResultEntry, aggressive: boolean): Record<
       "durationMs",
       "outputLines"
     ]),
-    stdout: rawStdout || undefined,
-    stderr: rawStderr || undefined,
+    stdout: stdout || undefined,
+    stderr: stderr || undefined,
     stdoutBytes,
-    stdoutRetainedBytes: numberField(record, "stdoutRetainedBytes") ?? Buffer.byteLength(rawStdout, "utf8"),
+    stdoutRetainedBytes: Buffer.byteLength(stdout, "utf8"),
     stdoutTruncated,
     stdoutTruncationDirection: stdoutTruncated ? "tail" : undefined,
     stderrBytes,
-    stderrRetainedBytes: numberField(record, "stderrRetainedBytes") ?? Buffer.byteLength(rawStderr, "utf8"),
+    stderrRetainedBytes: Buffer.byteLength(stderr, "utf8"),
     stderrTruncated,
     stderrTruncationDirection: stderrTruncated ? "tail" : undefined,
     summary: stdoutTruncated || stderrTruncated || aggressive
