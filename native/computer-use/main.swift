@@ -797,7 +797,20 @@ func postClick(_ pid: pid_t, _ point: CGPoint, button: CGMouseButton, clicks: In
     // 而它替换掉的全局路是**已验证可用**的。未经证实就换掉能用的那条，
     // 等于用一个"可能更正确"的说法去赌"现在还能不能点"。
     // → 想试的人显式要它（`pipeline: "window-local"`），回执里会写明走的哪条。
+    // ⚠️ 曾经把这里改成"默认走窗口局部管线"做实验（想验证它能否替代会拽光标的全局路），
+    // **实验没有信号**：我用的观测（插入点有没有动）在**两条管线上都报"没送达"** ——
+    // 包括我已知能送达的全局路，所以是仪器的问题，不是管线的结论。
+    // 三次尝试（活动监视器选中行 / Calculator 按钮 / TextEdit 插入点）全部无效。
+    // → 回到已验证的默认；管线仍然可选（`pipeline: "window-local"`）且回执里写明走的哪条。
     let useWindowLocal = preferWindowLocal && windowLocalPipelineAvailable
+    // 全局合成点击**必然把光标瞬移到落点**（事件本身就带坐标，这是机制不是 bug）。
+    // 位置我们保存并还原，但那一瞬看得见 —— 用户会觉得"鼠标被抢走了"。
+    // 既然这一下动不了，就**在动的时候把它藏起来**：藏着的这段时间看不到瞬移。
+    // ⚠️ 隐藏只是不画出来，位置真的变了 —— 所以下面的还原照样要执行。
+    // 走窗口局部管线时不需要（它不碰光标）。
+    var cursorHidden = false
+    if !useWindowLocal { cursorHidden = CGDisplayHideCursor(CGMainDisplayID()) == .success }
+    defer { if cursorHidden { _ = CGDisplayShowCursor(CGMainDisplayID()) } }
     let total = max(1, clicks)
     for index in 1...total {
         // **先试窗口局部管线**：它不激活落点窗口，所以用户的前台不会被顶掉。
