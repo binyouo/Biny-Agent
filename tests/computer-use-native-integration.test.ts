@@ -744,7 +744,11 @@ test("daemon fields survive the screenshot path, which rebuilds the reply", asyn
 // ⚠️ 这条测试**必须自建一次性文档**：早先的版本遍历应用挑第一个有文本域的往里写，
 // 那会把用户真实界面里的输入框内容覆盖掉。写入类测试不能用"随便找一个"当目标。
 test("type can insert at the cursor instead of replacing the whole value", async () => {
-  const scratch = "/tmp/biny-cu-insert-test.txt";
+  // ⚠️ 文件名必须**每次唯一**：早先用固定名字，而清理一旦失败（AppleScript 超时会），
+  // 残留窗口会带着上一次的内容被 `open` 复用 → 下一次运行断言必挂。
+  // 清理不可靠时，"换个名字"比"指望清理成功"稳。
+  const scratch = `/tmp/biny-cu-insert-test-${process.pid}-${Date.now()}.txt`;
+  const scratchName = scratch.split("/").pop()!;
   writeFileSync(scratch, "AAAABBBB");
   spawnSync("open", ["-a", "TextEdit", scratch]);
   await new Promise(resolve => setTimeout(resolve, 2000));
@@ -775,7 +779,7 @@ test("type can insert at the cursor instead of replacing the whole value", async
     // ⚠️ 用 `close ... saving no` 会**超时**（TextEdit 的 scripting 会挂住，实测 -1712），
     // 于是窗口留在用户屏幕上、文件却已删掉。按关闭按钮那条路是可靠的。
     spawnSync("osascript", ["-e",
-      'tell application "System Events" to tell process "TextEdit" to perform action "AXPress" of (first button of window "biny-cu-insert-test.txt")']);
+      `tell application "System Events" to tell process "TextEdit" to perform action "AXPress" of (first button of window "${scratchName}")`]);
     rmSync(scratch, { force: true });
   }
 });
@@ -891,6 +895,11 @@ test("an action can suppress the indicator for one action only", async () => {
     assert.equal(await readIndicator(), "suppressed", "带 show_cursor=false 的这一次应当不亮");
     await driver.daemonCommand("scroll", { pid, direction: "down", pages: 1 });
     assert.equal(await readIndicator(), "shown", "抑制作用只限这一次，下一次照旧");
+
+    // 再走一遍 `actRaw` —— MCP 和 CLI 用的都是这条路（不是 daemonCommand）。
+    // 两条路都要能把动作级开关带到守护进程，否则 agent 面就没有这个能力。
+    await driver.actRaw("scroll", { direction: "down", pages: 1, show_cursor: false }, pid);
+    assert.equal(await readIndicator(), "suppressed", "actRaw（MCP/CLI 的路）也要能抑制指示器");
 
     await driver.daemonCommand("lens", { mode: "off" });
     await driver.daemonCommand("scroll", { pid, direction: "down", pages: 1 });

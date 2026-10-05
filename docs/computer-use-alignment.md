@@ -276,6 +276,31 @@ physical click`、`set_value (AXValue not settable on this element)`、
 所以 `lens status` 报 `lastIndicator` = `shown` / `suppressed` / `disabled` / `none`。
 有了它 `--no-cursor` 才是可验证的，而不是"我没看见所以应该没显示"。
 
+### 1.4e MCP 的参数面：又一处「对过名字、没对过参数」
+
+上轮 diff MCP 契约时我 diff 的是**工具名**（13 个，为空 ✓）—— **参数看不见**。
+这轮读参照 MCP 的本体，`get_app_state` 一个工具上就暴露出我之前**四个都没暴露**：
+
+```
+depth:                 max(20)   "AX tree depth. Default 6."
+interactive_only:      boolean   "Limit to interactive elements. Default true."
+screenshot_max_width:  int       "Downsample width for the screenshot (default 1280)."
+auto_launch:           boolean   "Auto-launch the app in the background if not running. Default true."
+```
+
+- `depth` / `screenshot_max_width` —— **daemon 早已支持**（`max_width` 默认就是 1280），
+  MCP 没开口 → 已开（命名随本仓的 camelCase 惯例）。
+- `interactive_only` / `auto_launch` —— **daemon 里没有**，不假装有，标为未覆盖。
+- **顺手逮到一处描述与实现矛盾**：我的 `get_app_state` 描述写着
+  "if the app is not running the call **fails** — use launch_app first"，
+  而实现是 `resolvePid` 走 `openApplication(activates: false)` **后台自启** ——
+  **描述在教 agent 一件错的事**。已改准。
+
+**这轮还差点照抄一个参照没有的东西**：我数到参照 MCP 里 `strategy` 出现 7 次，
+差一步就加进 click —— 读上下文发现那 7 处**全是 zod 的内部字段**，
+参照的 MCP **并不暴露** `strategy`。所以我没有它是对的。
+→ **计数不是证据，上下文才是。**
+
 ### 1.5 工具 / 技能层
 
 - 模型侧工具：`ComputerList` / `ComputerObserve` / `ComputerAction`（8 个动作动词）

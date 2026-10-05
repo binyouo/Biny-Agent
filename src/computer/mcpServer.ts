@@ -81,15 +81,24 @@ export function createComputerUseMcpServer(driver: NativeProcessDriver): McpServ
     {
       title: "Observe a window",
       description:
-        "Snapshot one app window: returns the accessibility tree (role, title, value, frame, and a stable ref per element) plus a screenshot. Call this once per turn before acting. If the app is not running the call fails — use launch_app first.",
-      inputSchema: { ...appSchema, maxElements: z.number().int().positive().max(1000).optional() }
+        "Snapshot one app window: returns the accessibility tree (role, title, value, frame, and a stable ref per element) plus a screenshot. Call this once per turn before acting. On apps with no AX tree (Qt / custom-drawn) the elements list is empty but the screenshot is still captured, so you can click by pixel. AUTO-LAUNCH: if the app is not running it is launched in the BACKGROUND — the user's frontmost app stays put.",
+      inputSchema: {
+        ...appSchema,
+        maxElements: z.number().int().positive().max(1000).optional(),
+        // 参照的 MCP 在这一个工具上暴露了四个参数，我原先一个都没有 —— 对过工具名，没对参数。
+        depth: z.number().int().max(20).optional().describe("AX tree depth. Default 6."),
+        screenshotMaxWidth: z.number().int().optional()
+          .describe("Downsample width for the screenshot (default 1280).")
+      }
     },
-    async ({ pid, bundle, maxElements }) => {
+    async ({ pid, bundle, maxElements, depth, screenshotMaxWidth }) => {
       try {
         const args: Record<string, unknown> = {};
         if (pid !== undefined) args.pid = pid;
         if (bundle !== undefined) args.bundle = bundle;
         if (maxElements !== undefined) args.max_elements = maxElements;
+        if (depth !== undefined) args.depth = depth;
+        if (screenshotMaxWidth !== undefined) args.max_width = screenshotMaxWidth;
         const reply = await driver.observeRaw(args);
         const { elements, ...rest } = reply.data as { elements?: ElementLike[] } & Record<string, unknown>;
         const tree = renderElementTree(elements);
@@ -113,13 +122,14 @@ export function createComputerUseMcpServer(driver: NativeProcessDriver): McpServ
       inputSchema: {
         ref: z.string().min(1).optional().describe("Element ref from the latest snapshot"),
         x: z.number().optional(), y: z.number().optional(),
-        pid: z.number().int().positive().optional()
+        pid: z.number().int().positive().optional(),
+        show_cursor: z.boolean().optional().describe("Set false to hide the action indicator for this one action")
       }
     },
-    async ({ ref, x, y, pid }) => {
+    async ({ ref, x, y, pid , show_cursor }) => {
       try {
         if (!ref && (x === undefined || y === undefined)) throw new Error("click requires either ref or x/y");
-        const reply = await driver.actRaw("click", ref ? { ref: ref as string } : { x: x as number, y: y as number }, pid);
+        const reply = await driver.actRaw("click", ref ? { ref: ref as string, show_cursor } : { x: x as number, y: y as number, show_cursor }, pid);
         return await withPostShot(pid, asText(reply.data));
       } catch (error) { return fail(error); }
     }
@@ -130,11 +140,11 @@ export function createComputerUseMcpServer(driver: NativeProcessDriver): McpServ
     {
       title: "Type text",
       description: "Type text into the target app. Focus the destination first with click. Multi-byte text is delivered character by character. If the reply carries a keystrokes_may_be_dropped warning the app had nothing focused to receive them — treat it as not written. Returns the post-action screenshot.",
-      inputSchema: { text: z.string().min(1).max(4000), pid: z.number().int().positive().optional() }
+      inputSchema: { text: z.string().min(1).max(4000), pid: z.number().int().positive().optional(), show_cursor: z.boolean().optional().describe("Set false to hide the action indicator for this one action") }
     },
-    async ({ text, pid }) => {
+    async ({ text, pid , show_cursor }) => {
       try {
-        const reply = await driver.actRaw("type_text", { text }, pid);
+        const reply = await driver.actRaw("type_text", { text, show_cursor }, pid);
         return await withPostShot(pid, asText(reply.data));
       } catch (error) { return fail(error); }
     }
@@ -145,11 +155,11 @@ export function createComputerUseMcpServer(driver: NativeProcessDriver): McpServ
     {
       title: "Press key",
       description: "Press a key or chord in xdotool syntax: cmd+s, ctrl+shift+t, Return, Escape, F1. A keystrokes_may_be_dropped warning means the app had nothing focused to receive it. Returns the post-action screenshot.",
-      inputSchema: { key: z.string().min(1).max(40), pid: z.number().int().positive().optional() }
+      inputSchema: { key: z.string().min(1).max(40), pid: z.number().int().positive().optional(), show_cursor: z.boolean().optional().describe("Set false to hide the action indicator for this one action") }
     },
-    async ({ key, pid }) => {
+    async ({ key, pid , show_cursor }) => {
       try {
-        const reply = await driver.actRaw("press_key", { key }, pid);
+        const reply = await driver.actRaw("press_key", { key, show_cursor }, pid);
         return await withPostShot(pid, asText(reply.data));
       } catch (error) { return fail(error); }
     }
@@ -163,13 +173,14 @@ export function createComputerUseMcpServer(driver: NativeProcessDriver): McpServ
       inputSchema: {
         direction: z.enum(["up", "down", "left", "right"]),
         pages: z.number().int().min(1).max(20).optional(),
-        pid: z.number().int().positive().optional()
+        pid: z.number().int().positive().optional(),
+        show_cursor: z.boolean().optional().describe("Set false to hide the action indicator for this one action")
       }
     },
-    async ({ direction, pages, pid }) => {
+    async ({ direction, pages, pid , show_cursor }) => {
       try {
         // 默认一页：页是量出来的单位，行数是估的。
-        const reply = await driver.actRaw("scroll", { direction, pages: pages ?? 1 }, pid);
+        const reply = await driver.actRaw("scroll", { direction, pages: pages ?? 1, show_cursor }, pid);
         return await withPostShot(pid, asText(reply.data));
       } catch (error) { return fail(error); }
     }
@@ -182,12 +193,13 @@ export function createComputerUseMcpServer(driver: NativeProcessDriver): McpServ
       description: "Mouse drag from one screenshot point to another. The accessibility API has no drag action, so this synthesises a press-move-release sequence. Returns the post-action screenshot.",
       inputSchema: {
         x1: z.number(), y1: z.number(), x2: z.number(), y2: z.number(),
-        pid: z.number().int().positive().optional()
+        pid: z.number().int().positive().optional(),
+        show_cursor: z.boolean().optional().describe("Set false to hide the action indicator for this one action")
       }
     },
-    async ({ x1, y1, x2, y2, pid }) => {
+    async ({ x1, y1, x2, y2, pid , show_cursor }) => {
       try {
-        const reply = await driver.actRaw("drag", { x1, y1, x2, y2 }, pid);
+        const reply = await driver.actRaw("drag", { x1, y1, x2, y2, show_cursor }, pid);
         return await withPostShot(pid, asText(reply.data));
       } catch (error) { return fail(error); }
     }
@@ -200,13 +212,14 @@ export function createComputerUseMcpServer(driver: NativeProcessDriver): McpServ
       description: "Right-click, or open the context menu of an element by ref. Tries the accessibility ShowMenu action first and falls back to a synthesised right-click. Returns the post-action screenshot.",
       inputSchema: {
         ref: z.string().min(1).optional(), x: z.number().optional(), y: z.number().optional(),
-        pid: z.number().int().positive().optional()
+        pid: z.number().int().positive().optional(),
+        show_cursor: z.boolean().optional().describe("Set false to hide the action indicator for this one action")
       }
     },
-    async ({ ref, x, y, pid }) => {
+    async ({ ref, x, y, pid , show_cursor }) => {
       try {
         if (!ref && (x === undefined || y === undefined)) throw new Error("perform_secondary_action requires either ref or x/y");
-        const reply = await driver.actRaw("perform_secondary_action", ref ? { ref } : { x: x as number, y: y as number }, pid);
+        const reply = await driver.actRaw("perform_secondary_action", ref ? { ref, show_cursor } : { x: x as number, y: y as number, show_cursor }, pid);
         return await withPostShot(pid, asText(reply.data));
       } catch (error) { return fail(error); }
     }
@@ -220,12 +233,13 @@ export function createComputerUseMcpServer(driver: NativeProcessDriver): McpServ
       inputSchema: {
         ref: z.string().min(1).describe("Element ref from the latest snapshot"),
         value: z.union([z.string(), z.number(), z.boolean()]),
-        pid: z.number().int().positive().optional()
+        pid: z.number().int().positive().optional(),
+        show_cursor: z.boolean().optional().describe("Set false to hide the action indicator for this one action")
       }
     },
-    async ({ ref, value, pid }) => {
+    async ({ ref, value, pid , show_cursor }) => {
       try {
-        const reply = await driver.actRaw("set_value", { ref, value }, pid);
+        const reply = await driver.actRaw("set_value", { ref, value, show_cursor }, pid);
         return await withPostShot(pid, asText(reply.data));
       } catch (error) { return fail(error); }
     }
@@ -241,13 +255,14 @@ export function createComputerUseMcpServer(driver: NativeProcessDriver): McpServ
         text: z.string().min(1).optional(),
         location: z.number().int().nonnegative().optional(),
         length: z.number().int().nonnegative().optional(),
-        pid: z.number().int().positive().optional()
+        pid: z.number().int().positive().optional(),
+        show_cursor: z.boolean().optional().describe("Set false to hide the action indicator for this one action")
       }
     },
-    async ({ ref, text, location, length, pid }) => {
+    async ({ ref, text, location, length, pid , show_cursor }) => {
       try {
         if (text === undefined && location === undefined) throw new Error("select_text requires text or location");
-        const reply = await driver.actRaw("select_text", text !== undefined ? { ref, text } : { ref, location, length: length ?? 0 }, pid);
+        const reply = await driver.actRaw("select_text", text !== undefined ? { ref, text, show_cursor } : { ref, location, length: length ?? 0, show_cursor }, pid);
         return await withPostShot(pid, asText(reply.data));
       } catch (error) { return fail(error); }
     }
