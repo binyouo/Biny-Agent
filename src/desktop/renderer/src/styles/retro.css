@@ -2416,18 +2416,17 @@
  * 撑成 270~435px 的巨块 —— 看上去就是"炸开"。同一份 CSS 在参照那里看不出来，
  * 是因为它的条带更宽/页签更少，恰好不折。
  *
- * 所以：条带与页签都不许折行，页签可压缩（min-width: 0 + 标签省略号），
+ * 所以：页签要**可压缩**（min-width: 0 + flex: 1 1 auto）—— 压得住就不会折行，
+ * 而折行正是「末行被撑开」的入口。这里**不写 flex-wrap: nowrap**：页签能压到 0
+ * 时本来就不会折，反过来 nowrap 会跟 tests/desktop-themes.test.ts 那条契约断言打架
+ * （那条契约要求导航仍是可折行的横向条，由另一路工作在维护）。
  * 字距按 Win98 原作收到 11px，让 15 个页签在一行里放得下并均分。
  * 只改 padding-inline，不动 padding 简写 —— 各皮肤的 `.is-selected` 靠
  * padding-bottom 做"抬高"效果，别把它冲掉。
  * ------------------------------------------------------------------------- */
-:root:is([data-appearance-skin='win98'], [data-appearance-skin='winxp'], [data-appearance-skin='longhorn'], [data-appearance-skin='longhorn-dark']) .is-retro-settings .settings-tabs {
-    flex-wrap: nowrap;
-}
 :root:is([data-appearance-skin='win98'], [data-appearance-skin='winxp'], [data-appearance-skin='longhorn'], [data-appearance-skin='longhorn-dark']) .is-retro-settings .settings-tabs .settings-nav-list {
     flex: 1 1 auto;
     min-width: 0;
-    flex-wrap: nowrap;
 }
 :root:is([data-appearance-skin='win98'], [data-appearance-skin='winxp'], [data-appearance-skin='longhorn'], [data-appearance-skin='longhorn-dark']) .is-retro-settings .settings-tabs .settings-nav-list button {
     flex: 1 1 auto;
