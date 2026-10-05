@@ -246,7 +246,8 @@ export class McpToolHost {
     }
   }
 
-  async listServerResources(serverName?: string): Promise<Array<Record<string, unknown>>> {
+  async listServerResources(serverName?: string, signal?: AbortSignal): Promise<Array<Record<string, unknown>>> {
+    signal?.throwIfAborted();
     const targets = serverName
       ? [this.requireServer(serverName)]
       : [...this.servers.values()].filter((server) => server.status.enabled && server.status.hasResources);
@@ -254,17 +255,20 @@ export class McpToolHost {
     for (const managed of targets) {
       if (!managed.client || !managed.status.connected) {
         try {
-          await this.reconnect(managed);
+          await waitForMcpResourceReconnect(this.reconnect(managed), signal);
         } catch {
+          signal?.throwIfAborted();
           continue;
         }
       }
+      signal?.throwIfAborted();
       const client = managed.client;
       if (!client) continue;
       try {
         let cursor: string | undefined;
         for (let page = 0; page < maxResourceListPages; page += 1) {
-          const listed = await this.requestWithCredentials(managed, () => client.listResources(cursor === undefined ? undefined : { cursor }, this.requestOptions(managed)));
+          const listed = await this.requestWithCredentials(managed, () => client.listResources(cursor === undefined ? undefined : { cursor }, this.requestOptions(managed, signal)));
+          signal?.throwIfAborted();
           for (const resource of listed.resources) {
             resources.push({
               server: managed.name,
@@ -278,6 +282,7 @@ export class McpToolHost {
           if (!cursor) break;
         }
       } catch (error) {
+        signal?.throwIfAborted();
         resources.push({ server: managed.name, error: errorText(error) });
       }
     }
@@ -697,13 +702,14 @@ export function createMcpResourceTools(host: McpToolHost): Tool[] {
           accesses: ToolAccesses.none(),
           display: { kind: "generic" as const, summary: parsed.data.server ? `MCP resources of ${parsed.data.server}` : "MCP resources" },
           approvalRule: "mcp:resources:list",
-          async execute(): Promise<unknown> {
+          async execute(context): Promise<unknown> {
+            context.signal?.throwIfAborted();
             if (parsed.data.server) {
               host.assertServerExposed(parsed.data.server);
-              return await host.listServerResources(parsed.data.server);
+              return await host.listServerResources(parsed.data.server, context.signal);
             }
             return (await Promise.all(host.listExposedServers().filter((server) => server.hasResources)
-              .map((server) => host.listServerResources(server.name)))).flat();
+              .map((server) => host.listServerResources(server.name, context.signal)))).flat();
           }
         };
       }
@@ -753,6 +759,25 @@ export function createMcpResourceTools(host: McpToolHost): Tool[] {
 
 function transportKind(serverConfig: McpServerConfig): McpTransportKind {
   return serverConfig.type ?? (serverConfig.url ? "http" : "stdio");
+}
+
+/** 只取消资源列表调用者的等待；共享重连仍由 host 持有并继续服务其他调用者。 */
+function waitForMcpResourceReconnect(connecting: Promise<void>, signal?: AbortSignal): Promise<void> {
+  if (!signal) return connecting;
+  return new Promise<void>((resolve, reject) => {
+    let settled = false;
+    const finish = (settle: () => void): void => {
+      if (settled) return;
+      settled = true;
+      signal.removeEventListener("abort", cancelled);
+      settle();
+    };
+    const cancelled = (): void => finish(() => reject(signal.reason));
+    // 即使调用者先取消，也观察共享尝试最终的成功/失败，避免遗留未处理的拒绝。
+    void connecting.then(() => finish(resolve), (error: unknown) => finish(() => reject(error)));
+    signal.addEventListener("abort", cancelled, { once: true });
+    if (signal.aborted) cancelled();
+  });
 }
 
 function markDisconnected(managed: ManagedMcpServer, error: unknown): void {
