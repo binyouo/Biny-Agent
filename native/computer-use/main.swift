@@ -342,6 +342,27 @@ let lensOverlay = LensOverlay()
 var lensEnabled = true
 /// 上一次动作用的是哪种指示器结局：shown / suppressed / disabled / none。
 var lastIndicatorOutcome = "none"
+/// 上一次观察的元素树指纹（按 pid:window 存），用于 `elements_are_diff`。
+///
+/// 参照在观察回执里报两个字段：`elements_are_diff`（与上次相比变没变）和
+/// `unchanged_element_count`（没变的元素数）。这对调用方是**语义信息**——
+/// "什么都没变"意味着不必重读一整棵树，也不必把上次的 ref 当过期。
+var lastElementFingerprints: [String: [String]] = [:]
+
+/// 元素的一条规范化描述：参与"变没变"的比较。
+/// 只收**会影响调用方判断**的字段（角色/标题/值/几何），不收 ref ——
+/// ref 每次都重新编，收进去会让"没变"永远判成"变了"。
+func elementFingerprint(_ element: [String: Any]) -> String {
+    let role = element["role"] as? String ?? ""
+    let title = element["title"] as? String ?? ""
+    let value = String(describing: element["value"] ?? "")
+    var frame = ""
+    if let f = element["frame"] as? [String: Double] {
+        frame = "\(Int(f["x"] ?? 0)),\(Int(f["y"] ?? 0)),\(Int(f["w"] ?? 0)),\(Int(f["h"] ?? 0))"
+    }
+    return "\(role)|\(title)|\(value)|\(frame)"
+}
+
 /// 最近一次观察过的 pid：只给 ref、不给 pid 的调用靠它定目标。
 var lastObservedPid: pid_t?
 var lastActionPoint: CGPoint?
@@ -1675,6 +1696,28 @@ DispatchQueue.global().async {
                                 // 过滤开着的时候，「列表为空」不再等于「这应用没有 AX 树」：
                                 // 完全可能是有树、只是没有可交互元素。这两件事调用方要做得不一样
                                 // （前者放弃用 ref，后者加 `--all` 再看一次），必须分开说。
+                                // 与上一次观察比：变没变、变了多少。参照同样上报这两个字段。
+                                // 比对用**规范化指纹**（角色/标题/值/几何），不含 ref ——
+                                // ref 每次重编，收进去会让"没变"永远判成"变了"。
+                                let fingerprintKey = "\(Int(pid)):\(data["windowId"] as? Int ?? 0)"
+                                let fresh = elements.map(elementFingerprint)
+                                if let previous = lastElementFingerprints[fingerprintKey] {
+                                    // 逐位置比对，不是"从头连续相同的长度" ——
+                                    // 后者顶部一变就归零，而下面几十条其实没动，那个数会误导。
+                                    // （参照这一步的算法读不出来；这里选了**更可解释**的那个：
+                                    //   "同一序号上没变的元素有几个"，任何一个调用方都能自己复算。）
+                                    let unchanged = zip(previous, fresh).filter { $0 == $1 }.count
+                                    // ⚠️ 两个字段必须**同源**：先前 "变没变" 按集合比、
+                                    // "几个没变" 按位置比 —— 集合相等但元素换了位置时，
+                                    // 会报出 diff=false 而 未变<N 的**自相矛盾**组合
+                                    //（这让新加的测试逮到了）。现在都用位置判据，永远自洽。
+                                    data["unchanged_element_count"] = unchanged
+                                    data["elements_are_diff"] = unchanged < fresh.count
+                                } else {
+                                    data["elements_are_diff"] = true          // 第一次观察：无从比较，如实说"有差异"
+                                    data["unchanged_element_count"] = 0
+                                }
+                                lastElementFingerprints[fingerprintKey] = fresh
                                 data["interactiveOnly"] = interactiveOnly
                                 if interactiveOnly, elements.count <= 1, data["warning"] == nil {
                                     data["warning"] = "no_interactive_elements: 这棵树里没有可交互元素（并不代表没有树）。要看完整树就传 interactive_only=false（CLI：--all）。"

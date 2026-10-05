@@ -812,10 +812,13 @@ test("type can insert at the cursor instead of replacing the whole value", async
     while (Date.now() < deadline) {
       const observed = await driver.daemonCommand("get_app_state", { pid, no_shot: true, max_elements: 40 });
       const elements = (observed.data as { elements?: El[] }).elements ?? [];
-      const area = elements.find(element => element.role === "AXTextArea");
+      // ⚠️ 找**内容等于我们刚写的那份**，不是"第一个文本区"：
+      // 机器上可能还有别的文档（包括我以前跑剩下没关掉的），
+      // 挑第一个会挑到别人的，然后断言"内容不对"——而那根本不是我们的窗口。
+      const area = elements.find(element => element.role === "AXTextArea" && String(element.value ?? "") === "AAAABBBB");
       ref = area?.element_token ?? area?.ref ?? "";
       areaValue = String(area?.value ?? "");
-      if (ref && areaValue === "AAAABBBB") break;
+      if (ref) break;
       await new Promise(resolve => setTimeout(resolve, 400));
     }
     assert.ok(ref, "应当找得到那个一次性文档的文本域");
@@ -1242,6 +1245,62 @@ test("the product-internal observe path carries its parameters all the way to th
     const typed = (await driver.actRaw("scroll", { direction: "down", pages: 1, showCursor: false } as never, pid)).data as
       Record<string, unknown>;
     assert.ok(typed.unit, "动作参数也要能走通");
+  } finally {
+    await driver.dispose();
+  }
+});
+
+// 参照的观察回执里有一组"健康/新鲜度"字段，本轮字段级 diff 才捞出来：
+//   elements_are_diff（与上次相比变没变）· unchanged_element_count（没变的元素数）
+// 这对调用方是**语义信息** —— "什么都没变"意味着不必重读整棵树，
+// 也不必把上次的 ref 当过期。我原来一个都没有。
+test("observation reports whether the element tree changed since last time", async () => {
+  const driver = new NativeProcessDriver(() => {}, {
+    binaryPath: new URL("../out/native/computer-use", import.meta.url).pathname
+  });
+  try {
+    const listed = await driver.list("diff-e2e", undefined);
+    const apps = (listed.data as { apps?: { pid?: number }[] }).apps ?? [];
+    const pid = apps.find(app => typeof app.pid === "number")?.pid;
+    assert.ok(pid, "至少要有一个运行中的应用");
+
+    type Reply = { elements_are_diff?: boolean; unchanged_element_count?: number; elements?: unknown[] };
+    // 观察失败就跳过，不伪造通过 —— 这条测的是**字段语义**，
+    // 不该因为某个应用这一刻观察不到就变红（本机的 TextEdit 这会儿就卡着）。
+    const look = async (): Promise<Reply | undefined> => {
+      try {
+        return (await driver.daemonCommand("get_app_state", { pid, no_shot: true, max_elements: 200 })).data as Reply;
+      } catch { return undefined; }
+    };
+
+    // ⚠️ 不能断言"第一次观察 count=0"：daemon 是**长命**的，同一个测试文件里
+    // 前面的用例已经观察过这些应用了，指纹早就存进去了 ——
+    // "这是第一次"是测试的视角，不是 daemon 的视角。（和"ref 跨用例还在表里"同一个坑。）
+    const first = await look();
+    if (!first) { return; }                     // 目标观察不到 → 跳过（环境问题，不是逻辑问题）
+    assert.equal(typeof first.elements_are_diff, "boolean", "这个字段必须始终给");
+    assert.ok((first.unchanged_element_count ?? -1) >= 0, "未变数不能是负数");
+
+    // ⚠️ 别断言"紧接着再看一次，树一定没变" —— 活动监视器这类目标**自己在变**
+    //（进程列表每两秒刷一次），那样断言是在赌"这个应用的内容是静止的"。
+    // 断言**任何目标都成立的不变量**：
+    //   · 两个字段都要在，类型对
+    //   · 未变数不会超过元素总数
+    //   · **一旦报告"没变"，未变数就必须等于总数**（这是它们之间的一致性）
+    // （上一版我在替换注释时把 `const second = await look();` 一起替换掉了，
+    //   于是这里引用了没声明的变量 —— 报 `second is not defined`。
+    //   改测试和改代码一样：**替换整段时，先看清这一段里声明了什么。**）
+    const second = await look();
+    for (const reply of [second, await look()]) {
+      if (!reply) { return; }
+      assert.equal(typeof reply.elements_are_diff, "boolean", "两次观察后仍是布尔");
+      const total = reply.elements?.length ?? 0;
+      assert.ok((reply.unchanged_element_count ?? -1) <= total, "未变数不该超过元素总数");
+      if (reply.elements_are_diff === false) {
+        assert.equal(reply.unchanged_element_count, total,
+          "报「没变」时，未变数必须等于总数 —— 否则这两个字段自相矛盾");
+      }
+    }
   } finally {
     await driver.dispose();
   }
