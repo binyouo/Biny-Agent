@@ -233,6 +233,24 @@ physical click`、`set_value (AXValue not settable on this element)`、
 这条在 `click` 和 `perform_secondary_action` 上先后漏过一次（`if let ref = …, let element = refTables[…][ref]`
 把两件事并在一个条件里），现在四个动词都有测试钉住。
 
+### 1.4c 原生意图层：补上通用派发与 Music/Spotify/Mail
+
+参照的意图目录比本实现宽。从 helper 的**工具描述散文**里能读到完整清单：
+
+- **通用派发**：`route` 参数取 `dailyRecommend / historyRecommend / historyPlaylist /
+  styleRecommend / similarArtist / ranking / playlist / album / artist / albumlist /
+  musicDesktop / localMusic / login` —— 而且**"Other values may also work"**，
+  它就是 raw `orpheus://route/<name>` 桥。本实现原先只有两个具名路由。
+- `Open Music.app in the background.` / `Open an Apple Music URL (music.apple.com/… 或 music://…)`
+- `com.spotify.client` / `Play a Spotify URI, e.g. spotify:track:…`
+- `Open a new message. All params optional: to, subject, body, cc, bcc.`（走 `mailto:`）
+
+已全部补上。未知路由名**原样放行**（不是错误）—— 这正是参照的语义。
+
+失败分成四种，各自给下一步：`unknown_intent` / `intent_missing_url` /
+`intent_bad_url` / `intent_handler_not_installed`。
+（后者例如这台机器没装 Spotify —— 如实报，不假装成功。）
+
 ### 1.5 工具 / 技能层
 
 - 模型侧工具：`ComputerList` / `ComputerObserve` / `ComputerAction`（8 个动作动词）

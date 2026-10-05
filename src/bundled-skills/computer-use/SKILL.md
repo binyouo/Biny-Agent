@@ -42,6 +42,30 @@ type <ref> "XX" --at-selection        # 插在那里，不是替换整段
 
 这也是**自绘输入框唯一走得通的路**（键盘事件进不去那类应用）。
 
+## 有些事不用驱动 UI：原生意图层
+
+按应用注册的意图，走 URL scheme 直接派给应用 —— 比点按钮稳，也不动前台。
+
+```
+intent open_url --url "https://…"            # 交给系统里处理它的应用
+intent play_song --args '{"id": 12345}'      # 网易云：orpheus://song/?id=…
+intent netease_route --args '{"id": "ranking"}'
+intent compose_mail --args '{"to":"a@b.c","subject":"hi"}'   # 走 mailto:
+intent open_music_url --args '{"url": "music://…"}'          # Apple Music
+intent play_spotify_uri --args '{"id": "spotify:track:…"}'   # Spotify
+```
+
+- **`netease_route` 是通用派发**：`route` 取 `dailyRecommend` / `historyRecommend` /
+  `historyPlaylist` / `styleRecommend` / `similarArtist` / `ranking` / `playlist` /
+  `album` / `artist` / `albumlist` / `musicDesktop` / `localMusic` / `login`；
+  **别的名字照样放行**（它就是 raw `orpheus://route/<name>` 桥）。
+- URL 放 `args.id` 或 `args.url` 都可以。
+- `activates` 字段告诉你前台有没有被换掉 —— `false` 表示"派了但前台没动"。
+  **但这是具体应用的性质，不是这条路径的性质**（网易云不动前台，Chrome 处理 https 会被顶到前面）。
+- 失败分四种，各自下一步不同：`unknown_intent`（名字错）/ `intent_missing_url`（补参数）/
+  `intent_bad_url` / `intent_handler_not_installed`（这台机器没装那个应用）。
+  **报"没装"而不是假装派成功** —— 后者会让你以为发出去了。
+
 ## 优先用 ref，不要用像素——这不只是精确度问题
 
 `click` 既能给元素 ref，也能给截图坐标。**能用 ref 就用 ref。**

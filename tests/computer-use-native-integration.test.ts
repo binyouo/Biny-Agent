@@ -580,7 +580,9 @@ test("intent refuses unknown names and URLs with no handler", async () => {
     // 不认识的意图要列出可用的几个，别只说"不行"
     await assert.rejects(
       () => driver.daemonCommand("intent", { intent: "no_such_intent" }),
-      error => /unknown_intent_or_url/.test(String(error)) && /play_song/.test(String(error)),
+      // 文案从 unknown_intent_or_url 拆成了 unknown_intent —— 名字不认识、
+      // 名字对但没给 url、url 不合法、没装处理者，四种要分开报。
+      error => /unknown_intent/.test(String(error)) && /play_song/.test(String(error)),
       "未知意图应当把可用项列出来"
     );
     // 系统里没有处理者的 scheme：要在这儿就失败，而不是"派了但没人接"
@@ -810,6 +812,48 @@ test("a missing argument and an expired ref are reported differently", async () 
         `${tool} 传了过期 ref 时应当说"ref 不在最近一次观察里"，而不是"缺参数"`
       );
     }
+  } finally {
+    await driver.dispose();
+  }
+});
+
+// 意图层是"不驱动 UI、把意图派给应用"的那一层。参照的意图目录比本实现宽：
+// 除具名的网易云路由外，还有一条**通用派发**（raw `orpheus://route/<name>` bridge，
+// 未知名字照样放行 —— 参照自己写着 "Other values may also work"），
+// 以及 Music.app / Spotify / 邮件。
+test("intent layer dispatches generic routes and builds mailto URLs", async () => {
+  const driver = new NativeProcessDriver(() => {}, {
+    binaryPath: new URL("../out/native/computer-use", import.meta.url).pathname
+  });
+  try {
+    const play = async (intent: string, args?: Record<string, unknown>) =>
+      (await driver.daemonCommand("intent", args ? { intent, args } : { intent })).data as { url?: string; handler?: string };
+
+    // 通用派发：已知路由和未知路由都应当**原样**构成 orpheus://route/<name>
+    assert.equal((await play("netease_route", { id: "ranking" })).url, "orpheus://route/ranking");
+    assert.equal((await play("netease_route", { id: "no_such_route" })).url, "orpheus://route/no_such_route",
+      "未知路由名也要放行 —— 参照写着 Other values may also work");
+    // 具名路由就是它的特例
+    assert.equal((await play("play_daily_recommendation")).url, "orpheus://route/dailyRecommend");
+
+    // 邮件：只拼调用方给了的字段（参照："All params optional: to, subject, body, cc, bcc"）
+    assert.equal((await play("compose_mail", { to: "a@b.c", subject: "hi" })).url, "mailto:a@b.c?subject=hi");
+    assert.equal((await play("compose_mail", {})).url, "mailto:");
+    // 参数名：id 和 url 都认（调用方直觉会写 url）
+    assert.equal((await play("open_music_url", { url: "https://music.apple.com/album/1" })).url,
+      "https://music.apple.com/album/1");
+    // ⚠️ Spotify 不一定装了 —— 不能断言一个取决于机器的值（我在这上面栽过一次：
+    // focusTap 探针）。装了就看 URL 对不对，没装就看它报的是"没处理者"、
+    // 而不是"名字不认识"。两种都要过，但**两种必须分得开**。
+    const spotify = await play("play_spotify_uri", { id: "spotify:track:x" })
+      .then(result => result.url ?? "")
+      .catch(error => String(error));
+    assert.match(String(spotify), /spotify:track:x|intent_handler_not_installed/);
+
+    // 四种坏法必须分得清 —— 「名字不认识」和「名字对但没给 url」下一步完全不同
+    await assert.rejects(() => play("no_such_intent"), /unknown_intent/);
+    await assert.rejects(() => play("open_music_url"), /intent_missing_url/);
+    await assert.rejects(() => play("open_url"), /intent_missing_url/);
   } finally {
     await driver.dispose();
   }

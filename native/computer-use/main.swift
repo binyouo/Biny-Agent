@@ -222,9 +222,22 @@ let appshotMonitor = AppshotMonitor()
 let nativeIntents: [String: (bundle: String, url: (String?) -> String?)] = [
     "play_song":                  ("com.netease.163music", { id in id.map { "orpheus://song/?id=\($0)" } }),
     "play_playlist":              ("com.netease.163music", { id in id.map { "orpheus://playlist/?id=\($0)" } }),
+    // 具名路由只是壳，参照底下还有一条**通用派发**（"the raw `orpheus://route/<name>` bridge"）；
+    // 具名那两个就是它的特例。留出这条路，新路由不必等我们发版。
+    "netease_route":              ("com.netease.163music", { name in name.map { "orpheus://route/\($0)" } }),
     "play_daily_recommendation":  ("com.netease.163music", { _ in "orpheus://route/dailyRecommend" }),
     "open_history_recommend":     ("com.netease.163music", { _ in "orpheus://route/historyRecommend" }),
+    // Apple Music / Spotify：参照同样是 URL scheme，不是驱动 UI。
+    "open_music_url":             ("com.apple.Music", { url in url }),
+    "play_spotify_uri":           ("com.spotify.client", { uri in uri }),
+    // 邮件：参照的描述是"All params optional: to, subject, body, cc, bcc" → 走 mailto:（RFC 6068）。
+    "compose_mail":               ("com.apple.mail", { mailto in mailto }),
 ]
+
+/// 参照在错误里把可用的网易云路由列全了（`dailyRecommend` … `login`）—— 照抄这份表。
+let knownNeteaseRoutes = ["dailyRecommend", "historyRecommend", "historyPlaylist", "styleRecommend",
+                          "similarArtist", "ranking", "playlist", "album", "artist", "albumlist",
+                          "musicDesktop", "localMusic", "login"]
 
 // MARK: - Lens：动作指示器
 
@@ -1295,19 +1308,44 @@ DispatchQueue.global().async {
                                 let name = args["intent"] as? String ?? "open_url"
                                 // ⚠️ 别叫 `id`：那会遮蔽请求 id，于是 reply 回的是意图参数的 id，
                                 // 客户端对不上号、把回执丢掉、一路等到超时（daemon 其实是回了的）。
-                                let intentArgId = (args["args"] as? [String: Any])?["id"].map { "\($0)" }
+                                // 默认取 args.id；但像 open_music_url / play_spotify_uri 这种，调用方
+                                // 直觉上会写 args.url —— 两个都认，省得为参数名猜一次。
+                                let intentArgs = args["args"] as? [String: Any]
+                                let intentArgId = (intentArgs?["id"] ?? intentArgs?["url"]).map { "\($0)" }
                                 var targetBundle = args["bundle"] as? String
                                 var urlString: String?
-                                if name == "open_url" {
+                                if name == "compose_mail" {
+                                    // ⚠️ 这一支必须在**最前面**：它和 open_url / nativeIntents 是并列的，
+                                    // 塞进 `if name == "open_url"` 里面的话外层条件根本不成立，永远走不到。
+                                    let params = args["args"] as? [String: Any] ?? [:]
+                                    var parts: [String] = []
+                                    for key in ["cc", "bcc", "subject", "body"] where params[key] != nil {
+                                        let raw = String(describing: params[key]!)
+                                        let encoded = raw.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? raw
+                                        parts.append("\(key)=\(encoded)")
+                                    }
+                                    urlString = "mailto:\((params["to"] as? String) ?? "")" + (parts.isEmpty ? "" : "?\(parts.joined(separator: "&"))")
+                                } else if name == "open_url" {
                                     urlString = args["url"] as? String ?? intentArgId
                                 } else if let spec = nativeIntents[name] {
                                     targetBundle = targetBundle ?? spec.bundle
                                     urlString = spec.url(intentArgId)
                                 }
-                                guard let urlString, let url = URL(string: urlString) else {
+                                // ⚠️「名字不认识」和「名字对但没给 url」是两种坏法，下一步也不同
+                                // （查名字 vs 补参数）—— 我上轮刚立下这条不变量，这里又并成了一句。
+                                let isKnown = name == "open_url" || nativeIntents[name] != nil
+                                guard isKnown else {
                                     let known = (["open_url"] + nativeIntents.keys.sorted()).joined(separator: "/")
                                     throw NSError(domain: "intent", code: 64, userInfo: [NSLocalizedDescriptionKey:
-                                        "unknown_intent_or_url: \" \(name) \" 不是已注册的意图，或没给 url。可用：\(known)"])
+                                        "unknown_intent: \" \(name) \" 不是已注册的意图。可用：\(known)；netease_route 的 route 取其一：\(knownNeteaseRoutes.joined(separator: "/"))"])
+                                }
+                                guard let urlString else {
+                                    throw NSError(domain: "intent", code: 64, userInfo: [NSLocalizedDescriptionKey:
+                                        "intent_missing_url: 意图 \(name) 需要 URL，把它放在 args.id 或 args.url 里"])
+                                }
+                                guard let url = URL(string: urlString) else {
+                                    throw NSError(domain: "intent", code: 64, userInfo: [NSLocalizedDescriptionKey:
+                                        "intent_bad_url: \" \(urlString) \" 不是合法 URL"])
                                 }
                                 let config = NSWorkspace.OpenConfiguration()
                                 // 关键：不激活。意图就是要"派完就走"，别把应用顶到前台。
