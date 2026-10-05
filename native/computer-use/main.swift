@@ -512,6 +512,12 @@ func axWalk(_ root: AXUIElement, depth: Int, maxDepth: Int, limit: Int, counter:
 func resolvePid(_ parameters: [String: Any], fallbackPid: pid_t? = nil) throws -> pid_t {
     if let pid = parameters["pid"] as? Int { return pid_t(pid) }
     if let fallbackPid { return fallbackPid }
+    // 只给 ref 时（`cu click e12`、`cu set_value e3 x`）从元素表反查 pid：
+    // 参照的调用方**从来不带 pid**（它的元素存储是全局的），本实现按 pid 分表，
+    // 于是"只给 ref"这条调用在参照里成立、在这里不成立。`pidForRef` 就是为这个写的
+    // （scroll 那条路已经在用，这里是把它挪到所有动词共用的入口上）。
+    // 反查不到就照旧往下走，由各自的报错路径说清楚，别在这里改变失败姿态。
+    if let ref = parameters["ref"] as? String, let pid = pidForRef(ref) { return pid }
     if let bundle = parameters["bundle"] as? String {
         if let app = NSRunningApplication.runningApplications(withBundleIdentifier: bundle).first { return app.processIdentifier }
         // 参照的 MCP 契约里有 `auto_launch`（"Auto-launch the app in the background if not
@@ -1697,7 +1703,10 @@ DispatchQueue.global().async {
                                     throw NSError(domain: "click", code: 64, userInfo: [NSLocalizedDescriptionKey:
                                         "click_pixel_needs_target: 像素点击需要一个正在运行的目标（pid 或 bundle）。没有目标就只能全局投递，那会**移动用户的真实光标** —— 所以这里不做。"])
                                 }
-                                if let ref = args["ref"] as? String, let pid = args["pid"] as? Int {
+                                // 传了 pid 就用它；没传（`cu click e12`）才反查 ——
+                                // 反查的规则是"最近一次观察的 pid 优先"，别让它盖掉调用方明确的指定。
+                                let refPid = (args["pid"] as? Int).map { pid_t($0) }
+                                if let ref = args["ref"] as? String, let pid = refPid ?? pidForRef(ref) {
                                     // ⚠️ ref 的查找**不能和上面那两个条件并在一起**：
                                     // 并在一起时，"传了 ref 但它过期了"会掉到下面的像素分支，
                                     // 最终报成"需要 ref 或坐标"—— 而调用方明明给了 ref。
@@ -1786,6 +1795,12 @@ DispatchQueue.global().async {
                                     if hasX || hasY {
                                         throw NSError(domain: "click", code: 64, userInfo: [NSLocalizedDescriptionKey:
                                             "click_pixel_needs_both_xy: 像素点击要同时给 x 和 y（现在只有 \(hasX ? "x" : "y")）"])
+                                    }
+                                    // 给了 ref 却走到这儿 = 它定位不到（过期了、或跨了多个应用）。
+                                    // 这和"什么都没给"是两种坏法，下一步也不同 —— 分开报。
+                                    if let ref = args["ref"] as? String {
+                                        throw NSError(domain: "click", code: 64, userInfo: [NSLocalizedDescriptionKey:
+                                            "element_ref_not_located: ref \(ref) 不在最近一次观察里（或跨了多个应用，无法唯一定位）—— 先 snap 那个应用再点"])
                                     }
                                     throw NSError(domain: "click", code: 64, userInfo: [NSLocalizedDescriptionKey:
                                         "click_needs_ref_or_pixel: 要么给一个来自最近一次观察的 ref，要么给 x/y 坐标"])

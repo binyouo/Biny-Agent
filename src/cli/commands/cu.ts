@@ -24,6 +24,17 @@ const ACTION_VERBS = new Set(["click", "perform_secondary_action", "drag", "type
 const withCursorFlag = (options: Record<string, unknown>): Record<string, unknown> =>
   options.noCursor === true ? { show_cursor: false } : {};
 
+/**
+ * 只在真的给了 `--pid` 时才带 pid。
+ *
+ * `Number(undefined)` 是 NaN，JSON 化后是 `null` —— 守护进程于是把 pid 读成"没给"，
+ * 转头去解析 bundle，最后报 `app_not_found`；而调用方明明只是想用 ref。
+ * 参照的调用方**根本不给 pid**（它的元素存储是全局的），ref 该能自己反查最近一次
+ * 观察的 pid —— 守护进程侧见 `pidForRef`。
+ */
+const withPid = (options: { pid?: string }): Record<string, unknown> =>
+  options.pid ? { pid: Number(options.pid) } : {};
+
 const cu = program.command("cu").description("Drive the Mac from the terminal (same daemon the agent uses)");
 
   /** 每个动词都开一次守护进程连接；用完就断，空闲自退交给守护进程自己管。 */
@@ -165,16 +176,23 @@ cu.command(observeName).description("Observe a window: accessibility tree plus a
       // 这一次不要指示器，下一次照旧。
       const shared = { button: options.button, clicks: Number(options.clicks), strategy: options.strategy, ...(options.noCursor ? { show_cursor: false } : {}) };
       const args: Record<string, unknown> = options.pixel
-        ? { pid: Number(options.pid), x: Number(options.pixel[0]), y: Number(options.pixel[1]), ...shared }
-        : { ref, pid: Number(options.pid), ...shared };
+        ? { ...withPid(options), x: Number(options.pixel[0]), y: Number(options.pixel[1]), ...shared }
+        : { ref, ...withPid(options), ...shared };
       print((await driver.actRaw("click", args)).data, options.json);
     }));
 
   for (const verb of ["type_text", "press_key"] as const) {
     const command = cu.command(verb).description(verb === "type_text" ? "Type text into the target app" : "Press a key or chord (xdotool syntax: cmd+s)")
       .argument(verb === "type_text" ? "<text>" : "<combo>").option("--pid <n>", "target pid").option("--json", "print JSON").option("--no-cursor", "hide the action indicator for this one action");
-    command.action((value: string, options: { pid?: string; json?: boolean }) => withDriver(async driver => {
-      const args = verb === "type_text" ? { text: value, pid: Number(options.pid) } : { key: value, pid: Number(options.pid) };
+    // `global` 是 press_key 独有的：默认投给目标进程（后台应用也能收、不动前台），
+    // 系统级快捷键表达不出来时走上这条 —— 代价是会被前台应用收掉，所以要显式选。
+    if (verb === "press_key") {
+      command.option("--global", "deliver through the global HID stream to whatever is focused (needed for system-level shortcuts); default posts to the target process");
+    }
+    command.action((value: string, options: { pid?: string; json?: boolean; global?: boolean }) => withDriver(async driver => {
+      const args = verb === "type_text"
+        ? { text: value, ...withPid(options) }
+        : { key: value, ...withPid(options), ...(options.global ? { global: true } : {}) };
       print((await driver.actRaw(verb, { ...args, ...withCursorFlag(options) })).data, options.json);
     }));
   }
@@ -196,7 +214,7 @@ cu.command(observeName).description("Observe a window: accessibility tree plus a
       // 早先无条件传 `Number(undefined)` = NaN，daemon 于是报 app_not_found。
       const args: Record<string, unknown> = {
         direction: dir,
-        ...(options.pid ? { pid: Number(options.pid) } : {}),
+        ...withPid(options),
         ...(looksLikeRef ? { ref: refOrDirection } : {})
       };
       // 给了 --pages 就按页面走（量出来的），否则退回滚轮行数（估的）。回执里的 unit 会说明用了哪个。
@@ -208,7 +226,7 @@ cu.command(observeName).description("Observe a window: accessibility tree plus a
   cu.command("drag").description("Drag between two screenshot points").argument("<x1> <y1> <x2> <y2>")
     .option("--pid <n>", "target pid").option("--json", "print JSON")
     .action((x1: string, y1: string, x2: string, y2: string, options: { pid?: string; json?: boolean }) => withDriver(async driver => {
-      print((await driver.actRaw("drag", { x1: Number(x1), y1: Number(y1), x2: Number(x2), y2: Number(y2), pid: Number(options.pid), ...withCursorFlag(options) })).data, options.json);
+      print((await driver.actRaw("drag", { x1: Number(x1), y1: Number(y1), x2: Number(x2), y2: Number(y2), ...withPid(options), ...withCursorFlag(options) })).data, options.json);
     }));
 
   // 参照里这个名字叫 `perform_secondary_action`，且**两种定位方式**：
@@ -224,7 +242,7 @@ cu.command(menuName).description("Open an element's context menu").argument("[re
         ? { x: Number(options.pixel[0]), y: Number(options.pixel[1]) }
         : ref ? { ref } : null;
       if (!where) throw new Error(`${menuName} 需要 ref 或 --pixel <x> <y>`);
-      print((await driver.actRaw("perform_secondary_action", { ...where, ...(options.pid ? { pid: Number(options.pid) } : {}), ...withCursorFlag(options) })).data, options.json);
+      print((await driver.actRaw("perform_secondary_action", { ...where, ...withPid(options), ...withCursorFlag(options) })).data, options.json);
     }));
 }
 
@@ -238,7 +256,7 @@ cu.command(menuName).description("Open an element's context menu").argument("[re
       command.option("--at-selection", "insert at the selection (a cursor position when nothing is selected)");
     }
     command.action((ref: string, value: string, options: Record<string, unknown>) => withDriver(async driver => {
-      print((await driver.daemonCommand(name, { ref, pid: Number(options.pid), ...extra(value, options), ...withCursorFlag(options) })).data, options.json === true);
+      print((await driver.daemonCommand(name, { ref, ...withPid(options), ...extra(value, options), ...withCursorFlag(options) })).data, options.json === true);
     }));
   };
 
@@ -256,7 +274,7 @@ cu.command(menuName).description("Open an element's context menu").argument("[re
     .option("--pid <n>", "target pid").option("--json", "print JSON")
     .action((ref: string, value: string, options: { pid?: string; json?: boolean }) => withDriver(async driver => {
       const typed = value === "true" ? true : value === "false" ? false : Number.isFinite(Number(value)) ? Number(value) : value;
-      print((await driver.actRaw("set_value", { ref, value: typed, pid: Number(options.pid), ...withCursorFlag(options) })).data, options.json);
+      print((await driver.actRaw("set_value", { ref, value: typed, ...withPid(options), ...withCursorFlag(options) })).data, options.json);
     }));
 
   cu.command("launch_app").description("Launch an app in the background (never takes the foreground)").argument("<bundle>")

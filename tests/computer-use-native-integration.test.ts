@@ -1102,6 +1102,9 @@ test("pixel click tells apart the four ways it can be incomplete", async () => {
       ["只给 y", { y: 10 }, /click_pixel_needs_both_xy/],
       ["坐标齐但没目标", { x: 10, y: 10 }, /click_pixel_needs_target/],
       ["什么都没给", {}, /click_needs_ref_or_pixel/],
+      // 给了 ref 却定位不到（过期、或跨多个应用无法唯一确定），要和"什么都没给"分开报：
+      // 前者下一步是重新 snap，后者才是补参数。合并成一句会让调用方找错方向。
+      ["给了 ref 但定位不到", { ref: "e999" }, /element_ref_not_located/],
     ];
     for (const [label, args, pattern] of cases) {
       await assert.rejects(

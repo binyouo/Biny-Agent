@@ -58,3 +58,14 @@ assert.match(runHelp("click"), /--clicks\s+<n>/u);
 assert.match(runHelp("type"), /--append/u);
 assert.match(runHelp("type"), /<ref>/u);
 assert.match(runHelp("press"), /Increment/u);
+
+// `press_key` 的 `global` 必须就地可发现：系统级快捷键表达不出 "投给某个进程"，
+// 只能走全局 HID 流 —— 而它此前只存在于守护进程里，四个调用层一处都没传
+// （「能力在、路不通」）。补一个反向断言：`type_text` 没有这个语义，
+// 别把开关顺手挂到不相干的动词上。
+assert.match(runHelp("press_key"), /--global/u);
+assert.doesNotMatch(runHelp("type_text"), /--global/u);
+// ref 反查 pid 这条路（`cu click e12` 不带 --pid）在帮助文本里要看得出来：
+// 不给 pid 是**正常用法**，不是漏参。
+assert.match(runHelp("click"), /\[ref\]/u);
+assert.doesNotMatch(runHelp("click"), /--pid\s+<n>\s+target pid \(required\)/u);
