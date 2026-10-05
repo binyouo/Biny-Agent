@@ -1110,3 +1110,52 @@ test("pixel click tells apart the four ways it can be incomplete", async () => {
     await driver.dispose();
   }
 });
+
+// 按**原则**扫了一遍（不是按上次修的那个形状）：把所有错误分支列出来，逐个数"它背后有几种原因"。
+// 54 条里带"或"的多半是**选项清单**（"改用 A 或 B"），那没问题；
+// 有问题的是那些把**不同情形**并成一句的。这轮逮到四处：
+test("failures that used to share one message now name their own cause", async () => {
+  const driver = new NativeProcessDriver(() => {}, {
+    binaryPath: new URL("../out/native/computer-use", import.meta.url).pathname
+  });
+  try {
+    // ① 没给 hotkey vs 给了但解析不了 —— 前者补参数，后者改写法
+    await assert.rejects(
+      () => driver.daemonCommand("appshot_monitor_start", {}),
+      error => /hotkey_missing/.test(String(error)),
+      "没给 hotkey 时要说「需要这个参数」，而不是说它格式不对"
+    );
+    await assert.rejects(
+      () => driver.daemonCommand("appshot_monitor_start", { hotkey: "not a hotkey" }),
+      error => /invalid_hotkey/.test(String(error)),
+      "给了但解析不了时要说格式"
+    );
+
+    // ② drag 缺哪个坐标 —— 别说"需要四个"，要说缺哪几个
+    await assert.rejects(
+      () => driver.daemonCommand("drag", { x1: 1, y1: 2, x2: 3 }),
+      error => /drag_missing_coordinate/.test(String(error)) && /y2/.test(String(error)),
+      "要指出缺的是 y2"
+    );
+    await assert.rejects(
+      () => driver.daemonCommand("drag", { x1: 1 }),
+      error => /y1/.test(String(error)) && /x2/.test(String(error)) && /y2/.test(String(error)),
+      "缺多个时要全列出来"
+    );
+
+    // ③ 前台取不到 vs 前台是自己 —— 前者重试，后者换个窗口。
+    // ⚠️ **不断言"会失败"**：前台是真实应用时这一路本来就该成功。
+    // 断言的应该是"两种坏法**可判别**"，而不是"这一刻落在哪一种" ——
+    // 后者是取决于机器的值（我又踩了一次：这条本来就在断言必然 rejection）。
+    const frontmost = await driver.daemonCommand("appshot_frontmost")
+      .then(reply => reply.data as Record<string, unknown>)
+      .catch(error => ({ error: String(error) }));
+    const discriminable =
+      (frontmost as { path?: string }).path !== undefined ||
+      (frontmost as { error?: string }).error === undefined ||
+      /appshot_frontmost_(unavailable|is_self)/.test(String((frontmost as { error?: string }).error));
+    assert.ok(discriminable, `两种坏法要能分开；实际 ${JSON.stringify(frontmost).slice(0, 90)}`);
+  } finally {
+    await driver.dispose();
+  }
+});

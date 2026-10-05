@@ -1360,7 +1360,13 @@ DispatchQueue.global().async {
                                 }
                                 reply(fd, ["id": id, "ok": true, "data": raised] as [String: Any])
                             case "appshot_monitor_start":
-                                guard let raw = args["hotkey"] as? String, let spec = parseHotkey(raw) else {
+                                // 「没给它」和「给了但解析不了」是两种坏法：前者补一个参数，后者改写法。
+// 并成一句"invalid_hotkey"时，没给参数的人会去改一个他根本没传的字符串。
+                                guard let raw = args["hotkey"] as? String else {
+                                    throw NSError(domain: "appshot", code: 64, userInfo: [NSLocalizedDescriptionKey:
+                                        "hotkey_missing: 需要 hotkey 参数，写法如 Ctrl+Alt+C、Ctrl+Shift+Space，或 double-cmd"])
+                                }
+                                guard let spec = parseHotkey(raw) else {
                                     throw NSError(domain: "appshot", code: 64, userInfo: [NSLocalizedDescriptionKey:
                                         "invalid_hotkey: 写法如 Ctrl+Alt+C、Ctrl+Shift+Space，或 double-cmd"])
                                 }
@@ -1383,8 +1389,16 @@ DispatchQueue.global().async {
                                     "tapDisables": appshotMonitor.disableCount,
                                 ] as [String: Any]])
                             case "appshot_frontmost":
-                                guard let front = NSWorkspace.shared.frontmostApplication, front.processIdentifier != getpid() else {
-                                    throw NSError(domain: "appshot", code: 66, userInfo: [NSLocalizedDescriptionKey: "appshot_no_frontmost: 前台就是自己或拿不到"])
+                                // 「取不到前台」和「前台就是我自己（没得拍）」是两件事：
+                                // 前者是查询失败，后者是此刻没什么可拍的。并成一句，
+                                // 读的人分不清该重试还是该切到别的窗口。
+                                guard let front = NSWorkspace.shared.frontmostApplication else {
+                                    throw NSError(domain: "appshot", code: 66, userInfo: [NSLocalizedDescriptionKey:
+                                        "appshot_frontmost_unavailable: 取不到前台应用（系统查询失败）。稍后再试。"])
+                                }
+                                guard front.processIdentifier != getpid() else {
+                                    throw NSError(domain: "appshot", code: 66, userInfo: [NSLocalizedDescriptionKey:
+                                        "appshot_frontmost_is_self: 前台是守护进程自己，没有可拍的应用。先让用户切到目标窗口。"])
                                 }
                                 reply(fd, ["id": id, "ok": true, "data": [
                                     "pid": Int(front.processIdentifier),
@@ -1694,9 +1708,14 @@ DispatchQueue.global().async {
                                 }
                             case "drag":
                                 // AX 没有拖这个动作，只能合成鼠标序列。
-                                guard let x1 = args["x1"] as? Double, let y1 = args["y1"] as? Double,
+                                // 四个坐标并成一句 "requires x1,y1,x2,y2" 时，缺一个的人得自己逐个对 ——
+                                // 直接说缺哪个，一次到位。
+                                let missingCoords = ["x1", "y1", "x2", "y2"].filter { args[$0] as? Double == nil }
+                                guard missingCoords.isEmpty,
+                                      let x1 = args["x1"] as? Double, let y1 = args["y1"] as? Double,
                                       let x2 = args["x2"] as? Double, let y2 = args["y2"] as? Double else {
-                                    throw NSError(domain: "drag", code: 64, userInfo: [NSLocalizedDescriptionKey: "drag requires x1,y1,x2,y2"])
+                                    throw NSError(domain: "drag", code: 64, userInfo: [NSLocalizedDescriptionKey:
+                                        "drag_missing_coordinate: 缺 \(missingCoords.joined(separator: "、"))（拖拽需要 x1、y1、x2、y2 四个坐标）"])
                                 }
                                 let pid = try resolvePid(args)
                                 let screenSpace = args["coord_space"] as? String == "screen"
