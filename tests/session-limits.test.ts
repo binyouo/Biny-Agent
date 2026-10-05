@@ -6,7 +6,7 @@ import { updateSessionCatalogMetadata } from "../src/session/catalog.js";
 import { listSessionSummaries, parseSessionEvents, readSessionEvents, readSessionSummary, readStoredSessionEvents } from "../src/session/events.js";
 import { RuntimeEventAuthority } from "../src/runtime/RuntimeAuthority.js";
 import { forkSession } from "../src/session/fork.js";
-import { isSessionNearLimit, maxSessionEventLineBytes, maxSessionEvents, maxSessionFileBytes } from "../src/session/limits.js";
+import { isSessionNearLimit, maxSessionEvents, maxSessionFileBytes } from "../src/session/limits.js";
 import { SessionRecorder } from "../src/session/recorder.js";
 import { replayStoredSession } from "../src/session/replay.js";
 import { ensureAgentDirs } from "../src/session/store.js";
@@ -54,7 +54,7 @@ async function testOversizedWriteIsRejected(): Promise<void> {
   const recorder = new SessionRecorder(root);
   try {
     recorder.record({ type: "user_message", content: "first", messageId: "first" });
-    await assert.rejects(recorder.recordAndFlush({ type: "user_message", content: "x".repeat(maxSessionEventLineBytes), messageId: "rejected" }), /maximum size/);
+    await assert.rejects(recorder.recordAndFlush({ type: "user_message", content: "x".repeat(maxSessionFileBytes), messageId: "rejected" }), /maximum size/);
     recorder.record({ type: "user_message", content: "next", messageId: "next" });
     await recorder.flush();
     const events = await readSessionEvents(recorder.filePath);
@@ -106,7 +106,7 @@ async function testOversizedSessionStillOpens(): Promise<void> {
 
     // 撑到超过上限：一堆大事件加一条结尾标记。
     const filler = `${JSON.stringify({ type: "user_message", content: "f".repeat(64 * 1024) })}\n`;
-    const rounds = Math.ceil(16 * 1024 * 1024 / filler.length) + 2;
+    const rounds = Math.ceil(maxSessionFileBytes / filler.length) + 2;
     for (let index = 0; index < rounds; index += 1) await appendFile(recorder.filePath, filler);
     await appendFile(recorder.filePath, `${JSON.stringify({ type: "user_message", content: "final marker" })}\n`);
 

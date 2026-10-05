@@ -10,9 +10,10 @@ import { runtimeReferenceEntries } from "../src/session/runtimeReferenceEntries.
 const entries = runtimeReferenceEntries({
   tasks: { tasks: [{ taskRunId: "task-1", status: "running", task: { secret: "SECRET_PAYLOAD" } }] },
   automations: [{ automationId: "cron-1", name: "明日提醒", status: "active", triggerType: "once", schedule: { at: "2026-10-03T08:00:00Z" } }],
+  goals: [{ goalId: "goal-1", title: "完成目标", status: "active", payload: { secret: "SECRET_PAYLOAD" } }],
   graphs: [{ graphId: "graph-1", status: "running", payload: { secret: "SECRET_PAYLOAD" } }]
 }, [{ name: "Read", description: "读文件", source: "builtin" }]);
-assert.deepEqual(entries.map((item) => item.kind), ["task", "cron", "plan", "tool"]);
+assert.deepEqual(entries.map((item) => item.kind), ["task", "cron", "mission", "plan", "tool"]);
 assert.doesNotMatch(JSON.stringify(entries), /SECRET_PAYLOAD/u);
 
 const definition = {

@@ -60,6 +60,9 @@ import {
   sessionGoalActionCommand,
   sessionGoalSetCommand,
   graphActionCommand,
+  goalActionCommand,
+  goalCreateCommand,
+  goalListCommand,
   graphCreateCommand,
   graphListCommand,
   taskActionCommand,
@@ -308,17 +311,26 @@ todo.command("show").option("--session <id>", "session id; defaults to latest").
 todo.command("replace").requiredOption("--todos <json>", "complete Todo list JSON").option("--session <id>", "session id; defaults to latest").option("--json", "print JSON").action((options: { todos: string; session?: string; json?: boolean }) => wrap(() => todoReplaceCommand(workspaceRoot, options.session, options.todos, options))());
 todo.command("clear").requiredOption("--yes", "confirm clear").option("--session <id>", "session id; defaults to latest").option("--json", "print JSON").action((options: { yes?: boolean; session?: string; json?: boolean }) => wrap(() => todoClearCommand(workspaceRoot, options.session, options))());
 
-const goal = program.command("goal").description("Manage session goals");
+const goal = program.command("goal").description("Manage session goals or workspace Graph goals");
 goal.command("show").requiredOption("--session <id>", "session id").option("--json", "print JSON").action((options: { session: string; json?: boolean }) => wrap(() => sessionGoalActionCommand(workspaceRoot, "show", options))());
 goal.command("set").argument("<objective>", "complete goal objective").requiredOption("--session <id>", "session id").option("--token-budget <tokens>", "optional token budget", parsePositiveInteger).option("--json", "print JSON").action((objective: string, options: { session: string; tokenBudget?: number; json?: boolean }) => wrap(() => sessionGoalSetCommand(workspaceRoot, objective, options))());
 goal.command("clear").requiredOption("--session <id>", "session id").option("--json", "print JSON").action((options: { session: string; json?: boolean }) => wrap(() => sessionGoalActionCommand(workspaceRoot, "clear", options))());
+goal.command("list").description("List workspace Graph goals").option("--json", "print JSON").action((options: { json?: boolean }) => wrap(() => goalListCommand(workspaceRoot, options))());
+goal.command("create").description("Create a workspace Graph goal without starting a session").argument("<title>", "goal title").option("--payload <json>", "JSON payload").option("--goal-id <id>", "explicit goal id").option("--json", "print JSON").action((title: string, options: { payload?: string; goalId?: string; json?: boolean }) => wrap(() => goalCreateCommand(workspaceRoot, title, options))());
+for (const [name, action] of [["get", "get"], ["cancel", "cancel"]] as const) {
+  goal.command(name).argument("<goalId>", "workspace Graph goal id").option("--json", "print JSON").action((goalId: string, options: { json?: boolean }) => wrap(() => goalActionCommand(workspaceRoot, action, goalId, options))());
+}
 for (const action of ["pause", "resume"] as const) {
-  goal.command(action).requiredOption("--session <id>", "session id").option("--json", "print JSON").action((options: { session: string; json?: boolean }) => wrap(() => sessionGoalActionCommand(workspaceRoot, action, options))());
+  goal.command(action).argument("[goalId]", "workspace goal id").option("--session <id>", "session goal id").option("--json", "print JSON").action((goalId: string | undefined, options: { session?: string; json?: boolean }) => wrap(async () => {
+    if (goalId !== undefined && options.session !== undefined) throw new Error("Choose a workspace Goal ID or --session, not both.");
+    if (goalId !== undefined) await goalActionCommand(workspaceRoot, action, goalId, options);
+    else await sessionGoalActionCommand(workspaceRoot, action, options);
+  })());
 }
 
 const graph = program.command("graph").description("Manage durable Agent Graphs");
 graph.command("list").option("--json", "print JSON").action((options: { json?: boolean }) => wrap(() => graphListCommand(workspaceRoot, options))());
-graph.command("create").requiredOption("--nodes <json>", "JSON node array").option("--graph-id <id>", "explicit graph id").option("--payload <json>", "JSON payload").option("--json", "print JSON").action((options: { nodes: string; graphId?: string; payload?: string; json?: boolean }) => wrap(() => graphCreateCommand(workspaceRoot, options))());
+graph.command("create").requiredOption("--nodes <json>", "JSON node array").option("--goal-id <id>", "goal id").option("--graph-id <id>", "explicit graph id").option("--payload <json>", "JSON payload").option("--json", "print JSON").action((options: { nodes: string; goalId?: string; graphId?: string; payload?: string; json?: boolean }) => wrap(() => graphCreateCommand(workspaceRoot, options))());
 for (const [name, action] of [["start", "start"], ["pause", "pause"], ["resume", "resume"], ["cancel", "cancel"], ["inspect", "inspect"]] as const) {
   graph.command(name).argument("<graphId>", "graph id").option("--json", "print JSON").action((graphId: string, options: { json?: boolean }) => wrap(() => graphActionCommand(workspaceRoot, action, graphId, options))());
 }

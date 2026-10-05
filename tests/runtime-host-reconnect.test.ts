@@ -139,7 +139,7 @@ const backoff = { minMs: runtimeHostReconnectMinMs, maxMs: runtimeHostReconnectM
 }
 
 // ─── 3. 协议 v5 骨架 + 握手兼容矩阵（{v3,v5} × {v3,v5}）────────────────────────
-assert.equal(protocolVersion, 10, "移除工作区目标协议后使用新版本");
+assert.equal(protocolVersion, 9, "空闲 session claim 改为短期准入探测后使用新协议");
 
 // capabilities 协商：取声明 ∩ 支持，去重，host 不认识的声明不报错只是不生效。
 {
@@ -271,7 +271,7 @@ assert.equal(authenticateRuntimeHostHello(helloFor(5), registrationFor(3), 3), f
     await rm(workspaceRoot, { recursive: true, force: true });
   }
   assert.equal(rejection?.errorCode, "protocol_version_mismatch", "拒绝帧必须带 protocol_version_mismatch 错误码");
-  assert.match(rejection?.error ?? "", /protocol 10 is incompatible with 3/u, "拒绝消息先报告 Host 版本，再报告客户端版本");
+  assert.match(rejection?.error ?? "", /protocol 9 is incompatible with 3/u, "拒绝消息先报告 Host 版本，再报告客户端版本");
   assert.match(rejection?.error ?? "", /PID \d+/u, "拒绝消息必须指出实际 owner，不建议不存在的 daemon 命令");
 }
 

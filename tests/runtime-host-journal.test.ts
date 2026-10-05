@@ -166,8 +166,10 @@ async function serverSequenceRecovery(root: string): Promise<void> {
 async function serverCommandAdmission(root: string): Promise<void> {
   const authority = await RuntimeEventAuthority.open(root, { backfillLegacySessions: false });
   const graphs = await GoalGraphStore.open(root, authority);
+  graphs.createGoal("command goal", {}, "command-goal");
+  graphs.updateGoal("command-goal", "paused");
   for (const graphId of ["command-start", "command-resume", "command-cleanup"]) {
-    graphs.createGraph([{ nodeKey: "only", prompt: "must not execute" }], {}, graphId);
+    graphs.createGraph(undefined, [{ nodeKey: "only", prompt: "must not execute" }], {}, graphId);
   }
   graphs.startGraph("command-resume");
   graphs.pauseGraph("command-resume");
@@ -175,20 +177,23 @@ async function serverCommandAdmission(root: string): Promise<void> {
   const fixture = await serverFixture(root, [record(Number.MAX_SAFE_INTEGER - 1)], { graphs } as CommandRuntime);
   try {
     await fixture.server.initialize();
-    for (const input of ["/graph start command-start", "/graph resume command-resume"]) {
+    for (const input of ["/graph start command-start", "/graph resume command-resume", "/goal resume command-goal"]) {
       await assert.rejects(fixture.command(input, "desktop", true), /client is exiting/,
-        "Graph commands must share the RPC client admission boundary");
+        "Goal/Graph commands must share the RPC client admission boundary");
     }
     fixture.emit();
     const before = {
+      goals: graphs.listGoals(),
       graphs: graphs.listGraphs(),
       wakes: authority.databaseHandle().prepare("SELECT * FROM graph_wakes ORDER BY wake_id").all()
     };
     const inputs = [
       "/graph start command-start",
       "/graph resume command-resume",
+      "/goal resume command-goal",
       "  ///graph\tStArT\ncommand-start  ",
       "  //graph\nReSuMe\tcommand-resume  ",
+      "  ///goal\tReSuMe\ncommand-goal  "
     ];
     const bypasses: string[] = [];
     for (const source of ["desktop", "tui"] as const) {
@@ -201,13 +206,14 @@ async function serverCommandAdmission(root: string): Promise<void> {
         }
       }
     }
-    assert.deepEqual(bypasses, [], "Graph admission commands must reject exhaustion through the real command parser");
+    assert.deepEqual(bypasses, [], "Goal/Graph admission commands must reject exhaustion through the real command parser");
     assert.deepEqual({
+      goals: graphs.listGoals(),
       graphs: graphs.listGraphs(),
       wakes: authority.databaseHandle().prepare("SELECT * FROM graph_wakes ORDER BY wake_id").all()
     }, before, "rejected commands must preserve durable state and create no wakes");
     for (const source of ["desktop", "tui"] as const) {
-      for (const input of ["/graph inspect command-start", "/graph events command-start"]) {
+      for (const input of ["/graph inspect command-start", "/graph events command-start", "/goal get command-goal"]) {
         assert.ok(await fixture.command(input, source), "queries remain available during exhaustion");
       }
       await assert.rejects(fixture.command("/graph restart command-start", source), /Usage:/,
@@ -217,6 +223,8 @@ async function serverCommandAdmission(root: string): Promise<void> {
     assert.equal(graphs.inspectGraph("command-cleanup").status, "paused");
     await fixture.command("/graph cancel command-cleanup", "tui");
     assert.equal(graphs.inspectGraph("command-cleanup").status, "cancelled");
+    await fixture.command("/goal cancel command-goal", "desktop");
+    assert.equal(graphs.getGoal("command-goal")?.status, "cancelled");
   } finally {
     await fixture.server.close();
     graphs.close();

@@ -462,7 +462,7 @@ async function testLegacyRunningInvocationRemainsUnknownAfterMigration(): Promis
     authority = await RuntimeEventAuthority.open(root, { backfillLegacySessions: false });
     store = await CapabilityStore.open(root, authority);
 
-    assert.equal(authority.schemaRevision(), 13);
+    assert.equal(authority.schemaRevision(), 12);
     assert.equal(store.getInvocation(invocationId)?.dispatchState, "dispatched", "legacy records without a dispatch marker must migrate conservatively");
     assert.equal(store.recoverUnsettledInvocations("host_restarted"), 1);
     assert.equal(store.getInvocation(invocationId)?.status, "unknown");

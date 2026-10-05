@@ -858,7 +858,7 @@ async function testDesktopHostVersionConflict(): Promise<void> {
     await writeFile(paths.lockPath, `${process.pid}\n`, { mode: 0o600 });
     const agents = new DesktopAgentManager(state, projects, configStore, () => undefined);
     try {
-      await assert.rejects(agents.sendPrompt(project.id, undefined, "hello", []), /protocol 2 is incompatible with 10/);
+      await assert.rejects(agents.sendPrompt(project.id, undefined, "hello", []), /protocol 2 is incompatible with 9/);
       assert.deepEqual(JSON.parse(await readFile(paths.registrationPath, "utf8")), registration);
       assert.equal(await readFile(paths.lockPath, "utf8"), `${process.pid}\n`, "a failed client must not disturb the live owner");
     } finally {
