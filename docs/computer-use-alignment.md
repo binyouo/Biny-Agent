@@ -422,7 +422,13 @@ appshot_monitor_start { hotkey }  ·  appshot_monitor_stop
 appshot_frontmost { exclude_bundle_id }  ·  appshot_capture
 ```
 
-（本仓库原先把它误记成"给活动记录用的快照监控"，实际是用户按一下就能触发的抓取。）
+**归属更正（同日更晚）**：我先前写"实际是用户按一下就能触发的抓取"，**也不够准**。
+查 app 侧消费方后：appshot 属于**活动记录**那条线（`frontmost` 跟踪、`maybeCapture("visual_change")`
+那套），热键是**用户手动抓一张进记录**。所以它不是独立功能，是活动记录的一个入口。
+
+**这决定了应用侧接线的归属**：本仓库的活动记录有自己的 sidecar（`native/activity-ocr`），
+要接就是把 recorder 的抓帧换成 daemon 的 appshot —— 属于活动记录那块，**不在本次改动范围内**
+（那块当前有未提交改动）。daemon 侧动词已齐并已验证，接线留给那条线自己决定。
 
 **已实现**：动词齐了、前台识别准了。热键写法 `Ctrl+Alt+C` / `double-cmd`（单按修饰键两次，
 对应参照的 `BareModifierMonitor` + `doubleTapWindow`）。**参照的确切格式没完全还原**，
