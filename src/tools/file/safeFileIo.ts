@@ -11,6 +11,7 @@
  * 写入是原子的：先写临时文件并 fsync，新建用 `link`（目标已存在即失败，不覆盖），覆盖用
  * `rename`，并先用硬链接把原文件的 inode 钉住，以便提交窗口内被外部改动时能还原回去。
  */
+import { isUtf8 } from "node:buffer";
 import { randomBytes } from "node:crypto";
 import { constants, promises as fs, type BigIntStats } from "node:fs";
 import { StringDecoder } from "node:string_decoder";
@@ -49,6 +50,8 @@ export interface BoundedFileRead {
 export interface Utf8LineVisitResult {
   snapshot: FileSnapshot;
   completed: boolean;
+  /** True when content remains after the last line delivered to the visitor. */
+  hasRemaining: boolean;
   linesVisited: number;
 }
 
@@ -89,11 +92,11 @@ export async function visitBoundUtf8Lines(
       while (newline >= 0) {
         signal?.throwIfAborted();
         const rawLine = pending.slice(0, newline);
-        pending = pending.slice(newline + 1);
         if (Buffer.byteLength(rawLine, "utf8") > maxStreamedLineBytes) {
           if (drain && await drain() === false) { completed = false; break; }
           throw new Error(`File contains a line exceeding the ${String(maxStreamedLineBytes)}-byte streamed line limit.`);
         }
+        pending = pending.slice(newline + 1);
         lineNumber += 1;
         const line = rawLine.endsWith("\r") ? rawLine.slice(0, -1) : rawLine;
         const continuation = visit(line, lineNumber);
@@ -115,6 +118,7 @@ export async function visitBoundUtf8Lines(
         lineNumber += 1;
         const continuation = visit(pending, lineNumber);
         if ((continuation instanceof Promise ? await continuation : continuation) === false) completed = false;
+        pending = "";
       }
     }
     if (completed && drain && await drain() === false) completed = false;
@@ -122,7 +126,10 @@ export async function visitBoundUtf8Lines(
     const current = await assertFileBinding(filePath, handle);
     signal?.throwIfAborted();
     if (!sameFileSnapshot(initial, current)) throw new Error("File changed while it was being read.");
-    return { snapshot: current, completed, linesVisited: lineNumber };
+    // A visitor can stop on the final line. Inspect buffered/unread content rather than reading
+    // another line just to distinguish that case, since the next line may exceed the line limit.
+    const hasRemaining = pending.length > 0 || (!completed && decoder.end().length > 0) || BigInt(position) < current.size;
+    return { snapshot: current, completed, hasRemaining, linesVisited: lineNumber };
   } finally {
     await handle.close();
   }
@@ -187,9 +194,14 @@ async function readBoundedFile(
   }
 }
 
-export async function readUtf8FileForEdit(filePath: string, signal?: AbortSignal): Promise<{ content: string; snapshot: FileSnapshot }> {
-  const result = await readBoundedUtf8File(filePath, maxEditFileBytes, "reject", signal);
-  return { content: result.content, snapshot: result.snapshot };
+export async function readUtf8FileForEdit(filePath: string, signal?: AbortSignal, requireValidUtf8 = false): Promise<{ content: string; snapshot: FileSnapshot }> {
+  const result = await readBoundedFile(filePath, maxEditFileBytes, "reject", signal);
+  // Localized rewrites must not replace malformed bytes outside the requested change.
+  // Full Write and byte-preserving move/delete keep their existing permissive read behavior.
+  if (requireValidUtf8 && !isUtf8(result.content)) {
+    throw new Error("File is not valid UTF-8. Localized edits cannot safely rewrite this file.");
+  }
+  return { content: result.content.toString("utf8"), snapshot: result.snapshot };
 }
 
 /**

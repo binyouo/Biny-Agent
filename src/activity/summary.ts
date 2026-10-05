@@ -117,8 +117,8 @@ const MAX_KEY_MOMENTS = 10;
 /** 构造指定本地日报范围。 */
 export function activitySummaryRange(kind: "daily", dateKey: string): { start: Date; end: Date } {
   const start = parseLocalDateKey(dateKey);
-  const end = new Date(start.getTime());
-  end.setDate(end.getDate() + 1);
+  // 午夜可能被时区跳变推到 01:00；次日边界须独立构造，不能沿用该小时。
+  const end = new Date(start.getFullYear(), start.getMonth(), start.getDate() + 1);
   return { start, end };
 }
 
@@ -129,6 +129,7 @@ export function buildActivitySummary(
   now = new Date(),
   sessionLimit = 1000
 ): ActivitySummaryRecord {
+  dateKey = dateKey.trim();
   const range = activitySummaryRange(kind, dateKey);
   const source = store.getActivitySummarySource(range.start.toISOString(), range.end.toISOString(), sessionLimit);
   const stats = aggregateActivitySummaryStats(dateKey, source, now);
@@ -234,7 +235,10 @@ async function refreshActivityWeeklySummary(
     const day = new Date(start.getTime());
     day.setDate(start.getDate() + index);
     const dayKey = formatLocalDateKey(day);
-    const stats = buildActivitySummary(store, "daily", dayKey, now).stats;
+    const range = activitySummaryRange("daily", dayKey);
+    const source = store.getActivitySummarySource(range.start.toISOString(), range.end.toISOString(), 1000);
+    // 日结的前十应用只是展示上限；周结须先合计同一批有界源里的全部应用。
+    const stats = aggregateActivitySummaryStats(dayKey, source, now, Number.POSITIVE_INFINITY);
     daily.push({ dateKey: dayKey, activeMs: stats.totalActiveMs, sessionCount: stats.sessionCount });
     totalActiveMs += stats.totalActiveMs;
     sessionCount += stats.sessionCount;
@@ -278,7 +282,7 @@ async function refreshActivityWeeklySummary(
     summary,
     model,
     stats,
-    isPartial: endDateKey >= formatLocalDateKey(now),
+    isPartial: endDateKey.trim() >= formatLocalDateKey(now),
     generatedAt: now.toISOString()
   };
   store.upsertSummary(record);
@@ -305,7 +309,8 @@ function formatIsoWeekKey(date: Date): string {
 function aggregateActivitySummaryStats(
   dateKey: string,
   source: ActivitySummarySource,
-  now: Date
+  now: Date,
+  maximumApps = MAX_APPS
 ): ActivitySummaryStats {
   const appDurations = new Map<string, number>();
   let totalActiveMs = 0;
@@ -362,7 +367,7 @@ function aggregateActivitySummaryStats(
     apps: [...appDurations.entries()]
       .map(([app, durationMs]) => ({ app, durationMs: Math.round(durationMs) }))
       .sort((left, right) => right.durationMs - left.durationMs || left.app.localeCompare(right.app))
-      .slice(0, MAX_APPS),
+      .slice(0, maximumApps),
     hours: hourCounts.map((count, hour) => ({ hour, count })),
     keyMoments: keyMoments.slice(0, MAX_KEY_MOMENTS)
   };

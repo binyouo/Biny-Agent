@@ -189,13 +189,14 @@ export class ManagedProcessService {
     const logPath = path.join(await realpath(this.processRoot), `${processId}.log`);
     const startedAt = new Date().toISOString();
     const logFile = await open(logPath, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_APPEND | (constants.O_NOFOLLOW ?? 0));
-    let logBinding: ManagedProcessLogBinding;
-    let child: ChildProcess;
+    let record: ManagedProcessRecord;
     let spawned: Promise<void>;
     try {
       await logFile.writeFile(`[biny] ${startedAt} starting managed process ${processId}\n`, "utf8");
-      logBinding = await bindManagedProcessLog(logPath, logFile);
-      child = spawn(options.command, {
+      const logBinding = await bindManagedProcessLog(logPath, logFile);
+      // Shutdown may have completed while the filesystem preparation was pending.
+      if (this.closing) throw new Error("Managed process service is closing.");
+      const child = spawn(options.command, {
         cwd,
         shell: true,
         detached: process.platform !== "win32",
@@ -205,44 +206,46 @@ export class ManagedProcessService {
       // Closing a FileHandle yields to the event loop; install spawn/error listeners first.
       spawned = waitForSpawn(child, options.signal);
       void spawned.catch(() => undefined);
+
+      const pid = child.pid;
+      if (pid === undefined) {
+        child.kill();
+        throw new Error("Managed process did not receive an operating-system PID.");
+      }
+      const snapshot: ManagedProcessSnapshot = {
+        processId,
+        pid,
+        processGroupId: process.platform === "win32" ? undefined : pid,
+        command: options.displayCommand ?? options.command,
+        cwd,
+        state: "starting",
+        logPath,
+        startedAt,
+        url: options.url ?? (options.readiness?.type === "http" ? options.readiness.url : undefined),
+        readiness: options.readiness
+          ? {
+              type: options.readiness.type,
+              status: "pending",
+              passed: false,
+              attempts: 0,
+              checkedAt: startedAt,
+              durationMs: 0
+            }
+          : undefined,
+        cleanup: { status: "pending" }
+      };
+      // Publish ownership before yielding again so close() cannot miss a spawned child.
+      record = { snapshot, logBinding, child, stopRequested: false };
+      this.records.set(processId, record);
+      this.observeChild(record);
     } finally {
       await logFile.close();
     }
 
-    const pid = child.pid;
-    if (pid === undefined) {
-      child.kill();
-      throw new Error("Managed process did not receive an operating-system PID.");
-    }
-    const snapshot: ManagedProcessSnapshot = {
-      processId,
-      pid,
-      processGroupId: process.platform === "win32" ? undefined : pid,
-      command: options.displayCommand ?? options.command,
-      cwd,
-      state: "starting",
-      logPath,
-      startedAt,
-      url: options.url ?? (options.readiness?.type === "http" ? options.readiness.url : undefined),
-      readiness: options.readiness
-        ? {
-            type: options.readiness.type,
-            status: "pending",
-            passed: false,
-            attempts: 0,
-            checkedAt: startedAt,
-            durationMs: 0
-          }
-        : undefined,
-      cleanup: { status: "pending" }
-    };
-    const record: ManagedProcessRecord = { snapshot, logBinding, child, stopRequested: false };
-    this.records.set(processId, record);
-    this.observeChild(record);
-
+    const { snapshot, child } = record;
     try {
       await spawned;
-      snapshot.state = "running";
+      if (snapshot.state === "starting") snapshot.state = "running";
       child.unref();
       await this.recordLifecycle("started", snapshot);
       if (options.readiness) {
@@ -471,7 +474,14 @@ export class ManagedProcessService {
       signal?.throwIfAborted();
       this.refreshRecord(record);
       attempts += 1;
-      if (!isRunningState(record.snapshot.state)) {
+      if (isRunningState(record.snapshot.state) && !record.stopRequested) {
+        lastObservation = await runReadinessProbe(record.snapshot.logPath, probe, Math.max(1, deadline - Date.now()), signal);
+        // A probe can finish after exit, stop, or cancellation. Revalidate its owner
+        // before accepting either readiness or timeout from that observation.
+        signal?.throwIfAborted();
+        this.refreshRecord(record);
+      }
+      if (!isRunningState(record.snapshot.state) || record.stopRequested) {
         return {
           type: probe.type,
           status: "failed",
@@ -479,11 +489,12 @@ export class ManagedProcessService {
           attempts,
           checkedAt: new Date().toISOString(),
           durationMs: Date.now() - started,
-          message: `Process exited before readiness (${record.snapshot.state}).`
+          message: record.stopRequested
+            ? "Process stop requested before readiness."
+            : `Process exited before readiness (${record.snapshot.state}).`
         };
       }
 
-      lastObservation = await runReadinessProbe(record.snapshot.logPath, probe, Math.max(1, deadline - Date.now()), signal);
       if (lastObservation.ready) {
         return {
           type: probe.type,

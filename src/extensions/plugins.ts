@@ -70,8 +70,10 @@ export async function loadPluginsFromRoot(
       registerModels: (providerType, models) => ai.registerModels(providerType, models),
       registerCredentialHandler: (id, handler) => ai.registerCredentialHandler(id, handler)
     };
+    // ESM export bindings can change while the default callback runs.
+    const defaultExport = imported.default;
     if (typeof imported.default === "function") await imported.default(context);
-    if (typeof imported.register === "function") await imported.register(context);
+    if (typeof imported.register === "function" && imported.register !== defaultExport) await imported.register(context);
     if (
       typeof imported.default === "object"
       && imported.default !== null

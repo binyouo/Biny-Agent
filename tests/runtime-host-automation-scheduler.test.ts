@@ -449,6 +449,143 @@ await test("restart keeps uncertain dispatched fires behind approval and recover
   }
 });
 
+for (const backlogSize of [31, 32, 33]) {
+  await test(`startup recovers a healthy pending fire behind ${backlogSize} paused fires`, async () => {
+    const f = await fixture();
+    try {
+      const now = Date.now();
+      f.create("paused-backlog", undefined, { schedule: { at: new Date(now + 60_000).toISOString() } });
+      for (let index = 0; index < backlogSize; index += 1) {
+        f.store.forceFire("paused-backlog", new Date(now - 60_000 + index).toISOString());
+      }
+      f.store.pause("paused-backlog");
+      f.create("healthy", "healthy-session");
+      const [healthy] = f.store.claimDue();
+      assert.equal(healthy?.automationId, "healthy");
+      assert.equal(f.store.get("healthy")?.nextFireAt, undefined, "the once fire cannot be rediscovered as a new schedule");
+      f.runtimeFor("healthy-session").release();
+      f.scheduler.start();
+      await flush();
+      assert.deepEqual(f.runtimeFor("healthy-session").submissions, ["healthy"]);
+      assert.equal(f.store.listPending("healthy")[0]?.status, "completed");
+      assert.equal(f.store.listPending("paused-backlog").length, backlogSize);
+      assert.equal(f.store.listPending("paused-backlog").every((fire) => fire.status === "pending"), true);
+    } finally {
+      await f.close();
+    }
+  });
+}
+
+await test("all-paused recovery preserves every fire and resume drains finite batches", async () => {
+  const f = await fixture();
+  try {
+    const now = Date.now();
+    f.create("paused", "resumed-session", { schedule: { at: new Date(now + 60_000).toISOString() } });
+    for (let index = 0; index < 40; index += 1) {
+      f.store.forceFire("paused", new Date(now - 60_000 + index).toISOString());
+    }
+    f.store.pause("paused");
+    const before = f.store.listPending("paused");
+    assert.deepEqual(f.store.claimDue(), []);
+    await f.tick();
+    assert.equal(f.scheduler.hasActiveWork(), false);
+    assert.deepEqual(f.store.listPending("paused"), before, "skipping paused fires must not discard or rewrite them");
+    f.store.resume("paused");
+    f.runtimeFor("resumed-session").release();
+    await f.tick();
+    assert.equal(f.runtimeFor("resumed-session").submissions.length, 32);
+    assert.equal(f.store.listPending("paused").filter((fire) => fire.status === "pending").length, 8);
+    await f.tick();
+    assert.equal(f.runtimeFor("resumed-session").submissions.length, 40);
+    assert.equal(f.store.listPending("paused").every((fire) => fire.status === "completed"), true);
+  } finally {
+    await f.close();
+  }
+});
+
+await test("mixed recovery fills the bounded batch in order without requeuing later deferred fires", async () => {
+  const f = await fixture();
+  try {
+    const now = Date.now();
+    const future = { schedule: { at: new Date(now + 60_000).toISOString() } };
+    f.create("paused", undefined, future);
+    f.create("eligible", undefined, future);
+    const eligibleIds: string[] = [];
+    for (let index = 0; index < 40; index += 1) {
+      f.store.forceFire("paused", new Date(now - 60_000 + index * 2).toISOString());
+      const fire = f.store.forceFire("eligible", new Date(now - 60_000 + index * 2 + 1).toISOString());
+      eligibleIds.push(fire.fireId);
+      if (index % 2 === 1) {
+        assert.ok(f.store.claimFire(fire.fireId));
+        f.store.deferFire(fire.fireId, new Date(fire.scheduledAt), "busy target");
+      }
+    }
+    f.store.pause("paused");
+    const pausedBefore = f.store.listPending("paused");
+    const recovered = f.store.claimDue();
+    assert.deepEqual(recovered.map((fire) => fire.fireId), eligibleIds.slice(0, 32));
+    assert.equal(recovered.every((fire) => fire.status === "pending"), true);
+    assert.deepEqual(f.store.listPending("paused"), pausedBefore);
+    assert.equal(f.store.listPending("eligible")[33]?.status, "deferred", "discovery must not modify fires beyond its batch");
+    for (const fire of recovered) {
+      assert.ok(f.store.claimFire(fire.fireId));
+      f.store.completeFire(fire.fireId, `run-${fire.fireId}`);
+    }
+    assert.deepEqual(f.store.claimDue().map((fire) => fire.fireId), eligibleIds.slice(32));
+  } finally {
+    await f.close();
+  }
+});
+
+await test("a completed fire budget does not occupy the recovery window even after resume", async () => {
+  const f = await fixture();
+  try {
+    const now = Date.now();
+    f.create("capped", undefined, { maxFires: 1, schedule: { at: new Date(now + 60_000).toISOString() } });
+    const first = f.store.forceFire("capped", new Date(now - 60_001).toISOString());
+    for (let index = 0; index < 32; index += 1) {
+      f.store.forceFire("capped", new Date(now - 60_000 + index).toISOString());
+    }
+    assert.ok(f.store.claimFire(first.fireId));
+    f.store.completeFire(first.fireId, "capped-run");
+    f.create("healthy");
+    const [healthy] = f.store.claimDue();
+    assert.equal(healthy?.automationId, "healthy");
+    assert.deepEqual(f.store.claimDue().map((fire) => fire.fireId), [healthy.fireId]);
+    f.store.resume("capped");
+    assert.deepEqual(f.store.claimDue().map((fire) => fire.fireId), [healthy.fireId]);
+    assert.equal(f.store.listPending("capped").filter((fire) => fire.status === "pending").length, 32);
+  } finally {
+    await f.close();
+  }
+});
+
+await test("a fire selected for recovery still rechecks pause inside its claim transaction", async () => {
+  const f = await fixture();
+  try {
+    f.create("changed");
+    const [fire] = f.store.claimDue();
+    assert.ok(fire);
+    const original = f.authority.runEventTransaction.bind(f.authority);
+    f.authority.runEventTransaction = ((input: Parameters<typeof original>[0], execute: Parameters<typeof original>[1]) => {
+      if (input.eventType === "automation.fire.claimed") f.store.pause("changed");
+      return original(input, execute);
+    }) as typeof f.authority.runEventTransaction;
+    assert.equal(f.store.claimFire(fire.fireId), undefined);
+    assert.equal(f.store.listPending("changed")[0]?.status, "pending");
+    assert.equal(f.store.get("changed")?.status, "paused");
+    const claimedEvents = f.authority.databaseHandle().prepare(
+      "SELECT COUNT(*) AS count FROM runtime_events WHERE event_type = 'automation.fire.claimed'"
+    ).get() as { count: number };
+    assert.equal(claimedEvents.count, 0, "a stale candidate must not leave a successful claim event");
+    f.authority.runEventTransaction = original;
+    f.store.resume("changed");
+    assert.ok(f.store.claimFire(fire.fireId));
+  } finally {
+    await f.close();
+  }
+});
+
 await test("expiry stops new scheduled and manual fires at the cutoff", async (t) => {
   const start = Date.parse("2030-01-01T00:00:00.000Z");
   t.mock.timers.enable({ apis: ["Date"], now: new Date(start) });

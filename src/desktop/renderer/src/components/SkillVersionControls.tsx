@@ -2,7 +2,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { ManagedSkillVersion } from "../../../../extensions/skillVersions.js";
 
-export function SkillVersionControls({ skillId, disabled, onChanged, onError }: { skillId: string; disabled: boolean; onChanged(): void; onError(message: string): void }): React.JSX.Element | null {
+export function SkillVersionControls({ skillId, disabled, onChanged, onError, refreshKey }: { skillId: string; disabled: boolean; onChanged(skillId: string): void; refreshKey?: unknown; onError(message: string): void }): React.JSX.Element | null {
   const [version, setVersion] = useState<ManagedSkillVersion>();
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<string>();
@@ -10,9 +10,11 @@ export function SkillVersionControls({ skillId, disabled, onChanged, onError }: 
   useEffect(() => () => { generation.current += 1; }, []);
   useEffect(() => {
     let active = true;
+    // Recheck a refreshed catalog entry before offering versioned actions.
+    if (refreshKey !== undefined) setVersion(undefined);
     void window.biny.skillVersion(skillId).then((next) => { if (active) setVersion(next); }).catch((error) => { if (active) onError(String(error)); });
     return () => { active = false; };
-  }, [skillId, onError]);
+  }, [skillId, onError, refreshKey]);
   const changeVersion = async (rollback: boolean): Promise<void> => {
     if (!version || busy) return;
     const current = ++generation.current;
@@ -20,15 +22,19 @@ export function SkillVersionControls({ skillId, disabled, onChanged, onError }: 
     try {
       if (rollback) {
         const restored = await window.biny.rollbackSkillVersion(skillId, version.id);
-        if (current !== generation.current) return;
-        setVersion(restored); setNotice("已回滚到上一版本。");
+        if (current === generation.current) {
+          setVersion(restored); setNotice("已回滚到上一版本。");
+        }
       } else {
         const updated = await window.biny.updateSkillVersion(skillId, version.id);
-        if (current !== generation.current) return;
-        setVersion(updated.version);
-        setNotice(updated.version.id === version.id ? "已是最新版本。" : "已更新。");
+        if (current === generation.current) {
+          setVersion(updated.version);
+          setNotice(updated.version.id === version.id ? "已是最新版本。" : "已更新。");
+        }
       }
-      onChanged();
+      // A committed mutation outlives these controls; the parent owns cache
+      // invalidation and decides whether its own lifetime is still active.
+      onChanged(skillId);
     } catch (error) { if (current === generation.current) onError(error instanceof Error ? error.message : String(error)); }
     finally { if (current === generation.current) setBusy(false); }
   };

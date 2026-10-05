@@ -231,9 +231,21 @@ export class AutomationStore {
       else if (expiry <= Math.max(now.getTime(), Date.now())) this.updateStatus(automation.automation_id, "expired");
     }
     const fires: AutomationPendingFire[] = [];
+    // 暂停或已耗尽预算的定义保留自己的 pending fire，但不能占满其他任务的恢复窗口。
+    // 这里只筛选候选；领取时仍由 canClaimFire 和事务内条件重新验证执行权。
     const recoverable = this.database.prepare(
-      "SELECT fire_id, automation_id, scheduled_at, claim_token, claimed_at, status, run_id, error, created_at FROM automation_pending_fires WHERE status IN ('pending', 'deferred') AND scheduled_at <= ? ORDER BY scheduled_at ASC LIMIT ?"
-    ).all(now.toISOString(), limit) as unknown as PendingRow[];
+      `SELECT fire_id, automation_id, scheduled_at, claim_token, claimed_at, status, run_id, error, created_at
+       FROM automation_pending_fires
+       WHERE status IN ('pending', 'deferred') AND scheduled_at <= ?
+         AND EXISTS (
+           SELECT 1 FROM automations
+           WHERE automation_id = automation_pending_fires.automation_id
+             AND workspace_id = ?
+             AND status IN ('active', 'expired')
+             AND (max_fires IS NULL OR fire_count < max_fires)
+         )
+       ORDER BY scheduled_at ASC, fire_id ASC LIMIT ?`
+    ).all(now.toISOString(), this.authority.workspaceId, limit) as unknown as PendingRow[];
     for (const row of recoverable) {
       const fireId = stringValue(row.fire_id);
       const automation = this.require(stringValue(row.automation_id));

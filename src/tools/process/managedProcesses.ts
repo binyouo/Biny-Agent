@@ -108,7 +108,7 @@ export function createBashOutputTool(service: ManagedProcessService): Tool<BashO
         processId: { type: "string", description: "Opaque process ID returned by a background Bash call. Omit to list processes." },
         includeExited: { type: "boolean", description: "When listing, include exited processes; defaults to true." },
         offset: { type: "integer", minimum: 0, description: "Byte offset for output pagination; defaults to 0." },
-        maxBytes: { type: "integer", minimum: 1, maximum: 256 * 1024, description: "Maximum output bytes; defaults to 65536." },
+        maxBytes: { type: "integer", minimum: 1, maximum: 256 * 1024, description: "Maximum source log bytes consumed per page; defaults to 65536." },
         fromEnd: { type: "boolean", description: "Read a bounded tail instead of using offset." }
       },
       additionalProperties: false

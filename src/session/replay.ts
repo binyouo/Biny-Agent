@@ -13,7 +13,7 @@ import { parseFileChange, type CommittedFileChange } from "../tools/file/fileCha
 import type { AgentMessage, AgentReasoningContent, ModelRequestMetrics } from "../agent/core/types.js";
 import { createToolOperationId, type ToolExecutionState, type ToolOutcomeUnknownReason, type ToolRetrySafety } from "../tools/types.js";
 import { readSessionEvents, readStoredSessionEvents } from "./events.js";
-import { activeSessionEventsForPath, sessionMessageTree, type SessionMessageNode, type SessionMessageReference } from "./messageTree.js";
+import { activeSessionEventsForPath, activeSessionMessageIds, sessionMessageTree, type SessionMessageNode, type SessionMessageReference } from "./messageTree.js";
 import type { ReasoningBlock, SessionContextCheckpoint, SessionContextState, SessionContextUsage, SessionEvent, SessionUsage } from "./recorder.js";
 import { validateRuntimeEventStream, type RuntimeHighWater } from "./runtimeEvent.js";
 export { activeSessionEventsForPath, activeSessionMessageIds, sessionMessageTree, type SessionMessageNode, type SessionMessageReference } from "./messageTree.js";
@@ -86,14 +86,21 @@ export function replaySessionEvents(recordedEvents: SessionEvent[], options: Ses
   const recoveredToolResults = recovery.results;
   const events = orderRecoveredToolResults(recordedEvents, recoveredToolResults);
   const activeEvents = activeSessionEventsForPath(events);
-  const projection = projectSessionConversation(activeEvents, {
+  const projectionOptions = {
     discardedToolCallIds: new Set(recovery.discarded.map((call) => call.toolCallId).filter((id): id is string => id !== undefined)),
     recoveredToolResults
-  });
-  const contextCheckpoint = latestContextCheckpoint(activeEvents);
-  const activeProjection = options.includeCompactedMessages ? projection : applyContextCheckpoint(projection, contextCheckpoint);
+  };
+  const projection = projectSessionConversation(activeEvents, projectionOptions);
+  const messageTree = sessionMessageTree(events);
+  const checkpointPath = contextCheckpointPath(events, messageTree, projection, projectionOptions);
+  const selectedCheckpoint = latestContextCheckpoint(events, checkpointPath);
+  const contextCheckpoint = selectedCheckpoint?.checkpoint;
+  const activeProjection = options.includeCompactedMessages ? projection : applyContextCheckpoint(
+    projection, contextCheckpoint, selectedCheckpoint?.start
+  );
   const contextStartMessageIndex = activeProjection.references[0]?.index ?? projection.messages.length;
-  const persistedContextState = latestContextState(activeEvents);
+  const acceptsContextState = (state: SessionContextState, event: SessionEvent): boolean => !state.checkpoint || checkpointPath(state.checkpoint, event).applicable;
+  const persistedContextState = latestContextState(activeEvents, acceptsContextState);
   const contextState = persistedContextState && contextCheckpoint
     ? {
       ...persistedContextState,
@@ -112,14 +119,14 @@ export function replaySessionEvents(recordedEvents: SessionEvent[], options: Ses
       .slice(0, contextStartMessageIndex)
       .filter((message) => message.role === "user").length,
     totalMessageCount: projection.messages.length,
-    contextUsage: latestContextUsage(activeEvents),
+    contextUsage: latestContextUsage(activeEvents, acceptsContextState),
     contextState,
     contextCheckpoint,
     usage: sessionUsage(activeEvents),
     modelRequests: sessionModelRequests(activeEvents),
     recoveredToolResults,
     discardedToolCalls: recovery.discarded,
-    messageTree: sessionMessageTree(events),
+    messageTree,
     runtimeHighWater
   };
 }
@@ -484,32 +491,307 @@ function resultStatus(value: unknown): string | undefined {
 }
 
 /**
+ * 有完整 canonical 身份的日志用树索引定位压缩时的活动叶子。选择约束是各节点后代区间的
+ * 交集；区间内最后写入的节点与 activeSessionMessageIds 的规则一致。旧格式或不完整父链
+ * 不猜测身份，交给下面的原事件投影路径。索引构建 O((消息 + 选择 + checkpoint) log 消息)。
+ */
+function canonicalCheckpointPath(
+  events: SessionEvent[],
+  nodes: SessionMessageNode[],
+  projection: SessionConversationProjection,
+  projectionOptions: Parameters<typeof projectSessionConversation>[1]
+): ((checkpoint: SessionContextCheckpoint, event: SessionEvent) => { applicable: boolean; start: number } | undefined) | undefined {
+  const byId = new Map(nodes.map((node, index) => [node.id, index]));
+  if (byId.size !== nodes.length) return undefined;
+  const callNodes = new Map<string, number>();
+  const resultNodes = new Map<string, number>();
+  for (const [index, node] of nodes.entries()) {
+    if (node.message.role === "assistant") {
+      for (const part of node.message.content) if (part.type === "toolCall") callNodes.set(part.id, index);
+    } else if (node.message.role === "toolResult") resultNodes.set(node.message.toolCallId, index);
+  }
+  const auditWeights = new Int32Array(nodes.length);
+  const auditBefore = new Int32Array(nodes.length);
+  const nodesByEvent = new Map(nodes.map((node, index) => [node.eventIndex, index]));
+  let audits = 0;
+  const canonicalCalls = new Set<string>();
+  const canonicalResults = new Set<string>();
+  const pendingCalls = new Set<string>();
+  const pendingResults = new Set<string>();
+  for (const [index, event] of events.entries()) {
+    const node = nodesByEvent.get(index);
+    if (node !== undefined) auditBefore[node] = audits;
+    if ((event.type === "tool_call" || event.type === "tool_result") && !event.auditOnly) {
+      audits += 1;
+      const canonical = event.toolCallId === undefined ? undefined
+        : (event.type === "tool_call" ? callNodes : resultNodes).get(event.toolCallId);
+      if (canonical !== undefined && nodes[canonical]!.eventIndex > index) auditWeights[canonical]! += 1;
+    }
+    if (event.type === "assistant_message" && !event.auditOnly && (event.content || event.reasoningContent)) {
+      const canonical = event.messageId === undefined ? undefined : byId.get(event.messageId);
+      // 无身份的扁平回答可能在其兄弟 canonical 节点被过滤后重新出现。
+      if (canonical === undefined || nodes[canonical]!.message.role !== "assistant" || nodes[canonical]!.eventIndex >= index) return undefined;
+    }
+    if (event.type === "agent_message" && event.message.role === "assistant") {
+      for (const part of event.message.content) if (part.type === "toolCall") {
+        if (canonicalCalls.has(part.id)) return undefined;
+        canonicalCalls.add(part.id);
+        pendingCalls.delete(part.id);
+      }
+    } else if (event.type === "agent_message" && event.message.role === "toolResult") {
+      if (canonicalResults.has(event.message.toolCallId)) return undefined;
+      canonicalResults.add(event.message.toolCallId);
+      pendingResults.delete(event.message.toolCallId);
+    } else if (event.type === "tool_call" && !event.auditOnly) {
+      if (!event.toolCallId) return undefined;
+      if (!canonicalCalls.has(event.toolCallId)) pendingCalls.add(event.toolCallId);
+    } else if (event.type === "tool_result" && !event.auditOnly) {
+      if (!event.toolCallId) return undefined;
+      if (!canonicalResults.has(event.toolCallId)) pendingResults.add(event.toolCallId);
+    }
+    // 后写入的 canonical 工具消息不能倒过来抹掉 checkpoint 当时的扁平消息槽。
+    if (event.type === "context_checkpoint" && (pendingCalls.size || pendingResults.size)) return undefined;
+  }
+  const parents = new Int32Array(nodes.length).fill(-1);
+  const children = nodes.map(() => [] as number[]);
+  const roots: number[] = [];
+  for (const [index, node] of nodes.entries()) {
+    if (node.parentId === undefined) roots.push(index);
+    else {
+      const parent = byId.get(node.parentId);
+      if (parent === undefined || parent >= index) return undefined;
+      parents[index] = parent;
+      children[parent]!.push(index);
+    }
+  }
+  const physical = projectSessionConversation(events, projectionOptions);
+  const weights = new Int32Array(nodes.length);
+  const unindexedBefore = new Int32Array(nodes.length);
+  let unindexed = 0;
+  for (const reference of physical.references) {
+    if (reference.id === undefined) { unindexed += 1; continue; }
+    const index = byId.get(reference.id);
+    if (index === undefined || weights[index]) return undefined;
+    weights[index] = 1;
+    unindexedBefore[index] = unindexed;
+  }
+  const starts = new Int32Array(nodes.length);
+  const ends = new Int32Array(nodes.length);
+  const lengths = new Int32Array(nodes.length);
+  const pathAudits = new Int32Array(nodes.length);
+  for (let index = 0; index < nodes.length; index += 1) {
+    lengths[index] = weights[index]! + (parents[index]! < 0 ? 0 : lengths[parents[index]!]!);
+    pathAudits[index] = auditWeights[index]! + (parents[index]! < 0 ? 0 : pathAudits[parents[index]!]!);
+  }
+  let order = 0;
+  const stack = [...roots].reverse().map((index) => ({ index, leaving: false }));
+  while (stack.length) {
+    const { index, leaving } = stack.pop()!;
+    if (leaving) ends[index] = order;
+    else {
+      starts[index] = order++;
+      stack.push({ index, leaving: true });
+      for (let child = children[index]!.length - 1; child >= 0; child -= 1) {
+        stack.push({ index: children[index]![child]!, leaving: false });
+      }
+    }
+  }
+  const ancestors = [parents];
+  for (let span = 2; span <= nodes.length; span *= 2) {
+    const previous = ancestors.at(-1)!;
+    ancestors.push(Int32Array.from(previous, (parent) => parent < 0 ? -1 : previous[parent]!));
+  }
+  const slots = new Map<string, number>();
+  for (const event of events) if (event.type === "message_version_selected" && !slots.has(event.slotId)) slots.set(event.slotId, slots.size);
+  let size = 1;
+  while (size < Math.max(nodes.length, slots.size)) size *= 2;
+  const latest = new Int32Array(size * 2).fill(-1);
+  const selectedStart = new Int32Array(size * 2);
+  const selectedEnd = new Int32Array(size * 2).fill(nodes.length);
+  const nodeEvents = new Map(nodes.map((node, index) => [events[node.eventIndex], index]));
+  const leaves = new Map<SessionEvent, number>();
+  let lastNode = -1;
+  for (const event of events) {
+    const node = nodeEvents.get(event);
+    if (node !== undefined) {
+      lastNode = node;
+      let position = size + starts[node]!;
+      latest[position] = node;
+      while ((position = Math.floor(position / 2)) > 0) latest[position] = Math.max(latest[position * 2]!, latest[position * 2 + 1]!);
+    }
+    if (event.type === "message_version_selected") {
+      const selected = byId.get(event.messageId);
+      let position = size + slots.get(event.slotId)!;
+      selectedStart[position] = selected === undefined ? nodes.length : starts[selected]!;
+      selectedEnd[position] = selected === undefined ? 0 : ends[selected]!;
+      while ((position = Math.floor(position / 2)) > 0) {
+        selectedStart[position] = Math.max(selectedStart[position * 2]!, selectedStart[position * 2 + 1]!);
+        selectedEnd[position] = Math.min(selectedEnd[position * 2]!, selectedEnd[position * 2 + 1]!);
+      }
+    }
+    if (event.type !== "context_checkpoint") continue;
+    let left = size + selectedStart[1]!;
+    let right = size + selectedEnd[1]!;
+    let leaf = -1;
+    while (left < right) {
+      if (left % 2) leaf = Math.max(leaf, latest[left++]!);
+      if (right % 2) leaf = Math.max(leaf, latest[--right]!);
+      left = Math.floor(left / 2);
+      right = Math.floor(right / 2);
+    }
+    leaves.set(event, leaf < 0 ? lastNode : leaf);
+  }
+  const activeIds = activeSessionMessageIds(events, nodes);
+  return (checkpoint, event) => {
+    const leaf = leaves.get(event);
+    if (leaf === undefined || leaf < 0) return undefined;
+    let start: number;
+    if (checkpoint.firstKeptMessageId === undefined) start = Math.min(checkpoint.firstKeptMessageIndex, lengths[leaf]!);
+    else {
+      const kept = byId.get(checkpoint.firstKeptMessageId);
+      if (kept === undefined || !weights[kept] || starts[leaf]! < starts[kept]! || starts[leaf]! >= ends[kept]!) return undefined;
+      start = lengths[kept]! - 1;
+    }
+    if (unindexed || audits) {
+      // 暂停标记等无 ID 消息仍占真实槽位。这里只使用可证明的兄弟前缀反证；接受或计算
+      // 保留偏移仍走原始投影。来源路径深度加此前潜在无 ID 槽数给出位置上界；已确认在
+      // 该祖先链上、先审计后 canonical 的工具记录不会重新投影为无 ID 消息，不重复计数。
+      if (activeIds.has(nodes[leaf]!.id)) return undefined;
+      let divergent = leaf;
+      for (let level = ancestors.length - 1; level >= 0; level -= 1) {
+        const parent = ancestors[level]![divergent]!;
+        if (parent >= 0 && !activeIds.has(nodes[parent]!.id)) divergent = parent;
+      }
+      const shared = parents[divergent]!;
+      const sharedLength = shared < 0 ? 0 : lengths[shared]!;
+      if (lengths[leaf]! <= sharedLength) return undefined;
+      divergent = leaf;
+      for (let level = ancestors.length - 1; level >= 0; level -= 1) {
+        const parent = ancestors[level]![divergent]!;
+        if (parent >= 0 && lengths[parent]! > sharedLength) divergent = parent;
+      }
+      const unknownBefore = unindexedBefore[divergent]! + auditBefore[divergent]! - pathAudits[divergent]!;
+      const covered = checkpoint.firstKeptMessageId === undefined
+        ? checkpoint.firstKeptMessageIndex > sharedLength + unknownBefore
+        : start > sharedLength;
+      return covered ? { applicable: false, start: 0 } : undefined;
+    }
+    if (start === 0) return { applicable: true, start };
+    let covered = leaf;
+    for (let level = ancestors.length - 1; level >= 0; level -= 1) {
+      const parent = ancestors[level]![covered]!;
+      if (parent >= 0 && lengths[parent]! >= start) covered = parent;
+    }
+    return { applicable: projection.references[start - 1]?.id === nodes[covered]!.id, start };
+  };
+}
+
+/**
+ * 手动 checkpoint 没有 runId，不能仅按运行归属筛选。保留边界仍在活动路径上时可直接
+ * 使用；切换了保留段或压缩了全部消息时，从原事件位置还原被覆盖的前缀，再比较稳定 ID。
+ * 只拒绝能证明属于其他分支的摘要；没有消息身份的旧日志继续使用原来的索引边界。
+ */
+function contextCheckpointPath(
+  events: SessionEvent[],
+  nodes: SessionMessageNode[],
+  projection: SessionConversationProjection,
+  projectionOptions: Parameters<typeof projectSessionConversation>[1]
+): (checkpoint: SessionContextCheckpoint, source: SessionEvent) => { applicable: boolean; start?: number } {
+  if (!events.some((event) => event.type === "context_checkpoint")) return () => ({ applicable: true });
+  const activeIds = activeSessionMessageIds(events, nodes);
+  if (nodes.every((node) => activeIds.has(node.id))) return () => ({ applicable: true });
+  const canonicalPath = canonicalCheckpointPath(events, nodes, projection, projectionOptions);
+  const projectedIndexes = new Map(projection.references.map((reference, index) => [reference.id, index]));
+  const indexes = new Map<string, number[]>();
+  const eventIndexes = new Map(events.map((event, index) => [event, index]));
+  const key = (checkpoint: SessionContextCheckpoint): string => JSON.stringify([
+    checkpoint.createdAt, checkpoint.firstKeptMessageId, checkpoint.firstKeptMessageIndex,
+    checkpoint.compactedMessages, checkpoint.summary, checkpoint.tokensBefore, checkpoint.formatVersion,
+    checkpoint.state, checkpoint.evidence, checkpoint.parentCreatedAt, checkpoint.coveredMessageCount,
+    checkpoint.tokensAfter, checkpoint.summaryProvider, checkpoint.summaryModel, checkpoint.summaryPromptVersion
+  ]);
+  for (const [index, event] of events.entries()) {
+    if (event.type !== "context_checkpoint") continue;
+    const identity = key(event);
+    const matches = indexes.get(identity) ?? [];
+    matches.push(index);
+    indexes.set(identity, matches);
+  }
+  const cache = new Map<number, { applicable: boolean; start?: number }>();
+  return (checkpoint, source) => {
+    const sourceIndex = eventIndexes.get(source)!;
+    // 同毫秒可以出现两个不同分支的同文摘要；独立事件按位置识别，快照只匹配它之前的记录。
+    const matches = source.type === "context_checkpoint" ? [] : indexes.get(key(checkpoint)) ?? [];
+    let left = 0;
+    let right = matches.length;
+    while (left < right) {
+      const middle = Math.floor((left + right) / 2);
+      if (matches[middle]! < sourceIndex) left = middle + 1;
+      else right = middle;
+    }
+    const eventIndex = source.type === "context_checkpoint" ? sourceIndex : matches[left - 1];
+    // 旧的 embedded-only contextState 没有原始事件位置，不能猜测并丢弃它。
+    if (eventIndex === undefined) return { applicable: true };
+    const cached = cache.get(eventIndex);
+    if (cached) return cached;
+    const keptIndex = checkpoint.firstKeptMessageId === undefined ? -1
+      : projectedIndexes.get(checkpoint.firstKeptMessageId) ?? -1;
+    if (keptIndex >= 0) {
+      const result = { applicable: true, start: keptIndex };
+      cache.set(eventIndex, result);
+      return result;
+    }
+    const indexed = canonicalPath?.(checkpoint, events[eventIndex]!);
+    if (indexed) {
+      cache.set(eventIndex, indexed);
+      return indexed;
+    }
+    const original = projectSessionConversation(activeSessionEventsForPath(events.slice(0, eventIndex)), projectionOptions);
+    const originalKeptIndex = checkpoint.firstKeptMessageId === undefined ? -1
+      : original.references.findIndex((reference) => reference.id === checkpoint.firstKeptMessageId);
+    const start = originalKeptIndex >= 0 ? originalKeptIndex : Math.min(checkpoint.firstKeptMessageIndex, original.messages.length);
+    const covered = original.references.slice(0, start);
+    const applicable = covered.every((reference, index) => reference.id === undefined || reference.id === projection.references[index]?.id);
+    const result = { applicable, start: covered.some((reference) => reference.id !== undefined) ? start : undefined };
+    cache.set(eventIndex, result);
+    return result;
+  };
+}
+
+/**
  * 取最近一次的上下文预算。从后往前找，`contextUsage` 是 `contextState` 之前的旧字段，
  * 放在最后兜底以兼容历史 session。
  */
-function latestContextUsage(events: SessionEvent[]): SessionContextUsage | undefined {
+function latestContextUsage(events: SessionEvent[], accepts: (state: SessionContextState, event: SessionEvent) => boolean): SessionContextUsage | undefined {
   for (let index = events.length - 1; index >= 0; index -= 1) {
     const event = events[index];
-    if (event?.type === "assistant_message" && event.contextState !== undefined) return event.contextState.budget;
-    if (event?.type === "user_message" && event.contextState !== undefined) return event.contextState.budget;
+    if ((event?.type === "assistant_message" || event?.type === "user_message") && event.contextState !== undefined) {
+      if (accepts(event.contextState, event)) return event.contextState.budget;
+      continue;
+    }
     if (event?.type === "user_message" && event.contextUsage !== undefined) return event.contextUsage;
   }
   return undefined;
 }
 
-function latestContextState(events: SessionEvent[]): SessionContextState | undefined {
+function latestContextState(events: SessionEvent[], accepts: (state: SessionContextState, event: SessionEvent) => boolean): SessionContextState | undefined {
   for (let index = events.length - 1; index >= 0; index -= 1) {
     const event = events[index];
-    if ((event?.type === "assistant_message" || event?.type === "user_message") && event.contextState !== undefined) return event.contextState;
+    if ((event?.type === "assistant_message" || event?.type === "user_message") && event.contextState !== undefined && accepts(event.contextState, event)) return event.contextState;
   }
   return undefined;
 }
 
-function latestContextCheckpoint(events: SessionEvent[]): SessionContextCheckpoint | undefined {
+function latestContextCheckpoint(
+  events: SessionEvent[],
+  resolve: (checkpoint: SessionContextCheckpoint, source: SessionEvent) => { applicable: boolean; start?: number }
+): { checkpoint: SessionContextCheckpoint; start?: number } | undefined {
   for (let index = events.length - 1; index >= 0; index -= 1) {
     const event = events[index];
     if (event?.type !== "context_checkpoint") continue;
-    return {
+    const resolved = resolve(event, event);
+    if (!resolved.applicable) continue;
+    return { start: resolved.start, checkpoint: {
       summary: event.summary,
       firstKeptMessageId: event.firstKeptMessageId,
       firstKeptMessageIndex: event.firstKeptMessageIndex,
@@ -540,7 +822,7 @@ function latestContextCheckpoint(events: SessionEvent[]): SessionContextCheckpoi
       summaryProvider: event.summaryProvider,
       summaryModel: event.summaryModel,
       summaryPromptVersion: event.summaryPromptVersion
-    };
+    } };
   }
   return undefined;
 }
@@ -548,15 +830,16 @@ function latestContextCheckpoint(events: SessionEvent[]): SessionContextCheckpoi
 /** 最新 checkpoint 是恢复上下文的真值；旧消息仍保留在 JSONL 中供审计和分支展示。 */
 function applyContextCheckpoint(
   projection: SessionConversationProjection,
-  checkpoint: SessionContextCheckpoint | undefined
+  checkpoint: SessionContextCheckpoint | undefined,
+  resolvedStart?: number
 ): SessionConversationProjection {
   if (!checkpoint) return projection;
   const idBoundary = checkpoint.firstKeptMessageId === undefined
     ? -1
     : projection.references.findIndex((reference) => reference.id === checkpoint.firstKeptMessageId);
-  const start = idBoundary >= 0
+  const start = resolvedStart ?? (idBoundary >= 0
     ? idBoundary
-    : Math.min(checkpoint.firstKeptMessageIndex, projection.messages.length);
+    : Math.min(checkpoint.firstKeptMessageIndex, projection.messages.length));
   return {
     messages: projection.messages.slice(start),
     references: projection.references.slice(start)

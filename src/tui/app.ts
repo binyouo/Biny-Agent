@@ -44,10 +44,11 @@ import {
   pendingPermission,
   runtimeIsBusy,
   type AgentHostEvent,
-  type InteractiveRuntimeSnapshot
+  type InteractiveRuntimeSnapshot,
+  type PendingPermissionSnapshot
 } from "../runtime/agentEvents.js";
 import type { SessionSummary } from "../session/events.js";
-import type { UsageSummary } from "../session/metadata.js";
+import { readReportedCacheRates, type UsageSummary } from "../session/metadata.js";
 import { FooterComponent, ShortcutsBarComponent, StatusIndicatorComponent, WelcomeComponent, footerUsageFromBudget, type FooterData } from "./components/chrome.js";
 import { CardComponent } from "./components/cards.js";
 import { PermissionDialog, SelectDialog, TextViewerDialog } from "./components/dialogs.js";
@@ -98,6 +99,12 @@ interface ModelPresentation {
   modelLabel: string;
   reasoningLabel: string;
   thinking: ThinkingSelection;
+}
+
+interface PermissionAnswerAttempt {
+  runtime: InteractiveRuntimeHandle;
+  request: PendingPermissionSnapshot;
+  state: "pending" | "accepted" | "uncertain";
 }
 
 export const memoryPolicySelectOptions = [
@@ -172,6 +179,9 @@ export class BinyTui {
   private permissionDialog: PermissionDialog | undefined;
   /** 当前权限弹层对应的请求 id；同一请求的重复同步不重置用户已选选项和确认输入。 */
   private permissionDialogRequestId: string | undefined;
+  private permissionDialogRuntime: InteractiveRuntimeHandle | undefined;
+  /** 未确认的答复不能因缓存快照或切换会话而被重发。 */
+  private readonly permissionAnswers = new Map<string, PermissionAnswerAttempt>();
   /** 与 pi 一致：空闲时 Ctrl+C 需要在短时间内连续按两次才退出。 */
   private lastCtrlCAt = 0;
   private exiting = false;
@@ -403,13 +413,23 @@ export class BinyTui {
   private subscribeRuntime(runtime: InteractiveRuntimeHandle): void {
     this.unsubscribe?.();
     this.unsubscribe = runtime.subscribe((update) => {
+      if (this.runtime !== runtime) return;
       this.runtimeSnapshot = update.snapshot;
+      if (update.event?.type === "permission.resolved") {
+        const attempt = this.permissionAnswers.get(update.event.requestId);
+        if (attempt?.request.sessionId === update.event.sessionId && attempt.request.runId === update.event.runId) {
+          this.permissionAnswers.delete(update.event.requestId);
+        }
+      }
       if (update.event) {
         this.dispatch(update.event);
         if (update.event.type === "context.updated") this.applyLiveContextUsage(update.event);
       }
       else if (update.snapshot.state.kind === "maintenance") this.dispatch({ type: "maintenance.started" });
-      else this.refreshChrome();
+      else {
+        this.syncPermissionDialog();
+        this.refreshChrome();
+      }
       if (isTerminalRunEvent(update.event)) {
         void this.refreshContextUsage();
         void this.refreshUsage();
@@ -579,8 +599,9 @@ export class BinyTui {
         ? await this.commands.agent.usageSummary()
         : (await requireRemoteRuntime(runtime).usage()).summary;
       if (runtime.getSnapshot().info.sessionId !== sessionId) return;
-      this.cacheHitRate = summary.latestCacheHitRate;
-      this.sessionCacheHitRate = summary.sessionCacheHitRate;
+      const rates = readReportedCacheRates(summary) ?? summary;
+      this.cacheHitRate = rates.latestCacheHitRate;
+      this.sessionCacheHitRate = rates.sessionCacheHitRate;
       this.refreshChrome();
     } catch {
       // Footer telemetry is best effort and must never interrupt the TUI.
@@ -738,23 +759,30 @@ export class BinyTui {
     const runtime = this.runtime;
     if (!runtime) return;
     const sessionId = runtime.getSnapshot().info.sessionId;
-    const value = this.editor.getText().trim();
+    const text = this.editor.getExpandedText();
+    const value = text.trim();
     if (!value && !this.pendingAttachments.length) return;
     const prompt = value || "请分析这个附件。";
     const attachments = this.pendingAttachments;
+    let inputTaken = false;
     try {
+      const undo = editorSubmissionUndo(this.editor);
+      // 与 Enter 提交一致：在准入等待前取走这一份输入，后续编辑属于下一份草稿。
+      this.setEditorText("");
+      this.setPendingAttachments([]);
+      inputTaken = true;
+      undo.clear();
       await this.ensureSessionWriteAccess(sessionId);
       if (runtime instanceof RuntimeHostClient) {
         const queued = await runtime.queueRunMessageForSession(sessionId, withAttachmentReferences(prompt, attachments), "steer", attachments);
         if (!queued.accepted) throw errorFromHostOperation(queued);
       } else await runtime.steer(withAttachmentReferences(prompt, attachments), attachments);
-      this.setPendingAttachments([]);
-      this.setEditorText("");
       this.editor.addToHistory(prompt);
       void appendInputHistory(this.workspaceRoot, prompt)
         .catch((error) => this.notify(`写入输入历史失败：${describeError(error)}`));
       this.notify("消息已加入 steer 队列，将在当前模型步骤和工具批次结束后处理。");
     } catch (error) {
+      if (inputTaken) this.restoreSubmittedInput(text, attachments);
       if (isSessionWriterConflictError(error)) {
         await this.showSessionWriterConflict(error);
         return;
@@ -846,6 +874,7 @@ export class BinyTui {
     this.overlay = undefined;
     this.permissionDialog = undefined;
     this.permissionDialogRequestId = undefined;
+    this.permissionDialogRuntime = undefined;
     this.ui.setFocus(this.editor);
     this.ui.requestRender();
   }
@@ -880,26 +909,40 @@ export class BinyTui {
 
   /** 权限请求进出时同步弹层，避免请求切换后还留着上一份确认状态。 */
   private syncPermissionDialog(): void {
+    const runtime = this.runtime;
     const pending = pendingPermission(this.runtimeSnapshot);
+    const sessionId = this.runtimeSnapshot?.info.sessionId;
+    for (const [requestId, attempt] of this.permissionAnswers) {
+      if (attempt.runtime === runtime && attempt.request.sessionId === sessionId && pending?.requestId !== requestId) {
+        this.permissionAnswers.delete(requestId);
+      }
+    }
     if (!pending) {
+      if (this.permissionDialog) this.closeOverlay();
+      return;
+    }
+    if (!runtime) return;
+    if (this.permissionAnswers.has(pending.requestId)) {
       if (this.permissionDialog) this.closeOverlay();
       return;
     }
     if (this.permissionDialog) {
       // 并行工具的进度事件会反复触发同步；同一请求只刷新展开状态，
       // 换成新请求时才允许 setRequest 重置已选选项和已输入的确认词。
-      if (pending.requestId !== this.permissionDialogRequestId) {
-        this.permissionDialog.setRequest({ ...pending.request });
-        this.permissionDialogRequestId = pending.requestId;
-      }
-      this.permissionDialog.setDetailsExpanded(this.state.permissionDetailsExpanded);
-      return;
-    }
-    const dialog = new PermissionDialog(
-      { ...pending.request },
-      (choice, denialReason) => {
+      if (pending.requestId !== this.permissionDialogRequestId || runtime !== this.permissionDialogRuntime) {
+        // 回调与展示的请求一起替换；旧弹层的迟到输入不能选择新请求。
         this.closeOverlay();
-        this.answerPermission(choice, denialReason);
+      } else {
+        this.permissionDialog.setDetailsExpanded(this.state.permissionDetailsExpanded);
+        return;
+      }
+    }
+    const request = { ...pending, request: { ...pending.request } };
+    const dialog = new PermissionDialog(
+      request.request,
+      (choice, denialReason) => {
+        if (this.permissionDialog !== dialog) return;
+        void this.answerPermission(runtime, request, choice, denialReason);
       },
       () => {
         this.dispatch({ type: "permission.details.toggled" });
@@ -911,16 +954,58 @@ export class BinyTui {
     // showOverlay 内部会先 closeOverlay 清空弹层引用，归属登记必须放在之后。
     this.permissionDialog = dialog;
     this.permissionDialogRequestId = pending.requestId;
+    this.permissionDialogRuntime = runtime;
   }
 
-  private answerPermission(choice: PermissionChoice, denialReason?: string): void {
-    const runtime = this.runtime;
-    const request = pendingPermission(this.runtimeSnapshot);
-    if (!runtime || !request) return;
-    runtime.answerPermission(
-      request.requestId,
-      permissionChoiceToResult(choice, request.request, denialReason)
-    );
+  private isCurrentPermission(runtime: InteractiveRuntimeHandle, request: PendingPermissionSnapshot): boolean {
+    const pending = pendingPermission(this.runtimeSnapshot);
+    return !this.exiting && this.runtime === runtime
+      && this.runtimeSnapshot?.info.sessionId === request.sessionId
+      && pending?.sessionId === request.sessionId
+      && pending.runId === request.runId
+      && pending.requestId === request.requestId;
+  }
+
+  private async answerPermission(
+    runtime: InteractiveRuntimeHandle,
+    request: PendingPermissionSnapshot,
+    choice: PermissionChoice,
+    denialReason?: string
+  ): Promise<void> {
+    if (!this.isCurrentPermission(runtime, request)) return;
+    if (this.permissionAnswers.has(request.requestId)) return;
+    const attempt: PermissionAnswerAttempt = { runtime, request, state: "pending" };
+    this.permissionAnswers.set(request.requestId, attempt);
+    this.closeOverlay();
+    const result = permissionChoiceToResult(choice, request.request, denialReason);
+    try {
+      if (runtime instanceof RuntimeHostClient) {
+        const response = await runtime.answerPermissionRequest(request.requestId, result, request.sessionId);
+        if (!response.accepted) {
+          if (this.permissionAnswers.get(request.requestId) !== attempt) return;
+          this.permissionAnswers.delete(request.requestId);
+          if (this.isCurrentPermission(runtime, request)) {
+            this.dispatch({ type: "error.message", message: describeError(errorFromHostOperation(response)) });
+          }
+          return;
+        }
+      } else {
+        runtime.answerPermission(request.requestId, result);
+      }
+      attempt.state = "accepted";
+    } catch (error) {
+      if (this.permissionAnswers.get(request.requestId) !== attempt) return;
+      if (runtime instanceof RuntimeHostClient) {
+        // 丢失回执不代表 Host 拒绝了答复；保留抑制，等待权威状态解除请求。
+        attempt.state = "uncertain";
+        if (this.isCurrentPermission(runtime, request)) {
+          this.dispatch({ type: "error.message", message: `授权答复结果尚未确认：${describeError(error)}。请等待宿主状态更新，或取消当前任务。` });
+        }
+      } else {
+        this.permissionAnswers.delete(request.requestId);
+        if (this.isCurrentPermission(runtime, request)) this.dispatch({ type: "error.message", message: describeError(error) });
+      }
+    }
   }
 
   // ---------------------------------------------------------------- slash
@@ -1721,6 +1806,19 @@ export class BinyTui {
       this.resolveExit?.();
     }
   }
+}
+
+/**
+ * pi-tui 0.82.1 的 setText 会保留撤销快照，但 Enter 的 submitValue 会清空它。
+ * 该版本没有公开提交重置 API；只适配这一处撤销契约，避免模拟 Enter 改写末尾反斜杠。
+ * 升级时若契约变化，必须在取走草稿或发送前失败；真实 Editor 回归测试覆盖撤销边界。
+ */
+function editorSubmissionUndo(editor: Editor): { clear(): void } {
+  const undo = (editor as unknown as { undoStack?: unknown }).undoStack;
+  if (typeof undo !== "object" || undo === null || !("clear" in undo) || typeof undo.clear !== "function") {
+    throw new Error("TUI editor submission reset is unavailable. Input has been preserved.");
+  }
+  return undo as { clear(): void };
 }
 
 /** 判断两次 Ctrl+C 是否处于 pi 的 500ms 退出窗口内。 */

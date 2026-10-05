@@ -15,6 +15,7 @@ import { AGENT_DATABASE_FILE, globalAgentDir } from "../../config/paths.js";
 import { redactSecrets } from "../../utils/secrets.js";
 import {
   createStoredMemoryEntry,
+  isExpiredTemporaryMemory,
   sanitizeMemoryEntryInput
 } from "./memoryFormat.js";
 import {
@@ -431,7 +432,7 @@ export class MemoryStorage {
   async archiveEntries(
     ids: readonly string[],
     reason: MemoryArchiveReason,
-    options: MemoryMutationOptions & { mergedInto?: string } = {}
+    options: MemoryMutationOptions & { mergedInto?: string; temporaryTtl?: number } = {}
   ): Promise<MemoryBulkArchiveResult> {
     options.signal?.throwIfAborted();
     const uniqueIds = [...new Set(ids)];
@@ -440,18 +441,23 @@ export class MemoryStorage {
       assertExpectedEntries(database, options.expectedEntries);
       const revision = readRevision(database);
       if (!uniqueIds.length) return { entries: [], archived: 0, revision };
-      const active = readActiveMemoryEntries(database).filter((entry) => uniqueIds.includes(entry.id));
+      const now = options.now ?? new Date();
+      const active = readActiveMemoryEntries(database).filter((entry) => uniqueIds.includes(entry.id)
+        // Recall usage does not change fact revisions. Recheck TTL eligibility inside this
+        // transaction so a recall committed since Sleep's snapshot can rescue the fact.
+        && (reason !== "expired" || options.temporaryTtl === undefined
+          || isExpiredTemporaryMemory(entry, now, options.temporaryTtl)));
       if (!active.length) return { entries: [], archived: 0, revision };
       if (options.expectedEntries && options.mergedInto && !findActiveMemoryEntry(database, options.mergedInto)) {
         throw new StaleMemoryDecisionError();
       }
-      const now = (options.now ?? new Date()).toISOString();
+      const archivedAt = now.toISOString();
       const nextRevision = revision + 1;
       const entries = active.map((existing) => {
         // 与 archiveEntry 一致：归档状态字段必须放在 input 上才能进入生成的条目。
         const entry = createStoredMemoryEntry({
           ...existing,
-          archivedAt: now,
+          archivedAt,
           archivedReason: reason,
           mergedInto: options.mergedInto
         }, {

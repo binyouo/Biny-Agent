@@ -308,7 +308,8 @@ function SettingsOverlayContent({
     else onClose();
   };
   const requestCancel = (): void => {
-    if (settingsDraft.dirtyCount > 0) setCloseGuardOpen(true);
+    // 改回旧基线不代表已发出的保存完成；与脏草稿一样等待事务结束后再确认关闭。
+    if (settingsDraft.dirtyCount > 0 || settingsDraft.saveState === "saving" || settingsDraft.saveState === "rolling_back") setCloseGuardOpen(true);
     else void discardAndClose();
   };
   const cancelClose = async (): Promise<void> => {

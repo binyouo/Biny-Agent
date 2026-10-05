@@ -81,12 +81,12 @@ export function createWriteFileTool(context: ToolContext): Tool<WriteFileArgs, F
   };
 }
 
-export async function readOptionalFile(filePath: string, signal?: AbortSignal): Promise<{
+export async function readOptionalFile(filePath: string, signal?: AbortSignal, requireValidUtf8 = false): Promise<{
   content: string;
   snapshot: Awaited<ReturnType<typeof readUtf8FileForEdit>>["snapshot"] | null;
 }> {
   try {
-    return await readUtf8FileForEdit(filePath, signal);
+    return await readUtf8FileForEdit(filePath, signal, requireValidUtf8);
   } catch (error) {
     if (typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT") {
       return { content: "", snapshot: null };

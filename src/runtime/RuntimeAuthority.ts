@@ -484,7 +484,7 @@ export class RuntimeEventAuthority implements RuntimeEventSink {
     return this.transaction(() => this.appendEventInTransaction(input));
   }
 
-  readEvents(options: { afterSequence?: number; limit?: number; runId?: string; sessionId?: string } = {}): RuntimeEventPage {
+  readEvents(options: { afterSequence?: number; limit?: number; runId?: string; sessionId?: string; runOrTurnId?: string } = {}): RuntimeEventPage {
     this.assertOpen();
     const afterSequence = options.afterSequence ?? 0;
     if (!Number.isSafeInteger(afterSequence) || afterSequence < 0) throw new Error("afterSequence must be a non-negative safe integer.");
@@ -498,6 +498,10 @@ export class RuntimeEventAuthority implements RuntimeEventSink {
     if (options.sessionId !== undefined) {
       clauses.push("session_id = ?");
       parameters.push(options.sessionId);
+    }
+    if (options.runOrTurnId !== undefined) {
+      clauses.push("(run_id = ? OR turn_id = ?)");
+      parameters.push(options.runOrTurnId, options.runOrTurnId);
     }
     const rows = this.database.prepare(`
       SELECT event_id, workspace_id, session_id, invocation_id, run_id, turn_id,

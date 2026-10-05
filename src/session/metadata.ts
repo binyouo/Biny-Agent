@@ -178,6 +178,59 @@ export interface SessionContextState {
   toolSchemaHash?: string;
 }
 
+/** Supplied normalized measurements; presence does not certify provider-wire or billing completeness. */
+export interface ReportedCacheTokenCounts {
+  version: 1;
+  inputTokens?: number;
+  cacheReadTokens?: number;
+  /** Absent means legacy provenance cannot establish completeness. */
+  inputTokensComplete?: boolean;
+  cacheReadTokensComplete?: boolean;
+}
+
+export interface ReportedSessionCacheUsage extends ReportedCacheTokenCounts {
+  /** True even when the final request supplied neither count; never fall back to aggregate counts. */
+  latestRequestRecorded?: true;
+  latestRequestInputTokens?: number;
+  latestRequestCacheReadTokens?: number;
+}
+
+export interface ReportedCacheUsageSummary extends ReportedCacheTokenCounts {
+  latestCacheHitRate?: number;
+  sessionCacheHitRate?: number;
+  epochCacheHitRates?: Record<string, number | null>;
+}
+
+/** Unknown versions retain the compatibility scalar contract. */
+export function readReportedCacheUsage<T extends ReportedCacheTokenCounts>(usage: { reportedCacheUsage?: T }): T | undefined {
+  const projection = usage.reportedCacheUsage;
+  return projection !== null && typeof projection === "object" && projection.version === 1 ? projection : undefined;
+}
+
+/** Do not turn malformed persisted projection data into a usable denominator/numerator. */
+export function reportedCacheTokenValue(value: number | undefined): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
+}
+
+/** Summary projections also cross permissive JSON transports; invalid rates/maps stay unknown. */
+export function readReportedCacheRates(summary: { reportedCacheUsage?: ReportedCacheUsageSummary }): Pick<ReportedCacheUsageSummary, "latestCacheHitRate" | "sessionCacheHitRate" | "epochCacheHitRates"> | undefined {
+  const projection = readReportedCacheUsage(summary);
+  if (!projection) return undefined;
+  const validRate = (value: number | undefined | null): number | undefined =>
+    typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1 ? value : undefined;
+  const input = reportedCacheTokenValue(projection.inputTokens);
+  const read = reportedCacheTokenValue(projection.cacheReadTokens);
+  const usableCounts = input !== undefined && input > 0 && read !== undefined;
+  const epochs = projection.epochCacheHitRates;
+  return {
+    latestCacheHitRate: usableCounts ? validRate(projection.latestCacheHitRate) : undefined,
+    sessionCacheHitRate: usableCounts && projection.inputTokensComplete === true && projection.cacheReadTokensComplete === true
+      ? validRate(projection.sessionCacheHitRate) : undefined,
+    epochCacheHitRates: epochs !== null && typeof epochs === "object" && !Array.isArray(epochs)
+      ? Object.fromEntries(Object.entries(epochs).map(([id, rate]) => [id, validRate(rate) ?? null])) : undefined
+  };
+}
+
 export interface SessionUsage {
   operation: UsageOperation;
   modelAlias: string;
@@ -197,6 +250,8 @@ export interface SessionUsage {
   latestRequestInputTokens?: number;
   /** 回合聚合记录中，最后一次 provider 请求命中的缓存 token。 */
   latestRequestCacheReadTokens?: number;
+  /** Additive measured-count view; existing scalars keep their legacy eligibility semantics. */
+  reportedCacheUsage?: ReportedSessionCacheUsage;
   costUsd?: number;
   pricingKnown: boolean;
   time?: string;
@@ -221,6 +276,7 @@ export interface UsageSummary {
   sessionCacheHitRate?: number;
   /** 按 prompt epoch 分桶的加权命中率；null 表示该 epoch 缺少可靠 cache read 字段。 */
   epochCacheHitRates?: Record<string, number | null>;
+  reportedCacheUsage?: ReportedCacheUsageSummary;
 }
 
 export function usageSnapshot(usage: AgentUsage): Omit<SessionUsage,

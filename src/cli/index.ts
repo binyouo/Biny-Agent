@@ -242,7 +242,9 @@ task.command("message").argument("<taskRunId>", "TaskRun id").argument("<message
 task.command("wait").argument("<taskRunId>", "TaskRun id").requiredOption("--session <id>", "owning session id")
   .option("--wait-ms <ms>", "wait up to 60000ms for an update", Number, 0).option("--after-revision <revision>", "last observed revision", Number).option("--json", "print JSON")
   .action((taskRunId: string, options: { session: string; waitMs?: number; afterRevision?: number; json?: boolean }) => wrap(() => taskWaitCommand(workspaceRoot, taskRunId, options))());
-task.command("list").option("--status <status>", "TaskRun status").option("--limit <count>", "maximum rows", parsePositiveInteger).option("--json", "print JSON").action((options: { status?: string; limit?: number; json?: boolean }) => wrap(() => taskListCommand(workspaceRoot, options))());
+task.command("list").option("--status <status>", "TaskRun status").option("--limit <count>", "maximum rows", parsePositiveInteger)
+  .option("--cursor <cursor>", "continue from the previous page's nextCursor", parseTaskCursor).option("--json", "print JSON")
+  .action((options: { status?: string; limit?: number; cursor?: number; json?: boolean }) => wrap(() => taskListCommand(workspaceRoot, options))());
 task.command("events").argument("<taskRunId>", "TaskRun id").option("--limit <count>", "maximum events", parsePositiveInteger).option("--json", "print JSON").action((taskRunId: string, options: { limit?: number; json?: boolean }) => wrap(() => taskEventsCommand(workspaceRoot, taskRunId, options))());
 
 const memory = program.command("memory").description("Manage local memory");
@@ -317,9 +319,14 @@ for (const action of ["pause", "resume"] as const) {
 const graph = program.command("graph").description("Manage durable Agent Graphs");
 graph.command("list").option("--json", "print JSON").action((options: { json?: boolean }) => wrap(() => graphListCommand(workspaceRoot, options))());
 graph.command("create").requiredOption("--nodes <json>", "JSON node array").option("--graph-id <id>", "explicit graph id").option("--payload <json>", "JSON payload").option("--json", "print JSON").action((options: { nodes: string; graphId?: string; payload?: string; json?: boolean }) => wrap(() => graphCreateCommand(workspaceRoot, options))());
-for (const [name, action] of [["start", "start"], ["pause", "pause"], ["resume", "resume"], ["cancel", "cancel"], ["inspect", "inspect"], ["events", "events"]] as const) {
+for (const [name, action] of [["start", "start"], ["pause", "pause"], ["resume", "resume"], ["cancel", "cancel"], ["inspect", "inspect"]] as const) {
   graph.command(name).argument("<graphId>", "graph id").option("--json", "print JSON").action((graphId: string, options: { json?: boolean }) => wrap(() => graphActionCommand(workspaceRoot, action, graphId, options))());
 }
+graph.command("events").argument("<graphId>", "graph id")
+  .option("--cursor <cursor>", "continue from the previous page's nextCursor", parseTaskCursor)
+  .option("--limit <count>", "maximum events (1-1000, default 100)", parseGraphEventLimit).option("--json", "print JSON")
+  .action((graphId: string, options: { cursor?: number; limit?: number; json?: boolean }) => wrap(() => graphActionCommand(workspaceRoot, "events", graphId, options))());
+
 program
   .command("sessions")
   .description("List recorded sessions")
@@ -402,10 +409,10 @@ activity
   .argument("[date]", "YYYY-MM-DD; weekly 使用七天范围的结束日", localDateKey())
   .option("--narrative", "generate model narrative")
   .option("--json", "print JSON")
-  .action((kind: string, date: string, options: { narrative?: boolean; json?: boolean }) => {
+  .action((kind: string, date: string, options: { narrative?: boolean; json?: boolean }) => wrap(async () => {
     if (kind !== "daily" && kind !== "weekly") throw new Error("summary kind 只支持 daily 或 weekly。");
-    return wrap(() => activitySummaryCommand(workspaceRoot, kind, date, options))();
-  });
+    await activitySummaryCommand(workspaceRoot, kind, date, options);
+  })());
 const emotion = program.command("emotion").description("Read and update local emotion snapshots");
 emotion.action(wrap(() => emotionStatusCommand()));
 emotion.command("status").description("Show current emotion state").action(wrap(() => emotionStatusCommand()));
@@ -504,6 +511,18 @@ function collectStringOption(value: string, previous: string[] = []): string[] {
 function parseNonNegativeInteger(value: string): number {
   const parsed = Number(value);
   if (!Number.isInteger(parsed) || parsed < 0) throw new InvalidArgumentError(`Expected a non-negative integer, got: ${value}`);
+  return parsed;
+}
+
+function parseGraphEventLimit(value: string): number {
+  const parsed = Number(value);
+  if (!/^\d+$/u.test(value) || !Number.isSafeInteger(parsed) || parsed < 1 || parsed > 1000) throw new InvalidArgumentError(`Expected a page size between 1 and 1000, got: ${value}`);
+  return parsed;
+}
+
+function parseTaskCursor(value: string): number {
+  const parsed = Number(value);
+  if (!/^\d+$/u.test(value) || !Number.isSafeInteger(parsed)) throw new InvalidArgumentError(`Expected a non-negative safe integer, got: ${value}`);
   return parsed;
 }
 

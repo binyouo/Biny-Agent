@@ -4,6 +4,12 @@ import type { TimelineTool } from "../../sessionTimeline.js";
 import { Icon } from "../Icon.js";
 import { ToolPermission } from "../ToolActivity.js";
 
+type QuestionDraft = { selected: string[]; text: string };
+
+function questionDraft(drafts: Record<string, QuestionDraft>, id: string): QuestionDraft | undefined {
+  return Object.hasOwn(drafts, id) ? drafts[id] : undefined;
+}
+
 export function UserInputCard({ tool, projectId, sessionId, running }: {
   tool: TimelineTool;
   projectId: string;
@@ -11,7 +17,7 @@ export function UserInputCard({ tool, projectId, sessionId, running }: {
   running: boolean;
 }): React.JSX.Element {
   const formId = useId();
-  const [drafts, setDrafts] = useState<Record<string, { selected: string[]; text: string }>>({});
+  const [drafts, setDrafts] = useState<Record<string, QuestionDraft>>({});
   const [submitting, setSubmitting] = useState(false);
   const [submitted, setSubmitted] = useState<UserInputResponse>();
   const [error, setError] = useState<string>();
@@ -23,7 +29,7 @@ export function UserInputCard({ tool, projectId, sessionId, running }: {
   const pending = running && (tool.status === "running" || tool.status === "waiting") && !response && !waitingPermission;
   const disabled = !pending || submitting || !sessionId || !tool.runId;
   const questions = input.success ? input.data.questions : [];
-  const canSubmit = questions.length > 0 && questions.every((question) => drafts[question.id]?.selected.length || drafts[question.id]?.text.trim());
+  const canSubmit = questions.length > 0 && questions.every((question) => questionDraft(drafts, question.id)?.selected.length || questionDraft(drafts, question.id)?.text.trim());
   const submit = async (answer: UserInputResponse): Promise<void> => {
     if (disabled || inFlight.current || !sessionId || !tool.runId) return;
     inFlight.current = true;
@@ -45,24 +51,24 @@ export function UserInputCard({ tool, projectId, sessionId, running }: {
     <summary><Icon name={response?.status === "answered" ? "check" : "message"} size={16} /><span>{label}</span><Icon name="chevron" size={14} /></summary>
     <form onSubmit={(event) => {
       event.preventDefault();
-      if (canSubmit) void submit({ status: "answered", answers: questions.map((question) => ({ id: question.id, selected: drafts[question.id]?.selected ?? [], text: drafts[question.id]?.text.trim() || undefined })) });
+      if (canSubmit) void submit({ status: "answered", answers: questions.map((question) => ({ id: question.id, selected: questionDraft(drafts, question.id)?.selected ?? [], text: questionDraft(drafts, question.id)?.text.trim() || undefined })) });
     }}>
       {questions.map((question) => {
         const answer = response?.status === "answered" ? response.answers.find((entry) => entry.id === question.id) : undefined;
-        const draft = drafts[question.id] ?? { selected: [], text: "" };
+        const draft = questionDraft(drafts, question.id) ?? { selected: [], text: "" };
         const selected = answer?.selected ?? draft.selected;
         return <fieldset key={question.id} disabled={disabled}>
           <legend>{question.question}</legend>
           {question.options.map((option) => <label className="user-input-option" key={option.label}>
             <input type={question.multiSelect ? "checkbox" : "radio"} name={`${formId}-${question.id}`} value={option.label} checked={selected.includes(option.label)}
               onChange={() => setDrafts((current) => ({ ...current, [question.id]: {
-                text: question.multiSelect ? current[question.id]?.text ?? "" : "",
+                text: question.multiSelect ? questionDraft(current, question.id)?.text ?? "" : "",
                 selected: question.multiSelect ? selected.includes(option.label) ? selected.filter((value) => value !== option.label) : [...selected, option.label] : [option.label]
               } }))} />
             <span><span>{option.label}</span>{option.description ? <small>{option.description}</small> : null}</span>
           </label>)}
           {pending ? <label className="user-input-custom"><span>{question.options.length ? question.multiSelect ? "补充或填写其他答案" : "其他答案" : "你的回答"}</span>
-            <textarea value={draft.text} maxLength={4000} rows={2} onChange={(event) => setDrafts((current) => ({ ...current, [question.id]: { selected: question.multiSelect ? current[question.id]?.selected ?? [] : [], text: event.target.value } }))} />
+            <textarea value={draft.text} maxLength={4000} rows={2} onChange={(event) => setDrafts((current) => ({ ...current, [question.id]: { selected: question.multiSelect ? questionDraft(current, question.id)?.selected ?? [] : [], text: event.target.value } }))} />
           </label> : answer?.text ? <p className="user-input-answer">{answer.text}</p> : null}
         </fieldset>;
       })}

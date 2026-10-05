@@ -5,7 +5,12 @@ import { registerHooks } from "node:module";
 import { PROVIDER_ICON_DATA } from "../src/desktop/renderer/src/assets/provider-icon-data.js";
 import { providerCatalog } from "../src/desktop/renderer/src/providerCatalog.js";
 import { loadProviderIconData } from "../src/desktop/renderer/src/components/ProviderIconData.js";
+import { mkdtemp, rm } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { defaultConfig } from "../src/config/schema.js";
+import { loadConfigFile, saveConfigFile } from "../src/config/loader.js";
+import { DesktopConfigStore } from "../src/desktop/electron/main/DesktopConfigStore.js";
 import type { AppearanceSnapshot } from "../src/appearance/types.js";
 import type { DesktopSettingsSaveInput, DesktopSettingsSnapshot, DesktopSkillCatalogEntry, DesktopSkillCatalogSnapshot } from "../src/desktop/protocol.js";
 
@@ -564,3 +569,277 @@ test("工具模型选择器只显示模型名一行，并画服务商自己的�
     );
   } finally { await h.close(); }
 });
+test("保存响应保留等待期间修改的聊天草稿，再次保存使用新的修订号", async () => {
+  const initial = snapshot();
+  const originalStreaming = initial.chatParams.response?.streaming ?? true;
+  const saved = Promise.withResolvers<DesktopSettingsSnapshot>();
+  const writes: DesktopSettingsSaveInput[] = [];
+  const projections: Array<{ dirty: boolean; canSave: boolean; open: boolean }> = [];
+  const h = await harness({ settingsSnapshot: async () => initial,
+    updateSettingsDraftState: async (value: typeof projections[number]) => { projections.push(value); },
+    saveSettings: async (_project: string, input: DesktopSettingsSaveInput) => {
+      writes.push(input);
+      const committed = writes.length === 1 ? await saved.promise : {
+        ...initial, configRevision: "config:3", chatParams: input.chatParams!
+      };
+      return { status: "committed", journalId: "test", appliedFields: ["chatParams"], snapshot: committed };
+    } });
+  try {
+    await h.overlay({ targetTab: "聊天" });
+    await h.click('[aria-label="启用流式响应"]');
+    await h.click('.settings-save-button');
+    assert.equal(writes.length, 1);
+    assert.equal(writes[0]?.chatParams?.response?.streaming, !originalStreaming);
+    assert.equal(document.querySelector<HTMLButtonElement>('.settings-save-button')?.disabled, true);
+    await h.click('[aria-label="启用流式响应"]');
+    assert.equal(document.querySelector<HTMLInputElement>('[aria-label="启用流式响应"]')?.checked, originalStreaming);
+    await h.React.act(async () => saved.resolve({ ...initial, configRevision: "config:2", chatParams: writes[0]!.chatParams! }));
+    assert.equal(document.querySelector<HTMLInputElement>('[aria-label="启用流式响应"]')?.checked, originalStreaming,
+      "保存的旧响应不得覆盖请求发出后用户已作出的更新");
+    assert.match(document.querySelector('.settings-page-footer')?.textContent ?? "", /未保存/u);
+    assert.deepEqual(projections.at(-1), { dirty: true, canSave: true, open: true });
+    await h.click('.settings-save-button');
+    assert.equal(writes.length, 2);
+    assert.equal(writes[1]?.expectedConfigRevision, "config:2");
+    assert.equal(writes[1]?.chatParams?.response?.streaming, originalStreaming);
+    assert.match(document.querySelector('.settings-page-footer')?.textContent ?? "", /所有更改已保存/u);
+    assert.deepEqual(projections.at(-1), { dirty: false, canSave: false, open: true });
+  } finally { await h.close(); }
+});
+
+test("保存期间跨页编辑保留，已提交字段跟随后端归一化且关闭仍需明确确认", async () => {
+  const initial = snapshot();
+  const saved = Promise.withResolvers<DesktopSettingsSnapshot>();
+  const writes: DesktopSettingsSaveInput[] = [];
+  let closes = 0;
+  const h = await harness({ settingsSnapshot: async () => initial,
+    saveSettings: async (_project: string, input: DesktopSettingsSaveInput) => {
+      writes.push(input);
+      return { status: "committed", journalId: "test", appliedFields: ["chatParams"], snapshot: await saved.promise };
+    } });
+  try {
+    await h.overlay({ targetTab: "聊天", onClose: () => { closes += 1; } });
+    await h.click('[aria-label="启用流式响应"]');
+    await h.click('.settings-save-button');
+    const web = [...document.querySelectorAll<HTMLButtonElement>('.settings-nav-list button')].find(button => button.textContent === "网络搜索");
+    assert.ok(web);
+    await h.React.act(() => web.click());
+    await h.click('[aria-label="可视化 Agent 浏览"]');
+    await h.click('[aria-label="关闭设置"]');
+    assert.equal(h.confirmations.length, 0, "保存期间暂不询问丢弃尚在提交中的设置");
+    const committed = { ...initial, configRevision: "config:2", chatParams: { ...writes[0]!.chatParams!, temperature: 0.4 } };
+    await h.React.act(async () => saved.resolve(committed));
+    assert.equal(h.confirmations.length, 1, "提交后仍存在新草稿，关闭必须确认");
+    assert.equal(closes, 0, "取消关闭不丢弃新编辑");
+    assert.equal(document.querySelector('[aria-label="可视化 Agent 浏览"]')?.getAttribute("aria-checked"), String(!initial.webSearch.visibleBrowsing));
+    assert.match(document.querySelector('.settings-page-footer')?.textContent ?? "", /未保存/u);
+    h.dom.window.confirm = () => true;
+    await h.click('[aria-label="关闭设置"]');
+    assert.equal(closes, 1);
+    assert.equal(document.querySelector('[aria-label="可视化 Agent 浏览"]')?.getAttribute("aria-checked"), String(initial.webSearch.visibleBrowsing));
+    assert.match(document.querySelector('.settings-page-footer')?.textContent ?? "", /所有更改已保存/u);
+    assert.equal(writes.length, 1, "明确丢弃不触发新保存");
+  } finally { await h.close(); }
+});
+
+test("跨页新编辑重试只保存剩余字段，不重复提交已归一化的聊天参数", async () => {
+  const initial = snapshot();
+  const saved = Promise.withResolvers<DesktopSettingsSnapshot>();
+  const writes: DesktopSettingsSaveInput[] = [];
+  let committed = initial;
+  const h = await harness({ settingsSnapshot: async () => initial,
+    saveSettings: async (_project: string, input: DesktopSettingsSaveInput) => {
+      writes.push(input);
+      committed = writes.length === 1 ? await saved.promise : {
+        ...committed, configRevision: "config:3", webSearch: { ...committed.webSearch, ...input.webSearch }
+      };
+      return { status: "committed", journalId: "test", appliedFields: [], snapshot: committed };
+    } });
+  try {
+    await h.overlay({ targetTab: "聊天" });
+    await h.click('[aria-label="启用流式响应"]');
+    await h.click('.settings-save-button');
+    const web = [...document.querySelectorAll<HTMLButtonElement>('.settings-nav-list button')].find(button => button.textContent === "网络搜索");
+    assert.ok(web);
+    await h.React.act(() => web.click());
+    await h.click('[aria-label="可视化 Agent 浏览"]');
+    await h.React.act(async () => saved.resolve({ ...initial, configRevision: "config:2", chatParams: { ...writes[0]!.chatParams!, temperature: 0.4 } }));
+    await h.click('.settings-save-button');
+    assert.equal(writes.length, 2);
+    assert.equal(writes[1]?.expectedConfigRevision, "config:2");
+    assert.equal(writes[1]?.chatParams, undefined, "服务端归一化后的已提交组不应再次作为旧值提交");
+    assert.equal(writes[1]?.webSearch?.visibleBrowsing, !initial.webSearch.visibleBrowsing);
+    assert.equal(committed.chatParams.temperature, 0.4);
+    assert.match(document.querySelector('.settings-page-footer')?.textContent ?? "", /所有更改已保存/u);
+  } finally { await h.close(); }
+});
+
+for (const response of ["rejected", "conflict"] as const) {
+  test(`保存${response}仍保留等待期间的新选择并允许重试`, async () => {
+    const initial = snapshot();
+    const saved = Promise.withResolvers<unknown>();
+    const writes: DesktopSettingsSaveInput[] = [];
+    const h = await harness({ settingsSnapshot: async () => initial,
+      saveSettings: async (_project: string, input: DesktopSettingsSaveInput) => {
+        writes.push(input);
+        if (writes.length === 1) return await saved.promise;
+        return { status: "committed", journalId: "test", appliedFields: [], snapshot: { ...initial, chatParams: input.chatParams! } };
+      } });
+    try {
+      await h.overlay({ targetTab: "聊天" });
+      await h.click('[aria-label="启用流式响应"]');
+      await h.click('.settings-save-button');
+      await h.click('[aria-label="显示令牌使用情况"]');
+      const latest = document.querySelector<HTMLInputElement>('[aria-label="显示令牌使用情况"]')!.checked;
+      await h.React.act(async () => {
+        if (response === "rejected") saved.reject(new Error("写入失败"));
+        else saved.resolve({ status: "rolled_back", snapshot: { ...initial, configRevision: "config:2" }, draftRetained: true, message: "配置冲突" });
+      });
+      assert.equal(document.querySelector<HTMLInputElement>('[aria-label="显示令牌使用情况"]')?.checked, latest);
+      assert.match(document.querySelector('.settings-page-footer [role="alert"]')?.textContent ?? "", /写入失败|配置冲突/u);
+      await h.click('.settings-save-button');
+      assert.equal(writes.length, 2);
+      assert.equal(writes[1]?.expectedConfigRevision, response === "conflict" ? "config:2" : "config:1");
+      assert.equal(writes[1]?.chatParams?.response?.showTokenUsage, latest);
+      assert.match(document.querySelector('.settings-page-footer')?.textContent ?? "", /所有更改已保存/u);
+    } finally { await h.close(); }
+  });
+}
+
+for (const response of ["committed", "rejected", "conflict"] as const) {
+  test(`项目切换后忽略旧项目的${response}保存响应`, async () => {
+    const initial = snapshot();
+    const next = { ...snapshot(), projectId: "next", configRevision: "next:1" };
+    const saved = Promise.withResolvers<unknown>();
+    const writes: Array<{ project: string; input: DesktopSettingsSaveInput }> = [];
+    const committed: DesktopSettingsSnapshot[] = [];
+    const notices: string[] = [];
+    const h = await harness({ settingsSnapshot: async (project: string) => project === "next" ? next : initial,
+      saveSettings: async (project: string, input: DesktopSettingsSaveInput) => {
+        writes.push({ project, input });
+        if (project === "project") return await saved.promise;
+        return { status: "committed", journalId: "test", appliedFields: [], snapshot: { ...next, chatParams: input.chatParams! } };
+      } });
+    const props = { targetTab: "聊天", onNotify: (message: string) => notices.push(message), onSettingsCommitted: (value: DesktopSettingsSnapshot) => committed.push(value) };
+    try {
+      await h.overlay(props);
+      await h.click('[aria-label="启用流式响应"]');
+      await h.click('.settings-save-button');
+      await h.overlay({ ...props, workspace: { project: { id: "next", name: "Next" }, models: [], connections: [] } });
+      await h.click('[aria-label="显示令牌使用情况"]');
+      const latest = document.querySelector<HTMLInputElement>('[aria-label="显示令牌使用情况"]')!.checked;
+      await h.React.act(async () => {
+        if (response === "rejected") saved.reject(new Error("旧项目写入失败"));
+        else saved.resolve(response === "committed"
+          ? { status: "committed", journalId: "old", appliedFields: [], snapshot: { ...initial, chatParams: writes[0]!.input.chatParams! } }
+          : { status: "rolled_back", snapshot: initial, draftRetained: true, message: "旧项目冲突" });
+      });
+      assert.deepEqual(committed, []);
+      assert.deepEqual(notices, []);
+      assert.equal(document.querySelector<HTMLInputElement>('[aria-label="显示令牌使用情况"]')?.checked, latest);
+      assert.equal(document.querySelector<HTMLInputElement>('[aria-label="启用流式响应"]')?.checked, next.chatParams.response?.streaming ?? true);
+      assert.ok(document.querySelector('.settings-page-footer [role="alert"]') === null);
+      await h.click('.settings-save-button');
+      assert.equal(writes.length, 2);
+      assert.equal(writes[1]?.project, "next");
+      assert.equal(writes[1]?.input.expectedConfigRevision, "next:1");
+    } finally { await h.close(); }
+  });
+}
+
+for (const closeVia of ["titlebar", "escape", "html-dialog-cancel", "backdrop"] as const) {
+  test(`${closeVia} 关闭在草稿改回旧基线后仍等待保存，保留新草稿直到明确丢弃`, async () => {
+    // 真正的 DOM 与临时配置存储；IPC 只用闸门延迟，不启动 Electron 或访问真实凭据。
+    const directory = await mkdtemp(path.join(os.tmpdir(), "biny-settings-close-save-"));
+    const credentials = { persistent: false, get: async () => undefined, set: async () => {}, delete: async () => {} };
+    const config = structuredClone(defaultConfig);
+    config.chat.response = { streaming: true };
+    await saveConfigFile(directory, config);
+    const store = new DesktopConfigStore(directory, credentials);
+    const initial = await store.loadVersioned();
+    const asSnapshot = (value: typeof initial): DesktopSettingsSnapshot => ({
+      ...snapshot(), configRevision: value.revision, chatParams: value.config.chat
+    });
+    const gate = Promise.withResolvers<void>();
+    const completed = Promise.withResolvers<void>();
+    const writes: DesktopSettingsSaveInput[] = [];
+    const projections: Array<{ dirty: boolean; canSave: boolean; open: boolean }> = [];
+    const committed: DesktopSettingsSnapshot[] = [];
+    let closes = 0;
+    const h = await harness({
+      settingsSnapshot: async () => asSnapshot(initial),
+      updateSettingsDraftState: async (value: typeof projections[number]) => { projections.push(value); },
+      saveSettings: async (_project: string, input: DesktopSettingsSaveInput) => {
+        writes.push(structuredClone(input));
+        try {
+          await gate.promise;
+          const candidate = structuredClone(initial.config);
+          candidate.chat = structuredClone(input.chatParams!);
+          const saved = await store.saveVersioned(candidate, input.expectedConfigRevision!);
+          return { status: "committed", journalId: "close-save-test", appliedFields: ["chatParams"], snapshot: asSnapshot(saved) };
+        } finally { completed.resolve(); }
+      }
+    });
+    try {
+      const { SettingsOverlay } = await import("../src/desktop/renderer/src/components/settings/SettingsOverlay.js");
+      function Host() {
+        const [open, setOpen] = h.React.useState(true);
+        const props = { open, version: "test", targetTab: "聊天", modelSetupRequired: false,
+          workspace: { project: { id: "project", name: "Project" }, models: [], connections: [] },
+          themePreference: "system", fontPreference: { family: "system", size: 14 }, sessionRunning: false,
+          onNotify() {}, onThemePreference() {}, onFontPreference() {},
+          onSettingsCommitted(value: DesktopSettingsSnapshot) { committed.push(value); },
+          onClose() { closes += 1; setOpen(false); }
+        };
+        return h.React.createElement(SettingsOverlay, props as unknown as React.ComponentProps<typeof SettingsOverlay>);
+      }
+      await h.render(h.React.createElement(Host));
+      const original = initial.config.chat.response?.streaming ?? true;
+      await h.click('[aria-label="启用流式响应"]');
+      await h.click('.settings-save-button');
+      assert.equal(writes.length, 1);
+      assert.equal(writes[0]?.chatParams?.response?.streaming, !original);
+      await h.click('[aria-label="启用流式响应"]');
+      assert.equal(document.querySelector<HTMLInputElement>('[aria-label="启用流式响应"]')?.checked, original);
+      assert.deepEqual(projections.at(-1), { dirty: false, canSave: false, open: true }, "草稿确已改回旧基线");
+      assert.equal(document.querySelector<HTMLButtonElement>('.settings-footer-actions button')?.disabled, true);
+      assert.match(document.querySelector('#settings-save-status')?.textContent ?? "", /保存中/u);
+      const requestClose = async () => {
+        const dialog = document.querySelector('dialog.desktop-settings-dialog');
+        assert.ok(dialog);
+        if (closeVia === "titlebar") await h.click('[aria-label="关闭设置"]');
+        else if (closeVia === "backdrop") await h.click('dialog.desktop-settings-dialog');
+        else await h.React.act(async () => {
+          dialog.dispatchEvent(closeVia === "escape"
+            ? new h.dom.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })
+            : new h.dom.window.Event("cancel", { cancelable: true }));
+        });
+      };
+      await requestClose();
+      const closesWhileSaving = closes;
+      // 已发出的保存仍会落盘；关闭操作不能暗示它被取消，也不能提前丢弃后续编辑。
+      assert.equal((await loadConfigFile(directory)).chat.response?.streaming ?? true, original);
+      await h.React.act(async () => { gate.resolve(); await completed.promise; });
+      assert.equal((await loadConfigFile(directory)).chat.response?.streaming, !original);
+      assert.equal(closesWhileSaving, 0, "即使 dirtyCount 为 0，也不能在保存完成前关闭");
+      assert.equal(closes, 0, "取消确认后设置保持打开");
+      assert.equal(h.confirmations.length, 1, "保存结束后仅询问一次是否丢弃新草稿");
+      assert.equal(committed.length, 1, "保持挂载以接收实际提交的快照");
+      assert.equal(document.querySelector<HTMLInputElement>('[aria-label="启用流式响应"]')?.checked, original);
+      assert.deepEqual(projections.at(-1), { dirty: true, canSave: true, open: true });
+      assert.match(document.querySelector('#settings-save-status')?.textContent ?? "", /未保存/u);
+      assert.equal(writes.length, 1, "关闭与取消确认不重复保存");
+      h.dom.window.confirm = message => { h.confirmations.push(message ?? ""); return true; };
+      await requestClose();
+      assert.equal(h.confirmations.length, 2);
+      assert.equal(closes, 1);
+      assert.equal(document.querySelector('dialog.desktop-settings-dialog'), null);
+      assert.equal((await loadConfigFile(directory)).chat.response?.streaming, !original, "明确丢弃只丢弃草稿，不回滚已提交配置");
+      assert.equal(writes.length, 1);
+    } finally {
+      await h.React.act(async () => { gate.resolve(); if (writes.length) await completed.promise; });
+      await h.close();
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+}

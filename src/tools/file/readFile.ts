@@ -70,19 +70,15 @@ export function createReadFileTool(context: ToolContext, hashline = false): Tool
           const lineCount = args.lineCount ?? defaultLineCount;
           const formattedLines: string[] = [];
           let pageBytes = 0;
-          let hasMore = false;
-          await visitBoundUtf8Lines(absolutePath, (line, lineNumber) => {
+          const { hasRemaining: hasMore } = await visitBoundUtf8Lines(absolutePath, (line, lineNumber) => {
             if (lineNumber < startLine) return;
-            if (formattedLines.length >= lineCount) {
-              hasMore = true;
-              return false;
-            }
             const formatted = hashline ? formatHashlineLine(line, lineNumber) : line;
             pageBytes += Buffer.byteLength(formatted, "utf8") + (formattedLines.length > 0 ? 1 : 0);
             if (pageBytes > maxPageBytes) {
               throw new Error(`Read page exceeds the ${String(maxPageBytes)}-byte output limit; request fewer lines.`);
             }
             formattedLines.push(formatted);
+            return formattedLines.length < lineCount;
           }, signal);
           const endLine = formattedLines.length === 0 ? startLine - 1 : startLine + formattedLines.length - 1;
           return {

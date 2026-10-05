@@ -6,9 +6,9 @@
  */
 import type { AgentUsage } from "../agent/core/types.js";
 import type { ModelPricing } from "../config/schema.js";
-import type { SessionUsage, UsageOperation, UsageSummary } from "../session/metadata.js";
+import type { ReportedCacheTokenCounts, ReportedCacheUsageSummary, ReportedSessionCacheUsage, SessionUsage, UsageOperation, UsageSummary } from "../session/metadata.js";
 import type { PromptShapeDiagnostic } from "../llm/promptCache.js";
-import { usageSnapshot } from "../session/metadata.js";
+import { readReportedCacheRates, readReportedCacheUsage, reportedCacheTokenValue, usageSnapshot } from "../session/metadata.js";
 
 export interface UsageModelInfo {
   modelAlias: string;
@@ -44,6 +44,16 @@ export function createSessionUsage(
     stablePrefixHash: promptShape?.stablePrefixHash,
     latestRequestInputTokens: snapshot.inputTokens,
     latestRequestCacheReadTokens: snapshot.cacheReadTokens,
+    reportedCacheUsage: {
+      version: 1,
+      inputTokens: snapshot.inputTokens,
+      cacheReadTokens: snapshot.cacheReadTokens,
+      inputTokensComplete: snapshot.inputTokens !== undefined,
+      cacheReadTokensComplete: snapshot.cacheReadTokens !== undefined,
+      latestRequestRecorded: true,
+      latestRequestInputTokens: snapshot.inputTokens,
+      latestRequestCacheReadTokens: snapshot.cacheReadTokens
+    },
     costUsd: cost.costUsd,
     pricingKnown: cost.known,
     time
@@ -155,6 +165,7 @@ export function summarizeUsage(records: SessionUsage[]): UsageSummary {
     }
   }
 
+  const reportedCacheUsage = summarizeReportedCacheUsage(records);
   return {
     calls: records.length,
     inputTokens,
@@ -180,28 +191,109 @@ export function summarizeUsage(records: SessionUsage[]): UsageSummary {
           ? Math.min(1, Math.max(0, epoch.cacheReadTokens / epoch.inputTokens))
           : null
       ]))
-      : undefined
+      : undefined,
+    ...(reportedCacheUsage ? { reportedCacheUsage } : {})
   };
+}
+
+type CacheTokenField = "inputTokens" | "cacheReadTokens";
+
+/** Fold supplied counts independently. Legacy numeric presence never proves completeness. */
+function foldReportedCacheCounts(records: readonly SessionUsage[]): ReportedCacheTokenCounts {
+  const result: ReportedCacheTokenCounts = { version: 1 };
+  for (const field of ["inputTokens", "cacheReadTokens"] as const) {
+    const completeField = field === "inputTokens" ? "inputTokensComplete" : "cacheReadTokensComplete";
+    const measurements = records.map((record) => {
+      const projection = readReportedCacheUsage(record);
+      const value = reportedCacheTokenValue(projection ? projection[field] : record[field]);
+      return { value, complete: projection?.[completeField] };
+    });
+    const values = measurements.flatMap(({ value }) => value === undefined ? [] : [value]);
+    result[field] = values.length ? reportedCacheTokenValue(values.reduce((total, value) => total + value, 0)) : undefined;
+    result[completeField] = measurements.some(({ value, complete }) => value === undefined || complete === false)
+      || (values.length > 0 && result[field] === undefined)
+      ? false
+      : measurements.every(({ complete }) => complete === true) ? true : undefined;
+  }
+  return result;
+}
+
+function projectedCacheRate(inputTokens: number | undefined, cacheReadTokens: number | undefined): number | undefined {
+  const input = reportedCacheTokenValue(inputTokens);
+  const read = reportedCacheTokenValue(cacheReadTokens);
+  return input !== undefined && read !== undefined && input > 0 ? Math.min(1, Math.max(0, read / input)) : undefined;
+}
+
+function weightedProjectedCacheRate(counts: ReportedCacheTokenCounts): number | undefined {
+  return counts.inputTokensComplete === true && counts.cacheReadTokensComplete === true
+    ? projectedCacheRate(counts.inputTokens, counts.cacheReadTokens) : undefined;
+}
+
+function sumReportedCacheUsage(records: readonly SessionUsage[]): ReportedSessionCacheUsage | undefined {
+  if (!records.some((record) => readReportedCacheUsage(record) !== undefined)) return undefined;
+  const last = records.at(-1);
+  const latest = last ? readReportedCacheUsage(last) : undefined;
+  return {
+    ...foldReportedCacheCounts(records),
+    ...(latest?.latestRequestRecorded === true ? {
+      latestRequestRecorded: true,
+      latestRequestInputTokens: reportedCacheTokenValue(latest.latestRequestInputTokens),
+      latestRequestCacheReadTokens: reportedCacheTokenValue(latest.latestRequestCacheReadTokens)
+    } : {})
+  };
+}
+
+function summarizeReportedCacheUsage(records: readonly SessionUsage[]): ReportedCacheUsageSummary | undefined {
+  if (!records.some((record) => readReportedCacheUsage(record) !== undefined)) return undefined;
+  const counts = foldReportedCacheCounts(records);
+  const last = records.at(-1);
+  const latest = last ? readReportedCacheUsage(last) : undefined;
+  const epochs = new Map<string, SessionUsage[]>();
+  for (const record of records) {
+    if (record.promptEpochId === undefined) continue;
+    const bucket = epochs.get(record.promptEpochId) ?? [];
+    bucket.push(record);
+    epochs.set(record.promptEpochId, bucket);
+  }
+  return {
+    ...counts,
+    latestCacheHitRate: latest?.latestRequestRecorded === true
+      ? projectedCacheRate(latest.latestRequestInputTokens, latest.latestRequestCacheReadTokens) : undefined,
+    sessionCacheHitRate: weightedProjectedCacheRate(counts),
+    epochCacheHitRates: epochs.size ? Object.fromEntries([...epochs].map(([id, bucket]) =>
+      [id, weightedProjectedCacheRate(foldReportedCacheCounts(bucket)) ?? null])) : undefined
+  };
+}
+
+/** Only input/read labels opt into the projection; the other counts and costs retain their contract. */
+export function formatReportedCacheCount(summary: UsageSummary, field: CacheTokenField, format: (value: number) => string = String): string {
+  const projection = readReportedCacheUsage(summary);
+  if (!projection) return format(summary[field]);
+  const value = reportedCacheTokenValue(projection[field]);
+  if (value === undefined) return "unknown";
+  const complete = field === "inputTokens" ? projection.inputTokensComplete : projection.cacheReadTokensComplete;
+  return `${format(value)}${complete === true ? "" : complete === false ? " (partial)" : " (completeness unknown)"}`;
 }
 
 export function formatUsageSummary(summary: UsageSummary): string {
   if (!summary.calls) return "Usage\n\nNo model calls recorded in this session.";
-  const epochRates = summary.epochCacheHitRates === undefined
+  const rates = readReportedCacheRates(summary) ?? summary;
+  const epochRates = rates.epochCacheHitRates === undefined
     ? undefined
-    : Object.entries(summary.epochCacheHitRates)
+    : Object.entries(rates.epochCacheHitRates)
       .map(([epochId, rate]) => `${epochId}=${rate === null ? "unknown" : `${String(Math.round(rate * 100))}%`}`)
       .join(", ");
   return [
     "Usage",
     "",
     `Calls: ${String(summary.calls)}`,
-    `Input tokens: ${String(summary.inputTokens)}`,
+    `Input tokens: ${formatReportedCacheCount(summary, "inputTokens")}`,
     `Output tokens: ${String(summary.outputTokens)}`,
     `Reasoning tokens: ${String(summary.reasoningTokens)}`,
     `Total tokens: ${String(summary.totalTokens)}`,
-    `Cache read/write/miss: ${String(summary.cacheReadTokens)}/${String(summary.cacheWriteTokens)}/${String(summary.cacheMissTokens ?? 0)}`,
-    `Latest cache hit rate: ${summary.latestCacheHitRate === undefined ? "unknown" : `${String(Math.round(summary.latestCacheHitRate * 100))}%`}`,
-    `Session cache hit rate: ${summary.sessionCacheHitRate === undefined ? "unknown" : `${String(Math.round(summary.sessionCacheHitRate * 100))}%`}`,
+    `Cache read/write/miss: ${formatReportedCacheCount(summary, "cacheReadTokens")}/${String(summary.cacheWriteTokens)}/${String(summary.cacheMissTokens ?? 0)}`,
+    `Latest cache hit rate: ${rates.latestCacheHitRate === undefined ? "unknown" : `${String(Math.round(rates.latestCacheHitRate * 100))}%`}`,
+    `Session cache hit rate: ${rates.sessionCacheHitRate === undefined ? "unknown" : `${String(Math.round(rates.sessionCacheHitRate * 100))}%`}`,
     ...(epochRates ? [`Epoch cache hit rates: ${epochRates}`] : []),
     `Cost: ${summary.pricingKnown && summary.costUsd !== undefined ? `$${summary.costUsd.toFixed(6)}` : "unknown (configure model pricing)"}`,
     `Priced calls: ${String(summary.pricedCalls)}; unpriced calls: ${String(summary.unpricedCalls)}`
@@ -222,6 +314,7 @@ export function sumSessionUsage(records: readonly SessionUsage[]): SessionUsage 
   }
   if (records.length === 1) return last;
   const pricingKnown = records.every((record) => record.pricingKnown);
+  const reportedCacheUsage = sumReportedCacheUsage(records);
   return {
     operation: last.operation,
     modelAlias: last.modelAlias,
@@ -244,7 +337,8 @@ export function sumSessionUsage(records: readonly SessionUsage[]): SessionUsage 
       : last.cacheReadTokens,
     costUsd: pricingKnown ? sumDefined(records, "costUsd") : undefined,
     pricingKnown,
-    time: last.time
+    time: last.time,
+    ...(reportedCacheUsage ? { reportedCacheUsage } : {})
   };
 }
 

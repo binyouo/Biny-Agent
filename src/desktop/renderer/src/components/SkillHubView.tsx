@@ -18,6 +18,7 @@ import { SkillImportDialog } from "./SkillImportDialog.js";
 import { SkillVersionControls } from "./SkillVersionControls.js";
 
 type SkillHubTab = "plugins" | "skills";
+type MissingEditTarget = "skill" | "file";
 
 export function SkillHubView({ onError, onOpenRuntime }: { onError(message: string): void; onOpenRuntime(): void }): React.JSX.Element {
   const [tab, setTab] = useState<SkillHubTab>("skills");
@@ -27,7 +28,9 @@ export function SkillHubView({ onError, onOpenRuntime }: { onError(message: stri
   const [selectedFilePath, setSelectedFilePath] = useState("SKILL.md");
   const [preview, setPreview] = useState<DesktopSkillFilePreview>();
   const [draft, setDraft] = useState("");
-  const [editing, setEditing] = useState(false);
+  // A refresh may remove the target; keep its display identity until the user leaves the edit.
+  const [editingSkill, setEditingSkill] = useState<DesktopSkillCatalogEntry>();
+  const editing = editingSkill !== undefined;
   const [loading, setLoading] = useState(true);
   const [fileLoading, setFileLoading] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -36,8 +39,18 @@ export function SkillHubView({ onError, onOpenRuntime }: { onError(message: stri
   const [discoveryOpen, setDiscoveryOpen] = useState(false);
   const [successMessage, setSuccessMessage] = useState<string>();
   const requestRef = useRef(0);
+  const pendingChangedSkills = useRef(new Set<string>());
+  const fullRefreshPending = useRef(false);
+  const mounted = useRef(false);
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; requestRef.current += 1; };
+  }, []);
 
-  const loadCatalog = useCallback(async (): Promise<void> => {
+  const loadCatalog = useCallback(async (changedSkillId?: string): Promise<void> => {
+    if (!mounted.current) return;
+    if (changedSkillId === undefined) fullRefreshPending.current = true;
+    else pendingChangedSkills.current.add(changedSkillId);
     const request = requestRef.current + 1;
     requestRef.current = request;
     setLoading(true);
@@ -45,8 +58,18 @@ export function SkillHubView({ onError, onOpenRuntime }: { onError(message: stri
       const next = await window.biny.skillCatalog();
       if (request !== requestRef.current) return;
       // 旧的已运行主进程可能暂时还没有新字段；先归一化，避免热更新期间整页白屏。
-      setSnapshot({ ...next, unmanagedSkills: next.unmanagedSkills ?? [] });
-      setSelectedSkillId((current) => current && next.skills.some((skill) => skill.id === current) ? current : next.skills[0]?.id);
+      // Superseding catalog reads must retain every pending mutation and any
+      // explicit full refresh, without replacing unrelated entries/drafts.
+      const refreshAll = fullRefreshPending.current;
+      const changedSkills = new Set(pendingChangedSkills.current);
+      fullRefreshPending.current = false;
+      pendingChangedSkills.current.clear();
+      setSnapshot((current) => {
+        const existing = new Map(current.skills.map((skill) => [skill.id, skill]));
+        return { ...next, unmanagedSkills: next.unmanagedSkills ?? [],
+          skills: refreshAll ? next.skills : next.skills.map((skill) =>
+            changedSkills.has(skill.id) ? skill : existing.get(skill.id) ?? skill) };
+      });
     } catch (error) {
       if (request === requestRef.current) onError(errorMessage(error));
     } finally {
@@ -58,10 +81,19 @@ export function SkillHubView({ onError, onOpenRuntime }: { onError(message: stri
     void loadCatalog();
   }, [loadCatalog]);
 
-  const selectedSkill = useMemo(
+  const currentSkill = useMemo(
     () => snapshot.skills.find((skill) => skill.id === selectedSkillId),
     [selectedSkillId, snapshot.skills]
   );
+  const selectedSkill = editingSkill && !sameSkillTarget(currentSkill, editingSkill) ? editingSkill : currentSkill;
+  const missingTarget: MissingEditTarget | undefined = selectedSkill && selectedSkill !== currentSkill ? "skill"
+    : selectedSkill && !selectedSkill.files.some((file) => file.path === selectedFilePath) ? "file" : undefined;
+
+  useEffect(() => {
+    if (editing) return;
+    setSelectedSkillId((current) => current && snapshot.skills.some((skill) => skill.id === current) ? current : snapshot.skills[0]?.id);
+  }, [editing, snapshot.skills]);
+
   const normalizedQuery = query.trim().toLocaleLowerCase();
   const diagnosticMessages = useMemo(
     () => [...new Set([
@@ -81,10 +113,11 @@ export function SkillHubView({ onError, onOpenRuntime }: { onError(message: stri
   }), [normalizedQuery, snapshot.plugins]);
 
   useEffect(() => {
+    if (editing) return;
     if (!selectedSkill) {
       setPreview(undefined);
       setDraft("");
-      setEditing(false);
+      setFileLoading(false);
       return;
     }
     const selectedFile = selectedSkill.files.find((file) => file.path === selectedFilePath)
@@ -92,13 +125,18 @@ export function SkillHubView({ onError, onOpenRuntime }: { onError(message: stri
       ?? selectedSkill.files[0];
     if (!selectedFile) return;
     if (selectedFile.path !== selectedFilePath) setSelectedFilePath(selectedFile.path);
-  }, [selectedFilePath, selectedSkill]);
+  }, [editing, selectedFilePath, selectedSkill]);
 
   useEffect(() => {
-    if (!selectedSkill || !selectedFilePath) return;
+    if (!selectedSkill || !selectedFilePath || editing) return;
+    if (missingTarget) {
+      setPreview(undefined);
+      setDraft("");
+      setFileLoading(false);
+      return;
+    }
     let active = true;
     setFileLoading(true);
-    setEditing(false);
     void window.biny.readSkillFile(selectedSkill.id, selectedFilePath).then((next) => {
       if (!active) return;
       setPreview(next);
@@ -109,37 +147,44 @@ export function SkillHubView({ onError, onOpenRuntime }: { onError(message: stri
       if (active) setFileLoading(false);
     });
     return () => { active = false; };
-  }, [onError, selectedFilePath, selectedSkill]);
+  }, [editing, missingTarget, onError, selectedFilePath, selectedSkill]);
 
   const selectSkill = useCallback((skill: DesktopSkillCatalogEntry): void => {
     const primaryFile = skill.files.find((file) => file.name.toLowerCase() === "skill.md") ?? skill.files[0];
+    const nextFilePath = primaryFile?.path ?? "SKILL.md";
+    if (!sameSkillTarget(skill, selectedSkill) || nextFilePath !== selectedFilePath) setEditingSkill(undefined);
     setSelectedSkillId(skill.id);
-    setSelectedFilePath(primaryFile?.path ?? "SKILL.md");
-  }, []);
+    setSelectedFilePath(nextFilePath);
+  }, [selectedFilePath, selectedSkill]);
+
+  const selectFile = useCallback((filePath: string): void => {
+    if (filePath !== selectedFilePath) setEditingSkill(undefined);
+    setSelectedFilePath(filePath);
+  }, [selectedFilePath]);
 
   const saveFile = useCallback(async (): Promise<void> => {
-    if (!selectedSkill || !preview || preview.binary) return;
+    if (!editing || !selectedSkill || missingTarget || !preview || preview.binary) return;
     setSaving(true);
     try {
       await window.biny.writeSkillFile(selectedSkill.id, selectedFilePath, draft);
       setPreview({ ...preview, content: draft, bytes: new TextEncoder().encode(draft).byteLength, truncated: false });
-      setEditing(false);
+      setEditingSkill(undefined);
       await loadCatalog();
     } catch (error) {
       onError(errorMessage(error));
     } finally {
       setSaving(false);
     }
-  }, [draft, loadCatalog, onError, preview, selectedFilePath, selectedSkill]);
+  }, [draft, editing, loadCatalog, missingTarget, onError, preview, selectedFilePath, selectedSkill]);
 
   const openDirectory = useCallback(async (): Promise<void> => {
-    if (!selectedSkill) return;
+    if (!selectedSkill || missingTarget === "skill") return;
     try {
       await window.biny.openSkillDirectory(selectedSkill.id);
     } catch (error) {
       onError(errorMessage(error));
     }
-  }, [onError, selectedSkill]);
+  }, [missingTarget, onError, selectedSkill]);
 
   const importSource = useCallback(async (): Promise<void> => {
     setImporting(true);
@@ -202,7 +247,7 @@ export function SkillHubView({ onError, onOpenRuntime }: { onError(message: stri
         {successMessage ? <div className="biny-extension-success" role="status"><Icon name="check" size={15} />{successMessage}<button aria-label="关闭提示" onClick={() => setSuccessMessage(undefined)} type="button"><Icon name="close" size={13} /></button></div> : null}
         {tab === "skills" ? (
           <SkillCatalogContent
-            onChanged={() => void loadCatalog()}
+            onChanged={(skillId) => void loadCatalog(skillId)}
             skills={visibleSkills}
             managedSources={snapshot.managedSources}
             selectedSkill={selectedSkill}
@@ -210,15 +255,16 @@ export function SkillHubView({ onError, onOpenRuntime }: { onError(message: stri
             onSelect={selectSkill}
             onError={onError}
             onOpenDirectory={openDirectory}
-            onFile={setSelectedFilePath}
+            onFile={selectFile}
             selectedFilePath={selectedFilePath}
             preview={preview}
             draft={draft}
             editing={editing}
+            missingTarget={missingTarget}
             fileLoading={fileLoading}
             saving={saving}
-            onEdit={() => setEditing(true)}
-            onCancelEdit={() => { setDraft(preview?.content ?? ""); setEditing(false); }}
+            onEdit={() => { if (!missingTarget) setEditingSkill(selectedSkill); }}
+            onCancelEdit={() => { setDraft(preview?.content ?? ""); setEditingSkill(undefined); }}
             onDraft={setDraft}
             onSave={() => void saveFile()}
             onInstallSource={(sourceId) => void installSource(sourceId)}
@@ -296,6 +342,7 @@ const SkillCatalogContent = memo(function SkillCatalogContent({
   preview,
   draft,
   editing,
+  missingTarget,
   fileLoading,
   saving,
   onEdit,
@@ -304,7 +351,7 @@ const SkillCatalogContent = memo(function SkillCatalogContent({
   onSave,
   onInstallSource
 }: {
-  onChanged(): void;
+  onChanged(skillId: string): void;
   skills: DesktopSkillCatalogEntry[];
   managedSources: DesktopSkillCatalogSnapshot["managedSources"];
   selectedSkill?: DesktopSkillCatalogEntry;
@@ -317,6 +364,7 @@ const SkillCatalogContent = memo(function SkillCatalogContent({
   preview?: DesktopSkillFilePreview;
   draft: string;
   editing: boolean;
+  missingTarget?: MissingEditTarget;
   fileLoading: boolean;
   saving: boolean;
   onEdit(): void;
@@ -325,6 +373,7 @@ const SkillCatalogContent = memo(function SkillCatalogContent({
   onSave(): void;
   onInstallSource(sourceId: string): void;
 }): React.JSX.Element {
+  const retainingMissingDraft = editing && missingTarget !== undefined;
   return (
     <>
       <div className="biny-extension-heading">
@@ -335,7 +384,7 @@ const SkillCatalogContent = memo(function SkillCatalogContent({
         <span className="biny-extension-count">本地技能 {skills.length}</span>
       </div>
       {managedSources.length ? <ManagedSkillSources sources={managedSources} onInstall={onInstallSource} /> : null}
-      {loading && !skills.length ? <ExtensionLoading /> : !skills.length ? <ExtensionEmpty icon="wand" title="还没有找到技能" detail="将技能放入全局技能目录或项目的 .agents/skills；已有外部技能可通过“导入已有”复制到 Biny。" /> : (
+      {loading && !skills.length && !retainingMissingDraft ? <ExtensionLoading /> : !skills.length && !retainingMissingDraft ? <ExtensionEmpty icon="wand" title="还没有找到技能" detail="将技能放入全局技能目录或项目的 .agents/skills；已有外部技能可通过“导入已有”复制到 Biny。" /> : (
         <div className={selectedSkill ? "biny-skill-layout has-detail" : "biny-skill-layout"}>
           <div className="biny-skill-card-grid">
             {skills.map((skill) => <SkillCard key={skill.id} skill={skill} selected={skill.id === selectedSkill?.id} onSelect={onSelect} />)}
@@ -349,6 +398,7 @@ const SkillCatalogContent = memo(function SkillCatalogContent({
               preview={preview}
               draft={draft}
               editing={editing}
+              missingTarget={missingTarget}
               fileLoading={fileLoading}
               saving={saving}
               onOpenDirectory={onOpenDirectory}
@@ -407,6 +457,7 @@ const SkillDetail = memo(function SkillDetail({
   preview,
   draft,
   editing,
+  missingTarget,
   fileLoading,
   saving,
   onOpenDirectory,
@@ -416,13 +467,14 @@ const SkillDetail = memo(function SkillDetail({
   onDraft,
   onSave
 }: {
-  onChanged(): void;
+  onChanged(skillId: string): void;
   skill: DesktopSkillCatalogEntry;
   onError(message: string): void;
   selectedFilePath: string;
   preview?: DesktopSkillFilePreview;
   draft: string;
   editing: boolean;
+  missingTarget?: MissingEditTarget;
   fileLoading: boolean;
   saving: boolean;
   onOpenDirectory(): void;
@@ -442,17 +494,18 @@ const SkillDetail = memo(function SkillDetail({
           <div><h2>{skill.name}</h2><p>{skill.scope === "builtin" ? "内置" : skill.scope === "global" ? "全局" : "项目"}</p></div>
         </div>
         <div className="biny-skill-detail-actions">
-          <button onClick={onOpenDirectory} type="button"><Icon name="folder-open" size={14} />打开目录</button>
-          {skill.scope !== "builtin" ? editing ? <><button onClick={onCancelEdit} type="button">取消</button><button className="is-primary" disabled={saving} onClick={onSave} type="button">{saving ? "保存中…" : "保存"}</button></> : <button onClick={onEdit} type="button"><Icon name="edit" size={14} />编辑</button> : null}
+          <button disabled={missingTarget === "skill"} onClick={onOpenDirectory} type="button"><Icon name="folder-open" size={14} />打开目录</button>
+          {skill.scope !== "builtin" ? editing ? <><button onClick={onCancelEdit} type="button">取消</button><button className="is-primary" disabled={saving || missingTarget !== undefined} onClick={onSave} type="button">{saving ? "保存中…" : "保存"}</button></> : <button disabled={fileLoading || missingTarget !== undefined} onClick={onEdit} type="button"><Icon name="edit" size={14} />编辑</button> : null}
         </div>
       </div>
       <div className="biny-skill-detail-path" title={skill.absolutePath}>{skill.absolutePath}</div>
       {skill.parseError ? <div className="biny-skill-parse-error"><Icon name="warning" size={14} />{skill.parseError}</div> : null}
-      <SkillVersionControls key={`version:${skill.id}`} skillId={skill.id} disabled={editing || saving} onChanged={onChanged} onError={onError} />
+      {editing && missingTarget ? <div className="biny-skill-parse-error" role="status">{selectedFilePath} {missingTarget === "skill" ? "所在技能已移除或位置已变化" : "已从技能中移除"}。草稿仍保留，请先复制内容；取消编辑或切换文件、技能会丢弃草稿。目标恢复前无法保存。</div> : null}
+      {missingTarget !== "skill" ? <SkillVersionControls key={`version:${skill.id}`} skillId={skill.id} refreshKey={skill} disabled={editing || saving} onChanged={onChanged} onError={onError} /> : null}
       <div className="biny-skill-detail-body">
         <aside className="biny-skill-files">
           <h3>文件</h3>
-          {skill.files.map((file) => <button aria-current={file.path === selectedFilePath ? "page" : undefined} className={file.path === selectedFilePath ? "is-selected" : ""} key={file.path} onClick={() => onFile(file.path)} type="button"><Icon name="file" size={13} /><span>{file.path}</span></button>)}
+          {skill.files.map((file) => <button aria-current={file.path === selectedFilePath ? "page" : undefined} className={file.path === selectedFilePath ? "is-selected" : ""} disabled={missingTarget === "skill"} key={file.path} onClick={() => onFile(file.path)} type="button"><Icon name="file" size={13} /><span>{file.path}</span></button>)}
         </aside>
         <div className="biny-skill-document">
           {fileLoading ? <ExtensionLoading /> : preview?.binary ? <ExtensionEmpty icon="file" title="无法预览二进制文件" detail="请在文件管理器中打开这个文件。" /> : editing ? <textarea aria-label={`编辑 ${selectedFilePath}`} className="biny-skill-editor" onChange={(event) => onDraft(event.target.value)} spellCheck={false} value={draft} /> : (
@@ -517,6 +570,11 @@ function ExtensionLoading(): React.JSX.Element {
 
 function ExtensionEmpty({ icon, title, detail }: { icon: "file" | "plug" | "wand"; title: string; detail: string }): React.JSX.Element {
   return <div className="biny-extension-empty"><span><Icon name={icon} size={22} /></span><h2>{title}</h2><p>{detail}</p></div>;
+}
+
+function sameSkillTarget(left: DesktopSkillCatalogEntry | undefined, right: DesktopSkillCatalogEntry | undefined): boolean {
+  return left !== undefined && right !== undefined && left.id === right.id && left.ref === right.ref
+    && left.absolutePath === right.absolutePath && left.projectRoot === right.projectRoot;
 }
 
 function stripFrontmatter(content: string): string {

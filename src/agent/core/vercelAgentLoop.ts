@@ -611,28 +611,27 @@ function attachStreamedReasoningMetadata(
 
 function assistantFromStep(step: StepResult<ToolSet>): AgentAssistantMessage {
   const content: AgentAssistantMessage["content"] = [];
-  const text = step.text || step.content
-    .filter((part): part is Extract<typeof part, { type: "text" }> => part.type === "text")
-    .map((part) => part.text)
-    .join("");
-  if (text) content.push({ type: "text", text });
-  for (const part of step.reasoning) {
-    if (part.type === "reasoning") {
+  // SDK content retains block-start order and assembles deltas by stream ID.
+  // Rebuilding from text/reasoning/toolCalls groups would reorder signed thinking
+  // and merge distinct text blocks before the next provider continuation.
+  for (const part of step.content) {
+    if (part.type === "text") {
+      if (part.text) content.push({ type: "text", text: part.text });
+    } else if (part.type === "reasoning") {
       content.push({
         type: "reasoning",
         text: part.text,
-        providerMetadata: providerMetadata((part as { providerMetadata?: unknown }).providerMetadata)
+        providerMetadata: providerMetadata(part.providerMetadata)
+      });
+    } else if (part.type === "tool-call") {
+      content.push({
+        type: "toolCall",
+        id: part.toolCallId,
+        name: part.toolName,
+        arguments: isRecord(part.input) ? part.input : {},
+        invalid: part.invalid
       });
     }
-  }
-  for (const call of step.toolCalls) {
-    content.push({
-      type: "toolCall",
-      id: call.toolCallId,
-      name: call.toolName,
-      arguments: isRecord(call.input) ? call.input : {},
-      invalid: call.invalid
-    });
   }
   return {
     role: "assistant",

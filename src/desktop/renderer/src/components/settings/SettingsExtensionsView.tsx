@@ -4,7 +4,7 @@
  * 页面只调用 preload API；Skill 开关先进入设置草稿，随底部“保存”统一提交。Plugin
  * 下载、解包和启停由主进程完成，渲染层不会接触包内容或执行 JavaScript。
  */
-import { memo, useCallback, useEffect, useMemo, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
   DesktopPluginMarketEntry,
   DesktopPluginRegistrySnapshot,
@@ -49,11 +49,18 @@ const SKILL_GROUPS = [
   { scope: "project", label: "项目技能", icon: "folder-open" }
 ] as const;
 
-export function SettingsExtensionsView({ kind, onError, projectId }: {
+interface SettingsExtensionsViewProps {
   kind: SettingsExtensionKind;
   onError(message: string): void;
   projectId?: string;
-}): React.JSX.Element {
+}
+
+export function SettingsExtensionsView(props: SettingsExtensionsViewProps): React.JSX.Element {
+  // Catalogs, previews and pending actions belong to one project and settings page.
+  return <SettingsExtensionsContent key={JSON.stringify([props.projectId, props.kind])} {...props} />;
+}
+
+function SettingsExtensionsContent({ kind, onError, projectId }: SettingsExtensionsViewProps): React.JSX.Element {
   const settingsDraft = useSettingsDraft();
   const [snapshot, setSnapshot] = useState<DesktopSkillCatalogSnapshot>(EMPTY_SNAPSHOT);
   const [registry, setRegistry] = useState<DesktopPluginRegistrySnapshot>(EMPTY_REGISTRY);
@@ -69,7 +76,22 @@ export function SettingsExtensionsView({ kind, onError, projectId }: {
   const [importDialogOpen, setImportDialogOpen] = useState(false);
   const [importing, setImporting] = useState(false);
 
-  const load = useCallback(async (): Promise<void> => {
+  const mounted = useRef(false);
+  const loadGeneration = useRef(0);
+  const contentGeneration = useRef(0);
+  const expandedSkillIdRef = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; loadGeneration.current += 1; contentGeneration.current += 1; };
+  }, []);
+  const reportError = useCallback((error: unknown): void => {
+    if (mounted.current) onError(errorMessage(error));
+  }, [onError]);
+
+  const load = useCallback(async (refreshRegistry = false): Promise<void> => {
+    if (!mounted.current) return;
+    const generation = ++loadGeneration.current;
+    const isCurrent = (): boolean => mounted.current && generation === loadGeneration.current;
     if (!projectId) {
       setLoading(false);
       return;
@@ -78,21 +100,22 @@ export function SettingsExtensionsView({ kind, onError, projectId }: {
     try {
       if (kind === "skills") {
         const next = await window.biny.skillCatalog(projectId);
-        setSnapshot({ ...next, unmanagedSkills: next.unmanagedSkills ?? [] });
+        if (isCurrent()) setSnapshot({ ...next, unmanagedSkills: next.unmanagedSkills ?? [] });
       } else {
         const [next, nextRegistry] = await Promise.all([
           window.biny.skillCatalog(projectId),
-          window.biny.pluginRegistry(projectId)
+          refreshRegistry ? window.biny.refreshPluginRegistry(projectId) : window.biny.pluginRegistry(projectId)
         ]);
+        if (!isCurrent()) return;
         setSnapshot({ ...next, unmanagedSkills: next.unmanagedSkills ?? [] });
         setRegistry(nextRegistry);
       }
     } catch (error) {
-      onError(errorMessage(error));
+      if (isCurrent()) reportError(error);
     } finally {
-      setLoading(false);
+      if (isCurrent()) setLoading(false);
     }
-  }, [kind, onError, projectId]);
+  }, [kind, projectId, reportError]);
 
   useEffect(() => {
     void load();
@@ -148,6 +171,10 @@ export function SettingsExtensionsView({ kind, onError, projectId }: {
   }, [settingsDraft]);
 
   const toggleSkillContent = useCallback(async (skill: DesktopSkillCatalogEntry): Promise<void> => {
+    const generation = ++contentGeneration.current;
+    const isCurrent = (): boolean => mounted.current && generation === contentGeneration.current;
+    setContentLoadingId(undefined);
+    expandedSkillIdRef.current = expandedSkillId === skill.id ? undefined : skill.id;
     if (expandedSkillId === skill.id) {
       setExpandedSkillId(undefined);
       return;
@@ -159,31 +186,14 @@ export function SettingsExtensionsView({ kind, onError, projectId }: {
     setContentLoadingId(skill.id);
     try {
       const preview = await window.biny.readSkillFile(skill.id, file.path);
-      setSkillContent((current) => ({ ...current, [skill.id]: preview }));
+      if (isCurrent()) setSkillContent((current) => ({ ...current, [skill.id]: preview }));
     } catch (error) {
-      onError(errorMessage(error));
+      if (isCurrent()) reportError(error);
     } finally {
-      setContentLoadingId((current) => current === skill.id ? undefined : current);
+      if (isCurrent()) setContentLoadingId(undefined);
     }
-  }, [expandedSkillId, onError, skillContent]);
+  }, [expandedSkillId, reportError, skillContent]);
 
-
-  const refreshPlugins = useCallback(async (): Promise<void> => {
-    if (!projectId) return;
-    setLoading(true);
-    try {
-      const [next, nextRegistry] = await Promise.all([
-        window.biny.skillCatalog(projectId),
-        window.biny.refreshPluginRegistry(projectId)
-      ]);
-      setSnapshot({ ...next, unmanagedSkills: next.unmanagedSkills ?? [] });
-      setRegistry(nextRegistry);
-    } catch (error) {
-      onError(errorMessage(error));
-    } finally {
-      setLoading(false);
-    }
-  }, [onError, projectId]);
 
   const installPlugin = useCallback(async (plugin: DesktopPluginMarketEntry, scope: PluginScope): Promise<void> => {
     if (!projectId) return;
@@ -192,11 +202,11 @@ export function SettingsExtensionsView({ kind, onError, projectId }: {
       await window.biny.installPlugin(projectId, plugin.id, scope);
       await load();
     } catch (error) {
-      onError(errorMessage(error));
+      reportError(error);
     } finally {
-      setBusyPluginId(undefined);
+      if (mounted.current) setBusyPluginId(undefined);
     }
-  }, [load, onError, projectId]);
+  }, [load, projectId, reportError]);
 
   const setPluginEnabled = useCallback(async (plugin: DesktopPluginSummary): Promise<void> => {
     if (!projectId || !plugin.managed) return;
@@ -207,11 +217,11 @@ export function SettingsExtensionsView({ kind, onError, projectId }: {
       await window.biny.setPluginEnabled(projectId, pluginId, plugin.enabled !== true, plugin.scope);
       await load();
     } catch (error) {
-      onError(errorMessage(error));
+      reportError(error);
     } finally {
-      setBusyPluginId(undefined);
+      if (mounted.current) setBusyPluginId(undefined);
     }
-  }, [load, onError, projectId]);
+  }, [load, projectId, reportError]);
 
   const uninstallPlugin = useCallback(async (plugin: DesktopPluginSummary): Promise<void> => {
     if (!projectId || !plugin.managed) return;
@@ -222,11 +232,11 @@ export function SettingsExtensionsView({ kind, onError, projectId }: {
       await window.biny.uninstallPlugin(projectId, pluginId, plugin.scope);
       await load();
     } catch (error) {
-      onError(errorMessage(error));
+      reportError(error);
     } finally {
-      setBusyPluginId(undefined);
+      if (mounted.current) setBusyPluginId(undefined);
     }
-  }, [load, onError, projectId]);
+  }, [load, projectId, reportError]);
 
   const importExisting = useCallback(async (skillIds: string[]): Promise<void> => {
     if (!projectId) return;
@@ -234,27 +244,40 @@ export function SettingsExtensionsView({ kind, onError, projectId }: {
     try {
       await window.biny.importExistingSkills(skillIds);
       await load();
-      setImportDialogOpen(false);
+      if (mounted.current) setImportDialogOpen(false);
     } catch (error) {
-      onError(errorMessage(error));
+      reportError(error);
     } finally {
-      setImporting(false);
+      if (mounted.current) setImporting(false);
     }
-  }, [load, onError, projectId]);
+  }, [load, projectId, reportError]);
 
   if (!projectId) return <div className="settings-extension-view is-empty"><ExtensionSettingsEmpty icon={kind === "skills" ? "wand" : "puzzle"} title="请先打开一个项目" detail="Skill 和 Plugin 设置需要绑定当前项目。" /></div>;
 
   return (
     <div className={`settings-extension-view is-${kind}`} id={`settings-extensions-${kind}`}>
       {kind === "skills" ? <SkillsSettingsContent
-        onError={onError}
-        onVersionChanged={() => { setSkillContent({}); setExpandedSkillId(undefined); void load(); }}
+        onError={reportError}
+        onVersionChanged={(skillId) => {
+          if (!mounted.current) return;
+          if (expandedSkillIdRef.current === skillId) {
+            contentGeneration.current += 1;
+            expandedSkillIdRef.current = undefined;
+            setContentLoadingId(undefined);
+            setSkillContent({}); setExpandedSkillId(undefined);
+          } else {
+            setSkillContent((current) => {
+              const next = { ...current }; delete next[skillId]; return next;
+            });
+          }
+          void load();
+        }}
         expandedSkillId={expandedSkillId}
         loading={loading}
         onImportExisting={() => setImportDialogOpen(true)}
         onInherit={inheritSkill}
         onSetGlobal={setGlobalSkill}
-        onOpenDirectory={(skill) => { void window.biny.openSkillDirectory(skill.id).catch((error: unknown) => onError(errorMessage(error))); }}
+        onOpenDirectory={(skill) => { void window.biny.openSkillDirectory(skill.id).catch(reportError); }}
         onQuery={setQuery}
         onRefresh={() => void load()}
         onToggle={toggleSkill}
@@ -275,10 +298,10 @@ export function SettingsExtensionsView({ kind, onError, projectId }: {
         onInstall={(plugin, scope) => void installPlugin(plugin, scope)}
         onPluginTab={setPluginTab}
         onQuery={setQuery}
-        onRefresh={() => void refreshPlugins()}
+        onRefresh={() => void load(true)}
         onSetEnabled={(plugin) => void setPluginEnabled(plugin)}
         onUninstall={(plugin) => void uninstallPlugin(plugin)}
-        onOpenDirectory={() => { void window.biny.openPluginDirectory(projectId, pluginScope).catch((error: unknown) => onError(errorMessage(error))); }}
+        onOpenDirectory={() => { void window.biny.openPluginDirectory(projectId, pluginScope).catch(reportError); }}
         onScope={setPluginScope}
         pluginScope={pluginScope}
         pluginTab={pluginTab}
@@ -315,7 +338,7 @@ const SkillsSettingsContent = memo(function SkillsSettingsContent({
   unmanagedSkills
 }: {
   onError(message: string): void;
-  onVersionChanged(): void;
+  onVersionChanged(skillId: string): void;
   contentLoadingId?: string;
   expandedSkillId?: string;
   globalDefaults: Record<string, boolean>;
@@ -408,7 +431,7 @@ function SkillExtractionSettings(): React.JSX.Element | null {
 
 const SkillSettingsCard = memo(function SkillSettingsCard({ onError, onVersionChanged, activation, contentLoading, expanded, onInherit, onSetGlobal, onOpenDirectory, onToggle, onToggleContent, preview, skill }: {
   onError(message: string): void;
-  onVersionChanged(): void;
+  onVersionChanged(skillId: string): void;
   activation: DesktopSkillActivation;
   contentLoading: boolean;
   expanded: boolean;

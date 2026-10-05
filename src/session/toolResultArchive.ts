@@ -139,10 +139,13 @@ export async function readToolResultArchive(
       throw new Error(`Archived tool result is ${String(stats.size)} bytes, exceeding the ${String(maxArchiveFileBytes)}-byte read limit.`);
     }
     signal?.throwIfAborted();
-    content = (await handle.readFile()).toString("utf8");
+    content = await handle.readFile({ encoding: "utf8", signal });
   } finally {
     await handle.close();
   }
+  // Cancellation may arrive while reading or closing the handle. Never turn an
+  // interrupted read into a successful page after the file has been released.
+  signal?.throwIfAborted();
   const parsed: unknown = JSON.parse(content);
   if (!isArchiveEnvelope(parsed)) throw new Error(`Archived tool result is malformed: ${archivePath}`);
   return parsed;

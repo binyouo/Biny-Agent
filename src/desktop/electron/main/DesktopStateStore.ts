@@ -66,6 +66,8 @@ const defaultState: PersistedDesktopState = {
 export class DesktopStateStore {
   private state: PersistedDesktopState = structuredClone(defaultState);
   private writeTail = Promise.resolve();
+  private readonly projectInspectionTokens = new WeakMap<DesktopProject, object>();
+  private readonly projectGitInspectionTokens = new WeakMap<DesktopProject, object>();
 
   constructor(private readonly filePath: string) {}
 
@@ -112,6 +114,39 @@ export class DesktopStateStore {
     if (index === -1) this.state.projects.push({ ...project });
     else this.state.projects[index] = { ...project };
     await this.save();
+  }
+
+  /** Commit inspection-owned fields onto the current record without replaying user edits. */
+  async refreshProjectInspection(
+    projectId: string,
+    inspect: (project: DesktopProject) => Promise<Pick<DesktopProject, "branch" | "dirty" | "missing">>,
+    refreshGit = true
+  ): Promise<DesktopProject | undefined> {
+    const storedProject = this.state.projects.find((project) => project.id === projectId);
+    if (!storedProject) return undefined;
+    const token = {};
+    this.projectInspectionTokens.set(storedProject, token);
+    if (refreshGit) this.projectGitInspectionTokens.set(storedProject, token);
+    const inspected = await inspect({ ...storedProject });
+    const current = this.state.projects.find((project) => project.id === projectId);
+    // Removal and explicit re-add/upsert retire the old in-memory incarnation,
+    // even if every persisted field (including addedAt) has the same value.
+    if (current !== storedProject) return current ? { ...current } : undefined;
+    if (this.projectInspectionTokens.get(current) === token) {
+      current.missing = inspected.missing;
+      // A confirmed gap retires pre-gap Git reads even if the directory later reappears.
+      if (inspected.missing) this.projectGitInspectionTokens.delete(current);
+    }
+    if (current.missing) {
+      current.branch = undefined;
+      current.dirty = false;
+    } else if (refreshGit && this.projectGitInspectionTokens.get(current) === token && !inspected.missing) {
+      // Existence-only selection must not supersede a valid Git refresh.
+      current.branch = inspected.branch;
+      current.dirty = inspected.dirty;
+    }
+    await this.save();
+    return this.project(projectId);
   }
 
   async removeProject(projectId: string): Promise<void> {

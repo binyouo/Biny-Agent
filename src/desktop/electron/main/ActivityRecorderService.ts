@@ -209,6 +209,8 @@ export class ActivityRecorderService {
   /** 分析器在最近有输入时跳过当前 sweep；截图/浏览器事件不更新它。 */
   private lastInputAt?: number;
   private operationTail = Promise.resolve();
+  /** 配置保存先异步落盘；跨过 stop 的旧调用不能再把运行时拉起。 */
+  private stopEpoch = 0;
   /** 退出时中止在途的一轮分析，避免 quit 被未完成的模型请求拖住。 */
   private analysisAbort = new AbortController();
   private readonly analysisScheduler: ActivityAnalysisScheduler;
@@ -312,6 +314,18 @@ export class ActivityRecorderService {
   }
 
   async stop(): Promise<void> {
+    this.stopEpoch++;
+    // 立即撤销旧监听和分析；排队中的初始化/刷新仍可能创建新一轮资源。
+    this.stopBackgroundResources();
+    await this.enqueue(async () => {
+      // 与设置应用共享队列，在它完成后再次收口，不能遗留新建的监听和调度器。
+      this.stopBackgroundResources();
+      await this.stopInternal();
+    });
+    await this.nativeClient?.stop();
+  }
+
+  private stopBackgroundResources(): void {
     this.configWatcher?.close();
     this.configWatcher = undefined;
     if (this.configRefreshTimer) clearTimeout(this.configRefreshTimer);
@@ -320,8 +334,6 @@ export class ActivityRecorderService {
     this.analysisScheduler.stop();
     this.embeddingScheduler.stop();
     this.analysisAbort.abort();
-    await this.enqueue(async () => await this.stopInternal());
-    await this.nativeClient?.stop();
   }
 
   snapshot(): ActivityRuntimeSnapshot {
@@ -433,6 +445,7 @@ export class ActivityRecorderService {
     patch: DesktopActivitySettingsPatch,
     expectedConfigRevision: string
   ): Promise<DesktopActivitySettingsUpdate> {
+    const stopEpoch = this.stopEpoch;
     const loadVersioned = this.configStore.loadVersioned?.bind(this.configStore);
     const saveVersioned = this.configStore.saveVersioned?.bind(this.configStore);
     if (loadVersioned === undefined || saveVersioned === undefined) {
@@ -447,14 +460,18 @@ export class ActivityRecorderService {
       activity: activitySettingsSchema.parse({ ...current.config.activity, ...patch })
     };
     const saved = await saveVersioned(next, current.revision);
-    // 保存成功即撤销旧配置下的在途任务，不等待采集写队列完成才生效。
-    this.analysisAbort.abort();
-    await this.enqueue(async () => {
-      this.persistedActivitySettings = saved.config.activity;
-      this.runtimeConfig = saved.config.activity;
-      this.runtimeRunning = saved.config.activity.enabled;
-      await this.applySettings(saved.config.activity);
-    });
+    // 保存可以正常完成，但 stop 之前发起的调用已失去运行时所有权。
+    if (stopEpoch === this.stopEpoch) {
+      // 保存成功即撤销旧配置下的在途任务，不等待采集写队列完成才生效。
+      this.analysisAbort.abort();
+      await this.enqueue(async () => {
+        if (stopEpoch !== this.stopEpoch) return;
+        this.persistedActivitySettings = saved.config.activity;
+        this.runtimeConfig = saved.config.activity;
+        this.runtimeRunning = saved.config.activity.enabled;
+        await this.applySettings(saved.config.activity);
+      });
+    }
     return {
       activity: structuredClone(saved.config.activity),
       configRevision: saved.revision

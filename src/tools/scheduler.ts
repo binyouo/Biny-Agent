@@ -152,9 +152,12 @@ export class ToolScheduler<TResult> {
       return;
     }
 
-    void result
-      .then((value) => item.resolve(value), (error: unknown) => item.reject(error))
-      .finally(() => this.finish(item, activeItem));
+    // Release capacity in the same reaction that settles the caller's promise.
+    // A later finally reaction lets resumed callers observe a stale full queue.
+    void result.then(
+      (value) => this.finish(item, activeItem, () => item.resolve(value)),
+      (error: unknown) => this.finish(item, activeItem, () => item.reject(error))
+    );
   }
 
   private finish(item: QueuedTask<TResult>, activeItem: ActiveTask<TResult>, settle?: () => void): void {

@@ -50,7 +50,7 @@ export async function importUnmanagedSkills(options: {
 }): Promise<SkillImportResult[]> {
   if (!options.ids.length) return [];
   const homeDir = options.homeDir ?? os.homedir();
-  const snapshot = await scanSkillCatalog({ homeDir, projectRoots: options.projectRoots });
+  const snapshot = await scanSkillCatalog({ homeDir: options.homeDir, projectRoots: options.projectRoots });
   const selected = new Set(options.ids);
   const candidates = listUnmanagedSkillCandidates(snapshot).filter((candidate) => selected.has(candidate.id));
   const managedRoot = options.homeDir === undefined

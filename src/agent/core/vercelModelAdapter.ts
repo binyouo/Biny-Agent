@@ -368,7 +368,8 @@ export function toModelMessages(messages: AgentMessage[], nativePatch = false): 
         role: "assistant",
         content: message.content.map((part) => {
           if (part.type === "text") return { type: "text", text: part.text };
-          if (part.type === "reasoning") return { type: "reasoning", text: part.text, providerMetadata: part.providerMetadata };
+          // SDK 输出使用 providerMetadata，消息输入则通过 providerOptions 回传签名等元数据。
+          if (part.type === "reasoning") return { type: "reasoning", text: part.text, providerOptions: providerMetadata(part.providerMetadata) };
           if (part.name === "apply_patch" && !nativePatch) return { type: "text", text: `Historical file patch request: ${JSON.stringify(part.arguments)}` };
           return { type: "tool-call", toolCallId: part.id, toolName: part.name, input: part.arguments };
         })
@@ -444,16 +445,22 @@ export function fromVercelUsage(usage: {
   inputTokenDetails: { cacheReadTokens: number | undefined; cacheWriteTokens: number | undefined };
   outputTokens: number | undefined;
   outputTokenDetails: { reasoningTokens: number | undefined };
+  raw?: unknown;
 }): AgentUsage {
   const inputTokens = usage.inputTokens;
   const outputTokens = usage.outputTokens;
+  // DeepSeek reports this outside the SDK's normalized usage fields. Preserve
+  // only the explicit measurement; input/cache totals are not a substitute.
+  const cacheMissTokens = isRecord(usage.raw) ? usage.raw.prompt_cache_miss_tokens : undefined;
   return {
     inputTokens,
     outputTokens,
     totalTokens: inputTokens === undefined || outputTokens === undefined ? undefined : inputTokens + outputTokens,
     reasoningTokens: usage.outputTokenDetails.reasoningTokens,
     cacheReadTokens: usage.inputTokenDetails.cacheReadTokens,
-    cacheWriteTokens: usage.inputTokenDetails.cacheWriteTokens
+    cacheWriteTokens: usage.inputTokenDetails.cacheWriteTokens,
+    ...(typeof cacheMissTokens === "number" && Number.isFinite(cacheMissTokens) && cacheMissTokens >= 0
+      ? { cacheMissTokens } : {})
   };
 }
 

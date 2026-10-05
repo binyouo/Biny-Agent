@@ -163,19 +163,22 @@ export class DesktopProjectService {
     };
   }
 
-  async refreshStoredProject(projectIdValue: string): Promise<DesktopProject> {
-    const project = this.requireProject(projectIdValue);
-    const refreshed = await this.inspectProject(project);
-    await this.state.upsertProject(refreshed);
+  async refreshStoredProject(projectIdValue: string, refreshGit = true): Promise<DesktopProject> {
+    const refreshed = await this.state.refreshProjectInspection(
+      projectIdValue,
+      (project) => this.inspectProject(project, refreshGit),
+      refreshGit
+    );
+    if (!refreshed) throw new Error(`Unknown project: ${projectIdValue}`);
     return refreshed;
   }
 
   async refreshAllProjects(): Promise<DesktopProject[]> {
-    const activeProjectId = this.state.activeProjectId();
-    const projects = await Promise.all(this.state.projects().map(async (project) => await this.inspectProject(project)));
-    await Promise.all(projects.map(async (project) => await this.state.upsertProject(project)));
-    if (activeProjectId) await this.state.setActiveProject(activeProjectId);
-    return projects;
+    await Promise.all(this.state.projects().map((project) => this.state.refreshProjectInspection(
+      project.id,
+      (current) => this.inspectProject(current)
+    )));
+    return this.state.projects();
   }
 
   /**

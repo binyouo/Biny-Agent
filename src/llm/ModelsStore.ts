@@ -15,6 +15,8 @@ import { globalModelsStorePath } from "../config/paths.js";
 
 export interface ModelsStoreEntry {
   models: ModelCatalogEntry[];
+  /** 目录来源的隔离键；旧版 alias 缓存缺省，不能把其 HTTP validators 当成当前来源的事实。 */
+  sourceKey?: string;
   checkedAt?: number;
   lastModified?: number;
   etag?: string;
@@ -47,10 +49,26 @@ export async function readProviderCatalog(
   config: ProviderConfig,
   store: ModelsStore
 ): Promise<ModelsStoreEntry | undefined> {
-  const scoped = await store.read(modelCatalogCacheKey(providerId, config)).catch(() => undefined);
+  const cacheKey = modelCatalogCacheKey(providerId, config);
+  const scoped = catalogForSource(
+    await store.read(cacheKey).catch(() => undefined), cacheKey, cacheKey !== providerId
+  );
   if (scoped) return scoped;
+  if (cacheKey === providerId) return undefined;
   // 仅兼容旧版无 endpoint scope 的缓存；成功刷新后会写入新的隔离键。
-  return await store.read(providerId).catch(() => undefined);
+  return catalogForSource(await store.read(providerId).catch(() => undefined), cacheKey, false);
+}
+
+function catalogForSource(
+  entry: ModelsStoreEntry | undefined,
+  cacheKey: string,
+  exactScopedKey: boolean
+): ModelsStoreEntry | undefined {
+  if (!entry) return undefined;
+  if (entry.sourceKey !== undefined) return entry.sourceKey === cacheKey ? entry : undefined;
+  // 旧版精确隔离键已证明来源；仅 alias 的旧缓存保留离线可读性，但首次刷新必须拿到正文。
+  if (exactScopedKey) return { ...entry, sourceKey: cacheKey };
+  return { ...entry, etag: undefined, lastModified: undefined };
 }
 
 const modelSchema = z.object({
@@ -94,6 +112,7 @@ const modelSchema = z.object({
 
 const entrySchema = z.object({
   models: z.array(modelSchema),
+  sourceKey: z.string().min(1).optional(),
   checkedAt: z.number().int().nonnegative().optional(),
   lastModified: z.number().int().nonnegative().optional(),
   etag: z.string().max(1_024).optional()
@@ -206,7 +225,11 @@ export async function restoreProviderCatalogs(
     return providerIds.flatMap((providerId) => {
       const provider = providers?.[providerId];
       const scoped = provider ? modelCatalogCacheKey(providerId, provider) : providerId;
-      const entry = entries.get(scoped) ?? entries.get(providerId);
+      // 无 provider 配置的旧调用方仍按 alias 读取；有配置时不得跨已知来源复用镜像。
+      const entry = provider
+        ? catalogForSource(entries.get(scoped), scoped, scoped !== providerId)
+          ?? catalogForSource(entries.get(providerId), scoped, false)
+        : entries.get(providerId);
       return entry?.models.length ? [[providerId, entry.models] as [string, ModelCatalogEntry[]]] : [];
     });
   }
@@ -226,6 +249,7 @@ function sanitizeEntry(entry: ModelsStoreEntry): ModelsStoreEntry {
       ...model,
       headers: sanitizeHeaders(model.headers)
     })),
+    sourceKey: entry.sourceKey,
     checkedAt: entry.checkedAt,
     lastModified: entry.lastModified,
     etag: entry.etag

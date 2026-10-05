@@ -4,6 +4,7 @@ import { test } from "node:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { z } from "zod";
 import { AgentSession } from "../src/agent/AgentSession.js";
 import type { AgentModel, ModelStreamEvent } from "../src/agent/core/types.js";
 import { defaultConfig, configSchema } from "../src/config/schema.js";
@@ -12,15 +13,27 @@ import { SessionRecorder } from "../src/session/recorder.js";
 import { ensureAgentDirs } from "../src/session/store.js";
 import { ToolRegistry } from "../src/tools/registry.js";
 
-async function withAgent(model: AgentModel, run: (agent: AgentSession) => Promise<void>): Promise<void> {
+async function withAgent(model: AgentModel, run: (agent: AgentSession, getToolExecutionCount: () => number) => Promise<void>): Promise<void> {
   const root = await mkdtemp(path.join(os.tmpdir(), "biny-stream-session-"));
   await ensureAgentDirs(root);
   const recorder = new SessionRecorder(root);
   const tools = new ToolRegistry();
-  tools.registerBuiltinTool({ name: "Read", label: "Read", description: "Read a test value", parameters: { type: "object", properties: {} }, async execute() { return { content: [{ type: "text", text: "ok" }] }; } });
+  let toolExecutionCount = 0;
+  // A unique name keeps editing-tool routing from replacing the test stub with the real Read tool.
+  tools.registerBuiltinTool({
+    name: "TestRead", description: "Read a test value", risk: "read",
+    parameters: { type: "object", properties: {}, additionalProperties: false },
+    schema: z.object({}).strict(),
+    resolveExecution() {
+      return {
+        approvalRule: "TestRead",
+        async execute() { toolExecutionCount += 1; return { content: [{ type: "text", text: "ok" }] }; }
+      };
+    }
+  });
   const config = configSchema.parse({ ...defaultConfig, context: { ...defaultConfig.context, memory: { ...defaultConfig.context.memory, useMemories: false, generateMemories: false } } });
   const agent = new AgentSession({ workspaceRoot: root, config, model, toolRegistry: tools, permissionManager: new PermissionManager(config.permission), recorder });
-  try { await agent.initialize(); await run(agent); }
+  try { await agent.initialize(); await run(agent, () => toolExecutionCount); }
   finally { await agent.close(); await rm(root, { recursive: true, force: true }); }
 }
 
@@ -33,7 +46,7 @@ test("actual streaming resets after tool steps and releases a deferred canonical
       requests += 1;
       const events: ModelStreamEvent[] = requests === 1 ? [
         { type: "text-delta", text: "Step one\n<think>private" },
-        { type: "tool-call", id: "read", name: "Read", arguments: {} },
+        { type: "tool-call", id: "read", name: "TestRead", arguments: {} },
         { type: "finish", reason: "tool-calls" }
       ] : requests === 2 ? [
         { type: "text-delta", text: "Next step\n<bin" },
@@ -51,28 +64,40 @@ test("actual streaming resets after tool steps and releases a deferred canonical
       return (async function* () { yield* events; })();
     }
   };
-  await withAgent(model, async (agent) => {
+  await withAgent(model, async (agent, getToolExecutionCount) => {
     let visible = "";
     let outcome = "";
+    let completedToolSteps = 0;
     for await (const event of agent.prompt("Read the value", { confirmPermission: async () => ({ approved: true, scope: "once" }), emotionAnalysis: false })) {
+      assert.notEqual(event.type, "error");
+      assert.notEqual(event.type, "tool.failed");
+      if (event.type === "tool.completed") { assert.equal(event.tool, "TestRead"); completedToolSteps += 1; }
       if (event.type === "assistant.delta") visible += event.content;
       if (event.type === "done") { assert.equal(event.outcome.status, "completed"); outcome = event.outcome.output; }
     }
+    assert.equal(getToolExecutionCount(), 1, "the stub must actually execute exactly once across the tool step");
+    assert.equal(completedToolSteps, 1);
     assert.equal(visible, "Step one\nNext step\n\n" + tail);
     assert.equal(outcome, "Next step\n\n" + tail);
     assert.doesNotMatch(visible, /private|biny_notification|<think/u);
     let fresh = "";
     for await (const event of agent.prompt("Again", { emotionAnalysis: false })) {
+      assert.notEqual(event.type, "error");
+      assert.notEqual(event.type, "tool.failed");
+      if (event.type === "done") assert.equal(event.outcome.status, "completed");
       if (event.type === "assistant.delta") fresh += event.content;
     }
     assert.equal(fresh, "Fresh reply");
     let joined = "";
     for await (const event of agent.prompt("Check a fragmented notification", { emotionAnalysis: false })) {
+      assert.notEqual(event.type, "error");
+      assert.notEqual(event.type, "tool.failed");
       if (event.type === "assistant.delta") joined += event.content;
-      if (event.type === "done") assert.equal(event.outcome.output, "A");
+      if (event.type === "done") { assert.equal(event.outcome.status, "completed"); assert.equal(event.outcome.output, "A"); }
     }
     assert.equal(joined, "A", "removing an inner notification cannot expose an assembled outer tag");
     assert.equal(requests, 4);
+    assert.equal(getToolExecutionCount(), 1, "later prompts must not replay the tool step");
   });
 });
 
@@ -107,6 +132,9 @@ test("an interrupted hidden envelope cannot swallow or leak into the next prompt
     assert.doesNotMatch(visible, /private|thinking/u);
     let next = "";
     for await (const event of agent.prompt("Restart", { emotionAnalysis: false })) {
+      assert.notEqual(event.type, "error");
+      assert.notEqual(event.type, "tool.failed");
+      if (event.type === "done") assert.equal(event.outcome.status, "completed");
       if (event.type === "assistant.delta") next += event.content;
     }
     assert.equal(next, "After interruption");

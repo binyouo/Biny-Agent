@@ -25,7 +25,7 @@ import {
 import { readToolResultToolName } from "../tools/file/readToolResult.js";
 import { CapabilityInvocationCancelledError, CapabilityOutcomeUnknownError } from "../runtime/CapabilityStore.js";
 import { DiagnosticsRunner, formatDiagnostics } from "../tools/diagnostics.js";
-import { HookRunner } from "../tools/hooks.js";
+import { HookRunner, readHookCompletionEvidence } from "../tools/hooks.js";
 import { validateJsonSchema } from "../tools/schema.js";
 import { ToolScheduler } from "../tools/scheduler.js";
 import { isCodeModeReadTool } from "../tools/registry.js";
@@ -116,6 +116,10 @@ interface ToolCallExecutionOptions {
   toolDiscoveryNamespace?: string;
   /** Revalidate the exact nested registration after asynchronous admission/approval. */
   assertCurrentRegistration?: () => void;
+  /** Internal host-query result semantics; never read from a tool's payload. */
+  taskStatusResultIsData?: boolean;
+  /** Model projection may archive a failure; retain its authoritative outcome. */
+  onResultStatus?: (status: ToolExecutionResultStatus) => void;
 }
 
 /**
@@ -274,10 +278,12 @@ export class ToolExecutionCoordinator {
           // 写入工具的准备、权限确认和实际执行必须保持同一顺序，避免并发预览互相失效。
           executionMode: registered.risk === "write" ? "sequential" as const : "parallel" as const,
           execute: async (toolCallId: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<AgentToolResult> => {
+            let resultStatus: ToolExecutionResultStatus | undefined;
             const result = await this.trackExecution(this.execute(
               registered,
               args,
               { toolCallId, abortSignal: signal, auditOnly: options?.auditOnly, script: options?.script,
+                onResultStatus: (status) => { resultStatus = status; },
                 toolDiscoveryNames: options?.toolDiscoveryNames, toolDiscoveryNamespace: options?.toolDiscoveryNamespace,
                 assertCurrentRegistration: options?.script ? () => {
                   if (!this.context.toolRegistry.listEntries().includes(originalRegistration) || !(originalRegistration.source === "mcp" && !codeModeNestedToolNames.has(registered.name) || isCodeModeReadTool(originalRegistration))
@@ -288,14 +294,14 @@ export class ToolExecutionCoordinator {
                 } : undefined },
               source
             ), toolCallId);
-            const error = failedToolResultMessage(result);
+            const isError = resultStatus === undefined ? Boolean(failedToolResultMessage(result)) : resultStatus !== "succeeded";
             const image = this.toolImages.get(toolCallId);
             this.toolImages.delete(toolCallId);
             if (image) this.imageBytes -= Buffer.byteLength(image.data, "base64");
             return {
-              content: [{ type: "text", text: serializeToolResult(result, { context: source === "mcp" ? "mcp-result" : undefined }) }, ...(!error && image ? [image] : [])],
+              content: [{ type: "text", text: serializeToolResult(result, { context: source === "mcp" ? "mcp-result" : undefined }) }, ...(!isError && image ? [image] : [])],
               details: result,
-              isError: Boolean(error)
+              isError
             };
           }
         });
@@ -554,6 +560,7 @@ export class ToolExecutionCoordinator {
     let finishPromise: Promise<unknown> | undefined;
     let committedChange: CommittedFileChange | undefined;
     let budgetAdmitted = false;
+    let taskStatusResultIsData = false;
     const updateState = (state: ToolExecutionState, evidence?: string): void => {
       latestState = state;
       latestEvidence = evidence ?? latestEvidence;
@@ -641,7 +648,7 @@ export class ToolExecutionCoordinator {
             }
           }
         }
-        return await this.finishSyntheticCall(
+        const modelResult = await this.finishSyntheticCall(
           call,
           sequence,
           exposeExecutionMetadata(result, status, operationId, latestEvidence, outcomeUnknownReason),
@@ -653,9 +660,12 @@ export class ToolExecutionCoordinator {
             auditOnly: options.auditOnly || auditOnly || neverStarted && status === "cancelled",
             scriptResult: options.script,
             source,
+            taskStatusResultIsData,
             outcomeUnknownReason
           }
         );
+        options.onResultStatus?.(status);
+        return modelResult;
       })();
       return finishPromise;
     };
@@ -782,12 +792,22 @@ export class ToolExecutionCoordinator {
                 ? { path: permissionSnapshot.targetPath, snapshot: permissionSnapshot.baseline.snapshot }
                 : undefined;
               const blocked = await this.runBeforeToolHooks(call.name, prepared.args, signal);
-              if (blocked) return blocked;
+              if (blocked) {
+                // Publish the existing guard before resource users can resume.
+                if (blocked.executionStatus === "unknown") recordState("unknown", blocked.errorMessage);
+                return blocked;
+              }
               await this.ensureCheckpoint(toolDefinition.risk, call.name);
               // 这是工具副作用前的持久边界：记录成功后才允许进入 executeResolvedTool。
               // 崩溃发生在这里之后时，恢复不能再假设工具没有运行。
               await persistState("admitted");
               options.assertCurrentRegistration?.();
+              // Only the exact host-owned status reader returns a child outcome as data.
+              // Recheck after preparation/approval; same-name extensions and changed
+              // definitions cannot opt in through their payload or registration hints.
+              taskStatusResultIsData = toolDefinition.name === "TaskStatus"
+                && this.context.toolRegistry.listEntries().some((entry) => entry.tool === toolDefinition
+                  && entry.source === source && isCodeModeReadTool(entry));
               return await this.executeResolvedTool(
                 call,
                 prepared.execution,
@@ -823,7 +843,7 @@ export class ToolExecutionCoordinator {
                     throw new FileChangeUncertainError(`File side effect occurred, but commit evidence could not be recorded: ${formatToolError(call.name, error)}`);
                   }
                 },
-                options
+                { ...options, taskStatusResultIsData }
               );
             }
           });
@@ -875,6 +895,7 @@ export class ToolExecutionCoordinator {
       auditOnly?: boolean;
       scriptResult?: boolean;
       source?: ToolSource;
+      taskStatusResultIsData?: boolean;
     } = {}
   ): Promise<unknown> {
     const modelResult = metadata.scriptResult ? result : await this.applyToolResultBudget(call, sequence, result, metadata.source);
@@ -918,12 +939,14 @@ export class ToolExecutionCoordinator {
       recovered?: boolean;
       operationId?: string;
       evidence?: string;
+      taskStatusResultIsData?: boolean;
     } = {}
   ): void {
     const durationMs = resultNumber(result, "durationMs");
     const error = metadata.executionStatus === "unknown" || metadata.executionStatus === "cancelled"
       ? undefined
-      : errorMessage ?? failedToolResultMessage(result);
+      : errorMessage ?? (metadata.taskStatusResultIsData && metadata.executionStatus === "succeeded"
+        ? undefined : failedToolResultMessage(result));
     if (error) {
       this.emit({
         type: "tool.failed",
@@ -1114,10 +1137,17 @@ export class ToolExecutionCoordinator {
   private async runBeforeToolHooks(tool: string, args: unknown, signal?: AbortSignal): Promise<ToolExecutionOutcome | undefined> {
     if (!this.hooks.hasHooks("beforeTool")) return undefined;
     const outcomes = await this.hooks.run("beforeTool", { tool, path: mutatedFilePath(args) ?? "" }, signal);
-    const failed = outcomes.find((outcome) => outcome.exitCode !== 0);
+    signal?.throwIfAborted();
+    const failed = outcomes.find((outcome) => outcome.exitCode !== 0 || readHookCompletionEvidence(outcome) !== "normal_exit");
     if (!failed) return undefined;
     const message = `Blocked by a configured beforeTool hook (${failed.command}): ${failed.output || `exit ${String(failed.exitCode)}`}`;
-    return { result: { status: "blocked_by_hook", hook: failed.command, exitCode: failed.exitCode, output: failed.output }, errorMessage: message };
+    return {
+      result: { status: "blocked_by_hook", hook: failed.command, exitCode: failed.exitCode, output: failed.output },
+      errorMessage: message,
+      // Every configured hook must have a proven normal exit. A later timeout
+      // or termination cannot be hidden by an earlier ordinary policy veto.
+      executionStatus: outcomes.every((outcome) => readHookCompletionEvidence(outcome) === "normal_exit") ? "failed" : "unknown"
+    };
   }
 
   /** 执行后钩子的输出只作为附加信息；它的退出码不改变这次调用的成败。 */
@@ -1333,7 +1363,7 @@ export class ToolExecutionCoordinator {
         }
       }
       const summarized = attachToolSummary(result, Date.now() - startedAt);
-      const executionFailure = failedToolResultMessage(summarized);
+      const executionFailure = options?.taskStatusResultIsData ? undefined : failedToolResultMessage(summarized);
       reportExecutionState(executionFailure ? "failed" : "succeeded", executionFailure);
       return {
         result: summarized,
@@ -1360,6 +1390,9 @@ export class ToolExecutionCoordinator {
           this.context.quarantineExternalTool?.(call.name, call.id, externalExecutionPromise);
         }
         const message = formatToolError(call.name, error);
+        // Queued resource users can start as soon as this outcome is returned.
+        // Publish the guard before releasing the scheduler, not in finish().
+        reportExecutionState("unknown", message);
         return {
           result: {
             status: "unknown",

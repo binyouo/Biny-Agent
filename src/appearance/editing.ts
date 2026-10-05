@@ -176,7 +176,7 @@ export function importAppearanceTheme(content: string, name = "imported-theme"):
   const cleaned = content.replace(/--\[\[[\s\S]*?\]\]/gu, "").replace(/--[^\n]*/gu, "");
   const table = (key: string): Record<string, string> => {
     const body = new RegExp(`(?:\\b${key}\\s*=|\\[\\s*["']${key}["']\\s*\\]\\s*=)\\s*\\{([^{}]*)\\}`, "u").exec(cleaned)?.[1];
-    if (!body) throw new Error(`主题缺少 ${key} 颜色表。`);
+    if (body === undefined) throw new Error(`主题缺少 ${key} 颜色表。`);
     const colors: Record<string, string> = {};
     for (const entry of body.matchAll(/(?:\b([\w]+)|\[\s*["']([\w]+)["']\s*\])\s*=\s*["'](#[\da-f]{6})["']/giu)) {
       const field = entry[1] ?? entry[2]!;

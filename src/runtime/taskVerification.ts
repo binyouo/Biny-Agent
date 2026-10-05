@@ -906,6 +906,9 @@ function classifyCheckResult(
   if (result.status === "denied" || result.status === "permission_required") {
     return { status: "blocked", reason: result.reason ?? result.error ?? "Verification command requires permission." };
   }
+  if (result.status === "blocked_by_hook") {
+    return { status: "blocked", reason: result.reason ?? result.error ?? "Verification command was blocked by a configured beforeTool hook." };
+  }
   if (result.status === "unknown") {
     return { status: "blocked", reason: result.reason ?? result.error ?? "Verification command has an unknown side effect outcome." };
   }

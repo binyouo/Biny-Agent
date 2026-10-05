@@ -13,7 +13,7 @@ import { connectOrSpawnRuntimeHost, connectRuntimeHost, runtimeHostPaths, type R
 import { runRuntimeHostProcess } from "../../runtime/hostProcess.js";
 import { agentDir, ensureAgentDirs } from "../../session/store.js";
 import type { AutomationCreateInput } from "../../runtime/AutomationScheduler.js";
-import type { GraphNodeInput } from "../../runtime/GoalGraphStore.js";
+import { GoalGraphStore, type GraphNodeInput } from "../../runtime/GoalGraphStore.js";
 import { RuntimeEventAuthority } from "../../runtime/RuntimeAuthority.js";
 import { SessionGoalStore } from "../../runtime/SessionGoalStore.js";
 
@@ -143,8 +143,8 @@ export async function taskWaitCommand(workspaceRoot: string, taskRunId: string, 
   await hostAction(workspaceRoot, options, async (client) => await client.taskWait(taskRunId, options.session, options.waitMs, options.afterRevision));
 }
 
-export async function taskListCommand(workspaceRoot: string, options: JsonOption & { status?: string; limit?: number } = {}): Promise<void> {
-  await hostAction(workspaceRoot, options, async (client) => await client.taskList({ status: options.status, limit: options.limit }));
+export async function taskListCommand(workspaceRoot: string, options: JsonOption & { status?: string; limit?: number; cursor?: number } = {}): Promise<void> {
+  await hostAction(workspaceRoot, options, async (client) => await client.taskList({ status: options.status, limit: options.limit, cursor: options.cursor }));
 }
 
 export async function taskEventsCommand(workspaceRoot: string, taskRunId: string, options: JsonOption & { limit?: number } = {}): Promise<void> {
@@ -215,18 +215,35 @@ export async function graphCreateCommand(workspaceRoot: string, options: JsonOpt
 }
 
 export async function graphListCommand(workspaceRoot: string, options: JsonOption = {}): Promise<void> {
-  await hostAction(workspaceRoot, options, async (client) => await client.graphList());
+  await graphReadAction(workspaceRoot, options, (graphs) => graphs?.listGraphs() ?? []);
 }
 
-export async function graphActionCommand(workspaceRoot: string, action: "start" | "pause" | "resume" | "cancel" | "inspect" | "events", graphId: string, options: JsonOption = {}): Promise<void> {
+export async function graphActionCommand(workspaceRoot: string, action: "start" | "pause" | "resume" | "cancel" | "inspect" | "events", graphId: string, options: JsonOption & { cursor?: number; limit?: number } = {}): Promise<void> {
+  if (action === "inspect" || action === "events") {
+    await graphReadAction(workspaceRoot, options, (graphs) => {
+      if (action === "events") return graphs?.listGraphEvents(graphId, { afterSequence: options.cursor, limit: options.limit })
+        ?? { events: [], hasMore: false, gap: false };
+      if (!graphs) throw new Error(`Graph ${graphId} does not exist.`);
+      return graphs.inspectGraph(graphId);
+    });
+    return;
+  }
   await hostAction(workspaceRoot, options, async (client) => {
     if (action === "start") return await client.graphStart(graphId);
     if (action === "pause") return await client.graphPause(graphId);
     if (action === "resume") return await client.graphResume(graphId);
-    if (action === "cancel") return await client.graphCancel(graphId);
-    if (action === "inspect") return await client.graphInspect(graphId);
-    return await client.graphEvents(graphId);
+    return await client.graphCancel(graphId);
   });
+}
+
+/** Match desktop persisted projections: absent stores stay absent; schema upgrades need explicit startup. */
+async function graphReadAction(workspaceRoot: string, options: JsonOption, read: (graphs: GoalGraphStore | undefined) => unknown): Promise<void> {
+  const authority = await RuntimeEventAuthority.openReadOnly(workspaceRoot);
+  try {
+    const graphs = authority === undefined ? undefined : await GoalGraphStore.open(workspaceRoot, authority);
+    const value = read(graphs);
+    console.log(options.json ? JSON.stringify(value) : formatPlain(value));
+  } finally { authority?.close(); }
 }
 
 async function hostAction<T>(workspaceRoot: string, options: HostActionOptions, action: (client: RuntimeHostClient) => Promise<T>): Promise<void> {
