@@ -11,14 +11,14 @@ const actions = {
   quit: () => calls.push("quit")
 };
 const paused = activityTrayItems("paused", actions);
-assert.ok(paused.some((item) => item.label === "开始活动记录"));
+assert.ok(paused.some((item) => item.label === "开始记录电脑历史"));
 const stopped = activityTrayItems("stopped", actions);
-assert.ok(stopped.some((item) => item.label === "开始活动记录"));
+assert.ok(stopped.some((item) => item.label === "开始记录电脑历史"));
 const running = activityTrayItems("running", actions);
-assert.ok(running.some((item) => item.label === "暂停活动记录"));
+assert.ok(running.some((item) => item.label === "暂停记录电脑历史"));
 assert.ok(running.some((item) => item.label === "生成今日摘要"));
-assert.ok(running.some((item) => item.label === "活动记录设置…"));
-for (const label of ["打开 Biny", "暂停活动记录", "生成今日摘要", "活动记录设置…", "退出 Biny"]) {
+assert.ok(running.some((item) => item.label === "电脑历史设置…"));
+for (const label of ["打开 Biny", "暂停记录电脑历史", "生成今日摘要", "电脑历史设置…", "退出 Biny"]) {
   const item = running.find((candidate) => candidate.label === label);
   assert.ok(item?.click, `${label} 必须可操作`);
   item.click({} as never, {} as never, {} as never);
