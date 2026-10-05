@@ -15,8 +15,8 @@ const runHelp = (...args: string[]): string => {
 const cu = runHelp();
 // 对 Alma 的 cu：命令行层独有的动词必须在（模型侧那 13 个工具里没有它们）
 for (const verb of ["status", "doctor", "grant", "list_apps", "apps", "windows", "snap", "shot",
-                    "click", "type_text", "press_key", "scroll", "drag", "menu", "set_value",
-                    "launch_app", "raise", "shutdown"]) {
+                    "click", "type", "type_text", "press", "press_key", "scroll", "drag", "menu",
+                    "set_value", "launch_app", "raise", "shutdown"]) {
   assert.match(cu, new RegExp(`^\\s+${verb}\\b`, "mu"), `cu 缺动词 ${verb}`);
 }
 // 13 个模型工具里没有 raise/shutdown/status —— 它们是命令行层的，不该混进工具表
@@ -33,3 +33,7 @@ assert.match(runHelp("scroll"), /<direction>/u);
 assert.match(runHelp("drag"), /<x1>\s+<y1>\s+<x2>\s+<y2>/u);
 assert.match(runHelp("raise"), /--window\s+<id>/u);
 assert.match(runHelp("click"), /--pixel\s+<x>\s+<y\.\.\.>/u);
+// 元素级输入与全局输入是两对动词，别混：type 改 AXValue，type_text 发按键
+assert.match(runHelp("type"), /--append/u);
+assert.match(runHelp("type"), /<ref>/u);
+assert.match(runHelp("press"), /Increment/u);

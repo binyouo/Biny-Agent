@@ -786,6 +786,56 @@ DispatchQueue.global().async {
                                     }
                                     reply(fd, ["id": id, "ok": true, "data": ["menu": "@\(Int(x)),\(Int(y))"] as [String: Any]] as [String: Any])
                                 } else { throw NSError(domain: "menu", code: 64, userInfo: [NSLocalizedDescriptionKey: "ref_stale"]) }
+                            case "type":
+                                // 元素级文本写入：直接改控件的 AXValue。
+                                //
+                                // 这是**唯一**一条不需要键盘焦点的输入路径 —— 自绘输入框
+                                // （网易云那类）收不到合成按键，但控件自己的 AXValue 是可写的。
+                                // 注意它走的是「替换/追加」语义，不是「在光标处插入」。
+                                guard let ref = args["ref"] as? String, let pid = args["pid"] as? Int, let text = args["text"] as? String else {
+                                    // 四条合并成一句「requires ref and value」会让调用方无从下手：
+                                    // 是没传、还是 ref 属于上一次观察、还是这个控件不可写？
+                                    // 分开报，才不至于让人对着同一句话猜。
+                                    throw NSError(domain: "type", code: 64, userInfo: [NSLocalizedDescriptionKey: "type_missing_argument: 需要 ref、pid 和 text"])
+                                }
+                                guard let element = refTables[pid_t(pid)]?[ref] else {
+                                    throw NSError(domain: "type", code: 64, userInfo: [NSLocalizedDescriptionKey: "element_ref_not_observed: ref \(ref) 不在 pid \(pid) 的最近一次观察里，先 snap 一次"])
+                                }
+                                let append = args["append"] as? Bool ?? false
+                                let current = axCopy(element, kAXValueAttribute as String) as? String ?? ""
+                                let next = append ? current + text : text
+                                let typeStatus = AXUIElementSetAttributeValue(element, kAXValueAttribute as CFString, next as CFTypeRef)
+                                guard typeStatus == .success else {
+                                    throw NSError(domain: "type", code: 65, userInfo: [NSLocalizedDescriptionKey: "element_value_not_writable: 这个控件不接受直接写入，改用 type_text 并先让它取得焦点"])
+                                }
+                                reply(fd, ["id": id, "ok": true, "data": ["typed": next.count, "appended": append, "route": "ax"] as [String: Any]])
+                            case "press":
+                                // 在元素上触发 AX 动作 —— 同样不需要焦点。
+                                guard let ref = args["ref"] as? String, let pid = args["pid"] as? Int, let key = args["key"] as? String else {
+                                    // 四条合并成一句「requires ref and value」会让调用方无从下手：
+                                    // 是没传、还是 ref 属于上一次观察、还是这个控件不可写？
+                                    // 分开报，才不至于让人对着同一句话猜。
+                                    throw NSError(domain: "press", code: 64, userInfo: [NSLocalizedDescriptionKey: "press_missing_argument: 需要 ref、pid 和 key"])
+                                }
+                                guard let element = refTables[pid_t(pid)]?[ref] else {
+                                    throw NSError(domain: "press", code: 64, userInfo: [NSLocalizedDescriptionKey: "element_ref_not_observed: ref \(ref) 不在 pid \(pid) 的最近一次观察里，先 snap 一次"])
+                                }
+                                let actions: [String: String] = [
+                                    "Enter": kAXConfirmAction as String,
+                                    "Escape": kAXCancelAction as String,
+                                    "Space": kAXPressAction as String,
+                                    "Increment": kAXIncrementAction as String,
+                                    "Decrement": kAXDecrementAction as String,
+                                    "ShowMenu": kAXShowMenuAction as String,
+                                ]
+                                guard let action = actions[key] else {
+                                    throw NSError(domain: "press", code: 64, userInfo: [NSLocalizedDescriptionKey: "unknown_press_key: 只支持 \(actions.keys.sorted().joined(separator: "/"))"])
+                                }
+                                let pressStatus = AXUIElementPerformAction(element, action as CFString)
+                                guard pressStatus == .success else {
+                                    throw NSError(domain: "press", code: 66, userInfo: [NSLocalizedDescriptionKey: "element_action_unsupported: 这个控件不接受 \(key)"])
+                                }
+                                reply(fd, ["id": id, "ok": true, "data": ["pressed": key, "action": action, "route": "ax"] as [String: Any]])
                             case "set_value":
                                 // 直接写 AXValue：滑杆、步进器、输入框都能一步到位，不用模拟按键。
                                 guard let ref = args["ref"] as? String, let pid = args["pid"] as? Int,
