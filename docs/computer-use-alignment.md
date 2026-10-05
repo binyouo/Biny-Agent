@@ -825,6 +825,10 @@ ShareableContentCache · BareModifierMonitor · AppshotEvents
 其中三块本仓库没有对应物，一并记在这里：
 
 - **PiP 是按窗口的镜像会话**（`PIPSession` + `main/PIPWindow.swift`），而且**劫持最小化**：
+  （⚠️ "hijack" **是参照自己的用词**，不是我的评价 —— 它的工具描述原文就是
+  "List currently-open PIP sessions and **armed minimise-hijacks**"。我曾想把这句"更正"掉，
+  幸亏先去核了一遍。「拿对方的散文当实现」这条**是双向的**：判一个说法是"我自己的臆测"之前，
+  也要先确认它是不是对方说的。）
   `PIPMinimizeArmer` / "armed minimise-hijacks" / "PIP auto-open on minimise failed for wid=" ——
   被监督的窗口一旦最小化，PiP 自动顶上（否则用户就看不见 agent 在干什么了）。
   它的 MCP tool 描述也在二进制里："Close one (by window_id) or all (all: true) PIP mirrors."
@@ -853,7 +857,7 @@ ShareableContentCache · BareModifierMonitor · AppshotEvents
 | 3 | **daemon 自带的 TCP MCP server**（bearer token + `tokenPath`）| 与现有两条路径（产品内工具 / stdio MCP）重叠 | 见 §6：类名与日志前缀都读到了，机制未实现 | 需要"外部 MCP 客户端不经主应用直连守护进程"时 |
 | 4 | **系统级 socket**（`/Library/Application Support/Alma/computer-use.sock`，与用户级并存）| 语义未定：多用户共享？root 起的 daemon？——**说不出用途就不做** | 二进制里有这个路径 | 弄清它解决什么问题时 |
 | 5 | **Appshot 的应用侧接线** | 它属于**活动记录**那条线（热键是"用户手动抓一张进记录"），而那块当前有未提交改动 | daemon 侧动词齐、端到端已验证（§5.5）；缺的只是消费方 | 活动记录那条线自己决定接 |
-| 6 | **PiP 栈**（按窗口镜像的多个浮窗 + 最小化劫持）| `pip/move` 那条**已单独补过**；剩下的是常驻镜像栈，参照自己管最小化劫持叫 hijack | `state`/`bounds`/`pip/move` 已实现且可验 | 需要"同时盯多个窗口"时 |
+| 6 | **PiP 镜像会话**：按窗口开一个镜像，**供 agent 主动打开** | 本仓库的 PiP 是**单个预览面**（用户偏好 × 活动驱动，`previewSurface` 是单例），**不是按窗口、agent 也开不了** | 现状可直接看：`previewSurface.ts` 的接口是 `open/update/move/bounds/close`，**没有 window_id 这一维** | 需要"让用户看某个特定窗口里 agent 在做什么"时 |
 | 7 | **per-pid 事件 tap 的稳定性** | 实测会飘（2/3 · 3/3 · 3/3）。**推测**是签名身份（参照是公证包，本仓库 ad-hoc）——标为推测，未当事实 | `doctor` 采三次报模式（`per-pid`/`session-only`/`intermittent(n/3)`/`none`）| 有正式签名时 |
 | 8 | **设置页没有 i18n 层** | 本仓库**全仓没有 i18n 机制**（整个设置区内联文案）| 对齐的是**内容**：参照 36 个 key 逐条映射到本实现的界面元素，全部有对应物 | 引入 i18n 时 |
 | 9 | **仅 macOS** | 全部基于 AX / ScreenCaptureKit / CGEvent | —— | 要做别的平台时 |
@@ -863,6 +867,24 @@ ShareableContentCache · BareModifierMonitor · AppshotEvents
 **另有两处不属于本工作的测试问题**（记录但不修）：
 - `tests/activity-tray.test.ts`：未提交的改名（活动记录→电脑历史）导致断言过时，
   **而且它会让整个套件在第 49 个文件崩溃中止**。属于那份未提交改动，不是我的。
+
+### PiP 镜像会话：参照的三个动词（原文，供下轮实现）
+
+```
+Open a Picture-in-Picture mirror of a target window so the user can watch the agent's
+  work **without raising the app**.
+Close one (by window_id) or all (all: true) PIP mirrors.
+List currently-open PIP sessions and armed minimise-hijacks.
+```
+
+**第一句的用途从句是重点**：「让用户看见 agent 在干活，**而不必把应用调起来**」——
+它和「绝不抢用户焦点」是**同一件事的两面**，不是可有可无的装饰。
+
+⚠️ **我先前把它整组判成"价值存疑"**，理由是"参照自己管它叫 hijack"。
+两个错：
+1. **"hijack" 是参照的原词**（工具描述里就有），不是它在自贬 —— 我误把它读成负面评价；
+2. 更根本的是**贴了组标签就不逐条看**了 —— 而这一组里第一条（镜像会话）恰恰是核心机制。
+   （我的笔记里写过这条教训：**分类是省力的，而省掉的正是"逐个判断"**。）
 
 **这一节怎么维护**：每发现一条新的缺口就往表里加一行，并写上"怎么确认它缺"。
 只写"未覆盖"等于没写 —— **读者要的是"我能自己验一遍"。**
