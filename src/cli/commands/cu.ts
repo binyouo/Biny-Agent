@@ -214,6 +214,18 @@ export function registerCuCommands(program: Command): void {
       print(options.json ? data : `lens: ${(data as { enabled?: boolean }).enabled ? "on" : "off"}`, options.json);
     }));
 
+  cu.command("intent").description("Dispatch a registered app-native intent instead of driving the UI")
+    .argument("[name]", "intent name (open_url | play_song | play_playlist | play_daily_recommendation | open_history_recommend)")
+    .option("--url <url>", "for open_url: the URL to route to its handler").option("--id <id>", "for song/playlist intents")
+    .option("--bundle <id>", "override the target app").option("--json", "print JSON")
+    .action((name: string | undefined, options: { url?: string; id?: string; bundle?: string; json?: boolean }) => withDriver(async driver => {
+      const args: Record<string, unknown> = { intent: name ?? "open_url" };
+      if (options.url) args.url = options.url;
+      if (options.id) args.args = { id: options.id };
+      if (options.bundle) args.bundle = options.bundle;
+      print((await driver.daemonCommand("intent", args)).data, options.json);
+    }));
+
   cu.command("shutdown").description("Stop the daemon (it otherwise exits after 900s idle)").option("--json", "print JSON")
     .action((options: { json?: boolean }) => withDriver(async driver => {
       print((await driver.daemonCommand("shutdown")).data, options.json);

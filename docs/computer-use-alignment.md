@@ -235,7 +235,45 @@ pnpm tsx src/cli/index.ts cu lens off
 
 ---
 
-## 5. 尚未实现：daemon 自带 TCP MCP server
+## 5. 已实现：原生意图层（Layer 1 app-command dispatch）
+
+参照的 helper 二进制里有一整层本仓库原先没有的东西 —— 按应用注册的**原生意图**：
+不驱动 UI，直接把已知意图派给应用。
+
+```
+Invoke a pre-registered app-native intent (Layer 1 app-command dispatch).
+  Example: intent='play_song', bundle='com.netease.163music', args={'id': 12345}.
+Open NetEase Music without changing frontmost app.
+Open a URL via LaunchServices. Routes a URL-scheme or document URL to the handler app
+  without simulating a click (Layer 1).
+```
+
+机制从产物里读得到（URL scheme + `NSWorkspace.open`）：
+
+```
+" this is the raw `orpheus://route/<name>` bridge."
+orpheus://song/?id=  ·  orpheus://song/?id=  ·  orpheus://playlist/?id=
+orpheus://route/dailyRecommend  ·  orpheus://route/historyRecommend
+```
+
+本实现落地为 `intent` 动词（daemon + `biny cu intent`），注册了上面四个网易云路由
+加一个通用的 `open_url`。
+
+**它顺带解掉了此前那个死结**：网易云的搜索框收不到合成按键（§3.2），
+但 **`orpheus://` 路由它认** —— 所以对这类应用，能派意图就别去点界面。
+
+**一条重要的边界（实测）**：`activates: false` 只是**请求**，处理者可以不理。
+
+| 目标 | 派发后前台 |
+|---|---|
+| 网易云 `orpheus://route/historyRecommend` | **不变**（与参照描述一致）|
+| Chrome 处理 `https://` | **被顶到前面** |
+
+所以"不动前台"不是这条路径的性质，是**具体应用的性质** —— 参照选 orpheus 路由正是为此。
+
+---
+
+## 6. 尚未实现：daemon 自带 TCP MCP server
 
 helper 二进制里还有一条本仓库没有的接口：
 
@@ -279,7 +317,7 @@ ShareableContentCache · BareModifierMonitor · AppshotEvents
 
 ---
 
-## 6. 已知未覆盖
+## 7. 已知未覆盖
 
 - **设置页没有 i18n 层**：参照那一节是 36 个 `settings.computerUse.*` key；本仓库**全仓没有
   i18n 机制**（整个设置区都是内联文案），所以对齐的是**内容**而不是键名。

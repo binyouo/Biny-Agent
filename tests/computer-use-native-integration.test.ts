@@ -564,3 +564,27 @@ test("doctor distinguishes a per-pid event tap from a session one", async () => 
     await driver.dispose();
   }
 });
+
+// 原生意图（参照叫 "Layer 1 app-command dispatch"）：对认识的应用不驱动 UI，
+// 直接把意图走 URL scheme 派给应用。参照的 URL 模板从它的 helper 二进制里读出来的。
+// 这里只测**不产生副作用的分支** —— 真派发会开标签页/切页面，不该进测试套件。
+test("intent refuses unknown names and URLs with no handler", async () => {
+  const driver = new NativeProcessDriver(() => {}, {
+    binaryPath: new URL("../out/native/computer-use", import.meta.url).pathname
+  });
+  try {
+    // 不认识的意图要列出可用的几个，别只说"不行"
+    await assert.rejects(
+      () => driver.daemonCommand("intent", { intent: "no_such_intent" }),
+      error => /unknown_intent_or_url/.test(String(error)) && /play_song/.test(String(error)),
+      "未知意图应当把可用项列出来"
+    );
+    // 系统里没有处理者的 scheme：要在这儿就失败，而不是"派了但没人接"
+    await assert.rejects(
+      () => driver.daemonCommand("intent", { intent: "open_url", url: "binycu-nonexistent-scheme://x" }),
+      /intent_no_handler/
+    );
+  } finally {
+    await driver.dispose();
+  }
+});

@@ -30,6 +30,27 @@ func reply(_ fd: Int32, _ value: [String: Any]) {
 }
 
 // MARK: - 权限检查
+// MARK: - 原生意图（Layer 1 app-command dispatch）
+
+/// 对认识的应用**不驱动 UI**，直接把已知意图派给应用。
+///
+/// 参照管这叫 "Layer 1 app-command dispatch"，走的是 URL scheme + `NSWorkspace.open`，
+/// 因此**不模拟点击、不动前台**（"Open NetEase Music without changing frontmost app"）。
+/// URL 模板直接取自它的 helper 二进制：
+///
+///   " this is the raw `orpheus://route/<name>` bridge."
+///   orpheus://song/?id=  ·  orpheus://playlist/?id=
+///   orpheus://route/dailyRecommend  ·  orpheus://route/historyRecommend
+///
+/// 对自绘控件的应用（网易云就是）这条比模拟输入更可靠 —— 它的搜索框收不到合成按键，
+/// 但 orpheus:// 路由它认。所以能派意图就别去点界面。
+let nativeIntents: [String: (bundle: String, url: (String?) -> String?)] = [
+    "play_song":                  ("com.netease.163music", { id in id.map { "orpheus://song/?id=\($0)" } }),
+    "play_playlist":              ("com.netease.163music", { id in id.map { "orpheus://playlist/?id=\($0)" } }),
+    "play_daily_recommendation":  ("com.netease.163music", { _ in "orpheus://route/dailyRecommend" }),
+    "open_history_recommend":     ("com.netease.163music", { _ in "orpheus://route/historyRecommend" }),
+]
+
 // MARK: - Lens：动作指示器
 
 /// 让用户**看见** agent 正在哪里动手。
@@ -873,6 +894,50 @@ DispatchQueue.global().async {
                                     raised["warning"] = "window_not_found: 没有编号为 \(requested) 的窗口，已只把应用提到前面。"
                                 }
                                 reply(fd, ["id": id, "ok": true, "data": raised] as [String: Any])
+                            case "intent":
+                                // 派发一个注册过的原生意图。`open_url` 是通用那条：
+                                // 任何 URL scheme 或文档 URL 都能交给处理它的应用。
+                                let name = args["intent"] as? String ?? "open_url"
+                                // ⚠️ 别叫 `id`：那会遮蔽请求 id，于是 reply 回的是意图参数的 id，
+                                // 客户端对不上号、把回执丢掉、一路等到超时（daemon 其实是回了的）。
+                                let intentArgId = (args["args"] as? [String: Any])?["id"].map { "\($0)" }
+                                var targetBundle = args["bundle"] as? String
+                                var urlString: String?
+                                if name == "open_url" {
+                                    urlString = args["url"] as? String ?? intentArgId
+                                } else if let spec = nativeIntents[name] {
+                                    targetBundle = targetBundle ?? spec.bundle
+                                    urlString = spec.url(intentArgId)
+                                }
+                                guard let urlString, let url = URL(string: urlString) else {
+                                    let known = (["open_url"] + nativeIntents.keys.sorted()).joined(separator: "/")
+                                    throw NSError(domain: "intent", code: 64, userInfo: [NSLocalizedDescriptionKey:
+                                        "unknown_intent_or_url: \" \(name) \" 不是已注册的意图，或没给 url。可用：\(known)"])
+                                }
+                                let config = NSWorkspace.OpenConfiguration()
+                                // 关键：不激活。意图就是要"派完就走"，别把应用顶到前台。
+                                config.activates = false
+                                // 先解析处理者，**别等 completion**：那个回调不保证会来，
+                                // 等它会把请求线程堵死到超时（第一版就是这么挂的）。
+                                // 能派就立刻回执；派不出去在解析这一步就能知道。
+                                var handler: URL?
+                                if let targetBundle {
+                                    handler = NSWorkspace.shared.urlForApplication(withBundleIdentifier: targetBundle)
+                                    guard handler != nil else {
+                                        throw NSError(domain: "intent", code: 66, userInfo: [NSLocalizedDescriptionKey:
+                                            "intent_handler_not_installed: 没有处理 \(targetBundle) 的应用"])
+                                    }
+                                } else {
+                                    handler = NSWorkspace.shared.urlForApplication(toOpen: url)
+                                    guard handler != nil else {
+                                        throw NSError(domain: "intent", code: 67, userInfo: [NSLocalizedDescriptionKey:
+                                            "intent_no_handler: 系统里没有处理 \(url.scheme ?? "该 URL") 的应用"])
+                                    }
+                                }
+                                if let handler {
+                                    NSWorkspace.shared.open([url], withApplicationAt: handler, configuration: config, completionHandler: nil)
+                                }
+                                reply(fd, ["id": id, "ok": true, "data": ["intent": name, "url": urlString, "activates": false, "handler": handler?.lastPathComponent ?? "?"] as [String: Any]])
                             case "lens":
                                 // 动作指示器的开关。不传 mode 就是 toggle（参照实现的 CLI 同样先读再翻）。
                                 switch args["mode"] as? String ?? args["enabled"] as? String {
