@@ -994,9 +994,42 @@ let idleTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { _ in
     activityLock.lock(); let elapsed = Date().timeIntervalSince(lastRequestAt); activityLock.unlock()
     if elapsed >= max(1, idleSeconds) { exit(0) }
 }
+/// 子命令与帮助。
+///
+/// 参照的 helper 有正经的 usage（`daemon [--socket PATH] [--idle-seconds N]` / `version`，
+/// 并注明"The daemon is normally launched automatically by the app. Users do not need to run it
+/// directly."）。本实现原先**完全忽略子命令**、缺 `--socket` 就静默 `exit(64)` ——
+/// 于是"用户可以手动跑"这条路径是断的：跑一下什么都不说。
+let usage = """
+biny-computer-use \(driverVersion) — macOS 桌面自动化 helper（AX + ScreenCaptureKit）
+
+用法:
+  computer-use daemon [--socket PATH] [--idle-seconds N]
+      启动常驻进程，开一个 Unix domain socket，按 NDJSON 收发。
+      N 秒无活动后自退（默认 \(Int(idleSeconds))）。
+  computer-use version
+      打印版本后退出。
+
+守护进程正常情况下由 Biny 自动拉起，用户不需要手动运行。
+"""
+
+let subcommand = CommandLine.arguments.dropFirst().first { !$0.hasPrefix("--") } ?? "daemon"
+switch subcommand {
+case "version":
+    print(driverVersion); exit(0)
+case "daemon":
+    break
+default:
+    FileHandle.standardError.write("unknown subcommand: \(subcommand)\n\n".data(using: .utf8)!)
+    print(usage); exit(64)
+}
+
 let socketIndex = CommandLine.arguments.firstIndex(of: "--socket")
-let socketPath = socketIndex.flatMap { $0 + 1 < CommandLine.arguments.count ? CommandLine.arguments[$0 + 1] : nil } ?? ""
-if socketPath.isEmpty { exit(64) }
+// 有默认值：参照的默认是机器级路径（它的安装器建的），这里用**用户级** ——
+// `/Library/...` 普通用户写不进去，照抄会让手动跑必然失败。
+let defaultSocket = (NSHomeDirectory() as NSString)
+    .appendingPathComponent("Library/Application Support/alma/biny-computer-use-manual.sock")
+let socketPath = socketIndex.flatMap { $0 + 1 < CommandLine.arguments.count ? CommandLine.arguments[$0 + 1] : nil } ?? defaultSocket
 signal(SIGPIPE, SIG_IGN)
 let server = socket(AF_UNIX, SOCK_STREAM, 0)
 var address = sockaddr_un()

@@ -16,6 +16,19 @@ UI 三类界面齐全，并补上了参照实现有、本仓库原本没有的**
 
 ## 1. 已对齐
 
+### 1.0 手动运行的入口
+
+参照的 helper 有正经 usage（`daemon [--socket PATH] [--idle-seconds N]` / `version`，
+并注明"The daemon is normally launched automatically by the app. Users do not need to run it
+directly."）。本实现原先**忽略子命令、缺 `--socket` 就静默 `exit(64)`** ——
+"可以手动跑"这条文档路径是断的：跑一下什么都不说。
+
+现在三样齐了：`version` 打印版本、未知子命令报错并附用法、`daemon` 有默认 socket
+（用**用户级**路径；参照那个是机器级的 `/Library/Application Support/Alma/`，那是它的安装器建的，
+普通用户写不进去，照抄会让手动跑必然失败）。
+
+复验：裸跑 → socket 建起来 → `status` 回执正常 → 已清理。
+
 ### 1.1 动词面：21/21
 
 `status` · `doctor` · `grant` · `list_apps` · `apps` · `windows` · `get_app_state` · `snap` ·

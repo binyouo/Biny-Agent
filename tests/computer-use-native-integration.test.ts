@@ -1,4 +1,5 @@
 import { test } from "node:test";
+import { spawnSync } from "node:child_process";
 import assert from "node:assert/strict";
 import { NativeProcessDriver } from "../src/computer/nativeDriver.js";
 
@@ -660,4 +661,19 @@ test("an armed appshot hotkey fires when its chord is dispatched", async () => {
     await driver.daemonCommand("appshot_monitor_stop").catch(() => undefined);
     await driver.dispose();
   }
+});
+
+// 参照的 helper 有正经 usage：`daemon [--socket PATH] [--idle-seconds N]` / `version`，
+// 并注明用户不需要手动运行。本实现原先忽略子命令、缺 --socket 就静默 exit(64) ——
+// "可以手动跑"这条路径是断的（跑一下什么都不说，很费解）。
+test("the daemon answers version and prints usage for an unknown subcommand", () => {
+  const binary = new URL("../out/native/computer-use", import.meta.url).pathname;
+  const version = spawnSync(binary, ["version"], { encoding: "utf8" });
+  assert.equal(version.status, 0);
+  assert.match(version.stdout.trim(), /^native-\d+$/);
+
+  const bogus = spawnSync(binary, ["definitely-not-a-subcommand"], { encoding: "utf8" });
+  assert.notEqual(bogus.status, 0, "未知子命令应当非零退出");
+  assert.match(bogus.stderr, /unknown subcommand/);
+  assert.match(bogus.stdout, /用法:/, "要告诉用户正确的用法，而不是什么都不说");
 });
