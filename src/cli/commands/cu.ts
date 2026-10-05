@@ -98,15 +98,23 @@ const cu = program.command("cu").description("Drive the Mac from the terminal (s
       print(windows.map(w => `${String(w.window_id).padEnd(8)} ${String(w.frame.w)}×${String(w.frame.h).padEnd(6)} ${w.title}`).join("\n") || "(没有在屏窗口)");
     }));
 
-  cu.command("snap").description("Observe a window: accessibility tree plus a screenshot").argument("<bundle|pid>", "app bundle id or pid")
+  // 参照的 CLI 里这个能力叫 `get_app_state`，help 上写着 **"start every turn with
+// `alma cu get_app_state <bundle>`"** —— 名字本身就是给 agent 的契约，不只是叫法。
+// 本实现原先只有 `snap`（那是参照里 tree-only 的 legacy 名），能力在、名字不对。
+// 两个名字都留：`get_app_state` 是主名（带 --shot-max-width），`snap` 保留原名。
+for (const observeName of ["get_app_state", "snap"] as const) {
+cu.command(observeName).description("Observe a window: accessibility tree plus a screenshot").argument("<bundle|pid>", "app bundle id or pid")
+    .option("--shot-max-width <n>", "downsample width of the screenshot jpg (daemon default 1280)")
     .option("--window <id>", "exact window id from `cu windows`").option("--out <path>", "where to write the jpg")
     .option("--depth <n>", "how deep to walk the accessibility tree").option("--no-shot", "skip the screenshot and read only the tree")
     .option("--json", "print JSON")
-    .action(async (value: string, options: { window?: string; out?: string; depth?: string; shot?: boolean; json?: boolean }) => withDriver(async driver => {
+    .action(async (value: string, options: { window?: string; out?: string; depth?: string; shot?: boolean; shotMaxWidth?: string; json?: boolean }) => withDriver(async driver => {
       const args = {
         ...target(value), ...windowOption(options),
         ...(options.out ? { out: options.out } : {}),
         ...(options.depth ? { max_depth: Number(options.depth) } : {}),
+        // 参照在这一条上给的是 `--shot-max-width=N`（守护进程侧字段 max_width）。
+        ...(options.shotMaxWidth ? { max_width: Number(options.shotMaxWidth) } : {}),
         // Commander 把 --no-shot 变成 shot:false
         ...(options.shot === false ? { no_shot: true } : {})
       };
@@ -121,6 +129,7 @@ const cu = program.command("cu").description("Drive the Mac from the terminal (s
       ].filter(Boolean).join("  ");
       print([header, "", tree].join("\n"));
     }));
+}
 
   cu.command("shot").description("Capture one window to a file").argument("<bundle|pid>", "app bundle id or pid")
     .option("--window <id>", "exact window id").option("--out <path>", "where to write the jpg")
@@ -197,11 +206,22 @@ const cu = program.command("cu").description("Drive the Mac from the terminal (s
       print((await driver.actRaw("drag", { x1: Number(x1), y1: Number(y1), x2: Number(x2), y2: Number(y2), pid: Number(options.pid), ...withCursorFlag(options) })).data, options.json);
     }));
 
-  cu.command("menu").description("Open an element's context menu").argument("<ref>", "element ref from `cu snap`")
+  // 参照里这个名字叫 `perform_secondary_action`，且**两种定位方式**：
+// `perform_secondary_action <ref>` 与 `perform_secondary_action --pixel <x> <y> [--pid=N]`。
+// 本实现原先只有 `menu`（ref 一种），名字和像素形式都缺。
+for (const menuName of ["perform_secondary_action", "menu"] as const) {
+cu.command(menuName).description("Open an element's context menu").argument("[ref]", "element ref from `cu snap`")
+    .option("--pixel <x> <y...>", "click at screenshot coordinates instead")
     .option("--pid <n>", "target pid").option("--json", "print JSON")
-    .action((ref: string, options: { pid?: string; json?: boolean }) => withDriver(async driver => {
-      print((await driver.actRaw("perform_secondary_action", { ref, pid: Number(options.pid), ...withCursorFlag(options) })).data, options.json);
+    .action((ref: string | undefined, options: { pixel?: string[]; pid?: string; json?: boolean }) => withDriver(async driver => {
+      if (ref && options.pixel) throw new Error(`${menuName} 只能二选一：ref 或 --pixel`);
+      const where = options.pixel
+        ? { x: Number(options.pixel[0]), y: Number(options.pixel[1]) }
+        : ref ? { ref } : null;
+      if (!where) throw new Error(`${menuName} 需要 ref 或 --pixel <x> <y>`);
+      print((await driver.actRaw("perform_secondary_action", { ...where, ...(options.pid ? { pid: Number(options.pid) } : {}), ...withCursorFlag(options) })).data, options.json);
     }));
+}
 
   const elementVerb = (name: string, description: string, extra: (value: string, options: Record<string, unknown>) => Record<string, unknown>) => {
     const command = cu.command(name).description(description).argument("<ref>", "element ref from `cu snap`")

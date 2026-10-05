@@ -34,6 +34,15 @@ assert.match(runHelp("type_text"), /--pid\s+<n>/u);
 assert.match(runHelp("press_key"), /--pid\s+<n>/u);
 // scroll 现在两种用法都认：参照式 `scroll <ref> <direction>` 与原式 `scroll <direction> --pid`。
 // 断言契约（两种形式都出现在 usage 里），不是断言某一个措辞。
+// 参照 CLI 的动词名本身就是给 agent 的契约（它的 help 写着
+// "start every turn with `alma cu get_app_state <bundle>`"）。
+// 本实现原先这两个能力叫 `snap` / `menu` —— 能力在、名字不对，而 agent 是按名字找的。
+assert.match(runHelp("get_app_state"), /bundle\|pid/u);
+assert.match(runHelp("perform_secondary_action"), /pixel/u);
+// 原名保留，避免已有调用断掉
+assert.ok(runHelp("snap").length > 0, "snap 作为原名仍应可用");
+assert.ok(runHelp("menu").length > 0, "menu 作为原名仍应可用");
+
 assert.match(runHelp("scroll"), /refOrDirection/u);
 assert.match(runHelp("scroll"), /\[direction\]/u);
 assert.match(runHelp("scroll"), /--pages\s+<n>/u);

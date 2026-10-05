@@ -324,6 +324,24 @@ shot <bundle|pid> [--window=ID] [--out=PATH] [--max-width=N]
    本实现加了 `scrollAreaAncestor` 替调用方走完（有界 8 层）。
 3. 命令行只给 ref 时**不能传 `Number(undefined)`（= NaN）**，否则 daemon 报 `app_not_found`。
 
+### 1.4g 动词**名**也是契约：`get_app_state` / `perform_secondary_action`
+
+拿到参照的完整 help 文本后把动词表整个重对了一遍（之前那次对的是旧印象），
+逮到两个"能力在、名字不对"：
+
+| 参照 | 本实现（原先） |
+|---|---|
+| `get_app_state <bundle\|pid> [--window=ID] [--depth=N] [--no-shot] [--shot-out=PATH] [--shot-max-width=N]` | `snap`（名字是参照里 **tree-only 的 legacy 名**）|
+| `perform_secondary_action <ref>` / `--pixel <x> <y> [--pid=N]` | `menu`（只有 ref 一种形式）|
+
+**名字本身就是给 agent 的契约** —— 参照的 help 明写：
+
+> Hint: start every turn with `alma cu get_app_state <bundle>` — refs become stale across turns,
+> so the screenshot is your visual anchor.
+
+agent 是按名字找能力的。已补上两个正式名（**保留原名**，不让已有调用断掉），
+并补了缺的那条像素形式 `--pixel` 与 `--shot-max-width`（实测 1280 → 640 生效）。
+
 ### 1.5 工具 / 技能层
 
 - 模型侧工具：`ComputerList` / `ComputerObserve` / `ComputerAction`（8 个动作动词）
