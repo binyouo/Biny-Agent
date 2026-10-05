@@ -6,6 +6,7 @@ import { ToolAccesses } from "./access.js";
 import { ToolOutcomeUnknownError, type Tool, type ToolExecutionContext } from "./types.js";
 import { computerActionSchema, computerImageSchema, windowTargetSchema } from "../computer/protocol.js";
 import type { DriverReply } from "../computer/controller.js";
+import { renderElementTree, type ElementLike } from "../computer/elementTree.js";
 
 const commonProperties = { pid: { type: "integer" as const, minimum: 1 }, windowId: { type: "string" as const, pattern: "^[1-9][0-9]{0,19}$", description: "Exact window ID from ComputerList; preserve as decimal string." } };
 export function createComputerUseTools(endpoint: BrowserAutomationEndpoint): Tool[] {
@@ -46,7 +47,11 @@ function execution(endpoint: BrowserAutomationEndpoint, method: string, args: Re
       // The generic tool UI must not label unverified/partial input as successful.
       const image = error ? undefined : reply.images[0];
       const imageReturned = image ? context.onImage?.({ type: "image", mimeType: image.mimeType, data: image.dataBase64 }) === true : false;
-      return { ...reply.data, error, imageReturned, ...(reply.images.length && !imageReturned ? { observationImageUnavailable: true, doNotRepeat: mutation } : {}) };
+      // 无障碍树按行集交给模型：同样 301 个元素，紧凑 JSON 要 40KB，行集只要 12.7KB，
+      // 而观察是要反复做的。element_token 留在行首括号里，动作仍按 token 引用。
+      const { elements, ...rest } = reply.data as { elements?: ElementLike[] } & Record<string, unknown>;
+      const tree = renderElementTree(elements);
+      return { ...rest, ...(tree ? { tree } : {}), error, imageReturned, ...(reply.images.length && !imageReturned ? { observationImageUnavailable: true, doNotRepeat: mutation } : {}) };
     }
   };
 }

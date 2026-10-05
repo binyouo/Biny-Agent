@@ -3,6 +3,7 @@
 // Alma 把同一份能力暴露两遍——产品内工具走自己的通道，外部 MCP 客户端走
 // stdio server（alma-reverse: 16-电脑操控 §4「双形态暴露」）。能力层只做一次，
 // 协议面按消费者各自包装；这里复用同一个 NativeProcessDriver 和同一个 daemon。
+import { renderElementTree, type ElementLike } from "./elementTree.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
@@ -90,8 +91,11 @@ export function createComputerUseMcpServer(driver: NativeProcessDriver): McpServ
         if (bundle !== undefined) args.bundle = bundle;
         if (maxElements !== undefined) args.max_elements = maxElements;
         const reply = await driver.observeRaw(args);
+        const { elements, ...rest } = reply.data as { elements?: ElementLike[] } & Record<string, unknown>;
+        const tree = renderElementTree(elements);
+        // 行集比缩进 JSON 小 3 倍，而这是每次观察都付的成本。
         const content: ({ type: "text"; text: string } | { type: "image"; data: string; mimeType: string })[] = [
-          { type: "text", text: asText(reply.data) }
+          { type: "text", text: [asText(rest), tree].filter(Boolean).join("\n") }
         ];
         const image = (reply.images ?? [])[0];
         if (image) content.push({ type: "image", data: image.dataBase64, mimeType: image.mimeType });
