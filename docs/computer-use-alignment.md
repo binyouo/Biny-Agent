@@ -64,6 +64,12 @@ export { COMPUTER_PIP_ITEM_ID, endComputerUsePipSession,
 四个导出名与 90s 常数，与本实现的 `noteComputerUseActivity` / `previewIdleMs = 90_000` 一致
 （本实现当初是照 notes 写的，这次是从代码本身复核）。
 
+**浮窗可以挪，而且记住挪到哪儿。** 参照有 `pip/move`（`state` 也返回 `bounds`）——
+PiP 是常驻置顶的，挡到东西时必须能挪开；而窗口每次打开都重建，不记住位置用户就得每次重挪。
+本实现：头部是拖动区（里面的链接 `-webkit-app-region:no-drag`，否则点不动），
+`moved` 记下位置、下次 `open()` 还原。窗口位置只在内存里记（同一次运行内有效），
+跨重启持久化留给设置层。
+
 **但组织方式不同：参照的 PiP 是一「栈」。** 路由表与实现里可见：
 
 ```

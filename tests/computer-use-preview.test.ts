@@ -19,6 +19,9 @@ class FixtureWindow extends EventEmitter implements PreviewWindow {
   };
   isDestroyed(): boolean { return this.destroyed; }
   showInactive(): void { assert.equal(this.destroyed, false); }
+  private rect = { x: 100, y: 100, width: 480, height: 400 };
+  setBounds(bounds: { x: number; y: number; width: number; height: number }): void { this.rect = { ...bounds }; }
+  getBounds(): { x: number; y: number; width: number; height: number } { return { ...this.rect }; }
   async loadURL(): Promise<void> {}
   destroy(): void { if (this.rejectDestroy) throw new Error("fixture destroy failed"); this.destroyed = true; this.emit("closed"); }
 }
@@ -70,4 +73,25 @@ test("preview drives a repeating 3fps refresh and stops when disabled", async ()
   await new Promise(resolve => setTimeout(resolve, 200));
   assert.ok(refreshes >= 1, `frame pump should fire at least once, got ${refreshes}`);
   assert.equal(refreshes, afterStop, "frame pump must stop once preview is disabled");
+});
+
+// PiP 是常驻置顶的，挡到东西时必须能挪开（参照有 pip/move，state 也返回 bounds）。
+// 而窗口每次打开都重建 —— 不记住位置，用户挪一次、下次又跳回原点。
+test("the preview window can be moved, and reopens where it was left", () => {
+  const windows: FixtureWindow[] = [];
+  const preview = new ComputerPreviewSurface(() => { const window = new FixtureWindow(); windows.push(window); return window; }, "fixture", () => undefined, () => undefined, new CaptureSchedule(() => 0));
+
+  preview.open();
+  // 用户拖到别处
+  assert.deepEqual(preview.move(320, 180), { x: 320, y: 180, width: 480, height: 400 });
+  assert.deepEqual(preview.bounds(), { x: 320, y: 180, width: 480, height: 400 });
+
+  // 关掉再开：新窗口应当落在上次那个位置，而不是回到原点
+  preview.close();
+  preview.open();
+  assert.deepEqual(windows.at(-1)!.getBounds(), { x: 320, y: 180, width: 480, height: 400 }, "重开的浮窗要回到用户放的地方");
+
+  // 没给坐标的 move 也用记住的位置（参照 pip/move 允许只更新其一）
+  assert.deepEqual(preview.move(400, undefined), { x: 400, y: 180, width: 480, height: 400 });
+  preview.close();
 });
