@@ -24,6 +24,19 @@ description: "Operate native macOS apps on the user's behalf — observe a windo
 
 两者共用同一个守护进程（`computer-use.app`），能力完全一样。
 
+## 滚动：两条路由，守护进程按目标自己选
+
+| 目标 | 路由 | 表现 |
+|---|---|---|
+| 原生滚动区（备忘录、文本编辑、Numbers…）| **AX**：写滚动条的 `AXValue` | 返回里带 `route: "ax"` 和 `from`/`to` 位置 |
+| 网页内容（Chrome、内嵌 CEF 应用）| **滚轮**：向该进程投滚轮事件 | 返回里带 `route: "wheel"` |
+
+不用你选——两者是互补的，不是备选：网页内容由浏览器自绘，**根本不暴露** `AXScrollBar`，
+只有原生区才暴露。所以按目标暴露了什么定，而不是按猜测。
+
+`amount` 是"格"（1–10）：AX 路由上一格 = **滚动范围的 10%**（滑块尺寸读不到，
+算不出"一页"多大，这是约定不是测量值）；滚轮路由上一格是系统的一个行单位。
+两者单位不同，别把它们当同一个距离。
 可用的动作共 8 个：`click` · `type_text` · `press_key` · `scroll` · `drag` ·
 `perform_secondary_action`（右键/上下文菜单）· `set_value`（直写控件值）· `select_text`。
 

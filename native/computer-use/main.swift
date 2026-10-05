@@ -162,11 +162,11 @@ func windowScreenBounds(pid: Int) -> [String: Double]? {
 /// `activateIgnoringOtherApps:` —— 那是我们控制不了的代码，会把用户的前台窗口抢走。
 /// 动作前记下当时的前台应用，动作后如果前台变成了目标应用，就切回去。
 /// 这是安全网，不是操控手段：我们从不主动把应用拿到前台。
-func withFocusGuard(_ pid: pid_t, _ body: () async -> Void) async {
+func withFocusGuard<T>(_ pid: pid_t, _ body: () async -> T) async -> T {
     let before = NSWorkspace.shared.frontmostApplication
     let restore = (before?.processIdentifier == pid) ? nil : before
-    await body()
-    guard let restore else { return }
+    let value = await body()
+    guard let restore else { return value }
     // 目标应用的自激活是异步落地的：等太短会漏（我们走了它才抢），
     // 等太久用户就真的看见自己的窗口被顶掉。
     // 所以每 5ms 巡查一次，一发现被抢就立刻还回去 —— 不等满整段。
@@ -177,9 +177,10 @@ func withFocusGuard(_ pid: pid_t, _ body: () async -> Void) async {
         try? await Task.sleep(nanoseconds: 5_000_000)
         if NSWorkspace.shared.frontmostApplication?.processIdentifier == pid {
             restore.activate(options: [])
-            return          // 已经还回去了，不必再巡查
+            return value    // 已经还回去了，不必再巡查
         }
     }
+    return value
 }
 
 /// 给异步工作加一个截止时间。
@@ -275,6 +276,42 @@ func postDrag(_ pid: pid_t, from: CGPoint, to: CGPoint) {
 /// 后台应用被投递的按键常被系统直接丢弃，而 API 会照常报"已输入"——
 /// 这是最坏的一类失败：调用方以为写进去了。Alma 的守护进程会显式报这个
 /// （notes/19 §3：「目标是后台 app 且无 key window，按键被系统丢弃」）。
+/// AX 路由：写滚动条的 AXValue。
+///
+/// macOS 没有「整页滚动」这个 AX 动作常量。头文件写得很直接：scrollbar 的
+/// kAXValueAttribute 可写，目的就是让调用方滚动。实测写进去立刻回读得到。
+///
+/// 两条路由是**互补**的，不是备选：网页内容（Chrome）不暴露 AXScrollBar
+/// （浏览器自绘），只有原生滚动区才暴露。所以按目标**暴露了什么**来选，
+/// 而不是按调用方的猜测。
+func findScrollArea(_ root: AXUIElement, depth: Int = 0) -> AXUIElement? {
+    if depth > 12 { return nil }
+    if axString(root, kAXRoleAttribute as String) == "AXScrollArea" { return root }
+    for child in axChildren(root).prefix(40) {
+        if let found = findScrollArea(child, depth: depth + 1) { return found }
+    }
+    return nil
+}
+
+func axScroll(_ pid: pid_t, direction: String, notches: Int) -> [String: Any]? {
+    let wantsVertical = direction == "up" || direction == "down"
+    let forward = direction == "down" || direction == "right"
+    guard let windowRef = axCopy(axApp(pid), kAXFocusedWindowAttribute as String) else { return nil }
+    let window = unsafeBitCast(windowRef, to: AXUIElement.self)
+    guard let area = findScrollArea(window) else { return nil }
+    for bar in axChildren(area) where axString(bar, kAXRoleAttribute as String) == "AXScrollBar" {
+        guard (axString(bar, kAXOrientationAttribute as String) == "AXVerticalOrientation") == wantsVertical else { continue }
+        guard let current = axCopy(bar, kAXValueAttribute as String) as? Double else { continue }
+        // 一格 = 滚动范围的 10%。滑块尺寸读不到（子元素为 0 个），算不出「一页」多大，
+        // 所以这是**有意的约定**，不是测量值 —— 别把它当成物理距离。
+        let step = Double(notches) * 0.1 * (forward ? 1 : -1)
+        let target = min(1.0, max(0.0, current + step))
+        guard AXUIElementSetAttributeValue(bar, kAXValueAttribute as CFString, target as CFTypeRef) == .success else { continue }
+        return ["scrolled": direction, "route": "ax", "from": current, "to": target]
+    }
+    return nil
+}
+
 func keyDeliveryWarning(_ pid: pid_t) -> String? {
     if NSRunningApplication(processIdentifier: pid)?.isActive == true { return nil }  // 前台，正常路径
     // 判据是「有没有聚焦的 UI 元素」，不是「有没有 key window」：
@@ -602,12 +639,34 @@ DispatchQueue.global().async {
                                     default: return (.line, Int32(-amount))
                                     }
                                 }()
-                                await withFocusGuard(pid) {
-                                    if let event = CGEvent(scrollWheelEvent2Source: nil, units: CGScrollEventUnit(rawValue: axis.rawValue)!, wheelCount: 1, wheel1: (direction == "up" || direction == "down") ? sign : 0, wheel2: (direction == "left" || direction == "right") ? sign : 0, wheel3: 0) {
-                                        event.postToPid(pid)
+                                let route = args["route"] as? String ?? "auto"
+                                // 滚轮要的是自然滚动转换后的方向；AX 写滚动条位置，用语义方向。
+                                let wheelDirection = args["wheel_direction"] as? String ?? direction
+                                // 先试 AX —— 原生滚动区只有这一条路能走通；不行再退回滚轮，
+                                // 那才是网页内容（不暴露 AXScrollBar）唯一可用的路由。
+                                var data = route == "wheel" ? nil : await withFocusGuard(pid) { axScroll(pid, direction: direction, notches: amount) }
+                                if data == nil && route != "ax" {
+                                    await withFocusGuard(pid) {
+                                        let (wheelAxis, wheelSign): (CGScrollEventUnit, Int32) = {
+                                            switch wheelDirection {
+                                            case "up": return (.line, Int32(amount))
+                                            case "down": return (.line, Int32(-amount))
+                                            case "left": return (.line, Int32(amount))
+                                            default: return (.line, Int32(-amount))
+                                            }
+                                        }()
+                                        if let event = CGEvent(scrollWheelEvent2Source: nil, units: CGScrollEventUnit(rawValue: wheelAxis.rawValue)!, wheelCount: 1, wheel1: (wheelDirection == "up" || wheelDirection == "down") ? wheelSign : 0, wheel2: (wheelDirection == "left" || wheelDirection == "right") ? wheelSign : 0, wheel3: 0) {
+                                            event.postToPid(pid)
+                                        }
                                     }
+                                    data = ["scrolled": direction, "route": "wheel"]
                                 }
-                                reply(fd, ["id": id, "ok": true, "data": ["scrolled": direction] as [String: Any]] as [String: Any])
+                                if var result = data {
+                                    if let guardWarning = focusGuardWarning() { result["focusGuardWarning"] = guardWarning }
+                                    reply(fd, ["id": id, "ok": true, "data": result] as [String: Any])
+                                } else {
+                                    reply(fd, ["id": id, "ok": false, "error": ["code": "scroll_route_unavailable", "message": "这个滚动区既不暴露 AXScrollBar，也不接受滚轮事件。"] as [String: Any]] as [String: Any])
+                                }
                             default:
                                 throw NSError(domain: "method", code: 64, userInfo: [NSLocalizedDescriptionKey: "unknown_cmd"])
                             }
