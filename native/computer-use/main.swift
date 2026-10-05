@@ -852,8 +852,13 @@ func postDrag(_ pid: pid_t, from: CGPoint, to: CGPoint) {
 /// （notes/19 §3：「目标是后台 app 且无 key window，按键被系统丢弃」）。
 /// AX 路由：写滚动条的 AXValue。
 ///
-/// macOS 没有「整页滚动」这个 AX 动作常量。头文件写得很直接：scrollbar 的
-/// kAXValueAttribute 可写，目的就是让调用方滚动。实测写进去立刻回读得到。
+/// 顺序：**先试整页滚动动作**（`AXScrollDownByPage` 等，参照用的就是它），不认再写 AXValue。
+///
+/// ⚠️ 这里原先写着「macOS 没有『整页滚动』这个 AX 动作常量」——**那句是错的**。
+/// 动作存在，只是以字符串寻址；头文件没有对应常量 **不等于** 平台没有这个动作
+/// （AX 动作本来就是字符串）。正确的做法是去试，不是据"没有常量"下结论。
+/// 实测这些目标（活动监视器的滚动条/滚动区/内容）都不认这个动作，于是回落；
+/// scrollbar 的 kAXValueAttribute 可写是头文件明说的，写进去立刻回读得到。
 ///
 /// 两条路由是**互补**的，不是备选：网页内容（Chrome）不暴露 AXScrollBar
 /// （浏览器自绘），只有原生滚动区才暴露。所以按目标**暴露了什么**来选，
@@ -934,6 +939,34 @@ func axScroll(_ pid: pid_t, direction: String, notches: Int, pages: Double? = ni
     guard let area = findScrollArea(window) else { return nil }
     for bar in axChildren(area) where axString(bar, kAXRoleAttribute as String) == "AXScrollBar" {
         guard (axString(bar, kAXOrientationAttribute as String) == "AXVerticalOrientation") == wantsVertical else { continue }
+        // 先试**整页滚动动作** —— 参照用的就是它（`AXScrollDownByPage` 等）。
+        // 我早先说"macOS 没有这个动作"是错的：AX 动作本来就以字符串寻址，
+        // 头文件里没有常量不代表平台没有。头文件没给，就自己去试。
+        let pageAction: String? = {
+            switch direction {
+            case "down": return "AXScrollDownByPage"
+            case "up": return "AXScrollUpByPage"
+            case "left": return "AXScrollLeftByPage"
+            default: return "AXScrollRightByPage"
+            }
+        }()
+        if let pageAction {
+            // 动作要打在**支持它的那个元素**上：滚动区本身不一定认，内容元素（表格/大纲）才认。
+            // 参照给调用方的提示也是这个意思（"snap the parent ScrollArea"）。
+            // 候选有限，逐个试一下比让调用方自己猜便宜。
+            // 顺序：滚动条（"整页"本来就是滚动条的概念，它最可能认）→ 滚动区 → 内容元素。
+            var candidates: [AXUIElement] = []
+            candidates.append(contentsOf: axChildren(area).filter {
+                axString($0, kAXRoleAttribute as String) == "AXScrollBar"
+            })
+            candidates.append(area)
+            candidates.append(contentsOf: axChildren(area).filter {
+                axString($0, kAXRoleAttribute as String) != "AXScrollBar"
+            })
+            for candidate in candidates where AXUIElementPerformAction(candidate, pageAction as CFString) == .success {
+                return ["scrolled": direction, "route": "ax-page", "unit": "pages"]
+            }
+        }
         guard let current = axCopy(bar, kAXValueAttribute as String) as? Double else { continue }
         // 给了 pages 就按**真实的页**走（视口/内容）；否则退回「一格 ≈ 范围的 10%」
         // 这个有意的约定 —— 后者是估的，前者是量出来的，回执里会说明用的是哪个。
