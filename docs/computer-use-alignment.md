@@ -53,6 +53,30 @@ UI 三类界面齐全，并补上了参照实现有、本仓库原本没有的**
 穿透这条**是验的不是声明的**：lens 在点击**之前**弹出、盖满全屏，此时双击仍能选中词。
 开关行为：`off` 与 `show_cursor:false` 都不出现，默认出现（用 `.optionOnScreenOnly` 判可见）。
 
+### 1.2b 观察会自动后台拉起目标
+
+参照 SKILL 原文：`get_app_state` **auto-launches the target app in the background if it is
+not running** —— 调用方不必先 launch 再 observe。本实现原先对未运行的应用直接
+`app_not_found` 失败，现已实现同样的语义（`resolvePid` 走 `NSWorkspace.openApplication`
+且 `activates: false`）。
+
+**同时补上了参照明令的一条**（本实现原先没有）：
+
+> ## Opening apps — DO NOT use `open -b`
+> `open -b <bundle>` activates the app by default, which steals focus. **Never use it.**
+
+这条已写进本仓库的 SKILL.md。
+
+⚠️ 但 `activates: false` 是**请求不是保证**，实测：
+
+| 冷启动目标 | 前台 |
+|---|---|
+| 预览 | 不变 ✓ |
+| App Store | 不变 ✓ |
+| **FaceTime** | **被顶到前面** ✗（通话类应用自己会跳）|
+
+与 §5 的 URL 派发是同一个规律：**"不动前台"是具体应用的性质**。
+
 ### 1.3 生命周期与并发
 
 | 项 | 参照 | 本实现 |

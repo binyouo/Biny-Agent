@@ -259,11 +259,35 @@ func axWalk(_ root: AXUIElement, depth: Int, maxDepth: Int, limit: Int, counter:
 }
 
 // MARK: - 目标解析
+/// 按 pid 或 bundle 解析目标进程。
+///
+/// **bundle 没在跑就后台拉起**：参照的 `get_app_state` 就是这个语义
+/// （"auto-launches the target app in the background if it is not running"），
+/// 调用方不必先 launch 再 observe，冷启动也不会打断用户。
+///
+/// 关键是 `activates: false`。参照 SKILL 里那条
+/// "Opening apps — DO NOT use `open -b`" 就是讲这件事：`open -b` 默认会激活应用、
+/// 抢走用户当前的焦点。这里走 `NSWorkspace.openApplication` 并把激活关掉。
 func resolvePid(_ parameters: [String: Any]) throws -> pid_t {
     if let pid = parameters["pid"] as? Int { return pid_t(pid) }
     if let bundle = parameters["bundle"] as? String {
         if let app = NSRunningApplication.runningApplications(withBundleIdentifier: bundle).first { return app.processIdentifier }
-        throw NSError(domain: "app", code: 1, userInfo: [NSLocalizedDescriptionKey: "app_not_found: \(bundle)"])
+        guard let appURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundle) else {
+            throw NSError(domain: "app", code: 1, userInfo: [NSLocalizedDescriptionKey: "app_not_installed: \(bundle)"])
+        }
+        let config = NSWorkspace.OpenConfiguration()
+        config.activates = false
+        let ready = DispatchSemaphore(value: 0)
+        var launched: NSRunningApplication?
+        NSWorkspace.shared.openApplication(at: appURL, configuration: config) { app, _ in
+            launched = app
+            ready.signal()
+        }
+        // 冷启动要给它一点时间，但不无限等 —— 起不来就如实报，别让调用方卡在这儿。
+        _ = ready.wait(timeout: .now() + 5)
+        if let launched { return launched.processIdentifier }
+        if let app = NSRunningApplication.runningApplications(withBundleIdentifier: bundle).first { return app.processIdentifier }
+        throw NSError(domain: "app", code: 1, userInfo: [NSLocalizedDescriptionKey: "app_launch_failed: \(bundle) 没能在 5 秒内起来"])
     }
     throw NSError(domain: "app", code: 64, userInfo: [NSLocalizedDescriptionKey: "app_not_found: missing pid/bundle"])
 }

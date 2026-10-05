@@ -78,6 +78,21 @@ description: "Operate native macOS apps on the user's behalf — observe a windo
 可用的动作共 8 个：`click` · `type_text` · `press_key` · `scroll` · `drag` ·
 `perform_secondary_action`（右键/上下文菜单）· `set_value`（直写控件值）· `select_text`。
 
+## 启动应用：绝不用 `open -b`
+
+`open -b <bundle>` **默认会激活应用**，把用户正在做的事顶掉。**永远不用它。**
+
+- 直接用 `ComputerObserve`（或 `biny cu snap`）就够 —— **目标没在跑时守护进程会后台把它拉起来**，
+  这是默认行为，不用先 launch。
+- 要显式控制就用 `launch_app` / `biny cu launch_app <bundle>`：它走
+  `NSWorkspace.openApplication` 并把 `activates` 关掉。
+
+目标只有一个：**即使用户要的应用是冷启动，他的前台应用和当前 Space 也不该被动到。**
+
+⚠️ 但这是一条**请求**，不是保证：实测「预览」「App Store」冷启动都不动前台，
+而 **FaceTime 会自己跳到前面**（通话类应用如此）。所以别把它当成不可能失败的前提 ——
+真在意的话，动作前后各确认一次前台。
+
 ## 每一轮都从观察开始
 
 先 `ComputerObserve`（或 MCP 的 `get_app_state`）拿一次快照：它一次返回**无障碍树和窗口截图**两样东西。

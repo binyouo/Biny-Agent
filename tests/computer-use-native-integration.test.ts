@@ -588,3 +588,21 @@ test("intent refuses unknown names and URLs with no handler", async () => {
     await driver.dispose();
   }
 });
+
+// 参照的 get_app_state 会自动后台拉起未运行的应用（"auto-launches the target app in the
+// background if it is not running"），本实现已对齐。这里只测**不产生副作用的分支** ——
+// 真去拉起一个应用会往用户屏幕上开窗口，不该进测试套件。
+test("observing an unknown bundle fails as not-installed rather than not-found", async () => {
+  const driver = new NativeProcessDriver(() => {}, {
+    binaryPath: new URL("../out/native/computer-use", import.meta.url).pathname
+  });
+  try {
+    // 装都没装：要在这一步就说清楚，而不是去尝试拉起然后超时
+    await assert.rejects(
+      () => driver.daemonCommand("get_app_state", { bundle: "com.biny.definitely-not-installed", max_elements: 5 }),
+      /app_not_installed/
+    );
+  } finally {
+    await driver.dispose();
+  }
+});
