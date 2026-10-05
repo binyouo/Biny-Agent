@@ -10,11 +10,32 @@ const permissionLabels: Record<ComputerPermissionState, string> = { granted: "�
 function PermissionRow({ name, label, state }: { name: string; label: string; state: ComputerPermissionState }): React.JSX.Element {
   return <div className="cu-permission" data-permission={name}><span>{label}</span><span className={`cu-permission-state is-${state}`}><span className="cu-sr-only">{permissionLabels[state]}</span><Icon name={state === "granted" ? "circle-check" : state === "denied" ? "close" : "help"} size={17} /></span></div>;
 }
+function RevokeDialog({ bundle, busy, error, onClose, onConfirm }: { bundle: string; busy: boolean; error: string; onClose(): void; onConfirm(): void }): React.JSX.Element {
+  const dialog = useRef<HTMLDialogElement>(null);
+  useEffect(() => {
+    const previous = document.activeElement;
+    const element = dialog.current;
+    element?.showModal(); element?.querySelector<HTMLButtonElement>("button")?.focus();
+    return () => { element?.close(); if (previous instanceof HTMLElement && previous.isConnected) previous.focus(); };
+  }, []);
+  return <dialog ref={dialog} className="cu-confirm" role="alertdialog" aria-labelledby="cu-revoke-title" aria-describedby="cu-revoke-description" data-confirm-revoke={bundle} onCancel={event => { event.preventDefault(); if (!busy) onClose(); }}>
+    <h4 id="cu-revoke-title">撤销该应用的授权？</h4><p id="cu-revoke-description" className="cu-muted">撤销 <code className="cu-path">{bundle}</code> 的授权。严格审批开启时，重新批准前将无法操作；关闭严格审批时，下次使用会自动授权。</p>
+    {error ? <p role="alert" className="cu-feedback">{error}</p> : null}
+    <div className="cu-confirm-actions"><button type="button" className="settings-secondary-button" disabled={busy} onClick={onClose}>取消</button><button type="button" className="settings-secondary-button is-danger" disabled={busy} onClick={onConfirm}>确认撤销</button></div>
+  </dialog>;
+}
+function lastUsage(time: string): string {
+  const seconds = Math.max(0, (Date.now() - Date.parse(time)) / 1000);
+  if (seconds < 60) return "刚刚使用";
+  if (seconds < 3600) return `${Math.floor(seconds / 60)} 分钟前使用`;
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)} 小时前使用`;
+  return `${Math.floor(seconds / 86400)} 天前使用`;
+}
 export function SettingsComputerUse(): React.JSX.Element {
   const [status, setStatus] = useState<ComputerStatus>();
   const [diagnostic, setDiagnostic] = useState<ComputerDiagnostics>();
   const [tested, setTested] = useState(false);
-  // 撤销是不可逆的：Alma 会先弹确认，这里同样先问再动。
+
   const [confirmRevoke, setConfirmRevoke] = useState<string | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -95,7 +116,7 @@ export function SettingsComputerUse(): React.JSX.Element {
       <div className="settings-row-group cu-toggles">
         <SettingsSwitch label="桌面控制" checked={Boolean(status && status.state !== "disabled")} disabled={unavailable || !status} detail="保存启用选择，首次使用时启动；停止会关闭此选项。" onChange={value => void perform(async () => { await updateStatus(() => value ? api.enable() : api.control("stop")); await readDiagnostic(); })} />
         <SettingsSwitch label="严格应用审批" checked={diagnostic?.strictApproval ?? false} disabled={unavailable || !diagnostic} detail="开启后仅允许已批准的应用；关闭时首次使用自动授权。应用授权跨会话保存，与全局工具自动批准独立。截图会发送给当前模型。" onChange={value => void perform(() => readDiagnostic(() => api.strict(value)))} />
-        <SettingsSwitch label="记录操作日志" checked={status?.actionLogging ?? false} disabled={unavailable || !status} detail="临时保留最近 50 条操作记录，停止后清空。" onChange={value => void perform(() => updateStatus(() => api.logging(value)))} />
+        <SettingsSwitch label="记录操作日志" checked={status?.actionLogging ?? false} disabled={unavailable || !status} detail="在本机保存操作元数据，最多保留 10000 条；此处显示最近 50 条。关闭记录后保留已有历史，不记录输入或截图。" onChange={value => void perform(() => updateStatus(() => api.logging(value)))} />
         <SettingsSwitch label="画中画" checked={status?.preview ?? false} disabled={unavailable || !status} detail="操控期间在悬浮窗口显示画面，停手 90 秒后自动收起；开启时暂停活动截图。" onChange={value => void perform(() => updateStatus(() => api.preview(value)))} />
       </div>
       {diagnostic?.focusGuard === "unavailable" ? (
@@ -108,17 +129,6 @@ export function SettingsComputerUse(): React.JSX.Element {
           </p>
         </section>
       ) : null}
-      <section className="cu-section cu-approvals"><h4>应用授权</h4>
-        <p className="cu-muted">严格模式下，首次使用被拦截的应用会列在这里等待批准。关闭严格审批后，已撤销的应用在下次使用时会自动重新授权。</p>
-        <button type="button" className="settings-secondary-button" disabled={unavailable} onClick={() => void perform(() => readDiagnostic())}>刷新应用授权</button>
-        {!diagnostic?.approvals.length ? <p className="cu-muted">尚无应用授权记录。</p> : diagnostic.approvals.map(app => {
-          const approved = Boolean(app.approvedAt && !app.revokedAt);
-          return <div className="cu-permission" key={app.bundleId} data-app={app.bundleId}>
-            <div><strong>{app.appName}</strong><p className="cu-muted">{app.bundleId} · {approved ? "已批准" : app.revokedAt ? "已撤销" : "待批准"} · 使用 {app.useCount} 次{app.lastUsedAt ? ` · 最近 ${new Date(app.lastUsedAt).toLocaleString()}` : ""}</p></div>
-            <button type="button" className="settings-secondary-button" disabled={unavailable} onClick={() => { if (approved) setConfirmRevoke(app.bundleId); else void perform(() => readDiagnostic(() => api.approve(app.bundleId))); }}>{approved ? "撤销授权" : "批准应用"}</button>
-          </div>;
-        })}
-      </section>
       <details className="cu-controls"><summary>控制与高级选项</summary><p role="status">{status ? `${stateLabels[status.state]} · ${outcomeLabels[status.lastOutcome]}` : "正在读取控制状态…"}</p><div className="cu-button-row">
         <button type="button" className="settings-secondary-button" disabled={unavailable || status?.state !== "ready"} onClick={() => control("pause")}><Icon name="pause" size={14} />暂停</button>
         <button type="button" className="settings-secondary-button" disabled={unavailable || !status || status.state === "ready" || status.state === "disabled"} onClick={() => control("resume")}><Icon name="play" size={14} />继续（需重新观察）</button>
@@ -140,23 +150,20 @@ export function SettingsComputerUse(): React.JSX.Element {
         {diagnostic?.actionLimits?.map(limit => <p className="cu-description" data-action-limit={limit.action} key={limit.code}>{limit.message}</p>)}
         <pre className="cu-diagnostics">{diagnosticText}{diagnostic ? `\n组件：${diagnostic.workerPath}` : ""}</pre>
       </details>
-      {confirmRevoke ? (
-        <div className="cu-confirm" role="alertdialog" aria-modal="true" aria-label="撤销应用授权" data-confirm-revoke={confirmRevoke}>
-          <h4>撤销该应用的授权？</h4>
-          <p className="cu-muted">
-            撤销后 Biny 将不再被允许操控 <code className="cu-path">{confirmRevoke}</code>。
-            严格审批开启时需要重新批准才能再次操控。
-          </p>
-          <div className="cu-confirm-actions">
-            <button type="button" className="settings-secondary-button" onClick={() => setConfirmRevoke(null)}>取消</button>
-            <button
-              type="button"
-              className="settings-secondary-button is-danger"
-              onClick={() => void perform(async () => { const target = confirmRevoke; setConfirmRevoke(null); await readDiagnostic(() => api.revoke(target)); })}
-            >确认撤销</button>
-          </div>
-        </div>
-      ) : null}
+
     </section>
+      <section className="cu-card cu-approvals"><h3>应用授权（{diagnostic?.approvals.length ?? 0}）</h3>
+        <p className="cu-muted">严格模式下，首次使用被拦截的应用会列在这里等待批准。关闭严格审批后，已撤销的应用在下次使用时会自动重新授权。</p>
+        <button type="button" className="settings-secondary-button" disabled={unavailable} onClick={() => void perform(() => readDiagnostic())}>刷新应用授权</button>
+        {!diagnostic?.approvals.length ? <p className="cu-muted">尚无应用授权记录。</p> : diagnostic.approvals.map(app => {
+          const approved = Boolean(app.approvedAt && !app.revokedAt);
+          return <div className="cu-permission" key={app.bundleId} data-app={app.bundleId}>
+            <div><strong>{app.appName}</strong><p className="cu-muted">{app.bundleId} · {approved ? "已批准" : app.revokedAt ? "已撤销" : "待批准"} · 使用 {app.useCount} 次{app.lastUsedAt ? ` · ${lastUsage(app.lastUsedAt)}` : ""}</p></div>
+            <button type="button" className={`settings-secondary-button${approved ? " is-danger" : ""}`} disabled={unavailable} onClick={() => { if (approved) { setError(""); setConfirmRevoke(app.bundleId); } else void perform(() => readDiagnostic(() => api.approve(app.bundleId))); }}>{approved ? "撤销授权" : "批准应用"}</button>
+          </div>;
+        })}
+      </section>
+      {confirmRevoke ? <RevokeDialog bundle={confirmRevoke} busy={busy} error={error} onClose={() => setConfirmRevoke(null)} onConfirm={() => void perform(async () => { await readDiagnostic(() => api.revoke(confirmRevoke)); if (mounted.current) setConfirmRevoke(null); })} /> : null}
+
   </div>;
 }

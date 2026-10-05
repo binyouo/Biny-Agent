@@ -10,6 +10,7 @@ import { useFluidHoverItems } from "../../useFluidHoverItems.js";
 import { FluidHoverHighlight } from "../FluidHoverHighlight.js";
 import { Icon } from "../Icon.js";
 import { ProviderBrandGlyph } from "../ProviderBrandGlyph.js";
+import { ProviderBrandIcon } from "../ProviderBrandIcon.js";
 import type { SettingsModelPickerGroup } from "./settingsModelPickerData.js";
 
 export function SettingsModelPicker({
@@ -77,10 +78,9 @@ export function SettingsModelPicker({
       >
         {selected ? (
           <>
-            <ProviderMark iconTone={findGroup(groups, selected.value)?.iconTone ?? "compatible"} />
+            <ProviderMark iconId={findGroup(groups, selected.value)?.iconId} iconTone={findGroup(groups, selected.value)?.iconTone ?? "compatible"} />
             <span className="settings-model-picker-trigger-copy">
               <strong>{selected.label}</strong>
-              <small>{findGroup(groups, selected.value)?.label ?? selected.secondary}</small>
             </span>
           </>
         ) : (
@@ -117,7 +117,7 @@ export function SettingsModelPicker({
           {visibleGroups.map((group) => (
             <section className="settings-model-picker-group" key={group.key}>
               <div className="settings-model-picker-group-heading">
-                <ProviderMark iconTone={group.iconTone} />
+                <ProviderMark iconId={group.iconId} iconTone={group.iconTone} />
                 <strong>{group.label}</strong>
                 <small>{group.options.length}</small>
               </div>
@@ -155,10 +155,12 @@ function findGroup(groups: readonly SettingsModelPickerGroup[], value: string): 
   return groups.find((group) => group.options.some((option) => option.value === value));
 }
 
-function ProviderMark({ iconTone }: { iconTone: string }): React.JSX.Element {
+function ProviderMark({ iconTone, iconId }: { iconTone: string; iconId?: string }): React.JSX.Element {
   return (
     <span className={`settings-model-picker-provider-mark${iconTone === "local" ? " is-local" : ""}`}>
-      {iconTone === "local" ? <Icon name="database" size={14} /> : <ProviderBrandGlyph type={iconTone} />}
+      {iconTone === "local"
+        ? <Icon name="database" size={14} />
+        : <ProviderBrandIcon className="provider-logo" fallback={<ProviderBrandGlyph type={iconTone} />} iconId={iconId} />}
     </span>
   );
 }

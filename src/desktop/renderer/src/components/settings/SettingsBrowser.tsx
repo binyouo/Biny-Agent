@@ -81,7 +81,7 @@ export function SettingsBrowser(): React.JSX.Element {
         const result = await window.biny.browserRelaySetup(action === "regenerate");
         if (mounted.current) setExtensionPath(result.extensionPath);
         message = action === "regenerate" ? "新配对地址已复制，旧配对地址已失效。请在各 Chrome 配置的扩展设置中重新连接。"
-          : "配对地址已复制。在扩展设置中粘贴地址，选择「保存并连接」；连接结果会显示在上方。";
+          : "配对地址已复制。在扩展设置中粘贴地址，选择「保存并连接」。";
       }
       if (mounted.current) setNotice(message);
     } catch (reason) {
@@ -136,7 +136,7 @@ export function SettingsBrowser(): React.JSX.Element {
       {actionError ? <p role="alert">{actionError}</p> : null}
       <details className="settings-disclosure"><summary>多个 Chrome 配置与连接范围</summary>
         <p>最多同时连接 8 个 Chrome 配置。每个配置需分别安装扩展、粘贴配对地址，并填写不同的连接名称。</p>
-        <p>连接覆盖该 Chrome 配置的普通网页；重新生成地址或撤销连接会影响全部已配对配置。</p>
+        <p>连接覆盖该 Chrome 配置的普通网页。</p>
       </details>
     </section>
   </div>;

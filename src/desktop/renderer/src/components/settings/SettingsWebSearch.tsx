@@ -39,7 +39,7 @@ export function SettingsWebSearch({ onOpenBrowser, onExportCookies, onImportCook
       <NativeSelect id="web-search-engine" value={search.provider} onChange={(event) => setWebSearch({ ...search, provider: event.target.value as "google" | "xiaohongshu" })}>
         <option value="google">Google</option><option value="xiaohongshu">小红书</option>
       </NativeSelect>
-      <p>Google 用于通用搜索，小红书用于生活与购物内容。</p>
+      <p>选择用于网络搜索的搜索引擎。Google 适用于通用搜索，小红书适用于中文生活方式和购物内容。</p>
       <div className="web-search-options-grid">
         <div>
           <label htmlFor="web-search-timeout">搜索等待时间</label>

@@ -48,7 +48,7 @@ export function SettingsToolModel({ onTest }: { onTest(configuration: DesktopMod
           <SettingsModelPicker
             ariaLabel="工具模型"
             disabled={saving || testing || saveState === "saving" || saveState === "rolling_back" || saveState === "recovery_required"}
-            groups={modelPickerGroups(snapshot.models.configured)}
+            groups={modelPickerGroups(snapshot.models.configured, snapshot.models.connections)}
             inheritLabel="自动选择"
             onChange={selectModel}
             placeholder="自动选择"
@@ -56,11 +56,7 @@ export function SettingsToolModel({ onTest }: { onTest(configuration: DesktopMod
           />
           <ModelTestButton disabled={!active || saving} label="测试模型" testing={testing} onClick={runTest} />
         </div>
-        <p className="tool-model-status">{active
-          ? snapshot.models.toolModel
-            ? `当前使用：${active.displayName}。`
-            : `当前使用：${active.displayName}（自动模式，按供应商与辅助型号优先级选择已配置模型）。`
-          : "暂无可用工具模型，请先在「模型供应商」中配置。"}</p>
+        {active ? null : <p className="tool-model-status">暂无可用工具模型，请先在「模型供应商」中配置。</p>}
         <ModelTestResult result={testResult} />
         {error ? <p role="alert">{error}</p> : null}
       </section>

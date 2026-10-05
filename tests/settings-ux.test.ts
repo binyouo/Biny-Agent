@@ -2,6 +2,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { registerHooks } from "node:module";
+import { PROVIDER_ICON_DATA } from "../src/desktop/renderer/src/assets/provider-icon-data.js";
+import { providerCatalog } from "../src/desktop/renderer/src/providerCatalog.js";
+import { loadProviderIconData } from "../src/desktop/renderer/src/components/ProviderIconData.js";
 import { defaultConfig } from "../src/config/schema.js";
 import type { AppearanceSnapshot } from "../src/appearance/types.js";
 import type { DesktopSettingsSaveInput, DesktopSettingsSnapshot, DesktopSkillCatalogEntry, DesktopSkillCatalogSnapshot } from "../src/desktop/protocol.js";
@@ -33,7 +36,10 @@ async function harness(api: Record<string, unknown> = {}) {
     matchMedia: () => ({ matches: true, addEventListener() {}, removeEventListener() {} }),
     biny: { updateSettingsDraftState: async () => {}, releaseSettingsCredentials: async () => {}, previewAppearance: async () => {},
       settingsSnapshot: async () => snapshot(), onActivityEvent: () => () => {}, activitySnapshot: async () => { throw new Error("offline"); },
-      activityPermissions: async () => { throw new Error("offline"); }, ...api }
+      activityPermissions: async () => { throw new Error("offline"); },
+      // 快速对话现在挂在通用页里，任何一次渲染设置外壳都会读它 —— 所以默认就要有桩。
+      quickChatSettings: async () => ({ autoHideOnBlur: true, injectScreenContext: false, clickThrough: false }),
+      setQuickChatSettings: async (value: unknown) => value, ...api }
   });
   dom.window.HTMLElement.prototype.scrollTo = () => {};
   dom.window.HTMLDialogElement.prototype.showModal = function () { this.open = true; };
@@ -115,7 +121,7 @@ test("外观分段选择支持原生单选语义，自定义字体与字号重�
 test("搜索按设置内容定位子页，空结果可清除，跨页草稿继续保留", async () => {
   const h = await harness();
   try {
-    await h.overlay();
+    await h.overlay({ targetTab: "用户界面" });
     await h.click('input[type="radio"][value="dark"]');
     await h.input('[aria-label="搜索设置"]', "流式");
     assert.match(document.querySelector('[aria-label="设置搜索结果"]')?.textContent ?? "", /聊天偏好/u);
@@ -135,7 +141,7 @@ test("搜索按设置内容定位子页，空结果可清除，跨页草稿继�
     await h.input('[aria-label="搜索设置"]', "no_such_setting");
     assert.match(document.querySelector('[role="status"]')?.textContent ?? "", /没有找到/u);
     await h.click('[aria-label="清除设置搜索"]');
-    await h.click('.settings-nav-list button');
+    await h.click('[data-settings-tab="用户界面"]');
     assert.equal(document.querySelector<HTMLInputElement>('input[value="dark"]')?.checked, true);
     assert.match(document.querySelector('.settings-page-footer')?.textContent ?? "", /未保存/u);
   } finally { await h.close(); }
@@ -144,19 +150,25 @@ test("搜索按设置内容定位子页，空结果可清除，跨页草稿继�
 test("独立页面切换保留未保存主题和关闭确认，Activity Record 搜索别名仍定位中文页面", async () => {
   const h = await harness({ quickChatSettings: async () => ({ autoHideOnBlur: true, injectScreenContext: false, clickThrough: false }) });
   try {
-    await h.overlay();
+    await h.overlay({ targetTab: "用户界面" });
     await h.click('input[value="dark"]');
-    const quick = [...document.querySelectorAll<HTMLButtonElement>(".settings-nav-list button")].find(button => button.textContent === "快速对话");
-    assert.ok(quick); quick.focus();
-    await h.React.act(() => quick.click());
-    assert.equal(document.querySelector(".settings-titlebar h2")?.textContent, "快速对话");
+    const navLabels = [...document.querySelectorAll<HTMLButtonElement>(".settings-nav-list button")].map(button => button.textContent);
+    assert.ok(!navLabels.includes("快速对话"), "快速对话不再是独立页面，已并入通用");
+    assert.ok(!navLabels.includes("工具模型"), "工具模型不再是独立页面，已并入通用");
+    const general = [...document.querySelectorAll<HTMLButtonElement>(".settings-nav-list button")].find(button => button.textContent === "通用");
+    assert.ok(general); general.focus();
+    await h.React.act(() => general.click());
+    assert.equal(document.querySelector(".settings-titlebar h2")?.textContent, "通用");
+    assert.ok(document.querySelector("#vision-model"), "视觉模型在通用页里预留了位置");
+    assert.ok(document.querySelector("#tool-model"), "工具模型卡片在通用页里");
+    assert.ok(document.querySelector("#quickchat-behavior"), "快速对话卡片在通用页里");
     assert.ok(document.querySelector("#quickchat-shortcut") === null, "移除没有配置入口的快捷键展示块");
-    assert.ok(document.activeElement === quick, "切换页面后应保留导航按钮焦点");
+    assert.ok(document.activeElement === general, "切换页面后应保留导航按钮焦点");
     await h.input('[aria-label="搜索设置"]', "Activity Record");
-    assert.match(document.querySelector('[aria-label="设置搜索结果"]')?.textContent ?? "", /活动记录/u);
+    assert.match(document.querySelector('[aria-label="设置搜索结果"]')?.textContent ?? "", /电脑历史/u);
     await h.click('[aria-label="设置搜索结果"] button');
-    assert.equal(document.querySelector(".settings-titlebar h2")?.textContent, "活动记录");
-    await h.click(".settings-nav-list button");
+    assert.equal(document.querySelector(".settings-titlebar h2")?.textContent, "电脑历史");
+    await h.click('[data-settings-tab="用户界面"]');
     assert.equal(document.querySelector<HTMLInputElement>('input[value="dark"]')?.checked, true);
     assert.match(document.querySelector(".settings-page-footer")?.textContent ?? "", /未保存/u);
     await h.click('[aria-label="关闭设置"]');
@@ -171,7 +183,7 @@ test("设置加载失败持续显示重试入口，重试期间不声称已保�
   const deferred = Promise.withResolvers<DesktopSettingsSnapshot>();
   const h = await harness({ settingsSnapshot: async () => { if (++attempt === 1) throw new Error("读取失败"); return await deferred.promise; } });
   try {
-    await h.overlay();
+    await h.overlay({ targetTab: "用户界面" });
     assert.match(document.querySelector('[role="alert"]')?.textContent ?? "", /读取失败/u);
     assert.doesNotMatch(document.querySelector('.settings-page-footer')?.textContent ?? "", /所有更改已保存/u);
     await h.click('[aria-label="重新加载设置"]');
@@ -191,7 +203,7 @@ test("保存失败保留草稿并就地显示原因，重试提交同一组更�
     return { status: "committed", journalId: "test", appliedFields: ["themePreference"], snapshot: { ...snapshot(), themePreference: input.themePreference } };
   } });
   try {
-    await h.overlay();
+    await h.overlay({ targetTab: "用户界面" });
     assert.equal(document.querySelector<HTMLButtonElement>('.settings-save-button')?.disabled, true);
     await h.click('input[value="dark"]');
     assert.equal(document.querySelector('.settings-footer-actions button')?.textContent, "取消");
@@ -209,7 +221,7 @@ test("保存失败保留草稿并就地显示原因，重试提交同一组更�
 test("运行中允许保存外观，但共享设置更改明确说明禁用原因", async () => {
   const h = await harness({ settingsSnapshot: async () => ({ ...snapshot(), hasRunningTasks: true }) });
   try {
-    await h.overlay();
+    await h.overlay({ targetTab: "用户界面" });
     await h.click('input[value="dark"]');
     assert.equal(document.querySelector<HTMLButtonElement>('.settings-save-button')?.disabled, false);
     await h.input('[aria-label="搜索设置"]', "流式");
@@ -289,7 +301,7 @@ test("没有项目也能修改外观，偏好保存成功后才更新界面", as
   const h = await harness({ activitySettings: async () => ({ activity: snapshot().activity, configRevision: "config:1" }),
     setThemePreference: async (value: string) => { writes.push(value); return await saved.promise; } });
   try {
-    await h.overlay({ workspace: undefined, onThemePreference: (value: string) => previews.push(value) });
+    await h.overlay({ workspace: undefined, onThemePreference: (value: string) => previews.push(value), targetTab: "用户界面" });
     await h.click('input[value="dark"]');
     assert.deepEqual(writes, ["dark"]);
     assert.deepEqual(previews, []);
@@ -367,7 +379,7 @@ test("打开设置时切换结构皮肤保留当前分页、未保存修改和�
     const props = { onNotify: noop, onThemePreference: noop, onFontPreference: noop, onAppearancePreference: noop, onSettingsCommitted: noop, onClose: noop };
     const initial: AppearanceSnapshot = { themePreference: "dark", appearancePreference: structuredClone(DEFAULT_APPEARANCE), fontPreference: { family: "system", size: 14 } };
     await h.overlay(props, initial);
-    await h.click('.settings-nav-list button:nth-of-type(4)');
+    await h.click('[data-settings-tab="聊天"]');
     const streaming = document.querySelector<HTMLInputElement>('[aria-label="启用流式响应"]');
     assert.ok(streaming);
     assert.equal(streaming.type, "checkbox");
@@ -475,5 +487,80 @@ test("自动技能提取与技能开关进入统一草稿，保存时保留聊�
     assert.deepEqual(writes[0]?.chatParams?.skillExtraction, { enabled: false, minToolCalls: 9 });
     assert.equal(writes[0]?.chatParams?.temperature, 0.3);
     assert.deepEqual(writes[0]?.skills, { globalDefaults: { "builtin:diary": false }, projectOverrides: { "builtin:diary": true } });
+  } finally { await h.close(); }
+});
+
+test("图标入口只给没有自带品牌图标的服务商：内置服务商用自带的，自定义服务商才可选", async () => {
+  const base = snapshot();
+  const deepseek = providerCatalog.find((item) => item.id === "deepseek");
+  assert.ok(deepseek?.baseUrl, "目录里应当有 DeepSeek 的接入地址");
+  const builtIn = { providerAlias: "deepseek", providerType: deepseek.value, baseUrl: deepseek.baseUrl, requiresApiKey: true, hasCredential: true };
+  const custom = { providerAlias: "我的中转站", providerType: "openai-compatible", displayName: "我的中转站", baseUrl: "https://relay.example.com/v1", requiresApiKey: true, hasCredential: true };
+  // 先把图标数据灌进缓存，这样列表行的品牌标首帧就画得出来（不必等动态 import）。
+  await loadProviderIconData();
+  const h = await harness({ settingsSnapshot: async () => ({ ...base, models: { ...base.models, connections: [builtIn, custom] } }) });
+  try {
+    await h.overlay({ targetTab: "模型" });
+    const rows = [...document.querySelectorAll<HTMLButtonElement>(".provider-row")];
+    const rowFor = (needle: string): HTMLButtonElement => {
+      const row = rows.find((element) => (element.textContent ?? "").includes(needle));
+      assert.ok(row, "列表里应当有 " + needle + " 这一行（实际：" + rows.map((element) => element.textContent).join(" / ") + "）");
+      return row;
+    };
+
+    // 内置服务商：画它自带的品牌图标，并且没有图标选择入口。
+    await h.React.act(async () => { rowFor("DeepSeek").click(); });
+    assert.equal(
+      document.querySelector(".provider-row.is-active svg.provider-logo")?.getAttribute("viewBox"),
+      PROVIDER_ICON_DATA.DeepSeek!.vb,
+      "DeepSeek 这一行应当画它自带的品牌图标"
+    );
+    assert.equal(document.querySelector('label[for$="-icon"]'), null, "自带图标的服务商不该有图标选择入口");
+    const pane = document.querySelector(".provider-detail-pane");
+    assert.ok(document.querySelector('label[for$="-api-key"]'), "面板其它字段照常出现（面板实际内容：" + (pane?.textContent ?? "空").slice(0, 400) + "）");
+
+    // 自定义服务商（没有品牌）：才给选择入口。
+    await h.React.act(async () => { rowFor("我的中转站").click(); });
+    assert.ok(document.querySelector('label[for$="-icon"]'), "自定义服务商应当能选图标");
+  } finally { await h.close(); }
+});
+
+test("工具模型选择器只显示模型名一行，并画服务商自己的图标", async () => {
+  await loadProviderIconData();
+  const base = snapshot();
+  const freeRelay = {
+    providerAlias: "free", providerType: "openai-compatible", displayName: "free",
+    icon: "Apple", baseUrl: "http://127.0.0.1:3425/v1", requiresApiKey: true, hasCredential: true
+  };
+  const model = {
+    alias: "free-deepseek", displayName: "Deepseek-V4.1-Flash", provider: "free",
+    providerType: "openai-compatible", model: "workbuddy-ai/deepseek-v4.1-flash",
+    baseUrl: "http://127.0.0.1:3425/v1", efforts: [], thinkingLevelMap: {}, defaultThinking: "off", showInPicker: true
+  };
+  const h = await harness({
+    settingsSnapshot: async () => ({
+      ...base,
+      models: {
+        ...base.models, connections: [freeRelay], configured: [model],
+        toolModel: "free-deepseek", resolvedToolModel: "free-deepseek"
+      } as never
+    })
+  });
+  try {
+    await h.overlay({ targetTab: "通用" });
+    const trigger = document.querySelector<HTMLElement>("#tool-model .settings-model-picker-trigger");
+    assert.ok(trigger, "工具模型卡片里应当有选择器");
+    const copy = trigger.querySelector(".settings-model-picker-trigger-copy");
+    assert.equal(copy?.children.length, 1, "选择器只显示一行（实际：" + (copy?.textContent ?? "") + "）");
+    assert.match(trigger.textContent ?? "", /Deepseek-V4\.1-Flash/u, "显示模型名");
+    assert.doesNotMatch(trigger.textContent ?? "", /free/u, "不该再把服务商名当第二行显示");
+    assert.doesNotMatch(document.querySelector("#tool-model")?.textContent ?? "", /当前使用/u, "不再回显「当前使用」");
+    // 比 innerHTML 而不是 viewBox：Apple 和兜底字形的 viewBox 都是 "0 0 24 24"，只比那个等于没比。
+    const logo = document.querySelector("#tool-model .settings-model-picker-provider-mark .provider-logo");
+    assert.equal(
+      logo?.innerHTML,
+      PROVIDER_ICON_DATA.Apple!.body,
+      "自定义服务商应当画用户在服务商页挑的那个图标（实际画的是：" + (logo?.innerHTML ?? "(没有图标)") + "）"
+    );
   } finally { await h.close(); }
 });

@@ -4671,6 +4671,55 @@ button.capability-check[aria-checked="true"] {
   app-region: no-drag;
 }
 
+/* ---------------------------------------------------------------------------
+   hero 态：hero 内容 + 输入框收进同一条居中窄列，发送后输入框铺满并落回底部。
+   对齐 Alma：hero 容器 max-w-2xl = 42rem = 672px；输入框发送时 width/y 一起动，
+   duration 0.5s / ease [0.32,0.72,0,1]，跨态位移交给 View Transition 补间。
+   注意不能用 justify-content:center —— 顶栏 toolbar 也是 .biny-workspace-main 的子元素，
+   那样会把顶栏一起推到中间。改用 auto margin 只把 body+composer 这一组居中。
+   --------------------------------------------------------------------------- */
+.biny-workspace-main.is-hero .biny-chat-body {
+  /* 收缩到 hero 内容高度，让输入框能贴到它下面 */
+  flex: 0 0 auto;
+  margin-top: auto;
+}
+
+.biny-workspace-main.is-hero .biny-hero {
+  height: auto;
+}
+
+.biny-workspace-main.is-hero .biny-chat-composer {
+  flex: 0 0 auto;
+  width: 100%;
+  max-width: 42rem;
+  margin: 0 auto auto;
+  padding-bottom: 24px;
+}
+
+/* 输入框跨态形变：命名后由 View Transition 接管补间。 */
+.biny-chat-composer {
+  view-transition-name: biny-composer;
+}
+
+::view-transition-old(biny-composer),
+::view-transition-new(biny-composer),
+::view-transition-group(biny-composer) {
+  animation-duration: 0.42s;
+  animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation-duration: 0.32s;
+  animation-timing-function: ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .biny-chat-composer {
+    view-transition-name: none;
+  }
+}
+
 /* 首页/欢迎态：body 整体居中，内容超高时仍可滚。 */
 .biny-chat-body.is-welcome {
   display: flex;
@@ -5305,6 +5354,83 @@ button.capability-check[aria-checked="true"] {
   .biny-activity-suggestions .suggestion-chip,
   .biny-activity-suggestion-skeleton,
   .biny-activity-suggestion-placeholder { opacity: 1; animation: none; transition: none; transform: none; }
+}
+
+/* 新会话欢迎区（hero）。文案/间距/动效对齐 Alma 原版 Main.js 的 hero 块。 */
+.biny-hero {
+  display: flex;
+  height: 100%;
+  align-items: center;
+  justify-content: center;
+  padding: 48px 32px;
+}
+
+.biny-hero-inner {
+  display: flex;
+  width: 100%;
+  max-width: 42rem;
+  flex-direction: column;
+  align-items: center;
+  transition: opacity 200ms ease-out;
+}
+
+/* 提交后先淡出，别和消息流抢同一帧。 */
+.biny-hero-inner.is-leaving {
+  pointer-events: none;
+  opacity: 0;
+}
+
+/* 直接用应用图标本体：它自带圆角外框和留白，不要再套圆底或背景。 */
+.biny-hero-avatar {
+  display: block;
+  width: 88px;
+  height: 88px;
+  margin-bottom: 22px;
+  object-fit: contain;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
+.biny-hero-title {
+  margin: 0 0 12px;
+  color: var(--biny-text);
+  font-family: "Slabo 27px", ui-serif, Georgia, serif;
+  font-size: 2.25rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  line-height: 1.2;
+  text-align: center;
+}
+
+.biny-hero-subtitle {
+  margin: 0 0 22px;
+  color: var(--biny-text-secondary);
+  font-size: 0.875rem;
+  line-height: 1.5;
+  text-align: center;
+}
+
+/* 立即淡入：0.25s，与 Alma 的 hero-fade 一致。 */
+.biny-hero-fade {
+  opacity: 0;
+  will-change: opacity;
+  animation: biny-hero-fade 0.25s ease-out forwards;
+}
+
+@keyframes biny-hero-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .biny-hero-fade {
+    opacity: 1;
+    animation: none;
+  }
+
+  .biny-hero-inner {
+    transition: none;
+  }
 }
 
 .biny-chat-empty,
@@ -10375,3 +10501,9 @@ button.capability-check[aria-checked="true"] {
   padding: 0 8px;
   font-size: 12px;
 }
+
+@keyframes attachment-arrival { from { opacity: 0; transform: translateY(6px) scale(.96); } to { opacity: 1; transform: none; } }
+.biny-composer-attachments > * { animation: attachment-arrival 180ms ease-out; }
+@media (prefers-reduced-motion: reduce) { .biny-composer-attachments > * { animation: none; } }
+.cu-confirm { max-width: 460px; border: 1px solid var(--border); border-radius: 12px; padding: 24px; background: var(--surface-raised); color: var(--text); }
+.cu-confirm::backdrop { background: rgb(0 0 0 / 40%); }

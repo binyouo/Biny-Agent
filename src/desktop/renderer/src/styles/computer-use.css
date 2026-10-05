@@ -58,3 +58,121 @@
 .computer-use-settings .cu-checkup { display: grid; gap: 4px; margin: 0; padding: 0; list-style: none; }
 .computer-use-settings .cu-checkup li { font-size: calc(12px * var(--font-scale, 1)); color: var(--text-secondary); }
 .computer-use-settings .cu-checkup li[data-ok="false"] { color: var(--red-text); }
+
+/* ── Appshots ──────────────────────────────────────────────────────────────
+   Hero + 行卡片，与 Alma 的 AppshotsSettings 同构：一个带徽章的介绍卡、
+   一张 divide 的行列表、一条脚注。所有行共用同一套 4px/16px 间距节奏。 */
+.appshot-settings .appshot-hero {
+  display: flex;
+  flex-direction: row;
+  align-items: flex-start;
+  gap: calc(12px * var(--font-scale, 1));
+}
+.appshot-settings .appshot-hero-badge {
+  display: inline-flex;
+  width: calc(48px * var(--font-scale, 1));
+  height: calc(48px * var(--font-scale, 1));
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  border-radius: calc(12px * var(--font-scale, 1));
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+.appshot-settings .appshot-hero-copy { display: flex; min-width: 0; flex-direction: column; gap: 4px; }
+.appshot-settings .appshot-hero-copy h3 { margin: 0; }
+.appshot-settings .appshot-hero-copy strong { color: var(--text); font-weight: 550; }
+
+/* 行卡片：卡片本身不再撑开 gap，分隔线由 border-top 画，和 Alma 的 divide-y 一致。 */
+.appshot-settings .appshot-rows { padding: 0; gap: 0; }
+.appshot-settings .appshot-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: calc(16px * var(--font-scale, 1));
+  padding: calc(16px * var(--font-scale, 1));
+}
+.appshot-settings .appshot-row + .appshot-row { border-top: 1px solid var(--border-subtle); }
+.appshot-settings .appshot-row-copy { display: flex; min-width: 0; flex: 1; flex-direction: column; gap: 4px; }
+.appshot-settings .appshot-row-copy > strong {
+  color: var(--text);
+  font-size: calc(13px * var(--font-scale, 1));
+  font-weight: 550;
+}
+.appshot-settings .appshot-row-copy > p {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: calc(12px * var(--font-scale, 1));
+  line-height: 1.5;
+}
+.appshot-settings .appshot-row-copy > p strong { color: var(--text); font-weight: 550; }
+.appshot-settings .appshot-row-copy .appshot-error {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  color: var(--red-text);
+}
+.appshot-settings .appshot-link {
+  padding: 0;
+  border: 0;
+  color: var(--accent);
+  background: none;
+  font-size: inherit;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.appshot-settings .appshot-link:disabled { opacity: .55; }
+
+/* 下拉框：宽度按内容走、不随行拉伸，触发器里留出一枚加载指示的位置。 */
+.appshot-settings .appshot-field { flex: none; }
+.appshot-settings .appshot-select {
+  display: inline-flex;
+  min-width: calc(120px * var(--font-scale, 1));
+  align-items: center;
+  gap: 6px;
+  padding: 0 10px;
+  border-radius: var(--st-radius);
+  background: var(--surface-soft);
+}
+.appshot-settings .appshot-select select {
+  width: 100%;
+  min-height: calc(32px * var(--font-scale, 1));
+  padding: 0;
+  border: 0;
+  color: var(--text);
+  background: transparent;
+  font-size: calc(13px * var(--font-scale, 1));
+}
+.appshot-settings .appshot-select:hover { background: var(--surface-hover); }
+.appshot-settings .appshot-select:focus-within { box-shadow: 0 0 0 2px var(--st-ring); }
+.appshot-settings .appshot-select select:focus-visible { outline: none; }
+.appshot-settings .appshot-spin { flex: none; color: var(--text-tertiary); animation: appshot-spin 1s linear infinite; }
+@keyframes appshot-spin { to { transform: rotate(1turn); } }
+@media (prefers-reduced-motion: reduce) { .appshot-settings .appshot-spin { animation: none; } }
+
+/* 未武装的警示卡：与 Alma 的 unsupportedNotice 同形（琥珀色边框 + 淡底）。 */
+.appshot-settings .appshot-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: calc(12px * var(--font-scale, 1));
+  padding: calc(16px * var(--font-scale, 1));
+  border: 1px solid color-mix(in srgb, var(--amber-text) 40%, transparent);
+  border-radius: var(--st-radius);
+  background: color-mix(in srgb, var(--amber-text) 5%, transparent);
+}
+.appshot-settings .appshot-notice > svg { flex: none; margin-top: 2px; color: var(--amber-text); }
+.appshot-settings .appshot-notice p {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: calc(12px * var(--font-scale, 1));
+  line-height: 1.5;
+}
+
+.appshot-settings .appshot-foot { gap: calc(12px * var(--font-scale, 1)); }
+.appshot-settings .appshot-foot .cu-description { font-size: calc(12px * var(--font-scale, 1)); }
+
+@container settings (max-width: 560px) {
+  .appshot-settings .appshot-row { flex-direction: column; align-items: stretch; }
+  .appshot-settings .appshot-field { align-self: flex-start; }
+}

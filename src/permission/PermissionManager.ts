@@ -138,7 +138,7 @@ export class PermissionManager {
     }
 
     // 桌面观察与操作由执行端按真实应用身份审批；此处保留只读与拒绝路径约束。
-    if (request.toolName === "ComputerObserve" || request.toolName === "ComputerAction") {
+    if (request.toolName === "ComputerObserve" || request.toolName === "ComputerAction" || request.toolName === "ComputerMirror") {
       return { decision: "allow", reason: "Desktop application approval is enforced by the execution service." };
     }
 

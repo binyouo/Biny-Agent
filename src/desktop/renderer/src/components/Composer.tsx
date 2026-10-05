@@ -24,6 +24,8 @@ import { ModelPickerMenu } from "./composer/ModelPickerMenu.js";
 import { thinkingLabel } from "./composer/composerLabels.js";
 import { Icon } from "./Icon.js";
 import { ProviderBrandGlyph } from "./ProviderBrandGlyph.js";
+import { ProviderBrandIcon } from "./ProviderBrandIcon.js";
+import { resolveProviderIconId } from "../providerIconIds.js";
 import { isResumeInput } from "./composer/resumeInput.js";
 import { SendOrStopButton } from "./composer/SendOrStopButton.js";
 import { PromptInput } from "./composer/PromptInput.js";
@@ -715,7 +717,15 @@ export const Composer = memo(function Composer({
                 onClick={() => setMenu(menu === "model" ? null : "model")}
                 tooltip={menu === "model" ? undefined : running ? "模型与推理强度用于后续回合" : "模型与推理强度"}
               >
-                {selectedModel ? <span className="model-trigger-brand"><ProviderBrandGlyph type={selectedModelCatalog?.iconTone ?? selectedModel.providerType} /></span> : null}
+                {selectedModel ? (
+                  <span className="model-trigger-brand">
+                    <ProviderBrandIcon
+                      className="provider-logo"
+                      fallback={<ProviderBrandGlyph type={selectedModelCatalog?.iconTone ?? selectedModel.providerType} />}
+                      iconId={resolveProviderIconId(undefined, selectedModelCatalog?.id)}
+                    />
+                  </span>
+                ) : null}
                 <span>{modelName}</span>
                 {thinkingAvailable && currentThinking ? <span className="model-trigger-thinking">{thinkingLabel(currentThinking)}</span> : null}
                 <Icon name="chevron" size={11} />

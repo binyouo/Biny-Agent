@@ -17,7 +17,7 @@ export function SettingsPermissions(): React.JSX.Element {
         <div className="settings-row-group">
         <SettingsSwitch
           checked={permission.mode === "full-access"}
-          detail="开启后自动批准工具请求，无需逐次确认；项目明确拒绝的路径仍会拦截。桌面控制的应用授权在 Computer Use 中单独管理。"
+          detail="开启后自动批准工具请求，无需逐次确认；项目明确拒绝的路径仍会拦截。"
           label="自动批准所有工具请求"
           onChange={(enabled) => update({ mode: enabled ? "full-access" : "ask" })}
         />

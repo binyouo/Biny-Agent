@@ -59,6 +59,8 @@ interface SidebarProps {
   onOpenTerminalProject(projectId: string): void;
   onRenameProject(projectId: string): void;
   onNewTask(projectId: string): void;
+  /** 顶层「新建任务」：会展示欢迎 hero，和文件夹内新建区分开。 */
+  onNewTopLevelTask(): void;
   onImportSession(projectId: string): void;
   onRemoveProject(projectId: string): void;
   onSearch(): void;
@@ -90,6 +92,7 @@ export const Sidebar = memo(function Sidebar({
   onOpenTerminalProject,
   onRenameProject,
   onNewTask,
+  onNewTopLevelTask,
   onImportSession,
   onRemoveProject,
   onSearch,
@@ -260,7 +263,8 @@ export const Sidebar = memo(function Sidebar({
   };
 
   const createTask = (): void => {
-    if (activeProjectId) onNewTask(activeProjectId);
+    // 顶层新建：始终走 welcome hero 路径；没有活动项目时先让用户选目录。
+    if (activeProjectId) onNewTopLevelTask();
     else onOpenProject();
   };
 

@@ -29,6 +29,7 @@ import { RuntimeRecoveryBanner } from "./workspace/RuntimeRecoveryBanner.js";
 import type { CompactionCommandState } from "../app/useCompactionCommand.js";
 import { CompactionStatus } from "./chat/CompactionStatus.js";
 import { ActivitySuggestions } from "./workspace/ActivitySuggestions.js";
+import { ChatHero } from "./workspace/ChatHero.js";
 
 /** 发送消息的临时投影；真实消息或队列接管后由 App 清掉。 */
 export interface PendingPrompt {
@@ -105,6 +106,8 @@ interface WorkspaceProps {
   onOpenRuntime(): void;
   onOpenExtensions(): void;
   onSendActivitySuggestion?(text: string): Promise<void>;
+  /** 顶层新建会话：展示欢迎 hero（而不是裸的空态提示行）。 */
+  heroStart?: boolean;
   children?: React.ReactNode;
 }
 
@@ -162,6 +165,7 @@ export function Workspace({
   onOpenRuntime: _onOpenRuntime,
   onOpenExtensions: _onOpenExtensions,
   onSendActivitySuggestion,
+  heroStart = false,
   onWidgetDraftPrompt,
   children
 }: WorkspaceProps): React.JSX.Element {
@@ -196,7 +200,7 @@ export function Workspace({
 
   return (
     <WidgetContext.Provider value={widgetContext}><div className="workspace biny-workspace biny-workspace-chat">
-      <div className="biny-workspace-main">
+      <div className={`biny-workspace-main${heroStart ? " is-hero" : ""}`}>
         {runtimePanelOpen ? null : inspectorRail}
         <header className={`biny-chat-toolbar${chatScrolled ? " is-scrolled" : ""}`}>
           <div className="biny-chat-drag-region">
@@ -289,6 +293,11 @@ export function Workspace({
                 turns={turns}
               />
             </ChatScroll>
+          ) : heroStart ? (
+            <ChatHero leaving={Boolean(visiblePendingPrompt)}>
+              {!loading && !hasConversation && !running && !visiblePendingPrompt && !writerConflict && !runtimeError && onSendActivitySuggestion
+                ? <ActivitySuggestions onSend={onSendActivitySuggestion} onError={onRuntimeError} /> : null}
+            </ChatHero>
           ) : (
             <div className="biny-chat-empty"><Icon name="message" size={20} /><span>开始一段新的对话</span></div>
           )}
@@ -322,8 +331,6 @@ export function Workspace({
               onCreateBranch={sessionId === undefined ? undefined : onCreateBranch}
               onOpenProject={onOpenProject}
             /> : children}
-            {!loading && !hasConversation && !running && !visiblePendingPrompt && !writerConflict && !runtimeError && onSendActivitySuggestion
-              ? <ActivitySuggestions onSend={onSendActivitySuggestion} onError={onRuntimeError} /> : null}
         </div>
       </div>
       {streaming ? <span className="biny-streaming-state" aria-hidden="true" /> : null}

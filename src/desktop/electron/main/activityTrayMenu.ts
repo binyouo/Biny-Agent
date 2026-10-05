@@ -23,10 +23,10 @@ export function activityTrayItems(state: ActivityServiceState, actions: Activity
   return [
     { label: "打开 Biny", click: () => actions.open() },
     { type: "separator" },
-    { label: `活动记录：${statusLabels[state]}`, enabled: false },
-    { label: state === "paused" || state === "stopped" ? "开始活动记录" : "暂停活动记录", click: () => actions.toggle() },
+    { label: `电脑历史：${statusLabels[state]}`, enabled: false },
+    { label: state === "paused" || state === "stopped" ? "开始记录电脑历史" : "暂停记录电脑历史", click: () => actions.toggle() },
     { label: "生成今日摘要", click: () => actions.summary() },
-    { label: "活动记录设置…", click: () => actions.settings() },
+    { label: "电脑历史设置…", click: () => actions.settings() },
     { type: "separator" },
     { label: "退出 Biny", click: () => actions.quit() }
   ];

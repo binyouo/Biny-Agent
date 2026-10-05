@@ -283,6 +283,11 @@ const providerConfigSchema = z.object({
   type: modelProviderSchema,
   /** 用户自定义服务商的显示名；内置目录服务商不使用，列表标签优先于端点主机名。 */
   displayName: z.string().trim().min(1).max(80).optional(),
+  /**
+   * 用户为该服务商挑的品牌图标 id（`assets/provider-icon-data` 的键）。
+   * 缺省表示没有覆盖，渲染层按目录默认图标回退。
+   */
+  icon: z.string().trim().min(1).max(64).optional(),
   protocol: providerProtocolSchema.optional(),
   baseUrl: z.string().url().optional(),
   apiKey: z.string().min(1).optional(),

@@ -345,3 +345,38 @@ test("returning to default clears first-paint variables and skin without touchin
     else Reflect.deleteProperty(globalThis, "window");
   }
 });
+
+test("semantic status colors stay theme-independent and match Alma's fixed Tailwind scale", async () => {
+  const STATUS = ["--green", "--green-text", "--green-bg", "--red", "--red-text", "--red-bg", "--amber", "--amber-text", "--amber-bg", "--info"] as const;
+  const projections = new Map<string, string>();
+  for (const [id, palette] of Object.entries(BUILTIN_PALETTES)) {
+    const preference = normalizeAppearancePreference({
+      darkTheme: palette.type === "dark" ? id : null,
+      lightTheme: palette.type === "light" ? id : null,
+      density: "comfortable",
+      win98Trail: true,
+      customThemes: []
+    });
+    const variables = appearanceVariables(resolveAppearance(preference, palette.type, palette.type === "dark"));
+    projections.set(STATUS.map(token => variables[token] ?? "").join("|"), `${id}/${palette.type}`);
+  }
+  assert.equal(
+    projections.size,
+    1,
+    `状态色必须与主题无关，实际有 ${projections.size} 种取值：${[...projections.values()].join(", ")}`
+  );
+  assert.equal(
+    [...projections.keys()][0],
+    STATUS.map(() => "").join("|"),
+    "调色板不应派生语义状态色，应由 theme.css 的固定值提供"
+  );
+
+  const contract = await readFile(new URL("../src/desktop/renderer/src/styles/theme.css", import.meta.url), "utf8");
+  assert.match(contract, /--green-text:\s*light-dark\(#009966, #00d492\);/u, "emerald-600 亮 / emerald-400 暗");
+  assert.match(contract, /--red-text:\s*light-dark\(#e7000b, #ff6467\);/u, "red-600 亮 / red-400 暗");
+  assert.match(contract, /--amber-text:\s*light-dark\(#e17100, #ffb900\);/u, "amber-600 亮 / amber-400 暗");
+  assert.match(contract, /--green-bg:\s*rgb\(0 188 125 \/ 10%\);/u, "emerald-500 / 10");
+  assert.match(contract, /--red-bg:\s*rgb\(251 44 54 \/ 10%\);/u, "red-500 / 10");
+  assert.match(contract, /--amber-bg:\s*rgb\(254 154 0 \/ 10%\);/u, "amber-500 / 10");
+  assert.match(contract, /--info:\s*#2b7fff;/u, "blue-500");
+});

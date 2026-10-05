@@ -1,4 +1,4 @@
-/** 活动记录设置：采集配置、运行摘要与权限入口；截图仅在后台使用。 */
+/** 电脑历史设置：采集配置、运行摘要与权限入口；截图仅在后台使用。 */
 import { useEffect, useRef, useState } from "react";
 import type { ActivityRuntimeSnapshot } from "../../../../../activity/types.js";
 import type { ActivityPermissionStatus } from "../../../../../activity/httpServer.js";
@@ -11,7 +11,7 @@ import { useActivityRuntime } from "./ActivityRuntimeContext.js";
 export function SettingsActivity(): React.JSX.Element {
   const { activity, loadError, updateActivityImmediately } = useSettingsDraft();
   const { runtime, permissions, permissionError, refresh, refreshPermissions, updateRuntime } = useActivityRuntime();
-  if (!activity) return <div aria-busy={!loadError} className="settings-sections"><section><p role={loadError ? "alert" : "status"}>{loadError ? `活动记录设置加载失败：${loadError}。请关闭设置后重试。` : "正在加载活动记录设置…"}</p></section></div>;
+  if (!activity) return <div aria-busy={!loadError} className="settings-sections"><section><p role={loadError ? "alert" : "status"}>{loadError ? `电脑历史设置加载失败：${loadError}。请关闭设置后重试。` : "正在加载电脑历史设置…"}</p></section></div>;
   return <SettingsActivityForm activity={activity} onChange={updateActivityImmediately} onRefreshRuntime={refresh} onRefreshPermissions={refreshPermissions} onRuntimeChange={updateRuntime} permissions={permissions} permissionError={permissionError} runtime={runtime} />;
 }
 
@@ -123,7 +123,7 @@ function SettingsActivityForm({ activity, onChange, onRefreshRuntime, onRefreshP
     void window.biny.clearActivity().then((next) => {
       onRuntimeChange(next);
       setClearOpen(false);
-      setFeedback("已清除全部 Activity 数据。");
+      setFeedback("已清除全部电脑历史数据。");
     }).catch((error: unknown) => setFeedback(activityErrorMessage(error))).finally(() => setClearing(false));
   };
   const storagePercent = runtime === undefined || activity.maxStorageMb <= 0
@@ -159,7 +159,7 @@ function SettingsActivityForm({ activity, onChange, onRefreshRuntime, onRefreshP
           <div className="activity-heading-copy">
             <div className="activity-title-line">
               <Icon name="activity" size={15} />
-              <h3>活动记录器</h3>
+              <h3>电脑历史</h3>
               <span className={`activity-status-badge${activityStatusClass}`}>
                 {runtimeLabel}
               </span>
@@ -167,7 +167,7 @@ function SettingsActivityForm({ activity, onChange, onRefreshRuntime, onRefreshP
             </div>
             <p>以周期截屏和本地 OCR 生成时间线，原始截图始终留在本机。</p>
           </div>
-          <ActivitySwitch busy={activityUpdating} checked={activity.enabled} disabled={activityUpdating} label="启用活动记录器" onChange={(enabled) => updateActivity({ enabled })} />
+          <ActivitySwitch busy={activityUpdating} checked={activity.enabled} disabled={activityUpdating} label="启用电脑历史" onChange={(enabled) => updateActivity({ enabled })} />
         </div>
         {/* 总开关关闭时状态区不隐藏，整体变暗保留上下文。 */}
         <div className={`activity-overview-stats${activity.enabled ? "" : " is-disabled"}`}>
@@ -285,17 +285,17 @@ function SettingsActivityForm({ activity, onChange, onRefreshRuntime, onRefreshP
 
       <section className="activity-card activity-danger-zone" id="activity-danger" tabIndex={-1}>
         <div className="activity-section-title is-danger"><Icon name="trash" size={15} /><h3>危险区</h3></div>
-        <p className="activity-section-description">删除活动会话、事件、OCR、截图、分析和摘要。不可撤销；已沉淀的长期记忆、结晶和已导出日报保留，需在各自位置单独删除。</p>
+        <p className="activity-section-description">删除活动会话、事件、OCR、截图、分析和摘要。此操作不可撤销。</p>
         <button className="activity-danger-button" disabled={clearing || runtime?.sessions === 0 || runtime === undefined} onClick={clearActivity} type="button"><Icon name="trash" size={14} />{clearing ? "清除中…" : "清除全部活动数据"}</button>
         <small className="activity-disabled-hint">{runtime?.sessions ? undefined : runtime?.collectorAvailable === false ? "采集服务尚未接入，清除操作暂不可用。" : "暂无可清除的活动数据。"}</small>
       </section>
 
-      {isRuntimeRunning ? <p className="activity-running-footer">运行中 · 多数参数即时生效；会话与空闲计时相关改动在下一个会话生效。</p> : null}
+      {isRuntimeRunning ? <p className="activity-running-footer">运行中 · 多数参数即时生效；会话/空闲计时相关改动在下个会话生效。</p> : null}
 
       {clearOpen ? (
         <SettingsDetailLayer onClose={() => { if (!clearing) setClearOpen(false); }}>
           <section aria-describedby="activity-clear-description" aria-labelledby="activity-clear-title" aria-modal="true" className="settings-confirm-panel activity-clear-panel" role="dialog">
-            <h3 id="activity-clear-title">清除全部 Activity 数据？</h3>
+            <h3 id="activity-clear-title">清除全部电脑历史数据？</h3>
             <p id="activity-clear-description">将永久删除 {runtime?.sessions ?? 0} 个会话、{runtime?.events ?? 0} 个事件，以及截图、OCR、分析和摘要。此操作不可撤销。已沉淀的长期记忆、结晶和已导出日报不会删除。</p>
             <div className="settings-confirm-actions"><button className="ghost-button" disabled={clearing} onClick={() => setClearOpen(false)} type="button">取消</button><button className="ghost-button is-danger" disabled={clearing} onClick={confirmClearActivity} type="button"><Icon name="trash" size={14} />{clearing ? "清除中…" : "永久清除"}</button></div>
           </section>
@@ -337,7 +337,7 @@ function formatActivityDuration(startedAt: string, endedAt: string): string {
 }
 
 function activityErrorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : "Activity 操作失败，请稍后重试。";
+  return error instanceof Error ? error.message : "电脑历史操作失败，请稍后重试。";
 }
 
 function ActivitySection({ action, children, collapsible, icon, id, title }: { collapsible?: boolean; action?: React.ReactNode; children: React.ReactNode; icon: IconName; id: string; title: string }): React.JSX.Element {

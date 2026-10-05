@@ -150,6 +150,11 @@ function DesktopApp(): React.JSX.Element {
   const [pendingPrompt, setPendingPrompt] = useState<PendingPrompt>();
   /** 未发送草稿的目标项目；只改变输入框归属，不提前切换工作区。 */
   const [draftProjectId, setDraftProjectId] = useState<string>();
+  /**
+   * 顶层「新建任务」进入的空会话。只有它为 true 时聊天区才渲染欢迎 hero；
+   * 从项目文件夹里点 + 新建（createSidebarTask）不会置位，因此不展示欢迎语。
+   */
+  const [heroStart, setHeroStart] = useState(false);
   const [projectBranches, setProjectBranches] = useState<DesktopGitBranch[]>([]);
   const [branchesLoading, setBranchesLoading] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
@@ -243,6 +248,20 @@ function DesktopApp(): React.JSX.Element {
     selectedRef.current = selectedSessionId;
     projectRef.current = workspace?.project.id;
   }, [selectedSessionId, workspace?.project.id]);
+
+  // 会话一落地（发送成功后后端建了 session），欢迎 hero 就该退场。
+  // 这一步同时要把输入框从 hero 的窄列铺满、落回底部，用 View Transition 补间：
+  // 必须套 flushSync，否则浏览器抓「旧」快照时 React 还没把 DOM 提交上去。
+  useEffect(() => {
+    if (selectedSessionId === undefined) return;
+    // 注意用 window.document：本作用域里 `document` 被会话文档变量遮蔽了。
+    const viewDocument = window.document as Document & { startViewTransition?: (callback: () => void) => unknown };
+    if (typeof viewDocument.startViewTransition === "function") {
+      viewDocument.startViewTransition(() => { flushSync(() => setHeroStart(false)); });
+    } else {
+      setHeroStart(false);
+    }
+  }, [selectedSessionId]);
 
 
   // 换会话时清掉上一会话的 Recipe 卡片与技能提取卡；新会话的卡片由历史读取和事件桥共同收集。
@@ -835,8 +854,9 @@ function DesktopApp(): React.JSX.Element {
     }
   }, [loadProjectBranches, mergeProjectSnapshot]);
 
-  const newTask = useCallback(async (targetProjectId = projectRef.current): Promise<void> => {
+  const newTask = useCallback(async (targetProjectId = projectRef.current, topLevel = false): Promise<void> => {
     setRuntimePanelOpen(false);
+    setHeroStart(topLevel);
     const projectId = targetProjectId;
     if (!projectId) {
       await openProject();
@@ -969,11 +989,11 @@ function DesktopApp(): React.JSX.Element {
 
   useEffect(() => {
     menuActionRef.current = (action) => {
-      if (action === "new-task") void newTask();
+      if (action === "new-task") void newTask(undefined, true);
       if (action === "open-project") void openProject();
       if (action === "search") openSearch();
       if (action === "settings") openSettings();
-      if (action === "activity-settings") openSettings("活动记录");
+      if (action === "activity-settings") openSettings("电脑历史");
       if (action === "toggle-sidebar") toggleSidebar();
       if (action === "focus-composer") setFocusToken((value) => value + 1);
     };
@@ -1352,8 +1372,13 @@ function DesktopApp(): React.JSX.Element {
   const createSidebarProject = useCallback((): void => {
     void createEmptyProject();
   }, [createEmptyProject]);
+  const createTopLevelTask = useCallback((): void => {
+    void newTask(undefined, true);
+  }, [newTask]);
   const createSidebarTask = useCallback((projectId: string): void => {
-    void newTask(projectId);
+    // 从项目文件夹里新建：有明确上下文，不展示欢迎 hero。
+    setHeroStart(false);
+    void newTask(projectId, false);
   }, [newTask]);
   const importSidebarSession = useCallback((projectId: string): void => {
     void importSessionIntoProject(projectId);
@@ -2018,6 +2043,7 @@ function DesktopApp(): React.JSX.Element {
           activeProjectId={workspace?.project.id}
           onCreateEmptyProject={createSidebarProject}
           onNewTask={createSidebarTask}
+          onNewTopLevelTask={createTopLevelTask}
           onImportSession={importSidebarSession}
           onOpenProject={openSidebarProject}
           onOpenTerminalProject={openSidebarTerminalProject}
@@ -2053,6 +2079,7 @@ function DesktopApp(): React.JSX.Element {
       /> : <Workspace
         loading={loading}
         onSendActivitySuggestion={async text => { await composerRef.current?.submitSuggestion(text); }}
+        heroStart={heroStart && selectedSessionId === undefined}
         onWidgetDraftPrompt={draftWidgetPrompt}
         onCreateBranch={openTurnBranch}
         onEditRequest={requestEditMessage}

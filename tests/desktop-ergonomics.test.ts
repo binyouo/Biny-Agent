@@ -163,14 +163,14 @@ test("聊天草稿在切项目、切会话和取消历史编辑后保留，默�
   } finally { await h.close(); }
 });
 
-test("16个设置页面直接导航，页头精简且配色可直接进入", async () => {
+test("15个设置页面直接导航，页头精简且配色可直接进入", async () => {
   const h = await harness();
   try {
     const { SettingsOverlay } = await import("../src/desktop/renderer/src/components/settings/SettingsOverlay.js");
     const props = { open: true, version: "test", themePreference: "system", fontPreference: { family: "system", size: 14 }, sessionRunning: false,
       onNotify() {}, onThemePreference() {}, onFontPreference() {}, onSettingsCommitted() {}, onClose() {} };
     await h.render(h.React.createElement(SettingsOverlay, props as unknown as React.ComponentProps<typeof SettingsOverlay>));
-    const pages = [["通用", "通用"], ["模型", "模型供应商"], ["工具模型", "工具模型"], ["聊天", "聊天偏好"], ["快速对话", "快速对话"], ["记忆", "记忆"], ["活动记录", "活动记录"], ["Computer Use", "Computer Use"], ["MCP 服务器", "MCP 服务器"], ["技能", "技能"], ["插件", "插件"], ["网络搜索", "网络搜索"], ["浏览器", "浏览器"], ["配色", "配色"], ["权限", "权限"], ["关于", "关于"]];
+    const pages = [["通用", "通用"], ["模型", "模型供应商"], ["聊天", "聊天偏好"], ["记忆", "记忆"], ["电脑历史", "电脑历史"], ["Computer Use", "Computer Use"], ["权限", "权限"], ["网络搜索", "网络搜索"], ["浏览器", "浏览器"], ["MCP 服务器", "MCP 服务器"], ["技能", "技能"], ["插件", "插件"], ["用户界面", "用户界面"], ["配色", "配色"], ["关于", "关于"]];
     assert.deepEqual([...document.querySelectorAll('.settings-nav-list button')].map(node => node.textContent), pages.map(page => page[1]));
     assert.equal(document.querySelectorAll('.settings-nav-group').length, 0);
     assert.equal(document.querySelectorAll('.settings-titlebar p, .settings-save-hint').length, 0);

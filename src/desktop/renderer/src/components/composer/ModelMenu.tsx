@@ -14,12 +14,16 @@ import { useFluidHoverItems } from "../../useFluidHoverItems.js";
 import { FluidHoverHighlight } from "../FluidHoverHighlight.js";
 import { Icon } from "../Icon.js";
 import { ProviderBrandGlyph } from "../ProviderBrandGlyph.js";
+import { ProviderBrandIcon } from "../ProviderBrandIcon.js";
+import { resolveProviderIconId } from "../../providerIconIds.js";
 import { ComposerPopover } from "./ComposerPopover.js";
 
 interface ModelGroup {
   key: string;
   label: string;
   iconTone: string;
+  /** 目录自带品牌图标的 id；没有就留给手写字形兜底。 */
+  iconId?: string;
   providerAlias: string;
   models: ModelChoice[];
 }
@@ -142,7 +146,7 @@ export function ModelMenu({
           {groups.map((group) => (
             <div className="model-group" key={group.key}>
               <div className="model-group-heading">
-                <span className="model-option-brand"><ProviderBrandGlyph type={group.iconTone} /></span>
+                <span className="model-option-brand"><ProviderBrandIcon className="provider-logo" fallback={<ProviderBrandGlyph type={group.iconTone} />} iconId={group.iconId} /></span>
                 <span>{group.label}</span>
                 {duplicateLabels.has(group.label) ? <small>{group.providerAlias}</small> : null}
               </div>
@@ -199,6 +203,7 @@ function groupModels(models: ModelChoice[]): ModelGroup[] {
       key,
       label: catalog?.label ?? providerLabel(model.provider),
       iconTone: catalog?.iconTone ?? model.providerType,
+      iconId: resolveProviderIconId(undefined, catalog?.id),
       providerAlias: model.provider,
       models: []
     };

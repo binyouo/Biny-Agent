@@ -1,3 +1,4 @@
+import { SettingsAppshots } from "./SettingsAppshots.js";
 /**
  * Desktop 设置中心。
  *
@@ -32,6 +33,7 @@ import { useSettingsDraft } from "./SettingsDraftContext.js";
 import { SettingsDraftProvider } from "./SettingsDraftProvider.js";
 import { SettingsMemory } from "./SettingsMemory.js";
 import { SettingsQuickChat } from "./SettingsQuickChat.js";
+import { SettingsVisionModel } from "./SettingsVisionModel.js";
 import { SettingsPageFooter } from "./SettingsPageFooter.js";
 import { SettingsPermissions } from "./SettingsPermissions.js";
 import { SettingsExtensionsView } from "./SettingsExtensionsView.js";
@@ -90,41 +92,57 @@ interface SettingsOverlayProps {
   onCancelModelLogin(provider: DesktopModelLoginProvider, authRequestId: string): Promise<void>;
 }
 
-export type SettingsTab = "通用" | "配色" | "聊天" | "快速对话" | "模型" | "MCP 服务器" | "技能" | "插件" | "权限" | "活动记录" | "记忆" | "网络搜索" | "浏览器" | "Computer Use" | "关于" | "工具模型";
+export type SettingsTab = "通用" | "用户界面" | "配色" | "聊天" | "模型" | "MCP 服务器" | "技能" | "插件" | "权限" | "电脑历史" | "记忆" | "网络搜索" | "浏览器" | "Computer Use" | "Appshots" | "关于";
 
+/**
+ * 侧栏导航。对齐 Alma 设置侧栏的单列平铺结构：通用在最前，日常对话与能力居中，
+ * 隐私、系统与关于在后；不再插分组标题。
+ *
+ * 「快速对话」「工具模型」「视觉模型」不是独立页面 —— 它们是通用页里的卡片。
+ */
 const settingsNav: Array<{ icon: IconName; tab: SettingsTab }> = [
-  { icon: "sun", tab: "通用" }, { icon: "network", tab: "模型" }, { icon: "cpu", tab: "工具模型" },
-  { icon: "message", tab: "聊天" }, { icon: "message", tab: "快速对话" },
-  { icon: "brain", tab: "记忆" }, { icon: "activity", tab: "活动记录" }, { icon: "cpu", tab: "Computer Use" },
-  { icon: "server", tab: "MCP 服务器" }, { icon: "wand", tab: "技能" }, { icon: "puzzle", tab: "插件" },
-  { icon: "search", tab: "网络搜索" }, { icon: "globe", tab: "浏览器" }, { icon: "sun", tab: "配色" },
-  { icon: "shield", tab: "权限" }, { icon: "help", tab: "关于" }
+  { icon: "sun", tab: "通用" },
+  { icon: "network", tab: "模型" },
+  { icon: "message", tab: "聊天" },
+  { icon: "brain", tab: "记忆" },
+  { icon: "history", tab: "电脑历史" },
+  { icon: "monitor", tab: "Computer Use" },
+  { icon: "monitor", tab: "Appshots" },
+  { icon: "shield", tab: "权限" },
+  { icon: "search", tab: "网络搜索" },
+  { icon: "globe", tab: "浏览器" },
+  { icon: "server", tab: "MCP 服务器" },
+  { icon: "wand", tab: "技能" },
+  { icon: "puzzle", tab: "插件" },
+  { icon: "layout-grid", tab: "用户界面" },
+  { icon: "sliders", tab: "配色" },
+  { icon: "help", tab: "关于" }
 ];
 const settingsRouteEntries = settingsNav.map(page => ({ value: page.tab }));
 const settingsTabLabels: Partial<Record<SettingsTab, string>> = { 模型: "模型供应商", 聊天: "聊天偏好" };
 const settingsPages: Record<SettingsTab, { description: string; keywords: string }> = {
   配色: { description: "选择配色与界面皮肤，修改时即时预览。", keywords: "配色 主题 Windows 98 XP Longhorn 自定义" },
-  通用: { description: "调整外观与阅读体验，修改时即时预览。", keywords: "主题 外观 字体 字号 浅色 深色 系统" },
+  通用: { description: "后台模型与快速对话。", keywords: "工具模型 视觉模型 后台 标题 记忆整理 快速对话 悬浮 小窗 失焦 隐藏 点击穿透" },
+  用户界面: { description: "主题、界面密度与字体。", keywords: "外观 界面 主题 浅色 深色 跟随系统 密度 紧凑 舒适 宽松 字体 字号 行高 阅读" },
   聊天: { description: "设置回复的显示方式，以及新对话的默认能力。", keywords: "流式 令牌 token Markdown 数学公式 思考 链接 默认工具 技能 温度 采样 压缩 Hashline" },
-  快速对话: { description: "随时唤起小窗，让简短的问题留在手边。", keywords: "悬浮 小窗 失焦 隐藏 前台 上下文 点击穿透" },
   模型: { description: "管理模型连接、登录凭据和可用模型。", keywords: "供应商 服务商 API Key 密钥 base URL 登录 默认模型" },
-  工具模型: { description: "设置标题生成、记忆整理等后台任务使用的模型。", keywords: "工具 筛选 模型 后台 标题" },
   技能: { description: "管理可用技能、项目启用范围与自动技能提取。", keywords: "skill 导入 安装 版本 启用 自动技能提取 工具调用 阈值" },
   "MCP 服务器": { description: "连接外部工具与数据源。", keywords: "mcp 服务器 连接 授权 OAuth 工具" },
   插件: { description: "安装和管理扩展能力。", keywords: "plugin 市场 安装 启停 卸载" },
   网络搜索: { description: "设置搜索来源与网页访问方式。", keywords: "搜索引擎 联网 Cookie 登录 结果 超时" },
   浏览器: { description: "连接日常浏览器，管理扩展配对。", keywords: "Chrome 扩展 安装 配对 重新生成 撤销 连接" },
-  "Computer Use": { description: "管理本机桌面控制、权限与动作后预览。", keywords: "Cua computer use 桌面 截图 点击 输入 辅助功能 屏幕录制 画中画 PiP" },
+  Appshots: { description: "把应用截图与上下文放入聊天草稿。", keywords: "appshots 应用截图 双击 修饰键 Command Option Shift 快捷键 聊天 附件 辅助功能 权限" },
+  "Computer Use": { description: "管理本机桌面控制、权限与实时预览。", keywords: "computer use 桌面 操控 截图 点击 输入 辅助功能 屏幕录制 画中画 PiP" },
   记忆: { description: "管理长期记忆、检索与后台整理。", keywords: "记忆 memory 向量 embedding 模型 下载 索引 睡眠 清理" },
-  活动记录: { description: "控制本机活动采集与保存范围。", keywords: "Activity Record 活动记录 屏幕 截图 录制 OCR 采集 隐私 存储 排除" },
+  电脑历史: { description: "查看本机屏幕与输入的本地采集历史，随时可清除。", keywords: "computer history Activity Record 电脑历史 屏幕 截图 录制 OCR 采集 隐私 存储 排除" },
   权限: { description: "设置工具操作是否需要手动批准。", keywords: "安全 审批 确认 自动 批准 工具权限" },
   关于: { description: "版本信息与项目链接。", keywords: "版本 更新 帮助" }
 };
 const settingsTabValues = new Set<SettingsTab>(settingsRouteEntries.map(({ value }) => value));
 const immediateSaveHints: Partial<Record<SettingsTab, string>> = {
-  快速对话: "本页修改即时保存", 模型: "连接与模型配置即时保存", 工具模型: "模型选择即时保存",
-  活动记录: "采集设置即时保存", 浏览器: "连接操作即时生效",
-  "Computer Use": "控制与开关即时生效", "MCP 服务器": "服务器配置单独保存",
+  模型: "连接与模型配置即时保存",
+  电脑历史: "采集设置即时保存", 浏览器: "连接操作即时生效",
+  Appshots: "截图设置即时保存", "Computer Use": "控制与开关即时生效", "MCP 服务器": "服务器配置单独保存",
   插件: "安装与启停即时生效", 技能: "启用范围与自动提取需保存，导入操作即时生效",
   记忆: "配置需保存，记忆管理操作即时生效", 网络搜索: "搜索偏好需保存，登录操作即时生效"
 };
@@ -298,15 +316,15 @@ function SettingsOverlayContent({
     if (closeRequest) await onResolveCloseRequest(closeRequest.requestId, "cancelled");
   };
   const extensionSettings = activeTab === "MCP 服务器" || activeTab === "技能" || activeTab === "插件";
-  const needsProject = !workspace && ["聊天", "网络搜索", "工具模型", "模型", "技能", "MCP 服务器", "插件", "记忆"].includes(activeTab);
-  const loadBlocked = Boolean((workspace && !["快速对话", "浏览器", "Computer Use", "关于"].includes(activeTab) || activeTab === "活动记录" || activeTab === "权限") && (settingsDraft.loading || settingsDraft.loadError));
+  const needsProject = !workspace && ["聊天", "网络搜索", "模型", "技能", "MCP 服务器", "插件", "记忆"].includes(activeTab);
+  const loadBlocked = Boolean((workspace && !["浏览器", "Computer Use", "Appshots", "关于"].includes(activeTab) || activeTab === "电脑历史" || activeTab === "权限") && (settingsDraft.loading || settingsDraft.loadError));
   const openSearchResult = (nextTab: SettingsTab): void => {
     setSearch("");
     selectTab(nextTab);
     titleRef.current?.focus();
   };
   return (
-    <ActivityRuntimeProvider active={activeTab === "活动记录" || activeTab === "权限"}>
+    <ActivityRuntimeProvider active={activeTab === "电脑历史" || activeTab === "权限"}>
       <Dialog
         aria-label="Biny 设置"
         className="desktop-settings-dialog"
@@ -342,9 +360,9 @@ function SettingsOverlayContent({
             {!searchResults.length ? <p className="settings-search-empty">试试“字体”“模型”或“流式”。</p> : null}
           </nav> :
           <nav aria-label="设置分类" className="settings-nav-list">
-            {settingsNav.map(page => <button key={page.tab} aria-current={activeTab === page.tab ? "page" : undefined}
-              className={activeTab === page.tab ? "is-selected" : ""} onClick={() => selectTab(page.tab)} type="button">
-              <span aria-hidden="true" className="settings-nav-icon"><Icon name={page.icon} size={18} /></span>
+            {settingsNav.map(page => <button key={page.tab} aria-current={activeTab === page.tab ? "page" : undefined} data-settings-tab={page.tab}
+              className={activeTab === page.tab ? "is-selected" : ""} onClick={() => selectTab(page.tab)} title={page.tab} type="button">
+              <span aria-hidden="true" className="settings-nav-icon"><Icon name={page.icon} size={17} /></span>
               <span className="settings-nav-label">{settingsTabLabels[page.tab] ?? page.tab}</span>
             </button>)}
           </nav>}
@@ -363,7 +381,6 @@ function SettingsOverlayContent({
             {settingsDraft.loadError ? <><div role="alert"><h3>无法加载设置</h3><p>{settingsDraft.loadError}</p></div>
               <button aria-label="重新加载设置" className="settings-secondary-button" onClick={settingsDraft.retryLoad} type="button">重新加载</button></> : <p role="status">正在加载设置…</p>}
           </div> : needsProject ? <div className="settings-load-state"><h3>先打开一个项目</h3><p>返回主界面选择项目后，即可读取和修改这些设置。</p></div> : <>
-          {activeTab === "工具模型" ? <SettingsToolModel onTest={onTestModelConfiguration} /> : null}
           {activeTab === "模型" ? <ProviderSettings
             active={open}
             loading={settingsDraft.loading}
@@ -389,7 +406,7 @@ function SettingsOverlayContent({
               }
             }}
           /> : null}
-          {activeTab === "通用" ? <SettingsAppearance
+          {activeTab === "用户界面" ? <SettingsAppearance
             disabled={settingsDraft.saveState === "saving" || settingsDraft.saveState === "rolling_back" || settingsDraft.saveState === "recovery_required"}
             theme={settingsDraft.draft?.themePreference ?? themePreference}
             onThemeChange={settingsDraft.setThemePreference}
@@ -398,15 +415,15 @@ function SettingsOverlayContent({
             density={(settingsDraft.draft?.appearancePreference ?? appearancePreference ?? DEFAULT_APPEARANCE).density}
             onDensityChange={density => settingsDraft.setAppearancePreference({ ...(settingsDraft.draft?.appearancePreference ?? appearancePreference ?? DEFAULT_APPEARANCE), density })}
           /> : null}
+          {activeTab === "通用" ? <div className="settings-preferences"><SettingsToolModel onTest={onTestModelConfiguration} /><SettingsVisionModel /><SettingsQuickChat /></div> : null}
           {activeTab === "配色" ? <SettingsThemes
             preference={settingsDraft.draft?.appearancePreference ?? appearancePreference ?? DEFAULT_APPEARANCE}
             onChange={settingsDraft.setAppearancePreference}
             disabled={settingsDraft.saveState === "saving" || settingsDraft.saveState === "rolling_back" || settingsDraft.saveState === "recovery_required"}
           /> : null}
-          {activeTab === "活动记录" ? <SettingsActivity /> : null}
+          {activeTab === "电脑历史" ? <SettingsActivity /> : null}
           {activeTab === "聊天" ? <SettingsChatPage /> : null}
           {activeTab === "权限" ? <SettingsPermissions /> : null}
-          {activeTab === "快速对话" ? <SettingsQuickChat /> : null}
           {memoryVisited ? <SettingsMemory
             models={settingsModels}
             embeddingModels={settingsDraft.snapshot?.models.embeddingModels ?? []}
@@ -441,6 +458,7 @@ function SettingsOverlayContent({
           {activeTab === "关于" ? <SettingsAbout version={version} /> : null}
           {activeTab === "浏览器" ? <SettingsBrowser /> : null}
           {activeTab === "Computer Use" ? <SettingsComputerUse /> : null}
+          {activeTab === "Appshots" ? <SettingsAppshots /> : null}
           {activeTab === "网络搜索" ? <SettingsWebSearch
             onOpenBrowser={onOpenBrowser}
             onExportCookies={onExportCookies}

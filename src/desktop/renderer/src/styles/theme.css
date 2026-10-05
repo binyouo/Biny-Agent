@@ -21,15 +21,18 @@
   --border: light-dark(#dedede, #3b3b3b);
   --border-subtle: light-dark(#e8e8e8, #303030);
   --border-strong: light-dark(#bdbdbd, #525252);
-  --green: light-dark(#189a58, #6fd99b);
-  --green-text: light-dark(#137644, #6fd99b);
-  --green-bg: light-dark(#e4f6ec, #1e3a2b);
-  --red: light-dark(#d64545, #f28b82);
-  --red-text: light-dark(#bf3343, #f28b82);
-  --red-bg: light-dark(#fbe9e9, #45272a);
-  --amber: light-dark(#b45309, #f2b544);
-  --amber-text: light-dark(#96520a, #f2b544);
-  --amber-bg: light-dark(#fbf0df, #3f3220);
+  /* 语义状态色：固定值，不随主题调色板变化（与 Alma 的 Tailwind 标尺一致）。
+     亮色用 -600、暗色用 -400 作文本；-500 作实心/图标；/10 作淡底。 */
+  --green: #00bc7d;
+  --green-text: light-dark(#009966, #00d492);
+  --green-bg: rgb(0 188 125 / 10%);
+  --red: #fb2c36;
+  --red-text: light-dark(#e7000b, #ff6467);
+  --red-bg: rgb(251 44 54 / 10%);
+  --amber: #fe9a00;
+  --amber-text: light-dark(#e17100, #ffb900);
+  --amber-bg: rgb(254 154 0 / 10%);
+  --info: #2b7fff;
   --file-git: light-dark(#c84b2b, #f06a3c);
   --file-javascript: light-dark(#926900, #e2c54f);
   --file-purple: light-dark(#79579d, #b99bdd);

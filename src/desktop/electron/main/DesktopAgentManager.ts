@@ -2182,6 +2182,8 @@ export class DesktopAgentManager {
       ...existing,
       type: existing?.type ?? "openai-compatible",
       displayName: input.displayName ?? existing?.displayName,
+      // 图标是展示偏好：省略 = 保留现值，显式 null = 清除覆盖（回到目录默认）。
+      icon: input.icon === null ? undefined : input.icon ?? existing?.icon,
       protocol: input.protocol ?? existing?.protocol,
       baseUrl: input.baseUrl ?? existing?.baseUrl,
       apiKey: input.apiKey ?? existing?.apiKey,
@@ -3461,6 +3463,7 @@ function describeModelConnections(config: AgentConfig): DesktopModelConnection[]
       providerAlias,
       providerType: provider.type,
       displayName: provider.displayName,
+      icon: provider.icon,
       protocol: provider.protocol,
       apiBackend: provider.apiBackend,
       baseUrl: provider.baseUrl ?? profile.baseUrl,

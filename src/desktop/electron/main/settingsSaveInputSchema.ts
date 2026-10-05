@@ -105,6 +105,7 @@ export const settingsSaveInputSchema = z.object({
     customProviders: z.array(z.object({
       alias: idSchema,
       displayName: z.string().trim().min(1).max(80).optional(),
+      icon: z.string().trim().min(1).max(64).nullable().optional(),
       baseUrl: z.string().url().optional(),
       protocol: providerProtocolSchema.optional(),
       apiBackend: modelApiBackendSchema.optional(),

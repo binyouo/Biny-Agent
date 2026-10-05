@@ -1027,6 +1027,8 @@ export interface DesktopModelConnection {
   providerType: ModelProvider;
   /** 自定义服务商的用户命名；内置目录服务商缺省，列表标签回退到端点主机名。 */
   displayName?: string;
+  /** 用户为该服务商挑的品牌图标 id；没覆盖过则缺省，渲染层按目录回退。 */
+  icon?: string;
   protocol?: "anthropic" | "openai-compatible";
   /** 连接级适配器（新建连接时与模型级一致写入）；渲染层用它回显「API 格式」。 */
   apiBackend?: ModelApiBackend;
@@ -1387,6 +1389,8 @@ export interface DesktopSettingsModelsInput {
 export interface DesktopCustomProviderInput {
   alias: string;
   displayName?: string;
+  /** 品牌图标 id；省略表示保留现值，显式 null 表示清除覆盖、回到目录默认图标。 */
+  icon?: string | null;
   baseUrl?: string;
   protocol?: "anthropic" | "openai-compatible";
   apiBackend?: ModelApiBackend;

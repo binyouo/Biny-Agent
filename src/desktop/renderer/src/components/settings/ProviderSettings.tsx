@@ -51,6 +51,9 @@ import {
 } from "../../providerCatalog.js";
 import { Icon } from "../Icon.js";
 import { ProviderBrandGlyph } from "../ProviderBrandGlyph.js";
+import { ProviderBrandIcon } from "../ProviderBrandIcon.js";
+import { hasBuiltInProviderIcon, resolveProviderIconId } from "../../providerIconIds.js";
+import { ProviderIconPicker } from "./ProviderIconPicker.js";
 import { connectionLabel, type ConnectionGroup } from "./providerModelProjection.js";
 import { ModelTestStatusIcon } from "./ModelTestButton.js";
 import { useSettingsDraft, type SettingsModelDraft } from "./SettingsDraftContext.js";
@@ -67,6 +70,8 @@ interface ProviderListEntry {
   description: string;
   badge?: string;
   iconTone: string;
+  /** 品牌图标 id：用户选的优先，其次目录默认；都没有就退回 iconTone 手写字形。 */
+  iconId?: string;
   group?: ConnectionGroup;
   connection?: DesktopModelConnection;
 }
@@ -138,6 +143,7 @@ export function ProviderSettings({
         description: catalog.description,
         badge: catalog.badge,
         iconTone: catalog.iconTone,
+        iconId: resolveProviderIconId(group ? infoFor(group.provider)?.icon : undefined, catalog.id),
         group,
         connection: group ? infoFor(group.provider) : undefined
       };
@@ -152,6 +158,7 @@ export function ProviderSettings({
         description: neutral.description,
         badge: neutral.badge,
         iconTone: neutral.iconTone,
+        iconId: resolveProviderIconId(info?.icon, undefined),
         group,
         connection: info
       });
@@ -411,6 +418,8 @@ export function ProviderSettings({
   const [keyLoading, setKeyLoading] = useState(false);
   const [keyLoaded, setKeyLoaded] = useState(false);
   const [baseUrlDraft, setBaseUrlDraft] = useState("");
+  /** 当前选中服务商的品牌图标草稿；null 表示默认图标。 */
+  const [iconDraft, setIconDraft] = useState<string | null>(null);
   const [deleteArmed, setDeleteArmed] = useState(false);
   const keyTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const baseUrlTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -540,6 +549,28 @@ export function ProviderSettings({
     if (baseUrlDirtyRef.current) return;
     setBaseUrlDraft(savedBaseUrl);
   }, [savedBaseUrl]);
+
+  // 换服务商时按配置里的 icon 重置草稿；提交成功后刷新回来的 connection 会和它一致。
+  useEffect(() => {
+    setIconDraft(connection?.icon ?? null);
+  }, [connection?.icon, group?.provider]);
+
+  /**
+   * 图标只是展示偏好：先乐观写本地态，失败由草稿层通知并回滚，不打断正在做的编辑。
+   * 传 null 表示清除覆盖、回到目录默认图标，所以这个字段不能省略。
+   */
+  const changeProviderIcon = useCallback(async (iconId: string | null): Promise<void> => {
+    if (!group) return;
+    const draft = settingsDraft.draft;
+    if (!draft) return;
+    const previous = iconDraft;
+    setIconDraft(iconId);
+    const result = await settingsDraft.saveModels({
+      ...draft.models,
+      customProviders: [{ alias: group.provider, icon: iconId }]
+    });
+    if (result?.status !== "committed") setIconDraft(previous);
+  }, [group, iconDraft, settingsDraft]);
 
   const commitBaseUrl = useCallback(async (value: string): Promise<void> => {
     if (!group || !catalog) return;
@@ -756,6 +787,7 @@ export function ProviderSettings({
     baseUrl: string;
     apiKey: string;
     format: ApiFormatId;
+    icon: string | null;
   }): Promise<void> => {
     const draft = settingsDraft.draft;
     if (!draft || creating) return;
@@ -781,6 +813,7 @@ export function ProviderSettings({
           alias,
           displayName: input.displayName,
           baseUrl: input.baseUrl,
+          icon: input.icon ?? undefined,
           protocol: format.protocol,
           apiBackend: format.apiBackend,
           apiKeyHandle
@@ -973,7 +1006,9 @@ export function ProviderSettings({
                 role="tab"
                 type="button"
               >
-                <span className={`provider-mark is-${row.iconTone}`}><ProviderBrandGlyph type={row.iconTone} /></span>
+                <span className={`provider-mark is-${row.iconTone}`}>
+                  <ProviderBrandIcon className="provider-logo" fallback={<ProviderBrandGlyph type={row.iconTone} />} iconId={row.iconId} />
+                </span>
                 <span className="provider-row-copy">
                   <strong>{row.label}</strong>
                   {row.badge ? <small>{row.badge}</small> : null}
@@ -1077,6 +1112,8 @@ export function ProviderSettings({
             testConfiguration={testConfiguration}
             onDeleteConnection={() => void deleteConnection()}
             onRelogin={() => relogin(catalog)}
+            iconValue={iconDraft}
+            onChangeIcon={changeProviderIcon}
           />
         ) : catalog && catalog.baseUrl ? (
           <section className="provider-panel">
@@ -1294,6 +1331,8 @@ function LoginProviderPanel({
 function ConnectedProviderPanel({
   catalog,
   connection,
+  iconValue,
+  onChangeIcon,
   group,
   status,
   availableModels,
@@ -1350,6 +1389,9 @@ function ConnectedProviderPanel({
   deleteArmed: boolean;
   manualModelId: string;
   usesOAuth: boolean;
+  /** 品牌图标草稿；null 表示默认图标。 */
+  iconValue: string | null;
+  onChangeIcon(iconId: string | null): Promise<void>;
   onApiKeyChange(value: string): void;
   onApiKeyBlur(): void;
   onLoadApiKey(): Promise<void>;
@@ -1498,6 +1540,14 @@ function ConnectedProviderPanel({
         </div>
       ) : (
         <div className="provider-rows">
+          {/* 自带品牌图标的服务商（DeepSeek 这类）不给选择入口：图标是它的品牌标识，不是偏好。 */}
+          {hasBuiltInProviderIcon(catalog.id) ? null : (
+            <div className="provider-row-item">
+              <label className="provider-row-label" htmlFor={`${fieldPrefix}-icon`}>图标</label>
+              <ProviderIconPicker onChange={(iconId) => void onChangeIcon(iconId)} triggerId={`${fieldPrefix}-icon`} value={iconValue} />
+              <div className="provider-row-hint">为该服务商选择品牌图标。</div>
+            </div>
+          )}
           <div className="provider-row-item">
             <div className="provider-row-heading">
               <label className="provider-row-label" htmlFor={`${fieldPrefix}-api-key`}>API Key</label>
@@ -1907,9 +1957,10 @@ function CreateCustomProviderDialog({ apiFormatOptions: formatOptions, creating,
   apiFormatOptions: ApiFormatOption[];
   creating: boolean;
   onCancel(): void;
-  onSave(input: { displayName: string; baseUrl: string; apiKey: string; format: ApiFormatId }): void;
+  onSave(input: { displayName: string; baseUrl: string; apiKey: string; format: ApiFormatId; icon: string | null }): void;
 }): React.JSX.Element {
   const [displayName, setDisplayName] = useState("");
+  const [icon, setIcon] = useState<string | null>(null);
   const [baseUrl, setBaseUrl] = useState("");
   const [apiKey, setApiKey] = useState("");
   const [format, setFormat] = useState<ApiFormatId>("chat_completions");
@@ -1924,7 +1975,7 @@ function CreateCustomProviderDialog({ apiFormatOptions: formatOptions, creating,
         className="provider-dialog"
         onSubmit={(event) => {
           event.preventDefault();
-          if (canSubmit) onSave({ displayName: displayName.trim(), baseUrl: baseUrl.trim(), apiKey: apiKey.trim(), format });
+          if (canSubmit) onSave({ displayName: displayName.trim(), baseUrl: baseUrl.trim(), apiKey: apiKey.trim(), format, icon });
         }}
         role="dialog"
       >
@@ -1947,6 +1998,11 @@ function CreateCustomProviderDialog({ apiFormatOptions: formatOptions, creating,
                 placeholder="例如 我的中转站"
                 value={displayName}
               />
+            </div>
+            <div className="provider-row-item">
+              <label className="provider-row-label" htmlFor="custom-provider-create-icon">图标</label>
+              <ProviderIconPicker onChange={(iconId) => setIcon(iconId)} triggerId="custom-provider-create-icon" value={icon} />
+              <div className="provider-row-hint">为该服务商选择品牌图标。</div>
             </div>
             <div className="provider-row-item">
               <label className="provider-row-label" htmlFor="custom-provider-create-url">服务地址</label>

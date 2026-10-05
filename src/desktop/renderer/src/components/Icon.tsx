@@ -43,6 +43,8 @@ export type IconName =
   | "database"
   | "diff"
   | "display"
+  | "monitor"
+  | "history"
   | "download"
   | "edit"
   | "external"
@@ -99,6 +101,9 @@ export type IconName =
   | "play"
   | "sun"
   | "terminal"
+  | "target-circle"
+  | "pause-outline"
+  | "play-outline"
   | "target"
   | "timer"
   | "trash"
@@ -179,6 +184,10 @@ function pathFor(name: IconName): React.JSX.Element {
     case "database": return <><ellipse {...common} cx="12" cy="5.5" rx="7.5" ry="2.8" /><path {...common} d="M4.5 5.5v6.5c0 1.5 3.4 2.8 7.5 2.8s7.5-1.3 7.5-2.8V5.5M4.5 12v6.5c0 1.5 3.4 2.8 7.5 2.8s7.5-1.3 7.5-2.8V12" /></>;
     case "diff": return <><path {...common} d="M7 4v16M17 4v16M4 8h6M14 16h6" /><path {...common} d="m17 6 2 2-2 2M17 14l-2 2 2 2" /></>;
     case "display": return <><rect {...common} height="13" rx="2" width="18" x="3" y="4" /><path {...common} d="M9 21h6M12 17v4" /></>;
+    // 显示器 + 指针：Computer Use 的桌面操控语义，和外框式的 display 区分开。
+    case "monitor": return <><rect {...common} height="12" rx="2" width="18" x="3" y="5" /><path {...common} d="M12 17v4M9 21h6" /><path {...common} d="m10 9 2 2 2.6-1.3L16 14l-4.6 2.6L10 12z" /></>;
+    // 时钟倒转 + 回绕箭头：电脑历史（屏幕/输入回溯）。
+    case "history": return <><path {...common} d="M3.5 12a8.5 8.5 0 1 0 2.7-6.2" /><path {...common} d="M3 4v4.5h4.5" /><path {...common} d="M12 8v4.5l3 1.7" /></>;
     case "download": return <><path {...common} d="M12 3v11" /><path {...common} d="m7 10 5 5 5-5" /><path {...common} d="M5 20h14" /></>;
     case "edit": return <><path {...common} d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z" /><path {...common} d="m15 5 4 4" /></>;
     case "external": return <><path {...common} d="M14 5h5v5M19 5l-8 8" /><path {...common} d="M19 13v5a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h5" /></>;
@@ -238,6 +247,9 @@ function pathFor(name: IconName): React.JSX.Element {
     case "stop": return <rect fill="currentColor" height="9" rx="2" width="9" x="7.5" y="7.5" />;
     case "sun": return <><circle {...common} cx="12" cy="12" r="4" /><path {...common} d="M12 2.5V5M12 19v2.5M2.5 12H5M19 12h2.5M5.3 5.3 7 7M17 17l1.7 1.7M18.7 5.3 17 7M7 17l-1.7 1.7" /></>;
     case "terminal": return <><rect {...common} height="16" rx="2" width="19" x="2.5" y="4" /><path {...common} d="m6 9 3 3-3 3M12 15h5" /></>;
+    case "target-circle": return <><circle {...common} cx="12" cy="12" r="10" /><circle {...common} cx="12" cy="12" r="6" /><circle {...common} cx="12" cy="12" r="2" /></>;
+    case "pause-outline": return <><rect {...common} x="14" y="3" width="5" height="18" rx="1" /><rect {...common} x="5" y="3" width="5" height="18" rx="1" /></>;
+    case "play-outline": return <path {...common} d="M5 5a2 2 0 0 1 3-1.7l12 7a2 2 0 0 1 0 3.4l-12 7A2 2 0 0 1 5 19z" />;
     case "target": return <><path {...common} d="M20 11a8 8 0 1 1-7-7M16 12a4 4 0 1 1-4-4M12 12l8-8M17 4h3v3" /></>;
     case "timer": return <><line {...common} x1="10" x2="14" y1="2" y2="2" /><line {...common} x1="12" x2="15" y1="14" y2="11" /><circle {...common} cx="12" cy="14" r="8" /></>;
     case "trash": return <><path {...common} d="M3 6h18" /><path {...common} d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6" /><path {...common} d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /><path {...common} d="M10 11v6M14 11v6" /></>;
