@@ -4673,7 +4673,7 @@ button.capability-check[aria-checked="true"] {
 
 /* ---------------------------------------------------------------------------
    hero 态：hero 内容 + 输入框收进同一条居中窄列，发送后输入框铺满并落回底部。
-   对齐 Alma：hero 容器 max-w-2xl = 42rem = 672px；输入框发送时 width/y 一起动，
+   欢迎区最大宽度为 42rem = 672px；发送时输入框宽度与位置同步变化，
    duration 0.5s / ease [0.32,0.72,0,1]，跨态位移交给 View Transition 补间。
    注意不能用 justify-content:center —— 顶栏 toolbar 也是 .biny-workspace-main 的子元素，
    那样会把顶栏一起推到中间。改用 auto margin 只把 body+composer 这一组居中。
@@ -5356,7 +5356,7 @@ button.capability-check[aria-checked="true"] {
   .biny-activity-suggestion-placeholder { opacity: 1; animation: none; transition: none; transform: none; }
 }
 
-/* 新会话欢迎区（hero）。文案/间距/动效对齐 Alma 原版 Main.js 的 hero 块。 */
+/* 新会话欢迎区（hero）。 */
 .biny-hero {
   display: flex;
   height: 100%;
@@ -5410,7 +5410,7 @@ button.capability-check[aria-checked="true"] {
   text-align: center;
 }
 
-/* 立即淡入：0.25s，与 Alma 的 hero-fade 一致。 */
+/* 立即淡入，持续 0.25s。 */
 .biny-hero-fade {
   opacity: 0;
   will-change: opacity;

@@ -3628,7 +3628,7 @@ select option:disabled {
   transform: rotate(180deg);
 }
 
-/* 裸品牌 logo 槽位：不带底色和边框，参照 alma 的 ProviderLogo 用法 ——
+/* 品牌 logo 槽位不带底色和边框，
    外层只负责对齐尺寸，图标本身就是全部视觉；套一个灰底方框会把它压成一个小色块。 */
 .desktop-settings-dialog .settings-modal .settings-model-picker-provider-mark {
   display: grid;

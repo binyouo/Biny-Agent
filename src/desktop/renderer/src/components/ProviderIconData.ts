@@ -1,7 +1,7 @@
 /**
  * 品牌图标数据加载器。
  *
- * 图标集约 480KB，不能进主 chunk —— 参照 Alma 也是把它拆成独立 chunk 按需加载。
+ * 图标集约 480KB，使用独立 chunk 按需加载，避免增加主包体积。
  * 这里同样用动态 import，并在模块级缓存，避免每次打开选择器都重新解析一份。
  */
 import type { ProviderIconEntry, ProviderIconGlyph } from "../assets/provider-icon-data.js";

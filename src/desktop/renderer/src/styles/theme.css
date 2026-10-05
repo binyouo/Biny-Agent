@@ -21,7 +21,7 @@
   --border: light-dark(#dedede, #3b3b3b);
   --border-subtle: light-dark(#e8e8e8, #303030);
   --border-strong: light-dark(#bdbdbd, #525252);
-  /* 语义状态色：固定值，不随主题调色板变化（与 Alma 的 Tailwind 标尺一致）。
+  /* 语义状态色使用固定值，不随主题调色板变化。
      亮色用 -600、暗色用 -400 作文本；-500 作实心/图标；/10 作淡底。 */
   --green: #00bc7d;
   --green-text: light-dark(#009966, #00d492);

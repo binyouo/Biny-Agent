@@ -16,7 +16,7 @@ const referenceIcons: Record<LocalReferenceKind, IconName> = {
   date: "calendar", project: "folder", file: "file", thread: "message", message: "message", memory: "brain",
   snippet: "quote", scratch: "file-text", skill: "wand", agent: "person", mcp: "plug", model: "cpu",
   provider: "server", tool: "wrench", "tool-call": "wrench", task: "check", cron: "timer",
-  crystal: "cube", bundle: "cube", plan: "list-tree"
+  crystal: "cube", bundle: "cube", mission: "circle-check", plan: "list-tree"
 };
 
 export function PromptInput({ value, onChange, onReferenceChange, onInspectReference, referenceTokens, onSubmit, onFiles, disabled, placeholder, skills, projectId, inputRef }: {

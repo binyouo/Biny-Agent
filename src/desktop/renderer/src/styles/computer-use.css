@@ -60,7 +60,7 @@
 .computer-use-settings .cu-checkup li[data-ok="false"] { color: var(--red-text); }
 
 /* ── Appshots ──────────────────────────────────────────────────────────────
-   Hero + 行卡片，与 Alma 的 AppshotsSettings 同构：一个带徽章的介绍卡、
+   截图设置采用介绍卡和行卡片：一个带徽章的介绍卡、
    一张 divide 的行列表、一条脚注。所有行共用同一套 4px/16px 间距节奏。 */
 .appshot-settings .appshot-hero {
   display: flex;
@@ -83,7 +83,7 @@
 .appshot-settings .appshot-hero-copy h3 { margin: 0; }
 .appshot-settings .appshot-hero-copy strong { color: var(--text); font-weight: 550; }
 
-/* 行卡片：卡片本身不再撑开 gap，分隔线由 border-top 画，和 Alma 的 divide-y 一致。 */
+/* 行卡片不撑开 gap，使用 border-top 显示分隔线。 */
 .appshot-settings .appshot-rows { padding: 0; gap: 0; }
 .appshot-settings .appshot-row {
   display: flex;
@@ -151,7 +151,7 @@
 @keyframes appshot-spin { to { transform: rotate(1turn); } }
 @media (prefers-reduced-motion: reduce) { .appshot-settings .appshot-spin { animation: none; } }
 
-/* 未武装的警示卡：与 Alma 的 unsupportedNotice 同形（琥珀色边框 + 淡底）。 */
+/* 监听未开启时显示警示卡，使用琥珀色边框和淡色背景。 */
 .appshot-settings .appshot-notice {
   display: flex;
   align-items: flex-start;

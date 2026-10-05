@@ -1,4 +1,4 @@
-// 品牌图标数据 · 1:1 复刻自 Alma 0.4.147 的 provider-icon-data chunk。
+// 服务商品牌图标数据，按需加载。
 // 由脚本从参照产物提取，请勿手改；改请改提取脚本并重新生成。
 export interface ProviderIconGlyph { vb: string; body: string }
 export interface ProviderIconEntry { id: string; title: string; group: string }

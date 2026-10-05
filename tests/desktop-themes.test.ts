@@ -346,7 +346,7 @@ test("returning to default clears first-paint variables and skin without touchin
   }
 });
 
-test("semantic status colors stay theme-independent and match Alma's fixed Tailwind scale", async () => {
+test("semantic status colors remain fixed across themes", async () => {
   const STATUS = ["--green", "--green-text", "--green-bg", "--red", "--red-text", "--red-bg", "--amber", "--amber-text", "--amber-bg", "--info"] as const;
   const projections = new Map<string, string>();
   for (const [id, palette] of Object.entries(BUILTIN_PALETTES)) {

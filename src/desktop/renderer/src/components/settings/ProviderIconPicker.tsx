@@ -1,5 +1,5 @@
 /**
- * 服务商图标选择器。对齐 Alma 的 ProviderIconPicker：触发按钮 + 搜索框 + 7 列图标网格。
+ * 服务商图标选择器：触发按钮、搜索框和 7 列图标网格。
  *
  * 两点照参照的 `w-[var(--radix-popover-trigger-width)] min-w-[300px]`：
  * 弹层宽度跟随触发按钮且不小于 300px；弹层走 portal——设置面板本身是滚动容器，

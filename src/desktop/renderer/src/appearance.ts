@@ -35,7 +35,7 @@ export function appearanceVariables(appearance: ResolvedAppearance): Record<stri
   for (const [target, origin] of Object.entries(aliases)) variables[target] = source[origin]!;
   Object.assign(variables, {
     /* 语义状态色（--green* / --red* / --amber*）故意不在这里派生：
-       Alma 的状态色是固定的 Tailwind 标尺，不随主题变（见 theme.css）。 */
+       状态色采用固定标尺，不随主题变化（见 theme.css）。 */
     "--border-subtle": `${colors.line}40`, "--border-strong": colors.line,
     "--segment-track": colors.one_bg, "--segment-thumb": colors.one_bg2, "--switch-thumb": colors.white,
     "--shadow": appearance.mode === "dark" ? "#00000040" : "#00000010", "--shadow-soft": "#00000020", "--shadow-heavy": "#00000066",
