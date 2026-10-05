@@ -49,6 +49,9 @@ writeFileSync(
   <key>CFBundleVersion</key><string>1</string>
   <key>LSMinimumSystemVersion</key><string>13.0</string>
   <key>LSUIElement</key><true/>
+  <key>NSAccessibilityUsageDescription</key><string>Biny Computer Use 在 AI 需要操作桌面应用时，代为控制这些应用。只在一自动化命令执行期间使用该权限。</string>
+  <key>NSAppleEventsUsageDescription</key><string>当辅助功能动作不可用时，Biny Computer Use 可能通过 Apple Events 请求应用把窗口提到前面。</string>
+  <key>NSScreenCaptureUsageDescription</key><string>Biny Computer Use 只捕获单个应用窗口，好让 AI 看到它正在操作什么。屏幕其余部分不会被捕获。</string>
 </dict></plist>
 `
 );

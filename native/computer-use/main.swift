@@ -10,6 +10,7 @@ import Carbon.HIToolbox
 var refTables: [pid_t: [String: AXUIElement]] = [:]
 // 截图坐标 → 屏幕坐标的映射（pid → 比例与偏移）。
 var coordMaps: [pid_t: (scale: Double, ox: Double, oy: Double, sw: Double, sh: Double)] = [:]
+let driverVersion = "native-1"
 let startedAt = Date()
 let replyLock = NSRecursiveLock()
 func reply(_ fd: Int32, _ value: [String: Any]) {
@@ -148,6 +149,41 @@ func parseKeyCombo(_ combo: String) -> (CGKeyCode, CGEventFlags)? {
 ///
 /// kCGWindowNumber 就是调用方传回来的 window_id —— 两边同一个编号，所以模型列完窗口
 /// 就能指着具体某一个去观察。层 0 才是普通窗口（菜单、浮层、提示在更高层）。
+// 私有 API：AXUIElement → CGWindowID。macOS 没有公开的对应接口，
+// 而「按 window_id 指定窗口」需要它把两边对上。实测映射准确。
+typealias AXGetWindowFn = @convention(c) (AXUIElement, UnsafeMutablePointer<CGWindowID>) -> AXError
+let axWindowIdFn: AXGetWindowFn? = {
+    guard let handle = dlopen("/System/Library/Frameworks/ApplicationServices.framework/ApplicationServices", RTLD_LAZY),
+          let symbol = dlsym(handle, "_AXUIElementGetWindow") else { return nil }
+    return unsafeBitCast(symbol, to: AXGetWindowFn.self)
+}()
+
+/// 按 CGWindowID 找到对应的 AX 窗口（就是 windowsForApp 列出来的那个编号）。
+func axWindow(pid: pid_t, matching windowId: Int) -> AXUIElement? {
+    guard let lookup = axWindowIdFn,
+          let windows = axCopy(axApp(pid), kAXWindowsAttribute as String) as? [AXUIElement] else { return nil }
+    for window in windows {
+        var id: CGWindowID = 0
+        if lookup(window, &id) == .success, Int(id) == windowId { return window }
+    }
+    return nil
+}
+
+/// 通过 Apple Events 请求目标应用把自己激活。
+///
+/// 后台进程直接调 `NSRunningApplication.activate` 会被系统拒绝 —— 实测三种写法全都
+/// 无效（AX 的 kAXFrontmost 甚至返回成功但前台没变）。Apple Events 是向应用「请求」，
+/// 走的是目标应用自己的 scripting 支持，系统允许。
+/// 需要 plist 里的 NSAppleEventsUsageDescription，否则连授权弹窗都不会出现。
+func activateViaAppleEvents(_ bundleId: String) -> String? {
+    guard !bundleId.isEmpty else { return "bundle_unknown" }
+    let script = NSAppleScript(source: "tell application id \"\(bundleId)\" to activate")
+    var error: NSDictionary?
+    _ = script?.executeAndReturnError(&error)
+    if let error { return "\(error[NSAppleScript.errorNumber] ?? "?")" }
+    return nil
+}
+
 func windowsForApp(_ pid: Int) -> [[String: Any]] {
     guard let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else { return [] }
     var out: [[String: Any]] = []
@@ -555,7 +591,7 @@ DispatchQueue.global().async {
                                 reply(fd, ["id": id, "ok": true, "data": [
                                     "accessibility": axTrusted() ? "granted" : "denied",
                                     "screenRecording": screenTrusted() ? "granted" : "denied",
-                                    "version": "native-1",
+                                    "version": driverVersion,
                                     "uptime": Int(Date().timeIntervalSince(startedAt)),
                                     // 守卫要靠读前台应用并把它切回来，没有辅助功能权限就武装不起来。
                                     "focusGuard": axTrusted() ? "armed" : "unavailable",
@@ -592,6 +628,54 @@ DispatchQueue.global().async {
                                     return !seen.contains(bundle)
                                 })
                                 reply(fd, ["id": id, "ok": true, "data": ["apps": apps] as [String: Any]])
+                            case "raise":
+                                // **显式**动词。硬规则是别的动作都不许把应用提到前台 ——
+                                // 只有调用方明确要求「把它拿到前面来」时才动焦点。
+                                let pid = try resolvePid(args)
+                                let requested = args["window_id"] as? Int
+                                var raised: [String: Any] = ["raised": Int(pid)]
+                                // Apple Events 优先；拿不到 bundle id 或它失败时才退回本地激活。
+                                let runningApp = NSRunningApplication(processIdentifier: pid)
+                                let bundleId = args["bundle"] as? String ?? runningApp?.bundleIdentifier ?? ""
+                                if let scriptError = activateViaAppleEvents(bundleId) {
+                                    // 本地激活对后台进程无效（实测），所以如实说明为什么没提上来，
+                                    // 并指出下一步 —— 别让调用方以为窗口已经到前面了。
+                                    NSRunningApplication(processIdentifier: pid)?.activate(options: [.activateAllWindows])
+                                    raised["via"] = "local-activate"
+                                    raised["warning"] = "apple_events_unavailable: 通过 Apple Events 请求激活失败（-\(scriptError)）。请在 系统设置 → 隐私与安全性 → 自动化 里允许 Biny Computer Use 控制该应用；本地激活对后台进程无效，窗口可能没被提到前面。"
+                                } else {
+                                    raised["via"] = "apple-events"
+                                }
+                                if let requested, let window = axWindow(pid: pid, matching: requested) {
+                                    AXUIElementPerformAction(window, kAXRaiseAction as CFString)
+                                    AXUIElementSetAttributeValue(window, kAXMainAttribute as CFString, kCFBooleanTrue)
+                                    raised["window_id"] = requested
+                                } else if let requested {
+                                    raised["warning"] = "window_not_found: 没有编号为 \(requested) 的窗口，已只把应用提到前面。"
+                                }
+                                reply(fd, ["id": id, "ok": true, "data": raised] as [String: Any])
+                            case "status":
+                                // 「helper 包 + 守护进程状态」：调用方最想先知道的两件事是
+                                // 「包在不在」和「守护进程跑了多久、还剩多久自退」。
+                                let helper = Bundle.main.bundleURL.path
+                                reply(fd, ["id": id, "ok": true, "data": [
+                                    "helper": helper,
+                                    "helperPresent": FileManager.default.fileExists(atPath: helper),
+                                    "version": driverVersion,
+                                    "uptimeSeconds": Int(Date().timeIntervalSince(startedAt)),
+                                    "idleSeconds": Int(idleSeconds),
+                                    "socket": socketPath,
+                                    "accessibility": axTrusted(),
+                                    "screenRecording": CGPreflightScreenCaptureAccess(),
+                                ] as [String: Any]])
+                            case "shutdown":
+                                reply(fd, ["id": id, "ok": true, "data": ["stopping": true] as [String: Any]])
+                                // 回执要先出去再退，否则调用方只看到连接被断开，分不清是
+                                // 「按我说的停了」还是「它自己崩了」。
+                                DispatchQueue.global().asyncAfter(deadline: .now() + 0.15) {
+                                    unlink(socketPath)
+                                    exit(0)
+                                }
                             case "capture_screen":
                                 // 纯截图，不碰 AX：PiP 面板的帧源走这条，避免被卡住的
                                 // 无障碍调用牵连（目标窗口也可能根本不能被单独捕获）。
@@ -752,14 +836,6 @@ DispatchQueue.global().async {
                                 let pid = try resolvePid(args)
                                 let direction = args["direction"] as? String ?? "down"
                                 let amount = args["amount"] as? Int ?? 3
-                                let (axis, sign): (CGScrollEventUnit, Int32) = {
-                                    switch direction {
-                                    case "up": return (.line, Int32(amount))
-                                    case "down": return (.line, Int32(-amount))
-                                    case "left": return (.line, Int32(amount))
-                                    default: return (.line, Int32(-amount))
-                                    }
-                                }()
                                 let route = args["route"] as? String ?? "auto"
                                 // 滚轮要的是自然滚动转换后的方向；AX 写滚动条位置，用语义方向。
                                 let wheelDirection = args["wheel_direction"] as? String ?? direction

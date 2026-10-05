@@ -326,3 +326,32 @@ test("a window id can be discovered, requested, and comes back as the window cap
     await driver.dispose();
   }
 });
+
+// notes/31 的 cu 里，status / raise / shutdown 是**命令行层**的动词（不在模型的 13 个工具里）。
+// status 回答「helper 包在不在、守护进程还能活多久」；raise 是唯一允许动焦点的动词，
+// 所以它必须显式，且失败时要说明为什么 —— 别的动作永远不许把应用提到前面。
+test("the daemon answers status, and raise reports honestly when it cannot come forward", async () => {
+  const driver = new NativeProcessDriver(() => {}, {
+    binaryPath: new URL("../out/native/computer-use", import.meta.url).pathname
+  });
+  const call = (cmd: string, args: Record<string, unknown> = {}) =>
+    (driver as unknown as { call: (c: string, a: unknown) => Promise<{ data: Record<string, unknown> }> }).call(cmd, args);
+  try {
+    const status = (await call("status")).data;
+    assert.equal(typeof status.helperPresent, "boolean");
+    assert.equal(typeof status.uptimeSeconds, "number");
+    assert.ok(Number(status.idleSeconds) > 0, "要能看出还剩多久自退");
+    assert.ok(String(status.socket).endsWith(".sock"));
+
+    const listed = await driver.list("raise-e2e", undefined);
+    const target = (listed.data as { apps: { pid?: number }[] }).apps.find(app => typeof app.pid === "number");
+    if (target?.pid) {
+      // 不存在的窗口号：要么提到应用、要么说清为什么没提到，但不能静默成功
+      const raised = (await call("raise", { pid: target.pid, window_id: 99999999 })).data;
+      assert.equal(raised.raised, target.pid);
+      assert.match(String(raised.warning ?? ""), /window_not_found/, "没找到窗口就要说，别让调用方以为提上来了");
+    }
+  } finally {
+    await driver.dispose();
+  }
+});
