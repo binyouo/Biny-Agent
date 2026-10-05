@@ -127,7 +127,14 @@ export function SettingsComputerUse(): React.JSX.Element {
       </div><p className="cu-muted">暂停或接管会撤销旧帧并取消排队操作。已派发的输入可能无法撤回；结果未知时先检查窗口，重新观察后继续，不自动重放。</p>
       <details><summary>前台操作与诊断日志</summary><label className="cu-foreground"><input type="checkbox" disabled={unavailable || !status} checked={status?.foregroundAllowed ?? false} onChange={event => void perform(() => updateStatus(() => api.foreground(event.target.checked)))} />允许明确批准的前台动作（可能改变焦点）</label>
         <p className="cu-muted">日志共 {diagnostic?.audit.length ?? 0} 条，点击“刷新”读取最新元数据。</p>
-        {diagnostic?.audit.length ? <pre className="cu-diagnostics">{diagnostic.audit.map(entry => `${new Date(entry.at).toLocaleTimeString()} ${entry.action} PID ${entry.target.pid} / ${entry.target.windowId} ${outcomeLabels[entry.outcome]} ${entry.durationMs}ms`).join("\n")}</pre> : null}
+        {diagnostic?.audit.length ? <pre className="cu-diagnostics">{diagnostic.audit.map(entry => [
+              new Date(entry.at).toLocaleTimeString(),
+              entry.action,
+              entry.bundleId ?? `PID ${entry.target.pid}`,
+              outcomeLabels[entry.outcome],
+              `${entry.durationMs}ms`,
+              entry.errorCode ? `· ${entry.errorCode}` : ""
+            ].filter(Boolean).join(" ")).join("\n")}</pre> : null}
       </details></details>
       <details className="cu-technical-details"><summary>诊断详情</summary>
         {diagnostic?.actionLimits?.map(limit => <p className="cu-description" data-action-limit={limit.action} key={limit.code}>{limit.message}</p>)}

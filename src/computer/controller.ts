@@ -40,9 +40,18 @@ export class ComputerUseController {
   status(): ComputerStatus { return { ...this.snapshot }; }
   audit(): ComputerAuditEntry[] { return this.entries.map(entry => ({ ...entry, target: { ...entry.target } })); }
   setLogging(enabled: boolean): void { this.snapshot.actionLogging = enabled; if (!enabled) this.entries = []; }
-  private record(action: ComputerAction, at: number, outcome: ComputerStatus["lastOutcome"], generation: number): void {
+  private record(action: ComputerAction, at: number, outcome: ComputerStatus["lastOutcome"], generation: number, detail: { bundleId?: string; errorCode?: string } = {}): void {
     if (!this.snapshot.actionLogging || generation !== this.generation) return;
-    this.entries.push({ at, action: action.action, target: { pid: action.pid, windowId: action.windowId }, outcome, durationMs: Math.max(0, this.now() - at) });
+    // 只留「对哪个应用、成没成、为什么没成」这类元数据。
+    // **不记动作参数**：type_text 的 text 是用户输入，elementToken 是会话内的私有引用，
+    // 把它们写进审计等于把用户敲的内容和内部令牌留档。
+    // 参照实现落的是 tool/bundle/pid/args/duration/error_code —— 这里刻意少记 args，
+    // 有 tests/computer-use-diagnostics.test.ts 的不变量守着。
+    this.entries.push({
+      at, action: action.action, target: { pid: action.pid, windowId: action.windowId },
+      outcome, durationMs: Math.max(0, this.now() - at),
+      bundleId: detail.bundleId, errorCode: detail.errorCode
+    });
     this.entries = this.entries.slice(-50);
   }
   async enable(): Promise<void> {
@@ -213,7 +222,7 @@ export class ComputerUseController {
         result = await this.driver.act(session, action, s);
       } catch (error) {
         if (generation === this.generation) {
-          this.record(action, at, "unknown", generation);
+          this.record(action, at, "unknown", generation, { bundleId: capture.appId, errorCode: error instanceof Error ? error.message : String(error) });
           this.invalidate(); this.snapshot.lastOutcome = "unknown"; this.snapshot.state = "unknown";
         }
         throw new ToolOutcomeUnknownError("interrupted", `computer action outcome unknown: ${error instanceof Error ? error.message : String(error)}`);
@@ -222,7 +231,9 @@ export class ComputerUseController {
       const status = result.errorCode || effect === "refused" ? "refused" : effect === "confirmed" ? "completed" : "unverified";
       // 真的动到机器了才算活动；被拒的什么都没发生，不该把监督窗续命。
       if (status !== "refused") this.noteActivity();
-      this.record(action, at, status, generation);
+      // 错误码可能挂在 result 上，也可能在 data 里（驱动把拒绝原因放在 data.code）。
+      const failureCode = result.errorCode ?? (typeof result.data.code === "string" ? result.data.code : undefined);
+      this.record(action, at, status, generation, { bundleId: capture.appId, errorCode: failureCode });
       if (s.aborted || generation !== this.generation) return this.verificationUnavailable(result, status, "computer_verification_interrupted", generation);
       this.snapshot.lastOutcome = status;
       // A fresh post-action frame is evidence for the next decision, not proof of the intended postcondition.

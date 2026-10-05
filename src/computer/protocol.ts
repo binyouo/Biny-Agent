@@ -42,7 +42,14 @@ export type ComputerImage = z.infer<typeof computerImageSchema>;
 export type ComputerState = "disabled" | "ready" | "paused" | "taken-over" | "unknown";
 export interface ComputerStatus { state: ComputerState; owner?: string; preview: boolean; foregroundAllowed: boolean; actionLogging?: boolean; lastOutcome: "not-dispatched" | "completed" | "refused" | "unverified" | "unknown"; diagnostic?: string }
 export type ComputerPermissionState = "granted" | "denied" | "unknown";
-export interface ComputerAuditEntry { at: number; action: ComputerAction["action"]; target: WindowTarget; outcome: ComputerStatus["lastOutcome"]; durationMs: number }
+export interface ComputerAuditEntry {
+  at: number; action: ComputerAction["action"]; target: WindowTarget;
+  outcome: ComputerStatus["lastOutcome"]; durationMs: number;
+  /** 哪个应用被操作了 —— 事后翻日志时第一个想知道的就是它。 */
+  bundleId?: string;
+  /** 失败时的结构化错误码。 */
+  errorCode?: string;
+}
 export interface ComputerActionLimit { action: ComputerAction["action"]; code: string; message: string }
 export interface ComputerDiagnostics {
   workerPath: string; hostPath: string; expectedVersion: string; driverVersion?: string; uptimeSeconds?: number;

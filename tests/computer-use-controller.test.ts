@@ -359,3 +359,24 @@ test("the preview lights up with activity, times out on its own, and re-arms on 
     controller.setPreview(false);
   }
 });
+
+// 「对哪个应用、成了没有、为什么没成」要留下；而**动作参数不留**
+// —— text 是用户输入、elementToken 是私有引用，留档就等于把用户敲的东西存起来。
+test("the audit trail records which app and why it failed, but never the arguments", async () => {
+  const f = fixture(); await f.controller.enable(); f.controller.setLogging(true);
+  await f.controller.observe("s", target);
+
+  await f.controller.act("s", { ...target, action: "press_key", captureId: "c1", key: "Return" });
+  const ok = f.controller.audit();
+  assert.equal(ok.length, 1);
+  assert.equal(ok[0]?.action, "press_key");
+  assert.equal("args" in (ok[0] ?? {}), false, "参数（可能含用户输入）不得进审计");
+
+  // 失败：带错误码
+  f.setAction(async () => ({ data: { effect: "refused", code: "background_unavailable" }, images: [] }));
+  await f.controller.observe("s", target);
+  await f.controller.act("s", { ...target, action: "click", captureId: "c1", x: 1, y: 2 });
+  const refused = f.controller.audit().at(-1);
+  assert.equal(refused?.outcome, "refused");
+  assert.equal(refused?.errorCode, "background_unavailable", "失败原因要能直接看出");
+});

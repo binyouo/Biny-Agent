@@ -19,7 +19,9 @@ test("opt-in action audit retains only bounded metadata and clears on stop or op
   }
   const entries = controller.audit();
   assert.equal(entries.length, 50);
-  assert.deepEqual(Object.keys(entries[0]!).sort(), ["action", "at", "durationMs", "outcome", "target"]);
+  assert.deepEqual(Object.keys(entries[0]!).sort(), ["action", "at", "bundleId", "durationMs", "errorCode", "outcome", "target"]);
+  // 参数绝不进审计：那是用户输入和私有令牌。
+  assert.equal("args" in entries[0]!, false, "审计不得保留动作参数");
   assert.doesNotMatch(JSON.stringify(entries), /private|capture|image|token/);
   entries[0]!.target.pid = 999;
   assert.equal(controller.audit()[0]!.target.pid, 42, "caller cannot mutate retained audit");

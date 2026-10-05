@@ -274,7 +274,20 @@ func keyDeliveryWarning(_ pid: pid_t) -> String? {
     // 而它正是按键的去处。没有它，按键就是被系统丢掉。
     let axApp = axApp(pid)
     if axCopy(axApp, kAXFocusedUIElementAttribute as String) != nil { return nil }
-    return "keystrokes_may_be_dropped: 目标应用不在前台，且没有任何聚焦的 UI 元素，这些按键很可能已被系统丢弃。先重新观察确认目标状态，别把它当成写进去了。"
+    return "keystrokes_may_be_dropped: 目标应用不在前台，且没有任何聚焦的 UI 元素，这些按键很可能已被系统丢弃。先重新观察确认目标状态，别把它当成写进去了。铁律：绝不许为了让它收到输入就把应用调到前台——那是拿用户的焦点换的。"
+}
+
+/// 焦点护栏警告：护栏武装不起来时，动作可能真的会把用户的焦点带走。
+/// 每 30 秒最多提示一次 —— 每一步都重复同一句话只会把结果淹没（Alma 同样做了节流）。
+let focusGuardLock = NSLock()
+var lastFocusGuardWarnAt = Date.distantPast
+func focusGuardWarning() -> String? {
+    if axTrusted() { return nil }   // 护栏靠 AX 还焦点，权限在就没事
+    focusGuardLock.lock(); defer { focusGuardLock.unlock() }
+    let now = Date()
+    if now.timeIntervalSince(lastFocusGuardWarnAt) < 30 { return nil }
+    lastFocusGuardWarnAt = now
+    return "focus_guard_unavailable: 辅助功能权限缺失，焦点护栏无法武装，这些动作可能把用户的前台窗口带走。请用户到 设置 → Computer Use 重新授权（macOS 每次新构建都会重置该授权）。"
 }
 
 func screenshot(_ parameters: [String: Any]) async throws -> [String: Any] {
@@ -559,6 +572,7 @@ DispatchQueue.global().async {
                                 await withFocusGuard(pid) { postUnicode(pid, text) }
                                 var typed: [String: Any] = ["typed": text.count]
                                 if let warning = keyDeliveryWarning(pid) { typed["warning"] = warning }
+                                if let guardWarning = focusGuardWarning() { typed["focusGuardWarning"] = guardWarning }
                                 reply(fd, ["id": id, "ok": true, "data": typed])
                             case "press_key":
                                 let pid = try resolvePid(args)
