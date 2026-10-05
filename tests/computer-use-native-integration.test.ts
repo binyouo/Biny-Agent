@@ -1305,3 +1305,39 @@ test("observation reports whether the element tree changed since last time", asy
     await driver.dispose();
   }
 });
+
+// 参照的观察回执里有 `screenshot_error` + `screen_recording` 两个字段 ——
+// 「没有截图」和「**为什么**没有截图」是两件事。
+// 本实现原来这里是 `(try? await screenshot(...)) ?? [:]`：**把原因吞掉了**，
+// 调用方只看到 width=0，不知道是没权限、窗口没了、还是 SCK 自己出错 —— 三种下一步完全不同。
+test("observation says why a screenshot is missing, and always reports the permission", async () => {
+  const driver = new NativeProcessDriver(() => {}, {
+    binaryPath: new URL("../out/native/computer-use", import.meta.url).pathname
+  });
+  try {
+    const listed = await driver.list("shot-err-e2e", undefined);
+    const pid = ((listed.data as { apps?: { pid?: number }[] }).apps ?? []).find(app => typeof app.pid === "number")?.pid;
+    assert.ok(pid, "至少要有一个运行中的应用");
+
+    const withShot = (await driver.daemonCommand("get_app_state", { pid, max_elements: 10 })).data as Record<string, unknown>;
+    // 权限状态**每次都报**（它是新构建会被重置的授权，调用方需要知道）
+    assert.ok(["granted", "not_granted"].includes(String(withShot.screen_recording)),
+      `screen_recording 必须是 granted / not_granted，实际 ${JSON.stringify(withShot.screen_recording)}`);
+    // 这一路截图应当成功 → 不该有错误字段（有错误也必须说清是哪一种）
+    if (withShot.screenshot_width === 0) {
+      assert.ok(typeof withShot.screenshot_error === "string" && withShot.screenshot_error.length > 0,
+        "截图没成功就必须给出原因，不能只留一个 0");
+    }
+
+    // 明确不要截图 ≠ 失败：不该报错
+    const noShot = (await driver.daemonCommand("get_app_state", { pid, no_shot: true, max_elements: 10 })).data as Record<string, unknown>;
+    assert.equal(noShot.screenshot_error, undefined, "调用方明确不要截图时不该报错");
+    assert.ok(["granted", "not_granted"].includes(String(noShot.screen_recording)), "不要截图时权限状态照样要报");
+
+    // ⚠️ 超时那条路（withDeadline 到点直接返回兜底、不经过 catch）**没法按需触发** ——
+    // 要真断掉屏幕录制权限，那会扰动用户的系统设置。所以它只做过编译验证 + 代码路径推演，
+    // **这里不断言它**，如实标注比假装测过强。
+  } finally {
+    await driver.dispose();
+  }
+});

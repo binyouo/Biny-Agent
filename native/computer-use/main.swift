@@ -1221,6 +1221,23 @@ func focusGuardWarning() -> String? {
     return "focus_guard_unavailable: 辅助功能权限缺失，焦点护栏无法武装，这些动作可能把用户的前台窗口带走。请用户到 设置 → Computer Use 重新授权（macOS 每次新构建都会重置该授权）。"
 }
 
+/// 把截图失败的原因说成调用方能据以行动的一句话。
+///
+/// `screenshot()` 抛错时原来被 `try?` 吞掉，于是回执里只有 0 和空缺 ——
+/// **"没有截图"** 和 **"为什么没有截图"** 是两件事，参照分开报（`screenshot_error`）。
+/// 权限那一条尤其要说清：它是**每次新构建都会重置**的授权，用户一定会遇到。
+func describeCaptureFailure(_ error: Error) -> String {
+    let described = (error as NSError)
+    if described.domain == "capture" && described.code == 64 {
+        return "capture_missing_output: 内部调用没给输出路径（不该发生，报出来）。"
+    }
+    if described.localizedDescription.contains("屏幕录制") || described.localizedDescription.contains("screen") {
+        return "screen_recording_not_granted: \(described.localizedDescription)"
+    }
+    return "capture_failed: \(described.localizedDescription)（domain=\(described.domain) code=\(described.code)）。"
+        + "若反复出现，先在「系统设置 → 隐私与安全性 → 屏幕录制」里确认「Biny Computer Use」是开着的 —— 权限每次新构建都会重置。"
+}
+
 func screenshot(_ parameters: [String: Any]) async throws -> [String: Any] {
     guard let output = parameters["out"] as? String else { throw NSError(domain: "capture", code: 64) }
     // 先自己查一遍屏幕录制权限。不查的话，缺权限会在下面那行以
@@ -1668,7 +1685,32 @@ DispatchQueue.global().async {
                                 // 截图同样可能挂在无响应的窗口上：限时 3 秒，超时就返回不带图的观察。
                                 // 同理：TaskGroup 的 cancel 不会中断已在跑的 capture，
                                 // group.next() 仍会等它返回。放进独立线程 + 轮询才有真上限。
-                                let shot = skipShot ? [:] : await withDeadline(3.0, fallback: [:]) { (try? await screenshot(shotArgs)) ?? [:] }
+                                // ⚠️ 原来这里是 `(try? await screenshot(shotArgs)) ?? [:]` —— **把原因吞掉了**。
+                                // 截图失败时调用方只看到 width=0 和一个空字段，**不知道为什么**：
+                                // 是没权限？窗口不在了？还是 SCK 自己出错？三种的下一步完全不同。
+                                // 参照在同一个位置报 `screenshot_error` + `screen_recording` 两个字段 —— 就是这个道理。
+                                var screenshotError: String?
+                                let shot: [String: Any]
+                                if skipShot {
+                                    shot = [:]                      // 调用方明确说不要截图，不是失败
+                                } else {
+                                    // ⚠️ **先假设会超时**：`withDeadline` 到点就直接返回兜底值，
+                                    // **不会**经过下面的 catch —— 于是"超时"这条路原来什么也不报，
+                                    // 调用方只看到空。成功时再清掉这句话。
+                                    screenshotError = "capture_timeout: 截图在 3 秒内没回来（ScreenCaptureKit 卡住或系统太忙）。再试一次；若反复出现，先确认「系统设置 → 隐私与安全性 → 屏幕录制」里「Biny Computer Use」是开着的。"
+                                    shot = await withDeadline(3.0, fallback: [:]) {
+                                        do {
+                                            let captured = try await screenshot(shotArgs)
+                                            // 成功也可能返回空dict（没有可用窗口），那同样不是"有截图"。
+                                            screenshotError = captured["path"] == nil ? "capture_empty: 截图调用没有返回图片（目标窗口可能已经不在了）。" : nil
+                                            return captured
+                                        }
+                                        catch {
+                                            screenshotError = describeCaptureFailure(error)
+                                            return [:]
+                                        }
+                                    }
+                                }
                                 refTables[pid] = table
                                 lastObservedPid = pid
                                 // 记下截图坐标 → 屏幕坐标的映射，后续像素点击据此换算。
@@ -1678,6 +1720,10 @@ DispatchQueue.global().async {
                                 }
                                 var data: [String: Any] = ["pid": Int(pid), "elements": elements]
                                 if let path = shot["path"] { data["screenshot"] = path }
+                                // 「为什么没有截图」要说出来，并且**始终**报权限状态 ——
+                                // 参照同样在这一个回执里给这两个字段。
+                                if let screenshotError { data["screenshot_error"] = screenshotError }
+                                data["screen_recording"] = screenTrusted() ? "granted" : "not_granted"
                                 data["screenshotWidth"] = shot["width"] ?? 0
                                 data["screenshotHeight"] = shot["height"] ?? 0
                                 // 上报**真实**窗口号：以前这里是 Int(pid)，于是 windowId 一路都是假的。
