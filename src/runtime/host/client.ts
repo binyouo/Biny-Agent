@@ -271,7 +271,10 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
   ): Promise<HostOperationResult<{ runId: string; messageId: string }>> {
     if (!input.trim()) throw new Error("Agent prompt cannot be empty.");
     const ids = normalizeRequestIds(requestIds);
-    return await this.request("run.submit", {
+    const socket = this.socket;
+    const hostEpoch = this.hostEpoch;
+    const targetSessionId = sessionId ?? this.focusedSessionId;
+    const payload = {
       input,
       attachments,
       runId: ids.runId,
@@ -287,6 +290,33 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
       sessionId,
       writeIntent: true,
       expectedRevision: this.currentRevision(sessionId)
+    };
+    const rejected = await this.request<HostOperationResult<{ runId: string; messageId: string }>>("run.submit", payload);
+    // The Host checks this revision before writer acquisition or run admission. Only
+    // that explicit rejection can be retried; a lost response may have committed.
+    const rejection = asRecord(rejected.errorData);
+    if (rejected.accepted !== false || rejected.errorCode !== "run_revision_conflict_before_admission"
+      || typeof payload.expectedRevision !== "number" || !Number.isSafeInteger(payload.expectedRevision) || payload.expectedRevision < 0
+      || rejection.expectedRevision !== payload.expectedRevision
+      || typeof rejection.currentRevision !== "number" || !Number.isSafeInteger(rejection.currentRevision) || rejection.currentRevision < 0
+      || rejection.currentRevision !== rejected.revision
+      || rejection.currentRevision <= payload.expectedRevision
+      || rejected.reason !== `Runtime Host revision conflict: expected ${String(payload.expectedRevision)}, current ${String(rejection.currentRevision)}.`
+      || socket === undefined || socket.destroyed || this.socket !== socket || this.hostEpoch !== hostEpoch
+      || targetSessionId === undefined || rejected.sessionId !== targetSessionId) return rejected;
+    await this.refreshRuntimeSnapshot(targetSessionId);
+    const current = this.snapshots.get(targetSessionId);
+    if (this.closed || this.retired || socket.destroyed || this.socket !== socket || this.hostEpoch !== hostEpoch
+      || current?.info.sessionId !== targetSessionId || current.state.kind !== "idle"
+      || typeof current.revision !== "number" || !Number.isSafeInteger(current.revision) || current.revision < rejection.currentRevision) return rejected;
+    // Reuse every request identity, keep CAS, and try at most once on the same owner.
+    return await this.request("run.submit", { ...payload, sessionId: targetSessionId, expectedRevision: current.revision }, undefined, (dispatchedSocket) => {
+      const latest = this.snapshots.get(targetSessionId);
+      if (this.closed || this.retired || dispatchedSocket !== socket || socket.destroyed || this.hostEpoch !== hostEpoch
+        || latest?.info.sessionId !== targetSessionId || latest.state.kind !== "idle"
+        || typeof latest.revision !== "number" || !Number.isSafeInteger(latest.revision) || latest.revision < current.revision) {
+        throw new Error("Runtime Host owner changed before retrying rejected run admission.");
+      }
     });
   }
 
@@ -1515,7 +1545,13 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
         settle({ ok: false, error: new Error("Runtime Host is disconnected.") });
         return;
       }
-      onDispatch?.(socket);
+      try {
+        onDispatch?.(socket);
+      } catch (error) {
+        this.pending.delete(requestId);
+        settle({ ok: false, error: asError(error) });
+        return;
+      }
       this.send(socket, { kind: "request", requestId, operation, payload });
     }));
   }

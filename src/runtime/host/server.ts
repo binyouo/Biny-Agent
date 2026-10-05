@@ -1008,9 +1008,23 @@ export class RuntimeHostServer {
           messageId: submitted.messageId
         };
       }
-      case "run.submit":
-        return await this.executeAdmission(async () => {
-          this.assertRevision(payload, runtime);
+      case "run.submit": {
+        try {
+          this.admission.assertAdmission();
+          const snapshot = runtime.getSnapshot();
+          const expected = optionalSafeInteger(payload.expectedRevision);
+          // This result is created only here, synchronously before writer acquisition
+          // and submitPrompt. A similarly worded exception cannot claim no admission.
+          if (expected !== undefined && expected !== snapshot.revision) {
+            return {
+              accepted: false,
+              sessionId: snapshot.info.sessionId,
+              revision: snapshot.revision,
+              reason: `Runtime Host revision conflict: expected ${String(expected)}, current ${String(snapshot.revision)}.`,
+              errorCode: "run_revision_conflict_before_admission",
+              errorData: { expectedRevision: expected, currentRevision: snapshot.revision }
+            };
+          }
           await this.ensureSessionWriter(connection, runtime);
           this.admission.assertAdmission();
           const ids = readRequestIds(payload);
@@ -1022,8 +1036,13 @@ export class RuntimeHostServer {
             readCapabilitySelection(payload.capabilitySelection)
           );
           this.trackCompletion(submitted);
-          return { runId: submitted.runId, messageId: submitted.messageId };
-        }, runtime);
+          return { accepted: true, sessionId: runtime.getSnapshot().info.sessionId, revision: runtime.getSnapshot().revision,
+            result: { runId: submitted.runId, messageId: submitted.messageId } };
+        } catch (error) {
+          return { accepted: false, sessionId: runtime.getSnapshot().info.sessionId, revision: runtime.getSnapshot().revision,
+            reason: publicError(error), errorCode: publicErrorCode(error), errorData: publicErrorData(error) };
+        }
+      }
       case "queue": {
         this.assertRevision(payload, runtime);
         await this.ensureSessionWriter(connection, runtime);
