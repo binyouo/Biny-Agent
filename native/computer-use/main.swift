@@ -117,8 +117,17 @@ final class AppshotMonitor {
         // 只关心按键按下与修饰键变化：热键不需要看别的，mask 越小 tap 越不容易被系统掐。
         let mask = (CGEventMask(1) << CGEventType.keyDown.rawValue)
                  | (CGEventMask(1) << CGEventType.flagsChanged.rawValue)
+        // 先试 annotated session（全局热键的常规位置），不行再退普通 session。
+        // 实测普通 session 能建、能 enable、挂得上 runloop，却收不到任何事件。
+        let tapPoint: CGEventTapLocation = CGEvent.tapCreate(
+            tap: .cgAnnotatedSessionEventTap, place: .headInsertEventTap, options: .defaultTap,
+            eventsOfInterest: mask, callback: { _, type, event, refcon in
+                guard let refcon else { return Unmanaged.passUnretained(event) }
+                Unmanaged<AppshotMonitor>.fromOpaque(refcon).takeUnretainedValue().handle(type: type, event: event)
+                return Unmanaged.passUnretained(event)
+            }, userInfo: Unmanaged.passUnretained(self).toOpaque()) != nil ? .cgAnnotatedSessionEventTap : .cgSessionEventTap
         guard let tap = CGEvent.tapCreate(
-            tap: .cgSessionEventTap, place: .headInsertEventTap, options: .defaultTap,
+            tap: tapPoint, place: .headInsertEventTap, options: .defaultTap,
             eventsOfInterest: mask,
             callback: { _, type, event, refcon in
                 guard let refcon else { return Unmanaged.passUnretained(event) }
@@ -340,7 +349,22 @@ func noteActionPoint(_ args: [String: Any], _ point: CGPoint?, symbol: String?) 
 /// 「其实根本建不起来」，那是两个完全不同的结论。
 ///
 /// 用**自身 pid** 试，不碰任何目标应用；建起来立刻失效掉，不留下常驻 tap。
+/// 探三次：**这个探针本身会飘** —— 同一台机器上前后两次可以一次 per-pid、一次 session-only。
+/// 只报一次结果是误导：调用方会以为那是稳定属性。所以报**模式**而不是单次值。
 func canArmEventTap() -> String {
+    var perPidHits = 0, sessionHits = 0
+    for _ in 0..<3 {
+        let r = tryArmEventTapOnce()
+        if r == "per-pid" { perPidHits += 1 }
+        if r != "none" { sessionHits += 1 }
+    }
+    if perPidHits == 3 { return "per-pid" }
+    if perPidHits == 0 && sessionHits == 3 { return "session-only" }
+    if sessionHits == 0 { return "none" }
+    return "intermittent(per-pid \(perPidHits)/3)"
+}
+
+private func tryArmEventTapOnce() -> String {
     let mask = CGEventMask(1) << CGEventType.leftMouseDown.rawValue
     let callback: CGEventTapCallBack = { _, _, event, _ in Unmanaged.passUnretained(event) }
     // 按 pid 的 tap：参照第一层用的就是它
