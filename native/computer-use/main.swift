@@ -1434,7 +1434,15 @@ DispatchQueue.global().async {
                                 reply(fd, ["id": id, "ok": true, "data": data as [String: Any]])
                             case "click":
                                 guard axTrusted() else { throw axNotGranted() }
-                                if let ref = args["ref"] as? String, let pid = args["pid"] as? Int, let element = refTables[pid_t(pid)]?[ref] {
+                                if let ref = args["ref"] as? String, let pid = args["pid"] as? Int {
+                                    // ⚠️ ref 的查找**不能和上面那两个条件并在一起**：
+                                    // 并在一起时，"传了 ref 但它过期了"会掉到下面的像素分支，
+                                    // 最终报成"需要 ref 或坐标"—— 而调用方明明给了 ref。
+                                    // 这违反「一个 guard 只检查一件事」：没传和过期了必须分开报。
+                                    guard let element = refTables[pid_t(pid)]?[ref] else {
+                                        throw NSError(domain: "click", code: 64, userInfo: [NSLocalizedDescriptionKey:
+                                            "element_ref_not_observed: ref \(ref) 不在 pid \(pid) 的最近一次观察里，先 snap 一次"])
+                                    }
                                     // 两条路由是两种机制，不是同一件事的两种写法：
                                     // AX 让控件执行它自己的动作（不碰坐标，最可靠）；
                                     // 物理点击合成鼠标事件（能表达双击和右键，但依赖坐标与前台）。
@@ -1499,7 +1507,7 @@ DispatchQueue.global().async {
                                         postClick(pid, point, button: pixelButton, clicks: pixelClicks)
                                     }
                                     reply(fd, ["id": id, "ok": true, "data": ["clicked": "@\(Int(x)),\(Int(y))", "clicks": pixelClicks] as [String: Any]] as [String: Any])
-                                } else { throw NSError(domain: "click", code: 64, userInfo: [NSLocalizedDescriptionKey: "ref_stale"]) }
+                                } else { throw NSError(domain: "click", code: 64, userInfo: [NSLocalizedDescriptionKey: "click_needs_ref_or_pixel: 要么给一个来自最近一次观察的 ref，要么给 x/y 坐标"]) }
                             case "drag":
                                 // AX 没有拖这个动作，只能合成鼠标序列。
                                 guard let x1 = args["x1"] as? Double, let y1 = args["y1"] as? Double,
@@ -1515,8 +1523,19 @@ DispatchQueue.global().async {
                             case "perform_secondary_action":
                                 // 右键 / 打开上下文菜单：优先走 AX 的 ShowMenu，退化成合成右键。
                                 let pid = try resolvePid(args)
-                                if let ref = args["ref"] as? String, let element = refTables[pid]?[ref] {
+                                if let ref = args["ref"] as? String {
+                                    // 同上：ref 查找要和"有没有给 ref"分开，否则"过期"会报成"没给"。
+                                    guard let element = refTables[pid]?[ref] else {
+                                        throw NSError(domain: "menu", code: 64, userInfo: [NSLocalizedDescriptionKey:
+                                            "element_ref_not_observed: ref \(ref) 不在 pid \(Int(pid)) 的最近一次观察里，先 snap 一次"])
+                                    }
                                     let status = AXUIElementPerformAction(element, kAXShowMenuAction as CFString)
+                                    // 两条路都不通时要**说出来**：早先这里没有 else，
+                                    // 于是"AX 不认这个菜单、元素又没有坐标"就变成了静默什么都不做。
+                                    if status != .success && axFrame(element) == nil {
+                                        throw NSError(domain: "menu", code: 65, userInfo: [NSLocalizedDescriptionKey:
+                                            "element_has_no_context_menu: 这个元素既不响应 AXShowMenu，也没有可点击的坐标（可能是个容器）。改用它的子元素，或先 snap 看清结构"])
+                                    }
                                     if status != .success, let frame = axFrame(element) {
                                         let point = CGPoint(x: frame["x"]! + frame["w"]!/2, y: frame["y"]! + frame["h"]!/2)
                                         await withFocusGuard(pid) {
@@ -1530,7 +1549,7 @@ DispatchQueue.global().async {
                                         postMouse(pid, .rightMouseDown, point, .right, global: true); postMouse(pid, .rightMouseUp, point, .right, global: true)
                                     }
                                     reply(fd, ["id": id, "ok": true, "data": ["menu": "@\(Int(x)),\(Int(y))"] as [String: Any]] as [String: Any])
-                                } else { throw NSError(domain: "menu", code: 64, userInfo: [NSLocalizedDescriptionKey: "ref_stale"]) }
+                                } else { throw NSError(domain: "menu", code: 64, userInfo: [NSLocalizedDescriptionKey: "menu_needs_ref_or_pixel: 要么给一个来自最近一次观察的 ref，要么给 x/y 坐标"]) }
                             case "type":
                                 // 元素级文本写入：直接改控件的 AXValue。
                                 //
@@ -1598,36 +1617,40 @@ DispatchQueue.global().async {
                                 reply(fd, ["id": id, "ok": true, "data": ["pressed": key, "action": action, "route": "ax"] as [String: Any]])
                             case "set_value":
                                 // 直接写 AXValue：滑杆、步进器、输入框都能一步到位，不用模拟按键。
-                                guard let ref = args["ref"] as? String, let pid = args["pid"] as? Int,
-                                      let element = refTables[pid_t(pid)]?[ref], let value = args["value"] else {
-                                    throw NSError(domain: "value", code: 64, userInfo: [NSLocalizedDescriptionKey: "set_value requires ref and value"])
+                                guard let ref = args["ref"] as? String, let pid = args["pid"] as? Int, let value = args["value"] else {
+                                    throw NSError(domain: "value", code: 64, userInfo: [NSLocalizedDescriptionKey: "set_value_missing_argument: 需要 ref、pid 和 value"])
+                                }
+                                guard let element = refTables[pid_t(pid)]?[ref] else {
+                                    throw NSError(domain: "value", code: 64, userInfo: [NSLocalizedDescriptionKey: "element_ref_not_observed: ref \(ref) 不在 pid \(pid) 的最近一次观察里，先 snap 一次"])
                                 }
                                 let status = AXUIElementSetAttributeValue(element, kAXValueAttribute as CFString, value as CFTypeRef)
                                 guard status == .success else {
-                                    throw NSError(domain: "value", code: 1, userInfo: [NSLocalizedDescriptionKey: "set_value_failed"])
+                                    throw NSError(domain: "value", code: 1, userInfo: [NSLocalizedDescriptionKey: "element_value_not_settable: 这个控件的 AXValue 不可写（滑杆/步进器/输入框通常可以）。ref 可能指向容器，改用它的子元素"])
                                 }
                                 reply(fd, ["id": id, "ok": true, "data": ["ref": ref, "value": "\(value)"] as [String: Any]] as [String: Any])
                             case "select_text":
                                 // 选中一段文字，或在没有 text 时把光标放到 range 起点。
-                                guard let ref = args["ref"] as? String, let pid = args["pid"] as? Int,
-                                      let element = refTables[pid_t(pid)]?[ref] else {
-                                    throw NSError(domain: "select", code: 64, userInfo: [NSLocalizedDescriptionKey: "ref_stale"])
+                                guard let ref = args["ref"] as? String, let pid = args["pid"] as? Int else {
+                                    throw NSError(domain: "select", code: 64, userInfo: [NSLocalizedDescriptionKey: "select_text_missing_argument: 需要 ref 和 pid"])
+                                }
+                                guard let element = refTables[pid_t(pid)]?[ref] else {
+                                    throw NSError(domain: "select", code: 64, userInfo: [NSLocalizedDescriptionKey: "element_ref_not_observed: ref \(ref) 不在 pid \(pid) 的最近一次观察里，先 snap 一次"])
                                 }
                                 if let text = args["text"] as? String {
                                     let status = AXUIElementSetAttributeValue(element, kAXSelectedTextAttribute as CFString, text as CFTypeRef)
                                     guard status == .success else {
-                                        throw NSError(domain: "select", code: 1, userInfo: [NSLocalizedDescriptionKey: "select_text_failed"])
+                                        throw NSError(domain: "select", code: 1, userInfo: [NSLocalizedDescriptionKey: "element_selection_not_settable: 这个控件不接受设置选区/选中文本（可能不是文本控件）"])
                                     }
                                     reply(fd, ["id": id, "ok": true, "data": ["selected": text] as [String: Any]] as [String: Any])
                                 } else if let location = args["location"] as? Int {
                                     let length = args["length"] as? Int ?? 0
                                     var range = CFRange(location: location, length: length)
                                     guard let axRange = AXValueCreate(.cfRange, &range) else {
-                                        throw NSError(domain: "select", code: 1, userInfo: [NSLocalizedDescriptionKey: "select_range_failed"])
+                                        throw NSError(domain: "select", code: 1, userInfo: [NSLocalizedDescriptionKey: "element_range_not_settable: 读不到也写不进这个控件的选区范围（AXSelectedTextRange）"])
                                     }
                                     let status = AXUIElementSetAttributeValue(element, kAXSelectedTextRangeAttribute as CFString, axRange)
                                     guard status == .success else {
-                                        throw NSError(domain: "select", code: 1, userInfo: [NSLocalizedDescriptionKey: "select_range_failed"])
+                                        throw NSError(domain: "select", code: 1, userInfo: [NSLocalizedDescriptionKey: "element_range_not_settable: 读不到也写不进这个控件的选区范围（AXSelectedTextRange）"])
                                     }
                                     reply(fd, ["id": id, "ok": true, "data": ["cursor": location] as [String: Any]] as [String: Any])
                                 } else {

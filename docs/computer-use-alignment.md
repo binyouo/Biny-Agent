@@ -219,6 +219,20 @@ not running** —— 调用方不必先 launch 再 observe。本实现原先对�
 审批与 `action_unverified` 来自 notes，未在参照代码里逐条复核 —— 标在这里，
 免得读者把"照文档写的"和"对照代码验过的"当成一回事。
 
+### 1.4b 失败的**说法**：区分"没传"和"过期"
+
+参照的每条失败都说得具体（`click: element has no AX action and no screen bounds for a
+physical click`、`set_value (AXValue not settable on this element)`、
+`select_text (element has no readable AXValue text)` …）。本实现原先多处是裸码
+（`ref_stale` / `set_value_failed` / `select_text_failed`），
+`perform_secondary_action` 在"AX 不认菜单且元素没有坐标"时**静默什么都不做** ——
+没有任何消息。
+
+已逐条对齐，并守住一条不变量：**「没传参数」和「ref 过期了」必须分开报** ——
+调用方要做的下一步完全不同（补参数 vs 重新 snap）。
+这条在 `click` 和 `perform_secondary_action` 上先后漏过一次（`if let ref = …, let element = refTables[…][ref]`
+把两件事并在一个条件里），现在四个动词都有测试钉住。
+
 ### 1.5 工具 / 技能层
 
 - 模型侧工具：`ComputerList` / `ComputerObserve` / `ComputerAction`（8 个动作动词）

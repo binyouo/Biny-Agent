@@ -777,3 +777,40 @@ test("type can insert at the cursor instead of replacing the whole value", async
     rmSync(scratch, { force: true });
   }
 });
+
+// 「没传参数」和「ref 过期了」是两种完全不同的坏法，调用方要做的下一步也不同：
+// 前者是补参数，后者是重新 snap。合成一句话会让调用方对着"需要 ref"发呆 ——
+// 而他明明给了 ref，只是过期了。这条不变量在 set_value / select_text / click / menu 上
+// 都要成立，所以逐个钉住（click 和 menu 上就先后漏过一次）。
+test("a missing argument and an expired ref are reported differently", async () => {
+  const driver = new NativeProcessDriver(() => {}, {
+    binaryPath: new URL("../out/native/computer-use", import.meta.url).pathname
+  });
+  try {
+    const listed = await driver.list("err-e2e", undefined);
+    const apps = (listed.data as { apps: { pid?: number }[] }).apps;
+    const pid = apps.find(app => typeof app.pid === "number")?.pid;
+    assert.ok(pid, "至少要有一个运行中的应用");
+    const expired = "e999999";   // 不可能出现在任何一次观察里
+
+    for (const [tool, missing, stale] of [
+      ["click", { pid }, { pid, ref: expired }],
+      ["perform_secondary_action", { pid }, { pid, ref: expired }],
+      ["set_value", { pid, value: "x" }, { pid, ref: expired, value: "x" }],
+      ["select_text", { pid }, { pid, ref: expired }]
+    ] as const) {
+      await assert.rejects(
+        () => driver.daemonCommand(tool, missing),
+        error => /needs_ref_or_pixel|missing_argument/.test(String(error)),
+        `${tool} 没传目标时应当说"缺参数"`
+      );
+      await assert.rejects(
+        () => driver.daemonCommand(tool, stale),
+        error => /element_ref_not_observed/.test(String(error)),
+        `${tool} 传了过期 ref 时应当说"ref 不在最近一次观察里"，而不是"缺参数"`
+      );
+    }
+  } finally {
+    await driver.dispose();
+  }
+});
