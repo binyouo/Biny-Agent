@@ -926,12 +926,12 @@ ShareableContentCache · BareModifierMonitor · AppshotEvents
 | 3 | **daemon 自带的 TCP MCP server**（bearer token + `tokenPath`）| 与现有两条路径（产品内工具 / stdio MCP）重叠 | 见 §6：类名与日志前缀都读到了，机制未实现 | 需要"外部 MCP 客户端不经主应用直连守护进程"时 |
 | 4 | **系统级 socket**（`/Library/Application Support/Alma/computer-use.sock`，与用户级并存）| 语义未定：多用户共享？root 起的 daemon？——**说不出用途就不做** | 二进制里有这个路径 | 弄清它解决什么问题时 |
 | 5 | **Appshot 的应用侧接线** | 它属于**活动记录**那条线（热键是"用户手动抓一张进记录"），而那块当前有未提交改动 | daemon 侧动词齐、端到端已验证（§5.5）；缺的只是消费方 | 活动记录那条线自己决定接 |
-| 6 | **PiP 镜像会话**：按窗口开一个镜像，**供 agent 主动打开** | 本仓库的 PiP 是**单个预览面**（用户偏好 × 活动驱动，`previewSurface` 是单例），**不是按窗口、agent 也开不了** | 现状可直接看：`previewSurface.ts` 的接口是 `open/update/move/bounds/close`，**没有 window_id 这一维** | 需要"让用户看某个特定窗口里 agent 在做什么"时 |
+| 6 | **PiP 镜像会话**：按窗口开一个镜像，**供 agent 主动打开** | 本仓库的 PiP 是**单个预览面**（用户偏好 × 活动驱动，`previewSurface` 是单例），**不是按窗口、agent 也开不了** | 现状可直接看：`previewSurface.ts` 的接口是 `open/update/move/bounds/close`，**没有 window_id 这一维** | 需要"让用户看某个特定窗口里 agent 在做什么"时；同块还欠 **`last_frame_age_ms`**（镜像那一帧有多旧）与**最小化劫持**（`PIPMinimizeArmer`，用户最小化时自动开镜像）|
 | 7 | **per-pid 事件 tap 的稳定性** | 实测会飘（2/3 · 3/3 · 3/3）。**推测**是签名身份（参照是公证包，本仓库 ad-hoc）——标为推测，未当事实 | `doctor` 采三次报模式（`per-pid`/`session-only`/`intermittent(n/3)`/`none`）| 有正式签名时 |
 | 8 | **设置页没有 i18n 层** | 本仓库**全仓没有 i18n 机制**（整个设置区内联文案）| 对齐的是**内容**：参照 36 个 key 逐条映射到本实现的界面元素，全部有对应物 | 引入 i18n 时 |
 | 9 | **仅 macOS** | 全部基于 AX / ScreenCaptureKit / CGEvent | —— | 要做别的平台时 |
 | 10 | **网页内容量不出页** | 网页不报告内容高度，按 20 行/页估算 | 回执里**标注**：`unit=pages(estimated as 20 notches)` vs `unit=pages` | 网页侧有别的量法时 |
-| 11 | **`CGEventSetWindowLocation`** 未采用 | 实测在本环境对双击选词**没有区别**（两种都选区不变）| §4.1 的对照表 | —— |
+| 11 | **窗口局部管线的送达**（`CGEventSetWindowLocation` + `postToPid`）| 机制已实现（§3.1b），但**三次测量全是坏仪器**，没能证明它送达；推测要**正式签名** | 显式传 `pipeline: "window-local"`，看回执的 `clickPipeline` —— 但"有没有真的点到"暂无可靠观测量 | 有公证签名时 / 找到能区分送达的观测量时 |
 
 **~~第 12 条：产品内模型工具没跟上~~ —— 已补（2026-10-05 深夜）**
 
