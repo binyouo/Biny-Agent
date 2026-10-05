@@ -370,6 +370,17 @@ export class NativeProcessDriver implements ComputerDriver {
   }
 
   diagnostics(): Promise<DriverReply> { return this.call("doctor", {}); }
+  /**
+   * 通用命令口：命令行（`biny cu`）和测试用它直接对话守护进程。
+   *
+   * 模型侧的三个工具走的是 controller（有审批、审计、capture 校验），
+   * 而人和脚本要的是「我说什么它做什么」——所以这条口子绕开那些策略层，
+   * 只保留守护进程本身的能力。这也是 Alma 把 cu 放在命令行层的原因。
+   */
+  daemonCommand(cmd: string, args: Record<string, unknown> = {}): Promise<DriverReply> {
+    return this.call(cmd, args);
+  }
+
   list(_session: string, pid: number | undefined, signal?: AbortSignal): Promise<DriverReply> {
     return this.call("list_apps", pid === undefined ? {} : { pid }, signal);
   }

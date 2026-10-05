@@ -657,7 +657,14 @@ DispatchQueue.global().async {
                             case "status":
                                 // 「helper 包 + 守护进程状态」：调用方最想先知道的两件事是
                                 // 「包在不在」和「守护进程跑了多久、还剩多久自退」。
-                                let helper = Bundle.main.bundleURL.path
+                                // 从可执行文件往上爬三级拿真包路径：
+                                // .../computer-use.app/Contents/MacOS/computer-use
+                                // Bundle.main.bundleURL 在经软链启动时会解析成目录，不能用。
+                                let executable = ((Bundle.main.executableURL?.path ?? CommandLine.arguments.first ?? "") as NSString).resolvingSymlinksInPath
+                                var helper = executable
+                                for _ in 0..<3 { helper = (helper as NSString).deletingLastPathComponent }
+                                // 不在 .app 里（裸二进制直跑）就用可执行文件自己，别报一个不存在的路径。
+                                if !helper.hasSuffix(".app") { helper = executable }
                                 reply(fd, ["id": id, "ok": true, "data": [
                                     "helper": helper,
                                     "helperPresent": FileManager.default.fileExists(atPath: helper),
