@@ -677,3 +677,59 @@ test("the daemon answers version and prints usage for an unknown subcommand", ()
   assert.match(bogus.stderr, /unknown subcommand/);
   assert.match(bogus.stdout, /用法:/, "要告诉用户正确的用法，而不是什么都不说");
 });
+
+// 参照对「AX 树读回来是空的」有唤醒重试（wakeupAttempts / wakeupDurationMs /
+// no_wakeup_budget / empty_after_wakeup）：有些应用在 app nap 或懒加载时第一遍就是空的。
+// 用尽预算仍为空要**明说**，让调用方分得清"这应用没有 AX 树"和"我该再试一次"。
+test("an empty accessibility tree is retried, and says so when it stays empty", async () => {
+  const driver = new NativeProcessDriver(() => {}, {
+    binaryPath: new URL("../out/native/computer-use", import.meta.url).pathname
+  });
+  try {
+    const listed = await driver.list("wake-e2e", undefined);
+    const apps = (listed.data as { apps: { pid?: number; name?: string }[] }).apps;
+    // 需要一棵**本来就空**的 AX 树来触发重试；找不到就跳过，不伪造场景
+    for (const app of apps) {
+      if (typeof app.pid !== "number") continue;
+      const data = (await driver.daemonCommand("get_app_state", { pid: app.pid, no_shot: true, max_elements: 40 })).data as
+        { elements?: { role?: string }[]; wakeupAttempts?: number; warning?: string };
+      const meaningful = (data.elements ?? []).filter(element => element.role !== "AXWindow");
+      if (meaningful.length > 0) continue;
+      assert.ok((data.wakeupAttempts ?? 0) > 0, `${app.name} 的树是空的，应当尝试唤醒`);
+      assert.match(data.warning ?? "", /empty_after_wakeup/, "重试后仍为空要说清楚，别让调用方以为该再试");
+      return;
+    }
+  } finally {
+    await driver.dispose();
+  }
+});
+
+// shape() 在有截图时会**重建**回执对象 —— 只搬运它认识的字段，新加的就静默消失。
+// 这就是 wakeupAttempts 带截图时不见、不带截图时还在的原因，表现形式是
+// 「同一功能两次测出不同结果」。凡是 daemon 新加的字段都必须过这一关。
+test("daemon fields survive the screenshot path, which rebuilds the reply", async () => {
+  const driver = new NativeProcessDriver(() => {}, {
+    binaryPath: new URL("../out/native/computer-use", import.meta.url).pathname
+  });
+  try {
+    const listed = await driver.list("shape-e2e", undefined);
+    const apps = (listed.data as { apps: { pid?: number }[] }).apps;
+    const target = apps.find(app => typeof app.pid === "number");
+    if (!target?.pid) return;
+
+    const withShot = (await driver.daemonCommand("get_app_state", { pid: target.pid, max_elements: 30 })).data as Record<string, unknown>;
+    const noShot = (await driver.daemonCommand("get_app_state", { pid: target.pid, no_shot: true, max_elements: 30 })).data as Record<string, unknown>;
+
+    assert.ok(withShot.screenshot_width !== undefined, "带截图时应当带上截图尺寸");
+    assert.equal("screenshot" in withShot, false, "daemon 的临时截图路径不该泄漏出去");
+    // 两条路的**元素引用字段名不同**（有截图走 shape 映射给 element_token，
+    // no_shot 直出 daemon 的 ref）—— 契约不同是有原因的（captureSchema 要求截图宽为正，
+    // "没有截图"满足不了它）。但**两边都必须给出可用的引用**，否则拿到树也点不动。
+    const tokenOf = (data: Record<string, unknown>) =>
+      (data.elements as { element_token?: string; ref?: string }[] | undefined)?.map(element => element.element_token ?? element.ref);
+    assert.deepEqual(tokenOf(withShot), tokenOf(noShot), "带不带截图，元素引用都该在、且对得上");
+    assert.ok((tokenOf(noShot)?.length ?? 0) > 0, "no_shot 也必须给引用 —— 否则行集没有 ref，点了没用");
+  } finally {
+    await driver.dispose();
+  }
+});

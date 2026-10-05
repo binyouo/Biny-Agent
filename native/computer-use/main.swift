@@ -739,7 +739,7 @@ func withDeadline(_ timeout: Double, fallback: [String: Any], work: @escaping ()
     }
 }
 
-func collectAccessibility(pid: pid_t, maxDepth: Int, limit: Int, timeout: Double) -> ([[String: Any]], [String: AXUIElement]) {
+func collectAccessibility(pid: pid_t, maxDepth: Int, limit: Int, timeout: Double) -> ([[String: Any]], [String: AXUIElement], Int, Int) {
     let box = AXCollectBox()
     let thread = Thread {
         let app = axApp(pid)
@@ -750,14 +750,37 @@ func collectAccessibility(pid: pid_t, maxDepth: Int, limit: Int, timeout: Double
         // 那是留在**用户正在用的应用**上的副作用，不该由我们留下。
         let prevEnhanced = axCopy(app, "AXEnhancedUserInterface" as String)
         AXUIElementSetAttributeValue(app, "AXEnhancedUserInterface" as CFString, kCFBooleanTrue)
-        var elements: [[String: Any]] = []
-        var table: [String: AXUIElement] = [:]
-        var counter = 0
-        if let windows = axCopy(app, kAXWindowsAttribute as String) as? [AXUIElement], let main = windows.first {
-            if let frame = axFrame(main) { elements.append(["ref": "e0", "role": "AXWindow", "frame": frame]) }
-            table["e0"] = main
-            axWalk(main, depth: 0, maxDepth: maxDepth, limit: limit, counter: &counter, table: &table, out: &elements, deadline: Date().addingTimeInterval(2))
+        func walkOnce() -> ([[String: Any]], [String: AXUIElement]) {
+            var elements: [[String: Any]] = []
+            var table: [String: AXUIElement] = [:]
+            var counter = 0
+            if let windows = axCopy(app, kAXWindowsAttribute as String) as? [AXUIElement], let main = windows.first {
+                if let frame = axFrame(main) { elements.append(["ref": "e0", "role": "AXWindow", "frame": frame]) }
+                table["e0"] = main
+                axWalk(main, depth: 0, maxDepth: maxDepth, limit: limit, counter: &counter, table: &table, out: &elements, deadline: Date().addingTimeInterval(2))
+            }
+            return (elements, table)
         }
+
+        // 唤醒：AX 树读回来是**空的**时候重试几次。
+        //
+        // 参照有这套（`wakeupAttempts` / `wakeupDurationMs` / `no_wakeup_budget` /
+        // `empty_after_wakeup`）—— 有些应用在 app nap 或懒加载时第一遍就是空的，
+        // 重打一次标志再读就有了。预算刻意收紧（只在「只有窗口、没有元素」时才重试），
+        // 免得把正常的观察拖慢。
+        let wakeupBudget = 2
+        var wakeupAttempts = 0
+        let wakeupStart = Date()
+        var result = walkOnce()
+        while result.0.count <= 1 && wakeupAttempts < wakeupBudget {
+            wakeupAttempts += 1
+            AXUIElementSetAttributeValue(app, "AXEnhancedUserInterface" as CFString, kCFBooleanTrue)
+            usleep(150_000)
+            result = walkOnce()
+        }
+        let wakeupDurationMs = Int(Date().timeIntervalSince(wakeupStart) * 1000)
+        let elements = result.0
+        let table = result.1
         // 遍历一结束就撤销断言。原值有就放回，本来没有就置回 false ——
         // 别把「增强模式」留在用户的应用上。
         if let prevEnhanced {
@@ -765,7 +788,7 @@ func collectAccessibility(pid: pid_t, maxDepth: Int, limit: Int, timeout: Double
         } else {
             AXUIElementSetAttributeValue(app, "AXEnhancedUserInterface" as CFString, kCFBooleanFalse)
         }
-        box.store(elements, table)
+        box.store(elements, table, wakeupAttempts: wakeupAttempts, wakeupDurationMs: wakeupDurationMs)
     }
     thread.stackSize = 1 << 20
     thread.start()
@@ -783,15 +806,18 @@ final class AXCollectBox: @unchecked Sendable {
     private var finished = false
     private var elements: [[String: Any]] = []
     private var table: [String: AXUIElement] = [:]
+    private var attempts = 0
+    private var durationMs = 0
     var done: Bool { lock.lock(); defer { lock.unlock() }; return finished }
-    func store(_ nextElements: [[String: Any]], _ nextTable: [String: AXUIElement]) {
+    func store(_ nextElements: [[String: Any]], _ nextTable: [String: AXUIElement], wakeupAttempts: Int = 0, wakeupDurationMs: Int = 0) {
         lock.lock(); defer { lock.unlock() }
         if finished { return }
         elements = nextElements; table = nextTable; finished = true
+        attempts = wakeupAttempts; durationMs = wakeupDurationMs
     }
-    func take() -> ([[String: Any]], [String: AXUIElement]) {
+    func take() -> ([[String: Any]], [String: AXUIElement], Int, Int) {
         lock.lock(); defer { lock.unlock() }
-        return (elements, table)
+        return (elements, table, attempts, durationMs)
     }
 }
 
@@ -1326,13 +1352,15 @@ DispatchQueue.global().async {
                                 let limit = args["max_elements"] as? Int ?? 300
                                 // AX 是跨进程 IPC，卡住的调用无法取消：放到自己的工作线程，
                                 // 4 秒内没结果就放弃 AX（截图仍然返回，观察降级而不是挂死）。
-                                let collected: ([[String: Any]], [String: AXUIElement]) = await withCheckedContinuation { continuation in
+                                let collected: ([[String: Any]], [String: AXUIElement], Int, Int) = await withCheckedContinuation { continuation in
                                     DispatchQueue.global(qos: .userInitiated).async {
                                         continuation.resume(returning: collectAccessibility(pid: pid, maxDepth: maxDepth, limit: limit, timeout: 4.0))
                                     }
                                 }
                                 let elements = collected.0
                                 let table = collected.1
+                                let wakeupAttempts = collected.2
+                                let wakeupDurationMs = collected.3
                                 // no_shot：只读无障碍树。截图要过一次 ScreenCaptureKit，
                                 // 纯读结构时那是白付的等待（Alma 的 --no-shot 同样为此）。
                                 let skipShot = args["no_shot"] as? Bool ?? false
@@ -1357,6 +1385,17 @@ DispatchQueue.global().async {
                                 data["screenshotHeight"] = shot["height"] ?? 0
                                 // 上报**真实**窗口号：以前这里是 Int(pid)，于是 windowId 一路都是假的。
                                 data["windowId"] = (shot["windowId"] as? Int) ?? windowNumberForApp(Int(pid)) ?? Int(pid)
+                                // 唤醒的账目：试了几次、花了多久。参照同样上报（wakeupAttempts /
+                                // wakeupDurationMs），并在用尽预算仍为空时报 empty_after_wakeup ——
+                                // 让调用方能区分"这应用就是没有 AX 树"和"我该再试一次"。
+                                if wakeupAttempts > 0 {
+                                    data["wakeupAttempts"] = wakeupAttempts
+                                    data["wakeupDurationMs"] = wakeupDurationMs
+                                    let meaningful = elements.filter { ($0["role"] as? String) != "AXWindow" }
+                                    if meaningful.isEmpty {
+                                        data["warning"] = "empty_after_wakeup: 重试 \(wakeupAttempts) 次后仍没有可引用的元素（有些应用不提供 AX 树）。用截图里的坐标操作，不要用 ref。"
+                                    }
+                                }
                                 if let frame = shot["frame"] { data["windowFrame"] = frame }
                                 if let screenFrame = shot["screenFrame"] { data["screenFrame"] = screenFrame }
                                 reply(fd, ["id": id, "ok": true, "data": data as [String: Any]])

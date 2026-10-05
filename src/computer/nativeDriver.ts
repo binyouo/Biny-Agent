@@ -66,10 +66,22 @@ export interface NativeDriverOptions {
   idleTimeoutMs?: number;
 }
 
-/** 把 daemon 的 elements 数组映射成 captureSchema 需要的形状。 */
+/**
+ * 把 daemon 的 elements 数组映射成 captureSchema 需要的形状。
+ *
+ * ⚠️ 这里会**重建一个对象**，所以必须先把 daemon 其余的字段铺进来 ——
+ * 只搬运"认识的"字段会让新加的一律**静默消失**：`wakeupAttempts` 在带截图时就是这样没的
+ * （同一功能不带截图时还在，于是表现为"同一个东西两次测出不同结果"）。
+ * 只丢掉 daemon 自己的内部字段（截图路径、原始 elements、原始宽高）。
+ */
 function toCapture(data: Record<string, unknown>, windowId: number): Record<string, unknown> {
   const elements = Array.isArray(data.elements) ? (data.elements as Record<string, unknown>[]) : [];
+  const {
+    screenshot: _screenshotPath, elements: _rawElements,
+    screenshotWidth: _rawWidth, screenshotHeight: _rawHeight, ...rest
+  } = data;
   return {
+    ...rest,
     pid: data.pid,
     window_id: windowId,
     capture_id: crypto.randomUUID(),

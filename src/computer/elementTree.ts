@@ -5,7 +5,11 @@
 //   [index] role "label" @x,y w×h (focused/disabled)
 // 区别只在 ref：Alma 用位置序号，biny 一直用 element_token，所以两样都留着。
 export interface ElementLike {
-  element_token?: string; role?: string; title?: string; description?: string; value?: unknown;
+  /** 面向调用方的引用（有截图那条路给的）。 */
+  element_token?: string;
+  /** daemon 原样返回的引用（`--no-shot` 那条路给的，没有经过 shape 映射）。
+   *  两种都要认 —— 否则 `snap --no-shot` 出来的行集没有 ref，**点了没用**。 */
+  ref?: string; role?: string; title?: string; description?: string; value?: unknown;
   frame?: { x?: number; y?: number; w?: number; h?: number; width?: number; height?: number };
   focused?: boolean; enabled?: boolean;
 }
@@ -18,7 +22,8 @@ export function renderElementTree(elements: readonly ElementLike[] | undefined):
   if (!elements?.length) return "";
   return elements.map((element, index) => {
     const frame = element.frame ?? {};
-    const ref = element.element_token ? `(${element.element_token}) ` : "";
+    const token = element.element_token ?? element.ref;
+    const ref = token ? `(${token}) ` : "";
     // focused/disabled 内联在行尾：模型扫一眼就知道输入会落到哪个控件上。
     const flags = [element.focused ? "focused" : "", element.enabled === false ? "disabled" : ""].filter(Boolean).join(",");
     const size = `${number(frame.w ?? frame.width)}×${number(frame.h ?? frame.height)}`;

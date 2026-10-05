@@ -110,6 +110,39 @@ pip/present · pip/hide · pip/frame · pip/move · pip/invalidate
 本实现是**单个预览面**，跟随当前观察目标。差别属于组织方式，不是能力缺失
 （§6 另记了「按窗口镜像 + 最小化劫持」这一条）。
 
+### 1.1a 空 AX 树会唤醒重试（参照的 wakeup 那套）
+
+继续往 helper 的字符串里读，读到一组没见过的符号：
+
+```
+wakeupAttempts · wakeupDurationMs · wakeup_duration_ms
+no_wakeup_budget · empty_after_wakeup
+```
+
+即：**树读回来是空的时候，参照会「唤醒」应用并重试**，带预算与耗时上报。本实现原先
+**一次性的**——设完标志遍历一次，空就是空。现已对齐：只在「只有窗口、没有元素」时重试，
+预算 2 次、每次间隔 150ms（免得把正常观察拖慢），回执带 `wakeupAttempts` / `wakeupDurationMs`，
+用尽预算仍为空则明确报 `empty_after_wakeup` —— 让调用方分得清"这应用没有 AX 树"和"我该再试一次"。
+
+实测（网易云音乐，本来就无 AX 树）：`attempts=2` + `empty_after_wakeup` ✓。
+
+### 1.1b 顺带修掉一个**会静默吞字段**的缺陷
+
+写上面那条的测试时发现：**同一个功能带截图和不带截图，字段居然不一样。**
+
+原因是 driver 的 `shape()` 在有截图时用 `toCapture()` **重建**回执对象，而它只搬运
+**自己认识的**字段 —— 新加的 `wakeupAttempts` / `warning` 一律消失。这和我早先修的
+「参数被某一层吞掉」同族，但影响面更大：**任何 observe 回执上新增的字段都会这样没掉**。
+
+修法：`toCapture` 先把 daemon 其余字段铺进来，只丢掉自己的内部字段（截图路径、原始 elements、
+原始宽高）。现在两条路字段一致、且不泄漏内部字段。
+
+同一轮还发现 `--no-shot` 那条路**根本不过 shape**，于是它的元素带 `ref` 而另一条带
+`element_token` —— 渲染层只认后者，**`snap --no-shot` 出来的行集没有 ref，点了没用**
+（我早先跑过一次、看到 `[0] AXWindow @0,44` 光秃秃，当时没意识到那是缺陷）。
+两条路形状不同是有原因的（`captureSchema` 要求截图宽为正，"没有截图"满足不了它），
+所以修在渲染层：**两种引用字段都认**。现在 `[0] (e0) AXWindow …` ✓
+
 ### 1.2a AX 增强标志是**有作用域**的，用完要还原
 
 参照把它做成一个「断言」（`AXEnablementAssertion`，里面有字段 `prevEnhanced`）——
