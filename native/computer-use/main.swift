@@ -495,11 +495,17 @@ func postMouse(_ pid: pid_t, _ type: CGEventType, _ point: CGPoint, _ button: CG
     event.setIntegerValueField(.mouseEventClickState, value: clickState)
     if global { event.post(tap: .cghidEventTap) } else { event.postToPid(pid) }
 }
-func postKey(_ pid: pid_t, keyCode: CGKeyCode, flags: CGEventFlags) {
+/// 发一个组合键。
+///
+/// 默认投给目标进程（后台应用也能收，且不动前台）。`global` 走全局 HID 流，
+/// 落到**当前焦点**上 —— 有些键（系统级快捷键、必须经过窗口服务器的那类）
+/// 投给进程是表达不出来的。代价是它会被前台应用收到，所以要显式选择。
+func postKey(_ pid: pid_t, keyCode: CGKeyCode, flags: CGEventFlags, global: Bool = false) {
     guard let down = CGEvent(keyboardEventSource: nil, virtualKey: keyCode, keyDown: true),
           let up = CGEvent(keyboardEventSource: nil, virtualKey: keyCode, keyDown: false) else { return }
     down.flags = flags; up.flags = flags
-    down.postToPid(pid); up.postToPid(pid)
+    if global { down.post(tap: .cghidEventTap); up.post(tap: .cghidEventTap) }
+    else { down.postToPid(pid); up.postToPid(pid) }
 }
 func postUnicode(_ pid: pid_t, _ text: String) {
     for scalar in text.unicodeScalars {
@@ -1485,8 +1491,9 @@ DispatchQueue.global().async {
                                 let pid = try resolvePid(args)
                                 let combo = args["key"] as? String ?? ""
                                 guard let (keyCode, flags) = parseKeyCombo(combo) else { throw NSError(domain: "key", code: 64, userInfo: [NSLocalizedDescriptionKey: "unknown_key"]) }
-                                await withFocusGuard(pid) { postKey(pid, keyCode: keyCode, flags: flags) }
-                                var pressed: [String: Any] = ["pressed": combo]
+                                let global = args["global"] as? Bool ?? false
+                                await withFocusGuard(pid) { postKey(pid, keyCode: keyCode, flags: flags, global: global) }
+                                var pressed: [String: Any] = ["pressed": combo, "global": global]
                                 if let warning = keyDeliveryWarning(pid) { pressed["warning"] = warning }
                                 reply(fd, ["id": id, "ok": true, "data": pressed])
                             case "scroll":

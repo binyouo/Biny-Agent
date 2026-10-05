@@ -635,3 +635,29 @@ test("appshot reports the frontmost app and refuses a malformed hotkey", async (
     await driver.dispose();
   }
 });
+
+// Appshot 热键：装了要真的能被按键触发。
+// 触发方式用 daemon 自己的**全局**派发（`press_key … global: true`）——
+// 外部探针的全局投递在这台机器上不生效（CGPreflightPostEventAccess 报"允许"但事件没出去），
+// 用坏掉的注入源会得出"tap 收不到事件"这种错误结论（我为此改了三次结论）。
+// 组合键取四修饰键 + M：几乎不可能和任何应用自己的快捷键撞上。
+test("an armed appshot hotkey fires when its chord is dispatched", async () => {
+  const driver = new NativeProcessDriver(() => {}, {
+    binaryPath: new URL("../out/native/computer-use", import.meta.url).pathname
+  });
+  try {
+    const armed = (await driver.daemonCommand("appshot_monitor_start", { hotkey: "Ctrl+Alt+Cmd+Shift+M" })).data as { armed?: boolean };
+    assert.equal(armed.armed, true, "会话 tap 建不起来时这里会失败 —— 那是环境问题，不是逻辑问题");
+
+    const before = (await driver.daemonCommand("appshot_status")).data as { eventsSeen?: number };
+    await driver.daemonCommand("press_key", { pid: process.pid, key: "ctrl+alt+cmd+shift+m", global: true });
+    await new Promise(resolve => setTimeout(resolve, 2500));
+
+    const after = (await driver.daemonCommand("appshot_status")).data as { eventsSeen?: number; lastCapture?: string };
+    assert.ok((after.eventsSeen ?? 0) > (before.eventsSeen ?? 0), "tap 应当收到那次按键");
+    assert.ok((after.lastCapture ?? "").endsWith(".jpg"), "热键应当触发一次抓取并留下文件");
+  } finally {
+    await driver.daemonCommand("appshot_monitor_stop").catch(() => undefined);
+    await driver.dispose();
+  }
+});
