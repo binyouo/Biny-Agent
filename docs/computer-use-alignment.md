@@ -10,7 +10,8 @@
 
 动词面 **21/21 齐**；daemon / CLI / 模型工具三层的单位与语义一致；
 UI 三类界面齐全，并补上了参照实现有、本仓库原本没有的**动作指示器（lens）**。
-另有 **4 处刻意不抄**、**2 处机制差异**，逐条在 §2 §3 列明原因与依据。
+另有 **5 处刻意不抄**（§2）、**2 处机制差异**（§3），逐条列明原因与依据。
+§2 §3 里的每一条都写了**依据**；没有依据的差异不写进这两节，宁可标"未覆盖"。
 
 ---
 
@@ -58,8 +59,20 @@ Open System Settings → Privacy & Security → Accessibility and enable "Alma C
 | `click --strategy` | `auto\|physical\|ax` | 同 | 两条路由是不同机制：AX 让控件执行自己的动作；物理合成鼠标事件。`auto` 回执如实说走了哪条 |
 | `click --button/--clicks` | `left\|right\|middle`、双击 | 同 | 双击靠 `mouseEventClickState` 序列，不是发两次单击 |
 | `scroll --pages` | 页 | 同 | 页 = 视口/内容，**量出来的**（见 §4.2） |
-| `windows` | 列应用的窗口 | `list_apps <pid>` 返回 `windows[]`，带真实 `CGWindowID` + 标题 | 请求 121 回 121、请求 104 回 104 |
+| `windows` | **"List AX windows of an app"**（help 原文）| 同 —— **来源是 AX**；CGWindowList 只用来补真实 `CGWindowID` | 见下（这一行原先写错了来源）|
 | `snap --no-shot / --depth` | 同 | 同 | `--no-shot` 1338ms → 665ms，树一致 |
+
+> ⚠️ **修正（2026-10-05 晚）**：上面 `windows` 那一行原先写的是
+> 「`list_apps <pid>` 返回 `windows[]`，带真实 `CGWindowID` + 标题」——**两句都不准**：
+> 1. **来源是 AX**，不是 CGWindowList（help 原文："List **AX** windows of an app"）。
+>    我原先只走 CGWindowList，于是**活动监视器和 Finder 返回空**（它们的窗口在那侧被
+>    layer/尺寸规则滤掉，而 AX 树里明明有 `AXWindow`）。Chrome 两边都有，一直没暴露。
+>    现在两个来源取并集；**只有 AX 来源时 `window_id` 给 0** —— 如实标"这个号不可用"，不编一个。
+> 2. 产出它的是 **`windows` 这个独立动词**，`list_apps --pid` 也只是转手调它；
+>    原先那行把两件事说成了一件事。
+>
+> 怎么发现的：**去跑本文件 §4.3 承诺的复验命令**，`cu windows <pid>` 回了"没有在屏窗口"
+> 而同一 pid 的 `snap` 看得到窗口 —— 两条命令互相矛盾，就是文档或实现有一处在说假话。
 | `launch_app --activates` | 默认不激活 | 同 | 实测：默认前台不变；带 flag 才变 |
 | `raise` | `bundle\|pid [--window=ID]` | 同 | 走 Apple Events（见 §3.1） |
 | `lens on\|off\|toggle` | 动作指示器 | 同 | 见 §1.2 |
@@ -651,6 +664,15 @@ eventsSeen: 0                          ← tap 一个事件都没收到
 所以三级救不了这个场景（一级更不行，那应用没有可用的 AX 树）。
 **替代路径**：`type <ref>` 直写控件 AXValue（已实现）；控件不接受写入时明确报错而不是假装成功。
 
+> ⚠️ **后续更新（勿只读上表）**：上面那张表是一次**实测记录**，记录的是当时那三条路的效果。
+> 之后参照把"用哪条路"**暴露成了参数**（`input_method must be auto|physical|unicode|ax`），
+> 本实现据此补上了 `input_method`，但**只暴露真实存在的**：
+> `auto` / `unicode` / `ax`（AX 那条需要 `ref`）。
+> **`physical` 没有实现**（缺「字符→键码」的键盘布局翻译），如实报
+> `input_method_not_implemented` —— 不偷偷降级成 unicode。
+> 也就是说：上表里"物理键码 ❌"那一条，现在是"**这条路本实现没做**"，
+> 与当时"做了但没效果"不是同一件事 —— **测量记录和实现状态要分开看。**
+
 ---
 
 ## 4. 实测方法（可复验）
@@ -682,7 +704,7 @@ eventsSeen: 0                          ← tap 一个事件都没收到
 > 要么用开发态入口 `pnpm tsx src/cli/index.ts cu ...`（本节命令都用后者核对过）。
 
 ```bash
-node scripts/run-tests.mjs --standard computer          # 74 用例
+node scripts/run-tests.mjs --standard computer          # 93 用例（数字会变；写死它会变成下一条假话）
 pnpm typecheck
 
 pnpm tsx src/cli/index.ts cu status                     # helper 包 + 守护进程状态

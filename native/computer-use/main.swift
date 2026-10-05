@@ -654,23 +654,62 @@ func activateViaAppleEvents(_ bundleId: String) -> String? {
 }
 
 func windowsForApp(_ pid: Int) -> [[String: Any]] {
-    guard let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else { return [] }
+    // 参照的 help 原文是 **"List AX windows of an app"** —— 来源是 **AX**，不是 CGWindowList。
+    // 这个差别是可观察的：活动监视器与 Finder 的 AX 树里有 AXWindow（`snap` 看得到），
+    // 而 CGWindowList 那一侧它们被 layer/尺寸过滤掉 → 旧实现返回空，
+    // 调用方看到的是"这个应用没有窗口"。（Chrome 两边都有，所以一直没暴露。）
+    var axEntries: [[String: Any]] = []
+    if let windows = axCopy(axApp(pid_t(pid)), kAXWindowsAttribute as String) as? [AXUIElement] {
+        for (index, window) in windows.enumerated() {
+            var entry: [String: Any] = [
+                "window_id": 0,                              // 能用 CG 号就填，填不了给 0（不编）
+                "title": axString(window, kAXTitleAttribute as String) ?? "",
+                "index": index,
+            ]
+            if let frame = axFrame(window) {
+                entry["frame"] = ["x": frame["x"]!, "y": frame["y"]!, "w": frame["w"]!, "h": frame["h"]!] as [String: Double]
+            }
+            axEntries.append(entry)
+        }
+    }
+    guard let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else { return axEntries }
     var out: [[String: Any]] = []
     for window in list {
         guard let owner = window[kCGWindowOwnerPID as String] as? Int, owner == pid,
               (window[kCGWindowLayer as String] as? Int ?? 0) == 0,
               let number = window[kCGWindowNumber as String] as? Int,
-              let bounds = window[kCGWindowBounds as String] as? [String: CGFloat] else { continue }
-        let width = Double(bounds["Width"] ?? 0), height = Double(bounds["Height"] ?? 0)
+              // ⚠️ CGWindowList 给的是 CFDictionary：`kCGWindowBounds` 桥过来是 [String: Any]
+              // （值是 CFNumber），**转不成 [String: CGFloat]** —— 写成那个类型时这个 guard
+              // 对**每一个窗口**都失败，函数安静地返回 []，而调用方看到的是"这个应用没有窗口"。
+              // （实测：活动监视器 snap 看得到 AXWindow，而 cu windows 回"没有在屏窗口"。）
+              let boundsRaw = window[kCGWindowBounds as String] as? [String: Any] else { continue }
+        let boundsW = (boundsRaw["Width"] as? NSNumber)?.doubleValue ?? 0
+        let boundsH = (boundsRaw["Height"] as? NSNumber)?.doubleValue ?? 0
+        let width = boundsW, height = boundsH
         // 阴影和辅助小窗不是可观察目标，混进来只会让模型挑错。
         if width < 40 || height < 40 { continue }
         var entry: [String: Any] = [
             "window_id": number,
             "title": window[kCGWindowName as String] as? String ?? "",
-            "frame": ["x": Double(bounds["X"] ?? 0), "y": Double(bounds["Y"] ?? 0), "w": width, "h": height] as [String: Double],
+            "frame": [
+                "x": (boundsRaw["X"] as? NSNumber)?.doubleValue ?? 0,
+                "y": (boundsRaw["Y"] as? NSNumber)?.doubleValue ?? 0,
+                "w": width, "h": height
+            ] as [String: Double],
         ]
         if window[kCGWindowIsOnscreen as String] as? Bool == true { entry["onscreen"] = true }
         out.append(entry)
+    }
+    // CG 一条都没有 ≠ 这个应用没有窗口 —— 两个来源取并集：CG 有就补它的窗口号，
+    // 没有就用 AX 的（并把 window_id 留着 0，让调用方知道这个号不可用）。
+    if out.isEmpty { return axEntries }
+    if !axEntries.isEmpty {
+        for index in out.indices where index < axEntries.count {
+            if let axTitle = axEntries[index]["title"] as? String, !axTitle.isEmpty,
+               (out[index]["title"] as? String ?? "").isEmpty {
+                out[index]["title"] = axTitle
+            }
+        }
     }
     return out
 }

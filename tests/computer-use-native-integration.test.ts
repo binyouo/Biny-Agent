@@ -1159,3 +1159,38 @@ test("failures that used to share one message now name their own cause", async (
     await driver.dispose();
   }
 });
+
+// 参照的 help 原文是 **"List AX windows of an app"** ——
+// 来源是 **AX**，而本实现原先只走 CGWindowList。
+// 差别是可观察的：活动监视器、Finder 的 AX 树里有 AXWindow（`snap` 看得到），
+// 而 CGWindowList 那侧它们被 layer/尺寸规则滤掉 → `windows` 返回空，
+// 调用方看到的是「这个应用没有窗口」。Chrome 两边都有，所以一直没暴露。
+test("windows lists AX windows even when CGWindowList shows none for that app", async () => {
+  const driver = new NativeProcessDriver(() => {}, {
+    binaryPath: new URL("../out/native/computer-use", import.meta.url).pathname
+  });
+  try {
+    const listed = await driver.list("win-e2e", undefined);
+    type A = { pid?: number; name?: string };
+    const apps = ((listed.data as { apps?: A[] }).apps ?? []).filter(a => typeof a.pid === "number");
+    assert.ok(apps.length > 0, "至少要有一个运行中的应用");
+
+    // 找一个**AX 有窗口**的应用，它就应该能被列出来
+    let checked = 0;
+    for (const app of apps.slice(0, 6)) {
+      const snapshot = await driver.daemonCommand("get_app_state", { pid: app.pid, no_shot: true, max_elements: 30 });
+      const hasWindow = ((snapshot.data as { elements?: { role?: string }[] }).elements ?? [])
+        .some(element => element.role === "AXWindow");
+      if (!hasWindow) continue;
+      const reply = (await driver.daemonCommand("list_apps", { pid: app.pid })).data as { apps?: { windows?: unknown[] }[] };
+      const windows = reply.apps?.[0]?.windows ?? [];
+      assert.ok(windows.length > 0,
+        `${app.name} 的 AX 树里有窗口，windows 就不该返回空（这就是只用 CGWindowList 时的症状）`);
+      checked += 1;
+      if (checked >= 2) break;
+    }
+    assert.ok(checked > 0, "至少验到一个有 AX 窗口的应用");
+  } finally {
+    await driver.dispose();
+  }
+});
