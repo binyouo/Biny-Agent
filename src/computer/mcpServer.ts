@@ -65,7 +65,7 @@ export function createComputerUseMcpServer(driver: NativeProcessDriver): McpServ
     "list_apps",
     {
       title: "List apps",
-      description: "List apps you can work with: those currently running (with pid and bundle id, to observe or act on), plus those used in the last 30 days that are not running (bundle id only, no pid) — the latter are your candidates for launch_app. Background-only agents are excluded.",
+      description: "List apps you can work with: those currently running (with pid and bundle id, to observe or act on), plus those used in the last 14 days that are not running (bundle id only, no pid) — the latter are your candidates for launch_app. Background-only agents are excluded.",
       inputSchema: {}
     },
     async () => {
@@ -162,7 +162,7 @@ export function createComputerUseMcpServer(driver: NativeProcessDriver): McpServ
       description: "Scroll the target app up, down, left or right by a number of lines. Returns the post-action screenshot.",
       inputSchema: {
         direction: z.enum(["up", "down", "left", "right"]),
-        pages: z.number().positive().max(20).optional(),
+        pages: z.number().int().min(1).max(20).optional(),
         pid: z.number().int().positive().optional()
       }
     },

@@ -862,7 +862,8 @@ DispatchQueue.global().async {
                                 // 再补上近 N 天用过但没在运行的 —— 模型靠它知道有什么可以 launch。
                                 // 同一 bundleId 只出现一次：正在运行的那条优先（它带 pid，能直接操作）。
                                 let seen = Set(apps.compactMap { $0["bundleId"] as? String })
-                                let days = args["recent_days"] as? Int ?? 30
+                                // 默认 14 天：参照的 list_apps 描述写的是 "used in the last N days (default 14)"。
+                                let days = args["recent_days"] as? Int ?? 14
                                 apps.append(contentsOf: recentlyUsedApplications(withinDays: days).filter {
                                     guard let bundle = $0["bundleId"] as? String else { return false }
                                     return !seen.contains(bundle)

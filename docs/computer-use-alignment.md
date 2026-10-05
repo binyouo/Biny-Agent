@@ -78,6 +78,23 @@ UI 三类界面齐全，并补上了参照实现有、本仓库原本没有的**
 
 - 模型侧工具：`ComputerList` / `ComputerObserve` / `ComputerAction`（8 个动作动词）
 - MCP 出口：13 个工具（stdio）
+
+**MCP 工具表逐条核对过**（权威源是参照自己的 server 本体
+`resources-0.4.147/cli/alma-computer-use-mcp.mjs`，不是文档）：
+
+```
+参照 registerTool 共 23 个：原生 13 + Codex 别名 10
+原生 13: click drag get_app_state grant launch_app list_apps perform_secondary_action
+         permissions press_key scroll select_text set_value type_text
+本实现 MCP: 与上面 13 个**完全一致**（diff 为空）
+```
+
+同一份源码还确认了三件事：
+- `scroll` 的参数是 **`pages`**（`number().int().max(20)`），不是 notches —— §1.1 那条对齐属实
+- 每个动作都带 **`show_cursor: true`** —— lens 默认显示，与 `--no-cursor` 是单次抑制互为表里
+- `list_apps` 的默认窗口是 **14 天**（"used in the last N days (default 14)"）
+  —— 本实现原先写 30，已改成 14
+- 每个工具都被 `gated(tool, args, …)` 包一层（审批 + 日志），对应本实现的执行服务
 - 内置 skill + 7 个 playbook
 - **可判别的失败信号**：`keystrokes_may_be_dropped`（按键被系统丢弃）· `scroll_route_unavailable` ·
   `element_ref_not_observed`（并提示先 snap）· `ax_cannot_express_this_click`
