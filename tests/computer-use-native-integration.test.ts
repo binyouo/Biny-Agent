@@ -49,10 +49,37 @@ test("observe returns a decodable frame so the preview pump has something to pai
 });
 
 // set_value 直写 AX，不模拟按键：写完必须能从无障碍树上读回来。
+/**
+ * 给需要「一个可编辑文本区」的测试**自备夹具**。
+ *
+ * ⚠️ 这几条原先依赖"TextEdit 恰好开着一个窗口" —— 那是**环境残留**，不是测试的一部分。
+ * 我上一轮清理残留窗口（那本身是对的）之后，它们开始报"需要一个可编辑文本区"，
+ * 而**报错说的是缺文本区，事实是缺文档** —— 又一次"断言说的和事实不是一回事"。
+ * 会依赖目标的测试必须自己准备目标。用完调 closeScratchDocument 收掉。
+ */
+function ensureScratchDocument(): string {
+  const path = `/tmp/biny-cu-fixture-${process.pid}-${Date.now()}.txt`;
+  writeFileSync(path, "fixture");
+  spawnSync("open", ["-a", "TextEdit", path]);
+  spawnSync("sleep", ["1.8"]);   // 等窗口出来；后面的循环还会再兜底等待
+  return path.split("/").pop()!;
+}
+
+function closeScratchDocument(name: string): void {
+  // 用 System Events 按关闭按钮 —— `close ... saving no` 会超时（TextEdit 的 scripting 会挂）。
+  spawnSync("osascript", ["-e",
+    `tell application "System Events" to tell process "TextEdit" to perform action "AXPress" of (first button of window "${name}")`]);
+  rmSync(`/tmp/${name}`, { force: true });
+}
+
 test("set_value writes through the accessibility API and reads back", async () => {
   const driver = new NativeProcessDriver(() => {}, {
     binaryPath: new URL("../out/native/computer-use", import.meta.url).pathname
   });
+  // 自备夹具：这几条原先依赖环境里恰好有一个 TextEdit 文档。
+  // ⚠️ 声明必须在 `try` **外面**：`try {}` 是个块，`const` 在块内声明，
+  //    对应的 `finally` 是看不见它的（报 ReferenceError: scratchName is not defined）。
+  const scratchName = ensureScratchDocument();
   try {
     const listed = await driver.list("value-e2e", undefined);
     const apps = (listed.data as { apps?: { name: string; pid: number }[] }).apps ?? [];
@@ -73,6 +100,7 @@ test("set_value writes through the accessibility API and reads back", async () =
     assert.equal(reread, marker, "写进去的值必须能从 AX 树读回来");
   } finally {
     await driver.dispose();
+    closeScratchDocument(scratchName);
   }
 });
 
@@ -81,6 +109,7 @@ test("the in-product act path reaches the verbs beyond the original four", async
   const driver = new NativeProcessDriver(() => {}, {
     binaryPath: new URL("../out/native/computer-use", import.meta.url).pathname
   });
+  const scratchName = ensureScratchDocument();
   try {
     const listed = await driver.list("act-e2e", undefined);
     const apps = (listed.data as { apps?: { name: string; pid: number }[] }).apps ?? [];
@@ -103,6 +132,7 @@ test("the in-product act path reaches the verbs beyond the original four", async
     assert.equal(reread, marker, "产品内动作写进去的值必须能从 AX 树读回来");
   } finally {
     await driver.dispose();
+    closeScratchDocument(scratchName);
   }
 });
 
@@ -655,11 +685,22 @@ test("an armed appshot hotkey fires when its chord is dispatched", async () => {
 
     const before = (await driver.daemonCommand("appshot_status")).data as { eventsSeen?: number };
     await driver.daemonCommand("press_key", { pid: process.pid, key: "ctrl+alt+cmd+shift+m", global: true });
-    await new Promise(resolve => setTimeout(resolve, 2500));
 
-    const after = (await driver.daemonCommand("appshot_status")).data as { eventsSeen?: number; lastCapture?: string };
-    assert.ok((after.eventsSeen ?? 0) > (before.eventsSeen ?? 0), "tap 应当收到那次按键");
-    assert.ok((after.lastCapture ?? "").endsWith(".jpg"), "热键应当触发一次抓取并留下文件");
+    // ⚠️ 别用固定 sleep 等"文件出现"：抓取要先截屏再落盘，耗时随机器状态变，
+    // 固定 2.5s 在这台机器上会偶发不够 —— 而失败会显示成"热键没触发"，
+    // 其实按键收到了、只是文件还没写完（断言说的和事实不是一回事）。
+    // 轮询到截止：每一步都读一次状态，命中就退出。
+    let sawEvent = false, capturePath = "";
+    const deadline = Date.now() + 12_000;
+    while (Date.now() < deadline) {
+      const now = (await driver.daemonCommand("appshot_status")).data as { eventsSeen?: number; lastCapture?: string };
+      sawEvent = sawEvent || (now.eventsSeen ?? 0) > (before.eventsSeen ?? 0);
+      capturePath = now.lastCapture ?? "";
+      if (sawEvent && capturePath.endsWith(".jpg")) break;
+      await new Promise(resolve => setTimeout(resolve, 400));
+    }
+    assert.ok(sawEvent, "tap 应当收到那次按键");
+    assert.ok(capturePath.endsWith(".jpg"), `热键应当触发一次抓取并留下文件（实际 lastCapture=${JSON.stringify(capturePath)}）`);
   } finally {
     await driver.daemonCommand("appshot_monitor_stop").catch(() => undefined);
     await driver.dispose();
@@ -694,8 +735,12 @@ test("an empty accessibility tree is retried, and says so when it stays empty", 
     // 需要一棵**本来就空**的 AX 树来触发重试；找不到就跳过，不伪造场景
     for (const app of apps) {
       if (typeof app.pid !== "number") continue;
-      const data = (await driver.daemonCommand("get_app_state", { pid: app.pid, no_shot: true, max_elements: 40 })).data as
-        { elements?: { role?: string }[]; wakeupAttempts?: number; warning?: string };
+      // ⚠️ 必须显式要**完整树**：唤醒重试说的是「AX 树读回来是空的」，
+      // 而默认的 interactive_only=true 会把只有非交互元素的应用过滤成空列表 ——
+      // 那时"列表为空"和"树为空"是两件事，拿后者去触发前者的断言就会误报。
+      const data = (await driver.daemonCommand("get_app_state", {
+        pid: app.pid, no_shot: true, max_elements: 40, interactive_only: false
+      })).data as { elements?: { role?: string }[]; wakeupAttempts?: number; warning?: string };
       const meaningful = (data.elements ?? []).filter(element => element.role !== "AXWindow");
       if (meaningful.length > 0) continue;
       assert.ok((data.wakeupAttempts ?? 0) > 0, `${app.name} 的树是空的，应当尝试唤醒`);

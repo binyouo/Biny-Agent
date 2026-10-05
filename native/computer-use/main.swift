@@ -772,7 +772,7 @@ func withDeadline(_ timeout: Double, fallback: [String: Any], work: @escaping ()
     }
 }
 
-func collectAccessibility(pid: pid_t, maxDepth: Int, limit: Int, timeout: Double) -> ([[String: Any]], [String: AXUIElement], Int, Int) {
+func collectAccessibility(pid: pid_t, maxDepth: Int, limit: Int, timeout: Double, interactiveOnly: Bool = true) -> ([[String: Any]], [String: AXUIElement], Int, Int) {
     let box = AXCollectBox()
     let thread = Thread {
         let app = axApp(pid)
@@ -821,7 +821,7 @@ func collectAccessibility(pid: pid_t, maxDepth: Int, limit: Int, timeout: Double
         } else {
             AXUIElementSetAttributeValue(app, "AXEnhancedUserInterface" as CFString, kCFBooleanFalse)
         }
-        box.store(elements, table, wakeupAttempts: wakeupAttempts, wakeupDurationMs: wakeupDurationMs)
+        box.store(elements, table, wakeupAttempts: wakeupAttempts, wakeupDurationMs: wakeupDurationMs, interactiveOnly: interactiveOnly)
     }
     thread.stackSize = 1 << 20
     thread.start()
@@ -842,10 +842,16 @@ final class AXCollectBox: @unchecked Sendable {
     private var attempts = 0
     private var durationMs = 0
     var done: Bool { lock.lock(); defer { lock.unlock() }; return finished }
-    func store(_ nextElements: [[String: Any]], _ nextTable: [String: AXUIElement], wakeupAttempts: Int = 0, wakeupDurationMs: Int = 0) {
+    func store(_ nextElements: [[String: Any]], _ nextTable: [String: AXUIElement], wakeupAttempts: Int = 0, wakeupDurationMs: Int = 0, interactiveOnly: Bool = true) {
         lock.lock(); defer { lock.unlock() }
         if finished { return }
-        elements = nextElements; table = nextTable; finished = true
+        // 过滤的只是**给调用方看的列表**，`table` 保持完整 —— ref 仍能解析到被过滤掉的元素，
+        // 于是「看见的变少了」不会连带把已给的 ref 弄失效。
+        // 窗口本身留着（它没有"可交互"一说，但它是树的根）。
+        elements = interactiveOnly
+            ? nextElements.filter { ($0["role"] as? String).map { $0 == "AXWindow" || interactiveRoles.contains($0) } ?? false }
+            : nextElements
+        table = nextTable; finished = true
         attempts = wakeupAttempts; durationMs = wakeupDurationMs
     }
     func take() -> ([[String: Any]], [String: AXUIElement], Int, Int) {
@@ -979,6 +985,18 @@ func pidForRef(_ ref: String) -> pid_t? {
     let hits = refTables.compactMap { (key, table) -> pid_t? in table[ref] != nil ? key : nil }
     return hits.count == 1 ? hits[0] : nil
 }
+
+/// 能点/能输入的角色 —— 参照 `interactive_only` 用的就是这一组。
+///
+/// 来源：helper 二进制里的独立角色串（`strings | grep -E "^AX[A-Za-z]+$"`），
+/// 去掉动作（AXPress/AXPick/AXScrollXByPage…）、属性（AXValue/AXSelectedTextRange…）、
+/// 内部符号（AXBridge/AXEnablementAssertion/EnhancedUserInterface/Observer…）之后剩下的。
+/// **不是我编的**：照抄错了要么藏住该给的，要么多给一堆。
+let interactiveRoles: Set<String> = [
+    "AXButton", "AXCell", "AXCheckBox", "AXComboBox", "AXDisclosureTriangle", "AXIncrementor",
+    "AXLink", "AXMenuButton", "AXMenuItem", "AXPopUpButton", "AXRadioButton", "AXRow",
+    "AXSlider", "AXTab", "AXTextArea", "AXTextField"
+]
 
 /// 从一个具体元素往上找它所属的滚动区。
 ///
@@ -1486,11 +1504,19 @@ DispatchQueue.global().async {
                                 let pid = try resolvePid(args)
                                 let maxDepth = args["max_depth"] as? Int ?? 20
                                 let limit = args["max_elements"] as? Int ?? 300
+                                // 在这里定（**闭包外面**）：回执也要用它说明"这个空是过滤出来的、还是本来就没有"。
+                                // 参照的默认是 **interactive_only = true**（`--all` 关掉它）——
+                                // 默认值也是契约的一部分：调用方不写，就该拿到参照的那个默认。
+                                let interactiveOnly = args["interactive_only"] as? Bool ?? true
                                 // AX 是跨进程 IPC，卡住的调用无法取消：放到自己的工作线程，
                                 // 4 秒内没结果就放弃 AX（截图仍然返回，观察降级而不是挂死）。
                                 let collected: ([[String: Any]], [String: AXUIElement], Int, Int) = await withCheckedContinuation { continuation in
                                     DispatchQueue.global(qos: .userInitiated).async {
-                                        continuation.resume(returning: collectAccessibility(pid: pid, maxDepth: maxDepth, limit: limit, timeout: 4.0))
+                                        continuation.resume(returning: collectAccessibility(
+                                            pid: pid, maxDepth: maxDepth, limit: limit, timeout: 4.0,
+                                            // 参照的默认是 **interactive_only = true**（`--all` 关掉它）。
+                                            // 默认值也是契约的一部分：调用方不写就要拿到参照的那个默认。
+                                            interactiveOnly: interactiveOnly))
                                     }
                                 }
                                 let elements = collected.0
@@ -1532,6 +1558,13 @@ DispatchQueue.global().async {
                                     if meaningful.isEmpty {
                                         data["warning"] = "empty_after_wakeup: 重试 \(wakeupAttempts) 次后仍没有可引用的元素（有些应用不提供 AX 树）。用截图里的坐标操作，不要用 ref。"
                                     }
+                                }
+                                // 过滤开着的时候，「列表为空」不再等于「这应用没有 AX 树」：
+                                // 完全可能是有树、只是没有可交互元素。这两件事调用方要做得不一样
+                                // （前者放弃用 ref，后者加 `--all` 再看一次），必须分开说。
+                                data["interactiveOnly"] = interactiveOnly
+                                if interactiveOnly, elements.count <= 1, data["warning"] == nil {
+                                    data["warning"] = "no_interactive_elements: 这棵树里没有可交互元素（并不代表没有树）。要看完整树就传 interactive_only=false（CLI：--all）。"
                                 }
                                 if let frame = shot["frame"] { data["windowFrame"] = frame }
                                 if let screenFrame = shot["screenFrame"] { data["screenFrame"] = screenFrame }

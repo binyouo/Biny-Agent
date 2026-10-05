@@ -105,14 +105,19 @@ const cu = program.command("cu").description("Drive the Mac from the terminal (s
 for (const observeName of ["get_app_state", "snap"] as const) {
 cu.command(observeName).description("Observe a window: accessibility tree plus a screenshot").argument("<bundle|pid>", "app bundle id or pid")
     .option("--shot-max-width <n>", "downsample width of the screenshot jpg (daemon default 1280)")
+    // 参照：`--all` 就是 `interactive_only = false`（默认**只给可交互元素**）。
+    // `--shot-out=PATH` 是把截图写到文件，本实现原有的 `--out` 是同一件事。
+    .option("--all", "include every element, not just the interactive ones")
+    .option("--shot-out <path>", "write the screenshot to this path (alias of --out)")
     .option("--window <id>", "exact window id from `cu windows`").option("--out <path>", "where to write the jpg")
     .option("--depth <n>", "how deep to walk the accessibility tree").option("--no-shot", "skip the screenshot and read only the tree")
     .option("--json", "print JSON")
-    .action(async (value: string, options: { window?: string; out?: string; depth?: string; shot?: boolean; shotMaxWidth?: string; json?: boolean }) => withDriver(async driver => {
+    .action(async (value: string, options: { window?: string; out?: string; shotOut?: string; depth?: string; shot?: boolean; all?: boolean; shotMaxWidth?: string; json?: boolean }) => withDriver(async driver => {
       const args = {
         ...target(value), ...windowOption(options),
-        ...(options.out ? { out: options.out } : {}),
+        ...(options.out ?? options.shotOut ? { out: options.out ?? options.shotOut } : {}),
         ...(options.depth ? { max_depth: Number(options.depth) } : {}),
+        ...(options.all ? { interactive_only: false } : {}),
         // 参照在这一条上给的是 `--shot-max-width=N`（守护进程侧字段 max_width）。
         ...(options.shotMaxWidth ? { max_width: Number(options.shotMaxWidth) } : {}),
         // Commander 把 --no-shot 变成 shot:false

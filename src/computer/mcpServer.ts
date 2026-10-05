@@ -88,10 +88,13 @@ export function createComputerUseMcpServer(driver: NativeProcessDriver): McpServ
         // 参照的 MCP 在这一个工具上暴露了四个参数，我原先一个都没有 —— 对过工具名，没对参数。
         depth: z.number().int().max(20).optional().describe("AX tree depth. Default 6."),
         screenshotMaxWidth: z.number().int().optional()
-          .describe("Downsample width for the screenshot (default 1280).")
+          .describe("Downsample width for the screenshot (default 1280)."),
+        // 参照的默认是 **true**（只给可交互元素），`--all` 关掉它。上轮我把它标成"daemon 里没有"，
+        // 那是对的 —— 那时确实没有；现在有了，标注要跟着改，否则文档会一直说"未覆盖"。
+        interactiveOnly: z.boolean().optional().describe("Limit to interactive elements. Default true.")
       }
     },
-    async ({ pid, bundle, maxElements, depth, screenshotMaxWidth }) => {
+    async ({ pid, bundle, maxElements, depth, screenshotMaxWidth, interactiveOnly }) => {
       try {
         const args: Record<string, unknown> = {};
         if (pid !== undefined) args.pid = pid;
@@ -99,6 +102,7 @@ export function createComputerUseMcpServer(driver: NativeProcessDriver): McpServ
         if (maxElements !== undefined) args.max_elements = maxElements;
         if (depth !== undefined) args.depth = depth;
         if (screenshotMaxWidth !== undefined) args.max_width = screenshotMaxWidth;
+        if (interactiveOnly !== undefined) args.interactive_only = interactiveOnly;
         const reply = await driver.observeRaw(args);
         const { elements, ...rest } = reply.data as { elements?: ElementLike[] } & Record<string, unknown>;
         const tree = renderElementTree(elements);

@@ -342,6 +342,27 @@ shot <bundle|pid> [--window=ID] [--out=PATH] [--max-width=N]
 agent 是按名字找能力的。已补上两个正式名（**保留原名**，不让已有调用断掉），
 并补了缺的那条像素形式 `--pixel` 与 `--shot-max-width`（实测 1280 → 640 生效）。
 
+### 1.4h `interactive_only`（`--all`）：默认值也是契约
+
+从参照实现里读到（不是猜的）：
+
+```
+if (hasFlag('all')) body.interactive_only = false;     ← get_app_state 与 snap 各一处
+```
+
+**参照默认只给「可交互元素」，`--all` 才给完整树。** 角色的那份清单从 helper 二进制的
+独立角色串里筛出来（去掉动作 / 属性 / 内部符号）：16 个，`AXButton` … `AXTextField`。
+
+已实现并全线接通（daemon / protocol / CLI `--all` / MCP `interactiveOnly`）。
+**默认取 true，与参照一致** —— 实测差异：活动监视器 **200 → 401** 个元素。
+
+**过滤只作用于「给调用方看的列表」，ref 表保持完整** —— 看见的变少，不会把已给的 ref 弄失效。
+
+**顺带补上一个语义缺口**：过滤开着时，「列表为空」不再等于「这应用没有 AX 树」
+（可能是有树、只是没有可交互元素）。这两件事调用方要做得不一样
+（前者放弃用 ref，后者加 `--all` 再看一次），所以回执里加了 `interactiveOnly`，
+并在过滤后为空时给出 `no_interactive_elements` 提示。
+
 ### 1.5 工具 / 技能层
 
 - 模型侧工具：`ComputerList` / `ComputerObserve` / `ComputerAction`（8 个动作动词）
