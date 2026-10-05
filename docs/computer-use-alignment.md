@@ -62,6 +62,11 @@ Open System Settings → Privacy & Security → Accessibility and enable "Alma C
 | `windows` | **"List AX windows of an app"**（help 原文）| 同 —— **来源是 AX**；CGWindowList 只用来补真实 `CGWindowID` | 见下（这一行原先写错了来源）|
 | `snap --no-shot / --depth` | 同 | 同 | `--no-shot` 1338ms → 665ms，树一致 |
 
+
+| `launch_app --activates` | 默认不激活 | 同 | 实测：默认前台不变；带 flag 才变 |
+| `raise` | `bundle\|pid [--window=ID]` | 同 | 走 Apple Events（见 §3.1） |
+| `lens on\|off\|toggle` | 动作指示器 | 同 | 见 §1.2 |
+
 > ⚠️ **修正（2026-10-05 晚）**：上面 `windows` 那一行原先写的是
 > 「`list_apps <pid>` 返回 `windows[]`，带真实 `CGWindowID` + 标题」——**两句都不准**：
 > 1. **来源是 AX**，不是 CGWindowList（help 原文："List **AX** windows of an app"）。
@@ -73,9 +78,6 @@ Open System Settings → Privacy & Security → Accessibility and enable "Alma C
 >
 > 怎么发现的：**去跑本文件 §4.3 承诺的复验命令**，`cu windows <pid>` 回了"没有在屏窗口"
 > 而同一 pid 的 `snap` 看得到窗口 —— 两条命令互相矛盾，就是文档或实现有一处在说假话。
-| `launch_app --activates` | 默认不激活 | 同 | 实测：默认前台不变；带 flag 才变 |
-| `raise` | `bundle\|pid [--window=ID]` | 同 | 走 Apple Events（见 §3.1） |
-| `lens on\|off\|toggle` | 动作指示器 | 同 | 见 §1.2 |
 
 ### 1.2 展示界面
 
@@ -92,7 +94,10 @@ Open System Settings → Privacy & Security → Accessibility and enable "Alma C
 2. **不抢焦点** —— `NSWindow` 子类覆写 `canBecomeKey/canBecomeMain` 为 false，用 `orderFrontRegardless()`
 3. **不进 Dock** —— daemon 本身是 `LSUIElement`
 
-穿透这条**是验的不是声明的**：lens 在点击**之前**弹出、盖满全屏，此时双击仍能选中词。
+穿透这条**是验的不是声明的**：lens 在点击**之前**弹出、盖满全屏，此时双击仍能选中词
+（**别人也能验**：`cu lens status` 报 `lastIndicator` = `shown` / `suppressed` / `disabled` / `none`。
+指示器是全屏透明窗口，"看不见"和"没显示"肉眼分不开 —— 所以给它加了一个**可读的结局字段**，
+否则这条只能靠"我没看见"来断言。见 §1.4d。）。
 开关行为：`off` 与 `show_cursor:false` 都不出现，默认出现（用 `.optionOnScreenOnly` 判可见）。
 
 **PiP 的寿命逻辑与参照代码逐行吻合。** 参照的 `out/main/chunks/computerUsePip-*.js`：
