@@ -12,7 +12,9 @@ import { parseSkillDocument } from "../../extensions/skillDocument.js";
 import { discoverSkillRepositories, installDiscoveredSkill, searchSkillsSh, updateDiscoveredSkill } from "../../extensions/skillDiscovery.js";
 import { readManagedSkillVersion, rollbackSkillVersion } from "../../extensions/skillVersions.js";
 import { withGlobalConfigWriteLock } from "../../config/versioned.js";
-import { loadSkills } from "../../extensions/skills.js";
+import { loadSkills, type SkillBundle } from "../../extensions/skills.js";
+import { createProjectSkillKey } from "../../extensions/skillRef.js";
+import { loadConfig } from "../../config/loader.js";
 import { scanSkillCatalog } from "../../extensions/skillCatalog.js";
 import { diagnoseSkill } from "../../extensions/skillDiagnostics.js";
 import { createFileConfigStore } from "../../config/store.js";
@@ -96,8 +98,19 @@ interface SkillSearchOptions extends SkillOutputOptions {
   offset?: number;
 }
 
+/** Resolve discovery and activation from the same effective config as the runtime. */
+async function loadWorkspaceSkills(workspaceRoot: string): Promise<SkillBundle> {
+  const config = await loadConfig(workspaceRoot);
+  return await loadSkills({
+    workspaceRoot,
+    projectPaths: config.extensions.skills,
+    globalDefaults: config.extensions.skillDefaults,
+    projectOverrides: config.extensions.skillProjectOverrides[createProjectSkillKey(workspaceRoot)]
+  });
+}
+
 async function skillListCommand(workspaceRoot: string, options: SkillOutputOptions = {}): Promise<void> {
-  const bundle = await loadSkills({ workspaceRoot, projectPaths: [] });
+  const bundle = await loadWorkspaceSkills(workspaceRoot);
   const installations = (await Promise.all((await managedSkillNames()).map((name) => readManagedSkillVersion(defaultManagedSkillRoot(), name)))).filter(Boolean);
   const result = {
     skills: bundle.skills.map((skill) => ({
@@ -131,7 +144,7 @@ async function skillListCommand(workspaceRoot: string, options: SkillOutputOptio
 }
 
 async function skillSearchCommand(workspaceRoot: string, query: string, options: SkillSearchOptions = {}): Promise<void> {
-  const bundle = await loadSkills({ workspaceRoot, projectPaths: [] });
+  const bundle = await loadWorkspaceSkills(workspaceRoot);
   const result = await searchSkillsSh({
     query,
     limit: options.limit,

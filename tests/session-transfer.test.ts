@@ -15,9 +15,12 @@ process.env.BINY_AGENT_DIR = agentRoot;
 const { attachmentRoot, readAttachment, saveAttachment } = await import("../src/attachments/store.js");
 const { globalAgentDir, legacyProjectStateDirName, projectSessionsDir, projectStateDirName } = await import("../src/config/paths.js");
 const { readStoredSessionEvents } = await import("../src/session/events.js");
+const { replaySessionEvents } = await import("../src/session/replay.js");
+const { toModelMessages } = await import("../src/agent/core/vercelModelAdapter.js");
 const { createSessionId, SessionRecorder } = await import("../src/session/recorder.js");
 const { RuntimeEventAuthority } = await import("../src/runtime/RuntimeAuthority.js");
 const { ensureAgentDirs, resolveSessionFile } = await import("../src/session/store.js");
+const { sessionImportCommand } = await import("../src/cli/commands/sessionTransfer.js");
 const {
   BINY_BUNDLE_FORMAT,
   BINY_BUNDLE_VERSION,
@@ -220,8 +223,49 @@ try {
     assert.equal((toolCall as { tool: string }).tool, "Read");
     assert.equal((toolCall as { toolCallId?: string }).toolCallId, "call_1");
     assert.equal(toolResult?.type, "tool_result");
+    assert.equal((toolResult as { tool: string }).tool, "Read");
     assert.equal((toolResult as { toolCallId?: string }).toolCallId, "call_1");
     assert.equal((toolResult as { executionStatus?: string }).executionStatus, "succeeded");
+    const replay = replaySessionEvents(events);
+    assert.equal(replay.recoveredToolResults.length, 0);
+    assert.deepEqual(replay.messages.filter((message) => message.role === "toolResult")
+      .map((message) => [message.toolCallId, message.toolName]), [["call_1", "Read"]]);
+    assert.deepEqual(toModelMessages(replay.messages).filter((message) => message.role === "tool")
+      .flatMap((message) => message.content.filter((part) => part.type === "tool-result")
+        .map((part) => [part.toolCallId, part.toolName])), [["call_1", "Read"]]);
+  }
+
+  // Claude 的结果块不带工具名；必须按 id 找回，不能依赖结果顺序或最近一次调用。
+  {
+    const target = await tempWorkspace("biny-claude-tools-");
+    await ensureAgentDirs(target);
+    const lines = [
+      { type: "user", message: { role: "user", content: "读取两个文件，再运行测试" } },
+      { type: "assistant", message: { role: "assistant", content: [
+        { type: "tool_use", id: "read_1", name: "Read", input: { path: "first.txt" } },
+        { type: "tool_use", id: "bash_2", name: "Bash", input: { command: "npm test" } },
+        { type: "tool_use", id: "read_3", name: "Read", input: { path: "second.txt" } }
+      ] } },
+      { type: "user", message: { role: "user", content: [
+        { type: "tool_result", tool_use_id: "read_3", content: "second" },
+        { type: "tool_result", tool_use_id: "read_1", content: [{ type: "text", text: "first" }] },
+        { type: "tool_result", tool_use_id: "bash_2", content: "test failed", is_error: true },
+        { type: "tool_result", tool_use_id: "unknown", content: "unmatched result" },
+        { type: "tool_result", content: "legacy result without an id" }
+      ] } }
+    ];
+    const sourcePath = path.join(target, "tools.claude.jsonl");
+    await writeFile(sourcePath, `${lines.map((line) => JSON.stringify(line)).join("\n")}\n`);
+    const imported = await importSessionFile(target, sourcePath);
+    const { events } = await readStoredSessionEvents(target, imported.sessionId);
+    assert.deepEqual(events.filter((event) => event.type === "tool_result")
+      .map((event) => [event.toolCallId, event.tool, event.result, event.executionStatus]), [
+      ["read_3", "Read", "second", "succeeded"],
+      ["read_1", "Read", "first", "succeeded"],
+      ["bash_2", "Bash", "test failed", "failed"],
+      ["unknown", "tool", "unmatched result", "succeeded"],
+      [undefined, "tool", "legacy result without an id", "succeeded"]
+    ]);
   }
 
   // ── 外部 rollout JSONL 导入映射 ───────────────────────────────────────────
@@ -253,6 +297,79 @@ try {
     assert.equal(result?.type, "tool_result");
     assert.equal((result as { result: unknown }).result, "/tmp");
     assert.equal(events[3]?.type === "assistant_message" ? events[3].content : undefined, "完成");
+  }
+
+  // Custom tool input 是原始文本；恰好能解析为 JSON 对象也不能改成 function arguments。
+  {
+    const target = await tempWorkspace("biny-codex-custom-in-");
+    await ensureAgentDirs(target);
+    const inputs = [
+      '{ "command": "pwd", "value": 1.0 }',
+      ' \n{ "文件": "你好 🌍", "command": "pwd" }\t',
+      "",
+      '{"unfinished":',
+      "*** Begin Patch\n*** End Patch\n",
+      '"literal"',
+      '[{"command":"pwd"}]'
+    ];
+    const functionArgs = [
+      { raw: inputs[0], expected: { command: "pwd", value: 1 } },
+      { raw: { command: "pwd" }, expected: { command: "pwd" } },
+      { raw: inputs[3], expected: { input: inputs[3] } }
+    ];
+    const calls = [
+      ...inputs.map((input, index) => ({ type: "custom_tool_call", name: "custom", call_id: `custom_${index}`, input })),
+      ...functionArgs.map(({ raw }, index) => ({ type: "function_call", name: "function", call_id: `function_${index}`, arguments: raw }))
+    ];
+    const rollout = [
+      { type: "session_meta", payload: { session_id: "fixture-custom" } },
+      { type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "Compare tool inputs" }] } },
+      ...calls.flatMap((call) => [
+        { type: "response_item", payload: call },
+        { type: "response_item", payload: { type: call.type === "custom_tool_call" ? "custom_tool_call_output" : "function_call_output", call_id: call.call_id, output: "fixture result" } }
+      ]),
+      { type: "response_item", payload: { type: "message", role: "assistant", content: [{ type: "output_text", text: "Done" }] } }
+    ];
+    const sourcePath = path.join(target, "custom-inputs.codex.jsonl");
+    const raw = `${rollout.map((line) => JSON.stringify(line)).join("\n")}\n`;
+    await writeFile(sourcePath, raw);
+    const expectedArgs = [...inputs.map((input) => ({ input })), ...functionArgs.map(({ expected }) => expected)];
+    const imported = await importSessionFile(target, sourcePath);
+    assert.equal(imported.format, "codex");
+    const { events } = await readStoredSessionEvents(target, imported.sessionId);
+    assert.deepEqual(events.filter((event) => event.type === "tool_call").map((event) => event.args), expectedArgs);
+    assert.deepEqual(events.filter((event) => event.type === "tool_result").map((event) => event.tool), calls.map((call) => call.name));
+    const replay = replaySessionEvents(events);
+    assert.equal(replay.recoveredToolResults.length, 0);
+    assert.deepEqual(replay.messages.filter((message) => message.role === "assistant")
+      .flatMap((message) => message.content.filter((part) => part.type === "toolCall").map((part) => part.arguments)), expectedArgs);
+    assert.deepEqual(toModelMessages(replay.messages).filter((message) => message.role === "assistant")
+      .flatMap((message) => message.content.filter((part) => part.type === "tool-call").map((part) => part.input)), expectedArgs);
+
+    for (const exported of [await exportSessionBundle(target, imported.sessionId), await exportSessionClaudeCode(target, imported.sessionId)]) {
+      const roundTripPath = path.join(target, `custom-round-trip.${exported.extension}`);
+      await writeFile(roundTripPath, exported.content);
+      const roundTrip = await importSessionFile(target, roundTripPath);
+      const roundTripEvents = (await readStoredSessionEvents(target, roundTrip.sessionId)).events;
+      assert.deepEqual(roundTripEvents.filter((event) => event.type === "tool_call").map((event) => event.args), expectedArgs);
+    }
+
+    // CLI 的显式格式入口也走相同转换，且导入绝不修改来源文件。
+    const output: string[] = [];
+    const log = console.log;
+    try {
+      console.log = (line: string) => { output.push(line); };
+      await sessionImportCommand(target, sourcePath, { format: "codex", json: true });
+    } finally {
+      console.log = log;
+    }
+    assert.equal(output.length, 1);
+    const cliImported = JSON.parse(output[0]!) as { sessionId: string; format: string; eventCount: number };
+    assert.equal(cliImported.format, "codex");
+    assert.equal(cliImported.eventCount, events.length);
+    const cliEvents = (await readStoredSessionEvents(target, cliImported.sessionId)).events;
+    assert.deepEqual(cliEvents.filter((event) => event.type === "tool_call").map((event) => event.args), expectedArgs);
+    assert.equal(await readFile(sourcePath, "utf8"), raw);
   }
 
   // ── 格式探测：bundle / 两类外部格式 / 无法识别 ─────────────────────────────

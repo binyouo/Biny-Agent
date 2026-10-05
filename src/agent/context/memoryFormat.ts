@@ -137,6 +137,18 @@ export function memoryEntryExactKey(entry: Pick<MemoryEntry, "content" | "userId
   return JSON.stringify([entry.userId ?? null, normalizeMemoryContent(entry.content)]);
 }
 
+/** Explicit expiry wins; the age-based TTL applies only to never-recalled temporary facts. */
+export function isExpiredTemporaryMemory(entry: MemoryEntry, now: Date, ttlDays: number): boolean {
+  if (entry.durability !== "temporary") return false;
+  const nowMs = now.getTime();
+  const expiresAt = entry.expiresAt === undefined ? Number.NaN : Date.parse(entry.expiresAt);
+  if (Number.isFinite(expiresAt) && expiresAt < nowMs) return true;
+  if (entry.accessCount !== 0) return false;
+  const createdAt = Date.parse(entry.createdAt);
+  return Number.isFinite(createdAt)
+    && createdAt + Math.max(1, Math.trunc(ttlDays)) * 86_400_000 < nowMs;
+}
+
 /** 记忆默认只保留 64 个词；有界的全文索引可显式提供更大的词数预算。 */
 export function tokenizeMemoryText(value: string, maxTokens = 64): string[] {
   const lower = value.toLowerCase();

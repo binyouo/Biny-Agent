@@ -84,7 +84,7 @@ function scriptText(value: string): string { return value.replace(/<\/script/giu
 export function createWidgetDocument(options: { token: string; morphdomSource: string; theme?: WidgetTheme; widget?: WidgetInput }): string {
   if (!/^[a-zA-Z0-9_-]{1,100}$/u.test(options.token)) throw new Error("Invalid widget token.");
   const widget = options.widget ? widgetSchema.parse(options.widget) : undefined;
-  const runtime = bridge.replace("__TOKEN__", JSON.stringify(options.token)).replace("__INITIAL__", widget ? `setContent(${JSON.stringify(widget.html)},true);` : "");
+  const runtime = bridge.replace("__TOKEN__", JSON.stringify(options.token)).replace("__INITIAL__", () => widget ? `setContent(${JSON.stringify(widget.html)},true);` : "");
   const css = `${themeCss}\n${options.theme?.css ?? ""}`.replace(/<\/style/giu, "<\\/style");
   const title = (widget?.title ?? "可视化").replace(/&/gu, "&amp;").replace(/</gu, "&lt;").replace(/>/gu, "&gt;");
   return `<!doctype html><html data-theme="${options.theme?.dark ? "dark" : "light"}"><head><meta charset="utf-8"><title>${title}</title><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; connect-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'"><style>${css}</style><style id="widget-theme"></style></head><body><div id="content"></div><script>/* ${morphdomNotice} */\n${scriptText(options.morphdomSource)}</script><script>${scriptText(runtime)}</script></body></html>`;

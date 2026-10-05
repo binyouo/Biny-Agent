@@ -8,6 +8,7 @@ import type { ContextStatus } from "../../../../agent/context/types.js";
 import type { ModelRuntimeInfo } from "../../../../llm/ModelManager.js";
 import { isTerminalRunEvent, type AgentHostEvent } from "../../../../runtime/agentEvents.js";
 import type { SessionEvent } from "../../../../session/recorder.js";
+import { readReportedCacheUsage, reportedCacheTokenValue } from "../../../../session/metadata.js";
 import { publicUserMessage } from "../../../../session/publicMessage.js";
 import type {
   DesktopAgentEventEnvelope,
@@ -248,6 +249,11 @@ export function lastReportedInputTokens(document?: DesktopSessionDocument): numb
   let latest: number | undefined;
   for (const event of document.events) {
     if (event.type !== "assistant_message" || event.auditOnly) continue;
+    const projection = readReportedCacheUsage(event.usage ?? {});
+    if (projection) {
+      latest = projection.latestRequestRecorded === true ? reportedCacheTokenValue(projection.latestRequestInputTokens) : undefined;
+      continue;
+    }
     const inputTokens = event.usage?.latestRequestInputTokens ?? event.usage?.inputTokens;
     if (inputTokens !== undefined) latest = inputTokens;
   }

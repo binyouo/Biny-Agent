@@ -4,7 +4,7 @@
  * 派生活动相位、工具摘要与消息指标。全部为纯函数，不依赖 React，便于单测。
  */
 import type { TimelineReasoningStep, TimelineTool, TimelineToolStep, TimelineTurn } from "./sessionTimeline.js";
-import type { SessionUsage } from "../../../session/metadata.js";
+import { readReportedCacheUsage, reportedCacheTokenValue, type SessionUsage } from "../../../session/metadata.js";
 import { countDiffStats } from "./sessionChanges.js";
 
 /** 实时与历史消息共用同一身份判断，已接收的消息不再保留发送占位或驱动忙碌状态。 */
@@ -130,8 +130,13 @@ function formatTokensPerSecondPrecise(tps: number): string {
  */
 export function buildUsageDetailRows(usage: SessionUsage | undefined, metrics: TurnMetrics): UsageDetailRow[] {
   if (!usage) return [];
-  const input = usage.latestRequestInputTokens ?? usage.inputTokens;
-  const cacheRead = usage.latestRequestCacheReadTokens ?? usage.cacheReadTokens;
+  const projection = readReportedCacheUsage(usage);
+  const input = projection
+    ? projection.latestRequestRecorded === true ? reportedCacheTokenValue(projection.latestRequestInputTokens) : undefined
+    : usage.latestRequestInputTokens ?? usage.inputTokens;
+  const cacheRead = projection
+    ? projection.latestRequestRecorded === true ? reportedCacheTokenValue(projection.latestRequestCacheReadTokens) : undefined
+    : usage.latestRequestCacheReadTokens ?? usage.cacheReadTokens;
   const rows: UsageDetailRow[] = [
     { key: "input", label: "输入 Token", value: formatTokenCountExact(input) },
     { key: "output", label: "输出 Token", value: formatTokenCountExact(usage.outputTokens) },

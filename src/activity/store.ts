@@ -573,7 +573,7 @@ export class ActivityStore {
       SELECT * FROM activity_ocr_frames
       WHERE text LIKE ? ESCAPE '\\'
       ORDER BY created_at DESC, id DESC LIMIT ?
-    `).all(`%${normalized.replace(/%/gu, "\\%")}%`, Math.max(1, Math.min(500, limit))) as Array<Record<string, unknown>>;
+    `).all(`%${normalized.replace(/[\\%_]/gu, "\\$&")}%`, Math.max(1, Math.min(500, limit))) as Array<Record<string, unknown>>;
     return rows.map((row) => ({
       id: String(row.id), sessionId: String(row.session_id), snapshotId: String(row.snapshot_id), createdAt: Number(row.created_at),
       occurredAt: String(row.occurred_at), source: "screenshot_fallback", eventType: "screenshot_ocr",

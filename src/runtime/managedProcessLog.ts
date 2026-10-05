@@ -1,4 +1,5 @@
 /** A managed log keeps its creation-time inode identity while allowing normal appends. */
+import { isUtf8 } from "node:buffer";
 import { constants, promises as fs, type BigIntStats } from "node:fs";
 import type { FileHandle } from "node:fs/promises";
 import path from "node:path";
@@ -35,6 +36,7 @@ export async function readManagedProcessLog(
   // Validate before opening, and use nonblocking open so a raced-in FIFO cannot stall the host.
   await assertLogPath(binding);
   const file = await fs.open(binding.path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
+  let output: Omit<ManagedProcessOutput, "processId">;
   try {
     const metadata = await assertLogBinding(binding, file);
     signal?.throwIfAborted();
@@ -44,13 +46,65 @@ export async function readManagedProcessLog(
     const buffer = Buffer.alloc(Math.min(maxBytes, totalBytes - startOffset));
     const { bytesRead } = await file.read(buffer, 0, buffer.length, startOffset);
     signal?.throwIfAborted();
+    const page = buffer.subarray(0, bytesRead);
+    const consumedBytes = await completeUtf8PageBytes(binding, file, page, startOffset, totalBytes, signal);
     await assertLogBinding(binding, file);
-    const nextOffset = startOffset + bytesRead;
-    return { logPath: binding.path, content: buffer.subarray(0, bytesRead).toString("utf8"), startOffset, nextOffset,
+    const nextOffset = startOffset + consumedBytes;
+    output = { logPath: binding.path, content: page.subarray(0, consumedBytes).toString("utf8"), startOffset, nextOffset,
       totalBytes, omittedBefore: startOffset > 0, hasMore: nextOffset < totalBytes };
   } finally {
     await file.close();
   }
+  // Validation and handle release can yield after the last read-time check.
+  signal?.throwIfAborted();
+  return output;
+}
+
+/**
+ * maxBytes bounds consumed source bytes. Inspect at most three extra bytes,
+ * without advancing the cursor, to prove a valid code point crosses this page.
+ * Malformed bytes, explicit starting offsets, and actual EOF retain decoding.
+ */
+async function completeUtf8PageBytes(
+  binding: ManagedProcessLogBinding,
+  file: FileHandle,
+  page: Buffer,
+  startOffset: number,
+  totalBytes: number,
+  signal?: AbortSignal
+): Promise<number> {
+  const pageEnd = startOffset + page.length;
+  if (page.length === 0 || pageEnd >= totalBytes) return page.length;
+  let characterStart = page.length - 1;
+  while (characterStart > Math.max(0, page.length - 3) && (page[characterStart]! & 0xc0) === 0x80) characterStart--;
+  const first = page[characterStart]!;
+  const width = first >= 0xc2 && first <= 0xdf ? 2
+    : first >= 0xe0 && first <= 0xef ? 3
+    : first >= 0xf0 && first <= 0xf4 ? 4 : 0;
+  const prefixBytes = page.length - characterStart;
+  if (width === 0 || prefixBytes >= width || pageEnd + width - prefixBytes > totalBytes) return page.length;
+
+  const characterEnd = pageEnd + width - prefixBytes;
+  const before = await assertLogBinding(binding, file);
+  signal?.throwIfAborted();
+  if (before.size < BigInt(characterEnd)) throw new Error("Managed process log changed during boundary inspection; retry the page.");
+  const character = Buffer.alloc(width);
+  page.copy(character, 0, characterStart);
+  let inspected = 0;
+  const needed = width - prefixBytes;
+  while (inspected < needed) {
+    signal?.throwIfAborted();
+    const { bytesRead } = await file.read(character, prefixBytes + inspected, needed - inspected, pageEnd + inspected);
+    signal?.throwIfAborted();
+    if (bytesRead === 0) throw new Error("Managed process log changed during boundary inspection; retry the page.");
+    inspected += bytesRead;
+  }
+  const after = await assertLogBinding(binding, file);
+  signal?.throwIfAborted();
+  if (after.size < BigInt(characterEnd)) throw new Error("Managed process log changed during boundary inspection; retry the page.");
+  if (!isUtf8(character)) return page.length;
+  if (characterStart === 0) throw new RangeError(`maxBytes is too small for the next UTF-8 character; use at least ${String(width)}.`);
+  return characterStart;
 }
 
 async function assertLogPath(binding: ManagedProcessLogBinding): Promise<BigIntStats> {

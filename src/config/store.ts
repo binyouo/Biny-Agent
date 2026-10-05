@@ -186,9 +186,10 @@ export function createFileConfigStore(workspaceRoot: string, options: FileConfig
       const run = writeTail.then(async () => await withGlobalConfigWriteLock(configRoot, async () => {
         assertConfigRevision(expectedRevision, await loadUnlocked(requestedWorkspaceRoot));
         await saveUnlocked(config, requestedWorkspaceRoot);
-        // revision 只覆盖非凭据文档；刚写入的就是 `config`，直接算哈希即可，省掉一次
-        // 完整读盘 + 凭据水合（保存路径的第三次 loadUnlocked 是切换模型卡顿的来源之一）。
-        return { config, revision: configDocumentRevision(config) };
+        // 提交值可能只改变被项目覆盖遮住的全局字段；返回值和 CAS revision 必须来自
+        // 保存后的有效配置，否则调用方会暂时绕过项目设置并拿到无法复用的 revision。
+        const saved = await loadUnlocked(requestedWorkspaceRoot);
+        return { config: saved, revision: configDocumentRevision(saved) };
       }));
       writeTail = run.then(() => undefined, () => undefined);
       return await run;

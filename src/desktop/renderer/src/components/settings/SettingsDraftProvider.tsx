@@ -68,12 +68,18 @@ export function SettingsDraftProvider({
   const [saveState, setSaveState] = useState<SettingsSaveState>("clean");
   const credentialHandlesRef = useRef(new Set<string>());
   const snapshotRef = useRef<DesktopSettingsSnapshot | undefined>(undefined);
+  const loadGenerationRef = useRef(0);
   const activityUpdateTailRef = useRef(Promise.resolve());
 
-  const adoptSnapshot = useCallback((next: DesktopSettingsSnapshot): void => {
+  const adoptSnapshot = useCallback((next: DesktopSettingsSnapshot, submittedDraft?: DesktopSettingsDraft): void => {
     snapshotRef.current = next;
     setSnapshot(next);
-    setDraft(draftFromSnapshot(next));
+    const nextDraft = draftFromSnapshot(next);
+    // 保存期间其它分页仍可编辑；仅提交时未再修改的字段跟随服务端快照。
+    setDraft((current) => current && submittedDraft ? {
+      ...rebaseUneditedFields(current, submittedDraft, nextDraft),
+      models: nextDraft.models
+    } : nextDraft);
     setSaveError(undefined);
     setSaveState(next.pendingRecovery ? "recovery_required" : "clean");
     onThemePreview(next.themePreference);
@@ -83,6 +89,7 @@ export function SettingsDraftProvider({
 
   useEffect(() => {
     if (!active) return;
+    loadGenerationRef.current += 1;
     let cancelled = false;
     setSnapshot(undefined);
     snapshotRef.current = undefined;
@@ -108,7 +115,7 @@ export function SettingsDraftProvider({
       .finally(() => {
         if (!cancelled) setLoading(false);
       });
-    return () => { cancelled = true; };
+    return () => { cancelled = true; loadGenerationRef.current += 1; };
   }, [active, adoptSnapshot, loadAttempt, projectId, sessionId]);
 
   const retryLoad = useCallback((): void => {
@@ -367,7 +374,7 @@ export function SettingsDraftProvider({
         setSnapshot(result.snapshot);
         setSaveState(result.snapshot.pendingRecovery ? "recovery_required" : "clean");
         setDraft((current) => current ? {
-          ...rebaseUneditedFields(current, snapshotNow, result.snapshot),
+          ...rebaseUneditedFields(current, draftFromSnapshot(snapshotNow), draftFromSnapshot(result.snapshot)),
           models: toolModelOnly ? current.models : {
             upserts: [],
             removeAliases: [],
@@ -394,6 +401,7 @@ export function SettingsDraftProvider({
 
   const saveAll = useCallback(async (): Promise<DesktopSettingsSaveResult | undefined> => {
     if (!snapshot || !draft || runtimeBlocked || invalid || dirtyCount === 0 || saveState === "recovery_required" || saveState === "saving" || saveState === "rolling_back") return undefined;
+    const loadGeneration = loadGenerationRef.current;
     setSaveError(undefined);
     setSaveState("saving");
     // 看门狗：保存走单互斥事务，前序操作若撞上 Keychain security 超时可能长时间占用；
@@ -404,11 +412,12 @@ export function SettingsDraftProvider({
     });
     try {
       const result = await Promise.race([window.biny.saveSettings(snapshot.projectId, saveInput(snapshot, draft)), watchdogTrip]);
+      // 关闭或切换项目/会话后，旧事务仍可完成，但不能覆盖新页面的草稿或保存状态。
+      if (loadGenerationRef.current !== loadGeneration) return result;
       if (result.status === "committed") {
         credentialHandlesRef.current.clear();
-        adoptSnapshot(result.snapshot);
-        // 保存事务已经返回 committed；关闭握手的清理是非关键 IPC，不再让 UI 额外等待一轮。
-        void window.biny.updateSettingsDraftState({ dirty: false, canSave: false, open: active }).catch(() => undefined);
+        adoptSnapshot(result.snapshot, draft);
+        // 关闭握手由 layout effect 投影实际剩余草稿，不把保存期间的新编辑标记为已保存。
         onCommitted(result.snapshot);
       } else if (result.status === "rolled_back") {
         // 后端已验证补偿完成；只更新 CAS 基线，用户的草稿值继续保留以便处理冲突后重试。
@@ -430,6 +439,7 @@ export function SettingsDraftProvider({
       }
       return result;
     } catch (error) {
+      if (loadGenerationRef.current !== loadGeneration) return undefined;
       setSaveState("dirty");
       const message = error instanceof Error ? error.message : String(error);
       setSaveError(message);
@@ -438,7 +448,7 @@ export function SettingsDraftProvider({
     } finally {
       if (watchdog !== undefined) clearTimeout(watchdog);
     }
-  }, [active, adoptSnapshot, dirtyCount, draft, invalid, onAppearancePreview, onCommitted, onFontPreview, onNotify, onThemePreview, runtimeBlocked, saveState, snapshot]);
+  }, [adoptSnapshot, dirtyCount, draft, invalid, onAppearancePreview, onCommitted, onFontPreview, onNotify, onThemePreview, runtimeBlocked, saveState, snapshot]);
 
   const value = useMemo<SettingsDraftContextValue>(() => ({
     snapshot,
@@ -535,10 +545,8 @@ function draftFromSnapshot(snapshot: DesktopSettingsSnapshot): DesktopSettingsDr
   };
 }
 
-/** 即时保存只推进未编辑字段；保存期间新增的其他分页编辑也不能被覆盖。 */
-function rebaseUneditedFields(current: DesktopSettingsDraft, previous: DesktopSettingsSnapshot, next: DesktopSettingsSnapshot): DesktopSettingsDraft {
-  const before = draftFromSnapshot(previous);
-  const after = draftFromSnapshot(next);
+/** 只推进相对提交基线未修改的字段；保存期间新增的其它分页编辑也不能被覆盖。 */
+function rebaseUneditedFields(current: DesktopSettingsDraft, before: DesktopSettingsDraft, after: DesktopSettingsDraft): DesktopSettingsDraft {
   const rebased = { ...current };
   const rebaseField = <K extends keyof DesktopSettingsDraft>(key: K): void => {
     if (key !== "models" && sameJson(current[key], before[key])) rebased[key] = after[key];

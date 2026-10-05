@@ -535,6 +535,7 @@ function projectSearchResult(entry: ToolResultEntry): Record<string, unknown> {
   const rawMatches = Array.isArray(record.matches) ? record.matches : [];
   const matches: unknown[] = [];
   let retainedBytes = 0;
+  let shortened = false;
   for (const match of rawMatches) {
     const item = asRecord(match);
     const text = stringField(item, "text");
@@ -548,15 +549,16 @@ function projectSearchResult(entry: ToolResultEntry): Record<string, unknown> {
       before: projectSearchContext(item.before),
       after: projectSearchContext(item.after)
     });
-    const nextBytes = Buffer.byteLength(serializeToolResult(next), "utf8");
+    const nextBytes = boundSearchMatchContext(next, Math.max(0, maxSearchOutputBytes - retainedBytes));
     if (retainedBytes + nextBytes > maxSearchOutputBytes && matches.length > 0) break;
     matches.push(next);
     retainedBytes += nextBytes;
+    shortened ||= searchMatchSignature(next) !== searchMatchSignature(match);
   }
-  const truncated = matches.length < rawMatches.length || retainedBytes < Buffer.byteLength(serializeToolResult(rawMatches), "utf8");
+  const truncated = record.matchesTruncated === true || matches.length < rawMatches.length || shortened;
   return removeUndefined({
     matches,
-    matchCount: rawMatches.length,
+    matchCount: numberField(record, "matchCount") ?? rawMatches.length,
     ...copyFields(record, [
       "offset",
       "limit",
@@ -570,6 +572,30 @@ function projectSearchResult(entry: ToolResultEntry): Record<string, unknown> {
     matchesRetainedBytes: truncated ? retainedBytes : undefined,
     summary: truncated ? "Only bounded match locations and snippets are shown; the full search result is available via read_tool_result." : undefined
   });
+}
+
+function searchMatchSignature(value: unknown): string {
+  const serialized = serializeToolResult(value);
+  try {
+    return stableJson(JSON.parse(serialized));
+  } catch {
+    return serialized;
+  }
+}
+
+/** The match-record byte budget includes context; keep the nearest lines first. */
+function boundSearchMatchContext(match: Record<string, unknown>, maxBytes: number): number {
+  const before = Array.isArray(match.before) ? match.before : [];
+  const after = Array.isArray(match.after) ? match.after : [];
+  let bytes = Buffer.byteLength(serializeToolResult(match), "utf8");
+  while (bytes > maxBytes && (before.length > 0 || after.length > 0)) {
+    if (before.length >= after.length) before.shift();
+    else after.pop();
+    bytes = Buffer.byteLength(serializeToolResult(match), "utf8");
+  }
+  // A first match whose mandatory identity/snippet alone exceeds the budget is
+  // still retained by the caller. Never truncate a path or lose the occurrence.
+  return bytes;
 }
 
 function projectSearchContext(value: unknown): unknown[] | undefined {

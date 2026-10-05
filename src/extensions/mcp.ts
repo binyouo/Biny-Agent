@@ -474,6 +474,8 @@ export class McpToolHost {
         this.emitChange();
       };
       client.setNotificationHandler(ToolListChangedNotificationSchema, () => {
+        // SDK 异步派发通知；重连可能已在回调执行前摘除旧 client。
+        if (managed.client !== client) return;
         void this.refreshServerTools(managed);
       });
       managed.client = client;
@@ -481,7 +483,12 @@ export class McpToolHost {
       const capabilities = client.getServerCapabilities();
       managed.status.hasResources = Boolean(capabilities?.resources);
       managed.status.instructions = client.getInstructions();
-      managed.status.promptNames = capabilities?.prompts ? await this.listPromptNames(managed, client) : [];
+      const promptNames = capabilities?.prompts ? await this.listPromptNames(managed, client) : [];
+      // 可选提示列表失败可忽略，但等待期间关闭的连接不能重新发布为已连接。
+      if (this.closing || managed.client !== client || !client.transport) {
+        throw new Error(`MCP server ${managed.name} connection closed during startup.`);
+      }
+      managed.status.promptNames = promptNames;
       managed.status.connected = true;
       managed.status.authRequired = false;
     } catch (error) {

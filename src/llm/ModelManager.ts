@@ -19,7 +19,7 @@ import { ModelRuntime } from "./ModelRuntime.js";
 import type { ModelSettings, ProviderCredentialPersistence } from "./ProviderRuntime.js";
 import { createProviderCredentialPersistence } from "./modelFactory.js";
 import { AiRegistry } from "./AiRegistry.js";
-import { FileModelsStore, restoreProviderCatalogs, type ModelsStore } from "./ModelsStore.js";
+import { FileModelsStore, modelCatalogCacheKey, restoreProviderCatalogs, type ModelsStore } from "./ModelsStore.js";
 import type { ThinkingSelection } from "./modelThinking.js";
 
 export { modelThinkingSelections, type ThinkingSelection } from "./modelThinking.js";
@@ -123,7 +123,7 @@ export class ModelManager {
       if (latest && (latest.apiKey !== provider.apiKey || latest.oauth?.refreshToken !== provider.oauth?.refreshToken
         || latest.oauth?.expiresAt !== provider.oauth?.expiresAt)) {
         const observedRevision = this.observedConfigRevision;
-        this.applyConfig({ ...this.config, providers: { ...this.config.providers, [providerAlias]: latest } });
+        await this.applyConfig({ ...this.config, providers: { ...this.config.providers, [providerAlias]: latest } });
         // 凭据更新不代表已读取并准入其它客户端保存的后续模型选择。
         this.observedConfigRevision = observedRevision;
       }
@@ -140,7 +140,7 @@ export class ModelManager {
       }));
       // 凭据续期不能将运行中保存的新模型选择带进当前回合。
       const observedRevision = this.observedConfigRevision;
-      this.applyConfig(reloadConfig ? effective : {
+      await this.applyConfig(reloadConfig ? effective : {
         ...this.config,
         providers: { ...this.config.providers, [providerAlias]: effective.providers[providerAlias]! }
       });
@@ -158,24 +158,42 @@ export class ModelManager {
     const effective = await saveModelSelection(this.workspaceRoot, this.configStore, alias, thinking, this.runtime.catalogsSnapshot(), this.ai, this.modelsStore);
     // 项目覆盖的 defaultModel/thinking 仍然优先；保存后重新读取有效配置，避免内存状态
     // 短暂显示一个实际上被项目覆盖遮住的模型。
-    this.applyConfig(effective);
+    await this.applyConfig(effective);
     return this.getInfo();
   }
 
   async refreshFromDisk(): Promise<ModelRuntimeInfo> {
     const nextConfig = await this.configStore.load(this.workspaceRoot);
-    this.applyConfig(nextConfig);
+    await this.applyConfig(nextConfig);
     return this.getInfo();
   }
 
-  private applyConfig(nextConfig: AgentConfig): void {
-    const nextRuntime = new ModelRuntime(nextConfig, this.runtime.catalogsSnapshot(), this.ai, this.modelsStore, undefined, this.providerCredentials);
+  private async applyConfig(nextConfig: AgentConfig): Promise<void> {
+    const nextRevision = this.configStore.revision?.();
+    // 别名不代表同一个目录来源；端点/服务商变更后不能把旧连接的窗口和能力带入新连接。
+    // 凭据轮换和模型选择不改变来源，继续复用实时目录，避免旧磁盘缓存覆盖当前事实。
+    const changedProviders = Object.keys(nextConfig.providers).filter((alias) => {
+      const previous = this.config.providers[alias];
+      const next = nextConfig.providers[alias]!;
+      return !previous || previous.type !== next.type
+        || modelCatalogCacheKey(alias, previous) !== modelCatalogCacheKey(alias, next);
+    });
+    const changed = new Set(changedProviders);
+    const catalogs = this.runtime.catalogsSnapshot().filter(([alias]) => nextConfig.providers[alias] && !changed.has(alias));
+    // 内置默认端点的持久键只有 alias，不能证明目录属于变更后的服务商/端点。
+    // 已知来源变更时保守使用新 Provider 基线；不迁移或清理原缓存。
+    const restorableProviders = changedProviders.filter((alias) => !this.config.providers[alias]
+      || modelCatalogCacheKey(alias, nextConfig.providers[alias]!) !== alias);
+    if (this.modelsStore && restorableProviders.length) {
+      catalogs.push(...await restoreProviderCatalogs(restorableProviders, this.modelsStore, nextConfig.providers));
+    }
+    const nextRuntime = new ModelRuntime(nextConfig, catalogs, this.ai, this.modelsStore, undefined, this.providerCredentials);
     const nextSettings = nextRuntime.createModelSettings();
     // 自动模式在磁盘中省略 toolModel，仍需清除上一回合的显式选择。
     Object.assign(this.config, nextConfig, { toolModel: nextConfig.toolModel });
     this.runtime = nextRuntime;
     this.activeSettings = nextSettings;
-    this.observedConfigRevision = this.configStore.revision?.();
+    this.observedConfigRevision = nextRevision;
   }
 }
 

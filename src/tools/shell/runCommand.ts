@@ -63,6 +63,8 @@ export interface RunCommandResult {
 
 export interface RunShellCommandOptions {
   signal?: AbortSignal;
+  /** Internal observation only; this evidence never changes the public result. */
+  onCompletionEvidence?: (evidence: ShellCompletionEvidence) => void;
   /** 追加到子进程环境的变量；不提供时继承当前进程环境。 */
   env?: Record<string, string>;
   onUpdate?: (update: ToolUpdate) => void;
@@ -74,6 +76,9 @@ export interface RunShellCommandOptions {
   /** 完整输出捕获的硬上限，超过后仍保留尾部并明确标记。 */
   maxCapturedOutputBytes?: number;
 }
+
+/** A normal shell exit is evidence of completion, not proof that it had no effects. */
+export type ShellCompletionEvidence = "normal_exit" | "unconfirmed";
 
 export interface RunCommandToolOptions {
   /** 内部调用方可收紧单次命令超时；普通模型工具继续使用 runShellCommand 的默认值。 */
@@ -194,6 +199,27 @@ function inferredCommandCwd(command: string): string | undefined {
 }
 
 export async function runShellCommand(cwd: string, command: string, options: RunShellCommandOptions = {}): Promise<RunCommandResult> {
+  let evidence: ShellCompletionEvidence = "unconfirmed";
+  try {
+    return await runShellCommandWithCompletionEvidence(cwd, command, options, () => { evidence = "normal_exit"; });
+  } catch (error) {
+    evidence = "unconfirmed";
+    throw error;
+  } finally {
+    try {
+      options.onCompletionEvidence?.(evidence);
+    } catch {
+      // An observer cannot replace an already-settled command outcome.
+    }
+  }
+}
+
+async function runShellCommandWithCompletionEvidence(
+  cwd: string,
+  command: string,
+  options: RunShellCommandOptions,
+  onNormalExit: () => void
+): Promise<RunCommandResult> {
   options.signal?.throwIfAborted();
   const timeoutMs = options.timeoutMs ?? defaultTimeoutMs;
   const terminationGraceMs = options.terminationGraceMs ?? defaultTerminationGraceMs;
@@ -415,7 +441,8 @@ export async function runShellCommand(cwd: string, command: string, options: Run
       }
       settle(error);
     }
-    function onClose(code: number | null): void {
+    function onClose(code: number | null, signal: NodeJS.Signals | null = null): void {
+      if (settled) return;
       if (stopReason) {
         if (process.platform === "win32") {
           if (!windowsTreeKillPending) settleStopped();
@@ -426,6 +453,7 @@ export async function runShellCommand(cwd: string, command: string, options: Run
         if (unixStopInitialized && !processGroupExists(child) && !trackedProcessesExist(trackedUnixPids)) settleStopped();
         return;
       }
+      if (typeof code === "number" && Number.isSafeInteger(code) && code >= 0 && signal === null) onNormalExit();
       settle(undefined, typeof code === "number" ? code : 1);
     }
 

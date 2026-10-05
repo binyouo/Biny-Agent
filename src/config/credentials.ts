@@ -23,6 +23,8 @@ export interface CredentialStore {
   get(account: string): Promise<string | undefined>;
   set(account: string, value: string): Promise<void>;
   delete(account: string): Promise<void>;
+  /** 文件配置的凭据 nonce 变化时，让缓存实现丢弃相应槽位；nonce 只作相等比较。 */
+  observeCredentialRevisions?(revisions: Readonly<Record<string, string>> | undefined): void;
 }
 
 type CredentialTransactionStage =
@@ -79,9 +81,11 @@ export class MacKeychainCredentialStore implements CredentialStore {
    * 进程内凭据缓存。`security` 每次调用都要 fork 一个子进程、在钥匙串锁定/等授权时还会
    * 阻塞到超时；设置保存一次要全量水合配置好几轮，逐 provider 同步进程是主要卡顿来源。
    * 这里把读到的值缓存进内存：之后的 get 命中内存、不再 fork；set/delete 仍真实落 Keychain
-   * 并同步缓存。Keychain 条目由本应用独占管理，进程内缓存是安全的。
+   * 并同步缓存。其它进程的配置提交由凭据 nonce 使对应槽位失效。
    */
   private readonly cache = new Map<string, string | undefined>();
+  private readonly cacheReadGenerations = new Map<string, symbol>();
+  private observedCredentialRevisions = new Map<string, string>();
 
   constructor(
     private readonly run: KeychainCommand = async (command, args, input) => {
@@ -89,20 +93,39 @@ export class MacKeychainCredentialStore implements CredentialStore {
     }
   ) {}
 
+  // nonce 是失效信号，不是有序版本或 config/Keychain 的原子快照。
+  observeCredentialRevisions(revisions: Readonly<Record<string, string>> | undefined): void {
+    const next = new Map(Object.entries(revisions ?? {}));
+    for (const account of new Set([...this.observedCredentialRevisions.keys(), ...next.keys()])) {
+      if (this.observedCredentialRevisions.get(account) !== next.get(account)) this.invalidateCache(account);
+    }
+    this.observedCredentialRevisions = next;
+  }
+
+  private invalidateCache(account: string): void {
+    this.cache.delete(account);
+    this.cacheReadGenerations.delete(account);
+  }
+
   async get(account: string): Promise<string | undefined> {
     if (this.cache.has(account)) return this.cache.get(account);
+    // 迟到的读取仍可返回给原调用者，但不能覆盖失效或已被新读取接管的缓存。
+    const generation = Symbol();
+    this.cacheReadGenerations.set(account, generation);
     try {
       const result = await this.run("security", ["find-generic-password", "-s", BINY_KEYCHAIN_SERVICE, "-a", account, "-w"]);
       const value = result.stdout.trim();
       const resolved = value || undefined;
-      this.cache.set(account, resolved);
+      if (this.cacheReadGenerations.get(account) === generation) this.cache.set(account, resolved);
       return resolved;
     } catch (error) {
       if (isKeychainItemMissing(error)) {
-        this.cache.set(account, undefined);
+        if (this.cacheReadGenerations.get(account) === generation) this.cache.set(account, undefined);
         return undefined;
       }
       throw keychainError("读取", account, error);
+    } finally {
+      if (this.cacheReadGenerations.get(account) === generation) this.cacheReadGenerations.delete(account);
     }
   }
 
@@ -110,6 +133,7 @@ export class MacKeychainCredentialStore implements CredentialStore {
     try {
       // `security` 会在 `-w` 没有参数且位于末尾时从 stdin 读取，避免密钥出现在子进程 argv。
       await this.run("security", ["add-generic-password", "-U", "-s", BINY_KEYCHAIN_SERVICE, "-a", account, "-w"], `${value}\n`);
+      this.invalidateCache(account);
       this.cache.set(account, value);
     } catch (error) {
       throw keychainError("保存", account, error);
@@ -119,10 +143,10 @@ export class MacKeychainCredentialStore implements CredentialStore {
   async delete(account: string): Promise<void> {
     try {
       await this.run("security", ["delete-generic-password", "-s", BINY_KEYCHAIN_SERVICE, "-a", account]);
-      this.cache.delete(account);
+      this.invalidateCache(account);
     } catch (error) {
       if (isKeychainItemMissing(error)) {
-        this.cache.delete(account);
+        this.invalidateCache(account);
         return;
       }
       throw keychainError("删除", account, error);
@@ -160,6 +184,7 @@ export function applyStoredCredentials(config: AgentConfig, store: CredentialSto
 }
 
 export async function loadStoredCredentials(config: AgentConfig, store: CredentialStore): Promise<AgentConfig> {
+  store.observeCredentialRevisions?.(config.credentialRevisions);
   const next = structuredClone(config);
   const providers = Object.entries(next.providers);
   const mcpServers = Object.values(next.extensions.mcp);

@@ -254,18 +254,21 @@ export class MemoryEmbeddingService {
     let snapshotRevision = 0;
     const vectors: Array<{ entryId: string; revision: number; embedding: ArrayLike<number> }> = [];
     let dimensions: number | undefined;
+    // Snapshot loading is already part of the operation: reserve admission and
+    // cancellation ownership before the first await.
+    this.operation = {
+      kind: "rebuild",
+      state: "running",
+      startedAt,
+      updatedAt: startedAt,
+      processedEntries: 0,
+      totalEntries: 0
+    };
     try {
       const snapshot = await this.options.localMemory.listMemoryEntries({ signal: combined });
       entries = snapshot.entries;
       snapshotRevision = snapshot.storeRevision;
-      this.operation = {
-        kind: "rebuild",
-        state: "running",
-        startedAt,
-        updatedAt: startedAt,
-        processedEntries: 0,
-        totalEntries: entries.length
-      };
+      this.operation = { ...this.operation, totalEntries: entries.length };
       const runtime = await this.options.getRuntime();
       if (!runtime) throw new Error("尚未选择 Embedding 模型。");
       if (!entries.length) {

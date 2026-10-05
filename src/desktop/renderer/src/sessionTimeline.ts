@@ -435,7 +435,7 @@ function buildHistoricalTurns(events: SessionEvent[]): TimelineTurn[] {
     if (event.type === "tool_result") {
       const turn = ensureTurn(event.time);
       const toolName = event.tool;
-      const tool = [...turn.tools].reverse().find((candidate) => candidate.id === event.toolCallId || (candidate.tool === toolName && candidate.result === undefined));
+      const tool = turn.tools.findLast((candidate) => candidate.id === event.toolCallId || (candidate.tool === toolName && candidate.result === undefined));
       if (tool) {
         applyToolResult(tool, event.result);
         tool.status = timelineToolStatus(event.result, event.executionStatus);
@@ -636,7 +636,7 @@ function buildVersionedHistoricalTurns(events: SessionEvent[]): TimelineTurn[] {
     if (event.type === "tool_result") {
       const turn = turnForEvent(event, event.time);
       const toolName = event.tool;
-      const tool = [...turn.tools].reverse().find((candidate) => candidate.id === event.toolCallId || (candidate.tool === toolName && candidate.result === undefined));
+      const tool = turn.tools.findLast((candidate) => candidate.id === event.toolCallId || (candidate.tool === toolName && candidate.result === undefined));
       if (tool) {
         applyToolResult(tool, event.result);
         tool.status = timelineToolStatus(event.result, event.executionStatus);

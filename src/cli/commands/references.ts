@@ -43,7 +43,7 @@ export async function referenceKindsCommand(workspaceRoot: string, options: { js
 
 export async function referenceSearchCommand(workspaceRoot: string, query: string,
   options: { json?: boolean; kind?: string; limit?: number }): Promise<void> {
-  if (options.kind !== undefined && aliases[options.kind] === undefined) throw new Error("Unknown reference kind.");
+  if (options.kind !== undefined && !Object.hasOwn(aliases, options.kind)) throw new Error("Unknown reference kind.");
   const { instance, projectId } = service(workspaceRoot);
   const results = await instance.search(query, projectId, options.kind === undefined ? undefined : aliases[options.kind], options.limit);
   console.log(options.json ? JSON.stringify(results) : results.map((item) => `${item.label}\t${item.uri}`).join("\n"));

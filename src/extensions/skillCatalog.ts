@@ -111,7 +111,7 @@ interface GroupedSkill {
 export async function scanSkillCatalog(options: { homeDir?: string; projectRoots?: string[] } = {}): Promise<SkillCatalogSnapshot> {
   const homeDir = options.homeDir ?? os.homedir();
   const projectRoots = await canonicalProjectRoots(options.projectRoots ?? []);
-  const roots = buildSkillRoots(homeDir, projectRoots);
+  const roots = buildSkillRoots(homeDir, projectRoots, options.homeDir === undefined);
   const allowedDirectories = (await Promise.all(roots.map(async ({ directory }) => {
     try {
       const stat = await fs.lstat(directory);
@@ -248,7 +248,7 @@ export async function resolveSkillCatalogFile(entry: SkillCatalogEntry, relative
   return target;
 }
 
-function buildSkillRoots(homeDir: string, projectRoots: string[]): SkillRoot[] {
+function buildSkillRoots(homeDir: string, projectRoots: string[], useEnvironment: boolean): SkillRoot[] {
   const roots: SkillRoot[] = [];
   const add = (
     scope: SkillCatalogScope,
@@ -261,7 +261,7 @@ function buildSkillRoots(homeDir: string, projectRoots: string[]): SkillRoot[] {
       scope,
       engine,
       source: convention.source,
-      precedence: skillRootPrecedence(scope, scope === "global" ? directory : convention.relativePath, homeDir),
+      precedence: skillRootPrecedence(scope, scope === "global" ? directory : convention.relativePath, useEnvironment ? undefined : homeDir),
       directory,
       projectRoot,
       allowExternalSymlinks: scope === "global" && convention.allowExternalSymlinks === true
@@ -269,8 +269,9 @@ function buildSkillRoots(homeDir: string, projectRoots: string[]): SkillRoot[] {
   };
 
   for (const convention of GLOBAL_SKILL_ROOT_CONVENTIONS) {
+    // 显式 homeDir 保持隔离；默认扫描与 runtime 一样尊重 BINY_AGENT_DIR。
     const directory = convention.relativePath === ".biny/skills"
-      ? path.join(globalConfigDir({ env: {}, homeDir }), "skills")
+      ? path.join(globalConfigDir({ env: useEnvironment ? process.env : {}, homeDir }), "skills")
       : path.isAbsolute(convention.relativePath)
       ? convention.relativePath
       : path.join(homeDir, convention.relativePath);

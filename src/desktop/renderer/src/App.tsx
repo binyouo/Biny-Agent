@@ -28,7 +28,6 @@ import type {
   DesktopSessionMenuAction,
   DesktopSessionWriterConflict,
   DesktopSessionSummary,
-  DesktopSessionTreePage,
   DesktopRunReceipt,
   DesktopSettingsCloseRequest,
   DesktopSettingsCloseResponse,
@@ -66,6 +65,7 @@ import {
   replaceProjectSessionRoots,
   syntheticSession
 } from "./app/desktopState.js";
+import { createSessionTreePageLifetime, type LoadedSessionTreePage } from "./app/sessionTreePageLifetime.js";
 import { useDesktopEventBridge } from "./app/useDesktopEventBridge.js";
 import { useCompactionCommand } from "./app/useCompactionCommand.js";
 import type { RecipeNotice, SkillExtractionCardState } from "./app/useDesktopEventBridge.js";
@@ -113,6 +113,8 @@ function DesktopApp(): React.JSX.Element {
   const [projects, setProjects] = useState<DesktopProject[]>([]);
   const [sidebarSessions, setSidebarSessions] = useState<DesktopSessionSummary[]>([]);
   const [workspace, setWorkspace] = useState<DesktopWorkspaceSnapshot>();
+  const [sessionTreePages] = useState(createSessionTreePageLifetime);
+  useEffect(() => () => sessionTreePages.replaceAll(), [sessionTreePages]);
   const [composerSkillWarnings, setComposerSkillWarnings] = useState<string[]>([]);
   const [composerSkills, setComposerSkills] = useState<DesktopSkillCatalogEntry[]>([]);
   const skillDescriptions = useMemo(() => new Map(composerSkills.map((skill) => [skill.name, skill.description])), [composerSkills]);
@@ -326,20 +328,22 @@ function DesktopApp(): React.JSX.Element {
   }, []);
 
   const mergeWorkspaceProject = useCallback((snapshot: DesktopWorkspaceSnapshot): void => {
+    sessionTreePages.replaceProject(snapshot.project.id, snapshot.sessions);
     setProjects((current) => mergeProject(current, snapshot.project));
     setSidebarSessions((current) => snapshot.sessionPage
       ? replaceProjectSessionRoots(current, snapshot.project.id, snapshot.sessionPage.sessions, snapshot.sessions)
       : replaceProjectSessions(current, snapshot.project.id, snapshot.sessions));
     setWorkspace(snapshot);
-  }, []);
+  }, [sessionTreePages]);
 
   const mergeProjectSnapshot = useCallback((snapshot: DesktopWorkspaceSnapshot): void => {
+    sessionTreePages.replaceProject(snapshot.project.id, snapshot.sessions);
     setProjects((current) => mergeProject(current, snapshot.project));
     setSidebarSessions((current) => snapshot.sessionPage
       ? replaceProjectSessionRoots(current, snapshot.project.id, snapshot.sessionPage.sessions, snapshot.sessions)
       : replaceProjectSessions(current, snapshot.project.id, snapshot.sessions));
     if (projectRef.current === snapshot.project.id) setWorkspace(snapshot);
-  }, []);
+  }, [sessionTreePages]);
 
   const threadBriefState = useThreadBrief();
   const briefProjectIds = threadBriefState?.snapshot?.projects.map((project) => project.projectId).sort().join("\0") ?? "";
@@ -428,16 +432,28 @@ function DesktopApp(): React.JSX.Element {
     projectId: string,
     parentSessionId: string,
     cursor?: string
-  ): Promise<DesktopSessionTreePage> => {
-    const page = await window.biny.listSessionTreePage(projectId, {
-      parentSessionId,
-      cursor,
-      limit: 32,
-      includeArchived: true
-    });
-    setSidebarSessions((current) => mergeProjectSessionPage(current, projectId, page.sessions));
-    return page;
-  }, []);
+  ): Promise<LoadedSessionTreePage> => {
+    const isCurrent = sessionTreePages.capture(projectId, parentSessionId);
+    const options = { parentSessionId, limit: 32, includeArchived: true };
+    let page = await window.biny.listSessionTreePage(projectId, { ...options, cursor });
+    if (!isCurrent()) throw new Error("会话列表已更新，请重新展开或加载更多重试。");
+    const reset = page.revisionChanged === true;
+    if (reset) {
+      // Catalog cursors are revision-bound. An empty revisionChanged response is not
+      // the end of the tree: restart once, then return the new first page's cursor.
+      page = await window.biny.listSessionTreePage(projectId, options);
+      if (!isCurrent() || page.revisionChanged) throw new Error("会话列表已更新，请重新展开或加载更多重试。");
+    }
+    const resetSessionIds = reset ? sessionTreePages.restart(projectId, parentSessionId, page.sessions) : undefined;
+    if (!reset) sessionTreePages.observe(projectId, page.sessions);
+    const removed = new Set(resetSessionIds);
+    setSidebarSessions((current) => mergeProjectSessionPage(
+      reset ? current.filter((session) => session.projectId !== projectId || !removed.has(session.id)) : current,
+      projectId,
+      page.sessions
+    ));
+    return reset ? { ...page, resetSessionIds } : page;
+  }, [sessionTreePages]);
 
   const reportEventError = useCallback((error: unknown): void => {
     setWarning(errorMessage(error));
@@ -512,6 +528,7 @@ function DesktopApp(): React.JSX.Element {
       setContextBudget(undefined);
       setDocument(nextDocument);
       setWriterConflict(nextDocument.writerConflict);
+      sessionTreePages.observe(projectId, [nextDocument.session]);
       setSidebarSessions((current) => mergeProjectSessionPage(current, projectId, [nextDocument.session]));
       setWorkspace((current) => current?.project.id === projectId
         ? {
@@ -533,7 +550,7 @@ function DesktopApp(): React.JSX.Element {
     } finally {
       if (showLoader && loadRequestRef.current === request) setLoading(false);
     }
-  }, [mergeWorkspaceProject]);
+  }, [mergeWorkspaceProject, sessionTreePages]);
 
   const adoptWorkspace = useCallback(async (
     snapshot: DesktopWorkspaceSnapshot,
@@ -663,6 +680,7 @@ function DesktopApp(): React.JSX.Element {
       if (!active) return;
       setVersion(bootstrap.version);
       setProjects(bootstrap.projects);
+      sessionTreePages.replaceAll(bootstrap.sidebarSessions);
       setSidebarSessions(bootstrap.sidebarSessions);
       setSidebarExpandedWidth(bootstrap.sidebarWidth ?? DEFAULT_SIDEBAR_WIDTH);
       setFilePanelWidth(bootstrap.filePanelWidth ?? DEFAULT_FILE_PANEL_WIDTH);
@@ -698,7 +716,7 @@ function DesktopApp(): React.JSX.Element {
       if (active) setStarting(false);
     });
     return () => { active = false; };
-  }, [bootstrapAppearance, commitNavigation, mergeWorkspaceProject, openSession, setSidebarExpandedWidth]);
+  }, [bootstrapAppearance, commitNavigation, mergeWorkspaceProject, openSession, sessionTreePages, setSidebarExpandedWidth]);
 
   // 生成错误横幅（会话瞬态）：由事件桥在 live 失败事件到达时置位、新一轮开始（run.started）
   // 时清除，与 document 的重放/终态刷新完全解耦——历史重放永不弹，横幅也不会被刷新闪退掉。
@@ -1332,6 +1350,7 @@ function DesktopApp(): React.JSX.Element {
         setMemoryToggleBusy(false);
       }
       setProjects(bootstrap.projects);
+      sessionTreePages.replaceAll(bootstrap.sidebarSessions);
       setSidebarSessions(bootstrap.sidebarSessions);
       setWorkspace(bootstrap.workspace);
       setDocument(undefined);
@@ -1343,7 +1362,7 @@ function DesktopApp(): React.JSX.Element {
     } catch (error) {
       setWarning(errorMessage(error));
     }
-  }, [commitNavigation]);
+  }, [commitNavigation, sessionTreePages]);
 
   // 聊天区状态变化很频繁；侧栏已经 memo，这些桥接回调必须保持引用稳定，避免每次输入/流式更新
   // 都把整棵项目树重新渲染一遍，触发 macOS 玻璃侧栏的重绘闪烁。

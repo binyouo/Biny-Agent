@@ -80,7 +80,8 @@ export class DesktopConfigStore implements AgentConfigStore {
     const run = this.writeTail.then(async () => await withGlobalConfigWriteLock(this.root, async () => {
       assertConfigRevision(expectedRevision, await this.loadUnlocked(workspaceRoot));
       await this.saveUnlocked(config, workspaceRoot);
-      return { config, revision: configDocumentRevision(config) };
+      const saved = await this.loadUnlocked(workspaceRoot);
+      return { config: saved, revision: configDocumentRevision(saved) };
     }));
     this.writeTail = run.then(() => undefined, () => undefined);
     return await run;

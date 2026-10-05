@@ -335,10 +335,8 @@ export class DesktopAgentManager {
   }
 
   async workspaceSnapshot(projectId: string, refreshGit = true): Promise<DesktopWorkspaceSnapshot> {
-    const storedProject = this.projects.requireProject(projectId);
-    const project = await this.projects.inspectProject(storedProject, refreshGit);
     // Keep lastOpenedAt stable on select/refresh so the sidebar order does not jump.
-    await this.state.upsertProject(project);
+    const project = await this.projects.refreshStoredProject(projectId, refreshGit);
     const managed = this.residentRuntime(projectId);
     const runtimeSnapshots = this.runtimeSnapshots(projectId);
     const [config, sessionData] = await Promise.all([
@@ -3099,14 +3097,6 @@ export class DesktopAgentManager {
     // 初始化 Runtime 期间另一个项目可能开始运行，真正写入前必须再做一次全局检查。
     this.assertNoRunningTasks(busyMessage);
     return managed;
-  }
-
-  private async readMemoryStore(
-    projectId: string
-  ): Promise<{ overview: MemoryOverview; entries: MemoryEntriesResult; allEntries: MemoryEntriesResult; maintenance: MemoryMaintenanceStatus }> {
-    const managed = this.residentRuntime(projectId);
-    if (managed) return await this.readMemoryStoreFromRuntime(managed);
-    return await this.readMemoryStoreFromDisk(projectId);
   }
 
   /** runtime 已驻留：普通读取不占用 Runtime 独占，允许各投影短暂跨 revision。 */

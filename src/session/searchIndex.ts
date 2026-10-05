@@ -9,7 +9,7 @@
  * 生成 token 列，原文另存一列用于摘要展示。
  */
 import { open, stat } from "node:fs/promises";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, statSync, type Stats } from "node:fs";
 import { performance } from "node:perf_hooks";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -56,6 +56,11 @@ interface SessionSearchRefreshFlight {
 interface IndexStateRow {
   session_id: unknown;
   byte_offset: unknown;
+}
+
+interface SessionSearchBatch {
+  events: Array<{ event?: SessionEvent; endOffset: number }>;
+  source: Pick<Stats, "dev" | "ino">;
 }
 
 export class SessionSearchIndex {
@@ -222,7 +227,24 @@ export class SessionSearchIndex {
           retry = true;
           break;
         }
-        for (const { event, endOffset } of batch) {
+        // reader 可能已缓存被删除会话的字节；首次扫描的偏移同为 0，单靠偏移无法识别清理。
+        // 在写锁内同步核对原文件仍绑定该 reader，确保删除后的清理与批次提交有确定顺序。
+        const source = statSync(filePath, { throwIfNoEntry: false });
+        if (
+          !source
+          || source.dev !== batch.source.dev
+          || source.ino !== batch.source.ino
+          || source.size < (batch.events.at(-1)?.endOffset ?? offset)
+        ) {
+          // 原文已失效，旧批次和已提交前缀都不能沿用；一起清掉后重读现存文件。
+          database.prepare("DELETE FROM session_transcripts WHERE session_id = ?").run(sessionId);
+          database.prepare("DELETE FROM session_index_state WHERE session_id = ?").run(sessionId);
+          signal?.throwIfAborted();
+          database.exec("COMMIT");
+          retry = true;
+          break;
+        }
+        for (const { event, endOffset } of batch.events) {
           signal?.throwIfAborted();
           offset = endOffset;
           if (event?.type !== "user_message" && event?.type !== "assistant_message") continue;
@@ -365,15 +387,16 @@ async function* readAppendedEventBatches(
   filePath: string,
   startOffset: number,
   signal?: AbortSignal
-): AsyncGenerator<Array<{ event?: SessionEvent; endOffset: number }>> {
+): AsyncGenerator<SessionSearchBatch> {
   signal?.throwIfAborted();
   const handle = await open(filePath, "r");
   try {
     signal?.throwIfAborted();
-    const { size } = await handle.stat();
+    const source = await handle.stat();
+    const { size } = source;
     signal?.throwIfAborted();
     if (size <= startOffset) {
-      yield [];
+      yield { events: [], source };
       return;
     }
     const buffer = Buffer.allocUnsafe(sessionSearchReadChunkBytes);
@@ -405,7 +428,7 @@ async function* readAppendedEventBatches(
         batch.push(appended);
         batchBytes += completeLineBytes + 1;
         if (batch.length >= sessionSearchBatchEvents || batchBytes >= sessionSearchBatchBytes) {
-          yield batch;
+          yield { events: batch, source };
           signal?.throwIfAborted();
           yieldedBatch = true;
           batch = [];
@@ -430,7 +453,7 @@ async function* readAppendedEventBatches(
       offset += read.bytesRead;
     }
     signal?.throwIfAborted();
-    if (batch.length || !yieldedBatch) yield batch;
+    if (batch.length || !yieldedBatch) yield { events: batch, source };
   } finally {
     await handle.close();
   }

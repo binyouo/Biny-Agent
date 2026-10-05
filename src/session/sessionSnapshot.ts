@@ -16,7 +16,11 @@ import type { SessionEvent, SessionContextUsage, SessionContextState, SessionCon
 import type { ModelRequestMetrics } from "../agent/core/types.js";
 import type { RuntimeHighWater } from "./runtimeEvent.js";
 
+// 只标记可重建的 replay 投影版本；原始 JSONL 的事件格式不变。
+const replayVersion = 1;
+
 export interface SessionSnapshotData {
+  replayVersion: number;
   /** 快照时刻 JSONL 的指纹，用于判断快照是否过时。 */
   fingerprint: { size: number; mtimeMs: number };
   /** 快照创建时间。 */
@@ -66,6 +70,9 @@ export async function tryReadSessionSnapshot(
     const raw = await fs.readFile(snapPath, "utf-8");
     const snapshot: SessionSnapshotData = JSON.parse(raw);
 
+    // 旧投影可能保留其他消息分支的 checkpoint，必须从原始日志重算，不能沿用旧缓存。
+    if (snapshot.replayVersion !== replayVersion) return undefined;
+
     // 校验指纹：只要 size 或 mtimeMs 变了，快照作废。
     if (
       snapshot.fingerprint.size !== fingerprint.size ||
@@ -95,6 +102,7 @@ export async function writeSessionSnapshot(
   try {
     const snapPath = snapshotFilePath(jsonlPath);
     const data: SessionSnapshotData = {
+      replayVersion,
       fingerprint: { size: fingerprint.size, mtimeMs: fingerprint.mtimeMs },
       createdAt: new Date().toISOString(),
       messages: replay.messages,

@@ -8,6 +8,7 @@ let retryDelay = 1000;
 let status = "未连接";
 let busy = false;
 let generation = 0;
+// attached 清空后，连续重连仍须等之前已开始的调试连接释放。
 let cleanup = Promise.resolve();
 const attached = new Set();
 const dialogs = new Set();
@@ -59,7 +60,7 @@ async function connect() {
     // 只重连通道，不重发命令。
     retry = setTimeout(() => void connect(), retryDelay);
     retryDelay = Math.min(retryDelay * 2, 30000);
-    cleanup = Promise.all([...attached].map((tabId) => chrome.debugger.detach({ tabId }).catch(() => {})));
+    cleanup = Promise.all([cleanup, ...[...attached].map((tabId) => chrome.debugger.detach({ tabId }).catch(() => {}))]).then(() => undefined);
     attached.clear(); dialogs.clear(); contexts.clear();
   };
 }
@@ -79,7 +80,7 @@ chrome.runtime.onMessage.addListener((message, _sender, reply) => {
   if (message.type === "reconnect") {
     generation++;
     const previous = socket; socket = undefined; previous?.close(); clearTimeout(retry);
-    cleanup = Promise.all([...attached].map((tabId) => chrome.debugger.detach({ tabId }).catch(() => {})));
+    cleanup = Promise.all([cleanup, ...[...attached].map((tabId) => chrome.debugger.detach({ tabId }).catch(() => {}))]).then(() => undefined);
     attached.clear(); dialogs.clear(); contexts.clear();
     void connect(); reply({ status: "连接中" });
   }

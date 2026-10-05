@@ -126,26 +126,28 @@ export class StaticPreviewServer {
       const currentPath = media.resolveFile();
       const currentStat = await fs.stat(currentPath);
       if (!stat.isFile() || currentPath !== filePath || stat.dev !== currentStat.dev || stat.ino !== currentStat.ino) throw new Error("媒体文件路径已改变。");
-      if (response.destroyed || request.aborted || !this.media.has(token!)) return;
+      if (response.destroyed || request.aborted || !this.media.has(token!)) { response.destroy(); return; }
       const range = request.method === "GET" && request.headers.range ? singleRange(request.headers.range, stat.size) : undefined;
       if (range === null) { response.writeHead(416, { "Content-Range": `bytes */${stat.size}`, "Content-Length": "0" }).end(); return; }
       response.setHeader("Content-Type", media.mimeType);
       response.setHeader("Accept-Ranges", "bytes");
-      response.setHeader("Content-Length", String(range ? range.end - range.start + 1 : stat.size));
+      const length = range ? range.end - range.start + 1 : stat.size;
+      response.setHeader("Content-Length", String(length));
       if (range) response.setHeader("Content-Range", `bytes ${range.start}-${range.end}/${stat.size}`);
       response.writeHead(range ? 206 : 200);
       if (request.method === "HEAD" || !stat.size) { response.end(); return; }
-      const stream = handle.createReadStream({ start: range?.start, end: range?.end, autoClose: true });
+      const stream = handle.createReadStream({ start: range?.start, end: range?.end ?? stat.size - 1, autoClose: true });
       streaming = true;
       this.mediaStreams.set(stream, { projectId: media.projectId, response });
       const cancel = () => stream.destroy();
       response.once("close", cancel);
       stream.once("error", () => response.destroy());
+      stream.once("end", () => { if (stream.bytesRead !== length) response.destroy(); else response.end(); });
       stream.once("close", () => {
         this.mediaStreams.delete(stream); response.off("close", cancel);
         if (!response.writableEnded && !response.destroyed) response.destroy();
       });
-      stream.pipe(response);
+      stream.pipe(response, { end: false });
     } finally { if (!streaming) await handle.close(); }
   }
 

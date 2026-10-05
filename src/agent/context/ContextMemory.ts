@@ -1220,7 +1220,8 @@ const modifiedToolNames = new Set(["Write", "Edit"]);
 
 function extractSummaryPaths(value: unknown): string[] {
   const serialized = safeJson(value);
-  return [...new Set(serialized.match(/[A-Za-z0-9_./-]+\.(?:ts|tsx|js|jsx|mjs|cjs|json|md|yml|yaml|css|html|py|rs|go|java|kt|swift|sh)/gu) ?? [])].slice(0, 32);
+  // File claims must preserve complete extensions and never invent paths from longer suffixes.
+  return [...new Set(serialized.match(/[A-Za-z0-9_./-]+\.(?:ts|tsx|js|jsx|mjs|cjs|json|md|yml|yaml|css|html|py|rs|go|java|kt|swift|sh)(?![A-Za-z0-9_/\\-]|\.+[A-Za-z0-9_/\\-])/gu) ?? [])].slice(0, 32);
 }
 
 function safeJson(value: unknown): string {
@@ -1895,13 +1896,13 @@ function assembleContext(
   const repoMap = `RepoMap candidates:\n${formatRepoMapCandidates(workspace.repoMapCandidates)}`;
   const projectSnapshot = `Project snapshot:\n${truncateTextToTokens(formatProjectContext(workspace.snapshot.context), 3_500)}`;
   const requestedHistoryTokens = estimateMessageTokens(history);
-  const requestedTokens = requestedHistoryTokens + requestedTaskTokens + checkpointTokens + [
+  const requestedTokens = requestedHistoryTokens + requestedTaskTokens + checkpointTokens
+    + recalledMemoryTokenCost(fullUserContent, includeInput ? turnContext : "", stableMemory) + [
     systemPrompt,
     includeInput ? turnContext : "",
     projectInstructions,
     explicitPaths,
     recentActivity,
-    stableMemory,
     repoMap,
     projectSnapshot
   ].filter(Boolean).reduce((total, content) => total + estimateTokens(content) + 4, 0);
@@ -1962,14 +1963,14 @@ function assembleContext(
   let includedMemory = "";
   let includedMemoryMatches: MemoryMatch[] = [];
   if (stableMemory) {
-    const requestedMemoryTokens = estimateTokens(stableMemory) + 4;
+    const requestedMemoryTokens = recalledMemoryTokenCost(userContent, includedTurnContext, stableMemory);
     for (let count = 1; count <= memoryMatches.length; count += 1) {
       const candidate = formatMemoryMatches(memoryMatches.slice(0, count));
-      if (estimateTokens(candidate) + 4 > remaining) break;
+      if (recalledMemoryTokenCost(userContent, includedTurnContext, candidate) > remaining) break;
       includedMemory = candidate;
       includedMemoryMatches = memoryMatches.slice(0, count);
     }
-    const usedTokens = includedMemory ? estimateTokens(includedMemory) + 4 : 0;
+    const usedTokens = recalledMemoryTokenCost(userContent, includedTurnContext, includedMemory);
     const disposition = !includedMemory ? "omitted" : includedMemoryMatches.length === memoryMatches.length ? "included" : "trimmed";
     if (disposition !== "included") omitted.push(disposition === "trimmed" ? "stable memory (trimmed)" : "stable memory");
     components.push({ id: "stable memory", requestedTokens: requestedMemoryTokens, usedTokens, disposition });
@@ -1999,6 +2000,12 @@ function assembleContext(
       measuredAt: undefined
     }
   };
+}
+
+/** Price the exact memory envelope and separators added to the existing user message. */
+function recalledMemoryTokenCost(content: AgentUserMessage["content"], turnContext: string, memory: string): number {
+  return messageTokenCost(withUserContext(content, turnContext, memory))
+    - messageTokenCost(withUserContext(content, turnContext, ""));
 }
 
 function withUserContext(

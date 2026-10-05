@@ -25,6 +25,8 @@ const defaultRecallMaxChars = 12_000;
 
 export interface AutomaticMemoryStore {
   listMemoryEntries(options?: { includeArchived?: boolean; signal?: AbortSignal }): Promise<MemoryEntriesResult>;
+  /** Production stores can revalidate only the selected active facts. */
+  getEntry?(id: string, options?: { activeOnly?: boolean; signal?: AbortSignal }): Promise<MemoryEntry | undefined>;
   recordRecallUsage(ids: string[], options?: { signal?: AbortSignal; now?: Date }): Promise<void>;
 }
 
@@ -119,13 +121,28 @@ export class HybridMemoryRetriever {
     options.signal?.throwIfAborted();
     const byId = new Map(snapshot.entries.map((entry) => [entry.id, entry]));
     // 手动查询在 top-K 后过滤且不补位；自动召回在向量查询前已经限定可注入集合。
-    const selected = semantic.results.filter(({ entryId }) => {
+    let selected = semantic.results.filter(({ entryId }) => {
       const entry = byId.get(entryId);
       return entry !== undefined
         && entryMatchesMemorySearchScope(entry, options)
         && (this.options.allowEntry?.(entry) ?? true)
         && (options.allowEntry?.(entry) ?? true);
     });
+    options.signal?.throwIfAborted();
+    if (selected.length) {
+      // Final selected-fact reads revalidate the earlier snapshot after embedding/rewrite
+      // awaits. Changed/deleted facts lose their slot; usage-only updates keep the revision.
+      const memory = this.options.localMemory;
+      const currentEntries = memory.getEntry
+        ? await Promise.all(selected.map(({ entryId }) => memory.getEntry!(entryId, { activeOnly: true, signal: options.signal })))
+        : (await memory.listMemoryEntries({ signal: options.signal })).entries;
+      options.signal?.throwIfAborted();
+      const currentById = new Map(currentEntries.flatMap((entry) => entry === undefined ? [] : [[entry.id, entry] as const]));
+      selected = selected.filter(({ entryId }) => {
+        const current = currentById.get(entryId);
+        return current !== undefined && current.archivedAt === undefined && current.revision === byId.get(entryId)!.revision;
+      });
+    }
     options.signal?.throwIfAborted();
     if (selected.length) await this.options.localMemory.recordRecallUsage(selected.map(({ entryId }) => entryId), { signal: options.signal });
     options.signal?.throwIfAborted();

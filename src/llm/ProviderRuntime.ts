@@ -136,6 +136,7 @@ export class ConfiguredProviderRuntime implements ProviderRuntime {
 
   async refreshModels(signal?: AbortSignal, force = false): Promise<ModelCatalogEntry[]> {
     signal?.throwIfAborted();
+    const cacheKey = modelCatalogCacheKey(this.id, this.config);
     const cached = this.modelsStore === undefined
       ? undefined
       : await readProviderCatalog(this.id, this.config, this.modelsStore);
@@ -153,7 +154,9 @@ export class ConfiguredProviderRuntime implements ProviderRuntime {
         force ? {} : { etag: cached?.etag, lastModified: cached?.lastModified },
         this.fetcher
       );
-      if (result.notModified && !cached) throw new Error(`Provider ${this.id} returned 304 without a stored model catalog.`);
+      if (result.notModified && cached?.sourceKey !== cacheKey) {
+        throw new Error(`Provider ${this.id} returned 304 without a stored model catalog for the current source.`);
+      }
       models = result.notModified ? cached!.models : result.models ?? [];
       etag = result.etag;
       lastModified = result.lastModified;
@@ -165,11 +168,11 @@ export class ConfiguredProviderRuntime implements ProviderRuntime {
     this.restoreModels(models);
     const entry = {
       models: this.liveModels.map((model) => this.normalizeCatalogEntry(model)),
+      sourceKey: cacheKey,
       checkedAt: Date.now(),
       etag,
       lastModified
     };
-    const cacheKey = modelCatalogCacheKey(this.id, this.config);
     await this.modelsStore?.write(cacheKey, entry).catch(() => undefined);
     // 旧版 CLI/测试可能仍按 provider alias 读取；运行时优先使用上面的隔离键，
     // 这里保留一份无凭据的镜像，避免升级后旧入口突然看不到刚刷新的目录。

@@ -5,7 +5,7 @@ import type { JSONSchema7 } from "@ai-sdk/provider";
 import { assistantSnapshot, type VercelLoopState } from "./vercelAgentLoop.js";
 import type { AgentToolResult } from "./types.js";
 import { errorMessage, isRecord } from "./vercelAgentUtils.js";
-import { normalizeToolParameters, openAiCompatibleToolParameters } from "../../tools/schema.js";
+import { normalizeToolParameters, openAiCompatibleToolParameters, validateJsonSchema } from "../../tools/schema.js";
 
 export function createVercelTools(state: VercelLoopState): ToolSet {
   const entries = state.tools.map((agentTool) => {
@@ -18,7 +18,15 @@ export function createVercelTools(state: VercelLoopState): ToolSet {
     agentTool.name,
     tool({
       description: agentTool.description,
-      inputSchema: jsonSchema(parameters as unknown as JSONSchema7),
+      inputSchema: jsonSchema(parameters as unknown as JSONSchema7, {
+        // jsonSchema 本身只描述出站 schema；显式校验才能触发 SDK 的参数修复和拒绝路径。
+        validate: (value) => {
+          const validation = validateJsonSchema(parameters, value);
+          return validation.ok
+            ? { success: true, value }
+            : { success: false, error: new Error(`Invalid tool arguments for ${agentTool.name}: ${validation.errors.join("; ")}`) };
+        }
+      }),
       execute: async (input: unknown, options: { toolCallId: string; abortSignal?: AbortSignal }) => {
         const execute = async (): Promise<AgentToolResult> => {
           const args = isRecord(input) ? input : {};

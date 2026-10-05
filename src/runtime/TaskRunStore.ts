@@ -563,10 +563,6 @@ export class DurableTaskRunStore {
     return { ...task, attempts: rows.map(toTaskAttempt) };
   }
 
-  private transaction<T>(execute: () => T): T {
-    return this.authority.runTransaction(execute);
-  }
-
   private assertOpen(): void {
     if (this.closed) throw new Error("TaskRun store is closed.");
   }
