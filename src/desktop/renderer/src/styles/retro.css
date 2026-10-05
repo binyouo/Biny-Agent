@@ -2403,3 +2403,35 @@
 :root[data-appearance-skin='longhorn-dark'] input[type="checkbox"]:checked {
     background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M20 6 9 17l-5-5' fill='none' stroke='%23d5d5d5' stroke-width='3'/%3E%3C/svg%3E");
 }
+
+/* ---------------------------------------------------------------------------
+ * 设置弹窗的页签条：**不要折行**。
+ *
+ * 参照（Alma）那套是给一个专门的 `.win98-tab-strip` 写的：页签是那个容器的直接
+ * 子元素，条带按窗口宽度铺开，`.win98-tab { flex-grow: 1 }` 让它们均分剩余空间。
+ * 这里我们没有那个专用容器，是把现成的设置侧栏就地改成条带，于是页签比参照多、
+ * 宽度还更窄（设置弹窗约 990px，15 个页签 + 搜索框的自然宽度约 1235px）。
+ *
+ * `flex-wrap: wrap` 一折行，末行就只剩两三个页签，而 `flex-grow: 1` 会把它们
+ * 撑成 270~435px 的巨块 —— 看上去就是"炸开"。同一份 CSS 在参照那里看不出来，
+ * 是因为它的条带更宽/页签更少，恰好不折。
+ *
+ * 所以：条带与页签都不许折行，页签可压缩（min-width: 0 + 标签省略号），
+ * 字距按 Win98 原作收到 11px，让 15 个页签在一行里放得下并均分。
+ * 只改 padding-inline，不动 padding 简写 —— 各皮肤的 `.is-selected` 靠
+ * padding-bottom 做"抬高"效果，别把它冲掉。
+ * ------------------------------------------------------------------------- */
+:root:is([data-appearance-skin='win98'], [data-appearance-skin='winxp'], [data-appearance-skin='longhorn'], [data-appearance-skin='longhorn-dark']) .is-retro-settings .settings-tabs {
+    flex-wrap: nowrap;
+}
+:root:is([data-appearance-skin='win98'], [data-appearance-skin='winxp'], [data-appearance-skin='longhorn'], [data-appearance-skin='longhorn-dark']) .is-retro-settings .settings-tabs .settings-nav-list {
+    flex: 1 1 auto;
+    min-width: 0;
+    flex-wrap: nowrap;
+}
+:root:is([data-appearance-skin='win98'], [data-appearance-skin='winxp'], [data-appearance-skin='longhorn'], [data-appearance-skin='longhorn-dark']) .is-retro-settings .settings-tabs .settings-nav-list button {
+    flex: 1 1 auto;
+    min-width: 0;
+    padding-inline: 6px;
+    font-size: 11px;
+}
