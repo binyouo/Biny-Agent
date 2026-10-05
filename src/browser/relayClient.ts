@@ -8,7 +8,7 @@ import { BrowserRelayError, isRelayMutation, relaySchemas, relayStatusSchema, ty
 export const relayCredentialsSchema = z.object({ port: z.number().int().min(1).max(65535), token: z.string().regex(/^[a-f0-9]{64}$/) });
 export function browserRelayFile(): string { return path.join(globalAgentDir(), "browser-relay.json"); }
 
-export async function requestBrowserRelay(method: RelayMethod, args: unknown = {}, options: { file?: string; signal?: AbortSignal } = {}): Promise<unknown> {
+export async function requestBrowserRelay(method: RelayMethod, args: unknown = {}, options: { file?: string; signal?: AbortSignal; sessionId?: string } = {}): Promise<unknown> {
   const validated = relaySchemas[method].safeParse(args);
   if (!validated.success) throw new BrowserRelayError("invalid", "浏览器参数无效，请核对连接 ID、标签 ID 和操作参数。");
   const parsed = validated.data;
@@ -24,7 +24,7 @@ export async function requestBrowserRelay(method: RelayMethod, args: unknown = {
   try {
     const response = await fetch(`http://127.0.0.1:${credentials.port}/command`, {
       method: "POST", headers: { authorization: `Bearer ${credentials.token}`, "content-type": "application/json" },
-      body: JSON.stringify({ method, args: parsed }),
+      body: JSON.stringify({ method, args: parsed, sessionId: options.sessionId }),
       signal: AbortSignal.any([AbortSignal.timeout(18000), ...(options.signal ? [options.signal] : [])])
     });
     receivedResponse = true;

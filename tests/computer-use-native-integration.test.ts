@@ -1,8 +1,11 @@
-import { test } from "node:test";
+import { test as nativeTest } from "node:test";
 import { spawnSync } from "node:child_process";
 import { rmSync, writeFileSync } from "node:fs";
 import assert from "node:assert/strict";
 import { NativeProcessDriver } from "../src/computer/nativeDriver.js";
+
+// 这些用例会读取或改变真实桌面；仅供用户显式启动，不进入常规自动验证。
+const test = (name: string, run: () => void | Promise<void>) => nativeTest(name, { skip: process.env.BINY_TEST_COMPUTER_UI !== "1" }, run);
 
 // UI 复刻的判据：设置页展示的数据必须真的来自原生 daemon。
 // 这里直接跑真 daemon，验证喂给渲染层的形状与内容。
@@ -1041,9 +1044,8 @@ test("auto_launch=false refuses to launch instead of launching anyway", async ()
 // 参照把三条输入路径**暴露成参数**（daemon 侧文案：`input_method must be auto|physical|unicode|ax`，
 // 且 `input_method=ax requires ref`）。本实现原先只有一条（unicode），选择权在调用方手里才叫能力。
 //
-// 只暴露**真实存在的**：auto / unicode / ax。`physical` 需要「字符→键码」的键盘布局翻译，
-// 本实现没有 —— 如实拒绝，不偷偷降级成 unicode（选 physical 的人正是因为别的方式不管用）。
-test("type_text offers the input methods it actually has, and refuses the one it does not", async () => {
+// physical 按当前键盘布局规划完整输入；布局无法表示的字符在派发前拒绝。
+test("type_text offers all four input methods, and refuses characters no layout can express", async () => {
   const driver = new NativeProcessDriver(() => {}, {
     binaryPath: new URL("../out/native/computer-use", import.meta.url).pathname
   });
@@ -1065,11 +1067,11 @@ test("type_text offers the input methods it actually has, and refuses the one it
       "input_method=ax 没有 ref 时要报缺 ref"
     );
 
-    // physical 没实现：要**说出来**，不能悄悄走 unicode
+    // 不可表达的字符必须在派发任何按键前拒绝。
     await assert.rejects(
-      () => driver.daemonCommand("type_text", { pid, text: "x", input_method: "physical" }),
-      error => /input_method_not_implemented/.test(String(error)),
-      "未实现的输入方式要如实拒绝"
+      () => driver.daemonCommand("type_text", { pid, text: "🦊", input_method: "physical" }),
+      error => /input_method_(unmappable_character|layout_required|layout_unavailable)/.test(String(error)),
+      "物理输入不应降级为其他路径"
     );
 
     // 乱填要把可用项列出来

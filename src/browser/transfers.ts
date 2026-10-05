@@ -13,7 +13,7 @@ export const transferSchemas = {
   upload: relaySchemas.upload.omit({ files: true }).extend({ paths: z.array(z.string().min(1)).min(1).max(10) })
 };
 export async function transferBrowserFile(method: keyof typeof transferSchemas, input: unknown, options: {
-  workspaceRoot: string; ignore: string[]; deniedPaths?: readonly string[]; signal?: AbortSignal; file?: string;
+  workspaceRoot: string; ignore: string[]; deniedPaths?: readonly string[]; signal?: AbortSignal; file?: string; sessionId?: string;
   onDispatched?(): void; onCommit?(evidence: string): void;
 }): Promise<unknown> {
   const resolve = (requested: string, write: boolean): string => {

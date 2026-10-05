@@ -19,7 +19,19 @@ export function registerComputerCommands(program: Command): void {
     .action((bundleId: string, options: { json?: boolean }) => execute(async policy => await policy[operation](bundleId), options.json));
   // 第二个出口：external MCP clients can drive the same capability over stdio.
   // stdout carries the protocol, so nothing else may be printed here.
-  computer.command("mcp").description("Serve Computer Use over MCP on stdio").action(async () => {
+  computer.command("mcp").description("Serve Computer Use over stdio or authenticated loopback HTTP")
+    .option("--http", "serve Streamable HTTP on 127.0.0.1")
+    .option("--port <n>", "HTTP port; 0 selects a free port", "0")
+    .option("--token-path <path>", "create a private bearer token file (must not exist)")
+    .action(async (options: { http?: boolean; port: string; tokenPath?: string }) => {
+    if (options.http) {
+      const { startComputerUseHttpServer } = await import("../../computer/httpMcpServer.js");
+      const server = await startComputerUseHttpServer({ port: Number(options.port), tokenPath: options.tokenPath });
+      console.log(JSON.stringify({ url: server.url, tokenPath: server.tokenPath }));
+      const stop = (): void => { void server.close().catch(() => { process.exitCode = 1; }); };
+      process.once("SIGINT", stop); process.once("SIGTERM", stop);
+      return;
+    }
     const { runComputerUseMcpServer } = await import("../../computer/mcpServer.js");
     await runComputerUseMcpServer();
   });

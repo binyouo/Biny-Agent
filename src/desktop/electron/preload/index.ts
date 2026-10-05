@@ -13,6 +13,7 @@ import type { ActivityRuntimeSnapshot } from "../../../activity/types.js";
 import type { DesktopAgentEventEnvelope, DesktopApi, DesktopBrowserSnapshot, DesktopMenuAction, DesktopQuickChatScreenContext, DesktopSessionHandoff, DesktopSettingsCloseRequest, DesktopTerminalEvent } from "../../protocol.js";
 import { desktopIpc } from "../../protocol.js";
 import "./computerUse.js";
+import "./appshots.js";
 
 const pendingReferenceOpens: Array<{ uri: string; projectId: string }> = [];
 let referenceOpenListener: ((target: { uri: string; projectId: string }) => void) | undefined;

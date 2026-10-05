@@ -7,13 +7,16 @@ import { ActivityNativeClient } from '../src/desktop/electron/main/ActivityNativ
 const root = await mkdtemp(path.join(os.tmpdir(), 'biny-native-client-'));
 await writeFile(path.join(root, 'computer-use'), `#!${process.execPath}
 import {createServer} from 'node:net';import {createInterface} from 'node:readline';import {appendFileSync,writeFileSync} from 'node:fs';
-const server=createServer(socket=>{appendFileSync(${JSON.stringify(path.join(root, 'connections'))},'connected\\n');createInterface({input:socket}).on('line',line=>{const q=JSON.parse(line);if(q.cmd!=='shot_display')throw new Error('protocol');writeFileSync(q.args.out,String(q.args.max_width));socket.write(JSON.stringify({id:q.id,ok:true,data:{path:q.args.out}})+'\\n');});});
+const server=createServer(socket=>{appendFileSync(${JSON.stringify(path.join(root, 'connections'))},'connected\\n');createInterface({input:socket}).on('line',line=>{const q=JSON.parse(line);if(q.cmd==='appshot_capture'){if(q.args.exclude_bundles.includes(q.args.expected_bundle)){socket.write(JSON.stringify({id:q.id,ok:false,error:{message:'appshot_application_excluded'}})+'\\n');return;}q.args.out=${JSON.stringify(path.join(root, 'appshot.jpg'))};}if(q.cmd!=='shot_display'&&q.cmd!=='appshot_capture')throw new Error('protocol');writeFileSync(q.args.out,String(q.args.max_width));socket.write(JSON.stringify({id:q.id,ok:true,data:{path:q.args.out,bundleId:q.args.expected_bundle}})+'\\n');});});
 server.listen(process.argv[process.argv.indexOf('--socket')+1],()=>console.log('ready'));
 `, { mode: 0o700 });
 const first = new ActivityNativeClient(root, path.join(root, 'tmp'));
 const second = new ActivityNativeClient(root, path.join(root, 'tmp'));
 try {
   assert.equal((await first.capture(160, 40)).toString(), '160');
+  assert.equal((await first.captureAppshot(1280, 'com.example.editor', [])).toString(), '1280');
+  await assert.rejects(first.captureAppshot(1280, 'com.example.private', ['com.example.private']), /appshot_application_excluded/);
+  await assert.rejects(readFile(path.join(root, 'appshot.jpg')), /ENOENT/);
   const frames = await Promise.all([first.capture(100, 40), first.capture(200, 40)]);
   assert.deepEqual(frames.map(b => b.toString()), ['100', '200']);
   assert.equal((await readFile(path.join(root, 'connections'), 'utf8')).trim().split('\n').length, 1);

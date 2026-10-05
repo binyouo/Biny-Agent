@@ -13,8 +13,8 @@ test("preview window presents a live 3fps surface with takeover controls", async
   }
   assert.match(source, /img id="frame"/, "帧位必须存在，否则帧泵无处落图");
   assert.match(source, /Activity 暂停截图/, "预览开启时 Activity 必须让出截图通道");
-  // 不抢焦点是 PiP 的前提：窗口必须不可聚焦且始终置顶。
-  assert.match(source, /focusable: false/, "预览窗不能抢走用户焦点");
+  // 支持键盘操作，初次呈现通过 showInactive 保留前台焦点。
+  assert.match(source, /focusable: true/, "浮窗须支持用户主动聚焦后的键盘操作");
   assert.match(source, /alwaysOnTop: true/, "预览窗要浮在操控目标之上才「可注视」");
   // Alma 的 PiP 是 vibrancy 材质的 hud 小窗：窗口要声明材质，页面不能再铺实色底。
   assert.match(source, /vibrancy: "hud"/, "预览窗要用 HUD 材质");

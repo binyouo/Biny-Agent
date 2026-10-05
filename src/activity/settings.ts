@@ -62,7 +62,7 @@ function normalizeActivitySettingsValue<T extends ActivitySettingsNormalizationF
 }
 
 /** 已从设置里删除、但旧配置文件仍可能携带的键；解析前剥离，避免 .strict() 拒绝旧配置。 */
-const deprecatedActivitySettingKeys = new Set(["activityRecallEnabled", "analysisModel", "externalPolicy", "externalConfirmed", "analysisPolicy", "analysisExternalConfirmed"]);
+const deprecatedActivitySettingKeys = new Set(["activityRecallEnabled", "analysisModel", "externalPolicy", "externalConfirmed", "analysisPolicy", "analysisExternalConfirmed", "appshotHotkey"]);
 
 function stripDeprecatedActivitySettings(value: unknown): unknown {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return value;

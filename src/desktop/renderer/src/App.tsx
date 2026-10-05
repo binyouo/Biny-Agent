@@ -1,5 +1,5 @@
 import { ChatResponseContext } from "./chatResponseSettings.js";
-import type { ComposerDraftState } from "./components/composer/composerDraft.js";
+import { ComposerDraftState } from "./components/composer/composerDraft.js";
 import type { ChatResponseSettings } from "../../../config/schema.js";
 /**
  * Desktop 渲染进程的装配根。
@@ -1572,6 +1572,47 @@ function DesktopApp(): React.JSX.Element {
       cacheHitRate: budget?.cacheHitRate
     };
   }, [contextBudget, document, selectedRuntimeSnapshot?.info, workspace?.models]);
+  const appshotNavigation = useRef(openNavigationTarget);
+  useEffect(() => { appshotNavigation.current = openNavigationTarget; }, [openNavigationTarget]);
+  useEffect(() => {
+    const api = window.binyAppshots;
+    if (!api) return;
+    const targets = new Map<string, { projectId: string; sessionId?: string }>();
+    let active = true;
+    return (() => {
+      const unsubscribe = api.onEvent(event => {
+        if (event.type === "starting") {
+          const projectId = projectRef.current;
+          if (projectId) targets.set(event.id, { projectId, sessionId: event.target === "new" ? undefined : selectedRef.current });
+          return;
+        }
+        const target = targets.get(event.id); targets.delete(event.id);
+        if (event.type === "failed") { setWarning(event.error); return; }
+        if (!target) { setWarning("请先选择截图要进入的项目，再重试。"); return; }
+        void api.attach(target.projectId, event.id).then(async attachment => {
+          if (!active) return;
+          const key = `${target.projectId}:${target.sessionId ?? "draft"}`;
+          let draft = composerDrafts.get(key); if (!draft) { draft = new ComposerDraftState(); composerDrafts.set(key, draft); }
+          if (draft.getSnapshot().attachments.length >= 8) { setWarning("聊天附件已满，请移除一个附件后重新截图。"); return; }
+          draft.update(current => ({ attachments: [...current.attachments, attachment] }));
+          setSettingsOpen(false);
+          await appshotNavigation.current(target);
+          if (!active) return;
+          setFocusToken(value => value + 1); setToast(`已将 ${event.source.appName} 的截图放入聊天草稿`);
+        }).catch(failure => { if (active) setWarning(errorMessage(failure)); });
+      });
+      return () => { active = false; unsubscribe(); };
+    })();
+  }, [composerDrafts]);
+
+  useEffect(() => window.binyComputer?.onNavigate?.(target => {
+    const projectId = target.projectId ?? sidebarSessions.find(session => session.id === target.sessionId)?.projectId;
+    if (projectId && target.sessionId) void navigateToSession(projectId, target.sessionId).catch(failure => setWarning(errorMessage(failure)));
+    else if (projectId) void openNavigationTarget({ projectId }).catch(failure => setWarning(errorMessage(failure)));
+    else if (target.sessionId && workspace?.sessions.some(session => session.id === target.sessionId)) void navigateToSession(workspace.project.id, target.sessionId).catch(failure => setWarning(errorMessage(failure)));
+    else { setPage("chat"); if (target.sessionId) setWarning("关联聊天未在当前列表中，请从侧栏打开。"); }
+  }), [navigateToSession, openNavigationTarget, sidebarSessions, workspace]);
+
   const clearToast = useCallback(() => setToast(undefined), []);
   const sessionSummary = workspace?.sessions.find((session) => session.id === selectedSessionId) ?? document?.session;
   const activeRunSnapshot = activeRun(selectedRuntimeSnapshot);

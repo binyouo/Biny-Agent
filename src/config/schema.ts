@@ -1,3 +1,4 @@
+import { appshotsSettingsSchema } from "../computer/appshotsProtocol.js";
 import { computerSettingsSchema } from "../computer/protocol.js";
 /**
  * Runtime configuration schema.
@@ -658,7 +659,8 @@ const canonicalConfigSchema = z.object({
     ignore: z.array(z.string())
   }),
   activity: activitySettingsSchema,
-  computer: computerSettingsSchema.default({ enabled: false, strictApproval: false, apps: [] }),
+  appshots: appshotsSettingsSchema.default({ hotkey: "", target: "current" }),
+  computer: computerSettingsSchema.default({ enabled: false, previewEnabled: true, actionLogging: false, strictApproval: false, apps: [] }),
   crystal: crystalSettingsSchema,
   context: contextSchema,
   chat: chatParamsSchema,
@@ -782,7 +784,15 @@ const canonicalConfigSchema = z.object({
   }
 });
 
-export const configSchema = z.preprocess(rejectLegacyModelConfig, canonicalConfigSchema);
+export const configSchema = z.preprocess(value => {
+  const checked = rejectLegacyModelConfig(value);
+  if (!checked || typeof checked !== "object" || Array.isArray(checked)) return checked;
+  const config = checked as Record<string, unknown>;
+  const activity = config.activity as Record<string, unknown> | undefined;
+  if (!activity || typeof activity !== "object" || typeof activity.appshotHotkey !== "string") return checked;
+  const { appshotHotkey, ...remaining } = activity;
+  return { ...config, activity: remaining, appshots: config.appshots ?? { hotkey: appshotHotkey, target: "current" } };
+}, canonicalConfigSchema);
 
 export type AgentConfig = z.infer<typeof canonicalConfigSchema>;
 export type HeartbeatConfig = AgentConfig["heartbeat"];
@@ -833,7 +843,8 @@ export const defaultConfig: AgentConfig = {
   format: GLOBAL_CONFIG_FORMAT,
   configVersion: GLOBAL_CONFIG_VERSION,
   needsEmbeddingRebuild: false,
-  computer: { enabled: false, strictApproval: false, apps: [] },
+  appshots: { hotkey: "", target: "current" },
+  computer: { enabled: false, previewEnabled: true, actionLogging: false, strictApproval: false, apps: [] },
   defaultModel: "deepseek-v4-flash",
   toolModel: undefined,
   providers: {

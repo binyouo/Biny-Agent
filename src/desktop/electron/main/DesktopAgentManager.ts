@@ -1,3 +1,4 @@
+import { readAttachmentContext } from "../../../attachments/store.js";
 /**
  * 桌面端 agent 运行时管理。
  *
@@ -3710,7 +3711,8 @@ async function loadNativeAttachments(root: string, attachments: DesktopAttachmen
         mimeType: attachment.mimeType,
         path: attachment.path,
         size: attachment.size,
-        data: bytes.toString("base64")
+        data: bytes.toString("base64"),
+        hiddenContext: await readAttachmentContext(normalizedRoot, attachment.path)
       });
     } catch {
       throw new Error(`附件文件不可读取：${attachment.name}`);

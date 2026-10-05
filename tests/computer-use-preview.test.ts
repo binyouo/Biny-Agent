@@ -41,7 +41,7 @@ test("preview closed event releases privacy hold; reopen drops old paint and ret
   first.contents.emit("did-finish-load"); assert.deepEqual(first.paints, []); assert.deepEqual(second.paints, []);
   preview.update(frame, status); assert.match(second.paints[0]!, /aGVsbG8=/);
   await assert.rejects(schedule.run("activity", async () => "private"), CaptureBusyError);
-  preview.close(); assert.equal(closed, 2); assert.equal(await schedule.run("activity", async () => "allowed"), "allowed");
+  preview.close(); assert.equal(closed, 1); assert.equal(await schedule.run("activity", async () => "allowed"), "allowed");
 });
 test("failed preview destruction retains the privacy hold", async () => {
   const schedule = new CaptureSchedule(); const window = new FixtureWindow();
@@ -94,4 +94,27 @@ test("the preview window can be moved, and reopens where it was left", () => {
   // 没给坐标的 move 也用记住的位置（参照 pip/move 允许只更新其一）
   assert.deepEqual(preview.move(400, undefined), { x: 400, y: 180, width: 480, height: 400 });
   preview.close();
+});
+
+test("layout records every move and resize through the persistent store", () => {
+  let persisted: { x: number; y: number; width: number; height: number } | undefined;
+  const windows: FixtureWindow[] = [];
+  const preview = new ComputerPreviewSurface(() => { const window = new FixtureWindow(); windows.push(window); return window; }, "fixture", () => undefined, () => undefined, new CaptureSchedule(), { layout: { load: () => persisted, save: value => { persisted = value; } } });
+  preview.open(); const first = windows[0]!;
+  first.setBounds({ x: 200, y: 300, width: 480, height: 400 }); first.emit("moved");
+  first.setBounds({ x: 400, y: 500, width: 640, height: 480 }); first.emit("moved"); first.emit("resized");
+  preview.close();
+  const recreated = new ComputerPreviewSurface(() => { const window = new FixtureWindow(); windows.push(window); return window; }, "fixture", () => undefined, () => undefined, new CaptureSchedule(), { layout: { load: () => persisted, save: value => { persisted = value; } } });
+  recreated.open(); assert.deepEqual(windows[1]!.getBounds(), { x: 400, y: 500, width: 640, height: 480 }); recreated.close();
+});
+
+test("browser and window frames share one surface and close independently", async () => {
+  const windows: FixtureWindow[] = []; let closed = 0;
+  const surface = new ComputerPreviewSurface(() => { const window = new FixtureWindow(); windows.push(window); return window; }, "fixture", () => undefined, () => undefined, new CaptureSchedule());
+  surface.present({ id: "computer", label: "Notes", frame, status, onClose: () => { closed++; } });
+  surface.present({ id: "browser", label: "Browser", frame: { ...frame, image: { mimeType: "image/png", dataBase64: "YnJvd3Nlcg==" } }, status });
+  assert.equal(windows.length, 1); surface.select("browser"); assert.equal(surface.activeItem(), "browser");
+  assert.match(windows[0]!.paints.slice(-2).join("\n"), /YnJvd3Nlcg==/);
+  surface.remove("computer"); assert.equal(windows[0]!.isDestroyed(), false); assert.equal(closed, 0);
+  surface.remove("browser"); assert.equal(windows[0]!.isDestroyed(), true);
 });

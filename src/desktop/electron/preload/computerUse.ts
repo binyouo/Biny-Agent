@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer } from "electron";
 import { computerIpc, type ComputerDesktopApi } from "../../../computer/protocol.js";
 const api: ComputerDesktopApi = {
+  onNavigate: listener => { const handler = (_event: Electron.IpcRendererEvent, target: { sessionId?: string; projectId?: string }): void => listener(target); ipcRenderer.on(computerIpc.navigate, handler); return () => { ipcRenderer.removeListener(computerIpc.navigate, handler); }; },
   strict: async enabled => await ipcRenderer.invoke(computerIpc.strict, enabled),
   approve: async bundleId => await ipcRenderer.invoke(computerIpc.approve, bundleId),
   revoke: async bundleId => await ipcRenderer.invoke(computerIpc.revoke, bundleId),

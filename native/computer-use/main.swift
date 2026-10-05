@@ -84,23 +84,28 @@ func parseHotkey(_ raw: String) -> HotkeySpec? {
     return HotkeySpec(flags: flags, keyCode: code, bareModifier: nil)
 }
 
-final class AppshotMonitor {
+@MainActor final class AppshotMonitor {
     private var tap: CFMachPort?
     private var source: CFRunLoopSource?
     private(set) var hotkey: String = ""
     private(set) var lastCapturePath: String?
-    private var lastBareTapAt: Date?
+    private var modifierTaps = ModifierDoubleTap()
     /// 诊断：tap 有没有真的在收事件、有没有被系统掐掉。
     /// 「装了热键但按了没反应」有两种完全不同的原因 —— tap 没收到，还是收到了没匹配上。
     private(set) var eventsSeen = 0
     private(set) var disableCount = 0
-    /// 两次单按修饰键之间多久算「双击」。参照里叫 doubleTapWindow。
-    private let doubleTapWindow: TimeInterval = 0.45
+    private(set) var recoveredCount = 0
+    private(set) var captureError: String?
+    private var capturing = false
+    var subscriber: Int32?
+    var captureOptions: [String: Any] = [:]
+    private var monitorEpoch = 0
     let outputDir: String
 
     init() {
         let base = NSTemporaryDirectory() + "biny-appshots"
         try? FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
+        chmod(base, 0o700)
         outputDir = base
     }
 
@@ -117,17 +122,9 @@ final class AppshotMonitor {
         // 只关心按键按下与修饰键变化：热键不需要看别的，mask 越小 tap 越不容易被系统掐。
         let mask = (CGEventMask(1) << CGEventType.keyDown.rawValue)
                  | (CGEventMask(1) << CGEventType.flagsChanged.rawValue)
-        // 先试 annotated session（全局热键的常规位置），不行再退普通 session。
-        // 实测普通 session 能建、能 enable、挂得上 runloop，却收不到任何事件。
-        let tapPoint: CGEventTapLocation = CGEvent.tapCreate(
-            tap: .cgAnnotatedSessionEventTap, place: .headInsertEventTap, options: .defaultTap,
-            eventsOfInterest: mask, callback: { _, type, event, refcon in
-                guard let refcon else { return Unmanaged.passUnretained(event) }
-                Unmanaged<AppshotMonitor>.fromOpaque(refcon).takeUnretainedValue().handle(type: type, event: event)
-                return Unmanaged.passUnretained(event)
-            }, userInfo: Unmanaged.passUnretained(self).toOpaque()) != nil ? .cgAnnotatedSessionEventTap : .cgSessionEventTap
+        // 监听全局键盘事件，不吞掉用户输入；失败由设置页显示权限反馈。
         guard let tap = CGEvent.tapCreate(
-            tap: tapPoint, place: .headInsertEventTap, options: .defaultTap,
+            tap: .cgAnnotatedSessionEventTap, place: .headInsertEventTap, options: .listenOnly,
             eventsOfInterest: mask,
             callback: { _, type, event, refcon in
                 guard let refcon else { return Unmanaged.passUnretained(event) }
@@ -146,9 +143,10 @@ final class AppshotMonitor {
     }
 
     func disarm() {
+        monitorEpoch += 1; subscriber = nil; captureOptions = [:]
         if let tap { CGEvent.tapEnable(tap: tap, enable: false); CFMachPortInvalidate(tap) }
         if let source { CFRunLoopRemoveSource(CFRunLoopGetMain(), source, .commonModes) }
-        tap = nil; source = nil
+        tap = nil; source = nil; modifierTaps = ModifierDoubleTap()
     }
 
     fileprivate func handle(type: CGEventType, event: CGEvent) {
@@ -156,19 +154,17 @@ final class AppshotMonitor {
         // 系统会因为回调太慢把 tap 掐掉；参照同样会记这条。重新武装，别静默失效。
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
             disableCount += 1
-            if let tap { CGEvent.tapEnable(tap: tap, enable: true) }
+            if let tap {
+                CGEvent.tapEnable(tap: tap, enable: true)
+                if CGEvent.tapIsEnabled(tap: tap) { recoveredCount += 1 }
+            }
             return
         }
         guard let spec = parseHotkey(hotkey) else { return }
         if let bare = spec.bareModifier {
-            guard type == .flagsChanged, event.flags.contains(bare) else { return }
-            let now = Date()
-            if let last = lastBareTapAt, now.timeIntervalSince(last) <= doubleTapWindow {
-                lastBareTapAt = nil
-                fire()
-            } else {
-                lastBareTapAt = now
-            }
+            let modifiers: CGEventFlags = [.maskCommand, .maskAlternate, .maskControl, .maskShift]
+            let flags = event.flags.intersection(modifiers)
+            if modifierTaps.update(pressed: flags == bare, interrupted: type == .keyDown || !flags.isSubset(of: bare), now: Date().timeIntervalSince1970) { fire() }
             return
         }
         guard type == .keyDown, event.getIntegerValueField(.keyboardEventKeycode) == Int64(spec.keyCode ?? 0) else { return }
@@ -180,30 +176,73 @@ final class AppshotMonitor {
 
     /// 触发一次抓取。回调里不能做慢活（tap 会被系统掐），所以派到别的队列。
     private func fire() {
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in self?.captureFrontmost() }
+        let id = UUID().uuidString, epoch = monitorEpoch, destination = subscriber, options = captureOptions
+        if let destination { reply(destination, ["event": "appshot", "data": ["type": "starting", "id": id]]) }
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                let data = try await self.captureFrontmost(options)
+                if epoch != self.monitorEpoch { if let file = data["path"] as? String { try? FileManager.default.removeItem(atPath: file) }; return }
+                if let destination { reply(destination, ["event": "appshot", "data": ["type": "captured", "id": id, "data": data]]) }
+            } catch {
+                self.captureError = error.localizedDescription
+                if epoch == self.monitorEpoch, let destination { reply(destination, ["event": "appshot", "data": ["type": "failed", "id": id, "error": error.localizedDescription]]) }
+            }
+        }
     }
 
-    func captureFrontmost() {
+    func captureFrontmost(_ args: [String: Any]) async throws -> [String: Any] {
+        guard !capturing else { throw NSError(domain: "appshot", code: 69, userInfo: [NSLocalizedDescriptionKey: "appshot_capture_busy"]) }
+        capturing = true; defer { capturing = false }
+        if args["wait_frontmost"] as? Bool == true {
+            let deadline = Date().addingTimeInterval(1.2), excluded = args["exclude_bundles"] as? [String] ?? []
+            while excluded.contains(NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? "") && Date() < deadline { try await Task.sleep(nanoseconds: 20_000_000) }
+        }
         // 抓「当前前台应用」，但排除自己 —— 参照的 appshot_frontmost 就是带 exclude_bundle_id 的。
         guard let front = NSWorkspace.shared.frontmostApplication,
-              front.processIdentifier != getpid() else { return }
+              front.processIdentifier != getpid(), let bundle = front.bundleIdentifier else {
+            throw NSError(domain: "appshot", code: 66, userInfo: [NSLocalizedDescriptionKey: "appshot_frontmost_unavailable"])
+        }
+        if let expected = args["expected_bundle"] as? String, expected != bundle {
+            throw NSError(domain: "appshot", code: 66, userInfo: [NSLocalizedDescriptionKey: "appshot_frontmost_changed"])
+        }
+        if (args["exclude_bundles"] as? [String] ?? []).contains(bundle) {
+            throw NSError(domain: "appshot", code: 66, userInfo: [NSLocalizedDescriptionKey: "appshot_application_excluded"])
+        }
         let pid = front.processIdentifier
-        let out = outputDir + "/appshot-\(Int(Date().timeIntervalSince1970 * 1000)).jpg"
-        guard let frame = windowScreenBounds(pid: Int(pid)) else { return }
-        let params: [String: Any] = ["out": out, "pid": Int(pid), "max_width": 1280]
-        let done = DispatchSemaphore(value: 0)
-        Task {
-            defer { done.signal() }
-            _ = try? await screenshot(params)
+        guard let window = windowNumberForApp(Int(pid)) else {
+            throw NSError(domain: "appshot", code: 66, userInfo: [NSLocalizedDescriptionKey: "appshot_no_window"])
         }
-        if done.wait(timeout: .now() + 6) == .success, FileManager.default.fileExists(atPath: out) {
-            lastCapturePath = out
-            _ = frame
+        let out = outputDir + "/appshot-\(UUID().uuidString).jpg"
+        var result = await captureObservation(timeout: 3, describeError: { $0.localizedDescription }) {
+            try await screenshot(["out": out, "pid": Int(pid), "window_id": window, "max_width": args["max_width"] ?? 1280])
         }
+        guard result["path"] != nil else { throw NSError(domain: "appshot", code: 70, userInfo: [NSLocalizedDescriptionKey: result["screenshot_error"] as? String ?? "appshot_capture_failed"]) }
+        result["windowId"] = window
+        result["appName"] = front.localizedName ?? bundle
+        if args["include_ax"] as? Bool == true {
+            if axTrusted() {
+                let tree = await withCheckedContinuation { continuation in
+                    DispatchQueue.global(qos: .userInitiated).async {
+                        continuation.resume(returning: collectAccessibility(pid: pid, maxDepth: 6, limit: 200, timeout: 3, interactiveOnly: false, windowId: window).0)
+                    }
+                }
+                let text = String(data: (try? JSONSerialization.data(withJSONObject: tree)) ?? Data(), encoding: .utf8) ?? ""
+                result["axText"] = String(text.prefix(24000))
+            } else { result["axError"] = "accessibility_not_granted" }
+        }
+        guard NSWorkspace.shared.frontmostApplication?.processIdentifier == pid, windowNumberForApp(Int(pid)) == window else {
+            try? FileManager.default.removeItem(atPath: out)
+            throw NSError(domain: "appshot", code: 66, userInfo: [NSLocalizedDescriptionKey: "appshot_frontmost_changed"])
+        }
+        chmod(out, 0o600)
+        if let previous = lastCapturePath, previous != out { try? FileManager.default.removeItem(atPath: previous) }
+        lastCapturePath = out; captureError = nil
+        return result.merging(["bundleId": bundle, "pid": Int(pid)]) { _, new in new }
     }
 }
 
-let appshotMonitor = AppshotMonitor()
+let appshotMonitor = MainActor.assumeIsolated { AppshotMonitor() }
 
 // MARK: - 原生意图（Layer 1 app-command dispatch）
 
@@ -850,31 +889,6 @@ func postClick(_ pid: pid_t, _ point: CGPoint, button: CGMouseButton, clicks: In
     return useWindowLocal ? "window-local" : "global"
 }
 
-func windowNumberForApp(_ pid: Int) -> Int? {
-    guard let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else { return nil }
-    for window in list {
-        guard let owner = window[kCGWindowOwnerPID as String] as? Int, owner == pid,
-              (window[kCGWindowLayer as String] as? Int ?? 0) == 0,
-              let bounds = window[kCGWindowBounds as String] as? [String: CGFloat],
-              Double(bounds["Width"] ?? 0) >= 40, Double(bounds["Height"] ?? 0) >= 40,
-              let number = window[kCGWindowNumber as String] as? Int else { continue }
-        return number
-    }
-    return nil
-}
-
-func windowScreenBounds(pid: Int) -> [String: Double]? {
-    guard let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] else { return nil }
-    for window in list {
-        guard let owner = window[kCGWindowOwnerPID as String] as? Int, owner == pid,
-              let bounds = window[kCGWindowBounds as String] as? [String: CGFloat],
-              (window[kCGWindowLayer as String] as? Int ?? 0) == 0 else { continue }
-        return ["x": Double(bounds["X"] ?? 0), "y": Double(bounds["Y"] ?? 0), "w": Double(bounds["Width"] ?? 0), "h": Double(bounds["Height"] ?? 0)]
-    }
-    return nil
-}
-
-
 
 /// 截图同样可能挂在无响应的窗口上：独立线程采集，主线程轮询到点就放弃。
 /// 焦点守卫：很多 Cocoa/Electron 应用会在自己的点击处理里调
@@ -916,29 +930,7 @@ func withFocusGuard<T>(_ pid: pid_t, _ body: () async -> T) async -> T {
     return value
 }
 
-/// 给异步工作加一个截止时间。
-/// 早期实现用 Thread + 信号量阻塞等待：帧泵每 333ms 调一次，每次都占住一个 OS 线程
-/// 最多 10 秒，线程只增不减，daemon 会越跑越慢直到截图彻底拿不到。
-/// 这里改成两个协作式 Task 竞争，完全不阻塞线程。
-func withDeadline(_ timeout: Double, fallback: [String: Any], work: @escaping () async -> [String: Any]) async -> [String: Any] {
-    let lock = NSLock()
-    var settled = false
-    return await withCheckedContinuation { continuation in
-        func finish(_ value: [String: Any]) {
-            lock.lock(); defer { lock.unlock() }
-            if settled { return }   // 双 resume 会让进程崩溃，必须守住。
-            settled = true
-            continuation.resume(returning: value)
-        }
-        Task { finish(await work()) }
-        Task {
-            try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
-            finish(fallback)
-        }
-    }
-}
-
-func collectAccessibility(pid: pid_t, maxDepth: Int, limit: Int, timeout: Double, interactiveOnly: Bool = true) -> ([[String: Any]], [String: AXUIElement], Int, Int) {
+func collectAccessibility(pid: pid_t, maxDepth: Int, limit: Int, timeout: Double, interactiveOnly: Bool = true, windowId: Int? = nil) -> ([[String: Any]], [String: AXUIElement], Int, Int) {
     let box = AXCollectBox()
     let thread = Thread {
         let app = axApp(pid)
@@ -953,7 +945,9 @@ func collectAccessibility(pid: pid_t, maxDepth: Int, limit: Int, timeout: Double
             var elements: [[String: Any]] = []
             var table: [String: AXUIElement] = [:]
             var counter = 0
-            if let windows = axCopy(app, kAXWindowsAttribute as String) as? [AXUIElement], let main = windows.first {
+            let selected = windowId.flatMap { axWindow(pid: pid, matching: $0) }
+                ?? (windowId == nil ? (axCopy(app, kAXWindowsAttribute as String) as? [AXUIElement])?.first : nil)
+            if let main = selected {
                 if let frame = axFrame(main) { elements.append(["ref": "e0", "role": "AXWindow", "frame": frame]) }
                 table["e0"] = main
                 axWalk(main, depth: 0, maxDepth: maxDepth, limit: limit, counter: &counter, table: &table, out: &elements, deadline: Date().addingTimeInterval(2))
@@ -1297,14 +1291,19 @@ func screenshot(_ parameters: [String: Any]) async throws -> [String: Any] {
     // **每次新构建都会重置**的授权，所以他一定会遇到。
     guard screenTrusted() else { throw screenRecordingMissing() }
     let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+    try validateCaptureTarget(pid: parameters["pid"] as? Int, windowID: parameters["window_id"] as? Int,
+        applications: Set(content.applications.map { Int($0.processID) }),
+        windows: Dictionary(content.windows.compactMap { window in
+            window.owningApplication.map { (Int(window.windowID), Int($0.processID)) }
+        }, uniquingKeysWith: { first, _ in first }))
     let config = SCStreamConfiguration()
     config.showsCursor = false
-    // 指定 pid 时只截该应用的窗口；否则退化为整屏。
+    // 指定目标在枚举后校验；目标消失时拒绝，不能扩大到别的窗口或整屏。
     if let pid = parameters["pid"] as? Int,
        content.applications.contains(where: { Int($0.processID) == pid }),
        let display = content.displays.first(where: { $0.displayID == CGMainDisplayID() }) ?? content.displays.first {
         // 真实屏幕位置：AX 报的 frame 是 UI 坐标，跟 CGEvent 用的屏幕点不一致，必须用 CGWindowList。
-        let screenBounds = windowScreenBounds(pid: pid)
+        let screenBounds = windowScreenBounds(pid: pid, windowID: parameters["window_id"] as? Int)
         // 指定了窗口就只拍那一个：调用方列过窗口列表、挑了一个，拍成别的就是契约在撒谎。
         // 没指定才退回「该 pid 的所有窗口」。
         let requestedWindow = parameters["window_id"] as? Int
@@ -1340,7 +1339,9 @@ func screenshot(_ parameters: [String: Any]) async throws -> [String: Any] {
     let width = min(display.width, max(1, parameters["max_width"] as? Int ?? 1280))
     config.width = width
     config.height = max(1, Int((Double(display.height) * Double(width) / Double(display.width)).rounded()))
-    let filter = SCContentFilter(display: display, excludingApplications: [], exceptingWindows: [])
+    // 原生镜像可能属于另一个 daemon；按 bundle 排除，避免活动记录二次采集镜像中的私有画面。
+    let mirrors = content.applications.filter { $0.bundleIdentifier == "com.biny.computer-use" || $0.processID == getpid() }
+    let filter = SCContentFilter(display: display, excludingApplications: mirrors, exceptingWindows: [])
     let image = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config)
     let bitmap = NSBitmapImageRep(cgImage: image)
     guard let data = bitmap.representation(using: .jpeg, properties: [.compressionFactor: parameters["quality"] as? Double ?? 0.55]) else { throw NSError(domain: "capture", code: 2) }
@@ -1354,7 +1355,7 @@ let idleIndex = CommandLine.arguments.firstIndex(of: "--idle-seconds")
 let idleSeconds = idleIndex.flatMap { $0 + 1 < CommandLine.arguments.count ? Double(CommandLine.arguments[$0 + 1]) : nil } ?? 900
 let idleTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { _ in
     activityLock.lock(); let elapsed = Date().timeIntervalSince(lastRequestAt); activityLock.unlock()
-    if elapsed >= max(1, idleSeconds) { exit(0) }
+    if elapsed >= max(1, idleSeconds) && MainActor.assumeIsolated({ windowMirrors.isEmpty }) { exit(0) }
 }
 /// 子命令与帮助。
 ///
@@ -1409,16 +1410,17 @@ DispatchQueue.global().async {
         let fd = accept(server, nil, nil)
         if fd < 0 { continue }
         DispatchQueue.global().async {
+            defer { close(fd); Task { @MainActor in if appshotMonitor.subscriber == fd { appshotMonitor.disarm() } } }
             var buffer = Data(); var chunk = [UInt8](repeating: 0, count: 4096)
             while true {
                 let count = Darwin.read(fd, &chunk, chunk.count)
-                if count <= 0 { close(fd); return }
+                if count <= 0 { return }
                 buffer.append(contentsOf: chunk.prefix(count))
-                if buffer.count > 1_048_576 { close(fd); return }
+                if buffer.count > 1_048_576 { return }
                 while let newline = buffer.firstIndex(of: 10) {
                     let line = Data(buffer.prefix(upTo: newline))
                     buffer.removeSubrange(...newline)
-                    guard let request = (try? JSONSerialization.jsonObject(with: line)) as? [String: Any] else { close(fd); return }
+                    guard let request = (try? JSONSerialization.jsonObject(with: line)) as? [String: Any] else { return }
                     activityLock.lock(); lastRequestAt = Date(); activityLock.unlock()
                     Task {
                         let id = request["id"] ?? NSNull()
@@ -1428,8 +1430,25 @@ DispatchQueue.global().async {
                             switch cmd {
                             case "ping":
                                 reply(fd, ["id": id, "ok": true, "data": ["ok": true] as [String: Any]] as [String: Any])
+                            case "pip_open":
+                                reply(fd, ["id": id, "ok": true, "data": try await windowMirrors.open(args)])
+                            case "pip_frame":
+                                reply(fd, ["id": id, "ok": true, "data": try await windowMirrors.frame(args)])
+                            case "pip_list":
+                                reply(fd, ["id": id, "ok": true, "data": await windowMirrors.list()])
+                            case "pip_close":
+                                guard args["all"] as? Bool == true || (args["window_id"] as? Int).map({ $0 > 0 && $0 <= Int(UInt32.max) }) == true else {
+                                    throw NSError(domain: "pip", code: 64, userInfo: [NSLocalizedDescriptionKey: "pip_close_requires_target: window_id or all=true"])
+                                }
+                                reply(fd, ["id": id, "ok": true, "data": await windowMirrors.close(args)])
                             case "shot_display":
-                                reply(fd, ["id": id, "ok": true, "data": try await screenshot(args)])
+                                let shot = await captureObservation(timeout: 3, describeError: describeCaptureFailure) {
+                                    try await screenshot(args)
+                                }
+                                if let error = shot["screenshot_error"] as? String {
+                                    throw NSError(domain: "capture", code: 1, userInfo: [NSLocalizedDescriptionKey: error])
+                                }
+                                reply(fd, ["id": id, "ok": true, "data": shot])
                             case "grant":
                                 // 必须由守护进程自己发起：系统弹窗授的是「调用进程」——
                                 // 从 Electron 宿主发起就会把辅助功能授给宿主，而真正需要它的是
@@ -1437,6 +1456,16 @@ DispatchQueue.global().async {
                                 let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
                                 let granted = AXIsProcessTrustedWithOptions(options)
                                 reply(fd, ["id": id, "ok": true, "data": ["accessibility": granted ? "granted" : "denied", "prompted": !granted] as [String: Any]])
+                            case "app_identity":
+                                guard let bundleId = args["bundle"] as? String,
+                                      let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleId),
+                                      let bundle = Bundle(url: url), bundle.bundleIdentifier == bundleId else {
+                                    throw NSError(domain: "identity", code: 66, userInfo: [NSLocalizedDescriptionKey: "computer_app_identity_unavailable"])
+                                }
+                                let running = NSRunningApplication.runningApplications(withBundleIdentifier: bundleId).first
+                                let name = (bundle.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String)
+                                    ?? (bundle.object(forInfoDictionaryKey: "CFBundleName") as? String) ?? url.deletingPathExtension().lastPathComponent
+                                reply(fd, ["id": id, "ok": true, "data": ["bundleId": bundleId, "name": name, "running": running != nil] as [String: Any]])
                             case "launch_app":
                                 // 后台拉起：绝不 activate，不抢用户焦点（Alma 的 launch_app 同样保证这点）。
                                 guard let bundle = args["bundle"] as? String else {
@@ -1545,24 +1574,32 @@ DispatchQueue.global().async {
                                     throw NSError(domain: "appshot", code: 64, userInfo: [NSLocalizedDescriptionKey:
                                         "invalid_hotkey: 写法如 Ctrl+Alt+C、Ctrl+Shift+Space，或 double-cmd"])
                                 }
-                                let armed = await MainActor.run { appshotMonitor.arm(spec, raw: raw) }
+                                let armed = try await MainActor.run { () throws -> Bool in
+                                    if let owner = appshotMonitor.subscriber, owner != fd { throw NSError(domain: "appshot", code: 69, userInfo: [NSLocalizedDescriptionKey: "appshot_monitor_owned"]) }
+                                    let armed = appshotMonitor.arm(spec, raw: raw)
+                                    if armed && args["emit_events"] as? Bool == true { appshotMonitor.subscriber = fd; appshotMonitor.captureOptions = args }
+                                    return armed
+                                }
                                 guard armed else {
                                     throw NSError(domain: "appshot", code: 65, userInfo: [NSLocalizedDescriptionKey:
                                         "appshot_tap_unavailable: 会话级事件 tap 建不起来（需要辅助功能权限）"])
                                 }
                                 reply(fd, ["id": id, "ok": true, "data": ["hotkey": raw, "armed": true] as [String: Any]])
                             case "appshot_monitor_stop":
-                                await MainActor.run { appshotMonitor.disarm() }
+                                await MainActor.run { if appshotMonitor.subscriber == nil || appshotMonitor.subscriber == fd { appshotMonitor.disarm() } }
                                 reply(fd, ["id": id, "ok": true, "data": ["armed": false] as [String: Any]])
                             case "appshot_status":
-                                reply(fd, ["id": id, "ok": true, "data": [
+                                let status: [String: Any] = await MainActor.run { [
                                     "armed": appshotMonitor.isArmed,
                                     "hotkey": appshotMonitor.hotkey,
                                     "lastCapture": appshotMonitor.lastCapturePath ?? "",
                                     "live": appshotMonitor.isLive,
                                     "eventsSeen": appshotMonitor.eventsSeen,
                                     "tapDisables": appshotMonitor.disableCount,
-                                ] as [String: Any]])
+                                    "tapDisablesRecovered": appshotMonitor.recoveredCount,
+                                    "captureError": appshotMonitor.captureError as Any? ?? NSNull(),
+                                ] }
+                                reply(fd, ["id": id, "ok": true, "data": status])
                             case "appshot_frontmost":
                                 // 「取不到前台」和「前台就是我自己（没得拍）」是两件事：
                                 // 前者是查询失败，后者是此刻没什么可拍的。并成一句，
@@ -1581,8 +1618,7 @@ DispatchQueue.global().async {
                                     "name": front.localizedName ?? "",
                                 ] as [String: Any]])
                             case "appshot_capture":
-                                appshotMonitor.captureFrontmost()
-                                reply(fd, ["id": id, "ok": true, "data": ["path": appshotMonitor.lastCapturePath ?? ""] as [String: Any]])
+                                reply(fd, ["id": id, "ok": true, "data": try await appshotMonitor.captureFrontmost(args)])
                             case "intent":
                                 // 派发一个注册过的原生意图。`open_url` 是通用那条：
                                 // 任何 URL scheme 或文档 URL 都能交给处理它的应用。
@@ -1719,7 +1755,7 @@ DispatchQueue.global().async {
                                             pid: pid, maxDepth: maxDepth, limit: limit, timeout: 4.0,
                                             // 参照的默认是 **interactive_only = true**（`--all` 关掉它）。
                                             // 默认值也是契约的一部分：调用方不写就要拿到参照的那个默认。
-                                            interactiveOnly: interactiveOnly))
+                                            interactiveOnly: interactiveOnly, windowId: args["window_id"] as? Int))
                                     }
                                 }
                                 let elements = collected.0
@@ -1741,28 +1777,10 @@ DispatchQueue.global().async {
                                 // 截图失败时调用方只看到 width=0 和一个空字段，**不知道为什么**：
                                 // 是没权限？窗口不在了？还是 SCK 自己出错？三种的下一步完全不同。
                                 // 参照在同一个位置报 `screenshot_error` + `screen_recording` 两个字段 —— 就是这个道理。
-                                var screenshotError: String?
-                                let shot: [String: Any]
-                                if skipShot {
-                                    shot = [:]                      // 调用方明确说不要截图，不是失败
-                                } else {
-                                    // ⚠️ **先假设会超时**：`withDeadline` 到点就直接返回兜底值，
-                                    // **不会**经过下面的 catch —— 于是"超时"这条路原来什么也不报，
-                                    // 调用方只看到空。成功时再清掉这句话。
-                                    screenshotError = "capture_timeout: 截图在 3 秒内没回来（ScreenCaptureKit 卡住或系统太忙）。再试一次；若反复出现，先确认「系统设置 → 隐私与安全性 → 屏幕录制」里「Biny Computer Use」是开着的。"
-                                    shot = await withDeadline(3.0, fallback: [:]) {
-                                        do {
-                                            let captured = try await screenshot(shotArgs)
-                                            // 成功也可能返回空dict（没有可用窗口），那同样不是"有截图"。
-                                            screenshotError = captured["path"] == nil ? "capture_empty: 截图调用没有返回图片（目标窗口可能已经不在了）。" : nil
-                                            return captured
-                                        }
-                                        catch {
-                                            screenshotError = describeCaptureFailure(error)
-                                            return [:]
-                                        }
-                                    }
+                                let shot = skipShot ? [:] : await captureObservation(timeout: 3, describeError: describeCaptureFailure) {
+                                    try await screenshot(shotArgs)
                                 }
+                                let screenshotError = shot["screenshot_error"] as? String
                                 refTables[pid] = table
                                 lastObservedPid = pid
                                 // 记下截图坐标 → 屏幕坐标的映射，后续像素点击据此换算。
@@ -1771,6 +1789,7 @@ DispatchQueue.global().async {
                                     coordMaps[pid] = (Double(sw) / max(1, f["w"] ?? 1), f["x"] ?? 0, f["y"] ?? 0, Double(sw), Double(sh))
                                 }
                                 var data: [String: Any] = ["pid": Int(pid), "elements": elements]
+                                data["bundleId"] = NSRunningApplication(processIdentifier: pid)?.bundleIdentifier
                                 if let path = shot["path"] { data["screenshot"] = path }
                                 // 「为什么没有截图」要说出来，并且**始终**报权限状态 ——
                                 // 参照同样在这一个回执里给这两个字段。
@@ -1779,10 +1798,11 @@ DispatchQueue.global().async {
                                 // 护栏的账目（参照在这一组里同样上报）：察觉到多少次"被激活"。
                                 // 只有记下来，"绝不抢焦点"才是可核查的 —— 否则它只是一个意图。
                                 data["observed_activations"] = observedActivations
+                                data["tap_disables_recovered"] = await MainActor.run { appshotMonitor.recoveredCount }
                                 data["screenshotWidth"] = shot["width"] ?? 0
                                 data["screenshotHeight"] = shot["height"] ?? 0
                                 // 上报**真实**窗口号：以前这里是 Int(pid)，于是 windowId 一路都是假的。
-                                data["windowId"] = (shot["windowId"] as? Int) ?? windowNumberForApp(Int(pid)) ?? Int(pid)
+                                data["windowId"] = (shot["windowId"] as? Int) ?? (args["window_id"] as? Int) ?? windowNumberForApp(Int(pid)) ?? 0
                                 // 唤醒的账目：试了几次、花了多久。参照同样上报（wakeupAttempts /
                                 // wakeupDurationMs），并在用尽预算仍为空时报 empty_after_wakeup ——
                                 // 让调用方能区分"这应用就是没有 AX 树"和"我该再试一次"。
@@ -2109,9 +2129,21 @@ DispatchQueue.global().async {
                                 // auto|physical|unicode|ax`，而且 `input_method=ax requires ref`
                                 // —— 也就是"AX 那条要带元素引用"，正是 `type` 动词在做的事。
                                 // 本实现原先只有 unicode 一条，选择权在调用方手里才叫能力。
-                                let method = args["input_method"] as? String ?? "auto"
+                                var method = args["input_method"] as? String ?? "auto"
+                                var plannedStrokes: [PhysicalStroke]?
+                                if method == "auto" {
+                                    var writable = DarwinBoolean(false)
+                                    if let ref = args["ref"] as? String {
+                                        guard let element = refTables[pid]?[ref] else {
+                                            throw NSError(domain: "type_text", code: 64, userInfo: [NSLocalizedDescriptionKey: "element_ref_not_observed: observe again before typing"])
+                                        }
+                                        _ = AXUIElementIsAttributeSettable(element, kAXSelectedTextAttribute as CFString, &writable)
+                                    }
+                                    if !writable.boolValue { plannedStrokes = try? await MainActor.run { try PhysicalInput.currentLayoutPlan(text) } }
+                                    method = PhysicalInput.autoRoute(axWritable: writable.boolValue, physicalAvailable: plannedStrokes != nil)
+                                }
                                 switch method {
-                                case "auto", "unicode":
+                                case "unicode":
                                     await withFocusGuard(pid) { postUnicode(pid, text) }
                                 case "ax":
                                     // AX 那条不需要键盘焦点，但需要 ref —— 没有就明说。
@@ -2129,16 +2161,19 @@ DispatchQueue.global().async {
                                             "element_selection_not_writable: 这个控件不接受 AX 写入。改用 input_method=unicode。"])
                                     }
                                 case "physical":
-                                    // 如实拒绝，不偷偷降级成 unicode —— 调用方选 physical 是因为别的方式不管用。
-                                    throw NSError(domain: "type_text", code: 69, userInfo: [NSLocalizedDescriptionKey:
-                                        "input_method_not_implemented: physical 需要「字符→键码」的键盘布局翻译，本实现还没有。用 auto/unicode（按焦点）或 input_method=ax + ref（按元素）。"])
+                                    let strokes: [PhysicalStroke]
+                                    if let plannedStrokes { strokes = plannedStrokes }
+                                    else { strokes = try await MainActor.run { try PhysicalInput.currentLayoutPlan(text) } }
+                                    await withFocusGuard(pid) {
+                                        for stroke in strokes { postKey(pid, keyCode: stroke.keyCode, flags: stroke.flags) }
+                                    }
                                 default:
                                     throw NSError(domain: "type_text", code: 64, userInfo: [NSLocalizedDescriptionKey:
-                                        "unknown_input_method: \"\(method)\"。可用：auto | unicode | ax（physical 未实现）"])
+                                        "unknown_input_method: \"\(method)\"。可用：auto | physical | unicode | ax"])
                                 }
                                 noteActionPoint(args, nil, symbol: "keyboard")
                                 var typed: [String: Any] = ["typed": text.count, "inputMethod": method]
-                                if let warning = keyDeliveryWarning(pid) {
+                                if method != "ax", let warning = keyDeliveryWarning(pid) {
                                     typed["warning"] = warning
                                     // 参照在这里还单独给一个 `verification_note`：
                                     // "sent, but could not confirm it landed"。
@@ -2235,4 +2270,5 @@ DispatchQueue.global().async {
 _ = NSApplication.shared
 NSApp.setActivationPolicy(.accessory)
 NSApp.finishLaunching()
-RunLoop.main.run()
+// 镜像窗需要 AppKit 分发窗口事件，普通 RunLoop 不负责处理拖动与关闭。
+NSApp.run()

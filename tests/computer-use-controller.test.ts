@@ -17,6 +17,20 @@ function fixture(enabled = false) {
   const controller = new ComputerUseController(driver, { enabled, now: () => now, preview: value => previews.push(value) });
   return { controller, calls, lifecycle, previews, setStart: (value: typeof start) => { start = value; }, setAction: (value: typeof action) => { action = value; }, setObserve: (value: typeof observe) => { observe = value; }, advance: () => { now = 60_001; } };
 }
+test("observation options reach the driver and remain in post-action verification, not target identity", async () => {
+  const f = fixture(true);
+  const observations: unknown[] = [];
+  const request = { ...target, depth: 3, screenshotMaxWidth: 320, interactiveOnly: false, autoLaunch: false };
+  f.setObserve(async (_session, input) => { observations.push(input); return frame(); });
+  await f.controller.observe("s", request);
+  assert.deepEqual(f.controller.currentCapture()?.target, target);
+  await f.controller.act("s", { ...target, action: "press_key", captureId: "c1", key: "Return" });
+  assert.deepEqual(observations, [request, request]);
+  for (const options of [{ depth: 0 }, { depth: 21 }, { screenshotMaxWidth: 0 }, { interactiveOnly: "false" }, { extra: true }]) {
+    assert.throws(() => f.controller.observe("s", { ...target, ...options } as never));
+  }
+  assert.equal(observations.length, 2, "invalid options cannot reach the driver");
+});
 test("disabled and permission/missing/version failures do not admit calls", async () => {
   const f = fixture();
   await assert.rejects(f.controller.observe("s", target), /disabled/);
@@ -379,4 +393,15 @@ test("the audit trail records which app and why it failed, but never the argumen
   const refused = f.controller.audit().at(-1);
   assert.equal(refused?.outcome, "refused");
   assert.equal(refused?.errorCode, "background_unavailable", "失败原因要能直接看出");
+});
+
+test("screenshot drag endpoints stay inside the observed frame while screen-space can be negative", async () => {
+  const { controller, calls } = fixture(true);
+  await controller.observe("s", target);
+  const drag = { ...target, captureId: "c1", action: "drag" as const, x1: -1, y1: 0, x2: 10, y2: 10 };
+  await assert.rejects(controller.act("s", drag), /capture_coordinates_out_of_bounds/);
+  assert.deepEqual(calls, []);
+  await assert.rejects(controller.act("s", { ...drag, x1: 0, y2: 80 }), /capture_coordinates_out_of_bounds/);
+  await controller.act("s", { ...drag, coordinateSpace: "screen" });
+  assert.deepEqual(calls, ["drag"]); await controller.disable();
 });

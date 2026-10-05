@@ -1,3 +1,4 @@
+import { attachmentMessageParts } from "../../attachments/store.js";
 import { estimateContextBreakdown, estimateMessageTokens, estimateTokens, messageTokenCost, type ContextTokenInput } from "./tokenUsage.js";
 import type { AgentContext, AgentMessage, AgentModel, AgentTool, AgentToolResultMessage, AgentUsage, AgentUserMessage, ModelRequestContext, ModelRequestObserver } from "../core/types.js";
 import { generateNativeText } from "../../llm/nativeJson.js";
@@ -1810,21 +1811,13 @@ function assembleContext(
   const fullUserContent = attachments.length
     ? [
       { type: "text" as const, text: task },
-      ...attachments.map((attachment) => ({
-        type: attachment.mimeType.startsWith("audio/") ? "audio" as const : "image" as const,
-        data: attachment.data,
-        mimeType: attachment.mimeType
-      }))
+      ...attachmentMessageParts(attachments)
     ]
     : task;
   const userContent = attachments.length
     ? [
       { type: "text" as const, text: taskContent },
-      ...attachments.map((attachment) => ({
-        type: attachment.mimeType.startsWith("audio/") ? "audio" as const : "image" as const,
-        data: attachment.data,
-        mimeType: attachment.mimeType
-      }))
+      ...attachmentMessageParts(attachments)
     ]
     : taskContent;
   const fullUserMessage: AgentMessage = { role: "user", content: fullUserContent };

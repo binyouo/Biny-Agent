@@ -18,7 +18,7 @@ test("explicit computer enablement survives config reload without starting nativ
   };
   try {
     const config = configSchema.parse(defaultConfig);
-    assert.deepEqual(config.computer, { enabled: false, strictApproval: false, apps: [] });
+    assert.deepEqual(config.computer, { enabled: false, previewEnabled: true, actionLogging: false, strictApproval: false, apps: [] });
     assert.throws(() => configSchema.parse({ ...config, computer: { enabled: "yes" } }));
     const store = createFileConfigStore(root, { globalDir: root, credentialStore });
     await updateConfig(store, undefined, current => ({ ...current, computer: { ...current.computer, enabled: true } }));
@@ -32,7 +32,7 @@ test("explicit computer enablement survives config reload without starting nativ
     await controller.disable();
     await updateConfig(restartedStore, undefined, current => ({ ...current, computer: { ...current.computer, enabled: false } }));
     const saved = JSON.parse(await readFile(path.join(root, "config.json"), "utf8"));
-    assert.deepEqual(saved.computer, { enabled: false, strictApproval: false, apps: [] });
+    assert.deepEqual(saved.computer, { enabled: false, previewEnabled: true, actionLogging: false, strictApproval: false, apps: [] });
     const stopped = new ComputerUseController(driver, { enabled: (await restartedStore.load()).computer.enabled });
     await assert.rejects(stopped.list("fixture"), /computer_disabled/);
     assert.deepEqual(calls, ["start", "list", "stop"]);

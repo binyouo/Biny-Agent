@@ -175,3 +175,39 @@ test("public tool execution persists results, unknown outcomes and permission de
     assert.ok((await readSessionEvents(recorder.filePath)).some((event) => event.type === "tool_result" && event.toolCallId === "denied" && event.executionStatus === "failed"));
   } finally { await recorder?.close(); await rm(root, { recursive: true, force: true }); }
 }));
+
+test("completed relay actions notify their preview target without changing a dispatched result on notification failure", async () => fixture(async (relay, file) => {
+  const socket = await connect(relay); const events: unknown[] = [];
+  socket.on("message", raw => { const command = JSON.parse(raw.toString()); socket.send(JSON.stringify({ id: command.id, ok: true, result: { success: true, url: "https://example.org/" } })); });
+  const target = { browserId: relay.status().browsers[0]!.browserId, tabId: 7 };
+  relay.attachActivity(value => { events.push(value); throw new Error("preview capacity exceeded"); });
+  const tools = (await import("../src/tools/browserRelay.js")).createBrowserRelayTools(file);
+  const tool = tools.find(item => item.name === "ChromeRelayClick")!;
+  const execution = await tool.resolveExecution(tool.schema.parse({ ...target, selector: "button" }));
+  assert.ok(!("isError" in execution));
+  const result = await execution.execute({ toolCallId: "relay", operationId: "relay", sessionId: "linked-session" });
+  assert.equal((result as { success: boolean }).success, true);
+  assert.deepEqual(events, [{ ...target, browserName: "Chrome test", sessionId: "linked-session" }]);
+}));
+
+test("an input waits for an in-flight preview frame without being rejected or repeated", async () => fixture(async relay => {
+  const socket = await connect(relay), target = { browserId: relay.status().browsers[0]!.browserId, tabId: 7 };
+  const received = once(socket, "message");
+  const frame = relay.request("screenshot", target, undefined, undefined, true);
+  const command = JSON.parse((await received)[0].toString());
+  const next = once(socket, "message");
+  const input = relay.request("click", { ...target, selector: "button" });
+  // Capture rejection before returning the frame; the input is allowed to wait, never replay.
+  const result = input.then(value => ({ value }), error => ({ error }));
+  socket.send(JSON.stringify({ id: command.id, ok: true, result: { mimeType: "image/png", data: "eA==" } }));
+  await frame;
+  const timeout = setTimeout(() => socket.terminate(), 1000);
+  try {
+    const completed = await Promise.race([next.then(([raw]) => {
+      const action = JSON.parse(raw.toString()); assert.equal(action.method, "click");
+      socket.send(JSON.stringify({ id: action.id, ok: true, result: { success: true, url: "https://example.org/" } }));
+      return result;
+    }), result]);
+    assert.equal("error" in completed, false, JSON.stringify(completed));
+  } finally { clearTimeout(timeout); }
+}));

@@ -9,9 +9,11 @@ import { BrowserRelayError, isRelayMutation, relayPageSchema, relayBinarySchema,
 import { relayCredentialsSchema } from "./relayClient.js";
 
 interface Connection { socket: WebSocket; id: string; name: string; alive: boolean; pending?: Pending }
-interface Pending { id: string; connection: Connection; reject(error: Error): void; resolve(value: unknown): void }
+interface Pending { id: string; connection: Connection; preview: boolean; completed: Promise<void>; reject(error: Error): void; resolve(value: unknown): void }
 
 export class BrowserRelay {
+  private activity?: (target: { browserId: string; tabId: number; sessionId?: string; browserName: string }) => void;
+  attachActivity(listener: typeof this.activity): void { this.activity = listener; }
   private token = randomBytes(32).toString("hex");
   private port = 0;
   private readonly connections = new Map<string, Connection>();
@@ -89,7 +91,7 @@ export class BrowserRelay {
     await new Promise<void>((resolve) => this.sockets.close(() => resolve()));
   }
 
-  async request(method: RelayMethod, input: unknown, signal?: AbortSignal): Promise<unknown> {
+  async request(method: RelayMethod, input: unknown, signal?: AbortSignal, sessionId?: string, preview = false): Promise<unknown> {
     const args = relaySchemas[method].parse(input);
     signal?.throwIfAborted();
     if (method === "status") return this.status();
@@ -101,19 +103,21 @@ export class BrowserRelay {
     const connection = "browserId" in args && typeof args.browserId === "string" ? this.connections.get(args.browserId) : undefined;
     if (!connection?.name || connection.socket.readyState !== WebSocket.OPEN) throw new BrowserRelayError("invalid", "浏览器连接已变化，请重新列出标签后再操作。");
     if ("browserId" in args && args.browserId !== connection.id) throw new BrowserRelayError("invalid", "浏览器连接已变化，请重新列出标签后再操作。");
+    if (connection.pending?.preview && !preview) { await connection.pending.completed; signal?.throwIfAborted(); }
     if (connection.pending) throw new BrowserRelayError("busy", "真实浏览器正在执行另一项操作，请等待完成。");
     const result = await new Promise<unknown>((resolve, reject) => {
       const id = randomUUID();
+      let complete!: () => void; const completed = new Promise<void>(resolve => { complete = resolve; });
       const failure = (): BrowserRelayError => new BrowserRelayError(isRelayMutation(method) ? "unknown" : "unavailable", isRelayMutation(method)
         ? "浏览器操作超时或中断，结果未确认；请检查页面，不会自动重试。" : "浏览器读取超时或连接中断，请重新连接并列出标签。");
       const finish = (error?: Error, value?: unknown): void => {
         if (connection.pending?.id !== id) return;
-        connection.pending = undefined; clearTimeout(timer); signal?.removeEventListener("abort", abort);
+        connection.pending = undefined; complete(); clearTimeout(timer); signal?.removeEventListener("abort", abort);
         if (error) reject(error); else resolve(value);
       };
       const abort = (): void => { finish(failure()); connection.socket.terminate(); };
       const timer = setTimeout(abort, this.timeoutMs);
-      connection.pending = { id, connection, resolve: (value) => finish(undefined, value), reject: (error) => finish(error instanceof BrowserRelayError && error.code === "unknown" && !isRelayMutation(method) ? new BrowserRelayError("unavailable", error.message) : error) };
+      connection.pending = { id, connection, preview, completed, resolve: (value) => finish(undefined, value), reject: (error) => finish(error instanceof BrowserRelayError && error.code === "unknown" && !isRelayMutation(method) ? new BrowserRelayError("unavailable", error.message) : error) };
       signal?.addEventListener("abort", abort, { once: true });
       connection.socket.send(JSON.stringify({ id, method, args }), (error) => { if (error) abort(); });
     });
@@ -122,6 +126,10 @@ export class BrowserRelay {
     if (method === "read") return { browserId: connection.id, browserName: connection.name, tabId: (args as { tabId: number }).tabId, ...relayPageSchema.parse(result) };
     const actionResult = z.object({ success: z.literal(true), url: relayTabSchema.shape.url }).safeParse(result);
     if (!actionResult.success) throw new BrowserRelayError("unknown", "浏览器动作已派发，但返回结果无效；请检查页面，不会自动重试。");
+    if (isRelayMutation(method) && "tabId" in args && typeof args.tabId === "number") {
+      try { this.activity?.({ browserId: connection.id, browserName: connection.name, tabId: args.tabId, sessionId }); }
+      catch (error) { console.error("Browser preview notification failed after completed action", error instanceof Error ? error.name : "Error"); }
+    }
     return actionResult.data;
   }
 
@@ -173,8 +181,8 @@ export class BrowserRelay {
     try {
       const chunks: Buffer[] = []; let length = 0;
       for await (const chunk of request) { length += chunk.length; if (length > 13 * 1024 * 1024) throw new Error("请求过大。"); chunks.push(chunk); }
-      const command = z.object({ method: z.enum(Object.keys(relaySchemas) as [RelayMethod, ...RelayMethod[]]), args: z.unknown() }).strict().parse(JSON.parse(Buffer.concat(chunks).toString("utf8")));
-      const result = await this.request(command.method, command.args, controller.signal);
+      const command = z.object({ method: z.enum(Object.keys(relaySchemas) as [RelayMethod, ...RelayMethod[]]), args: z.unknown(), sessionId: z.string().min(1).max(240).optional() }).strict().parse(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+      const result = await this.request(command.method, command.args, controller.signal, command.sessionId);
       response.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" }).end(JSON.stringify({ ok: true, result }));
     } catch (error) {
       if (!response.destroyed) response.writeHead(400, { "content-type": "application/json", "cache-control": "no-store" }).end(JSON.stringify({ ok: false, code: error instanceof BrowserRelayError ? error.code : "invalid", error: error instanceof BrowserRelayError ? error.message : "浏览器请求或响应格式无效。" }));

@@ -55,7 +55,7 @@ import {
 } from "../../../session/transfer.js";
 import { gitInspectionEnvironment } from "../../../tools/git/environment.js";
 import { resolveWorkspaceDirectory, resolveWorkspacePath, toWorkspaceRelative } from "../../../workspace/resolvePath.js";
-import { attachmentFilePath, attachmentPathPrefix, saveAttachment as saveProjectAttachment } from "../../../attachments/store.js";
+import { saveAttachmentContext, attachmentFilePath, attachmentPathPrefix, saveAttachment as saveProjectAttachment } from "../../../attachments/store.js";
 import type {
   DesktopAttachment,
   DesktopGitBranch,
@@ -735,10 +735,14 @@ export class DesktopProjectService {
    * 保存附件到项目的附件目录。文件名先做安全化处理，再加时间戳和随机串前缀，
    * 既避免同名覆盖，也避免用户提供的名字里带路径分隔符写到目录之外。
    */
-  async saveAttachment(project: DesktopProject, name: string, mimeType: string, bytes: Uint8Array): Promise<DesktopAttachment> {
+  async saveAttachment(project: DesktopProject, name: string, mimeType: string, bytes: Uint8Array, hiddenContext?: string): Promise<DesktopAttachment> {
     // 先迁移旧版 userData 附件，再使用和 TUI/CLI 相同的项目级存储器写入。
     await this.storage.ensureProjectData(project);
     const attachment = await saveProjectAttachment(project.path, name, mimeType, bytes);
+    if (hiddenContext) {
+      try { await saveAttachmentContext(this.attachmentsRoot(project), attachment.path, hiddenContext); }
+      catch (error) { const file = attachmentFilePath(this.attachmentsRoot(project), attachment.path); if (file) await fs.unlink(file); throw error; }
+    }
     return { ...attachment, size: attachment.size ?? bytes.byteLength };
   }
 

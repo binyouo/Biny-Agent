@@ -68,9 +68,9 @@ export function createBrowserRelayTools(file?: string, workspace: Pick<ToolConte
           async execute(context) {
             context.signal?.throwIfAborted();
             try {
-              if (transfer) return await transferBrowserFile(transfer, args, { ...workspace, file, signal: context.signal, deniedPaths: context.deniedPaths, onDispatched: context.onDispatched, onCommit: (evidence) => context.onExecutionState?.("side_effect_committed", evidence) });
+              if (transfer) return await transferBrowserFile(transfer, args, { ...workspace, file, signal: context.signal, sessionId: context.sessionId, deniedPaths: context.deniedPaths, onDispatched: context.onDispatched, onCommit: (evidence) => context.onExecutionState?.("side_effect_committed", evidence) });
               context.onDispatched?.();
-              return redactSensitiveValue(await requestBrowserRelay(method, args, { file, signal: context.signal }));
+              return redactSensitiveValue(await requestBrowserRelay(method, args, { file, signal: context.signal, sessionId: context.sessionId }));
             }
             catch (error) {
               if (mutation && error instanceof BrowserRelayError && error.code === "unknown") throw new ToolOutcomeUnknownError("transport_error", error.message);

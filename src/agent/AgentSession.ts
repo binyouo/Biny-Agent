@@ -140,7 +140,7 @@ import { ProviderRegistry } from "../llm/ProviderRuntime.js";
 import { LocalEmbeddingManager } from "../llm/embedding/LocalEmbeddingRuntime.js";
 import { selectMemoryEmbeddingModel } from "../llm/embedding/selectMemoryModel.js";
 import type { EmbeddingModelDescriptor, EmbeddingModelRef, EmbeddingModelRuntime, LocalEmbeddingModelId } from "../llm/embedding/types.js";
-import { readAttachment, type AgentAttachment } from "../attachments/store.js";
+import { attachmentMessageParts, readAttachment, type AgentAttachment } from "../attachments/store.js";
 import type { AttachmentReference } from "../attachments/store.js";
 import { messageText } from "./modelMessages.js";
 import { projectToolResultsForModel } from "./toolResultProjection.js";
@@ -4097,11 +4097,7 @@ export class AgentSession {
         role: "user",
         content: [
           { type: "text", text: message.content },
-          ...files.map((attachment) => ({
-            type: attachment.mimeType.startsWith("audio/") ? "audio" as const : "image" as const,
-            data: attachment.data,
-            mimeType: attachment.mimeType
-          }))
+          ...attachmentMessageParts(files)
         ]
       });
     }
@@ -4172,11 +4168,7 @@ function queuedUserMessage(input: string, attachments: AgentAttachment[]): Agent
     role: "user",
     content: [
       { type: "text", text: input },
-      ...attachments.map((attachment) => ({
-        type: attachment.mimeType.startsWith("audio/") ? "audio" as const : "image" as const,
-        data: attachment.data,
-        mimeType: attachment.mimeType
-      }))
+      ...attachmentMessageParts(attachments)
     ]
   };
 }

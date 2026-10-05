@@ -34,3 +34,14 @@ test("each new verb rejects the arguments it cannot act on", () => {
   assert.equal(valid({ action: "set_value", value: 1 }), false);
   assert.equal(valid({ action: "select_text", elementToken: "e1" }), false);
 });
+
+test("physical text input is available through the in-product schema", () => {
+  assert.ok(valid({ action: "type_text", elementToken: "e1", text: "ABC", inputMethod: "physical" }));
+});
+
+test("click accepts a reference without coordinates and rejects incomplete pixel targets", () => {
+  assert.ok(valid({ action: "click", elementToken: "e1" }));
+  for (const args of [{}, { x: 1 }, { y: 2 }, { elementToken: "e1", x: 1 }, { elementToken: "e1", y: 2 }]) {
+    assert.equal(valid({ action: "click", ...args }), false, JSON.stringify(args));
+  }
+});

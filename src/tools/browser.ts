@@ -10,7 +10,7 @@ import net from "node:net";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { ToolAccesses } from "./access.js";
-import { ToolOutcomeUnknownError, type Tool, type ToolOutcomeUnknownReason } from "./types.js";
+import { ToolOutcomeUnknownError, type Tool, type ToolExecutionContext, type ToolOutcomeUnknownReason } from "./types.js";
 import { createComputerUseTools } from "./computerUse.js";
 import { redactSensitiveValue } from "../utils/secrets.js";
 
@@ -182,8 +182,8 @@ function browserExecution(
     display: { kind: "generic" as const, summary: description, detail: browserDisplayDetail(method, detail) },
     description,
     approvalRule: `browser_${method}`,
-    async execute({ signal }: { signal?: AbortSignal }) {
-      return await requestBrowser(endpoint, method, detail, signal);
+    async execute({ signal, sessionId }: ToolExecutionContext) {
+      return await requestBrowser(endpoint, method, { ...detail, sessionId }, signal);
     }
   };
 }

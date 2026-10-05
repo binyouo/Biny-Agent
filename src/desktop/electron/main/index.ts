@@ -1,3 +1,6 @@
+import { promises as fs } from "node:fs";
+import { computerDesktopEndpoint } from "../../../computer/desktopActivity.js";
+import { createAppshotsService } from "./appshotsService.js";
 /**
  * Electron 主进程入口。
  *
@@ -187,6 +190,8 @@ async function startDesktopApplication(): Promise<void> {
     () => agents.assertNoRunningTasks("任务运行期间不能修改 Cookie 或驱动浏览器。")
   );
   const browserAutomation = await browser.startAutomationServer(path.join(desktopRoot, "browser-control.sock"));
+  await fs.mkdir(path.dirname(computerDesktopEndpoint()), { recursive: true, mode: 0o700 });
+  await fs.writeFile(computerDesktopEndpoint(), JSON.stringify(browserAutomation), { mode: 0o600 });
   await browser.startRelay().catch((error: unknown) => {
     console.warn("[BrowserRelay]", redactSecrets(error instanceof Error ? error.message : String(error)));
   });
@@ -261,6 +266,7 @@ async function startDesktopApplication(): Promise<void> {
   // 恢复检查必须早于 IPC 注册和窗口开放；无法自动恢复时保留应用可用来展示设置错误，
   // 但同一个 transaction 实例会阻止所有新工作入口。
   await settings.recoverAtStartup();
+  const appshots = await createAppshotsService(configStore, projects, () => mainWindow);
   const computerUse = await createComputerUseService(browser, () => mainWindow, () => settings.assertRuntimeReady(), configStore);
   const pauseComputer = (): void => { if (computerUse?.controller.status().state !== "disabled") computerUse?.controller.control("pause"); };
   powerMonitor.on("lock-screen", pauseComputer);
@@ -437,7 +443,7 @@ async function startDesktopApplication(): Promise<void> {
     if (!sourceIcon.isEmpty()) {
       const icon = sourceIcon.resize({ width: 18, height: 18 });
       activityTray = new Tray(icon);
-      activityTray.setToolTip("Biny 活动记录");
+      activityTray.setToolTip("Biny 电脑历史");
       const openMainWindow = (): void => {
         if (quitCommitted) return;
         if (!mainWindow || mainWindow.isDestroyed()) createWindow();
@@ -445,7 +451,7 @@ async function startDesktopApplication(): Promise<void> {
         mainWindow?.focus();
       };
       const showActivityError = (error: unknown): void => {
-        dialog.showErrorBox("活动记录操作失败", error instanceof Error ? error.message : String(error));
+        dialog.showErrorBox("电脑历史操作失败", error instanceof Error ? error.message : String(error));
       };
       refreshActivityTray = (state) => {
         if (!activityTray) return;
@@ -544,6 +550,8 @@ async function startDesktopApplication(): Promise<void> {
         quickChatWindow?.destroy();
         const cleanupResult = await waitForDesktopQuitCleanup(async () => {
           await threadBriefs.close();
+          await fs.unlink(computerDesktopEndpoint()).catch(error => { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; });
+          await appshots.close();
           await computerUse?.close();
           terminals.disposeAll();
           await staticPreview.disposeAll();

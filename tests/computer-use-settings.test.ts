@@ -8,6 +8,8 @@ import type { ComputerDesktopApi, ComputerStatus, ComputerDiagnostics } from "..
 
 test("desktop settings handle missing bridge and expose enable, pause/takeover/stop and PiP controls", async () => {
   const dom = new JSDOM("<div id='root'></div>");
+  dom.window.HTMLDialogElement.prototype.showModal = function () { this.open = true; };
+  dom.window.HTMLDialogElement.prototype.close = function () { this.open = false; };
   const saved = new Map<string, PropertyDescriptor | undefined>();
   for (const [key, value] of Object.entries({ window: dom.window, document: dom.window.document, navigator: dom.window.navigator, HTMLElement: dom.window.HTMLElement, React, IS_REACT_ACT_ENVIRONMENT: true })) {
     saved.set(key, Object.getOwnPropertyDescriptor(globalThis, key)); Object.defineProperty(globalThis, key, { configurable: true, value });
@@ -59,6 +61,8 @@ test("desktop settings handle missing bridge and expose enable, pause/takeover/s
 
 test("Computer Use cards show independent unknown permissions and dispatch real diagnostic controls", async () => {
   const dom = new JSDOM("<div id='root'></div>");
+  dom.window.HTMLDialogElement.prototype.showModal = function () { this.open = true; };
+  dom.window.HTMLDialogElement.prototype.close = function () { this.open = false; };
   const saved = new Map<string, PropertyDescriptor | undefined>();
   for (const [key, value] of Object.entries({ window: dom.window, document: dom.window.document, navigator: dom.window.navigator, HTMLElement: dom.window.HTMLElement, React, IS_REACT_ACT_ENVIRONMENT: true })) {
     saved.set(key, Object.getOwnPropertyDescriptor(globalThis, key)); Object.defineProperty(globalThis, key, { configurable: true, value });
@@ -80,7 +84,7 @@ test("Computer Use cards show independent unknown permissions and dispatch real 
   } });
   try {
     await act(async () => { root.render(createElement(SettingsComputerUse)); });
-    assert.equal(dom.window.document.querySelectorAll(".cu-card").length, 1);
+    assert.equal(dom.window.document.querySelectorAll(".cu-card").length, 2);
     assert.match(dom.window.document.querySelector('[data-permission="accessibility"]')?.textContent ?? "", /未知/);
     assert.match(dom.window.document.querySelector('[data-permission="screenRecording"]')?.textContent ?? "", /未授权/);
     assert.doesNotMatch(dom.window.document.querySelector(".cu-helper")?.textContent ?? "", /已就绪|运行中/);
@@ -123,6 +127,8 @@ test("Computer Use cards show independent unknown permissions and dispatch real 
 // "通常意味着辅助功能权限需要重新授予——macOS 每次新构建都会重置它"。
 test("focus guard failure surfaces a warning, and staying armed does not", async () => {
   const dom = new JSDOM("<div id='root'></div>");
+  dom.window.HTMLDialogElement.prototype.showModal = function () { this.open = true; };
+  dom.window.HTMLDialogElement.prototype.close = function () { this.open = false; };
   const saved = new Map<string, PropertyDescriptor | undefined>();
   for (const [key, value] of Object.entries({ window: dom.window, document: dom.window.document, navigator: dom.window.navigator, HTMLElement: dom.window.HTMLElement, React, IS_REACT_ACT_ENVIRONMENT: true })) {
     saved.set(key, Object.getOwnPropertyDescriptor(globalThis, key)); Object.defineProperty(globalThis, key, { configurable: true, value });
@@ -165,6 +171,8 @@ test("focus guard failure surfaces a warning, and staying armed does not", async
 // 确认前不能真的调 revoke；说明里还要内联助手路径（desc1 + <code> + desc2）。
 test("revoking asks first, and the helper path is shown inline", async () => {
   const dom = new JSDOM("<div id='root'></div>");
+  dom.window.HTMLDialogElement.prototype.showModal = function () { this.open = true; };
+  dom.window.HTMLDialogElement.prototype.close = function () { this.open = false; };
   const saved = new Map<string, PropertyDescriptor | undefined>();
   for (const [key, value] of Object.entries({ window: dom.window, document: dom.window.document, navigator: dom.window.navigator, HTMLElement: dom.window.HTMLElement, React, IS_REACT_ACT_ENVIRONMENT: true })) {
     saved.set(key, Object.getOwnPropertyDescriptor(globalThis, key)); Object.defineProperty(globalThis, key, { configurable: true, value });
@@ -225,6 +233,8 @@ test("revoking asks first, and the helper path is shown inline", async () => {
 // 「文件不在」和「还没启动」要给不同的话，否则会把人指去重装一个已经装好的组件。
 test("a present helper shows its path; only a missing one points at the build", async () => {
   const dom = new JSDOM("<div id='root'></div>");
+  dom.window.HTMLDialogElement.prototype.showModal = function () { this.open = true; };
+  dom.window.HTMLDialogElement.prototype.close = function () { this.open = false; };
   const saved = new Map<string, PropertyDescriptor | undefined>();
   for (const [key, value] of Object.entries({ window: dom.window, document: dom.window.document, navigator: dom.window.navigator, HTMLElement: dom.window.HTMLElement, React, IS_REACT_ACT_ENVIRONMENT: true })) {
     saved.set(key, Object.getOwnPropertyDescriptor(globalThis, key)); Object.defineProperty(globalThis, key, { configurable: true, value });
@@ -289,6 +299,8 @@ test("a live daemon reads as installed, not as an unavailable component", async 
 // 「请完成组件安装与权限授权」把三项混在一起，等于把这个按钮废掉了。
 test("the setup test names the check that failed, not just that one did", async () => {
   const dom = new JSDOM("<div id='root'></div>");
+  dom.window.HTMLDialogElement.prototype.showModal = function () { this.open = true; };
+  dom.window.HTMLDialogElement.prototype.close = function () { this.open = false; };
   const saved = new Map<string, PropertyDescriptor | undefined>();
   for (const [key, value] of Object.entries({ window: dom.window, document: dom.window.document, navigator: dom.window.navigator, HTMLElement: dom.window.HTMLElement, React, IS_REACT_ACT_ENVIRONMENT: true })) {
     saved.set(key, Object.getOwnPropertyDescriptor(globalThis, key)); Object.defineProperty(globalThis, key, { configurable: true, value });
@@ -340,6 +352,8 @@ test("the setup test names the check that failed, not just that one did", async 
 // 前台动作开关（会改变焦点的显式批准）和审计日志列表。
 test("the advanced section wires the foreground switch and renders the audit trail", async () => {
   const dom = new JSDOM("<div id='root'></div>");
+  dom.window.HTMLDialogElement.prototype.showModal = function () { this.open = true; };
+  dom.window.HTMLDialogElement.prototype.close = function () { this.open = false; };
   const saved = new Map<string, PropertyDescriptor | undefined>();
   for (const [key, value] of Object.entries({ window: dom.window, document: dom.window.document, navigator: dom.window.navigator, HTMLElement: dom.window.HTMLElement, React, IS_REACT_ACT_ENVIRONMENT: true })) {
     saved.set(key, Object.getOwnPropertyDescriptor(globalThis, key)); Object.defineProperty(globalThis, key, { configurable: true, value });

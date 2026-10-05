@@ -7,7 +7,7 @@ export const computerAppSchema = z.object({
 }).strict();
 export type ComputerAppApproval = z.infer<typeof computerAppSchema>;
 export const computerSettingsSchema = z.object({
-  enabled: z.boolean().default(false), strictApproval: z.boolean().default(false),
+  enabled: z.boolean().default(false), previewEnabled: z.boolean().default(true), actionLogging: z.boolean().default(false), strictApproval: z.boolean().default(false),
   apps: z.array(computerAppSchema).max(256).default([])
 }).strict().refine(value => new Set(value.apps.map(app => app.bundleId)).size === value.apps.length, "Duplicate computer application identity");
 
@@ -15,21 +15,24 @@ export const maxComputerImageBytes = 1024 * 1024;
 export const windowTargetSchema = z.object({ pid: z.number().int().positive().max(2147483647), windowId: z.string().regex(/^[1-9][0-9]{0,19}$/) }).strict();
 export type WindowTarget = z.infer<typeof windowTargetSchema>;
 
-/**
- * 观察路径的参数。来源是参照 MCP 的 `get_app_state`（它有 depth / interactive_only /
- * screenshot_max_width / auto_launch 四个）—— 我这几轮把 MCP 那面接通了，
- * **产品内这条路没跟上**，于是同样一个守护进程，MCP 客户端能用的参数，产品内的模型用不了。
- * 这里单开一个 schema 而不是改 `windowTargetSchema`：后者带 `.strict()`，
- * 是"目标是哪一个"的最小契约，不该被观察参数撑大。
- */
+export const computerMirrorSchema = z.object({
+  operation: z.enum(["open", "close", "list"]),
+  pid: windowTargetSchema.shape.pid.optional(), windowId: windowTargetSchema.shape.windowId.optional(),
+  onMinimize: z.boolean().optional(), all: z.boolean().optional()
+}).strict().superRefine((value, context) => {
+  if (value.operation === "open" && (value.pid === undefined || value.windowId === undefined)) context.addIssue({ code: "custom", message: "mirror open requires pid and windowId" });
+  if (value.windowId !== undefined && Number(value.windowId) > 4294967295) context.addIssue({ code: "custom", message: "mirror windowId exceeds the native window ID range" });
+  if (value.operation === "close" && !value.all && value.windowId === undefined) context.addIssue({ code: "custom", message: "mirror close requires windowId or all=true" });
+  if (value.operation !== "open" && value.onMinimize !== undefined) context.addIssue({ code: "custom", message: "onMinimize is only valid for open" });
+  if (value.operation !== "close" && value.all !== undefined) context.addIssue({ code: "custom", message: "all is only valid for close" });
+});
+export type ComputerMirrorRequest = z.infer<typeof computerMirrorSchema>;
+
+/** 观察选项不属于窗口身份；审批与动作目标只使用 pid/windowId。 */
 export const windowObserveSchema = windowTargetSchema.extend({
-  /** AX 树深度（参照默认 6）。 */
-  depth: z.number().int().max(20).optional(),
-  /** 截图缩放宽度（→ 守护进程的 max_width，默认 1280）。 */
-  screenshotMaxWidth: z.number().int().optional(),
-  /** 只给可交互元素（参照默认 true，`--all` 关掉）。 */
+  depth: z.number().int().min(1).max(20).optional(),
+  screenshotMaxWidth: z.number().int().positive().optional(),
   interactiveOnly: z.boolean().optional(),
-  /** 应用没在运行时是否后台自启（参照默认 true）。 */
   autoLaunch: z.boolean().optional(),
 });
 export type WindowObserve = z.infer<typeof windowObserveSchema>;
@@ -43,26 +46,29 @@ export const computerActionSchema = windowTargetSchema.extend({
    * 能力在、路不通。
    */
   showCursor: z.boolean().optional(),
-  /**
-   * 文本怎么送进去（参照：`input_method must be auto|physical|unicode|ax`，
-   * 且 `input_method=ax requires ref` —— AX 那条按元素走、不按焦点）。
-   * 本实现只有 auto/unicode/ax；physical 会**如实拒绝**，不偷偷降级。
-   */
-  inputMethod: z.enum(["auto", "unicode", "ax"]).optional(),
-  x: z.number().finite().nonnegative().optional(), y: z.number().finite().nonnegative().optional(),
+  /** physical 先验证整段文本可由当前键盘布局表达；ax 按元素写入。 */
+  inputMethod: z.enum(["auto", "physical", "unicode", "ax"]).optional(),
+  button: z.enum(["left", "right", "middle"]).optional(),
+  clickCount: z.number().int().min(1).max(3).optional(),
+  strategy: z.enum(["auto", "physical", "ax"]).optional(),
+  coordinateSpace: z.enum(["screenshot", "screen"]).optional(),
+  x: z.number().finite().optional(), y: z.number().finite().optional(),
   text: z.string().max(4000).optional(), key: z.string().min(1).max(40).optional(),
   direction: z.enum(["up", "down", "left", "right"]).optional(),
   // 单位是**页**，不是行。一页 = 视口/内容，由守护进程从滚动区量出来（原生目标）；
   // 网页内容量不出页大小，那里会换算成行数并在回执里标注是估算。
   // 参照的 MCP 契约是 number().int().max(20) —— 页是整数，别让它接受 1.5。
   pages: z.number().int().min(1).max(20).optional(),
-  x1: z.number().finite().nonnegative().optional(), y1: z.number().finite().nonnegative().optional(),
-  x2: z.number().finite().nonnegative().optional(), y2: z.number().finite().nonnegative().optional(),
+  x1: z.number().finite().optional(), y1: z.number().finite().optional(),
+  x2: z.number().finite().optional(), y2: z.number().finite().optional(),
   value: z.union([z.string().max(4000), z.number(), z.boolean()]).optional(),
   location: z.number().int().nonnegative().optional(), length: z.number().int().nonnegative().optional(),
   elementToken: z.string().min(1).max(256).optional()
 }).strict().superRefine((value, context) => {
-  if (value.action === "click" && (value.x === undefined || value.y === undefined)) context.addIssue({ code: "custom", message: "click requires screenshot coordinates" });
+  if (value.action === "click") {
+    if (!value.elementToken && (value.x === undefined || value.y === undefined)) context.addIssue({ code: "custom", message: "click requires elementToken or screenshot coordinates" });
+    if ((value.x === undefined) !== (value.y === undefined)) context.addIssue({ code: "custom", message: "click coordinates require both x and y" });
+  }
   if (value.action === "type_text" && (!value.elementToken || value.text === undefined)) context.addIssue({ code: "custom", message: "type_text requires a fresh elementToken and text" });
   if (value.action === "press_key" && !value.key) context.addIssue({ code: "custom", message: "press_key requires key" });
   if (value.action === "scroll" && (!value.elementToken || !value.direction)) context.addIssue({ code: "custom", message: "scroll requires elementToken and direction" });
@@ -102,6 +108,7 @@ export interface ComputerDiagnostics {
 export interface ComputerPreview { image: ComputerImage; target: WindowTarget; capturedAt: number }
 export type ComputerControl = "pause" | "resume" | "takeover" | "stop";
 export interface ComputerDesktopApi {
+  onNavigate?(listener: (target: { sessionId?: string; projectId?: string }) => void): () => void;
   status(): Promise<ComputerStatus>;
   enable(): Promise<ComputerStatus>;
   control(control: ComputerControl): Promise<ComputerStatus>;
@@ -115,4 +122,4 @@ export interface ComputerDesktopApi {
   approve(bundleId: string): Promise<ComputerDiagnostics>;
   revoke(bundleId: string): Promise<ComputerDiagnostics>;
 }
-export const computerIpc = { strict: "desktop:computer:strict", approve: "desktop:computer:approve", revoke: "desktop:computer:revoke", status: "desktop:computer:status", enable: "desktop:computer:enable", control: "desktop:computer:control", preview: "desktop:computer:preview", foreground: "desktop:computer:foreground", logging: "desktop:computer:logging", diagnostics: "desktop:computer:diagnostics", accessibility: "desktop:computer:accessibility", test: "desktop:computer:test" } as const;
+export const computerIpc = { navigate: "desktop:computer:navigate", strict: "desktop:computer:strict", approve: "desktop:computer:approve", revoke: "desktop:computer:revoke", status: "desktop:computer:status", enable: "desktop:computer:enable", control: "desktop:computer:control", preview: "desktop:computer:preview", foreground: "desktop:computer:foreground", logging: "desktop:computer:logging", diagnostics: "desktop:computer:diagnostics", accessibility: "desktop:computer:accessibility", test: "desktop:computer:test" } as const;

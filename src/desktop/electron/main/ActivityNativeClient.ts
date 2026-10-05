@@ -30,6 +30,13 @@ export class ActivityNativeClient {
       return await readFile(output);
     } finally { await unlink(output).catch(() => undefined); }
   }
+  async captureAppshot(maxWidth: number, expectedBundle: string, excludedBundles: string[]): Promise<Buffer> {
+    return await desktopCaptureSchedule.run("activity", async () => {
+      const result = await this.request("appshot_capture", { max_width: maxWidth, expected_bundle: expectedBundle, exclude_bundles: excludedBundles }) as { path?: unknown; bundleId?: unknown };
+      if (result.bundleId !== expectedBundle || typeof result.path !== "string") throw new Error("appshot_target_mismatch");
+      try { return await readFile(result.path); } finally { await unlink(result.path).catch(() => undefined); }
+    });
+  }
   async recognize(file: string, languages: string[], signal?: AbortSignal): Promise<string> {
     const { stdout } = await executeFile(path.join(this.directory, "activity-ocr"), [file, ...languages], { timeout: 30_000, maxBuffer: 4 * 1024 * 1024, signal });
     return stdout.trim();

@@ -20,7 +20,7 @@ test("computer use is served over MCP with the documented verbs", async () => {
     // 13 个：12 个动词 + grant（daemon 早就会，工具面曾经漏掉）。
     assert.deepEqual(names, [
       "click", "drag", "get_app_state", "grant", "launch_app", "list_apps",
-      "perform_secondary_action", "permissions", "press_key", "scroll",
+      "perform_secondary_action", "permissions", "pip_close", "pip_list", "pip_open", "press_key", "scroll",
       "select_text", "set_value", "type_text"
     ]);
     // 动作类工具必须声明 pid，否则调用方无法把动作定向到目标窗口。
@@ -62,7 +62,7 @@ test("the MCP permissions verb reports live daemon state", async () => {
 
 // Alma 的每个动作工具都带回执截图（notes/19 §2），模型执行完一步就能看到结果，
 // 不必再 observe 一次 —— 少一个来回、少一棵 AX 树。
-test("an action tool returns the post-action screenshot, not just an ack", async () => {
+test("an action tool returns the post-action screenshot, not just an ack", { skip: process.env.BINY_TEST_COMPUTER_UI !== "1" }, async () => {
   const driver = new NativeProcessDriver(() => undefined, {
     binaryPath: new URL("../out/native/computer-use", import.meta.url).pathname
   });

@@ -31,6 +31,10 @@ assert.match(runHelp("snap"), /--no-shot/u);
 assert.match(runHelp("launch_app"), /--activates/u);
 assert.match(runHelp("list_apps"), /--days\s+<n>/u);
 assert.match(runHelp("type_text"), /--pid\s+<n>/u);
+assert.match(runHelp("type_text"), /--input-method\s+<method>/u);
+assert.match(runHelp("pip", "open"), /--on-minimize/u);
+assert.match(runHelp("pip", "close"), /--all/u);
+assert.ok(runHelp("appshot").length > 0);
 assert.match(runHelp("press_key"), /--pid\s+<n>/u);
 // scroll 现在两种用法都认：参照式 `scroll <ref> <direction>` 与原式 `scroll <direction> --pid`。
 // 断言契约（两种形式都出现在 usage 里），不是断言某一个措辞。

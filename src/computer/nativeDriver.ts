@@ -1,16 +1,17 @@
 // 自研 macOS 原生 driver：spawn native/computer-use daemon 并通过 unix socket 通信。
 // 协议：换行分隔 JSON，{"id","cmd","args"} → {"id","ok","data"|"error"}。
 // daemon 是独立的 Swift 可执行文件（native/computer-use），不依赖任何第三方 SDK。
+import { applicationPlaybook } from "./playbooks.js";
 import { spawn, type ChildProcess } from "node:child_process";
 import net from "node:net";
 import { StringDecoder } from "node:string_decoder";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import crypto from "node:crypto";
 import os from "node:os";
 import type { ComputerDriver, DriverReply } from "./controller.js";
-import type { ComputerAction, WindowObserve, WindowTarget } from "./protocol.js";
+import type { ComputerMirrorRequest, ComputerAction, WindowObserve } from "./protocol.js";
 
 const maxIpcBytes = 2 * 1024 * 1024;
 const maxPending = 32;
@@ -241,9 +242,12 @@ export class NativeProcessDriver implements ComputerDriver {
     }
   }
 
+  private readonly eventListeners = new Set<(event: string, data: unknown) => void>();
+  onNativeEvent(listener: (event: string, data: unknown) => void): () => void { this.eventListeners.add(listener); return () => this.eventListeners.delete(listener); }
   private onReply(line: string): void {
-    let parsed: { id?: string | number; ok?: boolean; data?: unknown; error?: { code?: string; message?: string } };
+    let parsed: { id?: string | number; ok?: boolean; data?: unknown; error?: { code?: string; message?: string }; event?: string };
     try { parsed = JSON.parse(line); } catch { return; }
+    if (typeof parsed.event === "string") { for (const listener of this.eventListeners) listener(parsed.event, parsed.data); return; }
     const id = parsed.id === undefined || parsed.id === null ? undefined : String(parsed.id);
     if (!id) return;
     const job = this.pending.get(id);
@@ -388,15 +392,27 @@ export class NativeProcessDriver implements ComputerDriver {
     return this.stop();
   }
 
-  /**
-   * 只截目标窗口、不读无障碍树。动作后回图用 —— 调用方执行完一个动词
-   * 就能立刻看到结果，不必再 observe 一次（Alma 的每个动作工具都带回执截图）。
-   */
+  /** 动作回图不重新观察，保留调用方正在使用的 AX 引用与坐标映射。 */
   async captureWindow(pid?: number): Promise<DriverReply> {
     const target = pid ?? this.lastPid;
     if (target === undefined) return { data: {}, images: [] };
-    // max_elements=0：跳过遍历，只留窗口节点和截图。
-    return await this.observeRaw({ pid: target, max_elements: 0 });
+    return await this.capturePreview({ pid: target });
+  }
+
+  /** 纯像素帧源；没有目标时截屏，有目标时不能扩大捕获范围。 */
+  async capturePreview(target?: { pid: number; windowId?: string }, signal?: AbortSignal): Promise<DriverReply> {
+    signal?.throwIfAborted();
+    const out = path.join(os.tmpdir(), `biny-cu-preview-${crypto.randomUUID()}.jpg`);
+    try {
+      // 系统捕获不能取消，等待回执后再释放帧泵槽位并删除文件；取消只阻止发布。
+      const reply = await this.call("shot_display", {
+        out, pid: target?.pid, window_id: target?.windowId === undefined ? undefined : Number(target.windowId)
+      });
+      signal?.throwIfAborted();
+      const image = this.readImage(out);
+      const { path: _path, ...data } = reply.data;
+      return { data, images: image ? [image] : [] };
+    } finally { rmSync(out, { force: true }); }
   }
 
   /**
@@ -421,7 +437,7 @@ export class NativeProcessDriver implements ComputerDriver {
     // 从那里取 —— 动作和动作后的回执截图都靠它定位目标。
     const observed = (reply.data as { pid?: unknown }).pid;
     if (typeof observed === "number" && observed > 0) this.lastPid = observed;
-    return reply;
+    return { ...reply, data: { ...reply.data, playbook: applicationPlaybook(reply.data.bundleId ?? reply.data.bundle) || undefined } };
   }
 
   /**
@@ -458,6 +474,10 @@ export class NativeProcessDriver implements ComputerDriver {
     return this.call(cmd, args);
   }
 
+  mirror(operation: ComputerMirrorRequest["operation"], args: Record<string, unknown>): Promise<DriverReply> {
+    return this.call(`pip_${operation}`, args);
+  }
+
   list(_session: string, pid: number | undefined, signal?: AbortSignal): Promise<DriverReply> {
     return this.call("list_apps", pid === undefined ? {} : { pid }, signal);
   }
@@ -478,29 +498,29 @@ export class NativeProcessDriver implements ComputerDriver {
     if (observe.screenshotMaxWidth !== undefined) args.max_width = observe.screenshotMaxWidth;
     if (observe.interactiveOnly !== undefined) args.interactive_only = observe.interactiveOnly;
     if (observe.autoLaunch !== undefined) args.auto_launch = observe.autoLaunch;
-    return await this.call("get_app_state", args, signal);
+    const reply = await this.call("get_app_state", args, signal);
+    return { ...reply, data: { ...reply.data, playbook: applicationPlaybook(reply.data.bundleId ?? reply.data.bundle) || undefined } };
   }
 
   async act(_session: string, action: ComputerAction, signal?: AbortSignal): Promise<DriverReply> {
-    // daemon 按 pid 找 ref 表和坐标映射；动作不自己带 pid，用最近一次观察的目标。
-    const pid = this.lastPid;
+    // 产品内动作已有校验过的精确目标，不能被共享 driver 的最近观察覆盖。
+    const pid = action.pid;
     // `show_cursor` 挂在这里：它是**每个动作都适用**的（参照 CLI 的 `--no-cursor`
     // 写在 "Action flags" 里，不挑动词）。放在 withPid 旁边一次覆盖全部 8 个动作，
     // 好过在每个 case 里各写一遍 —— 那种写法漏一个就静默失效。
     const withPid = (params: Record<string, unknown>): Record<string, unknown> => ({
-      ...(pid === undefined ? {} : { pid }),
-      ...(action.showCursor === undefined ? {} : { show_cursor: action.showCursor }),
+      pid, window_id: Number(action.windowId), show_cursor: action.showCursor, coord_space: action.coordinateSpace,
       ...params
     });
     switch (action.action) {
       case "click":
-        return await this.call("click", withPid(action.elementToken ? { ref: action.elementToken } : { x: action.x, y: action.y }), signal);
+        return await this.call("click", withPid({ ref: action.elementToken, x: action.x, y: action.y, button: action.button, clicks: action.clickCount, strategy: action.strategy }), signal);
       case "type_text":
-        return await this.call("type_text", withPid({ text: action.text }), signal);
+        return await this.call("type_text", withPid({ text: action.text, input_method: action.inputMethod, ref: action.elementToken }), signal);
       case "press_key":
         return await this.call("press_key", withPid({ key: action.key }), signal);
       case "scroll":
-        return await this.call("scroll", withPid({ direction: action.direction, pages: action.pages }), signal);
+        return await this.call("scroll", withPid({ ref: action.elementToken, direction: action.direction, pages: action.pages }), signal);
       case "drag":
         return await this.call("drag", withPid({ x1: action.x1, y1: action.y1, x2: action.x2, y2: action.y2 }), signal);
       case "perform_secondary_action":

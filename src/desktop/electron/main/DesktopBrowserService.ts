@@ -49,6 +49,8 @@ interface EmbeddedTab { view: WebContentsView; state: DesktopBrowserTab; navigat
 interface EmbeddedProject { revision: number; tabs: Map<string, EmbeddedTab>; activeId?: string }
 
 export class DesktopBrowserService {
+  private previewActivity?: (source: { id: string; label: string; projectId?: string; sessionId?: string; capture: () => Promise<import("../../../computer/protocol.js").ComputerImage> }) => void;
+  attachPreviewActivity(listener: typeof this.previewActivity): void { this.previewActivity = listener; }
   private computerUse?: (method: string, args: Record<string, unknown>, signal: AbortSignal) => Promise<unknown>;
   attachComputerUse(handler: (method: string, args: Record<string, unknown>, signal: AbortSignal) => Promise<unknown>): void { this.computerUse = handler; }
   private relay?: BrowserRelay;
@@ -61,6 +63,17 @@ export class DesktopBrowserService {
       const relay = new BrowserRelay(browserRelayFile());
       await relay.start();
       this.relay = relay;
+      relay.attachActivity(target => {
+        this.previewActivity?.({ id: `relay:${target.browserId}:${target.tabId}`, label: target.browserName, sessionId: target.sessionId,
+          capture: async () => {
+            const response = await relay.request("screenshot", { browserId: target.browserId, tabId: target.tabId, fullPage: false }, undefined, undefined, true) as { mimeType: string; data: string };
+            const { nativeImage } = await import("electron");
+            const image = nativeImage.createFromBuffer(Buffer.from(response.data, "base64")).resize({ width: 1024 }).toJPEG(50);
+            if (image.byteLength > 1048576) throw new Error("browser_preview_budget_exceeded");
+            return { mimeType: "image/jpeg", dataBase64: image.toString("base64") };
+          }
+        });
+      });
     })().finally(() => { this.relayStarting = undefined; });
     await this.relayStarting;
   }
@@ -578,6 +591,14 @@ export class DesktopBrowserService {
           controller.signal.throwIfAborted();
           return method === "web_read" ? this.readWebPage(args, controller.signal) : this.executeAutomation(method, args);
         });
+        if (["navigate", "click", "fill", "press"].includes(method) && this.previewActivity) {
+          try {
+          const contents = await this.ensureContents(); const shown = this.shownBrowser;
+          this.previewActivity({ id: `browser:${contents.id}`, label: contents.getTitle() || "浏览器", projectId: shown?.projectId, sessionId: typeof args.sessionId === "string" ? args.sessionId : undefined,
+            capture: async () => { if (contents.isDestroyed()) throw new Error("browser_preview_closed"); const image = (await contents.capturePage()).resize({ width: 1024 }).toJPEG(50); if (image.byteLength > 1048576) throw new Error("browser_preview_budget_exceeded"); return { mimeType: "image/jpeg", dataBase64: image.toString("base64") }; }
+          });
+          } catch (error) { console.error("Browser preview notification failed after completed action", error instanceof Error ? error.name : "Error"); }
+        }
       } finally { socket.off("close", abort); }
       socket.write(`${JSON.stringify({ id, ok: true, result })}\n`);
     } catch (error) {

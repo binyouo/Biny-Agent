@@ -254,6 +254,11 @@ export class ActivityRecorderService {
       this.captureEngine = new ActivityCaptureEngine({
         now: this.now,
         native: (width, quality) => client?.capture(width, quality) ?? Promise.reject(new Error("Native capture unavailable")),
+        appshot: async width => {
+          const bundle = this.foregroundBundle;
+          if (!client || !bundle) throw new Error("appshot_frontmost_unavailable");
+          return await client.captureAppshot(width, bundle, this.settings?.sensitiveApplications ?? []);
+        },
         desktop: options.captureDesktopScreen,
         frame: options.encodeFrame
       });
@@ -1038,6 +1043,18 @@ export class ActivityRecorderService {
     } finally { this.captureInFlight = false; }
   }
 
+  async captureAppshot(): Promise<void> {
+    if (!this.settings?.enabled || this.screenLocked || !this.captureTimers.length || this.captureInFlight) return;
+    const epoch = this.captureEpoch;
+    let bundle: string | undefined;
+    try { bundle = await this.readFrontmostBundle(); }
+    catch { this.setState("error", "手动截图无法确认当前应用"); return; }
+    if (epoch !== this.captureEpoch || !bundle || this.settings.sensitiveApplications.includes(bundle)) return;
+    if (this.foregroundBundle !== bundle) { this.currentApplication = bundle; this.foregroundTitle = undefined; }
+    this.foregroundBundle = bundle;
+    await this.capture("appshot");
+  }
+
   private async verifiedIndependentBundle(epoch: number, settings: ActivitySettings): Promise<string | undefined> {
     const active = (): boolean => epoch === this.captureEpoch && settings.enabled && this.settings?.enabled === true
       && this.captureTimers.length > 0 && !this.child && !this.screenLocked
@@ -1405,7 +1422,7 @@ export class ActivityRecorderService {
       recentSessions: storeSnapshot.recentSessions,
       currentSessionId: this.sessionId,
       currentApplication: this.currentApplication,
-      error: this.error
+      error: this.error,
     };
   }
 

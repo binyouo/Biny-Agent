@@ -1,3 +1,4 @@
+import { z } from "zod";
 import type { Command } from "commander";
 import { NativeProcessDriver } from "../../computer/nativeDriver.js";
 import { renderElementTree, type ElementLike } from "../../computer/elementTree.js";
@@ -13,9 +14,6 @@ import { renderElementTree, type ElementLike } from "../../computer/elementTree.
  * 它直连守护进程的 unix socket，因此**不需要桌面应用在运行**：守护进程按需自启。
  */
 export function registerCuCommands(program: Command): void {
-  /** 动作类动词：`--no-cursor` 对它们都成立（参照把它写在 "Action flags" 一节）。 */
-const ACTION_VERBS = new Set(["click", "perform_secondary_action", "drag", "type", "type_text", "press", "press_key", "set_value", "select_text", "scroll"]);
-
 /**
  * 动作级开关：`--no-cursor` → `show_cursor: false`。
  * 参照把它写在 help 的 "Action flags: --no-cursor hides the lens for one action"，
@@ -59,6 +57,20 @@ const cu = program.command("cu").description("Drive the Mac from the terminal (s
   const windowOption = (options: { window?: string }): Record<string, unknown> =>
     options.window === undefined ? {} : { window_id: Number(options.window) };
 
+  const pip = cu.command("pip").description("Mirror an exact window without activating its app");
+  pip.command("open <window-id>").option("--pid <n>", "expected window owner")
+    .option("--on-minimize", "show the mirror when the user minimizes the target").option("--json", "print JSON")
+    .action((id: string, options: { pid?: string; onMinimize?: boolean; json?: boolean }) => withDriver(async driver => {
+      print((await driver.daemonCommand("pip_open", { window_id: Number(id), pid: options.pid === undefined ? undefined : Number(options.pid), on_minimize: options.onMinimize })).data, options.json);
+    }));
+  pip.command("list").option("--json", "print JSON").action((options: { json?: boolean }) => withDriver(async driver => {
+    print((await driver.daemonCommand("pip_list")).data, options.json);
+  }));
+  pip.command("close [window-id]").option("--all", "close and disarm every mirror").option("--json", "print JSON")
+    .action((id: string | undefined, options: { all?: boolean; json?: boolean }) => withDriver(async driver => {
+      print((await driver.daemonCommand("pip_close", { window_id: id === undefined ? undefined : Number(id), all: options.all })).data, options.json);
+    }));
+
   cu.command("status").description("Helper bundle + daemon status").option("--json", "print JSON")
     .action((options: { json?: boolean }) => withDriver(async driver => {
       const data = (await driver.daemonCommand("status")).data;
@@ -89,9 +101,9 @@ const cu = program.command("cu").description("Drive the Mac from the terminal (s
     const command = cu.command(name)
       .description(days ? "Running apps plus those used recently (with the bundle ids to launch)" : "Running apps only")
       .option("--json", "print JSON").option("--no-cursor", "hide the action indicator for this one action");
-    if (days) command.option("--days <n>", "how far back to look for recent apps", "30");
+    if (days) command.option("--days <n>", "how far back to look for recent apps (0–90)", "14");
     command.action(async (options: { json?: boolean; days?: string }) => withDriver(async driver => {
-      const apps = ((await driver.list("cli", undefined)).data as { apps?: never[] }).apps ?? [];
+      const apps = ((await driver.daemonCommand("list_apps", { recent_days: days ? z.number().int().min(0).max(90).parse(Number(options.days)) : 0 })).data as { apps?: never[] }).apps ?? [];
       if (options.json) return print(apps, true);
       print(apps.map((app: { running?: boolean; name?: string; bundleId?: string; pid?: number; lastUsed?: string }) =>
         `${app.running ? "●" : "○"} ${String(app.bundleId ?? "").padEnd(34)} ${String(app.pid ?? "").padEnd(7)} ${String(app.name ?? "")}${app.lastUsed ? `  (${app.lastUsed})` : ""}`
@@ -188,14 +200,21 @@ cu.command(observeName).description("Observe a window: accessibility tree plus a
     // 系统级快捷键表达不出来时走上这条 —— 代价是会被前台应用收掉，所以要显式选。
     if (verb === "press_key") {
       command.option("--global", "deliver through the global HID stream to whatever is focused (needed for system-level shortcuts); default posts to the target process");
+    } else {
+      command.option("--input-method <method>", "auto | physical | unicode | ax", "auto").option("--ref <ref>", "element reference for ax input");
     }
-    command.action((value: string, options: { pid?: string; json?: boolean; global?: boolean }) => withDriver(async driver => {
+    command.action((value: string, options: { pid?: string; json?: boolean; global?: boolean; inputMethod?: string; ref?: string }) => withDriver(async driver => {
       const args = verb === "type_text"
-        ? { text: value, ...withPid(options) }
+        ? { text: value, input_method: options.inputMethod, ref: options.ref, ...withPid(options) }
         : { key: value, ...withPid(options), ...(options.global ? { global: true } : {}) };
       print((await driver.actRaw(verb, { ...args, ...withCursorFlag(options) })).data, options.json);
     }));
   }
+
+  cu.command("appshot").description("Capture the current application's window").option("--json", "print JSON")
+    .action((options: { json?: boolean }) => withDriver(async driver => {
+      print((await driver.daemonCommand("appshot_capture", { include_ax: true })).data, options.json);
+    }));
 
   cu.command("scroll").description("Scroll the target window, or a given element's scroll area")
     // 参照是 `cu scroll <ref> <up|down|left|right> [--pages=N]` —— **目标由 ref 指定**。
