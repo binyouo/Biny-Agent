@@ -550,9 +550,37 @@ func resolvePid(_ parameters: [String: Any], fallbackPid: pid_t? = nil) throws -
 /// 调用方会以为点过了。这是键盘那条「按键被丢弃」的同一类失败，只是更隐蔽。
 ///
 /// 代价是光标会被挪一下，所以整段点击序列前后把它放回原处。
-func postMouse(_ pid: pid_t, _ type: CGEventType, _ point: CGPoint, _ button: CGMouseButton = .left, clickState: Int64 = 1, global: Bool = false) {
+/// `CGEventSetWindowLocation` 是 **SPI**：头文件里没有，只能 dlsym 拿。
+///
+/// 参照的 helper 也这么做（它的日志里写着拿不到就 "window-local pipeline disabled"）。
+/// 实测这台机器上符号存在 —— 所以那条"窗口局部管线"是可用的，只是我从没接上。
+private let setWindowLocationFn: (@convention(c) (CGEvent, CGPoint) -> Void)? = {
+    guard let handle = dlopen("/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics", RTLD_NOW),
+          let symbol = dlsym(handle, "CGEventSetWindowLocation") else { return nil }
+    return unsafeBitCast(symbol, to: (@convention(c) (CGEvent, CGPoint) -> Void).self)
+}()
+
+/// 这个事件能不能用「窗口局部管线」送。
+var windowLocalPipelineAvailable: Bool { setWindowLocationFn != nil }
+
+/// 发一个鼠标事件。
+///
+/// 三条路，**优先那条不抢焦点的**：
+/// 1. **窗口局部管线**（`CGEventSetWindowLocation` + `postToPid`）——
+///    事件以"落在这个窗口里"的身份送到目标进程，**不经过窗口服务器的激活路径**，
+///    所以用户的前台不会被顶掉。这是参照所谓 focus-steal prevention 的核心。
+/// 2. **全局投递**（`.cghidEventTap`）—— 能送达，但**全局点击本身就会激活落点窗口**，
+///    只能靠事后还回去（压小，压不到零）。
+/// 3. 裸 `postToPid`（不带窗口位置）—— 实测**鼠标事件根本不投递**，等于什么都不做。
+func postMouse(_ pid: pid_t, _ type: CGEventType, _ point: CGPoint, _ button: CGMouseButton = .left, clickState: Int64 = 1, global: Bool = false, windowLocal: Bool = true) {
     guard let event = CGEvent(mouseEventSource: nil, mouseType: type, mouseCursorPosition: point, mouseButton: button) else { return }
     event.setIntegerValueField(.mouseEventClickState, value: clickState)
+    if !global, windowLocal, let setLocation = setWindowLocationFn, let origin = windowScreenBounds(pid: Int(pid)) {
+        // 窗口局部坐标 = 屏幕坐标 − 窗口原点
+        setLocation(event, CGPoint(x: point.x - (origin["x"] ?? 0), y: point.y - (origin["y"] ?? 0)))
+        event.postToPid(pid)
+        return
+    }
     if global { event.post(tap: .cghidEventTap) } else { event.postToPid(pid) }
 }
 /// 发一个组合键。
@@ -730,19 +758,31 @@ func mouseButton(_ name: String?) -> CGMouseButton {
 /// 双击**不是"发两次单击"**：系统靠 mouseEventClickState 认这是第几下，
 /// 每次都带对序号、中间留出能被认作连续点击的间隔，才会被当成双击。
 /// 少了这个，在 Finder 里点两下文件只会被选中两次，永远不会打开它。
-func postClick(_ pid: pid_t, _ point: CGPoint, button: CGMouseButton, clicks: Int) {
+/// 返回这次点击走的哪条路 —— 调用方能据此判断"会不会抢焦点"。
+/// `window-local` = 不激活落点窗口；`global` = 能送达但会激活它。
+@discardableResult
+func postClick(_ pid: pid_t, _ point: CGPoint, button: CGMouseButton, clicks: Int, preferWindowLocal: Bool = false) -> String {
     let down: CGEventType = button == .right ? .rightMouseDown : button == .center ? .otherMouseDown : .leftMouseDown
     let up: CGEventType = button == .right ? .rightMouseUp : button == .center ? .otherMouseUp : .leftMouseUp
     let saved = CGEvent(source: nil)?.location
+    // ⚠️ 默认**不用**窗口局部管线，尽管它才是"不抢焦点"的正解。
+    // 理由：**它的投递还没被验证过**（我试了三种观测量都测不出它有没有送到），
+    // 而它替换掉的全局路是**已验证可用**的。未经证实就换掉能用的那条，
+    // 等于用一个"可能更正确"的说法去赌"现在还能不能点"。
+    // → 想试的人显式要它（`pipeline: "window-local"`），回执里会写明走的哪条。
+    let useWindowLocal = preferWindowLocal && windowLocalPipelineAvailable
     let total = max(1, clicks)
     for index in 1...total {
-        postMouse(pid, down, point, button, clickState: Int64(index), global: true)
-        postMouse(pid, up, point, button, clickState: Int64(index), global: true)
+        // **先试窗口局部管线**：它不激活落点窗口，所以用户的前台不会被顶掉。
+        // 全局投递是回落 —— 它确实能送达，代价是必然激活。
+        postMouse(pid, down, point, button, clickState: Int64(index), global: !useWindowLocal, windowLocal: useWindowLocal)
+        postMouse(pid, up, point, button, clickState: Int64(index), global: !useWindowLocal, windowLocal: useWindowLocal)
         // 太快会被系统合并成一下，太慢会被当成两次独立点击。
         if index < total { usleep(60_000) }
     }
     // 光标是我们挪的，用完放回去 —— 用户不该因为一次自动化发现鼠标换了位置。
     if let saved { CGWarpMouseCursorPosition(saved) }
+    return useWindowLocal ? "window-local" : "global"
 }
 
 func windowNumberForApp(_ pid: Int) -> Int? {
@@ -1675,12 +1715,17 @@ DispatchQueue.global().async {
                                     let refClicks = max(1, min(3, args["clicks"] as? Int ?? 1))
                                     let axCannotExpress = refClicks > 1 || refButton != .left
 
+                                    // 投递管线：默认 global（已验证可用）；显式要 window-local 才用它。
+                                    // 参照的取向是"不抢焦点优先"，我这边**先要求能送达** ——
+                                    // 管线的送达还没测出来，而点击送达是底线。
+                                    let wantWindowLocal = (args["pipeline"] as? String) == "window-local"
+                                    var clickPipeline = "global"
                                     func physicalAtElement() async -> Bool {
                                         guard let frame = axFrame(element) else { return false }
                                         let point = CGPoint(x: frame["x"]! + frame["w"]!/2, y: frame["y"]! + frame["h"]!/2)
                                         noteActionPoint(args, point, symbol: nil)
                                         await withFocusGuard(pid_t(pid)) {
-                                            postClick(pid_t(pid), point, button: refButton, clicks: refClicks)
+                                            clickPipeline = postClick(pid_t(pid), point, button: refButton, clicks: refClicks, preferWindowLocal: wantWindowLocal)
                                         }
                                         return true
                                     }
@@ -1692,7 +1737,7 @@ DispatchQueue.global().async {
                                         guard await physicalAtElement() else {
                                             throw NSError(domain: "click", code: 66, userInfo: [NSLocalizedDescriptionKey: "element_has_no_frame: 元素没有坐标，做不了物理点击"])
                                         }
-                                        reply(fd, ["id": id, "ok": true, "data": ["clicked": ref, "route": "physical", "clicks": refClicks] as [String: Any]] as [String: Any])
+                                        reply(fd, ["id": id, "ok": true, "data": ["clicked": ref, "route": "physical", "clicks": refClicks, "clickPipeline": clickPipeline] as [String: Any]] as [String: Any])
                                     } else if strategy == "ax" {
                                         let attempts: [String] = [kAXPressAction as String, kAXPickAction as String, kAXConfirmAction as String]
                                         let status: AXError = attempts.reduce(.failure) { acc, action in
