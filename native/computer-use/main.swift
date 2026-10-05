@@ -574,11 +574,23 @@ func axWindow(pid: pid_t, matching windowId: Int) -> AXUIElement? {
 /// 需要 plist 里的 NSAppleEventsUsageDescription，否则连授权弹窗都不会出现。
 func activateViaAppleEvents(_ bundleId: String) -> String? {
     guard !bundleId.isEmpty else { return "bundle_unknown" }
-    let script = NSAppleScript(source: "tell application id \"\(bundleId)\" to activate")
-    var error: NSDictionary?
-    _ = script?.executeAndReturnError(&error)
-    if let error { return "\(error[NSAppleScript.errorNumber] ?? "?")" }
-    return nil
+    // AppleScript **没有超时 API**：目标应用不响应时 `executeAndReturnError` 会一直挂着
+    // （Apple events 默认可以等上好几分钟）。而这是在请求处理路径上 ——
+    // 挂住就等于整个请求等到客户端超时，症状会变成"daemon 没反应"。
+    // 所以放独立线程 + 限时等待：等不到就如实说"还没回来"，而不是把自己搭进去。
+    var result: String? = "timeout_waiting_for_app"
+    let done = DispatchSemaphore(value: 0)
+    let thread = Thread {
+        let script = NSAppleScript(source: "tell application id \"\(bundleId)\" to activate")
+        var error: NSDictionary?
+        _ = script?.executeAndReturnError(&error)
+        result = error.map { "\($0[NSAppleScript.errorNumber] ?? "?")" }
+        done.signal()
+    }
+    thread.stackSize = 1 << 20
+    thread.start()
+    guard done.wait(timeout: .now() + 3) == .success else { return result }
+    return result
 }
 
 func windowsForApp(_ pid: Int) -> [[String: Any]] {
