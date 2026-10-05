@@ -20,7 +20,10 @@ export const computerActionSchema = windowTargetSchema.extend({
   delivery: z.enum(["background", "foreground"]).default("background"),
   x: z.number().finite().nonnegative().optional(), y: z.number().finite().nonnegative().optional(),
   text: z.string().max(4000).optional(), key: z.string().min(1).max(40).optional(),
-  direction: z.enum(["up", "down", "left", "right"]).optional(), amount: z.number().int().min(1).max(10).optional(),
+  direction: z.enum(["up", "down", "left", "right"]).optional(),
+  // 单位是**页**，不是行。一页 = 视口/内容，由守护进程从滚动区量出来（原生目标）；
+  // 网页内容量不出页大小，那里会换算成行数并在回执里标注是估算。
+  pages: z.number().positive().max(20).optional(),
   x1: z.number().finite().nonnegative().optional(), y1: z.number().finite().nonnegative().optional(),
   x2: z.number().finite().nonnegative().optional(), y2: z.number().finite().nonnegative().optional(),
   value: z.union([z.string().max(4000), z.number(), z.boolean()]).optional(),

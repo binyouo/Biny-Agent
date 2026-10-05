@@ -11,6 +11,9 @@ var refTables: [pid_t: [String: AXUIElement]] = [:]
 // 截图坐标 → 屏幕坐标的映射（pid → 比例与偏移）。
 var coordMaps: [pid_t: (scale: Double, ox: Double, oy: Double, sw: Double, sh: Double)] = [:]
 let driverVersion = "native-1"
+/// 滚轮路由上「一页」约等于几行。网页内容不暴露内容高度，算不出真正的页，
+/// 这是有意的估算（且回执会说明），不是测量值。
+let linesPerPage: Double = 20
 let startedAt = Date()
 let replyLock = NSRecursiveLock()
 func reply(_ fd: Int32, _ value: [String: Any]) {
@@ -1142,19 +1145,22 @@ DispatchQueue.global().async {
                                 var data = route == "wheel" ? nil : await withFocusGuard(pid) { axScroll(pid, direction: direction, notches: amount, pages: pagesArg) }
                                 if data == nil && route != "ax" {
                                     await withFocusGuard(pid) {
+                                        // 滚轮只认行数。给了 pages 就换算 —— 但**网页内容量不出页有多大**
+                                        // （内容高度不暴露），所以这是估算，回执里如实标出来。
+                                        let notches = pagesArg.map { max(1, Int(($0 * linesPerPage).rounded())) } ?? amount
                                         let (wheelAxis, wheelSign): (CGScrollEventUnit, Int32) = {
                                             switch wheelDirection {
-                                            case "up": return (.line, Int32(amount))
-                                            case "down": return (.line, Int32(-amount))
-                                            case "left": return (.line, Int32(amount))
-                                            default: return (.line, Int32(-amount))
+                                            case "up": return (.line, Int32(notches))
+                                            case "down": return (.line, Int32(-notches))
+                                            case "left": return (.line, Int32(notches))
+                                            default: return (.line, Int32(-notches))
                                             }
                                         }()
                                         if let event = CGEvent(scrollWheelEvent2Source: nil, units: CGScrollEventUnit(rawValue: wheelAxis.rawValue)!, wheelCount: 1, wheel1: (wheelDirection == "up" || wheelDirection == "down") ? wheelSign : 0, wheel2: (wheelDirection == "left" || wheelDirection == "right") ? wheelSign : 0, wheel3: 0) {
                                             event.postToPid(pid)
                                         }
                                     }
-                                    data = ["scrolled": direction, "route": "wheel"]
+                                    data = ["scrolled": direction, "route": "wheel", "unit": pagesArg == nil ? "notches" : "pages(estimated as \(max(1, Int(((pagesArg ?? 1) * linesPerPage).rounded()))) notches)"]
                                 }
                                 if var result = data {
                                     // 滚动没有单一落点：用目标窗口的中心，用户能看出"它在滚哪儿"。

@@ -474,7 +474,7 @@ export class NativeProcessDriver implements ComputerDriver {
       case "press_key":
         return await this.call("press_key", withPid({ key: action.key }), signal);
       case "scroll":
-        return await this.call("scroll", withPid({ direction: action.direction, amount: action.amount }), signal);
+        return await this.call("scroll", withPid({ direction: action.direction, pages: action.pages }), signal);
       case "drag":
         return await this.call("drag", withPid({ x1: action.x1, y1: action.y1, x2: action.x2, y2: action.y2 }), signal);
       case "perform_secondary_action":

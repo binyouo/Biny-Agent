@@ -36,7 +36,7 @@ export function planMacOsScroll(session: string, action: ComputerAction, observa
   if (!element) return refuse("element_token_not_in_observation", "The scroll target must belong to the fresh native observation.");
   // 路由由守护进程按目标**暴露了什么**来选：原生滚动区暴露 AXScrollBar（写它的 AXValue），
   // 网页内容不暴露（浏览器自绘）只能走滚轮。实测两者互补，所以这里不再按网页/原生做限制。
-  if (!action.direction || action.amount !== undefined && (!Number.isInteger(action.amount) || action.amount < 1 || action.amount > 10)) return refuse("invalid_scroll_amount_or_direction", "Scroll requires a direction and 1–10 line notches; zero is rejected before dispatch.");
+  if (!action.direction || action.pages !== undefined && (!Number.isFinite(action.pages) || action.pages <= 0 || action.pages > 20)) return refuse("invalid_scroll_pages_or_direction", "Scroll requires a direction and 1–20 pages; zero is rejected before dispatch.");
   if (naturalScrolling === undefined) return refuse("scroll_direction_setting_unavailable", "Cannot read the natural-scrolling direction; no input dispatched. Check the setting and observe again.");
   const windowId = Number(action.windowId);
   if (!Number.isSafeInteger(windowId)) return refuse("window_id_not_json_safe", "This release refuses lossy generic window ID encoding.");
@@ -46,5 +46,5 @@ export function planMacOsScroll(session: string, action: ComputerAction, observa
   // 方向要分两份发：AX 路由写的是滚动条的绝对位置，语义方向直接可用；
   // 滚轮路由才需要自然滚动的设备方向转换。以前只有滚轮一条路，所以转换后的值
   // 就是 direction —— 现在两条路并存，混用会让原生目标滚反。
-  return { mapped, args: { session, pid: action.pid, window_id: windowId, snapshot_id: observation.snapshotId, element_token: action.elementToken, delivery_mode: action.delivery, direction: action.direction, wheel_direction: mapped ? opposite[action.direction] : action.direction, by: "line", amount: action.amount ?? 1 } };
+  return { mapped, args: { session, pid: action.pid, window_id: windowId, snapshot_id: observation.snapshotId, element_token: action.elementToken, delivery_mode: action.delivery, direction: action.direction, wheel_direction: mapped ? opposite[action.direction] : action.direction, by: "line", pages: action.pages ?? 1 } };
 }

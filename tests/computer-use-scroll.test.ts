@@ -5,7 +5,7 @@ import { computerActionSchema, type ComputerAction } from "../src/computer/proto
 
 const target = { pid: 42, windowId: "900" };
 const observation: ScrollObservation = { session: "s", target, captureId: "capture-real", snapshotId: "snapshot-real", capturedAt: 10, elements: [{ token: "snapshot-real:1", role: "AXGroup", web: true }] };
-const scroll = (direction: NonNullable<ComputerAction["direction"]>, delivery: ComputerAction["delivery"] = "foreground"): ComputerAction => ({ ...target, action: "scroll", captureId: "capture-real", elementToken: "snapshot-real:1", delivery, direction, amount: 1 });
+const scroll = (direction: NonNullable<ComputerAction["direction"]>, delivery: ComputerAction["delivery"] = "foreground"): ComputerAction => ({ ...target, action: "scroll", captureId: "capture-real", elementToken: "snapshot-real:1", delivery, direction, pages: 1 });
 
 test("natural-scrolling conversion occurs once at the macOS web-wheel boundary for all axes", () => {
   const opposites = { up: "down", down: "up", left: "right", right: "left" } as const;
@@ -15,7 +15,7 @@ test("natural-scrolling conversion occurs once at the macOS web-wheel boundary f
     assert.equal(plan.args?.wheel_direction, opposites[direction], "自然滚动的方向转换只作用于滚轮路由");
     assert.equal(plan.args?.direction, direction, "语义方向原样保留给 AX 路由");
     assert.equal(plan.args?.by, "line");
-    assert.equal(plan.args?.amount, 1);
+    assert.equal(plan.args?.pages, 1);
     assert.equal(plan.args?.element_token, "snapshot-real:1");
     assert.equal(plan.args?.snapshot_id, "snapshot-real");
     assert.equal(plan.args?.window_id, 900);
@@ -51,10 +51,12 @@ test("unknown preference, stale or mismatched observations refuse before OS inpu
   }
 });
 
-test("zero/negative amounts never become SDK default wheel notches and missing amounts mean one notch", () => {
-  for (const amount of [0, -1, 0.5, 11]) assert.equal(computerActionSchema.safeParse({ ...scroll("down"), amount }).success, false);
-  assert.equal(planMacOsScroll("s", { ...scroll("down"), amount: undefined }, observation, true, 20).args?.amount, 1);
-  assert.equal(planMacOsScroll("s", { ...scroll("down"), amount: 10 }, observation, true, 20).args?.amount, 10);
+// 单位是**页**（量出来的），不是行（估的）。零和负数在派发前就被拒，别让它们
+// 变成 SDK 的默认滚轮行数 —— 那会变成"没要求却滚了一下"。
+test("zero or negative pages never become SDK default wheel notches, and a missing count means one page", () => {
+  for (const pages of [0, -1, 21]) assert.equal(computerActionSchema.safeParse({ ...scroll("down"), pages }).success, false);
+  assert.equal(planMacOsScroll("s", { ...scroll("down"), pages: undefined }, observation, true, 20).args?.pages, 1);
+  assert.equal(planMacOsScroll("s", { ...scroll("down"), pages: 5 }, observation, true, 20).args?.pages, 5);
   assert.equal(parseNaturalScrolling("1\n"), true);
   assert.equal(parseNaturalScrolling("0\n"), false);
   assert.equal(parseNaturalScrolling("unknown"), undefined);

@@ -162,13 +162,14 @@ export function createComputerUseMcpServer(driver: NativeProcessDriver): McpServ
       description: "Scroll the target app up, down, left or right by a number of lines. Returns the post-action screenshot.",
       inputSchema: {
         direction: z.enum(["up", "down", "left", "right"]),
-        amount: z.number().int().min(1).max(10).optional(),
+        pages: z.number().positive().max(20).optional(),
         pid: z.number().int().positive().optional()
       }
     },
-    async ({ direction, amount, pid }) => {
+    async ({ direction, pages, pid }) => {
       try {
-        const reply = await driver.actRaw("scroll", { direction, amount: amount ?? 3 }, pid);
+        // 默认一页：页是量出来的单位，行数是估的。
+        const reply = await driver.actRaw("scroll", { direction, pages: pages ?? 1 }, pid);
         return await withPostShot(pid, asText(reply.data));
       } catch (error) { return fail(error); }
     }
