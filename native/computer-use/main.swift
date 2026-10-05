@@ -284,6 +284,50 @@ func postDrag(_ pid: pid_t, from: CGPoint, to: CGPoint) {
 /// 两条路由是**互补**的，不是备选：网页内容（Chrome）不暴露 AXScrollBar
 /// （浏览器自绘），只有原生滚动区才暴露。所以按目标**暴露了什么**来选，
 /// 而不是按调用方的猜测。
+/// 近 N 天用过的应用（**包含没在运行的**）。
+///
+/// 只看运行中的应用，模型就看不到这台机器上还有什么可以 launch —— 而 launch_app
+/// 要的正是 bundle id。mdls 一次只吃一个文件（逐个问 30ms×N），NSMetadataQuery
+/// 一次问完：实测 138 个应用 ~93ms，而且 bundle id 和最后使用时间一起给。
+///
+/// 结果靠 runloop 投递。主线程在 RunLoop.main.run() 上，是唯一确定被泵起来的那个；
+/// 在全局队列里手动泵 runloop 会漏结果，所以派到主线程做完再等。
+func recentlyUsedApplications(withinDays days: Int) -> [[String: Any]] {
+    var collected: [[String: Any]] = []
+    let finished = DispatchSemaphore(value: 0)
+    DispatchQueue.main.async {
+        defer { finished.signal() }
+        let query = NSMetadataQuery()
+        query.searchScopes = ["/Applications", "/System/Applications", NSHomeDirectory() + "/Applications"]
+        query.predicate = NSPredicate(format: "kMDItemContentTypeTree == 'com.apple.application-bundle'")
+        query.valueListAttributes = [kMDItemLastUsedDate as String, kMDItemCFBundleIdentifier as String, kMDItemDisplayName as String, kMDItemPath as String]
+        query.sortDescriptors = [NSSortDescriptor(key: kMDItemLastUsedDate as String, ascending: false)]
+        query.start()
+        // 守护进程不能因为 Spotlight 卡住就整体失去响应。
+        let deadline = Date().addingTimeInterval(2)
+        while query.isGathering && Date() < deadline {
+            RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.02))
+        }
+        let cutoff = Date().addingTimeInterval(-Double(days) * 86_400)
+        let formatter = ISO8601DateFormatter()
+        for index in 0..<query.resultCount {
+            guard let item = query.result(at: index) as? NSMetadataItem else { continue }
+            guard let used = item.value(forAttribute: kMDItemLastUsedDate as String) as? Date, used >= cutoff else { continue }
+            guard let bundle = item.value(forAttribute: kMDItemCFBundleIdentifier as String) as? String, !bundle.isEmpty else { continue }
+            // 后台服务（LogiPluginService 这类）也带应用包标识和最后使用时间，
+            // 但它们不是用户会去启动的东西。混进来只会淹没真正可用的选项。
+            if let path = item.value(forAttribute: kMDItemPath as String) as? String,
+               let info = Bundle(path: path)?.infoDictionary,
+               (info["LSUIElement"] as? Bool == true) || (info["LSBackgroundOnly"] as? Bool == true) { continue }
+            let name = item.value(forAttribute: kMDItemDisplayName as String) as? String ?? bundle
+            collected.append(["bundleId": bundle, "name": name.replacingOccurrences(of: ".app", with: ""), "running": false, "lastUsed": formatter.string(from: used)])
+        }
+        query.stop()
+    }
+    _ = finished.wait(timeout: .now() + 3)
+    return collected
+}
+
 func findScrollArea(_ root: AXUIElement, depth: Int = 0) -> AXUIElement? {
     if depth > 12 { return nil }
     if axString(root, kAXRoleAttribute as String) == "AXScrollArea" { return root }
@@ -474,6 +518,14 @@ DispatchQueue.global().async {
                                     if let bundle = app.bundleIdentifier, !bundle.isEmpty { entry["bundleId"] = bundle }
                                     apps.append(entry)
                                 }
+                                // 再补上近 N 天用过但没在运行的 —— 模型靠它知道有什么可以 launch。
+                                // 同一 bundleId 只出现一次：正在运行的那条优先（它带 pid，能直接操作）。
+                                let seen = Set(apps.compactMap { $0["bundleId"] as? String })
+                                let days = args["recent_days"] as? Int ?? 30
+                                apps.append(contentsOf: recentlyUsedApplications(withinDays: days).filter {
+                                    guard let bundle = $0["bundleId"] as? String else { return false }
+                                    return !seen.contains(bundle)
+                                })
                                 reply(fd, ["id": id, "ok": true, "data": ["apps": apps] as [String: Any]])
                             case "capture_screen":
                                 // 纯截图，不碰 AX：PiP 面板的帧源走这条，避免被卡住的

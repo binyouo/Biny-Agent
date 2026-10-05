@@ -37,6 +37,16 @@ description: "Operate native macOS apps on the user's behalf — observe a windo
 `amount` 是"格"（1–10）：AX 路由上一格 = **滚动范围的 10%**（滑块尺寸读不到，
 算不出"一页"多大，这是约定不是测量值）；滚轮路由上一格是系统的一个行单位。
 两者单位不同，别把它们当同一个距离。
+## 先看有什么
+
+`list_apps` 给两类：
+
+- **运行中**：带 `pid`，可以直接 `get_app_state` 观察、直接操作
+- **近 30 天用过但没在运行**：只有 `bundleId`（没有 pid，正常），这些是 `launch_app` 的候选
+
+只跑后端的辅助进程（`LSUIElement`/`LSBackgroundOnly`）已被滤掉，所以列表里剩下的
+都是用户真会用的应用。**要用哪个应用先在这里查 bundle id，别猜。**
+
 可用的动作共 8 个：`click` · `type_text` · `press_key` · `scroll` · `drag` ·
 `perform_secondary_action`（右键/上下文菜单）· `set_value`（直写控件值）· `select_text`。
 

@@ -117,14 +117,17 @@ test("every daemon command answers in the shape its caller parses", async () => 
       assert.ok(key in doctor, `doctor 必须给出 ${key}`);
     }
 
-    // list_apps：服务端要求 {apps:[{pid:int,name,running}], bundleId 可选且不得为空串}
-    const apps = ((await driver.list("contract", undefined)).data.apps ?? []) as { pid?: unknown; name?: unknown; running?: unknown; bundleId?: unknown }[];
-    assert.ok(apps.length > 0, "至少要有一个运行中的应用");
+    // list_apps：运行中的 {pid,name,running,bundleId}（bundleId 可选且不得为空串），
+    // 加上近 N 天用过但没在运行的 {name,running:false,lastUsed,bundleId} —— 后者是
+    // launch_app 的候选集，没有 pid 是对的。
+    const apps = ((await driver.list("contract", undefined)).data.apps ?? []) as { pid?: unknown; name?: unknown; running?: unknown; bundleId?: unknown; lastUsed?: unknown }[];
+    assert.ok(apps.some(app => app.running === true), "至少要有一个运行中的应用");
     for (const app of apps) {
-      assert.equal(typeof app.pid, "number");
       assert.equal(typeof app.name, "string");
       assert.equal(typeof app.running, "boolean");
       if ("bundleId" in app) assert.ok(typeof app.bundleId === "string" && app.bundleId.length > 0, "bundleId 要么缺席，要么非空——空串会让整份列表解析失败");
+      if (app.running === true) assert.equal(typeof app.pid, "number", "运行中的必须有 pid");
+      else assert.equal(app.pid, undefined, "没在运行的不该有 pid");
     }
 
     const target = apps.find(app => /TextEdit|文本编辑/i.test(String(app.name)));
@@ -259,4 +262,30 @@ test("the daemon socket is keyed by the binary, not the working directory", () =
   // 内容哈希：二进制变了名字就得变，旧构建的 daemon 不能应答新请求
   const other = new NativeProcessDriver(() => {}, { binaryPath: "/bin/echo" }) as unknown as { socketPath: string };
   assert.notEqual(other.socketPath, first);
+});
+
+// list_apps 只有运行中的应用时，模型看不到这台机器上**还有什么可以 launch** ——
+// 而 launch_app 要的正是 bundle id。运行中 + 近 N 天用过的才是完整的候选集。
+test("list_apps offers apps that are not running, because those are the ones to launch", async () => {
+  const driver = new NativeProcessDriver(() => {}, {
+    binaryPath: new URL("../out/native/computer-use", import.meta.url).pathname
+  });
+  try {
+    const reply = await driver.list("apps-e2e", undefined);
+    const apps = (reply.data as { apps: { name: string; bundleId?: string; pid?: number; running?: boolean; lastUsed?: string }[] }).apps;
+
+    assert.ok(apps.length > 0);
+    // 每条都要有可 launch 的标识：光有名字没法传给 launch_app
+    for (const app of apps) assert.ok(app.bundleId, `${app.name} 缺 bundleId，launch_app 用不了`);
+    // 同一个应用不该出现两次（运行中的那份带 pid，优先）
+    assert.equal(new Set(apps.map(app => app.bundleId)).size, apps.length, "bundleId 不能重复");
+
+    for (const app of apps.filter(entry => entry.running)) assert.equal(typeof app.pid, "number");
+    for (const app of apps.filter(entry => !entry.running)) {
+      assert.equal(app.pid, undefined, "没在运行的不该有 pid");
+      assert.match(app.lastUsed ?? "", /^\d{4}-\d{2}-\d{2}T/, "没在运行的要带最后使用时间");
+    }
+  } finally {
+    await driver.dispose();
+  }
 });

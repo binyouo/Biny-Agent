@@ -65,7 +65,7 @@ export function createComputerUseMcpServer(driver: NativeProcessDriver): McpServ
     "list_apps",
     {
       title: "List apps",
-      description: "List running apps with their bundle ids and pids, so you can pick an observation target.",
+      description: "List apps you can work with: those currently running (with pid and bundle id, to observe or act on), plus those used in the last 30 days that are not running (bundle id only, no pid) — the latter are your candidates for launch_app. Background-only agents are excluded.",
       inputSchema: {}
     },
     async () => {
