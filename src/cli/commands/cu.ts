@@ -172,7 +172,10 @@ export function registerCuCommands(program: Command): void {
     const command = cu.command(name).description(description).argument("<ref>", "element ref from `cu snap`")
       .argument("<value>", name === "press" ? "Enter | Escape | Space | Increment | Decrement | ShowMenu" : "text")
       .option("--pid <n>", "target pid").option("--json", "print JSON");
-    if (name === "type") command.option("--append", "append instead of replacing the value");
+    if (name === "type") {
+      command.option("--append", "append instead of replacing the value");
+      command.option("--at-selection", "insert at the selection (a cursor position when nothing is selected)");
+    }
     command.action((ref: string, value: string, options: Record<string, unknown>) => withDriver(async driver => {
       print((await driver.daemonCommand(name, { ref, pid: Number(options.pid), ...extra(value, options) })).data, options.json === true);
     }));
@@ -180,7 +183,12 @@ export function registerCuCommands(program: Command): void {
 
   // 元素级输入：改控件自己的 AXValue / 触发它的 AX 动作，**不经过键盘焦点**。
   // 自绘输入框（收不到合成按键的那类）只有这条路走得通。
-  elementVerb("type", "Write text into an element through its accessibility value", (value, options) => ({ text: value, append: options.append === true }));
+  // 三种模式对应参照的三条路径：直接写值 / 追加到 AXValue / 在选区处插入。
+  // insert 是**光标处插入**（空选区即光标），不是替换整段 —— 自绘输入框只有这条路。
+  elementVerb("type", "Write text into an element through its accessibility value", (value, options) => ({
+    text: value,
+    mode: options.atSelection === true ? "insert" : options.append === true ? "append" : "replace"
+  }));
   elementVerb("press", "Trigger an element's accessibility action", value => ({ key: value }));
 
   cu.command("set_value").description("Write an accessibility value directly (skips keystrokes)").argument("<ref>").argument("<value>")

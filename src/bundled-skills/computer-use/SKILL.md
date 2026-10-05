@@ -24,6 +24,24 @@ description: "Operate native macOS apps on the user's behalf — observe a windo
 
 两者共用同一个守护进程（`computer-use.app`），能力完全一样。
 
+## `type` 有三种模式，别只会 replace
+
+| 模式 | 语义 | 走哪条 |
+|---|---|---|
+| `replace`（默认）| 覆盖整个控件的值 | 写 `AXValue` |
+| `--append` | 追加到末尾 | 读 `AXValue` 再写回 |
+| **`--at-selection`** | **在选区处插入**（没选中就是光标处）| 写 `AXSelectedTextAttribute` |
+
+**要往一个已有内容的输入框里补字，用 `--at-selection`，不要用 replace** —— replace 会把
+整段冲掉。配合 `select_text` 先定位光标：
+
+```
+select_text <ref> --location 4        # 光标放到第 4 个字符后
+type <ref> "XX" --at-selection        # 插在那里，不是替换整段
+```
+
+这也是**自绘输入框唯一走得通的路**（键盘事件进不去那类应用）。
+
 ## 优先用 ref，不要用像素——这不只是精确度问题
 
 `click` 既能给元素 ref，也能给截图坐标。**能用 ref 就用 ref。**

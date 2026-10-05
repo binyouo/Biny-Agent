@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import { spawnSync } from "node:child_process";
+import { rmSync, writeFileSync } from "node:fs";
 import assert from "node:assert/strict";
 import { NativeProcessDriver } from "../src/computer/nativeDriver.js";
 
@@ -731,5 +732,48 @@ test("daemon fields survive the screenshot path, which rebuilds the reply", asyn
     assert.ok((tokenOf(noShot)?.length ?? 0) > 0, "no_shot 也必须给引用 —— 否则行集没有 ref，点了没用");
   } finally {
     await driver.dispose();
+  }
+});
+
+// `type` 的三种模式对应参照的三条路径（"appending to AXValue" / "inserting at selection" /
+// 直接写值）。**insert 是光标处插入，不是替换整段** —— 自绘输入框唯一走得通的路，
+// 也是 `type_text` 三级降级里够不到的"第一级 AX 插入"。
+//
+// ⚠️ 这条测试**必须自建一次性文档**：早先的版本遍历应用挑第一个有文本域的往里写，
+// 那会把用户真实界面里的输入框内容覆盖掉。写入类测试不能用"随便找一个"当目标。
+test("type can insert at the cursor instead of replacing the whole value", async () => {
+  const scratch = "/tmp/biny-cu-insert-test.txt";
+  writeFileSync(scratch, "AAAABBBB");
+  spawnSync("open", ["-a", "TextEdit", scratch]);
+  await new Promise(resolve => setTimeout(resolve, 2000));
+
+  const driver = new NativeProcessDriver(() => {}, {
+    binaryPath: new URL("../out/native/computer-use", import.meta.url).pathname
+  });
+  const pid = Number(spawnSync("pgrep", ["-f", "TextEdit$"], { encoding: "utf8" }).stdout.trim().split("\n")[0]);
+  try {
+    assert.ok(pid > 0, "TextEdit 应当起来了");
+    const observed = await driver.daemonCommand("get_app_state", { pid, no_shot: true, max_elements: 40 });
+    type El = { element_token?: string; ref?: string; role?: string; value?: unknown };
+    const area = ((observed.data as { elements?: El[] }).elements ?? []).find(element => element.role === "AXTextArea");
+    const ref = area?.element_token ?? area?.ref;
+    assert.ok(ref, "应当找得到那个一次性文档的文本域");
+    assert.equal(String(area?.value ?? ""), "AAAABBBB", "一次性文档的内容应当是我们刚写进去的");
+
+    // 光标放到第 4 个字符后，再插入 —— 结果应当插在中间，而不是替换整段
+    await driver.daemonCommand("select_text", { pid, ref, location: 4, length: 0 });
+    const inserted = (await driver.daemonCommand("type", { pid, ref, text: "XX", mode: "insert" })).data as { mode?: string };
+    assert.equal(inserted.mode, "insert");
+
+    const after = await driver.daemonCommand("get_app_state", { pid, no_shot: true, max_elements: 40 });
+    const value = String(((after.data as { elements?: El[] }).elements ?? []).find(element => element.role === "AXTextArea")?.value ?? "");
+    assert.equal(value, "AAAAXXBBBB", `应当插在光标处而不是替换整段（实际 ${JSON.stringify(value)}）`);
+  } finally {
+    await driver.dispose();
+    // ⚠️ 用 `close ... saving no` 会**超时**（TextEdit 的 scripting 会挂住，实测 -1712），
+    // 于是窗口留在用户屏幕上、文件却已删掉。按关闭按钮那条路是可靠的。
+    spawnSync("osascript", ["-e",
+      'tell application "System Events" to tell process "TextEdit" to perform action "AXPress" of (first button of window "biny-cu-insert-test.txt")']);
+    rmSync(scratch, { force: true });
   }
 });

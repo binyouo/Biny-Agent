@@ -1536,7 +1536,12 @@ DispatchQueue.global().async {
                                 //
                                 // 这是**唯一**一条不需要键盘焦点的输入路径 —— 自绘输入框
                                 // （网易云那类）收不到合成按键，但控件自己的 AXValue 是可写的。
-                                // 注意它走的是「替换/追加」语义，不是「在光标处插入」。
+                                // 三种模式，对应参照的三条路径（"appending to AXValue" /
+                                // "inserting at selection" / 直接写值）：
+                                //   replace（默认）· append · insert（在选区处插入，空选区即光标处）
+                                // insert 走 kAXSelectedTextAttribute —— 它替换的是**选区**，
+                                // 而空选区就是一个光标位置，于是等价于在光标处插入。
+                                // 这也正是 `type_text` 三级降级里够不到的"第一级 AX 插入"。
                                 guard let ref = args["ref"] as? String, let pid = args["pid"] as? Int, let text = args["text"] as? String else {
                                     // 四条合并成一句「requires ref and value」会让调用方无从下手：
                                     // 是没传、还是 ref 属于上一次观察、还是这个控件不可写？
@@ -1546,7 +1551,17 @@ DispatchQueue.global().async {
                                 guard let element = refTables[pid_t(pid)]?[ref] else {
                                     throw NSError(domain: "type", code: 64, userInfo: [NSLocalizedDescriptionKey: "element_ref_not_observed: ref \(ref) 不在 pid \(pid) 的最近一次观察里，先 snap 一次"])
                                 }
-                                let append = args["append"] as? Bool ?? false
+                                let mode = args["mode"] as? String ?? ((args["append"] as? Bool ?? false) ? "append" : "replace")
+                                if mode == "insert" {
+                                    let insertStatus = AXUIElementSetAttributeValue(element, kAXSelectedTextAttribute as CFString, text as CFTypeRef)
+                                    guard insertStatus == .success else {
+                                        throw NSError(domain: "type", code: 68, userInfo: [NSLocalizedDescriptionKey:
+                                            "element_selection_not_writable: 这个控件不接受在选区处插入。先用 select_text 把光标放到位置，或改用 mode=replace/append"])
+                                    }
+                                    reply(fd, ["id": id, "ok": true, "data": ["inserted": text.count, "mode": "insert", "route": "ax"] as [String: Any]])
+                                    return
+                                }
+                                let append = mode == "append"
                                 let current = axCopy(element, kAXValueAttribute as String) as? String ?? ""
                                 let next = append ? current + text : text
                                 let typeStatus = AXUIElementSetAttributeValue(element, kAXValueAttribute as CFString, next as CFTypeRef)
