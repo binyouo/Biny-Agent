@@ -1,0 +1,130 @@
+{
+  "meta": { "title": "Biny 功能架构 04 · 模型与扩展", "lang": "zh-CN" },
+  "canvas": { "preset": "4:5", "width": 1200, "height": 1500, "duration": 30, "fps": 30, "preroll": 10 },
+  "theme": {
+    "preset": "terminal-dark",
+    "colors": { "bg": "#161a20", "bar": "#232833", "line": "#4a5367", "line2": "#3a4154", "dim": "#6f788c",
+      "fg": "#e4e8f0", "wh": "#ffffff", "cy": "#86e1e6", "cyd": "#3f7d84", "bl": "#8fb4f6", "bld": "#3f5c8a",
+      "gr": "#86e0a2", "grd": "#3a6b4c", "pu": "#b9a2f2", "pud": "#5c4b80", "ye": "#e3c07a",
+      "or": "#e79a4c", "orl": "#c4783a", "hl": "#2b2f42", "row": "#22323a", "dots": "#566078" }
+  },
+  "clock": { "start": "14:00:00", "rate": 1 },
+  "titlebar": { "text": "~/CodingAgent/biny — model & extensions — 120x46" },
+  "credit": { "text": "取自 src/llm/* · src/extensions/* · src/permission/* · src/computer/* 源码 · live-panel" },
+  "machines": {
+    "reg": { "type": "lane", "period": 7.5, "run": 4.6, "off": 2.9, "busy": "解析模型", "done": ["已就绪"], "phase": 0,
+      "log": { "who": "resolver", "c": "bl", "msgs": [["AiRegistry → ModelResolver 选定", "→ session"]] } },
+    "stream": { "type": "lane", "period": 7.5, "run": 5.0, "off": 2.5, "busy": "收流中", "done": ["已收完"], "phase": 1.2,
+      "log": { "who": "provider", "c": "bl", "msgs": [["按 provider 适配流式协议", "→ 流"]] } },
+    "tools": { "type": "lane", "period": 8, "run": 5.2, "off": 2.8, "busy": "执行工具", "done": ["已回填"], "phase": 2.0,
+      "log": { "who": "tools", "c": "or", "msgs": [["内置 + MCP 工具统一注册", "→ 结果"]] } },
+    "mcp": { "type": "lane", "period": 9, "run": 6.0, "off": 3.0, "busy": "连 MCP", "done": ["已挂载"], "phase": 0.6,
+      "log": { "who": "mcp", "c": "cy", "msgs": [["stdio / http 传输接入外部服务", "→ 工具集"]] } },
+    "skills": { "type": "lane", "period": 8.5, "run": 5.6, "off": 2.9, "busy": "装载 skills", "done": ["已激活"], "phase": 1.7,
+      "log": { "who": "skills", "c": "pu", "msgs": [["按需激活 skill / plugin", "→ 能力"]] } },
+    "tokens": { "type": "gauge", "period": 4.6, "t0": 0.4, "seed": 13, "threshold": 70,
+      "values": [44, 58, 76, 39, 62, 47, 71, 53],
+      "high": { "label": "命中缓存", "dest": "→ 省钱" }, "low": { "label": "未命中", "dest": "→ 全价" },
+      "log": { "who": "cache", "c": "gr", "msgs": ["prompt cache 命中样本"], "tail": "hit={value}% {label}" } },
+    "sub": { "type": "cycle", "period": 5, "t0": 1.0, "order": [0, 0, 1, 2],
+      "values": [
+        { "t": "派发", "m": "主 agent 把子任务交出去", "g": "subagent" },
+        { "t": "并行", "m": "多个子 agent 同时跑", "g": "并行" },
+        { "t": "汇总", "m": "结果回填主上下文", "g": "回收" }
+      ] },
+    "trig": { "type": "triggers", "color": "ye", "period": 6.8, "on": 4.4, "t0": 1.0, "callsStart": 6,
+      "onText": "处理中", "offText": "待命",
+      "items": [
+        { "name": "要写文件 / 跑命令", "adv": ["» 命中路径策略", "» 请求你确认"], "to": "→ 审批" },
+        { "name": "要看桌面窗口", "adv": ["» 走 Computer Use", "» 应用级授权名单"], "to": "→ window" },
+        { "name": "任务可切分", "adv": ["» 派给 Subagent", "» 并行再汇总"], "to": "→ sub" }
+      ],
+      "log": { "who": "policy", "c": "ye", "start": { "m": "{name} · 已拦截", "g": "拦截" }, "end": { "m": "{name} · 已放行", "g": "{to}" } } }
+  },
+  "elements": [
+    { "type": "text", "x": 40, "y": 62, "align": "left", "size": 28, "c": "or", "b": 1, "t": "04 · 模型与扩展" },
+    { "type": "text", "x": 40, "y": 98, "align": "left", "size": 18, "c": "dim", "t": "多家模型服务商 + OpenAI 兼容接口；MCP / Plugins / Skills / Subagents 扩展工具与工作流" },
+
+    { "type": "box", "x": 40, "y": 132, "w": 1120, "h": 118, "color": "bl", "fill": "row", "pad": [14, 16, 16],
+      "lines": [
+        { "align": "left", "runs": [ { "t": "模型层", "c": "bl", "b": 1 }, { "t": "   AiRegistry · ModelResolver · ProviderRuntime · prompt cache", "c": "fg" } ] },
+        { "align": "left", "runs": [ { "t": "src/llm/", "c": "dim" }, { "t": "    模型由你配置，不上托管", "c": "fg" } ] }
+      ] },
+
+    { "type": "path", "points": [[600, 250], [600, 290]], "color": "line", "arrow": true },
+    { "type": "flow", "path": [[600, 254], [600, 294]], "period": 1.5, "offsets": [0.2, 1.0], "color": "bl" },
+
+    { "type": "box", "x": 40, "y": 296, "w": 540, "h": 192, "color": "bl", "pad": [12, 16, 16],
+      "lines": [
+        { "align": "left", "runs": [ { "t": "取流链", "c": "bl", "b": 1 } ] },
+        { "align": "left", "runs": [ { "v": "reg" } ] },
+        { "align": "left", "runs": [ { "v": "stream" } ] },
+        { "align": "left", "runs": [ { "v": "tokens" } ] }
+      ] },
+    { "type": "box", "x": 620, "y": 296, "w": 540, "h": 192, "color": "or", "pad": [12, 16, 16],
+      "lines": [
+        { "align": "left", "runs": [ { "t": "工具调用", "c": "or", "b": 1 } ] },
+        { "align": "left", "runs": [ { "v": "tools" } ] },
+        { "align": "left", "t": "内置 / MCP / Skill 工具同一套注册表", "c": "fg" },
+        { "align": "left", "t": "并发执行，结果统一投影", "c": "dim" }
+      ] },
+
+    { "type": "path", "points": [[600, 488], [600, 528]], "color": "line", "arrow": true },
+    { "type": "flow", "path": [[600, 492], [600, 532]], "period": 1.6, "offsets": [0.4, 1.3], "color": "or" },
+
+    { "type": "box", "x": 40, "y": 534, "w": 360, "h": 200, "color": "cy", "pad": [12, 14, 14],
+      "lines": [
+        { "align": "left", "runs": [ { "t": "MCP", "c": "cy", "b": 1 } ] },
+        { "align": "left", "t": "统一协议接外部", "c": "fg" },
+        { "align": "left", "runs": [ { "v": "mcp" } ] },
+        { "align": "left", "t": "stdio / http 传输", "c": "dim" }
+      ] },
+    { "type": "box", "x": 420, "y": 534, "w": 360, "h": 200, "color": "pu", "pad": [12, 14, 14],
+      "lines": [
+        { "align": "left", "runs": [ { "t": "Skills / Plugins", "c": "pu", "b": 1 } ] },
+        { "align": "left", "runs": [ { "v": "skills" } ] },
+        { "align": "left", "t": "可搜索、可安装", "c": "fg" },
+        { "align": "left", "t": "按需激活，不占上下文", "c": "dim" }
+      ] },
+    { "type": "box", "x": 800, "y": 534, "w": 360, "h": 200, "color": "gr", "pad": [12, 14, 14],
+      "lines": [
+        { "align": "left", "runs": [ { "t": "Subagents", "c": "gr", "b": 1 } ] },
+        { "align": "left", "runs": [ { "t": "当前 ", "c": "dim" }, { "v": "sub.t", "c": "ye", "b": 1 } ] },
+        { "align": "left", "t": "拆任务并行再汇总", "c": "fg" },
+        { "align": "left", "t": "权限与上下文隔离", "c": "dim" }
+      ] },
+
+    { "type": "text", "x": 40, "y": 764, "align": "left", "size": 18, "c": "dim", "b": 1, "t": "▸ 权限与操作控制" },
+    { "type": "box", "x": 40, "y": 784, "w": 1120, "h": 148, "color": "pu", "pad": [12, 16, 16],
+      "lines": [
+        { "align": "left", "runs": [ { "t": "PermissionManager · 策略与审批", "c": "pu", "b": 1 }, { "t": "   src/permission/", "c": "dim" } ] },
+        { "align": "left", "t": "路径策略限制工作区范围 · 敏感动作弹确认 · 权限模式可切换", "c": "fg" },
+        { "align": "left", "t": "Computer Use 有独立严格开关与跨会话应用授权名单", "c": "fg" }
+      ] },
+
+    { "type": "box", "x": 40, "y": 956, "w": 740, "h": 230, "color": "ye", "pad": [14, 16, 16],
+      "lines": [
+        { "align": "left", "runs": [ { "t": "▸ 常驻触发", "c": "dim", "b": 1 } ] },
+        { "align": "left", "runs": [ { "v": "trig.label0" } ] },
+        { "align": "left", "runs": [ { "v": "trig.label1" } ] },
+        { "align": "left", "runs": [ { "v": "trig.label2" } ] },
+        { "align": "left", "runs": [ { "t": "→ ", "c": "dim" }, { "v": "trig.adv0" } ] },
+        { "align": "left", "runs": [ { "t": "   ", "c": "dim" }, { "v": "trig.adv1" } ] },
+        { "align": "left", "runs": [ { "t": "拦截 ", "c": "dim" }, { "v": "trig.calls", "c": "ye", "b": 1 }, { "t": " 次 ", "c": "dim" }, { "v": "trig.status", "c": "fg", "b": 1 } ] }
+      ] },
+    { "type": "box", "x": 800, "y": 956, "w": 360, "h": 230, "color": "or", "pad": [14, 16, 16],
+      "lines": [
+        { "align": "left", "runs": [ { "t": "扩展的三个前提", "c": "or", "b": 1 } ] },
+        { "align": "left", "t": "能力来自 skill，不硬编", "c": "fg" },
+        { "align": "left", "t": "外部服务走 MCP 协议", "c": "fg" },
+        { "align": "left", "t": "危险动作先问过你", "c": "fg" },
+        { "align": "left", "t": "上下文按需加载", "c": "fg" },
+        { "align": "left", "t": "扩展不越过权限边界", "c": "dim" }
+      ] },
+
+    { "type": "log", "x": 40, "y": 1234, "w": 1120, "rows": 4, "padTop": 16, "padBottom": 30, "padLeft": 20,
+      "title": "extension log", "titleX": 40, "titleW": 200,
+      "cols": [ { "key": "time", "x": 0 }, { "key": "who", "x": 116 }, { "key": "m", "x": 238 }, { "key": "g", "x": 900 } ] },
+    { "type": "text", "x": 40, "y": 1440, "align": "left", "size": 16, "c": "dim", "t": "动画计数为示意 (illustrative) · 模块与文件名取自 src 源码" }
+  ]
+}

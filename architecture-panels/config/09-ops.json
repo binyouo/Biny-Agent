@@ -1,0 +1,128 @@
+{
+  "meta": { "title": "Biny 功能架构 08 · 调度 / 浏览器 / 钩子", "lang": "zh-CN" },
+  "canvas": { "preset": "4:5", "width": 1200, "height": 1500, "duration": 30, "fps": 30, "preroll": 10 },
+  "theme": {
+    "preset": "terminal-dark",
+    "colors": { "bg": "#161a20", "bar": "#232833", "line": "#4a5367", "line2": "#3a4154", "dim": "#6f788c",
+      "fg": "#e4e8f0", "wh": "#ffffff", "cy": "#86e1e6", "cyd": "#3f7d84", "bl": "#8fb4f6", "bld": "#3f5c8a",
+      "gr": "#86e0a2", "grd": "#3a6b4c", "pu": "#b9a2f2", "pud": "#5c4b80", "ye": "#e3c07a",
+      "or": "#e79a4c", "orl": "#c4783a", "pk": "#f0575f", "hl": "#2b2f42", "row": "#22323a", "dots": "#566078" }
+  },
+  "clock": { "start": "17:30:00", "rate": 1 },
+  "titlebar": { "text": "~/CodingAgent/biny — ops layer — 120x46" },
+  "credit": { "text": "取自 src/tools/{scheduler,hooks}.ts · src/browser/BrowserRelay.ts · src/browser-extension/ · src/bundled-skills/ · live-panel" },
+  "machines": {
+    "sched": { "type": "lane", "period": 7, "run": 4.4, "off": 2.6, "busy": "并发调度", "done": ["已跑完"], "phase": 0,
+      "log": { "who": "sched", "c": "cy", "msgs": [["不冲突的工具并发跑", "→ 4 路"]] } },
+    "wait": { "type": "lane", "period": 8, "run": 5.0, "off": 3.0, "busy": "排队等锁", "done": ["已让开"], "phase": 1.2,
+      "log": { "who": "sched", "c": "cy", "msgs": [["同路径写入 / 未知副作用串行", "→ 等待"]] } },
+    "auto": { "type": "lane", "period": 9.5, "run": 5.8, "off": 3.7, "busy": "等到点", "done": ["已触发"], "phase": 2.0,
+      "log": { "who": "autom", "c": "ye", "msgs": [["automation 到点投递任务", "→ 会话"]] } },
+    "relay": { "type": "lane", "period": 7.5, "run": 4.6, "off": 2.9, "busy": "桥接标签页", "done": ["已回帧"], "phase": 0.6,
+      "log": { "who": "relay", "c": "pu", "msgs": [["令牌认证后转发到扩展", "→ 标签"]] } },
+    "hook": { "type": "lane", "period": 8.5, "run": 5.2, "off": 3.3, "busy": "跑钩子", "done": ["已通过"], "phase": 1.7,
+      "log": { "who": "hook", "c": "or", "msgs": [["beforeTool 非零退出即拦截", "→ 拒绝"]] } },
+    "queue": { "type": "gauge", "period": 4.6, "t0": 0.4, "seed": 37, "threshold": 62,
+      "values": [31, 48, 69, 39, 57, 76, 41, 60],
+      "high": { "label": "通畅", "dest": "→ 并发跑" }, "low": { "label": "积压", "dest": "→ 排队" },
+      "log": { "who": "sched", "c": "ye", "msgs": ["工具队列样本"], "tail": "q={value}% {label}" } },
+    "trig": { "type": "triggers", "color": "pk", "period": 6.8, "on": 4.4, "t0": 1.0, "callsStart": 5,
+      "onText": "进行中", "offText": "待命",
+      "items": [
+        { "name": "钩子拦下一次调用", "adv": ["» stderr 当拒绝理由回给模型", "» 这是硬约束不是建议"], "to": "→ 模型" },
+        { "name": "要读当前网页", "adv": ["» 走本机 relay", "» 中断后不重放"], "to": "→ 扩展" },
+        { "name": "定了个每天的任务", "adv": ["» 只记下未来触发点", "» 不保证一定跑成功"], "to": "→ autom" }
+      ],
+      "log": { "who": "ops", "c": "pk", "start": { "m": "{name} · 触发", "g": "触发" }, "end": { "m": "{name} · 已处置", "g": "{to}" } } }
+  },
+  "elements": [
+    { "type": "text", "x": 40, "y": 62, "align": "left", "size": 28, "c": "or", "b": 1, "t": "08 · 调度 / 浏览器 / 钩子" },
+    { "type": "text", "x": 40, "y": 98, "align": "left", "size": 18, "c": "dim", "t": "把「指望模型自觉」换成机制：并发调度、定时自动化、真实浏览器桥、不经过模型判断的钩子" },
+
+    { "type": "box", "x": 40, "y": 132, "w": 1120, "h": 118, "color": "ye", "fill": "row", "pad": [14, 16, 16],
+      "lines": [
+        { "align": "left", "runs": [ { "t": "共同点", "c": "ye", "b": 1 }, { "t": "   这几件事都由 runtime / 扩展执行，不靠模型记住或判断", "c": "fg" } ] },
+        { "align": "left", "runs": [ { "t": "src/tools/scheduler.ts · hooks.ts · src/browser/ · src/bundled-skills/", "c": "dim" } ] }
+      ] },
+
+    { "type": "path", "points": [[600, 250], [600, 290]], "color": "line", "arrow": true },
+    { "type": "flow", "path": [[600, 254], [600, 294]], "period": 1.5, "offsets": [0.2, 1.0], "color": "ye" },
+
+    { "type": "box", "x": 40, "y": 296, "w": 540, "h": 218, "color": "cy", "pad": [12, 14, 14],
+      "lines": [
+        { "align": "left", "runs": [ { "t": "工具调度器", "c": "cy", "b": 1 } ] },
+        { "align": "left", "runs": [ { "v": "sched" } ] },
+        { "align": "left", "runs": [ { "v": "wait" } ] },
+        { "align": "left", "t": "默认 4 路并发、64 个排队上限", "c": "fg" },
+        { "align": "left", "runs": [ { "t": "当前 ", "c": "dim" }, { "v": "queue", "c": "fg" } ] }
+      ] },
+    { "type": "box", "x": 620, "y": 296, "w": 540, "h": 218, "color": "or", "pad": [12, 14, 14],
+      "lines": [
+        { "align": "left", "runs": [ { "t": "钩子：不经过模型判断", "c": "or", "b": 1 } ] },
+        { "align": "left", "runs": [ { "v": "hook" } ] },
+        { "align": "left", "t": "beforeTool 非零退出会阻止调用", "c": "fg" },
+        { "align": "left", "t": "afterTool 只附加说明，不拦", "c": "fg" },
+        { "align": "left", "t": "钩子跑不起来也算失败", "c": "dim" }
+      ] },
+
+    { "type": "path", "points": [[600, 514], [600, 554]], "color": "line", "arrow": true },
+    { "type": "flow", "path": [[600, 518], [600, 558]], "period": 1.6, "offsets": [0.4, 1.3], "color": "or" },
+
+    { "type": "box", "x": 40, "y": 560, "w": 540, "h": 196, "color": "pu", "pad": [12, 14, 14],
+      "lines": [
+        { "align": "left", "runs": [ { "t": "浏览器桥 BrowserRelay", "c": "pu", "b": 1 } ] },
+        { "align": "left", "runs": [ { "v": "relay" } ] },
+        { "align": "left", "t": "本机扩展连接权威：令牌认证", "c": "fg" },
+        { "align": "left", "t": "中断后不重放请求", "c": "fg" }
+      ] },
+    { "type": "box", "x": 620, "y": 560, "w": 540, "h": 196, "color": "ye", "pad": [12, 14, 14],
+      "lines": [
+        { "align": "left", "runs": [ { "t": "定时自动化", "c": "ye", "b": 1 } ] },
+        { "align": "left", "runs": [ { "v": "auto" } ] },
+        { "align": "left", "t": "一次 / 间隔 / cron / 心跳四类", "c": "fg" },
+        { "align": "left", "t": "只记触发点，不保证跑成功", "c": "dim" }
+      ] },
+
+    { "type": "text", "x": 40, "y": 786, "align": "left", "size": 18, "c": "dim", "b": 1, "t": "▸ 浏览器扩展（MV3）" },
+    { "type": "box", "x": 40, "y": 806, "w": 640, "h": 190, "color": "pu", "pad": [12, 14, 14],
+      "lines": [
+        { "align": "left", "runs": [ { "t": "Biny Browser Relay · v1.1", "c": "pu", "b": 1 } ] },
+        { "align": "left", "t": "service worker + content script 两段", "c": "fg" },
+        { "align": "left", "t": "权限只申请 tabs / debugger / storage / alarms", "c": "fg" },
+        { "align": "left", "t": "host 只放行 127.0.0.1", "c": "fg" }
+      ] },
+    { "type": "box", "x": 720, "y": 806, "w": 440, "h": 190, "color": "gr", "pad": [12, 14, 14],
+      "lines": [
+        { "align": "left", "runs": [ { "t": "9 个内置 skill", "c": "gr", "b": 1 } ] },
+        { "align": "left", "t": "browser · workspace-search", "c": "fg" },
+        { "align": "left", "t": "memory-management · tasks", "c": "fg" },
+        { "align": "left", "t": "todo · scheduler · plan-weave", "c": "fg" },
+        { "align": "left", "t": "daily-report · self-reflection", "c": "fg" }
+      ] },
+
+    { "type": "box", "x": 40, "y": 1028, "w": 740, "h": 230, "color": "pk", "pad": [14, 16, 16],
+      "lines": [
+        { "align": "left", "runs": [ { "t": "▸ 常驻触发", "c": "dim", "b": 1 } ] },
+        { "align": "left", "runs": [ { "v": "trig.label0" } ] },
+        { "align": "left", "runs": [ { "v": "trig.label1" } ] },
+        { "align": "left", "runs": [ { "v": "trig.label2" } ] },
+        { "align": "left", "runs": [ { "t": "→ ", "c": "dim" }, { "v": "trig.adv0" } ] },
+        { "align": "left", "runs": [ { "t": "   ", "c": "dim" }, { "v": "trig.adv1" } ] },
+        { "align": "left", "runs": [ { "t": "触发 ", "c": "dim" }, { "v": "trig.calls", "c": "pk", "b": 1 }, { "t": " 次 ", "c": "dim" }, { "v": "trig.status", "c": "fg", "b": 1 } ] }
+      ] },
+    { "type": "box", "x": 800, "y": 1028, "w": 360, "h": 230, "color": "gr", "pad": [14, 16, 16],
+      "lines": [
+        { "align": "left", "runs": [ { "t": "边界", "c": "gr", "b": 1 } ] },
+        { "align": "left", "t": "钩子跑起来即信任那条命令", "c": "fg" },
+        { "align": "left", "t": "扩展只管本机 127.0.0.1", "c": "fg" },
+        { "align": "left", "t": "中断即放弃，不重放副作用", "c": "fg" },
+        { "align": "left", "t": "定时不等于会成功", "c": "fg" },
+        { "align": "left", "t": "调度器不碰 UI 与权限", "c": "dim" }
+      ] },
+
+    { "type": "log", "x": 40, "y": 1306, "w": 1120, "rows": 4, "padTop": 16, "padBottom": 30, "padLeft": 20,
+      "title": "ops log", "titleX": 40, "titleW": 150,
+      "cols": [ { "key": "time", "x": 0 }, { "key": "who", "x": 112 }, { "key": "m", "x": 232 }, { "key": "g", "x": 858 } ] },
+    { "type": "text", "x": 40, "y": 1460, "align": "left", "size": 16, "c": "dim", "t": "动画计数为示意 (illustrative) · 模块与文件名取自 src 源码" }
+  ]
+}

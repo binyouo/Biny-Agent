@@ -1,0 +1,143 @@
+{
+  "meta": { "title": "Biny 功能架构 01 · 多端交互", "lang": "zh-CN" },
+  "canvas": { "preset": "4:5", "width": 1200, "height": 1500, "duration": 30, "fps": 30, "preroll": 10 },
+  "theme": {
+    "preset": "terminal-dark",
+    "colors": { "bg": "#161a20", "bar": "#232833", "line": "#4a5367", "line2": "#3a4154", "dim": "#6f788c",
+      "fg": "#e4e8f0", "wh": "#ffffff", "cy": "#86e1e6", "cyd": "#3f7d84", "bl": "#8fb4f6", "bld": "#3f5c8a",
+      "gr": "#86e0a2", "grd": "#3a6b4c", "pu": "#b9a2f2", "pud": "#5c4b80", "ye": "#e3c07a",
+      "or": "#e79a4c", "orl": "#c4783a", "hl": "#2b2f42", "row": "#22323a", "dots": "#566078" }
+  },
+  "clock": { "start": "09:30:00", "rate": 1 },
+  "titlebar": { "text": "~/CodingAgent/biny — 多端交互 — 120x46" },
+  "credit": { "text": "取自 src/desktop · src/tui · src/cli · src/widgets 源码 · 动画计数为示意 illustrative · live-panel" },
+  "machines": {
+    "ipc": { "type": "lane", "period": 7, "run": 4.4, "off": 2.6, "busy": "IPC 转发中", "done": ["已投递"], "phase": 0,
+      "log": { "who": "desktop", "c": "cy", "msgs": [["Electron IPC → 主进程 → socket", "→ host"]] } },
+    "tui": { "type": "lane", "period": 7, "run": 3.9, "off": 3.1, "busy": "读键位输入", "done": ["已投递"], "phase": 1,
+      "log": { "who": "tui", "c": "cy", "msgs": [["TUI reducer 收键位事件", "→ host"]] } },
+    "runs": { "type": "lane", "period": 9, "run": 5.6, "off": 3.4, "busy": "跑一次性任务", "done": ["已退出 0"], "phase": 2,
+      "log": { "who": "cli", "c": "ye", "msgs": [["biny run → ExecutionService", "→ exec"]] } },
+    "widget": { "type": "lane", "period": 8, "run": 5.0, "off": 3.0, "busy": "流式生成 widget", "done": ["可交互"], "phase": 0.5,
+      "log": { "who": "widget", "c": "pu", "msgs": [["HTML / SVG 片段流式落盘", "→ 页面"]] } },
+    "lease": { "type": "cycle", "period": 4, "t0": 0.6, "order": [0, 0, 1, 2],
+      "values": [
+        { "t": "占用", "m": "SessionLease 单写者持有", "g": "独占" },
+        { "t": "排队", "m": "第二端排队等租约", "g": "串行" },
+        { "t": "切换", "m": "上一端释放，下一端接手", "g": "交接" }
+      ] },
+    "clients": { "type": "gauge", "period": 4.2, "t0": 0.8, "seed": 11, "threshold": 60,
+      "values": [38, 52, 71, 44, 63, 35, 58, 47],
+      "high": { "label": "同端", "dest": "→ desktop" }, "low": { "label": "多端", "dest": "→ host 排队" },
+      "log": { "who": "lease", "c": "gr", "msgs": ["活跃客户端样本"], "tail": "clients={value}% {label}" } },
+    "trig": { "type": "triggers", "color": "ye", "period": 6.8, "on": 4.4, "t0": 1.0, "callsStart": 2,
+      "onText": "处理中", "offText": "待命",
+      "items": [
+        { "name": "桌面发起会话", "adv": ["» 主进程建 socket 连接", "» 申请 SessionLease"], "to": "→ host" },
+        { "name": "终端发起会话", "adv": ["» TUI 渲染同一 transcript", "» 复用同一 session"], "to": "→ host" },
+        { "name": "脚本一次性任务", "adv": ["» 走 ExecutionService", "» 不进交互会话"], "to": "→ exec" }
+      ],
+      "log": { "who": "client", "c": "ye", "start": { "m": "{name} · 已接入", "g": "接入" }, "end": { "m": "{name} · 已建联", "g": "{to}" } } }
+  },
+  "elements": [
+    { "type": "text", "x": 40, "y": 62, "align": "left", "size": 28, "c": "cy", "b": 1, "t": "01 · 多端交互" },
+    { "type": "text", "x": 40, "y": 98, "align": "left", "size": 18, "c": "dim", "t": "Desktop / TUI / CLI 交互式任务共用本机 Runtime Host；biny run 是一次性任务入口" },
+
+    { "type": "box", "x": 40, "y": 132, "w": 1120, "h": 122, "color": "cy", "fill": "row", "pad": [14, 16, 16],
+      "lines": [
+        { "align": "left", "runs": [ { "t": "交互入口", "c": "cy", "b": 1 }, { "t": "   macOS Desktop (Electron) · 终端 TUI · CLI chat · CLI biny run", "c": "fg" } ] },
+        { "align": "left", "items": [
+          { "w": 172, "runs": [ { "v": "ipc" } ] },
+          { "w": 172, "runs": [ { "v": "tui" } ] },
+          { "w": 172, "runs": [ { "v": "runs" } ] },
+          { "w": 172, "runs": [ { "v": "widget" } ] } ] }
+      ] },
+
+    { "type": "path", "points": [[600, 254], [600, 300]], "color": "line", "arrow": true },
+    { "type": "flow", "path": [[600, 258], [600, 304]], "period": 1.5, "offsets": [0.2, 1.0], "color": "cy" },
+
+    { "type": "box", "x": 40, "y": 306, "w": 640, "h": 148, "color": "bl", "pad": [12, 16, 16],
+      "lines": [
+        { "align": "left", "runs": [ { "t": "本机 Runtime Host · 单点接入", "c": "bl", "b": 1 } ] },
+        { "align": "left", "t": "Unix domain socket，三端共用一条通道", "c": "fg" },
+        { "align": "left", "t": "同一份 AgentSession 执行核心", "c": "fg" },
+        { "align": "left", "runs": [ { "t": "src/runtime/RuntimeHost.ts", "c": "dim" } ] }
+      ] },
+    { "type": "box", "x": 712, "y": 306, "w": 448, "h": 148, "color": "gr", "pad": [12, 16, 16],
+      "lines": [
+        { "align": "left", "runs": [ { "t": "SessionLease · 单写者租约", "c": "gr", "b": 1 } ] },
+        { "align": "left", "t": "防两端同时写坏同一会话", "c": "fg" },
+        { "align": "left", "runs": [ { "t": "当前 ", "c": "dim" }, { "v": "lease.t", "c": "ye", "b": 1 } ] },
+        { "align": "left", "runs": [ { "v": "clients", "c": "fg" } ] }
+      ] },
+
+    { "type": "path", "points": [[600, 454], [600, 494]], "color": "line", "arrow": true },
+    { "type": "flow", "path": [[600, 458], [600, 498]], "period": 1.6, "offsets": [0.4, 1.3], "color": "bl" },
+
+    { "type": "box", "x": 40, "y": 500, "w": 1120, "h": 148, "color": "gr", "pad": [12, 16, 16],
+      "lines": [
+        { "align": "left", "runs": [ { "t": "AgentSession · 会话与转录", "c": "gr", "b": 1 }, { "t": "   src/agent/AgentSession.ts", "c": "dim" } ] },
+        { "align": "left", "t": "message tree · 分叉 · 重放 · 排队消息 · 引用图", "c": "fg" },
+        { "align": "left", "runs": [ { "t": "→ 会话记录落本机，切换端不丢上下文", "c": "dim" } ] }
+      ] },
+
+    { "type": "text", "x": 40, "y": 686, "align": "left", "size": 18, "c": "dim", "b": 1, "t": "▸ 四个入口各自的形态" },
+    { "type": "box", "x": 40, "y": 706, "w": 268, "h": 178, "color": "cy", "pad": [12, 12, 12],
+      "lines": [
+        { "align": "left", "runs": [ { "t": "Desktop", "c": "cy", "b": 1 } ] },
+        { "align": "left", "t": "Electron UI", "c": "fg" },
+        { "align": "left", "t": "流式 widget", "c": "fg" },
+        { "align": "left", "t": "附件与面板", "c": "fg" },
+        { "align": "left", "t": "Computer Use", "c": "fg" }
+      ] },
+    { "type": "box", "x": 328, "y": 706, "w": 268, "h": 178, "color": "bl", "pad": [12, 12, 12],
+      "lines": [
+        { "align": "left", "runs": [ { "t": "TUI", "c": "bl", "b": 1 } ] },
+        { "align": "left", "t": "终端全屏界面", "c": "fg" },
+        { "align": "left", "t": "键位 reducer", "c": "fg" },
+        { "align": "left", "t": "diff 预览", "c": "fg" },
+        { "align": "left", "t": "权限模式切换", "c": "fg" }
+      ] },
+    { "type": "box", "x": 616, "y": 706, "w": 268, "h": 178, "color": "ye", "pad": [12, 12, 12],
+      "lines": [
+        { "align": "left", "runs": [ { "t": "CLI chat / run", "c": "ye", "b": 1 } ] },
+        { "align": "left", "t": "biny chat 交互", "c": "fg" },
+        { "align": "left", "t": "biny run 一次性", "c": "fg" },
+        { "align": "left", "t": "goal / graph 命令", "c": "fg" },
+        { "align": "left", "t": "可脚本化", "c": "fg" }
+      ] },
+    { "type": "box", "x": 904, "y": 706, "w": 256, "h": 178, "color": "pu", "pad": [12, 12, 12],
+      "lines": [
+        { "align": "left", "runs": [ { "t": "Widget", "c": "pu", "b": 1 } ] },
+        { "align": "left", "t": "聊天内流式 HTML", "c": "fg" },
+        { "align": "left", "t": "滑块 / 按钮", "c": "fg" },
+        { "align": "left", "t": "动态计算", "c": "fg" },
+        { "align": "left", "t": "--html 独立页", "c": "fg" }
+      ] },
+
+    { "type": "box", "x": 40, "y": 908, "w": 740, "h": 230, "color": "ye", "pad": [14, 16, 16],
+      "lines": [
+        { "align": "left", "runs": [ { "t": "▸ 常驻触发", "c": "dim", "b": 1 } ] },
+        { "align": "left", "runs": [ { "v": "trig.label0" } ] },
+        { "align": "left", "runs": [ { "v": "trig.label1" } ] },
+        { "align": "left", "runs": [ { "v": "trig.label2" } ] },
+        { "align": "left", "runs": [ { "t": "→ ", "c": "dim" }, { "v": "trig.adv0" } ] },
+        { "align": "left", "runs": [ { "t": "   ", "c": "dim" }, { "v": "trig.adv1" } ] },
+        { "align": "left", "runs": [ { "t": "受理 ", "c": "dim" }, { "v": "trig.calls", "c": "ye", "b": 1 }, { "t": " 次 ", "c": "dim" }, { "v": "trig.status", "c": "fg", "b": 1 } ] }
+      ] },
+    { "type": "box", "x": 800, "y": 908, "w": 360, "h": 230, "color": "gr", "pad": [14, 16, 16],
+      "lines": [
+        { "align": "left", "runs": [ { "t": "一致性保证", "c": "gr", "b": 1 } ] },
+        { "align": "left", "t": "三端读同一份 message tree", "c": "fg" },
+        { "align": "left", "t": "写由 SessionLease 串行", "c": "fg" },
+        { "align": "left", "t": "确认框在发起端本地渲染", "c": "fg" },
+        { "align": "left", "t": "会话与记忆全部落本机", "c": "fg" },
+        { "align": "left", "t": "不需要云端账号", "c": "dim" }
+      ] },
+
+    { "type": "log", "x": 40, "y": 1186, "w": 1120, "rows": 4, "padTop": 16, "padBottom": 30, "padLeft": 20,
+      "title": "client log", "titleX": 40, "titleW": 170,
+      "cols": [ { "key": "time", "x": 0 }, { "key": "who", "x": 116 }, { "key": "m", "x": 238 }, { "key": "g", "x": 900 } ] },
+    { "type": "text", "x": 40, "y": 1440, "align": "left", "size": 16, "c": "dim", "t": "动画计数为示意 (illustrative) · 模块与文件名取自 src 源码" }
+  ]
+}

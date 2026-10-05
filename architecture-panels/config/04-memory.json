@@ -1,0 +1,127 @@
+{
+  "meta": { "title": "Biny 功能架构 03 · 记忆与 Activity", "lang": "zh-CN" },
+  "canvas": { "preset": "4:5", "width": 1200, "height": 1500, "duration": 30, "fps": 30, "preroll": 10 },
+  "theme": {
+    "preset": "terminal-dark",
+    "colors": { "bg": "#161a20", "bar": "#232833", "line": "#4a5367", "line2": "#3a4154", "dim": "#6f788c",
+      "fg": "#e4e8f0", "wh": "#ffffff", "cy": "#86e1e6", "cyd": "#3f7d84", "bl": "#8fb4f6", "bld": "#3f5c8a",
+      "gr": "#86e0a2", "grd": "#3a6b4c", "pu": "#b9a2f2", "pud": "#5c4b80", "ye": "#e3c07a",
+      "or": "#e79a4c", "orl": "#c4783a", "hl": "#2b2f42", "row": "#22323a", "dots": "#566078" }
+  },
+  "clock": { "start": "11:20:00", "rate": 1 },
+  "titlebar": { "text": "~/CodingAgent/biny — memory — 120x46" },
+  "credit": { "text": "取自 src/agent/context/* · src/activity/* · src/desktop/temporalMemoryService.ts 源码 · live-panel" },
+  "machines": {
+    "cap": { "type": "lane", "period": 8, "run": 5.0, "off": 3.0, "busy": "抓屏 + OCR", "done": ["已入库"], "phase": 0,
+      "log": { "who": "capture", "c": "cy", "msgs": [["定时截图 + OCR 抽文字", "→ 索引"]] } },
+    "analyse": { "type": "lane", "period": 9, "run": 5.8, "off": 3.2, "busy": "分析会话", "done": ["已成篇"], "phase": 1.5,
+      "log": { "who": "analyzer", "c": "pu", "msgs": [["归纳项目 / PR / 决策", "→ 摘要"]] } },
+    "recall": { "type": "lane", "period": 7, "run": 4.2, "off": 2.8, "busy": "检索中", "done": ["已召回"], "phase": 0.8,
+      "log": { "who": "retriever", "c": "gr", "msgs": [["混合检索：关键词 + 向量", "→ 上下文"]] } },
+    "embed": { "type": "lane", "period": 8.5, "run": 5.4, "off": 3.1, "busy": "建向量", "done": ["已索引"], "phase": 2.2,
+      "log": { "who": "embedding", "c": "bl", "msgs": [["增量嵌入写向量索引", "→ index"]] } },
+    "fatigue": { "type": "gauge", "period": 4.4, "t0": 0.6, "seed": 3, "threshold": 55,
+      "values": [18, 34, 62, 27, 49, 71, 23, 44],
+      "high": { "label": "轻载", "dest": "→ 建索引" }, "low": { "label": "繁忙", "dest": "→ 延后" },
+      "log": { "who": "scheduler", "c": "ye", "msgs": ["后台负载样本"], "tail": "load={value}% {label}" } },
+    "trig": { "type": "triggers", "color": "ye", "period": 6.8, "on": 4.4, "t0": 1.0, "callsStart": 5,
+      "onText": "处理中", "offText": "待命",
+      "items": [
+        { "name": "你打开新对话", "adv": ["» 取近期活动建议", "» 点一下即开聊"], "to": "→ chat" },
+        { "name": "你提起旧事", "adv": ["» 语义 + 关键词混合查", "» 连同原文一起召回"], "to": "→ recall" },
+        { "name": "Sleep 周期到", "adv": ["» 整理 / 归档 / 合并", "» 只留该留的"], "to": "→ sleep" }
+      ],
+      "log": { "who": "memory", "c": "ye", "start": { "m": "{name} · 已受理", "g": "受理" }, "end": { "m": "{name} · 已完成", "g": "{to}" } } }
+  },
+  "elements": [
+    { "type": "text", "x": 40, "y": 62, "align": "left", "size": 28, "c": "gr", "b": 1, "t": "03 · 记忆与 Activity" },
+    { "type": "text", "x": 40, "y": 98, "align": "left", "size": 18, "c": "dim", "t": "多层记忆 + 屏幕活动线索，全部在本机沉淀；Sleep 周期负责整理、归档与合并" },
+
+    { "type": "box", "x": 40, "y": 132, "w": 1120, "h": 118, "color": "gr", "fill": "row", "pad": [14, 16, 16],
+      "lines": [
+        { "align": "left", "runs": [ { "t": "三层来源", "c": "gr", "b": 1 }, { "t": "   会话历史 · 项目上下文 · Desktop Activity 线索", "c": "fg" } ] },
+        { "align": "left", "t": "对话里说过什么、项目里有什么、屏幕上刚发生过什么", "c": "fg" }
+      ] },
+
+    { "type": "path", "points": [[600, 250], [600, 290]], "color": "line", "arrow": true },
+    { "type": "flow", "path": [[600, 254], [600, 294]], "period": 1.5, "offsets": [0.2, 1.0], "color": "gr" },
+
+    { "type": "box", "x": 40, "y": 296, "w": 360, "h": 200, "color": "cy", "pad": [12, 14, 14],
+      "lines": [
+        { "align": "left", "runs": [ { "t": "Activity Recorder", "c": "cy", "b": 1 } ] },
+        { "align": "left", "t": "记录桌面活动", "c": "fg" },
+        { "align": "left", "runs": [ { "v": "cap" } ] },
+        { "align": "left", "t": "可从设置暂停", "c": "dim" }
+      ] },
+    { "type": "box", "x": 420, "y": 296, "w": 360, "h": 200, "color": "pu", "pad": [12, 14, 14],
+      "lines": [
+        { "align": "left", "runs": [ { "t": "会话分析", "c": "pu", "b": 1 } ] },
+        { "align": "left", "runs": [ { "v": "analyse" } ] },
+        { "align": "left", "t": "抽出项目 / 人 / 版本", "c": "fg" },
+        { "align": "left", "t": "生成活动摘要", "c": "dim" }
+      ] },
+    { "type": "box", "x": 800, "y": 296, "w": 360, "h": 200, "color": "bl", "pad": [12, 14, 14],
+      "lines": [
+        { "align": "left", "runs": [ { "t": "嵌入与索引", "c": "bl", "b": 1 } ] },
+        { "align": "left", "runs": [ { "v": "embed" } ] },
+        { "align": "left", "t": "向量索引 + 关键词", "c": "fg" },
+        { "align": "left", "t": "按空闲批量跑", "c": "dim" }
+      ] },
+
+    { "type": "path", "points": [[600, 496], [600, 536]], "color": "line", "arrow": true },
+    { "type": "flow", "path": [[600, 500], [600, 540]], "period": 1.6, "offsets": [0.4, 1.3], "color": "bl" },
+
+    { "type": "box", "x": 40, "y": 542, "w": 1120, "h": 168, "color": "gr", "pad": [12, 16, 16],
+      "lines": [
+        { "align": "left", "runs": [ { "t": "记忆层 · 长期 / 临时 / 项目", "c": "gr", "b": 1 }, { "t": "   src/agent/context/", "c": "dim" } ] },
+        { "align": "left", "t": "MEMORY.md 长期事实 · 每日笔记 · 项目上下文 · 会话内临时记忆", "c": "fg" },
+        { "align": "left", "runs": [ { "t": "HybridMemoryRetriever：关键词与向量一起用", "c": "fg" } ] },
+        { "align": "left", "runs": [ { "t": "当前负载 ", "c": "dim" }, { "v": "fatigue", "c": "fg" } ] }
+      ] },
+
+    { "type": "text", "x": 40, "y": 744, "align": "left", "size": 18, "c": "dim", "b": 1, "t": "▸ 三个动作" },
+    { "type": "box", "x": 40, "y": 764, "w": 360, "h": 168, "color": "gr", "pad": [12, 14, 14],
+      "lines": [
+        { "align": "left", "runs": [ { "t": "召回 recall", "c": "gr", "b": 1 } ] },
+        { "align": "left", "runs": [ { "v": "recall" } ] },
+        { "align": "left", "t": "要原文，不要二手概括", "c": "fg" }
+      ] },
+    { "type": "box", "x": 420, "y": 764, "w": 360, "h": 168, "color": "ye", "pad": [12, 14, 14],
+      "lines": [
+        { "align": "left", "runs": [ { "t": "整理 Sleep", "c": "ye", "b": 1 } ] },
+        { "align": "left", "t": "过期归档 · 重复合并", "c": "fg" },
+        { "align": "left", "t": "让长期记忆保持精炼", "c": "fg" }
+      ] },
+    { "type": "box", "x": 800, "y": 764, "w": 360, "h": 168, "color": "cy", "pad": [12, 14, 14],
+      "lines": [
+        { "align": "left", "runs": [ { "t": "新对话建议", "c": "cy", "b": 1 } ] },
+        { "align": "left", "t": "从近期活动挑话题", "c": "fg" },
+        { "align": "left", "t": "点一下直接开聊", "c": "fg" }
+      ] },
+
+    { "type": "box", "x": 40, "y": 956, "w": 740, "h": 230, "color": "ye", "pad": [14, 16, 16],
+      "lines": [
+        { "align": "left", "runs": [ { "t": "▸ 常驻触发", "c": "dim", "b": 1 } ] },
+        { "align": "left", "runs": [ { "v": "trig.label0" } ] },
+        { "align": "left", "runs": [ { "v": "trig.label1" } ] },
+        { "align": "left", "runs": [ { "v": "trig.label2" } ] },
+        { "align": "left", "runs": [ { "t": "→ ", "c": "dim" }, { "v": "trig.adv0" } ] },
+        { "align": "left", "runs": [ { "t": "   ", "c": "dim" }, { "v": "trig.adv1" } ] },
+        { "align": "left", "runs": [ { "t": "受理 ", "c": "dim" }, { "v": "trig.calls", "c": "ye", "b": 1 }, { "t": " 次 ", "c": "dim" }, { "v": "trig.status", "c": "fg", "b": 1 } ] }
+      ] },
+    { "type": "box", "x": 800, "y": 956, "w": 360, "h": 230, "color": "pu", "pad": [14, 16, 16],
+      "lines": [
+        { "align": "left", "runs": [ { "t": "记忆的边界", "c": "pu", "b": 1 } ] },
+        { "align": "left", "t": "全部落本机", "c": "fg" },
+        { "align": "left", "t": "截图可暂停", "c": "fg" },
+        { "align": "left", "t": "写入前打码敏感信息", "c": "fg" },
+        { "align": "left", "t": "不自作主张扩范围", "c": "fg" },
+        { "align": "left", "t": "该记的记，该忘的忘", "c": "dim" }
+      ] },
+
+    { "type": "log", "x": 40, "y": 1234, "w": 1120, "rows": 4, "padTop": 16, "padBottom": 30, "padLeft": 20,
+      "title": "memory log", "titleX": 40, "titleW": 180,
+      "cols": [ { "key": "time", "x": 0 }, { "key": "who", "x": 116 }, { "key": "m", "x": 238 }, { "key": "g", "x": 900 } ] },
+    { "type": "text", "x": 40, "y": 1440, "align": "left", "size": 16, "c": "dim", "t": "动画计数为示意 (illustrative) · 模块与文件名取自 src 源码" }
+  ]
+}

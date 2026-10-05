@@ -8,6 +8,15 @@ Biny 帮你在本地项目中对话、处理开发任务，并把会话和记忆
 
 ## 架构
 
+![Biny 架构总览](architecture-panels/assets/overview.png)
+
+Desktop、TUI 与 CLI chat 共用本机 Runtime Host；`biny run` 是一次性任务入口，复用 AgentSession 执行核心。会话与记忆保存在本机。
+
+上图是运行态总览：包在链路上流动、日志在滚、计数在涨，画的是「系统跑起来的样子」而不是静态分层。同一套图另有 8 张细分，覆盖 Agent 内核与工具循环、人格层、长任务执行、记忆与 Activity、会话存储与恢复、模型与扩展、调度 / 浏览器 / 钩子，源码见 [`architecture-panels/`](architecture-panels)，产物在 `architecture-panels/out/`（每张 mp4 + 可在浏览器自行循环的实时页面）。图中动画计数为示意值，不是真实遥测。
+
+<details>
+<summary>同一架构的文本版（分层关系、便于搜索与 diff）</summary>
+
 ```mermaid
 flowchart LR
   subgraph UI[交互入口]
@@ -34,7 +43,7 @@ flowchart LR
   Tools --> Skills[Skills / Plugins / Subagents]
 ```
 
-Desktop、TUI 与 CLI chat 共用本机 Runtime Host；`biny run` 是一次性任务入口，复用 AgentSession 执行核心。会话与记忆保存在本机。
+</details>
 
 ## 核心能力
 
@@ -86,3 +95,10 @@ Desktop 的“设置 → 技能”优先展示内置技能，并可关闭自动�
 - [问题反馈与功能请求](https://github.com/binyouo/Biny-Agent/issues)
 
 Computer Use 应用授权在 Desktop「设置 → Computer Use」中管理。严格审批默认关闭，首次使用应用时自动保存授权；开启后只允许已批准的应用，不受全局工具自动批准覆盖。CLI 可用 `biny computer status --json` 查看记录，`biny computer strict on` 开启严格模式，`biny computer approve <bundle-id>` 批准已发现的应用，`biny computer revoke <bundle-id>` 撤销授权。
+
+
+按窗口实时镜像可用 `biny cu windows <pid> --json` 查到窗口 ID，再运行 `biny cu pip open <window-id> --pid <pid> --json`；加 `--on-minimize` 后在源窗口最小化时显示。`biny cu pip list --json` 返回会话及帧龄，`biny cu pip close --all --json` 关闭并解除监听。内置工具 `ComputerMirror` 沿用应用审批。Desktop 浏览器和电脑画面共享 PiP，可切换来源、关闭单项及返回聊天；默认开启，开关和窗口布局跨重启保存。操作日志按需开启，仅保存本地动作元数据。
+
+`biny cu type_text "ABC" --pid <pid> --input-method physical` 按当前键盘布局输入；布局无法表示的字符会在输入前拒绝。Desktop「设置 → Appshots」可选择双击修饰键或组合快捷键，将当前应用窗口加入当前或新聊天草稿；不依赖电脑历史开启，发送前不请求模型。权限失败可在此测试与重试，敏感应用不可截图。
+
+外部 MCP 默认 `biny computer mcp`（stdio）；`biny computer mcp --http --port 0` 提供本地 HTTP 入口并输出 `url` 与 `tokenPath`。客户端从私有令牌文件读取 token，使用 `Authorization: Bearer <token>`。退出删除令牌。外部 MCP 共用全局桌面控制开关、应用审批及可选操作日志；输入前需观察精确目标，Desktop 运行时通知统一 PiP。`biny cu` 仍是用户显式调用的直接原生入口。

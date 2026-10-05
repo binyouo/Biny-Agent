@@ -1,0 +1,1103 @@
+{
+  "meta": {
+    "title": "Biny 总架构 · live panel",
+    "lang": "zh-CN"
+  },
+  "canvas": {
+    "preset": "4:5",
+    "width": 1200,
+    "height": 1500,
+    "duration": 30,
+    "fps": 30,
+    "preroll": 12
+  },
+  "theme": {
+    "preset": "terminal-dark",
+    "colors": {
+      "bg": "#161a20",
+      "bar": "#232833",
+      "line": "#4a5367",
+      "line2": "#3a4154",
+      "dim": "#6f788c",
+      "fg": "#e4e8f0",
+      "wh": "#ffffff",
+      "cy": "#86e1e6",
+      "cyd": "#3f7d84",
+      "bl": "#8fb4f6",
+      "bld": "#3f5c8a",
+      "gr": "#86e0a2",
+      "grd": "#3a6b4c",
+      "pu": "#b9a2f2",
+      "pud": "#5c4b80",
+      "ye": "#e3c07a",
+      "yed": "#7a6636",
+      "or": "#e79a4c",
+      "orl": "#c4783a",
+      "hl": "#2b2f42",
+      "row": "#22323a",
+      "dots": "#566078"
+    }
+  },
+  "clock": {
+    "start": "09:12:00",
+    "rate": 1
+  },
+  "titlebar": {
+    "text": "~/CodingAgent/biny — runtime host — 120x46"
+  },
+  "credit": {
+    "text": "架构取自 Biny-Agent README 与 src/ 源码 · 总览图，细分共 7 张 (02-08) · 计数为示意 · live-panel"
+  },
+  "machines": {
+    "flow00": {
+      "type": "lane",
+      "period": 8,
+      "run": 5.4,
+      "off": 3.2,
+      "busy": "IPC 转发",
+      "done": [
+        "已投递"
+      ],
+      "phase": 0,
+      "log": {
+        "who": "desktop",
+        "c": "cy",
+        "msgs": [
+          [
+            "Electron IPC → 主进程 → socket",
+            "→ host"
+          ]
+        ]
+      }
+    },
+    "flow01": {
+      "type": "lane",
+      "period": 8,
+      "run": 4.9,
+      "off": 4.6,
+      "busy": "终端输入",
+      "done": [
+        "已投递"
+      ],
+      "phase": 1,
+      "log": {
+        "who": "tui",
+        "c": "cy",
+        "msgs": [
+          [
+            "TUI / CLI chat 走同一条 socket",
+            "→ host"
+          ]
+        ]
+      }
+    },
+    "flow02": {
+      "type": "lane",
+      "period": 8,
+      "run": 4.4,
+      "off": 5.8,
+      "busy": "一次性任务",
+      "done": [
+        "已完成"
+      ],
+      "phase": 2,
+      "log": {
+        "who": "run",
+        "c": "ye",
+        "msgs": [
+          [
+            "biny run → ExecutionService",
+            "→ session"
+          ]
+        ]
+      }
+    },
+    "flow03": {
+      "type": "lane",
+      "period": 8,
+      "run": 4.0,
+      "off": 7.0,
+      "busy": "解析模型流",
+      "done": [
+        "已收流"
+      ],
+      "phase": 0.5,
+      "log": {
+        "who": "session",
+        "c": "bl",
+        "msgs": [
+          [
+            "AgentSession → Provider 取流",
+            "→ llm"
+          ]
+        ]
+      }
+    },
+    "flow04": {
+      "type": "lane",
+      "period": 8,
+      "run": 3.6,
+      "off": 8.2,
+      "busy": "调度工具",
+      "done": [
+        "已回填"
+      ],
+      "phase": 1.5,
+      "log": {
+        "who": "tools",
+        "c": "or",
+        "msgs": [
+          [
+            "内置 / MCP / Skills 并发执行",
+            "→ 工具"
+          ]
+        ]
+      }
+    },
+    "flow05": {
+      "type": "lane",
+      "period": 8,
+      "run": 3.2,
+      "off": 9.4,
+      "busy": "读写本机状态",
+      "done": [
+        "已落盘"
+      ],
+      "phase": 2.5,
+      "log": {
+        "who": "state",
+        "c": "gr",
+        "msgs": [
+          [
+            "会话 / 记忆 / 索引 → 本机",
+            "→ 本机"
+          ]
+        ]
+      }
+    },
+    "route": {
+      "type": "cycle",
+      "period": 5,
+      "t0": 0.4,
+      "order": [
+        0,
+        1,
+        2,
+        0
+      ],
+      "values": [
+        {
+          "t": "本地",
+          "m": "Runtime Host 在本机回环",
+          "g": "本地"
+        },
+        {
+          "t": "多端",
+          "m": "桌面 / TUI / CLI 共用执行核心",
+          "g": "共用"
+        },
+        {
+          "t": "可扩",
+          "m": "MCP · Plugins · Skills · Subagents",
+          "g": "可扩"
+        }
+      ]
+    },
+    "load": {
+      "type": "gauge",
+      "period": 4.5,
+      "t0": 0,
+      "seed": 7,
+      "threshold": 70,
+      "values": [
+        42,
+        61,
+        55,
+        78,
+        66,
+        49,
+        72,
+        58
+      ],
+      "high": {
+        "label": "正常",
+        "dest": "→ session"
+      },
+      "low": {
+        "label": "偏高",
+        "dest": "→ 排队"
+      },
+      "log": {
+        "who": "runtime",
+        "c": "cy",
+        "msgs": [
+          "host 负载样本"
+        ],
+        "tail": "load={value}% {label}"
+      }
+    },
+    "taskrun": {
+      "type": "lane",
+      "period": 11,
+      "run": 7.5,
+      "off": 3.5,
+      "busy": "跑 TaskRun",
+      "done": [
+        "已验收"
+      ],
+      "phase": 2,
+      "log": {
+        "who": "worker",
+        "c": "pu",
+        "msgs": [
+          [
+            "TaskRun 检查点续跑",
+            "→ 长任务"
+          ]
+        ]
+      }
+    },
+    "trig": {
+      "type": "triggers",
+      "color": "ye",
+      "period": 6.6,
+      "on": 4.4,
+      "t0": 1.2,
+      "callsStart": 3,
+      "onText": "处理中",
+      "offText": "待命",
+      "items": [
+        {
+          "name": "新会话接入",
+          "adv": [
+            "» 分配 SessionLease",
+            "» 绑定 workspace 根"
+          ],
+          "to": "→ session"
+        },
+        {
+          "name": "长任务开跑",
+          "adv": [
+            "» 建 TaskRun",
+            "» 记 attempt 状态"
+          ],
+          "to": "→ runtime"
+        },
+        {
+          "name": "桌面被观察",
+          "adv": [
+            "» Activity 截图 + OCR",
+            "» 入库待检索"
+          ],
+          "to": "→ activity"
+        }
+      ],
+      "log": {
+        "who": "host",
+        "c": "ye",
+        "start": {
+          "m": "{name} · 已受理",
+          "g": "受理"
+        },
+        "end": {
+          "m": "{name} · 已入队",
+          "g": "{to}"
+        }
+      }
+    }
+  },
+  "elements": [
+    {
+      "type": "text",
+      "x": 40,
+      "y": 66,
+      "align": "left",
+      "size": 30,
+      "c": "cy",
+      "b": 1,
+      "t": "BINY · 总架构"
+    },
+    {
+      "type": "text",
+      "x": 40,
+      "y": 102,
+      "align": "left",
+      "size": 19,
+      "c": "dim",
+      "t": "本地优先 · 记忆优先的开发协作 Agent  ·  Desktop / TUI / CLI 共用本机 Runtime"
+    },
+    {
+      "type": "box",
+      "x": 40,
+      "y": 136,
+      "w": 1120,
+      "h": 104,
+      "color": "cy",
+      "fill": "row",
+      "pad": [
+        14,
+        16,
+        16
+      ],
+      "lines": [
+        {
+          "align": "left",
+          "runs": [
+            {
+              "t": "01 交互入口",
+              "c": "cy",
+              "b": 1
+            },
+            {
+              "t": "   Desktop (Electron) · TUI / CLI chat · CLI biny run",
+              "c": "fg"
+            }
+          ]
+        },
+        {
+          "align": "left",
+          "items": [
+            {
+              "w": 150,
+              "runs": [
+                {
+                  "t": "desktop",
+                  "c": "cy",
+                  "b": 1
+                }
+              ]
+            },
+            {
+              "w": 700,
+              "runs": [
+                {
+                  "v": "flow00"
+                },
+                {
+                  "t": "   "
+                },
+                {
+                  "v": "flow01"
+                },
+                {
+                  "t": "   "
+                },
+                {
+                  "v": "flow02"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "path",
+      "points": [
+        [
+          600,
+          240
+        ],
+        [
+          600,
+          272
+        ]
+      ],
+      "color": "line",
+      "arrow": true
+    },
+    {
+      "type": "flow",
+      "path": [
+        [
+          600,
+          244
+        ],
+        [
+          600,
+          276
+        ]
+      ],
+      "period": 1.5,
+      "offsets": [
+        0.2,
+        1.0
+      ],
+      "color": "cy"
+    },
+    {
+      "type": "box",
+      "x": 40,
+      "y": 278,
+      "w": 468,
+      "h": 118,
+      "color": "bl",
+      "pad": [
+        10,
+        16,
+        16
+      ],
+      "lines": [
+        {
+          "align": "left",
+          "runs": [
+            {
+              "t": "02 本机 Runtime Host",
+              "c": "bl",
+              "b": 1
+            }
+          ]
+        },
+        {
+          "align": "left",
+          "t": "Unix domain socket · 单点接入",
+          "c": "fg"
+        },
+        {
+          "align": "left",
+          "runs": [
+            {
+              "t": "src/runtime/RuntimeHost.ts",
+              "c": "dim"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "box",
+      "x": 540,
+      "y": 278,
+      "w": 620,
+      "h": 118,
+      "color": "pu",
+      "pad": [
+        10,
+        16,
+        16
+      ],
+      "lines": [
+        {
+          "align": "left",
+          "runs": [
+            {
+              "t": "03 InteractiveAgentRuntime",
+              "c": "pu",
+              "b": 1
+            }
+          ]
+        },
+        {
+          "align": "left",
+          "t": "会话生命周期 · 调度 · Goal / TaskRun",
+          "c": "fg"
+        },
+        {
+          "align": "left",
+          "runs": [
+            {
+              "t": "src/runtime/InteractiveAgentRuntime.ts",
+              "c": "dim"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "path",
+      "points": [
+        [
+          600,
+          396
+        ],
+        [
+          600,
+          436
+        ]
+      ],
+      "color": "line",
+      "arrow": true
+    },
+    {
+      "type": "flow",
+      "path": [
+        [
+          600,
+          400
+        ],
+        [
+          600,
+          440
+        ]
+      ],
+      "period": 1.5,
+      "offsets": [
+        0.3,
+        1.2
+      ],
+      "color": "bl"
+    },
+    {
+      "type": "box",
+      "x": 40,
+      "y": 442,
+      "w": 1120,
+      "h": 128,
+      "color": "gr",
+      "pad": [
+        12,
+        16,
+        16
+      ],
+      "lines": [
+        {
+          "align": "left",
+          "runs": [
+            {
+              "t": "04 AgentSession · 共用执行核心",
+              "c": "gr",
+              "b": 1
+            },
+            {
+              "t": "   src/agent/AgentSession.ts",
+              "c": "dim"
+            }
+          ]
+        },
+        {
+          "align": "left",
+          "items": [
+            {
+              "w": 176,
+              "runs": [
+                {
+                  "v": "flow03"
+                }
+              ]
+            },
+            {
+              "w": 176,
+              "runs": [
+                {
+                  "v": "flow04"
+                }
+              ]
+            },
+            {
+              "w": 176,
+              "runs": [
+                {
+                  "v": "taskrun"
+                }
+              ]
+            },
+            {
+              "w": 176,
+              "runs": [
+                {
+                  "v": "flow05"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "path",
+      "points": [
+        [
+          196,
+          570
+        ],
+        [
+          196,
+          616
+        ]
+      ],
+      "color": "ye",
+      "width": 2,
+      "dash": true,
+      "arrow": false
+    },
+    {
+      "type": "path",
+      "points": [
+        [
+          466,
+          570
+        ],
+        [
+          466,
+          616
+        ]
+      ],
+      "color": "bl",
+      "width": 2,
+      "dash": true,
+      "arrow": false
+    },
+    {
+      "type": "path",
+      "points": [
+        [
+          736,
+          570
+        ],
+        [
+          736,
+          616
+        ]
+      ],
+      "color": "or",
+      "width": 2,
+      "dash": true,
+      "arrow": false
+    },
+    {
+      "type": "path",
+      "points": [
+        [
+          1006,
+          570
+        ],
+        [
+          1006,
+          616
+        ]
+      ],
+      "color": "pu",
+      "width": 2,
+      "dash": true,
+      "arrow": false
+    },
+    {
+      "type": "flow",
+      "path": [
+        [
+          196,
+          572
+        ],
+        [
+          196,
+          614
+        ]
+      ],
+      "period": 2.2,
+      "offsets": [
+        0.4
+      ],
+      "color": "ye"
+    },
+    {
+      "type": "flow",
+      "path": [
+        [
+          466,
+          572
+        ],
+        [
+          466,
+          614
+        ]
+      ],
+      "period": 2.6,
+      "offsets": [
+        1.1
+      ],
+      "color": "bl"
+    },
+    {
+      "type": "flow",
+      "path": [
+        [
+          736,
+          572
+        ],
+        [
+          736,
+          614
+        ]
+      ],
+      "period": 2.0,
+      "offsets": [
+        0.8
+      ],
+      "color": "or"
+    },
+    {
+      "type": "flow",
+      "path": [
+        [
+          1006,
+          572
+        ],
+        [
+          1006,
+          614
+        ]
+      ],
+      "period": 2.8,
+      "offsets": [
+        1.6
+      ],
+      "color": "pu"
+    },
+    {
+      "type": "box",
+      "x": 40,
+      "y": 618,
+      "w": 280,
+      "h": 168,
+      "color": "ye",
+      "pad": [
+        12,
+        12,
+        12
+      ],
+      "lines": [
+        {
+          "align": "left",
+          "runs": [
+            {
+              "t": "本机状态 · STATE",
+              "c": "ye",
+              "b": 1
+            }
+          ]
+        },
+        {
+          "align": "left",
+          "t": "会话记录 / 消息树",
+          "c": "fg",
+          "size": 19
+        },
+        {
+          "align": "left",
+          "t": "多层记忆 + 索引",
+          "c": "fg"
+        },
+        {
+          "align": "left",
+          "t": "Activity 线索",
+          "c": "fg"
+        },
+        {
+          "align": "left",
+          "t": "Goal / TaskRun 账本",
+          "c": "fg"
+        }
+      ]
+    },
+    {
+      "type": "box",
+      "x": 320,
+      "y": 618,
+      "w": 280,
+      "h": 168,
+      "color": "bl",
+      "pad": [
+        12,
+        12,
+        12
+      ],
+      "lines": [
+        {
+          "align": "left",
+          "runs": [
+            {
+              "t": "模型 Provider · LLM",
+              "c": "bl",
+              "b": 1
+            }
+          ]
+        },
+        {
+          "align": "left",
+          "t": "多家服务商 + 兼容",
+          "c": "fg"
+        },
+        {
+          "align": "left",
+          "t": "AiRegistry 解析",
+          "c": "fg",
+          "size": 19
+        },
+        {
+          "align": "left",
+          "t": "prompt cache",
+          "c": "fg",
+          "size": 19
+        }
+      ]
+    },
+    {
+      "type": "box",
+      "x": 600,
+      "y": 618,
+      "w": 280,
+      "h": 168,
+      "color": "or",
+      "pad": [
+        12,
+        12,
+        12
+      ],
+      "lines": [
+        {
+          "align": "left",
+          "runs": [
+            {
+              "t": "工具与扩展 · TOOLS",
+              "c": "or",
+              "b": 1
+            }
+          ]
+        },
+        {
+          "align": "left",
+          "t": "内置工具 · 文件/Shell",
+          "c": "fg",
+          "size": 19
+        },
+        {
+          "align": "left",
+          "t": "MCP · Plugins · Skill",
+          "c": "fg",
+          "size": 19
+        },
+        {
+          "align": "left",
+          "t": "Subagents · Widget",
+          "c": "fg"
+        }
+      ]
+    },
+    {
+      "type": "box",
+      "x": 880,
+      "y": 618,
+      "w": 280,
+      "h": 168,
+      "color": "pu",
+      "pad": [
+        12,
+        12,
+        12
+      ],
+      "lines": [
+        {
+          "align": "left",
+          "runs": [
+            {
+              "t": "策略与权限 · POLICY",
+              "c": "pu",
+              "b": 1
+            }
+          ]
+        },
+        {
+          "align": "left",
+          "t": "PermissionManager",
+          "c": "fg",
+          "size": 19
+        },
+        {
+          "align": "left",
+          "t": "workspace 路径策略",
+          "c": "fg"
+        },
+        {
+          "align": "left",
+          "t": "Computer Use 应用授权",
+          "c": "fg"
+        }
+      ]
+    },
+    {
+      "type": "box",
+      "x": 40,
+      "y": 802,
+      "w": 796,
+      "h": 230,
+      "color": "ye",
+      "pad": [
+        14,
+        16,
+        16
+      ],
+      "lines": [
+        {
+          "align": "left",
+          "runs": [
+            {
+              "t": "▸ 随叫随到 · 常驻触发",
+              "c": "dim",
+              "b": 1
+            }
+          ]
+        },
+        {
+          "align": "left",
+          "runs": [
+            {
+              "v": "trig.label0"
+            }
+          ]
+        },
+        {
+          "align": "left",
+          "runs": [
+            {
+              "v": "trig.label1"
+            }
+          ]
+        },
+        {
+          "align": "left",
+          "runs": [
+            {
+              "v": "trig.label2"
+            }
+          ]
+        },
+        {
+          "align": "left",
+          "runs": [
+            {
+              "t": "→ ",
+              "c": "dim"
+            },
+            {
+              "v": "trig.adv0"
+            }
+          ]
+        },
+        {
+          "align": "left",
+          "runs": [
+            {
+              "t": "   ",
+              "c": "dim"
+            },
+            {
+              "v": "trig.adv1"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "box",
+      "x": 856,
+      "y": 802,
+      "w": 304,
+      "h": 230,
+      "color": "cy",
+      "pad": [
+        14,
+        12,
+        12
+      ],
+      "lines": [
+        {
+          "align": "left",
+          "runs": [
+            {
+              "t": "设计原则",
+              "c": "cy",
+              "b": 1
+            }
+          ]
+        },
+        {
+          "align": "left",
+          "t": "本地优先 · 模型由你配置",
+          "c": "fg"
+        },
+        {
+          "align": "left",
+          "t": "记忆优先 · 会话跨端延续",
+          "c": "fg"
+        },
+        {
+          "align": "left",
+          "t": "能力可扩 · MCP / Skills",
+          "c": "fg"
+        },
+        {
+          "align": "left",
+          "t": "执行可续 · 检查点 + 重试",
+          "c": "fg"
+        },
+        {
+          "align": "left",
+          "t": "全部落本机，不托管",
+          "c": "dim"
+        },
+        {
+          "align": "left",
+          "size": 17,
+          "runs": [
+            {
+              "v": "trig.status"
+            },
+            {
+              "t": "   ",
+              "c": "dim"
+            },
+            {
+              "t": "受理 ",
+              "c": "dim"
+            },
+            {
+              "v": "trig.calls",
+              "c": "ye",
+              "b": 1
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "log",
+      "x": 40,
+      "y": 1082,
+      "w": 1120,
+      "rows": 4,
+      "padTop": 16,
+      "padBottom": 30,
+      "padLeft": 20,
+      "title": "runtime log",
+      "titleX": 40,
+      "titleW": 190,
+      "cols": [
+        {
+          "key": "time",
+          "x": 0
+        },
+        {
+          "key": "who",
+          "x": 116
+        },
+        {
+          "key": "m",
+          "x": 238
+        },
+        {
+          "key": "g",
+          "x": 900
+        }
+      ]
+    },
+    {
+      "type": "text",
+      "x": 40,
+      "y": 1340,
+      "align": "left",
+      "size": 16,
+      "c": "dim",
+      "t": "动画计数为示意 (illustrative) · 架构与文件名取自 README / src 源码"
+    }
+  ]
+}

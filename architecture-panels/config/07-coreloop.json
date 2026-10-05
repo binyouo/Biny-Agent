@@ -1,0 +1,867 @@
+{
+  "meta": {
+    "title": "Biny 功能架构 06 · Agent 内核与工具循环",
+    "lang": "zh-CN"
+  },
+  "canvas": {
+    "preset": "4:5",
+    "width": 1200,
+    "height": 1500,
+    "duration": 30,
+    "fps": 30,
+    "preroll": 10
+  },
+  "theme": {
+    "preset": "terminal-dark",
+    "colors": {
+      "bg": "#161a20",
+      "bar": "#232833",
+      "line": "#4a5367",
+      "line2": "#3a4154",
+      "dim": "#6f788c",
+      "fg": "#e4e8f0",
+      "wh": "#ffffff",
+      "cy": "#86e1e6",
+      "cyd": "#3f7d84",
+      "bl": "#8fb4f6",
+      "bld": "#3f5c8a",
+      "gr": "#86e0a2",
+      "grd": "#3a6b4c",
+      "pu": "#b9a2f2",
+      "pud": "#5c4b80",
+      "ye": "#e3c07a",
+      "or": "#e79a4c",
+      "orl": "#c4783a",
+      "pk": "#f0575f",
+      "hl": "#2b2f42",
+      "row": "#22323a",
+      "dots": "#566078"
+    }
+  },
+  "clock": {
+    "start": "15:42:00",
+    "rate": 1
+  },
+  "titlebar": {
+    "text": "~/CodingAgent/biny — agent core — 120x46"
+  },
+  "credit": {
+    "text": "取自 src/agent/core/vercelAgentLoop.ts · EventQueue.ts · toolCallRepair.ts · src/agent/toolExecutionCoordinator.ts · live-panel"
+  },
+  "machines": {
+    "req": {
+      "type": "lane",
+      "period": 7,
+      "run": 4.4,
+      "off": 2.6,
+      "busy": "发模型请求",
+      "done": [
+        "已发出"
+      ],
+      "phase": 0,
+      "log": {
+        "who": "loop",
+        "c": "bl",
+        "msgs": [
+          [
+            "streamText 发一轮请求",
+            "→ provider"
+          ]
+        ]
+      }
+    },
+    "parse": {
+      "type": "lane",
+      "period": 7.5,
+      "run": 4.6,
+      "off": 2.9,
+      "busy": "解析流",
+      "done": [
+        "已解析"
+      ],
+      "phase": 1.2,
+      "log": {
+        "who": "loop",
+        "c": "bl",
+        "msgs": [
+          [
+            "文本 / tool_call 分流",
+            "→ 事件"
+          ]
+        ]
+      }
+    },
+    "repair": {
+      "type": "lane",
+      "period": 8.5,
+      "run": 5.2,
+      "off": 3.3,
+      "busy": "修非法调用",
+      "done": [
+        "已修正"
+      ],
+      "phase": 2.0,
+      "log": {
+        "who": "repair",
+        "c": "gr",
+        "msgs": [
+          [
+            "名字 / 参数 / 类型纠偏",
+            "→ 可执行"
+          ]
+        ]
+      }
+    },
+    "exec": {
+      "type": "lane",
+      "period": 8,
+      "run": 5.0,
+      "off": 3.0,
+      "busy": "执行工具",
+      "done": [
+        "已回填"
+      ],
+      "phase": 0.6,
+      "log": {
+        "who": "tool",
+        "c": "or",
+        "msgs": [
+          [
+            "过权限 / 调度 / 进度策略",
+            "→ 结果"
+          ]
+        ]
+      }
+    },
+    "evq": {
+      "type": "lane",
+      "period": 6.5,
+      "run": 3.8,
+      "off": 2.7,
+      "busy": "汇合事件",
+      "done": [
+        "已出队"
+      ],
+      "phase": 1.7,
+      "log": {
+        "who": "evq",
+        "c": "cy",
+        "msgs": [
+          [
+            "回调事件与异步流汇合 FIFO",
+            "→ UI"
+          ]
+        ]
+      }
+    },
+    "steps": {
+      "type": "gauge",
+      "period": 4.4,
+      "t0": 0.4,
+      "seed": 23,
+      "threshold": 60,
+      "values": [
+        28,
+        47,
+        71,
+        36,
+        58,
+        79,
+        42,
+        63
+      ],
+      "high": {
+        "label": "还够用",
+        "dest": "→ 继续 step"
+      },
+      "low": {
+        "label": "接近上限",
+        "dest": "→ 收尾"
+      },
+      "log": {
+        "who": "step",
+        "c": "ye",
+        "msgs": [
+          "步数余量样本"
+        ],
+        "tail": "b={value}% {label}"
+      }
+    },
+    "cache": {
+      "type": "gauge",
+      "period": 5.0,
+      "t0": 1.1,
+      "seed": 29,
+      "threshold": 65,
+      "values": [
+        52,
+        68,
+        61,
+        79,
+        55,
+        84,
+        63,
+        72
+      ],
+      "high": {
+        "label": "命中",
+        "dest": "→ 1/10 费率"
+      },
+      "low": {
+        "label": "未命中",
+        "dest": "→ 全价"
+      },
+      "log": {
+        "who": "cache",
+        "c": "gr",
+        "msgs": [
+          "前缀缓存标记命中样本"
+        ],
+        "tail": "c={value}% {label}"
+      }
+    },
+    "trig": {
+      "type": "triggers",
+      "color": "ye",
+      "period": 6.8,
+      "on": 4.4,
+      "t0": 1.0,
+      "callsStart": 7,
+      "onText": "处理中",
+      "offText": "待命",
+      "items": [
+        {
+          "name": "模型名写错大小写",
+          "adv": [
+            "» 归一化匹配修正",
+            "» 不惊动模型"
+          ],
+          "to": "→ repair"
+        },
+        {
+          "name": "参数类型给错",
+          "adv": [
+            "» 按 schema 纠偏",
+            "» 修不好才报错"
+          ],
+          "to": "→ repair"
+        },
+        {
+          "name": "改文件 / 跑命令",
+          "adv": [
+            "» 协调器先过权限",
+            "» 再交给工具"
+          ],
+          "to": "→ 审批"
+        }
+      ],
+      "log": {
+        "who": "core",
+        "c": "ye",
+        "start": {
+          "m": "{name} · 命中",
+          "g": "命中"
+        },
+        "end": {
+          "m": "{name} · 已处置",
+          "g": "{to}"
+        }
+      }
+    }
+  },
+  "elements": [
+    {
+      "type": "text",
+      "x": 40,
+      "y": 62,
+      "align": "left",
+      "size": 28,
+      "c": "bl",
+      "b": 1,
+      "t": "06 · Agent 内核与工具循环"
+    },
+    {
+      "type": "text",
+      "x": 40,
+      "y": 98,
+      "align": "left",
+      "size": 18,
+      "c": "dim",
+      "t": "一轮 step 的完整路径：发请求 → 解析流 → 修工具调用 → 过权限执行 → 回填 → 续环"
+    },
+    {
+      "type": "box",
+      "x": 40,
+      "y": 132,
+      "w": 1120,
+      "h": 118,
+      "color": "bl",
+      "fill": "row",
+      "pad": [
+        14,
+        16,
+        16
+      ],
+      "lines": [
+        {
+          "align": "left",
+          "runs": [
+            {
+              "t": "立场分工",
+              "c": "bl",
+              "b": 1
+            },
+            {
+              "t": "   上下文 / 权限 / 工具审计 / session 消息归 Biny；provider 请求与工具续环交给 AI SDK",
+              "c": "fg"
+            }
+          ]
+        },
+        {
+          "align": "left",
+          "runs": [
+            {
+              "t": "src/agent/core/vercelAgentLoop.ts",
+              "c": "dim"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "path",
+      "points": [
+        [
+          600,
+          250
+        ],
+        [
+          600,
+          290
+        ]
+      ],
+      "color": "line",
+      "arrow": true
+    },
+    {
+      "type": "flow",
+      "path": [
+        [
+          600,
+          254
+        ],
+        [
+          600,
+          294
+        ]
+      ],
+      "period": 1.5,
+      "offsets": [
+        0.2,
+        1.0
+      ],
+      "color": "bl"
+    },
+    {
+      "type": "box",
+      "x": 40,
+      "y": 296,
+      "w": 540,
+      "h": 218,
+      "color": "bl",
+      "pad": [
+        12,
+        14,
+        14
+      ],
+      "lines": [
+        {
+          "align": "left",
+          "runs": [
+            {
+              "t": "发请求与收流",
+              "c": "bl",
+              "b": 1
+            }
+          ]
+        },
+        {
+          "align": "left",
+          "runs": [
+            {
+              "v": "req"
+            }
+          ]
+        },
+        {
+          "align": "left",
+          "runs": [
+            {
+              "v": "parse"
+            }
+          ]
+        },
+        {
+          "align": "left",
+          "t": "文本与 tool_call 分流成事件",
+          "c": "fg"
+        },
+        {
+          "align": "left",
+          "t": "每轮都有步数预算兜底",
+          "c": "dim"
+        }
+      ]
+    },
+    {
+      "type": "box",
+      "x": 620,
+      "y": 296,
+      "w": 540,
+      "h": 218,
+      "color": "cy",
+      "pad": [
+        12,
+        14,
+        14
+      ],
+      "lines": [
+        {
+          "align": "left",
+          "runs": [
+            {
+              "t": "EventQueue · 事件汇合",
+              "c": "cy",
+              "b": 1
+            }
+          ]
+        },
+        {
+          "align": "left",
+          "runs": [
+            {
+              "v": "evq"
+            }
+          ]
+        },
+        {
+          "align": "left",
+          "t": "载荷留队列，Promise 只做唤醒",
+          "c": "fg"
+        },
+        {
+          "align": "left",
+          "t": "只保证展示事件的局部 FIFO",
+          "c": "fg"
+        },
+        {
+          "align": "left",
+          "t": "不承担持久化与控制流顺序",
+          "c": "dim"
+        }
+      ]
+    },
+    {
+      "type": "path",
+      "points": [
+        [
+          600,
+          514
+        ],
+        [
+          600,
+          554
+        ]
+      ],
+      "color": "line",
+      "arrow": true
+    },
+    {
+      "type": "flow",
+      "path": [
+        [
+          600,
+          518
+        ],
+        [
+          600,
+          558
+        ]
+      ],
+      "period": 1.6,
+      "offsets": [
+        0.4,
+        1.3
+      ],
+      "color": "cy"
+    },
+    {
+      "type": "box",
+      "x": 40,
+      "y": 560,
+      "w": 540,
+      "h": 196,
+      "color": "gr",
+      "pad": [
+        12,
+        14,
+        14
+      ],
+      "lines": [
+        {
+          "align": "left",
+          "runs": [
+            {
+              "t": "toolCallRepair · 自愈",
+              "c": "gr",
+              "b": 1
+            }
+          ]
+        },
+        {
+          "align": "left",
+          "runs": [
+            {
+              "v": "repair"
+            }
+          ]
+        },
+        {
+          "align": "left",
+          "t": "名字归一化 / 参数别名 / 类型纠偏",
+          "c": "fg"
+        },
+        {
+          "align": "left",
+          "t": "修不了才回落原错误，不会无限自愈",
+          "c": "dim"
+        }
+      ]
+    },
+    {
+      "type": "box",
+      "x": 620,
+      "y": 560,
+      "w": 540,
+      "h": 196,
+      "color": "or",
+      "pad": [
+        12,
+        14,
+        14
+      ],
+      "lines": [
+        {
+          "align": "left",
+          "runs": [
+            {
+              "t": "toolExecutionCoordinator",
+              "c": "or",
+              "b": 1
+            }
+          ]
+        },
+        {
+          "align": "left",
+          "runs": [
+            {
+              "v": "exec"
+            }
+          ]
+        },
+        {
+          "align": "left",
+          "t": "用 Biny 的权限 / 调度 / 进度 / JSONL",
+          "c": "fg"
+        },
+        {
+          "align": "left",
+          "t": "包住每一个工具调用",
+          "c": "fg"
+        }
+      ]
+    },
+    {
+      "type": "text",
+      "x": 40,
+      "y": 786,
+      "align": "left",
+      "size": 18,
+      "c": "dim",
+      "b": 1,
+      "t": "▸ 两个省钱 / 保命的机制"
+    },
+    {
+      "type": "box",
+      "x": 40,
+      "y": 806,
+      "w": 540,
+      "h": 190,
+      "color": "gr",
+      "pad": [
+        12,
+        14,
+        14
+      ],
+      "lines": [
+        {
+          "align": "left",
+          "runs": [
+            {
+              "t": "Prompt 缓存标记",
+              "c": "gr",
+              "b": 1
+            }
+          ]
+        },
+        {
+          "align": "left",
+          "runs": [
+            {
+              "v": "cache"
+            }
+          ]
+        },
+        {
+          "align": "left",
+          "t": "给稳定前缀打缓存标记",
+          "c": "fg"
+        },
+        {
+          "align": "left",
+          "t": "输入按约 1/10 计费，首字更早",
+          "c": "fg"
+        }
+      ]
+    },
+    {
+      "type": "box",
+      "x": 620,
+      "y": 806,
+      "w": 540,
+      "h": 190,
+      "color": "ye",
+      "pad": [
+        12,
+        14,
+        14
+      ],
+      "lines": [
+        {
+          "align": "left",
+          "runs": [
+            {
+              "t": "步数与回合预算",
+              "c": "ye",
+              "b": 1
+            }
+          ]
+        },
+        {
+          "align": "left",
+          "runs": [
+            {
+              "v": "steps"
+            }
+          ]
+        },
+        {
+          "align": "left",
+          "t": "soft / hard 两级上限",
+          "c": "fg"
+        },
+        {
+          "align": "left",
+          "t": "超预算先压缩工具结果再继续",
+          "c": "fg"
+        }
+      ]
+    },
+    {
+      "type": "box",
+      "x": 40,
+      "y": 1028,
+      "w": 740,
+      "h": 230,
+      "color": "ye",
+      "pad": [
+        14,
+        16,
+        16
+      ],
+      "lines": [
+        {
+          "align": "left",
+          "runs": [
+            {
+              "t": "▸ 常驻触发",
+              "c": "dim",
+              "b": 1
+            }
+          ]
+        },
+        {
+          "align": "left",
+          "runs": [
+            {
+              "v": "trig.label0"
+            }
+          ]
+        },
+        {
+          "align": "left",
+          "runs": [
+            {
+              "v": "trig.label1"
+            }
+          ]
+        },
+        {
+          "align": "left",
+          "runs": [
+            {
+              "v": "trig.label2"
+            }
+          ]
+        },
+        {
+          "align": "left",
+          "runs": [
+            {
+              "t": "→ ",
+              "c": "dim"
+            },
+            {
+              "v": "trig.adv0"
+            }
+          ]
+        },
+        {
+          "align": "left",
+          "runs": [
+            {
+              "t": "   ",
+              "c": "dim"
+            },
+            {
+              "v": "trig.adv1"
+            }
+          ]
+        },
+        {
+          "align": "left",
+          "runs": [
+            {
+              "t": "命中 ",
+              "c": "dim"
+            },
+            {
+              "v": "trig.calls",
+              "c": "ye",
+              "b": 1
+            },
+            {
+              "t": " 次 ",
+              "c": "dim"
+            },
+            {
+              "v": "trig.status",
+              "c": "fg",
+              "b": 1
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "box",
+      "x": 800,
+      "y": 1028,
+      "w": 360,
+      "h": 230,
+      "color": "pk",
+      "pad": [
+        14,
+        16,
+        16
+      ],
+      "lines": [
+        {
+          "align": "left",
+          "runs": [
+            {
+              "t": "为什么这么切",
+              "c": "pk",
+              "b": 1
+            }
+          ]
+        },
+        {
+          "align": "left",
+          "t": "失败要在进模型前修掉",
+          "c": "fg"
+        },
+        {
+          "align": "left",
+          "t": "避免报错→原样重试的死循环",
+          "c": "fg"
+        },
+        {
+          "align": "left",
+          "t": "展示顺序与持久化分开",
+          "c": "fg"
+        },
+        {
+          "align": "left",
+          "t": "权限永远在工具之前",
+          "c": "fg"
+        },
+        {
+          "align": "left",
+          "t": "SDK 管续环，Biny 管边界",
+          "c": "dim"
+        }
+      ]
+    },
+    {
+      "type": "log",
+      "x": 40,
+      "y": 1306,
+      "w": 1120,
+      "rows": 4,
+      "padTop": 16,
+      "padBottom": 30,
+      "padLeft": 20,
+      "title": "core log",
+      "titleX": 40,
+      "titleW": 160,
+      "cols": [
+        {
+          "key": "time",
+          "x": 0
+        },
+        {
+          "key": "who",
+          "x": 112
+        },
+        {
+          "key": "m",
+          "x": 232
+        },
+        {
+          "key": "g",
+          "x": 858
+        }
+      ]
+    },
+    {
+      "type": "text",
+      "x": 40,
+      "y": 1460,
+      "align": "left",
+      "size": 16,
+      "c": "dim",
+      "t": "动画计数为示意 (illustrative) · 模块与文件名取自 src/agent/core 源码"
+    }
+  ]
+}

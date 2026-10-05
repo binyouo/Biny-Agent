@@ -1,0 +1,134 @@
+{
+  "meta": { "title": "Biny 功能架构 07 · 会话存储与恢复", "lang": "zh-CN" },
+  "canvas": { "preset": "4:5", "width": 1200, "height": 1500, "duration": 30, "fps": 30, "preroll": 10 },
+  "theme": {
+    "preset": "terminal-dark",
+    "colors": { "bg": "#161a20", "bar": "#232833", "line": "#4a5367", "line2": "#3a4154", "dim": "#6f788c",
+      "fg": "#e4e8f0", "wh": "#ffffff", "cy": "#86e1e6", "cyd": "#3f7d84", "bl": "#8fb4f6", "bld": "#3f5c8a",
+      "gr": "#86e0a2", "grd": "#3a6b4c", "pu": "#b9a2f2", "pud": "#5c4b80", "ye": "#e3c07a",
+      "or": "#e79a4c", "orl": "#c4783a", "pk": "#f0575f", "hl": "#2b2f42", "row": "#22323a", "dots": "#566078" }
+  },
+  "clock": { "start": "16:05:00", "rate": 1 },
+  "titlebar": { "text": "~/CodingAgent/biny — session store — 120x46" },
+  "credit": { "text": "取自 src/session/{store,messageTree,checkpointStore,searchIndex,replay,fork}.ts 源码 · live-panel" },
+  "machines": {
+    "append": { "type": "lane", "period": 7, "run": 4.4, "off": 2.6, "busy": "追加事件", "done": ["已落盘"], "phase": 0,
+      "log": { "who": "recorder", "c": "cy", "msgs": [["事件追加进 session JSONL", "→ 盘"]] } },
+    "index": { "type": "lane", "period": 7.5, "run": 4.6, "off": 2.9, "busy": "推进索引", "done": ["已索引"], "phase": 1.2,
+      "log": { "who": "fts", "c": "bl", "msgs": [["按字节偏移增量推进 FTS5", "→ 可搜"]] } },
+    "snap": { "type": "lane", "period": 9, "run": 5.6, "off": 3.4, "busy": "建快照", "done": ["已挂 ref"], "phase": 2.0,
+      "log": { "who": "ckpt", "c": "gr", "msgs": [["临时索引 + commit-tree", "→ ref"]] } },
+    "restore": { "type": "lane", "period": 10, "run": 6.2, "off": 3.8, "busy": "恢复中", "done": ["已恢复"], "phase": 0.6,
+      "log": { "who": "undo", "c": "gr", "msgs": [["新文件移进 undo-trash", "→ 可逆"]] } },
+    "replay": { "type": "lane", "period": 8, "run": 5.0, "off": 3.0, "busy": "重放历史", "done": ["已成串"], "phase": 1.7,
+      "log": { "who": "replay", "c": "pu", "msgs": [["事件流 → 模型对话历史", "→ 续聊"]] } },
+    "size": { "type": "gauge", "period": 4.4, "t0": 0.4, "seed": 31, "threshold": 60,
+      "values": [34, 52, 71, 43, 61, 78, 38, 56],
+      "high": { "label": "健康", "dest": "→ 继续追加" }, "low": { "label": "该清理", "dest": "→ cleanup" },
+      "log": { "who": "store", "c": "ye", "msgs": ["会话目录样本"], "tail": "s={value}% {label}" } },
+    "trig": { "type": "triggers", "color": "ye", "period": 6.8, "on": 4.4, "t0": 1.0, "callsStart": 4,
+      "onText": "处理中", "offText": "待命",
+      "items": [
+        { "name": "Agent 改坏了工作区", "adv": ["» 回到某个检查点", "» 不碰你的 git 状态"], "to": "→ undo" },
+        { "name": "想两条路都试试", "adv": ["» fork 某时点前的历史", "» 两边各走各的"], "to": "→ fork" },
+        { "name": "进程崩了再打开", "adv": ["» 从 JSONL 重放", "» 补齐中断的工具调用"], "to": "→ replay" }
+      ],
+      "log": { "who": "session", "c": "ye", "start": { "m": "{name} · 已受理", "g": "受理" }, "end": { "m": "{name} · 已完成", "g": "{to}" } } }
+  },
+  "elements": [
+    { "type": "text", "x": 40, "y": 62, "align": "left", "size": 28, "c": "cy", "b": 1, "t": "07 · 会话存储与恢复" },
+    { "type": "text", "x": 40, "y": 98, "align": "left", "size": 18, "c": "dim", "t": "JSONL 记事实、ledger 记生命周期、FTS5 记索引、git ref 记快照 —— 四套各管一件事" },
+
+    { "type": "box", "x": 40, "y": 132, "w": 1120, "h": 118, "color": "cy", "fill": "row", "pad": [14, 16, 16],
+      "lines": [
+        { "align": "left", "runs": [ { "t": "一份事实源，多个派生视图", "c": "cy", "b": 1 }, { "t": "   src/session/", "c": "dim" } ] },
+        { "align": "left", "t": "session JSONL 不做任何改写；索引与快照都可丢弃重建", "c": "fg" }
+      ] },
+
+    { "type": "path", "points": [[600, 250], [600, 290]], "color": "line", "arrow": true },
+    { "type": "flow", "path": [[600, 254], [600, 294]], "period": 1.5, "offsets": [0.2, 1.0], "color": "cy" },
+
+    { "type": "box", "x": 40, "y": 296, "w": 540, "h": 218, "color": "cy", "pad": [12, 14, 14],
+      "lines": [
+        { "align": "left", "runs": [ { "t": "写入：追加式 JSONL", "c": "cy", "b": 1 } ] },
+        { "align": "left", "runs": [ { "v": "append" } ] },
+        { "align": "left", "t": "稳定事件类型不变：", "c": "fg" },
+        { "align": "left", "t": "user_message / assistant_message", "c": "fg" },
+        { "align": "left", "t": "tool_call / tool_result / error", "c": "fg" }
+      ] },
+    { "type": "box", "x": 620, "y": 296, "w": 540, "h": 218, "color": "bl", "pad": [12, 14, 14],
+      "lines": [
+        { "align": "left", "runs": [ { "t": "检索：FTS5 全文索引", "c": "bl", "b": 1 } ] },
+        { "align": "left", "runs": [ { "v": "index" } ] },
+        { "align": "left", "t": "按文件字节偏移增量推进", "c": "fg" },
+        { "align": "left", "t": "中文用 CJK bigram 分词，", "c": "fg" },
+        { "align": "left", "t": "不依赖 FTS5 自带分词器", "c": "fg" }
+      ] },
+
+    { "type": "path", "points": [[600, 514], [600, 554]], "color": "line", "arrow": true },
+    { "type": "flow", "path": [[600, 518], [600, 558]], "period": 1.6, "offsets": [0.4, 1.3], "color": "bl" },
+
+    { "type": "box", "x": 40, "y": 560, "w": 540, "h": 196, "color": "gr", "pad": [12, 14, 14],
+      "lines": [
+        { "align": "left", "runs": [ { "t": "检查点：不碰你的 git", "c": "gr", "b": 1 } ] },
+        { "align": "left", "runs": [ { "v": "snap" } ] },
+        { "align": "left", "t": "临时索引 + commit-tree", "c": "fg" },
+        { "align": "left", "t": "挂在 refs/biny/checkpoints/*", "c": "dim" }
+      ] },
+    { "type": "box", "x": 620, "y": 560, "w": 540, "h": 196, "color": "ye", "pad": [12, 14, 14],
+      "lines": [
+        { "align": "left", "runs": [ { "t": "恢复：可逆，不删文件", "c": "ye", "b": 1 } ] },
+        { "align": "left", "runs": [ { "v": "restore" } ] },
+        { "align": "left", "t": "新建文件移到 undo-trash/<时间戳>", "c": "fg" },
+        { "align": "left", "t": "撤销如果会丢东西，就没人敢用", "c": "dim" }
+      ] },
+
+    { "type": "text", "x": 40, "y": 786, "align": "left", "size": 18, "c": "dim", "b": 1, "t": "▸ 三件恢复时才想起来重要的事" },
+    { "type": "box", "x": 40, "y": 806, "w": 360, "h": 190, "color": "pu", "pad": [12, 14, 14],
+      "lines": [
+        { "align": "left", "runs": [ { "t": "replay 重放", "c": "pu", "b": 1 } ] },
+        { "align": "left", "runs": [ { "v": "replay" } ] },
+        { "align": "left", "t": "宁可丢弃可疑内容，", "c": "fg" },
+        { "align": "left", "t": "也不拼出服务端会拒的序列", "c": "fg" }
+      ] },
+    { "type": "box", "x": 420, "y": 806, "w": 360, "h": 190, "color": "or", "pad": [12, 14, 14],
+      "lines": [
+        { "align": "left", "runs": [ { "t": "fork 分叉", "c": "or", "b": 1 } ] },
+        { "align": "left", "t": "复制某时点前的历史", "c": "fg" },
+        { "align": "left", "t": "硬规则：不能停在", "c": "fg" },
+        { "align": "left", "t": "tool_call 与 result 中间", "c": "fg" }
+      ] },
+    { "type": "box", "x": 800, "y": 806, "w": 360, "h": 190, "color": "pk", "pad": [12, 14, 14],
+      "lines": [
+        { "align": "left", "runs": [ { "t": "ledger 运行账本", "c": "pk", "b": 1 } ] },
+        { "align": "left", "t": "只答「这次运行", "c": "fg" },
+        { "align": "left", "t": "何时开始、怎么结束", "c": "fg" },
+        { "align": "left", "t": "不存 prompt 和工具参数」", "c": "fg" }
+      ] },
+
+    { "type": "box", "x": 40, "y": 1028, "w": 740, "h": 230, "color": "ye", "pad": [14, 16, 16],
+      "lines": [
+        { "align": "left", "runs": [ { "t": "▸ 常驻触发", "c": "dim", "b": 1 } ] },
+        { "align": "left", "runs": [ { "v": "trig.label0" } ] },
+        { "align": "left", "runs": [ { "v": "trig.label1" } ] },
+        { "align": "left", "runs": [ { "v": "trig.label2" } ] },
+        { "align": "left", "runs": [ { "t": "→ ", "c": "dim" }, { "v": "trig.adv0" } ] },
+        { "align": "left", "runs": [ { "t": "   ", "c": "dim" }, { "v": "trig.adv1" } ] },
+        { "align": "left", "runs": [ { "t": "受理 ", "c": "dim" }, { "v": "trig.calls", "c": "ye", "b": 1 }, { "t": " 次 ", "c": "dim" }, { "v": "trig.status", "c": "fg", "b": 1 } ] }
+      ] },
+    { "type": "box", "x": 800, "y": 1028, "w": 360, "h": 230, "color": "gr", "pad": [14, 16, 16],
+      "lines": [
+        { "align": "left", "runs": [ { "t": "存储纪律", "c": "gr", "b": 1 } ] },
+        { "align": "left", "t": "原文不改写", "c": "fg" },
+        { "align": "left", "t": "派生数据可重建", "c": "fg" },
+        { "align": "left", "t": "快照不污染用户 git", "c": "fg" },
+        { "align": "left", "t": "恢复本身可逆", "c": "fg" },
+        { "align": "left", "runs": [ { "t": "当前 ", "c": "dim" }, { "v": "size", "c": "fg" } ] }
+      ] },
+
+    { "type": "log", "x": 40, "y": 1306, "w": 1120, "rows": 4, "padTop": 16, "padBottom": 30, "padLeft": 20,
+      "title": "session log", "titleX": 40, "titleW": 180,
+      "cols": [ { "key": "time", "x": 0 }, { "key": "who", "x": 112 }, { "key": "m", "x": 232 }, { "key": "g", "x": 858 } ] },
+    { "type": "text", "x": 40, "y": 1460, "align": "left", "size": 16, "c": "dim", "t": "动画计数为示意 (illustrative) · 模块与文件名取自 src/session 源码" }
+  ]
+}

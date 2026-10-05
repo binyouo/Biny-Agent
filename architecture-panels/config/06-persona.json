@@ -1,0 +1,143 @@
+{
+  "meta": { "title": "Biny 功能架构 05 · 人格层", "lang": "zh-CN" },
+  "canvas": { "preset": "4:5", "width": 1200, "height": 1500, "duration": 30, "fps": 30, "preroll": 10 },
+  "theme": {
+    "preset": "terminal-dark",
+    "colors": { "bg": "#161a20", "bar": "#232833", "line": "#4a5367", "line2": "#3a4154", "dim": "#6f788c",
+      "fg": "#e4e8f0", "wh": "#ffffff", "cy": "#86e1e6", "cyd": "#3f7d84", "bl": "#8fb4f6", "bld": "#3f5c8a",
+      "gr": "#86e0a2", "grd": "#3a6b4c", "pu": "#b9a2f2", "pud": "#5c4b80", "ye": "#e3c07a",
+      "or": "#e79a4c", "orl": "#c4783a", "pk": "#f0575f", "hl": "#2b2f42", "row": "#22323a", "dots": "#566078" }
+  },
+  "clock": { "start": "23:10:00", "rate": 1 },
+  "titlebar": { "text": "~/CodingAgent/biny — persona — 120x46" },
+  "credit": { "text": "取自 src/agent/context/{soul,emotion,identity,fatigue,heartbeat,selfReflection}* 源码 · live-panel" },
+  "machines": {
+    "soulreload": { "type": "lane", "period": 8, "run": 4.8, "off": 3.2, "busy": "读 SOUL.md", "done": ["已注入"], "phase": 0,
+      "log": { "who": "soul", "c": "pk", "msgs": [["SOUL.md 投影成 system 区块", "→ prompt"]] } },
+    "evolve": { "type": "lane", "period": 11, "run": 7.0, "off": 4.0, "busy": "沉淀新特质", "done": ["已追加"], "phase": 2.0,
+      "log": { "who": "soul", "c": "pk", "msgs": [["soul append-trait 加一条演化特质", "→ 长期"]] } },
+    "blend": { "type": "lane", "period": 7.5, "run": 4.4, "off": 3.1, "busy": "融合中", "done": ["已注入"], "phase": 1.2,
+      "log": { "who": "emotion", "c": "pu", "msgs": [["base 与 context 融合 + 时间衰减", "→ 语气"]] } },
+    "decay": { "type": "lane", "period": 9.5, "run": 5.8, "off": 3.7, "busy": "回落到 6", "done": ["已回落"], "phase": 0.6,
+      "log": { "who": "emotion", "c": "pu", "msgs": [["valence 线性回 resting 6", "→ 平静"]] } },
+    "fatigueg": { "type": "gauge", "period": 4.8, "t0": 0.5, "seed": 17, "threshold": 60,
+      "values": [22, 41, 68, 30, 52, 74, 35, 58],
+      "high": { "label": "清醒", "dest": "→ 正常回话" }, "low": { "label": "累了", "dest": "→ 话变少" },
+      "log": { "who": "fatigue", "c": "ye", "msgs": ["疲劳度样本"], "tail": "fatigue={value}% {label}" } },
+    "sleep": { "type": "cycle", "period": 6, "t0": 1.0, "order": [0, 1, 2, 3],
+      "values": [
+        { "t": "awake", "m": "状态：清醒", "g": "awake" },
+        { "t": "tired", "m": "状态：累了", "g": "tired" },
+        { "t": "sleepy", "m": "状态：困了", "g": "sleepy" },
+        { "t": "sleeping", "m": "状态：睡着，跑整理", "g": "sleeping" }
+      ],
+      "log": { "who": "fatigue", "c": "ye" } },
+    "trig": { "type": "triggers", "color": "pk", "period": 6.8, "on": 4.4, "t0": 1.0, "callsStart": 3,
+      "onText": "进行中", "offText": "待命",
+      "items": [
+        { "name": "心跳 tick 到点", "adv": ["» 重读 HEARTBEAT.md 清单", "» 跑一个完整 agent turn"], "to": "→ 会话" },
+        { "name": "你改了口吻偏好", "adv": ["» 记进 USER.md", "» 下轮生效"], "to": "→ identity" },
+        { "name": "到了深夜 23 点", "adv": ["» 触发每日自省", "» 写日记 + 沉淀"], "to": "→ diary" }
+      ],
+      "log": { "who": "heartbeat", "c": "pk", "start": { "m": "{name} · 已触发", "g": "触发" }, "end": { "m": "{name} · 已完成", "g": "{to}" } } }
+  },
+  "elements": [
+    { "type": "text", "x": 40, "y": 62, "align": "left", "size": 28, "c": "pk", "b": 1, "t": "05 · 人格层" },
+    { "type": "text", "x": 40, "y": 98, "align": "left", "size": 18, "c": "dim", "t": "灵魂（可演化）· 情绪（双层+衰减）· 疲劳与睡眠 · 心跳与每日自省 —— 这是 biny 与通用 agent 的分界" },
+
+    { "type": "box", "x": 40, "y": 132, "w": 1120, "h": 118, "color": "pk", "fill": "row", "pad": [14, 16, 16],
+      "lines": [
+        { "align": "left", "runs": [ { "t": "注入 prompt 的人格三件套", "c": "pk", "b": 1 }, { "t": "   src/agent/context/", "c": "dim" } ] },
+        { "align": "left", "t": "SOUL 我是谁 · EMOTION 我现在什么状态 · USER 我在跟谁说话", "c": "fg" }
+      ] },
+
+    { "type": "path", "points": [[600, 250], [600, 290]], "color": "line", "arrow": true },
+    { "type": "flow", "path": [[600, 254], [600, 294]], "period": 1.5, "offsets": [0.2, 1.0], "color": "pk" },
+
+    { "type": "box", "x": 40, "y": 296, "w": 540, "h": 218, "color": "pk", "pad": [12, 14, 14],
+      "lines": [
+        { "align": "left", "runs": [ { "t": "SOUL.md · 可演化的自我", "c": "pk", "b": 1 } ] },
+        { "align": "left", "runs": [ { "v": "soulreload" } ] },
+        { "align": "left", "runs": [ { "v": "evolve" } ] },
+        { "align": "left", "t": "只有存在 SOUL.md 才启用，", "c": "fg" },
+        { "align": "left", "t": "与内置默认人格二选一", "c": "fg" },
+        { "align": "left", "t": "带文件锁，防止并发写坏", "c": "dim" }
+      ] },
+    { "type": "box", "x": 620, "y": 296, "w": 540, "h": 218, "color": "pu", "pad": [12, 14, 14],
+      "lines": [
+        { "align": "left", "runs": [ { "t": "EMOTION · 双层情绪", "c": "pu", "b": 1 } ] },
+        { "align": "left", "runs": [ { "v": "blend" } ] },
+        { "align": "left", "runs": [ { "v": "decay" } ] },
+        { "align": "left", "t": "base 6 小时衰减，context 2 小时", "c": "fg" },
+        { "align": "left", "t": "valence 按 0.3 / 0.7 融合", "c": "fg" },
+        { "align": "left", "t": "情绪只影响表达层", "c": "dim" }
+      ] },
+
+    { "type": "path", "points": [[600, 514], [600, 554]], "color": "line", "arrow": true },
+    { "type": "flow", "path": [[600, 518], [600, 558]], "period": 1.6, "offsets": [0.4, 1.3], "color": "pu" },
+
+    { "type": "box", "x": 40, "y": 560, "w": 540, "h": 196, "color": "ye", "pad": [12, 14, 14],
+      "lines": [
+        { "align": "left", "runs": [ { "t": "FATIGUE · 疲劳与主动睡眠", "c": "ye", "b": 1 } ] },
+        { "align": "left", "runs": [ { "v": "fatigueg" } ] },
+        { "align": "left", "t": "四档状态跨进程持久", "c": "fg" },
+        { "align": "left", "runs": [ { "t": "当前 ", "c": "dim" }, { "v": "sleep.t", "c": "ye", "b": 1 } ] }
+      ] },
+    { "type": "box", "x": 620, "y": 560, "w": 540, "h": 196, "color": "cy", "pad": [12, 14, 14],
+      "lines": [
+        { "align": "left", "runs": [ { "t": "IDENTITY · 关于你", "c": "cy", "b": 1 } ] },
+        { "align": "left", "t": "USER.md 是用户可审计的", "c": "fg" },
+        { "align": "left", "t": "Markdown canonical state", "c": "fg" },
+        { "align": "left", "t": "带 revision / contentHash", "c": "fg" },
+        { "align": "left", "t": "核心人格内置，不在这份文档里", "c": "dim" }
+      ] },
+
+    { "type": "text", "x": 40, "y": 786, "align": "left", "size": 18, "c": "dim", "b": 1, "t": "▸ 心跳与自省：让 agent 在没人说话时也在活" },
+    { "type": "box", "x": 40, "y": 806, "w": 360, "h": 190, "color": "pk", "pad": [12, 14, 14],
+      "lines": [
+        { "align": "left", "runs": [ { "t": "心跳 heartbeat", "c": "pk", "b": 1 } ] },
+        { "align": "left", "t": "周期跑完整 agent turn", "c": "fg" },
+        { "align": "left", "t": "每次重读清单防过期", "c": "fg" },
+        { "align": "left", "t": "服务本身不持模型权限", "c": "dim" }
+      ] },
+    { "type": "box", "x": 420, "y": 806, "w": 360, "h": 190, "color": "gr", "pad": [12, 14, 14],
+      "lines": [
+        { "align": "left", "runs": [ { "t": "每日自省", "c": "gr", "b": 1 } ] },
+        { "align": "left", "t": "从经历生成日记", "c": "fg" },
+        { "align": "left", "t": "可重试、互相独立", "c": "fg" },
+        { "align": "left", "t": "沉淀记忆 / 人格 / 情绪", "c": "fg" }
+      ] },
+    { "type": "box", "x": 800, "y": 806, "w": 360, "h": 190, "color": "pu", "pad": [12, 14, 14],
+      "lines": [
+        { "align": "left", "runs": [ { "t": "Sleep 记忆合并", "c": "pu", "b": 1 } ] },
+        { "align": "left", "t": "删冗余 + 合并同主题", "c": "fg" },
+        { "align": "left", "t": "硬约束：零信息损失", "c": "fg" },
+        { "align": "left", "t": "合并结果不能为空", "c": "dim" }
+      ] },
+
+    { "type": "box", "x": 40, "y": 1028, "w": 740, "h": 230, "color": "pk", "pad": [14, 16, 16],
+      "lines": [
+        { "align": "left", "runs": [ { "t": "▸ 常驻触发", "c": "dim", "b": 1 } ] },
+        { "align": "left", "runs": [ { "v": "trig.label0" } ] },
+        { "align": "left", "runs": [ { "v": "trig.label1" } ] },
+        { "align": "left", "runs": [ { "v": "trig.label2" } ] },
+        { "align": "left", "runs": [ { "t": "→ ", "c": "dim" }, { "v": "trig.adv0" } ] },
+        { "align": "left", "runs": [ { "t": "   ", "c": "dim" }, { "v": "trig.adv1" } ] },
+        { "align": "left", "runs": [ { "t": "触发 ", "c": "dim" }, { "v": "trig.calls", "c": "pk", "b": 1 }, { "t": " 次 ", "c": "dim" }, { "v": "trig.status", "c": "fg", "b": 1 } ] }
+      ] },
+    { "type": "box", "x": 800, "y": 1028, "w": 360, "h": 230, "color": "gr", "pad": [14, 16, 16],
+      "lines": [
+        { "align": "left", "runs": [ { "t": "设计约束", "c": "gr", "b": 1 } ] },
+        { "align": "left", "t": "情绪不改能力边界", "c": "fg" },
+        { "align": "left", "t": "人格从真实对话慢速长", "c": "fg" },
+        { "align": "left", "t": "不凭空编经历", "c": "fg" },
+        { "align": "left", "t": "默认人格与用户 SOUL 二选一", "c": "fg" },
+        { "align": "left", "t": "无 SOUL.md 就走内置", "c": "dim" }
+      ] },
+
+    { "type": "log", "x": 40, "y": 1306, "w": 1120, "rows": 4, "padTop": 16, "padBottom": 30, "padLeft": 20,
+      "title": "persona log", "titleX": 40, "titleW": 190,
+      "cols": [ { "key": "time", "x": 0 }, { "key": "who", "x": 116 }, { "key": "m", "x": 238 }, { "key": "g", "x": 900 } ] },
+    { "type": "text", "x": 40, "y": 1460, "align": "left", "size": 16, "c": "dim", "t": "动画计数为示意 (illustrative) · 模块与文件名取自 src/agent/context 源码" }
+  ]
+}

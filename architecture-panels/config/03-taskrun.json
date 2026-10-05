@@ -1,0 +1,117 @@
+{
+  "meta": { "title": "Biny 功能架构 02 · 长任务执行", "lang": "zh-CN" },
+  "canvas": { "preset": "4:5", "width": 1200, "height": 1500, "duration": 30, "fps": 30, "preroll": 10 },
+  "theme": {
+    "preset": "terminal-dark",
+    "colors": { "bg": "#161a20", "bar": "#232833", "line": "#4a5367", "line2": "#3a4154", "dim": "#6f788c",
+      "fg": "#e4e8f0", "wh": "#ffffff", "cy": "#86e1e6", "cyd": "#3f7d84", "bl": "#8fb4f6", "bld": "#3f5c8a",
+      "gr": "#86e0a2", "grd": "#3a6b4c", "pu": "#b9a2f2", "pud": "#5c4b80", "ye": "#e3c07a",
+      "or": "#e79a4c", "orl": "#c4783a", "hl": "#2b2f42", "row": "#22323a", "dots": "#566078" }
+  },
+  "clock": { "start": "10:05:00", "rate": 1 },
+  "titlebar": { "text": "~/CodingAgent/biny — long task — 120x46" },
+  "credit": { "text": "取自 src/runtime/TaskRunStore.ts · TaskRetryPolicy.ts · WorkerSession.ts · TaskClosure.ts · live-panel" },
+  "machines": {
+    "w1": { "type": "lane", "period": 10, "run": 7.0, "off": 3.0, "busy": "跑 attempt 1", "done": ["已完成"], "phase": 0,
+      "log": { "who": "worker", "c": "pu", "msgs": [["worker 写检查点 → 可续跑", "→ ckpt"]] } },
+    "w2": { "type": "lane", "period": 10, "run": 5.8, "off": 4.2, "busy": "跑 attempt 2", "done": ["已完成"], "phase": 2.5,
+      "log": { "who": "worker", "c": "pu", "msgs": [["断线后从检查点恢复", "→ resume"]] } },
+    "verify": { "type": "lane", "period": 9, "run": 5.2, "off": 3.8, "busy": "验收中", "done": ["已通过"], "phase": 1,
+      "log": { "who": "closure", "c": "gr", "msgs": [["TaskClosure 核对产物与证据", "→ 验收"]] } },
+    "retry": { "type": "gauge", "period": 4.0, "t0": 0.5, "seed": 5, "threshold": 65,
+      "values": [22, 41, 68, 33, 57, 76, 29, 48],
+      "high": { "label": "一次过", "dest": "→ closure" }, "low": { "label": "重试", "dest": "→ attempt+1" },
+      "log": { "who": "retry", "c": "ye", "msgs": ["attempt 成功率样本"], "tail": "p={value}% {label}" } },
+    "ctx": { "type": "gauge", "period": 5.2, "t0": 1.4, "seed": 9, "threshold": 70,
+      "values": [31, 46, 58, 82, 64, 39, 71, 53],
+      "high": { "label": "有空间", "dest": "→ 继续" }, "low": { "label": "吃紧", "dest": "→ 压缩" },
+      "log": { "who": "budget", "c": "cy", "msgs": ["上下文占用样本"], "tail": "ctx={value}% {label}" } },
+    "trig": { "type": "triggers", "color": "ye", "period": 6.8, "on": 4.4, "t0": 1.0, "callsStart": 4,
+      "onText": "处理中", "offText": "待命",
+      "items": [
+        { "name": "Provider 抖动", "adv": ["» 网络中断不算能力失败", "» 按策略退避重试"], "to": "→ retry" },
+        { "name": "回合超预算", "adv": ["» 压缩工具结果", "» 保留头尾继续"], "to": "→ budget" },
+        { "name": "任务被中断", "adv": ["» 从最近检查点续跑", "» 不重头再来"], "to": "→ worker" }
+      ],
+      "log": { "who": "policy", "c": "ye", "start": { "m": "{name} · 触发", "g": "触发" }, "end": { "m": "{name} · 已处置", "g": "{to}" } } }
+  },
+  "elements": [
+    { "type": "text", "x": 40, "y": 62, "align": "left", "size": 28, "c": "pu", "b": 1, "t": "02 · 长任务执行" },
+    { "type": "text", "x": 40, "y": 98, "align": "left", "size": 18, "c": "dim", "t": "持久化 TaskRun 与 attempt 状态，支持检查点续跑、重试决策和完成后的独立验证" },
+
+    { "type": "box", "x": 40, "y": 132, "w": 1120, "h": 118, "color": "ye", "fill": "row", "pad": [14, 16, 16],
+      "lines": [
+        { "align": "left", "runs": [ { "t": "任务入口", "c": "ye", "b": 1 }, { "t": "   会话目标 SessionGoal · 依赖图 GoalGraph · 用户直接派发", "c": "fg" } ] },
+        { "align": "left", "runs": [ { "t": "src/runtime/SessionGoalStore.ts · GoalGraphStore.ts", "c": "dim" } ] }
+      ] },
+
+    { "type": "path", "points": [[600, 250], [600, 290]], "color": "line", "arrow": true },
+    { "type": "flow", "path": [[600, 254], [600, 294]], "period": 1.5, "offsets": [0.2, 1.0], "color": "ye" },
+
+    { "type": "box", "x": 40, "y": 296, "w": 1120, "h": 148, "color": "pu", "pad": [12, 16, 16],
+      "lines": [
+        { "align": "left", "runs": [ { "t": "TaskRun · 任务账本", "c": "pu", "b": 1 }, { "t": "   src/runtime/TaskRunStore.ts", "c": "dim" } ] },
+        { "align": "left", "t": "每个 TaskRun 持久化：状态 · 已试次数 · 检查点 · 产物引用", "c": "fg" },
+        { "align": "left", "runs": [ { "t": "进程重启、断线、关机都不丢进度", "c": "dim" } ] }
+      ] },
+
+    { "type": "path", "points": [[600, 444], [600, 484]], "color": "line", "arrow": true },
+    { "type": "flow", "path": [[600, 448], [600, 488]], "period": 1.6, "offsets": [0.4, 1.3], "color": "pu" },
+
+    { "type": "box", "x": 40, "y": 490, "w": 540, "h": 188, "color": "pu", "pad": [12, 16, 16],
+      "lines": [
+        { "align": "left", "runs": [ { "t": "WorkerSession · 执行 attempt", "c": "pu", "b": 1 } ] },
+        { "align": "left", "runs": [ { "v": "w1" } ] },
+        { "align": "left", "runs": [ { "v": "w2" } ] },
+        { "align": "left", "runs": [ { "t": "检查点写在每步之后", "c": "dim" } ] }
+      ] },
+    { "type": "box", "x": 620, "y": 490, "w": 540, "h": 188, "color": "gr", "pad": [12, 16, 16],
+      "lines": [
+        { "align": "left", "runs": [ { "t": "TaskClosure · 收尾验证", "c": "gr", "b": 1 } ] },
+        { "align": "left", "runs": [ { "v": "verify" } ] },
+        { "align": "left", "t": "核对产物真的存在，再判完成", "c": "fg" },
+        { "align": "left", "runs": [ { "t": "checkpointEvidence 留证据链", "c": "dim" } ] }
+      ] },
+
+    { "type": "text", "x": 40, "y": 712, "align": "left", "size": 18, "c": "dim", "b": 1, "t": "▸ 两个仪表：重试策略与预算" },
+    { "type": "box", "x": 40, "y": 732, "w": 540, "h": 190, "color": "ye", "pad": [12, 16, 16],
+      "lines": [
+        { "align": "left", "runs": [ { "t": "TaskRetryPolicy", "c": "ye", "b": 1 } ] },
+        { "align": "left", "runs": [ { "v": "retry" } ] },
+        { "align": "left", "t": "区分「网络抖动」与「真做不出来」", "c": "fg" },
+        { "align": "left", "t": "重试次数与退避都可配", "c": "fg" }
+      ] },
+    { "type": "box", "x": 620, "y": 732, "w": 540, "h": 190, "color": "cy", "pad": [12, 16, 16],
+      "lines": [
+        { "align": "left", "runs": [ { "t": "预算与投影 runBudget", "c": "cy", "b": 1 } ] },
+        { "align": "left", "runs": [ { "v": "ctx" } ] },
+        { "align": "left", "t": "工具结果超限则折叠归档", "c": "fg" },
+        { "align": "left", "t": "模型可按下标分页补读", "c": "fg" }
+      ] },
+
+    { "type": "box", "x": 40, "y": 956, "w": 740, "h": 230, "color": "ye", "pad": [14, 16, 16],
+      "lines": [
+        { "align": "left", "runs": [ { "t": "▸ 常驻触发", "c": "dim", "b": 1 } ] },
+        { "align": "left", "runs": [ { "v": "trig.label0" } ] },
+        { "align": "left", "runs": [ { "v": "trig.label1" } ] },
+        { "align": "left", "runs": [ { "v": "trig.label2" } ] },
+        { "align": "left", "runs": [ { "t": "→ ", "c": "dim" }, { "v": "trig.adv0" } ] },
+        { "align": "left", "runs": [ { "t": "   ", "c": "dim" }, { "v": "trig.adv1" } ] },
+        { "align": "left", "runs": [ { "t": "触发 ", "c": "dim" }, { "v": "trig.calls", "c": "ye", "b": 1 }, { "t": " 次 ", "c": "dim" }, { "v": "trig.status", "c": "fg", "b": 1 } ] }
+      ] },
+    { "type": "box", "x": 800, "y": 956, "w": 360, "h": 230, "color": "gr", "pad": [14, 16, 16],
+      "lines": [
+        { "align": "left", "runs": [ { "t": "为什么能续跑", "c": "gr", "b": 1 } ] },
+        { "align": "left", "t": "状态在磁盘，不在内存", "c": "fg" },
+        { "align": "left", "t": "每步落一次检查点", "c": "fg" },
+        { "align": "left", "t": "续跑从最后一步接上", "c": "fg" },
+        { "align": "left", "t": "失败有归因，不静默吞", "c": "fg" },
+        { "align": "left", "t": "完成前必过验证", "c": "dim" }
+      ] },
+
+    { "type": "log", "x": 40, "y": 1234, "w": 1120, "rows": 4, "padTop": 16, "padBottom": 30, "padLeft": 20,
+      "title": "task log", "titleX": 40, "titleW": 160,
+      "cols": [ { "key": "time", "x": 0 }, { "key": "who", "x": 116 }, { "key": "m", "x": 238 }, { "key": "g", "x": 900 } ] },
+    { "type": "text", "x": 40, "y": 1440, "align": "left", "size": 16, "c": "dim", "t": "动画计数为示意 (illustrative) · 模块与文件名取自 src/runtime 源码" }
+  ]
+}

@@ -34,6 +34,9 @@ docs/TUI_INTERACTION_REQUIREMENTS.md
 # Product showcase site (separate project, own toolchain)
 /website/
 
+# 架构图的渲染产物（config/ + scripts/ 是源，可重跑生成）
+/architecture-panels/out/
+
 # 本地生成文件和测试产物
 *.log
 *.tsbuildinfo
