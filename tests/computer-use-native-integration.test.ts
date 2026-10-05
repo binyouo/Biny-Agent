@@ -858,3 +858,45 @@ test("intent layer dispatches generic routes and builds mailto URLs", async () =
     await driver.dispose();
   }
 });
+
+// `--no-cursor`（守护进程侧字段 `show_cursor`）是**动作级**开关：这一次不要动作指示器，
+// 下一次照旧。参照把它写在 help 的 "Action flags" 里，对每个动作都成立。
+//
+// 这道题原先根本没法验 —— 指示器是全屏透明的窗口，"看不见"和"没显示"肉眼分不开。
+// 办法是让结局**可读**：`lens {mode:"status"}` 报出上一次动作是 shown / suppressed /
+// disabled / none（只读，不翻转开关）。
+test("an action can suppress the indicator for one action only", async () => {
+  const driver = new NativeProcessDriver(() => {}, {
+    binaryPath: new URL("../out/native/computer-use", import.meta.url).pathname
+  });
+  const readIndicator = async () =>
+    ((await driver.daemonCommand("lens", { mode: "status" })).data as { lastIndicator?: string }).lastIndicator;
+  try {
+    const listed = await driver.list("cursor-e2e", undefined);
+    const apps = (listed.data as { apps: { pid?: number }[] }).apps;
+    const pid = apps.find(app => typeof app.pid === "number")?.pid;
+    assert.ok(pid, "至少要有一个运行中的应用");
+
+    await driver.daemonCommand("lens", { mode: "on" });
+    // 只读查询不能改变开关 —— 早先任何不认识的 mode 都会落进 `default` 把指示器翻转掉，
+    // 于是"查一次状态"本身就是一次扰动。
+    const first = await driver.daemonCommand("lens", { mode: "status" });
+    const second = await driver.daemonCommand("lens", { mode: "status" });
+    assert.deepEqual((first.data as { enabled?: boolean }).enabled, (second.data as { enabled?: boolean }).enabled,
+      "连查两次状态，开关不该被自己翻掉");
+
+    await driver.daemonCommand("scroll", { pid, direction: "down", pages: 1 });
+    assert.equal(await readIndicator(), "shown", "普通动作应当亮起指示器");
+    await driver.daemonCommand("scroll", { pid, direction: "down", pages: 1, show_cursor: false });
+    assert.equal(await readIndicator(), "suppressed", "带 show_cursor=false 的这一次应当不亮");
+    await driver.daemonCommand("scroll", { pid, direction: "down", pages: 1 });
+    assert.equal(await readIndicator(), "shown", "抑制作用只限这一次，下一次照旧");
+
+    await driver.daemonCommand("lens", { mode: "off" });
+    await driver.daemonCommand("scroll", { pid, direction: "down", pages: 1 });
+    assert.equal(await readIndicator(), "disabled", "指示器整体关掉时，结局应当能区分于 suppressed");
+    await driver.daemonCommand("lens", { mode: "on" });
+  } finally {
+    await driver.dispose();
+  }
+});

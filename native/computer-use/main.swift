@@ -340,6 +340,8 @@ final class LensOverlay {
 
 let lensOverlay = LensOverlay()
 var lensEnabled = true
+/// 上一次动作用的是哪种指示器结局：shown / suppressed / disabled / none。
+var lastIndicatorOutcome = "none"
 var lastActionPoint: CGPoint?
 
 /// 记一次动作落点。
@@ -347,12 +349,25 @@ var lastActionPoint: CGPoint?
 /// 命令处理跑在全局队列线程上，而 AppKit 只能主线程碰 —— 必须派过去。
 /// `show_cursor=false` 表示这一次不要指示器（`--no-cursor`）。
 func noteActionPoint(_ args: [String: Any], _ point: CGPoint?, symbol: String?) {
+    // 让"这一次显示了没有"变成**可读的量**：否则 `--no-cursor` 只能靠肉眼验，
+    // 而肉眼验不了 —— 指示器是全屏透明的，看不见不等于没显示。
+    lastIndicatorOutcome = !lensEnabled ? "disabled" : ((args["show_cursor"] as? Bool ?? true) ? "shown" : "suppressed")
     guard lensEnabled, args["show_cursor"] as? Bool ?? true else { return }
     // 打字这类动作没有坐标：沿用上一次落点，用户仍能看到「它正在这里输入」。
     let target = point ?? lastActionPoint
     guard let target else { return }
     lastActionPoint = target
     DispatchQueue.main.async { lensOverlay.show(at: target, symbol: symbol) }
+}
+
+/// 这一次动作的落点：给了像素就用像素，给了元素就用元素框中心，都没有就返回 nil
+/// （nil 表示"沿用上一次落点" —— 打字这类动作本来就没有自己的坐标）。
+func actionPoint(_ args: [String: Any], element: AXUIElement?) -> CGPoint? {
+    if let x = args["x"] as? Double, let y = args["y"] as? Double { return CGPoint(x: x, y: y) }
+    if let element, let frame = axFrame(element) {
+        return CGPoint(x: frame["x"]! + frame["w"]! / 2, y: frame["y"]! + frame["h"]! / 2)
+    }
+    return nil
 }
 
 /// 能不能为某个 pid 建立事件 tap。
@@ -1374,12 +1389,17 @@ DispatchQueue.global().async {
                             case "lens":
                                 // 动作指示器的开关。不传 mode 就是 toggle（参照实现的 CLI 同样先读再翻）。
                                 switch args["mode"] as? String ?? args["enabled"] as? String {
+                                // ⚠️ 只读的这几个值要**先接住**：否则它们会落进 `default` 把指示器**翻转**掉。
+                                // （我用 `mode: "status"` 查状态，每查一次翻一次，读到的 `false` 是自己造成的。）
+                                case "status", "report", "get":
+                                    reply(fd, ["id": id, "ok": true, "data": ["enabled": lensEnabled, "lastIndicator": lastIndicatorOutcome] as [String: Any]])
+                                    return
                                 case "on", "true", "1": lensEnabled = true
                                 case "off", "false", "0": lensEnabled = false
                                 default: lensEnabled.toggle()
                                 }
                                 if !lensEnabled { DispatchQueue.main.async { lensOverlay.hide() } }
-                                reply(fd, ["id": id, "ok": true, "data": ["enabled": lensEnabled] as [String: Any]])
+                                reply(fd, ["id": id, "ok": true, "data": ["enabled": lensEnabled, "lastIndicator": lastIndicatorOutcome] as [String: Any]])
                             case "status":
                                 // 「helper 包 + 守护进程状态」：调用方最想先知道的两件事是
                                 // 「包在不在」和「守护进程跑了多久、还剩多久自退」。
@@ -1723,6 +1743,14 @@ DispatchQueue.global().async {
                                 // 那才是网页内容（不暴露 AXScrollBar）唯一可用的路由。
                                 // pages 是语义单位（参照实现用 --pages），amount 是滚轮的行数。
                                 // 显式取两种数值类型：JSON 里的 1 既可能是 Int 也可能是 Double。
+                                // 滚动同样要有指示器：参照在这条路上有专门的 `alma.lens.scrollBadge`
+                                // 角标（"这一次滚了什么"）。原先 scroll 一个落点都不记 —— 于是它
+                                // 既不亮指示器，也吃不到 `--no-cursor`。落点取**窗口中心**：
+                                // 滚动是窗口级的动作，没有单点，取中心最能说明"它正在动这个窗口"。
+                                let scrollPoint: CGPoint? = windowScreenBounds(pid: Int(pid)).map {
+                                    CGPoint(x: $0["x"]! + $0["w"]! / 2, y: $0["y"]! + $0["h"]! / 2)
+                                }
+                                noteActionPoint(args, scrollPoint, symbol: "scroll")
                                 let pagesArg = (args["pages"] as? Double) ?? (args["pages"] as? Int).map(Double.init)
                                 var data = route == "wheel" ? nil : await withFocusGuard(pid) { axScroll(pid, direction: direction, notches: amount, pages: pagesArg) }
                                 if data == nil && route != "ax" {

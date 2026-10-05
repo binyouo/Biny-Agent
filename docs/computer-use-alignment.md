@@ -251,6 +251,31 @@ physical click`、`set_value (AXValue not settable on this element)`、
 `intent_bad_url` / `intent_handler_not_installed`。
 （后者例如这台机器没装 Spotify —— 如实报，不假装成功。）
 
+### 1.4d 动作指示器的单次抑制：`--no-cursor`
+
+参照的 help 末尾有一行：
+
+> **Action flags: `--no-cursor` hides the lens for one action.**
+
+**这一行我读过两次，两次都滑过去。** 补它的时候才发现：守护进程侧的 `show_cursor` 早就写好了
+（`guard lensEnabled, args["show_cursor"] as? Bool ?? true`，注释里甚至写着"对应 `--no-cursor`"），
+**而四个调用层（protocol / controller / driver / CLI）一处都没有传** ——
+能力在、路不通，又一次。
+
+现已全线接上：协议加 `show_cursor`、驱动在 `withPid` 旁边统一带上（8 个动作一处覆盖，
+好过每个 case 各写一遍 —— 那种写法漏一个就静默失效）、CLI 每个动作动词都有 `--no-cursor`。
+
+**顺带修了两件事**：
+1. `scroll` 原先**一个落点都不记** —— 于是它既不亮指示器、也吃不到这个开关。
+   参照在滚动这条路上有专门的 `alma.lens.scrollBadge` 角标，所以它本该有。
+   落点取窗口中心（滚动是窗口级动作，没有单点）。
+2. `lens <mode>` 的 `default` 分支是 `toggle`，于是**任何不认识的 mode 都会翻转开关** ——
+   连"查一下状态"都是一次扰动。加了只读的 `status`。
+
+**并且让结局可读**：指示器是全屏透明窗口，"看不见"和"没显示"肉眼分不开，
+所以 `lens status` 报 `lastIndicator` = `shown` / `suppressed` / `disabled` / `none`。
+有了它 `--no-cursor` 才是可验证的，而不是"我没看见所以应该没显示"。
+
 ### 1.5 工具 / 技能层
 
 - 模型侧工具：`ComputerList` / `ComputerObserve` / `ComputerAction`（8 个动作动词）

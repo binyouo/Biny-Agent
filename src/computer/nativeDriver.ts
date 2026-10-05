@@ -476,8 +476,14 @@ export class NativeProcessDriver implements ComputerDriver {
   async act(_session: string, action: ComputerAction, signal?: AbortSignal): Promise<DriverReply> {
     // daemon 按 pid 找 ref 表和坐标映射；动作不自己带 pid，用最近一次观察的目标。
     const pid = this.lastPid;
-    const withPid = (params: Record<string, unknown>): Record<string, unknown> =>
-      pid === undefined ? params : { ...params, pid };
+    // `show_cursor` 挂在这里：它是**每个动作都适用**的（参照 CLI 的 `--no-cursor`
+    // 写在 "Action flags" 里，不挑动词）。放在 withPid 旁边一次覆盖全部 8 个动作，
+    // 好过在每个 case 里各写一遍 —— 那种写法漏一个就静默失效。
+    const withPid = (params: Record<string, unknown>): Record<string, unknown> => ({
+      ...(pid === undefined ? {} : { pid }),
+      ...(action.show_cursor === undefined ? {} : { show_cursor: action.show_cursor }),
+      ...params
+    });
     switch (action.action) {
       case "click":
         return await this.call("click", withPid(action.elementToken ? { ref: action.elementToken } : { x: action.x, y: action.y }), signal);

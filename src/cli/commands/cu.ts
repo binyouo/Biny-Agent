@@ -13,7 +13,18 @@ import { renderElementTree, type ElementLike } from "../../computer/elementTree.
  * 它直连守护进程的 unix socket，因此**不需要桌面应用在运行**：守护进程按需自启。
  */
 export function registerCuCommands(program: Command): void {
-  const cu = program.command("cu").description("Drive the Mac from the terminal (same daemon the agent uses)");
+  /** 动作类动词：`--no-cursor` 对它们都成立（参照把它写在 "Action flags" 一节）。 */
+const ACTION_VERBS = new Set(["click", "perform_secondary_action", "drag", "type", "type_text", "press", "press_key", "set_value", "select_text", "scroll"]);
+
+/**
+ * 动作级开关：`--no-cursor` → `show_cursor: false`。
+ * 参照把它写在 help 的 "Action flags: --no-cursor hides the lens for one action"，
+ * 对每个动作都成立 —— 所以它是**动作参数**，不是某个动词的私事。
+ */
+const withCursorFlag = (options: Record<string, unknown>): Record<string, unknown> =>
+  options.noCursor === true ? { show_cursor: false } : {};
+
+const cu = program.command("cu").description("Drive the Mac from the terminal (same daemon the agent uses)");
 
   /** 每个动词都开一次守护进程连接；用完就断，空闲自退交给守护进程自己管。 */
   const withDriver = async <T>(work: (driver: NativeProcessDriver) => Promise<T>): Promise<T> => {
@@ -66,7 +77,7 @@ export function registerCuCommands(program: Command): void {
   for (const [name, days] of [["list_apps", true], ["apps", false]] as const) {
     const command = cu.command(name)
       .description(days ? "Running apps plus those used recently (with the bundle ids to launch)" : "Running apps only")
-      .option("--json", "print JSON");
+      .option("--json", "print JSON").option("--no-cursor", "hide the action indicator for this one action");
     if (days) command.option("--days <n>", "how far back to look for recent apps", "30");
     command.action(async (options: { json?: boolean; days?: string }) => withDriver(async driver => {
       const apps = ((await driver.list("cli", undefined)).data as { apps?: never[] }).apps ?? [];
@@ -126,8 +137,11 @@ export function registerCuCommands(program: Command): void {
     .option("--button <name>", "left | right | middle", "left").option("--clicks <n>", "1 = single, 2 = double-click", "1")
     .option("--strategy <name>", "auto | ax | physical — ax drives the control's own action, physical synthesises a mouse click", "auto")
     .option("--json", "print JSON")
-    .action(async (ref: string | undefined, options: { pixel?: string[]; pid?: string; button?: string; clicks?: string; strategy?: string; json?: boolean }) => withDriver(async driver => {
-      const shared = { button: options.button, clicks: Number(options.clicks), strategy: options.strategy };
+    .option("--no-cursor", "hide the action indicator for this one action")
+    .action(async (ref: string | undefined, options: { pixel?: string[]; pid?: string; button?: string; clicks?: string; strategy?: string; noCursor?: boolean; json?: boolean }) => withDriver(async driver => {
+      // `--no-cursor` 是**动作级**开关（参照写在 "Action flags" 里，不挑动词）：
+      // 这一次不要指示器，下一次照旧。
+      const shared = { button: options.button, clicks: Number(options.clicks), strategy: options.strategy, ...(options.noCursor ? { show_cursor: false } : {}) };
       const args: Record<string, unknown> = options.pixel
         ? { pid: Number(options.pid), x: Number(options.pixel[0]), y: Number(options.pixel[1]), ...shared }
         : { ref, pid: Number(options.pid), ...shared };
@@ -136,10 +150,10 @@ export function registerCuCommands(program: Command): void {
 
   for (const verb of ["type_text", "press_key"] as const) {
     const command = cu.command(verb).description(verb === "type_text" ? "Type text into the target app" : "Press a key or chord (xdotool syntax: cmd+s)")
-      .argument(verb === "type_text" ? "<text>" : "<combo>").option("--pid <n>", "target pid").option("--json", "print JSON");
+      .argument(verb === "type_text" ? "<text>" : "<combo>").option("--pid <n>", "target pid").option("--json", "print JSON").option("--no-cursor", "hide the action indicator for this one action");
     command.action((value: string, options: { pid?: string; json?: boolean }) => withDriver(async driver => {
       const args = verb === "type_text" ? { text: value, pid: Number(options.pid) } : { key: value, pid: Number(options.pid) };
-      print((await driver.actRaw(verb, args)).data, options.json);
+      print((await driver.actRaw(verb, { ...args, ...withCursorFlag(options) })).data, options.json);
     }));
   }
 
@@ -153,31 +167,32 @@ export function registerCuCommands(program: Command): void {
       // 给了 --pages 就按页面走（量出来的），否则退回滚轮行数（估的）。回执里的 unit 会说明用了哪个。
       if (options.pages !== undefined) args.pages = Number(options.pages);
       else args.amount = Number(options.amount);
-      print((await driver.actRaw("scroll", args)).data, options.json);
+      print((await driver.actRaw("scroll", { ...args, ...withCursorFlag(options) })).data, options.json);
     }));
 
   cu.command("drag").description("Drag between two screenshot points").argument("<x1> <y1> <x2> <y2>")
     .option("--pid <n>", "target pid").option("--json", "print JSON")
     .action((x1: string, y1: string, x2: string, y2: string, options: { pid?: string; json?: boolean }) => withDriver(async driver => {
-      print((await driver.actRaw("drag", { x1: Number(x1), y1: Number(y1), x2: Number(x2), y2: Number(y2), pid: Number(options.pid) })).data, options.json);
+      print((await driver.actRaw("drag", { x1: Number(x1), y1: Number(y1), x2: Number(x2), y2: Number(y2), pid: Number(options.pid), ...withCursorFlag(options) })).data, options.json);
     }));
 
   cu.command("menu").description("Open an element's context menu").argument("<ref>", "element ref from `cu snap`")
     .option("--pid <n>", "target pid").option("--json", "print JSON")
     .action((ref: string, options: { pid?: string; json?: boolean }) => withDriver(async driver => {
-      print((await driver.actRaw("perform_secondary_action", { ref, pid: Number(options.pid) })).data, options.json);
+      print((await driver.actRaw("perform_secondary_action", { ref, pid: Number(options.pid), ...withCursorFlag(options) })).data, options.json);
     }));
 
   const elementVerb = (name: string, description: string, extra: (value: string, options: Record<string, unknown>) => Record<string, unknown>) => {
     const command = cu.command(name).description(description).argument("<ref>", "element ref from `cu snap`")
       .argument("<value>", name === "press" ? "Enter | Escape | Space | Increment | Decrement | ShowMenu" : "text")
-      .option("--pid <n>", "target pid").option("--json", "print JSON");
+      .option("--pid <n>", "target pid").option("--json", "print JSON")
+      .option("--no-cursor", "hide the action indicator for this one action");
     if (name === "type") {
       command.option("--append", "append instead of replacing the value");
       command.option("--at-selection", "insert at the selection (a cursor position when nothing is selected)");
     }
     command.action((ref: string, value: string, options: Record<string, unknown>) => withDriver(async driver => {
-      print((await driver.daemonCommand(name, { ref, pid: Number(options.pid), ...extra(value, options) })).data, options.json === true);
+      print((await driver.daemonCommand(name, { ref, pid: Number(options.pid), ...extra(value, options), ...withCursorFlag(options) })).data, options.json === true);
     }));
   };
 
@@ -195,7 +210,7 @@ export function registerCuCommands(program: Command): void {
     .option("--pid <n>", "target pid").option("--json", "print JSON")
     .action((ref: string, value: string, options: { pid?: string; json?: boolean }) => withDriver(async driver => {
       const typed = value === "true" ? true : value === "false" ? false : Number.isFinite(Number(value)) ? Number(value) : value;
-      print((await driver.actRaw("set_value", { ref, value: typed, pid: Number(options.pid) })).data, options.json);
+      print((await driver.actRaw("set_value", { ref, value: typed, pid: Number(options.pid), ...withCursorFlag(options) })).data, options.json);
     }));
 
   cu.command("launch_app").description("Launch an app in the background (never takes the foreground)").argument("<bundle>")

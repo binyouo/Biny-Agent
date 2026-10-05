@@ -18,6 +18,12 @@ export const computerActionSchema = windowTargetSchema.extend({
   action: z.enum(["click", "type_text", "press_key", "scroll", "drag", "perform_secondary_action", "set_value", "select_text"]),
   captureId: z.string().min(1).max(256),
   delivery: z.enum(["background", "foreground"]).default("background"),
+  /**
+   * 这一次不要动作指示器。对应参照 CLI 的 `--no-cursor`（"hides the lens for one action"）。
+   * 守护进程侧的字段名就是 `show_cursor`；早先只有守护进程认识它，四个调用层都没接 ——
+   * 能力在、路不通。
+   */
+  show_cursor: z.boolean().optional(),
   x: z.number().finite().nonnegative().optional(), y: z.number().finite().nonnegative().optional(),
   text: z.string().max(4000).optional(), key: z.string().min(1).max(40).optional(),
   direction: z.enum(["up", "down", "left", "right"]).optional(),
