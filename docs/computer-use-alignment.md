@@ -23,6 +23,22 @@ UI 三类界面齐全，并补上了参照实现有、本仓库原本没有的**
 directly."）。本实现原先**忽略子命令、缺 `--socket` 就静默 `exit(64)`** ——
 "可以手动跑"这条文档路径是断的：跑一下什么都不说。
 
+同一段文本里还有一处该对齐的：参照的权限提示**明说去哪儿开**——
+
+```
+Accessibility permission not granted to Alma Computer Use.
+Open System Settings → Privacy & Security → Accessibility and enable "Alma Computer Use".
+```
+
+本实现原先只抛 `ax_not_granted` 一个错误码，截图那条更糟：缺屏幕录制时抛的是
+**ScreenCaptureKit 的原始错误**。而这两项授权 **macOS 每次新构建都会重置** ——
+也就是说用户会反复撞到它，只给错误码等于让他自己猜。
+
+现在两条都给全：`ax_not_granted` / `screen_recording_not_granted` 各自带上
+系统设置里的确切路径，并在截图入口先自查一次屏幕录制权限（不等 SCK 报错）。
+
+⚠️ 这条**没法自动化测**（要测就得撤销权限），靠的是正常路径仍通过 + 文案在源码里可核对。
+
 现在三样齐了：`version` 打印版本、未知子命令报错并附用法、`daemon` 有默认 socket
 （用**用户级**路径；参照那个是机器级的 `/Library/Application Support/Alma/`，那是它的安装器建的，
 普通用户写不进去，照抄会让手动跑必然失败）。

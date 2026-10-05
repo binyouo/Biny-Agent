@@ -388,6 +388,25 @@ private func tryArmEventTapOnce() -> String {
 }
 
 func axTrusted() -> Bool { return AXIsProcessTrusted() }
+/// 权限缺失时的文案：**要说清去哪儿开**，不能只回一个错误码。
+///
+/// 这两项授权 macOS **每次新构建都会重置**，所以用户会反复看到这条消息；
+/// 只回 `ax_not_granted` 等于让他自己猜。参照的 helper 就是明说的：
+/// "Accessibility permission not granted to Alma Computer Use. Open System Settings →
+///  Privacy & Security → Accessibility and enable \"Alma Computer Use\"."
+func axNotGranted() -> NSError {
+    NSError(domain: "ax", code: 1, userInfo: [NSLocalizedDescriptionKey:
+        "ax_not_granted: 辅助功能权限没有授予「Biny Computer Use」。"
+        + "请打开 系统设置 → 隐私与安全性 → 辅助功能，启用「Biny Computer Use」后重试。"
+        + "（macOS 每次新构建都会重置这项授权，重装或改代码后需要重新勾选。）"])
+}
+func screenRecordingMissing() -> NSError {
+    NSError(domain: "capture", code: 1, userInfo: [NSLocalizedDescriptionKey:
+        "screen_recording_not_granted: 屏幕录制权限没有授予「Biny Computer Use」。"
+        + "请打开 系统设置 → 隐私与安全性 → 屏幕录制与系统录音，启用「Biny Computer Use」后重试。"])
+}
+
+
 func screenTrusted() -> Bool { return CGPreflightScreenCaptureAccess() }
 
 // MARK: - AX 元素查找
@@ -934,6 +953,10 @@ func focusGuardWarning() -> String? {
 
 func screenshot(_ parameters: [String: Any]) async throws -> [String: Any] {
     guard let output = parameters["out"] as? String else { throw NSError(domain: "capture", code: 64) }
+    // 先自己查一遍屏幕录制权限。不查的话，缺权限会在下面那行以
+    // ScreenCaptureKit 的原始错误冒出来 —— 对用户毫无指引，而这是个
+    // **每次新构建都会重置**的授权，所以他一定会遇到。
+    guard screenTrusted() else { throw screenRecordingMissing() }
     let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
     let config = SCStreamConfiguration()
     config.showsCursor = false
@@ -1297,7 +1320,7 @@ DispatchQueue.global().async {
                                 let shot = await withDeadline(5.0, fallback: [:]) { (try? await screenshot(shotArgs)) ?? [:] }
                                 reply(fd, ["id": id, "ok": true, "data": shot])
                             case "get_app_state":
-                                guard axTrusted() else { throw NSError(domain: "ax", code: 1, userInfo: [NSLocalizedDescriptionKey: "ax_not_granted"]) }
+                                guard axTrusted() else { throw axNotGranted() }
                                 let pid = try resolvePid(args)
                                 let maxDepth = args["max_depth"] as? Int ?? 20
                                 let limit = args["max_elements"] as? Int ?? 300
@@ -1338,7 +1361,7 @@ DispatchQueue.global().async {
                                 if let screenFrame = shot["screenFrame"] { data["screenFrame"] = screenFrame }
                                 reply(fd, ["id": id, "ok": true, "data": data as [String: Any]])
                             case "click":
-                                guard axTrusted() else { throw NSError(domain: "ax", code: 1, userInfo: [NSLocalizedDescriptionKey: "ax_not_granted"]) }
+                                guard axTrusted() else { throw axNotGranted() }
                                 if let ref = args["ref"] as? String, let pid = args["pid"] as? Int, let element = refTables[pid_t(pid)]?[ref] {
                                     // 两条路由是两种机制，不是同一件事的两种写法：
                                     // AX 让控件执行它自己的动作（不碰坐标，最可靠）；
