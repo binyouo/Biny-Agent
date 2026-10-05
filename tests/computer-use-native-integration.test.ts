@@ -1024,3 +1024,55 @@ test("auto_launch=false refuses to launch instead of launching anyway", async ()
     await driver.dispose();
   }
 });
+
+// 参照把三条输入路径**暴露成参数**（daemon 侧文案：`input_method must be auto|physical|unicode|ax`，
+// 且 `input_method=ax requires ref`）。本实现原先只有一条（unicode），选择权在调用方手里才叫能力。
+//
+// 只暴露**真实存在的**：auto / unicode / ax。`physical` 需要「字符→键码」的键盘布局翻译，
+// 本实现没有 —— 如实拒绝，不偷偷降级成 unicode（选 physical 的人正是因为别的方式不管用）。
+test("type_text offers the input methods it actually has, and refuses the one it does not", async () => {
+  const driver = new NativeProcessDriver(() => {}, {
+    binaryPath: new URL("../out/native/computer-use", import.meta.url).pathname
+  });
+  try {
+    // 目标用自己：肯定不在前台、也没有聚焦的 AX 元素，所以能顺带触发那条交付警告
+    const pid = process.pid;
+
+    for (const method of [undefined, "auto", "unicode"] as const) {
+      const reply = (await driver.daemonCommand("type_text", {
+        pid, text: "x", ...(method ? { input_method: method } : {})
+      })).data as { inputMethod?: string };
+      assert.equal(reply.inputMethod, method ?? "auto", "回执要说明用了哪条路径");
+    }
+
+    // ax 需要 ref —— 没有就明说，别去猜一个元素
+    await assert.rejects(
+      () => driver.daemonCommand("type_text", { pid, text: "x", input_method: "ax" }),
+      error => /input_method_requires_ref/.test(String(error)),
+      "input_method=ax 没有 ref 时要报缺 ref"
+    );
+
+    // physical 没实现：要**说出来**，不能悄悄走 unicode
+    await assert.rejects(
+      () => driver.daemonCommand("type_text", { pid, text: "x", input_method: "physical" }),
+      error => /input_method_not_implemented/.test(String(error)),
+      "未实现的输入方式要如实拒绝"
+    );
+
+    // 乱填要把可用项列出来
+    await assert.rejects(
+      () => driver.daemonCommand("type_text", { pid, text: "x", input_method: "telepathy" }),
+      error => /unknown_input_method/.test(String(error)) && /auto/.test(String(error)),
+      "不认识的输入方式要列出可用的"
+    );
+
+    // 交付不确认时，回执应当带 **verification_note**（参照原话是 "sent, but could not confirm it landed"）。
+    // 它比 warning 准：warning 读起来像"出错了"，而这种情况是"不知道有没有落地"，
+    // agent 该据此去核实，而不是据此认定失败。
+    const uncertain = (await driver.daemonCommand("type_text", { pid, text: "x" })).data as { verification_note?: string };
+    assert.equal(uncertain.verification_note, "sent, but could not confirm it landed",
+      "没法确认落地时要给出可读的字段，而不是只给一句警告");
+  } finally {
+    await driver.dispose();
+  }
+});

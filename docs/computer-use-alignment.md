@@ -385,6 +385,29 @@ if (hasFlag('all')) body.interactive_only = false;     ← get_app_state 与 sna
 - `auto_launch: false` → 报 `app_not_running`，**且确认它真的没被启动**
 （正面那半会启动一个应用，属于用户机器上的副作用，所以只手动验、不进测试套件。）
 
+### 1.4j agent 面的契约文字：`input_method` 与 `verification_note`
+
+一整个面我从头到尾没对过：**发给 agent 的契约文字**（MCP 描述 + daemon 的失败文案）。
+它们只面向 agent —— 而 agent **只读得到这些字**，读不到实现。
+
+参照在这些字里放了三样本实现没有的东西：
+
+1. **`input_method must be auto|physical|unicode|ax`** —— 三条输入路径**暴露成参数**，
+   而且 `input_method=ax requires ref`（AX 那条按元素走、不按焦点）。
+   本实现原先只有 unicode 一条。已实现 auto/unicode/ax；
+   **`physical` 如实拒绝**（需要「字符→键码」的键盘布局翻译，本实现没有 ——
+   选它的人正是因为别的方式不管用，偷偷降级成 unicode 是最坏的回答）。
+2. **`verification_note` = "sent, but could not confirm it landed"** ——
+   一个**承认不确定性**的字段。它比 `warning` 准：warning 读起来像"出错了"，
+   而这种情况是"**不知道**有没有落地"，agent 该据此去核实，而不是据此认定失败。
+3. 交付失败文案里**点明了那个显而易见的错误修法**：
+   > … Use set_value with the element's ref to write the field directly.
+   > **Do NOT bring the app forward to make typing land** — Alma never takes the user's foreground.
+   本实现原来只写了铁律，**没给替代做法** —— 而 agent 最容易做的正是那件被禁止的事。
+
+**没做的**：`visual refs (v*)` —— 参照还有第二套 ref 命名空间（视觉 ref）。
+那是一条独立的机制，标为未覆盖，不假装有。
+
 ### 1.5 工具 / 技能层
 
 - 模型侧工具：`ComputerList` / `ComputerObserve` / `ComputerAction`（8 个动作动词）

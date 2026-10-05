@@ -1093,7 +1093,13 @@ func keyDeliveryWarning(_ pid: pid_t) -> String? {
     // 而它正是按键的去处。没有它，按键就是被系统丢掉。
     let axApp = axApp(pid)
     if axCopy(axApp, kAXFocusedUIElementAttribute as String) != nil { return nil }
-    return "keystrokes_may_be_dropped: 目标应用不在前台，且没有任何聚焦的 UI 元素，这些按键很可能已被系统丢弃。先重新观察确认目标状态，别把它当成写进去了。铁律：绝不许为了让它收到输入就把应用调到前台——那是拿用户的焦点换的。"
+    // 参照在同一个位置给的是：说清发生了什么 + **点明那个显而易见的错误修法** + 给替代做法。
+    // 「别把应用调到前台」这条铁律单说不够 —— agent 最可能做的就是那件事，所以要顺手告诉它改走哪条路。
+    // （参照原文："Do NOT bring the app forward to make typing land — Alma never takes the user's foreground."）
+    return "keystrokes_may_be_dropped: 目标应用不在前台，且没有任何聚焦的 UI 元素，这些按键很可能已被系统丢弃。"
+        + "先重新观察确认目标状态，别把它当成写进去了。"
+        + "要真的写进那个控件，用 set_value（带 ref 直接写值）或 type_text 的 input_method=ax（同样按元素走）。"
+        + "铁律：绝不许为了让它收到输入就把应用调到前台——那是拿用户的焦点换的。"
 }
 
 /// 焦点护栏警告：护栏武装不起来时，动作可能真的会把用户的焦点带走。
@@ -1804,10 +1810,48 @@ DispatchQueue.global().async {
                             case "type_text":
                                 let pid = try resolvePid(args)
                                 let text = args["text"] as? String ?? ""
-                                await withFocusGuard(pid) { postUnicode(pid, text) }
+                                // 参照把三条输入路径**暴露成参数**：`input_method must be
+                                // auto|physical|unicode|ax`，而且 `input_method=ax requires ref`
+                                // —— 也就是"AX 那条要带元素引用"，正是 `type` 动词在做的事。
+                                // 本实现原先只有 unicode 一条，选择权在调用方手里才叫能力。
+                                let method = args["input_method"] as? String ?? "auto"
+                                switch method {
+                                case "auto", "unicode":
+                                    await withFocusGuard(pid) { postUnicode(pid, text) }
+                                case "ax":
+                                    // AX 那条不需要键盘焦点，但需要 ref —— 没有就明说。
+                                    guard let ref = args["ref"] as? String else {
+                                        throw NSError(domain: "type_text", code: 64, userInfo: [NSLocalizedDescriptionKey:
+                                            "input_method_requires_ref: input_method=ax 需要 ref（AX 写入是按元素走的，不是按焦点）。要按焦点输入就用 auto 或 unicode。"])
+                                    }
+                                    guard let element = refTables[pid]?[ref] else {
+                                        throw NSError(domain: "type_text", code: 64, userInfo: [NSLocalizedDescriptionKey:
+                                            "element_ref_not_observed: ref \(ref) 不在 pid \(Int(pid)) 的最近一次观察里，先 snap 一次"])
+                                    }
+                                    let writeStatus = AXUIElementSetAttributeValue(element, kAXSelectedTextAttribute as CFString, text as CFTypeRef)
+                                    guard writeStatus == .success else {
+                                        throw NSError(domain: "type_text", code: 68, userInfo: [NSLocalizedDescriptionKey:
+                                            "element_selection_not_writable: 这个控件不接受 AX 写入。改用 input_method=unicode。"])
+                                    }
+                                case "physical":
+                                    // 如实拒绝，不偷偷降级成 unicode —— 调用方选 physical 是因为别的方式不管用。
+                                    throw NSError(domain: "type_text", code: 69, userInfo: [NSLocalizedDescriptionKey:
+                                        "input_method_not_implemented: physical 需要「字符→键码」的键盘布局翻译，本实现还没有。用 auto/unicode（按焦点）或 input_method=ax + ref（按元素）。"])
+                                default:
+                                    throw NSError(domain: "type_text", code: 64, userInfo: [NSLocalizedDescriptionKey:
+                                        "unknown_input_method: \"\(method)\"。可用：auto | unicode | ax（physical 未实现）"])
+                                }
                                 noteActionPoint(args, nil, symbol: "keyboard")
-                                var typed: [String: Any] = ["typed": text.count]
-                                if let warning = keyDeliveryWarning(pid) { typed["warning"] = warning }
+                                var typed: [String: Any] = ["typed": text.count, "inputMethod": method]
+                                if let warning = keyDeliveryWarning(pid) {
+                                    typed["warning"] = warning
+                                    // 参照在这里还单独给一个 `verification_note`：
+                                    // "sent, but could not confirm it landed"。
+                                    // 它比 warning 准 —— warning 读起来像"出错了"，
+                                    // 而这种情况是"**不知道**有没有落地"，agent 该据此去核实，
+                                    // 而不是据此认定失败。
+                                    typed["verification_note"] = "sent, but could not confirm it landed"
+                                }
                                 if let guardWarning = focusGuardWarning() { typed["focusGuardWarning"] = guardWarning }
                                 reply(fd, ["id": id, "ok": true, "data": typed])
                             case "press_key":

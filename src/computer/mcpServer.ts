@@ -149,12 +149,25 @@ export function createComputerUseMcpServer(driver: NativeProcessDriver): McpServ
     "type_text",
     {
       title: "Type text",
-      description: "Type text into the target app. Focus the destination first with click. Multi-byte text is delivered character by character. If the reply carries a keystrokes_may_be_dropped warning the app had nothing focused to receive them — treat it as not written. Returns the post-action screenshot.",
-      inputSchema: { text: z.string().min(1).max(4000), pid: z.number().int().positive().optional(), show_cursor: z.boolean().optional().describe("Set false to hide the action indicator for this one action") }
+      description: "Type text into the target app. Focus the destination first with click, or pass inputMethod=ax with a ref to write the element directly without needing focus. Multi-byte text is delivered character by character. If the reply carries verification_note, the text was sent but landing could not be confirmed — verify before assuming it was written. Do NOT bring the app to the front to make typing land; that costs the user their focus. Returns the post-action screenshot.",
+      inputSchema: {
+        text: z.string().min(1).max(4000),
+        pid: z.number().int().positive().optional(),
+        // 参照的 MCP 暴露了它（daemon 侧文案：`input_method must be auto|physical|unicode|ax`）。
+        // 本实现 auto/unicode/ax 三条真实存在；physical 没有「字符→键码」翻译 —— 如实拒绝，不偷偷降级。
+        inputMethod: z.enum(["auto", "unicode", "ax"]).optional()
+          .describe("How to deliver the text. auto/unicode go through the keyboard focus; ax writes the element directly and needs `ref`."),
+        ref: z.string().min(1).optional().describe("Required when inputMethod is ax"),
+        show_cursor: z.boolean().optional().describe("Set false to hide the action indicator for this one action")
+      }
     },
-    async ({ text, pid , show_cursor }) => {
+    async ({ text, pid, inputMethod, ref, show_cursor }) => {
       try {
-        const reply = await driver.actRaw("type_text", { text, show_cursor }, pid);
+        const reply = await driver.actRaw("type_text", {
+          text, show_cursor,
+          ...(inputMethod ? { input_method: inputMethod } : {}),
+          ...(ref ? { ref } : {})
+        }, pid);
         return await withPostShot(pid, asText(reply.data));
       } catch (error) { return fail(error); }
     }
