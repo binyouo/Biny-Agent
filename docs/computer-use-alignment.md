@@ -137,20 +137,43 @@ CGEventTap disabled (                    ← 运行时被系统禁用时记日�
 
 本实现的替代：动作后每 5ms 巡查、一被抢立刻还（可见窗口 30ms → ~5ms）。
 
-**但参照的 MCP instructions 原文把这个替代方案点名禁止了**（从 helper 二进制里读到的散文）：
+**参照是两层，本实现只有其中一层。** helper 二进制里的类名与字段：
 
-> Alma absolutely must not steal the user's focus. **not even momentarily, and never by bringing a
-> window forward and putting it back.** Every verb works on a background app; nothing here needs the
-> foreground. Never activate, raise, or otherwise front an app on your own initiative.
-> If an action reports it could not be delivered, tell the user …
+```
+FocusStealPreventer          ← 第一层：tap，事前不让激活事件生效
+PreserveFrontmostWatcher · VictimObserver · preservePid · frontmostApplication
+                             ← 第二层：记下要保全的 pid，把前台还回去
+```
 
-"抢了再还回去" —— **正是它写明的反模式**。所以这不是"比参照弱一点"，
-而是**本实现采用了参照明确否定的做法**，必须如实记着。
+**第二层的形状和本实现的 `withFocusGuard` 一样**（记前台 → 动作 → 还原）。
+所以差异是"**缺第一层**"，不是"采用了参照否定的做法"。
 
-根因是具体的：**全局投递的鼠标事件（§4.1 的修法）本身就会激活目标窗口**。
-AX 路由不需要焦点，这也是参照让 `auto` 优先走 AX 的原因。
-所以缓解是**行为上的**：优先 ref（AX）点击，像素点击是会短暂夺焦的那条路 ——
-工具指引已经改成这么写；`focus_guard_unavailable` 仍在护栏没武装时告警（30s 节流）。
+（这一条我先前**过度纠正**过**一次**：读到 MCP instructions 里
+"never by bringing a window forward and putting it back" 就断言自己踩了反模式。
+但那句是写给 **agent 自身的主动性**的 —— 原文紧接着 "Never activate, raise, or otherwise
+front an app **on your own initiative**"，说的是 agent 不许主动去 activation，
+不是禁止护栏在事后收拾。参照自己也做同样的事。）
+
+根因仍然具体：**全局投递的鼠标事件（§4.1 的修法）本身会激活目标窗口**，
+而 AX 路由不需要焦点 —— 这也是参照让 `auto` 优先走 AX 的原因。
+所以缓解是行为上的：优先 ref 点击，像素是知道代价的退路（工具指引已这么写）；
+`focus_guard_unavailable` 在护栏没武装上时告警（30s 节流）。
+
+### 第一层为什么补不了：**实测那个 API 在本构建里不可用**
+
+不是"文档没说清"，也不是没做 —— `doctor` 现在会分两种 tap 分别报：
+
+```
+accessibility: granted | screenRecording: granted | focusTap: session-only
+```
+
+同一次调用里：**全会话 tap 能建；按 pid 的 tap（参照第一层用的那个）建不起来。**
+两者都需要辅助功能权限，而权限是 granted，所以不是权限问题。
+
+**推测**（未验证，故标为推测）：差异在**签名身份** —— 参照发的是正式 Developer ID 的公证包，
+本仓库是 ad-hoc 签名。要证实得有一份正式签名，本环境没有。
+
+诊断保留在 `doctor` 里：换签名、换机器时它会立刻反映出来，比"机制不明"这种句子有用。
 
 ### 3.2 `type_text` 三级降级（对目标场景无效）
 

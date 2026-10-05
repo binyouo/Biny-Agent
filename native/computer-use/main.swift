@@ -146,6 +146,36 @@ func noteActionPoint(_ args: [String: Any], _ point: CGPoint?, symbol: String?) 
     DispatchQueue.main.async { lensOverlay.show(at: target, symbol: symbol) }
 }
 
+/// 能不能为某个 pid 建立事件 tap。
+///
+/// 参照的第一层（`FocusStealPreventer`）建在这上面，失败姿态是 FATAL。本实现没有那一层，
+/// 但**至少要知道这个 API 在真实权限下是否可用** —— 否则「机制不明」里会混着
+/// 「其实根本建不起来」，那是两个完全不同的结论。
+///
+/// 用**自身 pid** 试，不碰任何目标应用；建起来立刻失效掉，不留下常驻 tap。
+func canArmEventTap() -> String {
+    let mask = CGEventMask(1) << CGEventType.leftMouseDown.rawValue
+    let callback: CGEventTapCallBack = { _, _, event, _ in Unmanaged.passUnretained(event) }
+    // 按 pid 的 tap：参照第一层用的就是它
+    let perPid = CGEvent.tapCreateForPid(
+        pid: getpid(), place: .headInsertEventTap, options: .defaultTap,
+        eventsOfInterest: mask, callback: callback, userInfo: nil
+    )
+    // 全会话的 tap：同样需要辅助功能权限，但不带 pid 限定。
+    // 两者分开报 —— 「按 pid 不行」和「tap 整个不行」指向完全不同的原因。
+    let session = CGEvent.tapCreate(
+        tap: .cgSessionEventTap, place: .headInsertEventTap, options: .defaultTap,
+        eventsOfInterest: mask, callback: callback, userInfo: nil
+    )
+    for tap in [perPid, session].compactMap({ $0 }) {
+        CGEvent.tapEnable(tap: tap, enable: false)
+        CFMachPortInvalidate(tap)
+    }
+    if perPid != nil { return "per-pid" }
+    if session != nil { return "session-only" }
+    return "none"
+}
+
 func axTrusted() -> Bool { return AXIsProcessTrusted() }
 func screenTrusted() -> Bool { return CGPreflightScreenCaptureAccess() }
 
@@ -777,6 +807,8 @@ DispatchQueue.global().async {
                             case "doctor":
                                 reply(fd, ["id": id, "ok": true, "data": [
                                     "accessibility": axTrusted() ? "granted" : "denied",
+                                    // 第一层（事前拦截）需要的 API 到底能不能用 —— 见 canArmEventTap 注释。
+                                    "focusTap": canArmEventTap(),
                                     "screenRecording": screenTrusted() ? "granted" : "denied",
                                     "version": driverVersion,
                                     "uptime": Int(Date().timeIntervalSince(startedAt)),

@@ -547,3 +547,20 @@ test("a page is the real viewport/content ratio, and scrolling one page moves th
     await driver.dispose();
   }
 });
+
+// 第一层（事前拦截，参照的 FocusStealPreventer）建在 CGEventTapCreateForPid 上。
+// 本实现的 doctor 会分开报「按 pid 的 tap」和「全会话的 tap」—— 两者的失败原因不同，
+// 合成一个 available/unavailable 会把「权限没给」和「这个 API 在这儿用不了」混成一件事。
+test("doctor distinguishes a per-pid event tap from a session one", async () => {
+  const driver = new NativeProcessDriver(() => {}, {
+    binaryPath: new URL("../out/native/computer-use", import.meta.url).pathname
+  });
+  try {
+    const doc = (await driver.daemonCommand("doctor")).data as { accessibility?: string; focusTap?: string };
+    assert.equal(doc.accessibility, "granted", "本用例需要辅助功能权限");
+    assert.ok(["per-pid", "session-only", "none"].includes(doc.focusTap ?? ""), `focusTap 取值应可判别：${doc.focusTap ?? "缺失"}`);
+    assert.notEqual(doc.focusTap, "none", "辅助功能已授权时会话级 tap 应当能建起来");
+  } finally {
+    await driver.dispose();
+  }
+});
