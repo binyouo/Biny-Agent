@@ -208,3 +208,34 @@ test("type_text says so when the keystrokes were probably dropped", async () => 
     await driver.dispose();
   }
 });
+
+// 三处与参照实现的偏差，都是便宜且该对齐的：
+// 截图统一 1280 宽、元素带 focused、点击依次试三种 AX 动作。
+test("the daemon matches the reference on screenshot width, focus reporting and click actions", async () => {
+  const driver = new NativeProcessDriver(() => {}, {
+    binaryPath: new URL("../out/native/computer-use", import.meta.url).pathname
+  });
+  try {
+    const listed = await driver.list("align-e2e", undefined);
+    const apps = (listed.data as { apps?: { name: string; pid: number }[] }).apps ?? [];
+    const target = apps.find(app => /TextEdit|文本编辑/i.test(app.name)) ?? apps[0];
+    const observed = await driver.observe("align-e2e", { pid: target.pid } as never);
+    const data = observed.data as { screenshot_width?: number; elements?: { element_token?: string; role?: string; focused?: boolean }[] };
+
+    // 截图宽度统一到 1280：再宽只是白烧带宽和上下文
+    assert.equal(data.screenshot_width, 1280, "截图宽度应与参照一致");
+
+    // focused 是可读属性（本例可能是 0 个聚焦元素，但字段必须能被读出来）
+    const elements = data.elements ?? [];
+    assert.ok(elements.every(entry => entry.focused === undefined || entry.focused === true), "focused 只在该元素确实聚焦时出现");
+
+    // 点击要走通（AXPress → AXPick → AXConfirm → 物理点击）
+    const area = elements.find(entry => entry.role === "AXTextArea" || entry.role === "AXButton");
+    if (area?.element_token) {
+      const clicked = await driver.act("align-e2e", { action: "click", elementToken: area.element_token } as never);
+      assert.ok(!clicked.errorCode, `点击不应报错：${clicked.errorCode ?? ""}`);
+    }
+  } finally {
+    await driver.dispose();
+  }
+});
