@@ -47,6 +47,20 @@ description: "Operate native macOS apps on the user's behalf — observe a windo
 只跑后端的辅助进程（`LSUIElement`/`LSBackgroundOnly`）已被滤掉，所以列表里剩下的
 都是用户真会用的应用。**要用哪个应用先在这里查 bundle id，别猜。**
 
+## 挑窗口：把一个应用的窗口列出来
+
+`ComputerList` 带上 `pid` 就是问**这个应用有哪些窗口**，返回真实的 `window_id`：
+
+```
+{ "apps": [{ "pid": 653, "name": "Google Chrome", "windows": [
+  { "window_id": 121, "title": "Biny-Agent", "frame": {...} },
+  { "window_id": 104, "title": "新标签页",   "frame": {...} } ] }] }
+```
+
+**多窗口应用必须挑**：把挑中的 `window_id` 传给 `ComputerObserve`，观察和截图都会
+落在那一个窗口上，并且回报的 `window_id` 就是你请求的那个。不传也能用，守护进程
+会挑该应用的第一个普通窗口。
+
 可用的动作共 8 个：`click` · `type_text` · `press_key` · `scroll` · `drag` ·
 `perform_secondary_action`（右键/上下文菜单）· `set_value`（直写控件值）· `select_text`。
 

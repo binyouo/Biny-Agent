@@ -144,6 +144,47 @@ func parseKeyCombo(_ combo: String) -> (CGKeyCode, CGEventFlags)? {
 }
 
 /// 目标应用主窗口在屏幕上的真实位置（CGEvent 坐标系）。
+/// 某个应用的在屏窗口。
+///
+/// kCGWindowNumber 就是调用方传回来的 window_id —— 两边同一个编号，所以模型列完窗口
+/// 就能指着具体某一个去观察。层 0 才是普通窗口（菜单、浮层、提示在更高层）。
+func windowsForApp(_ pid: Int) -> [[String: Any]] {
+    guard let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else { return [] }
+    var out: [[String: Any]] = []
+    for window in list {
+        guard let owner = window[kCGWindowOwnerPID as String] as? Int, owner == pid,
+              (window[kCGWindowLayer as String] as? Int ?? 0) == 0,
+              let number = window[kCGWindowNumber as String] as? Int,
+              let bounds = window[kCGWindowBounds as String] as? [String: CGFloat] else { continue }
+        let width = Double(bounds["Width"] ?? 0), height = Double(bounds["Height"] ?? 0)
+        // 阴影和辅助小窗不是可观察目标，混进来只会让模型挑错。
+        if width < 40 || height < 40 { continue }
+        var entry: [String: Any] = [
+            "window_id": number,
+            "title": window[kCGWindowName as String] as? String ?? "",
+            "frame": ["x": Double(bounds["X"] ?? 0), "y": Double(bounds["Y"] ?? 0), "w": width, "h": height] as [String: Double],
+        ]
+        if window[kCGWindowIsOnscreen as String] as? Bool == true { entry["onscreen"] = true }
+        out.append(entry)
+    }
+    return out
+}
+
+/// 某个应用第一个「普通窗口」（层 0）的 CGWindowID，与 windowScreenBounds 选的是同一个。
+/// 用来把 windowId 上报成真窗口号，而不是拿 pid 冒充。
+func windowNumberForApp(_ pid: Int) -> Int? {
+    guard let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else { return nil }
+    for window in list {
+        guard let owner = window[kCGWindowOwnerPID as String] as? Int, owner == pid,
+              (window[kCGWindowLayer as String] as? Int ?? 0) == 0,
+              let bounds = window[kCGWindowBounds as String] as? [String: CGFloat],
+              Double(bounds["Width"] ?? 0) >= 40, Double(bounds["Height"] ?? 0) >= 40,
+              let number = window[kCGWindowNumber as String] as? Int else { continue }
+        return number
+    }
+    return nil
+}
+
 func windowScreenBounds(pid: Int) -> [String: Double]? {
     guard let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] else { return nil }
     for window in list {
@@ -390,9 +431,20 @@ func screenshot(_ parameters: [String: Any]) async throws -> [String: Any] {
        let display = content.displays.first(where: { $0.displayID == CGMainDisplayID() }) ?? content.displays.first {
         // 真实屏幕位置：AX 报的 frame 是 UI 坐标，跟 CGEvent 用的屏幕点不一致，必须用 CGWindowList。
         let screenBounds = windowScreenBounds(pid: pid)
-        // 只保留目标 app 的窗口：除它之外的应用全部排除。
+        // 指定了窗口就只拍那一个：调用方列过窗口列表、挑了一个，拍成别的就是契约在撒谎。
+        // 没指定才退回「该 pid 的所有窗口」。
+        let requestedWindow = parameters["window_id"] as? Int
         let others = content.applications.filter { Int($0.processID) != pid }
-        let filter = SCContentFilter(display: display, excludingApplications: others, exceptingWindows: [])
+        var filter: SCContentFilter
+        var capturedWindow: Int?
+        if let requestedWindow,
+           let match = content.windows.first(where: { Int($0.windowID) == requestedWindow }) {
+            filter = SCContentFilter(desktopIndependentWindow: match)
+            capturedWindow = requestedWindow
+        } else {
+            // 只保留目标 app 的窗口：除它之外的应用全部排除。
+            filter = SCContentFilter(display: display, excludingApplications: others, exceptingWindows: [])
+        }
         let rect = filter.contentRect
         // 截图尺寸必须与窗口内容区一致，否则像素坐标无法换算回屏幕点。
         let width = min(Int(rect.width), max(1, parameters["max_width"] as? Int ?? 1280))
@@ -404,8 +456,11 @@ func screenshot(_ parameters: [String: Any]) async throws -> [String: Any] {
         let bitmap = NSBitmapImageRep(cgImage: image)
         guard let data = bitmap.representation(using: .jpeg, properties: [.compressionFactor: parameters["quality"] as? Double ?? 0.55]) else { throw NSError(domain: "capture", code: 2) }
         try data.write(to: URL(fileURLWithPath: output), options: .atomic)
-        return ["path": output, "width": config.width, "height": config.height,
-                "screenFrame": contentFrame, "frame": contentFrame]
+        if capturedWindow == nil { capturedWindow = windowNumberForApp(pid) }
+        var result: [String: Any] = ["path": output, "width": config.width, "height": config.height,
+                                     "screenFrame": contentFrame, "frame": contentFrame]
+        if let capturedWindow { result["windowId"] = capturedWindow }
+        return result
     }
     guard let display = content.displays.first(where: { $0.displayID == CGMainDisplayID() }) ?? content.displays.first else { throw NSError(domain: "capture", code: 1) }
     let width = min(display.width, max(1, parameters["max_width"] as? Int ?? 1280))
@@ -518,6 +573,16 @@ DispatchQueue.global().async {
                                     if let bundle = app.bundleIdentifier, !bundle.isEmpty { entry["bundleId"] = bundle }
                                     apps.append(entry)
                                 }
+                                // 给了 pid 就是问「这个应用有哪些窗口」：ComputerObserve 要一个确切的
+                                // window_id，此前没有任何命令能产出它，模型只能编一个。
+                                if let onlyPid = args["pid"] as? Int {
+                                    apps = apps.filter { ($0["pid"] as? Int) == onlyPid }
+                                    for index in apps.indices {
+                                        apps[index]["windows"] = windowsForApp(onlyPid)
+                                    }
+                                    reply(fd, ["id": id, "ok": true, "data": ["apps": apps] as [String: Any]])
+                                    return
+                                }
                                 // 再补上近 N 天用过但没在运行的 —— 模型靠它知道有什么可以 launch。
                                 // 同一 bundleId 只出现一次：正在运行的那条优先（它带 pid，能直接操作）。
                                 let seen = Set(apps.compactMap { $0["bundleId"] as? String })
@@ -550,6 +615,9 @@ DispatchQueue.global().async {
                                 let table = collected.1
                                 var shotArgs: [String: Any] = ["out": args["out"] ?? "/tmp/biny-cu-state-\(Int(Date().timeIntervalSince1970 * 1000)).jpg", "pid": Int(pid)]
                                 if let maxWidth = args["max_width"] { shotArgs["max_width"] = maxWidth }
+                                // window_id 必须转下去 —— 之前在这里被吞掉，于是调用方指定的窗口
+                                // 从来没影响过截图，模型挑的窗口是装饰品。
+                                if let windowId = args["window_id"] { shotArgs["window_id"] = windowId }
                                 // 截图同样可能挂在无响应的窗口上：限时 3 秒，超时就返回不带图的观察。
                                 // 同理：TaskGroup 的 cancel 不会中断已在跑的 capture，
                                 // group.next() 仍会等它返回。放进独立线程 + 轮询才有真上限。
@@ -564,7 +632,8 @@ DispatchQueue.global().async {
                                 if let path = shot["path"] { data["screenshot"] = path }
                                 data["screenshotWidth"] = shot["width"] ?? 0
                                 data["screenshotHeight"] = shot["height"] ?? 0
-                                data["windowId"] = Int(pid)
+                                // 上报**真实**窗口号：以前这里是 Int(pid)，于是 windowId 一路都是假的。
+                                data["windowId"] = (shot["windowId"] as? Int) ?? windowNumberForApp(Int(pid)) ?? Int(pid)
                                 if let frame = shot["frame"] { data["windowFrame"] = frame }
                                 if let screenFrame = shot["screenFrame"] { data["screenFrame"] = screenFrame }
                                 reply(fd, ["id": id, "ok": true, "data": data as [String: Any]])

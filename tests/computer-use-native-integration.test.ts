@@ -289,3 +289,40 @@ test("list_apps offers apps that are not running, because those are the ones to 
     await driver.dispose();
   }
 });
+
+// ComputerObserve 把 windowId 列为必填，但以前没有任何命令能产出它，守护进程也从不读它
+// —— 模型只能编一个字符串，而真正拍哪个窗口由守护进程自己决定。
+// 这条链上有四个参数被吞掉，任何一环断掉都会退回到「随便拍一个」。
+test("a window id can be discovered, requested, and comes back as the window captured", async () => {
+  const driver = new NativeProcessDriver(() => {}, {
+    binaryPath: new URL("../out/native/computer-use", import.meta.url).pathname
+  });
+  try {
+    const listed = await driver.list("win-e2e", undefined);
+    const apps = (listed.data as { apps: { name: string; pid?: number }[] }).apps;
+    const target = apps.find(app => typeof app.pid === "number");
+    assert.ok(target?.pid, "至少要有一个运行中的应用");
+
+    // 给了 pid 就要给窗口，而不是把整份应用列表再吐一遍
+    const scoped = await driver.list("win-e2e", target.pid);
+    const windows = (scoped.data as { apps: { windows?: { window_id: number; frame: { w: number } }[] }[] }).apps[0]?.windows ?? [];
+    for (const window of windows) assert.ok(Number.isInteger(window.window_id) && window.window_id > 0, "窗口号必须是真编号");
+
+    if (windows.length === 0) return;   // 这个应用当时没有在屏窗口，不伪造场景
+
+    // 请求哪个窗口，就得回报哪个窗口
+    for (const window of windows) {
+      const observed = await driver.observe("win-e2e", { pid: target.pid!, windowId: String(window.window_id) } as never);
+      const data = observed.data as { window_id?: number };
+      assert.equal(data.window_id, window.window_id, `指定的窗口没有被真正使用（请求 ${window.window_id}，回报 ${data.window_id}）`);
+    }
+
+    // 不指定时也要回报一个真窗口号，而不是拿 pid 冒充
+    const fallback = await driver.observe("win-e2e", { pid: target.pid! } as never);
+    const fallbackId = (fallback.data as { window_id?: number }).window_id;
+    assert.ok(Number.isInteger(fallbackId) && fallbackId! > 0);
+    assert.notEqual(fallbackId, target.pid, "windowId 不能是 pid 冒充的");
+  } finally {
+    await driver.dispose();
+  }
+});

@@ -378,6 +378,10 @@ export class NativeProcessDriver implements ComputerDriver {
     const args: Record<string, unknown> = {};
     if (typeof target.pid === "number") { args.pid = target.pid; this.lastPid = target.pid; }
     if (typeof (target as { bundleId?: string }).bundleId === "string") args.bundle = (target as { bundleId?: string }).bundleId;
+    // windowId 以前被丢在这里，从没到过守护进程 —— 而 ComputerObserve 把它列为必填。
+    // 结果是模型必须编一个字符串，守护进程则拍它自己挑的窗口。现在它真的用于定位。
+    const windowId = Number(target.windowId);
+    if (Number.isSafeInteger(windowId) && windowId > 0) args.window_id = windowId;
     return await this.call("get_app_state", args, signal);
   }
 
