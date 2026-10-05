@@ -116,15 +116,28 @@ UI 三类界面齐全，并补上了参照实现有、本仓库原本没有的**
 
 ## 3. 不去做：验过才决定的
 
-### 3.1 `CGEventTap` 焦点零抢占（机制不明，保留事后补救）
+### 3.1 `CGEventTap` 焦点零抢占（只做到事后补救）
 
-参照用 `CGEventTapCreateForPid` + dlsym `CGEventPostToPid` + `CGEventSetWindowLocation` 做**事前拦截**。
-实测：前两者**动态符号都存在**（无权进程建 tap 返回 nil）。但文档只说"用了哪些 API"、
-没说**怎么组合** —— tap 是投递通道还是拦截器，猜不出来。
-**事件 tap 是系统级输入面，猜错会改掉用户的键盘行为**，所以没做。
+参照做的是**事前拦截**。从 helper 二进制里能读到的东西比文档多：
+
+```
+FocusStealPreventer                      （Swift: _TtC4main19FocusStealPreventer）
+CGEvent.tapCreate  ·  CGEventTapCreateForPid
+observed_activations  ·  suppressed      ← tap 在**统计并抑制**激活事件
+CGEventTap disabled (                    ← 运行时被系统禁用时记日志
+[alma-cu] FATAL: focus-steal prevention could NOT be armed (CGEvent.tapCreate returned nil).
+          Actions will steal the user's focus. Check Accessibility permission for this helper binary.
+```
+
+所以**机制的性质是清楚的**：按 pid 建 tap，拦截/抑制会把目标应用带到前台的事件；
+建不起来时它选择 FATAL 而不是降级 —— 宁可停，也不假装零抢占。
+
+**仍然不知道的是事件掩码与判定规则** —— 哪些事件类型、什么条件下抑制。
+事件 tap 是系统级输入面，掩码猜错会改掉用户的键盘/鼠标行为，所以补不了。
 
 本实现的替代：动作后每 5ms 巡查、一被抢立刻还（可见窗口 30ms → ~5ms）。
 **这是把差异压小，不是消除** —— 参照是"不给它抢的机会"，本实现是"抢了快速还"。
+回执里 `focus_guard_unavailable` 会在护栏没武装上时明确告警（30s 节流）。
 
 ### 3.2 `type_text` 三级降级（对目标场景无效）
 
@@ -186,7 +199,29 @@ pnpm tsx src/cli/index.ts cu lens off
 
 ---
 
-## 5. 已知未覆盖
+## 5. 尚未实现：daemon 自带 TCP MCP server
+
+helper 二进制里还有一条本仓库没有的接口：
+
+```
+MCPServer · MCPError · boundPort · bearerToken · tokenPath
+/Library/Application Support/Alma/computer-use.sock     ← 系统级 socket（与用户级并存）
+alma-cu://tool-catalog                                  ← MCP resource
+[alma-cu] MCP server listening on 127.0.0.1:
+[alma-cu] MCP peer pid=
+```
+
+即：**参照的守护进程自己监听一个本地 TCP 端口并提供 MCP**，用 bearer token 鉴权
+（token 落盘，`tokenPath`）。这比"主应用写进 mcp.json 的 stdio server"多一层 ——
+外部 MCP 客户端可以**不经主应用**直接连守护进程。
+
+本仓库现状：有原生工具（模型侧）+ `biny computer mcp`（stdio）。**没有** daemon 侧 TCP MCP。
+未实现的原因不是难，是**收益与已有两条路重叠较多，且 token 鉴权 + 端口暴露面需要单独设计**；
+先记为缺口而不是照抄。
+
+---
+
+## 6. 已知未覆盖
 
 - **仅 macOS**：全部实现基于 AX / ScreenCaptureKit / CGEvent，无跨平台路径。
 - **网页内容量不出页**：§4.2 的估算路径。
