@@ -864,6 +864,17 @@ ShareableContentCache · BareModifierMonitor · AppshotEvents
 | 10 | **网页内容量不出页** | 网页不报告内容高度，按 20 行/页估算 | 回执里**标注**：`unit=pages(estimated as 20 notches)` vs `unit=pages` | 网页侧有别的量法时 |
 | 11 | **`CGEventSetWindowLocation`** 未采用 | 实测在本环境对双击选词**没有区别**（两种都选区不变）| §4.1 的对照表 | —— |
 
+**⚠️ 本轮新发现的一条（还没补）**：
+
+| # | 缺口 | 依据 |
+|---|---|---|
+| 12 | **产品内模型工具没跟上**：`show_cursor` / `interactive_only` / `auto_launch` / `input_method` 只在 MCP 那一面 | `src/tools/computerUse.ts` 的 ComputerAction schema 里一个都没有；`interactive_only`/`auto_launch`/`input_method`/`verification_note` 全仓只出现在 `mcpServer.ts` |
+
+**这是"能力在、路不通"的又一次**，而且这次是**我这几轮自己造成的**：
+每加一个参数只通了 MCP 一条路，产品内的模型面没跟上 ——
+**协议层 `protocol.ts` 只加了 `show_cursor`，其余三个连协议都没有。**
+→ 修法不大：`src/tools/computerUse.ts` 加四个属性 + 确认它们流到 `controller`/`driver`。
+
 **另有两处不属于本工作的测试问题**（记录但不修）：
 - `tests/activity-tray.test.ts`：未提交的改名（活动记录→电脑历史）导致断言过时，
   **而且它会让整个套件在第 49 个文件崩溃中止**。属于那份未提交改动，不是我的。
