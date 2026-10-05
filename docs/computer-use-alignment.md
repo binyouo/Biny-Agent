@@ -136,8 +136,21 @@ CGEventTap disabled (                    ← 运行时被系统禁用时记日�
 事件 tap 是系统级输入面，掩码猜错会改掉用户的键盘/鼠标行为，所以补不了。
 
 本实现的替代：动作后每 5ms 巡查、一被抢立刻还（可见窗口 30ms → ~5ms）。
-**这是把差异压小，不是消除** —— 参照是"不给它抢的机会"，本实现是"抢了快速还"。
-回执里 `focus_guard_unavailable` 会在护栏没武装上时明确告警（30s 节流）。
+
+**但参照的 MCP instructions 原文把这个替代方案点名禁止了**（从 helper 二进制里读到的散文）：
+
+> Alma absolutely must not steal the user's focus. **not even momentarily, and never by bringing a
+> window forward and putting it back.** Every verb works on a background app; nothing here needs the
+> foreground. Never activate, raise, or otherwise front an app on your own initiative.
+> If an action reports it could not be delivered, tell the user …
+
+"抢了再还回去" —— **正是它写明的反模式**。所以这不是"比参照弱一点"，
+而是**本实现采用了参照明确否定的做法**，必须如实记着。
+
+根因是具体的：**全局投递的鼠标事件（§4.1 的修法）本身就会激活目标窗口**。
+AX 路由不需要焦点，这也是参照让 `auto` 优先走 AX 的原因。
+所以缓解是**行为上的**：优先 ref（AX）点击，像素点击是会短暂夺焦的那条路 ——
+工具指引已经改成这么写；`focus_guard_unavailable` 仍在护栏没武装时告警（30s 节流）。
 
 ### 3.2 `type_text` 三级降级（对目标场景无效）
 
@@ -214,6 +227,28 @@ alma-cu://tool-catalog                                  ← MCP resource
 即：**参照的守护进程自己监听一个本地 TCP 端口并提供 MCP**，用 bearer token 鉴权
 （token 落盘，`tokenPath`）。这比"主应用写进 mcp.json 的 stdio server"多一层 ——
 外部 MCP 客户端可以**不经主应用**直接连守护进程。
+
+从类名还能看出 daemon 的内部分工（`strings` 提取的 Swift 类名）：
+
+```
+FocusStealPreventer · LensOverlay · MCPServer · ElementStore · Daemon
+PIPManager · PIPFloaterWindow · PIPContentView · PIPLens · PIPSession · PIPMinimizeArmer
+PreserveFrontmostWatcher · VictimObserver · AXEnablementAssertion
+ShareableContentCache · BareModifierMonitor · AppshotEvents
+```
+
+其中三块本仓库没有对应物，一并记在这里：
+
+- **PiP 是按窗口的镜像会话**（`PIPSession` + `main/PIPWindow.swift`），而且**劫持最小化**：
+  `PIPMinimizeArmer` / "armed minimise-hijacks" / "PIP auto-open on minimise failed for wid=" ——
+  被监督的窗口一旦最小化，PiP 自动顶上（否则用户就看不见 agent 在干什么了）。
+  它的 MCP tool 描述也在二进制里："Close one (by window_id) or all (all: true) PIP mirrors."
+  本仓库的 PiP 是**单个预览面**，由用户偏好 × 活动驱动，没有按窗口镜像、也没有最小化劫持。
+- **Appshot / AppshotEvents**：另一套 tap + AX 快照的监控（`[appshot-monitor] tap disabled`、
+  "AX snapshot timed out"、"Target app has no on-screen window to appshot"），给活动记录用。
+  本仓库的活动记录走独立 OCR sidecar + 定时截图，不是事件驱动。
+- `ShareableContentCache`：缓存 `SCShareableContent` 枚举。**实测只值 15–47ms**
+  （而一次截图 ~670ms），本仓库每次重枚举，暂不改。
 
 本仓库现状：有原生工具（模型侧）+ `biny computer mcp`（stdio）。**没有** daemon 侧 TCP MCP。
 未实现的原因不是难，是**收益与已有两条路重叠较多，且 token 鉴权 + 端口暴露面需要单独设计**；

@@ -109,7 +109,7 @@ export function createComputerUseMcpServer(driver: NativeProcessDriver): McpServ
     {
       title: "Click",
       description:
-        "Click an element by ref from the latest get_app_state, or at absolute screenshot pixel (x, y). Refs go through the accessibility API; pixels are dispatched straight to the target process. Returns the post-action screenshot.",
+        "Click an element by ref from the latest get_app_state, or at absolute screenshot pixel (x, y). Prefer a ref: it drives the control through the accessibility API and needs no focus, whereas a pixel click synthesises a mouse event and briefly takes the target window to the foreground. Returns the post-action screenshot.",
       inputSchema: {
         ref: z.string().min(1).optional().describe("Element ref from the latest snapshot"),
         x: z.number().optional(), y: z.number().optional(),
