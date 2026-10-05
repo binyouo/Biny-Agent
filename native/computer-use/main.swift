@@ -167,10 +167,18 @@ func withFocusGuard(_ pid: pid_t, _ body: () async -> Void) async {
     let restore = (before?.processIdentifier == pid) ? nil : before
     await body()
     guard let restore else { return }
-    // 给目标应用的自激活留出落点，否则它会在我们还回去之后才抢。
-    try? await Task.sleep(nanoseconds: 30_000_000)
-    if NSWorkspace.shared.frontmostApplication?.processIdentifier == pid {
-        restore.activate(options: [])
+    // 目标应用的自激活是异步落地的：等太短会漏（我们走了它才抢），
+    // 等太久用户就真的看见自己的窗口被顶掉。
+    // 所以每 5ms 巡查一次，一发现被抢就立刻还回去 —— 不等满整段。
+    // 参照实现用的是 CGEventTapCreateForPid 做**事前**拦截，根本不给它抢的机会；
+    // 这里是事后补救，只能把窗口压小，压不到零。
+    let deadline = Date().addingTimeInterval(0.075)
+    while Date() < deadline {
+        try? await Task.sleep(nanoseconds: 5_000_000)
+        if NSWorkspace.shared.frontmostApplication?.processIdentifier == pid {
+            restore.activate(options: [])
+            return          // 已经还回去了，不必再巡查
+        }
     }
 }
 
