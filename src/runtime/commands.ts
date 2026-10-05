@@ -76,6 +76,20 @@ function parseGoalCommand(input: string): GoalCommand | undefined {
   return undefined;
 }
 
+function parseGraphEventOptions(args: string[]): { afterSequence?: number; limit?: number } {
+  const options: { afterSequence?: number; limit?: number } = {};
+  for (let index = 0; index < args.length; index += 2) {
+    const flag = args[index];
+    const field = flag === "--cursor" ? "afterSequence" : flag === "--limit" ? "limit" : undefined;
+    if (field === undefined || options[field] !== undefined) throw new Error("Usage: /graph events <id> [--cursor <cursor>] [--limit <count>]");
+    const value = args[index + 1];
+    const parsed = Number(value);
+    if (value === undefined || !/^\d+$/u.test(value) || !Number.isSafeInteger(parsed)) throw new Error(`${flag} must be a non-negative safe integer.`);
+    options[field] = parsed;
+  }
+  return options;
+}
+
 function parseRuntimeCommand(input: string): { command: string; args: string[] } {
   const [command = "", ...args] = input.trim().replace(/^\/+/, "/").split(/\s+/);
   return { command, args };
@@ -161,9 +175,12 @@ export async function executeRuntimeCommand(
   if (command === "/graph") {
     const action = args[0]?.toLowerCase() ?? "inspect";
     const graphId = action === "inspect" || action === "events" ? args[1] ?? args[0] : args[1];
-    if (!graphId) throw new Error("Usage: /graph inspect <id> | start <id> | pause <id> | resume <id> | cancel <id> | events <id>");
+    if (!graphId) throw new Error("Usage: /graph inspect <id> | start <id> | pause <id> | resume <id> | cancel <id> | events <id> [--cursor <cursor>] [--limit <count>]");
     if (action === "inspect") return result(command, "Graph", JSON.stringify(services.graphs.inspectGraph(graphId), null, 2));
-    if (action === "events") return result(command, "Graph events", JSON.stringify(services.graphs.listGraphEvents(graphId), null, 2));
+    if (action === "events") {
+      if (!args[1]) throw new Error("Usage: /graph events <id> [--cursor <cursor>] [--limit <count>]");
+      return result(command, "Graph events", JSON.stringify(services.graphs.listGraphEvents(graphId, parseGraphEventOptions(args.slice(2))), null, 2));
+    }
     if (action === "start") {
       const graph = services.graphs.startGraph(graphId);
       services.graphs.createWake(graph.graphId, "graph_started");
@@ -176,7 +193,7 @@ export async function executeRuntimeCommand(
       return result(command, "Graph", JSON.stringify(graph, null, 2));
     }
     if (action === "cancel") return result(command, "Graph", JSON.stringify(await cancelRuntimeGraph(runtime, services, graphId), null, 2));
-    throw new Error("Usage: /graph inspect <id> | start <id> | pause <id> | resume <id> | cancel <id> | events <id>");
+    throw new Error("Usage: /graph inspect <id> | start <id> | pause <id> | resume <id> | cancel <id> | events <id> [--cursor <cursor>] [--limit <count>]");
   }
   if (command === "/capabilities") {
     return result(command, "Capabilities", JSON.stringify(services.capabilities.list(), null, 2));

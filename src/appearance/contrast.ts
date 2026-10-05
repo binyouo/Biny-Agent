@@ -13,10 +13,14 @@ function luminance(hex: string): number {
 export function readableCommentColor(foreground: string, background: string, dark: boolean): string {
   let color = foreground;
   const backgroundLuminance = luminance(background);
+  const contrast = (foregroundLuminance: number): number =>
+    (Math.max(foregroundLuminance, backgroundLuminance) + 0.05) / (Math.min(foregroundLuminance, backgroundLuminance) + 0.05);
+  // A custom syntax background can differ from its theme's declared mode.
+  const lighten = contrast(dark ? 1 : 0) >= 3.5 ? dark : !dark;
   for (let iteration = 0; iteration < 20; iteration += 1) {
-    const foregroundLuminance = luminance(color);
-    if ((Math.max(foregroundLuminance, backgroundLuminance) + 0.05) / (Math.min(foregroundLuminance, backgroundLuminance) + 0.05) >= 3.5) break;
-    color = `#${channels(color).map(channel => Math.round(dark ? channel + (255 - channel) * 0.15 : channel * 0.85).toString(16).padStart(2, "0")).join("")}`;
+    if (contrast(luminance(color)) >= 3.5) return color;
+    color = `#${channels(color).map(channel => Math.round(lighten ? channel + (255 - channel) * 0.15 : channel * 0.85).toString(16).padStart(2, "0")).join("")}`;
   }
-  return color;
+  // Rounded steps can stall before reaching an otherwise readable endpoint.
+  return contrast(luminance(color)) >= 3.5 ? color : lighten ? "#ffffff" : "#000000";
 }

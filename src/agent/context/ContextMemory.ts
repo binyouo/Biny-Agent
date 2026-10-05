@@ -1220,7 +1220,8 @@ const modifiedToolNames = new Set(["Write", "Edit"]);
 
 function extractSummaryPaths(value: unknown): string[] {
   const serialized = safeJson(value);
-  return [...new Set(serialized.match(/[A-Za-z0-9_./-]+\.(?:ts|tsx|js|jsx|mjs|cjs|json|md|yml|yaml|css|html|py|rs|go|java|kt|swift|sh)/gu) ?? [])].slice(0, 32);
+  // File claims must preserve complete extensions and never invent paths from longer suffixes.
+  return [...new Set(serialized.match(/[A-Za-z0-9_./-]+\.(?:ts|tsx|js|jsx|mjs|cjs|json|md|yml|yaml|css|html|py|rs|go|java|kt|swift|sh)(?![A-Za-z0-9_/\\-]|\.+[A-Za-z0-9_/\\-])/gu) ?? [])].slice(0, 32);
 }
 
 function safeJson(value: unknown): string {

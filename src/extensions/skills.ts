@@ -319,7 +319,7 @@ export async function skillPromptForSelection(bundle: SkillBundle, selection?: C
       definition,
       body.trim() || content.trim(),
       metadata,
-      await listSkillResources(definition.filePath)
+      await listSkillResources(definition.filePath, metadata)
     );
   }));
   return [
@@ -395,7 +395,7 @@ export function createSkillTool(source: SkillBundleSource): Tool {
           } catch (error) {
             if (path.basename(definition.filePath) === "SKILL.md") throw error;
           }
-          const resources = await listSkillResources(definition.filePath);
+          const resources = await listSkillResources(definition.filePath, metadata);
           return renderSkillInstructions(definition, body.trim() || content.trim(), metadata, resources);
         }
       };
@@ -702,8 +702,11 @@ interface SkillResourceEntry {
 }
 
 /** 枚举标准资源目录，内容仍由 read_skill_resource 第三级按需读取。 */
-async function listSkillResources(skillFilePath: string): Promise<SkillResourceEntry[]> {
-  if (path.basename(skillFilePath) !== "SKILL.md") return [];
+async function listSkillResources(skillFilePath: string, metadata: SkillMetadata | undefined): Promise<SkillResourceEntry[]> {
+  const filename = path.basename(skillFilePath);
+  if (filename.toLowerCase() !== "skill.md") return [];
+  // 小写入口也支持目录资源，但无元数据的旧式 skill.md 仍只是独立 Markdown 文件。
+  if (filename !== "SKILL.md" && !metadata?.name && !metadata?.description) return [];
   const skillRoot = path.dirname(skillFilePath);
   const resources: SkillResourceEntry[] = [];
   const visit = async (directory: string): Promise<void> => {

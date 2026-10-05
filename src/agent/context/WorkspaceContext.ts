@@ -308,7 +308,8 @@ export function formatRepoMapCandidates(entries: RepoMapEntry[]): string {
 }
 
 export function extractPathReferences(value: string): string[] {
-  return [...new Set(value.match(/[A-Za-z0-9_./-]+\.(?:ts|tsx|js|jsx|json|md|yml|yaml|css|html)/g) ?? [])].slice(0, 24);
+  // Match the whole extension, not .ts inside .tsx or a supported prefix of .jsonl/.tsx.map.
+  return [...new Set(value.match(/[A-Za-z0-9_./-]+\.(?:ts|tsx|js|jsx|json|md|yml|yaml|css|html)(?![A-Za-z0-9_/\\-]|\.+[A-Za-z0-9_/\\-])/g) ?? [])].slice(0, 24);
 }
 
 async function buildRepoMapEntry(workspaceRoot: string, ignore: string[], filePath: string, signal?: AbortSignal): Promise<RepoMapEntry | undefined> {

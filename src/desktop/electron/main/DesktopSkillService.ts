@@ -70,7 +70,16 @@ import { readManagedSkillVersion, rollbackSkillVersion, type ManagedSkillVersion
 
 const maxPluginEntries = 64;
 
+interface PluginRegistryReload {
+  latestRequest: number;
+  writeTail: Promise<void>;
+}
+
 export class DesktopSkillService {
+  private readonly registryReloads = new Map<string, PluginRegistryReload>();
+  private registryRequestSequence = 0;
+  private registryRequestsPending = 0;
+
   constructor(
     private readonly state: DesktopStateStore,
     private readonly configStore: AgentConfigStore,
@@ -221,20 +230,53 @@ export class DesktopSkillService {
 
   async pluginRegistry(projectId: string, refresh = false): Promise<DesktopPluginRegistrySnapshot> {
     const project = this.requireProject(projectId);
+    const request = ++this.registryRequestSequence;
+    this.registryRequestsPending += 1;
+    try {
+      // Different project IDs (or symlink aliases) can share the same cache.
+      const key = await fs.realpath(project.path).catch(() => path.resolve(project.path));
+      let reload = this.registryReloads.get(key);
+      if (!reload) {
+        reload = { latestRequest: 0, writeTail: Promise.resolve() };
+        this.registryReloads.set(key, reload);
+      }
+      return await this.loadPluginRegistry(project.path, refresh, request, reload);
+    } finally {
+      this.registryRequestsPending -= 1;
+      // Keep ownership while any earlier identity/cache lookup may still resume.
+      if (this.registryRequestsPending === 0) this.registryReloads.clear();
+    }
+  }
+
+  private async loadPluginRegistry(
+    workspaceRoot: string,
+    refresh: boolean,
+    request: number,
+    reload: PluginRegistryReload
+  ): Promise<DesktopPluginRegistrySnapshot> {
     if (!refresh) {
-      const cache = await readPluginRegistryCache(project.path).catch(() => undefined);
+      const cache = await readPluginRegistryCache(workspaceRoot).catch(() => undefined);
       if (cache) return { registryUrl: BINY_PLUGIN_REGISTRY_URL, fetchedAt: cache.fetchedAt, stale: false, loadingError: undefined, plugins: cache.document.plugins };
     }
+    // Cache hits must not supersede a refresh. A delayed cache miss keeps its
+    // original request order, even if a newer explicit refresh already finished.
+    reload.latestRequest = Math.max(reload.latestRequest, request);
     try {
       const response = await this.fetcher(BINY_PLUGIN_REGISTRY_URL);
       if (!response.ok) throw new Error(`HTTP ${String(response.status)}`);
       if (response.url && new URL(response.url).origin !== new URL(BINY_PLUGIN_REGISTRY_URL).origin) throw new Error("Registry 重定向到非官方来源。");
       const document = parsePluginRegistry(await response.json());
       const fetchedAt = new Date().toISOString();
-      await writePluginRegistryCache(project.path, { fetchedAt, document });
+      const write = reload.writeTail.then(async () => {
+        if (reload.latestRequest === request) await writePluginRegistryCache(workspaceRoot, { fetchedAt, document });
+      });
+      // Serialize commits, not fetches: an already-started older write must
+      // settle before a newer result commits, including when that write fails.
+      reload.writeTail = write.catch(() => undefined);
+      await write;
       return { registryUrl: BINY_PLUGIN_REGISTRY_URL, fetchedAt, stale: false, loadingError: undefined, plugins: document.plugins };
     } catch (error) {
-      const cache = await readPluginRegistryCache(project.path).catch(() => undefined);
+      const cache = await readPluginRegistryCache(workspaceRoot).catch(() => undefined);
       return {
         registryUrl: BINY_PLUGIN_REGISTRY_URL,
         fetchedAt: cache?.fetchedAt,
@@ -429,7 +471,7 @@ export class DesktopSkillService {
     let error: string | undefined = plugin.error;
     try {
       moduleCount = (await countPluginModules(target)) ?? 0;
-      if (moduleCount === 0) status = "missing";
+      if (moduleCount === 0 || !(await fs.stat(path.join(target, plugin.entry))).isFile()) status = "missing";
     } catch (caught) {
       status = "missing";
       error = errorMessage(caught);
@@ -478,7 +520,7 @@ export class DesktopSkillService {
     let error: string | undefined = plugin.error;
     try {
       moduleCount = (await countPluginModules(target)) ?? 0;
-      if (moduleCount === 0) status = "missing";
+      if (moduleCount === 0 || !(await fs.stat(path.join(target, plugin.entry))).isFile()) status = "missing";
     } catch (caught) {
       status = "missing";
       error = errorMessage(caught);

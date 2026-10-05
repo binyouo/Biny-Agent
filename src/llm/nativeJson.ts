@@ -41,9 +41,12 @@ export async function generateNativeText(
     reported = true;
     await options.onRequestMetrics?.(metrics);
   };
-  const timeout = options.timeoutMs === undefined && options.idleTimeoutMs === undefined ? undefined : new AbortController();
-  const timer = timeout && options.timeoutMs !== undefined
-    ? setTimeout(() => timeout.abort(new DOMException("Auxiliary model request timed out.", "TimeoutError")), options.timeoutMs)
+  // Resolve the provider default before credential preparation and request cancellation are wired.
+  // An explicit undefined keeps callers that own a shared deadline from starting another timer.
+  const timeoutMs = Object.hasOwn(options, "timeoutMs") ? options.timeoutMs : model.vercelOptions?.timeoutMs;
+  const timeout = timeoutMs === undefined && options.idleTimeoutMs === undefined ? undefined : new AbortController();
+  const timer = timeout && timeoutMs !== undefined
+    ? setTimeout(() => timeout.abort(new DOMException("Auxiliary model request timed out.", "TimeoutError")), timeoutMs)
     : undefined;
   let idleTimer: ReturnType<typeof setTimeout> | undefined;
   const onProgress = () => {
@@ -81,7 +84,7 @@ export async function generateNativeText(
     }
   } catch (error) {
     // 外层取消可能先于忽略 signal 的 Provider 返回；先结算未知用量，迟到结果不得重复计账。
-    await reportVercelMetrics(model, { ...options, onRequestMetrics }, startedAtMs, undefined, error);
+    await reportVercelMetrics(model, { ...options, onRequestMetrics }, startedAtMs, undefined, { error });
     throw error;
   } finally {
     if (timer) clearTimeout(timer);
@@ -119,7 +122,8 @@ async function consumeVercelText(
     // result.text 的拒绝不携带原始错误（NoOutputGeneratedError），错误保真必须直接消费 fullStream。
     let text = "";
     let finishReason: string | undefined;
-    let failure: unknown;
+    // Presence must be separate from payload: SDK error parts may contain undefined or null.
+    let failure: { error: unknown } | undefined;
     for await (const part of result.fullStream) {
       options.signal?.throwIfAborted();
       onProgress();
@@ -128,13 +132,13 @@ async function consumeVercelText(
         usage = fromVercelUsage(part.totalUsage);
         finishReason = part.finishReason;
       }
-      else if (part.type === "error") failure ??= part.error;
+      else if (part.type === "error") failure ??= { error: part.error };
     }
-    if (failure !== undefined) throw failure instanceof Error ? failure : new Error(String(failure));
+    if (failure !== undefined) throw failure.error instanceof Error ? failure.error : new Error(String(failure.error));
     await reportVercelMetrics(model, options, startedAtMs, usage, undefined);
     return { text, usage, finishReason };
   } catch (error) {
-    await reportVercelMetrics(model, options, startedAtMs, usage, error);
+    await reportVercelMetrics(model, options, startedAtMs, usage, { error });
     throw error;
   } finally {
     // fullStream may close synthetically on abort without closing the provider stream.
@@ -226,12 +230,18 @@ function trackProviderStream(
     return cancellation;
   };
   const onAbort = (): void => { void cancel(signal?.reason); };
-  void reader.closed.then(() => {
-    if (cancellation === undefined) void finish().catch(() => undefined);
-  }, () => {
-    if (cancellation === undefined) void finish().catch(() => undefined);
-  });
   const stream = new ReadableStream<LanguageModelV4StreamPart>({
+    start(controller) {
+      void reader.closed.then(() => {
+        if (cancellation === undefined) void finish().catch(() => undefined);
+      }, (error) => {
+        if (cancellation !== undefined) return;
+        // A source can already be errored before our first pull. Mirror that
+        // terminal state before cleanup marks the reader finished and closes it.
+        controller.error(error);
+        void finish().catch(() => undefined);
+      });
+    },
     async pull(controller) {
       if (finished || cancelled) { controller.close(); return; }
       try {
@@ -253,9 +263,10 @@ async function reportVercelMetrics(
   options: NativeTextGenerationOptions,
   startedAtMs: number,
   usage: AgentUsage | undefined,
-  error: unknown
+  failure: { error: unknown } | undefined
 ): Promise<void> {
   if (!options.onRequestMetrics) return;
+  const error = failure?.error;
   try {
     await options.onRequestMetrics({
       requestId: randomUUID(),
@@ -269,11 +280,11 @@ async function reportVercelMetrics(
         error: error instanceof Error ? error.message : undefined,
         willRetry: false
       }],
-      finishReason: error === undefined ? "stop" : "error",
+      finishReason: failure === undefined ? "stop" : "error",
       usage,
-      error: error instanceof Error ? error.message : error === undefined ? undefined : String(error),
-      errorPhase: error === undefined ? undefined : "request",
-      eventCount: error === undefined ? 1 : 0,
+      error: error instanceof Error ? error.message : failure === undefined ? undefined : String(error),
+      errorPhase: failure === undefined ? undefined : "request",
+      eventCount: failure === undefined ? 1 : 0,
       requestContext: options.requestContext
     });
   } catch {
@@ -310,7 +321,7 @@ async function consumeInjectedText(
     await reportVercelMetrics(model, options, startedAtMs, usage, undefined);
     return { text, usage, finishReason };
   } catch (error) {
-    await reportVercelMetrics(model, options, startedAtMs, usage, error);
+    await reportVercelMetrics(model, options, startedAtMs, usage, { error });
     throw error;
   }
 }

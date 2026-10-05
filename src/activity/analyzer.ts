@@ -686,8 +686,8 @@ export function resolveActivityReportRange(date: string, now: Date = new Date())
     }
   }
   const start = new Date(base.getFullYear(), base.getMonth(), base.getDate());
-  const end = new Date(start.getTime());
-  end.setDate(end.getDate() + 1);
+  // 午夜可能被时区跳变推到 01:00；次日边界须独立构造，不能沿用该小时。
+  const end = new Date(start.getFullYear(), start.getMonth(), start.getDate() + 1);
   return { startIso: start.toISOString(), endIso: end.toISOString(), label: formatLocalDate(start) };
 }
 

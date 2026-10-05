@@ -15,6 +15,8 @@ process.env.BINY_AGENT_DIR = agentRoot;
 const { attachmentRoot, readAttachment, saveAttachment } = await import("../src/attachments/store.js");
 const { globalAgentDir, legacyProjectStateDirName, projectSessionsDir, projectStateDirName } = await import("../src/config/paths.js");
 const { readStoredSessionEvents } = await import("../src/session/events.js");
+const { replaySessionEvents } = await import("../src/session/replay.js");
+const { toModelMessages } = await import("../src/agent/core/vercelModelAdapter.js");
 const { createSessionId, SessionRecorder } = await import("../src/session/recorder.js");
 const { RuntimeEventAuthority } = await import("../src/runtime/RuntimeAuthority.js");
 const { ensureAgentDirs, resolveSessionFile } = await import("../src/session/store.js");
@@ -220,8 +222,49 @@ try {
     assert.equal((toolCall as { tool: string }).tool, "Read");
     assert.equal((toolCall as { toolCallId?: string }).toolCallId, "call_1");
     assert.equal(toolResult?.type, "tool_result");
+    assert.equal((toolResult as { tool: string }).tool, "Read");
     assert.equal((toolResult as { toolCallId?: string }).toolCallId, "call_1");
     assert.equal((toolResult as { executionStatus?: string }).executionStatus, "succeeded");
+    const replay = replaySessionEvents(events);
+    assert.equal(replay.recoveredToolResults.length, 0);
+    assert.deepEqual(replay.messages.filter((message) => message.role === "toolResult")
+      .map((message) => [message.toolCallId, message.toolName]), [["call_1", "Read"]]);
+    assert.deepEqual(toModelMessages(replay.messages).filter((message) => message.role === "tool")
+      .flatMap((message) => message.content.filter((part) => part.type === "tool-result")
+        .map((part) => [part.toolCallId, part.toolName])), [["call_1", "Read"]]);
+  }
+
+  // Claude 的结果块不带工具名；必须按 id 找回，不能依赖结果顺序或最近一次调用。
+  {
+    const target = await tempWorkspace("biny-claude-tools-");
+    await ensureAgentDirs(target);
+    const lines = [
+      { type: "user", message: { role: "user", content: "读取两个文件，再运行测试" } },
+      { type: "assistant", message: { role: "assistant", content: [
+        { type: "tool_use", id: "read_1", name: "Read", input: { path: "first.txt" } },
+        { type: "tool_use", id: "bash_2", name: "Bash", input: { command: "npm test" } },
+        { type: "tool_use", id: "read_3", name: "Read", input: { path: "second.txt" } }
+      ] } },
+      { type: "user", message: { role: "user", content: [
+        { type: "tool_result", tool_use_id: "read_3", content: "second" },
+        { type: "tool_result", tool_use_id: "read_1", content: [{ type: "text", text: "first" }] },
+        { type: "tool_result", tool_use_id: "bash_2", content: "test failed", is_error: true },
+        { type: "tool_result", tool_use_id: "unknown", content: "unmatched result" },
+        { type: "tool_result", content: "legacy result without an id" }
+      ] } }
+    ];
+    const sourcePath = path.join(target, "tools.claude.jsonl");
+    await writeFile(sourcePath, `${lines.map((line) => JSON.stringify(line)).join("\n")}\n`);
+    const imported = await importSessionFile(target, sourcePath);
+    const { events } = await readStoredSessionEvents(target, imported.sessionId);
+    assert.deepEqual(events.filter((event) => event.type === "tool_result")
+      .map((event) => [event.toolCallId, event.tool, event.result, event.executionStatus]), [
+      ["read_3", "Read", "second", "succeeded"],
+      ["read_1", "Read", "first", "succeeded"],
+      ["bash_2", "Bash", "test failed", "failed"],
+      ["unknown", "tool", "unmatched result", "succeeded"],
+      [undefined, "tool", "legacy result without an id", "succeeded"]
+    ]);
   }
 
   // ── 外部 rollout JSONL 导入映射 ───────────────────────────────────────────

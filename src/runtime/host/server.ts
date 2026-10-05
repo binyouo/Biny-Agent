@@ -167,6 +167,8 @@ export class RuntimeHostServer {
   private readonly runtimeRestartPromises = new Map<string, Promise<{ snapshot: InteractiveRuntimeSnapshot; sequence: number }>>();
   private listening = false;
   private initialized = false;
+  private initializationPromise: Promise<void> | undefined;
+  private journalReady = false;
   private pendingRequests = 0;
   private activityRevision = 0;
   private idleSince: number | undefined;
@@ -337,12 +339,36 @@ export class RuntimeHostServer {
   /** 载入最近的持久事件；session JSONL 和 turnStore 仍是恢复事实来源。 */
   async initialize(): Promise<void> {
     if (this.initialized) return;
-    const loaded = await this.journal.initialize();
-    this.sequence = loaded.sequence;
-    this.assertEventSequenceAvailable();
-    this.history.push(...loaded.records);
+    if (this.closePromise) throw new Error("Runtime Host is shutting down.");
+    this.initializationPromise ??= this.initializeOnce().finally(() => { this.initializationPromise = undefined; });
+    await this.initializationPromise;
+  }
+
+  private async initializeOnce(): Promise<void> {
+    if (!this.journalReady) {
+      const loaded = await this.journal.initialize();
+      if (this.closePromise) throw new Error("Runtime Host is shutting down.");
+      // 后台资源在 journal 读取期间也会发布快照；已有 bounded history 暂存这些更新，
+      // 恢复 high-water 后再分配最终序号，不能让临时序号覆盖旧 journal 或丢失更新。
+      const pendingSequence = this.sequence;
+      this.sequence = loaded.sequence;
+      this.assertEventSequenceAvailable();
+      if (pendingSequence > Number.MAX_SAFE_INTEGER - this.sequence) throw this.markEventSequenceExhausted();
+      const pending = this.history.splice(0).map((record) => ({ ...record, sequence: record.sequence + loaded.sequence }));
+      // 启动窗口已被裁剪时，旧 journal 与保留的新尾部之间有缺口；只保留连续尾部，
+      // 让现有 canReplay / gap 协议对过旧 cursor 明确走快照恢复。
+      if (pendingSequence === pending.length) this.history.push(...loaded.records);
+      this.history.push(...pending);
+      if (this.history.length > eventHistoryLimit) this.history.splice(0, this.history.length - eventHistoryLimit);
+      this.sequence += pendingSequence;
+      if (this.sequence === Number.MAX_SAFE_INTEGER) this.markEventSequenceExhausted();
+      this.journalReady = true;
+      if (pending.length) void this.journal.persist(this.sequence, () => this.history, true);
+    }
     await this.worktrees.reconcile();
+    if (this.closePromise) throw new Error("Runtime Host is shutting down.");
     await this.recoverTaskRuns();
+    if (this.closePromise) throw new Error("Runtime Host is shutting down.");
     this.initialized = true;
   }
 
@@ -731,6 +757,7 @@ export class RuntimeHostServer {
       ? runtimeCommandOperation(requiredString(payload.input, "input")) ?? frame.operation
       : frame.operation;
     this.assertRequestAdmission(connection, admissionOperation);
+    const graphEventOptions = frame.operation === "graph.events" ? readGraphEventPageOptions(payload) : undefined;
     if (frame.operation === "session.goal.get") {
       const sessionId = optionalString(payload.sessionId) ?? this.registry.primary().sessionId;
       const store = this.registry.get(sessionId)?.commands.sessionGoals ?? this.commands.sessionGoals;
@@ -881,6 +908,32 @@ export class RuntimeHostServer {
         const task = await communication.wait(taskRunId, payload.waitMs as number | undefined, payload.afterRevision as number | undefined);
         return { task, messages: communication.messages(taskRunId) };
       } finally { if (!resident?.commands.taskCommunication) communication.close(); }
+    }
+    if (frame.operation === "task.get" || frame.operation === "task.events") {
+      const taskRunId = requiredString(payload.taskRunId, "taskRunId");
+      const commands = await this.taskReadEntry(payload, taskRunId);
+      return frame.operation === "task.get"
+        ? commands.taskRuns.get(taskRunId)
+        : commands.taskRuns.events(taskRunId, optionalSafeInteger(payload.limit) ?? 100);
+    }
+    const graphRead = frame.operation === "graph.inspect" || frame.operation === "graph.list" || frame.operation === "graph.events";
+    // Keep every revision-bearing command on its original route. A cold target has no
+    // live revision, and its reconstruction must not depend on a borrowed read connection.
+    const graphReadCommand = frame.operation === "command" && payload.expectedRevision === undefined
+      && (admissionOperation === "graph.inspect" || admissionOperation === "graph.events");
+    if (graphRead || graphReadCommand) {
+      const query = await this.graphReadEntry(payload, graphRead ? optionalString(payload.graphId) : undefined);
+      if (graphRead) {
+        if (frame.operation === "graph.list") return query.commands.graphs.listGraphs();
+        const graphId = requiredString(payload.graphId, "graphId");
+        return frame.operation === "graph.inspect"
+          ? query.commands.graphs.inspectGraph(graphId)
+          : query.commands.graphs.listGraphEvents(graphId, graphEventOptions);
+      }
+      const source = readSurface(payload.source ?? connection.surface);
+      this.assertRequestAdmission(connection, admissionOperation);
+      return await executeRuntimeCommand(query.runtime ?? this.runtime, query.commands,
+        requiredString(payload.input, "input"), source === "desktop" ? "desktop" : "tui");
     }
     const managed = await this.runtimeEntry(frame.operation, payload);
     const runtime = managed.runtime;
@@ -1218,16 +1271,12 @@ export class RuntimeHostServer {
           const started = await this.startTaskRun(taskRunId, commands, { retrySafety: decision.attempt.retrySafety });
           return commands.taskRuns.get(started.task.taskRunId);
         }, runtime);
-      case "task.get":
-        return commands.taskRuns.get(requiredString(payload.taskRunId, "taskRunId"));
       case "task.list":
         return commands.taskRuns.list({
           status: readOptionalTaskStatus(payload.status),
           limit: optionalSafeInteger(payload.limit),
           cursor: optionalSafeInteger(payload.cursor)
         });
-      case "task.events":
-        return commands.taskRuns.events(requiredString(payload.taskRunId, "taskRunId"), optionalSafeInteger(payload.limit) ?? 100);
       case "automation.create":
         return await this.executeAdmission(async () => commands.automationStore.create(readAutomationCreateInput(payload)), runtime);
       case "automation.list":
@@ -1288,12 +1337,6 @@ export class RuntimeHostServer {
         }, runtime);
       case "graph.cancel":
         return await this.executeControl(async () => await this.cancelGraph(requiredString(payload.graphId, "graphId"), runtime, commands), runtime);
-      case "graph.inspect":
-        return commands.graphs.inspectGraph(requiredString(payload.graphId, "graphId"));
-      case "graph.list":
-        return commands.graphs.listGraphs();
-      case "graph.events":
-        return commands.graphs.listGraphEvents(requiredString(payload.graphId, "graphId"));
       case "capability.register":
         return await this.executeAdmission(async () => {
           const ownerType = readCapabilityOwnerType(payload.ownerType);
@@ -1718,6 +1761,50 @@ export class RuntimeHostServer {
     }
   }
 
+  /** Task facts share the workspace authority; reads do not perform session startup. */
+  private async taskReadEntry(payload: Record<string, unknown>, taskRunId: string): Promise<CommandRuntime> {
+    const requestedSessionId = optionalString(payload.sessionId)
+      ?? (typeof payload.session === "string" ? sessionIdFromFile(payload.session) : undefined);
+    const routingSessionId = this.registry.get(requestedSessionId ?? "")?.sessionId ?? this.registry.primary().sessionId;
+    await this.runtimeRestartPromises.get(routingSessionId);
+    const routing = this.registry.get(routingSessionId) ?? this.registry.primary();
+    const taskSessionId = routing.commands.taskRuns.get(taskRunId)?.sessionId;
+    if (requestedSessionId !== undefined && taskSessionId !== undefined && requestedSessionId !== taskSessionId) {
+      throw new Error(`TaskRun ${taskRunId} belongs to session ${taskSessionId}, not ${requestedSessionId}.`);
+    }
+    const sessionId = requestedSessionId ?? taskSessionId ?? this.registry.primary().sessionId;
+    await this.runtimeRestartPromises.get(sessionId);
+    const sourceSessionId = (this.registry.get(sessionId) ?? this.registry.get(routingSessionId) ?? this.registry.primary()).sessionId;
+    // A cold owner borrows a resident connection; never retain a closed pre-restart store.
+    await this.runtimeRestartPromises.get(sourceSessionId);
+    return (this.registry.get(sessionId) ?? this.registry.get(sourceSessionId) ?? this.registry.primary()).commands;
+  }
+
+  /** Graph projections share the workspace authority; reading them never creates a session. */
+  private async graphReadEntry(payload: Record<string, unknown>, graphId?: string): Promise<{
+    commands: CommandRuntime; runtime?: InteractiveRuntimeHandle;
+  }> {
+    const requestedSessionId = optionalString(payload.sessionId)
+      ?? (typeof payload.session === "string" ? sessionIdFromFile(payload.session) : undefined);
+    const routingSessionId = this.registry.get(requestedSessionId ?? "")?.sessionId ?? this.registry.primary().sessionId;
+    if (graphId !== undefined) await this.runtimeRestartPromises.get(routingSessionId);
+    const routing = this.registry.get(routingSessionId) ?? this.registry.primary();
+    const graphSessionId = graphId === undefined ? undefined : routing.commands.graphs.getGraph(graphId)?.supervisorSessionId;
+    if (requestedSessionId !== undefined && graphSessionId !== undefined && requestedSessionId !== graphSessionId) {
+      throw new Error(`Plan ${graphId} belongs to another session.`);
+    }
+    const sessionId = requestedSessionId ?? graphSessionId ?? this.registry.primary().sessionId;
+    await this.runtimeRestartPromises.get(sessionId);
+    const sourceSessionId = (this.registry.get(sessionId) ?? this.registry.get(routingSessionId) ?? this.registry.primary()).sessionId;
+    // A cold target borrows a resident connection, which may itself be rebuilding.
+    await this.runtimeRestartPromises.get(sourceSessionId);
+    const resident = this.registry.get(sessionId);
+    return {
+      commands: (resident ?? this.registry.get(sourceSessionId) ?? this.registry.primary()).commands,
+      runtime: resident?.runtime
+    };
+  }
+
   private async runtimeEntry(operation: string, payload: Record<string, unknown>): Promise<ManagedSessionRuntime> {
     const explicitSessionId = optionalString(payload.sessionId);
     const sessionFromFile = typeof payload.session === "string" ? sessionIdFromFile(payload.session) : undefined;
@@ -1975,7 +2062,7 @@ export class RuntimeHostServer {
     }
     this.history.push({ sequence, update });
     if (this.history.length > eventHistoryLimit) this.history.splice(0, this.history.length - eventHistoryLimit);
-    void this.journal.persist(sequence, () => this.history, rewriteJournal);
+    if (this.journalReady) void this.journal.persist(sequence, () => this.history, rewriteJournal);
     for (const connection of this.connections) {
       if (connection.authenticated && connection.subscribed && this.matchesSessionFilter(connection, update)) {
         this.sendEvent(connection, sequence, update);
@@ -1984,6 +2071,7 @@ export class RuntimeHostServer {
   }
 
   private assertEventSequenceAvailable(): void {
+    if (this.eventSequenceError) throw this.eventSequenceError;
     if (this.sequence >= Number.MAX_SAFE_INTEGER) throw this.markEventSequenceExhausted();
   }
 
@@ -2158,6 +2246,19 @@ export class RuntimeHostServer {
 function readCancellationReason(value: unknown): AgentTurnCancellationReason {
   if (value === "interrupted" || value === "replaced" || value === "cancelled" || value === "paused" || value === "host_shutdown") return value;
   throw new Error("Cancellation reason must be interrupted, replaced, cancelled, paused, or host_shutdown.");
+}
+
+function readGraphEventPageOptions(payload: Record<string, unknown>): { afterSequence?: number; limit?: number } {
+  const options: { afterSequence?: number; limit?: number } = {};
+  for (const field of ["afterSequence", "limit"] as const) {
+    const value = payload[field];
+    if (value === undefined) continue;
+    if (typeof value !== "number" || !Number.isSafeInteger(value) || value < (field === "limit" ? 1 : 0) || (field === "limit" && value > 1000)) {
+      throw new Error(field === "limit" ? "Graph events limit must be an integer between 1 and 1000." : "Graph events afterSequence must be a non-negative safe integer.");
+    }
+    options[field] = value;
+  }
+  return options;
 }
 
 function readGoalExpected(value: unknown): SessionGoalExpected | undefined {

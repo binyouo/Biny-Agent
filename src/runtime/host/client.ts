@@ -125,6 +125,7 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
   private readonly capabilityOfferListeners = new Set<(offer: { invocation: CapabilityInvocation; registration: CapabilityRegistration }) => void>();
   private readonly pendingUpdates: AgentRuntimeUpdate[] = [];
   private readonly snapshots = new Map<string, InteractiveRuntimeSnapshot>();
+  private readonly snapshotSequences = new Map<string, number>();
   private runtimeSessions: RuntimeHostSessionSummary[] = [];
   private focusedSessionId: string | undefined;
   private snapshot: InteractiveRuntimeSnapshot | undefined;
@@ -537,8 +538,8 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
     return await this.request("graph.list", {});
   }
 
-  async graphEvents(graphId: string): Promise<unknown> {
-    return await this.request("graph.events", { graphId });
+  async graphEvents(graphId: string, options: { afterSequence?: number; limit?: number } = {}): Promise<unknown> {
+    return await this.request("graph.events", { graphId, ...options });
   }
 
   async capabilityRegister(input: Omit<CapabilityRegistrationInput, "ownerId">): Promise<HostOperationResult<CapabilityRegistration>> {
@@ -746,15 +747,15 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
   }
 
   runtimeSnapshots(): RuntimeHostSessionSummary[] {
-    if (this.runtimeSessions.length > 0) {
-      return this.runtimeSessions.map((session) => ({ ...session, snapshot: this.snapshots.get(session.sessionId) ?? session.snapshot }));
-    }
-    return [...this.snapshots.entries()].map(([sessionId, snapshot]) => ({
+    const sessions = this.runtimeSessions.map((session) => ({ ...session, snapshot: this.snapshots.get(session.sessionId) ?? session.snapshot }));
+    const known = new Set(sessions.map((session) => session.sessionId));
+    // 新会话的事件可能比包含它的列表先到；不能把已收到的快照藏到下一次列表刷新。
+    return [...sessions, ...[...this.snapshots.entries()].filter(([sessionId]) => !known.has(sessionId)).map(([sessionId, snapshot]) => ({
       sessionId,
       snapshot,
-      primary: sessionId === this.focusedSessionId,
+      primary: sessions.length === 0 && sessionId === this.focusedSessionId,
       lastActiveAt: Date.now()
-    }));
+    }))];
   }
 
   getFocusedSessionId(): string | undefined {
@@ -769,7 +770,7 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
       sessions: RuntimeHostSessionSummary[];
     }>("session.ensure", { sessionId: options.sessionId, isolation: options.isolation, writeIntent: options.writeIntent });
     if (options.focus !== false) this.focusedSessionId = result.sessionId;
-    this.applySessionSummaries(result.sessions);
+    this.applySessionSummaries(result.sessions, result.sequence);
     this.applySnapshot(result.snapshot, result.sequence, undefined, true);
     return { sessionId: result.sessionId, snapshot: result.snapshot };
   }
@@ -777,7 +778,7 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
   async focusSession(sessionId: string): Promise<InteractiveRuntimeSnapshot> {
     const result = await this.request<{ snapshot: InteractiveRuntimeSnapshot; sequence: number; sessions: RuntimeHostSessionSummary[] }>("snapshot", { sessionId });
     this.focusedSessionId = sessionId;
-    this.applySessionSummaries(result.sessions);
+    this.applySessionSummaries(result.sessions, result.sequence);
     this.applySnapshot(result.snapshot, result.sequence, undefined, true);
     return result.snapshot;
   }
@@ -785,6 +786,7 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
   async closeSession(sessionId: string): Promise<void> {
     await this.request("session.close", { sessionId });
     this.snapshots.delete(sessionId);
+    this.snapshotSequences.delete(sessionId);
     this.runtimeSessions = this.runtimeSessions.filter((session) => session.sessionId !== sessionId);
     if (this.focusedSessionId === sessionId) {
       const primary = this.runtimeSessions.find((session) => session.primary);
@@ -1100,12 +1102,12 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
       this.capabilities = result.capabilities;
       this.focusedSessionId = result.snapshot.info.sessionId;
       this.applySnapshot(result.snapshot, result.sequence, result.hostEpoch, true);
-      this.applySessionSummaries(result.sessions);
+      this.applySessionSummaries(result.sessions, result.sequence);
       if (!this.snapshot) {
         const snapshot = await this.request<{ snapshot: InteractiveRuntimeSnapshot; sessions: RuntimeHostSessionSummary[]; sequence: number }>("snapshot", {}, this.handshakeTimeoutMs);
         this.focusedSessionId = snapshot.snapshot.info.sessionId;
         this.applySnapshot(snapshot.snapshot, snapshot.sequence, undefined, true);
-        this.applySessionSummaries(snapshot.sessions);
+        this.applySessionSummaries(snapshot.sessions, snapshot.sequence);
       }
     } catch (error) {
       await this.close().catch(() => undefined);
@@ -1187,7 +1189,7 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
           clearTimeout(handshakeTimer);
           this.environmentTakeoverHandshake = false;
           const result = value as { hostEpoch: string; persistenceRoot: string; sequence: number; capabilities: string[]; negotiatedCapabilities?: string[] };
-          this.hostEpoch = result.hostEpoch;
+          this.applyHostEpoch(result.hostEpoch);
           this.sequence = result.sequence;
           // v5↔v5 协商生效集优先；旧 host 不回该字段时退化为 host 全集（行为同现状）。
           this.capabilities = result.negotiatedCapabilities ?? result.capabilities;
@@ -1282,7 +1284,7 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
     if (this.browserAutomationConfigured) await this.applyBrowserAutomationLease();
     if (this.focusedSessionId === undefined) this.focusedSessionId = result.snapshot.info.sessionId;
     this.applySnapshot(result.snapshot, result.sequence, result.hostEpoch, this.focusedSessionId === result.snapshot.info.sessionId);
-    this.applySessionSummaries(result.sessions);
+    this.applySessionSummaries(result.sessions, result.sequence);
     await this.recoverCompletions();
   }
 
@@ -1335,7 +1337,7 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
     if (this.closed) throw new Error("Runtime Host client is closed.");
     if (this.options.spawnOptions === undefined) throw new Error("Runtime Host cannot be replaced from this client.");
     const current = await this.request<{ snapshot: InteractiveRuntimeSnapshot; sessions: RuntimeHostSessionSummary[]; sequence: number }>("snapshot", {});
-    this.applySessionSummaries(current.sessions);
+    this.applySessionSummaries(current.sessions, current.sequence);
     this.focusedSessionId = current.snapshot.info.sessionId;
     this.applySnapshot(current.snapshot, current.sequence, undefined, true);
     if (current.snapshot.state.kind !== "idle") throw new Error("Cannot replace the Runtime Host while it is busy.");
@@ -1418,14 +1420,11 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
       return;
     }
     if (isEventFrame(frame)) {
-      this.hostEpoch = frame.hostEpoch;
-      this.sequence = frame.sequence;
       const sessionId = frame.update.snapshot.info.sessionId;
-      this.snapshots.set(sessionId, frame.update.snapshot);
+      this.applySnapshot(frame.update.snapshot, frame.sequence, frame.hostEpoch);
       for (const listener of this.allListeners) listener(frame.update);
       if (this.focusedSessionId === undefined) this.focusedSessionId = sessionId;
       if (sessionId === this.focusedSessionId) {
-        this.snapshot = frame.update.snapshot;
         if (this.listeners.size) {
           for (const listener of this.listeners) listener(frame.update);
         } else {
@@ -1449,7 +1448,7 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
     if (isGapFrame(frame)) {
       this.focusedSessionId = this.focusedSessionId ?? frame.snapshot.info.sessionId;
       this.applySnapshot(frame.snapshot, frame.sequence, frame.hostEpoch, this.focusedSessionId === frame.snapshot.info.sessionId);
-      this.applySessionSummaries(frame.sessions);
+      this.applySessionSummaries(frame.sessions, frame.sequence);
       const update: AgentRuntimeUpdate = { snapshot: frame.snapshot };
       for (const listener of this.allListeners) listener(update);
       if (this.focusedSessionId === frame.snapshot.info.sessionId) {
@@ -1505,7 +1504,7 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
 
   private async refreshRuntimeSnapshot(sessionId?: string): Promise<void> {
     const current = await this.request<{ snapshot: InteractiveRuntimeSnapshot; sessions: RuntimeHostSessionSummary[]; sequence: number }>("snapshot", { sessionId });
-    this.applySessionSummaries(current.sessions);
+    this.applySessionSummaries(current.sessions, current.sequence);
     this.applySnapshot(current.snapshot, current.sequence, undefined, sessionId === undefined || sessionId === this.focusedSessionId);
   }
 
@@ -1514,33 +1513,51 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
    * 窗口内到达的事件帧已把 sequence 推得更新。同 epoch 下禁止回退，epoch 切换则整体替换。
    */
   private applySnapshot(snapshot: InteractiveRuntimeSnapshot, sequence: number, hostEpoch?: string, focused = false): void {
-    if (hostEpoch !== undefined && hostEpoch !== this.hostEpoch) {
-      this.hostEpoch = hostEpoch;
-      this.snapshots.clear();
-      this.snapshot = snapshot;
-      this.sequence = sequence;
-      this.snapshots.set(snapshot.info.sessionId, snapshot);
-      if (focused || this.focusedSessionId === undefined) this.focusedSessionId = snapshot.info.sessionId;
-      return;
-    }
-    if (sequence < this.sequence) return;
-    this.snapshots.set(snapshot.info.sessionId, snapshot);
-    if (focused || this.focusedSessionId === undefined || this.focusedSessionId === snapshot.info.sessionId) {
+    if (hostEpoch !== undefined) this.applyHostEpoch(hostEpoch);
+    const sessionId = snapshot.info.sessionId;
+    // 全局游标可能来自其它会话，不能阻止当前会话的合法刷新。
+    if (sequence < (this.snapshotSequences.get(sessionId) ?? -1)) return;
+    this.snapshots.set(sessionId, snapshot);
+    this.snapshotSequences.set(sessionId, sequence);
+    if (focused || this.focusedSessionId === undefined || this.focusedSessionId === sessionId) {
       this.snapshot = snapshot;
     }
-    this.sequence = sequence;
+    this.sequence = Math.max(this.sequence, sequence);
   }
 
-  private applySessionSummaries(sessions: readonly RuntimeHostSessionSummary[] | undefined): void {
+  private applyHostEpoch(hostEpoch: string): void {
+    if (hostEpoch === this.hostEpoch) return;
+    this.hostEpoch = hostEpoch;
+    this.sequence = 0;
+    this.snapshots.clear();
+    this.snapshotSequences.clear();
+    this.runtimeSessions = [];
+    this.snapshot = undefined;
+    this.pendingUpdates.length = 0;
+  }
+
+  private applySessionSummaries(sessions: readonly RuntimeHostSessionSummary[] | undefined, sequence?: number): void {
     if (sessions === undefined) return;
-    this.runtimeSessions = sessions.map((session) => ({ ...session }));
     const liveSessionIds = new Set(sessions.map((session) => session.sessionId));
+    // 比响应更新的会话不能被旧列表删掉，也不能让列表内的旧快照覆盖新事件。
+    this.runtimeSessions = [
+      ...sessions.map((session) => ({ ...session })),
+      ...this.runtimeSessions.filter((session) => !liveSessionIds.has(session.sessionId)
+        && sequence !== undefined && (this.snapshotSequences.get(session.sessionId) ?? -1) > sequence)
+    ];
     for (const sessionId of this.snapshots.keys()) {
-      if (!liveSessionIds.has(sessionId)) this.snapshots.delete(sessionId);
+      if (!liveSessionIds.has(sessionId) && (sequence === undefined || (this.snapshotSequences.get(sessionId) ?? -1) <= sequence)) {
+        this.snapshots.delete(sessionId);
+        this.snapshotSequences.delete(sessionId);
+      }
     }
-    for (const session of sessions) this.snapshots.set(session.sessionId, session.snapshot);
+    for (const session of sessions) {
+      // 旧 session.list 不携带游标，保持其原有刷新行为，不虚构响应的采样顺序。
+      if (sequence === undefined) this.snapshots.set(session.sessionId, session.snapshot);
+      else this.applySnapshot(session.snapshot, sequence);
+    }
     const primary = sessions.find((session) => session.primary);
-    if ((this.focusedSessionId === undefined || !liveSessionIds.has(this.focusedSessionId)) && primary !== undefined) {
+    if ((this.focusedSessionId === undefined || !this.snapshots.has(this.focusedSessionId)) && primary !== undefined) {
       this.focusedSessionId = primary.sessionId;
     }
     const focused = this.focusedSessionId === undefined ? undefined : this.snapshots.get(this.focusedSessionId);

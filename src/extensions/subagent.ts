@@ -185,9 +185,9 @@ export function createTaskStatusTool(options: SubagentOptions): Tool<{ taskRunId
     parameters: {
       type: "object",
       properties: {
-        taskRunId: { type: "string", description: "The TaskRun id returned by Task." },
-        waitMs: { type: "number", description: "Wait for an update for at most 60000ms; defaults to zero." },
-        afterRevision: { type: "number", description: "The last task revision observed." }
+        taskRunId: { type: "string", minLength: 1, description: "The TaskRun id returned by Task." },
+        waitMs: { type: "integer", minimum: 0, maximum: 60_000, description: "Wait for an update for at most 60000ms; defaults to zero." },
+        afterRevision: { type: "integer", minimum: 0, description: "The last task revision observed." }
       },
       required: ["taskRunId"],
       additionalProperties: false

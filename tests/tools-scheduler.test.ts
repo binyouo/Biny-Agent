@@ -13,6 +13,8 @@ async function main(): Promise<void> {
   await testQueueLimitAndStatusSnapshot();
   await testWaitingWriterIsNotStarvedByLaterReaders();
   await testSynchronousStartFailureReleasesCapacity();
+  await testAsyncSettlementReleasesCapacityBeforeCallerResumes(false);
+  await testAsyncSettlementReleasesCapacityBeforeCallerResumes(true);
   testBrowserAccessIsScopedToContext();
   testIndependentCommandDirectoriesDoNotConflict();
   assert.throws(() => new ToolScheduler(0), /positive integer/);
@@ -202,6 +204,64 @@ async function testSynchronousStartFailureReleasesCapacity(): Promise<void> {
 
   await assert.rejects(failed, /start failed/);
   assert.equal(await next, "next");
+}
+
+async function testAsyncSettlementReleasesCapacityBeforeCallerResumes(fail: boolean): Promise<void> {
+  const scheduler = new ToolScheduler<string>({ maxConcurrency: 1, maxQueuedTasks: 1 });
+  const firstGate = deferred<void>();
+  const secondGate = deferred<void>();
+  const failure = new Error("asynchronous start failed");
+  const starts: string[] = [];
+  const first = scheduler.schedule({
+    accesses: ToolAccesses.none(),
+    start: async () => {
+      starts.push("first");
+      await firstGate.promise;
+      if (fail) throw failure;
+      return "first";
+    }
+  });
+  const second = scheduler.schedule({
+    accesses: ToolAccesses.none(),
+    start: async () => {
+      starts.push("second");
+      await secondGate.promise;
+      return "second";
+    }
+  });
+  let third: Promise<string | Error> | undefined;
+  const scheduleThird = () => {
+    // A caller must be able to reuse capacity as soon as its task settles.
+    third = scheduler.schedule({
+      accesses: ToolAccesses.none(),
+      start: async () => {
+        starts.push("third");
+        return "third";
+      }
+    }).catch((error: Error) => error);
+  };
+  const continued = first.then((value) => {
+    assert.equal(fail, false);
+    assert.equal(value, "first");
+    scheduleThird();
+  }, (error: unknown) => {
+    assert.equal(fail, true);
+    assert.equal(error, failure);
+    scheduleThird();
+  });
+
+  firstGate.resolve(undefined);
+  await continued;
+  secondGate.resolve(undefined);
+  assert.equal(await second, "second");
+  assert.equal(await third, "third");
+  assert.deepEqual(starts, ["first", "second", "third"]);
+  assert.deepEqual(scheduler.getSnapshot(), {
+    maxConcurrency: 1,
+    maxQueuedTasks: 1,
+    active: 0,
+    queued: 0
+  });
 }
 
 function testSchedulerConfigDefaultsAndValidation(): void {

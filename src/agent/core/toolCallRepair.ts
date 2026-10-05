@@ -65,7 +65,9 @@ export const toolCallRepair: ToolCallRepairFunction<ToolSet> = async ({ toolCall
       if (repaired === undefined) return null;
       toolName = repaired;
     }
-    const { input, changed } = repairToolArguments(await inputSchema({ toolName }), toolCall.input);
+    const repaired = repairToolArguments(await inputSchema({ toolName }), toolCall.input);
+    if (repaired === null) return null;
+    const { input, changed } = repaired;
     const renamed = toolName !== toolCall.toolName;
     if (!renamed && !changed) return null;
     return { ...toolCall, toolName, input: JSON.stringify(input) };
@@ -82,33 +84,44 @@ function repairToolName(name: string, available: readonly string[]): string | un
   return byNormalized.get(normalizeName(name));
 }
 
-function repairToolArguments(schema: unknown, rawInput: unknown): RepairedArguments {
+function repairToolArguments(schema: unknown, rawInput: unknown): RepairedArguments | null {
   const recovered = recoverObjectInput(rawInput);
   if (recovered === null) return { input: {}, changed: false };
   const { value: input, recovered: inputRecovered } = recovered;
+  // 模式键或组合条件可能允许 properties 以外的字段；此处不重新解释这些 schema。
+  if (isRecord(schema) && [
+    "patternProperties", "allOf", "anyOf", "oneOf", "if", "then", "else",
+    "dependentSchemas", "dependencies", "unevaluatedProperties", "$ref", "$dynamicRef", "$recursiveRef"
+  ].some((key) => Object.hasOwn(schema, key))) return { input, changed: inputRecovered };
   const properties = isRecord(schema) && isRecord(schema.properties)
     ? schema.properties
     : undefined;
   if (properties === undefined) return { input, changed: inputRecovered };
 
-  const canonicalByKey = new Map<string, string>();
-  for (const key of Object.keys(properties)) canonicalByKey.set(normalizeName(key), key);
+  const canonicalByKey = new Map<string, string[]>();
+  for (const key of Object.keys(properties)) {
+    const normalized = normalizeName(key);
+    canonicalByKey.set(normalized, [...(canonicalByKey.get(normalized) ?? []), key]);
+  }
   const repaired: Record<string, unknown> = {};
   let changed = inputRecovered;
   for (const [key, value] of Object.entries(input)) {
-    if (key in properties) {
+    // 开放对象允许额外字段；包括看起来像别名的键，也必须原样保留其含义。
+    if (key in properties || !isRecord(schema) || schema.additionalProperties !== false) {
       repaired[key] = value;
       continue;
     }
-    const canonical = canonicalByKey.get(normalizeName(key))
-      ?? firstDefined((parameterAliases[normalizeName(key)] ?? [])
-        .map((candidate) => canonicalByKey.get(normalizeName(candidate))));
-    // Biny 工具 schema 均 additionalProperties:false；无法映射或与已有键冲突的参数
-    // 只能丢弃，保留会让重新校验仍然失败、自愈失去意义。
-    if (canonical === undefined || canonical in repaired) {
+    const candidates = canonicalByKey.get(normalizeName(key))
+      ?? (parameterAliases[normalizeName(key)] ?? [])
+        .flatMap((candidate) => canonicalByKey.get(normalizeName(candidate)) ?? []);
+    if (candidates.length > 1) return null;
+    const canonical = candidates[0];
+    // 只有封闭对象才能丢弃无法映射的键；别名与规范键或其他别名冲突时不能猜测。
+    if (canonical === undefined) {
       changed = true;
       continue;
     }
+    if (Object.hasOwn(input, canonical) || Object.hasOwn(repaired, canonical)) return null;
     repaired[canonical] = value;
     changed = true;
   }
@@ -218,8 +231,4 @@ function parseJsonSilently(text: string): unknown {
   } catch {
     return undefined;
   }
-}
-
-function firstDefined(values: ReadonlyArray<string | undefined>): string | undefined {
-  return values.find((value) => value !== undefined);
 }

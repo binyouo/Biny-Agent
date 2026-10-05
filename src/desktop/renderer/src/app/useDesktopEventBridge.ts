@@ -4,7 +4,7 @@
  * 主进程为所有项目共用一条事件通道。本 hook 负责有界批处理、按项目/会话过滤、刷新终态快照，
  * 并把结果写回 React 状态；组件无需理解事件时序或处理流式输出的高频更新。
  */
-import { useEffect, type Dispatch, type RefObject, type SetStateAction } from "react";
+import { useEffect, useState, type Dispatch, type RefObject, type SetStateAction } from "react";
 import type { ContextBudgetStatus } from "../../../../agent/context/types.js";
 import { isTerminalRunEvent, type AgentHostEvent } from "../../../../runtime/agentEvents.js";
 import type {
@@ -78,7 +78,14 @@ export function useDesktopEventBridge({
   onCompactionStarted,
   onCompactionFailed
 }: DesktopEventBridgeOptions): void {
+  const [pendingRefresh, setPendingRefresh] = useState<{
+    document: DesktopSessionDocument;
+    isCurrent(): boolean;
+  }>();
+
   useEffect(() => {
+    let active = true;
+    let documentRefreshGeneration = 0;
     const refreshTimers = new Map<string, ReturnType<typeof setTimeout>>();
     const pendingEvents = createSessionEventBuffer<DesktopAgentEventEnvelope>();
 
@@ -89,15 +96,19 @@ export function useDesktopEventBridge({
       const timer = setTimeout(() => {
         refreshTimers.delete(scope);
         void window.biny.refreshProject(projectId).then(async (snapshot) => {
+          if (!active) return;
           mergeProjectSnapshot(snapshot);
           if (activeProjectIdRef.current === projectId && selectedSessionIdRef.current === sessionId) {
+            const generation = ++documentRefreshGeneration;
+            const requestedDocument = documentRef.current;
             const refreshedDocument = await window.biny.openSession(projectId, sessionId);
-            if (activeProjectIdRef.current === projectId && selectedSessionIdRef.current === sessionId) {
-              setDocument(refreshedDocument);
-              setWriterConflict(refreshedDocument.writerConflict);
-            }
+            // 同一会话也可能已经收到新流式内容、切换消息版本或重新打开，旧回读不能覆盖它。
+            const isCurrent = (): boolean => active && documentRefreshGeneration === generation
+              && activeProjectIdRef.current === projectId
+              && selectedSessionIdRef.current === sessionId && documentRef.current === requestedDocument;
+            if (isCurrent()) setPendingRefresh({ document: refreshedDocument, isCurrent });
           }
-        }).catch(onError);
+        }).catch((error: unknown) => { if (active) onError(error); });
       }, 260);
       refreshTimers.set(scope, timer);
     };
@@ -200,10 +211,22 @@ export function useDesktopEventBridge({
     const batcher = createDesktopEventBatcher(flushEvents);
     const unsubscribe = window.biny.onAgentEvent(batcher.push);
     return () => {
+      active = false;
       unsubscribe();
       batcher.dispose();
       for (const timer of refreshTimers.values()) clearTimeout(timer);
       refreshTimers.clear();
     };
-  }, [activeProjectIdRef, documentRef, mergeProjectSnapshot, onError, selectedSessionIdRef, setContextBudget, setDocument, setRecipeNotices, setSkillExtraction, setSidebarSessions, setWorkspace, setWriterConflict, onGenerationError, onGenerationStarted, onCompactionStarted, onCompactionFailed, onRuntimeProjectionChanged]);
+  }, [activeProjectIdRef, documentRef, mergeProjectSnapshot, onError, selectedSessionIdRef, setContextBudget, setDocument, setRecipeNotices, setSkillExtraction, setSidebarSessions, setWorkspace, onGenerationError, onGenerationStarted, onCompactionStarted, onCompactionFailed, onRuntimeProjectionChanged]);
+
+  useEffect(() => {
+    if (!pendingRefresh) return;
+    // 等本轮 React 提交后再检查，避免同批排队的文档更新尚未同步到 documentRef。
+    // 文档和 writer conflict 必须共用同一个新鲜度判断，不能在 state updater 内产生副作用。
+    if (pendingRefresh.isCurrent()) {
+      setDocument(pendingRefresh.document);
+      setWriterConflict(pendingRefresh.document.writerConflict);
+    }
+    setPendingRefresh(undefined);
+  }, [pendingRefresh, setDocument, setWriterConflict]);
 }

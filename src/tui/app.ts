@@ -738,23 +738,30 @@ export class BinyTui {
     const runtime = this.runtime;
     if (!runtime) return;
     const sessionId = runtime.getSnapshot().info.sessionId;
-    const value = this.editor.getText().trim();
+    const text = this.editor.getExpandedText();
+    const value = text.trim();
     if (!value && !this.pendingAttachments.length) return;
     const prompt = value || "请分析这个附件。";
     const attachments = this.pendingAttachments;
+    let inputTaken = false;
     try {
+      const undo = editorSubmissionUndo(this.editor);
+      // 与 Enter 提交一致：在准入等待前取走这一份输入，后续编辑属于下一份草稿。
+      this.setEditorText("");
+      this.setPendingAttachments([]);
+      inputTaken = true;
+      undo.clear();
       await this.ensureSessionWriteAccess(sessionId);
       if (runtime instanceof RuntimeHostClient) {
         const queued = await runtime.queueRunMessageForSession(sessionId, withAttachmentReferences(prompt, attachments), "steer", attachments);
         if (!queued.accepted) throw errorFromHostOperation(queued);
       } else await runtime.steer(withAttachmentReferences(prompt, attachments), attachments);
-      this.setPendingAttachments([]);
-      this.setEditorText("");
       this.editor.addToHistory(prompt);
       void appendInputHistory(this.workspaceRoot, prompt)
         .catch((error) => this.notify(`写入输入历史失败：${describeError(error)}`));
       this.notify("消息已加入 steer 队列，将在当前模型步骤和工具批次结束后处理。");
     } catch (error) {
+      if (inputTaken) this.restoreSubmittedInput(text, attachments);
       if (isSessionWriterConflictError(error)) {
         await this.showSessionWriterConflict(error);
         return;
@@ -1721,6 +1728,19 @@ export class BinyTui {
       this.resolveExit?.();
     }
   }
+}
+
+/**
+ * pi-tui 0.82.1 的 setText 会保留撤销快照，但 Enter 的 submitValue 会清空它。
+ * 该版本没有公开提交重置 API；只适配这一处撤销契约，避免模拟 Enter 改写末尾反斜杠。
+ * 升级时若契约变化，必须在取走草稿或发送前失败；真实 Editor 回归测试覆盖撤销边界。
+ */
+function editorSubmissionUndo(editor: Editor): { clear(): void } {
+  const undo = (editor as unknown as { undoStack?: unknown }).undoStack;
+  if (typeof undo !== "object" || undo === null || !("clear" in undo) || typeof undo.clear !== "function") {
+    throw new Error("TUI editor submission reset is unavailable. Input has been preserved.");
+  }
+  return undo as { clear(): void };
 }
 
 /** 判断两次 Ctrl+C 是否处于 pi 的 500ms 退出窗口内。 */

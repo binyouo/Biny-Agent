@@ -13,6 +13,7 @@ import { generateNativeText } from "../../llm/nativeJson.js";
 import type { ModelUsageObserver } from "../../observability/usage.js";
 import { redactSecrets } from "../../utils/secrets.js";
 import {
+  isExpiredTemporaryMemory,
   memoryEntryExactKey,
   normalizeMemoryOriginAnchors,
   sanitizeMemoryEntryInput
@@ -440,8 +441,12 @@ export class LocalMemory {
 
   async loadMaintenanceStatus(options: MemoryReadOptions = {}): Promise<MemoryMaintenanceStatus> {
     options.signal?.throwIfAborted();
-    if (this.maintenanceOwnerToken && this.maintenance.state === "running") return this.maintenanceStatus();
-    this.maintenance = await this.storage.recoverInterruptedMaintenanceStatus(options.signal);
+    // owner 一直持有到终态写入结束；期间磁盘仍可能保留上一阶段的 running 快照。
+    if (this.maintenanceOwnerToken) return this.maintenanceStatus();
+    const previous = this.maintenance;
+    const loaded = await this.storage.recoverInterruptedMaintenanceStatus(options.signal);
+    // 恢复读取期间可能已启动甚至完成新一轮 Sleep；终态释放 owner 后也不能被旧快照覆盖。
+    if (this.maintenance === previous) this.maintenance = loaded;
     this.maintenanceLoaded = true;
     return this.maintenanceStatus();
   }
@@ -803,7 +808,8 @@ export class LocalMemory {
     return await this.storage.archiveEntries(ids, reason, {
       mergedInto, archivedBy, now, signal: options.signal,
       sleepOwnerToken: this.maintenanceOwnerToken,
-      expectedEntries
+      expectedEntries,
+      temporaryTtl: reason === "expired" ? options.temporaryTtl ?? 30 : undefined
     });
   }
 
@@ -1352,17 +1358,6 @@ function selectSleepSurvivor(entries: readonly MemoryEntry[], exactDuplicate = f
 
 function compareSleepEntries(left: MemoryEntry, right: MemoryEntry): number {
   return Date.parse(right.updatedAt) - Date.parse(left.updatedAt);
-}
-
-function isExpiredTemporaryMemory(entry: MemoryEntry, now: Date, ttlDays: number): boolean {
-  if (entry.durability !== "temporary") return false;
-  const nowMs = now.getTime();
-  const expiresAt = entry.expiresAt === undefined ? Number.NaN : Date.parse(entry.expiresAt);
-  if (Number.isFinite(expiresAt) && expiresAt < nowMs) return true;
-  if (entry.accessCount !== 0) return false;
-  const createdAt = Date.parse(entry.createdAt);
-  return Number.isFinite(createdAt)
-    && createdAt + Math.max(1, Math.trunc(ttlDays)) * 86_400_000 < nowMs;
 }
 
 function emptySleepMergeDecision(): SleepMergeDecision {

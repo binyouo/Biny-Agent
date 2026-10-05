@@ -58,7 +58,7 @@ export function createListFilesTool(context: ToolContext): Tool<ListFilesArgs, L
       const listRoot = resolveWorkspaceDirectory(context.workspaceRoot, args.path ?? ".", context.ignore);
       const relativeRoot = normalizePath(toWorkspaceRelative(context.workspaceRoot, listRoot));
       const pattern = args.pattern?.trim();
-      const cursor = args.cursor?.trim();
+      const cursor = args.cursor;
       if (args.pattern !== undefined && !pattern) throw new Error("Glob requires a non-empty pattern.");
       if (args.cursor !== undefined && !cursor) throw new Error("Glob requires a non-empty cursor.");
       if (pattern) path.matchesGlob("validation-path", pattern);

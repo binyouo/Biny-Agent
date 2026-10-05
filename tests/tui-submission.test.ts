@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { promises as fs } from "node:fs";
 import { createServer, type ServerResponse } from "node:http";
 import { mkdtemp, realpath, rm } from "node:fs/promises";
 import os from "node:os";
@@ -11,7 +12,7 @@ import { globalConfigDir } from "../src/config/paths.js";
 import { createInteractiveAgentHost } from "../src/runtime/InteractiveAgentRuntime.js";
 import { connectRuntimeHost, startRuntimeHost, type RuntimeHostClient, type RuntimeHostFactory } from "../src/runtime/RuntimeHost.js";
 import { slashCommandsForSurface } from "../src/runtime/commandRegistry.js";
-import { readSessionEvents } from "../src/session/events.js";
+import { readSessionEvents, type SessionEvent } from "../src/session/events.js";
 import { BinyTui } from "../src/tui/app.js";
 import { SelectDialog } from "../src/tui/components/dialogs.js";
 import { PendingAttachmentsComponent } from "../src/tui/components/pendingAttachments.js";
@@ -24,6 +25,79 @@ async function waitUntil(condition: () => boolean | Promise<boolean>): Promise<v
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
 }
+
+async function readSessionEventsIfStable(filePath: string): Promise<SessionEvent[] | undefined> {
+  try {
+    return await readSessionEvents(filePath);
+  } catch (error) {
+    // A provider reply starts asynchronous writes. The bounded assertion poll
+    // may retry a contested snapshot, but must still surface invalid histories.
+    if (error instanceof Error && error.message === `Session changed repeatedly while reading: ${filePath}`) return undefined;
+    throw error;
+  }
+}
+
+test("session event polling waits for stable writes and preserves read failures", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "biny-tui-event-poll-"));
+  const file = path.join(root, "session.jsonl");
+  const row = (content: string): string => `${JSON.stringify({ type: "user_message", content })}\n`;
+  const originalOpen = fs.open;
+  let appends = 0;
+  let openFailure: Error | undefined;
+  try {
+    await fs.writeFile(file, row("first"));
+    const previous = await readSessionEvents(file);
+    await fs.appendFile(file, row("reply started"));
+    t.mock.method(fs, "open", async (...args: Parameters<typeof fs.open>) => {
+      if (args[0] === file && openFailure) throw openFailure;
+      const handle = await originalOpen(...args);
+      if (args[0] === file) {
+        handle.read = new Proxy(handle.read, {
+          async apply(target, receiver, parameters: unknown[]) {
+            const result: unknown = await Reflect.apply(target, receiver, parameters);
+            // Force one valid append during each of the reader's three attempts.
+            // No sleeps or changes to production snapshot validation are needed.
+            if (parameters[3] === 0 && appends < 3) {
+              appends++;
+              await fs.appendFile(file, row(`append ${appends}`));
+            }
+            return result;
+          }
+        });
+      }
+      return handle;
+    });
+    let polls = 0;
+    let stored: SessionEvent[] | undefined;
+    await waitUntil(async () => {
+      polls++;
+      stored = await readSessionEventsIfStable(file);
+      return stored?.length === 5;
+    });
+    assert.equal(appends, 3);
+    assert.equal(polls, 2, "a contested snapshot must be retried by the existing bounded poll");
+    assert.equal(previous.length, 1, "concurrent appends must not mutate the cached snapshot");
+    assert.deepEqual(stored?.map((event) => event.type === "user_message" ? event.content : undefined), [
+      "first", "reply started", "append 1", "append 2", "append 3"
+    ]);
+    await fs.writeFile(file, "{broken}\n");
+    await assert.rejects(readSessionEventsIfStable(file), /Invalid JSONL event at line 1/u);
+    await fs.link(file, `${file}.link`);
+    await assert.rejects(readSessionEventsIfStable(file), /single-link/u);
+    await fs.unlink(file);
+    await assert.rejects(readSessionEventsIfStable(file), { code: "ENOENT" });
+    for (const failure of [
+      Object.assign(new Error("Permission denied"), { code: "EACCES" }),
+      new Error(`Session changed repeatedly while reading: ${file}.other`)
+    ]) {
+      openFailure = failure;
+      await assert.rejects(readSessionEventsIfStable(file), (error) => error === failure);
+    }
+  } finally {
+    t.mock.restoreAll();
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 function terminal(): Terminal {
   return {
@@ -151,9 +225,11 @@ test("TUI serializes admissions, queues follow-ups and preserves the next draft"
     ];
     await Promise.all(followUps);
     sendReply(firstResponse!, "tui-send-reply");
-    let stored = await readSessionEvents(app.tuiState.sessionFile);
+    let stored: SessionEvent[] = [];
     await waitUntil(async () => {
-      stored = await readSessionEvents(app.tuiState.sessionFile);
+      const events = await readSessionEventsIfStable(app.tuiState.sessionFile);
+      if (events === undefined) return false;
+      stored = events;
       return stored.filter((event) => event.type === "user_message").length === 2
         && stored.filter((event) => event.type === "turn_status" && event.status === "completed").length === 2;
     }).catch((error) => {
@@ -174,7 +250,9 @@ test("TUI serializes admissions, queues follow-ups and preserves the next draft"
       app.submit("tui-send-probe rapid two")
     ]);
     await waitUntil(async () => {
-      stored = await readSessionEvents(app.tuiState.sessionFile);
+      const events = await readSessionEventsIfStable(app.tuiState.sessionFile);
+      if (events === undefined) return false;
+      stored = events;
       return stored.filter((event) => event.type === "turn_status" && event.status === "completed").length === 4;
     }).catch((error) => assert.fail(`${String(error)}\n${JSON.stringify(stored.filter((event) => event.type === "user_message").map((event) => event.content))}\n${JSON.stringify(app.tuiState.transcript.committed.filter((item) => item.kind === "error" || item.kind === "notification"))}`));
     assert.deepEqual(stored.filter((event) => event.type === "user_message").slice(-2).map((event) => event.content), [

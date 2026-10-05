@@ -3101,14 +3101,6 @@ export class DesktopAgentManager {
     return managed;
   }
 
-  private async readMemoryStore(
-    projectId: string
-  ): Promise<{ overview: MemoryOverview; entries: MemoryEntriesResult; allEntries: MemoryEntriesResult; maintenance: MemoryMaintenanceStatus }> {
-    const managed = this.residentRuntime(projectId);
-    if (managed) return await this.readMemoryStoreFromRuntime(managed);
-    return await this.readMemoryStoreFromDisk(projectId);
-  }
-
   /** runtime 已驻留：普通读取不占用 Runtime 独占，允许各投影短暂跨 revision。 */
   private async readMemoryStoreFromRuntime(
     managed: ManagedRuntime

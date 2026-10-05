@@ -456,6 +456,7 @@ function binyEventsToClaudeLines(events: readonly SessionEvent[]): ClaudeLine[] 
 
 function claudeLinesToBinyEvents(lines: unknown[]): SessionEvent[] {
   const events: SessionEvent[] = [];
+  const toolNameByCallId = new Map<string, string>();
   for (const line of lines) {
     if (!isRecord(line)) continue;
     const claude = line as ClaudeLine;
@@ -465,15 +466,20 @@ function claudeLinesToBinyEvents(lines: unknown[]): SessionEvent[] {
     const role = message.role;
     const time = typeof claude.timestamp === "string" ? claude.timestamp : undefined;
     if (role === "user") {
-      pushClaudeUserContent(events, message.content, time);
+      pushClaudeUserContent(events, message.content, time, toolNameByCallId);
       continue;
     }
-    if (role === "assistant") pushClaudeAssistantContent(events, message.content, time);
+    if (role === "assistant") pushClaudeAssistantContent(events, message.content, time, toolNameByCallId);
   }
   return events;
 }
 
-function pushClaudeUserContent(events: SessionEvent[], content: string | ClaudeContentBlock[] | undefined, time: string | undefined): void {
+function pushClaudeUserContent(
+  events: SessionEvent[],
+  content: string | ClaudeContentBlock[] | undefined,
+  time: string | undefined,
+  toolNameByCallId: ReadonlyMap<string, string>
+): void {
   if (typeof content === "string") {
     if (content.trim()) events.push({ type: "user_message", content, time });
     return;
@@ -489,10 +495,11 @@ function pushClaudeUserContent(events: SessionEvent[], content: string | ClaudeC
     if (block.type === "tool_result") {
       // 工具结果在外部格式里以 user 角色承载；只有真正执行过才单独翻译，避免伪造结果。
       const result = block as ClaudeContentToolResult;
+      const toolCallId = typeof result.tool_use_id === "string" ? result.tool_use_id : undefined;
       events.push({
         type: "tool_result",
-        tool: "tool",
-        toolCallId: typeof result.tool_use_id === "string" ? result.tool_use_id : undefined,
+        tool: (toolCallId && toolNameByCallId.get(toolCallId)) || "tool",
+        toolCallId,
         result: claudeToolResultText(result.content),
         executionStatus: result.is_error === true ? "failed" : "succeeded",
         time
@@ -503,7 +510,12 @@ function pushClaudeUserContent(events: SessionEvent[], content: string | ClaudeC
   if (text) events.push({ type: "user_message", content: text, time });
 }
 
-function pushClaudeAssistantContent(events: SessionEvent[], content: string | ClaudeContentBlock[] | undefined, time: string | undefined): void {
+function pushClaudeAssistantContent(
+  events: SessionEvent[],
+  content: string | ClaudeContentBlock[] | undefined,
+  time: string | undefined,
+  toolNameByCallId: Map<string, string>
+): void {
   if (typeof content === "string") {
     if (content.trim()) events.push({ type: "assistant_message", content, time });
     return;
@@ -540,6 +552,7 @@ function pushClaudeAssistantContent(events: SessionEvent[], content: string | Cl
     reasoning = "";
   }
   for (const call of toolCalls) {
+    if (typeof call.id === "string") toolNameByCallId.set(call.id, call.name);
     events.push({
       type: "tool_call",
       tool: call.name,

@@ -372,7 +372,10 @@ export class GoalGraphStore {
   }
 
   resumeGraph(graphId: string): GraphRecord {
-    return this.updateGraph(graphId, "running");
+    const graph = this.updateGraph(graphId, "running");
+    // 暂停/恢复使旧 revision 的 wake 过期；无 ready 节点的检查点也必须重新交付。
+    this.queueCurrentSupervisorCheckpoint(graph);
+    return graph;
   }
 
   cancelGraph(graphId: string): GraphRecord {
@@ -784,8 +787,9 @@ export class GoalGraphStore {
     return rows.map((row) => stringValue(row.graph_id));
   }
 
-  listGraphEvents(graphId: string): ReturnType<RuntimeEventAuthority["readEvents"]> {
-    return this.authority.readEvents({ runId: "graph:" + graphId });
+  listGraphEvents(graphId: string, options: { afterSequence?: number; limit?: number } = {}): ReturnType<RuntimeEventAuthority["readEvents"]> {
+    // 节点结果以 TaskRun 为 runId，但保留 graph turnId；同时保留旧 runId 查询中的 task.created。
+    return this.authority.readEvents({ afterSequence: options.afterSequence, limit: options.limit, runOrTurnId: "graph:" + graphId });
   }
 
   close(): void {

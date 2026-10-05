@@ -368,7 +368,8 @@ export function toModelMessages(messages: AgentMessage[], nativePatch = false): 
         role: "assistant",
         content: message.content.map((part) => {
           if (part.type === "text") return { type: "text", text: part.text };
-          if (part.type === "reasoning") return { type: "reasoning", text: part.text, providerMetadata: part.providerMetadata };
+          // SDK 输出使用 providerMetadata，消息输入则通过 providerOptions 回传签名等元数据。
+          if (part.type === "reasoning") return { type: "reasoning", text: part.text, providerOptions: providerMetadata(part.providerMetadata) };
           if (part.name === "apply_patch" && !nativePatch) return { type: "text", text: `Historical file patch request: ${JSON.stringify(part.arguments)}` };
           return { type: "tool-call", toolCallId: part.id, toolName: part.name, input: part.arguments };
         })

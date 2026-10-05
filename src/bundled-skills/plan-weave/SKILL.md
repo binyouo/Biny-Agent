@@ -49,7 +49,11 @@ biny graph list --json
 # Inspect graph state and recorded events
 biny graph inspect <graphId> --json
 biny graph events <graphId> --json
+# If hasMore is true, continue using the returned nextCursor
+biny graph events <graphId> --cursor <nextCursor> --limit 100 --json
 ```
+
+Graph events default to 100 per page (maximum 1000). Follow `nextCursor` while `hasMore` is true to inspect later outcomes. Desktop and TUI support the same options: `/graph events <graphId> --cursor <nextCursor> --limit 100`.
 
 Start only an identified graph. Use inspection results to determine which nodes are ready, blocked, running, failed, or complete. Do not claim that a node executed merely because the graph accepted a start request; look for the corresponding TaskRun, tool results, or runtime events.
 
