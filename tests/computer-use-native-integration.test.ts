@@ -804,12 +804,22 @@ test("type can insert at the cursor instead of replacing the whole value", async
   const pid = Number(spawnSync("pgrep", ["-f", "TextEdit$"], { encoding: "utf8" }).stdout.trim().split("\n")[0]);
   try {
     assert.ok(pid > 0, "TextEdit 应当起来了");
-    const observed = await driver.daemonCommand("get_app_state", { pid, no_shot: true, max_elements: 40 });
+    // ⚠️ 别用固定 sleep 等"文档加载完成"：满载时会来不及，而失败会显示成
+    // "内容不是我们写的"（听起来像串台了）。轮询到**内容出现**为止。
     type El = { element_token?: string; ref?: string; role?: string; value?: unknown };
-    const area = ((observed.data as { elements?: El[] }).elements ?? []).find(element => element.role === "AXTextArea");
-    const ref = area?.element_token ?? area?.ref;
+    let ref = "", areaValue = "";
+    const deadline = Date.now() + 15_000;
+    while (Date.now() < deadline) {
+      const observed = await driver.daemonCommand("get_app_state", { pid, no_shot: true, max_elements: 40 });
+      const elements = (observed.data as { elements?: El[] }).elements ?? [];
+      const area = elements.find(element => element.role === "AXTextArea");
+      ref = area?.element_token ?? area?.ref ?? "";
+      areaValue = String(area?.value ?? "");
+      if (ref && areaValue === "AAAABBBB") break;
+      await new Promise(resolve => setTimeout(resolve, 400));
+    }
     assert.ok(ref, "应当找得到那个一次性文档的文本域");
-    assert.equal(String(area?.value ?? ""), "AAAABBBB", "一次性文档的内容应当是我们刚写进去的");
+    assert.equal(areaValue, "AAAABBBB", `一次性文档的内容应当是我们刚写进去的（实际 ${JSON.stringify(areaValue)}）`);
 
     // 光标放到第 4 个字符后，再插入 —— 结果应当插在中间，而不是替换整段
     await driver.daemonCommand("select_text", { pid, ref, location: 4, length: 0 });
@@ -1190,6 +1200,45 @@ test("windows lists AX windows even when CGWindowList shows none for that app", 
       if (checked >= 2) break;
     }
     assert.ok(checked > 0, "至少验到一个有 AX 窗口的应用");
+  } finally {
+    await driver.dispose();
+  }
+});
+
+// 第 12 条：产品内的模型工具（`src/tools/computerUse.ts`）和 MCP 是两个面，
+// 而我这几轮每加一个参数**只通了当时在测的那一面** —— 于是同一个守护进程，
+// MCP 客户端能用的参数，产品内的模型用不了。
+//
+// 这条路径上有**四处**会各丢一次字段，缺一处就整条不通：
+//   工具 schema（additionalProperties:false）→ tool 的 parse → service 的 parse → driver 的逐字段拼 args
+// 实测时前面三处都修好了仍然不通，卡在 driver —— 它像动作那条一样"逐字段拼"，
+// 没拼进去的字段等于这一层不存在。
+test("the product-internal observe path carries its parameters all the way to the daemon", async () => {
+  const driver = new NativeProcessDriver(() => {}, {
+    binaryPath: new URL("../out/native/computer-use", import.meta.url).pathname
+  });
+  try {
+    const listed = await driver.list("params-e2e", undefined);
+    const apps = (listed.data as { apps?: { pid?: number }[] }).apps ?? [];
+    const pid = apps.find(app => typeof app.pid === "number")?.pid;
+    assert.ok(pid, "至少要有一个运行中的应用");
+
+    // 走 driver.observe —— 产品内那条路（不是 daemonCommand）
+    const base = (await driver.observe("params", { pid, windowId: "" } as never)).data as
+      { elements?: unknown[]; screenshot_width?: number };
+    const many = (await driver.observe("params", { pid, windowId: "", interactiveOnly: false } as never)).data as
+      { elements?: unknown[] };
+    assert.ok((many.elements ?? []).length >= (base.elements ?? []).length,
+      "interactiveOnly=false 不该返回更少的元素（它应当是「不过滤」）");
+
+    const small = (await driver.observe("params", { pid, windowId: "", screenshotMaxWidth: 320 } as never)).data as
+      { screenshot_width?: number };
+    assert.equal(small.screenshot_width, 320, "screenshotMaxWidth 必须真的到守护进程");
+
+    // 动作面：showCursor 也必须能传（同一族参数）
+    const typed = (await driver.actRaw("scroll", { direction: "down", pages: 1, showCursor: false } as never, pid)).data as
+      Record<string, unknown>;
+    assert.ok(typed.unit, "动作参数也要能走通");
   } finally {
     await driver.dispose();
   }

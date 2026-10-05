@@ -1,12 +1,12 @@
 import { z } from "zod";
 import { ToolOutcomeUnknownError } from "../tools/types.js";
-import { computerActionSchema, computerImageSchema, windowTargetSchema, type ComputerAction, type ComputerAuditEntry, type ComputerImage, type ComputerPreview, type ComputerStatus, type WindowTarget } from "./protocol.js";
+import { computerActionSchema, computerImageSchema, windowTargetSchema, type ComputerAction, type ComputerAuditEntry, type ComputerImage, type ComputerPreview, type ComputerStatus, type WindowObserve, type WindowTarget } from "./protocol.js";
 
 export interface DriverReply { data: Record<string, unknown>; images: ComputerImage[]; errorCode?: string }
 export interface ComputerDriver {
   start(): Promise<void>; stop(): Promise<void>;
   list(session: string, pid: number | undefined, signal: AbortSignal): Promise<DriverReply>;
-  observe(session: string, target: WindowTarget, signal: AbortSignal): Promise<DriverReply>;
+  observe(session: string, target: WindowObserve, signal: AbortSignal): Promise<DriverReply>;
   act(session: string, action: ComputerAction, signal: AbortSignal): Promise<DriverReply>;
 }
 const captureSchema = z.object({ pid: z.number().int(), window_id: z.number().int().safe(), capture_id: z.string().min(1), screenshot_width: z.number().int().positive(), screenshot_height: z.number().int().positive(), screenshot_frame_valid: z.literal(true), elements: z.array(z.object({ element_token: z.string().optional() }).passthrough()).optional() }).passthrough();
@@ -182,7 +182,7 @@ export class ComputerUseController {
     this.tail = run.then(() => undefined, () => undefined); return run;
   }
   list(session: string, pid?: number, signal?: AbortSignal): Promise<DriverReply> { return this.enqueue(session, signal, s => this.driver.list(session, pid, s)); }
-  observe(session: string, target: WindowTarget, signal?: AbortSignal): Promise<DriverReply> {
+  observe(session: string, target: WindowObserve, signal?: AbortSignal): Promise<DriverReply> {
     target = windowTargetSchema.parse(target);
     return this.enqueue(session, signal, (s, generation) => this.captureWindow(session, target, s, generation));
   }

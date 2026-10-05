@@ -9,7 +9,7 @@ import { ComputerAppApprovals } from "../../../computer/appApprovals.js";
 import { ComputerUseController } from "../../../computer/controller.js";
 import { NativeProcessDriver } from "../../../computer/nativeDriver.js";
 import { updateConfig, type AgentConfigStore } from "../../../config/store.js";
-import { computerActionSchema, computerIpc, windowTargetSchema, type ComputerDiagnostics, type ComputerStatus } from "../../../computer/protocol.js";
+import { computerActionSchema, computerIpc, windowObserveSchema, windowTargetSchema, type ComputerDiagnostics, type ComputerStatus } from "../../../computer/protocol.js";
 import { ComputerPreviewWindow } from "./ComputerPreviewWindow.js";
 import type { DesktopBrowserService } from "./DesktopBrowserService.js";
 
@@ -216,7 +216,7 @@ export async function createComputerUseService(browser: DesktopBrowserService, g
     const session = z.string().min(1).max(240).parse(input.session);
     const args = { ...input }; delete args.session;
     if (method === "computer_list") { const parsed = z.object({ pid: windowTargetSchema.shape.pid.optional() }).strict().parse(args); return await controller.list(session, parsed.pid, signal); }
-    if (method === "computer_observe") return await controller.observe(session, windowTargetSchema.parse(args), signal);
+    if (method === "computer_observe") return await controller.observe(session, windowObserveSchema.parse(args), signal);
     if (method === "computer_action") return await controller.act(session, computerActionSchema.parse(args), signal);
     throw new Error("Unsupported computer method");
   });

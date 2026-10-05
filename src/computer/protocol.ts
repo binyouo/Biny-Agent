@@ -14,6 +14,25 @@ export const computerSettingsSchema = z.object({
 export const maxComputerImageBytes = 1024 * 1024;
 export const windowTargetSchema = z.object({ pid: z.number().int().positive().max(2147483647), windowId: z.string().regex(/^[1-9][0-9]{0,19}$/) }).strict();
 export type WindowTarget = z.infer<typeof windowTargetSchema>;
+
+/**
+ * 观察路径的参数。来源是参照 MCP 的 `get_app_state`（它有 depth / interactive_only /
+ * screenshot_max_width / auto_launch 四个）—— 我这几轮把 MCP 那面接通了，
+ * **产品内这条路没跟上**，于是同样一个守护进程，MCP 客户端能用的参数，产品内的模型用不了。
+ * 这里单开一个 schema 而不是改 `windowTargetSchema`：后者带 `.strict()`，
+ * 是"目标是哪一个"的最小契约，不该被观察参数撑大。
+ */
+export const windowObserveSchema = windowTargetSchema.extend({
+  /** AX 树深度（参照默认 6）。 */
+  depth: z.number().int().max(20).optional(),
+  /** 截图缩放宽度（→ 守护进程的 max_width，默认 1280）。 */
+  screenshotMaxWidth: z.number().int().optional(),
+  /** 只给可交互元素（参照默认 true，`--all` 关掉）。 */
+  interactiveOnly: z.boolean().optional(),
+  /** 应用没在运行时是否后台自启（参照默认 true）。 */
+  autoLaunch: z.boolean().optional(),
+});
+export type WindowObserve = z.infer<typeof windowObserveSchema>;
 export const computerActionSchema = windowTargetSchema.extend({
   action: z.enum(["click", "type_text", "press_key", "scroll", "drag", "perform_secondary_action", "set_value", "select_text"]),
   captureId: z.string().min(1).max(256),
@@ -23,7 +42,13 @@ export const computerActionSchema = windowTargetSchema.extend({
    * 守护进程侧的字段名就是 `show_cursor`；早先只有守护进程认识它，四个调用层都没接 ——
    * 能力在、路不通。
    */
-  show_cursor: z.boolean().optional(),
+  showCursor: z.boolean().optional(),
+  /**
+   * 文本怎么送进去（参照：`input_method must be auto|physical|unicode|ax`，
+   * 且 `input_method=ax requires ref` —— AX 那条按元素走、不按焦点）。
+   * 本实现只有 auto/unicode/ax；physical 会**如实拒绝**，不偷偷降级。
+   */
+  inputMethod: z.enum(["auto", "unicode", "ax"]).optional(),
   x: z.number().finite().nonnegative().optional(), y: z.number().finite().nonnegative().optional(),
   text: z.string().max(4000).optional(), key: z.string().min(1).max(40).optional(),
   direction: z.enum(["up", "down", "left", "right"]).optional(),

@@ -10,7 +10,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 import os from "node:os";
 import type { ComputerDriver, DriverReply } from "./controller.js";
-import type { ComputerAction, WindowTarget } from "./protocol.js";
+import type { ComputerAction, WindowObserve, WindowTarget } from "./protocol.js";
 
 const maxIpcBytes = 2 * 1024 * 1024;
 const maxPending = 32;
@@ -462,7 +462,7 @@ export class NativeProcessDriver implements ComputerDriver {
     return this.call("list_apps", pid === undefined ? {} : { pid }, signal);
   }
 
-  async observe(_session: string, target: WindowTarget, signal?: AbortSignal): Promise<DriverReply> {
+  async observe(_session: string, target: WindowObserve, signal?: AbortSignal): Promise<DriverReply> {
     const args: Record<string, unknown> = {};
     if (typeof target.pid === "number") { args.pid = target.pid; this.lastPid = target.pid; }
     if (typeof (target as { bundleId?: string }).bundleId === "string") args.bundle = (target as { bundleId?: string }).bundleId;
@@ -470,6 +470,14 @@ export class NativeProcessDriver implements ComputerDriver {
     // 结果是模型必须编一个字符串，守护进程则拍它自己挑的窗口。现在它真的用于定位。
     const windowId = Number(target.windowId);
     if (Number.isSafeInteger(windowId) && windowId > 0) args.window_id = windowId;
+    // ⚠️ 这里是**逐字段拼**的，所以"没拼进去"等于"这一层不存在"。
+    // 观察参数以前一个都没拼 —— 于是守护进程明明支持，产品内这条路却够不到。
+    // （和动作那条一样：加参数时要跟一遍每一层，而不是只改你正在测的那层。）
+    const observe = target as WindowObserve;
+    if (observe.depth !== undefined) args.max_depth = observe.depth;
+    if (observe.screenshotMaxWidth !== undefined) args.max_width = observe.screenshotMaxWidth;
+    if (observe.interactiveOnly !== undefined) args.interactive_only = observe.interactiveOnly;
+    if (observe.autoLaunch !== undefined) args.auto_launch = observe.autoLaunch;
     return await this.call("get_app_state", args, signal);
   }
 
@@ -481,7 +489,7 @@ export class NativeProcessDriver implements ComputerDriver {
     // 好过在每个 case 里各写一遍 —— 那种写法漏一个就静默失效。
     const withPid = (params: Record<string, unknown>): Record<string, unknown> => ({
       ...(pid === undefined ? {} : { pid }),
-      ...(action.show_cursor === undefined ? {} : { show_cursor: action.show_cursor }),
+      ...(action.showCursor === undefined ? {} : { show_cursor: action.showCursor }),
       ...params
     });
     switch (action.action) {

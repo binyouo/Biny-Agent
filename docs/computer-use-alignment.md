@@ -864,16 +864,32 @@ ShareableContentCache · BareModifierMonitor · AppshotEvents
 | 10 | **网页内容量不出页** | 网页不报告内容高度，按 20 行/页估算 | 回执里**标注**：`unit=pages(estimated as 20 notches)` vs `unit=pages` | 网页侧有别的量法时 |
 | 11 | **`CGEventSetWindowLocation`** 未采用 | 实测在本环境对双击选词**没有区别**（两种都选区不变）| §4.1 的对照表 | —— |
 
-**⚠️ 本轮新发现的一条（还没补）**：
+**~~第 12 条：产品内模型工具没跟上~~ —— 已补（2026-10-05 深夜）**
 
-| # | 缺口 | 依据 |
+`show_cursor` / `input_method` / `interactive_only` / `auto_launch` / `screenshot_max_width` / `depth`
+现在两个面都有。**这条路径上有四处会各丢一次字段**，缺一处就整条不通：
+
+| 层 | 原先 | 现在 |
 |---|---|---|
-| 12 | **产品内模型工具没跟上**：`show_cursor` / `interactive_only` / `auto_launch` / `input_method` 只在 MCP 那一面 | `src/tools/computerUse.ts` 的 ComputerAction schema 里一个都没有；`interactive_only`/`auto_launch`/`input_method`/`verification_note` 全仓只出现在 `mcpServer.ts` |
+| 工具 schema（`additionalProperties: false`）| 只有 `commonProperties` | 补了观察的四个 + 动作的两个 |
+| tool 的解析 | `windowTargetSchema.parse`（`.strict()` → 多余字段被拒）| 新增 `windowObserveSchema` |
+| **service 的二次解析**（`computerUseService.ts`）| **又用 `windowTargetSchema.parse` 解析一遍** | 改用它 |
+| **driver 的 `observe`（逐字段拼 `args`）** | 只拼 pid / bundle / window_id | 补上四个 |
 
-**这是"能力在、路不通"的又一次**，而且这次是**我这几轮自己造成的**：
-每加一个参数只通了 MCP 一条路，产品内的模型面没跟上 ——
-**协议层 `protocol.ts` 只加了 `show_cursor`，其余三个连协议都没有。**
-→ 修法不大：`src/tools/computerUse.ts` 加四个属性 + 确认它们流到 `controller`/`driver`。
+**第三、四处是关键**：把工具面改完、类型也对，**仍然不通** —— 因为 service 会二次解析、
+driver 会逐字段重建。修完实测：
+```
+默认                      150 元素
+interactiveOnly=false     301 元素     ← 过滤真的被绕过
+screenshotMaxWidth=320    320px 宽     ← 缩放真的到了守护进程
+```
+
+**顺带统一了命名**：动作协议里本来就是 camelCase（`elementToken` / `captureId`），
+而我这轮加的 `show_cursor` / `input_method` 是 snake —— **我在同一个文件里引进了第三种约定**，
+它能用只是因为驱动恰好读同一个名字。现在统一为 `showCursor` / `inputMethod`。
+
+→ 教训：**"加一个参数"要跟一遍每一层，而不是只改你正在测的那层。**
+   这条路径上有 **4 个会丢字段的地方**，而"改完工具面"离"通"还差两层。
 
 **另有两处不属于本工作的测试问题**（记录但不修）：
 - `tests/activity-tray.test.ts`：未提交的改名（活动记录→电脑历史）导致断言过时，
