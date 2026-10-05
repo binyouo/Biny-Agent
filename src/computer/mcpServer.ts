@@ -91,10 +91,15 @@ export function createComputerUseMcpServer(driver: NativeProcessDriver): McpServ
           .describe("Downsample width for the screenshot (default 1280)."),
         // 参照的默认是 **true**（只给可交互元素），`--all` 关掉它。上轮我把它标成"daemon 里没有"，
         // 那是对的 —— 那时确实没有；现在有了，标注要跟着改，否则文档会一直说"未覆盖"。
-        interactiveOnly: z.boolean().optional().describe("Limit to interactive elements. Default true.")
+        interactiveOnly: z.boolean().optional().describe("Limit to interactive elements. Default true."),
+        // ⚠️ 这个参数**只加在 MCP**，不加进 CLI：参照的 CLI help 里没有 `--auto-launch`
+        // （它只有 --window/--depth/--no-shot/--shot-out/--shot-max-width）。
+        // 参照把这个开关给 agent，没给命令行 —— 两边都要对，包括"对不上的地方"。
+        autoLaunch: z.boolean().optional()
+          .describe("Auto-launch the app in the background if not running. Default true.")
       }
     },
-    async ({ pid, bundle, maxElements, depth, screenshotMaxWidth, interactiveOnly }) => {
+    async ({ pid, bundle, maxElements, depth, screenshotMaxWidth, interactiveOnly, autoLaunch }) => {
       try {
         const args: Record<string, unknown> = {};
         if (pid !== undefined) args.pid = pid;
@@ -103,6 +108,7 @@ export function createComputerUseMcpServer(driver: NativeProcessDriver): McpServ
         if (depth !== undefined) args.depth = depth;
         if (screenshotMaxWidth !== undefined) args.max_width = screenshotMaxWidth;
         if (interactiveOnly !== undefined) args.interactive_only = interactiveOnly;
+        if (autoLaunch !== undefined) args.auto_launch = autoLaunch;
         const reply = await driver.observeRaw(args);
         const { elements, ...rest } = reply.data as { elements?: ElementLike[] } & Record<string, unknown>;
         const tree = renderElementTree(elements);

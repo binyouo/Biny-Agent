@@ -363,6 +363,28 @@ if (hasFlag('all')) body.interactive_only = false;     ← get_app_state 与 sna
 （前者放弃用 ref，后者加 `--all` 再看一次），所以回执里加了 `interactiveOnly`，
 并在过滤后为空时给出 `no_interactive_elements` 提示。
 
+### 1.4i `auto_launch`：只有 MCP 有，CLI 没有 —— 两边都要对
+
+参照 MCP 的 `get_app_state` 描述里写着：
+
+> AUTO-LAUNCH: if `bundle` is given and the app is not running, it is launched in the
+> **BACKGROUND** — the user's frontmost app stays put. Pass `auto_launch: false` to disable.
+
+本实现一直就是后台自启的（`resolvePid` 里 `config.activates = false`），**只是没有开关**。
+
+已加。关掉时**明确报 `app_not_running` 并给出下一步**，而不是静默照旧启动 ——
+关它的人要的就是"别动我的机器"。
+
+**它只加在 MCP，不加进 CLI**：参照的 CLI help 里没有 `--auto-launch`
+（只有 `--window/--depth/--no-shot/--shot-out/--shot-max-width`）。
+参照把这个开关给 agent、没给命令行 —— **对齐包括"对不上的地方"**，
+不能因为"顺手"就给两边都加。
+
+两个方向都实测过：
+- 默认（不传）→ 应用起来了，且**前台仍是原来的应用**（正是契约那句话）
+- `auto_launch: false` → 报 `app_not_running`，**且确认它真的没被启动**
+（正面那半会启动一个应用，属于用户机器上的副作用，所以只手动验、不进测试套件。）
+
 ### 1.5 工具 / 技能层
 
 - 模型侧工具：`ComputerList` / `ComputerObserve` / `ComputerAction`（8 个动作动词）

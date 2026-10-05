@@ -997,3 +997,30 @@ test("scroll accepts a ref alone, and finds the scroll area above a content elem
     await driver.dispose();
   }
 });
+
+// 参照 MCP 契约里的 `auto_launch`（"Auto-launch the app in the background if not running.
+// **Default true.** Pass `auto_launch: false` to disable."）。本实现一直就是后台自启的，
+// 只是没有开关 —— 又一次"能力在、路不通"。
+//
+// 这里只测**否定那半**（关掉时不启动、并把原因说清楚）：正面那半会真的启动一个应用，
+// 那是用户机器上的副作用。正面已手动验过：默认调用 → 应用起来了、**前台仍是原来的应用**
+// （正是契约里 "the user's frontmost app stays put" 那句），验完把它退掉了。
+test("auto_launch=false refuses to launch instead of launching anyway", async () => {
+  const driver = new NativeProcessDriver(() => {}, {
+    binaryPath: new URL("../out/native/computer-use", import.meta.url).pathname
+  });
+  const isRunning = () =>
+    spawnSync("bash", ["-lc", 'pgrep -f "Calculator.app/Contents/MacOS/Calculator$" | head -1'], { encoding: "utf8" }).stdout.trim();
+  try {
+    if (isRunning()) return;               // 已经在跑就没法测"没启动"，跳过而不是伪造
+    await assert.rejects(
+      () => driver.daemonCommand("get_app_state", { bundle: "com.apple.calculator", no_shot: true, auto_launch: false }),
+      error => /app_not_running/.test(String(error)),
+      "关掉自启时要明说「它没在运行」，而不是静默照旧启动"
+    );
+    await new Promise(resolve => setTimeout(resolve, 1200));
+    assert.equal(isRunning(), "", "auto_launch=false 之后它仍然不该被启动");
+  } finally {
+    await driver.dispose();
+  }
+});

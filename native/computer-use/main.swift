@@ -514,6 +514,14 @@ func resolvePid(_ parameters: [String: Any], fallbackPid: pid_t? = nil) throws -
     if let fallbackPid { return fallbackPid }
     if let bundle = parameters["bundle"] as? String {
         if let app = NSRunningApplication.runningApplications(withBundleIdentifier: bundle).first { return app.processIdentifier }
+        // 参照的 MCP 契约里有 `auto_launch`（"Auto-launch the app in the background if not
+        // running. **Default true.** Pass `auto_launch: false` to disable."）。
+        // 本实现一直就是后台自启的，只是没有这个开关 —— 又一次"能力在、路不通"。
+        // 关掉它的人要的是"别动我的机器"，所以这里必须**说出来**，不能静默照旧启动。
+        if parameters["auto_launch"] as? Bool == false {
+            throw NSError(domain: "app", code: 3, userInfo: [NSLocalizedDescriptionKey:
+                "app_not_running: \(bundle) 没在运行，而这次显式要求 auto_launch=false。先自己起一个，或去掉这个参数让它后台自启。"])
+        }
         guard let appURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundle) else {
             throw NSError(domain: "app", code: 1, userInfo: [NSLocalizedDescriptionKey: "app_not_installed: \(bundle)"])
         }
