@@ -144,9 +144,16 @@ export function registerCuCommands(program: Command): void {
   }
 
   cu.command("scroll").description("Scroll the target window").argument("<direction>", "up | down | left | right")
-    .option("--pid <n>", "target pid").option("--amount <n>", "notches, default 1", "1").option("--json", "print JSON")
-    .action((direction: string, options: { pid?: string; amount?: string; json?: boolean }) => withDriver(async driver => {
-      print((await driver.actRaw("scroll", { direction, amount: Number(options.amount), pid: Number(options.pid) })).data, options.json);
+    .option("--pid <n>", "target pid")
+    .option("--pages <n>", "whole pages (one page = viewport/content, computed from the scroll area)")
+    .option("--amount <n>", "line notches instead of pages — an estimate, only used when --pages is absent", "1")
+    .option("--json", "print JSON")
+    .action((direction: string, options: { pid?: string; pages?: string; amount?: string; json?: boolean }) => withDriver(async driver => {
+      const args: Record<string, unknown> = { direction, pid: Number(options.pid) };
+      // 给了 --pages 就按页面走（量出来的），否则退回滚轮行数（估的）。回执里的 unit 会说明用了哪个。
+      if (options.pages !== undefined) args.pages = Number(options.pages);
+      else args.amount = Number(options.amount);
+      print((await driver.actRaw("scroll", args)).data, options.json);
     }));
 
   cu.command("drag").description("Drag between two screenshot points").argument("<x1> <y1> <x2> <y2>")

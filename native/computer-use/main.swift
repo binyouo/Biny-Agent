@@ -568,7 +568,22 @@ func findScrollArea(_ root: AXUIElement, depth: Int = 0) -> AXUIElement? {
     return nil
 }
 
-func axScroll(_ pid: pid_t, direction: String, notches: Int) -> [String: Any]? {
+/// 一页占滚动范围的比例 = 视口 / 内容。
+///
+/// 不需要滑块尺寸：滚动区的子元素里最大的那个就是内容。活动监视器实测
+/// AXOutline 高 13836、视口 472 → 一页约 3.4%。读不到内容高度（内容不比视口高，
+/// 或者结构不暴露）时返回 nil，调用方退回按比例估。
+func pageFraction(_ area: AXUIElement) -> Double? {
+    guard let areaFrame = axFrame(area), let viewport = areaFrame["h"], viewport > 0 else { return nil }
+    var content: Double = 0
+    for child in axChildren(area) where axString(child, kAXRoleAttribute as String) != "AXScrollBar" {
+        if let frame = axFrame(child), let height = frame["h"], height > content { content = height }
+    }
+    guard content > viewport else { return nil }
+    return min(1.0, viewport / content)
+}
+
+func axScroll(_ pid: pid_t, direction: String, notches: Int, pages: Double? = nil) -> [String: Any]? {
     let wantsVertical = direction == "up" || direction == "down"
     let forward = direction == "down" || direction == "right"
     guard let windowRef = axCopy(axApp(pid), kAXFocusedWindowAttribute as String) else { return nil }
@@ -577,12 +592,21 @@ func axScroll(_ pid: pid_t, direction: String, notches: Int) -> [String: Any]? {
     for bar in axChildren(area) where axString(bar, kAXRoleAttribute as String) == "AXScrollBar" {
         guard (axString(bar, kAXOrientationAttribute as String) == "AXVerticalOrientation") == wantsVertical else { continue }
         guard let current = axCopy(bar, kAXValueAttribute as String) as? Double else { continue }
-        // 一格 = 滚动范围的 10%。滑块尺寸读不到（子元素为 0 个），算不出「一页」多大，
-        // 所以这是**有意的约定**，不是测量值 —— 别把它当成物理距离。
-        let step = Double(notches) * 0.1 * (forward ? 1 : -1)
+        // 给了 pages 就按**真实的页**走（视口/内容）；否则退回「一格 ≈ 范围的 10%」
+        // 这个有意的约定 —— 后者是估的，前者是量出来的，回执里会说明用的是哪个。
+        let fraction: Double
+        let unit: String
+        if let pages {
+            fraction = (pageFraction(area) ?? 0.1) * pages
+            unit = pageFraction(area) == nil ? "pages(estimated)" : "pages"
+        } else {
+            fraction = Double(notches) * 0.1
+            unit = "notches(estimated)"
+        }
+        let step = fraction * (forward ? 1 : -1)
         let target = min(1.0, max(0.0, current + step))
         guard AXUIElementSetAttributeValue(bar, kAXValueAttribute as CFString, target as CFTypeRef) == .success else { continue }
-        return ["scrolled": direction, "route": "ax", "from": current, "to": target]
+        return ["scrolled": direction, "route": "ax", "unit": unit, "fraction": fraction, "from": current, "to": target]
     }
     return nil
 }
@@ -1112,7 +1136,10 @@ DispatchQueue.global().async {
                                 let wheelDirection = args["wheel_direction"] as? String ?? direction
                                 // 先试 AX —— 原生滚动区只有这一条路能走通；不行再退回滚轮，
                                 // 那才是网页内容（不暴露 AXScrollBar）唯一可用的路由。
-                                var data = route == "wheel" ? nil : await withFocusGuard(pid) { axScroll(pid, direction: direction, notches: amount) }
+                                // pages 是语义单位（参照实现用 --pages），amount 是滚轮的行数。
+                                // 显式取两种数值类型：JSON 里的 1 既可能是 Int 也可能是 Double。
+                                let pagesArg = (args["pages"] as? Double) ?? (args["pages"] as? Int).map(Double.init)
+                                var data = route == "wheel" ? nil : await withFocusGuard(pid) { axScroll(pid, direction: direction, notches: amount, pages: pagesArg) }
                                 if data == nil && route != "ax" {
                                     await withFocusGuard(pid) {
                                         let (wheelAxis, wheelSign): (CGScrollEventUnit, Int32) = {

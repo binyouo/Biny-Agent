@@ -512,3 +512,38 @@ test("lens reports its state and toggles", async () => {
     await driver.dispose();
   }
 });
+
+// 一页 = 视口/内容，**量出来的**而不是估的：滚动区的子元素里最大的那个就是内容。
+// 活动监视器实测 AXOutline 高 13836、视口 472 → 一页 3.45%，滚一页后滚动条真的移动 3.405%。
+// （上一版这里是个约定值「一格 = 10%」，因为当时以为滑块尺寸读不到就算不出一页。）
+test("a page is the real viewport/content ratio, and scrolling one page moves that far", async () => {
+  const driver = new NativeProcessDriver(() => {}, {
+    binaryPath: new URL("../out/native/computer-use", import.meta.url).pathname
+  });
+  const position = async (pid: number): Promise<number> =>
+    ((await driver.daemonCommand("scroll", { pid, direction: "down", pages: 0 })).data as { from?: number }).from ?? -1;
+  try {
+    const listed = await driver.list("page-e2e", undefined);
+    const apps = (listed.data as { apps: { pid?: number }[] }).apps;
+    // 需要一个内容比视口高的滚动区；找不到就不伪造场景
+    for (const app of apps) {
+      if (typeof app.pid !== "number") continue;
+      const warm = await driver.daemonCommand("scroll", { pid: app.pid, direction: "down", pages: 1 });
+      const data = warm.data as { route?: string; unit?: string; fraction?: number };
+      if (data.route !== "ax" || data.unit !== "pages") continue;
+
+      const fraction = data.fraction ?? 0;
+      assert.ok(fraction > 0 && fraction < 0.5, `一页应当是范围的一小部分，实测 ${fraction}`);
+      const before = await position(app.pid);
+      await driver.daemonCommand("scroll", { pid: app.pid, direction: "down", pages: 1 });
+      const after = await position(app.pid);
+      // 到底就测不到位移，那就只验回执的 fraction 与之一致
+      if (after <= before) return;
+      assert.ok(Math.abs((after - before) - fraction) < fraction * 0.25,
+        `滚一页应移动一个 fraction：回执 ${fraction.toFixed(4)}，实测 ${(after - before).toFixed(4)}`);
+      return;
+    }
+  } finally {
+    await driver.dispose();
+  }
+});

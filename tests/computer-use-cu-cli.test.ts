@@ -33,6 +33,7 @@ assert.match(runHelp("list_apps"), /--days\s+<n>/u);
 assert.match(runHelp("type_text"), /--pid\s+<n>/u);
 assert.match(runHelp("press_key"), /--pid\s+<n>/u);
 assert.match(runHelp("scroll"), /<direction>/u);
+assert.match(runHelp("scroll"), /--pages\s+<n>/u);
 assert.match(runHelp("drag"), /<x1>\s+<y1>\s+<x2>\s+<y2>/u);
 assert.match(runHelp("raise"), /--window\s+<id>/u);
 assert.match(runHelp("lens"), /\[mode\]/u);
