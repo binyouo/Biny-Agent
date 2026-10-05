@@ -101,6 +101,16 @@ interface PendingRequest<T> {
   timeout?: ReturnType<typeof setTimeout>;
 }
 
+/** Cursorless reads protect observations after dispatch on their selected connection. */
+interface SessionListRead {
+  socket: net.Socket;
+  hostEpoch: string | undefined;
+  ordinal: number;
+  snapshotWrites: Set<string>;
+  summaryWrites: Set<string>;
+  removals: Set<string>;
+}
+
 interface PendingCompletion {
   resolve(outcome: AgentRunOutcome): void;
   reject(error: Error): void;
@@ -127,6 +137,9 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
   private readonly snapshots = new Map<string, InteractiveRuntimeSnapshot>();
   private readonly snapshotSequences = new Map<string, number>();
   private runtimeSessions: RuntimeHostSessionSummary[] = [];
+  private readonly sessionListReads = new Set<SessionListRead>();
+  private sessionListOrdinal = 0;
+  private committedSessionListOrdinal = 0;
   private focusedSessionId: string | undefined;
   private snapshot: InteractiveRuntimeSnapshot | undefined;
   private sequence = 0;
@@ -741,9 +754,24 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
   }
 
   async listRuntimeSessions(): Promise<RuntimeHostSessionSummary[]> {
-    const sessions = await this.request<RuntimeHostSessionSummary[]>("session.list", {});
-    this.applySessionSummaries(sessions);
-    return sessions;
+    let read: SessionListRead | undefined;
+    try {
+      const sessions = await this.request<RuntimeHostSessionSummary[]>("session.list", {}, undefined, (socket) => {
+        // Backpressure may queue the frame before socket.write; protecting that interval is conservative.
+        read = { socket, hostEpoch: this.hostEpoch, ordinal: ++this.sessionListOrdinal,
+          snapshotWrites: new Set(), summaryWrites: new Set(), removals: new Set() };
+        this.sessionListReads.add(read);
+      });
+      if (read !== undefined && !this.closed && !read.socket.destroyed && this.socket === read.socket
+        && this.hostEpoch === read.hostEpoch && read.ordinal > this.committedSessionListOrdinal) {
+        this.applyCursorlessSessionSummaries(sessions, read);
+        this.committedSessionListOrdinal = read.ordinal;
+      }
+      // TUI consumes this return value directly; return the same reconciled view as cache readers.
+      return this.runtimeSnapshots();
+    } finally {
+      if (read !== undefined) this.sessionListReads.delete(read);
+    }
   }
 
   runtimeSnapshots(): RuntimeHostSessionSummary[] {
@@ -785,6 +813,7 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
 
   async closeSession(sessionId: string): Promise<void> {
     await this.request("session.close", { sessionId });
+    this.noteSessionListRemoval(sessionId);
     this.snapshots.delete(sessionId);
     this.snapshotSequences.delete(sessionId);
     this.runtimeSessions = this.runtimeSessions.filter((session) => session.sessionId !== sessionId);
@@ -925,6 +954,7 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
       : this.snapshots.get(sessionId);
     if (current) {
       const next = { ...current, permissionMode: nextMode };
+      for (const read of this.sessionListReads) read.snapshotWrites.add(next.info.sessionId);
       this.snapshots.set(next.info.sessionId, next);
       if (this.focusedSessionId === next.info.sessionId) this.snapshot = next;
     }
@@ -1457,7 +1487,7 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
     }
   }
 
-  private request<T>(operation: string, payload: unknown, timeoutMs?: number): Promise<T> {
+  private request<T>(operation: string, payload: unknown, timeoutMs?: number, onDispatch?: (socket: net.Socket) => void): Promise<T> {
     if (this.closed) return Promise.reject(new Error("Runtime Host client is closed."));
     if (this.retired) return Promise.reject(new Error("Runtime Host retired after becoming idle. Connect again before starting new work."));
     return this.openSocket().then(() => new Promise<T>((resolve, reject) => {
@@ -1485,6 +1515,7 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
         settle({ ok: false, error: new Error("Runtime Host is disconnected.") });
         return;
       }
+      onDispatch?.(socket);
       this.send(socket, { kind: "request", requestId, operation, payload });
     }));
   }
@@ -1517,6 +1548,7 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
     const sessionId = snapshot.info.sessionId;
     // 全局游标可能来自其它会话，不能阻止当前会话的合法刷新。
     if (sequence < (this.snapshotSequences.get(sessionId) ?? -1)) return;
+    for (const read of this.sessionListReads) read.snapshotWrites.add(sessionId);
     this.snapshots.set(sessionId, snapshot);
     this.snapshotSequences.set(sessionId, sequence);
     if (focused || this.focusedSessionId === undefined || this.focusedSessionId === sessionId) {
@@ -1536,27 +1568,75 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
     this.pendingUpdates.length = 0;
   }
 
-  private applySessionSummaries(sessions: readonly RuntimeHostSessionSummary[] | undefined, sequence?: number): void {
+  private applySessionSummaries(sessions: readonly RuntimeHostSessionSummary[] | undefined, sequence: number): void {
     if (sessions === undefined) return;
+    const previousSessions = this.runtimeSessions;
     const liveSessionIds = new Set(sessions.map((session) => session.sessionId));
+    for (const read of this.sessionListReads) {
+      for (const session of sessions) read.summaryWrites.add(session.sessionId);
+    }
     // 比响应更新的会话不能被旧列表删掉，也不能让列表内的旧快照覆盖新事件。
     this.runtimeSessions = [
       ...sessions.map((session) => ({ ...session })),
       ...this.runtimeSessions.filter((session) => !liveSessionIds.has(session.sessionId)
-        && sequence !== undefined && (this.snapshotSequences.get(session.sessionId) ?? -1) > sequence)
+        && (this.snapshotSequences.get(session.sessionId) ?? -1) > sequence)
     ];
+    const retainedSessionIds = new Set(this.runtimeSessions.map((session) => session.sessionId));
+    for (const session of previousSessions) {
+      if (!retainedSessionIds.has(session.sessionId)) this.noteSessionListRemoval(session.sessionId);
+    }
     for (const sessionId of this.snapshots.keys()) {
-      if (!liveSessionIds.has(sessionId) && (sequence === undefined || (this.snapshotSequences.get(sessionId) ?? -1) <= sequence)) {
+      if (!liveSessionIds.has(sessionId) && (this.snapshotSequences.get(sessionId) ?? -1) <= sequence) {
+        this.noteSessionListRemoval(sessionId);
         this.snapshots.delete(sessionId);
         this.snapshotSequences.delete(sessionId);
       }
     }
-    for (const session of sessions) {
-      // 旧 session.list 不携带游标，保持其原有刷新行为，不虚构响应的采样顺序。
-      if (sequence === undefined) this.snapshots.set(session.sessionId, session.snapshot);
-      else this.applySnapshot(session.snapshot, sequence);
+    for (const session of sessions) this.applySnapshot(session.snapshot, sequence);
+    this.refreshFocusedSessionSnapshot();
+  }
+
+  private noteSessionListRemoval(sessionId: string): void {
+    for (const read of this.sessionListReads) {
+      read.snapshotWrites.add(sessionId);
+      read.summaryWrites.add(sessionId);
+      read.removals.add(sessionId);
     }
-    const primary = sessions.find((session) => session.primary);
+  }
+
+  private applyCursorlessSessionSummaries(sessions: readonly RuntimeHostSessionSummary[], read: SessionListRead): void {
+    const currentSummaries = new Map(this.runtimeSessions.map((session) => [session.sessionId, session]));
+    const nextSummaries = new Map<string, RuntimeHostSessionSummary>();
+    const listedIds = new Set(sessions.map((session) => session.sessionId));
+    for (const session of sessions) {
+      const sessionId = session.sessionId;
+      if (read.removals.has(sessionId)) continue;
+      // Snapshot and registry metadata already have separate owners in runtimeSnapshots().
+      // Protect a whole owner, never merge snapshot fields or invent a Host sample sequence.
+      const summary = read.summaryWrites.has(sessionId) ? currentSummaries.get(sessionId) : { ...session };
+      if (summary !== undefined) nextSummaries.set(sessionId, summary);
+      if (!read.snapshotWrites.has(sessionId)) this.snapshots.set(sessionId, session.snapshot);
+    }
+    for (const session of this.runtimeSessions) {
+      if (!nextSummaries.has(session.sessionId)
+        && (read.snapshotWrites.has(session.sessionId) || read.summaryWrites.has(session.sessionId))) {
+        nextSummaries.set(session.sessionId, session);
+      }
+    }
+    for (const sessionId of this.snapshots.keys()) {
+      if (!listedIds.has(sessionId) && !read.snapshotWrites.has(sessionId) && !read.summaryWrites.has(sessionId)) {
+        this.snapshots.delete(sessionId);
+        this.snapshotSequences.delete(sessionId);
+      }
+    }
+    // List commits do not mark other in-flight lists: an earlier list must not suppress a later one.
+    // Hot sessions retain observed updates while untouched sessions still populate/prune on every reply.
+    this.runtimeSessions = [...nextSummaries.values()];
+    this.refreshFocusedSessionSnapshot();
+  }
+
+  private refreshFocusedSessionSnapshot(): void {
+    const primary = this.runtimeSessions.find((session) => session.primary);
     if ((this.focusedSessionId === undefined || !this.snapshots.has(this.focusedSessionId)) && primary !== undefined) {
       this.focusedSessionId = primary.sessionId;
     }

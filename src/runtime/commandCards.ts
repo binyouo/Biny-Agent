@@ -6,7 +6,7 @@
  */
 import type { AgentSessionInfo } from "../agent/AgentSession.js";
 import type { ContextStatus } from "../agent/context/types.js";
-import type { UsageSummary } from "../session/metadata.js";
+import { readReportedCacheRates, readReportedCacheUsage, reportedCacheTokenValue, type UsageSummary } from "../session/metadata.js";
 import { formatDuration, type ModelRequestSummary } from "../observability/modelRequests.js";
 import type { ExtensionStatus } from "../extensions/report.js";
 import type { McpServerStatus } from "../extensions/mcp.js";
@@ -102,14 +102,14 @@ export function buildUsageCard(summary: UsageSummary): CommandCardData {
       sections: [{ rows: [row("Usage", "no model calls recorded in this session", "dim")] }]
     };
   }
-  const epochRates = Object.entries(summary.epochCacheHitRates ?? {});
+  const epochRates = Object.entries((readReportedCacheRates(summary) ?? summary).epochCacheHitRates ?? {});
   return {
     title: "Usage",
     sections: [
       {
         rows: [
           row("Calls", String(summary.calls)),
-          row("Input tokens", tokens(summary.inputTokens)),
+          row("Input tokens", readReportedCacheUsage(summary) ? reportedCacheTokens(summary, "inputTokens") : tokens(summary.inputTokens)),
           row("Output tokens", tokens(summary.outputTokens)),
           ...(summary.reasoningTokens > 0 ? [row("Reasoning tokens", tokens(summary.reasoningTokens))] : []),
           { label: "Total tokens", value: tokens(summary.totalTokens, "bold") }
@@ -121,7 +121,7 @@ export function buildUsageCard(summary: UsageSummary): CommandCardData {
             label: "Cache",
             value: [
               { text: "read " },
-              { tokens: summary.cacheReadTokens },
+              ...reportedCacheTokens(summary, "cacheReadTokens"),
               { text: " / write " },
               { tokens: summary.cacheWriteTokens },
               { text: " / miss " },
@@ -268,6 +268,15 @@ function tokens(count: number, style?: CardValueStyle): CommandCardValue {
   return style === undefined ? { tokens: count } : { tokens: count, style };
 }
 
+function reportedCacheTokens(summary: UsageSummary, field: "inputTokens" | "cacheReadTokens"): CommandCardValue[] {
+  const projection = readReportedCacheUsage(summary);
+  if (!projection) return [tokens(summary[field])];
+  const value = reportedCacheTokenValue(projection[field]);
+  if (value === undefined) return [{ text: "unknown" }];
+  const complete = field === "inputTokens" ? projection.inputTokensComplete : projection.cacheReadTokensComplete;
+  return [tokens(value), ...(complete === true ? [] : [{ text: complete === false ? " (partial)" : " (completeness unknown)" }])];
+}
+
 /** 把一组片段整体包进 dim 括号：`(A input + B output)`。 */
 function dimParen(segments: CommandCardValue[]): CommandCardValue[] {
   const dimmed = segments.map((segment): CommandCardValue => {
@@ -285,7 +294,7 @@ function usageRow(usage: UsageSummary): CommandCardRow {
       tokens(usage.totalTokens, "bold"),
       { text: " total " },
       ...dimParen([
-        tokens(usage.inputTokens),
+        ...reportedCacheTokens(usage, "inputTokens"),
         { text: " input + " },
         tokens(usage.outputTokens),
         ...(usage.reasoningTokens > 0
@@ -297,7 +306,8 @@ function usageRow(usage: UsageSummary): CommandCardRow {
 }
 
 function cacheHitRow(usage: UsageSummary): CommandCardRow {
-  return row("Cache hit", `latest ${cacheRate(usage.latestCacheHitRate)} · session ${cacheRate(usage.sessionCacheHitRate)}`);
+  const rates = readReportedCacheRates(usage) ?? usage;
+  return row("Cache hit", `latest ${cacheRate(rates.latestCacheHitRate)} · session ${cacheRate(rates.sessionCacheHitRate)}`);
 }
 
 function cacheRate(value: number | undefined): string {

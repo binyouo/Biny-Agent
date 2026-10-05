@@ -453,6 +453,7 @@ function catalogRevision(items: readonly SessionCatalogItem[]): string {
     rootSessionId: item.rootSessionId,
     parentSessionId: item.parentSessionId,
     branchPoint: item.branchPoint,
+    hasChildren: item.hasChildren,
     title: item.title,
     pinned: item.pinned,
     archived: item.archived,

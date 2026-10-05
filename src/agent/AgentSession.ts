@@ -2577,7 +2577,7 @@ export class AgentSession {
           stepUsageRecords.push(this.recordModelUsage(usage ?? {}, "agent"));
           this.contextMemory.recordProviderUsage(
             usage ?? {},
-            summarizeUsage(this.usageRecords.filter((record) => record.operation === "agent" || record.operation === "plan")).sessionCacheHitRate
+            summarizeUsage(this.usageRecords.filter((record) => record.operation === "agent" || record.operation === "plan")).reportedCacheUsage?.sessionCacheHitRate
           );
           await recordNativeTelemetry(this.options.config, this.options.workspaceRoot, {
             type: "step",

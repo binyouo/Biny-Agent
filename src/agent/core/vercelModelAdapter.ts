@@ -445,16 +445,22 @@ export function fromVercelUsage(usage: {
   inputTokenDetails: { cacheReadTokens: number | undefined; cacheWriteTokens: number | undefined };
   outputTokens: number | undefined;
   outputTokenDetails: { reasoningTokens: number | undefined };
+  raw?: unknown;
 }): AgentUsage {
   const inputTokens = usage.inputTokens;
   const outputTokens = usage.outputTokens;
+  // DeepSeek reports this outside the SDK's normalized usage fields. Preserve
+  // only the explicit measurement; input/cache totals are not a substitute.
+  const cacheMissTokens = isRecord(usage.raw) ? usage.raw.prompt_cache_miss_tokens : undefined;
   return {
     inputTokens,
     outputTokens,
     totalTokens: inputTokens === undefined || outputTokens === undefined ? undefined : inputTokens + outputTokens,
     reasoningTokens: usage.outputTokenDetails.reasoningTokens,
     cacheReadTokens: usage.inputTokenDetails.cacheReadTokens,
-    cacheWriteTokens: usage.inputTokenDetails.cacheWriteTokens
+    cacheWriteTokens: usage.inputTokenDetails.cacheWriteTokens,
+    ...(typeof cacheMissTokens === "number" && Number.isFinite(cacheMissTokens) && cacheMissTokens >= 0
+      ? { cacheMissTokens } : {})
   };
 }
 

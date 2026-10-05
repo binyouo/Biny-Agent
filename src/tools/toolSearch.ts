@@ -136,6 +136,8 @@ export function createToolSearchTool(
           if (discovery?.timedOut) {
             return failedResult(args.query, "mcp_discovery_timeout", "MCP discovery is still pending. Try again after the connection is ready.", true);
           }
+          // Empty eligible catalogs cannot contain a match, even without an auxiliary model.
+          if (!candidates.length) return { status: "completed", query: args.query, found: 0, tools: [] };
           const models = getModels();
           if (!models.length) {
             return failedResult(args.query, "tool_search_model_unavailable", "No tool model configured.", false);

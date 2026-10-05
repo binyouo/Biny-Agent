@@ -7,7 +7,8 @@
  */
 import type { AgentSessionInfo } from "../agent/AgentSession.js";
 import type { ContextStatus } from "../agent/context/types.js";
-import type { UsageSummary } from "../session/metadata.js";
+import { readReportedCacheRates, type UsageSummary } from "../session/metadata.js";
+import { formatReportedCacheCount } from "../observability/usage.js";
 import { formatDuration, formatModelRequestSummary, type ModelRequestSummary } from "../observability/modelRequests.js";
 
 const numberFormatter = new Intl.NumberFormat("en-US");
@@ -46,7 +47,7 @@ export function formatStatusReport(
       : "enabled"
     : "disabled (stored data retained)";
   const usageSummary = usage.calls
-    ? `${formatCount(usage.totalTokens)} total (${formatCount(usage.inputTokens)} input + ${formatCount(usage.outputTokens)} output; ${formatCount(usage.reasoningTokens)} reasoning)`
+    ? `${formatCount(usage.totalTokens)} total (${formatReportedCacheCount(usage, "inputTokens", formatCount)} input + ${formatCount(usage.outputTokens)} output; ${formatCount(usage.reasoningTokens)} reasoning)`
     : "no model calls recorded";
   const contextComposition = context.budget.components?.filter((component) => component.requestedTokens > 0) ?? [];
   const reserveSummary = [
@@ -56,6 +57,7 @@ export function formatStatusReport(
     context.budget.systemPromptReserveTokens === undefined ? "" : `system ${formatCount(context.budget.systemPromptReserveTokens)}`
   ].filter(Boolean).join(", ");
   const inputMeasurement = formatInputMeasurement(budget.estimatedTokens, budget.providerInputTokens);
+  const rates = readReportedCacheRates(usage) ?? usage;
 
   return [
     `Model: ${info.modelLabel} (${info.reasoningLabel})`,
@@ -65,7 +67,7 @@ export function formatStatusReport(
     `Session: ${info.sessionId}`,
     "",
     `Token usage: ${usageSummary}`,
-    `Cache hit rate: latest ${formatCacheRate(usage.latestCacheHitRate)}; session ${formatCacheRate(usage.sessionCacheHitRate)}`,
+    `Cache hit rate: latest ${formatCacheRate(rates.latestCacheHitRate)}; session ${formatCacheRate(rates.sessionCacheHitRate)}`,
     `Provider requests: ${formatModelRequestSummary(modelRequests)}`,
     ...(modelRequests.totalDurationMs > 0 ? [`Provider time: ${formatDuration(modelRequests.totalDurationMs)} total`] : []),
     `Context window: ${formatCount(contextUsed)} used / ${formatCount(contextWindow)} (${String(contextRemainingPercent)}% remaining; ${source})`,

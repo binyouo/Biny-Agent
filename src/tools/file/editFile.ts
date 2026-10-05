@@ -128,7 +128,7 @@ export function createEditFileTool(context: ToolContext, hashline = false): Tool
           const currentPath = resolveWorkspacePath(context.workspaceRoot, args.path, context.ignore);
           if (currentPath !== absolutePath) throw new Error("The edit target changed after the tool call was prepared.");
           if (approvedFile && approvedFile.path !== absolutePath) throw new Error("The approved edit target does not match the prepared tool target.");
-          const { content, snapshot } = await readUtf8FileForEdit(absolutePath, signal);
+          const { content, snapshot } = await readUtf8FileForEdit(absolutePath, signal, args.operation === "update");
           if (approvedFile && !sameOptionalFileSnapshot(approvedFile.snapshot, snapshot)) {
             throw new Error("The edit target changed after permission approval.");
           }

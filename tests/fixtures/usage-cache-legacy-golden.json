@@ -1,0 +1,1279 @@
+{
+  "base": "a5826c37bdcb85738503c936f0413bfef1c14e6c",
+  "info": {
+    "modelAlias": "fixture",
+    "provider": "fixture",
+    "model": "fixture",
+    "pricing": {
+      "inputPerMillionTokens": 2,
+      "outputPerMillionTokens": 4,
+      "cacheReadPerMillionTokens": 0.5
+    }
+  },
+  "cases": [
+    {
+      "name": "missing-first-input",
+      "inputs": [
+        {
+          "cacheReadTokens": 7,
+          "outputTokens": 0
+        },
+        {
+          "inputTokens": 10,
+          "cacheReadTokens": 3,
+          "outputTokens": 0,
+          "totalTokens": 10
+        }
+      ],
+      "records": [
+        {
+          "operation": "agent",
+          "modelAlias": "fixture",
+          "provider": "fixture",
+          "model": "fixture",
+          "outputTokens": 0,
+          "cacheReadTokens": 7,
+          "promptEpochId": "e",
+          "stablePrefixHash": "fixture",
+          "latestRequestCacheReadTokens": 7,
+          "costUsd": 0.0000035,
+          "pricingKnown": true,
+          "time": "2026-10-05T00:00:00Z"
+        },
+        {
+          "operation": "agent",
+          "modelAlias": "fixture",
+          "provider": "fixture",
+          "model": "fixture",
+          "inputTokens": 10,
+          "outputTokens": 0,
+          "totalTokens": 10,
+          "cacheReadTokens": 3,
+          "promptEpochId": "e",
+          "stablePrefixHash": "fixture",
+          "latestRequestInputTokens": 10,
+          "latestRequestCacheReadTokens": 3,
+          "costUsd": 0.0000155,
+          "pricingKnown": true,
+          "time": "2026-10-05T00:00:00Z"
+        }
+      ],
+      "turn": {
+        "operation": "agent",
+        "modelAlias": "fixture",
+        "provider": "fixture",
+        "model": "fixture",
+        "inputTokens": 10,
+        "outputTokens": 0,
+        "totalTokens": 10,
+        "promptEpochId": "e",
+        "stablePrefixHash": "fixture",
+        "latestRequestInputTokens": 10,
+        "latestRequestCacheReadTokens": 3,
+        "costUsd": 0.000019,
+        "pricingKnown": true,
+        "time": "2026-10-05T00:00:00Z"
+      },
+      "nested": {
+        "operation": "agent",
+        "modelAlias": "fixture",
+        "provider": "fixture",
+        "model": "fixture",
+        "inputTokens": 10,
+        "outputTokens": 0,
+        "totalTokens": 10,
+        "promptEpochId": "e",
+        "stablePrefixHash": "fixture",
+        "latestRequestInputTokens": 10,
+        "latestRequestCacheReadTokens": 3,
+        "costUsd": 0.000019,
+        "pricingKnown": true,
+        "time": "2026-10-05T00:00:00Z"
+      },
+      "summary": {
+        "calls": 2,
+        "inputTokens": 10,
+        "outputTokens": 0,
+        "totalTokens": 10,
+        "reasoningTokens": 0,
+        "cacheReadTokens": 10,
+        "cacheWriteTokens": 0,
+        "cacheMissTokens": 0,
+        "costUsd": 0.000019,
+        "pricingKnown": true,
+        "pricedCalls": 2,
+        "unpricedCalls": 0,
+        "latestCacheHitRate": 0.3,
+        "epochCacheHitRates": {
+          "e": 1
+        }
+      },
+      "turnSummary": {
+        "calls": 1,
+        "inputTokens": 10,
+        "outputTokens": 0,
+        "totalTokens": 10,
+        "reasoningTokens": 0,
+        "cacheReadTokens": 0,
+        "cacheWriteTokens": 0,
+        "cacheMissTokens": 0,
+        "costUsd": 0.000019,
+        "pricingKnown": true,
+        "pricedCalls": 1,
+        "unpricedCalls": 0,
+        "latestCacheHitRate": 0.3,
+        "epochCacheHitRates": {
+          "e": null
+        }
+      },
+      "nestedSummary": {
+        "calls": 1,
+        "inputTokens": 10,
+        "outputTokens": 0,
+        "totalTokens": 10,
+        "reasoningTokens": 0,
+        "cacheReadTokens": 0,
+        "cacheWriteTokens": 0,
+        "cacheMissTokens": 0,
+        "costUsd": 0.000019,
+        "pricingKnown": true,
+        "pricedCalls": 1,
+        "unpricedCalls": 0,
+        "latestCacheHitRate": 0.3,
+        "epochCacheHitRates": {
+          "e": null
+        }
+      },
+      "report": "Usage\n\nCalls: 2\nInput tokens: 10\nOutput tokens: 0\nReasoning tokens: 0\nTotal tokens: 10\nCache read/write/miss: 10/0/0\nLatest cache hit rate: 30%\nSession cache hit rate: unknown\nEpoch cache hit rates: e=100%\nCost: $0.000019\nPriced calls: 2; unpriced calls: 0"
+    },
+    {
+      "name": "missing-last-input",
+      "inputs": [
+        {
+          "inputTokens": 10,
+          "cacheReadTokens": 3,
+          "outputTokens": 0,
+          "totalTokens": 10
+        },
+        {
+          "cacheReadTokens": 7,
+          "outputTokens": 0
+        }
+      ],
+      "records": [
+        {
+          "operation": "agent",
+          "modelAlias": "fixture",
+          "provider": "fixture",
+          "model": "fixture",
+          "inputTokens": 10,
+          "outputTokens": 0,
+          "totalTokens": 10,
+          "cacheReadTokens": 3,
+          "promptEpochId": "e",
+          "stablePrefixHash": "fixture",
+          "latestRequestInputTokens": 10,
+          "latestRequestCacheReadTokens": 3,
+          "costUsd": 0.0000155,
+          "pricingKnown": true,
+          "time": "2026-10-05T00:00:00Z"
+        },
+        {
+          "operation": "agent",
+          "modelAlias": "fixture",
+          "provider": "fixture",
+          "model": "fixture",
+          "outputTokens": 0,
+          "cacheReadTokens": 7,
+          "promptEpochId": "e",
+          "stablePrefixHash": "fixture",
+          "latestRequestCacheReadTokens": 7,
+          "costUsd": 0.0000035,
+          "pricingKnown": true,
+          "time": "2026-10-05T00:00:00Z"
+        }
+      ],
+      "turn": {
+        "operation": "agent",
+        "modelAlias": "fixture",
+        "provider": "fixture",
+        "model": "fixture",
+        "inputTokens": 10,
+        "outputTokens": 0,
+        "totalTokens": 10,
+        "promptEpochId": "e",
+        "stablePrefixHash": "fixture",
+        "latestRequestCacheReadTokens": 7,
+        "costUsd": 0.000019,
+        "pricingKnown": true,
+        "time": "2026-10-05T00:00:00Z"
+      },
+      "nested": {
+        "operation": "agent",
+        "modelAlias": "fixture",
+        "provider": "fixture",
+        "model": "fixture",
+        "inputTokens": 10,
+        "outputTokens": 0,
+        "totalTokens": 10,
+        "promptEpochId": "e",
+        "stablePrefixHash": "fixture",
+        "latestRequestCacheReadTokens": 7,
+        "costUsd": 0.000019,
+        "pricingKnown": true,
+        "time": "2026-10-05T00:00:00Z"
+      },
+      "summary": {
+        "calls": 2,
+        "inputTokens": 10,
+        "outputTokens": 0,
+        "totalTokens": 10,
+        "reasoningTokens": 0,
+        "cacheReadTokens": 10,
+        "cacheWriteTokens": 0,
+        "cacheMissTokens": 0,
+        "costUsd": 0.000019,
+        "pricingKnown": true,
+        "pricedCalls": 2,
+        "unpricedCalls": 0,
+        "epochCacheHitRates": {
+          "e": 1
+        }
+      },
+      "turnSummary": {
+        "calls": 1,
+        "inputTokens": 10,
+        "outputTokens": 0,
+        "totalTokens": 10,
+        "reasoningTokens": 0,
+        "cacheReadTokens": 0,
+        "cacheWriteTokens": 0,
+        "cacheMissTokens": 0,
+        "costUsd": 0.000019,
+        "pricingKnown": true,
+        "pricedCalls": 1,
+        "unpricedCalls": 0,
+        "epochCacheHitRates": {
+          "e": null
+        }
+      },
+      "nestedSummary": {
+        "calls": 1,
+        "inputTokens": 10,
+        "outputTokens": 0,
+        "totalTokens": 10,
+        "reasoningTokens": 0,
+        "cacheReadTokens": 0,
+        "cacheWriteTokens": 0,
+        "cacheMissTokens": 0,
+        "costUsd": 0.000019,
+        "pricingKnown": true,
+        "pricedCalls": 1,
+        "unpricedCalls": 0,
+        "epochCacheHitRates": {
+          "e": null
+        }
+      },
+      "report": "Usage\n\nCalls: 2\nInput tokens: 10\nOutput tokens: 0\nReasoning tokens: 0\nTotal tokens: 10\nCache read/write/miss: 10/0/0\nLatest cache hit rate: unknown\nSession cache hit rate: unknown\nEpoch cache hit rates: e=100%\nCost: $0.000019\nPriced calls: 2; unpriced calls: 0"
+    },
+    {
+      "name": "missing-last-read",
+      "inputs": [
+        {
+          "inputTokens": 10,
+          "cacheReadTokens": 3
+        },
+        {
+          "inputTokens": 20
+        }
+      ],
+      "records": [
+        {
+          "operation": "agent",
+          "modelAlias": "fixture",
+          "provider": "fixture",
+          "model": "fixture",
+          "inputTokens": 10,
+          "cacheReadTokens": 3,
+          "promptEpochId": "e",
+          "stablePrefixHash": "fixture",
+          "latestRequestInputTokens": 10,
+          "latestRequestCacheReadTokens": 3,
+          "costUsd": 0.0000155,
+          "pricingKnown": true,
+          "time": "2026-10-05T00:00:00Z"
+        },
+        {
+          "operation": "agent",
+          "modelAlias": "fixture",
+          "provider": "fixture",
+          "model": "fixture",
+          "inputTokens": 20,
+          "promptEpochId": "e",
+          "stablePrefixHash": "fixture",
+          "latestRequestInputTokens": 20,
+          "costUsd": 0.00004,
+          "pricingKnown": true,
+          "time": "2026-10-05T00:00:00Z"
+        }
+      ],
+      "turn": {
+        "operation": "agent",
+        "modelAlias": "fixture",
+        "provider": "fixture",
+        "model": "fixture",
+        "inputTokens": 30,
+        "promptEpochId": "e",
+        "stablePrefixHash": "fixture",
+        "latestRequestInputTokens": 20,
+        "costUsd": 0.00005550000000000001,
+        "pricingKnown": true,
+        "time": "2026-10-05T00:00:00Z"
+      },
+      "nested": {
+        "operation": "agent",
+        "modelAlias": "fixture",
+        "provider": "fixture",
+        "model": "fixture",
+        "inputTokens": 30,
+        "promptEpochId": "e",
+        "stablePrefixHash": "fixture",
+        "latestRequestInputTokens": 20,
+        "costUsd": 0.00005550000000000001,
+        "pricingKnown": true,
+        "time": "2026-10-05T00:00:00Z"
+      },
+      "summary": {
+        "calls": 2,
+        "inputTokens": 30,
+        "outputTokens": 0,
+        "totalTokens": 0,
+        "reasoningTokens": 0,
+        "cacheReadTokens": 3,
+        "cacheWriteTokens": 0,
+        "cacheMissTokens": 0,
+        "costUsd": 0.00005550000000000001,
+        "pricingKnown": true,
+        "pricedCalls": 2,
+        "unpricedCalls": 0,
+        "epochCacheHitRates": {
+          "e": null
+        }
+      },
+      "turnSummary": {
+        "calls": 1,
+        "inputTokens": 30,
+        "outputTokens": 0,
+        "totalTokens": 0,
+        "reasoningTokens": 0,
+        "cacheReadTokens": 0,
+        "cacheWriteTokens": 0,
+        "cacheMissTokens": 0,
+        "costUsd": 0.00005550000000000001,
+        "pricingKnown": true,
+        "pricedCalls": 1,
+        "unpricedCalls": 0,
+        "epochCacheHitRates": {
+          "e": null
+        }
+      },
+      "nestedSummary": {
+        "calls": 1,
+        "inputTokens": 30,
+        "outputTokens": 0,
+        "totalTokens": 0,
+        "reasoningTokens": 0,
+        "cacheReadTokens": 0,
+        "cacheWriteTokens": 0,
+        "cacheMissTokens": 0,
+        "costUsd": 0.00005550000000000001,
+        "pricingKnown": true,
+        "pricedCalls": 1,
+        "unpricedCalls": 0,
+        "epochCacheHitRates": {
+          "e": null
+        }
+      },
+      "report": "Usage\n\nCalls: 2\nInput tokens: 30\nOutput tokens: 0\nReasoning tokens: 0\nTotal tokens: 0\nCache read/write/miss: 3/0/0\nLatest cache hit rate: unknown\nSession cache hit rate: unknown\nEpoch cache hit rates: e=unknown\nCost: $0.000056\nPriced calls: 2; unpriced calls: 0"
+    },
+    {
+      "name": "unreported-last",
+      "inputs": [
+        {
+          "inputTokens": 10,
+          "cacheReadTokens": 3
+        },
+        {}
+      ],
+      "records": [
+        {
+          "operation": "agent",
+          "modelAlias": "fixture",
+          "provider": "fixture",
+          "model": "fixture",
+          "inputTokens": 10,
+          "cacheReadTokens": 3,
+          "promptEpochId": "e",
+          "stablePrefixHash": "fixture",
+          "latestRequestInputTokens": 10,
+          "latestRequestCacheReadTokens": 3,
+          "costUsd": 0.0000155,
+          "pricingKnown": true,
+          "time": "2026-10-05T00:00:00Z"
+        },
+        {
+          "operation": "agent",
+          "modelAlias": "fixture",
+          "provider": "fixture",
+          "model": "fixture",
+          "promptEpochId": "e",
+          "stablePrefixHash": "fixture",
+          "pricingKnown": false,
+          "time": "2026-10-05T00:00:00Z"
+        }
+      ],
+      "turn": {
+        "operation": "agent",
+        "modelAlias": "fixture",
+        "provider": "fixture",
+        "model": "fixture",
+        "inputTokens": 10,
+        "promptEpochId": "e",
+        "stablePrefixHash": "fixture",
+        "pricingKnown": false,
+        "time": "2026-10-05T00:00:00Z"
+      },
+      "nested": {
+        "operation": "agent",
+        "modelAlias": "fixture",
+        "provider": "fixture",
+        "model": "fixture",
+        "inputTokens": 10,
+        "promptEpochId": "e",
+        "stablePrefixHash": "fixture",
+        "pricingKnown": false,
+        "time": "2026-10-05T00:00:00Z"
+      },
+      "summary": {
+        "calls": 2,
+        "inputTokens": 10,
+        "outputTokens": 0,
+        "totalTokens": 0,
+        "reasoningTokens": 0,
+        "cacheReadTokens": 3,
+        "cacheWriteTokens": 0,
+        "cacheMissTokens": 0,
+        "pricingKnown": false,
+        "pricedCalls": 1,
+        "unpricedCalls": 1,
+        "epochCacheHitRates": {
+          "e": null
+        }
+      },
+      "turnSummary": {
+        "calls": 1,
+        "inputTokens": 10,
+        "outputTokens": 0,
+        "totalTokens": 0,
+        "reasoningTokens": 0,
+        "cacheReadTokens": 0,
+        "cacheWriteTokens": 0,
+        "cacheMissTokens": 0,
+        "pricingKnown": false,
+        "pricedCalls": 0,
+        "unpricedCalls": 1,
+        "epochCacheHitRates": {
+          "e": null
+        }
+      },
+      "nestedSummary": {
+        "calls": 1,
+        "inputTokens": 10,
+        "outputTokens": 0,
+        "totalTokens": 0,
+        "reasoningTokens": 0,
+        "cacheReadTokens": 0,
+        "cacheWriteTokens": 0,
+        "cacheMissTokens": 0,
+        "pricingKnown": false,
+        "pricedCalls": 0,
+        "unpricedCalls": 1,
+        "epochCacheHitRates": {
+          "e": null
+        }
+      },
+      "report": "Usage\n\nCalls: 2\nInput tokens: 10\nOutput tokens: 0\nReasoning tokens: 0\nTotal tokens: 0\nCache read/write/miss: 3/0/0\nLatest cache hit rate: unknown\nSession cache hit rate: unknown\nEpoch cache hit rates: e=unknown\nCost: unknown (configure model pricing)\nPriced calls: 1; unpriced calls: 1"
+    },
+    {
+      "name": "reported-zero",
+      "inputs": [
+        {
+          "inputTokens": 10,
+          "cacheReadTokens": 0
+        },
+        {
+          "inputTokens": 20,
+          "cacheReadTokens": 0
+        }
+      ],
+      "records": [
+        {
+          "operation": "agent",
+          "modelAlias": "fixture",
+          "provider": "fixture",
+          "model": "fixture",
+          "inputTokens": 10,
+          "cacheReadTokens": 0,
+          "promptEpochId": "e",
+          "stablePrefixHash": "fixture",
+          "latestRequestInputTokens": 10,
+          "latestRequestCacheReadTokens": 0,
+          "costUsd": 0.00002,
+          "pricingKnown": true,
+          "time": "2026-10-05T00:00:00Z"
+        },
+        {
+          "operation": "agent",
+          "modelAlias": "fixture",
+          "provider": "fixture",
+          "model": "fixture",
+          "inputTokens": 20,
+          "cacheReadTokens": 0,
+          "promptEpochId": "e",
+          "stablePrefixHash": "fixture",
+          "latestRequestInputTokens": 20,
+          "latestRequestCacheReadTokens": 0,
+          "costUsd": 0.00004,
+          "pricingKnown": true,
+          "time": "2026-10-05T00:00:00Z"
+        }
+      ],
+      "turn": {
+        "operation": "agent",
+        "modelAlias": "fixture",
+        "provider": "fixture",
+        "model": "fixture",
+        "inputTokens": 30,
+        "cacheReadTokens": 0,
+        "promptEpochId": "e",
+        "stablePrefixHash": "fixture",
+        "latestRequestInputTokens": 20,
+        "latestRequestCacheReadTokens": 0,
+        "costUsd": 0.00006000000000000001,
+        "pricingKnown": true,
+        "time": "2026-10-05T00:00:00Z"
+      },
+      "nested": {
+        "operation": "agent",
+        "modelAlias": "fixture",
+        "provider": "fixture",
+        "model": "fixture",
+        "inputTokens": 30,
+        "cacheReadTokens": 0,
+        "promptEpochId": "e",
+        "stablePrefixHash": "fixture",
+        "latestRequestInputTokens": 20,
+        "latestRequestCacheReadTokens": 0,
+        "costUsd": 0.00006000000000000001,
+        "pricingKnown": true,
+        "time": "2026-10-05T00:00:00Z"
+      },
+      "summary": {
+        "calls": 2,
+        "inputTokens": 30,
+        "outputTokens": 0,
+        "totalTokens": 0,
+        "reasoningTokens": 0,
+        "cacheReadTokens": 0,
+        "cacheWriteTokens": 0,
+        "cacheMissTokens": 0,
+        "costUsd": 0.00006000000000000001,
+        "pricingKnown": true,
+        "pricedCalls": 2,
+        "unpricedCalls": 0,
+        "latestCacheHitRate": 0,
+        "sessionCacheHitRate": 0,
+        "epochCacheHitRates": {
+          "e": 0
+        }
+      },
+      "turnSummary": {
+        "calls": 1,
+        "inputTokens": 30,
+        "outputTokens": 0,
+        "totalTokens": 0,
+        "reasoningTokens": 0,
+        "cacheReadTokens": 0,
+        "cacheWriteTokens": 0,
+        "cacheMissTokens": 0,
+        "costUsd": 0.00006000000000000001,
+        "pricingKnown": true,
+        "pricedCalls": 1,
+        "unpricedCalls": 0,
+        "latestCacheHitRate": 0,
+        "sessionCacheHitRate": 0,
+        "epochCacheHitRates": {
+          "e": 0
+        }
+      },
+      "nestedSummary": {
+        "calls": 1,
+        "inputTokens": 30,
+        "outputTokens": 0,
+        "totalTokens": 0,
+        "reasoningTokens": 0,
+        "cacheReadTokens": 0,
+        "cacheWriteTokens": 0,
+        "cacheMissTokens": 0,
+        "costUsd": 0.00006000000000000001,
+        "pricingKnown": true,
+        "pricedCalls": 1,
+        "unpricedCalls": 0,
+        "latestCacheHitRate": 0,
+        "sessionCacheHitRate": 0,
+        "epochCacheHitRates": {
+          "e": 0
+        }
+      },
+      "report": "Usage\n\nCalls: 2\nInput tokens: 30\nOutput tokens: 0\nReasoning tokens: 0\nTotal tokens: 0\nCache read/write/miss: 0/0/0\nLatest cache hit rate: 0%\nSession cache hit rate: 0%\nEpoch cache hit rates: e=0%\nCost: $0.000060\nPriced calls: 2; unpriced calls: 0"
+    },
+    {
+      "name": "zero-denominator",
+      "inputs": [
+        {
+          "inputTokens": 0,
+          "cacheReadTokens": 0
+        }
+      ],
+      "records": [
+        {
+          "operation": "agent",
+          "modelAlias": "fixture",
+          "provider": "fixture",
+          "model": "fixture",
+          "inputTokens": 0,
+          "cacheReadTokens": 0,
+          "promptEpochId": "e",
+          "stablePrefixHash": "fixture",
+          "latestRequestInputTokens": 0,
+          "latestRequestCacheReadTokens": 0,
+          "costUsd": 0,
+          "pricingKnown": true,
+          "time": "2026-10-05T00:00:00Z"
+        }
+      ],
+      "turn": {
+        "operation": "agent",
+        "modelAlias": "fixture",
+        "provider": "fixture",
+        "model": "fixture",
+        "inputTokens": 0,
+        "cacheReadTokens": 0,
+        "promptEpochId": "e",
+        "stablePrefixHash": "fixture",
+        "latestRequestInputTokens": 0,
+        "latestRequestCacheReadTokens": 0,
+        "costUsd": 0,
+        "pricingKnown": true,
+        "time": "2026-10-05T00:00:00Z"
+      },
+      "nested": {
+        "operation": "agent",
+        "modelAlias": "fixture",
+        "provider": "fixture",
+        "model": "fixture",
+        "inputTokens": 0,
+        "cacheReadTokens": 0,
+        "promptEpochId": "e",
+        "stablePrefixHash": "fixture",
+        "latestRequestInputTokens": 0,
+        "latestRequestCacheReadTokens": 0,
+        "costUsd": 0,
+        "pricingKnown": true,
+        "time": "2026-10-05T00:00:00Z"
+      },
+      "summary": {
+        "calls": 1,
+        "inputTokens": 0,
+        "outputTokens": 0,
+        "totalTokens": 0,
+        "reasoningTokens": 0,
+        "cacheReadTokens": 0,
+        "cacheWriteTokens": 0,
+        "cacheMissTokens": 0,
+        "costUsd": 0,
+        "pricingKnown": true,
+        "pricedCalls": 1,
+        "unpricedCalls": 0,
+        "epochCacheHitRates": {
+          "e": null
+        }
+      },
+      "turnSummary": {
+        "calls": 1,
+        "inputTokens": 0,
+        "outputTokens": 0,
+        "totalTokens": 0,
+        "reasoningTokens": 0,
+        "cacheReadTokens": 0,
+        "cacheWriteTokens": 0,
+        "cacheMissTokens": 0,
+        "costUsd": 0,
+        "pricingKnown": true,
+        "pricedCalls": 1,
+        "unpricedCalls": 0,
+        "epochCacheHitRates": {
+          "e": null
+        }
+      },
+      "nestedSummary": {
+        "calls": 1,
+        "inputTokens": 0,
+        "outputTokens": 0,
+        "totalTokens": 0,
+        "reasoningTokens": 0,
+        "cacheReadTokens": 0,
+        "cacheWriteTokens": 0,
+        "cacheMissTokens": 0,
+        "costUsd": 0,
+        "pricingKnown": true,
+        "pricedCalls": 1,
+        "unpricedCalls": 0,
+        "epochCacheHitRates": {
+          "e": null
+        }
+      },
+      "report": "Usage\n\nCalls: 1\nInput tokens: 0\nOutput tokens: 0\nReasoning tokens: 0\nTotal tokens: 0\nCache read/write/miss: 0/0/0\nLatest cache hit rate: unknown\nSession cache hit rate: unknown\nEpoch cache hit rates: e=unknown\nCost: $0.000000\nPriced calls: 1; unpriced calls: 0"
+    },
+    {
+      "name": "partial-zero",
+      "inputs": [
+        {
+          "inputTokens": 10,
+          "cacheReadTokens": 0
+        },
+        {
+          "inputTokens": 20
+        }
+      ],
+      "records": [
+        {
+          "operation": "agent",
+          "modelAlias": "fixture",
+          "provider": "fixture",
+          "model": "fixture",
+          "inputTokens": 10,
+          "cacheReadTokens": 0,
+          "promptEpochId": "e",
+          "stablePrefixHash": "fixture",
+          "latestRequestInputTokens": 10,
+          "latestRequestCacheReadTokens": 0,
+          "costUsd": 0.00002,
+          "pricingKnown": true,
+          "time": "2026-10-05T00:00:00Z"
+        },
+        {
+          "operation": "agent",
+          "modelAlias": "fixture",
+          "provider": "fixture",
+          "model": "fixture",
+          "inputTokens": 20,
+          "promptEpochId": "e",
+          "stablePrefixHash": "fixture",
+          "latestRequestInputTokens": 20,
+          "costUsd": 0.00004,
+          "pricingKnown": true,
+          "time": "2026-10-05T00:00:00Z"
+        }
+      ],
+      "turn": {
+        "operation": "agent",
+        "modelAlias": "fixture",
+        "provider": "fixture",
+        "model": "fixture",
+        "inputTokens": 30,
+        "promptEpochId": "e",
+        "stablePrefixHash": "fixture",
+        "latestRequestInputTokens": 20,
+        "costUsd": 0.00006000000000000001,
+        "pricingKnown": true,
+        "time": "2026-10-05T00:00:00Z"
+      },
+      "nested": {
+        "operation": "agent",
+        "modelAlias": "fixture",
+        "provider": "fixture",
+        "model": "fixture",
+        "inputTokens": 30,
+        "promptEpochId": "e",
+        "stablePrefixHash": "fixture",
+        "latestRequestInputTokens": 20,
+        "costUsd": 0.00006000000000000001,
+        "pricingKnown": true,
+        "time": "2026-10-05T00:00:00Z"
+      },
+      "summary": {
+        "calls": 2,
+        "inputTokens": 30,
+        "outputTokens": 0,
+        "totalTokens": 0,
+        "reasoningTokens": 0,
+        "cacheReadTokens": 0,
+        "cacheWriteTokens": 0,
+        "cacheMissTokens": 0,
+        "costUsd": 0.00006000000000000001,
+        "pricingKnown": true,
+        "pricedCalls": 2,
+        "unpricedCalls": 0,
+        "epochCacheHitRates": {
+          "e": null
+        }
+      },
+      "turnSummary": {
+        "calls": 1,
+        "inputTokens": 30,
+        "outputTokens": 0,
+        "totalTokens": 0,
+        "reasoningTokens": 0,
+        "cacheReadTokens": 0,
+        "cacheWriteTokens": 0,
+        "cacheMissTokens": 0,
+        "costUsd": 0.00006000000000000001,
+        "pricingKnown": true,
+        "pricedCalls": 1,
+        "unpricedCalls": 0,
+        "epochCacheHitRates": {
+          "e": null
+        }
+      },
+      "nestedSummary": {
+        "calls": 1,
+        "inputTokens": 30,
+        "outputTokens": 0,
+        "totalTokens": 0,
+        "reasoningTokens": 0,
+        "cacheReadTokens": 0,
+        "cacheWriteTokens": 0,
+        "cacheMissTokens": 0,
+        "costUsd": 0.00006000000000000001,
+        "pricingKnown": true,
+        "pricedCalls": 1,
+        "unpricedCalls": 0,
+        "epochCacheHitRates": {
+          "e": null
+        }
+      },
+      "report": "Usage\n\nCalls: 2\nInput tokens: 30\nOutput tokens: 0\nReasoning tokens: 0\nTotal tokens: 0\nCache read/write/miss: 0/0/0\nLatest cache hit rate: unknown\nSession cache hit rate: unknown\nEpoch cache hit rates: e=unknown\nCost: $0.000060\nPriced calls: 2; unpriced calls: 0"
+    },
+    {
+      "name": "weighted-complete",
+      "inputs": [
+        {
+          "inputTokens": 100,
+          "cacheReadTokens": 0
+        },
+        {
+          "inputTokens": 900,
+          "cacheReadTokens": 900
+        }
+      ],
+      "records": [
+        {
+          "operation": "agent",
+          "modelAlias": "fixture",
+          "provider": "fixture",
+          "model": "fixture",
+          "inputTokens": 100,
+          "cacheReadTokens": 0,
+          "promptEpochId": "e",
+          "stablePrefixHash": "fixture",
+          "latestRequestInputTokens": 100,
+          "latestRequestCacheReadTokens": 0,
+          "costUsd": 0.0002,
+          "pricingKnown": true,
+          "time": "2026-10-05T00:00:00Z"
+        },
+        {
+          "operation": "agent",
+          "modelAlias": "fixture",
+          "provider": "fixture",
+          "model": "fixture",
+          "inputTokens": 900,
+          "cacheReadTokens": 900,
+          "promptEpochId": "e",
+          "stablePrefixHash": "fixture",
+          "latestRequestInputTokens": 900,
+          "latestRequestCacheReadTokens": 900,
+          "costUsd": 0.00045,
+          "pricingKnown": true,
+          "time": "2026-10-05T00:00:00Z"
+        }
+      ],
+      "turn": {
+        "operation": "agent",
+        "modelAlias": "fixture",
+        "provider": "fixture",
+        "model": "fixture",
+        "inputTokens": 1000,
+        "cacheReadTokens": 900,
+        "promptEpochId": "e",
+        "stablePrefixHash": "fixture",
+        "latestRequestInputTokens": 900,
+        "latestRequestCacheReadTokens": 900,
+        "costUsd": 0.00065,
+        "pricingKnown": true,
+        "time": "2026-10-05T00:00:00Z"
+      },
+      "nested": {
+        "operation": "agent",
+        "modelAlias": "fixture",
+        "provider": "fixture",
+        "model": "fixture",
+        "inputTokens": 1000,
+        "cacheReadTokens": 900,
+        "promptEpochId": "e",
+        "stablePrefixHash": "fixture",
+        "latestRequestInputTokens": 900,
+        "latestRequestCacheReadTokens": 900,
+        "costUsd": 0.00065,
+        "pricingKnown": true,
+        "time": "2026-10-05T00:00:00Z"
+      },
+      "summary": {
+        "calls": 2,
+        "inputTokens": 1000,
+        "outputTokens": 0,
+        "totalTokens": 0,
+        "reasoningTokens": 0,
+        "cacheReadTokens": 900,
+        "cacheWriteTokens": 0,
+        "cacheMissTokens": 0,
+        "costUsd": 0.00065,
+        "pricingKnown": true,
+        "pricedCalls": 2,
+        "unpricedCalls": 0,
+        "latestCacheHitRate": 1,
+        "sessionCacheHitRate": 0.9,
+        "epochCacheHitRates": {
+          "e": 0.9
+        }
+      },
+      "turnSummary": {
+        "calls": 1,
+        "inputTokens": 1000,
+        "outputTokens": 0,
+        "totalTokens": 0,
+        "reasoningTokens": 0,
+        "cacheReadTokens": 900,
+        "cacheWriteTokens": 0,
+        "cacheMissTokens": 0,
+        "costUsd": 0.00065,
+        "pricingKnown": true,
+        "pricedCalls": 1,
+        "unpricedCalls": 0,
+        "latestCacheHitRate": 1,
+        "sessionCacheHitRate": 0.9,
+        "epochCacheHitRates": {
+          "e": 0.9
+        }
+      },
+      "nestedSummary": {
+        "calls": 1,
+        "inputTokens": 1000,
+        "outputTokens": 0,
+        "totalTokens": 0,
+        "reasoningTokens": 0,
+        "cacheReadTokens": 900,
+        "cacheWriteTokens": 0,
+        "cacheMissTokens": 0,
+        "costUsd": 0.00065,
+        "pricingKnown": true,
+        "pricedCalls": 1,
+        "unpricedCalls": 0,
+        "latestCacheHitRate": 1,
+        "sessionCacheHitRate": 0.9,
+        "epochCacheHitRates": {
+          "e": 0.9
+        }
+      },
+      "report": "Usage\n\nCalls: 2\nInput tokens: 1000\nOutput tokens: 0\nReasoning tokens: 0\nTotal tokens: 0\nCache read/write/miss: 900/0/0\nLatest cache hit rate: 100%\nSession cache hit rate: 90%\nEpoch cache hit rates: e=90%\nCost: $0.000650\nPriced calls: 2; unpriced calls: 0"
+    },
+    {
+      "name": "nested-last-missing-input",
+      "inputs": [
+        {
+          "inputTokens": 10,
+          "cacheReadTokens": 3
+        },
+        {
+          "inputTokens": 20,
+          "cacheReadTokens": 4
+        },
+        {
+          "cacheReadTokens": 7
+        }
+      ],
+      "records": [
+        {
+          "operation": "agent",
+          "modelAlias": "fixture",
+          "provider": "fixture",
+          "model": "fixture",
+          "inputTokens": 10,
+          "cacheReadTokens": 3,
+          "promptEpochId": "e",
+          "stablePrefixHash": "fixture",
+          "latestRequestInputTokens": 10,
+          "latestRequestCacheReadTokens": 3,
+          "costUsd": 0.0000155,
+          "pricingKnown": true,
+          "time": "2026-10-05T00:00:00Z"
+        },
+        {
+          "operation": "agent",
+          "modelAlias": "fixture",
+          "provider": "fixture",
+          "model": "fixture",
+          "inputTokens": 20,
+          "cacheReadTokens": 4,
+          "promptEpochId": "e",
+          "stablePrefixHash": "fixture",
+          "latestRequestInputTokens": 20,
+          "latestRequestCacheReadTokens": 4,
+          "costUsd": 0.000034,
+          "pricingKnown": true,
+          "time": "2026-10-05T00:00:00Z"
+        },
+        {
+          "operation": "agent",
+          "modelAlias": "fixture",
+          "provider": "fixture",
+          "model": "fixture",
+          "cacheReadTokens": 7,
+          "promptEpochId": "e",
+          "stablePrefixHash": "fixture",
+          "latestRequestCacheReadTokens": 7,
+          "costUsd": 0.0000035,
+          "pricingKnown": true,
+          "time": "2026-10-05T00:00:00Z"
+        }
+      ],
+      "turn": {
+        "operation": "agent",
+        "modelAlias": "fixture",
+        "provider": "fixture",
+        "model": "fixture",
+        "inputTokens": 30,
+        "promptEpochId": "e",
+        "stablePrefixHash": "fixture",
+        "latestRequestCacheReadTokens": 7,
+        "costUsd": 0.000052999999999999994,
+        "pricingKnown": true,
+        "time": "2026-10-05T00:00:00Z"
+      },
+      "nested": {
+        "operation": "agent",
+        "modelAlias": "fixture",
+        "provider": "fixture",
+        "model": "fixture",
+        "inputTokens": 30,
+        "promptEpochId": "e",
+        "stablePrefixHash": "fixture",
+        "latestRequestInputTokens": 20,
+        "costUsd": 0.000053,
+        "pricingKnown": true,
+        "time": "2026-10-05T00:00:00Z"
+      },
+      "summary": {
+        "calls": 3,
+        "inputTokens": 30,
+        "outputTokens": 0,
+        "totalTokens": 0,
+        "reasoningTokens": 0,
+        "cacheReadTokens": 14,
+        "cacheWriteTokens": 0,
+        "cacheMissTokens": 0,
+        "costUsd": 0.000052999999999999994,
+        "pricingKnown": true,
+        "pricedCalls": 3,
+        "unpricedCalls": 0,
+        "epochCacheHitRates": {
+          "e": 0.4666666666666667
+        }
+      },
+      "turnSummary": {
+        "calls": 1,
+        "inputTokens": 30,
+        "outputTokens": 0,
+        "totalTokens": 0,
+        "reasoningTokens": 0,
+        "cacheReadTokens": 0,
+        "cacheWriteTokens": 0,
+        "cacheMissTokens": 0,
+        "costUsd": 0.000052999999999999994,
+        "pricingKnown": true,
+        "pricedCalls": 1,
+        "unpricedCalls": 0,
+        "epochCacheHitRates": {
+          "e": null
+        }
+      },
+      "nestedSummary": {
+        "calls": 1,
+        "inputTokens": 30,
+        "outputTokens": 0,
+        "totalTokens": 0,
+        "reasoningTokens": 0,
+        "cacheReadTokens": 0,
+        "cacheWriteTokens": 0,
+        "cacheMissTokens": 0,
+        "costUsd": 0.000053,
+        "pricingKnown": true,
+        "pricedCalls": 1,
+        "unpricedCalls": 0,
+        "epochCacheHitRates": {
+          "e": null
+        }
+      },
+      "report": "Usage\n\nCalls: 3\nInput tokens: 30\nOutput tokens: 0\nReasoning tokens: 0\nTotal tokens: 0\nCache read/write/miss: 14/0/0\nLatest cache hit rate: unknown\nSession cache hit rate: unknown\nEpoch cache hit rates: e=47%\nCost: $0.000053\nPriced calls: 3; unpriced calls: 0"
+    },
+    {
+      "name": "other-fields",
+      "inputs": [
+        {
+          "inputTokens": 10,
+          "cacheReadTokens": 3,
+          "outputTokens": 5,
+          "totalTokens": 15,
+          "reasoningTokens": 2,
+          "cacheWriteTokens": 1,
+          "cacheMissTokens": 7
+        },
+        {
+          "outputTokens": 2,
+          "cacheReadTokens": 7,
+          "cacheMissTokens": 1
+        }
+      ],
+      "records": [
+        {
+          "operation": "agent",
+          "modelAlias": "fixture",
+          "provider": "fixture",
+          "model": "fixture",
+          "inputTokens": 10,
+          "outputTokens": 5,
+          "totalTokens": 15,
+          "reasoningTokens": 2,
+          "cacheReadTokens": 3,
+          "cacheWriteTokens": 1,
+          "cacheMissTokens": 7,
+          "promptEpochId": "e",
+          "stablePrefixHash": "fixture",
+          "latestRequestInputTokens": 10,
+          "latestRequestCacheReadTokens": 3,
+          "pricingKnown": false,
+          "time": "2026-10-05T00:00:00Z"
+        },
+        {
+          "operation": "agent",
+          "modelAlias": "fixture",
+          "provider": "fixture",
+          "model": "fixture",
+          "outputTokens": 2,
+          "cacheReadTokens": 7,
+          "cacheMissTokens": 1,
+          "promptEpochId": "e",
+          "stablePrefixHash": "fixture",
+          "latestRequestCacheReadTokens": 7,
+          "costUsd": 0.0000115,
+          "pricingKnown": true,
+          "time": "2026-10-05T00:00:00Z"
+        }
+      ],
+      "turn": {
+        "operation": "agent",
+        "modelAlias": "fixture",
+        "provider": "fixture",
+        "model": "fixture",
+        "inputTokens": 10,
+        "outputTokens": 7,
+        "totalTokens": 15,
+        "reasoningTokens": 2,
+        "cacheWriteTokens": 1,
+        "cacheMissTokens": 8,
+        "promptEpochId": "e",
+        "stablePrefixHash": "fixture",
+        "latestRequestCacheReadTokens": 7,
+        "pricingKnown": false,
+        "time": "2026-10-05T00:00:00Z"
+      },
+      "nested": {
+        "operation": "agent",
+        "modelAlias": "fixture",
+        "provider": "fixture",
+        "model": "fixture",
+        "inputTokens": 10,
+        "outputTokens": 7,
+        "totalTokens": 15,
+        "reasoningTokens": 2,
+        "cacheWriteTokens": 1,
+        "cacheMissTokens": 8,
+        "promptEpochId": "e",
+        "stablePrefixHash": "fixture",
+        "latestRequestCacheReadTokens": 7,
+        "pricingKnown": false,
+        "time": "2026-10-05T00:00:00Z"
+      },
+      "summary": {
+        "calls": 2,
+        "inputTokens": 10,
+        "outputTokens": 7,
+        "totalTokens": 15,
+        "reasoningTokens": 2,
+        "cacheReadTokens": 10,
+        "cacheWriteTokens": 1,
+        "cacheMissTokens": 8,
+        "pricingKnown": false,
+        "pricedCalls": 1,
+        "unpricedCalls": 1,
+        "epochCacheHitRates": {
+          "e": 1
+        }
+      },
+      "turnSummary": {
+        "calls": 1,
+        "inputTokens": 10,
+        "outputTokens": 7,
+        "totalTokens": 15,
+        "reasoningTokens": 2,
+        "cacheReadTokens": 0,
+        "cacheWriteTokens": 1,
+        "cacheMissTokens": 8,
+        "pricingKnown": false,
+        "pricedCalls": 0,
+        "unpricedCalls": 1,
+        "epochCacheHitRates": {
+          "e": null
+        }
+      },
+      "nestedSummary": {
+        "calls": 1,
+        "inputTokens": 10,
+        "outputTokens": 7,
+        "totalTokens": 15,
+        "reasoningTokens": 2,
+        "cacheReadTokens": 0,
+        "cacheWriteTokens": 1,
+        "cacheMissTokens": 8,
+        "pricingKnown": false,
+        "pricedCalls": 0,
+        "unpricedCalls": 1,
+        "epochCacheHitRates": {
+          "e": null
+        }
+      },
+      "report": "Usage\n\nCalls: 2\nInput tokens: 10\nOutput tokens: 7\nReasoning tokens: 2\nTotal tokens: 15\nCache read/write/miss: 10/1/8\nLatest cache hit rate: unknown\nSession cache hit rate: unknown\nEpoch cache hit rates: e=100%\nCost: unknown (configure model pricing)\nPriced calls: 1; unpriced calls: 1"
+    }
+  ]
+}

@@ -621,7 +621,10 @@ function codexLinesToBinyEvents(lines: unknown[]): SessionEvent[] {
       events.push({
         type: "tool_call",
         tool: name,
-        args: codexToolArgs(rawArgs),
+        // Custom input 始终是原始文本；即使看起来是 JSON，也不能按 function arguments 解码。
+        args: payload.type === "custom_tool_call" && typeof rawArgs === "string"
+          ? { input: rawArgs }
+          : codexToolArgs(rawArgs),
         toolCallId: callId,
         reasoningContent: nonEmpty(pendingReasoning),
         time
@@ -658,7 +661,7 @@ function codexLinesToBinyEvents(lines: unknown[]): SessionEvent[] {
   return events;
 }
 
-/** function_call 的 arguments 是 JSON 字符串，尝试解析成对象；custom_tool_call 的 input 是原始文本。 */
+/** function_call 的 arguments 是 JSON 字符串，尝试解析成对象；非对象或解析失败时保留原文。 */
 function codexToolArgs(raw: unknown): unknown {
   if (typeof raw !== "string") return isRecord(raw) ? raw : {};
   try {

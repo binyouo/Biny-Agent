@@ -474,6 +474,8 @@ export class McpToolHost {
         this.emitChange();
       };
       client.setNotificationHandler(ToolListChangedNotificationSchema, () => {
+        // SDK 异步派发通知；重连可能已在回调执行前摘除旧 client。
+        if (managed.client !== client) return;
         void this.refreshServerTools(managed);
       });
       managed.client = client;

@@ -35,7 +35,7 @@ export function createApplyPatchTool(context: ToolContext): Tool<PatchArgs, File
     risk: "write",
     async resolveExecution({ callId, operation }) {
       const absolutePath = resolveWorkspacePath(context.workspaceRoot, operation.path, context.ignore);
-      const before = await readOptionalFile(absolutePath);
+      const before = await readOptionalFile(absolutePath, undefined, operation.type === "update_file");
       if (operation.type === "create_file" ? before.snapshot !== null : before.snapshot === null) {
         throw new Error(operation.type === "create_file" ? "Patch create target already exists." : "Patch target does not exist.");
       }
@@ -50,7 +50,7 @@ export function createApplyPatchTool(context: ToolContext): Tool<PatchArgs, File
         async execute(input) {
           if (callId !== input.toolCallId) throw new Error("Patch callId does not match the dispatched tool call.");
           if (input.approvedFile && (input.approvedFile.path !== absolutePath || !sameOptionalFileSnapshot(input.approvedFile.snapshot, before.snapshot))) throw new Error("The approved file does not match the prepared patch target.");
-          const current = await readOptionalFile(absolutePath, input.signal);
+          const current = await readOptionalFile(absolutePath, input.signal, operation.type === "update_file");
           if (!sameOptionalFileSnapshot(before.snapshot, current.snapshot)) throw new Error("Patch target changed after preparation. Read and prepare a new patch.");
           return await execution.execute({ ...input, approvedFile: { path: absolutePath, snapshot: before.snapshot } });
         }

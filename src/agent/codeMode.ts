@@ -113,7 +113,7 @@ export async function executeCodeModeCell(input: {
   const assertOpen = (name: string, signal: AbortSignal): void => {
     signal.throwIfAborted();
     if (closed) throw new CodeModeToolError("Code Mode cell has already ended.", { toolName: name });
-    if (fatalError) throw new CodeModeToolError(fatalError, { toolName: name });
+    if (fatalError !== undefined) throw new CodeModeToolError(fatalError, { toolName: name });
   };
   const refreshTools = async (query: string, signal: AbortSignal): Promise<void> => {
     if (!input.prepareTools) return;
@@ -236,7 +236,7 @@ export async function executeCodeModeCell(input: {
         executionTimeoutMs: vmTimeoutMs
       } }
     });
-    result = fatalError
+    result = fatalError !== undefined
       ? { ok: false, error: fatalError, childCalls }
       : { ok: true, value: value ?? null, childCalls };
   } catch (error) {

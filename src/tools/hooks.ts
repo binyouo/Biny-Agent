@@ -14,7 +14,7 @@
  * 的意志。这一点在 README 里明确写出，配置钩子等同于信任那条命令。
  */
 import type { HookConfig, HooksConfig } from "../config/schema.js";
-import { runShellCommand } from "./shell/runCommand.js";
+import { runShellCommand, type ShellCompletionEvidence } from "./shell/runCommand.js";
 
 export interface HookContext {
   tool: string;
@@ -26,6 +26,14 @@ export interface HookOutcome {
   command: string;
   exitCode: number;
   output: string;
+}
+
+// Only HookRunner can attach authority. Public hook payloads remain unchanged,
+// and an outcome copied or supplied by a caller cannot manufacture this proof.
+const completionEvidence = new WeakMap<HookOutcome, ShellCompletionEvidence>();
+
+export function readHookCompletionEvidence(outcome: HookOutcome): ShellCompletionEvidence {
+  return completionEvidence.get(outcome) ?? "unconfirmed";
 }
 
 export class HookRunner {
@@ -50,19 +58,25 @@ export class HookRunner {
 
   private async execute(hook: HookConfig, context: HookContext, signal?: AbortSignal): Promise<HookOutcome> {
     try {
+      let evidence: ShellCompletionEvidence = "unconfirmed";
       const result = await runShellCommand(this.workspaceRoot, hook.command, {
         timeoutMs: hook.timeoutMs,
         signal,
+        onCompletionEvidence: (value) => { evidence = value; },
         // 钩子拿到触发它的工具和路径，才能写出有针对性的命令。
         env: { BINY_HOOK_TOOL: context.tool, BINY_HOOK_PATH: context.path }
       });
       const output = [result.stdout, result.stderr].filter((part) => part.trim()).join("\n").trim();
-      return {
+      const outcome: HookOutcome = {
         command: hook.command,
         exitCode: result.status === "timed_out" ? 124 : result.exitCode,
         output: output.slice(0, maxHookOutputCharacters)
       };
+      completionEvidence.set(outcome, evidence);
+      return outcome;
     } catch (error) {
+      // 取消属于调用生命周期；不能伪装成钩子拒绝，也不能继续后续钩子。
+      signal?.throwIfAborted();
       return { command: hook.command, exitCode: 1, output: error instanceof Error ? error.message : String(error) };
     }
   }

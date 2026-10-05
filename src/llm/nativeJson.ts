@@ -122,14 +122,26 @@ async function consumeVercelText(
     // result.text 的拒绝不携带原始错误（NoOutputGeneratedError），错误保真必须直接消费 fullStream。
     let text = "";
     let finishReason: string | undefined;
+    let cacheMissTokens: number | undefined;
+    let cacheMissComplete = true;
     // Presence must be separate from payload: SDK error parts may contain undefined or null.
     let failure: { error: unknown } | undefined;
     for await (const part of result.fullStream) {
       options.signal?.throwIfAborted();
       onProgress();
       if (part.type === "text-delta") text += part.text;
+      else if (part.type === "finish-step") {
+        // SDK totalUsage omits raw metadata. Read one final measurement per
+        // step, and keep the aggregate unknown if any step omitted it.
+        const stepCacheMissTokens = fromVercelUsage(part.usage).cacheMissTokens;
+        if (stepCacheMissTokens === undefined) cacheMissComplete = false;
+        else cacheMissTokens = (cacheMissTokens ?? 0) + stepCacheMissTokens;
+      }
       else if (part.type === "finish") {
-        usage = fromVercelUsage(part.totalUsage);
+        usage = {
+          ...fromVercelUsage(part.totalUsage),
+          ...(cacheMissComplete && cacheMissTokens !== undefined ? { cacheMissTokens } : {})
+        };
         finishReason = part.finishReason;
       }
       else if (part.type === "error") failure ??= { error: part.error };

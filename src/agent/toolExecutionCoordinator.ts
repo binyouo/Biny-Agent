@@ -25,7 +25,7 @@ import {
 import { readToolResultToolName } from "../tools/file/readToolResult.js";
 import { CapabilityInvocationCancelledError, CapabilityOutcomeUnknownError } from "../runtime/CapabilityStore.js";
 import { DiagnosticsRunner, formatDiagnostics } from "../tools/diagnostics.js";
-import { HookRunner } from "../tools/hooks.js";
+import { HookRunner, readHookCompletionEvidence } from "../tools/hooks.js";
 import { validateJsonSchema } from "../tools/schema.js";
 import { ToolScheduler } from "../tools/scheduler.js";
 import { isCodeModeReadTool } from "../tools/registry.js";
@@ -792,7 +792,11 @@ export class ToolExecutionCoordinator {
                 ? { path: permissionSnapshot.targetPath, snapshot: permissionSnapshot.baseline.snapshot }
                 : undefined;
               const blocked = await this.runBeforeToolHooks(call.name, prepared.args, signal);
-              if (blocked) return blocked;
+              if (blocked) {
+                // Publish the existing guard before resource users can resume.
+                if (blocked.executionStatus === "unknown") recordState("unknown", blocked.errorMessage);
+                return blocked;
+              }
               await this.ensureCheckpoint(toolDefinition.risk, call.name);
               // 这是工具副作用前的持久边界：记录成功后才允许进入 executeResolvedTool。
               // 崩溃发生在这里之后时，恢复不能再假设工具没有运行。
@@ -1133,10 +1137,17 @@ export class ToolExecutionCoordinator {
   private async runBeforeToolHooks(tool: string, args: unknown, signal?: AbortSignal): Promise<ToolExecutionOutcome | undefined> {
     if (!this.hooks.hasHooks("beforeTool")) return undefined;
     const outcomes = await this.hooks.run("beforeTool", { tool, path: mutatedFilePath(args) ?? "" }, signal);
-    const failed = outcomes.find((outcome) => outcome.exitCode !== 0);
+    signal?.throwIfAborted();
+    const failed = outcomes.find((outcome) => outcome.exitCode !== 0 || readHookCompletionEvidence(outcome) !== "normal_exit");
     if (!failed) return undefined;
     const message = `Blocked by a configured beforeTool hook (${failed.command}): ${failed.output || `exit ${String(failed.exitCode)}`}`;
-    return { result: { status: "blocked_by_hook", hook: failed.command, exitCode: failed.exitCode, output: failed.output }, errorMessage: message };
+    return {
+      result: { status: "blocked_by_hook", hook: failed.command, exitCode: failed.exitCode, output: failed.output },
+      errorMessage: message,
+      // Every configured hook must have a proven normal exit. A later timeout
+      // or termination cannot be hidden by an earlier ordinary policy veto.
+      executionStatus: outcomes.every((outcome) => readHookCompletionEvidence(outcome) === "normal_exit") ? "failed" : "unknown"
+    };
   }
 
   /** 执行后钩子的输出只作为附加信息；它的退出码不改变这次调用的成败。 */

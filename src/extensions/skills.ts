@@ -443,7 +443,7 @@ function renderSkillInstructions(
 
 const readSkillResourceArgsSchema = z.object({
   skill: z.string().trim().min(1),
-  path: z.string().trim().min(1)
+  path: z.string().min(1).refine((value) => value.trim().length > 0)
 });
 
 /** 第三级渐进式披露：只在 SKILL.md 明确需要时读取 references/scripts/assets。 */
@@ -473,10 +473,21 @@ export function createSkillResourceTool(source: SkillBundleSource): Tool {
       }
       const resolved = resolveSkill(currentBundle(source), parsed.data.skill);
       if (typeof resolved === "string") return { isError: true as const, result: resolved, errorMessage: resolved };
+      let resource = parsed.data.path;
       let resourcePath: string;
       let resourceSnapshot: SkillFileSnapshot;
       try {
-        resourcePath = resolveSkillResourcePath(resolved, parsed.data.path);
+        resourcePath = resolveSkillResourcePath(resolved, resource);
+        if (resource !== resource.trim()) {
+          // Exact listed filenames win; preserve padded-path compatibility only when absent.
+          try {
+            await fs.lstat(resourcePath);
+          } catch (error) {
+            if (!isNotFound(error)) throw error;
+            resource = resource.trim();
+            resourcePath = resolveSkillResourcePath(resolved, resource);
+          }
+        }
         resourceSnapshot = await assertReadableSkillResource(resolved, resourcePath);
       } catch (error) {
         const message = errorMessage(error);
@@ -487,14 +498,14 @@ export function createSkillResourceTool(source: SkillBundleSource): Tool {
         // This contract only reads bounded text and closes its descriptor before settling.
         // A cooperative abort has no side effect to inspect; unresolved reads still quarantine.
         retrySafety: "safe" as const,
-        display: { kind: "file_io" as const, operation: "read" as const, path: parsed.data.path },
-        description: `Read ${parsed.data.path} from skill ${resolved.name}`,
-        approvalRule: `read_skill_resource:${resolved.name}:${parsed.data.path}`,
+        display: { kind: "file_io" as const, operation: "read" as const, path: resource },
+        description: `Read ${resource} from skill ${resolved.name}`,
+        approvalRule: `read_skill_resource:${resolved.name}:${resource}`,
         async execute({ signal }): Promise<unknown> {
           return {
             skill: resolved.name,
             skillPath: resolved.path,
-            path: parsed.data.path,
+            path: resource,
             content: await readSkillResourceFresh(resolved, resourcePath, resourceSnapshot, signal)
           };
         }

@@ -335,10 +335,8 @@ export class DesktopAgentManager {
   }
 
   async workspaceSnapshot(projectId: string, refreshGit = true): Promise<DesktopWorkspaceSnapshot> {
-    const storedProject = this.projects.requireProject(projectId);
-    const project = await this.projects.inspectProject(storedProject, refreshGit);
     // Keep lastOpenedAt stable on select/refresh so the sidebar order does not jump.
-    await this.state.upsertProject(project);
+    const project = await this.projects.refreshStoredProject(projectId, refreshGit);
     const managed = this.residentRuntime(projectId);
     const runtimeSnapshots = this.runtimeSnapshots(projectId);
     const [config, sessionData] = await Promise.all([

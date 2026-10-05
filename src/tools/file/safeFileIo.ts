@@ -11,6 +11,7 @@
  * 写入是原子的：先写临时文件并 fsync，新建用 `link`（目标已存在即失败，不覆盖），覆盖用
  * `rename`，并先用硬链接把原文件的 inode 钉住，以便提交窗口内被外部改动时能还原回去。
  */
+import { isUtf8 } from "node:buffer";
 import { randomBytes } from "node:crypto";
 import { constants, promises as fs, type BigIntStats } from "node:fs";
 import { StringDecoder } from "node:string_decoder";
@@ -193,9 +194,14 @@ async function readBoundedFile(
   }
 }
 
-export async function readUtf8FileForEdit(filePath: string, signal?: AbortSignal): Promise<{ content: string; snapshot: FileSnapshot }> {
-  const result = await readBoundedUtf8File(filePath, maxEditFileBytes, "reject", signal);
-  return { content: result.content, snapshot: result.snapshot };
+export async function readUtf8FileForEdit(filePath: string, signal?: AbortSignal, requireValidUtf8 = false): Promise<{ content: string; snapshot: FileSnapshot }> {
+  const result = await readBoundedFile(filePath, maxEditFileBytes, "reject", signal);
+  // Localized rewrites must not replace malformed bytes outside the requested change.
+  // Full Write and byte-preserving move/delete keep their existing permissive read behavior.
+  if (requireValidUtf8 && !isUtf8(result.content)) {
+    throw new Error("File is not valid UTF-8. Localized edits cannot safely rewrite this file.");
+  }
+  return { content: result.content.toString("utf8"), snapshot: result.snapshot };
 }
 
 /**

@@ -10,7 +10,8 @@ import { createPortal } from "react-dom";
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { SidebarLayoutSnapshot } from "../../../sidebarLayout.js";
 import { clampSidebarWidth, MAX_SIDEBAR_WIDTH, MIN_SIDEBAR_WIDTH } from "../../../sidebarSizing.js";
-import type { DesktopProject, DesktopSessionMenuAction, DesktopSessionSummary, DesktopSessionTreePage } from "../../../protocol.js";
+import type { DesktopProject, DesktopSessionMenuAction, DesktopSessionSummary } from "../../../protocol.js";
+import type { LoadedSessionTreePage } from "../app/sessionTreePageLifetime.js";
 import type { SidebarPeekHandlers, SidebarResizeHandlers } from "../app/useSidebarLayout.js";
 import { useClosingPresence } from "../useClosingPresence.js";
 import { useFluidHover, useRegisterFluidHoverItem, type UseFluidHoverReturn } from "../useFluidHover.js";
@@ -50,7 +51,7 @@ interface SidebarProps {
   onOpenProject(): void;
   onCreateEmptyProject(): void;
   onSelectSession(projectId: string, sessionId: string): void;
-  onLoadSessionChildren(projectId: string, parentSessionId: string, cursor?: string): Promise<DesktopSessionTreePage>;
+  onLoadSessionChildren(projectId: string, parentSessionId: string, cursor?: string): Promise<LoadedSessionTreePage>;
   onSessionAction(session: DesktopSessionSummary, action: DesktopSessionMenuAction): void;
   onProjectPinned(projectId: string, pinned: boolean): void;
   onReorderProjects(projectIds: string[]): void;
@@ -108,6 +109,7 @@ export const Sidebar = memo(function Sidebar({
   const [expandedSessionIds, setExpandedSessionIds] = useState<Set<string>>(() => new Set());
   const [loadedSessionParents, setLoadedSessionParents] = useState<Set<string>>(() => new Set());
   const [loadingSessionIds, setLoadingSessionIds] = useState<Set<string>>(() => new Set());
+  const sessionPageRequests = useRef(new Map<string, object>());
   const [sessionNextCursors, setSessionNextCursors] = useState<Map<string, string>>(() => new Map());
   const [projectMenuOpen, setProjectMenuOpen] = useState<string>();
   const [projectOrganizationMenuOpen, setProjectOrganizationMenuOpen] = useState(false);
@@ -268,13 +270,23 @@ export const Sidebar = memo(function Sidebar({
   const showPinnedSection = Boolean(pinnedProjects.length || pinnedSessions.length);
 
   const loadSessionChildren = async (session: DesktopSessionSummary, cursor?: string): Promise<void> => {
-    if (!session.hasChildren || loadingSessionIds.has(session.id)) return;
+    if (!session.hasChildren || sessionPageRequests.current.has(session.id)) return;
+    const request = {};
+    sessionPageRequests.current.set(session.id, request);
     setLoadingSessionIds((current) => new Set(current).add(session.id));
     try {
       const page = await onLoadSessionChildren(session.projectId, session.id, cursor);
-      setLoadedSessionParents((current) => new Set(current).add(session.id));
+      if (sessionPageRequests.current.get(session.id) !== request) return;
+      const resetIds = new Set(page.resetSessionIds);
+      if (page.resetSessionIds) {
+        for (const id of resetIds) sessionPageRequests.current.delete(id);
+        setExpandedSessionIds((current) => new Set([...current].filter((id) => !resetIds.has(id))));
+        setLoadingSessionIds((current) => new Set([...current].filter((id) => !resetIds.has(id))));
+      }
+      setLoadedSessionParents((current) => new Set([...current].filter((id) => !resetIds.has(id))).add(session.id));
       setSessionNextCursors((current) => {
         const next = new Map(current);
+        for (const id of resetIds) next.delete(id);
         if (page.nextCursor) next.set(session.id, page.nextCursor);
         else next.delete(session.id);
         return next;
@@ -283,11 +295,15 @@ export const Sidebar = memo(function Sidebar({
       // 两个调用点都是 void 调用，IPC 失败不能抛成未处理的 rejection；
       // 不写入 loadedSessionParents，用户重新展开时自然会重试。
     } finally {
-      setLoadingSessionIds((current) => {
-        const next = new Set(current);
-        next.delete(session.id);
-        return next;
-      });
+      // A subtree reset may already have allowed a newer request for this same ID.
+      if (sessionPageRequests.current.get(session.id) === request) {
+        sessionPageRequests.current.delete(session.id);
+        setLoadingSessionIds((current) => {
+          const next = new Set(current);
+          next.delete(session.id);
+          return next;
+        });
+      }
     }
   };
 
