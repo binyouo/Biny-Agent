@@ -138,8 +138,9 @@ function validateValue(schema: JsonSchema, value: unknown, path: string, errors:
       return branchErrors.length === 0;
     });
     if (!matched) errors.push(`${path} must match one of the allowed types`);
-    return;
   }
+  // anyOf 分支不能跳过同节点已有的类型及其约束；纯联合节点没有 type。
+  if (!("type" in schema)) return;
   switch (schema.type) {
     case "object":
       validateObject(schema, value, path, errors);
