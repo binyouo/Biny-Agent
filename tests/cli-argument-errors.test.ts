@@ -14,7 +14,8 @@ try {
       "activity", "summary", "monthly", "2026-10-04", ...options
     ], {
       cwd: root,
-      env: { ...process.env, BINY_AGENT_DIR: path.join(root, "agent") },
+      // Runtime warnings (for example node:sqlite on Node 22) are separate from CLI errors.
+      env: { ...process.env, BINY_AGENT_DIR: path.join(root, "agent"), NODE_NO_WARNINGS: "1" },
       encoding: "utf8",
       timeout: 15_000
     });
