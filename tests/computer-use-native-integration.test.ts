@@ -412,3 +412,30 @@ test("a pixel click reports the button and the number of clicks it dispatched", 
     await driver.dispose();
   }
 });
+
+// --no-shot：只读树。截图要过一次 ScreenCaptureKit，纯读结构时那是白付的等待
+// （实测同一窗口 1338ms → 665ms）。但树必须照常回来。
+test("no_shot skips the capture and still returns the tree", async () => {
+  const driver = new NativeProcessDriver(() => {}, {
+    binaryPath: new URL("../out/native/computer-use", import.meta.url).pathname
+  });
+  try {
+    const listed = await driver.list("noshot-e2e", undefined);
+    const apps = (listed.data as { apps: { pid?: number }[] }).apps;
+    const target = apps.find(app => typeof app.pid === "number");
+    if (!target?.pid) return;
+
+    const full = await driver.daemonCommand("get_app_state", { pid: target.pid, max_elements: 40 });
+    const lean = await driver.daemonCommand("get_app_state", { pid: target.pid, max_elements: 40, no_shot: true });
+    const fullData = full.data as { elements?: unknown[] };
+    const leanData = lean.data as { elements?: unknown[] };
+
+    // 截图在 shape 之后落在 images 里，不在 data 上 —— 别去 data.screenshot 找。
+    assert.ok(full.images.length > 0, "默认要截图");
+    assert.equal(lean.images.length, 0, "no_shot 不该有截图");
+    assert.ok((leanData.elements?.length ?? 0) > 0, "树照常要回来");
+    assert.equal(leanData.elements?.length, fullData.elements?.length, "跳截图不该改变读到的结构");
+  } finally {
+    await driver.dispose();
+  }
+});

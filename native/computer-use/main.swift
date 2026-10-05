@@ -609,8 +609,12 @@ DispatchQueue.global().async {
                                 guard let bundle = args["bundle"] as? String else {
                                     throw NSError(domain: "app", code: 64, userInfo: [NSLocalizedDescriptionKey: "launch_app requires a bundle id"])
                                 }
+                                let wantsActivation = args["activates"] as? Bool ?? false
                                 if let running = NSRunningApplication.runningApplications(withBundleIdentifier: bundle).first {
-                                    reply(fd, ["id": id, "ok": true, "data": ["pid": Int(running.processIdentifier), "alreadyRunning": true] as [String: Any]])
+                                    // 已经在跑也要尊重 --activates：调用方的意图是"它要在前面"，
+                                    // 这个意图跟它是刚启动还是早就开着无关。（只是启动的话用 raise 更直接。）
+                                    if wantsActivation { _ = activateViaAppleEvents(bundle) }
+                                    reply(fd, ["id": id, "ok": true, "data": ["pid": Int(running.processIdentifier), "alreadyRunning": true, "activated": wantsActivation] as [String: Any]])
                                     return
                                 }
                                 let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundle)
@@ -618,13 +622,15 @@ DispatchQueue.global().async {
                                     throw NSError(domain: "app", code: 1, userInfo: [NSLocalizedDescriptionKey: "app_not_installed: \(bundle)"])
                                 }
                                 let config = NSWorkspace.OpenConfiguration()
-                                config.activates = false
+                                // 默认**不**激活：绝不因为启动一个应用就把用户的前台窗口顶掉。
+                                // 只有调用方明确给了 activates 才动焦点（Alma 的 --activates 同理）。
+                                config.activates = args["activates"] as? Bool ?? false
                                 let launched: NSRunningApplication? = await withCheckedContinuation { continuation in
                                     NSWorkspace.shared.openApplication(at: appURL, configuration: config) { app, _ in
                                         continuation.resume(returning: app)
                                     }
                                 }
-                                reply(fd, ["id": id, "ok": true, "data": ["pid": Int(launched?.processIdentifier ?? 0), "alreadyRunning": false] as [String: Any]])
+                                reply(fd, ["id": id, "ok": true, "data": ["pid": Int(launched?.processIdentifier ?? 0), "alreadyRunning": false, "activated": config.activates] as [String: Any]])
                             case "doctor":
                                 reply(fd, ["id": id, "ok": true, "data": [
                                     "accessibility": axTrusted() ? "granted" : "denied",
@@ -742,6 +748,9 @@ DispatchQueue.global().async {
                                 }
                                 let elements = collected.0
                                 let table = collected.1
+                                // no_shot：只读无障碍树。截图要过一次 ScreenCaptureKit，
+                                // 纯读结构时那是白付的等待（Alma 的 --no-shot 同样为此）。
+                                let skipShot = args["no_shot"] as? Bool ?? false
                                 var shotArgs: [String: Any] = ["out": args["out"] ?? "/tmp/biny-cu-state-\(Int(Date().timeIntervalSince1970 * 1000)).jpg", "pid": Int(pid)]
                                 if let maxWidth = args["max_width"] { shotArgs["max_width"] = maxWidth }
                                 // window_id 必须转下去 —— 之前在这里被吞掉，于是调用方指定的窗口
@@ -750,7 +759,7 @@ DispatchQueue.global().async {
                                 // 截图同样可能挂在无响应的窗口上：限时 3 秒，超时就返回不带图的观察。
                                 // 同理：TaskGroup 的 cancel 不会中断已在跑的 capture，
                                 // group.next() 仍会等它返回。放进独立线程 + 轮询才有真上限。
-                                let shot = await withDeadline(3.0, fallback: [:]) { (try? await screenshot(shotArgs)) ?? [:] }
+                                let shot = skipShot ? [:] : await withDeadline(3.0, fallback: [:]) { (try? await screenshot(shotArgs)) ?? [:] }
                                 refTables[pid] = table
                                 // 记下截图坐标 → 屏幕坐标的映射，后续像素点击据此换算。
                                 if let f = shot["screenFrame"] as? [String: Double],

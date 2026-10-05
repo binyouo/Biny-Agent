@@ -361,9 +361,10 @@ export class NativeProcessDriver implements ComputerDriver {
     this.host = undefined;
     this.failHost(host, "driver_stopped");
     await new Promise<void>(resolve => {
-      // 采用来的 daemon 不是我们的子进程：断开连接就够了，它自己会在空闲后退出，
-      // 而且别的调用方可能正用着它，杀了就是替别人做主。
-      if (!host.child) { resolve(); return; }
+      // 采用来的 daemon 不是我们的子进程：不杀它（别的调用方可能正用着，而且它自己会在
+      // 空闲后退出），但**连接必须断开** —— 漏掉这句 socket 会一直挂在事件循环上，
+      // 进程跑完用例也退不出去。上一版正是漏在这里。
+      if (!host.child) { host.socket.destroy(); resolve(); return; }
       const timer = setTimeout(() => { try { host.child?.kill("SIGKILL"); } catch { /* noop */ } resolve(); }, shutdownTimeoutMs);
       host.child.once("exit", () => { clearTimeout(timer); resolve(); });
       try { host.child.kill("SIGTERM"); } catch { clearTimeout(timer); resolve(); }

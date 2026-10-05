@@ -89,13 +89,26 @@ export function registerCuCommands(program: Command): void {
 
   cu.command("snap").description("Observe a window: accessibility tree plus a screenshot").argument("<bundle|pid>", "app bundle id or pid")
     .option("--window <id>", "exact window id from `cu windows`").option("--out <path>", "where to write the jpg")
+    .option("--depth <n>", "how deep to walk the accessibility tree").option("--no-shot", "skip the screenshot and read only the tree")
     .option("--json", "print JSON")
-    .action(async (value: string, options: { window?: string; out?: string; json?: boolean }) => withDriver(async driver => {
-      const args = { ...target(value), ...windowOption(options), ...(options.out ? { out: options.out } : {}) };
+    .action(async (value: string, options: { window?: string; out?: string; depth?: string; shot?: boolean; json?: boolean }) => withDriver(async driver => {
+      const args = {
+        ...target(value), ...windowOption(options),
+        ...(options.out ? { out: options.out } : {}),
+        ...(options.depth ? { max_depth: Number(options.depth) } : {}),
+        // Commander 把 --no-shot 变成 shot:false
+        ...(options.shot === false ? { no_shot: true } : {})
+      };
       const reply = await driver.observeRaw(args);
       const data = reply.data as { window_id?: number; elements?: ElementLike[]; screenshot_width?: number; screenshot_height?: number };
-      if (options.json) return print({ ...data, tree: renderElementTree(data.elements) }, true);
-      print([`窗口 ${String(data.window_id)}  ${String(data.screenshot_width)}×${String(data.screenshot_height)}`, "", renderElementTree(data.elements)].join("\n"));
+      const tree = renderElementTree(data.elements);
+      if (options.json) return print({ ...data, tree }, true);
+      // --no-shot 时没有截图，也就没有尺寸 —— 别把 undefined 打给用户。
+      const header = [
+        data.window_id === undefined ? undefined : `窗口 ${String(data.window_id)}`,
+        data.screenshot_width ? `${String(data.screenshot_width)}×${String(data.screenshot_height)}` : "(未截图)"
+      ].filter(Boolean).join("  ");
+      print([header, "", tree].join("\n"));
     }));
 
   cu.command("shot").description("Capture one window to a file").argument("<bundle|pid>", "app bundle id or pid")
@@ -170,9 +183,13 @@ export function registerCuCommands(program: Command): void {
     }));
 
   cu.command("launch_app").description("Launch an app in the background (never takes the foreground)").argument("<bundle>")
+    .option("--activates", "bring it to the front afterwards — off by default, because starting an app should not move the user's focus")
     .option("--json", "print JSON")
-    .action((bundle: string, options: { json?: boolean }) => withDriver(async driver => {
-      print(await driver.launchApp(bundle), options.json);
+    .action((bundle: string, options: { activates?: boolean; json?: boolean }) => withDriver(async driver => {
+      const reply = options.activates
+        ? await driver.daemonCommand("launch_app", { bundle, activates: true })
+        : await driver.launchApp(bundle);
+      print(reply, options.json);
     }));
 
   cu.command("raise").description("Bring an app (or one of its windows) to the front").argument("<bundle|pid>")
