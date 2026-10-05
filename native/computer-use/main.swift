@@ -349,6 +349,31 @@ var lastIndicatorOutcome = "none"
 /// "什么都没变"意味着不必重读一整棵树，也不必把上次的 ref 当过期。
 var lastElementFingerprints: [String: [String]] = [:]
 
+/// 参照的观察回执里有 `observed_activations`：护栏**察觉到多少次"被激活"**。
+/// 只有把这件事记下来，"绝不抢焦点"才是可核查的 —— 否则它只是一个意图。
+var observedActivations = 0
+/// 最近一次护栏做了什么（供回执说明）。
+var focusGuardNote: String?
+
+/// 目标应用**聚焦元素**的指纹（pid → 描述）。
+///
+/// 参照护栏的判据从这里能读出来（它自己的三句话）：
+/// ```
+/// the app reported no focused element to compare
+/// the focused element exposes no readable text
+/// the focused element stopped exposing readable text
+/// ```
+/// —— 它比对的是**聚焦元素**，不是前台应用。这个差别是实的：
+/// **同一个应用内换了 key window / 换了焦点元素，只看前台应用是看不见的。**
+func focusedElementFingerprint(_ app: AXUIElement) -> String? {
+    guard let focusedRef = axCopy(app, kAXFocusedUIElementAttribute as String) else { return nil }
+    let focused = unsafeBitCast(focusedRef, to: AXUIElement.self)
+    let role = axString(focused, kAXRoleAttribute as String) ?? "?"
+    let title = axString(focused, kAXTitleAttribute as String) ?? ""
+    let value = (axCopy(focused, kAXValueAttribute as String) as? String).map { String($0.prefix(40)) } ?? ""
+    return "\(role)|\(title)|\(value)"
+}
+
 /// 元素的一条规范化描述：参与"变没变"的比较。
 /// 只收**会影响调用方判断**的字段（角色/标题/值/几何），不收 ref ——
 /// ref 每次都重新编，收进去会让"没变"永远判成"变了"。
@@ -859,7 +884,21 @@ func windowScreenBounds(pid: Int) -> [String: Double]? {
 func withFocusGuard<T>(_ pid: pid_t, _ body: () async -> T) async -> T {
     let before = NSWorkspace.shared.frontmostApplication
     let restore = (before?.processIdentifier == pid) ? nil : before
+    // 应用级之外再记一层**元素级**：同一个应用内换 key window 时，前台应用没变，
+    // 但用户的焦点其实已经被挪走了。参照判的就是这一层。
+    let app = axApp(pid)
+    let focusedBefore = focusedElementFingerprint(app)
+    let focusedElementBefore: AXUIElement? = axCopy(app, kAXFocusedUIElementAttribute as String)
+        .map { unsafeBitCast($0, to: AXUIElement.self) }
     let value = await body()
+
+    // 元素级：焦点在**应用内部**被挪走了吗？挪走了就还回去，并计一次数。
+    if let focusedBefore, let elementBefore = focusedElementBefore,
+       focusedElementFingerprint(app) != focusedBefore {
+        _ = AXUIElementSetAttributeValue(elementBefore, kAXFocusedAttribute as CFString, kCFBooleanTrue)
+        observedActivations += 1
+        focusGuardNote = "focus_returned_to_element: 动作把焦点挪到了本应用的另一个元素上，已经还回原来的那个。"
+    }
     guard let restore else { return value }
     // 目标应用的自激活是异步落地的：等太短会漏（我们走了它才抢），
     // 等太久用户就真的看见自己的窗口被顶掉。
@@ -1737,6 +1776,9 @@ DispatchQueue.global().async {
                                 // 参照同样在这一个回执里给这两个字段。
                                 if let screenshotError { data["screenshot_error"] = screenshotError }
                                 data["screen_recording"] = screenTrusted() ? "granted" : "not_granted"
+                                // 护栏的账目（参照在这一组里同样上报）：察觉到多少次"被激活"。
+                                // 只有记下来，"绝不抢焦点"才是可核查的 —— 否则它只是一个意图。
+                                data["observed_activations"] = observedActivations
                                 data["screenshotWidth"] = shot["width"] ?? 0
                                 data["screenshotHeight"] = shot["height"] ?? 0
                                 // 上报**真实**窗口号：以前这里是 Int(pid)，于是 windowId 一路都是假的。
