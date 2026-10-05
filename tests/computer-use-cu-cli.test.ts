@@ -36,6 +36,9 @@ assert.match(runHelp("scroll"), /<direction>/u);
 assert.match(runHelp("drag"), /<x1>\s+<y1>\s+<x2>\s+<y2>/u);
 assert.match(runHelp("raise"), /--window\s+<id>/u);
 assert.match(runHelp("click"), /--pixel\s+<x>\s+<y\.\.\.>/u);
+assert.match(runHelp("click"), /--strategy\s+<name>/u);
+assert.match(runHelp("click"), /--button\s+<name>/u);
+assert.match(runHelp("click"), /--clicks\s+<n>/u);
 // 元素级输入与全局输入是两对动词，别混：type 改 AXValue，type_text 发按键
 assert.match(runHelp("type"), /--append/u);
 assert.match(runHelp("type"), /<ref>/u);

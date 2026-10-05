@@ -439,3 +439,44 @@ test("no_shot skips the capture and still returns the tree", async () => {
     await driver.dispose();
   }
 });
+
+// 两条路由是两种机制：AX 让控件执行它自己的动作（不碰坐标），物理点击合成鼠标事件
+// （能表达双击和右键，但依赖坐标与前台）。strategy 让调用方指定，而 auto 必须如实
+// 回报**实际走了哪条** —— 以前它无论怎么走都写 route:"ax"，那是个小谎。
+test("click honours the strategy it was given, and refuses the impossible combinations", async () => {
+  const driver = new NativeProcessDriver(() => {}, {
+    binaryPath: new URL("../out/native/computer-use", import.meta.url).pathname
+  });
+  try {
+    const listed = await driver.list("strategy-e2e", undefined);
+    const apps = (listed.data as { apps: { pid?: number }[] }).apps;
+    const target = apps.find(app => typeof app.pid === "number");
+    if (!target?.pid) return;
+    const observed = await driver.observe("strategy-e2e", { pid: target.pid } as never);
+    const elements = (observed.data as { elements?: { element_token?: string; role?: string; frame?: unknown }[] }).elements ?? [];
+    const ref = elements.find(element => element.element_token && element.frame)?.element_token;
+    if (!ref) return;
+
+    // 坐标 + strategy=ax：AX 是按元素动作的，坐标对它没有意义 —— 说清楚，别假装能走
+    await assert.rejects(
+      () => driver.actRaw("click", { pid: target.pid, x: 10, y: 10, strategy: "ax" }),
+      /strategy_ax_needs_ref/
+    );
+
+    // AX 只有单次左键动作，表达不了双击 —— 也别说能做
+    await assert.rejects(
+      () => driver.actRaw("click", { pid: target.pid, ref, strategy: "ax", clicks: 2 }),
+      /ax_cannot_express_this_click/
+    );
+
+    // physical 一定走物理：它不需要控件支持任何 AX 动作
+    const physical = await driver.actRaw("click", { pid: target.pid, ref, strategy: "physical" });
+    assert.equal((physical.data as { route?: string }).route, "physical");
+
+    // auto 要如实说走了哪条，而不是一律写 ax
+    const auto = await driver.actRaw("click", { pid: target.pid, ref, clicks: 2 });
+    assert.equal((auto.data as { route?: string }).route, "physical", "双击 AX 表达不了，auto 应当退到物理并如实回报");
+  } finally {
+    await driver.dispose();
+  }
+});

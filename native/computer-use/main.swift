@@ -778,34 +778,56 @@ DispatchQueue.global().async {
                             case "click":
                                 guard axTrusted() else { throw NSError(domain: "ax", code: 1, userInfo: [NSLocalizedDescriptionKey: "ax_not_granted"]) }
                                 if let ref = args["ref"] as? String, let pid = args["pid"] as? Int, let element = refTables[pid_t(pid)]?[ref] {
-                                    // 不同控件认不同的 AX 动作：有的只响应 Pick、有的只响应 Confirm。
+                                    // 两条路由是两种机制，不是同一件事的两种写法：
+                                    // AX 让控件执行它自己的动作（不碰坐标，最可靠）；
+                                    // 物理点击合成鼠标事件（能表达双击和右键，但依赖坐标与前台）。
+                                    // strategy 让调用方指定用哪条 —— auto 仍按可用性挑。
+                                    let strategy = args["strategy"] as? String ?? "auto"
                                     let refButton = mouseButton(args["button"] as? String)
                                     let refClicks = max(1, min(3, args["clicks"] as? Int ?? 1))
-                                    // 双击和右键在 AX 里都没有对应动作：AXPress 表达不了"点两下"。
-                                    // 那种情况直接在元素中心做物理点击序列。
-                                    if refClicks > 1 || refButton != .left, let frame = axFrame(element) {
+                                    let axCannotExpress = refClicks > 1 || refButton != .left
+
+                                    func physicalAtElement() async -> Bool {
+                                        guard let frame = axFrame(element) else { return false }
                                         let point = CGPoint(x: frame["x"]! + frame["w"]!/2, y: frame["y"]! + frame["h"]!/2)
                                         await withFocusGuard(pid_t(pid)) {
                                             postClick(pid_t(pid), point, button: refButton, clicks: refClicks)
                                         }
+                                        return true
+                                    }
+
+                                    if strategy == "ax" && axCannotExpress {
+                                        throw NSError(domain: "click", code: 65, userInfo: [NSLocalizedDescriptionKey: "ax_cannot_express_this_click: AX 只有单次左键动作，双击或其它按键请用 strategy=physical"])
+                                    }
+                                    if strategy == "physical" || (strategy == "auto" && axCannotExpress) {
+                                        guard await physicalAtElement() else {
+                                            throw NSError(domain: "click", code: 66, userInfo: [NSLocalizedDescriptionKey: "element_has_no_frame: 元素没有坐标，做不了物理点击"])
+                                        }
                                         reply(fd, ["id": id, "ok": true, "data": ["clicked": ref, "route": "physical", "clicks": refClicks] as [String: Any]] as [String: Any])
-                                    } else {
-                                        // 依次试，全都不认才退到物理点击。
+                                    } else if strategy == "ax" {
                                         let attempts: [String] = [kAXPressAction as String, kAXPickAction as String, kAXConfirmAction as String]
                                         let status: AXError = attempts.reduce(.failure) { acc, action in
                                             acc == .success ? acc : AXUIElementPerformAction(element, action as CFString)
                                         }
-                                        if status != .success {
-                                            if let frame = axFrame(element) {
-                                                let point = CGPoint(x: frame["x"]! + frame["w"]!/2, y: frame["y"]! + frame["h"]!/2)
-                                                await withFocusGuard(pid_t(pid)) {
-                                                    postClick(pid_t(pid), point, button: .left, clicks: 1)
-                                                }
-                                            }
+                                        guard status == .success else {
+                                            throw NSError(domain: "click", code: 67, userInfo: [NSLocalizedDescriptionKey: "element_action_unsupported: 这个控件不响应任何 AX 点击动作，改用 strategy=physical 或 auto"])
                                         }
                                         reply(fd, ["id": id, "ok": true, "data": ["clicked": ref, "route": "ax"] as [String: Any]] as [String: Any])
+                                    } else {
+                                        // auto：先 AX，控件不认才退物理；回执要说清**实际走了哪条**。
+                                        let attempts: [String] = [kAXPressAction as String, kAXPickAction as String, kAXConfirmAction as String]
+                                        let status: AXError = attempts.reduce(.failure) { acc, action in
+                                            acc == .success ? acc : AXUIElementPerformAction(element, action as CFString)
+                                        }
+                                        let route = status == .success ? "ax" : (await physicalAtElement() ? "physical" : "none")
+                                        reply(fd, ["id": id, "ok": true, "data": ["clicked": ref, "route": route] as [String: Any]] as [String: Any])
                                     }
                                 } else if let x = args["x"] as? Double, let y = args["y"] as? Double {
+                                    // 给了坐标就只能是物理点击：AX 是按元素动作的，坐标对它没有意义。
+                                    // 早点说清楚，别让调用方以为指定了 strategy=ax 就会走 AX。
+                                    if (args["strategy"] as? String) == "ax" {
+                                        throw NSError(domain: "click", code: 65, userInfo: [NSLocalizedDescriptionKey: "strategy_ax_needs_ref: 传了坐标就只能合成鼠标事件；要 AX 点击请用 ref"])
+                                    }
                                     let pid = try resolvePid(args)
                                     // 像素坐标为截图坐标：按最近一次快照的映射换算回屏幕点。
                                     let point = screenPoint(pid, x, y, screenSpace: args["coord_space"] as? String == "screen")
