@@ -75,6 +75,26 @@ pip/present · pip/hide · pip/frame · pip/move · pip/invalidate
 本实现是**单个预览面**，跟随当前观察目标。差别属于组织方式，不是能力缺失
 （§6 另记了「按窗口镜像 + 最小化劫持」这一条）。
 
+### 1.2a AX 增强标志是**有作用域**的，用完要还原
+
+参照把它做成一个「断言」（`AXEnablementAssertion`，里面有字段 `prevEnhanced`）——
+记下 `AXEnhancedUserInterface` 的原值，用完恢复。
+
+本实现原先**设了就不管**：每次观察都会在目标应用上留下「增强无障碍树」常开。
+后果是具体的 —— 对 Electron 应用意味着**一直渲染完整无障碍树**，可能持续变慢。
+**那是留在用户正在用的应用上的副作用**，不该由我们留下。现已改为断言式。
+
+复验方法（三步，需要能读 AX 的进程）：
+
+```bash
+# 1. 把基准设成 false，确认读回 false
+# 2. 让守护进程对它观察一次（get_app_state）
+# 3. 再读 —— 应为 false（旧实现会留 true）
+```
+
+实测：基准 false → 观察后仍 false ✓。顺带一提，改之前 TextEdit 读回是 **true** ——
+那就是旧行为留在这台机器上的残留，等于亲眼看到了这个副作用。
+
 ### 1.2b 观察会自动后台拉起目标
 
 参照 SKILL 原文：`get_app_state` **auto-launches the target app in the background if it is

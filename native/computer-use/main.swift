@@ -517,6 +517,11 @@ func collectAccessibility(pid: pid_t, maxDepth: Int, limit: Int, timeout: Double
     let thread = Thread {
         let app = axApp(pid)
         AXUIElementSetAttributeValue(app, "AXManualAccessibility" as CFString, kCFBooleanTrue)
+        // AXEnhancedUserInterface 要当**有作用域的断言**用，不是永久打开。
+        // 参照的 AXEnablementAssertion 里有个 prevEnhanced —— 它记原值，用完恢复。
+        // 留着的后果是具体的：Electron 应用会一直渲染完整无障碍树，可能持续变慢 ——
+        // 那是留在**用户正在用的应用**上的副作用，不该由我们留下。
+        let prevEnhanced = axCopy(app, "AXEnhancedUserInterface" as String)
         AXUIElementSetAttributeValue(app, "AXEnhancedUserInterface" as CFString, kCFBooleanTrue)
         var elements: [[String: Any]] = []
         var table: [String: AXUIElement] = [:]
@@ -525,6 +530,13 @@ func collectAccessibility(pid: pid_t, maxDepth: Int, limit: Int, timeout: Double
             if let frame = axFrame(main) { elements.append(["ref": "e0", "role": "AXWindow", "frame": frame]) }
             table["e0"] = main
             axWalk(main, depth: 0, maxDepth: maxDepth, limit: limit, counter: &counter, table: &table, out: &elements, deadline: Date().addingTimeInterval(2))
+        }
+        // 遍历一结束就撤销断言。原值有就放回，本来没有就置回 false ——
+        // 别把「增强模式」留在用户的应用上。
+        if let prevEnhanced {
+            AXUIElementSetAttributeValue(app, "AXEnhancedUserInterface" as CFString, prevEnhanced)
+        } else {
+            AXUIElementSetAttributeValue(app, "AXEnhancedUserInterface" as CFString, kCFBooleanFalse)
         }
         box.store(elements, table)
     }
