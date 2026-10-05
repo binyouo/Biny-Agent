@@ -125,7 +125,8 @@ export function createSearchFilesTool(context: ToolContext): Tool<SearchFilesArg
             context.ignore,
             maxScannedFiles + 1,
             signal,
-            (relativePath) => fileInScope(relativePath, relativeRoot, glob)
+            (relativePath) => fileInScope(relativePath, relativeRoot, glob),
+            relativeRoot === "." ? undefined : (relativePath) => directoryInScope(relativePath, relativeRoot)
           );
           const fileLimitReached = candidates.length > maxScannedFiles;
           const matches: SearchFilesMatch[] = [];
@@ -246,4 +247,10 @@ function fileInScope(relativePath: string, relativeRoot: string, glob: string | 
   const normalized = relativePath.split(path.sep).join("/");
   const inRoot = relativeRoot === "." || normalized === relativeRoot || normalized.startsWith(`${relativeRoot}/`);
   return inRoot && (glob === undefined || path.matchesGlob(normalized, glob));
+}
+
+function directoryInScope(relativePath: string, relativeRoot: string): boolean {
+  const normalized = relativePath.split(path.sep).join("/");
+  // Walk from the workspace root as before, including ancestors of file or missing scopes.
+  return normalized === relativeRoot || normalized.startsWith(`${relativeRoot}/`) || relativeRoot.startsWith(`${normalized}/`);
 }
