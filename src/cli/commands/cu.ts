@@ -199,6 +199,14 @@ export function registerCuCommands(program: Command): void {
       print((await driver.daemonCommand("raise", { ...target(value), ...windowOption(options) })).data, options.json);
     }));
 
+  cu.command("lens").description("Show or hide the action indicator that marks where the agent acts")
+    .argument("[mode]", "on | off | toggle (default: toggle)")
+    .option("--json", "print JSON")
+    .action((mode: string | undefined, options: { json?: boolean }) => withDriver(async driver => {
+      const data = (await driver.daemonCommand("lens", { mode: mode ?? "toggle" })).data;
+      print(options.json ? data : `lens: ${(data as { enabled?: boolean }).enabled ? "on" : "off"}`, options.json);
+    }));
+
   cu.command("shutdown").description("Stop the daemon (it otherwise exits after 900s idle)").option("--json", "print JSON")
     .action((options: { json?: boolean }) => withDriver(async driver => {
       print((await driver.daemonCommand("shutdown")).data, options.json);

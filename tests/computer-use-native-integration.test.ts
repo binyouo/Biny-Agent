@@ -420,9 +420,17 @@ test("no_shot skips the capture and still returns the tree", async () => {
     binaryPath: new URL("../out/native/computer-use", import.meta.url).pathname
   });
   try {
+    // 必须挑**有窗口**的应用：随便拿第一个有 pid 的，它可能压根没有窗口，
+    // 那样树本来就是空的，测试会变成看运气（这条一开始就犯了这个错）。
     const listed = await driver.list("noshot-e2e", undefined);
     const apps = (listed.data as { apps: { pid?: number }[] }).apps;
-    const target = apps.find(app => typeof app.pid === "number");
+    let target: { pid?: number } | undefined;
+    for (const app of apps) {
+      if (typeof app.pid !== "number") continue;
+      const scoped = await driver.list("noshot-e2e", app.pid);
+      const windows = (scoped.data as { apps: { windows?: unknown[] }[] }).apps[0]?.windows ?? [];
+      if (windows.length) { target = app; break; }
+    }
     if (!target?.pid) return;
 
     const full = await driver.daemonCommand("get_app_state", { pid: target.pid, max_elements: 40 });
@@ -476,6 +484,30 @@ test("click honours the strategy it was given, and refuses the impossible combin
     // auto 要如实说走了哪条，而不是一律写 ax
     const auto = await driver.actRaw("click", { pid: target.pid, ref, clicks: 2 });
     assert.equal((auto.data as { route?: string }).route, "physical", "双击 AX 表达不了，auto 应当退到物理并如实回报");
+  } finally {
+    await driver.dispose();
+  }
+});
+
+// lens 是动作指示器：让用户看见 agent 在哪里动手（参照实现的 helper 里是 Overlay.swift，
+// 含 LensOverlay/ActionCursor 与 scrollBadge/typeBadge 两个角标）。开关状态必须如实回报，
+// 因为它同时决定「用户会不会看到这次动作」。
+// 可见性在真机上单独验证过：off 与 show_cursor=false 都不出现，默认出现且**不吃点击**
+// （全屏覆盖时双击仍能选中词）。
+test("lens reports its state and toggles", async () => {
+  const driver = new NativeProcessDriver(() => {}, {
+    binaryPath: new URL("../out/native/computer-use", import.meta.url).pathname
+  });
+  try {
+    const on = (await driver.daemonCommand("lens", { mode: "on" })).data as { enabled?: boolean };
+    assert.equal(on.enabled, true);
+    const off = (await driver.daemonCommand("lens", { mode: "off" })).data as { enabled?: boolean };
+    assert.equal(off.enabled, false);
+    const toggled = (await driver.daemonCommand("lens", { mode: "toggle" })).data as { enabled?: boolean };
+    assert.equal(toggled.enabled, true, "从关到开");
+    const back = (await driver.daemonCommand("lens", { mode: "toggle" })).data as { enabled?: boolean };
+    assert.equal(back.enabled, false, "再 toggle 应翻回");
+    await driver.daemonCommand("lens", { mode: "on" });
   } finally {
     await driver.dispose();
   }

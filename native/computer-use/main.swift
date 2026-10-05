@@ -27,6 +27,122 @@ func reply(_ fd: Int32, _ value: [String: Any]) {
 }
 
 // MARK: - 权限检查
+// MARK: - Lens：动作指示器
+
+/// 让用户**看见** agent 正在哪里动手。
+///
+/// 参照实现的 helper 里是 `main/Overlay.swift`，含 `LensOverlay` / `LensView` /
+/// `ActionCursor`，以及 `alma.lens.scrollBadge` / `alma.lens.typeBadge` 两个角标图层 ——
+/// 也就是「光标落点 + 这一次做了什么」。`lens on|off|toggle` 开关它，
+/// 单个动作可以用 `show_cursor=false` 临时不显示。
+///
+/// 三条硬约束，缺一条就会打扰用户：
+/// **穿透点击**（ignoresMouseEvents）· **不抢焦点**（canBecomeKey=false，只用
+/// orderFrontRegardless）· **不进 Dock**（daemon 本身是 LSUIElement）。
+/// 指示器窗口永不成为 key/main —— 它只是浮在最上面的一层画。
+final class LensWindow: NSWindow {
+    override var canBecomeKey: Bool { false }
+    override var canBecomeMain: Bool { false }
+}
+
+final class LensOverlay {
+    private var window: NSWindow?
+    private var cursorLayer: CAShapeLayer?
+    private var badgeLayer: CALayer?
+    private var hideTimer: Timer?
+    private let size: CGFloat = 44
+    private let fadeIn: TimeInterval = 0.12
+    private let linger: TimeInterval = 1.1
+
+    private func ensureWindow() -> NSWindow {
+        if let window { return window }
+        let window = LensWindow(
+            contentRect: NSScreen.main?.frame ?? .zero,
+            styleMask: [.borderless], backing: .buffered, defer: false
+        )
+        window.isOpaque = false
+        window.backgroundColor = .clear
+        window.hasShadow = false
+        // 穿透：鼠标事件原样落到下面的应用，指示器本身绝不能吃掉点击。
+        window.ignoresMouseEvents = true
+        window.level = .screenSaver
+        window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
+        let content = NSView(frame: window.contentRect(forFrameRect: window.frame))
+        content.wantsLayer = true
+        let cursor = CAShapeLayer()
+        cursor.opacity = 0
+        let badge = CALayer()
+        badge.opacity = 0
+        content.layer?.addSublayer(cursor)
+        content.layer?.addSublayer(badge)
+        window.contentView = content
+        self.window = window
+        self.cursorLayer = cursor
+        self.badgeLayer = badge
+        return window
+    }
+
+    /// 在屏幕坐标处显示一次动作指示。`symbol` 是这次动作的角标（滚动/输入），空则只显示落点。
+    func show(at point: CGPoint, symbol: String?) {
+        let window = ensureWindow()
+        guard let cursor = cursorLayer, let badge = badgeLayer, let root = window.contentView?.layer else { return }
+        hideTimer?.invalidate()
+
+        // 屏幕坐标原点在左下，图层坐标原点在左上 —— 这里必须翻一次，否则指示器会跑到对侧。
+        let flippedY = (NSScreen.main?.frame.height ?? 0) - point.y
+        let ring = CGRect(x: point.x - size / 2, y: flippedY - size / 2, width: size, height: size)
+        cursor.path = CGPath(ellipseIn: ring, transform: nil)
+        cursor.fillColor = NSColor.systemBlue.withAlphaComponent(0.18).cgColor
+        cursor.strokeColor = NSColor.systemBlue.withAlphaComponent(0.95).cgColor
+        cursor.lineWidth = 2.5
+        cursor.opacity = 1
+
+        if let symbol, let image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil) {
+            let badgeSize = CGSize(width: 30, height: 22)
+            badge.contents = image.cgImage(forProposedRect: nil, context: nil, hints: nil)
+            badge.contentsGravity = .resizeAspect
+            badge.backgroundColor = NSColor.systemBlue.withAlphaComponent(0.92).cgColor
+            badge.cornerRadius = 6
+            badge.frame = CGRect(x: ring.maxX - 2, y: ring.minY - badgeSize.height + 6, width: badgeSize.width, height: badgeSize.height)
+            badge.opacity = 1
+        } else {
+            badge.opacity = 0
+        }
+
+        window.orderFrontRegardless()
+        let fade = CABasicAnimation(keyPath: "opacity")
+        fade.fromValue = 0; fade.toValue = 1; fade.duration = fadeIn
+        cursor.add(fade, forKey: "in")
+        root.opacity = 1
+
+        hideTimer = Timer.scheduledTimer(withTimeInterval: linger, repeats: false) { [weak self] _ in self?.hide() }
+    }
+
+    func hide() {
+        hideTimer?.invalidate(); hideTimer = nil
+        cursorLayer?.opacity = 0
+        badgeLayer?.opacity = 0
+        window?.orderOut(nil)
+    }
+}
+
+let lensOverlay = LensOverlay()
+var lensEnabled = true
+var lastActionPoint: CGPoint?
+
+/// 记一次动作落点。
+///
+/// 命令处理跑在全局队列线程上，而 AppKit 只能主线程碰 —— 必须派过去。
+/// `show_cursor=false` 表示这一次不要指示器（`--no-cursor`）。
+func noteActionPoint(_ args: [String: Any], _ point: CGPoint?, symbol: String?) {
+    guard lensEnabled, args["show_cursor"] as? Bool ?? true else { return }
+    // 打字这类动作没有坐标：沿用上一次落点，用户仍能看到「它正在这里输入」。
+    let target = point ?? lastActionPoint
+    guard let target else { return }
+    lastActionPoint = target
+    DispatchQueue.main.async { lensOverlay.show(at: target, symbol: symbol) }
+}
+
 func axTrusted() -> Bool { return AXIsProcessTrusted() }
 func screenTrusted() -> Bool { return CGPreflightScreenCaptureAccess() }
 
@@ -405,7 +521,7 @@ func postDrag(_ pid: pid_t, from: CGPoint, to: CGPoint) {
 /// 要的正是 bundle id。mdls 一次只吃一个文件（逐个问 30ms×N），NSMetadataQuery
 /// 一次问完：实测 138 个应用 ~93ms，而且 bundle id 和最后使用时间一起给。
 ///
-/// 结果靠 runloop 投递。主线程在 RunLoop.main.run() 上，是唯一确定被泵起来的那个；
+/// 结果靠 runloop 投递。主线程在 `RunLoop.main.run()` 上，是唯一确定被泵起来的那个；
 /// 在全局队列里手动泵 runloop 会漏结果，所以派到主线程做完再等。
 func recentlyUsedApplications(withinDays days: Int) -> [[String: Any]] {
     var collected: [[String: Any]] = []
@@ -698,6 +814,15 @@ DispatchQueue.global().async {
                                     raised["warning"] = "window_not_found: 没有编号为 \(requested) 的窗口，已只把应用提到前面。"
                                 }
                                 reply(fd, ["id": id, "ok": true, "data": raised] as [String: Any])
+                            case "lens":
+                                // 动作指示器的开关。不传 mode 就是 toggle（参照实现的 CLI 同样先读再翻）。
+                                switch args["mode"] as? String ?? args["enabled"] as? String {
+                                case "on", "true", "1": lensEnabled = true
+                                case "off", "false", "0": lensEnabled = false
+                                default: lensEnabled.toggle()
+                                }
+                                if !lensEnabled { DispatchQueue.main.async { lensOverlay.hide() } }
+                                reply(fd, ["id": id, "ok": true, "data": ["enabled": lensEnabled] as [String: Any]])
                             case "status":
                                 // 「helper 包 + 守护进程状态」：调用方最想先知道的两件事是
                                 // 「包在不在」和「守护进程跑了多久、还剩多久自退」。
@@ -790,6 +915,7 @@ DispatchQueue.global().async {
                                     func physicalAtElement() async -> Bool {
                                         guard let frame = axFrame(element) else { return false }
                                         let point = CGPoint(x: frame["x"]! + frame["w"]!/2, y: frame["y"]! + frame["h"]!/2)
+                                        noteActionPoint(args, point, symbol: nil)
                                         await withFocusGuard(pid_t(pid)) {
                                             postClick(pid_t(pid), point, button: refButton, clicks: refClicks)
                                         }
@@ -808,6 +934,9 @@ DispatchQueue.global().async {
                                         let attempts: [String] = [kAXPressAction as String, kAXPickAction as String, kAXConfirmAction as String]
                                         let status: AXError = attempts.reduce(.failure) { acc, action in
                                             acc == .success ? acc : AXUIElementPerformAction(element, action as CFString)
+                                        }
+                                        if let frame = axFrame(element) {
+                                            noteActionPoint(args, CGPoint(x: frame["x"]! + frame["w"]!/2, y: frame["y"]! + frame["h"]!/2), symbol: nil)
                                         }
                                         guard status == .success else {
                                             throw NSError(domain: "click", code: 67, userInfo: [NSLocalizedDescriptionKey: "element_action_unsupported: 这个控件不响应任何 AX 点击动作，改用 strategy=physical 或 auto"])
@@ -833,6 +962,7 @@ DispatchQueue.global().async {
                                     let point = screenPoint(pid, x, y, screenSpace: args["coord_space"] as? String == "screen")
                                     let pixelButton = mouseButton(args["button"] as? String)
                                     let pixelClicks = max(1, min(3, args["clicks"] as? Int ?? 1))
+                                    noteActionPoint(args, point, symbol: nil)
                                     await withFocusGuard(pid) {
                                         postClick(pid, point, button: pixelButton, clicks: pixelClicks)
                                     }
@@ -960,6 +1090,7 @@ DispatchQueue.global().async {
                                 let pid = try resolvePid(args)
                                 let text = args["text"] as? String ?? ""
                                 await withFocusGuard(pid) { postUnicode(pid, text) }
+                                noteActionPoint(args, nil, symbol: "keyboard")
                                 var typed: [String: Any] = ["typed": text.count]
                                 if let warning = keyDeliveryWarning(pid) { typed["warning"] = warning }
                                 if let guardWarning = focusGuardWarning() { typed["focusGuardWarning"] = guardWarning }
@@ -999,7 +1130,11 @@ DispatchQueue.global().async {
                                     data = ["scrolled": direction, "route": "wheel"]
                                 }
                                 if var result = data {
-                                    if let guardWarning = focusGuardWarning() { result["focusGuardWarning"] = guardWarning }
+                                    // 滚动没有单一落点：用目标窗口的中心，用户能看出"它在滚哪儿"。
+                                    if let frame = windowScreenBounds(pid: Int(pid)) {
+                                        noteActionPoint(args, CGPoint(x: frame["x"]! + frame["w"]!/2, y: frame["y"]! + frame["h"]!/2), symbol: "arrow.up.arrow.down")
+                                    }
+                                    if let guardWarning = focusGuardWarning() { result["guardWarning"] = guardWarning }
                                     reply(fd, ["id": id, "ok": true, "data": result] as [String: Any])
                                 } else {
                                     reply(fd, ["id": id, "ok": false, "error": ["code": "scroll_route_unavailable", "message": "这个滚动区既不暴露 AXScrollBar，也不接受滚轮事件。"] as [String: Any]] as [String: Any])
@@ -1016,4 +1151,10 @@ DispatchQueue.global().async {
         }
     }
 }
+// 让 AppKit 就位：daemon 是 LSUIElement 的 .app，平时只跑 runloop 不碰 UI。
+// 但 lens 指示器要开窗口，没初始化过 NSApplication 的话窗口排不到前面。
+// setActivationPolicy(.accessory) 保证它不进 Dock、也不抢别的前台。
+_ = NSApplication.shared
+NSApp.setActivationPolicy(.accessory)
+NSApp.finishLaunching()
 RunLoop.main.run()

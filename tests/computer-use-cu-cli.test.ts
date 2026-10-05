@@ -16,7 +16,7 @@ const cu = runHelp();
 // 对 Alma 的 cu：命令行层独有的动词必须在（模型侧那 13 个工具里没有它们）
 for (const verb of ["status", "doctor", "grant", "list_apps", "apps", "windows", "snap", "shot",
                     "click", "type", "type_text", "press", "press_key", "scroll", "drag", "menu",
-                    "set_value", "launch_app", "raise", "shutdown"]) {
+                    "set_value", "launch_app", "raise", "lens", "shutdown"]) {
   assert.match(cu, new RegExp(`^\\s+${verb}\\b`, "mu"), `cu 缺动词 ${verb}`);
 }
 // 13 个模型工具里没有 raise/shutdown/status —— 它们是命令行层的，不该混进工具表
@@ -35,6 +35,8 @@ assert.match(runHelp("press_key"), /--pid\s+<n>/u);
 assert.match(runHelp("scroll"), /<direction>/u);
 assert.match(runHelp("drag"), /<x1>\s+<y1>\s+<x2>\s+<y2>/u);
 assert.match(runHelp("raise"), /--window\s+<id>/u);
+assert.match(runHelp("lens"), /\[mode\]/u);
+assert.match(runHelp("lens"), /on \| off \| toggle/u);
 assert.match(runHelp("click"), /--pixel\s+<x>\s+<y\.\.\.>/u);
 assert.match(runHelp("click"), /--strategy\s+<name>/u);
 assert.match(runHelp("click"), /--button\s+<name>/u);
