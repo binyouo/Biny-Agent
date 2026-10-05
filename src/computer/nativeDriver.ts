@@ -14,7 +14,26 @@ import type { ComputerAction, WindowTarget } from "./protocol.js";
 
 const maxIpcBytes = 2 * 1024 * 1024;
 const maxPending = 32;
-const requestTimeoutMs = 30_000;
+// 截图本来就慢，其余请求不该陪着它等。参照实现同样是 20s 默认 / 30s 截图。
+/**
+ * socket 名按**二进制**隔离，不按工作目录。
+ *
+ * 按 cwd 的话同一个人换个目录跑就会起第二个 daemon —— 两份 ref 表、两套空闲计时。
+ * 按内容哈希还多一层好处：重新构建后名字就变了，不会有上一次构建的旧 daemon
+ * 应答新请求。macOS 每次新构建都会重置 TCC 授权，这两件事本来就该一起变。
+ */
+function socketKeyFor(binaryPath: string): string {
+  try {
+    return crypto.createHash("sha1").update(readFileSync(binaryPath)).digest("hex").slice(0, 8);
+  } catch {
+    // 还没构建好就退回按路径 —— 至少同一个源码树里的实例共用。
+    return crypto.createHash("sha1").update(binaryPath).digest("hex").slice(0, 8);
+  }
+}
+
+const requestTimeoutMs = 20_000;
+const screenshotTimeoutMs = 30_000;
+const screenshotCommands = new Set(["capture_screen", "get_app_state", "shot_display"]);
 const shutdownTimeoutMs = 2_000;
 const idleTimeoutMs = 900_000;
 // 与 protocol.ts 的 maxComputerImageBytes 保持一致。
@@ -84,7 +103,7 @@ export class NativeProcessDriver implements ComputerDriver {
     this.binaryPath = options.binaryPath ?? NativeProcessDriver.resolveBinary();
     this.socketPath = path.join(
       options.socketDir ?? path.join(os.homedir(), "Library", "Application Support", "alma"),
-      `biny-computer-use-${crypto.createHash("sha1").update(process.cwd()).digest("hex").slice(0, 8)}.sock`
+      `biny-computer-use-${socketKeyFor(this.binaryPath)}.sock`
     );
   }
 
@@ -244,7 +263,7 @@ export class NativeProcessDriver implements ComputerDriver {
         this.pending.delete(id);
         cleanup();
         reject(new Error("driver_request_timeout; outcome may be unknown"));
-      }, requestTimeoutMs);
+      }, screenshotCommands.has(cmd) ? screenshotTimeoutMs : requestTimeoutMs);
       const onAbort = () => { this.pending.delete(id); clearTimeout(timer); cleanup(); reject(new Error("driver_request_aborted")); };
       const cleanup = () => signal?.removeEventListener("abort", onAbort);
       signal?.addEventListener("abort", onAbort, { once: true });

@@ -239,3 +239,24 @@ test("the daemon matches the reference on screenshot width, focus reporting and 
     await driver.dispose();
   }
 });
+
+// socket 名按二进制内容隔离，不按工作目录：同一个 daemon 不该因为用户
+// 从不同目录启动就成了两个（两份 ref 表、两套空闲计时）。
+test("the daemon socket is keyed by the binary, not the working directory", () => {
+  const binary = new URL("../out/native/computer-use", import.meta.url).pathname;
+  const socketOf = () => (new NativeProcessDriver(() => {}, { binaryPath: binary }) as unknown as { socketPath: string }).socketPath;
+
+  const original = process.cwd();
+  const first = socketOf();
+  try {
+    process.chdir("/tmp");
+    assert.equal(socketOf(), first, "换目录不该换 socket —— 否则会起第二个 daemon");
+  } finally {
+    process.chdir(original);
+  }
+
+  assert.match(first, /Application Support\/alma\/biny-computer-use-[0-9a-f]{8}\.sock$/);
+  // 内容哈希：二进制变了名字就得变，旧构建的 daemon 不能应答新请求
+  const other = new NativeProcessDriver(() => {}, { binaryPath: "/bin/echo" }) as unknown as { socketPath: string };
+  assert.notEqual(other.socketPath, first);
+});
