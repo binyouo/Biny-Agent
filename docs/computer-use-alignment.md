@@ -39,7 +39,7 @@ UI 三类界面齐全，并补上了参照实现有、本仓库原本没有的**
 
 | 界面 | 参照 | 本实现 | 依据 |
 |---|---|---|---|
-| 设置页 Computer Use 节 | 全 i18n key | 同 | 键名逐条对齐 |
+| 设置页 Computer Use 节 | 36 个 i18n key | **内容逐条覆盖**（权限 / 审批 / 严格模式 / 画中画 / 操作日志 / helper 诊断 / 焦点保护 / 测试我的配置）| 见下 |
 | PiP 监督窗 | 悬浮画中画 · 3fps · 90s 无活动自动结束 | 同 | 窗口 `vibrancy: hud`；寿命由偏好 × 活动驱动 |
 | 权限引导浮层 | 520×76，贴目标控件 | 同 | 几何模块 + OCR 定位行 |
 | **动作指示器（lens）** | `Overlay.swift` · `LensOverlay`/`ActionCursor` · `alma.lens.scrollBadge`/`typeBadge` | 同 | 见下 |
@@ -281,6 +281,10 @@ ShareableContentCache · BareModifierMonitor · AppshotEvents
 
 ## 6. 已知未覆盖
 
+- **设置页没有 i18n 层**：参照那一节是 36 个 `settings.computerUse.*` key；本仓库**全仓没有
+  i18n 机制**（整个设置区都是内联文案），所以对齐的是**内容**而不是键名。
+  校验方式：把参照的 36 个 key 逐条映射到本实现的界面元素，全部有对应物
+  （含容易漏的两处：`focusGuardTitle/Body` 的焦点保护告警、`testMySetup` 的"测试我的配置"按钮）。
 - **仅 macOS**：全部实现基于 AX / ScreenCaptureKit / CGEvent，无跨平台路径。
 - **网页内容量不出页**：§4.2 的估算路径。
 - **`CGEventSetWindowLocation`** 在本环境对双击选词**没有区别**（两种都选区不变），
