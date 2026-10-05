@@ -1585,6 +1585,25 @@ DispatchQueue.global().async {
                                 reply(fd, ["id": id, "ok": true, "data": data as [String: Any]])
                             case "click":
                                 guard axTrusted() else { throw axNotGranted() }
+                                // 参照在这条路上点明了**为什么**要 pid：
+                                // "click by pixel requires either `pid` or `bundle` of a running app
+                                //  — without a target we'd have to post globally and move the real cursor."
+                                // 只说"缺参数"，调用方分不清这是它的调用错、还是我们的策略 —— 把代价说出来。
+                                // 顺序有讲究：**先查调用本身完整不完整，再查策略**。
+                                // "只给了 x"连点都点不了，是比"没有目标"更前面的事；
+                                // 两条都成立时报后一条会让人先去找目标，补完才发现坐标还是缺的。
+                                if args["ref"] == nil, args["x"] != nil, args["y"] == nil {
+                                    throw NSError(domain: "click", code: 64, userInfo: [NSLocalizedDescriptionKey:
+                                        "click_pixel_needs_both_xy: 像素点击要同时给 x 和 y（现在只给了 x）"])
+                                }
+                                if args["ref"] == nil, args["x"] == nil, args["y"] != nil {
+                                    throw NSError(domain: "click", code: 64, userInfo: [NSLocalizedDescriptionKey:
+                                        "click_pixel_needs_both_xy: 像素点击要同时给 x 和 y（现在只给了 y）"])
+                                }
+                                if args["ref"] == nil, args["x"] != nil, args["pid"] == nil, args["bundle"] == nil {
+                                    throw NSError(domain: "click", code: 64, userInfo: [NSLocalizedDescriptionKey:
+                                        "click_pixel_needs_target: 像素点击需要一个正在运行的目标（pid 或 bundle）。没有目标就只能全局投递，那会**移动用户的真实光标** —— 所以这里不做。"])
+                                }
                                 if let ref = args["ref"] as? String, let pid = args["pid"] as? Int {
                                     // ⚠️ ref 的查找**不能和上面那两个条件并在一起**：
                                     // 并在一起时，"传了 ref 但它过期了"会掉到下面的像素分支，
@@ -1658,7 +1677,21 @@ DispatchQueue.global().async {
                                         postClick(pid, point, button: pixelButton, clicks: pixelClicks)
                                     }
                                     reply(fd, ["id": id, "ok": true, "data": ["clicked": "@\(Int(x)),\(Int(y))", "clicks": pixelClicks] as [String: Any]] as [String: Any])
-                                } else { throw NSError(domain: "click", code: 64, userInfo: [NSLocalizedDescriptionKey: "click_needs_ref_or_pixel: 要么给一个来自最近一次观察的 ref，要么给 x/y 坐标"]) }
+                                } else {
+                                    // ⚠️ 「一个坐标都没给」和「只给了一半」是两种坏法，下一步也不同
+                                    // （补坐标 vs 补**另一个**坐标）。参照在这条路上有两句独立的话：
+                                    // `click by pixel requires either pid or bundle…` 与
+                                    // `click --pixel requires both x and y`。
+                                    // 这条不变量我今天已经写过两次，这是第三次栽在同一处 ——
+                                    // 写 guard 时数一下它背后有几种原因。
+                                    let hasX = args["x"] != nil, hasY = args["y"] != nil
+                                    if hasX || hasY {
+                                        throw NSError(domain: "click", code: 64, userInfo: [NSLocalizedDescriptionKey:
+                                            "click_pixel_needs_both_xy: 像素点击要同时给 x 和 y（现在只有 \(hasX ? "x" : "y")）"])
+                                    }
+                                    throw NSError(domain: "click", code: 64, userInfo: [NSLocalizedDescriptionKey:
+                                        "click_needs_ref_or_pixel: 要么给一个来自最近一次观察的 ref，要么给 x/y 坐标"])
+                                }
                             case "drag":
                                 // AX 没有拖这个动作，只能合成鼠标序列。
                                 guard let x1 = args["x1"] as? Double, let y1 = args["y1"] as? Double,

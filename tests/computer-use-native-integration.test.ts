@@ -1076,3 +1076,37 @@ test("type_text offers the input methods it actually has, and refuses the one it
     await driver.dispose();
   }
 });
+
+// 像素点击的失败有四种，每一步该做的事都不同：补 x、补 y、补目标、补整个定位。
+// 参照在两个位置上各有一句（`click by pixel requires either pid or bundle…` /
+// `click --pixel requires both x and y`）。本实现原先只有一句笼统的
+// "要么给 ref，要么给 x/y 坐标" —— 调用方给了 x 却被告知"要给 x/y"。
+// 而且**顺序**也要对：连点都点不了（缺一半坐标）比"没有目标"更前面。
+test("pixel click tells apart the four ways it can be incomplete", async () => {
+  const driver = new NativeProcessDriver(() => {}, {
+    binaryPath: new URL("../out/native/computer-use", import.meta.url).pathname
+  });
+  try {
+    const cases: [string, Record<string, unknown>, RegExp][] = [
+      ["只给 x", { x: 10 }, /click_pixel_needs_both_xy/],
+      ["只给 y", { y: 10 }, /click_pixel_needs_both_xy/],
+      ["坐标齐但没目标", { x: 10, y: 10 }, /click_pixel_needs_target/],
+      ["什么都没给", {}, /click_needs_ref_or_pixel/],
+    ];
+    for (const [label, args, pattern] of cases) {
+      await assert.rejects(
+        () => driver.daemonCommand("click", args),
+        error => pattern.test(String(error)),
+        `${label} 应当报 ${String(pattern)}`
+      );
+    }
+    // 「没有目标」那句要把**代价**说出来 —— 只说"缺参数"，调用方分不清是它错还是我们的策略
+    await assert.rejects(
+      () => driver.daemonCommand("click", { x: 10, y: 10 }),
+      error => /光标/.test(String(error)),
+      "要说明为什么必须要目标（没有目标就得全局投递、移动真实光标）"
+    );
+  } finally {
+    await driver.dispose();
+  }
+});

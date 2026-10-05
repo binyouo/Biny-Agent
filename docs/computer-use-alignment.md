@@ -408,6 +408,44 @@ if (hasFlag('all')) body.interactive_only = false;     ← get_app_state 与 sna
 **没做的**：`visual refs (v*)` —— 参照还有第二套 ref 命名空间（视觉 ref）。
 那是一条独立的机制，标为未覆盖，不假装有。
 
+### 1.4k `visual refs (v*)` —— 读了，**但没做**（格式不可考）
+
+参照的 daemon 侧有**第二套 ref 命名空间**，面向坐标：
+
+```
+visual refs (v*) require `pid` or `bundle`
+no screenshot mapping for pid <n>; run get_app_state first
+```
+
+已知的：它是**截图坐标系**里的引用，靠 pid 找到那张截图的映射，用前必须先 `get_app_state`。
+
+**但编码格式在能拿到的产物里读不出来** —— 符号在（`visualRefs` 在 helper 里出现 4 次），
+语法不在；发布的 CLI 里一次都没提；`notes/` 里也没有。
+→ 按既有原则（"它没说清所以不能猜的"）：**不去猜它的格式**，保留差异并写明。
+
+**它解的那件事本来也已经有了**：截图坐标 → 屏幕坐标的映射（`coordMaps`）+ `click --pixel`。
+缺的只是一个名字。名字要靠猜才能对上 —— 猜错了比没有更糟。
+
+### 1.4l 同一屏里的两句"为什么"：像素点击的失败要分四种
+
+```
+click by pixel requires either `pid` or `bundle` of a running app — without a target
+  we'd have to post globally and move the real cursor.
+click --pixel requires both x and y
+```
+
+第二句本实现**没有对应物**：只有一句笼统的「要么给 ref，要么给 x/y 坐标」——
+于是**"只给了 x"的调用方，被告知"要给 x/y 坐标"**。这是「合并 guard」那族，
+**今天第三次**栽在同一处（前两次是 `click`/`menu` 的 ref 查找、和 `interactive_only` 的 scope）。
+本实现拆成四种：缺 x / 缺 y / 缺目标 / 缺全部定位。
+
+**顺序也有讲究**：先查**调用本身完整不完整**，再查**策略**。
+"只给了 x"连点都点不了，比"没有目标"更前面；两条都成立时报后一条，
+会让人先去找目标、补完才发现坐标还是缺的。
+
+第一句的**"为什么"**也补上了：没有目标就只能全局投递，那会**移动用户的真实光标**。
+只说"缺参数"，调用方分不清是它调用错了还是我们的策略 —— 把代价说出来，它才知道下一步。
+
 ### 1.5 工具 / 技能层
 
 - 模型侧工具：`ComputerList` / `ComputerObserve` / `ComputerAction`（8 个动作动词）
