@@ -7,6 +7,8 @@
 const strippedBlocks = /<(script|style|noscript|template|svg)\b[^>]*>[\s\S]*?<\/\1\s*>/gi;
 const lineBreakTags = /<(?:br|\/p|\/div|\/li|\/h[1-6]|\/tr|\/section|\/article|\/header|\/footer)\b[^>]*>/gi;
 const listItemTags = /<li\b[^>]*>/gi;
+const readableBlockTags = new Set(["p", "div", "li", "h1", "h2", "h3", "h4", "h5", "h6", "tr", "section", "article", "header", "footer", "blockquote", "pre", "ul", "ol", "table"]);
+const unreadableTags = new Set(["script", "style", "noscript", "template", "svg"]);
 
 export function htmlToText(html: string): string {
   return decodeHtmlEntities(
@@ -44,8 +46,8 @@ export async function extractReadableHtml(html: string, url: string): Promise<Re
   try {
     const dom = new JSDOM(html, { url });
     closeDom = () => dom.window.close();
-    const article = new Readability(dom.window.document).parse();
-    const text = normalizeReadableText(article?.textContent ?? "");
+    const article = new Readability(dom.window.document, { serializer: readableNodeText }).parse();
+    const text = normalizeReadableText(article?.content ?? "");
     if (!text) return fallback;
     const title = article?.title?.replace(/\s+/g, " ").trim() || fallback.title;
     return { title, text };
@@ -55,6 +57,18 @@ export async function extractReadableHtml(html: string, url: string): Promise<Re
   } finally {
     closeDom?.();
   }
+}
+
+/** DOM textContent 会拼接相邻段落、列表和单元格；仅在块边界补分隔，保留行内文字的连接。 */
+function readableNodeText(node: Node): string {
+  if (node.nodeType === 3) return node.textContent ?? "";
+  const tag = node.nodeName.toLowerCase();
+  if (unreadableTags.has(tag)) return "";
+  if (tag === "br") return "\n";
+  const text = Array.from(node.childNodes, readableNodeText).join("");
+  if (tag === "td" || tag === "th") return `${text}\t`;
+  if (tag === "li") return `\n- ${text}\n`;
+  return readableBlockTags.has(tag) ? `\n${text}\n` : text;
 }
 
 function normalizeReadableText(text: string): string {
