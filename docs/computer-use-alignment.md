@@ -40,7 +40,7 @@ UI 三类界面齐全，并补上了参照实现有、本仓库原本没有的**
 | 界面 | 参照 | 本实现 | 依据 |
 |---|---|---|---|
 | 设置页 Computer Use 节 | 36 个 i18n key | **内容逐条覆盖**（权限 / 审批 / 严格模式 / 画中画 / 操作日志 / helper 诊断 / 焦点保护 / 测试我的配置）| 见下 |
-| PiP 监督窗 | 悬浮画中画 · 3fps · 90s 无活动自动结束 | 同 | 窗口 `vibrancy: hud`；寿命由偏好 × 活动驱动 |
+| PiP 监督窗 | 悬浮画中画 · 3fps · 90s 无活动自动结束 | **同**（寿命逻辑逐行对得上）| 窗口 `vibrancy: hud`；见下 |
 | 权限引导浮层 | 520×76，贴目标控件 | 同 | 几何模块 + OCR 定位行 |
 | **动作指示器（lens）** | `Overlay.swift` · `LensOverlay`/`ActionCursor` · `alma.lens.scrollBadge`/`typeBadge` | 同 | 见下 |
 
@@ -52,6 +52,28 @@ UI 三类界面齐全，并补上了参照实现有、本仓库原本没有的**
 
 穿透这条**是验的不是声明的**：lens 在点击**之前**弹出、盖满全屏，此时双击仍能选中词。
 开关行为：`off` 与 `show_cursor:false` 都不出现，默认出现（用 `.optionOnScreenOnly` 判可见）。
+
+**PiP 的寿命逻辑与参照代码逐行吻合。** 参照的 `out/main/chunks/computerUsePip-*.js`：
+
+```js
+setTimeout(() => { f() }, 9e4)     // 90000ms —— 90 秒
+export { COMPUTER_PIP_ITEM_ID, endComputerUsePipSession,
+         isComputerUsePipEnabled, noteComputerUseActivity }
+```
+
+四个导出名与 90s 常数，与本实现的 `noteComputerUseActivity` / `previewIdleMs = 90_000` 一致
+（本实现当初是照 notes 写的，这次是从代码本身复核）。
+
+**但组织方式不同：参照的 PiP 是一「栈」。** 路由表与实现里可见：
+
+```
+pip/state → { open, activeItemId, items, bounds }      getPipItems · isPipStackOpen · getPipStackBounds
+pip/present · pip/hide · pip/frame · pip/move · pip/invalidate
+```
+
+即**按窗口的多个镜像叠在一起**，可整体定位（`bounds` / `move`）、可失效（`invalidate`）。
+本实现是**单个预览面**，跟随当前观察目标。差别属于组织方式，不是能力缺失
+（§6 另记了「按窗口镜像 + 最小化劫持」这一条）。
 
 ### 1.2b 观察会自动后台拉起目标
 
