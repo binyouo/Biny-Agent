@@ -21,7 +21,8 @@ export function registerCuCommands(program: Command): void {
     try {
       return await work(driver);
     } finally {
-      await driver.dispose().catch(() => undefined);
+      // 放手而不是停掉：ref 表在守护进程里，杀掉它 = 每条命令都从零开始。
+      driver.detach();
     }
   };
 
@@ -143,6 +144,21 @@ export function registerCuCommands(program: Command): void {
     .action((ref: string, options: { pid?: string; json?: boolean }) => withDriver(async driver => {
       print((await driver.actRaw("perform_secondary_action", { ref, pid: Number(options.pid) })).data, options.json);
     }));
+
+  const elementVerb = (name: string, description: string, extra: (value: string, options: Record<string, unknown>) => Record<string, unknown>) => {
+    const command = cu.command(name).description(description).argument("<ref>", "element ref from `cu snap`")
+      .argument("<value>", name === "press" ? "Enter | Escape | Space | Increment | Decrement | ShowMenu" : "text")
+      .option("--pid <n>", "target pid").option("--json", "print JSON");
+    if (name === "type") command.option("--append", "append instead of replacing the value");
+    command.action((ref: string, value: string, options: Record<string, unknown>) => withDriver(async driver => {
+      print((await driver.daemonCommand(name, { ref, pid: Number(options.pid), ...extra(value, options) })).data, options.json === true);
+    }));
+  };
+
+  // 元素级输入：改控件自己的 AXValue / 触发它的 AX 动作，**不经过键盘焦点**。
+  // 自绘输入框（收不到合成按键的那类）只有这条路走得通。
+  elementVerb("type", "Write text into an element through its accessibility value", (value, options) => ({ text: value, append: options.append === true }));
+  elementVerb("press", "Trigger an element's accessibility action", value => ({ key: value }));
 
   cu.command("set_value").description("Write an accessibility value directly (skips keystrokes)").argument("<ref>").argument("<value>")
     .option("--pid <n>", "target pid").option("--json", "print JSON")

@@ -355,3 +355,34 @@ test("the daemon answers status, and raise reports honestly when it cannot come 
     await driver.dispose();
   }
 });
+
+// 第二个调用方要用得上第一个观察到的 ref。
+// socket 名按二进制隔离，用意就是「同一个 daemon 被所有调用方共用」——
+// 如果每个调用方都 spawn 一个（新 daemon 会 unlink 并重绑 socket，把前一个顶掉），
+// 或者走完就把它杀掉，ref 表就永远活不过一次调用，`cu snap` 的 ref 在下一条命令里必然失效。
+test("a second driver shares the running daemon, so refs outlive the call that made them", async () => {
+  const binaryPath = new URL("../out/native/computer-use", import.meta.url).pathname;
+  const first = new NativeProcessDriver(() => {}, { binaryPath });
+  const second = new NativeProcessDriver(() => {}, { binaryPath });
+  try {
+    const listed = await first.list("share-a", undefined);
+    const target = (listed.data as { apps: { pid?: number; windowId?: number }[] }).apps.find(app => typeof app.pid === "number");
+    assert.ok(target?.pid, "至少要有一个运行中的应用");
+
+    const observed = await first.daemonCommand("get_app_state", { pid: target.pid, max_elements: 0 });
+    const elements = (observed.data as { elements?: { element_token?: string }[] }).elements ?? [];
+    const ref = elements.find(element => element.element_token)?.element_token;
+    if (!ref) return;  // 这个应用当时没有可引用的元素，不伪造场景
+
+    // 第二个实例读第一个实例刚观察到的 ref —— 共用同一个 daemon 才可能成立。
+    // 故意给一个不存在的按键名：如果 ref 没被认出来，报错会是 element_ref_not_observed，
+    // 而这里期望的报错是按键名不认识 —— 那才能证明它越过了 ref 查找。
+    await assert.rejects(
+      () => second.daemonCommand("press", { pid: target.pid, ref, key: "NoSuchKey" }),
+      error => /unknown_press_key/.test(String(error)) && !/element_ref_not_observed/.test(String(error))
+    );
+  } finally {
+    await first.dispose().catch(() => undefined);
+    await second.dispose().catch(() => undefined);
+  }
+});

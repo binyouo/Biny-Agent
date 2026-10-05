@@ -31,6 +31,7 @@ function socketKeyFor(binaryPath: string): string {
   }
 }
 
+const adoptTimeoutMs = 400;
 const requestTimeoutMs = 20_000;
 const screenshotTimeoutMs = 30_000;
 const screenshotCommands = new Set(["capture_screen", "get_app_state", "shot_display"]);
@@ -47,7 +48,8 @@ interface PendingJob {
 }
 
 interface Host {
-  child: ChildProcess;
+  /** 采用一个已经在听的 daemon 时没有子进程 —— 那个 daemon 是别人起的。 */
+  child?: ChildProcess;
   socket: net.Socket;
   socketPath: string;
   buffer: Buffer;
@@ -162,6 +164,40 @@ export class NativeProcessDriver implements ComputerDriver {
     return host;
   }
 
+  /**
+   * 先看有没有已经在听的 daemon，有就直接用它。
+   *
+   * socket 名按**二进制内容**隔离，用意就是「同一个 daemon 被所有调用方共用」。
+   * 无条件 spawn 会让每个新进程都把前一个 daemon 的 socket 顶掉 —— 于是命令行里
+   * `cu snap` 拿到的 ref，在下一条命令里就不认了（ref 表存在 daemon 进程里）。
+   * 带着 stale socket 文件的情况会连接失败（ECONNREFUSED），那时才 spawn。
+   */
+  private adoptExisting(): Promise<Host | undefined> {
+    return new Promise(resolve => {
+      const socket = new net.Socket();
+      const host: Host = { socket, socketPath: this.socketPath, buffer: Buffer.alloc(0), closed: false, connected: false, stdout: "", decoder: new StringDecoder("utf8") };
+      // 放弃时才能清监听器。成功路径绝不能再调这个 —— 它会把下面刚装上的
+      // data 监听一起摘掉，于是连接是通的、回包永远收不到，只剩请求超时。
+      const giveUp = (): void => {
+        socket.removeAllListeners();
+        socket.destroy();
+        resolve(undefined);
+      };
+      const timer = setTimeout(giveUp, adoptTimeoutMs);
+      socket.once("connect", () => {
+        clearTimeout(timer);
+        socket.removeAllListeners("error");
+        socket.on("data", chunk => this.onData(host, chunk));
+        socket.on("error", error => { if (host.connected) this.failAndRetire(host, `driver_socket_error: ${error.message}`); });
+        socket.on("close", () => { if (host.connected && !host.closed) this.failAndRetire(host, "driver_process_disconnected; outcome may be unknown"); });
+        host.connected = true;
+        resolve(host);
+      });
+      socket.once("error", () => { clearTimeout(timer); giveUp(); });
+      socket.connect(this.socketPath);
+    });
+  }
+
   /** 等 daemon 打出 "ready" 后连上 socket；这是唯一的连接入口。 */
   private connectAfterReady(host: Host): Promise<void> {
     return new Promise<void>((resolve, reject) => {
@@ -174,8 +210,8 @@ export class NativeProcessDriver implements ComputerDriver {
         host.socket.connect(this.socketPath);
       };
       const poll = setInterval(() => { if (host.stdout.includes("ready")) connectNow(); }, 20);
-      host.child.once("error", error => { clearInterval(poll); clearTimeout(timer); reject(error); });
-      host.child.once("exit", code => { clearInterval(poll); clearTimeout(timer); reject(new Error(`driver_sdk_missing_or_crashed: daemon exited ${String(code)}`)); });
+      host.child?.once("error", error => { clearInterval(poll); clearTimeout(timer); reject(error); });
+      host.child?.once("exit", code => { clearInterval(poll); clearTimeout(timer); reject(new Error(`driver_sdk_missing_or_crashed: daemon exited ${String(code)}`)); });
     });
   }
 
@@ -248,7 +284,7 @@ export class NativeProcessDriver implements ComputerDriver {
   private failAndRetire(host: Host, reason: string): void {
     this.failHost(host, reason);
     if (this.host === host) this.host = undefined;
-    try { host.child.kill("SIGTERM"); } catch { /* already gone */ }
+    try { host.child?.kill("SIGTERM"); } catch { /* already gone */ }
   }
 
   private async call(cmd: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<DriverReply> {
@@ -276,6 +312,10 @@ export class NativeProcessDriver implements ComputerDriver {
     if (this.host) return;
     if (!this.starting) {
       this.starting = (async () => {
+        // 已有一个 daemon 在听就采用它：ref 表、坐标映射、空闲计时都在那个进程里，
+        // 每个调用方各起一个会把它们全部切碎。
+        const adopted = await this.adoptExisting();
+        if (adopted) { this.host = adopted; this.armIdle(); return; }
         const host = this.spawnHost();
         await this.connectAfterReady(host);
         if (this.host !== undefined) throw new Error("driver_sdk_missing_or_crashed: host retired during startup");
@@ -292,6 +332,27 @@ export class NativeProcessDriver implements ComputerDriver {
     await this.ensureHost();
   }
 
+  /**
+   * 放手：断开连接，但**不**结束守护进程。
+   *
+   * 每次命令行调用都是一个新进程，而 ref 表、坐标映射都存在守护进程里。
+   * 走完一条命令就把它杀掉，等于 ref 永远活不过一次调用 —— `cu snap` 得到的 ref
+   * 在下一条命令里必然失效。守护进程自己会在空闲 900s 后退出，那个计时器就是
+   * 为这件事存在的。
+   */
+  detach(): void {
+    this.disposed = true;
+    if (this.idleTimer) { clearTimeout(this.idleTimer); this.idleTimer = undefined; }
+    const host = this.host;
+    this.host = undefined;
+    if (!host) return;
+    this.failHost(host, "driver_detached");
+    host.child?.unref();
+    host.child?.stdout?.destroy();
+    host.child?.stderr?.destroy();
+    host.socket.destroy();
+  }
+
   async stop(): Promise<void> {
     this.enabled = false;
     if (this.idleTimer) { clearTimeout(this.idleTimer); this.idleTimer = undefined; }
@@ -300,7 +361,10 @@ export class NativeProcessDriver implements ComputerDriver {
     this.host = undefined;
     this.failHost(host, "driver_stopped");
     await new Promise<void>(resolve => {
-      const timer = setTimeout(() => { try { host.child.kill("SIGKILL"); } catch { /* noop */ } resolve(); }, shutdownTimeoutMs);
+      // 采用来的 daemon 不是我们的子进程：断开连接就够了，它自己会在空闲后退出，
+      // 而且别的调用方可能正用着它，杀了就是替别人做主。
+      if (!host.child) { resolve(); return; }
+      const timer = setTimeout(() => { try { host.child?.kill("SIGKILL"); } catch { /* noop */ } resolve(); }, shutdownTimeoutMs);
       host.child.once("exit", () => { clearTimeout(timer); resolve(); });
       try { host.child.kill("SIGTERM"); } catch { clearTimeout(timer); resolve(); }
     });
