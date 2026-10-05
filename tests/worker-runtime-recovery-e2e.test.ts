@@ -209,7 +209,7 @@ async function crashWorker(root: string): Promise<void> {
     prompt: "produce candidate", verification: { objective: "candidate exists", checks: [{ command: "node --version" }],
       artifactPaths: ["artifact.txt"], allowedRepairPaths: ["artifact.txt"], maxAttempts: 1 }
   } });
-  const graph = runtime.graphs.createGraph(undefined, [{ nodeKey: "worker", prompt: "produce candidate" }], {}, "worker-graph");
+  const graph = runtime.graphs.createGraph([{ nodeKey: "worker", prompt: "produce candidate" }], {}, "worker-graph");
   runtime.graphs.startGraph(graph.graphId);
   assert.ok(runtime.graphs.claimIntent(graph.graphId, graph.nodes[0]!.nodeId, "before-crash", "crashed-task"));
   const submitted = await runtime.startTaskRun("crashed-task");

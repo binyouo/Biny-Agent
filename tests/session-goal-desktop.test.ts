@@ -10,6 +10,7 @@ import { createFileConfigStore } from "../src/config/store.js";
 import { defaultConfig } from "../src/config/schema.js";
 import { RuntimeEventAuthority } from "../src/runtime/RuntimeAuthority.js";
 import { SessionGoalStore } from "../src/runtime/SessionGoalStore.js";
+import { changeSessionGoal } from "../src/desktop/renderer/src/components/workspace/sessionGoalControl.js";
 import { SessionRecorder } from "../src/session/recorder.js";
 
 const root = await mkdtemp(path.join(os.tmpdir(), "biny-session-goal-desktop-"));
@@ -44,7 +45,7 @@ try {
   }
   const authority = await RuntimeEventAuthority.open(dataRoot, { backfillLegacySessions: false });
   const goals = await SessionGoalStore.open(dataRoot, authority);
-  for (const sessionId of ["goal-session-a", "goal-session-b"]) { goals.set(sessionId, "existing goal"); goals.pause(sessionId); }
+  for (const sessionId of ["goal-session-a", "goal-session-b"]) { goals.set(sessionId, "existing goal", { tokenBudget: 1000 }); goals.pause(sessionId); }
   goals.close(); authority.close();
   manager = new DesktopAgentManager(state, projects, configStore, () => undefined);
   const draft = await manager.runSlashCommand(project.id, undefined, "/goal");
@@ -61,8 +62,25 @@ try {
   assert.equal(projection.goal?.status, "paused");
   assert.equal(projection.plans.length, 0, "session goals work with subagents disabled");
   assert.equal((await manager.planProjection(project.id, "goal-session-b")).goal?.objective, "existing goal");
+  const editErrors: unknown[] = [];
+  const editFeedback = { pending: () => undefined, error: () => undefined, report: (error: unknown) => { editErrors.push(error); } };
+  const editGoal = projection.goal!;
+  const editedObjective = "界面编辑后的完整目标\n保留第二行约束";
+  assert.equal(await changeSessionGoal(editGoal, { operation: "session.goal.set", previousObjective: editGoal.objective, objective: editedObjective }, async (operation, payload) => {
+    await manager!.runtimeMutation(project.id, operation, payload);
+  }, editFeedback, new AbortController().signal), true);
+  const afterEdit = await manager.planProjection(project.id, "goal-session-a");
+  assert.equal(afterEdit.goal?.objective, editedObjective);
+  assert.equal(afterEdit.goal?.status, "paused", "Editing must not resume a paused goal");
+  assert.equal(afterEdit.goal?.tokenBudget, 1000, "Editing must preserve the existing budget");
+  assert.equal(await changeSessionGoal(editGoal, { operation: "session.goal.set", previousObjective: editGoal.objective, objective: "迟到的旧编辑" }, async (operation, payload) => {
+    await manager!.runtimeMutation(project.id, operation, payload);
+  }, editFeedback, new AbortController().signal), false, "A stale editor cannot overwrite the new objective");
+  assert.equal(editErrors.length, 1);
+  assert.equal((await manager.planProjection(project.id, "goal-session-a")).goal?.objective, editedObjective);
+  assert.equal((await manager.planProjection(project.id, "goal-session-b")).goal?.objective, "existing goal");
   await assert.rejects(manager.runtimeMutation(project.id, "session.goal.clear", { sessionId: "goal-session-a", expected: { goalId: "stale-goal", revision: 0 } }), /changed|conflict|stale|mismatch/iu);
-  await manager.runtimeMutation(project.id, "session.goal.clear", { sessionId: "goal-session-a", expected: { goalId: projection.goal!.goalId, revision: projection.goal!.revision } });
+  await manager.runtimeMutation(project.id, "session.goal.clear", { sessionId: "goal-session-a", expected: { goalId: afterEdit.goal!.goalId, revision: afterEdit.goal!.revision } });
   assert.equal((await manager.planProjection(project.id, "goal-session-a")).goal, undefined);
   assert.equal((await manager.planProjection(project.id, "goal-session-b")).goal?.objective, "existing goal");
   assert.equal(requests, 0);

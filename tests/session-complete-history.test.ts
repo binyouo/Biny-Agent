@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { appendFile, mkdtemp, readFile, rm, stat, truncate, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, readFile, rm, stat, truncate, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -9,10 +9,12 @@ import { DesktopStateStore } from "../src/desktop/electron/main/DesktopStateStor
 import { DesktopUserDataStore } from "../src/desktop/electron/main/DesktopUserDataStore.js";
 import { buildSessionTimeline } from "../src/desktop/renderer/src/sessionTimeline.js";
 import { readSessionEvents, readSessionSummary, readStoredSessionEvents } from "../src/session/events.js";
-import { maxSessionHistoryBytes, maxSessionFileBytes } from "../src/session/limits.js";
+import { maxSessionFileBytes } from "../src/session/limits.js";
+import { forkSession } from "../src/session/fork.js";
+import { archiveConversationMarkdown } from "../src/session/markdownArchive.js";
 import { clearSessionParseCache } from "../src/session/parseCache.js";
 import { SessionRecorder, type SessionEvent } from "../src/session/recorder.js";
-import { ensureAgentDirs } from "../src/session/store.js";
+import { duplicateSessionFile, ensureAgentDirs, readSessionSnapshot } from "../src/session/store.js";
 
 const row = (event: SessionEvent): string => `${JSON.stringify(event)}\n`;
 
@@ -42,8 +44,21 @@ test("截图密集的长会话完整打开，保留首条消息、父链、图�
     events.push({ type: "assistant_message", messageId: "final", replyToMessageId: "user", slotId: "user", content: "执行结果" });
     events.push({ type: "turn_status", status: "completed", stopReason: "model_stop", steps: 35 });
     await writeFile(recorder.filePath, events.map(row).join(""));
-    assert.ok((await stat(recorder.filePath)).size > maxSessionFileBytes);
+    assert.ok((await stat(recorder.filePath)).size > 16 * 1024 * 1024);
     const original = await readFile(recorder.filePath);
+    assert.deepEqual((await readSessionSnapshot(root, recorder.sessionId)).bytes, original);
+    const copy = await duplicateSessionFile(root, recorder.sessionId, "complete-copy");
+    assert.deepEqual(await readFile(copy), original);
+    const fork = await forkSession(root, recorder.sessionId);
+    assert.deepEqual(await readSessionEvents(fork.filePath), events);
+    const archiveRoot = path.join(root, "archive");
+    const archiveSessions = path.join(archiveRoot, "sessions", "workspace");
+    await mkdir(archiveSessions, { recursive: true });
+    await writeFile(path.join(archiveSessions, `${recorder.sessionId}.jsonl`), original);
+    const archived = await archiveConversationMarkdown(archiveRoot);
+    assert.deepEqual(archived.failed, []);
+    const markdown = await readFile(path.join(archived.directory, `${recorder.sessionId}.md`), "utf8");
+    assert.ok(markdown.includes("播放指定歌曲🌍") && markdown.includes("执行结果"));
     clearSessionParseCache();
     const stored = await readStoredSessionEvents(root, recorder.sessionId);
     assert.equal(stored.truncated, false);
@@ -63,7 +78,8 @@ test("截图密集的长会话完整打开，保留首条消息、父链、图�
     assert.equal(summary?.firstUserMessage, "播放指定歌曲🌍");
     assert.equal(summary?.eventCount, events.length);
     assert.equal(summary?.lastAssistantMessage, "执行结果");
-    await assert.rejects(readSessionEvents(recorder.filePath), /maximum size/, "只读历史不得绕过执行恢复的资源限制");
+    clearSessionParseCache();
+    assert.deepEqual(await readSessionEvents(recorder.filePath), events);
     assert.deepEqual(await readFile(recorder.filePath), original);
     await appendFile(recorder.filePath, row({ type: "user_message", messageId: "next", parentMessageId: "final", content: "后续消息" }));
     assert.equal((await readStoredSessionEvents(root, recorder.sessionId)).events.length, events.length + 1);
@@ -90,7 +106,10 @@ test("完整历史超过展示预算明确报错，不返回伪完整的尾部",
   await recorder.close();
   try {
     await writeFile(recorder.filePath, "");
-    await truncate(recorder.filePath, maxSessionHistoryBytes + 1);
-    await assert.rejects(readStoredSessionEvents(root, recorder.sessionId), /Session history exceeds the maximum size/);
+    await truncate(recorder.filePath, maxSessionFileBytes + 1);
+    await assert.rejects(readStoredSessionEvents(root, recorder.sessionId), /Session exceeds the maximum size/);
+    await assert.rejects(readSessionEvents(recorder.filePath), /Session exceeds the maximum size/);
+    await assert.rejects(readSessionSnapshot(root, recorder.sessionId), /Session exceeds the maximum size/);
+    await assert.rejects(duplicateSessionFile(root, recorder.sessionId, "oversized-copy"), /Session exceeds the maximum size/);
   } finally { await rm(root, { recursive: true, force: true }); }
 });

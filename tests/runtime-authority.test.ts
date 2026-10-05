@@ -242,8 +242,7 @@ try {
   );
   assert.equal(automations.get(leapCron.automationId)?.status, "paused");
 
-  const goal = graphs.createGoal("goal");
-  const graph = graphs.createGraph(goal.goalId, [
+  const graph = graphs.createGraph([
     { nodeKey: "first", prompt: "first" },
     { nodeKey: "second", prompt: "second", dependencies: ["first"] }
   ]);
@@ -254,7 +253,7 @@ try {
   graphs.completeNode(graph.graphId, first.nodeId, "completed", { artifact: "a" });
   assert.equal(graphs.readyNodes(graph.graphId).find((node) => node.nodeKey === "second")?.nodeKey, "second");
 
-  const recoverableGraph = graphs.createGraph(undefined, [{ nodeKey: "recoverable", prompt: "recoverable" }]);
+  const recoverableGraph = graphs.createGraph([{ nodeKey: "recoverable", prompt: "recoverable" }]);
   graphs.startGraph(recoverableGraph.graphId);
   const recoverableNode = graphs.readyNodes(recoverableGraph.graphId)[0]!;
   assert.ok(graphs.claimIntent(recoverableGraph.graphId, recoverableNode.nodeId, "claim-before-restart", "graph-recoverable-task"));
@@ -262,7 +261,7 @@ try {
   assert.equal(graphs.inspectGraph(recoverableGraph.graphId).nodes[0]!.status, "ready");
   assert.ok(graphs.claimIntent(recoverableGraph.graphId, recoverableNode.nodeId, "claim-after-restart", "graph-recoverable-task"));
 
-  const blockedGraph = graphs.createGraph(undefined, [{ nodeKey: "uncertain", prompt: "uncertain" }]);
+  const blockedGraph = graphs.createGraph([{ nodeKey: "uncertain", prompt: "uncertain" }]);
   graphs.startGraph(blockedGraph.graphId);
   const blockedNode = graphs.readyNodes(blockedGraph.graphId)[0]!;
   assert.ok(graphs.claimIntent(blockedGraph.graphId, blockedNode.nodeId, "claim-uncertain", "graph-uncertain-task"));
@@ -273,7 +272,7 @@ try {
   assert.equal(graphs.inspectGraph(blockedGraph.graphId).status, "blocked");
   assert.equal(graphs.inspectGraph(blockedGraph.graphId).nodes[0]!.status, "blocked");
 
-  const cancelledGraph = graphs.createGraph(undefined, [{ nodeKey: "cancelled", prompt: "cancelled" }]);
+  const cancelledGraph = graphs.createGraph([{ nodeKey: "cancelled", prompt: "cancelled" }]);
   graphs.startGraph(cancelledGraph.graphId);
   const cancelledNode = graphs.readyNodes(cancelledGraph.graphId)[0]!;
   assert.ok(graphs.claimIntent(cancelledGraph.graphId, cancelledNode.nodeId));
@@ -283,9 +282,6 @@ try {
   assert.equal(lateGraph.nodes[0]!.status, "cancelled");
   assert.throws(() => graphs.resumeGraph(cancelledGraph.graphId), /cannot transition from cancelled/);
 
-  const terminalGoal = graphs.createGoal("terminal goal");
-  graphs.updateGoal(terminalGoal.goalId, "completed");
-  assert.throws(() => graphs.updateGoal(terminalGoal.goalId, "active"), /cannot transition from completed/);
 
   const registration = capabilities.register({
     registrationId: "cap-1",
@@ -450,7 +446,7 @@ async function testGraphSupervisorDefersOnBusyRuntime(): Promise<void> {
     };
     try {
       // 快照已 busy：不认领、不反复改写 revision，后续空闲通知再推进。
-      const prechecked = isolatedGraphs.createGraph(undefined, [{ nodeKey: "prechecked", prompt: "prechecked" }]);
+      const prechecked = isolatedGraphs.createGraph([{ nodeKey: "prechecked", prompt: "prechecked" }]);
       const started = isolatedGraphs.startGraph(prechecked.graphId);
       await tickAndSettle();
       assert.equal(isolatedGraphs.inspectGraph(prechecked.graphId).nodes[0]!.status, "pending");
@@ -461,7 +457,7 @@ async function testGraphSupervisorDefersOnBusyRuntime(): Promise<void> {
       // supervisor 串行调度且按创建顺序扫描，先取消旧 graph 保证本轮 claim 落到新节点。
       behavior = "busy_throw";
       isolatedGraphs.cancelGraph(prechecked.graphId);
-      const raced = isolatedGraphs.createGraph(undefined, [{ nodeKey: "raced", prompt: "raced" }]);
+      const raced = isolatedGraphs.createGraph([{ nodeKey: "raced", prompt: "raced" }]);
       isolatedGraphs.startGraph(raced.graphId);
       await tickAndSettle();
       assert.equal(isolatedGraphs.inspectGraph(raced.graphId).nodes[0]!.status, "ready");
@@ -470,7 +466,7 @@ async function testGraphSupervisorDefersOnBusyRuntime(): Promise<void> {
       // 真实执行失败仍然判 failed。
       behavior = "explode";
       isolatedGraphs.cancelGraph(raced.graphId);
-      const failing = isolatedGraphs.createGraph(undefined, [{ nodeKey: "failing", prompt: "failing" }]);
+      const failing = isolatedGraphs.createGraph([{ nodeKey: "failing", prompt: "failing" }]);
       isolatedGraphs.startGraph(failing.graphId);
       await tickAndSettle();
       assert.equal(isolatedGraphs.inspectGraph(failing.graphId).nodes[0]!.status, "failed");

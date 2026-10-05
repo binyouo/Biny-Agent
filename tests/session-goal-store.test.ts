@@ -134,10 +134,8 @@ try {
   assert.equal(store.get("session-budget")!.goalId, expectedUsage.goalId);
   otherStore.close(); otherWorkspace.close();
 
-  // Given schema 11 data, When the authority upgrades, Then workspace goals remain passive and unchanged.
+  // Given schema 11 data, When the authority upgrades, Then session objectives are created only explicitly.
   const graphs = await GoalGraphStore.open(root, authority);
-  const legacy = graphs.createGoal("Existing workspace goal", {}, "existing-workspace-goal");
-  graphs.updateGoal(legacy.goalId, "blocked");
   graphs.close(); store.close(); authority.close();
   const database = new DatabaseSync(path.join(agentDir(root), "runtime.sqlite"));
   database.exec("DROP TABLE session_goal_usage; DROP TABLE session_goals; DROP INDEX agent_runs_continuation_source_idx; PRAGMA user_version = 11;");
@@ -145,9 +143,7 @@ try {
   authority = await RuntimeEventAuthority.open(root, { backfillLegacySessions: false });
   store = await SessionGoalStore.open(root, authority);
   const migratedGraphs = await GoalGraphStore.open(root, authority);
-  assert.equal(migratedGraphs.getGoal(legacy.goalId)!.status, "blocked");
-  assert.throws(() => migratedGraphs.updateGoal(legacy.goalId, "active"), /blocked/u);
-  assert.deepEqual(store.list(), [], "workspace goals must not become automatically runnable session goals");
+  assert.deepEqual(store.list(), [], "schema migration must not create automatically runnable session goals");
   const upgradedPlan = authority.databaseHandle().prepare("EXPLAIN QUERY PLAN SELECT run_id FROM agent_runs WHERE workspace_id = ? AND session_id = ? AND continuation_source = ? ORDER BY rowid DESC LIMIT 1")
     .all(authority.workspaceId, "session", "goal:identity:1") as Array<{ detail: string }>;
   assert.ok(upgradedPlan.some(row => row.detail.includes("continuation_source=?")), "schema 11 upgrades must install the continuation source index");

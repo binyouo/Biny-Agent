@@ -32,7 +32,10 @@ assert.match(runHelp("launch_app"), /--activates/u);
 assert.match(runHelp("list_apps"), /--days\s+<n>/u);
 assert.match(runHelp("type_text"), /--pid\s+<n>/u);
 assert.match(runHelp("press_key"), /--pid\s+<n>/u);
-assert.match(runHelp("scroll"), /<direction>/u);
+// scroll 现在两种用法都认：参照式 `scroll <ref> <direction>` 与原式 `scroll <direction> --pid`。
+// 断言契约（两种形式都出现在 usage 里），不是断言某一个措辞。
+assert.match(runHelp("scroll"), /refOrDirection/u);
+assert.match(runHelp("scroll"), /\[direction\]/u);
 assert.match(runHelp("scroll"), /--pages\s+<n>/u);
 assert.match(runHelp("drag"), /<x1>\s+<y1>\s+<x2>\s+<y2>/u);
 assert.match(runHelp("raise"), /--window\s+<id>/u);

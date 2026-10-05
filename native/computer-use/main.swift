@@ -342,6 +342,8 @@ let lensOverlay = LensOverlay()
 var lensEnabled = true
 /// 上一次动作用的是哪种指示器结局：shown / suppressed / disabled / none。
 var lastIndicatorOutcome = "none"
+/// 最近一次观察过的 pid：只给 ref、不给 pid 的调用靠它定目标。
+var lastObservedPid: pid_t?
 var lastActionPoint: CGPoint?
 
 /// 记一次动作落点。
@@ -505,8 +507,11 @@ func axWalk(_ root: AXUIElement, depth: Int, maxDepth: Int, limit: Int, counter:
 /// 关键是 `activates: false`。参照 SKILL 里那条
 /// "Opening apps — DO NOT use `open -b`" 就是讲这件事：`open -b` 默认会激活应用、
 /// 抢走用户当前的焦点。这里走 `NSWorkspace.openApplication` 并把激活关掉。
-func resolvePid(_ parameters: [String: Any]) throws -> pid_t {
+/// `fallbackPid` 用于「只给了 ref、没给 pid」的调用（参照的 `cu scroll <ref> <dir>` 就是这种）：
+/// ref 已经能唯一定位到一个 pid 时，不必再要求调用方多说一遍。
+func resolvePid(_ parameters: [String: Any], fallbackPid: pid_t? = nil) throws -> pid_t {
     if let pid = parameters["pid"] as? Int { return pid_t(pid) }
+    if let fallbackPid { return fallbackPid }
     if let bundle = parameters["bundle"] as? String {
         if let app = NSRunningApplication.runningApplications(withBundleIdentifier: bundle).first { return app.processIdentifier }
         guard let appURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundle) else {
@@ -959,12 +964,52 @@ func pageFraction(_ area: AXUIElement) -> Double? {
     return min(1.0, viewport / content)
 }
 
-func axScroll(_ pid: pid_t, direction: String, notches: Int, pages: Double? = nil) -> [String: Any]? {
+/// 只凭 ref 找回 pid。
+///
+/// 参照的 CLI 是 `cu scroll <ref> <up|down|…>` —— **不带 pid**，说明它的元素存储是全局的
+/// （helper 类名表里那个 `ElementStore`）。本实现的 refTables 是按 pid 分表的，
+/// 于是"只给 ref"这条调用在参照里成立、在这里不成立。
+/// 这里跨表找一次：**唯一命中才算**，多个 pid 都有同名 ref 时宁可报歧义，也不猜。
+func pidForRef(_ ref: String) -> pid_t? {
+    // 参照的元素存储是**全局**的，所以它的 ref 天然不冲突；本实现按 pid 分表，
+    // 而 daemon 活得很久（900s 空闲才退），于是同一个 ref 名会在多个应用的表里同时存在。
+    // 规则：**最近一次观察的那个 pid 优先**（ref 本来就是"最近一次观察"里的引用，
+    // 跨轮次即失效）；不中再退回"唯一命中"，仍不唯一就返回 nil，让调用方报清楚，不猜。
+    if let recent = lastObservedPid, refTables[recent]?[ref] != nil { return recent }
+    let hits = refTables.compactMap { (key, table) -> pid_t? in table[ref] != nil ? key : nil }
+    return hits.count == 1 ? hits[0] : nil
+}
+
+/// 从一个具体元素往上找它所属的滚动区。
+///
+/// 参照在这条路上给调用方的提示是 "ref points at an unscrollable element
+/// (snap the parent ScrollArea)" —— 也就是**让调用方自己往上找**。
+/// 我们已经能走这条链，就替调用方走完，省掉一次来回观察。
+func scrollAreaAncestor(of element: AXUIElement) -> AXUIElement? {
+    var current: AXUIElement? = element
+    for _ in 0..<8 {                                  // 有界，避免病态树
+        guard let node = current else { return nil }
+        if axString(node, kAXRoleAttribute as String) == "AXScrollArea" { return node }
+        guard let parentRef = axCopy(node, kAXParentAttribute as String) else { return nil }
+        current = unsafeBitCast(parentRef, to: AXUIElement.self)
+    }
+    return nil
+}
+
+func axScroll(_ pid: pid_t, direction: String, notches: Int, pages: Double? = nil, refArea: AXUIElement? = nil) -> [String: Any]? {
     let wantsVertical = direction == "up" || direction == "down"
     let forward = direction == "down" || direction == "right"
     guard let windowRef = axCopy(axApp(pid), kAXFocusedWindowAttribute as String) else { return nil }
     let window = unsafeBitCast(windowRef, to: AXUIElement.self)
-    guard let area = findScrollArea(window) else { return nil }
+    let area: AXUIElement
+    if let refArea {
+        // ref 常常指向内容元素（表格/大纲/文本），往上找到它所属的滚动区；
+        // 实在找不到就把 ref 本身当滚动区试 —— 不静默放弃。
+        area = scrollAreaAncestor(of: refArea) ?? refArea
+    } else {
+        guard let found = findScrollArea(window) else { return nil }
+        area = found
+    }
     for bar in axChildren(area) where axString(bar, kAXRoleAttribute as String) == "AXScrollBar" {
         guard (axString(bar, kAXOrientationAttribute as String) == "AXVerticalOrientation") == wantsVertical else { continue }
         // 先试**整页滚动动作** —— 参照用的就是它（`AXScrollDownByPage` 等）。
@@ -1465,6 +1510,7 @@ DispatchQueue.global().async {
                                 // group.next() 仍会等它返回。放进独立线程 + 轮询才有真上限。
                                 let shot = skipShot ? [:] : await withDeadline(3.0, fallback: [:]) { (try? await screenshot(shotArgs)) ?? [:] }
                                 refTables[pid] = table
+                                lastObservedPid = pid
                                 // 记下截图坐标 → 屏幕坐标的映射，后续像素点击据此换算。
                                 if let f = shot["screenFrame"] as? [String: Double],
                                    let sw = shot["width"] as? Int, let sh = shot["height"] as? Int, sw > 0, sh > 0 {
@@ -1733,7 +1779,13 @@ DispatchQueue.global().async {
                                 if let warning = keyDeliveryWarning(pid) { pressed["warning"] = warning }
                                 reply(fd, ["id": id, "ok": true, "data": pressed])
                             case "scroll":
-                                let pid = try resolvePid(args)
+                                // 参照的 scroll 可以**只给 ref**（`cu scroll <ref> <dir>`，不带 pid），
+                                // 所以先看 ref 能不能唯一定出一个 pid。
+                                // ⚠️ 这两行最早被我挂到了 `raise` 上：锚点 `let pid = try resolvePid(args)`
+                                // 在文件里出现多次，`replace(..., 1)` 静默打中了第一个，**而且编译通过、
+                                // 看着也合理** —— 所以改完必须回读落点。
+                                let scrollRefOnlyPid: pid_t? = (args["ref"] as? String).flatMap { pidForRef($0) }
+                                let pid = try resolvePid(args, fallbackPid: scrollRefOnlyPid)
                                 let direction = args["direction"] as? String ?? "down"
                                 let amount = args["amount"] as? Int ?? 3
                                 let route = args["route"] as? String ?? "auto"
@@ -1752,7 +1804,10 @@ DispatchQueue.global().async {
                                 }
                                 noteActionPoint(args, scrollPoint, symbol: "scroll")
                                 let pagesArg = (args["pages"] as? Double) ?? (args["pages"] as? Int).map(Double.init)
-                                var data = route == "wheel" ? nil : await withFocusGuard(pid) { axScroll(pid, direction: direction, notches: amount, pages: pagesArg) }
+                                // 参照的 scroll 是 `scroll <ref> <up|down|…>` —— 目标由 **ref** 指定，
+                                // 而不是只给 pid、让守护进程自己猜哪个滚动区。给了 ref 就按 ref 走。
+                                let refArea: AXUIElement? = (args["ref"] as? String).flatMap { refTables[pid]?[$0] }
+                                var data = route == "wheel" ? nil : await withFocusGuard(pid) { axScroll(pid, direction: direction, notches: amount, pages: pagesArg, refArea: refArea) }
                                 if data == nil && route != "ax" {
                                     await withFocusGuard(pid) {
                                         // 滚轮只认行数。给了 pages 就换算 —— 但**网页内容量不出页有多大**

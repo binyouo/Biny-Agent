@@ -13,28 +13,34 @@ const render = (sessionId = "session-a", value = projection) => renderToStaticMa
   sessionId, projection: value, onMutation: async () => undefined, onError: () => undefined
 }));
 const document = new JSDOM(render()).window.document;
-const details = document.querySelector("details")!;
-const summary = details.querySelector("summary")!;
-assert.equal(summary.textContent, "目标", "The collapsed entry contains only its icon and short label.");
-assert.ok(summary.querySelector("svg"), "The goal entry must have a target icon.");
-assert.equal(details.hasAttribute("open"), false);
-assert.ok(summary.getAttribute("aria-label")?.includes("持续执行中"), "Status remains accessible without filling the collapsed entry.");
-assert.ok(details.querySelector('[role="status"]'));
-assert.equal(document.querySelectorAll("button").length, details.querySelectorAll("button").length, "Goal controls appear inside the expanded details.");
-assert.match(render(), /完成原始目标/u);
-assert.match(render(), /保留全部约束/u);
-assert.match(render(), /暂停/u);
+const row = document.querySelector(".biny-session-goal-row");
+assert.ok(row, "The current goal is visible as a complete row above the composer.");
+assert.equal(row.querySelector('[role="status"]')?.textContent, "进行中的目标");
+assert.equal(row.querySelector(".biny-session-goal-preview")?.textContent, projection.goal!.objective);
+assert.ok(row.querySelector(".biny-session-goal-icon.is-active"), "Only active goals breathe.");
+assert.equal(row.querySelectorAll(".biny-session-goal-icon circle").length, 3, "The target uses three concentric circles.");
+assert.deepEqual([...row.querySelectorAll(".biny-session-goal-actions button")].map((button) => button.getAttribute("aria-label")), ["暂停目标", "编辑目标", "删除目标"]);
+assert.ok(row.querySelector('[aria-label="查看完整目标"]'), "The truncated objective can be expanded without hiding its controls.");
+assert.ok(document.querySelector(".biny-session-goal-details")?.hasAttribute("hidden"), "Details stay collapsed initially.");
+assert.equal(document.querySelector(".biny-session-goal-objective")?.textContent, projection.goal!.objective);
 assert.match(render(), /250 \/ 1,000/u);
+assert.match(render("session-a", { ...projection, goal: { ...projection.goal!, usageKnown: false } }), /用量不完整/u);
 assert.equal(render("session-b"), "");
 assert.equal(render("session-a", { sessionId: "session-a", plans: [] }), "");
-assert.match(render("session-a", { ...projection, goal: { ...projection.goal!, status: "paused" } }), /恢复/u);
-const automaticallyPaused = render("session-a", { ...projection, goal: { ...projection.goal!, status: "paused", evidence: {
+assert.equal(render("session-a", { ...projection, goal: { ...projection.goal!, sessionId: "session-b" } }), "");
+const paused = render("session-a", { ...projection, goal: { ...projection.goal!, status: "paused", evidence: {
   summary: "自动续跑仅产生文字，已暂停以避免空转。", requirements: [{ requirement: "工作工具活动", evidence: "The last turn had no working tool." }]
 } } });
-assert.match(automaticallyPaused, /空转/u, "Expanded details must explain an automatic pause.");
-assert.match(automaticallyPaused, /恢复/u);
+assert.match(paused, /已暂停的目标/u);
+assert.match(paused, /空转/u, "The pause reason remains available on the preview tooltip.");
+assert.match(paused, /继续目标/u);
+assert.doesNotMatch(paused, /is-active/u);
+const blocked = render("session-a", { ...projection, goal: { ...projection.goal!, status: "blocked" } });
+assert.match(blocked, /等待处理的目标/u);
+assert.match(blocked, /继续目标/u);
+assert.doesNotMatch(blocked, /is-active/u);
 const limited = render("session-a", { ...projection, goal: { ...projection.goal!, status: "budget_limited" } });
 assert.match(limited, /预算已用尽/u);
-assert.doesNotMatch(limited, />恢复</u);
-assert.match(render("session-a", { ...projection, goal: { ...projection.goal!, usageKnown: false } }), /用量不完整/u);
+assert.doesNotMatch(limited, /继续目标|暂停目标|is-active/u);
+assert.equal(render("session-a", { ...projection, goal: { ...projection.goal!, status: "completed" } }), "", "Completed goals leave the ongoing-goal row.");
 console.log("session goal presentation tests passed");

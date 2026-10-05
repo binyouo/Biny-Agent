@@ -1,6 +1,6 @@
 /** 快照恢复、模型输出、落盘与聊天投影共用真实消息父链。 */
 import assert from "node:assert/strict";
-import { mkdtemp, rm, stat } from "node:fs/promises";
+import { appendFile, mkdtemp, rm, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -10,15 +10,16 @@ import { configSchema, defaultConfig } from "../src/config/schema.js";
 import { buildSessionTimeline } from "../src/desktop/renderer/src/sessionTimeline.js";
 import { PermissionManager } from "../src/permission/PermissionManager.js";
 import { readSessionEvents } from "../src/session/events.js";
-import { sessionFileFingerprint } from "../src/session/parseCache.js";
+import { clearSessionParseCache, sessionFileFingerprint } from "../src/session/parseCache.js";
 import { SessionRecorder } from "../src/session/recorder.js";
 import { replaySession } from "../src/session/replay.js";
 import { tryReadSessionSnapshot, writeSessionSnapshot } from "../src/session/sessionSnapshot.js";
 import { ensureAgentDirs } from "../src/session/store.js";
 import { ToolRegistry } from "../src/tools/registry.js";
 
-for (const selectedVersion of [false, true]) {
-  test(`快照恢复后继续发送保留${selectedVersion ? "已选择版本" : "末条回答"}的父链`, async () => {
+for (const mode of ["cold", "snapshot", "selected"] as const) {
+  const selectedVersion = mode === "selected";
+  test(`${mode} 长会话恢复后继续发送保留${selectedVersion ? "已选择版本" : "末条回答"}的父链`, async () => {
     const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "biny-snapshot-parent-"));
     await ensureAgentDirs(workspaceRoot);
     const recorder = new SessionRecorder(workspaceRoot);
@@ -35,10 +36,17 @@ for (const selectedVersion of [false, true]) {
         recorder.record({ type: "message_version_selected", messageId: "answer-first", slotId: "user-first" });
       }
       await recorder.close();
+      // 历史中的大块诊断不进入模型上下文，但计入完整会话文件大小。
+      const diagnostic = JSON.stringify({ type: "error", message: "历史诊断", detail: "x".repeat(512 * 1024) }) + "\n";
+      await appendFile(recorder.filePath, diagnostic.repeat(34));
+      assert.ok((await stat(recorder.filePath)).size > 16 * 1024 * 1024);
       const replay = await replaySession(recorder.filePath);
       const fingerprint = sessionFileFingerprint(await stat(recorder.filePath));
-      await writeSessionSnapshot(recorder.filePath, fingerprint, replay);
-      assert.ok(await tryReadSessionSnapshot(recorder.filePath, fingerprint), "必须命中快照而非完整重放");
+      if (mode !== "cold") {
+        await writeSessionSnapshot(recorder.filePath, fingerprint, replay);
+        assert.ok(await tryReadSessionSnapshot(recorder.filePath, fingerprint), "必须命中快照而非完整重放");
+      }
+      clearSessionParseCache();
       const config = configSchema.parse({ ...defaultConfig,
         context: { ...defaultConfig.context, memory: { ...defaultConfig.context.memory, useMemories: false, generateMemories: false } } });
       const model: AgentModel = { provider: "test", modelId: "snapshot-parent", supportsTools: false,

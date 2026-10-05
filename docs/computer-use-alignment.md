@@ -301,6 +301,29 @@ auto_launch:           boolean   "Auto-launch the app in the background if not r
 参照的 MCP **并不暴露** `strategy`。所以我没有它是对的。
 → **计数不是证据，上下文才是。**
 
+### 1.4f `scroll` 按 ref（参照的用法）+ `shot --max-width`
+
+参照的两条 CLI 签名：
+
+```
+scroll <ref> <up|down|left|right> [--pages=N]      ← **目标由 ref 指定，不带 pid**
+shot <bundle|pid> [--window=ID] [--out=PATH] [--max-width=N]
+```
+
+本实现原先 `scroll <direction> --pid`，**ref 这条路完全没有**；`shot` 有 `--out` 没有 `--max-width`
+（而 daemon 早就支持 `max_width`，默认 1280 —— 又是能力在、路不通）。
+
+已补。三件附带发现：
+
+1. **参照的 ref 是全局的**。它的 CLI 只给 ref 不给 pid 就能滚 → 说明元素存储全局
+   （helper 类名表里的 `ElementStore`）。本实现的 `refTables` **按 pid 分表**，
+   所以"只给 ref"要跨表反查。规则定为：**最近一次观察的 pid 优先，其次唯一命中，不唯一就报错不猜**
+   （ref 本来就是"最近一次观察"里的引用，跨轮次即失效 —— 与参照给 agent 的提示一致）。
+2. **给的 ref 常指向内容元素而不是滚动区**。参照的提示是
+   "ref points at an unscrollable element (snap the parent ScrollArea)" —— 它让调用方自己往上找。
+   本实现加了 `scrollAreaAncestor` 替调用方走完（有界 8 层）。
+3. 命令行只给 ref 时**不能传 `Number(undefined)`（= NaN）**，否则 daemon 报 `app_not_found`。
+
 ### 1.5 工具 / 技能层
 
 - 模型侧工具：`ComputerList` / `ComputerObserve` / `ComputerAction`（8 个动作动词）

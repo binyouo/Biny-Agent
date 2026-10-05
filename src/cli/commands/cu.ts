@@ -124,10 +124,18 @@ const cu = program.command("cu").description("Drive the Mac from the terminal (s
 
   cu.command("shot").description("Capture one window to a file").argument("<bundle|pid>", "app bundle id or pid")
     .option("--window <id>", "exact window id").option("--out <path>", "where to write the jpg")
+    // 参照的这条 help 是 `shot <bundle|pid> [--window=ID] [--out=PATH] [--max-width=N]`。
+    // 守护进程一直支持 max_width（默认 1280），CLI 没开口 —— 又是能力在、路不通。
+    .option("--max-width <n>", "downsample width of the jpg (daemon default 1280)")
     .option("--json", "print JSON")
-    .action((value: string, options: { window?: string; out?: string; json?: boolean }) => withDriver(async driver => {
+    .action((value: string, options: { window?: string; out?: string; maxWidth?: string; json?: boolean }) => withDriver(async driver => {
       const out = options.out ?? `/tmp/biny-cu-${Date.now()}.jpg`;
-      const data = (await driver.daemonCommand("capture_screen", { ...target(value), window_id: options.window ? Number(options.window) : undefined, out })).data;
+      const data = (await driver.daemonCommand("capture_screen", {
+        ...target(value),
+        window_id: options.window ? Number(options.window) : undefined,
+        out,
+        ...(options.maxWidth ? { max_width: Number(options.maxWidth) } : {})
+      })).data;
       if (options.json) return print(data, true);
       print(String((data as { path?: string }).path ?? out));
     }));
@@ -157,13 +165,26 @@ const cu = program.command("cu").description("Drive the Mac from the terminal (s
     }));
   }
 
-  cu.command("scroll").description("Scroll the target window").argument("<direction>", "up | down | left | right")
+  cu.command("scroll").description("Scroll the target window, or a given element's scroll area")
+    // 参照是 `cu scroll <ref> <up|down|left|right> [--pages=N]` —— **目标由 ref 指定**。
+    // 原先是 `scroll <direction> --pid`，两种都留：第一个参数长得像 ref（e123）就按 ref 走。
+    .argument("[refOrDirection]", "element ref (e12) or direction: up | down | left | right")
+    .argument("[direction]", "up | down | left | right — required when a ref is given")
     .option("--pid <n>", "target pid")
     .option("--pages <n>", "whole pages (one page = viewport/content, computed from the scroll area)")
     .option("--amount <n>", "line notches instead of pages — an estimate, only used when --pages is absent", "1")
     .option("--json", "print JSON")
-    .action((direction: string, options: { pid?: string; pages?: string; amount?: string; json?: boolean }) => withDriver(async driver => {
-      const args: Record<string, unknown> = { direction, pid: Number(options.pid) };
+    .action((refOrDirection: string, direction: string | undefined, options: { pid?: string; pages?: string; amount?: string; json?: boolean }) => withDriver(async driver => {
+      const looksLikeRef = /^e\d+$/.test(refOrDirection);
+      const dir = looksLikeRef ? direction : refOrDirection;
+      if (!dir) throw new Error("scroll 需要方向：cu scroll <ref> <up|down|left|right> 或 cu scroll <direction> --pid N");
+      // 只给 ref 时不带 pid（参照的 `cu scroll <ref> <dir>` 就是不给 pid）；
+      // 早先无条件传 `Number(undefined)` = NaN，daemon 于是报 app_not_found。
+      const args: Record<string, unknown> = {
+        direction: dir,
+        ...(options.pid ? { pid: Number(options.pid) } : {}),
+        ...(looksLikeRef ? { ref: refOrDirection } : {})
+      };
       // 给了 --pages 就按页面走（量出来的），否则退回滚轮行数（估的）。回执里的 unit 会说明用了哪个。
       if (options.pages !== undefined) args.pages = Number(options.pages);
       else args.amount = Number(options.amount);

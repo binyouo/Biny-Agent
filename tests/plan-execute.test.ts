@@ -181,7 +181,7 @@ async function testBusyCheckpointDoesNotBlockOtherGraphs(): Promise<void> {
     graphs.claimIntent(waiting.graphId, first.nodeId);
     graphs.completeNode(waiting.graphId, first.nodeId, "failed");
     const wake = graphs.listSupervisorWakes()[0]!;
-    const fixed = graphs.createGraph(undefined, [{ nodeKey: "independent", prompt: "work" }, { nodeKey: "next", prompt: "more work" }]);
+    const fixed = graphs.createGraph([{ nodeKey: "independent", prompt: "work" }, { nodeKey: "next", prompt: "more work" }]);
     graphs.startGraph(fixed.graphId);
     const scheduleWakeId = graphs.createWake(fixed.graphId, "test-ready");
     await supervisor.tick();
@@ -256,7 +256,7 @@ async function testNaturalLanguagePlanStartAndInternalWakeTurn(): Promise<void> 
     assert.equal(graphs[0]?.mode, "supervised");
     assert.equal(graphs[0]?.supervisorSessionId, sessionId);
     assert.equal(graphs[0]?.nodes.length, 2);
-    assert.equal(commands.graphs.listGoals().length, 0, "a plan must not create a second objective ledger");
+    assert.equal("goalId" in graphs[0]!, false, "a plan must not create a second objective ledger");
 
     const before = await readSessionEvents(sessionFilePath(root, sessionId));
     const beforeUsers = before.filter((event) => event.type === "user_message").length;

@@ -909,3 +909,46 @@ test("an action can suppress the indicator for one action only", async () => {
     await driver.dispose();
   }
 });
+
+// 参照的 scroll 是 `cu scroll <ref> <up|down|…>` —— **目标由 ref 指定，不带 pid**。
+// 本实现的 refTables 按 pid 分表，所以"只给 ref"要跨表反查：
+// 唯一命中才认，多个 pid 都有同名 ref 时宁可报错也不猜。
+// 给的 ref 还常常是**内容元素**（表格/大纲）而不是滚动区本身 ——
+// 参照给调用方的提示是 "snap the parent ScrollArea"，这里替调用方往上走完。
+test("scroll accepts a ref alone, and finds the scroll area above a content element", async () => {
+  const driver = new NativeProcessDriver(() => {}, {
+    binaryPath: new URL("../out/native/computer-use", import.meta.url).pathname
+  });
+  try {
+    const listed = await driver.list("scroll-ref-e2e", undefined);
+    const apps = (listed.data as { apps: { pid?: number }[] }).apps;
+    const pid = apps.find(app => typeof app.pid === "number")?.pid;
+    assert.ok(pid, "至少要有一个运行中的应用");
+
+    const observed = await driver.daemonCommand("get_app_state", { pid, no_shot: true, max_elements: 60 });
+    type El = { element_token?: string; ref?: string; role?: string };
+    const elements = (observed.data as { elements?: El[] }).elements ?? [];
+    // 挑一个**能滚的**内容元素或滚动区；滚动本身要有内容才量得出位移
+    const target = elements.find(el => el.role === "AXOutline" || el.role === "AXScrollArea");
+    if (!target) { return; }                      // 这个应用没有可滚区域，跳过而非伪造
+    const ref = (target.element_token ?? target.ref)!;
+
+    // ⚠️ 只断言「能力成立」，不断言「走了哪条路」—— 页滚动这条 AX 动作
+    // **取决于目标应用认不认**（活动监视器认、很多应用不认）。断言具体 route 就是在
+    // 断言一个取决于机器的值（focusTap 那条教训）。
+    const withPid = (await driver.daemonCommand("scroll", { pid, ref, direction: "down", pages: 1 })).data as { unit?: string };
+    assert.ok(withPid.unit, "带 pid 的 ref 滚动应当成功并说明单位");
+
+    const alone = (await driver.daemonCommand("scroll", { ref, direction: "down", pages: 1 })).data as { unit?: string };
+    assert.ok(alone.unit, "只给 ref（参照的用法）也应当能定位到 pid 并滚动");
+
+    // 不存在的 ref：要报"不在最近一次观察里"，而不是含糊的 app_not_found
+    await assert.rejects(
+      () => driver.daemonCommand("scroll", { ref: "e999999", direction: "down", pages: 1 }),
+      error => /element_ref_not_observed|app_not_found/.test(String(error)),
+      "不存在的 ref 应当说清是 ref 的问题"
+    );
+  } finally {
+    await driver.dispose();
+  }
+});
