@@ -606,3 +606,30 @@ test("observing an unknown bundle fails as not-installed rather than not-found",
     await driver.dispose();
   }
 });
+
+// Appshot 是参照里一条面向用户的通路：设置一个全局热键，按下抓当前前台应用。
+// 这里只测**无副作用的分支** —— 真去抓会写文件、真去装热键会挂全局 tap。
+test("appshot reports the frontmost app and refuses a malformed hotkey", async () => {
+  const driver = new NativeProcessDriver(() => {}, {
+    binaryPath: new URL("../out/native/computer-use", import.meta.url).pathname
+  });
+  try {
+    // 前台识别：要能排除自己（参照的 appshot_frontmost 同样带 exclude）
+    const front = (await driver.daemonCommand("appshot_frontmost")).data as { pid?: number; bundleId?: string };
+    assert.ok(Number.isInteger(front.pid) && front.pid! > 0, "应当报出前台应用的 pid");
+    assert.notEqual(front.bundleId, "com.biny.computer-use", "不该把自己当前台");
+
+    // 热键写法不对要在装之前就说清楚，而不是装上一个永远不触发的
+    await assert.rejects(
+      () => driver.daemonCommand("appshot_monitor_start", { hotkey: "Ctrl+NotAKey" }),
+      /invalid_hotkey/
+    );
+
+    // 状态里必须能看出「装了但不收事件」—— 这个环境里 tap 建得起来却不投递
+    const status = (await driver.daemonCommand("appshot_status")).data as { armed?: boolean; live?: boolean; eventsSeen?: number };
+    assert.equal(typeof status.armed, "boolean");
+    assert.equal(typeof status.eventsSeen, "number", "要把收到的事件数暴露出来，否则『装了没反应』无从判断");
+  } finally {
+    await driver.dispose();
+  }
+});

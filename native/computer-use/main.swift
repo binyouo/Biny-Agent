@@ -30,6 +30,172 @@ func reply(_ fd: Int32, _ value: [String: Any]) {
 }
 
 // MARK: - 权限检查
+// MARK: - Appshot：全局热键抓当前应用
+
+/// 参照的 appshot 是一条**面向用户**的通路：设置里有 `appshots.hotkey`，
+/// 按下就把**当前前台应用**（排除自己）抓下来，还带快门声（`[appshot-sound]`）。
+/// daemon 侧的动词是 `appshot_monitor_start/stop` · `appshot_frontmost` · `appshot_capture`。
+///
+/// 它需要的是**会话级**事件 tap —— 这个在本构建里实测**可用**
+/// （`doctor` 的 `focusTap: session-only`：会话级能建，按 pid 的不能）。
+///
+/// 热键写法：修饰键用 `+` 连接，例如 `Ctrl+Alt+C`、`Ctrl+Shift+Space`；
+/// 也接受单按修饰键两次（`double-cmd` / `double-alt`），对应参照的 `BareModifierMonitor`
+/// 与 `doubleTapWindow`。**参照的确切格式没完全还原出来**，这里是一套合理的子集。
+let hotkeyKeyCodes: [String: CGKeyCode] = [
+    "A": 0, "S": 1, "D": 2, "F": 3, "H": 4, "G": 5, "Z": 6, "X": 7, "C": 8, "V": 9,
+    "B": 11, "Q": 12, "W": 13, "E": 14, "R": 15, "Y": 16, "T": 17,
+    "1": 18, "2": 19, "3": 20, "4": 21, "6": 22, "5": 23, "9": 25, "7": 26, "8": 28, "0": 29,
+    "O": 31, "U": 32, "I": 34, "P": 35, "L": 37, "J": 38, "K": 40, "N": 45, "M": 46,
+    "RETURN": 36, "SPACE": 49, "TAB": 48, "ESCAPE": 53,
+    "LEFT": 123, "RIGHT": 124, "DOWN": 125, "UP": 126,
+]
+
+struct HotkeySpec {
+    let flags: CGEventFlags
+    let keyCode: CGKeyCode?              // nil = 单按修饰键两次
+    let bareModifier: CGEventFlags?      // double-cmd 之类
+}
+
+func parseHotkey(_ raw: String) -> HotkeySpec? {
+    let text = raw.trimmingCharacters(in: .whitespaces)
+    if text.lowercased().hasPrefix("double-") {
+        let name = String(text.dropFirst(7)).lowercased()
+        let map: [String: CGEventFlags] = ["cmd": .maskCommand, "command": .maskCommand,
+                                           "alt": .maskAlternate, "option": .maskAlternate,
+                                           "ctrl": .maskControl, "control": .maskControl,
+                                           "shift": .maskShift]
+        guard let flag = map[name] else { return nil }
+        return HotkeySpec(flags: [], keyCode: nil, bareModifier: flag)
+    }
+    var flags: CGEventFlags = []
+    var key: String?
+    for raw in text.split(separator: "+") {
+        let part = raw.trimmingCharacters(in: .whitespaces).uppercased()
+        switch part {
+        case "CMD", "COMMAND": flags.insert(.maskCommand)
+        case "CTRL", "CONTROL": flags.insert(.maskControl)
+        case "ALT", "OPTION": flags.insert(.maskAlternate)
+        case "SHIFT": flags.insert(.maskShift)
+        default: key = part
+        }
+    }
+    guard let key, let code = hotkeyKeyCodes[key] else { return nil }
+    return HotkeySpec(flags: flags, keyCode: code, bareModifier: nil)
+}
+
+final class AppshotMonitor {
+    private var tap: CFMachPort?
+    private var source: CFRunLoopSource?
+    private(set) var hotkey: String = ""
+    private(set) var lastCapturePath: String?
+    private var lastBareTapAt: Date?
+    /// 诊断：tap 有没有真的在收事件、有没有被系统掐掉。
+    /// 「装了热键但按了没反应」有两种完全不同的原因 —— tap 没收到，还是收到了没匹配上。
+    private(set) var eventsSeen = 0
+    private(set) var disableCount = 0
+    /// 两次单按修饰键之间多久算「双击」。参照里叫 doubleTapWindow。
+    private let doubleTapWindow: TimeInterval = 0.45
+    let outputDir: String
+
+    init() {
+        let base = NSTemporaryDirectory() + "biny-appshots"
+        try? FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
+        outputDir = base
+    }
+
+    var isArmed: Bool { tap != nil }
+    /// tap 建好≠在工作：可能没 enable，也可能 source 没真挂上 runloop。
+    var isLive: Bool {
+        guard let tap, let source else { return false }
+        return CGEvent.tapIsEnabled(tap: tap) && CFRunLoopContainsSource(CFRunLoopGetMain(), source, .commonModes)
+    }
+
+    func arm(_ spec: HotkeySpec, raw: String) -> Bool {
+        disarm()
+        hotkey = raw
+        // 只关心按键按下与修饰键变化：热键不需要看别的，mask 越小 tap 越不容易被系统掐。
+        let mask = (CGEventMask(1) << CGEventType.keyDown.rawValue)
+                 | (CGEventMask(1) << CGEventType.flagsChanged.rawValue)
+        guard let tap = CGEvent.tapCreate(
+            tap: .cgSessionEventTap, place: .headInsertEventTap, options: .defaultTap,
+            eventsOfInterest: mask,
+            callback: { _, type, event, refcon in
+                guard let refcon else { return Unmanaged.passUnretained(event) }
+                let monitor = Unmanaged<AppshotMonitor>.fromOpaque(refcon).takeUnretainedValue()
+                monitor.handle(type: type, event: event)
+                return Unmanaged.passUnretained(event)   // 只监听，不改写用户的输入
+            },
+            userInfo: Unmanaged.passUnretained(self).toOpaque()
+        ) else { return false }
+        let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
+        CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
+        CGEvent.tapEnable(tap: tap, enable: true)
+        self.tap = tap
+        self.source = source
+        return true
+    }
+
+    func disarm() {
+        if let tap { CGEvent.tapEnable(tap: tap, enable: false); CFMachPortInvalidate(tap) }
+        if let source { CFRunLoopRemoveSource(CFRunLoopGetMain(), source, .commonModes) }
+        tap = nil; source = nil
+    }
+
+    fileprivate func handle(type: CGEventType, event: CGEvent) {
+        eventsSeen += 1
+        // 系统会因为回调太慢把 tap 掐掉；参照同样会记这条。重新武装，别静默失效。
+        if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
+            disableCount += 1
+            if let tap { CGEvent.tapEnable(tap: tap, enable: true) }
+            return
+        }
+        guard let spec = parseHotkey(hotkey) else { return }
+        if let bare = spec.bareModifier {
+            guard type == .flagsChanged, event.flags.contains(bare) else { return }
+            let now = Date()
+            if let last = lastBareTapAt, now.timeIntervalSince(last) <= doubleTapWindow {
+                lastBareTapAt = nil
+                fire()
+            } else {
+                lastBareTapAt = now
+            }
+            return
+        }
+        guard type == .keyDown, event.getIntegerValueField(.keyboardEventKeycode) == Int64(spec.keyCode ?? 0) else { return }
+        // 修饰键要**恰好**匹配：少了不触发，多了也不触发（否则 Cmd+C 会误触 Cmd+Shift+C）。
+        let relevant: CGEventFlags = [.maskCommand, .maskControl, .maskAlternate, .maskShift]
+        guard event.flags.intersection(relevant) == spec.flags else { return }
+        fire()
+    }
+
+    /// 触发一次抓取。回调里不能做慢活（tap 会被系统掐），所以派到别的队列。
+    private func fire() {
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in self?.captureFrontmost() }
+    }
+
+    func captureFrontmost() {
+        // 抓「当前前台应用」，但排除自己 —— 参照的 appshot_frontmost 就是带 exclude_bundle_id 的。
+        guard let front = NSWorkspace.shared.frontmostApplication,
+              front.processIdentifier != getpid() else { return }
+        let pid = front.processIdentifier
+        let out = outputDir + "/appshot-\(Int(Date().timeIntervalSince1970 * 1000)).jpg"
+        guard let frame = windowScreenBounds(pid: Int(pid)) else { return }
+        let params: [String: Any] = ["out": out, "pid": Int(pid), "max_width": 1280]
+        let done = DispatchSemaphore(value: 0)
+        Task {
+            defer { done.signal() }
+            _ = try? await screenshot(params)
+        }
+        if done.wait(timeout: .now() + 6) == .success, FileManager.default.fileExists(atPath: out) {
+            lastCapturePath = out
+            _ = frame
+        }
+    }
+}
+
+let appshotMonitor = AppshotMonitor()
+
 // MARK: - 原生意图（Layer 1 app-command dispatch）
 
 /// 对认识的应用**不驱动 UI**，直接把已知意图派给应用。
@@ -931,6 +1097,41 @@ DispatchQueue.global().async {
                                     raised["warning"] = "window_not_found: 没有编号为 \(requested) 的窗口，已只把应用提到前面。"
                                 }
                                 reply(fd, ["id": id, "ok": true, "data": raised] as [String: Any])
+                            case "appshot_monitor_start":
+                                guard let raw = args["hotkey"] as? String, let spec = parseHotkey(raw) else {
+                                    throw NSError(domain: "appshot", code: 64, userInfo: [NSLocalizedDescriptionKey:
+                                        "invalid_hotkey: 写法如 Ctrl+Alt+C、Ctrl+Shift+Space，或 double-cmd"])
+                                }
+                                let armed = await MainActor.run { appshotMonitor.arm(spec, raw: raw) }
+                                guard armed else {
+                                    throw NSError(domain: "appshot", code: 65, userInfo: [NSLocalizedDescriptionKey:
+                                        "appshot_tap_unavailable: 会话级事件 tap 建不起来（需要辅助功能权限）"])
+                                }
+                                reply(fd, ["id": id, "ok": true, "data": ["hotkey": raw, "armed": true] as [String: Any]])
+                            case "appshot_monitor_stop":
+                                await MainActor.run { appshotMonitor.disarm() }
+                                reply(fd, ["id": id, "ok": true, "data": ["armed": false] as [String: Any]])
+                            case "appshot_status":
+                                reply(fd, ["id": id, "ok": true, "data": [
+                                    "armed": appshotMonitor.isArmed,
+                                    "hotkey": appshotMonitor.hotkey,
+                                    "lastCapture": appshotMonitor.lastCapturePath ?? "",
+                                    "live": appshotMonitor.isLive,
+                                    "eventsSeen": appshotMonitor.eventsSeen,
+                                    "tapDisables": appshotMonitor.disableCount,
+                                ] as [String: Any]])
+                            case "appshot_frontmost":
+                                guard let front = NSWorkspace.shared.frontmostApplication, front.processIdentifier != getpid() else {
+                                    throw NSError(domain: "appshot", code: 66, userInfo: [NSLocalizedDescriptionKey: "appshot_no_frontmost: 前台就是自己或拿不到"])
+                                }
+                                reply(fd, ["id": id, "ok": true, "data": [
+                                    "pid": Int(front.processIdentifier),
+                                    "bundleId": front.bundleIdentifier ?? "",
+                                    "name": front.localizedName ?? "",
+                                ] as [String: Any]])
+                            case "appshot_capture":
+                                appshotMonitor.captureFrontmost()
+                                reply(fd, ["id": id, "ok": true, "data": ["path": appshotMonitor.lastCapturePath ?? ""] as [String: Any]])
                             case "intent":
                                 // 派发一个注册过的原生意图。`open_url` 是通用那条：
                                 // 任何 URL scheme 或文档 URL 都能交给处理它的应用。

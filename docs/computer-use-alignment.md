@@ -264,6 +264,23 @@ accessibility: granted | screenRecording: granted | focusTap: session-only
 同一次调用里：**全会话 tap 能建；按 pid 的 tap（参照第一层用的那个）建不起来。**
 两者都需要辅助功能权限，而权限是 granted，所以不是权限问题。
 
+### 更准的一层：能建 ≠ 能用（2026-10-05 补测）
+
+做 appshot 全局热键（§5.5）时又量了一次，结论要修正：
+
+```
+armed: true · live: true（tap enabled，source 确实挂在主 runloop 上）
+注入输出: 已全局注入 keycode=46        ← 注入真的执行了（探针 CGPreflightPostEventAccess = 允许）
+eventsSeen: 0                          ← tap 一个事件都没收到
+```
+
+**会话级 tap 能建、能 enable、能挂上 runloop —— 但一个事件都不投递。**
+所以先前那句「会话级 tap 能用」下得太乐观，准确的说法是「**能建，不投递**」。
+这也回过头解释了参照为什么在建不起 tap 时直接 FATAL：tap 本来就是个容易静默失效的东西，
+它宁可停也不假装拦住了。
+
+**推测仍是签名身份**（正式 Developer ID vs ad-hoc），未验证 —— 与 per-pid 那条同一个推测。
+
 **推测**（未验证，故标为推测）：差异在**签名身份** —— 参照发的是正式 Developer ID 的公证包，
 本仓库是 ad-hoc 签名。要证实得有一份正式签名，本环境没有。
 
@@ -364,6 +381,28 @@ orpheus://route/dailyRecommend  ·  orpheus://route/historyRecommend
 | Chrome 处理 `https://` | **被顶到前面** |
 
 所以"不动前台"不是这条路径的性质，是**具体应用的性质** —— 参照选 orpheus 路由正是为此。
+
+---
+
+## 5.5 Appshot：全局热键抓当前应用（daemon 侧已实现，热键投递受阻）
+
+参照有一条**面向用户**的通路：设置里的 `appshots.hotkey`，按下就把**当前前台应用**
+（排除自己）抓下来，还带快门声（二进制里的 `[appshot-sound]`）。daemon 侧动词：
+
+```
+appshot_monitor_start { hotkey }  ·  appshot_monitor_stop
+appshot_frontmost { exclude_bundle_id }  ·  appshot_capture
+```
+
+（本仓库原先把它误记成"给活动记录用的快照监控"，实际是用户按一下就能触发的抓取。）
+
+**已实现**：动词齐了、前台识别准了。热键写法 `Ctrl+Alt+C` / `double-cmd`（单按修饰键两次，
+对应参照的 `BareModifierMonitor` + `doubleTapWindow`）。**参照的确切格式没完全还原**，
+这是一套合理子集。
+
+**受阻的部分**：热键投递。诊断显示 tap「装上了、live、却收不到任何事件」（见 §3.1 补测）。
+所以现在 `appshot_status` 会同时报 `armed` / `live` / `eventsSeen` —— **把"装了但不工作"这个
+状态显式暴露出来**，而不是让调用方以为热键生效了。这条约束和 §3.1 同一个根因（推测签名身份）。
 
 ---
 
