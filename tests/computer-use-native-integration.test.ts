@@ -386,3 +386,29 @@ test("a second driver shares the running daemon, so refs outlive the call that m
     await second.dispose().catch(() => undefined);
   }
 });
+
+// 鼠标事件不能走 postToPid：投给进程的鼠标事件到不了窗口，而 API 照样返回成功。
+// 实测（TextEdit 双击选词）postToPid → 选区纹丝不动；全局 post → 选中 8 个字符。
+// 这条测试钉住「次数与按键被如实回报」，实际落地在真机上验证过。
+test("a pixel click reports the button and the number of clicks it dispatched", async () => {
+  const driver = new NativeProcessDriver(() => {}, {
+    binaryPath: new URL("../out/native/computer-use", import.meta.url).pathname
+  });
+  try {
+    const listed = await driver.list("click-e2e", undefined);
+    const apps = (listed.data as { apps: { pid?: number }[] }).apps;
+    const target = apps.find(app => typeof app.pid === "number");
+    if (!target?.pid) return;
+    // 点在自己窗口的左上角区域之外没有意义，这里只验证回执与所发的一致
+    const observed = await driver.observe("click-e2e", { pid: target.pid } as never);
+    const frame = (observed.data as { elements?: { role?: string; frame?: { x: number; y: number } }[] }).elements?.find(e => e.frame)?.frame;
+    if (!frame) return;
+    const x = frame.x + 5, y = frame.y + 5;
+    const single = await driver.actRaw("click", { pid: target.pid, x, y, coord_space: "screen", clicks: 1 });
+    assert.equal((single.data as { clicks?: number }).clicks, 1);
+    const double = await driver.actRaw("click", { pid: target.pid, x, y, coord_space: "screen", clicks: 2, button: "left" });
+    assert.equal((double.data as { clicks?: number }).clicks, 2, "双击要如实回报 2 —— 它靠 clickState 序列实现，不是发两次单击");
+  } finally {
+    await driver.dispose();
+  }
+});

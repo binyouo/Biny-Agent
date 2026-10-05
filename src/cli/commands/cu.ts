@@ -110,11 +110,13 @@ export function registerCuCommands(program: Command): void {
 
   cu.command("click").description("Click an element ref, or a screenshot pixel").argument("[ref]", "element ref from `cu snap`")
     .option("--pixel <x> <y...>", "click at these screenshot pixels instead").option("--pid <n>", "target pid when clicking a pixel")
+    .option("--button <name>", "left | right | middle", "left").option("--clicks <n>", "1 = single, 2 = double-click", "1")
     .option("--json", "print JSON")
-    .action(async (ref: string | undefined, options: { pixel?: string[]; pid?: string; json?: boolean }) => withDriver(async driver => {
+    .action(async (ref: string | undefined, options: { pixel?: string[]; pid?: string; button?: string; clicks?: string; json?: boolean }) => withDriver(async driver => {
+      const shared = { button: options.button, clicks: Number(options.clicks) };
       const args: Record<string, unknown> = options.pixel
-        ? { pid: Number(options.pid), x: Number(options.pixel[0]), y: Number(options.pixel[1]) }
-        : { ref, pid: Number(options.pid) };
+        ? { pid: Number(options.pid), x: Number(options.pixel[0]), y: Number(options.pixel[1]), ...shared }
+        : { ref, pid: Number(options.pid), ...shared };
       print((await driver.actRaw("click", args)).data, options.json);
     }));
 

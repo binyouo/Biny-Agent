@@ -99,10 +99,17 @@ func resolvePid(_ parameters: [String: Any]) throws -> pid_t {
 }
 
 // MARK: - 输入合成（全部走 PostToPid，不抢焦点、不动真实光标）
-func postMouse(_ pid: pid_t, _ type: CGEventType, _ point: CGPoint, _ button: CGMouseButton = .left, clickState: Int64 = 1) {
+/// 鼠标事件必须**全局投递**。
+///
+/// 实测（TextEdit，双击选词）：`postToPid` → 选区 loc=0 len=0，纹丝不动；
+/// 全局 post → 选中 8 个字符。投给进程的鼠标事件到不了窗口，而 API 照样返回成功 ——
+/// 调用方会以为点过了。这是键盘那条「按键被丢弃」的同一类失败，只是更隐蔽。
+///
+/// 代价是光标会被挪一下，所以整段点击序列前后把它放回原处。
+func postMouse(_ pid: pid_t, _ type: CGEventType, _ point: CGPoint, _ button: CGMouseButton = .left, clickState: Int64 = 1, global: Bool = false) {
     guard let event = CGEvent(mouseEventSource: nil, mouseType: type, mouseCursorPosition: point, mouseButton: button) else { return }
     event.setIntegerValueField(.mouseEventClickState, value: clickState)
-    event.postToPid(pid)
+    if global { event.post(tap: .cghidEventTap) } else { event.postToPid(pid) }
 }
 func postKey(_ pid: pid_t, keyCode: CGKeyCode, flags: CGEventFlags) {
     guard let down = CGEvent(keyboardEventSource: nil, virtualKey: keyCode, keyDown: true),
@@ -208,6 +215,35 @@ func windowsForApp(_ pid: Int) -> [[String: Any]] {
 
 /// 某个应用第一个「普通窗口」（层 0）的 CGWindowID，与 windowScreenBounds 选的是同一个。
 /// 用来把 windowId 上报成真窗口号，而不是拿 pid 冒充。
+/// 按钮名 → CGMouseButton。默认左键。
+func mouseButton(_ name: String?) -> CGMouseButton {
+    switch name {
+    case "right": return .right
+    case "middle": return .center
+    default: return .left
+    }
+}
+
+/// 合成一次点击序列。
+///
+/// 双击**不是"发两次单击"**：系统靠 mouseEventClickState 认这是第几下，
+/// 每次都带对序号、中间留出能被认作连续点击的间隔，才会被当成双击。
+/// 少了这个，在 Finder 里点两下文件只会被选中两次，永远不会打开它。
+func postClick(_ pid: pid_t, _ point: CGPoint, button: CGMouseButton, clicks: Int) {
+    let down: CGEventType = button == .right ? .rightMouseDown : button == .center ? .otherMouseDown : .leftMouseDown
+    let up: CGEventType = button == .right ? .rightMouseUp : button == .center ? .otherMouseUp : .leftMouseUp
+    let saved = CGEvent(source: nil)?.location
+    let total = max(1, clicks)
+    for index in 1...total {
+        postMouse(pid, down, point, button, clickState: Int64(index), global: true)
+        postMouse(pid, up, point, button, clickState: Int64(index), global: true)
+        // 太快会被系统合并成一下，太慢会被当成两次独立点击。
+        if index < total { usleep(60_000) }
+    }
+    // 光标是我们挪的，用完放回去 —— 用户不该因为一次自动化发现鼠标换了位置。
+    if let saved { CGWarpMouseCursorPosition(saved) }
+}
+
 func windowNumberForApp(_ pid: Int) -> Int? {
     guard let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else { return nil }
     for window in list {
@@ -339,13 +375,15 @@ func screenPoint(_ pid: pid_t, _ x: Double, _ y: Double, screenSpace: Bool) -> C
 
 /// 拖拽：AX 没有拖这个动作，只能合成鼠标序列（按下 → 若干拖动点 → 抬起）。
 func postDrag(_ pid: pid_t, from: CGPoint, to: CGPoint) {
-    postMouse(pid, .leftMouseDown, from)
+    let saved = CGEvent(source: nil)?.location
+    defer { if let saved { CGWarpMouseCursorPosition(saved) } }
+    postMouse(pid, .leftMouseDown, from, global: true)
     let steps = 8
     for step in 1...steps {
         let t = Double(step) / Double(steps)
-        postMouse(pid, .leftMouseDragged, CGPoint(x: from.x + (to.x - from.x) * t, y: from.y + (to.y - from.y) * t))
+        postMouse(pid, .leftMouseDragged, CGPoint(x: from.x + (to.x - from.x) * t, y: from.y + (to.y - from.y) * t), global: true)
     }
-    postMouse(pid, .leftMouseUp, to)
+    postMouse(pid, .leftMouseUp, to, global: true)
 }
 
 /// 目标应用是否处在能接收键盘输入的状态。
@@ -732,28 +770,42 @@ DispatchQueue.global().async {
                                 guard axTrusted() else { throw NSError(domain: "ax", code: 1, userInfo: [NSLocalizedDescriptionKey: "ax_not_granted"]) }
                                 if let ref = args["ref"] as? String, let pid = args["pid"] as? Int, let element = refTables[pid_t(pid)]?[ref] {
                                     // 不同控件认不同的 AX 动作：有的只响应 Pick、有的只响应 Confirm。
-                                    // 依次试，全都不认才退到物理点击。
-                                    let attempts: [String] = [kAXPressAction as String, kAXPickAction as String, kAXConfirmAction as String]
-                                    let status: AXError = attempts.reduce(.failure) { acc, action in
-                                        acc == .success ? acc : AXUIElementPerformAction(element, action as CFString)
-                                    }
-                                    if status != .success {
-                                        if let frame = axFrame(element) {
-                                            let point = CGPoint(x: frame["x"]! + frame["w"]!/2, y: frame["y"]! + frame["h"]!/2)
-                                            await withFocusGuard(pid_t(pid)) {
-                                                postMouse(pid_t(pid), .leftMouseDown, point); postMouse(pid_t(pid), .leftMouseUp, point)
+                                    let refButton = mouseButton(args["button"] as? String)
+                                    let refClicks = max(1, min(3, args["clicks"] as? Int ?? 1))
+                                    // 双击和右键在 AX 里都没有对应动作：AXPress 表达不了"点两下"。
+                                    // 那种情况直接在元素中心做物理点击序列。
+                                    if refClicks > 1 || refButton != .left, let frame = axFrame(element) {
+                                        let point = CGPoint(x: frame["x"]! + frame["w"]!/2, y: frame["y"]! + frame["h"]!/2)
+                                        await withFocusGuard(pid_t(pid)) {
+                                            postClick(pid_t(pid), point, button: refButton, clicks: refClicks)
+                                        }
+                                        reply(fd, ["id": id, "ok": true, "data": ["clicked": ref, "route": "physical", "clicks": refClicks] as [String: Any]] as [String: Any])
+                                    } else {
+                                        // 依次试，全都不认才退到物理点击。
+                                        let attempts: [String] = [kAXPressAction as String, kAXPickAction as String, kAXConfirmAction as String]
+                                        let status: AXError = attempts.reduce(.failure) { acc, action in
+                                            acc == .success ? acc : AXUIElementPerformAction(element, action as CFString)
+                                        }
+                                        if status != .success {
+                                            if let frame = axFrame(element) {
+                                                let point = CGPoint(x: frame["x"]! + frame["w"]!/2, y: frame["y"]! + frame["h"]!/2)
+                                                await withFocusGuard(pid_t(pid)) {
+                                                    postClick(pid_t(pid), point, button: .left, clicks: 1)
+                                                }
                                             }
                                         }
+                                        reply(fd, ["id": id, "ok": true, "data": ["clicked": ref, "route": "ax"] as [String: Any]] as [String: Any])
                                     }
-                                    reply(fd, ["id": id, "ok": true, "data": ["clicked": ref] as [String: Any]] as [String: Any])
                                 } else if let x = args["x"] as? Double, let y = args["y"] as? Double {
                                     let pid = try resolvePid(args)
                                     // 像素坐标为截图坐标：按最近一次快照的映射换算回屏幕点。
                                     let point = screenPoint(pid, x, y, screenSpace: args["coord_space"] as? String == "screen")
+                                    let pixelButton = mouseButton(args["button"] as? String)
+                                    let pixelClicks = max(1, min(3, args["clicks"] as? Int ?? 1))
                                     await withFocusGuard(pid) {
-                                        postMouse(pid, .leftMouseDown, point); postMouse(pid, .leftMouseUp, point)
+                                        postClick(pid, point, button: pixelButton, clicks: pixelClicks)
                                     }
-                                    reply(fd, ["id": id, "ok": true, "data": ["clicked": "@\(Int(x)),\(Int(y))"] as [String: Any]] as [String: Any])
+                                    reply(fd, ["id": id, "ok": true, "data": ["clicked": "@\(Int(x)),\(Int(y))", "clicks": pixelClicks] as [String: Any]] as [String: Any])
                                 } else { throw NSError(domain: "click", code: 64, userInfo: [NSLocalizedDescriptionKey: "ref_stale"]) }
                             case "drag":
                                 // AX 没有拖这个动作，只能合成鼠标序列。
@@ -775,14 +827,14 @@ DispatchQueue.global().async {
                                     if status != .success, let frame = axFrame(element) {
                                         let point = CGPoint(x: frame["x"]! + frame["w"]!/2, y: frame["y"]! + frame["h"]!/2)
                                         await withFocusGuard(pid) {
-                                            postMouse(pid, .rightMouseDown, point, .right); postMouse(pid, .rightMouseUp, point, .right)
+                                            postMouse(pid, .rightMouseDown, point, .right, global: true); postMouse(pid, .rightMouseUp, point, .right, global: true)
                                         }
                                     }
                                     reply(fd, ["id": id, "ok": true, "data": ["menu": ref] as [String: Any]] as [String: Any])
                                 } else if let x = args["x"] as? Double, let y = args["y"] as? Double {
                                     let point = screenPoint(pid, x, y, screenSpace: args["coord_space"] as? String == "screen")
                                     await withFocusGuard(pid) {
-                                        postMouse(pid, .rightMouseDown, point, .right); postMouse(pid, .rightMouseUp, point, .right)
+                                        postMouse(pid, .rightMouseDown, point, .right, global: true); postMouse(pid, .rightMouseUp, point, .right, global: true)
                                     }
                                     reply(fd, ["id": id, "ok": true, "data": ["menu": "@\(Int(x)),\(Int(y))"] as [String: Any]] as [String: Any])
                                 } else { throw NSError(domain: "menu", code: 64, userInfo: [NSLocalizedDescriptionKey: "ref_stale"]) }
