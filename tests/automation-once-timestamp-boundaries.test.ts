@@ -149,14 +149,14 @@ await test("every-minute cron retains its next-minute recurrence across a year b
 const extendedYearCases = [
   ["upper offset crossing", "9999-12-31T23:00:00-12:00", 0],
   ["lower offset crossing", "0000-01-01T01:00:00+14:00", 1],
-  ["positive extended year", "+010000-01-01T11:00:00.000Z", 1],
+  ["positive extended year", "+010000-01-01T11:00:00.000Z", 0],
   ["negative extended year", "-000001-12-31T11:00:00.000Z", 1],
-  ["positive extended year with offset", "+010000-01-01T11:00:00-12:00", 1],
+  ["positive extended year with offset", "+010000-01-01T11:00:00-12:00", 0],
   ["negative extended year with offset", "-000001-01-01T00:00:00+01:00", 1]
 ] as const;
 
-for (const [label, at, priorDueCount] of extendedYearCases) {
-  await test(`once timestamp preserves existing extended-year behavior for ${label}`, async () => {
+for (const [label, at, expectedDueCount] of extendedYearCases) {
+  await test(`once timestamp uses the actual instant outside four-digit years for ${label}`, async () => {
     await withStore((store) => {
       const automation = store.create({
         name: label,
@@ -165,12 +165,10 @@ for (const [label, at, priorDueCount] of extendedYearCases) {
         executionTemplate: { prompt: "Synthetic date-range control; do not execute" }
       });
       const fires = store.claimDue(new Date("2035-01-01T00:00:00.000Z"));
-      // Preserve the existing lexical behavior outside the four-digit UTC-year
-      // range; these controls do not assert that extended years are supported.
-      assert.equal(fires.length, priorDueCount, "must not introduce an extended-year scheduling change");
-      assert.equal(automation.nextFireAt, at, "must preserve the original out-of-range representation");
+      assert.equal(fires.length, expectedDueCount, "extended years must use chronological comparison");
+      assert.equal(automation.nextFireAt, new Date(at).toISOString());
       assert.equal(automation.schedule.at, at);
-      if (priorDueCount > 0) assert.equal(fires[0]?.scheduledAt, at);
+      if (expectedDueCount > 0) assert.equal(fires[0]?.scheduledAt, new Date(at).toISOString());
     });
   });
 }

@@ -116,7 +116,13 @@ export class AutomationStore {
   private constructor(
     private readonly database: DatabaseSync,
     private readonly authority: RuntimeEventAuthority
-  ) {}
+  ) {
+    // 使用同一解析契约覆盖时区偏移、毫秒和扩展年份；SQLite 日期函数的输入范围更窄。
+    database.function("automation_time_ms", { deterministic: true }, (value) => {
+      const time = typeof value === "string" ? Date.parse(value) : NaN;
+      return Number.isFinite(time) ? time : null;
+    });
+  }
 
   static async open(persistenceRoot: string, authority: RuntimeEventAuthority): Promise<AutomationStore> {
     void persistenceRoot;
@@ -200,6 +206,7 @@ export class AutomationStore {
   }
 
   forceFire(automationId: string, scheduledAt = new Date().toISOString()): AutomationPendingFire {
+    if (!Number.isFinite(Date.parse(scheduledAt))) throw new Error("Automation fire scheduledAt must be a valid timestamp.");
     const automation = this.require(automationId);
     const now = new Date().toISOString();
     const expiry = automation.expiresAt === undefined ? undefined : Date.parse(automation.expiresAt);
@@ -221,6 +228,24 @@ export class AutomationStore {
 
   claimDue(now = new Date(), limit = 32): AutomationPendingFire[] {
     this.assertOpen();
+    const nowMs = now.getTime();
+    if (!Number.isFinite(nowMs)) throw new Error("Automation discovery now must be a valid timestamp.");
+    if (!Number.isSafeInteger(limit) || limit < 1) throw new Error("Automation discovery limit must be a positive integer.");
+    const invalid = this.database.prepare(`
+      SELECT automation_id, 'nextFireAt' AS field FROM automations
+      WHERE workspace_id = ? AND status = 'active' AND next_fire_at IS NOT NULL
+        AND automation_time_ms(next_fire_at) IS NULL
+      UNION ALL
+      SELECT automation_id, 'fire scheduledAt' AS field FROM automations
+      WHERE workspace_id = ? AND status IN ('active', 'expired') AND EXISTS (
+        SELECT 1 FROM automation_pending_fires
+        WHERE automation_id = automations.automation_id AND status IN ('pending', 'deferred')
+          AND automation_time_ms(scheduled_at) IS NULL
+      )
+    `).all(this.authority.workspaceId, this.authority.workspaceId) as Array<{ automation_id: string; field: string }>;
+    for (const automation of invalid) {
+      this.updateStatus(automation.automation_id, "paused", `Invalid automation ${automation.field} timestamp.`);
+    }
     // once 已产生 fire 后没有 next_fire_at；定义仍须按自身截止时间过期。
     const expiring = this.database.prepare(
       "SELECT automation_id, expires_at FROM automations WHERE workspace_id = ? AND status = 'active' AND expires_at IS NOT NULL"
@@ -228,7 +253,7 @@ export class AutomationStore {
     for (const automation of expiring) {
       const expiry = Date.parse(automation.expires_at);
       if (!Number.isFinite(expiry)) this.updateStatus(automation.automation_id, "paused", "Invalid automation expiresAt timestamp.");
-      else if (expiry <= Math.max(now.getTime(), Date.now())) this.updateStatus(automation.automation_id, "expired");
+      else if (expiry <= Math.max(nowMs, Date.now())) this.updateStatus(automation.automation_id, "expired");
     }
     const fires: AutomationPendingFire[] = [];
     // 暂停或已耗尽预算的定义保留自己的 pending fire，但不能占满其他任务的恢复窗口。
@@ -236,7 +261,7 @@ export class AutomationStore {
     const recoverable = this.database.prepare(
       `SELECT fire_id, automation_id, scheduled_at, claim_token, claimed_at, status, run_id, error, created_at
        FROM automation_pending_fires
-       WHERE status IN ('pending', 'deferred') AND scheduled_at <= ?
+       WHERE status IN ('pending', 'deferred') AND automation_time_ms(scheduled_at) <= ?
          AND EXISTS (
            SELECT 1 FROM automations
            WHERE automation_id = automation_pending_fires.automation_id
@@ -244,8 +269,8 @@ export class AutomationStore {
              AND status IN ('active', 'expired')
              AND (max_fires IS NULL OR fire_count < max_fires)
          )
-       ORDER BY scheduled_at ASC, fire_id ASC LIMIT ?`
-    ).all(now.toISOString(), this.authority.workspaceId, limit) as unknown as PendingRow[];
+       ORDER BY automation_time_ms(scheduled_at) ASC, fire_id ASC LIMIT ?`
+    ).all(nowMs, this.authority.workspaceId, limit) as unknown as PendingRow[];
     for (const row of recoverable) {
       const fireId = stringValue(row.fire_id);
       const automation = this.require(stringValue(row.automation_id));
@@ -262,8 +287,8 @@ export class AutomationStore {
     }
     if (fires.length >= limit) return fires;
     const candidates = this.database.prepare(
-      "SELECT automation_id, next_fire_at FROM automations WHERE workspace_id = ? AND status = 'active' AND next_fire_at IS NOT NULL AND next_fire_at <= ? ORDER BY next_fire_at ASC LIMIT ?"
-    ).all(this.authority.workspaceId, now.toISOString(), limit - fires.length) as Array<Record<string, unknown>>;
+      "SELECT automation_id, next_fire_at FROM automations WHERE workspace_id = ? AND status = 'active' AND next_fire_at IS NOT NULL AND automation_time_ms(next_fire_at) <= ? ORDER BY automation_time_ms(next_fire_at) ASC, rowid ASC LIMIT ?"
+    ).all(this.authority.workspaceId, nowMs, limit - fires.length) as Array<Record<string, unknown>>;
     for (const candidate of candidates) {
       const automationId = stringValue(candidate.automation_id);
       const automation = this.require(automationId);
@@ -713,11 +738,7 @@ function normalizeExecutionTemplate(value: unknown): AutomationExecutionTemplate
 
 function initialFireAt(type: AutomationTriggerType, schedule: AutomationSchedule, now: string): string | undefined {
   if (type === "once") {
-    const at = schedule.at ?? now;
-    const canonical = new Date(at).toISOString();
-    // Lexical due-time queries require canonical UTC within the four-digit year
-    // range. Preserve prior input behavior for signed, extended ISO years.
-    return canonical.length === 24 ? canonical : at;
+    return new Date(schedule.at ?? now).toISOString();
   }
   if (type === "interval" || type === "heartbeat") return new Date(Date.parse(now) + (schedule.intervalMs ?? 60_000)).toISOString();
   return nextCron(schedule.cron ?? "* * * * *", new Date(now)).toISOString();
@@ -781,6 +802,7 @@ function deferDelay(automation: AutomationRecord): number {
 }
 
 function canClaimFire(automation: AutomationRecord, fire: AutomationPendingFire): boolean {
+  if (!Number.isFinite(Date.parse(fire.scheduledAt))) return false;
   const expiry = automation.expiresAt === undefined ? undefined : Date.parse(automation.expiresAt);
   if (expiry !== undefined && (!Number.isFinite(expiry) || Date.parse(fire.createdAt) >= expiry)) return false;
   if (automation.status === "active") return true;
