@@ -14,6 +14,7 @@ import { DurableTaskRunStore } from "../src/runtime/TaskRunStore.js";
 import { runTaskClosure, type TaskClosureResult } from "../src/runtime/TaskClosure.js";
 import { SubagentTaskIncompleteError } from "../src/runtime/SubagentTaskManager.js";
 import type { InteractiveRuntimeHandle } from "../src/runtime/InteractiveAgentRuntime.js";
+import { createRuntimeHostMemoryPolicy } from "./helpers/runtime-host-memory-policy.js";
 import { defaultChatPersonalizationOverride, resolveChatPersonalization } from "../src/personalization/index.js";
 import { LocalMemory } from "../src/agent/context/LocalMemory.js";
 import { AgentSession } from "../src/agent/AgentSession.js";
@@ -98,14 +99,7 @@ async function main(): Promise<void> {
   };
   let chatExpectedRevision: string | undefined;
   let globalExpectedRevision: string | undefined;
-  const memoryPolicy = {
-    sleepTime: "00:00",
-    useMemories: false,
-    generateMemories: false,
-    extractModel: undefined,
-    excludeExternalContext: true,
-    maxRecalled: 3
-  };
+  const memoryPolicy = createRuntimeHostMemoryPolicy();
   const indexedMemoryEntries: string[] = [];
   let downloadedEmbeddingModel: string | undefined;
   let removedEmbeddingModel: string | undefined;
