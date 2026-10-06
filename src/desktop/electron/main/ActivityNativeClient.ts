@@ -79,11 +79,13 @@ export class ActivityNativeClient {
   private async connectSocket(): Promise<void> {
     await new Promise<void>((resolve, reject) => {
       const socket = connect(this.socketPath);
+      // Keep partial UTF-8 characters between reads before framing daemon replies.
+      socket.setEncoding("utf8");
       let buffer = "";
       socket.once("error", reject);
       socket.once("connect", () => { this.socket = socket; resolve(); });
-      socket.on("data", chunk => {
-        buffer += chunk.toString();
+      socket.on("data", (chunk: string) => {
+        buffer += chunk;
         let newline: number;
         while ((newline = buffer.indexOf("\n")) >= 0) {
           const line = buffer.slice(0, newline); buffer = buffer.slice(newline + 1);
