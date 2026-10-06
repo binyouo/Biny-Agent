@@ -20,7 +20,7 @@ for (const kind of ["file", "desktop"] as const) {
 }
 
 async function testModelSwitchKeepsProjectSelection(kind: "file" | "desktop"): Promise<void> {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "biny-config-project-model-"));
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "biny-config-project-model-")));
   try {
     const config = configSchema.parse({
       ...defaultConfig,
@@ -49,7 +49,7 @@ async function testModelSwitchKeepsProjectSelection(kind: "file" | "desktop"): P
 console.log("project-aware config save tests passed");
 
 async function testSavedSnapshotKeepsProjectOverrides(kind: "file" | "desktop"): Promise<void> {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "biny-config-project-save-"));
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "biny-config-project-save-")));
   const globalRoot = path.join(root, "global");
   const workspace = path.join(root, "project");
   const credentials: CredentialStore = {
@@ -99,7 +99,7 @@ async function testSavedSnapshotKeepsProjectOverrides(kind: "file" | "desktop"):
 }
 
 async function testGlobalSnapshotAndFailedWrite(kind: "file" | "desktop"): Promise<void> {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "biny-config-global-save-"));
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "biny-config-global-save-")));
   const originalRename = fs.rename;
   try {
     await saveConfigFile(root, structuredClone(defaultConfig));
@@ -131,7 +131,7 @@ async function testGlobalSnapshotAndFailedWrite(kind: "file" | "desktop"): Promi
 
 /** The read-back stays inside the writer's existing lock, including credential hydration. */
 async function testReadbackKeepsWriteLock(kind: "file" | "desktop"): Promise<void> {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "biny-config-save-lock-"));
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "biny-config-save-lock-")));
   const originalRename = fs.rename;
   const originalExec = DatabaseSync.prototype.exec;
   const readingBack = Promise.withResolvers<void>();

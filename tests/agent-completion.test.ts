@@ -76,6 +76,7 @@ async function testNaturalCompletion(scenario: "answer" | "write" | "recovery" |
   };
   const config = configSchema.parse({
     ...defaultConfig,
+    crystal: { ...defaultConfig.crystal, passiveEnabled: false },
     agent: { ...defaultConfig.agent, hardStepLimit: scenario === "limit" ? 1 : scenario === "write" ? 2 : 4 },
     context: { ...defaultConfig.context, memory: { ...defaultConfig.context.memory, useMemories: false, generateMemories: false } }
   });
@@ -180,6 +181,7 @@ async function testStepPersistenceFailureIsATurnFailure(): Promise<void> {
   };
   const config = configSchema.parse({
     ...defaultConfig,
+    crystal: { ...defaultConfig.crystal, passiveEnabled: false },
     context: { ...defaultConfig.context, memory: { ...defaultConfig.context.memory, useMemories: false, generateMemories: false } }
   });
   const recorder = new FailingRecorder(workspaceRoot);
@@ -252,6 +254,7 @@ async function testRepeatedActionBudgetStopsTheLoop(withFileProgress = false): P
   };
   const config = configSchema.parse({
     ...defaultConfig,
+    crystal: { ...defaultConfig.crystal, passiveEnabled: false },
     agent: {
       ...defaultConfig.agent,
       hardStepLimit: 8,
@@ -332,6 +335,7 @@ async function testInterruptedTurnMarkerIsModelVisibleOnlyForManualStop(): Promi
   };
   const config = configSchema.parse({
     ...defaultConfig,
+    crystal: { ...defaultConfig.crystal, passiveEnabled: false },
     context: { ...defaultConfig.context, memory: { ...defaultConfig.context.memory, useMemories: false, generateMemories: false } }
   });
   const recorder = new SessionRecorder(workspaceRoot);
@@ -392,6 +396,7 @@ async function testReplacedTurnDoesNotWriteInterruptionMarker(): Promise<void> {
   };
   const config = configSchema.parse({
     ...defaultConfig,
+    crystal: { ...defaultConfig.crystal, passiveEnabled: false },
     context: { ...defaultConfig.context, memory: { ...defaultConfig.context.memory, useMemories: false, generateMemories: false } }
   });
   const recorder = new SessionRecorder(workspaceRoot);
@@ -444,6 +449,7 @@ async function testUnattributedCancellationDoesNotWriteInterruptionMarker(): Pro
   };
   const config = configSchema.parse({
     ...defaultConfig,
+    crystal: { ...defaultConfig.crystal, passiveEnabled: false },
     context: { ...defaultConfig.context, memory: { ...defaultConfig.context.memory, useMemories: false, generateMemories: false } }
   });
   const recorder = new SessionRecorder(workspaceRoot);

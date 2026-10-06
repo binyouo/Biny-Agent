@@ -13,7 +13,7 @@ import { ensureAgentDirs } from "../src/session/store.js";
 
 for (const checkpoint of ["initial", "zero-offset", "incremental"] as const) {
   test(`会话删除完成后，已读取但尚未提交的历史扫描不能复活旧消息（${checkpoint}）`, { timeout: 10_000 }, async (t) => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), "biny-session-search-lifecycle-"));
+    const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "biny-session-search-lifecycle-")));
     const workspace = path.join(root, "workspace");
     const agentRoot = path.join(root, "agent");
     const previousAgentRoot = process.env.BINY_AGENT_DIR;
