@@ -399,7 +399,7 @@ activity
 activity
   .command("report")
   .argument("[date]", "today, yesterday, or YYYY-MM-DD", "today")
-  .option("--force", "reanalyze sessions in the requested date")
+  .option("--force", "regenerate the report from stored analysis without using the cached report")
   .option("--skeleton", "render stored analysis without requesting the model")
   .option("--json", "print JSON")
   .action((date: string, options: { force?: boolean; skeleton?: boolean; json?: boolean }) => wrap(() => activityReportCommand(workspaceRoot, date, options))());
