@@ -2,12 +2,18 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
+import { registerHooks } from "node:module";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { JSDOM } from "jsdom";
-import { Workspace } from "../src/desktop/renderer/src/components/Workspace.js";
 import { CompactionDivider } from "../src/desktop/renderer/src/components/chat/CompactionDivider.js";
 import { CompactionStatus } from "../src/desktop/renderer/src/components/chat/CompactionStatus.js";
+
+const assets = registerHooks({ load(url, context, next) {
+  return url.endsWith(".png") ? { format: "module", source: `export default ${JSON.stringify(url)};`, shortCircuit: true } : next(url, context);
+} });
+const { Workspace } = await import("../src/desktop/renderer/src/components/Workspace.js");
+assets.deregister();
 
 Object.assign(globalThis, { React });
 const noop = (): void => undefined;
