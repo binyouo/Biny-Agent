@@ -250,7 +250,7 @@ try {
   await replayWindow([Number.MAX_SAFE_INTEGER - 2], 1, false);
   await closeDrainsRebasedJournal();
   for (const mode of ["read", "close", "exhausted", "overflow"] as const) await initializationFailure(mode);
-  assert.equal(runtimeHostProtocolVersion, 9, "startup recovery does not change the replay protocol");
+  assert.equal(runtimeHostProtocolVersion, 10, "startup recovery does not change the replay protocol");
 } finally {
   if (previousAgentDir === undefined) delete process.env.BINY_AGENT_DIR;
   else process.env.BINY_AGENT_DIR = previousAgentDir;

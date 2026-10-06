@@ -26,7 +26,9 @@ try {
 
   const goalHelp = await runCli(["goal", "--help"]);
   assert.equal(goalHelp.code, 0);
-  assert.match(goalHelp.stdout, /list \[options\]/u);
+  assert.match(goalHelp.stdout, /show \[options\]/u);
+  assert.match(goalHelp.stdout, /set \[options\] <objective>/u);
+  assert.doesNotMatch(goalHelp.stdout, /list|create|cancel/u);
 
   const graphHelp = await runCli(["graph", "--help"]);
   assert.equal(graphHelp.code, 0);
