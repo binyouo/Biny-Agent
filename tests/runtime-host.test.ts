@@ -24,6 +24,7 @@ import { ensureAgentDirs } from "../src/session/store.js";
 import { startMemoryHttpServer } from "../src/runtime/host/memory-http.js";
 import { spawn } from "node:child_process";
 import { WebSocket } from "ws";
+import { isRuntimeHostTakeoverReady } from "./helpers/runtime-host-takeover-readiness.js";
 
 const snapshot = {
   revision: 0,
@@ -967,11 +968,13 @@ async function main(): Promise<void> {
   const restartedRegistration = JSON.parse(await readFile(runtimeHostPaths(spawnedWorkspace).registrationPath, "utf8")) as { pid?: unknown };
   if (typeof restartedRegistration.pid === "number") process.kill(restartedRegistration.pid, "SIGKILL");
   const takeoverDeadline = Date.now() + 10_000;
-  while ((!reattached.hostInfo?.hostEpoch || reattached.hostInfo.hostEpoch === restartedEpoch) && Date.now() < takeoverDeadline) {
+  // hello 发布新 epoch 时会清空旧快照；gap/subscribe 帧到达后 focused session 才可读取。
+  while (!isRuntimeHostTakeoverReady(reattached, restartedEpoch) && Date.now() < takeoverDeadline) {
     await new Promise<void>((resolve) => setTimeout(resolve, 100));
   }
   assert.ok(reattached.hostInfo?.hostEpoch);
   assert.notEqual(reattached.hostInfo.hostEpoch, restartedEpoch);
+  assert.equal(isRuntimeHostTakeoverReady(reattached, restartedEpoch), true, "Timed out waiting for Runtime Host takeover snapshot.");
   const takeoverSnapshot = await reattached.focusSession(reattached.getSnapshot().info.sessionId);
   assert.equal(takeoverSnapshot.info.workspaceRoot, spawnedWorkspace);
   await reattached.close();
