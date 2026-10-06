@@ -82,7 +82,7 @@ export function SettingsAppshots(): React.JSX.Element {
 
   return <div className="settings-sections appshot-settings">
     <section className="cu-card appshot-hero">
-      <span aria-hidden="true" className="appshot-hero-badge"><Icon name="monitor" size={24} /></span>
+      <span aria-hidden="true" className="appshot-hero-badge"><Icon name="camera" size={24} /></span>
       <div className="appshot-hero-copy">
         <h3>用 Appshot 把当前窗口给 Biny 看</h3>
         <p className="cu-description">

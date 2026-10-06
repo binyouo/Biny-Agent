@@ -43,6 +43,7 @@ export type IconName =
   | "database"
   | "diff"
   | "display"
+  | "camera"
   | "monitor"
   | "history"
   | "download"
@@ -185,6 +186,7 @@ function pathFor(name: IconName): React.JSX.Element {
     case "diff": return <><path {...common} d="M7 4v16M17 4v16M4 8h6M14 16h6" /><path {...common} d="m17 6 2 2-2 2M17 14l-2 2 2 2" /></>;
     case "display": return <><rect {...common} height="13" rx="2" width="18" x="3" y="4" /><path {...common} d="M9 21h6M12 17v4" /></>;
     // 显示器 + 指针：Computer Use 的桌面操控语义，和外框式的 display 区分开。
+    case "camera": return <><rect {...common} height="14" rx="2" width="19" x="2.5" y="6" /><path {...common} d="M8.5 6 10 3.5h4L15.5 6" /><circle {...common} cx="12" cy="13" r="3.6" /></>;
     case "monitor": return <><rect {...common} height="12" rx="2" width="18" x="3" y="5" /><path {...common} d="M12 17v4M9 21h6" /><path {...common} d="m10 9 2 2 2.6-1.3L16 14l-4.6 2.6L10 12z" /></>;
     // 时钟倒转 + 回绕箭头：电脑历史（屏幕/输入回溯）。
     case "history": return <><path {...common} d="M3.5 12a8.5 8.5 0 1 0 2.7-6.2" /><path {...common} d="M3 4v4.5h4.5" /><path {...common} d="M12 8v4.5l3 1.7" /></>;
