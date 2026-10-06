@@ -132,7 +132,11 @@ export async function taskActionCommand(workspaceRoot: string, action: "start" |
 }
 
 export async function taskGetCommand(workspaceRoot: string, taskRunId: string, options: JsonOption = {}): Promise<void> {
-  await hostAction(workspaceRoot, options, async (client) => await client.taskGet(taskRunId));
+  await hostAction(workspaceRoot, options, async (client) => {
+    const task = await client.taskGet(taskRunId);
+    if (task === undefined) throw new Error(`TaskRun ${taskRunId} does not exist.`);
+    return task;
+  });
 }
 
 export async function taskMessageCommand(workspaceRoot: string, taskRunId: string, message: string, options: JsonOption & { session: string; messageId?: string }): Promise<void> {
