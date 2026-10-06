@@ -6,6 +6,7 @@
  */
 import { randomBytes } from "node:crypto";
 import { constants, promises as fs } from "node:fs";
+import type { FileHandle } from "node:fs/promises";
 import path from "node:path";
 import { agentDir, ensureAgentDirs } from "../session/store.js";
 
@@ -106,7 +107,13 @@ export async function readAttachmentContext(root: string, virtualPath: string): 
   const file = attachmentFilePath(root, virtualPath);
   if (!file) return undefined;
   try {
-    const handle = await fs.open(`${file}.context`, constants.O_RDONLY | constants.O_NOFOLLOW);
+    let handle: FileHandle;
+    try { handle = await fs.open(`${file}.context`, constants.O_RDONLY | constants.O_NOFOLLOW); }
+    catch (error) {
+      // A valid attachment may leave no filename space for its optional sidecar.
+      if (typeof error === "object" && error !== null && "code" in error && error.code === "ENAMETOOLONG") return undefined;
+      throw error;
+    }
     try { const info = await handle.stat(); if (!info.isFile() || info.size > 128000) throw new Error("attachment_context_invalid"); return await handle.readFile("utf8"); }
     finally { await handle.close(); }
   } catch (error) { if (isNotFound(error)) return undefined; throw error; }
