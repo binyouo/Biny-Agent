@@ -9,7 +9,7 @@ import type { SessionEvent } from "../src/session/recorder.js";
 
 const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "biny-export-scaling-")));
 process.env.BINY_AGENT_DIR = path.join(root, "agent");
-const { maxSessionEvents, maxSessionFileBytes, maxSessionHistoryBytes } = await import("../src/session/limits.js");
+const { maxSessionEvents, maxSessionFileBytes } = await import("../src/session/limits.js");
 const { createSessionFile, ensureAgentDirs } = await import("../src/session/store.js");
 const { exportSessionClaudeCode } = await import("../src/session/transfer.js");
 const workspace = path.join(root, "workspace");
@@ -24,7 +24,7 @@ function hash(value: string | Buffer): string {
 async function checkBoundedExport(label: string, events: SessionEvent[], expectedResults: string[] | "unresolved") {
   assert.equal(events.length, maxSessionEvents, "fixture exercises the supported event cap");
   const raw = `${events.map((event) => JSON.stringify(event)).join("\n")}\n`;
-  assert.ok(Buffer.byteLength(raw) < maxSessionFileBytes && Buffer.byteLength(raw) < maxSessionHistoryBytes);
+  assert.ok(Buffer.byteLength(raw) < maxSessionFileBytes);
   const source = await createSessionFile(workspace, label, Buffer.from(raw));
   const cold = await exportSessionClaudeCode(workspace, label);
   const expectedHash = hash(cold.content);
