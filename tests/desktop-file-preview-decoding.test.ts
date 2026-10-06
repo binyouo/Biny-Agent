@@ -18,7 +18,7 @@ let projects: DesktopProjectService;
 let project: DesktopProject;
 
 before(async () => {
-  root = await mkdtemp(path.join(os.tmpdir(), "biny-file-preview-decoding-"));
+  root = await fs.realpath(await mkdtemp(path.join(os.tmpdir(), "biny-file-preview-decoding-")));
   workspace = path.join(root, "workspace");
   await mkdir(workspace);
   const storage = new DesktopUserDataStore(path.join(root, "desktop"));
