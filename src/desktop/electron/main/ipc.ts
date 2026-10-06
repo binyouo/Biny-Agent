@@ -191,7 +191,7 @@ const memoryEntryPatchSchema = z.object({
 const runtimeMutationSchema = z.enum([
   "plan.start",
   "session.goal.set", "session.goal.pause", "session.goal.resume", "session.goal.clear",
-  "task.create", "task.start", "task.run", "task.cancel", "task.approve", "task.resume", "task.retry",
+  "task.create", "task.start", "task.run", "task.message", "task.continue", "task.cancel", "task.approve", "task.resume", "task.retry",
   "automation.create", "automation.pause", "automation.resume", "automation.run", "automation.delete",
   "graph.create", "graph.start", "graph.pause", "graph.resume", "graph.cancel",
   "capability.register", "capability.replace", "capability.admit", "capability.reject", "capability.release",
@@ -676,6 +676,12 @@ export function registerDesktopIpc(context: IpcContext): void {
 
   handleRecoveryGated(desktopIpc.compact, async (_event, projectId: unknown, hint: unknown) => {
     return await context.agents.compact(idSchema.parse(projectId), hint === undefined ? undefined : z.string().max(2_000).parse(hint));
+  });
+
+  handleRecoveryGated(desktopIpc.taskInspection, async (_event, projectId: unknown, sessionId: unknown, taskRunId: unknown, options: unknown) => {
+    const parsed = z.object({ attemptId: idSchema.optional(), afterSequence: z.number().int().nonnegative().optional(),
+      afterRevision: z.number().int().nonnegative().optional(), limit: z.number().int().min(1).max(1000).optional(), summary: z.boolean().optional() }).strict().optional().parse(options);
+    return await context.agents.taskInspection(idSchema.parse(projectId), idSchema.parse(sessionId), idSchema.parse(taskRunId), parsed);
   });
 
   handleRecoveryGated(desktopIpc.runtimeProjection, async (_event, projectId: unknown) => {

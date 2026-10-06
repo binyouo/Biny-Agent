@@ -61,3 +61,44 @@ async function waitForFile(file: string): Promise<void> {
   }
   assert.fail("verification process did not reach its gate");
 }
+
+// A model-issued follow-up must keep the same explicit parent-cancellation boundary as Task.
+test("a continued child preserves scope and is cancelled with the requesting parent run", { timeout: 10_000 }, async () => {
+  const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "biny-followup-cancellation-")));
+  const originalFetch = globalThis.fetch;
+  let entered!: () => void;
+  const started = new Promise<void>((resolve) => { entered = resolve; });
+  globalThis.fetch = async (_request, options) => await new Promise<Response>((_resolve, reject) => {
+    const signal = options?.signal;
+    if (signal?.aborted) { reject(signal.reason); return; }
+    signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
+    entered();
+  });
+  const config = structuredClone(defaultConfig);
+  config.defaultModel = "synthetic";
+  config.providers = { local: { type: "openai-compatible", baseUrl: "https://example.test/v1", requiresApiKey: false } };
+  config.models = { synthetic: { ...defaultConfig.models["deepseek-v4-flash"]!, provider: "local", model: "synthetic", capabilities: { tools: true, reasoning: false, streaming: true } } };
+  config.extensions.subagent.enabled = true; config.checkpoints.enabled = false;
+  config.heartbeat.enabled = false; config.context.memory.enabled = false; config.context.identity.enabled = false;
+  const commands = await createCommandRuntime(root, { configStore: { load: async () => structuredClone(config), save: async () => undefined } });
+  const parent = new AbortController();
+  try {
+    const sessionId = commands.agent.getInfo().sessionId;
+    commands.taskRuns.create({ taskRunId: "source", sessionId, task: { prompt: "finite inspection", communication: true, constraints: ["preserve src/a.ts"] } });
+    const sourceAttempt = commands.taskRuns.createAttempt("source"); commands.taskRuns.transition("source", "queued");
+    commands.taskRuns.transition("source", "running", { attemptId: sourceAttempt.attemptId });
+    commands.taskRuns.transition("source", "completed", { attemptId: sourceAttempt.attemptId, artifacts: { output: "prior evidence" } });
+    const followup = await commands.continueTaskRun("source", "inspect one more boundary", "followup", parent.signal);
+    const id = String(followup.taskRunId);
+    const definition = commands.taskRuns.get(id)!.task as { constraints: string[]; prompt: string };
+    assert.deepEqual(definition.constraints, ["preserve src/a.ts"]); assert.match(definition.prompt, /prior evidence/);
+    await started;
+    parent.abort(new Error("requesting parent stopped"));
+    assert.ok(["cancelled", "aborted"].includes(commands.taskRuns.get(id)!.status));
+    assert.equal(commands.taskRuns.get("source")?.status, "completed");
+    assert.equal(commands.taskRuns.get("source")?.attempts.length, 1);
+  } finally {
+    parent.abort(); await commands.close(); globalThis.fetch = originalFetch;
+    await rm(root, { recursive: true, force: true });
+  }
+});
