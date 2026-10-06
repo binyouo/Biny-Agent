@@ -517,6 +517,7 @@ const Turn = memo(function Turn({
         <div className="agent-response">
         {executionSteps.length ? (
           <ExecutionTimeline
+            readOnly={readOnly}
             sessionId={sessionId}
             onPreviewFile={onPreviewFile}
             onOpenExternal={onOpenExternal}
@@ -589,7 +590,7 @@ const TypewriterMarkdown = memo(function TypewriterMarkdown({ active, content, o
   );
 });
 
-function ExecutionTimeline({
+function ExecutionTimeline({ readOnly,
   sessionId,
   onPreviewFile,
   onOpenExternal,
@@ -604,6 +605,7 @@ function ExecutionTimeline({
   onOpenExternal(url: string): void;
   onResolvePermission(requestId: string, result: PermissionResult): Promise<void>;
   projectId: string;
+  readOnly: boolean;
   running: boolean;
   steps: TimelineStep[];
   /** 轮次级思考耗时（秒）；纯思考段的「已思考 N 秒」兜底。 */
@@ -658,7 +660,7 @@ function ExecutionTimeline({
         }
         if (step.kind === "tool") return step.tool.tool === "AskUserQuestion"
           ? <UserInputCard key={`${sessionId}:${step.tool.runId}:${step.id}`} tool={step.tool} projectId={projectId} sessionId={sessionId} running={running} />
-          : <SubagentActivity key={step.id} tool={step.tool} projectId={projectId} onPreviewFile={onPreviewFile} onOpenExternal={onOpenExternal} onResolvePermission={onResolvePermission} />;
+          : <SubagentActivity key={step.id} tool={step.tool} projectId={projectId} sessionId={sessionId} readOnly={readOnly} onPreviewFile={onPreviewFile} onOpenExternal={onOpenExternal} onResolvePermission={onResolvePermission} />;
         if (step.summary) {
           return (
             <ActivitySummaryStep
