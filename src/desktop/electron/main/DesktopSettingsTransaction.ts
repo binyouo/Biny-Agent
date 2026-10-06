@@ -963,6 +963,10 @@ function withoutRecoveryCredentials(config: AgentConfig): AgentConfig {
     provider.apiKey = undefined;
     if (provider.oauth) provider.oauth.refreshToken = undefined;
   }
+  for (const server of Object.values(safe.extensions.mcp)) {
+    for (const key of Object.keys(server.credentialRefs?.env ?? {})) delete server.env?.[key];
+    for (const key of Object.keys(server.credentialRefs?.headers ?? {})) delete server.headers?.[key];
+  }
   return configSchema.parse(safe);
 }
 
