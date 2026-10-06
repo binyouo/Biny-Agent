@@ -969,14 +969,14 @@ function compactMcpText(value: string): string {
 
 function normalizeMcpResult(result: unknown): unknown {
   if (!isRecord(result)) return result;
+  const parts = Array.isArray(result.content) ? result.content.filter(isRecord) : [];
+  const textParts = parts.filter((part): part is { type: "text"; text: string } => part.type === "text" && typeof part.text === "string");
+  const text = textParts.map((part) => part.text).join("\n");
   if (result.structuredContent !== undefined) {
-    return result.isError ? { error: true, structuredContent: result.structuredContent } : result.structuredContent;
+    return result.isError ? { error: text || true, structuredContent: result.structuredContent } : result.structuredContent;
   }
   if (Array.isArray(result.content)) {
-    const parts = result.content.filter(isRecord);
-    const textParts = parts.filter((part): part is { type: "text"; text: string } => part.type === "text" && typeof part.text === "string");
     if (textParts.length === parts.length) {
-      const text = textParts.map((part) => part.text).join("\n");
       if (text) return result.isError ? { error: text } : text;
       return result;
     }
