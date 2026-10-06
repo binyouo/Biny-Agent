@@ -11,7 +11,7 @@ import type { FileHandle } from "node:fs/promises";
 import path from "node:path";
 import { globalAgentDir, legacyProjectStateDirName, projectSessionsDir, projectStateDirName, workspaceAgentDir } from "../config/paths.js";
 import { sameSessionFingerprint } from "./parseCache.js";
-import { readSessionTail } from "./limits.js";
+import { readBoundedSessionHandle } from "./limits.js";
 
 const sessionMetadataConcurrency = 8;
 const managedStateDirectories = ["attachments", "logs", "runs", "processes", "tool-results", "todos", "turns", "evals"] as const;
@@ -41,8 +41,6 @@ export interface SessionFileSnapshot {
   fileName: string;
   bytes: Buffer;
   stat: Stats;
-  /** 文件超过大小上限、只读回了尾部时为 true。 */
-  truncated: boolean;
 }
 
 export interface SessionDeleteHooks {
@@ -849,11 +847,10 @@ async function readSessionSnapshotAt(location: SessionStorageLocation, filePath:
   const handle = await openSessionHandle(location, filePath);
   try {
     await assertSessionBinding(location, filePath, handle);
-    // 超限时读尾部而不是抛错：否则一条很长的会话就彻底打不开，而用户是在想恢复它的时候
-    // 才发现的。`truncated` 让调用方能如实告知只拿到了最近的部分。
-    const { bytes, truncated } = await readSessionTail(handle, fileName);
+    // 原始快照也供复制使用；超限必须拒绝，不能把尾部固化为新会话。
+    const bytes = await readBoundedSessionHandle(handle, fileName);
     const stat = await assertSessionBinding(location, filePath, handle);
-    return { filePath, fileName, bytes, stat, truncated };
+    return { filePath, fileName, bytes, stat };
   } finally {
     await handle.close();
   }

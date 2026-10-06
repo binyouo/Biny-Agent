@@ -15,7 +15,6 @@ import {
   maxSessionEventLineBytes,
   maxSessionEvents,
   maxSessionFileBytes,
-  maxSessionHistoryBytes,
   readSessionEventLines,
   readBoundedSessionHandle
 } from "./limits.js";
@@ -296,6 +295,14 @@ export async function readSessionEvents(filePath: string): Promise<SessionEvent[
         if (sameSessionFingerprint(before, after)) return cached;
         continue;
       }
+      // 大文件不再同时保留整块字节、UTF-8 原文和解析缓存的原文副本。
+      if (before.size > 16 * 1024 * 1024) {
+        const events = await readCompleteSessionEvents(handle, before.size);
+        const after = sessionFileFingerprint(await assertStandaloneSessionBinding(filePath, handle));
+        assertSessionFileSize(after.size, filePath);
+        if (!sameSessionFingerprint(before, after)) continue;
+        return cachedSessionEvents(filePath, after, () => ({ events, complete: true }));
+      }
       const bytes = await readBoundedSessionHandle(handle, filePath);
       const after = sessionFileFingerprint(await assertStandaloneSessionBinding(filePath, handle));
       if (!sameSessionFingerprint(before, after) || bytes.length !== after.size) continue;
@@ -350,15 +357,8 @@ export async function readStoredSessionEvents(
   const result = await readSessionFileOrCached(workspaceRoot, session,
     (filePath, stat) => lookupSessionEvents(filePath, sessionFileFingerprint(stat)),
     async (handle, filePath, stat) => {
-      if (stat.size > maxSessionHistoryBytes) {
-        throw new Error(`Session history exceeds the maximum size of ${String(maxSessionHistoryBytes)} bytes: ${path.basename(filePath)}`);
-      }
-      const events: SessionEvent[] = [];
-      for await (const event of validatedHistoryEvents(handle, stat.size)) {
-        if (events.length >= maxSessionEvents) throw new Error(`Session cannot contain more than ${String(maxSessionEvents)} events.`);
-        events.push(event);
-      }
-      return events;
+      assertSessionFileSize(stat.size, filePath);
+      return readCompleteSessionEvents(handle, stat.size);
     });
   const events = cachedSessionEvents(result.filePath, sessionFileFingerprint(result.stat), () => ({ events: result.value, complete: true }));
   return {
@@ -370,16 +370,20 @@ export async function readStoredSessionEvents(
   };
 }
 
+async function readCompleteSessionEvents(handle: FileHandle, size: number): Promise<SessionEvent[]> {
+  const events: SessionEvent[] = [];
+  for await (const event of validatedHistoryEvents(handle, size)) {
+    if (events.length >= maxSessionEvents) throw new Error(`Session cannot contain more than ${String(maxSessionEvents)} events.`);
+    events.push(event);
+  }
+  return events;
+}
+
 async function* validatedHistoryEvents(handle: FileHandle, size: number): AsyncGenerator<SessionEvent> {
   let lineNumber = 0;
   for await (const line of readSessionEventLines(handle, size)) {
     lineNumber++;
-    try {
-      for (const event of parseSessionEvents(line)) yield event;
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      throw new Error(message.replace(/at line 1\b|event line 1\b/g, (value) => value.replace("1", String(lineNumber))));
-    }
+    for (const event of parseSessionEventsWithPrefix(line, {}, [], lineNumber - 1).events) yield event;
   }
 }
 

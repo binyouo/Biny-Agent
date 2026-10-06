@@ -1638,10 +1638,9 @@ async function testSessionReadLimits(): Promise<void> {
     // 校验与写入路径保持严格：这些地方发现超限就该停下。
     await assert.rejects(readSessionEvents(oversizedFile), /maximum size/u);
     await assert.rejects(repairSessionTailForAppend(oversizedFile), /maximum size/u);
-    // 打开路径改为读尾部并标注截断。超限就整条会话打不开，而用户是在想恢复它的时候才发现，
-    // 这个失败模式比只拿到最近历史糟糕得多。
-    const oversizedSnapshot = await readSessionSnapshot(workspaceRoot, "oversized-session");
-    assert.equal(oversizedSnapshot.truncated, true);
+    // 原始快照供文件复制使用，不能把残缺尾部当成完整源文件。
+    await assert.rejects(readSessionSnapshot(workspaceRoot, "oversized-session"), /maximum size/u);
+    await assert.rejects(duplicateSessionFile(workspaceRoot, "oversized-session", "oversized-copy"), /maximum size/u);
     const oversizedRecorder = new SessionRecorder(workspaceRoot, "oversized-session");
     assert.throws(() => oversizedRecorder.readText(), /maximum size/u);
     await oversizedRecorder.close();

@@ -15,10 +15,10 @@ import {
 } from "../llm/ModelManager.js";
 import { PermissionManager, type PermissionMode } from "../permission/PermissionManager.js";
 import { runPermissionCommand } from "../permission/commands.js";
-import { listSessionSummaries, parseSessionEvents, readSessionEvents, readSessionSummary, type SessionSummary } from "../session/events.js";
+import { listSessionSummaries, readSessionEvents, readSessionSummary, type SessionSummary } from "../session/events.js";
 import { sessionMessageMetadata } from "../session/messageTree.js";
 import { assertSessionFileSize } from "../session/limits.js";
-import { cachedSessionEvents, sessionFileFingerprint } from "../session/parseCache.js";
+import { sessionFileFingerprint } from "../session/parseCache.js";
 import { SessionRecorder, type ReasoningBlock, type SessionEvent } from "../session/recorder.js";
 import { TemporalMemoryIndex, parseTemporalClues } from "../session/temporalMemory.js";
 import { createTemporalModelExtractor } from "../session/temporalModelExtractor.js";
@@ -3066,25 +3066,18 @@ export class AgentSession {
       const resumeStat = await fs.stat(resumeRecorder.filePath);
       assertSessionFileSize(resumeStat.size, resumeRecorder.filePath);
 
-      // 快照路径：读快照跳过整条 replay（读字节 + JSON.parse + zod + 事件重放）。
+      // 快照跳过领域事件重放；仍读取完整验证事件以恢复父链和版本选择。
       // 指纹不匹配或快照损坏时自动回退到完整重放，并在重放后异步写入新快照。
       const fingerprint = sessionFileFingerprint(resumeStat);
       const snapshot: SessionSnapshotData | undefined = await tryReadSessionSnapshot(resumeRecorder.filePath, fingerprint);
       const snapshotReplay = snapshot ? snapshotToReplay(snapshot) : undefined;
+      const resumeEvents = await readSessionEvents(resumeRecorder.filePath);
       let replay: SessionReplay;
       if (snapshotReplay && (!this.options.capabilities || snapshotReplay.recoveredToolResults.length === 0)) {
         replay = snapshotReplay;
-        // 预热 parse 缓存，让后续依赖 events 的操作（如摘要）也能命中。
-        cachedSessionEvents(resumeRecorder.filePath, fingerprint, () => ({
-          events: parseSessionEvents(resumeRecorder.readText()),
-          complete: true
-        }));
       } else {
         replay = replaySessionEvents(
-          cachedSessionEvents(resumeRecorder.filePath, fingerprint, () => ({
-            events: parseSessionEvents(resumeRecorder.readText()),
-            complete: true
-          })),
+          resumeEvents,
           { sessionId: resumeRecorder.sessionId, resolveToolOutcome: this.resolveDurableToolOutcome }
         );
         // 写完快照就完事，不阻塞 resume。
@@ -3095,10 +3088,6 @@ export class AgentSession {
         snapshot ? snapshot.maxToolCallSequence : maxToolCallSequence(replay.events)
       );
       // 快照不携带 events；父链与版本选择必须从同一文件指纹对应的持久事件恢复。
-      const resumeEvents = cachedSessionEvents(resumeRecorder.filePath, fingerprint, () => ({
-        events: parseSessionEvents(resumeRecorder.readText()),
-        complete: true
-      }));
       const resumedActiveIds = activeSessionMessageIds(resumeEvents);
       replacementRecorder.restoreMessageParent(
         replay.messageTree.filter((node) => resumedActiveIds.has(node.id)).at(-1)?.id

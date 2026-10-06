@@ -629,9 +629,6 @@ export class DesktopProjectService {
     const targetSessionId = createSessionId();
     const dataRoot = await this.storage.ensureProjectData(project);
     const source = await readStoredSessionEvents(dataRoot, sessionId);
-    if (source.sizeBytes > maxSessionFileBytes) {
-      throw new Error("会话超过大小限制，无法安全创建分支；请继续使用原会话。");
-    }
     const sourceEvents = source.events;
     const duplicatedEvents = rebaseForkedSessionEvents(sourceEvents);
     const content = duplicatedEvents.length ? `${duplicatedEvents.map((event) => JSON.stringify(event)).join("\n")}\n` : "";
