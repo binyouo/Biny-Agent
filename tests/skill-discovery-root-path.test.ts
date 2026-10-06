@@ -42,6 +42,52 @@ function selection(directory: string, name = "root-skill") {
   return { name, directory, repoOwner: repository.owner, repoName: repository.name, repoBranch: repository.branch };
 }
 
+test("root and repository-name child remain distinct discovery and installation targets", async () => {
+  const homeDir = await mkdtemp(path.join(os.tmpdir(), "biny-skill-root-collision-"));
+  const remote = fixture({
+    "SKILL.md": document("root-skill", "Root instructions"),
+    [`${repository.name}/SKILL.md`]: document("child-skill", "Child instructions"),
+    [`${repository.name}/references/guide.md`]: "Child reference\n"
+  });
+  try {
+    const discovered = await discoverSkillRepositories({ repositories: [repository], fetcher: remote.fetcher });
+    assert.deepEqual(discovered.warnings, []);
+    assert.equal(discovered.skills.length, 2, "the root must not deduplicate the actual child directory");
+    const root = discovered.skills.find((skill) => skill.directory === ".");
+    const child = discovered.skills.find((skill) => skill.directory === repository.name);
+    assert.ok(root);
+    assert.ok(child);
+    assert.equal(root.name, "root-skill");
+    assert.equal(child.name, "child-skill");
+    assert.equal(root.key, `${repository.owner}/${repository.name}:.`);
+    assert.equal(child.key, `${repository.owner}/${repository.name}:${repository.name}`);
+    assert.equal(root.readmeUrl, `https://github.com/${repository.owner}/${repository.name}/tree/main`);
+    assert.equal(child.readmeUrl, `https://github.com/${repository.owner}/${repository.name}/tree/main/${repository.name}`);
+    const installedRoot = await installDiscoveredSkill({ skill: root, homeDir, fetcher: remote.fetcher });
+    const installedChild = await installDiscoveredSkill({ skill: child, homeDir, fetcher: remote.fetcher });
+    assert.equal(installedRoot.version.source.directory, ".");
+    assert.equal(installedChild.version.source.directory, repository.name);
+    assert.equal(await readFile(path.join(installedRoot.installedPath, "SKILL.md"), "utf8"), remote.files["SKILL.md"]);
+    assert.equal(await readFile(path.join(installedChild.installedPath, "SKILL.md"), "utf8"), remote.files[`${repository.name}/SKILL.md`]);
+    assert.equal(await readFile(path.join(installedChild.installedPath, "references/guide.md"), "utf8"), "Child reference\n");
+    await assert.rejects(stat(path.join(installedChild.installedPath, repository.name)), { code: "ENOENT" });
+    remote.setRevision("b".repeat(40));
+    remote.files["SKILL.md"] = document("root-skill", "Updated root instructions");
+    remote.files[`${repository.name}/SKILL.md`] = document("child-skill", "Updated child instructions");
+    const updatedRoot = await updateDiscoveredSkill({ name: root.name, expectedVersion: installedRoot.version.id, homeDir, fetcher: remote.fetcher });
+    const updatedChild = await updateDiscoveredSkill({ name: child.name, expectedVersion: installedChild.version.id, homeDir, fetcher: remote.fetcher });
+    assert.equal(updatedRoot.version.source.directory, ".");
+    assert.equal(updatedChild.version.source.directory, repository.name);
+    assert.equal(await readFile(path.join(updatedRoot.installedPath, "SKILL.md"), "utf8"), remote.files["SKILL.md"]);
+    assert.equal(await readFile(path.join(updatedChild.installedPath, "SKILL.md"), "utf8"), remote.files[`${repository.name}/SKILL.md`]);
+    remote.setRevision("c".repeat(40));
+    remote.files["SKILL.md"] = document("child-skill", "Unexpected root identity change");
+    await assert.rejects(updateDiscoveredSkill({ name: root.name, expectedVersion: updatedRoot.version.id, homeDir, fetcher: remote.fetcher }), /名称与所选 Skill 不一致.*刷新/u);
+    assert.equal((await readManagedSkillVersion(path.dirname(installedRoot.installedPath), root.name))?.id, updatedRoot.version.id);
+    assert.match(await readFile(path.join(updatedRoot.installedPath, "SKILL.md"), "utf8"), /Updated root instructions/u);
+  } finally { await rm(homeDir, { recursive: true, force: true }); }
+});
+
 for (const filename of ["SKILL.md", "skill.md"]) {
   test(`updates a discovered root ${filename} through its persisted source directory`, async () => {
     const homeDir = await mkdtemp(path.join(os.tmpdir(), "biny-skill-root-update-"));
@@ -52,8 +98,8 @@ for (const filename of ["SKILL.md", "skill.md"]) {
       assert.deepEqual(discovered.warnings, []);
       assert.equal(discovered.skills.length, 1);
       const selected = discovered.skills[0]!;
-      assert.equal(selected.directory, repository.name, "keep the existing discovery directory contract");
-      assert.equal(selected.key, `${repository.owner}/${repository.name}:${repository.name}`);
+      assert.equal(selected.directory, ".", "root selection has its own exact identity");
+      assert.equal(selected.key, `${repository.owner}/${repository.name}:.`);
       const installed = await installDiscoveredSkill({ skill: selected, homeDir, fetcher: remote.fetcher });
       assert.equal(installed.directory, ".");
       assert.equal(installed.version.source.directory, ".");
@@ -86,44 +132,38 @@ for (const filename of ["SKILL.md", "skill.md"]) {
   });
 }
 
-test("the persisted root identity downloads the same tree as the existing root alias", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "biny-skill-root-equivalence-"));
-  const remote = fixture({ "SKILL.md": document("root-skill", "Root instructions"), "references/guide.md": "Reference\n" });
+test("repository-name and basename aliases reject rather than guess a source", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "biny-skill-exact-path-"));
   try {
-    const legacy = await installDiscoveredSkill({ skill: selection(repository.name), homeDir: path.join(root, "legacy"), fetcher: remote.fetcher });
-    const legacyRequests = remote.requests.splice(0);
-    const exact = await installDiscoveredSkill({ skill: selection("."), homeDir: path.join(root, "exact"), fetcher: remote.fetcher });
-    assert.deepEqual(remote.requests, legacyRequests);
-    assert.deepEqual(exact.version.source, legacy.version.source);
-    assert.equal(exact.version.digest, legacy.version.digest);
-    assert.equal(exact.name, legacy.name);
-    assert.equal(exact.directory, legacy.directory);
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
+    for (const [files, selected] of [
+      [{ "SKILL.md": document("root-skill", "Root instructions") }, selection(repository.name)],
+      [{ "skills/nested/SKILL.md": document("nested-skill", "Nested instructions") }, selection("nested", "nested-skill")]
+    ] as const) {
+      const remote = fixture(files);
+      await assert.rejects(installDiscoveredSkill({ skill: selected, homeDir: root, fetcher: remote.fetcher }), /找不到.*Skill 目录.*刷新/u);
+      assert.equal(remote.requests.length, 2, "unknown aliases must fail before downloading files");
+      await assert.rejects(stat(path.join(root, ".config")), { code: "ENOENT" });
+    }
+  } finally { await rm(root, { recursive: true, force: true }); }
 });
 
-for (const directory of ["skills/nested", "nested"]) {
-  test(`preserves nested directory selection and updates via ${directory}`, async () => {
-    const homeDir = await mkdtemp(path.join(os.tmpdir(), "biny-skill-nested-update-"));
-    const remote = fixture({ "skills/nested/SKILL.md": document("nested-skill", "Nested instructions") });
-    try {
-      const installed = await installDiscoveredSkill({ skill: selection(directory, "nested-skill"), homeDir, fetcher: remote.fetcher });
-      assert.equal(installed.version.source.directory, "skills/nested");
-      const unchanged = await updateDiscoveredSkill({ name: "nested-skill", expectedVersion: installed.version.id, homeDir, fetcher: remote.fetcher });
-      assert.equal(unchanged.version.id, installed.version.id);
-      assert.equal(await readFile(path.join(installed.installedPath, "SKILL.md"), "utf8"), remote.files["skills/nested/SKILL.md"]);
-    } finally {
-      await rm(homeDir, { recursive: true, force: true });
-    }
-  });
-}
+test("exact nested directory selection remains stable across updates", async () => {
+  const homeDir = await mkdtemp(path.join(os.tmpdir(), "biny-skill-nested-update-"));
+  const remote = fixture({ "skills/nested/SKILL.md": document("nested-skill", "Nested instructions") });
+  try {
+    const installed = await installDiscoveredSkill({ skill: selection("skills/nested", "nested-skill"), homeDir, fetcher: remote.fetcher });
+    assert.equal(installed.version.source.directory, "skills/nested");
+    const unchanged = await updateDiscoveredSkill({ name: "nested-skill", expectedVersion: installed.version.id, homeDir, fetcher: remote.fetcher });
+    assert.equal(unchanged.version.id, installed.version.id);
+    assert.equal(await readFile(path.join(installed.installedPath, "SKILL.md"), "utf8"), remote.files["skills/nested/SKILL.md"]);
+  } finally { await rm(homeDir, { recursive: true, force: true }); }
+});
 
 test("an explicit root identity does not fall back to an unrelated nested skill", async () => {
   const homeDir = await mkdtemp(path.join(os.tmpdir(), "biny-skill-root-missing-"));
   const remote = fixture({ "skills/nested/SKILL.md": document("root-skill", "Unrelated nested instructions") });
   try {
-    await assert.rejects(installDiscoveredSkill({ skill: selection("."), homeDir, fetcher: remote.fetcher }), /找不到唯一的 Skill 目录/u);
+    await assert.rejects(installDiscoveredSkill({ skill: selection("."), homeDir, fetcher: remote.fetcher }), /找不到.*Skill 目录.*刷新/u);
     assert.equal(remote.requests.length, 2, "resolve the source tree, then reject before downloading files");
     await assert.rejects(stat(path.join(homeDir, ".config")), { code: "ENOENT" });
   } finally {
@@ -131,7 +171,7 @@ test("an explicit root identity does not fall back to an unrelated nested skill"
   }
 });
 
-test("root compatibility does not allow traversal or malformed directory variants", async () => {
+test("exact root selection does not allow traversal or malformed directory variants", async () => {
   const homeDir = await mkdtemp(path.join(os.tmpdir(), "biny-skill-root-invalid-"));
   const remote = fixture({ "SKILL.md": document("root-skill", "Root instructions") });
   try {
@@ -145,7 +185,7 @@ test("root compatibility does not allow traversal or malformed directory variant
   }
 });
 
-for (const directory of [".", repository.name]) {
+for (const directory of ["."]) {
   test(`root selection ${directory} retains download tree checks`, async () => {
     const homeDir = await mkdtemp(path.join(os.tmpdir(), "biny-skill-root-checks-"));
     try {

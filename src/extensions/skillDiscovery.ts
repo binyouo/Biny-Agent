@@ -232,8 +232,10 @@ export async function installDiscoveredSkill(options: {
   const baseFetch = options.fetcher ?? getSharedProxyAwareFetch();
   const fetcher: typeof fetch = (input, init) => baseFetch(input, { ...init, signal: options.signal ? AbortSignal.any([options.signal, ...(init?.signal ? [init.signal] : [])]) : init?.signal });
   const { tree, branch, revision } = await fetchRepositoryTreeWithFallback(repository, fetcher);
-  const sourceDirectory = resolveSkillDirectory(tree, skill.directory);
-  if (sourceDirectory === undefined) throw new Error(`仓库中找不到唯一的 Skill 目录：${skill.directory}`);
+  const sourceDirectory = skill.directory;
+  if (!tree.some((entry) => entry.type === "blob" && path.posix.basename(entry.path).toLowerCase() === "skill.md" && path.posix.dirname(entry.path) === sourceDirectory)) {
+    throw new Error(`仓库中找不到所选 Skill 目录：${skill.directory}，请刷新目录后重新选择。`);
+  }
   const files = tree.filter((entry) => entry.type === "blob" && isInsideRepoDirectory(sourceDirectory, entry.path));
   if (files.some((entry) => entry.mode === "120000")) throw new Error("Skill 不能包含符号链接。");
   if (files.length > maxSkillFiles) throw new Error(`Skill 文件数量超过 ${String(maxSkillFiles)} 个。`);
@@ -285,8 +287,8 @@ async function discoverRepository(repository: SkillRepository, fetcher: typeof g
     try {
       const raw = await fetchText(fetcher, githubRawUrl(repository, entry.path), maxMetadataBytes);
       const parsed = parseSkillDocument(raw);
-      const directory = path.posix.dirname(entry.path) === "." ? repository.name : path.posix.dirname(entry.path);
-      const name = typeof parsed.frontmatter.name === "string" && parsed.frontmatter.name.trim() ? parsed.frontmatter.name.trim() : lastPathSegment(directory);
+      const directory = path.posix.dirname(entry.path);
+      const name = typeof parsed.frontmatter.name === "string" && parsed.frontmatter.name.trim() ? parsed.frontmatter.name.trim() : directory === "." ? repository.name : lastPathSegment(directory);
       const descriptionValue = parsed.frontmatter.description;
       const description = typeof descriptionValue === "string" && descriptionValue.trim() ? descriptionValue.trim() : firstDescriptionLine(parsed.body) ?? "暂无描述";
       return {
@@ -294,7 +296,7 @@ async function discoverRepository(repository: SkillRepository, fetcher: typeof g
         name,
         description: truncate(description, 500),
         directory,
-        readmeUrl: `https://github.com/${repository.owner}/${repository.name}/tree/${encodeBranch(repository.branch)}/${directory === repository.name ? "" : directory}`,
+        readmeUrl: `https://github.com/${repository.owner}/${repository.name}/tree/${encodeBranch(repository.branch)}${directory === "." ? "" : `/${directory.split("/").map(encodeURIComponent).join("/")}`}`,
         repoOwner: repository.owner,
         repoName: repository.name,
         repoBranch: repository.branch,
@@ -357,19 +359,6 @@ async function fetchDefaultBranch(repository: SkillRepository, fetcher: typeof g
 
 function isHttp404(error: unknown): boolean {
   return error instanceof Error && error.message.includes("HTTP 404");
-}
-
-function resolveSkillDirectory(tree: readonly GitTreeEntry[], directory: string): string | undefined {
-  const normalized = directory.replace(/\\/gu, "/").replace(/^\.\//u, "").replace(/\/$/u, "");
-  const directories = [...new Set(tree
-    .filter((entry) => entry.type === "blob" && path.posix.basename(entry.path).toLowerCase() === "skill.md")
-    .map((entry) => path.posix.dirname(entry.path)))];
-  const direct = directories.find((candidate) => candidate === normalized);
-  if (direct !== undefined) return direct;
-  if (normalized.includes("/")) return undefined;
-  const matches = directories.filter((candidate) => lastPathSegment(candidate).toLocaleLowerCase() === normalized.toLocaleLowerCase());
-  if (matches.length === 1) return matches[0];
-  return directories.length === 1 && directories[0] === "." ? "." : undefined;
 }
 
 function isInsideRepoDirectory(directory: string, filePath: string): boolean {
