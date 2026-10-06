@@ -3257,10 +3257,14 @@ export class DesktopAgentManager {
 
   private scheduleSessionRead(project: DesktopProject, sessionId: string, initialRevision: string | undefined): void {
     const key = sessionReadKey(project.id, sessionId);
-    if (this.pendingSessionReads.has(key)) return;
+    const pending = this.pendingSessionReads.get(key);
+    if (pending && pending.initialRevision === initialRevision) return;
     let promise: Promise<SessionCatalogRecord>;
     try {
-      promise = this.projects.markSessionRead(project, sessionId);
+      // 新 revision 的已读写入接在旧请求后，保证替换映射后关闭仍能等完全部写入。
+      promise = pending === undefined
+        ? this.projects.markSessionRead(project, sessionId)
+        : pending.promise.catch(() => undefined).then(() => this.projects.markSessionRead(project, sessionId));
     } catch {
       return;
     }
@@ -3271,7 +3275,9 @@ export class DesktopAgentManager {
       if (this.pendingSessionReads.get(key)?.promise === promise) this.pendingSessionReads.delete(key);
     }, 30_000);
     cleanup.unref?.();
-    void promise.then(() => undefined, () => undefined);
+    void promise.catch(() => {
+      if (this.pendingSessionReads.get(key)?.promise === promise) this.pendingSessionReads.delete(key);
+    });
   }
 
   private async resolvePendingSessionRead(
