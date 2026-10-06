@@ -94,7 +94,7 @@ export function readMemoryEntryPatch(value: unknown): MemoryEntryPatch {
     throw new Error("Memory importance must be a finite number.");
   }
   return {
-    content: optionalString(record.content),
+    content: record.content === undefined ? undefined : requiredString(record.content, "patch.content"),
     source: optionalString(record.source),
     tags: record.tags === undefined ? undefined : readStringArray(record.tags, "patch.tags"),
     rationale: optionalString(record.rationale),
