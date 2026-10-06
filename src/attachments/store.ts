@@ -49,14 +49,23 @@ export async function saveAttachment(
 ): Promise<AttachmentReference> {
   const directory = await ensureAttachmentRoot(persistenceRoot);
   const safeName = sanitizeAttachmentName(name);
-  const fileName = `${String(Date.now())}-${randomBytes(3).toString("hex")}-${safeName}`;
-  await fs.writeFile(path.join(directory, fileName), bytes, { mode: 0o600 });
-  return {
-    name: safeName,
-    mimeType,
-    path: `${attachmentPathPrefix}${fileName}`,
-    size: bytes.byteLength
-  };
+  const maxAttempts = 10;
+  for (let attempt = 1; ; attempt += 1) {
+    const fileName = `${String(Date.now())}-${randomBytes(3).toString("hex")}-${safeName}`;
+    try {
+      await fs.writeFile(path.join(directory, fileName), bytes, { mode: 0o600, flag: "wx" });
+    } catch (error) {
+      // Only a claimed name is safe to retry; other failures may leave a partial file.
+      if (attempt >= maxAttempts || typeof error !== "object" || error === null || !("code" in error) || error.code !== "EEXIST") throw error;
+      continue;
+    }
+    return {
+      name: safeName,
+      mimeType,
+      path: `${attachmentPathPrefix}${fileName}`,
+      size: bytes.byteLength
+    };
+  }
 }
 
 export async function readAttachment(persistenceRoot: string, reference: AttachmentReference): Promise<AgentAttachment | undefined> {
