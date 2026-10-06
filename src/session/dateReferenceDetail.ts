@@ -81,7 +81,8 @@ export class DateReferenceDetailService {
         if (day >= range.startDate && day < range.endDate) conversations.push(hit);
       }
     }
-    conversations.sort((left, right) => left.time.localeCompare(right.time) || left.sessionId.localeCompare(right.sessionId));
+    const orderedConversations = conversations.map((hit) => ({ hit, instant: Date.parse(hit.time) }))
+      .sort((left, right) => left.instant - right.instant || left.hit.sessionId.localeCompare(right.hit.sessionId));
     const scheduled: DateScheduledHit[] = [];
     for (const automation of rows(runtime.automations)) {
       if (automation.triggerType !== "once" || typeof automation.automationId !== "string" || typeof automation.name !== "string") continue;
@@ -106,10 +107,12 @@ export class DateReferenceDetailService {
       if (day && day >= range.startDate && day < range.endDate) runs.push({ id: fire.fireId, occurredAt: fire.scheduledAt,
         status: typeof fire.status === "string" ? fire.status : "unknown", kind: "automation" });
     }
-    scheduled.sort((left, right) => left.dueAt.localeCompare(right.dueAt));
-    runs.sort((left, right) => left.occurredAt.localeCompare(right.occurredAt));
-    return { range, conversations: conversations.slice(0, 100), clues: cluePage.clues, facts: factPage.facts,
-      scheduled: scheduled.slice(0, 100), runs: runs.slice(0, 100),
+    const orderedScheduled = scheduled.map((hit) => ({ hit, instant: Date.parse(hit.dueAt) }))
+      .sort((left, right) => left.instant - right.instant);
+    const orderedRuns = runs.map((hit) => ({ hit, instant: Date.parse(hit.occurredAt) }))
+      .sort((left, right) => left.instant - right.instant);
+    return { range, conversations: orderedConversations.slice(0, 100).map(({ hit }) => hit), clues: cluePage.clues, facts: factPage.facts,
+      scheduled: orderedScheduled.slice(0, 100).map(({ hit }) => hit), runs: orderedRuns.slice(0, 100).map(({ hit }) => hit),
       coverage: { conversations: "有时间戳的本机 Session 用户及助手消息", clues: cluePage.coverage,
         facts: "仅显式索引的原始用户文本与原文引文", scheduled: "Host 当前一次性定时任务快照", runs: "Host 当前任务及自动化触发记录" },
       hasMore: { conversations: conversations.length > 100, clues: cluePage.hasMore, facts: factPage.hasMore,
