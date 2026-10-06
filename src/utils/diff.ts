@@ -17,19 +17,44 @@ export function createUnifiedDiff(filePath: string, oldContent: string, newConte
   for (let index = 0; index < max; index += 1) {
     const oldLine = oldLines[index];
     const newLine = newLines[index];
-    if (oldLine === newLine && oldLine !== undefined) {
-      lines.push(` ${oldLine}`);
+    if (
+      oldLine !== undefined &&
+      newLine !== undefined &&
+      oldLine.text === newLine.text &&
+      oldLine.hasNewline === newLine.hasNewline
+    ) {
+      lines.push(` ${oldLine.text}`);
+      if (!oldLine.hasNewline) lines.push(noNewlineAtEof);
       continue;
     }
-    if (oldLine !== undefined) lines.push(`-${oldLine}`);
-    if (newLine !== undefined) lines.push(`+${newLine}`);
+    if (oldLine !== undefined) {
+      lines.push(`-${oldLine.text}`);
+      if (!oldLine.hasNewline) lines.push(noNewlineAtEof);
+    }
+    if (newLine !== undefined) {
+      lines.push(`+${newLine.text}`);
+      if (!newLine.hasNewline) lines.push(noNewlineAtEof);
+    }
   }
 
   return lines.join("\n");
 }
 
-function splitLines(content: string): string[] {
-  // 去掉最后一个换行，避免常见文本文件被额外显示一行空 diff。
+interface DiffLine {
+  text: string;
+  /** Whether this logical line is terminated by LF; the final line's bit distinguishes EOF newline state. */
+  hasNewline: boolean;
+}
+
+const noNewlineAtEof = "\\ No newline at end of file";
+
+function splitLines(content: string): DiffLine[] {
   if (!content) return [];
-  return content.replace(/\n$/, "").split("\n");
+  const lines = content.split("\n");
+  const hasTrailingNewline = content.endsWith("\n");
+  if (hasTrailingNewline) lines.pop();
+  return lines.map((text, index) => ({
+    text,
+    hasNewline: hasTrailingNewline || index < lines.length - 1
+  }));
 }
