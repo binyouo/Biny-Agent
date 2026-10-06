@@ -377,6 +377,12 @@ function preserveGlobalValuesForProjectOverrides(
   projectSettings: ProjectSettings
 ): AgentConfig {
   const currentEffective = deepMerge(globalConfig, projectSettings);
+  if (projectSettings.diagnostics?.commands) {
+    // loadConfig 为项目命令补齐 timeoutMs；比较前使用相同规范化，避免把默认值误认为用户编辑。
+    currentEffective.diagnostics = configSchema.parse({
+      ...globalConfig, diagnostics: currentEffective.diagnostics
+    }).diagnostics;
+  }
   const next = structuredClone(submitted);
   preserveOverrideLeaves(next as unknown as Record<string, unknown>, globalConfig as unknown as Record<string, unknown>, currentEffective as unknown as Record<string, unknown>, projectSettings as unknown as Record<string, unknown>);
   return configSchema.parse(next);
