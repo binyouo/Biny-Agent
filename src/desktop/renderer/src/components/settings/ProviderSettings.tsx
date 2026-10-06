@@ -424,9 +424,11 @@ export function ProviderSettings({
   const keyTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const baseUrlTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const baseUrlDirtyRef = useRef(false);
+  const keySaveAttemptRef = useRef({ pending: false });
   const activeProviderRef = useRef<string | undefined>(undefined);
   useEffect(() => {
     activeProviderRef.current = providerAlias;
+    keySaveAttemptRef.current = { pending: false };
   }, [providerAlias]);
   useEffect(() => {
     // 切换面板时清掉未提交的输入与挂起的防抖，密钥和地址编辑绝不跨服务商残留。
@@ -529,18 +531,32 @@ export function ProviderSettings({
     }
   }, [activeModel, applyModelBatch, catalog, choiceUpsertInput, connection?.apiBackend, connection?.protocol, group, onNotify, projectId, refreshCatalog, settingsDraft]);
 
+  const commitKeyOnce = async (value: string): Promise<void> => {
+    // 同一次输入的提交进行中时，Enter、失焦和防抖不重复提交；后续编辑按独立身份处理。
+    const attempt = keySaveAttemptRef.current;
+    if (attempt.pending) return;
+    attempt.pending = true;
+    try {
+      await commitKey(value);
+    } finally {
+      // 失败后仍可重试；旧请求完成时不能解除新编辑的提交保护。
+      attempt.pending = false;
+    }
+  };
+
   const onKeyDraftChange = (value: string): void => {
     setKeyDraft(value);
+    keySaveAttemptRef.current = { pending: false };
     setKeyLoaded(true);
     setKeySaveState("idle");
     setTestResult(undefined);
     if (keyTimerRef.current) clearTimeout(keyTimerRef.current);
     if (!value.trim()) return;
-    keyTimerRef.current = setTimeout(() => { void commitKey(value); }, 900);
+    keyTimerRef.current = setTimeout(() => { void commitKeyOnce(value); }, 900);
   };
   const flushKeyDraft = (): void => {
     if (keyTimerRef.current) clearTimeout(keyTimerRef.current);
-    if (keyDraft.trim()) void commitKey(keyDraft);
+    if (keyDraft.trim()) void commitKeyOnce(keyDraft);
   };
 
   const savedBaseUrl = connection?.baseUrl ?? catalog?.baseUrl ?? "";
