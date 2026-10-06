@@ -797,12 +797,16 @@ export class DesktopProjectService {
     }
     const content = buffer.subarray(0, bytesRead);
     const binary = content.includes(0);
+    const truncated = stat.size > bytesRead;
     return {
       path: isDailyNote || relativePath.startsWith(attachmentPathPrefix) ? relativePath : toWorkspaceRelative(project.path, filePath),
-      content: binary ? undefined : content.toString("utf8"),
+      // Only a byte-limited preview may end mid-character; preserve the BOM and real malformed bytes.
+      content: binary ? undefined : truncated && bytesRead === filePreviewLimit
+        ? new TextDecoder("utf-8", { ignoreBOM: true }).decode(content, { stream: true })
+        : content.toString("utf8"),
       bytes: stat.size,
       binary,
-      truncated: stat.size > bytesRead
+      truncated
     };
   }
 
