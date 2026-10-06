@@ -226,7 +226,8 @@ export async function installDiscoveredSkill(options: {
   const { skill } = options;
   const repository: SkillRepository = { owner: skill.repoOwner, name: skill.repoName, branch: skill.repoBranch, enabled: true };
   assertRepository(repository);
-  if (!isSafeSkillPath(skill.directory)) throw new Error("Skill 目录路径无效。");
+  // 已安装的仓库根技能将来源目录保存为 "."；文件路径仍使用严格的相对路径校验。
+  if (skill.directory !== "." && !isSafeSkillPath(skill.directory)) throw new Error("Skill 目录路径无效。");
   options.signal?.throwIfAborted();
   const baseFetch = options.fetcher ?? getSharedProxyAwareFetch();
   const fetcher: typeof fetch = (input, init) => baseFetch(input, { ...init, signal: options.signal ? AbortSignal.any([options.signal, ...(init?.signal ? [init.signal] : [])]) : init?.signal });
