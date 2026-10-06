@@ -372,9 +372,9 @@ test("semantic status colors remain fixed across themes", async () => {
   );
 
   const contract = await readFile(new URL("../src/desktop/renderer/src/styles/theme.css", import.meta.url), "utf8");
-  assert.match(contract, /--green-text:\s*light-dark\(#009966, #00d492\);/u, "emerald-600 亮 / emerald-400 暗");
-  assert.match(contract, /--red-text:\s*light-dark\(#e7000b, #ff6467\);/u, "red-600 亮 / red-400 暗");
-  assert.match(contract, /--amber-text:\s*light-dark\(#e17100, #ffb900\);/u, "amber-600 亮 / amber-400 暗");
+  assert.match(contract, /--green-text:\s*light-dark\(#007a55, #00d492\);/u, "readable light text / unchanged dark text");
+  assert.match(contract, /--red-text:\s*light-dark\(#c10007, #ff6467\);/u, "readable light text / unchanged dark text");
+  assert.match(contract, /--amber-text:\s*light-dark\(#a65f00, #ffb900\);/u, "readable light text / unchanged dark text");
   assert.match(contract, /--green-bg:\s*rgb\(0 188 125 \/ 10%\);/u, "emerald-500 / 10");
   assert.match(contract, /--red-bg:\s*rgb\(251 44 54 \/ 10%\);/u, "red-500 / 10");
   assert.match(contract, /--amber-bg:\s*rgb\(254 154 0 \/ 10%\);/u, "amber-500 / 10");

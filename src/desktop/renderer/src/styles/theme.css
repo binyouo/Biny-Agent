@@ -22,18 +22,18 @@
   --border-subtle: light-dark(#e8e8e8, #303030);
   --border-strong: light-dark(#bdbdbd, #525252);
   /* 语义状态色使用固定值，不随主题调色板变化。
-     亮色用 -600、暗色用 -400 作文本；-500 作实心/图标；/10 作淡底。 */
+     亮色文本加深以保证淡底上的小字号可读；暗色文本、实心色与淡底保持独立。 */
   --green: #00bc7d;
-  --green-text: light-dark(#009966, #00d492);
+  --green-text: light-dark(#007a55, #00d492);
   --green-bg: rgb(0 188 125 / 10%);
   --red: #fb2c36;
-  --red-text: light-dark(#e7000b, #ff6467);
+  --red-text: light-dark(#c10007, #ff6467);
   --red-bg: rgb(251 44 54 / 10%);
-  /* 小号状态文字单独加深；不改变复用上方语义色的图标、圆点和背景。 */
+  /* 小号标题保留独立 token，默认与状态正文使用同一可读文本色。 */
   --green-text-small: light-dark(#007a55, #00d492);
   --red-text-small: light-dark(#c10007, #ff6467);
   --amber: #fe9a00;
-  --amber-text: light-dark(#e17100, #ffb900);
+  --amber-text: light-dark(#a65f00, #ffb900);
   --amber-bg: rgb(254 154 0 / 10%);
   --info: #2b7fff;
   --file-git: light-dark(#c84b2b, #f06a3c);

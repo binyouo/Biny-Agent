@@ -132,6 +132,7 @@
   align-items: center;
   gap: 6px;
   padding: 0 10px;
+  border: 1px solid transparent;
   border-radius: var(--st-radius);
   background: var(--surface-soft);
 }
@@ -145,7 +146,7 @@
   font-size: calc(13px * var(--font-scale, 1));
 }
 .appshot-settings .appshot-select:hover { background: var(--surface-hover); }
-.appshot-settings .appshot-select:focus-within { box-shadow: 0 0 0 2px var(--st-ring); }
+.appshot-settings .appshot-select:focus-within { border-color: var(--accent); }
 .appshot-settings .appshot-select select:focus-visible { outline: none; }
 .appshot-settings .appshot-spin { flex: none; color: var(--text-tertiary); animation: appshot-spin 1s linear infinite; }
 @keyframes appshot-spin { to { transform: rotate(1turn); } }

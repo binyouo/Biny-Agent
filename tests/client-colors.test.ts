@@ -60,19 +60,47 @@ function color(token: string, mode: "light" | "dark"): string {
   return pair ? pair[mode === "light" ? 1 : 2]! : value;
 }
 
-function contrast(foreground: string, background: string): number {
-  const luminance = (hex: string): number => {
-    assert.match(hex, /^#[\da-f]{6}$/iu);
-    const channels = hex.slice(1).match(/../gu)!.map((channel) => {
-      const component = Number.parseInt(channel, 16) / 255;
+function contrast(foreground: string, background: string, surface = "#ffffff"): number {
+  const rgba = (value: string): readonly [number, number, number, number] => {
+    if (/^#[\da-f]{6}$/iu.test(value)) {
+      const channels = value.slice(1).match(/../gu)!.map(channel => Number.parseInt(channel, 16));
+      return [channels[0]!, channels[1]!, channels[2]!, 1];
+    }
+    const match = /^rgb\((\d+) (\d+) (\d+) \/ (\d+(?:\.\d+)?)%\)$/u.exec(value);
+    assert.ok(match, `unsupported color: ${value}`);
+    const channels = match.slice(1, 4).map(Number);
+    const alpha = Number(match[4]) / 100;
+    assert.ok(channels.every(channel => channel >= 0 && channel <= 255) && alpha >= 0 && alpha <= 1, value);
+    return [channels[0]!, channels[1]!, channels[2]!, alpha];
+  };
+  const over = (front: readonly number[], back: readonly number[]): number[] =>
+    [0, 1, 2].map(index => front[index]! * front[3]! + back[index]! * (1 - front[3]!));
+  const backing = rgba(surface);
+  assert.equal(backing[3], 1, "contrast requires an opaque backing surface");
+  const renderedBackground = over(rgba(background), backing);
+  const renderedForeground = over(rgba(foreground), renderedBackground);
+  const luminance = (rgb: readonly number[]): number => {
+    const channels = rgb.map((channel) => {
+      const component = channel / 255;
       return component <= 0.04045 ? component / 12.92 : ((component + 0.055) / 1.055) ** 2.4;
     });
     return channels[0]! * 0.2126 + channels[1]! * 0.7152 + channels[2]! * 0.0722;
   };
-  const first = luminance(foreground);
-  const second = luminance(background);
+  const first = luminance(renderedForeground);
+  const second = luminance(renderedBackground);
   return (Math.max(first, second) + 0.05) / (Math.min(first, second) + 0.05);
 }
+
+test("contrast calculation composes transparent colors over an opaque surface", () => {
+  assert.equal(contrast("#000000", "rgb(0 188 125 / 0%)", "#ffffff"), 21);
+  assert.equal(contrast("#ffffff", "rgb(0 188 125 / 0%)", "#000000"), 21);
+  assert.equal(contrast("rgb(0 0 0 / 0%)", "#ffffff"), 1);
+  assert.ok(Math.abs(contrast("#000000", "rgb(0 0 0 / 50%)") - 5.280822809644651) < 1e-12);
+  for (const value of ["#fff", "transparent", "rgb(256 0 0 / 10%)", "rgb(0 0 0 / 101%)"]) {
+    assert.throws(() => contrast("#000000", value), assert.AssertionError, value);
+  }
+  assert.throws(() => contrast("#000000", "#ffffff", "rgb(0 0 0 / 50%)"), /opaque backing surface/u);
+});
 
 test("shared light and dark palettes separate emphasis from health indicators", () => {
   for (const [mode, accent, green, selected] of [
@@ -179,6 +207,13 @@ test("search, preference and dialog fields use focus borders without outer outli
   assert.ok(declaration(quickchat, ".quickchat-input:focus", "border-color"));
   assert.equal(declaration(desktop, ".desktop-dialog-content .astryx-text-input:focus-within", "box-shadow"), "none");
   assert.ok(declaration(desktop, ".desktop-dialog-content .astryx-text-input:focus-within", "border-color"));
+});
+
+test("Appshot shortcut selection retains a visible focus border without an outer halo", () => {
+  assert.equal(declaration(desktop, ".appshot-settings .appshot-select", "border"), "1px solid transparent");
+  assert.equal(declaration(desktop, ".appshot-settings .appshot-select:focus-within", "border-color"), "var(--accent)");
+  assert.equal(declaration(desktop, ".appshot-settings .appshot-select:focus-within", "box-shadow"), undefined);
+  assert.equal(declaration(desktop, ".appshot-settings .appshot-select select:focus-visible", "outline"), "none");
 });
 
 test("client chat input has no outer shadow on its actual composer surface", () => {
@@ -297,7 +332,7 @@ test("readable text, status labels and primary controls retain sufficient contra
       ["--accent-foreground", "--accent"], ["--accent-foreground", "--accent-hover"],
       ["--green-text", "--green-bg"], ["--red-text", "--red-bg"], ["--amber-text", "--amber-bg"],
       ["--file-typescript-foreground", "--file-typescript"], ["--file-javascript-foreground", "--file-javascript"]
-    ]) assert.ok(contrast(color(foreground!, mode), color(background!, mode)) >= 4.5, `${mode}: ${foreground} on ${background}`);
+    ]) assert.ok(contrast(color(foreground!, mode), color(background!, mode), color("--surface-raised", mode)) >= 4.5, `${mode}: ${foreground} on ${background}`);
   }
 });
 

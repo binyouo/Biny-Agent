@@ -114,11 +114,11 @@ for (const mode of ["light", "dark"] as const) {
   }
 }
 
-test("dedicated title tokens preserve existing semantic dots, icons, backgrounds and aliases", () => {
+test("readable semantic text tokens retain fixed status colors, backgrounds and aliases", () => {
   for (const [token, expected] of Object.entries({
-    "--green": "#00bc7d", "--green-text": "light-dark(#009966, #00d492)", "--green-bg": "rgb(0 188 125 / 10%)",
-    "--red": "#fb2c36", "--red-text": "light-dark(#e7000b, #ff6467)", "--red-bg": "rgb(251 44 54 / 10%)",
-    "--amber": "#fe9a00", "--amber-text": "light-dark(#e17100, #ffb900)", "--amber-bg": "rgb(254 154 0 / 10%)",
+    "--green": "#00bc7d", "--green-text": "light-dark(#007a55, #00d492)", "--green-bg": "rgb(0 188 125 / 10%)",
+    "--red": "#fb2c36", "--red-text": "light-dark(#c10007, #ff6467)", "--red-bg": "rgb(251 44 54 / 10%)",
+    "--amber": "#fe9a00", "--amber-text": "light-dark(#a65f00, #ffb900)", "--amber-bg": "rgb(254 154 0 / 10%)",
     "--biny-success": "var(--green-text)", "--biny-success-bg": "var(--green-bg)",
     "--biny-danger": "var(--red-text)", "--biny-danger-bg": "var(--red-bg)"
   })) assert.equal(tokens.get(token), expected, token);
