@@ -10,6 +10,10 @@ export function applyStringEdit(content: string, oldString: string, newString: s
     spans.push({ start, end: start + oldString.length });
     offset = start + oldString.length;
   }
+  // A single non-overlapping match can still hide another valid starting position.
+  if (!replaceAll && spans.length === 1 && content.indexOf(oldString, spans[0]!.start + 1) >= 0) {
+    throw new Error("old_string matches overlapping locations. Provide more context or set replace_all.");
+  }
   if (!spans.length && oldString.trim()) {
     const lines = content.split("\n");
     const starts: number[] = [];
