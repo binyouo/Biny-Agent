@@ -260,6 +260,7 @@ export class BinyTui {
    * 启动失败的错误保留在 startupError 里由调用方透出；成功后 runtime 与快照就绪。
    */
   private ensureRuntimeStarted(): Promise<void> {
+    if (this.exiting) return Promise.resolve();
     if (this.startRuntimePromise) return this.startRuntimePromise;
     if (this.runtime) return Promise.resolve();
     this.startRuntimePromise ??= this.startRuntime().finally(() => {
@@ -284,6 +285,12 @@ export class BinyTui {
       } catch (error) {
         attachFailure = error;
         // 无配置或独立 Host 启动失败时，保留当前进程内的最小 fallback。
+      }
+      // 终端输入和信号在 attach 完成前已经可用；退出不能留下晚到的连接，
+      // 也不能在失败的 attach 返回后再启动本进程的 fallback Host。
+      if (this.exiting) {
+        await attached?.close();
+        return;
       }
       let runtime: InteractiveRuntimeHandle;
       let commands: CommandRuntime | undefined;
@@ -338,6 +345,11 @@ export class BinyTui {
           commands = undefined;
         }
       }
+      if (this.exiting) {
+        await this.runtimeHost?.close().catch(() => undefined);
+        await runtime.close();
+        return;
+      }
       this.runtime = runtime;
       this.commands = commands;
       this.startupError = undefined;
@@ -351,6 +363,7 @@ export class BinyTui {
       } catch {
         this.setAutocompleteProvider([], this.workspaceRoot);
       }
+      if (this.exiting) return;
 
       // 普通入口在 Host 上新建独立 Session；已有运行不影响新窗口，也不会被替换。
       if ((this.launchMode === "new" || this.launchMode === "resume-picker")
@@ -360,6 +373,7 @@ export class BinyTui {
         runtime = this.runtime;
         commands = this.commands;
       }
+      if (this.exiting) return;
       this.runtimeSnapshot = runtime.getSnapshot();
       const { info, permissionMode } = this.runtimeSnapshot;
       this.permissionMode = permissionMode;
@@ -402,6 +416,7 @@ export class BinyTui {
       this.unsubscribe = undefined;
       this.ownedSessionIds.clear();
       if (failedRuntime instanceof RuntimeHostClient) await failedRuntime.close().catch(() => undefined);
+      if (this.exiting) return;
       // Runtime 启动失败（例如模型 provider 缺 API Key）时，slash 补全和命令选择器
       // 仍应可用，否则用户连命令列表和 /exit 都打不开。skills 拿不到就退化为纯命令集。
       this.startupError = describeError(error);
@@ -412,8 +427,12 @@ export class BinyTui {
 
   private subscribeRuntime(runtime: InteractiveRuntimeHandle): void {
     this.unsubscribe?.();
+    if (this.exiting) {
+      this.unsubscribe = undefined;
+      return;
+    }
     this.unsubscribe = runtime.subscribe((update) => {
-      if (this.runtime !== runtime) return;
+      if (this.exiting || this.runtime !== runtime) return;
       this.runtimeSnapshot = update.snapshot;
       if (update.event?.type === "permission.resolved") {
         const attempt = this.permissionAnswers.get(update.event.requestId);
@@ -541,6 +560,7 @@ export class BinyTui {
   }
 
   private refreshChrome(): void {
+    if (this.exiting) return;
     const status = runtimeStatus(this.runtimeSnapshot);
     this.status.setState(status, this.state.turnStartedAt, this.state.lastWorkedMs);
     this.shortcuts.setState(status);
