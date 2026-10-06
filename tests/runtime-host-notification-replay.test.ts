@@ -80,11 +80,12 @@ async function fixture(t: TestContext, initialEvents: AgentHostEvent[] = []) {
       assert.equal(frame.kind, "request");
       assert.ok(frame.kind === "request");
       requests.push(frame);
-      assert.ok(["subscribe", "host.info"].includes(frame.operation), "recovery must not resubmit a run or another side effect");
+      assert.ok(["subscribe", "host.info", "snapshot", "session.ensure"].includes(frame.operation),
+        "recovery and navigation must not submit a run or another side effect");
       const result = await internals.execute(connection, frame);
       const response: HostFrame = { kind: "response", requestId: frame.requestId, ok: true, result };
       connection.writer.send(response);
-      subscribed.emit("settled");
+      if (frame.operation === "subscribe") subscribed.emit("settled");
     });
     const connection = { authenticated: true, subscribed: false, clientId: "notification-fixture", surface: "desktop",
       writer: { send(frame: HostFrame): boolean {
@@ -149,6 +150,74 @@ function terminal(type: "run.completed" | "run.blocked", runId: string = type): 
   return type === "run.completed" ? { ...base, type } : { ...base, type, reason: "missing_user_input", summary: "Fixture input needed" };
 }
 
+for (const read of ["focus", "ensure"] as const) {
+  for (const type of ["run.completed", "run.blocked"] as const) {
+    test(`${read} snapshot before reconnect cannot acknowledge a missed ${type}`, { timeout: 5_000 }, async (t) => {
+      const f = await fixture(t);
+      try {
+        f.emit();
+        await f.disconnect();
+        f.emit(terminal(type, "missed-before-read"));
+        f.emit();
+        const current = read === "focus"
+          ? await f.client.focusSession("primary")
+          : (await f.client.ensureSession({ sessionId: "primary", focus: false })).snapshot;
+        assert.equal(current.revision, 3);
+        assert.deepEqual(f.delivered, [], "navigation reads snapshots without receiving the missing event");
+        const cached: number[] = [];
+        const observed: AgentRuntimeUpdate[] = [];
+        const focused: AgentRuntimeUpdate[] = [];
+        const stop = f.client.subscribeAllRuntimeEvents((update) => {
+          cached.push(f.client.getSnapshot().revision);
+          observed.push(update);
+        });
+        const stopFocused = f.client.subscribe((update) => focused.push(update));
+        assert.deepEqual(focused.map((update) => update.snapshot.revision), [3],
+          "buffered state updates use the newer navigation snapshot when delivered");
+        focused.length = 0;
+        await f.reconnect();
+        stop();
+        stopFocused();
+        assert.deepEqual(f.delivered, [terminal(type, "missed-before-read")]);
+        assert.equal((f.requests.at(-1)?.payload as { afterSequence: number }).afterSequence, 1);
+        assert.deepEqual(cached, [3, 3], "older replay snapshots cannot overwrite the newer navigation snapshot");
+        assert.deepEqual(observed.map((update) => update.snapshot.revision), [3, 3],
+          "all-session subscribers must receive the adopted state together with the old terminal event");
+        assert.deepEqual(focused.map((update) => update.snapshot.revision), [3, 3]);
+        assert.deepEqual(focused.flatMap((update) => update.event ? [update.event] : []), [terminal(type, "missed-before-read")]);
+        await f.disconnect();
+        await f.reconnect(500);
+        assert.deepEqual(f.delivered, [terminal(type, "missed-before-read")], "consumed replay is not requested again");
+      } finally { await f.close(); }
+    });
+  }
+}
+
+test("failed event delivery retains its unconsumed cursor and closes the replay transport", { timeout: 5_000 }, async (t) => {
+  const f = await fixture(t);
+  let rejectFirst = true;
+  const stop = f.client.subscribeAllRuntimeEvents((update) => {
+    if (update.event?.runId === "first" && rejectFirst) {
+      rejectFirst = false;
+      throw new Error("Synthetic subscriber failure");
+    }
+  });
+  try {
+    f.emit();
+    await f.disconnect();
+    f.emit(terminal("run.completed", "first"));
+    f.emit(terminal("run.blocked", "second"));
+    await f.reconnect();
+    assert.equal(f.sockets[1]!.destroyed, true, "the replay cannot continue past failed event delivery");
+    assert.deepEqual(f.delivered.map((event) => event.runId), ["first"]);
+    await f.reconnect(500);
+    assert.deepEqual(f.delivered.map((event) => event.runId), ["first", "first", "second"],
+      "a listener which already received the failed frame may see it again; delivery is not exactly once");
+    assert.deepEqual(f.requests.filter((request) => request.operation === "subscribe").slice(1)
+      .map((request) => (request.payload as { afterSequence: number }).afterSequence), [1, 1]);
+  } finally { stop(); await f.close(); }
+});
+
 for (const type of ["run.completed", "run.blocked"] as const) {
   test(`same-epoch reconnect delivers the missed ${type} notification`, { timeout: 5_000 }, async (t) => {
     const f = await fixture(t);
@@ -191,6 +260,8 @@ for (const partial of [false, true]) {
       await f.disconnect();
       f.emit(terminal("run.completed", "first"));
       f.emit(terminal("run.blocked", "second"));
+      await f.client.focusSession("primary");
+      assert.equal(f.client.getSnapshot().revision, 3);
       f.dropFrames((frame, index) => {
         if (index !== 1 || partial && frame.kind === "event" && frame.sequence === 2) return false;
         f.sockets[index]!.destroy();
@@ -200,7 +271,8 @@ for (const partial of [false, true]) {
       assert.deepEqual(f.delivered.map((event) => event.runId), partial ? ["first"] : []);
       await f.reconnect(500);
       assert.deepEqual(f.delivered.map((event) => event.runId), ["first", "second"]);
-      assert.deepEqual(f.requests.slice(1).map((request) => (request.payload as { afterSequence: number }).afterSequence), [1, partial ? 2 : 1]);
+      assert.deepEqual(f.requests.filter((request) => request.operation === "subscribe").slice(1)
+        .map((request) => (request.payload as { afterSequence: number }).afterSequence), [1, partial ? 2 : 1]);
       assert.equal(f.client.hostInfo?.sequence, 3);
       assert.equal(f.client.getSnapshot().revision, 3);
     } finally { await f.close(); }
@@ -243,6 +315,74 @@ test("an evicted replay cursor asks the Host for a gap snapshot without inventin
   } finally { await f.close(); }
 });
 
+test("a new-epoch navigation read still requests an explicit cross-epoch resync", { timeout: 5_000 }, async (t) => {
+  const f = await fixture(t);
+  try {
+    f.emit();
+    await f.disconnect();
+    f.emit(terminal("run.completed", "prior-epoch"));
+    await f.changeEpoch();
+    await f.client.focusSession("primary");
+    assert.equal(f.client.hostInfo?.hostEpoch, "replacement-epoch");
+    await f.reconnect();
+    assert.deepEqual(f.delivered, []);
+    assert.equal((f.requests.at(-1)?.payload as { afterHostEpoch: string }).afterHostEpoch, "notification-epoch");
+    assert.equal(f.serverFrames.filter((frame) => frame.kind === "gap").length, 1);
+    await f.disconnect();
+    f.emit(terminal("run.blocked", "new-epoch"));
+    await f.reconnect(500);
+    assert.deepEqual(f.delivered, [terminal("run.blocked", "new-epoch")]);
+  } finally { await f.close(); }
+});
+
+test("a failed cross-epoch subscribe before gap preserves the old consumption epoch until resync", { timeout: 5_000 }, async (t) => {
+  const f = await fixture(t);
+  try {
+    f.emit();
+    await f.disconnect();
+    f.emit(terminal("run.completed", "prior-epoch"));
+    await f.changeEpoch();
+    f.dropFrames((frame, index) => {
+      if (index !== 1) return false;
+      f.sockets[index]!.destroy();
+      return true;
+    });
+    await f.reconnect();
+    await f.reconnect(500);
+    assert.deepEqual(f.delivered, []);
+    assert.deepEqual(f.requests.filter((request) => request.operation === "subscribe").slice(1)
+      .map((request) => (request.payload as { afterHostEpoch: string }).afterHostEpoch),
+    ["notification-epoch", "notification-epoch"]);
+    assert.equal(f.serverFrames.filter((frame) => frame.kind === "gap").length, 2);
+    assert.equal(f.client.getSnapshot().revision, 2);
+  } finally { await f.close(); }
+});
+
+test("a delivered gap commits its resync boundary even if the subscribe response is lost", { timeout: 5_000 }, async (t) => {
+  const f = await fixture(t);
+  try {
+    f.emit();
+    await f.disconnect();
+    f.emit(terminal("run.completed", "prior-epoch"));
+    await f.changeEpoch();
+    f.dropFrames((frame, index) => {
+      if (index !== 1 || frame.kind !== "response") return false;
+      f.sockets[index]!.destroy();
+      return true;
+    });
+    await f.reconnect();
+    f.emit(terminal("run.blocked", "after-gap"));
+    await f.reconnect(500);
+    assert.deepEqual(f.delivered, [terminal("run.blocked", "after-gap")]);
+    assert.deepEqual(f.requests.filter((request) => request.operation === "subscribe").slice(1)
+      .map((request) => (request.payload as { afterSequence: number; afterHostEpoch: string }))
+      .map(({ afterSequence, afterHostEpoch }) => ({ afterSequence, afterHostEpoch })),
+    [{ afterSequence: 0, afterHostEpoch: "notification-epoch" },
+      { afterSequence: 2, afterHostEpoch: "replacement-epoch" }]);
+    assert.equal(f.serverFrames.filter((frame) => frame.kind === "gap").length, 1);
+  } finally { await f.close(); }
+});
+
 test("closing a disconnected client cancels reconnect without delivering queued notifications", { timeout: 5_000 }, async (t) => {
   const f = await fixture(t);
   try {
@@ -277,8 +417,13 @@ test("initial connection still replays retained history through the existing foc
   const f = await fixture(t, initialEvents);
   try {
     const focused: AgentHostEvent[] = [];
-    const unsubscribe = f.client.subscribe((update) => { if (update.event) focused.push(update.event); });
+    const revisions: number[] = [];
+    const unsubscribe = f.client.subscribe((update) => {
+      revisions.push(update.snapshot.revision);
+      if (update.event) focused.push(update.event);
+    });
     assert.deepEqual(focused, initialEvents);
+    assert.deepEqual(revisions, [2, 2], "buffered events must carry the current state at delivery time");
     assert.equal(f.client.hostInfo?.sequence, 2);
     assert.equal(f.client.getSnapshot().revision, 2);
     unsubscribe();
