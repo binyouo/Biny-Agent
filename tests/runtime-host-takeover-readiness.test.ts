@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { EventEmitter } from "node:events";
+import { EventEmitter, once } from "node:events";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import net from "node:net";
 import os from "node:os";
@@ -9,6 +9,7 @@ import type { InteractiveRuntimeSnapshot } from "../src/runtime/agentEvents.js";
 import { RuntimeHostClient } from "../src/runtime/host/client.js";
 import { currentRuntimeHostIdentity, ensureRuntimeHostDirectory, runtimeHostPaths } from "../src/runtime/host/lifecycle.js";
 import { encodeHostFrame, runtimeHostProtocolVersion, type HostFrame, type HostRequestFrame } from "../src/runtime/host/protocol.js";
+import { runtimeHostReconnectMinMs } from "../src/runtime/host/reconnect.js";
 import { isRuntimeHostTakeoverReady } from "./helpers/runtime-host-takeover-readiness.js";
 
 function deferred<T>() {
@@ -65,6 +66,8 @@ for (const replacementSessionId of ["original-session", "replacement-session"]) 
     const subscription = deferred<{ socket: MemorySocket; request: HostRequestFrame }>();
     const focusedRead = deferred<HostRequestFrame>();
     const sockets: MemorySocket[] = [];
+    context.mock.method(Math, "random", () => 0.5);
+    context.mock.timers.enable({ apis: ["setTimeout"] });
     context.mock.method(net, "createServer", () => { throw new Error("Real listeners forbidden in takeover readiness regression"); });
     context.mock.method(net, "createConnection", () => {
       const replacing = sockets.length > 0;
@@ -97,7 +100,13 @@ for (const replacementSessionId of ["original-session", "replacement-session"]) 
       assert.deepEqual(client.getSnapshot(), original);
       assert.equal(isRuntimeHostTakeoverReady(client, "original-epoch"), false, "an old-epoch snapshot is not a takeover");
       await writeFile(paths.registrationPath, JSON.stringify({ ...registration, hostEpoch: "replacement-epoch" }), { mode: 0o600 });
+      const closed = once(sockets[0]!, "close");
       sockets[0]!.destroy();
+      await closed;
+      // 内存 transport 没有活跃 socket handle，需确定性推进 unref 的重连计时器。
+      context.mock.timers.tick(runtimeHostReconnectMinMs - 1);
+      assert.equal(sockets.length, 1, "reconnect waits for the configured backoff");
+      context.mock.timers.tick(1);
       const held = await subscription.promise;
       assert.equal(sockets.length, 2);
       assert.equal(client.hostInfo?.hostEpoch, "replacement-epoch", "hello is visible while all subscribe frames are held");
@@ -140,6 +149,7 @@ for (const replacementSessionId of ["original-session", "replacement-session"]) 
       assert.equal(isRuntimeHostTakeoverReady(client, "original-epoch"), true);
     } finally {
       await client?.close();
+      context.mock.timers.reset();
       await rm(paths.registrationPath, { force: true });
       await rm(root, { recursive: true, force: true });
     }
