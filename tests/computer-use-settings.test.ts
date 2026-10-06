@@ -276,7 +276,7 @@ test("a present helper shows its path; only a missing one points at the build", 
 // daemon 的 doctor 返回扁平字段（accessibility / screenRecording），
 // 而不是嵌套的 permissions 对象。曾经按嵌套形状解析 → 每次 parse 都抛，
 // helper 明明在跑也一律报「组件不可用」。这条钉住两边形状一致。
-test("a live daemon reads as installed, not as an unavailable component", async () => {
+test("a live daemon reads as installed, not as an unavailable component", { skip: process.platform !== "darwin" || process.env.BINY_TEST_COMPUTER_UI !== "1" }, async () => {
   const { NativeProcessDriver } = await import("../src/computer/nativeDriver.js");
   const driver = new NativeProcessDriver(() => undefined, {
     binaryPath: new URL("../out/native/computer-use", import.meta.url).pathname

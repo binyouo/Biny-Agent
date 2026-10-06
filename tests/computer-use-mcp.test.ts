@@ -5,8 +5,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { createComputerUseMcpServer } from "../src/computer/mcpServer.js";
 import { NativeProcessDriver } from "../src/computer/nativeDriver.js";
 
-// Alma 把 Computer Use 暴露两遍：产品内工具 + stdio MCP server（alma-reverse 16 §4）。
-// 这里钉住第二个出口的对外形状。
+// MCP 入口与产品内工具共享原生能力，固定模型可见的协议形状。
 test("computer use is served over MCP with the documented verbs", async () => {
   const driver = new NativeProcessDriver(() => undefined);
   const server = createComputerUseMcpServer(driver);
@@ -16,8 +15,7 @@ test("computer use is served over MCP with the documented verbs", async () => {
     await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
     const { tools } = await client.listTools();
     const names = tools.map(tool => tool.name).sort();
-    // Alma 的核心动词面：读、点、输入、滚动、拖拽、右键、直写、选文、权限。
-    // 13 个：12 个动词 + grant（daemon 早就会，工具面曾经漏掉）。
+    // 读写动作、权限与镜像均通过 MCP 的工具列表公开。
     assert.deepEqual(names, [
       "click", "drag", "get_app_state", "grant", "launch_app", "list_apps",
       "perform_secondary_action", "permissions", "pip_close", "pip_list", "pip_open", "press_key", "scroll",
@@ -41,18 +39,22 @@ test("computer use is served over MCP with the documented verbs", async () => {
   }
 });
 
-test("the MCP permissions verb reports live daemon state", async () => {
+test("the MCP permissions verb reports current native diagnostics", async () => {
   const driver = new NativeProcessDriver(() => undefined);
+  let accessibility = "denied";
+  driver.diagnostics = async () => ({ data: { accessibility, screenRecording: "granted", version: "fixture-1" }, images: [] });
   const server = createComputerUseMcpServer(driver);
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   const client = new Client({ name: "test-client", version: "1" });
   try {
     await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
-    const result = await client.callTool({ name: "permissions", arguments: {} });
-    const text = (result.content as { type: string; text?: string }[]).find(part => part.type === "text")?.text ?? "";
-    const data = JSON.parse(text) as { accessibility?: string; screenRecording?: string; version?: string };
-    assert.ok(["granted", "denied"].includes(data.accessibility ?? ""), "权限状态必须来自 daemon 自检");
-    assert.equal(typeof data.version, "string");
+    for (const current of ["denied", "granted"]) {
+      accessibility = current;
+      const result = await client.callTool({ name: "permissions", arguments: {} });
+      assert.equal(result.isError, undefined);
+      const text = (result.content as { type: string; text?: string }[]).find(part => part.type === "text")?.text ?? "";
+      assert.deepEqual(JSON.parse(text), { accessibility: current, screenRecording: "granted", version: "fixture-1" });
+    }
   } finally {
     await client.close();
     await server.close();
@@ -60,8 +62,7 @@ test("the MCP permissions verb reports live daemon state", async () => {
   }
 });
 
-// Alma 的每个动作工具都带回执截图（notes/19 §2），模型执行完一步就能看到结果，
-// 不必再 observe 一次 —— 少一个来回、少一棵 AX 树。
+// 动作结果携带回执截图，调用方可直接确认执行后的画面。
 test("an action tool returns the post-action screenshot, not just an ack", { skip: process.env.BINY_TEST_COMPUTER_UI !== "1" }, async () => {
   const driver = new NativeProcessDriver(() => undefined, {
     binaryPath: new URL("../out/native/computer-use", import.meta.url).pathname
