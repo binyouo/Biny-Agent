@@ -40,6 +40,8 @@ export class ComputerUseController {
   private starting?: { promise: Promise<void>; generation: number; signal: AbortSignal };
   private readonly journal: ComputerAuditStore;
   private mirrors = new Map<string, string>();
+  // 关闭预览只撤销镜像打开请求，不中断输入；重新打开也不能复活旧请求。
+  private mirrorGeneration = 0;
   // 预览只采集像素；在途捕获必须结束后才能接纳下一帧。
   private framePump?: ReturnType<typeof setInterval>;
   private previewRefresh?: AbortController;
@@ -126,6 +128,7 @@ export class ComputerUseController {
   setPreview(enabled: boolean): void {
     this.snapshot.preview = enabled;
     if (!enabled) {
+      this.mirrorGeneration++;
       for (const [windowId, requestId] of this.mirrors) { this.options.onMirrorChange?.(windowId); void this.driver.mirror?.("close", { window_id: Number(windowId), request_id: requestId }).catch(() => { this.snapshot.diagnostic = "computer_mirror_cleanup_failed"; }); }
       this.mirrors.clear();
     }
@@ -217,6 +220,7 @@ export class ComputerUseController {
   list(session: string, pid?: number, signal?: AbortSignal): Promise<DriverReply> { return this.enqueue(session, signal, s => this.driver.list(session, pid, s)); }
   mirror(session: string, input: ComputerMirrorRequest, signal?: AbortSignal): Promise<DriverReply> {
     const request = computerMirrorSchema.parse(input);
+    const mirrorGeneration = this.mirrorGeneration;
     return this.enqueue(session, signal, async (s, generation) => {
       const mirror = this.driver.mirror?.bind(this.driver);
       if (!mirror) throw new Error("computer_mirrors_unavailable");
@@ -233,15 +237,17 @@ export class ComputerUseController {
         return { data: { closed }, images: [] };
       }
       if (!this.snapshot.preview) throw new Error("computer_preview_disabled");
+      if (mirrorGeneration !== this.mirrorGeneration) throw new Error("computer_mirror_invalidated");
       const target = { pid: request.pid!, windowId: request.windowId! };
       await this.options.authorize?.(session, target, s);
       s.throwIfAborted();
       if (generation !== this.generation) throw new Error("computer_authorization_invalidated");
+      if (mirrorGeneration !== this.mirrorGeneration) throw new Error("computer_mirror_invalidated");
       const requestId = this.mirrors.get(target.windowId) ?? randomUUID();
       this.mirrors.set(target.windowId, requestId);
       try {
         const reply = await mirror("open", { pid: target.pid, window_id: Number(target.windowId), on_minimize: request.onMinimize, request_id: requestId, external: this.options.externalMirrors });
-        if (s.aborted || generation !== this.generation) {
+        if (s.aborted || generation !== this.generation || mirrorGeneration !== this.mirrorGeneration) {
           await mirror("close", { window_id: Number(target.windowId), request_id: requestId });
           throw new Error("computer_mirror_invalidated");
         }
@@ -304,12 +310,12 @@ export class ComputerUseController {
       }
       const effect = result.data.effect;
       const status = result.errorCode || effect === "refused" ? "refused" : effect === "confirmed" ? "completed" : "unverified";
-      // 真的动到机器了才算活动；被拒的什么都没发生，不该把监督窗续命。
-      if (status !== "refused") this.noteActivity();
       // 错误码可能挂在 result 上，也可能在 data 里（驱动把拒绝原因放在 data.code）。
       const failureCode = result.errorCode ?? (typeof result.data.code === "string" ? result.data.code : undefined);
       this.record(action, at, status, { bundleId: capture.appId, errorCode: failureCode });
       if (s.aborted || generation !== this.generation) return this.verificationUnavailable(result, status, "computer_verification_interrupted", generation);
+      // 只有仍有效的已派发动作续期监督窗；迟到回执仍如实记录，但不能重开已停止的预览。
+      if (status !== "refused") this.noteActivity();
       this.snapshot.lastOutcome = status;
       // A fresh post-action frame is evidence for the next decision, not proof of the intended postcondition.
       if (status === "refused") return { ...result, data: { ...result.data, status } };
