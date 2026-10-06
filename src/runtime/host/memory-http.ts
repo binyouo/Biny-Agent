@@ -43,7 +43,7 @@ export async function startMemoryHttpServer(client: MemoryHttpClient, options: {
         const limit = integerQuery(url, "limit");
         const offset = integerQuery(url, "offset");
         const paginated = limit !== undefined || offset !== undefined;
-        const pageLimit = paginated ? limit || 20 : Number.MAX_SAFE_INTEGER;
+        const pageLimit = paginated ? limit ?? 20 : Number.MAX_SAFE_INTEGER;
         const pageOffset = offset ?? 0;
         const listed = await client.memory<MemoryEntriesResult>("list", {
           limit: pageLimit, offset: pageOffset, threadId: stringQuery(url, "threadId")
@@ -97,7 +97,7 @@ export async function startMemoryHttpServer(client: MemoryHttpClient, options: {
           rewrittenQuery: searched.rewrittenQuery
         };
       } else if (route === "/api/memories/archive" && method === "GET") {
-        const limit = Math.min(integerQuery(url, "limit") || 50, 200);
+        const limit = Math.min(integerQuery(url, "limit") ?? 50, 200);
         const archived = await client.memory<MemoryArchiveEntriesResult>("archive-list", {
           limit, offset: integerQuery(url, "offset") ?? 0,
           runId: stringQuery(url, "runId"), userId: stringQuery(url, "userId")
