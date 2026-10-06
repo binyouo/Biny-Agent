@@ -32,7 +32,7 @@ async function fixture(name: string, check: (value: {
     ]);
     const state = new DesktopStateStore(path.join(root, "state.json"));
     await state.load();
-    const service = new DesktopProjectService(state, new DesktopUserDataStore(path.join(root, "data")), createFileConfigStore({ workspaceRoot: repo }));
+    const service = new DesktopProjectService(state, new DesktopUserDataStore(path.join(root, "data")), createFileConfigStore(repo));
     const project = await service.createProject(repo);
     await check({ repo, root, service, project, git });
   } finally {
