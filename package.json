@@ -67,7 +67,7 @@
     ],
     "overrides": {
       "adm-zip": "0.6.1",
-      "sharp": "0.35.4",
+      "sharp": "0.35.5",
       "fast-uri": "3.1.7",
       "ip-address": "10.3.1",
       "hono": "4.12.34",
@@ -122,7 +122,7 @@
     "remark-gfm": "^4.0.1",
     "remark-math": "^6.0.0",
     "remark-parse": "11.0.0",
-    "sharp": "0.35.4",
+    "sharp": "0.35.5",
     "shiki": "^4.4.3",
     "sqlite-vec": "0.1.9",
     "thinking-orbs": "0.2.0",
