@@ -38,13 +38,14 @@ import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import type { ModelCatalogEntry } from "../../../ai/types.js";
+import { modelThinkingLevelMap, projectThinkingSelectionToModel } from "../../../ai/capabilities.js";
 import { providerDefinition } from "../../../ai/provider.js";
 import { builtinProviderModels } from "../../../ai/builtinModels.js";
 import { loadProjectSettings } from "../../../config/projectSettings.js";
 import { globalAgentDir, globalConfigDir } from "../../../config/paths.js";
 import { createProjectSkillKey } from "../../../extensions/skillRef.js";
 import { synchronizeCredentialRevisions, type DeferredCredentialTransactionStatus } from "../../../config/credentials.js";
-import { configSchema, type AgentConfig, type ProviderConfig } from "../../../config/schema.js";
+import { configSchema, reasoningEffortSchema, type AgentConfig, type ProviderConfig } from "../../../config/schema.js";
 import type { AgentConfigStore } from "../../../config/store.js";
 import { configDocumentRevision } from "../../../config/versioned.js";
 import { createModelSettings, validateModelConfiguration } from "../../../llm/modelFactory.js";
@@ -1249,29 +1250,62 @@ export class DesktopAgentManager {
       for (const providerAlias of removeProviderAliases) {
         if (!next.providers[providerAlias]) throw new Error(`未知服务商：${providerAlias}`);
       }
-      const removeAliases = new Set([
+      const removeAliases = new Set<string>();
+      for (const requestedAlias of [
         ...input.models.removeAliases,
         ...Object.entries(next.models).filter(([, model]) => removeProviderAliases.has(model.provider)).map(([alias]) => alias)
-      ]);
-      for (const requestedAlias of removeAliases) {
+      ]) {
         const alias = resolveConfiguredModelAlias(next, requestedAlias);
         if (!alias) throw new Error(`未知模型：${requestedAlias}`);
         if (projectSettings.defaultModel === alias) {
           throw new Error(`不能删除项目 .biny/settings.json 当前引用的模型：${alias}`);
         }
-        const removedModel = next.models[alias]!;
-        const provider = next.providers[removedModel.provider]!;
-        const modelProfiles = { ...provider.modelProfiles };
-        delete modelProfiles[removedModel.model];
-        const remaining = Object.entries(next.models).filter(([key]) => key !== alias);
-        if (!remaining.length) throw new Error("至少需要保留一个可用模型。");
-        next = configSchema.parse({
+        removeAliases.add(alias);
+      }
+      if (removeAliases.size) {
+        const models = Object.fromEntries(Object.entries(next.models).filter(([alias]) => !removeAliases.has(alias)));
+        const firstRemaining = Object.keys(models)[0];
+        if (!firstRemaining) throw new Error("至少需要保留一个可用模型。");
+        const providers = { ...next.providers };
+        for (const alias of removeAliases) {
+          const removed = next.models[alias]!;
+          const provider = providers[removed.provider]!;
+          const modelProfiles = { ...provider.modelProfiles };
+          delete modelProfiles[removed.model];
+          providers[removed.provider] = { ...provider, modelProfiles };
+        }
+        const defaultRemoved = removeAliases.has(next.defaultModel);
+        let candidate = {
           ...next,
-          defaultModel: next.defaultModel === alias ? remaining[0]![0] : next.defaultModel,
-          toolModel: next.toolModel === alias ? undefined : next.toolModel,
-          models: Object.fromEntries(remaining),
-          providers: { ...next.providers, [removedModel.provider]: { ...provider, modelProfiles } }
-        });
+          defaultModel: defaultRemoved ? firstRemaining : next.defaultModel,
+          toolModel: next.toolModel && removeAliases.has(next.toolModel) ? undefined : next.toolModel,
+          models,
+          providers
+        };
+        if (defaultRemoved && input.models.defaultModel) {
+          const alias = resolveConfiguredModelAlias(candidate, input.models.defaultModel.alias);
+          if (!alias) throw new Error(`未知模型：${input.models.defaultModel.alias}`);
+          const selection = input.models.defaultModel.thinking;
+          candidate = { ...candidate, defaultModel: alias, thinking: {
+            enabled: selection !== "off", effort: selection === "off" ? next.thinking.effort : selection
+          } };
+        }
+        // 只在最终保留模型拒绝继承档位时投影；显式选择和仍有效的配置不被目录/profile 改写。
+        const parsed = configSchema.safeParse(candidate);
+        if (!parsed.success && defaultRemoved && input.models.defaultModel === undefined
+          && parsed.error.issues.every((issue) => issue.path.length === 2 && issue.path[0] === "thinking"
+            && (issue.path[1] === "enabled" || issue.path[1] === "effort"))) {
+          const model = models[candidate.defaultModel]!;
+          const efforts = reasoningEffortSchema.options.filter((effort) => model.thinkingLevelMap
+            ? model.thinkingLevelMap[effort] !== undefined && model.thinkingLevelMap[effort] !== null
+            : model.reasoning?.efforts.includes(effort));
+          const effort = projectThinkingSelectionToModel(modelThinkingLevelMap(model), efforts, next.thinking.effort) ?? efforts[0];
+          candidate.thinking = {
+            enabled: model.compatibility?.supportsReasoning !== false && effort !== undefined,
+            effort: effort ?? next.thinking.effort
+          };
+        }
+        next = parsed.success ? parsed.data : configSchema.parse(candidate);
       }
       if (input.models.modelProfiles !== undefined) {
         for (const [providerAlias, profiles] of Object.entries(input.models.modelProfiles)) {
