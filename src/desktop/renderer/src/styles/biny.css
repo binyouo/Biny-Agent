@@ -10506,4 +10506,4 @@ button.capability-check[aria-checked="true"] {
 .biny-composer-attachments > * { animation: attachment-arrival 180ms ease-out; }
 @media (prefers-reduced-motion: reduce) { .biny-composer-attachments > * { animation: none; } }
 .cu-confirm { max-width: 460px; border: 1px solid var(--border); border-radius: 12px; padding: 24px; background: var(--surface-raised); color: var(--text); }
-.cu-confirm::backdrop { background: rgb(0 0 0 / 40%); }
+.cu-confirm::backdrop { background: var(--dialog-overlay-strong); }
