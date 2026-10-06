@@ -175,19 +175,29 @@ function testEmotionPromptAndSystemPrompt(): void {
     source: "base"
   };
   const emotionPrompt = renderEmotionPrompt(blended);
-  assert.match(emotionPrompt, /<biny_emotion mood="疲惫" valence="5" energy="4" fatigue="30">/u);
-  assert.match(emotionPrompt, /EMOTION — A layered state/u);
-  assert.match(emotionPrompt, /The user's real needs and confirmed facts still matter/u);
+  assert.match(emotionPrompt, /<biny_emotion>/u);
+  assert.match(emotionPrompt, /EMOTION SYSTEM — You have a layered emotion system/u);
+  assert.match(emotionPrompt, /YOUR DEFAULT PERSONALITY IS NOT NEUTRAL/u);
+  assert.match(emotionPrompt, /biny emotion set-context/u);
+  assert.match(emotionPrompt, /emotional gravity/u);
+  assert.match(emotionPrompt, /EXPIRY: Base emotion decays over 6 hours/u);
   assert.match(emotionPrompt, /FATIGUE & SLEEP STATE: 😪 TIRED/u);
   assert.doesNotMatch(emotionPrompt, /SLEEPING/u);
-  assert.doesNotMatch(emotionPrompt, /Task/u);
-  assert.doesNotMatch(emotionPrompt, /cannot take it on right now/u);
+  assert.doesNotMatch(emotionPrompt, /ASLEEP or extremely tired/u);
   const sleepingPrompt = renderEmotionPrompt({ ...blended, fatigue: 80 });
   assert.match(sleepingPrompt, /FATIGUE & SLEEP STATE: 💤 SLEEPING/u);
   assert.match(sleepingPrompt, /Task/u);
-  assert.match(sleepingPrompt, /cannot take it on right now/u);
-  assert.match(emotionPrompt, /level=tired/u);
+  assert.match(sleepingPrompt, /ASLEEP or extremely tired/u);
+  assert.match(sleepingPrompt, /AUTO-WAKE/u);
+  assert.match(sleepingPrompt, /biny wake/u);
+  assert.match(sleepingPrompt, /biny sleep/u);
+  assert.match(emotionPrompt, /level: tired/u);
   assert.match(emotionPrompt, /凌晨三点还在干活，有点累/u);
+  const awakePrompt = renderEmotionPrompt({ ...blended, fatigue: 0 });
+  assert.match(awakePrompt, /FATIGUE SYSTEM: You have a fatigue\/sleep system/u);
+  assert.match(awakePrompt, /biny rest/u);
+  assert.doesNotMatch(emotionPrompt, /biny rest/u);
+  assert.doesNotMatch(emotionPrompt, /the emotion tool/u);
   assert.doesNotMatch(emotionPrompt, /cannot grant/u);
 
   const promptBundle = buildPromptBundle({

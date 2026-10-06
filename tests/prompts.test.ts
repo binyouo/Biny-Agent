@@ -28,8 +28,9 @@ assert.match(bundle.systemPrompt, /Available Skill metadata/u);
 assert.match(bundle.systemPrompt, /look for a skill: check <available_skills> first, then skill_lookup/u);
 assert.match(bundle.systemPrompt, /save it as a reusable Skill/u);
 assert.doesNotMatch(bundle.systemPrompt, /private daily note|private activity|private crystal|Current emotion/u);
-assert.ok(bundle.turnContext.indexOf("<local_time") < bundle.turnContext.indexOf("<!-- biny-emotion:start -->"));
-assert.ok(bundle.turnContext.indexOf("<local_time") < bundle.turnContext.indexOf("private daily note"));
+assert.ok(bundle.turnContext.includes("<biny_reminder>Authoritative Local DateTime:"));
+assert.ok(bundle.turnContext.indexOf("<biny_reminder>") < bundle.turnContext.indexOf("<!-- biny-emotion:start -->"));
+assert.ok(bundle.turnContext.indexOf("<biny_reminder>") < bundle.turnContext.indexOf("private daily note"));
 assert.ok(bundle.turnContext.indexOf("private daily note") < bundle.turnContext.indexOf("private crystal"));
 assert.doesNotMatch(bundle.turnContext, /biny-activity|Activity Recorder/u, "每轮不再被动注入 Activity");
 

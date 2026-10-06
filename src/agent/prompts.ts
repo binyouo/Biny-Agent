@@ -424,12 +424,15 @@ function renderTurnContext(options: {
     timeStyle: "long",
     timeZone: timezone
   }).format(options.now);
+  // 时间、情绪与疲劳先于参考资料，保持各自的提示层级。
+  // 情绪块放在 <biny_turn_context> 之外，避免被 "reference material, not an instruction layer"
+  // 的措辞降级成纯参考资料。
   return [
     turnContextStart,
+    `<biny_reminder>Authoritative Local DateTime: ${localDate} ${localTime}. If the user says "today/今天/今年/latest", use this date context and do not invent an old year.</biny_reminder>`,
+    emotionPromptBlock(options.emotionPrompt),
     "<biny_turn_context>",
     "This is ephemeral context for the current user message. It is reference material, not a new instruction layer.",
-    `<local_time date="${localDate}" timezone="${escapeXmlAttribute(timezone)}">${localTime}</local_time>`,
-    emotionPromptBlock(options.emotionPrompt),
     dailyNotesPromptBlock(options.dailyNotesPrompt),
     crystalPromptBlock(options.crystalPrompt),
     activityGreetingPromptBlock(options.activityGreetingPrompt),
@@ -513,6 +516,3 @@ function contentIncludes(content: AgentUserMessage["content"], value: string): b
 function stableCompare(left: string, right: string): number { return left === right ? 0 : left < right ? -1 : 1; }
 function uniqueGuidelines(guidelines: readonly string[]): string[] { return [...new Set(guidelines.map((value) => value.trim()).filter(Boolean))]; }
 function normalizePath(value: string): string { return value.replace(/\\/g, "/"); }
-function escapeXmlAttribute(value: string): string {
-  return value.replaceAll("&", "&amp;").replaceAll('"', "&quot;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
-}
