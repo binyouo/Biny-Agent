@@ -291,26 +291,12 @@ export class ActivityRecorderService {
   }
 
   async initialize(): Promise<void> {
-    await this.enqueue(async () => {
-      const config = await this.configStore.load();
-      this.persistedActivitySettings = config.activity;
-      this.runtimeConfig = config.activity;
-      this.runtimeRunning = config.activity.enabled;
-      await this.applySettings(config.activity);
-      this.watchConfig();
-    });
+    await this.enqueue(() => this.loadSettingsAndWatch());
   }
 
   async refresh(): Promise<void> {
     this.analysisAbort.abort();
-    await this.enqueue(async () => {
-      const config = await this.configStore.load();
-      this.persistedActivitySettings = config.activity;
-      this.runtimeConfig = config.activity;
-      this.runtimeRunning = config.activity.enabled;
-      await this.applySettings(config.activity);
-      this.watchConfig();
-    });
+    await this.enqueue(() => this.loadSettingsAndWatch());
   }
 
   async stop(): Promise<void> {
@@ -353,7 +339,29 @@ export class ActivityRecorderService {
     };
   }
 
-  private watchConfig(): void {
+  private async loadSettingsAndWatch(): Promise<void> {
+    // 首次读取可能创建配置目录；订阅后再读，补上首次快照与监听安装之间的保存。
+    let config = await this.configStore.load();
+    const watcher = this.watchConfig();
+    try {
+      if (watcher) config = await this.configStore.load();
+      this.persistedActivitySettings = config.activity;
+      this.runtimeConfig = config.activity;
+      this.runtimeRunning = config.activity.enabled;
+      await this.applySettings(config.activity);
+    } catch (error) {
+      // 失败的初始化不能留下新监听；队列中尚未执行的回调也由 watcher 身份失效。
+      if (watcher && this.configWatcher === watcher) {
+        watcher.close();
+        this.configWatcher = undefined;
+        if (this.configRefreshTimer) clearTimeout(this.configRefreshTimer);
+        this.configRefreshTimer = undefined;
+      }
+      throw error;
+    }
+  }
+
+  private watchConfig(): FSWatcher | undefined {
     const configPath = this.configStore.configPath?.();
     if (!configPath || this.configWatcher) return;
     // 监听目录而非文件 inode，覆盖编辑器/CLI 的临时文件 + rename 原子保存。
@@ -392,6 +400,7 @@ export class ActivityRecorderService {
       void this.stop().then(() => this.setState("error", safeError(error)));
     });
     this.configWatcher = watcher;
+    return watcher;
   }
 
   /** 读取全局活动设置；QuickChat 不应借用需要 projectId 的设置事务快照。 */
