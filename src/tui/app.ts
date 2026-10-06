@@ -346,7 +346,13 @@ export class BinyTui {
         }
       }
       if (this.exiting) {
-        await this.runtimeHost?.close().catch(() => undefined);
+        try {
+          await this.runtimeHost?.close();
+        } catch (error) {
+          // 晚到的 Host 已尝试关闭本地 runtime；期限失败后只释放 socket client。
+          if (runtime instanceof RuntimeHostClient) await runtime.close().catch(() => undefined);
+          throw error;
+        }
         await runtime.close();
         return;
       }
