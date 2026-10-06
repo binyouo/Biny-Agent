@@ -189,7 +189,8 @@ export class DesktopProjectService {
     const project = this.requireProject(projectIdValue);
     if (project.missing || !await directoryExists(project.path)) return [];
     try {
-      const result = await runGit(project.path, ["for-each-ref", "--format=%(refname:short)%00%(HEAD)", "refs/heads"]);
+      // Strip only the refs/heads namespace; :short depends on other ref names.
+      const result = await runGit(project.path, ["for-each-ref", "--format=%(refname:strip=2)%00%(HEAD)", "refs/heads"]);
       return result.stdout
         .split(/\r?\n/u)
         .filter((line) => line.length > 0)
@@ -246,7 +247,8 @@ export class DesktopProjectService {
   async projectGitStatus(projectIdValue: string): Promise<DesktopGitStatus> {
     const project = this.requireProject(projectIdValue);
     await assertGitRepository(project);
-    const top = (await runGit(project.path, ["rev-parse", "--show-toplevel"])).stdout.trim();
+    // Git appends one LF; any other trailing whitespace belongs to the path.
+    const top = (await runGit(project.path, ["rev-parse", "--show-toplevel"])).stdout.replace(/\n$/u, "");
     if (await fs.realpath(top) !== await fs.realpath(project.path)) throw new Error("请打开 Git 仓库根目录后操作提交。");
     const [status, branch, head] = await Promise.all([
       runGit(project.path, ["status", "--porcelain=v1", "-z", "--untracked-files=all", "--no-renames", "--ignore-submodules=all"]),
