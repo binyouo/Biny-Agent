@@ -13,7 +13,9 @@ export async function scanWorkspaceFiles(
   ignore: string[],
   limit = 200,
   signal?: AbortSignal,
-  includeFile?: (relativePath: string) => boolean
+  includeFile?: (relativePath: string) => boolean,
+  // Optional traversal pruning; callers must retain ancestors of eligible files.
+  includeDirectory?: (relativePath: string) => boolean
 ): Promise<string[]> {
   const files: string[] = [];
   // 递归扫描只收集文件相对路径；目录遍历过程会持续检查 limit。
@@ -44,7 +46,7 @@ export async function scanWorkspaceFiles(
       if (isIgnoredPath(relativePath, ignore)) continue;
       const absolutePath = path.join(currentDir, entry.name);
       if (entry.isDirectory()) {
-        await walk(absolutePath, relativePath);
+        if (includeDirectory === undefined || includeDirectory(relativePath)) await walk(absolutePath, relativePath);
       } else if (entry.isFile() && (includeFile === undefined || includeFile(relativePath))) {
         files.push(relativePath);
       }
