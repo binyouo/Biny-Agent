@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { test, type TestContext } from "node:test";
@@ -20,7 +20,7 @@ async function withFixture(
   context: TestContext,
   run: (fixture: { root: string; homeDir: string; configuredRoot: string; projectRoot: string }) => Promise<void>
 ): Promise<void> {
-  const root = await mkdtemp(path.join(os.tmpdir(), "biny-skill-precedence-"));
+  const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "biny-skill-precedence-")));
   const homeDir = path.join(root, "home");
   const configuredRoot = path.join(root, "configured");
   const projectRoot = path.join(root, "project");

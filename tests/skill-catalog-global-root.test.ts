@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { test, type TestContext } from "node:test";
@@ -23,7 +23,7 @@ async function withFixture(
   context: TestContext,
   run: (fixture: { root: string; homeDir: string; projectRoot: string; configuredRoot: string }) => Promise<void>
 ): Promise<void> {
-  const root = await mkdtemp(path.join(os.tmpdir(), "biny-catalog-root-"));
+  const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "biny-catalog-root-")));
   const homeDir = path.join(root, "home");
   const projectRoot = path.join(root, "project");
   const configuredRoot = path.join(root, "configured");

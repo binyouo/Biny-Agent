@@ -148,7 +148,7 @@ async function stop(worker: Worker): Promise<void> {
 }
 
 async function fixture(run: (root: string, workers: Worker[]) => Promise<void>): Promise<void> {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "biny-local-file-lock-races-"));
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "biny-local-file-lock-races-")));
   const workers: Worker[] = [];
   try { await run(root, workers); } finally {
     await Promise.all(workers.map(stop));
