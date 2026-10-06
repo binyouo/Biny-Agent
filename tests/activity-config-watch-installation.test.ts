@@ -1,6 +1,8 @@
 /** Atomic saves at watcher admission, using only temporary files and disabled capture. */
 import assert from "node:assert/strict";
-import { watch } from "node:fs";
+import fs, { type FSWatcher } from "node:fs";
+import { EventEmitter } from "node:events";
+import { syncBuiltinESMExports } from "node:module";
 import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -12,7 +14,7 @@ import { ActivityRecorderService } from "../src/desktop/electron/main/ActivityRe
 
 
 for (const method of ["initialize", "refresh"] as const) {
-  test(`${method} reconciles a save between its first snapshot and watcher installation`, async (context) => {
+  test(`${method} reconciles a save between its first snapshot and watcher installation`, { timeout: 5_000 }, async (context) => {
     const fixture = await createFixture(context);
     const barrier = fixture.blockRead(1, "after");
     const starting = fixture.service[method]();
@@ -31,7 +33,7 @@ for (const method of ["initialize", "refresh"] as const) {
     }
   });
 
-  test(`${method} reconciles a save after subscription but before its second read`, async (context) => {
+  test(`${method} reconciles a save after subscription but before its second read`, { timeout: 5_000 }, async (context) => {
     const fixture = await createFixture(context);
     const barrier = fixture.blockRead(2, "before");
     const starting = fixture.service[method]();
@@ -51,7 +53,7 @@ for (const method of ["initialize", "refresh"] as const) {
     }
   });
 
-  test(`${method} serializes a notification queued after its second snapshot`, async (context) => {
+  test(`${method} serializes a notification queued after its second snapshot`, { timeout: 5_000 }, async (context) => {
     const fixture = await createFixture(context);
     const barrier = fixture.blockRead(2, "after");
     const starting = fixture.service[method]();
@@ -75,7 +77,7 @@ for (const method of ["initialize", "refresh"] as const) {
 }
 
 for (const queued of [false, true]) {
-  test(`failed reload cleans up its ${queued ? "queued callback" : "pending timer"} and permits retry`, async (context) => {
+  test(`failed reload cleans up its ${queued ? "queued callback" : "pending timer"} and permits retry`, { timeout: 5_000 }, async (context) => {
     const fixture = await createFixture(context);
     const barrier = fixture.blockRead(2, "after", new Error("fixture reload failed"));
     const starting = fixture.service.initialize();
@@ -106,7 +108,7 @@ for (const queued of [false, true]) {
 }
 
 for (const failRead of [false, true]) {
-  test(`stop during the new watcher reload fences later writes (${failRead ? "failed" : "successful"} read)`, async (context) => {
+  test(`stop during the new watcher reload fences later writes (${failRead ? "failed" : "successful"} read)`, { timeout: 5_000 }, async (context) => {
     const fixture = await createFixture(context);
     const barrier = fixture.blockRead(2, "after", failRead ? new Error("fixture reload failed") : undefined);
     const starting = fixture.service.initialize();
@@ -136,7 +138,7 @@ for (const failRead of [false, true]) {
   });
 }
 
-test("refresh with an existing watcher performs only one load", async (context) => {
+test("refresh with an existing watcher performs only one load", { timeout: 5_000 }, async (context) => {
   const fixture = await createFixture(context);
   await fixture.service.initialize();
   const loads = fixture.loads;
@@ -148,7 +150,7 @@ test("refresh with an existing watcher performs only one load", async (context) 
   assert.equal(fixture.loads, loads + 2);
 });
 
-test("a store without a watch path retains one-read initialization and refresh", async (context) => {
+test("a store without a watch path retains one-read initialization and refresh", { timeout: 5_000 }, async (context) => {
   const fixture = await createFixture(context, { watchPath: false });
   await fixture.service.initialize();
   assert.equal(fixture.loads, 1);
@@ -160,7 +162,7 @@ test("a store without a watch path retains one-read initialization and refresh",
   assert.equal((await fixture.service.runtimeSettingsSnapshot()).jpegQuality, 55);
 });
 
-test("the first load can create the previously absent configuration directory", async (context) => {
+test("the first load can create the previously absent configuration directory", { timeout: 5_000 }, async (context) => {
   const fixture = await createFixture(context, { bootstrapDirectory: true });
   await fixture.service.initialize();
   assert.equal(fixture.loads, 2);
@@ -168,7 +170,7 @@ test("the first load can create the previously absent configuration directory", 
   assert.equal(fixture.service.snapshot().state, "paused");
 });
 
-test("an application failure also retires the newly installed watcher", async (context) => {
+test("an application failure also retires the newly installed watcher", { timeout: 5_000 }, async (context) => {
   const fixture = await createFixture(context);
   fixture.onEmit = () => { throw new Error("fixture application failed"); };
   await assert.rejects(fixture.service.initialize(), /fixture application failed/u);
@@ -200,10 +202,24 @@ async function createFixture(context: TestContext, options: { watchPath?: boolea
   let afterRead: ((read: number) => Promise<void>) | undefined;
   let nativeCalls = 0;
   const forbidden = async (): Promise<never> => { nativeCalls++; throw new Error("capture must remain disabled"); };
-  let observed: (() => void) | undefined;
-  // Real independent watcher confirms replacement delivery before each barrier is released.
-  const observer = options.bootstrapDirectory ? undefined : watch(directory, (_event, filename) => {
-    if (filename?.toString() === "config.json") { observed?.(); observed = undefined; }
+  // Only OS delivery is fake: the production watcher callback, debounce,
+  // operation queue, real atomic files and SQLite store still execute.
+  const subscriptions: Array<{ closed: boolean; notify: () => void }> = [];
+  const watchMock = context.mock.method(fs, "watch", ((watchedDirectory, _options, listener) => {
+    assert.equal(watchedDirectory, directory);
+    assert.ok(fs.statSync(directory).isDirectory(), "load must create the directory before installing its watcher");
+    const subscription = { closed: false, notify: () => listener("rename", "config.json") };
+    subscriptions.push(subscription);
+    const watcher = new EventEmitter() as FSWatcher;
+    watcher.close = () => { subscription.closed = true; };
+    watcher.ref = () => watcher;
+    watcher.unref = () => watcher;
+    return watcher;
+  }) as typeof fs.watch);
+  syncBuiltinESMExports();
+  context.after(() => {
+    watchMock.mock.restore();
+    syncBuiltinESMExports();
   });
   const fixture = {
     service: undefined as unknown as ActivityRecorderService,
@@ -224,12 +240,9 @@ async function createFixture(context: TestContext, options: { watchPath?: boolea
       return { entered, release };
     },
     async saveObserved(quality: number) {
-      assert.ok(observer, "observed writes require the existing fixture directory");
-      const delivered = new Promise<void>((resolve) => { observed = resolve; });
       config.activity.jpegQuality = quality;
       await store.save(config);
-      await delivered;
-      await immediate();
+      for (const subscription of subscriptions) if (!subscription.closed) subscription.notify();
     },
     async drain() {
       // A public read joins the same operation queue without changing runtime settings.
@@ -273,7 +286,6 @@ async function createFixture(context: TestContext, options: { watchPath?: boolea
   context.after(async () => {
     fixture.onEmit = undefined;
     await fixture.service.stop();
-    observer?.close();
     await rm(root, { recursive: true, force: true });
     assert.equal(nativeCalls, 0, "the complete fixture must never invoke capture or native adapters");
     assert.equal(fixture.service.httpCaptureStatus().running, false);
