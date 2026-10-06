@@ -216,15 +216,25 @@ async function testMissingOcrBinaryKeepsCadence(): Promise<void> {
     database=new DatabaseSync(path.join(root,"agent.sqlite"));
     await waitFor(async()=>service.snapshot().screenRecordingGranted);
     const snapshots=()=>Number(database!.prepare("SELECT COUNT(*) AS n FROM activity_snapshots").get()!.n);
+    const captureUntilSaved = async (expected: number): Promise<void> => {
+      const deadline = Date.now() + 20_000;
+      await waitFor(async () => {
+        assert.ok(Date.now() < deadline, `heartbeat capture ${String(expected)} exceeded its deadline`);
+        if (snapshots() >= expected) return true;
+        callbacks.get(settings.heartbeatMs)!();
+        return false;
+      });
+    };
     for (let expected=1;expected<=2;expected++) {
-      callbacks.get(settings.heartbeatMs)!();
-      await waitFor(async()=>snapshots()===expected);
-      await new Promise(resolve=>setTimeout(resolve,5));
+      await captureUntilSaved(expected);
     }
+    // 落盘不代表 OCR 已结束；先观察缺失程序的失败反馈，再恢复二进制。
+    await waitFor(async () => service.snapshot().error === "Activity OCR 识别失败");
+    assert.equal(snapshots(), 2);
     assert.equal(database.prepare("SELECT COUNT(*) AS n FROM activity_ocr_frames").get()!.n,0);
     await writeFile(path.join(root,"activity-ocr"),`#!${process.execPath}\nconsole.log('recovered OCR');\n`,{mode:0o700});
-    callbacks.get(settings.heartbeatMs)!();
-    await waitFor(async()=>snapshots()===3);
+    await captureUntilSaved(3);
+    assert.equal(snapshots(), 3);
     await waitFor(async()=>Number(database!.prepare("SELECT COUNT(*) AS n FROM activity_ocr_frames").get()!.n)===1);
   } finally {
     await service.stop();
