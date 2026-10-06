@@ -41,6 +41,11 @@ interface FeatureExtractor {
   dispose(): Promise<void>;
 }
 
+interface FeatureExtractorState {
+  loading: Promise<FeatureExtractor>;
+  activeEmbeddings: Set<Promise<EmbeddingResult>>;
+}
+
 interface TransformersModule {
   pipeline(
     task: "feature-extraction",
@@ -86,7 +91,7 @@ export const localEmbeddingModels: readonly LocalModelDefinition[] = [
 ] as const;
 
 export class LocalEmbeddingManager {
-  private readonly extractors = new Map<LocalEmbeddingModelId, Promise<FeatureExtractor>>();
+  private readonly extractors = new Map<LocalEmbeddingModelId, FeatureExtractorState>();
   private readonly readyModels = new Set<LocalEmbeddingModelId>();
   private readonly moduleLoader: () => Promise<TransformersModule>;
 
@@ -149,7 +154,7 @@ export class LocalEmbeddingManager {
     const loaded = this.extractors.get(modelId);
     this.extractors.delete(modelId);
     this.readyModels.delete(modelId);
-    if (loaded) await (await loaded).dispose();
+    if (loaded) await disposeExtractor(loaded);
     const transformers = await this.moduleLoader();
     const cacheRoot = path.join(this.cacheDirectory, ...model.repository.split("/"), model.revision);
     const beforeBytes = await directoryBytes(cacheRoot);
@@ -173,12 +178,38 @@ export class LocalEmbeddingManager {
     const loaded = [...this.extractors.values()];
     this.extractors.clear();
     this.readyModels.clear();
-    await Promise.allSettled(loaded.map(async (extractor) => await (await extractor).dispose()));
+    await Promise.allSettled(loaded.map(async (state) => {
+      const disposing = disposeExtractor(state);
+      if (state.activeEmbeddings.size === 0) {
+        await disposing;
+      } else {
+        // Inference has no interrupt API. Retire now, then dispose after admitted
+        // work settles without adding an unbounded inference wait to shutdown.
+        void disposing.catch(() => undefined);
+        await state.loading;
+      }
+    }));
   }
 
   async embed(model: LocalModelDefinition, request: EmbeddingRequest): Promise<EmbeddingResult> {
     validateLocalRequest(request);
-    const extractor = await this.extractor(model);
+    const state = this.extractor(model);
+    const embedding = this.embedWithExtractor(model, request, state.loading);
+    // Register before yielding so close/remove owns even requests waiting for startup.
+    state.activeEmbeddings.add(embedding);
+    try {
+      return await embedding;
+    } finally {
+      state.activeEmbeddings.delete(embedding);
+    }
+  }
+
+  private async embedWithExtractor(
+    model: LocalModelDefinition,
+    request: EmbeddingRequest,
+    loading: Promise<FeatureExtractor>
+  ): Promise<EmbeddingResult> {
+    const extractor = await loading;
     const embeddings: Float32Array[] = [];
     for (let offset = 0; offset < request.texts.length; offset += localEmbeddingBatchSize) {
       request.signal?.throwIfAborted();
@@ -195,18 +226,19 @@ export class LocalEmbeddingManager {
     };
   }
 
-  private async extractor(model: LocalModelDefinition): Promise<FeatureExtractor> {
+  private extractor(model: LocalModelDefinition): FeatureExtractorState {
     const existing = this.extractors.get(model.id);
-    if (existing) return await existing;
+    if (existing) return existing;
     const loading = this.load(model, true).then((extractor) => {
-      if (this.extractors.get(model.id) === loading) this.readyModels.add(model.id);
+      if (this.extractors.get(model.id)?.loading === loading) this.readyModels.add(model.id);
       return extractor;
     }).catch((error) => {
-      this.extractors.delete(model.id);
+      if (this.extractors.get(model.id)?.loading === loading) this.extractors.delete(model.id);
       throw error;
     });
-    this.extractors.set(model.id, loading);
-    return await loading;
+    const state: FeatureExtractorState = { loading, activeEmbeddings: new Set() };
+    this.extractors.set(model.id, state);
+    return state;
   }
 
   private async load(
@@ -229,6 +261,13 @@ export class LocalEmbeddingManager {
       }
     });
   }
+}
+
+async function disposeExtractor(state: FeatureExtractorState): Promise<void> {
+  // Retired states accept no new borrowers. Drain admitted requests before disposal,
+  // including failures/cancellation, without preventing the resource from being freed.
+  await Promise.allSettled([...state.activeEmbeddings]);
+  await (await state.loading).dispose();
 }
 
 async function directoryBytes(directory: string): Promise<number> {
