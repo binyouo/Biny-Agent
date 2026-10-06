@@ -27,11 +27,15 @@ function rows(value: unknown, key?: string): Record<string, unknown>[] {
   return Array.isArray(source) ? source.filter((item): item is Record<string, unknown> => typeof item === "object" && item !== null) : [];
 }
 
-function instantDay(value: string, timeZone: string): string | undefined {
-  if (Number.isNaN(Date.parse(value))) return undefined;
-  const parts = new Intl.DateTimeFormat("en-US", { timeZone, year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(new Date(value));
-  const part = (type: string): string => parts.find((item) => item.type === type)?.value ?? "";
-  return `${part("year")}-${part("month")}-${part("day")}`;
+function createInstantDayFormatter(timeZone: string): (value: string) => string | undefined {
+  let formatter: Intl.DateTimeFormat | undefined;
+  return (value) => {
+    if (Number.isNaN(Date.parse(value))) return undefined;
+    formatter ??= new Intl.DateTimeFormat("en-US", { timeZone, year: "numeric", month: "2-digit", day: "2-digit" });
+    const parts = formatter.formatToParts(new Date(value));
+    const part = (type: string): string => parts.find((item) => item.type === type)?.value ?? "";
+    return `${part("year")}-${part("month")}-${part("day")}`;
+  };
 }
 
 export class DateReferenceDetailService {
@@ -57,6 +61,7 @@ export class DateReferenceDetailService {
       sessionIds: ownedFiles.map((item) => item.sessionId) };
     const cluePage = this.index.queryClues(query);
     const factPage = this.index.queryFacts(query);
+    const instantDay = createInstantDayFormatter(range.timeZone);
     const conversations: DateConversationHit[] = [];
     for (const { file, projectId, sessionId } of ownedFiles) {
       signal?.throwIfAborted();
@@ -68,7 +73,7 @@ export class DateReferenceDetailService {
           ? event.message.role === "assistant" ? event.message.content.filter((part) => part.type === "text").map((part) => part.text).join("\n") : undefined
           : event.content;
         if (!content?.trim()) continue;
-        const day = instantDay(event.time, range.timeZone);
+        const day = instantDay(event.time);
         if (!day) continue;
         const previous = messages.get(event.messageId);
         const canonical = event.type === "agent_message";
@@ -89,7 +94,7 @@ export class DateReferenceDetailService {
       const schedule = automation.schedule;
       if (typeof schedule !== "object" || schedule === null || typeof (schedule as Record<string, unknown>).at !== "string") continue;
       const dueAt = (schedule as { at: string }).at;
-      const day = instantDay(dueAt, range.timeZone);
+      const day = instantDay(dueAt);
       if (day && day >= range.startDate && day < range.endDate) scheduled.push({ automationId: automation.automationId,
         name: automation.name, dueAt, status: typeof automation.status === "string" ? automation.status : "unknown",
         fired: typeof automation.fireCount === "number" && automation.fireCount > 0 });
@@ -97,13 +102,13 @@ export class DateReferenceDetailService {
     const runs: DateRunHit[] = [];
     for (const task of rows(runtime.tasks, "tasks")) {
       if (typeof task.taskRunId !== "string" || typeof task.createdAt !== "string") continue;
-      const day = instantDay(task.createdAt, range.timeZone);
+      const day = instantDay(task.createdAt);
       if (day && day >= range.startDate && day < range.endDate) runs.push({ id: task.taskRunId, occurredAt: task.createdAt,
         status: typeof task.status === "string" ? task.status : "unknown", kind: "task" });
     }
     for (const fire of rows(runtime.pendingFires)) {
       if (typeof fire.fireId !== "string" || typeof fire.scheduledAt !== "string") continue;
-      const day = instantDay(fire.scheduledAt, range.timeZone);
+      const day = instantDay(fire.scheduledAt);
       if (day && day >= range.startDate && day < range.endDate) runs.push({ id: fire.fireId, occurredAt: fire.scheduledAt,
         status: typeof fire.status === "string" ? fire.status : "unknown", kind: "automation" });
     }
