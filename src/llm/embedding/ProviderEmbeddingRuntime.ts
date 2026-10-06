@@ -98,7 +98,11 @@ export class ProviderEmbeddingRuntime implements EmbeddingModelRuntime {
       }),
       signal: requestSignal(signal, this.config.timeoutMs)
     });
-    if (!response.ok) throw new Error(`Embedding request failed for provider ${this.providerAlias} (${String(response.status)}).`);
+    if (!response.ok) {
+      // 此正文不会被消费；清理失败或阻塞不能覆盖原始 HTTP 错误。
+      void response.body?.cancel().catch(() => undefined);
+      throw new Error(`Embedding request failed for provider ${this.providerAlias} (${String(response.status)}).`);
+    }
     const payload = await response.json() as unknown;
     const data = objectValue(payload)?.data;
     if (!Array.isArray(data) || data.length !== texts.length) {
@@ -142,7 +146,11 @@ export class ProviderEmbeddingRuntime implements EmbeddingModelRuntime {
         }),
         signal: requestSignal(signal, this.config.timeoutMs)
       });
-      if (!response.ok) throw new Error(`Embedding request failed for provider ${this.providerAlias} (${String(response.status)}).`);
+      if (!response.ok) {
+        // 此正文不会被消费；清理失败或阻塞不能覆盖原始 HTTP 错误。
+        void response.body?.cancel().catch(() => undefined);
+        throw new Error(`Embedding request failed for provider ${this.providerAlias} (${String(response.status)}).`);
+      }
       const payload = objectValue(await response.json() as unknown);
       const values = objectValue(payload?.embedding)?.values;
       if (!Array.isArray(values)) throw new Error(`Embedding provider ${this.providerAlias} returned no vector.`);
