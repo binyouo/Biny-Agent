@@ -383,6 +383,8 @@ export class AgentSession {
   private readonly memoryModelFor: (field: MemoryModelField) => AgentModel;
   private readonly toolModel: () => AgentModel | undefined;
   private titleTask?: Promise<void>;
+  private titleTaskSessionId?: string;
+  private pendingTitleSessionId?: string;
   private readonly titleAbort = new AbortController();
   private readonly localEmbeddingManager: LocalEmbeddingManager;
   private readonly memoryRetriever: HybridMemoryRetriever;
@@ -3556,15 +3558,28 @@ export class AgentSession {
   }
 
   private scheduleTitle(): void {
-    if (this.titleTask || this.closed) return;
+    if (this.closed || this.titleAbort.signal.aborted) return;
     const recorder = this.recorder;
+    if (this.titleTask) {
+      // 单 runtime 切换会话时，只保留最新请求；同一会话仍合并为一个在飞任务。
+      this.pendingTitleSessionId = this.titleTaskSessionId === recorder.sessionId ? undefined : recorder.sessionId;
+      return;
+    }
+    this.titleTaskSessionId = recorder.sessionId;
     this.titleTask = (async () => {
       const model = this.toolModel();
       if (!model) return;
       await recorder.flush();
       const title = await generateSessionTitle(this.persistenceRoot(), recorder.sessionId, model, this.titleAbort.signal);
       if (title) this.options.onTitleGenerated?.(recorder.sessionId, title);
-    })().catch(() => undefined).finally(() => { this.titleTask = undefined; });
+    })().catch(() => undefined).finally(() => {
+      this.titleTask = undefined;
+      this.titleTaskSessionId = undefined;
+      const pendingSessionId = this.pendingTitleSessionId;
+      this.pendingTitleSessionId = undefined;
+      // 不重试原请求，也不为已切走的会话排队；关闭后的取消由入口挡住。
+      if (pendingSessionId === this.recorder.sessionId) this.scheduleTitle();
+    });
   }
 
   async setPermissionMode(mode: PermissionMode): Promise<void> {
