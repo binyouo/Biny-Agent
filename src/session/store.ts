@@ -700,17 +700,33 @@ function ensureSessionDirectorySync(sessionsPath: string, directory: string): vo
 async function listSessionFileEntries(location: SessionStorageLocation): Promise<SessionFileEntry[]> {
   await assertSessionStorage(location);
   const entries = await fs.readdir(location.sessions.path, { withFileTypes: true });
-  const safeFiles: SessionFileEntry[] = [];
-  for (const entry of entries) {
-    const filePath = path.join(location.sessions.path, entry.name);
-    if (entry.isDirectory()) {
-      await listSessionFileEntriesFromDirectory(location, filePath, safeFiles);
-      continue;
+  const filesByEntry: SessionFileEntry[][] = Array.from({ length: entries.length }, () => []);
+  const failures: Array<{ error: unknown } | undefined> = new Array(entries.length);
+  let nextIndex = 0;
+  let failed = false;
+  // 只在顶层有界并发；子目录仍串行，避免递归放大并发量。
+  await Promise.all(Array.from({ length: Math.min(sessionMetadataConcurrency, entries.length) }, async () => {
+    while (!failed && nextIndex < entries.length) {
+      const index = nextIndex++;
+      const entry = entries[index]!;
+      const files = filesByEntry[index]!;
+      const filePath = path.join(location.sessions.path, entry.name);
+      try {
+        if (entry.isDirectory()) {
+          await listSessionFileEntriesFromDirectory(location, filePath, files);
+        } else if (entry.isFile() && isSessionFileName(entry.name)) {
+          const existing = await existingSessionFileAt(location, filePath, entry.name);
+          if (existing) files.push({ fileName: entry.name, filePath: existing });
+        }
+      } catch (error) {
+        failures[index] = { error };
+        failed = true;
+      }
     }
-    if (!entry.isFile() || !isSessionFileName(entry.name)) continue;
-    const existing = await existingSessionFileAt(location, filePath, entry.name);
-    if (existing) safeFiles.push({ fileName: entry.name, filePath: existing });
-  }
+  }));
+  // 等待已开始的读取结束，并按原遍历顺序报告错误，而非按完成顺序。
+  if (failed) throw failures.find((failure) => failure !== undefined)!.error;
+  const safeFiles = filesByEntry.flat();
   await assertSessionStorage(location);
   const seen = new Map<string, string>();
   for (const file of safeFiles) {
