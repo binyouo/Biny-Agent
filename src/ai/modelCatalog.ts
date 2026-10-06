@@ -97,11 +97,13 @@ export async function fetchModelCatalogSnapshot(
     headers,
     signal: signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal
   });
+  const notModified = response.status === 304;
+  // 只有 304 继续使用旧正文；新正文缺少校验信息时，不能继承旧正文的 validators。
   const responseValidators = {
-    etag: response.headers.get("etag") ?? validators.etag,
-    lastModified: httpTimestamp(response.headers.get("last-modified")) ?? validators.lastModified
+    etag: response.headers.get("etag") ?? (notModified ? validators.etag : undefined),
+    lastModified: httpTimestamp(response.headers.get("last-modified")) ?? (notModified ? validators.lastModified : undefined)
   };
-  if (response.status === 304) return { notModified: true, ...responseValidators };
+  if (notModified) return { notModified: true, ...responseValidators };
   if (!response.ok) {
     const responseBody = (await response.text().catch(() => "")).slice(0, 8_192) || undefined;
     throw new ModelCatalogRequestError(`Model catalog request failed (${String(response.status)}).`, {
