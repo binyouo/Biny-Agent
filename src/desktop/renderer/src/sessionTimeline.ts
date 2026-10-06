@@ -334,6 +334,7 @@ function historicalPrefix(events: SessionEvent[], liveEvents: AgentHostEvent[]):
 }
 
 function buildHistoricalTurns(events: SessionEvent[]): TimelineTurn[] {
+  const appendAssistant = createHistoricalAssistantAppender();
   const metadataById = historicalUserMetadata(events, events);
   const turns: TimelineTurn[] = [];
   let current: TimelineTurn | undefined;
@@ -377,7 +378,7 @@ function buildHistoricalTurns(events: SessionEvent[]): TimelineTurn[] {
       const memoryRecallDegraded = event.metadata?.memoryRecallDegraded;
       if (typeof memoryRecallDegraded === "string" && memoryRecallDegraded.trim()) turn.memoryRecallDegraded = memoryRecallDegraded.trim();
       appendHistoricalReasoning(turn, event.reasoningContent, reasoningStartedAt, event.time);
-      appendHistoricalAssistant(turn, event.content);
+      appendAssistant(turn, event.content);
       turn.durationMs = elapsedMs(turn.timestamp, event.time) ?? turn.durationMs;
       turn.timestamp = event.time ?? turn.timestamp;
       turn.status = "completed";
@@ -416,7 +417,7 @@ function buildHistoricalTurns(events: SessionEvent[]): TimelineTurn[] {
       appendInvokedSkill(turn, toolName, event.args);
       const projection = historicalToolProjection(toolName, event.args);
       appendHistoricalReasoning(turn, event.reasoningContent, reasoningStartedAt, event.time);
-      appendHistoricalAssistant(turn, event.assistantContent, true);
+      appendAssistant(turn, event.assistantContent, true);
       const tool: TimelineTool = {
         id: event.toolCallId ?? `history-tool-${String(turn.tools.length)}`,
         runId: event.runtime?.runId,
@@ -489,6 +490,7 @@ interface HistoricalVersionRecord {
 
 /** 新消息树的历史投影：同一 user turn 下只展示活动版本，工具事件按 runId 回填。 */
 function buildVersionedHistoricalTurns(events: SessionEvent[]): TimelineTurn[] {
+  const appendAssistant = createHistoricalAssistantAppender();
   const activeEvents = activeSessionEventsForPath(events);
   const metadataById = historicalUserMetadata(events, activeEvents);
   const turns: TimelineTurn[] = [];
@@ -580,7 +582,7 @@ function buildVersionedHistoricalTurns(events: SessionEvent[]): TimelineTurn[] {
       const memoryRecallDegraded = event.metadata?.memoryRecallDegraded;
       if (typeof memoryRecallDegraded === "string" && memoryRecallDegraded.trim()) turn.memoryRecallDegraded = memoryRecallDegraded.trim();
       appendHistoricalReasoning(turn, event.reasoningContent, reasoningStartedAt, event.time);
-      appendHistoricalAssistant(turn, event.content);
+      appendAssistant(turn, event.content);
       turn.durationMs = elapsedMs(turn.timestamp, event.time) ?? turn.durationMs;
       turn.timestamp = event.time ?? turn.timestamp;
       turn.status = "completed";
@@ -617,7 +619,7 @@ function buildVersionedHistoricalTurns(events: SessionEvent[]): TimelineTurn[] {
       appendInvokedSkill(turn, toolName, event.args);
       const projection = historicalToolProjection(toolName, event.args);
       appendHistoricalReasoning(turn, event.reasoningContent, reasoningStartedAt, event.time);
-      appendHistoricalAssistant(turn, event.assistantContent, true);
+      appendAssistant(turn, event.assistantContent, true);
       const tool: TimelineTool = {
         id: event.toolCallId ?? `history-tool-${String(turn.tools.length)}`,
         runId: event.runtime?.runId,
@@ -1270,16 +1272,24 @@ function appendHistoricalReasoning(turn: TimelineTurn, content: string | undefin
   if (windowMs !== undefined) turn.reasoningDurationMs = (turn.reasoningDurationMs ?? 0) + windowMs;
 }
 
-function appendHistoricalAssistant(turn: TimelineTurn, content: string | undefined, summary = false): void {
-  const visibleContent = summary ? activitySummaryText(content ?? "") : content;
-  if (!visibleContent) return;
-  // 去重要跨整个轮次：tool_call 事件会夹带当时的 assistant 段落作为 summary 步骤，
-  // 中间隔着工具步骤，仅看相邻步骤挡不住同一段落反复出现（截图里的刷屏重复）。
-  const summaryFlag = summary || undefined;
-  const duplicated = turn.steps.some((step) =>
-    step.kind === "assistant" && step.content === visibleContent && step.summary === summaryFlag);
-  if (duplicated) return;
-  turn.steps.push({ kind: "assistant", id: `${turn.id}:assistant:${String(turn.steps.filter((step) => step.kind === "assistant").length)}`, content: visibleContent, summary: summary || undefined });
+/** 索引只属于本次历史构建；按 turn 对象隔离，不能跨版本或会话复用。 */
+function createHistoricalAssistantAppender(): (turn: TimelineTurn, content: string | undefined, summary?: boolean) => void {
+  const byTurn = new Map<TimelineTurn, { summaries: Set<string>; messages: Set<string> }>();
+  return (turn, content, summary = false) => {
+    const visibleContent = summary ? activitySummaryText(content ?? "") : content;
+    if (!visibleContent) return;
+    let seen = byTurn.get(turn);
+    if (!seen) {
+      seen = { summaries: new Set(), messages: new Set() };
+      byTurn.set(turn, seen);
+    }
+    // 跨工具步骤去重，但工具前说明与最终正文仍是两个独立类别。
+    const contents = summary ? seen.summaries : seen.messages;
+    if (contents.has(visibleContent)) return;
+    const index = seen.summaries.size + seen.messages.size;
+    contents.add(visibleContent);
+    turn.steps.push({ kind: "assistant", id: `${turn.id}:assistant:${String(index)}`, content: visibleContent, summary: summary || undefined });
+  };
 }
 
 /** 追加思考内容。已经以同样内容结尾时跳过：session 里同一段思考可能被重复记录。 */
