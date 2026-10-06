@@ -417,6 +417,7 @@ export function ProviderSettings({
   const [keySaveState, setKeySaveState] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [keyLoading, setKeyLoading] = useState(false);
   const [keyLoaded, setKeyLoaded] = useState(false);
+  const keyReadGenerationRef = useRef(0);
   const [baseUrlDraft, setBaseUrlDraft] = useState("");
   /** 当前选中服务商的品牌图标草稿；null 表示默认图标。 */
   const [iconDraft, setIconDraft] = useState<string | null>(null);
@@ -443,6 +444,8 @@ export function ProviderSettings({
     if (keyTimerRef.current) clearTimeout(keyTimerRef.current);
     if (baseUrlTimerRef.current) clearTimeout(baseUrlTimerRef.current);
     return () => {
+      // 返回同一家服务商也属于新面板；旧读取不能回填或结束新读取的 loading。
+      keyReadGenerationRef.current += 1;
       if (keyTimerRef.current) clearTimeout(keyTimerRef.current);
       if (baseUrlTimerRef.current) clearTimeout(baseUrlTimerRef.current);
     };
@@ -450,15 +453,16 @@ export function ProviderSettings({
 
   const loadKey = useCallback(async (): Promise<void> => {
     if (!active || !providerAlias || !connection?.hasCredential || connection.authMode === "oauth-bearer" || keyLoaded || keyLoading) return;
+    const generation = ++keyReadGenerationRef.current;
     setKeyLoading(true);
     try {
       const value = await onReadModelApiKey(providerAlias);
-      if (activeProviderRef.current === providerAlias) {
+      if (keyReadGenerationRef.current === generation && activeProviderRef.current === providerAlias) {
         setKeyDraft(value ?? "");
         setKeyLoaded(true);
       }
     } finally {
-      if (activeProviderRef.current === providerAlias) {
+      if (keyReadGenerationRef.current === generation && activeProviderRef.current === providerAlias) {
         setKeyLoading(false);
       }
     }
@@ -545,6 +549,8 @@ export function ProviderSettings({
     setKeyLoaded(true);
     setKeySaveState("idle");
     setTestResult(undefined);
+    keyReadGenerationRef.current += 1;
+    setKeyLoading(false);
     if (keyTimerRef.current) clearTimeout(keyTimerRef.current);
     if (!value.trim()) return;
     keyTimerRef.current = setTimeout(() => { void commitKey(value); }, 900);
