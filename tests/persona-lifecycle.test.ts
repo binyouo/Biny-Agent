@@ -32,7 +32,7 @@ try {
   now = new Date(2026, 8, 12, 2);
   assert.equal((await fatigue.change("wake")).level, "tired", "manual wake cannot override the 01-06 circadian tier");
   await fatigue.change("sleep");
-  assert.match(renderEmotionPrompt({ mood: "困", energy: 2, valence: 5, fatigue: 0, source: "base", updatedAt: "" }, await fatigue.currentStatus()), /level=sleeping/u);
+  assert.match(renderEmotionPrompt({ mood: "困", energy: 2, valence: 5, fatigue: 0, source: "base", updatedAt: "" }, await fatigue.currentStatus()), /level: sleeping/u);
   assert.equal((await fatigue.change("rest")).manualSleep, false);
 
   now = new Date(2026, 8, 11, 23);
