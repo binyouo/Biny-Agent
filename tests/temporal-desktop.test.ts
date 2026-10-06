@@ -1,12 +1,12 @@
 /** Desktop 时间线索入口：分页、状态恢复与原始消息定位目标。 */
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, realpath, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { projectSessionsDir } from "../src/config/paths.js";
 import { DesktopTemporalMemoryService, parseTemporalSourceUri } from "../src/desktop/temporalMemoryService.js";
 
-const root = await mkdtemp(path.join(os.tmpdir(), "biny-temporal-desktop-"));
+const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "biny-temporal-desktop-")));
 const workspace = path.join(root, "workspace");
 try {
   await mkdir(workspace);

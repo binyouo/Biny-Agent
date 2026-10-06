@@ -100,13 +100,21 @@ export class DesktopTemporalMemoryService {
     scheduledSources: Array<{ projectId: string; automations: ScheduledAutomation[] }> = []): Promise<DesktopTemporalPage> {
     await this.index.refreshAll();
     const page = this.index.queryClues(query);
-    const projectRoots = projects.map((project) => ({ id: project.id, sessions: projectSessionsDir(project.path, { env: { ...process.env, BINY_AGENT_DIR: this.root } }) }));
+    const projectRoots = await Promise.all(projects.map(async (project) => {
+      let workspace: string;
+      try { workspace = await realpath(project.path); }
+      catch (error) {
+        if (typeof error === "object" && error !== null && "code" in error && (error.code === "ENOENT" || error.code === "ENOTDIR")) return undefined;
+        throw error;
+      }
+      return { id: project.id, sessions: projectSessionsDir(workspace, { env: { ...process.env, BINY_AGENT_DIR: this.root } }) };
+    }));
     const projectBySession = new Map<string, string | undefined>();
     const visibleSessions = new Set(page.clues.map((clue) => clue.sessionId));
     for (const file of visibleSessions.size ? await listAllSessionFiles(this.root) : []) {
       if (!visibleSessions.has(sessionIdFromFile(file))) continue;
       const canonicalFile = await realpath(file);
-      const owner = projectRoots.find((project) => canonicalFile.startsWith(`${project.sessions}${path.sep}`));
+      const owner = projectRoots.find((project) => project && canonicalFile.startsWith(`${project.sessions}${path.sep}`));
       if (owner) {
         const sessionId = sessionIdFromFile(file);
         projectBySession.set(sessionId, projectBySession.has(sessionId) && projectBySession.get(sessionId) !== owner.id

@@ -1,6 +1,6 @@
 /** 日期侧栏只能读取持久化任务，不能替未启动的项目迁移 Runtime 数据库。 */
 import assert from "node:assert/strict";
-import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -15,7 +15,7 @@ import { DesktopTemporalMemoryService, readScheduledTemporalSources } from "../s
 import { AutomationStore } from "../src/runtime/AutomationScheduler.js";
 import { RuntimeEventAuthority } from "../src/runtime/RuntimeAuthority.js";
 import { runtimeHostPaths } from "../src/runtime/RuntimeHost.js";
-import { agentDir } from "../src/session/store.js";
+import { agentDir, ensureAgentDirs } from "../src/session/store.js";
 import { SessionRecorder } from "../src/session/recorder.js";
 
 test("日期任务查询不创建数据库、不启动 Host，旧 schema 必须显式启动后迁移", async () => {
@@ -124,6 +124,40 @@ test("日期任务查询不创建数据库、不启动 Host，旧 schema 必须�
     await assert.rejects(access(runtimeHostPaths(project.path).lockPath), { code: "ENOENT" });
   } finally {
     await manager.closeAll();
+    if (previous === undefined) delete process.env[BINY_AGENT_DIR_ENV];
+    else process.env[BINY_AGENT_DIR_ENV] = previous;
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("日期消息线索按工作区真实路径归属，别名与缺失项目不影响健康项目", async () => {
+  const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "biny-temporal-workspace-alias-")));
+  const previous = process.env[BINY_AGENT_DIR_ENV];
+  const agentRoot = path.join(root, "agent");
+  const workspace = path.join(root, "workspace");
+  const alias = path.join(root, "workspace-alias");
+  process.env[BINY_AGENT_DIR_ENV] = agentRoot;
+  let temporal: DesktopTemporalMemoryService | undefined;
+  try {
+    await mkdir(workspace);
+    await symlink(workspace, alias, process.platform === "win32" ? "junction" : "dir");
+    await ensureAgentDirs(workspace);
+    const recorder = new SessionRecorder(workspace, "alias-history");
+    recorder.record({ type: "user_message", content: "2099-01-01开会" });
+    await recorder.close();
+    temporal = new DesktopTemporalMemoryService(agentRoot);
+    const query = { startDate: "2099-01-01", endDate: "2099-01-02", timeZone: "UTC" };
+    for (const projectPath of [alias, workspace]) {
+      const page = await temporal.query(query, [
+        { id: "missing", path: path.join(root, "missing") },
+        { id: "healthy", path: projectPath }
+      ]);
+      assert.equal(page.clues.length, 1);
+      assert.equal(page.clues[0]?.projectId, "healthy");
+      assert.match(page.clues[0]!.quote, /开会/u);
+    }
+  } finally {
+    await temporal?.close();
     if (previous === undefined) delete process.env[BINY_AGENT_DIR_ENV];
     else process.env[BINY_AGENT_DIR_ENV] = previous;
     await rm(root, { recursive: true, force: true });
