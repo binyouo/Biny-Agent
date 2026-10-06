@@ -69,6 +69,9 @@ export function createRetryFetch(
         retryDelayMs: retryDelay
       });
       if (!willRetry) return response;
+      // 此响应不会交给调用方；主动释放正文，避免未消费的连接积压。
+      // 自定义 fetch 的异步清理可能阻塞或失败，不能拖住重试或覆盖取消原因。
+      void response.body?.cancel().catch(() => undefined);
       // 退避前先检查取消，避免用户已中断还白等一轮。
       init?.signal?.throwIfAborted();
       await delay(retryDelay ?? 0, init?.signal ?? undefined);
