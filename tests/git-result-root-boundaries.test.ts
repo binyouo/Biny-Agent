@@ -1,7 +1,7 @@
 /** Real Git output must preserve whitespace that belongs to a repository root. */
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -16,7 +16,7 @@ async function fixture(name: string, check: (value: {
   project: import("../src/desktop/protocol.js").DesktopProject;
   git: (...args: string[]) => Promise<string>;
 }) => Promise<void>): Promise<void> {
-  const root = await mkdtemp(path.join(os.tmpdir(), "biny-git-result-root-"));
+  const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "biny-git-result-root-")));
   try {
     const repo = path.join(root, name);
     await mkdir(repo);
