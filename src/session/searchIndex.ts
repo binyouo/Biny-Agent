@@ -389,7 +389,13 @@ async function* readAppendedEventBatches(
   signal?: AbortSignal
 ): AsyncGenerator<SessionSearchBatch> {
   signal?.throwIfAborted();
-  const handle = await open(filePath, "r");
+  const handle = await open(filePath, "r").catch((error: unknown) => {
+    signal?.throwIfAborted();
+    // 会话可能在 stat 后被正常删除；只忽略 reader 尚未打开时的缺失。
+    if (typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT") return undefined;
+    throw error;
+  });
+  if (!handle) return;
   try {
     signal?.throwIfAborted();
     const source = await handle.stat();
