@@ -253,9 +253,14 @@ async function readStoredAttachmentFile(root: string, virtualPath: string, maxBy
 }
 
 export async function readAttachment(persistenceRoot: string, reference: AttachmentReference): Promise<AgentAttachment | undefined> {
-  const bytes = await readAttachmentBytes(persistenceRoot, reference.path);
+  return await readAttachmentFromRoot(attachmentRoot(persistenceRoot), reference);
+}
+
+/** Runtime 已经解析出的附件目录；不得再次按项目根计算持久化分区。 */
+export async function readAttachmentFromRoot(root: string, reference: AttachmentReference): Promise<AgentAttachment | undefined> {
+  const bytes = await readStoredAttachmentFile(root, reference.path);
   return bytes === undefined ? undefined : { ...reference, data: bytes.toString("base64"),
-    hiddenContext: await readAttachmentContext(attachmentRoot(persistenceRoot), reference.path) };
+    hiddenContext: await readAttachmentContext(root, reference.path) };
 }
 
 export function attachmentFilePath(root: string, virtualPath: string): string | undefined {

@@ -196,6 +196,7 @@ export interface CommandRuntimeOptions {
   /** Defaults to Runtime ownership; only a disposable enclosing environment may outlive it. */
   processLifetime?: ManagedProcessLifetime;
   configStore?: AgentConfigStore;
+  /** 附件物理目录；未指定时从 persistenceRoot 解析。 */
   attachmentRoot?: string;
   /** Host 为新 session 预先分配的 id；历史 session 仍由 InteractiveAgentRuntime.resumeSession 载入。 */
   sessionId?: string;

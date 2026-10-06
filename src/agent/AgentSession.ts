@@ -140,7 +140,7 @@ import { ProviderRegistry } from "../llm/ProviderRuntime.js";
 import { LocalEmbeddingManager } from "../llm/embedding/LocalEmbeddingRuntime.js";
 import { selectMemoryEmbeddingModel } from "../llm/embedding/selectMemoryModel.js";
 import type { EmbeddingModelDescriptor, EmbeddingModelRef, EmbeddingModelRuntime, LocalEmbeddingModelId } from "../llm/embedding/types.js";
-import { attachmentMessageParts, readAttachment, type AgentAttachment } from "../attachments/store.js";
+import { attachmentMessageParts, readAttachmentFromRoot, type AgentAttachment } from "../attachments/store.js";
 import type { AttachmentReference } from "../attachments/store.js";
 import { messageText } from "./modelMessages.js";
 import { projectToolResultsForModel } from "./toolResultProjection.js";
@@ -220,7 +220,7 @@ export interface AgentSessionOptions {
   sessionGoals?: SessionGoalStore;
   /** 回合内首次改动工作区前建快照，供 /undo 回退；不在 git 仓库时省略。 */
   createCheckpoint?: (label: string) => Promise<unknown>;
-  /** 会话恢复时按虚拟路径重新读取项目级附件。 */
+  /** 已解析的附件物理目录；工具读取、重试与会话恢复共用，不是项目持久化根。 */
   attachmentRoot?: string;
   /** Host composition root 注入 SQLite authority；独立 AgentSession 可省略。 */
   runtimeEventSink?: RuntimeEventSink;
@@ -1558,7 +1558,7 @@ export class AgentSession {
     const userEvent = replay.events[userNode.eventIndex];
     const originalAttachments = this.options.attachmentRoot === undefined || userEvent?.type !== "user_message"
       ? []
-      : (await Promise.all((userEvent.attachments ?? []).map(async (attachment) => await readAttachment(this.options.attachmentRoot!, attachment))))
+      : (await Promise.all((userEvent.attachments ?? []).map(async (attachment) => await readAttachmentFromRoot(this.options.attachmentRoot!, attachment))))
         .filter((attachment): attachment is AgentAttachment => attachment !== undefined);
     const sourceAttachments = replacingUser ? options.attachments ?? [] : originalAttachments;
     this.assertAttachmentsSupported(sourceAttachments);
@@ -4092,7 +4092,7 @@ export class AgentSession {
       }
       const event = userEvents[userIndex];
       userIndex += 1;
-      const attachments = await Promise.all((event?.attachments ?? []).map(async (attachment) => await readAttachment(this.options.attachmentRoot!, attachment)));
+      const attachments = await Promise.all((event?.attachments ?? []).map(async (attachment) => await readAttachmentFromRoot(this.options.attachmentRoot!, attachment)));
       const files = attachments.filter((attachment): attachment is AgentAttachment => attachment !== undefined);
       this.assertAttachmentsSupported(files);
       if (!files.length || typeof message.content !== "string") {

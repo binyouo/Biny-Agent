@@ -25,7 +25,7 @@ test("chat screenshot context reaches the model on first input and replay but st
     providers: { sample: { type: "openai-compatible", baseUrl: "https://example.invalid/", apiKeyEnv: "BINY_TEST_UNCONFIGURED_KEY", modelProfiles: { "shot-model": { capabilities: { vision: true } } } } },
     models: { selected: { provider: "sample", model: "shot-model", capabilities: { vision: true } } }, defaultModel: "selected" });
   config.context.memory.useMemories = false; config.context.memory.generateMemories = false;
-  const create = () => new AgentSession({ workspaceRoot: root, attachmentRoot: root, config, model, toolRegistry: new ToolRegistry(),
+  const create = () => new AgentSession({ workspaceRoot: root, attachmentRoot: attachmentRoot(root), config, model, toolRegistry: new ToolRegistry(),
     permissionManager: new PermissionManager({ ...config.permission, source: "test" }), recorder: new SessionRecorder(root) });
   await ensureAgentDirs(root);
   let agent = create();
