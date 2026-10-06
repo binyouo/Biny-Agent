@@ -50,6 +50,7 @@ export async function attachMemoryWebSocket(
     if (closed || !states.size) return;
     if (pending) { dirty = true; return; }
     pending = true;
+    const subscriptions = new WeakSet(states.values());
     try {
       const sources = ["memory", "sleep", "embedding"];
       const results = await Promise.allSettled([
@@ -58,27 +59,30 @@ export async function attachMemoryWebSocket(
         client.memoryEmbeddingStatus()
       ]);
       if (closed) return;
+      // 只向读取开始时的订阅发布；后来加入的客户端必须用下一次读取初始化，不能继承旧 Sleep 生命周期。
+      const subscribers = new Map([...states].filter(([, state]) => subscriptions.has(state)));
+      const refreshRecipients = new Set(subscribers.keys());
       for (const [index, result] of results.entries()) {
         const source = sources[index]!;
         const errorKey = `error:${source}`;
         if (result.status === "rejected") {
-          publish("memory-stream-error", { source, error: result.reason instanceof Error ? result.reason.message : String(result.reason) }, errorKey);
-          for (const state of states.values()) state.last.delete(`ready:${source}`);
+          publish("memory-stream-error", { source, error: result.reason instanceof Error ? result.reason.message : String(result.reason) }, errorKey, refreshRecipients);
+          for (const state of subscribers.values()) state.last.delete(`ready:${source}`);
           continue;
         }
         let recovered = false;
-        for (const state of states.values()) if (state.last.delete(errorKey)) recovered = true;
+        for (const state of subscribers.values()) if (state.last.delete(errorKey)) recovered = true;
         // 明确告知恢复，即便恢复后的业务值与断线前相同。
-        if (recovered) publish("memory-stream-ready", { source }, `ready:${source}`);
+        if (recovered) publish("memory-stream-ready", { source }, `ready:${source}`, refreshRecipients);
       }
       const [memory, sleep, embedding] = results;
-      if (memory.status === "fulfilled") publish("memory-changed", memory.value.overview ?? memory.value);
+      if (memory.status === "fulfilled") publish("memory-changed", memory.value.overview ?? memory.value, "memory-changed", refreshRecipients);
       if (sleep.status === "fulfilled") {
         const status = sleep.value;
-        publish("memory-sleep-status", status);
+        publish("memory-sleep-status", status, "memory-sleep-status", refreshRecipients);
         const run = status.lastRun;
         const recipients = new Set<WebSocket>();
-        for (const [ws, state] of states) {
+        for (const [ws, state] of subscribers) {
           if (!state.sleepInitialized) {
             state.sleepInitialized = true;
             state.lastSleepRunId = run?.id;
@@ -95,7 +99,7 @@ export async function attachMemoryWebSocket(
           const currentProgressKeys = new Set((run.progressEvents ?? []).map((progress, index) =>
             `sleep:${run.id}:progress:${progress.sequence ?? index + 1}`));
           for (const ws of recipients) {
-            const last = states.get(ws)?.last;
+            const last = subscribers.get(ws)?.last;
             if (!last) continue;
             for (const key of last.keys()) if (key.startsWith(`sleep:${run.id}:progress:`) && !currentProgressKeys.has(key)) last.delete(key);
           }
@@ -114,10 +118,10 @@ export async function attachMemoryWebSocket(
         }
       }
       if (embedding.status === "fulfilled") {
-        publish("memory-embedding-status", embedding.value);
+        publish("memory-embedding-status", embedding.value, "memory-embedding-status", refreshRecipients);
         const operation = embedding.value.operation;
-        if (operation?.kind === "rebuild") publish("memory-rebuild-progress", operation);
-        if (operation?.kind === "download") publish("local-embedding-progress", operation);
+        if (operation?.kind === "rebuild") publish("memory-rebuild-progress", operation, "memory-rebuild-progress", refreshRecipients);
+        if (operation?.kind === "download") publish("local-embedding-progress", operation, "local-embedding-progress", refreshRecipients);
       }
     } finally {
       pending = false;
