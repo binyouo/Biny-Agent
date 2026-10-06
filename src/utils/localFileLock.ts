@@ -46,8 +46,8 @@ export async function withLocalFileWriteLock<T>(root: string, lockFileName: stri
   }
 
   let handle: FileHandle | undefined;
-  const nonce = randomBytes(8).toString("hex");
   try {
+    const nonce = randomBytes(8).toString("hex");
     while (!handle) {
       authority.assertBinding();
       try {
