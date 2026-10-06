@@ -14,7 +14,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { cp, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
@@ -24,7 +24,7 @@ const sourceRoot = fileURLToPath(new URL("..", import.meta.url));
 const root = path.resolve(argument("--artifact-root", sourceRoot));
 const desktopRoot = process.argv.includes("--skip-desktop") ? undefined : argument("--desktop-root", root);
 const stockPackages = argument("--stock-packages");
-const temporary = await mkdtemp(path.join(os.tmpdir(), "biny-packaged-runtime-"));
+const temporary = await realpath(await mkdtemp(path.join(os.tmpdir(), "biny-packaged-runtime-")));
 const fixturePath = fileURLToPath(new URL("./code-mode-runtime-artifact-fixture.mjs", import.meta.url));
 const sha256 = bytes => createHash("sha256").update(bytes).digest("hex");
 const checks = [];
