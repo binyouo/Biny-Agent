@@ -29,6 +29,9 @@
   --red: #fb2c36;
   --red-text: light-dark(#e7000b, #ff6467);
   --red-bg: rgb(251 44 54 / 10%);
+  /* 小号状态文字单独加深；不改变复用上方语义色的图标、圆点和背景。 */
+  --green-text-small: light-dark(#007a55, #00d492);
+  --red-text-small: light-dark(#c10007, #ff6467);
   --amber: #fe9a00;
   --amber-text: light-dark(#e17100, #ffb900);
   --amber-bg: rgb(254 154 0 / 10%);

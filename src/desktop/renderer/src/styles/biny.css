@@ -8409,6 +8409,14 @@ button.capability-check[aria-checked="true"] {
   background: var(--biny-danger-bg);
 }
 
+.biny-mcp-test-result.is-success strong {
+  color: var(--green-text-small);
+}
+
+.biny-mcp-test-result.is-error strong {
+  color: var(--red-text-small);
+}
+
 .biny-mcp-test-result div {
   display: flex;
   min-width: 0;
