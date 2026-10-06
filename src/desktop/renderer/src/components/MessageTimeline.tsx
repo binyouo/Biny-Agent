@@ -29,6 +29,7 @@ import { ChangesSummary } from "./chat/ChangesSummary.js";
 import { RunStatus } from "./chat/RunStatus.js";
 import { SubagentActivity } from "./chat/SubagentActivity.js";
 import { UserInputCard } from "./chat/UserInputCard.js";
+import type { SavedQueuedMessage } from "../../../../session/queuedMessages.js";
 
 interface MessageTimelineProps {
   sessionId?: string;
@@ -250,6 +251,7 @@ export const MessageTimeline = memo(function MessageTimeline({ sessionId, readOn
   return (
     <div className="message-timeline" ref={timelineRef} onMouseUp={updateQuoteSelection}>
       {displayedTurns.map((turn, index) => (
+        turn.recoveryOnly ? <SavedMessageRecovery key={turn.id} messages={turn.savedMessages ?? []} detached /> :
         <Turn
           busy={busy}
           suppressRunStatus={compacting}
@@ -301,6 +303,20 @@ export const MessageTimeline = memo(function MessageTimeline({ sessionId, readOn
     </div>
   );
 });
+
+function SavedMessageRecovery({ messages, detached = false }: { messages: SavedQueuedMessage[]; detached?: boolean }): React.JSX.Element {
+  const unknown = detached && messages.some((message) => message.targetMessageId === undefined);
+  return <section className="saved-message-recovery" aria-label={unknown ? "恢复区域：原目标未知" : "已保存但未投递的消息"}>
+    <h3>{unknown ? "原目标未知" : "已保存但未投递"}</h3>
+    <p>以下消息已保存，尚未投递。不会自动执行。</p>
+    {messages.map((message) => <div className="saved-message-recovery-entry" data-saved-message-id={message.messageId} key={message.messageId}>
+      <span className="saved-message-recovery-label">{message.targetMessageId === undefined ? "原目标未知 · " : ""}{message.delivery === "steer" ? "插话" : "排队消息"}</span>
+      {message.content ? <div className="saved-message-recovery-body">{message.content}</div> : null}
+      {message.attachments.length ? <ul className="saved-message-recovery-attachments">{message.attachments.map((attachment) =>
+        <li key={attachment.path}><span>{attachment.name}</span><code>{attachment.path}</code></li>)}</ul> : null}
+    </div>)}
+  </section>;
+}
 
 const PendingUserMessage = memo(function PendingUserMessage({ content, floatFromComposer, id, onOpenExternal, onPreviewFile, projectId }: {
   content: string;
@@ -547,6 +563,7 @@ const Turn = memo(function Turn({
         </div>
       </article>
       ) : null}
+      {turn.savedMessages?.length ? <SavedMessageRecovery messages={turn.savedMessages} /> : null}
       {!readOnly && !running && !(turn.status === "completed" && turn.tools.length > 0) && !turn.assistant.trim() && turn.versionCount && turn.versionCount > 1 && turn.versionIndex !== undefined ? (
         <VersionSwitcher onSwitchVersion={switchVersion} versionCount={turn.versionCount} versionIndex={turn.versionIndex} />
       ) : null}

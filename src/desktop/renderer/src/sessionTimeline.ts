@@ -21,6 +21,7 @@ import type { SessionEvent } from "../../../session/recorder.js";
 import type { ModelRequestMetrics } from "../../../agent/core/types.js";
 import type { SessionUsage } from "../../../session/metadata.js";
 import { publicAssistantMessage, publicUserMessage } from "../../../session/publicMessage.js";
+import { isUndeliveredMessageNotice, savedQueuedMessages, type SavedQueuedMessage } from "../../../session/queuedMessages.js";
 
 export type TimelineRunStatus =
   | "idle"
@@ -128,6 +129,8 @@ export interface TimelineModelRequest extends ModelRequestMetrics {
 }
 
 export interface TimelineTurn {
+  savedMessages?: SavedQueuedMessage[];
+  recoveryOnly?: boolean;
   /** 已落盘的主回合模型请求；旧记录缺失时不推算。 */
   modelRequests?: TimelineModelRequest[];
   preparationStage?: import("../../../agent/context/types.js").PreparationStage;
@@ -219,7 +222,7 @@ function appendLiveReasoning(existing: string, next: string): string {
 
 /** 完全空的轮次（只有元信息、没有任何可展示内容）不进时间线。 */
 function isVisibleTimelineTurn(turn: TimelineTurn): boolean {
-  return Boolean(turn.user || turn.assistant || turn.steps.length || turn.tools.length || turn.error);
+  return Boolean(turn.user || turn.assistant || turn.steps.length || turn.tools.length || turn.error || turn.savedMessages?.length);
 }
 
 function checkpointTimelineStep(checkpoint: Extract<SessionEvent, { type: "context_checkpoint" }>): TimelineReasoningStep {
@@ -246,15 +249,38 @@ function manualCheckpointTurn(checkpoint: Extract<SessionEvent, { type: "context
 /** 合成完整时间线；末尾过滤掉完全空的轮次（只有元信息、没有任何可展示内容）。 */
 export function buildSessionTimeline(events: SessionEvent[], liveEvents: AgentHostEvent[]): TimelineTurn[] {
   events = traceOutputEvents(events);
-  const history = historicalPrefix(events, liveEvents);
+  const history = historicalPrefix(events.filter((event) => !isUndeliveredMessageNotice(event)), liveEvents);
   const historicalTurns = hasVersionMetadata(history)
     ? buildVersionedHistoricalTurns(history)
     : buildHistoricalTurns(history);
   // 实时轮次的用户消息序号要接着历史的算，「编辑消息」功能依赖这个序号定位。
   const historicalUserMessages = history.filter((event) => event.type === "user_message" && !event.auditOnly).length;
-  return mergeLiveRetryTurns(historicalTurns, buildLiveTurns(liveEvents, historicalUserMessages).map(attachLiveRequestMetrics(events)), activeSessionMessageIds(events))
+  const liveTurns = buildLiveTurns(liveEvents, historicalUserMessages).map(attachLiveRequestMetrics(events));
+  return appendSavedMessageRecovery(mergeLiveRetryTurns(historicalTurns, liveTurns, activeSessionMessageIds(events)), savedQueuedMessages(events), liveTurns)
     .map((turn) => publicTimelineTurn(turn))
     .filter(isVisibleTimelineTurn);
+}
+
+function appendSavedMessageRecovery(turns: TimelineTurn[], saved: SavedQueuedMessage[], liveTurns: TimelineTurn[]): TimelineTurn[] {
+  if (!saved.length) return turns;
+  const activeRuns = new Set(liveTurns.filter((turn) => turn.status === "running" || turn.status === "waiting_permission" || turn.status === "idle").map((turn) => turn.id));
+  const byTarget = new Map<string, SavedQueuedMessage[]>();
+  const detached: SavedQueuedMessage[] = [];
+  const users = new Set(turns.flatMap((turn) => turn.userMessageId ? [turn.userMessageId] : []));
+  for (const message of saved) {
+    if (message.runId && activeRuns.has(message.runId)) continue;
+    if (message.targetMessageId && users.has(message.targetMessageId)) {
+      const messages = byTarget.get(message.targetMessageId) ?? [];
+      messages.push(message);
+      byTarget.set(message.targetMessageId, messages);
+    } else detached.push(message);
+  }
+  const result = turns.map((turn) => {
+    const savedMessages = turn.userMessageId === undefined ? undefined : byTarget.get(turn.userMessageId);
+    return savedMessages ? { ...turn, savedMessages } : turn;
+  });
+  if (detached.length) result.push({ ...emptyTurn("saved-message-recovery"), recoveryOnly: true, savedMessages: detached });
+  return result;
 }
 
 /** 旧 session 和旧 Host 事件里可能残留内部通知块，时间线只投影公开正文。 */
@@ -1177,11 +1203,13 @@ export function createSessionTimelineProjector(): SessionTimelineProjector {
   let processedLive = 0;
   let processedTail: AgentHostEvent | undefined;
   let attachRequests = attachLiveRequestMetrics([]);
+  let savedMessages: SavedQueuedMessage[] = [];
 
   const rebuild = (events: SessionEvent[], liveEvents: AgentHostEvent[]): void => {
     events = traceOutputEvents(events);
     activeIds = activeSessionMessageIds(events);
-    const history = historicalPrefix(events, liveEvents);
+    savedMessages = savedQueuedMessages(events);
+    const history = historicalPrefix(events.filter((event) => !isUndeliveredMessageNotice(event)), liveEvents);
     attachRequests = attachLiveRequestMetrics(events);
     historyTurns = (hasVersionMetadata(history) ? buildVersionedHistoricalTurns(history) : buildHistoricalTurns(history)).map((turn) => publicTimelineTurn(turn)).filter(isVisibleTimelineTurn);
     const historicalUserMessages = history.filter((event) => event.type === "user_message" && !event.auditOnly).length;
@@ -1231,7 +1259,7 @@ export function createSessionTimelineProjector(): SessionTimelineProjector {
         processedTail = liveEvents.at(-1);
       }
       const liveTurns = (fold ? fold.snapshot() : []).filter(isVisibleTimelineTurn);
-      return mergeLiveRetryTurns(historyTurns, liveTurns.map(attachRequests), activeIds).filter(isVisibleTimelineTurn);
+      return appendSavedMessageRecovery(mergeLiveRetryTurns(historyTurns, liveTurns.map(attachRequests), activeIds), savedMessages, liveTurns).filter(isVisibleTimelineTurn);
     }
   };
 }

@@ -7,6 +7,20 @@
  * - 颜色全部走 biny 主题 token，明暗主题自动适配；语法高亮用 --syn-* 变量双主题切换。
  */
 
+.saved-message-recovery {
+  margin-block: 16px;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: var(--text);
+}
+.saved-message-recovery h3 { margin: 0; font-size: 13px; font-weight: 600; }
+.saved-message-recovery > p, .saved-message-recovery-label { color: var(--text-muted); font-size: 12px; }
+.saved-message-recovery-entry + .saved-message-recovery-entry { margin-top: 16px; }
+.saved-message-recovery-body { margin-top: 6px; white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
+.saved-message-recovery-attachments { padding-left: 18px; margin-block: 8px 0; user-select: text; }
+.saved-message-recovery-attachments code { display: block; overflow-wrap: anywhere; font-size: 12px; }
+
 /* ============ 动画 ============ */
 
 @keyframes chat-breath-core {
