@@ -3413,7 +3413,9 @@ export class AgentSession {
       // 手动失败也要保存冷却原因，否则重启会立即重复请求同一摘要。
       try {
         if (!this.checkpointPersistenceError) {
-          this.recorder.record({ type: "assistant_message", content: "", usage: this.usageRecords.slice(usageBeforeCompaction).at(-1), contextState: this.contextMemory.snapshot() });
+          // 摘要修复也有独立用量；后台记忆/子代理仍由 relatedUsage 单独持久化。
+          const compactionUsage = this.usageRecords.slice(usageBeforeCompaction).filter((record) => record.operation === "compaction");
+          this.recorder.record({ type: "assistant_message", content: "", usage: compactionUsage.length ? sumSessionUsage(compactionUsage) : undefined, contextState: this.contextMemory.snapshot() });
           await this.recorder.flush();
         }
       } finally { release(); }
