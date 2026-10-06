@@ -422,6 +422,7 @@ export function ProviderSettings({
   const [iconDraft, setIconDraft] = useState<string | null>(null);
   const [deleteArmed, setDeleteArmed] = useState(false);
   const keyTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const keyEditRef = useRef<{ value: string } | undefined>(undefined);
   const baseUrlTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const baseUrlDirtyRef = useRef(false);
   const activeProviderRef = useRef<string | undefined>(undefined);
@@ -437,6 +438,7 @@ export function ProviderSettings({
     setKeySaveState("idle");
     setKeyLoading(false);
     setKeyLoaded(false);
+    keyEditRef.current = undefined;
     baseUrlDirtyRef.current = false;
     if (keyTimerRef.current) clearTimeout(keyTimerRef.current);
     if (baseUrlTimerRef.current) clearTimeout(baseUrlTimerRef.current);
@@ -467,7 +469,9 @@ export function ProviderSettings({
     : undefined;
 
   const commitKey = useCallback(async (value: string): Promise<void> => {
-    if (!group || !catalog || !value.trim()) return;
+    // 按需读取只供查看；只有用户输入的草稿才能进入凭据暂存与保存。
+    const edit = keyEditRef.current;
+    if (!edit || edit.value !== value || !group || !catalog || !value.trim()) return;
     const draft = settingsDraft.draft;
     if (!draft) return;
     setKeySaveState("saving");
@@ -495,8 +499,11 @@ export function ProviderSettings({
         });
         if (activeProviderRef.current !== group.provider) return;
         if (result?.status === "committed") {
-          setKeySaveState("saved");
-          setKeyDraft(value.trim());
+          if (keyEditRef.current === edit) {
+            keyEditRef.current = undefined;
+            setKeySaveState("saved");
+            setKeyDraft(value.trim());
+          }
           void refreshCatalog(group.provider, { force: true });
         } else {
           await settingsDraft.releaseCredential(staged.handle);
@@ -519,8 +526,11 @@ export function ProviderSettings({
     const result = await applyModelBatch([{ ...input, apiKey: value.trim() }]);
     if (activeProviderRef.current !== group.provider) return;
     if (result) {
-      setKeySaveState("saved");
-      setKeyDraft(value.trim());
+      if (keyEditRef.current === edit) {
+        keyEditRef.current = undefined;
+        setKeySaveState("saved");
+        setKeyDraft(value.trim());
+      }
       // 新密钥通常立刻解锁真实模型列表。
       void refreshCatalog(group.provider, { force: true });
     } else {
@@ -530,6 +540,7 @@ export function ProviderSettings({
   }, [activeModel, applyModelBatch, catalog, choiceUpsertInput, connection?.apiBackend, connection?.protocol, group, onNotify, projectId, refreshCatalog, settingsDraft]);
 
   const onKeyDraftChange = (value: string): void => {
+    keyEditRef.current = { value };
     setKeyDraft(value);
     setKeyLoaded(true);
     setKeySaveState("idle");
