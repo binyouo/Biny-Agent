@@ -712,7 +712,13 @@ function normalizeExecutionTemplate(value: unknown): AutomationExecutionTemplate
 }
 
 function initialFireAt(type: AutomationTriggerType, schedule: AutomationSchedule, now: string): string | undefined {
-  if (type === "once") return schedule.at ?? now;
+  if (type === "once") {
+    const at = schedule.at ?? now;
+    const canonical = new Date(at).toISOString();
+    // Lexical due-time queries require canonical UTC within the four-digit year
+    // range. Preserve prior input behavior for signed, extended ISO years.
+    return canonical.length === 24 ? canonical : at;
+  }
   if (type === "interval" || type === "heartbeat") return new Date(Date.parse(now) + (schedule.intervalMs ?? 60_000)).toISOString();
   return nextCron(schedule.cron ?? "* * * * *", new Date(now)).toISOString();
 }
