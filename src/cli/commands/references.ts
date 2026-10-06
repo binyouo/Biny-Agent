@@ -16,7 +16,7 @@ const aliases: Record<string, LocalReferenceKind> = {
   snippet: "snippet", 片段: "snippet", scratch: "scratch", 临时引用: "scratch",
   skill: "skill", 技能: "skill", agent: "agent", 子代理: "agent", 智能体: "agent", mcp: "mcp", model: "model", 模型: "model", provider: "provider", 服务商: "provider",
   tool: "tool", 工具: "tool", "tool-call": "tool-call", 工具调用: "tool-call", task: "task", 任务: "task", cron: "cron", 定时任务: "cron",
-  crystal: "crystal", 结晶: "crystal", bundle: "bundle", 结晶包: "bundle", mission: "mission", 目标: "mission", plan: "plan", 计划: "plan"
+  crystal: "crystal", 结晶: "crystal", bundle: "bundle", 结晶包: "bundle", plan: "plan", 计划: "plan"
 };
 
 function service(workspaceRoot: string): { instance: LocalReferenceService; projectId: string } {
@@ -28,10 +28,10 @@ function service(workspaceRoot: string): { instance: LocalReferenceService; proj
       const client = await connectRuntimeHost(projectPath);
       if (!client) return [];
       try {
-        const [tasks, automations, goals, graphs, tools] = await Promise.all([
-          client.taskList(), client.automationList(), client.goalList(), client.graphList(), client.listTools()
+        const [tasks, automations, graphs, tools] = await Promise.all([
+          client.taskList(), client.automationList(), client.graphList(), client.listTools()
         ]);
-        return runtimeReferenceEntries({ tasks, automations, goals, graphs }, tools);
+        return runtimeReferenceEntries({ tasks, automations, graphs }, tools);
       } finally { await client.close(); }
     } }) };
 }

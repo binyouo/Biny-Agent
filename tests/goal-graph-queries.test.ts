@@ -15,7 +15,7 @@ import { DurableTaskRunStore } from "../src/runtime/TaskRunStore.js";
 for (const status of ["completed", "failed", "blocked"] as const) {
   await test(`graph events includes persisted TaskRun ${status} outcomes through the public command`, async () => {
     await fixture(async (_root, authority, graphs, tasks) => {
-      const graph = graphs.createGraph(undefined, [{ nodeKey: "work", prompt: "Inspect fixture" }], {}, `fixed-${status}`);
+      const graph = graphs.createGraph([{ nodeKey: "work", prompt: "Inspect fixture" }], {}, `fixed-${status}`);
       const node = graph.nodes[0]!;
       const taskRunId = `graph:${graph.graphId}:${node.nodeId}`;
       tasks.create({ taskRunId, task: node.intent, parentRunId: `graph:${graph.graphId}` });
@@ -107,9 +107,8 @@ await test("run-or-turn event filters preserve workspace isolation, identity, or
 
 await test("graph list, detail, and plan projection retain dependency and session identities", async () => {
   await fixture(async (root, authority, graphs, tasks) => {
-    const goal = graphs.createGoal("Inspect graph query fixtures", { scope: "local" }, "query-goal");
     const graph = graphs.createSupervisedGraph({
-      goalId: goal.goalId, graphId: "query-graph", supervisorSessionId: "owner",
+      graphId: "query-graph", supervisorSessionId: "owner",
       nodes: [
         { nodeKey: "z-first", prompt: "First source" },
         { nodeKey: "a-second", prompt: "Second source" },
@@ -120,7 +119,6 @@ await test("graph list, detail, and plan projection retain dependency and sessio
     graphs.claimIntent(graph.graphId, graph.nodes[0]!.nodeId, "query-claim", "missing-task");
     const detail = graphs.inspectGraph(graph.graphId);
     assert.deepEqual(graphs.listGraphs(), [detail]);
-    assert.deepEqual(graphs.listGoals(), [graphs.getGoal(goal.goalId)]);
     assert.deepEqual(detail.nodes.map((node) => node.nodeKey), ["z-first", "a-second", "dependent"], "node order is insertion order, not alphabetical");
     assert.deepEqual(detail.nodes[2]!.dependencies, ["a-second", "z-first", "a-second"], "query projection preserves persisted edge identities and ordering");
     const before = authority.readEvents();
@@ -132,9 +130,7 @@ await test("graph list, detail, and plan projection retain dependency and sessio
     const foreign = await RuntimeEventAuthority.open(root, { workspaceId: "foreign-workspace", backfillLegacySessions: false });
     const foreignGraphs = await GoalGraphStore.open(root, foreign);
     try {
-      assert.deepEqual(foreignGraphs.listGoals(), []);
       assert.deepEqual(foreignGraphs.listGraphs(), []);
-      assert.equal(foreignGraphs.getGoal(goal.goalId), undefined);
       assert.equal(foreignGraphs.getGraph(graph.graphId), undefined);
       assert.deepEqual(foreignGraphs.listGraphEvents(graph.graphId).events, []);
       assert.throws(() => foreignGraphs.inspectGraph(graph.graphId), /does not exist/u);

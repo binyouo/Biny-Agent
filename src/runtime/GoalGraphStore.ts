@@ -1,5 +1,5 @@
 /**
- * Goal / Agent Graph durable supervisor。
+ * Agent Graph durable supervisor。
  *
  * Graph 节点的 readiness、intent claim 和 wake 都落在 SQLite；模型只负责执行节点
  * prompt，不能通过伪造普通用户消息改变 graph 状态。
@@ -14,22 +14,10 @@ import { runTaskClosure, type TaskClosureResult } from "./TaskClosure.js";
 import { readTaskDefinition, type TaskCommandExecutor } from "./taskVerification.js";
 import { latestPlanNode, planBlock, planReviewResultSchema, planWorkPacket } from "./planWork.js";
 
-export type GoalStatus = "active" | "paused" | "completed" | "failed" | "blocked" | "cancelled";
 export type GraphStatus = "draft" | "running" | "paused" | "completed" | "failed" | "blocked" | "cancelled";
 export type GraphNodeStatus = "pending" | "ready" | "running" | "completed" | "failed" | "blocked" | "cancelled";
 export type GraphMode = "fixed" | "supervised";
 export type SupervisorCheckpoint = "needs_attention" | "settled";
-
-export interface GoalRecord {
-  goalId: string;
-  workspaceId: string;
-  title: string;
-  status: GoalStatus;
-  payload: unknown;
-  revision: number;
-  createdAt: string;
-  updatedAt: string;
-}
 
 export interface GraphNodeInput {
   nodeKey: string;
@@ -55,7 +43,6 @@ export interface GraphNodeRecord {
 export interface GraphRecord {
   graphId: string;
   workspaceId: string;
-  goalId?: string;
   status: GraphStatus;
   mode: GraphMode;
   supervisorSessionId?: string;
@@ -69,7 +56,6 @@ export interface GraphRecord {
 }
 
 export interface SupervisedGraphInput {
-  goalId?: string;
   graphId?: string;
   supervisorSessionId: string;
   supervisorRunId?: string;
@@ -103,21 +89,9 @@ export interface GraphClaim {
   claimedAt: string;
 }
 
-interface GoalRow {
-  goal_id: unknown;
-  workspace_id: unknown;
-  title: unknown;
-  status: unknown;
-  payload_json: unknown;
-  revision: unknown;
-  created_at: unknown;
-  updated_at: unknown;
-}
-
 interface GraphRow {
   graph_id: unknown;
   workspace_id: unknown;
-  goal_id: unknown;
   status: unknown;
   mode: unknown;
   supervisor_session_id: unknown;
@@ -161,61 +135,8 @@ export class GoalGraphStore {
     return new GoalGraphStore(authority.databaseHandle(), authority);
   }
 
-  createGoal(title: string, payload: unknown = {}, goalId: string = randomUUID()): GoalRecord {
-    this.assertOpen();
-    if (!title.trim()) throw new Error("Goal title cannot be empty.");
-    const existing = this.getGoal(goalId);
-    if (existing) return existing;
-    const now = new Date().toISOString();
-    return this.withGraphEvent({
-      eventId: "goal:" + goalId + ":created",
-      sessionId: "goal:" + goalId,
-      invocationId: goalId,
-      runId: "goal:" + goalId,
-      turnId: "goal:" + goalId,
-      eventType: "goal.created",
-      payload: { title, payload },
-      createdAt: now
-    }, () => {
-      this.database.prepare("INSERT INTO goals (goal_id, workspace_id, status, title, payload_json, created_at, updated_at, revision) VALUES (?, ?, 'active', ?, ?, ?, ?, 0)").run(goalId, this.authority.workspaceId, title.trim(), stringify(payload), now, now);
-      return this.requireGoal(goalId);
-    });
-  }
-
-  getGoal(goalId: string): GoalRecord | undefined {
-    const row = this.database.prepare("SELECT goal_id, workspace_id, title, status, payload_json, revision, created_at, updated_at FROM goals WHERE goal_id = ? AND workspace_id = ?").get(goalId, this.authority.workspaceId) as unknown as GoalRow | undefined;
-    return row ? toGoal(row) : undefined;
-  }
-
-  listGoals(): GoalRecord[] {
-    const rows = this.database.prepare("SELECT goal_id, workspace_id, title, status, payload_json, revision, created_at, updated_at FROM goals WHERE workspace_id = ? ORDER BY created_at ASC").all(this.authority.workspaceId) as unknown as GoalRow[];
-    return rows.map(toGoal);
-  }
-
-  updateGoal(goalId: string, status: GoalStatus): GoalRecord {
-    const goal = this.requireGoal(goalId);
-    if (goal.status === status) return goal;
-    if (!isAllowedGoalTransition(goal.status, status)) {
-      throw new Error(`Goal ${goalId} cannot transition from ${goal.status} to ${status}.`);
-    }
-    const now = new Date().toISOString();
-    return this.withGraphEvent({
-      eventId: "goal:" + goalId + ":revision:" + String(goal.revision + 1),
-      sessionId: "goal:" + goalId,
-      invocationId: goalId,
-      runId: "goal:" + goalId,
-      turnId: "goal:" + goalId,
-      eventType: "goal.status",
-      payload: { status },
-      createdAt: now
-    }, () => {
-      this.database.prepare("UPDATE goals SET status = ?, revision = revision + 1, updated_at = ? WHERE goal_id = ?").run(status, now, goalId);
-      return this.requireGoal(goalId);
-    });
-  }
-
-  createGraph(goalId: string | undefined, nodes: readonly GraphNodeInput[], payload: unknown = {}, graphId: string = randomUUID()): GraphRecord {
-    return this.createGraphRecord({ goalId, nodes, payload, graphId, mode: "fixed", maxReplans: 0 });
+  createGraph(nodes: readonly GraphNodeInput[], payload: unknown = {}, graphId: string = randomUUID()): GraphRecord {
+    return this.createGraphRecord({ nodes, payload, graphId, mode: "fixed", maxReplans: 0 });
   }
 
   createSupervisedGraph(input: SupervisedGraphInput): GraphRecord {
@@ -226,7 +147,6 @@ export class GoalGraphStore {
       throw new Error("Supervised graph maxReplans must be between 0 and 2.");
     }
     return this.createGraphRecord({
-      goalId: input.goalId,
       nodes: input.nodes,
       payload: input.payload ?? {},
       graphId: input.graphId ?? randomUUID(),
@@ -238,7 +158,6 @@ export class GoalGraphStore {
   }
 
   private createGraphRecord(input: {
-    goalId?: string;
     nodes: readonly GraphNodeInput[];
     payload: unknown;
     graphId: string;
@@ -249,7 +168,6 @@ export class GoalGraphStore {
   }): GraphRecord {
     this.assertOpen();
     validateGraphNodes(input.nodes, 20);
-    if (input.goalId !== undefined && !this.getGoal(input.goalId)) throw new Error("Graph goal does not exist.");
     const now = new Date().toISOString();
     return this.withGraphEvent({
       eventId: "graph:" + input.graphId + ":created",
@@ -259,7 +177,6 @@ export class GoalGraphStore {
       turnId: "graph:" + input.graphId,
       eventType: "graph.created",
       payload: {
-        goalId: input.goalId,
         nodes: input.nodes,
         payload: input.payload,
         mode: input.mode,
@@ -271,13 +188,12 @@ export class GoalGraphStore {
     }, () => {
       this.database.prepare(`
         INSERT INTO graphs (
-          graph_id, workspace_id, goal_id, status, mode, supervisor_session_id,
+          graph_id, workspace_id, status, mode, supervisor_session_id,
           max_replans, replan_count, revision, payload_json, created_at, updated_at
-        ) VALUES (?, ?, ?, 'draft', ?, ?, ?, 0, 0, ?, ?, ?)
+        ) VALUES (?, ?, 'draft', ?, ?, ?, 0, 0, ?, ?, ?)
       `).run(
         input.graphId,
         this.authority.workspaceId,
-        input.goalId ?? null,
         input.mode,
         input.supervisorSessionId ?? null,
         input.maxReplans,
@@ -302,12 +218,12 @@ export class GoalGraphStore {
   }
 
   getGraph(graphId: string): GraphRecord | undefined {
-    const row = this.database.prepare("SELECT graph_id, workspace_id, goal_id, status, mode, supervisor_session_id, max_replans, replan_count, revision, payload_json, created_at, updated_at FROM graphs WHERE graph_id = ? AND workspace_id = ?").get(graphId, this.authority.workspaceId) as unknown as GraphRow | undefined;
+    const row = this.database.prepare("SELECT graph_id, workspace_id, status, mode, supervisor_session_id, max_replans, replan_count, revision, payload_json, created_at, updated_at FROM graphs WHERE graph_id = ? AND workspace_id = ?").get(graphId, this.authority.workspaceId) as unknown as GraphRow | undefined;
     return row ? { ...toGraph(row), nodes: this.nodes(graphId) } : undefined;
   }
 
   listGraphs(): GraphRecord[] {
-    const rows = this.database.prepare("SELECT graph_id, workspace_id, goal_id, status, mode, supervisor_session_id, max_replans, replan_count, revision, payload_json, created_at, updated_at FROM graphs WHERE workspace_id = ? ORDER BY created_at ASC").all(this.authority.workspaceId) as unknown as GraphRow[];
+    const rows = this.database.prepare("SELECT graph_id, workspace_id, status, mode, supervisor_session_id, max_replans, replan_count, revision, payload_json, created_at, updated_at FROM graphs WHERE workspace_id = ? ORDER BY created_at ASC").all(this.authority.workspaceId) as unknown as GraphRow[];
     return rows.map((row) => ({ ...toGraph(row), nodes: this.nodes(stringValue(row.graph_id)) }));
   }
 
@@ -395,12 +311,6 @@ export class GoalGraphStore {
         this.database.prepare("UPDATE graph_nodes SET status = 'cancelled', revision = revision + 1 WHERE graph_id = ? AND node_id = ? AND status NOT IN ('completed', 'failed', 'cancelled')").run(graphId, node.nodeId);
         this.database.prepare("UPDATE graph_intent_claims SET status = 'cancelled' WHERE graph_id = ? AND node_id = ? AND status = 'claimed'").run(graphId, node.nodeId);
       });
-    }
-    if (graph.goalId !== undefined) {
-      const goal = this.getGoal(graph.goalId);
-      if (goal && goal.status !== "cancelled" && goal.status !== "completed" && goal.status !== "failed" && goal.status !== "blocked") {
-        this.updateGoal(graph.goalId, "cancelled");
-      }
     }
     return this.requireGraph(graphId);
   }
@@ -505,13 +415,7 @@ export class GoalGraphStore {
     if (status === "completed" && current.some((node) => node.status !== "completed")) {
       throw new Error("A supervised graph can complete only after every current node has passed.");
     }
-    const finished = this.updateGraph(graphId, status, summary === undefined ? undefined : { summary });
-    if (finished.goalId !== undefined) {
-      const goal = this.getGoal(finished.goalId);
-      const goalStatus: GoalStatus = status === "completed" ? "completed" : status;
-      if (goal && goal.status !== goalStatus) this.updateGoal(finished.goalId, goalStatus);
-    }
-    return this.requireGraph(graphId);
+    return this.updateGraph(graphId, status, summary === undefined ? undefined : { summary });
   }
 
   readyNodes(graphId: string): GraphNodeRecord[] {
@@ -833,11 +737,6 @@ export class GoalGraphStore {
           ? "blocked"
           : graph.status;
     const projected = status === graph.status ? graph : this.updateGraph(graphId, status);
-    if (projected.goalId !== undefined && (status === "completed" || status === "failed" || status === "blocked" || status === "cancelled")) {
-      const goal = this.getGoal(projected.goalId);
-      const goalStatus: GoalStatus = status === "completed" ? "completed" : status;
-      if (goal && goal.status !== goalStatus) this.updateGoal(projected.goalId, goalStatus);
-    }
     return projected;
   }
 
@@ -937,12 +836,6 @@ export class GoalGraphStore {
       `).run(wakeId, graph.graphId, checkpoint, graph.revision, checkpoint, supervisorSessionId, runId, now);
     });
     return wakeId;
-  }
-
-  private requireGoal(goalId: string): GoalRecord {
-    const goal = this.getGoal(goalId);
-    if (!goal) throw new Error("Goal " + goalId + " does not exist.");
-    return goal;
   }
 
   private requireGraph(graphId: string): GraphRecord {
@@ -1294,24 +1187,10 @@ export class GraphSupervisor {
   }
 }
 
-function toGoal(row: GoalRow): GoalRecord {
-  return {
-    goalId: stringValue(row.goal_id),
-    workspaceId: stringValue(row.workspace_id),
-    title: stringValue(row.title),
-    status: goalStatus(row.status),
-    payload: parse(row.payload_json),
-    revision: integerValue(row.revision),
-    createdAt: stringValue(row.created_at),
-    updatedAt: stringValue(row.updated_at)
-  };
-}
-
 function toGraph(row: GraphRow): Omit<GraphRecord, "nodes"> {
   return {
     graphId: stringValue(row.graph_id),
     workspaceId: stringValue(row.workspace_id),
-    goalId: optionalString(row.goal_id),
     status: graphStatus(row.status),
     mode: graphMode(row.mode),
     supervisorSessionId: optionalString(row.supervisor_session_id),
@@ -1378,11 +1257,6 @@ function toClaim(row: Record<string, unknown>): GraphClaim {
   };
 }
 
-function goalStatus(value: unknown): GoalStatus {
-  if (value === "active" || value === "paused" || value === "completed" || value === "failed" || value === "blocked" || value === "cancelled") return value;
-  throw new Error("Invalid goal status: " + String(value));
-}
-
 function graphStatus(value: unknown): GraphStatus {
   if (value === "draft" || value === "running" || value === "paused" || value === "completed" || value === "failed" || value === "blocked" || value === "cancelled") return value;
   throw new Error("Invalid graph status: " + String(value));
@@ -1405,16 +1279,6 @@ function isGraphTerminal(status: GraphStatus): boolean {
 /** InteractiveAgentRuntime/Host 在 runtime 忙时抛出的 admission 错误；busy 是可重试信号，不是执行失败。 */
 function isRuntimeBusyError(error: unknown): boolean {
   return error instanceof Error && error.message.includes("while the runtime is busy");
-}
-
-function isAllowedGoalTransition(from: GoalStatus, to: GoalStatus): boolean {
-  if (isGoalTerminal(from)) return false;
-  return (from === "active" || from === "paused")
-    && (to === "active" || to === "paused" || isGoalTerminal(to));
-}
-
-function isGoalTerminal(status: GoalStatus): boolean {
-  return status === "completed" || status === "failed" || status === "blocked" || status === "cancelled";
 }
 
 function isAllowedGraphTransition(from: GraphStatus, to: GraphStatus): boolean {

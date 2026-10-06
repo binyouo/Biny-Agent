@@ -57,6 +57,8 @@ flowchart LR
 | 模型与扩展 | 接入多家模型服务商和 OpenAI-compatible 接口；通过 MCP、Plugins、Skills、Subagents 扩展工具与工作流。 |
 | 工具与操作控制 | 提供项目文件操作、受控命令和权限审批；Desktop 还可选 Computer Use 来观察桌面并操作指定窗口；通过独立的严格应用审批开关和跨会话应用授权名单控制访问。 |
 
+持续目标绑定具体会话：`biny goal set "完整目标" --session <id>`，通过 `goal show/pause/resume/clear --session <id>` 查看与控制。`goal` 只管理会话目标；依赖任务图由 `biny graph` 独立管理。Desktop 输入框上方的目标栏提供暂停、继续、正文编辑和删除；点击正文可查看完整目标、运行原因与用量。
+
 ### Shell 输出与归档
 
 `Bash` 发给模型的 stdout / stderr 分别展示，但共用 12 KiB UTF-8 正文预算（包含省略标记，并非 token 预算）；超出时保留头尾，并分别报告捕获阶段与模型投影阶段的丢失。`BashOutput` 的单页正文使用同一模型预算，原有后台日志分页位置不变。JSON 包装和元数据另计，回合总预算仍独立生效。
@@ -93,12 +95,3 @@ Desktop 的“设置 → 技能”优先展示内置技能，并可关闭自动�
 - [会话存储](src/session) · [长期记忆与上下文](src/agent/context)
 - [工具与扩展](src/extensions) · [权限策略](src/permission) · [工具实现](src/tools)
 - [问题反馈与功能请求](https://github.com/binyouo/Biny-Agent/issues)
-
-Computer Use 应用授权在 Desktop「设置 → Computer Use」中管理。严格审批默认关闭，首次使用应用时自动保存授权；开启后只允许已批准的应用，不受全局工具自动批准覆盖。CLI 可用 `biny computer status --json` 查看记录，`biny computer strict on` 开启严格模式，`biny computer approve <bundle-id>` 批准已发现的应用，`biny computer revoke <bundle-id>` 撤销授权。
-
-
-按窗口实时镜像可用 `biny cu windows <pid> --json` 查到窗口 ID，再运行 `biny cu pip open <window-id> --pid <pid> --json`；加 `--on-minimize` 后在源窗口最小化时显示。`biny cu pip list --json` 返回会话及帧龄，`biny cu pip close --all --json` 关闭并解除监听。内置工具 `ComputerMirror` 沿用应用审批。Desktop 浏览器和电脑画面共享 PiP，可切换来源、关闭单项及返回聊天；默认开启，开关和窗口布局跨重启保存。操作日志按需开启，仅保存本地动作元数据。
-
-`biny cu type_text "ABC" --pid <pid> --input-method physical` 按当前键盘布局输入；布局无法表示的字符会在输入前拒绝。Desktop「设置 → Appshots」可选择双击修饰键或组合快捷键，将当前应用窗口加入当前或新聊天草稿；不依赖电脑历史开启，发送前不请求模型。权限失败可在此测试与重试，敏感应用不可截图。
-
-外部 MCP 默认 `biny computer mcp`（stdio）；`biny computer mcp --http --port 0` 提供本地 HTTP 入口并输出 `url` 与 `tokenPath`。客户端从私有令牌文件读取 token，使用 `Authorization: Bearer <token>`。退出删除令牌。外部 MCP 共用全局桌面控制开关、应用审批及可选操作日志；输入前需观察精确目标，Desktop 运行时通知统一 PiP。`biny cu` 仍是用户显式调用的直接原生入口。

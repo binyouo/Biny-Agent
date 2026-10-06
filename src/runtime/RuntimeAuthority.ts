@@ -14,7 +14,7 @@ import { readSessionEvents, readSessionEventsForBackfill } from "../session/even
 import type { SessionEvent } from "../session/recorder.js";
 import { assertRuntimeEventSequence, validateRuntimeEventStream, type RuntimeEventIdentity, type RuntimeEventSink } from "../session/runtimeEvent.js";
 
-const schemaVersion = 12;
+const schemaVersion = 13;
 const busyTimeoutMs = 5_000;
 const defaultPageSize = 100;
 const maxPageSize = 1_000;
@@ -831,16 +831,6 @@ export class RuntimeEventAuthority implements RuntimeEventSink {
             claim_token TEXT NOT NULL,
             created_at TEXT NOT NULL
           );
-          CREATE TABLE IF NOT EXISTS goals (
-            goal_id TEXT PRIMARY KEY,
-            workspace_id TEXT NOT NULL,
-            status TEXT NOT NULL,
-            title TEXT NOT NULL,
-            payload_json TEXT NOT NULL,
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL,
-            revision INTEGER NOT NULL DEFAULT 0
-          );
 
           CREATE TABLE IF NOT EXISTS task_runs (
             task_run_id TEXT PRIMARY KEY,
@@ -912,7 +902,6 @@ export class RuntimeEventAuthority implements RuntimeEventSink {
           CREATE TABLE IF NOT EXISTS graphs (
             graph_id TEXT PRIMARY KEY,
             workspace_id TEXT NOT NULL,
-            goal_id TEXT,
             status TEXT NOT NULL,
             mode TEXT NOT NULL DEFAULT 'fixed',
             supervisor_session_id TEXT,
@@ -1035,16 +1024,6 @@ export class RuntimeEventAuthority implements RuntimeEventSink {
             child_run_id TEXT NOT NULL,
             claim_token TEXT NOT NULL,
             created_at TEXT NOT NULL
-          );
-          CREATE TABLE IF NOT EXISTS goals (
-            goal_id TEXT PRIMARY KEY,
-            workspace_id TEXT NOT NULL,
-            status TEXT NOT NULL,
-            title TEXT NOT NULL,
-            payload_json TEXT NOT NULL,
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL,
-            revision INTEGER NOT NULL DEFAULT 0
           );
         `);
         this.database.exec("PRAGMA user_version = 2");
@@ -1185,6 +1164,14 @@ export class RuntimeEventAuthority implements RuntimeEventSink {
         this.transaction(() => {
           this.createSessionGoalSchema();
           this.database.exec("PRAGMA user_version = 12");
+        });
+      }
+      if (currentRevision < 13) {
+        this.transaction(() => {
+          // 移除工作区目标记录；任务图、会话目标和审计事件保留。
+          this.database.exec("DROP TABLE IF EXISTS goals");
+          if (this.hasColumn("graphs", "goal_id")) this.database.exec("ALTER TABLE graphs DROP COLUMN goal_id");
+          this.database.exec("PRAGMA user_version = 13");
         });
       }
     }

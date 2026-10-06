@@ -2286,7 +2286,7 @@ export class DesktopAgentManager {
       };
       throw new Error("请先用 /goal set <目标> 设置当前会话目标。");
     }
-    if (!["session.goal.get", "session.goal.pause", "session.goal.clear", "goal.get", "goal.pause", "goal.cancel"].includes(operation ?? "")) await this.requireConfiguredModel(projectId);
+    if (!["session.goal.get", "session.goal.pause", "session.goal.clear"].includes(operation ?? "")) await this.requireConfiguredModel(projectId);
     const managed = await this.ensureRuntime(projectId);
     if (managed.runtime instanceof RuntimeHostClient) {
       if (operation === "session.goal.set" && sessionId === undefined) sessionId = (await managed.runtime.ensureSession({ writeIntent: true })).sessionId;
@@ -2379,7 +2379,7 @@ export class DesktopAgentManager {
     const persistenceRoot = await this.projects.dataRoot(project);
     const worktrees = (await new WorktreeManager(project.path, persistenceRoot).status()).map(toDesktopWorktreeStatus);
     const authority = await RuntimeEventAuthority.openReadOnly(persistenceRoot);
-    if (!authority) return { tasks: { tasks: [], nextCursor: undefined, hasMore: false }, automations: [], pendingFires: [], goals: [], graphs: [], capabilities: [], worktrees };
+    if (!authority) return { tasks: { tasks: [], nextCursor: undefined, hasMore: false }, automations: [], pendingFires: [], graphs: [], capabilities: [], worktrees };
     try {
       const tasks = await DurableTaskRunStore.open(persistenceRoot, authority);
       const automations = await AutomationStore.open(persistenceRoot, authority);
@@ -2390,7 +2390,6 @@ export class DesktopAgentManager {
         tasks: tasks.list(),
         automations: automations.list(),
         pendingFires: automations.listPending(),
-        goals: graphs.listGoals(),
         graphs: graphs.listGraphs(),
         capabilities: capabilities.list(),
         worktrees
@@ -2406,23 +2405,21 @@ export class DesktopAgentManager {
         tasks: commands.taskRuns.list(),
         automations: commands.automationStore.list(),
         pendingFires: commands.automationStore.listPending(),
-        goals: commands.graphs.listGoals(),
         graphs: commands.graphs.listGraphs(),
         capabilities: commands.capabilities.list(),
         worktrees: []
       };
     }
     const remote = requireRemoteRuntime(runtime);
-    const [tasks, automations, pendingFires, goals, graphs, capabilities, worktrees] = await Promise.all([
+    const [tasks, automations, pendingFires, graphs, capabilities, worktrees] = await Promise.all([
       remote.taskList(),
       remote.automationList(),
       remote.automationPending(),
-      remote.goalList(),
       remote.graphList(),
       remote.capabilityList(),
       remote.worktreeStatus()
     ]);
-    return { tasks, automations, pendingFires, goals, graphs, capabilities, worktrees: worktrees.map(toDesktopWorktreeStatus) };
+    return { tasks, automations, pendingFires, graphs, capabilities, worktrees: worktrees.map(toDesktopWorktreeStatus) };
   }
 
   async runtimeEvents(projectId: string, afterSequence?: number, limit?: number): Promise<unknown> {
@@ -2510,11 +2507,7 @@ export class DesktopAgentManager {
       if (!host) throw new Error("Automation scheduler is unavailable.");
       return await host.runAutomation(requiredPayloadString(payload.automationId, "automationId"));
     }
-    if (operation === "goal.create") return commands.graphs.createGoal(requiredPayloadString(payload.title, "title"), payload.payload, optionalPayloadString(payload.goalId));
-    if (operation === "goal.pause") return commands.graphs.updateGoal(requiredPayloadString(payload.goalId, "goalId"), "paused");
-    if (operation === "goal.resume") return commands.graphs.updateGoal(requiredPayloadString(payload.goalId, "goalId"), "active");
-    if (operation === "goal.cancel") return commands.graphs.updateGoal(requiredPayloadString(payload.goalId, "goalId"), "cancelled");
-    if (operation === "graph.create") return commands.graphs.createGraph(optionalPayloadString(payload.goalId), (payload.nodes ?? []) as GraphNodeInput[], payload.payload, optionalPayloadString(payload.graphId));
+    if (operation === "graph.create") return commands.graphs.createGraph((payload.nodes ?? []) as GraphNodeInput[], payload.payload, optionalPayloadString(payload.graphId));
     if (operation === "graph.start") {
       const graphId = requiredPayloadString(payload.graphId, "graphId");
       if (commands.graphs.inspectGraph(graphId).mode === "supervised") throw new Error("请通过计划卡片确认当前草稿版本。");
@@ -3544,11 +3537,7 @@ async function executeRemoteRuntimeMutation(runtime: RuntimeHostClient, operatio
   if (operation === "automation.resume") return await unwrapHostOperationResult(runtime.automationResume(requiredPayloadString(payload.automationId, "automationId")));
   if (operation === "automation.run") return await unwrapHostOperationResult(runtime.automationRun(requiredPayloadString(payload.automationId, "automationId")));
   if (operation === "automation.delete") return await unwrapHostOperationResult(runtime.automationDelete(requiredPayloadString(payload.automationId, "automationId")));
-  if (operation === "goal.create") return await unwrapHostOperationResult(runtime.goalCreate(requiredPayloadString(payload.title, "title"), payload.payload, optionalPayloadString(payload.goalId)));
-  if (operation === "goal.pause") return await unwrapHostOperationResult(runtime.goalPause(requiredPayloadString(payload.goalId, "goalId")));
-  if (operation === "goal.resume") return await unwrapHostOperationResult(runtime.goalResume(requiredPayloadString(payload.goalId, "goalId")));
-  if (operation === "goal.cancel") return await unwrapHostOperationResult(runtime.goalCancel(requiredPayloadString(payload.goalId, "goalId")));
-  if (operation === "graph.create") return await unwrapHostOperationResult(runtime.graphCreate({ goalId: optionalPayloadString(payload.goalId), graphId: optionalPayloadString(payload.graphId), nodes: (payload.nodes ?? []) as GraphNodeInput[], payload: payload.payload }));
+  if (operation === "graph.create") return await unwrapHostOperationResult(runtime.graphCreate({ graphId: optionalPayloadString(payload.graphId), nodes: (payload.nodes ?? []) as GraphNodeInput[], payload: payload.payload }));
   if (operation === "graph.start") return await unwrapHostOperationResult(runtime.graphStart(requiredPayloadString(payload.graphId, "graphId")));
   if (operation === "graph.pause") return await unwrapHostOperationResult(runtime.graphPause(requiredPayloadString(payload.graphId, "graphId")));
   if (operation === "graph.resume") return await unwrapHostOperationResult(runtime.graphResume(requiredPayloadString(payload.graphId, "graphId")));

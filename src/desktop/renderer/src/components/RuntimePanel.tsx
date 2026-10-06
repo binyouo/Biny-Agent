@@ -49,7 +49,6 @@ export function RuntimePanel({ open, onClose, projection, selectedSessionId, wor
   };
 
   const tasks = records(projection?.tasks);
-  const goals = records(projection?.goals);
   const graphs = records(projection?.graphs);
   const capabilities = records(projection?.capabilities);
   const selectedWorktree = selectedSessionId === undefined
@@ -123,12 +122,7 @@ export function RuntimePanel({ open, onClose, projection, selectedSessionId, wor
         })}
       </RuntimeSection>
 
-      <RuntimeSection title="工作区目标 / Graph" empty="暂无工作区目标或 Graph">
-        {goals.map((goal) => {
-          const id = recordId(goal, "goalId", "id");
-          if (!id) return null;
-          return <RuntimeRow key={`goal:${id}`} label={`Goal · ${recordText(goal, "title") ?? id}`} status={recordText(goal, "status") ?? "unknown"} />;
-        })}
+      <RuntimeSection title="任务图" empty="暂无任务图">
         {graphs.map((graph) => {
           const id = recordId(graph, "graphId", "id");
           if (!id) return null;

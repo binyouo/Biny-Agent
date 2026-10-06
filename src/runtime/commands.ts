@@ -47,31 +47,27 @@ export function runtimeCommandOperation(input: string): string | undefined {
   const { command, args } = parseRuntimeCommand(input);
   if (command === "/goal") {
     const goal = parseGoalCommand(input);
-    return goal === undefined ? undefined : `${goal.scope === "session" ? "session.goal" : "goal"}.${goal.action}`;
+    return goal === undefined ? undefined : `session.goal.${goal.action}`;
   }
   if (command === "/graph") return `graph.${args[0]?.toLowerCase() ?? "inspect"}`;
   return undefined;
 }
 
 type GoalCommand =
-  | { scope: "session"; action: "get" | "pause" | "resume" | "clear" }
-  | { scope: "session"; action: "set"; objective: string }
-  | { scope: "workspace"; action: "get" | "pause" | "resume" | "cancel"; goalId: string };
+  | { action: "get" | "pause" | "resume" | "clear" }
+  | { action: "set"; objective: string };
 
 function parseGoalCommand(input: string): GoalCommand | undefined {
   const match = /^\/goal(?:\s+([^\s]+)(?:\s+([\s\S]*))?)?$/u.exec(input.trim().replace(/^\/+/, "/"));
   if (!match) return undefined;
   const action = match[1]?.toLowerCase() ?? "show";
   const argument = match[2]?.trim();
-  if (action === "set" && argument) return { scope: "session", action, objective: argument };
+  if (action === "set" && argument) return { action, objective: argument };
   if (!argument && (action === "show" || action === "pause" || action === "resume" || action === "clear")) {
-    return { scope: "session", action: action === "show" ? "get" : action };
-  }
-  if (argument && !/\s/u.test(argument) && (action === "get" || action === "pause" || action === "resume" || action === "cancel")) {
-    return { scope: "workspace", action, goalId: argument };
+    return { action: action === "show" ? "get" : action };
   }
   if (!["show", "set", "pause", "resume", "clear", "get", "cancel"].includes(action)) {
-    return { scope: "session", action: "set", objective: input.trim().replace(/^\/+/, "/").slice("/goal".length).trim() };
+    return { action: "set", objective: input.trim().replace(/^\/+/, "/").slice("/goal".length).trim() };
   }
   return undefined;
 }
@@ -148,12 +144,7 @@ export async function executeRuntimeCommand(
   }
   if (command === "/goal") {
     const goal = parseGoalCommand(input);
-    if (!goal) throw new Error("Usage: /goal [<objective> | show | set <objective> | pause | resume | clear]; workspace Goal: get | pause | resume | cancel <id>");
-    if (goal.scope === "workspace") {
-      const record = goal.action === "get" ? services.graphs.getGoal(goal.goalId)
-        : services.graphs.updateGoal(goal.goalId, goal.action === "pause" ? "paused" : goal.action === "resume" ? "active" : "cancelled");
-      return result(command, "Workspace Goal", JSON.stringify(record, null, 2));
-    }
+    if (!goal) throw new Error("Usage: /goal [<objective> | show | set <objective> | pause | resume | clear]");
     const sessionId = runtime.getSnapshot().info.sessionId;
     const current = services.sessionGoals.get(sessionId);
     const expected = current === undefined ? undefined : { goalId: current.goalId, revision: current.revision };

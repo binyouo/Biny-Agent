@@ -89,7 +89,7 @@ async function testGraphVerificationRepairAndDownstreamUnlock(): Promise<void> {
   const fixture = await createFixture("full-access");
   try {
     await writeFile(path.join(fixture.root, "artifact.txt"), "bad\n", "utf8");
-    const graph = fixture.graphs.createGraph(undefined, [
+    const graph = fixture.graphs.createGraph([
       {
         nodeKey: "build",
         prompt: "produce artifact",
@@ -139,7 +139,7 @@ async function testFailedVerificationDoesNotUnlockDownstream(): Promise<void> {
   const fixture = await createFixture("full-access");
   try {
     await writeFile(path.join(fixture.root, "artifact.txt"), "bad\n", "utf8");
-    const graph = fixture.graphs.createGraph(undefined, [
+    const graph = fixture.graphs.createGraph([
       { nodeKey: "build", prompt: "leave artifact bad", verification: verificationContract(1) },
       { nodeKey: "publish", prompt: "must not run", dependencies: ["build"] }
     ]);
@@ -394,7 +394,7 @@ async function testGraphRecoveryResumesVerificationOnly(): Promise<void> {
   try {
     await writeFile(path.join(fixture.root, "artifact.txt"), "good\n", "utf8");
     const contract = verificationContract(2);
-    const graph = fixture.graphs.createGraph(undefined, [{
+    const graph = fixture.graphs.createGraph([{
       nodeKey: "recover",
       prompt: "resume only verification",
       verification: contract
@@ -436,7 +436,7 @@ async function testGraphRecoveryProjectsCompletedVerification(): Promise<void> {
   try {
     await writeFile(path.join(fixture.root, "artifact.txt"), "good\n", "utf8");
     const contract = verificationContract(1);
-    const graph = fixture.graphs.createGraph(undefined, [{ nodeKey: "project", prompt: "persist before projection", verification: contract }]);
+    const graph = fixture.graphs.createGraph([{ nodeKey: "project", prompt: "persist before projection", verification: contract }]);
     fixture.graphs.startGraph(graph.graphId);
     const node = fixture.graphs.readyNodes(graph.graphId)[0]!;
     const taskRunId = `graph:${graph.graphId}:${node.nodeId}`;
@@ -1095,7 +1095,7 @@ async function testHostRestartApprovalResumesVerificationAndUnlocksGraph(): Prom
     let graphId: string;
     let taskRunId: string;
     try {
-      const graph = graphs.createGraph(undefined, [
+      const graph = graphs.createGraph([
         { nodeKey: "build", prompt: "persisted candidate", verification: contract },
         { nodeKey: "publish", prompt: "consume verified candidate", dependencies: ["build"] }
       ]);

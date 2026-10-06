@@ -117,7 +117,7 @@ export const MarkdownContent = memo(function MarkdownContent({
       // 页内锚点（如脚注）保留默认跳转，不能带 target=_blank 否则点击被吞。
       if (path) return <FileLinkCard onPreviewFile={onPreviewFile} path={path} />;
       if (href?.startsWith("biny://")) {
-        if (/^biny:\/\/(?:date|project|file|thread|memory|snippet|scratch|skill|mcp|model|provider|tool|task|cron|crystal|bundle|mission|plan)\//u.test(href)) {
+        if (/^biny:\/\/(?:date|project|file|thread|memory|snippet|scratch|skill|mcp|model|provider|tool|task|cron|crystal|bundle|plan)\//u.test(href)) {
           return <LocalReferenceLink href={href} projectId={projectId}>{children}</LocalReferenceLink>;
         }
         return (

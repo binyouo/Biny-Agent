@@ -461,8 +461,7 @@ export class RuntimeHostServer {
       // 定时职责保留进程，但历史终态和等待人工处理的记录并不是执行中的工作。
       const scheduledWork = heartbeat?.enabled
         || commands.automationStore?.list().some((entry) => entry.status === "active")
-        || commands.graphs?.listGraphs().some((entry) => entry.status === "running")
-        || commands.graphs?.listGoals().some((entry) => entry.status === "active");
+        || commands.graphs?.listGraphs().some((entry) => entry.status === "running");
       const activeGoals = commands.sessionGoals?.list({ status: "active" }).length;
       if (activeWork || scheduledWork || activeGoals) {
         this.idleSince = undefined;
@@ -1315,25 +1314,8 @@ export class RuntimeHostServer {
         }, runtime);
       case "automation.pending":
         return commands.automationStore.listPending(optionalString(payload.automationId));
-      case "goal.create":
-        return await this.executeAdmission(async () => commands.graphs.createGoal(
-          requiredString(payload.title, "title"),
-          payload.payload,
-          optionalString(payload.goalId)
-        ), runtime);
-      case "goal.get":
-        return commands.graphs.getGoal(requiredString(payload.goalId, "goalId"));
-      case "goal.list":
-        return commands.graphs.listGoals();
-      case "goal.pause":
-        return await this.executeControl(async () => commands.graphs.updateGoal(requiredString(payload.goalId, "goalId"), "paused"), runtime);
-      case "goal.resume":
-        return await this.executeAdmission(async () => commands.graphs.updateGoal(requiredString(payload.goalId, "goalId"), "active"), runtime);
-      case "goal.cancel":
-        return await this.executeControl(async () => commands.graphs.updateGoal(requiredString(payload.goalId, "goalId"), "cancelled"), runtime);
       case "graph.create":
         return await this.executeAdmission(async () => commands.graphs.createGraph(
-          optionalString(payload.goalId),
           readGraphNodes(payload.nodes),
           payload.payload,
           optionalString(payload.graphId)

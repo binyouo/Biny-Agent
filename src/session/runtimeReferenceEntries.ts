@@ -36,7 +36,7 @@ function schemaDefinition(value: unknown, propertyName?: string, ancestors = new
   } finally { ancestors.delete(value); }
 }
 
-export function runtimeReferenceEntries(projection: { tasks?: unknown; automations?: unknown; goals?: unknown; graphs?: unknown },
+export function runtimeReferenceEntries(projection: { tasks?: unknown; automations?: unknown; graphs?: unknown },
   tools: unknown): RuntimeReferenceEntry[] {
   const result: RuntimeReferenceEntry[] = [];
   for (const task of records(projection.tasks, "tasks")) {
@@ -47,11 +47,6 @@ export function runtimeReferenceEntries(projection: { tasks?: unknown; automatio
     const id = field(automation, "automationId");
     if (id) result.push({ kind: "cron", id, label: field(automation, "name") ?? id,
       content: `${field(automation, "name") ?? id} · ${field(automation, "status") ?? "unknown"}` });
-  }
-  for (const goal of records(projection.goals)) {
-    const id = field(goal, "goalId");
-    if (id) result.push({ kind: "mission", id, label: field(goal, "title") ?? id,
-      content: `${field(goal, "title") ?? id} · ${field(goal, "status") ?? "unknown"}` });
   }
   for (const graph of records(projection.graphs)) {
     const id = field(graph, "graphId");

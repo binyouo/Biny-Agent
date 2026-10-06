@@ -193,7 +193,6 @@ const runtimeMutationSchema = z.enum([
   "session.goal.set", "session.goal.pause", "session.goal.resume", "session.goal.clear",
   "task.create", "task.start", "task.run", "task.cancel", "task.approve", "task.resume", "task.retry",
   "automation.create", "automation.pause", "automation.resume", "automation.run", "automation.delete",
-  "goal.create", "goal.pause", "goal.resume", "goal.cancel",
   "graph.create", "graph.start", "graph.pause", "graph.resume", "graph.cancel",
   "capability.register", "capability.replace", "capability.admit", "capability.reject", "capability.release",
   "capability.invoke", "capability.accept", "capability.start", "capability.result", "capability.chunk", "capability.fail", "capability.cancel",
@@ -618,7 +617,7 @@ export function registerDesktopIpc(context: IpcContext): void {
 
   handle(desktopIpc.runSlashCommand, async (_event, projectId: unknown, sessionId: unknown, command: unknown) => {
     const operation = typeof command === "string" ? runtimeCommandOperation(command) : undefined;
-    if (!["session.goal.get", "session.goal.pause", "session.goal.clear", "goal.get", "goal.pause", "goal.cancel"].includes(operation ?? "")) await settings.assertRuntimeReady();
+    if (!["session.goal.get", "session.goal.pause", "session.goal.clear"].includes(operation ?? "")) await settings.assertRuntimeReady();
     // 目标正文由领域层统一校验 20k；IPC 额外容纳命令前缀和空白，不截断正文。
     return await context.agents.runSlashCommand(
       idSchema.parse(projectId),
@@ -910,7 +909,7 @@ export function registerDesktopIpc(context: IpcContext): void {
   handleRecoveryGated(desktopIpc.referenceKinds, async () => localReferenceKinds);
   handleRecoveryGated(desktopIpc.referenceSearch, async (_event, projectId: unknown, query: unknown, kind: unknown, timeZone: unknown) => {
     const service = referenceService();
-    const selectedKind = z.enum(["date", "project", "file", "thread", "message", "memory", "snippet", "scratch", "skill", "agent", "mcp", "model", "provider", "tool", "tool-call", "task", "cron", "crystal", "bundle", "mission", "plan"]).optional().parse(kind);
+    const selectedKind = z.enum(["date", "project", "file", "thread", "message", "memory", "snippet", "scratch", "skill", "agent", "mcp", "model", "provider", "tool", "tool-call", "task", "cron", "crystal", "bundle", "plan"]).optional().parse(kind);
     return await service.search(z.string().max(128).parse(query), idSchema.parse(projectId), selectedKind, 30,
       z.string().min(1).max(100).optional().parse(timeZone));
   });

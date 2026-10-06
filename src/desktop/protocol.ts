@@ -1494,7 +1494,6 @@ export interface DesktopRuntimeProjection {
   tasks: unknown;
   automations: unknown;
   pendingFires: unknown;
-  goals: unknown;
   graphs: unknown;
   capabilities: unknown;
   /** 只返回渲染层需要的工作树状态，不把路径、分支和 base commit 暴露给普通 UI。 */
@@ -1537,10 +1536,6 @@ export type DesktopRuntimeMutation =
   | "automation.resume"
   | "automation.run"
   | "automation.delete"
-  | "goal.create"
-  | "goal.pause"
-  | "goal.resume"
-  | "goal.cancel"
   | "graph.create"
   | "graph.start"
   | "graph.pause"

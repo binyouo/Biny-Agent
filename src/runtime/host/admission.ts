@@ -38,7 +38,6 @@ export function isRuntimeHostAdmissionOperation(operation: string): boolean {
     || operation === "automation.run"
     || operation === "graph.start"
     || operation === "graph.resume"
-    || operation === "goal.resume"
     || operation === "session.goal.set"
     || operation === "session.goal.resume"
     || operation === "task.create"

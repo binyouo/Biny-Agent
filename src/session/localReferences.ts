@@ -17,7 +17,7 @@ import { LocalReferenceGraph } from "./referenceGraph.js";
 import { redactSensitiveValue } from "../utils/secrets.js";
 
 export type LocalReferenceKind = "date" | "project" | "file" | "thread" | "message" | "memory" | "snippet" | "scratch"
-  | "skill" | "agent" | "mcp" | "model" | "provider" | "tool" | "tool-call" | "task" | "cron" | "crystal" | "bundle" | "mission" | "plan";
+  | "skill" | "agent" | "mcp" | "model" | "provider" | "tool" | "tool-call" | "task" | "cron" | "crystal" | "bundle" | "plan";
 export type ParsedLocalReference =
   | { kind: "date"; range: DateReferenceRange }
   | { kind: Exclude<LocalReferenceKind, "date" | "message" | "tool-call">; id: string }
@@ -36,7 +36,7 @@ export interface LocalReferenceProject { id: string; path: string; name: string 
 const labels: Record<LocalReferenceKind, string> = {
   date: "日期", project: "项目", file: "文件", thread: "会话", message: "消息", memory: "记忆", snippet: "片段", scratch: "临时引用",
   skill: "技能", agent: "子代理", mcp: "MCP", model: "模型", provider: "服务商", tool: "工具", "tool-call": "工具调用", task: "任务", cron: "定时任务",
-  crystal: "结晶", bundle: "结晶包", mission: "目标", plan: "计划"
+  crystal: "结晶", bundle: "结晶包", plan: "计划"
 };
 export const localReferenceKinds = Object.entries(labels).map(([kind, label]) => ({ kind: kind as LocalReferenceKind, label }));
 
@@ -360,7 +360,7 @@ export class LocalReferenceService {
         if (memoryMatches >= limit) break;
       } } finally { store.close(); }
     }
-    if (!kind || ["skill", "agent", "mcp", "model", "provider", "tool", "task", "cron", "crystal", "bundle", "mission", "plan"].includes(kind)) {
+    if (!kind || ["skill", "agent", "mcp", "model", "provider", "tool", "task", "cron", "crystal", "bundle", "plan"].includes(kind)) {
       results.push(...(await this.existingEntries(projectId, kind)).filter((item) => matches(item.label) || matches(item.content)));
     }
     if (!kind || kind === "snippet" || kind === "scratch") {
@@ -447,7 +447,7 @@ export class LocalReferenceService {
         }
       } finally { store.close(); }
     }
-    if (this.runtimeEntries && (!kind || ["tool", "task", "cron", "mission", "plan"].includes(kind))) {
+    if (this.runtimeEntries && (!kind || ["tool", "task", "cron", "plan"].includes(kind))) {
       let entries: Awaited<ReturnType<NonNullable<typeof this.runtimeEntries>>>;
       try { entries = await this.runtimeEntries(projectId); }
       catch (cause) {
@@ -456,7 +456,7 @@ export class LocalReferenceService {
       }
       for (const entry of entries) {
         if (kind && entry.kind !== kind) continue;
-        if (!["tool", "task", "cron", "mission", "plan"].includes(entry.kind)) continue;
+        if (!["tool", "task", "cron", "plan"].includes(entry.kind)) continue;
         add(entry.kind, entry.id, entry.label, entry.content);
       }
     }

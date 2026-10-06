@@ -235,7 +235,7 @@ async function fixture(t: TestContext, run: (f: Fixture) => Promise<void>): Prom
   const graphs = await GoalGraphStore.open(root, authority);
   const tasks = await DurableTaskRunStore.open(root, authority);
   graphs.createSupervisedGraph({ graphId, supervisorSessionId: "cold-owner", nodes: [{ nodeKey: "work", prompt: "Read local facts" }] });
-  graphs.createGraph(undefined, [{ nodeKey: "fixed", prompt: "Fixed facts" }], {}, "fixed");
+  graphs.createGraph([{ nodeKey: "fixed", prompt: "Fixed facts" }], {}, "fixed");
   for (let index = 0; index < 3; index++) authority.appendEvent({ eventId: `event-${index}`, sessionId: "cold-owner", runId: `task-${index}`, turnId: `graph:${graphId}`, eventType: "fixture.graph" });
   tasks.create({ taskRunId: "cold-task", sessionId: "cold-owner", task: { prompt: "Unrelated task" } });
   const commands = { graphs, taskRuns: tasks, runtimeAuthority: authority } as CommandRuntime;

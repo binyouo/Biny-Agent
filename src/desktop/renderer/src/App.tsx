@@ -1795,7 +1795,7 @@ function DesktopApp(): React.JSX.Element {
   }, []);
   // 深链路由：MarkdownContent 叶子渲染直接调用 hub，这里统一解析并导航。
   const openDeepLink = useCallback(async (url: string, requestedProjectId?: string): Promise<void> => {
-    if (/^biny:\/\/(?:date|project|file|thread|memory|snippet|scratch|skill|agent|mcp|model|provider|tool|tool-call|task|cron|crystal|bundle|mission|plan)\//u.test(url)) {
+    if (/^biny:\/\/(?:date|project|file|thread|memory|snippet|scratch|skill|agent|mcp|model|provider|tool|tool-call|task|cron|crystal|bundle|plan)\//u.test(url)) {
       const projectId = requestedProjectId ?? workspace?.project.id;
       if (!projectId) return;
       try {

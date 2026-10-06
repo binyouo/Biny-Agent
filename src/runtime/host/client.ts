@@ -509,10 +509,6 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
     return await this.request("automation.pending", { automationId });
   }
 
-  async goalCreate(title: string, payload?: unknown, goalId?: string): Promise<HostOperationResult<unknown>> {
-    return await this.request("goal.create", { title, payload, goalId });
-  }
-
   async sessionGoalGet(sessionId?: string): Promise<SessionGoalRecord | undefined> {
     return await this.request("session.goal.get", { sessionId });
   }
@@ -533,27 +529,7 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
     return await this.request("session.goal.clear", { sessionId, expected });
   }
 
-  async goalGet(goalId: string): Promise<unknown> {
-    return await this.request("goal.get", { goalId });
-  }
-
-  async goalList(): Promise<unknown> {
-    return await this.request("goal.list", {});
-  }
-
-  async goalPause(goalId: string): Promise<HostOperationResult<unknown>> {
-    return await this.request("goal.pause", { goalId });
-  }
-
-  async goalResume(goalId: string): Promise<HostOperationResult<unknown>> {
-    return await this.request("goal.resume", { goalId });
-  }
-
-  async goalCancel(goalId: string): Promise<HostOperationResult<unknown>> {
-    return await this.request("goal.cancel", { goalId });
-  }
-
-  async graphCreate(input: { goalId?: string; nodes: GraphNodeInput[]; payload?: unknown; graphId?: string }): Promise<HostOperationResult<unknown>> {
+  async graphCreate(input: { nodes: GraphNodeInput[]; payload?: unknown; graphId?: string }): Promise<HostOperationResult<unknown>> {
     return await this.request("graph.create", input);
   }
 

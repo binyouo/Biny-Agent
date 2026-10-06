@@ -21,10 +21,10 @@ assert.equal(runtimeCommandOperation("/goal pause"), "session.goal.pause");
 assert.equal(runtimeCommandOperation("/goal resume"), "session.goal.resume");
 assert.equal(runtimeCommandOperation("/goal clear"), "session.goal.clear");
 assert.equal(runtimeCommandOperation("  ///goal\tReSuMe  "), "session.goal.resume");
-assert.equal(runtimeCommandOperation("/goal get workspace-goal"), "goal.get");
-assert.equal(runtimeCommandOperation("/goal pause workspace-goal"), "goal.pause");
-assert.equal(runtimeCommandOperation("/goal resume workspace-goal"), "goal.resume");
-assert.equal(runtimeCommandOperation("/goal cancel workspace-goal"), "goal.cancel");
+assert.equal(runtimeCommandOperation("/goal get workspace-goal"), undefined);
+assert.equal(runtimeCommandOperation("/goal pause workspace-goal"), undefined);
+assert.equal(runtimeCommandOperation("/goal resume workspace-goal"), undefined);
+assert.equal(runtimeCommandOperation("/goal cancel workspace-goal"), undefined);
 assert.equal(runtimeCommandOperation("/goal 完成所有验收\n保留  两个空格"), "session.goal.set");
 assert.equal(runtimeCommandOperation("/goal nonsense"), "session.goal.set");
 assert.equal(runtimeCommandOperation("/goal show unexpected-id"), undefined);
@@ -58,11 +58,8 @@ try {
   const resumed = await executeRuntimeCommand(runtime, services, "/goal resume", "desktop");
   assert.deepEqual(resumed?.sessionGoal, { action: "resume", status: "active" });
   assert.equal(sessionGoals.get("session-a")?.status, "active");
-  assert.deepEqual(cancellations, ["paused"], "workspace Goal control must not cancel the session goal turn");
-  const workspaceGoal = graphs.createGoal("独立 workspace 目标", {}, "workspace-goal");
-  const workspaceResult = await executeRuntimeCommand(runtime, services, `/goal pause ${workspaceGoal.goalId}`, "desktop");
-  assert.equal(workspaceResult?.sessionGoal, undefined, "workspace Goal actions do not enter session Goal mode");
-  assert.equal(graphs.getGoal(workspaceGoal.goalId)?.status, "paused");
+  assert.deepEqual(cancellations, ["paused"], "resuming a session goal must not cancel its current turn");
+  await assert.rejects(executeRuntimeCommand(runtime, services, "/goal pause workspace-goal", "desktop"), /Usage:/u);
   assert.equal(sessionGoals.get("session-a")?.status, "active");
   await assert.rejects(executeRuntimeCommand(runtime, services, "/goal clear unexpected-id", "tui"), /Usage:/u);
   await assert.rejects(sessionGoalSetCommand(root, "目标"), /--session/u);
@@ -83,7 +80,6 @@ try {
   assert.deepEqual(cleared?.sessionGoal, { action: "clear" });
   assert.equal(sessionGoals.get("session-a"), undefined);
   assert.deepEqual(cancellations, ["paused", "paused"], "clearing an active session goal also stops its current turn");
-  assert.equal(graphs.getGoal(workspaceGoal.goalId)?.status, "paused");
   await executeRuntimeCommand(runtime, services, "/goal clear", "desktop");
   assert.deepEqual(cancellations, ["paused", "paused"], "clearing a missing goal must not cancel unrelated ordinary work");
 } finally {

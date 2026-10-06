@@ -28,7 +28,7 @@ type PageOptions = { afterSequence?: number; limit?: number };
 await test("graph history continuation reaches failed and recovered node facts after read-only reopen", async (t) => {
   await fixture(t, async ({ root, authority, commands, read, rpc }) => {
     const graphId = "graph:cursor_%";
-    const graph = commands.graphs.createGraph(undefined, [{ nodeKey: "work", prompt: "Read persisted evidence" }], {}, graphId);
+    const graph = commands.graphs.createGraph([{ nodeKey: "work", prompt: "Read persisted evidence" }], {}, graphId);
     commands.graphs.startGraph(graphId);
     for (let index = 0; index < 105; index += 1) {
       authority.appendEvent({ eventId: `history-${index}`, sessionId: "owner", runId: index % 2 ? `task-${index}` : `graph:${graphId}`,

@@ -123,12 +123,12 @@ async function testAtomicRuntimeProjectionRollback(): Promise<void> {
       payload: { phase: "before-crash" }
     }, () => {
       authority.databaseHandle().prepare(
-        "INSERT INTO goals (goal_id, workspace_id, status, title, payload_json, created_at, updated_at, revision) VALUES (?, ?, 'active', ?, '{}', ?, ?, 0)"
-      ).run("atomic-goal", authority.workspaceId, "atomic", new Date().toISOString(), new Date().toISOString());
+        "INSERT INTO graphs (graph_id, workspace_id, status, payload_json, created_at, updated_at, revision) VALUES (?, ?, 'draft', '{}', ?, ?, 0)"
+      ).run("atomic-graph", authority.workspaceId, new Date().toISOString(), new Date().toISOString());
       throw new Error("injected projection crash");
     }), /injected projection crash/);
     assert.equal(authority.readEvents({ runId: "atomic-run" }).events.length, 0);
-    assert.equal(authority.databaseHandle().prepare("SELECT goal_id FROM goals WHERE goal_id = ?").get("atomic-goal"), undefined);
+    assert.equal(authority.databaseHandle().prepare("SELECT graph_id FROM graphs WHERE graph_id = ?").get("atomic-graph"), undefined);
     authority.close();
   } finally {
     await rm(root, { recursive: true, force: true });

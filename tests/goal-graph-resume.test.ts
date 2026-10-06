@@ -96,7 +96,7 @@ async function testResumeRunnableAndFixedGraphs(): Promise<void> {
   const graphs = await GoalGraphStore.open(root, authority);
   try {
     const nodes = [{ nodeKey: "first", prompt: "Work" }];
-    const fixed = graphs.createGraph(undefined, nodes);
+    const fixed = graphs.createGraph(nodes);
     const supervised = graphs.createSupervisedGraph({ supervisorSessionId: "owner", nodes });
     for (const graph of [fixed, supervised]) {
       graphs.startGraph(graph.graphId);

@@ -15,14 +15,14 @@ const kinds: Record<string, LocalReferenceKind> = {
   片段: "snippet", snippet: "snippet", 临时引用: "scratch", scratch: "scratch",
   技能: "skill", skill: "skill", 子代理: "agent", 智能体: "agent", agent: "agent", mcp: "mcp", 模型: "model", model: "model", 服务商: "provider", provider: "provider",
   工具: "tool", tool: "tool", 工具调用: "tool-call", "tool-call": "tool-call", call: "tool-call", 任务: "task", task: "task", 定时任务: "cron", cron: "cron",
-  结晶: "crystal", crystal: "crystal", 结晶包: "bundle", bundle: "bundle", 目标: "mission", mission: "mission", 计划: "plan", plan: "plan"
+  结晶: "crystal", crystal: "crystal", 结晶包: "bundle", bundle: "bundle", 计划: "plan", plan: "plan"
 };
 
 const kindLabels: Record<LocalReferenceKind, string> = {
   date: "日期", project: "项目", file: "文件", thread: "会话", message: "消息", memory: "记忆",
   snippet: "片段", scratch: "临时引用", skill: "技能", agent: "子代理", mcp: "MCP",
   model: "模型", provider: "服务商", tool: "工具", "tool-call": "工具调用", task: "任务", cron: "定时任务",
-  crystal: "结晶", bundle: "结晶包", mission: "目标", plan: "计划"
+  crystal: "结晶", bundle: "结晶包", plan: "计划"
 };
 
 export function referenceKindLabel(kind: LocalReferenceKind): string { return kindLabels[kind]; }

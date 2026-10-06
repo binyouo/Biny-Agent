@@ -148,8 +148,6 @@ export function operationLane(operation: string, payload: Record<string, unknown
     || operation === "heartbeat.status"
     || operation === "automation.list"
     || operation === "automation.pending"
-    || operation === "goal.get"
-    || operation === "goal.list"
     || operation === "graph.inspect"
     || operation === "graph.events"
     || operation === "graph.list"
@@ -159,7 +157,7 @@ export function operationLane(operation: string, payload: Record<string, unknown
   ) return "query";
   if (operation === "task.message" || operation === "task.cancel" || operation === "memory.sleep.cancel" || operation === "memory.embedding.cancel-download" || operation === "memory.embedding.cancel-rebuild") return "control";
   if (operation === "capability.cancel" || operation === "capability.fail" || operation === "capability.release" || operation === "capability.reject") return "control";
-  if (operation === "goal.pause" || operation === "goal.cancel" || operation === "graph.pause" || operation === "graph.cancel") return "control";
-  if (operation === "capability.register" || operation === "capability.replace" || operation === "capability.invoke" || operation === "capability.accept" || operation === "capability.start" || operation === "capability.result" || operation === "capability.chunk" || operation === "capability.admit" || operation === "graph.start" || operation === "graph.resume" || operation === "goal.resume") return "admission";
+  if (operation === "graph.pause" || operation === "graph.cancel") return "control";
+  if (operation === "capability.register" || operation === "capability.replace" || operation === "capability.invoke" || operation === "capability.accept" || operation === "capability.start" || operation === "capability.result" || operation === "capability.chunk" || operation === "capability.admit" || operation === "graph.start" || operation === "graph.resume") return "admission";
   return "mutation";
 }

@@ -151,23 +151,6 @@ export async function taskEventsCommand(workspaceRoot: string, taskRunId: string
   await hostAction(workspaceRoot, options, async (client) => await client.taskEvents(taskRunId, options.limit));
 }
 
-export async function goalCreateCommand(workspaceRoot: string, title: string, options: JsonOption & { payload?: string; goalId?: string } = {}): Promise<void> {
-  await hostAction(workspaceRoot, options, async (client) => await client.goalCreate(title, parseJsonOption(options.payload), options.goalId));
-}
-
-export async function goalListCommand(workspaceRoot: string, options: JsonOption = {}): Promise<void> {
-  await hostAction(workspaceRoot, options, async (client) => await client.goalList());
-}
-
-export async function goalActionCommand(workspaceRoot: string, action: "get" | "pause" | "resume" | "cancel", goalId: string, options: JsonOption = {}): Promise<void> {
-  await hostAction(workspaceRoot, options, async (client) => {
-    if (action === "get") return await client.goalGet(goalId);
-    if (action === "pause") return await client.goalPause(goalId);
-    if (action === "resume") return await client.goalResume(goalId);
-    return await client.goalCancel(goalId);
-  });
-}
-
 export async function sessionGoalSetCommand(workspaceRoot: string, objective: string, options: JsonOption & { session?: string; tokenBudget?: number } = {}): Promise<void> {
   const sessionId = requireGoalSession(options.session);
   if (!objective.trim()) throw new Error("Goal objective must not be empty.");
@@ -208,10 +191,10 @@ function requireGoalSession(sessionId?: string): string {
   return sessionId.trim();
 }
 
-export async function graphCreateCommand(workspaceRoot: string, options: JsonOption & { goalId?: string; graphId?: string; nodes: string; payload?: string } ): Promise<void> {
+export async function graphCreateCommand(workspaceRoot: string, options: JsonOption & { graphId?: string; nodes: string; payload?: string } ): Promise<void> {
   const parsedNodes = JSON.parse(options.nodes) as unknown;
   if (!Array.isArray(parsedNodes)) throw new Error("--nodes must be a JSON array.");
-  await hostAction(workspaceRoot, options, async (client) => await client.graphCreate({ goalId: options.goalId, graphId: options.graphId, nodes: parsedNodes as GraphNodeInput[], payload: parseJsonOption(options.payload) }));
+  await hostAction(workspaceRoot, options, async (client) => await client.graphCreate({ graphId: options.graphId, nodes: parsedNodes as GraphNodeInput[], payload: parseJsonOption(options.payload) }));
 }
 
 export async function graphListCommand(workspaceRoot: string, options: JsonOption = {}): Promise<void> {
