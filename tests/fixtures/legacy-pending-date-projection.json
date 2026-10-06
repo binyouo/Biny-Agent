@@ -1,0 +1,119 @@
+{
+  "provenance": {
+    "sourceRevision": "e62a05510833b91bbb73be56e64d35e98058ddb8",
+    "projectionRevision": "a4cca13143219fcdf4e372689f155e4776a6e768",
+    "construction": "Real e62 readAutomationCreateInput -> AutomationStore.create -> claimDue on temporary SQLite; production authority schema 12-to-13 migration; a4 openReadOnly -> listPending",
+    "sanitization": "Only random fireId values replaced with legacy-<automationId>; omitted fields unused by date-detail projection. scheduledAt strings, automationId, status, and snapshot ordering are copied unchanged.",
+    "scope": "Synthetic historical records with no scheduler execution; each case is independent."
+  },
+  "range": {
+    "startDate": "2035-06-12",
+    "endDate": "2035-06-13",
+    "timeZone": "UTC"
+  },
+  "cases": [
+    {
+      "name": "legacy mixed offsets reverse actual run time",
+      "pendingFires": [
+        {
+          "fireId": "legacy-later",
+          "automationId": "later",
+          "scheduledAt": "2035-06-12T09:00:00-04:00",
+          "status": "pending"
+        },
+        {
+          "fireId": "legacy-earlier",
+          "automationId": "earlier",
+          "scheduledAt": "2035-06-12T20:00:00+08:00",
+          "status": "pending"
+        }
+      ],
+      "expectedAutomationIds": [
+        "earlier",
+        "later"
+      ]
+    },
+    {
+      "name": "legacy mixed UTC precision reverses actual run time",
+      "pendingFires": [
+        {
+          "fireId": "legacy-plus-100ms",
+          "automationId": "plus-100ms",
+          "scheduledAt": "2035-06-12T12:00:00.100Z",
+          "status": "pending"
+        },
+        {
+          "fireId": "legacy-whole-second",
+          "automationId": "whole-second",
+          "scheduledAt": "2035-06-12T12:00:00Z",
+          "status": "pending"
+        }
+      ],
+      "expectedAutomationIds": [
+        "whole-second",
+        "plus-100ms"
+      ]
+    },
+    {
+      "name": "legacy equal-instant fires retain incoming snapshot tie order",
+      "pendingFires": [
+        {
+          "fireId": "legacy-m-third",
+          "automationId": "m-third",
+          "scheduledAt": "2035-06-12T08:00:00-04:00",
+          "status": "pending"
+        },
+        {
+          "fireId": "legacy-a-second",
+          "automationId": "a-second",
+          "scheduledAt": "2035-06-12T12:00:00Z",
+          "status": "pending"
+        },
+        {
+          "fireId": "legacy-z-first",
+          "automationId": "z-first",
+          "scheduledAt": "2035-06-12T20:00:00+08:00",
+          "status": "pending"
+        }
+      ],
+      "expectedAutomationIds": [
+        "m-third",
+        "a-second",
+        "z-first"
+      ]
+    },
+    {
+      "name": "legacy membership uses parsed UTC start-inclusive and end-exclusive bounds",
+      "pendingFires": [
+        {
+          "fireId": "legacy-outside-before",
+          "automationId": "outside-before",
+          "scheduledAt": "2035-06-12T07:59:59+08:00",
+          "status": "pending"
+        },
+        {
+          "fireId": "legacy-at-start",
+          "automationId": "at-start",
+          "scheduledAt": "2035-06-12T08:00:00+08:00",
+          "status": "pending"
+        },
+        {
+          "fireId": "legacy-before-end",
+          "automationId": "before-end",
+          "scheduledAt": "2035-06-13T07:59:59+08:00",
+          "status": "pending"
+        },
+        {
+          "fireId": "legacy-outside-end",
+          "automationId": "outside-end",
+          "scheduledAt": "2035-06-13T08:00:00+08:00",
+          "status": "pending"
+        }
+      ],
+      "expectedAutomationIds": [
+        "at-start",
+        "before-end"
+      ]
+    }
+  ]
+}

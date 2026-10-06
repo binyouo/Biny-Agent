@@ -71,7 +71,9 @@ export function scheduledTemporalRows(
     return [{ id: `automation:${projectId}:${automation.automationId}`, automationId: automation.automationId,
       projectId, name: automation.name, dueAt, date, time: `${part("hour")}:${part("minute")}`,
       fired: automation.fireCount > 0 }];
-  })).sort((left, right) => left.dueAt.localeCompare(right.dueAt) || left.id.localeCompare(right.id));
+  })).map((row) => ({ row, instant: Date.parse(row.dueAt) }))
+    .sort((left, right) => left.instant - right.instant || left.row.id.localeCompare(right.row.id))
+    .map(({ row }) => row);
 }
 
 export { parseTemporalSourceUri } from "../session/temporalSourceUri.js";
