@@ -20,7 +20,7 @@ function deferred(): { promise: Promise<void>; resolve: () => void } {
 }
 
 async function fixture(t: TestContext) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "biny-search-open-race-"));
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "biny-search-open-race-")));
   const workspace = path.join(root, "workspace");
   const agentRoot = path.join(root, "agent");
   const previousAgentRoot = process.env.BINY_AGENT_DIR;
