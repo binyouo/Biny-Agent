@@ -400,7 +400,51 @@ interface ClaudeLine {
 
 function binyEventsToClaudeLines(events: readonly SessionEvent[]): ClaudeLine[] {
   const lines: ClaudeLine[] = [];
+  // Legacy facts may omit call IDs. Reserve explicit IDs before generating any,
+  // including references on results that must never point at a synthetic call.
+  const usedToolCallIds = new Set(events.flatMap((event) =>
+    (event.type === "tool_call" || event.type === "tool_result") && event.toolCallId !== undefined
+      ? [event.toolCallId] : []));
+  const explicitCallCounts = new Map<string, number>();
   for (const event of events) {
+    if (event.type === "tool_call" && event.toolCallId !== undefined) {
+      explicitCallCounts.set(event.toolCallId, (explicitCallCounts.get(event.toolCallId) ?? 0) + 1);
+    }
+  }
+  type PendingCall = { id: string; order: number; closed: boolean; groups: PendingGroup[] };
+  type PendingGroup = { calls: PendingCall[]; head: number; count: number; uncertainThrough: number };
+  const pendingByTool = new Map<string, PendingGroup>();
+  const pendingBySequence = new Map<string, Map<number | undefined, PendingGroup>>();
+  const pendingById = new Map<string, PendingCall>();
+  const idUncertainThrough = new Map<string, number>();
+  let callOrder = 0;
+  let boundaryUncertainThrough = 0;
+  const groupFor = <Key,>(index: Map<Key, PendingGroup>, key: Key): PendingGroup => {
+    let group = index.get(key);
+    if (!group) {
+      group = { calls: [], head: 0, count: 0, uncertainThrough: 0 };
+      index.set(key, group);
+    }
+    return group;
+  };
+  const solePendingCall = (group: PendingGroup): PendingCall | undefined => {
+    if (group.count !== 1) return undefined;
+    // Every closed entry is skipped at most once in each of its two groups.
+    while (group.calls[group.head]?.closed) group.head += 1;
+    return group.calls[group.head];
+  };
+  const closePendingCall = (call: PendingCall | undefined): void => {
+    if (!call || call.closed) return;
+    call.closed = true;
+    for (const group of call.groups) group.count -= 1;
+    pendingById.delete(call.id);
+  };
+  for (const event of events) {
+    if (event.type === "user_message" || event.type === "assistant_message"
+      || event.type === "agent_message" || event.type === "turn_interrupted") {
+      // A conversation boundary is not evidence that an unresolved invocation closed.
+      boundaryUncertainThrough = callOrder;
+    }
     if (event.type === "user_message") {
       lines.push({
         type: "user",
@@ -420,6 +464,30 @@ function binyEventsToClaudeLines(events: readonly SessionEvent[]): ClaudeLine[] 
       continue;
     }
     if (event.type === "tool_call") {
+      let toolCallId = event.toolCallId ?? `call_${String(lines.length)}`;
+      if (event.toolCallId === undefined) {
+        const baseId = toolCallId;
+        for (let suffix = 1; usedToolCallIds.has(toolCallId); suffix += 1) {
+          toolCallId = `${baseId}_${String(suffix)}`;
+        }
+        usedToolCallIds.add(toolCallId);
+      }
+      if (!event.auditOnly) {
+        let sequences = pendingBySequence.get(event.tool);
+        if (!sequences) {
+          sequences = new Map();
+          pendingBySequence.set(event.tool, sequences);
+        }
+        const groups = [groupFor(pendingByTool, event.tool), groupFor(sequences, event.sequence)];
+        const call: PendingCall = { id: toolCallId, order: ++callOrder, closed: false, groups };
+        for (const group of groups) {
+          group.calls.push(call);
+          group.count += 1;
+        }
+        // Globally unreused nonempty IDs are the only IDs eligible for removal.
+        // Reused IDs still retain every invocation in their tool/sequence groups.
+        pendingById.set(toolCallId, call);
+      }
       lines.push({
         type: "assistant",
         timestamp: event.time,
@@ -427,7 +495,7 @@ function binyEventsToClaudeLines(events: readonly SessionEvent[]): ClaudeLine[] 
           role: "assistant",
           content: [{
             type: "tool_use",
-            id: event.toolCallId ?? `call_${String(lines.length)}`,
+            id: toolCallId,
             name: event.tool,
             input: isRecord(event.args) ? event.args : {}
           }]
@@ -436,6 +504,48 @@ function binyEventsToClaudeLines(events: readonly SessionEvent[]): ClaudeLine[] 
       continue;
     }
     if (event.type === "tool_result") {
+      const matchingGroups: PendingGroup[] = [];
+      if (event.toolCallId === undefined && !event.auditOnly) {
+        if (event.sequence === undefined) {
+          const group = pendingByTool.get(event.tool);
+          if (group) matchingGroups.push(group);
+        } else {
+          const sequences = pendingBySequence.get(event.tool);
+          const unknown = sequences?.get(undefined);
+          const exact = sequences?.get(event.sequence);
+          if (unknown) matchingGroups.push(unknown);
+          if (exact) matchingGroups.push(exact);
+        }
+      }
+      // A unique name/sequence match is evidence; FIFO among ambiguous calls is not.
+      const matchCount = matchingGroups.reduce((count, group) => count + group.count, 0);
+      const soleGroup = matchCount === 1 ? matchingGroups.find((group) => group.count === 1) : undefined;
+      const candidate = soleGroup ? solePendingCall(soleGroup) : undefined;
+      const inferredCall = candidate && candidate.id !== ""
+        && candidate.order > boundaryUncertainThrough
+        && candidate.order > (idUncertainThrough.get(candidate.id) ?? 0)
+        && candidate.groups.every((group) => candidate.order > group.uncertainThrough)
+        && (explicitCallCounts.get(candidate.id) ?? 0) <= 1
+        ? candidate : undefined;
+      const toolCallId = event.toolCallId ?? inferredCall?.id ?? "";
+      if (!event.auditOnly) {
+        if (event.toolCallId !== undefined) {
+          if (toolCallId !== "" && (explicitCallCounts.get(toolCallId) ?? 0) <= 1) {
+            closePendingCall(pendingById.get(toolCallId));
+          } else {
+            // Empty or reused IDs cannot prove which invocation an explicit result closed.
+            idUncertainThrough.set(toolCallId, callOrder);
+          }
+        } else if (inferredCall) {
+          closePendingCall(inferredCall);
+        } else {
+          // Retain uncertain candidates as blockers for later same-tool results.
+          // Deleting them would make an old late result look unique to a new call.
+          // Cutoffs poison only existing calls, without scanning retained blockers.
+          // Both unknown and exact sequences remain possible competitors.
+          for (const group of matchingGroups) group.uncertainThrough = callOrder;
+        }
+      }
       lines.push({
         type: "user",
         timestamp: event.time,
@@ -443,7 +553,7 @@ function binyEventsToClaudeLines(events: readonly SessionEvent[]): ClaudeLine[] 
           role: "user",
           content: [{
             type: "tool_result",
-            tool_use_id: event.toolCallId ?? "",
+            tool_use_id: toolCallId,
             content: toolResultText(event.result),
             is_error: event.executionStatus === "failed" || event.executionStatus === "cancelled"
           }]
