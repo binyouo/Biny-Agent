@@ -76,8 +76,8 @@ function contrast(foreground: string, background: string): number {
 
 test("shared light and dark palettes separate emphasis from health indicators", () => {
   for (const [mode, accent, green, selected] of [
-    ["light", "#0f5fa8", "#189a58", "#e9e9e9"],
-    ["dark", "#74b6fb", "#6fd99b", "#343434"]
+    ["light", "#0f5fa8", "#00bc7d", "#e9e9e9"],
+    ["dark", "#74b6fb", "#00bc7d", "#343434"]
   ] as const) {
     assert.equal(color("--accent", mode), accent);
     assert.equal(color("--green", mode), green);
