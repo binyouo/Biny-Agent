@@ -847,7 +847,7 @@ export class DesktopProjectService {
       const root = this.storage.attachmentsRoot(project);
       const target = attachmentFilePath(root, relativePath);
       if (!target) throw new Error("Invalid attachment path.");
-      return resolveWorkspacePath(root, path.basename(target), []);
+      return resolveWorkspacePath(root, path.relative(root, target), []);
     }
     return resolveWorkspacePath(project.path, relativePath, ["node_modules", ".git"]);
   }

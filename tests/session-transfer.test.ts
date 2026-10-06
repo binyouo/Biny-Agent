@@ -12,7 +12,7 @@ import path from "node:path";
 const agentRoot = await mkdtemp(path.join(os.tmpdir(), "biny-transfer-agent-"));
 process.env.BINY_AGENT_DIR = agentRoot;
 
-const { attachmentRoot, readAttachment, saveAttachment } = await import("../src/attachments/store.js");
+const { attachmentFilePath, attachmentRoot, readAttachment, saveAttachment } = await import("../src/attachments/store.js");
 const { globalAgentDir, legacyProjectStateDirName, projectSessionsDir, projectStateDirName } = await import("../src/config/paths.js");
 const { readStoredSessionEvents } = await import("../src/session/events.js");
 const { replaySessionEvents } = await import("../src/session/replay.js");
@@ -165,7 +165,7 @@ try {
     const restored = await readAttachment(target, refs[0] as never);
     assert.ok(restored);
     // 落到磁盘的附件字节也读得回来。
-    const disk = await readFile(path.join(attachmentRoot(target), path.basename(refs[0].path)));
+    const disk = await readFile(attachmentFilePath(attachmentRoot(target), refs[0].path)!);
     assert.equal(disk.toString(), "hello attachment");
 
     const importedAgain = await importSessionFile(target, bundlePath);
@@ -216,9 +216,9 @@ try {
     const imported = await importSessionFile(target, claudePath);
     assert.equal(imported.format, "claude");
     const { events } = await readStoredSessionEvents(target, imported.sessionId);
-    assert.deepEqual(events.map((event) => event.type), ["user_message", "tool_call", "tool_result", "assistant_message"]);
-    const toolCall = events[1];
-    const toolResult = events[2];
+    assert.deepEqual(events.map((event) => event.type), ["user_message", "agent_message", "tool_call", "agent_message", "tool_result", "agent_message", "assistant_message"]);
+    const toolCall = events.find((event) => event.type === "tool_call");
+    const toolResult = events.find((event) => event.type === "tool_result");
     assert.equal(toolCall?.type, "tool_call");
     assert.equal((toolCall as { tool: string }).tool, "Read");
     assert.equal((toolCall as { toolCallId?: string }).toolCallId, "call_1");

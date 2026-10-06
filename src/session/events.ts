@@ -120,6 +120,12 @@ const persistedAgentMessageSchema = z.discriminatedUnion("role", [
     timestamp: z.number().finite().optional()
   }).passthrough()
 ]);
+const sessionImportSourceSchema = z.object({
+  format: z.literal("claude"),
+  record: z.number().int().positive(),
+  messageId: z.string().min(1).optional(),
+  parentMessageId: z.string().min(1).optional()
+});
 const sessionEventSchema = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("user_message"),
@@ -255,7 +261,7 @@ const sessionEventSchema = z.discriminatedUnion("type", [
     relatedUsage: z.array(sessionUsageSchema).optional(),
     time: z.string().optional()
   }).passthrough()
-]);
+]).and(z.object({ importSource: sessionImportSourceSchema.optional() }).passthrough());
 
 export interface SessionSummary {
   fileName: string;

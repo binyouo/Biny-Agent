@@ -97,7 +97,10 @@ export function formatLocalReference(label: string, uri: string): string {
 
 function textOf(event: SessionEvent): string | undefined {
   if (event.type === "user_message") return event.auditOnly ? undefined : event.content;
-  if (event.type === "agent_message") return typeof event.message.content === "string" ? event.message.content : undefined;
+  if (event.type === "agent_message" && event.message.role === "assistant") {
+    const text = event.message.content.filter((part) => part.type === "text").map((part) => part.text).join("\n");
+    return text.trim() ? text : undefined;
+  }
   return undefined;
 }
 
@@ -106,10 +109,18 @@ function visibleMessages(events: SessionEvent[]): Array<{ slotId: string; messag
   const active = activeSessionMessageIds(events);
   const hasParentLinks = nodes.some((node) => node.parentId !== undefined);
   const selected = new Map<string, string>();
-  for (const node of nodes) if (node.slotId) selected.set(node.slotId, node.id);
+  const roles = new Map<string, string>();
+  const ambiguous = new Set<string>();
+  for (const node of nodes) if (node.slotId) {
+    const role = roles.get(node.slotId);
+    if (role !== undefined && role !== node.message.role) ambiguous.add(node.slotId);
+    roles.set(node.slotId, node.message.role);
+    selected.set(node.slotId, node.id);
+  }
   for (const event of events) if (event.type === "message_version_selected") selected.set(event.slotId, event.messageId);
   return nodes.flatMap((node) => {
-    if (!node.slotId || selected.get(node.slotId) !== node.id || (hasParentLinks && !active.has(node.id))) return [];
+    // A slot reused across roles cannot safely resolve a historical message reference.
+    if (!node.slotId || ambiguous.has(node.slotId) || selected.get(node.slotId) !== node.id || (hasParentLinks && !active.has(node.id))) return [];
     const content = textOf(events[node.eventIndex]!);
     return content === undefined ? [] : [{ slotId: node.slotId, messageId: node.id, content }];
   });

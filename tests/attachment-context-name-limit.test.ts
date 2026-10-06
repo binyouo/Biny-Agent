@@ -105,24 +105,25 @@ test("context size, regular-file, and no-follow checks remain enforced", async (
   await assert.rejects(readAttachmentContext(root, reference.path), /attachment_context_invalid/u);
   await fs.unlink(file);
   await fs.mkdir(file);
-  await assert.rejects(readAttachmentContext(root, reference.path), /attachment_context_invalid/u);
+  await assert.rejects(readAttachmentContext(root, reference.path), /attachment_path_invalid/u);
   await fs.rmdir(file);
   const target = path.join(f.root, "synthetic-context");
   await fs.writeFile(target, "target");
   await fs.symlink(target, file);
-  await assert.rejects(readAttachmentContext(root, reference.path), { code: "ELOOP" });
+  await assert.rejects(readAttachmentContext(root, reference.path), /attachment_path_invalid/u);
 });
 
 for (const code of ["EACCES", "EIO", "ELOOP"]) {
   test(`context open ${code} still propagates`, async (t) => {
     const f = await fixture(t);
     const reference = await saveAttachment(f.workspace, "short.png", "image/png", png);
+    await saveAttachmentContext(attachmentRoot(f.workspace), reference.path, "context");
     const failure = Object.assign(new Error("injected context open failure"), { code });
     t.mock.method(fs, "open", async (...args: Parameters<typeof fs.open>) => {
       assert.equal(args[1], constants.O_RDONLY | constants.O_NOFOLLOW);
       throw failure;
     });
-    await assert.rejects(readAttachment(f.workspace, reference), error => error === failure);
+    await assert.rejects(readAttachmentContext(attachmentRoot(f.workspace), reference.path), error => error === failure);
   });
 }
 
@@ -131,17 +132,28 @@ for (const stage of ["stat", "readFile", "close"] as const) {
     test(`context ${stage} ${code} still propagates and closes the handle`, async (t) => {
       const f = await fixture(t);
       const reference = await saveAttachment(f.workspace, "short.png", "image/png", png);
+      await saveAttachmentContext(attachmentRoot(f.workspace), reference.path, "context");
       const failure = Object.assign(new Error(`injected context ${stage} failure`), { code });
       let closed = 0;
+      const open = fs.open;
       t.mock.method(fs, "open", async (...args: Parameters<typeof fs.open>) => {
         assert.equal(args[1], constants.O_RDONLY | constants.O_NOFOLLOW);
-        return {
-          stat: async () => { if (stage === "stat") throw failure; return { isFile: () => true, size: 7 }; },
-          readFile: async () => { if (stage === "readFile") throw failure; return "context"; },
-          close: async () => { closed += 1; if (stage === "close") throw failure; }
-        } as unknown as Awaited<ReturnType<typeof fs.open>>;
+        const handle = await open(...args);
+        const stat = handle.stat.bind(handle);
+        const readFile = handle.readFile.bind(handle);
+        const close = handle.close.bind(handle);
+        handle.stat = async (...options: Parameters<typeof handle.stat>) => {
+          if (stage === "stat") throw failure;
+          return await stat(...options);
+        };
+        handle.readFile = async (...options: Parameters<typeof handle.readFile>) => {
+          if (stage === "readFile") throw failure;
+          return await readFile(...options);
+        };
+        handle.close = async () => { closed += 1; await close(); if (stage === "close") throw failure; };
+        return handle;
       });
-      await assert.rejects(readAttachment(f.workspace, reference), error => error === failure);
+      await assert.rejects(readAttachmentContext(attachmentRoot(f.workspace), reference.path), error => error === failure);
       assert.equal(closed, 1);
     });
   }
