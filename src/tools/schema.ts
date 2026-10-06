@@ -169,11 +169,11 @@ function validateObject(schema: JsonObjectSchema, value: unknown, path: string, 
   const record = value as Record<string, unknown>;
   const properties = schema.properties ?? {};
   for (const key of schema.required ?? []) {
-    if (!(key in record)) errors.push(`${path}.${key} is required`);
+    if (!Object.hasOwn(record, key)) errors.push(`${path}.${key} is required`);
   }
 
   for (const [key, field] of Object.entries(record)) {
-    const propertySchema = properties[key];
+    const propertySchema = Object.hasOwn(properties, key) ? properties[key] : undefined;
     if (!propertySchema) {
       if (schema.additionalProperties === false) errors.push(`${path}.${key} is not allowed`);
       continue;
