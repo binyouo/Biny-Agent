@@ -1819,7 +1819,14 @@ export class BinyTui {
         }
         this.unsubscribe?.();
         this.unsubscribe = undefined;
-        await this.runtimeHost?.close();
+        try {
+          await this.runtimeHost?.close();
+        } catch (error) {
+          // Host 超时仍须关闭本窗口的客户端，避免断线后重连；不能再次等待
+          // Host 已尝试关闭的本地 runtime，否则会越过 Host 的退出期限。
+          if (runtime instanceof RuntimeHostClient) await runtime.close().catch(() => undefined);
+          throw error;
+        }
         await runtime.close();
       } else {
         this.unsubscribe?.();
