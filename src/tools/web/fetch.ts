@@ -5,6 +5,7 @@
  * 抓取本身是把一个任意出网请求交给模型，所以目标地址必须先过 `addressPolicy` 的校验，
  * 跳转也要逐跳重新校验 —— 一次跳到 `169.254.169.254` 就能读到云实例凭证。
  */
+import { MIMEType } from "node:util";
 import { requestBrowser, type BrowserAutomationEndpoint } from "../browser.js";
 import { z } from "zod";
 import type { WebCookiesConfig, WebFetchConfig } from "../../config/schema.js";
@@ -244,7 +245,27 @@ export async function readBounded(response: Response, maxBytes: number): Promise
   } finally {
     await reader.cancel().catch(() => undefined);
   }
-  return { text: Buffer.concat(chunks, total).toString("utf8"), truncated };
+  const contentType = response.headers.get("content-type") ?? "";
+  const bytes = Buffer.concat(chunks, total);
+  let encoding = "utf-8";
+  try {
+    encoding = new MIMEType(contentType).params.get("charset") || encoding;
+  } catch {
+    // 无效 Content-Type 保留默认编码；不能把引号内的其他参数误当成 charset。
+  }
+  // 与网页解码一致，Unicode BOM 的优先级高于服务器声明的 charset。
+  if (bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf) encoding = "utf-8";
+  else if (bytes[0] === 0xff && bytes[1] === 0xfe) encoding = "utf-16le";
+  else if (bytes[0] === 0xfe && bytes[1] === 0xff) encoding = "utf-16be";
+  let decoder: TextDecoder;
+  try {
+    decoder = new TextDecoder(encoding);
+  } catch {
+    // 不受支持或畸形的 charset 不能让原本可读的 UTF-8 响应失败。
+    decoder = new TextDecoder("utf-8");
+  }
+  // 上限截断可能切在多字节字符中间；保留完整字符，不把未读完的尾部替换成乱码。
+  return { text: decoder.decode(bytes, { stream: truncated }), truncated };
 }
 
 function parseUrl(value: string): URL {
