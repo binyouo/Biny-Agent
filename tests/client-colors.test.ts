@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
 import { test } from "node:test";
+import { transformSync } from "esbuild";
 import { darkTheme, lightTheme } from "../src/tui/theme/palettes.js";
 import { Theme } from "../src/tui/theme/theme.js";
 
@@ -14,6 +15,29 @@ const styles = [...layers.matchAll(/@import "(\.\.?\/[^"]+\.css)"/gu)].map((entr
 }));
 const desktop = styles.map((entry) => entry.source).join("\n");
 const quickchat = read("quickchat/quickchat.css");
+
+function skinRuleSelectors(source: string): string[] {
+  // Let the existing CSS parser distinguish real comments from string/URL
+  // literals before finding rule boundaries. Keep global at-rules for validation.
+  const { code, warnings } = transformSync(source, { loader: "css", legalComments: "none", logLevel: "silent" });
+  assert.deepEqual(warnings, [], "skin CSS must parse without warnings");
+  // Skin attribute values are emitted as bare identifiers. Other literals and
+  // escapes must not supply fake braces or a fake skin selector to the check.
+  const structural = code.replace(/\burl\((?:\\[\s\S]|"(?:\\[\s\S]|[^"\\])*"|'(?:\\[\s\S]|[^'\\])*'|[^)\\"'])*\)|"(?:\\[\s\S]|[^"\\])*"|'(?:\\[\s\S]|[^'\\])*'|\\[\s\S]/giu, "");
+  // Inspect outer blocks too: a nested block or custom-property value must not
+  // hide an unscoped parent. Grouping headers do not select any elements.
+  return [...structural.matchAll(/([^{}]+)\{/gu)].map(rule => rule[1]!.trim())
+    .filter(selector => !/^@(?:layer|media|supports|container|scope)\b[^;]*$/u.test(selector));
+}
+
+function assertSkinSelectors(source: string, file = "fixture"): void {
+  const selectors = skinRuleSelectors(source);
+  assert.ok(selectors.length > 0, file);
+  for (const selector of selectors) {
+    // esbuild normalizes the quoted skin attribute values to unquoted values.
+    assert.match(selector, /^:root[^{}]*\[data-appearance-skin=(?:win98|winxp|longhorn|longhorn-dark)\]/u, file);
+  }
+}
 
 function declaration(source: string, selector: string, property: string): string | undefined {
   let value: string | undefined;
@@ -210,12 +234,56 @@ test("all product styles use the shared palette rather than local literals or mi
 
 test("optional desktop skin palettes remain scoped to their explicit skin selectors", () => {
   for (const file of ["styles/retro.css", "styles/retro-layout.css"]) {
-    const rules = [...read(file).matchAll(/([^{}]+)\{([^{}]*)\}/gu)];
-    assert.ok(rules.length > 0);
-    for (const rule of rules) {
-      assert.match(rule[1]!, /:root[^{}]*\[data-appearance-skin=['"](?:win98|winxp|longhorn|longhorn-dark)['"]\]/u, file);
-    }
+    assertSkinSelectors(read(file), file);
   }
+});
+
+test("skin rule scanning ignores commented CSS examples without hiding live selectors", () => {
+  const scoped = ":root[data-appearance-skin=win98] .settings-tabs";
+  assert.deepEqual(skinRuleSelectors(`
+    /* Example: .win98-tab { flex-grow: 1 } */
+    ${scoped} { /* .documented { } */ color: var(--text); }
+    /* ${scoped} */ .unscoped { color: var(--text); }
+    /* .another-example { } */
+  `), [scoped, ".unscoped"]);
+  assert.deepEqual(skinRuleSelectors(`/* ${scoped} { color: var(--text); } */`), []);
+  assert.deepEqual(skinRuleSelectors(`${scoped} {} .unscoped {}`), [scoped, ".unscoped"]);
+});
+
+test("skin rule scanning preserves comment delimiters inside quoted CSS values", () => {
+  const scoped = ":root[data-appearance-skin=winxp] .settings-tabs";
+  for (const quote of ['"', "'"]) {
+    assert.deepEqual(skinRuleSelectors(`
+      ${scoped} { content: ${quote}/*${quote}; }
+      .unscoped { content: ${quote}*/${quote}; }
+    `), [scoped, ".unscoped"]);
+  }
+});
+
+test("skin rule scanning preserves URL literals and traverses nested layers", () => {
+  const scoped = ":root[data-appearance-skin=winxp] .settings-tabs";
+  assert.deepEqual(skinRuleSelectors(`
+    ${scoped} { background: url(/*); }
+    .unscoped { background: url(*/); }
+  `), [scoped, ".unscoped"]);
+  assert.deepEqual(skinRuleSelectors(`@layer theme { ${scoped} {} @media (min-width: 1px) { .unscoped {} } }`), [scoped, ".unscoped"]);
+  assert.throws(() => skinRuleSelectors("}"), /skin CSS must/u);
+  for (const globalRule of [
+    '@font-face { font-family: "test"; src: url(test.woff); }',
+    '@property --test { syntax: "<color>"; inherits: false; initial-value: blue; }',
+    '@keyframes pulse { from { opacity: 0; } to { opacity: 1; } }'
+  ]) assert.throws(() => assertSkinSelectors(`${scoped} {} ${globalRule}`));
+  assert.throws(() => assertSkinSelectors("/* .comment { color: red; } */"));
+  assert.throws(() => assertSkinSelectors(`${scoped} {} .unscoped { color: red; }`));
+  for (const literal of [":root[data-appearance-skin=win98]", "}:root[data-appearance-skin=win98]"]) {
+    assert.throws(() => assertSkinSelectors(`.unscoped[data-example='${literal}'] { color: red; }`));
+    assert.throws(() => assertSkinSelectors(`.unscoped { content: '${literal}'; }`));
+    assert.throws(() => assertSkinSelectors(`.unscoped { background: url(${literal}); }`));
+  }
+  for (const value of ["foo(:root[data-appearance-skin=win98]{color:red})", "{:root[data-appearance-skin=win98]{color:red}}"])
+    assert.throws(() => assertSkinSelectors(`.unscoped { --example: ${value}; color: blue; }`));
+  for (const statement of ["@unknown foo(:root[data-appearance-skin=win98]);", "@layer theme;"])
+    assert.throws(() => assertSkinSelectors(`${scoped} {} ${statement} .unscoped { color: blue; }`));
 });
 
 test("readable text, status labels and primary controls retain sufficient contrast in both modes", () => {
