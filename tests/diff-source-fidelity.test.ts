@@ -48,9 +48,10 @@ test("committed Edit diff remains visible in the session tool summary", async ()
       operation: "update",
       path: "tail.txt",
       old_string: "tail\n",
-      new_string: "tail"
+      new_string: "tail",
+      replace_all: false
     }));
-    const result = await execution.execute({ toolCallId: "eof-edit" });
+    const result = await execution.execute({ toolCallId: "eof-edit", operationId: "eof-edit-operation" });
 
     assert.equal(await readFile(path.join(workspaceRoot, "tail.txt"), "utf8"), "tail");
     assert.ok(result.change.diff.includes(noNewlineMarker));
