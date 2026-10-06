@@ -417,3 +417,49 @@ for (const transport of ["direct", "compatible"] as const) {
     assert.equal(run.requests(), 1);
   });
 }
+
+const anyOfSiblingParameters: AgentTool["parameters"] = {
+  type: "object", required: ["path"], additionalProperties: false,
+  properties: { path: { type: "string", minLength: 1 }, count: { type: "integer", minimum: 1, maximum: 3 } },
+  anyOf: [{ type: "object" }]
+};
+for (const transport of ["direct", "compatible"] as const) {
+  for (const [label, input] of [
+    ["missing required property", {}],
+    ["invalid property type", { path: 7 }],
+    ["invalid property range", { path: "fixture", count: 0 }],
+    ["forbidden additional property", { path: "fixture", scope: "only-here" }]
+  ] as const) {
+    test(`${transport}: anyOf never bypasses sibling ${label}`, async () => {
+      const run = fixture([{ id: "anyof-invalid", input: JSON.stringify(input) }], { transport, parameters: anyOfSiblingParameters });
+      await run.done;
+      assert.deepEqual(run.executions, []);
+      assert.equal(run.requests(), 1);
+      assert.equal(run.events.some(event => event.type === "tool_execution_start"), false);
+      assert.equal(run.events.some(event => event.type === "error" && event.fatal), true);
+    });
+  }
+  test(`${transport}: valid anyOf sibling arguments execute once unchanged`, async () => {
+    const input = { path: "fixture", count: 3 };
+    const run = fixture([{ id: "anyof-valid", input: JSON.stringify(input) }], { transport, parameters: anyOfSiblingParameters });
+    await run.done;
+    assert.deepEqual(run.executions, [{ id: "anyof-valid", args: input }]);
+    assert.equal(run.requests(), 1);
+    assert.equal(run.events.filter(event => event.type === "tool_execution_start").length, 1);
+    assert.equal(run.events.some(event => event.type === "error"), false);
+  });
+  for (const value of ["text", 0.5, false]) {
+    test(`${transport}: pure anyOf preserves ${typeof value} arguments`, async () => {
+      const input = { value };
+      const parameters: AgentTool["parameters"] = {
+        type: "object", required: ["value"], additionalProperties: false,
+        properties: { value: { anyOf: [{ type: "string" }, { type: "number" }, { type: "boolean" }] } }
+      };
+      const run = fixture([{ id: "pure-anyof", input: JSON.stringify(input) }], { transport, parameters });
+      await run.done;
+      assert.deepEqual(run.executions, [{ id: "pure-anyof", args: input }]);
+      assert.equal(run.requests(), 1);
+      assert.equal(run.events.some(event => event.type === "error"), false);
+    });
+  }
+}
