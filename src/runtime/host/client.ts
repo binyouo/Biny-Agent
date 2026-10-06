@@ -1249,8 +1249,11 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
           clearTimeout(handshakeTimer);
           this.environmentTakeoverHandshake = false;
           const result = value as { hostEpoch: string; persistenceRoot: string; sequence: number; capabilities: string[]; negotiatedCapabilities?: string[] };
+          const epochChanged = result.hostEpoch !== this.hostEpoch;
           this.applyHostEpoch(result.hostEpoch);
-          this.sequence = result.sequence;
+          // Same-owner hello advertises the Host high-water, not events this client has consumed.
+          // Keep the replay cursor across handshake/subscribe retries; new epochs still resync.
+          if (epochChanged) this.sequence = result.sequence;
           // v5↔v5 协商生效集优先；旧 host 不回该字段时退化为 host 全集（行为同现状）。
           this.capabilities = result.negotiatedCapabilities ?? result.capabilities;
           this.noteConnectionEstablished();
