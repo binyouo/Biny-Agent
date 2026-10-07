@@ -713,6 +713,7 @@ function normalizeAutomationInput(input: AutomationCreateInput): AutomationCreat
   const executionTemplate = normalizeExecutionTemplate(input.executionTemplate);
   if (input.maxFires !== undefined && (!Number.isSafeInteger(input.maxFires) || input.maxFires < 1)) throw new Error("Automation maxFires must be a positive integer.");
   if (input.triggerType === "cron" && !input.schedule.cron?.trim()) throw new Error("Cron automation requires a cron expression.");
+  if (input.triggerType === "cron") validateCronExpression(input.schedule.cron!);
   if ((input.triggerType === "interval" || input.triggerType === "heartbeat") && (!Number.isSafeInteger(input.schedule.intervalMs) || (input.schedule.intervalMs ?? 0) < 100)) throw new Error("Interval automation requires intervalMs >= 100.");
   if (input.triggerType === "once" && input.schedule.at !== undefined && Number.isNaN(Date.parse(input.schedule.at))) throw new Error("Once automation at must be an ISO timestamp.");
   if (input.schedule.jitterMs !== undefined && (!Number.isSafeInteger(input.schedule.jitterMs) || input.schedule.jitterMs < 0)) throw new Error("Automation jitterMs must be a non-negative integer.");
@@ -774,6 +775,28 @@ function nextCron(expression: string, after: Date): Date {
     start.setMinutes(start.getMinutes() + 1);
   }
   throw new Error("Cron expression has no occurrence within one year.");
+}
+
+function validateCronExpression(expression: string): void {
+  const fields = expression.trim().split(/\s+/u);
+  if (fields.length !== 5) throw new Error("Cron expression must have five fields.");
+  const bounds = [["minute", 0, 59], ["hour", 0, 23], ["day", 1, 31], ["month", 1, 12], ["weekday", 0, 6]] as const;
+  for (const [index, [name, minimum, maximum]] of bounds.entries()) {
+    const field = fields[index]!;
+    const valid = field.split(",").every((part) => {
+      if (!/^(?:\*|\d+(?:-\d+)?)(?:\/\d+)?$/u.test(part)) return false;
+      const [range, stepText] = part.split("/");
+      const step = stepText === undefined ? 1 : Number(stepText);
+      if (!Number.isSafeInteger(step) || step < 1) return false;
+      if (range === "*") return true;
+      const [startText, endText] = range!.split("-");
+      const start = Number(startText);
+      const end = endText === undefined ? start : Number(endText);
+      return Number.isSafeInteger(start) && Number.isSafeInteger(end)
+        && start >= minimum && end <= maximum && start <= end;
+    });
+    if (!valid) throw new Error(`Invalid cron ${name} field: ${field}.`);
+  }
 }
 
 function cronField(field: string, value: number, minimum: number, maximum: number): boolean {
