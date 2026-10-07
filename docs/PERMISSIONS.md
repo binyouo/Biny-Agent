@@ -45,9 +45,11 @@ biny run "检查项目结构" --permission-mode read-only --json
 
 ## 文件枚举与搜索的完整性
 
-`Glob` 与 `Grep` 保留可读取的结果；扫描时无法读取或已经消失的目录记录在 `unreadableDirectories`，路径相对于工作区，`.` 表示工作区根目录。`Grep` 另外用 `skippedFiles` 标记读取失败的文件，用 `fileLimitReached` 标记候选文件超过扫描上限。
+`Glob` 与 `Grep` 保留可读取的结果；扫描时无法读取或已经消失的目录记录在 `unreadableDirectories`，路径相对于工作区，`.` 表示工作区根目录。`Grep` 另外用 `unreadableFiles` 标记读取失败的文件，用 `fileLimitReached` 标记候选文件超过扫描上限。
 
 `hasMore` 只表示发现的结果还有下一页。即使它为 `false`，上述跳过或上限提示仍表示结果不完整，不能据此认定工作区中没有其他匹配。恢复目录访问后应从第一页重新扫描；原有游标不会补回先前跳过的内容。主动忽略的路径及与指定 `path` 无关的目录不列入跳过提示；无法读取的祖先目录仍会报告。
+
+解析新 `Grep` 输出的调用方应使用 `unreadableFiles`；不再提供 `skippedFiles` 字段或别名。已保存的会话和归档不会改写，旧归档的预览或 `read_tool_result` 返回文本仍可能因敏感文本过滤而丢失旧字段名称。需要完整的具名警告时，应重新搜索生成新结果。
 
 ## 沙箱与审批
 

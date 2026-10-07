@@ -44,7 +44,7 @@ test("path-scoped Grep only enters its ancestors and descendants, retaining work
     assert.deepEqual(first, {
       matches: [{ path: "scope/target/a.txt", line: 2, column: 1, anchor: hashlineAnchor("needle first", 2), text: "needle first",
         before: [{ line: 1, text: "before" }], after: [{ line: 3, text: "after" }] }],
-      offset: 0, limit: 1, hasMore: true, nextOffset: 1, scannedFiles: 1, skippedFiles: undefined, fileLimitReached: undefined
+      offset: 0, limit: 1, hasMore: true, nextOffset: 1, scannedFiles: 1, unreadableFiles: undefined, fileLimitReached: undefined
     });
     assert.deepEqual(reads, [".", "scope", "scope/target", "scope/target/nested"].map((entry) => entry.split("/").join(path.sep)));
     const next = await search(root, { ...args, offset: first.nextOffset });

@@ -56,7 +56,7 @@ test("Grep retains context, cross-batch pagination, CRLF/EOF, filters and anchor
     assert.equal(first.matches[0]?.anchor, hashlineAnchor(lines[125]!, 126));
     assert.equal(first.hasMore, true);
     assert.equal(first.nextOffset, 27);
-    assert.equal(first.skippedFiles, undefined);
+    assert.equal(first.unreadableFiles, undefined);
     const final = await search(root, { query: "^context 309$", mode: "regex", path: "scope", glob: "scope/**/*.txt" });
     assert.equal(final.matches[0]?.line, 310);
     assert.equal(final.hasMore, false);
@@ -72,7 +72,7 @@ test("batch read-ahead preserves early pagination before a later invalid line", 
     const result = await search(root, { query: "^hit$", mode: "regex", limit: 1 });
     assert.equal(result.matches.length, 1);
     assert.equal(result.hasMore, true);
-    assert.equal(result.skippedFiles, undefined);
+    assert.equal(result.unreadableFiles, undefined);
   });
 });
 
@@ -83,7 +83,7 @@ test("regex still streams past the old file prefix, rolls back rejected files, a
     await writeFile(path.join(root, "b.txt"), `suffix-hit\n${"x".repeat(1024 * 1024 + 1)}\n`);
     const result = await search(root, { query: "^suffix-hit$", mode: "regex" });
     assert.deepEqual(result.matches.map((match) => match.path), ["a.txt"]);
-    assert.deepEqual(result.skippedFiles, ["b.txt"]);
+    assert.deepEqual(result.unreadableFiles, ["b.txt"]);
     assert.throws(() => createSearchFilesTool({ workspaceRoot: root, ignore: [] }).resolveExecution({ query: "x", mode: "regex", path: ".." }), /escapes workspace/u);
     if (process.platform !== "win32") {
       await symlink(os.tmpdir(), path.join(root, "outside"), "dir");

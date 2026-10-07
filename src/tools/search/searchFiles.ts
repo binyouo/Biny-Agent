@@ -47,7 +47,7 @@ export interface SearchFilesResult {
   hasMore: boolean;
   nextOffset?: number;
   scannedFiles: number;
-  skippedFiles?: string[];
+  unreadableFiles?: string[];
   unreadableDirectories?: string[];
   fileLimitReached?: boolean;
 }
@@ -75,7 +75,7 @@ export function createSearchFilesTool(context: ToolContext): Tool<SearchFilesArg
     promptGuidelines: [
       "Use literal mode for exact text and regex mode only when pattern syntax is needed",
       "Use path or glob to narrow broad searches; continue with nextOffset when hasMore is true",
-      "skippedFiles, unreadableDirectories or fileLimitReached means the search is incomplete even when hasMore is false",
+      "unreadableFiles, unreadableDirectories or fileLimitReached means the search is incomplete even when hasMore is false",
       "A Grep anchor can be passed to Edit only while that exact file line remains unchanged"
     ],
     parameters: {
@@ -134,7 +134,7 @@ export function createSearchFilesTool(context: ToolContext): Tool<SearchFilesArg
           );
           const fileLimitReached = candidates.length > maxScannedFiles;
           const matches: SearchFilesMatch[] = [];
-          const skippedFiles: string[] = [];
+          const unreadableFiles: string[] = [];
           let matchedLines = 0;
           let scannedFiles = 0;
           let hasMore = false;
@@ -215,7 +215,7 @@ export function createSearchFilesTool(context: ToolContext): Tool<SearchFilesArg
                 matchedLines = matchedLinesBeforeFile;
                 hasMore = hasMoreBeforeFile;
                 stopSearch = false;
-                skippedFiles.push(file);
+                unreadableFiles.push(file);
               }
               if (stopSearch) break;
             }
@@ -227,7 +227,7 @@ export function createSearchFilesTool(context: ToolContext): Tool<SearchFilesArg
               hasMore,
               nextOffset: hasMore ? offset + matches.length : undefined,
               scannedFiles,
-              skippedFiles: skippedFiles.length > 0 ? skippedFiles : undefined,
+              unreadableFiles: unreadableFiles.length > 0 ? unreadableFiles : undefined,
               fileLimitReached: fileLimitReached || undefined
             };
             if (unreadableDirectories.length) result.unreadableDirectories = unreadableDirectories;
