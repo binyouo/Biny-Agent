@@ -88,8 +88,13 @@ const languageByExtension: Record<string, string> = {
 };
 
 // Markdown 代码块的语言标注不一定和扩展名一致，这里补上常见写法。
+//
+// `console` 显式钉到 shellsession，不用 shiki 自己的别名：shiki 里 `console` 同时挂在
+// shellscript 和 shellsession 下（同一个 key，两个候选），透传是拿不准的。
+// 两者的区别是语义：`shellscript` 是「shell 脚本」，把输出行也当命令继续上色，整块一个颜色；
+// `shellsession` 是「终端会话记录」，认 `$ ` 提示符，命令与输出分开着色。
 const languageByFence: Record<string, string> = {
-  console: "shellscript",
+  console: "shellsession",
   golang: "go",
   htm: "html",
   html: "html",
