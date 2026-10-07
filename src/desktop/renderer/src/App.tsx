@@ -365,6 +365,24 @@ function DesktopApp(): React.JSX.Element {
     if (projectRef.current === snapshot.project.id) setWorkspace(snapshot);
   }, [sessionTreePages]);
 
+  useEffect(() => {
+    const subscribe = window.biny.onApplicationImportsChanged;
+    if (!subscribe) return;
+    let active = true;
+    let generation = 0;
+    const unsubscribe = subscribe(() => {
+      const request = ++generation;
+      void window.biny.bootstrap().then(bootstrap => {
+        if (!active || request !== generation) return;
+        setProjects(bootstrap.projects);
+        sessionTreePages.replaceAll(bootstrap.sidebarSessions);
+        setSidebarSessions(bootstrap.sidebarSessions);
+        if (bootstrap.workspace && projectRef.current === bootstrap.workspace.project.id) setWorkspace(bootstrap.workspace);
+      }).catch(error => { if (active && request === generation) setWarning(errorMessage(error)); });
+    });
+    return () => { active = false; unsubscribe(); };
+  }, [sessionTreePages]);
+
   const threadBriefState = useThreadBrief();
   const briefProjectIds = threadBriefState?.snapshot?.projects.map((project) => project.projectId).sort().join("\0") ?? "";
   useEffect(() => {
@@ -993,19 +1011,10 @@ function DesktopApp(): React.JSX.Element {
 
   const importSessionIntoProject = useCallback(async (projectId: string): Promise<void> => {
     try {
-      const snapshot = await window.biny.importSession(projectId);
-      if (projectRef.current === projectId) {
-        await adoptWorkspace(snapshot, snapshot.selectedSessionId);
-        if (snapshot.selectedSessionId) {
-          commitNavigation(pushNavigation(navigationRef.current, { projectId, sessionId: snapshot.selectedSessionId }));
-        }
-      } else {
-        mergeProjectSnapshot(snapshot);
-      }
-    } catch (error) {
-      setWarning(errorMessage(error));
-    }
-  }, [adoptWorkspace, commitNavigation, mergeProjectSnapshot]);
+      if (projectRef.current !== projectId) await adoptWorkspace(await window.biny.selectProject(projectId));
+      openSettings("导入");
+    } catch (error) { setWarning(errorMessage(error)); }
+  }, [adoptWorkspace, openSettings]);
 
   useEffect(() => {
     menuActionRef.current = (action) => {
@@ -1983,6 +1992,7 @@ function DesktopApp(): React.JSX.Element {
             onReadModelApiKey={readModelApiKey}
             onFontPreference={changeFontPreference}
             onSettingsCommitted={settingsCommitted}
+            onSessionImportComplete={async projectId => { mergeProjectSnapshot(await window.biny.refreshProject(projectId)); }}
             onResolveCloseRequest={resolveSettingsCloseRequest}
             onImportCookies={async () => await window.biny.importCookies()}
             onNotify={setWarning}

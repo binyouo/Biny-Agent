@@ -25,6 +25,17 @@ ipcRenderer.on(desktopIpc.referenceOpen, (_event, target: { uri: string; project
 const readRequest = createDesktopReadRequest((channel, ...args) => ipcRenderer.invoke(channel, ...args));
 
 const api: DesktopApi = {
+  applicationImports: async () => await ipcRenderer.invoke(desktopIpc.applicationImports),
+  onApplicationImportsChanged(listener) {
+    const handler = (): void => listener();
+    ipcRenderer.on(desktopIpc.applicationImportsChanged, handler);
+    return () => ipcRenderer.removeListener(desktopIpc.applicationImportsChanged, handler);
+  },
+  previewApplicationImport: async (source) => await ipcRenderer.invoke(desktopIpc.previewApplicationImport, source),
+  runApplicationImport: async (input) => await ipcRenderer.invoke(desktopIpc.runApplicationImport, input),
+  configureApplicationImportSync: async (input) => await ipcRenderer.invoke(desktopIpc.configureApplicationImportSync, input),
+  setApplicationImportSync: async (enabled) => await ipcRenderer.invoke(desktopIpc.setApplicationImportSync, enabled),
+  syncApplicationImports: async () => await ipcRenderer.invoke(desktopIpc.syncApplicationImports),
   activitySuggestions: async () => await ipcRenderer.invoke(desktopIpc.activitySuggestions),
   crystalRequest: async (request) => await ipcRenderer.invoke(desktopIpc.crystalRequest, request),
   bootstrap: async () => await readRequest(desktopIpc.bootstrap),

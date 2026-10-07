@@ -10,6 +10,7 @@ import { createRequire } from "node:module";
 import { Command, InvalidArgumentError, Option } from "commander";
 import { initCommand } from "./commands/init.js";
 import { widgetRenderCommand } from "./commands/widget.js";
+import { registerApplicationImportCommands } from "./commands/applicationImports.js";
 import { registerComputerCommands } from "./commands/computer.js";
 import { registerCuCommands } from "./commands/cu.js";
 import { registerBrowserCommands } from "./commands/browser.js";
@@ -344,6 +345,7 @@ program
   .option("--parent <session-id>", "only list direct children of a session")
   .option("--json", "print the page as JSON")
   .action((options: SessionsCommandOptions) => wrap(() => sessionsCommand(workspaceRoot, options))());
+registerApplicationImportCommands(program, workspaceRoot);
 const session = program.command("session").description("Export and import sessions");
 session
   .command("export")
@@ -358,13 +360,13 @@ session
   });
 session
   .command("import")
-  .description("Import a Biny, Claude Code, or Codex session file as a new session")
+  .description("Import a Biny, Claude Code, Codex, or ChatGPT session file as a new session")
   .argument("<file>", "path to the session file to import")
-  .option("--format <format>", "source format: biny, claude, or codex (auto-detected by default)")
+  .addOption(new Option("--format <format>", "source format (auto-detected by default)").choices(["biny", "claude", "codex", "chatgpt"]))
+  .option("--conversation <id>", "conversation to select from a ChatGPT export")
   .option("--json", "print the result as JSON")
-  .action((file: string, options: { format?: string; json?: boolean }) => {
-    const format: SessionTransferFormat | undefined = options.format === "biny" || options.format === "claude" || options.format === "codex" ? options.format : undefined;
-    return wrap(() => sessionImportCommand(workspaceRoot, file, { format, json: options.json }))();
+  .action((file: string, options: { format?: SessionTransferFormat; conversation?: string; json?: boolean }) => {
+    return wrap(() => sessionImportCommand(workspaceRoot, file, { format: options.format, conversationId: options.conversation, json: options.json }))();
   });
 const activity = program.command("activity").description("Inspect local Activity Recorder data");
 activity.command("analyze").argument("<session-id>", "activity session to analyze again").option("--json", "print JSON").action((sessionId: string, options: { json?: boolean }) => wrap(() => activityAnalyzeCommand(workspaceRoot, sessionId, options))());

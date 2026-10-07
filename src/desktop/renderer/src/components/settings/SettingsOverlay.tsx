@@ -1,3 +1,4 @@
+import { SettingsImport } from "./SettingsImport.js";
 import { SettingsAppshots } from "./SettingsAppshots.js";
 /**
  * Desktop 设置中心。
@@ -52,6 +53,7 @@ interface SettingsOverlayProps {
   appearancePreference?: AppearancePreference;
   onAppearancePreference?(preference: AppearancePreference): void;
   onSettingsCommitted(snapshot: DesktopSettingsSnapshot): void;
+  onSessionImportComplete?(projectId: string): Promise<void>;
   onNotify(message: string): void;
   closeRequest?: DesktopSettingsCloseRequest;
   onResolveCloseRequest(requestId: string, response: DesktopSettingsCloseResponse): Promise<void>;
@@ -92,7 +94,7 @@ interface SettingsOverlayProps {
   onCancelModelLogin(provider: DesktopModelLoginProvider, authRequestId: string): Promise<void>;
 }
 
-export type SettingsTab = "通用" | "用户界面" | "配色" | "聊天" | "模型" | "MCP 服务器" | "技能" | "插件" | "权限" | "电脑历史" | "记忆" | "网络搜索" | "浏览器" | "Computer Use" | "Appshots" | "关于";
+export type SettingsTab = "导入" | "通用" | "用户界面" | "配色" | "聊天" | "模型" | "MCP 服务器" | "技能" | "插件" | "权限" | "电脑历史" | "记忆" | "网络搜索" | "浏览器" | "Computer Use" | "Appshots" | "关于";
 
 /**
  * 侧栏导航采用单列结构：通用在最前，日常对话与能力居中，
@@ -102,6 +104,7 @@ export type SettingsTab = "通用" | "用户界面" | "配色" | "聊天" | "模
  */
 const settingsNav: Array<{ icon: IconName; tab: SettingsTab }> = [
   { icon: "sun", tab: "通用" },
+  { icon: "download", tab: "导入" },
   { icon: "network", tab: "模型" },
   { icon: "message", tab: "聊天" },
   { icon: "brain", tab: "记忆" },
@@ -121,6 +124,7 @@ const settingsNav: Array<{ icon: IconName; tab: SettingsTab }> = [
 const settingsRouteEntries = settingsNav.map(page => ({ value: page.tab }));
 const settingsTabLabels: Partial<Record<SettingsTab, string>> = { 模型: "模型供应商", 聊天: "聊天偏好" };
 const settingsPages: Record<SettingsTab, { description: string; keywords: string }> = {
+  导入: { description: "导入其他应用的模型设置、MCP 配置和会话。", keywords: "import 导入 同步 Claude Codex ChatGPT 会话 历史 模型 MCP" },
   配色: { description: "选择配色与界面皮肤，修改时即时预览。", keywords: "配色 主题 Windows 98 XP Longhorn 自定义" },
   通用: { description: "后台模型与快速对话。", keywords: "工具模型 视觉模型 后台 标题 记忆整理 快速对话 悬浮 小窗 失焦 隐藏 点击穿透" },
   用户界面: { description: "主题、界面密度与字体。", keywords: "外观 界面 主题 浅色 深色 跟随系统 密度 紧凑 舒适 宽松 字体 字号 行高 阅读" },
@@ -140,6 +144,7 @@ const settingsPages: Record<SettingsTab, { description: string; keywords: string
 };
 const settingsTabValues = new Set<SettingsTab>(settingsRouteEntries.map(({ value }) => value));
 const immediateSaveHints: Partial<Record<SettingsTab, string>> = {
+  导入: "导入与同步设置即时保存",
   模型: "连接与模型配置即时保存",
   电脑历史: "采集设置即时保存", 浏览器: "连接操作即时生效",
   Appshots: "截图设置即时保存", "Computer Use": "控制与开关即时生效", "MCP 服务器": "服务器配置单独保存",
@@ -193,6 +198,7 @@ function SettingsOverlayContent({
   appearancePreference,
   onNotify: _onNotify,
   onClose,
+  onSessionImportComplete,
   onTestModelConfiguration,
   onFetchModelCatalog,
   onReadModelApiKey,
@@ -456,6 +462,9 @@ function SettingsOverlayContent({
           {activeTab === "MCP 服务器" ? <McpServersView onError={_onNotify} onSuccess={(nextMessage) => notifyForTab("MCP 服务器", nextMessage)} projectId={workspace?.project.id} /> : null}
           {activeTab === "技能" ? <SettingsExtensionsView kind="skills" onError={_onNotify} projectId={workspace?.project.id} /> : null}
           {activeTab === "插件" ? <SettingsExtensionsView kind="plugins" onError={_onNotify} projectId={workspace?.project.id} /> : null}
+          {activeTab === "导入" ? <SettingsImport projectId={workspace?.project.id}
+            disabled={runtimeBusy || settingsDraft.dirtyCount > 0 || settingsDraft.saveState === "saving" || settingsDraft.saveState === "rolling_back" || settingsDraft.saveState === "recovery_required"}
+            onImported={async projectId => { settingsDraft.retryLoad(); await onSessionImportComplete?.(projectId); }} /> : null}
           {activeTab === "关于" ? <SettingsAbout version={version} /> : null}
           {activeTab === "浏览器" ? <SettingsBrowser /> : null}
           {activeTab === "Computer Use" ? <SettingsComputerUse /> : null}

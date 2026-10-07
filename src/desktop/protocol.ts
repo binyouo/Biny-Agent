@@ -1,4 +1,5 @@
 import type { TaskInspection, TaskInspectionOptions } from "../runtime/TaskCommunication.js";
+import type { ApplicationImportSource, ApplicationImportSnapshot, ApplicationImportPreview, ApplicationImportHistory } from "../imports/types.js";
 /**
  * 桌面端 IPC 协议。
  *
@@ -114,6 +115,13 @@ export const desktopIpc = {
   deleteSession: "desktop:session:delete",
   exportSession: "desktop:session:export",
   importSession: "desktop:session:import",
+  applicationImports: "desktop:imports:snapshot",
+  applicationImportsChanged: "desktop:imports:changed",
+  previewApplicationImport: "desktop:imports:preview",
+  runApplicationImport: "desktop:imports:run",
+  setApplicationImportSync: "desktop:imports:sync:set",
+  configureApplicationImportSync: "desktop:imports:sync:selection",
+  syncApplicationImports: "desktop:imports:sync:run",
   sendPrompt: "desktop:agent:send",
   mutateQueuedMessage: "desktop:agent:queue:mutate",
   toolCatalog: "desktop:agent:tool-catalog",
@@ -1599,6 +1607,13 @@ export type DesktopTerminalEvent =
  * 不需要自己推算改动结果。`on*` 系列返回取消订阅函数。
  */
 export interface DesktopApi {
+  applicationImports(): Promise<ApplicationImportSnapshot>;
+  onApplicationImportsChanged(listener: () => void): () => void;
+  previewApplicationImport(source: ApplicationImportSource): Promise<ApplicationImportPreview | undefined>;
+  runApplicationImport(input: { previewId: string; itemIds: string[]; projectId: string }): Promise<ApplicationImportHistory>;
+  setApplicationImportSync(enabled: boolean): Promise<ApplicationImportSnapshot>;
+  configureApplicationImportSync(input: { previewId: string; itemIds: string[]; projectId: string }): Promise<ApplicationImportSnapshot>;
+  syncApplicationImports(): Promise<ApplicationImportSnapshot>;
   activitySuggestions(): Promise<string[]>;
   crystalRequest(request: DesktopCrystalRequest): Promise<DesktopCrystalSnapshot>;
   bootstrap(): Promise<DesktopBootstrap>;

@@ -287,7 +287,7 @@ try {
     const imported = await importSessionFile(target, codexPath);
     assert.equal(imported.format, "codex");
     const { events } = await readStoredSessionEvents(target, imported.sessionId);
-    assert.deepEqual(events.map((event) => event.type), ["user_message", "tool_call", "tool_result", "assistant_message"]);
+    assert.deepEqual(events.map((event) => event.type), ["user_message", "tool_call", "tool_result", "agent_message", "assistant_message"]);
     assert.equal(events[0]?.type === "user_message" ? events[0].content : undefined, "codex 你好");
     const call = events[1];
     assert.equal(call?.type, "tool_call");
@@ -296,7 +296,9 @@ try {
     const result = events[2];
     assert.equal(result?.type, "tool_result");
     assert.equal((result as { result: unknown }).result, "/tmp");
-    assert.equal(events[3]?.type === "assistant_message" ? events[3].content : undefined, "完成");
+    assert.equal(events[4]?.type === "assistant_message" ? events[4].content : undefined, "完成");
+    assert.equal(events[3]?.type === "agent_message" ? events[3].messageId : undefined,
+      events[4]?.type === "assistant_message" ? events[4].messageId : undefined);
   }
 
   // Custom tool input 是原始文本；恰好能解析为 JSON 对象也不能改成 function arguments。

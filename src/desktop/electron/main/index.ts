@@ -1,3 +1,5 @@
+import { ApplicationImportService } from "../../../imports/service.js";
+import { DesktopApplicationImports } from "./DesktopApplicationImports.js";
 import { promises as fs } from "node:fs";
 import { computerDesktopEndpoint } from "../../../computer/desktopActivity.js";
 import { createAppshotsService } from "./appshotsService.js";
@@ -182,6 +184,7 @@ async function startDesktopApplication(): Promise<void> {
   });
   await threadBriefs.initialize();
   const settingsClose = new DesktopSettingsCloseCoordinator();
+  let importDraftOpen = false;
   // 浏览器控制面先于 Agent Host 启动，这样独立 Runtime Host 也能拿到同一个可见窗口。
   // 回调只在用户/Agent 真的触碰 cookie 或浏览器动作时执行，此时 agents 已完成装配。
   const defaultCookieJarPath = path.join(desktopRoot, "cookies.json");
@@ -377,6 +380,7 @@ async function startDesktopApplication(): Promise<void> {
 
   const createWindow = (): BrowserWindow => {
     settingsClose.reset();
+    importDraftOpen = false;
     mainWindow = createDesktopWindow(state, decideWindowClose, () => appearance.snapshot());
     const trailWindow = mainWindow;
     attachWindowTrail(trailWindow, () => { const snapshot = appearance.snapshot(); return resolveAppearance(snapshot.appearancePreference, snapshot.themePreference, nativeTheme.shouldUseDarkColors).win98Trail; });
@@ -409,7 +413,16 @@ async function startDesktopApplication(): Promise<void> {
     }
   };
 
+  const applicationImports = new DesktopApplicationImports(new ApplicationImportService({ configStore }), async () => {
+    if (quitCommitted) throw new Error("Biny 正在退出，暂不能导入。");
+    if (importDraftOpen) throw new Error("请先保存或取消其他设置更改，再导入内容。");
+    await settings.assertRuntimeReady();
+    agents.assertNoRunningTasks("任务运行期间不能导入内容。");
+  }, async () => { await agents.refreshMcpRuntimes(); });
+  applicationImports.start(async () => { broadcastToWindows(desktopIpc.applicationImportsChanged, undefined); });
+
   registerDesktopIpc({
+    applicationImports,
     appearance,
     temporalMemory,
     crystals,
@@ -431,7 +444,7 @@ async function startDesktopApplication(): Promise<void> {
     quickChatContext,
     toggleQuickChat,
     bootstrap,
-    updateSettingsDraftState: (draftState) => settingsClose.updateState(draftState),
+    updateSettingsDraftState: (draftState) => { importDraftOpen = draftState.dirty; settingsClose.updateState(draftState); },
     resolveSettingsCloseRequest: (requestId, response) => settingsClose.resolve(requestId, response)
   });
   installApplicationMenu(() => mainWindow);
@@ -549,6 +562,7 @@ async function startDesktopApplication(): Promise<void> {
         activityTray = undefined;
         quickChatWindow?.destroy();
         const cleanupResult = await waitForDesktopQuitCleanup(async () => {
+          await applicationImports.close();
           await threadBriefs.close();
           await fs.unlink(computerDesktopEndpoint()).catch(error => { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; });
           await appshots.close();

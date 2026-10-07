@@ -28,6 +28,7 @@ export interface SessionExportOptions {
 export interface SessionImportOptions {
   /** 显式指定来源格式；不给则按内容/扩展名自动探测。 */
   format?: SessionTransferFormat;
+  conversationId?: string;
   json?: boolean;
 }
 
@@ -56,7 +57,7 @@ export async function sessionImportCommand(
   options: SessionImportOptions = {}
 ): Promise<void> {
   await ensureAgentDirs(workspaceRoot);
-  const imported = await importSessionFile(workspaceRoot, sourcePath, { format: options.format });
+  const imported = await importSessionFile(workspaceRoot, sourcePath, { format: options.format, conversationId: options.conversationId });
   if (options.json) {
     console.log(JSON.stringify(imported));
     return;

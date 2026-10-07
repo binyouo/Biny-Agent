@@ -1,3 +1,4 @@
+import type { DesktopApplicationImports } from "./DesktopApplicationImports.js";
 /**
  * 桌面端 IPC handler 注册。
  *
@@ -74,6 +75,7 @@ import { TemporalMemoryIndex } from "../../../session/temporalMemory.js";
 import { resolveSessionFile } from "../../../session/store.js";
 
 interface IpcContext {
+  applicationImports: DesktopApplicationImports;
   appearance: AppearancePreviewCoordinator;
   crystals: DesktopCrystalService;
   temporalMemory: DesktopTemporalMemoryService;
@@ -287,10 +289,10 @@ export function registerDesktopIpc(context: IpcContext): void {
     channel: string,
     listener: Parameters<typeof ipcMain.handle>[1]
   ): void => {
-    handle(channel, async (event, ...args) => {
+    handle(channel, async (event, ...args) => context.applicationImports.withRuntimeAdmission(async () => {
       await settings.assertRuntimeReady();
       return await listener(event, ...args);
-    });
+    }));
   };
   handle(desktopIpc.bootstrap, async () => await context.bootstrap());
   handleRecoveryGated(desktopIpc.crystalRequest, async (_event, input: unknown) => {
@@ -529,12 +531,36 @@ export function registerDesktopIpc(context: IpcContext): void {
     return await context.agents.exportSession(parsedProjectId, parsedSessionId, exportFormat, result.filePath);
   });
 
+  handle(desktopIpc.applicationImports, async () => await context.applicationImports.snapshot());
+  handle(desktopIpc.previewApplicationImport, async (_event, source: unknown) => {
+    const parsedSource = z.enum(["claude", "codex", "chatgpt"]).parse(source);
+    if (parsedSource !== "chatgpt") return await context.applicationImports.preview(parsedSource);
+    const options: OpenDialogOptions = { title: "选择 ChatGPT 导出 JSON", filters: [{ name: "ChatGPT 导出", extensions: ["json"] }], properties: ["openFile"] };
+    const window = context.getWindow();
+    const result = window ? await dialog.showOpenDialog(window, options) : await dialog.showOpenDialog(options);
+    if (result.canceled || !result.filePaths[0]) return undefined;
+    return await context.applicationImports.preview(parsedSource, result.filePaths[0]);
+  });
+  handle(desktopIpc.runApplicationImport, async (_event, input: unknown) => {
+    const parsed = z.object({ previewId: idSchema, itemIds: z.array(z.string().min(1).max(300)).min(1).max(10_000), projectId: idSchema }).strict().parse(input);
+    const project = context.projects.requireProject(parsed.projectId);
+    const workspaceRoot = await context.projects.dataRoot(project);
+    return await context.applicationImports.run({ previewId: parsed.previewId, itemIds: parsed.itemIds, workspaceRoot });
+  });
+  handle(desktopIpc.configureApplicationImportSync, async (_event, input: unknown) => {
+    const parsed = z.object({ previewId: idSchema, itemIds: z.array(z.string().min(1).max(300)).max(10_000), projectId: idSchema }).strict().parse(input);
+    const workspaceRoot = await context.projects.dataRoot(context.projects.requireProject(parsed.projectId));
+    return await context.applicationImports.configureSyncSelection({ previewId: parsed.previewId, itemIds: parsed.itemIds, workspaceRoot });
+  });
+  handle(desktopIpc.setApplicationImportSync, async (_event, enabled: unknown) => await context.applicationImports.setSyncEnabled(z.boolean().parse(enabled)));
+  handle(desktopIpc.syncApplicationImports, async () => await context.applicationImports.sync());
+
   handle(desktopIpc.importSession, async (_event, projectId: unknown) => {
     const parsedProjectId = idSchema.parse(projectId);
     const options: OpenDialogOptions = {
       title: "导入会话",
       filters: [
-        { name: "会话文件 (Biny / Claude Code / Codex)", extensions: ["json", "jsonl"] },
+        { name: "会话文件 (Biny / Claude Code / Codex / ChatGPT)", extensions: ["json", "jsonl"] },
         { name: "全部文件", extensions: ["*"] }
       ],
       properties: ["openFile"]
@@ -1075,7 +1101,7 @@ export function registerDesktopIpc(context: IpcContext): void {
     return await context.activity.clear();
   });
 
-  handle(desktopIpc.saveSettings, async (_event, projectId: unknown, input: unknown) => {
+  handle(desktopIpc.saveSettings, async (_event, projectId: unknown, input: unknown) => context.applicationImports.withRuntimeAdmission(async () => {
     const parsedInput = settingsSaveInputSchema.parse(input);
     if (settingsSaveRequiresIdleRuntime(parsedInput)) {
       context.agents.assertNoRunningTasks("任务运行期间不能保存设置。");
@@ -1095,7 +1121,7 @@ export function registerDesktopIpc(context: IpcContext): void {
     }
     if (result.snapshot) context.appearance.committed();
     return result;
-  });
+  }));
 
   handle(desktopIpc.stageSettingsCredential, async (_event, secret: unknown, scope: unknown) => {
     return context.agents.stageSettingsCredential(

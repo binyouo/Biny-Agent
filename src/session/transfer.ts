@@ -1,7 +1,7 @@
 /**
  * 会话导入/导出。
  *
- * 三种格式在这里互相转换，统一落到 Biny 自己的 `SessionEvent` 序列上：
+ * 多种来源格式在这里互相转换，统一落到 Biny 自己的 `SessionEvent` 序列上：
  *
  * - **Biny bundle**：单文件 JSON（`format: "biny-session-bundle"`），自描述成
  *   `manifest + events + attachments` 三段。`events` 保留完整事件流；`attachments` 内嵌
@@ -9,6 +9,7 @@
  * - **外部对话格式**：一行一个 `{type:"user"|"assistant", message:{role,content}}` 的 JSONL，
  *   可导出也可导入。
  * - **外部 rollout**：只导入；事件在 `type:"response_item"` 的 payload 里。
+ * - **ChatGPT 导出**：只导入；从 conversations.json 数组或单会话 mapping 中选择明确活动链。
  *
  * 所有外部格式都先翻译成事件、再用 `parseSessionEvents` 走一遍与读取路径相同的校验，
  * 避免把一份语法上能解析、语义上却非法的文件写进会话目录。导入一律分配全新 session id，
@@ -17,24 +18,27 @@
  * 兼容负担：旧版平铺 bundle（顶层直接带 `events`，没有 `manifest`）只在本仓库短暂存在过、
  * 从未发布；导入端顺手认一下（便宜），导出端一律只产新格式。
  */
-import { createHash, randomBytes } from "node:crypto";
+import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { attachmentFilePath, attachmentRoot, readAttachmentBytes, createAttachmentImportBatch, type AttachmentImportBatch, AttachmentImportCleanupError } from "../attachments/store.js";
 import { rewriteAttachmentReferences } from "../attachments/references.js";
 import { parseSessionEvents, readStoredSessionEvents } from "./events.js";
-import type { AgentAssistantMessage } from "../agent/core/types.js";
-import type { SessionEvent, SessionImportSource } from "./recorder.js";
+import type { SessionEvent } from "./recorder.js";
 import { createSessionId } from "./recorder.js";
 import { rebaseForkedSessionEvents } from "./fork.js";
 import { createSessionFile, resolveSessionFile, sessionIdFromFile } from "./store.js";
 import { refreshSessionIndex } from "./catalog.js";
 import { publicAssistantMessage } from "./publicMessage.js";
+import { codexLinesToBinyEvents } from "./import/codex.js";
+import { importChatGptConversation, type ChatGptSkippedContentIssue } from "./import/chatgpt.js";
+export { listChatGptConversations, type ChatGptConversationSummary } from "./import/chatgpt.js";
+import { claudeLinesToBinyEvents, type ClaudeContentBlock, type ClaudeLine } from "./import/claude.js";
 
 /** bundle 的格式标识与版本号；导入时据此拒绝不兼容的文件。 */
 export const BINY_BUNDLE_FORMAT = "biny-session-bundle" as const;
 export const BINY_BUNDLE_VERSION = 2 as const;
-export type SessionTransferFormat = "biny" | "claude" | "codex";
+export type SessionTransferFormat = "biny" | "claude" | "codex" | "chatgpt";
 
 /** 单个附件超过这个体积就不内嵌进 bundle，导入时记为 skipped（不阻塞整体导入）。 */
 export const BINY_BUNDLE_ATTACHMENT_LIMIT = 50 * 1024 * 1024;
@@ -89,6 +93,10 @@ export interface ImportedSession {
   filePath: string;
   eventCount: number;
   format: SessionTransferFormat;
+  sourceConversationId?: string;
+  sourceTitle?: string;
+  skippedContentCount: number;
+  skippedContentIssues: ChatGptSkippedContentIssue[];
   /** 还原成功 / 因故跳过的附件统计；非 bundle 导入恒为 0。 */
   attachmentsRestored: number;
   attachmentsSkipped: number;
@@ -199,25 +207,44 @@ async function collectBundleAttachments(
  * 事件先按来源格式解析、再走一遍 `parseSessionEvents` 校验，最后经 `createSessionFile`
  * 以 `O_EXCL` 落盘，保证不会覆盖任何已存在的会话。
  */
+export interface SessionImportOptions {
+  format?: SessionTransferFormat;
+  conversationId?: string;
+}
+export interface ParsedSessionImport {
+  format: SessionTransferFormat;
+  events: SessionEvent[];
+  attachments: BinySessionBundleAttachment[];
+  sourceConversationId?: string;
+  sourceTitle?: string;
+  skippedContentCount: number;
+  skippedContentIssues: ChatGptSkippedContentIssue[];
+}
+
+/** 与实际导入共用的纯解析入口；不会创建 session 或还原附件。 */
+export function parseSessionImport(raw: string, sourcePath: string, options: SessionImportOptions = {}): ParsedSessionImport {
+  const format = options.format ?? detectSessionImportFormat(raw, sourcePath);
+  const source = format === "chatgpt" ? importChatGptConversation(raw, sourcePath, options.conversationId)
+    : { events: importEventsFromSource(raw, format, sourcePath), sourceConversationId: undefined, sourceTitle: undefined,
+      skippedContentCount: 0, skippedContentIssues: [] };
+  if (!source.events.length) throw new Error("导入文件里没有可用的会话事件。");
+  const events = parseSessionEvents(`${source.events.map((event) => JSON.stringify(event)).join("\n")}\n`);
+  return { format, ...source, events, attachments: format === "biny" ? parseBinyBundleAttachments(raw) : [] };
+}
+
 export async function importSessionFile(
   workspaceRoot: string,
   sourcePath: string,
-  options: { format?: SessionTransferFormat } = {}
+  options: SessionImportOptions = {}
 ): Promise<ImportedSession> {
-  const raw = await fs.readFile(sourcePath, "utf8");
-  const format = options.format ?? detectSessionImportFormat(raw, sourcePath);
-  const events = importEventsFromSource(raw, format, sourcePath);
-  if (!events.length) throw new Error("导入文件里没有可用的会话事件。");
-  const attachments = format === "biny" ? parseBinyBundleAttachments(raw) : [];
-  return await persistImportedSession(workspaceRoot, events, format, attachments);
+  return await persistImportedSession(workspaceRoot, parseSessionImport(await fs.readFile(sourcePath, "utf8"), sourcePath, options));
 }
 
 async function persistImportedSession(
   workspaceRoot: string,
-  events: SessionEvent[],
-  format: SessionTransferFormat,
-  bundleAttachments: BinySessionBundleAttachment[]
+  source: ParsedSessionImport
 ): Promise<ImportedSession> {
+  const { events, format, attachments: bundleAttachments } = source;
   let batch: AttachmentImportBatch | undefined;
   try {
     const restored = await restoreBundleAttachments(bundleAttachments, async () => {
@@ -237,6 +264,10 @@ async function persistImportedSession(
       filePath,
       eventCount: validated.length,
       format,
+      sourceConversationId: source.sourceConversationId,
+      sourceTitle: source.sourceTitle,
+      skippedContentCount: source.skippedContentCount,
+      skippedContentIssues: source.skippedContentIssues,
       attachmentsRestored: restored.restored,
       attachmentsSkipped: restored.skipped.length,
       attachmentsRenamed: restored.renamed,
@@ -253,7 +284,7 @@ async function persistImportedSession(
   }
 }
 
-function importEventsFromSource(raw: string, format: SessionTransferFormat, sourcePath: string): SessionEvent[] {
+function importEventsFromSource(raw: string, format: Exclude<SessionTransferFormat, "chatgpt">, sourcePath: string): SessionEvent[] {
   if (format === "biny") return parseBinyBundle(raw, sourcePath);
   if (format === "claude") return claudeLinesToBinyEvents(parseJsonLines(raw, sourcePath));
   return codexLinesToBinyEvents(parseJsonLines(raw, sourcePath));
@@ -262,12 +293,14 @@ function importEventsFromSource(raw: string, format: SessionTransferFormat, sour
 // ── 格式探测 ────────────────────────────────────────────────────────────────
 
 /** 显式 format 优先；否则先看 bundle 信封，再按首行的字段形状区分两类外部格式。 */
-function detectSessionImportFormat(raw: string, sourcePath: string): SessionTransferFormat {
+export function detectSessionImportFormat(raw: string, sourcePath: string): SessionTransferFormat {
   const trimmed = raw.trimStart();
+  if (trimmed.startsWith("[")) return "chatgpt";
   if (trimmed.startsWith("{")) {
     try {
       const parsed: unknown = JSON.parse(trimmed);
       if (isRecord(parsed) && parsed.format === BINY_BUNDLE_FORMAT) return "biny";
+      if (isRecord(parsed) && isRecord(parsed.mapping)) return "chatgpt";
     } catch {
       // 单 JSON 解析失败就按 JSONL 继续探测。
     }
@@ -287,7 +320,7 @@ function detectSessionImportFormat(raw: string, sourcePath: string): SessionTran
     }
   }
   if (/\.json$/iu.test(sourcePath)) return "biny";
-  throw new Error(`无法识别会话文件格式：${path.basename(sourcePath)}。请明确指定是 Biny、Claude Code 还是 Codex。`);
+  throw new Error(`无法识别会话文件格式：${path.basename(sourcePath)}。请明确指定是 Biny、Claude Code、Codex 还是 ChatGPT。`);
 }
 
 // ── Biny bundle ─────────────────────────────────────────────────────────────
@@ -405,25 +438,6 @@ function rewriteAttachmentPaths(events: readonly SessionEvent[], pathBySource: R
 }
 
 // ── 外部对话格式 ─────────────────────────────────────────────────────────────
-
-interface ClaudeContentText { type: "text"; text: string }
-interface ClaudeContentThinking { type: "thinking"; thinking?: string; text?: string }
-interface ClaudeContentToolUse { type: "tool_use"; id?: string; name?: string; input?: unknown }
-interface ClaudeContentToolResult {
-  type: "tool_result";
-  tool_use_id?: string;
-  content?: string | Array<{ type?: string; text?: string }>;
-  is_error?: boolean;
-}
-type ClaudeContentBlock = ClaudeContentText | ClaudeContentThinking | ClaudeContentToolUse | ClaudeContentToolResult | { type?: string };
-
-interface ClaudeLine {
-  uuid?: string;
-  parentUuid?: string;
-  type?: string;
-  timestamp?: string;
-  message?: { role?: string; content?: string | ClaudeContentBlock[] };
-}
 
 function binyEventsToClaudeLines(events: readonly SessionEvent[]): ClaudeLine[] {
   const lines: ClaudeLine[] = [];
@@ -591,312 +605,6 @@ function binyEventsToClaudeLines(events: readonly SessionEvent[]): ClaudeLine[] 
   return lines;
 }
 
-function claudeLinesToBinyEvents(lines: unknown[]): SessionEvent[] {
-  const events: SessionEvent[] = [];
-  const toolNameByCallId = new Map<string, string>();
-  const callCounts = new Map<string, number>();
-  const resultCounts = new Map<string, number>();
-  for (const line of lines) {
-    if (!isRecord(line) || (line.type !== "user" && line.type !== "assistant")
-      || !isRecord(line.message) || !Array.isArray(line.message.content)) continue;
-    for (const block of line.message.content) {
-      if (!isRecord(block)) continue;
-      const id = line.message.role === "assistant" && block.type === "tool_use" ? block.id
-        : line.message.role === "user" && block.type === "tool_result" ? block.tool_use_id : undefined;
-      if (typeof id !== "string" || !id) continue;
-      const counts = block.type === "tool_use" ? callCounts : resultCounts;
-      counts.set(id, (counts.get(id) ?? 0) + 1);
-    }
-  }
-  const canonicalToolId = (id: string | undefined): id is string =>
-    typeof id === "string" && id !== "" && (callCounts.get(id) ?? 0) <= 1 && (resultCounts.get(id) ?? 0) <= 1;
-  let parentMessageId: string | undefined;
-  const identity = (): { messageId: string; parentMessageId?: string; slotId: string } => {
-    const messageId = `msg_${randomBytes(12).toString("hex")}`;
-    const linked = { messageId, parentMessageId, slotId: messageId };
-    parentMessageId = messageId;
-    return linked;
-  };
-  for (const [index, line] of lines.entries()) {
-    if (!isRecord(line)) continue;
-    const claude = line as ClaudeLine;
-    if (claude.type !== "user" && claude.type !== "assistant") continue;
-    const message = claude.message;
-    if (!isRecord(message)) continue;
-    const time = typeof claude.timestamp === "string" ? claude.timestamp : undefined;
-    const importSource: SessionImportSource = {
-      format: "claude",
-      record: index + 1,
-      messageId: typeof claude.uuid === "string" ? nonEmpty(claude.uuid) : undefined,
-      parentMessageId: typeof claude.parentUuid === "string" ? nonEmpty(claude.parentUuid) : undefined
-    };
-    const translated: SessionEvent[] = [];
-    if (message.role === "user") {
-      pushClaudeUserContent(translated, message.content, time, toolNameByCallId);
-      for (const event of translated) {
-        if (event.type === "user_message") {
-          events.push({ ...event, ...identity(), importSource });
-        } else if (event.type === "tool_result") {
-          // Missing invocation IDs are not evidence of a link to a preceding call.
-          if (canonicalToolId(event.toolCallId)) {
-            events.push({ type: "agent_message", ...identity(), importSource, time, message: {
-              role: "toolResult", toolCallId: event.toolCallId, toolName: event.tool,
-              content: [{ type: "text", text: toolResultText(event.result) }], details: event.result,
-              isError: event.executionStatus === "failed" ? true : undefined
-            } });
-          }
-          events.push({ ...event, importSource });
-        }
-      }
-    } else if (message.role === "assistant") {
-      pushClaudeAssistantContent(translated, message.content, time, toolNameByCallId);
-      const content: AgentAssistantMessage["content"] = [];
-      for (const event of translated) {
-        if (event.type === "assistant_message") {
-          if (event.reasoningContent) content.push({ type: "reasoning", text: event.reasoningContent });
-          if (event.content) content.push({ type: "text", text: event.content });
-        } else if (event.type === "tool_call") {
-          // Reused source IDs retain every flat fact, without choosing a winning invocation.
-          if (event.toolCallId && (callCounts.get(event.toolCallId) ?? 0) > 1) toolNameByCallId.delete(event.toolCallId);
-          if (canonicalToolId(event.toolCallId)) content.push({ type: "toolCall", id: event.toolCallId, name: event.tool,
-            arguments: isRecord(event.args) ? event.args : {} });
-        }
-      }
-      const linked = content.length ? identity() : undefined;
-      if (linked) events.push({ type: "agent_message", ...linked, importSource, time,
-        message: { role: "assistant", content } });
-      for (const event of translated) {
-        // The display projection shares its canonical identity; it is not a second message.
-        events.push(event.type === "assistant_message" && linked
-          ? { ...event, ...linked, importSource }
-          : { ...event, importSource });
-      }
-    }
-  }
-  return events;
-}
-
-function pushClaudeUserContent(
-  events: SessionEvent[],
-  content: string | ClaudeContentBlock[] | undefined,
-  time: string | undefined,
-  toolNameByCallId: ReadonlyMap<string, string>
-): void {
-  if (typeof content === "string") {
-    if (content.trim()) events.push({ type: "user_message", content, time });
-    return;
-  }
-  if (!Array.isArray(content)) return;
-  const textParts: string[] = [];
-  for (const block of content) {
-    if (isClaudeTextBlock(block)) {
-      textParts.push(block.text);
-      continue;
-    }
-    if (!isRecord(block)) continue;
-    if (block.type === "tool_result") {
-      // 工具结果在外部格式里以 user 角色承载；只有真正执行过才单独翻译，避免伪造结果。
-      const result = block as ClaudeContentToolResult;
-      const toolCallId = typeof result.tool_use_id === "string" ? result.tool_use_id : undefined;
-      events.push({
-        type: "tool_result",
-        tool: (toolCallId && toolNameByCallId.get(toolCallId)) || "tool",
-        toolCallId,
-        result: claudeToolResultText(result.content),
-        executionStatus: result.is_error === true ? "failed" : "succeeded",
-        time
-      });
-    }
-  }
-  const text = textParts.join("\n").trim();
-  if (text) events.push({ type: "user_message", content: text, time });
-}
-
-function pushClaudeAssistantContent(
-  events: SessionEvent[],
-  content: string | ClaudeContentBlock[] | undefined,
-  time: string | undefined,
-  toolNameByCallId: Map<string, string>
-): void {
-  if (typeof content === "string") {
-    if (content.trim()) events.push({ type: "assistant_message", content, time });
-    return;
-  }
-  if (!Array.isArray(content)) return;
-  const textParts: string[] = [];
-  let reasoning = "";
-  const toolCalls: Array<{ id?: string; name: string; input: unknown }> = [];
-  for (const block of content) {
-    if (isClaudeTextBlock(block)) {
-      textParts.push(block.text);
-      continue;
-    }
-    if (!isRecord(block)) continue;
-    if (block.type === "thinking") {
-      const thinking = (block as ClaudeContentThinking);
-      const value = typeof thinking.thinking === "string" ? thinking.thinking : thinking.text;
-      if (typeof value === "string") reasoning = reasoning ? `${reasoning}\n${value}` : value;
-      continue;
-    }
-    if (block.type === "tool_use") {
-      const use = block as ClaudeContentToolUse;
-      if (typeof use.name === "string" && use.name) toolCalls.push({ id: use.id, name: use.name, input: use.input });
-    }
-  }
-  const text = textParts.join("\n").trim();
-  if (text || reasoning) {
-    events.push({
-      type: "assistant_message",
-      content: text,
-      reasoningContent: reasoning || undefined,
-      time
-    });
-    reasoning = "";
-  }
-  for (const call of toolCalls) {
-    if (typeof call.id === "string") toolNameByCallId.set(call.id, call.name);
-    events.push({
-      type: "tool_call",
-      tool: call.name,
-      args: isRecord(call.input) ? call.input : {},
-      toolCallId: call.id,
-      time
-    });
-  }
-}
-
-// ── 外部 rollout ───────────────────────────────────────────────────────────
-
-interface CodexContentPart { type?: string; text?: string }
-interface CodexReasoningSummaryPart { type?: string; text?: string }
-interface CodexMessagePayload {
-  type?: string;
-  role?: string;
-  content?: CodexContentPart[];
-  // function_call / custom_tool_call
-  name?: string;
-  call_id?: string;
-  arguments?: unknown;
-  input?: unknown;
-  // function_call_output / custom_tool_call_output
-  output?: unknown;
-  // reasoning
-  summary?: CodexReasoningSummaryPart[];
-}
-interface CodexLine { type?: string; timestamp?: string; payload?: CodexMessagePayload }
-
-/**
- * 把外部 rollout 翻成 Biny 事件。真实 payload 形态：
- *
- * - `message`：`content[].text`，`input_text`（user）/`output_text`（assistant）。
- * - `function_call`：`name` + `call_id` + `arguments`（**JSON 字符串**）。
- * - `custom_tool_call`：`name` + `call_id` + `input`（原始字符串，例如某些外部工具的结构化输入）。
- * - `function_call_output` / `custom_tool_call_output`：`call_id` + `output`（通常是
- *   `{"output":"...","metadata":{...}}` 的 JSON 字符串）。
- * - `reasoning`：`summary[].text`（`summary_text`），折成 assistant 事件的 reasoningContent。
- *
- * 事件顺序与源文件一致：遇到 call 立即发 `tool_call`，遇到 output 立即发 `tool_result`，
- * 用 `call_id` 对回工具名。一个 message 可能跟在若干 call 之后，因此逐 payload 处理、不做预分组合。
- */
-function codexLinesToBinyEvents(lines: unknown[]): SessionEvent[] {
-  const events: SessionEvent[] = [];
-  const toolNameByCallId = new Map<string, string>();
-  let pendingReasoning = "";
-  for (const line of lines) {
-    if (!isRecord(line)) continue;
-    const codex = line as CodexLine;
-    if (codex.type !== "response_item") continue;
-    const payload = codex.payload;
-    if (!isRecord(payload)) continue;
-    const time = typeof codex.timestamp === "string" ? codex.timestamp : undefined;
-
-    if (payload.type === "reasoning") {
-      const text = codexReasoningText(payload);
-      if (text) pendingReasoning = pendingReasoning ? `${pendingReasoning}\n${text}` : text;
-      continue;
-    }
-    if (payload.type === "function_call" || payload.type === "custom_tool_call") {
-      const name = typeof payload.name === "string" && payload.name ? payload.name : "tool";
-      const callId = typeof payload.call_id === "string" ? payload.call_id : undefined;
-      if (callId) toolNameByCallId.set(callId, name);
-      const rawArgs = payload.type === "function_call" ? payload.arguments : payload.input;
-      events.push({
-        type: "tool_call",
-        tool: name,
-        // Custom input 始终是原始文本；即使看起来是 JSON，也不能按 function arguments 解码。
-        args: payload.type === "custom_tool_call" && typeof rawArgs === "string"
-          ? { input: rawArgs }
-          : codexToolArgs(rawArgs),
-        toolCallId: callId,
-        reasoningContent: nonEmpty(pendingReasoning),
-        time
-      });
-      pendingReasoning = "";
-      continue;
-    }
-    if (payload.type === "function_call_output" || payload.type === "custom_tool_call_output") {
-      const callId = typeof payload.call_id === "string" ? payload.call_id : undefined;
-      events.push({
-        type: "tool_result",
-        tool: (callId && toolNameByCallId.get(callId)) || "tool",
-        result: codexToolOutput(payload.output),
-        toolCallId: callId,
-        time
-      });
-      continue;
-    }
-    if (payload.type === "message") {
-      const text = (Array.isArray(payload.content) ? payload.content : [])
-        .filter((part): part is CodexContentPart => isRecord(part) && typeof part.text === "string")
-        .map((part) => part.text ?? "")
-        .join("\n")
-        .trim();
-      if (!text) continue;
-      if (payload.role === "user") {
-        events.push({ type: "user_message", content: text, time });
-      } else if (payload.role === "assistant") {
-        events.push({ type: "assistant_message", content: text, reasoningContent: nonEmpty(pendingReasoning), time });
-        pendingReasoning = "";
-      }
-    }
-  }
-  return events;
-}
-
-/** function_call 的 arguments 是 JSON 字符串，尝试解析成对象；非对象或解析失败时保留原文。 */
-function codexToolArgs(raw: unknown): unknown {
-  if (typeof raw !== "string") return isRecord(raw) ? raw : {};
-  try {
-    const parsed: unknown = JSON.parse(raw);
-    return isRecord(parsed) ? parsed : { input: raw };
-  } catch {
-    return { input: raw };
-  }
-}
-
-/** output 常是 `{"output":...,"metadata":...}` 的 JSON 字符串；提取可读的 output，失败就保留原文。 */
-function codexToolOutput(raw: unknown): unknown {
-  if (typeof raw !== "string") return raw;
-  const trimmed = raw.trim();
-  if (!trimmed.startsWith("{")) return raw;
-  try {
-    const parsed: unknown = JSON.parse(trimmed);
-    if (isRecord(parsed) && typeof parsed.output === "string") return parsed.output;
-    return parsed;
-  } catch {
-    return raw;
-  }
-}
-
-function codexReasoningText(payload: CodexMessagePayload): string {
-  if (!Array.isArray(payload.summary)) return "";
-  return payload.summary
-    .filter((part): part is CodexReasoningSummaryPart => isRecord(part) && typeof part.text === "string")
-    .map((part) => part.text ?? "")
-    .join("\n")
-    .trim();
-}
-
 // ── 共享小工具 ──────────────────────────────────────────────────────────────
 
 function parseJsonLines(raw: string, sourcePath: string): unknown[] {
@@ -934,16 +642,6 @@ function toolResultText(result: unknown): string {
   }
 }
 
-function claudeToolResultText(content: ClaudeContentToolResult["content"]): string {
-  if (typeof content === "string") return content;
-  if (!Array.isArray(content)) return "";
-  return content
-    .filter((part): part is { type?: string; text?: string } => isRecord(part))
-    .filter((part) => part.type === "text" && typeof part.text === "string")
-    .map((part) => part.text ?? "")
-    .join("\n");
-}
-
 /** 文件名只保留安全字符，避免导出的默认文件名带路径分隔符或奇怪字符。 */
 function sanitizeBaseName(name: string): string {
   const cleaned = name.replace(/[^\p{L}\p{N}._-]+/gu, "-").replace(/^[.-]+/, "").slice(0, 80);
@@ -956,13 +654,4 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function hasErrorCode(error: unknown, code: string): boolean {
   return typeof error === "object" && error !== null && "code" in error && error.code === code;
-}
-
-function nonEmpty(value: string): string | undefined {
-  return value.length > 0 ? value : undefined;
-}
-
-/** 文本块收窄守卫：`isRecord` 给的是宽 Record，这里单独判定 `type:"text"` 且 `text` 是字符串。 */
-function isClaudeTextBlock(block: unknown): block is ClaudeContentText {
-  return isRecord(block) && block.type === "text" && typeof block.text === "string";
 }
