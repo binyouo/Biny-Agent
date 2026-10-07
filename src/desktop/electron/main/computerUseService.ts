@@ -31,10 +31,13 @@ function runOcr(imagePath: string, workerPath: string): Promise<string> {
 export async function createComputerUseService(browser: DesktopBrowserService, getWindow: () => BrowserWindow | undefined, assertWorkAllowed: () => Promise<void>, configStore: AgentConfigStore, createDriver = (onExit: () => void) => new NativeProcessDriver(onExit)) {
   const config = await configStore.load();
   const auditStore = new ComputerAuditStore(path.join(configStore.configPath ? path.dirname(configStore.configPath()) : globalAgentDir(), "computer-actions.sqlite"));
+  let closed = false;
+  let nativeSourceEpoch = 0;
   let computerFrame: ComputerPreview | undefined; let computerError: string | undefined; let computerShown = false;
   type PreviewSource = { label: string; sessionId?: string; projectId?: string; frame?: ComputerPreview; lastUsed: number; capture(): Promise<{ frame?: ComputerPreview; diagnostic?: string; waiting?: boolean }> };
   const sources = new Map<string, PreviewSource>();
   function setSource(id: string, source: PreviewSource): void {
+    if (closed) return;
     if (!sources.has(id) && sources.size >= 15) {
       const oldest = [...sources.entries()].filter(([key]) => !key.startsWith("mirror:")).sort((a, b) => a[1].lastUsed - b[1].lastUsed)[0];
       if (!oldest) throw new Error("preview_item_limit");
@@ -73,8 +76,9 @@ export async function createComputerUseService(browser: DesktopBrowserService, g
     } });
   },
   onPreviewError: error => { computerError = error; if (computerShown) presentComputer(); },
-  setPreviewVisible: visible => { computerShown = visible; if (visible) presentComputer(); else preview.remove("computer"); },
+  setPreviewVisible: visible => { if (closed) return; computerShown = visible; if (visible) presentComputer(); else preview.remove("computer"); },
   refreshPreview: async (target, signal) => {
+    if (closed) throw new Error("Computer use service is closed");
     if (!target) throw new Error("preview_observation_unavailable");
     const reply = await driver.capturePreview(target, signal);
     const image = reply.images[0];
@@ -82,14 +86,16 @@ export async function createComputerUseService(browser: DesktopBrowserService, g
     return { image, target, capturedAt: Date.now() };
   } });
   function presentComputer(): void {
+    if (closed) return;
     preview.present({ id: "computer", label: "电脑", frame: computerFrame, status: { ...controller.status(), diagnostic: computerError ?? controller.status().diagnostic }, onReturn: () => returnToChat(controller.status().owner), onClose: () => controller.dismissPreview() });
   }
   browser.attachPreviewActivity(source => {
-    if (!controller.status().preview) return;
+    if (closed || !controller.status().preview) return;
     setSource(source.id, { ...source, lastUsed: Date.now(), capture: async () => ({ frame: { image: await source.capture(), target: { pid: 0, windowId: source.id }, capturedAt: Date.now() } }) });
     presentSource(source.id);
   });
   function presentSource(id: string): void {
+    if (closed) return;
     const source = sources.get(id); if (!source) return;
     preview.present({ id, label: source.label, frame: source.frame, status: { ...controller.status(), diagnostic: sourceErrors.get(id) }, onReturn: () => returnToChat(source.sessionId, source.projectId), onClose: () => {
       sources.delete(id); sourceErrors.delete(id);
@@ -103,10 +109,13 @@ export async function createComputerUseService(browser: DesktopBrowserService, g
     void (async () => {
       try {
         for (const [id, source] of [...sources]) {
+          // A previous capture may have yielded across source removal or replacement.
+          if (closed || !controller.status().preview) break;
+          if (sources.get(id) !== source) continue;
           if (!id.startsWith("mirror:") && Date.now() - source.lastUsed >= 90_000) { sources.delete(id); sourceErrors.delete(id); preview.remove(id); continue; }
           if (!id.startsWith("mirror:") && preview.activeItem() !== id) continue;
           let expired = false;
-          const timeout = setTimeout(() => { expired = true; if (sources.get(id) === source) { sourceErrors.set(id, "preview_capture_timeout"); presentSource(id); } }, 4000);
+          const timeout = setTimeout(() => { expired = true; if (!closed && controller.status().preview && sources.get(id) === source) { sourceErrors.set(id, "preview_capture_timeout"); presentSource(id); } }, 4000);
           try {
             const result = await source.capture();
             if (closed || expired || sources.get(id) !== source || !controller.status().preview) continue;
@@ -114,7 +123,7 @@ export async function createComputerUseService(browser: DesktopBrowserService, g
             if (result.frame) source.frame = result.frame;
             sourceErrors.set(id, result.diagnostic ?? (result.frame ? "" : "preview_frame_unavailable"));
             presentSource(id);
-          } catch (error) { if (!closed && sources.get(id) === source) { sourceErrors.set(id, error instanceof Error ? error.message : String(error)); presentSource(id); } }
+          } catch (error) { if (!closed && controller.status().preview && sources.get(id) === source) { sourceErrors.set(id, error instanceof Error ? error.message : String(error)); presentSource(id); } }
           finally { clearTimeout(timeout); }
         }
       } finally { pumping = false; }
@@ -122,7 +131,6 @@ export async function createComputerUseService(browser: DesktopBrowserService, g
   }, 1000 / 3); sourceTimer.unref();
 
   let controlEpoch = 0;
-  let closed = false;
   let setupTest: Promise<ComputerDiagnostics> | undefined;
   const probes = new Set<NativeProcessDriver>();
   const intentWrites = new Set<Promise<unknown>>();
@@ -167,6 +175,7 @@ export async function createComputerUseService(browser: DesktopBrowserService, g
     }
   }
   function clearNativeSources(): void {
+    nativeSourceEpoch++;
     for (const id of [...sources.keys()]) if (id.startsWith("mirror:") || id.startsWith("external:")) { sources.delete(id); sourceErrors.delete(id); preview.remove(id); }
   }
   async function controlComputer(control: "pause" | "resume" | "takeover" | "stop"): Promise<ComputerStatus> {
@@ -202,12 +211,25 @@ export async function createComputerUseService(browser: DesktopBrowserService, g
     return controller.status();
   });
   ipcMain.handle(computerIpc.control, async (event, value: unknown) => { assertSender(event); return await controlComputer(z.enum(["pause", "resume", "takeover", "stop"]).parse(value)); });
-  ipcMain.handle(computerIpc.preview, async (event, value: unknown) => { assertSender(event); const enabled = z.boolean().parse(value); await updateConfig(configStore, undefined, current => ({ ...current, computer: { ...current.computer, previewEnabled: enabled } })); assertSender(event); controller.setPreview(enabled); if (!enabled) { for (const id of sources.keys()) preview.remove(id); sources.clear(); sourceErrors.clear(); } return controller.status(); });
+  ipcMain.handle(computerIpc.preview, async (event, value: unknown) => {
+    assertSender(event); const enabled = z.boolean().parse(value);
+    if (!enabled) nativeSourceEpoch++;
+    await updateConfig(configStore, undefined, current => ({ ...current, computer: { ...current.computer, previewEnabled: enabled } }));
+    assertSender(event);
+    // Also retire admissions made while the preference write was pending.
+    if (!enabled) nativeSourceEpoch++;
+    controller.setPreview(enabled);
+    if (!enabled) { for (const id of sources.keys()) preview.remove(id); sources.clear(); sourceErrors.clear(); }
+    return controller.status();
+  });
   ipcMain.handle(computerIpc.foreground, (event, value: unknown) => { assertSender(event); controller.setForeground(z.boolean().parse(value)); return controller.status(); });
   ipcMain.handle(computerIpc.logging, async (event, value: unknown) => { assertSender(event); const enabled = z.boolean().parse(value); await updateConfig(configStore, undefined, current => ({ ...current, computer: { ...current.computer, actionLogging: enabled } })); assertSender(event); controller.setLogging(enabled); return controller.status(); });
   async function changeApproval(update: () => Promise<void>): Promise<ComputerDiagnostics> {
     clearNativeSources(); controller.authorizationChanged();
-    const write = approvalWrites.then(update).finally(() => controller.authorizationChanged());
+    const write = approvalWrites.then(update).finally(() => {
+      // Invalidate sources and admissions made while the approval write was pending too.
+      clearNativeSources(); controller.authorizationChanged();
+    });
     approvalWrites = write.catch(() => undefined);
     intentWrites.add(write);
     try { await write; } finally { intentWrites.delete(write); }
@@ -272,14 +294,23 @@ export async function createComputerUseService(browser: DesktopBrowserService, g
   });
   browser.attachComputerUse(async (method, input, signal) => {
     if (closed) throw new Error("Computer use service is closed");
+    const sourceEpoch = nativeSourceEpoch;
+    const externalPreviewCurrent = (): boolean => {
+      const status = controller.status();
+      // Stop takes effect before its saved intent; browser previews use a separate gate.
+      return !closed && sourceEpoch === nativeSourceEpoch && status.state !== "disabled" && status.preview;
+    };
     if (method === "computer_release") { controller.release(z.string().min(1).max(240).parse(input.session)); return { data: { released: true }, images: [] }; }
     await assertWorkAllowed();
     if (method === "computer_external_activity") {
+      if (!externalPreviewCurrent()) return { data: { visible: false }, images: [] };
       const target = windowTargetSchema.parse(input), current = await configStore.load();
-      if (!current.computer.enabled || !current.computer.previewEnabled) return { data: { visible: false }, images: [] };
+      if (!externalPreviewCurrent() || !current.computer.enabled || !current.computer.previewEnabled) return { data: { visible: false }, images: [] };
       const apps = z.object({ apps: z.array(z.object({ pid: z.number(), bundleId: z.string().optional(), name: z.string(), running: z.boolean() })) }).passthrough().parse((await driver.list("external-preview", target.pid, signal)).data).apps;
+      if (!externalPreviewCurrent()) return { data: { visible: false }, images: [] };
       const identity = apps.find(app => app.pid === target.pid && app.running); if (!identity?.bundleId) throw new Error("computer_app_identity_unavailable");
       await approvals.authorize({ bundleId: identity.bundleId, appName: identity.name }); signal.throwIfAborted();
+      if (!externalPreviewCurrent()) return { data: { visible: false }, images: [] };
       const id = `external:${target.pid}:${target.windowId}`;
       setSource(id, { label: identity.name, lastUsed: Date.now(), capture: async () => { const reply = await driver.capturePreview(target); return { frame: reply.images[0] ? { image: reply.images[0], target, capturedAt: Date.now() } : undefined, diagnostic: typeof reply.data.screenshot_error === "string" ? reply.data.screenshot_error : undefined }; } });
       presentSource(id); return { data: { visible: true }, images: [] };
@@ -293,7 +324,7 @@ export async function createComputerUseService(browser: DesktopBrowserService, g
     throw new Error("Unsupported computer method");
   });
   return { controller, close: async () => {
-    closed = true; clearInterval(sourceTimer); browser.attachPreviewActivity(undefined); sources.clear(); sourceErrors.clear();
+    closed = true; nativeSourceEpoch++; clearInterval(sourceTimer); browser.attachPreviewActivity(undefined); sources.clear(); sourceErrors.clear();
     // Abort input before destroying the preview; a failing surface must not keep control alive.
     const cleanup: Promise<unknown>[] = [controller.disable()];
     try { preview.close(); } catch (error) { cleanup.push(Promise.reject(error)); }
