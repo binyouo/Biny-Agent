@@ -80,7 +80,7 @@ test("activity config set --json failures exit nonzero with no success output an
     const failedSave = spawnSync(process.execPath, [
       "--import", preload, "--import", import.meta.resolve("tsx"), entry,
       "activity", "config", "set", "jpegQuality", "100", "--json"
-    ], { cwd: root, env: { ...process.env, BINY_AGENT_DIR: globalRoot }, encoding: "utf8", timeout: 15_000 });
+    ], { cwd: root, env: { ...process.env, BINY_AGENT_DIR: globalRoot, NODE_NO_WARNINGS: "1" }, encoding: "utf8", timeout: 15_000 });
     assert.equal(failedSave.status, 1, failedSave.stderr);
     assert.equal(failedSave.stdout, "");
     assert.match(failedSave.stderr, /Injected config publication failure/u);
@@ -95,7 +95,7 @@ test("activity config set --json failures exit nonzero with no success output an
 
 function runCli(root: string, globalRoot: string, ...args: string[]) {
   return spawnSync(process.execPath, ["--import", import.meta.resolve("tsx"), entry, ...args], {
-    cwd: root, env: { ...process.env, BINY_AGENT_DIR: globalRoot }, encoding: "utf8", timeout: 15_000
+    cwd: root, env: { ...process.env, BINY_AGENT_DIR: globalRoot, NODE_NO_WARNINGS: "1" }, encoding: "utf8", timeout: 15_000
   });
 }
 
