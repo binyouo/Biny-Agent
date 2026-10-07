@@ -966,7 +966,9 @@ export async function createCommandRuntime(workspaceRoot: string, options: Comma
     const current = taskRuns.get(taskRunId);
     if (!current) throw new Error(`TaskRun ${taskRunId} does not exist.`);
     if (isTaskRunTerminal(current.status)) return current;
-    return taskRuns.transition(taskRunId, "cancelled", { attemptId: current.attempts.at(-1)?.attemptId });
+    const cancelled = taskRuns.transition(taskRunId, "cancelled", { attemptId: current.attempts.at(-1)?.attemptId });
+    taskCommunication.notify(taskRunId);
+    return cancelled;
   };
 
   const executeTaskCheckOnce = async (input: {
