@@ -669,8 +669,8 @@ export function resolveActivityReportRange(date: string, now: Date = new Date())
   if (trimmed === "today") {
     base = now;
   } else if (trimmed === "yesterday") {
-    base = new Date(now.getTime());
-    base.setDate(base.getDate() - 1);
+    // 昨日末尾的小时可能被夏令时跳过；按日历构造，不继承当前时刻。
+    base = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1);
   } else {
     const match = /^(\d{4})-(\d{2})-(\d{2})$/u.exec(trimmed);
     if (!match) {

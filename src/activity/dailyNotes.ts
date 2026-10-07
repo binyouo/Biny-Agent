@@ -38,8 +38,8 @@ export async function readDailyMemoryNotes(
   now = new Date(),
   options: { configDir?: string } = {}
 ): Promise<DailyMemoryNote[]> {
-  const yesterday = new Date(now.getTime());
-  yesterday.setDate(yesterday.getDate() - 1);
+  // 昨日末尾的小时可能被夏令时跳过；按日历构造，不继承当前时刻。
+  const yesterday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1);
   const dateKeys = [formatLocalDate(now), formatLocalDate(yesterday)];
   const notes = await Promise.all(dateKeys.map(async (dateKey) => {
     const content = await readDailyMemoryNote(dateKey, options);
