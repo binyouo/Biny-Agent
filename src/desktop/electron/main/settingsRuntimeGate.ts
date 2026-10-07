@@ -14,6 +14,8 @@ const startsWork: Record<DesktopRuntimeMutation, boolean> = {
   "task.start": true,
   "task.run": true,
   "task.cancel": false,
+  "task.message": true,
+  "task.continue": true,
   "task.approve": true,
   "task.resume": true,
   "task.retry": true,

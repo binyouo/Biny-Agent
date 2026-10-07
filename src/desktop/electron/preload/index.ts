@@ -97,6 +97,7 @@ const api: DesktopApi = {
   startModelLogin: async (projectId, provider) => await ipcRenderer.invoke(desktopIpc.startModelLogin, projectId, provider),
   cancelModelLogin: async (projectId, provider, authRequestId) => await ipcRenderer.invoke(desktopIpc.cancelModelLogin, projectId, provider, authRequestId),
   compact: async (projectId, hint) => await ipcRenderer.invoke(desktopIpc.compact, projectId, hint),
+  taskInspection: async (projectId, sessionId, taskRunId, options) => await ipcRenderer.invoke(desktopIpc.taskInspection, projectId, sessionId, taskRunId, options),
   runtimeProjection: async (projectId) => await ipcRenderer.invoke(desktopIpc.runtimeProjection, projectId),
   planProjection: async (projectId, sessionId) => await ipcRenderer.invoke(desktopIpc.planProjection, projectId, sessionId),
   runtimeMutation: async (projectId, operation, payload) => await ipcRenderer.invoke(desktopIpc.runtimeMutation, projectId, operation, payload),

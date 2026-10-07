@@ -71,7 +71,7 @@ export class SubagentTaskManager {
   private static readonly maxTimerMs = 2_147_483_647;
   private readonly tasks = new Map<string, ManagedSubagentTask>();
   private readonly queue: ManagedSubagentTask[] = [];
-  private readonly terminalTaskIds: string[] = [];
+  private readonly terminalSnapshots = new Map<string, SubagentTaskSnapshot>();
   private readonly runningExecutions = new Set<Promise<void>>();
   private readonly listeners = new Set<(task: SubagentTaskSnapshot) => void>();
   private activeTasks = 0;
@@ -103,7 +103,7 @@ export class SubagentTaskManager {
     }
 
     const taskId = options.taskId ?? randomUUID();
-    if (this.tasks.has(taskId)) throw new Error(`Subagent task already exists: ${taskId}`);
+    if (this.tasks.has(taskId) || this.terminalSnapshots.has(taskId)) throw new Error(`Subagent task already exists: ${taskId}`);
     const parentRunId = options.parentRunId ?? taskId;
     const timeoutMs = options.timeoutMs ?? this.options.timeoutMs;
     assertIntegerInRange("timeoutMs", timeoutMs, 1, SubagentTaskManager.maxTimerMs);
@@ -157,11 +157,11 @@ export class SubagentTaskManager {
 
   getSnapshot(taskId: string): SubagentTaskSnapshot | undefined {
     const task = this.tasks.get(taskId);
-    return task ? publicSnapshot(task) : undefined;
+    return task ? publicSnapshot(task) : this.terminalSnapshots.get(taskId);
   }
 
   listSnapshots(): SubagentTaskSnapshot[] {
-    return [...this.tasks.values()].map(publicSnapshot);
+    return [...this.terminalSnapshots.values(), ...[...this.tasks.values()].filter((task) => !this.terminalSnapshots.has(task.taskId)).map(publicSnapshot)];
   }
 
   subscribe(listener: (task: SubagentTaskSnapshot) => void): () => void {
@@ -226,6 +226,7 @@ export class SubagentTaskManager {
       // Observers may synchronously cancel the task (or close the manager) from
       // the running notification. Do not start user code after that cancellation.
       if (task.status !== "running" || task.controller.signal.aborted) {
+        this.tasks.delete(task.taskId);
         this.activeTasks -= 1;
         continue;
       }
@@ -251,6 +252,7 @@ export class SubagentTaskManager {
     } catch (error) {
       this.fail(task, error instanceof Error ? error : new Error(String(error)));
     } finally {
+      this.tasks.delete(task.taskId);
       this.activeTasks -= 1;
       this.drain();
     }
@@ -266,7 +268,7 @@ export class SubagentTaskManager {
       if (queuedIndex >= 0) this.queue.splice(queuedIndex, 1);
     }
     this.fail(task, error);
-    if (wasQueued) this.drain();
+    if (wasQueued) { this.tasks.delete(taskId); this.drain(); }
   }
 
   private async complete(task: ManagedSubagentTask, output: string): Promise<void> {
@@ -318,10 +320,12 @@ export class SubagentTaskManager {
   }
 
   private rememberTerminalTask(taskId: string): void {
-    this.terminalTaskIds.push(taskId);
-    while (this.terminalTaskIds.length > SubagentTaskManager.historyLimit) {
-      const expiredTaskId = this.terminalTaskIds.shift();
-      if (expiredTaskId) this.tasks.delete(expiredTaskId);
+    const task = this.tasks.get(taskId);
+    if (!task) return;
+    this.terminalSnapshots.set(taskId, publicSnapshot(task));
+    while (this.terminalSnapshots.size > SubagentTaskManager.historyLimit) {
+      const first = this.terminalSnapshots.keys().next().value;
+      if (first !== undefined) this.terminalSnapshots.delete(first);
     }
   }
 }
@@ -378,7 +382,7 @@ function publicSnapshot(task: ManagedSubagentTask): SubagentTaskSnapshot {
     deadline: task.deadline,
     startedAt: task.startedAt,
     completedAt: task.completedAt,
-    error: task.error,
+    error: task.error?.slice(0, 2000),
     accessMode: task.accessMode,
     agent: task.agent
   };
