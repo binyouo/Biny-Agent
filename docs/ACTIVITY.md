@@ -102,6 +102,8 @@ biny activity search "项目名称" --json
 biny activity report today --skeleton --json
 ```
 
+CLI `activity config set <key> <value>` 保存单项采集设置，文本确认显示实际保存的值。时间间隔和图像质量等参数会按运行时范围归一化，例如 `heartbeatMs` 设为 `1` 时保存并显示 `60000`。
+
 CLI `status` 返回配置和存储统计；判断宿主是否正在采集，还需查看 Desktop 的运行状态。详细命令参数见 `biny activity --help` 及子命令帮助。
 
 实现入口：[采集宿主](../src/desktop/electron/main/ActivityRecorderService.ts)、[存储](../src/activity/store.ts)、[分析](../src/activity/analyzer.ts)、[语义检索](../src/activity/semanticSearch.ts)、[Appshots](../src/computer/appshots.ts)。窗口控制与镜像见 [Computer Use](COMPUTER_USE.md)。
