@@ -62,7 +62,7 @@ biny session export <session-id> --format biny --out session.json --json
 biny session import session.json --format biny --json
 ```
 
-Biny bundle 保存会话事件和可内嵌附件。单个附件超过 50 MiB 时标记跳过，不使整份导出失败。导出可能包含对话与业务资料，分享前按实际内容检查。
+Biny bundle 保存会话事件和可内嵌附件。附件源文件缺失或单个附件超过 50 MiB 时不内嵌，名称记入清单的 `skippedAttachments`，不使整份导出失败；权限或其他读取错误仍会中止导出。导出可能包含对话与业务资料，分享前按实际内容检查。
 
 导入总是分配新的会话 ID；重复导入同一文件会产生不同会话。附件撞名时改名并更新引用。兼容格式只能保留该格式能表达的内容，不能当作全部运行事件的无损备份；可用格式见 `biny session import --help` 和 `biny session export --help`。
 
