@@ -213,8 +213,8 @@ export async function executeRuntimeHostMemoryOperation(
   }
   if (action === "archive") {
     const id = requiredString(payload.id, "id");
-    const archived = payload.archived === true;
-    return await memory.archiveEntry(id, archived);
+    if (typeof payload.archived !== "boolean") throw new Error("Runtime Host field archived must be a boolean.");
+    return await memory.archiveEntry(id, payload.archived);
   }
   if (action === "delete") {
     const id = requiredString(payload.id, "id");

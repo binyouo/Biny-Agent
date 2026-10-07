@@ -72,6 +72,8 @@ biny memory delete <memory-id> --yes --json
 
 归档使事实离开活动召回，仍可恢复。恢复使用归档 ID；永久删除使用活动记忆 ID，并要求显式确认。
 
+直接调用 Runtime Host 的 `archive` 操作时，`archived` 必须明确使用布尔值：`true` 归档，`false` 恢复；缺省、字符串或其他类型会被拒绝，不改变已保存的事实。
+
 `memory archive` 是另一种操作：将会话 transcript 导出为本地 Markdown，不归档长期事实，也不删除会话。`memory clear --yes` 的缺省范围是整个共享事实库；按会话清理需要明确传入 `--thread-id`。执行前确认范围，不能把项目目录当作全局清空的边界。
 
 ## 自动处理
