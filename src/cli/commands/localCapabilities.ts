@@ -19,7 +19,7 @@ import path from "node:path";
 import { globalConfigDir } from "../../config/paths.js";
 import { readDailyMemoryNote, readDailyMemorySection } from "../../activity/dailyNotes.js";
 import { HeartbeatFileStore } from "../../agent/context/heartbeat.js";
-import { TodoStore, type TodoItem } from "../../session/todoStore.js";
+import { TodoStore } from "../../session/todoStore.js";
 import { resolveSessionFile, sessionIdFromFile } from "../../session/store.js";
 
 export interface LocalCapabilityOutputOptions {
@@ -252,8 +252,9 @@ export async function todoShowCommand(workspaceRoot: string, sessionInput: strin
 export async function todoReplaceCommand(workspaceRoot: string, sessionInput: string | undefined, todosJson: string, options: LocalCapabilityOutputOptions = {}): Promise<void> {
   const store = await openTodoStore(workspaceRoot, sessionInput);
   const parsed = JSON.parse(todosJson) as unknown;
-  const todos = Array.isArray(parsed) ? parsed : typeof parsed === "object" && parsed !== null && Array.isArray((parsed as { todos?: unknown }).todos) ? (parsed as { todos: unknown[] }).todos : [];
-  const result = await store.replace(todos as TodoItem[]);
+  const todos = Array.isArray(parsed) ? parsed : typeof parsed === "object" && parsed !== null && Array.isArray((parsed as { todos?: unknown }).todos) ? (parsed as { todos: unknown[] }).todos : undefined;
+  if (!todos) throw new Error("Todo replacement must be an array or an object with a todos array.");
+  const result = await store.replace(todos);
   printResult({ todos: result }, options.json, (value) => JSON.stringify(asRecord(value).todos, null, 2));
 }
 

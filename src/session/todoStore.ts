@@ -64,21 +64,29 @@ export class TodoStore {
    * 整份替换而不是增量改。模型每次给出完整清单，就不会出现"改第 3 条"却数错序号的
    * 情况，也省掉一套 id 分配和对账逻辑。
    */
-  async replace(items: readonly TodoItem[]): Promise<TodoItem[]> {
+  async replace(items: readonly unknown[]): Promise<TodoItem[]> {
+    if (!Array.isArray(items)) throw new TypeError("A plan must be an array of items.");
     if (items.length > maxTodoItems) {
       throw new RangeError(`A plan may hold at most ${String(maxTodoItems)} items; received ${String(items.length)}.`);
     }
-    const inProgress = items.filter((item) => item.status === "in_progress");
+    const nextItems = Array.from(items, (item: unknown): TodoItem => {
+      if (typeof item !== "object" || item === null || Array.isArray(item)) {
+        throw new TypeError("Plan items must be objects with content and status.");
+      }
+      const { content, status } = item as { content?: unknown; status?: unknown };
+      if (typeof content !== "string" || !content.trim()) throw new RangeError("Plan items must have non-empty content.");
+      if (content.length > maxTodoContentLength) {
+        throw new RangeError(`Plan item content must be at most ${String(maxTodoContentLength)} characters.`);
+      }
+      if (status !== "pending" && status !== "in_progress" && status !== "completed") {
+        throw new RangeError("Plan item status must be pending, in_progress, or completed.");
+      }
+      return { content: content.trim(), status };
+    });
+    const inProgress = nextItems.filter((item) => item.status === "in_progress");
     if (inProgress.length > 1) {
       throw new RangeError("At most one plan item may be in_progress at a time; finish or re-queue the others.");
     }
-    for (const item of items) {
-      if (!item.content.trim()) throw new RangeError("Plan items must have non-empty content.");
-      if (item.content.length > maxTodoContentLength) {
-        throw new RangeError(`Plan item content must be at most ${String(maxTodoContentLength)} characters.`);
-      }
-    }
-    const nextItems = items.map((item) => ({ content: item.content.trim(), status: item.status }));
     await this.persist(nextItems);
     return nextItems.map((item) => ({ ...item }));
   }
