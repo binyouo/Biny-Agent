@@ -247,6 +247,13 @@ function manualCheckpointTurn(checkpoint: Extract<SessionEvent, { type: "context
 }
 
 /** 合成完整时间线；末尾过滤掉完全空的轮次（只有元信息、没有任何可展示内容）。 */
+// 通知保留在消息树中；仅在展示时跳过，避免切断 canonical 祖先链。
+function isSubagentNotice(event: SessionEvent): boolean {
+  return event.type === "user_message"
+    && Boolean(event.messageId?.startsWith("worker:") || event.messageId?.startsWith("task-result:"))
+    && event.metadata?.source === "subagent";
+}
+
 export function buildSessionTimeline(events: SessionEvent[], liveEvents: AgentHostEvent[]): TimelineTurn[] {
   events = traceOutputEvents(events);
   const history = historicalPrefix(events.filter((event) => !isUndeliveredMessageNotice(event)), liveEvents);
@@ -254,7 +261,7 @@ export function buildSessionTimeline(events: SessionEvent[], liveEvents: AgentHo
     ? buildVersionedHistoricalTurns(history)
     : buildHistoricalTurns(history);
   // 实时轮次的用户消息序号要接着历史的算，「编辑消息」功能依赖这个序号定位。
-  const historicalUserMessages = history.filter((event) => event.type === "user_message" && !event.auditOnly).length;
+  const historicalUserMessages = history.filter((event) => event.type === "user_message" && !event.auditOnly && !isSubagentNotice(event)).length;
   const liveTurns = buildLiveTurns(liveEvents, historicalUserMessages).map(attachLiveRequestMetrics(events));
   return appendSavedMessageRecovery(mergeLiveRetryTurns(historicalTurns, liveTurns, activeSessionMessageIds(events)), savedQueuedMessages(events), liveTurns)
     .map((turn) => publicTimelineTurn(turn))
@@ -381,7 +388,7 @@ function buildHistoricalTurns(events: SessionEvent[]): TimelineTurn[] {
     priorEventAt = event.time ?? priorEventAt;
     if (event.type === "tool_result" && event.auditOnly && event.recovered && resultString(event.result, "status") !== "skipped") continue;
     if (event.type === "user_message") {
-      if (event.auditOnly) continue;
+      if (event.auditOnly || isSubagentNotice(event)) continue;
       priorEventAt = undefined;
       anonymousIndex += 1;
       current = emptyTurn(`history-${String(anonymousIndex)}`, event.time);
@@ -527,7 +534,7 @@ function buildVersionedHistoricalTurns(events: SessionEvent[]): TimelineTurn[] {
   const userIndexes = new Map<string, number>();
   let rawUserIndex = 0;
   for (const event of events) {
-    if (event.type !== "user_message" || event.auditOnly) continue;
+    if (event.type !== "user_message" || event.auditOnly || isSubagentNotice(event)) continue;
     if (event.messageId) userIndexes.set(event.messageId, rawUserIndex);
     rawUserIndex += 1;
   }
@@ -540,7 +547,7 @@ function buildVersionedHistoricalTurns(events: SessionEvent[]): TimelineTurn[] {
   for (const records of versionsBySlot.values()) records.sort((left, right) => left.eventIndex - right.eventIndex);
   for (const event of events) {
     if (event.runtime?.runId === undefined) continue;
-    if (event.type === "user_message" && !event.auditOnly && event.messageId) runToUserId.set(event.runtime.runId, event.messageId);
+    if (event.type === "user_message" && !event.auditOnly && !isSubagentNotice(event) && event.messageId) runToUserId.set(event.runtime.runId, event.messageId);
     if (event.type === "assistant_message" && event.replyToMessageId) runToUserId.set(event.runtime.runId, event.replyToMessageId);
     if (event.type === "agent_message" && event.replyToMessageId) runToUserId.set(event.runtime.runId, event.replyToMessageId);
   }
@@ -582,7 +589,7 @@ function buildVersionedHistoricalTurns(events: SessionEvent[]): TimelineTurn[] {
     priorEventAt = event.time ?? priorEventAt;
     if (event.type === "tool_result" && event.auditOnly && event.recovered && resultString(event.result, "status") !== "skipped") continue;
     if (event.type === "user_message") {
-      if (event.auditOnly) continue;
+      if (event.auditOnly || isSubagentNotice(event)) continue;
       priorEventAt = undefined;
       anonymousIndex += 1;
       current = emptyTurn(`history-${String(anonymousIndex)}`, event.time);
@@ -1212,7 +1219,7 @@ export function createSessionTimelineProjector(): SessionTimelineProjector {
     const history = historicalPrefix(events.filter((event) => !isUndeliveredMessageNotice(event)), liveEvents);
     attachRequests = attachLiveRequestMetrics(events);
     historyTurns = (hasVersionMetadata(history) ? buildVersionedHistoricalTurns(history) : buildHistoricalTurns(history)).map((turn) => publicTimelineTurn(turn)).filter(isVisibleTimelineTurn);
-    const historicalUserMessages = history.filter((event) => event.type === "user_message" && !event.auditOnly).length;
+    const historicalUserMessages = history.filter((event) => event.type === "user_message" && !event.auditOnly && !isSubagentNotice(event)).length;
     const nextFold = createLiveTimelineFold(historicalUserMessages);
     for (const event of liveEvents) nextFold.apply(event);
     fold = nextFold;
@@ -1494,7 +1501,7 @@ function changedFileOperation(tool: TimelineTool): TimelineChangedFile["operatio
 function historicalUserMetadata(events: SessionEvent[], projectedEvents: SessionEvent[]): ReadonlyMap<string, Record<string, unknown>> {
   const userIds = new Set<string>();
   for (const event of projectedEvents) {
-    if (event.type === "user_message" && !event.auditOnly && event.messageId) userIds.add(event.messageId);
+    if (event.type === "user_message" && !event.auditOnly && !isSubagentNotice(event) && event.messageId) userIds.add(event.messageId);
   }
   return sessionMessageMetadataForIds(events, userIds);
 }

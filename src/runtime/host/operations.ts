@@ -117,7 +117,7 @@ export function operationLane(operation: string, payload: Record<string, unknown
     || operation === "session.goal.pause"
     || operation === "session.goal.clear"
   ) return "run";
-  if (operation === "task.start" || operation === "task.run" || operation === "task.retry" || operation === "task.approve") return "admission";
+  if (operation === "task.continue" || operation === "task.start" || operation === "task.run" || operation === "task.retry" || operation === "task.approve") return "admission";
   if (operation === "diary.refresh" || operation === "reflection.run" || operation === "heartbeat.run") return "admission";
   if (
     operation === "snapshot"
@@ -145,6 +145,7 @@ export function operationLane(operation: string, payload: Record<string, unknown
     || operation === "task.list"
     || operation === "task.events"
     || operation === "task.wait"
+    || operation === "task.inspect"
     || operation === "heartbeat.status"
     || operation === "automation.list"
     || operation === "automation.pending"

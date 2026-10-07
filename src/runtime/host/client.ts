@@ -471,11 +471,19 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
     return await this.request("task.message", { taskRunId, sessionId, message, messageId });
   }
 
+  async taskContinue(taskRunId: string, sessionId: string, message: string, messageId?: string): Promise<unknown> {
+    return await this.request("task.continue", { taskRunId, sessionId, message, messageId });
+  }
+
   async taskWait(taskRunId: string, sessionId: string, waitMs = 0, afterRevision?: number): Promise<unknown> {
     return await this.request("task.wait", { taskRunId, sessionId, waitMs, afterRevision });
   }
 
-  async taskList(options: { status?: string; limit?: number; cursor?: number } = {}): Promise<unknown> {
+  async taskInspect(taskRunId: string, sessionId: string, options: import("../TaskCommunication.js").TaskInspectionOptions = {}): Promise<import("../TaskCommunication.js").TaskInspection> {
+    return await this.request("task.inspect", { taskRunId, sessionId, ...options });
+  }
+
+  async taskList(options: { status?: string; limit?: number; cursor?: number; order?: "asc" | "desc" } = {}): Promise<unknown> {
     return await this.request("task.list", options);
   }
 

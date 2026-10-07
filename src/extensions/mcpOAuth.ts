@@ -107,8 +107,13 @@ export class McpOAuthProvider implements OAuthClientProvider {
   private async read(): Promise<OAuthRecord> {
     if (this.record) return this.record;
     const raw = await this.store.get(this.account);
-    this.record = raw ? JSON.parse(raw) as OAuthRecord : {};
-    if (this.record.tokens) this.record.tokens = OAuthTokensSchema.parse(this.record.tokens);
+    const record = raw ? JSON.parse(raw) as OAuthRecord : {};
+    if (record.tokens) record.tokens = OAuthTokensSchema.parse(record.tokens);
+    // 旧凭据没有可信的授权服务器绑定，不能通过首次使用猜测 issuer。
+    if ((record.tokens && !record.tokens.issuer?.trim()) || (record.client && !record.client.issuer?.trim())) {
+      if (!this.interactive) throw new McpAuthRequiredError();
+      this.record = {};
+    } else this.record = record;
     return this.record;
   }
 }

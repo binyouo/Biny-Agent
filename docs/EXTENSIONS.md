@@ -31,6 +31,8 @@ Biny 的扩展入口承担不同职责：MCP 连接外部服务，Skill 提供�
 
 stdio 服务的 stdout 用于协议，诊断写 stderr。远程连接需要正确的传输协议与鉴权；支持 OAuth 的服务通过显式登录流程授权，普通连接不会自动打开浏览器登录。
 
+OAuth 凭据绑定其授权服务器。旧凭据缺少此绑定时，连接会要求重新登录，不发送已有凭据；只有显式登录成功才替换存储记录，取消登录保留原记录。
+
 配置中的 `timeoutMs` 控制请求期限，`exposure` 与 `toolExposure` 控制能力暴露方式。可选值为 `direct`、`codemode`、`deferred` 和 `hidden`；隐藏能力不表示卸载或撤销远端凭据。
 
 服务器断线后，后续显式操作或调用可重新连接。已派发而结果未知的工具不会因为重连就重新执行。Resources、Prompts 和服务器 instructions 作为外部内容读取，不升级为系统指令，也不自动执行其中的操作。
@@ -80,5 +82,23 @@ Plugin 的 JavaScript 在 Biny 进程中运行。受管安装、路径校验和�
 `extensions.subagent.enabled` 控制子代理能力，当前默认关闭。启用后可设置模型、步数、期限、并发与允许工具。
 
 子代理的工具范围与全局允许集合求交集，不能扩大父任务权限。任务结果以持久 TaskRun、Attempt 和可选验证记录为准；子代理的文字报告不代替文件或测试证据。管理与恢复见 [目标与自动化](AUTOMATION.md)。
+
+父代理只收到有限报告与完成摘要（子报告最多 2000 字符，每次根执行最多四条通知、合计 6000 字符），完整执行历史保存在独立子 Session。后台任务完成后，通知会在父回合下一个安全边界接收；不会自行唤醒空闲父代理。子代理共享工作区，独立 Session 不提供文件系统隔离。
+
+聊天中的子代理卡片与后台任务面板可展开查看工具参数、结果、思考、回答、消息送达状态及验收证据，切换执行记录并分页查询。后台列表显示最新的 100 个任务，创建后续任务后详情直接打开新记录，也可返回原任务。活跃任务可发送补充上下文或取消；已完成任务可明确创建后续有限任务，原记录保留。中断执行需要显式恢复，未知副作用不会自动重放。消息只在所属父子任务间传递，子代理报告不构成人类授权。
+
+取消和超时会发出中断并清理计时器及父取消监听；正在执行的任务实际退出后才释放并发槽位与执行句柄。内存仅保留最近 200 条终态快照，完整持久记录仍可查阅。
+
+CLI 提供相同领域入口：
+
+```bash
+biny task inspect <taskRunId> --session <sessionId> --limit 100 --json
+biny task message <taskRunId> "补充上下文" --session <sessionId> --message-id <id>
+biny task continue <taskRunId> "新的有限任务" --session <sessionId> --message-id <id>
+```
+
+`task list --newest-first` 按新到旧查询任务。`inspect` 支持 `--attempt-id` 查询旧执行、`--after-sequence` 分页；消息与后续任务的 ID 用于失败重试去重，重试必须保留原 ID 和内容。
+
+恢复会核对原工具与权限契约；旧断点与当前策略不匹配时保持阻塞。先查明既有副作用，再明确创建新的有限任务，不能把重试当作自动恢复。
 
 配置定义见 [schema.ts](../src/config/schema.ts)。运行实现：[MCP](../src/extensions/mcp.ts)、[Skills](../src/extensions/skills.ts)、[Plugins](../src/extensions/plugins.ts)。
