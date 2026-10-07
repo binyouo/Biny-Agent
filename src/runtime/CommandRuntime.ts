@@ -114,7 +114,7 @@ export interface CommandRuntime {
   extensionStatus(): ExtensionStatus;
   /** 当前可用于 TUI 补全的 Skill 元数据；正文仍按需加载。 */
   listSkills(): SkillDefinition[];
-  /** 当前注册表的脱敏工具目录，供 Desktop 的单回合能力选择器使用。 */
+  /** 供下一回合能力选择使用的实时工具目录，不修改活动回合的执行注册表。 */
   listTools(): RuntimeToolCatalogEntry[];
   /** 每个新根回合前重新扫描 Skill，使新增和元数据修改无需重启即可生效。 */
   refreshSkills(): Promise<void>;
@@ -1181,7 +1181,9 @@ export async function createCommandRuntime(workspaceRoot: string, options: Comma
     runSkillPaths: (runId: string): string[] => skillPathsForSelection(skillsForRun(runId)),
     releaseRunResourceSnapshot: (runId: string): void => { runSkillSnapshots.delete(runId); },
     listTools: (): RuntimeToolCatalogEntry[] => {
-      const entries = toolRegistry.listEntries();
+      // MCP 以共享资源的当前目录投影；执行注册表仍在回合开始或显式发现时刷新。
+      const sessionMcpTools = new Set(registeredMcpTools);
+      const entries = toolRegistry.listEntries().filter(({ source, tool }) => source !== "mcp" || !sessionMcpTools.has(tool.name));
       const knownNames = new Set(entries.map(({ tool }) => tool.name));
       const extensionTools = [...resourceScope.createTools(), ...resourceScope.createResourceTools()]
         .filter((tool) => !knownNames.has(tool.name))
