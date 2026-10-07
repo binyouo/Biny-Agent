@@ -114,7 +114,7 @@ export async function activityConfigSetCommand(workspaceRoot: string, key: strin
   }));
   if (options.json) console.log(JSON.stringify(saved.activity));
   else {
-    console.log(`${key} = ${JSON.stringify(patch[key as keyof ActivitySettings])}`);
+    console.log(`${key} = ${JSON.stringify(saved.activity[key as keyof ActivitySettings])}`);
     console.log("运行中的记录器会自动应用；会话/空闲计时相关改动在下一个会话生效。");
   }
 }
