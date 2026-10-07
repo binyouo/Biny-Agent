@@ -43,6 +43,7 @@ test("messages are durable, ordered, idempotent and confined to their owning ses
     assert.throws(() => f.communication.worker("child", "stale").pending(), /stale attempt/);
     assert.throws(() => f.communication.send("child", " "), /between 1/);
     assert.throws(() => f.communication.send("child", "x".repeat(8001)), /8000/);
+    assert.throws(() => worker.report("x".repeat(2001), "overlong"), /2000/);
     assert.throws(() => f.communication.send("child", "text", ""), /identity/);
     assert.equal(worker.seal(), false);
     worker.delivered(["message-one", "message-two"]);
@@ -70,6 +71,31 @@ test("wait observes committed updates, has a deadline and does not cancel the ta
     await assert.rejects(f.communication.wait("child", -1), /between 0/);
     await assert.rejects(f.communication.wait("child", 60001), /60000/);
     await assert.rejects(f.communication.wait("child", 0, -1), /revision/);
+  } finally { await f.close(); }
+});
+
+test("inspection waits for Worker events without a task revision change and never exposes checkpoint prompts", async () => {
+  const f = await fixture();
+  try {
+    const before = await f.communication.inspect("child");
+    const waiting = f.communication.inspect("child", { waitMs: 1000, afterRevision: before.revision, afterSequence: before.cursor });
+    f.authority.appendSessionEvent({ sessionId: workerSessionId(f.attempt.attemptId),
+      runtime: { eventId: "worker-tool", eventSeq: 1, runId: "worker", turnId: "worker" },
+      event: { type: "tool_call", tool: "Read", toolCallId: "read", args: { path: "src/a.ts" }, assistantContent: "inspect the file" },
+      createdAt: new Date().toISOString() });
+    f.communication.notify("child");
+    const inspected = await waiting;
+    assert.equal(inspected.revision, before.revision);
+    assert.equal(inspected.activity[0]?.tool, "Read");
+    assert.ok(inspected.cursor > before.cursor);
+    assert.equal(JSON.stringify(inspected).includes("inspect assigned files"), true, "the finite task description is visible");
+    assert.equal(Object.hasOwn(inspected, "artifacts"), false, "execution checkpoints are not UI data");
+    await assert.rejects(new TaskCommunication(f.tasks, "other").inspect("child"), /another session/);
+    const controller = new AbortController();
+    const cancelled = f.communication.inspect("child", { waitMs: 1000, afterRevision: inspected.revision, afterSequence: inspected.cursor }, controller.signal);
+    controller.abort(new Error("panel closed"));
+    await assert.rejects(cancelled, /panel closed/);
+    assert.equal(f.tasks.get("child")?.status, "running");
   } finally { await f.close(); }
 });
 
@@ -148,3 +174,44 @@ async function* textResponse(text: string): AsyncGenerator<ModelStreamEvent> {
   yield { type: "text-delta", text };
   yield { type: "finish", reason: "stop" };
 }
+
+// Distinct reports retain their order within bounded parent input; durable receipts prevent repeated delivery.
+test("parent inbox preserves distinct reports in order and acknowledges durable bounded delivery", async () => {
+  const f = await fixture();
+  try {
+    const worker = f.communication.worker("child", f.attempt.attemptId);
+    worker.report("early finding", "one"); worker.report("current finding", "two");
+    const notices = f.communication.notifications();
+    assert.equal(notices.length, 2); assert.match(notices[0]!.content, /early finding/); assert.match(notices[1]!.content, /current finding/);
+    const revision = f.tasks.get("child")!.revision;
+    const received = f.communication.wait("child", 1000, revision);
+    f.communication.acknowledge(notices[0]!);
+    assert.ok((await received).revision > revision, "parent delivery is an observable committed update");
+    const remaining = new TaskCommunication(f.tasks, "parent").notifications();
+    assert.equal(remaining.length, 1); assert.match(remaining[0]!.content, /current finding/);
+    f.communication.acknowledge(remaining[0]!);
+    assert.deepEqual(f.communication.notifications(), []);
+    f.tasks.transition("child", "completed", { attemptId: f.attempt.attemptId, artifacts: { ...f.tasks.get("child")!.attempts[0]!.artifacts as object, output: "x".repeat(10000) } });
+    const completed = f.communication.notifications();
+    assert.equal(completed.length, 1); assert.match(completed[0]!.content, /completed/);
+    assert.ok(completed[0]!.content.length <= 3000);
+    f.communication.acknowledge(completed[0]!);
+    assert.deepEqual(f.communication.notifications(), []);
+    assert.deepEqual(new TaskCommunication(f.tasks, "other").notifications(), []);
+  } finally { await f.close(); }
+});
+
+// Retired communication handles must release waits and cannot keep writing after runtime cleanup.
+test("closing the channel releases waiters and fences delivery receipts without cancelling the child", async () => {
+  const f = await fixture();
+  try {
+    f.communication.worker("child", f.attempt.attemptId).report("material evidence", "report");
+    const notice = f.communication.notifications()[0]!;
+    const revision = f.tasks.get("child")!.revision;
+    const waiting = f.communication.wait("child", 1000, revision);
+    f.communication.close();
+    assert.equal((await waiting).status, "running");
+    assert.throws(() => f.communication.acknowledge(notice), /closed/);
+    assert.equal(f.tasks.get("child")!.revision, revision);
+  } finally { await f.close(); }
+});

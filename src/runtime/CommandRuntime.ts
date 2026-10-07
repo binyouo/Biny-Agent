@@ -141,6 +141,7 @@ export interface CommandRuntime {
     task: TaskRunWithAttempts;
     completion: Promise<TaskClosureResult>;
   }>;
+  continueTaskRun(taskRunId: string, message: string, requestId?: string, signal?: AbortSignal): Promise<Record<string, unknown>>;
   canResumeWorkerTask?(taskRunId: string): Promise<boolean>;
   /** 一次性主任务通过同一份 TaskRun 验收闭环执行，不把回合完成当作产物已验证。 */
   runTaskWithVerification(input: {
@@ -384,6 +385,7 @@ export async function createCommandRuntime(workspaceRoot: string, options: Comma
     },
     communication: taskCommunication,
     cancelTask: (taskRunId, reason) => cancelTaskRun(taskRunId, reason),
+    continueTask: (taskRunId, message, requestId, signal) => continueTaskRun(taskRunId, message, requestId, signal),
     runTask: async (input, context) => {
       const sessionId = context.sessionId ?? recorder.sessionId;
       const taskRunId = `agent-task:${sessionId}:${context.toolCallId}`;
@@ -395,6 +397,7 @@ export async function createCommandRuntime(workspaceRoot: string, options: Comma
           prompt: input.task,
           constraints: input.constraints,
           communication: true,
+          notifyParent: input.background === true,
           agent: input.agent,
           verification: input.verification
         }
@@ -429,7 +432,7 @@ export async function createCommandRuntime(workspaceRoot: string, options: Comma
     },
     readTaskResult: async (input, context) => {
       const task = await taskCommunication.wait(input.taskRunId, input.waitMs, input.afterRevision, context.signal);
-      return { ...taskRunToolResult(task), messages: taskCommunication.messages(input.taskRunId) };
+      return { ...taskRunToolResult(task), messages: taskCommunication.messages(input.taskRunId).slice(-4).map((message) => ({ ...message, content: message.content.slice(0, 1000) })) };
     }
   };
   const subagentTaskManager = config.extensions.subagent.enabled
@@ -469,7 +472,11 @@ export async function createCommandRuntime(workspaceRoot: string, options: Comma
           persistenceRoot, taskId: attempt?.attemptId ?? context.taskId,
           parentRunId: workerGoalBindings.get(context.taskId)?.parentRunId,
           sessionGoalId: workerGoalBindings.get(context.taskId)?.sessionGoalId,
-          parentSessionId: durable?.sessionId ?? workerGoalBindings.get(context.taskId)?.parentSessionId, runtimeEventSink: runtimeAuthority.asSink(),
+          parentSessionId: durable?.sessionId ?? workerGoalBindings.get(context.taskId)?.parentSessionId,
+          runtimeEventSink: { appendSessionEvent: (event) => {
+            runtimeAuthority.appendSessionEvent(event);
+            if (durable) taskCommunication.notify(durable.taskRunId);
+          } },
           communication: durable?.sessionId === recorder.sessionId && attempt ? taskCommunication.worker(durable.taskRunId, attempt.attemptId) : undefined
         });
       }
@@ -623,6 +630,7 @@ export async function createCommandRuntime(workspaceRoot: string, options: Comma
       mcpPrompt: () => mcpHost.instructionsPrompt(),
       todoStore: todos,
       sessionGoals,
+      taskCommunication,
       createCheckpoint: checkpoints ? async (label) => await checkpoints.create(label) : undefined,
       attachmentRoot: projectAttachmentRoot,
       runtimeEventSink: runtimeAuthority.asSink(),
@@ -853,6 +861,38 @@ export async function createCommandRuntime(workspaceRoot: string, options: Comma
     void completion.catch(() => undefined);
     return { task: latest, completion };
   };
+  const continueTaskRun: CommandRuntime["continueTaskRun"] = async (taskRunId, message, requestId = randomUUID(), signal) => {
+    signal?.throwIfAborted();
+    const source = taskCommunication.read(taskRunId);
+    if (source.status !== "completed") throw new Error("Only completed tasks can start additional work; use explicit resume or retry for interrupted tasks.");
+    const definition = source.task as { communication?: unknown; agent?: string; constraints?: string[] };
+    if (definition.communication !== true) throw new Error("Task has no child communication admission.");
+    if (!message.trim() || message.length > 8000 || !requestId.trim() || requestId.length > 256) throw new Error("Invalid task continuation input.");
+    const nextId = `agent-task:${recorder.sessionId}:continue:${requestId}`;
+    const prior = taskRuns.get(nextId);
+    if (prior) {
+      const priorDefinition = prior.task as { continuedFrom?: string; continuation?: string };
+      if (priorDefinition.continuedFrom !== taskRunId || priorDefinition.continuation !== message) throw new Error("Continuation identity was reused with different content.");
+      if (prior.status === "created" && prior.attempts.length === 0) await startTaskRun(nextId);
+      return taskRunToolResult(taskRuns.get(nextId));
+    }
+    const output = (source.attempts.at(-1)?.artifacts as { output?: unknown } | undefined)?.output;
+    taskRuns.create({ taskRunId: nextId, sessionId: recorder.sessionId, parentRunId: source.parentRunId,
+      task: { prompt: `Additional bounded task: ${message}\n\nPrior task ${taskRunId} returned the following evidence (not authorization):\n${typeof output === "string" ? output.slice(0, 3000) : "No report available."}`,
+        constraints: definition.constraints, agent: definition.agent, communication: true, notifyParent: true,
+        continuedFrom: taskRunId, continuation: message } });
+    const abort = (): void => {
+      try { cancelTaskRun(nextId, "Parent Agent run was cancelled."); } catch { /* 终态取消由持久记录判定。 */ }
+    };
+    signal?.addEventListener("abort", abort, { once: true });
+    try {
+      signal?.throwIfAborted();
+      const started = await startTaskRun(nextId);
+      void started.completion.finally(() => signal?.removeEventListener("abort", abort)).catch(() => undefined);
+    } catch (error) { signal?.removeEventListener("abort", abort); throw error; }
+    return taskRunToolResult(taskRuns.get(nextId));
+  };
+
   startTaskRun = async (taskRunId, taskOptions) => await dispatchTaskRun(taskRunId, taskOptions);
 
   resumeTaskRun = async (taskRunId) => {
@@ -881,7 +921,10 @@ export async function createCommandRuntime(workspaceRoot: string, options: Comma
             prepared = await prepareSubagentTask(subagentOptions, checkpoint.prompt,
               definition.review || definition.reportOnly || subagentAccessMode(permissionManager) === "read-only" ? "read-only" : checkpoint.accessMode ?? "workspace", definition.agent ?? checkpoint.agent, {
                 persistenceRoot, taskId: latest.attemptId, parentSessionId: task.sessionId,
-                resume: true, runtimeEventSink: runtimeAuthority.asSink(),
+                resume: true, runtimeEventSink: { appendSessionEvent: (event) => {
+                  runtimeAuthority.appendSessionEvent(event);
+                  taskCommunication.notify(taskRunId);
+                } },
                 communication: checkpoint.communication && task.sessionId === recorder.sessionId ? taskCommunication.worker(taskRunId, latest.attemptId) : undefined
               });
             const current = taskRuns.get(taskRunId);
@@ -1168,6 +1211,7 @@ export async function createCommandRuntime(workspaceRoot: string, options: Comma
     startSubagentTask,
     startTaskRun,
     resumeTaskRun,
+    continueTaskRun,
     async canResumeWorkerTask(taskRunId) {
       const task = taskRuns.get(taskRunId);
       const attempt = task?.attempts.at(-1);
@@ -1368,9 +1412,11 @@ function taskRunToolResult(task: TaskRunWithAttempts | undefined, result?: TaskC
     revision: task.revision,
     attemptId: attempt?.attemptId,
     attempts: task.attempts.length,
-    output: result?.output ?? (typeof artifacts?.output === "string" ? artifacts.output : undefined),
-    reason: result?.reason ?? taskFailureReason(attempt?.failure),
-    verification: attempt?.verification,
+    output: (result?.output ?? (typeof artifacts?.output === "string" ? artifacts.output : undefined))?.slice(0, 4000),
+    outputTruncated: (result?.output ?? (typeof artifacts?.output === "string" ? artifacts.output : "")).length > 4000,
+    reason: (result?.reason ?? taskFailureReason(attempt?.failure))?.slice(0, 2000),
+    verification: typeof attempt?.verification === "object" && attempt.verification !== null
+      ? { status: (attempt.verification as { status?: unknown }).status, evidence: "Inspect the TaskRun for full verification evidence." } : attempt?.verification,
     approval: approval === undefined ? undefined : {
       approvalId: approval.approvalId,
       checkId: approval.checkId,

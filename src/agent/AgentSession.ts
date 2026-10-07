@@ -1,3 +1,4 @@
+import type { TaskCommunication } from "../runtime/TaskCommunication.js";
 import { promises as fs } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
@@ -218,6 +219,7 @@ export interface AgentSessionOptions {
   /** Todo 真值源；session resume 与模型计划工具共用同一个实例。 */
   todoStore?: TodoStore;
   sessionGoals?: SessionGoalStore;
+  taskCommunication?: TaskCommunication;
   /** 回合内首次改动工作区前建快照，供 /undo 回退；不在 git 仓库时省略。 */
   createCheckpoint?: (label: string) => Promise<unknown>;
   /** 已解析的附件物理目录；工具读取、重试与会话恢复共用，不是项目持久化根。 */
@@ -2297,6 +2299,34 @@ export class AgentSession {
       && runOptions.retryOfMessageId === undefined
       && runOptions.recordSessionUserMessage !== false
       && runOptions.emotionAnalysis !== false;
+    let noticeCharacters = 0;
+    let noticeCount = 0;
+    let receivedNotices: Set<string> | undefined;
+    const takeTaskNotifications = async (): Promise<AgentUserMessage[]> => {
+      const channel = this.options.taskCommunication;
+      if (!channel || noticeCount >= 4 || noticeCharacters >= 6000) return [];
+      const notices = channel.notifications(6000 - noticeCharacters).slice(0, 4 - noticeCount);
+      if (!notices.length) return [];
+      if (!receivedNotices) {
+        await this.recorder.flush();
+        receivedNotices = new Set((await readSessionEvents(this.recorder.filePath)).flatMap((event) =>
+          event.type === "user_message" && event.metadata?.source === "subagent" && event.messageId ? [event.messageId] : []));
+      }
+      const next: AgentUserMessage[] = [];
+      for (const notice of notices) {
+        if (receivedNotices.has(notice.id)) { channel.acknowledge(notice); continue; }
+        const message: AgentUserMessage = { role: "user", content: notice.content };
+        const reference = this.recordCanonicalMessage({ type: "user_message", content: notice.content, messageId: notice.id,
+          metadata: { source: "subagent", taskRunId: notice.taskRunId, attemptId: notice.attemptId } });
+        referenceByMessage.set(message, reference);
+        await this.recorder.flush();
+        channel.acknowledge(notice);
+        receivedNotices.add(notice.id);
+        noticeCount += 1; noticeCharacters += notice.content.length;
+        next.push(message);
+      }
+      return next;
+    };
     let systemPrompt = initialSystemPrompt;
     const activeModel = this.options.modelManager?.getModel() ?? this.options.model;
     const modelSettings: ModelSettings | undefined = this.options.modelManager?.getModelSettings()
@@ -2714,13 +2744,14 @@ export class AgentSession {
         getSteeringMessages: async () => {
           const next = await this.takeQueuedRunMessages(messageQueues, "steer", lastAssistant, referenceByMessage);
           await this.recordFatigueForMessages(next.length, runOptions.emotionAnalysis !== false);
-          return next;
+          return [...next, ...await takeTaskNotifications()];
         },
         getQueuedMessages: async () => {
           const next = await this.takeQueuedRunMessages(messageQueues, "queue", lastAssistant, referenceByMessage);
           await this.recordFatigueForMessages(next.length, runOptions.emotionAnalysis !== false);
-          if (!next.length) messageQueues.accepting = false;
-          return next;
+          const notices = await takeTaskNotifications();
+          if (!next.length && !notices.length) messageQueues.accepting = false;
+          return [...next, ...notices];
         }
       }, abortSignal);
 
