@@ -43,6 +43,12 @@ biny run "检查项目结构" --permission-mode read-only --json
 
 文件写入在批准后继续核对目标路径和文件状态。拒绝路径优先于一般允许规则；软链或目标变化不能用旧批准绕过检查。
 
+## 文件搜索的完整性
+
+`Grep` 保留可读取的匹配结果，扫描时未能完整读取的文件记录在 `unreadableFiles`，路径相对于工作区；`fileLimitReached` 表示候选文件超过扫描上限。`hasMore` 只表示发现的匹配还有下一页；即使它为 `false`，读取失败或扫描上限仍表示结果不完整。修复读取问题后，应从第一页重新搜索。
+
+解析新 `Grep` 输出的调用方应使用 `unreadableFiles`；不再提供 `skippedFiles` 字段或别名。已保存的会话和归档不会改写，旧归档的预览或 `read_tool_result` 返回文本仍可能因敏感文本过滤而丢失旧字段名称。需要完整的具名警告时，应重新搜索生成新结果。
+
 ## 沙箱与审批
 
 `sandbox.mode` 可选择 `off` 或 `workspace-write`，`sandbox.allowNetwork` 控制所配置沙箱中的网络策略。当前缺省为 `off`、`allowNetwork: true`。
