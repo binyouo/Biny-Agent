@@ -231,11 +231,17 @@ test("冷子代理详情只读取归属明确的记录，不启动 Runtime", { t
   tasks.transition("cold-child", "running", { attemptId: attempt.attemptId });
   authority.appendSessionEvent({ sessionId: workerSessionId(attempt.attemptId), runtime: { eventId: "call", eventSeq: 1, runId: "worker", turnId: "worker" },
     event: { type: "tool_call", tool: "Read", toolCallId: "read", args: { path: "src/a.ts" } }, createdAt: new Date().toISOString() });
+  authority.appendSessionEvent({ sessionId: workerSessionId(attempt.attemptId), runtime: { eventId: "worker-model", eventSeq: 2, runId: "worker", turnId: "worker" },
+    event: { type: "user_message", content: "inspect", metadata: { subagentModel: { provider: "local", id: "worker-model" } } }, createdAt: new Date().toISOString() });
+  tasks.transition("cold-child", "incomplete", { attemptId: attempt.attemptId, failure: { failureClass: "step_limit", message: "Subagent did not complete (stopReason=step_limit)." } });
   tasks.close(); authority.close();
   const files = async () => await readdir(projectSessionsDir(dataRoot)).catch((error: NodeJS.ErrnoException) => { if (error.code === "ENOENT") return []; throw error; });
   const before = await files();
   const result = await manager.taskInspection(project.id, "parent", "cold-child");
   assert.equal(result.activity[0]?.tool, "Read");
+  assert.equal(result.status, "incomplete");
+  assert.equal(result.stopReason, "step_limit");
+  assert.deepEqual(result.activity.find(entry => entry.kind === "model")?.model, { provider: "local", id: "worker-model" });
   await assert.rejects(manager.taskInspection(project.id, "other", "cold-child"), /another session/);
   assert.deepEqual(await files(), before);
 });

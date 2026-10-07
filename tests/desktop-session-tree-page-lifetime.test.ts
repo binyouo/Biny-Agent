@@ -72,7 +72,7 @@ async function appModule() {
   }
   const actual = new Set(["react", "./app/desktopState.js", "./app/desktopApi.js", "./app/sessionTreePageLifetime.js", "./app/useDesktopEventBridge.js", "./navigationHistory.js", "../../../runtime/agentEvents.js"]);
   const implementations: Record<string, string> = {
-    ChatResponseContext: "createContext(undefined)", RenderingPreviewContext: "createContext(undefined)",
+    ChatResponseContext: "createContext(undefined)", RenderingPreviewContext: "createContext(undefined)", SubagentNavigationContext: "createContext(undefined)",
     AppearanceProvider: "({children}) => children",
     DesktopShell: "({sideNav}) => sideNav",
     Sidebar: "(props) => { window.__sidebar = props; return window.__realSidebar ? createElement(RealSidebar, props) : createElement('pre', null, JSON.stringify(props.sessions)); }",
