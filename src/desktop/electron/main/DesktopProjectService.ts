@@ -392,6 +392,21 @@ export class DesktopProjectService {
     return await this.buildSessionSummaries(project, catalog, runtime, liveEvents, latestRunBySession, runLedger);
   }
 
+  /** 置顶区域独立于最近会话分页；只投影可见条目，避免处理隐藏会话的运行记录。 */
+  async listSidebarSessions(
+    project: DesktopProject,
+    runtime: RuntimeSnapshotsInput,
+    liveEvents: ReadonlyMap<string, AgentHostEvent[]>
+  ): Promise<DesktopSessionSummary[]> {
+    if (project.missing) return [];
+    const dataRoot = await this.storage.ensureProjectData(project);
+    const catalog = await listSessionCatalog(dataRoot);
+    const pageIds = new Set(querySessionCatalogItems(catalog).items.map((item) => item.id));
+    const visible = catalog.filter((item) => item.pinned || pageIds.has(item.id));
+    const latestRuns = await new SessionRunLedger(dataRoot).latestSessionRuns(visible.map((item) => item.id));
+    return visible.map((item) => desktopSessionSummary(project.id, item, runtime, liveEvents, latestRuns.get(item.id)));
+  }
+
   /** workspace 首屏同时需要完整摘要和分页页，复用同一份 catalog/ledger 读取结果。 */
   async listWorkspaceSessions(
     project: DesktopProject,

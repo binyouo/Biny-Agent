@@ -435,14 +435,17 @@ export class DesktopAgentManager {
   }
 
   /**
-   * 侧栏首屏只读取每个项目的根会话；子节点通过 listSessionTreePage 单独按需读取。
+   * 侧栏首屏保留每个项目最近一页和全部置顶会话；子节点通过 listSessionTreePage 按需读取。
    * 这不会初始化其它项目的 runtime。
    */
   async sidebarSessions(workspace?: DesktopWorkspaceSnapshot): Promise<DesktopSessionSummary[]> {
     const sessionGroups = await Promise.all(this.state.projects().map(async (storedProject) => {
-      if (workspace?.project.id === storedProject.id) return workspace.sessionPage?.sessions ?? workspace.sessions;
-      // bootstrap 已刷新所有项目；侧栏只读会话，不再次为每个项目启动 Git 子进程。
-      return (await this.projects.listSessionTreePage(storedProject, this.runtimeSnapshots(storedProject.id), this.projectEvents(storedProject.id))).sessions;
+      // bootstrap 已刷新所有项目；侧栏只读摘要，不再次为每个项目启动 Git 子进程。
+      if (workspace?.project.id === storedProject.id) {
+        const pageIds = new Set((workspace.sessionPage?.sessions ?? workspace.sessions).map((session) => session.id));
+        return workspace.sessions.filter((session) => session.pinned || pageIds.has(session.id));
+      }
+      return await this.projects.listSidebarSessions(storedProject, this.runtimeSnapshots(storedProject.id), this.projectEvents(storedProject.id));
     }));
     return sessionGroups.flat();
   }
