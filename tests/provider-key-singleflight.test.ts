@@ -269,7 +269,7 @@ for (const withModel of [true, false]) {
         });
         assert.equal(h.writes.length, 1);
         assert.ok(h.dom.window.document.querySelector(".provider-key-state.is-error"));
-        assert.equal(h.context().dirtyCount, withModel ? 1 : 0, "existing manual-save fallback behavior remains unchanged");
+        assert.equal(h.context().dirtyCount, 0, "failed key write stays in its editor and must not stage unrelated model candidates");
         await h.blurKey();
         assert.equal(h.staged.length, 2);
         assert.equal(h.writes.length, 2);
@@ -309,7 +309,7 @@ for (const withModel of [true, false]) {
       assert.equal(h.writes.length, 1);
       await act(async () => pending.resolve(committed(withModel)));
       assert.equal(h.writes.length, 3);
-      assert.deepEqual(h.writes.map(input => withModel ? input.models?.upserts[0]?.apiKeyHandle : input.models?.customProviders?.[0]?.apiKeyHandle), ["synthetic:1", "synthetic:2", "synthetic:3"]);
+      assert.deepEqual(h.writes.map(input => input.models?.customProviders?.[0]?.apiKeyHandle), ["synthetic:1", "synthetic:2", "synthetic:3"]);
       assert.deepEqual(h.writes.map(input => input.expectedConfigRevision), ["config:1", "config:2", "config:3"]);
       assert.equal(h.keyInput().value, "SYNTHETIC_A");
       assert.equal(h.context().dirtyCount, 0);
@@ -335,18 +335,22 @@ for (const withModel of [true, false]) {
     } finally { first.resolve(committed(withModel)); second.resolve(committed(withModel, 3)); await h.close(); }
   });
 
-  test(`provider A then B then A receives independent submission identities, model=${withModel}`, async () => {
+  test(`provider A then B then A receives independent submission identities after pending saves finish, model=${withModel}`, async () => {
     const pending = deferred<DesktopSettingsSaveResult>();
     const h = await harness({ withModel, save: async () => h.writes.length === 1 ? pending.promise : committed(withModel, h.writes.length + 1) });
     try {
-      for (const provider of ["Example", "Second", "Example"]) {
+      await h.selectProvider("Example");
+      await h.editKey("SYNTHETIC_SAME_TEXT");
+      await h.blurKey(); await h.enterKey();
+      await h.selectProvider("Second");
+      assert.equal(h.staged.length, 1, "switch waits for the pending connection write");
+      await act(async () => pending.resolve(committed(withModel)));
+      for (const provider of ["Second", "Example"]) {
         await h.selectProvider(provider);
         await h.editKey("SYNTHETIC_SAME_TEXT");
         await h.blurKey(); await h.enterKey();
       }
       assert.deepEqual(h.staged.map(item => item.scope.providerAlias), ["example", "second", "example"]);
-      assert.equal(h.writes.length, 1);
-      await act(async () => pending.resolve(committed(withModel)));
       assert.equal(h.writes.length, 3);
       assert.equal(h.context().dirtyCount, 0);
     } finally { pending.resolve(committed(withModel)); await h.close(); }

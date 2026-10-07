@@ -104,6 +104,8 @@ export const settingsSaveInputSchema = z.object({
     // 自定义服务商「先建连接、后补模型」：只写 providers 段，不改模型列表。
     customProviders: z.array(z.object({
       alias: idSchema,
+      enabled: z.boolean().optional(),
+      clearApiKey: z.boolean().optional(),
       displayName: z.string().trim().min(1).max(80).optional(),
       icon: z.string().trim().min(1).max(64).nullable().optional(),
       baseUrl: z.string().url().optional(),

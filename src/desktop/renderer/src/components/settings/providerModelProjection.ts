@@ -14,6 +14,7 @@ export interface ConnectionGroup {
   providerType: string;
   /** 用户在创建对话框命名的显示名；内置目录服务商缺省。 */
   displayName?: string;
+  enabled?: boolean;
   models: ModelChoice[];
   defaultModel?: ModelChoice;
 }
@@ -26,6 +27,7 @@ export function connectionLabel(models: ModelChoice[], connections: DesktopModel
       provider: connection.providerAlias,
       providerType: connection.providerType,
       displayName: connection.displayName,
+      enabled: connection.enabled ?? true,
       models: []
     });
   }

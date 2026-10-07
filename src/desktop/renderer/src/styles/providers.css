@@ -8,8 +8,7 @@
 .provider-catalog-error p { margin: 5px 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .provider-catalog-error small { color: var(--text-secondary); }
 
-/* 服务商图标选择器：对齐参照的 ProviderIconPicker（触发按钮 + 搜索行 + 7 列图标网格）。
-   弹层走 portal，这里只负责 fixed 落点与外观，尺寸/位置由组件按锚点算。 */
+/* 图标选择器弹层使用 portal，尺寸和位置由组件根据锚点计算。 */
 .provider-icon-picker { min-width: 0; }
 .provider-icon-trigger { display: flex; align-items: center; gap: 8px; width: 100%; height: 40px; padding: 0 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-raised); color: var(--text); font: inherit; font-weight: 400; text-align: left; cursor: pointer; }
 .provider-icon-trigger:hover { border-color: var(--border-strong); background: var(--surface-hover); }
@@ -41,3 +40,48 @@
   .provider-icon-popover { transition: none; }
   .provider-icon-spinner { animation: none; }
 }
+
+/* 连接信息按常用项与端点设置分层，标题和模型列表保持紧凑。 */
+.provider-detail-pane .provider-panel { gap: 20px; padding: 22px; }
+.provider-panel-head { align-items: flex-start; gap: 14px; }
+.provider-panel-title h3 { flex-wrap: wrap; column-gap: 7px; row-gap: 5px; font-size: calc(1 * var(--st-rem)); font-weight: 600; }
+.provider-panel-title .provider-panel-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.provider-panel-title p { overflow-wrap: anywhere; line-height: 1.5; margin-top: 6px; }
+.provider-header-actions { display: flex; flex: 0 0 auto; align-items: center; gap: 8px; }
+.provider-header-actions .provider-master-toggle { flex: 0 0 auto; }
+.provider-header-actions .provider-master-toggle small { max-width: 10rem; }
+.provider-detail-pane .provider-rows { gap: 18px; }
+.provider-endpoint-details { border: 1px solid var(--border); border-radius: var(--st-radius); }
+.provider-endpoint-details > summary { display: flex; min-height: 42px; align-items: center; gap: 8px; padding: 0 12px; color: var(--text-secondary); cursor: pointer; list-style: none; }
+.provider-endpoint-details > summary::-webkit-details-marker { display: none; }
+.provider-endpoint-details > summary > span { color: var(--text); font-size: calc(0.8125 * var(--st-rem)); font-weight: 550; }
+.provider-endpoint-details > summary > small { padding: 2px 6px; border-radius: 5px; color: var(--text-tertiary); background: var(--surface-hover); font-size: calc(0.625 * var(--st-rem)); }
+.provider-endpoint-details > summary > svg:last-child { margin-left: auto; transform: rotate(-90deg); }
+.provider-endpoint-details[open] > summary > svg:last-child { transform: rotate(0deg); }
+.provider-endpoint-details > summary:hover { background: var(--surface-hover); }
+.provider-endpoint-details > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.provider-endpoint-details .provider-connection-fields { display: flex; flex-direction: column; gap: 16px; padding: 4px 12px 14px; }
+.provider-models { gap: 10px; }
+.provider-models-heading { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; min-width: 0; }
+.provider-model-count { color: var(--text-tertiary); font-size: calc(0.6875 * var(--st-rem)); }
+.provider-models-head > button { flex-shrink: 0; }
+.provider-model-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 16px; }
+.provider-model-tools > button { display: inline-flex; min-height: 28px; align-items: center; gap: 4px; font-size: calc(0.75 * var(--st-rem)); }
+.provider-manual-row { flex-wrap: wrap; padding: 12px; border: 1px solid var(--border); border-radius: var(--st-radius); background: var(--surface-soft); }
+.provider-manual-row input { flex: 1 1 140px; }
+.provider-models-empty { padding: 22px 12px; }
+@container settings (max-width: 720px) {
+  .provider-panel-head { flex-wrap: wrap; gap: 10px; }
+  .provider-panel-title { flex-basis: 160px; }
+  .provider-header-actions { margin-left: auto; }
+  .provider-detail-pane .provider-panel { padding: 16px; }
+}
+
+.provider-list-rows { gap: 7px; padding: 8px; }
+.provider-row { min-height: 42px; border-color: var(--border); padding: 8px 9px; }
+.provider-row-copy { flex-direction: row; align-items: center; gap: 6px; }
+.provider-row-copy strong { flex: 1; min-width: 0; }
+.provider-row-copy .provider-row-badge { flex-shrink: 0; padding: 2px 6px; border-radius: 6px; background: var(--surface-hover); font-size: calc(0.625 * var(--st-rem)); }
+.provider-row.is-active .provider-row-badge { color: var(--text-secondary); }
+
+.provider-settings { --st-button-height: calc(2 * var(--st-rem)); --st-button-font-size: calc(0.8125 * var(--st-rem)); }

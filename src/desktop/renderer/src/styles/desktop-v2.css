@@ -1557,6 +1557,22 @@ select option:disabled {
   background: var(--bg);
 }
 
+/* 标题栏里的"正在刷新…"：只表示后台校验，不影响任何操作。 */
+.desktop-settings-dialog .settings-modal .settings-content > header.settings-titlebar > div {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
+  gap: calc(0.6 * var(--st-rem));
+}
+
+.settings-titlebar .settings-revalidating {
+  flex: none;
+  color: var(--muted);
+  font-size: calc(0.78 * var(--st-rem));
+  font-weight: 400;
+  letter-spacing: 0;
+}
+
 .settings-titlebar h2 {
   display: flex;
   min-width: 0;
@@ -4260,7 +4276,7 @@ select option:disabled {
 /* 测试中按钮虽禁用，但转圈指示不能跟着变淡。 */
 .provider-test-button.is-testing:disabled { opacity: 1; }
 
-/* 头部删除按钮：与测试按钮同高的描边方块，待确认时变红提示二次点击。 */
+/* 头部删除按钮使用紧凑的描边方块，点击后请求确认。 */
 .provider-delete-button {
   display: inline-flex;
   width: 36px;
@@ -4280,12 +4296,6 @@ select option:disabled {
   color: var(--red-text);
   border-color: color-mix(in srgb, var(--red) 45%, var(--border));
   background: color-mix(in srgb, var(--red) 8%, transparent);
-}
-
-.provider-delete-button.is-armed {
-  color: var(--red-text);
-  border-color: color-mix(in srgb, var(--red) 55%, var(--border));
-  background: color-mix(in srgb, var(--red) 12%, transparent);
 }
 
 .provider-delete-button:disabled { opacity: 0.55; }

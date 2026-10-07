@@ -44,6 +44,7 @@ export class ProviderEmbeddingRuntime implements EmbeddingModelRuntime {
     readonly modelId: string,
     options: ProviderEmbeddingRuntimeOptions = {}
   ) {
+    if (config.enabled === false) throw new Error(`服务商 ${providerAlias} 已停用，请在模型供应商设置中启用。`);
     const embedding = requireEmbeddingDefinition(providerAlias, definition);
     const baseUrl = config.baseUrl ?? definition.baseUrl;
     if (!baseUrl) throw new Error(`No embedding endpoint configured for provider ${providerAlias}.`);
@@ -219,7 +220,7 @@ function providerDescriptor(
     providerType: config.type,
     endpoint,
     privacyEndpointHash: endpoint === undefined ? undefined : embeddingProviderEndpointHash(providerAlias, endpoint),
-    available: baseUrl !== undefined && (
+    available: config.enabled !== false && baseUrl !== undefined && (
       !(config.requiresApiKey ?? definition.requiresApiKey)
       || resolveApiKey(config, definition, process.env) !== undefined
     )

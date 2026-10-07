@@ -57,12 +57,19 @@ export interface SettingsDraftContextValue {
   activity?: DesktopActivitySettingsInput;
   loadError?: string;
   loading: boolean;
+  /**
+   * 为真表示当前渲染的是上一次读取的缓存快照，后台仍在重新校验。
+   * 用于"壳先出"：不要因为这次刷新还没回来就把整个设置页遮住。
+   */
+  revalidating: boolean;
   retryLoad(): void;
   saveError?: string;
   dirtyCount: number;
   preferencesOnly: boolean;
   invalid: boolean;
   saveState: SettingsSaveState;
+  pendingModelEdits?: boolean;
+  reportModelEditState?(pending: boolean): void;
   setThemePreference(value: DesktopThemePreference): void;
   setFontPreference(value: DesktopFontPreference): void;
   setAppearancePreference(value: AppearancePreference): Promise<boolean>;
@@ -77,12 +84,10 @@ export interface SettingsDraftContextValue {
   setSkills(value: DesktopSkillSettingsInput): void;
   upsertModel(value: DesktopModelConfigurationInput): void;
   removeModel(alias: string): void;
-  /**
-   * 只提交 models 段的即时保存（复刻「零保存按钮」的服务商配置体验）。入参是完整的
-   * models 段（草稿待提交项 + 本次变更），提交成功后 models 草稿清零，其余分页草稿不动。
-   * 单独保存 toolModel 只推进已保存选择，保留供应商模型草稿。
-   */
-  saveModels(models: DesktopSettingsModelsInput): Promise<DesktopSettingsSaveResult | undefined>;
+  /** 即时保存只提交本次模型变更；计算型更新在队列执行时读取最新快照。 */
+  saveModels(models: DesktopSettingsModelsInput | ((snapshot: DesktopSettingsSnapshot) => DesktopSettingsModelsInput)): Promise<DesktopSettingsSaveResult | undefined>;
+  registerModelEditor?(flush: () => Promise<boolean>): () => void;
+  flushModelEdits?(): Promise<boolean>;
   setModelProfile(providerAlias: string, modelId: string, profile: ModelProfile | undefined): void;
   stageCredential(secret: string, scope: DesktopSettingsCredentialScope): Promise<DesktopStagedSettingsCredential>;
   addOauthCredentialHandle(handle: string): void;
@@ -92,6 +97,27 @@ export interface SettingsDraftContextValue {
 }
 
 export const SettingsDraftContext = createContext<SettingsDraftContextValue | undefined>(undefined);
+
+/**
+ * 打开设置时能否复用上一次读到的快照。
+ *
+ * 可以复用 → 先拿缓存把界面渲染出来，后台再静默校验一次；
+ * 不可以复用 → 老老实实显示加载态（首次打开、切了项目、用户主动重试后）。
+ *
+ * 抽成纯函数是为了能直接测：这个判断错了会让用户看到别的项目的设置。
+ */
+export function canReuseSettingsSnapshot(input: {
+  cachedKey: string | undefined;
+  currentKey: string;
+  loadAttempt: number;
+  lastLoadAttempt: number;
+  hasSnapshot: boolean;
+}): boolean {
+  return input.cachedKey !== undefined
+    && input.cachedKey === input.currentKey
+    && input.loadAttempt === input.lastLoadAttempt
+    && input.hasSnapshot;
+}
 
 export function useSettingsDraft(): SettingsDraftContextValue {
   const value = useContext(SettingsDraftContext);

@@ -31,7 +31,7 @@ import type {
   DesktopWebSearchSettings,
   DesktopWebSearchSettingsInput
 } from "../../../../protocol.js";
-import { SettingsDraftContext, type DesktopSettingsDraft, type SettingsDraftContextValue, type SettingsSaveState } from "./SettingsDraftContext.js";
+import { canReuseSettingsSnapshot, SettingsDraftContext, type DesktopSettingsDraft, type SettingsDraftContextValue, type SettingsSaveState } from "./SettingsDraftContext.js";
 
 export function SettingsDraftProvider({
   active,
@@ -57,23 +57,36 @@ export function SettingsDraftProvider({
   sessionRunning: boolean;
 }): React.JSX.Element {
   const [snapshot, setSnapshot] = useState<DesktopSettingsSnapshot>();
+  // 关掉设置窗口不销毁缓存：下次打开先用它渲染，后台再校验一次，
+  // 避免每次都从零走一趟 IPC（这正是"进设置先看到正在加载"的来源）。
+  const cacheKey = `${projectId ?? ""}::${sessionId ?? ""}`;
+  const cacheKeyRef = useRef(cacheKey);
+  const reusableCacheRef = useRef<{ key: string } | undefined>(undefined);
+  const lastLoadAttemptRef = useRef(0);
   useEffect(() => () => { void window.biny.previewAppearance(null).catch((error: unknown) => onNotify(`恢复外观失败：${error instanceof Error ? error.message : String(error)}`)); }, [onNotify]);
   const [draft, setDraft] = useState<DesktopSettingsDraft>();
   const [globalActivity, setGlobalActivity] = useState<DesktopActivitySettingsUpdate>();
   const globalActivityRef = useRef<DesktopActivitySettingsUpdate | undefined>(undefined);
   const [loadError, setLoadError] = useState<string>();
   const [loading, setLoading] = useState(active);
+  const [revalidating, setRevalidating] = useState(false);
   const [loadAttempt, setLoadAttempt] = useState(0);
   const [saveError, setSaveError] = useState<string>();
+  const [pendingModelEdits, reportModelEditState] = useState(false);
   const [saveState, setSaveState] = useState<SettingsSaveState>("clean");
   const credentialHandlesRef = useRef(new Set<string>());
   const snapshotRef = useRef<DesktopSettingsSnapshot | undefined>(undefined);
+  useLayoutEffect(() => { cacheKeyRef.current = cacheKey; }, [cacheKey]);
   const loadGenerationRef = useRef(0);
   const activityUpdateTailRef = useRef(Promise.resolve());
 
   const adoptSnapshot = useCallback((next: DesktopSettingsSnapshot, submittedDraft?: DesktopSettingsDraft): void => {
     snapshotRef.current = next;
     setSnapshot(next);
+    // 记下这份快照属于哪个项目；下次打开同一项目时可以先拿它渲染。
+    // 这里必须用 cacheKeyRef 而不是闭包里的 projectId/sessionId —— adoptSnapshot 的
+    // 依赖数组不含它们，闭包里读到的是旧值，会给快照挂错 key。
+    reusableCacheRef.current = { key: cacheKeyRef.current };
     const nextDraft = draftFromSnapshot(next);
     // 保存期间其它分页仍可编辑；仅提交时未再修改的字段跟随服务端快照。
     setDraft((current) => current && submittedDraft ? {
@@ -90,16 +103,32 @@ export function SettingsDraftProvider({
   useEffect(() => {
     if (!active) return;
     loadGenerationRef.current += 1;
+    const generation = loadGenerationRef.current;
     let cancelled = false;
-    setSnapshot(undefined);
-    snapshotRef.current = undefined;
-    setDraft(undefined);
-    setGlobalActivity(undefined);
-    globalActivityRef.current = undefined;
-    setLoadError(undefined);
-    setLoading(true);
-    setSaveError(undefined);
-    setSaveState("clean");
+    // 之前读过同一个项目：先沿用缓存渲染（壳先出），后台再静默校验一次。
+    // 首次读取、或项目变了、或用户主动 retry 时才清空并显示加载态。
+    const reusable = canReuseSettingsSnapshot({
+      cachedKey: reusableCacheRef.current?.key,
+      currentKey: cacheKey,
+      loadAttempt,
+      lastLoadAttempt: lastLoadAttemptRef.current,
+      hasSnapshot: snapshotRef.current !== undefined
+    });
+    if (reusable) {
+      setRevalidating(true);
+      setLoadError(undefined);
+    } else {
+      setSnapshot(undefined);
+      snapshotRef.current = undefined;
+      setDraft(undefined);
+      setGlobalActivity(undefined);
+      globalActivityRef.current = undefined;
+      setLoadError(undefined);
+      setLoading(true);
+      setRevalidating(false);
+      setSaveError(undefined);
+      setSaveState("clean");
+    }
     // 没有项目时只读取全局 Activity 快照，不伪造项目 ID，也不加载项目模型或会话。
     const request = projectId
       ? window.biny.settingsSnapshot(projectId, sessionId).then((next) => { if (!cancelled) adoptSnapshot(next); })
@@ -110,13 +139,19 @@ export function SettingsDraftProvider({
       });
     request
       .catch((error: unknown) => {
-        if (!cancelled) setLoadError(error instanceof Error ? error.message : String(error));
+        // 后台校验失败不该把已经能用的缓存内容换成一屏错误。
+        if (!cancelled && !reusable) setLoadError(error instanceof Error ? error.message : String(error));
       })
       .finally(() => {
-        if (!cancelled) setLoading(false);
+        if (cancelled) return;
+        setLoading(false);
+        setRevalidating(false);
+        if (loadGenerationRef.current === generation) {
+          lastLoadAttemptRef.current = loadAttempt;
+        }
       });
     return () => { cancelled = true; loadGenerationRef.current += 1; };
-  }, [active, adoptSnapshot, loadAttempt, projectId, sessionId]);
+  }, [active, adoptSnapshot, cacheKey, loadAttempt, projectId, sessionId]);
 
   const retryLoad = useCallback((): void => {
     // 重试只用于初次读取失败；已存在的跨页草稿不能被刷新覆盖。
@@ -315,11 +350,11 @@ export function SettingsDraftProvider({
 
   useLayoutEffect(() => {
     void window.biny.updateSettingsDraftState({
-      dirty: dirtyCount > 0,
+      dirty: dirtyCount > 0 || pendingModelEdits || saveState === "saving",
       canSave,
       open: active
     }).catch(() => undefined);
-  }, [active, canSave, dirtyCount]);
+  }, [active, canSave, dirtyCount, pendingModelEdits, saveState]);
 
   useEffect(() => {
     if (saveState === "saving" || saveState === "rolling_back" || saveState === "recovery_required") return;
@@ -345,34 +380,51 @@ export function SettingsDraftProvider({
     await window.biny.updateSettingsDraftState({ dirty: false, canSave: false, open: active }).catch(() => undefined);
   }, [active, adoptSnapshot, releaseAllCredentials, snapshot]);
 
-  // 模型页的即时保存串行化：连续动作（连接、开关模型、改密钥）各自带着「当前草稿 +
-  // 本次变更」的完整 models 段进入同一互斥队列，后一笔基于前一笔提交后的快照继续。
+  // 即时保存只携带本次增量；依赖模型偏好的更新在队列内根据最新快照计算。
   const modelsSaveTailRef = useRef<Promise<unknown>>(Promise.resolve());
+  const pendingModelSavesRef = useRef(0);
+  const modelEditorsRef = useRef(new Set<() => Promise<boolean>>());
+  const registerModelEditor = useCallback((flush: () => Promise<boolean>): (() => void) => {
+    modelEditorsRef.current.add(flush);
+    return () => { modelEditorsRef.current.delete(flush); };
+  }, []);
+  const flushModelEdits = useCallback(async (): Promise<boolean> => {
+    for (const flush of modelEditorsRef.current) if (!await flush()) return false;
+    await modelsSaveTailRef.current;
+    return true;
+  }, []);
 
-  const saveModels = useCallback(async (models: DesktopSettingsModelsInput): Promise<DesktopSettingsSaveResult | undefined> => {
+  const saveModels = useCallback(async (update: DesktopSettingsModelsInput | ((snapshot: DesktopSettingsSnapshot) => DesktopSettingsModelsInput)): Promise<DesktopSettingsSaveResult | undefined> => {
     const base = snapshotRef.current;
     if (!base) throw new Error("设置尚未加载完成。");
     if (saveState === "recovery_required") {
       onNotify("存在未恢复的保存事务，请先处理再修改模型配置。");
       return undefined;
     }
-    const toolModelOnly = models.toolModel !== undefined && models.upserts.length === 0 && models.removeAliases.length === 0
-      && Object.keys(models).every((key) => key === "upserts" || key === "removeAliases" || key === "toolModel");
+    const generation = loadGenerationRef.current;
+    pendingModelSavesRef.current += 1;
+    setSaveError(undefined);
+    setSaveState("saving");
     const operation = modelsSaveTailRef.current.then(async (): Promise<DesktopSettingsSaveResult | undefined> => {
       // 队列执行时取最新基线：前一笔即时保存可能已经推进了 configRevision。
       const snapshotNow = snapshotRef.current;
-      if (!snapshotNow) throw new Error("设置尚未加载完成。");
+      if (!snapshotNow || generation !== loadGenerationRef.current) throw new Error("设置页面已切换，请重新操作。");
+      if (snapshotNow.pendingRecovery) throw new Error("存在未恢复的保存事务，请先处理再修改模型配置。");
+      const models = typeof update === "function" ? update(snapshotNow) : update;
+      const toolModelOnly = models.toolModel !== undefined && models.upserts.length === 0 && models.removeAliases.length === 0
+        && Object.keys(models).every((key) => key === "upserts" || key === "removeAliases" || key === "toolModel");
       const result = await window.biny.saveSettings(snapshotNow.projectId, {
         expectedPreferenceRevision: snapshotNow.preferenceRevision,
         expectedConfigRevision: snapshotNow.configRevision,
         models
       });
+      if (generation !== loadGenerationRef.current) return result;
       if (result.status === "committed") {
         // 模型变更可能同时改变后端派生的默认设置。未编辑字段跟随新快照，
         // 只有真正偏离旧基线的字段才保留，避免旧默认值造成幽灵 dirty 状态。
         snapshotRef.current = result.snapshot;
         setSnapshot(result.snapshot);
-        setSaveState(result.snapshot.pendingRecovery ? "recovery_required" : "clean");
+        setSaveState(result.snapshot.pendingRecovery ? "recovery_required" : pendingModelSavesRef.current > 1 ? "saving" : "clean");
         setDraft((current) => current ? {
           ...rebaseUneditedFields(current, draftFromSnapshot(snapshotNow), draftFromSnapshot(result.snapshot)),
           models: toolModelOnly ? current.models : {
@@ -387,7 +439,8 @@ export function SettingsDraftProvider({
       } else if (result.status === "rolled_back") {
         setSnapshot(result.snapshot);
         snapshotRef.current = result.snapshot;
-        setSaveState("dirty");
+        setSaveState(dirtyCount > 0 ? "dirty" : "clean");
+        setSaveError(result.message ?? "模型设置保存失败，已恢复原设置；请在对应字段重试。");
         onNotify(result.message ?? (result.conflicts?.length ? "模型设置已在其他位置更改，请重试" : "模型设置保存失败，已恢复原设置"));
       } else {
         setSaveState("recovery_required");
@@ -396,8 +449,18 @@ export function SettingsDraftProvider({
       return result;
     });
     modelsSaveTailRef.current = operation.then(() => undefined, () => undefined);
-    return operation;
-  }, [onCommitted, onNotify, saveState]);
+    try {
+      return await operation;
+    } catch (error) {
+      if (generation === loadGenerationRef.current) {
+        setSaveState(dirtyCount > 0 ? "dirty" : "clean");
+        setSaveError(error instanceof Error ? error.message : String(error));
+      }
+      throw error;
+    } finally {
+      pendingModelSavesRef.current -= 1;
+    }
+  }, [dirtyCount, onCommitted, onNotify, saveState]);
 
   const saveAll = useCallback(async (): Promise<DesktopSettingsSaveResult | undefined> => {
     if (!snapshot || !draft || runtimeBlocked || invalid || dirtyCount === 0 || saveState === "recovery_required" || saveState === "saving" || saveState === "rolling_back") return undefined;
@@ -456,12 +519,15 @@ export function SettingsDraftProvider({
     activity: draft?.activity ?? globalActivity?.activity,
     loadError,
     loading,
+    revalidating,
     retryLoad,
     saveError,
     dirtyCount,
     preferencesOnly,
     invalid,
     saveState,
+    pendingModelEdits,
+    reportModelEditState,
     setThemePreference,
     setFontPreference,
     setAppearancePreference,
@@ -477,6 +543,8 @@ export function SettingsDraftProvider({
     upsertModel,
     removeModel,
     saveModels,
+    registerModelEditor,
+    flushModelEdits,
     setModelProfile,
     stageCredential,
     addOauthCredentialHandle,
@@ -484,7 +552,10 @@ export function SettingsDraftProvider({
     discard,
     saveAll
   }), [
+    registerModelEditor,
+    flushModelEdits,
     addOauthCredentialHandle,
+    pendingModelEdits,
     dirtyCount,
     discard,
     draft,
@@ -492,6 +563,7 @@ export function SettingsDraftProvider({
     invalid,
     loadError,
     loading,
+    revalidating,
     retryLoad,
     saveError,
     releaseCredential,

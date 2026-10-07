@@ -203,8 +203,8 @@ for (const withModel of [true, false]) {
         }]);
         assert.equal(h.writes.length, 1);
         const saved = h.writes[0]?.models;
-        assert.equal(withModel ? saved?.upserts[0]?.apiKeyHandle : saved?.customProviders?.[0]?.apiKeyHandle, "synthetic:1");
-        assert.equal(withModel ? saved?.upserts[0]?.providerAlias : saved?.customProviders?.[0]?.alias, "example");
+        assert.equal(saved?.customProviders?.[0]?.apiKeyHandle, "synthetic:1");
+        assert.equal(saved?.customProviders?.[0]?.alias, "example");
         assert.ok(!JSON.stringify(h.writes).includes("SYNTHETIC_NEWER_EDIT"), "settings writes must carry handles only");
         assert.equal(h.keyInput().value, "SYNTHETIC_NEWER_EDIT");
         assert.match(h.dom.window.document.querySelector('.provider-key-state')?.textContent ?? "", /已保存/u);
@@ -336,7 +336,7 @@ test("a current reveal rejection releases loading and permits a successful retry
     await act(async () => { pending.reject(new Error("Synthetic current read failure")); });
     assert.equal(h.keyInput().disabled, false);
     assert.equal(h.keyInput().value, "");
-    assert.equal(h.keyInput().placeholder, "已保存；点按右侧图标查看");
+    assert.equal(h.keyInput().placeholder, "••••••••");
     assert.equal(h.dom.window.document.querySelector('.provider-key-state'), null, "a read failure is not a save failure");
     await h.click('[aria-label="显示密钥"]');
     assert.equal(h.keyInput().value, syntheticKey);

@@ -10,6 +10,8 @@ export function SettingsPageFooter({
   error,
   onCancel,
   onSave,
+  hideSave = false,
+  pendingModelEdits = false,
   state
 }: {
   dirtyCount: number;
@@ -20,9 +22,11 @@ export function SettingsPageFooter({
   error?: string;
   onCancel(): void;
   onSave(): void;
+  hideSave?: boolean;
+  pendingModelEdits?: boolean;
   state: SettingsSaveState;
 }): React.JSX.Element {
-  const status = unavailable ?? settingsSaveStatus(state, dirtyCount);
+  const status = unavailable ?? (state === "clean" && pendingModelEdits ? "等待保存…" : state === "clean" && error ? "保存失败，请重试" : settingsSaveStatus(state, dirtyCount));
   const clean = dirtyCount === 0 && state === "clean";
   return (
     <footer className="settings-page-footer">
@@ -33,7 +37,7 @@ export function SettingsPageFooter({
       </div>
       <span className="settings-footer-actions">
         <button className="ghost-button" disabled={state === "saving" || state === "rolling_back"} onClick={onCancel} type="button">{clean ? "关闭" : "取消"}</button>
-        <button
+        {!hideSave ? <button
           aria-describedby="settings-save-status"
           className="settings-save-button"
           disabled={disabled || dirtyCount === 0 || state === "invalid" || state === "saving" || state === "rolling_back" || state === "recovery_required"}
@@ -41,7 +45,7 @@ export function SettingsPageFooter({
           type="button"
         >
           {state === "saving" ? "保存中…" : state === "rolling_back" ? "回滚中…" : error ? "重试保存" : "保存"}
-        </button>
+        </button> : null}
       </span>
     </footer>
   );

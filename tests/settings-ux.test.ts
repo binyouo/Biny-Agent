@@ -170,10 +170,11 @@ test("独立页面切换保留未保存主题和关闭确认，Activity Record �
     assert.ok(document.querySelector("#quickchat-behavior"), "快速对话卡片在通用页里");
     assert.ok(document.querySelector("#quickchat-shortcut") === null, "移除没有配置入口的快捷键展示块");
     assert.ok(document.activeElement === general, "切换页面后应保留导航按钮焦点");
-    await h.input('[aria-label="搜索设置"]', "Activity Record");
-    assert.match(document.querySelector('[aria-label="设置搜索结果"]')?.textContent ?? "", /电脑历史/u);
+    // 搜索别名走的是中文旧名（用户仍会这么叫），命中的页面标题已经是新名。
+    await h.input('[aria-label="搜索设置"]', "电脑历史");
+    assert.match(document.querySelector('[aria-label="设置搜索结果"]')?.textContent ?? "", /Computer History/u);
     await h.click('[aria-label="设置搜索结果"] button');
-    assert.equal(document.querySelector(".settings-titlebar h2")?.textContent, "电脑历史");
+    assert.equal(document.querySelector(".settings-titlebar h2")?.textContent, "Computer History");
     await h.click('[data-settings-tab="用户界面"]');
     assert.equal(document.querySelector<HTMLInputElement>('input[value="dark"]')?.checked, true);
     assert.match(document.querySelector(".settings-page-footer")?.textContent ?? "", /未保存/u);
@@ -258,6 +259,31 @@ test("运行中的工具模型选择仍可打开并即时保存，不夹带其�
     assert.equal(writes.length, 1);
     assert.deepEqual(writes[0]?.models, { upserts: [], removeAliases: [], toolModel: { alias: undefined } });
     assert.match(document.querySelector('#tool-model')?.textContent ?? "", /后续回合/u);
+  } finally { await h.close(); }
+});
+
+test("复用设置缓存期间公开重新校验状态，读取完成后恢复空闲", async () => {
+  const refresh = Promise.withResolvers<DesktopSettingsSnapshot>();
+  let reads = 0;
+  const h = await harness({ settingsSnapshot: async () => ++reads === 1 ? snapshot() : await refresh.promise });
+  try {
+    const { SettingsDraftProvider } = await import("../src/desktop/renderer/src/components/settings/SettingsDraftProvider.js");
+    const { useSettingsDraft } = await import("../src/desktop/renderer/src/components/settings/SettingsDraftContext.js");
+    let current!: ReturnType<typeof useSettingsDraft>;
+    function Probe() { current = useSettingsDraft(); return null; }
+    const props = { projectId: "project", sessionRunning: false, onCommitted() {}, onFontPreview() {},
+      onThemePreview() {}, onNotify() {}, children: h.React.createElement(Probe) };
+    await h.render(h.React.createElement(SettingsDraftProvider, { ...props, active: true }));
+    assert.equal(current.revalidating, false);
+    const cached = current.snapshot;
+    await h.render(h.React.createElement(SettingsDraftProvider, { ...props, active: false }));
+    await h.render(h.React.createElement(SettingsDraftProvider, { ...props, active: true }));
+    assert.equal(current.revalidating, true, "缓存刷新期间调用方必须能观察忙碌状态");
+    assert.equal(current.loading, false);
+    assert.equal(current.snapshot, cached);
+    await h.React.act(async () => refresh.resolve({ ...snapshot(), preferenceRevision: 2 }));
+    assert.equal(current.revalidating, false);
+    assert.equal(current.snapshot?.preferenceRevision, 2);
   } finally { await h.close(); }
 });
 
@@ -851,7 +877,7 @@ for (const closeVia of ["titlebar", "escape", "html-dialog-cancel", "backdrop"] 
       assert.equal(writes[0]?.chatParams?.response?.streaming, !original);
       await h.click('[aria-label="启用流式响应"]');
       assert.equal(document.querySelector<HTMLInputElement>('[aria-label="启用流式响应"]')?.checked, original);
-      assert.deepEqual(projections.at(-1), { dirty: false, canSave: false, open: true }, "草稿确已改回旧基线");
+      assert.deepEqual(projections.at(-1), { dirty: true, canSave: false, open: true }, "原生关闭握手仍需保护尚未完成的保存事务");
       assert.equal(document.querySelector<HTMLButtonElement>('.settings-footer-actions button')?.disabled, true);
       assert.match(document.querySelector('#settings-save-status')?.textContent ?? "", /保存中/u);
       const requestClose = async () => {

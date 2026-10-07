@@ -1044,6 +1044,7 @@ export interface DesktopModelConfigurationInput {
 export interface DesktopModelConnection {
   providerAlias: string;
   providerType: ModelProvider;
+  enabled?: boolean;
   /** 自定义服务商的用户命名；内置目录服务商缺省，列表标签回退到端点主机名。 */
   displayName?: string;
   /** 用户为该服务商挑的品牌图标 id；没覆盖过则缺省，渲染层按目录回退。 */
@@ -1407,6 +1408,9 @@ export interface DesktopSettingsModelsInput {
 /** 自定义服务商连接的创建/修补输入；除 alias 外全部按「未提供即保留现值」合并。 */
 export interface DesktopCustomProviderInput {
   alias: string;
+  enabled?: boolean;
+  /** 删除已保存的 API Key；环境变量和 OAuth 登录有各自的管理入口。 */
+  clearApiKey?: boolean;
   displayName?: string;
   /** 品牌图标 id；省略表示保留现值，显式 null 表示清除覆盖、回到目录默认图标。 */
   icon?: string | null;

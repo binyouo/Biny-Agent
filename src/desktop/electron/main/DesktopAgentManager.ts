@@ -47,7 +47,7 @@ import { createProjectSkillKey } from "../../../extensions/skillRef.js";
 import { synchronizeCredentialRevisions, type DeferredCredentialTransactionStatus } from "../../../config/credentials.js";
 import { configSchema, reasoningEffortSchema, type AgentConfig, type ProviderConfig } from "../../../config/schema.js";
 import type { AgentConfigStore } from "../../../config/store.js";
-import { configDocumentRevision } from "../../../config/versioned.js";
+import { configChangeRequiresRuntimeRestart, configDocumentRevision } from "../../../config/versioned.js";
 import { createModelSettings, validateModelConfiguration } from "../../../llm/modelFactory.js";
 import { ModelRuntime } from "../../../llm/ModelRuntime.js";
 import { LocalEmbeddingManager, listLocalEmbeddingModels } from "../../../llm/embedding/LocalEmbeddingRuntime.js";
@@ -1361,7 +1361,10 @@ export class DesktopAgentManager {
         if (alias) validateModelConfiguration(next, alias);
         next = configSchema.parse({ ...next, toolModel: alias });
       }
-      validateModelConfiguration(next, next.defaultModel);
+      // 连接停用、删除密钥等管理操作可以暂时让原默认模型不可用；明确选择新默认时才验证请求条件。
+      if (input.models.defaultModel !== undefined || next.defaultModel !== current.config.defaultModel) {
+        validateModelConfiguration(next, next.defaultModel);
+      }
     }
 
     if (input.memory !== undefined
@@ -2048,7 +2051,7 @@ export class DesktopAgentManager {
 
   /** 设置事务只提交配置；驻留 Runtime 的刷新仍在后台进行，向量索引按自身状态收敛。 */
   settingsCommitted(prepared: PreparedDesktopSettingsConfig): void {
-    if (prepared.beforeRevision !== prepared.targetRevision && !isModelSelectionChange(prepared.before, prepared.after)) {
+    if (prepared.beforeRevision !== prepared.targetRevision && configChangeRequiresRuntimeRestart(prepared.before, prepared.after)) {
       this.scheduleIdleManagedRuntimeRebuild();
     }
   }
@@ -2213,15 +2216,18 @@ export class DesktopAgentManager {
    */
   private buildConfigWithCustomProvider(current: AgentConfig, input: DesktopCustomProviderInput): AgentConfig {
     const existing = current.providers[input.alias];
+    if (input.clearApiKey && (input.apiKey || input.apiKeyHandle)) throw new Error("删除密钥不能同时提供新密钥。");
+    if (input.clearApiKey && existing?.authMode === "oauth-bearer") throw new Error("订阅凭据请通过退出登录移除。");
     const provider: ProviderConfig = {
       ...existing,
       type: existing?.type ?? "openai-compatible",
+      enabled: input.enabled ?? existing?.enabled ?? true,
       displayName: input.displayName ?? existing?.displayName,
       // 图标是展示偏好：省略 = 保留现值，显式 null = 清除覆盖（回到目录默认）。
       icon: input.icon === null ? undefined : input.icon ?? existing?.icon,
       protocol: input.protocol ?? existing?.protocol,
       baseUrl: input.baseUrl ?? existing?.baseUrl,
-      apiKey: input.apiKey ?? existing?.apiKey,
+      apiKey: input.clearApiKey ? undefined : input.apiKey ?? existing?.apiKey,
       requiresApiKey: existing?.requiresApiKey ?? true,
       apiBackend: input.apiBackend ?? existing?.apiBackend
     };
@@ -2240,6 +2246,9 @@ export class DesktopAgentManager {
       : Object.assign({}, sameProvider ? existingProvider?.modelProfiles : undefined, { [input.model]: input.modelProfile });
     const provider = {
       type: input.providerType,
+      enabled: existingProvider?.enabled,
+      icon: sameProvider ? existingProvider.icon : undefined,
+      dataResidency: sameProvider ? existingProvider.dataResidency : undefined,
       // 自定义服务商的显示名保存在 provider 上；模型级 upsert 不携带它，不能清掉。
       displayName: sameProvider ? existingProvider?.displayName : undefined,
       protocol: input.protocol,
@@ -3166,13 +3175,12 @@ export class DesktopAgentManager {
     const { runtime, commands } = managed;
     if (commands) {
       const memory = requireLocalMemory(commands);
-      const [overview, entries, allEntries, maintenance] = await Promise.all([
+      const [overview, allEntries, maintenance] = await Promise.all([
         memory.getOverview(),
-        memory.listMemoryEntries(),
         memory.listMemoryEntries(),
         memory.loadMaintenanceStatus().catch(() => ({ state: "idle" as const, eligible: 0, processed: 0, written: 0, failed: 0 }))
       ]);
-      return { overview, entries, allEntries, maintenance };
+      return { overview, entries: allEntries, allEntries, maintenance };
     }
     const remote = requireRemoteRuntime(runtime);
     return await remote.memory<{
@@ -3192,13 +3200,14 @@ export class DesktopAgentManager {
   ): Promise<{ overview: MemoryOverview; entries: MemoryEntriesResult; allEntries: MemoryEntriesResult; maintenance: MemoryMaintenanceStatus }> {
     const project = this.projects.requireProject(projectId);
     const storage = new MemoryStorage(project.path);
-    const [overview, entries, allEntries, maintenance] = await Promise.all([
+    // entries 与 allEntries 是同一份全量结果的两个用途（分页页脚 / 统计），
+    // 原来读了两次，等于把全部记忆正文反序列化两遍。
+    const [overview, allEntries, maintenance] = await Promise.all([
       storage.getOverview(),
-      storage.listEntries(),
       storage.listEntries(),
       storage.readMaintenanceStatus()
     ]);
-    return { overview, entries, allEntries, maintenance };
+    return { overview, entries: allEntries, allEntries, maintenance };
   }
 
   /** 记忆条目分页读取；runtime 驻留走 runtime，未驻留直连。 */
@@ -3295,6 +3304,9 @@ export class DesktopAgentManager {
         ...current.providers,
         [providerAlias]: {
           type: providerType,
+          enabled: existingProvider?.enabled,
+          icon: existingProvider?.icon,
+          displayName: existingProvider?.displayName,
           baseUrl: profile.baseUrl,
           apiKey: authenticated.accessToken,
           apiKeyEnv: undefined,
@@ -3515,6 +3527,7 @@ function describeModelConnections(config: AgentConfig): DesktopModelConnection[]
     return {
       providerAlias,
       providerType: provider.type,
+      enabled: provider.enabled ?? true,
       displayName: provider.displayName,
       icon: provider.icon,
       protocol: provider.protocol,

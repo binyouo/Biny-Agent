@@ -9,7 +9,7 @@ import { SettingsAppshots } from "./SettingsAppshots.js";
 import { SettingsWebSearch } from "./SettingsWebSearch.js";
 import { SettingsBrowser } from "./SettingsBrowser.js";
 import { SettingsComputerUse } from "./SettingsComputerUse.js";
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Dialog } from "@astryxdesign/core/Dialog";
 import type { LocalEmbeddingModelId } from "../../../../../llm/embedding/types.js";
 import type { MemorySleepRun } from "../../../../../agent/context/memoryTypes.js";
@@ -236,9 +236,14 @@ function SettingsOverlayContent({
 }: SettingsOverlayProps): React.JSX.Element | null {
   const appearance = useAppearance();
   const settingsDraft = useSettingsDraft();
+  const settingsDraftRef = useRef(settingsDraft);
+  useLayoutEffect(() => { settingsDraftRef.current = settingsDraft; });
   const runtimeBusy = sessionRunning || settingsDraft.snapshot?.hasRunningTasks === true;
   const [tab, setTab] = useState<SettingsTab>("通用");
   const [memoryVisited, setMemoryVisited] = useState(false);
+  // 技能/插件页每次挂载都会全量扫描所有 skill 与项目目录（还没有缓存），
+  // 所以和记忆页一样做成"首次进入挂载、之后常驻靠 hidden 切换"。
+  const [extensionsVisited, setExtensionsVisited] = useState<{ skills: boolean; plugins: boolean }>({ skills: false, plugins: false });
   const [message, setMessage] = useState<string>();
   const [search, setSearch] = useState("");
   const [closeGuardOpen, setCloseGuardOpen] = useState(false);
@@ -266,9 +271,6 @@ function SettingsOverlayContent({
     }
   }, [_onNotify, modelSetupRequired, open]);
   useEffect(() => {
-    if (closeRequest) setCloseGuardOpen(true);
-  }, [closeRequest]);
-  useEffect(() => {
     if (!open) return;
     const handleSelectKeys = (event: KeyboardEvent): void => {
       if (event.key !== "Escape" && event.key !== "Tab") return;
@@ -279,6 +281,10 @@ function SettingsOverlayContent({
     window.addEventListener("keydown", handleSelectKeys, true);
     return () => window.removeEventListener("keydown", handleSelectKeys, true);
   }, [open]);
+  const markVisited = useCallback((nextTab: SettingsTab): void => {
+    if (nextTab === "技能") setExtensionsVisited((current) => current.skills ? current : { ...current, skills: true });
+    if (nextTab === "插件") setExtensionsVisited((current) => current.plugins ? current : { ...current, plugins: true });
+  }, []);
   // 由 Composer 直达模型设置时，在浏览器绘制前同步分页，避免先闪过上次打开的内容。
   useLayoutEffect(() => {
     if (!open) return;
@@ -289,8 +295,9 @@ function SettingsOverlayContent({
       activeTabRef.current = nextTab;
       setTab(nextTab);
       if (nextTab === "记忆") setMemoryVisited(true);
+      markVisited(nextTab);
     }
-  }, [open, targetTab]);
+  }, [markVisited, open, targetTab]);
   const settingsModels = stagedModelChoices(
     settingsDraft.snapshot?.models.configured ?? workspace?.models ?? [],
     settingsDraft.draft?.models.upserts ?? [],
@@ -299,13 +306,15 @@ function SettingsOverlayContent({
   );
   const defaultModelAlias = settingsDraft.draft?.models.defaultModel?.alias
     ?? settingsDraft.snapshot?.models.defaultModel;
-  const selectTab = (nextTab: SettingsTab): void => {
+  const selectTab = async (nextTab: SettingsTab): Promise<void> => {
     if (nextTab === activeTab) return;
+    if (settingsDraft.flushModelEdits && !await settingsDraft.flushModelEdits()) return;
     activeTabRef.current = nextTab;
     setTab(nextTab);
     setMessage(undefined);
     scrollRef.current?.scrollTo({ top: 0 });
     if (nextTab === "记忆") setMemoryVisited(true);
+    markVisited(nextTab);
   };
   const discardAndClose = async (): Promise<void> => {
     await settingsDraft.discard();
@@ -313,21 +322,32 @@ function SettingsOverlayContent({
     if (closeRequest) await onResolveCloseRequest(closeRequest.requestId, "discarded");
     else onClose();
   };
-  const requestCancel = (): void => {
+  const requestCancel = async (): Promise<void> => {
+    if (settingsDraft.flushModelEdits && !await settingsDraft.flushModelEdits()) {
+      if (closeRequest) await onResolveCloseRequest(closeRequest.requestId, "cancelled");
+      return;
+    }
     // 改回旧基线不代表已发出的保存完成；与脏草稿一样等待事务结束后再确认关闭。
-    if (settingsDraft.dirtyCount > 0 || settingsDraft.saveState === "saving" || settingsDraft.saveState === "rolling_back") setCloseGuardOpen(true);
+    const current = settingsDraftRef.current;
+    if (current.dirtyCount > 0 || current.saveState === "saving" || current.saveState === "rolling_back" || current.saveState === "recovery_required") setCloseGuardOpen(true);
     else void discardAndClose();
   };
+  const requestCancelRef = useRef(requestCancel);
+  useLayoutEffect(() => { requestCancelRef.current = requestCancel; });
+  useEffect(() => {
+    if (closeRequest) void requestCancelRef.current();
+  }, [closeRequest]);
   const cancelClose = async (): Promise<void> => {
     setCloseGuardOpen(false);
     if (closeRequest) await onResolveCloseRequest(closeRequest.requestId, "cancelled");
   };
   const extensionSettings = activeTab === "MCP 服务器" || activeTab === "技能" || activeTab === "插件";
   const needsProject = !workspace && ["聊天", "网络搜索", "模型", "技能", "MCP 服务器", "插件", "记忆"].includes(activeTab);
-  const loadBlocked = Boolean((workspace && !["浏览器", "Computer Use", "Appshots", "关于"].includes(activeTab) || activeTab === "Computer History" || activeTab === "权限") && (settingsDraft.loading || settingsDraft.loadError));
-  const openSearchResult = (nextTab: SettingsTab): void => {
+  // 只有"从没读到过快照且这次也失败了"才拦整页；单纯在刷新不该把已经能用的界面遮起来。
+  const loadBlocked = Boolean((workspace && !["浏览器", "Computer Use", "Appshots", "关于"].includes(activeTab) || activeTab === "Computer History" || activeTab === "权限") && (settingsDraft.loading || settingsDraft.loadError) && !settingsDraft.snapshot);
+  const openSearchResult = async (nextTab: SettingsTab): Promise<void> => {
     setSearch("");
-    selectTab(nextTab);
+    await selectTab(nextTab);
     titleRef.current?.focus();
   };
   return (
@@ -378,6 +398,8 @@ function SettingsOverlayContent({
           <header className="settings-titlebar">
             <div>
               <h2 ref={titleRef} tabIndex={-1}><Icon name={settingsNav.find(page => page.tab === activeTab)!.icon} size={18} />{settingsTabLabels[activeTab] ?? activeTab}</h2>
+              {/* 后台校验中：内容已经能用了，只是一个不挡操作的状态提示。 */}
+              {settingsDraft.revalidating ? <span className="settings-revalidating" role="status">正在刷新…</span> : null}
             </div>
             <button aria-label="关闭设置" className="icon-button settings-close-button" onClick={requestCancel} title="关闭设置 · Esc" type="button">
               <Icon name="close" size={18} />
@@ -460,8 +482,8 @@ function SettingsOverlayContent({
             sessionRunning={runtimeBusy}
           /> : null}
           {activeTab === "MCP 服务器" ? <McpServersView onError={_onNotify} onSuccess={(nextMessage) => notifyForTab("MCP 服务器", nextMessage)} projectId={workspace?.project.id} /> : null}
-          {activeTab === "技能" ? <SettingsExtensionsView kind="skills" onError={_onNotify} projectId={workspace?.project.id} /> : null}
-          {activeTab === "插件" ? <SettingsExtensionsView kind="plugins" onError={_onNotify} projectId={workspace?.project.id} /> : null}
+          {extensionsVisited.skills ? <div hidden={activeTab !== "技能"}><SettingsExtensionsView kind="skills" onError={_onNotify} projectId={workspace?.project.id} /></div> : null}
+          {extensionsVisited.plugins ? <div hidden={activeTab !== "插件"}><SettingsExtensionsView kind="plugins" onError={_onNotify} projectId={workspace?.project.id} /></div> : null}
           {activeTab === "导入" ? <SettingsImport projectId={workspace?.project.id}
             disabled={runtimeBusy || settingsDraft.dirtyCount > 0 || settingsDraft.saveState === "saving" || settingsDraft.saveState === "rolling_back" || settingsDraft.saveState === "recovery_required"}
             onImported={async projectId => { settingsDraft.retryLoad(); await onSessionImportComplete?.(projectId); }} /> : null}
@@ -479,7 +501,9 @@ function SettingsOverlayContent({
           </>}
           </div>
           <SettingsPageFooter
-            hint={immediateSaveHints[activeTab]}
+            pendingModelEdits={settingsDraft.pendingModelEdits}
+            hideSave={activeTab === "模型" && settingsDraft.dirtyCount === 0}
+            hint={activeTab === "模型" ? undefined : immediateSaveHints[activeTab]}
             unavailable={!workspace && activeTab === "通用" ? settingsDraft.saveState === "saving" ? "正在保存外观偏好…" : "外观偏好即时保存" : settingsDraft.loading ? "正在加载设置…" : settingsDraft.loadError ? "设置尚未加载" : !settingsDraft.draft ? "本页操作即时保存" : undefined}
             blockedReason={settingsDraft.dirtyCount > 0 && runtimeBusy && !settingsDraft.preferencesOnly ? "任务运行中，共享设置暂不能保存。更改已保留。" : undefined}
             error={settingsDraft.saveError ?? settingsDraft.snapshot?.pendingRecovery?.message}

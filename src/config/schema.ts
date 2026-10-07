@@ -281,6 +281,8 @@ export const providerEmbeddingModelSchema = z.object({
 
 const providerConfigSchema = z.object({
   type: modelProviderSchema,
+  /** 缺省启用；停用保留连接、凭据和模型选择。 */
+  enabled: z.boolean().optional(),
   /** 用户自定义服务商的显示名；内置目录服务商不使用，列表标签优先于端点主机名。 */
   displayName: z.string().trim().min(1).max(80).optional(),
   /**

@@ -181,6 +181,7 @@ export class ConfiguredProviderRuntime implements ProviderRuntime {
   }
 
   isConfigured(model?: ModelAliasConfig): boolean {
+    if (this.config.enabled === false) return false;
     const endpoint = model?.baseUrl ?? this.config.baseUrl ?? this.definition.baseUrl;
     if (!endpoint || !isHttpEndpoint(endpoint)) return false;
     if (this.config.authMode === "oauth-bearer") {
@@ -234,6 +235,7 @@ export class ConfiguredProviderRuntime implements ProviderRuntime {
   }
 
   validate(model?: ModelAliasConfig): void {
+    if (this.config.enabled === false) throw new Error(`服务商 ${this.id} 已停用，请在模型供应商设置中启用。`);
     const endpoint = model?.baseUrl ?? this.config.baseUrl ?? this.definition.baseUrl;
     if (!endpoint) throw new Error(`No model endpoint configured. Set providers.${this.id}.baseUrl.`);
     let parsed: URL;
@@ -333,6 +335,7 @@ export class ConfiguredProviderRuntime implements ProviderRuntime {
   }
 
   async refreshCredential(signal?: AbortSignal): Promise<ProviderConfig | undefined> {
+    if (this.config.enabled === false) return undefined;
     const oauth = this.config.oauth;
     if (
       this.config.authMode !== "oauth-bearer"

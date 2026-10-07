@@ -2273,6 +2273,7 @@ async function testDesktopCustomProviderConnection(): Promise<void> {
         removeAliases: [],
         customProviders: [{
           alias: "my-relay",
+          icon: "openai",
           displayName: "我的中转",
           baseUrl: "https://relay.example/v1",
           protocol: "openai-compatible",
@@ -2321,6 +2322,22 @@ async function testDesktopCustomProviderConnection(): Promise<void> {
     assert.equal(enabledConfig.providers["my-relay"]?.apiKey, "relay-key");
     assert.equal(enabled.models.configured.some((model) => model.alias === "my-relay-test-model"), true);
 
+    await commitDesktopSettings(settings, project.id, { models: { upserts: [], removeAliases: [], defaultModel: { alias: "my-relay-test-model", thinking: "off" },
+      modelProfiles: { "my-relay": { "test-model": { showInPicker: true }, "hidden-model": { showInPicker: false } } } } });
+    const selectionBeforeStop = await configStore.load();
+    const stopped = await commitDesktopSettings(settings, project.id, { models: { upserts: [], removeAliases: [], customProviders: [{ alias: "my-relay", enabled: false }] } });
+    const stoppedConfig = await configStore.load();
+    assert.equal(stoppedConfig.defaultModel, selectionBeforeStop.defaultModel, "停用默认供应商保留默认模型引用");
+    assert.deepEqual(stoppedConfig.models, selectionBeforeStop.models);
+    assert.deepEqual(stoppedConfig.providers["my-relay"]?.modelProfiles, selectionBeforeStop.providers["my-relay"]?.modelProfiles);
+    assert.equal(stoppedConfig.providers["my-relay"]?.apiKey, "relay-key");
+    assert.equal(stopped.models.configured.find((model) => model.alias === "my-relay-test-model")?.available, false);
+    const restarted = new DesktopAgentManager(state, projects, configStore, () => undefined);
+    assert.equal((await new DesktopSettingsTransaction(state, restarted).snapshot(project.id)).models.connections.find((item) => item.providerAlias === "my-relay")?.enabled, false);
+    await restarted.closeAll();
+    const restored = await commitDesktopSettings(settings, project.id, { models: { upserts: [], removeAliases: [], customProviders: [{ alias: "my-relay", enabled: true }] } });
+    assert.equal(restored.models.configured.find((model) => model.alias === "my-relay-test-model")?.available, true);
+
     // 端点补丁按合并语义改写（与模型级「服务地址」提交一致），显示名等未提供字段保留。
     const rewired = await commitDesktopSettings(settings, project.id, {
       models: {
@@ -2352,6 +2369,17 @@ async function testDesktopCustomProviderConnection(): Promise<void> {
     const patchedConfig = await configStore.load();
     assert.equal(patchedConfig.providers["empty-relay"]?.baseUrl, "https://empty.example/v2");
     assert.equal(patchedConfig.providers["empty-relay"]?.displayName, "Empty");
+    const disabled = await commitDesktopSettings(settings, project.id, {
+      models: { upserts: [], removeAliases: [], customProviders: [{ alias: "empty-relay", enabled: false }] }
+    });
+    assert.equal((await configStore.load()).providers["empty-relay"]?.enabled, false, "零模型供应商可独立停用并落盘");
+    assert.equal(disabled.models.connections.find((item) => item.providerAlias === "empty-relay")?.enabled, false);
+    assert.equal(enabledConfig.providers["my-relay"]?.icon, "openai", "模型新增不能丢失连接图标");
+    const credentialRemoved = await commitDesktopSettings(settings, project.id, {
+      models: { upserts: [], removeAliases: [], customProviders: [{ alias: "my-relay", clearApiKey: true }] }
+    });
+    assert.equal((await configStore.load()).providers["my-relay"]?.apiKey, undefined, "显式删除密钥同时更新凭据存储");
+    assert.equal(credentialRemoved.models.connections.find((item) => item.providerAlias === "my-relay")?.hasCredential, false);
     assert.equal(patched.models.connections.some((item) => item.providerAlias === "empty-relay" && item.baseUrl === "https://empty.example/v2"), true);
     await agents.closeAll();
   } finally {

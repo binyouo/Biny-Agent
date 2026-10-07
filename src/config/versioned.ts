@@ -7,6 +7,7 @@
 import { createHash } from "node:crypto";
 import { withLocalFileWriteLock } from "../utils/localFileLock.js";
 import type { AgentConfig } from "./schema.js";
+import { assertTestStatePathIsolated } from "./paths.js";
 
 export interface VersionedConfigSnapshot {
   config: AgentConfig;
@@ -48,6 +49,7 @@ export function assertConfigRevision(expectedRevision: string, config: AgentConf
 }
 
 export async function withGlobalConfigWriteLock<T>(root: string, operation: () => Promise<T>): Promise<T> {
+  assertTestStatePathIsolated(root);
   return await withLocalFileWriteLock(root, ".config.write.lock", operation);
 }
 
@@ -60,4 +62,63 @@ function stableJson(value: unknown): string {
     return `{${Object.keys(object).filter((key) => object[key] !== undefined).sort().map((key) => `${JSON.stringify(key)}:${stableJson(object[key])}`).join(",")}}`;
   }
   return JSON.stringify(value) ?? "null";
+}
+
+/**
+ * 哪些顶层配置字段变化后**必须重建 Runtime 进程**才生效。
+ *
+ * 反过来记更容易：不在这个清单里的字段，是 main 侧即时读取的交互偏好
+ * （appshots 热键、computer 显示偏好、活动记录等），改它们不用碰 Runtime。
+ *
+ * ⚠️ **`context` 必须在清单里**，尽管 AgentSession 是每轮现读 `activeConfig`：
+ * 桌面端保存设置时，只有**当前项目**的 Runtime 会被推送新配置
+ * （见 DesktopAgentManager.updateGlobalPersonalization），其它驻留项目拿不到，
+ * 而它自己在推送之后仍然调 `scheduleIdleManagedRuntimeRebuild()`
+ * —— 那一步就是为了让其它项目的 Runtime 也跟上。
+ * 所以把 `context` 排除出去，会让别的项目静默保留旧的记忆/压缩策略。
+ *
+ * 同理，任何"某个 Runtime 里被热更新、但别的 Runtime 没有"的字段都必须留在这里。
+ * 往清单外挪字段之前，先确认**所有**驻留 Runtime 都能拿到新值。
+ */
+const RESTART_RELEVANT_CONFIG_FIELDS: readonly string[] = [
+  "format",
+  "configVersion",
+  "defaultModel",
+  "toolModel",
+  "providers",
+  "credentialRevisions",
+  "models",
+  "thinking",
+  "agent",
+  "heartbeat",
+  "permission",
+  "workspace",
+  "context",
+  "crystal",
+  "sandbox",
+  "hooks",
+  "diagnostics",
+  "checkpoints",
+  "web",
+  "telemetry",
+  "extensions"
+];
+
+/** 只保留"变了就必须重建 Runtime"的字段，其余键被剔除，使 revision 比较忽略它们。 */
+export function restartRelevantConfig(config: AgentConfig): AgentConfig {
+  const projection = structuredClone(config) as unknown as Record<string, unknown>;
+  for (const key of Object.keys(projection)) {
+    if (!RESTART_RELEVANT_CONFIG_FIELDS.includes(key)) delete projection[key];
+  }
+  return projection as unknown as AgentConfig;
+}
+
+/**
+ * 这次配置变更是否需要重启驻留的 Runtime Host。
+ *
+ * 判据不能用"revision 变了"——那等于把所有设置都当成需要重启。
+ * 用一个记忆开关把所有项目的 Host 拖去重启，正是"开关要等很久"的来源。
+ */
+export function configChangeRequiresRuntimeRestart(before: AgentConfig, after: AgentConfig): boolean {
+  return configDocumentRevision(restartRelevantConfig(after)) !== configDocumentRevision(restartRelevantConfig(before));
 }
