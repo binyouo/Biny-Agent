@@ -74,6 +74,8 @@ biny skill uninstall <skill-name>
 
 Desktop 的技能设置可管理启用状态与自动提取。自动提取会调用模型并将可复用流程保存到全局受管技能目录；它会额外消耗模型用量，失败不改变已完成聊天的终态。
 
+本地 `SKILL.md` 导入受管来源库时会校验可选元数据：`license` 与 `compatibility` 可省略或设为 `null`，填写时应为文本，`compatibility` 去除首尾空白后不超过 500 个字符；`allowed-tools` 应为字符串或字符串数组，`metadata` 应为对象。无效内容不会写入来源库；已保存的来源若被改成无效内容，会显示跳过警告并拒绝安装，保留原文件和现有安装。
+
 ## Plugins
 
 Plugin 可注册工具、Provider、模型目录或凭据处理能力。项目与全局插件通过受管目录和启用配置加载。

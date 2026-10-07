@@ -9,7 +9,7 @@ import { randomBytes } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { globalConfigDir } from "../config/paths.js";
-import { parseSkillDocument } from "./skillDocument.js";
+import { parseSkillDocument, readSkillMetadataFields } from "./skillDocument.js";
 
 const maxSkillFileBytes = 512 * 1024;
 const skillNamePattern = /^[a-z0-9]+(?:-[a-z0-9]+)*$/u;
@@ -154,6 +154,7 @@ export function parseManagedSkillMetadata(content: string, expectedId: string): 
   }
   if (expectedId !== name) throw new Error(`Skill name ${name} 必须与目录名 ${expectedId} 一致。`);
   if (description.length > 1_024) throw new Error("Skill description 不能超过 1024 个字符。");
+  readSkillMetadataFields(frontmatter);
   return { id: name, name, description };
 }
 
