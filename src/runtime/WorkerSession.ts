@@ -151,12 +151,6 @@ export class WorkerSession {
       if (event.type === "model_request") await observer(event.metrics);
     }
   }
-  get finalHandoff(): string | undefined {
-    const message = this.messages.at(-1);
-    return message?.role === "assistant" && !message.content.some((part) => part.type === "toolCall")
-      && (message.stopReason === "stop" || message.stopReason === "other")
-      ? message.content.filter((part) => part.type === "text").map((part) => part.text).join("") : undefined;
-  }
 
   setAssistant(message: AgentAssistantMessage): void { this.assistant = message; }
 
