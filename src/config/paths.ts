@@ -25,6 +25,42 @@ export const MODELS_STORE_FILE = "models-store.json";
 export const GLOBAL_PLUGIN_DIR = "plugins";
 export const AGENT_DATABASE_FILE = "agent.sqlite";
 
+// 直接运行的测试也要把身份传给派生 CLI/Host；不能只依赖测试总入口设置目录。
+if (process.env.NODE_TEST_CONTEXT !== undefined || /\.test\.[cm]?[jt]s$/u.test(process.argv[1] ?? "")) {
+  process.env.BINY_TEST_PROCESS = "1";
+}
+
+// 固定进程启动时的用户目录，测试注入的临时 HOME 不改变受保护的真实路径。
+const protectedTestStateRoots = [path.join(os.homedir(), DEFAULT_CONFIG_DIR), path.join(os.homedir(), ".biny")];
+
+export function isTestProcess(): boolean {
+  return process.env.BINY_TEST_PROCESS === "1";
+}
+
+/** 测试可以显式指定临时目录，但不能把默认路径或其符号链接当成隔离目录。 */
+export function assertTestStatePathIsolated(root: string): void {
+  if (!isTestProcess()) return;
+  const candidate = canonicalFuturePath(root);
+  for (const protectedRoot of protectedTestStateRoots) {
+    const relative = path.relative(canonicalFuturePath(protectedRoot), candidate);
+    if (relative === "" || (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative))) {
+      throw new Error("Test processes must isolate Biny state outside the user directories; set BINY_AGENT_DIR to a temporary directory or pass an isolated config root.");
+    }
+  }
+}
+
+function canonicalFuturePath(root: string): string {
+  let ancestor = path.resolve(root);
+  const suffix: string[] = [];
+  while (!existsSync(ancestor)) {
+    suffix.unshift(path.basename(ancestor));
+    const parent = path.dirname(ancestor);
+    if (parent === ancestor) break;
+    ancestor = parent;
+  }
+  return path.join(realpathSync(ancestor), ...suffix);
+}
+
 export interface PathEnvironment {
   env?: NodeJS.ProcessEnv;
   homeDir?: string;
@@ -32,8 +68,9 @@ export interface PathEnvironment {
 
 export function globalAgentDir(options: PathEnvironment = {}): string {
   const configured = (options.env ?? process.env)[BINY_AGENT_DIR_ENV];
-  if (configured?.trim()) return path.resolve(configured.trim());
-  return path.resolve(options.homeDir ?? os.homedir(), DEFAULT_AGENT_DIR);
+  const root = configured?.trim() ? path.resolve(configured.trim()) : path.resolve(options.homeDir ?? os.homedir(), DEFAULT_AGENT_DIR);
+  assertTestStatePathIsolated(root);
+  return root;
 }
 
 export function globalConfigPath(options: PathEnvironment = {}): string {
@@ -42,8 +79,9 @@ export function globalConfigPath(options: PathEnvironment = {}): string {
 
 export function globalConfigDir(options: PathEnvironment = {}): string {
   const configured = (options.env ?? process.env)[BINY_AGENT_DIR_ENV];
-  if (configured?.trim()) return path.resolve(configured.trim());
-  return path.resolve(options.homeDir ?? os.homedir(), DEFAULT_CONFIG_DIR);
+  const root = configured?.trim() ? path.resolve(configured.trim()) : path.resolve(options.homeDir ?? os.homedir(), DEFAULT_CONFIG_DIR);
+  assertTestStatePathIsolated(root);
+  return root;
 }
 
 /** 动态 Provider 模型目录属于全局模型配置，不按工作区重复保存。 */

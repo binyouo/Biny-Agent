@@ -12,6 +12,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import type { AgentConfig, McpServerConfig } from "./schema.js";
 import { configDocumentRevision } from "./versioned.js";
+import { isTestProcess } from "./paths.js";
 
 export const BINY_KEYCHAIN_SERVICE = "com.biny.agent";
 export const CREDENTIAL_TRANSACTION_JOURNAL = ".credentials.transaction.json";
@@ -172,7 +173,8 @@ export class EnvironmentCredentialStore implements CredentialStore {
 }
 
 export function createCredentialStore(platform = process.platform): CredentialStore {
-  return platform === "darwin" ? new MacKeychainCredentialStore() : new EnvironmentCredentialStore();
+  // 配置目录隔离不会隔离系统 Keychain。持久凭据测试必须显式注入自己的存储。
+  return platform === "darwin" && !isTestProcess() ? new MacKeychainCredentialStore() : new EnvironmentCredentialStore();
 }
 
 export function providerCredentialAccount(providerAlias: string, kind: ProviderCredentialKind): string {
@@ -583,6 +585,7 @@ async function writeCredentialJournal(journalPath: string, journal: CredentialTr
 const KEYCHAIN_COMMAND_TIMEOUT_MS = 30_000;
 
 function runKeychainCommand(command: string, args: string[], input?: string): Promise<KeychainCommandResult> {
+  if (isTestProcess()) throw new Error("Test processes must inject a credential store or Keychain command instead of accessing the user Keychain.");
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, { stdio: ["pipe", "pipe", "pipe"] });
     let stdout = "";

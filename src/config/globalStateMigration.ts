@@ -8,7 +8,7 @@
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { BINY_AGENT_DIR_ENV, DEFAULT_CONFIG_DIR, DEFAULT_AGENT_DIR, type PathEnvironment } from "./paths.js";
+import { assertTestStatePathIsolated, BINY_AGENT_DIR_ENV, DEFAULT_CONFIG_DIR, DEFAULT_AGENT_DIR, type PathEnvironment } from "./paths.js";
 
 const migrationLockName = ".global-state-migration.lock";
 const migrationLockTimeoutMs = 5_000;
@@ -41,6 +41,8 @@ export function migrateLegacyGlobalState(options: PathEnvironment = {}): Promise
   }
   const homeDir = path.resolve(options.homeDir ?? os.homedir());
   const targetRoot = path.join(homeDir, DEFAULT_CONFIG_DIR);
+  assertTestStatePathIsolated(targetRoot);
+  assertTestStatePathIsolated(path.join(homeDir, DEFAULT_AGENT_DIR));
   const existing = migrationPromises.get(targetRoot);
   if (existing) return existing;
   const pending = migrate(homeDir, targetRoot);

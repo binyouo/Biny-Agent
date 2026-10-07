@@ -11,7 +11,7 @@ import path from "node:path";
 import { configSchema, defaultConfig, type AgentConfig } from "./schema.js";
 import { migrateGlobalConfigDocument } from "./migrations.js";
 import { migrateLegacyGlobalState } from "./globalStateMigration.js";
-import { globalConfigDir } from "./paths.js";
+import { assertTestStatePathIsolated, globalConfigDir } from "./paths.js";
 import { loadProjectSettings, type ProjectSettings } from "./projectSettings.js";
 
 export const CONFIG_FILE = "config.json";
@@ -130,6 +130,7 @@ export async function ensureConfig(workspaceRoot: string, options: ConfigPathOpt
   void workspaceRoot;
   if (options.globalDir === undefined) await migrateLegacyGlobalState();
   const root = options.globalDir ?? globalConfigDir();
+  assertTestStatePathIsolated(root);
   await fs.mkdir(root, { recursive: true, mode: 0o700 });
   const location = await resolveConfigLocation(root);
   let existing: FileHandle | undefined;
@@ -165,6 +166,7 @@ export async function ensureConfig(workspaceRoot: string, options: ConfigPathOpt
 }
 
 async function resolveConfigLocation(workspaceRoot: string): Promise<ConfigLocation> {
+  assertTestStatePathIsolated(workspaceRoot);
   const root = await fs.realpath(path.resolve(workspaceRoot));
   const stat = await fs.lstat(root);
   if (stat.isSymbolicLink() || !stat.isDirectory()) {
@@ -339,6 +341,7 @@ function isSymbolicLinkError(error: unknown): boolean {
 }
 
 async function ensureConfigDirectory(root: string): Promise<void> {
+  assertTestStatePathIsolated(root);
   try {
     const stat = await fs.lstat(root);
     if (stat.isSymbolicLink() || !stat.isDirectory()) throw new Error("Configuration root must be a real directory.");

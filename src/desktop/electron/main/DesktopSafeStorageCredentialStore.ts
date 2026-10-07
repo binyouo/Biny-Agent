@@ -15,6 +15,7 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import type { CredentialStore } from "../../../config/credentials.js";
+import { assertTestStatePathIsolated } from "../../../config/paths.js";
 
 const CREDENTIALS_FILE = "credentials.enc";
 
@@ -46,6 +47,7 @@ export class DesktopSafeStorageCredentialStore implements CredentialStore {
     root: string,
     private readonly cipherSource: () => Promise<SafeStorageCipher> | SafeStorageCipher = defaultCipher
   ) {
+    assertTestStatePathIsolated(root);
     this.filePath = path.join(root, CREDENTIALS_FILE);
   }
 
