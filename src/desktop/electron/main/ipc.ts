@@ -118,7 +118,8 @@ const sessionTreePageOptionsSchema = z.object({
   parentSessionId: idSchema.optional(),
   cursor: z.string().max(4_000).optional(),
   limit: z.number().int().min(1).max(50).optional(),
-  includeArchived: z.boolean().optional()
+  includeArchived: z.boolean().optional(),
+  includePinnedSessions: z.boolean().optional()
 }).optional();
 const permissionModeSchema = z.enum(["ask", "read-only", "auto", "full-access"]);
 const activeViewSchema = z.enum(["chat", "runtime", "extensions"]);

@@ -27,7 +27,6 @@ import { readStoredSessionEvents } from "../../../session/events.js";
 import { isSessionNearLimit, maxSessionEvents, maxSessionFileBytes } from "../../../session/limits.js";
 import {
   listSessionCatalog,
-  querySessionCatalog,
   querySessionCatalogItems,
   readSessionCatalogRecord,
   registerSessionBranch,
@@ -472,22 +471,25 @@ export class DesktopProjectService {
     }
     const dataRoot = await this.storage.ensureProjectData(project);
     await ensureAgentDirs(dataRoot);
-    const page = await querySessionCatalog(dataRoot, options satisfies SessionCatalogQuery);
+    const catalog = await listSessionCatalog(dataRoot);
+    const page = querySessionCatalogItems(catalog, options satisfies SessionCatalogQuery);
+    const pinnedItems = options.includePinnedSessions && !page.revisionChanged
+      ? catalog.filter((item) => item.pinned)
+      : undefined;
+    const visible = new Map([...page.items, ...(pinnedItems ?? [])].map((item) => [item.id, item]));
     const runLedger = new SessionRunLedger(dataRoot);
-    const latestRunBySession = await runLedger.latestSessionRuns(page.items.map((item) => item.id));
-    const latestRuns = page.items.map((item) => latestRunBySession.get(item.id));
-    const sessions = page.items.map((item, index) => desktopSessionSummary(
-      project.id,
-      item,
-      runtime,
-      liveEvents,
-      latestRuns[index]
-    ));
+    const latestRuns = await runLedger.latestSessionRuns([...visible.keys()]);
+    const summaries = new Map([...visible].map(([id, item]) => [id, desktopSessionSummary(
+      project.id, item, runtime, liveEvents, latestRuns.get(id)
+    )]));
+    const sessions = page.items.map((item) => summaries.get(item.id)!);
+    const pinnedSessions = pinnedItems?.map((item) => summaries.get(item.id)!);
     return {
       projectId: project.id,
       parentSessionId: options.parentSessionId,
       revision: page.revision,
       sessions,
+      pinnedSessions,
       nextCursor: page.nextCursor,
       revisionChanged: page.revisionChanged
     };
