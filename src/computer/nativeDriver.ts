@@ -510,6 +510,7 @@ export class NativeProcessDriver implements ComputerDriver {
     // 好过在每个 case 里各写一遍 —— 那种写法漏一个就静默失效。
     const withPid = (params: Record<string, unknown>): Record<string, unknown> => ({
       pid, window_id: Number(action.windowId), show_cursor: action.showCursor, coord_space: action.coordinateSpace,
+      delivery: action.delivery,
       ...params
     });
     switch (action.action) {

@@ -8,11 +8,20 @@ import { test, type TestContext } from "node:test";
 import { configSchema, defaultConfig } from "../src/config/schema.js";
 import { createFileConfigStore, updateConfig } from "../src/config/store.js";
 import { NativeProcessDriver } from "../src/computer/nativeDriver.js";
-import { createComputerUseTools } from "../src/tools/computerUse.js";
+import { createComputerUseTools, requestComputer } from "../src/tools/computerUse.js";
+import { ToolExecutionCoordinator } from "../src/agent/toolExecutionCoordinator.js";
+import { PermissionManager } from "../src/permission/PermissionManager.js";
+import { SessionRecorder } from "../src/session/recorder.js";
+import { ensureAgentDirs } from "../src/session/store.js";
+import { ToolRegistry } from "../src/tools/registry.js";
 
 // 只替换系统窗口边界；工具、Desktop 控制面、审批、driver 和进程通信均用真实装配。
+const previewWindows: WindowFixture[] = [];
 class WindowFixture extends EventEmitter {
   destroyed = false;
+  workspaceChanges: unknown[][] = [];
+  topChanges: unknown[][] = [];
+  constructor(readonly options: Record<string, unknown>) { super(); previewWindows.push(this); }
   webContents = Object.assign(new EventEmitter(), {
     setWindowOpenHandler: () => undefined,
     isLoading: () => false,
@@ -20,8 +29,8 @@ class WindowFixture extends EventEmitter {
   });
   isDestroyed() { return this.destroyed; }
   showInactive() {}
-  setVisibleOnAllWorkspaces() {}
-  setAlwaysOnTop() {}
+  setVisibleOnAllWorkspaces(...args: unknown[]) { this.workspaceChanges.push(args); }
+  setAlwaysOnTop(...args: unknown[]) { this.topChanges.push(args); }
   destroy() { this.destroyed = true; this.emit("closed"); }
   async loadURL() {}
 }
@@ -35,7 +44,11 @@ Object.assign(globalThis, { __computerDispatchElectron: electron });
 
 interface JournalEntry { cmd: string; args: Record<string, unknown> }
 const target = { pid: 42, windowId: "900" };
-async function fixture(t: TestContext) {
+async function fixture(t: TestContext, apps: Record<string, unknown>[] = [
+  { pid: 42, name: "Fixture", bundleId: "test.fixture", running: true },
+  { name: "Recently Used", bundleId: "test.recent", running: false, lastUsed: "2026-10-07T00:00:00Z" }
+], options: { actionEffect?: "confirmed" | "unverified"; emptyTree?: boolean } = {}) {
+  const firstWindow = previewWindows.length;
   const directory = await mkdtemp(path.join(os.tmpdir(), "biny-dispatch-"));
   const hooks = registerHooks({ load(url, context, next) {
     return /\/electron\/index\.js$/.test(url) ? {
@@ -67,25 +80,26 @@ const server = net.createServer(socket => {
       const { id, cmd, args } = request;
       fs.appendFileSync(journal, JSON.stringify({ cmd, args }) + '\\n');
       let data = {};
-      if (cmd === 'list_apps') data = { apps: [{ pid: 42, name: 'Fixture', bundleId: 'test.fixture', running: true }] };
+      if (cmd === 'list_apps') data = { apps: ${JSON.stringify(apps)} };
+      else if (cmd === 'pip_open') data = { state: 'open', window_id: args.window_id };
       else if (cmd === 'get_app_state') {
         ref = 'e' + (++generation);
         const imagePath = path.join(directory, 'state-' + generation + '.jpg');
         fs.writeFileSync(imagePath, Buffer.from([255, 216, 255, 217]));
         data = { pid: 42, windowId: 900, screenshot: imagePath, screenshotWidth: args.max_width || 100, screenshotHeight: 80,
-          elements: args.max_elements === 0 ? [] : [{ ref, role: 'AXScrollArea', title: 'Fixture' }] };
+          elements: args.max_elements === 0 || ${JSON.stringify(options.emptyTree ?? false)} ? [] : [{ ref, role: 'AXScrollArea', title: 'Fixture' }] };
       } else if (cmd === 'shot_display' || cmd === 'capture_screen') {
         if (args.window_id !== undefined && args.window_id !== 900) {
           socket.write(JSON.stringify({ id, ok: false, error: { message: 'capture_window_not_found' } }) + '\\n'); continue;
         }
         fs.writeFileSync(args.out, Buffer.from([255, 216, 255, 217]));
         data = { path: args.out, width: 100, height: 80, windowId: args.window_id || 900 };
-      } else if (cmd === 'click' || cmd === 'scroll') {
+      } else if (['click', 'scroll', 'type_text', 'press_key'].includes(cmd)) {
         if ((cmd === 'scroll' && !args.ref) || (args.ref && args.ref !== ref)) {
           socket.write(JSON.stringify({ id, ok: false, error: { message: 'element_ref_not_observed' } }) + '\\n'); continue;
         }
         fs.writeFileSync(path.join(directory, 'action.json'), JSON.stringify({ cmd, args }));
-        data = { effect: 'confirmed' };
+        data = { effect: ${JSON.stringify(options.actionEffect ?? "confirmed")} };
       }
       socket.write(JSON.stringify({ id, ok: true, data }) + '\\n');
     }
@@ -103,14 +117,161 @@ server.listen(process.argv[process.argv.indexOf('--socket') + 1], () => console.
   resources.service = service;
   const endpoint = await browser.startAutomationServer(path.join(directory, "desktop.sock"));
   const tools = createComputerUseTools(endpoint);
+  const images: { mimeType: string; data: string }[] = [];
   const invoke = async (name: string, args: Record<string, unknown>) => {
     const tool = tools.find(entry => entry.name === name)!;
     const execution = await tool.resolveExecution(args);
-    return await execution.execute({ toolCallId: "fixture-call", operationId: "fixture-operation", sessionId: "fixture-session", onImage: () => true }) as Record<string, unknown>;
+    return await execution.execute({ toolCallId: "fixture-call", operationId: "fixture-operation", sessionId: "fixture-session", onImage: image => { images.push(image); return true; } }) as Record<string, unknown>;
   };
   const entries = async (): Promise<JournalEntry[]> => (await readFile(journal, "utf8")).trim().split("\n").filter(Boolean).map(line => JSON.parse(line));
-  return { directory, store, service, driver: resources.driver!, invoke, entries };
+  const externalActivity = async () => await requestComputer(endpoint, "external_activity", target);
+  return { directory, endpoint, store, service, driver: resources.driver!, invoke, entries, externalActivity, images, windows: () => previewWindows.slice(firstWindow) };
 }
+
+test("Desktop supervision opens a non-topmost window confined to its current workspace", { timeout: 8_000 }, async t => {
+  const f = await fixture(t);
+  f.service.controller.setPreview(true);
+  await f.invoke("ComputerObserve", target);
+  const windows = f.windows();
+  assert.equal(windows.length, 1);
+  assert.equal(windows[0]!.options.alwaysOnTop, false, "existing preview-frame coverage did not check the Electron window stacking policy");
+  assert.deepEqual(windows[0]!.topChanges, []);
+  assert.deepEqual(windows[0]!.workspaceChanges, []);
+  assert.equal(windows[0]!.options.show, false);
+  assert.equal(windows[0]!.options.focusable, true);
+});
+
+test("unverified input returns its fresh image without claiming success or replaying the action", { timeout: 8_000 }, async t => {
+  const f = await fixture(t, undefined, { actionEffect: "unverified" });
+  const observed = await f.invoke("ComputerObserve", target);
+  const result = await f.invoke("ComputerAction", { ...target, action: "click", x: 1, y: 2, captureId: observed.capture_id });
+  assert.equal(result.status, "unverified");
+  assert.match(String(result.error), /action_unverified/);
+  assert.equal(result.doNotRepeat, true);
+  assert.equal(result.imageReturned, true, "existing successful-action coverage misses images dropped only for unverified delivery");
+  assert.equal(result.observationImageUnavailable, undefined);
+  assert.equal(f.images.length, 2);
+  assert.deepEqual(f.images[1], { type: "image", mimeType: "image/jpeg", data: "/9j/2Q==" });
+  assert.notEqual(result.capture_id, observed.capture_id);
+  await assert.rejects(f.invoke("ComputerAction", { ...target, action: "click", x: 1, y: 2, captureId: observed.capture_id }), /capture_target_mismatch/);
+  assert.equal((await f.entries()).filter(entry => entry.cmd === "click").length, 1);
+});
+
+test("Agent model messages retain unverified ComputerAction observations and persist the failure", { timeout: 8_000 }, async t => {
+  const f = await fixture(t, undefined, { actionEffect: "unverified" });
+  await ensureAgentDirs(f.directory);
+  const recorder = new SessionRecorder(f.directory, "fixture-session");
+  t.after(() => recorder.close());
+  const config = structuredClone(defaultConfig);
+  config.permission.mode = "full-access";
+  config.permission.denyPaths = [];
+  const registry = new ToolRegistry();
+  for (const tool of createComputerUseTools(f.endpoint)) registry.register(tool, "builtin");
+  const coordinator = new ToolExecutionCoordinator({ workspaceRoot: f.directory, config, recorder, toolRegistry: registry },
+    new PermissionManager(config.permission), () => undefined, () => ({}));
+  const action = coordinator.createAgentTools().find(tool => tool.name === "ComputerAction")!;
+  const observed = await f.invoke("ComputerObserve", target);
+  const result = await action.execute("model-action", { ...target, action: "click", x: 1, y: 2, captureId: observed.capture_id });
+  assert.equal(result.isError, true);
+  assert.equal(result.content.filter(part => part.type === "image").length, 1, "direct callbacks did not cover the coordinator dropping failure images before the model sees them");
+  assert.match(JSON.stringify(result.details), /action_unverified/);
+  const stale = await action.execute("model-stale", { ...target, action: "click", x: 1, y: 2, captureId: observed.capture_id });
+  assert.equal(stale.isError, true);
+  assert.equal(stale.content.filter(part => part.type === "image").length, 0);
+  await recorder.close();
+  const events = (await readFile(recorder.filePath, "utf8")).trim().split("\n").map(line => JSON.parse(line));
+  assert.ok(events.some(event => event.type === "tool_result" && JSON.stringify(event).includes("action_unverified")));
+  assert.equal(JSON.stringify(events).includes("/9j/2Q=="), false, "retaining model evidence must not persist screenshot bytes in the session ledger");
+});
+
+test("custom windows without AX elements accept focused keyboard input but still require fresh exact-window captures", { timeout: 8_000 }, async t => {
+  const f = await fixture(t, undefined, { emptyTree: true, actionEffect: "unverified" });
+  const observed = await f.invoke("ComputerObserve", target);
+  assert.equal(observed.tree, undefined);
+  await assert.rejects(f.invoke("ComputerAction", { ...target, action: "type_text", captureId: observed.capture_id, text: "一半一半", inputMethod: "ax" }), /requires.*elementToken/);
+  await assert.rejects(f.invoke("ComputerAction", { ...target, action: "type_text", captureId: observed.capture_id }), /requires.*text/);
+  await assert.rejects(f.invoke("ComputerAction", { ...target, windowId: "901", action: "type_text", captureId: observed.capture_id, text: "一半一半" }), /capture_target_mismatch/);
+  const typed = await f.invoke("ComputerAction", { ...target, action: "type_text", captureId: observed.capture_id, text: "一半一半", inputMethod: "unicode" });
+  assert.equal(typed.status, "unverified");
+  assert.equal(typed.imageReturned, true);
+  assert.equal(typed.doNotRepeat, true);
+  await assert.rejects(f.invoke("ComputerAction", { ...target, action: "type_text", captureId: observed.capture_id, text: "一半一半" }), /capture_target_mismatch/);
+  const pressed = await f.invoke("ComputerAction", { ...target, action: "press_key", captureId: typed.capture_id, key: "Return" });
+  assert.equal(pressed.imageReturned, true);
+  const requests = await f.entries();
+  assert.deepEqual(requests.filter(entry => entry.cmd === "type_text"), [{ cmd: "type_text", args: { pid: 42, window_id: 900, delivery: "background", text: "一半一半", input_method: "unicode" } }]);
+  assert.deepEqual(requests.filter(entry => entry.cmd === "press_key"), [{ cmd: "press_key", args: { pid: 42, window_id: 900, delivery: "background", key: "Return" } }]);
+});
+
+test("explicit foreground input reaches the native window only after user enablement and re-observation", { timeout: 8_000 }, async t => {
+  const f = await fixture(t, undefined, { emptyTree: true, actionEffect: "unverified" });
+  const observed = await f.invoke("ComputerObserve", target);
+  assert.equal(observed.foregroundAllowed, false);
+  await assert.rejects(f.invoke("ComputerAction", { ...target, action: "click", x: 1, y: 2, captureId: observed.capture_id, delivery: "foreground" }), /foreground_permission_required/);
+  assert.equal((await f.entries()).filter(entry => entry.cmd === "click").length, 0);
+  f.service.controller.setForeground(true);
+  await assert.rejects(f.invoke("ComputerAction", { ...target, action: "click", x: 1, y: 2, captureId: observed.capture_id, delivery: "foreground" }), /capture_target_mismatch/);
+  const fresh = await f.invoke("ComputerObserve", target);
+  assert.equal(fresh.foregroundAllowed, true, "the model must see user enablement instead of guessing permission from the UI");
+  const clicked = await f.invoke("ComputerAction", { ...target, action: "click", x: 1, y: 2, captureId: fresh.capture_id, delivery: "foreground" });
+  const typed = await f.invoke("ComputerAction", { ...target, action: "type_text", text: "一半一半", inputMethod: "unicode", captureId: clicked.capture_id, delivery: "foreground" });
+  const pressed = await f.invoke("ComputerAction", { ...target, action: "press_key", key: "Return", captureId: typed.capture_id, delivery: "foreground" });
+  assert.equal(pressed.status, "unverified");
+  assert.equal(pressed.imageReturned, true);
+  const inputs = (await f.entries()).filter(entry => ["click", "type_text", "press_key"].includes(entry.cmd));
+  assert.deepEqual(inputs.map(entry => [entry.cmd, entry.args.pid, entry.args.window_id, entry.args.delivery]), [
+    ["click", 42, 900, "foreground"], ["type_text", 42, 900, "foreground"], ["press_key", 42, 900, "foreground"]
+  ], "controller-only foreground coverage missed the delivery mode being dropped by the real driver");
+  f.service.controller.setForeground(false);
+  const afterRevoke = await f.invoke("ComputerObserve", target);
+  assert.equal(afterRevoke.foregroundAllowed, false);
+  await assert.rejects(f.invoke("ComputerAction", { ...target, action: "type_text", text: "no input", captureId: afterRevoke.capture_id, delivery: "foreground" }), /foreground_permission_required/);
+  assert.equal((await f.entries()).filter(entry => entry.cmd === "type_text").length, 1);
+});
+
+test("recently used apps without PID do not block observation, mirrors or external preview of a running target", { timeout: 8_000 }, async t => {
+  const f = await fixture(t);
+  const listing = await f.invoke("ComputerList", {});
+  assert.deepEqual(listing.apps, [
+    { pid: 42, name: "Fixture", bundleId: "test.fixture", running: true },
+    { name: "Recently Used", bundleId: "test.recent", running: false, lastUsed: "2026-10-07T00:00:00Z" }
+  ]);
+  const observed = await f.invoke("ComputerObserve", target);
+  assert.equal(typeof observed.capture_id, "string");
+  assert.equal((await f.invoke("ComputerMirror", { operation: "open", ...target })).state, "open");
+  assert.equal((await f.externalActivity()).data.visible, true);
+  assert.deepEqual((await f.store.load()).computer.apps.map(app => app.bundleId), ["test.fixture"]);
+});
+
+for (const scenario of [
+  { name: "running application missing PID", apps: [{ name: "Fixture", bundleId: "test.fixture", running: true }], error: /Running applications require a PID/ },
+  { name: "non-running application cannot supply target identity", apps: [{ ...target, name: "Fixture", bundleId: "test.fixture", running: false }], error: /computer_app_identity_unavailable/ },
+  { name: "ambiguous running PID cannot select an arbitrary identity", apps: [
+    { pid: 42, name: "Fixture", bundleId: "test.fixture", running: true },
+    { pid: 42, name: "Other", bundleId: "test.other", running: true }
+  ], error: /computer_app_identity_unavailable/ }
+]) {
+  test(`${scenario.name} refuses capture and mirrors before any native side effect`, { timeout: 8_000 }, async t => {
+    const f = await fixture(t, scenario.apps);
+    await assert.rejects(f.invoke("ComputerObserve", target), scenario.error);
+    await assert.rejects(f.invoke("ComputerMirror", { operation: "open", ...target }), scenario.error);
+    await assert.rejects(f.externalActivity(), scenario.error);
+    assert.equal((await f.entries()).some(entry => ["get_app_state", "pip_open", "shot_display", "click", "scroll"].includes(entry.cmd)), false);
+    assert.deepEqual((await f.store.load()).computer.apps, []);
+  });
+}
+
+test("mixed app listings still enforce strict approval before capture or mirror dispatch", { timeout: 8_000 }, async t => {
+  const f = await fixture(t);
+  await updateConfig(f.store, undefined, config => ({ ...config, computer: { ...config.computer, strictApproval: true } }));
+  await assert.rejects(f.invoke("ComputerObserve", target), /computer_app_approval_required/);
+  await assert.rejects(f.invoke("ComputerMirror", { operation: "open", ...target }), /computer_app_approval_required/);
+  await assert.rejects(f.externalActivity(), /computer_app_approval_required/);
+  assert.equal((await f.entries()).every(entry => entry.cmd === "list_apps"), true);
+  const pending = (await f.store.load()).computer.apps;
+  assert.deepEqual(pending.map(app => app.bundleId), ["test.fixture"]);
+  assert.equal(pending[0]?.approvedAt, undefined);
+});
 
 test("product observation options survive Desktop and native transport and post-action verification", { timeout: 8_000 }, async t => {
   const f = await fixture(t);

@@ -679,21 +679,26 @@ func postMouse(_ pid: pid_t, _ type: CGEventType, _ point: CGPoint, _ button: CG
 /// 默认投给目标进程（后台应用也能收，且不动前台）。`global` 走全局 HID 流，
 /// 落到**当前焦点**上 —— 有些键（系统级快捷键、必须经过窗口服务器的那类）
 /// 投给进程是表达不出来的。代价是它会被前台应用收到，所以要显式选择。
-func postKey(_ pid: pid_t, keyCode: CGKeyCode, flags: CGEventFlags, global: Bool = false) {
+func postKey(_ pid: pid_t, keyCode: CGKeyCode, flags: CGEventFlags, global: Bool = false, windowID: Int? = nil) throws {
+    if let windowID { try validateActiveInputTarget(pid, windowID) }
     guard let down = CGEvent(keyboardEventSource: nil, virtualKey: keyCode, keyDown: true),
           let up = CGEvent(keyboardEventSource: nil, virtualKey: keyCode, keyDown: false) else { return }
     down.flags = flags; up.flags = flags
     if global { down.post(tap: .cghidEventTap); up.post(tap: .cghidEventTap) }
     else { down.postToPid(pid); up.postToPid(pid) }
 }
-func postUnicode(_ pid: pid_t, _ text: String) {
+func postUnicode(_ pid: pid_t, _ text: String, windowID: Int? = nil) throws {
     for scalar in text.unicodeScalars {
-        var unit = UniChar(scalar.value)
+        if let windowID { try validateActiveInputTarget(pid, windowID) }
+        let units = Array(String(scalar).utf16)
         guard let down = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: true),
               let up = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: false) else { continue }
-        down.keyboardSetUnicodeString(stringLength: 1, unicodeString: &unit)
-        up.keyboardSetUnicodeString(stringLength: 1, unicodeString: &unit)
-        down.postToPid(pid); up.postToPid(pid)
+        units.withUnsafeBufferPointer { buffer in
+            down.keyboardSetUnicodeString(stringLength: buffer.count, unicodeString: buffer.baseAddress)
+            up.keyboardSetUnicodeString(stringLength: buffer.count, unicodeString: buffer.baseAddress)
+        }
+        if windowID != nil { down.post(tap: .cghidEventTap); up.post(tap: .cghidEventTap) }
+        else { down.postToPid(pid); up.postToPid(pid) }
     }
 }
 let keyNameMap: [String: CGKeyCode] = [
@@ -894,8 +899,8 @@ func postClick(_ pid: pid_t, _ point: CGPoint, button: CGMouseButton, clicks: In
 /// 焦点守卫：很多 Cocoa/Electron 应用会在自己的点击处理里调
 /// `activateIgnoringOtherApps:` —— 那是我们控制不了的代码，会把用户的前台窗口抢走。
 /// 动作前记下当时的前台应用，动作后如果前台变成了目标应用，就切回去。
-/// 这是安全网，不是操控手段：我们从不主动把应用拿到前台。
-func withFocusGuard<T>(_ pid: pid_t, _ body: () async -> T) async -> T {
+/// 后台输入使用此安全网；显式前台投递保留新控件焦点。
+func withFocusGuard<T>(_ pid: pid_t, preserveElementFocus: Bool = true, _ body: () async throws -> T) async rethrows -> T {
     let before = NSWorkspace.shared.frontmostApplication
     let restore = (before?.processIdentifier == pid) ? nil : before
     // 应用级之外再记一层**元素级**：同一个应用内换 key window 时，前台应用没变，
@@ -904,10 +909,10 @@ func withFocusGuard<T>(_ pid: pid_t, _ body: () async -> T) async -> T {
     let focusedBefore = focusedElementFingerprint(app)
     let focusedElementBefore: AXUIElement? = axCopy(app, kAXFocusedUIElementAttribute as String)
         .map { unsafeBitCast($0, to: AXUIElement.self) }
-    let value = await body()
+    let value = try await body()
 
     // 元素级：焦点在**应用内部**被挪走了吗？挪走了就还回去，并计一次数。
-    if let focusedBefore, let elementBefore = focusedElementBefore,
+    if preserveElementFocus, let focusedBefore, let elementBefore = focusedElementBefore,
        focusedElementFingerprint(app) != focusedBefore {
         _ = AXUIElementSetAttributeValue(elementBefore, kAXFocusedAttribute as CFString, kCFBooleanTrue)
         observedActivations += 1
@@ -1284,7 +1289,57 @@ func keyDeliveryWarning(_ pid: pid_t) -> String? {
     return "keystrokes_may_be_dropped: 目标应用不在前台，且没有任何聚焦的 UI 元素，这些按键很可能已被系统丢弃。"
         + "先重新观察确认目标状态，别把它当成写进去了。"
         + "要真的写进那个控件，用 set_value（带 ref 直接写值）或 type_text 的 input_method=ax（同样按元素走）。"
-        + "铁律：绝不许为了让它收到输入就把应用调到前台——那是拿用户的焦点换的。"
+        + "不要自动重放或切前台。仅在用户开启前台许可且本次明确选择 foreground 后使用前台输入。"
+}
+
+func validateActiveInputTarget(_ pid: pid_t, _ windowID: Int) throws {
+    var focusedID: CGWindowID = 0
+    let focusedWindow = axCopy(axApp(pid), kAXFocusedWindowAttribute as String)
+        .map { unsafeBitCast($0, to: AXUIElement.self) }
+    let identified = focusedWindow.map { axWindowIdFn?($0, &focusedID) == .success } ?? false
+    try validateForegroundTarget(pid: Int(pid), windowID: windowID,
+        frontmostPID: NSWorkspace.shared.frontmostApplication.map { Int($0.processIdentifier) },
+        focusedWindowID: identified ? Int(focusedID) : nil)
+}
+
+@MainActor func prepareForegroundInput(_ args: [String: Any]) async throws {
+    guard let targetPID = args["pid"] as? Int, targetPID > 0, targetPID <= Int(Int32.max),
+          let targetWindowID = args["window_id"] as? Int, targetWindowID > 0, targetWindowID <= Int(UInt32.max),
+          let application = NSRunningApplication(processIdentifier: pid_t(targetPID)),
+          windowScreenBounds(pid: targetPID, windowID: targetWindowID) != nil,
+          let window = axWindow(pid: pid_t(targetPID), matching: targetWindowID) else {
+        throw NSError(domain: "input", code: 65, userInfo: [NSLocalizedDescriptionKey: "foreground_target_unavailable: input was not sent; observe the exact target again"])
+    }
+    if !application.isActive {
+        guard let appURL = application.bundleURL else {
+            throw NSError(domain: "input", code: 65, userInfo: [NSLocalizedDescriptionKey: "foreground_target_unavailable: application location is unknown; input was not sent"])
+        }
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.activates = true
+        configuration.createsNewApplicationInstance = false
+        configuration.allowsRunningApplicationSubstitution = false
+        configuration.promptsUserIfNeeded = false
+        let activation = await withDeadline(0.75, fallback: ["error": "foreground_activation_timeout: input was not sent; observe before deciding what remains"]) {
+            await withCheckedContinuation { continuation in
+                NSWorkspace.shared.openApplication(at: appURL, configuration: configuration) { activated, error in
+                    if let error { continuation.resume(returning: ["error": "foreground_activation_failed: \(error.localizedDescription)"]) }
+                    else { continuation.resume(returning: ["pid": Int(activated?.processIdentifier ?? 0)]) }
+                }
+            }
+        }
+        guard activation["pid"] as? Int == targetPID else {
+            throw NSError(domain: "input", code: 65, userInfo: [NSLocalizedDescriptionKey:
+                activation["error"] as? String ?? "foreground_target_identity_changed: input was not sent; observe the target again"])
+        }
+    }
+    AXUIElementPerformAction(window, kAXRaiseAction as CFString)
+    AXUIElementSetAttributeValue(window, kAXMainAttribute as CFString, kCFBooleanTrue)
+    let deadline = Date().addingTimeInterval(0.75)
+    while Date() < deadline {
+        if (try? validateActiveInputTarget(pid_t(targetPID), targetWindowID)) != nil { return }
+        try await Task.sleep(nanoseconds: 5_000_000)
+    }
+    try validateActiveInputTarget(pid_t(targetPID), targetWindowID)
 }
 
 /// 焦点护栏警告：护栏武装不起来时，动作可能真的会把用户的焦点带走。
@@ -1460,6 +1515,13 @@ DispatchQueue.global().async {
                         do {
                             let cmd = request["cmd"] as? String ?? ""
                             let args = request["args"] as? [String: Any] ?? [:]
+                            let foregroundInput = args["delivery"] as? String == "foreground"
+                            if foregroundInput {
+                                guard ["click", "type_text", "press_key", "scroll", "drag", "perform_secondary_action", "set_value", "select_text"].contains(cmd) else {
+                                    throw NSError(domain: "input", code: 64, userInfo: [NSLocalizedDescriptionKey: "foreground_action_unsupported"])
+                                }
+                                try await prepareForegroundInput(args)
+                            }
                             switch cmd {
                             case "ping":
                                 reply(fd, ["id": id, "ok": true, "data": ["ok": true] as [String: Any]] as [String: Any])
@@ -1934,7 +1996,7 @@ DispatchQueue.global().async {
                                         guard let frame = axFrame(element) else { return false }
                                         let point = CGPoint(x: frame["x"]! + frame["w"]!/2, y: frame["y"]! + frame["h"]!/2)
                                         noteActionPoint(args, point, symbol: nil)
-                                        await withFocusGuard(pid_t(pid)) {
+                                        await withFocusGuard(pid_t(pid), preserveElementFocus: !foregroundInput) {
                                             clickPipeline = postClick(pid_t(pid), point, button: refButton, clicks: refClicks, preferWindowLocal: wantWindowLocal)
                                         }
                                         return true
@@ -1981,7 +2043,7 @@ DispatchQueue.global().async {
                                     let pixelButton = mouseButton(args["button"] as? String)
                                     let pixelClicks = max(1, min(3, args["clicks"] as? Int ?? 1))
                                     noteActionPoint(args, point, symbol: nil)
-                                    await withFocusGuard(pid) {
+                                    _ = await withFocusGuard(pid, preserveElementFocus: !foregroundInput) {
                                         postClick(pid, point, button: pixelButton, clicks: pixelClicks)
                                     }
                                     reply(fd, ["id": id, "ok": true, "data": ["clicked": "@\(Int(x)),\(Int(y))", "clicks": pixelClicks] as [String: Any]] as [String: Any])
@@ -2021,7 +2083,7 @@ DispatchQueue.global().async {
                                 let screenSpace = args["coord_space"] as? String == "screen"
                                 let from = screenPoint(pid, x1, y1, screenSpace: screenSpace)
                                 let to = screenPoint(pid, x2, y2, screenSpace: screenSpace)
-                                await withFocusGuard(pid) { postDrag(pid, from: from, to: to) }
+                                await withFocusGuard(pid, preserveElementFocus: !foregroundInput) { postDrag(pid, from: from, to: to) }
                                 reply(fd, ["id": id, "ok": true, "data": ["dragged": "@\(Int(x1)),\(Int(y1))→@\(Int(x2)),\(Int(y2))"] as [String: Any]] as [String: Any])
                             case "perform_secondary_action":
                                 // 右键 / 打开上下文菜单：优先走 AX 的 ShowMenu，退化成合成右键。
@@ -2041,14 +2103,14 @@ DispatchQueue.global().async {
                                     }
                                     if status != .success, let frame = axFrame(element) {
                                         let point = CGPoint(x: frame["x"]! + frame["w"]!/2, y: frame["y"]! + frame["h"]!/2)
-                                        await withFocusGuard(pid) {
+                                        await withFocusGuard(pid, preserveElementFocus: !foregroundInput) {
                                             postMouse(pid, .rightMouseDown, point, .right, global: true); postMouse(pid, .rightMouseUp, point, .right, global: true)
                                         }
                                     }
                                     reply(fd, ["id": id, "ok": true, "data": ["menu": ref] as [String: Any]] as [String: Any])
                                 } else if let x = args["x"] as? Double, let y = args["y"] as? Double {
                                     let point = screenPoint(pid, x, y, screenSpace: args["coord_space"] as? String == "screen")
-                                    await withFocusGuard(pid) {
+                                    await withFocusGuard(pid, preserveElementFocus: !foregroundInput) {
                                         postMouse(pid, .rightMouseDown, point, .right, global: true); postMouse(pid, .rightMouseUp, point, .right, global: true)
                                     }
                                     reply(fd, ["id": id, "ok": true, "data": ["menu": "@\(Int(x)),\(Int(y))"] as [String: Any]] as [String: Any])
@@ -2181,7 +2243,9 @@ DispatchQueue.global().async {
                                 }
                                 switch method {
                                 case "unicode":
-                                    await withFocusGuard(pid) { postUnicode(pid, text) }
+                                    try await withFocusGuard(pid, preserveElementFocus: !foregroundInput) {
+                                        try postUnicode(pid, text, windowID: foregroundInput ? args["window_id"] as? Int : nil)
+                                    }
                                 case "ax":
                                     // AX 那条不需要键盘焦点，但需要 ref —— 没有就明说。
                                     guard let ref = args["ref"] as? String else {
@@ -2201,8 +2265,10 @@ DispatchQueue.global().async {
                                     let strokes: [PhysicalStroke]
                                     if let plannedStrokes { strokes = plannedStrokes }
                                     else { strokes = try await MainActor.run { try PhysicalInput.currentLayoutPlan(text) } }
-                                    await withFocusGuard(pid) {
-                                        for stroke in strokes { postKey(pid, keyCode: stroke.keyCode, flags: stroke.flags) }
+                                    try await withFocusGuard(pid, preserveElementFocus: !foregroundInput) {
+                                        for stroke in strokes {
+                                            try postKey(pid, keyCode: stroke.keyCode, flags: stroke.flags, global: foregroundInput, windowID: foregroundInput ? args["window_id"] as? Int : nil)
+                                        }
                                     }
                                 default:
                                     throw NSError(domain: "type_text", code: 64, userInfo: [NSLocalizedDescriptionKey:
@@ -2225,8 +2291,10 @@ DispatchQueue.global().async {
                                 let pid = try resolvePid(args)
                                 let combo = args["key"] as? String ?? ""
                                 guard let (keyCode, flags) = parseKeyCombo(combo) else { throw NSError(domain: "key", code: 64, userInfo: [NSLocalizedDescriptionKey: "unknown_key"]) }
-                                let global = args["global"] as? Bool ?? false
-                                await withFocusGuard(pid) { postKey(pid, keyCode: keyCode, flags: flags, global: global) }
+                                let global = foregroundInput || (args["global"] as? Bool ?? false)
+                                try await withFocusGuard(pid, preserveElementFocus: !foregroundInput) {
+                                    try postKey(pid, keyCode: keyCode, flags: flags, global: global, windowID: foregroundInput ? args["window_id"] as? Int : nil)
+                                }
                                 var pressed: [String: Any] = ["pressed": combo, "global": global]
                                 if let warning = keyDeliveryWarning(pid) { pressed["warning"] = warning }
                                 reply(fd, ["id": id, "ok": true, "data": pressed])
@@ -2259,9 +2327,9 @@ DispatchQueue.global().async {
                                 // 参照的 scroll 是 `scroll <ref> <up|down|…>` —— 目标由 **ref** 指定，
                                 // 而不是只给 pid、让守护进程自己猜哪个滚动区。给了 ref 就按 ref 走。
                                 let refArea: AXUIElement? = (args["ref"] as? String).flatMap { refTables[pid]?[$0] }
-                                var data = route == "wheel" ? nil : await withFocusGuard(pid) { axScroll(pid, direction: direction, notches: amount, pages: pagesArg, refArea: refArea) }
+                                var data = route == "wheel" ? nil : await withFocusGuard(pid, preserveElementFocus: !foregroundInput) { axScroll(pid, direction: direction, notches: amount, pages: pagesArg, refArea: refArea) }
                                 if data == nil && route != "ax" {
-                                    await withFocusGuard(pid) {
+                                    await withFocusGuard(pid, preserveElementFocus: !foregroundInput) {
                                         // 滚轮只认行数。给了 pages 就换算 —— 但**网页内容量不出页有多大**
                                         // （内容高度不暴露），所以这是估算，回执里如实标出来。
                                         let notches = pagesArg.map { max(1, Int(($0 * linesPerPage).rounded())) } ?? amount

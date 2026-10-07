@@ -3,10 +3,11 @@ import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { ComputerAppApprovals } from "../src/computer/appApprovals.js";
-import { createFileConfigStore } from "../src/config/store.js";
+import { createFileConfigStore, updateConfig } from "../src/config/store.js";
 const root = await mkdtemp(path.join(os.tmpdir(), "biny-app-grants-"));
 const store = createFileConfigStore(root, { globalDir: root, credentialStore: { persistent: false, get: async () => undefined, set: async () => undefined, delete: async () => undefined } });
 try {
+  await updateConfig(store, undefined, config => ({ ...config, computer: { ...config.computer, enabled: false } }));
   const app = { bundleId: "test.notes", appName: "Notes" };
   const policy = new ComputerAppApprovals(store);
   await policy.authorize(app);

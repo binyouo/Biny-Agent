@@ -17,6 +17,12 @@ import type { DesktopBrowserService } from "./DesktopBrowserService.js";
 
 /** 授权引导用的浮层；停用服务时统一收掉。 */
 const guideOverlays = new Set<ComputerPermissionOverlay>();
+const nativeAppsSchema = z.object({ apps: z.array(z.object({
+  pid: windowTargetSchema.shape.pid.optional(),
+  name: z.string().min(1).max(256),
+  running: z.boolean(),
+  bundleId: z.string().min(1).max(256).optional()
+}).passthrough().refine(app => !app.running || app.pid !== undefined, { path: ["pid"], message: "Running applications require a PID" })) }).passthrough();
 
 function runOcr(imagePath: string, workerPath: string): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -54,7 +60,7 @@ export async function createComputerUseService(browser: DesktopBrowserService, g
     await approvalWrites; signal.throwIfAborted();
     const reply = await driver.list(session, undefined, signal);
     if (reply.errorCode) throw new Error(reply.errorCode);
-    const apps = z.object({ apps: z.array(z.object({ pid: z.number().int().positive(), name: z.string().min(1).max(256), running: z.boolean(), bundleId: z.string().min(1).max(256).optional() }).passthrough()) }).passthrough().parse(reply.data).apps;
+    const apps = nativeAppsSchema.parse(reply.data).apps;
     const matches = apps.filter(app => app.pid === target.pid && app.running);
     const app = matches.length === 1 ? matches[0] : undefined;
     if (!app?.bundleId) throw new Error("computer_app_identity_unavailable: 无法确认目标应用身份，不截图或输入。");
@@ -306,9 +312,10 @@ export async function createComputerUseService(browser: DesktopBrowserService, g
       if (!externalPreviewCurrent()) return { data: { visible: false }, images: [] };
       const target = windowTargetSchema.parse(input), current = await configStore.load();
       if (!externalPreviewCurrent() || !current.computer.enabled || !current.computer.previewEnabled) return { data: { visible: false }, images: [] };
-      const apps = z.object({ apps: z.array(z.object({ pid: z.number(), bundleId: z.string().optional(), name: z.string(), running: z.boolean() })) }).passthrough().parse((await driver.list("external-preview", target.pid, signal)).data).apps;
+      const apps = nativeAppsSchema.parse((await driver.list("external-preview", target.pid, signal)).data).apps;
       if (!externalPreviewCurrent()) return { data: { visible: false }, images: [] };
-      const identity = apps.find(app => app.pid === target.pid && app.running); if (!identity?.bundleId) throw new Error("computer_app_identity_unavailable");
+      const matches = apps.filter(app => app.pid === target.pid && app.running);
+      const identity = matches.length === 1 ? matches[0] : undefined; if (!identity?.bundleId) throw new Error("computer_app_identity_unavailable");
       await approvals.authorize({ bundleId: identity.bundleId, appName: identity.name }); signal.throwIfAborted();
       if (!externalPreviewCurrent()) return { data: { visible: false }, images: [] };
       const id = `external:${target.pid}:${target.windowId}`;

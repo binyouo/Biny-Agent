@@ -66,6 +66,12 @@ actor Gate {
   static func main() async throws {
     try validateCaptureTarget(pid: nil, windowID: nil, applications: [12], windows: [42: 12])
     try validateCaptureTarget(pid: 12, windowID: 42, applications: [12], windows: [42: 12])
+    try validateForegroundTarget(pid: 12, windowID: 42, frontmostPID: 12, focusedWindowID: 42)
+    let invalidFocus: [(Int, Int, Int?, Int?)] = [(12, 42, nil, 42), (12, 42, 13, 42), (12, 42, 12, nil), (12, 42, 12, 43), (0, 42, 0, 42), (12, 0, 12, 0), (12, Int(UInt32.max) + 1, 12, Int(UInt32.max) + 1)]
+    for (pid, window, frontmost, focused) in invalidFocus {
+      do { try validateForegroundTarget(pid: pid, windowID: window, frontmostPID: frontmost, focusedWindowID: focused); fatalError("keyboard input escaped its exact foreground window") }
+      catch { precondition(error.localizedDescription.hasPrefix("foreground_target_not_focused")) }
+    }
     for (pid, window, message) in [(13, 42, "capture_application_not_found"), (12, 43, "capture_window_not_found"), (12, 44, "capture_window_identity_changed")] {
       do { try validateCaptureTarget(pid: pid, windowID: window, applications: [12], windows: [42: 12, 44: 13]); fatalError("expanded a missing target") }
       catch { precondition(error.localizedDescription == message) }

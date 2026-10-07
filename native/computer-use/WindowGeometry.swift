@@ -1,6 +1,12 @@
 import Foundation
 import CoreGraphics
 
+func validateForegroundTarget(pid: Int, windowID: Int, frontmostPID: Int?, focusedWindowID: Int?) throws {
+    guard pid > 0, windowID > 0, windowID <= Int(UInt32.max), frontmostPID == pid, focusedWindowID == windowID else {
+        throw NSError(domain: "input", code: 65, userInfo: [NSLocalizedDescriptionKey: "foreground_target_not_focused: input stopped; select the exact target window and observe before deciding what remains"])
+    }
+}
+
 func validateCaptureTarget(pid: Int?, windowID: Int?, applications: Set<Int>, windows: [Int: Int]) throws {
     if let pid, !applications.contains(pid) {
         throw NSError(domain: "capture", code: 65, userInfo: [NSLocalizedDescriptionKey: "capture_application_not_found"])

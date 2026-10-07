@@ -7,7 +7,7 @@ export const computerAppSchema = z.object({
 }).strict();
 export type ComputerAppApproval = z.infer<typeof computerAppSchema>;
 export const computerSettingsSchema = z.object({
-  enabled: z.boolean().default(false), previewEnabled: z.boolean().default(true), actionLogging: z.boolean().default(false), strictApproval: z.boolean().default(false),
+  enabled: z.boolean().default(true), previewEnabled: z.boolean().default(true), actionLogging: z.boolean().default(false), strictApproval: z.boolean().default(false),
   apps: z.array(computerAppSchema).max(256).default([])
 }).strict().refine(value => new Set(value.apps.map(app => app.bundleId)).size === value.apps.length, "Duplicate computer application identity");
 
@@ -69,7 +69,8 @@ export const computerActionSchema = windowTargetSchema.extend({
     if (!value.elementToken && (value.x === undefined || value.y === undefined)) context.addIssue({ code: "custom", message: "click requires elementToken or screenshot coordinates" });
     if ((value.x === undefined) !== (value.y === undefined)) context.addIssue({ code: "custom", message: "click coordinates require both x and y" });
   }
-  if (value.action === "type_text" && (!value.elementToken || value.text === undefined)) context.addIssue({ code: "custom", message: "type_text requires a fresh elementToken and text" });
+  if (value.action === "type_text" && value.text === undefined) context.addIssue({ code: "custom", message: "type_text requires text" });
+  if (value.action === "type_text" && value.inputMethod === "ax" && !value.elementToken) context.addIssue({ code: "custom", message: "type_text with inputMethod=ax requires a fresh elementToken" });
   if (value.action === "press_key" && !value.key) context.addIssue({ code: "custom", message: "press_key requires key" });
   if (value.action === "scroll" && (!value.elementToken || !value.direction)) context.addIssue({ code: "custom", message: "scroll requires elementToken and direction" });
   if (value.action === "drag" && (value.x1 === undefined || value.y1 === undefined || value.x2 === undefined || value.y2 === undefined)) context.addIssue({ code: "custom", message: "drag requires x1, y1, x2 and y2" });

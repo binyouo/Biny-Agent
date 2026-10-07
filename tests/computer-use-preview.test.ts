@@ -8,6 +8,7 @@ class FixtureWindow extends EventEmitter implements PreviewWindow {
   destroyed = false;
   loading = false;
   rejectDestroy = false;
+  presentations = 0;
   paints: string[] = [];
   contents = new EventEmitter();
   webContents = {
@@ -18,7 +19,7 @@ class FixtureWindow extends EventEmitter implements PreviewWindow {
     executeJavaScript: async (script: string) => { this.paints.push(script); }
   };
   isDestroyed(): boolean { return this.destroyed; }
-  showInactive(): void { assert.equal(this.destroyed, false); }
+  showInactive(): void { assert.equal(this.destroyed, false); this.presentations++; }
   private rect = { x: 100, y: 100, width: 480, height: 400 };
   setBounds(bounds: { x: number; y: number; width: number; height: number }): void { this.rect = { ...bounds }; }
   getBounds(): { x: number; y: number; width: number; height: number } { return { ...this.rect }; }
@@ -27,6 +28,20 @@ class FixtureWindow extends EventEmitter implements PreviewWindow {
 }
 const status = { state: "ready", preview: true, foregroundAllowed: false, lastOutcome: "not-dispatched" } as const;
 const frame = { image: { mimeType: "image/png", dataBase64: "aGVsbG8=" }, target: { pid: 42, windowId: "900" }, capturedAt: 0 } as const;
+test("refreshing preview pixels never re-presents a window the user has put behind another app", () => {
+  const window = new FixtureWindow();
+  const surface = new ComputerPreviewSurface(() => window, "fixture", () => undefined, () => undefined, new CaptureSchedule());
+  try {
+    surface.present({ id: "computer", label: "电脑", frame, status });
+    window.emit("ready-to-show");
+    assert.equal(window.presentations, 1);
+    surface.present({ id: "computer", label: "电脑", frame: { ...frame, capturedAt: 10 }, status });
+    surface.present({ id: "browser:tab", label: "浏览器", frame, status });
+    surface.select("browser:tab");
+    assert.equal(window.presentations, 1, "frame-only tests did not catch repeated showInactive raising the preview on each refresh");
+    assert.match(window.paints.at(-2)!, /aGVsbG8=/);
+  } finally { surface.close(); }
+});
 test("preview closed event releases privacy hold; reopen drops old paint and retains new hold", async () => {
   let now = 0; const schedule = new CaptureSchedule(() => now); const windows: FixtureWindow[] = [];
   let closed = 0;

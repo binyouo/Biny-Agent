@@ -24,13 +24,6 @@ function RevokeDialog({ bundle, busy, error, onClose, onConfirm }: { bundle: str
     <div className="cu-confirm-actions"><button type="button" className="settings-secondary-button" disabled={busy} onClick={onClose}>取消</button><button type="button" className="settings-secondary-button is-danger" disabled={busy} onClick={onConfirm}>确认撤销</button></div>
   </dialog>;
 }
-function lastUsage(time: string): string {
-  const seconds = Math.max(0, (Date.now() - Date.parse(time)) / 1000);
-  if (seconds < 60) return "刚刚使用";
-  if (seconds < 3600) return `${Math.floor(seconds / 60)} 分钟前使用`;
-  if (seconds < 86400) return `${Math.floor(seconds / 3600)} 小时前使用`;
-  return `${Math.floor(seconds / 86400)} 天前使用`;
-}
 export function SettingsComputerUse(): React.JSX.Element {
   const [status, setStatus] = useState<ComputerStatus>();
   const [diagnostic, setDiagnostic] = useState<ComputerDiagnostics>();
@@ -66,28 +59,27 @@ export function SettingsComputerUse(): React.JSX.Element {
   const control = (value: ComputerControl): void => { void perform(async () => { await updateStatus(() => api.control(value)); await readDiagnostic(); }); };
   const unavailable = busy || !available;
   const permission = diagnostic?.permissions;
+  const helperPresent = diagnostic?.helperPresent ?? diagnostic?.sdkLoaded ?? false;
   const diagnosticText = [
-    diagnostic?.runtimeReady ? `✓ 原生运行时已就绪（v${diagnostic.driverVersion}）` : diagnostic?.sdkLoaded ? `✓ 原生 daemon 已加载；运行时按需启动` : "✗ 原生 daemon 尚未加载",
+    diagnostic?.runtimeReady ? `✓ 原生运行时已就绪（v${diagnostic.driverVersion ?? "未知"}）` : helperPresent ? "✓ 原生组件已安装；运行时按需启动" : "✗ 原生组件未找到",
     `辅助功能：${permissionLabels[permission?.accessibility ?? "unknown"]}`,
     `屏幕录制：${permissionLabels[permission?.screenRecording ?? "unknown"]}`,
     "配置测试只检查运行时、版本和权限，不截图、不输入。",
     diagnostic ? `宿主：${diagnostic.hostPath}` : "",
-    diagnostic?.error ?? error ?? "",
+    error,
+    diagnostic?.error ?? "",
     status?.diagnostic ?? ""
   ].filter(Boolean).join("\n");
   return <div className="settings-sections computer-use-settings">
     <section className="cu-card">
       <h3 className="cu-heading"><Icon name="cpu" size={17} />Computer Use</h3>
-      <p className="cu-description">
-        让 Biny 在后台操作受支持的 Mac 应用，不抢你当前应用的焦点。需要原生 helper（
-        {diagnostic?.helperPresent === false
-          ? <code className="cu-path">未找到 — 运行 pnpm build:activity-sidecar</code>
-          : <code className="cu-path">{diagnostic?.workerPath ?? "正在解析路径…"}</code>}
-        ）以及下面的系统权限。
-      </p>
-      <div className="cu-section"><h4>桌面控制组件</h4><div className="cu-helper" data-loaded={diagnostic?.sdkLoaded ?? false}>
-        <Icon name={diagnostic?.sdkLoaded ? "circle-check" : "help"} size={17} />
-        <strong>{!diagnostic ? "正在检查…" : diagnostic.sdkLoaded ? "已安装" : "组件不可用"}</strong><span>{diagnostic?.driverVersion ? `原生 daemon · v${diagnostic.driverVersion}${typeof diagnostic.uptimeSeconds === "number" ? ` · 已运行 ${Math.floor(diagnostic.uptimeSeconds / 60) >= 1 ? `${Math.floor(diagnostic.uptimeSeconds / 60)} 分钟` : `${diagnostic.uptimeSeconds} 秒`}` : ""}` : diagnostic?.expectedVersion ? `要求 ${diagnostic.expectedVersion}` : "原生 daemon"}</span>
+      <p className="cu-description">在后台操作 Mac 应用。需要系统授权，截图会发送给当前模型。</p>
+      <div className="settings-row-group cu-toggles">
+        <SettingsSwitch label="桌面控制" checked={Boolean(status && status.state !== "disabled")} disabled={unavailable || !status} detail="首次使用时启动；关闭会停止控制。" onChange={value => void perform(async () => { await updateStatus(() => value ? api.enable() : api.control("stop")); await readDiagnostic(); })} />
+      </div>
+      <div className="cu-section"><h4>桌面控制组件</h4><div className="cu-helper" data-loaded={helperPresent}>
+        <Icon name={helperPresent ? "circle-check" : "help"} size={17} />
+        <strong>{!diagnostic ? "正在检查…" : helperPresent ? "已安装" : "未找到"}</strong><span>{diagnostic?.runtimeReady ? "运行中" : helperPresent ? "按需启动" : ""}</span>
       </div></div>
       <div className="cu-section"><h4>权限</h4><div className="cu-permission-grid">
         <PermissionRow name="accessibility" label="辅助功能" state={permission?.accessibility ?? "unknown"} />
@@ -98,8 +90,6 @@ export function SettingsComputerUse(): React.JSX.Element {
         <button type="button" className="settings-secondary-button" disabled={unavailable} onClick={() => void perform(async () => { setTested(false); await readDiagnostic(() => api.testSetup()); await updateStatus(() => api.status()); if (mounted.current) setTested(true); })}><Icon name="eye" size={14} />测试我的配置</button>
       </div>
       {error || diagnostic?.error || status?.diagnostic ? <p className="cu-feedback" role="alert">{!available ? restartMessage : "桌面控制暂不可用，请查看诊断详情。"}</p> : tested ? (
-        // Alma 的「测试我的配置」逐项报结果。一句"检查通过/请完成授权"会把三项
-        // （helper、辅助功能、屏幕录制）混在一起，而用户唯一需要知道的正是哪一项没过。
         <ul className="cu-feedback cu-checkup" role="status">
           <li data-check="helper" data-ok={Boolean(diagnostic?.sdkLoaded)}>
             {diagnostic?.sdkLoaded ? `✓ 原生 daemon v${diagnostic.driverVersion ?? "?"} 运行中（已运行 ${diagnostic.uptimeSeconds ?? 0}s）` : "✗ 原生 daemon 未加载"}
@@ -114,28 +104,22 @@ export function SettingsComputerUse(): React.JSX.Element {
       ) : null}
       </div>
       <div className="settings-row-group cu-toggles">
-        <SettingsSwitch label="桌面控制" checked={Boolean(status && status.state !== "disabled")} disabled={unavailable || !status} detail="保存启用选择，首次使用时启动；停止会关闭此选项。" onChange={value => void perform(async () => { await updateStatus(() => value ? api.enable() : api.control("stop")); await readDiagnostic(); })} />
-        <SettingsSwitch label="严格应用审批" checked={diagnostic?.strictApproval ?? false} disabled={unavailable || !diagnostic} detail="开启后仅允许已批准的应用；关闭时首次使用自动授权。应用授权跨会话保存，与全局工具自动批准独立。截图会发送给当前模型。" onChange={value => void perform(() => readDiagnostic(() => api.strict(value)))} />
-        <SettingsSwitch label="记录操作日志" checked={status?.actionLogging ?? false} disabled={unavailable || !status} detail="在本机保存操作元数据，最多保留 10000 条；此处显示最近 50 条。关闭记录后保留已有历史，不记录输入或截图。" onChange={value => void perform(() => updateStatus(() => api.logging(value)))} />
-        <SettingsSwitch label="画中画" checked={status?.preview ?? false} disabled={unavailable || !status} detail="操控期间在悬浮窗口显示画面，停手 90 秒后自动收起；开启时暂停活动截图。" onChange={value => void perform(() => updateStatus(() => api.preview(value)))} />
+        <SettingsSwitch label="严格应用审批" checked={diagnostic?.strictApproval ?? false} disabled={unavailable || !diagnostic} detail="仅允许已批准的应用；关闭时首次使用自动授权。" onChange={value => void perform(() => readDiagnostic(() => api.strict(value)))} />
+        <SettingsSwitch label="记录操作日志" checked={status?.actionLogging ?? false} disabled={unavailable || !status} detail="本地记录动作与结果，不保存输入或截图。" onChange={value => void perform(() => updateStatus(() => api.logging(value)))} />
+        <SettingsSwitch label="画中画" checked={status?.preview ?? false} disabled={unavailable || !status} detail="操控时显示预览，空闲自动收起；显示期间暂停活动截图。" onChange={value => void perform(() => updateStatus(() => api.preview(value)))} />
       </div>
       {diagnostic?.focusGuard === "unavailable" ? (
         <section className="cu-section" data-focus-guard="unavailable">
           <h4>焦点保护未生效</h4>
-          <p className="cu-description">
-            没能武装「阻止应用抢占前台」的守卫，动作可能把你的当前窗口带走。
-            这通常意味着辅助功能权限需要重新授予——macOS 每次新构建都会重置它。
-            在上方重新授权后重试。
-          </p>
+          <p className="cu-description">动作可能切换前台应用。请重新授予辅助功能权限后重试。</p>
         </section>
       ) : null}
-      <details className="cu-controls"><summary>控制与高级选项</summary><p role="status">{status ? `${stateLabels[status.state]} · ${outcomeLabels[status.lastOutcome]}` : "正在读取控制状态…"}</p><div className="cu-button-row">
+      <details className="cu-controls"><summary>高级设置</summary><div className="cu-section"><p role="status">{status ? `${stateLabels[status.state]} · ${outcomeLabels[status.lastOutcome]}` : "正在读取控制状态…"}</p><div className="cu-button-row">
         <button type="button" className="settings-secondary-button" disabled={unavailable || status?.state !== "ready"} onClick={() => control("pause")}><Icon name="pause" size={14} />暂停</button>
         <button type="button" className="settings-secondary-button" disabled={unavailable || !status || status.state === "ready" || status.state === "disabled"} onClick={() => control("resume")}><Icon name="play" size={14} />继续（需重新观察）</button>
         <button type="button" className="settings-secondary-button" disabled={unavailable || !status || status.state === "disabled"} onClick={() => control("takeover")}>人工接管</button>
-        <button type="button" className="settings-secondary-button" disabled={unavailable || !status || status.state === "disabled"} onClick={() => control("stop")}><Icon name="stop" size={14} />停止</button>
-      </div><p className="cu-muted">暂停或接管会撤销旧帧并取消排队操作。已派发的输入可能无法撤回；结果未知时先检查窗口，重新观察后继续，不自动重放。</p>
-      <details><summary>前台操作与诊断日志</summary><label className="cu-foreground"><input type="checkbox" disabled={unavailable || !status} checked={status?.foregroundAllowed ?? false} onChange={event => void perform(() => updateStatus(() => api.foreground(event.target.checked)))} />允许明确批准的前台动作（可能改变焦点）</label>
+      </div><p className="cu-muted">暂停或接管会取消等待操作。已派发的输入可能无法撤回；继续前重新观察，不自动重放。</p>
+      <label className="cu-foreground"><input type="checkbox" disabled={unavailable || !status} checked={status?.foregroundAllowed ?? false} onChange={event => void perform(() => updateStatus(() => api.foreground(event.target.checked)))} />允许明确批准的前台动作（可能改变焦点）</label>
         <p className="cu-muted">日志共 {diagnostic?.audit.length ?? 0} 条，点击“刷新”读取最新元数据。</p>
         {diagnostic?.audit.length ? <pre className="cu-diagnostics">{diagnostic.audit.map(entry => [
               new Date(entry.at).toLocaleTimeString(),
@@ -145,20 +129,19 @@ export function SettingsComputerUse(): React.JSX.Element {
               `${entry.durationMs}ms`,
               entry.errorCode ? `· ${entry.errorCode}` : ""
             ].filter(Boolean).join(" ")).join("\n")}</pre> : null}
-      </details></details>
+      </div></details>
       <details className="cu-technical-details"><summary>诊断详情</summary>
         {diagnostic?.actionLimits?.map(limit => <p className="cu-description" data-action-limit={limit.action} key={limit.code}>{limit.message}</p>)}
-        <pre className="cu-diagnostics">{diagnosticText}{diagnostic ? `\n组件：${diagnostic.workerPath}` : ""}</pre>
+        <pre className="cu-diagnostics">{diagnosticText}{diagnostic ? <>{"\n组件："}<code className="cu-path">{diagnostic.workerPath}</code>{diagnostic.driverVersion ? `\n版本：${diagnostic.driverVersion}` : ""}{typeof diagnostic.uptimeSeconds === "number" ? `\n运行时长：${diagnostic.uptimeSeconds} 秒` : ""}{!helperPresent ? "\n开发环境可运行 pnpm build:activity-sidecar 重建组件。" : ""}</> : null}</pre>
       </details>
 
     </section>
       <section className="cu-card cu-approvals"><h3>应用授权（{diagnostic?.approvals.length ?? 0}）</h3>
-        <p className="cu-muted">严格模式下，首次使用被拦截的应用会列在这里等待批准。关闭严格审批后，已撤销的应用在下次使用时会自动重新授权。</p>
-        <button type="button" className="settings-secondary-button" disabled={unavailable} onClick={() => void perform(() => readDiagnostic())}>刷新应用授权</button>
+        <p className="cu-muted">严格模式下在此批准应用。关闭严格审批后，撤销的应用会在下次使用时自动重新授权。</p>
         {!diagnostic?.approvals.length ? <p className="cu-muted">尚无应用授权记录。</p> : diagnostic.approvals.map(app => {
           const approved = Boolean(app.approvedAt && !app.revokedAt);
           return <div className="cu-permission" key={app.bundleId} data-app={app.bundleId}>
-            <div><strong>{app.appName}</strong><p className="cu-muted">{app.bundleId} · {approved ? "已批准" : app.revokedAt ? "已撤销" : "待批准"} · 使用 {app.useCount} 次{app.lastUsedAt ? ` · ${lastUsage(app.lastUsedAt)}` : ""}</p></div>
+            <div><strong>{app.appName}</strong><p className="cu-muted">{app.bundleId} · {approved ? "已批准" : app.revokedAt ? "已撤销" : "待批准"}</p></div>
             <button type="button" className={`settings-secondary-button${approved ? " is-danger" : ""}`} disabled={unavailable} onClick={() => { if (approved) { setError(""); setConfirmRevoke(app.bundleId); } else void perform(() => readDiagnostic(() => api.approve(app.bundleId))); }}>{approved ? "撤销授权" : "批准应用"}</button>
           </div>;
         })}

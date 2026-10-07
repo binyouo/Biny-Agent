@@ -298,8 +298,11 @@ export class ToolExecutionCoordinator {
             const image = this.toolImages.get(toolCallId);
             this.toolImages.delete(toolCallId);
             if (image) this.imageBytes -= Buffer.byteLength(image.data, "base64");
+            const unverifiedObservation = source === "builtin" && registered.name === "ComputerAction"
+              && result !== null && typeof result === "object" && "status" in result && result.status === "unverified"
+              && "imageReturned" in result && result.imageReturned === true;
             return {
-              content: [{ type: "text", text: serializeToolResult(result, { context: source === "mcp" ? "mcp-result" : undefined }) }, ...(!isError && image ? [image] : [])],
+              content: [{ type: "text", text: serializeToolResult(result, { context: source === "mcp" ? "mcp-result" : undefined }) }, ...((!isError || unverifiedObservation) && image ? [image] : [])],
               details: result,
               isError
             };

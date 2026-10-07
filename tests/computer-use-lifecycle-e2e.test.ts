@@ -7,7 +7,7 @@ import { configSchema, defaultConfig } from "../src/config/schema.js";
 import { createFileConfigStore, updateConfig } from "../src/config/store.js";
 import { ComputerUseController, type ComputerDriver } from "../src/computer/controller.js";
 
-test("explicit computer enablement survives config reload without starting native work", async () => {
+test("default computer enablement survives config reload without starting native work and explicit stop stays disabled", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "biny-computer-lifecycle-"));
   const credentialStore = { persistent: false, get: async () => undefined, set: async () => undefined, delete: async () => undefined };
   const calls: string[] = [];
@@ -18,10 +18,10 @@ test("explicit computer enablement survives config reload without starting nativ
   };
   try {
     const config = configSchema.parse(defaultConfig);
-    assert.deepEqual(config.computer, { enabled: false, previewEnabled: true, actionLogging: false, strictApproval: false, apps: [] });
+    assert.deepEqual(config.computer, { enabled: true, previewEnabled: true, actionLogging: false, strictApproval: false, apps: [] });
     assert.throws(() => configSchema.parse({ ...config, computer: { enabled: "yes" } }));
     const store = createFileConfigStore(root, { globalDir: root, credentialStore });
-    await updateConfig(store, undefined, current => ({ ...current, computer: { ...current.computer, enabled: true } }));
+    await updateConfig(store, undefined, current => current);
     const restartedStore = createFileConfigStore(root, { globalDir: root, credentialStore });
     const restored = await restartedStore.load();
     const controller = new ComputerUseController(driver, { enabled: restored.computer.enabled });

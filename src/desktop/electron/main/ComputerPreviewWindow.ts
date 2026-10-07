@@ -23,6 +23,6 @@ export class ComputerPreviewWindow extends ComputerPreviewSurface {
       },
       save(bounds: PreviewBounds): void { mkdirSync(path.dirname(file), { recursive: true }); writeFileSync(`${file}.tmp`, JSON.stringify({ ...bounds, displayId: screen.getDisplayMatching(bounds).id }), { mode: 0o600 }); renameSync(`${file}.tmp`, file); }
     };
-    super(() => { const window = new BrowserWindow({ width: 480, height: 400, title: "Biny 桌面控制 · 实时预览", show: false, alwaysOnTop: true, focusable: true, minWidth: 320, minHeight: 240, vibrancy: "hud", visualEffectState: "active", backgroundColor: "#00000000", webPreferences: { nodeIntegration: false, contextIsolation: true, sandbox: true } }); window.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true }); window.setAlwaysOnTop(true, "floating"); return window; }, previewHtml, onControl, onClose, undefined, { layout, onError: error => { console.error("PiP surface error", error instanceof Error ? error.message : String(error)); } });
+    super(() => new BrowserWindow({ width: 480, height: 400, title: "Biny 桌面控制 · 实时预览", show: false, alwaysOnTop: false, focusable: true, minWidth: 320, minHeight: 240, vibrancy: "hud", visualEffectState: "active", backgroundColor: "#00000000", webPreferences: { nodeIntegration: false, contextIsolation: true, sandbox: true } }), previewHtml, onControl, onClose, undefined, { layout, onError: error => { console.error("PiP surface error", error instanceof Error ? error.message : String(error)); } });
   }
 }

@@ -5,7 +5,7 @@ description: "Operate native macOS apps on the user's behalf — observe a windo
 
 # Computer Use Skill (macOS)
 
-用 Biny 操控本机 Mac 应用。所有动作都在**后台**执行：不移动用户的真实光标，也不把目标应用拿到前台。
+用 Biny 操控本机 Mac 应用。默认后台投递；用户开启前台许可后，内置 `ComputerAction` 可明确选择 `delivery: "foreground"`，会激活指定窗口并改变焦点。后台失败不能自动升级到前台。
 
 ## 什么时候用
 
@@ -22,7 +22,7 @@ description: "Operate native macOS apps on the user's behalf — observe a windo
 | Biny 内置 agent | `ComputerList` / `ComputerObserve` / `ComputerAction` 工具 |
 | 外部 MCP 客户端 | `biny computer mcp` 暴露的 13 个工具 |
 
-两者共用同一个守护进程（`computer-use.app`），能力完全一样。
+两者共用原生守护进程（`computer-use.app`），但参数和控制面不同。内置工具使用 `captureId`、`elementToken`、`inputMethod`；不要将 CLI/MCP 参数直接传给它。
 
 ## `type` 有三种模式，别只会 replace
 
@@ -40,7 +40,7 @@ select_text <ref> --location 4        # 光标放到第 4 个字符后
 type <ref> "XX" --at-selection        # 插在那里，不是替换整段
 ```
 
-这也是**自绘输入框唯一走得通的路**（键盘事件进不去那类应用）。
+这些 AX 模式只适用于暴露可写控件的应用；不能用于没有 AX 引用的自绘搜索框。内置 `type_text` 的 `auto`、`physical`、`unicode` 可不带 `elementToken`，向当前键盘焦点输入；只有 `inputMethod: "ax"` 必须带有效引用。
 
 ## 有些事不用驱动 UI：原生意图层
 
@@ -73,10 +73,7 @@ intent play_spotify_uri --args '{"id": "spotify:track:…"}'   # Spotify
 区别在焦点：ref 走无障碍 API，让控件执行它自己的动作，**不需要键盘焦点、也不会动前台**；
 像素点击是合成鼠标事件，而**合成鼠标事件本身就会把目标窗口带到前台**。
 
-参照实现的硬规则把这条写死了：绝不能抢用户的焦点，**"连一瞬都不行，也绝不许用
-'先把窗口提到前面再放回去'这种做法"**。像素点击正是会触发它的那条路。
-
-所以：控件有可用 ref 时用 ref；点了没反应再退像素，并知道这一次会短暂动到前台。
+所以：控件有可用 ref 时用 ref；没有引用时按当前截图点击。后台像素输入不能承诺零焦点变化；明确前台输入须先取得用户许可。
 ## 滚动：两条路由，守护进程按目标自己选
 
 | 目标 | 路由 | 表现 |
@@ -113,9 +110,7 @@ intent play_spotify_uri --args '{"id": "spotify:track:…"}'   # Spotify
   { "window_id": 104, "title": "新标签页",   "frame": {...} } ] }] }
 ```
 
-**多窗口应用必须挑**：把挑中的 `window_id` 传给 `ComputerObserve`，观察和截图都会
-落在那一个窗口上，并且回报的 `window_id` 就是你请求的那个。不传也能用，守护进程
-会挑该应用的第一个普通窗口。
+**多窗口应用必须挑**：内置工具把选中的 `pid` 和 `windowId` 传给 `ComputerObserve`，后续动作绑定同一窗口的 `capture_id`。不要省略目标、猜窗口号或借用其他窗口的引用。
 
 可用的动作共 8 个：`click` · `type_text` · `press_key` · `scroll` · `drag` ·
 `perform_secondary_action`（右键/上下文菜单）· `set_value`（直写控件值）· `select_text`。
@@ -154,8 +149,7 @@ intent play_spotify_uri --args '{"id": "spotify:track:…"}'   # Spotify
 
 ## 绝不做的事
 
-- **不抢用户的焦点。** 不把应用调前台，不移动真实光标。这是硬规则，没有例外。
-  守护进程自己也不会抢；目标应用自己抢走时，焦点守卫会把它还回去。
+- **不擅自切前台。** 默认后台；观察返回 `foregroundAllowed: true` 时才可明确选择前台投递。否则请用户在设置里开启。原生输入前核对准确 PID 与聚焦窗口，不向其他前台窗口发送按键。
 - **不重放结果未知的动作。** 传输中断或进程退出时，输入可能已经送达也可能没有。
   这时重新观察、看当前状态再决定，**不要重发**。
 - **不绕过应用授权。** 未批准的应用会被拒绝。让用户去 设置 → Computer Use 批准，
@@ -169,10 +163,9 @@ intent play_spotify_uri --args '{"id": "spotify:track:…"}'   # Spotify
   这些按键**大概率已经被系统丢掉了**。别把它当成写进去了。
 - 没有警告也**不等于**安全：回读一次确认才作数。
 
-遇到丢弃就去换路径：用 `set_value` 直写控件值，或先 `select_text` 定位再输入；
-都不行的话，这类自绘输入框只能请用户手动操作。
+存在可写 AX 控件时可用 `set_value`；没有引用时不要编造 ref。自绘应用可按截图点击搜索框，再用不带引用的 `type_text` 输入。后台送达未确认时先观察；若仍需输入且用户开启前台许可，明确选择前台动作，否则停止并请求许可。
 
-网易云音乐的搜索框就是典型：点击可用，键盘输入进不去。
+`unverified` 保留动作后的截图和新的 `capture_id`，但仍标记为未证实，不能宣称成功，也不能因为错误标记而重复刚才的动作。截图未返回或结果未知时先重新观察。
 
 ## 限速与代价
 

@@ -64,7 +64,7 @@ export class ComputerPreviewSurface {
   private readonly captures: CaptureSchedule;
   constructor(createWindow: () => PreviewWindow, html: string, onControl: (control: "pause" | "takeover" | "stop") => void, onClose: () => void, captures: CaptureSchedule = desktopCaptureSchedule, private readonly options: PreviewSurfaceOptions = {}) { this.createWindow = createWindow; this.html = html; this.captures = captures; this.onControl = onControl; this.onClose = onClose; }
   open(): void {
-    if (this.window && !this.window.isDestroyed()) { this.window.showInactive(); return; }
+    if (this.window && !this.window.isDestroyed()) return;
     this.lastBounds ??= this.options.layout?.load();
     const window = this.createWindow();
     this.window = window;

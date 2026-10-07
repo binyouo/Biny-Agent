@@ -281,7 +281,7 @@ export class ComputerUseController {
     const at = this.now();
     this.capture = { id: data.capture_id, target, observation: { ...observation }, appId, at, width: data.screenshot_width, height: data.screenshot_height, tokens: new Set(data.elements?.flatMap(element => element.element_token ? [element.element_token] : []) ?? []) };
     if (this.snapshot.preview) this.options.preview?.({ image: images[0]!, target, capturedAt: at });
-    return { ...reply, images };
+    return { ...reply, data: { ...reply.data, foregroundAllowed: this.snapshot.foregroundAllowed }, images };
   }
   act(session: string, input: Omit<ComputerAction, "delivery"> & { delivery?: ComputerAction["delivery"] }, signal?: AbortSignal): Promise<DriverReply> {
     const action = computerActionSchema.parse(input);

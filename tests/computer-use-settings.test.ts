@@ -6,7 +6,7 @@ import { createRoot } from "react-dom/client";
 import { SettingsComputerUse } from "../src/desktop/renderer/src/components/settings/SettingsComputerUse.js";
 import type { ComputerDesktopApi, ComputerStatus, ComputerDiagnostics } from "../src/computer/protocol.js";
 
-test("desktop settings handle missing bridge and expose enable, pause/takeover/stop and PiP controls", async () => {
+test("compact settings keep one stop entry through the master switch and retain pause, takeover and PiP controls", async () => {
   const dom = new JSDOM("<div id='root'></div>");
   dom.window.HTMLDialogElement.prototype.showModal = function () { this.open = true; };
   dom.window.HTMLDialogElement.prototype.close = function () { this.open = false; };
@@ -47,11 +47,16 @@ test("desktop settings handle missing bridge and expose enable, pause/takeover/s
     assert.ok(dom.window.document.querySelector(".cu-feedback"));
     const desktopControl = dom.window.document.querySelector<HTMLButtonElement>('[role="switch"][aria-label="桌面控制"]')!;
     assert.ok(desktopControl, "desktop control enablement is directly visible");
+    assert.equal([...dom.window.document.querySelectorAll("button")].some(button => button.textContent === "停止"), false, "关闭主开关是唯一设置页停止入口，不重复提供停止按钮");
+    assert.equal([...dom.window.document.querySelectorAll("button")].some(button => button.textContent === "刷新应用授权"), false, "全页刷新同时读取应用授权，不保留重复刷新入口");
+    const advanced = dom.window.document.querySelector<HTMLDetailsElement>(".cu-controls")!;
+    assert.equal(advanced.open, false);
+    assert.equal(advanced.querySelector("details"), null, "高级设置不再嵌套第二层展开");
     await act(async () => { desktopControl.click(); });
     await click("暂停"); await click("继续（需重新观察）"); await click("人工接管"); await click("继续（需重新观察）");
     const checkbox = dom.window.document.querySelector<HTMLButtonElement>('[role="switch"][aria-label="画中画"]')!;
     await act(async () => { checkbox.click(); }); await act(async () => { checkbox.click(); });
-    await click("停止");
+    await act(async () => { desktopControl.click(); });
     assert.deepEqual(controls, ["enable", "pause", "resume", "takeover", "resume", "preview:true", "preview:false", "stop"]);
   } finally {
     await act(async () => { root.unmount(); }); dom.window.close();
@@ -103,13 +108,18 @@ test("Computer Use cards show independent unknown permissions and dispatch real 
     const approve = [...dom.window.document.querySelectorAll("button")].find(button => button.textContent === "批准应用")!;
     await act(async () => { approve.click(); });
     assert.ok(calls.includes("approve:test.notes"));
-    // 撤销要先过确认：Alma 的语义是不问就不动。
     const revoke = [...dom.window.document.querySelectorAll("button")].find(button => button.textContent === "撤销授权")!;
     await act(async () => { revoke.click(); });
     assert.equal(calls.includes("revoke:test.notes"), false, "未确认前不得撤销");
     const confirmRevoke = [...dom.window.document.querySelectorAll("[data-confirm-revoke] button")].find(button => button.textContent === "确认撤销")!;
     await act(async () => { confirmRevoke.click(); });
     assert.ok(calls.includes("revoke:test.notes"));
+    diagnostic.approvals.push({ bundleId: "test.new", appName: "New App", useCount: 0 });
+    state = { ...state, state: "paused" };
+    const refresh = [...dom.window.document.querySelectorAll("button")].find(button => button.textContent?.trim() === "刷新")!;
+    await act(async () => { refresh.click(); });
+    assert.match(dom.window.document.querySelector('[data-app="test.new"]')?.textContent ?? "", /待批准/);
+    assert.match(dom.window.document.querySelector(".cu-controls")?.textContent ?? "", /已暂停/, "统一刷新同时更新控制状态和新发现的应用授权");
     for (const label of ["授权辅助功能", "刷新", "测试我的配置", "记录操作日志"]) {
       const button = [...dom.window.document.querySelectorAll("button")].find(button => button.textContent?.trim() === label || button.getAttribute("aria-label") === label)!;
       assert.ok(button, label); await act(async () => { button.click(); });
@@ -123,8 +133,6 @@ test("Computer Use cards show independent unknown permissions and dispatch real 
   }
 });
 
-// Alma 在守不住「阻止应用抢前台」的守卫时会亮一张告警卡，并指出
-// "通常意味着辅助功能权限需要重新授予——macOS 每次新构建都会重置它"。
 test("focus guard failure surfaces a warning, and staying armed does not", async () => {
   const dom = new JSDOM("<div id='root'></div>");
   dom.window.HTMLDialogElement.prototype.showModal = function () { this.open = true; };
@@ -167,9 +175,7 @@ test("focus guard failure surfaces a warning, and staying armed does not", async
   }
 });
 
-// 撤销授权不可逆：Alma 先弹确认（revokeTitle/revokeDesc1/revokeDesc2），
-// 确认前不能真的调 revoke；说明里还要内联助手路径（desc1 + <code> + desc2）。
-test("revoking asks first, and the helper path is shown inline", async () => {
+test("revoking still requires confirmation after private component paths move into collapsed diagnostics", async () => {
   const dom = new JSDOM("<div id='root'></div>");
   dom.window.HTMLDialogElement.prototype.showModal = function () { this.open = true; };
   dom.window.HTMLDialogElement.prototype.close = function () { this.open = false; };
@@ -202,9 +208,10 @@ test("revoking asks first, and the helper path is shown inline", async () => {
     await act(async () => { root.render(createElement(SettingsComputerUse)); });
     await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)); });
 
-    // 说明里内联了助手路径
     const path = dom.window.document.querySelector(".cu-path");
-    assert.equal(path?.textContent, diagnostic.workerPath, "说明里要给出真实助手路径，而不是笼统一句");
+    assert.equal(path?.textContent, diagnostic.workerPath, "诊断区保留真实组件路径");
+    assert.equal(Boolean(path?.closest(".cu-technical-details")), true, "组件路径不占用主要设置说明");
+    assert.doesNotMatch(dom.window.document.querySelector(".cu-card > .cu-description")?.textContent ?? "", /\/opt\/|Contents|daemon/);
 
     const revokeButton = [...dom.window.document.querySelectorAll("button")].find(b => b.textContent === "撤销授权")!;
     await act(async () => { revokeButton.click(); });
@@ -231,7 +238,7 @@ test("revoking asks first, and the helper path is shown inline", async () => {
 });
 
 // 「文件不在」和「还没启动」要给不同的话，否则会把人指去重装一个已经装好的组件。
-test("a present helper shows its path; only a missing one points at the build", async () => {
+test("an installed idle helper stays installed instead of reporting unavailable; only a missing binary requires rebuilding", async () => {
   const dom = new JSDOM("<div id='root'></div>");
   dom.window.HTMLDialogElement.prototype.showModal = function () { this.open = true; };
   dom.window.HTMLDialogElement.prototype.close = function () { this.open = false; };
@@ -257,15 +264,18 @@ test("a present helper shows its path; only a missing one points at the build", 
     Object.assign(dom.window, { binyComputer: api });
     await act(async () => { root.render(createElement(SettingsComputerUse)); });
     await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)); });
-    let path = dom.window.document.querySelector(".cu-path")?.textContent ?? "";
+    assert.match(dom.window.document.querySelector(".cu-helper")?.textContent ?? "", /已安装/);
+    assert.doesNotMatch(dom.window.document.querySelector(".cu-helper")?.textContent ?? "", /组件不可用/);
+    const path = dom.window.document.querySelector(".cu-path")?.textContent ?? "";
     assert.equal(path, diagnostic.workerPath, "组件已在磁盘上就该显示路径，而不是叫人去重建");
     assert.doesNotMatch(path, /build:activity-sidecar/);
 
     diagnostic = { ...diagnostic, helperPresent: false };
     await act(async () => { root.render(createElement(SettingsComputerUse, { key: "missing" })); });
     await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)); });
-    path = dom.window.document.querySelector(".cu-path")?.textContent ?? "";
-    assert.match(path, /build:activity-sidecar/, "真的不在才给构建命令");
+    assert.match(dom.window.document.querySelector(".cu-helper")?.textContent ?? "", /未找到/);
+    assert.match(dom.window.document.querySelector(".cu-technical-details")?.textContent ?? "", /pnpm build:activity-sidecar/, "组件确实缺失才在诊断区引导重建");
+    assert.doesNotMatch(dom.window.document.querySelector(".cu-card > .cu-description")?.textContent ?? "", /pnpm build/);
   } finally {
     await act(async () => { root.unmount(); });
     for (const [key, descriptor] of saved) { if (descriptor) Object.defineProperty(globalThis, key, descriptor); else delete (globalThis as Record<string, unknown>)[key]; }
@@ -348,8 +358,6 @@ test("the setup test names the check that failed, not just that one did", async 
   }
 });
 
-// 「控制与高级选项」里的两个交互此前从没被真实数据验过：
-// 前台动作开关（会改变焦点的显式批准）和审计日志列表。
 test("the advanced section wires the foreground switch and renders the audit trail", async () => {
   const dom = new JSDOM("<div id='root'></div>");
   dom.window.HTMLDialogElement.prototype.showModal = function () { this.open = true; };

@@ -670,7 +670,7 @@ const canonicalConfigSchema = z.object({
   }),
   activity: activitySettingsSchema,
   appshots: appshotsSettingsSchema.default({ hotkey: "", target: "current" }),
-  computer: computerSettingsSchema.default({ enabled: false, previewEnabled: true, actionLogging: false, strictApproval: false, apps: [] }),
+  computer: computerSettingsSchema.default({ enabled: true, previewEnabled: true, actionLogging: false, strictApproval: false, apps: [] }),
   crystal: crystalSettingsSchema,
   context: contextSchema,
   chat: chatParamsSchema,
@@ -854,7 +854,7 @@ export const defaultConfig: AgentConfig = {
   configVersion: GLOBAL_CONFIG_VERSION,
   needsEmbeddingRebuild: false,
   appshots: { hotkey: "", target: "current" },
-  computer: { enabled: false, previewEnabled: true, actionLogging: false, strictApproval: false, apps: [] },
+  computer: { enabled: true, previewEnabled: true, actionLogging: false, strictApproval: false, apps: [] },
   defaultModel: "deepseek-v4-flash",
   toolModel: undefined,
   providers: {
