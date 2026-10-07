@@ -28,6 +28,10 @@ export interface StoredEntryFields {
 }
 
 export function sanitizeMemoryEntryInput(input: MemoryEntryInput): MemoryEntryInput {
+  return sanitizeMemoryInput(input);
+}
+
+function sanitizeMemoryInput(input: MemoryEntryInput, validatedTimeZones?: Set<string>): MemoryEntryInput {
   if (input.tags !== undefined && (!Array.isArray(input.tags) || input.tags.some((tag) => typeof tag !== "string"))) {
     throw new Error("Memory tags must be strings.");
   }
@@ -50,7 +54,7 @@ export function sanitizeMemoryEntryInput(input: MemoryEntryInput): MemoryEntryIn
     userId: sanitizeOptionalIdentifier(input.userId),
     activitySource: input.activitySource,
     activitySessionId: sanitizeOptionalIdentifier(input.activitySessionId),
-    originAnchors: normalizeMemoryOriginAnchors(input.originAnchors),
+    originAnchors: normalizeOriginAnchors(input.originAnchors, validatedTimeZones),
     metadataExtra: sanitizeMetadataExtra(input.metadataExtra),
     accessCount: input.accessCount,
     archivedAt: input.archivedAt,
@@ -61,7 +65,17 @@ export function sanitizeMemoryEntryInput(input: MemoryEntryInput): MemoryEntryIn
 
 /** 写入 SQLite 前再次做边界校验；模型输出也不能绕过格式和长度约束。 */
 export function createStoredMemoryEntry(input: MemoryEntryInput, fields: StoredEntryFields): MemoryEntry {
-  const safe = sanitizeMemoryEntryInput(input);
+  return storedMemoryEntry(input, fields);
+}
+
+/** 批量读取只复用本批已验证的来源时区；调用方不能预填校验结果。 */
+export function createStoredMemoryEntryReader(): typeof createStoredMemoryEntry {
+  const validatedTimeZones = new Set<string>();
+  return (input, fields) => storedMemoryEntry(input, fields, validatedTimeZones);
+}
+
+function storedMemoryEntry(input: MemoryEntryInput, fields: StoredEntryFields, validatedTimeZones?: Set<string>): MemoryEntry {
+  const safe = sanitizeMemoryInput(input, validatedTimeZones);
   return {
     id: sanitizeIdentifier(fields.id),
     originalId: fields.originalId === undefined ? undefined : sanitizeIdentifier(fields.originalId),
@@ -101,6 +115,10 @@ function sanitizeMetadataExtra(value: Record<string, unknown> | undefined): Reco
 }
 
 export function normalizeMemoryOriginAnchors(value: MemoryOriginAnchor[] | undefined): MemoryOriginAnchor[] | undefined {
+  return normalizeOriginAnchors(value);
+}
+
+function normalizeOriginAnchors(value: MemoryOriginAnchor[] | undefined, validatedTimeZones?: Set<string>): MemoryOriginAnchor[] | undefined {
   if (value === undefined) return undefined;
   if (!Array.isArray(value)) throw new Error("Memory origin anchors must be an array.");
   const unique = new Map<string, MemoryOriginAnchor>();
@@ -111,8 +129,11 @@ export function normalizeMemoryOriginAnchors(value: MemoryOriginAnchor[] | undef
     const parsedTime = Date.parse(anchor.sentAt);
     if (!messageId || !Number.isFinite(parsedTime)) continue;
     let timeZone = anchor.timeZone.trim() || "unknown";
-    if (timeZone !== "unknown") {
-      try { new Intl.DateTimeFormat("en", { timeZone }); } catch { timeZone = "unknown"; }
+    if (timeZone !== "unknown" && !validatedTimeZones?.has(timeZone)) {
+      try {
+        new Intl.DateTimeFormat("en", { timeZone });
+        validatedTimeZones?.add(timeZone);
+      } catch { timeZone = "unknown"; }
     }
     const safe = { messageId, sentAt: new Date(parsedTime).toISOString(), timeZone };
     unique.set(JSON.stringify(safe), safe);
