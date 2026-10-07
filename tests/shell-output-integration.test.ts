@@ -173,6 +173,42 @@ try {
     assert.equal(record(reread.details).archived, undefined, "archive reads must not return another budget envelope");
   });
 
+  for (const signal of ["TERM", "KILL"] as const) {
+    await test(`Bash preserves SIG${signal} termination feedback through progress, model results and session history`, {
+      skip: process.platform === "win32",
+      timeout: 10_000
+    }, async () => {
+      const callId = `signal-${signal}`;
+      const f = await fixture(callId);
+      // Kill only this finite shell itself. Its close event is the completion
+      // boundary; the tool timeout is a watchdog, not a sleep-based assertion.
+      const command = `printf before-signal; printf failure-context >&2; kill -${signal} $$`;
+      const result = await f.tool("Bash").execute(callId, { command, timeoutMs: 3_000 });
+      assert.equal(result.isError, true);
+      assert.equal(record(result.details).status, "failed");
+      assert.equal(record(result.details).exitCode, 1, "preserve the existing fallback code when no numeric exit was observed");
+      assert.equal(record(result.details).error, `Command terminated by signal SIG${signal}.`);
+      assert.equal(record(result.details).stdout, "before-signal");
+      assert.equal(record(result.details).stderr, "failure-context");
+      const progress = f.events.filter((event) => event.type === "tool.progress" && event.toolCallId === callId);
+      assert.ok(progress.some((event) => event.type === "tool.progress"
+        && event.update.kind === "status" && event.update.text === `Terminated by signal SIG${signal}`));
+      const failure = f.events.find((event) => event.type === "tool.failed" && event.toolCallId === callId);
+      assert.ok(failure?.type === "tool.failed");
+      assert.equal(failure.error, `Command terminated by signal SIG${signal}.`);
+      const events = await storedEvents(f.recorder);
+      const persisted = events.find((event) => event.type === "tool_result" && event.toolCallId === callId);
+      assert.ok(persisted?.type === "tool_result");
+      assert.equal(record(persisted.result).error, `Command terminated by signal SIG${signal}.`);
+      const replay = replaySessionEvents(events, { sessionId: f.recorder.sessionId });
+      const replayed = (await projectToolResultsForModel(replay.messages)).find((message) => message.role === "toolResult" && message.toolCallId === callId);
+      assert.ok(replayed?.role === "toolResult");
+      assert.equal(record(replayed.details).status, "failed");
+      assert.equal(record(replayed.details).exitCode, 1);
+      assert.equal(record(replayed.details).error, `Command terminated by signal SIG${signal}.`);
+    });
+  }
+
   await test("capture loss remains distinct from model-only omission and cannot be recovered from the archive", async () => {
     const f = await fixture("capture-loss");
     const captured = await runShellCommand(f.workspaceRoot, f.command, { captureFullOutput: true, maxCapturedOutputBytes: 20 * 1024 });

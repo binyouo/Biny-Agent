@@ -307,7 +307,7 @@ async function runShellCommandWithCompletionEvidence(
       }
       settle(undefined, 124, "timed_out");
     };
-    const settle = (error: unknown, exitCode?: number, stopStatus?: Extract<RunCommandResult["status"], "timed_out">) => {
+    const settle = (error: unknown, exitCode?: number, stopStatus?: Extract<RunCommandResult["status"], "timed_out">, exitSignal?: NodeJS.Signals) => {
       if (settled) return;
       settled = true;
       cleanup();
@@ -317,13 +317,15 @@ async function runShellCommandWithCompletionEvidence(
         return;
       }
       const resolvedExitCode = exitCode ?? 1;
-      const status = stopStatus ?? (resolvedExitCode === 0 ? "completed" : "failed");
+      const status = stopStatus ?? (resolvedExitCode === 0 && !exitSignal ? "completed" : "failed");
       const failureMessage = status === "timed_out"
         ? `Command timed out after ${String(timeoutMs)}ms.`
+        : exitSignal ? `Command terminated by signal ${exitSignal}.`
         : status === "failed" ? `Command exited with code ${String(resolvedExitCode)}.` : undefined;
       options.onUpdate?.({
         kind: "status",
-        text: status === "timed_out" ? `Timed out with exit code ${String(resolvedExitCode)}` : `Exited with ${String(resolvedExitCode)}`
+        text: status === "timed_out" ? `Timed out with exit code ${String(resolvedExitCode)}`
+          : exitSignal ? `Terminated by signal ${exitSignal}` : `Exited with ${String(resolvedExitCode)}`
       });
       const stdoutRetainedBytes = Buffer.byteLength(stdout, "utf8");
       const stderrRetainedBytes = Buffer.byteLength(stderr, "utf8");
@@ -454,7 +456,7 @@ async function runShellCommandWithCompletionEvidence(
         return;
       }
       if (typeof code === "number" && Number.isSafeInteger(code) && code >= 0 && signal === null) onNormalExit();
-      settle(undefined, typeof code === "number" ? code : 1);
+      settle(undefined, typeof code === "number" ? code : 1, undefined, signal ?? undefined);
     }
 
     const commandTimer = setTimeout(() => requestStop("timeout"), timeoutMs);
