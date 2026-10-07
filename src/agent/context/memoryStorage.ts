@@ -15,6 +15,7 @@ import { AGENT_DATABASE_FILE, globalAgentDir } from "../../config/paths.js";
 import { redactSecrets } from "../../utils/secrets.js";
 import {
   createStoredMemoryEntry,
+  createStoredMemoryEntryReader,
   isExpiredTemporaryMemory,
   sanitizeMemoryEntryInput
 } from "./memoryFormat.js";
@@ -258,7 +259,7 @@ export class MemoryStorage {
           : normalizeLimit(options.limit, 0),
         offset: normalizeLimit(options.offset, 0)
       });
-    const records = page.rows.map(memoryFromRow);
+    const records = memoryEntriesFromRows(page.rows);
     return {
       entries: records,
       paths: database === undefined
@@ -293,7 +294,7 @@ export class MemoryStorage {
       "ORDER BY archived_at DESC, id DESC " +
       "LIMIT ? OFFSET ?"
     ).all(...parameters, limit, offset) as unknown as MemoryDbRow[];
-    return { entries: rows.map(memoryFromRow), storeRevision: readRevision(database), total };
+    return { entries: memoryEntriesFromRows(rows), storeRevision: readRevision(database), total };
   }
 
   async writeEntry(input: MemoryEntryInput, options: MemoryMutationOptions = {}): Promise<MemoryWriteResult> {
@@ -982,7 +983,7 @@ function setRevision(database: DatabaseSync, revision: number): void {
 
 function readActiveMemoryEntries(database: DatabaseSync): MemoryEntry[] {
   const rows = database.prepare("SELECT * FROM memories").all() as unknown as MemoryDbRow[];
-  return rows.map(memoryFromRow);
+  return memoryEntriesFromRows(rows);
 }
 
 function readMemoryEntryPage(
@@ -1023,11 +1024,16 @@ const archivedEntrySelect =
   "original_created_at AS created_at, original_updated_at AS updated_at, revision, access_count, last_accessed_at, " +
   "archived_at, archived_reason, archived_by, merged_into ";
 
-function memoryFromRow(row: MemoryDbRow): MemoryEntry {
+function memoryEntriesFromRows(rows: MemoryDbRow[]): MemoryEntry[] {
+  const readEntry = createStoredMemoryEntryReader();
+  return rows.map((row) => memoryFromRow(row, readEntry));
+}
+
+function memoryFromRow(row: MemoryDbRow, readEntry = createStoredMemoryEntry): MemoryEntry {
   const metadata = parseMemoryMetadata(row.metadata);
   const archivedAt = optionalTimeValue(row.archived_at);
   const originalId = archivedAt === undefined ? undefined : optionalString(row.original_id);
-  const entry = createStoredMemoryEntry({
+  const entry = readEntry({
     content: stringValue(row.content, "memory content"),
     source: metadata.source,
     tags: metadata.tags,
