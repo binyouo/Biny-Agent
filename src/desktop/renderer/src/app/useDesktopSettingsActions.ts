@@ -29,20 +29,26 @@ export function useDesktopSettingsActions({
   setWorkspace
 }: DesktopSettingsActionsOptions) {
   const modelSwitchGenerationRef = useRef(0);
+  const modelSwitchQueueRef = useRef<Promise<void>>(Promise.resolve());
 
   const switchModel = useCallback(async (alias: string, thinking: ThinkingSelection): Promise<void> => {
     const projectId = projectIdRef.current;
     if (!projectId) return;
     const generation = ++modelSwitchGenerationRef.current;
-    const info = await window.biny.switchModel(projectId, alias, thinking);
-    // 当前回合的模型与上下文用量保持不变；新回合由 Runtime 事件更新实际预算。
-    setWorkspace((current) => current?.project.id === projectId ? updateRuntimeInfo(current, info) : current);
-    // 完整快照补齐运行状态和已保存选择，不阻塞按钮；旧刷新不能覆盖后续的新选择。
-    void window.biny.refreshProject(projectId)
-      .then((snapshot) => {
-        if (modelSwitchGenerationRef.current === generation) mergeProjectSnapshot(snapshot);
-      })
-      .catch(() => undefined);
+    // 队列属于 App，切换会话不会重置顺序；项目在选择时捕获，不能随导航改变请求目标。
+    const request = modelSwitchQueueRef.current.then(async () => {
+      const info = await window.biny.switchModel(projectId, alias, thinking);
+      // 当前回合的模型与上下文用量保持不变；新回合由 Runtime 事件更新实际预算。
+      setWorkspace((current) => current?.project.id === projectId ? updateRuntimeInfo(current, info) : current);
+      // 完整快照补齐运行状态和已保存选择，不阻塞按钮；旧刷新不能覆盖后续的新选择。
+      void window.biny.refreshProject(projectId)
+        .then((snapshot) => {
+          if (modelSwitchGenerationRef.current === generation) mergeProjectSnapshot(snapshot);
+        })
+        .catch(() => undefined);
+    });
+    modelSwitchQueueRef.current = request.catch(() => undefined);
+    await request;
   }, [mergeProjectSnapshot, projectIdRef, setWorkspace]);
 
   const testModelConfiguration = useCallback(async (configuration: DesktopModelConfigurationInput) => {

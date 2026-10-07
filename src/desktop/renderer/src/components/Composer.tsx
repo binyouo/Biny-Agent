@@ -235,7 +235,6 @@ export const Composer = memo(function Composer({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const capabilityAnchorRef = useRef<HTMLDivElement>(null);
   const modelAnchorRef = useRef<HTMLDivElement>(null);
-  const modelSwitchQueueRef = useRef<Promise<void>>(Promise.resolve());
   const modelSwitchPromiseRef = useRef<Promise<void> | undefined>(undefined);
   const modelSwitchRequestRef = useRef(0);
   const submitFlightRef = useRef(false);
@@ -488,10 +487,7 @@ export const Composer = memo(function Composer({
     const requestId = modelSwitchRequestRef.current + 1;
     modelSwitchRequestRef.current = requestId;
     setOptimisticModel({ alias, thinking });
-    const request = modelSwitchQueueRef.current
-      .catch(() => undefined)
-      .then(async () => await onSwitchModel(alias, thinking));
-    modelSwitchQueueRef.current = request.catch(() => undefined);
+    const request = (async () => await onSwitchModel(alias, thinking))();
     modelSwitchPromiseRef.current = request;
     void request.then(
       () => {
