@@ -11,7 +11,7 @@ import { constants, promises as fs, type BigIntStats } from "node:fs";
 import type { FileHandle } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { parseSkillDocument, readSkillMetadataFields, type SkillMetadata } from "./skillDocument.js";
+import { maxSkillMetadataBytes, parseSkillDocument, readSkillMetadataFields, type SkillMetadata } from "./skillDocument.js";
 import { z } from "zod";
 import { ToolAccesses } from "../tools/access.js";
 import type { Tool } from "../tools/types.js";
@@ -24,7 +24,6 @@ import type { CapabilitySelectionValue } from "../agent/capabilitySelection.js";
 import { builtinSkillRoot } from "./builtinSkills.js";
 
 const maxDiscoveredSkillCount = 256;
-const maxSkillMetadataBytes = 64 * 1024;
 const maxSkillInstructionBytes = 512 * 1024;
 const maxSkillResourceBytes = 512 * 1024;
 const maxSkillDescriptionChars = 1024;
