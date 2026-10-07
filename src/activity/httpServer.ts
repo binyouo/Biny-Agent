@@ -14,7 +14,7 @@ import { activitySettingsPatchSchema, type ActivitySettings, type ActivitySettin
 import { ActivityStore, resolveActivityDirectory } from "./store.js";
 import { createActivityOperation } from "./operation.js";
 import { buildActivityDigest } from "./digest.js";
-import { analyzeActivitySession, buildActivityReport, resolveActivityReportRange, type ActivityAnalyzerDeps } from "./analyzer.js";
+import { analyzeActivitySession, buildActivityReport, formatActivityReportResult, resolveActivityReportRange, type ActivityAnalyzerDeps } from "./analyzer.js";
 import { narrateActivityReport } from "./reportNarrative.js";
 import { refreshActivitySummaryWithNarrative } from "./summary.js";
 import { generateActivitySuggestions } from "./suggestions.js";
@@ -241,14 +241,15 @@ export async function handleActivityHttpRequest(
         }, range.label, { force: isTrueQueryValue(searchParams.get("force")), skeletonOnly });
         const model = skeleton.cached || skeletonOnly ? undefined : await deps.getModel?.();
         const report = await narrateActivityReport(skeleton, { store, model, skeleton: skeletonOnly, ...operation });
+        const markdown = formatActivityReportResult(report);
         if (searchParams.get("format") !== "json") {
-          return { status: 200, body: report.markdown, contentType: "text/markdown; charset=utf-8" };
+          return { status: 200, body: markdown, contentType: "text/markdown; charset=utf-8" };
         }
         const reportGeneratedAt = store.getSummary("daily", report.date)?.stats.reportGeneratedAt;
         if (typeof reportGeneratedAt !== "number") throw new Error("Activity report 缺少持久化生成时间。");
         const jsonReport = {
           dateKey: report.date,
-          markdown: report.markdown,
+          markdown,
           isPartial: report.date >= resolveActivityReportRange("today", new Date()).label,
           model: report.cached ? null : report.narrativeModel ?? null,
           generatedAt: reportGeneratedAt,
