@@ -75,11 +75,13 @@ export async function readFileMemoryPrompt(
   options: FileMemoryOptions = {}
 ): Promise<string | undefined> {
   const storage = new FileMemoryStorage(options);
+  // 夏令时切换日不一定有 24 小时；昨日文件名按本地日历计算。
+  const yesterdayDateKey = formatLocalDate(new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1));
   // 长期文件与两份日报互不依赖；活动库暂时不可读时不能把已经存在的 MEMORY.md 一并丢掉。
   const results = await Promise.allSettled([
     storage.readLongTerm(),
     readDailyMemoryNote(formatLocalDate(now), options),
-    readDailyMemoryNote(formatLocalDate(new Date(now.getTime() - 86_400_000)), options)
+    readDailyMemoryNote(yesterdayDateKey, options)
   ]);
   const [longTerm, todayRaw, yesterdayRaw] = results.map((result) => result.status === "fulfilled" ? result.value : undefined);
   const today = todayRaw ? dailyNoteForModel(todayRaw, options.allowActivity === true) : undefined;
@@ -87,7 +89,7 @@ export async function readFileMemoryPrompt(
   const sections = [
     longTerm ? `## Long-term Memory (${storage.longTermPath})\n${longTerm}` : undefined,
     today ? `## Today's Notes (${formatLocalDate(now)})\n${today}` : undefined,
-    yesterday ? `## Yesterday's Notes (${formatLocalDate(new Date(now.getTime() - 86_400_000))})\n${yesterday}` : undefined
+    yesterday ? `## Yesterday's Notes (${yesterdayDateKey})\n${yesterday}` : undefined
   ].filter((section): section is string => section !== undefined);
   if (!sections.length) return undefined;
   return [
