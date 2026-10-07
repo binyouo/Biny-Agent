@@ -835,6 +835,22 @@ function AssistantActions({ projectId, sessionId, turn, skillDescriptions, skill
   const [usagePopover, setUsagePopover] = useState<{ top: number; left: number }>();
   const usageHideTimerRef = useRef<number | undefined>(undefined);
   const [copiedKind, setCopiedKind] = useState<"markdown" | "plain">();
+  const [copyFailed, setCopyFailed] = useState(false);
+  const [copyingKind, setCopyingKind] = useState<"markdown" | "plain">();
+  const copyRequestRef = useRef<{ pending: boolean } | undefined>(undefined);
+  const copyCloseTimerRef = useRef<number | undefined>(undefined);
+
+  // 菜单或回复更换后，旧写入可以完成，但不能更新新操作的反馈或收起新菜单。
+  useEffect(() => {
+    setCopiedKind(undefined);
+    setCopyingKind(undefined);
+    setCopyFailed(false);
+    return () => {
+      copyRequestRef.current = undefined;
+      if (copyCloseTimerRef.current !== undefined) window.clearTimeout(copyCloseTimerRef.current);
+      copyCloseTimerRef.current = undefined;
+    };
+  }, [menuOpen, content, projectId, sessionId, turn.assistantMessageId]);
 
   // 组件卸载（切会话、消息被折叠）时朗读与悬浮卡定时器都要跟着停。
   useEffect(() => () => {
@@ -879,18 +895,34 @@ function AssistantActions({ projectId, sessionId, turn, skillDescriptions, skill
     setUsagePopover({ top, left });
   }, [usageRows.length, cancelUsageHide]);
 
-  // 菜单收起时悬浮卡与复制成功态一并复位。
+  // 菜单收起时悬浮卡一并复位。
   useEffect(() => {
     if (menuOpen) return;
     cancelUsageHide();
     setUsagePopover(undefined);
-    setCopiedKind(undefined);
   }, [menuOpen, cancelUsageHide]);
 
-  const copyAs = (kind: "markdown" | "plain"): void => {
-    copyText(kind === "markdown" ? content : plainTextFromMarkdown(content));
+  const copyAs = async (kind: "markdown" | "plain"): Promise<void> => {
+    if (copyRequestRef.current?.pending) return;
+    if (copyCloseTimerRef.current !== undefined) window.clearTimeout(copyCloseTimerRef.current);
+    copyCloseTimerRef.current = undefined;
+    const request = { pending: true };
+    copyRequestRef.current = request;
+    setCopyingKind(kind);
+    setCopiedKind(undefined);
+    setCopyFailed(false);
+    const copied = await copyToClipboard(kind === "markdown" ? content : plainTextFromMarkdown(content));
+    if (copyRequestRef.current !== request) return;
+    request.pending = false;
+    setCopyingKind(undefined);
+    if (!copied) {
+      setCopyFailed(true);
+      return;
+    }
     setCopiedKind(kind);
-    window.setTimeout(() => {
+    copyCloseTimerRef.current = window.setTimeout(() => {
+      copyCloseTimerRef.current = undefined;
+      if (copyRequestRef.current !== request) return;
       setCopiedKind(undefined);
       closeMenu();
     }, 800);
@@ -980,14 +1012,15 @@ function AssistantActions({ projectId, sessionId, turn, skillDescriptions, skill
           ) : null}
           {hasContent ? (
             <>
-              <button className={`message-menu-item${copiedKind === "markdown" ? " is-success" : ""}`} onClick={() => copyAs("markdown")} role="menuitem" type="button">
-                <Icon name={copiedKind === "markdown" ? "check" : "copy"} size={14} /><span>复制为 Markdown</span>
+              <button aria-label="复制为 Markdown" aria-busy={copyingKind === "markdown"} disabled={copyingKind !== undefined} className={`message-menu-item${copiedKind === "markdown" ? " is-success" : ""}`} onClick={() => { void copyAs("markdown"); }} role="menuitem" type="button">
+                <Icon name={copiedKind === "markdown" ? "check" : "copy"} size={14} /><span>{copyingKind === "markdown" ? "正在复制…" : "复制为 Markdown"}</span>
               </button>
-              <button className={`message-menu-item${copiedKind === "plain" ? " is-success" : ""}`} onClick={() => copyAs("plain")} role="menuitem" type="button">
-                <Icon name={copiedKind === "plain" ? "check" : "file-text"} size={14} /><span>复制为纯文本</span>
+              <button aria-label="复制为纯文本" aria-busy={copyingKind === "plain"} disabled={copyingKind !== undefined} className={`message-menu-item${copiedKind === "plain" ? " is-success" : ""}`} onClick={() => { void copyAs("plain"); }} role="menuitem" type="button">
+                <Icon name={copiedKind === "plain" ? "check" : "file-text"} size={14} /><span>{copyingKind === "plain" ? "正在复制…" : "复制为纯文本"}</span>
               </button>
             </>
           ) : null}
+          {copyFailed ? <div className="message-menu-item is-static is-danger" role="alert">复制失败，请重试或手动复制</div> : null}
           <button className="message-menu-item" role="menuitem" type="button" onClick={() => { closeMenu(); setTraceOpen(true); }}><Icon name="activity" size={14} /><span>查看 Trace</span></button>
           <div className="message-menu-separator" role="separator" />
           <button className="message-menu-item" onClick={() => { onCreateBranch(); closeMenu(); }} role="menuitem" type="button"><Icon name="branch" size={14} /><span>创建分支</span></button>
