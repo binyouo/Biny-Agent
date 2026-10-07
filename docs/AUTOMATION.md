@@ -47,6 +47,8 @@ biny task events <task-run-id> --json
 
 创建记录不表示已经执行。TaskRun 保持稳定任务身份，每次实际尝试保存独立 Attempt；历史失败不被新尝试覆盖。需要验证的任务可通过 `--verification` 提供支持的验收契约，参数见 `biny task create --help`。
 
+`task get` 查询不存在的 ID 时，在标准错误输出说明原因并以状态码 `1` 退出，标准输出为空；使用 `--json` 时也遵循此错误规则。
+
 Graph 关联多个任务及依赖。可用 `biny graph list --json`、`biny graph inspect <graph-id> --json` 查看，再通过 `start`、`pause`、`resume` 和 `cancel` 控制。Graph 管依赖，不能替代会话目标；当前 `goal` 命令只管理会话目标。
 
 ## 定时执行
