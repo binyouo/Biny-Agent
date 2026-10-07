@@ -94,7 +94,11 @@ Appshots 使用原生快捷键监听捕获当前应用窗口，带回截图、�
 
 Desktop 设置管理活动记录的启用和采集参数。屏幕截图需要 macOS 屏幕录制权限，输入监听和窗口文字读取还受对应系统权限约束。
 
+`activity config --json` 输出当前采集设置；`activity config set <key> <value> --json` 成功后输出完整的已保存设置对象，包含归一化后的值，不附带文本提示。
+
 ```bash
+biny activity config --json
+biny activity config set jpegQuality 100 --json
 biny activity status --json
 biny activity sessions --json
 biny activity show <session-id> --json

@@ -380,7 +380,7 @@ activityConfig
   .argument("<key>", "ActivitySettings key, e.g. jpegQuality")
   .argument("<value>", "JSON value or raw string")
   .option("--json", "print JSON")
-  .action((key: string, value: string, options: { json?: boolean }) => wrap(() => activityConfigSetCommand(workspaceRoot, key, value, options))());
+  .action((key: string, value: string, _options: { json?: boolean }, command: Command) => wrap(() => activityConfigSetCommand(workspaceRoot, key, value, command.optsWithGlobals<{ json?: boolean }>()))());
 const activitySearch = activity
   .command("search")
   .argument("<query...>", "keyword query")
