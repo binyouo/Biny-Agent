@@ -33,7 +33,9 @@ export function applyStringEdit(content: string, oldString: string, newString: s
         if (!needle.every((line, delta) => normalize(lines[index + delta]!) === normalize(line))) continue;
         const last = index + needle.length - 1;
         if (trailingNewline && last === lines.length - 1) continue;
-        spans.push({ start: starts[index]!, end: starts[last]! + (trailingNewline ? lines[last]!.length + 1 : lines[last]!.replace(/\r$/u, "").length) });
+        // 文件开头的 BOM 只有在 old_string 显式包含它时才属于替换范围。
+        const start = starts[index]! + (index === 0 && content.startsWith("\uFEFF") && !oldString.startsWith("\uFEFF") ? 1 : 0);
+        spans.push({ start, end: starts[last]! + (trailingNewline ? lines[last]!.length + 1 : lines[last]!.replace(/\r$/u, "").length) });
       }
       if (spans.length) break;
     }

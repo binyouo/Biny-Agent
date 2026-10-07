@@ -4,6 +4,7 @@ import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
+import { createToolPermissionRequest } from "../src/tools/display/ToolDisplay.js";
 import { createApplyPatchTool } from "../src/tools/file/applyPatch.js";
 import { createEditFileTool } from "../src/tools/file/editFile.js";
 import type { FileChangeResult } from "../src/tools/file/fileChange.js";
@@ -42,6 +43,48 @@ for (const mode of editModes) {
       });
     });
   }
+}
+
+test("Edit preserves an unmentioned leading BOM when LF context requires normalized matching", async () => {
+  await withWorkspace(async (root) => {
+    const filePath = path.join(root, "target.txt");
+    await writeFile(filePath, "\uFEFFbefore\r\nnext\r\nuntouched: 中文 😀\r\n");
+    const args = { path: "target.txt", old_string: "before\nnext", new_string: "after\nnext" };
+    const context = { workspaceRoot: root, ignore: [] };
+    const preview = await createToolPermissionRequest({ id: "bom-preview", name: "Edit", args }, context);
+    const committed: FileChangeResult["change"][] = [];
+    const result = await run(createEditFileTool(context), args, {
+      onFileChangeCommitted: async (change) => { committed.push(change); }
+    });
+    assert.deepEqual(await readFile(filePath), Buffer.from("\uFEFFafter\nnext\r\nuntouched: 中文 😀\r\n"));
+    assert.equal(result.change.committed, true);
+    assert.equal(result.change.edits, 1);
+    assert.equal(result.change.firstChangedLine, 1);
+    assert.equal(result.change.diff, preview.diff);
+    assert.deepEqual(committed, [result.change]);
+    assert.deepEqual(await readdir(root), ["target.txt"]);
+  });
+});
+
+for (const fixture of [
+  { name: "whitespace-normalized first line keeps an unmentioned BOM", source: "\uFEFFbefore  text\r\nkeep\r\n", old: "before text", replacement: "after text", expected: "\uFEFFafter text\r\nkeep\r\n", count: 1 },
+  { name: "normalized replace_all keeps the leading BOM only once", source: "\uFEFFbefore  text\nbefore  text\nkeep\n", old: "before text", replacement: "after text", expected: "\uFEFFafter text\nafter text\nkeep\n", count: 2 },
+  { name: "normalized context can explicitly remove a leading BOM", source: "\uFEFFbefore\r\nnext\r\nkeep\r\n", old: "\uFEFFbefore\nnext", replacement: "after\nnext", expected: "after\nnext\r\nkeep\r\n", count: 1 },
+  { name: "normalized context can explicitly retain a leading BOM", source: "\uFEFFbefore\r\nnext\r\nkeep\r\n", old: "\uFEFFbefore\nnext", replacement: "\uFEFFafter\nnext", expected: "\uFEFFafter\nnext\r\nkeep\r\n", count: 1 },
+  { name: "normalized context can explicitly add a leading BOM", source: "before\r\nnext\r\nkeep\r\n", old: "before\nnext", replacement: "\uFEFFafter\nnext", expected: "\uFEFFafter\nnext\r\nkeep\r\n", count: 1 },
+  { name: "exact context can explicitly remove a leading BOM", source: "\uFEFFbefore\r\nkeep\r\n", old: "\uFEFFbefore", replacement: "after", expected: "after\r\nkeep\r\n", count: 1 }
+]) {
+  test(`Edit ${fixture.name}`, async () => {
+    await withWorkspace(async (root) => {
+      const filePath = path.join(root, "target.txt");
+      await writeFile(filePath, fixture.source);
+      const result = await run(createEditFileTool({ workspaceRoot: root, ignore: [] }), {
+        path: "target.txt", old_string: fixture.old, new_string: fixture.replacement, replace_all: fixture.count > 1
+      });
+      assert.deepEqual(await readFile(filePath), Buffer.from(fixture.expected));
+      assert.equal(result.change.edits, fixture.count);
+    });
+  });
 }
 
 const validSources = [
