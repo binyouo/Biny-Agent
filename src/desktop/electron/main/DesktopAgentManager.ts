@@ -1,5 +1,5 @@
 import { TaskCommunication, type TaskInspection, type TaskInspectionOptions } from "../../../runtime/TaskCommunication.js";
-import { readAttachmentContext } from "../../../attachments/store.js";
+import { readAttachment } from "../../../attachments/store.js";
 /**
  * 桌面端 agent 运行时管理。
  *
@@ -36,7 +36,6 @@ import { DesktopActivityMemoryIndex } from "./DesktopActivityMemoryIndex.js";
 import { resolveToolModelAlias } from "../../../llm/toolModel.js";
 import { IdentityStorage } from "../../../agent/context/identityStorage.js";
 import { randomUUID } from "node:crypto";
-import { promises as fs } from "node:fs";
 import path from "node:path";
 import type { ModelCatalogEntry } from "../../../ai/types.js";
 import { providerDefinition } from "../../../ai/provider.js";
@@ -744,7 +743,7 @@ export class DesktopAgentManager {
     recordPerfPhase("desktop.runtimeForPrompt", runtimeForPromptPerfStartedAt, { projectId }, project.path);
     const prompt = withAttachmentReferences(input, attachments);
     const attachmentsPerfStartedAt = perfNow();
-    const nativeAttachments = await loadNativeAttachments(this.projects.attachmentsRoot(project), attachments);
+    const nativeAttachments = await loadNativeAttachments(project.path, attachments);
     recordPerfPhase("desktop.loadAttachments", attachmentsPerfStartedAt, { count: attachments.length }, project.path);
     // 前端发送占位与持久用户消息共用身份，重复文本、事件先于回执到达也不会误合并。
     const requestIds = { messageId };
@@ -956,7 +955,7 @@ export class DesktopAgentManager {
           size: attachment.size ?? 0
         }));
       const prompt = attachments.length ? withAttachmentReferences(input, attachments) : input;
-      const nativeAttachments = await loadNativeAttachments(this.projects.attachmentsRoot(project), retryAttachments);
+      const nativeAttachments = await loadNativeAttachments(project.path, retryAttachments);
       const requestIds = { retryOfMessageId: targetMessageId };
       if (runtime instanceof RuntimeHostClient) {
         const accepted = await runtime.submitRunForSession(sessionId, prompt, nativeAttachments, requestIds);
@@ -1005,7 +1004,7 @@ export class DesktopAgentManager {
     const targetMessageId = await this.projects.sessionUserMessageIdAtIndex(project, sessionId, userMessageIndex);
     this.runtimeErrors.delete(projectId);
     const prompt = withAttachmentReferences(input, attachments);
-    const nativeAttachments = await loadNativeAttachments(this.projects.attachmentsRoot(project), attachments);
+    const nativeAttachments = await loadNativeAttachments(project.path, attachments);
     const requestIds = {
       retryOfMessageId: targetMessageId,
       replaceUserMessageId: targetMessageId
@@ -3712,27 +3711,16 @@ function compactJsonError(body: string): string | undefined {
   return trimmed.length > 240 ? `${trimmed.slice(0, 240)}…` : trimmed || undefined;
 }
 
-async function loadNativeAttachments(root: string, attachments: DesktopAttachment[]): Promise<AgentAttachment[]> {
-  const normalizedRoot = path.resolve(root);
+async function loadNativeAttachments(persistenceRoot: string, attachments: DesktopAttachment[]): Promise<AgentAttachment[]> {
   const native: AgentAttachment[] = [];
   for (const attachment of attachments) {
     if (!attachment.mimeType.startsWith("image/") && !attachment.mimeType.startsWith("audio/")) continue;
-    const relative = attachment.path.replace(/^@attachments\//u, "");
-    if (!relative || relative.includes("/") || relative.includes("\\")) continue;
-    const filePath = path.resolve(normalizedRoot, relative);
-    if (filePath !== normalizedRoot && !filePath.startsWith(`${normalizedRoot}${path.sep}`)) continue;
     try {
-      const bytes = await fs.readFile(filePath);
-      native.push({
-        name: attachment.name,
-        mimeType: attachment.mimeType,
-        path: attachment.path,
-        size: attachment.size,
-        data: bytes.toString("base64"),
-        hiddenContext: await readAttachmentContext(normalizedRoot, attachment.path)
-      });
-    } catch {
-      throw new Error(`附件文件不可读取：${attachment.name}`);
+      const loaded = await readAttachment(persistenceRoot, attachment);
+      if (!loaded) throw new Error("attachment_file_missing_or_invalid");
+      native.push(loaded);
+    } catch (cause) {
+      throw new Error(`附件文件不可读取：${attachment.name}。请重新添加附件后重试。`, { cause });
     }
   }
   return native;
