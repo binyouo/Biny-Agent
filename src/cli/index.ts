@@ -68,6 +68,8 @@ import {
   taskGetCommand,
   taskMessageCommand,
   taskWaitCommand,
+  taskInspectCommand,
+  taskContinueCommand,
   taskListCommand
 } from "./commands/runtimeManagement.js";
 import {
@@ -239,12 +241,19 @@ task.command("get").argument("<taskRunId>", "TaskRun id").option("--json", "prin
 task.command("message").argument("<taskRunId>", "TaskRun id").argument("<message...>", "message to the active child")
   .requiredOption("--session <id>", "owning session id").option("--message-id <id>", "stable message identity for a retry").option("--json", "print JSON")
   .action((taskRunId: string, message: string[], options: { session: string; messageId?: string; json?: boolean }) => wrap(() => taskMessageCommand(workspaceRoot, taskRunId, message.join(" "), options))());
+task.command("continue").argument("<taskRunId>", "completed TaskRun id").argument("<message...>", "additional bounded task")
+  .requiredOption("--session <id>", "owning session id").option("--message-id <id>", "stable continuation identity").option("--json", "print JSON")
+  .action((taskRunId: string, message: string[], options: { session: string; messageId?: string; json?: boolean }) => wrap(() => taskContinueCommand(workspaceRoot, taskRunId, message.join(" "), options))());
+task.command("inspect").argument("<taskRunId>", "TaskRun id").requiredOption("--session <id>", "owning session id")
+  .option("--attempt-id <id>", "inspect a historical attempt").option("--after-sequence <n>", "Worker event cursor", Number)
+  .option("--limit <n>", "maximum events", parsePositiveInteger).option("--json", "print JSON")
+  .action((taskRunId: string, options: { session: string; attemptId?: string; afterSequence?: number; limit?: number; json?: boolean }) => wrap(() => taskInspectCommand(workspaceRoot, taskRunId, options))());
 task.command("wait").argument("<taskRunId>", "TaskRun id").requiredOption("--session <id>", "owning session id")
   .option("--wait-ms <ms>", "wait up to 60000ms for an update", Number, 0).option("--after-revision <revision>", "last observed revision", Number).option("--json", "print JSON")
   .action((taskRunId: string, options: { session: string; waitMs?: number; afterRevision?: number; json?: boolean }) => wrap(() => taskWaitCommand(workspaceRoot, taskRunId, options))());
-task.command("list").option("--status <status>", "TaskRun status").option("--limit <count>", "maximum rows", parsePositiveInteger)
+task.command("list").option("--newest-first", "show the newest tasks first").option("--status <status>", "TaskRun status").option("--limit <count>", "maximum rows", parsePositiveInteger)
   .option("--cursor <cursor>", "continue from the previous page's nextCursor", parseTaskCursor).option("--json", "print JSON")
-  .action((options: { status?: string; limit?: number; cursor?: number; json?: boolean }) => wrap(() => taskListCommand(workspaceRoot, options))());
+  .action((options: { status?: string; limit?: number; cursor?: number; newestFirst?: boolean; json?: boolean }) => wrap(() => taskListCommand(workspaceRoot, options))());
 task.command("events").argument("<taskRunId>", "TaskRun id").option("--limit <count>", "maximum events", parsePositiveInteger).option("--json", "print JSON").action((taskRunId: string, options: { limit?: number; json?: boolean }) => wrap(() => taskEventsCommand(workspaceRoot, taskRunId, options))());
 
 const memory = program.command("memory").description("Manage local memory");

@@ -26,7 +26,7 @@ const subagentParameters = {
   properties: {
     task: { type: "string" as const, description: "A focused repository task for the subagent, including implementation and finite validation when needed." },
     agent: { type: "string" as const, description: "Optional named subagent definition to run this task with (see the named subagents list). Omit for the default bounded subagent." },
-    background: { type: "boolean" as const, description: "Return the durable taskRunId immediately, continue your own work, then use TaskStatus to wait for or inspect the child result." },
+    background: { type: "boolean" as const, description: "Return the durable taskRunId immediately and continue your own work. Bounded progress and completion notices arrive at parent step boundaries; TaskStatus inspects or waits for a result." },
     constraints: {
       type: "array" as const,
       items: { type: "string" as const },
@@ -134,6 +134,7 @@ export interface SubagentOptions {
   runTask?: (input: SubagentToolInput, context: ToolExecutionContext) => Promise<unknown>;
   readTaskResult?: (input: { taskRunId: string; waitMs?: number; afterRevision?: number }, context: ToolExecutionContext) => Promise<unknown>;
   communication?: TaskCommunication;
+  continueTask?: (taskRunId: string, message: string, requestId: string, signal?: AbortSignal) => Promise<unknown>;
   cancelTask?: (taskRunId: string, reason?: string) => unknown;
 }
 
@@ -145,7 +146,7 @@ export function createSubagentTool(options: SubagentOptions): Tool<SubagentToolI
     promptGuidelines: [
       "Keep simple one-step requests in the current run; delegate when isolation, specialist focus, or independent execution will help.",
       "Give the worker a concrete goal, relevant constraints, and a finite deliverable; summarize its result to the user when it returns.",
-      "Use background for independent tasks. Retain each taskRunId; use TaskMessage for corrections, TaskStatus with waitMs for updates, and TaskCancel for work no longer needed.",
+      "Use background for independent tasks. Retain each taskRunId; progress and completion notices arrive at safe parent boundaries without starting idle parent turns. Use TaskMessage for corrections, TaskStatus for a necessary bounded wait, TaskCancel for work no longer needed, and TaskContinue only for explicitly authorized additional work from a completed report.",
       "Preserve user-specified acceptance conditions exactly. Put them in verification.checks; do not replace them with easier inferred checks.",
       "If a verified task returns needs_approval, report the exact approvalId, command, cwd, and reason. Do not claim completion or approve it yourself."
     ],
@@ -176,7 +177,7 @@ export function createSubagentTool(options: SubagentOptions): Tool<SubagentToolI
 export function createTaskStatusTool(options: SubagentOptions): Tool<{ taskRunId: string; waitMs?: number; afterRevision?: number }, unknown> {
   return {
     name: "TaskStatus",
-    description: "Read a task created by this session, including output, revision, messages and verification evidence. waitMs waits up to 60000ms for a revision change or terminal/blocked status; afterRevision is the last revision you saw. A wait timeout leaves the child running. This never resumes, retries, approves, or creates work.",
+    description: "Read a task created by this session, including bounded output, revision, recent messages and verification status. Detailed execution and full evidence stay in the child record. waitMs waits up to 60000ms for a revision change or terminal/blocked status; afterRevision is the last revision you saw. A wait timeout leaves the child running. This never resumes, retries, approves, or creates work.",
     promptSnippet: "Read or wait for a delegated task result",
     promptGuidelines: [
       "Use TaskStatus when a previous verified Task call returned needs_approval or another non-terminal status.",
@@ -212,24 +213,29 @@ export function createTaskStatusTool(options: SubagentOptions): Tool<{ taskRunId
 }
 
 export function createTaskControlTools(options: SubagentOptions): Tool[] {
-  return ["TaskMessage", "TaskCancel"].map((name) => {
+  return ["TaskMessage", "TaskCancel", "TaskContinue"].map((name) => {
     const isMessage = name === "TaskMessage";
+    const needsMessage = isMessage || name === "TaskContinue";
     return {
       name,
-      description: isMessage
+      description: name === "TaskContinue" ? "Start explicit additional bounded work from a completed child report. Creates a new TaskRun with a short evidence reference; preserves the completed execution. Requires existing user authorization for the added work." : isMessage
         ? "Persist a correction or context for an active child task created by this session. Delivery occurs between child model steps and does not interrupt a dispatched tool. Terminal, verifying, or finishing tasks reject new messages."
         : "Cancel a child task created by this session. Dispatched tool side effects are not undone.",
       parameters: { type: "object", properties: {
-        taskRunId: { type: "string" }, message: { type: "string", description: isMessage ? "Message to the child, at most 8000 characters." : "Optional cancellation reason." }
-      }, required: isMessage ? ["taskRunId", "message"] : ["taskRunId"], additionalProperties: false },
-      schema: z.object({ taskRunId: z.string().trim().min(1), message: isMessage ? z.string().trim().min(1).max(8_000) : z.string().trim().min(1).max(8_000).optional() }).strict(),
+        taskRunId: { type: "string" }, message: { type: "string", description: needsMessage ? "Context or a bounded additional task, at most 8000 characters." : "Optional cancellation reason." }
+      }, required: needsMessage ? ["taskRunId", "message"] : ["taskRunId"], additionalProperties: false },
+      schema: z.object({ taskRunId: z.string().trim().min(1), message: needsMessage ? z.string().trim().min(1).max(8_000) : z.string().trim().min(1).max(8_000).optional() }).strict(),
       source: "subagent", capability: "subagent.workspace", risk: "execute",
       resolveExecution(args: { taskRunId: string; message?: string }) {
-        return { accesses: ToolAccesses.none(), display: { kind: "generic", summary: name, detail: args.taskRunId },
+        return { accesses: name === "TaskContinue" ? ToolAccesses.all() : ToolAccesses.none(), display: { kind: "generic", summary: name, detail: args.taskRunId },
           description: name, approvalRule: name,
           async execute(context: ToolExecutionContext): Promise<unknown> {
             if (!options.communication) throw new Error("Task communication is unavailable.");
             options.communication.read(args.taskRunId);
+            if (name === "TaskContinue") {
+              if (!options.continueTask) throw new Error("Task continuation is unavailable.");
+              return await options.continueTask(args.taskRunId, args.message!, context.toolCallId, context.signal);
+            }
             if (isMessage) return options.communication.send(args.taskRunId, args.message!, context.toolCallId);
             if (!options.cancelTask) throw new Error("Task cancellation is unavailable.");
             return options.cancelTask(args.taskRunId, args.message);
@@ -448,11 +454,11 @@ async function runNativeSubagentTask(
 
 function createWorkerReportTool(communication: WorkerCommunication, session?: WorkerSession): AgentTool {
   return {
-    name: "TaskReport", description: "Send a concise finding, progress update or blocker to the parent. This does not finish the task or trigger a parent model request.",
-    parameters: { type: "object", properties: { message: { type: "string" } }, required: ["message"], additionalProperties: false },
+    name: "TaskReport", description: "Send a material finding, progress update or blocker to the parent in at most 2000 characters. This does not finish the task or trigger a parent model request.",
+    parameters: { type: "object", properties: { message: { type: "string", maxLength: 2000 } }, required: ["message"], additionalProperties: false },
     executionMode: "sequential",
     async execute(toolCallId, args) {
-      const input = z.object({ message: z.string().trim().min(1).max(8_000) }).strict().parse(args);
+      const input = z.object({ message: z.string().trim().min(1).max(2000) }).strict().parse(args);
       const report = async (beforeDispatch?: () => Promise<void>): Promise<AgentToolResult> => {
         await beforeDispatch?.();
         const message = communication.report(input.message, toolCallId);

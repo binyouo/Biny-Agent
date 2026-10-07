@@ -1,3 +1,4 @@
+import { TaskCommunication, type TaskInspection, type TaskInspectionOptions } from "../../../runtime/TaskCommunication.js";
 import { readAttachmentContext } from "../../../attachments/store.js";
 /**
  * 桌面端 agent 运行时管理。
@@ -2366,6 +2367,26 @@ export class DesktopAgentManager {
     } finally { authority.close(); }
   }
 
+  async taskInspection(projectId: string, sessionId: string, taskRunId: string, options: TaskInspectionOptions = {}): Promise<TaskInspection> {
+    const managed = await this.getRuntime(projectId, false);
+    if (managed?.runtime instanceof RuntimeHostClient) {
+      try { return await managed.runtime.taskInspect(taskRunId, sessionId, { ...options, waitMs: 0 }); }
+      catch (error) { if (!managed.runtime.isRetired) throw error; }
+    }
+    if (managed?.commands) {
+      const channel = new TaskCommunication(managed.commands.taskRuns, sessionId);
+      try { return await channel.inspect(taskRunId, { ...options, waitMs: 0 }); } finally { channel.close(); }
+    }
+    const project = this.projects.requireProject(projectId);
+    const root = await this.projects.dataRoot(project);
+    const authority = await RuntimeEventAuthority.openReadOnly(root);
+    if (!authority) throw new Error("任务记录暂不可用。");
+    const tasks = await DurableTaskRunStore.open(root, authority);
+    const channel = new TaskCommunication(tasks, sessionId);
+    try { return await channel.inspect(taskRunId, { ...options, waitMs: 0 }); }
+    finally { channel.close(); tasks.close(); authority.close(); }
+  }
+
   async runtimeProjection(projectId: string): Promise<DesktopRuntimeProjection> {
     const managed = await this.getRuntime(projectId, false);
     if (managed) {
@@ -2387,7 +2408,7 @@ export class DesktopAgentManager {
       const capabilities = await CapabilityStore.open(persistenceRoot, authority);
       authority.databaseHandle().exec("BEGIN");
       return {
-        tasks: tasks.list(),
+        tasks: tasks.list({ order: "desc" }),
         automations: automations.list(),
         pendingFires: automations.listPending(),
         graphs: graphs.listGraphs(),
@@ -2402,7 +2423,7 @@ export class DesktopAgentManager {
   private async readRuntimeProjection({ runtime, commands }: ManagedRuntime): Promise<DesktopRuntimeProjection> {
     if (commands) {
       return {
-        tasks: commands.taskRuns.list(),
+        tasks: commands.taskRuns.list({ order: "desc" }),
         automations: commands.automationStore.list(),
         pendingFires: commands.automationStore.listPending(),
         graphs: commands.graphs.listGraphs(),
@@ -2412,7 +2433,7 @@ export class DesktopAgentManager {
     }
     const remote = requireRemoteRuntime(runtime);
     const [tasks, automations, pendingFires, graphs, capabilities, worktrees] = await Promise.all([
-      remote.taskList(),
+      remote.taskList({ order: "desc" }),
       remote.automationList(),
       remote.automationPending(),
       remote.graphList(),
@@ -2431,6 +2452,13 @@ export class DesktopAgentManager {
   async runtimeMutation(projectId: string, operation: DesktopRuntimeMutation, payload: Record<string, unknown> = {}): Promise<unknown> {
     const { runtime, commands, host } = await this.ensureRuntime(projectId);
     if (!commands) return await executeRemoteRuntimeMutation(requireRemoteRuntime(runtime), operation, payload);
+    if (operation === "task.message" || operation === "task.continue") {
+      if (requiredPayloadString(payload.sessionId, "sessionId") !== commands.agent.getInfo().sessionId) throw new Error("子任务操作必须在原会话执行。");
+      const taskRunId = requiredPayloadString(payload.taskRunId, "taskRunId");
+      if (operation === "task.continue") return await commands.continueTaskRun(taskRunId, requiredPayloadString(payload.message, "message"), optionalPayloadString(payload.messageId));
+      if (!commands.taskCommunication) throw new Error("子任务消息暂不可用。");
+      return commands.taskCommunication.send(taskRunId, requiredPayloadString(payload.message, "message"), optionalPayloadString(payload.messageId));
+    }
     if (operation.startsWith("session.goal.")) {
       const sessionId = requiredPayloadString(payload.sessionId, "sessionId");
       if (sessionId !== runtime.getSnapshot().info.sessionId) throw new Error("会话目标操作必须在原会话执行。");
@@ -3500,6 +3528,13 @@ function remainingTimeout(deadline: number): number {
 }
 
 async function executeRemoteRuntimeMutation(runtime: RuntimeHostClient, operation: DesktopRuntimeMutation, payload: Record<string, unknown>): Promise<unknown> {
+  if (operation === "task.message" || operation === "task.continue") {
+    const taskRunId = requiredPayloadString(payload.taskRunId, "taskRunId");
+    const sessionId = requiredPayloadString(payload.sessionId, "sessionId");
+    const message = requiredPayloadString(payload.message, "message");
+    return operation === "task.message" ? await runtime.taskMessage(taskRunId, sessionId, message, optionalPayloadString(payload.messageId))
+      : await runtime.taskContinue(taskRunId, sessionId, message, optionalPayloadString(payload.messageId));
+  }
   if (operation.startsWith("session.goal.")) {
     const sessionId = requiredPayloadString(payload.sessionId, "sessionId");
     const expected = sessionGoalExpected(payload.expected);

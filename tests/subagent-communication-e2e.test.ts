@@ -43,7 +43,9 @@ test("parent tools, Host and CLI coordinate an asynchronous Worker through durab
       else if (system.includes("选择需要的工具") || system.includes("选择需要的技能")) result = { text: '{"tools":[],"skillIds":[]}' };
       else if (system.includes("focused, bounded worker inside Biny")) {
         const messages = JSON.stringify(body.messages);
-        if (messages.includes("cancel target")) { await cancelGate; result = { text: "cancel target finished" }; }
+        if (messages.includes("Additional bounded task:")) {
+          assert.match(messages, /Prior task.*returned/); result = { text: "additional result" };
+        } else if (messages.includes("cancel target")) { await cancelGate; result = { text: "cancel target finished" }; }
         else {
           workerRequests += 1;
           if (workerRequests === 1) {
@@ -59,6 +61,11 @@ test("parent tools, Host and CLI coordinate an asynchronous Worker through durab
         }
       } else {
         parentRequests += 1;
+        if (phase === "result" && !acted) {
+          const notices = body.messages.filter((message) => message.role === "user" && JSON.stringify(message.content).includes("Subagent notice"));
+          assert.equal(notices.length, 2, "the explicit report and completion arrive without TaskStatus polling");
+          assert.match(JSON.stringify(notices), /corrected result/);
+        }
         const name = phase === "message" ? "TaskMessage" : phase === "result" ? "TaskStatus" : phase === "cancel" ? "TaskCancel" : "Task";
         if (!acted && !names.has(name)) result = { name: "ToolSearch", args: { query: name } };
         else if (!acted) {
@@ -108,6 +115,10 @@ test("parent tools, Host and CLI coordinate an asynchronous Worker through durab
     taskRunId = listed.tasks[0]!.taskRunId;
     assert.equal(listed.tasks[0]!.sessionId, sessionId);
     assert.equal(listed.tasks[0]!.status, "running");
+    const inspected = await client.taskInspect(taskRunId, sessionId);
+    assert.equal(inspected.status, "running");
+    assert.equal(inspected.attemptId, listed.tasks[0]!.attempts[0]?.attemptId);
+    await assert.rejects(client.taskInspect(taskRunId, "different-session"), /another session/);
     phase = "message"; acted = false;
     assert.equal((await client.submitPrompt("send the child additional context").completion).status, "completed");
     const queued = await client.taskWait(taskRunId, sessionId) as { task: TaskRunWithAttempts; messages: TaskMessage[] };
@@ -117,6 +128,7 @@ test("parent tools, Host and CLI coordinate an asynchronous Worker through durab
     const before = JSON.parse((await runCli(["wait", taskRunId, "--session", sessionId])).stdout) as { task: TaskRunWithAttempts };
     assert.equal(before.task.status, "running");
     await assert.rejects(runCli(["message", taskRunId, "intrusion", "--session", "different-session"]));
+    const beforeCompletionRequests = parentRequests;
     release();
     let current = queued;
     const deadline = Date.now() + 5_000;
@@ -127,6 +139,7 @@ test("parent tools, Host and CLI coordinate an asynchronous Worker through durab
     assert.equal(current.messages[0]?.delivered, true);
     assert.ok(current.messages.some((item) => item.direction === "worker"));
     assert.equal(workerRequests, 2);
+    assert.equal(parentRequests, beforeCompletionRequests, "child completion does not wake an idle parent");
     const childEvents = await readSessionEvents(sessionFilePath(root, workerSessionId(current.task.attempts[0]!.attemptId)));
     assert.equal(childEvents.filter((event) => event.type === "user_message" && event.messageId === message.id).length, 1);
     assert.ok(childEvents.some((event) => event.type === "tool_call" && event.tool === "TaskReport"));
@@ -134,17 +147,32 @@ test("parent tools, Host and CLI coordinate an asynchronous Worker through durab
     await assert.rejects(client.taskMessage(taskRunId, sessionId, "late correction"), /no longer accepts/);
     phase = "result"; acted = false;
     assert.equal((await client.submitPrompt("read the inspection result").completion).status, "completed");
+    const parentEvents = await readSessionEvents(sessionFilePath(root, sessionId));
+    assert.equal(parentEvents.filter((event) => event.type === "user_message" && event.metadata?.source === "subagent").length, 2);
+    assert.ok(parentEvents.every((event) => event.type !== "tool_call" || event.tool !== "TaskReport"), "child tool history never enters the parent transcript");
+    await assert.rejects(client.taskContinue(taskRunId, "different-session", "inspect once more", "continuation"), /another session/);
+    const continued = await client.taskContinue(taskRunId, sessionId, "inspect once more", "continuation") as { taskRunId: string };
+    const repeated = await client.taskContinue(taskRunId, sessionId, "inspect once more", "continuation") as { taskRunId: string };
+    assert.equal(continued.taskRunId, repeated.taskRunId);
+    assert.notEqual(continued.taskRunId, taskRunId);
+    const next = await client.taskGet(continued.taskRunId) as TaskRunWithAttempts;
+    assert.equal((next.task as { continuedFrom: string }).continuedFrom, taskRunId);
+    assert.equal((await client.taskGet(taskRunId) as TaskRunWithAttempts).attempts.length, 1);
     await client.close();
     const reconnected = await connectRuntimeHost(root, { surface: "cli", clientId: "reconnected-parent" });
     assert.ok(reconnected); client = reconnected;
-    assert.deepEqual((await client.taskWait(taskRunId, sessionId) as typeof queued).messages, current.messages);
+    assert.deepEqual((await client.taskWait(taskRunId, sessionId) as typeof queued).messages, current.messages.map((item) => item.direction === "worker" ? { ...item, delivered: true } : item));
     phase = "launch-cancel"; acted = false;
     assert.equal((await client.submitPrompt("launch a cancellable task").completion).status, "completed");
     const after = await client.taskList() as { tasks: TaskRunWithAttempts[] };
-    taskRunId = after.tasks.find((task) => task.taskRunId !== current.task.taskRunId)!.taskRunId;
+    taskRunId = after.tasks.find((task) => (task.task as { prompt?: string }).prompt === "cancel target")!.taskRunId;
     phase = "cancel"; acted = false;
     assert.equal((await client.submitPrompt("cancel the last task").completion).status, "completed");
     assert.ok(["aborted", "cancelled"].includes((await client.taskGet(taskRunId) as TaskRunWithAttempts).status));
+    const newest = await client.taskList({ order: "desc" }) as { tasks: TaskRunWithAttempts[] };
+    assert.equal(newest.tasks[0]?.taskRunId, taskRunId);
+    const newestCli = JSON.parse((await runCli(["list", "--newest-first"])).stdout) as typeof newest;
+    assert.equal(newestCli.tasks[0]?.taskRunId, taskRunId);
     assert.ok(parentRequests > 0);
     assert.deepEqual(providerErrors, []);
   } finally {
