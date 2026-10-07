@@ -339,6 +339,7 @@ test("删除自定义主题先确认，取消或保存失败均不丢失主题",
     await h.render(h.React.createElement(SettingsThemes, { preference, onChange(next) {
       if (failSave) throw new Error("主题偏好暂时不可写");
       writes.push(next as typeof preference);
+      return Promise.resolve(true);
     } }));
     await h.click('[aria-label="删除 测试配色"]');
     assert.deepEqual(writes, []);
@@ -367,11 +368,11 @@ test("窗口拖影选项只在选中对应结构皮肤时出现", async () => {
     const { SettingsThemes } = await import("../src/desktop/renderer/src/components/settings/SettingsThemes.js");
     const { DEFAULT_APPEARANCE } = await import("../src/appearance/index.js");
     const preference = structuredClone(DEFAULT_APPEARANCE);
-    await h.render(h.React.createElement(SettingsThemes, { preference, onChange() {} }));
+    await h.render(h.React.createElement(SettingsThemes, { preference, onChange: async () => true }));
     assert.equal(document.querySelector(".theme-trail-option") === null, true);
-    await h.render(h.React.createElement(SettingsThemes, { preference: { ...preference, lightTheme: "win98" }, onChange() {} }));
+    await h.render(h.React.createElement(SettingsThemes, { preference: { ...preference, lightTheme: "win98" }, onChange: async () => true }));
     assert.equal(document.querySelector<HTMLInputElement>('.theme-trail-option input')?.checked, true);
-    await h.render(h.React.createElement(SettingsThemes, { preference: { ...preference, lightTheme: "winxp", win98Trail: false }, onChange() {} }));
+    await h.render(h.React.createElement(SettingsThemes, { preference: { ...preference, lightTheme: "winxp", win98Trail: false }, onChange: async () => true }));
     assert.equal(document.querySelector(".theme-trail-option") === null, true);
   } finally { await h.close(); }
 });

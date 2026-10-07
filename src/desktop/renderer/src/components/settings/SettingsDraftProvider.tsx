@@ -123,11 +123,11 @@ export function SettingsDraftProvider({
     if (!loading && !snapshotRef.current) setLoadAttempt((attempt) => attempt + 1);
   }, [loading]);
 
-  const saveGlobalPreference = useCallback(async (save: () => Promise<void>): Promise<void> => {
+  const saveGlobalPreference = useCallback(async (save: () => Promise<void>): Promise<boolean> => {
     setSaveState("saving");
     setSaveError(undefined);
-    try { await save(); }
-    catch (error) { setSaveError(error instanceof Error ? error.message : String(error)); }
+    try { await save(); return true; }
+    catch (error) { setSaveError(error instanceof Error ? error.message : String(error)); return false; }
     finally { setSaveState("clean"); }
   }, []);
 
@@ -149,13 +149,13 @@ export function SettingsDraftProvider({
     onFontPreview(value);
   }, [onFontPreview, projectId, saveGlobalPreference]);
 
-  const setAppearancePreference = useCallback((value: AppearancePreference): void => {
+  const setAppearancePreference = useCallback(async (value: AppearancePreference): Promise<boolean> => {
     if (!projectId) {
-      void saveGlobalPreference(async () => onAppearancePreview?.(await window.biny.setAppearancePreference(value)));
-      return;
+      return saveGlobalPreference(async () => onAppearancePreview?.(await window.biny.setAppearancePreference(value)));
     }
     setDraft((current) => current ? { ...current, appearancePreference: value } : current);
     onAppearancePreview?.(value);
+    return true;
   }, [onAppearancePreview, projectId, saveGlobalPreference]);
 
 

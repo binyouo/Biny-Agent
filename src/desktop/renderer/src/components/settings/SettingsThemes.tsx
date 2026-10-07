@@ -6,7 +6,7 @@ import { palettePreviewColors } from "../../../../../appearance/palette.js";
 import type { AppearanceMode, AppearancePreference, CustomAppearanceTheme } from "../../../../../appearance/types.js";
 import { ThemeEditor } from "./ThemeEditor.js";
 
-export function SettingsThemes({ preference, onChange, disabled }: { preference: AppearancePreference; onChange(preference: AppearancePreference): void; disabled?: boolean }): React.JSX.Element {
+export function SettingsThemes({ preference, onChange, disabled }: { preference: AppearancePreference; onChange(preference: AppearancePreference): Promise<boolean>; disabled?: boolean }): React.JSX.Element {
   const [search, setSearch] = useState("");
   const [editor, setEditor] = useState<{ type: AppearanceMode; theme?: CustomAppearanceTheme }>();
   const [pendingDelete, setPendingDelete] = useState<CustomAppearanceTheme>();
@@ -27,8 +27,10 @@ export function SettingsThemes({ preference, onChange, disabled }: { preference:
       customThemes: preference.customThemes.filter(theme => theme.name !== pendingDelete.name)
     })) closeDelete();
   };
-  const save = (theme: CustomAppearanceTheme): void => {
-    onChange(upsertAppearanceTheme(preference, theme, editor?.theme?.name));
+  const save = async (theme: CustomAppearanceTheme): Promise<void> => {
+    if (await onChange(upsertAppearanceTheme(preference, theme, editor?.theme?.name)) === false) {
+      throw new Error("主题保存失败，请重试。");
+    }
     setError(undefined);
     setEditor(undefined);
   };

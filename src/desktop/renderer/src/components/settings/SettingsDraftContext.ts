@@ -65,7 +65,7 @@ export interface SettingsDraftContextValue {
   saveState: SettingsSaveState;
   setThemePreference(value: DesktopThemePreference): void;
   setFontPreference(value: DesktopFontPreference): void;
-  setAppearancePreference(value: AppearancePreference): void;
+  setAppearancePreference(value: AppearancePreference): Promise<boolean>;
   updateActivityImmediately(patch: DesktopActivitySettingsPatch): Promise<void>;
   setIdentity(value: DesktopIdentitySettings): void;
   setMemory(value: DesktopMemorySettings): void;
