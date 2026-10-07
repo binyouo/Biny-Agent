@@ -313,8 +313,10 @@ export async function prepareSubagentTask(
           await session.receiveMessages(pending);
           execution.communication.delivered(pending.map((message) => message.id));
         }
-        if (session?.finalHandoff !== undefined && (execution?.communication?.seal() ?? true)) {
-          const output = redactSecrets(session.finalHandoff);
+        const finalMessage = session?.messages.at(-1);
+        if (session && finalMessage?.role === "assistant" && !finalMessage.content.some((part) => part.type === "toolCall")
+          && (execution?.communication?.seal() ?? true)) {
+          const output = completedSubagentOutput(finalMessage);
           await session.complete(output);
           return output;
         }
@@ -440,16 +442,20 @@ async function runNativeSubagentTask(
   if (!lastAssistant) throw new Error("Subagent produced no assistant message.");
   if (stopReason === "step_limit") throw new SubagentTaskIncompleteError("step_limit", redactSecrets(assistantTexts.join("\n\n")));
   if (communication?.pending().length) throw new SubagentTaskIncompleteError("messages_pending", "Worker budget ended before pending messages were processed.");
-  const output = agentMessageText(lastAssistant);
   if (lastAssistant.content.some((part) => part.type === "toolCall")) {
     throw new SubagentTaskIncompleteError(stopReason ?? "tool-calls", redactSecrets(assistantTexts.join("\n\n")));
   }
-  if (lastAssistant.stopReason !== undefined && !["stop", "other"].includes(lastAssistant.stopReason)) {
-    throw new SubagentTaskIncompleteError(lastAssistant.stopReason, redactSecrets(output));
-  }
-  const safeOutput = redactSecrets(output);
+  const safeOutput = completedSubagentOutput(lastAssistant);
   await session?.complete(safeOutput);
   return safeOutput;
+}
+
+function completedSubagentOutput(message: AgentAssistantMessage): string {
+  const output = redactSecrets(agentMessageText(message));
+  if (message.stopReason !== "stop") {
+    throw new SubagentTaskIncompleteError(message.stopReason ?? "missing_terminal_event", output);
+  }
+  return output;
 }
 
 function createWorkerReportTool(communication: WorkerCommunication, session?: WorkerSession): AgentTool {
