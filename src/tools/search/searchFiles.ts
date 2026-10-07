@@ -48,6 +48,7 @@ export interface SearchFilesResult {
   nextOffset?: number;
   scannedFiles: number;
   skippedFiles?: string[];
+  unreadableDirectories?: string[];
   fileLimitReached?: boolean;
 }
 
@@ -74,6 +75,7 @@ export function createSearchFilesTool(context: ToolContext): Tool<SearchFilesArg
     promptGuidelines: [
       "Use literal mode for exact text and regex mode only when pattern syntax is needed",
       "Use path or glob to narrow broad searches; continue with nextOffset when hasMore is true",
+      "skippedFiles, unreadableDirectories or fileLimitReached means the search is incomplete even when hasMore is false",
       "A Grep anchor can be passed to Edit only while that exact file line remains unchanged"
     ],
     parameters: {
@@ -120,13 +122,15 @@ export function createSearchFilesTool(context: ToolContext): Tool<SearchFilesArg
           const offset = args.offset ?? 0;
           const limit = args.limit ?? defaultLimit;
           const contextLines = args.contextLines ?? 0;
+          const unreadableDirectories: string[] = [];
           const candidates = await scanWorkspaceFiles(
             context.workspaceRoot,
             context.ignore,
             maxScannedFiles + 1,
             signal,
             (relativePath) => fileInScope(relativePath, relativeRoot, glob),
-            relativeRoot === "." ? undefined : (relativePath) => directoryInScope(relativePath, relativeRoot)
+            relativeRoot === "." ? undefined : (relativePath) => directoryInScope(relativePath, relativeRoot),
+            (relativePath) => unreadableDirectories.push(relativePath.split(path.sep).join("/"))
           );
           const fileLimitReached = candidates.length > maxScannedFiles;
           const matches: SearchFilesMatch[] = [];
@@ -216,7 +220,7 @@ export function createSearchFilesTool(context: ToolContext): Tool<SearchFilesArg
               if (stopSearch) break;
             }
 
-            return {
+            const result: SearchFilesResult = {
               matches,
               offset,
               limit,
@@ -226,6 +230,8 @@ export function createSearchFilesTool(context: ToolContext): Tool<SearchFilesArg
               skippedFiles: skippedFiles.length > 0 ? skippedFiles : undefined,
               fileLimitReached: fileLimitReached || undefined
             };
+            if (unreadableDirectories.length) result.unreadableDirectories = unreadableDirectories;
+            return result;
           } finally {
             await regexMatcher?.close();
           }

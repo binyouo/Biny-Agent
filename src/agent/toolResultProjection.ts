@@ -566,6 +566,7 @@ function projectSearchResult(entry: ToolResultEntry): Record<string, unknown> {
       "nextOffset",
       "scannedFiles",
       "skippedFiles",
+      "unreadableDirectories",
       "fileLimitReached"
     ]),
     matchesTruncated: truncated ? true : undefined,

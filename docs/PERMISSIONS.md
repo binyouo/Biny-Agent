@@ -43,6 +43,12 @@ biny run "检查项目结构" --permission-mode read-only --json
 
 文件写入在批准后继续核对目标路径和文件状态。拒绝路径优先于一般允许规则；软链或目标变化不能用旧批准绕过检查。
 
+## 文件枚举与搜索的完整性
+
+`Glob` 与 `Grep` 保留可读取的结果；扫描时无法读取或已经消失的目录记录在 `unreadableDirectories`，路径相对于工作区，`.` 表示工作区根目录。`Grep` 另外用 `skippedFiles` 标记读取失败的文件，用 `fileLimitReached` 标记候选文件超过扫描上限。
+
+`hasMore` 只表示发现的结果还有下一页。即使它为 `false`，上述跳过或上限提示仍表示结果不完整，不能据此认定工作区中没有其他匹配。恢复目录访问后应从第一页重新扫描；原有游标不会补回先前跳过的内容。主动忽略的路径及与指定 `path` 无关的目录不列入跳过提示；无法读取的祖先目录仍会报告。
+
 ## 沙箱与审批
 
 `sandbox.mode` 可选择 `off` 或 `workspace-write`，`sandbox.allowNetwork` 控制所配置沙箱中的网络策略。当前缺省为 `off`、`allowNetwork: true`。

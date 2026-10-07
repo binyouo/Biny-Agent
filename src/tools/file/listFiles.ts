@@ -22,6 +22,7 @@ export interface ListFilesResult {
   files: string[];
   hasMore: boolean;
   nextCursor?: string;
+  unreadableDirectories?: string[];
 }
 
 const defaultLimit = 200;
@@ -39,7 +40,10 @@ export function createListFilesTool(context: ToolContext): Tool<ListFilesArgs, L
     name: "Glob",
     description: "List workspace files in stable path order. Supports a workspace-relative root path, glob filtering, and cursor pagination.",
     promptSnippet: "List workspace files with root, glob, and cursor pagination",
-    promptGuidelines: ["Continue with nextCursor when hasMore is true; pattern matches workspace-relative paths"],
+    promptGuidelines: [
+      "Continue with nextCursor when hasMore is true; pattern matches workspace-relative paths",
+      "unreadableDirectories means the listing is incomplete even when hasMore is false"
+    ],
     parameters: {
       type: "object",
       properties: {
@@ -72,6 +76,7 @@ export function createListFilesTool(context: ToolContext): Tool<ListFilesArgs, L
           const currentRoot = resolveWorkspaceDirectory(context.workspaceRoot, args.path ?? ".", context.ignore);
           if (currentRoot !== listRoot) throw new Error("The list root changed after the tool call was prepared.");
           const limit = args.limit ?? defaultLimit;
+          const unreadableDirectories: string[] = [];
           const candidates = await scanWorkspaceFiles(
             context.workspaceRoot,
             context.ignore,
@@ -82,15 +87,22 @@ export function createListFilesTool(context: ToolContext): Tool<ListFilesArgs, L
               return isUnderRoot(normalized, relativeRoot)
                 && (pattern === undefined || path.matchesGlob(normalized, pattern))
                 && (cursor === undefined || normalized > cursor);
+            },
+            undefined,
+            (relativePath) => {
+              const normalized = normalizePath(relativePath);
+              if (isUnderRoot(normalized, relativeRoot) || isUnderRoot(relativeRoot, normalized)) unreadableDirectories.push(normalized);
             }
           );
           const files = candidates.slice(0, limit).map(normalizePath);
           const hasMore = candidates.length > limit;
-          return {
+          const result: ListFilesResult = {
             files,
             hasMore,
             nextCursor: hasMore ? files.at(-1) : undefined
           };
+          if (unreadableDirectories.length) result.unreadableDirectories = unreadableDirectories;
+          return result;
         }
       };
     }
