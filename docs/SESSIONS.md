@@ -55,6 +55,17 @@ Desktop 中从消息分支会创建新会话，保留分支点之前的对话上
 
 会话分支与 Git worktree 是不同对象。Worktree 隔离代码检出；会话历史仍保存在原持久化根中。合并与清理须检查真实 Git 状态，不能由会话归档推断代码已经合并。
 
+## 当前会话清单
+
+`TodoWrite` 维护当前会话的完整清单，后续回合会再次读取，恢复会话后仍保留。CLI 也可以查看和替换同一份清单：
+
+```bash
+biny todo show --session <session-id> --json
+biny todo replace --session <session-id> --todos '[{"content":"检查结果","status":"pending"}]' --json
+```
+
+`--todos` 接受完整数组或含 `todos` 数组的对象；每次整份替换，不合并旧条目。条目需有非空文字，状态只能是 `pending`、`in_progress` 或 `completed`，最多一项进行中。不合法的输入会报错并保留原清单，不会跳过坏条目后保存剩余部分；显式传入 `[]` 仍会清空清单。清单状态只是工作记录，不替代实际执行和验证证据。
+
 ## 导出与导入
 
 ```bash
