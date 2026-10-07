@@ -75,7 +75,7 @@ export const toolDisplayRules: Record<string, ToolDisplayRule> = {
     title: "File patch request",
     async summarize(args, context) {
       const { operation } = patchArgsSchema.parse(args);
-      const content = await readExistingFileForDiff(operation.path, context);
+      const content = await readExistingFileForDiff(operation.path, context, operation.type === "create_file");
       const diff = createUnifiedDiff(operation.path, content, patchContent(content, operation));
       return { details: `${operation.type}: ${operation.path}`, diff, preview: formatUnifiedDiffPreview(operation.path, diff, 16), requireFullYes: operation.type === "delete_file" };
     }
@@ -97,7 +97,7 @@ export const toolDisplayRules: Record<string, ToolDisplayRule> = {
     async summarize(args, context) {
       const filePath = getStringField(args, "path");
       const content = getStringField(args, "content");
-      const oldContent = await readExistingFileForDiff(filePath, context);
+      const oldContent = await readExistingFileForDiff(filePath, context, true);
       const diff = oldContent ? createUnifiedDiff(filePath, oldContent, content) : undefined;
       const preview = oldContent
         ? formatUnifiedDiffPreview(filePath, diff ?? "", 16)
@@ -177,12 +177,12 @@ const defaultDisplayRule: ToolDisplayRule = {
   }
 };
 
-async function readExistingFileForDiff(filePath: string, context: ToolDisplayContext): Promise<string> {
+async function readExistingFileForDiff(filePath: string, context: ToolDisplayContext, allowMissing = false): Promise<string> {
   const absolutePath = resolveWorkspacePath(context.workspaceRoot, filePath, context.ignore);
   try {
     return (await readBoundedUtf8File(absolutePath, maxEditFileBytes, "reject")).content;
   } catch (error) {
-    if (typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT") return "";
+    if (allowMissing && typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT") return "";
     throw error;
   }
 }
