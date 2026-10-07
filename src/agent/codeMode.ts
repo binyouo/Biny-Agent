@@ -180,7 +180,7 @@ export async function executeCodeModeCell(input: {
     childCalls.push({ tool: name, toolCallId });
     setOperationId(toolCallId);
     const result: AgentToolResult = await entry.execute(toolCallId, args.args as Record<string, unknown>, signal);
-    if (result.isError) throw new CodeModeToolError(`Nested ${name} failed: ${String(JSON.stringify(result.details)).slice(0, 2_048)}`, { toolName: name });
+    if (result.isError) throw new CodeModeToolError(`Nested ${name} failed: ${nestedToolFailurePreview(result.details)}`, { toolName: name });
     return result.details ?? result.content;
   });
   addBridge(discoveryBridgeNames.search, async (args, signal, id) => {
@@ -257,6 +257,15 @@ export async function executeCodeModeCell(input: {
     return { ok: false, error: "Code Mode returned before all nested tools settled; do not replay this cell.", childCalls };
   }
   return result;
+}
+
+function nestedToolFailurePreview(details: unknown): string {
+  // MCP 错误信封中的资源可能很长，优先保留文本原因，避免截断只留下资源正文。
+  const content = typeof details === "object" && details !== null && "isError" in details && details.isError === true
+    && "content" in details && Array.isArray(details.content) ? details.content : [];
+  const text = content.flatMap((part: unknown) => typeof part === "object" && part !== null
+    && "type" in part && part.type === "text" && "text" in part && typeof part.text === "string" ? [part.text] : []).join("\n").trim();
+  return (text || String(JSON.stringify(details))).slice(0, 2_048);
 }
 
 function discoveryString(value: unknown, name: string, maxLength: number): string {
