@@ -7,8 +7,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { InvalidArgumentError } from "commander";
 import type { Command } from "commander";
-import { defaultManagedSkillRoot } from "../../extensions/managedSkillSources.js";
-import { parseSkillDocument } from "../../extensions/skillDocument.js";
+import { defaultManagedSkillRoot, parseManagedSkillMetadata } from "../../extensions/managedSkillSources.js";
 import { discoverSkillRepositories, installDiscoveredSkill, searchSkillsSh, updateDiscoveredSkill } from "../../extensions/skillDiscovery.js";
 import { readManagedSkillVersion, rollbackSkillVersion } from "../../extensions/skillVersions.js";
 import { withGlobalConfigWriteLock } from "../../config/versioned.js";
@@ -215,10 +214,7 @@ async function managedSkillNames(): Promise<string[]> {
 async function skillCreateCommand(name: string, source: string): Promise<void> {
   assertSkillDirectoryName(name);
   const content = source === "-" ? await readStdin() : await fs.readFile(source, "utf8");
-  const parsed = parseSkillDocument(content);
-  if (parsed.frontmatter.name !== name || typeof parsed.frontmatter.description !== "string" || !parsed.frontmatter.description.trim()) {
-    throw new Error("SKILL.md frontmatter must contain matching name and a non-empty description.");
-  }
+  parseManagedSkillMetadata(content, name);
   const target = path.join(defaultManagedSkillRoot(), name);
   await fs.mkdir(defaultManagedSkillRoot(), { recursive: true });
   await fs.mkdir(target);

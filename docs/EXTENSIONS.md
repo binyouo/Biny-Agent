@@ -58,10 +58,13 @@ description: 检查当前项目的构建入口与模块依赖。
 biny skill list --json
 biny skill search "项目检查" --json
 biny skill check --json
+biny skill create <skill-name> --file <path-to-SKILL.md>
 biny skill install <owner/repository>
 biny skill update <skill-name>
 biny skill uninstall <skill-name>
 ```
+
+`create` 将本地 `SKILL.md` 安装到 Biny 受管全局目录，也可用 `--file -` 从标准输入读取。名称须与目录名一致，使用 1–64 位小写字母、数字和单连字符；描述不可为空或超过 1024 个字符。不符合这些要求时会在写入前报错。
 
 `check` 校验声明的需求，不运行技能脚本。搜索结果不表示已经安装，安装成功也不表示当前回合已经选用。
 
