@@ -1055,6 +1055,7 @@ export function registerDesktopIpc(context: IpcContext): void {
   handle(desktopIpc.activityPermissions, async () => context.getActivityPermissions());
 
   handle(desktopIpc.activitySettings, async () => context.activity.settingsSnapshot());
+  handle(desktopIpc.activityApplications, async () => context.activity.applications());
 
   handle(desktopIpc.activityUpdateSettings, async (_event, patch: unknown, expectedConfigRevision: unknown) => (
     await context.activity.updateSettings(

@@ -456,7 +456,7 @@ async function startDesktopApplication(): Promise<void> {
     if (!sourceIcon.isEmpty()) {
       const icon = sourceIcon.resize({ width: 18, height: 18 });
       activityTray = new Tray(icon);
-      activityTray.setToolTip("Biny 电脑历史");
+      activityTray.setToolTip("Biny Computer History");
       const openMainWindow = (): void => {
         if (quitCommitted) return;
         if (!mainWindow || mainWindow.isDestroyed()) createWindow();
@@ -464,7 +464,7 @@ async function startDesktopApplication(): Promise<void> {
         mainWindow?.focus();
       };
       const showActivityError = (error: unknown): void => {
-        dialog.showErrorBox("电脑历史操作失败", error instanceof Error ? error.message : String(error));
+        dialog.showErrorBox("Computer History 操作失败", error instanceof Error ? error.message : String(error));
       };
       refreshActivityTray = (state) => {
         if (!activityTray) return;

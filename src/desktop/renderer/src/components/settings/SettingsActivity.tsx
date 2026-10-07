@@ -1,4 +1,4 @@
-/** 电脑历史设置：采集配置、运行摘要与权限入口；截图仅在后台使用。 */
+/** Computer History 设置：采集配置、运行摘要与权限入口；截图仅在后台使用。 */
 import { useEffect, useRef, useState } from "react";
 import type { ActivityRuntimeSnapshot } from "../../../../../activity/types.js";
 import type { ActivityPermissionStatus } from "../../../../../activity/httpServer.js";
@@ -7,24 +7,23 @@ import { Icon, type IconName } from "../Icon.js";
 import { SettingsDetailLayer } from "./SettingsDetailLayer.js";
 import { useSettingsDraft } from "./SettingsDraftContext.js";
 import { useActivityRuntime } from "./ActivityRuntimeContext.js";
+import { SettingsActivityApplications } from "./SettingsActivityApplications.js";
 
 export function SettingsActivity(): React.JSX.Element {
   const { activity, loadError, updateActivityImmediately } = useSettingsDraft();
   const { runtime, permissions, permissionError, refresh, refreshPermissions, updateRuntime } = useActivityRuntime();
-  if (!activity) return <div aria-busy={!loadError} className="settings-sections"><section><p role={loadError ? "alert" : "status"}>{loadError ? `电脑历史设置加载失败：${loadError}。请关闭设置后重试。` : "正在加载电脑历史设置…"}</p></section></div>;
+  if (!activity) return <div aria-busy={!loadError} className="settings-sections"><section><p role={loadError ? "alert" : "status"}>{loadError ? `Computer History 设置加载失败：${loadError}。请关闭设置后重试。` : "正在加载 Computer History 设置…"}</p></section></div>;
   return <SettingsActivityForm activity={activity} onChange={updateActivityImmediately} onRefreshRuntime={refresh} onRefreshPermissions={refreshPermissions} onRuntimeChange={updateRuntime} permissions={permissions} permissionError={permissionError} runtime={runtime} />;
 }
 
 function SettingsActivityForm({ activity, onChange, onRefreshRuntime, onRefreshPermissions, onRuntimeChange, permissions, permissionError, runtime }: { activity: DesktopActivitySettingsInput; onChange(patch: Partial<DesktopActivitySettingsInput>): Promise<void>; onRefreshRuntime(): Promise<ActivityRuntimeSnapshot>; onRefreshPermissions(): Promise<ActivityPermissionStatus>; onRuntimeChange(next: ActivityRuntimeSnapshot): void; permissions: ActivityPermissionStatus | undefined; permissionError: string | undefined; runtime: ActivityRuntimeSnapshot | undefined }): React.JSX.Element {
   const [languagesText, setLanguagesText] = useState(activity.ocrLanguages.join(", "));
-  const [sensitiveApplicationsText, setSensitiveApplicationsText] = useState(activity.sensitiveApplications.join("\n"));
   const [clearing, setClearing] = useState(false);
   const [clearOpen, setClearOpen] = useState(false);
   const [feedback, setFeedback] = useState<string>();
   const [requestingPermission, setRequestingPermission] = useState<"screen-recording" | "accessibility">();
   const [activityUpdateCount, setActivityUpdateCount] = useState(0);
   const languagesInputRef = useRef<HTMLInputElement>(null);
-  const sensitiveApplicationsInputRef = useRef<HTMLTextAreaElement>(null);
   const activityFocusRestoreRef = useRef<{ id?: string; ariaLabel?: string } | undefined>(undefined);
   const updateActivity = (patch: Partial<DesktopActivitySettingsInput>): void => {
     const activeElement = document.activeElement instanceof HTMLElement && document.activeElement !== document.body
@@ -63,8 +62,7 @@ function SettingsActivityForm({ activity, onChange, onRefreshRuntime, onRefreshP
 
   useEffect(() => {
     if (document.activeElement !== languagesInputRef.current) setLanguagesText(activity.ocrLanguages.join(", "));
-    if (document.activeElement !== sensitiveApplicationsInputRef.current) setSensitiveApplicationsText(activity.sensitiveApplications.join("\n"));
-  }, [activity.ocrLanguages, activity.sensitiveApplications]);
+  }, [activity.ocrLanguages]);
 
   const refreshRuntime = (): void => {
     void onRefreshRuntime().catch((error: unknown) => setFeedback(activityErrorMessage(error)));
@@ -87,10 +85,6 @@ function SettingsActivityForm({ activity, onChange, onRefreshRuntime, onRefreshP
     if (languages.length > 0 && languages.every((item) => item.length >= 2 && item.length <= 32)) {
       updateActivity({ ocrLanguages: languages });
     }
-  };
-  const updateSensitiveApplications = (value: string): void => {
-    setSensitiveApplicationsText(value);
-    updateActivity({ sensitiveApplications: value.split(/\r?\n/u).map((item) => item.trim()).filter(Boolean) });
   };
   const openPermissionSettings = async (pane: "screen-recording" | "accessibility"): Promise<void> => {
     if (requestingPermission !== undefined) return;
@@ -123,7 +117,7 @@ function SettingsActivityForm({ activity, onChange, onRefreshRuntime, onRefreshP
     void window.biny.clearActivity().then((next) => {
       onRuntimeChange(next);
       setClearOpen(false);
-      setFeedback("已清除全部电脑历史数据。");
+      setFeedback("已清除全部 Computer History 数据。");
     }).catch((error: unknown) => setFeedback(activityErrorMessage(error))).finally(() => setClearing(false));
   };
   const storagePercent = runtime === undefined || activity.maxStorageMb <= 0
@@ -159,7 +153,7 @@ function SettingsActivityForm({ activity, onChange, onRefreshRuntime, onRefreshP
           <div className="activity-heading-copy">
             <div className="activity-title-line">
               <Icon name="activity" size={15} />
-              <h3>电脑历史</h3>
+              <h3>Computer History</h3>
               <span className={`activity-status-badge${activityStatusClass}`}>
                 {runtimeLabel}
               </span>
@@ -167,7 +161,7 @@ function SettingsActivityForm({ activity, onChange, onRefreshRuntime, onRefreshP
             </div>
             <p>以周期截屏和本地 OCR 生成时间线，原始截图始终留在本机。</p>
           </div>
-          <ActivitySwitch busy={activityUpdating} checked={activity.enabled} disabled={activityUpdating} label="启用电脑历史" onChange={(enabled) => updateActivity({ enabled })} />
+          <ActivitySwitch busy={activityUpdating} checked={activity.enabled} disabled={activityUpdating} label="启用 Computer History" onChange={(enabled) => updateActivity({ enabled })} />
         </div>
         {/* 总开关关闭时状态区不隐藏，整体变暗保留上下文。 */}
         <div className={`activity-overview-stats${activity.enabled ? "" : " is-disabled"}`}>
@@ -245,9 +239,8 @@ function SettingsActivityForm({ activity, onChange, onRefreshRuntime, onRefreshP
         </div>
       </ActivitySection>
 
-      <ActivitySection id="activity-sensitive-apps" icon="shield" title="敏感应用（不保存文本/截图）">
-        <p className="activity-section-description">每行一个 bundle ID；命中的应用不保存文本、OCR 和截图。</p>
-        <textarea aria-label="敏感应用 bundle ID" autoComplete="off" className="activity-sensitive-apps" disabled={!activity.enabled} name="activity-sensitive-applications" onChange={(event) => updateSensitiveApplications(event.target.value)} ref={sensitiveApplicationsInputRef} rows={4} spellCheck={false} value={sensitiveApplicationsText} />
+      <ActivitySection id="activity-sensitive-apps" icon="display" title="不记录的应用">
+        <SettingsActivityApplications excluded={activity.sensitiveApplications} onChange={async sensitiveApplications => { await onChange({ sensitiveApplications }); }} />
       </ActivitySection>
 
       <ActivitySection id="activity-storage" icon="database" title="存储配额">
@@ -295,7 +288,7 @@ function SettingsActivityForm({ activity, onChange, onRefreshRuntime, onRefreshP
       {clearOpen ? (
         <SettingsDetailLayer onClose={() => { if (!clearing) setClearOpen(false); }}>
           <section aria-describedby="activity-clear-description" aria-labelledby="activity-clear-title" aria-modal="true" className="settings-confirm-panel activity-clear-panel" role="dialog">
-            <h3 id="activity-clear-title">清除全部电脑历史数据？</h3>
+            <h3 id="activity-clear-title">清除全部 Computer History 数据？</h3>
             <p id="activity-clear-description">将永久删除 {runtime?.sessions ?? 0} 个会话、{runtime?.events ?? 0} 个事件，以及截图、OCR、分析和摘要。此操作不可撤销。已沉淀的长期记忆、结晶和已导出日报不会删除。</p>
             <div className="settings-confirm-actions"><button className="ghost-button" disabled={clearing} onClick={() => setClearOpen(false)} type="button">取消</button><button className="ghost-button is-danger" disabled={clearing} onClick={confirmClearActivity} type="button"><Icon name="trash" size={14} />{clearing ? "清除中…" : "永久清除"}</button></div>
           </section>
@@ -337,7 +330,7 @@ function formatActivityDuration(startedAt: string, endedAt: string): string {
 }
 
 function activityErrorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : "电脑历史操作失败，请稍后重试。";
+  return error instanceof Error ? error.message : "Computer History 操作失败，请稍后重试。";
 }
 
 function ActivitySection({ action, children, collapsible, icon, id, title }: { collapsible?: boolean; action?: React.ReactNode; children: React.ReactNode; icon: IconName; id: string; title: string }): React.JSX.Element {

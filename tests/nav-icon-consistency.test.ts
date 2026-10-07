@@ -5,12 +5,13 @@ test("every settings nav icon is distinct, and matches its page heading icon", a
   const { readFile } = await import("node:fs/promises");
   const overlay = await readFile(new URL("../src/desktop/renderer/src/components/settings/SettingsOverlay.tsx", import.meta.url), "utf8");
   const nav = [...overlay.matchAll(/icon: "([a-z-]+)", tab: "([^"]+)"/gu)].map(m => ({ icon: m[1], tab: m[2] }));
-  assert.equal(nav.length, 16, "导航项数量变了，先确认不是漏读");
+  assert.equal(nav.length, 17, "导航项数量变了，先确认不是漏读");
   const icons = nav.map(n => n.icon);
   const dupes = icons.filter((v, i) => icons.indexOf(v) !== i);
   assert.deepEqual(dupes, [], `导航图标重复：${dupes.join(", ")}`);
   // 导航与页内标题共用同一图标，避免切页后语义变化。
   const byTab = new Map(nav.map(n => [n.tab, n.icon]));
+  assert.equal(byTab.get("导入"), "download");
   assert.equal(byTab.get("Computer Use"), "cpu");
   assert.equal(byTab.get("Appshots"), "camera");
   const cu = await readFile(new URL("../src/desktop/renderer/src/components/settings/SettingsComputerUse.tsx", import.meta.url), "utf8");

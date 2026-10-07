@@ -1,0 +1,65 @@
+.activity-application-list {
+  display: grid;
+  gap: 6px;
+  margin: 12px 0;
+  padding: 0;
+  list-style: none;
+}
+
+.activity-application-list li {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-soft);
+}
+
+.activity-application-copy {
+  display: grid;
+  gap: 3px;
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.activity-application-copy small {
+  color: var(--text-muted);
+  font-size: calc(11px * var(--font-scale));
+}
+
+.activity-application-actions,
+.activity-applications-feedback,
+.activity-application-picker-heading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.activity-application-actions button,
+.activity-application-picker-heading button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.activity-application-picker {
+  display: flex;
+  flex-direction: column;
+  max-height: min(640px, 80vh);
+}
+
+.activity-application-picker-heading {
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.activity-application-picker-heading h3 {
+  margin: 0;
+}
+
+.activity-application-choices {
+  min-height: 0;
+  overflow-y: auto;
+}

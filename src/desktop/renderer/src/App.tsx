@@ -1022,7 +1022,7 @@ function DesktopApp(): React.JSX.Element {
       if (action === "open-project") void openProject();
       if (action === "search") openSearch();
       if (action === "settings") openSettings();
-      if (action === "activity-settings") openSettings("电脑历史");
+      if (action === "activity-settings") openSettings("Computer History");
       if (action === "toggle-sidebar") toggleSidebar();
       if (action === "focus-composer") setFocusToken((value) => value + 1);
     };

@@ -33,6 +33,7 @@ import { writeDailyActivityNote } from "../../../activity/dailyNotes.js";
 import type { ActivityRuntimeSnapshot, ActivityServiceState } from "../../../activity/types.js";
 import type { EmbeddingModelRuntime } from "../../../llm/embedding/types.js";
 import type {
+  DesktopActivityApplication,
   DesktopActivitySessionDetail,
   DesktopActivitySettingsPatch,
   DesktopActivitySettingsUpdate,
@@ -408,6 +409,12 @@ export class ActivityRecorderService {
     if (!this.configStore.loadVersioned) throw new Error("当前配置存储不支持 Activity 版本快照。");
     const { config, revision } = await this.configStore.loadVersioned();
     return { activity: structuredClone(config.activity), configRevision: revision };
+  }
+
+  async applications(): Promise<DesktopActivityApplication[]> {
+    if (process.platform !== "darwin" || !this.nativeClient) throw new Error("应用列表仅在 macOS 桌面端可用。");
+    const config = await this.configStore.load();
+    return await this.nativeClient.applications(config.activity.sensitiveApplications);
   }
 
   /** 本地 REST 读取和变更进程内配置；Desktop 设置与 CLI 仍由磁盘配置决定。 */

@@ -158,7 +158,7 @@ export function SettingsAppshots(): React.JSX.Element {
 
     <section className="cu-card appshot-foot">
       <p className="cu-description">
-        截图不依赖电脑历史记录；敏感应用排除名单仍然生效，被排除的应用既不会被截取，也不会带上窗口上下文。
+        截图不依赖 Computer History 记录；敏感应用排除名单仍然生效，被排除的应用既不会被截取，也不会带上窗口上下文。
         快捷键监控由桌面控制组件分发，因此本页与 Computer Use 共用同一套权限。
       </p>
       <div className="cu-button-row">

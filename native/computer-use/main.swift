@@ -1062,6 +1062,39 @@ func postDrag(_ pid: pid_t, from: CGPoint, to: CGPoint) {
 /// 两条路由是**互补**的，不是备选：网页内容（Chrome）不暴露 AXScrollBar
 /// （浏览器自绘），只有原生滚动区才暴露。所以按目标**暴露了什么**来选，
 /// 而不是按调用方的猜测。
+func installedApplications(bundleIds: [String]) -> [[String: Any]] {
+    var applications: [[String: Any]] = []
+    var seen = Set<String>()
+    func append(_ url: URL) {
+        guard let bundle = Bundle(url: url), let identifier = bundle.bundleIdentifier,
+              !identifier.isEmpty, seen.insert(identifier).inserted else { return }
+        let name = bundle.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String
+            ?? bundle.object(forInfoDictionaryKey: "CFBundleName") as? String
+            ?? url.deletingPathExtension().lastPathComponent
+        applications.append(["bundleId": identifier, "name": name, "path": url.path, "running": false])
+    }
+    // 已保存的排除项可能安装在自定义目录；优先解析，避免目录扫描遗漏它们。
+    for identifier in bundleIds.prefix(256) {
+        if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: identifier) { append(url) }
+    }
+    let roots = [URL(fileURLWithPath: "/Applications"), URL(fileURLWithPath: "/System/Applications"),
+                 FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Applications")]
+    var inspected = 0
+    for root in roots {
+        guard let enumerator = FileManager.default.enumerator(at: root, includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles], errorHandler: { _, _ in true }) else { continue }
+        while let url = enumerator.nextObject() as? URL {
+            inspected += 1
+            if inspected > 10_000 || applications.count >= 2048 { break }
+            if url.pathExtension.lowercased() == "app" {
+                enumerator.skipDescendants()
+                append(url)
+            }
+        }
+    }
+    return applications
+}
+
 /// 近 N 天用过的应用（**包含没在运行的**）。
 ///
 /// 只看运行中的应用，模型就看不到这台机器上还有什么可以 launch —— 而 launch_app
@@ -1509,12 +1542,13 @@ DispatchQueue.global().async {
                                 for app in NSWorkspace.shared.runningApplications where app.activationPolicy == .regular {
                                     var entry: [String: Any] = [
                                         "pid": Int(app.processIdentifier),
-                                        "name": app.localizedName ?? "",
+                                        "name": app.localizedName ?? app.bundleIdentifier ?? "Application",
                                         "running": true,
                                     ]
                                     // 没有 bundle id 的应用不要发空串：调用方按 min(1) 校验，
                                     // 一个空值会让整份列表解析失败，而不是只缺一个标识。
                                     if let bundle = app.bundleIdentifier, !bundle.isEmpty { entry["bundleId"] = bundle }
+                                    if let url = app.bundleURL { entry["path"] = url.path }
                                     apps.append(entry)
                                 }
                                 // 给了 pid 就是问「这个应用有哪些窗口」：ComputerObserve 要一个确切的
@@ -1532,7 +1566,10 @@ DispatchQueue.global().async {
                                 let seen = Set(apps.compactMap { $0["bundleId"] as? String })
                                 // 默认 14 天：参照的 list_apps 描述写的是 "used in the last N days (default 14)"。
                                 let days = args["recent_days"] as? Int ?? 14
-                                apps.append(contentsOf: recentlyUsedApplications(withinDays: days).filter {
+                                let candidates = args["include_installed"] as? Bool == true
+                                    ? installedApplications(bundleIds: args["bundle_ids"] as? [String] ?? [])
+                                    : recentlyUsedApplications(withinDays: days)
+                                apps.append(contentsOf: candidates.filter {
                                     guard let bundle = $0["bundleId"] as? String else { return false }
                                     return !seen.contains(bundle)
                                 })

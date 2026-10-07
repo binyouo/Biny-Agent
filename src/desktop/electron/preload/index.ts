@@ -180,6 +180,7 @@ const api: DesktopApi = {
   activitySnapshot: async () => await ipcRenderer.invoke(desktopIpc.activitySnapshot),
   activityPermissions: async () => await ipcRenderer.invoke(desktopIpc.activityPermissions),
   activitySettings: async () => await ipcRenderer.invoke(desktopIpc.activitySettings),
+  activityApplications: async () => await ipcRenderer.invoke(desktopIpc.activityApplications),
   updateActivitySettings: async (patch, expectedConfigRevision) => await ipcRenderer.invoke(desktopIpc.activityUpdateSettings, patch, expectedConfigRevision),
   requestActivityPermission: async (pane) => await ipcRenderer.invoke(desktopIpc.activityRequestPermission, pane),
   searchActivity: async (query, limit) => await ipcRenderer.invoke(desktopIpc.activitySearch, query, limit),

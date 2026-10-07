@@ -94,7 +94,7 @@ interface SettingsOverlayProps {
   onCancelModelLogin(provider: DesktopModelLoginProvider, authRequestId: string): Promise<void>;
 }
 
-export type SettingsTab = "导入" | "通用" | "用户界面" | "配色" | "聊天" | "模型" | "MCP 服务器" | "技能" | "插件" | "权限" | "电脑历史" | "记忆" | "网络搜索" | "浏览器" | "Computer Use" | "Appshots" | "关于";
+export type SettingsTab = "导入" | "通用" | "用户界面" | "配色" | "聊天" | "模型" | "MCP 服务器" | "技能" | "插件" | "权限" | "Computer History" | "记忆" | "网络搜索" | "浏览器" | "Computer Use" | "Appshots" | "关于";
 
 /**
  * 侧栏导航采用单列结构：通用在最前，日常对话与能力居中，
@@ -108,7 +108,7 @@ const settingsNav: Array<{ icon: IconName; tab: SettingsTab }> = [
   { icon: "network", tab: "模型" },
   { icon: "message", tab: "聊天" },
   { icon: "brain", tab: "记忆" },
-  { icon: "history", tab: "电脑历史" },
+  { icon: "computer-history", tab: "Computer History" },
   { icon: "cpu", tab: "Computer Use" },
   { icon: "camera", tab: "Appshots" },
   { icon: "shield", tab: "权限" },
@@ -138,7 +138,7 @@ const settingsPages: Record<SettingsTab, { description: string; keywords: string
   Appshots: { description: "把应用截图与上下文放入聊天草稿。", keywords: "appshots 应用截图 双击 修饰键 Command Option Shift 快捷键 聊天 附件 辅助功能 权限" },
   "Computer Use": { description: "管理本机桌面控制、权限与实时预览。", keywords: "computer use 桌面 操控 截图 点击 输入 辅助功能 屏幕录制 画中画 PiP" },
   记忆: { description: "管理长期记忆、检索与后台整理。", keywords: "记忆 memory 向量 embedding 模型 下载 索引 睡眠 清理" },
-  电脑历史: { description: "查看本机屏幕与输入的本地采集历史，随时可清除。", keywords: "computer history Activity Record 电脑历史 屏幕 截图 录制 OCR 采集 隐私 存储 排除" },
+  ["Computer History"]: { description: "查看本机屏幕与输入的本地采集历史，随时可清除。", keywords: "computer history 电脑历史 屏幕 截图 录制 OCR 采集 隐私 存储 排除" },
   权限: { description: "设置工具操作是否需要手动批准。", keywords: "安全 审批 确认 自动 批准 工具权限" },
   关于: { description: "版本信息与项目链接。", keywords: "版本 更新 帮助" }
 };
@@ -146,7 +146,7 @@ const settingsTabValues = new Set<SettingsTab>(settingsRouteEntries.map(({ value
 const immediateSaveHints: Partial<Record<SettingsTab, string>> = {
   导入: "导入与同步设置即时保存",
   模型: "连接与模型配置即时保存",
-  电脑历史: "采集设置即时保存", 浏览器: "连接操作即时生效",
+  ["Computer History"]: "采集设置即时保存", 浏览器: "连接操作即时生效",
   Appshots: "截图设置即时保存", "Computer Use": "控制与开关即时生效", "MCP 服务器": "服务器配置单独保存",
   插件: "安装与启停即时生效", 技能: "启用范围与自动提取需保存，导入操作即时生效",
   记忆: "配置需保存，记忆管理操作即时生效", 网络搜索: "搜索偏好需保存，登录操作即时生效"
@@ -324,14 +324,14 @@ function SettingsOverlayContent({
   };
   const extensionSettings = activeTab === "MCP 服务器" || activeTab === "技能" || activeTab === "插件";
   const needsProject = !workspace && ["聊天", "网络搜索", "模型", "技能", "MCP 服务器", "插件", "记忆"].includes(activeTab);
-  const loadBlocked = Boolean((workspace && !["浏览器", "Computer Use", "Appshots", "关于"].includes(activeTab) || activeTab === "电脑历史" || activeTab === "权限") && (settingsDraft.loading || settingsDraft.loadError));
+  const loadBlocked = Boolean((workspace && !["浏览器", "Computer Use", "Appshots", "关于"].includes(activeTab) || activeTab === "Computer History" || activeTab === "权限") && (settingsDraft.loading || settingsDraft.loadError));
   const openSearchResult = (nextTab: SettingsTab): void => {
     setSearch("");
     selectTab(nextTab);
     titleRef.current?.focus();
   };
   return (
-    <ActivityRuntimeProvider active={activeTab === "电脑历史" || activeTab === "权限"}>
+    <ActivityRuntimeProvider active={activeTab === "Computer History" || activeTab === "权限"}>
       <Dialog
         aria-label="Biny 设置"
         className="desktop-settings-dialog"
@@ -428,7 +428,7 @@ function SettingsOverlayContent({
             onChange={settingsDraft.setAppearancePreference}
             disabled={settingsDraft.saveState === "saving" || settingsDraft.saveState === "rolling_back" || settingsDraft.saveState === "recovery_required"}
           /> : null}
-          {activeTab === "电脑历史" ? <SettingsActivity /> : null}
+          {activeTab === "Computer History" ? <SettingsActivity /> : null}
           {activeTab === "聊天" ? <SettingsChatPage /> : null}
           {activeTab === "权限" ? <SettingsPermissions /> : null}
           {memoryVisited ? <SettingsMemory

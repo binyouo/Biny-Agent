@@ -56,6 +56,11 @@ import type { NativeCalendarResult } from "../session/nativeCalendar.js";
 export type DesktopActivitySettings = ActivitySettings;
 export type DesktopActivitySettingsInput = ActivitySettingsInput;
 export type DesktopActivitySettingsPatch = ActivitySettingsPatch;
+export interface DesktopActivityApplication {
+  bundleId: string;
+  name: string;
+  path?: string;
+}
 export type DesktopIdentitySettings = IdentityPolicy;
 export type DesktopIdentityDocumentKind = IdentityDocumentKind;
 export type DesktopIdentityOverview = IdentityOverview;
@@ -204,6 +209,7 @@ export const desktopIpc = {
   activitySnapshot: "desktop:activity:snapshot",
   activityPermissions: "desktop:activity:permissions",
   activitySettings: "desktop:activity:settings",
+  activityApplications: "desktop:activity:applications",
   activityUpdateSettings: "desktop:activity:update-settings",
   activityRequestPermission: "desktop:activity:request-permission",
   activitySearch: "desktop:activity:search",
@@ -1746,6 +1752,7 @@ export interface DesktopApi {
   activitySnapshot(): Promise<ActivityRuntimeSnapshot>;
   activityPermissions(): Promise<ActivityPermissionStatus>;
   activitySettings(): Promise<DesktopActivitySettingsUpdate>;
+  activityApplications(): Promise<DesktopActivityApplication[]>;
   updateActivitySettings(patch: DesktopActivitySettingsPatch, expectedConfigRevision: string): Promise<DesktopActivitySettingsUpdate>;
   requestActivityPermission(pane: DesktopSystemSettingsPane): Promise<void>;
   searchActivity(query: string, limit?: number): Promise<ActivitySearchResult[]>;

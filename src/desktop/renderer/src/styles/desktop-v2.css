@@ -2903,28 +2903,6 @@ select option:disabled {
   grid-column: span 1;
 }
 
-/* 之前只有布局属性，边框/底色都靠浏览器默认；补齐成与其他输入框一致的 inset 样式。 */
-.activity-sensitive-apps {
-  display: block;
-  width: 100%;
-  box-sizing: border-box;
-  min-height: 108px;
-  padding: 9px 11px;
-  resize: vertical;
-  border: 1px solid color-mix(in srgb, var(--border) 75%, transparent);
-  border-radius: 9px;
-  outline: 0;
-  color: var(--text);
-  background: var(--surface-soft);
-  font-family: var(--font-mono);
-  font-size: calc(11.5px * var(--font-scale));
-  line-height: 1.55;
-}
-
-.activity-sensitive-apps:focus-visible {
-  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
-}
-
 .activity-storage-note {
   margin-top: 16px;
 }

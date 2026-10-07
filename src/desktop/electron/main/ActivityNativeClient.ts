@@ -7,6 +7,8 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { promisify } from "node:util";
+import { z } from "zod";
+import type { DesktopActivityApplication } from "../../protocol.js";
 import { desktopCaptureSchedule } from "../../../computer/captureSchedule.js";
 const executeFile = promisify(execFile);
 
@@ -36,6 +38,20 @@ export class ActivityNativeClient {
       if (result.bundleId !== expectedBundle || typeof result.path !== "string") throw new Error("appshot_target_mismatch");
       try { return await readFile(result.path); } finally { await unlink(result.path).catch(() => undefined); }
     });
+  }
+  async applications(excludedBundles: string[]): Promise<DesktopActivityApplication[]> {
+    const result = z.object({ apps: z.array(z.object({
+      bundleId: z.string().min(1).max(256).optional(),
+      name: z.string().min(1).max(256),
+      path: z.string().min(1).max(4096).optional()
+    })).max(4096) }).parse(await this.request("list_apps", { include_installed: true, bundle_ids: excludedBundles }));
+    const applications = new Map<string, DesktopActivityApplication>();
+    for (const app of result.apps) {
+      if (app.bundleId && !applications.has(app.bundleId)) {
+        applications.set(app.bundleId, { bundleId: app.bundleId, name: app.name, path: app.path });
+      }
+    }
+    return [...applications.values()].sort((left, right) => left.name.localeCompare(right.name));
   }
   async recognize(file: string, languages: string[], signal?: AbortSignal): Promise<string> {
     const { stdout } = await executeFile(path.join(this.directory, "activity-ocr"), [file, ...languages], { timeout: 30_000, maxBuffer: 4 * 1024 * 1024, signal });

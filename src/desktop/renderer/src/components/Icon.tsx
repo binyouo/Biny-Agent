@@ -45,7 +45,7 @@ export type IconName =
   | "display"
   | "camera"
   | "monitor"
-  | "history"
+  | "computer-history"
   | "download"
   | "edit"
   | "external"
@@ -188,8 +188,9 @@ function pathFor(name: IconName): React.JSX.Element {
     // 显示器 + 指针：Computer Use 的桌面操控语义，和外框式的 display 区分开。
     case "camera": return <><rect {...common} height="14" rx="2" width="19" x="2.5" y="6" /><path {...common} d="M8.5 6 10 3.5h4L15.5 6" /><circle {...common} cx="12" cy="13" r="3.6" /></>;
     case "monitor": return <><rect {...common} height="12" rx="2" width="18" x="3" y="5" /><path {...common} d="M12 17v4M9 21h6" /><path {...common} d="m10 9 2 2 2.6-1.3L16 14l-4.6 2.6L10 12z" /></>;
-    // 时钟倒转 + 回绕箭头：电脑历史（屏幕/输入回溯）。
-    case "history": return <><path {...common} d="M3.5 12a8.5 8.5 0 1 0 2.7-6.2" /><path {...common} d="M3 4v4.5h4.5" /><path {...common} d="M12 8v4.5l3 1.7" /></>;
+    // 显示器外框 + 屏幕内的时钟指针：Computer History（屏幕/输入回溯）。
+    // 与 display（纯显示器）、monitor（显示器 + 指针）区分：这个图标里屏幕是时钟表盘。
+    case "computer-history": return <><rect {...common} height="12" rx="2" width="18" x="3" y="5" /><path {...common} d="M12 17v4M9 21h6" /><path {...common} d="M12 11.2V8.6" /><path {...common} d="m12 11.2 2.1 1.3" /></>;
     case "download": return <><path {...common} d="M12 3v11" /><path {...common} d="m7 10 5 5 5-5" /><path {...common} d="M5 20h14" /></>;
     case "edit": return <><path {...common} d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z" /><path {...common} d="m15 5 4 4" /></>;
     case "external": return <><path {...common} d="M14 5h5v5M19 5l-8 8" /><path {...common} d="M19 13v5a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h5" /></>;
