@@ -144,7 +144,7 @@ export function mergeProjectSessionPage(
   ];
 }
 
-/** 快照刷新根页时替换根节点，但保留已经展开并加载的子树。 */
+/** 快照刷新根页时替换根节点，保留已经展开的子树与独立于分页的置顶会话。 */
 export function replaceProjectSessionRoots(
   sessions: DesktopSessionSummary[],
   projectId: string,
@@ -163,7 +163,8 @@ export function replaceProjectSessionRoots(
     && currentProjectSessions.has(session.id)
   )).map((session) => currentProjectSessions.get(session.id)!);
   const otherSessions = sessions.filter((session) => session.projectId !== projectId);
-  const merged = new Map([...rootSessions, ...childSessions].map((session) => [session.id, session]));
+  const pinnedSessions = [...currentProjectSessions.values()].filter((session) => session.pinned);
+  const merged = new Map([...rootSessions, ...childSessions, ...pinnedSessions].map((session) => [session.id, session]));
   const insertAt = firstProjectIndex < 0 ? otherSessions.length : Math.min(firstProjectIndex, otherSessions.length);
   return [
     ...otherSessions.slice(0, insertAt),
