@@ -41,7 +41,12 @@ export function createSessionTreePageLifetime() {
       parents.clear();
       for (const session of sessions) observe(session.projectId, [session]);
     },
-    restart(projectId: string, parentSessionId: string, firstPage: readonly DesktopSessionSummary[]): string[] {
+    restart(
+      projectId: string,
+      parentSessionId: string,
+      firstPage: readonly DesktopSessionSummary[],
+      pinnedSessions: readonly DesktopSessionSummary[] = []
+    ): string[] {
       const links = parents.get(projectId) ?? new Map<string, string | undefined>();
       const children = new Map<string, string[]>();
       for (const [id, parent] of links) {
@@ -64,7 +69,17 @@ export function createSessionTreePageLifetime() {
       const pageLifetimes = pages.get(projectId) ?? new Map<string, object>();
       for (const id of [parentSessionId, ...descendants]) pageLifetimes.set(id, {});
       pages.set(projectId, pageLifetimes);
-      for (const id of descendants) links.delete(id);
+      // 置顶孙节点可能保留，但中间父节点不在新页；只保留其清理所需的祖先关系，
+      // 不保留旧摘要，确保下次重置仍能移除已取消置顶或删除的后代。
+      const pinnedAncestors = new Set<string>();
+      for (const session of pinnedSessions) {
+        let id: string | undefined = session.id;
+        while (id !== undefined && descendants.has(id) && !pinnedAncestors.has(id)) {
+          pinnedAncestors.add(id);
+          id = links.get(id);
+        }
+      }
+      for (const id of descendants) if (!pinnedAncestors.has(id)) links.delete(id);
       parents.set(projectId, links);
       observe(projectId, firstPage);
       return [...descendants];

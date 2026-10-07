@@ -461,16 +461,17 @@ function DesktopApp(): React.JSX.Element {
     if (reset) {
       // Catalog cursors are revision-bound. An empty revisionChanged response is not
       // the end of the tree: restart once, then return the new first page's cursor.
-      page = await window.biny.listSessionTreePage(projectId, options);
+      page = await window.biny.listSessionTreePage(projectId, { ...options, includePinnedSessions: true });
       if (!isCurrent() || page.revisionChanged) throw new Error("会话列表已更新，请重新展开或加载更多重试。");
     }
-    const resetSessionIds = reset ? sessionTreePages.restart(projectId, parentSessionId, page.sessions) : undefined;
-    if (!reset) sessionTreePages.observe(projectId, page.sessions);
+    const resetSessionIds = reset ? sessionTreePages.restart(projectId, parentSessionId, page.sessions, page.pinnedSessions) : undefined;
     const removed = new Set(resetSessionIds);
+    const restoredPins = reset ? (page.pinnedSessions ?? []).filter((session) => removed.has(session.id)) : [];
+    sessionTreePages.observe(projectId, reset ? restoredPins : page.sessions);
     setSidebarSessions((current) => mergeProjectSessionPage(
       reset ? current.filter((session) => session.projectId !== projectId || !removed.has(session.id)) : current,
       projectId,
-      page.sessions
+      [...page.sessions, ...restoredPins]
     ));
     return reset ? { ...page, resetSessionIds } : page;
   }, [sessionTreePages]);

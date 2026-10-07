@@ -10,8 +10,17 @@ import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { JSDOM } from "jsdom";
 import { querySessionCatalog, querySessionCatalogItems, refreshSessionIndex, registerSessionBranch, type SessionCatalogItem } from "../src/session/catalog.js";
+import { EnvironmentCredentialStore } from "../src/config/credentials.js";
+import { createFileConfigStore } from "../src/config/store.js";
+import { DesktopProjectService } from "../src/desktop/electron/main/DesktopProjectService.js";
+import { DesktopStateStore } from "../src/desktop/electron/main/DesktopStateStore.js";
+import { DesktopUserDataStore } from "../src/desktop/electron/main/DesktopUserDataStore.js";
+import { deleteSessionArtifacts } from "../src/session/cleanup.js";
+import { SessionRunLedger } from "../src/session/runLedger.js";
+import { readSessionCatalogRecord, updateSessionCatalogMetadata } from "../src/session/catalog.js";
+import type { LoadedSessionTreePage } from "../src/desktop/renderer/src/app/sessionTreePageLifetime.js";
 import { createSessionFile, ensureAgentDirs } from "../src/session/store.js";
-import type { DesktopAgentEventEnvelope, DesktopBootstrap, DesktopSessionSummary, DesktopSessionTreePage, DesktopWorkspaceSnapshot } from "../src/desktop/protocol.js";
+import type { DesktopAgentEventEnvelope, DesktopBootstrap, DesktopSessionSummary, DesktopSessionTreePage, DesktopSessionTreePageOptions, DesktopWorkspaceSnapshot } from "../src/desktop/protocol.js";
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -39,7 +48,7 @@ function bootstrap(snapshot = workspace()): DesktopBootstrap {
 interface SidebarProps {
   sessions: DesktopSessionSummary[];
   activeProjectId?: string;
-  onLoadSessionChildren(projectId: string, parentSessionId: string, cursor?: string): Promise<DesktopSessionTreePage>;
+  onLoadSessionChildren(projectId: string, parentSessionId: string, cursor?: string): Promise<LoadedSessionTreePage>;
   onRefreshProject(projectId: string): void;
   onRemoveProject(projectId: string): void;
   onNewTask(projectId: string): void;
@@ -111,7 +120,7 @@ async function fixture(context: TestContext, realSidebar = false, deferBootstrap
     Object.defineProperty(globalThis, key, { configurable: true, value });
   }
   const initialBootstrap = deferred<DesktopBootstrap>();
-  const pages: Array<{ projectId: string; parentSessionId: string; cursor?: string; result: ReturnType<typeof deferred<DesktopSessionTreePage>> }> = [];
+  const pages: Array<DesktopSessionTreePageOptions & { projectId: string; parentSessionId: string; result: ReturnType<typeof deferred<DesktopSessionTreePage>> }> = [];
   const snapshots: Array<ReturnType<typeof deferred<DesktopWorkspaceSnapshot>>> = [];
   const mutations: Array<ReturnType<typeof deferred<DesktopWorkspaceSnapshot>>> = [];
   const bootstraps: Array<ReturnType<typeof deferred<DesktopBootstrap>>> = [];
@@ -119,7 +128,7 @@ async function fixture(context: TestContext, realSidebar = false, deferBootstrap
   Object.assign(dom.window, { __realSidebar: realSidebar, biny: {
     bootstrap: async () => deferBootstrap ? await initialBootstrap.promise : bootstrap(),
     refreshProject() { const value = deferred<DesktopWorkspaceSnapshot>(); snapshots.push(value); return value.promise; },
-    listSessionTreePage(projectId: string, options: { parentSessionId: string; cursor?: string }) {
+    listSessionTreePage(projectId: string, options: DesktopSessionTreePageOptions & { parentSessionId: string }) {
       const result = deferred<DesktopSessionTreePage>(); pages.push({ projectId, ...options, result }); return result.promise;
     },
     deleteSession() { const value = deferred<DesktopWorkspaceSnapshot>(); mutations.push(value); return value.promise; },
@@ -576,3 +585,217 @@ test("persisted descendant changes make the production Sidebar reset and expose 
 
 // The compiled module is only a test artifact and lives under this checkout.
 after(async () => { await compiled?.dispose(); });
+
+// The public App callback consumes production Desktop pages from real isolated catalog files.
+// Synthetic page-only fixtures cannot cover authoritative pins outside the reloaded first page.
+async function persistedPinResetFixture(context: TestContext) {
+  const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "biny-child-pin-reset-")));
+  const previousAgentDir = process.env.BINY_AGENT_DIR;
+  process.env.BINY_AGENT_DIR = path.join(root, "agent");
+  const configStore = createFileConfigStore(root, {
+    globalDir: path.join(root, "config"), credentialStore: new EnvironmentCredentialStore()
+  });
+  const state = new DesktopStateStore(path.join(root, "state.json"));
+  const storage = new DesktopUserDataStore(path.join(root, "data"));
+  await state.load();
+  await storage.initialize();
+  const service = new DesktopProjectService(state, storage, configStore);
+  const project = { ...workspace().project, path: root };
+  context.after(async () => {
+    await refreshSessionIndex(root);
+    if (previousAgentDir === undefined) delete process.env.BINY_AGENT_DIR;
+    else process.env.BINY_AGENT_DIR = previousAgentDir;
+    await rm(root, { recursive: true, force: true });
+  });
+  const view = await fixture(context);
+  const create = async (id: string, minute: number, parentSessionId?: string) => {
+    const file = await createSessionFile(root, id, Buffer.from(`${JSON.stringify({
+      type: "user_message", content: id, time: new Date(Date.UTC(2026, 0, 1, 0, minute)).toISOString()
+    })}\n`));
+    if (parentSessionId !== undefined) {
+      await registerSessionBranch(root, { sessionId: id, parentSessionId, branchPoint: { kind: "event", index: 1 } });
+    }
+    return file;
+  };
+  await ensureAgentDirs(root);
+  await create("parent", -1);
+  for (let index = 0; index < 65; index += 1) await create(`child-${String(index).padStart(2, "0")}`, index, "parent");
+  await updateSessionCatalogMetadata(root, "child-20", { pinned: true });
+  const storedPage = async (index: number) => {
+    const request = view.pages[index]!;
+    return await service.listSessionTreePage(project, undefined, new Map(), {
+      parentSessionId: request.parentSessionId, cursor: request.cursor, limit: 32, includeArchived: true,
+      includePinnedSessions: request.includePinnedSessions
+    });
+  };
+  const resolveStored = async (index: number) => {
+    const page = await storedPage(index);
+    await act(async () => view.pages[index]!.result.resolve(page));
+    return page;
+  };
+  const initial = view.load();
+  const first = await resolveStored(0); await initial;
+  assert.equal(first.pinnedSessions, undefined, "ordinary pages do not project unrelated pins");
+  const continuation = view.load("project", "parent", first.nextCursor);
+  const second = await resolveStored(1); await continuation;
+  assert.equal(second.pinnedSessions, undefined);
+  assert.equal(view.props().sessions.find((row) => row.id === "child-20")?.pinned, true);
+  assert.ok(second.nextCursor);
+  return { root, view, create, storedPage, resolveStored, second };
+}
+
+test("persisted child pin survives cursor reset outside the fresh page with current metadata", async (context) => {
+  const { root, view, resolveStored, second } = await persistedPinResetFixture(context);
+  await updateSessionCatalogMetadata(root, "child-20", { title: "Updated pinned child", archived: true });
+  const ledger = new SessionRunLedger(root);
+  await ledger.start({ runId: "hidden-run", sessionId: "child-00", pid: 2_147_483_647 });
+  const hiddenRun = await ledger.read("hidden-run");
+  const restart = view.load("project", "parent", second.nextCursor);
+  const invalid = await resolveStored(2);
+  assert.equal(invalid.revisionChanged, true);
+  assert.equal(invalid.pinnedSessions, undefined);
+  assert.equal(view.pages[3]?.includePinnedSessions, true);
+  const fresh = await resolveStored(3);
+  const result = await restart;
+  assert.equal(fresh.sessions.length, 32);
+  assert.deepEqual(await ledger.read("hidden-run"), hiddenRun, "reset pin projection must not reconcile hidden runs");
+  assert.equal(fresh.sessions.some((row) => row.id === "child-20"), false);
+  assert.ok(result.page?.resetSessionIds?.includes("child-20"), "pinned shortcuts still discard old child expansion state");
+  const pinned = view.props().sessions.find((row) => row.id === "child-20");
+  assert.equal(pinned?.pinned, true, "cursor reset must preserve the persisted pin beyond its new first page");
+  assert.ok(pinned);
+  assert.equal(pinned.title, "Updated pinned child");
+  assert.equal(pinned.archived, true);
+  assert.equal((await readSessionCatalogRecord(root, "child-20"))?.pinned, true);
+  assert.equal(view.props().sessions.length, 34, "unrelated stale descendants must be discarded");
+  const next = view.load("project", "parent", result.page?.nextCursor);
+  await resolveStored(4); await next;
+  assert.equal(view.props().sessions.filter((row) => row.id === "child-20").length, 1);
+});
+
+// Previously loaded true flags are not authority after an external catalog mutation.
+for (const mutation of ["unpin", "delete"] as const) {
+  test(`persisted child pin is not resurrected by reset after external ${mutation}`, async (context) => {
+    const { root, view, resolveStored, second } = await persistedPinResetFixture(context);
+    if (mutation === "unpin") await updateSessionCatalogMetadata(root, "child-20", { pinned: false });
+    else await deleteSessionArtifacts(root, "child-20");
+    const restart = view.load("project", "parent", second.nextCursor);
+    assert.equal((await resolveStored(2)).revisionChanged, true);
+    await resolveStored(3); await restart;
+    assert.equal(view.props().sessions.some((row) => row.id === "child-20"), false);
+    assert.equal((await readSessionCatalogRecord(root, "child-20"))?.pinned, mutation === "unpin" ? false : undefined);
+  });
+}
+
+test("persisted child pin stays tracked through repeated resets before external unpin", async (context) => {
+  const { root, view, resolveStored, second } = await persistedPinResetFixture(context);
+  await updateSessionCatalogMetadata(root, "child-64", { title: "First change" });
+  const restart = view.load("project", "parent", second.nextCursor);
+  await resolveStored(2); await resolveStored(3);
+  const fresh = (await restart).page!;
+  assert.equal(view.props().sessions.find((row) => row.id === "child-20")?.pinned, true);
+  await updateSessionCatalogMetadata(root, "child-20", { pinned: false });
+  const repeated = view.load("project", "parent", fresh.nextCursor);
+  await resolveStored(4); await resolveStored(5);
+  const result = await repeated;
+  assert.ok(result.page?.resetSessionIds?.includes("child-20"));
+  assert.equal(view.props().sessions.some((row) => row.id === "child-20"), false);
+});
+
+test("persisted nested pins survive reset while discarded descendants and their pending pages are invalidated", async (context) => {
+  const { root, view, create, resolveStored, second } = await persistedPinResetFixture(context);
+  await create("pinned-grandchild", 70, "child-20");
+  await create("discarded-grandchild", 71, "child-20");
+  await updateSessionCatalogMetadata(root, "pinned-grandchild", { pinned: true });
+  const children = view.load("project", "child-20");
+  await resolveStored(2); await children;
+  const held = view.load("project", "pinned-grandchild");
+  const restart = view.load("project", "parent", second.nextCursor);
+  await resolveStored(4); await resolveStored(5);
+  const result = await restart;
+  assert.ok(result.page?.resetSessionIds?.includes("pinned-grandchild"));
+  assert.ok(result.page?.resetSessionIds?.includes("discarded-grandchild"));
+  assert.equal(view.props().sessions.find((row) => row.id === "pinned-grandchild")?.pinned, true);
+  assert.equal(view.props().sessions.some((row) => row.id === "discarded-grandchild"), false);
+  await view.resolvePage(3, [session("obsolete-nested", "project", "pinned-grandchild")]);
+  assert.ok((await held).error instanceof Error);
+  assert.equal(view.props().sessions.some((row) => row.id === "obsolete-nested"), false);
+});
+
+for (const invalidation of ["refresh", "unmount"] as const) {
+  test(`persisted child pin response cannot commit after ${invalidation} invalidates the reset`, async (context) => {
+    const { root, view, storedPage, resolveStored, second } = await persistedPinResetFixture(context);
+    await updateSessionCatalogMetadata(root, "child-64", { title: "Trigger reset" });
+    const restart = view.load("project", "parent", second.nextCursor);
+    await resolveStored(2);
+    const held = await storedPage(3);
+    assert.equal(held.pinnedSessions?.find((row) => row.id === "child-20")?.pinned, true);
+    await updateSessionCatalogMetadata(root, "child-20", { pinned: false });
+    if (invalidation === "refresh") await view.refresh(workspace("project", [session("parent")]));
+    else await view.unmount();
+    await act(async () => view.pages[3]!.result.resolve(held));
+    assert.ok((await restart).error instanceof Error);
+    if (invalidation === "refresh") assert.equal(view.props().sessions.some((row) => row.id === "child-20"), false);
+  });
+}
+
+test("persisted child pin reset leaves unrelated branch metadata and same-ID other-project pins intact", async (context) => {
+  const { root, view, create, storedPage, resolveStored, second } = await persistedPinResetFixture(context);
+  await create("sibling-parent", 70);
+  await create("sibling-pin", 71, "sibling-parent");
+  await updateSessionCatalogMetadata(root, "sibling-pin", { pinned: true, title: "Old sibling title" });
+  const sibling = view.load("project", "sibling-parent");
+  await resolveStored(2); await sibling;
+  const other = { ...session("child-20", "other-project"), title: "Other project", pinned: true };
+  await view.refresh(workspace("other-project", [other]));
+  await updateSessionCatalogMetadata(root, "child-64", { title: "Trigger reset" });
+  const restart = view.load("project", "parent", second.nextCursor);
+  await resolveStored(3);
+  const held = await storedPage(4);
+  await updateSessionCatalogMetadata(root, "sibling-pin", { pinned: false, title: "Current sibling title" });
+  const newerSibling = view.load("project", "sibling-parent");
+  await resolveStored(5); await newerSibling;
+  await act(async () => view.pages[4]!.result.resolve(held));
+  await restart;
+  assert.equal(view.props().sessions.find((row) => row.id === "sibling-pin")?.pinned, false);
+  assert.equal(view.props().sessions.find((row) => row.id === "sibling-pin")?.title, "Current sibling title");
+  assert.strictEqual(view.props().sessions.find((row) => row.projectId === "other-project" && row.id === "child-20"), other);
+  assert.equal(view.props().sessions.find((row) => row.projectId === "project" && row.id === "child-20")?.pinned, true);
+});
+
+test("persisted child pin reset failure preserves loaded rows and allows a fresh retry", async (context) => {
+  const { root, view, resolveStored, second } = await persistedPinResetFixture(context);
+  await updateSessionCatalogMetadata(root, "child-64", { title: "Trigger reset" });
+  const before = view.props().sessions;
+  const restart = view.load("project", "parent", second.nextCursor);
+  await resolveStored(2);
+  await act(async () => view.pages[3]!.result.reject(new Error("catalog read failed")));
+  assert.ok((await restart).error instanceof Error);
+  assert.strictEqual(view.props().sessions, before, "failed reset must not partially publish or discard summaries");
+  const retry = view.load("project", "parent", second.nextCursor);
+  await resolveStored(4); await resolveStored(5);
+  assert.ok((await retry).page);
+  assert.equal(view.props().sessions.find((row) => row.id === "child-20")?.pinned, true);
+});
+
+// A nested pin still belongs to the reset subtree when its unpinned intermediate row ages out.
+test("persisted nested pin keeps reset ownership after its intermediate parent is discarded", async (context) => {
+  const { root, view, create, resolveStored, second } = await persistedPinResetFixture(context);
+  await updateSessionCatalogMetadata(root, "child-20", { pinned: false });
+  await create("nested-pin", 70, "child-20");
+  await updateSessionCatalogMetadata(root, "nested-pin", { pinned: true });
+  const nested = view.load("project", "child-20");
+  await resolveStored(2); await nested;
+  const restart = view.load("project", "parent", second.nextCursor);
+  await resolveStored(3); await resolveStored(4);
+  const fresh = (await restart).page!;
+  assert.equal(view.props().sessions.some((row) => row.id === "child-20"), false);
+  assert.equal(view.props().sessions.find((row) => row.id === "nested-pin")?.pinned, true);
+  await updateSessionCatalogMetadata(root, "nested-pin", { pinned: false });
+  await updateSessionCatalogMetadata(root, "child-64", { title: "Second reset" });
+  const repeated = view.load("project", "parent", fresh.nextCursor);
+  await resolveStored(5); await resolveStored(6);
+  const result = await repeated;
+  assert.ok(result.page?.resetSessionIds?.includes("nested-pin"), "off-page ancestor removal must not detach a restored pin from reset ownership");
+  assert.equal(view.props().sessions.some((row) => row.id === "nested-pin"), false);
+});

@@ -533,6 +533,7 @@ export interface DesktopSessionTreePageOptions {
   cursor?: string;
   limit?: number;
   includeArchived?: boolean;
+  includePinnedSessions?: boolean;
 }
 
 export interface DesktopSessionTreePage {
@@ -540,6 +541,8 @@ export interface DesktopSessionTreePage {
   parentSessionId?: string;
   revision: string;
   sessions: DesktopSessionSummary[];
+  /** 子页首屏携带同一 catalog 快照中的置顶摘要，供游标重置后恢复独立置顶入口。 */
+  pinnedSessions?: DesktopSessionSummary[];
   nextCursor?: string;
   revisionChanged?: boolean;
 }
