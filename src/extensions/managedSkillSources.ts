@@ -141,7 +141,7 @@ async function readManagedSkillMetadata(filePath: string, expectedId: string): P
   return parseManagedSkillMetadata(await readBoundedFile(await assertRegularFile(filePath)), expectedId);
 }
 
-function parseManagedSkillMetadata(content: string, expectedId: string): {
+export function parseManagedSkillMetadata(content: string, expectedId: string): {
   id: string;
   name: string;
   description: string;
