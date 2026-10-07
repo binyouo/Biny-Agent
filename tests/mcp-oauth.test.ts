@@ -98,6 +98,38 @@ try {
     assert.equal((await new McpOAuthProvider(config, store).tokens())?.access_token, validAccessToken);
     assert.ok((await provider.credentialValues()).includes(validAccessToken), "response scrubbing uses the refreshed token");
   } finally { await client.close(); }
+  // Pre-upgrade credentials have no trustworthy issuer; ordinary connects must reject before any request.
+  const bound = JSON.parse(records.get(provider.account)!) as { client: Record<string, unknown>; tokens: Record<string, unknown> };
+  assert.equal(bound.client.issuer, base);
+  assert.equal(bound.tokens.issuer, base);
+  for (const field of ["client", "tokens"] as const) {
+    const legacy = structuredClone(bound);
+    delete legacy[field].issuer;
+    records.set(provider.account, JSON.stringify(legacy));
+    let requests = 0;
+    const legacyClient = new Client({ name: "legacy", version: "1" });
+    try {
+      await assert.rejects(legacyClient.connect(new StreamableHTTPClientTransport(new URL(config.url!), {
+        authProvider: new McpOAuthProvider(config, store), fetch: async (input, init) => { requests += 1; return await fetch(input, init); }
+      })), McpAuthRequiredError);
+      assert.equal(requests, 0, `${field} without issuer must never leave local storage`);
+      assert.equal(records.get(provider.account), JSON.stringify(legacy), "rejected connection preserves credentials until explicit login");
+    } finally { await legacyClient.close(); }
+  }
+  // Explicit login replaces legacy credentials only after success; cancelling preserves the original record.
+  const legacy = structuredClone(bound);
+  delete legacy.client.issuer; delete legacy.tokens.issuer;
+  const legacyRecord = JSON.stringify(legacy);
+  records.set(provider.account, legacyRecord);
+  const canceledLegacy = await logins.start(config);
+  await logins.cancel(canceledLegacy.id);
+  assert.equal(records.get(provider.account), legacyRecord);
+  const relogin = await logins.start(config);
+  const reauthorized = logins.finish(relogin.id);
+  await fetch(relogin.url); await reauthorized;
+  const replaced = JSON.parse(records.get(provider.account)!) as typeof bound;
+  assert.equal(replaced.client.issuer, base);
+  assert.equal(replaced.tokens.issuer, base);
   const beforeCancel = [...records.values()];
   const canceled = await logins.start(config);
   const canceledResult = logins.finish(canceled.id);

@@ -188,7 +188,8 @@ await test("CommandRuntime admits only exact host-owned read queries without cha
         } else {
           assert.equal(result.attemptId, `attempt-${status}`);
           assert.equal(result.output, `candidate-${status}`);
-          assert.deepEqual(result.verification, evidenceByTask.get(String(taskRunId)));
+          assert.equal(record(result.verification).status, evidenceByTask.get(String(taskRunId))?.status);
+          assert.equal(Object.hasOwn(record(result.verification), "checks"), false, "model queries use a bounded status projection; full checks remain durable");
         }
         if (status === "needs_approval") {
           const evidence = evidenceByTask.get(String(taskRunId));
@@ -275,7 +276,8 @@ await test("CommandRuntime admits only exact host-owned read queries without cha
       assert.equal(status.isError, false);
       assert.equal(lookup.isError, false);
       assert.equal(record(status.details).status, "completed");
-      assert.deepEqual(record(status.details).verification, evidenceByTask.get("fixture-completed"));
+      assert.equal(record(record(status.details).verification).status, "passed");
+      assert.equal(Object.hasOwn(record(record(status.details).verification), "checks"), false);
       assertLookup(lookup.details, "sapphire", "sapphire metadata after refresh");
       assert.equal(record(results.find((result) => result.toolName === "read_skill_resource")?.details).content, "Local resource fixture");
       assert.deepEqual(record(results.find((result) => result.toolName === "BashOutput")?.details).processes, []);

@@ -5,7 +5,7 @@ import { syncBuiltinESMExports } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import { test, type TestContext } from "node:test";
-import { attachmentPathPrefix, ensureAttachmentRoot, saveAttachment } from "../src/attachments/store.js";
+import { attachmentFilePath, attachmentPathPrefix, ensureAttachmentRoot, readAttachment, saveAttachment } from "../src/attachments/store.js";
 import { BINY_AGENT_DIR_ENV } from "../src/config/paths.js";
 
 const timestamp = 1_800_000_000_000;
@@ -59,7 +59,7 @@ test("saveAttachment retains metadata, name sanitization, bytes and private file
     assert.ok(input !== undefined && safeName !== undefined);
     const bytes = index === 0 ? new Uint8Array([99, 1, 2, 3, 88]).subarray(1, 4) : new Uint8Array();
     const reference = await saveAttachment(f.workspace, input, "application/x-test", bytes);
-    const generated = fileName(index.toString(16).padStart(6, "0"), safeName);
+    const generated = fileName(index.toString(16).padStart(6, "0"), safeName.replace(/\.{2,}/g, "."));
     assert.deepEqual(reference, { name: safeName, mimeType: "application/x-test", path: `${attachmentPathPrefix}${generated}`, size: bytes.byteLength });
     assert.deepEqual(await fs.readFile(path.join(f.directory, generated)), Buffer.from(bytes));
     if (process.platform !== "win32") assert.equal((await fs.stat(path.join(f.directory, generated))).mode & 0o777, 0o600 & ~process.umask());
@@ -207,4 +207,21 @@ test("saveAttachment does not retry name-generation errors", async (t) => {
   await assert.rejects(saveAttachment(f.workspace, "note.txt", "text/plain", Buffer.from("new attachment")), error => error === failure);
   assert.equal(random.mock.callCount(), 1);
   assert.deepEqual(await fs.readdir(f.directory), []);
+});
+
+
+test("new internal filenames fold consecutive dots while metadata retains its display name and strict read boundary", async (t) => {
+  const f = await fixture(t);
+  names(t, ["000001", "000002", "000003", "000004"]);
+  for (const [index, name] of ["report..pdf", "image....png", "...", "x..y..txt"].entries()) {
+    const bytes = Buffer.from(`attachment-${index}`);
+    const reference = await saveAttachment(f.workspace, name, "application/octet-stream", bytes);
+    assert.equal(reference.name, name);
+    assert.equal(reference.path.includes(".."), false);
+    assert.ok(attachmentFilePath(f.directory, reference.path));
+    assert.equal((await readAttachment(f.workspace, reference))?.data, bytes.toString("base64"));
+  }
+  assert.equal(attachmentFilePath(f.directory, "@attachments/report..pdf"), undefined);
+  assert.equal(attachmentFilePath(f.directory, "@attachments/../secret"), undefined);
+  assert.equal(attachmentFilePath(f.directory, "@attachments/folder/file"), undefined);
 });

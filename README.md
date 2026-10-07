@@ -2,68 +2,29 @@
 
 **本地优先、记忆优先的开发协作 Agent，提供 macOS Desktop、TUI 与 CLI。**
 
-Biny 帮你在本地项目中对话、处理开发任务，并把会话和记忆带到后续工作中。Desktop、TUI 与 CLI 的交互式任务共用本机 Runtime Host 和 AgentSession；模型由你配置，能力可通过 MCP、插件与 Skills 扩展。
+Biny 帮你在本地项目中对话、处理开发任务，并把会话和记忆带到后续工作中。模型由你配置，工具与工作流可通过 MCP、插件和 Skills 扩展。
 
-[GitHub](https://github.com/binyouo/Biny-Agent) · [Issues](https://github.com/binyouo/Biny-Agent/issues) · [架构源码](src/runtime) · [Agent 与会话源码](src/agent)
+[GitHub](https://github.com/binyouo/Biny-Agent) · [Issues](https://github.com/binyouo/Biny-Agent/issues)
 
 ## 架构
 
 ![Biny 架构总览](architecture-panels/assets/overview.png)
 
-Desktop、TUI 与 CLI chat 共用本机 Runtime Host；`biny run` 是一次性任务入口，复用 AgentSession 执行核心。会话与记忆保存在本机。
+Desktop、TUI 与 CLI chat 共用本机 Runtime Host；`biny run` 提供一次性任务入口。会话与记忆保存在本机。
 
-上图是运行态总览：包在链路上流动、日志在滚、计数在涨，画的是「系统跑起来的样子」而不是静态分层。同一套图另有 8 张细分，覆盖 Agent 内核与工具循环、人格层、长任务执行、记忆与 Activity、会话存储与恢复、模型与扩展、调度 / 浏览器 / 钩子，源码见 [`architecture-panels/`](architecture-panels)，产物在 `architecture-panels/out/`（每张 mp4 + 可在浏览器自行循环的实时页面）。图中动画计数为示意值，不是真实遥测。
-
-<details>
-<summary>同一架构的文本版（分层关系、便于搜索与 diff）</summary>
-
-```mermaid
-flowchart LR
-  subgraph UI[交互入口]
-    Desktop[macOS Desktop<br/>Electron UI]
-    TUI[TUI / CLI chat]
-  end
-
-  Desktop -->|Electron IPC| Main[Electron 主进程]
-  Main -->|Unix domain socket| Host[本机 Runtime Host]
-  TUI -->|Unix domain socket| Host
-
-  Host --> Runtime[InteractiveAgentRuntime]
-  Runtime --> Session[AgentSession<br/>共用执行实现]
-  Session --> Provider[模型 Provider]
-  Session --> Tools[工具与扩展]
-  Session --> Policy[权限与工作区策略]
-  Session --> State[本地会话、记忆与索引]
-
-  Run[CLI biny run<br/>一次性任务] --> Exec[CommandRuntime / ExecutionService]
-  Exec --> Session
-
-  Tools --> Builtin[内置工具]
-  Tools --> MCP[MCP]
-  Tools --> Skills[Skills / Plugins / Subagents]
-```
-
-</details>
+图中计数为示意值，模块职责与数据流见 [架构说明](docs/ARCHITECTURE.md)。
 
 ## 核心能力
 
 | 能力 | Biny 提供 |
 | --- | --- |
 | 多端交互 | macOS Desktop、终端 TUI 与 CLI chat；`biny run` 支持脚本化的一次性任务。 |
-| 交互式可视化 | Desktop 聊天内流式生成 HTML/SVG widget，支持滑块、按钮和动态计算；`biny widget --html fragment.html --title "可视化" --out widget.html` 可生成独立页面，支持 `--json`。 |
-| 多层记忆 | 结合会话历史、项目上下文、临时与长期记忆，以及可检索的 Desktop Activity 线索；Sleep 周期会整理记忆、归档过期记忆并合并重复信息。 |
-| Activity Recorder | 记录桌面活动与 OCR 线索，支持回看、检索和生成活动摘要；新对话页提供近期活动建议，点击可直接开始对话；可从 Desktop 设置中暂停记录。 |
-| 长任务执行 | 持久化 TaskRun 与 attempt 状态，支持 worker 检查点续跑、重试决策和任务完成后的验证。 |
+| 交互式可视化 | 在 Desktop 聊天中生成可交互的 HTML/SVG 内容，也可导出独立页面。 |
+| 多层记忆 | 结合会话历史、项目上下文与长期记忆，支持检索和整理。 |
+| Activity Recorder | 记录桌面活动与 OCR 线索，支持回看、检索和活动摘要。 |
+| 长任务执行 | 保存会话目标与任务进度，支持检查点续跑、重试和完成验证。 |
 | 模型与扩展 | 接入多家模型服务商和 OpenAI-compatible 接口；通过 MCP、Plugins、Skills、Subagents 扩展工具与工作流。 |
-| 工具与操作控制 | 提供项目文件操作、受控命令和权限审批；Desktop 还可选 Computer Use 来观察桌面并操作指定窗口；通过独立的严格应用审批开关和跨会话应用授权名单控制访问。 |
-
-持续目标绑定具体会话：`biny goal set "完整目标" --session <id>`，通过 `goal show/pause/resume/clear --session <id>` 查看与控制。`goal` 只管理会话目标；依赖任务图由 `biny graph` 独立管理。Desktop 输入框上方的目标栏提供暂停、继续、正文编辑和删除；点击正文可查看完整目标、运行原因与用量。
-
-### Shell 输出与归档
-
-`Bash` 发给模型的 stdout / stderr 分别展示，但共用 12 KiB UTF-8 正文预算（包含省略标记，并非 token 预算）；超出时保留头尾，并分别报告捕获阶段与模型投影阶段的丢失。`BashOutput` 的单页正文使用同一模型预算，原有后台日志分页位置不变。JSON 包装和元数据另计，回合总预算仍独立生效。
-
-被折叠的结果复用受限的工具归档，模型可用 `read_tool_result` 按 `nextOffset` 分页补读。归档保存打码后的完整**已捕获结果**；超出前台命令原有每流 8 MiB 捕获硬上限而丢失的字节无法恢复。归档继续受每文件 64 MiB 与最近 512 份保留策略约束；写入失败会明确报告无可回读引用，不把大段原文重新塞进模型上下文。Code Mode 查询仍在自身 bridge / result 限额内拿到程序化结果，不提前套用该 12 KiB 模型展示预算。
+| 工具与操作控制 | 操作项目文件、执行受控命令；Desktop 可通过应用授权观察和操作 macOS 窗口。 |
 
 ## 快速开始
 
@@ -78,7 +39,7 @@ pnpm install --frozen-lockfile
 pnpm dev -- init
 ```
 
-完成模型配置后，启动终端对话或 Desktop：
+完成 [模型配置](docs/CONFIGURATION.md) 后，启动终端对话或 Desktop：
 
 ```bash
 pnpm dev -- chat
@@ -87,11 +48,25 @@ pnpm desktop:dev
 
 CLI 帮助：`pnpm dev -- --help`。
 
-Desktop 的“设置 → 技能”优先展示内置技能，并可关闭自动技能提取或调整调用阈值。自动提取会额外调用模型，把可复用流程直接保存为全局技能；修改设置后需点击“保存”。
+## 文档
 
-## 继续了解
+完整阅读入口见 [文档索引](docs/README.md)。
 
-- [Agent 执行与 Runtime](src/agent) · [Host 实现](src/runtime/host)
-- [会话存储](src/session) · [长期记忆与上下文](src/agent/context)
-- [工具与扩展](src/extensions) · [权限策略](src/permission) · [工具实现](src/tools)
-- [问题反馈与功能请求](https://github.com/binyouo/Biny-Agent/issues)
+- [docs/CONFIGURATION.md](docs/CONFIGURATION.md) — 服务商、模型别名、凭据与项目设置。
+- [docs/SESSIONS.md](docs/SESSIONS.md) — 对话入口、会话恢复、分支与导入导出。
+- [docs/MEMORY.md](docs/MEMORY.md) — 长期事实的写入、召回、整理与管理。
+- [docs/PERMISSIONS.md](docs/PERMISSIONS.md) — 工具权限模式、沙箱与应用授权边界。
+- [docs/EXTENSIONS.md](docs/EXTENSIONS.md) — MCP、Skills、Plugins 与子代理。
+- [docs/BROWSER.md](docs/BROWSER.md) — 内置浏览器与 Chrome 标签连接。
+- [docs/COMPUTER_USE.md](docs/COMPUTER_USE.md) — macOS 权限、应用审批、窗口镜像与外部 MCP。
+- [docs/ACTIVITY.md](docs/ACTIVITY.md) — 桌面采集、OCR、活动分析、工作日记与 Appshots。
+- [docs/AUTOMATION.md](docs/AUTOMATION.md) — 会话目标、任务图与定时执行。
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — 运行链路、模块职责与本地状态。
+- [docs/EVALUATION.md](docs/EVALUATION.md) — 实现检查、模型评测与成绩口径。
+
+## 贡献与安全
+
+- [CONTRIBUTING.md](CONTRIBUTING.md) — 开发环境、构建、验证与文档维护。
+- [工具与权限](docs/PERMISSIONS.md) — 文件、命令、扩展和桌面控制的安全边界。
+- [Issues](https://github.com/binyouo/Biny-Agent/issues) — 问题反馈与功能请求。
+- [第三方声明](THIRD_PARTY_NOTICES.txt) — 第三方依赖的版权与许可证说明。

@@ -143,6 +143,8 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
   private focusedSessionId: string | undefined;
   private snapshot: InteractiveRuntimeSnapshot | undefined;
   private sequence = 0;
+  private consumedSequence = 0;
+  private consumedHostEpoch: string | undefined;
   private hostEpoch: string | undefined;
   private capabilities: readonly string[] = [];
   private closed = false;
@@ -469,11 +471,19 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
     return await this.request("task.message", { taskRunId, sessionId, message, messageId });
   }
 
+  async taskContinue(taskRunId: string, sessionId: string, message: string, messageId?: string): Promise<unknown> {
+    return await this.request("task.continue", { taskRunId, sessionId, message, messageId });
+  }
+
   async taskWait(taskRunId: string, sessionId: string, waitMs = 0, afterRevision?: number): Promise<unknown> {
     return await this.request("task.wait", { taskRunId, sessionId, waitMs, afterRevision });
   }
 
-  async taskList(options: { status?: string; limit?: number; cursor?: number } = {}): Promise<unknown> {
+  async taskInspect(taskRunId: string, sessionId: string, options: import("../TaskCommunication.js").TaskInspectionOptions = {}): Promise<import("../TaskCommunication.js").TaskInspection> {
+    return await this.request("task.inspect", { taskRunId, sessionId, ...options });
+  }
+
+  async taskList(options: { status?: string; limit?: number; cursor?: number; order?: "asc" | "desc" } = {}): Promise<unknown> {
     return await this.request("task.list", options);
   }
 
@@ -893,7 +903,9 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
     if (this.pendingUpdates.length) {
       const updates = this.pendingUpdates.splice(0);
       for (const update of updates) {
-        if (update.snapshot.info.sessionId === this.focusedSessionId) listener(update);
+        if (update.snapshot.info.sessionId === this.focusedSessionId) {
+          listener({ ...update, snapshot: this.snapshots.get(update.snapshot.info.sessionId) ?? update.snapshot });
+        }
       }
     }
     return () => this.listeners.delete(listener);
@@ -1124,6 +1136,7 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
 
   private async open(): Promise<void> {
     await this.openSocket();
+    const socket = this.socket;
     // hello 之后仍可能有界失败（owner 半死：应答了握手却不再处理请求）；
     // 初始请求失败要关闭 client，避免留下半开的 socket 让调用方误以为连接可用。
     try {
@@ -1139,6 +1152,7 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
       this.focusedSessionId = result.snapshot.info.sessionId;
       this.applySnapshot(result.snapshot, result.sequence, result.hostEpoch, true);
       this.applySessionSummaries(result.sessions, result.sequence);
+      if (this.socket === socket && !socket?.destroyed) this.acknowledgeEvents(result.sequence, result.hostEpoch);
       if (!this.snapshot) {
         const snapshot = await this.request<{ snapshot: InteractiveRuntimeSnapshot; sessions: RuntimeHostSessionSummary[]; sequence: number }>("snapshot", {}, this.handshakeTimeoutMs);
         this.focusedSessionId = snapshot.snapshot.info.sessionId;
@@ -1227,8 +1241,7 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
           const result = value as { hostEpoch: string; persistenceRoot: string; sequence: number; capabilities: string[]; negotiatedCapabilities?: string[] };
           const epochChanged = result.hostEpoch !== this.hostEpoch;
           this.applyHostEpoch(result.hostEpoch);
-          // Same-owner hello advertises the Host high-water, not events this client has consumed.
-          // Keep the replay cursor across handshake/subscribe retries; new epochs still resync.
+          // hello 只报告 Host 高水位；同 owner 不确认事件，新 owner 等 gap/订阅完成再确认。
           if (epochChanged) this.sequence = result.sequence;
           // v5↔v5 协商生效集优先；旧 host 不回该字段时退化为 host 全集（行为同现状）。
           this.capabilities = result.negotiatedCapabilities ?? result.capabilities;
@@ -1304,14 +1317,14 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
     }
     if (!registration) throw new Error("Runtime Host registration is not available.");
     if (this.closed || this.retired) return;
-    const previousHostEpoch = this.hostEpoch;
     this.options.registration = registration;
     await this.openSocket();
+    const socket = this.socket;
     let result: { hostEpoch: string; snapshot: InteractiveRuntimeSnapshot; sessions: RuntimeHostSessionSummary[]; sequence: number; replayed: boolean; capabilities: string[] };
     try {
       result = await this.request("subscribe", {
-        afterSequence: this.sequence,
-        afterHostEpoch: previousHostEpoch,
+        afterSequence: this.consumedSequence,
+        afterHostEpoch: this.consumedHostEpoch,
         sessions: undefined
       }, this.handshakeTimeoutMs);
     } catch (error) {
@@ -1324,6 +1337,7 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
     if (this.focusedSessionId === undefined) this.focusedSessionId = result.snapshot.info.sessionId;
     this.applySnapshot(result.snapshot, result.sequence, result.hostEpoch, this.focusedSessionId === result.snapshot.info.sessionId);
     this.applySessionSummaries(result.sessions, result.sequence);
+    if (this.socket === socket && !socket?.destroyed) this.acknowledgeEvents(result.sequence, result.hostEpoch);
     await this.recoverCompletions();
   }
 
@@ -1434,6 +1448,7 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
         } catch (error) {
           this.reportError(error);
         }
+        if (socket.destroyed || this.socket !== socket) return;
       }
     } catch (error) {
       socket.destroy(asError(error));
@@ -1459,18 +1474,28 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
       return;
     }
     if (isEventFrame(frame)) {
+      if (frame.hostEpoch === this.consumedHostEpoch && frame.sequence <= this.consumedSequence) return;
       const sessionId = frame.update.snapshot.info.sessionId;
       this.applySnapshot(frame.update.snapshot, frame.sequence, frame.hostEpoch);
-      for (const listener of this.allListeners) listener(frame.update);
-      if (this.focusedSessionId === undefined) this.focusedSessionId = sessionId;
-      if (sessionId === this.focusedSessionId) {
-        if (this.listeners.size) {
-          for (const listener of this.listeners) listener(frame.update);
-        } else {
-          this.pendingUpdates.push(frame.update);
-          if (this.pendingUpdates.length > eventHistoryLimit) this.pendingUpdates.splice(0, this.pendingUpdates.length - eventHistoryLimit);
+      // 事件仍需交付，但接收方使用的状态必须是已采纳快照，不能被旧回放带回过去。
+      const update = { ...frame.update, snapshot: this.snapshots.get(sessionId) ?? frame.update.snapshot };
+      try {
+        for (const listener of this.allListeners) listener(update);
+        if (this.focusedSessionId === undefined) this.focusedSessionId = sessionId;
+        if (sessionId === this.focusedSessionId) {
+          if (this.listeners.size) {
+            for (const listener of this.listeners) listener(update);
+          } else {
+            this.pendingUpdates.push(update);
+            if (this.pendingUpdates.length > eventHistoryLimit) this.pendingUpdates.splice(0, this.pendingUpdates.length - eventHistoryLimit);
+          }
         }
+      } catch (error) {
+        // 未交付完整的帧不能被后续帧越过；重连可能让已接收它的 listener 再次看到该事件。
+        this.socket?.destroy();
+        throw error;
       }
+      this.acknowledgeEvents(frame.sequence, frame.hostEpoch);
       return;
     }
     if (isCompletionFrame(frame)) {
@@ -1488,7 +1513,9 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
       this.focusedSessionId = this.focusedSessionId ?? frame.snapshot.info.sessionId;
       this.applySnapshot(frame.snapshot, frame.sequence, frame.hostEpoch, this.focusedSessionId === frame.snapshot.info.sessionId);
       this.applySessionSummaries(frame.sessions, frame.sequence);
-      const update: AgentRuntimeUpdate = { snapshot: frame.snapshot };
+      // gap 明确结束旧区间，snapshot 不能补回已淘汰的通知。
+      this.acknowledgeEvents(frame.sequence, frame.hostEpoch);
+      const update: AgentRuntimeUpdate = { snapshot: this.snapshots.get(frame.snapshot.info.sessionId) ?? frame.snapshot };
       for (const listener of this.allListeners) listener(update);
       if (this.focusedSessionId === frame.snapshot.info.sessionId) {
         for (const listener of this.listeners) listener(update);
@@ -1556,7 +1583,8 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
 
   /**
    * subscribe/snapshot 响应在 Host execute 时取样，但客户端在 await 后的微任务里落地；
-   * 窗口内到达的事件帧已把 sequence 推得更新。同 epoch 下禁止回退，epoch 切换则整体替换。
+   * 窗口内到达的事件帧可能更新快照位置。同 epoch 下禁止回退，epoch 切换则整体替换。
+   * 普通快照读取不确认事件；订阅恢复只使用独立的已消费游标。
    */
   private applySnapshot(snapshot: InteractiveRuntimeSnapshot, sequence: number, hostEpoch?: string, focused = false): void {
     if (hostEpoch !== undefined) this.applyHostEpoch(hostEpoch);
@@ -1576,11 +1604,19 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
     if (hostEpoch === this.hostEpoch) return;
     this.hostEpoch = hostEpoch;
     this.sequence = 0;
+    this.consumedSequence = 0;
+    // 保留消费代次直到新 gap/回放完成，避免新 hello 后失败的重试跳过跨代 resync。
     this.snapshots.clear();
     this.snapshotSequences.clear();
     this.runtimeSessions = [];
     this.snapshot = undefined;
     this.pendingUpdates.length = 0;
+  }
+
+  private acknowledgeEvents(sequence: number, hostEpoch: string): void {
+    if (hostEpoch !== this.consumedHostEpoch) this.consumedSequence = 0;
+    this.consumedHostEpoch = hostEpoch;
+    this.consumedSequence = Math.max(this.consumedSequence, sequence);
   }
 
   private applySessionSummaries(sessions: readonly RuntimeHostSessionSummary[] | undefined, sequence: number): void {

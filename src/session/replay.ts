@@ -1044,7 +1044,7 @@ function projectSessionConversation(
       if (event.toolCallId && options.discardedToolCallIds?.has(event.toolCallId)) continue;
       if (event.toolCallId && canonicalCallIds.has(event.toolCallId)) continue;
       // 上一批调用已经 flush 且全部收到结果，说明这是新一批调用，重新开始累积。
-      if (canonicalTurn) {
+      if (canonicalTurn && event.importSource === undefined) {
         const id = event.toolCallId ?? `session-tool-${String(event.sequence ?? index + 1)}`;
         if (!openCalls.has(id)) openCalls.set(id, { id, name: event.tool, args: event.args });
         continue;
@@ -1071,8 +1071,9 @@ function projectSessionConversation(
       if (event.toolCallId && canonicalResultIds.has(event.toolCallId)) continue;
       if (event.recovered && recoveredResults.has(event) && consumedRecoveredResults.has(event)) continue;
       // 完整 canonical session 已经有 agent_message/toolResult；这里只接收 replay 新补的结果。
-      if (canonicalTurn && !event.recovered) continue;
-      const toolCallId = event.toolCallId ?? findToolCallId(openCalls, event.tool) ?? `session-tool-${String(event.sequence ?? index + 1)}`;
+      if (canonicalTurn && !event.recovered && event.importSource === undefined) continue;
+      const toolCallId = event.toolCallId ?? (event.importSource !== undefined ? ""
+        : findToolCallId(openCalls, event.tool) ?? `session-tool-${String(event.sequence ?? index + 1)}`);
       flushPendingCalls();
       appendToolResult(event, toolCallId);
       continue;

@@ -7,7 +7,6 @@ dist/
 /out/
 /release/
 /artifacts/computer-use/
-docs/
 .agent/
 .biny/
 .agents/
@@ -17,9 +16,23 @@ TODO.local.md
 ARCHITECTURE.local.md
 /.agents
 
-# 本地文档不进入仓库，仅发布根目录 README
+# 默认保留本地 Markdown；公开首页、贡献指南和专题文档按名单放行。
 *.md
 !/README.md
+!/CONTRIBUTING.md
+/docs/*
+!/docs/README.md
+!/docs/ARCHITECTURE.md
+!/docs/CONFIGURATION.md
+!/docs/SESSIONS.md
+!/docs/MEMORY.md
+!/docs/PERMISSIONS.md
+!/docs/EXTENSIONS.md
+!/docs/BROWSER.md
+!/docs/COMPUTER_USE.md
+!/docs/ACTIVITY.md
+!/docs/AUTOMATION.md
+!/docs/EVALUATION.md
 # 随 Biny 发布的内置 Skill 是源码资源，不属于本地文档。
 !/src/bundled-skills/
 !/src/bundled-skills/**/

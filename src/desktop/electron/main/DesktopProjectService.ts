@@ -651,7 +651,7 @@ export class DesktopProjectService {
     const stored = await readStoredSessionEvents(dataRoot, sessionId);
     let seen = 0;
     for (const event of stored.events) {
-      if (event.type !== "user_message" || event.auditOnly) continue;
+      if (event.type !== "user_message" || event.auditOnly || event.metadata?.source === "subagent") continue;
       if (seen === userMessageIndex) {
         if (event.messageId === undefined) throw new Error("这条历史消息缺少版本 ID，无法在原会话中编辑。");
         return event.messageId;
@@ -669,7 +669,7 @@ export class DesktopProjectService {
   async forkSessionAtUserMessage(project: DesktopProject, sessionId: string, userMessageIndex: number): Promise<string> {
     const dataRoot = await this.storage.ensureProjectData(project);
     const events = await readStoredSessionEvents(dataRoot, sessionId).then((result) => result.events);
-    const userEventIndices = events.flatMap((event, index) => event.type === "user_message" && !event.auditOnly ? [index] : []);
+    const userEventIndices = events.flatMap((event, index) => event.type === "user_message" && !event.auditOnly && event.metadata?.source !== "subagent" ? [index] : []);
     const targetEventIndex = userEventIndices[userMessageIndex];
     if (targetEventIndex === undefined) throw new Error("要编辑的消息已不在当前会话中。");
     const targetSessionId = createSessionId();
@@ -847,7 +847,7 @@ export class DesktopProjectService {
       const root = this.storage.attachmentsRoot(project);
       const target = attachmentFilePath(root, relativePath);
       if (!target) throw new Error("Invalid attachment path.");
-      return resolveWorkspacePath(root, path.basename(target), []);
+      return resolveWorkspacePath(root, path.relative(root, target), []);
     }
     return resolveWorkspacePath(project.path, relativePath, ["node_modules", ".git"]);
   }

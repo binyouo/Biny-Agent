@@ -211,7 +211,7 @@ const DiscoveryFilters = memo(function DiscoveryFilters({ query, repository, rep
   );
 });
 
-const DiscoveryCard = memo(function DiscoveryCard({ skill, installing, onInstall, onView }: {
+export const DiscoveryCard = memo(function DiscoveryCard({ skill, installing, onInstall, onView }: {
   skill: DesktopDiscoverableSkill;
   installing: boolean;
   onInstall(): void;
@@ -221,12 +221,12 @@ const DiscoveryCard = memo(function DiscoveryCard({ skill, installing, onInstall
     <article className="biny-discovery-card">
       <div className="biny-discovery-card-content">
         <h2>{skill.name}</h2>
-        <div className="biny-discovery-card-repo">{skill.directory}<span>{skill.repoOwner}/{skill.repoName}</span></div>
+        <div className="biny-discovery-card-repo">{skill.directory === "." ? "仓库根目录（.）" : skill.directory}<span>{skill.repoOwner}/{skill.repoName}</span></div>
         <p>{skill.description}</p>
       </div>
       <div className="biny-discovery-card-actions">
         <button className="biny-discovery-view" onClick={onView} type="button"><Icon name="external" size={15} />查看</button>
-        <button className="biny-discovery-install" disabled={skill.installed || installing} onClick={onInstall} type="button">{skill.installed ? <><Icon name="check" size={15} />已安装</> : installing ? "安装中…" : <><Icon name="archive" size={15} />安装</>}</button>
+        <button aria-label={`${skill.installed ? "已安装" : installing ? "安装中" : "安装"} ${skill.name}（${skill.directory === "." ? "仓库根目录：." : skill.directory}）`} className="biny-discovery-install" disabled={skill.installed || installing} onClick={onInstall} type="button">{skill.installed ? <><Icon name="check" size={15} />已安装</> : installing ? "安装中…" : <><Icon name="archive" size={15} />安装</>}</button>
       </div>
     </article>
   );
@@ -260,7 +260,7 @@ const SkillsShPanel = memo(function SkillsShPanel({ hasSearched, input, loading,
   );
 });
 
-const SkillsShCard = memo(function SkillsShCard({ skill, installing, onInstall, onView }: {
+export const SkillsShCard = memo(function SkillsShCard({ skill, installing, onInstall, onView }: {
   skill: DesktopSkillsShDiscoverableSkill;
   installing: boolean;
   onInstall(): void;
@@ -270,12 +270,12 @@ const SkillsShCard = memo(function SkillsShCard({ skill, installing, onInstall, 
     <article className="biny-discovery-card">
       <div className="biny-discovery-card-content">
         <h2>{skill.name}</h2>
-        <div className="biny-discovery-card-repo">{skill.directory}<span>{skill.repoOwner}/{skill.repoName}</span></div>
+        <div className="biny-discovery-card-repo">{skill.directory === "." ? "仓库根目录（.）" : skill.directory}<span>{skill.repoOwner}/{skill.repoName}</span></div>
         <p>来自 skills.sh，已安装 {skill.installs.toLocaleString()} 次。</p>
       </div>
       <div className="biny-discovery-card-actions">
         <button className="biny-discovery-view" onClick={onView} type="button"><Icon name="external" size={15} />查看</button>
-        <button className="biny-discovery-install" disabled={skill.installed || installing} onClick={onInstall} type="button">{skill.installed ? <><Icon name="check" size={15} />已安装</> : installing ? "安装中…" : <><Icon name="archive" size={15} />安装</>}</button>
+        <button aria-label={`${skill.installed ? "已安装" : installing ? "安装中" : "安装"} ${skill.name}（${skill.directory === "." ? "仓库根目录：." : skill.directory}）`} className="biny-discovery-install" disabled={skill.installed || installing} onClick={onInstall} type="button">{skill.installed ? <><Icon name="check" size={15} />已安装</> : installing ? "安装中…" : <><Icon name="archive" size={15} />安装</>}</button>
       </div>
     </article>
   );

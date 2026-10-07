@@ -41,3 +41,11 @@ export function splitAttachmentReferences(content: string): { text: string; atta
   }
   return { text: content.slice(0, headingStart).trimEnd(), attachments };
 }
+
+/** Only rewrite the complete generated list, preserving ordinary user text verbatim. */
+export function rewriteAttachmentReferences(content: string, pathBySource: ReadonlyMap<string, string>): string {
+  if (!splitAttachmentReferences(content).attachments.length) return content;
+  const start = content.lastIndexOf(`\n${referenceHeading}\n`);
+  return content.slice(0, start) + content.slice(start).replace(/^- (\S+) (?=\()/gm,
+    (line, source: string) => pathBySource.has(source) ? `- ${pathBySource.get(source)} ` : line);
+}

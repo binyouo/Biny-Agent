@@ -17,12 +17,14 @@
  * 兼容负担：旧版平铺 bundle（顶层直接带 `events`，没有 `manifest`）只在本仓库短暂存在过、
  * 从未发布；导入端顺手认一下（便宜），导出端一律只产新格式。
  */
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import { attachmentFilePath, attachmentRoot, saveAttachment } from "../attachments/store.js";
+import { attachmentFilePath, attachmentRoot, readAttachmentBytes, createAttachmentImportBatch, type AttachmentImportBatch, AttachmentImportCleanupError } from "../attachments/store.js";
+import { rewriteAttachmentReferences } from "../attachments/references.js";
 import { parseSessionEvents, readStoredSessionEvents } from "./events.js";
-import type { SessionEvent } from "./recorder.js";
+import type { AgentAssistantMessage } from "../agent/core/types.js";
+import type { SessionEvent, SessionImportSource } from "./recorder.js";
 import { createSessionId } from "./recorder.js";
 import { rebaseForkedSessionEvents } from "./fork.js";
 import { createSessionFile, resolveSessionFile, sessionIdFromFile } from "./store.js";
@@ -49,11 +51,11 @@ export interface BinySessionBundleManifest {
   skippedAttachments: string[];
 }
 
-/** bundle 里内嵌的一份附件：按原始 `@attachments/` 虚拟路径还原。 */
+/** bundle 里内嵌的一份附件；导入时分配新的批次路径并回填引用。 */
 export interface BinySessionBundleAttachment {
   name: string;
   mimeType: string;
-  /** 原始虚拟路径（`@attachments/<file>`）；导入时若撞名会换新路径并回填事件引用。 */
+  /** 原始虚拟路径，支持单文件及导入批次内的文件。 */
   sourcePath: string;
   size: number;
   /** base64 编码的附件字节。 */
@@ -93,6 +95,13 @@ export interface ImportedSession {
   /** 撞名后换了新虚拟路径的附件数（事件引用已同步回填）。 */
   attachmentsRenamed: number;
   skippedAttachmentIssues: ImportedSessionAttachmentIssue[];
+}
+
+export class SessionImportCleanupError extends AttachmentImportCleanupError {
+  constructor(cause: unknown, retainedAttachmentPaths: readonly string[]) {
+    super(cause, retainedAttachmentPaths);
+    this.name = "SessionImportCleanupError";
+  }
 }
 
 // ── 导出 ────────────────────────────────────────────────────────────────────
@@ -157,7 +166,9 @@ async function collectBundleAttachments(
       if (!filePath) continue;
       let bytes: Buffer;
       try {
-        bytes = await fs.readFile(filePath);
+        const storedBytes = await readAttachmentBytes(workspaceRoot, reference.path);
+        if (storedBytes === undefined) continue;
+        bytes = storedBytes;
       } catch (error) {
         if (hasErrorCode(error, "ENOENT")) continue; // 源文件已被清理，无可恢复内容。
         throw error;
@@ -207,25 +218,39 @@ async function persistImportedSession(
   format: SessionTransferFormat,
   bundleAttachments: BinySessionBundleAttachment[]
 ): Promise<ImportedSession> {
-  const restored = await restoreBundleAttachments(workspaceRoot, bundleAttachments);
-  const remapped = restored.pathBySource.size > 0 ? rewriteAttachmentPaths(events, restored.pathBySource) : events;
-  const rebased = rebaseForkedSessionEvents(remapped);
-  const content = `${rebased.map((event) => JSON.stringify(event)).join("\n")}\n`;
-  // 与读取路径共用同一套校验：任何能在列表/恢复里读出来的会话，必须能过这一关。
-  const validated = parseSessionEvents(content);
-  const sessionId = createSessionId();
-  const filePath = await createSessionFile(workspaceRoot, sessionId, Buffer.from(content, "utf8"));
-  refreshSessionIndex(workspaceRoot);
-  return {
-    sessionId,
-    filePath,
-    eventCount: validated.length,
-    format,
-    attachmentsRestored: restored.restored,
-    attachmentsSkipped: restored.skipped.length,
-    attachmentsRenamed: restored.renamed,
-    skippedAttachmentIssues: restored.skipped
-  };
+  let batch: AttachmentImportBatch | undefined;
+  try {
+    const restored = await restoreBundleAttachments(bundleAttachments, async () => {
+      batch ??= await createAttachmentImportBatch(workspaceRoot);
+      return batch;
+    });
+    const remapped = restored.pathBySource.size > 0 ? rewriteAttachmentPaths(events, restored.pathBySource) : events;
+    const rebased = rebaseForkedSessionEvents(remapped);
+    const content = `${rebased.map((event) => JSON.stringify(event)).join("\n")}\n`;
+    const validated = parseSessionEvents(content);
+    const sessionId = createSessionId();
+    const filePath = await createSessionFile(workspaceRoot, sessionId, Buffer.from(content, "utf8"));
+    batch?.commit();
+    refreshSessionIndex(workspaceRoot);
+    return {
+      sessionId,
+      filePath,
+      eventCount: validated.length,
+      format,
+      attachmentsRestored: restored.restored,
+      attachmentsSkipped: restored.skipped.length,
+      attachmentsRenamed: restored.renamed,
+      skippedAttachmentIssues: restored.skipped
+    };
+  } catch (error) {
+    if (!batch) {
+      if (error instanceof AttachmentImportCleanupError) throw new SessionImportCleanupError(error.cause, error.retainedAttachmentPaths);
+      throw error;
+    }
+    const retainedAttachmentPaths = await batch.rollback();
+    if (!retainedAttachmentPaths.length) throw error;
+    throw new SessionImportCleanupError(error, retainedAttachmentPaths);
+  }
 }
 
 function importEventsFromSource(raw: string, format: SessionTransferFormat, sourcePath: string): SessionEvent[] {
@@ -326,12 +351,12 @@ interface RestoredAttachments {
 }
 
 /**
- * 把内嵌附件写回项目附件目录。超 50MB 上限或 base64 损坏的记 skipped 不阻塞导入；`saveAttachment`
- * 自带时间戳+随机串前缀，撞名天然换到新路径，新旧虚拟路径的映射留给 `rewriteAttachmentPaths` 回填。
+ * 有效附件写入本次导入的独占批次；超上限或损坏的条目记 skipped。
+ * 路径映射回填后创建 Session，Session 创建成功才提交该批次。
  */
 async function restoreBundleAttachments(
-  workspaceRoot: string,
-  attachments: readonly BinySessionBundleAttachment[]
+  attachments: readonly BinySessionBundleAttachment[],
+  batchForWrite: () => Promise<AttachmentImportBatch>
 ): Promise<RestoredAttachments> {
   const result: RestoredAttachments = { restored: 0, renamed: 0, skipped: [], pathBySource: new Map() };
   for (const attachment of attachments) {
@@ -353,7 +378,7 @@ async function restoreBundleAttachments(
       result.skipped.push({ name: attachment.name, reason: "invalid" });
       continue;
     }
-    const saved = await saveAttachment(workspaceRoot, attachment.name, attachment.mimeType, bytes);
+    const saved = await (await batchForWrite()).save(attachment.name, attachment.mimeType, bytes);
     result.restored += 1;
     if (saved.path !== attachment.sourcePath) result.renamed += 1;
     result.pathBySource.set(attachment.sourcePath, saved.path);
@@ -375,7 +400,7 @@ function rewriteAttachmentPaths(events: readonly SessionEvent[], pathBySource: R
       const renamed = pathBySource.get(reference.path);
       return renamed === undefined ? reference : { ...reference, path: renamed };
     });
-    return { ...event, attachments: next };
+    return { ...event, content: rewriteAttachmentReferences(event.content, pathBySource), attachments: next };
   });
 }
 
@@ -393,6 +418,8 @@ interface ClaudeContentToolResult {
 type ClaudeContentBlock = ClaudeContentText | ClaudeContentThinking | ClaudeContentToolUse | ClaudeContentToolResult | { type?: string };
 
 interface ClaudeLine {
+  uuid?: string;
+  parentUuid?: string;
   type?: string;
   timestamp?: string;
   message?: { role?: string; content?: string | ClaudeContentBlock[] };
@@ -567,19 +594,84 @@ function binyEventsToClaudeLines(events: readonly SessionEvent[]): ClaudeLine[] 
 function claudeLinesToBinyEvents(lines: unknown[]): SessionEvent[] {
   const events: SessionEvent[] = [];
   const toolNameByCallId = new Map<string, string>();
+  const callCounts = new Map<string, number>();
+  const resultCounts = new Map<string, number>();
   for (const line of lines) {
+    if (!isRecord(line) || (line.type !== "user" && line.type !== "assistant")
+      || !isRecord(line.message) || !Array.isArray(line.message.content)) continue;
+    for (const block of line.message.content) {
+      if (!isRecord(block)) continue;
+      const id = line.message.role === "assistant" && block.type === "tool_use" ? block.id
+        : line.message.role === "user" && block.type === "tool_result" ? block.tool_use_id : undefined;
+      if (typeof id !== "string" || !id) continue;
+      const counts = block.type === "tool_use" ? callCounts : resultCounts;
+      counts.set(id, (counts.get(id) ?? 0) + 1);
+    }
+  }
+  const canonicalToolId = (id: string | undefined): id is string =>
+    typeof id === "string" && id !== "" && (callCounts.get(id) ?? 0) <= 1 && (resultCounts.get(id) ?? 0) <= 1;
+  let parentMessageId: string | undefined;
+  const identity = (): { messageId: string; parentMessageId?: string; slotId: string } => {
+    const messageId = `msg_${randomBytes(12).toString("hex")}`;
+    const linked = { messageId, parentMessageId, slotId: messageId };
+    parentMessageId = messageId;
+    return linked;
+  };
+  for (const [index, line] of lines.entries()) {
     if (!isRecord(line)) continue;
     const claude = line as ClaudeLine;
     if (claude.type !== "user" && claude.type !== "assistant") continue;
     const message = claude.message;
     if (!isRecord(message)) continue;
-    const role = message.role;
     const time = typeof claude.timestamp === "string" ? claude.timestamp : undefined;
-    if (role === "user") {
-      pushClaudeUserContent(events, message.content, time, toolNameByCallId);
-      continue;
+    const importSource: SessionImportSource = {
+      format: "claude",
+      record: index + 1,
+      messageId: typeof claude.uuid === "string" ? nonEmpty(claude.uuid) : undefined,
+      parentMessageId: typeof claude.parentUuid === "string" ? nonEmpty(claude.parentUuid) : undefined
+    };
+    const translated: SessionEvent[] = [];
+    if (message.role === "user") {
+      pushClaudeUserContent(translated, message.content, time, toolNameByCallId);
+      for (const event of translated) {
+        if (event.type === "user_message") {
+          events.push({ ...event, ...identity(), importSource });
+        } else if (event.type === "tool_result") {
+          // Missing invocation IDs are not evidence of a link to a preceding call.
+          if (canonicalToolId(event.toolCallId)) {
+            events.push({ type: "agent_message", ...identity(), importSource, time, message: {
+              role: "toolResult", toolCallId: event.toolCallId, toolName: event.tool,
+              content: [{ type: "text", text: toolResultText(event.result) }], details: event.result,
+              isError: event.executionStatus === "failed" ? true : undefined
+            } });
+          }
+          events.push({ ...event, importSource });
+        }
+      }
+    } else if (message.role === "assistant") {
+      pushClaudeAssistantContent(translated, message.content, time, toolNameByCallId);
+      const content: AgentAssistantMessage["content"] = [];
+      for (const event of translated) {
+        if (event.type === "assistant_message") {
+          if (event.reasoningContent) content.push({ type: "reasoning", text: event.reasoningContent });
+          if (event.content) content.push({ type: "text", text: event.content });
+        } else if (event.type === "tool_call") {
+          // Reused source IDs retain every flat fact, without choosing a winning invocation.
+          if (event.toolCallId && (callCounts.get(event.toolCallId) ?? 0) > 1) toolNameByCallId.delete(event.toolCallId);
+          if (canonicalToolId(event.toolCallId)) content.push({ type: "toolCall", id: event.toolCallId, name: event.tool,
+            arguments: isRecord(event.args) ? event.args : {} });
+        }
+      }
+      const linked = content.length ? identity() : undefined;
+      if (linked) events.push({ type: "agent_message", ...linked, importSource, time,
+        message: { role: "assistant", content } });
+      for (const event of translated) {
+        // The display projection shares its canonical identity; it is not a second message.
+        events.push(event.type === "assistant_message" && linked
+          ? { ...event, ...linked, importSource }
+          : { ...event, importSource });
+      }
     }
-    if (role === "assistant") pushClaudeAssistantContent(events, message.content, time, toolNameByCallId);
   }
   return events;
 }
@@ -652,7 +744,7 @@ function pushClaudeAssistantContent(
     }
   }
   const text = textParts.join("\n").trim();
-  if (text) {
+  if (text || reasoning) {
     events.push({
       type: "assistant_message",
       content: text,

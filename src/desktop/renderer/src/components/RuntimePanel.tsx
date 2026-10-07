@@ -8,11 +8,13 @@ import { useEffect, useState } from "react";
 import type { DesktopRuntimeMutation, DesktopRuntimeProjection } from "../../../protocol.js";
 import { useClosingPresence } from "../useClosingPresence.js";
 import { desktopWorktreeView } from "../worktreePresentation.js";
+import { TaskInspector } from "./chat/TaskInspector.js";
 import { Icon } from "./Icon.js";
 
 type RuntimeRecord = Record<string, unknown>;
 
 interface RuntimePanelProps {
+  projectId?: string;
   open: boolean;
   onClose(): void;
   projection?: DesktopRuntimeProjection;
@@ -23,7 +25,7 @@ interface RuntimePanelProps {
   onRefresh(): Promise<void>;
 }
 
-export function RuntimePanel({ open, onClose, projection, selectedSessionId, worktreeSession = false, onError, onMutation, onRefresh }: RuntimePanelProps): React.JSX.Element | null {
+export function RuntimePanel({ projectId, open, onClose, projection, selectedSessionId, worktreeSession = false, onError, onMutation, onRefresh }: RuntimePanelProps): React.JSX.Element | null {
   const [busyAction, setBusyAction] = useState<string>();
   const presence = useClosingPresence(open);
 
@@ -106,7 +108,7 @@ export function RuntimePanel({ open, onClose, projection, selectedSessionId, wor
           const status = recordText(task, "status") ?? "unknown";
           const action = taskAction(status);
           return (
-            <RuntimeRow key={id} label={id} status={status}>
+            <div key={id}><RuntimeRow label={id} status={status}>
               {action ? (
                 <button
                   className="biny-runtime-row-action"
@@ -118,6 +120,8 @@ export function RuntimePanel({ open, onClose, projection, selectedSessionId, wor
                 </button>
               ) : null}
             </RuntimeRow>
+              {projectId && typeof task.sessionId === "string" && (task.task as { communication?: boolean } | undefined)?.communication === true ? <TaskPanelDetail projectId={projectId} sessionId={task.sessionId} taskRunId={id} active={open} /> : null}
+            </div>
           );
         })}
       </RuntimeSection>
@@ -262,4 +266,11 @@ function formatWorktreeError(error: unknown): Error {
     return new Error("隔离工作树合并未完成，工作树已保留；请手动处理冲突后再试。");
   }
   return new Error("隔离工作树操作未完成，已保留；请刷新状态后重试。");
+}
+
+function TaskPanelDetail({ projectId, sessionId, taskRunId, active }: { projectId: string; sessionId: string; taskRunId: string; active: boolean }): React.JSX.Element {
+  const [expanded, setExpanded] = useState(false);
+  return <details onToggle={(event) => setExpanded(event.currentTarget.open)}><summary>子代理详情与消息</summary>
+    {active && expanded ? <TaskInspector projectId={projectId} sessionId={sessionId} taskRunId={taskRunId} /> : null}
+  </details>;
 }

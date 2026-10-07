@@ -4,13 +4,13 @@
  * 附件本体和会话 JSONL 分离：会话只保存受限的虚拟路径，既避免把图片 base64 重复写进历史，
  * 也让 Desktop、TUI 与 CLI 能在同一项目下重新读取同一份文件。
  */
-import { randomBytes } from "node:crypto";
-import { constants, promises as fs } from "node:fs";
+import { createHash, randomBytes } from "node:crypto";
+import { constants, promises as fs, type Stats } from "node:fs";
 import type { FileHandle } from "node:fs/promises";
 import path from "node:path";
 import { agentDir, ensureAgentDirs } from "../session/store.js";
-
-export const attachmentPathPrefix = "@attachments/";
+import { attachmentPathPrefix, attachmentRelativePath } from "./paths.js";
+export { attachmentPathPrefix } from "./paths.js";
 
 export interface AttachmentReference {
   name: string;
@@ -50,9 +50,10 @@ export async function saveAttachment(
 ): Promise<AttachmentReference> {
   const directory = await ensureAttachmentRoot(persistenceRoot);
   const safeName = sanitizeAttachmentName(name);
+  const internalName = safeName.replace(/\.{2,}/g, ".");
   const maxAttempts = 10;
   for (let attempt = 1; ; attempt += 1) {
-    const fileName = `${String(Date.now())}-${randomBytes(3).toString("hex")}-${safeName}`;
+    const fileName = `${String(Date.now())}-${randomBytes(3).toString("hex")}-${internalName}`;
     try {
       await fs.writeFile(path.join(directory, fileName), bytes, { mode: 0o600, flag: "wx" });
     } catch (error) {
@@ -69,23 +70,197 @@ export async function saveAttachment(
   }
 }
 
-export async function readAttachment(persistenceRoot: string, reference: AttachmentReference): Promise<AgentAttachment | undefined> {
-  const filePath = attachmentFilePath(attachmentRoot(persistenceRoot), reference.path);
-  if (!filePath) return undefined;
+export class AttachmentImportCleanupError extends Error {
+  constructor(cause: unknown, readonly retainedAttachmentPaths: readonly string[]) {
+    super(`${cause instanceof Error ? cause.message : String(cause)}; attachment_import_cleanup_uncertain: cleanup ownership or I/O could not be confirmed; retained ${retainedAttachmentPaths.map(file => JSON.stringify(file)).join(", ")}`, { cause });
+    this.name = "AttachmentImportCleanupError";
+  }
+}
+
+interface ImportedAttachmentFile {
+  file: string;
+  bytes?: Buffer;
+  size: number;
+  checksum: string;
+  identity: Pick<Stats, "dev" | "ino">;
+  snapshot?: Stats;
+  completed: boolean;
+}
+
+export interface AttachmentImportBatch {
+  save(name: string, mimeType: string, bytes: Uint8Array): Promise<AttachmentReference>;
+  commit(): void;
+  /** Returns files retained because their ownership or cleanup could not be confirmed. */
+  rollback(): Promise<string[]>;
+}
+
+/** The private batch becomes persistent only when its owning session is created. */
+export async function createAttachmentImportBatch(persistenceRoot: string): Promise<AttachmentImportBatch> {
+  const root = await fs.realpath(await ensureAttachmentRoot(persistenceRoot));
+  let directory: string;
+  for (let attempt = 1; ; attempt += 1) {
+    directory = path.join(root, `import-${randomBytes(16).toString("hex")}`);
+    try { await fs.mkdir(directory, { mode: 0o700 }); break; }
+    catch (error) { if (attempt >= 10 || !hasCode(error, "EEXIST")) throw error; }
+  }
+  let identity: Stats;
+  try { identity = await fs.lstat(directory); }
+  catch (error) { throw new AttachmentImportCleanupError(error, [directory]); }
+  const files: ImportedAttachmentFile[] = [];
+  let active = true;
+  const isOwnedDirectory = async (): Promise<boolean> => {
+    try {
+      const current = await fs.lstat(directory);
+      return current.isDirectory() && !current.isSymbolicLink() && current.dev === identity.dev && current.ino === identity.ino;
+    } catch (error) { if (isNotFound(error)) return false; throw error; }
+  };
+  return {
+    async save(name, mimeType, bytes) {
+      if (!active || !await isOwnedDirectory()) throw new Error("attachment_import_batch_unavailable");
+      const safeName = sanitizeAttachmentName(name);
+      for (let attempt = 1; ; attempt += 1) {
+        const leaf = `${String(Date.now())}-${randomBytes(3).toString("hex")}-${safeName.replace(/\.{2,}/g, ".")}`;
+        const file = path.join(directory, leaf);
+        let handle: FileHandle;
+        try { handle = await fs.open(file, constants.O_RDWR | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW ?? 0), 0o600); }
+        catch (error) { if (attempt >= 10 || !hasCode(error, "EEXIST")) throw error; continue; }
+        let entry: ImportedAttachmentFile | undefined;
+        try {
+          const stat = await handle.stat();
+          const stableBytes = Buffer.from(bytes);
+          entry = { file, bytes: stableBytes, size: stableBytes.length, checksum: createHash("sha256").update(stableBytes).digest("hex"),
+            identity: { dev: stat.dev, ino: stat.ino }, completed: false };
+          files.push(entry);
+          await handle.writeFile(stableBytes);
+          await handle.sync();
+          entry.completed = true;
+          entry.bytes = undefined;
+        } finally {
+          try { if (entry) entry.snapshot = await handle.stat(); }
+          finally { await handle.close(); }
+        }
+        if (!entry || !await isOwnedDirectory() || !await sameImportedFile(file, entry)) throw new Error("attachment_import_file_replaced");
+        return { name: safeName, mimeType, path: `${attachmentPathPrefix}${path.basename(directory)}/${leaf}`, size: bytes.byteLength };
+      }
+    },
+    commit() { active = false; },
+    async rollback() {
+      if (!active) return [];
+      active = false;
+      try { if (!await isOwnedDirectory()) return [directory]; }
+      catch { return [directory]; }
+      const retained: string[] = [];
+      for (const entry of files) {
+        try { if (!await isOwnedDirectory()) { retained.push(directory); break; } }
+        catch { retained.push(directory); break; }
+        try { retained.push(...await cleanImportedFile(directory, entry)); }
+        catch { retained.push(entry.file); }
+      }
+      try { await fs.rmdir(directory); }
+      catch (error) { if (!isNotFound(error) && !retained.length) retained.push(directory); }
+      return [...new Set(retained)];
+    }
+  };
+}
+
+async function sameImportedFile(file: string, entry: ImportedAttachmentFile): Promise<boolean> {
+  const current = await fs.lstat(file);
+  return current.isFile() && !current.isSymbolicLink() && current.nlink === 1
+    && current.dev === entry.identity.dev && current.ino === entry.identity.ino
+    && entry.snapshot !== undefined && current.size === entry.snapshot.size && current.mtimeMs === entry.snapshot.mtimeMs;
+}
+
+/** Claim into a private quarantine before checking, so a replaced original path is never unlinked. */
+async function cleanImportedFile(directory: string, entry: ImportedAttachmentFile): Promise<string[]> {
+  const quarantine = await fs.mkdtemp(path.join(directory, ".cleanup-"));
+  const claimed = path.join(quarantine, "file");
+  let retained: string[] = [];
   try {
-    const bytes = await fs.readFile(filePath);
-    return { ...reference, data: bytes.toString("base64"), hiddenContext: await readAttachmentContext(attachmentRoot(persistenceRoot), reference.path) };
+    try { await fs.rename(entry.file, claimed); }
+    catch (error) { if (isNotFound(error)) return []; return [entry.file]; }
+    let owned = await sameImportedFile(claimed, entry);
+    if (owned) {
+      const handle = await fs.open(claimed, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+      try {
+        const stat = await handle.stat();
+        const bytes = await handle.readFile();
+        owned = stat.dev === entry.identity.dev && stat.ino === entry.identity.ino && bytes.length <= entry.size
+          && (entry.completed ? bytes.length === entry.size && createHash("sha256").update(bytes).digest("hex") === entry.checksum
+            : entry.bytes !== undefined && bytes.equals(entry.bytes.subarray(0, bytes.length)));
+      } finally { await handle.close(); }
+    }
+    if (owned) await fs.unlink(claimed);
+    else {
+      // Restoration is exclusive: a newer occupant must never be overwritten.
+      try { await fs.link(claimed, entry.file); await fs.unlink(claimed); retained = [entry.file]; }
+      catch { retained = [claimed]; }
+    }
+  } catch { retained = [claimed]; }
+  finally {
+    try { await fs.rmdir(quarantine); }
+    catch (error) { if (!isNotFound(error) && !retained.length) retained = [quarantine]; }
+  }
+  return retained;
+}
+
+function hasCode(error: unknown, code: string): boolean {
+  return typeof error === "object" && error !== null && "code" in error && error.code === code;
+}
+
+/** Read through a bound no-follow handle; generated batch parents must remain real directories. */
+export async function readAttachmentBytes(persistenceRoot: string, virtualPath: string): Promise<Buffer | undefined> {
+  return await readStoredAttachmentFile(attachmentRoot(persistenceRoot), virtualPath);
+}
+
+async function attachmentParent(root: string, virtualPath: string): Promise<{ file: string; parent: string; identity: Stats }> {
+  const relative = attachmentRelativePath(virtualPath);
+  if (relative === undefined) throw new Error("attachment_path_invalid");
+  const rootInfo = await fs.lstat(root);
+  if (!rootInfo.isDirectory() || rootInfo.isSymbolicLink()) throw new Error("attachment_path_invalid");
+  const canonicalRoot = await fs.realpath(root);
+  const file = path.join(root, relative);
+  const parent = path.dirname(file);
+  const identity = await fs.lstat(parent);
+  if (!identity.isDirectory() || identity.isSymbolicLink()
+    || await fs.realpath(parent) !== path.dirname(path.join(canonicalRoot, relative))) throw new Error("attachment_path_invalid");
+  return { file, parent, identity };
+}
+
+async function readStoredAttachmentFile(root: string, virtualPath: string, maxBytes?: number, context = false): Promise<Buffer | undefined> {
+  if (attachmentRelativePath(virtualPath) === undefined) return undefined;
+  try {
+    const binding = await attachmentParent(root, virtualPath);
+    if (context) binding.file += ".context";
+    const before = await fs.lstat(binding.file);
+    if (!before.isFile() || before.isSymbolicLink()) throw new Error("attachment_path_invalid");
+    const handle = await fs.open(binding.file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    try {
+      const info = await handle.stat();
+      if (!info.isFile() || info.nlink !== 1 || info.dev !== before.dev || info.ino !== before.ino) throw new Error("attachment_path_invalid");
+      if (maxBytes !== undefined && info.size > maxBytes) throw new Error("attachment_context_invalid");
+      const bytes = await handle.readFile();
+      const current = await attachmentParent(root, virtualPath);
+      const after = await fs.lstat(binding.file);
+      if (current.identity.dev !== binding.identity.dev || current.identity.ino !== binding.identity.ino
+        || !after.isFile() || after.isSymbolicLink() || after.dev !== info.dev || after.ino !== info.ino) throw new Error("attachment_path_invalid");
+      if (maxBytes !== undefined && bytes.length > maxBytes) throw new Error("attachment_context_invalid");
+      return bytes;
+    } finally { await handle.close(); }
   } catch (error) {
-    if (isNotFound(error)) return undefined;
+    if (isNotFound(error) || hasCode(error, "ENOTDIR")) return undefined;
     throw error;
   }
 }
 
+export async function readAttachment(persistenceRoot: string, reference: AttachmentReference): Promise<AgentAttachment | undefined> {
+  const bytes = await readAttachmentBytes(persistenceRoot, reference.path);
+  return bytes === undefined ? undefined : { ...reference, data: bytes.toString("base64"),
+    hiddenContext: await readAttachmentContext(attachmentRoot(persistenceRoot), reference.path) };
+}
+
 export function attachmentFilePath(root: string, virtualPath: string): string | undefined {
-  if (!virtualPath.startsWith(attachmentPathPrefix)) return undefined;
-  const fileName = virtualPath.slice(attachmentPathPrefix.length);
-  if (!fileName || fileName.includes("/") || fileName.includes("\\") || fileName.includes("..")) return undefined;
-  return path.join(root, fileName);
+  const relativePath = attachmentRelativePath(virtualPath);
+  return relativePath === undefined ? undefined : path.join(root, relativePath);
 }
 
 export function sanitizeAttachmentName(name: string): string {
@@ -101,23 +276,17 @@ function isNotFound(error: unknown): boolean {
 export async function saveAttachmentContext(root: string, virtualPath: string, context: string): Promise<void> {
   const file = attachmentFilePath(root, virtualPath);
   if (!file || Buffer.byteLength(context) > 128000) throw new Error("attachment_context_invalid");
+  await attachmentParent(root, virtualPath);
   await fs.writeFile(`${file}.context`, context, { mode: 0o600, flag: "wx" });
 }
 export async function readAttachmentContext(root: string, virtualPath: string): Promise<string | undefined> {
-  const file = attachmentFilePath(root, virtualPath);
-  if (!file) return undefined;
-  try {
-    let handle: FileHandle;
-    try { handle = await fs.open(`${file}.context`, constants.O_RDONLY | constants.O_NOFOLLOW); }
-    catch (error) {
-      // A valid attachment may leave no filename space for its optional sidecar.
-      if (typeof error === "object" && error !== null && "code" in error && error.code === "ENAMETOOLONG") return undefined;
-      throw error;
-    }
-    try { const info = await handle.stat(); if (!info.isFile() || info.size > 128000) throw new Error("attachment_context_invalid"); return await handle.readFile("utf8"); }
-    finally { await handle.close(); }
-  } catch (error) { if (isNotFound(error)) return undefined; throw error; }
+  if (attachmentRelativePath(virtualPath) === undefined) return undefined;
+  const file = `${attachmentFilePath(root, virtualPath)!}.context`;
+  try { await fs.lstat(file); }
+  catch (error) { if (isNotFound(error) || hasCode(error, "ENAMETOOLONG")) return undefined; throw error; }
+  return (await readStoredAttachmentFile(root, virtualPath, 128000, true))?.toString("utf8");
 }
+
 export function attachmentMessageParts(attachments: AgentAttachment[]) {
   return attachments.flatMap(attachment => {
     const media = { type: attachment.mimeType.startsWith("audio/") ? "audio" as const : "image" as const, data: attachment.data, mimeType: attachment.mimeType };

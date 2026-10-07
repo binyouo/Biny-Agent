@@ -139,12 +139,16 @@ export async function taskMessageCommand(workspaceRoot: string, taskRunId: strin
   await hostAction(workspaceRoot, options, async (client) => await client.taskMessage(taskRunId, options.session, message, options.messageId));
 }
 
+export async function taskInspectCommand(workspaceRoot: string, taskRunId: string, options: JsonOption & { session: string; attemptId?: string; afterSequence?: number; limit?: number }): Promise<void> {
+  await hostAction(workspaceRoot, options, async (client) => await client.taskInspect(taskRunId, options.session, options));
+}
+
 export async function taskWaitCommand(workspaceRoot: string, taskRunId: string, options: JsonOption & { session: string; waitMs?: number; afterRevision?: number }): Promise<void> {
   await hostAction(workspaceRoot, options, async (client) => await client.taskWait(taskRunId, options.session, options.waitMs, options.afterRevision));
 }
 
-export async function taskListCommand(workspaceRoot: string, options: JsonOption & { status?: string; limit?: number; cursor?: number } = {}): Promise<void> {
-  await hostAction(workspaceRoot, options, async (client) => await client.taskList({ status: options.status, limit: options.limit, cursor: options.cursor }));
+export async function taskListCommand(workspaceRoot: string, options: JsonOption & { status?: string; limit?: number; cursor?: number; newestFirst?: boolean } = {}): Promise<void> {
+  await hostAction(workspaceRoot, options, async (client) => await client.taskList({ status: options.status, limit: options.limit, cursor: options.cursor, order: options.newestFirst ? "desc" : undefined }));
 }
 
 export async function taskEventsCommand(workspaceRoot: string, taskRunId: string, options: JsonOption & { limit?: number } = {}): Promise<void> {
@@ -301,4 +305,8 @@ async function readJsonFile(filePath: string): Promise<unknown> {
 
 async function fileExists(filePath: string): Promise<boolean> {
   try { await fs.access(filePath); return true; } catch { return false; }
+}
+
+export async function taskContinueCommand(workspaceRoot: string, taskRunId: string, message: string, options: JsonOption & { session: string; messageId?: string }): Promise<void> {
+  await hostAction(workspaceRoot, options, async (client) => await client.taskContinue(taskRunId, options.session, message, options.messageId));
 }

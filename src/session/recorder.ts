@@ -56,8 +56,17 @@ export interface ReasoningBlock {
   providerOptions?: Record<string, unknown>;
 }
 
+export interface SessionImportSource {
+  format: "claude";
+  /** One-based nonempty JSONL record, independent of repeated or absent source UUIDs. */
+  record: number;
+  messageId?: string;
+  parentMessageId?: string;
+}
+
 export interface SessionEventRuntimeMetadata {
   runtime?: RuntimeEventIdentity;
+  importSource?: SessionImportSource;
 }
 
 export type SessionTurnStatus = "completed" | "incomplete" | "blocked" | "cancelled" | "failed" | "aborted";

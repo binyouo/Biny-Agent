@@ -8,7 +8,8 @@
 import { randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import type { SubagentTaskSnapshot } from "./SubagentTaskManager.js";
-import { RuntimeEventAuthority } from "./RuntimeAuthority.js";
+import { RuntimeEventAuthority, type RuntimeEventPage } from "./RuntimeAuthority.js";
+import { workerSessionId } from "./WorkerSession.js";
 
 export type TaskRunStatus =
   | "queued"
@@ -76,6 +77,7 @@ export interface TaskAttemptCreateInput {
 }
 
 export interface TaskRunListOptions {
+  order?: "asc" | "desc";
   status?: TaskRunStatus;
   limit?: number;
   cursor?: number;
@@ -466,6 +468,20 @@ export class DurableTaskRunStore {
     });
   }
 
+  /** 按已准入的 Attempt 查询独立 Worker 历史，不改变任务或恢复执行。 */
+  workerTrail(taskRunId: string, options: { limit?: number; afterSequence?: number; attemptId?: string } = {}): RuntimeEventPage {
+    this.assertOpen();
+    const task = this.requireWithAttempts(taskRunId);
+    const attempt = options.attemptId === undefined ? task.attempts.at(-1)
+      : task.attempts.find((item) => item.attemptId === options.attemptId);
+    if (options.attemptId !== undefined && !attempt) throw new Error("Worker Attempt does not belong to this TaskRun.");
+    if (!attempt) return { events: [], hasMore: false, gap: false };
+    return this.authority.readEvents({
+      limit: options.limit ?? 100, afterSequence: options.afterSequence,
+      sessionId: workerSessionId(attempt.attemptId)
+    });
+  }
+
   get(taskRunId: string): TaskRunWithAttempts | undefined {
     this.assertOpen();
     return this.read(taskRunId) ? this.requireWithAttempts(taskRunId) : undefined;
@@ -474,16 +490,18 @@ export class DurableTaskRunStore {
   list(options: TaskRunListOptions = {}): { tasks: TaskRunWithAttempts[]; nextCursor?: number; hasMore: boolean } {
     this.assertOpen();
     const limit = options.limit ?? 100;
+    const descending = options.order === "desc";
+    if (options.order !== undefined && options.order !== "asc" && options.order !== "desc") throw new Error("Task order must be asc or desc.");
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1_000) throw new Error("Task page size must be between 1 and 1000.");
     const rows = this.database.prepare(`
       SELECT rowid, task_run_id, workspace_id, session_id, parent_run_id, status,
              task_json, created_at, updated_at, terminal_event_id, revision
       FROM task_runs
-      WHERE workspace_id = ? AND rowid > ? ${options.status === undefined ? "" : "AND status = ?"}
-      ORDER BY rowid ASC LIMIT ?
+      WHERE workspace_id = ? AND rowid ${descending ? "<" : ">"} ? ${options.status === undefined ? "" : "AND status = ?"}
+      ORDER BY rowid ${descending ? "DESC" : "ASC"} LIMIT ?
     `).all(
       this.authority.workspaceId,
-      options.cursor ?? 0,
+      options.cursor ?? (descending ? Number.MAX_SAFE_INTEGER : 0),
       ...(options.status === undefined ? [] : [options.status]),
       limit + 1
     ) as unknown as Array<TaskRunRow & { rowid: unknown }>;
@@ -510,6 +528,31 @@ export class DurableTaskRunStore {
       payload: parse(row.payload_json),
       createdAt: toString(row.created_at)
     }));
+  }
+
+  hasMessageReceipt(taskRunId: string, messageId: string): boolean {
+    this.assertOpen(); this.require(taskRunId);
+    return this.database.prepare("SELECT 1 FROM task_events WHERE event_id = ? AND task_run_id = ?")
+      .get(`task-receipt:${taskRunId}:${messageId}`, taskRunId) !== undefined;
+  }
+
+  recordMessageReceipt(taskRunId: string, attemptId: string, messageId: string): void {
+    this.assertOpen();
+    const task = this.requireWithAttempts(taskRunId);
+    const attempt = task.attempts.at(-1);
+    if (attempt?.attemptId !== attemptId) throw new Error("Task message receipt belongs to a stale attempt.");
+    const eventId = `task-receipt:${taskRunId}:${messageId}`;
+    if (this.hasMessageReceipt(taskRunId, messageId)) return;
+    const createdAt = new Date().toISOString();
+    const payload = { taskRunId, attemptId, messageId };
+    this.authority.runEventTransaction({ eventId, sessionId: task.sessionId ?? `task:${taskRunId}`,
+      runId: attempt.runId, turnId: attempt.turnId, eventType: "task.message.received", payload, createdAt }, () => {
+      const updated = this.database.prepare("UPDATE task_runs SET revision = revision + 1, updated_at = ? WHERE task_run_id = ? AND revision = ?")
+        .run(createdAt, taskRunId, task.revision);
+      if (updated.changes !== 1) throw new Error("TaskRun changed while recording a message receipt.");
+      this.database.prepare("INSERT INTO task_events (event_id, task_run_id, attempt_id, event_type, payload_json, created_at) VALUES (?, ?, ?, 'task.message.received', ?, ?)")
+        .run(eventId, taskRunId, attemptId, stringify(payload), createdAt);
+    });
   }
 
   close(): void {

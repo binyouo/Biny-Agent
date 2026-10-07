@@ -93,9 +93,10 @@ export async function fetchModelCatalogSnapshot(
   if (validators.lastModified) headers["If-Modified-Since"] = new Date(validators.lastModified).toUTCString();
   const retry = request.config.retry ?? { maxAttempts: 1, initialDelayMs: 0, maxDelayMs: 0 };
   const timeoutSignal = AbortSignal.timeout(catalogTimeoutMs);
+  const requestSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
   const response = await createRetryFetch(retry, fetcher)(catalogEndpoint, {
     headers,
-    signal: signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal
+    signal: requestSignal
   });
   const notModified = response.status === 304;
   // 只有 304 继续使用旧正文；新正文缺少校验信息时，不能继承旧正文的 validators。
@@ -105,7 +106,7 @@ export async function fetchModelCatalogSnapshot(
   };
   if (notModified) return { notModified: true, ...responseValidators };
   if (!response.ok) {
-    const responseBody = (await response.text().catch(() => "")).slice(0, 8_192) || undefined;
+    const responseBody = await readErrorPrefix(response, requestSignal);
     throw new ModelCatalogRequestError(`Model catalog request failed (${String(response.status)}).`, {
       statusCode: response.status,
       url: catalogEndpoint,
@@ -118,6 +119,41 @@ export async function fetchModelCatalogSnapshot(
     notModified: false,
     ...responseValidators
   };
+}
+
+async function readErrorPrefix(response: Response, signal: AbortSignal): Promise<string | undefined> {
+  if (!response.body) return undefined;
+  let reader: ReadableStreamDefaultReader<Uint8Array>;
+  try { reader = response.body.getReader(); }
+  catch { return undefined; }
+  const decoder = new TextDecoder();
+  const limit = 8_192;
+  let text = "";
+  let completed = false;
+  let interrupted = false;
+  let stop!: (value: ReadableStreamReadResult<Uint8Array>) => void;
+  const aborted = new Promise<ReadableStreamReadResult<Uint8Array>>((resolve) => { stop = resolve; });
+  const onAbort = (): void => { interrupted = true; stop({ done: true, value: undefined }); };
+  signal.addEventListener("abort", onAbort, { once: true });
+  if (signal.aborted) onAbort();
+  try {
+    while (text.length < limit && !interrupted) {
+      const chunk = await Promise.race([reader.read(), aborted]);
+      if (chunk.done) { completed = !interrupted; break; }
+      // 单次响应块也可能很大，只解码足够形成显示前缀的字节。
+      const bytes = chunk.value.subarray(0, (limit - text.length) * 4);
+      text += decoder.decode(bytes, { stream: true }).slice(0, limit - text.length);
+    }
+  } catch {
+    // 错误正文是尽力获取的诊断；读取尾部失败不能抹掉已收到的内容。
+  } finally {
+    text += decoder.decode().slice(0, limit - text.length);
+    signal.removeEventListener("abort", onAbort);
+    // 取消由外部流决定何时完成，不能延迟原 HTTP 错误。
+    if (!completed) void reader.cancel().catch(() => {});
+    reader.releaseLock();
+  }
+  return text || undefined;
 }
 
 /**

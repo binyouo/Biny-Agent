@@ -6,6 +6,7 @@ import path from "node:path";
 import { createFileConfigStore } from "../src/config/store.js";
 import { DesktopProjectService } from "../src/desktop/electron/main/DesktopProjectService.js";
 import { DesktopStateStore } from "../src/desktop/electron/main/DesktopStateStore.js";
+import { createSessionFile } from "../src/session/store.js";
 import { DesktopUserDataStore } from "../src/desktop/electron/main/DesktopUserDataStore.js";
 
 const root = await mkdtemp(path.join(os.tmpdir(), "biny-desktop-attachments-"));
@@ -19,10 +20,24 @@ try {
   const projects = new DesktopProjectService(state, storage, createFileConfigStore(root, { globalDir: root }));
   const project = await projects.createProject(workspace);
   const bytes = Buffer.from("%PDF-1.7\n");
-  const attachment = await projects.saveAttachment(project, "report.pdf", "application/pdf", bytes);
+  const attachment = await projects.saveAttachment(project, "report..pdf", "application/pdf", bytes);
+  assert.equal(attachment.name, "report..pdf");
+  assert.equal(attachment.path.includes(".."), false);
   assert.deepEqual(await readFile(projects.workspaceFile(project, attachment.path)), bytes);
   assert.equal((await projects.readWorkspaceFile(project, attachment.path)).path, attachment.path);
   assert.throws(() => projects.workspaceFile(project, "@attachments/../../escape.pdf"), /Invalid attachment path/u);
+  await createSessionFile(workspace, "attachment-source", Buffer.from(JSON.stringify({ type: "user_message", content: "file", attachments: [attachment] }) + "\n"));
+  const exported = await projects.buildSessionExport(project, "attachment-source", "biny");
+  const source = path.join(root, "export.json");
+  await writeFile(source, exported.content);
+  const imported = await projects.importSessionFromFile(project, source);
+  const bundle = JSON.parse((await projects.buildSessionExport(project, imported.sessionId, "biny")).content);
+  const importedPath = bundle.events[0].attachments[0].path;
+  assert.match(importedPath, /^@attachments\/import-[a-f0-9]{32}\/[^/]+$/u);
+  assert.deepEqual(await readFile(projects.workspaceFile(project, importedPath)), bytes);
+  assert.equal((await projects.readWorkspaceFile(project, importedPath)).path, importedPath);
+  assert.throws(() => projects.workspaceFile(project, "@attachments/arbitrary/leaf.pdf"), /Invalid attachment path/u);
+
   const outside = path.join(root, "outside.pdf");
   await writeFile(outside, bytes);
   await symlink(outside, path.join(projects.attachmentsRoot(project), "link.pdf"));

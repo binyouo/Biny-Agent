@@ -1,3 +1,4 @@
+import type { TaskInspection, TaskInspectionOptions } from "../runtime/TaskCommunication.js";
 /**
  * 桌面端 IPC 协议。
  *
@@ -133,6 +134,7 @@ export const desktopIpc = {
   cancelModelLogin: "desktop:model:login:cancel",
   compact: "desktop:agent:compact",
   runtimeProjection: "desktop:runtime:projection",
+  taskInspection: "desktop:task:inspection",
   planProjection: "desktop:runtime:plans",
   runtimeMutation: "desktop:runtime:mutation",
   runtimeEvents: "desktop:runtime:events",
@@ -1527,6 +1529,8 @@ export type DesktopRuntimeMutation =
   | "task.create"
   | "task.start"
   | "task.run"
+  | "task.message"
+  | "task.continue"
   | "task.cancel"
   | "task.approve"
   | "task.resume"
@@ -1664,6 +1668,7 @@ export interface DesktopApi {
   startModelLogin(projectId: string, provider: DesktopModelLoginProvider): Promise<DesktopModelLoginStartResult>;
   cancelModelLogin(projectId: string, provider: DesktopModelLoginProvider, authRequestId: string): Promise<void>;
   compact(projectId: string, hint?: string): Promise<string>;
+  taskInspection(projectId: string, sessionId: string, taskRunId: string, options?: TaskInspectionOptions): Promise<TaskInspection>;
   runtimeProjection(projectId: string): Promise<DesktopRuntimeProjection>;
   planProjection(projectId: string, sessionId: string): Promise<DesktopPlanProjection>;
   runtimeMutation(projectId: string, operation: DesktopRuntimeMutation, payload?: Record<string, unknown>): Promise<unknown>;
