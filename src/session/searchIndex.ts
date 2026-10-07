@@ -189,9 +189,10 @@ export class SessionSearchIndex {
     let fileSize: number;
     try {
       fileSize = (await stat(filePath)).size;
-    } catch {
+    } catch (error) {
       signal?.throwIfAborted();
-      return 0;
+      if (typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT") return 0;
+      throw error;
     }
     signal?.throwIfAborted();
     if (fileSize < previousOffset) {
