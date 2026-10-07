@@ -9,7 +9,7 @@ import { randomBytes } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { globalConfigDir } from "../config/paths.js";
-import { parseSkillDocument } from "./skillDocument.js";
+import { maxSkillMetadataBytes, parseSkillDocument } from "./skillDocument.js";
 
 const maxSkillFileBytes = 512 * 1024;
 const skillNamePattern = /^[a-z0-9]+(?:-[a-z0-9]+)*$/u;
@@ -146,7 +146,10 @@ function parseManagedSkillMetadata(content: string, expectedId: string): {
   name: string;
   description: string;
 } {
-  const { frontmatter } = parseSkillDocument(content);
+  const { frontmatter, frontmatterEndByte } = parseSkillDocument(content);
+  if (frontmatterEndByte !== undefined && frontmatterEndByte > maxSkillMetadataBytes) {
+    throw new Error(`SKILL.md frontmatter 的结束分隔线必须位于前 ${String(maxSkillMetadataBytes)} 字节内。`);
+  }
   const name = requiredString(frontmatter.name, "name");
   const description = requiredString(frontmatter.description, "description");
   if (!skillNamePattern.test(name) || name.length > 64) {

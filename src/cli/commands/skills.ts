@@ -8,7 +8,7 @@ import path from "node:path";
 import { InvalidArgumentError } from "commander";
 import type { Command } from "commander";
 import { defaultManagedSkillRoot } from "../../extensions/managedSkillSources.js";
-import { parseSkillDocument } from "../../extensions/skillDocument.js";
+import { maxSkillMetadataBytes, parseSkillDocument } from "../../extensions/skillDocument.js";
 import { discoverSkillRepositories, installDiscoveredSkill, searchSkillsSh, updateDiscoveredSkill } from "../../extensions/skillDiscovery.js";
 import { readManagedSkillVersion, rollbackSkillVersion } from "../../extensions/skillVersions.js";
 import { withGlobalConfigWriteLock } from "../../config/versioned.js";
@@ -216,6 +216,9 @@ async function skillCreateCommand(name: string, source: string): Promise<void> {
   assertSkillDirectoryName(name);
   const content = source === "-" ? await readStdin() : await fs.readFile(source, "utf8");
   const parsed = parseSkillDocument(content);
+  if (parsed.frontmatterEndByte !== undefined && parsed.frontmatterEndByte > maxSkillMetadataBytes) {
+    throw new Error(`SKILL.md frontmatter 的结束分隔线必须位于前 ${String(maxSkillMetadataBytes)} 字节内。`);
+  }
   if (parsed.frontmatter.name !== name || typeof parsed.frontmatter.description !== "string" || !parsed.frontmatter.description.trim()) {
     throw new Error("SKILL.md frontmatter must contain matching name and a non-empty description.");
   }
