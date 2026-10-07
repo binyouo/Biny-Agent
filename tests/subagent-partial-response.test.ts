@@ -22,11 +22,11 @@ import type { ModelRequestMetrics } from "../src/agent/core/types.js";
 const partial = "I checked the first part; the remaining result is";
 const diagnostic = "The upstream response failed after partial output.";
 for (const response of [
-  { name: "normal stop", finish: "stop", status: "completed", reason: undefined },
-  { name: "output limit", finish: "length", status: "incomplete", reason: `Subagent did not complete (stopReason=length).\n\n${partial}` },
-  { name: "provider error", finish: "error", status: "failed", reason: diagnostic },
-  { name: "content filter", finish: "content_filter", status: "incomplete", reason: `Subagent did not complete (stopReason=other).\n\n${partial}` },
-  { name: "early EOF", finish: undefined, status: "incomplete", reason: `Subagent did not complete (stopReason=other).\n\n${partial}` }
+  { name: "normal stop", finish: "stop", stopReason: undefined, status: "completed", reason: undefined },
+  { name: "output limit", finish: "length", stopReason: "length", status: "incomplete", reason: `Subagent did not complete (stopReason=length).\n\n${partial}` },
+  { name: "provider error", finish: "error", stopReason: undefined, status: "failed", reason: diagnostic },
+  { name: "content filter", finish: "content_filter", stopReason: "other", status: "incomplete", reason: `Subagent did not complete (stopReason=other).\n\n${partial}` },
+  { name: "early EOF", finish: undefined, stopReason: "other", status: "incomplete", reason: `Subagent did not complete (stopReason=other).\n\n${partial}` }
 ]) {
   test(`TaskStatus reports ${response.name} after partial text through a real Worker and read-only reopening`, { timeout: 15_000 }, async () => {
     const temporary = await mkdtemp(path.join(os.tmpdir(), "biny-partial-response-"));
@@ -129,7 +129,8 @@ for (const response of [
         .filter((metrics) => metrics.requestContext?.operation === "subagent");
       assert.equal(requestMetrics.length, 1);
       const failure = task.attempts[0]?.failure;
-      assert.deepEqual(failure, response.reason === undefined ? undefined : { message: response.reason });
+      assert.deepEqual(failure, response.reason === undefined ? undefined : response.stopReason === undefined
+        ? { message: response.reason } : { message: response.reason, failureClass: response.stopReason });
       assert.equal(task.attempts.length, 1);
       const sessionId = task.sessionId!;
       await commands.close(); commands = undefined;
@@ -140,6 +141,7 @@ for (const response of [
       try {
         assert.equal((await channel.inspect(taskRunId)).status, response.status);
         assert.equal((await channel.inspect(taskRunId)).reason, response.reason);
+        assert.equal((await channel.inspect(taskRunId)).stopReason, response.stopReason);
         assert.deepEqual(stored.get(taskRunId)?.attempts[0]?.failure, failure);
       } finally { channel.close(); stored.close(); authority.close(); }
     } finally {

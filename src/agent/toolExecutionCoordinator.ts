@@ -10,7 +10,7 @@ import { routeEditingTools, type EditingMode } from "../tools/file/editingMode.j
 import { confirmPermissionRequest } from "../permission/confirm.js";
 import { isFullYesConfirmation } from "../permission/confirmation.js";
 import { PermissionManager } from "../permission/PermissionManager.js";
-import { analyzePermissionRequest } from "../permission/policy.js";
+import { analyzePermissionRequest, permissionApprovalFingerprint } from "../permission/policy.js";
 import { createToolPermissionRequest } from "../tools/display/ToolDisplay.js";
 import { ToolAccesses } from "../tools/access.js";
 import { getToolExposure, isToolModelVisible, isToolScriptCallable } from "../tools/exposure.js";
@@ -1638,11 +1638,6 @@ function validateStrongConfirmation(
     message: "Full yes confirmation was not provided.",
     confirmation: result.confirmation
   };
-}
-
-function permissionApprovalFingerprint(approvalRule: string, args: unknown): string {
-  const input = `${approvalRule}\0${stableJson(args)}`;
-  return createHash("sha256").update(input).digest("hex");
 }
 
 function stableJson(value: unknown): string {

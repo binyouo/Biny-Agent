@@ -61,25 +61,24 @@ test("后台启动的工具结果表示已委派，不把启动时的快照当�
     projectId: "p", onPreviewFile() {}, onOpenExternal() {}, async onResolvePermission() {}
   }));
   const dom = new JSDOM(html);
-  try { assert.equal(dom.window.document.querySelector('[role="status"]')!.textContent, "已委派"); }
+  try { assert.match(dom.window.document.querySelector("summary")!.getAttribute("aria-label")!, /已委派/); }
   finally { dom.window.close(); }
 });
 
-test("无效子代理参数和未知状态仍可查看错误详情，不中断时间线", () => {
+test("无效子代理参数和未知状态保留安全名称和状态，不中断时间线", () => {
   const html = renderToStaticMarkup(React.createElement(SubagentActivity, {
     tool: { ...task, args: { task: { unexpected: true }, agent: [1] }, status: "success", result: { status: "__proto__" } },
     projectId: "p", onPreviewFile() {}, onOpenExternal() {}, async onResolvePermission() {}
   }));
   const dom = new JSDOM(html);
   try {
-    const summary = dom.window.document.querySelector("summary")!.textContent!;
+    const summary = dom.window.document.querySelector("summary")!.getAttribute("aria-label")!;
     assert.match(summary, /子代理/);
-    assert.match(summary, /委派任务/);
     assert.match(summary, /状态待确认/);
   } finally { dom.window.close(); }
 });
 
-test("子代理调用独立显示在时间线，历史完成结果仍可展开", () => {
+test("历史子代理调用在自身卡片中展示保存的结果", () => {
   const turns = buildSessionTimeline([
     { type: "user_message", content: "检查缓存", time: "2026-09-30T00:00:00Z" },
     { type: "tool_call", tool: "Task", toolCallId: "child", args: task.args, time: "2026-09-30T00:00:01Z" },
@@ -96,10 +95,9 @@ test("子代理调用独立显示在时间线，历史完成结果仍可展开",
   }));
   const dom = new JSDOM(html);
   try {
-    const card = dom.window.document.querySelector(".chat-subagent");
+    const card = dom.window.document.querySelector(".subagent-card");
     assert.ok(card, "子代理不得只藏在已收起的通用工具活动里");
     assert.match(card.querySelector("summary")!.textContent!, /reviewer/);
-    assert.match(card.textContent!, /检查缓存的失效边界/);
     assert.match(card.textContent!, /缓存过期处理正确/);
   } finally { dom.window.close(); }
 });

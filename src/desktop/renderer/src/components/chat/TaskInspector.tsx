@@ -1,113 +1,144 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { TaskInspection, WorkerActivity } from "../../../../../runtime/TaskCommunication.js";
+import type { TimelineTool } from "../../sessionTimeline.js";
+import { buildSubagentTimeline } from "../../subagentTimeline.js";
+import { subagentColor, subagentFailurePresentation, subagentStatusLabel } from "../../subagentPresentation.js";
+import { ExecutionTimeline } from "../MessageTimeline.js";
+import { MarkdownContent } from "../MarkdownContent.js";
+import { Icon } from "../Icon.js";
 
-export function TaskInspector({ projectId, sessionId, taskRunId: originalTaskRunId, readOnly = false, onStatus }: {
-  projectId: string; sessionId: string; taskRunId: string; readOnly?: boolean;
-  onStatus?(status: string): void;
+interface Selection { projectId: string; sessionId?: string; taskRunId?: string; name: string; tool?: TimelineTool }
+const activeStatuses = new Set(["created", "queued", "running", "verifying", "needs_approval", "blocked", "delegated", "waiting"]);
+
+/** 卡片只读取所属执行记录；展开读取正文，收起仅刷新状态，不向父会话注入内容。 */
+export function TaskInspector({ selection, initialStatus = "running", onPreviewFile, onOpenExternal }: {
+  selection: Selection; initialStatus?: unknown;
+  onPreviewFile(path: string): void; onOpenExternal(url: string): void;
 }): React.JSX.Element {
-  const [taskRunId, setTaskRunId] = useState(originalTaskRunId);
-  const [inspection, setInspection] = useState<TaskInspection>();
-  const [activity, setActivity] = useState<WorkerActivity[]>([]);
+  const { projectId, sessionId, taskRunId, name, tool } = selection;
+  const admitted = !tool || (!["running", "waiting"].includes(tool.status) && !(tool.permission && !tool.permission.resolved))
+    || tool.updates.some(update => update.customKind === "subagent" && typeof (update.customData as { taskId?: unknown } | undefined)?.taskId === "string")
+    || typeof (tool.result as { taskRunId?: unknown } | undefined)?.taskRunId === "string";
+  const identity = `${projectId}:${sessionId}:${taskRunId}`;
+  const [open, setOpen] = useState(true);
   const [attemptId, setAttemptId] = useState<string>();
+  const [retry, setRetry] = useState(0);
+  const [state, setState] = useState<{ identity: string; inspection: TaskInspection; activity: WorkerActivity[] }>();
   const [error, setError] = useState<string>();
-  const [busy, setBusy] = useState(false);
-  const [message, setMessage] = useState("");
-  const [notice, setNotice] = useState<string>();
-  const [refresh, setRefresh] = useState(0);
-  const onStatusRef = useRef(onStatus);
-  useEffect(() => { onStatusRef.current = onStatus; }, [onStatus]);
-  const cursorRef = useRef(0);
-  const generation = useRef(0);
-  const requestIdentity = useRef<{ text: string; id: string; operation: string } | undefined>(undefined);
-  const [hasMore, setHasMore] = useState(false);
-  const [pageStarts, setPageStarts] = useState<number[]>([0]);
-  const pageStart = pageStarts.at(-1) ?? 0;
-  useEffect(() => { setTaskRunId(originalTaskRunId); setAttemptId(undefined); setPageStarts([0]); }, [originalTaskRunId]);
+  const cache = useRef<{ identity: string; selected?: string; attempt?: string; cursor: number; activity: WorkerActivity[] }>({ identity, cursor: 0, activity: [] });
+  const inspection = state?.identity === identity ? state.inspection : undefined;
+  const activity = useMemo(() => state?.identity === identity ? state.activity : [], [state, identity]);
   useEffect(() => {
-    const current = ++generation.current;
     let stopped = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
-    cursorRef.current = 0;
-    setInspection(undefined); setActivity([]); setError(undefined); setBusy(false);
+    if (cache.current.identity !== identity || cache.current.selected !== attemptId) {
+      cache.current = { identity, selected: attemptId, cursor: 0, activity: [] };
+      setState(undefined);
+    }
+    setError(undefined);
+    if (!sessionId || !taskRunId || !admitted) return;
     const load = async (): Promise<void> => {
       try {
-        const next = await window.biny.taskInspection(projectId, sessionId, taskRunId, { attemptId, afterSequence: pageStart, limit: 100 });
+        const current = cache.current;
+        const next = await window.biny.taskInspection(projectId, sessionId, taskRunId, {
+          attemptId, afterSequence: open ? current.cursor : 0, limit: 100, summary: !open
+        });
         if (stopped) return;
-        // A retry creates a new Worker Session; its cursor cannot reuse the old attempt.
-        if (inspectionAttempt !== undefined && inspectionAttempt !== next.attemptId) { cursorRef.current = 0; setActivity([]); inspectionAttempt = next.attemptId; if (pageStart !== 0) { setPageStarts([0]); return; } }
-        inspectionAttempt = next.attemptId;
-        cursorRef.current = next.cursor;
-        setInspection(next); setHasMore(next.hasMore); setError(undefined);
-        setActivity(next.activity);
-        if (taskRunId === originalTaskRunId) onStatusRef.current?.(next.status);
-        if (["created", "queued", "running", "verifying", "needs_approval", "blocked"].includes(next.status)) timer = setTimeout(() => void load(), 1000);
-      } catch (failure) { if (!stopped) setError(failure instanceof Error ? failure.message : "任务详情读取失败。"); }
+        if (current.attempt !== next.attemptId && current.attempt !== undefined) {
+          const hadCursor = current.cursor > 0;
+          current.cursor = 0; current.activity = []; current.attempt = next.attemptId;
+          setState({ identity, inspection: next, activity: [] });
+          if (open && hadCursor) { timer = setTimeout(() => void load(), 16); return; }
+        }
+        current.attempt = next.attemptId;
+        if (open) {
+          if (next.hasMore && next.cursor <= current.cursor) throw new Error("执行记录游标未前进，请重试读取。");
+          const existing = new Set(current.activity.map(entry => entry.id));
+          current.activity = [...current.activity, ...next.activity.filter(entry => !existing.has(entry.id))];
+          current.cursor = next.cursor;
+        }
+        setState({ identity, inspection: next, activity: current.activity });
+        setError(undefined);
+        const selected = next.attempts.find(attempt => attempt.attemptId === next.attemptId);
+        if (open && next.hasMore) timer = setTimeout(() => void load(), 16);
+        else if (activeStatuses.has(selected?.status ?? next.status)) timer = setTimeout(() => void load(), open ? 1000 : 2500);
+      } catch (failure) { if (!stopped) setError(failure instanceof Error ? failure.message : "子代理记录读取失败。"); }
     };
-    let inspectionAttempt: string | undefined;
     void load();
-    return () => { stopped = true; if (timer) clearTimeout(timer); if (generation.current === current) generation.current += 1; };
-  }, [projectId, sessionId, taskRunId, originalTaskRunId, attemptId, refresh, pageStart]);
-  const act = async (operation: "task.message" | "task.continue" | "task.cancel" | "task.resume" | "task.approve"): Promise<void> => {
-    if (busy) return;
-    const current = generation.current;
-    const text = message.trim();
-    if (!requestIdentity.current || requestIdentity.current.text !== text || requestIdentity.current.operation !== operation) requestIdentity.current = { text, operation, id: crypto.randomUUID() };
-    setBusy(true); setError(undefined); setNotice(undefined);
-    try {
-      const result = await window.biny.runtimeMutation(projectId, operation, { sessionId, taskRunId, message: text, messageId: requestIdentity.current.id, approvalId: inspection?.approval?.approvalId });
-      if (generation.current !== current) return;
-      setMessage(""); requestIdentity.current = undefined;
-      setNotice(operation === "task.message" ? "消息已持久化，子代理会在下一步接收。" : operation === "task.continue" ? `已创建后续任务：${(result as { taskRunId?: string })?.taskRunId ?? "请在后台任务中查看"}` : operation === "task.cancel" ? "已请求取消，正在释放执行资源。" : "已提交恢复请求。");
-      if (operation === "task.continue" && typeof (result as { taskRunId?: unknown })?.taskRunId === "string") {
-        setAttemptId(undefined); setPageStarts([0]); setTaskRunId((result as { taskRunId: string }).taskRunId);
-      } else setRefresh((value) => value + 1);
-    } catch (failure) { if (generation.current === current) setError(failure instanceof Error ? failure.message : "操作失败，可重试。"); }
-    finally { if (generation.current === current) setBusy(false); }
-  };
-  return <div className="chat-task-inspector">
-    {taskRunId !== originalTaskRunId ? <button type="button" disabled={busy} onClick={() => { setAttemptId(undefined); setPageStarts([0]); setTaskRunId(originalTaskRunId); }}>返回原任务</button> : null}
-    <button type="button" disabled={busy} onClick={() => setRefresh((value) => value + 1)}>刷新记录</button>
-    {error ? <p role="alert">{error} <button type="button" onClick={() => setRefresh((value) => value + 1)}>重新读取</button></p> : null}
-    {!inspection && !error ? <p role="status">正在读取子代理记录…</p> : null}
-    {inspection ? <>
-      <label>执行记录 <select aria-label="选择子代理执行记录" value={attemptId ?? "current"} onChange={(event) => { setPageStarts([0]); setAttemptId(event.target.value === "current" ? undefined : event.target.value); }}>
-        <option value="current">当前执行</option>{inspection.attempts.map((attempt, index) => <option key={attempt.attemptId} value={attempt.attemptId}>第 {index + 1} 次 · {attempt.status}</option>)}
-      </select></label>
-      <TaskInspectionView inspection={inspection} activity={activity} />
-      {pageStarts.length > 1 ? <button type="button" onClick={() => setPageStarts((pages) => pages.slice(0, -1))}>上一页活动</button> : null}
-      {hasMore ? <button type="button" onClick={() => setPageStarts((pages) => [...pages, cursorRef.current])}>下一页活动</button> : null}
-      {!readOnly && attemptId === undefined ? <div className="chat-task-controls">
-        {inspection.inputOpen || inspection.status === "completed" ? <>
-          <label>给子代理的消息<textarea aria-label="给子代理的消息" value={message} maxLength={8000} disabled={busy} onChange={(event) => setMessage(event.target.value)} placeholder={inspection.inputOpen ? "补充上下文或纠正任务方向" : "描述新的有限任务"} /></label>
-          <button type="button" disabled={busy || !message.trim()} onClick={() => void act(inspection.inputOpen ? "task.message" : "task.continue")}>{inspection.inputOpen ? "发送消息" : "创建后续任务"}</button>
-        </> : <p>当前执行不接收新消息。中断任务请从后台任务恢复；已有副作用不会自动重放。</p>}
-        {inspection.resumable ? <button type="button" disabled={busy} onClick={() => void act("task.resume")}>恢复执行</button> : null}
-        {inspection.approval ? <div><p>验收命令需要批准：{inspection.approval.cwd ?? "."}</p><pre>{inspection.approval.command}</pre><p>{inspection.approval.reason}</p><button type="button" disabled={busy} onClick={() => void act("task.approve")}>批准并继续验收</button></div> : null}
-        {["created", "queued", "running", "verifying"].includes(inspection.status) ? <button type="button" disabled={busy} onClick={() => void act("task.cancel")}>取消任务</button> : null}
-      </div> : null}
-    </> : null}
-    {notice ? <p role="status">{notice}</p> : null}
-  </div>;
+    return () => { stopped = true; clearTimeout(timer); };
+  }, [identity, projectId, sessionId, taskRunId, attemptId, open, retry, admitted]);
+
+  const selected = inspection?.attempts.find(attempt => attempt.attemptId === inspection.attemptId);
+  const status = selected?.status ?? inspection?.status ?? initialStatus;
+  const running = typeof status === "string" && activeStatuses.has(status);
+  const stoppedLabels: Record<string, string> = { step_limit: "步数用尽", permission_denied: "权限受阻", approval_required: "待父代理处理授权", inactivity_timeout: "无响应" };
+  const statusLabel = status === "completed" ? "已完成" : inspection?.stopReason && stoppedLabels[inspection.stopReason]
+    ? `已停止 · ${stoppedLabels[inspection.stopReason]}` : subagentStatusLabel(status);
+  const model = activity.findLast(entry => entry.model)?.model;
+  const workerName = inspection?.name ?? name;
+  const rawDescription = inspection?.description ?? (tool?.args as { description?: unknown } | undefined)?.description;
+  const description = typeof rawDescription === "string" ? rawDescription.replace(/\s+/gu, " ").trim().slice(0, 120) : "";
+  const title = description || (workerName === "子代理" ? workerName : `子代理 · ${workerName}`);
+  const recorded = typeof tool?.result === "string" ? tool.result : (tool?.result as { output?: string; error?: string } | undefined)?.output;
+  const recordedError = tool?.error ?? (tool?.result as { error?: string } | undefined)?.error;
+  const failure = subagentFailurePresentation(inspection?.reason ?? recordedError);
+  const scroll = useRef<HTMLDivElement>(null);
+  const content = useRef<HTMLDivElement>(null);
+  const following = useRef(true);
+  const [behind, setBehind] = useState(false);
+  useLayoutEffect(() => {
+    const viewport = scroll.current;
+    const body = content.current;
+    if (!open || !viewport || !body) return;
+    const follow = (): void => { if (following.current) viewport.scrollTop = viewport.scrollHeight; };
+    follow();
+    const observer = new ResizeObserver(follow);
+    observer.observe(body);
+    return () => observer.disconnect();
+  }, [open, activity, inspection]);
+  const bodyId = useId();
+  return <details className="subagent-card" data-agent-color={subagentColor(taskRunId ?? tool?.id ?? name)} open={open}
+    onToggle={event => setOpen(event.currentTarget.open)}>
+    <summary className="subagent-card-header" aria-label={`${title} · ${statusLabel}`} aria-controls={bodyId} aria-expanded={open}>
+      <span className="subagent-avatar"><Icon name="person" size={15} /></span>
+      <strong title={title}>{title}</strong>
+      <Icon name="chevron" size={13} />
+      {description && workerName !== "子代理" && workerName !== description ? <span className="subagent-name" title={workerName}>{workerName}</span> : null}
+      <span className={`subagent-card-status${running ? " is-running" : ""}`} role="status">{statusLabel}</span>
+      <span className="subagent-model" title={model ? `${model.provider} / ${model.id}` : undefined}>{model?.id ?? (inspection?.hasMore || !inspection && !error && sessionId && taskRunId ? "正在读取模型…" : running ? "等待模型信息" : "模型未记录")}</span>
+    </summary>
+    {open ? <div className="subagent-card-body" id={bodyId}>
+      {inspection && inspection.attempts.length > 1 ? <div className="subagent-card-toolbar"><select aria-label="选择子代理执行记录" value={attemptId ?? "current"} onChange={event => { following.current = true; setBehind(false); setAttemptId(event.target.value === "current" ? undefined : event.target.value); }}>
+        <option value="current">当前执行</option>{inspection.attempts.map((attempt, index) => <option key={attempt.attemptId} value={attempt.attemptId}>第 {index + 1} 次 · {subagentStatusLabel(attempt.status)}</option>)}
+      </select></div> : null}
+      {error ? <div className="subagent-card-notice" role="alert">{error} <button type="button" onClick={() => setRetry(value => value + 1)}>重新读取</button></div> : null}
+      {failure.reason ? <div className="subagent-card-outcome">{failure.reason}</div> : null}
+      <div className="subagent-card-scroll" ref={scroll} onScroll={event => {
+        const viewport = event.currentTarget;
+        following.current = viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight < 48;
+        setBehind(!following.current);
+      }}><div ref={content}>
+        {inspection ? <TaskInspectionView inspection={inspection} activity={activity} projectId={projectId} recordedOutput={recorded} onPreviewFile={onPreviewFile} onOpenExternal={onOpenExternal} />
+          : (recorded ?? failure.output) ? <MarkdownContent content={recorded ?? failure.output ?? ""} projectId={projectId} onPreviewFile={onPreviewFile} onOpenExternal={onOpenExternal} />
+            : <p className="subagent-card-empty">{error ? "暂时无法读取执行记录。" : !sessionId || !taskRunId ? "此历史记录没有可关联的执行身份。" : !admitted ? "等待子代理启动…" : "正在读取子代理记录…"}</p>}
+      </div></div>
+      {behind ? <button type="button" className="subagent-card-latest" onClick={() => { following.current = true; setBehind(false); if (scroll.current) scroll.current.scrollTop = scroll.current.scrollHeight; }}><Icon name="arrow-down" size={14} />回到最新</button> : null}
+    </div> : null}
+  </details>;
 }
 
-export function TaskInspectionView({ inspection, activity }: { inspection: TaskInspection; activity: WorkerActivity[] }): React.JSX.Element {
-  return <>
-    <p>{inspection.title}</p>
-    <p role="status">任务状态：{inspection.status}</p>
-    {inspection.reason ? <p>{inspection.reason}</p> : null}
-    {inspection.messages.length ? <ol aria-label="父子代理消息">{inspection.messages.map((message) => <li key={message.id}>
-      <strong>{message.direction === "parent" ? "父代理 → 子代理" : "子代理 → 父代理"}</strong>
-      <span> · {message.delivered ? "已接收" : "已持久化"}</span><p>{message.content}</p>
-    </li>)}</ol> : <p>暂无父子代理消息。</p>}
-    {activity.length ? <ol className="chat-subagent-trail" aria-label="子代理活动">{activity.map((entry) => <li key={entry.id}>
-      <details><summary>{entry.tool ?? ({ assistant: "回答", reasoning: "思考", completion: "执行结束" }[entry.kind as "assistant" | "reasoning" | "completion"] ?? "执行事件")} {entry.status}</summary>
-        {entry.toolCallId ? <small>调用 {entry.toolCallId}</small> : null}
-        {entry.content ? <p>{entry.content}</p> : null}
-        {entry.args !== undefined ? <pre>{JSON.stringify(entry.args, null, 2)}</pre> : null}
-        {entry.result !== undefined ? <pre>{JSON.stringify(entry.result, null, 2)}</pre> : null}
-      </details>
-    </li>)}</ol> : <p>暂无执行活动。</p>}
-    {inspection.output ? <details open><summary>子代理报告</summary><pre>{inspection.output}</pre>{inspection.outputTruncated ? <p>报告过长，当前显示前 16000 个字符。</p> : null}</details> : null}
-    {inspection.verification !== undefined ? <details><summary>验收证据</summary><pre>{JSON.stringify(inspection.verification, null, 2)}</pre></details> : null}
-  </>;
+export function TaskInspectionView({ inspection, activity, projectId = "", recordedOutput, onPreviewFile = () => {}, onOpenExternal = () => {} }: {
+  inspection: TaskInspection; activity: WorkerActivity[]; projectId?: string; recordedOutput?: string;
+  onPreviewFile?(path: string): void; onOpenExternal?(url: string): void;
+}): React.JSX.Element {
+  const turns = useMemo(() => buildSubagentTimeline(inspection, activity, recordedOutput), [inspection, activity, recordedOutput]);
+  const steps = turns.flatMap(turn => turn.steps).filter(step => step.kind !== "user");
+  return <div className="subagent-transcript">
+    {steps.length ? <ExecutionTimeline readOnly projectId={projectId} running={activeStatuses.has(inspection.attempts.find(attempt => attempt.attemptId === inspection.attemptId)?.status ?? inspection.status)} keepActivitiesOpen steps={steps}
+      onPreviewFile={onPreviewFile} onOpenExternal={onOpenExternal} onResolvePermission={async () => {}} />
+      : <p className="subagent-card-empty">{activeStatuses.has(inspection.status) ? "等待子代理输出…" : "没有执行正文。"}</p>}
+    {inspection.messages.length ? <details className="subagent-messages"><summary>父子代理消息 · {inspection.messages.length}</summary><ol>{inspection.messages.map(message => <li key={message.id}>
+      <small>{message.direction === "parent" ? "父代理 → 子代理" : "子代理 → 父代理"} · {message.delivered ? "已接收" : "已持久化"}</small><MarkdownContent content={message.content} projectId={projectId} onPreviewFile={onPreviewFile} onOpenExternal={onOpenExternal} />
+    </li>)}</ol></details> : null}
+  </div>;
 }

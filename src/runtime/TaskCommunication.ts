@@ -16,7 +16,8 @@ export interface WorkerActivity {
   id: string;
   sequence: number;
   createdAt: string;
-  kind: "tool_call" | "tool_result" | "tool_execution" | "assistant" | "reasoning" | "completion";
+  kind: "tool_call" | "tool_result" | "tool_execution" | "assistant" | "reasoning" | "completion" | "model";
+  model?: { provider: string; id: string };
   tool?: string;
   toolCallId?: string;
   content?: string;
@@ -40,6 +41,8 @@ export interface TaskInspection {
   attemptId?: string;
   attempts: Array<{ attemptId: string; status: TaskRunStatus }>;
   title: string;
+  name?: string;
+  description?: string;
   agent?: string;
   status: TaskRunStatus;
   revision: number;
@@ -48,6 +51,7 @@ export interface TaskInspection {
   output?: string;
   outputTruncated?: boolean;
   reason?: string;
+  stopReason?: string;
   verification?: unknown;
   inputOpen: boolean;
   resumable: boolean;
@@ -167,7 +171,7 @@ export class TaskCommunication {
     const task = this.read(taskRunId);
     const attempt = options.attemptId === undefined ? task.attempts.at(-1) : task.attempts.find((item) => item.attemptId === options.attemptId);
     const page = options.summary ? { events: [], hasMore: false } : this.tasks.workerTrail(taskRunId, options);
-    const definition = task.task as { prompt?: unknown; agent?: unknown } | undefined;
+    const definition = task.task as { prompt?: unknown; agent?: unknown; name?: unknown; description?: unknown } | undefined;
     const stored = attempt?.artifacts as { output?: unknown } | undefined;
     const failure = attempt?.failure as { message?: unknown; failureClass?: unknown } | undefined;
     const state = mailbox(task, attempt?.artifacts);
@@ -177,11 +181,14 @@ export class TaskCommunication {
       taskRunId, sessionId: this.sessionId, attemptId: attempt?.attemptId,
       attempts: task.attempts.map((item) => ({ attemptId: item.attemptId, status: item.status })),
       title: typeof definition?.prompt === "string" ? redactSecrets(definition.prompt).slice(0, 2000) : "子代理任务",
+      name: typeof definition?.name === "string" ? redactSecrets(definition.name).slice(0, 80) : undefined,
+      description: typeof definition?.description === "string" ? redactSecrets(definition.description).slice(0, 120) : undefined,
       agent: typeof definition?.agent === "string" ? definition.agent : undefined,
       status: task.status, revision: task.revision, createdAt: task.createdAt, updatedAt: task.updatedAt,
       output: !options.summary && typeof stored?.output === "string" ? redactSecrets(stored.output).slice(0, 16_000) : undefined,
       outputTruncated: typeof stored?.output === "string" && stored.output.length > 16_000,
       reason: typeof failure?.message === "string" ? redactSecrets(failure.message).slice(0, 2000) : undefined,
+      stopReason: typeof failure?.failureClass === "string" ? redactSecrets(failure.failureClass).slice(0, 128) : undefined,
       verification: options.summary ? undefined : boundedValue(attempt?.verification),
       inputOpen: attempt?.attemptId === task.attempts.at(-1)?.attemptId && ["queued", "running"].includes(task.status) && !state.inputClosed,
       resumable: task.status === "blocked" && failure?.failureClass === "worker_interrupted",
@@ -298,6 +305,20 @@ function workerActivity(event: RuntimeEvent): WorkerActivity[] {
   const text = (input: unknown): string | undefined => typeof input === "string" ? redactSecrets(input).slice(0, 16_000) : undefined;
   const tool = text(value.tool);
   const toolCallId = text(value.toolCallId);
+  if (event.eventType === "session.user_message") {
+    const model = (value.metadata as { subagentModel?: { provider?: unknown; id?: unknown } } | undefined)?.subagentModel;
+    const provider = text(model?.provider);
+    const id = text(model?.id);
+    return provider && id ? [{ ...base, kind: "model", model: { provider: provider.slice(0, 256), id: id.slice(0, 256) } }] : [];
+  }
+  if (event.eventType === "session.model_request") {
+    const metrics = value.metrics as { provider?: unknown; modelId?: unknown; requestContext?: { operation?: unknown } } | undefined;
+    const provider = text(metrics?.provider);
+    const id = text(metrics?.modelId);
+    const operation = metrics?.requestContext?.operation;
+    return provider && id && (operation === undefined || operation === "subagent" || operation === "agent")
+      ? [{ ...base, kind: "model", model: { provider: provider.slice(0, 256), id: id.slice(0, 256) } }] : [];
+  }
   if (event.eventType === "session.tool_call" && tool) return [{ ...base, kind: "tool_call", tool, toolCallId, args: boundedValue(value.args), content: text(value.assistantContent) }];
   if (event.eventType === "session.tool_result" && tool) return [{ ...base, kind: "tool_result", tool, toolCallId, result: boundedValue(value.result), status: text(value.executionStatus) }];
   if (event.eventType === "session.tool_execution" && tool) return [{ ...base, kind: "tool_execution", tool, toolCallId, status: text(value.state), content: text(value.evidence) }];

@@ -368,7 +368,7 @@ async function testHostPlanApprovalRestartAndDelivery(planning = false, independ
     return streamText("计划已开始");
   }) as typeof fetch;
   const testConfig = config();
-  testConfig.permission = { ...testConfig.permission, mode: "ask", criticalAlwaysAsk: true };
+  testConfig.permission = { ...testConfig.permission, mode: "ask", criticalAlwaysAsk: true, allowPaths: ["first.txt", "second.txt"] };
   testConfig.extensions.subagent.maxSteps = 4;
   testConfig.workspace.ignore = [...testConfig.workspace.ignore, ".verification-state", ".agent-test"];
   let storedConfig = structuredClone(testConfig);

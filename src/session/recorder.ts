@@ -57,8 +57,10 @@ export interface ReasoningBlock {
 }
 
 export interface SessionImportSource {
-  format: "claude";
-  /** One-based nonempty JSONL record, independent of repeated or absent source UUIDs. */
+  format: "claude" | "chatgpt" | "codex";
+  conversationId?: string;
+  toolCallId?: string;
+  /** One-based source record or mapping entry, independent of source message identity. */
   record: number;
   messageId?: string;
   parentMessageId?: string;

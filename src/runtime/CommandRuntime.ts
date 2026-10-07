@@ -372,6 +372,7 @@ export async function createCommandRuntime(workspaceRoot: string, options: Comma
   });
   const subagentOptions: SubagentOptions = {
     workspaceRoot,
+    permissionManager,
     config,
     getModelSettings: (modelAlias?: string) => subagentModelSettings(config, requireModelManager(modelManager), modelAlias),
     loadAgentDefinitions,
@@ -395,6 +396,8 @@ export async function createCommandRuntime(workspaceRoot: string, options: Comma
         parentRunId: context.runId ?? subagentParentRunId,
         task: {
           prompt: input.task,
+          name: input.name,
+          description: input.description,
           constraints: input.constraints,
           communication: true,
           notifyParent: input.background === true,

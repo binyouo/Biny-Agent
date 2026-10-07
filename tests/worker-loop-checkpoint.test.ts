@@ -188,6 +188,10 @@ test("prepared workers keep their admitted tool and budget policy while queued",
   const options = workerOptions(root, registry, model);
   const prepared = await prepareSubagentTask(options, "inspect", "workspace", undefined, { taskId: "queued-policy", persistenceRoot: root });
   try {
+    const admittedEvents = await readSessionEvents(sessionFilePath(root, workerSessionId("queued-policy")));
+    const taskMessage = admittedEvents.find(event => event.type === "user_message");
+    assert.deepEqual(taskMessage?.metadata?.subagentModel, { provider: "synthetic", id: "synthetic" }, "the selected worker model is persisted before any request, including queued workers");
+    assert.equal(requests, 0);
     options.config.extensions.subagent.allowedTools = [];
     options.config.extensions.subagent.maxSteps = 0;
     registry.unregister("Write");
@@ -210,9 +214,37 @@ test("a safe checkpoint refuses capability policy changes without spending a new
     options.config.permission.mode = "ask";
     await assert.rejects(runSubagentTask(options, "inspect", undefined, "workspace", undefined, { ...execution, resume: true }), /policy changed/u);
     options.config.permission.mode = "full-access";
-    options.config.extensions.subagent.maxSteps += 1;
+    options.config.extensions.subagent.maxSteps = 7;
     await assert.rejects(runSubagentTask(options, "inspect", undefined, "workspace", undefined, { ...execution, resume: true }), /policy changed/u);
     assert.equal(requests, 1);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("default worker budget permits a task beyond 32 model steps and persists its final handoff", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "biny-worker-long-task-"));
+  let requests = 0;
+  let writes = 0;
+  const registry = registryWithWrite(root, async () => { writes += 1; });
+  const model: AgentModel = { provider: "synthetic", modelId: "synthetic", supportsTools: true,
+    stream: async () => {
+      requests += 1;
+      if (requests === 35) return response("all steps completed");
+      return (async function* (): AsyncGenerator<ModelStreamEvent> {
+        yield { type: "start" };
+        yield { type: "tool-call", id: `write-${requests}`, name: "Write", arguments: { path: "artifact.txt" } };
+        yield { type: "finish", reason: "tool-calls" };
+      })();
+    }
+  };
+  const options = workerOptions(root, registry, model);
+  options.config.extensions.subagent = structuredClone(defaultConfig.extensions.subagent);
+  try {
+    assert.equal(await runSubagentTask(options, "finish the assigned multi-step task", undefined, "workspace", undefined,
+      { taskId: "long-task", persistenceRoot: root }), "all steps completed");
+    assert.equal(requests, 35);
+    assert.equal(writes, 34);
+    const saved = await new TurnStore(root, workerSessionId("long-task")).load();
+    assert.equal((saved?.facts as { output?: string }).output, "all steps completed");
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 

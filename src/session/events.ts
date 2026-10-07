@@ -121,7 +121,9 @@ const persistedAgentMessageSchema = z.discriminatedUnion("role", [
   }).passthrough()
 ]);
 const sessionImportSourceSchema = z.object({
-  format: z.literal("claude"),
+  format: z.enum(["claude", "chatgpt", "codex"]),
+  conversationId: z.string().min(1).optional(),
+  toolCallId: z.string().min(1).optional(),
   record: z.number().int().positive(),
   messageId: z.string().min(1).optional(),
   parentMessageId: z.string().min(1).optional()

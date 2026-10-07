@@ -145,8 +145,7 @@ export async function* vercelAgentLoopContinue(
     signal?.throwIfAborted();
     // 这些消息已经写入 context；标记只用于判断上一段 loop 是否需要再次启动。
     state.hasPendingMessages = false;
-    const remainingSteps = config.maxSteps - state.completedSteps;
-    if (remainingSteps <= 0) {
+    if (config.maxSteps !== undefined && state.completedSteps >= config.maxSteps) {
       yield {
         type: "error",
         error: `Agent reached its ${String(config.maxSteps)}-step limit.`,
@@ -245,7 +244,7 @@ export async function* vercelAgentLoopContinue(
       yield* appendQueuedMessages(state, await config.getQueuedMessages?.() ?? []);
     }
     needsFollowUp = state.hasPendingMessages || modelNeedsFollowUp;
-    if (state.completedSteps >= config.maxSteps && needsFollowUp) {
+    if (config.maxSteps !== undefined && state.completedSteps >= config.maxSteps && needsFollowUp) {
       yield {
         type: "error",
         error: `Agent reached its ${String(config.maxSteps)}-step limit.`,

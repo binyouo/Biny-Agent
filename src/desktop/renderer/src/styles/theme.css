@@ -36,6 +36,13 @@
   --amber-text: light-dark(#a65f00, #ffb900);
   --amber-bg: rgb(254 154 0 / 10%);
   --info: #2b7fff;
+  /* 子代理身份色与运行状态无关，保持明暗主题中的文字对比度。 */
+  --agent-teal: light-dark(#087e8b, #67d4df);
+  --agent-purple: light-dark(#7951b0, #bd9aee);
+  --agent-amber: light-dark(#956000, #efbd5b);
+  --agent-green: light-dark(#28784b, #7ecb9b);
+  --agent-rose: light-dark(#ab4572, #ed9abd);
+  --agent-blue: var(--accent);
   --file-git: light-dark(#c84b2b, #f06a3c);
   --file-javascript: light-dark(#926900, #e2c54f);
   --file-purple: light-dark(#79579d, #b99bdd);

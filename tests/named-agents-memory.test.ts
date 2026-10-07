@@ -155,7 +155,7 @@ async function testSubagentTaskManagerAgentThreading(): Promise<void> {
   }
 }
 
-/** 模型每步都继续请求工具，验证步数预算截停时返回带标注的部分结论而不是抛错。 */
+/** 模型每步都继续请求工具，验证显式步数预算截停时抛出未完成结果并保留部分结论。 */
 async function testSubagentBudgetExhaustionRejectsWithPartialFindings(): Promise<void> {
   const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "biny-subagent-partial-"));
   const originalFetch = globalThis.fetch;
@@ -196,6 +196,7 @@ async function testSubagentBudgetExhaustionRejectsWithPartialFindings(): Promise
         memory: { ...defaultConfig.context.memory, useMemories: false, generateMemories: false }
       }
     });
+    config.extensions.subagent.maxSteps = 4;
     const registry = new ToolRegistry();
     registry.registerBuiltinTool(listFilesTool());
     const options: SubagentOptions = {

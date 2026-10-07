@@ -337,7 +337,7 @@ function extensionSummaryRows(extensions: ExtensionStatus): CommandCardRow[] {
     row("MCP", mcpText, mcpEnabled.length ? undefined : "dim"),
     row("Skills", extensions.skills.length ? `${String(extensions.skills.length)} loaded` : "none", extensions.skills.length ? undefined : "dim"),
     row("Plugins", extensions.plugins.length ? `${String(extensions.plugins.length)} loaded` : "none", extensions.plugins.length ? undefined : "dim"),
-    row("Subagent", extensions.subagent.enabled ? `enabled · up to ${String(extensions.subagent.maxSteps)} steps` : "disabled", extensions.subagent.enabled ? undefined : "dim"),
+    row("Subagent", extensions.subagent.enabled ? `enabled · ${extensions.subagent.maxSteps === undefined ? "no step limit" : `up to ${extensions.subagent.maxSteps} steps`}` : "disabled", extensions.subagent.enabled ? undefined : "dim"),
     ...extensions.skillWarnings.map((warning): CommandCardRow => ({
       label: "Skill warning",
       value: { text: warning, style: "warning" },

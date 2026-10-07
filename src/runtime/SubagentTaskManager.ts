@@ -9,10 +9,11 @@ export interface SubagentTaskSnapshot {
   task: string;
   status: SubagentTaskStatus;
   createdAt: string;
-  deadline: string;
+  deadline?: string;
   startedAt?: string;
   completedAt?: string;
   error?: string;
+  stopReason?: string;
   accessMode?: SubagentAccessMode;
   /** 具名子代理定义名；省略表示默认子代理。 */
   agent?: string;
@@ -34,19 +35,19 @@ export interface SubagentTaskRunOptions {
 export interface SubmittedSubagentTask {
   taskId: string;
   parentRunId: string;
-  deadline: string;
+  deadline?: string;
   completion: Promise<string>;
 }
 
 export interface SubagentTaskManagerOptions {
   maxConcurrentSubagents: number;
   maxPendingSubagents?: number;
-  timeoutMs: number;
+  timeoutMs?: number;
   shutdownDrainMs?: number;
   /** 将内存调度快照投影到 durable TaskRun；观察者失败不能破坏调度。 */
   onSnapshot?(snapshot: SubagentTaskSnapshot): void;
   persistCompletion?(snapshot: SubagentTaskSnapshot, output: string): Promise<void> | void;
-  execute(task: string, context: { taskId: string; parentRunId: string; signal: AbortSignal; deadline: string; accessMode: SubagentAccessMode; agent?: string }): Promise<string>;
+  execute(task: string, context: { taskId: string; parentRunId: string; signal: AbortSignal; deadline?: string; accessMode: SubagentAccessMode; agent?: string }): Promise<string>;
 }
 
 interface ManagedSubagentTask extends SubagentTaskSnapshot {
@@ -55,7 +56,7 @@ interface ManagedSubagentTask extends SubagentTaskSnapshot {
   completion: Promise<string>;
   resolve(value: string): void;
   reject(error: Error): void;
-  timeout: ReturnType<typeof setTimeout>;
+  timeout?: ReturnType<typeof setTimeout>;
   removeParentAbortListener?: () => void;
 }
 
@@ -84,7 +85,7 @@ export class SubagentTaskManager {
     assertIntegerInRange("maxConcurrentSubagents", options.maxConcurrentSubagents, 1, Number.MAX_SAFE_INTEGER);
     this.maxPendingSubagents = options.maxPendingSubagents ?? SubagentTaskManager.defaultMaxPendingSubagents;
     assertIntegerInRange("maxPendingSubagents", this.maxPendingSubagents, 0, Number.MAX_SAFE_INTEGER);
-    assertIntegerInRange("timeoutMs", options.timeoutMs, 1, SubagentTaskManager.maxTimerMs);
+    if (options.timeoutMs !== undefined) assertIntegerInRange("timeoutMs", options.timeoutMs, 1, SubagentTaskManager.maxTimerMs);
     if (options.shutdownDrainMs !== undefined) {
       assertIntegerInRange("shutdownDrainMs", options.shutdownDrainMs, 0, SubagentTaskManager.maxTimerMs);
     }
@@ -106,13 +107,13 @@ export class SubagentTaskManager {
     if (this.tasks.has(taskId) || this.terminalSnapshots.has(taskId)) throw new Error(`Subagent task already exists: ${taskId}`);
     const parentRunId = options.parentRunId ?? taskId;
     const timeoutMs = options.timeoutMs ?? this.options.timeoutMs;
-    assertIntegerInRange("timeoutMs", timeoutMs, 1, SubagentTaskManager.maxTimerMs);
+    if (timeoutMs !== undefined) assertIntegerInRange("timeoutMs", timeoutMs, 1, SubagentTaskManager.maxTimerMs);
     const canStartImmediately = this.activeTasks < this.options.maxConcurrentSubagents && this.queue.length === 0;
     if (!canStartImmediately && this.queue.length >= this.maxPendingSubagents) {
       throw new SubagentTaskQueueFullError(this.maxPendingSubagents);
     }
     const createdAtMs = Date.now();
-    const deadlineMs = createdAtMs + timeoutMs;
+    const deadline = timeoutMs === undefined ? undefined : new Date(createdAtMs + timeoutMs).toISOString();
     const controller = new AbortController();
     let resolveCompletion!: (value: string) => void;
     let rejectCompletion!: (error: Error) => void;
@@ -126,14 +127,14 @@ export class SubagentTaskManager {
       task: normalizedTask,
       status: "queued",
       createdAt: new Date(createdAtMs).toISOString(),
-      deadline: new Date(deadlineMs).toISOString(),
+      deadline,
       accessMode: options.accessMode ?? "read-only",
       agent: options.agent,
       controller,
       completion,
       resolve: resolveCompletion,
       reject: rejectCompletion,
-      timeout: setTimeout(() => {
+      timeout: timeoutMs === undefined ? undefined : setTimeout(() => {
         this.abortTask(taskId, new SubagentTaskTimeoutError(taskId, timeoutMs));
       }, timeoutMs)
     };
@@ -289,6 +290,7 @@ export class SubagentTaskManager {
       : error instanceof SubagentTaskAbortedError || task.controller.signal.aborted ? "aborted"
         : error instanceof SubagentTaskIncompleteError ? "incomplete" : "failed";
     task.error = error.message;
+    task.stopReason = error instanceof SubagentTaskIncompleteError ? error.stopReason : undefined;
     task.completedAt = new Date().toISOString();
     this.cleanup(task);
     task.reject(error);
@@ -383,6 +385,7 @@ function publicSnapshot(task: ManagedSubagentTask): SubagentTaskSnapshot {
     startedAt: task.startedAt,
     completedAt: task.completedAt,
     error: task.error?.slice(0, 2000),
+    stopReason: task.stopReason,
     accessMode: task.accessMode,
     agent: task.agent
   };

@@ -57,7 +57,7 @@ interface MessageTimelineProps {
   onEditRequest(turn: TimelineTurn): void;
   /** 进行中的编辑重写：App 提交时置位，替换回合出现后由 App 清除。 */
   editInFlight?: { turnId: string; user: string; userMessageIndex?: number };
-  onCreateBranch(): void;
+  onCreateBranch?(): void;
   onRollbackFiles(turn: TimelineTurn): void;
 }
 
@@ -100,7 +100,7 @@ export const MessageTimeline = memo(function MessageTimeline({ sessionId, readOn
     const start = element(range.startContainer)?.closest(".markdown-body");
     const end = element(range.endContainer)?.closest(".markdown-body");
     const message = start?.closest<HTMLElement>("article[data-message-id]");
-    if (!start || start !== end || !message?.dataset.messageId || !timeline.contains(message)) { setQuoteSelection(undefined); return; }
+    if (!start || start.closest(".subagent-card") || start !== end || !message?.dataset.messageId || !timeline.contains(message)) { setQuoteSelection(undefined); return; }
     const quote = selection.toString().trim();
     if (!quote || quote.length > 4_000) { setQuoteSelection(undefined); return; }
     const bounds = range.getBoundingClientRect();
@@ -446,7 +446,7 @@ const Turn = memo(function Turn({
   onRetrySettled(turnId: string, succeeded: boolean): void;
   onSwitchVersion(messageId: string, direction: "prev" | "next"): Promise<void>;
   onEditRequest(turn: TimelineTurn): void;
-  onCreateBranch(): void;
+  onCreateBranch?(): void;
   onRollbackFiles(turn: TimelineTurn): void;
 }): React.JSX.Element {
   const running = turnIsRunning(turn, runtimeActiveRunId);
@@ -499,11 +499,11 @@ const Turn = memo(function Turn({
           messageId={turn.userMessageId}
           entrySheenOnly={entrySheenOnly === true}
           hasChangedFiles={listChangedFiles(turn).length > 0}
-          onCreateBranch={onCreateBranch}
+          onCreateBranch={readOnly ? undefined : onCreateBranch}
           onEdit={readOnly ? undefined : () => onEditRequest(turn)}
           onOpenExternal={onOpenExternal}
           onReference={!readOnly && turn.userMessageId ? () => onReferenceMessage(turn.userMessageId!) : undefined}
-          onShowReferences={turn.userMessageId ? () => onShowMessageReferences(turn.userMessageId!) : undefined}
+          onShowReferences={!readOnly && turn.userMessageId ? () => onShowMessageReferences(turn.userMessageId!) : undefined}
           onPreviewFile={onPreviewFile}
           onRegenerate={canRetry ? retry : undefined}
           onRollbackFiles={readOnly ? undefined : () => onRollbackFiles(turn)}
@@ -547,9 +547,9 @@ const Turn = memo(function Turn({
             content={turn.assistant}
             finishReason={turn.finishReason}
             metrics={turnMetrics(turn)}
-            onCreateBranch={onCreateBranch}
+            onCreateBranch={readOnly ? undefined : onCreateBranch}
             onReference={!readOnly && turn.assistantMessageId ? () => onReferenceMessage(turn.assistantMessageId!) : undefined}
-            onShowReferences={turn.assistantMessageId ? () => onShowMessageReferences(turn.assistantMessageId!) : undefined}
+            onShowReferences={!readOnly && turn.assistantMessageId ? () => onShowMessageReferences(turn.assistantMessageId!) : undefined}
             onRegenerate={canRetry ? retry : undefined}
             onSwitchVersion={!readOnly && turn.versionCount && turn.versionCount > 1 ? switchVersion : undefined}
             runMs={turn.durationMs}
@@ -590,7 +590,7 @@ const TypewriterMarkdown = memo(function TypewriterMarkdown({ active, content, o
   );
 });
 
-function ExecutionTimeline({ readOnly,
+export function ExecutionTimeline({ readOnly, keepActivitiesOpen = false,
   sessionId,
   onPreviewFile,
   onOpenExternal,
@@ -606,6 +606,7 @@ function ExecutionTimeline({ readOnly,
   onResolvePermission(requestId: string, result: PermissionResult): Promise<void>;
   projectId: string;
   readOnly: boolean;
+  keepActivitiesOpen?: boolean;
   running: boolean;
   steps: TimelineStep[];
   /** 轮次级思考耗时（秒）；纯思考段的「已思考 N 秒」兜底。 */
@@ -622,15 +623,18 @@ function ExecutionTimeline({ readOnly,
               key={entry[0]?.id ?? "activity-segment"}
               onOpenExternal={onOpenExternal}
               onPreviewFile={onPreviewFile}
-              onResolvePermission={onResolvePermission}
+              onResolvePermission={readOnly ? undefined : onResolvePermission}
               projectId={projectId}
-              running={running && index === entries.length - 1}
+              running={running && (keepActivitiesOpen || index === entries.length - 1)}
               steps={entry}
               thinkingSeconds={thinkingSeconds}
             />
           );
         }
         const step = entry;
+        if (step.kind === "tool" && step.tool.tool === "Task" && !readOnly) {
+          return <SubagentActivity key={step.id} tool={step.tool} projectId={projectId} sessionId={sessionId} onPreviewFile={onPreviewFile} onOpenExternal={onOpenExternal} onResolvePermission={onResolvePermission} />;
+        }
         if (step.kind === "reasoning") {
           // 上下文压缩标记渲染为独立的压缩分隔条（居中药丸）。
           if (step.notice === "compaction") {
@@ -643,9 +647,9 @@ function ExecutionTimeline({ readOnly,
               key={step.id}
               onOpenExternal={onOpenExternal}
               onPreviewFile={onPreviewFile}
-              onResolvePermission={onResolvePermission}
+              onResolvePermission={readOnly ? undefined : onResolvePermission}
               projectId={projectId}
-              running={running && index === entries.length - 1}
+              running={running && (keepActivitiesOpen || index === entries.length - 1)}
               steps={[step]}
               thinkingSeconds={thinkingSeconds}
             />
@@ -658,6 +662,7 @@ function ExecutionTimeline({ readOnly,
             </div>
           );
         }
+        if (step.kind === "tool" && readOnly) return <ActivitySegment key={step.id} projectId={projectId} steps={[step]} running={false} onPreviewFile={onPreviewFile} onOpenExternal={onOpenExternal} onResolvePermission={readOnly ? undefined : onResolvePermission} />;
         if (step.kind === "tool") return step.tool.tool === "AskUserQuestion"
           ? <UserInputCard key={`${sessionId}:${step.tool.runId}:${step.id}`} tool={step.tool} projectId={projectId} sessionId={sessionId} running={running} />
           : <SubagentActivity key={step.id} tool={step.tool} projectId={projectId} sessionId={sessionId} readOnly={readOnly} onPreviewFile={onPreviewFile} onOpenExternal={onOpenExternal} onResolvePermission={onResolvePermission} />;
@@ -738,7 +743,7 @@ function UserMessage({
   /** 只播高光扫光、跳过浮入（FLIP 落定后的首条消息）。 */
   entrySheenOnly?: boolean;
   hasChangedFiles: boolean;
-  onCreateBranch(): void;
+  onCreateBranch?(): void;
   onEdit?(): void;
   onOpenExternal(url: string): void;
   onPreviewFile(path: string): void;
@@ -772,7 +777,7 @@ function UserMessage({
         <div className="message-menu" data-direction={menuPosition.direction} ref={menuRef} role="menu" style={menuPosition.style}>
           <button className="message-menu-item" onClick={() => { copyText(message.text); closeMenu(); }} role="menuitem" type="button"><Icon name="copy" size={14} /><span>复制为 Markdown</span></button>
           <button className="message-menu-item" onClick={() => { copyText(plainTextFromMarkdown(message.text)); closeMenu(); }} role="menuitem" type="button"><Icon name="copy" size={14} /><span>复制为纯文本</span></button>
-          <button className="message-menu-item" onClick={() => { onCreateBranch(); closeMenu(); }} role="menuitem" type="button"><Icon name="branch" size={14} /><span>创建分支</span></button>
+          {onCreateBranch ? <button className="message-menu-item" onClick={() => { onCreateBranch(); closeMenu(); }} role="menuitem" type="button"><Icon name="branch" size={14} /><span>创建分支</span></button> : null}
           {onReference ? <button className="message-menu-item" onClick={() => { onReference(); closeMenu(); }} role="menuitem" type="button"><Icon name="at" size={14} /><span>引用消息</span></button> : null}
           {onShowReferences ? <button className="message-menu-item" onClick={() => { onShowReferences(); closeMenu(); }} role="menuitem" type="button"><Icon name="network" size={14} /><span>查看引用来源</span></button> : null}
           {onRollbackFiles ? <button className="message-menu-item" disabled={!hasChangedFiles} onClick={() => { onRollbackFiles(); closeMenu(); }} role="menuitem" title={hasChangedFiles ? "回滚本条消息产生的文件修改" : "当前消息没有可回滚的文件修改"} type="button"><Icon name="arrow-left" size={14} /><span>回滚文件</span></button> : null}
@@ -814,7 +819,7 @@ function AssistantActions({ projectId, sessionId, turn, skillDescriptions, skill
   runMs?: number;
   usage?: SessionUsage;
   finishReason?: string;
-  onCreateBranch(): void;
+  onCreateBranch?(): void;
   onReference?(): void;
   onShowReferences?(): void;
   onRegenerate?(): Promise<void>;
@@ -1023,7 +1028,7 @@ function AssistantActions({ projectId, sessionId, turn, skillDescriptions, skill
           {copyFailed ? <div className="message-menu-item is-static is-danger" role="alert">复制失败，请重试或手动复制</div> : null}
           <button className="message-menu-item" role="menuitem" type="button" onClick={() => { closeMenu(); setTraceOpen(true); }}><Icon name="activity" size={14} /><span>查看 Trace</span></button>
           <div className="message-menu-separator" role="separator" />
-          <button className="message-menu-item" onClick={() => { onCreateBranch(); closeMenu(); }} role="menuitem" type="button"><Icon name="branch" size={14} /><span>创建分支</span></button>
+          {onCreateBranch ? <button className="message-menu-item" onClick={() => { onCreateBranch(); closeMenu(); }} role="menuitem" type="button"><Icon name="branch" size={14} /><span>创建分支</span></button> : null}
           {onReference ? <button className="message-menu-item" onClick={() => { onReference(); closeMenu(); }} role="menuitem" type="button"><Icon name="at" size={14} /><span>引用消息</span></button> : null}
           {onShowReferences ? <button className="message-menu-item" onClick={() => { onShowReferences(); closeMenu(); }} role="menuitem" type="button"><Icon name="network" size={14} /><span>查看引用来源</span></button> : null}
         </div>,

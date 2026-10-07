@@ -173,8 +173,10 @@ function testPathRulesMatchAnyDepth(): void {
 
 function testSubagentAccessInheritsMode(): void {
   const manager = new PermissionManager({ mode: "ask" });
-  assert.equal(subagentAccessMode(manager), "read-only");
+  assert.equal(subagentAccessMode(manager), "workspace", "ask mode exposes task tools but requires each action to pass the inherited permission gate");
   manager.setMode("auto");
+  assert.equal(subagentAccessMode(manager), "workspace");
+  manager.setMode("read-only");
   assert.equal(subagentAccessMode(manager), "read-only");
   manager.setMode("full-access");
   assert.equal(subagentAccessMode(manager), "workspace");

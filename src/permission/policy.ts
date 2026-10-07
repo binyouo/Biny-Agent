@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 /**
  * 权限风险识别模块。
  *
@@ -355,4 +356,17 @@ function normalizePermissionPath(value: string): string {
   if (!value) return "";
   const normalized = path.posix.normalize(value.replaceAll("\\", "/")).replace(/^\.\//, "");
   return normalized === "." ? "" : normalized;
+}
+
+export function permissionApprovalFingerprint(approvalRule: string, args: unknown): string {
+  const input = `${approvalRule}\0${stableJson(args)}`;
+  return createHash("sha256").update(input).digest("hex");
+}
+
+
+function stableJson(value: unknown): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value) ?? String(value);
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+  const record = value as Record<string, unknown>;
+  return `{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${stableJson(record[key])}`).join(",")}}`;
 }

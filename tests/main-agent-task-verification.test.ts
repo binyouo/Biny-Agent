@@ -319,8 +319,8 @@ function config(): AgentConfig {
         displayName: "Main Agent Verification Test"
       }
     },
-    // 本用例只覆盖审批恢复；默认路径禁令依赖 macOS Seatbelt，Linux 上无法执行沙箱命令。
-    permission: { ...defaultConfig.permission, mode: "ask", criticalAlwaysAsk: true, denyPaths: [] },
+    // 产物写入已授权；验收命令仍须单独批准。路径禁令依赖 macOS Seatbelt，本用例不测试沙箱。
+    permission: { ...defaultConfig.permission, mode: "ask", criticalAlwaysAsk: true, allowPaths: ["artifact.txt"], denyPaths: [] },
     checkpoints: { enabled: false },
     workspace: { ...defaultConfig.workspace, ignore: [...defaultConfig.workspace.ignore, ".verification-state"] },
     extensions: {

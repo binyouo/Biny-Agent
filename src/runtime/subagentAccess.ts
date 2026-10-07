@@ -8,9 +8,9 @@ import type { PermissionManager } from "../permission/PermissionManager.js";
 import type { SubagentAccessMode } from "./SubagentTaskManager.js";
 
 /**
- * 子任务继承当前交互会话的权限姿态：只有 full-access 才允许子 agent 写工作区。
- * 一次「同意派发任务」的授权不等于放开写权限，否则 ask / read-only 会话会被悄悄提权。
+ * 只读会话收窄工具面；其他模式逐次通过同一权限管理器决定能否执行。
+ * 暴露写工具不代表授权，ask 模式中未获授权的操作会作为阻塞交回父代理。
  */
 export function subagentAccessMode(permissionManager: PermissionManager): SubagentAccessMode {
-  return permissionManager.getStatus().mode === "full-access" ? "workspace" : "read-only";
+  return permissionManager.getStatus().mode === "read-only" ? "read-only" : "workspace";
 }

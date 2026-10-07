@@ -215,3 +215,22 @@ test("closing the channel releases waiters and fences delivery receipts without 
     assert.equal(f.tasks.get("child")!.revision, revision);
   } finally { await f.close(); }
 });
+
+// The header must not pick a memory/compaction model or expose unrelated request metadata.
+test("inspection exposes only the selected worker's bounded model identity", async () => {
+  const f = await fixture();
+  try {
+    for (const [index, operation] of ["subagent", "memory", "compaction"].entries()) {
+      f.authority.appendSessionEvent({ sessionId: workerSessionId(f.attempt.attemptId),
+        runtime: { eventId: `model-${index}`, eventSeq: index + 1, runId: "worker", turnId: "worker" },
+        event: { type: "model_request", metrics: { requestId: `model-${index}`, provider: "local", modelId: operation === "subagent" ? "worker-model" : "background-model", startedAt: "2026-10-07T00:00:00Z", durationMs: 10, attempts: [], eventCount: 0, requestContext: { operation: operation as "subagent" | "memory" | "compaction" } } },
+        createdAt: "2026-10-07T00:00:00Z" });
+    }
+    const inspection = await f.communication.inspect("child");
+    assert.deepEqual(inspection.activity.filter(entry => entry.kind === "model").map(entry => entry.model), [{ provider: "local", id: "worker-model" }]);
+    assert.doesNotMatch(JSON.stringify(inspection.activity), /background-model|requestContext/);
+    f.tasks.createAttempt("child");
+    assert.equal((await f.communication.inspect("child")).activity.length, 0, "a new attempt never inherits the previous worker's model");
+    assert.deepEqual((await f.communication.inspect("child", { attemptId: f.attempt.attemptId })).activity[0]?.model, { provider: "local", id: "worker-model" });
+  } finally { await f.close(); }
+});

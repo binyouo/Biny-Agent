@@ -1,3 +1,6 @@
+import { PermissionManager } from "../permission/PermissionManager.js";
+import { analyzePermissionRequest, permissionApprovalFingerprint } from "../permission/policy.js";
+import { toWorkspaceRelative } from "../workspace/resolvePath.js";
 import { promises as fs } from "node:fs";
 import { z } from "zod";
 import type { AgentConfig } from "../config/schema.js";
@@ -25,6 +28,8 @@ const subagentParameters = {
   type: "object" as const,
   properties: {
     task: { type: "string" as const, description: "A focused repository task for the subagent, including implementation and finite validation when needed." },
+    description: { type: "string" as const, description: "A short, action-oriented description of what this task will do, in the user's language. For example: 查设置页加载慢问题 or Review cache invalidation. Keep it to a short phrase (about 3–5 words); omit paths, implementation instructions, and status claims." },
+    name: { type: "string" as const, description: "A short display name for this worker, such as Review data CLI. Choose freely; this does not select a role or change permissions." },
     agent: { type: "string" as const, description: "Optional named subagent definition to run this task with (see the named subagents list). Omit for the default bounded subagent." },
     background: { type: "boolean" as const, description: "Return the durable taskRunId immediately and continue your own work. Bounded progress and completion notices arrive at parent step boundaries; TaskStatus inspects or waits for a result." },
     constraints: {
@@ -96,6 +101,8 @@ export const taskVerificationSchema = z.object({
 
 const subagentSchema = z.object({
   task: z.string().min(1).max(20_000),
+  description: z.string().trim().min(1).max(120).optional(),
+  name: z.string().trim().min(1).max(80).optional(),
   agent: z.string().trim().min(1).max(64).optional(),
   background: z.boolean().optional(),
   constraints: z.array(z.string().trim().min(1)).max(100).optional(),
@@ -123,6 +130,7 @@ const maxSubagentTextChars = 64_000;
 export interface SubagentOptions {
   workspaceRoot: string;
   config: AgentConfig;
+  permissionManager?: PermissionManager;
   /** 不带别名时返回 subagent 默认模型设置；带别名时返回该模型别名的设置。 */
   getModelSettings: (modelAlias?: string) => ModelSettings;
   /** 每次委派时重新读取具名定义，允许会话期间编辑生效。 */
@@ -146,6 +154,7 @@ export function createSubagentTool(options: SubagentOptions): Tool<SubagentToolI
     promptGuidelines: [
       "Keep simple one-step requests in the current run; delegate when isolation, specialist focus, or independent execution will help.",
       "Give the worker a concrete goal, relevant constraints, and a finite deliverable; summarize its result to the user when it returns.",
+      "Include a short description of the task in the user's language for the card title. Keep the full instructions in task; name is an optional worker nickname, not the task description.",
       "Use background for independent tasks. Retain each taskRunId; progress and completion notices arrive at safe parent boundaries without starting idle parent turns. Use TaskMessage for corrections, TaskStatus for a necessary bounded wait, TaskCancel for work no longer needed, and TaskContinue only for explicitly authorized additional work from a completed report.",
       "Preserve user-specified acceptance conditions exactly. Put them in verification.checks; do not replace them with easier inferred checks.",
       "If a verified task returns needs_approval, report the exact approvalId, command, cwd, and reason. Do not claim completion or approve it yourself."
@@ -163,7 +172,7 @@ export function createSubagentTool(options: SubagentOptions): Tool<SubagentToolI
           summary: args.agent ? `Delegate to subagent ${args.agent}` : "Delegate repository task",
           detail: args.task
         },
-        description: "Runs a bounded workspace subagent with an explicit local-tool allowlist and restricted validation commands.",
+        description: "Runs a focused workspace subagent within its allowed tool scope and the parent session's permissions.",
         approvalRule: "Task",
         async execute(context): Promise<unknown> {
           if (!options.runTask) throw new Error("Task execution is unavailable in this runtime.");
@@ -271,7 +280,8 @@ export async function prepareSubagentTask(
 ): Promise<PreparedSubagentTask> {
   const toolRegistry = new ToolRegistry();
   for (const entry of input.toolRegistry.listEntries()) toolRegistry.register(entry.tool, entry.source);
-  const options = { ...input, config: structuredClone(input.config), toolRegistry };
+  const options = { ...input, config: structuredClone(input.config), toolRegistry,
+    permissionManager: input.permissionManager ?? new PermissionManager(input.config.permission) };
   const settings = options.config.extensions.subagent;
   const definition = await resolveSubagentDefinition(options, agentName);
   const modelSettings = options.getModelSettings(definition?.model);
@@ -281,6 +291,7 @@ export async function prepareSubagentTask(
     ? settings.allowedTools.filter((toolName) => definition.tools?.includes(toolName))
     : settings.allowedTools;
   const instructions = buildSubagentSystemPrompt(accessMode, definition);
+  const permissionStatus = options.permissionManager.getStatus();
   const entries = createSubagentTools(options.toolRegistry, allowedTools, {
     accessMode, editing: { mode: resolveEditingMode(options.config.chat.hashlineEdit, modelSettings.applyPatchProtocol), context: { workspaceRoot: options.workspaceRoot, ignore: options.config.workspace.ignore } }
   });
@@ -291,11 +302,12 @@ export async function prepareSubagentTask(
     providerType: options.config.providers[modelSettings.model.providerAlias ?? ""]?.type,
     providerBaseUrl: options.config.providers[modelSettings.model.providerAlias ?? ""]?.baseUrl,
     maxOutputTokens: subagentMaxOutputTokens(options.config, modelSettings.maxOutputTokens, modelAlias),
-    maxSteps: settings.maxSteps, maxCostUsd: settings.maxCostUsd, pricing: options.config.models[modelAlias]?.pricing,
-    permission: options.config.permission, sandbox: options.config.sandbox,
+    maxSteps: settings.maxSteps, inactivityTimeoutMs: settings.inactivityTimeoutMs, maxCostUsd: settings.maxCostUsd, pricing: options.config.models[modelAlias]?.pricing,
+    permission: options.config.permission, permissionStatus: { mode: permissionStatus.mode, allowTools: permissionStatus.allowTools, allowPaths: permissionStatus.allowPaths,
+      allowedCommands: permissionStatus.allowedCommands, allowedActions: permissionStatus.allowedActions }, sandbox: options.config.sandbox,
     accessMode, allowedTools, tools: entries.map((tool) => ({ name: tool.name, parameters: tool.parameters, description: tool.description })),
     ignore: options.config.workspace.ignore
-  }, instructions) : undefined;
+  }, instructions, { provider: modelSettings.model.provider, id: modelSettings.model.modelId }) : undefined;
   try { await session?.replayModelRequestUsage(options.onRequestMetrics); }
   catch (error) { await session?.close(); throw error; }
   let started = false;
@@ -334,7 +346,7 @@ export async function prepareSubagentTask(
 }
 
 async function runNativeSubagentTask(
-  options: SubagentOptions,
+  options: SubagentOptions & { permissionManager: PermissionManager },
   task: string,
   modelSettings: ModelSettings,
   modelAlias: string,
@@ -353,8 +365,23 @@ async function runNativeSubagentTask(
     maxConcurrency: options.config.agent.maxConcurrentTools,
     maxQueuedTasks: options.config.agent.maxQueuedToolCalls
   });
+  const inactivity = new AbortController();
+  signal = signal ? AbortSignal.any([signal, inactivity.signal]) : inactivity.signal;
+  let activityTimer: ReturnType<typeof setTimeout> | undefined;
+  let watching = false;
+  const reportActivity = (): void => {
+    if (!watching || signal.aborted) return;
+    clearTimeout(activityTimer);
+    activityTimer = setTimeout(() => {
+      inactivity.abort(new SubagentTaskIncompleteError("inactivity_timeout", "Worker stopped after no model output or tool progress."));
+    }, options.config.extensions.subagent.inactivityTimeoutMs);
+  };
+  let blocked: SubagentTaskIncompleteError | undefined;
   const tools = createSubagentTools(options.toolRegistry, allowedTools, {
     accessMode, scheduler, session,
+    permission: { manager: options.permissionManager, workspaceRoot: options.workspaceRoot },
+    onBlocked: (error) => { blocked ??= error; },
+    onActivity: reportActivity,
     editing: { mode: resolveEditingMode(options.config.chat.hashlineEdit, modelSettings.applyPatchProtocol), context: { workspaceRoot: options.workspaceRoot, ignore: options.config.workspace.ignore } }
   });
   if (communication) tools.push(createWorkerReportTool(communication, session));
@@ -392,7 +419,8 @@ async function runNativeSubagentTask(
         }
       }
     },
-    maxSteps: Math.max(1, options.config.extensions.subagent.maxSteps - (session?.startedSteps ?? 0)),
+    maxSteps: options.config.extensions.subagent.maxSteps === undefined
+      ? undefined : Math.max(1, options.config.extensions.subagent.maxSteps - (session?.startedSteps ?? 0)),
     onRequestContext: async () => {
       if (usageFailure) throw usageFailure;
       if (options.goalBudgetStopped?.(requestContext)) throw new SubagentTaskIncompleteError("goal_budget", "");
@@ -410,6 +438,7 @@ async function runNativeSubagentTask(
     },
     shouldStopAfterTurn: async (turn) => {
       session?.assertCanContinue();
+      if (blocked) return true;
       if (usageFailure) throw usageFailure;
       lastAssistant = turn.message;
       if (options.goalBudgetStopped?.(requestContext)) { stopReason = "goal_budget"; return true; }
@@ -417,8 +446,11 @@ async function runNativeSubagentTask(
       return !turn.message.content.some((part) => part.type === "toolCall") && (communication?.seal() ?? true);
     }
   }, signal);
+  watching = true;
+  reportActivity();
   try {
     for await (const event of loop) {
+      reportActivity();
       if (event.type === "error" && event.fatal) fatalError = event.error;
       if (event.type === "error" && event.reason === "step_limit") stopReason = "step_limit";
       if (event.type === "turn_end") {
@@ -428,12 +460,15 @@ async function runNativeSubagentTask(
       }
     }
   } finally {
+    watching = false;
+    clearTimeout(activityTimer);
     const usage = usages.length ? sumNativeUsage(usages) : undefined;
     if (usage) await options.onUsage?.(usage, "subagent", modelAlias);
   }
   session?.assertCanContinue();
   if (usageFailure) throw usageFailure;
   if (signal?.aborted) throw abortReason(signal);
+  if (blocked) throw blocked;
   if (fatalError) throw new Error(fatalError);
   const usage = usages.length ? sumNativeUsage(usages) : undefined;
   if (usage) {
@@ -503,12 +538,13 @@ export function buildSubagentSystemPrompt(
     "- The available tools, runtime permissions, project instructions, and verified facts are binding.",
     "- Never request or expose secrets, credentials, tokens, passwords, environment files, config.json, or unrelated private data.",
     "- Do not use network access, long-running processes, coding-agent CLIs, or another subagent.",
-    "- Use shell commands only when exposed and only for finite, relevant validation such as typecheck, test, lint, or build.",
+    "- Use shell commands only when exposed and for finite work required by the assigned task, including running the program you changed.",
     "",
     "HANDOFF:",
     "- When TaskReport is available, use it for material progress, findings or blockers. Parent messages arrive between model steps; preserve the original task scope and permissions.",
     "- Return concise, grounded findings with the exact paths inspected or changed.",
     "- Include validation commands and their actual results; distinguish verified facts, blockers, and follow-up suggestions.",
+    "- Permission denial or required approval stops execution. Do not try alternate commands to bypass it; return the blocker to the parent.",
     "- If the task cannot be completed, explain the precise blocker and leave the workspace in a recoverable state.",
     ...(definition ? ["", `NAMED SPECIALIST ROLE — ${definition.name}:`, definition.prompt] : [])
   ].join("\n");
@@ -519,6 +555,7 @@ export function createSubagentTools(
   allowedTools: readonly string[],
   options: CreateSubagentToolsOptions = {}
 ): AgentTool[] {
+  let blocked: SubagentTaskIncompleteError | undefined;
   const allowed = new Set(allowedTools);
   const accessMode = options.accessMode ?? "read-only";
   const capabilities = accessMode === "workspace" ? workspaceBuiltinCapabilities : safeBuiltinCapabilities;
@@ -537,12 +574,44 @@ export function createSubagentTools(
       execute: async (toolCallId, args, signal) => {
         const execute = async (beforeDispatch?: () => Promise<void>): Promise<AgentToolResult> => {
           const parsed = entry.schema.parse(args);
-          assertSafeToolInput(entry.name, parsed, accessMode);
+          if (blocked) throw blocked;
+          try { assertSafeToolInput(entry.name, parsed, accessMode); }
+          catch (error) {
+            blocked = new SubagentTaskIncompleteError("permission_denied", error instanceof Error ? error.message : String(error));
+            options.onBlocked?.(blocked);
+            throw blocked;
+          }
           const resolved = await entry.resolveExecution(parsed);
           if ("isError" in resolved) {
             return { content: [{ type: "text", text: stringifySubagentValue(resolved.result) }], details: resolved.result, isError: true };
           }
-          const result = await executeNativeSubagentTool(entry.name, resolved, toolCallId, signal, options.scheduler, beforeDispatch, createToolOperationId(options.session?.sessionId ?? "subagent", toolCallId));
+          const authorize = (): void => {
+            if (blocked) throw blocked;
+            if (!options.permission) {
+              if (entry.risk !== "read") throw new Error("Workspace worker tools require a permission authority.");
+              return;
+            }
+            const { manager, workspaceRoot } = options.permission;
+            const declaredPath = resolved.accesses?.find((access) => access.kind === "file")?.path;
+            const permissionArgs = isRecord(parsed) && typeof parsed.path === "string" && declaredPath
+              ? { ...parsed, path: toWorkspaceRelative(workspaceRoot, declaredPath) } : parsed;
+            const request = {
+              ...analyzePermissionRequest({ toolName: entry.name, args: permissionArgs,
+                projectRoot: workspaceRoot, sessionId: options.session?.sessionId ?? "subagent",
+                toolRisk: entry.risk, fileChange: resolved.fileChange }),
+              approvalRule: permissionApprovalFingerprint(resolved.approvalRule, permissionArgs)
+            };
+            const evaluation = manager.evaluate(request);
+            if (evaluation.decision !== "allow") {
+              blocked = new SubagentTaskIncompleteError(evaluation.decision === "ask" ? "approval_required" : "permission_denied",
+                redactSecrets(`${entry.name}: ${evaluation.reason}\n${JSON.stringify({ path: request.targetPath, destinationPath: request.secondaryTargetPath, command: request.command })}`).slice(0, 2000));
+              options.onBlocked?.(blocked);
+              throw blocked;
+            }
+          };
+          const result = await executeNativeSubagentTool(entry.name, resolved, toolCallId, signal, options.scheduler,
+            async () => { authorize(); await beforeDispatch?.(); },
+            createToolOperationId(options.session?.sessionId ?? "subagent", toolCallId), options.permission?.manager.getDeniedPaths(), options.onActivity);
           const sanitized = sanitizeToolResult(entry.name, result);
           return { content: [{ type: "text", text: stringifySubagentValue(sanitized) }], details: sanitized };
         };
@@ -564,7 +633,9 @@ async function executeNativeSubagentTool(
   signal: AbortSignal | undefined,
   scheduler?: ToolScheduler<unknown>,
   beforeDispatch?: () => Promise<void>,
-  operationId = createToolOperationId("subagent", toolCallId)
+  operationId = createToolOperationId("subagent", toolCallId),
+  deniedPaths?: readonly string[],
+  onActivity?: () => void
 ): Promise<unknown> {
   const execute = async (): Promise<unknown> => {
     if (toolName === "Read") {
@@ -578,7 +649,7 @@ async function executeNativeSubagentTool(
     }
     signal?.throwIfAborted();
     await beforeDispatch?.();
-    return await execution.execute({ toolCallId, operationId, signal });
+    return await execution.execute({ toolCallId, operationId, signal, deniedPaths, onUpdate: onActivity });
   };
   return scheduler
     ? await scheduler.schedule({ accesses: execution.accesses ?? ToolAccesses.all(), signal, start: execute })
@@ -622,6 +693,9 @@ async function resolveSubagentDefinition(options: SubagentOptions, agentName?: s
 }
 
 export interface CreateSubagentToolsOptions {
+  permission?: { manager: PermissionManager; workspaceRoot: string };
+  onBlocked?: (error: SubagentTaskIncompleteError) => void;
+  onActivity?: () => void;
   editing?: { mode: EditingMode; context: ToolContext };
   accessMode?: SubagentAccessMode;
   scheduler?: ToolScheduler<unknown>;
@@ -692,35 +766,7 @@ function assertSafeToolInput(toolName: string, input: unknown, accessMode: Subag
   if (toolName === "Bash") {
     if (accessMode !== "workspace") throw new Error("Subagent command execution is not available in read-only mode.");
     if (input.background === true) throw new Error("Subagent Bash only permits finite foreground validation commands.");
-    const command = typeof input.command === "string" ? input.command.trim() : "";
-    if (!isAllowedSubagentValidationCommand(command)) {
-      throw new Error("Subagent Bash only permits finite build, test, lint, and typecheck commands without shell operators.");
-    }
   }
-}
-
-export function isAllowedSubagentValidationCommand(command: string): boolean {
-  // The command is passed to a shell. Only horizontal ASCII whitespace is
-  // accepted so a newline cannot smuggle a second command past this allowlist.
-  if (!command || !/^[\w@%+.,:/=\- \t]+$/u.test(command)) return false;
-  const words = command.trim().split(/[ \t]+/u);
-  const executable = words[0] ?? "";
-  const firstArgument = words[1] ?? "";
-  const secondArgument = words[2] ?? "";
-  if (["pnpm", "npm", "yarn", "bun"].includes(executable)) {
-    if (["test", "build", "lint", "typecheck", "check"].includes(firstArgument)) return true;
-    if (firstArgument === "run" && ["test", "build", "lint", "typecheck", "check"].includes(secondArgument)) return true;
-    return executable === "pnpm" && firstArgument === "exec" && ["tsc", "eslint", "vitest", "jest"].includes(secondArgument);
-  }
-  if (["mvn", "./mvnw"].includes(executable)) return ["test", "verify", "package"].includes(firstArgument);
-  if (["gradle", "./gradlew"].includes(executable)) return ["test", "check", "build"].includes(firstArgument);
-  if (executable === "cargo") return ["test", "check", "build", "clippy"].includes(firstArgument);
-  if (executable === "go") return firstArgument === "test";
-  if (["pytest", "py.test"].includes(executable)) return true;
-  if (["python", "python3"].includes(executable)) return firstArgument === "-m" && secondArgument === "pytest";
-  if (executable === "dotnet") return ["test", "build"].includes(firstArgument);
-  if (executable === "make") return ["test", "check", "build", "lint"].includes(firstArgument);
-  return false;
 }
 
 function sanitizeToolResult(toolName: string, result: unknown): unknown {

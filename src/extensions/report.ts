@@ -16,11 +16,11 @@ export interface ExtensionStatus {
   plugins: string[];
   subagent: {
     enabled: boolean;
-    maxSteps: number;
+    maxSteps?: number;
     maxOutputTokens: number;
     maxConcurrentSubagents: number;
     maxPendingSubagents: number;
-    timeoutMs: number;
+    timeoutMs?: number;
     model?: string;
     maxCostUsd?: number;
     allowedTools: string[];
@@ -67,8 +67,8 @@ export function formatExtensionReport(status: ExtensionStatus, section: Extensio
     "Subagent",
     status.subagent.enabled
       ? [
-        `  enabled · Task · adaptive up to ${String(status.subagent.maxSteps)} steps · ${String(status.subagent.maxOutputTokens)} output tokens`,
-        `  concurrency ${String(status.subagent.maxConcurrentSubagents)} · queue cap ${String(status.subagent.maxPendingSubagents)} · timeout ${String(status.subagent.timeoutMs)}ms · model ${status.subagent.model ?? "current"}`,
+        `  enabled · Task · ${status.subagent.maxSteps === undefined ? "no step limit" : `up to ${status.subagent.maxSteps} steps`} · ${String(status.subagent.maxOutputTokens)} output tokens`,
+        `  concurrency ${String(status.subagent.maxConcurrentSubagents)} · queue cap ${String(status.subagent.maxPendingSubagents)} · ${status.subagent.timeoutMs === undefined ? "no total timeout" : `timeout ${status.subagent.timeoutMs}ms`} · model ${status.subagent.model ?? "current"}`,
         `  cost stop threshold ${status.subagent.maxCostUsd === undefined ? "not set" : `$${status.subagent.maxCostUsd.toFixed(6)}`} · tools ${status.subagent.allowedTools.join(", ")}`,
         ...formatSubagentAgents(status.subagent.agents)
       ].join("\n")

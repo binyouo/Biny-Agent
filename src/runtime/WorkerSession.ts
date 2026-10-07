@@ -90,7 +90,7 @@ export class WorkerSession {
     this.turns = new TurnStore(execution.persistenceRoot, this.sessionId);
   }
 
-  static async open(execution: WorkerExecution, task: string, workspaceRoot: string, policy: unknown, systemPrompt: string): Promise<WorkerSession> {
+  static async open(execution: WorkerExecution, task: string, workspaceRoot: string, policy: unknown, systemPrompt: string, model?: { provider: string; id: string }): Promise<WorkerSession> {
     const leases = await SessionLeaseStore.open(execution.persistenceRoot);
     let session: WorkerSession | undefined;
     try {
@@ -122,7 +122,8 @@ export class WorkerSession {
       } else {
         if (checkpoint || existsSync(sessionFilePath(execution.persistenceRoot, sessionId))) throw new Error("Worker history already exists; use explicit continuation instead of replaying the task.");
         session = new WorkerSession(execution, task, systemPrompt, [{ role: "user", content: task }], facts, leases, lease);
-        await session.recorder.recordAndFlush({ type: "user_message", content: task });
+        // 选定模型在排队时就可观察；请求记录随后提供实际执行模型，不暴露完整配置。
+        await session.recorder.recordAndFlush({ type: "user_message", content: task, metadata: model ? { subagentModel: model } : undefined });
         await session.save();
       }
       return session;
@@ -169,9 +170,9 @@ export class WorkerSession {
     return accepted;
   }
 
-  async beforeRequest(maxSteps: number): Promise<void> {
+  async beforeRequest(maxSteps: number | undefined): Promise<void> {
     await this.enqueue(async () => {
-      if (this.facts.startedSteps >= maxSteps) throw new Error("Worker step budget is exhausted; continuation cannot reset it.");
+      if (maxSteps !== undefined && this.facts.startedSteps >= maxSteps) throw new Error("Worker step budget is exhausted; continuation cannot reset it.");
       this.facts.startedSteps += 1;
       await this.save();
     });

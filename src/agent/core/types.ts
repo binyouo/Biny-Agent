@@ -275,7 +275,7 @@ export interface AgentLoopConfig {
   maxRetries?: number;
   tools: AgentTool[];
   modelOptions?: ModelStreamOptions;
-  maxSteps: number;
+  maxSteps?: number;
   /** 观察最终送入模型的上下文，不改变请求；每个 provider step 在剪枝后调用。 */
   onRequestContext?: (context: ModelStreamContext) => Promise<void> | void;
   beforeToolExecution?: (message: AgentAssistantMessage) => Promise<void> | void;

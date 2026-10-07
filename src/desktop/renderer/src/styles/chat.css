@@ -226,22 +226,13 @@
   box-shadow: 0 0 0 2px var(--bg, var(--biny-surface));
 }
 
-.biny-chat-scroll .chat-activity:not([data-running]) .chat-activity-header:hover .chat-activity-avatars.is-stacked .chat-phase-avatar:not(.is-collapsed):not(.is-droplet) {
-  box-shadow: 0 0 0 2px var(--activity-hover-bg);
-}
-
-.biny-chat-scroll .chat-activity:not([data-running]) .chat-activity-header:hover .chat-activity-avatars.is-stacked .chat-phase-avatar.is-droplet.is-open {
+.biny-chat-scroll .chat-activity:not([data-running]) .chat-activity-header:hover .chat-activity-avatars.is-stacked .chat-phase-avatar {
   box-shadow: 0 0 0 2px var(--activity-hover-bg);
 }
 
 .chat-phase-avatar:hover:not(:disabled) {
   border-color: color-mix(in srgb, var(--biny-text) 60%, transparent);
   color: var(--biny-text);
-}
-
-/* 高密度液滴（>12 枚）hover 需要越过 inline zIndex 抬升。 */
-.chat-phase-avatar.is-flip:hover:not(:disabled) {
-  z-index: 50 !important;
 }
 
 .chat-phase-avatar.is-active {
@@ -268,75 +259,17 @@
   }
 }
 
-/* 「+N」溢出徽标与液滴：悬停时徽标收成 0 宽，
-   隐藏相位从头像串左侧逐枚长出；错峰时序由组件按索引写 transition-delay。 */
-.chat-phase-overflow {
-  position: relative;
-  z-index: 0;
-  display: flex;
-  align-items: center;
-}
-
 .chat-phase-avatar.is-overflow {
   width: auto;
-  max-width: 56px;
   padding: 0 8px;
   border-radius: 999px;
-  overflow: hidden;
   font-size: calc(10px * var(--font-scale, 1));
   font-weight: 600;
   font-variant-numeric: tabular-nums;
-  transition: all 300ms ease-out;
-}
-
-.chat-phase-avatar.is-overflow.is-collapsed {
-  max-width: 0;
-  padding-inline: 0;
-  border-color: transparent;
-  box-shadow: none;
-  opacity: 0;
-  pointer-events: none;
-}
-
-/* 液滴规则带容器前缀提升优先级：闭合态必须压过堆叠隔离环，否则 0 宽液滴会漏出 2px 环。 */
-.chat-activity-avatars.is-stacked .chat-phase-avatar.is-droplet {
-  width: 0;
-  min-width: 0;
-  padding: 0;
-  border-color: transparent;
-  border-radius: 999px;
-  overflow: hidden;
-  box-shadow: none;
-  opacity: 0;
-  pointer-events: none;
-  transition: width 300ms ease-out, margin 300ms ease-out, opacity 300ms ease-out, border-color 300ms ease-out, transform 300ms ease-out;
-}
-
-.chat-activity-avatars.is-stacked .chat-phase-avatar.is-droplet.is-open {
-  width: 24px;
-  border-color: var(--biny-border);
-  box-shadow: 0 0 0 2px var(--bg, var(--biny-surface));
-  opacity: 1;
-  pointer-events: auto;
-}
-
-/* >12 枚隐藏相位启用 3D 翻面 hover。 */
-.chat-phase-avatar.is-flip {
-  transform-style: preserve-3d;
-}
-
-.chat-phase-avatar.is-flip:hover:not(:disabled) {
-  animation: 220ms cubic-bezier(0.25, 0.6, 0.3, 1) both chat-phase-avatar-flip-in;
-}
-
-@keyframes chat-phase-avatar-flip-in {
-  from {
-    transform: perspective(300px) rotateY(-55deg) scale(1.03);
-  }
-
-  to {
-    transform: perspective(300px) rotateY(0) scale(1.06);
-  }
+  line-height: 1;
+  white-space: nowrap;
+  overflow-wrap: normal;
+  word-break: normal;
 }
 
 /* 摘要文案：verb 加重前景、rest 弱化；占满头部剩余宽度，长文案截断。 */
@@ -2502,7 +2435,6 @@
   }
   .with-streaming-cursor .markdown-body > * { animation: none !important; }
   .chat-phase-avatar.is-alive { animation: none; }
-  .chat-phase-avatar.is-flip:hover:not(:disabled) { animation: none; transform: scale(1.06); }
 }
 
 /* ============ 消息"更多"菜单与用量悬浮卡（portal 到 body） ============ */
@@ -2903,28 +2835,13 @@
 .markdown-link-menu-separator { height: 1px; margin: 4px 3px; background: var(--border); }
 .markdown-link-feedback { position: fixed; z-index: 2201; max-width: min(240px, calc(100vw - 16px)); padding: 7px 10px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface-raised); color: var(--text); box-shadow: 0 4px 16px var(--shadow); font-size: 12px; pointer-events: none; }
 
-/* 委派与需求澄清保留独立入口，展开内容沿用工具详情的有界滚动。 */
-.chat-subagent, .user-input-card { border: 1px solid var(--biny-border); border-radius: 10px; margin: 8px 0; min-width: 0; font-size: .92em; }
-.chat-subagent-summary, .user-input-card > summary { display: flex; align-items: center; gap: 8px; min-height: 40px; padding: 8px 12px; cursor: pointer; list-style: none; }
-.chat-subagent-summary::-webkit-details-marker, .user-input-card > summary::-webkit-details-marker { display: none; }
-.chat-subagent-summary > svg, .user-input-card > summary > svg { flex: none; }
-.chat-subagent-summary > svg:last-child, .user-input-card > summary > svg:last-child { margin-left: auto; transform: rotate(-90deg); }
-.chat-subagent details[open] > summary > svg:last-child, .user-input-card[open] > summary > svg:last-child { transform: none; }
-.chat-subagent-name { flex: none; font-weight: 550; }
-.chat-subagent-task { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.chat-subagent-status, .chat-subagent-duration { flex: none; color: var(--biny-text-secondary); font-size: .88em; }
-.chat-subagent-detail { padding: 0 12px 12px; }
-
-/* 子代理自己的活动轨迹：父会话里能看到 worker 跑了哪些工具。
-   与 .chat-tool-row 同一套字号/间距规格，避免同一段里出现两种密度。 */
-.chat-subagent-trail {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  margin: 0;
-  padding: 0 12px 8px 12px;
-  list-style: none;
-}
+/* 需求澄清保留独立入口。 */
+.user-input-card { border: 1px solid var(--biny-border); border-radius: 10px; margin: 8px 0; min-width: 0; font-size: .92em; }
+.user-input-card > summary { display: flex; align-items: center; gap: 8px; min-height: 40px; padding: 8px 12px; cursor: pointer; list-style: none; }
+.user-input-card > summary::-webkit-details-marker { display: none; }
+.user-input-card > summary > svg { flex: none; }
+.user-input-card > summary > svg:last-child { margin-left: auto; transform: rotate(-90deg); }
+.user-input-card[open] > summary > svg:last-child { transform: none; }
 
 .user-input-card form { padding: 0 12px 12px; }
 .user-input-card fieldset { border: 0; margin: 0 0 14px; padding: 0; min-width: 0; }
@@ -2941,13 +2858,46 @@
 .user-input-actions button { min-height: 32px; padding: 5px 12px; border: 1px solid var(--biny-border); border-radius: 6px; background: transparent; color: inherit; cursor: pointer; font: inherit; }
 .user-input-actions button[type=submit] { background: var(--biny-accent); color: var(--accent-foreground); }
 .user-input-actions button:disabled { opacity: .45; cursor: default; }
-.user-input-card :focus-visible, .chat-subagent summary:focus-visible { outline: 2px solid var(--biny-accent); outline-offset: -2px; }
+.user-input-card :focus-visible { outline: 2px solid var(--biny-accent); outline-offset: -2px; }
 .user-input-error { color: var(--biny-danger); overflow-wrap: anywhere; }
-@container (max-width: 480px) { .chat-subagent-summary { flex-wrap: wrap; } .chat-subagent-task { order: 2; flex-basis: 100%; } }
-
-.chat-task-inspector { min-width: 0; padding: 12px 16px; border-top: 1px solid var(--biny-border-subtle); }
-.chat-task-inspector p, .chat-task-inspector pre { white-space: pre-wrap; overflow-wrap: anywhere; }
-.chat-task-inspector pre { max-height: 320px; overflow: auto; font-size: 12px; }
-.chat-task-inspector button, .chat-task-inspector select { margin: 4px 8px 4px 0; }
-.chat-task-controls label { display: block; margin-top: 12px; }
-.chat-task-controls textarea { display: block; width: 100%; min-height: 64px; resize: vertical; }
+/* 子代理正文只在卡片内读取和展示，保持父会话的滚动与消息归属。 */
+[data-agent-color="teal"] { --subagent-color: var(--agent-teal); }
+[data-agent-color="purple"] { --subagent-color: var(--agent-purple); }
+[data-agent-color="amber"] { --subagent-color: var(--agent-amber); }
+[data-agent-color="green"] { --subagent-color: var(--agent-green); }
+[data-agent-color="rose"] { --subagent-color: var(--agent-rose); }
+[data-agent-color="blue"] { --subagent-color: var(--agent-blue); }
+.subagent-card { width: 100%; min-width: 0; margin: 12px 0; border: 1px solid var(--biny-border); border-radius: 12px; overflow: clip; background: var(--biny-surface); }
+.subagent-card-header { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; min-height: 46px; padding: 10px 14px; background: var(--biny-surface-soft); cursor: pointer; list-style: none; font-size: 13px; }
+.subagent-card-header::-webkit-details-marker { display: none; }
+.subagent-card-header:hover { background: var(--biny-surface-hover); }
+.subagent-card[open] > .subagent-card-header { border-bottom: 1px solid var(--biny-border-subtle); }
+.subagent-card-header strong { min-width: 0; max-width: min(42ch, 65%); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 550; }
+.subagent-card-header > svg { flex: none; color: var(--biny-text-tertiary); transform: rotate(-90deg); }
+.subagent-card[open] > .subagent-card-header > svg { transform: rotate(180deg); }
+.subagent-avatar { display: grid; place-items: center; flex: none; width: 24px; height: 24px; color: var(--subagent-color); }
+.subagent-card-status { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; color: var(--biny-text-secondary); }
+.subagent-name { min-width: 0; max-width: 18ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; color: var(--biny-text-secondary); }
+.subagent-card-status.is-running::before { content: ""; width: 5px; height: 5px; border-radius: 50%; background: var(--subagent-color); }
+.subagent-model { min-width: 0; max-width: 45%; margin-left: auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; color: var(--biny-text-tertiary); }
+.subagent-card-body { position: relative; min-width: 0; }
+.subagent-card-scroll { max-height: min(60vh, 640px); min-height: 48px; overflow-y: auto; overscroll-behavior-y: contain; overflow-anchor: none; padding: 14px 16px; }
+.subagent-card .execution-timeline { font-size: 13px; }
+.subagent-card .execution-assistant-step { margin: 8px 0; }
+.subagent-card .chat-activity { min-width: 0; max-width: 100%; }
+.subagent-card-toolbar { display: flex; padding: 8px 14px 0; }
+.subagent-card select, .subagent-card button { font: inherit; }
+.subagent-card-toolbar select { max-width: 100%; min-height: 28px; padding: 3px 8px; border: 1px solid var(--biny-border-subtle); border-radius: 6px; background: var(--biny-surface); color: var(--biny-text-secondary); font-size: 12px; }
+.subagent-card-notice, .subagent-card-outcome { margin: 10px 14px 0; padding: 8px 10px; border-radius: 6px; background: var(--biny-surface-soft); color: var(--biny-text-secondary); font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+.subagent-card-notice[role=alert] { color: var(--biny-danger); }
+.subagent-card-notice button { padding: 3px 6px; margin-left: 4px; border: 1px solid var(--biny-border); border-radius: 4px; background: transparent; color: var(--biny-text); cursor: pointer; }
+.subagent-card-empty { margin: 4px 0; color: var(--biny-text-tertiary); font-size: 13px; }
+.subagent-card-latest { position: absolute; right: 16px; bottom: 12px; display: flex; align-items: center; gap: 5px; min-height: 30px; padding: 4px 10px; border: 1px solid var(--biny-border); border-radius: 16px; background: var(--biny-surface); color: var(--biny-text-secondary); font-size: 12px; cursor: pointer; box-shadow: 0 2px 6px var(--shadow); }
+.subagent-card-latest:hover { background: var(--biny-surface-hover); }
+.subagent-card :is(summary, button, select):focus-visible { outline: 2px solid var(--biny-accent); outline-offset: -2px; }
+.subagent-card > .tool-permission { margin: 10px 14px; }
+.subagent-messages { margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--biny-border-subtle); font-size: 12px; }
+.subagent-messages summary { color: var(--biny-text-secondary); cursor: pointer; }
+.subagent-messages ol { padding-left: 18px; }
+.subagent-messages li { padding: 8px 0; }
+.subagent-messages small { color: var(--biny-text-secondary); }

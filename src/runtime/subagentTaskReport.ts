@@ -14,7 +14,7 @@ export function formatSubagentTaskReport(tasks: readonly SubagentTaskSnapshot[])
     .map((task) => {
       const details = [
         `  ${singleLine(task.task, 240)}`,
-        `  parent ${task.parentRunId} · deadline ${task.deadline}`
+        `  parent ${task.parentRunId}${task.deadline ? ` · deadline ${task.deadline}` : ""}`
       ];
       if (task.error) details.push(`  error ${singleLine(task.error, 240)}`);
       return [`${task.taskId} · ${task.status}${task.agent ? ` · agent ${task.agent}` : ""}`, ...details].join("\n");

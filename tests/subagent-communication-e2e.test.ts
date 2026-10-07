@@ -16,8 +16,16 @@ import { workerSessionId } from "../src/runtime/WorkerSession.js";
 import { readSessionEvents } from "../src/session/events.js";
 import { sessionFilePath } from "../src/session/store.js";
 
-test("parent tools, Host and CLI coordinate an asynchronous Worker through durable messages and results", { timeout: 25_000 }, async () => {
+test("parent tools, Host and CLI coordinate an asynchronous Worker through durable messages and results", { timeout: 25_000 }, async (t) => {
   const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "biny-subagent-communication-e2e-")));
+  const previousAgentDir = process.env.BINY_AGENT_DIR;
+  // 工作区参数不决定全局配置位置；直接运行也必须隔离配置、Host 和派生 CLI。
+  process.env.BINY_AGENT_DIR = path.join(root, "agent");
+  t.after(async () => {
+    if (previousAgentDir === undefined) delete process.env.BINY_AGENT_DIR;
+    else process.env.BINY_AGENT_DIR = previousAgentDir;
+    await rm(root, { recursive: true, force: true });
+  });
   let release!: () => void;
   const gate = new Promise<void>((resolve) => { release = resolve; });
   let cancelRelease!: () => void;
@@ -178,6 +186,5 @@ test("parent tools, Host and CLI coordinate an asynchronous Worker through durab
   } finally {
     release(); cancelRelease(); await client.close(); await host.close();
     provider.closeAllConnections(); await new Promise<void>((resolve) => provider.close(() => resolve()));
-    await rm(root, { recursive: true, force: true });
   }
 });
