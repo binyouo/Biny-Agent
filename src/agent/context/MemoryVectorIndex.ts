@@ -211,8 +211,9 @@ export class MemoryVectorIndex {
     if (!active || active.modelFingerprint !== options.modelFingerprint || active.dimensions !== query.length) return [];
     if (!this.vectorExtensionAvailable) return [];
     const normalizedQuery = normalizeEmbedding(query);
+    // 常量构造器在语句内复用同一 Float32 转换，避免每条候选向量重新解析查询 JSON。
     const rows = this.database.prepare(
-      `SELECT memory_id, 1 - vec_distance_cosine(embedding, ?) AS similarity
+      `SELECT memory_id, 1 - vec_distance_cosine(embedding, vec_f32(?)) AS similarity
        FROM memory_embeddings
        WHERE similarity >= ?
          AND memory_id IN (${currentVectorIds})
