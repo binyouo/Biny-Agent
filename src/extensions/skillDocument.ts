@@ -1,6 +1,8 @@
 /** Skill 文档的公共解析层；目录管理和运行时共享格式规则，权限仍由运行时决定。 */
 import { parseDocument } from "yaml";
 
+export const maxSkillMetadataBytes = 64 * 1024;
+
 export interface SkillMetadata {
   name?: string;
   description?: string;
@@ -10,7 +12,7 @@ export interface SkillMetadata {
   metadata?: Record<string, unknown>;
 }
 
-export function parseSkillDocument(content: string): { frontmatter: Record<string, unknown>; body: string } {
+export function parseSkillDocument(content: string): { frontmatter: Record<string, unknown>; body: string; frontmatterEndByte?: number } {
   const opening = /^---[ \t]*\r?\n/u.exec(content);
   if (!opening) return { frontmatter: {}, body: content };
   const closingPattern = /^---[ \t]*\r?$/gmu;
@@ -24,7 +26,9 @@ export function parseSkillDocument(content: string): { frontmatter: Record<strin
   let bodyStart = closing.index + closing[0].length;
   if (content.startsWith("\r\n", bodyStart)) bodyStart += 2;
   else if (content.startsWith("\n", bodyStart)) bodyStart += 1;
-  return { frontmatter: value as Record<string, unknown>, body: content.slice(bodyStart) };
+  // 只计入结束线的三个连字符；其后空白和换行不影响前缀读取时识别分隔线。
+  const frontmatterEndByte = Buffer.byteLength(content.slice(0, closing.index + 3), "utf8");
+  return { frontmatter: value as Record<string, unknown>, body: content.slice(bodyStart), frontmatterEndByte };
 }
 
 export function readSkillMetadataFields(record: Record<string, unknown>): SkillMetadata {
