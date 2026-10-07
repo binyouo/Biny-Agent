@@ -47,7 +47,7 @@ export interface BinySessionBundleManifest {
   exportedAt: string;
   eventCount: number;
   attachmentCount: number;
-  /** 因超 50MB 上限而未内嵌、导出时就被跳过的附件名。 */
+  /** 因源文件缺失或超 50MB 上限而未内嵌、导出时就被跳过的附件名。 */
   skippedAttachments: string[];
 }
 
@@ -164,16 +164,16 @@ async function collectBundleAttachments(
       seen.add(reference.path);
       const filePath = attachmentFilePath(attachmentRoot(workspaceRoot), reference.path);
       if (!filePath) continue;
+      const name = typeof reference.name === "string" && reference.name ? reference.name : path.basename(reference.path);
       let bytes: Buffer;
       try {
         const storedBytes = await readAttachmentBytes(workspaceRoot, reference.path);
-        if (storedBytes === undefined) continue;
+        if (storedBytes === undefined) { skipped.push(name); continue; }
         bytes = storedBytes;
       } catch (error) {
-        if (hasErrorCode(error, "ENOENT")) continue; // 源文件已被清理，无可恢复内容。
+        if (hasErrorCode(error, "ENOENT")) { skipped.push(name); continue; }
         throw error;
       }
-      const name = typeof reference.name === "string" && reference.name ? reference.name : path.basename(reference.path);
       if (bytes.byteLength > BINY_BUNDLE_ATTACHMENT_LIMIT) {
         skipped.push(name);
         continue;
