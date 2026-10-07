@@ -525,7 +525,9 @@ export class McpToolHost {
             if (managed.client !== client) return;
             this.registerServerTools(managed, client, tools);
           } catch (error) {
+            if (this.closing || managed.client !== client || !managed.status.connected) return;
             managed.status.lastError = `tool refresh failed: ${errorText(error)}`;
+            this.emitChange();
           }
         } while (managed.refreshDirty && !this.closing);
       } finally {
