@@ -178,10 +178,10 @@ export function importAppearanceTheme(content: string, name = "imported-theme"):
     const body = new RegExp(`(?:\\b${key}\\s*=|\\[\\s*["']${key}["']\\s*\\]\\s*=)\\s*\\{([^{}]*)\\}`, "u").exec(cleaned)?.[1];
     if (body === undefined) throw new Error(`主题缺少 ${key} 颜色表。`);
     const colors: Record<string, string> = {};
-    for (const entry of body.matchAll(/(?:\b([\w]+)|\[\s*["']([\w]+)["']\s*\])\s*=\s*["'](#[\da-f]{6})["']/giu)) {
+    for (const entry of body.matchAll(/(?:\b([\w]+)|\[\s*["']([\w]+)["']\s*\])\s*=\s*(["'])(.*?)\3/giu)) {
       const field = entry[1] ?? entry[2]!;
       if (field in colors) throw new Error(`颜色字段重复：${field}`);
-      colors[field] = entry[3]!;
+      colors[field] = entry[4]!;
     }
     return colors;
   };
