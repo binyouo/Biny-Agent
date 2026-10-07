@@ -10440,7 +10440,6 @@ button.capability-check[aria-checked="true"] {
   .activity-danger-button,
   .danger-text-button,
   .ghost-button.is-danger,
-  .provider-delete-button.is-armed,
   .biny-mcp-danger-button,
   .settings-plugin-danger-button
 ) {
@@ -10454,7 +10453,6 @@ button.capability-check[aria-checked="true"] {
   .activity-danger-button,
   .danger-text-button,
   .ghost-button.is-danger,
-  .provider-delete-button.is-armed,
   .biny-mcp-danger-button,
   .settings-plugin-danger-button
 ):hover:not(:disabled) {

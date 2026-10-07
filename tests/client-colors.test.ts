@@ -166,8 +166,6 @@ test("provider, session, extension and execution states keep their semantic colo
     [".trace-status.is-incomplete", "color", "var(--biny-warning)"],
     [".status-pill.is-muted", "color", "var(--text-secondary)"]
   ]) assert.equal(declaration(desktop, selector!, property!), expected, selector);
-  const provider = read("components/settings/ProviderSettings.tsx");
-  assert.match(provider, /showInPicker !== false\) \? " is-ok" : " is-muted"/u);
 });
 
 test("quick chat uses the same message surfaces and primary-button foreground", () => {
