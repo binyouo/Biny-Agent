@@ -1,5 +1,9 @@
+import { RuntimeEventAuthority } from "../src/runtime/RuntimeAuthority.js";
+import { DurableTaskRunStore } from "../src/runtime/TaskRunStore.js";
+import { workerSessionId } from "../src/runtime/WorkerSession.js";
+import { projectSessionsDir } from "../src/config/paths.js";
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, readdir } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { test, type TestContext } from "node:test";
@@ -200,4 +204,51 @@ test("跨目录正文加载不等待项目快照，成功后返回同一目标�
     releaseWorkspace(await manager.workspaceSnapshot(project.id));
     await pending.catch(() => undefined);
   }
+});
+
+// Hidden child evidence must not shift the public index used to edit or fork the next human message.
+test("子代理收件事实不占用可编辑用户消息的序号", { timeout: 10_000 }, async (context) => {
+  const { project, projects, dataRoot } = await fixture(context);
+  const recorder = new SessionRecorder(dataRoot, "with-child-notice");
+  recorder.record({ type: "user_message", messageId: "human-one", content: "inspect" });
+  recorder.record({ type: "user_message", messageId: "child-receipt", content: "child evidence", metadata: { source: "subagent" } });
+  recorder.record({ type: "user_message", messageId: "human-two", content: "next human request" });
+  await recorder.close();
+  assert.equal(await projects.sessionUserMessageIdAtIndex(project, recorder.sessionId, 1), "human-two");
+  const fork = await projects.forkSessionAtUserMessage(project, recorder.sessionId, 1);
+  const events = await readSessionEvents(sessionFilePath(dataRoot, fork));
+  assert.ok(events.some((event) => event.type === "user_message" && event.content === "child evidence"));
+  assert.ok(events.every((event) => event.type !== "user_message" || event.content !== "next human request"));
+});
+
+// Cold details read persisted authority without opening a Session writer or starting a model.
+test("冷子代理详情只读取归属明确的记录，不启动 Runtime", { timeout: 10_000 }, async (context) => {
+  const { project, manager, dataRoot } = await fixture(context);
+  const authority = await RuntimeEventAuthority.open(dataRoot);
+  const tasks = await DurableTaskRunStore.open(dataRoot, authority);
+  tasks.create({ taskRunId: "cold-child", sessionId: "parent", task: { prompt: "inspect", communication: true } });
+  const attempt = tasks.createAttempt("cold-child"); tasks.transition("cold-child", "queued");
+  tasks.transition("cold-child", "running", { attemptId: attempt.attemptId });
+  authority.appendSessionEvent({ sessionId: workerSessionId(attempt.attemptId), runtime: { eventId: "call", eventSeq: 1, runId: "worker", turnId: "worker" },
+    event: { type: "tool_call", tool: "Read", toolCallId: "read", args: { path: "src/a.ts" } }, createdAt: new Date().toISOString() });
+  tasks.close(); authority.close();
+  const files = async () => await readdir(projectSessionsDir(dataRoot)).catch((error: NodeJS.ErrnoException) => { if (error.code === "ENOENT") return []; throw error; });
+  const before = await files();
+  const result = await manager.taskInspection(project.id, "parent", "cold-child");
+  assert.equal(result.activity[0]?.tool, "Read");
+  await assert.rejects(manager.taskInspection(project.id, "other", "cold-child"), /another session/);
+  assert.deepEqual(await files(), before);
+});
+
+// The bounded background list must keep newly admitted children visible when durable history exceeds one page.
+test("后台投影显示最新任务，历史超过一页也不会隐藏新子任务", { timeout: 10_000 }, async (context) => {
+  const { project, manager, dataRoot } = await fixture(context);
+  const authority = await RuntimeEventAuthority.open(dataRoot);
+  const tasks = await DurableTaskRunStore.open(dataRoot, authority);
+  for (let index = 0; index < 105; index += 1) tasks.create({ taskRunId: `task-${index}`, sessionId: "parent", task: "inspect" });
+  assert.equal(tasks.list().tasks[0]?.taskRunId, "task-0", "default ledger pagination remains chronological");
+  tasks.close(); authority.close();
+  const projection = await manager.runtimeProjection(project.id);
+  assert.equal(projection.tasks.tasks[0]?.taskRunId, "task-104");
+  assert.equal(projection.tasks.tasks.length, 100);
 });

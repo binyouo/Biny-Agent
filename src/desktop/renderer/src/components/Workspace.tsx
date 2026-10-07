@@ -243,6 +243,7 @@ export function Workspace({
           </div>
         </header>
         <RuntimePanel
+          projectId={projectId}
           onClose={() => onRuntimePanelOpenChange(false)}
           onError={onRuntimeError}
           onMutation={onRuntimeMutation}
