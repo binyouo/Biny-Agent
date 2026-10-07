@@ -296,15 +296,17 @@ export const Composer = memo(function Composer({
     };
   }, [menu]);
 
-  const runSlash = async (command: string): Promise<void> => {
+  const runSlash = async (command: string, consumeDraft: boolean): Promise<void> => {
     if (!project || busy) return;
-    clearHistory();
-    setDraft({ value: "", tokens: [] });
+    if (consumeDraft) {
+      clearHistory();
+      setDraft({ value: "", tokens: [] });
+    }
     setBusy(true);
     try {
       await onSlashCommand(command);
     } catch (slashError) {
-      setDraft({ value: command, tokens: [] });
+      if (consumeDraft) setDraft({ value: command, tokens: [] });
       onWarning(errorMessage(slashError));
     } finally {
       setBusy(false);
@@ -356,7 +358,7 @@ export const Composer = memo(function Composer({
       const [slashName] = value.split(/\s+/, 1);
       const slashCommand = DESKTOP_SLASH_COMMANDS.find((command) => command.name === slashName);
       if (!resume && slashCommand && (value === slashCommand.name || slashCommand.acceptsArgs)) {
-        await runSlash(value);
+        await runSlash(value, suggestion === undefined);
         return;
       }
       if (sessionWriterConflict) return;
@@ -367,9 +369,12 @@ export const Composer = memo(function Composer({
         // 调用 Skill 工具按需加载全文（渐进式披露）。
         // 模型标签已经即时更新，但真正的 Runtime 切换仍需完成后才能发送，
         // 否则用户紧接着按 Enter 时可能把消息发给旧模型。
-        clearHistory();
-        setDraft({ value: "", tokens: [] });
-        setAttachments([]);
+        // 建议不携带当前草稿，也不能清空或回滚它。
+        if (suggestion === undefined) {
+          clearHistory();
+          setDraft({ value: "", tokens: [] });
+          setAttachments([]);
+        }
         if (resume) {
           if (!recovery?.canContinue) throw new Error(recovery?.message ?? "当前任务无法继续。");
           await onResume();
@@ -377,7 +382,7 @@ export const Composer = memo(function Composer({
           await onSend(value, sentAttachments, delivery, globalThis.crypto.randomUUID(), capabilitySelection);
         }
       } catch (submitError) {
-        draftState.update({ draft: originalDraft, attachments, history: sentHistory });
+        if (suggestion === undefined) draftState.update({ draft: originalDraft, attachments, history: sentHistory });
         if (mounted.current) onSubmitError(errorMessage(submitError));
       } finally {
         setBusy(false);
