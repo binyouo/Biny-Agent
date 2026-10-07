@@ -15,7 +15,8 @@ export async function scanWorkspaceFiles(
   signal?: AbortSignal,
   includeFile?: (relativePath: string) => boolean,
   // Optional traversal pruning; callers must retain ancestors of eligible files.
-  includeDirectory?: (relativePath: string) => boolean
+  includeDirectory?: (relativePath: string) => boolean,
+  onSkippedDirectory?: (relativePath: string) => void
 ): Promise<string[]> {
   const files: string[] = [];
   // 递归扫描只收集文件相对路径；目录遍历过程会持续检查 limit。
@@ -29,7 +30,9 @@ export async function scanWorkspaceFiles(
     try {
       entries = await fs.readdir(currentDir, { withFileTypes: true });
     } catch {
-      // 不可读（EACCES）或扫描过程中被删除的目录整棵跳过，与文件级读取失败的跳过策略一致。
+      // 不可读或扫描过程中被删除的目录整棵跳过；工具调用方保留不完整扫描的证据。
+      signal?.throwIfAborted();
+      onSkippedDirectory?.(relativeDir || ".");
       return;
     }
     entries.sort((left, right) => {
