@@ -88,6 +88,9 @@ export function readMemoryEntryInput(value: unknown): MemoryEntryInput {
 }
 
 export function readMemoryEntryPatch(value: unknown): MemoryEntryPatch {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error("Memory patch must be a JSON object.");
+  }
   const record = asRecord(value);
   const importance = record.importance;
   if (importance !== undefined && (typeof importance !== "number" || !Number.isFinite(importance))) {
