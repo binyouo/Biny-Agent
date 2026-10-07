@@ -1600,11 +1600,19 @@ export class AgentSession {
     options.capabilitySelection = await selection;
     yield { type: "preparation.updated", stage: "waiting" };
     const preparedHistoryCount = Math.max(0, prepared.messages.length - 1);
-    const preparedHistoryReferences = this.contextMessageReferences.slice(-preparedHistoryCount);
-    const continuationMessages = targetIsAssistant ? prepared.messages.slice(0, -1) : prepared.messages;
-    const continuationReferences = targetIsAssistant
-      ? preparedHistoryReferences
-      : [...preparedHistoryReferences, replay.messageReferences[userReferenceIndex]];
+    const preparedHistoryReferences = preparedHistoryCount ? this.contextMessageReferences.slice(-preparedHistoryCount) : [];
+    const continuationMessages = [...prepared.messages];
+    const continuationReferences = [...preparedHistoryReferences, replay.messageReferences[userReferenceIndex]];
+    const preparedUser = continuationMessages.at(-1);
+    const sourceUserIndex = targetIsAssistant
+      ? preparedHistoryReferences.findIndex((reference) => reference?.id === userNode.id)
+      : -1;
+    if (sourceUserIndex >= 0 && preparedUser?.role === "user") {
+      // 更新原用户位置的瞬态上下文，保留其后已完成的工具步骤，不追加重复用户消息。
+      continuationMessages[sourceUserIndex] = preparedUser;
+      continuationMessages.pop();
+      continuationReferences.pop();
+    }
     const userSlotId = userNode.slotId ?? userNode.id;
     const activeAssistantChild = targetIsAssistant
       ? undefined
