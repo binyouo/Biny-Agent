@@ -41,8 +41,7 @@ export async function sessionExportCommand(
   const exported = format === "claude"
     ? await exportSessionClaudeCode(workspaceRoot, session)
     : await exportSessionBundle(workspaceRoot, session);
-  const target = await resolveExportTarget(exported, options.out);
-  await fs.writeFile(target, exported.content, { encoding: "utf8", mode: 0o600 });
+  const target = await writeExportFile(exported, options.out);
   await fs.chmod(target, 0o600);
   if (options.json) {
     console.log(JSON.stringify({ file: target, format, baseName: exported.baseName }));
@@ -72,23 +71,19 @@ export async function sessionImportCommand(
   }
 }
 
-/** 选定输出路径：显式 `--out` 优先；否则落到当前目录，撞名时自动加 `-1`/`-2` 后缀，绝不覆盖。 */
-async function resolveExportTarget(exported: ExportedSessionFile, out: string | undefined): Promise<string> {
-  if (out !== undefined) return path.resolve(out);
+/** 显式 `--out` 写入指定路径；默认文件名以独占创建选定，撞名时加后缀，绝不覆盖。 */
+async function writeExportFile(exported: ExportedSessionFile, out: string | undefined): Promise<string> {
   const directory = process.cwd();
-  let candidate = path.join(directory, `${exported.baseName}.${exported.extension}`);
-  for (let suffix = 1; await pathExists(candidate); suffix += 1) {
-    candidate = path.join(directory, `${exported.baseName}-${String(suffix)}.${exported.extension}`);
+  for (let suffix = 0; suffix < 1_000; suffix += 1) {
+    const name = suffix === 0 ? exported.baseName : `${exported.baseName}-${String(suffix)}`;
+    const target = out === undefined ? path.join(directory, `${name}.${exported.extension}`) : path.resolve(out);
+    try {
+      await fs.writeFile(target, exported.content, { encoding: "utf8", mode: 0o600, flag: out === undefined ? "wx" : "w" });
+      return target;
+    } catch (error) {
+      if (out === undefined && typeof error === "object" && error !== null && "code" in error && error.code === "EEXIST") continue;
+      throw error;
+    }
   }
-  return candidate;
-}
-
-async function pathExists(target: string): Promise<boolean> {
-  try {
-    await fs.lstat(target);
-    return true;
-  } catch (error) {
-    if (typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT") return false;
-    throw error;
-  }
+  throw new Error("Cannot export session: all 1,000 default filenames are occupied. Use --out to choose an output path.");
 }

@@ -75,6 +75,8 @@ biny session export <session-id> --format biny --out session.json --json
 biny session import session.json --format biny --json
 ```
 
+CLI 未指定 `--out` 时，导出写入当前目录；默认名称已占用时依次添加 `-1`、`-2` 等后缀，通过独占创建避免并发导出覆盖已有文件。前 1,000 个候选名称都被占用时停止并提示使用 `--out`。显式 `--out` 仍写入指定路径，会覆盖该路径已有文件。
+
 Biny bundle 保存会话事件和可内嵌附件。单个附件超过 50 MiB 时标记跳过，不使整份导出失败。导出可能包含对话与业务资料，分享前按实际内容检查。
 
 导入总是分配新的会话 ID；重复导入同一文件会产生不同会话。附件撞名时改名并更新引用。兼容格式只能保留该格式能表达的内容，不能当作全部运行事件的无损备份；可用格式见 `biny session import --help` 和 `biny session export --help`。
