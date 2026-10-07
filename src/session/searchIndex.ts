@@ -315,7 +315,7 @@ export class SessionSearchIndex {
             messageId: typeof row.message_id === "string" ? row.message_id : undefined,
             role: row.role === "assistant" ? "assistant" as const : "user" as const,
             time: typeof row.time === "string" ? row.time : undefined,
-            excerpt: excerpt.replaceAll("\n", " ").trim().slice(0, 500)
+            excerpt: transcriptSearchExcerpt(publicBody, excerpt, query, tokens)
           }]
         : [];
     });
@@ -381,6 +381,31 @@ export class SessionSearchIndex {
     this.database = database;
     return database;
   }
+}
+
+/** FTS 的 body 列不含中文 bigram 位置，摘要缺词时从公开原文定位上下文。 */
+function transcriptSearchExcerpt(body: string, excerpt: string, query: string, tokens: readonly string[]): string {
+  const original = excerpt.replaceAll("\n", " ").trim().slice(0, 500);
+  body = body.replaceAll("\n", " ").trim();
+  const missing = tokens.find((token) => token.charCodeAt(0) > 127 && !original.includes(token) && body.includes(token));
+  if (!missing) return original;
+
+  const trimmed = query.replaceAll("\n", " ").trim();
+  const quoted = trimmed.startsWith('"') && trimmed.endsWith('"') || trimmed.startsWith("“") && trimmed.endsWith("”");
+  const phrase = quoted ? trimmed.slice(1, -1) : trimmed;
+  const exact = phrase.length <= 498
+    ? new RegExp(phrase.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&"), "iu").exec(body)?.index
+    : undefined;
+  const before = exact === undefined ? 80 : Math.min(80, 498 - phrase.length);
+  let start = Math.max(0, (exact ?? body.indexOf(missing)) - before);
+  const segments = new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(body);
+  const first = segments.containing(start);
+  if (first && first.index < start) start = first.index + first.segment.length;
+  // 沿用 500 个 UTF-16 code unit 上限，给两端省略号各留一个位置。
+  let end = Math.min(body.length, start + 498);
+  const last = segments.containing(end);
+  if (last && last.index < end) end = last.index;
+  return `${start > 0 ? "…" : ""}${body.slice(start, end)}${end < body.length ? "…" : ""}`;
 }
 
 /** 分块读取追加数据；每批仅保留有限事件，半行等下次追加后再读。 */
