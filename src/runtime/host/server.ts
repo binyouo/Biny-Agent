@@ -893,7 +893,15 @@ export class RuntimeHostServer {
       if (!requests) throw new Error("User input request is no longer pending in this session.");
       return requests.answer(sessionId, requiredString(payload.runId, "runId"), requiredString(payload.toolCallId, "toolCallId"), payload.response);
     }
-    if (frame.operation === "task.message" || frame.operation === "task.wait") {
+    if (frame.operation === "task.continue") {
+      const sessionId = requiredString(payload.sessionId, "sessionId");
+      const taskRunId = requiredString(payload.taskRunId, "taskRunId");
+      const scoped = new TaskCommunication(this.commands.taskRuns, sessionId);
+      try { scoped.read(taskRunId); } finally { scoped.close(); }
+      const resident = await this.registry.ensure(sessionId);
+      return await resident.commands.continueTaskRun(taskRunId, requiredString(payload.message, "message"), optionalString(payload.messageId));
+    }
+    if (frame.operation === "task.message" || frame.operation === "task.wait" || frame.operation === "task.inspect") {
       const sessionId = requiredString(payload.sessionId, "sessionId");
       const resident = this.registry.get(sessionId);
       const communication = resident?.commands.taskCommunication ?? new TaskCommunication(this.commands.taskRuns, sessionId);
@@ -904,6 +912,11 @@ export class RuntimeHostServer {
         return communication.send(taskRunId, requiredString(payload.message, "message"), optionalString(payload.messageId));
       }
       try {
+        if (frame.operation === "task.inspect") return await communication.inspect(taskRunId, {
+          attemptId: optionalString(payload.attemptId), afterSequence: optionalSafeInteger(payload.afterSequence),
+          afterRevision: optionalSafeInteger(payload.afterRevision), limit: optionalSafeInteger(payload.limit),
+          waitMs: resident ? optionalSafeInteger(payload.waitMs) : 0, summary: payload.summary === true
+        });
         const task = await communication.wait(taskRunId, payload.waitMs as number | undefined, payload.afterRevision as number | undefined);
         return { task, messages: communication.messages(taskRunId) };
       } finally { if (!resident?.commands.taskCommunication) communication.close(); }
@@ -1293,7 +1306,8 @@ export class RuntimeHostServer {
         return commands.taskRuns.list({
           status: readOptionalTaskStatus(payload.status),
           limit: optionalSafeInteger(payload.limit),
-          cursor: optionalSafeInteger(payload.cursor)
+          cursor: optionalSafeInteger(payload.cursor),
+          order: optionalString(payload.order) as "asc" | "desc" | undefined
         });
       case "automation.create":
         return await this.executeAdmission(async () => commands.automationStore.create(readAutomationCreateInput(payload)), runtime);
