@@ -43,13 +43,21 @@ export function SettingsChatParams(): React.JSX.Element {
         <OptionalNumberField
           id="chat-max-output-tokens"
           label="最大令牌数"
-          hint="单次回复的最大 token 数，留空使用模型默认值。"
+          hint="单次模型请求的输出上限，包括正文和工具参数，部分模型也包含思考。留空跟随各模型的配置和目录额度；未声明时由服务商决定，不另设统一额度。填写后全局覆盖，切换模型也会沿用。"
           max={131_072}
           min={256}
           onCommit={(maxOutputTokens) => update({ maxOutputTokens })}
           unit="tokens"
           value={chatParams.maxOutputTokens}
         />
+        <small className="compaction-hint">
+          {chatParams.maxOutputTokens === undefined ? "自动跟随当前模型；实际输出仍受服务商限制。" : (
+            <>
+              当前使用全局输出额度。
+              <button aria-label="恢复自动输出额度" className="chat-temperature-reset" onClick={() => update({ maxOutputTokens: undefined })} type="button">恢复自动</button>
+            </>
+          )}
+        </small>
       </section>
     </div>
   );

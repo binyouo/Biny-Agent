@@ -2921,7 +2921,9 @@ export class AgentSession {
                 lastAssistant?.stopReason,
                 completedStepsBeforeRun + observedSteps,
                 usageRecord,
-                notification !== undefined
+                notification !== undefined,
+                this.activeConfig.chat.maxOutputTokens ?? activeModelSettings.maxOutputTokens,
+                lastAssistant?.usage
               )),
         notification
       };
@@ -4251,7 +4253,9 @@ function nativeTurnOutcome(
   finishReason: string | undefined,
   steps: number,
   usage?: SessionUsage,
-  hasNotification = false
+  hasNotification = false,
+  maxOutputTokens?: number,
+  lastStepUsage?: AgentUsage
 ): AgentTurnOutcome {
   if (hardStepLimitReached) {
     return {
@@ -4266,6 +4270,10 @@ function nativeTurnOutcome(
     };
   }
   if (finishReason === "length") {
+    const details: string[] = [];
+    if (maxOutputTokens !== undefined) details.push(`本次请求上限 ${String(maxOutputTokens)} tokens`);
+    if (lastStepUsage?.outputTokens !== undefined) details.push(`本次输出 ${String(lastStepUsage.outputTokens)} tokens`);
+    if (lastStepUsage?.reasoningTokens !== undefined) details.push(`${lastStepUsage.outputTokens !== undefined ? "其中" : "本次"}思考 ${String(lastStepUsage.reasoningTokens)} tokens`);
     return {
       status: "incomplete",
       stopReason: "model_length",
@@ -4273,7 +4281,7 @@ function nativeTurnOutcome(
       steps,
       output,
       usage,
-      error: "模型输出达到长度上限，回复未能完整生成。",
+      error: `模型输出达到长度上限，回复未能完整生成。${details.length ? `${details.join("，")}。` : ""}思考也可能占用输出额度。可在聊天参数中提高“最大令牌数”，或降低思考强度后点击“继续”；不会自动重放已完成的工具。`,
       resumable: true
     };
   }

@@ -11,6 +11,7 @@ import path from "node:path";
 import { defaultConfig } from "../src/config/schema.js";
 import { loadConfigFile, saveConfigFile } from "../src/config/loader.js";
 import { DesktopConfigStore } from "../src/desktop/electron/main/DesktopConfigStore.js";
+import { settingsSaveInputSchema } from "../src/desktop/electron/main/settingsSaveInputSchema.js";
 import type { AppearanceSnapshot } from "../src/appearance/types.js";
 import type { DesktopSettingsSaveInput, DesktopSettingsSnapshot, DesktopSkillCatalogEntry, DesktopSkillCatalogSnapshot } from "../src/desktop/protocol.js";
 
@@ -446,6 +447,54 @@ test("技能设置按内置、全局、项目展示，搜索保留来源分组�
     assert.equal(document.querySelectorAll('.settings-extension-group-title').length, 0);
     assert.match(document.querySelector('[aria-label="技能列表"]')?.textContent ?? "", /没有匹配/u);
   } finally { await h.close(); }
+});
+
+test("恢复自动输出额度清除全局覆盖并保留温度，原有手填数字不能阻止恢复模型默认", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "biny-settings-auto-output-"));
+  const credentials = { persistent: false, get: async () => undefined, set: async () => {}, delete: async () => {} };
+  const config = structuredClone(defaultConfig);
+  config.chat.maxOutputTokens = 8192;
+  config.chat.temperature = 0.3;
+  await saveConfigFile(directory, config);
+  const store = new DesktopConfigStore(directory, credentials);
+  const before = await store.loadVersioned();
+  const initial = { ...snapshot(), configRevision: before.revision, chatParams: before.config.chat };
+  const writes: DesktopSettingsSaveInput[] = [];
+  let saving: ReturnType<DesktopConfigStore["saveVersioned"]> | undefined;
+  const settingsView = await harness({
+    settingsSnapshot: async () => initial,
+    saveSettings: async (_project: string, input: DesktopSettingsSaveInput) => {
+      writes.push(input);
+      const payload = settingsSaveInputSchema.parse(JSON.parse(JSON.stringify(input)));
+      const candidate = structuredClone(before.config);
+      candidate.chat = payload.chatParams!;
+      saving = store.saveVersioned(candidate, payload.expectedConfigRevision!);
+      const saved = await saving;
+      return { status: "committed", journalId: "test", appliedFields: ["chatParams"], snapshot: { ...initial, configRevision: saved.revision, chatParams: saved.config.chat } };
+    }
+  });
+  try {
+    await settingsView.overlay({ targetTab: "聊天" });
+    await settingsView.React.act(async () => {
+      const advanced = document.querySelector<HTMLDetailsElement>("details.settings-advanced")!;
+      advanced.open = true;
+      advanced.dispatchEvent(new settingsView.dom.window.Event("toggle"));
+    });
+    assert.equal(document.querySelector<HTMLInputElement>("#chat-max-output-tokens")?.value, "8192");
+    await settingsView.click('[aria-label="恢复自动输出额度"]');
+    assert.equal(document.querySelector<HTMLInputElement>("#chat-max-output-tokens")?.value, "");
+    assert.match(document.querySelector(".chat-params-settings")?.textContent ?? "", /自动跟随当前模型/u);
+    await settingsView.click(".settings-save-button");
+    assert.ok(saving);
+    await settingsView.React.act(async () => { await saving; });
+    assert.equal(writes.length, 1);
+    assert.equal(writes[0]?.chatParams?.maxOutputTokens, undefined);
+    assert.equal(writes[0]?.chatParams?.temperature, 0.3);
+    assert.equal(document.querySelector('[aria-label="恢复自动输出额度"]'), null);
+    const expected = structuredClone(before.config.chat);
+    delete expected.maxOutputTokens;
+    assert.deepEqual((await loadConfigFile(directory)).chat, expected);
+  } finally { await settingsView.close(); await rm(directory, { recursive: true, force: true }); }
 });
 
 test("自动技能提取与技能开关进入统一草稿，保存时保留聊天参数与来源继承", async () => {

@@ -524,6 +524,25 @@ test("能力菜单按固定分区和顺序整理工具与 Skill", () => {
   assert.equal(compareCapabilitySkills({ name: "a", ref: "z", id: "2" }, { name: "b", ref: "a", id: "1" }) < 0, true);
 });
 
+test("ActivitySegment 长活动只渲染最近八枚头像，避免隐藏阶段撑开间距且不混淆工具次数", () => {
+  const steps = Array.from({ length: 60 }, (_, index) => [
+    reasoningStep(`reasoning-${String(index)}`, { durationMs: 400 }),
+    toolStep(`tool-${String(index)}`, "Read", "success", { args: { path: "a.ts" } }),
+  ]).flat();
+  const markup = renderToStaticMarkup(createElement(ActivitySegment, {
+    steps,
+    running: false,
+    projectId: "p1",
+    onPreviewFile: () => undefined,
+    onOpenExternal: () => undefined,
+  }));
+  const avatars = markup.match(/<button[^>]*class="chat-phase-avatar[^"]*"/gu) ?? [];
+  assert.equal(avatars.length, 9, "八枚阶段头像和一枚计数，不为隐藏阶段保留零宽按钮");
+  assert.match(markup, /aria-label="112 个更早阶段"/u);
+  assert.match(markup, />\+112<\/button>/u);
+  assert.match(markup, /工具调用 60 次/u);
+});
+
 test("ActivitySegment 工具次数不包含思考相位", () => {
   const markup = renderToStaticMarkup(createElement(ActivitySegment, {
     steps: [
@@ -566,8 +585,7 @@ test("ActivitySegment 多相位段提供时间线视图且思考相位独立展�
   assert.match(markup, /chat-activity-collapse/u);
 });
 
-test("ActivitySegment 相位超过 8 个时折叠为「+N」液滴入口", () => {
-  // Given 10 个交替相位（思考/工具），只有最后 8 个直显，前 2 个进入液滴。
+test("ActivitySegment 相位超过 8 个时只保留计数和最近八枚头像", () => {
   const steps: Array<TimelineToolStep | TimelineReasoningStep> = [];
   for (let i = 1; i <= 5; i += 1) {
     steps.push(reasoningStep(`r${String(i)}`, { durationMs: 400 }));
@@ -580,20 +598,14 @@ test("ActivitySegment 相位超过 8 个时折叠为「+N」液滴入口", () =>
     onOpenExternal: (): void => undefined,
     onResolvePermission: noopAsync,
   };
-  // When 落定渲染：徽标展开态关闭，隐藏相位以 0 宽液滴形式常驻并带错峰延迟。
   const markup = renderToStaticMarkup(createElement(ActivitySegment, { ...segmentProps, running: false }));
   assert.match(markup, /chat-activity-avatars is-stacked/u);
   assert.match(markup, /aria-label="2 个更早阶段"[^>]*class="chat-phase-avatar is-overflow"/u);
-  const droplets = markup.match(/chat-phase-avatar is-droplet( is-open)?(?:"| is-active| is-flip)/gu) ?? [];
-  assert.equal(droplets.length, 2);
-  assert.ok(droplets.every((entry) => !entry.includes("is-open")), "默认收起");
-  // 错峰收起延迟：第 1 枚 24ms、第 2 枚 12ms（(hiddenCount - hi) * 12）。
-  assert.match(markup, /transition-delay:24ms/u);
-  assert.match(markup, /transition-delay:12ms/u);
-  // Then 运行中徽标常驻且液滴不展开（悬停入口由 !running 守卫）。
+  assert.equal((markup.match(/<button[^>]*class="chat-phase-avatar[^"]*"/gu) ?? []).length, 9);
+  assert.doesNotMatch(markup, /is-droplet/u);
   const running = renderToStaticMarkup(createElement(ActivitySegment, { ...segmentProps, running: true }));
   assert.match(running, /class="chat-phase-avatar is-overflow"/u);
-  assert.doesNotMatch(running, /is-droplet is-open/u);
+  assert.doesNotMatch(running, /is-droplet/u);
 });
 
 test("CompactionDivider 渲染压缩药丸并省略缺失段", () => {

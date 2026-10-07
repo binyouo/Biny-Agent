@@ -14,6 +14,75 @@ import { replaySession } from "../src/session/replay.js";
 import { ensureAgentDirs } from "../src/session/store.js";
 import { createWriteFileTool } from "../src/tools/file/writeFile.js";
 import { ToolRegistry } from "../src/tools/registry.js";
+import { ModelRuntime } from "../src/llm/ModelRuntime.js";
+
+async function testAutomaticOutputBudgetReachesEveryProviderRequest(): Promise<void> {
+  const scenarios: Array<{ catalogLimit?: number; modelLimit?: number; profileLimit?: number; globalLimit?: number; expectedLimit?: number }> = [
+    { catalogLimit: 16384, expectedLimit: 16384 },
+    { catalogLimit: 32768, expectedLimit: 32768 },
+    { expectedLimit: undefined },
+    { catalogLimit: 16384, modelLimit: 4096, expectedLimit: 4096 },
+    { catalogLimit: 16384, modelLimit: 4096, profileLimit: 8192, expectedLimit: 8192 },
+    { catalogLimit: 16384, modelLimit: 4096, profileLimit: 8192, globalLimit: 2048, expectedLimit: 2048 }
+  ];
+  for (const scenario of scenarios) {
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "biny-auto-output-budget-"));
+    await ensureAgentDirs(workspaceRoot);
+    const requests: Array<Record<string, unknown>> = [];
+    const fetcher: typeof fetch = async (url, input) => {
+      if (String(url).endsWith("/models")) return Response.json({ data: [{ id: "fixture-model", max_output_tokens: scenario.catalogLimit }] });
+      requests.push(JSON.parse(String(input?.body)) as Record<string, unknown>);
+      const first = requests.length === 1;
+      assert.ok(requests.length <= 2, "额度解析不能引入额外模型请求或工具重放");
+      const delta = first ? { tool_calls: [{ index: 0, id: "write-once", type: "function", function: {
+        name: "Write", arguments: JSON.stringify({ path: "result.txt", content: "preserved" })
+      } }] } : { content: "Done." };
+      const chunks = [
+        { choices: [{ index: 0, delta, finish_reason: null }] },
+        { choices: [{ index: 0, delta: {}, finish_reason: first ? "tool_calls" : "stop" }] }
+      ];
+      return new Response(chunks.map(chunk => `data: ${JSON.stringify(chunk)}\n\n`).join("") + "data: [DONE]\n\n", { headers: { "content-type": "text/event-stream" } });
+    };
+    const config = configSchema.parse({
+      ...defaultConfig,
+      providers: { fixture: { type: "openai-compatible", baseUrl: "https://fixture.invalid/v1", apiKey: "fixture", modelProfiles: {
+        "fixture-model": { maxOutputTokens: scenario.profileLimit }
+      } } },
+      models: { selected: { provider: "fixture", model: "fixture-model", maxOutputTokens: scenario.modelLimit } },
+      defaultModel: "selected",
+      chat: { ...defaultConfig.chat, maxOutputTokens: scenario.globalLimit },
+      agent: { ...defaultConfig.agent, toolExecutionMode: "direct" },
+      crystal: { ...defaultConfig.crystal, passiveEnabled: false },
+      context: { ...defaultConfig.context, memory: { ...defaultConfig.context.memory, useMemories: false, generateMemories: false } }
+    });
+    const runtime = new ModelRuntime(config, [], undefined, undefined, fetcher);
+    await runtime.refreshModels("fixture");
+    const registry = new ToolRegistry();
+    registry.registerBuiltinTool(createWriteFileTool({ workspaceRoot, ignore: [] }));
+    const recorder = new SessionRecorder(workspaceRoot);
+    const agent = new AgentSession({ workspaceRoot, config, model: runtime.createModelSettings().model,
+      toolRegistry: registry, permissionManager: new PermissionManager(config.permission), recorder });
+    try {
+      await agent.initialize();
+      const outcome = await agent.runTask("Write once and report", { confirmPermission: async () => ({ approved: true, scope: "once" }) });
+      assert.equal(outcome.status, "completed", outcome.error);
+      assert.equal(outcome.output, "Done.");
+      assert.equal(requests.length, 2);
+      for (const request of requests) {
+        assert.equal(request.max_tokens, scenario.expectedLimit);
+        assert.equal(Object.hasOwn(request, "max_tokens"), scenario.expectedLimit !== undefined, "未知额度不得套用统一数值");
+      }
+      assert.equal(await readFile(path.join(workspaceRoot, "result.txt"), "utf8"), "preserved");
+      await recorder.flush();
+      const replay = await replaySession(recorder.filePath);
+      assert.equal(replay.events.filter(event => event.type === "tool_call" && event.tool === "Write").length, 1);
+      assert.ok(replay.events.some(event => event.type === "turn_status" && event.status === "completed"));
+    } finally {
+      await agent.close();
+      await rm(workspaceRoot, { recursive: true, force: true });
+    }
+  }
+}
 
 async function testNaturalCompletion(scenario: "answer" | "write" | "recovery" | "limit" | "length" | "notification" | "reasoning-only"): Promise<void> {
   const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "biny-natural-completion-"));
@@ -69,13 +138,15 @@ async function testNaturalCompletion(scenario: "answer" | "write" | "recovery" |
         type: "finish",
         reason: scenario === "length" && requests === 1
           ? "length"
-          : response[0]?.type === "tool-call" ? "tool-calls" : "stop"
+          : response[0]?.type === "tool-call" ? "tool-calls" : "stop",
+        usage: scenario === "length" && requests === 1 ? { outputTokens: 2560, reasoningTokens: 2234 } : undefined
       });
       return (async function* () { yield* response; })();
     }
   };
   const config = configSchema.parse({
     ...defaultConfig,
+    chat: { ...defaultConfig.chat, maxOutputTokens: scenario === "length" ? 2560 : undefined },
     crystal: { ...defaultConfig.crystal, passiveEnabled: false },
     agent: { ...defaultConfig.agent, hardStepLimit: scenario === "limit" ? 1 : scenario === "write" ? 2 : 4 },
     context: { ...defaultConfig.context, memory: { ...defaultConfig.context.memory, useMemories: false, generateMemories: false } }
@@ -124,6 +195,10 @@ async function testNaturalCompletion(scenario: "answer" | "write" | "recovery" |
     }
     if (scenario === "write" || scenario === "limit") assert.equal(await readFile(path.join(workspaceRoot, "result.txt"), "utf8"), "written");
     if (scenario === "length") {
+      assert.match(outcome.error ?? "", /本次请求上限 2560 tokens/u);
+      assert.match(outcome.error ?? "", /本次输出 2560 tokens，其中思考 2234 tokens/u);
+      assert.match(outcome.error ?? "", /提高.*最大令牌数.*降低思考强度/u);
+      assert.match(outcome.error ?? "", /继续/u);
       await assert.rejects(readFile(path.join(workspaceRoot, "result.txt"), "utf8"), { code: "ENOENT" });
       let resumedOutcome;
       for await (const event of agent.continueInterruptedTurn({
@@ -154,6 +229,67 @@ async function testNaturalCompletion(scenario: "answer" | "write" | "recovery" |
   } finally {
     await agent.close();
     await rm(workspaceRoot, { recursive: true, force: true });
+  }
+}
+
+async function testOutputLimitDiagnosticsUseTheFinalRequest(): Promise<void> {
+  for (const scenario of [
+    { globalLimit: 2560, modelLimit: 8192, usage: { outputTokens: 2560, reasoningTokens: 2234 }, expectedLimit: 2560, expectedOutput: 2560 },
+    { globalLimit: undefined, modelLimit: 4096, usage: { outputTokens: 4096 }, expectedLimit: 4096, expectedOutput: 4096 },
+    { globalLimit: undefined, modelLimit: undefined, usage: undefined, expectedLimit: undefined, expectedOutput: undefined },
+  ]) {
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "biny-output-limit-diagnostics-"));
+    await ensureAgentDirs(workspaceRoot);
+    const registry = new ToolRegistry();
+    registry.registerBuiltinTool(createWriteFileTool({ workspaceRoot, ignore: [] }));
+    let requests = 0;
+    const model: AgentModel = {
+      provider: "test", modelId: "output-limit-diagnostics", supportsTools: true,
+      vercelOptions: { maxOutputTokens: scenario.modelLimit },
+      async stream() {
+        requests += 1;
+        assert.ok(requests <= 2, "截断不能自动续跑或重放已经完成的写入");
+        const response: ModelStreamEvent[] = requests === 1 ? [
+          { type: "tool-call", id: "write-once", name: "Write", arguments: { path: "result.txt", content: "preserved" } },
+          { type: "finish", reason: "tool-calls", usage: { outputTokens: 100 } },
+        ] : [
+          { type: "text-delta", text: "Partial response" },
+          { type: "finish", reason: "length", usage: scenario.usage },
+        ];
+        return (async function* () { yield* response; })();
+      },
+    };
+    const config = configSchema.parse({
+      ...defaultConfig,
+      chat: { ...defaultConfig.chat, maxOutputTokens: scenario.globalLimit },
+      crystal: { ...defaultConfig.crystal, passiveEnabled: false },
+      context: { ...defaultConfig.context, memory: { ...defaultConfig.context.memory, useMemories: false, generateMemories: false } },
+    });
+    const recorder = new SessionRecorder(workspaceRoot);
+    const agent = new AgentSession({ workspaceRoot, config, model, toolRegistry: registry, permissionManager: new PermissionManager(config.permission), recorder });
+    try {
+      await agent.initialize();
+      const outcome = await agent.runTask("Write once and report", { confirmPermission: async () => ({ approved: true, scope: "once" }) });
+      assert.equal(outcome.stopReason, "model_length");
+      assert.equal(outcome.resumable, true);
+      assert.equal(outcome.output, "Partial response");
+      assert.equal(requests, 2);
+      if (scenario.expectedLimit !== undefined) assert.match(outcome.error ?? "", new RegExp(`本次请求上限 ${String(scenario.expectedLimit)} tokens`, "u"));
+      else assert.doesNotMatch(outcome.error ?? "", /本次请求上限/u);
+      if (scenario.expectedOutput !== undefined) {
+        assert.match(outcome.error ?? "", new RegExp(`本次输出 ${String(scenario.expectedOutput)} tokens`, "u"));
+        assert.equal(outcome.usage?.outputTokens, scenario.expectedOutput + 100, "回合总用量仍包含已经完成的请求，但诊断只显示最后一次请求");
+      } else assert.doesNotMatch(outcome.error ?? "", /本次输出|其中思考/u);
+      await recorder.flush();
+      const replay = await replaySession(recorder.filePath);
+      assert.ok(replay.events.some((event) => event.type === "turn_status" && event.summary === outcome.error), "诊断经公开入口写入终态后可回放");
+      assert.ok(replay.events.some((event) => event.type === "turn_status" && event.stopReason === "model_length" && event.status === "incomplete"));
+      assert.equal(replay.events.filter((event) => event.type === "tool_call" && event.toolCallId === "write-once").length, 1);
+      assert.equal(await readFile(path.join(workspaceRoot, "result.txt"), "utf8"), "preserved");
+    } finally {
+      await agent.close();
+      await rm(workspaceRoot, { recursive: true, force: true });
+    }
   }
 }
 
@@ -480,6 +616,8 @@ async function testUnattributedCancellationDoesNotWriteInterruptionMarker(): Pro
 }
 
 for (const scenario of ["answer", "write", "recovery", "limit", "length", "notification", "reasoning-only"] as const) await testNaturalCompletion(scenario);
+await testOutputLimitDiagnosticsUseTheFinalRequest();
+await testAutomaticOutputBudgetReachesEveryProviderRequest();
 await testRepeatedActionBudgetStopsTheLoop();
 await testRepeatedActionBudgetStopsTheLoop(true);
 await testStepPersistenceFailureIsATurnFailure();
