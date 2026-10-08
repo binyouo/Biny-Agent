@@ -224,7 +224,7 @@ export class McpToolHost {
   ): Promise<unknown> {
     signal?.throwIfAborted();
     const managed = this.requireServer(serverName);
-    if (!managed.client || !managed.status.connected) await this.reconnect(managed);
+    if (!managed.client || !managed.status.connected) await waitForMcpReconnect(this.reconnect(managed), signal);
     signal?.throwIfAborted();
     const client = managed.client;
     if (!client) throw new Error(`MCP server ${serverName} is not connected: ${managed.status.lastError ?? "unknown error"}`);
@@ -255,7 +255,7 @@ export class McpToolHost {
     for (const managed of targets) {
       if (!managed.client || !managed.status.connected) {
         try {
-          await waitForMcpResourceReconnect(this.reconnect(managed), signal);
+          await waitForMcpReconnect(this.reconnect(managed), signal);
         } catch {
           signal?.throwIfAborted();
           continue;
@@ -290,8 +290,10 @@ export class McpToolHost {
   }
 
   async readServerResource(serverName: string, uri: string, signal?: AbortSignal): Promise<unknown> {
+    signal?.throwIfAborted();
     const managed = this.requireServer(serverName);
-    if (!managed.client || !managed.status.connected) await this.reconnect(managed);
+    if (!managed.client || !managed.status.connected) await waitForMcpReconnect(this.reconnect(managed), signal);
+    signal?.throwIfAborted();
     const client = managed.client;
     if (!client) throw new Error(`MCP server ${serverName} is not connected: ${managed.status.lastError ?? "unknown error"}`);
     const result = await this.requestWithCredentials(managed, () => client.readResource({ uri }, this.requestOptions(managed, signal)));
@@ -309,10 +311,12 @@ export class McpToolHost {
   }
 
   async listServerPrompts(serverName?: string, signal?: AbortSignal): Promise<Array<{ server: string; prompts?: Prompt[]; error?: string }>> {
+    signal?.throwIfAborted();
     const targets = serverName ? [this.requireServer(serverName)] : [...this.servers.values()].filter((server) => server.status.enabled);
     return await Promise.all(targets.map(async (managed) => {
       try {
-        if (!managed.client || !managed.status.connected) await this.reconnect(managed);
+        if (!managed.client || !managed.status.connected) await waitForMcpReconnect(this.reconnect(managed), signal);
+        signal?.throwIfAborted();
         const client = managed.client;
         if (!client?.getServerCapabilities()?.prompts) return { server: managed.name, prompts: [] };
         const prompts: Prompt[] = [];
@@ -334,8 +338,10 @@ export class McpToolHost {
   }
 
   async getServerPrompt(serverName: string, name: string, args?: Record<string, string>, signal?: AbortSignal): Promise<unknown> {
+    signal?.throwIfAborted();
     const managed = this.requireServer(serverName);
-    if (!managed.client || !managed.status.connected) await this.reconnect(managed);
+    if (!managed.client || !managed.status.connected) await waitForMcpReconnect(this.reconnect(managed), signal);
+    signal?.throwIfAborted();
     const client = managed.client;
     if (!client) throw new Error(`MCP server ${serverName} is not connected.`);
     // 模板通过普通工具结果返回，不提升为 system 消息，也不自动执行其中的操作。
@@ -522,10 +528,12 @@ export class McpToolHost {
           if (!client || this.closing) return;
           try {
             const tools = await this.listAllTools(managed, client);
-            if (managed.client !== client) return;
+            if (this.closing || managed.client !== client || !client.transport
+              || (!managed.status.connected && !managed.status.connecting)) return;
             this.registerServerTools(managed, client, tools);
           } catch (error) {
-            if (this.closing || managed.client !== client || !client.transport) return;
+            if (this.closing || managed.client !== client || !client.transport
+              || (!managed.status.connected && !managed.status.connecting)) return;
             managed.status.lastError = `tool refresh failed: ${errorText(error)}`;
             this.emitChange();
           }
@@ -763,8 +771,8 @@ function transportKind(serverConfig: McpServerConfig): McpTransportKind {
   return serverConfig.type ?? (serverConfig.url ? "http" : "stdio");
 }
 
-/** 只取消资源列表调用者的等待；共享重连仍由 host 持有并继续服务其他调用者。 */
-function waitForMcpResourceReconnect(connecting: Promise<void>, signal?: AbortSignal): Promise<void> {
+/** 只取消当前调用者的等待；共享重连仍由 host 持有并继续服务其他调用者。 */
+function waitForMcpReconnect(connecting: Promise<void>, signal?: AbortSignal): Promise<void> {
   if (!signal) return connecting;
   return new Promise<void>((resolve, reject) => {
     let settled = false;

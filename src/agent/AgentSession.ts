@@ -16,7 +16,7 @@ import {
 } from "../llm/ModelManager.js";
 import { PermissionManager, type PermissionMode } from "../permission/PermissionManager.js";
 import { runPermissionCommand } from "../permission/commands.js";
-import { listSessionSummaries, readSessionEvents, readSessionSummary, type SessionSummary } from "../session/events.js";
+import { listSessionSummaries, readSessionEvents, readSessionEventsForBackfill, readSessionSummary, type SessionSummary } from "../session/events.js";
 import { sessionMessageMetadata } from "../session/messageTree.js";
 import { assertSessionFileSize } from "../session/limits.js";
 import { sessionFileFingerprint } from "../session/parseCache.js";
@@ -1140,6 +1140,7 @@ export class AgentSession {
         recordSessionUserMessage: false,
         completedStepsBeforeRun: turn.completedSteps,
         initialToolBudget: restartToolBudget(readToolBudget(turn.facts), turn.completedSteps === 0),
+        recoveryCheckpoint: turn,
         previousTerminals
       });
     } finally {
@@ -1749,7 +1750,7 @@ export class AgentSession {
       await this.recorder.flush();
       // 接收确认也要留下任务意图；上下文准备尚未完成时崩溃，仍能恢复这次输入。
       await this.turnStore.save(input, undefined, [...this.contextMemory.getHistory(), { role: "user", content: input }], 0,
-        undefined, undefined, undefined, this.recorder.runtimeHighWater());
+        undefined, undefined, undefined, this.recorder.runtimeHighWater(), options.turnId);
       this.admittedUserMessages.set(options.runId, { input, reference });
       this.scheduleTemporalIndex();
     } finally {
@@ -1882,6 +1883,7 @@ export class AgentSession {
       previousTerminals?: InterruptedTurnTerminal[];
       continueMessageReferences?: Array<SessionMessageReference | undefined>;
       emptyTurnAuditRecorded?: boolean;
+      recoveryCheckpoint?: InterruptedTurn;
     } = {}
   ): AsyncGenerator<AgentSessionEvent> {
     const release = this.beginOperation("agent turn");
@@ -1993,7 +1995,7 @@ export class AgentSession {
         }
         await this.recorder.flush();
         await this.turnStore.save(input, undefined, cancellationContext().messages, 0,
-          undefined, undefined, runOptions.previousTerminals, this.recorder.runtimeHighWater());
+          undefined, undefined, runOptions.previousTerminals, this.recorder.runtimeHighWater(), runtimeTurnId);
         this.scheduleTemporalIndex();
       } catch (error) {
         const message = `初始检查点持久化失败：${errorMessage(error)}`;
@@ -2017,6 +2019,30 @@ export class AgentSession {
       yield { type: "status", status: "cancelled" };
       yield doneEvent(outcome);
       return;
+    }
+    if (runOptions.recoveryCheckpoint?.turnId && runOptions.recoveryCheckpoint.runtimeHighWater) {
+      const turn = runOptions.recoveryCheckpoint;
+      // Reconstruct durable copies under both the operation exclusion and recorder
+      // barrier. Neither the input nor output of this path trusts mutable parse caches.
+      await this.recorder.flush();
+      const source = await readSessionEventsForBackfill(this.recorder.filePath, 0);
+      const canonical = await this.recorder.materializeRecoveredToolSuffix({
+        ownerTurnId: turn.turnId!, expectedRuntimeHighWater: turn.runtimeHighWater!,
+        sourcePrefix: { byteLength: source.byteLength, sha256: source.contentHash }
+      });
+      if (canonical.messages.length) {
+        const restored = await this.rehydrateSessionAttachments(canonical.messages, canonical.events, canonical.contextStartUserMessageIndex);
+        const indexes = restored.map((_, index) => index).filter(index => !(canonical.messageReferences[index]?.id === undefined
+          && restored[index]?.role === "user" && restored[index].content === pausedTurnMarker));
+        const history = indexes.map(index => restored[index]!);
+        const references = indexes.map(index => canonical.messageReferences[index]);
+        runOptions.continueFrom = turn.terminal ? [...history, runtimeContinuationMessage(turn.terminal)] : history;
+        runOptions.continueMessageReferences = turn.terminal ? [...references, undefined] : references;
+        this.contextMemory.restore(history, canonical.contextState ?? canonical.contextUsage);
+        if (canonical.contextCheckpoint) this.contextMemory.setCheckpoint(canonical.contextCheckpoint);
+        this.contextMessageReferences = references;
+        this.nextSessionMessageIndex = Math.max(canonical.totalMessageCount, canonical.messageTree.length);
+      }
     }
     const preparePromptPerfStartedAt = perfNow();
     try {
@@ -2212,7 +2238,8 @@ export class AgentSession {
           undefined,
           undefined,
           runOptions.previousTerminals,
-          this.recorder.runtimeHighWater()
+          this.recorder.runtimeHighWater(),
+          runtimeTurnId
         );
         recordPerfPhase("turn.persistCheckpoint", persistPerfStartedAt, { runId: runtimeRunId });
       } catch (error) {
@@ -2418,7 +2445,8 @@ export class AgentSession {
           coordinator.getExecutionBudgetSnapshot(),
           undefined,
           runOptions.previousTerminals,
-          this.recorder.runtimeHighWater()
+          this.recorder.runtimeHighWater(),
+          runOptions.turnId
         );
       });
       toolResultCheckpointBarrier = current.catch(() => undefined);
@@ -2640,7 +2668,8 @@ export class AgentSession {
                 coordinator.getExecutionBudgetSnapshot(),
                 undefined,
                 runOptions.previousTerminals,
-                this.recorder.runtimeHighWater()
+                this.recorder.runtimeHighWater(),
+                runOptions.turnId
               );
             } catch (error) {
               // 工具事实已落盘，但不能带着陈旧预算和上下文进入下一步。
@@ -2947,7 +2976,8 @@ export class AgentSession {
               requiredAction: outcome.requiredAction
             },
             runOptions.previousTerminals,
-            this.recorder.runtimeHighWater()
+            this.recorder.runtimeHighWater(),
+            runOptions.turnId
           );
         } catch (error) {
           outcome = {

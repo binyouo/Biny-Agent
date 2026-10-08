@@ -56,11 +56,12 @@ import { modelReasoningConfig } from "../ai/capabilities.js";
 import { attachmentRoot, ensureAttachmentRoot } from "../attachments/store.js";
 import { AiRegistry } from "../llm/AiRegistry.js";
 import { RuntimeEventAuthority } from "./RuntimeAuthority.js";
-import { DurableTaskRunStore, isTaskRunTerminal, type TaskRetrySafety, type TaskRunWithAttempts } from "./TaskRunStore.js";
+import { DurableTaskRunStore, isTaskRunTerminal, isLegacyWorkerOwnerBoundary, type TaskRetrySafety, type TaskRunWithAttempts } from "./TaskRunStore.js";
 import { evaluateTaskRetry } from "./TaskRetryPolicy.js";
 import { readWorkerAttemptCheckpoint, runTaskClosure, type TaskClosureResult } from "./TaskClosure.js";
 import { isSessionWriterConflictError } from "./SessionLease.js";
 import { readWorkerSessionCheckpoint } from "./WorkerSession.js";
+import { readLegacyWorkerOwner } from "./legacyWorkerOwner.js";
 import { AutomationStore } from "./AutomationScheduler.js";
 import { GoalGraphStore } from "./GoalGraphStore.js";
 import { SessionGoalStore } from "./SessionGoalStore.js";
@@ -143,6 +144,10 @@ export interface CommandRuntime {
   }>;
   continueTaskRun(taskRunId: string, message: string, requestId?: string, signal?: AbortSignal): Promise<Record<string, unknown>>;
   canResumeWorkerTask?(taskRunId: string): Promise<boolean>;
+  /** Read-only routing evidence; only explicit resume may persist a missing owner. */
+  legacyWorkerOwner?(taskRunId: string): Promise<string>;
+  /** Exact validated resume admission, before its durable owner can be reconciled. */
+  pendingTaskResume?(taskRunId: string): { attemptId: string; sessionId: string } | undefined;
   /** 一次性主任务通过同一份 TaskRun 验收闭环执行，不把回合完成当作产物已验证。 */
   runTaskWithVerification(input: {
     prompt: string;
@@ -311,8 +316,12 @@ export async function createCommandRuntime(workspaceRoot: string, options: Comma
   const durableTaskPromises = new Map<string, Promise<TaskClosureResult>>();
   const durableTaskControllers = new Map<string, AbortController>();
   const workerContinuations = new Map<string, PreparedSubagentTask>();
-  const workerGoalBindings = new Map<string, { parentSessionId: string; parentRunId: string; sessionGoalId?: string }>();
-  const workerResumeAdmissions = new Map<string, ReturnType<CommandRuntime["resumeTaskRun"]>>();
+  const workerGoalBindings = new Map<string, { parentSessionId: string; parentRunId: string; sessionGoalId?: string; communication: boolean }>();
+  const workerResumeAdmissions = new Map<string, {
+    attemptId: string; sessionId?: string; controller: AbortController;
+    promise: ReturnType<CommandRuntime["resumeTaskRun"]>;
+  }>();
+  let closing = false;
   let startTaskRun: CommandRuntime["startTaskRun"] = async () => {
     throw new Error("TaskRun execution is not initialized.");
   };
@@ -446,16 +455,21 @@ export async function createCommandRuntime(workspaceRoot: string, options: Comma
       onSnapshot: (snapshot) => {
         if (snapshot.status === "queued" && !workerGoalBindings.has(snapshot.taskId)) {
           const binding = durableSubagentBindings.get(snapshot.taskId);
-          const parentSessionId = taskRuns.get(binding?.taskRunId ?? snapshot.taskId)?.sessionId ?? agent?.getInfo().sessionId ?? recorder.sessionId;
+          const admittedTask = taskRuns.get(binding?.taskRunId ?? snapshot.taskId);
+          const parentSessionId = admittedTask?.sessionId ?? agent?.getInfo().sessionId ?? recorder.sessionId;
           const goal = sessionGoals.get(parentSessionId);
-          workerGoalBindings.set(snapshot.taskId, { parentSessionId, parentRunId: snapshot.parentRunId, sessionGoalId: goal?.status === "active" ? goal.goalId : undefined });
+          // Routing identity must not grant communication to an unbound slash child.
+          workerGoalBindings.set(snapshot.taskId, { parentSessionId, parentRunId: snapshot.parentRunId, sessionGoalId: goal?.status === "active" ? goal.goalId : undefined,
+            communication: admittedTask?.sessionId === recorder.sessionId });
         }
-        taskRuns.syncSubagentSnapshot(snapshot, durableSubagentBindings.get(snapshot.taskId));
+        taskRuns.syncSubagentSnapshot(snapshot, durableSubagentBindings.get(snapshot.taskId)
+          ?? { sessionId: workerGoalBindings.get(snapshot.taskId)?.parentSessionId });
         taskCommunication.notify(durableSubagentBindings.get(snapshot.taskId)?.taskRunId ?? snapshot.taskId);
         if (snapshot.status !== "queued" && snapshot.status !== "running") workerGoalBindings.delete(snapshot.taskId);
       },
       persistCompletion: (snapshot, output) => {
-        taskRuns.syncSubagentSnapshot(snapshot, durableSubagentBindings.get(snapshot.taskId), output);
+        taskRuns.syncSubagentSnapshot(snapshot, durableSubagentBindings.get(snapshot.taskId)
+          ?? { sessionId: workerGoalBindings.get(snapshot.taskId)?.parentSessionId }, output);
         taskCommunication.notify(durableSubagentBindings.get(snapshot.taskId)?.taskRunId ?? snapshot.taskId);
       },
       execute: async (task, context) => {
@@ -464,11 +478,12 @@ export async function createCommandRuntime(workspaceRoot: string, options: Comma
         const binding = durableSubagentBindings.get(context.taskId);
         const durable = taskRuns.get(binding?.taskRunId ?? context.taskId);
         const attempt = durable?.attempts.at(-1);
+        const communication = workerGoalBindings.get(context.taskId)?.communication ?? (durable?.sessionId === recorder.sessionId);
         if (durable && attempt && durable.status === "running") {
           const artifacts = attempt.artifacts as Record<string, unknown> | undefined;
           taskRuns.transition(durable.taskRunId, "running", { attemptId: attempt.attemptId, artifacts: {
             ...artifacts, workerExecution: { ...readWorkerAttemptCheckpoint(artifacts), prompt: task, accessMode: context.accessMode, agent: context.agent,
-              communication: durable.sessionId === recorder.sessionId }
+              communication }
           } });
         }
         return await executeSubagentTask(subagentOptions, task, context.signal, context.accessMode, context.agent, {
@@ -480,7 +495,7 @@ export async function createCommandRuntime(workspaceRoot: string, options: Comma
             runtimeAuthority.appendSessionEvent(event);
             if (durable) taskCommunication.notify(durable.taskRunId);
           } },
-          communication: durable?.sessionId === recorder.sessionId && attempt ? taskCommunication.worker(durable.taskRunId, attempt.attemptId) : undefined
+          communication: communication && durable && attempt ? taskCommunication.worker(durable.taskRunId, attempt.attemptId) : undefined
         });
       }
     })
@@ -708,6 +723,13 @@ export async function createCommandRuntime(workspaceRoot: string, options: Comma
     toolCounts: createToolCounts(toolRegistry.listEntries())
   });
 
+  const assertTaskOwner = (task: TaskRunWithAttempts | undefined): void => {
+    const sessionId = agent.getInfo().sessionId;
+    if (task?.sessionId !== undefined && task.sessionId !== sessionId) {
+      throw new Error(`TaskRun ${task.taskRunId} belongs to session ${task.sessionId}, not ${sessionId}.`);
+    }
+  };
+
   const startSubagentTask = (task: string, taskOptions?: SubagentTaskRunOptions): SubmittedSubagentTask => {
     if (!config.extensions.subagent.enabled) throw new Error("Subagent extension is disabled in config.json.");
     if (!subagentTaskManager) throw new Error("Subagent runtime is unavailable.");
@@ -718,6 +740,8 @@ export async function createCommandRuntime(workspaceRoot: string, options: Comma
     let submitted: SubmittedSubagentTask;
     try {
       taskOptions?.signal?.throwIfAborted();
+      const effectiveTaskRunId = taskOptions?.taskRunId && taskOptions.attemptId ? taskOptions.taskRunId : taskId;
+      assertTaskOwner(taskRuns.get(effectiveTaskRunId));
       if (taskOptions?.taskRunId && taskOptions.attemptId) {
         durableSubagentBindings.set(taskId, {
           taskRunId: taskOptions.taskRunId,
@@ -768,6 +792,7 @@ export async function createCommandRuntime(workspaceRoot: string, options: Comma
   ): Promise<{ task: TaskRunWithAttempts; completion: Promise<TaskClosureResult> }> => {
     const task = taskRuns.get(taskRunId);
     if (!task) throw new Error(`TaskRun ${taskRunId} does not exist.`);
+    assertTaskOwner(task);
     const existingPromise = durableTaskPromises.get(taskRunId);
     if (existingPromise) return { task, completion: existingPromise };
     const definition = readTaskDefinition(task.task);
@@ -788,7 +813,7 @@ export async function createCommandRuntime(workspaceRoot: string, options: Comma
       });
       return { task: current, completion: Promise.resolve({ status: "blocked", reason }) };
     }
-    if (current.status === "queued" && current.attempts.length > 0 && !hasSafeQueuedTaskContinuation(current, taskRuns.events(taskRunId))) {
+    if (current.status === "queued" && current.attempts.length > 0 && !hasSafeQueuedTaskContinuation(current, taskRuns.latestEvent(taskRunId))) {
       const reason = "This queued TaskRun has no persisted retry or verification-repair admission; replaying its Worker is unsafe.";
       current = taskRuns.transition(taskRunId, "blocked", {
         attemptId: current.attempts.at(-1)?.attemptId,
@@ -799,7 +824,8 @@ export async function createCommandRuntime(workspaceRoot: string, options: Comma
     if (current.status === "created") current = taskRuns.transition(taskRunId, "queued");
     const latest = taskRuns.get(taskRunId);
     if (!latest) throw new Error(`TaskRun ${taskRunId} disappeared before execution.`);
-    const controller = new AbortController();
+    const controller = durableTaskControllers.get(taskRunId) ?? new AbortController();
+    controller.signal.throwIfAborted();
     durableTaskControllers.set(taskRunId, controller);
     const completion = runTaskClosure({
       taskRuns,
@@ -899,56 +925,86 @@ export async function createCommandRuntime(workspaceRoot: string, options: Comma
   startTaskRun = async (taskRunId, taskOptions) => await dispatchTaskRun(taskRunId, taskOptions);
 
   resumeTaskRun = async (taskRunId) => {
+    if (closing) throw new Error("Task runtime is closing.");
     const task = taskRuns.get(taskRunId);
     if (!task) throw new Error(`TaskRun ${taskRunId} does not exist.`);
+    assertTaskOwner(task);
     const existingPromise = durableTaskPromises.get(taskRunId);
     if (existingPromise) return { task, completion: existingPromise };
     const existingAdmission = workerResumeAdmissions.get(taskRunId);
-    if (existingAdmission) return await existingAdmission;
+    if (existingAdmission) return await existingAdmission.promise;
 
     const latest = task.attempts.at(-1);
-    const events = taskRuns.events(taskRunId);
+    const latestEvent = taskRuns.latestEvent(taskRunId);
     const persistedVerification = task.status === "verifying"
       && latest?.status === "verifying"
       && latest.artifacts !== undefined;
     const admittedQueuedContinuation = task.status === "queued"
-      && hasSafeQueuedTaskContinuation(task, events);
+      && hasSafeQueuedTaskContinuation(task, latestEvent);
     const parkedWorker = task.status === "blocked" && (latest?.failure as { failureClass?: string } | undefined)?.failureClass === "worker_interrupted";
-    if ((task.status === "running" || parkedWorker) && latest && config.extensions.subagent.enabled) {
+    const legacyWorker = isLegacyWorkerOwnerBoundary(task);
+    if ((task.status === "running" || parkedWorker || legacyWorker) && latest && config.extensions.subagent.enabled) {
       const checkpoint = readWorkerAttemptCheckpoint(latest.artifacts);
       if (checkpoint) {
-        const admission = (async () => {
+        const controller = new AbortController();
+        const admission = Promise.resolve().then(async () => {
           const definition = readTaskDefinition(task.task);
           let prepared: PreparedSubagentTask | undefined;
           try {
+            controller.signal.throwIfAborted();
+            const legacyOwner = task.sessionId === undefined
+              ? await readLegacyWorkerOwner(persistenceRoot, task, runtimeAuthority, workspaceRoot) : undefined;
+            if (legacyOwner && legacyOwner.sessionId !== agent.getInfo().sessionId) {
+              throw new Error(`Legacy Worker belongs to session ${legacyOwner.sessionId}; resume it through that session.`);
+            }
+            controller.signal.throwIfAborted();
+            if (durableTaskControllers.has(taskRunId)) throw new Error("TaskRun acquired another execution during resume admission.");
+            // Reuse the closure's cancellation controller across preparation and dispatch.
+            pending.sessionId = legacyOwner?.sessionId ?? task.sessionId;
+            durableTaskControllers.set(taskRunId, controller);
             prepared = await prepareSubagentTask(subagentOptions, checkpoint.prompt,
               definition.review || definition.reportOnly || subagentAccessMode(permissionManager) === "read-only" ? "read-only" : checkpoint.accessMode ?? "workspace", definition.agent ?? checkpoint.agent, {
-                persistenceRoot, taskId: latest.attemptId, parentSessionId: task.sessionId,
+                persistenceRoot, taskId: latest.attemptId, parentSessionId: legacyOwner?.sessionId ?? task.sessionId,
                 resume: true, runtimeEventSink: { appendSessionEvent: (event) => {
                   runtimeAuthority.appendSessionEvent(event);
                   taskCommunication.notify(taskRunId);
                 } },
                 communication: checkpoint.communication && task.sessionId === recorder.sessionId ? taskCommunication.worker(taskRunId, latest.attemptId) : undefined
               });
+            controller.signal.throwIfAborted();
             const current = taskRuns.get(taskRunId);
             if (current?.status !== task.status || current.revision !== task.revision || current.attempts.at(-1)?.attemptId !== latest.attemptId) throw new Error("Worker Attempt changed during continuation admission.");
-            if (parkedWorker) taskRuns.resumeWorkerAttempt(taskRunId, latest.attemptId, task.revision);
+            // The prepared Worker holds its lease; revalidate facts that preparation does not itself compare.
+            const heldProof = legacyOwner ? await readLegacyWorkerOwner(persistenceRoot, task, runtimeAuthority, workspaceRoot) : undefined;
+            controller.signal.throwIfAborted();
+            if (heldProof && heldProof.sessionId !== legacyOwner?.sessionId) throw new Error("Legacy Worker owner changed during preparation.");
+            if (heldProof?.completionDigest !== legacyOwner?.completionDigest) throw new Error("Legacy Worker completion evidence changed during preparation.");
+            if (heldProof) taskRuns.reconcileWorkerOwner(heldProof);
+            else if (parkedWorker) taskRuns.resumeWorkerAttempt(taskRunId, latest.attemptId, task.revision);
+            controller.signal.throwIfAborted();
+            assertTaskOwner(taskRuns.get(taskRunId));
             const submitted = await dispatchTaskRun(taskRunId, {}, prepared);
             void submitted.completion.finally(async () => { await prepared?.close(); }).catch(() => undefined);
             return submitted;
           } catch (error) {
             await prepared?.close();
             const current = taskRuns.get(taskRunId);
-            if (!isSessionWriterConflictError(error) && current?.status === "running" && current.attempts.at(-1)?.attemptId === latest.attemptId) {
+            if (!controller.signal.aborted && task.sessionId !== undefined && !isSessionWriterConflictError(error) && current?.status === "running" && current.attempts.at(-1)?.attemptId === latest.attemptId) {
               taskRuns.transition(taskRunId, "blocked", { attemptId: latest.attemptId, artifacts: latest.artifacts,
                 failure: { failureClass: "unsafe_recovery", message: error instanceof Error ? error.message : String(error) } });
             }
             throw error;
           }
-        })();
-        workerResumeAdmissions.set(taskRunId, admission);
+        });
+        const pending: { attemptId: string; sessionId?: string; controller: AbortController; promise: typeof admission } = {
+          attemptId: latest.attemptId, controller, promise: admission
+        };
+        workerResumeAdmissions.set(taskRunId, pending);
         try { return await admission; }
-        finally { if (workerResumeAdmissions.get(taskRunId) === admission) workerResumeAdmissions.delete(taskRunId); }
+        finally {
+          if (workerResumeAdmissions.get(taskRunId) === pending) workerResumeAdmissions.delete(taskRunId);
+          if (durableTaskControllers.get(taskRunId) === controller && !durableTaskPromises.has(taskRunId)) durableTaskControllers.delete(taskRunId);
+        }
       }
     }
     if (!persistedVerification && !admittedQueuedContinuation) {
@@ -1177,6 +1233,7 @@ export async function createCommandRuntime(workspaceRoot: string, options: Comma
     },
     hasBackgroundWork: () => heartbeat.status().running
       || durableTaskPromises.size > 0
+      || workerResumeAdmissions.size > 0
       || Boolean(subagentTaskManager?.listSnapshots().some((task) => task.status === "queued" || task.status === "running")),
     extensionReport: (section?: ExtensionSection): string => formatExtensionReport(extensionStatus(), section),
     extensionStatus: (): ExtensionStatus => extensionStatus(),
@@ -1192,7 +1249,11 @@ export async function createCommandRuntime(workspaceRoot: string, options: Comma
       const entries = toolRegistry.listEntries().filter(({ source, tool }) => source !== "mcp" || !sessionMcpTools.has(tool.name));
       const knownNames = new Set(entries.map(({ tool }) => tool.name));
       const extensionTools = [...resourceScope.createTools(), ...resourceScope.createResourceTools()]
-        .filter((tool) => !knownNames.has(tool.name))
+        .filter((tool) => {
+          if (knownNames.has(tool.name)) return false;
+          knownNames.add(tool.name);
+          return true;
+        })
         .map((tool) => ({ name: tool.name, description: tool.description, source: "mcp" as const, risk: tool.risk,
           exposure: getToolExposure(tool), namespace: tool.namespace, parameters: tool.parameters, outputSchema: tool.outputSchema }));
       return [
@@ -1219,12 +1280,27 @@ export async function createCommandRuntime(workspaceRoot: string, options: Comma
     startTaskRun,
     resumeTaskRun,
     continueTaskRun,
+    pendingTaskResume(taskRunId) {
+      const pending = workerResumeAdmissions.get(taskRunId);
+      if (!pending?.sessionId || durableTaskControllers.get(taskRunId) !== pending.controller
+        || taskRuns.get(taskRunId)?.attempts.at(-1)?.attemptId !== pending.attemptId) return undefined;
+      return { attemptId: pending.attemptId, sessionId: pending.sessionId };
+    },
+    async legacyWorkerOwner(taskRunId) {
+      const task = taskRuns.get(taskRunId);
+      if (!task) throw new Error(`TaskRun ${taskRunId} does not exist.`);
+      return (await readLegacyWorkerOwner(persistenceRoot, task, runtimeAuthority)).sessionId;
+    },
     async canResumeWorkerTask(taskRunId) {
       const task = taskRuns.get(taskRunId);
       const attempt = task?.attempts.at(-1);
       const admission = readWorkerAttemptCheckpoint(attempt?.artifacts);
       if (!task || !attempt || !admission) return false;
       try {
+        if (task.sessionId === undefined) {
+          await readLegacyWorkerOwner(persistenceRoot, task, runtimeAuthority);
+          return true;
+        }
         const { checkpoint, facts } = await readWorkerSessionCheckpoint(persistenceRoot, attempt.attemptId);
         return checkpoint.prompt === admission.prompt && facts.parentSessionId === task.sessionId;
       } catch { return false; }
@@ -1256,12 +1332,15 @@ export async function createCommandRuntime(workspaceRoot: string, options: Comma
       subagentParentRunId = parentRunId;
     },
     close: async () => {
+      closing = true;
+      for (const pending of workerResumeAdmissions.values()) pending.controller.abort(new Error("Task runtime is closing."));
       userInput.setRun();
       try {
         const wasOwner = backgroundOwners.values().next().value === backgroundOwner;
         backgroundOwner.stop();
         backgroundOwners.delete(backgroundOwner);
         if (wasOwner) backgroundOwners.values().next().value?.start();
+        await Promise.allSettled([...workerResumeAdmissions.values()].map(pending => pending.promise));
         await subagentTaskManager?.close();
         await agent.close();
       } finally {
@@ -1311,10 +1390,9 @@ function latestTaskCheckResult(
 
 function hasSafeQueuedTaskContinuation(
   task: TaskRunWithAttempts,
-  events: ReturnType<DurableTaskRunStore["events"]>
+  latestEvent: ReturnType<DurableTaskRunStore["latestEvent"]>
 ): boolean {
   const attempt = task.attempts.at(-1);
-  const latestEvent = events.at(-1);
   if (!attempt || attempt.status !== "failed" || !latestEvent) return false;
   if (latestEvent.eventType === "task.retry") {
     const decision = evaluateTaskRetry({ ...task, status: "failed" });

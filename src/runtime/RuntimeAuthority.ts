@@ -90,6 +90,7 @@ export interface RuntimeRunStartResult extends RuntimeRunRecord {
 export interface RuntimeRunFinishInput {
   runId: string;
   status: RuntimeRunStatus;
+  /** Omission preserves a terminal payload; repeated canonical session projections only enrich known evidence fields. */
   payload?: unknown;
   terminalEventId?: string;
   createdAt?: string;
@@ -358,17 +359,20 @@ export class RuntimeEventAuthority implements RuntimeEventSink {
         if (input.terminalEventId !== undefined && run.terminalEventId !== input.terminalEventId) {
           throw new Error(`Runtime run ${input.runId} already has a different terminal event.`);
         }
-        if (run.terminalPayload !== undefined && json(run.terminalPayload) !== json(input.payload)) {
-          // 启动 reconciliation 可能先根据 JSONL 的 turn_status 写入一个缺少 output /
-          // duration 的最小投影；同一个 canonical event 后续由 Host 补齐完整 projection
-          // 是安全的，其他 terminal event 仍然保持严格幂等。
-          if (input.terminalEventId === undefined || run.terminalEventId !== input.terminalEventId) {
-            throw new Error(`Runtime run ${input.runId} already has a different terminal fact.`);
-          }
-          this.database.prepare("UPDATE agent_runs SET terminal_payload_json = ?, updated_at = ? WHERE run_id = ?").run(json(input.payload), now, input.runId);
-          return this.requireRun(input.runId);
+        const terminalEvent = run.terminalEventId === undefined ? undefined : this.readEventById(run.terminalEventId);
+        if (!terminalEvent) throw new Error(`Runtime run ${input.runId} has no persisted terminal fact.`);
+        assertTerminalEventMatchesRun(terminalEvent, run, input.status, input.payload === undefined ? run.terminalPayload : input.payload);
+        // Omitted payload means no new projection evidence, never a request to clear it.
+        if (input.payload === undefined || json(run.terminalPayload) === json(input.payload)) return run;
+        if (input.terminalEventId === undefined || terminalEvent.eventType !== "session.turn_status") {
+          throw new Error(`Runtime run ${input.runId} already has a different terminal fact.`);
         }
-        return run;
+        // Only the known Host projection can enrich a canonical session terminal.
+        // Self-contained run.terminal facts and opaque payloads remain immutable.
+        const payload = enrichSessionTerminalPayload(terminalEvent, run.terminalPayload, input.payload);
+        if (json(payload) === json(run.terminalPayload)) return run;
+        this.database.prepare("UPDATE agent_runs SET terminal_payload_json = ?, updated_at = ? WHERE run_id = ?").run(json(payload), now, input.runId);
+        return this.requireRun(input.runId);
       }
       const terminalEventId = input.terminalEventId ?? `run-terminal:${input.runId}`;
       const existingTerminalEvent = input.terminalEventId === undefined
@@ -1378,14 +1382,76 @@ function assertTerminalEventMatchesRun(
     const projectionRecord = projection !== null && typeof projection === "object" && !Array.isArray(projection)
       ? projection as Record<string, unknown>
       : undefined;
-    if (projectionRecord?.stopReason !== undefined && eventPayload.stopReason !== projectionRecord.stopReason) {
-      throw new Error(`Runtime terminal event ${event.eventId} has a different stop reason.`);
+    const displayProjection = terminalRecord(projectionRecord?.projection);
+    if (displayProjection?.status !== undefined && displayProjection.status !== status) {
+      throw new Error(`Runtime terminal event ${event.eventId} has a different projection status.`);
+    }
+    for (const [field, canonicalField] of [["stopReason", "stopReason"], ["finishReason", "finishReason"], ["steps", "steps"], ["error", "summary"]] as const) {
+      if (projectionRecord?.[field] !== undefined && json(eventPayload[canonicalField]) !== json(projectionRecord[field])) {
+        throw new Error(`Runtime terminal event ${event.eventId} has a different ${field === "stopReason" ? "stop reason" : field}.`);
+      }
     }
     return;
   }
   if (event.eventType !== "run.terminal" || eventPayload?.status !== status || json(eventPayload.payload) !== json(projection)) {
     throw new Error(`Runtime terminal event ${event.eventId} is not the requested terminal fact.`);
   }
+}
+
+const terminalPayloadFields = ["stopReason", "finishReason", "steps", "output", "error", "projection"] as const;
+const terminalProjectionFields = ["status", "durationMs", "stopReason", "finishReason", "steps", "resumable", "blockedReason", "requiredAction", "error"] as const;
+
+/** Exactly the two known projection levels; this is not a merge policy for arbitrary payloads. */
+function enrichSessionTerminalPayload(event: RuntimeEvent, current: unknown, incoming: unknown): Record<string, unknown> {
+  const previous = terminalRecord(current);
+  const next = terminalRecord(incoming);
+  if (!previous || !next) throw new Error(`Runtime terminal event ${event.eventId} cannot replace an opaque terminal payload.`);
+  const result = enrichTerminalFields(previous, next, terminalPayloadFields, "output");
+  if (next.projection !== undefined) {
+    const previousProjection = previous.projection === undefined ? {} : terminalRecord(previous.projection);
+    const nextProjection = terminalRecord(next.projection);
+    if (!previousProjection || !nextProjection) throw new Error(`Runtime terminal event ${event.eventId} cannot clear its projection.`);
+    // Startup's exact canonical projection is provisional display metadata. Host
+    // may fill its normalized error/reason as well as zero-duration placeholders.
+    const canonical = event.payload as Extract<SessionEvent, { type: "turn_status" }>;
+    const recovering = json(current) === json(terminalPayloadFromSessionEvent(canonical));
+    result.projection = enrichTerminalFields(previousProjection, nextProjection, terminalProjectionFields, "durationMs", recovering);
+  }
+  return result;
+}
+
+function terminalRecord(value: unknown): Record<string, unknown> | undefined {
+  return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+}
+
+function enrichTerminalFields(
+  previous: Record<string, unknown>,
+  next: Record<string, unknown>,
+  allowed: readonly string[],
+  placeholder: "output" | "durationMs",
+  recovering = false
+): Record<string, unknown> {
+  if ([...Object.keys(previous), ...Object.keys(next)].some((key) => !allowed.includes(key))) {
+    throw new Error("Runtime terminal payload has unsupported enrichment fields.");
+  }
+  const result = { ...previous };
+  for (const [key, value] of Object.entries(next)) {
+    if (value === undefined || key === "projection") continue;
+    if (value === null) throw new Error(`Runtime terminal ${key} cannot be cleared.`);
+    if (key === "output" && typeof value !== "string"
+      || key === "durationMs" && (typeof value !== "number" || !Number.isFinite(value) || value < 0)) {
+      throw new Error(`Runtime terminal ${key} has invalid enrichment evidence.`);
+    }
+    const old = previous[key];
+    if (old !== undefined && old !== "" && value === "") throw new Error(`Runtime terminal ${key} cannot be cleared.`);
+    const fillsPlaceholder = key === placeholder && old === (placeholder === "output" ? "" : 0);
+    const fillsDisplayProjection = recovering && ["error", "blockedReason", "requiredAction"].includes(key);
+    if (old !== undefined && json(old) !== json(value) && !fillsPlaceholder && !fillsDisplayProjection) {
+      throw new Error(`Runtime terminal ${key} already has different evidence.`);
+    }
+    result[key] = value;
+  }
+  return result;
 }
 
 function isTerminalRunStatus(status: RuntimeRunStatus): boolean {

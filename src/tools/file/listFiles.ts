@@ -88,7 +88,10 @@ export function createListFilesTool(context: ToolContext): Tool<ListFilesArgs, L
                 && (pattern === undefined || path.matchesGlob(normalized, pattern))
                 && (cursor === undefined || normalized > cursor);
             },
-            undefined,
+            relativeRoot === "." ? undefined : (relativePath) => {
+              const normalized = normalizePath(relativePath);
+              return isUnderRoot(normalized, relativeRoot) || isUnderRoot(relativeRoot, normalized);
+            },
             (relativePath) => {
               const normalized = normalizePath(relativePath);
               if (isUnderRoot(normalized, relativeRoot) || isUnderRoot(relativeRoot, normalized)) unreadableDirectories.push(normalized);

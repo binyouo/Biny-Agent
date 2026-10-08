@@ -2,6 +2,7 @@
 import assert from "node:assert/strict";
 import { APICallError, type LanguageModelV4 } from "@ai-sdk/provider";
 import { vercelAgentLoopContinue } from "../src/agent/core/vercelAgentLoop.js";
+import { createVercelLanguageModel } from "../src/llm/vercelModel.js";
 import type { AgentEvent, AgentModel, ModelRequestMetrics } from "../src/agent/core/types.js";
 
 const fallbackModel: AgentModel = {
@@ -53,5 +54,42 @@ for (const scenario of [
   assert.equal(metrics[0]?.status, scenario.status);
   assert.equal(requests, 1);
   assert.doesNotMatch(JSON.stringify({ events, metrics }), /private-(?:url|request|response|header)-sentinel/);
+}
+// The real adapter and SDK retry path wrap the final APICallError in RetryError.
+for (const scenario of [
+  { name: "blank", body: "private-response-sentinel", expected: "Provider request failed (500).", exact: true },
+  { name: "nonblank", body: JSON.stringify({ error: { message: "Provider temporarily unavailable." }, private: "private-response-sentinel" }),
+    expected: "Provider temporarily unavailable.", exact: false }
+]) {
+  let providerRequests = 0;
+  const retryProvider = createVercelLanguageModel({
+    providerAlias: "synthetic", providerType: "openai-compatible", authMode: "api-key", api: "chat_completions",
+    modelId: "synthetic", supportsReasoning: false, baseUrl: "https://example.test/v1", apiKey: "fixture-key", headers: {},
+    fetcher: async () => {
+      providerRequests += 1;
+      return new Response(scenario.body, { status: 500, statusText: "" });
+    }
+  });
+  const retryEvents: AgentEvent[] = [];
+  const retryMetrics: ModelRequestMetrics[] = [];
+  for await (const event of vercelAgentLoopContinue(
+    { messages: [{ role: "user", content: "hello" }], tools: [] },
+    {
+      model: fallbackModel, vercelModel: retryProvider, tools: [], maxSteps: 1, maxRetries: 1,
+      modelOptions: { onRequestMetrics: (value) => { retryMetrics.push(value); } }
+    }
+  )) retryEvents.push(event);
+  const retryFailure = retryEvents.find((event) => event.type === "error" && event.fatal);
+  const fatalMessage = retryFailure?.type === "error" ? retryFailure.error : undefined;
+  assert.equal(providerRequests, 2, `${scenario.name} response should traverse both SDK attempts`);
+  if (scenario.exact) assert.equal(fatalMessage, scenario.expected);
+  else assert.ok(fatalMessage?.includes(scenario.expected), `nonblank provider reason must survive: ${fatalMessage}`);
+  assert.equal(retryMetrics.length, 1);
+  assert.equal(retryMetrics[0]?.attempts.length, 2);
+  assert.equal(retryMetrics[0]?.status, 500);
+  if (scenario.exact) assert.equal(retryMetrics[0]?.error, scenario.expected);
+  else assert.ok(retryMetrics[0]?.error?.includes(scenario.expected), `nonblank metric reason must survive: ${retryMetrics[0]?.error}`);
+  assert.equal(retryMetrics[0]?.errorCode, "http_error");
+  assert.doesNotMatch(JSON.stringify({ retryEvents, retryMetrics }), /private-(?:response|request|url|header)-sentinel/);
 }
 console.log("provider error surface tests passed");

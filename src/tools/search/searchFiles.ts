@@ -33,6 +33,7 @@ export interface SearchContextLine {
 export interface SearchFilesMatch {
   path: string;
   line: number;
+  /** One-based original UTF-16 column; casing-generated marks belong to their source letter. */
   column: number;
   anchor: string;
   text: string;
@@ -243,10 +244,52 @@ export function createSearchFilesTool(context: ToolContext): Tool<SearchFilesArg
 
 function createLiteralMatcher(query: string, caseSensitive: boolean): (line: string) => number | undefined {
   const needle = caseSensitive ? query : query.toLocaleLowerCase();
+  let casing: { turkic: boolean; lithuanian: boolean } | undefined;
   return (line) => {
-    const index = (caseSensitive ? line : line.toLocaleLowerCase()).indexOf(needle);
-    return index < 0 ? undefined : index;
+    const folded = caseSensitive ? line : line.toLocaleLowerCase();
+    const index = folded.indexOf(needle);
+    if (index < 0) return undefined;
+    // Native lowercasing only expands outside Turkic locales, which only contract.
+    // Equal lengths therefore cannot hide cancelling source-offset changes.
+    if (caseSensitive || folded.length === line.length || index === 0) return index;
+    casing ??= {
+      turkic: "I\u0307".toLocaleLowerCase() === "i",
+      lithuanian: "I\u0301".toLocaleLowerCase() === "i\u0307\u0301"
+    };
+    return originalLiteralIndex(line, folded, index, casing);
   };
+}
+
+/**
+ * Map the authoritative whole-line transform, never independently folded fragments.
+ * Unicode SpecialCasing length changes are dotted I, Lithuanian I/J accents, and
+ * Turkic dot removal. All other UTF-16 units keep their offsets, including surrogates.
+ * Reading the actual folded output also preserves native Latin-1 casing fast paths.
+ * https://www.unicode.org/Public/17.0.0/ucd/SpecialCasing.txt
+ * This bounded scan is O(line prefix), O(1) space. Existing marks keep their owner;
+ * every unit inserted by a letter's expansion maps back to that original letter.
+ */
+function originalLiteralIndex(line: string, folded: string, index: number, casing: { turkic: boolean; lithuanian: boolean }): number {
+  let foldedOffset = 0;
+  let removeDot = false;
+  for (let sourceOffset = 0; sourceOffset < line.length; sourceOffset += 1) {
+    const code = line.charCodeAt(sourceOffset);
+    let width = 1;
+    if (code === 0x0130) width = casing.turkic ? 1 : 2;
+    else if (casing.lithuanian) {
+      if ((code === 0x0049 || code === 0x004a || code === 0x012e) && folded.charCodeAt(foldedOffset + 1) === 0x0307) width = 2;
+      else if ((code === 0x00cc || code === 0x00cd || code === 0x0128) && folded.charCodeAt(foldedOffset) === 0x0069) width = 3;
+    } else if (casing.turkic) {
+      // An I producing i identifies the next source dot as deleted, even when
+      // another preserved dot follows it. A Latin-1 fast path contains no dots.
+      if (code === 0x0049 && folded.charCodeAt(foldedOffset) === 0x0069) removeDot = true;
+      else if (code === 0x0307 && removeDot) { width = 0; removeDot = false; }
+    }
+    if (index < foldedOffset + width) return sourceOffset;
+    foldedOffset += width;
+  }
+  // Future unsupported casing rules must not turn a valid match into an unreadable file.
+  return index;
 }
 
 function fileInScope(relativePath: string, relativeRoot: string, glob: string | undefined): boolean {

@@ -50,7 +50,11 @@ export async function applicationImportsCommand(workspaceRoot: string, action: A
 export function registerApplicationImportCommands(program: Command, workspaceRoot: string): void {
   const imports = program.command("imports").description("Preview and selectively import application data");
   const execute = async (action: ApplicationImportsAction, options: ApplicationImportsCommandOptions): Promise<void> => {
-    try { await applicationImportsCommand(workspaceRoot, action, options); }
+    try {
+      const result = await applicationImportsCommand(workspaceRoot, action, options);
+      if (action === "run" && "results" in result && result.results.some(item => item.status === "failed" || item.status === "unknown")) process.exitCode = 1;
+      if (action === "sync" && "sync" in result && result.sync.enabled && result.sync.lastError) process.exitCode = 1;
+    }
     catch (error) { console.error(error instanceof Error ? error.message : String(error)); process.exitCode = 1; }
   };
   imports.option("--json", "print JSON").action((_options: { json?: boolean }, command: Command) => execute("status", { json: command.optsWithGlobals().json === true }));

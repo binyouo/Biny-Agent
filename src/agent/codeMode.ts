@@ -265,6 +265,11 @@ function nestedToolFailurePreview(details: unknown): string {
     && "content" in details && Array.isArray(details.content) ? details.content : [];
   const text = content.flatMap((part: unknown) => typeof part === "object" && part !== null
     && "type" in part && part.type === "text" && "text" in part && typeof part.text === "string" ? [part.text] : []).join("\n").trim();
+  // 文本原因之外的剩余预算保留结构化恢复提示，不加入资源或二进制正文。
+  if (text && text.length < 2_048 && typeof details === "object" && details !== null
+    && "structuredContent" in details && details.structuredContent !== undefined) {
+    return `${text}\n${JSON.stringify(details.structuredContent)}`.slice(0, 2_048);
+  }
   return (text || String(JSON.stringify(details))).slice(0, 2_048);
 }
 

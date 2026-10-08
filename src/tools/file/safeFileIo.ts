@@ -20,6 +20,9 @@ import path from "node:path";
 import { FileChangeUncertainError } from "./fileChange.js";
 
 export const maxEditFileBytes = 1024 * 1024;
+// A FIFO must reach the regular-file check without waiting for a writer.
+// Preserve the existing open mode on platforms without this POSIX flag.
+const nonBlockingReadFlag = process.platform === "win32" || typeof constants.O_NONBLOCK !== "number" ? 0 : constants.O_NONBLOCK;
 
 export interface FileSnapshot {
   device: bigint;
@@ -248,6 +251,7 @@ async function atomicWriteFile(
   );
   let backupPath: string | undefined;
   let backupSnapshot: FileSnapshot | undefined;
+  let preserveBackup = false;
   let handle: FileHandle | undefined;
   let temporarySnapshot: FileSnapshot | undefined;
   let committed = false;
@@ -310,6 +314,8 @@ async function atomicWriteFile(
       const displacedSnapshot = await requiredTargetSnapshot(backupPath);
       backupSnapshot = displacedSnapshot;
       if (!sameStableFileVersion(targetSnapshot, displacedSnapshot)) {
+        // This backup now holds an external version; failed restoration must retain it.
+        preserveBackup = true;
         // 只有当前可见的目标还是我们刚提交的那个 inode 时才还原。若又被别人替换过，
         // 就两个文件都保留并直接失败，不去覆盖那个更新的外部版本。
         await assertFileBinding(filePath, handle, true);
@@ -329,6 +335,13 @@ async function atomicWriteFile(
     await syncDirectory(directory).catch(() => undefined);
     await reportCommitted(onCommit, `Atomic file commit completed for ${path.basename(filePath)}.`);
     return Buffer.byteLength(content, "utf8");
+  } catch (error) {
+    // Once bytes are committed, a later cleanup/binding error must not look like
+    // a definite failed write. A completed rollback above clears committed.
+    if (committed && !(error instanceof FileChangeUncertainError)) {
+      throw new FileChangeUncertainError(`File write committed, but post-commit verification or cleanup failed: ${error instanceof Error ? error.message : String(error)}`, { cause: error });
+    }
+    throw error;
   } finally {
     if (!committed && handle && temporarySnapshot) {
       try {
@@ -341,7 +354,7 @@ async function atomicWriteFile(
     if (!committed && temporarySnapshot) {
       await removeBoundTemporaryFile(directory, directorySnapshot, temporaryPath, temporarySnapshot);
     }
-    if (backupPath && backupSnapshot) {
+    if (backupPath && backupSnapshot && !preserveBackup) {
       await removeBoundAuxiliaryFile(directory, directorySnapshot, backupPath, backupSnapshot);
     }
   }
@@ -444,6 +457,9 @@ export async function deleteBoundRegularFile(
         // 比在目录里留下一个可追查的隔离文件更糟。
       }
     }
+    if (quarantined && !(error instanceof FileChangeUncertainError)) {
+      throw new FileChangeUncertainError(`File deletion could not be rolled back safely: ${error instanceof Error ? error.message : String(error)}`, { cause: error });
+    }
     throw error;
   } finally {
     await handle.close().catch(() => undefined);
@@ -527,10 +543,16 @@ export async function moveBoundRegularFile(
       try {
         await assertFileBinding(destination, handle);
         if (await snapshotTarget(source) === null) sourceRemoved = true;
-        if (!sourceRemoved) await fs.unlink(destination);
+        if (!sourceRemoved) {
+          await fs.unlink(destination);
+          linked = false;
+        }
       } catch {
         // 目标状态不确定时宁可留着，也不要误删掉一个替换进来的新文件。
       }
+    }
+    if ((linked || sourceRemoved) && !(error instanceof FileChangeUncertainError)) {
+      throw new FileChangeUncertainError(`File move could not be rolled back safely: ${error instanceof Error ? error.message : String(error)}`, { cause: error });
     }
     throw error;
   } finally {
@@ -608,7 +630,7 @@ async function removeCreatedDirectories(created: readonly CreatedDirectory[]): P
 async function openBoundRegularFile(filePath: string): Promise<FileHandle> {
   let handle: FileHandle;
   try {
-    handle = await fs.open(filePath, constants.O_RDONLY | noFollowFlag());
+    handle = await fs.open(filePath, constants.O_RDONLY | noFollowFlag() | nonBlockingReadFlag);
   } catch (error) {
     if (isSymbolicLinkError(error)) throw new Error("File changed to a symbolic link before it could be opened.");
     throw error;

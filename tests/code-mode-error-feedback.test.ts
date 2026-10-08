@@ -55,15 +55,32 @@ function fakeServer(result: CallToolResult) {
   return { calls: () => calls };
 }
 
-for (const example of [
-  { name: "text after a large diagnostic resource", response, expected: `${explanation}\nDiagnostic credential echo: [redacted]` },
+// Added during 2026-10-08 revalidation; these assertions are new, not recovered
+// copies of the missing later structured-diagnostic test revision.
+const credentialHints = { code: "CALENDAR_NOT_FOUND", availableCalendars: ["work", "personal"],
+  diagnostics: { reflected: syntheticCredential, [`echo-${syntheticCredential}`]: [syntheticCredential] } };
+const safeCredentialHints = { code: "CALENDAR_NOT_FOUND", availableCalendars: ["work", "personal"],
+  diagnostics: { reflected: "[redacted]", "echo-[redacted]": ["[redacted]"] } };
+const longHints = { availableCalendars: ["work"], diagnostic: "y".repeat(3_000) };
+const examples: Array<{ name: string; response: CallToolResult; expected: string | undefined; exactPreview?: string }> = [
+  { name: "text after a large diagnostic resource", response, expected: `${explanation}\nDiagnostic credential echo: [redacted]`,
+    exactPreview: `${explanation}\nDiagnostic credential echo: [redacted]\n${JSON.stringify(response.structuredContent)}` },
   { name: "resource-only error fallback", response: { ...response, content: response.content.slice(0, 1) }, expected: '"uri":"fixture://diagnostics"' },
   { name: "empty text error fallback", response: { ...response, content: [...response.content.slice(0, 1), { type: "text", text: "" }, { type: "text", text: " \n " }] }, expected: '"uri":"fixture://diagnostics"' },
   { name: "actionable text after a large blank text block", response: { ...response, content: [{ type: "text", text: " ".repeat(3_000) }, { type: "text", text: explanation }] }, expected: explanation },
   { name: "actionable text after leading whitespace in one block", response: { ...response, content: [{ type: "text", text: " ".repeat(3_000) + explanation }] }, expected: explanation },
   { name: "bounded long error text", response: { ...response, content: [{ type: "text", text: "x".repeat(3_000) }] }, expected: "x".repeat(2_048) },
+  { name: "scrubbed structured recovery hints", response: { ...response, structuredContent: credentialHints }, expected: '"availableCalendars":["work","personal"]',
+    exactPreview: `${explanation}\nDiagnostic credential echo: [redacted]\n${JSON.stringify(safeCredentialHints)}` },
+  { name: "bounded structured recovery hints", response: { ...response, content: [{ type: "text", text: explanation }], structuredContent: longHints }, expected: '"availableCalendars":["work"]',
+    exactPreview: `${explanation}\n${JSON.stringify(longHints)}`.slice(0, 2_048) },
+  { name: "text using the entire preview budget", response: { ...response, content: [{ type: "text", text: "x".repeat(2_048) }] }, expected: "x".repeat(2_048), exactPreview: "x".repeat(2_048) },
+  { name: "one-character remaining preview budget", response: { ...response, content: [{ type: "text", text: "x".repeat(2_047) }] }, expected: "x".repeat(2_047) },
+  { name: "text without structured hints", response: { content: [{ type: "text", text: explanation }], isError: true }, expected: explanation, exactPreview: explanation },
+  { name: "empty structured recovery hints", response: { content: [{ type: "text", text: explanation }], structuredContent: {}, isError: true }, expected: explanation, exactPreview: `${explanation}\n{}` },
   { name: "successful structured output with error-like data", response: { ...response, isError: false, structuredContent: { error: "A reported remote task failed", status: "failed" } }, expected: undefined }
-] satisfies Array<{ name: string; response: CallToolResult; expected: string | undefined }>) {
+];
+for (const example of examples) {
   await test(`exec preserves ${example.name} in live and replayed feedback`, { timeout: 10_000 }, async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "biny-code-mode-error-feedback-"));
     const previousAgentDir = process.env.BINY_AGENT_DIR;
@@ -97,6 +114,7 @@ for (const example of [
         assert.ok(typeof value.error === "string");
         assert.ok(value.error.includes(example.expected), "the 2,048-character failure preview must retain actionable text before ancillary resources, or bounded JSON when text is absent");
         assert.ok(value.error.length <= "Nested mcp_fixture_lookup failed: ".length + 2_048);
+        if (example.exactPreview !== undefined) assert.equal(value.error, `Nested mcp_fixture_lookup failed: ${example.exactPreview}`);
       } else {
         assert.equal(value.error, undefined);
         assert.deepEqual((value.value as { structuredContent: unknown }).structuredContent, example.response.structuredContent);
@@ -125,6 +143,10 @@ for (const example of [
       const expectedContent = example.response.content.map((part) => part.type === "text"
         ? { ...part, text: part.text.replaceAll(syntheticCredential, "[redacted]") } : part);
       assert.deepEqual((child.result as { content: unknown }).content, expectedContent, "the full scrubbed child outcome stays available for inspection");
+      const expectedHints = example.response.structuredContent === undefined ? undefined
+        : JSON.parse(JSON.stringify(example.response.structuredContent).replaceAll(syntheticCredential, "[redacted]"));
+      assert.deepEqual((child.result as { structuredContent?: unknown }).structuredContent, expectedHints,
+        "the complete scrubbed structured child output survives independently of the parent preview budget");
       assert.equal(JSON.stringify(events).includes(syntheticCredential), false);
       const restored = replaySessionEvents(events, { sessionId: recorder.sessionId }).messages.filter((message) => message.role === "toolResult");
       assert.equal(restored.length, 1, "the parent exposes the explanation because audit-only child results are not model messages");

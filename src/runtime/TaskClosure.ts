@@ -124,7 +124,7 @@ async function executeTaskClosure(input: Parameters<typeof runTaskClosure>[0]): 
   let workerAttempt = input.resumeWorker && initial.status === "running" ? initial.attempts.at(-1) : undefined;
   if (input.resumeWorker && !workerAttempt) throw new Error("Worker continuation requires the current running Attempt.");
   const latestAttempt = initial.attempts.at(-1);
-  const latestEvent = input.taskRuns.events(input.taskRunId).at(-1);
+  const latestEvent = input.taskRuns.latestEvent(input.taskRunId);
   const persistedRepairEvidence = initial.status === "queued"
     && latestAttempt?.status === "failed"
     && latestEvent?.eventType === "task.verification.repair"
@@ -239,7 +239,7 @@ async function executeTaskClosure(input: Parameters<typeof runTaskClosure>[0]): 
         : repairPrompt(basePrompt, contract!, repairEvidence, current.attempts.length));
       input.taskRuns.transition(input.taskRunId, "running", { attemptId: attempt.attemptId, artifacts: {
         ...input.taskRuns.get(input.taskRunId)?.attempts.at(-1)?.artifacts as Record<string, unknown>,
-        workerExecution: { prompt, beforeWorkspace, definitionFingerprint }
+        workerExecution: workerCheckpoint ?? { prompt, beforeWorkspace, definitionFingerprint }
       } });
       workerAttempt = undefined;
       input.signal?.throwIfAborted();

@@ -26,6 +26,12 @@ import {
   type WriteStream
 } from "node:fs";
 import { randomBytes } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
+import { parseSessionEvents, readSessionEventsForBackfill } from "./events.js";
+import { replaySessionEvents, type SessionReplay } from "./replay.js";
+import { assertRecoveryMaterializationSuffix, recoveryMaterializationPlan } from "./recoveryMaterialization.js";
+import { resolveContinuationPlan } from "./recoveryPlan.js";
+import { TurnStore } from "./turnStore.js";
 import path from "node:path";
 import { redactSecrets, redactSensitiveValue, type SensitiveValueRedactionOptions } from "../utils/secrets.js";
 import { assertSessionFileSize, maxSessionEventLineBytes } from "./limits.js";
@@ -134,7 +140,7 @@ export class SessionRecorder {
   private lastRuntimeEvent: RuntimeHighWater | undefined;
 
   constructor(
-    workspaceRoot: string,
+    private readonly workspaceRoot: string,
     sessionId = createSessionId(),
     resolvedFilePath = sessionFilePath(workspaceRoot, sessionId),
     private readonly runtimeEventSink?: RuntimeEventSink
@@ -176,6 +182,15 @@ export class SessionRecorder {
     const safeEvent = redactSessionEvent({ ...linked, runtime }, resultRedactionOptions);
     const createdAt = event.time ?? new Date().toISOString();
     const persistedEvent = { ...safeEvent, time: createdAt } as SessionEvent;
+    return this.appendPersistedEvent(persistedEvent, project);
+  }
+
+  /** Only ordinary redacted records and internally reconstructed durable copies enter here. */
+  private appendPersistedEvent(persistedEvent: SessionEvent, project: boolean): SessionEvent {
+    if (this.closed || this.closing) throw new Error(`Session recorder is already closed: ${this.sessionId}`);
+    const runtime = persistedEvent.runtime;
+    if (!runtime) throw new Error("Persisted session event requires runtime identity.");
+    const createdAt = persistedEvent.time ?? new Date().toISOString();
     const line = JSON.stringify(persistedEvent);
     if (Buffer.byteLength(line, "utf8") > maxSessionEventLineBytes) {
       throw new Error(`Session event exceeds the maximum size of ${String(maxSessionEventLineBytes)} bytes.`);
@@ -238,6 +253,89 @@ export class SessionRecorder {
         });
       }
       return recorded;
+    });
+    this.persistenceBarrier = current.then(() => undefined, () => undefined);
+    return current;
+  }
+
+  /**
+   * Copy an already-durable native recovery suffix without recapturing/redacting it.
+   * The API accepts only immutable source references, never caller message content.
+   * Every copied body is reconstructed afresh from physical JSONL inside the barrier.
+   */
+  materializeRecoveredToolSuffix(input: {
+    ownerTurnId: string;
+    expectedRuntimeHighWater: RuntimeHighWater;
+    sourcePrefix: { byteLength: number; sha256: string };
+  }): Promise<SessionReplay> {
+    // Snapshot caller references before queueing; mutation cannot change queued authority.
+    const requested = structuredClone(input);
+    const runtimeContext = this.runtimeContextSnapshot();
+    const current = this.persistenceBarrier.then(async () => {
+      if (!runtimeContext || runtimeContext.turnId !== requested.ownerTurnId) throw new Error("Recovery copy owner does not match the recorder invocation.");
+      if (!Number.isSafeInteger(requested.sourcePrefix.byteLength) || requested.sourcePrefix.byteLength < 1
+        || !/^[a-f0-9]{64}$/u.test(requested.sourcePrefix.sha256)) throw new Error("Invalid recovery source prefix proof.");
+      for (;;) {
+        if (!isDeepStrictEqual(this.runtimeContextSnapshot(), runtimeContext)) throw new Error("Recovery recorder invocation changed before canonical copy.");
+        await this.flush();
+        const turn = await new TurnStore(this.workspaceRoot, this.sessionId).load();
+        if (!turn || turn.turnId !== requested.ownerTurnId
+          || !isDeepStrictEqual(turn.runtimeHighWater, requested.expectedRuntimeHighWater)) {
+          throw new Error("Recovery checkpoint owner or high-water changed before canonical copy.");
+        }
+        const source = await readSessionEventsForBackfill(this.filePath, requested.sourcePrefix.byteLength);
+        if (source.prefixHash !== requested.sourcePrefix.sha256 || source.prefixEventCount === undefined) {
+          throw new Error("Recovery source prefix changed before canonical copy.");
+        }
+        const later = source.events.slice(source.prefixEventCount);
+        if (later.some(event => event.type === "user_message" && !event.auditOnly
+          || event.type === "message_version_selected"
+          || event.type === "turn_status" && event.runtime?.turnId === requested.ownerTurnId
+          || event.type === "agent_message" && event.runtime?.turnId !== requested.ownerTurnId)) {
+          throw new Error("Recovery branch or owner changed before canonical copy.");
+        }
+        const replay = replaySessionEvents(source.events, { sessionId: this.sessionId, expectedRuntimeHighWater: requested.expectedRuntimeHighWater });
+        const checkpointIndex = source.events.findIndex(event => event.runtime?.eventId === requested.expectedRuntimeHighWater.eventId);
+        if (checkpointIndex < 0 || checkpointIndex >= source.prefixEventCount) throw new Error("Recovery checkpoint witness is outside the authenticated prefix.");
+        if (source.events.slice(checkpointIndex + 1).some(event => event.type === "message_version_selected")) {
+          throw new Error("Recovery branch was explicitly selected after its checkpoint.");
+        }
+        const prefixEvents = source.events.slice(0, source.prefixEventCount);
+        const prefixReplay = replaySessionEvents(prefixEvents, { sessionId: this.sessionId, expectedRuntimeHighWater: requested.expectedRuntimeHighWater });
+        const prefixPlan = recoveryMaterializationPlan(prefixEvents, prefixReplay, requested.ownerTurnId);
+        if (!prefixPlan.eligible) throw new Error("Recovery owner is not on the active conversation branch.");
+        // Validate every reconstructed canonical shape before copying any member.
+        for (const message of prefixPlan.messages) parseSessionEvents(`${JSON.stringify({ type: "agent_message", message })}\n`);
+        assertRecoveryMaterializationSuffix(prefixEvents, prefixPlan, later);
+        if (resolveContinuationPlan(turn, replay, Infinity).action !== "continue") {
+          throw new Error("Recovery is no longer safe to continue before canonical copy.");
+        }
+        // Ordinary background writes can advance the stream while the reads await.
+        // Drain them and replan rather than assigning an already-used event sequence.
+        if (!isDeepStrictEqual(this.runtimeContextSnapshot(), runtimeContext)) throw new Error("Recovery recorder invocation changed before canonical copy.");
+        this.ensureRuntimeSequence();
+        if (this.runtimeSequence > (replay.runtimeHighWater?.eventSeq ?? 0)) continue;
+        if (replay.runtimeHighWater) {
+          this.runtimeSequence = replay.runtimeHighWater.eventSeq;
+          this.lastRuntimeEvent = { ...replay.runtimeHighWater };
+        }
+        const descriptor = this.descriptor ?? (this.stream as WriteStream & { fd?: number | null } | undefined)?.fd;
+        if (typeof descriptor !== "number") throw new Error("Recovery recorder has no bound descriptor.");
+        validateSessionDescriptor(descriptor, this.filePath);
+        const plan = recoveryMaterializationPlan(source.events, replay, requested.ownerTurnId);
+        if (!plan.eligible) throw new Error("Recovery owner is not on the active conversation branch.");
+        if (plan.parentMessageId) this.restoreMessageParent(plan.parentMessageId);
+        const message = plan.messages[0];
+        if (!message) return replay;
+        const linked = this.linkCanonicalMessage({ type: "agent_message", message, parentMessageId: plan.parentMessageId });
+        const runtime = createRuntimeEventIdentity(this.runtimeSequence + 1, runtimeContext);
+        const persisted = this.appendPersistedEvent({ ...linked, runtime, time: new Date().toISOString() }, false);
+        // Do not call queued recordAndFlush while holding its persistence barrier.
+        await this.flush();
+        this.runtimeEventSink?.appendSessionEvent({ sessionId: this.sessionId, runtime, event: persisted, createdAt: persisted.time! });
+        // Re-read and reconstruct after every durable append. Partial copies and
+        // same-owner canonical additions are deduplicated by actual persisted IDs.
+      }
     });
     this.persistenceBarrier = current.then(() => undefined, () => undefined);
     return current;

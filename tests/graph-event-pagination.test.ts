@@ -164,10 +164,36 @@ await test("invalid graph pagination never connects the CLI or routes a cold Hos
     for (const limit of ["0", "-1", "0.5", "1001", "9007199254740992", "1e2", "0x10", "+2", "2.0", "NaN", "Infinity", ""]) {
       await t.test(`CLI rejects --limit ${JSON.stringify(limit)} before connection`, async () => {
         const before = connectionCount();
-        await assert.rejects(readCli("cold-supervisor", ["--limit", limit]), /CLI exited/u);
+        await assert.rejects(readCli("cold-supervisor", ["--limit", limit]), (error: unknown) => {
+          assert.ok(error instanceof Error);
+          assert.match(error.message, /CLI exited with code 1\./u);
+          assert.match(error.message, /Expected a page size between 1 and 1000/u);
+          return true;
+        });
         assert.equal(connectionCount(), before, "invalid CLI page size cannot start Host discovery/connection");
       });
     }
+  });
+});
+
+await test("the CLI harness restores process state after successful and invalid pagination", async (t) => {
+  await fixture(t, async ({ readCli }) => {
+    const previousExitCode = process.exitCode;
+    const previousArgv = process.argv;
+    const previousCwd = process.cwd();
+    const stdoutListeners = process.stdout.listeners("error");
+    const stderrListeners = process.stderr.listeners("error");
+    try {
+      process.exitCode = 7;
+      assert.deepEqual(await readCli("missing", []), { events: [], hasMore: false, gap: false });
+      assert.equal(process.exitCode, 7);
+      await assert.rejects(readCli("missing", ["--limit", "0"]), /CLI exited with code 1\..*Expected a page size/su);
+      assert.equal(process.exitCode, 7);
+      assert.equal(process.argv, previousArgv);
+      assert.equal(process.cwd(), previousCwd);
+      assert.deepEqual(process.stdout.listeners("error"), stdoutListeners);
+      assert.deepEqual(process.stderr.listeners("error"), stderrListeners);
+    } finally { process.exitCode = previousExitCode; }
   });
 });
 
@@ -220,16 +246,34 @@ async function fixture(t: TestContext, execute: (context: {
     const previousExitCode = process.exitCode;
     const previousCwd = process.cwd();
     const output: string[] = [];
+    const errors: string[] = [];
+    const stdoutListeners = process.stdout.listeners("error");
+    const stderrListeners = process.stderr.listeners("error");
     const stdout = t.mock.method(console, "log", (value: string) => { output.push(value); });
-    const exit = t.mock.method(process, "exit", (code?: number | string | null): never => { throw new Error(`CLI exited with code ${String(code)}.`); });
+    const stderr = t.mock.method(process.stderr, "write", (chunk: string | Uint8Array): boolean => {
+      errors.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString());
+      return true;
+    });
+    const exit = t.mock.method(process, "exit", (code?: number | string | null): never => { throw new Error(`Unexpected immediate process.exit(${String(code)}).`); });
     try {
       process.chdir(root);
+      process.exitCode = undefined;
       process.argv = [process.execPath, cli, "graph", "events", graphId, ...args, "--json"];
       await import(`${pathToFileURL(cli).href}?graph-page-test=${String(++invocation)}`);
+      const exitCode = Number(process.exitCode ?? 0);
+      if (exitCode !== 0) {
+        assert.equal(output.length, 0, "invalid CLI input cannot produce a success page");
+        assert.match(errors.join(""), /error:/u, "failure must retain its parser diagnostic");
+        throw new Error(`CLI exited with code ${String(exitCode)}. ${errors.join("")}`);
+      }
+      assert.equal(errors.join(""), "", "valid pagination must not produce an error diagnostic");
       assert.equal(output.length, 1);
       return JSON.parse(output[0]!) as RuntimeEventPage;
     } finally {
-      stdout.mock.restore(); exit.mock.restore(); process.argv = previousArgv; process.exitCode = previousExitCode; process.chdir(previousCwd);
+      stdout.mock.restore(); stderr.mock.restore(); exit.mock.restore();
+      for (const listener of process.stdout.listeners("error")) if (!stdoutListeners.includes(listener)) process.stdout.removeListener("error", listener as (error: Error) => void);
+      for (const listener of process.stderr.listeners("error")) if (!stderrListeners.includes(listener)) process.stderr.removeListener("error", listener as (error: Error) => void);
+      process.argv = previousArgv; process.exitCode = previousExitCode; process.chdir(previousCwd);
     }
   };
   try { await execute({ root, authority, commands, runtime, read, rpc, server, readCli, connectionCount: () => connection.mock.callCount() }); }

@@ -21,7 +21,7 @@
 import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import { attachmentFilePath, attachmentRoot, readAttachmentBytes, createAttachmentImportBatch, type AttachmentImportBatch, AttachmentImportCleanupError } from "../attachments/store.js";
+import { attachmentFilePath, attachmentRoot, readAttachmentBytes, createAttachmentImportBatch, type AttachmentImportBatch, AttachmentImportCleanupError, AttachmentReadLimitError } from "../attachments/store.js";
 import { rewriteAttachmentReferences } from "../attachments/references.js";
 import { parseSessionEvents, readStoredSessionEvents } from "./events.js";
 import type { SessionEvent } from "./recorder.js";
@@ -175,11 +175,11 @@ async function collectBundleAttachments(
       const name = typeof reference.name === "string" && reference.name ? reference.name : path.basename(reference.path);
       let bytes: Buffer;
       try {
-        const storedBytes = await readAttachmentBytes(workspaceRoot, reference.path);
+        const storedBytes = await readAttachmentBytes(workspaceRoot, reference.path, BINY_BUNDLE_ATTACHMENT_LIMIT);
         if (storedBytes === undefined) { skipped.push(name); continue; }
         bytes = storedBytes;
       } catch (error) {
-        if (hasErrorCode(error, "ENOENT")) { skipped.push(name); continue; }
+        if (error instanceof AttachmentReadLimitError || hasErrorCode(error, "ENOENT")) { skipped.push(name); continue; }
         throw error;
       }
       if (bytes.byteLength > BINY_BUNDLE_ATTACHMENT_LIMIT) {
@@ -421,7 +421,18 @@ async function restoreBundleAttachments(
 
 function isStrictBase64(value: string): boolean {
   if (value.length % 4 !== 0) return false;
-  return /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u.test(value);
+  // A repeated-group regexp can exhaust its engine stack on valid large data.
+  // Keep the same alphabet/padding language, including empty data and pad bits.
+  let end = value.length;
+  if (value.endsWith("=")) end -= 1;
+  if (value.endsWith("==")) end -= 1;
+  for (let index = 0; index < end; index += 1) {
+    const code = value.charCodeAt(index);
+    if ((code >= 65 && code <= 90) || (code >= 97 && code <= 122)
+      || (code >= 48 && code <= 57) || code === 43 || code === 47) continue;
+    return false;
+  }
+  return true;
 }
 
 /** 撞名后附件实际路径变了，把事件里的引用从旧 sourcePath 回填到新路径。 */

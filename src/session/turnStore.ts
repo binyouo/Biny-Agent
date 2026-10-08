@@ -60,12 +60,14 @@ export class TurnStore {
     facts?: unknown,
     terminal?: InterruptedTurnTerminal,
     previousTerminals?: readonly InterruptedTurnTerminal[],
-    runtimeHighWater?: RuntimeHighWater
+    runtimeHighWater?: RuntimeHighWater,
+    /** The checkpoint owner can differ from the newest background event in the log. */
+    turnId = runtimeHighWater?.turnId
   ): Promise<void> {
     await ensureAgentDirs(this.persistenceRoot);
     const payload: InterruptedTurn = {
       sessionId: this.sessionId,
-      turnId: runtimeHighWater?.turnId,
+      turnId,
       prompt,
       systemPrompt,
       messages: [...messages],
