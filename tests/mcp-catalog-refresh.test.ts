@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { mock, test } from "node:test";
+import { promiseHooks } from "node:v8";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { JSONRPCMessage, JSONRPCRequest, Tool as McpTool } from "@modelcontextprotocol/sdk/types.js";
 import { configSchema, defaultConfig } from "../src/config/schema.js";
@@ -84,7 +85,8 @@ await test("a queued notification from a detached client cannot block its succes
     const changed = registry.get("mcp_fixture_echo");
     assert.notEqual(changed, original);
     assert.deepEqual(changed.parameters.properties?.value, { type: "number" });
-    assert.deepEqual(changed.outputSchema?.properties?.value, { type: "number" });
+    assert.ok(changed.outputSchema && "properties" in changed.outputSchema);
+    assert.deepEqual(changed.outputSchema.properties?.value, { type: "number" });
     assert.equal(changed.exposure, "direct");
     assert.equal(registry.get("mcp_fixture_private").exposure, "hidden");
     assert.match(changed.namespace?.instructions ?? "", /selected fixture/);
@@ -208,6 +210,105 @@ await test("repeated same-turn reconnects keep notification ownership with each 
     assert.equal(fake.connections.slice(0, -1).every((connection) => connection.closes === 1), true);
   } finally {
     await host.close();
+    mock.restoreAll();
+  }
+});
+
+// Observe outstanding work without retaining the promises being measured. The
+// settled hook removes completed promises; a full event-loop turn drains SDK
+// notification microtasks before each count, excluding ordinary allocation churn.
+function pendingPromises() {
+  const entries = new Set<WeakRef<Promise<unknown>>>();
+  const references = new WeakMap<Promise<unknown>, WeakRef<Promise<unknown>>>();
+  const stop = promiseHooks.createHook({
+    init(promise) {
+      const reference = new WeakRef(promise);
+      references.set(promise, reference);
+      entries.add(reference);
+    },
+    settled(promise) {
+      const reference = references.get(promise);
+      if (reference) entries.delete(reference);
+    }
+  });
+  return {
+    count(): number {
+      for (const reference of entries) if (!reference.deref()) entries.delete(reference);
+      return entries.size;
+    },
+    stop
+  };
+}
+
+await test("notification bursts keep pending refresh work bounded across dirty rounds", async () => {
+  const fake = fakeServer();
+  const host = new McpToolHost();
+  let tracker: ReturnType<typeof pendingPromises> | undefined;
+  const samples: Array<{ phase: string; pending: number; lists: number }> = [];
+  const burst = (count: number): void => { for (let i = 0; i < count; i += 1) fake.notify(); };
+  const sample = (phase: string): void => {
+    samples.push({ phase, pending: tracker!.count(), lists: fake.connections[0]!.lists });
+  };
+  try {
+    await host.connectConfiguredServers(process.cwd(), config);
+    await drainProtocol();
+    tracker = pendingPromises();
+    fake.state.holdLists = true;
+    fake.notify();
+    await drainProtocol();
+    sample("one held refresh");
+    burst(64);
+    await drainProtocol();
+    sample("64 busy notifications");
+    burst(256);
+    await drainProtocol();
+    sample("320 busy notifications");
+    assert.equal(fake.connections[0]!.lists, 2, "bursts must share one in-flight list request");
+    for (let round = 0; round < 3; round += 1) {
+      fake.finishList();
+      await drainProtocol();
+      assert.equal(fake.connections[0]!.lists, 3 + round, "each completed dirty round starts one follow-up list");
+      burst(64);
+      await drainProtocol();
+      sample(`completed dirty round ${round + 1}`);
+    }
+    fake.state.tools = [definition("number", "replacement")];
+    fake.state.holdLists = false;
+    fake.finishList();
+    await drainProtocol();
+    sample("quiet after follow-up");
+    assert.equal(fake.connections[0]!.lists, 6, "the final dirty round has exactly one follow-up");
+    assert.deepEqual(host.listServers()[0]!.toolNames, ["mcp_fixture_replacement"]);
+    assert.deepEqual(host.createTools()[0]!.parameters.properties?.value, { type: "number" });
+    fake.state.tools = [definition("string")];
+    fake.notify();
+    await drainProtocol();
+    assert.equal(fake.connections[0]!.lists, 7, "a later notification still refreshes normally");
+    assert.deepEqual(host.listServers()[0]!.toolNames, ["mcp_fixture_echo"]);
+    sample("next notification settled");
+    fake.state.holdLists = true;
+    fake.notify();
+    await drainProtocol();
+    burst(64);
+    await drainProtocol();
+    await host.close();
+    await drainProtocol();
+    sample("closed while dirty");
+    assert.equal(fake.connections[0]!.closes, 1);
+    assert.equal(fake.connections[0]!.lists, 8, "close must not start a dirty follow-up");
+    assert.equal(host.listServers()[0]!.connected, false);
+    console.log(JSON.stringify({ pendingRefreshSamples: samples }));
+    const active = samples[0]!.pending;
+    for (const observation of samples.slice(1, 6)) {
+      assert.ok(observation.pending <= active + 8,
+        `${observation.phase}: pending work grew from ${active} to ${observation.pending}`);
+    }
+    for (const observation of samples.slice(6)) {
+      assert.ok(observation.pending <= 4, `${observation.phase}: refresh work did not settle (${observation.pending})`);
+    }
+  } finally {
+    await host.close();
+    tracker?.stop();
     mock.restoreAll();
   }
 });

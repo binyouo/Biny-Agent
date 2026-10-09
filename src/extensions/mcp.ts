@@ -577,7 +577,6 @@ export class McpToolHost {
     if (this.closing) return;
     if (managed.refreshing) {
       managed.refreshDirty = true;
-      await managed.refreshing;
       return;
     }
     managed.refreshing = (async () => {
