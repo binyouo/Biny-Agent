@@ -6,9 +6,10 @@ import { assistantSnapshot, type VercelLoopState } from "./vercelAgentLoop.js";
 import type { AgentToolResult } from "./types.js";
 import { errorMessage, isRecord } from "./vercelAgentUtils.js";
 import { normalizeToolParameters, openAiCompatibleToolParameters, validateJsonSchema } from "../../tools/schema.js";
+import { stableAgentTools } from "../../llm/promptCache.js";
 
 export function createVercelTools(state: VercelLoopState): ToolSet {
-  const entries = state.tools.map((agentTool) => {
+  const entries = stableAgentTools(state.tools, state.promptProjectionCache).map((agentTool) => {
     // AI SDK 的 schema 也属于 provider 出站边界；不能只在 prompt-cache 投影时修正。
     // 这里提前校验，首轮失败会在任何 tool.started 之前变成带工具名和路径的本地错误。
     const parameters = state.model.provider === "openai-compatible"
