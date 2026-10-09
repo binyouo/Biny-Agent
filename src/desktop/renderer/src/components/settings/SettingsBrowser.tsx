@@ -11,7 +11,7 @@ type ConnectionState =
 type BrowserAction = "install" | "open-chrome" | "pair" | "regenerate" | "disconnect";
 const restartMessage = "浏览器连接接口尚不可用，请完全退出并重新启动 Biny。";
 
-export function SettingsBrowser(): React.JSX.Element {
+export function SettingsBrowser({ active = true }: { active?: boolean }): React.JSX.Element {
   const [connection, setConnection] = useState<ConnectionState>({ kind: "loading" });
   const [busy, setBusy] = useState<BrowserAction>();
   const [confirmation, setConfirmation] = useState<"regenerate" | "disconnect">();
@@ -23,7 +23,7 @@ export function SettingsBrowser(): React.JSX.Element {
   const pending = useRef(false);
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   useEffect(() => {
-    if (busy) return;
+    if (!active || busy) return;
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let deadline: ReturnType<typeof setTimeout> | undefined;
@@ -59,7 +59,7 @@ export function SettingsBrowser(): React.JSX.Element {
     };
     void update();
     return () => { cancelled = true; cancelRead?.(); clearTimeout(timer); clearTimeout(deadline); };
-  }, [busy, refresh]);
+  }, [active, busy, refresh]);
 
   const perform = async (action: BrowserAction): Promise<void> => {
     if (pending.current) return;

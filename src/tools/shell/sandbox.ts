@@ -23,6 +23,7 @@ export interface SandboxOptions {
   mode: SandboxMode;
   allowNetwork: boolean;
   denyPaths?: readonly string[];
+  allowDesktopControl?: boolean;
 }
 
 export interface SandboxedCommand {
@@ -65,6 +66,12 @@ export function buildSeatbeltProfile(workspaceRoot: string, options: SandboxOpti
     // 写入 /dev/null、tty 是命令的日常行为，单独放行避免误伤。
     '(allow file-write-data (literal "/dev/null") (literal "/dev/zero") (literal "/dev/dtracehelper"))',
     ...(options.allowNetwork ? [] : ["(deny network*)"]),
+    ...(options.allowDesktopControl === false ? [
+      "(deny appleevent-send)",
+      "(deny hid-control)",
+      '(deny mach-lookup (global-name "com.apple.windowserver.active") (global-name "com.apple.coreservices.appleevents") (global-name-regex "^com[.]apple[.]axserver.*$"))',
+      '(deny network-outbound (remote unix-socket (regex ".*/(biny|alma)-computer-use[^/]*[.]sock$")))'
+    ] : []),
     // 放在允许规则之后，显式拒绝优先于工作区、缓存和临时目录的写入授权。
     ...denied.patterns
       // 使用普通 Scheme 字符串传入正则，避免 #"..." 字面量对引号与反斜杠的不同解释。
@@ -84,7 +91,7 @@ export function sandboxCommand(
   options: SandboxOptions,
   environment: { platform: NodeJS.Platform; home: string; temporaryDirectory: string }
 ): SandboxedCommand {
-  if (options.mode === "off" && options.allowNetwork && !options.denyPaths?.length) {
+  if (options.mode === "off" && options.allowNetwork && !options.denyPaths?.length && options.allowDesktopControl !== false) {
     return { command, applied: false, reason: "sandbox is disabled and no path or network restrictions are configured" };
   }
   if (environment.platform !== "darwin") {
@@ -98,12 +105,13 @@ export function sandboxCommand(
 }
 
 export function describeSandbox(options: SandboxOptions, platform: NodeJS.Platform): string {
-  if (options.mode === "off" && options.allowNetwork && !options.denyPaths?.length) return "off";
+  if (options.mode === "off" && options.allowNetwork && !options.denyPaths?.length && options.allowDesktopControl !== false) return "off";
   if (platform !== "darwin") return `requested but unavailable on ${platform}`;
   return [
     options.mode === "workspace-write" ? "workspace-write" : "unrestricted writes",
     options.denyPaths?.length ? "denied paths enforced" : undefined,
-    options.allowNetwork ? undefined : "no network"
+    options.allowNetwork ? undefined : "no network",
+    options.allowDesktopControl === false ? "no desktop control" : undefined
   ].filter(Boolean).join(", ");
 }
 

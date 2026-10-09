@@ -80,7 +80,7 @@ export function SettingsDraftProvider({
   const loadGenerationRef = useRef(0);
   const activityUpdateTailRef = useRef(Promise.resolve());
 
-  const adoptSnapshot = useCallback((next: DesktopSettingsSnapshot, submittedDraft?: DesktopSettingsDraft): void => {
+  const adoptSnapshot = useCallback((next: DesktopSettingsSnapshot, submittedDraft?: DesktopSettingsDraft, refreshing = false): void => {
     snapshotRef.current = next;
     setSnapshot(next);
     // 记下这份快照属于哪个项目；下次打开同一项目时可以先拿它渲染。
@@ -91,14 +91,19 @@ export function SettingsDraftProvider({
     // 保存期间其它分页仍可编辑；仅提交时未再修改的字段跟随服务端快照。
     setDraft((current) => current && submittedDraft ? {
       ...rebaseUneditedFields(current, submittedDraft, nextDraft),
-      models: nextDraft.models
+      models: refreshing && !sameJson(current.models, submittedDraft.models) ? current.models : nextDraft.models
     } : nextDraft);
     setSaveError(undefined);
     setSaveState(next.pendingRecovery ? "recovery_required" : "clean");
-    onThemePreview(next.themePreference);
-    onFontPreview(next.fontPreference);
-    onAppearancePreview?.(normalizeAppearancePreference(next.appearancePreference));
-  }, [onAppearancePreview, onFontPreview, onThemePreview]);
+  }, []);
+
+  const { themePreference: draftTheme, fontPreference: draftFont, appearancePreference: draftAppearance } = draft ?? {};
+  useEffect(() => {
+    if (!active || !draftTheme || !draftFont || !draftAppearance) return;
+    onThemePreview(draftTheme);
+    onFontPreview(draftFont);
+    onAppearancePreview?.(draftAppearance);
+  }, [active, draftTheme, draftFont, draftAppearance, onAppearancePreview, onFontPreview, onThemePreview]);
 
   useEffect(() => {
     if (!active) return;
@@ -130,8 +135,11 @@ export function SettingsDraftProvider({
       setSaveState("clean");
     }
     // 没有项目时只读取全局 Activity 快照，不伪造项目 ID，也不加载项目模型或会话。
+    const refreshBase = snapshotRef.current;
     const request = projectId
-      ? window.biny.settingsSnapshot(projectId, sessionId).then((next) => { if (!cancelled) adoptSnapshot(next); })
+      ? window.biny.settingsSnapshot(projectId, sessionId).then((next) => {
+        if (!cancelled && snapshotRef.current === refreshBase) adoptSnapshot(next, refreshBase ? draftFromSnapshot(refreshBase) : undefined, reusable);
+      })
       : window.biny.activitySettings().then((next) => {
         if (cancelled) return;
         globalActivityRef.current = next;
@@ -172,7 +180,6 @@ export function SettingsDraftProvider({
       return;
     }
     setDraft((current) => current ? { ...current, themePreference: value } : current);
-    onThemePreview(value);
   }, [onThemePreview, projectId, saveGlobalPreference]);
 
   const setFontPreference = useCallback((value: DesktopFontPreference): void => {
@@ -181,7 +188,6 @@ export function SettingsDraftProvider({
       return;
     }
     setDraft((current) => current ? { ...current, fontPreference: value } : current);
-    onFontPreview(value);
   }, [onFontPreview, projectId, saveGlobalPreference]);
 
   const setAppearancePreference = useCallback(async (value: AppearancePreference): Promise<boolean> => {
@@ -189,7 +195,6 @@ export function SettingsDraftProvider({
       return saveGlobalPreference(async () => onAppearancePreview?.(await window.biny.setAppearancePreference(value)));
     }
     setDraft((current) => current ? { ...current, appearancePreference: value } : current);
-    onAppearancePreview?.(value);
     return true;
   }, [onAppearancePreview, projectId, saveGlobalPreference]);
 
@@ -376,9 +381,14 @@ export function SettingsDraftProvider({
 
   const discard = useCallback(async (): Promise<void> => {
     await releaseAllCredentials();
-    if (snapshot) adoptSnapshot(snapshot);
+    if (snapshot) {
+      adoptSnapshot(snapshot);
+      onThemePreview(snapshot.themePreference);
+      onFontPreview(snapshot.fontPreference);
+      onAppearancePreview?.(normalizeAppearancePreference(snapshot.appearancePreference));
+    }
     await window.biny.updateSettingsDraftState({ dirty: false, canSave: false, open: active }).catch(() => undefined);
-  }, [active, adoptSnapshot, releaseAllCredentials, snapshot]);
+  }, [active, adoptSnapshot, onAppearancePreview, onFontPreview, onThemePreview, releaseAllCredentials, snapshot]);
 
   // 即时保存只携带本次增量；依赖模型偏好的更新在队列内根据最新快照计算。
   const modelsSaveTailRef = useRef<Promise<unknown>>(Promise.resolve());

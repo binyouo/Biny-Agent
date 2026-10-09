@@ -2,7 +2,7 @@
 .biny-inspector-tabs { position: relative; overflow: hidden; }
 .inspector-tab-measure { position: absolute; display: flex; gap: 2px; width: max-content; visibility: hidden; pointer-events: none; }
 .inspector-tab-measure > span { display: inline-flex; align-items: center; gap: 5px; padding: 0 8px; font-size: 12px; white-space: nowrap; }
-.biny-inspector-tab { height: 30px; border-radius: 6px; }
+.biny-inspector-tab { height: var(--biny-control-height); border-radius: var(--biny-radius-control); }
 .biny-inspector-tab.is-compact { width: 34px; }
 /* 已访问的视图保持挂载并在同一槽位交叠，退出内容淡出期间不接收输入。 */
 .inspector-terminal-screen[hidden] { display: none; }
@@ -31,7 +31,7 @@
 .desktop-inspector button:focus-visible, .desktop-inspector [role="separator"]:focus-visible { outline: 2px solid var(--biny-focus); outline-offset: -2px; }
 .inspector-subtoolbar { display: flex; min-height: 36px; flex: 0 0 auto; align-items: center; gap: 6px; padding: 4px 8px; border-bottom: 1px solid var(--biny-border); color: var(--biny-text-secondary); font-size: 12px; }
 .inspector-subtoolbar > span { flex: 1; }
-.inspector-subtoolbar button, .inspector-file-filter button { display: inline-flex; align-items: center; justify-content: center; gap: 5px; min-width: 28px; min-height: 28px; padding: 3px 6px; border: 0; border-radius: 5px; color: inherit; background: transparent; cursor: pointer; white-space: nowrap; }
+.inspector-subtoolbar button, .inspector-file-filter button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-width: var(--biny-control-height); min-height: var(--biny-control-height); padding: 4px 8px; border: 0; border-radius: var(--biny-radius-control); color: inherit; background: transparent; cursor: pointer; white-space: nowrap; }
 .inspector-subtoolbar button:hover, .inspector-subtoolbar button[aria-pressed="true"] { color: var(--biny-text); background: var(--biny-surface-hover); }
 .inspector-subtoolbar button:disabled { opacity: .4; cursor: default; }
 .inspector-subtoolbar input { width: 0; flex: 1; min-width: 0; padding: 5px; border: 0; background: transparent; color: var(--biny-text); font: inherit; }
@@ -42,7 +42,7 @@
 .inspector-file-filter input { min-width: 0; width: 100%; padding: 6px 0; border: 0; outline: none; background: transparent; color: var(--biny-text); font: inherit; font-size: 12px; }
 .biny-root .file-browser-current-path { display: flex; align-items: center; gap: 7px; font-size: 11px; }
 .file-browser-current-path > svg, .file-browser-current-path > button { flex-shrink: 0; }
-.file-browser-current-path button { display: grid; place-items: center; width: 28px; height: 28px; border: 0; border-radius: 5px; background: transparent; color: inherit; }
+.file-browser-current-path button { display: grid; place-items: center; width: var(--biny-control-height); height: var(--biny-control-height); border: 0; border-radius: var(--biny-radius-control); background: transparent; color: inherit; }
 .file-tree-row { min-height: 29px; }
 .file-tree-row.is-selected { background: var(--biny-surface-selected); color: var(--biny-accent); }
 .inspector-review, .inspector-sidechat, .inspector-terminals { display: flex; flex-direction: column; width: 100%; height: 100%; min-height: 0; background: var(--biny-surface); }
@@ -51,7 +51,7 @@
 .inspector-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; min-height: 180px; flex: 1; padding: 24px; color: var(--biny-text-secondary); text-align: center; font-size: 13px; }
 .inspector-empty p { margin: 4px 0; color: var(--biny-text); }
 .inspector-empty small { line-height: 1.7; font-size: 12px; }
-.inspector-empty button, .inspector-review-scope button { padding: 6px 12px; border: 1px solid var(--biny-border); border-radius: 6px; background: var(--biny-surface-elevated); color: var(--biny-text); cursor: pointer; }
+.inspector-empty button, .inspector-review-scope button { min-height: var(--biny-control-height); padding: 6px 12px; border: 1px solid var(--biny-border); border-radius: var(--biny-radius-control); background: var(--biny-surface-elevated); color: var(--biny-text); cursor: pointer; }
 .inspector-git-setup { min-height: 0; }
 .inspector-git-setup > svg { color: var(--biny-text-secondary); opacity: .7; }
 .inspector-git-setup > p { font-size: 15px; color: var(--biny-text-secondary); }
@@ -95,10 +95,11 @@
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
 }
-.biny-root .desktop-inspector-header { min-height: 48px; padding: 0 8px; gap: 6px; }
-.biny-root .biny-inspector-tab, .inspector-tab-measure > span { gap: 6px; padding: 6px 10px; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-size: 12px; font-weight: 500; line-height: 18px; letter-spacing: 0; }
-.biny-root .biny-inspector-tab { height: 30px; border-radius: 6px; }
-.biny-root .biny-inspector-tab.is-compact { width: 34px; padding: 6px 8px; }
+.biny-root .desktop-inspector-header { min-height: 40px; padding: 0 8px; gap: 4px; }
+.biny-root .biny-inspector-tab, .inspector-tab-measure > span { gap: 6px; padding: 4px 8px; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-size: 12px; font-weight: 500; line-height: 18px; letter-spacing: 0; }
+.biny-root .biny-inspector-tab { height: 28px; border-radius: var(--biny-radius-control); }
+.biny-root .biny-inspector-tab.is-compact { position: relative; width: 28px; padding: 0; }
+.biny-inspector-tab.is-compact .biny-inspector-badge { position: absolute; top: 3px; right: 3px; width: 6px; min-width: 6px; height: 6px; padding: 0; }
 .biny-inspector-tab svg { flex-shrink: 0; }
 .biny-inspector-tab svg * { stroke-width: 1.75; }
 .biny-root .desktop-inspector .file-tree-row { height: 28px; min-height: 28px; font-size: 12px; }
@@ -214,7 +215,7 @@
 .biny-root[data-inspector-focused="true"] .biny-app-shell > .desktop-inspector-wrap { max-width: none; }
 .biny-root[data-inspector-focused="true"] .desktop-inspector-resizer { display: none; }
 .inspector-browser-selection > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.inspector-browser-panel .inspector-subtoolbar button { min-width: 36px; min-height: 36px; flex-shrink: 0; }
+.inspector-browser-panel .inspector-subtoolbar button { min-width: 32px; min-height: 32px; flex-shrink: 0; }
 .inspector-browser-panel button:focus-visible { outline: 2px solid var(--biny-focus); outline-offset: -2px; }
 .inspector-browser-panel button:disabled { cursor: default; opacity: .4; }
 .inspector-browser-tabbar { gap: 4px; }
@@ -234,8 +235,8 @@
 .inspector-browser-address { display: flex; align-items: center; flex: 1 1 180px; min-width: 140px; gap: 4px; padding-left: 10px; border: 1px solid var(--biny-border); border-radius: 9px; background: var(--biny-surface-elevated); }
 .inspector-browser-address:focus-within { border-color: var(--biny-focus); }
 .inspector-browser-address > svg { flex-shrink: 0; }
-.inspector-browser-address input { min-height: 34px; padding: 0 4px; outline: none; }
-.inspector-browser-navigation .inspector-profile-anchor > button { width: 36px; height: 36px; }
+.inspector-browser-address input { min-height: 30px; padding: 0 4px; outline: none; }
+.inspector-browser-navigation .inspector-profile-anchor > button { width: 32px; height: 32px; }
 .inspector-browser-navigation .inspector-profile-anchor { position: static; }
 .inspector-browser-navigation .inspector-profile-picker { left: 8px; right: auto; width: min(320px, calc(100% - 16px)); box-sizing: border-box; }
 .inspector-browser-welcome { gap: 10px; }

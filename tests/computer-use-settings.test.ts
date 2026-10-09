@@ -6,7 +6,8 @@ import { createRoot } from "react-dom/client";
 import { SettingsComputerUse } from "../src/desktop/renderer/src/components/settings/SettingsComputerUse.js";
 import type { ComputerDesktopApi, ComputerStatus, ComputerDiagnostics } from "../src/computer/protocol.js";
 
-test("compact settings keep one stop entry through the master switch and retain pause, takeover and PiP controls", async () => {
+test("compact settings keep controls and stop status polling while closed without losing their cached state", async context => {
+  context.mock.timers.enable({ apis: ["setInterval"] });
   const dom = new JSDOM("<div id='root'></div>");
   dom.window.HTMLDialogElement.prototype.showModal = function () { this.open = true; };
   dom.window.HTMLDialogElement.prototype.close = function () { this.open = false; };
@@ -17,9 +18,10 @@ test("compact settings keep one stop entry through the master switch and retain 
   const root = createRoot(dom.window.document.getElementById("root")!);
   let state: ComputerStatus = { state: "disabled", preview: false, foregroundAllowed: false, lastOutcome: "not-dispatched" };
   const controls: string[] = [];
+  let statusReads = 0;
   const api: ComputerDesktopApi = {
     strict: async () => await api.diagnostics(), approve: async () => await api.diagnostics(), revoke: async () => await api.diagnostics(),
-    status: async () => ({ ...state }),
+    status: async () => { statusReads++; return { ...state }; },
     enable: async () => { controls.push("enable"); state = { ...state, state: "ready" }; return state; },
     control: async control => { controls.push(control); state = { ...state, state: control === "resume" ? "ready" : control === "pause" ? "paused" : control === "takeover" ? "taken-over" : "disabled" }; return state; },
     preview: async preview => { controls.push(`preview:${preview}`); state = { ...state, preview }; return state; },
@@ -58,8 +60,17 @@ test("compact settings keep one stop entry through the master switch and retain 
     await act(async () => { checkbox.click(); }); await act(async () => { checkbox.click(); });
     await act(async () => { desktopControl.click(); });
     assert.deepEqual(controls, ["enable", "pause", "resume", "takeover", "resume", "preview:true", "preview:false", "stop"]);
+    const beforeClose = statusReads;
+    await act(async () => { root.render(createElement(SettingsComputerUse, { key: "ready", active: false })); });
+    await act(async () => { context.mock.timers.tick(4500); });
+    assert.equal(statusReads, beforeClose, "cached settings must not poll desktop control while closed");
+    assert.equal(desktopControl.getAttribute("aria-checked"), "false");
+    await act(async () => { root.render(createElement(SettingsComputerUse, { key: "ready", active: true })); });
+    assert.equal(statusReads, beforeClose + 1);
+    assert.ok(desktopControl === dom.window.document.querySelector('[role="switch"][aria-label="桌面控制"]'));
   } finally {
     await act(async () => { root.unmount(); }); dom.window.close();
+    context.mock.timers.reset();
     for (const [key, descriptor] of saved) { if (descriptor) Object.defineProperty(globalThis, key, descriptor); else Reflect.deleteProperty(globalThis, key); }
   }
 });
@@ -89,7 +100,7 @@ test("Computer Use cards show independent unknown permissions and dispatch real 
   } });
   try {
     await act(async () => { root.render(createElement(SettingsComputerUse)); });
-    assert.equal(dom.window.document.querySelectorAll(".cu-card").length, 2);
+    assert.equal(dom.window.document.querySelectorAll(".cu-card").length, 3, "权限与运行状态、控制偏好和应用授权各自成组，主开关独立置顶");
     assert.match(dom.window.document.querySelector('[data-permission="accessibility"]')?.textContent ?? "", /未知/);
     assert.match(dom.window.document.querySelector('[data-permission="screenRecording"]')?.textContent ?? "", /未授权/);
     assert.doesNotMatch(dom.window.document.querySelector(".cu-helper")?.textContent ?? "", /已就绪|运行中/);
@@ -121,8 +132,8 @@ test("Computer Use cards show independent unknown permissions and dispatch real 
     assert.match(dom.window.document.querySelector('[data-app="test.new"]')?.textContent ?? "", /待批准/);
     assert.match(dom.window.document.querySelector(".cu-controls")?.textContent ?? "", /已暂停/, "统一刷新同时更新控制状态和新发现的应用授权");
     for (const label of ["授权辅助功能", "刷新", "测试我的配置", "记录操作日志"]) {
-      const button = [...dom.window.document.querySelectorAll("button")].find(button => button.textContent?.trim() === label || button.getAttribute("aria-label") === label)!;
-      assert.ok(button, label); await act(async () => { button.click(); });
+      const control = [...dom.window.document.querySelectorAll<HTMLButtonElement | HTMLInputElement>('button, input[role="switch"]')].find(element => element.textContent?.trim() === label || element.getAttribute("aria-label") === label)!;
+      assert.ok(control, label); await act(async () => { control.click(); });
     }
     assert.ok(calls.includes("grant")); assert.ok(calls.includes("test")); assert.ok(calls.includes("logging:true"));
     assert.match(dom.window.document.querySelector("pre")?.textContent ?? "", /driver_sdk_missing_or_crashed/);

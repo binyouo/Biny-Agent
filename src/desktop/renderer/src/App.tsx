@@ -1972,6 +1972,7 @@ function DesktopApp(): React.JSX.Element {
           />
           <SettingsOverlay
             closeRequest={settingsCloseRequest}
+            projects={projects}
             modelSetupRequired={Boolean(workspace?.requiresModelConfiguration)}
             onAddMemoryEntry={addMemoryEntry}
             onCancelModelLogin={cancelModelLogin}

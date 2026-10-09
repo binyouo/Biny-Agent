@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import type { ModelChoice } from "../../../../../llm/ModelManager.js";
 import { defaultEmbeddingModelRef, embeddingModelRefKey, type EmbeddingModelRef, type LocalEmbeddingModelId } from "../../../../../llm/embedding/types.js";
+import { selectMemoryEmbeddingModel } from "../../../../../llm/embedding/selectMemoryModel.js";
 import type {
   DesktopEmbeddingModelDescriptor,
   DesktopMemoryArchivePage,
@@ -19,6 +20,7 @@ import type {
 } from "../../../../protocol.js";
 import type { MemorySleepRun } from "../../../../../agent/context/memoryTypes.js";
 import { catalogForConnection } from "../../providerCatalog.js";
+import { resolveProviderIconId } from "../../providerIconIds.js";
 import { Icon } from "../Icon.js";
 import { useSettingsDraft } from "./SettingsDraftContext.js";
 import { ModelTestButton, ModelTestResult } from "./ModelTestButton.js";
@@ -63,7 +65,7 @@ function rangeProgress(value: number, min: number, max: number): React.CSSProper
   return { "--range-progress": `${Math.min(100, Math.max(0, percent))}%` } as React.CSSProperties;
 }
 
-function embeddingPickerGroups(models: readonly DesktopEmbeddingModelDescriptor[]): SettingsModelPickerGroup[] {
+function embeddingPickerGroups(models: readonly DesktopEmbeddingModelDescriptor[], automaticKey?: string): SettingsModelPickerGroup[] {
   const groups = new Map<string, SettingsModelPickerGroup>();
   for (const model of models) {
     const local = model.source === "local";
@@ -77,18 +79,23 @@ function embeddingPickerGroups(models: readonly DesktopEmbeddingModelDescriptor[
       key: groupKey,
       label: local ? "本地模型" : catalog?.label ?? providerAlias,
       iconTone: local ? "local" : catalog?.iconTone ?? providerType,
+      iconId: resolveProviderIconId(undefined, catalog?.id),
       options: []
     };
     if (model.ref.kind === "auto") continue;
+    const modelKey = embeddingModelRefKey(model.ref);
+    const sizeLabel = model.modelSizeBytes ? `~${Math.round(model.modelSizeBytes / (1024 * 1024))} MB` : undefined;
     group.options.push({
-      value: embeddingModelRefKey(model.ref),
+      value: modelKey === automaticKey ? "auto" : modelKey,
       label: model.displayName,
-      secondary: `${model.ref.model}${model.available === false ? " · 未配置" : ""}`,
-      disabled: model.available === false
+      trailing: modelKey === automaticKey ? "默认" : local
+        ? [sizeLabel, model.installed === false ? "未下载" : undefined].filter(Boolean).join(" · ")
+        : model.available === false ? "未配置" : undefined,
+      disabled: !local && model.available === false
     });
     groups.set(groupKey, group);
   }
-  return [...groups.values()];
+  return [...groups.values()].sort((first, second) => Number(second.iconTone === "local") - Number(first.iconTone === "local"));
 }
 
 export function SettingsMemory({
@@ -202,7 +209,7 @@ export function SettingsMemory({
   }, [onLoadArchived, onLoadEntries, onLoadStats, onSleepRuns, onSleepStatus, workspaceAvailable]);
 
   useEffect(() => { if (!hidden) void reload(); }, [hidden, reload]);
-  useEffect(() => { void refreshEmbeddingStatus(); }, [refreshEmbeddingStatus]);
+  useEffect(() => { if (!hidden) void refreshEmbeddingStatus(); }, [hidden, refreshEmbeddingStatus]);
   useEffect(() => {
     if (hidden || !workspaceAvailable) return;
     let cancelled = false;
@@ -230,12 +237,12 @@ export function SettingsMemory({
     return () => { cancelled = true; window.clearInterval(timer); };
   }, [hidden, onSleepStatus, reload, workspaceAvailable]);
   useEffect(() => {
-    if (!embeddingWorking || !workspaceAvailable) return;
+    if (hidden || !embeddingWorking || !workspaceAvailable) return;
     const timer = window.setInterval(() => {
       void onLoadEmbeddingStatus().then(setEmbeddingStatus).catch(() => undefined);
     }, 750);
     return () => window.clearInterval(timer);
-  }, [embeddingWorking, onLoadEmbeddingStatus, workspaceAvailable]);
+  }, [embeddingWorking, hidden, onLoadEmbeddingStatus, workspaceAvailable]);
 
   const downloadEmbedding = async (model: LocalEmbeddingModelId): Promise<void> => {
     if (embeddingWorking) return;
@@ -490,7 +497,13 @@ export function SettingsMemory({
   // 已移除的模型重新暴露给用户。云端 provider 模型不在这里裁剪。
   const availableEmbeddingModels = (embeddingStatus?.models.length ? embeddingStatus.models : embeddingModels)
     .filter((model) => model.source !== "local" || (model.ref.kind === "local" && model.ref.model === "multilingual-e5-small"));
-  const selectedEmbeddingDescriptor = availableEmbeddingModels.find((model) => embeddingModelRefKey(model.ref) === embeddingModelRefKey(embeddingStatus?.activeModel ?? selectedEmbeddingModel));
+  const automaticEmbeddingModel = (snapshot?.memory.embeddingModel ?? defaultEmbeddingModelRef).kind === "auto"
+    ? embeddingStatus?.activeModel ?? selectMemoryEmbeddingModel(defaultEmbeddingModelRef, availableEmbeddingModels)
+    : selectMemoryEmbeddingModel(defaultEmbeddingModelRef, availableEmbeddingModels);
+  const effectiveEmbeddingModel = selectedEmbeddingModel.kind === "auto" ? automaticEmbeddingModel : selectedEmbeddingModel;
+  const selectedEmbeddingDescriptor = effectiveEmbeddingModel
+    ? availableEmbeddingModels.find((model) => embeddingModelRefKey(model.ref) === embeddingModelRefKey(effectiveEmbeddingModel))
+    : undefined;
   const selectedLocalStatus = selectedEmbeddingModel.kind === "local"
     ? embeddingStatus?.localModels.find((model) => model.descriptor.ref.kind === "local" && model.descriptor.ref.model === selectedEmbeddingModel.model)
     : undefined;
@@ -508,9 +521,14 @@ export function SettingsMemory({
   const modelDraftChanged = snapshot?.memory.embeddingModel !== undefined
     && embeddingModelRefKey(snapshot.memory.embeddingModel) !== selectedEmbeddingKey;
   const canRebuild = !modelDraftChanged && dirtyCount === 0 && selectedInstalled;
-  const embeddingGroups = embeddingPickerGroups(availableEmbeddingModels);
-  embeddingGroups.unshift({ key: "auto", label: "自动", iconTone: "local", options: [{ value: "auto", label: "自动选择可用服务商", secondary: "优先使用已配置的嵌入模型" }] });
-  if (!availableEmbeddingModels.some((model) => embeddingModelRefKey(model.ref) === selectedEmbeddingKey)) {
+  const embeddingGroups = embeddingPickerGroups(availableEmbeddingModels,
+    selectedEmbeddingModel.kind === "auto" && automaticEmbeddingModel ? embeddingModelRefKey(automaticEmbeddingModel) : undefined);
+  if (!embeddingGroups.some((group) => group.options.some((option) => option.value === "auto"))) {
+    embeddingGroups.push({ key: "auto", label: "默认", iconTone: "local", options: [{
+      value: "auto", label: "自动选择可用服务商", trailing: automaticEmbeddingModel ? "默认" : "暂无可用模型"
+    }] });
+  }
+  if (!embeddingGroups.some((group) => group.options.some((option) => option.value === selectedEmbeddingKey))) {
     embeddingGroups.unshift({
       key: "current-embedding-model",
       label: "当前配置",
@@ -518,7 +536,7 @@ export function SettingsMemory({
       options: [{
         value: selectedEmbeddingKey,
         label: selectedEmbeddingModel.kind === "auto" ? "自动选择可用服务商" : selectedEmbeddingModel.kind === "local" ? "Multilingual E5 Small" : selectedEmbeddingModel.model,
-        secondary: selectedEmbeddingModel.kind === "auto" ? "自动" : selectedEmbeddingModel.kind === "local" ? selectedEmbeddingModel.model : `${selectedEmbeddingModel.provider} · 当前配置`
+        trailing: "当前配置"
       }]
     });
   }
@@ -587,8 +605,8 @@ export function SettingsMemory({
             </div>
           </div>
           {error ? <p className="settings-effective-hint is-blocked">{error}</p> : null}
-          {loading ? <p className="activity-memory-empty-hint">加载中...</p> : null}
-          {!loading && !entries.length ? <p className="activity-memory-empty">暂无记忆。可手动添加，也可从对话自动提取。</p> : null}
+          {loading && !stats ? <p className="activity-memory-empty-hint">加载中...</p> : null}
+          {(!loading || stats) && !entries.length ? <p className="activity-memory-empty">暂无记忆。可手动添加，也可从对话自动提取。</p> : null}
           <div className="activity-memory-entries">
             {entries.map((entry) => (
               <article className="activity-memory-entry" key={entry.id}>
@@ -810,10 +828,12 @@ export function SettingsMemory({
 
         <section className="activity-memory-group" id="memory-embedding" tabIndex={-1}>
           <h3>嵌入模型</h3>
-          <p>默认自动选择已配置的嵌入服务商；没有可用服务商时语义搜索暂不可用。</p>
+          <p>用于语义搜索的嵌入模型。默认自动选择已配置的服务商，也可手动选择本地模型；没有可用模型时语义搜索暂不可用。</p>
           <SettingsModelPicker
             ariaLabel="选择嵌入模型"
+            compact
             groups={embeddingGroups}
+            selectionHint={selectedEmbeddingModel.kind === "auto" ? selectedEmbeddingDescriptor ? "默认" : "暂无可用模型" : undefined}
             onChange={(value) => {
               if (!value) return;
               if (value === "auto") { selectEmbeddingModel({ kind: "auto" }); return; }

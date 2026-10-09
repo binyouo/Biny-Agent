@@ -94,7 +94,7 @@ test("追加消息队列展示数量并提供编辑、插话和删除入口", ()
   assert.match(markup, /补充背景/u);
   assert.match(markup, /插话/u);
   assert.match(markup, /停止当前任务并发送队列/u);
-  assert.match(markup, /拖动以重新排序/u);
+  assert.match(markup, /拖动或按 Alt\+↑\/↓ 重新排序/u);
   assert.match(markup, /aria-label="删除"/u);
 });
 

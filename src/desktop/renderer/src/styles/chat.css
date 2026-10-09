@@ -2151,8 +2151,10 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 26px;
-  height: 26px;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  flex-shrink: 0;
   border: none;
   border-radius: 8px;
   background: transparent;
@@ -2165,6 +2167,17 @@
 .biny-chat-scroll .assistant-action:hover {
   background: var(--biny-surface-hover);
   color: var(--biny-text);
+}
+
+.biny-chat-scroll .user-message-action[aria-expanded="true"],
+.biny-chat-scroll .assistant-action[aria-expanded="true"] {
+  background: var(--biny-surface-hover);
+  color: var(--biny-text);
+}
+
+.biny-chat-scroll .user-message-action.is-copied,
+.biny-chat-scroll .assistant-action.is-copied {
+  color: var(--biny-focus);
 }
 
 .biny-chat-scroll .assistant-action.is-active {
@@ -2446,14 +2459,19 @@
 .message-menu {
   position: fixed;
   z-index: 2000;
-  min-width: 248px;
-  padding: 5px;
+  min-width: 0;
+  box-sizing: border-box;
+  max-width: calc(100vw - 16px);
+  max-height: calc(100dvh - 16px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 4px;
   border: 1px solid var(--biny-border);
-  border-radius: 12px;
+  border-radius: var(--biny-radius-card);
   background: var(--biny-surface-elevated);
   box-shadow: 0 1px 2px var(--biny-shadow-soft), 0 6px 16px var(--biny-shadow-soft);
   color: var(--biny-text-secondary);
-  font-size: 13px;
+  font-size: calc(12px * var(--font-scale, 1));
   line-height: 1.4;
   user-select: none;
   /* messageMenuReveal 原文：offset 10px→-2.5px→0、scale .94→1.03→1、blur 6px→0，
@@ -2493,12 +2511,12 @@
 .message-menu .message-menu-item {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 7px;
   width: 100%;
-  height: 32px;
-  padding: 0 10px;
+  min-height: 28px;
+  padding: 4px 8px;
   border: none;
-  border-radius: 8px;
+  border-radius: var(--biny-radius-control);
   background: transparent;
   color: var(--biny-text-secondary);
   font-size: inherit;
@@ -2508,8 +2526,8 @@
 
 .message-menu .message-menu-item > svg {
   flex: none;
-  width: 16px;
-  height: 16px;
+  width: 14px;
+  height: 14px;
   opacity: 0.8;
 }
 

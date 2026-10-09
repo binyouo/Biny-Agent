@@ -13,7 +13,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react
 import { Dialog } from "@astryxdesign/core/Dialog";
 import type { LocalEmbeddingModelId } from "../../../../../llm/embedding/types.js";
 import type { MemorySleepRun } from "../../../../../agent/context/memoryTypes.js";
-import type { DesktopCookieJarStatus, DesktopFontPreference, DesktopMemoryArchiveMutationResult, DesktopMemoryArchivePage, DesktopMemoryEmbeddingCancellationResult, DesktopMemoryEmbeddingDeleteResult, DesktopMemoryEmbeddingStatus, DesktopMemoryEntriesPage, DesktopMemoryEntryInput, DesktopMemoryEntryPatch, DesktopMemoryStats, DesktopMemorySearchMatch, DesktopModelCatalogResult, DesktopModelConfigurationInput, DesktopModelConnectionTestResult, DesktopModelLoginProvider, DesktopModelLoginStartResult, DesktopSettingsCloseRequest, DesktopSettingsCloseResponse, DesktopSettingsSnapshot, DesktopThemePreference, DesktopWorkspaceSnapshot } from "../../../../protocol.js";
+import type { DesktopCookieJarStatus, DesktopFontPreference, DesktopMemoryArchiveMutationResult, DesktopMemoryArchivePage, DesktopMemoryEmbeddingCancellationResult, DesktopMemoryEmbeddingDeleteResult, DesktopMemoryEmbeddingStatus, DesktopMemoryEntriesPage, DesktopMemoryEntryInput, DesktopMemoryEntryPatch, DesktopMemoryStats, DesktopMemorySearchMatch, DesktopModelCatalogResult, DesktopModelConfigurationInput, DesktopModelConnectionTestResult, DesktopModelLoginProvider, DesktopModelLoginStartResult, DesktopProject, DesktopSettingsCloseRequest, DesktopSettingsCloseResponse, DesktopSettingsSnapshot, DesktopThemePreference, DesktopWorkspaceSnapshot } from "../../../../protocol.js";
 import { Icon, type IconName } from "../Icon.js";
 import { McpServersView } from "../McpServersView.js";
 import { TopToast } from "../overlays/TopToast.js";
@@ -43,6 +43,7 @@ import { useAppearance } from "../../appearanceContext.js";
 interface SettingsOverlayProps {
   open: boolean;
   version: string;
+  projects: DesktopProject[];
   workspace?: DesktopWorkspaceSnapshot;
   modelSetupRequired: boolean;
   targetTab?: SettingsTab;
@@ -169,9 +170,13 @@ export function SettingsOverlay(props: SettingsOverlayProps): React.JSX.Element 
     themePreference,
     workspace
   } = props;
-  if (!open) return null;
+  const scope = JSON.stringify([workspace?.project.id, sessionId]);
+  const [visitedScope, setVisitedScope] = useState(open ? scope : undefined);
+  useEffect(() => { if (open) setVisitedScope(scope); }, [open, scope]);
+  if (!open && visitedScope !== scope) return null;
   return (
     <SettingsDraftProvider
+      key={scope}
       active={open}
       onCommitted={onSettingsCommitted}
       onFontPreview={onFontPreference}
@@ -190,6 +195,7 @@ export function SettingsOverlay(props: SettingsOverlayProps): React.JSX.Element 
 function SettingsOverlayContent({
   open,
   version,
+  projects,
   workspace,
   modelSetupRequired,
   targetTab,
@@ -241,6 +247,7 @@ function SettingsOverlayContent({
   const runtimeBusy = sessionRunning || settingsDraft.snapshot?.hasRunningTasks === true;
   const [tab, setTab] = useState<SettingsTab>("通用");
   const [memoryVisited, setMemoryVisited] = useState(false);
+  const [importVisited, setImportVisited] = useState(false);
   // 技能/插件页每次挂载都会全量扫描所有 skill 与项目目录（还没有缓存），
   // 所以和记忆页一样做成"首次进入挂载、之后常驻靠 hidden 切换"。
   const [extensionsVisited, setExtensionsVisited] = useState<{ skills: boolean; plugins: boolean }>({ skills: false, plugins: false });
@@ -282,6 +289,7 @@ function SettingsOverlayContent({
     return () => window.removeEventListener("keydown", handleSelectKeys, true);
   }, [open]);
   const markVisited = useCallback((nextTab: SettingsTab): void => {
+    if (nextTab === "导入") setImportVisited(true);
     if (nextTab === "技能") setExtensionsVisited((current) => current.skills ? current : { ...current, skills: true });
     if (nextTab === "插件") setExtensionsVisited((current) => current.plugins ? current : { ...current, plugins: true });
   }, []);
@@ -344,14 +352,14 @@ function SettingsOverlayContent({
   const extensionSettings = activeTab === "MCP 服务器" || activeTab === "技能" || activeTab === "插件";
   const needsProject = !workspace && ["聊天", "网络搜索", "模型", "技能", "MCP 服务器", "插件", "记忆"].includes(activeTab);
   // 只有"从没读到过快照且这次也失败了"才拦整页；单纯在刷新不该把已经能用的界面遮起来。
-  const loadBlocked = Boolean((workspace && !["浏览器", "Computer Use", "Appshots", "关于"].includes(activeTab) || activeTab === "Computer History" || activeTab === "权限") && (settingsDraft.loading || settingsDraft.loadError) && !settingsDraft.snapshot);
+  const loadBlocked = Boolean((workspace && !["导入", "浏览器", "Computer Use", "Appshots", "关于"].includes(activeTab) || activeTab === "Computer History" || activeTab === "权限") && (settingsDraft.loading || settingsDraft.loadError) && !settingsDraft.snapshot);
   const openSearchResult = async (nextTab: SettingsTab): Promise<void> => {
     setSearch("");
     await selectTab(nextTab);
     titleRef.current?.focus();
   };
   return (
-    <ActivityRuntimeProvider active={activeTab === "Computer History" || activeTab === "权限"}>
+    <ActivityRuntimeProvider active={open && (activeTab === "Computer History" || activeTab === "权限")}>
       <Dialog
         aria-label="Biny 设置"
         className="desktop-settings-dialog"
@@ -359,10 +367,10 @@ function SettingsOverlayContent({
         onOpenChange={(isOpen) => { if (!isOpen) requestCancel(); }}
         padding={0}
         purpose="info"
-        width={1040}
-        maxHeight="calc(100dvh - 80px)"
+        width={980}
+        maxHeight="calc(100dvh - 48px)"
       >
-      <SettingsDetailHostContext.Provider value={detailHost}>
+      <SettingsDetailHostContext.Provider value={open ? detailHost : null}>
       <section className={`settings-modal${extensionSettings ? " is-extension-settings" : ""}${appearance.skin !== "default" ? " is-retro-settings" : ""}`} ref={setDetailHost}>
         <aside className="settings-tabs">
           <div className="settings-sidebar-strip">
@@ -398,8 +406,6 @@ function SettingsOverlayContent({
           <header className="settings-titlebar">
             <div>
               <h2 ref={titleRef} tabIndex={-1}><Icon name={settingsNav.find(page => page.tab === activeTab)!.icon} size={18} />{settingsTabLabels[activeTab] ?? activeTab}</h2>
-              {/* 后台校验中：内容已经能用了，只是一个不挡操作的状态提示。 */}
-              {settingsDraft.revalidating ? <span className="settings-revalidating" role="status">正在刷新…</span> : null}
             </div>
             <button aria-label="关闭设置" className="icon-button settings-close-button" onClick={requestCancel} title="关闭设置 · Esc" type="button">
               <Icon name="close" size={18} />
@@ -456,7 +462,7 @@ function SettingsOverlayContent({
           {memoryVisited ? <SettingsMemory
             models={settingsModels}
             embeddingModels={settingsDraft.snapshot?.models.embeddingModels ?? []}
-            hidden={activeTab !== "记忆"}
+            hidden={!open || activeTab !== "记忆"}
             workspaceAvailable={workspace !== undefined}
             onLoadStats={onLoadMemoryStats}
             onLoadEntries={onLoadMemoryEntries}
@@ -484,12 +490,9 @@ function SettingsOverlayContent({
           {activeTab === "MCP 服务器" ? <McpServersView onError={_onNotify} onSuccess={(nextMessage) => notifyForTab("MCP 服务器", nextMessage)} projectId={workspace?.project.id} /> : null}
           {extensionsVisited.skills ? <div hidden={activeTab !== "技能"}><SettingsExtensionsView kind="skills" onError={_onNotify} projectId={workspace?.project.id} /></div> : null}
           {extensionsVisited.plugins ? <div hidden={activeTab !== "插件"}><SettingsExtensionsView kind="plugins" onError={_onNotify} projectId={workspace?.project.id} /></div> : null}
-          {activeTab === "导入" ? <SettingsImport projectId={workspace?.project.id}
-            disabled={runtimeBusy || settingsDraft.dirtyCount > 0 || settingsDraft.saveState === "saving" || settingsDraft.saveState === "rolling_back" || settingsDraft.saveState === "recovery_required"}
-            onImported={async projectId => { settingsDraft.retryLoad(); await onSessionImportComplete?.(projectId); }} /> : null}
           {activeTab === "关于" ? <SettingsAbout version={version} /> : null}
-          {activeTab === "浏览器" ? <SettingsBrowser /> : null}
-          {activeTab === "Computer Use" ? <SettingsComputerUse /> : null}
+          {activeTab === "浏览器" ? <SettingsBrowser active={open} /> : null}
+          {activeTab === "Computer Use" ? <SettingsComputerUse active={open} /> : null}
           {activeTab === "Appshots" ? <SettingsAppshots /> : null}
           {activeTab === "网络搜索" ? <SettingsWebSearch
             onOpenBrowser={onOpenBrowser}
@@ -499,6 +502,9 @@ function SettingsOverlayContent({
             sessionRunning={runtimeBusy}
           /> : null}
           </>}
+          {importVisited ? <SettingsImport projectId={workspace?.project.id} projects={projects} hidden={!open || activeTab !== "导入"}
+            disabled={runtimeBusy || settingsDraft.dirtyCount > 0 || settingsDraft.saveState === "saving" || settingsDraft.saveState === "rolling_back" || settingsDraft.saveState === "recovery_required"}
+            onImported={async projectId => { settingsDraft.retryLoad(); await onSessionImportComplete?.(projectId); }} /> : null}
           </div>
           <SettingsPageFooter
             pendingModelEdits={settingsDraft.pendingModelEdits}

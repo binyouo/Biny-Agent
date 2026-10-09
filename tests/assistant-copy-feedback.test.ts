@@ -219,3 +219,43 @@ for (const changed of ["content", "message", "session", "project", "unmount"] as
     } finally { await act(() => operation.resolve()); await h.close(); }
   });
 }
+
+test("用户复制入口成功后显示对勾；旧入口没有可观察反馈", async () => {
+  const h = await harness(async () => undefined, () => false);
+  try {
+    await h.render({ turns: [{ ...h.turn, user: "测试消息", userMessageId: "user" }] });
+    await h.click("复制消息");
+    assert.equal(h.button("已复制").classList.contains("is-copied"), true);
+  } finally { await h.close(); }
+});
+
+test("用户菜单宽度与定位一致并右对齐触发器，窄窗口保持安全边距", async () => {
+  const h = await harness(async () => undefined, () => false);
+  try {
+    await h.render({ turns: [{ ...h.turn, user: "测试消息", userMessageId: "user" }] });
+    const anchor = h.button("更多消息操作");
+    anchor.getBoundingClientRect = () => ({ left: 700, right: 726, top: 100, bottom: 126, width: 26, height: 26, x: 700, y: 100, toJSON() {} });
+    await h.click("更多消息操作");
+    const menu = h.dom.window.document.querySelector<HTMLElement>('.message-menu')!;
+    assert.equal(menu.style.width, "248px");
+    assert.equal(menu.style.left, "478px");
+    assert.equal(menu.style.top, "132px");
+    await h.click("更多消息操作");
+    Object.defineProperty(h.dom.window, "innerWidth", { configurable: true, value: 220 });
+    await h.click("更多消息操作");
+    assert.equal(h.dom.window.document.querySelector<HTMLElement>('.message-menu')!.style.width, "204px");
+    assert.equal(h.dom.window.document.querySelector<HTMLElement>('.message-menu')!.style.left, "8px");
+  } finally { await h.close(); }
+});
+
+test("用户复制失败保留可重试入口，不把失败显示成成功", async () => {
+  let attempts = 0;
+  const h = await harness(async () => { if (++attempts === 1) throw new Error("denied"); }, () => false);
+  try {
+    await h.render({ turns: [{ ...h.turn, user: "测试消息", userMessageId: "user" }] });
+    await h.click("复制消息");
+    assert.equal(h.button("复制失败，点击重试").classList.contains("is-copied"), false);
+    await h.click("复制失败，点击重试");
+    assert.ok(h.button("已复制"));
+  } finally { await h.close(); }
+});

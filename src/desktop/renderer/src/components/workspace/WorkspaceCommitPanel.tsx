@@ -99,8 +99,9 @@ export function WorkspaceCommitPanel({ projectId, active, onCount, onSwitchBranc
     </form>
     {error ? <div className="inspector-error" role="alert">{error}</div> : null}
     {notice ? <div className="inspector-subtoolbar" role="status">{notice}</div> : null}
-    <div className="inspector-subtoolbar"><span>变更（{snapshot?.files.length ?? 0}）</span><label><input type="checkbox" aria-label="选择所有变更" disabled={busy || !selectable.length} checked={!!selectable.length && selectable.every((file) => selected.has(file.path))} onChange={(event) => setSelected(new Set(event.target.checked ? selectable.map((file) => file.path) : []))} />全选</label></div>
+    <div className="inspector-subtoolbar"><span>{snapshot ? `变更（${snapshot.files.length}）` : "变更"}</span><label><input type="checkbox" aria-label="选择所有变更" disabled={busy || !selectable.length} checked={!!selectable.length && selectable.every((file) => selected.has(file.path))} onChange={(event) => setSelected(new Set(event.target.checked ? selectable.map((file) => file.path) : []))} />全选</label></div>
     <div className="inspector-result-scroll">
+      {!snapshot && !error ? <div className="inspector-empty" role="status">正在读取 Git 状态…</div> : null}
       {snapshot?.files.length === 0 ? <div className="inspector-empty"><Icon name="check" size={28} /><p>工作区没有未提交变更</p></div> : null}
       {snapshot?.files.map((file) => <div className="inspector-commit-file" key={file.path}><input type="checkbox" aria-label={`选择 ${file.path}`} checked={selected.has(file.path)} disabled={busy || /U|AA|DD/u.test(file.status)} onChange={() => setSelected((previous) => { const next = new Set(previous); if (next.has(file.path)) next.delete(file.path); else next.add(file.path); return next; })} /><code>{file.status}</code><button type="button" onClick={() => onPreviewFile(file.path)} title={file.path}>{file.path}</button></div>)}
     </div>

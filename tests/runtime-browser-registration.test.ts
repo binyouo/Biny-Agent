@@ -9,12 +9,14 @@ import { defaultConfig } from "../src/config/schema.js";
 import { createCommandRuntime, type CommandRuntime } from "../src/runtime/CommandRuntime.js";
 import { createInteractiveAgentHost } from "../src/runtime/InteractiveAgentRuntime.js";
 import { createBrowserTools, type BrowserAutomationEndpoint } from "../src/tools/browser.js";
+import { createComputerUseTools } from "../src/tools/computerUse.js";
 import { ToolRegistry } from "../src/tools/registry.js";
 import type { Tool } from "../src/tools/types.js";
 
 const firstEndpoint = { endpoint: "/unused/first-desktop.sock", token: "first-fixture-token", projectId: "first-project" };
 const secondEndpoint = { endpoint: "/unused/second-desktop.sock", token: "second-fixture-token", projectId: "second-project" };
-const desktopNames = createBrowserTools(firstEndpoint).map((tool) => tool.name).sort();
+const computerTools = createComputerUseTools(async () => { throw new Error("Metadata fixture must not dispatch"); });
+const desktopNames = [...createBrowserTools(firstEndpoint), ...computerTools].map((tool) => tool.name).sort();
 
 async function fixture(t: TestContext, endpoint?: BrowserAutomationEndpoint, fetchEnabled = true, interactive = false) {
   const root = await mkdtemp(path.join(os.tmpdir(), "biny-browser-registration-"));
@@ -67,9 +69,9 @@ function assertDesktopTools(runtime: CommandRuntime, present: boolean): void {
   assert.equal(new Set(catalog.map((tool) => tool.name)).size, catalog.length);
   assert.deepEqual(catalog.filter((tool) => desktopNames.includes(tool.name)).map((tool) => tool.name).sort(), present ? desktopNames : []);
   if (present) {
-    for (const tool of createBrowserTools(firstEndpoint)) {
+    for (const tool of [...createBrowserTools(firstEndpoint), ...computerTools]) {
       const entry = catalog.find((candidate) => candidate.name === tool.name)!;
-      assert.equal(entry.source, "builtin");
+      assert.equal(entry.source, tool.source ?? "builtin");
       assert.equal(entry.risk, tool.risk);
       assert.deepEqual(entry.parameters, tool.parameters);
     }
@@ -77,6 +79,16 @@ function assertDesktopTools(runtime: CommandRuntime, present: boolean): void {
   assert.equal(catalog.find((tool) => tool.name === "ChromeRelayListTabs")?.source, "builtin", "the independent daily-browser relay remains available");
   assert.equal(catalog.find((tool) => tool.name === "Read")?.source, "builtin");
 }
+
+await test("Desktop Computer Use is registered as an owned MCP server, not a duplicate builtin", async t => {
+  const runtime = await fixture(t, firstEndpoint);
+  const tools = runtime.listTools().filter(tool => tool.name.startsWith("Computer"));
+  assert.equal(tools.length, 4);
+  assert.ok(tools.every(tool => tool.source === "mcp"), "native input must go through MCP while retaining the Desktop control plane");
+  const server = runtime.mcp.listServers().find(server => server.name === "computer-use");
+  assert.ok(server);
+  assert.deepEqual([...server.toolNames].sort(), ["ComputerAction", "ComputerList", "ComputerMirror", "ComputerObserve"]);
+});
 
 await test("Desktop host initialization may reapply its bootstrapped browser endpoint", async (t) => {
   const runtime = await fixture(t, firstEndpoint, true, true);
@@ -119,8 +131,8 @@ await test("CLI runtime stays surface-free until Desktop attaches, including aft
 
 await test("replacement mirror uses the new endpoint while preserving execution authority", async (t) => {
   let mirror: Tool | undefined;
-  const register = ToolRegistry.prototype.registerBuiltinTool;
-  t.mock.method(ToolRegistry.prototype, "registerBuiltinTool", function (this: ToolRegistry, tool: Tool) {
+  const register = ToolRegistry.prototype.registerMcpTool;
+  t.mock.method(ToolRegistry.prototype, "registerMcpTool", function (this: ToolRegistry, tool: Tool) {
     register.call(this, tool);
     if (tool.name === "ComputerMirror") mirror = tool;
   });
@@ -151,6 +163,9 @@ await test("replacement mirror uses the new endpoint while preserving execution 
     return socket;
   });
   const context = { toolCallId: "mirror-call", operationId: "mirror-operation" };
+  const staleExecution = await firstMirror!.resolveExecution({ operation: "list" });
+  await assert.rejects(staleExecution.execute({ ...context, sessionId: runtime.agent.getInfo().sessionId }), /endpoint was replaced/);
+  assert.deepEqual(destinations, [], "a prepared old tool must not dispatch to the replacement Desktop endpoint");
   await assert.rejects(execution.execute(context), /requires an Agent session/);
   assert.deepEqual(destinations, []);
   await execution.execute({ ...context, sessionId: runtime.agent.getInfo().sessionId });
@@ -164,7 +179,7 @@ await test("replacement mirror uses the new endpoint while preserving execution 
 
 await test("the registry still rejects genuine duplicate registrations", () => {
   const registry = new ToolRegistry();
-  const mirror = createBrowserTools(firstEndpoint).find((tool) => tool.name === "ComputerMirror")!;
+  const mirror = computerTools.find((tool) => tool.name === "ComputerMirror")!;
   registry.registerBuiltinTool(mirror);
   assert.throws(() => registry.registerBuiltinTool(mirror), /Tool already registered: ComputerMirror/);
 });

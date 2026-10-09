@@ -179,18 +179,19 @@ cu.command(observeName).description("Observe a window: accessibility tree plus a
 
   cu.command("click").description("Click an element ref, or a screenshot pixel").argument("[ref]", "element ref from `cu snap`")
     .option("--pixel <x> <y...>", "click at these screenshot pixels instead").option("--pid <n>", "target pid when clicking a pixel")
+    .option("--window <id>", "exact window id for background physical input")
     .option("--button <name>", "left | right | middle", "left").option("--clicks <n>", "1 = single, 2 = double-click", "1")
     .option("--strategy <name>", "auto | ax | physical — ax drives the control's own action, physical synthesises a mouse click", "auto")
     .option("--json", "print JSON")
     .option("--no-cursor", "hide the action indicator for this one action")
-    .action(async (ref: string | undefined, options: { pixel?: string[]; pid?: string; button?: string; clicks?: string; strategy?: string; noCursor?: boolean; json?: boolean }) => withDriver(async driver => {
+    .action(async (ref: string | undefined, options: { pixel?: string[]; pid?: string; window?: string; button?: string; clicks?: string; strategy?: string; noCursor?: boolean; json?: boolean }) => withDriver(async driver => {
       // `--no-cursor` 是**动作级**开关（参照写在 "Action flags" 里，不挑动词）：
       // 这一次不要指示器，下一次照旧。
       const shared = { button: options.button, clicks: Number(options.clicks), strategy: options.strategy, ...(options.noCursor ? { show_cursor: false } : {}) };
       const args: Record<string, unknown> = options.pixel
         ? { ...withPid(options), x: Number(options.pixel[0]), y: Number(options.pixel[1]), ...shared }
         : { ref, ...withPid(options), ...shared };
-      print((await driver.actRaw("click", args)).data, options.json);
+      print((await driver.actRaw("click", { ...args, ...windowOption(options) })).data, options.json);
     }));
 
   for (const verb of ["type_text", "press_key"] as const) {
@@ -242,10 +243,10 @@ cu.command(observeName).description("Observe a window: accessibility tree plus a
       print((await driver.actRaw("scroll", { ...args, ...withCursorFlag(options) })).data, options.json);
     }));
 
-  cu.command("drag").description("Drag between two screenshot points").argument("<x1> <y1> <x2> <y2>")
-    .option("--pid <n>", "target pid").option("--json", "print JSON")
-    .action((x1: string, y1: string, x2: string, y2: string, options: { pid?: string; json?: boolean }) => withDriver(async driver => {
-      print((await driver.actRaw("drag", { x1: Number(x1), y1: Number(y1), x2: Number(x2), y2: Number(y2), ...withPid(options), ...withCursorFlag(options) })).data, options.json);
+  cu.command("drag").description("Drag between two screenshot points").arguments("<x1> <y1> <x2> <y2>")
+    .option("--pid <n>", "target pid").option("--window <id>", "exact window id for background physical input").option("--json", "print JSON")
+    .action((x1: string, y1: string, x2: string, y2: string, options: { pid?: string; window?: string; json?: boolean }) => withDriver(async driver => {
+      print((await driver.actRaw("drag", { x1: Number(x1), y1: Number(y1), x2: Number(x2), y2: Number(y2), ...withPid(options), ...windowOption(options), ...withCursorFlag(options) })).data, options.json);
     }));
 
   // 参照里这个名字叫 `perform_secondary_action`，且**两种定位方式**：
@@ -254,14 +255,14 @@ cu.command(observeName).description("Observe a window: accessibility tree plus a
 for (const menuName of ["perform_secondary_action", "menu"] as const) {
 cu.command(menuName).description("Open an element's context menu").argument("[ref]", "element ref from `cu snap`")
     .option("--pixel <x> <y...>", "click at screenshot coordinates instead")
-    .option("--pid <n>", "target pid").option("--json", "print JSON")
-    .action((ref: string | undefined, options: { pixel?: string[]; pid?: string; json?: boolean }) => withDriver(async driver => {
+    .option("--pid <n>", "target pid").option("--window <id>", "exact window id for background physical input").option("--json", "print JSON")
+    .action((ref: string | undefined, options: { pixel?: string[]; pid?: string; window?: string; json?: boolean }) => withDriver(async driver => {
       if (ref && options.pixel) throw new Error(`${menuName} 只能二选一：ref 或 --pixel`);
       const where = options.pixel
         ? { x: Number(options.pixel[0]), y: Number(options.pixel[1]) }
         : ref ? { ref } : null;
       if (!where) throw new Error(`${menuName} 需要 ref 或 --pixel <x> <y>`);
-      print((await driver.actRaw("perform_secondary_action", { ...where, ...withPid(options), ...withCursorFlag(options) })).data, options.json);
+      print((await driver.actRaw("perform_secondary_action", { ...where, ...withPid(options), ...windowOption(options), ...withCursorFlag(options) })).data, options.json);
     }));
 }
 

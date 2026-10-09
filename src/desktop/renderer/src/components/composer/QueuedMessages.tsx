@@ -74,7 +74,7 @@ export function QueuedMessages({ messages, running, onRemove, onMove, onSteer, o
         </button>
       </header>
       <div className="biny-queued-message-list">
-        {messages.map((message) => {
+        {messages.map((message, index) => {
           const isEditing = editing?.messageId === message.messageId;
           const pending = busyIds.has(message.messageId);
           return (
@@ -114,7 +114,7 @@ export function QueuedMessages({ messages, running, onRemove, onMove, onSteer, o
                 lastMoveRef.current = undefined;
               }}
             >
-              <span aria-hidden="true" className="biny-queued-message-grip" title="拖动以重新排序">
+              <span aria-hidden="true" className="biny-queued-message-grip" title="拖动或按 Alt+↑/↓ 重新排序">
                 <Icon name="grip-vertical" size={14} />
               </span>
               {isEditing ? (
@@ -143,7 +143,14 @@ export function QueuedMessages({ messages, running, onRemove, onMove, onSteer, o
                   className="biny-queued-message-content"
                   disabled={pending}
                   onClick={() => setEditing({ messageId: message.messageId, content: message.content })}
-                  title="点击编辑"
+                  onKeyDown={(event) => {
+                    if (!event.altKey || (event.key !== "ArrowUp" && event.key !== "ArrowDown")) return;
+                    const up = event.key === "ArrowUp";
+                    const target = messages[up ? index - 1 : index + 1];
+                    event.preventDefault();
+                    if (target) void run(message.messageId, async () => await onMove(message.messageId, target.messageId, !up));
+                  }}
+                  title="点击编辑；Alt+↑/↓ 调整顺序"
                   type="button"
                 >
                   {message.content || `[${String(message.attachmentCount)} 个文件]`}

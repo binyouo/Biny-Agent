@@ -176,7 +176,7 @@ export function createToolRegistry(
   registry.register(createSearchFilesTool(context));
   registry.register(createWriteFileTool(context));
   registry.register(createEditFileTool(context));
-  registry.register(createRunCommandTool(context, sandboxConfig, {}, managedProcessService));
+  registry.register(createRunCommandTool(context, sandboxConfig, { controlledComputerUse: true }, managedProcessService));
   if (managedProcessService) {
     registry.registerHostReadQuery(createBashOutputTool(managedProcessService), "BashOutput");
     registry.register(createKillShellTool(managedProcessService));

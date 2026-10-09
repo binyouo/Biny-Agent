@@ -7,16 +7,25 @@ import { SettingsImportContent } from "../src/desktop/renderer/src/components/se
 import type { ApplicationImportSnapshot } from "../src/imports/types.js";
 
 const callbacks = { onRetry() {}, onChoose() {}, onCustomize() {}, onSyncChange() {}, onSync() {} };
-function render(snapshot: ApplicationImportSnapshot | undefined, options: { loading?: boolean; error?: string; busy?: boolean } = {}) {
-  return new JSDOM(renderToStaticMarkup(createElement(SettingsImportContent, { ...callbacks, snapshot, loading: options.loading ?? false, error: options.error, busy: options.busy ?? false }))).window.document;
+function render(snapshot: ApplicationImportSnapshot | undefined, options: { error?: string; busy?: boolean } = {}) {
+  return new JSDOM(renderToStaticMarkup(createElement(SettingsImportContent, { ...callbacks, snapshot, error: options.error, busy: options.busy ?? false }))).window.document;
 }
 const empty: ApplicationImportSnapshot = { sources: [
   { source: "claude", label: "Claude Code", detected: false, description: "未发现本机配置。" },
   { source: "chatgpt", label: "ChatGPT", detected: false, description: "选择导出的 JSON 文件。" }
 ], history: [], sync: { enabled: false, hasSelection: false } };
-test("import page exposes real empty, loading, failure and unavailable-source states", () => {
-  assert.match(render(undefined, { loading: true }).querySelector('[role="status"]')!.textContent!, /检测导入来源/u);
-  assert.match(render(undefined, { error: "无法读取导入状态" }).querySelector('[role="alert"]')!.textContent!, /无法读取导入状态/u);
+test("import sources are immediately usable before detection; the old loading assertion allowed an empty first screen", () => {
+  const document = render(undefined);
+  assert.deepEqual([...document.querySelectorAll('.import-source-copy strong')].map(element => element.textContent), ["Claude Code", "Codex", "ChatGPT"]);
+  assert.ok([...document.querySelectorAll('.import-source-row button')].every(button => !button.hasAttribute("disabled")));
+  assert.equal(document.querySelector('.settings-import')?.getAttribute("aria-busy"), "false");
+  assert.ok(!document.querySelector('[role="status"]'));
+  assert.ok(!document.querySelector('.import-empty'), "尚未读取历史时不能声称没有导入记录");
+});
+test("import read failures keep the source actions available while confirmed unavailable sources and sync stay guarded", () => {
+  const failed = render(undefined, { error: "无法读取导入状态" });
+  assert.match(failed.querySelector('[role="alert"]')!.textContent!, /无法读取导入状态/u);
+  assert.equal(failed.querySelector('[aria-label="从 ChatGPT 导入"]')?.hasAttribute("disabled"), false);
   const document = render(empty);
   assert.match(document.body.textContent!, /尚未导入内容/u);
   assert.ok(document.querySelector('[role="switch"]')!.hasAttribute("disabled"));

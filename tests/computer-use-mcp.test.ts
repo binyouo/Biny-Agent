@@ -13,6 +13,7 @@ test("computer use is served over MCP with the documented verbs", async () => {
   const client = new Client({ name: "test-client", version: "1" });
   try {
     await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+    assert.equal(client.getServerVersion()?.name, "computer-use", "the public MCP identity must not include the application prefix");
     const { tools } = await client.listTools();
     const names = tools.map(tool => tool.name).sort();
     // 读写动作、权限与镜像均通过 MCP 的工具列表公开。

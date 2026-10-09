@@ -135,7 +135,7 @@ async function harness(global = false, saveGlobal?: (value: AppearancePreference
         const [current, setCurrent] = React.useState(appearance);
         const [open, setOpen] = React.useState(true);
         rerenderAppearance = setCurrent;
-        const props: ComponentProps<typeof SettingsOverlay> = { open, version: 'test', targetTab: '配色', modelSetupRequired: false,
+        const props: ComponentProps<typeof SettingsOverlay> = { open, version: 'test', projects: [], targetTab: '配色', modelSetupRequired: false,
             workspace: global ? undefined : workspace,
             themePreference: 'dark', fontPreference: initial.fontPreference, appearancePreference: current, sessionRunning: false,
             onNotify: (m: string) => notifications.push(m), onThemePreference: noop, onFontPreference: noop, onAppearancePreference: preview,

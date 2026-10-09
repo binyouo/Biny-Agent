@@ -47,7 +47,7 @@ test("首屏从配置返回实际模型与思考档位；缺少凭据仍可浏�
     assert.equal((await manager.workspaceSnapshot(project.id)).runtime, undefined);
 
     const ready = await manager.prepareWorkspace(project.id);
-    assert.equal(ready.runtime, undefined);
+    assert.ok(ready.runtime, "首屏为当前项目启动 Host，不等待第一条消息");
     assert.equal(ready.pickerModels[0]?.alias, "selected");
     assert.equal(ready.pickerModels[0]?.defaultThinking, "off");
     assert.equal(ready.runtimeError, undefined);
@@ -64,7 +64,7 @@ test("首屏从配置返回实际模型与思考档位；缺少凭据仍可浏�
     const failed = await manager.prepareWorkspace(project.id);
     assert.equal(failed.runtime, undefined);
     assert.equal(failed.requiresModelConfiguration, true);
-    assert.equal(failed.runtimeError, undefined);
+    assert.ok(failed.runtimeError, "后台启动失败不能隐藏，历史和模型设置仍可读取");
     assert.ok(failed.sessions.some((session) => session.id === recorder.sessionId));
     assert.deepEqual(await readSessionEvents(sessionFilePath(dataRoot, recorder.sessionId)), before);
   } finally {

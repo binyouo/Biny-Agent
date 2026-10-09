@@ -121,13 +121,13 @@ try {
 
   // 同一个 Desktop manager 保持观察连接，空闲 owner 仍应回收；再次发送才创建执行者。
   manager = new DesktopAgentManager(state, projects, configStore, () => undefined);
-  await manager.prepareWorkspace(project.id);
+  await manager.toolCatalog(project.id);
   await peer.close();
   peer = undefined;
   await waitFor(() => !isProcessAlive(owner!.process.pid!));
   const draft = await manager.startDraft(project.id);
   assert.equal(draft.runtime, undefined, "回收后的新聊天只准备草稿，不启动 Host");
-  const cold = await manager.prepareWorkspace(project.id);
+  const cold = await manager.workspaceSnapshot(project.id, false);
   assert.equal(cold.runtime, undefined);
   const nextRun = await manager.sendPrompt(project.id, desktopRun.sessionId, "Continue after idle retirement", []);
   await waitFor(() => requestPrompts.some((prompt) => prompt.includes("Continue after idle retirement")));

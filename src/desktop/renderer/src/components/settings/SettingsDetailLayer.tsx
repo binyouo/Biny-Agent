@@ -28,10 +28,12 @@ export function SettingsDetailLayer({ children, onClose }: {
     const layerId = layerIdRef.current;
     detailLayerStack.push(layerId);
     const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : undefined;
-    const focusTarget = backdropRef.current?.querySelector<HTMLElement>(
-      "[data-settings-detail-autofocus], [data-model-dialog-autofocus], button, input, textarea, select, [tabindex]:not([tabindex='-1'])"
-    );
-    focusTarget?.focus();
+    const controls = detailControls(backdropRef.current);
+    const focusTarget = controls.find(element => element.matches("[data-settings-detail-autofocus], [data-model-dialog-autofocus]"))
+      ?? controls.find(element => element.matches("input:not([type='checkbox']):not([type='radio']):not([type='button']):not([type='submit']), textarea, select"))
+      ?? controls[0]
+      ?? backdropRef.current;
+    focusTarget?.focus({ preventScroll: true });
 
     const handleLayerKeys = (event: KeyboardEvent): void => {
       if (detailLayerStack.at(-1) !== layerId) return;
@@ -45,10 +47,8 @@ export function SettingsDetailLayer({ children, onClose }: {
         return;
       }
       if (event.key !== "Tab") return;
-      const focusable = [...(backdropRef.current?.querySelectorAll<HTMLElement>(
-        "button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), a[href], [tabindex]:not([tabindex='-1'])"
-      ) ?? [])].filter((element) => element.offsetParent !== null);
-      if (!focusable.length) return;
+      const focusable = detailControls(backdropRef.current);
+      if (!focusable.length) { event.preventDefault(); backdropRef.current?.focus(); return; }
       const current = focusable.indexOf(document.activeElement as HTMLElement);
       const next = event.shiftKey
         ? current <= 0 ? focusable.length - 1 : current - 1
@@ -70,9 +70,24 @@ export function SettingsDetailLayer({ children, onClose }: {
       className="model-dialog-backdrop settings-detail-layer"
       onMouseDown={(event) => { if (event.target === event.currentTarget) onCloseRef.current(); }}
       ref={backdropRef}
+      tabIndex={-1}
     >
       {children}
     </div>,
     host
   ) : null;
+}
+
+function detailControls(root: HTMLElement | null): HTMLElement[] {
+  return [...(root?.querySelectorAll<HTMLElement>(
+    "button, input:not([type='hidden']), textarea, select, a[href], summary, [tabindex]"
+  ) ?? [])].filter(element => {
+    if (element.matches(":disabled, [tabindex='-1'], [aria-disabled='true']") || element.closest("[hidden], [inert], [aria-hidden='true']")) return false;
+    for (let ancestor: HTMLElement | null = element; ancestor && ancestor !== root; ancestor = ancestor.parentElement) {
+      const style = element.ownerDocument.defaultView?.getComputedStyle(ancestor);
+      if (style?.display === "none" || style?.visibility === "hidden") return false;
+      if (ancestor.matches("details:not([open])") && !ancestor.querySelector("summary")?.contains(element)) return false;
+    }
+    return true;
+  });
 }

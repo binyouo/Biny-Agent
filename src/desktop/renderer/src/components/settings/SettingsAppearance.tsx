@@ -52,12 +52,12 @@ export function SettingsAppearance({ theme, onThemeChange, font, onFontChange, d
         <h3>外观</h3>
         <div className="settings-row-group">
           <div className="settings-preference-row" id="appearance-theme">
-            <div className="settings-row-copy"><strong>主题</strong><p>选择浅色、深色，或随系统切换。</p></div>
+            <div className="settings-row-copy"><strong>主题</strong></div>
             <SettingsSegmentedControl label="外观" value={theme} onChange={onThemeChange} options={[
               { value: "system", label: "跟随系统" }, { value: "light", label: "浅色" }, { value: "dark", label: "深色" }
             ]} />
           </div>
-        {onDensityChange ? <div className="settings-preference-row"><div className="settings-row-copy"><label>界面密度</label><p>调整控件高度、间距和行高。</p></div><SettingsSegmentedControl label="界面密度" value={density ?? "compact"} onChange={onDensityChange} options={[{ value: "compact", label: "紧凑" }, { value: "comfortable", label: "舒适" }, { value: "spacious", label: "宽松" }]} /></div> : null}
+        {onDensityChange ? <div className="settings-preference-row"><div className="settings-row-copy"><label>界面密度</label></div><SettingsSegmentedControl label="界面密度" value={density ?? "compact"} onChange={onDensityChange} options={[{ value: "compact", label: "紧凑" }, { value: "comfortable", label: "舒适" }, { value: "spacious", label: "宽松" }]} /></div> : null}
         </div>
       </section>
       <section className="settings-preference-section">
@@ -65,7 +65,7 @@ export function SettingsAppearance({ theme, onThemeChange, font, onFontChange, d
 
         <div className="settings-row-group">
           <div className="settings-preference-row" id="appearance-font">
-            <div className="settings-row-copy"><label htmlFor="appearance-font-family">界面字体</label><p>使用本机已安装的字体。</p></div>
+            <div className="settings-row-copy"><label htmlFor="appearance-font-family">界面字体</label></div>
             <NativeSelect
               id="appearance-font-family"
               onChange={(event) => onFontChange({ ...font, family: event.target.value })}
@@ -75,7 +75,7 @@ export function SettingsAppearance({ theme, onThemeChange, font, onFontChange, d
             </NativeSelect>
           </div>
           <div className="settings-preference-row">
-            <div className="settings-row-copy"><label htmlFor="appearance-font-size">字体大小</label><p>同步调整界面文字与控件尺寸。</p></div>
+            <div className="settings-row-copy"><label htmlFor="appearance-font-size">字体大小</label><p>同时缩放控件。</p></div>
             <div className="font-size-row">
               <input
                 className="font-size-input"

@@ -2,6 +2,10 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import path from "node:path";
+import { test } from "node:test";
+import { Command } from "commander";
+import { registerCuCommands } from "../src/cli/commands/cu.js";
+import { NativeProcessDriver } from "../src/computer/nativeDriver.js";
 
 const entry = path.resolve("src/cli/index.ts");
 const runHelp = (...args: string[]): string => {
@@ -73,3 +77,27 @@ assert.doesNotMatch(runHelp("type_text"), /--global/u);
 // 不给 pid 是**正常用法**，不是漏参。
 assert.match(runHelp("click"), /\[ref\]/u);
 assert.doesNotMatch(runHelp("click"), /--pid\s+<n>\s+target pid \(required\)/u);
+
+for (const scenario of [
+  { verb: "click", args: ["--pixel", "10", "20"], command: "click", fields: { x: 10, y: 20 } },
+  { verb: "drag", args: ["10", "20", "30", "40"], command: "drag", fields: { x1: 10, y1: 20, x2: 30, y2: 40 } },
+  { verb: "perform_secondary_action", args: ["--pixel", "10", "20"], command: "perform_secondary_action", fields: { x: 10, y: 20 } },
+  { verb: "menu", args: ["--pixel", "10", "20"], command: "perform_secondary_action", fields: { x: 10, y: 20 } }
+]) {
+  test(`CLI ${scenario.verb} forwards the explicit window required by background input; help-only tests missed dispatch`, async context => {
+    const requests: Array<{ command: string; args: Record<string, unknown> }> = [];
+    context.mock.method(console, "log", () => undefined);
+    context.mock.method(NativeProcessDriver.prototype, "actRaw", async (command: string, args: Record<string, unknown>) => {
+      requests.push({ command, args });
+      return { data: {}, images: [] };
+    });
+    const program = new Command().exitOverride();
+    registerCuCommands(program);
+    await program.parseAsync(["node", "biny", "cu", scenario.verb, ...scenario.args, "--pid", "123", "--window", "456", "--json"]);
+    assert.equal(requests.length, 1);
+    assert.equal(requests[0]?.command, scenario.command);
+    for (const [key, value] of Object.entries({ ...scenario.fields, pid: 123, window_id: 456 })) assert.equal(requests[0]?.args[key], value);
+    assert.equal(requests[0]?.args.delivery, undefined, "exact window identity must not imply foreground delivery");
+    assert.match(runHelp(scenario.verb), /--window\s+<id>/u);
+  });
+}

@@ -227,6 +227,7 @@ function SettingsExtensionsContent({ kind, onError, projectId }: SettingsExtensi
     if (!projectId || !plugin.managed) return;
     const pluginId = plugin.path.split("/").at(-1);
     if (!pluginId) return;
+    if (!window.confirm(`卸载插件“${plugin.name}”？\n\n此操作无法撤销。`)) return;
     setBusyPluginId(pluginId);
     try {
       await window.biny.uninstallPlugin(projectId, pluginId, plugin.scope);

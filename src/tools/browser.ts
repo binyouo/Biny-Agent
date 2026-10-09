@@ -11,7 +11,6 @@ import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { ToolAccesses } from "./access.js";
 import { ToolOutcomeUnknownError, type Tool, type ToolExecutionContext, type ToolOutcomeUnknownReason } from "./types.js";
-import { createComputerUseTools } from "./computerUse.js";
 import { redactSensitiveValue } from "../utils/secrets.js";
 
 const requestTimeoutMs = 20_000;
@@ -49,8 +48,7 @@ export function createBrowserTools(endpoint: BrowserAutomationEndpoint): Tool[] 
     createBrowserReadDomTool(endpoint),
     createBrowserClickTool(endpoint),
     createBrowserFillTool(endpoint),
-    createBrowserPressTool(endpoint),
-    ...createComputerUseTools(endpoint)
+    createBrowserPressTool(endpoint)
   ];
 }
 

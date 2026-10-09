@@ -10,14 +10,13 @@ import { importSessionFile, parseSessionImport, SessionImportCleanupError } from
 import { ensureAgentDirs } from "../session/store.js";
 import { listChatGptConversations } from "../session/import/chatgpt.js";
 import { discoverConfigurationImports, type ConfigurationImportCandidate } from "./configuration.js";
-import type { ApplicationImportHistory, ApplicationImportPreview, ApplicationImportResult, ApplicationImportSnapshot, ApplicationImportSource } from "./types.js";
+import { applicationImportSources, type ApplicationImportHistory, type ApplicationImportPreview, type ApplicationImportResult, type ApplicationImportSnapshot, type ApplicationImportSource } from "./types.js";
 
 const maxSourceBytes = 64 * 1024 * 1024;
 const maxStateBytes = 32 * 1024 * 1024;
 const maxItems = 256;
 const maxScanEntries = 4_096;
 const maxReceipts = 4_096;
-const labels = { claude: "Claude Code", codex: "Codex", chatgpt: "ChatGPT" } as const;
 const sourceSchema = z.enum(["claude", "codex", "chatgpt"]);
 const categorySchema = z.enum(["settings", "mcp", "sessions"]);
 const resultSchema = z.object({ id: z.string().max(256), category: categorySchema, label: z.string().max(512),
@@ -202,7 +201,7 @@ export class ApplicationImportService {
 
   private async scan(source: ApplicationImportSource, filePath?: string): Promise<ScannedSource> {
     const preview: StoredPreview = { id: randomUUID(), source,
-      label: source === "chatgpt" && filePath !== undefined ? `${labels.chatgpt} · ${path.basename(filePath).slice(0, 256)}` : labels[source],
+      label: source === "chatgpt" && filePath !== undefined ? `${applicationImportSources.chatgpt.label} · ${path.basename(filePath).slice(0, 256)}` : applicationImportSources[source].label,
       filePath: filePath === undefined ? undefined : path.resolve(filePath), items: [], warnings: [] };
     const configurations = new Map<string, ConfigurationImportCandidate>();
     const contents = new Map<string, Buffer>();
@@ -332,15 +331,13 @@ export class ApplicationImportService {
       catch { return false; }
     };
     return {
-      sources: [
-        { source: "claude", label: labels.claude, detected: await detected("claude"), description: "读取本机设置、MCP 与项目会话。" },
-        { source: "codex", label: labels.codex, detected: await detected("codex"), description: "读取本机设置、MCP 与 rollout 会话。" },
-        { source: "chatgpt", label: labels.chatgpt, detected: false, description: "选择导出的 JSON 文件，不自动检测本机数据。" }
-      ],
+      sources: await Promise.all(Object.values(applicationImportSources).map(async source => ({
+        ...source, detected: source.source !== "chatgpt" && await detected(source.source)
+      }))),
       history: state.history,
       sync: { enabled: state.sync.enabled, hasSelection: state.sync.selections.length > 0, lastError: state.sync.lastError,
         selections: state.sync.selections.map(({ source, filePath, workspaceRoot, itemIds }) => ({ source,
-          label: source === "chatgpt" && filePath !== undefined ? `${labels.chatgpt} · ${path.basename(filePath).slice(0, 256)}` : labels[source],
+          label: source === "chatgpt" && filePath !== undefined ? `${applicationImportSources.chatgpt.label} · ${path.basename(filePath).slice(0, 256)}` : applicationImportSources[source].label,
           workspaceRoot, itemIds })) }
     };
   }

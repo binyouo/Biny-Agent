@@ -28,7 +28,9 @@ test("展开首帧就挂载面板并隐藏 rail；关闭与快速重开不遗留
   const { useWorkspaceInspector } = await import("../src/desktop/renderer/src/components/workspace/useWorkspaceInspector.js");
   let inspector: ReturnType<typeof useWorkspaceInspector>;
   const commits: Array<{ open: boolean; visible: boolean; railVisible: boolean }> = [];
-  const options = { changes: [], tools: [], filePanelResizing: false, filePanelWidth: 420, projectId: "p", source: "p:s",
+  let measuredWidth = 1200;
+  Object.defineProperty(dom.window.HTMLElement.prototype, "scrollWidth", { configurable: true, get() { return this.classList.contains("inspector-tab-measure") ? measuredWidth : 0; } });
+  const options = { changes: Array.from({ length: 120 }, (_, i) => ({ path: `file-${i}.ts`, operation: "update" as const, changeCount: 1, diff: "", add: 1, del: 0, status: "completed" as const })), tools: [], filePanelResizing: false, filePanelWidth: 420, projectId: "p", source: "p:s",
     onFilePanelResizeEnd() {}, onFilePanelResizeStart() {}, onFilePanelWidthChange() {},
     onListDirectory: async () => ({ path: ".", entries: [] }), onOpenFile() {}, onOpenBrowser: async () => {}, onSwitchBranch: async () => {},
     onReadFile: async () => { throw new Error("unused"); }, onWarning() {} };
@@ -49,6 +51,14 @@ test("展开首帧就挂载面板并隐藏 rail；关闭与快速重开不遗留
     await React.act(async () => { inspector.openFiles(); });
     assert.deepEqual(commits[0], { open: true, visible: true, railVisible: false });
     assert.match(document.querySelector(".file-browser-content")?.textContent ?? "", /选择要预览的文件/);
+    const changesTab = document.querySelector<HTMLButtonElement>('#inspector-tab-changes')!;
+    assert.equal(changesTab.title, "变更，120 个文件", "紧凑模式仍能取得完整数量，不能只留下被挤扁的徽标");
+    assert.equal(changesTab.getAttribute("aria-label"), "变更，120 个文件");
+    assert.equal(changesTab.querySelector('.biny-inspector-badge')?.textContent, "");
+    measuredWidth = 100;
+    options.filePanelWidth = 421;
+    await React.act(() => root.render(React.createElement(Harness)));
+    assert.equal(changesTab.querySelector('.biny-inspector-badge')?.textContent, "99+", "宽模式恢复数字徽标");
     const panel = document.querySelector(".desktop-inspector-wrap");
     await React.act(() => (document.querySelector('[aria-label="收起工作区工具"]') as HTMLButtonElement).click());
     assert.equal(inspector!.layout.open, false);
@@ -74,4 +84,26 @@ test("展开首帧就挂载面板并隐藏 rail；关闭与快速重开不遗留
       else Reflect.deleteProperty(globalThis, key);
     }
   }
+});
+
+test("提交数字徽标不继承标签文字的收缩和省略规则，单个数字保留正方形底面", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const { JSDOM } = await import("jsdom");
+  const dom = new JSDOM('<!doctype html><html><head></head><body><button class="biny-inspector-tab"><span>提交</span><span class="biny-inspector-badge">1</span></button></body></html>');
+  try {
+    for (const name of ["biny", "inspector"]) {
+      const style = dom.window.document.createElement('style');
+      style.textContent = await readFile(new URL(`../src/desktop/renderer/src/styles/${name}.css`, import.meta.url), 'utf8');
+      dom.window.document.head.append(style);
+    }
+    const badge = dom.window.document.querySelector('.biny-inspector-badge')!;
+    for (const count of ["1", "12", "99+"]) {
+      badge.textContent = count;
+      const style = dom.window.getComputedStyle(badge);
+      assert.equal(style.minWidth, "16px");
+      assert.equal(style.height, "16px");
+      assert.equal(style.flexShrink, "0");
+      assert.notEqual(style.textOverflow, "ellipsis");
+    }
+  } finally { dom.window.close(); }
 });

@@ -17,6 +17,7 @@ export function MarkdownCodeBlock({ code, language, dashed, isStreaming = false 
   const toolbar = useRef<HTMLDivElement>(null);
   const [sticky, setSticky] = useState<{ top: number; right: number; unit: string }>();
   const [copied, setCopied] = useState(false);
+  const [copyFailed, setCopyFailed] = useState(false);
   const copyTimer = useRef<number | undefined>(undefined);
   useEffect(() => () => window.clearTimeout(copyTimer.current), []);
   useEffect(() => {
@@ -45,8 +46,15 @@ export function MarkdownCodeBlock({ code, language, dashed, isStreaming = false 
     schedule();
     return () => { if (frame !== undefined) window.cancelAnimationFrame(frame); scroll.removeEventListener("scroll", schedule); window.removeEventListener("resize", schedule); };
   }, []);
-  const copy = <button className={`copy-button markdown-code-copy${copied ? " is-copied" : ""}`} type="button" aria-label={copied ? "已复制" : "复制代码"} title={copied ? "已复制" : "复制代码"} onClick={async () => {
-    if (!await copyToClipboard(code)) return;
+  const label = copied ? "已复制" : copyFailed ? "复制失败，点击重试" : "复制代码";
+  const copy = <button className={`copy-button markdown-code-copy${copied ? " is-copied" : ""}`} type="button" aria-label={label} title={label} onClick={async () => {
+    window.clearTimeout(copyTimer.current);
+    if (!await copyToClipboard(code)) {
+      setCopyFailed(true);
+      copyTimer.current = window.setTimeout(() => setCopyFailed(false), 2_000);
+      return;
+    }
+    setCopyFailed(false);
     setCopied(true);
     window.clearTimeout(copyTimer.current);
     copyTimer.current = window.setTimeout(() => setCopied(false), 2_000);

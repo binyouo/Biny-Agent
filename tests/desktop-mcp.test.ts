@@ -128,4 +128,10 @@ const connectingService = new DesktopMcpService(
 );
 assert.equal((await connectingService.snapshot("project")).servers[0]?.state, "connecting");
 
+const builtin = (await service.snapshot()).servers.find(server => server.name === "computer-use");
+assert.ok(builtin, "global settings must expose the built-in MCP even before a workspace Runtime connects");
+assert.equal(builtin.transport, "in-process");
+assert.equal(builtin.builtin, true);
+assert.equal(builtin.state, "not-started");
+
 console.log("desktop MCP service tests passed");

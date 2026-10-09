@@ -1,6 +1,12 @@
 export type ApplicationImportSource = "claude" | "codex" | "chatgpt";
 export type ApplicationImportCategory = "settings" | "mcp" | "sessions";
 
+export const applicationImportSources = {
+  claude: { source: "claude", label: "Claude Code", description: "读取本机设置、MCP 与项目会话。" },
+  codex: { source: "codex", label: "Codex", description: "读取本机设置、MCP 与 rollout 会话。" },
+  chatgpt: { source: "chatgpt", label: "ChatGPT", description: "选择导出的 JSON 文件，不自动检测本机数据。" }
+} as const satisfies Record<ApplicationImportSource, { source: ApplicationImportSource; label: string; description: string }>;
+
 export interface ApplicationImportItem {
   id: string;
   category: ApplicationImportCategory;

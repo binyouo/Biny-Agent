@@ -32,7 +32,7 @@ export function createDesktopWindow(
   nativeTheme.themeSource = preference;
   const appearance = resolveAppearance(state.appearancePreference(), preference, nativeTheme.shouldUseDarkColors);
   const savedBounds = visibleBounds(state.windowBounds());
-  // macOS 也保持主题底色，避免 ready-to-show 后切透明时露出与渲染层不同步的白色原生底。
+  // macOS 从创建起使用透明底，由渲染层绘制圆角与主题底板。
   const window = new BrowserWindow({
     width: savedBounds?.width ?? 1480,
     height: savedBounds?.height ?? 920,
@@ -41,7 +41,8 @@ export function createDesktopWindow(
     minWidth: 800,
     minHeight: 600,
     show: false,
-    backgroundColor: appearance.variables["--background"] ?? themeBackgroundColor(preference),
+    transparent: process.platform === "darwin",
+    backgroundColor: process.platform === "darwin" ? "#00000000" : appearance.variables["--background"] ?? themeBackgroundColor(preference),
     roundedCorners: appearance.skin !== "win98",
     title: "Biny",
     titleBarStyle: "hidden",
@@ -50,9 +51,7 @@ export function createDesktopWindow(
     // overlay 必须保持开启：Electron 只在 titleBarOverlay 启用时才应用 trafficLightPosition，
     // 关掉或省略后红绿灯会落回系统默认高位，与侧栏按钮行错开。
     titleBarOverlay: process.platform === "darwin" ? true : undefined,
-    // 红绿灯与侧栏顶栏按钮行（卡片线内 10~38px，中心 y=24）同轴。实测 y 到灯心偏移约 +8，
-    // y=16 → 灯心 ~23.75，与 28px 按钮行共线；y=18 会低到 ~25.75。
-    trafficLightPosition: process.platform === "darwin" ? { x: 14, y: 16 } : undefined,
+    trafficLightPosition: process.platform === "darwin" ? { x: 20, y: 24 } : undefined,
     webPreferences: {
       preload: path.join(fileURLToPath(new URL(".", import.meta.url)), "../preload/index.cjs"),
       contextIsolation: true,
@@ -66,7 +65,7 @@ export function createDesktopWindow(
     if (window.isDestroyed()) return;
     const snapshot = getAppearance();
     const current = resolveAppearance(snapshot.appearancePreference, snapshot.themePreference, nativeTheme.shouldUseDarkColors);
-    window.setBackgroundColor(current.variables["--background"] ?? themeBackgroundColor(snapshot.themePreference));
+    window.setBackgroundColor(process.platform === "darwin" ? "#00000000" : current.variables["--background"] ?? themeBackgroundColor(snapshot.themePreference));
   };
   nativeTheme.on("updated", syncBackgroundColor);
   window.once("ready-to-show", () => {

@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { JSDOM } from "jsdom";
-import { SIDEBAR_TRANSITION_MS } from "../src/desktop/sidebarSizing.js";
+import { MIN_SIDEBAR_WIDTH, SIDEBAR_TRANSITION_MS } from "../src/desktop/sidebarSizing.js";
 
 const css = ["biny", "inspector"].map((name) => readFileSync(
   new URL(`../src/desktop/renderer/src/styles/${name}.css`, import.meta.url), "utf8"
@@ -15,12 +15,14 @@ function withStyles(attributes: string, check: (get: (selector: string) => CSSSt
       <div class="biny-chat-body"><div class="biny-chat-scroll"></div></div></div>
     <main class="biny-content-shell"></main><div class="biny-sidebar-block"></div>
     <div class="biny-sidebar-pin-spacer"></div>
-    <aside class="biny-sidebar"><div class="biny-sidebar-card"></div></aside>
+    <aside class="biny-sidebar"><div class="biny-sidebar-card"><div class="biny-sidebar-topbar-spacer"></div></div></aside>
     <aside class="biny-sidebar is-hidden"><div class="biny-sidebar-card"></div></aside>
     <aside class="biny-sidebar is-peek-overlay"></aside>
     <aside class="biny-sidebar is-peek-overlay is-peek-peeking"></aside>
     <aside class="biny-sidebar is-peek-overlay is-peek-pinning"></aside>
-    <div class="biny-sidebar-topbar-floating"><div class="biny-sidebar-topbar-hit-layer"></div></div></div>
+    <div class="biny-sidebar-topbar biny-sidebar-topbar-floating"><div class="biny-sidebar-topbar-hit-layer">
+      <button class="biny-chrome-button"></button><button class="biny-chrome-button"></button><button class="biny-chrome-button"></button>
+    </div></div></div>
   </div>`);
   try {
     check((selector) => dom.window.getComputedStyle(dom.window.document.querySelector(selector)!));
@@ -33,6 +35,37 @@ test("收起和展开过程中标题与按钮共用带最小安全宽度的边�
     assert.match(get(".biny-chat-toolbar").paddingLeft, /--biny-sidebar-animated-flow-width/);
     assert.equal(get(".biny-sidebar-topbar-floating").width, boundary);
     assert.equal(get(".biny-sidebar-topbar-hit-layer").width, "100%");
+  });
+});
+
+test("顶栏为 32px 按钮保留卡片内的上下留白，最窄侧栏仍容得下三个操作", () => {
+  withStyles('', (get) => {
+    const root = get(".biny-root");
+    const topbar = get(".biny-sidebar-topbar-floating");
+    const actions = get(".biny-sidebar-topbar-hit-layer");
+    const button = get(".biny-chrome-button");
+    const controlSize = Number.parseFloat(get(":root").getPropertyValue("--biny-control-height"));
+    const titlebarHeight = topbar.height.startsWith("var(")
+      ? Number.parseFloat(root.getPropertyValue("--biny-titlebar-height"))
+      : Number.parseFloat(topbar.height);
+    const paddingTop = Number.parseFloat(actions.paddingTop);
+    const paddingBottom = Number.parseFloat(actions.paddingBottom);
+    const buttonTop = paddingTop + (titlebarHeight - paddingTop - paddingBottom - controlSize) / 2;
+    const cardTop = Number.parseFloat(get(".biny-sidebar").paddingTop);
+    assert.equal(controlSize, 32, "不能通过缩小点击目标遮掩越界");
+    assert.equal(button.height, "var(--biny-control-height)");
+    assert.equal(button.width, "var(--biny-control-height)");
+    assert.ok(buttonTop >= cardTop + 4, "按钮背景上缘必须留在卡片顶线内侧");
+    assert.ok(titlebarHeight - buttonTop - controlSize >= 4, "按下偏移后仍需保留下缘留白");
+    assert.equal(actions.height, "100%", "按钮层跟随顶栏，而不是另设较矮的固定高度");
+    assert.equal(get(".biny-chat-toolbar").height, topbar.height);
+    assert.equal(get(".biny-chat-toolbar").paddingTop, actions.paddingTop);
+    assert.equal(get(".biny-chat-toolbar").paddingBottom, actions.paddingBottom);
+    const minimumWidth = Number.parseFloat(actions.paddingLeft) + Number.parseFloat(actions.paddingRight)
+      + 3 * controlSize + 2 * Number.parseFloat(actions.gap);
+    assert.ok(minimumWidth <= MIN_SIDEBAR_WIDTH, "按钮不得撑出最窄侧栏");
+    assert.ok(Number.parseFloat(actions.paddingLeft) >= 78, "保留原生窗口按钮的空间");
+    assert.ok(Number.parseFloat(actions.paddingRight) >= Number.parseFloat(get(".biny-sidebar-card").marginInline) + 8);
   });
 });
 
@@ -95,7 +128,7 @@ for (const mode of ["collapsed", "expanded", "peek"]) {
       assert.equal(get(".biny-workspace-main").flexDirection, "column");
       assert.equal(get(".biny-chat-toolbar").position, "relative");
       assert.equal(get(".biny-chat-toolbar").flexShrink, "0");
-      assert.equal(get(".biny-chat-toolbar").height, "48px");
+      assert.equal(get(".biny-chat-toolbar").height, "var(--biny-titlebar-height)");
       assert.ok(Number(get(".biny-sidebar-topbar-floating").zIndex) > Number(get(".biny-chat-toolbar").zIndex), "顶部按钮应在整行背景上方接受点击");
       assert.equal(get(".biny-chat-body").overflow, "hidden");
       assert.equal(get(".biny-chat-scroll").paddingTop, "8px");
@@ -109,7 +142,7 @@ test("结构皮肤切回普通皮肤后恢复卡片边界，主区不增加额�
   const sources = [...layers.matchAll(/@import "(\.\.?\/[^"]+\.css)"/gu)]
     .map(entry => readFileSync(new URL(entry[1]!, new URL("styles/layers.css", renderer)), "utf8"));
   sources.push(...["retro", "retro-layout"].map(name => readFileSync(new URL(`styles/${name}.css`, renderer), "utf8")));
-  const dom = new JSDOM('<div class="desktop-root biny-root"><div class="biny-app-shell"><main class="biny-content-shell"></main><aside class="biny-sidebar"><div class="biny-sidebar-card"></div></aside></div></div>');
+  const dom = new JSDOM('<div class="desktop-root biny-root"><div class="biny-app-shell"><main class="biny-content-shell"><header class="biny-chat-toolbar"></header></main><aside class="biny-sidebar"><div class="biny-sidebar-card"></div></aside><div class="biny-sidebar-topbar biny-sidebar-topbar-floating"><div class="biny-sidebar-topbar-hit-layer"><button class="biny-chrome-button"></button></div></div></div></div>');
   try {
     for (const source of sources) {
       const style = dom.window.document.createElement("style");
@@ -122,6 +155,13 @@ test("结构皮肤切回普通皮肤后恢复卡片边界，主区不增加额�
       root.dataset.appearanceSkin = skin;
       assert.equal(computed(".biny-sidebar-card").borderRadius, "0px", skin);
       assert.equal(computed(".biny-sidebar").padding, "0px", skin);
+      const topbar = computed(".biny-sidebar-topbar-floating");
+      const actions = computed(".biny-sidebar-topbar-hit-layer");
+      const availableHeight = Number.parseFloat(topbar.height) - Number.parseFloat(topbar.paddingTop)
+        - Number.parseFloat(topbar.paddingBottom) - Number.parseFloat(actions.paddingTop) - Number.parseFloat(actions.paddingBottom);
+      assert.ok(availableHeight >= 32, `${skin} 的紧凑顶栏也必须容纳完整按钮`);
+      assert.equal(topbar.minHeight, topbar.height, skin);
+      assert.equal(computed(".biny-chat-toolbar").height, topbar.height, skin);
       root.dataset.appearanceSkin = "default";
       assert.equal(computed(".biny-sidebar-card").borderRadius, "16px", skin);
       assert.equal(computed(".biny-sidebar-card").marginInline, "10px", skin);

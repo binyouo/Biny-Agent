@@ -874,7 +874,7 @@ async function main(): Promise<void> {
   await fs.chmod(hostPaths.registrationPath, 0o600);
   await assert.rejects(
     connectRuntimeHost(workspace, { clientId: "incompatible-client", surface: "tui" }),
-    /protocol 2 is incompatible with 10/u
+    /protocol 2 is incompatible with 11/u
   );
   assert.deepEqual(JSON.parse(await readFile(hostPaths.registrationPath, "utf8")), incompatibleRegistration);
   await fs.rm(hostPaths.registrationPath);

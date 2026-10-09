@@ -417,7 +417,7 @@ export class AgentSession {
   private activeRunMessageQueues: ActiveRunMessageQueues | undefined;
   private readonly lingeringExternalTools = new Map<Promise<unknown>, { tool: string; toolCallId: string }>();
   private readonly pendingCrystalTasks = new Set<Promise<void>>();
-  private readonly queuedCrystalThreads = new Set<string>();
+  private readonly queuedCrystalRuns = new Set<string>();
   private readonly pendingMemoryTasks = new Set<Promise<unknown>>();
   private temporalIndexFlight: Promise<void> = Promise.resolve();
   /** Runtime 已接纳的普通发送；让 canonical user_message 先于前台 generating 状态落盘。 */
@@ -2528,7 +2528,7 @@ export class AgentSession {
           }
         }
       } finally {
-        this.scheduleCrystalThread(this.recorder);
+        if (turnPersonalization.contributeMemories) this.scheduleCrystalRun(this.recorder, runtimeRunId);
         // 正文先获得模型请求机会，标题在回合结束后生成，不抢占首字响应。
         if (ordinaryRootMessage && this.options.onTitleGenerated) this.scheduleTitle();
         this.recorder.setRuntimeContext(undefined);
@@ -4518,20 +4518,19 @@ export class AgentSession {
     return hydrated;
   }
 
-  private scheduleCrystalThread(recorder: SessionRecorder): void {
+  private scheduleCrystalRun(recorder: SessionRecorder, runId: string): void {
     if (this.closed) return;
-    if (this.queuedCrystalThreads.has(recorder.sessionId)) return;
-    this.queuedCrystalThreads.add(recorder.sessionId);
+    if (this.queuedCrystalRuns.has(runId)) return;
+    this.queuedCrystalRuns.add(runId);
     let timer: ReturnType<typeof setTimeout> | undefined;
     const task = new Promise<void>((resolve) => {
       timer = setTimeout(() => {
         void (async () => {
-          this.queuedCrystalThreads.delete(recorder.sessionId);
           await recorder.flush();
           const events = await readSessionEvents(recorder.filePath);
           const activeIds = activeSessionMessageIds(events);
           for (const node of sessionMessageTree(events)) {
-            if (node.message.role !== "user" || !activeIds.has(node.id)) continue;
+            if (node.message.role !== "user" || !activeIds.has(node.id) || events[node.eventIndex]?.runtime?.runId !== runId) continue;
             if (this.crystalService.storage.hasProcessedAnchor(node.id)) continue;
             await this.crystalService.processAnchor({
               threadId: recorder.sessionId,
@@ -4541,12 +4540,12 @@ export class AgentSession {
               source: "conversation"
             });
           }
-          // 整个线程扫描结束才维护休眠，已处理锚点不应阻止时间驱动的状态变化。
           this.crystalService.dormantOldCrystals();
         })().catch(() => undefined).finally(resolve);
       }, 400);
     }).finally(() => {
       if (timer !== undefined) clearTimeout(timer);
+      this.queuedCrystalRuns.delete(runId);
       this.pendingCrystalTasks.delete(task);
     });
     this.pendingCrystalTasks.add(task);

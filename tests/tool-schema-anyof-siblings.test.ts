@@ -77,7 +77,7 @@ test("the native ComputerAction value remains a pure string/number/boolean union
   const { createComputerUseTools } = await import("../src/tools/computerUse.js");
   const { validateJsonSchema } = await import("../src/tools/schema.js");
   // Read the registered schema only. No native transport is resolved or executed.
-  const action = createComputerUseTools({ endpoint: "/unused-anyof-fixture", token: "fixture" }).find(tool => tool.name === "ComputerAction");
+  const action = createComputerUseTools(async () => { throw new Error("Schema fixture must not dispatch"); }).find(tool => tool.name === "ComputerAction");
   assert.ok(action);
   const base = { pid: 1, windowId: "1", action: "set_value", captureId: "fixture", elementToken: "fixture" };
   for (const value of ["", "text", 0, 0.5, -1, true, false]) {

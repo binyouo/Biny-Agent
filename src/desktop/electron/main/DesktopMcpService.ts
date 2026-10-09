@@ -21,6 +21,7 @@ import type {
   DesktopMcpTestResult
 } from "../../protocol.js";
 import { McpToolHost, type McpServerStatus } from "../../../extensions/mcp.js";
+import { desktopComputerMcpName } from "../../../computer/desktopMcp.js";
 import { getSharedProxyAwareFetch } from "../../../network/proxyFetch.js";
 import { ToolRegistry } from "../../../tools/registry.js";
 import type { DesktopProjectService } from "./DesktopProjectService.js";
@@ -74,7 +75,7 @@ export class DesktopMcpService {
     const live = projectId === undefined ? undefined : await this.agents.mcpStatuses(projectId);
     return {
       configRevision: stored.revision,
-      servers: Object.entries(stored.config.extensions.mcp).map(([name, server]) => describeServer(name, server, live)),
+      servers: [...Object.entries(stored.config.extensions.mcp).map(([name, server]) => describeServer(name, server, live)), describeBuiltinComputerServer(live)],
       catalog: cloneCatalogState(this.catalogState)
     };
   }
@@ -171,6 +172,7 @@ export class DesktopMcpService {
     const workspaceRoot = this.workspaceRoot(projectId);
     const current = await this.loadVersioned(workspaceRoot);
     const name = normalizeServerName(draft.name);
+    if (name === desktopComputerMcpName) throw new Error("此名称由内置 Computer Use MCP 使用；请在 Computer Use 设置中管理权限。");
     const oldName = originalName === undefined ? undefined : normalizeServerName(originalName);
     const existing = oldName === undefined ? undefined : current.config.extensions.mcp[oldName];
     if (oldName !== undefined && existing === undefined) throw new Error(`MCP 服务器不存在：${oldName}`);
@@ -398,6 +400,16 @@ function mcpCredentialAccount(serverId: string, location: "env" | "headers", key
 
 function isEnvironmentReference(value: string): boolean {
   return /^\$\{[A-Za-z_][A-Za-z0-9_]*\}$/u.test(value);
+}
+
+function describeBuiltinComputerServer(live: McpServerStatus[] | undefined): DesktopMcpServerSummary {
+  const runtime = live?.find(server => server.name === desktopComputerMcpName && server.transport === "in-process");
+  return {
+    name: desktopComputerMcpName, builtin: true, description: "内置桌面控制服务，由工作区 Runtime 自动连接；启用和应用授权在 Computer Use 设置中管理。",
+    transport: "in-process", commandOrUrl: "Desktop control plane · in-process MCP", args: [], enabled: true,
+    state: !runtime ? "not-started" : runtime.connecting ? "connecting" : runtime.connected ? "connected" : "disconnected",
+    toolNames: runtime?.toolNames ?? ["ComputerList", "ComputerObserve", "ComputerAction", "ComputerMirror"], promptNames: [], hasResources: false, environmentKeys: [], headerNames: [], lastError: runtime?.lastError
+  };
 }
 
 function describeServer(name: string, config: McpServerConfig, live: McpServerStatus[] | undefined): DesktopMcpServerSummary {

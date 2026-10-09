@@ -302,7 +302,7 @@ export function useWorkspaceInspector({
   useEffect(() => {
     if (!projectId) return;
     const handleShortcut = (event: KeyboardEvent): void => {
-      if (event.defaultPrevented || event.repeat || isTextEntryTarget(event.target) || !event.metaKey) return;
+      if (event.defaultPrevented || event.repeat || !event.metaKey) return;
       if (event.shiftKey && !event.altKey && event.code === "KeyG") {
         event.preventDefault();
         openRailAction("commit");
@@ -407,6 +407,7 @@ export function useWorkspaceInspector({
               const active = inspectorView === view;
               const count = view === "commit" ? gitChangeCount ?? 0 : view === "changes" ? changeCount : 0;
               const badge = count > 0 ? (count > 99 ? "99+" : String(count)) : undefined;
+              const label = `${inspectorViewMetadata[view].label}${count > 0 ? `，${count} 个文件` : ""}`;
               return (
                 <button
                   role="tab"
@@ -414,16 +415,16 @@ export function useWorkspaceInspector({
                   aria-controls={`inspector-panel-${view}`}
                   id={`inspector-tab-${view}`}
                   tabIndex={active ? 0 : -1}
-                  aria-label={inspectorViewMetadata[view].label}
+                  aria-label={label}
                   className={`biny-inspector-tab${active ? " is-active" : ""}${compactTabs ? " is-compact" : ""}`}
                   key={view}
                   onClick={() => openInspector(view)}
-                  title={inspectorViewMetadata[view].label}
+                  title={label}
                   type="button"
                 >
                   <Icon name={inspectorViewMetadata[view].icon} size={compactTabs ? 16 : 14} />
                   {!compactTabs ? <span>{inspectorViewMetadata[view].label}</span> : null}
-                  {badge !== undefined ? <span className="biny-inspector-badge">{badge}</span> : null}
+                  {badge !== undefined ? <span aria-hidden="true" className="biny-inspector-badge">{compactTabs ? null : badge}</span> : null}
                 </button>
               );
             })}
@@ -569,8 +570,4 @@ function normalizeWorkspacePath(value: string): string {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
-}
-
-function isTextEntryTarget(target: EventTarget | null): boolean {
-  return target instanceof HTMLElement && (target.isContentEditable || target.matches("input, textarea, select"));
 }

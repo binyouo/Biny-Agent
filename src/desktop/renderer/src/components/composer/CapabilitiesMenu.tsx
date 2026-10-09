@@ -76,9 +76,6 @@ const SOURCE_GROUPS: Record<Exclude<DesktopToolCatalogEntry["source"], "mcp">, {
   subagent: { label: "子 Agent", icon: "person" }
 };
 
-/** MCP 工具描述以 `[MCP 服务器名]` 开头；用它把工具归回所属服务器。 */
-const MCP_DESCRIPTION_PREFIX = /^\[MCP ([^\]]+)\]\s*/;
-
 interface ToolGroup {
   key: string;
   label: string;
@@ -275,18 +272,17 @@ export function CapabilitiesMenu({ anchorRef, onOpenMcpSettings, onRefreshCatalo
                       {mcpServers.map((server) => {
                         const checked = mcpServerSelection.checked.has(server.name);
                         const connecting = server.state === "connecting" || reconnecting === server.name;
+                        const serverTools = tools.filter((tool) => tool.source === "mcp" && tool.namespace?.name === server.name).map((tool) => tool.name);
                         return (
                           <div className="capabilities-mcp-row" data-state={server.state} key={server.name}>
-                            <button disabled={!server.toolNames.length || server.state !== "connected"} aria-checked={checked} aria-label={`${checked ? "停用" : "启用"} ${server.name}`} className="capability-check" onClick={() => {
-                              const serverTools = tools.filter((tool) => tool.source === "mcp" && mcpServerOf(tool) === server.name).map((tool) => tool.name);
-                              if (serverTools.length === 0) return;
+                            <button disabled={!serverTools.length} title={serverTools.length ? undefined : "该服务器未提供工具"} aria-checked={checked} aria-label={`${checked ? "停用" : "启用"} ${server.name}`} className="capability-check" onClick={() => {
                               onChange({ ...selection, tools: applyCapabilityNames(value, serverTools, allToolNames, !checked) });
                             }} role="switch" type="button"><Icon name="check" size={12} /></button>
                             {connecting ? <span aria-label="连接中" role="status" className="capabilities-spinner" /> : <span aria-label={server.state === "connected" ? "已连接" : "未连接"} role="img" className={`capabilities-mcp-state is-${server.state}`} />}
                             <span className="capabilities-mcp-name" title={server.description ?? server.name}>{server.name}</span>
                             {!connecting && server.state === "disconnected" ? <span className="capabilities-mcp-badge is-error">未连接</span> : null}
-                            {!connecting && server.state === "not-started" ? <span className="capabilities-mcp-badge">未启动</span> : null}
-                            {server.state !== "connected" ? <button aria-label={`重新连接 ${server.name}`} className="capabilities-mcp-action" disabled={Boolean(reconnecting) || server.state === "connecting"} onClick={() => void reconnectMcp(server.name)} type="button"><Icon name="refresh" size={13} /></button> : null}
+                            {!connecting && server.state === "not-started" ? <span className="capabilities-mcp-badge">待连接</span> : null}
+                            {server.state !== "connected" ? <button aria-label={`${server.state === "not-started" ? "连接" : "重新连接"} ${server.name}`} title={server.state === "not-started" ? "连接" : "重新连接"} className="capabilities-mcp-action" disabled={Boolean(reconnecting) || server.state === "connecting"} onClick={() => void reconnectMcp(server.name)} type="button"><Icon name={server.state === "not-started" ? "plug" : "refresh"} size={13} /></button> : null}
                             {connecting ? <span className="capabilities-mcp-badge">连接中</span> : null}
                             {!connecting && server.lastError ? <p className="capabilities-mcp-error">{server.lastError}</p> : null}
                           </div>
@@ -419,7 +415,7 @@ function mcpServerSelectionState(value: CapabilitySelectionValue, tools: Desktop
   const checked = new Set<string>();
   if (!servers) return { checked, selected: 0 };
   for (const server of servers) {
-    const serverTools = tools.filter((tool) => tool.source === "mcp" && mcpServerOf(tool) === server.name).map((tool) => tool.name);
+    const serverTools = tools.filter((tool) => tool.source === "mcp" && tool.namespace?.name === server.name).map((tool) => tool.name);
     if (serverTools.length === 0) continue;
     if (groupSelectionState(value, serverTools) === "all") checked.add(server.name);
   }
@@ -447,11 +443,6 @@ function groupSelectionState(value: CapabilitySelectionValue, names: string[]): 
 function explicitNames(value: CapabilitySelectionValue): string[] | undefined {
   if (value === "auto" || value === "all") return undefined;
   return value === "none" ? [] : value;
-}
-
-function mcpServerOf(tool: DesktopToolCatalogEntry): string | undefined {
-  if (tool.source !== "mcp") return undefined;
-  return MCP_DESCRIPTION_PREFIX.exec(tool.description)?.[1];
 }
 
 /** 当前显式选择的总项数；auto / all 不计入（触发 pill 与页签计数只反映逐项选择）。 */

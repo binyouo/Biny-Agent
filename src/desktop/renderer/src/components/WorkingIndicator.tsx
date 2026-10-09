@@ -41,6 +41,7 @@ export function WorkingIndicator({ waiting = false }: { waiting?: boolean }): Re
   return (
     <span
       aria-label={waiting ? "等待确认" : "运行中"}
+      role="img"
       className={`biny-working-indicator${waiting ? " is-waiting" : ""}`}
     >
       {glyph}

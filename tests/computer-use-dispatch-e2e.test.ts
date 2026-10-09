@@ -8,12 +8,15 @@ import { test, type TestContext } from "node:test";
 import { configSchema, defaultConfig } from "../src/config/schema.js";
 import { createFileConfigStore, updateConfig } from "../src/config/store.js";
 import { NativeProcessDriver } from "../src/computer/nativeDriver.js";
-import { createComputerUseTools, requestComputer } from "../src/tools/computerUse.js";
+import { requestComputer } from "../src/tools/computerUse.js";
 import { ToolExecutionCoordinator } from "../src/agent/toolExecutionCoordinator.js";
 import { PermissionManager } from "../src/permission/PermissionManager.js";
 import { SessionRecorder } from "../src/session/recorder.js";
 import { ensureAgentDirs } from "../src/session/store.js";
 import { ToolRegistry } from "../src/tools/registry.js";
+import { McpToolHost } from "../src/extensions/mcp.js";
+import { attachDesktopComputerMcp } from "../src/computer/desktopMcp.js";
+import { ToolOutcomeUnknownError } from "../src/tools/types.js";
 
 // 只替换系统窗口边界；工具、Desktop 控制面、审批、driver 和进程通信均用真实装配。
 const previewWindows: WindowFixture[] = [];
@@ -47,7 +50,7 @@ const target = { pid: 42, windowId: "900" };
 async function fixture(t: TestContext, apps: Record<string, unknown>[] = [
   { pid: 42, name: "Fixture", bundleId: "test.fixture", running: true },
   { name: "Recently Used", bundleId: "test.recent", running: false, lastUsed: "2026-10-07T00:00:00Z" }
-], options: { actionEffect?: "confirmed" | "unverified"; emptyTree?: boolean } = {}) {
+], options: { actionEffect?: "confirmed" | "unverified"; emptyTree?: boolean; holdActionReply?: boolean } = {}) {
   const firstWindow = previewWindows.length;
   const directory = await mkdtemp(path.join(os.tmpdir(), "biny-dispatch-"));
   const hooks = registerHooks({ load(url, context, next) {
@@ -59,9 +62,9 @@ async function fixture(t: TestContext, apps: Record<string, unknown>[] = [
   const { DesktopBrowserService } = await import("../src/desktop/electron/main/DesktopBrowserService.js");
   const { createComputerUseService } = await import("../src/desktop/electron/main/computerUseService.js");
   const browser = new DesktopBrowserService(async () => path.join(directory, "cookies.json"));
-  const resources: { service?: Awaited<ReturnType<typeof createComputerUseService>>; driver?: NativeProcessDriver } = {};
+  const resources: { service?: Awaited<ReturnType<typeof createComputerUseService>>; driver?: NativeProcessDriver; mcp?: McpToolHost } = {};
   t.after(async () => {
-    try { await resources.service?.close(); await browser.dispose(); }
+    try { await resources.mcp?.close(); await resources.service?.close(); await browser.dispose(); }
     finally { hooks.deregister(); await rm(directory, { recursive: true, force: true }); }
   });
   const binary = path.join(directory, "native-fixture.cjs");
@@ -99,6 +102,7 @@ const server = net.createServer(socket => {
           socket.write(JSON.stringify({ id, ok: false, error: { message: 'element_ref_not_observed' } }) + '\\n'); continue;
         }
         fs.writeFileSync(path.join(directory, 'action.json'), JSON.stringify({ cmd, args }));
+        if (${JSON.stringify(options.holdActionReply ?? false)}) continue;
         data = { effect: ${JSON.stringify(options.actionEffect ?? "confirmed")} };
       }
       socket.write(JSON.stringify({ id, ok: true, data }) + '\\n');
@@ -116,7 +120,10 @@ server.listen(process.argv[process.argv.indexOf('--socket') + 1], () => console.
   });
   resources.service = service;
   const endpoint = await browser.startAutomationServer(path.join(directory, "desktop.sock"));
-  const tools = createComputerUseTools(endpoint);
+  const mcp = new McpToolHost();
+  resources.mcp = mcp;
+  await attachDesktopComputerMcp(mcp, endpoint);
+  const tools = mcp.createTools();
   const images: { mimeType: string; data: string }[] = [];
   const invoke = async (name: string, args: Record<string, unknown>) => {
     const tool = tools.find(entry => entry.name === name)!;
@@ -125,7 +132,7 @@ server.listen(process.argv[process.argv.indexOf('--socket') + 1], () => console.
   };
   const entries = async (): Promise<JournalEntry[]> => (await readFile(journal, "utf8")).trim().split("\n").filter(Boolean).map(line => JSON.parse(line));
   const externalActivity = async () => await requestComputer(endpoint, "external_activity", target);
-  return { directory, endpoint, store, service, driver: resources.driver!, invoke, entries, externalActivity, images, windows: () => previewWindows.slice(firstWindow) };
+  return { directory, endpoint, store, service, driver: resources.driver!, mcp, invoke, entries, externalActivity, images, browserClose: () => browser.dispose(), windows: () => previewWindows.slice(firstWindow) };
 }
 
 test("Desktop supervision opens a non-topmost window confined to its current workspace", { timeout: 8_000 }, async t => {
@@ -139,6 +146,52 @@ test("Desktop supervision opens a non-topmost window confined to its current wor
   assert.deepEqual(windows[0]!.workspaceChanges, []);
   assert.equal(windows[0]!.options.show, false);
   assert.equal(windows[0]!.options.focusable, true);
+});
+
+test("MCP session metadata preserves Desktop ownership and closing releases the observed window", { timeout: 8_000 }, async t => {
+  const f = await fixture(t);
+  await f.invoke("ComputerObserve", target);
+  assert.equal(f.service.controller.status().owner, "fixture-session");
+  const list = f.mcp.createTools().find(tool => tool.name === "ComputerList")!;
+  const prepared = await list.resolveExecution({});
+  await assert.rejects(prepared.execute({ toolCallId: "other", operationId: "other", sessionId: "another-session" }), /computer_owner_conflict/);
+  await assert.rejects(f.mcp.callServerTool("computer-use", "ComputerList", {}, undefined, true), /invalid_type|Required/);
+  await f.mcp.close();
+  assert.equal(f.service.controller.status().owner, undefined, "an MCP disconnect must not leave its session owning the Desktop controller");
+  await assert.rejects(requestComputer(f.endpoint, "action", { ...target, session: "fixture-session", action: "click", captureId: "closed-capture", x: 1, y: 2 }, undefined, true), /capture_target_mismatch/);
+});
+
+test("cancelling an MCP action after native dispatch keeps its effect unknown and never replays it", { timeout: 8_000 }, async t => {
+  const f = await fixture(t, undefined, { holdActionReply: true });
+  const observed = await f.invoke("ComputerObserve", target);
+  const action = f.mcp.createTools().find(tool => tool.name === "ComputerAction")!;
+  const execution = await action.resolveExecution({ ...target, action: "click", captureId: observed.capture_id, x: 1, y: 2 });
+  const cancelled = new AbortController();
+  const result = execution.execute({ toolCallId: "cancelled-input", operationId: "cancelled-input", sessionId: "fixture-session", signal: cancelled.signal });
+  const rejection = assert.rejects(result, error => error instanceof ToolOutcomeUnknownError && error.reason === "cancelled");
+  const deadline = Date.now() + 2_000;
+  while (!(await f.entries()).some(entry => entry.cmd === "click")) {
+    assert.ok(Date.now() < deadline, "native dispatch did not arrive within the bounded IPC deadline");
+    await new Promise<void>(resolve => setImmediate(resolve));
+  }
+  cancelled.abort();
+  await rejection;
+  await f.mcp.close();
+  assert.equal((await f.entries()).filter(entry => entry.cmd === "click").length, 1);
+  assert.equal(f.service.controller.status().owner, undefined);
+});
+
+test("failed MCP ownership cleanup remains visible and cannot silently restore Computer tools", { timeout: 8_000 }, async t => {
+  const f = await fixture(t);
+  await f.invoke("ComputerObserve", target);
+  await f.browserClose();
+  await assert.rejects(f.mcp.detachLocalServer("computer-use"), /ownership release could not be confirmed/);
+  const status = f.mcp.listServers().find(server => server.name === "computer-use");
+  assert.ok(status, "existing successful disconnect coverage misses cleanup failure diagnostics");
+  assert.equal(status.connected, false);
+  assert.equal(status.enabled, false);
+  assert.match(status.lastError ?? "", /ownership release could not be confirmed/);
+  assert.deepEqual(f.mcp.createTools(), []);
 });
 
 test("unverified input returns its fresh image without claiming success or replaying the action", { timeout: 8_000 }, async t => {
@@ -157,7 +210,7 @@ test("unverified input returns its fresh image without claiming success or repla
   assert.equal((await f.entries()).filter(entry => entry.cmd === "click").length, 1);
 });
 
-test("Agent model messages retain unverified ComputerAction observations and persist the failure", { timeout: 8_000 }, async t => {
+test("Agent retains unverified observations and records unknown effects instead of failed input", { timeout: 8_000 }, async t => {
   const f = await fixture(t, undefined, { actionEffect: "unverified" });
   await ensureAgentDirs(f.directory);
   const recorder = new SessionRecorder(f.directory, "fixture-session");
@@ -166,14 +219,14 @@ test("Agent model messages retain unverified ComputerAction observations and per
   config.permission.mode = "full-access";
   config.permission.denyPaths = [];
   const registry = new ToolRegistry();
-  for (const tool of createComputerUseTools(f.endpoint)) registry.register(tool, "builtin");
+  for (const tool of f.mcp.createTools()) registry.registerMcpTool(tool);
   const coordinator = new ToolExecutionCoordinator({ workspaceRoot: f.directory, config, recorder, toolRegistry: registry },
     new PermissionManager(config.permission), () => undefined, () => ({}));
   const action = coordinator.createAgentTools().find(tool => tool.name === "ComputerAction")!;
   const observed = await f.invoke("ComputerObserve", target);
   const result = await action.execute("model-action", { ...target, action: "click", x: 1, y: 2, captureId: observed.capture_id });
   assert.equal(result.isError, true);
-  assert.equal(result.content.filter(part => part.type === "image").length, 1, "direct callbacks did not cover the coordinator dropping failure images before the model sees them");
+  assert.equal(result.content.filter(part => part.type === "image").length, 1, JSON.stringify(result.details));
   assert.match(JSON.stringify(result.details), /action_unverified/);
   const stale = await action.execute("model-stale", { ...target, action: "click", x: 1, y: 2, captureId: observed.capture_id });
   assert.equal(stale.isError, true);
@@ -181,6 +234,8 @@ test("Agent model messages retain unverified ComputerAction observations and per
   await recorder.close();
   const events = (await readFile(recorder.filePath, "utf8")).trim().split("\n").map(line => JSON.parse(line));
   assert.ok(events.some(event => event.type === "tool_result" && JSON.stringify(event).includes("action_unverified")));
+  const actionResult = events.find(event => event.type === "tool_result" && event.toolCallId === "model-action");
+  assert.equal(actionResult?.executionStatus, "unknown", "dispatch without effect confirmation must not be recorded as an action that failed to run");
   assert.equal(JSON.stringify(events).includes("/9j/2Q=="), false, "retaining model evidence must not persist screenshot bytes in the session ledger");
 });
 

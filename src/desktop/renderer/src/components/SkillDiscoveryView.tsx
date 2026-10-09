@@ -136,6 +136,7 @@ export function SkillDiscoveryView({ onBack, onError, onInstalled }: {
 
   const removeRepository = useCallback(async (next: DesktopSkillRepository): Promise<void> => {
     try {
+      if (!window.confirm(`移除仓库 ${next.owner}/${next.name}？\n\n它提供的技能将从列表中消失。`)) return;
       const repositories = await window.biny.removeSkillRepository(next.owner, next.name);
       setSnapshot((current) => ({ ...current, repositories, skills: current.skills.filter((skill) => skill.repoOwner !== next.owner || skill.repoName !== next.name) }));
     } catch (error) {
@@ -304,13 +305,13 @@ const RepositoryManager = memo(function RepositoryManager({ repositories, onAdd,
 
   return (
     <div className="biny-skill-dialog-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
-      <section aria-label="仓库管理" className="biny-skill-repository-dialog" role="dialog">
+      <section aria-label="仓库管理" aria-modal="true" className="biny-skill-repository-dialog" onKeyDown={(event) => { if (event.key === "Escape" && !event.nativeEvent.isComposing) { event.stopPropagation(); onClose(); } }} role="dialog">
         <div className="biny-skill-dialog-heading"><div><h2>仓库管理</h2><p>添加 GitHub 仓库，发现其中的 SKILL.md。</p></div><button aria-label="关闭仓库管理" onClick={onClose} type="button"><Icon name="close" size={18} /></button></div>
-        <div className="biny-skill-repository-form">
-          <input aria-label="GitHub 仓库" onChange={(event) => setUrl(event.target.value)} placeholder="owner/repository 或 GitHub URL" value={url} />
+        <form className="biny-skill-repository-form" onSubmit={(event) => { event.preventDefault(); submit(); }}>
+          <input aria-label="GitHub 仓库" autoFocus onChange={(event) => setUrl(event.target.value)} placeholder="owner/repository 或 GitHub URL" value={url} />
           <input aria-label="仓库分支" onChange={(event) => setBranch(event.target.value)} placeholder="分支" value={branch} />
-          <button onClick={submit} type="button"><Icon name="add" size={15} />添加仓库</button>
-        </div>
+          <button type="submit"><Icon name="add" size={15} />添加仓库</button>
+        </form>
         {error ? <div className="biny-skill-dialog-error" role="alert">{error}</div> : null}
         <div className="biny-skill-repository-list">
           {repositories.map((repository) => <div className="biny-skill-repository-row" key={`${repository.owner}/${repository.name}`}><div><strong>{repository.owner}/{repository.name}</strong><span>{repository.branch}</span></div><button aria-label={`删除 ${repository.owner}/${repository.name}`} onClick={() => onRemove(repository)} type="button"><Icon name="trash" size={15} /></button></div>)}

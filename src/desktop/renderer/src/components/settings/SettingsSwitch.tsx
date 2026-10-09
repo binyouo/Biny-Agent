@@ -1,9 +1,4 @@
-/**
- * 设置内统一的布尔开关行：左侧标题与说明、右侧滑动开关。
- *
- * 开启态与主要操作共用黑白配色，未开启时使用中性灰轨道。
- */
-import React from "react";
+import React, { useId } from "react";
 
 interface SettingsSwitchProps {
   checked: boolean;
@@ -15,18 +10,21 @@ interface SettingsSwitchProps {
 }
 
 export function SettingsSwitch({ checked, detail, disabled = false, label, onChange }: SettingsSwitchProps): React.JSX.Element {
+  const descriptionId = useId();
   return (
-    <button
-      aria-checked={checked}
-      aria-label={label}
-      className={`settings-switch-row${checked ? " is-checked" : ""}`}
-      disabled={disabled}
-      onClick={() => onChange(!checked)}
-      role="switch"
-      type="button"
-    >
-      <span className="settings-switch-copy"><strong>{label}</strong>{detail ? <small>{detail}</small> : null}</span>
-      <span aria-hidden="true" className="settings-switch"><span className="settings-switch-thumb" /></span>
-    </button>
+    <div className="settings-switch-row">
+      <span className="settings-switch-copy"><strong>{label}</strong>{detail ? <small id={descriptionId}>{detail}</small> : null}</span>
+      <input
+        aria-checked={checked}
+        aria-describedby={detail ? descriptionId : undefined}
+        aria-label={label}
+        checked={checked}
+        className="settings-switch"
+        disabled={disabled}
+        onChange={(event) => onChange(event.target.checked)}
+        role="switch"
+        type="checkbox"
+      />
+    </div>
   );
 }

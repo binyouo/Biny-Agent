@@ -756,7 +756,7 @@ function UserMessage({
   time?: string;
 }): React.JSX.Element {
   // 更多菜单走 portal fixed 定位（与助手菜单共用 hook），内联渲染会把消息列表往下挤。
-  const { open: menuOpen, position: menuPosition, anchorRef: moreAnchorRef, menuRef, toggle, close: closeMenu } = useAnchoredMenu({ width: 208, estimatedHeight: 180 });
+  const { open: menuOpen, position: menuPosition, anchorRef: moreAnchorRef, menuRef, toggle, close: closeMenu } = useAnchoredMenu({ width: 248, estimatedHeight: 196, align: "end" });
   // 发送时追加给模型的附件清单不该原样显示，拆出来渲染成附件卡片。
   const message = useMemo(() => splitAttachmentReferences(content), [content]);
   const clock = time ? <MessageClock time={Date.parse(time)} /> : null;
@@ -768,7 +768,7 @@ function UserMessage({
       </div>
       <div className={`user-message-actions${menuOpen ? " is-open" : ""}`} data-time-hover-root>
         {clock}
-        <button aria-label="复制消息" className="user-message-action" onClick={() => copyText(message.text)} title="复制消息" type="button"><Icon name="copy" size={16} /></button>
+        <CopyButton className="user-message-action" label="复制消息" size={16} value={message.text} />
         {onRegenerate ? <button aria-label="重新生成" className="user-message-action" onClick={() => { void onRegenerate(); }} title="重新生成" type="button"><Icon name="refresh" size={16} /></button> : null}
         {onEdit ? <button aria-label="编辑消息" className="user-message-action" onClick={onEdit} title="编辑消息" type="button"><Icon name="edit" size={16} /></button> : null}
         <button aria-expanded={menuOpen} aria-haspopup="menu" aria-label="更多消息操作" className="user-message-action" onClick={toggle} ref={moreAnchorRef} title="更多" type="button"><Icon name="more" size={16} /></button>
@@ -835,7 +835,7 @@ function AssistantActions({ projectId, sessionId, turn, skillDescriptions, skill
   const tone = finishReason ? finishReasonTone(finishReason) : undefined;
   // 更多菜单走 portal fixed 定位；条目数按需增减（用量/结束原因 + 分隔线），高度用于弹出方向判断。
   const menuItemCount = 5 + Number(Boolean(onReference)) + Number(Boolean(onShowReferences)) + (usageRows.length ? 1 : 0) + (finishReason ? 1 : 0) + ((usageRows.length || finishReason) ? 1 : 0);
-  const { open: menuOpen, position: menuPosition, anchorRef: moreButtonRef, menuRef, toggle: toggleMenu, close: closeMenu } = useAnchoredMenu({ width: 288, estimatedHeight: menuItemCount * 32 + 12 });
+  const { open: menuOpen, position: menuPosition, anchorRef: moreButtonRef, menuRef, toggle: toggleMenu, close: closeMenu } = useAnchoredMenu({ width: 248, estimatedHeight: menuItemCount * 28 + 8 });
   const usageItemRef = useRef<HTMLButtonElement>(null);
   const [usagePopover, setUsagePopover] = useState<{ top: number; left: number }>();
   const usageHideTimerRef = useRef<number | undefined>(undefined);
@@ -1115,7 +1115,7 @@ function MessageAttachments({ attachments, projectId }: { attachments: Attachmen
  * 点击锚点/菜单以外、Esc、滚动或缩放窗口时收起。portal 不在组件 DOM 树内，
  * 外部点击判断必须显式比对锚点和菜单两个 ref。
  */
-function useAnchoredMenu({ width, estimatedHeight }: { width: number; estimatedHeight: number }): {
+function useAnchoredMenu({ width, estimatedHeight, align = "start" }: { width: number; estimatedHeight: number; align?: "start" | "end" }): {
   open: boolean;
   position: { direction: "up" | "down"; style: CSSProperties } | undefined;
   anchorRef: React.RefObject<HTMLButtonElement | null>;
@@ -1143,12 +1143,15 @@ function useAnchoredMenu({ width, estimatedHeight }: { width: number; estimatedH
     const gap = 6;
     const spaceBelow = window.innerHeight - anchor.bottom - gap;
     const direction = spaceBelow >= estimatedHeight || spaceBelow >= anchor.top - gap ? "down" : "up";
-    const left = Math.max(8, Math.min(anchor.left, window.innerWidth - width - 8));
+    const menuWidth = Math.min(width, window.innerWidth - 16);
+    const left = Math.max(8, Math.min(align === "end" ? anchor.right - menuWidth : anchor.left, window.innerWidth - menuWidth - 8));
+    const maxHeight = Math.max(0, (direction === "down" ? spaceBelow : anchor.top - gap) - 8);
+    const style: CSSProperties = { left, width: menuWidth, maxHeight, transformOrigin: `${align === "end" ? "right" : "left"} ${direction === "down" ? "top" : "bottom"}` };
     setPosition(direction === "down"
-      ? { direction, style: { left, top: anchor.bottom + gap } }
-      : { direction, style: { left, bottom: window.innerHeight - anchor.top + gap } });
+      ? { direction, style: { ...style, top: anchor.bottom + gap } }
+      : { direction, style: { ...style, bottom: window.innerHeight - anchor.top + gap } });
     setOpen(true);
-  }, [open, estimatedHeight, width]);
+  }, [open, estimatedHeight, width, align]);
 
   useEffect(() => {
     if (!open) return;

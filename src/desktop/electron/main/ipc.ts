@@ -342,6 +342,8 @@ export function registerDesktopIpc(context: IpcContext): void {
       sessionId === undefined ? undefined : idSchema.parse(sessionId),
       activeViewSchema.parse(activeView)
     );
+    const workspace = await context.agents.prepareWorkspace(idSchema.parse(projectId));
+    if (workspace.runtimeError) throw new Error(workspace.runtimeError.message);
   });
 
   handle(desktopIpc.setActiveView, async (_event, activeView: unknown) => {
