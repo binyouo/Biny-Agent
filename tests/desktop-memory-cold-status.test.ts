@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { DesktopAgentManager } from "../src/desktop/electron/main/DesktopAgentManager.js";
@@ -12,6 +12,141 @@ import { defaultConfig } from "../src/config/schema.js";
 import { MemoryStorage } from "../src/agent/context/memoryStorage.js";
 import { MemoryVectorIndex } from "../src/agent/context/MemoryVectorIndex.js";
 import { LocalEmbeddingManager } from "../src/llm/embedding/index.js";
+import { readSessionCatalogRecord, sessionCatalogRecordRevision } from "../src/session/catalog.js";
+import { SessionRecorder } from "../src/session/recorder.js";
+import { AgentSession } from "../src/agent/AgentSession.js";
+import type { AgentModel } from "../src/agent/core/types.js";
+import { PermissionManager } from "../src/permission/PermissionManager.js";
+import { ToolRegistry } from "../src/tools/registry.js";
+import { CrystalStorage } from "../src/agent/context/crystalStorage.js";
+import { ensureAgentDirs } from "../src/session/store.js";
+
+test("cold chat memory toggle persists without model credentials or Runtime; status-only reads did not cover writes", { timeout: 15_000 }, async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "biny-cold-chat-memory-"));
+  const previous = process.env.BINY_AGENT_DIR;
+  process.env.BINY_AGENT_DIR = root;
+  let agents: DesktopAgentManager | undefined;
+  let conversation: AgentSession | undefined;
+  try {
+    const userData = new DesktopUserDataStore(root); await userData.initialize();
+    const state = new DesktopStateStore(path.join(root, "desktop.json")); await state.load();
+    const configStore = createFileConfigStore(root, { globalDir: root });
+    configStore.supportsDetachedRuntimeHost = false;
+    const config = structuredClone(defaultConfig);
+    config.providers = { isolated: { type: "openai", apiKeyEnv: "BINY_MEMORY_TOGGLE_UNCONFIGURED_KEY" } };
+    config.models = { isolated: { provider: "isolated", model: "isolated" } };
+    config.defaultModel = "isolated";
+    config.permission.mode = "full-access";
+    await configStore.save(config);
+    const initialConfig = await configStore.load();
+    const projects = new DesktopProjectService(state, userData, configStore);
+    const project = await projects.createProject(root);
+    const dataRoot = await projects.dataRoot(project);
+    const recorder = new SessionRecorder(dataRoot, "cold-chat-memory");
+    recorder.record({ type: "user_message", content: "Keep this conversation intact" });
+    await recorder.close();
+    const transcript = await readFile(recorder.filePath, "utf8");
+    agents = new DesktopAgentManager(state, projects, configStore, () => undefined);
+    const document = await agents.openSession(project.id, recorder.sessionId);
+    const requests: string[] = [];
+    const model: AgentModel = {
+      provider: "test", modelId: "test",
+      async stream(context) {
+        requests.push(context.systemPrompt ?? "");
+        return (async function* () {
+          yield { type: "text-delta" as const, text: "Done" };
+          yield { type: "finish" as const, reason: "stop" as const };
+        })();
+      }
+    };
+    conversation = new AgentSession({
+      workspaceRoot: project.path, persistenceRoot: dataRoot, config: initialConfig, configStore, model,
+      recorder: new SessionRecorder(dataRoot, recorder.sessionId), toolRegistry: new ToolRegistry(),
+      permissionManager: new PermissionManager(initialConfig.permission)
+    });
+    await conversation.initialize();
+    assert.equal((await conversation.getPersonalizationState()).resolved.useMemories, true);
+    const disabled = { useMemories: false, contributeMemories: false };
+    const saved = await agents.saveChatPersonalization(project.id, recorder.sessionId, disabled, document.session.metadataRevision);
+    const record = await readSessionCatalogRecord(dataRoot, recorder.sessionId);
+    assert.ok(record);
+    assert.deepEqual(record.personalization, disabled);
+    assert.deepEqual(saved.sessions.find(session => session.id === recorder.sessionId)?.personalization, disabled);
+    assert.equal(saved.runtime, undefined);
+    assert.equal(saved.permissionMode, "full-access");
+    assert.equal(await readFile(recorder.filePath, "utf8"), transcript);
+    assert.deepEqual(await configStore.load(), initialConfig);
+    await projects.updateSessionMetadata(project, recorder.sessionId, { title: "Changed elsewhere" });
+    await assert.rejects(agents.saveChatPersonalization(project.id, recorder.sessionId,
+      { useMemories: true, contributeMemories: true }, sessionCatalogRecordRevision(record)), /Session catalog revision conflict/u);
+    const afterConflict = await readSessionCatalogRecord(dataRoot, recorder.sessionId);
+    assert.equal(afterConflict?.title, "Changed elsewhere");
+    assert.deepEqual(afterConflict?.personalization, disabled);
+    const stages: string[] = [];
+    for await (const event of conversation.prompt("Reply without retrieving or contributing memories")) {
+      if (event.type === "preparation.updated") stages.push(event.stage);
+    }
+    assert.equal((await conversation.contextStatus()).memoryEnabled, false);
+    assert.ok(!stages.includes("memory"));
+    assert.equal((await conversation.getPersonalizationState()).resolved.contributeMemories, false);
+    await conversation.close();
+    conversation = undefined;
+    assert.equal(requests.length, 1, "a disabled conversation must not make extraction or query-rewrite model requests, including queued work");
+  } finally {
+    await conversation?.close();
+    await agents?.closeAll();
+    if (previous === undefined) delete process.env.BINY_AGENT_DIR; else process.env.BINY_AGENT_DIR = previous;
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("re-enabling memory contributes only opted-in turns; a disabled-only turn did not cover later history backfill", { timeout: 15_000 }, async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "biny-memory-opt-in-"));
+  const previous = process.env.BINY_AGENT_DIR;
+  process.env.BINY_AGENT_DIR = root;
+  let conversation: AgentSession | undefined;
+  const storage = new CrystalStorage({ agentDir: root });
+  try {
+    await ensureAgentDirs(root);
+    const config = structuredClone(defaultConfig);
+    const extracted: string[] = [];
+    const model: AgentModel = {
+      provider: "test", modelId: "test",
+      async stream(context) {
+        const extracting = context.systemPrompt?.startsWith("你是一个称呼抽取器") === true;
+        const content = context.messages.at(-1)?.content;
+        const input = typeof content === "string" ? content : content?.filter(part => part.type === "text").map(part => part.text).join("") ?? "";
+        if (extracting) extracted.push(input);
+        return (async function* () {
+          yield { type: "text-delta" as const, text: extracting ? JSON.stringify([input]) : "Done" };
+          yield { type: "finish" as const, reason: "stop" as const };
+        })();
+      }
+    };
+    conversation = new AgentSession({
+      workspaceRoot: root, config, model, recorder: new SessionRecorder(root, "memory-opt-in"),
+      toolRegistry: new ToolRegistry(), permissionManager: new PermissionManager(config.permission)
+    });
+    await conversation.initialize();
+    await conversation.updateChatPersonalization({ useMemories: false, contributeMemories: false },
+      (await conversation.getPersonalizationState()).catalogRevision);
+    assert.equal((await conversation.runTask("PrivateTopic")).status, "completed");
+    await conversation.updateChatPersonalization({ contributeMemories: true },
+      (await conversation.getPersonalizationState()).catalogRevision);
+    assert.equal((await conversation.runTask("PublicTopicOne")).status, "completed");
+    assert.equal((await conversation.runTask("PublicTopicTwo")).status, "completed");
+    await conversation.close();
+    conversation = undefined;
+    assert.deepEqual(extracted.sort(), ["PublicTopicOne", "PublicTopicTwo"]);
+    await storage.initialize();
+    assert.deepEqual(storage.listTerms().map(term => term.term).sort(), ["publictopicone", "publictopictwo"]);
+  } finally {
+    await conversation?.close();
+    storage.close();
+    if (previous === undefined) delete process.env.BINY_AGENT_DIR; else process.env.BINY_AGENT_DIR = previous;
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 for (const query of ["index", "sleep"] as const) test(`cold memory ${query} reads persisted state without launching a runtime`, { timeout: 15_000 }, async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "biny-cold-memory-"));

@@ -1595,14 +1595,9 @@ export class DesktopAgentManager {
   ): Promise<DesktopWorkspaceSnapshot> {
     this.assertNoRunningTasks("任务运行期间不能修改当前聊天的个性化设置。");
     const revision = (await this.resolvePendingSessionRead(projectId, sessionId, expectedRevision)) ?? expectedRevision;
-    const managed = await this.runtimeForSession(projectId, sessionId, "任务运行期间不能修改当前聊天的个性化设置。");
     this.assertNoRunningTasks("任务运行期间不能修改当前聊天的个性化设置。");
-    if (managed.commands) {
-      await managed.commands.agent.updateChatPersonalization(input, revision);
-    } else {
-      await requireRemoteRuntime(managed.runtime).updateChatPersonalization(input, revision, sessionId);
-    }
-    return await this.workspaceSnapshot(projectId);
+    await this.projects.updateSessionMetadata(this.projects.requireProject(projectId), sessionId, { personalization: input }, revision);
+    return await this.workspaceSnapshot(projectId, false);
   }
 
   /** 单一记忆库条目与 revision；记忆是扁平全库视图。 */
@@ -3146,18 +3141,6 @@ export class DesktopAgentManager {
       : await requireRemoteRuntime(managed.runtime).updateGlobalPersonalization(update, expectedRevision);
     this.scheduleIdleManagedRuntimeRebuild();
     return state;
-  }
-
-  private async runtimeForSession(projectId: string, sessionId: string, busyMessage: string): Promise<ManagedRuntime> {
-    const managed = await this.ensureRuntime(projectId);
-    if (managed.runtime instanceof RuntimeHostClient) {
-      await managed.runtime.focusSession(sessionId);
-      return managed;
-    }
-    const snapshot = managed.runtime.getSnapshot();
-    if (runtimeIsBusy(snapshot)) throw new Error(busyMessage);
-    if (snapshot.info.sessionId !== sessionId) await managed.runtime.resumeSession(sessionId);
-    return managed;
   }
 
   private async runtimeForGlobalWrite(projectId: string, busyMessage: string): Promise<ManagedRuntime> {
