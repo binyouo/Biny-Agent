@@ -42,11 +42,11 @@ function Fixture(): React.JSX.Element {
   const context = {
     draft: { memory }, snapshot: { memory: policy }, dirtyCount: 0, setMemory
   } as unknown as SettingsDraftContextValue;
-  return <div className="memory-fixture desktop-settings-dialog">
+  return <dialog open className="memory-fixture desktop-settings-dialog">
     <div className="settings-modal"><div className="settings-scroll">
       <SettingsDraftContext.Provider value={context}><SettingsMemory {...props} /></SettingsDraftContext.Provider>
     </div></div>
-  </div>;
+  </dialog>;
 }
 
 createRoot(document.getElementById("root")!).render(<Fixture />);
