@@ -224,7 +224,7 @@ function CommandLog({ command, error, status, running }: { command: TimelineComm
   return (
     <div className="chat-command">
       {command.command ? <div className="chat-command-input">
-        <pre><span aria-hidden="true">$ </span>{command.command}</pre>
+        <pre aria-label="执行命令" tabIndex={0}><span aria-hidden="true">$ </span>{command.command}</pre>
         <CopyButton label="复制命令" value={command.command} />
       </div> : null}
       {output ? <div className="chat-command-result">

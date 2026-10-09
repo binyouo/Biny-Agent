@@ -631,6 +631,7 @@ button.chat-think-chip:focus-visible {
 
 .chat-tool-row-detail { min-width: 0; padding: 2px 0 6px; }
 .chat-tool-row:focus-visible,
+.chat-command-input pre:focus-visible,
 .chat-command-result pre:focus-visible {
   outline: 2px solid var(--biny-control-active);
   outline-offset: -2px;
@@ -939,6 +940,7 @@ button.chat-think-chip:focus-visible {
   border-top: 1px solid color-mix(in srgb, var(--biny-border) 50%, transparent);
   color: var(--biny-text-tertiary);
 }
+.chat-command-input pre,
 .chat-command-result pre {
   max-height: 288px;
   overflow: auto;
