@@ -15,6 +15,7 @@ import type { TaskMessage } from "../src/runtime/TaskCommunication.js";
 import { workerSessionId } from "../src/runtime/WorkerSession.js";
 import { readSessionEvents } from "../src/session/events.js";
 import { sessionFilePath } from "../src/session/store.js";
+import { refreshSessionIndex } from "../src/session/catalog.js";
 
 test("parent tools, Host and CLI coordinate an asynchronous Worker through durable messages and results", { timeout: 25_000 }, async (t) => {
   const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "biny-subagent-communication-e2e-")));
@@ -22,6 +23,8 @@ test("parent tools, Host and CLI coordinate an asynchronous Worker through durab
   // 工作区参数不决定全局配置位置；直接运行也必须隔离配置、Host 和派生 CLI。
   process.env.BINY_AGENT_DIR = path.join(root, "agent");
   t.after(async () => {
+    // catalog 会异步发布派生索引，恢复全局目录前须等完最后一轮刷新。
+    await refreshSessionIndex(root);
     if (previousAgentDir === undefined) delete process.env.BINY_AGENT_DIR;
     else process.env.BINY_AGENT_DIR = previousAgentDir;
     await rm(root, { recursive: true, force: true });
