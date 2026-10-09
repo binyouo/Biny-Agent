@@ -185,6 +185,9 @@ interface ManagedRuntime {
 
 const SETTINGS_CREDENTIAL_TTL_MS = 30 * 60 * 1000;
 
+/** Desktop 预热的 Host 在窗口关闭/切走后最多驻留的宽限；活跃项目由 keepAlive 常驻。 */
+const DESKTOP_HOST_IDLE_GRACE_MS = 10 * 60 * 1000;
+
 type StagedSettingsCredential =
   | {
       kind: "api-key";
@@ -301,12 +304,23 @@ export class DesktopAgentManager {
     this.activeProjectId = projectId;
     try {
       if (previous?.runtime instanceof RuntimeHostClient) await previous.runtime.setKeepAlive(false);
-      const managed = await this.ensureRuntime(projectId);
-      if (managed.runtime instanceof RuntimeHostClient) await managed.runtime.setKeepAlive(this.activeProjectId === projectId);
+      // 后台预热不阻塞首屏；发送等消费操作复用 getRuntime 的同一次初始化。
+      this.prewarmRuntime(projectId, this.getRuntime(projectId, true));
     } catch (error) {
       this.recordRuntimeFailure(projectId, error);
     }
     return await this.workspaceSnapshot(projectId, false);
+  }
+
+  /** 后台预热：就绪后为当前项目建立保活，失败只记录，透出与显式入口共用 runtimeErrors 通道。 */
+  private prewarmRuntime(projectId: string, pending: Promise<ManagedRuntime | undefined>): void {
+    void pending.then(async (managed) => {
+      if (this.closing || !managed) return;
+      if (managed.runtime instanceof RuntimeHostClient) await managed.runtime.setKeepAlive(this.activeProjectId === projectId);
+    }).catch((error: unknown) => {
+      if (this.closing) return;
+      this.recordRuntimeFailure(projectId, error);
+    });
   }
 
   async retryRuntime(projectId: string, sessionId?: string): Promise<DesktopRuntimeRetryResult> {
@@ -651,6 +665,10 @@ export class DesktopAgentManager {
     // 已读标记只影响侧栏状态，不应阻塞会话正文首屏。后续元数据写入会先等待这次
     // 后台更新，并把同一份 revision 传给 catalog CAS，避免用户紧接着置顶/改名时误冲突。
     this.scheduleSessionRead(project, sessionId, document.session.metadataRevision);
+    // 打开历史会话时预热项目 Host；同项目已有实例或正在初始化时复用，不阻塞正文。
+    if (this.residentRuntime(projectId) === undefined && !this.runtimeInitializations.has(projectId)) {
+      this.prewarmRuntime(projectId, this.getRuntime(projectId, true));
+    }
     return {
       ...document,
       session: {
@@ -2962,6 +2980,7 @@ export class DesktopAgentManager {
     if (allowSpawn && supportsDetachedRuntimeHost) {
       const connected = await connectOrSpawnRuntimeHostWithOwnership(persistenceRoot, {
         lifecycleMode: "ephemeral",
+        idleGraceMs: DESKTOP_HOST_IDLE_GRACE_MS,
         workspaceRoot: project.path,
         configDir,
         attachmentRoot: this.projects.attachmentsRoot(project),

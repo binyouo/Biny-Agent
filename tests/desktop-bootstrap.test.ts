@@ -47,13 +47,18 @@ test("首屏从配置返回实际模型与思考档位；缺少凭据仍可浏�
     assert.equal((await manager.workspaceSnapshot(project.id)).runtime, undefined);
 
     const ready = await manager.prepareWorkspace(project.id);
-    assert.ok(ready.runtime, "首屏为当前项目启动 Host，不等待第一条消息");
+    // 新契约：首屏为当前项目在后台预热 Host，不把首屏冻结在冷启动上；预热完成前
+    // runtime 暂为 undefined，消费入口复用同一次初始化（覆盖见 desktop-runtime-prewarm.test.ts）。
+    assert.equal(ready.runtimeError, undefined);
     assert.equal(ready.pickerModels[0]?.alias, "selected");
     assert.equal(ready.pickerModels[0]?.defaultThinking, "off");
-    assert.equal(ready.runtimeError, undefined);
     assert.equal(ready.models.find((model) => model.alias === "selected")?.contextWindow, 128_000);
     assert.ok(ready.sessions.some((session) => session.id === recorder.sessionId));
     assert.deepEqual(await readSessionEvents(sessionFilePath(dataRoot, recorder.sessionId)), before, "首屏准备不得恢复或改写旧回合");
+    // 等待后台预热就绪后，运行时快照经只读入口可见，且不需要发送消息。
+    const warmed = await manager.retryRuntime(project.id);
+    assert.ok(warmed.workspace.runtime, "首屏预热为当前项目启动 Host，不等待第一条消息");
+    assert.equal(warmed.workspace.runtimeError, undefined);
 
     await manager.closeAll();
     await configStore.save({
@@ -61,11 +66,11 @@ test("首屏从配置返回实际模型与思考档位；缺少凭据仍可浏�
       providers: { local: { type: "openai-compatible", baseUrl: "https://missing-credentials.invalid/v1" } }
     });
     manager = new DesktopAgentManager(state, projects, configStore, () => undefined);
-    const failed = await manager.prepareWorkspace(project.id);
-    assert.equal(failed.runtime, undefined);
-    assert.equal(failed.requiresModelConfiguration, true);
-    assert.ok(failed.runtimeError, "后台启动失败不能隐藏，历史和模型设置仍可读取");
-    assert.ok(failed.sessions.some((session) => session.id === recorder.sessionId));
+    const failed = await manager.retryRuntime(project.id);
+    assert.equal(failed.workspace.runtime, undefined);
+    assert.equal(failed.workspace.requiresModelConfiguration, true);
+    assert.ok(failed.workspace.runtimeError, "后台启动失败不能隐藏，历史和模型设置仍可读取");
+    assert.ok(failed.workspace.sessions.some((session) => session.id === recorder.sessionId));
     assert.deepEqual(await readSessionEvents(sessionFilePath(dataRoot, recorder.sessionId)), before);
   } finally {
     await manager?.closeAll();
