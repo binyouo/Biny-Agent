@@ -6,7 +6,14 @@ import path from "node:path";
 import { mock, test } from "node:test";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { JSONRPCMessage, JSONRPCRequest, Tool } from "@modelcontextprotocol/sdk/types.js";
-import { McpToolHost } from "../src/extensions/mcp.js";
+import { AgentSession } from "../src/agent/AgentSession.js";
+import { PermissionManager } from "../src/permission/PermissionManager.js";
+import { ToolRegistry } from "../src/tools/registry.js";
+import { createToolSearchTool } from "../src/tools/toolSearch.js";
+import type { ModelStreamEvent } from "../src/agent/core/types.js";
+import { SessionRecorder } from "../src/session/recorder.js";
+import { readSessionEvents } from "../src/session/events.js";
+import { McpToolCatalogCache, McpToolHost } from "../src/extensions/mcp.js";
 import { EnvironmentCredentialStore } from "../src/config/credentials.js";
 import { saveConfigFile } from "../src/config/loader.js";
 import { configSchema, defaultConfig } from "../src/config/schema.js";
@@ -26,7 +33,7 @@ type ListResult = { tools: Tool[]; nextCursor?: string } | { error: string };
 // Only the external transport is replaced, including disconnect delivery.
 function fakeServer(holdPrompts = false) {
   const connections: Array<{ transport: StreamableHTTPClientTransport; lists: number; closes: number }> = [];
-  const state = { tools: [definition("first"), definition("second")], results: [] as Array<ListResult | "hold"> };
+  const state = { tools: [definition("first"), definition("second")], calls: [] as string[], results: [] as Array<ListResult | "hold"> };
   const pending: Array<(result: ListResult) => void> = [];
   let finishPrompts: (() => void) | undefined;
   const reply = (transport: StreamableHTTPClientTransport, request: JSONRPCRequest, result: Record<string, unknown>): void => {
@@ -50,6 +57,9 @@ function fakeServer(holdPrompts = false) {
       };
       if (result === "hold") pending.push(finish);
       else finish(result);
+    } else if (message.method === "tools/call") {
+      state.calls.push(String(message.params?.name));
+      reply(this, message, { content: [{ type: "text", text: "Read completed" }] });
     } else if (message.method === "prompts/list") {
       finishPrompts = () => reply(this, message, { prompts: [] });
     } else throw new Error(`Unexpected MCP request: ${message.method}`);
@@ -233,3 +243,79 @@ for (const transition of ["reconnect", "disconnect", "close"] as const) {
     });
   });
 }
+
+// 等待可选列表时仍可刷新工具；缓存必须保存启动结束时的最新目录。
+await test("startup completion caches the latest notified catalog", async () => {
+  const fake = fakeServer(true);
+  const cache = new McpToolCatalogCache();
+  const first = new McpToolHost(cache);
+  const second = new McpToolHost(cache);
+  const config = configSchema.parse({ ...defaultConfig, extensions: { ...defaultConfig.extensions,
+    mcp: { fixture: { url: "https://mcp-notification.invalid/mcp", transportProtocol: "streamable-http" } }
+  } });
+  try {
+    const startup = first.connectConfiguredServers(os.tmpdir(), config);
+    await drainProtocol();
+    fake.state.tools = [definition("replacement")];
+    fake.notify();
+    await drainProtocol();
+    fake.finishPrompts();
+    await startup;
+    await first.close();
+    fake.state.results.push("hold");
+    const next = second.connectConfiguredServers(os.tmpdir(), config);
+    await drainProtocol();
+    assert.deepEqual(second.createTools().map(tool => tool.name), ["mcp_fixture_replacement"]);
+    fake.finishList({ tools: fake.state.tools });
+    await drainProtocol();
+    fake.finishPrompts();
+    await next;
+  } finally {
+    await first.close();
+    await second.close();
+    mock.restoreAll();
+  }
+});
+
+// 根回合会刷新执行目录；仅在旧代理上直接调用无法发现断线后工具已从模型目录消失。
+await test("a new root turn discovers disconnected tools and reconnects only before dispatch", { timeout: 10_000 }, async () => {
+  await withRuntime(async ({ commands, fake }) => {
+    fake.connections[0]!.transport.onclose?.();
+    await drainProtocol();
+    commands.refreshExtensionTools!();
+    assert.ok(commands.listTools().some(tool => tool.name === "mcp_fixture_first"), "a successful catalog remains discoverable while disconnected");
+    assert.equal(commands.mcp.listServers()[0]!.connected, false);
+    assert.equal(fake.connections.length, 1, "refreshing a directory does not reconnect or execute anything");
+    let steps = 0;
+    const registry = new ToolRegistry();
+    for (const tool of commands.mcp.createTools()) registry.registerMcpTool(tool);
+    registry.registerBuiltinTool(createToolSearchTool(() => registry.listEntries()));
+    const agent = new AgentSession({ workspaceRoot: commands.workspaceRoot, config: commands.config, recorder: new SessionRecorder(commands.workspaceRoot),
+      toolRegistry: registry, permissionManager: new PermissionManager(commands.config.permission),
+      model: { provider: "test", modelId: "offline-discovery", supportsTools: true, async stream(context) {
+        steps++;
+        assert.ok(steps <= 3);
+        if (steps === 2) assert.ok(context.tools.some(tool => tool.name === "mcp_fixture_first"));
+        return (async function* (): AsyncGenerator<ModelStreamEvent> {
+          if (steps === 1) yield { type: "tool-call", id: "find-offline", name: "ToolSearch", arguments: { query: "mcp_fixture_first" } };
+          else if (steps === 2) yield { type: "tool-call", id: "read-after-reconnect", name: "mcp_fixture_first", arguments: {} };
+          else yield { type: "text-delta", text: "Done" };
+          yield { type: "finish", reason: steps < 3 ? "tool-calls" : "stop" };
+        })();
+      } }
+    });
+    try {
+      await agent.initialize();
+      const outcome = await agent.runTask("Read the fixture records", {
+        emotionAnalysis: false, capabilitySelection: { tools: ["ToolSearch"], skills: "none" },
+        confirmPermission: async () => ({ approved: true, scope: "once" })
+      });
+      assert.equal(outcome.status, "completed", outcome.error);
+      assert.deepEqual(fake.state.calls, ["first"]);
+      assert.equal(fake.connections.length, 2, "the call reconnects once without replaying the request");
+      const events = await readSessionEvents(agent.getSessionRecorder().filePath);
+      assert.equal(events.filter(event => event.type === "tool_call" && event.tool === "mcp_fixture_first").length, 1);
+      assert.equal(events.filter(event => event.type === "tool_result" && event.tool === "mcp_fixture_first").length, 1);
+    } finally { await agent.close(); }
+  });
+});

@@ -211,3 +211,27 @@ await test("repeated same-turn reconnects keep notification ownership with each 
     mock.restoreAll();
   }
 });
+
+await test("startup catalog uses the startup budget independently of a shorter request timeout", async (t) => {
+  const fake = fakeServer();
+  fake.state.holdLists = true;
+  const host = new McpToolHost();
+  const separate = structuredClone(config);
+  separate.extensions.mcp.fixture!.startupTimeoutMs = 5_000;
+  separate.extensions.mcp.fixture!.timeoutMs = 1_000;
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  try {
+    const starting = host.connectConfiguredServers(process.cwd(), separate);
+    await drainProtocol();
+    assert.equal(fake.connections[0]?.lists, 1);
+    t.mock.timers.tick(1_500);
+    await drainProtocol();
+    fake.finishList();
+    await starting;
+    assert.equal(host.listServers()[0]?.connected, true, "initial catalog retrieval must not inherit the shorter tools/call budget");
+  } finally {
+    await host.close();
+    t.mock.timers.reset();
+    mock.restoreAll();
+  }
+});

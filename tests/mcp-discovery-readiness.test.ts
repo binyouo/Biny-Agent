@@ -218,6 +218,10 @@ try {
     enabled: true, connected: true, connecting: false, toolNames: [], promptNames: [], hasResources: false }));
   assert.deepEqual((await prefixes.waitForMcpDiscovery({ query: "mcp_records_db_list" })).servers.map((entry) => entry.name), ["records_db"]);
   assert.deepEqual((await prefixes.waitForMcpDiscovery({ query: "mcp_alpha_beta_list" })).servers.map((entry) => entry.name), ["alpha++beta", "alpha beta"]);
+  prefixes.mcp.listServers = () => ["records", "records_db"].map(name => ({ name, command: "unused", transport: "stdio",
+    enabled: true, connected: true, connecting: false, toolNames: name === "records_db" ? ["mcp__records_db_list_0123456789abcdef"] : [], promptNames: [], hasResources: false }));
+  assert.deepEqual((await prefixes.waitForMcpDiscovery({ query: "mcp__records_db_list_0123456789abcdef" })).servers.map(entry => entry.name), ["records_db"],
+    "a catalog's exact callable name identifies its server even when the name is hashed");
   await prefixes.close();
 } finally {
   for (const finish of held.values()) finish();

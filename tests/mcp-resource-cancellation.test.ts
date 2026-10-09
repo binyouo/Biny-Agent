@@ -6,6 +6,7 @@ import path from "node:path";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { JSONRPCMessage, JSONRPCRequest } from "@modelcontextprotocol/sdk/types.js";
 import { configSchema, defaultConfig } from "../src/config/schema.js";
+import { createMcpPromptTools } from "../src/extensions/mcpPrompts.js";
 import { createMcpResourceTools, McpToolHost } from "../src/extensions/mcp.js";
 import { ToolExecutionCoordinator } from "../src/agent/toolExecutionCoordinator.js";
 import { PermissionManager } from "../src/permission/PermissionManager.js";
@@ -32,11 +33,14 @@ function fakeServer() {
   const cancellations: Array<string | number> = [];
   const requestOwners: StreamableHTTPClientTransport[] = [];
   const cancellationOwners: StreamableHTTPClientTransport[] = [];
-  const state = { holdResources: true, starts: 0, closes: 0, rejectResources: false, rejectFirstResources: false, afterPage: undefined as (() => void) | undefined };
+  const connections: StreamableHTTPClientTransport[] = [];
+  const initializers: Array<() => void> = [];
+  const reads: string[] = [];
+  const state = { holdInitialize: false, holdResources: true, starts: 0, closes: 0, rejectResources: false, rejectFirstResources: false, afterPage: undefined as (() => void) | undefined };
   const reply = (transport: StreamableHTTPClientTransport, request: JSONRPCRequest, result: Record<string, unknown>): void => {
     transport.onmessage?.({ jsonrpc: "2.0", id: request.id, result });
   };
-  mock.method(StreamableHTTPClientTransport.prototype, "start", async function () { state.starts += 1; });
+  mock.method(StreamableHTTPClientTransport.prototype, "start", async function (this: StreamableHTTPClientTransport) { state.starts += 1; connections.push(this); });
   mock.method(StreamableHTTPClientTransport.prototype, "send", async function (this: StreamableHTTPClientTransport, message: JSONRPCMessage) {
     if (!("method" in message)) return;
     if (!("id" in message)) {
@@ -48,12 +52,24 @@ function fakeServer() {
       }
       return;
     }
-    if (message.method === "initialize") reply(this, message, {
-      protocolVersion: message.params?.protocolVersion, capabilities: { tools: {}, resources: {} },
-      serverInfo: { name: "fixture", version: "1" }
-    });
+    if (message.method === "initialize") {
+      const finish = () => reply(this, message, {
+        protocolVersion: message.params?.protocolVersion, capabilities: { tools: {}, resources: {}, prompts: {} },
+        serverInfo: { name: "fixture", version: "1" }
+      });
+      if (state.holdInitialize) initializers.push(finish); else finish();
+    }
     else if (message.method === "tools/list") reply(this, message, { tools: [] });
-    else if (message.method === "resources/list") {
+    else if (message.method === "resources/read") {
+      reads.push(message.method);
+      reply(this, message, { contents: [{ uri: "fixture://current", text: "Current resource" }] });
+    } else if (message.method === "prompts/get") {
+      reads.push(message.method);
+      reply(this, message, { messages: [] });
+    } else if (message.method === "prompts/list") {
+      reads.push(message.method);
+      reply(this, message, { prompts: [] });
+    } else if (message.method === "resources/list") {
       requests.push(message);
       requestOwners.push(this);
       if (state.rejectResources || state.rejectFirstResources && requests.length === 1) {
@@ -73,7 +89,7 @@ function fakeServer() {
     state.closes += 1;
     this.onclose?.();
   });
-  return { state, requests, requestOwners, cancellations, cancellationOwners, entered: entered.promise, finish: () => { const finish = pending.shift(); assert.ok(finish); finish(); } };
+  return { state, connections, initializers, reads, requests, requestOwners, cancellations, cancellationOwners, entered: entered.promise, finish: () => { const finish = pending.shift(); assert.ok(finish); finish(); } };
 }
 
 const drainProtocol = async (): Promise<void> => { await new Promise<void>((resolve) => setImmediate(resolve)); };
@@ -318,4 +334,56 @@ for (const cancel of [false, true]) {
       mock.restoreAll();
     }
   });
+}
+
+// 已有资源列表取消测试没有覆盖读取与模板在重连阶段的等待，也没有覆盖预先取消。
+for (const name of ["mcp_read_resource", "mcp_list_prompts", "mcp_get_prompt"]) {
+  for (const alreadyCancelled of [false, true]) {
+    await test(`${name} cancels its reconnect wait without cancelling the shared connection (${alreadyCancelled ? "before call" : "while connecting"})`, async () => {
+      const fake = fakeServer();
+      const host = new McpToolHost();
+      let pending: Promise<unknown> | undefined;
+      try {
+        await host.connectConfiguredServers(process.cwd(), config);
+        fake.connections[0]!.onclose?.();
+        fake.state.holdInitialize = true;
+        const tool = [...createMcpResourceTools(host), ...createMcpPromptTools(host)].find(tool => tool.name === name)!;
+        const args = name === "mcp_read_resource" ? { server: "fixture", uri: "fixture://current" }
+          : name === "mcp_get_prompt" ? { server: "fixture", name: "template" } : { server: "fixture" };
+        const execution = await tool.resolveExecution(args);
+        assert.ok(!("isError" in execution));
+        const controller = new AbortController();
+        const reason = new Error("Cancelled resource or prompt");
+        if (alreadyCancelled) controller.abort(reason);
+        let result: unknown;
+        pending = execution.execute({ toolCallId: "cancel-reconnect", operationId: "cancel-reconnect", signal: controller.signal });
+        const settled = pending.then(value => { result = value; }, error => { result = error; });
+        await drainProtocol();
+        if (!alreadyCancelled) {
+          assert.equal(fake.initializers.length, 1);
+          controller.abort(reason);
+          await drainProtocol();
+        }
+        assert.equal(result, reason, "cancelled caller must settle before the shared handshake is released");
+        await settled;
+        if (alreadyCancelled) {
+          assert.equal(fake.state.starts, 1, "an already cancelled request cannot start a reconnect");
+          assert.equal(fake.initializers.length, 0);
+        } else {
+          const surviving = host.readServerResource("fixture", "fixture://current");
+          fake.state.holdInitialize = false;
+          fake.initializers.shift()!();
+          await surviving;
+          assert.equal(fake.state.starts, 2, "a surviving caller shares the single reconnect");
+          assert.equal(host.listServers()[0]!.connected, true);
+          assert.deepEqual(fake.reads, ["prompts/list", "prompts/list", "resources/read"], "only handshake discovery and the surviving read dispatch");
+        }
+      } finally {
+        for (const finish of fake.initializers) finish();
+        await host.close();
+        await pending?.catch(() => undefined);
+        mock.restoreAll();
+      }
+    });
+  }
 }

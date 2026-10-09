@@ -35,6 +35,7 @@ export interface McpDraftForm {
   oauthClientId?: string;
   oauthScopes?: string;
   oauthRedirectPort?: string;
+  startupTimeoutMs: string;
   timeoutMs: string;
   env: FieldRow[];
   headers: FieldRow[];
@@ -53,6 +54,7 @@ export const EMPTY_DRAFT: McpDraftForm = {
   stderr: "ignore",
   url: "",
   remoteProtocol: "streamable-http",
+  startupTimeoutMs: "",
   timeoutMs: "",
   env: [],
   headers: [],
@@ -63,8 +65,10 @@ export const EMPTY_DRAFT: McpDraftForm = {
 export function toProtocolDraft(draft: McpDraftForm): DesktopMcpServerDraft {
   const name = draft.name.trim();
   if (!name) throw new Error("请输入服务器名称。");
+  const startupTimeoutMs = draft.startupTimeoutMs.trim() ? Number(draft.startupTimeoutMs.trim()) : undefined;
+  if (startupTimeoutMs !== undefined && (!Number.isInteger(startupTimeoutMs) || startupTimeoutMs < 1_000 || startupTimeoutMs > 600_000)) throw new Error("启动超时需要是 1000 到 600000 之间的整数。");
   const timeoutMs = draft.timeoutMs.trim() ? Number(draft.timeoutMs.trim()) : undefined;
-  if (timeoutMs !== undefined && (!Number.isInteger(timeoutMs) || timeoutMs < 1_000 || timeoutMs > 600_000)) throw new Error("连接超时需要是 1000 到 600000 之间的整数。");
+  if (timeoutMs !== undefined && (!Number.isInteger(timeoutMs) || timeoutMs < 1_000 || timeoutMs > 600_000)) throw new Error("请求超时需要是 1000 到 600000 之间的整数。");
   const redirectPort = draft.oauthRedirectPort?.trim() ? Number(draft.oauthRedirectPort) : undefined;
   if (redirectPort !== undefined && (!Number.isInteger(redirectPort) || redirectPort < 1024 || redirectPort > 65535)) throw new Error("OAuth 回调端口需要是 1024 到 65535 之间的整数。");
   return {
@@ -82,6 +86,7 @@ export function toProtocolDraft(draft: McpDraftForm): DesktopMcpServerDraft {
       scopes: draft.oauthScopes?.trim() ? draft.oauthScopes.trim().split(/\s+/u) : undefined,
       redirectPort
     } : undefined,
+    startupTimeoutMs,
     timeoutMs,
     env: toFieldMutations(draft.env, draft.savedEnvKeys),
     headers: toFieldMutations(draft.headers, draft.savedHeaderKeys)
@@ -144,6 +149,7 @@ export function parseClipboardConfig(value: unknown): McpDraftForm | undefined {
     oauthClientId: isRecord(config.oauth) && typeof config.oauth.clientId === "string" ? config.oauth.clientId : "",
     oauthScopes: isRecord(config.oauth) && Array.isArray(config.oauth.scopes) ? config.oauth.scopes.filter((scope): scope is string => typeof scope === "string").join(" ") : "",
     oauthRedirectPort: isRecord(config.oauth) && typeof config.oauth.redirectPort === "number" ? String(config.oauth.redirectPort) : "",
+    startupTimeoutMs: typeof config.startupTimeoutMs === "number" ? String(config.startupTimeoutMs) : "",
     timeoutMs: typeof config.timeoutMs === "number" ? String(config.timeoutMs) : "",
     env: recordRows(config.env),
     headers: recordRows(config.headers)
