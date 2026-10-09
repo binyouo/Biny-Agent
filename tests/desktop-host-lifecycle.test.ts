@@ -7,6 +7,7 @@ import { test } from "node:test";
 import { defaultConfig } from "../src/config/schema.js";
 import { createFileConfigStore } from "../src/config/store.js";
 import { DesktopAgentManager } from "../src/desktop/electron/main/DesktopAgentManager.js";
+import { DesktopMcpService } from "../src/desktop/electron/main/DesktopMcpService.js";
 import { DesktopProjectService } from "../src/desktop/electron/main/DesktopProjectService.js";
 import { DesktopStateStore } from "../src/desktop/electron/main/DesktopStateStore.js";
 import { DesktopUserDataStore } from "../src/desktop/electron/main/DesktopUserDataStore.js";
@@ -33,7 +34,8 @@ test("浏览多个项目、工具目录和历史不创建 Runtime Host", async (
   await state.load();
   await storage.initialize();
   const projects = new DesktopProjectService(state, storage, configStore);
-  const manager = new DesktopAgentManager(state, projects, configStore, () => undefined);
+  const manager = new DesktopAgentManager(state, projects, configStore, () => undefined,
+    undefined, undefined, undefined, { endpoint: path.join(root, "must-not-connect.sock"), token: "cold-catalog-fixture" });
   try {
     for (let index = 0; index < 3; index += 1) {
       const project = await projects.createEmptyProject(path.join(root, `project-${index}`));
@@ -42,12 +44,18 @@ test("浏览多个项目、工具目录和历史不创建 Runtime Host", async (
       const recorder = new SessionRecorder(dataRoot, `history-${index}`);
       recorder.record({ type: "user_message", content: "已有历史" });
       await recorder.close();
-      const workspace = await manager.prepareWorkspace(project.id);
-      assert.equal(workspace.runtime, undefined, "进入目录不得初始化执行者");
+      const workspace = await manager.workspaceSnapshot(project.id, false);
+      assert.equal(workspace.runtime, undefined, "读取非当前项目不得初始化执行者");
       assert.equal(workspace.requiresModelConfiguration, false);
       const tools = await manager.toolCatalog(project.id);
       assert.ok(tools.some((entry) => entry.name === "Read"), "执行前仍可选择内置工具");
       assert.ok(tools.some((entry) => entry.name === "Bash"));
+      assert.deepEqual(tools.filter(entry => entry.name.startsWith("Computer")).map(entry => [entry.name, entry.source]).sort(), [
+        ["ComputerAction", "mcp"], ["ComputerList", "mcp"], ["ComputerMirror", "mcp"], ["ComputerObserve", "mcp"]
+      ], "cold chat selection must list the same Computer MCP tools without contacting Desktop or creating a Runtime");
+      assert.deepEqual(tools.filter(entry => entry.name.startsWith("Computer")).map(entry => entry.namespace?.name),
+        ["computer-use", "computer-use", "computer-use", "computer-use"],
+        "cold MCP selection must retain structured ownership; description parsing cannot identify native tools");
       const document = await manager.openSession(project.id, recorder.sessionId);
       assert.equal(document.runtimeSnapshot, undefined);
       assert.ok(document.events.some((event) => event.type === "user_message" && event.content === "已有历史"));
@@ -94,6 +102,57 @@ test("浏览多个项目、工具目录和历史不创建 Runtime Host", async (
   }
 });
 
+test("进入当前项目即连接 MCP；重复进入复用 Host，历史读取不启动原生输入", { timeout: 10_000 }, async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "biny-desktop-mcp-connect-"));
+  const state = new DesktopStateStore(path.join(root, "state.json"));
+  const storage = new DesktopUserDataStore(path.join(root, "data"));
+  const configStore = createFileConfigStore(root, { globalDir: path.join(root, "config") });
+  configStore.supportsDetachedRuntimeHost = false;
+  await configStore.save({ ...structuredClone(defaultConfig), defaultModel: "local-test",
+    providers: { local: { type: "ollama", baseUrl: "http://127.0.0.1:1/v1", requiresApiKey: false } },
+    models: { "local-test": { ...defaultConfig.models["deepseek-v4-flash"]!, provider: "local", model: "local-test" } }
+  });
+  await state.load();
+  await storage.initialize();
+  const projects = new DesktopProjectService(state, storage, configStore);
+  const project = await projects.createEmptyProject(path.join(root, "workspace"));
+  const endpoint = path.join(root, "must-not-connect.sock");
+  const manager = new DesktopAgentManager(state, projects, configStore, () => undefined,
+    undefined, undefined, undefined, { endpoint, token: "mcp-connect-fixture" });
+  const service = new DesktopMcpService(configStore, projects, manager);
+  try {
+    const dataRoot = await projects.dataRoot(project);
+    await ensureAgentDirs(dataRoot);
+    const history = new SessionRecorder(dataRoot, "existing-history");
+    history.record({ type: "user_message", content: "不能在进入项目时重放" });
+    await history.close();
+    const historyBefore = await readFile(history.filePath, "utf8");
+    assert.equal((await service.snapshot(project.id)).servers.find(server => server.name === "computer-use")?.state, "not-started");
+    const workspace = await manager.prepareWorkspace(project.id);
+    assert.ok(workspace.runtime, "active workspace must initialize its Host before the first message or explicit MCP reconnect");
+    const registration = await readFile(runtimeHostPaths(dataRoot).registrationPath, "utf8");
+    await Promise.all([manager.prepareWorkspace(project.id), manager.prepareWorkspace(project.id)]);
+    assert.equal(await readFile(runtimeHostPaths(dataRoot).registrationPath, "utf8"), registration, "re-entry must reuse the same owner");
+    assert.equal((await service.snapshot(project.id)).servers.find(server => server.name === "computer-use")?.state, "connected");
+    assert.deepEqual((await manager.workspaceSnapshot(project.id, false)).sessions.map(session => session.id), [history.sessionId], "warming MCP must not create empty conversation history");
+    assert.equal(await readFile(history.filePath, "utf8"), historyBefore);
+    const connected = await service.reconnect(project.id, "computer-use");
+    assert.equal(connected.state, "connected", "the existing connect action must initialize MCP without model or native input calls");
+    assert.deepEqual([...connected.toolNames].sort(), ["ComputerAction", "ComputerList", "ComputerMirror", "ComputerObserve"]);
+    const catalog = await manager.toolCatalog(project.id);
+    assert.deepEqual(catalog.filter(tool => tool.name.startsWith("Computer")).map(tool => [tool.name, tool.source, tool.namespace?.name]).sort(), [
+      ["ComputerAction", "mcp", "computer-use"], ["ComputerList", "mcp", "computer-use"],
+      ["ComputerMirror", "mcp", "computer-use"], ["ComputerObserve", "mcp", "computer-use"]
+    ], "warm Host IPC must retain the same selection ownership as the cold catalog");
+    assert.equal((await service.snapshot(project.id)).servers.find(server => server.name === "computer-use")?.state, "connected");
+    await assert.rejects(access(endpoint), { code: "ENOENT" });
+  } finally {
+    await service.dispose();
+    await manager.closeAll();
+    await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  }
+});
+
 test("工作区快照读取途中 Host 回收，不得由后续投影查询重新启动", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "biny-desktop-host-read-race-"));
   const state = new DesktopStateStore(path.join(root, "state.json"));
@@ -122,6 +181,9 @@ test("工作区快照读取途中 Host 回收，不得由后续投影查询重�
   let snapshot: ReturnType<typeof manager.workspaceSnapshot> | undefined;
   try {
     assert.ok((await manager.prepareWorkspace(project.id)).runtime);
+    assert.equal(await server.retireIfIdle(0), false, "current project retains MCP while waiting for a message");
+    const other = await projects.createEmptyProject(path.join(root, "other-workspace"));
+    assert.ok((await manager.prepareWorkspace(other.id)).runtime);
     configStore.load = async (workspaceRoot) => {
       configStore.load = loadConfig;
       enterRead();

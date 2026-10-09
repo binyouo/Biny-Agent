@@ -83,6 +83,7 @@ export type ShellCompletionEvidence = "normal_exit" | "unconfirmed";
 export interface RunCommandToolOptions {
   /** 内部调用方可收紧单次命令超时；普通模型工具继续使用 runShellCommand 的默认值。 */
   timeoutMs?: number;
+  controlledComputerUse?: boolean;
 }
 
 export function createRunCommandTool(
@@ -91,7 +92,7 @@ export function createRunCommandTool(
   options: RunCommandToolOptions = {},
   managedProcesses?: ManagedProcessService
 ): Tool<RunCommandArgs, RunCommandToolResult> {
-  const sandboxOptions: SandboxOptions = { mode: sandbox?.mode ?? "off", allowNetwork: sandbox?.allowNetwork ?? true };
+  const sandboxOptions: SandboxOptions = { mode: sandbox?.mode ?? "off", allowNetwork: sandbox?.allowNetwork ?? true, allowDesktopControl: options.controlledComputerUse && process.platform === "darwin" ? false : undefined };
   const schema = z.object({
     command: z.string().min(1),
     description: z.string().trim().max(200).optional(),
@@ -121,7 +122,7 @@ export function createRunCommandTool(
     name: "Bash",
     description: "Run a shell command in the workspace. Foreground commands have a bounded timeout; set background for servers and other long-running commands, then use BashOutput or KillShell with the returned process ID.",
     promptSnippet: "Run a finite command or start a managed background process",
-    promptGuidelines: ["Provide a brief description of the command purpose in the user's language", "Use background instead of &, nohup, or disown for long-running commands; pass a workspace-relative cwd for commands in a subdirectory"],
+    promptGuidelines: ["Provide a brief description of the command purpose in the user's language", "Use background instead of &, nohup, or disown for long-running commands; pass a workspace-relative cwd for commands in a subdirectory", "Native desktop actions must use the Computer Use MCP tools. Never substitute biny cu, another native daemon, AppleScript, Quartz, clipboard paste, or app activation when an action is unavailable, paused, denied or unverified. Ask for the missing permission or inspect a fresh observation."],
     parameters: {
       type: "object",
       properties: {
@@ -140,6 +141,9 @@ export function createRunCommandTool(
     capability: "shell.execute",
     risk: "execute",
     resolveExecution(args) {
+      if (options.controlledComputerUse && /(?:^|[;&|\n])\s*(?:[\w-]+=\S+\s+)*(?:(?:env|command|exec)\s+)*(?:["']?[^\s"';&|]*\/)?["']?(?:biny|alma)["']?\s+(?:cu\b|computer\s+mcp\b)/iu.test(args.command)) {
+        throw new Error("computer_shell_bypass_refused: use Computer Use MCP tools with current session ownership, observation and approval; Shell is not a desktop-control fallback.");
+      }
       if (args.background === true && !managedProcesses) throw new Error("Background Bash is unavailable in this runtime.");
       if (args.background === true && args.timeoutMs !== undefined) {
         throw new Error("Background Bash does not accept timeoutMs; use readiness.timeoutMs to bound startup checks.");

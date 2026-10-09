@@ -165,7 +165,7 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
   }
 
   static async connect(options: RuntimeHostClientOptions): Promise<RuntimeHostClient> {
-    const client = new RuntimeHostClient(options);
+    const client = new RuntimeHostClient({ ...options });
     await client.open();
     return client;
   }
@@ -199,6 +199,11 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
     const status = await this.request<RuntimeHostStatus>("host.info", {});
     if (!status.journal) throw new Error("Runtime Host does not report journal persistence status.");
     return status;
+  }
+
+  async setKeepAlive(keepAlive: boolean): Promise<void> {
+    await this.request("client.keep-alive", { keepAlive });
+    this.options.keepAlive = keepAlive;
   }
 
   async setBrowserAutomation(endpoint: BrowserAutomationEndpoint | undefined): Promise<boolean> {

@@ -11,7 +11,7 @@ const appSchema = { pid: z.number().int().positive().optional(), bundle: z.strin
 
 export function createComputerUseMcpServer(driver: NativeProcessDriver, policy: ComputerMcpPolicy = new LocalComputerMcpPolicy(driver)): McpServer {
   const server = new McpServer(
-    { name: "biny-computer-use", version: "1.0.0" },
+    { name: "computer-use", version: "1.0.0" },
     {
       instructions:
         "Drive native macOS apps through Biny.\n\n" +

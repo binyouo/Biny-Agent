@@ -763,6 +763,11 @@ export class RuntimeHostServer {
       return store.get(sessionId);
     }
     if (frame.operation === "session.list") return this.sessionSummaries();
+    if (frame.operation === "client.keep-alive") {
+      if (typeof payload.keepAlive !== "boolean") throw new Error("keepAlive must be a boolean.");
+      connection.keepAlive = payload.keepAlive;
+      return;
+    }
     if (frame.operation === "client.pause-owned-runs") return await this.pauseOwnedRunsForExit(connection);
     if (frame.operation === "session.ensure") {
       const requestedSessionId = optionalString(payload.sessionId);

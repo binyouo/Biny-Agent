@@ -31,6 +31,9 @@ try {
   assert.equal(await server.retireIfIdle(0), false, "one client leaving must not stop the other client");
   await second.close();
   second = undefined;
+  await observer.setKeepAlive(true);
+  assert.equal(await server.retireIfIdle(0), false, "active workspace retains its MCP Host even without a message");
+  await observer.setKeepAlive(false);
   const automation = local.commands.automationStore.create({ name: "future work", triggerType: "interval", schedule: { intervalMs: 86_400_000 }, executionTemplate: { prompt: "Never invoke a model in this test" } });
   assert.equal(await server.retireIfIdle(0), false, "future scheduled work is residency, not idle");
   local.commands.automationStore.pause(automation.automationId);

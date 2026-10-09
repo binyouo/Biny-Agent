@@ -71,6 +71,7 @@ import { listEnabledGlobalPluginPaths, listEnabledProjectPluginPaths } from "../
 import { globalPluginRoot } from "../config/paths.js";
 import { HeartbeatScheduler } from "../agent/context/heartbeat.js";
 import { createBrowserTools, type BrowserAutomationEndpoint } from "../tools/browser.js";
+import { attachDesktopComputerMcp, desktopComputerMcpName } from "../computer/desktopMcp.js";
 import { createWebFetchTool } from "../tools/web/fetch.js";
 import { createWebSearchTool } from "../tools/web/search.js";
 import { ToolExecutionCoordinator } from "../agent/toolExecutionCoordinator.js";
@@ -272,12 +273,19 @@ export async function createCommandRuntime(workspaceRoot: string, options: Comma
     () => selectionStateForConfig(toolModelConfig)
   );
   const browserToolNames = ["BrowserOpen", "BrowserReadDom", "BrowserClick", "BrowserType", "BrowserPress", "ComputerMirror", "ComputerList", "ComputerObserve", "ComputerAction"];
+  let registeredMcpTools: string[] = [];
   const setBrowserAutomation = (endpoint?: BrowserAutomationEndpoint): void => {
     for (const name of [...browserToolNames, "WebSearch", "WebFetch"]) toolRegistry.unregister(name);
+    registeredMcpTools = registeredMcpTools.filter(name => !browserToolNames.includes(name));
     if (endpoint) {
+      void attachDesktopComputerMcp(resourceScope.mcp, endpoint).catch(() => undefined);
+      for (const tool of resourceScope.mcp.createTools().filter(tool => tool.namespace?.name === desktopComputerMcpName)) {
+        toolRegistry.registerMcpTool(tool);
+        registeredMcpTools.push(tool.name);
+      }
       for (const tool of createBrowserTools(endpoint)) toolRegistry.registerBuiltinTool(tool);
       toolRegistry.registerBuiltinTool(createWebSearchTool(config.web.search, config.web.cookies, endpoint));
-    }
+    } else void resourceScope.mcp.detachLocalServer(desktopComputerMcpName).catch(() => undefined);
     if (endpoint || config.web.fetch.enabled !== false) {
       toolRegistry.registerBuiltinTool(createWebFetchTool(config.web.fetch, config.web.cookies, {
         browser: endpoint,
@@ -301,7 +309,6 @@ export async function createCommandRuntime(workspaceRoot: string, options: Comma
     ? requireSkillBundle(skills)
     : skillsForRun(subagentParentRunId);
   let subagentDefinitions: SubagentDefinition[] = [];
-  let registeredMcpTools: string[] = [];
   const durableSubagentBindings = new Map<string, {
     taskRunId: string;
     attemptId: string;

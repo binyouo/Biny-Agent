@@ -163,7 +163,8 @@ import type {
   DesktopStagedSettingsCredential,
   DesktopWorkspaceSnapshot
 } from "../../protocol.js";
-import type { McpServerDetails, McpServerStatus } from "../../../extensions/mcp.js";
+import { McpToolHost, type McpServerDetails, type McpServerStatus } from "../../../extensions/mcp.js";
+import { attachDesktopComputerMcp } from "../../../computer/desktopMcp.js";
 import type { AutomationCreateInput } from "../../../runtime/AutomationScheduler.js";
 import { GoalGraphStore, type GraphNodeInput } from "../../../runtime/GoalGraphStore.js";
 import { CapabilityStore } from "../../../runtime/CapabilityStore.js";
@@ -234,6 +235,7 @@ export interface PreparedDesktopSettingsChat {
 export class DesktopAgentManager {
   private readonly runtimes = new Map<string, ManagedRuntime>();
   private readonly runtimeInitializations = new Map<string, Promise<ManagedRuntime | undefined>>();
+  private activeProjectId?: string;
   private readonly liveEvents = new Map<string, Map<string, AgentHostEvent[]>>();
   private readonly runtimeErrors = new Map<string, DesktopRuntimeError>();
   private readonly writerConflicts = new Map<string, DesktopSessionWriterConflict>();
@@ -294,10 +296,13 @@ export class DesktopAgentManager {
     return await this.activityMemoryIndex;
   }
 
-  /** 浏览只附着已有执行者；模型配置和历史可独立读取，不因首屏创建后台进程。 */
   async prepareWorkspace(projectId: string): Promise<DesktopWorkspaceSnapshot> {
+    const previous = this.activeProjectId === projectId ? undefined : this.residentRuntime(this.activeProjectId ?? "");
+    this.activeProjectId = projectId;
     try {
-      await this.getRuntime(projectId, false);
+      if (previous?.runtime instanceof RuntimeHostClient) await previous.runtime.setKeepAlive(false);
+      const managed = await this.ensureRuntime(projectId);
+      if (managed.runtime instanceof RuntimeHostClient) await managed.runtime.setKeepAlive(this.activeProjectId === projectId);
     } catch (error) {
       this.recordRuntimeFailure(projectId, error);
     }
@@ -409,12 +414,21 @@ export class DesktopAgentManager {
         config.web.search, undefined, config.web.fetch, config.sandbox, config.web.cookies, undefined,
         this.browserAutomation ? { ...this.browserAutomation, projectId } : undefined
       );
-      return registry.listEntries().map(({ source, tool }) => ({ name: tool.name, description: tool.description, source, risk: tool.risk }));
+      if (this.browserAutomation) {
+        const catalog = new McpToolHost();
+        try {
+          await attachDesktopComputerMcp(catalog, { ...this.browserAutomation, projectId });
+          for (const tool of catalog.createTools()) registry.registerMcpTool(tool);
+        } finally { await catalog.close(); }
+      }
+      return registry.listEntries().map(({ source, tool }) => ({ name: tool.name, description: tool.description, source, risk: tool.risk,
+        namespace: tool.namespace ? { name: tool.namespace.name } : undefined }));
     }
     const entries = managed.commands
       ? managed.commands.listTools()
       : await requireRemoteRuntime(managed.runtime).listTools();
-    return entries.map((entry) => ({ ...entry }));
+    return entries.map(({ name, description, source, risk, namespace }) => ({ name, description, source, risk,
+      namespace: namespace ? { name: namespace.name } : undefined }));
   }
 
   async mcpDetails(projectId: string, serverName: string): Promise<McpServerDetails> {
@@ -2957,7 +2971,7 @@ export class DesktopAgentManager {
         resumeInterrupted: false,
         clientId: `desktop-${process.pid}`,
         surface: "desktop",
-        keepAlive: false,
+        keepAlive: this.activeProjectId === projectId,
         browserAutomation: this.browserAutomation ? { ...this.browserAutomation, projectId } : undefined
       });
       attached = connected?.client;
@@ -2967,7 +2981,7 @@ export class DesktopAgentManager {
         configDir,
         clientId: `desktop-${process.pid}`,
         surface: "desktop",
-        keepAlive: false
+        keepAlive: this.activeProjectId === projectId
       });
     }
     if (!attached && !allowSpawn) return undefined;
@@ -3011,7 +3025,8 @@ export class DesktopAgentManager {
         const client = await connectRuntimeHost(persistenceRoot, {
           configDir,
           clientId: `desktop-${process.pid}`,
-          surface: "desktop"
+          surface: "desktop",
+          keepAlive: this.activeProjectId === projectId
         });
         if (!client) throw new Error("无法连接当前 Desktop 的 Runtime Host。");
         runtime = client;

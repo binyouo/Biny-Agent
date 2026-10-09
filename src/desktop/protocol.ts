@@ -596,6 +596,7 @@ export interface DesktopToolCatalogEntry {
   description: string;
   source: "builtin" | "mcp" | "skill" | "plugin" | "subagent";
   risk?: "read" | "write" | "execute";
+  namespace?: { name: string };
 }
 
 /** Agent 权限策略的脱敏设置视图；工具选择器不读写这里的 allowTools。 */
@@ -868,7 +869,8 @@ export interface DesktopMcpServerSummary {
   name: string;
   id?: string;
   description?: string;
-  transport: DesktopMcpTransport;
+  transport: DesktopMcpTransport | "in-process";
+  builtin?: boolean;
   remoteProtocol?: DesktopMcpRemoteProtocol;
   commandOrUrl: string;
   args: string[];

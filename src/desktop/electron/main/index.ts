@@ -324,9 +324,8 @@ async function startDesktopApplication(): Promise<void> {
       ? initialTarget.sessionId
       : undefined;
     const activeView = explicitSessionId === undefined ? state.activeView() : "chat";
-    // 首屏从配置取得模型和思考档位；已有 Host 可附着，首次浏览不创建执行者。
     const workspace = activeProjectId
-      ? await (activeView === "extensions" ? agents.workspaceSnapshot(activeProjectId) : agents.prepareWorkspace(activeProjectId))
+      ? await agents.prepareWorkspace(activeProjectId)
       : undefined;
     const storedSessionId = activeProjectId === undefined ? undefined : state.selectedSessionId(activeProjectId);
     const restorableSessionId = storedSessionId && workspace?.sessions.some((session) => session.id === storedSessionId)

@@ -388,31 +388,6 @@ var lastIndicatorOutcome = "none"
 /// "什么都没变"意味着不必重读一整棵树，也不必把上次的 ref 当过期。
 var lastElementFingerprints: [String: [String]] = [:]
 
-/// 参照的观察回执里有 `observed_activations`：护栏**察觉到多少次"被激活"**。
-/// 只有把这件事记下来，"绝不抢焦点"才是可核查的 —— 否则它只是一个意图。
-var observedActivations = 0
-/// 最近一次护栏做了什么（供回执说明）。
-var focusGuardNote: String?
-
-/// 目标应用**聚焦元素**的指纹（pid → 描述）。
-///
-/// 参照护栏的判据从这里能读出来（它自己的三句话）：
-/// ```
-/// the app reported no focused element to compare
-/// the focused element exposes no readable text
-/// the focused element stopped exposing readable text
-/// ```
-/// —— 它比对的是**聚焦元素**，不是前台应用。这个差别是实的：
-/// **同一个应用内换了 key window / 换了焦点元素，只看前台应用是看不见的。**
-func focusedElementFingerprint(_ app: AXUIElement) -> String? {
-    guard let focusedRef = axCopy(app, kAXFocusedUIElementAttribute as String) else { return nil }
-    let focused = unsafeBitCast(focusedRef, to: AXUIElement.self)
-    let role = axString(focused, kAXRoleAttribute as String) ?? "?"
-    let title = axString(focused, kAXTitleAttribute as String) ?? ""
-    let value = (axCopy(focused, kAXValueAttribute as String) as? String).map { String($0.prefix(40)) } ?? ""
-    return "\(role)|\(title)|\(value)"
-}
-
 /// 元素的一条规范化描述：参与"变没变"的比较。
 /// 只收**会影响调用方判断**的字段（角色/标题/值/几何），不收 ref ——
 /// ref 每次都重新编，收进去会让"没变"永远判成"变了"。
@@ -459,10 +434,6 @@ func actionPoint(_ args: [String: Any], element: AXUIElement?) -> CGPoint? {
 
 /// 能不能为某个 pid 建立事件 tap。
 ///
-/// 参照的第一层（`FocusStealPreventer`）建在这上面，失败姿态是 FATAL。本实现没有那一层，
-/// 但**至少要知道这个 API 在真实权限下是否可用** —— 否则「机制不明」里会混着
-/// 「其实根本建不起来」，那是两个完全不同的结论。
-///
 /// 用**自身 pid** 试，不碰任何目标应用；建起来立刻失效掉，不留下常驻 tap。
 /// 探三次：**这个探针本身会飘** —— 同一台机器上前后两次可以一次 per-pid、一次 session-only。
 /// 只报一次结果是误导：调用方会以为那是稳定属性。所以报**模式**而不是单次值。
@@ -482,7 +453,6 @@ func canArmEventTap() -> String {
 private func tryArmEventTapOnce() -> String {
     let mask = CGEventMask(1) << CGEventType.leftMouseDown.rawValue
     let callback: CGEventTapCallBack = { _, _, event, _ in Unmanaged.passUnretained(event) }
-    // 按 pid 的 tap：参照第一层用的就是它
     let perPid = CGEvent.tapCreateForPid(
         pid: getpid(), place: .headInsertEventTap, options: .defaultTap,
         eventsOfInterest: mask, callback: callback, userInfo: nil
@@ -651,45 +621,40 @@ private let setWindowLocationFn: (@convention(c) (CGEvent, CGPoint) -> Void)? = 
     return unsafeBitCast(symbol, to: (@convention(c) (CGEvent, CGPoint) -> Void).self)
 }()
 
-/// 这个事件能不能用「窗口局部管线」送。
-var windowLocalPipelineAvailable: Bool { setWindowLocationFn != nil }
-
-/// 发一个鼠标事件。
-///
-/// 三条路，**优先那条不抢焦点的**：
-/// 1. **窗口局部管线**（`CGEventSetWindowLocation` + `postToPid`）——
-///    事件以"落在这个窗口里"的身份送到目标进程，**不经过窗口服务器的激活路径**，
-///    所以用户的前台不会被顶掉。这是参照所谓 focus-steal prevention 的核心。
-/// 2. **全局投递**（`.cghidEventTap`）—— 能送达，但**全局点击本身就会激活落点窗口**，
-///    只能靠事后还回去（压小，压不到零）。
-/// 3. 裸 `postToPid`（不带窗口位置）—— 实测**鼠标事件根本不投递**，等于什么都不做。
-func postMouse(_ pid: pid_t, _ type: CGEventType, _ point: CGPoint, _ button: CGMouseButton = .left, clickState: Int64 = 1, global: Bool = false, windowLocal: Bool = true) {
-    guard let event = CGEvent(mouseEventSource: nil, mouseType: type, mouseCursorPosition: point, mouseButton: button) else { return }
-    event.setIntegerValueField(.mouseEventClickState, value: clickState)
-    if !global, windowLocal, let setLocation = setWindowLocationFn, let origin = windowScreenBounds(pid: Int(pid)) {
-        // 窗口局部坐标 = 屏幕坐标 − 窗口原点
-        setLocation(event, CGPoint(x: point.x - (origin["x"] ?? 0), y: point.y - (origin["y"] ?? 0)))
-        event.postToPid(pid)
+func postMouse(_ pid: pid_t, _ type: CGEventType, _ point: CGPoint, _ button: CGMouseButton = .left, clickState: Int64 = 1, global: Bool = false, windowID: Int? = nil) throws {
+    if global {
+        guard let event = CGEvent(mouseEventSource: nil, mouseType: type, mouseCursorPosition: point, mouseButton: button) else {
+            throw NSError(domain: "input", code: 64, userInfo: [NSLocalizedDescriptionKey: "input_event_unavailable"])
+        }
+        event.setIntegerValueField(.mouseEventClickState, value: clickState)
+        event.post(tap: .cghidEventTap)
         return
     }
-    if global { event.post(tap: .cghidEventTap) } else { event.postToPid(pid) }
+    guard let windowID, let setLocation = setWindowLocationFn,
+          let origin = windowScreenBounds(pid: Int(pid), windowID: windowID) else {
+        throw NSError(domain: "input", code: 64, userInfo: [NSLocalizedDescriptionKey: "background_window_unavailable: exact window-local delivery is required; input was not dispatched"])
+    }
+    let event = try BackgroundInput.mouseEvent(pid: pid, windowID: windowID, type: type, point: point, button: button, clickState: clickState)
+    setLocation(event, CGPoint(x: point.x - (origin["x"] ?? 0), y: point.y - (origin["y"] ?? 0)))
+    event.postToPid(pid)
 }
+
 /// 发一个组合键。
 ///
 /// 默认投给目标进程（后台应用也能收，且不动前台）。`global` 走全局 HID 流，
 /// 落到**当前焦点**上 —— 有些键（系统级快捷键、必须经过窗口服务器的那类）
 /// 投给进程是表达不出来的。代价是它会被前台应用收到，所以要显式选择。
 func postKey(_ pid: pid_t, keyCode: CGKeyCode, flags: CGEventFlags, global: Bool = false, windowID: Int? = nil) throws {
-    if let windowID { try validateActiveInputTarget(pid, windowID) }
+    if global, let windowID { try validateActiveInputTarget(pid, windowID) }
     guard let down = CGEvent(keyboardEventSource: nil, virtualKey: keyCode, keyDown: true),
           let up = CGEvent(keyboardEventSource: nil, virtualKey: keyCode, keyDown: false) else { return }
     down.flags = flags; up.flags = flags
     if global { down.post(tap: .cghidEventTap); up.post(tap: .cghidEventTap) }
     else { down.postToPid(pid); up.postToPid(pid) }
 }
-func postUnicode(_ pid: pid_t, _ text: String, windowID: Int? = nil) throws {
+func postUnicode(_ pid: pid_t, _ text: String, global: Bool = false, windowID: Int? = nil) throws {
     for scalar in text.unicodeScalars {
-        if let windowID { try validateActiveInputTarget(pid, windowID) }
+        if global, let windowID { try validateActiveInputTarget(pid, windowID) }
         let units = Array(String(scalar).utf16)
         guard let down = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: true),
               let up = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: false) else { continue }
@@ -697,7 +662,7 @@ func postUnicode(_ pid: pid_t, _ text: String, windowID: Int? = nil) throws {
             down.keyboardSetUnicodeString(stringLength: buffer.count, unicodeString: buffer.baseAddress)
             up.keyboardSetUnicodeString(stringLength: buffer.count, unicodeString: buffer.baseAddress)
         }
-        if windowID != nil { down.post(tap: .cghidEventTap); up.post(tap: .cghidEventTap) }
+        if global { down.post(tap: .cghidEventTap); up.post(tap: .cghidEventTap) }
         else { down.postToPid(pid); up.postToPid(pid) }
     }
 }
@@ -857,81 +822,27 @@ func mouseButton(_ name: String?) -> CGMouseButton {
 /// 返回这次点击走的哪条路 —— 调用方能据此判断"会不会抢焦点"。
 /// `window-local` = 不激活落点窗口；`global` = 能送达但会激活它。
 @discardableResult
-func postClick(_ pid: pid_t, _ point: CGPoint, button: CGMouseButton, clicks: Int, preferWindowLocal: Bool = false) -> String {
+func postClick(_ pid: pid_t, _ point: CGPoint, button: CGMouseButton, clicks: Int, global: Bool = false, windowID: Int? = nil) throws -> String {
     let down: CGEventType = button == .right ? .rightMouseDown : button == .center ? .otherMouseDown : .leftMouseDown
     let up: CGEventType = button == .right ? .rightMouseUp : button == .center ? .otherMouseUp : .leftMouseUp
-    let saved = CGEvent(source: nil)?.location
-    // ⚠️ 默认**不用**窗口局部管线，尽管它才是"不抢焦点"的正解。
-    // 理由：**它的投递还没被验证过**（我试了三种观测量都测不出它有没有送到），
-    // 而它替换掉的全局路是**已验证可用**的。未经证实就换掉能用的那条，
-    // 等于用一个"可能更正确"的说法去赌"现在还能不能点"。
-    // → 想试的人显式要它（`pipeline: "window-local"`），回执里会写明走的哪条。
-    // ⚠️ 曾经把这里改成"默认走窗口局部管线"做实验（想验证它能否替代会拽光标的全局路），
-    // **实验没有信号**：我用的观测（插入点有没有动）在**两条管线上都报"没送达"** ——
-    // 包括我已知能送达的全局路，所以是仪器的问题，不是管线的结论。
-    // 三次尝试（活动监视器选中行 / Calculator 按钮 / TextEdit 插入点）全部无效。
-    // → 回到已验证的默认；管线仍然可选（`pipeline: "window-local"`）且回执里写明走的哪条。
-    let useWindowLocal = preferWindowLocal && windowLocalPipelineAvailable
-    // 全局合成点击**必然把光标瞬移到落点**（事件本身就带坐标，这是机制不是 bug）。
-    // 位置我们保存并还原，但那一瞬看得见 —— 用户会觉得"鼠标被抢走了"。
-    // 既然这一下动不了，就**在动的时候把它藏起来**：藏着的这段时间看不到瞬移。
-    // ⚠️ 隐藏只是不画出来，位置真的变了 —— 所以下面的还原照样要执行。
-    // 走窗口局部管线时不需要（它不碰光标）。
-    var cursorHidden = false
-    if !useWindowLocal { cursorHidden = CGDisplayHideCursor(CGMainDisplayID()) == .success }
-    defer { if cursorHidden { _ = CGDisplayShowCursor(CGMainDisplayID()) } }
+    let saved = global ? CGEvent(source: nil)?.location : nil
+    defer { if let saved { CGWarpMouseCursorPosition(saved) } }
     let total = max(1, clicks)
     for index in 1...total {
-        // **先试窗口局部管线**：它不激活落点窗口，所以用户的前台不会被顶掉。
-        // 全局投递是回落 —— 它确实能送达，代价是必然激活。
-        postMouse(pid, down, point, button, clickState: Int64(index), global: !useWindowLocal, windowLocal: useWindowLocal)
-        postMouse(pid, up, point, button, clickState: Int64(index), global: !useWindowLocal, windowLocal: useWindowLocal)
-        // 太快会被系统合并成一下，太慢会被当成两次独立点击。
+        try postMouse(pid, down, point, button, clickState: Int64(index), global: global, windowID: windowID)
+        try postMouse(pid, up, point, button, clickState: Int64(index), global: global, windowID: windowID)
         if index < total { usleep(60_000) }
     }
-    // 光标是我们挪的，用完放回去 —— 用户不该因为一次自动化发现鼠标换了位置。
-    if let saved { CGWarpMouseCursorPosition(saved) }
-    return useWindowLocal ? "window-local" : "global"
+    return global ? "global" : "window-local"
 }
 
-
-/// 截图同样可能挂在无响应的窗口上：独立线程采集，主线程轮询到点就放弃。
-/// 焦点守卫：很多 Cocoa/Electron 应用会在自己的点击处理里调
-/// `activateIgnoringOtherApps:` —— 那是我们控制不了的代码，会把用户的前台窗口抢走。
-/// 动作前记下当时的前台应用，动作后如果前台变成了目标应用，就切回去。
-/// 后台输入使用此安全网；显式前台投递保留新控件焦点。
-func withFocusGuard<T>(_ pid: pid_t, preserveElementFocus: Bool = true, _ body: () async throws -> T) async rethrows -> T {
-    let before = NSWorkspace.shared.frontmostApplication
-    let restore = (before?.processIdentifier == pid) ? nil : before
-    // 应用级之外再记一层**元素级**：同一个应用内换 key window 时，前台应用没变，
-    // 但用户的焦点其实已经被挪走了。参照判的就是这一层。
-    let app = axApp(pid)
-    let focusedBefore = focusedElementFingerprint(app)
-    let focusedElementBefore: AXUIElement? = axCopy(app, kAXFocusedUIElementAttribute as String)
-        .map { unsafeBitCast($0, to: AXUIElement.self) }
+let backgroundFocusGuard = BackgroundFocusGuard()
+func withFocusGuard<T>(_ pid: pid_t, background: Bool = true, _ body: () async throws -> T) async rethrows -> T {
+    if !background { return try await body() }
+    backgroundFocusGuard.block(pid)
+    defer { backgroundFocusGuard.release(pid) }
     let value = try await body()
-
-    // 元素级：焦点在**应用内部**被挪走了吗？挪走了就还回去，并计一次数。
-    if preserveElementFocus, let focusedBefore, let elementBefore = focusedElementBefore,
-       focusedElementFingerprint(app) != focusedBefore {
-        _ = AXUIElementSetAttributeValue(elementBefore, kAXFocusedAttribute as CFString, kCFBooleanTrue)
-        observedActivations += 1
-        focusGuardNote = "focus_returned_to_element: 动作把焦点挪到了本应用的另一个元素上，已经还回原来的那个。"
-    }
-    guard let restore else { return value }
-    // 目标应用的自激活是异步落地的：等太短会漏（我们走了它才抢），
-    // 等太久用户就真的看见自己的窗口被顶掉。
-    // 所以每 5ms 巡查一次，一发现被抢就立刻还回去 —— 不等满整段。
-    // 参照实现用的是 CGEventTapCreateForPid 做**事前**拦截，根本不给它抢的机会；
-    // 这里是事后补救，只能把窗口压小，压不到零。
-    let deadline = Date().addingTimeInterval(0.075)
-    while Date() < deadline {
-        try? await Task.sleep(nanoseconds: 5_000_000)
-        if NSWorkspace.shared.frontmostApplication?.processIdentifier == pid {
-            restore.activate(options: [])
-            return value    // 已经还回去了，不必再巡查
-        }
-    }
+    try? await Task.sleep(nanoseconds: 75_000_000)
     return value
 }
 
@@ -1037,16 +948,16 @@ func screenPoint(_ pid: pid_t, _ x: Double, _ y: Double, screenSpace: Bool) -> C
 }
 
 /// 拖拽：AX 没有拖这个动作，只能合成鼠标序列（按下 → 若干拖动点 → 抬起）。
-func postDrag(_ pid: pid_t, from: CGPoint, to: CGPoint) {
-    let saved = CGEvent(source: nil)?.location
+func postDrag(_ pid: pid_t, from: CGPoint, to: CGPoint, global: Bool = false, windowID: Int? = nil) throws {
+    let saved = global ? CGEvent(source: nil)?.location : nil
     defer { if let saved { CGWarpMouseCursorPosition(saved) } }
-    postMouse(pid, .leftMouseDown, from, global: true)
+    try postMouse(pid, .leftMouseDown, from, global: global, windowID: windowID)
     let steps = 8
     for step in 1...steps {
-        let t = Double(step) / Double(steps)
-        postMouse(pid, .leftMouseDragged, CGPoint(x: from.x + (to.x - from.x) * t, y: from.y + (to.y - from.y) * t), global: true)
+        let progress = Double(step) / Double(steps)
+        try postMouse(pid, .leftMouseDragged, CGPoint(x: from.x + (to.x - from.x) * progress, y: from.y + (to.y - from.y) * progress), global: global, windowID: windowID)
     }
-    postMouse(pid, .leftMouseUp, to, global: true)
+    try postMouse(pid, .leftMouseUp, to, global: global, windowID: windowID)
 }
 
 /// 目标应用是否处在能接收键盘输入的状态。
@@ -1347,12 +1258,12 @@ func validateActiveInputTarget(_ pid: pid_t, _ windowID: Int) throws {
 let focusGuardLock = NSLock()
 var lastFocusGuardWarnAt = Date.distantPast
 func focusGuardWarning() -> String? {
-    if axTrusted() { return nil }   // 护栏靠 AX 还焦点，权限在就没事
+    if backgroundFocusGuard.status["armed"] as? Bool == true { return nil }
     focusGuardLock.lock(); defer { focusGuardLock.unlock() }
     let now = Date()
     if now.timeIntervalSince(lastFocusGuardWarnAt) < 30 { return nil }
     lastFocusGuardWarnAt = now
-    return "focus_guard_unavailable: 辅助功能权限缺失，焦点护栏无法武装，这些动作可能把用户的前台窗口带走。请用户到 设置 → Computer Use 重新授权（macOS 每次新构建都会重置该授权）。"
+    return "focus_guard_unavailable: 事前激活拦截不可用，后台输入将拒绝派发；请检查 Computer Use helper 的辅助功能权限。"
 }
 
 /// 把截图失败的原因说成调用方能据以行动的一句话。
@@ -1512,10 +1423,25 @@ DispatchQueue.global().async {
                     activityLock.lock(); lastRequestAt = Date(); activityLock.unlock()
                     Task {
                         let id = request["id"] ?? NSNull()
+                        var guardedPID: pid_t?
+                        defer {
+                            if let guardedPID {
+                                Task {
+                                    try? await Task.sleep(nanoseconds: 75_000_000)
+                                    backgroundFocusGuard.release(guardedPID)
+                                }
+                            }
+                        }
                         do {
                             let cmd = request["cmd"] as? String ?? ""
                             let args = request["args"] as? [String: Any] ?? [:]
                             let foregroundInput = args["delivery"] as? String == "foreground"
+                            if !foregroundInput && ["click", "type_text", "press_key", "scroll", "drag", "perform_secondary_action", "set_value", "select_text"].contains(cmd) {
+                                let targetPID = try resolvePid(args)
+                                try await backgroundFocusGuard.arm()
+                                backgroundFocusGuard.block(targetPID)
+                                guardedPID = targetPID
+                            }
                             if foregroundInput {
                                 guard ["click", "type_text", "press_key", "scroll", "drag", "perform_secondary_action", "set_value", "select_text"].contains(cmd) else {
                                     throw NSError(domain: "input", code: 64, userInfo: [NSLocalizedDescriptionKey: "foreground_action_unsupported"])
@@ -1591,7 +1517,6 @@ DispatchQueue.global().async {
                             case "doctor":
                                 reply(fd, ["id": id, "ok": true, "data": [
                                     "accessibility": axTrusted() ? "granted" : "denied",
-                                    // 第一层（事前拦截）需要的 API 到底能不能用 —— 见 canArmEventTap 注释。
                                     "focusTap": canArmEventTap(),
                                     "screenRecording": screenTrusted() ? "granted" : "denied",
                                     "version": driverVersion,
@@ -1896,7 +1821,8 @@ DispatchQueue.global().async {
                                 data["screen_recording"] = screenTrusted() ? "granted" : "not_granted"
                                 // 护栏的账目（参照在这一组里同样上报）：察觉到多少次"被激活"。
                                 // 只有记下来，"绝不抢焦点"才是可核查的 —— 否则它只是一个意图。
-                                data["observed_activations"] = observedActivations
+                                data["observed_activations"] = backgroundFocusGuard.status["observed_activations"]
+                                data["focus_guard"] = backgroundFocusGuard.status
                                 data["tap_disables_recovered"] = await MainActor.run { appshotMonitor.recoveredCount }
                                 data["screenshotWidth"] = shot["width"] ?? 0
                                 data["screenshotHeight"] = shot["height"] ?? 0
@@ -1987,17 +1913,13 @@ DispatchQueue.global().async {
                                     let refClicks = max(1, min(3, args["clicks"] as? Int ?? 1))
                                     let axCannotExpress = refClicks > 1 || refButton != .left
 
-                                    // 投递管线：默认 global（已验证可用）；显式要 window-local 才用它。
-                                    // 参照的取向是"不抢焦点优先"，我这边**先要求能送达** ——
-                                    // 管线的送达还没测出来，而点击送达是底线。
-                                    let wantWindowLocal = (args["pipeline"] as? String) == "window-local"
                                     var clickPipeline = "global"
-                                    func physicalAtElement() async -> Bool {
+                                    func physicalAtElement() async throws -> Bool {
                                         guard let frame = axFrame(element) else { return false }
                                         let point = CGPoint(x: frame["x"]! + frame["w"]!/2, y: frame["y"]! + frame["h"]!/2)
                                         noteActionPoint(args, point, symbol: nil)
-                                        await withFocusGuard(pid_t(pid), preserveElementFocus: !foregroundInput) {
-                                            clickPipeline = postClick(pid_t(pid), point, button: refButton, clicks: refClicks, preferWindowLocal: wantWindowLocal)
+                                        try await withFocusGuard(pid_t(pid), background: !foregroundInput) {
+                                            clickPipeline = try postClick(pid_t(pid), point, button: refButton, clicks: refClicks, global: foregroundInput, windowID: args["window_id"] as? Int)
                                         }
                                         return true
                                     }
@@ -2006,7 +1928,7 @@ DispatchQueue.global().async {
                                         throw NSError(domain: "click", code: 65, userInfo: [NSLocalizedDescriptionKey: "ax_cannot_express_this_click: AX 只有单次左键动作，双击或其它按键请用 strategy=physical"])
                                     }
                                     if strategy == "physical" || (strategy == "auto" && axCannotExpress) {
-                                        guard await physicalAtElement() else {
+                                        guard try await physicalAtElement() else {
                                             throw NSError(domain: "click", code: 66, userInfo: [NSLocalizedDescriptionKey: "element_has_no_frame: 元素没有坐标，做不了物理点击"])
                                         }
                                         reply(fd, ["id": id, "ok": true, "data": ["clicked": ref, "route": "physical", "clicks": refClicks, "clickPipeline": clickPipeline] as [String: Any]] as [String: Any])
@@ -2028,7 +1950,7 @@ DispatchQueue.global().async {
                                         let status: AXError = attempts.reduce(.failure) { acc, action in
                                             acc == .success ? acc : AXUIElementPerformAction(element, action as CFString)
                                         }
-                                        let route = status == .success ? "ax" : (await physicalAtElement() ? "physical" : "none")
+                                        let route = status == .success ? "ax" : (try await physicalAtElement() ? "physical" : "none")
                                         reply(fd, ["id": id, "ok": true, "data": ["clicked": ref, "route": route] as [String: Any]] as [String: Any])
                                     }
                                 } else if let x = args["x"] as? Double, let y = args["y"] as? Double {
@@ -2043,8 +1965,8 @@ DispatchQueue.global().async {
                                     let pixelButton = mouseButton(args["button"] as? String)
                                     let pixelClicks = max(1, min(3, args["clicks"] as? Int ?? 1))
                                     noteActionPoint(args, point, symbol: nil)
-                                    _ = await withFocusGuard(pid, preserveElementFocus: !foregroundInput) {
-                                        postClick(pid, point, button: pixelButton, clicks: pixelClicks)
+                                    _ = try await withFocusGuard(pid, background: !foregroundInput) {
+                                        try postClick(pid, point, button: pixelButton, clicks: pixelClicks, global: foregroundInput, windowID: args["window_id"] as? Int)
                                     }
                                     reply(fd, ["id": id, "ok": true, "data": ["clicked": "@\(Int(x)),\(Int(y))", "clicks": pixelClicks] as [String: Any]] as [String: Any])
                                 } else {
@@ -2083,7 +2005,7 @@ DispatchQueue.global().async {
                                 let screenSpace = args["coord_space"] as? String == "screen"
                                 let from = screenPoint(pid, x1, y1, screenSpace: screenSpace)
                                 let to = screenPoint(pid, x2, y2, screenSpace: screenSpace)
-                                await withFocusGuard(pid, preserveElementFocus: !foregroundInput) { postDrag(pid, from: from, to: to) }
+                                try await withFocusGuard(pid, background: !foregroundInput) { try postDrag(pid, from: from, to: to, global: foregroundInput, windowID: args["window_id"] as? Int) }
                                 reply(fd, ["id": id, "ok": true, "data": ["dragged": "@\(Int(x1)),\(Int(y1))→@\(Int(x2)),\(Int(y2))"] as [String: Any]] as [String: Any])
                             case "perform_secondary_action":
                                 // 右键 / 打开上下文菜单：优先走 AX 的 ShowMenu，退化成合成右键。
@@ -2103,15 +2025,15 @@ DispatchQueue.global().async {
                                     }
                                     if status != .success, let frame = axFrame(element) {
                                         let point = CGPoint(x: frame["x"]! + frame["w"]!/2, y: frame["y"]! + frame["h"]!/2)
-                                        await withFocusGuard(pid, preserveElementFocus: !foregroundInput) {
-                                            postMouse(pid, .rightMouseDown, point, .right, global: true); postMouse(pid, .rightMouseUp, point, .right, global: true)
+                                        try await withFocusGuard(pid, background: !foregroundInput) {
+                                            try postMouse(pid, .rightMouseDown, point, .right, global: foregroundInput, windowID: args["window_id"] as? Int); try postMouse(pid, .rightMouseUp, point, .right, global: foregroundInput, windowID: args["window_id"] as? Int)
                                         }
                                     }
                                     reply(fd, ["id": id, "ok": true, "data": ["menu": ref] as [String: Any]] as [String: Any])
                                 } else if let x = args["x"] as? Double, let y = args["y"] as? Double {
                                     let point = screenPoint(pid, x, y, screenSpace: args["coord_space"] as? String == "screen")
-                                    await withFocusGuard(pid, preserveElementFocus: !foregroundInput) {
-                                        postMouse(pid, .rightMouseDown, point, .right, global: true); postMouse(pid, .rightMouseUp, point, .right, global: true)
+                                    try await withFocusGuard(pid, background: !foregroundInput) {
+                                        try postMouse(pid, .rightMouseDown, point, .right, global: foregroundInput, windowID: args["window_id"] as? Int); try postMouse(pid, .rightMouseUp, point, .right, global: foregroundInput, windowID: args["window_id"] as? Int)
                                     }
                                     reply(fd, ["id": id, "ok": true, "data": ["menu": "@\(Int(x)),\(Int(y))"] as [String: Any]] as [String: Any])
                                 } else { throw NSError(domain: "menu", code: 64, userInfo: [NSLocalizedDescriptionKey: "menu_needs_ref_or_pixel: 要么给一个来自最近一次观察的 ref，要么给 x/y 坐标"]) }
@@ -2243,8 +2165,8 @@ DispatchQueue.global().async {
                                 }
                                 switch method {
                                 case "unicode":
-                                    try await withFocusGuard(pid, preserveElementFocus: !foregroundInput) {
-                                        try postUnicode(pid, text, windowID: foregroundInput ? args["window_id"] as? Int : nil)
+                                    try await withFocusGuard(pid, background: !foregroundInput) {
+                                        try postUnicode(pid, text, global: foregroundInput, windowID: args["window_id"] as? Int)
                                     }
                                 case "ax":
                                     // AX 那条不需要键盘焦点，但需要 ref —— 没有就明说。
@@ -2265,7 +2187,7 @@ DispatchQueue.global().async {
                                     let strokes: [PhysicalStroke]
                                     if let plannedStrokes { strokes = plannedStrokes }
                                     else { strokes = try await MainActor.run { try PhysicalInput.currentLayoutPlan(text) } }
-                                    try await withFocusGuard(pid, preserveElementFocus: !foregroundInput) {
+                                    try await withFocusGuard(pid, background: !foregroundInput) {
                                         for stroke in strokes {
                                             try postKey(pid, keyCode: stroke.keyCode, flags: stroke.flags, global: foregroundInput, windowID: foregroundInput ? args["window_id"] as? Int : nil)
                                         }
@@ -2292,7 +2214,7 @@ DispatchQueue.global().async {
                                 let combo = args["key"] as? String ?? ""
                                 guard let (keyCode, flags) = parseKeyCombo(combo) else { throw NSError(domain: "key", code: 64, userInfo: [NSLocalizedDescriptionKey: "unknown_key"]) }
                                 let global = foregroundInput || (args["global"] as? Bool ?? false)
-                                try await withFocusGuard(pid, preserveElementFocus: !foregroundInput) {
+                                try await withFocusGuard(pid, background: !foregroundInput) {
                                     try postKey(pid, keyCode: keyCode, flags: flags, global: global, windowID: foregroundInput ? args["window_id"] as? Int : nil)
                                 }
                                 var pressed: [String: Any] = ["pressed": combo, "global": global]
@@ -2327,9 +2249,9 @@ DispatchQueue.global().async {
                                 // 参照的 scroll 是 `scroll <ref> <up|down|…>` —— 目标由 **ref** 指定，
                                 // 而不是只给 pid、让守护进程自己猜哪个滚动区。给了 ref 就按 ref 走。
                                 let refArea: AXUIElement? = (args["ref"] as? String).flatMap { refTables[pid]?[$0] }
-                                var data = route == "wheel" ? nil : await withFocusGuard(pid, preserveElementFocus: !foregroundInput) { axScroll(pid, direction: direction, notches: amount, pages: pagesArg, refArea: refArea) }
+                                var data = route == "wheel" ? nil : await withFocusGuard(pid, background: !foregroundInput) { axScroll(pid, direction: direction, notches: amount, pages: pagesArg, refArea: refArea) }
                                 if data == nil && route != "ax" {
-                                    await withFocusGuard(pid, preserveElementFocus: !foregroundInput) {
+                                    await withFocusGuard(pid, background: !foregroundInput) {
                                         // 滚轮只认行数。给了 pages 就换算 —— 但**网页内容量不出页有多大**
                                         // （内容高度不暴露），所以这是估算，回执里如实标出来。
                                         let notches = pagesArg.map { max(1, Int(($0 * linesPerPage).rounded())) } ?? amount

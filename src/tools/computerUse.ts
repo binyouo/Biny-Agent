@@ -9,17 +9,18 @@ import type { DriverReply } from "../computer/controller.js";
 import { renderElementTree, type ElementLike } from "../computer/elementTree.js";
 
 const commonProperties = { pid: { type: "integer" as const, minimum: 1 }, windowId: { type: "string" as const, pattern: "^[1-9][0-9]{0,19}$", description: "Exact window ID from ComputerList; preserve as decimal string." } };
-export function createComputerUseTools(endpoint: BrowserAutomationEndpoint): Tool[] {
-  return [
+export type ComputerToolCaller = (method: string, args: Record<string, unknown>, context: ToolExecutionContext, mutation: boolean) => Promise<DriverReply>;
+export function createComputerUseTools(call: ComputerToolCaller): Tool[] {
+  const tools: Tool[] = [
     {
       name: "ComputerMirror", description: "Open a live mirror of an approved native window without raising the application. Choose an exact pid/windowId from ComputerList. onMinimize arms presentation when the user minimizes the window. List mirrors and frame age, or close this session's mirrors. Does not restore or activate the source window.", risk: "execute", capability: "computer.mirror",
       parameters: { type: "object", properties: { operation: { type: "string", enum: ["open", "close", "list"] }, ...commonProperties, onMinimize: { type: "boolean" }, all: { type: "boolean" } }, required: ["operation"], additionalProperties: false }, schema: computerMirrorSchema,
-      resolveExecution: args => execution(endpoint, "mirror", computerMirrorSchema.parse(args), true)
+      resolveExecution: args => execution(call, "mirror", computerMirrorSchema.parse(args), true)
     },
     {
       name: "ComputerList", description: "List native apps, or exact windows of a pid. Requires user-enabled desktop control in Biny settings. Browser tasks should prefer Browser/ChromeRelay tools.", risk: "read", capability: "computer.list",
       parameters: { type: "object", properties: { pid: commonProperties.pid }, additionalProperties: false }, schema: z.object({ pid: windowTargetSchema.shape.pid.optional() }).strict(),
-      resolveExecution: args => execution(endpoint, "list", z.object({ pid: windowTargetSchema.shape.pid.optional() }).strict().parse(args), false)
+      resolveExecution: args => execution(call, "list", z.object({ pid: windowTargetSchema.shape.pid.optional() }).strict().parse(args), false)
     },
     {
       name: "ComputerObserve", description: "Observe one exact native window, returning an image, fresh capture_id and element tokens. This screenshot is sent to the current model only after the execution service checks the target application approval; it is not saved to Activity memory.", risk: "read", capability: "computer.observe",
@@ -29,11 +30,12 @@ export function createComputerUseTools(endpoint: BrowserAutomationEndpoint): Too
         interactiveOnly: { type: "boolean", description: "Limit the element list to interactive elements. Default true; set false for the full tree." },
         autoLaunch: { type: "boolean", description: "Launch the app in the background if it is not running. Default true." },
       }, required: ["pid", "windowId"], additionalProperties: false }, schema: windowObserveSchema,
-      resolveExecution: args => execution(endpoint, "observe", windowObserveSchema.parse(args), false)
+      resolveExecution: args => execution(call, "observe", windowObserveSchema.parse(args), false)
     },
     {
       name: "ComputerAction", description: "Perform one action on an approved application and exact observed window and return a fresh verification image. Coordinates must be from capture_id. Background is default; refusals never retry foreground. Foreground delivery needs user enablement and approval. Unverified delivery is not success.", risk: "execute", capability: "computer.action",
       promptGuidelines: [
+        "Use this MCP control plane for native desktop input, not Bash, biny cu, osascript, Quartz, clipboard paste or another daemon. A paused, denied, unavailable or unverified action never authorizes an alternate input or activation path.",
         "Use ComputerList, then ComputerObserve to choose an exact target; never guess IDs, element tokens or screenshot coordinates. Prefer a usable element token; custom-drawn controls without tokens require screenshot coordinates.",
         "type_text with auto, physical or unicode may omit elementToken and uses the target's keyboard focus. Only inputMethod=ax requires a writable elementToken. Click the field first, inspect the returned observation for focus, then type with its fresh capture_id.",
         "If application approval is required, ask the user to approve the app in Settings → Computer Use. Global tool approval does not override strict application approval.",
@@ -50,11 +52,12 @@ export function createComputerUseTools(endpoint: BrowserAutomationEndpoint): Too
         value: { anyOf: [{ type: "string" }, { type: "number" }, { type: "boolean" }], description: "set_value: the value to write, matching the control's own type." },
         location: { type: "integer", minimum: 0, description: "select_text: character offset to place the cursor at when no text is given." },
         length: { type: "integer", minimum: 0, description: "select_text: characters to select from location. Default 0 (cursor only)." } }, required: ["pid", "windowId", "action", "captureId"], additionalProperties: false }, schema: computerActionSchema,
-      resolveExecution: args => execution(endpoint, "action", computerActionSchema.parse(args), true)
+      resolveExecution: args => execution(call, "action", computerActionSchema.parse(args), true)
     }
   ];
+  return tools.map(tool => ({ ...tool, source: "mcp", exposure: "direct", namespace: { name: "computer-use", description: "Approved Desktop windows" } }));
 }
-function execution(endpoint: BrowserAutomationEndpoint, method: string, args: Record<string, unknown>, mutation: boolean) {
+function execution(call: ComputerToolCaller, method: string, args: Record<string, unknown>, mutation: boolean) {
   return {
     accesses: ToolAccesses.browser("biny:single-desktop"), retrySafety: mutation ? "unsafe" as const : "safe" as const,
     approvalRule: `computer_${method}`,
@@ -62,7 +65,8 @@ function execution(endpoint: BrowserAutomationEndpoint, method: string, args: Re
     display: { kind: "generic" as const, summary: `Computer ${method}`, detail: { ...args, text: args.text === undefined ? undefined : "[input hidden]" } },
     async execute(context: ToolExecutionContext): Promise<unknown> {
       if (!context.sessionId) throw new Error("Computer use requires an Agent session.");
-      const reply = await requestComputer(endpoint, method, { ...args, session: context.sessionId }, context.signal, mutation, () => { context.onDispatched?.(); context.onExecutionState?.("admitted", "Desktop request dispatched."); });
+      const reply = await call(method, args, context, mutation);
+      if (!reply.errorCode && reply.data.status === "unverified") context.onExecutionState?.("unknown", "Input dispatched; inspect the fresh observation before deciding the effect. Do not repeat.");
       const error = reply.errorCode ?? (reply.data.status === "unverified" ? "action_unverified: delivery may have occurred. Do not repeat; obtain a fresh observation and inspect the target." : undefined);
       // The generic tool UI must not label unverified/partial input as successful.
       const image = reply.errorCode ? undefined : reply.images[0];

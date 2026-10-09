@@ -127,6 +127,40 @@ actor Gate {
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
+test("background mouse packets name the exact window for clicks and drags without posting UI events", { skip: process.platform !== "darwin" }, async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "biny-background-input-"));
+  try {
+    const source = path.join(directory, "main.swift");
+    await writeFile(source, `
+import Foundation
+import CoreGraphics
+for type: CGEventType in [.leftMouseDown, .leftMouseUp, .leftMouseDragged, .rightMouseDown, .rightMouseUp] {
+    let event = try BackgroundInput.mouseEvent(pid: 123, windowID: 456, type: type, point: CGPoint(x: 315, y: 245), button: .left, clickState: 2)
+    precondition(event.getIntegerValueField(.mouseEventWindowUnderMousePointer) == 456, "packet omitted exact window ID")
+    precondition(event.getIntegerValueField(.mouseEventWindowUnderMousePointerThatCanHandleThisEvent) == 456)
+    precondition(event.getIntegerValueField(.eventTargetUnixProcessID) == 123)
+    precondition(event.getIntegerValueField(.mouseEventClickState) == 2)
+    precondition(event.location == CGPoint(x: 315, y: 245))
+}
+print("background packets passed")
+let focusGuard = BackgroundFocusGuard()
+focusGuard.block(123); focusGuard.block(123)
+precondition(focusGuard.shouldDropActivation(type: 13, subtype: 0, targetPID: 123))
+precondition(focusGuard.shouldDropActivation(type: 14, subtype: 8, targetPID: 123))
+precondition(!focusGuard.shouldDropActivation(type: 14, subtype: 7, targetPID: 123))
+precondition(!focusGuard.shouldDropActivation(type: 1, subtype: 0, targetPID: 123))
+precondition(!focusGuard.shouldDropActivation(type: 13, subtype: 0, targetPID: 124))
+focusGuard.release(123)
+precondition(focusGuard.shouldDropActivation(type: 13, subtype: 0, targetPID: 123))
+focusGuard.release(123)
+precondition(!focusGuard.shouldDropActivation(type: 13, subtype: 0, targetPID: 123))
+`);
+    const executable = path.join(directory, "test");
+    execFileSync("xcrun", ["swiftc", "-swift-version", "5", "native/computer-use/BackgroundInput.swift", source, "-o", executable], { timeout: 30_000 });
+    assert.match(execFileSync(executable, { encoding: "utf8", timeout: 5_000 }), /background packets passed/);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
 test("double modifier requires separate bare presses and resets after a chord", { skip: process.platform !== "darwin" }, async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "biny-modifier-"));
   try {
