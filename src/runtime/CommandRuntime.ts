@@ -272,7 +272,7 @@ export async function createCommandRuntime(workspaceRoot: string, options: Comma
     options.browserAutomation,
     () => selectionStateForConfig(toolModelConfig)
   );
-  const browserToolNames = ["BrowserOpen", "BrowserReadDom", "BrowserClick", "BrowserType", "BrowserPress", "ComputerMirror", "ComputerList", "ComputerObserve", "ComputerAction"];
+  const browserToolNames = ["BrowserOpen", "BrowserReadDom", "BrowserClick", "BrowserType", "BrowserPress", "ComputerLaunch", "ComputerMirror", "ComputerList", "ComputerObserve", "ComputerAction"];
   let registeredMcpTools: string[] = [];
   const setBrowserAutomation = (endpoint?: BrowserAutomationEndpoint): void => {
     for (const name of [...browserToolNames, "WebSearch", "WebFetch"]) toolRegistry.unregister(name);
