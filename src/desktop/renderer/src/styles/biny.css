@@ -5362,15 +5362,7 @@ button.capability-check[aria-checked="true"] {
 
 .biny-activity-suggestions .suggestion-chip:active { transform: translateY(0) scale(.98); }
 .biny-activity-suggestions .suggestion-chip:disabled { pointer-events: none; opacity: .5; }
-.biny-activity-suggestion-placeholder {
-  width: 112px;
-  height: 28px;
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--biny-surface-soft) 50%, transparent);
-  animation: biny-activity-suggestion-pulse 2s cubic-bezier(.4, 0, .6, 1) infinite;
-}
-.biny-activity-suggestions .suggestion-chip,
-.biny-activity-suggestion-skeleton {
+.biny-activity-suggestions .suggestion-chip {
   opacity: 0;
   will-change: transform, opacity;
   animation: biny-activity-suggestion-pop .42s cubic-bezier(.34, 1.56, .64, 1) forwards;
@@ -5380,11 +5372,8 @@ button.capability-check[aria-checked="true"] {
   60% { transform: translateY(0) scale(1.04); }
   100% { opacity: 1; transform: translateY(0) scale(1); }
 }
-@keyframes biny-activity-suggestion-pulse { 50% { opacity: .5; } }
 @media (prefers-reduced-motion: reduce) {
-  .biny-activity-suggestions .suggestion-chip,
-  .biny-activity-suggestion-skeleton,
-  .biny-activity-suggestion-placeholder { opacity: 1; animation: none; transition: none; transform: none; }
+  .biny-activity-suggestions .suggestion-chip { opacity: 1; animation: none; transition: none; transform: none; }
 }
 
 /* 新会话欢迎区（hero）。 */
