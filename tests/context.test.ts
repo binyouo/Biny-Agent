@@ -167,10 +167,10 @@ async function main(): Promise<void> {
     await testRestoreWithoutPersistedBudgetUsesHistoryEstimate();
     await testSessionReplayAndAgentResume();
     await testCrystalHistoricalMaterial();
-    await testCrystalThreadBackfill();
+    await testCrystalCurrentRunAnchors();
     await testCrystalSemanticDotProduct();
     await testCrystalDormancyWithoutNewAnchors();
-    await testCrystalFailedAndCancelledTurns();
+    await testCrystalFailedAndCancelledTurnContribution();
     await testTemporalCluesFromDurableFailedAndCancelledMessages();
     await testCheckpointIsResumeTruthSource();
     await testCheckpointPersistenceFailureStopsSession();
@@ -2238,13 +2238,16 @@ function hasToolResult(message: AgentMessage | undefined, toolCallId: string): b
   return message?.role === "toolResult" && message.toolCallId === toolCallId;
 }
 
-async function testCrystalFailedAndCancelledTurns(): Promise<void> {
-  for (const status of ["failed", "cancelled"] as const) {
+async function testCrystalFailedAndCancelledTurnContribution(): Promise<void> {
+  for (const { status, contribute } of [
+    { status: "failed", contribute: false }, { status: "failed", contribute: true },
+    { status: "cancelled", contribute: false }, { status: "cancelled", contribute: true }
+  ] as const) {
     await withTempWorkspace(async (workspaceRoot) => {
       await ensureAgentDirs(workspaceRoot);
       const config = testConfig();
       config.context.memory.useMemories = false;
-      config.context.memory.generateMemories = false;
+      config.context.memory.generateMemories = contribute;
       const model: AgentModel = { provider: "test", modelId: "terminal-crystal", stream: async () => { throw new Error("Terminal fixture model failure"); } };
       const agent = new AgentSession({ workspaceRoot, config, model, toolRegistry: new ToolRegistry(), permissionManager: new PermissionManager({ ...config.permission, source: "test" }), recorder: new SessionRecorder(workspaceRoot) });
       await agent.initialize();
@@ -2259,7 +2262,8 @@ async function testCrystalFailedAndCancelledTurns(): Promise<void> {
       } finally {
         await agent.close();
       }
-      assert.deepEqual(seen, [input]);
+      assert.deepEqual(seen, contribute ? [input] : [],
+        "Durable failed and cancelled turns contribute Crystal anchors only when that turn enabled contribution.");
     });
   }
 }
@@ -2416,7 +2420,7 @@ async function testCrystalDormancyWithoutNewAnchors(): Promise<void> {
     await ensureAgentDirs(workspaceRoot);
     const config = testConfig();
     config.context.memory.useMemories = false;
-    config.context.memory.generateMemories = false;
+    config.context.memory.generateMemories = true;
     const recorder = new SessionRecorder(workspaceRoot, "crystal-aging");
     recorder.record({ type: "user_message", messageId: "aging-processed", content: "Already processed topic" });
     const model: AgentModel = { provider: "test", modelId: "aging-test", stream: async () => {
@@ -2449,7 +2453,7 @@ async function testCrystalDormancyWithoutNewAnchors(): Promise<void> {
   });
 }
 
-async function testCrystalThreadBackfill(): Promise<void> {
+async function testCrystalCurrentRunAnchors(): Promise<void> {
   await withTempWorkspace(async (workspaceRoot) => {
     await ensureAgentDirs(workspaceRoot);
     const saved = new SessionRecorder(workspaceRoot, "crystal-backfill");
@@ -2460,7 +2464,7 @@ async function testCrystalThreadBackfill(): Promise<void> {
     await saved.close();
     const config = testConfig();
     config.context.memory.useMemories = false;
-    config.context.memory.generateMemories = false;
+    config.context.memory.generateMemories = true;
     const model: AgentModel = { provider: "test", modelId: "backfill-test", stream: async () => (async function* (): AsyncGenerator<ModelStreamEvent> {
       yield { type: "text-delta", text: "Done" };
       yield { type: "finish", reason: "stop" };
@@ -2485,10 +2489,11 @@ async function testCrystalThreadBackfill(): Promise<void> {
     } finally {
       await agent.close();
     }
-    assert.deepEqual(seen.map((entry) => entry.text), ["Old backlog topic", "Selected backlog topic", "Newest backlog topic", "One more backlog topic"]);
-    assert.deepEqual(seen.slice(0, 2).map((entry) => entry.day), ["2026-08-01", "2026-08-02"]);
-    assert.equal(count, 4);
-    assert.equal(new Set(seen.map((entry) => entry.anchorId)).size, 4);
+    assert.deepEqual(seen.map((entry) => entry.text), ["Newest backlog topic", "One more backlog topic"],
+      "Contributing turns process only their own user anchors; restored history and discarded branches are not backfilled.");
+    assert.ok(seen.every((entry) => !["backfill-old", "backfill-selected", "backfill-discarded"].includes(entry.anchorId)));
+    assert.equal(count, 2);
+    assert.equal(new Set(seen.map((entry) => entry.anchorId)).size, 2);
   });
 }
 
@@ -2604,13 +2609,19 @@ async function testCrystalHistoricalMaterial(): Promise<void> {
         await released.promise;
         return ["ShutdownEvidence"];
       };
+      const personalization = await agent.getPersonalizationState();
+      await agent.updateChatPersonalization({ contributeMemories: true }, personalization.catalogRevision);
       await agent.runTask("Keep ShutdownEvidence across shutdown.");
       let closed = false;
       const closing = agent.close().then(() => { closed = true; });
+      let entryTimeout: ReturnType<typeof setTimeout> | undefined;
       try {
-        await entered.promise;
+        await Promise.race([entered.promise, new Promise<never>((_resolve, reject) => {
+          entryTimeout = setTimeout(() => reject(new Error("Crystal extraction did not start for the contributing turn.")), 10_000);
+        })]);
         assert.equal(closed, false);
       } finally {
+        clearTimeout(entryTimeout);
         released.resolve();
         await closing;
       }
