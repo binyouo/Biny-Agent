@@ -1,9 +1,10 @@
-/** 四条真实 AI SDK adapter 的出站请求都必须携带相同、合法且互不污染的工具 schema。 */
+/** 真实 AI SDK adapter 的出站请求必须携带稳定、有合法结构且互不污染的工具 schema。 */
 import assert from "node:assert/strict";
 import { vercelAgentLoopContinue } from "../src/agent/core/vercelAgentLoop.js";
 import type { AgentModel, AgentTool } from "../src/agent/core/types.js";
 import type { ModelApiBackend } from "../src/config/schema.js";
 import { createVercelLanguageModel } from "../src/llm/vercelModel.js";
+import { canonicalToolSchemaHash } from "../src/llm/promptCache.js";
 import type { JsonObjectSchema } from "../src/tools/schema.js";
 
 const parameters = {
@@ -62,13 +63,21 @@ for (const adapter of adapters) {
       });
     }
   });
-  for await (const _event of vercelAgentLoopContinue(
-    { messages: [{ role: "user", content: "probe" }], tools: [agentTool] },
-    { model: { ...fallbackModel, provider: adapter.providerType }, vercelModel: model, tools: [agentTool], maxSteps: 1, maxRetries: 0 }
-  )) {
-    // 400 只用于在首个出站请求后停止；断言目标是捕获到的 adapter request body。
+  const otherTool = { ...agentTool, name: "aaa_schema_probe" };
+  const orders = [[agentTool, otherTool], [otherTool, agentTool]];
+  for (const tools of orders) {
+    for await (const _event of vercelAgentLoopContinue(
+      { messages: [{ role: "user", content: "probe" }], tools },
+      { model: { ...fallbackModel, provider: adapter.providerType }, vercelModel: model, tools, maxSteps: 1, maxRetries: 0 }
+    )) {
+      // 400 只用于在首个出站请求后停止；断言目标是捕获到的 adapter request body。
+    }
   }
-  assert.equal(bodies.length, 1, `${adapter.label} should make one captured request`);
+  assert.equal(bodies.length, 2, `${adapter.label} should capture both registration orders`);
+  assert.equal(canonicalToolSchemaHash(orders[0]!), canonicalToolSchemaHash(orders[1]!));
+  // 同一 schema hash 必须对应相同出站顺序；单工具用例无法发现注册顺序破坏缓存。
+  const definitions = bodies.map((body) => (body as { tools: unknown[] }).tools);
+  assert.deepEqual(definitions[0], definitions[1], `${adapter.label} tool order must agree with cache diagnostics`);
   if (adapter.api === "chat_completions" || adapter.api === "responses") {
     assert.equal((bodies[0] as { tool_choice?: string }).tool_choice, "auto", `${adapter.label} must allow a text-only answer; a greeting must not be forced to call a tool`);
   }
