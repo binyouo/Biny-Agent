@@ -24,6 +24,8 @@ async function waitFor(fn, ...args) {
 }
 async function focus(index) {
   win.focus();
+  win.webContents.focus();
+  await waitFor(() => document.hasFocus());
   await evaluate(index => window.__disclosureQa.elements()[index].focus(), index);
   assert.equal(await evaluate(index => document.activeElement === window.__disclosureQa.elements()[index], index), true);
 }
