@@ -99,6 +99,8 @@ export async function writeSessionSnapshot(
   fingerprint: { size: number; mtimeMs: number },
   replay: SessionReplay
 ): Promise<void> {
+  // A checkpoint-scoped retry cannot be reused by an ordinary JSONL-only reader.
+  if (replay.retrySourceEvents !== undefined) return;
   try {
     const snapPath = snapshotFilePath(jsonlPath);
     const data: SessionSnapshotData = {

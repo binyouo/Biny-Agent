@@ -595,18 +595,23 @@ export class TemporalMemoryIndex {
       if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
     }
     const db = new DatabaseSync(databasePath);
-    db.exec("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000; PRAGMA foreign_keys=ON");
-    db.exec(`
-      CREATE TABLE IF NOT EXISTS temporal_sources(id TEXT PRIMARY KEY,session_id TEXT NOT NULL,message_id TEXT NOT NULL,source_hash TEXT NOT NULL,sent_at TEXT,time_zone TEXT,parser TEXT NOT NULL,facts_indexed INTEGER NOT NULL DEFAULT 0);
-      CREATE TABLE IF NOT EXISTS temporal_session_files(session_id TEXT PRIMARY KEY,file_path TEXT NOT NULL);
-      CREATE TABLE IF NOT EXISTS temporal_clues(id TEXT PRIMARY KEY,source_id TEXT NOT NULL REFERENCES temporal_sources(id) ON DELETE CASCADE,session_id TEXT NOT NULL,message_id TEXT NOT NULL,expression TEXT NOT NULL,date TEXT,end_date TEXT,time TEXT,offset INTEGER NOT NULL,quote TEXT NOT NULL,ignored INTEGER NOT NULL DEFAULT 0);
-      CREATE INDEX IF NOT EXISTS temporal_clues_date ON temporal_clues(date,session_id);
-      CREATE TABLE IF NOT EXISTS temporal_seen(day TEXT NOT NULL,clue_id TEXT NOT NULL REFERENCES temporal_clues(id) ON DELETE CASCADE,PRIMARY KEY(day,clue_id));
-      CREATE TABLE IF NOT EXISTS temporal_facts(id TEXT PRIMARY KEY,source_id TEXT NOT NULL REFERENCES temporal_sources(id) ON DELETE CASCADE,session_id TEXT NOT NULL,message_id TEXT NOT NULL,title TEXT NOT NULL,quote TEXT NOT NULL,state TEXT NOT NULL,event_date TEXT,due_date TEXT,completed_date TEXT);
-      CREATE INDEX IF NOT EXISTS temporal_facts_event ON temporal_facts(event_date);
-      CREATE INDEX IF NOT EXISTS temporal_facts_due ON temporal_facts(due_date);
-      CREATE INDEX IF NOT EXISTS temporal_facts_completed ON temporal_facts(completed_date);
-    `);
+    try {
+      db.exec("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000; PRAGMA foreign_keys=ON");
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS temporal_sources(id TEXT PRIMARY KEY,session_id TEXT NOT NULL,message_id TEXT NOT NULL,source_hash TEXT NOT NULL,sent_at TEXT,time_zone TEXT,parser TEXT NOT NULL,facts_indexed INTEGER NOT NULL DEFAULT 0);
+        CREATE TABLE IF NOT EXISTS temporal_session_files(session_id TEXT PRIMARY KEY,file_path TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS temporal_clues(id TEXT PRIMARY KEY,source_id TEXT NOT NULL REFERENCES temporal_sources(id) ON DELETE CASCADE,session_id TEXT NOT NULL,message_id TEXT NOT NULL,expression TEXT NOT NULL,date TEXT,end_date TEXT,time TEXT,offset INTEGER NOT NULL,quote TEXT NOT NULL,ignored INTEGER NOT NULL DEFAULT 0);
+        CREATE INDEX IF NOT EXISTS temporal_clues_date ON temporal_clues(date,session_id);
+        CREATE TABLE IF NOT EXISTS temporal_seen(day TEXT NOT NULL,clue_id TEXT NOT NULL REFERENCES temporal_clues(id) ON DELETE CASCADE,PRIMARY KEY(day,clue_id));
+        CREATE TABLE IF NOT EXISTS temporal_facts(id TEXT PRIMARY KEY,source_id TEXT NOT NULL REFERENCES temporal_sources(id) ON DELETE CASCADE,session_id TEXT NOT NULL,message_id TEXT NOT NULL,title TEXT NOT NULL,quote TEXT NOT NULL,state TEXT NOT NULL,event_date TEXT,due_date TEXT,completed_date TEXT);
+        CREATE INDEX IF NOT EXISTS temporal_facts_event ON temporal_facts(event_date);
+        CREATE INDEX IF NOT EXISTS temporal_facts_due ON temporal_facts(due_date);
+        CREATE INDEX IF NOT EXISTS temporal_facts_completed ON temporal_facts(completed_date);
+      `);
+    } catch (error) {
+      try { db.close(); } catch { /* Preserve the initialization failure. */ }
+      throw error;
+    }
     this.database = db;
     return db;
   }

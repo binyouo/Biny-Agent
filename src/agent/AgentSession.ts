@@ -1,5 +1,6 @@
 import type { TaskCommunication } from "../runtime/TaskCommunication.js";
 import { promises as fs } from "node:fs";
+import { isDeepStrictEqual } from "node:util";
 import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
 import { configSchema, type AgentConfig } from "../config/schema.js";
@@ -26,7 +27,9 @@ import { createTemporalModelExtractor } from "../session/temporalModelExtractor.
 import { activeSessionEventsForPath, activeSessionMessageIds, replaySessionEvents, sessionMessageTree, type SessionMessageReference, type SessionReplay } from "../session/replay.js";
 import { tryReadSessionSnapshot, writeSessionSnapshot, snapshotToReplay, type SessionSnapshotData } from "../session/sessionSnapshot.js";
 import { runtimeEventsForRun, type RuntimeEventSink, type RuntimeHighWater } from "../session/runtimeEvent.js";
-import { pausedTurnAvailable, resolveContinuationPlan } from "../session/recoveryPlan.js";
+import { assertRetryWindow, type RetryCommit, type RetryWindow } from "../session/retryCommit.js";
+import { resolveRetryScope, type RetryOrigin } from "../session/retryOrigin.js";
+import { admissionRecoveryInputConflict, pausedTurnAvailable, pausedTurnMarker, resolveContinuationPlan } from "../session/recoveryPlan.js";
 import type { CapabilityStore } from "../runtime/CapabilityStore.js";
 import { CapabilityOutcomeResolver } from "../session/capabilityOutcomeResolver.js";
 import {
@@ -83,7 +86,7 @@ import type {
   AgentTurnOutcome
 } from "./types.js";
 import { AgentTurnCancellationError, type AgentTurnCancellationReason } from "./types.js";
-import { ContextMemory, type RunContextCompaction } from "./context/ContextMemory.js";
+import { ContextMemory, type ContextCompactionOptions, type RunContextCompaction } from "./context/ContextMemory.js";
 import {
   refreshChatDailyDiary,
   type ChatDiaryRefreshResult
@@ -190,9 +193,6 @@ import {
 const interruptedTurnMarker = `<turn_aborted>
 The user intentionally interrupted the previous turn. Running processes may still be active in the background. If tools or commands were cancelled, they may have partially executed.
 </turn_aborted>`;
-const pausedTurnMarker = `<turn_paused>
-The previous turn was paused before completion. Running processes may still be active in the background. If tools or commands were cancelled, they may have partially executed.
-</turn_paused>`;
 
 export interface AgentSessionOptions {
   workspaceRoot: string;
@@ -341,6 +341,8 @@ interface TurnArgs {
   selectionMessageId?: string;
   runOptions: AgentRunOptions & {
     initialToolBudget?: ToolExecutionBudgetSnapshot;
+    retryOrigin?: RetryOrigin;
+    retryWindow?: RetryWindow;
     previousTerminals?: InterruptedTurnTerminal[];
   };
   abortSignal: AbortSignal;
@@ -348,6 +350,16 @@ interface TurnArgs {
   completedStepsBeforeRun: number;
   messageQueues: ActiveRunMessageQueues;
   personalization: ResolvedChatPersonalization;
+}
+
+interface UserAdmissionOptions {
+  runId: string;
+  turnId: string;
+  messageId: string;
+  attachments?: AgentAttachment[];
+  replaceUserMessageId?: string;
+  replacementUserMessageId?: string;
+  source?: "heartbeat" | "auto";
 }
 
 interface QueuedRunMessage {
@@ -375,6 +387,7 @@ const maxQueuedRunMessages = 100;
  */
 export class AgentSession {
   private readonly contextMemory: ContextMemory;
+  private readonly createStagingContextMemory: () => ContextMemory;
   private readonly localMemory: LocalMemory;
   private readonly sessionSearchIndex = new SessionSearchIndex();
   private readonly identityStorage: IdentityStorage;
@@ -408,7 +421,10 @@ export class AgentSession {
   private readonly pendingMemoryTasks = new Set<Promise<unknown>>();
   private temporalIndexFlight: Promise<void> = Promise.resolve();
   /** Runtime 已接纳的普通发送；让 canonical user_message 先于前台 generating 状态落盘。 */
-  private readonly admittedUserMessages = new Map<string, { input: string; reference: SessionMessageReference }>();
+  private readonly admittedUserMessages = new Map<string, { input: string; reference: SessionMessageReference; identity: UserAdmissionOptions }>();
+  private readonly pendingUserAdmissions = new Map<string, { input: string; identity: UserAdmissionOptions; promise: Promise<void> }>();
+  /** Only a hint to read fresh selected facts before leaving an owned retry view. */
+  private retryScopedView = false;
   private closed = false;
   /** checkpoint 持久化结果不确定后只能关闭重开，禁止继续使用已经压缩的内存视图。 */
   private checkpointPersistenceError: Error | undefined;
@@ -597,9 +613,20 @@ export class AgentSession {
         return getModel();
       }
     };
-    this.contextMemory = new ContextMemory(
+    const contextCompactionOptions: ContextCompactionOptions = {
+        ...options.config.context.compaction,
+        resolveSummaryModel,
+        resolveSummaryBudget: (model) => summaryBudgets.get(model),
+        configurationIdentity: () => createHash("sha256").update(JSON.stringify([
+          this.activeConfig.providers, this.activeConfig.models, this.activeConfig.thinking, this.activeConfig.chat.maxOutputTokens
+        ])).digest("hex"),
+        onFailure: async () => {
+          await this.recorder.recordAndFlush({ type: "assistant_message", content: "", contextState: this.checkpointPersistenceError ? undefined : this.contextMemory.snapshot() });
+        }
+      };
+    const makeContextMemory = (contextWorkspace: WorkspaceContext): ContextMemory => new ContextMemory(
       getModel,
-      workspace,
+      contextWorkspace,
       this.localMemory,
       initialContextBudget?.maxInputTokens ?? options.config.context.maxInputTokens ?? defaultModelContextWindow,
       options.config.context.instructionsMaxBytes,
@@ -610,22 +637,16 @@ export class AgentSession {
         const fallback = options.config.context.maxInputTokens ?? defaultModelContextWindow;
         return { contextWindow: fallback, contextWindowIsFallback: true, maxInputTokens: fallback, maxOutputTokens: undefined };
       },
-      {
-        ...options.config.context.compaction,
-        resolveSummaryModel,
-        resolveSummaryBudget: (model) => summaryBudgets.get(model),
-        configurationIdentity: () => createHash("sha256").update(JSON.stringify([
-          this.activeConfig.providers, this.activeConfig.models, this.activeConfig.thinking, this.activeConfig.chat.maxOutputTokens
-        ])).digest("hex"),
-        onFailure: async () => {
-          await this.recorder.recordAndFlush({ type: "assistant_message", content: "", contextState: this.checkpointPersistenceError ? undefined : this.contextMemory.snapshot() });
-        }
-      },
+      contextCompactionOptions,
       onModelRequest,
       () => this.sideModelRequestContext(),
       this.memoryRetriever,
       () => this.activeConfig.activity.enabled
     );
+    this.contextMemory = makeContextMemory(workspace);
+    this.createStagingContextMemory = () => makeContextMemory(new WorkspaceContext(
+      options.workspaceRoot, options.config.workspace.ignore, options.config.context.instructionsMaxBytes
+    ));
     this.contextMemory.setPersonalization(
       {},
       this.activePersonalization.useMemories
@@ -995,12 +1016,13 @@ export class AgentSession {
   }
 
   /** 只补齐 session 中缺失的协议结果；恢复过程不调用任何工具执行函数。 */
-  private async reconcileInterruptedToolExecutions(expectedRuntimeHighWater?: RuntimeHighWater): Promise<SessionReplay> {
+  private async reconcileInterruptedToolExecutions(turn: InterruptedTurn): Promise<SessionReplay> {
     await this.recorder.flush().catch(() => undefined);
     const events = await readSessionEvents(this.recorder.filePath);
     const replay = replaySessionEvents(events, {
       sessionId: this.recorder.sessionId,
-      expectedRuntimeHighWater,
+      expectedRuntimeHighWater: turn.runtimeHighWater,
+      retryOrigin: turn.retryOrigin,
       resolveToolOutcome: this.resolveDurableToolOutcome
     });
     for (const event of replay.recoveredToolResults) {
@@ -1028,7 +1050,7 @@ export class AgentSession {
     try {
       let replay: SessionReplay;
       try {
-        replay = await this.reconcileInterruptedToolExecutions(turn.runtimeHighWater);
+        replay = await this.reconcileInterruptedToolExecutions(turn);
       } catch (error) {
         const message = `无法校验会话运行高水位，恢复已阻塞：${errorMessage(error)}`;
         const outcome: AgentTurnOutcome = {
@@ -1047,6 +1069,13 @@ export class AgentSession {
         yield { type: "error", message };
         yield { type: "status", status: "blocked" };
         yield doneEvent(outcome);
+        return;
+      }
+      if (turn.retryCommit && !replay.events.some(event => event.type === "turn_status" && event.runtime?.runId === turn.retryCommit!.runId)) {
+        const completed = await this.finishRetryCommit(turn);
+        yield { type: "assistant.completed", content: completed.output, notification: completed.notification };
+        yield { type: "status", status: completed.status === "failed" ? "error" : completed.status };
+        yield doneEvent(completed);
         return;
       }
       const turnLimit = runOptions.maxSteps ?? resolveRunBudget(this.options.config.agent).hardStepLimit;
@@ -1081,7 +1110,8 @@ export class AgentSession {
       const replayMessages = await this.rehydrateSessionAttachments(
         replay.messages,
         replay.events,
-        replay.contextStartUserMessageIndex
+        replay.contextStartUserMessageIndex,
+        replay.retrySourceEvents ? replay.messageReferences : undefined
       );
       // 精确续跑沿用暂停前的断点；暂停标记只供之后发起的新回合读取。
       const replayIndexes = replayMessages.map((_, index) => index).filter((index) =>
@@ -1092,6 +1122,31 @@ export class AgentSession {
       const recoveredReferences = replayIndexes.length
         ? replayIndexes.map((index) => replay.messageReferences[index])
         : turn.messages.map(() => undefined);
+      let recoveryUserIndex = recoveredMessages.length - 1;
+      while (recoveryUserIndex >= 0 && recoveredMessages[recoveryUserIndex]?.role !== "user") recoveryUserIndex -= 1;
+      const recoveryUserId = recoveredReferences[recoveryUserIndex]?.id;
+      if (admissionRecoveryInputConflict(turn, replay.events, recoveryUserId)) {
+        const message = "Cannot safely continue: the selected conversation would resume a different user message from the one admitted by this checkpoint.";
+        const outcome: AgentTurnOutcome = {
+          status: "blocked",
+          stopReason: "blocked",
+          steps: turn.completedSteps,
+          output: "",
+          error: message,
+          resumable: false,
+          blockedReason: "environment_unavailable",
+          requiredAction: "Inspect the saved conversation and start a new explicit input. The checkpoint has been preserved."
+        };
+        this.recordError(message);
+        await this.recordTurnOutcome(outcome);
+        yield { type: "error", message };
+        yield { type: "status", status: "blocked" };
+        yield doneEvent(outcome);
+        return;
+      }
+      const restoreAdmittedFollowup = !turn.retryOrigin && turn.prompt === "" && turn.completedSteps === 0 && !turn.terminal
+        && recoveredMessages.at(-1)?.role === "assistant" && replay.events.some(event => event.type === "user_message"
+          && event.auditOnly && event.metadata?.turnTrigger === "resume_interrupted_task" && event.runtime?.turnId === turnId);
       const continuationMessages = turn.terminal
         ? [...recoveredMessages, runtimeContinuationMessage(turn.terminal)]
         : recoveredMessages;
@@ -1102,11 +1157,12 @@ export class AgentSession {
       if (replay.contextCheckpoint) this.contextMemory.setCheckpoint(replay.contextCheckpoint);
       this.contextMessageReferences = recoveredReferences.map((reference) => reference === undefined ? undefined : { ...reference });
       this.nextSessionMessageIndex = Math.max(replay.totalMessageCount, replay.messageTree.length);
+      this.retryScopedView = replay.retrySourceEvents !== undefined;
       const previousTerminals = [
         ...(turn.previousTerminals ?? []),
         ...(turn.terminal ? [turn.terminal] : [])
       ];
-      if (turn.systemPrompt === undefined && turn.completedSteps === 0) {
+      if (!turn.retryOrigin && turn.systemPrompt === undefined && turn.completedSteps === 0) {
         const emptyFollowup = turn.prompt === "" && replay.events.some((event) => event.type === "user_message"
           && event.auditOnly && event.metadata?.turnTrigger === "resume_interrupted_task"
           && event.runtime?.turnId === turnId);
@@ -1117,14 +1173,13 @@ export class AgentSession {
           yield* this.runTurn("", {
             ...runOptions, runId, turnId, maxSteps: recoveryPlan.remainingSteps,
             recordSessionUserMessage: false, emptyTurn: true, emptyTurnAuditRecorded: true,
+            restoreAdmittedFollowup: replayMessages.at(-1)?.role === "assistant",
             emotionAnalysis: false
           });
           return;
         }
         // 只有输入已确认、准备尚未完成的断点，复用原消息的准备路径，避免裸上下文绕过工作区指令。
-        let userIndex = recoveredMessages.length - 1;
-        while (userIndex >= 0 && recoveredMessages[userIndex]?.role !== "user") userIndex -= 1;
-        const userId = recoveredReferences[userIndex]?.id;
+        const userId = recoveryUserId;
         if (!userId) throw new Error("无法找到中断任务的原始输入，恢复已阻塞。");
         yield* this.retry(userId, { ...runOptions, runId, turnId, maxSteps: recoveryPlan.remainingSteps, emotionAnalysis: false });
         return;
@@ -1141,6 +1196,16 @@ export class AgentSession {
         completedStepsBeforeRun: turn.completedSteps,
         initialToolBudget: restartToolBudget(readToolBudget(turn.facts), turn.completedSteps === 0),
         recoveryCheckpoint: turn,
+        restoreAdmittedFollowup,
+        retryOrigin: turn.retryOrigin,
+        retryWindow: turn.retryWindow,
+        ...(turn.retryOrigin ? {
+          retryOfMessageId: turn.retryOrigin.targetMessageId,
+          retryParentMessageId: turn.retryOrigin.baseParentMessageId,
+          retrySlotId: turn.retryOrigin.targetSlotId,
+          replyToMessageId: turn.retryOrigin.replyToMessageId,
+          messageId: turn.terminal ? runOptions.messageId ?? randomUUID() : turn.retryWindow?.replyMessageId
+        } : {}),
         previousTerminals
       });
     } finally {
@@ -1148,27 +1213,62 @@ export class AgentSession {
     }
   }
 
+  private async finishRetryCommit(expected: InterruptedTurn): Promise<AgentTurnOutcome> {
+    const release = this.beginOperation("retry reply commit");
+    try {
+      const turn = await this.turnStore.load();
+      if (!turn?.retryOrigin || !turn.retryWindow || !turn.retryCommit || !turn.runtimeHighWater
+        || !isDeepStrictEqual(turn, expected)) throw new Error("Retry commit checkpoint changed before recovery.");
+      await this.recorder.flush();
+      const source = await readSessionEventsForBackfill(this.recorder.filePath, 0);
+      const replay = await this.recorder.commitRetryReply({ ownerTurnId: turn.retryOrigin.ownerTurnId,
+        replyMessageId: turn.retryWindow.replyMessageId, expectedRuntimeHighWater: turn.runtimeHighWater,
+        sourcePrefix: { byteLength: source.byteLength, sha256: source.contentHash } });
+      const outcome = turn.retryCommit.outcome;
+      if (outcome.status !== "blocked" && !(outcome.status === "incomplete" && outcome.resumable)) {
+        if (!isDeepStrictEqual(await this.turnStore.load(), turn)) throw new Error("Retry checkpoint changed before terminal cleanup.");
+        await this.turnStore.clear();
+      }
+      const messages = await this.rehydrateSessionAttachments(replay.messages, replay.events, replay.contextStartUserMessageIndex, replay.messageReferences);
+      this.contextMemory.restore(messages, replay.contextState ?? replay.contextUsage);
+      if (replay.contextCheckpoint) this.contextMemory.setCheckpoint(replay.contextCheckpoint);
+      this.contextMessageReferences = replay.messageReferences;
+      this.nextSessionMessageIndex = Math.max(replay.totalMessageCount, replay.messageTree.length);
+      this.retryScopedView = outcome.status !== "completed" && replay.retrySourceEvents !== undefined;
+      return outcome;
+    } finally { release(); }
+  }
+
   /** 暂停后的空输入沿会话历史开始新回合，不使用旧 turn 的执行断点。 */
   async *startInterruptedFollowup(runOptions: AgentRunOptions = {}): AsyncGenerator<AgentSessionEvent> {
     const turn = await this.interruptedTurn();
     if (!turn) throw new Error("There is no interrupted turn to continue.");
-    const replay = await this.reconcileInterruptedToolExecutions(turn.runtimeHighWater);
+    const replay = await this.reconcileInterruptedToolExecutions(turn);
     if (!pausedTurnAvailable(turn, replay)) {
       throw new Error("The previous turn is no longer paused.");
     }
     if (resolveContinuationPlan(turn, replay, Number.MAX_SAFE_INTEGER).action === "finished") {
       throw new Error("The previous turn is no longer paused.");
     }
+    if (turn.retryOrigin) {
+      // This public action starts a new task from visible session history. The
+      // exact continuation entrypoint above retains its checkpoint-owned view.
+      yield* this.runTurn("", { ...runOptions, turnId: runOptions.turnId ?? randomUUID(),
+        recordSessionUserMessage: false, emptyTurn: true, rebindPausedFollowup: true });
+      return;
+    }
     const messages = await this.rehydrateSessionAttachments(
       replay.messages,
       replay.events,
-      replay.contextStartUserMessageIndex
+      replay.contextStartUserMessageIndex,
+      replay.retrySourceEvents ? replay.messageReferences : undefined
     );
     if (!messages.length) throw new Error("The interrupted conversation has no history to continue.");
     this.contextMemory.restore(messages, replay.contextState ?? replay.contextUsage);
     if (replay.contextCheckpoint) this.contextMemory.setCheckpoint(replay.contextCheckpoint);
     this.contextMessageReferences = replay.messageReferences.map((reference) => reference === undefined ? undefined : { ...reference });
     this.nextSessionMessageIndex = Math.max(replay.totalMessageCount, replay.messageTree.length);
+    this.retryScopedView = replay.retrySourceEvents !== undefined;
     yield* this.runTurn("", {
       ...runOptions,
       turnId: runOptions.turnId ?? randomUUID(),
@@ -1550,7 +1650,8 @@ export class AgentSession {
     const replayMessages = await this.rehydrateSessionAttachments(
       replay.messages,
       activeEvents,
-      replay.contextStartUserMessageIndex
+      replay.contextStartUserMessageIndex,
+      replay.retrySourceEvents ? replay.messageReferences : undefined
     );
     const prefixMessages = replayMessages.slice(0, prefixEnd);
     const prefixReferences = replay.messageReferences.slice(0, prefixEnd).map((reference) => ({ ...reference }));
@@ -1572,6 +1673,9 @@ export class AgentSession {
     const personalization = snapshot.state.resolved;
     this.contextMemory.restore(prefixMessages, replay.contextState ?? replay.contextUsage);
     this.contextMessageReferences = prefixReferences;
+    // Mark the installed view before preflight/admission can fail. An edit
+    // replaces any earlier retry-scoped view at this same installation boundary.
+    this.retryScopedView = !replacingUser;
     const originalActiveIds = activeSessionMessageIds(recordedEvents);
     const referenceHistory = nodes.filter((node) => originalActiveIds.has(node.id)
       && node.eventIndex < (replacingUser ? userNode.eventIndex : target.eventIndex)).map((node) => node.message);
@@ -1626,9 +1730,25 @@ export class AgentSession {
     const replacementUserMessageId = replacingUser
       ? options.replacementUserMessageId ?? randomUUID()
       : undefined;
+    const runId = options.runId ?? randomUUID();
+    const turnId = options.turnId ?? randomUUID();
+    const finalMessageId = options.messageId ?? randomUUID();
+    const targetRuntime = recordedEvents[target.eventIndex]?.runtime;
+    const retryOrigin: RetryOrigin | undefined = !replacingUser && target.message.role !== "toolResult"
+      && targetRuntime && replay.runtimeHighWater
+      && !recordedEvents.some(event => event.runtime?.turnId === turnId || event.runtime?.runId === runId)
+      ? {
+        version: 1, source: "agent-session-retry", sessionId: this.recorder.sessionId,
+        ownerTurnId: turnId, initialRunId: runId, sourceUserMessageId: userNode.id,
+        targetMessageId, targetRole: target.message.role, targetRuntime: { ...targetRuntime },
+        baseParentMessageId: targetIsAssistant ? target.parentId! : userNode.id,
+        targetSlotId, replyToMessageId: userNode.id, finalMessageId,
+        admissionHighWater: { ...replay.runtimeHighWater }
+      } : undefined;
     if (replacingUser) this.recorder.restoreMessageParent(userNode.parentId);
     yield* this.runTurn(sourceInput, {
       ...options,
+      runId, turnId, messageId: finalMessageId, retryOrigin,
       attachments: sourceAttachments,
       continueFrom: continuationMessages,
       continueMessageReferences: continuationReferences,
@@ -1679,7 +1799,8 @@ export class AgentSession {
       const messages = await this.rehydrateSessionAttachments(
         replay.messages,
         activeEvents,
-        replay.contextStartUserMessageIndex
+        replay.contextStartUserMessageIndex,
+        replay.retrySourceEvents ? replay.messageReferences : undefined
       );
       this.contextMemory.restore(messages, replay.contextState ?? replay.contextUsage);
       if (replay.contextCheckpoint) this.contextMemory.setCheckpoint(replay.contextCheckpoint);
@@ -1689,6 +1810,7 @@ export class AgentSession {
       this.recorder.restoreMessageParent(
         replay.messageTree.filter((node) => activeIdSet.has(node.id)).at(-1)?.id
       );
+      this.retryScopedView = false;
     } finally {
       release();
     }
@@ -1708,18 +1830,31 @@ export class AgentSession {
    * 这一步只负责 durable admission，不读取 workspace、记忆或模型；真正的上下文准备仍由
    * runTurn 统一完成。runTurn 会复用这里产生的 reference，避免重复写入 user_message。
    */
-  async admitUserMessage(input: string, options: {
-    runId: string;
-    turnId: string;
-    messageId: string;
-    attachments?: AgentAttachment[];
-    replaceUserMessageId?: string;
-    replacementUserMessageId?: string;
-    source?: "heartbeat" | "auto";
-  }): Promise<void> {
+  async admitUserMessage(input: string, options: UserAdmissionOptions): Promise<void> {
     this.assertNotQuarantined("user message admission");
     if (!input.trim() && !(options.attachments?.length)) throw new Error("Agent prompt cannot be empty.");
-    if (this.admittedUserMessages.has(options.runId)) return;
+    const identity = structuredClone(options);
+    for (const key of ["attachments", "replaceUserMessageId", "replacementUserMessageId", "source"] as const) {
+      if (identity[key] === undefined) delete identity[key];
+    }
+    const existing = this.admittedUserMessages.get(options.runId) ?? this.pendingUserAdmissions.get(options.runId);
+    if (existing) {
+      if (existing.input !== input || !isDeepStrictEqual(existing.identity, identity)) throw new Error("User admission identity was reused with different input or options.");
+      if ("promise" in existing) await existing.promise;
+      return;
+    }
+    const promise = this.admitUserMessageOnce(input, identity);
+    const pending = { input, identity, promise };
+    this.pendingUserAdmissions.set(options.runId, pending);
+    try { await promise; }
+    finally { if (this.pendingUserAdmissions.get(options.runId) === pending) this.pendingUserAdmissions.delete(options.runId); }
+  }
+
+  private async admitUserMessageOnce(input: string, options: UserAdmissionOptions): Promise<void> {
+    const rebind = this.retryScopedView && options.replaceUserMessageId === undefined;
+    const release = rebind ? this.beginOperation("user message admission") : () => {};
+    const previousContext = this.recorder.runtimeContextSnapshot();
+    try {
     let replacement: { messageId: string; parentMessageId?: string; slotId?: string } | undefined;
     if (options.replaceUserMessageId !== undefined) {
       await this.recorder.flush();
@@ -1732,10 +1867,8 @@ export class AgentSession {
         slotId: source.slotId ?? source.id
       };
     }
-    const previousContext = this.recorder.runtimeContextSnapshot();
     this.recorder.setRuntimeContext({ runId: options.runId, turnId: options.turnId });
-    try {
-      const reference = this.recordCanonicalMessage({
+      const create = (selected?: SessionReplay): Extract<SessionEvent, { type: "user_message" }> => ({
         type: "user_message",
         metadata: options.source === undefined ? undefined : { source: options.source },
         content: input,
@@ -1744,18 +1877,55 @@ export class AgentSession {
         parentMessageId: replacement?.parentMessageId,
         slotId: replacement?.slotId,
         skills: this.skillPaths(undefined, options.runId),
-        contextUsage: this.contextMemory.getBudget(),
-        contextState: this.checkpointPersistenceError ? undefined : this.contextMemory.persistedState()
+        contextUsage: selected ? selected.contextState?.budget ?? selected.contextUsage : this.contextMemory.getBudget(),
+        contextState: selected ? selected.contextState : this.contextMemory.persistedState()
       });
+      const reference = rebind
+        ? this.referenceForRecordedMessage((await this.admitTurnFromSelectedRetryView("ordinary", create))!)
+        : this.recordCanonicalMessage(create());
       await this.recorder.flush();
       // 接收确认也要留下任务意图；上下文准备尚未完成时崩溃，仍能恢复这次输入。
       await this.turnStore.save(input, undefined, [...this.contextMemory.getHistory(), { role: "user", content: input }], 0,
         undefined, undefined, undefined, this.recorder.runtimeHighWater(), options.turnId);
-      this.admittedUserMessages.set(options.runId, { input, reference });
+      this.admittedUserMessages.set(options.runId, { input, reference, identity: options });
       this.scheduleTemporalIndex();
     } finally {
       this.recorder.setRuntimeContext(previousContext);
+      release();
     }
+  }
+
+  private async admitTurnFromSelectedRetryView(
+    kind: "ordinary" | "paused-followup" | "admitted-followup",
+    create: (selected: SessionReplay) => Extract<SessionEvent, { type: "user_message" }> | undefined
+  ): Promise<SessionEvent | undefined> {
+    const recorded = await this.recorder.admitTurnAfterRetryView(kind, async (selected, pausedMarker) => {
+      const messages = await this.rehydrateSessionAttachments(selected.messages, selected.events,
+        selected.contextStartUserMessageIndex, selected.messageReferences);
+      const references: Array<SessionMessageReference | undefined> = [...selected.messageReferences];
+      if (pausedMarker !== undefined && !(messages.at(-1)?.role === "user" && messages.at(-1)?.content === pausedMarker
+        && references.at(-1)?.id === undefined)) {
+        messages.push({ role: "user", content: pausedMarker });
+        references.push(undefined);
+      }
+      // Normalize with the same restore logic in an unused workspace view.
+      // No preparation, initialization, provider or memory work runs here.
+      const stagedContext = this.createStagingContextMemory();
+      stagedContext.restore(messages, selected.contextState ?? selected.contextUsage);
+      if (selected.contextCheckpoint) stagedContext.setCheckpoint(selected.contextCheckpoint);
+      const budget = stagedContext.getBudget();
+      const state = stagedContext.snapshot();
+      const event = create({ ...selected, contextUsage: budget, contextState: state });
+      if (kind === "ordinary" && event) event.metadata = { ...event.metadata, sentAtTimeZone: Intl.DateTimeFormat().resolvedOptions().timeZone };
+      return { event, install: () => {
+        this.contextMemory.restore(messages, state);
+        if (selected.contextCheckpoint) this.contextMemory.setCheckpoint(selected.contextCheckpoint);
+        this.contextMessageReferences = references;
+        this.nextSessionMessageIndex = Math.max(selected.totalMessageCount, selected.messageTree.length);
+      } };
+    });
+    this.retryScopedView = false;
+    return recorded;
   }
 
   queuedRunMessages(): import("../runtime/agentEvents.js").QueuedRunMessageSnapshot[] {
@@ -1883,7 +2053,12 @@ export class AgentSession {
       previousTerminals?: InterruptedTurnTerminal[];
       continueMessageReferences?: Array<SessionMessageReference | undefined>;
       emptyTurnAuditRecorded?: boolean;
+      /** Only the public paused new-turn entrypoint may request this native audit variant. */
+      rebindPausedFollowup?: boolean;
+      restoreAdmittedFollowup?: boolean;
       recoveryCheckpoint?: InterruptedTurn;
+      retryOrigin?: RetryOrigin;
+    retryWindow?: RetryWindow;
     } = {}
   ): AsyncGenerator<AgentSessionEvent> {
     const release = this.beginOperation("agent turn");
@@ -1904,7 +2079,7 @@ export class AgentSession {
       : turnController.signal;
     const retrying = runOptions.retryOfMessageId !== undefined;
     const hasProvidedContext = Boolean(runOptions.continueFrom?.length);
-    const continuing = hasProvidedContext && !retrying;
+    const continuing = hasProvidedContext && (!retrying || runOptions.recoveryCheckpoint?.retryOrigin !== undefined);
     const ordinaryRootMessage = !continuing && !retrying && !runOptions.emptyTurn && runOptions.recordSessionUserMessage !== false;
     let turnPersonalization: ResolvedChatPersonalization = this.activePersonalization;
     this.contextMemory.setPersonalization(
@@ -1929,24 +2104,25 @@ export class AgentSession {
       userMessageReference = admitted.reference;
       this.admittedUserMessages.delete(runtimeRunId);
     }
-    const recordUserMessage = (): SessionMessageReference | undefined => {
-      if (userMessageRecorded) return userMessageReference;
-      userMessageRecorded = true;
-      if ((runOptions.recordSessionUserMessage === false || runOptions.emptyTurn) && runOptions.replacementUserMessage === undefined) return undefined;
-      userMessageReference = this.recordCanonicalMessage({
+    const createUserMessage = (selected?: SessionReplay): Extract<SessionEvent, { type: "user_message" }> => ({
         type: "user_message",
         metadata: runOptions.source === undefined ? undefined : { source: runOptions.source },
         content: input,
         attachments: sessionAttachments(runOptions.attachments),
         skills: this.skillPaths(runOptions.capabilitySelection?.skills, runOptions.runId),
-        contextUsage: this.contextMemory.getBudget(),
-        contextState: this.checkpointPersistenceError ? undefined : this.contextMemory.persistedState(),
+        contextUsage: selected ? selected.contextState?.budget ?? selected.contextUsage : this.contextMemory.getBudget(),
+        contextState: selected ? selected.contextState : this.checkpointPersistenceError ? undefined : this.contextMemory.persistedState(),
         preparationUsage: this.usageRecords.slice(usageBeforePreparation),
         // 普通发送沿用回执/实时事件的 ID，避免落盘后变成另一条用户消息。
         messageId: runOptions.replacementUserMessage?.messageId ?? (retrying ? undefined : runOptions.messageId),
         parentMessageId: runOptions.replacementUserMessage?.parentMessageId,
         slotId: runOptions.replacementUserMessage?.slotId
       });
+    const recordUserMessage = (): SessionMessageReference | undefined => {
+      if (userMessageRecorded) return userMessageReference;
+      userMessageRecorded = true;
+      if ((runOptions.recordSessionUserMessage === false || runOptions.emptyTurn) && runOptions.replacementUserMessage === undefined) return undefined;
+      userMessageReference = this.recordCanonicalMessage(createUserMessage());
       return userMessageReference;
     };
     const cancellationContext = (): {
@@ -1979,8 +2155,37 @@ export class AgentSession {
       await this.fatigueService.recordMessage().catch(() => undefined);
     };
     try {
+    if (ordinaryRootMessage && !userMessageRecorded && this.retryScopedView) {
+      userMessageReference = this.referenceForRecordedMessage((await this.admitTurnFromSelectedRetryView("ordinary", createUserMessage))!);
+      userMessageRecorded = true;
+    }
+    if (runOptions.restoreAdmittedFollowup) {
+      await this.admitTurnFromSelectedRetryView("admitted-followup", () => undefined);
+      if (hasProvidedContext) {
+        runOptions.continueFrom = this.contextMemory.getHistory();
+        runOptions.continueMessageReferences = [...this.contextMessageReferences];
+      }
+    }
+    if (runOptions.rebindPausedFollowup) {
+      await this.admitTurnFromSelectedRetryView("paused-followup", () => ({ type: "user_message", content: "",
+        messageId: runOptions.messageId, auditOnly: true, metadata: { turnTrigger: "resume_interrupted_task" } }));
+      runOptions.emptyTurnAuditRecorded = true;
+    }
     // 新输入用新断点替换旧任务；在准备模型/上下文之前保存，覆盖刚发送就关闭的窗口。
     if (!continuing && !admitted) {
+      if (runOptions.retryOrigin) {
+        await this.recorder.flush();
+        const events = await readSessionEvents(this.recorder.filePath);
+        const scope = resolveRetryScope(events, runOptions.retryOrigin, { sessionId: this.recorder.sessionId, turnId: runtimeTurnId });
+        if (scope.status !== "active" || scope.ownedEvents.length) throw new Error("Retry target was superseded during preparation.");
+        const admissionHighWater = events.at(-1)?.runtime;
+        if (!admissionHighWater) throw new Error("Retry has no durable admission witness.");
+        runOptions.retryOrigin = { ...runOptions.retryOrigin, admissionHighWater: { ...admissionHighWater } };
+        resolveRetryScope(events, runOptions.retryOrigin, { sessionId: this.recorder.sessionId, turnId: runtimeTurnId });
+        runOptions.retryWindow = { version: 1, replyMessageId: runOptions.retryOrigin.finalMessageId,
+          admissionHighWater: { ...admissionHighWater } };
+        assertRetryWindow(events, runOptions.retryOrigin, runOptions.retryWindow);
+      }
       recordUserMessage();
       try {
         if (runOptions.emptyTurn && !runOptions.emptyTurnAuditRecorded) {
@@ -1994,8 +2199,9 @@ export class AgentSession {
           });
         }
         await this.recorder.flush();
-        await this.turnStore.save(input, undefined, cancellationContext().messages, 0,
-          undefined, undefined, runOptions.previousTerminals, this.recorder.runtimeHighWater(), runtimeTurnId);
+        await this.turnStore.save(input, runOptions.retryOrigin ? runOptions.continueSystemPrompt : undefined, cancellationContext().messages, 0,
+          undefined, undefined, runOptions.previousTerminals, this.recorder.runtimeHighWater(), runtimeTurnId, runOptions.retryOrigin, runOptions.retryWindow);
+        if (runOptions.retryOrigin) this.retryScopedView = true;
         this.scheduleTemporalIndex();
       } catch (error) {
         const message = `初始检查点持久化失败：${errorMessage(error)}`;
@@ -2031,7 +2237,8 @@ export class AgentSession {
         sourcePrefix: { byteLength: source.byteLength, sha256: source.contentHash }
       });
       if (canonical.messages.length) {
-        const restored = await this.rehydrateSessionAttachments(canonical.messages, canonical.events, canonical.contextStartUserMessageIndex);
+        const restored = await this.rehydrateSessionAttachments(canonical.messages, canonical.events, canonical.contextStartUserMessageIndex,
+          canonical.retrySourceEvents ? canonical.messageReferences : undefined);
         const indexes = restored.map((_, index) => index).filter(index => !(canonical.messageReferences[index]?.id === undefined
           && restored[index]?.role === "user" && restored[index].content === pausedTurnMarker));
         const history = indexes.map(index => restored[index]!);
@@ -2043,6 +2250,25 @@ export class AgentSession {
         this.contextMessageReferences = references;
         this.nextSessionMessageIndex = Math.max(canonical.totalMessageCount, canonical.messageTree.length);
       }
+    }
+    if (runOptions.restoreAdmittedFollowup && continuing) {
+      // Materialization may restore generic history; re-prove the native marker
+      // after that boundary without hiding any intervening execution evidence.
+      await this.admitTurnFromSelectedRetryView("admitted-followup", () => undefined);
+      runOptions.continueFrom = this.contextMemory.getHistory();
+      runOptions.continueMessageReferences = [...this.contextMessageReferences];
+    }
+    if (continuing && runOptions.retryOrigin) {
+      const events = await readSessionEvents(this.recorder.filePath);
+      if (runOptions.recoveryCheckpoint?.terminal) {
+        const admissionHighWater = events.at(-1)?.runtime;
+        if (!admissionHighWater || !runOptions.messageId) throw new Error("Retry continuation has no window admission identity.");
+        runOptions.retryWindow = { version: 1, replyMessageId: runOptions.messageId, admissionHighWater: { ...admissionHighWater } };
+      }
+      assertRetryWindow(events, runOptions.retryOrigin, runOptions.retryWindow);
+      await this.turnStore.save(input, runOptions.continueSystemPrompt, cancellationContext().messages, completedStepsBeforeRun,
+        runOptions.initialToolBudget, undefined, runOptions.previousTerminals, this.recorder.runtimeHighWater(), runtimeTurnId,
+        runOptions.retryOrigin, runOptions.retryWindow);
     }
     const preparePromptPerfStartedAt = perfNow();
     try {
@@ -2239,7 +2465,9 @@ export class AgentSession {
           undefined,
           runOptions.previousTerminals,
           this.recorder.runtimeHighWater(),
-          runtimeTurnId
+          runtimeTurnId,
+          runOptions.retryOrigin,
+          runOptions.retryWindow
         );
         recordPerfPhase("turn.persistCheckpoint", persistPerfStartedAt, { runId: runtimeRunId });
       } catch (error) {
@@ -2350,10 +2578,12 @@ export class AgentSession {
       const next: AgentUserMessage[] = [];
       for (const notice of notices) {
         if (receivedNotices.has(notice.id)) { channel.acknowledge(notice); continue; }
+        await flushIntermediateRetryReply();
         const message: AgentUserMessage = { role: "user", content: notice.content };
         const reference = this.recordCanonicalMessage({ type: "user_message", content: notice.content, messageId: notice.id,
           metadata: { source: "subagent", taskRunId: notice.taskRunId, attemptId: notice.attemptId } });
         referenceByMessage.set(message, reference);
+        if (runOptions.retryOrigin) retryCursor = reference.id;
         await this.recorder.flush();
         channel.acknowledge(notice);
         receivedNotices.add(notice.id);
@@ -2423,6 +2653,10 @@ export class AgentSession {
     const emitUpdate = (event: CallbackDisplayEvent): void => {
       pendingEvents.push(event);
     };
+    let retryCursor = runOptions.retryOrigin
+      ? resolveRetryScope(await readSessionEvents(this.recorder.filePath), runOptions.retryOrigin, { sessionId: this.recorder.sessionId, turnId: runOptions.turnId }).cursor
+      : runOptions.retryParentMessageId;
+    if (runOptions.retryOfMessageId !== undefined) this.recorder.restoreMessageParent(retryCursor);
     let observedSteps = 0;
     let toolDiscoveryFailure: ToolSearchResult | undefined;
     let toolResultCheckpointBarrier = Promise.resolve();
@@ -2431,9 +2665,10 @@ export class AgentSession {
       const current = toolResultCheckpointBarrier.then(async () => {
         const coordinator = coordinatorRef.current;
         if (!coordinator) return;
+        await this.recorder.flush();
         const replay = replaySessionEvents(
           await readSessionEvents(this.recorder.filePath),
-          { sessionId: this.recorder.sessionId }
+          { sessionId: this.recorder.sessionId, retryOrigin: runOptions.retryOrigin }
         );
         if (!replay.messages.length) return;
         await this.recorder.flush();
@@ -2446,7 +2681,9 @@ export class AgentSession {
           undefined,
           runOptions.previousTerminals,
           this.recorder.runtimeHighWater(),
-          runOptions.turnId
+          runOptions.turnId,
+          runOptions.retryOrigin,
+          runOptions.retryWindow
         );
       });
       toolResultCheckpointBarrier = current.catch(() => undefined);
@@ -2525,6 +2762,67 @@ export class AgentSession {
       const reference = messageReferences[index];
       if (reference) referenceByMessage.set(message, reference);
     }
+    let pendingRetryReply: AgentAssistantMessage | undefined;
+    let retryCommitStarted = false;
+    let currentStepContext = loopContext;
+    const flushIntermediateRetryReply = async (): Promise<void> => {
+      if (!runOptions.retryOrigin || !pendingRetryReply) return;
+      const checkpoint = await this.turnStore.load();
+      const events = await readSessionEvents(this.recorder.filePath);
+      if (!checkpoint || !isDeepStrictEqual(checkpoint.retryOrigin, runOptions.retryOrigin)
+        || !isDeepStrictEqual(checkpoint.retryWindow, runOptions.retryWindow)
+        || resolveRetryScope(events, runOptions.retryOrigin, checkpoint).status !== "active") throw new Error("Retry window changed before queued delivery.");
+      assertRetryWindow(events, runOptions.retryOrigin, runOptions.retryWindow);
+      const reference = this.recordCanonicalMessage({ type: "agent_message", message: pendingRetryReply,
+        parentMessageId: retryCursor, slotId: runOptions.retrySlotId, replyToMessageId: runOptions.replyToMessageId,
+        retryOfMessageId: runOptions.retryOfMessageId });
+      referenceByMessage.set(pendingRetryReply, reference);
+      retryCursor = reference.id;
+      this.recorder.record({ type: "message_version_selected", messageId: reference.id!, slotId: reference.slotId! });
+      pendingRetryReply = undefined;
+    };
+    const deliveryHooks = { beforeDelivery: flushIntermediateRetryReply,
+      onDelivered: (reference: SessionMessageReference): void => { if (runOptions.retryOrigin) retryCursor = reference.id; } };
+    const saveDeliveredRetryInput = async (delivered: AgentUserMessage[]): Promise<AgentUserMessage[]> => {
+      if (runOptions.retryOrigin && delivered.length) {
+        await this.recorder.flush();
+        await this.turnStore.save(input, currentStepContext.systemPrompt ?? systemPrompt, [...currentStepContext.messages, ...delivered],
+          completedStepsBeforeRun + observedSteps, coordinator.getExecutionBudgetSnapshot(), undefined, runOptions.previousTerminals,
+          this.recorder.runtimeHighWater(), runOptions.turnId, runOptions.retryOrigin, runOptions.retryWindow);
+      }
+      return delivered;
+    };
+    const commitTerminalRetryReply = async (outcome: AgentTurnOutcome, history: AgentMessage[], recordAudit: () => void | Promise<void>): Promise<void> => {
+      if (!pendingRetryReply || !runOptions.retryOrigin || !runOptions.retryWindow || !retryCursor) return;
+      await this.recorder.flush();
+      const highWater = this.recorder.runtimeHighWater();
+      if (!highWater) throw new Error("Retry reply has no precommit witness.");
+      const terminal: InterruptedTurnTerminal | undefined = outcome.status === "blocked" || outcome.status === "incomplete" && outcome.resumable
+        ? { status: outcome.status, stopReason: outcome.stopReason, summary: outcome.error ?? `${outcome.status} (${outcome.stopReason})`,
+          blockedReason: outcome.blockedReason, requiredAction: outcome.requiredAction } : undefined;
+      const phase: RetryCommit = { version: 1, replyMessageId: runOptions.retryWindow.replyMessageId, runId: runOptions.runId!,
+        parentMessageId: retryCursor, runtimeHighWater: highWater, message: pendingRetryReply, outcome };
+      retryCommitStarted = true;
+      await this.turnStore.save(input, systemPrompt, history, terminal ? 0 : outcome.steps, coordinator.getExecutionBudgetSnapshot(),
+        terminal, runOptions.previousTerminals, highWater, runOptions.turnId, runOptions.retryOrigin, runOptions.retryWindow, phase);
+      const source = await readSessionEventsForBackfill(this.recorder.filePath, 0);
+      const commit = { ownerTurnId: runOptions.retryOrigin.ownerTurnId,
+        replyMessageId: phase.replyMessageId, expectedRuntimeHighWater: highWater,
+        sourcePrefix: { byteLength: source.byteLength, sha256: source.contentHash } };
+      const replay = await this.recorder.commitRetryReply({ ...commit, stage: "reply" });
+      const recorded = replay.events.find(event => event.type === "agent_message" && event.messageId === phase.replyMessageId);
+      if (!recorded) throw new Error("Committed retry reply has no durable canonical identity.");
+      const reference = this.referenceForRecordedMessage(recorded);
+      finalAssistantReference = reference;
+      referenceByMessage.set(pendingRetryReply, reference);
+      retryCursor = reference.id;
+      this.contextMessageReferences = history.map((message, index) => referenceByMessage.get(message) ?? this.contextMessageReferences[index]);
+      // Canonical identity exists before its rich audit, and the audit precedes
+      // terminal. Re-enter the same checkpoint-validated barrier to finish it.
+      await recordAudit();
+      await this.recorder.commitRetryReply({ ...commit, stage: "terminal" });
+      pendingRetryReply = undefined;
+    };
     const lastUserMessage = [...messages].reverse().find((message) => message.role === "user");
     const lastUserMessageReference = lastUserMessage === undefined ? undefined : referenceByMessage.get(lastUserMessage);
     const loopPerfStartedAt = perfNow();
@@ -2597,18 +2895,20 @@ export class AgentSession {
         maxSteps: runBudget.hardStepLimit - completedStepsBeforeRun,
         persistStep: async ({ message, toolResults, context }) => {
           const finalMessage = !message.content.some((part) => part.type === "toolCall");
+          currentStepContext = context;
+          if (runOptions.retryOrigin && finalMessage) pendingRetryReply = message;
           if (message.stopReason !== "error" && message.stopReason !== "aborted") {
             const extractedNotification = extractNotificationBlock(message);
             if (finalMessage && extractedNotification) notification = extractedNotification;
           }
           stepAssistantContent = agentMessageText(message);
           stepReasoningBlocks = reasoningBlocks(message);
-          if (message.stopReason !== "error" && message.stopReason !== "aborted") {
-            const reference = this.recordCanonicalMessage({
+          if (message.stopReason !== "error" && message.stopReason !== "aborted" && !(runOptions.retryOrigin && finalMessage)) {
+            const canonicalEvent: Extract<SessionEvent, { type: "agent_message" }> = {
               type: "agent_message",
               message,
               messageId: finalMessage && runOptions.retryOfMessageId !== undefined ? runOptions.messageId : undefined,
-              parentMessageId: finalMessage ? runOptions.retryParentMessageId : undefined,
+              parentMessageId: runOptions.retryOfMessageId !== undefined ? retryCursor : undefined,
               slotId: finalMessage
                 ? runOptions.retrySlotId ?? lastUserMessageReference?.id
                 : undefined,
@@ -2616,22 +2916,27 @@ export class AgentSession {
                 ? runOptions.replyToMessageId ?? lastUserMessageReference?.id
                 : undefined,
               retryOfMessageId: finalMessage ? runOptions.retryOfMessageId : undefined
-            });
+            };
+            const reference = runOptions.retryOrigin && finalMessage
+              ? this.referenceForRecordedMessage(await this.recorder.recordAndFlush(canonicalEvent))
+              : this.recordCanonicalMessage(canonicalEvent);
             referenceByMessage.set(message, reference);
+            if (runOptions.retryOfMessageId !== undefined) retryCursor = reference.id;
             if (finalMessage) {
               finalAssistantReference = reference;
               if (runOptions.retryOfMessageId !== undefined && reference.id && reference.slotId) {
                 // 重试旧版本时覆盖此前的选择标记，让新回答立即成为活动版本。
-                this.recorder.record({ type: "message_version_selected", messageId: reference.id, slotId: reference.slotId });
+                if (runOptions.retryOrigin) await this.recorder.recordAndFlush({ type: "message_version_selected", messageId: reference.id, slotId: reference.slotId });
+                else this.recorder.record({ type: "message_version_selected", messageId: reference.id, slotId: reference.slotId });
               }
             }
           }
           relatedToolCallIds = toolResults.map((toolResult) => toolResult.toolCallId);
           for (const toolResult of toolResults) {
-            referenceByMessage.set(
-              toolResult,
-              this.recordCanonicalMessage({ type: "agent_message", message: toolResult })
-            );
+            const reference = this.recordCanonicalMessage({ type: "agent_message", message: toolResult,
+              parentMessageId: runOptions.retryOfMessageId !== undefined ? retryCursor : undefined });
+            referenceByMessage.set(toolResult, reference);
+            if (runOptions.retryOfMessageId !== undefined) retryCursor = reference.id;
             if (toolResult.toolName === toolSearchToolName && isToolSearchTerminalFailure(toolResult.details)) {
               toolDiscoveryFailure = toolResult.details;
             }
@@ -2669,7 +2974,9 @@ export class AgentSession {
                 undefined,
                 runOptions.previousTerminals,
                 this.recorder.runtimeHighWater(),
-                runOptions.turnId
+                runOptions.turnId,
+                runOptions.retryOrigin,
+                runOptions.retryWindow
               );
             } catch (error) {
               // 工具事实已落盘，但不能带着陈旧预算和上下文进入下一步。
@@ -2779,16 +3086,16 @@ export class AgentSession {
           return requestMessages;
         },
         getSteeringMessages: async () => {
-          const next = await this.takeQueuedRunMessages(messageQueues, "steer", lastAssistant, referenceByMessage);
+          const next = await this.takeQueuedRunMessages(messageQueues, "steer", lastAssistant, referenceByMessage, deliveryHooks);
           await this.recordFatigueForMessages(next.length, runOptions.emotionAnalysis !== false);
-          return [...next, ...await takeTaskNotifications()];
+          return await saveDeliveredRetryInput([...next, ...await takeTaskNotifications()]);
         },
         getQueuedMessages: async () => {
-          const next = await this.takeQueuedRunMessages(messageQueues, "queue", lastAssistant, referenceByMessage);
+          const next = await this.takeQueuedRunMessages(messageQueues, "queue", lastAssistant, referenceByMessage, deliveryHooks);
           await this.recordFatigueForMessages(next.length, runOptions.emotionAnalysis !== false);
           const notices = await takeTaskNotifications();
           if (!next.length && !notices.length) messageQueues.accepting = false;
-          return [...next, ...notices];
+          return await saveDeliveredRetryInput([...next, ...notices]);
         }
       }, abortSignal);
 
@@ -2906,7 +3213,8 @@ export class AgentSession {
         output: content
       });
       const finalContextStatus = await this.contextStatus();
-      this.recorder.record({
+      const recordAssistantAudit = (): void | Promise<void> => {
+        const audit: Extract<SessionEvent, { type: "assistant_message" }> = {
         type: "assistant_message",
         content,
         metadata: {
@@ -2920,12 +3228,15 @@ export class AgentSession {
         usage: usageRecord,
         relatedUsage: this.takeRelatedUsage(),
         contextState: this.checkpointPersistenceError ? undefined : this.contextMemory.snapshot(),
-        messageId: finalAssistantReference?.id,
-        parentMessageId: finalAssistantReference?.parentId,
-        slotId: finalAssistantReference?.slotId,
+        messageId: finalAssistantReference?.id ?? (pendingRetryReply ? runOptions.retryWindow?.replyMessageId : undefined),
+        parentMessageId: finalAssistantReference?.parentId ?? (pendingRetryReply ? retryCursor : undefined),
+        slotId: finalAssistantReference?.slotId ?? (pendingRetryReply ? runOptions.retrySlotId : undefined),
         replyToMessageId: runOptions.replyToMessageId ?? lastUserMessageReference?.id,
         retryOfMessageId: runOptions.retryOfMessageId
-      });
+      };
+        if (runOptions.retryOrigin && retryCommitStarted) return this.recorder.recordAndFlush(audit).then(() => undefined);
+        this.recorder.record(audit);
+      };
       const budgetRejection = coordinator.getBudgetRejection();
       let outcome = {
         ...(budgetRejection
@@ -2956,10 +3267,13 @@ export class AgentSession {
               )),
         notification
       };
+      await commitTerminalRetryReply(outcome, finalMessages, recordAssistantAudit);
+      this.contextMessageReferences = finalMessages.map((message, index) => referenceByMessage.get(message) ?? finalReferences[index]);
+      if (!retryCommitStarted) recordAssistantAudit();
       if (content && (outcome.status === "completed" || outcome.status === "incomplete" || outcome.status === "blocked")) {
         yield { type: "assistant.completed", content, notification };
       }
-      if (outcome.status === "blocked" || outcome.status === "incomplete" && outcome.resumable === true) {
+      if (!retryCommitStarted && (outcome.status === "blocked" || outcome.status === "incomplete" && outcome.resumable === true)) {
         try {
           await this.recorder.flush();
           await this.turnStore.save(
@@ -2977,7 +3291,9 @@ export class AgentSession {
             },
             runOptions.previousTerminals,
             this.recorder.runtimeHighWater(),
-            runOptions.turnId
+            runOptions.turnId,
+            runOptions.retryOrigin,
+            runOptions.retryWindow
           );
         } catch (error) {
           outcome = {
@@ -2993,6 +3309,7 @@ export class AgentSession {
         await this.turnStore.clear().catch(() => undefined);
       }
       if (outcome.status === "completed") {
+        if (runOptions.retryOrigin || runOptions.retryOfMessageId !== undefined) this.retryScopedView = false;
         if (autoAnalyzeForTurn) {
           this.emotionAnalysisScheduler.schedule(this.recorder.sessionId, finalAssistantReference?.id);
         }
@@ -3070,6 +3387,7 @@ export class AgentSession {
       }
       yield doneEvent(outcome);
     } catch (error) {
+      if (retryCommitStarted) throw error;
       const message = errorMessage(error);
       await recordNativeTelemetry(this.options.config, this.options.workspaceRoot, {
         type: "error",
@@ -3142,7 +3460,9 @@ export class AgentSession {
       // 快照跳过领域事件重放；仍读取完整验证事件以恢复父链和版本选择。
       // 指纹不匹配或快照损坏时自动回退到完整重放，并在重放后异步写入新快照。
       const fingerprint = sessionFileFingerprint(resumeStat);
-      const snapshot: SessionSnapshotData | undefined = await tryReadSessionSnapshot(resumeRecorder.filePath, fingerprint);
+      const retryCheckpoint = await new TurnStore(this.persistenceRoot(), resumeRecorder.sessionId).load();
+      const snapshot: SessionSnapshotData | undefined = retryCheckpoint?.retryOrigin ? undefined
+        : await tryReadSessionSnapshot(resumeRecorder.filePath, fingerprint);
       const snapshotReplay = snapshot ? snapshotToReplay(snapshot) : undefined;
       const resumeEvents = await readSessionEvents(resumeRecorder.filePath);
       let replay: SessionReplay;
@@ -3151,10 +3471,11 @@ export class AgentSession {
       } else {
         replay = replaySessionEvents(
           resumeEvents,
-          { sessionId: resumeRecorder.sessionId, resolveToolOutcome: this.resolveDurableToolOutcome }
+          { sessionId: resumeRecorder.sessionId, resolveToolOutcome: this.resolveDurableToolOutcome,
+            retryOrigin: retryCheckpoint?.retryOrigin, expectedRuntimeHighWater: retryCheckpoint?.retryOrigin ? retryCheckpoint.runtimeHighWater : undefined }
         );
         // 写完快照就完事，不阻塞 resume。
-        writeSessionSnapshot(resumeRecorder.filePath, fingerprint, replay).catch(() => {});
+        if (!retryCheckpoint?.retryOrigin) writeSessionSnapshot(resumeRecorder.filePath, fingerprint, replay).catch(() => {});
       }
       const catalogRecord = await readSessionCatalogRecord(this.persistenceRoot(), replacementRecorder.sessionId);
       replacementRecorder.restoreToolCallSequence(
@@ -3163,7 +3484,9 @@ export class AgentSession {
       // 快照不携带 events；父链与版本选择必须从同一文件指纹对应的持久事件恢复。
       const resumedActiveIds = activeSessionMessageIds(resumeEvents);
       replacementRecorder.restoreMessageParent(
-        replay.messageTree.filter((node) => resumedActiveIds.has(node.id)).at(-1)?.id
+        retryCheckpoint?.retryOrigin && resolveRetryScope(resumeEvents, retryCheckpoint.retryOrigin, retryCheckpoint).status === "active"
+          ? resolveRetryScope(resumeEvents, retryCheckpoint.retryOrigin, retryCheckpoint).cursor
+          : replay.messageTree.filter((node) => resumedActiveIds.has(node.id)).at(-1)?.id
       );
 
       if (!resumingCurrent) {
@@ -3193,7 +3516,8 @@ export class AgentSession {
       const messages = await this.rehydrateSessionAttachments(
         replay.messages,
         replay.events,
-        replay.contextStartUserMessageIndex
+        replay.contextStartUserMessageIndex,
+        replay.retrySourceEvents ? replay.messageReferences : undefined
       );
       this.contextMemory.restore(messages, replay.contextState ?? replay.contextUsage);
       if (replay.contextCheckpoint) this.contextMemory.setCheckpoint(replay.contextCheckpoint);
@@ -3202,6 +3526,7 @@ export class AgentSession {
       this.nextSessionMessageIndex = Math.max(replay.totalMessageCount, replay.messageTree.length);
       await this.options.todoStore?.useSession(replacementRecorder.sessionId);
       this.recorder = replacementRecorder;
+      this.retryScopedView = replay.retrySourceEvents !== undefined;
       this.turnStore = new TurnStore(this.persistenceRoot(), replacementRecorder.sessionId);
       const personalization = await this.readPersonalizationState();
       this.activeConfig = personalization.config;
@@ -3274,6 +3599,7 @@ export class AgentSession {
       this.nextSessionMessageIndex = 0;
       await this.options.todoStore?.useSession(nextRecorder.sessionId);
       this.recorder = nextRecorder;
+      this.retryScopedView = false;
       this.turnStore = new TurnStore(this.persistenceRoot(), nextRecorder.sessionId);
       return nextRecorder.sessionId;
     } catch (error) {
@@ -3453,7 +3779,8 @@ export class AgentSession {
     const events = await readSessionEvents(this.recorder.filePath);
     signal?.throwIfAborted();
     // 保留当前分支选择，只移除压缩边界以读回原文；绝不按外部传入路径访问其他会话。
-    const full = replaySessionEvents(events, { sessionId: this.recorder.sessionId, includeCompactedMessages: true });
+    const retryOrigin = (await this.turnStore.load())?.retryOrigin;
+    const full = replaySessionEvents(events, { sessionId: this.recorder.sessionId, includeCompactedMessages: true, retryOrigin });
     const sources = claim.references.map((reference) => {
       if (reference.kind === "checkpoint") return { reference, status: "inherited_only", note: "Original evidence unavailable; this is a previous summary, not verification." };
       const index = full.messageReferences.findIndex((item) => reference.messageId !== undefined
@@ -3875,12 +4202,14 @@ export class AgentSession {
     queues: ActiveRunMessageQueues,
     delivery: "steer" | "queue",
     previousAssistant: AgentAssistantMessage | undefined,
-    referenceByMessage: WeakMap<AgentMessage, SessionMessageReference>
+    referenceByMessage: WeakMap<AgentMessage, SessionMessageReference>,
+    hooks?: { beforeDelivery: () => Promise<void>; onDelivered: (reference: SessionMessageReference) => void }
   ): Promise<AgentUserMessage[]> {
     const pending = delivery === "steer" ? queues.steering : queues.queued;
     if (!pending.length) return [];
     const items = [...pending];
     await Promise.all(items.map((item) => item.persisted));
+    await hooks?.beforeDelivery();
     this.recordIntermediateAssistant(queues, previousAssistant);
     pending.splice(0, items.length);
     for (const item of items) {
@@ -3894,6 +4223,7 @@ export class AgentSession {
         messageId: item.messageId
       });
       referenceByMessage.set(item.message, reference);
+      hooks?.onDelivered(reference);
       queues.delivered.set(item.message, item);
     }
     return items.map((item) => item.message);
@@ -3906,6 +4236,10 @@ export class AgentSession {
     const recorded = this.recorder.record(event.type === "user_message"
       ? { ...event, metadata: { ...event.metadata, sentAtTimeZone: event.metadata?.sentAtTimeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone } }
       : event);
+    return this.referenceForRecordedMessage(recorded);
+  }
+
+  private referenceForRecordedMessage(recorded: SessionEvent): SessionMessageReference {
     const reference = {
       id: "messageId" in recorded ? recorded.messageId : undefined,
       index: this.nextSessionMessageIndex,
@@ -4150,18 +4484,21 @@ export class AgentSession {
   private async rehydrateSessionAttachments(
     messages: AgentMessage[],
     events: SessionReplay["events"],
-    firstUserEventIndex = 0
+    firstUserEventIndex = 0,
+    references?: readonly SessionMessageReference[]
   ): Promise<AgentMessage[]> {
     if (!this.options.attachmentRoot) return messages;
     const userEvents = events.filter((event): event is Extract<typeof event, { type: "user_message" }> => event.type === "user_message" && !event.auditOnly);
     let userIndex = firstUserEventIndex;
     const hydrated: AgentMessage[] = [];
-    for (const message of messages) {
+    for (const [index, message] of messages.entries()) {
       if (message.role !== "user") {
         hydrated.push(message);
         continue;
       }
-      const event = userEvents[userIndex];
+      const reference = references?.[index];
+      const event = references ? reference?.id === undefined ? undefined : userEvents.find(item => item.messageId === reference.id)
+        : userEvents[userIndex];
       userIndex += 1;
       const attachments = await Promise.all((event?.attachments ?? []).map(async (attachment) => await readAttachmentFromRoot(this.options.attachmentRoot!, attachment)));
       const files = attachments.filter((attachment): attachment is AgentAttachment => attachment !== undefined);

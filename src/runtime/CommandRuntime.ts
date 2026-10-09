@@ -216,7 +216,33 @@ export interface CommandRuntimeOptions {
   browserAutomation?: BrowserAutomationEndpoint;
 }
 
+type CommandRuntimeStartupCleanup = Partial<Record<
+  "background" | "subagents" | "agent" | "processes" | "recorder" | "resources"
+  | "automation" | "graphs" | "sessionGoals" | "capabilities" | "communication" | "taskRuns" | "authority",
+  () => unknown
+>>;
+
 export async function createCommandRuntime(workspaceRoot: string, options: CommandRuntimeOptions = {}): Promise<CommandRuntime> {
+  const cleanup: CommandRuntimeStartupCleanup = {};
+  try {
+    return await initializeCommandRuntime(workspaceRoot, options, cleanup);
+  } catch (error) {
+    // Stop producers first; all borrowed views must close before their authority.
+    // Read each slot when reached: a successful Agent close owns the recorder.
+    for (const owner of ["background", "subagents", "agent", "processes", "recorder", "resources",
+      "automation", "graphs", "sessionGoals", "capabilities", "communication", "taskRuns", "authority"] as const) {
+      try { await cleanup[owner]?.(); }
+      catch { /* Cleanup must neither mask the startup error nor skip another owner. */ }
+    }
+    throw error;
+  }
+}
+
+async function initializeCommandRuntime(
+  workspaceRoot: string,
+  options: CommandRuntimeOptions,
+  cleanup: CommandRuntimeStartupCleanup
+): Promise<CommandRuntime> {
   // Session store 和其余运行组件都根据 workspace 定位全局按项目隔离的持久化分区。
   const persistenceRoot = options.persistenceRoot ?? workspaceRoot;
   const projectAttachmentRoot = options.attachmentRoot ?? attachmentRoot(persistenceRoot);
@@ -226,33 +252,52 @@ export async function createCommandRuntime(workspaceRoot: string, options: Comma
   const resourceScope = options.resourceScope
     ?? options.resourceRegistry?.acquire(workspaceRoot, config)
     ?? new RuntimeHostResourceScope(workspaceRoot, config);
+  const ownsResourceScope = options.resourceScope === undefined && options.resourceRegistry === undefined;
+  let unsubscribeResources: (() => void) | undefined = undefined;
+  const releaseResourceScope = async (): Promise<void> => {
+    try { unsubscribeResources?.(); }
+    finally {
+      if (ownsResourceScope) await resourceScope.close();
+      else if (options.resourceRegistry) await options.resourceRegistry.release(resourceScope);
+      else resourceScope.release();
+    }
+  };
+  cleanup.resources = releaseResourceScope;
   let skills: SkillBundle = resourceScope.skills;
   const runSkillSnapshots = new Map<string, SkillBundle>();
   const skillsForRun = (runId?: string): SkillBundle => runId === undefined
     ? requireSkillBundle(skills)
     : runSkillSnapshots.get(runId) ?? requireSkillBundle(skills);
-  const ownsResourceScope = options.resourceScope === undefined && options.resourceRegistry === undefined;
   const resourceBoot = options.resourceBoot ?? (ownsResourceScope ? "blocking" : "background");
   const resourceStart = resourceScope.start();
-  const unsubscribeResources = resourceScope.subscribe(() => {
+  unsubscribeResources = resourceScope.subscribe(() => {
     skills = resourceScope.skills;
   });
   const ai = new AiRegistry();
   await ensureAgentDirs(persistenceRoot);
   await ensureAttachmentRoot(persistenceRoot);
   const runtimeAuthority = await RuntimeEventAuthority.open(persistenceRoot);
+  cleanup.authority = () => runtimeAuthority.close();
   const taskRuns = await DurableTaskRunStore.open(persistenceRoot, runtimeAuthority);
+  cleanup.taskRuns = () => taskRuns.close();
   const automationStore = await AutomationStore.open(persistenceRoot, runtimeAuthority);
+  cleanup.automation = () => automationStore.close();
   const graphs = await GoalGraphStore.open(persistenceRoot, runtimeAuthority);
+  cleanup.graphs = () => graphs.close();
   const sessionGoals = await SessionGoalStore.open(persistenceRoot, runtimeAuthority);
+  cleanup.sessionGoals = () => sessionGoals.close();
   const capabilities = await CapabilityStore.open(persistenceRoot, runtimeAuthority);
+  cleanup.capabilities = () => capabilities.close();
   const recorder = new SessionRecorder(persistenceRoot, options.sessionId, undefined, runtimeAuthority.asSink());
+  cleanup.recorder = () => recorder.close();
   const taskCommunication = new TaskCommunication(taskRuns, recorder.sessionId);
+  cleanup.communication = () => taskCommunication.close();
   const managedProcesses = new ManagedProcessService({
     workspaceRoot,
     persistenceRoot,
     processLifetime: options.processLifetime
   });
+  cleanup.processes = () => managedProcesses.close();
   await managedProcesses.initialize();
   // 选择状态只属于本 Runtime；配置变更替换状态，迟到请求不能污染新配置。
   let toolModelSelectionState: ToolModelSelectionState = { unavailableConnections: new Map() };
@@ -299,8 +344,8 @@ export async function createCommandRuntime(workspaceRoot: string, options: Comma
   const userInput = new UserInputRequests();
   const permissionManager = new PermissionManager({ ...config.permission, source: "global config.json + project .biny/settings.json" });
   const mcpHost = resourceScope.mcp;
-  let agent: AgentSession | undefined;
-  let modelManager: ModelManager | undefined;
+  let agent: AgentSession | undefined = undefined;
+  let modelManager: ModelManager | undefined = undefined;
   let subagentParentRunId: string | undefined;
   const currentSkillBundle = (): SkillBundle => subagentParentRunId === undefined
     ? requireSkillBundle(skills)
@@ -367,12 +412,6 @@ export async function createCommandRuntime(workspaceRoot: string, options: Comma
   const refreshSkills = async (force = false): Promise<void> => {
     await resourceScope.refreshSkills(force);
     skills = resourceScope.skills;
-  };
-  const releaseResourceScope = async (): Promise<void> => {
-    unsubscribeResources();
-    if (ownsResourceScope) await resourceScope.close();
-    else if (options.resourceRegistry) await options.resourceRegistry.release(resourceScope);
-    else resourceScope.release();
   };
   // 具名子代理定义每次委派时重新读取（会话期间可编辑生效）；启动时读一次用于 prompt 与报告。
   const loadAgentDefinitions = (): Promise<SubagentDefinition[]> => loadSubagentDefinitions({
@@ -500,192 +539,181 @@ export async function createCommandRuntime(workspaceRoot: string, options: Comma
       }
     })
     : undefined;
+  if (subagentTaskManager) cleanup.subagents = () => subagentTaskManager.close();
   const loadedPlugins: string[] = [];
-  try {
-    // Desktop Host 的 MCP/Skill 启动在后台进行；私有 CLI/TUI runtime 仍在这里等待首个稳定快照。
-    if (resourceBoot === "blocking") await resourceStart;
-    skills = resourceScope.skills;
-    toolRegistry.registerUserTool(createSkillTool(currentSkillBundle));
-    toolRegistry.registerHostReadQuery(createSkillResourceTool(currentSkillBundle), "read_skill_resource");
-    toolRegistry.registerHostReadQuery(createSkillLookupTool(currentSkillBundle), "skill_lookup");
-    toolRegistry.registerBuiltinTool(createSkillSearchTool({
-      getInstalledNames: () => {
-        const installed = new Set<string>();
-        for (const skill of currentSkillBundle().skills) {
-          installed.add(skill.name.toLocaleLowerCase());
-          installed.add(path.basename(path.dirname(skill.filePath)).toLocaleLowerCase());
-        }
-        return installed;
+  // Desktop Host 的 MCP/Skill 启动在后台进行；私有 CLI/TUI runtime 仍在这里等待首个稳定快照。
+  if (resourceBoot === "blocking") await resourceStart;
+  skills = resourceScope.skills;
+  toolRegistry.registerUserTool(createSkillTool(currentSkillBundle));
+  toolRegistry.registerHostReadQuery(createSkillResourceTool(currentSkillBundle), "read_skill_resource");
+  toolRegistry.registerHostReadQuery(createSkillLookupTool(currentSkillBundle), "skill_lookup");
+  toolRegistry.registerBuiltinTool(createSkillSearchTool({
+    getInstalledNames: () => {
+      const installed = new Set<string>();
+      for (const skill of currentSkillBundle().skills) {
+        installed.add(skill.name.toLocaleLowerCase());
+        installed.add(path.basename(path.dirname(skill.filePath)).toLocaleLowerCase());
       }
-    }));
-    toolRegistry.registerBuiltinTool(createSkillInstallTool({
-      refreshSkills: async () => await refreshSkills(true)
-    }));
-    refreshExtensionTools();
-    const pluginsPerfStartedAt = perfNow();
-    const managedPluginPaths = await listEnabledProjectPluginPaths(workspaceRoot).catch((error: unknown) => {
-      loadedPlugins.push(`managed plugins (failed: ${error instanceof Error ? error.message : String(error)})`);
-      return [];
-    });
-    for (const pluginPath of [...config.extensions.plugins, ...managedPluginPaths]) {
-      try {
-        loadedPlugins.push(...await loadPlugins(workspaceRoot, [pluginPath], config, toolRegistry, ai));
-      } catch (error) {
-        // 单个 Plugin 失败只影响它自己；主 Runtime、其它 Plugin 和内置工具仍可用。
-        loadedPlugins.push(`${pluginPath} (failed: ${error instanceof Error ? error.message : String(error)})`);
-      }
+      return installed;
     }
-    const managedGlobalPluginPaths = await listEnabledGlobalPluginPaths().catch((error: unknown) => {
-      loadedPlugins.push(`global managed plugins (failed: ${error instanceof Error ? error.message : String(error)})`);
-      return [];
-    });
-    const globalPluginPaths = [...config.extensions.globalPlugins, ...managedGlobalPluginPaths];
-    if (globalPluginPaths.length) {
-      try {
-        loadedPlugins.push(...await loadPluginsFromRoot(workspaceRoot, globalPluginRoot(), globalPluginPaths, config, toolRegistry, ai));
-      } catch (error) {
-        loadedPlugins.push(`global plugins (failed: ${error instanceof Error ? error.message : String(error)})`);
-      }
+  }));
+  toolRegistry.registerBuiltinTool(createSkillInstallTool({
+    refreshSkills: async () => await refreshSkills(true)
+  }));
+  refreshExtensionTools();
+  const pluginsPerfStartedAt = perfNow();
+  const managedPluginPaths = await listEnabledProjectPluginPaths(workspaceRoot).catch((error: unknown) => {
+    loadedPlugins.push(`managed plugins (failed: ${error instanceof Error ? error.message : String(error)})`);
+    return [];
+  });
+  for (const pluginPath of [...config.extensions.plugins, ...managedPluginPaths]) {
+    try {
+      loadedPlugins.push(...await loadPlugins(workspaceRoot, [pluginPath], config, toolRegistry, ai));
+    } catch (error) {
+      // 单个 Plugin 失败只影响它自己；主 Runtime、其它 Plugin 和内置工具仍可用。
+      loadedPlugins.push(`${pluginPath} (failed: ${error instanceof Error ? error.message : String(error)})`);
     }
-    recordPerfPhase("host.loadPlugins", pluginsPerfStartedAt, { count: loadedPlugins.length }, workspaceRoot);
-    // 插件必须先完成 Provider/API 注册，默认模型才能使用插件提供的新类型。
-    const modelManagerPerfStartedAt = perfNow();
-    modelManager = await ModelManager.create(workspaceRoot, config, configStore, ai);
-    recordPerfPhase("host.modelManagerCreate", modelManagerPerfStartedAt, undefined, workspaceRoot);
-    for (const tool of createSessionGoalTools(sessionGoals, () => agent?.getInfo().sessionId ?? recorder.sessionId, () => agent?.currentSessionGoalRequest())) {
-      toolRegistry.registerBuiltinTool(tool);
-    }
-    if (config.extensions.subagent.enabled) {
-      toolRegistry.registerSubagentTool(createSubagentTool(subagentOptions));
-      toolRegistry.registerHostReadQuery(createTaskStatusTool(subagentOptions), "TaskStatus");
-      for (const tool of createTaskControlTools(subagentOptions)) toolRegistry.registerSubagentTool(tool);
-      for (const tool of createPlanTools({
-        graphs,
-        taskRuns,
-        stopGraph: (graphId, reason) => {
-          const current = graphs.inspectGraph(graphId);
-          const activeTaskRunIds = current.nodes.flatMap((node) => node.status === "running" && node.taskRunId !== undefined ? [node.taskRunId] : []);
-          const cancelled = graphs.cancelGraph(graphId);
-          for (const taskRunId of activeTaskRunIds) {
-            const task = taskRuns.get(taskRunId);
-            if (!task || isTaskRunTerminal(task.status)) continue;
-            try { cancelTaskRun(taskRunId, reason ?? "Supervised plan stopped."); } catch { /* Graph 终态已经阻止晚到结果，取消竞态以 TaskRun 当前事实为准。 */ }
-          }
-          return cancelled;
-        }
-      })) toolRegistry.registerSubagentTool(tool);
-      subagentDefinitions = await loadAgentDefinitions();
-    }
-    // 读取/写入 durable memory 与“当前聊天是否自动召回/贡献”是两组独立开关。
-    // 工具始终注册；显式 save_memory 不会因聊天策略关闭而丢失。
-    for (const tool of createMemoryTools(
-      () => agent?.getLocalMemory(),
-      async (query, paths, options) => {
-        const currentAgent = agent;
-        if (!currentAgent) throw new Error("Local memory is unavailable.");
-        return await currentAgent.searchMemory(query, paths, options);
-      }
-    )) {
-      toolRegistry.registerBuiltinTool(tool);
-    }
-    for (const tool of createHistoryTools({
-      getIndex: () => (agent ? agent.getSessionSearchIndex() : undefined),
-      flushCurrentSession: async (signal) => {
-        signal?.throwIfAborted();
-        const currentAgent = agent;
-        if (!currentAgent) return;
-        await currentAgent.flushSessionSearchIndex(signal);
-      }
-    })) {
-      toolRegistry.registerBuiltinTool(tool);
-    }
-    toolRegistry.registerBuiltinTool(createCheckpointEvidenceTool(async (args, signal) => {
-      if (!agent) throw new Error("Session is unavailable.");
-      return await agent.readCheckpointEvidence(args, signal);
-    }));
-    // MCP/Plugin 仍由 Host 持有连接和执行权；共享 MCP 工具在回合开始前按最新快照同步。
-    for (const entry of toolRegistry.listEntries()) {
-      if (entry.source !== "mcp" && entry.source !== "plugin") continue;
-      try {
-        capabilities.ensureHostCapability(`host:${entry.source}:${entry.tool.name}`, entry.tool.parameters);
-      } catch {
-        // 扩展 schema 不合法时保留原有工具加载行为；实际调用会由 coordinator 记录失败。
-      }
-    }
-    agent = new AgentSession({
-      workspaceRoot,
-      persistenceRoot,
-      configStore,
-      config,
-      model: undefined,
-      modelManager,
-      toolRegistry,
-      permissionManager,
-      recorder,
-      skillPrompt: (selection, runId) => skillPromptForSelection(skillsForRun(runId), selection),
-      extractSkill: async ({ messageId, events, minToolCalls, onNotice }) => await runSkillExtraction({
-        messageId,
-        events,
-        minToolCalls,
-        onNotice,
-        installedSkills: requireSkillBundle(skills).skills,
-        model: resolveToolModel(config, providerCredentials),
-        refreshSkills: async () => await refreshSkills(true)
-      }),
-      subagentPrompt: buildSubagentDefinitionsPrompt(subagentDefinitions),
-      skillPaths: (selection, runId) => skillPathsForSelection(skillsForRun(runId), selection),
-      selectCapabilities: async (input, runId) => {
-        return await preselectCapabilities({
-          ...input, models: resolveToolModelCandidates(input.config, providerCredentials), tools: toolRegistry.list().filter(isToolModelVisible), skills: skillsForRun(runId).skills,
-          selectionState: selectionStateForConfig(input.config)
-        });
-      },
-      prepareToolDiscovery: async (query, signal) => {
-        const result = await resourceScope.waitForMcpDiscovery({ query, signal });
-        refreshExtensionTools();
-        return { pending: result.pending, timedOut: result.timedOut };
-      },
-      mcpPrompt: () => mcpHost.instructionsPrompt(),
-      todoStore: todos,
-      sessionGoals,
-      taskCommunication,
-      createCheckpoint: checkpoints ? async (label) => await checkpoints.create(label) : undefined,
-      attachmentRoot: projectAttachmentRoot,
-      runtimeEventSink: runtimeAuthority.asSink(),
-      capabilities,
-      createSelfReflectionTask: async (candidate) => {
-        taskRuns.create({
-          taskRunId: candidate.taskRunId,
-          sessionId: recorder.sessionId,
-          task: {
-            type: "self_reflection_action",
-            title: candidate.title,
-            description: candidate.description,
-            evidence: candidate.evidence,
-            sourceDate: candidate.dateKey,
-            sourceHash: candidate.sourceHash
-          }
-        });
-        return true;
-      }
-    });
-    await agent.initialize();
-  } catch (error) {
-    // agent.initialize() 失败时 agent 已构造但不随下方资源关闭；recorder.close 幂等，重复调用安全。
-    await agent?.close().catch(() => undefined);
-    await subagentTaskManager?.close();
-    await managedProcesses.close();
-    await releaseResourceScope();
-    await recorder.close();
-    automationStore.close();
-    graphs.close();
-    sessionGoals.close();
-    capabilities.close();
-    taskCommunication.close();
-    taskRuns.close();
-    runtimeAuthority.close();
-    throw error;
   }
+  const managedGlobalPluginPaths = await listEnabledGlobalPluginPaths().catch((error: unknown) => {
+    loadedPlugins.push(`global managed plugins (failed: ${error instanceof Error ? error.message : String(error)})`);
+    return [];
+  });
+  const globalPluginPaths = [...config.extensions.globalPlugins, ...managedGlobalPluginPaths];
+  if (globalPluginPaths.length) {
+    try {
+      loadedPlugins.push(...await loadPluginsFromRoot(workspaceRoot, globalPluginRoot(), globalPluginPaths, config, toolRegistry, ai));
+    } catch (error) {
+      loadedPlugins.push(`global plugins (failed: ${error instanceof Error ? error.message : String(error)})`);
+    }
+  }
+  recordPerfPhase("host.loadPlugins", pluginsPerfStartedAt, { count: loadedPlugins.length }, workspaceRoot);
+  // 插件必须先完成 Provider/API 注册，默认模型才能使用插件提供的新类型。
+  const modelManagerPerfStartedAt = perfNow();
+  modelManager = await ModelManager.create(workspaceRoot, config, configStore, ai);
+  recordPerfPhase("host.modelManagerCreate", modelManagerPerfStartedAt, undefined, workspaceRoot);
+  for (const tool of createSessionGoalTools(sessionGoals, () => agent?.getInfo().sessionId ?? recorder.sessionId, () => agent?.currentSessionGoalRequest())) {
+    toolRegistry.registerBuiltinTool(tool);
+  }
+  if (config.extensions.subagent.enabled) {
+    toolRegistry.registerSubagentTool(createSubagentTool(subagentOptions));
+    toolRegistry.registerHostReadQuery(createTaskStatusTool(subagentOptions), "TaskStatus");
+    for (const tool of createTaskControlTools(subagentOptions)) toolRegistry.registerSubagentTool(tool);
+    for (const tool of createPlanTools({
+      graphs,
+      taskRuns,
+      stopGraph: (graphId, reason) => {
+        const current = graphs.inspectGraph(graphId);
+        const activeTaskRunIds = current.nodes.flatMap((node) => node.status === "running" && node.taskRunId !== undefined ? [node.taskRunId] : []);
+        const cancelled = graphs.cancelGraph(graphId);
+        for (const taskRunId of activeTaskRunIds) {
+          const task = taskRuns.get(taskRunId);
+          if (!task || isTaskRunTerminal(task.status)) continue;
+          try { cancelTaskRun(taskRunId, reason ?? "Supervised plan stopped."); } catch { /* Graph 终态已经阻止晚到结果，取消竞态以 TaskRun 当前事实为准。 */ }
+        }
+        return cancelled;
+      }
+    })) toolRegistry.registerSubagentTool(tool);
+    subagentDefinitions = await loadAgentDefinitions();
+  }
+  // 读取/写入 durable memory 与“当前聊天是否自动召回/贡献”是两组独立开关。
+  // 工具始终注册；显式 save_memory 不会因聊天策略关闭而丢失。
+  for (const tool of createMemoryTools(
+    () => agent?.getLocalMemory(),
+    async (query, paths, options) => {
+      const currentAgent = agent;
+      if (!currentAgent) throw new Error("Local memory is unavailable.");
+      return await currentAgent.searchMemory(query, paths, options);
+    }
+  )) {
+    toolRegistry.registerBuiltinTool(tool);
+  }
+  for (const tool of createHistoryTools({
+    getIndex: () => (agent ? agent.getSessionSearchIndex() : undefined),
+    flushCurrentSession: async (signal) => {
+      signal?.throwIfAborted();
+      const currentAgent = agent;
+      if (!currentAgent) return;
+      await currentAgent.flushSessionSearchIndex(signal);
+    }
+  })) {
+    toolRegistry.registerBuiltinTool(tool);
+  }
+  toolRegistry.registerBuiltinTool(createCheckpointEvidenceTool(async (args, signal) => {
+    if (!agent) throw new Error("Session is unavailable.");
+    return await agent.readCheckpointEvidence(args, signal);
+  }));
+  // MCP/Plugin 仍由 Host 持有连接和执行权；共享 MCP 工具在回合开始前按最新快照同步。
+  for (const entry of toolRegistry.listEntries()) {
+    if (entry.source !== "mcp" && entry.source !== "plugin") continue;
+    try {
+      capabilities.ensureHostCapability(`host:${entry.source}:${entry.tool.name}`, entry.tool.parameters);
+    } catch {
+      // 扩展 schema 不合法时保留原有工具加载行为；实际调用会由 coordinator 记录失败。
+    }
+  }
+  agent = new AgentSession({
+    workspaceRoot,
+    persistenceRoot,
+    configStore,
+    config,
+    model: undefined,
+    modelManager,
+    toolRegistry,
+    permissionManager,
+    recorder,
+    skillPrompt: (selection, runId) => skillPromptForSelection(skillsForRun(runId), selection),
+    extractSkill: async ({ messageId, events, minToolCalls, onNotice }) => await runSkillExtraction({
+      messageId,
+      events,
+      minToolCalls,
+      onNotice,
+      installedSkills: requireSkillBundle(skills).skills,
+      model: resolveToolModel(config, providerCredentials),
+      refreshSkills: async () => await refreshSkills(true)
+    }),
+    subagentPrompt: buildSubagentDefinitionsPrompt(subagentDefinitions),
+    skillPaths: (selection, runId) => skillPathsForSelection(skillsForRun(runId), selection),
+    selectCapabilities: async (input, runId) => {
+      return await preselectCapabilities({
+        ...input, models: resolveToolModelCandidates(input.config, providerCredentials), tools: toolRegistry.list().filter(isToolModelVisible), skills: skillsForRun(runId).skills,
+        selectionState: selectionStateForConfig(input.config)
+      });
+    },
+    prepareToolDiscovery: async (query, signal) => {
+      const result = await resourceScope.waitForMcpDiscovery({ query, signal });
+      refreshExtensionTools();
+      return { pending: result.pending, timedOut: result.timedOut };
+    },
+    mcpPrompt: () => mcpHost.instructionsPrompt(),
+    todoStore: todos,
+    sessionGoals,
+    taskCommunication,
+    createCheckpoint: checkpoints ? async (label) => await checkpoints.create(label) : undefined,
+    attachmentRoot: projectAttachmentRoot,
+    runtimeEventSink: runtimeAuthority.asSink(),
+    capabilities,
+    createSelfReflectionTask: async (candidate) => {
+      taskRuns.create({
+        taskRunId: candidate.taskRunId,
+        sessionId: recorder.sessionId,
+        task: {
+          type: "self_reflection_action",
+          title: candidate.title,
+          description: candidate.description,
+          evidence: candidate.evidence,
+          sourceDate: candidate.dateKey,
+          sourceHash: candidate.sourceHash
+        }
+      });
+      return true;
+    }
+  });
+  const initializedAgent = agent;
+  cleanup.agent = async () => {
+    await initializedAgent.close();
+    cleanup.recorder = undefined;
+  };
+  await agent.initialize();
   if (!agent) throw new Error("Failed to initialize Biny agent runtime.");
 
   const heartbeatAgent = agent;
@@ -707,6 +735,14 @@ export async function createCommandRuntime(workspaceRoot: string, options: Comma
     stop: (): void => { heartbeat.stop(); }
   };
   backgroundOwners.add(backgroundOwner);
+  cleanup.background = () => {
+    const wasOwner = backgroundOwners.values().next().value === backgroundOwner;
+    try { backgroundOwner.stop(); }
+    finally {
+      backgroundOwners.delete(backgroundOwner);
+      if (wasOwner) backgroundOwners.values().next().value?.start();
+    }
+  };
   if (backgroundOwners.size === 1) backgroundOwner.start();
 
   // MCP 连接状态与工具集合在运行期会变（断线、重连、list_changed），报告每次实时取。

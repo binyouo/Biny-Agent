@@ -69,6 +69,18 @@ export function validateRuntimeEventRecord(value: unknown): value is RuntimeEven
   return true;
 }
 
+/** Compare only valid witness records; JSON omits optional own-undefined fields. */
+export function sameRuntimeHighWater(left: RuntimeHighWater | undefined, right: RuntimeHighWater | undefined): boolean {
+  const valid = (value: RuntimeHighWater | undefined): value is RuntimeHighWater => value !== undefined
+    && validateRuntimeEventRecord(value)
+    && Object.hasOwn(value, "eventId") && Object.hasOwn(value, "eventSeq")
+    && Reflect.ownKeys(value).every(key => key === "eventId" || key === "eventSeq" || key === "runId" || key === "turnId");
+  return valid(left) && valid(right)
+    && Object.getPrototypeOf(left) === Object.getPrototypeOf(right)
+    && left.eventId === right.eventId && left.eventSeq === right.eventSeq
+    && left.runId === right.runId && left.turnId === right.turnId;
+}
+
 export function assertRuntimeEventSequence(value: number): void {
   if (!Number.isSafeInteger(value) || value < 1) {
     throw new RangeError("Runtime event sequence must be a positive safe integer.");

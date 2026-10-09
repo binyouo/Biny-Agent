@@ -11,8 +11,8 @@ test(`direct ${suite} execution leaves the inherited user config untouched; suit
   const userRoot = await mkdtemp(path.join(os.tmpdir(), "biny-worker-user-config-"));
   const configPath = path.join(userRoot, "config.json");
   const original = '{"userConfigSentinel":true}\n';
-  await writeFile(configPath, original, { mode: 0o600 });
   try {
+    await writeFile(configPath, original, { mode: 0o600 });
     const env: NodeJS.ProcessEnv = { ...process.env, BINY_AGENT_DIR: userRoot };
     delete env.NODE_TEST_CONTEXT;
     const child = await promisify(execFile)(process.execPath, [

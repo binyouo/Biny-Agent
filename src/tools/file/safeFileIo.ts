@@ -2,14 +2,14 @@
  * 安全文件读写。
  *
  * 工具层所有真实的文件读写都走这里，目的是两条：一是有界（读取有字节上限，不会被巨大文件
- * 打爆内存），二是不被中途换掉目标。
+ * 打爆内存），二是尽力检查已观察到的目标版本是否变化。
  *
- * 「不被换掉」靠 `FileSnapshot`（device/inode/size/mode/链接数/时间戳）实现：打开后、写入
- * 前、提交前反复核对句柄和路径指向的还是同一个 inode，一旦不一致就中止。所有打开操作都带
+ * 版本检查靠 `FileSnapshot`（device/inode/size/mode/链接数/时间戳）实现：打开后、写入
+ * 前、提交前尽力核对句柄和路径，发现不一致就中止；检查与提交并非原子操作。普通文件打开在平台支持时带
  * `O_NOFOLLOW`，符号链接一律拒绝，避免被引到工作区之外。
  *
  * 写入是原子的：先写临时文件并 fsync，新建用 `link`（目标已存在即失败，不覆盖），覆盖用
- * `rename`，并先用硬链接把原文件的 inode 钉住，以便提交窗口内被外部改动时能还原回去。
+ * `rename`，并先用硬链接保留旧 inode 供复核及尝试恢复；钉住后外部原子保存的新版本仍可能被覆盖。
  */
 import { isUtf8 } from "node:buffer";
 import { randomBytes } from "node:crypto";
@@ -212,7 +212,7 @@ export async function readUtf8FileForEdit(filePath: string, signal?: AbortSignal
  *
  * `expectedSnapshot` 表示调用方认为写之前文件应有的状态：`null` 意为「文件应当不存在」，
  * 传具体快照意为「必须还是我读到的那一版」，`undefined` 则表示不做版本校验（以当前状态为准）。
- * 对不上就抛错，绝不悄悄覆盖别人的改动。
+ * 校验发现不一致就抛错；这是对已观察版本的尽力检查，不能保证不覆盖并发的外部原子保存。
  */
 export async function atomicWriteUtf8File(filePath: string, content: string, expectedSnapshot: FileSnapshot | null | undefined, signal?: AbortSignal, onCommit?: (evidence: string) => void | Promise<void>): Promise<number> {
   return atomicWriteFile(filePath, content, expectedSnapshot, signal, onCommit);
@@ -293,8 +293,8 @@ async function atomicWriteFile(
       temporarySnapshot = undefined;
     } else {
       // 覆盖已有文件前，用硬链接把「已确认的那一版」inode 钉住，让它在 rename 之后仍可访问。
-      // 如果提交窗口内有别的进程通过旧路径写入，靠这个备份既能发现改动，也能把内容还原回去，
-      // 而不是直接丢掉。
+      // 提交后复核备份，若发现旧 inode 被改写则尝试恢复；外部进程若在钉住后、rename 前原子替换路径，
+      // 新版本仍可能被覆盖，旧 inode 的备份无法检测或恢复该新版本。
       backupPath = path.join(
         directory,
         `.biny-backup-${String(process.pid)}-${randomBytes(8).toString("hex")}.tmp`
@@ -627,7 +627,8 @@ async function removeCreatedDirectories(created: readonly CreatedDirectory[]): P
   }
 }
 
-async function openBoundRegularFile(filePath: string): Promise<FileHandle> {
+/** Open a canonical regular file for reading; the caller owns closing the returned handle. */
+export async function openBoundRegularFile(filePath: string): Promise<FileHandle> {
   let handle: FileHandle;
   try {
     handle = await fs.open(filePath, constants.O_RDONLY | noFollowFlag() | nonBlockingReadFlag);

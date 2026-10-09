@@ -25,12 +25,14 @@ import {
   type Stats,
   type WriteStream
 } from "node:fs";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { parseSessionEvents, readSessionEventsForBackfill } from "./events.js";
-import { replaySessionEvents, type SessionReplay } from "./replay.js";
+import { activeSessionMessageIds, replaySessionEvents, type SessionReplay } from "./replay.js";
 import { assertRecoveryMaterializationSuffix, recoveryMaterializationPlan } from "./recoveryMaterialization.js";
-import { resolveContinuationPlan } from "./recoveryPlan.js";
+import { resolveContinuationPlan, witnessedPausedFollowupMarker } from "./recoveryPlan.js";
+import { assertRetryWindow } from "./retryCommit.js";
+import { resolveRetryScope, type RetryOrigin } from "./retryOrigin.js";
 import { TurnStore } from "./turnStore.js";
 import path from "node:path";
 import { redactSecrets, redactSensitiveValue, type SensitiveValueRedactionOptions } from "../utils/secrets.js";
@@ -44,6 +46,7 @@ import type { ToolExecutionResultStatus, ToolExecutionState, ToolOutcomeUnknownR
 import type { CommittedFileChange } from "../tools/file/fileChange.js";
 import {
   createRuntimeEventIdentity,
+  sameRuntimeHighWater,
   type RuntimeEventContext,
   type RuntimeEventIdentity,
   type RuntimeEventSink,
@@ -195,23 +198,8 @@ export class SessionRecorder {
     if (Buffer.byteLength(line, "utf8") > maxSessionEventLineBytes) {
       throw new Error(`Session event exceeds the maximum size of ${String(maxSessionEventLineBytes)} bytes.`);
     }
-    if (!this.stream) {
-      const descriptor = this.descriptor;
-      if (descriptor === undefined) throw new Error(`Session recorder has no open descriptor: ${this.sessionId}`);
-      validateSessionDescriptor(descriptor, this.filePath);
-      try {
-        this.stream = createWriteStream(this.filePath, { fd: descriptor, autoClose: true });
-        this.descriptor = undefined;
-      } catch (error) {
-        closeSync(descriptor);
-        this.descriptor = undefined;
-        throw error;
-      }
-      this.stream.on("error", (error) => {
-        this.streamError ??= error;
-      });
-    }
-    this.stream.write(`${line}\n`);
+    const stream = this.prepareAppendStream();
+    stream.write(`${line}\n`);
     if (persistedEvent.type === "agent_message" || (persistedEvent.type === "user_message" && !persistedEvent.auditOnly)) {
       this.lastMessageId = persistedEvent.messageId;
     }
@@ -229,6 +217,27 @@ export class SessionRecorder {
       });
     }
     return persistedEvent;
+  }
+
+  private prepareAppendStream(): WriteStream {
+    if (this.closed || this.closing) throw new Error(`Session recorder is already closed: ${this.sessionId}`);
+    if (!this.stream) {
+      const descriptor = this.descriptor;
+      if (descriptor === undefined) throw new Error(`Session recorder has no open descriptor: ${this.sessionId}`);
+      validateSessionDescriptor(descriptor, this.filePath);
+      try {
+        this.stream = createWriteStream(this.filePath, { fd: descriptor, autoClose: true });
+        this.descriptor = undefined;
+      } catch (error) {
+        closeSync(descriptor);
+        this.descriptor = undefined;
+        throw error;
+      }
+      this.stream.on("error", (error) => {
+        this.streamError ??= error;
+      });
+    }
+    return this.stream;
   }
 
   /** 关键协议事件使用有序屏障，确保 JSONL 已交给文件系统后再推进执行状态。 */
@@ -259,6 +268,97 @@ export class SessionRecorder {
   }
 
   /**
+   * A new ordinary input leaves a retry-owned view through the actual selected
+   * path. The old checkpoint is opaque: abandonment never parses old intent.
+   * Hydration is staged; only this recorder chooses the durable parent.
+   */
+  admitTurnAfterRetryView(kind: "ordinary" | "paused-followup" | "admitted-followup", prepare: (replay: SessionReplay, pausedMarker?: string) => Promise<{
+    event?: Extract<SessionEvent, { type: "user_message" }>;
+    install: () => void;
+  }>): Promise<SessionEvent | undefined> {
+    if (kind !== "ordinary" && kind !== "paused-followup" && kind !== "admitted-followup") throw new Error("Invalid retry-view admission kind.");
+    const invocation = this.runtimeContextSnapshot();
+    const current = this.persistenceBarrier.then(async () => {
+      await this.flush();
+      const store = new TurnStore(this.workspaceRoot, this.sessionId);
+      const checkpoint = await store.readReplacementWitness();
+      const initial = await readSessionEventsForBackfill(this.filePath, 0);
+      const replay = replaySessionEvents(initial.events, { sessionId: this.sessionId });
+      const activeIds = activeSessionMessageIds(initial.events, replay.messageTree);
+      const parent = replay.messageTree.filter(node => activeIds.has(node.id)).at(-1)?.id;
+      let pausedMarker: string | undefined;
+      if (kind !== "ordinary") {
+        const turn = await store.load();
+        if (!turn || !isDeepStrictEqual(checkpoint, await store.readReplacementWitness())) throw new Error("Paused followup checkpoint changed.");
+        if (kind === "admitted-followup" && turn.turnId !== invocation?.turnId) throw new Error("Admitted followup invocation owner changed.");
+        pausedMarker = witnessedPausedFollowupMarker(initial.events, turn, kind === "admitted-followup");
+      }
+      const staged = await prepare(structuredClone(replay), pausedMarker);
+      const event = structuredClone(staged.event);
+      if (kind === "admitted-followup" ? event !== undefined : !event || event.type !== "user_message" || event.importSource !== undefined
+        || event.parentMessageId !== undefined || event.slotId !== undefined
+        || (kind === "ordinary" ? event.auditOnly : event.auditOnly !== true || event.content !== ""
+          || !isDeepStrictEqual(event.metadata, { turnTrigger: "resume_interrupted_task" })
+          || Object.keys(event).some(key => !["type", "content", "messageId", "auditOnly", "metadata"].includes(key)))) {
+        throw new Error("Retry-view abandonment requires an ordinary root input.");
+      }
+      const messageId = kind === "ordinary" ? event?.messageId ?? createMessageId() : event?.messageId;
+      if (kind === "ordinary" && replay.messageTree.some(node => node.id === messageId)) throw new Error("New input identity already exists.");
+      for (;;) {
+        await this.flush();
+        const source = await readSessionEventsForBackfill(this.filePath, initial.byteLength);
+        if (source.prefixHash !== initial.contentHash || source.prefixEventCount !== initial.events.length) {
+          throw new Error("Selected conversation changed during user admission.");
+        }
+        if (source.events.slice(initial.events.length).some(item => item.type !== "message_metadata"
+          && item.type !== "model_request" && item.type !== "error")) {
+          throw new Error("Conversation advanced during user admission.");
+        }
+        // Even initially corrupt bytes are valid abandonment witnesses. A change
+        // while attachments await is a different task intent and must not race.
+        if (!isDeepStrictEqual(checkpoint, await store.readReplacementWitness())) {
+          throw new Error("Checkpoint changed during user admission.");
+        }
+        const currentReplay = replaySessionEvents(source.events, { sessionId: this.sessionId });
+        if (!isDeepStrictEqual(invocation, this.runtimeContextSnapshot())) throw new Error("User admission invocation changed.");
+        this.ensureRuntimeSequence();
+        if (this.runtimeSequence > (currentReplay.runtimeHighWater?.eventSeq ?? 0)) continue;
+        const descriptor = this.descriptor ?? (this.stream as WriteStream & { fd?: number | null } | undefined)?.fd;
+        if (typeof descriptor !== "number") throw new Error("User admission recorder has no bound descriptor.");
+        const stat = validateSessionDescriptor(descriptor, this.filePath);
+        assertSessionFileSize(stat.size, this.filePath);
+        if (createHash("sha256").update(readDescriptor(descriptor, stat.size)).digest("hex") !== source.contentHash) continue;
+        if (!event) {
+          staged.install();
+          this.restoreMessageParent(parent);
+          return undefined;
+        }
+        const sequence = currentReplay.runtimeHighWater?.eventSeq ?? 0;
+        const runtime = createRuntimeEventIdentity(sequence + 1, invocation);
+        const persisted = JSON.parse(JSON.stringify(redactSessionEvent({ ...event,
+          ...(kind === "ordinary" ? { messageId, parentMessageId: parent, slotId: messageId } : {}),
+          runtime, time: event.time ?? new Date().toISOString()
+        }))) as SessionEvent;
+        const line = JSON.stringify(persisted);
+        if (Buffer.byteLength(line, "utf8") > maxSessionEventLineBytes) throw new Error("User admission exceeds the maximum session event size.");
+        parseSessionEvents(`${line}\n`);
+        if (this.closed || this.closing) throw new Error("User admission recorder is closed.");
+        // No await or fallible payload construction between installation and the
+        // ordinary append. Later flush/sink failure never rolls back this fact.
+        this.prepareAppendStream();
+        staged.install();
+        this.restoreMessageParent(parent);
+        const recorded = this.appendPersistedEvent(persisted, false);
+        await this.flush();
+        this.runtimeEventSink?.appendSessionEvent({ sessionId: this.sessionId, runtime, event: recorded, createdAt: recorded.time! });
+        return recorded;
+      }
+    });
+    this.persistenceBarrier = current.then(() => undefined, () => undefined);
+    return current;
+  }
+
+  /**
    * Copy an already-durable native recovery suffix without recapturing/redacting it.
    * The API accepts only immutable source references, never caller message content.
    * Every copied body is reconstructed afresh from physical JSONL inside the barrier.
@@ -275,15 +375,22 @@ export class SessionRecorder {
       if (!runtimeContext || runtimeContext.turnId !== requested.ownerTurnId) throw new Error("Recovery copy owner does not match the recorder invocation.");
       if (!Number.isSafeInteger(requested.sourcePrefix.byteLength) || requested.sourcePrefix.byteLength < 1
         || !/^[a-f0-9]{64}$/u.test(requested.sourcePrefix.sha256)) throw new Error("Invalid recovery source prefix proof.");
+      let admittedOrigin: RetryOrigin | undefined;
+      let originLoaded = false;
       for (;;) {
         if (!isDeepStrictEqual(this.runtimeContextSnapshot(), runtimeContext)) throw new Error("Recovery recorder invocation changed before canonical copy.");
         await this.flush();
         const turn = await new TurnStore(this.workspaceRoot, this.sessionId).load();
         if (!turn || turn.turnId !== requested.ownerTurnId
-          || !isDeepStrictEqual(turn.runtimeHighWater, requested.expectedRuntimeHighWater)) {
+          || !sameRuntimeHighWater(turn.runtimeHighWater, requested.expectedRuntimeHighWater)) {
           throw new Error("Recovery checkpoint owner or high-water changed before canonical copy.");
         }
+        if (!originLoaded) { admittedOrigin = structuredClone(turn.retryOrigin); originLoaded = true; }
+        else if (!isDeepStrictEqual(admittedOrigin, turn.retryOrigin)) throw new Error("Recovery retry origin changed before canonical copy.");
         const source = await readSessionEventsForBackfill(this.filePath, requested.sourcePrefix.byteLength);
+        if (turn.retryOrigin && resolveRetryScope(source.events, turn.retryOrigin, turn).status !== "active") {
+          throw new Error("Recovery retry intent was superseded before canonical copy.");
+        }
         if (source.prefixHash !== requested.sourcePrefix.sha256 || source.prefixEventCount === undefined) {
           throw new Error("Recovery source prefix changed before canonical copy.");
         }
@@ -294,15 +401,15 @@ export class SessionRecorder {
           || event.type === "agent_message" && event.runtime?.turnId !== requested.ownerTurnId)) {
           throw new Error("Recovery branch or owner changed before canonical copy.");
         }
-        const replay = replaySessionEvents(source.events, { sessionId: this.sessionId, expectedRuntimeHighWater: requested.expectedRuntimeHighWater });
+        const replay = replaySessionEvents(source.events, { sessionId: this.sessionId, expectedRuntimeHighWater: requested.expectedRuntimeHighWater, retryOrigin: turn.retryOrigin });
         const checkpointIndex = source.events.findIndex(event => event.runtime?.eventId === requested.expectedRuntimeHighWater.eventId);
         if (checkpointIndex < 0 || checkpointIndex >= source.prefixEventCount) throw new Error("Recovery checkpoint witness is outside the authenticated prefix.");
-        if (source.events.slice(checkpointIndex + 1).some(event => event.type === "message_version_selected")) {
+        if (!turn.retryOrigin && source.events.slice(checkpointIndex + 1).some(event => event.type === "message_version_selected")) {
           throw new Error("Recovery branch was explicitly selected after its checkpoint.");
         }
         const prefixEvents = source.events.slice(0, source.prefixEventCount);
-        const prefixReplay = replaySessionEvents(prefixEvents, { sessionId: this.sessionId, expectedRuntimeHighWater: requested.expectedRuntimeHighWater });
-        const prefixPlan = recoveryMaterializationPlan(prefixEvents, prefixReplay, requested.ownerTurnId);
+        const prefixReplay = replaySessionEvents(prefixEvents, { sessionId: this.sessionId, expectedRuntimeHighWater: requested.expectedRuntimeHighWater, retryOrigin: turn.retryOrigin });
+        const prefixPlan = recoveryMaterializationPlan(prefixEvents, prefixReplay, requested.ownerTurnId, turn.retryOrigin);
         if (!prefixPlan.eligible) throw new Error("Recovery owner is not on the active conversation branch.");
         // Validate every reconstructed canonical shape before copying any member.
         for (const message of prefixPlan.messages) parseSessionEvents(`${JSON.stringify({ type: "agent_message", message })}\n`);
@@ -322,7 +429,7 @@ export class SessionRecorder {
         const descriptor = this.descriptor ?? (this.stream as WriteStream & { fd?: number | null } | undefined)?.fd;
         if (typeof descriptor !== "number") throw new Error("Recovery recorder has no bound descriptor.");
         validateSessionDescriptor(descriptor, this.filePath);
-        const plan = recoveryMaterializationPlan(source.events, replay, requested.ownerTurnId);
+        const plan = recoveryMaterializationPlan(source.events, replay, requested.ownerTurnId, turn.retryOrigin);
         if (!plan.eligible) throw new Error("Recovery owner is not on the active conversation branch.");
         if (plan.parentMessageId) this.restoreMessageParent(plan.parentMessageId);
         const message = plan.messages[0];
@@ -335,6 +442,111 @@ export class SessionRecorder {
         this.runtimeEventSink?.appendSessionEvent({ sessionId: this.sessionId, runtime, event: persisted, createdAt: persisted.time! });
         // Re-read and reconstruct after every durable append. Partial copies and
         // same-owner canonical additions are deduplicated by actual persisted IDs.
+      }
+    });
+    this.persistenceBarrier = current.then(() => undefined, () => undefined);
+    return current;
+  }
+
+  /** Finish only the actual outcome/payload held by the current checkpoint phase. */
+  commitRetryReply(input: {
+    /** Live completion publishes its rich audit between these validated stages. */
+    stage?: "reply" | "terminal";
+    ownerTurnId: string;
+    replyMessageId: string;
+    expectedRuntimeHighWater: RuntimeHighWater;
+    sourcePrefix: { byteLength: number; sha256: string };
+  }): Promise<SessionReplay> {
+    const requested = structuredClone(input);
+    const invocation = this.runtimeContextSnapshot();
+    const current = this.persistenceBarrier.then(async () => {
+      if (!invocation || invocation.turnId !== requested.ownerTurnId) throw new Error("Retry commit invocation owner changed.");
+      if (!Number.isSafeInteger(requested.sourcePrefix.byteLength) || requested.sourcePrefix.byteLength < 1
+        || !/^[a-f0-9]{64}$/u.test(requested.sourcePrefix.sha256)) throw new Error("Invalid retry commit physical prefix proof.");
+      if (requested.stage !== undefined && requested.stage !== "reply" && requested.stage !== "terminal") throw new Error("Invalid retry commit stage.");
+      let admitted: unknown;
+      for (;;) {
+        await this.flush();
+        if (!isDeepStrictEqual(invocation, this.runtimeContextSnapshot())) throw new Error("Retry commit invocation changed.");
+        const turn = await new TurnStore(this.workspaceRoot, this.sessionId).load();
+        if (!turn?.retryOrigin || !turn.retryWindow || !turn.retryCommit || turn.turnId !== requested.ownerTurnId
+          || turn.retryWindow.replyMessageId !== requested.replyMessageId
+          || !sameRuntimeHighWater(turn.runtimeHighWater, requested.expectedRuntimeHighWater)
+          || !sameRuntimeHighWater(turn.retryCommit.runtimeHighWater, turn.runtimeHighWater)) throw new Error("Retry commit checkpoint was replaced.");
+        const identity = { origin: turn.retryOrigin, window: turn.retryWindow, commit: turn.retryCommit };
+        if (admitted === undefined) admitted = structuredClone(identity);
+        else if (!isDeepStrictEqual(admitted, identity)) throw new Error("Retry commit phase changed during persistence.");
+        const source = await readSessionEventsForBackfill(this.filePath, requested.sourcePrefix.byteLength);
+        if (source.prefixHash !== requested.sourcePrefix.sha256 || source.prefixEventCount === undefined) throw new Error("Retry commit physical prefix changed.");
+        assertRetryWindow(source.events, turn.retryOrigin, turn.retryWindow);
+        const scope = resolveRetryScope(source.events, turn.retryOrigin, turn);
+        if (scope.status === "superseded") throw new Error("Retry commit was superseded by newer input or selection.");
+        const phase = turn.retryCommit;
+        const phaseIndex = source.events.findIndex(event => sameRuntimeHighWater(event.runtime, phase.runtimeHighWater));
+        if (phaseIndex < 0 || phaseIndex >= source.prefixEventCount) throw new Error("Retry commit witness is outside its physical prefix.");
+        const afterPhase = source.events.slice(phaseIndex + 1);
+        if (afterPhase.some(event => event.type === "agent_message" && event.messageId !== phase.replyMessageId
+          || event.type === "user_message" && !event.auditOnly
+          || event.type === "tool_call" || event.type === "tool_execution")) throw new Error("Retry execution advanced beyond its commit phase.");
+        const expected: SessionEvent = { type: "agent_message", message: phase.message, messageId: phase.replyMessageId,
+          parentMessageId: phase.parentMessageId, slotId: turn.retryOrigin.targetSlotId,
+          replyToMessageId: turn.retryOrigin.replyToMessageId, retryOfMessageId: turn.retryOrigin.targetMessageId };
+        // The pending body is new provider output, not an authenticated durable
+        // copy: normal redaction AND the ordinary persisted parser both apply.
+        parseSessionEvents(`${JSON.stringify(redactSessionEvent(expected))}\n`);
+        const canonical = source.events.filter(event => event.type === "agent_message" && event.messageId === phase.replyMessageId);
+        if (canonical.length > 1) throw new Error("Retry reply identity is duplicated.");
+        const normal = (event: SessionEvent): unknown => {
+          const { runtime: _runtime, time: _time, ...body } = event;
+          return JSON.parse(JSON.stringify(body));
+        };
+        if (canonical[0] && (canonical[0].runtime?.runId !== phase.runId || canonical[0].runtime?.turnId !== turn.turnId
+          || !isDeepStrictEqual(normal(canonical[0]), normal(redactSessionEvent(expected))))) {
+          throw new Error("Retry committed reply differs from the normalized checkpoint payload.");
+        }
+        if (!canonical.length && scope.cursor !== phase.parentMessageId) throw new Error("Retry commit parent cursor changed.");
+        const selected = source.events.filter(event => event.type === "message_version_selected" && event.messageId === phase.replyMessageId);
+        if (selected.length > 1 || selected.some(event => event.runtime?.turnId !== turn.turnId)) throw new Error("Retry reply selection changed.");
+        const outcome = phase.outcome;
+        const reasoningBlocks = phase.message.content.flatMap(part => part.type === "reasoning"
+          ? [{ text: part.text, providerOptions: part.providerMetadata }] : []);
+        const expectedAudit: SessionEvent = { type: "assistant_message", content: outcome.output, usage: outcome.usage,
+          messageId: phase.replyMessageId, parentMessageId: phase.parentMessageId, slotId: turn.retryOrigin.targetSlotId,
+          replyToMessageId: turn.retryOrigin.replyToMessageId, retryOfMessageId: turn.retryOrigin.targetMessageId,
+          reasoningContent: reasoningBlocks.map(block => block.text).join("") || undefined,
+          reasoningBlocks: reasoningBlocks.length ? reasoningBlocks : undefined,
+          reasoningProviderOptions: reasoningBlocks.length === 1 ? reasoningBlocks[0]?.providerOptions : undefined };
+        const audits = source.events.filter(event => event.type === "assistant_message" && event.messageId === phase.replyMessageId);
+        const normalizedAudit = redactSessionEvent(expectedAudit);
+        if (audits.length > 1 || audits.some(event => event.type === "assistant_message" && (event.runtime?.runId !== phase.runId
+          || event.runtime?.turnId !== turn.turnId || event.slotId !== turn.retryOrigin!.targetSlotId
+          || event.parentMessageId !== phase.parentMessageId || event.replyToMessageId !== turn.retryOrigin!.replyToMessageId
+          || event.retryOfMessageId !== turn.retryOrigin!.targetMessageId
+          || normalizedAudit.type !== "assistant_message" || event.content !== normalizedAudit.content))) throw new Error("Retry reply audit changed identity or content.");
+        const expectedTerminal: SessionEvent = { type: "turn_status", status: outcome.status, stopReason: outcome.stopReason,
+          finishReason: outcome.finishReason, steps: outcome.steps, summary: outcome.error, resumable: outcome.resumable,
+          blockedReason: outcome.blockedReason, requiredAction: outcome.requiredAction, affectedTodoIds: outcome.affectedTodoIds };
+        const terminals = source.events.filter(event => event.type === "turn_status" && event.runtime?.runId === phase.runId);
+        if (terminals.length > 1 || terminals[0] && (terminals[0].runtime?.turnId !== turn.turnId
+          || !isDeepStrictEqual(normal(terminals[0]), normal(redactSessionEvent(expectedTerminal))))) throw new Error("Retry outcome conflicts with its checkpoint phase.");
+        const replay = replaySessionEvents(source.events, { sessionId: this.sessionId, expectedRuntimeHighWater: turn.runtimeHighWater, retryOrigin: turn.retryOrigin });
+        const decision = resolveContinuationPlan(turn, replay, Infinity);
+        if (decision.action !== "continue" && !(decision.action === "finished" && terminals.length)
+          && !(decision.action === "require-user-input" && outcome.status === "blocked")) throw new Error("Retry commit is not safe to finish.");
+        this.ensureRuntimeSequence();
+        if (this.runtimeSequence > (replay.runtimeHighWater?.eventSeq ?? 0)) continue;
+        if (replay.runtimeHighWater) { this.runtimeSequence = replay.runtimeHighWater.eventSeq; this.lastRuntimeEvent = { ...replay.runtimeHighWater }; }
+        const event = !canonical.length ? expected : !selected.length
+          ? { type: "message_version_selected" as const, messageId: phase.replyMessageId, slotId: turn.retryOrigin.targetSlotId }
+          : requested.stage === "reply" ? undefined : !audits.length ? expectedAudit : !terminals.length ? expectedTerminal : undefined;
+        if (!event) { this.restoreMessageParent(phase.replyMessageId); return replay; }
+        if (!isDeepStrictEqual(invocation, this.runtimeContextSnapshot())) throw new Error("Retry commit invocation changed before append.");
+        const descriptor = this.descriptor ?? (this.stream as WriteStream & { fd?: number | null } | undefined)?.fd;
+        if (typeof descriptor !== "number") throw new Error("Retry commit recorder has no bound descriptor.");
+        validateSessionDescriptor(descriptor, this.filePath);
+        const recorded = this.recordInternal(event, { runId: phase.runId, turnId: requested.ownerTurnId }, false);
+        await this.flush();
+        this.runtimeEventSink?.appendSessionEvent({ sessionId: this.sessionId, runtime: recorded.runtime!, event: recorded, createdAt: recorded.time! });
       }
     });
     this.persistenceBarrier = current.then(() => undefined, () => undefined);
@@ -782,8 +994,8 @@ function lastPersistedRuntimeEvent(raw: Buffer): RuntimeHighWater | undefined {
         last = {
           eventId: runtime.eventId,
           eventSeq: runtime.eventSeq as number,
-          runId: typeof runtime.runId === "string" ? runtime.runId : undefined,
-          turnId: typeof runtime.turnId === "string" ? runtime.turnId : undefined
+          ...(typeof runtime.runId === "string" ? { runId: runtime.runId } : {}),
+          ...(typeof runtime.turnId === "string" ? { turnId: runtime.turnId } : {})
         };
       }
     } catch {

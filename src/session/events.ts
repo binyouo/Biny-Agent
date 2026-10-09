@@ -27,6 +27,7 @@ import { validateRuntimeEventRecord, type RuntimeEventIdentity } from "./runtime
 import { contextCheckpointSchema, contextStateSchema, contextUsageSchema } from "./contextSchema.js";
 
 const sessionListReadConcurrency = 8;
+const maxSummaryCacheBytes = 8 * 1024 * 1024;
 const sessionUsageSchema = z.record(z.unknown());
 const reasoningBlockSchema = z.object({
   text: z.string(),
@@ -444,9 +445,11 @@ export async function readSessionSummary(
   const previous = summaryCache.get(result.filePath);
   if (previous) summaryCacheBytes -= previous.weight;
   summaryCache.delete(result.filePath);
+  // 单条摘要超过总预算时不入缓存，避免先淘汰所有健康摘要、再淘汰自身。
+  if (weight > maxSummaryCacheBytes) return summary;
   summaryCache.set(result.filePath, { fingerprint: sessionFileFingerprint(result.stat), summary: structuredClone(summary), weight });
   summaryCacheBytes += weight;
-  while (summaryCache.size > 4096 || summaryCacheBytes > 8 * 1024 * 1024) {
+  while (summaryCache.size > 4096 || summaryCacheBytes > maxSummaryCacheBytes) {
     const oldest = summaryCache.keys().next();
     if (oldest.done) break;
     summaryCacheBytes -= summaryCache.get(oldest.value)!.weight;

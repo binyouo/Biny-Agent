@@ -3,6 +3,7 @@
  * This is an append plan, not another recovery/outcome inference or a legacy migration.
  * The caller must validate the full log and continuation safety under its operation lock.
  */
+import { resolveRetryScope, retryProjectionEvents, type RetryOrigin } from "./retryOrigin.js";
 import { isDeepStrictEqual } from "node:util";
 import type { AgentMessage } from "../agent/core/types.js";
 import { activeSessionEventsForPath, activeSessionMessageIds } from "./messageTree.js";
@@ -19,18 +20,25 @@ export interface RecoveryMaterializationPlan {
 export function recoveryMaterializationPlan(
   recordedEvents: readonly SessionEvent[],
   replay: SessionReplay,
-  turnId: string | undefined
+  turnId: string | undefined,
+  retryOrigin?: RetryOrigin
 ): RecoveryMaterializationPlan {
-  const activeIds = activeSessionMessageIds(recordedEvents);
+  const retry = retryOrigin ? resolveRetryScope(recordedEvents, retryOrigin, { turnId }) : undefined;
+  const projectedEvents = retry?.status === "active" && retryOrigin ? retryProjectionEvents(recordedEvents, retry, retryOrigin) : undefined;
+  const activeIds = projectedEvents ? new Set(projectedEvents.flatMap(event =>
+    (event.type === "agent_message" || event.type === "user_message" && !event.auditOnly) && event.messageId ? [event.messageId] : []))
+    : activeSessionMessageIds(recordedEvents);
   const activeNodes = replay.messageTree.filter(node => activeIds.has(node.id));
-  const parentMessageId = activeNodes.at(-1)?.id;
+  const parentMessageId = retry?.status === "active" ? retry.cursor : activeNodes.at(-1)?.id;
   const empty = { eligible: false, parentMessageId, messages: [] };
-  if (!turnId || !parentMessageId) return empty;
-  const latestInput = [...recordedEvents].reverse().find(event => event.type === "user_message" && event.runtime?.turnId);
-  if (latestInput?.runtime?.turnId !== turnId || latestInput.importSource !== undefined) return empty;
-  if (latestInput.type === "user_message" && !latestInput.auditOnly && (!latestInput.messageId || !activeIds.has(latestInput.messageId))) return empty;
+  if (!turnId || !parentMessageId || retry && retry.status !== "active") return empty;
+  if (!retry) {
+    const latestInput = [...recordedEvents].reverse().find(event => event.type === "user_message" && event.runtime?.turnId);
+    if (latestInput?.runtime?.turnId !== turnId || latestInput.importSource !== undefined) return empty;
+    if (latestInput.type === "user_message" && !latestInput.auditOnly && (!latestInput.messageId || !activeIds.has(latestInput.messageId))) return empty;
+  }
 
-  const activeEvents = new Set(activeSessionEventsForPath(recordedEvents));
+  const activeEvents = new Set(projectedEvents ?? activeSessionEventsForPath(recordedEvents));
   const calls = new Map<string, Extract<SessionEvent, { type: "tool_call" }>>();
   const results = new Map<string, Extract<SessionEvent, { type: "tool_result" }>>();
   const operations = new Map<string, Extract<SessionEvent, { type: "tool_execution" }>>();

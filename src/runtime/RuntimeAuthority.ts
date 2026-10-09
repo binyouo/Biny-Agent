@@ -16,6 +16,7 @@ import { assertRuntimeEventSequence, validateRuntimeEventStream, type RuntimeEve
 
 const schemaVersion = 13;
 const busyTimeoutMs = 5_000;
+const taskAttemptIndexName = "task_attempts_task_run_idx";
 const defaultPageSize = 100;
 const maxPageSize = 1_000;
 
@@ -193,6 +194,7 @@ export class RuntimeEventAuthority implements RuntimeEventSink {
     );
     try {
       authority.migrate();
+      authority.ensureTaskAttemptIndex();
       if (options.backfillLegacySessions !== false) await authority.reconcileSessionProjections();
       return authority;
     } catch (error) {
@@ -239,9 +241,11 @@ export class RuntimeEventAuthority implements RuntimeEventSink {
   }
 
   /** 将 runtime fact 与其 SQLite projection 放入同一 SQLite transaction。 */
-  runEventTransaction<T>(input: RuntimeEventAppendInput, execute: () => T): T {
+  runEventTransaction<T>(input: RuntimeEventAppendInput | (() => RuntimeEventAppendInput | undefined), execute: () => T): T {
     return this.transaction(() => {
-      this.appendEventInTransaction(input);
+      // A synchronous state guard can select an event, or an already-applied no-op, under this same transaction.
+      const event = typeof input === "function" ? input() : input;
+      if (event !== undefined) this.appendEventInTransaction(event);
       return execute();
     });
   }
@@ -1012,6 +1016,11 @@ export class RuntimeEventAuthority implements RuntimeEventSink {
           );
         `);
         this.createSessionGoalSchema();
+        // Keep initial schema and index creation atomic without a second write transaction.
+        if (!this.hasTaskAttemptIndex()) {
+          this.database.exec(`CREATE INDEX IF NOT EXISTS ${taskAttemptIndexName} ON task_attempts(task_run_id)`);
+          if (!this.hasTaskAttemptIndex()) throw new Error(`Optional task-attempt index ${taskAttemptIndexName} was not created.`);
+        }
         this.database.exec(`PRAGMA user_version = ${String(schemaVersion)};`);
       });
     } else {
@@ -1179,6 +1188,60 @@ export class RuntimeEventAuthority implements RuntimeEventSink {
         });
       }
     }
+  }
+
+  /** Optional physical optimization; schema-13 readers never require this index. */
+  private ensureTaskAttemptIndex(): void {
+    if (this.hasTaskAttemptIndex()) return;
+    const timeout = toInteger(this.database.prepare("PRAGMA busy_timeout").get()?.timeout, "busy_timeout");
+    let transactionRequested = false;
+    let callbackStarted = false;
+    let failed = false;
+    let failure: unknown;
+    try {
+      this.database.exec("PRAGMA busy_timeout = 0");
+      transactionRequested = true;
+      this.transaction(() => {
+        callbackStarted = true;
+        const revision = this.schemaRevision();
+        if (revision !== schemaVersion) throw new Error(`Runtime schema revision ${String(revision)} changed before optional index maintenance.`);
+        if (this.hasTaskAttemptIndex()) return;
+        this.database.exec(`CREATE INDEX IF NOT EXISTS ${taskAttemptIndexName} ON task_attempts(task_run_id)`);
+        if (!this.hasTaskAttemptIndex()) throw new Error(`Optional task-attempt index ${taskAttemptIndexName} was not created.`);
+      });
+    } catch (error) {
+      // Only another writer winning BEGIN may defer this optional work to a later open.
+      // DDL, callback, commit, extended codes and required-migration errors stay fatal.
+      const beginBusy = transactionRequested && !callbackStarted
+        && error instanceof Error && "code" in error && error.code === "ERR_SQLITE_ERROR"
+        && "errcode" in error && error.errcode === 5;
+      if (!beginBusy) { failed = true; failure = error; }
+    }
+    try {
+      this.database.exec(`PRAGMA busy_timeout = ${String(timeout)}`);
+    } catch (error) {
+      if (!failed) throw error;
+      // open() closes this connection; preserve the primary error if restoration also fails.
+    }
+    if (failed) throw failure;
+  }
+
+  /** Reading a valid existing index must not acquire a write lock. */
+  private hasTaskAttemptIndex(): boolean {
+    const object = this.database.prepare("SELECT type, tbl_name FROM sqlite_schema WHERE name = ? COLLATE NOCASE").get(taskAttemptIndexName);
+    if (!object) return false;
+    const mismatch = (): never => { throw new Error(`Optional task-attempt index ${taskAttemptIndexName} has an incompatible definition.`); };
+    if (object.type !== "index" || typeof object.tbl_name !== "string" || object.tbl_name.toLowerCase() !== "task_attempts") mismatch();
+    const definition = this.database.prepare("PRAGMA index_list('task_attempts')").all()
+      .find((index) => typeof index.name === "string" && index.name.toLowerCase() === taskAttemptIndexName);
+    const columns = this.database.prepare(`PRAGMA index_xinfo('${taskAttemptIndexName}')`).all();
+    const keys = columns.filter((column) => column.key === 1);
+    const auxiliary = columns.filter((column) => column.key === 0);
+    if (!definition || definition.unique !== 0 || definition.partial !== 0
+      || keys.length !== 1 || typeof keys[0]?.name !== "string" || keys[0].name.toLowerCase() !== "task_run_id"
+      || keys[0].desc !== 0 || typeof keys[0].coll !== "string" || keys[0].coll.toUpperCase() !== "BINARY"
+      || auxiliary.length !== 1 || auxiliary[0]?.cid !== -1 || auxiliary[0].name !== null || auxiliary[0].desc !== 0) mismatch();
+    return true;
   }
 
   private createSessionGoalSchema(): void {
