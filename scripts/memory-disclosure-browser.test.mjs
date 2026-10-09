@@ -74,14 +74,25 @@ async function capture(name) {
     document.activeElement?.blur();
   });
   await painted();
-  const clip = await evaluate(() => {
+  const { clip, viewport, host } = await evaluate(() => {
     const first = window.__disclosureQa.elements()[0].getBoundingClientRect();
     const card = document.getElementById("memory-sleep").getBoundingClientRect();
-    return { x: Math.floor(card.x), y: Math.max(0, Math.floor(first.y - 8)),
-      width: Math.ceil(card.width), height: Math.ceil(card.bottom - first.y + 8) };
+    const host = document.querySelector("dialog.memory-fixture");
+    return {
+      clip: { x: Math.floor(card.x), y: Math.max(0, Math.floor(first.y - 8)),
+        width: Math.ceil(card.width), height: Math.ceil(card.bottom - first.y + 8) },
+      viewport: { innerWidth: window.innerWidth, innerHeight: window.innerHeight,
+        clientWidth: document.documentElement.clientWidth, clientHeight: document.documentElement.clientHeight,
+        scrollWidth: document.documentElement.scrollWidth, scrollHeight: document.documentElement.scrollHeight,
+        scrollX: window.scrollX, scrollY: window.scrollY },
+      host: host ? { rect: host.getBoundingClientRect().toJSON(), scrollWidth: host.scrollWidth,
+        width: getComputedStyle(host).width, minWidth: getComputedStyle(host).minWidth,
+        boxSizing: getComputedStyle(host).boxSizing, position: getComputedStyle(host).position } : null
+    };
   });
   const [width, height] = win.getContentSize();
-  assert.ok(clip.x >= 0 && clip.x + clip.width <= width && clip.y + clip.height <= height, "capture must fit the viewport");
+  assert.ok(clip.x >= 0 && clip.x + clip.width <= width && clip.y + clip.height <= height,
+    `capture must fit the viewport: ${JSON.stringify({ name, clip, contentSize: { width, height }, viewport, host })}`);
   const image = await win.webContents.capturePage(clip);
   assert.equal(image.isEmpty(), false);
   await writeFile(path.join(output, `${name}.png`), image.toPNG());

@@ -1,6 +1,6 @@
 /* Only the outer host is unbounded, so screenshots can include the whole settings section. */
 body { margin: 0; background: var(--bg); }
 html, body, #root { height: auto; overflow: visible; }
-.memory-fixture.desktop-settings-dialog { height: auto; max-width: none; overflow: visible; border: 0; border-radius: 0; box-shadow: none; }
+.memory-fixture.desktop-settings-dialog { width: 100%; height: auto; max-width: none; overflow: visible; border: 0; border-radius: 0; box-shadow: none; }
 .memory-fixture.desktop-settings-dialog .settings-modal { display: block; height: auto; overflow: visible; }
 .memory-fixture.desktop-settings-dialog .settings-scroll { height: auto; overflow: visible; padding: 24px; }
