@@ -126,6 +126,13 @@ try {
     await win.loadFile(file);
     win.focus();
     await waitFor(() => !!document.querySelector(".activity-memory-run-details > summary"));
+    assert.equal(await evaluate(() => {
+      const host = document.querySelector("dialog.memory-fixture.desktop-settings-dialog[open]");
+      if (!host) return false;
+      const rect = host.getBoundingClientRect();
+      return host.checkVisibility({ visibilityProperty: true, opacityProperty: true })
+        && rect.width > 0 && rect.height > 0;
+    }), true, `${phase} fixture must render an open, visible settings dialog before input`);
     await evaluate(() => {
       const elements = () => {
         const buttons = [...document.querySelectorAll("button.activity-memory-disclosure")];
