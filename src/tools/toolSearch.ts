@@ -18,7 +18,7 @@ import type { Tool, ToolSource } from "./types.js";
 
 export const toolSearchToolName = "ToolSearch";
 /** 修改目录披露格式、选择 prompt 或验证语义时同步递增。 */
-const toolSearchProtocolVersion = "6";
+const toolSearchProtocolVersion = "7";
 const defaultMaxResults = 8;
 const maxResults = 20;
 const cacheTtlMs = 30 * 60 * 1000;
@@ -247,27 +247,19 @@ async function searchWithModels(
   }
 }
 
-interface SelectedTools {
-  tools: string[];
-  reasoning?: string;
-}
+const selectedToolsSchema = z.object({
+  tools: z.array(z.string().min(1)),
+  reasoning: z.string().optional()
+});
 
 /**
  * 容错解析：先从回复文本中提取首个 { 到最后一个 } 的子串再 JSON.parse，
- * 容忍 prose 包裹、代码围栏与前后噪声；字段缺失或类型不符按空结果处理，
- * 只有完全解析不出 JSON 才抛 SyntaxError 并归类为 invalid_response。
+ * 容忍 prose 包裹与代码围栏；结构错误必须报告失败，不能缓存成没有匹配项。
  */
-function parseSelectedTools(text: string): SelectedTools {
+function parseSelectedTools(text: string): z.infer<typeof selectedToolsSchema> {
   const match = text.trim().match(/\{[\s\S]*\}/u);
   const value: unknown = JSON.parse(match ? match[0]! : text.trim());
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return { tools: [] };
-  const record = value as { tools?: unknown; reasoning?: unknown };
-  return {
-    tools: Array.isArray(record.tools)
-      ? record.tools.filter((name): name is string => typeof name === "string")
-      : [],
-    reasoning: typeof record.reasoning === "string" ? record.reasoning : undefined
-  };
+  return selectedToolsSchema.parse(value);
 }
 
 export function toolSearchResultNames(value: unknown): string[] {
@@ -287,7 +279,7 @@ export function isToolSearchTerminalFailure(value: unknown): value is ToolSearch
   return result.status === "failed" && result.retryable === false;
 }
 
-/** 从持久化 continuation 恢复成功发现的精确工具名；实际白名单仍由当前注册表校验。 */
+/** 从对话上下文恢复成功发现的精确工具名；实际白名单仍由当前注册表校验。 */
 export function toolSearchResultNamesFromMessages(messages: readonly AgentMessage[]): string[] {
   const names = messages.flatMap((message) => message.role === "toolResult"
     && message.toolName === toolSearchToolName
