@@ -11,7 +11,7 @@ import { ComputerAppApprovals } from "../../../computer/appApprovals.js";
 import { ComputerUseController } from "../../../computer/controller.js";
 import { NativeProcessDriver } from "../../../computer/nativeDriver.js";
 import { updateConfig, type AgentConfigStore } from "../../../config/store.js";
-import { computerImageSchema, computerActionSchema, computerMirrorSchema, computerIpc, windowObserveSchema, windowTargetSchema, type ComputerDiagnostics, type ComputerStatus, type ComputerPreview } from "../../../computer/protocol.js";
+import { computerListSchema, computerImageSchema, computerActionSchema, computerMirrorSchema, computerIpc, windowObserveSchema, windowTargetSchema, type ComputerDiagnostics, type ComputerStatus, type ComputerPreview } from "../../../computer/protocol.js";
 import { ComputerPreviewWindow } from "./ComputerPreviewWindow.js";
 import type { DesktopBrowserService } from "./DesktopBrowserService.js";
 
@@ -67,6 +67,12 @@ export async function createComputerUseService(browser: DesktopBrowserService, g
     signal.throwIfAborted();
     await approvals.authorize({ bundleId: app.bundleId, appName: app.name });
     return app.bundleId;
+  }, authorizeLaunch: async (bundleId, signal) => {
+    await approvalWrites; signal.throwIfAborted();
+    const reply = await driver.daemonCommand("app_identity", { bundle: bundleId });
+    const identity = z.object({ bundleId: z.literal(bundleId), name: z.string().min(1) }).parse(reply.data);
+    await approvals.authorize({ bundleId, appName: identity.name });
+    signal.throwIfAborted();
   }, preview: frame => {
     computerFrame = frame; computerError = undefined;
     if (computerShown) presentComputer();
@@ -324,7 +330,8 @@ export async function createComputerUseService(browser: DesktopBrowserService, g
     }
     const session = z.string().min(1).max(240).parse(input.session);
     const args = { ...input }; delete args.session;
-    if (method === "computer_list") { const parsed = z.object({ pid: windowTargetSchema.shape.pid.optional() }).strict().parse(args); return await controller.list(session, parsed.pid, signal); }
+    if (method === "computer_launch") return await controller.launch(session, z.object({ bundleId: z.string().min(1).max(256) }).strict().parse(args).bundleId, signal);
+    if (method === "computer_list") { const parsed = computerListSchema.parse(args); return await controller.list(session, parsed.pid, signal, parsed.days); }
     if (method === "computer_observe") return await controller.observe(session, windowObserveSchema.parse(args), signal);
     if (method === "computer_action") return await controller.act(session, computerActionSchema.parse(args), signal);
     if (method === "computer_mirror") return await controller.mirror(session, computerMirrorSchema.parse(args), signal);

@@ -20,7 +20,7 @@ function fixture(enabled = false) {
 test("observation options reach the driver and remain in post-action verification, not target identity", async () => {
   const f = fixture(true);
   const observations: unknown[] = [];
-  const request = { ...target, depth: 3, screenshotMaxWidth: 320, interactiveOnly: false, autoLaunch: false };
+  const request = { ...target, depth: 3, screenshotMaxWidth: 320, interactiveOnly: false };
   f.setObserve(async (_session, input) => { observations.push(input); return frame(); });
   await f.controller.observe("s", request);
   assert.deepEqual(f.controller.currentCapture()?.target, target);
@@ -246,7 +246,7 @@ test("verification refusal does not turn confirmed delivery into an input failur
   f.setObserve(async () => ({ data: {}, images: [], errorCode: "capture_generation_mismatch" }));
   const result = await f.controller.act("s", { ...target, action: "click", captureId: "c1", x: 1, y: 2 });
   assert.equal(result.data.status, "completed"); assert.equal(result.errorCode, undefined);
-  assert.equal(result.data.doNotRepeat, true); assert.equal(f.controller.status().state, "paused");
+  assert.equal(result.data.doNotRepeat, true); assert.equal(f.controller.status().state, "unknown");
   assert.deepEqual(result.data.observation, { available: false, reason: "capture_generation_mismatch" });
 });
 
@@ -404,4 +404,18 @@ test("screenshot drag endpoints stay inside the observed frame while screen-spac
   await assert.rejects(controller.act("s", { ...drag, x1: 0, y2: 80 }), /capture_coordinates_out_of_bounds/);
   await controller.act("s", { ...drag, coordinateSpace: "screen" });
   assert.deepEqual(calls, ["drag"]); await controller.disable();
+});
+
+test("结果未知后只读观察可恢复输入，用户主动暂停仍必须由用户恢复", async () => {
+  const f = fixture(true);
+  await f.controller.observe("s", target);
+  f.setAction(async () => { throw new Error("connection closed"); });
+  await assert.rejects(f.controller.act("s", { ...target, action: "click", captureId: "c1", x: 1, y: 2 }), /unknown/);
+  await assert.rejects(f.controller.act("s", { ...target, action: "click", captureId: "c1", x: 1, y: 2 }), /unknown/);
+  await f.controller.observe("s", target);
+  assert.equal(f.controller.status().state, "ready");
+  assert.equal(f.calls.length, 1, "观察恢复不得重放上次输入");
+  f.controller.control("pause");
+  await assert.rejects(f.controller.observe("s", target), /paused/);
+  await f.controller.disable();
 });

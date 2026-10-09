@@ -6,6 +6,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import { applicationPlaybook } from "./playbooks.js";
 import { NativeProcessDriver } from "./nativeDriver.js";
+import type { DriverReply } from "./controller.js";
 
 const appSchema = { pid: z.number().int().positive().optional(), bundle: z.string().min(1).optional(), window_id: z.number().int().positive().max(4294967295).optional() };
 
@@ -14,24 +15,23 @@ export function createComputerUseMcpServer(driver: NativeProcessDriver, policy: 
     { name: "computer-use", version: "1.0.0" },
     {
       instructions:
-        "Drive native macOS apps through Biny.\n\n" +
-        "Start every turn with get_app_state: it returns the accessibility tree and a window\n" +
-        "screenshot in one round trip. Element refs are scoped to the latest snapshot, so\n" +
-        "re-snapshot when you see ref_stale.\n\n" +
-        "Prefer accessibility actions. Pixel input can briefly change focus and cursor position. An action whose\n" +
-        "delivery is interrupted may have unknown outcome — re-observe instead of replaying it."
+        "通过 Biny 操作 macOS 原生应用。先观察准确窗口，再使用该次观察中的控件引用或截图坐标。\n" +
+        "优先使用无障碍控件；输入默认后台投递，不自动升级到前台。每次输入消费观察凭据，" +
+        "下一次输入前重新观察，或使用桌面控制器明确返回的新观察。纯回执截图不更新控件引用。\n" +
+        "动作已投递不代表业务目标完成。已有新画面时直接核对并决定下一步，缺少所需信息时才重新观察。请求中断时停止输入，不重放动作；暂停和人工接管后等待用户恢复。"
     }
   );
 
   const asText = (value: unknown): string => JSON.stringify(value, null, 1);
-  const withPostShot = async (pid: number | undefined, text: string, windowID?: number): Promise<{ content: ({ type: "text"; text: string } | { type: "image"; data: string; mimeType: string })[] }> => {
-    const content: ({ type: "text"; text: string } | { type: "image"; data: string; mimeType: string })[] = [{ type: "text", text }];
+  const withPostShot = async (pid: number | undefined, reply: DriverReply, windowID?: number): Promise<import("@modelcontextprotocol/sdk/types.js").CallToolResult> => {
+    const content: ({ type: "text"; text: string } | { type: "image"; data: string; mimeType: string })[] = [{ type: "text", text: asText({ ...reply.data, error: reply.errorCode, verificationRequired: !reply.errorCode, observationRequired: true, doNotRepeat: !reply.errorCode }) }];
+    if (reply.errorCode) return { isError: true, content, structuredContent: { effect: "refused" } };
     try {
       const shot = await (pid && windowID ? driver.capturePreview({ pid, windowId: String(windowID) }) : driver.captureWindow(pid));
       const image = (shot.images ?? [])[0];
       if (image) content.push({ type: "image", data: image.dataBase64, mimeType: image.mimeType });
     } catch { /* 截图拿不到不该让动作本身算失败 */ }
-    return { content };
+    return { content, structuredContent: { effect: reply.data.effect } };
   };
   const fail = (error: unknown) => ({
     isError: true,
@@ -40,7 +40,7 @@ export function createComputerUseMcpServer(driver: NativeProcessDriver, policy: 
 
   function registerTool<Shape extends z.ZodRawShape>(name: string, config: { title?: string; description?: string; inputSchema: Shape }, callback: ToolCallback<Shape>) {
     const guarded: ToolCallback<z.ZodRawShape> = async (args, extra) => {
-      try { return await policy.run(name, args as Record<string, unknown>, async () => await (callback as ToolCallback<z.ZodRawShape>)(args, extra)); }
+      try { return await policy.run(name, args as Record<string, unknown>, async () => await (callback as ToolCallback<z.ZodRawShape>)(args, extra), extra.signal); }
       catch (error) { return fail(error); }
     };
     return server.registerTool<z.ZodRawShape, z.ZodRawShape>(name, config, guarded);
@@ -72,12 +72,12 @@ export function createComputerUseMcpServer(driver: NativeProcessDriver, policy: 
     {
       title: "Launch app",
       description:
-        "Launch an app by bundle id WITHOUT bringing it to the foreground. No-op if it is already running. The user's focus is never disturbed.",
+        "按应用标识请求后台启动；已经运行则返回现有进程。需要应用授权，应用自身仍可能改变焦点。",
       inputSchema: { bundle: z.string().min(1).describe("Bundle identifier, e.g. com.apple.TextEdit") }
     },
-    async ({ bundle }) => {
+    async ({ bundle }, extra) => {
       try {
-        const reply = await driver.launchApp(bundle);
+        const reply = await driver.launchApp(bundle, extra.signal);
         return { content: [{ type: "text" as const, text: asText(reply.data) }] };
       } catch (error) { return fail(error); }
     }
@@ -115,7 +115,7 @@ export function createComputerUseMcpServer(driver: NativeProcessDriver, policy: 
           .describe("Auto-launch the app in the background if not running. Default true.")
       }
     },
-    async ({ pid, bundle, window_id, maxElements, depth, screenshotMaxWidth, interactiveOnly, autoLaunch }) => {
+    async ({ pid, bundle, window_id, maxElements, depth, screenshotMaxWidth, interactiveOnly, autoLaunch }, extra) => {
       try {
         const args: Record<string, unknown> = {};
         if (pid !== undefined) args.pid = pid;
@@ -126,7 +126,7 @@ export function createComputerUseMcpServer(driver: NativeProcessDriver, policy: 
         if (screenshotMaxWidth !== undefined) args.max_width = screenshotMaxWidth;
         if (interactiveOnly !== undefined) args.interactive_only = interactiveOnly;
         if (autoLaunch !== undefined) args.auto_launch = autoLaunch;
-        const reply = await driver.observeRaw(args);
+        const reply = await driver.observeRaw(args, extra.signal);
         const { elements, playbook, ...rest } = reply.data as { elements?: ElementLike[] } & Record<string, unknown>;
         const tree = renderElementTree(elements);
         const content: ({ type: "text"; text: string } | { type: "image"; data: string; mimeType: string })[] = [
@@ -144,7 +144,7 @@ export function createComputerUseMcpServer(driver: NativeProcessDriver, policy: 
     {
       title: "Click",
       description:
-        "Click an element by ref from the latest get_app_state, or at absolute screenshot pixel (x, y). Prefer a ref: it drives the control through the accessibility API and needs no focus, whereas a pixel click synthesises a mouse event and briefly takes the target window to the foreground. Returns the post-action screenshot.",
+        "使用最新观察中的控件引用或截图坐标点击。优先控件引用；坐标点击默认后台投递，不自动切换到前台。返回动作后截图；投递不等于业务目标已完成。",
       inputSchema: {
         ref: z.string().min(1).optional().describe("Element ref from the latest snapshot"),
         x: z.number().finite().optional(), y: z.number().finite().optional(),
@@ -154,11 +154,11 @@ export function createComputerUseMcpServer(driver: NativeProcessDriver, policy: 
         show_cursor: z.boolean().optional().describe("Set false to hide the action indicator for this one action")
       }
     },
-    async ({ ref, x, y, pid, bundle, window_id, button, click_count, strategy, coord_space, show_cursor }) => {
+    async ({ ref, x, y, pid, bundle, window_id, button, click_count, strategy, coord_space, show_cursor }, extra) => {
       try {
         if (!ref && (x === undefined || y === undefined)) throw new Error("click requires either ref or x/y");
-        const reply = await driver.actRaw("click", { ref, x, y, bundle, window_id, button, clicks: click_count, strategy, coord_space, show_cursor }, pid);
-        return await withPostShot(pid, asText(reply.data), window_id);
+        const reply = await driver.actRaw("click", { ref, x, y, bundle, window_id, button, clicks: click_count, strategy, coord_space, show_cursor }, pid, extra.signal);
+        return await withPostShot(pid, reply, window_id);
       } catch (error) { return fail(error); }
     }
   );
@@ -177,13 +177,13 @@ export function createComputerUseMcpServer(driver: NativeProcessDriver, policy: 
         show_cursor: z.boolean().optional().describe("Set false to hide the action indicator for this one action")
       }
     },
-    async ({ text, pid, bundle, window_id, inputMethod, ref, show_cursor }) => {
+    async ({ text, pid, bundle, window_id, inputMethod, ref, show_cursor }, extra) => {
       try {
         const reply = await driver.actRaw("type_text", {
           text, show_cursor, bundle, window_id,
           input_method: inputMethod, ref
-        }, pid);
-        return await withPostShot(pid, asText(reply.data), window_id);
+        }, pid, extra.signal);
+        return await withPostShot(pid, reply, window_id);
       } catch (error) { return fail(error); }
     }
   );
@@ -195,10 +195,10 @@ export function createComputerUseMcpServer(driver: NativeProcessDriver, policy: 
       description: "Press a key or chord in xdotool syntax: cmd+s, ctrl+shift+t, Return, Escape, F1. A keystrokes_may_be_dropped warning means the app had nothing focused to receive it. Returns the post-action screenshot.",
       inputSchema: { key: z.string().min(1).max(40), ...appSchema, show_cursor: z.boolean().optional().describe("Set false to hide the action indicator for this one action") }
     },
-    async ({ key, pid, bundle, window_id, show_cursor }) => {
+    async ({ key, pid, bundle, window_id, show_cursor }, extra) => {
       try {
-        const reply = await driver.actRaw("press_key", { key, bundle, window_id, show_cursor }, pid);
-        return await withPostShot(pid, asText(reply.data), window_id);
+        const reply = await driver.actRaw("press_key", { key, bundle, window_id, show_cursor }, pid, extra.signal);
+        return await withPostShot(pid, reply, window_id);
       } catch (error) { return fail(error); }
     }
   );
@@ -209,17 +209,18 @@ export function createComputerUseMcpServer(driver: NativeProcessDriver, policy: 
       title: "Scroll",
       description: "Scroll the target app up, down, left or right by a number of lines. Returns the post-action screenshot.",
       inputSchema: {
-        ref: z.string().min(1),
+        ref: z.string().min(1).optional(), x: z.number().finite().optional(), y: z.number().finite().optional(),
         direction: z.enum(["up", "down", "left", "right"]),
         pages: z.number().int().min(1).max(20).optional(),
         ...appSchema,
         show_cursor: z.boolean().optional().describe("Set false to hide the action indicator for this one action")
       }
     },
-    async ({ ref, direction, pages, pid, bundle, window_id, show_cursor }) => {
+    async ({ ref, x, y, direction, pages, pid, bundle, window_id, show_cursor }, extra) => {
       try {
-        const reply = await driver.actRaw("scroll", { ref, direction, pages: pages ?? 1, bundle, window_id, show_cursor }, pid);
-        return await withPostShot(pid, asText(reply.data), window_id);
+        if (!ref && (x === undefined || y === undefined)) throw new Error("scroll requires ref or x/y");
+        const reply = await driver.actRaw("scroll", { ref, x, y, direction, pages: pages ?? 1, bundle, window_id, show_cursor }, pid, extra.signal);
+        return await withPostShot(pid, reply, window_id);
       } catch (error) { return fail(error); }
     }
   );
@@ -235,10 +236,10 @@ export function createComputerUseMcpServer(driver: NativeProcessDriver, policy: 
         show_cursor: z.boolean().optional().describe("Set false to hide the action indicator for this one action")
       }
     },
-    async ({ x1, y1, x2, y2, coord_space, pid, bundle, window_id, show_cursor }) => {
+    async ({ x1, y1, x2, y2, coord_space, pid, bundle, window_id, show_cursor }, extra) => {
       try {
-        const reply = await driver.actRaw("drag", { x1, y1, x2, y2, bundle, window_id, coord_space, show_cursor }, pid);
-        return await withPostShot(pid, asText(reply.data), window_id);
+        const reply = await driver.actRaw("drag", { x1, y1, x2, y2, bundle, window_id, coord_space, show_cursor }, pid, extra.signal);
+        return await withPostShot(pid, reply, window_id);
       } catch (error) { return fail(error); }
     }
   );
@@ -254,11 +255,11 @@ export function createComputerUseMcpServer(driver: NativeProcessDriver, policy: 
         show_cursor: z.boolean().optional().describe("Set false to hide the action indicator for this one action")
       }
     },
-    async ({ ref, x, y, pid, bundle, window_id, show_cursor }) => {
+    async ({ ref, x, y, pid, bundle, window_id, show_cursor }, extra) => {
       try {
         if (!ref && (x === undefined || y === undefined)) throw new Error("perform_secondary_action requires either ref or x/y");
-        const reply = await driver.actRaw("perform_secondary_action", { ref, x, y, bundle, window_id, show_cursor }, pid);
-        return await withPostShot(pid, asText(reply.data), window_id);
+        const reply = await driver.actRaw("perform_secondary_action", { ref, x, y, bundle, window_id, show_cursor }, pid, extra.signal);
+        return await withPostShot(pid, reply, window_id);
       } catch (error) { return fail(error); }
     }
   );
@@ -275,10 +276,10 @@ export function createComputerUseMcpServer(driver: NativeProcessDriver, policy: 
         show_cursor: z.boolean().optional().describe("Set false to hide the action indicator for this one action")
       }
     },
-    async ({ ref, value, pid, bundle, window_id, show_cursor }) => {
+    async ({ ref, value, pid, bundle, window_id, show_cursor }, extra) => {
       try {
-        const reply = await driver.actRaw("set_value", { ref, value, bundle, window_id, show_cursor }, pid);
-        return await withPostShot(pid, asText(reply.data), window_id);
+        const reply = await driver.actRaw("set_value", { ref, value, bundle, window_id, show_cursor }, pid, extra.signal);
+        return await withPostShot(pid, reply, window_id);
       } catch (error) { return fail(error); }
     }
   );
@@ -287,7 +288,7 @@ export function createComputerUseMcpServer(driver: NativeProcessDriver, policy: 
     "select_text",
     {
       title: "Select text",
-      description: "Select a run of text inside an editable element, or place the cursor at a character offset when no text is given. Returns the post-action screenshot.",
+      description: "在可编辑控件中按位置和长度选择文本，长度为零时移动光标。传入 text 会替换当前选区，不用于查找或选择匹配文本。返回动作后截图。",
       inputSchema: {
         ref: z.string().min(1).describe("Element ref from the latest snapshot"),
         text: z.string().min(1).optional(),
@@ -297,11 +298,11 @@ export function createComputerUseMcpServer(driver: NativeProcessDriver, policy: 
         show_cursor: z.boolean().optional().describe("Set false to hide the action indicator for this one action")
       }
     },
-    async ({ ref, text, location, length, pid, bundle, window_id, show_cursor }) => {
+    async ({ ref, text, location, length, pid, bundle, window_id, show_cursor }, extra) => {
       try {
         if (text === undefined && location === undefined) throw new Error("select_text requires text or location");
-        const reply = await driver.actRaw("select_text", { ref, text, location, length: length ?? 0, bundle, window_id, show_cursor }, pid);
-        return await withPostShot(pid, asText(reply.data), window_id);
+        const reply = await driver.actRaw("select_text", { ref, text, location, length: length ?? 0, bundle, window_id, show_cursor }, pid, extra.signal);
+        return await withPostShot(pid, reply, window_id);
       } catch (error) { return fail(error); }
     }
   );

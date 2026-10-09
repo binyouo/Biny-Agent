@@ -51,10 +51,10 @@ test("被动读取不创建 Runtime Host；打开历史会话后预热项目 own
       assert.ok(tools.some((entry) => entry.name === "Read"), "执行前仍可选择内置工具");
       assert.ok(tools.some((entry) => entry.name === "Bash"));
       assert.deepEqual(tools.filter(entry => entry.name.startsWith("Computer")).map(entry => [entry.name, entry.source]).sort(), [
-        ["ComputerAction", "mcp"], ["ComputerList", "mcp"], ["ComputerMirror", "mcp"], ["ComputerObserve", "mcp"]
+        ["ComputerAction", "mcp"], ["ComputerLaunch", "mcp"], ["ComputerList", "mcp"], ["ComputerMirror", "mcp"], ["ComputerObserve", "mcp"]
       ], "cold chat selection must list the same Computer MCP tools without contacting Desktop or creating a Runtime");
       assert.deepEqual(tools.filter(entry => entry.name.startsWith("Computer")).map(entry => entry.namespace?.name),
-        ["computer-use", "computer-use", "computer-use", "computer-use"],
+        ["computer-use", "computer-use", "computer-use", "computer-use", "computer-use"],
         "cold MCP selection must retain structured ownership; description parsing cannot identify native tools");
       const todos = new TodoStore(dataRoot, recorder.sessionId);
       await todos.replace([{ content: "保存的清单", status: "pending" }]);
@@ -142,10 +142,10 @@ test("进入当前项目即连接 MCP；重复进入复用 Host，历史读取�
     assert.equal(await readFile(history.filePath, "utf8"), historyBefore);
     const connected = await service.reconnect(project.id, "computer-use");
     assert.equal(connected.state, "connected", "the existing connect action must initialize MCP without model or native input calls");
-    assert.deepEqual([...connected.toolNames].sort(), ["ComputerAction", "ComputerList", "ComputerMirror", "ComputerObserve"]);
+    assert.deepEqual([...connected.toolNames].sort(), ["ComputerAction", "ComputerLaunch", "ComputerList", "ComputerMirror", "ComputerObserve"]);
     const catalog = await manager.toolCatalog(project.id);
     assert.deepEqual(catalog.filter(tool => tool.name.startsWith("Computer")).map(tool => [tool.name, tool.source, tool.namespace?.name]).sort(), [
-      ["ComputerAction", "mcp", "computer-use"], ["ComputerList", "mcp", "computer-use"],
+      ["ComputerAction", "mcp", "computer-use"], ["ComputerLaunch", "mcp", "computer-use"], ["ComputerList", "mcp", "computer-use"],
       ["ComputerMirror", "mcp", "computer-use"], ["ComputerObserve", "mcp", "computer-use"]
     ], "warm Host IPC must retain the same selection ownership as the cold catalog");
     assert.equal((await service.snapshot(project.id)).servers.find(server => server.name === "computer-use")?.state, "connected");

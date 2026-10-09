@@ -41,7 +41,10 @@ const idleTimeoutMs = 900_000;
 // 与 protocol.ts 的 maxComputerImageBytes 保持一致。
 const maxImageBytes = 1_048_576;
 
+class NativeCommandError extends Error {}
+
 interface PendingJob {
+  captureId?: string;
   resolve: (value: DriverReply) => void;
   reject: (error: Error) => void;
   timer: ReturnType<typeof setTimeout>;
@@ -75,7 +78,7 @@ export interface NativeDriverOptions {
  * （同一功能不带截图时还在，于是表现为"同一个东西两次测出不同结果"）。
  * 只丢掉 daemon 自己的内部字段（截图路径、原始 elements、原始宽高）。
  */
-function toCapture(data: Record<string, unknown>, windowId: number): Record<string, unknown> {
+function toCapture(data: Record<string, unknown>, windowId: number, captureId?: string): Record<string, unknown> {
   const elements = Array.isArray(data.elements) ? (data.elements as Record<string, unknown>[]) : [];
   const {
     screenshot: _screenshotPath, elements: _rawElements,
@@ -85,7 +88,7 @@ function toCapture(data: Record<string, unknown>, windowId: number): Record<stri
     ...rest,
     pid: data.pid,
     window_id: windowId,
-    capture_id: crypto.randomUUID(),
+    capture_id: captureId ?? data.capture_id,
     screenshot_width: data.screenshotWidth ?? 0,
     screenshot_height: data.screenshotHeight ?? 0,
     screenshot_frame_valid: true,
@@ -108,9 +111,10 @@ export class NativeProcessDriver implements ComputerDriver {
   private enabled = false;
   private disposed = false;
   private idleTimer?: ReturnType<typeof setTimeout>;
-  // daemon 的 ref 表和坐标映射都是按 pid 存的，动作必须带上目标 pid。
-  // 观察时记下来，动作时默认用它。
+  // 独立客户端保留最近观察目标，原生输入仍校验调用方、窗口及一次性凭据。
   private lastPid?: number;
+  private lastCapture?: { id: string; pid: number; windowId: number };
+  private readonly clientId = crypto.randomUUID();
   private readonly socketPath: string;
   private readonly binaryPath: string;
 
@@ -251,27 +255,31 @@ export class NativeProcessDriver implements ComputerDriver {
     const id = parsed.id === undefined || parsed.id === null ? undefined : String(parsed.id);
     if (!id) return;
     const job = this.pending.get(id);
-    if (!job) return;
+    if (!job) {
+      const screenshot = (parsed.data as { screenshot?: unknown } | undefined)?.screenshot;
+      if (typeof screenshot === "string") rmSync(screenshot, { force: true });
+      return;
+    }
     this.pending.delete(id);
     clearTimeout(job.timer);
     job.cleanup();
     if (parsed.ok === false) {
-      job.reject(new Error(parsed.error?.code ?? parsed.error?.message ?? "native_action_failed"));
+      job.reject(new NativeCommandError(parsed.error?.code ?? parsed.error?.message ?? "native_action_failed"));
       return;
     }
-    job.resolve(this.shape(parsed.data));
+    job.resolve(this.shape(parsed.data, job.captureId));
     this.armIdle();
   }
 
   /** 把 daemon 的原始 data 折算成 controller 认识的样子。 */
-  private shape(raw: unknown): DriverReply {
+  private shape(raw: unknown, captureId?: string): DriverReply {
     const data = (raw ?? {}) as Record<string, unknown>;
     if (Array.isArray(data.apps)) return { data, images: [] };
     if (data.screenshot && Array.isArray(data.elements)) {
       const windowId = typeof data.windowId === "number" ? data.windowId : Number(data.windowId ?? 0);
       // daemon 把截图落在磁盘上；读回来转成 ComputerImage，PiP 帧泵和模型帧都靠它。
       const image = this.readImage(data.screenshot);
-      return { data: toCapture(data, windowId), images: image ? [image] : [] };
+      return { data: toCapture(data, windowId, captureId), images: image ? [image] : [] };
     }
     return { data, images: [] };
   }
@@ -288,7 +296,7 @@ export class NativeProcessDriver implements ComputerDriver {
       return { mimeType: "image/jpeg", dataBase64: base64 };
     } catch {
       return undefined;
-    }
+    } finally { rmSync(path, { force: true }); }
   }
 
   private failHost(host: Host, reason: string): void {
@@ -310,6 +318,9 @@ export class NativeProcessDriver implements ComputerDriver {
     if (!host) throw new Error("driver_sdk_missing_or_crashed: no host");
     if (this.pending.size >= maxPending) throw new Error("driver_busy: IPC request budget reached");
     const id = crypto.randomUUID();
+    const captureId = cmd === "get_app_state" ? crypto.randomUUID() : undefined;
+    if (captureId) args = { ...args, capture_id: captureId };
+    signal?.throwIfAborted();
     return await new Promise<DriverReply>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
@@ -319,7 +330,7 @@ export class NativeProcessDriver implements ComputerDriver {
       const onAbort = () => { this.pending.delete(id); clearTimeout(timer); cleanup(); reject(new Error("driver_request_aborted")); };
       const cleanup = () => signal?.removeEventListener("abort", onAbort);
       signal?.addEventListener("abort", onAbort, { once: true });
-      this.pending.set(id, { resolve, reject, timer, cleanup });
+      this.pending.set(id, { resolve, reject, timer, cleanup, captureId });
       host.socket.write(`${JSON.stringify({ id, cmd, args })}\n`);
     });
   }
@@ -423,16 +434,18 @@ export class NativeProcessDriver implements ComputerDriver {
   grantAccessibility(): Promise<DriverReply> { return this.call("grant", {}); }
 
   /** 后台拉起（不抢焦点）；已运行则原样返回 pid。供 MCP 出口使用。 */
-  launchApp(bundle: string): Promise<DriverReply> { return this.call("launch_app", { bundle }); }
+  launchApp(bundle: string, signal?: AbortSignal): Promise<DriverReply> { return this.call("launch_app", { bundle }, signal); }
 
   /**
    * 按原始 daemon 参数观察，不做 WindowTarget 折算。供 MCP 出口使用。
    * 直接返回 call 的结果：shape() 已经把落盘的截图读成 image 了，
    * 这里再按 data.screenshot 重读会踩到 shape 之后的形状（已被 toCapture 换过）而丢图。
    */
-  async observeRaw(args: Record<string, unknown>): Promise<DriverReply> {
+  async observeRaw(args: Record<string, unknown>, signal?: AbortSignal): Promise<DriverReply> {
+    this.lastCapture = undefined;
     if (typeof args.pid === "number") this.lastPid = args.pid;
-    const reply = await this.call("get_app_state", args);
+    const reply = await this.call("get_app_state", { ...args, client_id: this.clientId }, signal);
+    if (reply.images.length === 1 && typeof reply.data.capture_id === "string") this.lastCapture = { id: reply.data.capture_id, pid: Number(reply.data.pid), windowId: Number(reply.data.window_id) };
     // 调用方可能给的是 bundle 而不是 pid；守护进程一定会在回复里带上真实 pid，
     // 从那里取 —— 动作和动作后的回执截图都靠它定位目标。
     const observed = (reply.data as { pid?: unknown }).pid;
@@ -442,12 +455,11 @@ export class NativeProcessDriver implements ComputerDriver {
 
   /**
    * 直接派发一个 daemon 动作，参数原样透传。供 MCP 出口使用。
-   * pid 缺省时回落到最近一次观察的目标——daemon 的 ref 表和坐标映射都按 pid 存，
-   * 让调用方「观察一次、连续动作」时不必每一步都重复 pid。
+   * 未给进程或窗口时使用最近观察目标；每次输入消费凭据，下一次须重新观察。
    */
-  actRaw(action: string, params: Record<string, unknown>, pid?: number): Promise<DriverReply> {
+  actRaw(action: string, params: Record<string, unknown>, pid?: number, signal?: AbortSignal): Promise<DriverReply> {
     const target = pid ?? this.lastPid;
-    return this.call(action, target === undefined ? params : { ...params, pid: target });
+    return this.input(action, { ...params, pid: target, client_id: this.clientId, capture_id: this.lastCapture?.id, window_id: params.window_id ?? this.lastCapture?.windowId }, signal);
   }
 
   /**
@@ -463,13 +475,7 @@ export class NativeProcessDriver implements ComputerDriver {
   }
 
   diagnostics(): Promise<DriverReply> { return this.call("doctor", {}); }
-  /**
-   * 通用命令口：命令行（`biny cu`）和测试用它直接对话守护进程。
-   *
-   * 模型侧的三个工具走的是 controller（有审批、审计、capture 校验），
-   * 而人和脚本要的是「我说什么它做什么」——所以这条口子绕开那些策略层，
-   * 只保留守护进程本身的能力。这也是 Alma 把 cu 放在命令行层的原因。
-   */
+  /** 用户显式调用的命令行和系统诊断入口，不替代模型工具的控制器审批。 */
   daemonCommand(cmd: string, args: Record<string, unknown> = {}): Promise<DriverReply> {
     return this.call(cmd, args);
   }
@@ -478,8 +484,8 @@ export class NativeProcessDriver implements ComputerDriver {
     return this.call(`pip_${operation}`, args);
   }
 
-  list(_session: string, pid: number | undefined, signal?: AbortSignal): Promise<DriverReply> {
-    return this.call("list_apps", pid === undefined ? {} : { pid }, signal);
+  list(_session: string, pid: number | undefined, signal?: AbortSignal, days?: number): Promise<DriverReply> {
+    return this.call("list_apps", { pid, recent_days: days }, signal);
   }
 
   async observe(_session: string, target: WindowObserve, signal?: AbortSignal): Promise<DriverReply> {
@@ -494,12 +500,28 @@ export class NativeProcessDriver implements ComputerDriver {
     // 观察参数以前一个都没拼 —— 于是守护进程明明支持，产品内这条路却够不到。
     // （和动作那条一样：加参数时要跟一遍每一层，而不是只改你正在测的那层。）
     const observe = target as WindowObserve;
+    if (observe.maxElements !== undefined) args.max_elements = observe.maxElements;
     if (observe.depth !== undefined) args.max_depth = observe.depth;
     if (observe.screenshotMaxWidth !== undefined) args.max_width = observe.screenshotMaxWidth;
     if (observe.interactiveOnly !== undefined) args.interactive_only = observe.interactiveOnly;
-    if (observe.autoLaunch !== undefined) args.auto_launch = observe.autoLaunch;
-    const reply = await this.call("get_app_state", args, signal);
+    const reply = await this.call("get_app_state", { ...args, client_id: this.clientId }, signal);
     return { ...reply, data: { ...reply.data, playbook: applicationPlaybook(reply.data.bundleId ?? reply.data.bundle) || undefined } };
+  }
+
+  private async input(command: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<DriverReply> {
+    try {
+      const reply = await this.call(command, args, signal);
+      const data = reply.data;
+      // 无障碍接口成功只证明操作已被接受；业务结果仍由动作后的观察确认。
+      const accepted = data.route === "ax" || data.route === "ax-page" || data.inputMethod === "ax" || ["set_value", "select_text"].includes(command);
+      return { ...reply, data: { ...data, effect: data.effect ?? (accepted && !data.warning && !data.verification_note ? "confirmed" : "unverifiable") } };
+    } catch (error) {
+      // 只将确定发生在派发前的原生拒绝降为普通失败，部分输入与传输失败保持未知。
+      if (error instanceof NativeCommandError && /^(ax_not_granted|focus_guard_unavailable|element_ref_not_observed|observation_[a-z_]+|input_method_(requires_ref|unmappable_character|layout_required|layout_unavailable)|unknown_key|unknown_input_method)(:|$)/.test(error.message)) {
+        return { data: { effect: "refused", code: error.message }, images: [], errorCode: error.message };
+      }
+      throw error;
+    }
   }
 
   async act(_session: string, action: ComputerAction, signal?: AbortSignal): Promise<DriverReply> {
@@ -509,27 +531,27 @@ export class NativeProcessDriver implements ComputerDriver {
     // 写在 "Action flags" 里，不挑动词）。放在 withPid 旁边一次覆盖全部 8 个动作，
     // 好过在每个 case 里各写一遍 —— 那种写法漏一个就静默失效。
     const withPid = (params: Record<string, unknown>): Record<string, unknown> => ({
-      pid, window_id: Number(action.windowId), show_cursor: action.showCursor, coord_space: action.coordinateSpace,
+      pid, window_id: Number(action.windowId), client_id: this.clientId, capture_id: action.captureId, show_cursor: action.showCursor, coord_space: action.coordinateSpace,
       delivery: action.delivery,
       ...params
     });
     switch (action.action) {
       case "click":
-        return await this.call("click", withPid({ ref: action.elementToken, x: action.x, y: action.y, button: action.button, clicks: action.clickCount, strategy: action.strategy }), signal);
+        return await this.input("click", withPid({ ref: action.elementToken, x: action.x, y: action.y, button: action.button, clicks: action.clickCount, strategy: action.strategy }), signal);
       case "type_text":
-        return await this.call("type_text", withPid({ text: action.text, input_method: action.inputMethod, ref: action.elementToken }), signal);
+        return await this.input("type_text", withPid({ text: action.text, input_method: action.inputMethod, ref: action.elementToken }), signal);
       case "press_key":
-        return await this.call("press_key", withPid({ key: action.key }), signal);
+        return await this.input("press_key", withPid({ key: action.key }), signal);
       case "scroll":
-        return await this.call("scroll", withPid({ ref: action.elementToken, direction: action.direction, pages: action.pages }), signal);
+        return await this.input("scroll", withPid({ ref: action.elementToken, x: action.x, y: action.y, direction: action.direction, pages: action.pages }), signal);
       case "drag":
-        return await this.call("drag", withPid({ x1: action.x1, y1: action.y1, x2: action.x2, y2: action.y2 }), signal);
+        return await this.input("drag", withPid({ x1: action.x1, y1: action.y1, x2: action.x2, y2: action.y2 }), signal);
       case "perform_secondary_action":
-        return await this.call("perform_secondary_action", withPid(action.elementToken ? { ref: action.elementToken } : { x: action.x, y: action.y }), signal);
+        return await this.input("perform_secondary_action", withPid(action.elementToken ? { ref: action.elementToken } : { x: action.x, y: action.y }), signal);
       case "set_value":
-        return await this.call("set_value", withPid({ ref: action.elementToken, value: action.value }), signal);
+        return await this.input("set_value", withPid({ ref: action.elementToken, value: action.value }), signal);
       case "select_text":
-        return await this.call("select_text", withPid(
+        return await this.input("select_text", withPid(
           action.text !== undefined
             ? { ref: action.elementToken, text: action.text }
             : { ref: action.elementToken, location: action.location, length: action.length ?? 0 }

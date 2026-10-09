@@ -27,9 +27,9 @@ test("computer use is served over MCP with the documented verbs", async () => {
       const tool = tools.find(entry => entry.name === name)!;
       assert.ok(tool.inputSchema, `${name} must declare an input schema`);
     }
-    // 动作工具也要自述会带回执截图 —— 模型据此知道不必再 observe 一次。
+    // 动作后的截图用于核对结果，独立服务的下一次输入仍须重新观察。
     const click = tools.find(entry => entry.name === "click")!;
-    assert.match(click.description ?? "", /screenshot/i, "动作工具要说明它带回动作后的截图");
+    assert.match(click.description ?? "", /动作后截图/, "动作工具要说明它带回动作后的截图");
     // 观察工具必须自述它会返回截图，否则模型不会预期图像块。
     const observe = tools.find(entry => entry.name === "get_app_state")!;
     assert.match(observe.description ?? "", /screenshot/i);

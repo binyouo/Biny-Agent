@@ -16,7 +16,12 @@ import { ensureAgentDirs } from "../src/session/store.js";
 import { ToolRegistry } from "../src/tools/registry.js";
 import { McpToolHost } from "../src/extensions/mcp.js";
 import { attachDesktopComputerMcp } from "../src/computer/desktopMcp.js";
+import { LocalComputerMcpPolicy } from "../src/computer/mcpPolicy.js";
+import { ComputerAuditStore } from "../src/computer/auditStore.js";
 import { ToolOutcomeUnknownError } from "../src/tools/types.js";
+import { createComputerUseMcpServer } from "../src/computer/mcpServer.js";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 
 // 只替换系统窗口边界；工具、Desktop 控制面、审批、driver 和进程通信均用真实装配。
 const previewWindows: WindowFixture[] = [];
@@ -50,7 +55,7 @@ const target = { pid: 42, windowId: "900" };
 async function fixture(t: TestContext, apps: Record<string, unknown>[] = [
   { pid: 42, name: "Fixture", bundleId: "test.fixture", running: true },
   { name: "Recently Used", bundleId: "test.recent", running: false, lastUsed: "2026-10-07T00:00:00Z" }
-], options: { actionEffect?: "confirmed" | "unverified"; emptyTree?: boolean; holdActionReply?: boolean } = {}) {
+], options: { actionEffect?: "confirmed" | "unverified"; emptyTree?: boolean; holdActionReply?: boolean; nativeRefusal?: boolean; failPostObservation?: boolean } = {}) {
   const firstWindow = previewWindows.length;
   const directory = await mkdtemp(path.join(os.tmpdir(), "biny-dispatch-"));
   const hooks = registerHooks({ load(url, context, next) {
@@ -72,7 +77,7 @@ async function fixture(t: TestContext, apps: Record<string, unknown>[] = [
   await writeFile(binary, `#!/usr/bin/env node
 const fs = require('node:fs'), net = require('node:net'), path = require('node:path');
 const journal = ${JSON.stringify(journal)}, directory = ${JSON.stringify(directory)};
-let generation = 0, ref;
+let generation = 0, ref, apps = ${JSON.stringify(apps)};
 const server = net.createServer(socket => {
   let buffer = '';
   socket.on('data', chunk => {
@@ -83,10 +88,13 @@ const server = net.createServer(socket => {
       const { id, cmd, args } = request;
       fs.appendFileSync(journal, JSON.stringify({ cmd, args }) + '\\n');
       let data = {};
-      if (cmd === 'list_apps') data = { apps: ${JSON.stringify(apps)} };
+      if (cmd === 'list_apps') data = { apps };
+      else if (cmd === 'app_identity') data = { bundleId: args.bundle, name: 'Fixture', running: false };
+      else if (cmd === 'launch_app') { apps = [{ pid: 42, bundleId: args.bundle, name: 'Fixture', running: true }]; data = { pid: 42, activated: false }; }
       else if (cmd === 'pip_open') data = { state: 'open', window_id: args.window_id };
       else if (cmd === 'get_app_state') {
         ref = 'e' + (++generation);
+        if (generation === 2 && ${JSON.stringify(options.failPostObservation ?? false)}) { socket.write(JSON.stringify({ id, ok: false, error: { code: 'capture_timeout' } }) + '\\n'); continue; }
         const imagePath = path.join(directory, 'state-' + generation + '.jpg');
         fs.writeFileSync(imagePath, Buffer.from([255, 216, 255, 217]));
         data = { pid: 42, windowId: 900, screenshot: imagePath, screenshotWidth: args.max_width || 100, screenshotHeight: 80,
@@ -98,12 +106,14 @@ const server = net.createServer(socket => {
         fs.writeFileSync(args.out, Buffer.from([255, 216, 255, 217]));
         data = { path: args.out, width: 100, height: 80, windowId: args.window_id || 900 };
       } else if (['click', 'scroll', 'type_text', 'press_key'].includes(cmd)) {
-        if ((cmd === 'scroll' && !args.ref) || (args.ref && args.ref !== ref)) {
+        if ((cmd === 'scroll' && !args.ref && (args.x === undefined || args.y === undefined)) || (args.ref && args.ref !== ref)) {
           socket.write(JSON.stringify({ id, ok: false, error: { message: 'element_ref_not_observed' } }) + '\\n'); continue;
         }
+        if (${JSON.stringify(options.nativeRefusal ?? false)}) { socket.write(JSON.stringify({ id, ok: false, error: { code: 'ax_not_granted' } }) + '\\n'); continue; }
         fs.writeFileSync(path.join(directory, 'action.json'), JSON.stringify({ cmd, args }));
         if (${JSON.stringify(options.holdActionReply ?? false)}) continue;
-        data = { effect: ${JSON.stringify(options.actionEffect ?? "confirmed")} };
+        data = ${JSON.stringify(options.actionEffect === "unverified" ? { clicked: "e1", route: "physical", verification_note: "sent, but could not confirm it landed" } : { clicked: "e1", route: "ax" })};
+        if (cmd === 'scroll' && data.route === 'ax') data = { scrolled: args.direction, route: 'ax-page', unit: 'pages' };
       }
       socket.write(JSON.stringify({ id, ok: true, data }) + '\\n');
     }
@@ -199,7 +209,8 @@ test("unverified input returns its fresh image without claiming success or repla
   const observed = await f.invoke("ComputerObserve", target);
   const result = await f.invoke("ComputerAction", { ...target, action: "click", x: 1, y: 2, captureId: observed.capture_id });
   assert.equal(result.status, "unverified");
-  assert.match(String(result.error), /action_unverified/);
+  assert.equal(result.error, undefined);
+  assert.equal(result.verificationRequired, true);
   assert.equal(result.doNotRepeat, true);
   assert.equal(result.imageReturned, true, "existing successful-action coverage misses images dropped only for unverified delivery");
   assert.equal(result.observationImageUnavailable, undefined);
@@ -210,8 +221,31 @@ test("unverified input returns its fresh image without claiming success or repla
   assert.equal((await f.entries()).filter(entry => entry.cmd === "click").length, 1);
 });
 
-test("Agent retains unverified observations and records unknown effects instead of failed input", { timeout: 8_000 }, async t => {
+for (const desktop of [true, false]) test(`外部输入已投递待核对时保留原生警告且不报调用失败：${desktop ? "桌面转接" : "独立服务"}`, { timeout: 8_000 }, async t => {
   const f = await fixture(t, undefined, { actionEffect: "unverified" });
+  const policy = new LocalComputerMcpPolicy(f.driver, f.store, new ComputerAuditStore(), async () => undefined, async () => desktop ? f.endpoint : undefined);
+  const server = createComputerUseMcpServer(f.driver, policy);
+  const client = new Client({ name: "result-contract", version: "1" });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  try {
+    await Promise.all([client.connect(clientTransport), server.connect(serverTransport)]);
+    const observe = () => client.callTool({ name: "get_app_state", arguments: { pid: 42, window_id: 900 } });
+    await observe();
+    const result = await client.callTool({ name: "type_text", arguments: { pid: 42, window_id: 900, text: "test", inputMethod: "unicode" } });
+    assert.equal(result.isError ?? false, false);
+    const content = result.content as { type: string; text?: string }[];
+    assert.equal(content.some(part => part.type === "image"), true);
+    assert.match(content.find(part => part.type === "text")!.text!, /verification_note/);
+    assert.match(content.find(part => part.type === "text")!.text!, /"verificationRequired"\s*:\s*true/);
+    if (!desktop) await observe();
+    const next = await client.callTool({ name: "press_key", arguments: { pid: 42, window_id: 900, key: "Return" } });
+    assert.equal(next.isError ?? false, false);
+    assert.deepEqual((await f.entries()).filter(entry => ["type_text", "press_key"].includes(entry.cmd)).map(entry => entry.cmd), ["type_text", "press_key"]);
+  } finally { await client.close(); await server.close(); }
+});
+
+for (const failPostObservation of [false, true]) test(`已投递待核对的输入允许下一步，覆盖原有用例遗漏的任务续行：${failPostObservation ? "回图失败后重新观察" : "复用返回画面"}`, { timeout: 8_000 }, async t => {
+  const f = await fixture(t, undefined, { actionEffect: "unverified", failPostObservation });
   await ensureAgentDirs(f.directory);
   const recorder = new SessionRecorder(f.directory, "fixture-session");
   t.after(() => recorder.close());
@@ -225,17 +259,35 @@ test("Agent retains unverified observations and records unknown effects instead 
   const action = coordinator.createAgentTools().find(tool => tool.name === "ComputerAction")!;
   const observed = await f.invoke("ComputerObserve", target);
   const result = await action.execute("model-action", { ...target, action: "click", x: 1, y: 2, captureId: observed.capture_id });
-  assert.equal(result.isError, true);
-  assert.equal(result.content.filter(part => part.type === "image").length, 1, JSON.stringify(result.details));
-  assert.match(JSON.stringify(result.details), /action_unverified/);
+  assert.equal(result.isError, false);
+  assert.equal(result.content.filter(part => part.type === "image").length, failPostObservation ? 0 : 1, JSON.stringify(result.details));
+  const details = result.details as Record<string, unknown>;
+  assert.equal(details.status, "unverified", "工具调用完成不能被解释为业务目标已验证");
+  assert.equal(details.verificationRequired, true);
+  assert.equal(details.observationRequired, failPostObservation, "只有缺失观察时才要求重新采集");
+  assert.doesNotThrow(() => coordinator.assertCanContinue());
+  let nextCapture = details.capture_id;
+  if (failPostObservation) {
+    const blocked = await action.execute("model-before-recovery", { ...target, action: "type_text", text: "blocked", captureId: observed.capture_id });
+    assert.equal(blocked.isError, true);
+    assert.equal((await f.entries()).some(entry => entry.cmd === "type_text"), false);
+    const observe = coordinator.createAgentTools().find(tool => tool.name === "ComputerObserve")!;
+    const recovered = await observe.execute("model-recovery", target);
+    assert.equal(recovered.isError, false);
+    nextCapture = (recovered.details as Record<string, unknown>).capture_id;
+  }
+  const next = await action.execute("model-next", { ...target, action: "type_text", text: "next", captureId: nextCapture });
+  assert.equal(next.isError, false);
+  assert.equal((await f.entries()).filter(entry => entry.cmd === "get_app_state").length, failPostObservation ? 4 : 3, "仅回图失败时额外观察，不重复派发动作");
+  assert.deepEqual((await f.entries()).filter(entry => ["click", "type_text"].includes(entry.cmd)).map(entry => entry.cmd), ["click", "type_text"]);
   const stale = await action.execute("model-stale", { ...target, action: "click", x: 1, y: 2, captureId: observed.capture_id });
   assert.equal(stale.isError, true);
   assert.equal(stale.content.filter(part => part.type === "image").length, 0);
   await recorder.close();
   const events = (await readFile(recorder.filePath, "utf8")).trim().split("\n").map(line => JSON.parse(line));
-  assert.ok(events.some(event => event.type === "tool_result" && JSON.stringify(event).includes("action_unverified")));
+  assert.ok(events.some(event => event.type === "tool_result" && JSON.stringify(event).includes("unverified")));
   const actionResult = events.find(event => event.type === "tool_result" && event.toolCallId === "model-action");
-  assert.equal(actionResult?.executionStatus, "unknown", "dispatch without effect confirmation must not be recorded as an action that failed to run");
+  assert.equal(actionResult?.executionStatus, "succeeded", "调用已返回的事实与业务效果待核对分别保存");
   assert.equal(JSON.stringify(events).includes("/9j/2Q=="), false, "retaining model evidence must not persist screenshot bytes in the session ledger");
 });
 
@@ -254,8 +306,8 @@ test("custom windows without AX elements accept focused keyboard input but still
   const pressed = await f.invoke("ComputerAction", { ...target, action: "press_key", captureId: typed.capture_id, key: "Return" });
   assert.equal(pressed.imageReturned, true);
   const requests = await f.entries();
-  assert.deepEqual(requests.filter(entry => entry.cmd === "type_text"), [{ cmd: "type_text", args: { pid: 42, window_id: 900, delivery: "background", text: "一半一半", input_method: "unicode" } }]);
-  assert.deepEqual(requests.filter(entry => entry.cmd === "press_key"), [{ cmd: "press_key", args: { pid: 42, window_id: 900, delivery: "background", key: "Return" } }]);
+  assert.deepEqual(requests.filter(entry => entry.cmd === "type_text"), [{ cmd: "type_text", args: { pid: 42, window_id: 900, client_id: requests.find(entry => entry.cmd === "get_app_state")!.args.client_id, capture_id: observed.capture_id, delivery: "background", text: "一半一半", input_method: "unicode" } }]);
+  assert.deepEqual(requests.filter(entry => entry.cmd === "press_key"), [{ cmd: "press_key", args: { pid: 42, window_id: 900, client_id: requests.find(entry => entry.cmd === "get_app_state")!.args.client_id, capture_id: typed.capture_id, delivery: "background", key: "Return" } }]);
 });
 
 test("explicit foreground input reaches the native window only after user enablement and re-observation", { timeout: 8_000 }, async t => {
@@ -330,14 +382,18 @@ test("mixed app listings still enforce strict approval before capture or mirror 
 
 test("product observation options survive Desktop and native transport and post-action verification", { timeout: 8_000 }, async t => {
   const f = await fixture(t);
-  const options = { depth: 3, screenshotMaxWidth: 320, interactiveOnly: false, autoLaunch: false };
+  const options = { depth: 3, screenshotMaxWidth: 320, interactiveOnly: false };
   const observed = await f.invoke("ComputerObserve", { ...target, ...options });
   assert.equal(observed.screenshot_width, 320);
   const result = await f.invoke("ComputerAction", { ...target, action: "click", x: 1, y: 2, captureId: observed.capture_id });
   assert.equal(result.status, "completed");
   const reads = (await f.entries()).filter(entry => entry.cmd === "get_app_state");
   assert.equal(reads.length, 2);
-  for (const entry of reads) assert.deepEqual(entry.args, { pid: 42, window_id: 900, max_depth: 3, max_width: 320, interactive_only: false, auto_launch: false });
+  for (const entry of reads) {
+    const { client_id, capture_id, ...options } = entry.args;
+    assert.equal(typeof client_id, "string"); assert.equal(typeof capture_id, "string");
+    assert.deepEqual(options, { pid: 42, window_id: 900, max_depth: 3, max_width: 320, interactive_only: false });
+  }
   assert.ok((await f.store.load()).computer.apps[0]?.approvedAt, "real app approval persisted before capture");
 });
 
@@ -400,4 +456,100 @@ test("pixel captures clean their files, preserve direct-client refs, and reject 
   assert.equal((await f.entries()).length, requests, "pre-cancelled capture cannot reach the process");
   const action = await f.driver.actRaw("scroll", { ref: "e1", direction: "down" });
   assert.equal(action.data.effect, "confirmed", "post-action pixel capture must not clear direct-client references");
+});
+
+// 原有端到端替身直接提供效果字段，不能发现原生回包与领域状态的转换缺口。
+test("原生无障碍成功回包保留已完成投递，明确权限拒绝后仍可重新观察", { timeout: 8_000 }, async t => {
+  const f = await fixture(t, undefined, {});
+  const observed = await f.invoke("ComputerObserve", target);
+  const result = await f.invoke("ComputerAction", { ...target, action: "click", elementToken: "e1", captureId: observed.capture_id });
+  assert.equal(result.status, "completed");
+  assert.equal(result.error, undefined);
+});
+test("原生派发前权限拒绝不锁死观察，也不产生输入副作用", { timeout: 8_000 }, async t => {
+  const f = await fixture(t, undefined, { nativeRefusal: true });
+  const observed = await f.invoke("ComputerObserve", target);
+  const result = await f.invoke("ComputerAction", { ...target, action: "click", x: 1, y: 2, captureId: observed.capture_id });
+  assert.equal(result.status, "refused");
+  assert.match(String(result.error), /ax_not_granted/);
+  assert.equal(f.service.controller.status().state, "ready");
+  await f.invoke("ComputerObserve", target);
+  await assert.rejects(stat(path.join(f.directory, "action.json")), { code: "ENOENT" });
+});
+
+test("普通观察读图后删除临时截图，原有预览清理覆盖不到这条路径", { timeout: 8_000 }, async t => {
+  const f = await fixture(t);
+  await f.invoke("ComputerObserve", target);
+  assert.equal(f.images.length, 1);
+  await assert.rejects(stat(path.join(f.directory, "state-1.jpg")), { code: "ENOENT" });
+});
+
+test("无控件引用的窗口按截图坐标滚动，坐标必须完整且位于当前画面内", { timeout: 8_000 }, async t => {
+  const f = await fixture(t, undefined, { emptyTree: true });
+  const observed = await f.invoke("ComputerObserve", target);
+  await assert.rejects(f.invoke("ComputerAction", { ...target, action: "scroll", captureId: observed.capture_id, x: 10, direction: "down" }), /scroll/);
+  await assert.rejects(f.invoke("ComputerAction", { ...target, action: "scroll", captureId: observed.capture_id, x: 110, y: 10, direction: "down" }), /bounds/);
+  await f.invoke("ComputerAction", { ...target, action: "scroll", captureId: observed.capture_id, x: 10, y: 20, direction: "down", pages: 2 });
+  const action = (await f.entries()).find(entry => entry.cmd === "scroll")!;
+  assert.equal(action.args.x, 10); assert.equal(action.args.y, 20);
+  assert.equal(action.args.window_id, 900); assert.equal(action.args.pages, 2);
+});
+
+test("未启动应用经审批启动后返回真实进程，严格审批拒绝时不得启动", { timeout: 8_000 }, async t => {
+  const f = await fixture(t, [{ name: "Fixture", bundleId: "test.fixture", running: false }]);
+  assert.ok(f.mcp.createTools().some(tool => tool.name === "ComputerLaunch"), "内置工具必须有受控启动入口");
+  await updateConfig(f.store, undefined, config => ({ ...config, computer: { ...config.computer, strictApproval: true } }));
+  await assert.rejects(f.invoke("ComputerLaunch", { bundleId: "test.fixture" }), /approval_required/);
+  assert.equal((await f.entries()).some(entry => entry.cmd === "launch_app"), false);
+  await updateConfig(f.store, undefined, config => ({ ...config, computer: { ...config.computer, strictApproval: false } }));
+  const result = await f.invoke("ComputerLaunch", { bundleId: "test.fixture" });
+  assert.equal(result.pid, 42);
+  const observed = await f.invoke("ComputerObserve", target);
+  assert.ok(observed.capture_id);
+});
+
+test("原生输入携带观察身份和调用方身份，不允许只靠进程编号解析控件", { timeout: 8_000 }, async t => {
+  const f = await fixture(t);
+  const observed = await f.invoke("ComputerObserve", target);
+  await f.invoke("ComputerAction", { ...target, action: "click", elementToken: "e1", captureId: observed.capture_id });
+  const requests = await f.entries();
+  const observation = requests.find(entry => entry.cmd === "get_app_state")!;
+  const action = requests.find(entry => entry.cmd === "click")!;
+  assert.equal(action.args.capture_id, observed.capture_id);
+  assert.equal(observation.args.capture_id, observed.capture_id);
+  assert.equal(typeof action.args.client_id, "string");
+  assert.equal(action.args.client_id, observation.args.client_id);
+});
+
+test("外部客户端遵守桌面暂停和接管，不得转到独立原生输入", { timeout: 8_000 }, async t => {
+  const f = await fixture(t);
+  const policy = new LocalComputerMcpPolicy(f.driver, f.store, new ComputerAuditStore(), async () => undefined, async () => f.endpoint);
+  let bypassed = 0;
+  const fallback = async () => { bypassed++; return { content: [{ type: "text" as const, text: JSON.stringify({ pid: 42, window_id: 900 }) }] }; };
+  try {
+    await policy.run("get_app_state", { pid: 42, window_id: 900 }, fallback);
+    f.service.controller.control("pause");
+    await assert.rejects(policy.run("click", { pid: 42, window_id: 900, x: 1, y: 2 }, fallback), /paused/);
+    f.service.controller.control("takeover");
+    await assert.rejects(policy.run("get_app_state", { pid: 42, window_id: 900 }, fallback), /taken-over/);
+    assert.equal(bypassed, 0);
+    assert.equal((await f.entries()).some(entry => entry.cmd === "click"), false);
+  } finally { await policy.close(); }
+});
+
+test("外部客户端接入桌面后保留列表期限和观察数量选项，原有内置工具测试不覆盖转接", { timeout: 8_000 }, async t => {
+  const f = await fixture(t);
+  const policy = new LocalComputerMcpPolicy(f.driver, f.store, new ComputerAuditStore(), async () => undefined, async () => f.endpoint);
+  const fallback = async () => { throw new Error("不应绕过桌面"); };
+  try {
+    await policy.run("list_apps", { days: 7 }, fallback);
+    await policy.run("get_app_state", { pid: 42, window_id: 900, maxElements: 12 }, fallback);
+    const entries = await f.entries();
+    assert.equal(entries.find(entry => entry.cmd === "list_apps")!.args.recent_days, 7);
+    assert.equal(entries.find(entry => entry.cmd === "get_app_state")!.args.max_elements, 12);
+    const result = await policy.run("scroll", { pid: 42, window_id: 900, ref: "e1", direction: "down" }, fallback);
+    assert.equal(result.isError, false);
+    assert.equal(result.content.some(part => part.type === "image"), true);
+    assert.equal((await f.entries()).filter(entry => entry.cmd === "scroll").length, 1);
+  } finally { await policy.close(); }
 });

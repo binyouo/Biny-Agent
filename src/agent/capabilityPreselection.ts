@@ -49,7 +49,7 @@ export async function preselectCapabilities(options: CapabilityPreselectionInput
   if (toolsMode === "auto") {
     const explicitNames = explicitToolNames(options.input, tools);
     for (const name of explicitNames) selectedTools.add(name);
-    const computerNames = ["ComputerList", "ComputerObserve", "ComputerAction", "ComputerMirror"];
+    const computerNames = ["ComputerList", "ComputerLaunch", "ComputerObserve", "ComputerAction", "ComputerMirror"];
     if (explicitNames.some((name) => computerNames.includes(name)) || /(?:^|[^a-z0-9_])(?:computer[\s_-]*use|cua)(?=$|[^a-z0-9_])/iu.test(options.input)) {
       for (const name of computerNames) if (tools.some((tool) => tool.name === name)) selectedTools.add(name);
     }
