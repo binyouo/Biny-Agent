@@ -88,10 +88,12 @@ test("concurrent openings of the same catalog revision share the pending read an
     }
     return await Reflect.apply(rename, fs, args);
   });
+  const lockDatabase = path.join(sessionCatalogDirectory(f.dataRoot), ".locks", `${f.sessionId}.sqlite`);
   let transactions = 0;
   const exec = DatabaseSync.prototype.exec;
   context.mock.method(DatabaseSync.prototype, "exec", function (this: DatabaseSync, sql: string) {
-    if (sql === "BEGIN IMMEDIATE") transactions++;
+    // 打开会话也会预热 Host；这里只统计本会话的 catalog 写入事务。
+    if (sql === "BEGIN IMMEDIATE" && this.prepare("PRAGMA database_list").get()?.file === lockDatabase) transactions++;
     return exec.call(this, sql);
   });
   try {
