@@ -14,6 +14,7 @@ import { SessionRecorder } from "../src/session/recorder.js";
 import { parseSessionEvents } from "../src/session/events.js";
 import { ensureAgentDirs } from "../src/session/store.js";
 import { ToolRegistry } from "../src/tools/registry.js";
+import { createToolSearchTool } from "../src/tools/toolSearch.js";
 import type { Tool } from "../src/tools/types.js";
 
 interface ExecutableTool {
@@ -266,9 +267,28 @@ async function testChangingErrorsDoNotResetRepeatBudget(): Promise<void> {
   }
 }
 
+// 搜索先完成、同批业务调用稍后取得结果时，不能把暂时无进展锁死为终态。
+async function testPendingExecutionResetsDiscoveryStop(): Promise<void> {
+  let started!: () => void;
+  const admitted = new Promise<void>((resolve) => { started = resolve; });
+  let release!: () => void;
+  const result = new Promise<unknown>((resolve) => { release = () => resolve({ records: [1] }); });
+  const fixture = await createFixture({ maxToolCalls: 20, maxRepeatedActions: 2 }, () => { started(); return result; });
+  try {
+    const execution = fixture.tool.execute("business", { key: "read" });
+    await admitted;
+    for (let index = 0; index < 3; index++) await fixture.search.execute(`search-${index}`, { query: `counted_tool alternative ${index}` });
+    assert.equal(fixture.coordinator.getBudgetRejection()?.reason, "repeated_action_limit");
+    release();
+    await execution;
+    assert.equal(fixture.coordinator.getBudgetRejection(), undefined, "已经准入的调用取得新结果后，批次应当继续");
+  } finally { release(); await fixture.close(); }
+}
+
 async function createFixture(budget: ToolExecutionBudget, result?: () => unknown): Promise<{
   coordinator: ToolExecutionCoordinator;
   tool: ExecutableTool;
+  search: ExecutableTool;
   events: CoordinatorEvent[];
   resolveCount(): number;
   executeCount(): number;
@@ -304,6 +324,7 @@ async function createFixture(budget: ToolExecutionBudget, result?: () => unknown
       };
     }
   } as Tool);
+  registry.registerBuiltinTool(createToolSearchTool(() => registry.listEntries()));
   const recorder = new SessionRecorder(workspaceRoot, "tool-budget");
   const events: CoordinatorEvent[] = [];
   const coordinator = new ToolExecutionCoordinator(
@@ -322,6 +343,7 @@ async function createFixture(budget: ToolExecutionBudget, result?: () => unknown
   return {
     coordinator,
     tool: nativeTool(coordinator, "counted_tool"),
+    search: nativeTool(coordinator, "ToolSearch"),
     events,
     resolveCount: () => resolved,
     executeCount: () => executed,
@@ -351,6 +373,7 @@ function readString(value: unknown, key: string): string | undefined {
 
 await testBatchCannotExceedToolCallLimit();
 await testBatchCannotExceedRepeatedActionLimit();
+await testPendingExecutionResetsDiscoveryStop();
 await testProgressAndRestoredActionBudgets();
 await testChangingErrorsDoNotResetRepeatBudget();
 await testAbortAfterSuccessfulPromiseKeepsSuccess();

@@ -2440,7 +2440,8 @@ export class AgentSession {
         maxToolCalls: runBudget.maxToolCalls,
         maxRepeatedActions: runBudget.maxRepeatedActions,
         initialToolCallCount: runOptions.initialToolBudget?.accountedToolCalls,
-        initialRepeatedActions: runOptions.initialToolBudget?.repeatedActions
+        initialRepeatedActions: runOptions.initialToolBudget?.repeatedActions,
+        initialToolDiscovery: runOptions.initialToolBudget?.toolDiscovery
       },
       persistToolResultCheckpoint,
       resolveCapabilityNames(runOptions.capabilitySelection?.tools === "none" ? "none" : runOptions.toolAccessSelection, this.activeConfig.chat.defaultToolSelection, this.options.toolRegistry.list().map((tool) => tool.name))
@@ -4432,6 +4433,10 @@ function readToolBudget(value: unknown): ToolExecutionBudgetSnapshot | undefined
       && typeof action.count === "number" && Number.isSafeInteger(action.count) && action.count >= 0
       && (action.resultFingerprint === undefined || typeof action.resultFingerprint === "string" && /^[a-f0-9]{64}$/u.test(action.resultFingerprint)))
   ) return undefined;
+  const discovery = value.toolDiscovery;
+  if (discovery !== undefined && (!isRecord(discovery)
+    || !Array.isArray(discovery.tools) || !discovery.tools.every((name: unknown) => typeof name === "string" && name.length > 0)
+    || typeof discovery.noProgressCount !== "number" || !Number.isSafeInteger(discovery.noProgressCount) || discovery.noProgressCount < 0)) return undefined;
   return {
     accountedToolCalls: value.accountedToolCalls,
     maxRepeatedActionCount: value.maxRepeatedActionCount,
@@ -4439,7 +4444,10 @@ function readToolBudget(value: unknown): ToolExecutionBudgetSnapshot | undefined
       fingerprint: action.fingerprint as string,
       count: action.count as number,
       resultFingerprint: action.resultFingerprint as string | undefined
-    }))
+    })),
+    toolDiscovery: discovery === undefined ? undefined : {
+      tools: discovery.tools as string[], noProgressCount: discovery.noProgressCount as number
+    }
   };
 }
 
