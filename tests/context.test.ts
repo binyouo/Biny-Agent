@@ -167,7 +167,7 @@ async function main(): Promise<void> {
     await testRestoreWithoutPersistedBudgetUsesHistoryEstimate();
     await testSessionReplayAndAgentResume();
     await testCrystalHistoricalMaterial();
-    await testCrystalThreadBackfill();
+    await testCrystalCurrentRunSkipsHistoricalAnchors();
     await testCrystalSemanticDotProduct();
     await testCrystalDormancyWithoutNewAnchors();
     await testCrystalFailedAndCancelledTurns();
@@ -2244,7 +2244,8 @@ async function testCrystalFailedAndCancelledTurns(): Promise<void> {
       await ensureAgentDirs(workspaceRoot);
       const config = testConfig();
       config.context.memory.useMemories = false;
-      config.context.memory.generateMemories = false;
+      // 终止回合仍贡献其已落盘输入，前提是该回合明确开启贡献。
+      config.context.memory.generateMemories = true;
       const model: AgentModel = { provider: "test", modelId: "terminal-crystal", stream: async () => { throw new Error("Terminal fixture model failure"); } };
       const agent = new AgentSession({ workspaceRoot, config, model, toolRegistry: new ToolRegistry(), permissionManager: new PermissionManager({ ...config.permission, source: "test" }), recorder: new SessionRecorder(workspaceRoot) });
       await agent.initialize();
@@ -2416,7 +2417,8 @@ async function testCrystalDormancyWithoutNewAnchors(): Promise<void> {
     await ensureAgentDirs(workspaceRoot);
     const config = testConfig();
     config.context.memory.useMemories = false;
-    config.context.memory.generateMemories = false;
+    // 开启贡献调度维护，即使当前 run 没有新的用户锚点。
+    config.context.memory.generateMemories = true;
     const recorder = new SessionRecorder(workspaceRoot, "crystal-aging");
     recorder.record({ type: "user_message", messageId: "aging-processed", content: "Already processed topic" });
     const model: AgentModel = { provider: "test", modelId: "aging-test", stream: async () => {
@@ -2449,7 +2451,7 @@ async function testCrystalDormancyWithoutNewAnchors(): Promise<void> {
   });
 }
 
-async function testCrystalThreadBackfill(): Promise<void> {
+async function testCrystalCurrentRunSkipsHistoricalAnchors(): Promise<void> {
   await withTempWorkspace(async (workspaceRoot) => {
     await ensureAgentDirs(workspaceRoot);
     const saved = new SessionRecorder(workspaceRoot, "crystal-backfill");
@@ -2460,7 +2462,7 @@ async function testCrystalThreadBackfill(): Promise<void> {
     await saved.close();
     const config = testConfig();
     config.context.memory.useMemories = false;
-    config.context.memory.generateMemories = false;
+    config.context.memory.generateMemories = true;
     const model: AgentModel = { provider: "test", modelId: "backfill-test", stream: async () => (async function* (): AsyncGenerator<ModelStreamEvent> {
       yield { type: "text-delta", text: "Done" };
       yield { type: "finish", reason: "stop" };
@@ -2485,10 +2487,27 @@ async function testCrystalThreadBackfill(): Promise<void> {
     } finally {
       await agent.close();
     }
-    assert.deepEqual(seen.map((entry) => entry.text), ["Old backlog topic", "Selected backlog topic", "Newest backlog topic", "One more backlog topic"]);
-    assert.deepEqual(seen.slice(0, 2).map((entry) => entry.day), ["2026-08-01", "2026-08-02"]);
-    assert.equal(count, 4);
-    assert.equal(new Set(seen.map((entry) => entry.anchorId)).size, 4);
+    const newInputs = ["Newest backlog topic", "One more backlog topic"];
+    assert.deepEqual(seen.map((entry) => entry.text), newInputs);
+    const newUserEvents = (await readSessionEvents(saved.filePath)).filter(
+      (event): event is Extract<SessionEvent, { type: "user_message" }> => event.type === "user_message" && newInputs.includes(event.content)
+    );
+    assert.equal(newUserEvents.length, 2);
+    assert.deepEqual(seen, newUserEvents.map((event) => {
+      assert.ok(event.messageId && event.time);
+      return { text: event.content, day: event.time.slice(0, 10), anchorId: event.messageId };
+    }));
+    assert.equal(count, 2);
+    assert.equal(new Set(seen.map((entry) => entry.anchorId)).size, 2);
+    const reopened = new CrystalStorage();
+    await reopened.initialize();
+    try {
+      for (const id of ["backfill-old", "backfill-assistant", "backfill-discarded", "backfill-selected"]) {
+        assert.equal(reopened.hasProcessedAnchor(id), false, "historical anchors must not be backfilled or marked processed by a later run");
+      }
+    } finally {
+      reopened.close();
+    }
   });
 }
 
@@ -2597,6 +2616,9 @@ async function testCrystalHistoricalMaterial(): Promise<void> {
       assert.match(materialPrompt, new RegExp(`biny://crystal/${seed.id}`, "u"));
       assert.ok(systemPrompts.every((prompt) => !prompt.includes("Checklist:")));
       assert.equal(materialPrompt.includes(`biny://crystal/${seed.id}`), true, "当前回合仍可通过动态 Crystal context 看到已确认卡片");
+      // 只有最后这个回合开启贡献；先前关闭期间的历史不能补提取。
+      await agent.updateChatPersonalization({ contributeMemories: true }, (await agent.getPersonalizationState()).catalogRevision);
+      assert.equal((await agent.getPersonalizationState()).resolved.contributeMemories, true);
       const entered = deferred<void>();
       const released = deferred<void>();
       crystals.extract = async () => {
@@ -2608,7 +2630,11 @@ async function testCrystalHistoricalMaterial(): Promise<void> {
       let closed = false;
       const closing = agent.close().then(() => { closed = true; });
       try {
-        await entered.promise;
+        const first = await Promise.race([
+          entered.promise.then(() => "extraction"),
+          closing.then(() => "closed")
+        ]);
+        assert.equal(first, "extraction", "Agent closed before the opted-in shutdown extraction started");
         assert.equal(closed, false);
       } finally {
         released.resolve();
