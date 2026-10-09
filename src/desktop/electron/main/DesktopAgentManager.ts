@@ -327,6 +327,8 @@ export class DesktopAgentManager {
     const project = this.projects.requireProject(projectId);
     if (sessionId !== undefined) await this.projects.openSession(project, sessionId, [], new Map());
     const persistenceRoot = await this.projects.dataRoot(project);
+    // 旧预热可能已捕获熔断错误，先等它结算，避免重试复用复位前的失败初始化。
+    await this.runtimeInitializations.get(projectId)?.catch(() => undefined);
     runtimeHostSpawnCircuitFor(runtimeHostPaths(persistenceRoot).endpoint).reset();
     try {
       if (sessionId === undefined) await this.ensureRuntime(projectId);
