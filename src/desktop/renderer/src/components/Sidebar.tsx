@@ -137,7 +137,9 @@ export const Sidebar = memo(function Sidebar({
       setSessionMenuVisible(false);
     };
     const closeOnEscape = (event: KeyboardEvent): void => {
-      if (event.key !== "Escape") return;
+      if (event.key !== "Escape" || event.isComposing || event.defaultPrevented) return;
+      event.preventDefault();
+      event.stopPropagation();
       setProjectMenuOpen(undefined);
       setProjectOrganizationMenuOpen(false);
       setProjectCreateMenuOpen(false);
@@ -912,7 +914,7 @@ const ProjectRow = memo(function ProjectRow({
         className={`biny-project-row${selected ? " is-active" : ""}`}
         onClick={() => { if (!suppressClickRef.current) onSelect(project.id); }}
         onKeyDown={(event) => {
-          if (event.key !== "Enter" && event.key !== " ") return;
+          if (event.target !== event.currentTarget || (event.key !== "Enter" && event.key !== " ")) return;
           event.preventDefault();
           onSelect(project.id);
         }}
@@ -998,6 +1000,17 @@ function FloatingSidebarMenu({ anchorRef, ariaLabel, className = "", children, o
   const presence = useClosingPresence(open);
   const surfaceRef = useRef<HTMLDivElement>(null);
   const [position, setPosition] = useState<{ left: number; top: number; origin: "top-left" | "bottom-left" }>();
+  const positioned = Boolean(position);
+
+  useEffect(() => {
+    if (!open || !presence.present || !positioned) return;
+    const surface = surfaceRef.current;
+    const previousFocus = anchorRef?.current ?? (document.activeElement instanceof HTMLElement ? document.activeElement : undefined);
+    surface?.querySelector<HTMLElement>('[role^="menuitem"]:not(:disabled):not([aria-disabled="true"])')?.focus({ preventScroll: true });
+    return () => {
+      if ((surface?.contains(document.activeElement) || document.activeElement === document.body) && previousFocus?.isConnected) previousFocus.focus({ preventScroll: true });
+    };
+  }, [anchorRef, open, positioned, presence.present]);
 
   useLayoutEffect(() => {
     if (!presence.present) return;
@@ -1048,7 +1061,17 @@ function FloatingSidebarMenu({ anchorRef, ariaLabel, className = "", children, o
 
   if (!presence.present) return null;
   return createPortal(
-    <div aria-label={ariaLabel} className={`biny-sidebar-menu${className ? ` ${className}` : ""}`} data-menu-phase={presence.phase} data-origin={position?.origin ?? "top-left"} ref={surfaceRef} role="menu" style={{ left: position?.left, top: position?.top, visibility: position ? "visible" : "hidden" }}>
+    <div aria-label={ariaLabel} className={`biny-sidebar-menu${className ? ` ${className}` : ""}`} data-menu-phase={presence.phase} data-origin={position?.origin ?? "top-left"} ref={surfaceRef} role="menu" inert={!open} onKeyDown={event => {
+      if (event.nativeEvent.isComposing || !["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
+      const items = [...event.currentTarget.querySelectorAll<HTMLElement>('[role^="menuitem"]:not(:disabled):not([aria-disabled="true"])')];
+      if (!items.length) return;
+      event.preventDefault();
+      event.stopPropagation();
+      const current = items.indexOf(document.activeElement as HTMLElement);
+      const next = event.key === "Home" ? 0 : event.key === "End" ? items.length - 1
+        : event.key === "ArrowDown" ? (current + 1) % items.length : current < 0 ? items.length - 1 : (current - 1 + items.length) % items.length;
+      items[next]?.focus();
+    }} style={{ left: position?.left, top: position?.top, visibility: position ? "visible" : "hidden" }}>
       {children}
     </div>,
     document.body

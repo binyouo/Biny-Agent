@@ -47,9 +47,16 @@ export function TerminalView({ projectId, active = true }: { projectId: string; 
   const activeSlot = selected ?? tabs?.[0]?.slotId;
   return <section className="inspector-terminals" aria-label="项目终端">
     <div className="inspector-subtoolbar">
-      <div className="inspector-terminal-tabs" role="tablist" aria-label="终端会话">
+      <div className="inspector-terminal-tabs" role="tablist" aria-label="终端会话" onKeyDown={(event) => {
+        if (!tabs || !["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+        const current = Math.max(0, tabs.findIndex((tab) => tab.slotId === activeSlot));
+        const next = event.key === "Home" ? 0 : event.key === "End" ? tabs.length - 1 : (current + (event.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length;
+        event.preventDefault();
+        setSelected(tabs[next]!.slotId);
+        event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="tab"]')[next]?.focus();
+      }}>
         {(tabs ?? []).map((tab, index) => <div className={`inspector-terminal-tab${activeSlot === tab.slotId ? " is-active" : ""}`} key={tab.slotId}>
-          <button type="button" role="tab" aria-selected={activeSlot === tab.slotId} onClick={() => setSelected(tab.slotId)}><Icon name="terminal" size={13} />{tab.slotId === "preview" ? "开发服务器" : `终端 ${index + 1}`}</button>
+          <button type="button" role="tab" aria-selected={activeSlot === tab.slotId} tabIndex={activeSlot === tab.slotId ? 0 : -1} onClick={() => setSelected(tab.slotId)}><Icon name="terminal" size={13} />{tab.slotId === "preview" ? "开发服务器" : `终端 ${index + 1}`}</button>
           <button type="button" aria-label={`关闭终端 ${index + 1} 并终止进程`} title="关闭并终止进程" onClick={() => void close(tab)}><Icon name="close" size={12} /></button>
         </div>)}
       </div>
@@ -138,6 +145,6 @@ function TerminalScreen({ projectId, slotId, active, onHandle }: { projectId: st
   }, [active]);
   return <div className="terminal-view">
     <div className="terminal-screen" ref={containerRef} />
-    {error !== undefined || exitCode !== undefined ? <div className="terminal-overlay"><span>{error ?? `进程已退出（${exitCode}）`}</span><button type="button" onClick={() => setRestartToken((token) => token + 1)}>重新启动</button></div> : null}
+    {error !== undefined || exitCode !== undefined ? <div className="terminal-overlay" role="alert"><span>{error ?? `进程已退出（${exitCode}）`}</span><button autoFocus type="button" onClick={() => setRestartToken((token) => token + 1)}>重新启动</button></div> : null}
   </div>;
 }

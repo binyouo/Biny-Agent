@@ -4,7 +4,7 @@
  * 复制成功后图标临时变成对勾再自动复原，复制失败则不给成功反馈。
  * `resolveValue` 用于内容会变的场景（如实时渲染的代码块），点击时才取当前文本。
  */
-import React, { useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { copyToClipboard } from "../copyToClipboard.js";
 import { Icon } from "./Icon.js";
 
@@ -29,20 +29,40 @@ export function CopyButton({
   showTooltip = true
 }: CopyButtonProps): React.JSX.Element {
   const [copied, setCopied] = useState(false);
+  const [failed, setFailed] = useState(false);
+  const requestRef = useRef<object | undefined>(undefined);
+  const timerRef = useRef<number | undefined>(undefined);
+  useEffect(() => {
+    setCopied(false);
+    setFailed(false);
+    return () => {
+      requestRef.current = undefined;
+      window.clearTimeout(timerRef.current);
+    };
+  }, [value]);
+  const feedback = copied ? "已复制" : failed ? "复制失败，点击重试" : label;
   return (
     <button
-      aria-label={copied ? "已复制" : label}
+      aria-label={feedback}
       className={`${className}${copied ? " is-copied" : ""}`}
       onClick={() => {
+        if (requestRef.current) return;
+        const request = {};
+        requestRef.current = request;
+        window.clearTimeout(timerRef.current);
+        setCopied(false);
+        setFailed(false);
         // 去掉结尾换行：代码块渲染时会带一个，复制到别处会多出一空行。
         const text = (resolveValue?.() ?? value).replace(/\n$/, "");
         void copyToClipboard(text).then((ok) => {
-          if (!ok) return;
+          if (requestRef.current !== request) return;
+          requestRef.current = undefined;
+          if (!ok) { setFailed(true); return; }
           setCopied(true);
-          window.setTimeout(() => setCopied(false), 1_200);
+          timerRef.current = window.setTimeout(() => setCopied(false), 1_200);
         });
       }}
-      title={showTooltip ? copied ? "已复制" : label : undefined}
+      title={showTooltip ? feedback : undefined}
       type="button"
     >
       <Icon name={copied ? "check" : "copy"} size={size} />

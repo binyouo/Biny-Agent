@@ -24,10 +24,10 @@ async function harness() {
   dom.window.scrollTo = () => {};
   const saved = new Map<string, PropertyDescriptor | undefined>();
   for (const [key, value] of Object.entries({ window: dom.window, document: dom.window.document, React,
-    HTMLElement: dom.window.HTMLElement, HTMLTextAreaElement: dom.window.HTMLTextAreaElement, Element: dom.window.Element,
-    Node: dom.window.Node, navigator: dom.window.navigator, getComputedStyle: dom.window.getComputedStyle,
+    HTMLElement: dom.window.HTMLElement, HTMLInputElement: dom.window.HTMLInputElement, HTMLTextAreaElement: dom.window.HTMLTextAreaElement, Element: dom.window.Element,
+    Node: dom.window.Node, MutationObserver: dom.window.MutationObserver, navigator: dom.window.navigator, getComputedStyle: dom.window.getComputedStyle,
     requestAnimationFrame: dom.window.requestAnimationFrame.bind(dom.window), cancelAnimationFrame: dom.window.cancelAnimationFrame.bind(dom.window),
-    CSS: { escape: (value: string) => value }, ResizeObserver: class { observe() {} disconnect() {} }, IS_REACT_ACT_ENVIRONMENT: true })) {
+    CSS: { escape: (value: string) => value }, ResizeObserver: class { observe() {} unobserve() {} disconnect() {} }, IS_REACT_ACT_ENVIRONMENT: true })) {
     saved.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
     Object.defineProperty(globalThis, key, { configurable: true, value });
   }
@@ -169,7 +169,7 @@ test("17个设置页面直接导航，页头精简且配色可直接进入", asy
   const h = await harness();
   try {
     const { SettingsOverlay } = await import("../src/desktop/renderer/src/components/settings/SettingsOverlay.js");
-    const props = { open: true, version: "test", themePreference: "system", fontPreference: { family: "system", size: 14 }, sessionRunning: false,
+    const props = { open: true, version: "test", projects: [], themePreference: "system", fontPreference: { family: "system", size: 14 }, sessionRunning: false,
       onNotify() {}, onThemePreference() {}, onFontPreference() {}, onSettingsCommitted() {}, onClose() {} };
     await h.render(h.React.createElement(SettingsOverlay, props as unknown as React.ComponentProps<typeof SettingsOverlay>));
     const pages = [["通用", "通用"], ["导入", "导入"], ["模型", "模型供应商"], ["聊天", "聊天偏好"], ["记忆", "记忆"], ["Computer History", "Computer History"], ["Computer Use", "Computer Use"], ["Appshots", "Appshots"], ["权限", "权限"], ["网络搜索", "网络搜索"], ["浏览器", "浏览器"], ["MCP 服务器", "MCP 服务器"], ["技能", "技能"], ["插件", "插件"], ["用户界面", "用户界面"], ["配色", "配色"], ["关于", "关于"]];
@@ -216,4 +216,74 @@ test("项目排序只提供有区别的手动排序与最近打开", async () =>
     await h.click('[aria-label="项目排序"]');
     assert.deepEqual([...document.querySelectorAll('[aria-label="项目排序菜单"] [role="menuitemradio"]')].map(node => node.textContent), ["最近打开", "手动排序"]);
   } finally { await h.close(); }
+});
+
+test("侧栏菜单支持方向键和首尾导航，Escape 还原触发按钮；原排序用例只覆盖鼠标选择", async () => {
+  const h = await harness();
+  try {
+    const { Sidebar } = await import("../src/desktop/renderer/src/components/Sidebar.js");
+    await h.render(h.React.createElement(Sidebar, { projects: [], sessions: [], layout: { mode: "expanded", contentWidth: 260 },
+      peekDrawerHandlers: {}, peekTriggerHandlers: {}, resizeHandlers: {},
+    } as unknown as React.ComponentProps<typeof Sidebar>));
+    const trigger = document.querySelector<HTMLButtonElement>('[aria-label="项目排序"]')!;
+    trigger.focus();
+    await h.click('[aria-label="项目排序"]');
+    await h.React.act(async () => await new Promise<void>(resolve => h.dom.window.requestAnimationFrame(() => resolve())));
+    const items = [...document.querySelectorAll<HTMLButtonElement>('[aria-label="项目排序菜单"] [role="menuitemradio"]')];
+    assert.ok(document.activeElement === items[0], "打开菜单应将焦点交给首个操作");
+    const press = async (key: string, isComposing = false): Promise<void> => {
+      await h.React.act(() => document.activeElement!.dispatchEvent(new h.dom.window.KeyboardEvent("keydown", { key, isComposing, bubbles: true, cancelable: true })));
+    };
+    await press("ArrowDown");
+    assert.ok(document.activeElement === items[1]);
+    await press("ArrowDown");
+    assert.ok(document.activeElement === items[0]);
+    await press("End");
+    assert.ok(document.activeElement === items[1]);
+    await press("Home");
+    assert.ok(document.activeElement === items[0]);
+    await press("Escape", true);
+    assert.ok(document.activeElement === items[0], "中文输入法取消候选不能关闭菜单");
+    await press("Escape");
+    assert.equal(trigger.getAttribute("aria-expanded"), "false");
+    assert.ok(document.activeElement === trigger, `关闭后焦点应返回项目排序，当前为 ${document.activeElement?.outerHTML.slice(0, 160)}`);
+  } finally { await h.close(); }
+});
+
+test("模型菜单无需悬停即可进入推理选项，Escape 逐层返回且关闭后恢复焦点；现有模型测试仅覆盖切换顺序", async () => {
+  const h = await harness();
+  const anchor = document.createElement("button");
+  anchor.textContent = "选择模型";
+  document.body.append(anchor);
+  Object.defineProperty(h.dom.window.HTMLElement.prototype, "offsetWidth", { configurable: true, get: () => 264 });
+  anchor.focus();
+  try {
+    const { ModelPickerMenu } = await import("../src/desktop/renderer/src/components/composer/ModelPickerMenu.js");
+    const anchorRef = { current: anchor };
+    const selected: string[] = [];
+    function PickerExample(): React.ReactNode {
+      const [open, setOpen] = h.React.useState(true);
+      return h.React.createElement(ModelPickerMenu, { anchorRef, currentModelName: "测试模型", currentThinking: "off", models: [],
+        thinkingLevels: ["off", "high"], open, onClose: () => setOpen(false), onSelectModel() {}, onSelectThinking: value => { selected.push(value); } });
+    }
+    await h.render(h.React.createElement(PickerExample));
+    const entries = [...document.querySelectorAll<HTMLElement>('[aria-label="模型与推理强度"] [role="menuitem"]')];
+    assert.ok(document.activeElement === entries[0], "模型菜单打开后聚焦第一个可操作入口");
+    const press = async (key: string): Promise<void> => { await h.React.act(() => document.activeElement!.dispatchEvent(new h.dom.window.KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }))); };
+    await press("ArrowDown");
+    assert.ok(document.activeElement === entries[1]);
+    await press("ArrowRight");
+    const options = [...document.querySelectorAll<HTMLElement>('[aria-label="选择推理强度"] [role="menuitemradio"]')];
+    assert.equal(options.length, 2);
+    assert.ok(document.activeElement === options[0]);
+    await press("ArrowDown");
+    assert.ok(document.activeElement === options[1]);
+    await h.React.act(() => options[1]!.click());
+    assert.deepEqual(selected, ["high"], "原生按钮激活也必须提交选项，不能只监听指针按下");
+    await press("Escape");
+    assert.equal(document.querySelector('[aria-label="选择推理强度"]'), null);
+    assert.ok(document.activeElement === entries[1]);
+    await press("Escape");
+    assert.ok(document.activeElement === anchor);
+  } finally { anchor.remove(); await h.close(); }
 });

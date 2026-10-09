@@ -24,7 +24,7 @@ function RevokeDialog({ bundle, busy, error, onClose, onConfirm }: { bundle: str
     <div className="cu-confirm-actions"><button type="button" className="settings-secondary-button" disabled={busy} onClick={onClose}>取消</button><button type="button" className="settings-secondary-button is-danger" disabled={busy} onClick={onConfirm}>确认撤销</button></div>
   </dialog>;
 }
-export function SettingsComputerUse(): React.JSX.Element {
+export function SettingsComputerUse({ active = true }: { active?: boolean }): React.JSX.Element {
   const [status, setStatus] = useState<ComputerStatus>();
   const [diagnostic, setDiagnostic] = useState<ComputerDiagnostics>();
   const [tested, setTested] = useState(false);
@@ -36,18 +36,20 @@ export function SettingsComputerUse(): React.JSX.Element {
   const pending = useRef(false);
   const api = window.binyComputer;
   const available = [api?.status, api?.enable, api?.control, api?.preview, api?.foreground, api?.logging, api?.diagnostics, api?.requestAccessibility, api?.testSetup, api?.strict, api?.approve, api?.revoke].every(method => typeof method === "function");
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   useEffect(() => {
-    mounted.current = true;
-    if (!available) { setError(restartMessage); return () => { mounted.current = false; }; }
+    if (!active) return;
+    if (!available) { setError(restartMessage); return; }
+    let cancelled = false;
     const refreshStatus = (): void => {
       if (pending.current) return;
-      void api.status().then(value => { if (mounted.current && !pending.current) setStatus(value); }).catch(reason => { if (mounted.current) setError(String(reason)); });
+      void api.status().then(value => { if (!cancelled && !pending.current) setStatus(value); }).catch(reason => { if (!cancelled) setError(String(reason)); });
     };
     refreshStatus();
-    void api.diagnostics().then(value => { if (mounted.current) setDiagnostic(value); }).catch(reason => { if (mounted.current) setError(String(reason)); });
+    void api.diagnostics().then(value => { if (!cancelled) setDiagnostic(value); }).catch(reason => { if (!cancelled) setError(String(reason)); });
     const timer = setInterval(refreshStatus, 1500);
-    return () => { mounted.current = false; clearInterval(timer); };
-  }, [api, available]);
+    return () => { cancelled = true; clearInterval(timer); };
+  }, [active, api, available]);
   const perform = async (action: () => Promise<void>): Promise<void> => {
     if (pending.current || !available) return;
     pending.current = true; setBusy(true); setError("");
@@ -71,12 +73,11 @@ export function SettingsComputerUse(): React.JSX.Element {
     status?.diagnostic ?? ""
   ].filter(Boolean).join("\n");
   return <div className="settings-sections computer-use-settings">
+    <div className="settings-row-group cu-toggles">
+      <SettingsSwitch label="桌面控制" checked={Boolean(status && status.state !== "disabled")} disabled={unavailable || !status} detail="在后台操作 Mac 应用，首次使用时启动；关闭会停止控制。截图会发送给当前模型。" onChange={value => void perform(async () => { await updateStatus(() => value ? api.enable() : api.control("stop")); await readDiagnostic(); })} />
+    </div>
     <section className="cu-card">
-      <h3 className="cu-heading"><Icon name="cpu" size={17} />Computer Use</h3>
-      <p className="cu-description">在后台操作 Mac 应用。需要系统授权，截图会发送给当前模型。</p>
-      <div className="settings-row-group cu-toggles">
-        <SettingsSwitch label="桌面控制" checked={Boolean(status && status.state !== "disabled")} disabled={unavailable || !status} detail="首次使用时启动；关闭会停止控制。" onChange={value => void perform(async () => { await updateStatus(() => value ? api.enable() : api.control("stop")); await readDiagnostic(); })} />
-      </div>
+      <h3>权限与运行状态</h3>
       <div className="cu-section"><h4>桌面控制组件</h4><div className="cu-helper" data-loaded={helperPresent}>
         <Icon name={helperPresent ? "circle-check" : "help"} size={17} />
         <strong>{!diagnostic ? "正在检查…" : helperPresent ? "已安装" : "未找到"}</strong><span>{diagnostic?.runtimeReady ? "运行中" : helperPresent ? "按需启动" : ""}</span>
@@ -103,6 +104,9 @@ export function SettingsComputerUse(): React.JSX.Element {
         </ul>
       ) : null}
       </div>
+    </section>
+    <section className="cu-card">
+      <h3>控制偏好</h3>
       <div className="settings-row-group cu-toggles">
         <SettingsSwitch label="严格应用审批" checked={diagnostic?.strictApproval ?? false} disabled={unavailable || !diagnostic} detail="仅允许已批准的应用；关闭时首次使用自动授权。" onChange={value => void perform(() => readDiagnostic(() => api.strict(value)))} />
         <SettingsSwitch label="记录操作日志" checked={status?.actionLogging ?? false} disabled={unavailable || !status} detail="本地记录动作与结果，不保存输入或截图。" onChange={value => void perform(() => updateStatus(() => api.logging(value)))} />
@@ -114,7 +118,7 @@ export function SettingsComputerUse(): React.JSX.Element {
           <p className="cu-description">动作可能切换前台应用。请重新授予辅助功能权限后重试。</p>
         </section>
       ) : null}
-      <details className="cu-controls"><summary>高级设置</summary><div className="cu-section"><p role="status">{status ? `${stateLabels[status.state]} · ${outcomeLabels[status.lastOutcome]}` : "正在读取控制状态…"}</p><div className="cu-button-row">
+      <details className="settings-disclosure cu-controls"><summary>高级设置</summary><div className="cu-section"><p role="status">{status ? `${stateLabels[status.state]} · ${outcomeLabels[status.lastOutcome]}` : "正在读取控制状态…"}</p><div className="cu-button-row">
         <button type="button" className="settings-secondary-button" disabled={unavailable || status?.state !== "ready"} onClick={() => control("pause")}><Icon name="pause" size={14} />暂停</button>
         <button type="button" className="settings-secondary-button" disabled={unavailable || !status || status.state === "ready" || status.state === "disabled"} onClick={() => control("resume")}><Icon name="play" size={14} />继续（需重新观察）</button>
         <button type="button" className="settings-secondary-button" disabled={unavailable || !status || status.state === "disabled"} onClick={() => control("takeover")}>人工接管</button>
@@ -130,7 +134,7 @@ export function SettingsComputerUse(): React.JSX.Element {
               entry.errorCode ? `· ${entry.errorCode}` : ""
             ].filter(Boolean).join(" ")).join("\n")}</pre> : null}
       </div></details>
-      <details className="cu-technical-details"><summary>诊断详情</summary>
+      <details className="settings-disclosure cu-technical-details"><summary>诊断详情</summary>
         {diagnostic?.actionLimits?.map(limit => <p className="cu-description" data-action-limit={limit.action} key={limit.code}>{limit.message}</p>)}
         <pre className="cu-diagnostics">{diagnosticText}{diagnostic ? <>{"\n组件："}<code className="cu-path">{diagnostic.workerPath}</code>{diagnostic.driverVersion ? `\n版本：${diagnostic.driverVersion}` : ""}{typeof diagnostic.uptimeSeconds === "number" ? `\n运行时长：${diagnostic.uptimeSeconds} 秒` : ""}{!helperPresent ? "\n开发环境可运行 pnpm build:activity-sidecar 重建组件。" : ""}</> : null}</pre>
       </details>

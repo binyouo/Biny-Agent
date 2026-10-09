@@ -3,7 +3,7 @@
 :root {
   --desktop-titlebar-height: 74px;
   --desktop-content-max: 880px;
-  --desktop-control-radius: 6px;
+  --desktop-control-radius: var(--biny-radius-control);
   --desktop-motion-fast: 140ms;
 }
 
@@ -23,11 +23,21 @@ body {
   font-size: calc(var(--app-font-size, 14) * 1px);
 }
 
+html:has(.biny-root),
+body:has(.biny-root) {
+  background: transparent;
+}
+
 button,
 input,
 textarea,
 select {
   font: inherit;
+}
+
+:where(button, a[href], input, textarea, select, summary, [tabindex]):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
 }
 
 /* Electron 支持可定制的原生 select：弹出层跟随应用主题，键盘、选中和定位仍交给浏览器。 */
@@ -106,6 +116,7 @@ select option:disabled {
 .mode-toggle:focus-visible,
 .model-trigger:focus-visible,
 .user-message-action:focus-visible,
+.assistant-action:focus-visible,
 .message-menu-item:focus-visible,
 [role="separator"]:focus-visible {
   outline: 2px solid var(--color-accent);
@@ -1014,12 +1025,15 @@ select option:disabled {
   position: relative;
   display: grid;
   width: 100%;
-  min-height: 38px;
+  min-height: max(38px, var(--biny-control-height));
   grid-template-columns: minmax(0, 1fr) auto 16px;
   align-items: center;
   gap: 8px;
-  padding: 0 9px;
-  border-radius: 8px;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: var(--biny-radius-control);
+  background: transparent;
+  cursor: pointer;
   color: var(--text-secondary);
   /* 与 composer 模型 pill 的显示字号一致；之前继承 body 的 14px，比触发器大一号。 */
   font-size: calc(13px * var(--font-scale));
@@ -1051,6 +1065,8 @@ select option:disabled {
   color: var(--text);
   background: var(--surface-hover);
 }
+
+.model-picker-entry:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; background: var(--surface-hover); }
 
 .model-picker-entry[data-fluid-hover-active] {
   color: var(--text);
@@ -1253,18 +1269,25 @@ select option:disabled {
 /* ===================== 设置中心 ===================== */
 /* 原生 Dialog 保持焦点隔离与 Escape 行为；尺寸只由外层决定，内部双栏共用一张面板。 */
 .desktop-settings-dialog {
-  height: min(760px, calc(100dvh - 80px));
-  max-width: calc(100dvw - 64px);
+  height: min(740px, calc(100dvh - 48px));
+  max-width: calc(100dvw - 48px);
   overflow: hidden;
   border: 1px solid var(--border-strong);
-  border-radius: 14px;
+  border-radius: var(--biny-radius-window);
+  animation: none;
   background: var(--surface-raised);
   box-shadow: 0 8px 24px var(--shadow);
   -webkit-app-region: no-drag;
   app-region: no-drag;
 }
 
+/* 原生模态层建立前保持隐藏，避免依赖库的打开样式提前显示普通定位的 dialog。 */
+.desktop-settings-dialog:not([open]) {
+  display: none;
+}
+
 .desktop-settings-dialog::backdrop {
+  border-radius: var(--biny-radius-window);
   background: var(--biny-overlay);
   backdrop-filter: none;
   -webkit-backdrop-filter: none;
@@ -1275,17 +1298,19 @@ select option:disabled {
   --st-rem: calc(14px * var(--font-scale, 1));
   --st-card-padding: calc(20px * var(--font-scale, 1));
   --st-card-gap: calc(0.75 * var(--st-rem));
-  --st-control-h: calc(32px * var(--font-scale, 1));
+  --st-control-h: max(var(--biny-control-height), calc(32px * var(--font-scale, 1)));
   --st-control-h-sm: calc(2 * var(--st-rem));
   --st-control-px: calc(0.9 * var(--st-rem));
   --st-control-py: calc(0.4 * var(--st-rem));
-  --st-control-gap: calc(0.4 * var(--st-rem));
-  --st-stack-gap: calc(16px * var(--font-scale, 1));
-  --st-radius: 10px;
+  --st-control-gap: calc(8px * var(--font-scale, 1));
+  --st-stack-gap: calc(24px * var(--font-scale, 1));
+  --st-row-padding: var(--biny-row-padding);
+  --st-page-padding: clamp(16px, 3vw, 28px);
+  --st-radius: var(--biny-radius-card);
   --st-button-height: var(--st-control-h);
   --st-button-font-size: calc(13px * var(--font-scale, 1));
   --st-button-padding: calc(12px * var(--font-scale, 1));
-  --st-button-radius: 8px;
+  --st-button-radius: var(--biny-radius-control);
   /* 实底只强调主要操作，次要操作用细边框，辅助操作使用透明底。 */
   --st-primary: var(--accent);
   --st-on-primary: var(--accent-foreground);
@@ -1337,7 +1362,7 @@ select option:disabled {
   margin: 8px 0 8px 8px;
   padding: 0;
   border: 1px solid var(--st-sidebar-border);
-  border-radius: 16px;
+  border-radius: var(--biny-radius-card);
   background: var(--st-sidebar-bg);
   box-shadow: none;
 }
@@ -1552,7 +1577,7 @@ select option:disabled {
   justify-content: space-between;
   gap: calc(0.5 * var(--st-rem));
   margin: 0;
-  padding: 20px 28px;
+  padding: 20px var(--st-page-padding);
   border-bottom: 1px solid var(--border);
   background: var(--bg);
 }
@@ -1563,14 +1588,6 @@ select option:disabled {
   min-width: 0;
   align-items: baseline;
   gap: calc(0.6 * var(--st-rem));
-}
-
-.settings-titlebar .settings-revalidating {
-  flex: none;
-  color: var(--muted);
-  font-size: calc(0.78 * var(--st-rem));
-  font-weight: 400;
-  letter-spacing: 0;
 }
 
 .settings-titlebar h2 {
@@ -1587,10 +1604,10 @@ select option:disabled {
 }
 
 .desktop-settings-dialog .settings-close-button {
-  width: 30px;
-  height: 30px;
+  width: var(--st-control-h);
+  height: var(--st-control-h);
   flex: none;
-  margin-right: -8px;
+  margin-right: 0;
   border: 0;
   border-radius: var(--st-button-radius);
 }
@@ -1602,7 +1619,7 @@ select option:disabled {
   min-height: 0;
   overflow-x: hidden;
   overflow-y: auto;
-  padding: 24px 28px;
+  padding: 24px var(--st-page-padding);
   overscroll-behavior: contain;
   scrollbar-gutter: stable;
 }
@@ -1624,7 +1641,7 @@ select option:disabled {
   align-items: center;
   justify-content: space-between;
   gap: calc(1 * var(--st-rem));
-  padding: 14px 28px;
+  padding: 16px var(--st-page-padding);
   background: var(--bg);
   border-top: 1px solid var(--border);
 }
@@ -1843,7 +1860,7 @@ select option:disabled {
   min-height: var(--st-control-h);
   padding: var(--st-control-py) var(--st-control-px);
   border: 1px solid var(--border);
-  border-radius: var(--st-radius);
+  border-radius: var(--st-button-radius);
   color: var(--text);
   background: transparent;
   box-shadow: 0 1px 2px var(--shadow);
@@ -1868,17 +1885,17 @@ select option:disabled {
   width: 100%;
   align-items: center;
   justify-content: space-between;
-  gap: var(--st-control-gap);
-  padding: 12px 14px;
-  border: 1px solid var(--border);
-  border-radius: var(--st-radius);
+  min-height: calc(48px * var(--font-scale, 1));
+  gap: calc(16px * var(--font-scale, 1));
+  padding: var(--st-row-padding);
+  border: 0;
+  border-radius: 0;
   color: var(--text);
-  background: var(--surface-soft);
+  background: transparent;
   text-align: left;
 }
 
-.desktop-settings-dialog .settings-modal .settings-switch-row:disabled {
-  cursor: not-allowed;
+.desktop-settings-dialog .settings-modal .settings-switch-row:has(input:disabled) {
   opacity: 0.5;
 }
 
@@ -1887,58 +1904,66 @@ select option:disabled {
   min-width: 0;
   flex: 1;
   flex-direction: column;
-  gap: 2px;
+  gap: 4px;
+  overflow-wrap: anywhere;
 }
 
 .desktop-settings-dialog .settings-modal .settings-switch-copy strong {
   font-size: calc(13px * var(--font-scale, 1));
-  font-weight: 550;
+  font-weight: 400;
 }
 
 .desktop-settings-dialog .settings-modal .settings-switch-copy small {
   color: var(--st-muted-foreground);
-  font-size: calc(0.75 * var(--st-rem));
+  font-size: calc(12px * var(--font-scale, 1));
   line-height: 1.4;
 }
 
 /* 开启态使用主题强调色与配对前景色，深色模式仍能区分轨道和圆点。 */
 .desktop-settings-dialog .settings-modal .settings-switch {
-  display: inline-flex;
-  width: calc(32px * var(--font-scale, 1));
-  height: calc(20px * var(--font-scale, 1));
+  appearance: none;
+  position: relative;
+  display: block;
+  box-sizing: border-box;
+  width: calc(36px * var(--font-scale, 1));
+  height: calc(22px * var(--font-scale, 1));
   flex: none;
-  align-items: center;
+  margin: 0;
+  padding: 0;
   border: calc(2px * var(--font-scale, 1)) solid transparent;
   border-radius: 999px;
   background: color-mix(in srgb, var(--text) 22%, transparent);
+  cursor: pointer;
   transition: background-color 0.15s var(--st-ease);
 }
 
-.desktop-settings-dialog .settings-modal .settings-switch-row.is-checked .settings-switch {
+.desktop-settings-dialog .settings-modal .settings-switch:checked {
   background: var(--accent);
 }
 
-.desktop-settings-dialog .settings-modal .settings-switch-row:focus-visible {
-  outline: none;
+.desktop-settings-dialog .settings-modal .settings-switch:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
 }
 
-.desktop-settings-dialog .settings-modal .settings-switch-row:focus-visible .settings-switch {
-  box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--st-ring);
+.desktop-settings-dialog .settings-modal .settings-switch:disabled {
+  cursor: default;
 }
 
-.desktop-settings-dialog .settings-modal .settings-switch-thumb {
+.desktop-settings-dialog .settings-modal .settings-switch::before {
+  content: "";
+  position: absolute;
   display: block;
-  width: calc(16px * var(--font-scale, 1));
-  height: calc(16px * var(--font-scale, 1));
+  width: calc(18px * var(--font-scale, 1));
+  height: calc(18px * var(--font-scale, 1));
   border-radius: 999px;
   background: var(--switch-thumb);
   box-shadow: 0 1px 2px var(--shadow-soft);
   transition: transform 0.15s var(--st-ease);
 }
 
-.desktop-settings-dialog .settings-modal .settings-switch-row.is-checked .settings-switch-thumb {
-  background: var(--accent-foreground);
-  transform: translateX(calc(12px * var(--font-scale, 1)));
+.desktop-settings-dialog .settings-modal .settings-switch:checked::before {
+  transform: translateX(calc(14px * var(--font-scale, 1)));
 }
 
 /* 动效降级：系统要求减少动态效果时关闭设置内的过渡。 */
@@ -1947,7 +1972,7 @@ select option:disabled {
   .desktop-settings-dialog .settings-modal .settings-nav-icon,
   .desktop-settings-dialog .settings-close-button,
   .desktop-settings-dialog .settings-modal .settings-switch,
-  .desktop-settings-dialog .settings-modal .settings-switch-thumb,
+  .desktop-settings-dialog .settings-modal .settings-switch::before,
   .desktop-settings-dialog .settings-modal .settings-page-footer button,
   .desktop-settings-dialog .settings-modal .settings-confirm-actions button,
   .desktop-settings-dialog .settings-modal .settings-sections input,
@@ -2458,29 +2483,11 @@ select option:disabled {
   opacity: .72;
 }
 
-.activity-switch-copy {
-  display: flex;
-  min-width: 0;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.activity-switch-copy strong {
-  font-size: calc(12px * var(--font-scale));
-  font-weight: 550;
-}
-
-.activity-switch-copy small {
-  color: var(--text-tertiary);
-  font-size: calc(10.5px * var(--font-scale));
-  line-height: 1.45;
-}
-
 .activity-switch-track {
   position: relative;
   display: block;
-  width: calc(32px * var(--font-scale, 1));
-  height: calc(20px * var(--font-scale, 1));
+  width: calc(36px * var(--font-scale, 1));
+  height: calc(22px * var(--font-scale, 1));
   flex: none;
   border: calc(2px * var(--font-scale, 1)) solid transparent;
   border-radius: 999px;
@@ -2492,8 +2499,8 @@ select option:disabled {
   position: absolute;
   top: 50%;
   left: 0;
-  width: calc(16px * var(--font-scale, 1));
-  height: calc(16px * var(--font-scale, 1));
+  width: calc(18px * var(--font-scale, 1));
+  height: calc(18px * var(--font-scale, 1));
   border-radius: 999px;
   background: var(--switch-thumb);
   box-shadow: 0 1px 2px var(--shadow-soft);
@@ -2506,8 +2513,7 @@ select option:disabled {
 }
 
 .activity-switch.is-checked .activity-switch-track > span {
-  background: var(--accent-foreground);
-  transform: translateY(-50%) translateX(calc(12px * var(--font-scale, 1)));
+  transform: translateY(-50%) translateX(calc(14px * var(--font-scale, 1)));
 }
 
 .activity-switch:focus-visible .activity-switch-track {
@@ -3214,7 +3220,7 @@ select option:disabled {
   min-height: 0;
   padding: 0 var(--st-control-px);
   border: 1px solid var(--border);
-  border-radius: var(--st-radius);
+  border-radius: var(--st-button-radius);
   background: transparent;
   box-shadow: 0 1px 2px var(--shadow);
   font-size: calc(0.875 * var(--st-rem));
@@ -3248,7 +3254,7 @@ select option:disabled {
   min-height: 0;
   padding-inline: var(--st-control-px);
   border: 1px solid var(--border);
-  border-radius: var(--st-radius);
+  border-radius: var(--st-button-radius);
   background: transparent;
   box-shadow: 0 1px 2px var(--shadow);
   transition: color 0.15s var(--st-ease), border-color 0.15s var(--st-ease), box-shadow 0.15s var(--st-ease);
@@ -3257,12 +3263,12 @@ select option:disabled {
 .desktop-settings-dialog .settings-modal .font-size-input {
   height: var(--st-control-h);
   min-height: 0;
-  border-radius: var(--st-radius);
+  border-radius: var(--st-button-radius);
 }
 
 .desktop-settings-dialog .settings-modal .provider-search {
   height: var(--st-control-h);
-  border-radius: var(--st-radius);
+  border-radius: var(--st-button-radius);
 }
 
 /* —— 文本域 —— */
@@ -3270,7 +3276,7 @@ select option:disabled {
 .desktop-settings-dialog .settings-modal .personalization-instructions,
 .desktop-settings-dialog .settings-modal .chat-instructions-field textarea {
   border: 1px solid var(--border);
-  border-radius: var(--st-radius);
+  border-radius: var(--st-button-radius);
   background: transparent;
   box-shadow: 0 1px 2px var(--shadow);
   transition: color 0.15s var(--st-ease), border-color 0.15s var(--st-ease), box-shadow 0.15s var(--st-ease);
@@ -3502,7 +3508,7 @@ select option:disabled {
 .desktop-settings-dialog .settings-modal .activity-field > textarea,
 .desktop-settings-dialog .settings-modal .activity-number-input {
   min-height: var(--st-control-h);
-  border-radius: var(--st-radius);
+  border-radius: var(--st-button-radius);
 }
 
 /* 减少动态效果时关闭内容区过渡。 */
@@ -3550,7 +3556,7 @@ select option:disabled {
   gap: 9px;
   padding: 5px 10px;
   border: 1px solid var(--border);
-  border-radius: var(--st-radius);
+  border-radius: var(--st-button-radius);
   color: var(--text);
   background: var(--surface);
   box-shadow: 0 1px 2px var(--shadow);
@@ -3762,6 +3768,28 @@ select option:disabled {
   flex: 0 0 18px;
   place-items: center;
   color: var(--accent);
+}
+
+.desktop-settings-dialog .settings-modal .settings-model-picker.is-compact .settings-model-picker-trigger-copy {
+  flex-direction: row;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.desktop-settings-dialog .settings-modal .settings-model-picker.is-compact .settings-model-picker-option {
+  min-height: 30px;
+  padding-block: 4px;
+}
+
+.desktop-settings-dialog .settings-modal .settings-model-picker.is-compact .settings-model-picker-option-copy strong {
+  font-family: var(--font-mono);
+  font-weight: 500;
+}
+
+.desktop-settings-dialog .settings-modal .settings-model-picker-option-trailing {
+  flex-shrink: 0;
+  color: var(--text-tertiary);
+  font-size: calc(11px * var(--font-scale, 1));
 }
 
 .desktop-settings-dialog .settings-modal .settings-model-picker-option.is-inherit {
@@ -4998,11 +5026,7 @@ select option:disabled {
   .biny-plan-task-dot.is-in_progress, .biny-plan-block > .is-spinning { animation: none; }
 }
 
-/* 网络搜索卡片使用舒展间距，覆盖设置中心的紧凑行布局。 */
-.desktop-settings-dialog .settings-modal .web-search-settings > section { padding: 24px; gap: 16px; }
-.desktop-settings-dialog .settings-modal .web-search-settings > section + section { margin-top: 24px; }
-.desktop-settings-dialog .settings-modal .web-search-settings > section:not(.activity-memory-group) > h3 { margin-bottom: 16px; }
-.desktop-settings-dialog .settings-modal .web-search-settings p { margin: 0; color: var(--text-secondary); font-size: calc(14px * var(--font-scale, 1)); line-height: 1.6; }
+.desktop-settings-dialog .settings-modal .web-search-settings p { margin: 0; color: var(--text-secondary); font-size: calc(12px * var(--font-scale, 1)); line-height: 1.6; }
 .desktop-settings-dialog .settings-modal .web-search-options-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; margin-top: 16px; }
 .desktop-settings-dialog .settings-modal .web-search-options-grid > div { min-width: 0; }
 .desktop-settings-dialog .settings-modal .web-search-options-grid label { display: block; margin-bottom: 8px; font-weight: 600; }
@@ -5058,7 +5082,10 @@ select option:disabled {
   cursor: pointer;
 }
 .desktop-settings-dialog :is(.settings-primary-button, .login-primary-button, .biny-mcp-add-button, .biny-mcp-primary-button, .biny-mcp-install-button, .biny-mcp-toolbar-add-button, .settings-plugin-install-button, .settings-secondary-button, .activity-secondary-button, .biny-mcp-secondary-button, .biny-mcp-clipboard-button, .settings-plugin-action, .connect-dialog-actions button, .settings-page-footer button, .settings-confirm-actions button):disabled {
-  opacity: .5;
+  border-color: transparent;
+  color: var(--text-tertiary);
+  background: var(--surface-soft);
+  opacity: 1;
   cursor: default;
   box-shadow: none;
 }
@@ -5066,7 +5093,7 @@ select option:disabled {
 /* 操作按钮采用设置页紧凑尺寸；卡片、输入框与导航保留各自的布局尺寸。 */
 .desktop-settings-dialog :is(.settings-modal, .settings-confirm-panel, .settings-page-footer) :is(.settings-primary-button, .login-primary-button, .settings-secondary-button, .activity-secondary-button, .danger-button, .activity-danger-button, .web-search-action, .biny-mcp-add-button, .biny-mcp-primary-button, .biny-mcp-install-button, .biny-mcp-toolbar-add-button, .biny-mcp-secondary-button, .biny-mcp-clipboard-button, .settings-plugin-install-button, .settings-plugin-action, .settings-plugin-danger-button, .connect-dialog-actions button, .settings-page-footer button, .settings-confirm-actions button) {
   box-sizing: border-box;
-  height: var(--st-button-height);
+  height: auto;
   min-height: var(--st-button-height);
   padding: 0 var(--st-button-padding);
   border-radius: var(--st-button-radius);

@@ -106,6 +106,35 @@ test("structural skins address the actual sidebar, composer and message roles", 
   assert.doesNotMatch(layout, /\[role=['"]menu['"]\][^{}]*\{[^}]*(?:background|box-shadow):/u);
 });
 
+test("grouped preferences have one surface and shared row spacing, while a disabled save stays neutral", async () => {
+  const { JSDOM } = await import("jsdom");
+  const renderer = new URL("../src/desktop/renderer/src/", import.meta.url);
+  const sources = await Promise.all(["biny", "desktop-v2", "settings"].map(name =>
+    readFile(new URL(`styles/${name}.css`, renderer), "utf8")));
+  const dom = new JSDOM('<dialog open class="desktop-settings-dialog"><section class="settings-modal"><main class="settings-content"><div class="settings-scroll"><div class="settings-preferences"><section class="settings-preference-section"><h3>回复显示</h3><div class="settings-row-group"><div class="settings-switch-row"><span class="settings-switch-copy"><strong>流式响应</strong></span><input class="settings-switch" role="switch" type="checkbox" checked /></div><div class="settings-preference-row">字体</div></div></section></div></div><footer class="settings-page-footer"><button class="settings-save-button" disabled>保存</button></footer></main></section></dialog>');
+  try {
+    for (const source of sources) {
+      const style = dom.window.document.createElement("style");
+      style.textContent = source;
+      dom.window.document.head.append(style);
+    }
+    const computed = (selector: string): CSSStyleDeclaration => dom.window.getComputedStyle(dom.window.document.querySelector(selector)!);
+    const section = computed(".settings-preference-section");
+    assert.equal(section.borderWidth, "0px", "分组不应嵌套第二层卡片边框");
+    assert.equal(Number.parseFloat(section.padding), 0, "分组标题不能被第二层卡片挤入");
+    assert.equal(section.background, "rgba(0, 0, 0, 0)");
+    assert.equal(computed(".settings-row-group").borderWidth, "0px");
+    const row = computed(".settings-switch-row");
+    assert.equal(row.padding, computed(".settings-preference-row").padding);
+    assert.equal(row.minHeight, computed(".settings-preference-row").minHeight);
+    assert.notEqual(row.cursor, "pointer", "不可操作的说明区不能提示整行可点击");
+    assert.equal(computed(".settings-switch").cursor, "pointer");
+    assert.equal(computed(".settings-switch").appearance, "none");
+    assert.equal(computed(".settings-save-button").background, "var(--surface-soft)");
+    assert.equal(computed(".settings-save-button").color, "var(--text-tertiary)");
+  } finally { dom.window.close(); }
+});
+
 test("retro settings navigation stays horizontal and releases space for the active page", async () => {
   const { JSDOM, VirtualConsole } = await import("jsdom");
   const renderer = new URL("../src/desktop/renderer/src/", import.meta.url);
@@ -153,7 +182,7 @@ test("retro settings navigation stays horizontal and releases space for the acti
       assert.equal(computed(".settings-tabs").flexDirection, "column", skin);
       assert.equal(computed(".settings-tabs").height, "calc(100% - 16px)", skin);
       assert.equal(computed(".settings-tabs").marginTop, "8px", skin);
-      assert.equal(computed(".settings-tabs").borderRadius, "16px", skin);
+      assert.equal(computed(".settings-tabs").borderRadius, "var(--biny-radius-card)", skin);
       assert.equal(computed(".settings-tabs").minWidth, "208px", skin);
       assert.equal(computed(".settings-nav-list").flexDirection, "column", skin);
     }
@@ -379,4 +408,23 @@ test("semantic status colors remain fixed across themes", async () => {
   assert.match(contract, /--red-bg:\s*rgb\(251 44 54 \/ 10%\);/u, "red-500 / 10");
   assert.match(contract, /--amber-bg:\s*rgb\(254 154 0 \/ 10%\);/u, "amber-500 / 10");
   assert.match(contract, /--info:\s*#2b7fff;/u, "blue-500");
+});
+
+test("设置进入原生模态层前不显示，打开后不做几何变形，外壳共用圆角", async () => {
+  const { JSDOM } = await import("jsdom");
+  const dom = new JSDOM('<!doctype html><head><style>.library-open { display: flex; animation: entry 200ms; }</style></head><body><div class="desktop-root biny-root"></div><dialog class="desktop-settings-dialog library-open"></dialog>');
+  try {
+    for (const name of ["biny", "desktop-v2"]) {
+      const style = dom.window.document.createElement("style");
+      style.textContent = await readFile(new URL(`../src/desktop/renderer/src/styles/${name}.css`, import.meta.url), "utf8");
+      dom.window.document.head.append(style);
+    }
+    const dialog = dom.window.document.querySelector('dialog')!;
+    assert.equal(dom.window.getComputedStyle(dialog).display, "none", "Dialog 的打开类不能在 showModal 前露出非模态内容");
+    dialog.setAttribute("open", "");
+    const computed = dom.window.getComputedStyle(dialog);
+    assert.equal(computed.animation, "none", "设置打开不能继承依赖库的缩放和位移");
+    assert.equal(computed.borderRadius, "var(--biny-radius-window)");
+    assert.equal(dom.window.getComputedStyle(dom.window.document.querySelector('.biny-root')!).borderRadius, "var(--biny-radius-window)");
+  } finally { dom.window.close(); }
 });

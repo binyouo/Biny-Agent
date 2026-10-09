@@ -408,6 +408,7 @@ export function QuickChatApp(): React.JSX.Element {
               aria-expanded={modelMenuOpen}
               aria-haspopup="menu"
               className="quickchat-model-button"
+              title={selectedModel?.displayName}
               disabled={!hasModel || busy}
               onClick={() => setModelMenuOpen((open) => !open)}
               type="button"

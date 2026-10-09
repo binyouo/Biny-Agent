@@ -8,6 +8,7 @@ import { SettingsDetailLayer } from "./SettingsDetailLayer.js";
 import { useSettingsDraft } from "./SettingsDraftContext.js";
 import { useActivityRuntime } from "./ActivityRuntimeContext.js";
 import { SettingsActivityApplications } from "./SettingsActivityApplications.js";
+import { SettingsSwitch } from "./SettingsSwitch.js";
 
 export function SettingsActivity(): React.JSX.Element {
   const { activity, loadError, updateActivityImmediately } = useSettingsDraft();
@@ -226,8 +227,8 @@ function SettingsActivityForm({ activity, onChange, onRefreshRuntime, onRefreshP
 
       <ActivitySection id="activity-ocr" icon="file" title="OCR 与输入">
         <div className="activity-toggle-list">
-          <ActivitySwitch checked={activity.ocrEnabled} detail="对活动截图运行本地 Vision 识别。" disabled={!activity.enabled} label="对活动截图运行 Vision OCR" onChange={(ocrEnabled) => updateActivity({ ocrEnabled })} />
-          <ActivitySwitch checked={activity.inputMonitoringEnabled} detail="记录点击和键盘活动类型，不记录键值。" disabled={!activity.enabled} label="全局键盘与鼠标监听" onChange={(inputMonitoringEnabled) => updateActivity({ inputMonitoringEnabled })} />
+          <SettingsSwitch checked={activity.ocrEnabled} detail="对活动截图运行本地 Vision 识别。" disabled={!activity.enabled} label="对活动截图运行 Vision OCR" onChange={(ocrEnabled) => updateActivity({ ocrEnabled })} />
+          <SettingsSwitch checked={activity.inputMonitoringEnabled} detail="记录点击和键盘活动类型，不记录键值。" disabled={!activity.enabled} label="全局键盘与鼠标监听" onChange={(inputMonitoringEnabled) => updateActivity({ inputMonitoringEnabled })} />
         </div>
         <div className="activity-field-grid activity-ocr-fields">
           <label className="activity-field activity-field-wide" htmlFor="activity-ocr-languages">
@@ -370,10 +371,9 @@ function ActivityPermission({ detail, label, status }: { detail: string; label: 
   );
 }
 
-function ActivitySwitch({ busy = false, checked, detail, disabled = false, label, onChange }: { busy?: boolean; checked: boolean; detail?: string; disabled?: boolean; label: string; onChange(value: boolean): void }): React.JSX.Element {
+function ActivitySwitch({ busy = false, checked, disabled = false, label, onChange }: { busy?: boolean; checked: boolean; disabled?: boolean; label: string; onChange(value: boolean): void }): React.JSX.Element {
   return (
     <button aria-busy={busy} aria-checked={checked} aria-label={label} className={`activity-switch${checked ? " is-checked" : ""}`} disabled={disabled} onClick={() => onChange(!checked)} role="switch" type="button">
-      {detail ? <span className="activity-switch-copy"><strong>{label}</strong><small>{detail}</small></span> : null}
       <span aria-hidden="true" className="activity-switch-track"><span /></span>
     </button>
   );

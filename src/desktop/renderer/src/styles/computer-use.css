@@ -1,6 +1,4 @@
-.desktop-settings-dialog .settings-modal .computer-use-settings .cu-card { display: flex; flex-direction: column; padding: calc(16px * var(--font-scale, 1)); gap: calc(16px * var(--font-scale, 1)); }
-.computer-use-settings .cu-heading { display: flex; align-items: center; gap: var(--st-control-gap); }
-.computer-use-settings .cu-heading svg, .computer-use-settings .cu-muted { color: var(--text-secondary); }
+.computer-use-settings .cu-muted { margin: 0; color: var(--text-secondary); font-size: calc(12px * var(--font-scale, 1)); line-height: 1.5; overflow-wrap: anywhere; }
 .computer-use-settings .cu-section { display: flex; flex-direction: column; gap: var(--st-card-gap); }
 .computer-use-settings h4 { margin: 0; color: var(--text-secondary); font-size: calc(.875 * var(--st-rem)); font-weight: 500; }
 .computer-use-settings .cu-helper, .computer-use-settings .cu-permission, .computer-use-settings .cu-diagnostics { border: 1px solid var(--border-subtle); border-radius: var(--st-radius); background: var(--surface); padding: var(--st-control-py) var(--st-control-px); }
@@ -11,7 +9,9 @@
 .computer-use-settings .cu-helper strong { flex: 1; min-width: 0; overflow-wrap: anywhere; font-weight: 400; font-size: calc(.875 * var(--st-rem)); color: var(--text); }
 .computer-use-settings .cu-helper > span { flex-shrink: 0; color: var(--text-secondary); font-size: calc(.8 * var(--st-rem)); }
 .computer-use-settings .cu-permission-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--st-card-gap); }
-.computer-use-settings .cu-permission { display: flex; align-items: center; justify-content: space-between; gap: var(--st-control-gap); }
+.computer-use-settings .cu-permission { display: flex; align-items: center; justify-content: space-between; gap: var(--st-control-gap); flex-wrap: wrap; }
+.computer-use-settings .cu-permission > div { min-width: 0; flex: 1 1 180px; }
+.computer-use-settings .cu-permission > button { flex: none; }
 .computer-use-settings .cu-permission-state { display: inline-flex; color: var(--text-tertiary); }
 .computer-use-settings .cu-button-row { display: flex; align-items: center; flex-wrap: wrap; gap: var(--st-control-gap); }
 .computer-use-settings .cu-diagnostics { white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--font-mono); font-size: calc(.8 * var(--st-rem)); margin: 0; max-height: 240px; overflow: auto; }
@@ -23,7 +23,6 @@
 
 .computer-use-settings .cu-description { margin: 0; color: var(--text-secondary); line-height: 1.6; }
 .computer-use-settings .cu-helper, .computer-use-settings .cu-permission { min-height: calc(36px * var(--font-scale, 1)); }
-.desktop-settings-dialog .settings-modal .computer-use-settings .settings-secondary-button { min-height: calc(30px * var(--font-scale, 1)); height: auto; padding: 6px 12px; gap: 6px; font-size: calc(12px * var(--font-scale, 1)); font-weight: 500; border-radius: 8px; box-shadow: none; }
 .computer-use-settings .cu-feedback { margin: 0; font-size: calc(12px * var(--font-scale, 1)); color: var(--text-secondary); }
 .computer-use-settings .cu-feedback[role="alert"] { color: var(--red-text); }
 .computer-use-settings .cu-controls, .computer-use-settings .cu-technical-details { border-top: 1px solid var(--border-subtle); }
@@ -32,8 +31,6 @@
 .computer-use-settings details .cu-description { margin-bottom: 12px; }
 
 .computer-use-settings .cu-toggles { display: grid; gap: 0; }
-.desktop-settings-dialog .settings-modal .computer-use-settings .settings-switch-row { padding: 10px 0; border: 0; border-radius: 0; background: transparent; }
-.desktop-settings-dialog .settings-modal .computer-use-settings .settings-switch-copy strong { font-size: calc(13px * var(--font-scale, 1)); }
 
 .computer-use-settings .cu-confirm {
   margin-top: 12px; padding: 14px;
@@ -83,10 +80,10 @@
 .desktop-settings-dialog .settings-modal .appshot-settings .appshot-rows { padding: 0; gap: 0; }
 .appshot-settings .appshot-row {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
   gap: calc(16px * var(--font-scale, 1));
-  padding: calc(16px * var(--font-scale, 1));
+  padding: var(--st-row-padding);
 }
 .appshot-settings .appshot-row + .appshot-row { border-top: 1px solid var(--border-subtle); }
 .appshot-settings .appshot-row-copy { display: flex; min-width: 0; flex: 1; flex-direction: column; gap: 4px; }

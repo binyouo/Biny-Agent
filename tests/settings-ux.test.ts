@@ -14,6 +14,7 @@ import { DesktopConfigStore } from "../src/desktop/electron/main/DesktopConfigSt
 import { settingsSaveInputSchema } from "../src/desktop/electron/main/settingsSaveInputSchema.js";
 import type { AppearanceSnapshot } from "../src/appearance/types.js";
 import type { DesktopSettingsSaveInput, DesktopSettingsSnapshot, DesktopSkillCatalogEntry, DesktopSkillCatalogSnapshot } from "../src/desktop/protocol.js";
+import type { ApplicationImportSnapshot } from "../src/imports/types.js";
 
 function snapshot(): DesktopSettingsSnapshot {
   const config = structuredClone(defaultConfig);
@@ -78,7 +79,7 @@ async function harness(api: Record<string, unknown> = {}) {
   };
   const overlay = async (extra: Record<string, unknown> = {}, appearance?: AppearanceSnapshot) => {
     const { SettingsOverlay } = await import("../src/desktop/renderer/src/components/settings/SettingsOverlay.js");
-    const props = { open: true, version: "test", workspace: { project: { id: "project", name: "Project" }, models: [], connections: [] },
+    const props = { open: true, version: "test", projects: [], workspace: { project: { id: "project", name: "Project" }, models: [], connections: [] },
       themePreference: "system", fontPreference: { family: "system", size: 14 }, sessionRunning: false,
       onNotify() {}, onThemePreference() {}, onFontPreference() {}, onSettingsCommitted() {}, onClose() {}, ...extra };
     const node = React.createElement(SettingsOverlay, props as unknown as React.ComponentProps<typeof SettingsOverlay>);
@@ -94,6 +95,41 @@ async function harness(api: Record<string, unknown> = {}) {
     }
   } };
 }
+
+test("设置详情优先聚焦可用输入而非关闭按钮，Escape 返回原入口；导航测试未覆盖详情焦点", async () => {
+  const h = await harness();
+  const host = document.createElement("div");
+  document.body.append(host);
+  try {
+    const { SettingsDetailLayer } = await import("../src/desktop/renderer/src/components/settings/SettingsDetailLayer.js");
+    const { SettingsDetailHostContext } = await import("../src/desktop/renderer/src/components/settings/SettingsDetailHostContext.js");
+    function DetailExample(): React.ReactNode {
+      const [open, setOpen] = h.React.useState(false);
+      return h.React.createElement(SettingsDetailHostContext.Provider, { value: host },
+        h.React.createElement("button", { id: "detail-trigger", onClick: () => setOpen(true) }, "编辑"),
+        open ? h.React.createElement(SettingsDetailLayer, { onClose: () => setOpen(false), children:
+          h.React.createElement("section", { role: "dialog", "aria-label": "编辑配置" },
+            h.React.createElement("button", { onClick: () => setOpen(false) }, "关闭"),
+            h.React.createElement("input", { disabled: true, "data-settings-detail-autofocus": true, "aria-label": "不可用字段" }),
+            h.React.createElement("input", { "aria-label": "名称" }),
+            h.React.createElement("input", { "data-settings-detail-autofocus": true, "aria-label": "服务地址" })
+          )
+        }) : null
+      );
+    }
+    await h.render(h.React.createElement(DetailExample));
+    document.querySelector<HTMLButtonElement>("#detail-trigger")!.focus();
+    await h.click("#detail-trigger");
+    assert.equal(document.activeElement?.getAttribute("aria-label"), "服务地址");
+    await h.React.act(() => document.activeElement!.dispatchEvent(new h.dom.window.KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true })));
+    assert.equal(document.activeElement?.textContent, "关闭");
+    await h.React.act(() => document.activeElement!.dispatchEvent(new h.dom.window.KeyboardEvent("keydown", { key: "Tab", shiftKey: true, bubbles: true, cancelable: true })));
+    assert.equal(document.activeElement?.getAttribute("aria-label"), "服务地址");
+    await h.React.act(() => document.activeElement!.dispatchEvent(new h.dom.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })));
+    assert.equal(document.querySelector('[role="dialog"]'), null);
+    assert.equal(document.activeElement?.id, "detail-trigger");
+  } finally { host.remove(); await h.close(); }
+});
 
 test("摘要配置不出现在设置导航和搜索中，旧页面目标回到通用", async () => {
   const h = await harness();
@@ -225,6 +261,36 @@ test("保存失败保留草稿并就地显示原因，重试提交同一组更�
   } finally { await h.close(); }
 });
 
+test("聊天偏好仅开关改变草稿，点击行和说明不切换；原保存用例未覆盖整行误触", async () => {
+  const h = await harness();
+  try {
+    await h.overlay({ targetTab: "聊天" });
+    const streaming = document.querySelector<HTMLInputElement>('[aria-label="启用流式响应"]')!;
+    assert.equal(streaming.checked, true);
+    await h.React.act(() => streaming.parentElement!.click());
+    await h.React.act(() => streaming.parentElement!.querySelector("strong")!.click());
+    await h.React.act(() => streaming.parentElement!.querySelector("small")?.click());
+    assert.equal(streaming.checked, true, "行、标题和说明不应触发开关");
+    assert.equal(document.querySelector<HTMLButtonElement>(".settings-save-button")?.disabled, true);
+    assert.equal(streaming.getAttribute("role"), "switch");
+    assert.equal(streaming.getAttribute("aria-checked"), "true");
+    const description = streaming.getAttribute("aria-describedby");
+    assert.ok(description && document.getElementById(description)?.textContent, "开关保留说明的可访问关联");
+    streaming.focus();
+    assert.equal(document.activeElement, streaming);
+    await h.click('[aria-label="启用流式响应"]');
+    assert.equal(streaming.checked, false);
+    assert.equal(streaming.getAttribute("aria-checked"), "false");
+    assert.equal(document.querySelector<HTMLButtonElement>(".settings-save-button")?.disabled, false);
+    await h.click('[aria-label="启用 Markdown 渲染"]');
+    const math = document.querySelector<HTMLInputElement>('[aria-label="渲染单美元符号数学公式"]')!;
+    const originalMath = math.checked;
+    assert.equal(math.disabled, true);
+    await h.React.act(() => math.click());
+    assert.equal(math.checked, originalMath, "依赖被关闭的选项不能操作");
+  } finally { await h.close(); }
+});
+
 test("运行中允许保存外观，但共享设置更改明确说明禁用原因", async () => {
   const h = await harness({ settingsSnapshot: async () => ({ ...snapshot(), hasRunningTasks: true }) });
   try {
@@ -259,6 +325,242 @@ test("运行中的工具模型选择仍可打开并即时保存，不夹带其�
     assert.equal(writes.length, 1);
     assert.deepEqual(writes[0]?.models, { upserts: [], removeAliases: [], toolModel: { alias: undefined } });
     assert.match(document.querySelector('#tool-model')?.textContent ?? "", /后续回合/u);
+  } finally { await h.close(); }
+});
+
+test("首次打开导入不等待其他设置或重跑 bootstrap，来源可立即预览；静态内容测试未覆盖外壳加载门禁", async () => {
+  const settings = Promise.withResolvers<DesktopSettingsSnapshot>();
+  const imports = Promise.withResolvers<ApplicationImportSnapshot>();
+  let bootstraps = 0;
+  const chosen: string[] = [];
+  const h = await harness({
+    settingsSnapshot: async () => await settings.promise,
+    applicationImports: async () => await imports.promise,
+    onApplicationImportsChanged: () => () => {},
+    bootstrap: async () => { bootstraps++; return { projects: [] }; },
+    previewApplicationImport: async (source: string) => {
+      chosen.push(source);
+      return { id: "preview", source, label: "ChatGPT", items: [{ id: "chat", category: "sessions", label: "Conversation", detail: "" }], warnings: [] };
+    }
+  });
+  try {
+    await h.overlay({ targetTab: "导入", projects: [{ id: "project", name: "Project", path: "/fixture" }] });
+    assert.ok(!document.querySelector('.settings-load-state'), "导入页不依赖模型和聊天设置快照");
+    assert.equal(document.querySelectorAll('.import-source-row').length, 3);
+    assert.equal(bootstraps, 0, "不得为项目列表重新初始化客户端及所有项目");
+    await h.click('[aria-label="从 ChatGPT 导入"]');
+    assert.deepEqual(chosen, ["chatgpt"]);
+    assert.equal(document.querySelector<HTMLSelectElement>('.import-target select')?.value, "project");
+    assert.equal(document.querySelector<HTMLButtonElement>('.import-preview-dialog footer .settings-primary-button')?.disabled, false);
+  } finally {
+    settings.resolve(snapshot());
+    imports.resolve({ sources: [], history: [], sync: { enabled: false, hasSelection: false } });
+    await h.close();
+  }
+});
+
+test("导入页切换后保留已读历史，隐藏时停止订阅；首次可见测试未覆盖页签卸载", async () => {
+  const previous: ApplicationImportSnapshot = { sources: [], history: [{ id: "cached", source: "claude", label: "Claude Code",
+    time: "2026-10-08T00:00:00Z", workspaceRoot: "/fixture", results: [{ id: "chat", category: "sessions", label: "Imported chat", status: "imported" }]
+  }], sync: { enabled: false, hasSelection: false } };
+  const refresh = Promise.withResolvers<ApplicationImportSnapshot>();
+  let reads = 0;
+  const listeners = new Set<() => void>();
+  const h = await harness({
+    applicationImports: async () => ++reads === 1 ? previous : await refresh.promise,
+    onApplicationImportsChanged: (listener: () => void) => { listeners.add(listener); return () => listeners.delete(listener); }
+  });
+  const props = { targetTab: "导入", onThemePreference() {}, onFontPreference() {}, onNotify() {} };
+  try {
+    await h.overlay(props);
+    const history = document.querySelector('.import-history');
+    assert.ok(history);
+    assert.equal(listeners.size, 1);
+    await h.overlay({ ...props, targetTab: "聊天" });
+    assert.ok(history.isConnected, "切换设置页不丢弃已读取的导入历史");
+    assert.ok(history.closest('[hidden]'));
+    assert.equal(listeners.size, 0);
+    assert.equal(reads, 1);
+    await h.overlay(props);
+    assert.equal(reads, 2);
+    assert.ok(document.querySelector('.import-history') === history, "重新校验期间保留原记录，不重建空页面");
+    assert.ok(!history.closest('[hidden]'));
+    await h.React.act(async () => refresh.resolve(previous));
+    await h.overlay({ ...props, open: false });
+    assert.equal(listeners.size, 0);
+  } finally { refresh.resolve(previous); await h.close(); }
+});
+
+test("导入缓存刷新不能覆盖已保存的同步开关；保留历史测试未覆盖刷新与写入竞态", async () => {
+  const previous: ApplicationImportSnapshot = { sources: [], history: [], sync: { enabled: false, hasSelection: true } };
+  const refresh = Promise.withResolvers<ApplicationImportSnapshot>();
+  let reads = 0;
+  const writes: boolean[] = [];
+  const h = await harness({
+    applicationImports: async () => ++reads === 1 ? previous : await refresh.promise,
+    onApplicationImportsChanged: () => () => {},
+    setApplicationImportSync: async (enabled: boolean) => { writes.push(enabled); return { ...previous, sync: { ...previous.sync, enabled } }; }
+  });
+  const props = { targetTab: "导入", onThemePreference() {}, onFontPreference() {}, onNotify() {} };
+  try {
+    await h.overlay(props);
+    await h.overlay({ ...props, open: false });
+    await h.overlay(props);
+    await h.click('[aria-label="保持导入同步"]');
+    assert.deepEqual(writes, [true]);
+    await h.React.act(async () => refresh.resolve(previous));
+    assert.equal(document.querySelector('[aria-label="保持导入同步"]')?.getAttribute("aria-checked"), "true");
+  } finally { refresh.resolve(previous); await h.close(); }
+});
+
+test("关闭再打开设置直接显示已读取内容；仅测 Provider 未覆盖外壳卸载导致的缓存丢失", async () => {
+  const refresh = Promise.withResolvers<DesktopSettingsSnapshot>();
+  let reads = 0;
+  const h = await harness({ settingsSnapshot: async () => ++reads === 1 ? snapshot() : await refresh.promise });
+  const props = { targetTab: "用户界面", onThemePreference() {}, onFontPreference() {}, onNotify() {} };
+  try {
+    await h.overlay(props);
+    assert.ok(document.querySelector('input[type="radio"][value="system"]'));
+    await h.overlay({ ...props, open: false });
+    assert.equal(reads, 1);
+    await h.overlay(props);
+    assert.equal(reads, 2);
+    assert.ok(!document.querySelector(".settings-load-state"), "后台校验不能把已有设置换回加载页");
+    assert.ok(document.querySelector('input[type="radio"][value="system"]'));
+    await h.React.act(async () => refresh.resolve({ ...snapshot(), themePreference: "dark", preferenceRevision: 2 }));
+    assert.equal(document.querySelector<HTMLInputElement>('input[type="radio"][value="dark"]')?.checked, true);
+  } finally { refresh.resolve(snapshot()); await h.close(); }
+});
+
+test("关闭设置不读取新项目，首次打开其他项目不展示旧项目缓存", async () => {
+  const refresh = Promise.withResolvers<DesktopSettingsSnapshot>();
+  const reads: string[] = [];
+  const h = await harness({ settingsSnapshot: async (projectId: string) => {
+    reads.push(projectId);
+    return projectId === "project" ? snapshot() : await refresh.promise;
+  } });
+  const props = { targetTab: "用户界面", onThemePreference() {}, onFontPreference() {}, onNotify() {} };
+  const other = { project: { id: "other", name: "Other" }, models: [], connections: [] };
+  try {
+    await h.overlay({ ...props, open: false });
+    assert.deepEqual(reads, []);
+    await h.overlay(props);
+    await h.overlay({ ...props, open: false });
+    await h.overlay({ ...props, open: false, workspace: other });
+    assert.deepEqual(reads, ["project"]);
+    await h.overlay({ ...props, workspace: other });
+    assert.ok(!document.querySelector('input[type="radio"]'), "新项目不能短暂编辑旧项目缓存");
+    await h.React.act(async () => refresh.resolve({ ...snapshot(), projectId: "other", themePreference: "light" }));
+    assert.equal(document.querySelector<HTMLInputElement>('input[type="radio"][value="light"]')?.checked, true);
+  } finally { refresh.resolve(snapshot()); await h.close(); }
+});
+
+test("关闭设置保留浏览器状态但停止轮询；重新打开在刷新完成前仍显示旧状态", async context => {
+  context.mock.timers.enable({ apis: ["setTimeout"] });
+  const refresh = Promise.withResolvers<unknown>();
+  let reads = 0;
+  const status = { running: true, connected: true, browsers: [{ browserId: "chrome", browserName: "Chrome" }] };
+  const h = await harness({ browserRelayStatus: async () => ++reads === 1 ? status : await refresh.promise,
+    browserRelayInstall: async () => {}, browserRelayOpenChrome: async () => {}, browserRelaySetup: async () => {}, browserRelayDisconnect: async () => {} });
+  const props = { targetTab: "浏览器", onThemePreference() {}, onFontPreference() {}, onNotify() {} };
+  try {
+    await h.overlay(props);
+    assert.equal(reads, 1);
+    const before = document.querySelector('.browser-connection-status')?.textContent;
+    assert.ok(before?.includes("Chrome"));
+    await h.overlay({ ...props, open: false });
+    await h.React.act(async () => context.mock.timers.tick(6000));
+    assert.equal(reads, 1);
+    await h.overlay(props);
+    assert.equal(reads, 2);
+    assert.equal(document.querySelector('.browser-connection-status')?.textContent, before);
+    await h.React.act(async () => refresh.resolve(status));
+  } finally { refresh.resolve(status); await h.close(); context.mock.timers.reset(); }
+});
+
+test("缓存设置关闭后详情层不再拦截主界面的 Escape；页面缓存测试未覆盖全局键盘监听", async () => {
+  const h = await harness();
+  const props = { targetTab: "模型", onThemePreference() {}, onFontPreference() {}, onNotify() {} };
+  try {
+    await h.overlay(props);
+    await h.click('.provider-settings-toolbar > button');
+    assert.ok(document.querySelector('[role="dialog"][aria-label="添加自定义服务商"]'));
+    await h.overlay({ ...props, open: false });
+    const escape = new h.dom.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true });
+    await h.React.act(() => document.body.dispatchEvent(escape));
+    assert.equal(escape.defaultPrevented, false, "关闭的设置不能消费聊天区的快捷键");
+    assert.ok(!document.querySelector('.settings-detail-layer'));
+  } finally { await h.close(); }
+});
+
+test("记忆页重开保留已确认的空列表，后台刷新不再把列表替换成加载文案", async () => {
+  const refresh = Promise.withResolvers<void>();
+  let reads = 0;
+  const h = await harness();
+  const maintenance = { state: "idle", eligible: 0, processed: 0, written: 0, failed: 0 };
+  const props = { targetTab: "记忆", onThemePreference() {}, onFontPreference() {}, onNotify() {},
+    onLoadMemoryStats: async () => {
+      if (++reads > 1) await refresh.promise;
+      return { configRevision: "config:1", revision: 0, settings: defaultConfig.context.memory, totalEntries: 0,
+        memoryStats: { total: 0, autoGenerated: 0, manualAdded: 0 }, maintenance };
+    },
+    onLoadMemoryEntries: async () => ({ revision: 0, entries: [], total: 0, offset: 0, limit: 20 }),
+    onLoadArchivedMemory: async () => ({ revision: 0, entries: [], total: 0, offset: 0, limit: 25 }),
+    onSleepStatus: async () => maintenance, onSleepRuns: async () => [],
+    onLoadMemoryEmbeddingStatus: async () => { throw new Error("No embedding provider configured"); }
+  };
+  try {
+    await h.overlay(props);
+    assert.match(document.querySelector('.activity-memory-empty')?.textContent ?? "", /暂无记忆/u);
+    await h.overlay({ ...props, open: false });
+    await h.overlay(props);
+    assert.equal(reads, 2);
+    assert.match(document.querySelector('.activity-memory-empty')?.textContent ?? "", /暂无记忆/u);
+    assert.ok(!document.querySelector('.activity-memory-empty-hint'));
+  } finally { await h.React.act(async () => refresh.resolve()); await h.close(); }
+});
+
+test("设置后台刷新保留刚修改的草稿并更新未编辑字段；重开可见性测试未覆盖刷新覆盖输入", async () => {
+  const refresh = Promise.withResolvers<DesktopSettingsSnapshot>();
+  let reads = 0;
+  const h = await harness({ settingsSnapshot: async () => ++reads === 1 ? snapshot() : await refresh.promise });
+  const props = { targetTab: "用户界面", onThemePreference() {}, onFontPreference() {}, onNotify() {} };
+  try {
+    await h.overlay(props);
+    await h.overlay({ ...props, open: false });
+    await h.overlay(props);
+    await h.click('input[type="radio"][value="dark"]');
+    await h.React.act(async () => refresh.resolve({ ...snapshot(), fontPreference: { family: "system", size: 18 }, preferenceRevision: 2 }));
+    assert.equal(document.querySelector<HTMLInputElement>('input[type="radio"][value="dark"]')?.checked, true);
+    assert.equal(document.querySelector<HTMLInputElement>('.font-size-input')?.value, "18");
+    assert.match(document.querySelector('.settings-page-footer')?.textContent ?? "", /未保存/u);
+  } finally { refresh.resolve(snapshot()); await h.close(); }
+});
+
+test("丢弃外观草稿并关闭设置恢复已保存预览；保留缓存不能留下取消的主题", async () => {
+  const h = await harness();
+  h.dom.window.confirm = () => true;
+  try {
+    const { SettingsOverlay } = await import("../src/desktop/renderer/src/components/settings/SettingsOverlay.js");
+    const callbacks = { onNotify() {}, onFontPreference() {}, onSettingsCommitted() {} };
+    function Host() {
+      const [open, setOpen] = h.React.useState(true);
+      const [theme, setTheme] = h.React.useState("system");
+      const props = { ...callbacks, open, version: "test", targetTab: "用户界面",
+        workspace: { project: { id: "project", name: "Project" }, models: [], connections: [] },
+        themePreference: theme, fontPreference: { family: "system", size: 14 }, sessionRunning: false,
+        onThemePreference: setTheme, onClose: () => setOpen(false)
+      };
+      return h.React.createElement(h.React.Fragment, null,
+        h.React.createElement("output", { "data-theme-preview": true }, theme),
+        h.React.createElement(SettingsOverlay, props as unknown as React.ComponentProps<typeof SettingsOverlay>));
+    }
+    await h.render(h.React.createElement(Host));
+    await h.click('input[type="radio"][value="dark"]');
+    assert.equal(document.querySelector('[data-theme-preview]')?.textContent, "dark");
+    await h.click('[aria-label="关闭设置"]');
+    assert.equal(document.querySelector<HTMLDialogElement>('dialog.desktop-settings-dialog')?.open, false);
+    assert.equal(document.querySelector('[data-theme-preview]')?.textContent, "system");
   } finally { await h.close(); }
 });
 
@@ -351,6 +653,38 @@ test("关闭的模型选择菜单不抢占设置页焦点", async () => {
     await h.render(h.React.createElement(SettingsModelPicker, { ariaLabel: "模型", groups: [], placeholder: "选择模型", onChange() {} }));
     assert.ok(document.activeElement !== document.querySelector('[aria-label="搜索模型或服务商"]'), "页面加载不应抢占搜索框焦点");
   } finally { await h.close(); }
+});
+
+test("设置模型选择跳过不可用项，Escape 先收起选择再退出详情；关闭态用例未覆盖嵌套返回", async () => {
+  const h = await harness();
+  const host = document.createElement("div");
+  document.body.append(host);
+  try {
+    const { SettingsModelPicker } = await import("../src/desktop/renderer/src/components/settings/SettingsModelPicker.js");
+    const { SettingsDetailLayer } = await import("../src/desktop/renderer/src/components/settings/SettingsDetailLayer.js");
+    const { SettingsDetailHostContext } = await import("../src/desktop/renderer/src/components/settings/SettingsDetailHostContext.js");
+    let closed = 0;
+    await h.render(h.React.createElement(SettingsDetailHostContext.Provider, { value: host },
+      h.React.createElement(SettingsDetailLayer, { onClose: () => { closed++; }, children:
+        h.React.createElement("section", { role: "dialog", "aria-label": "配置" }, h.React.createElement(SettingsModelPicker, {
+          ariaLabel: "模型", placeholder: "选择模型", onChange() {}, groups: [{ key: "local", label: "本地", iconTone: "local", options: [
+            { value: "missing", label: "未配置", disabled: true }, { value: "ready", label: "可用模型" }
+          ] }]
+        }))
+      })
+    ));
+    const details = document.querySelector<HTMLDetailsElement>("details")!;
+    await h.React.act(() => { details.open = true; details.dispatchEvent(new h.dom.window.Event("toggle")); });
+    const press = async (key: string): Promise<void> => { await h.React.act(() => document.activeElement!.dispatchEvent(new h.dom.window.KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }))); };
+    await press("ArrowDown");
+    assert.equal(document.activeElement?.textContent, "可用模型");
+    await press("Escape");
+    assert.equal(details.open, false);
+    assert.equal(closed, 0);
+    assert.ok(document.activeElement === details.querySelector("summary"));
+    await press("Escape");
+    assert.equal(closed, 1);
+  } finally { host.remove(); await h.close(); }
 });
 
 test("删除自定义主题先确认，取消或保存失败均不丢失主题", async () => {
@@ -909,7 +1243,7 @@ for (const closeVia of ["titlebar", "escape", "html-dialog-cancel", "backdrop"] 
       await requestClose();
       assert.equal(h.confirmations.length, 2);
       assert.equal(closes, 1);
-      assert.equal(document.querySelector('dialog.desktop-settings-dialog'), null);
+      assert.equal(document.querySelector<HTMLDialogElement>('dialog.desktop-settings-dialog')?.open ?? false, false, "关闭对话框但保留已读取设置，不再要求销毁缓存节点");
       assert.equal((await loadConfigFile(directory)).chat.response?.streaming, !original, "明确丢弃只丢弃草稿，不回滚已提交配置");
       assert.equal(writes.length, 1);
     } finally {

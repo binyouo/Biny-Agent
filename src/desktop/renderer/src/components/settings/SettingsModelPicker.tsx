@@ -5,7 +5,7 @@
  * grouped combobox 形态：触发器显示当前模型和 provider，展开后支持搜索、分组
  * 和 provider 图标。选项仍然是普通 button，避免引入一套新的菜单依赖。
  */
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { useFluidHoverItems } from "../../useFluidHoverItems.js";
 import { FluidHoverHighlight } from "../FluidHoverHighlight.js";
 import { Icon } from "../Icon.js";
@@ -15,25 +15,52 @@ import type { SettingsModelPickerGroup } from "./settingsModelPickerData.js";
 
 export function SettingsModelPicker({
   ariaLabel,
+  compact = false,
   disabled = false,
   groups,
   inheritLabel,
   onChange,
   placeholder,
+  selectionHint,
   value
 }: {
   ariaLabel: string;
+  compact?: boolean;
   disabled?: boolean;
   groups: readonly SettingsModelPickerGroup[];
   inheritLabel?: string;
   onChange(value: string | undefined): void;
   placeholder: string;
+  selectionHint?: string;
   value?: string;
 }): React.JSX.Element {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
+  const detailsRef = useRef<HTMLDetailsElement>(null);
+  const triggerRef = useRef<HTMLElement>(null);
+  const listId = useId();
   const searchRef = useRef<HTMLInputElement>(null);
   useEffect(() => { if (open) searchRef.current?.focus(); }, [open]);
+  useEffect(() => {
+    if (!open) return;
+    const closeOnEscape = (event: KeyboardEvent): void => {
+      if (event.key !== "Escape" || event.isComposing || event.defaultPrevented || !(event.target instanceof Node) || !detailsRef.current?.contains(event.target)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      setOpen(false);
+      setQuery("");
+      triggerRef.current?.focus({ preventScroll: true });
+    };
+    const closeOutside = (event: PointerEvent): void => {
+      if (event.target instanceof Node && !detailsRef.current?.contains(event.target)) { setOpen(false); setQuery(""); }
+    };
+    window.addEventListener("keydown", closeOnEscape, true);
+    window.addEventListener("pointerdown", closeOutside);
+    return () => {
+      window.removeEventListener("keydown", closeOnEscape, true);
+      window.removeEventListener("pointerdown", closeOutside);
+    };
+  }, [open]);
   // 流动悬停：选项列表按选择器自动注册；未配置的禁用项对悬停不可见。
   const listRef = useRef<HTMLDivElement>(null);
   const hover = useFluidHoverItems(listRef, ".settings-model-picker-option");
@@ -44,7 +71,7 @@ export function SettingsModelPicker({
       ...group,
       options: group.options.filter((option) => {
         if (!normalizedQuery) return true;
-        return `${group.label} ${option.label} ${option.secondary ?? ""}`.toLocaleLowerCase().includes(normalizedQuery);
+        return `${group.label} ${option.label} ${option.secondary ?? ""} ${option.trailing ?? ""}`.toLocaleLowerCase().includes(normalizedQuery);
       })
     }))
     .filter((group) => group.options.length > 0);
@@ -53,11 +80,26 @@ export function SettingsModelPicker({
     onChange(next);
     setOpen(false);
     setQuery("");
+    triggerRef.current?.focus({ preventScroll: true });
   };
 
   return (
     <details
-      className={`settings-model-picker${disabled ? " is-disabled" : ""}`}
+      className={`settings-model-picker${compact ? " is-compact" : ""}${disabled ? " is-disabled" : ""}`}
+      ref={detailsRef}
+      onKeyDown={event => {
+        if (disabled || event.nativeEvent.isComposing || !["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
+        if (event.target instanceof HTMLInputElement && ["Home", "End"].includes(event.key)) return;
+        event.preventDefault();
+        event.stopPropagation();
+        if (!open) { setOpen(true); return; }
+        const options = [...(listRef.current?.querySelectorAll<HTMLButtonElement>('[role="option"]:not(:disabled)') ?? [])];
+        if (!options.length) return;
+        const current = options.indexOf(document.activeElement as HTMLButtonElement);
+        const next = event.key === "Home" ? 0 : event.key === "End" ? options.length - 1
+          : event.key === "ArrowDown" ? (current + 1) % options.length : current < 0 ? options.length - 1 : (current - 1 + options.length) % options.length;
+        options[next]?.focus();
+      }}
       onToggle={(event) => {
         const nextOpen = event.currentTarget.open;
         setOpen(nextOpen);
@@ -69,18 +111,21 @@ export function SettingsModelPicker({
         aria-disabled={disabled}
         aria-expanded={open}
         aria-haspopup="listbox"
+        aria-controls={listId}
         aria-label={ariaLabel}
         className="settings-model-picker-trigger"
         onClick={(event) => {
           if (disabled) event.preventDefault();
         }}
         role="combobox"
+        ref={triggerRef}
       >
         {selected ? (
           <>
             <ProviderMark iconId={findGroup(groups, selected.value)?.iconId} iconTone={findGroup(groups, selected.value)?.iconTone ?? "compatible"} />
             <span className="settings-model-picker-trigger-copy">
               <strong>{selected.label}</strong>
+              {selectionHint ? <small>（{selectionHint}）</small> : null}
             </span>
           </>
         ) : (
@@ -100,7 +145,7 @@ export function SettingsModelPicker({
             value={query}
           />
         </label>
-        <div className="settings-model-picker-options" ref={listRef} {...hover.handlers} role="listbox" aria-label={ariaLabel}>
+        <div className="settings-model-picker-options" id={listId} ref={listRef} {...hover.handlers} role="listbox" aria-label={ariaLabel}>
           <FluidHoverHighlight hover={hover} className="has-row-radius" />
           {inheritLabel ? (
             <button
@@ -119,7 +164,7 @@ export function SettingsModelPicker({
               <div className="settings-model-picker-group-heading">
                 <ProviderMark iconId={group.iconId} iconTone={group.iconTone} />
                 <strong>{group.label}</strong>
-                <small>{group.options.length}</small>
+                {!compact ? <small>{group.options.length}</small> : null}
               </div>
               {group.options.map((option) => {
                 const selectedOption = option.value === value;
@@ -139,6 +184,7 @@ export function SettingsModelPicker({
                       <strong>{option.label}</strong>
                       {option.secondary ? <small>{option.secondary}{option.disabled ? " · 未配置" : ""}</small> : null}
                     </span>
+                    {option.trailing ? <small className="settings-model-picker-option-trailing">{option.trailing}</small> : null}
                   </button>
                 );
               })}

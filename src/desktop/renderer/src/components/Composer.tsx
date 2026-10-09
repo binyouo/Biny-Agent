@@ -765,7 +765,7 @@ export const Composer = memo(function Composer({
                   ? undefined
                   : memoryState === "enabled" ? "关闭聊天记忆" : "开启聊天记忆"}
               >
-                <Icon name={memoryState === "unknown" ? "brain" : memoryState === "enabled" ? "brain-spark" : "brain-off"} size={20} />
+                <Icon name={memoryState === "unknown" || memoryState === "enabled" ? "brain" : "brain-off"} size={20} />
               </ComposerActionButton>
             </div>
             {usage ? (
