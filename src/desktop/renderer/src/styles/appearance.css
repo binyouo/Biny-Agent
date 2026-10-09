@@ -1,8 +1,9 @@
-:root[data-ui-density] .biny-root { line-height: var(--ui-density-line-height); }
-:root[data-ui-density] .settings-row-group { gap: var(--ui-density-control-gap); }
-:root[data-ui-density] .settings-preference-row { padding-block: var(--ui-density-control-padding-y); }
-:root[data-ui-density] :is(.settings-preference-row, .theme-page-toolbar, .theme-editor) :is(input:not([type="radio"]):not([type="checkbox"]):not([type="color"]), select) { min-height: var(--ui-density-control-height-default); }
-:root[data-ui-density] .biny-sidebar-session-item { min-height: var(--ui-density-control-height-sm); }
+/* 紧凑间距：与 Alma 紧凑档的 rem 值一致，rem 以根字号（默认 13px）为基准。 */
+.biny-root { line-height: 1.4; }
+.settings-row-group { gap: 0.4rem; }
+.settings-preference-row { padding-block: 0.4rem; }
+:is(.settings-preference-row, .theme-page-toolbar, .theme-editor) :is(input:not([type="radio"]):not([type="checkbox"]):not([type="color"]), select) { min-height: 2.25rem; }
+.biny-sidebar-session-item { min-height: 2rem; }
 .theme-page-toolbar { display: flex; flex-wrap: wrap; gap: 8px; margin-block-end: 20px; }
 .theme-page-toolbar input[type="search"] { flex: 1; min-width: 180px; }
 .theme-page-toolbar :is(input, button), .theme-editor :is(input, select, button) { padding: 6px 10px; color: var(--text); background: var(--surface-raised); border: 1px solid var(--border); border-radius: 6px; }

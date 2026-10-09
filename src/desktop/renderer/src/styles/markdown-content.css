@@ -4,11 +4,12 @@
   max-width: 100%;
   min-width: 0;
   font-size: var(--markdown-unit);
+  font-weight: 500;
   line-height: 1.6;
   color: var(--biny-text);
   overflow-wrap: break-word;
 }
-:is(.biny-chat-scroll, .inspector-result-scroll) .markdown-body p { font-size: inherit; line-height: inherit; }
+:is(.biny-chat-scroll, .inspector-result-scroll) .markdown-body p { font-size: inherit; font-weight: inherit; line-height: inherit; }
 :is(.biny-chat-scroll, .inspector-result-scroll) .markdown-body em { font-style: italic; }
 :is(.biny-chat-scroll, .inspector-result-scroll) .markdown-body ul { list-style-type: disc; }
 :is(.biny-chat-scroll, .inspector-result-scroll) .markdown-body ol { list-style-type: decimal; }

@@ -5415,7 +5415,7 @@ button.capability-check[aria-checked="true"] {
   margin: 0 0 12px;
   color: var(--biny-text);
   font-family: "Slabo 27px", ui-serif, Georgia, serif;
-  font-size: 2.25rem;
+  font-size: 36px;
   font-weight: 600;
   letter-spacing: -0.01em;
   line-height: 1.2;
@@ -5425,7 +5425,7 @@ button.capability-check[aria-checked="true"] {
 .biny-hero-subtitle {
   margin: 0 0 22px;
   color: var(--biny-text-secondary);
-  font-size: 0.875rem;
+  font-size: 14px;
   line-height: 1.5;
   text-align: center;
 }
