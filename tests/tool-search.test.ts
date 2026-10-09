@@ -404,11 +404,11 @@ async function testFailureClassification(): Promise<void> {
   }
 }
 
-/** 容错解析：prose/围栏包裹的 JSON 能命中；字段缺失或类型不符按空结果处理。 */
+/** 保留 prose/围栏包裹的 JSON；缺字段或类型错误不能伪装成空结果并进入缓存。 */
 async function testTolerantResponseParsing(): Promise<void> {
   const testRoot = await mkdtemp(path.join(os.tmpdir(), "biny-tool-search-tolerant-"));
   await ensureAgentDirs(testRoot);
-  const cases: Array<{ name: string; text: string; expected: string[] }> = [
+  const cases: Array<{ name: string; text: string; expected?: string[] }> = [
     {
       name: "prose-fenced",
       text: 'Sure! Here is the selection:\n```json\n{"tools":["candidate"],"reasoning":"exact name match"}\n```\nAnything else?',
@@ -421,34 +421,51 @@ async function testTolerantResponseParsing(): Promise<void> {
     },
     {
       name: "missing-tools-field",
-      text: '{"reasoning":"nothing matched"}',
-      expected: []
+      text: '{"reasoning":"nothing matched"}'
     },
     {
       name: "non-string-entries",
-      text: '{"tools":["candidate", 42, null]}',
-      expected: ["candidate"]
-    }
+      text: '{"tools":["candidate", 42, null]}'
+    },
+    { name: "wrong-tools-type", text: '{"tools":"candidate"}' },
+    { name: "null-response", text: 'null' },
+    { name: "empty-tool-name", text: '{"tools":[""]}' },
+    { name: "invalid-reasoning", text: '{"tools":[],"reasoning":42}' },
+    { name: "explicit-no-match", text: '{"tools":[]}', expected: [] }
   ];
   try {
     for (const scenario of cases) {
+      let response = scenario.text;
+      let calls = 0;
       const registry = new ToolRegistry();
       registry.register(createToolSearchTool(() => registry.listEntries(), () => modelCandidates({
         provider: "tool-search-tolerant-test",
         modelId: scenario.name,
-        stream: async () => events([
-          { type: "text-delta", text: scenario.text },
+        stream: async () => { calls += 1; return events([
+          { type: "text-delta", text: response },
           { type: "finish", reason: "stop" }
-        ])
+        ]); }
       })));
       registry.register(candidateTool("candidate", "Candidate", "test"));
       const recorder = new SessionRecorder(testRoot, `tolerant-${scenario.name}`);
       try {
-        const result = await requiredAgentTool(coordinatorFor(testRoot, recorder, registry), "ToolSearch")
+        const search = requiredAgentTool(coordinatorFor(testRoot, recorder, registry), "ToolSearch");
+        const result = await search
           .execute(`tolerant-${scenario.name}`, { query: "find a matching capability" });
-        assert.equal(result.isError, false, scenario.name);
-        assert.equal((result.details as ToolSearchResult).status, "completed", scenario.name);
-        assert.deepEqual(toolSearchResultNames(result.details), scenario.expected, scenario.name);
+        if (scenario.expected) {
+          assert.equal(result.isError, false, scenario.name);
+          assert.equal((result.details as ToolSearchResult).status, "completed", scenario.name);
+          assert.deepEqual(toolSearchResultNames(result.details), scenario.expected, scenario.name);
+        } else {
+          // 错误选择不能缓存成无匹配；仅验证 JSON 语法无法覆盖这个故障。
+          assert.equal(result.isError, true, scenario.name);
+          assert.equal((result.details as ToolSearchResult).code, "tool_search_invalid_response", scenario.name);
+          assert.deepEqual(toolSearchResultNames(result.details), [], scenario.name);
+          response = '{"tools":["candidate"]}';
+          const recovered = await search.execute(`recovered-${scenario.name}`, { query: "find a matching capability" });
+          assert.deepEqual(toolSearchResultNames(recovered.details), ["candidate"], scenario.name);
+          assert.equal(calls, 2, "invalid selections must not enter the search cache");
+        }
       } finally {
         await recorder.close();
       }
