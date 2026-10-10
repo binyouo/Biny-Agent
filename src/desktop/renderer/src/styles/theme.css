@@ -88,6 +88,9 @@
 :root,
 [data-astryx-theme],
 .desktop-root.biny-root {
+  --font-family-body: var(--font-sans);
+  --font-family-heading: var(--font-sans);
+  --font-family-code: var(--font-mono);
   --biny-backplate: var(--surface);
   --biny-sidebar-surface: var(--sidebar);
   --biny-surface: var(--surface);

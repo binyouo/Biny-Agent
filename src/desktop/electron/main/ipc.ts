@@ -264,6 +264,7 @@ const mcpDraftSchema = z.object({
     scopes: z.array(z.string().trim().min(1).max(200)).max(32).optional(),
     redirectPort: z.number().int().min(1024).max(65535).optional()
   }).strict().optional(),
+  startupTimeoutMs: z.number().int().min(1_000).max(600_000).optional(),
   timeoutMs: z.number().int().min(1_000).max(600_000).optional(),
   env: z.array(mcpFieldMutationSchema).max(256),
   headers: z.array(mcpFieldMutationSchema).max(256)

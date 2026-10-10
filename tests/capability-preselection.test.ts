@@ -1,4 +1,4 @@
-/** 自动筛选的能力边界、配套工具、受限历史、显式选择和失败处理。 */
+/** 自动筛选的能力边界、配套工具、累计历史、显式选择和失败处理。 */
 import assert from "node:assert/strict";
 import { preselectCapabilities } from "../src/agent/capabilityPreselection.js";
 import type { AgentModel, ModelStreamEvent } from "../src/agent/core/types.js";

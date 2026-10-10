@@ -727,6 +727,8 @@ function DesktopApp(): React.JSX.Element {
       setChatResponse(bootstrap.chatResponse);
       setPage(bootstrap.activeView === "extensions" ? "extensions" : "chat");
       setRuntimePanelOpen(bootstrap.activeView === "runtime" && Boolean(bootstrap.workspace));
+      // 没有可恢复的会话时默认落在新会话欢迎页，而不是空白占位；恢复会话时 hero 由选中会话关闭。
+      if (!bootstrap.selectedSessionId) setHeroStart(true);
       if (bootstrap.workspace) {
         mergeWorkspaceProject(bootstrap.workspace);
         // 显式 `/app` 交接优先于持久化位置；普通启动则恢复上次会话正文，

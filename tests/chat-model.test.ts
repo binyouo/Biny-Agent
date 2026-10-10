@@ -498,6 +498,7 @@ test("parseCompactionNotice 解析压缩条数与节省 token", () => {
 /* ============ 聊天展示组件静态渲染冒烟（活动段 / 技能指示器 / 压缩分隔条） ============ */
 
 import { ActivitySegment } from "../src/desktop/renderer/src/components/chat/ActivitySegment.js";
+import { reasoningExpandable, reasoningSummaryLine } from "../src/desktop/renderer/src/reasoningPresentation.js";
 import { RecipeReadyBanner } from "../src/desktop/renderer/src/components/RecipeReadyBanner.js";
 import { CompactionDivider } from "../src/desktop/renderer/src/components/chat/CompactionDivider.js";
 import { compareCapabilitySkills, compareCapabilityTools, shouldShowToolInCapabilityMenu, skillCapabilityGroupId, SKILL_CAPABILITY_GROUPS } from "../src/desktop/renderer/src/components/composer/capabilityVisibility.js";
@@ -645,6 +646,61 @@ test("ActivitySegment 运行时展开完整的思考与工具时间线", () => {
   const completed = renderToStaticMarkup(createElement(ActivitySegment, { ...segmentProps, running: false }));
   assert.match(completed, /class="biny-collapse chat-activity-collapse"/u);
   assert.doesNotMatch(completed, /class="biny-collapse is-open chat-activity-collapse"/u);
+});
+
+test("思考一行摘要：落定取首个非空行、运行中取最新行，并去掉 Markdown 标记", () => {
+  // 摘要只用于 chip 的一行展示：首行错取或保留 ** 标记，都会让用户看不懂这一段在想什么。
+  const text = "\n## **确认范围**\n\n- 读取 `theme.ts`\n第三行";
+  assert.equal(reasoningSummaryLine(text, "settled"), "确认范围");
+  assert.equal(reasoningSummaryLine(text, "live"), "第三行");
+  assert.equal(reasoningSummaryLine("   \n\n", "live"), "");
+});
+
+test("思考展开入口：多行或超过一行宽度的思考才可展开，一句话说完的不显示箭头", () => {
+  // 短思考展开后与摘要相同，多一步点击没有信息增量；多行或长句被截断时必须能看到全文。
+  assert.equal(reasoningExpandable("检查 Read 工具的返回值"), false);
+  assert.equal(reasoningExpandable("先检查相关文件\n\n第二段"), true);
+  assert.equal(reasoningExpandable("这是一段非常长的单行思考内容，一行放不下，需要在展开后完整阅读，不能只留下被截断的前半句"), true);
+});
+
+test("ActivitySegment 思考相位收成一行 chip，全文在点击后才渲染", () => {
+  // 落定的长思考只保留首行和耗时；正文不进入 DOM，避免版面和渲染成本随思考长度增长。
+  const markup = renderToStaticMarkup(createElement(ActivitySegment, {
+    steps: [
+      reasoningStep("r1", { content: "先检查相关文件\n\n第二段正文很长不应默认展开", completed: true, durationMs: 400 }),
+      toolStep("t1", "Read", "success", { args: { path: "previous.ts" } }),
+      reasoningStep("r2", { content: "旧的思考\n再确认当前调用", completed: false, durationMs: undefined }),
+    ],
+    running: true,
+    projectId: "p1",
+    onPreviewFile: () => undefined,
+    onOpenExternal: () => undefined,
+    onResolvePermission: noopAsync,
+  }));
+  assert.match(markup, /class="chat-think-chip[^"]*"[^>]*aria-expanded="false"/u);
+  assert.match(markup, /先检查相关文件/u);
+  assert.doesNotMatch(markup, /第二段正文很长不应默认展开/u);
+  // 运行中的思考只显示最新一行，且不可展开。
+  assert.match(markup, /再确认当前调用/u);
+  assert.doesNotMatch(markup, /旧的思考/u);
+  assert.equal((markup.match(/chat-think-chip[^"]*"[^>]*aria-expanded=/gu) ?? []).length, 1, "只有已落定的思考 chip 带展开状态");
+});
+
+test("ActivitySegment 一句话思考的 chip 不显示展开箭头", () => {
+  const markup = renderToStaticMarkup(createElement(ActivitySegment, {
+    steps: [
+      reasoningStep("r1", { content: "检查 Read 工具的返回值", completed: true, durationMs: 2000 }),
+      toolStep("t1", "Read", "running", { args: { path: "a.ts" } }),
+    ],
+    running: true,
+    projectId: "p1",
+    onPreviewFile: () => undefined,
+    onOpenExternal: () => undefined,
+    onResolvePermission: noopAsync,
+  }));
+  assert.match(markup, /检查 Read 工具的返回值/u);
+  assert.doesNotMatch(markup, /chat-think-chevron/u);
+  assert.doesNotMatch(markup, /chat-think-chip[^>]*aria-expanded/u);
 });
 
 test("ActivitySegment 工具落定后不另加跟进状态", () => {

@@ -110,6 +110,79 @@ async function testDiscoveryFailure(permanent: boolean): Promise<void> {
   }
 }
 
+// 普通新回合必须复用已落盘的发现结果；仅验证同回合续跑无法发现 schema 在下一条消息丢失。
+async function testDiscoveryAcrossTurns(): Promise<void> {
+  const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "biny-discovery-history-"));
+  await ensureAgentDirs(workspaceRoot);
+  const registry = new ToolRegistry();
+  for (const name of ["mcp_records_read", "mcp_records_delete"]) {
+    registry.registerMcpTool({
+      name, description: name, exposure: "deferred", namespace: { name: "records" }, risk: "read",
+      parameters: { type: "object", properties: {}, additionalProperties: false }, schema: z.object({}),
+      resolveExecution: () => ({ approvalRule: name, async execute() { return { ok: true }; } })
+    });
+  }
+  registry.registerBuiltinTool(createToolSearchTool(() => registry.listEntries()));
+  const requests: string[][] = [];
+  let searched = false;
+  const model: AgentModel = {
+    provider: "test", modelId: "discovery-history", supportsTools: true,
+    async stream(context) {
+      requests.push(context.tools.map((tool) => tool.name));
+      return (async function* (): AsyncGenerator<ModelStreamEvent> {
+        if (!searched) {
+          searched = true;
+          yield { type: "tool-call", id: "discover-records", name: "ToolSearch", arguments: { query: "mcp_records_read" } };
+          yield { type: "finish", reason: "tool-calls" };
+        } else {
+          yield { type: "text-delta", text: "Ready." };
+          yield { type: "finish", reason: "stop" };
+        }
+      })();
+    }
+  };
+  const config = configSchema.parse({ ...defaultConfig,
+    agent: { ...defaultConfig.agent, toolExecutionMode: "direct" },
+    crystal: { ...defaultConfig.crystal, passiveEnabled: false },
+    context: { ...defaultConfig.context, memory: { ...defaultConfig.context.memory, useMemories: false, generateMemories: false } }
+  });
+  const recorder = new SessionRecorder(workspaceRoot);
+  const agent = new AgentSession({ workspaceRoot, config, recorder, model, toolRegistry: registry,
+    permissionManager: new PermissionManager(config.permission),
+    selectCapabilities: async (input) => {
+      return { tools: input.selection?.tools === "auto" ? ["ToolSearch"] : input.selection?.tools ?? ["ToolSearch"], skills: "none" };
+    }
+  });
+  const run = async (tools: "auto" | "none" | string[] = "auto"): Promise<string[]> => {
+    const outcome = await agent.runTask("Continue the records task", {
+      emotionAnalysis: false, capabilitySelection: { tools, skills: "none" }
+    });
+    assert.equal(outcome.status, "completed", outcome.error);
+    return requests.at(-1)!.toSorted();
+  };
+  try {
+    await agent.initialize();
+    assert.deepEqual(await run(), ["ToolSearch", "mcp_records_read"]);
+    for (let turn = 0; turn < 5; turn++) {
+      assert.deepEqual(await run(), ["ToolSearch", "mcp_records_read"], "successful discovery survives ordinary turns without another search");
+    }
+    await agent.startNewSession();
+    assert.deepEqual(await run(), ["ToolSearch"], "another session cannot inherit discovered tools");
+    await agent.resume(recorder.sessionId);
+    assert.deepEqual(await run(), ["ToolSearch", "mcp_records_read"], "session replay restores discovery without another search");
+    assert.deepEqual(await run(["ToolSearch"]), ["ToolSearch"], "a new explicit selection is not widened by history");
+    assert.deepEqual(await run("none"), [], "none disables tools even with discovery history");
+    registry.unregister("mcp_records_read");
+    assert.deepEqual(await run(), ["ToolSearch"], "unregistered tools cannot be restored from history");
+    const replay = await replaySession(recorder.filePath);
+    assert.equal(replay.events.filter((event) => event.type === "tool_call" && event.tool === "ToolSearch").length, 1);
+    assert.equal(replay.events.filter((event) => event.type === "tool_result" && event.tool === "ToolSearch").length, 1);
+  } finally {
+    await agent.close();
+    await rm(workspaceRoot, { recursive: true, force: true });
+  }
+}
+
 // query 改写不能绕过发现预算；现有逐参数预算无法识别同一能力的反复发现。
 async function testDiscoveryWithoutProgress(scenario: {
   actions: Array<"search" | "inspect" | "interrupt" | "other" | "script" | "script-loop" | "parallel" | "empty" | "invalid">;
@@ -208,6 +281,7 @@ await testDiscoveryWithoutProgress({ actions: ["empty", "empty"], requests: 2, s
 await testDiscoveryWithoutProgress({ actions: ["invalid", "invalid"], requests: 2, searches: 2, stopped: true });
 await testDiscoveryWithoutProgress({ actions: ["script", "script", "script", "script"], requests: 3, searches: 3, stopped: true });
 await testDiscoveryWithoutProgress({ actions: ["script-loop"], requests: 1, searches: 4, stopped: true });
+await testDiscoveryAcrossTurns();
 await testDiscoveryFailure(true);
 await testDiscoveryFailure(false);
 console.log("agent tool discovery e2e tests passed");

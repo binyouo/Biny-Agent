@@ -19,7 +19,6 @@ body {
   color: var(--text, var(--color-text-primary));
   font-family: var(--font-sans);
   font-size: calc(var(--app-font-size, 14) * 1px);
-  -webkit-font-smoothing: antialiased;
 }
 
 button,

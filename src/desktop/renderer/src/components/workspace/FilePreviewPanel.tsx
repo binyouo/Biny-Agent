@@ -118,7 +118,7 @@ export const FilePreviewPanel = memo(function FilePreviewPanel({ width, preview,
         <div className="file-browser-content">
           {preview ? <>
             <header className="file-browser-path">
-              <span className="file-browser-current-path">{narrow ? <button type="button" aria-label="返回文件列表" onClick={onShowFiles}><Icon name="arrow-left" size={14} /></button> : fileTreeOpen ? null : <button type="button" aria-label="显示文件树" onClick={() => setFileTreeOpen(true)}><Icon name="folder-panel" size={14} /></button>}<span className="file-browser-path-label" title={path}>{path}</span></span>
+              <span className="file-browser-current-path">{narrow ? <button type="button" aria-label="返回文件列表" onClick={onShowFiles}><Icon name="arrow-left" size={14} /></button> : fileTreeOpen ? null : <button type="button" aria-label="显示文件树" onClick={() => setFileTreeOpen(true)}><Icon name="folder-panel" size={14} /></button>}<span className="file-browser-path-label">{path}</span></span>
               <div className="file-browser-path-actions">
                 {preview.status === "ready" && path ? <IconButton icon={<Icon name="external" size={14} />} label="使用系统应用打开" onClick={() => onOpenFile(path)} size="sm" variant="ghost" /> : null}
                 {!narrow && fileTreeOpen ? <IconButton icon={<Icon name="folder-panel" size={14} />} label="隐藏文件树" onClick={() => setFileTreeOpen(false)} size="sm" variant="ghost" /> : null}

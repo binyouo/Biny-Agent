@@ -21,7 +21,6 @@ import { applyAppearance, appearanceVariables, readAppearanceCache, APPEARANCE_C
 const appearancePreference = {
   darkTheme: "tokyonight",
   lightTheme: "win98",
-  density: "compact" as const,
   win98Trail: false,
   customThemes: []
 };
@@ -245,8 +244,16 @@ test("catalog includes all 74 validated palettes and exactly four structural ski
   }
 });
 
-test("mode, density, skin and custom palette resolve independently", () => {
-  const preference = { ...DEFAULT_APPEARANCE, darkTheme: "longhorn-dark", lightTheme: "winxp", density: "spacious" as const };
+test("a stored density value is dropped: the appearance has one compact layout", () => {
+  const stored = { ...DEFAULT_APPEARANCE, darkTheme: "longhorn-dark", density: "spacious" };
+  assert.equal("density" in normalizeAppearancePreference(stored), false);
+  const resolved = resolveAppearance(stored, "dark", true);
+  assert.equal("density" in resolved, false);
+  assert.equal(resolved.variables["--ui-density-line-height"], undefined);
+});
+
+test("mode, skin and custom palette resolve independently", () => {
+  const preference = { ...DEFAULT_APPEARANCE, darkTheme: "longhorn-dark", lightTheme: "winxp" };
   assert.equal(resolveAppearance(preference, "system", false).skin, "winxp");
   assert.equal(resolveAppearance(preference, "system", true).skin, "longhorn-dark");
   assert.equal(resolveAppearance(preference, "light", true).skin, "winxp");
@@ -254,7 +261,6 @@ test("mode, density, skin and custom palette resolve independently", () => {
   const resolved = resolveAppearance({ ...preference, lightTheme: "custom:win98", customThemes: [custom] }, "light", true);
   assert.equal(resolved.skin, "default");
   assert.equal(resolved.win98Trail, false);
-  assert.equal(resolved.variables["--ui-density-line-height"], "1.65");
   assert.equal(resolveAppearance({ ...preference, lightTheme: "win98" }, "light", false).win98Trail, true);
   assert.equal(resolveAppearance({ ...preference, lightTheme: "win98", win98Trail: false }, "light", false).win98Trail, false);
 });
@@ -382,7 +388,6 @@ test("semantic status colors remain fixed across themes", async () => {
     const preference = normalizeAppearancePreference({
       darkTheme: palette.type === "dark" ? id : null,
       lightTheme: palette.type === "light" ? id : null,
-      density: "comfortable",
       win98Trail: true,
       customThemes: []
     });

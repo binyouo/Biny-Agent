@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm, readFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { setImmediate } from "node:timers/promises";
 import { test, type TestContext } from "node:test";
 import { defaultConfig } from "../src/config/schema.js";
 import { createFileConfigStore } from "../src/config/store.js";
@@ -44,7 +45,7 @@ async function fixture(context: TestContext) {
     await manager.closeAll();
     await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   });
-  return { project, dataRoot, manager, configStore, configDir, sessionId: recorder.sessionId };
+  return { projects, project, dataRoot, manager, configStore, configDir, sessionId: recorder.sessionId };
 }
 
 test("写入冲突保留历史；重读不解除冲突，重试检查写入权且不重发消息", { timeout: 30_000 }, async (context) => {
@@ -186,24 +187,50 @@ test("旧协议 owner 存活时保留它；owner 退出后在原窗口重试恢�
   assert.deepEqual(await readSessionEvents(sessionFilePath(dataRoot, sessionId)), before);
 });
 
-test("浏览不解除启动熔断；显式重试只复位当前项目并恢复历史而不运行模型", { timeout: 30_000 }, async (context) => {
-  const { project, dataRoot, manager, configStore, sessionId } = await fixture(context);
+test("浏览不解除启动熔断；显式重试等待旧预热失败再复位当前项目且不运行模型", { timeout: 30_000 }, async (context) => {
+  const { projects, project, dataRoot, manager, configStore, sessionId } = await fixture(context);
   const before = await readSessionEvents(sessionFilePath(dataRoot, sessionId));
   const circuit = runtimeHostSpawnCircuitFor(runtimeHostPaths(dataRoot).endpoint);
   const otherCircuit = runtimeHostSpawnCircuitFor(runtimeHostPaths(path.join(dataRoot, "other")).endpoint);
   for (let i = 0; i < 3; i++) { circuit.recordFailure(new Error("fixture startup failed")); otherCircuit.recordFailure(); }
   const load = configStore.load.bind(configStore);
+  let holdPrewarmFailure = false;
+  let enter!: () => void;
+  let release!: () => void;
+  const entered = new Promise<void>((resolve) => { enter = resolve; });
+  const gate = new Promise<void>((resolve) => { release = resolve; });
   configStore.load = async (...args) => {
     const failure = circuit.failureError();
-    if (failure) throw failure;
+    if (failure) {
+      if (holdPrewarmFailure) { holdPrewarmFailure = false; enter(); await gate; }
+      throw failure;
+    }
     return await load(...args);
   };
   await assert.rejects(manager.sendPrompt(project.id, sessionId, "未接收输入", []), /3 times in a row/u);
   const blocked = await manager.workspaceSnapshot(project.id, false);
   assert.equal(blocked.runtimeError?.retryable, true);
+  holdPrewarmFailure = true;
   assert.equal((await manager.openSession(project.id, sessionId)).runtimeError?.kind, "startup_failed");
   assert.equal(circuit.consecutiveFailures, 3);
-  const ready = await manager.retryRuntime(project.id, sessionId);
+  await entered;
+  let reachRetry!: () => void;
+  const retryReached = new Promise<void>((resolve) => { reachRetry = resolve; });
+  const resolveDataRoot = projects.dataRoot.bind(projects);
+  context.mock.method(projects, "dataRoot", async (...args: Parameters<typeof projects.dataRoot>) => {
+    const result = await resolveDataRoot(...args);
+    reachRetry();
+    return result;
+  });
+  const retry = manager.retryRuntime(project.id, sessionId);
+  try {
+    await retryReached;
+    // 推进 dataRoot 返回后的微任务；旧预热仍由 gate 持有，不依赖文件系统耗时制造竞态。
+    await setImmediate();
+  } finally {
+    release();
+  }
+  const ready = await retry;
   assert.equal(ready.workspace.runtimeError, undefined);
   assert.equal(ready.document?.runtimeSnapshot?.info.sessionId, sessionId);
   assert.equal(circuit.consecutiveFailures, 0);

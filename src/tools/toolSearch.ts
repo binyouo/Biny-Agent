@@ -279,7 +279,7 @@ export function isToolSearchTerminalFailure(value: unknown): value is ToolSearch
   return result.status === "failed" && result.retryable === false;
 }
 
-/** 从持久化 continuation 恢复成功发现的精确工具名；实际白名单仍由当前注册表校验。 */
+/** 从对话上下文恢复成功发现的精确工具名；实际白名单仍由当前注册表校验。 */
 export function toolSearchResultNamesFromMessages(messages: readonly AgentMessage[]): string[] {
   const names = messages.flatMap((message) => message.role === "toolResult"
     && message.toolName === toolSearchToolName

@@ -83,11 +83,11 @@ function assertDesktopTools(runtime: CommandRuntime, present: boolean): void {
 await test("Desktop Computer Use is registered as an owned MCP server, not a duplicate builtin", async t => {
   const runtime = await fixture(t, firstEndpoint);
   const tools = runtime.listTools().filter(tool => tool.name.startsWith("Computer"));
-  assert.equal(tools.length, 4);
+  assert.equal(tools.length, 5);
   assert.ok(tools.every(tool => tool.source === "mcp"), "native input must go through MCP while retaining the Desktop control plane");
   const server = runtime.mcp.listServers().find(server => server.name === "computer-use");
   assert.ok(server);
-  assert.deepEqual([...server.toolNames].sort(), ["ComputerAction", "ComputerList", "ComputerMirror", "ComputerObserve"]);
+  assert.deepEqual([...server.toolNames].sort(), ["ComputerAction", "ComputerLaunch", "ComputerList", "ComputerMirror", "ComputerObserve"]);
 });
 
 await test("Desktop host initialization may reapply its bootstrapped browser endpoint", async (t) => {

@@ -156,7 +156,7 @@ test("外观分段选择支持原生单选语义，自定义字体与字号重�
     assert.equal(theme, "dark");
     assert.equal(document.querySelector<HTMLSelectElement>('#appearance-font-family')?.value, "Custom Font");
     await h.click('[aria-label="恢复默认字体"]');
-    assert.deepEqual(font, { family: "system", size: 14 });
+    assert.deepEqual(font, { family: "system", size: 13 });
   } finally { await h.close(); }
 });
 

@@ -4,7 +4,7 @@ import { mkdtemp, realpath, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { setImmediate, setTimeout as delay } from "node:timers/promises";
+import { setTimeout as delay } from "node:timers/promises";
 import { test, type TestContext } from "node:test";
 import { createFileConfigStore } from "../src/config/store.js";
 import { DesktopAgentManager } from "../src/desktop/electron/main/DesktopAgentManager.js";
@@ -20,12 +20,43 @@ function deferred() {
   return { promise, resolve };
 }
 
-async function waitForRead(dataRoot: string, sessionId: string): Promise<void> {
-  // 等待真实后台落盘，不消费为后续元数据操作保留的 revision 映射。
-  const deadline = performance.now() + 2_000;
-  while ((await readSessionCatalogRecord(dataRoot, sessionId))?.unread !== false) {
-    assert.ok(performance.now() < deadline, "opening did not persist its read marker");
-    await setImmediate();
+type ObservedSessionRead = { completion: ReturnType<DesktopProjectService["markSessionRead"]> };
+
+function observeNextSessionRead(context: TestContext, projects: DesktopProjectService): Promise<ObservedSessionRead> {
+  let observe!: (read: ObservedSessionRead) => void;
+  const started = new Promise<ObservedSessionRead>((resolve) => { observe = resolve; });
+  const markSessionRead = projects.markSessionRead;
+  context.mock.method(projects, "markSessionRead", function (this: DesktopProjectService, ...args: Parameters<DesktopProjectService["markSessionRead"]>) {
+    const completion = markSessionRead.apply(this, args);
+    // 包装对象避免观测 promise 提前承接后台失败；manager 仍收到同一个原始 promise。
+    observe({ completion });
+    return completion;
+  });
+  return started;
+}
+
+async function waitForRead(dataRoot: string, sessionId: string, started: Promise<ObservedSessionRead>): Promise<void> {
+  // 等待指定后台写入完成后再读盘，不消费为后续元数据操作保留的 revision 映射。
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let expired = false;
+  try {
+    await Promise.race([
+      (async () => {
+        const { completion } = await started;
+        await completion;
+        if (expired) return;
+        assert.equal((await readSessionCatalogRecord(dataRoot, sessionId))?.unread, false,
+          "opening did not persist its read marker");
+      })(),
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => {
+          expired = true;
+          reject(new Error("opening did not persist its read marker"));
+        }, 2_000);
+      })
+    ]);
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -58,9 +89,10 @@ async function fixture(context: TestContext) {
 test("reopening after another completion clears its persisted unread flag while the previous read is retained", { timeout: 10_000 }, async (context) => {
   const f = await fixture(context);
   await f.projects.updateSessionMetadata(f.project, f.sessionId, { unread: true });
+  const read = observeNextSessionRead(context, f.projects);
   const first = await f.manager.openSession(f.project.id, f.sessionId);
   assert.equal(first.session.unread, false);
-  await waitForRead(f.dataRoot, f.sessionId);
+  await waitForRead(f.dataRoot, f.sessionId, read);
   // 后台运行完成也通过这个元数据入口设置未读。
   await f.projects.updateSessionMetadata(f.project, f.sessionId, { unread: true });
   assert.equal((await readSessionCatalogRecord(f.dataRoot, f.sessionId))?.unread, true);
@@ -88,10 +120,12 @@ test("concurrent openings of the same catalog revision share the pending read an
     }
     return await Reflect.apply(rename, fs, args);
   });
+  const lockDatabase = path.join(sessionCatalogDirectory(f.dataRoot), ".locks", `${f.sessionId}.sqlite`);
   let transactions = 0;
   const exec = DatabaseSync.prototype.exec;
   context.mock.method(DatabaseSync.prototype, "exec", function (this: DatabaseSync, sql: string) {
-    if (sql === "BEGIN IMMEDIATE") transactions++;
+    // 打开会话也会预热 Host；这里只统计本会话的 catalog 写入事务。
+    if (sql === "BEGIN IMMEDIATE" && this.prepare("PRAGMA database_list").get()?.file === lockDatabase) transactions++;
     return exec.call(this, sql);
   });
   try {
@@ -113,8 +147,9 @@ test("concurrent openings of the same catalog revision share the pending read an
 test("a completion after the latest opening persisted its read remains unread", { timeout: 10_000 }, async (context) => {
   const f = await fixture(context);
   await f.projects.updateSessionMetadata(f.project, f.sessionId, { unread: true });
+  const read = observeNextSessionRead(context, f.projects);
   await f.manager.openSession(f.project.id, f.sessionId);
-  await waitForRead(f.dataRoot, f.sessionId);
+  await waitForRead(f.dataRoot, f.sessionId, read);
   await f.projects.updateSessionMetadata(f.project, f.sessionId, { unread: true });
   await f.manager.closeAll();
   assert.equal((await readSessionCatalogRecord(f.dataRoot, f.sessionId))?.unread, true,
@@ -206,9 +241,10 @@ test("a superseded read rejection preserves the newer opening revision for immed
     await f.manager.openSession(f.project.id, f.sessionId);
     await entered.promise;
     await f.projects.updateSessionMetadata(f.project, f.sessionId, { title: "Changed in another window" });
+    const read = observeNextSessionRead(context, f.projects);
     const latest = await f.manager.openSession(f.project.id, f.sessionId);
     release.resolve();
-    await waitForRead(f.dataRoot, f.sessionId);
+    await waitForRead(f.dataRoot, f.sessionId, read);
     await f.manager.pinSession(f.project.id, f.sessionId, true, latest.session.metadataRevision);
     const persisted = await readSessionCatalogRecord(f.dataRoot, f.sessionId);
     assert.equal(persisted?.unread, false);

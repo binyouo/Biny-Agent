@@ -27,6 +27,7 @@ import type { UsageSummary } from "../../session/metadata.js";
 import type { ModelRequestSummary } from "../../observability/modelRequests.js";
 import { resolveWorkspacePath } from "../../workspace/resolvePath.js";
 import { withCliAbortSignal } from "../sigint.js";
+import { createRunDeadlineSignal } from "../runDeadline.js";
 
 const maxRunAttachments = 8;
 const maxRunAttachmentBytes = 20 * 1024 * 1024;
@@ -523,16 +524,6 @@ export function withRunTaskGuidance(
     );
   }
   return `${prompt}\n\n${guidance.join("\n")}`;
-}
-
-function createRunDeadlineSignal(deadlineAtMs: number, safetyMarginMs = 1_000): { signal: AbortSignal; dispose(): void } {
-  const controller = new AbortController();
-  const stopAtMs = Math.max(Date.now(), deadlineAtMs - safetyMarginMs);
-  const timer = setTimeout(() => {
-    controller.abort(new DOMException("Run stopped at the external deadline boundary.", "TimeoutError"));
-  }, Math.max(0, stopAtMs - Date.now()));
-  timer.unref?.();
-  return { signal: controller.signal, dispose: () => clearTimeout(timer) };
 }
 
 function combineRunSignals(signal: AbortSignal, deadlineSignal?: AbortSignal): AbortSignal {

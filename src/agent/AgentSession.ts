@@ -172,13 +172,13 @@ import type {
   MemorySimilarSearchOptions,
   MemorySimilarityScan
 } from "./context/memoryTypes.js";
-import { agentCapabilitySelectionSchema, capabilitySelectionValueSchema, resolveCapabilityNames, type AgentCapabilitySelection } from "./capabilitySelection.js";
+import { resolvedCapabilitySelectionSchema, capabilitySelectionValueSchema, resolveCapabilityNames, type AgentCapabilitySelection } from "./capabilitySelection.js";
 import { getToolExposure, isToolModelVisible } from "../tools/exposure.js";
 import { checkpointClaims } from "../session/checkpointClaims.js";
 import type { CheckpointEvidenceArgs } from "../extensions/checkpointEvidence.js";
 import type { CapabilityPreselectionInput } from "./capabilityPreselection.js";
 import { stableCodingToolNames } from "./capabilityPreselection.js";
-import { recentAutomaticToolNames } from "./automaticToolHistory.js";
+import { accumulatedAutomaticToolNames } from "./automaticToolHistory.js";
 import {
   isToolSearchTerminalFailure,
   toolSearchResultNames,
@@ -854,7 +854,7 @@ export class AgentSession {
     }
     if (options.reuse && options.messageId) {
       const metadata = sessionMessageMetadata(events, options.messageId);
-      const saved = agentCapabilitySelectionSchema.safeParse(metadata.capabilitySelection);
+      const saved = resolvedCapabilitySelectionSchema.safeParse(metadata.capabilitySelection);
       if (saved.success && (options.selection === undefined || JSON.stringify(options.selection) === JSON.stringify(saved.data))) {
         const original = capabilitySelectionValueSchema.safeParse(metadata.toolAccessSelection);
         toolAccessSelection = original.success ? original.data : metadata.automaticToolSelection === true ? "auto" : saved.data.tools;
@@ -874,9 +874,8 @@ export class AgentSession {
     const active = options.activeMessageIds ?? activeSessionMessageIds(events, nodes);
     const history = options.history ?? nodes
       .filter((node) => active.has(node.id) && node.id !== options.messageId).map((node) => node.message);
-    const previousTools = recentAutomaticToolNames(events, active, options.messageId);
+    const previousTools = accumulatedAutomaticToolNames(events, active, options.messageId);
     const startedAt = perfNow();
-    let freshAutomaticTools: readonly string[] | undefined;
     const selectionController = new AbortController();
     const forwardAbort = (): void => selectionController.abort(options.signal?.reason);
     options.signal?.addEventListener("abort", forwardAbort, { once: true });
@@ -884,13 +883,12 @@ export class AgentSession {
     try {
       const selected = await this.options.selectCapabilities({
         input: options.input, config: this.activeConfig, selection: options.selection, signal: selectionController.signal,
-        history, previousTools: [...new Set(previousTools)],
+        history, previousTools,
         requestContext: this.sideModelRequestContext(), onRequestMetrics: async (metrics) => {
           await this.recordModelRequest(metrics);
           // 候选切换也属于新的请求；目标预算停止后不能继续辅助采样。
           if (this.sessionGoalBudgetStopped()) selectionController.abort(this.sessionGoalUsageFailure ?? new Error("The session goal budget stopped further auxiliary model work."));
-        },
-        onAutomaticToolsSelected: (tools) => { freshAutomaticTools = tools; }
+        }
       }, options.runId);
       selectionController.signal.throwIfAborted();
       recordPerfPhase("turn.capabilities", startedAt, { runId: this.recorder.runtimeContextSnapshot()?.runId });
@@ -898,8 +896,7 @@ export class AgentSession {
         await this.recorder.recordAndFlush({ type: "message_metadata", messageId: options.messageId, metadata: {
           capabilitySelection: selected,
           toolAccessSelection: selected.tools === "none" ? "none" : toolAccessSelection,
-          automaticToolSelection: (options.selection?.tools ?? this.activeConfig.chat.defaultToolSelection) === "auto",
-          automaticToolFreshSelection: freshAutomaticTools ?? (Array.isArray(selected.tools) ? selected.tools : [])
+          automaticToolSelection: (options.selection?.tools ?? this.activeConfig.chat.defaultToolSelection) === "auto"
         } });
       }
       return selected;
@@ -2447,7 +2444,10 @@ export class AgentSession {
       resolveCapabilityNames(runOptions.capabilitySelection?.tools === "none" ? "none" : runOptions.toolAccessSelection, this.activeConfig.chat.defaultToolSelection, this.options.toolRegistry.list().map((tool) => tool.name))
     );
     coordinatorRef.current = coordinator;
-    if (runOptions.continueFrom?.length) {
+    if (runOptions.toolAccessSelection === "auto" && runOptions.capabilitySelection?.tools !== "none") {
+      // 仅复用当前活动上下文中的成功发现；用户手选范围不继承旧发现，权限仍逐次检查。
+      coordinator.allowTools(toolSearchResultNamesFromMessages(messages));
+    } else if (runOptions.continueFrom?.length) {
       // ToolSearch 的成功结果已经属于 continuation 事实；重建 coordinator 后恢复 schema，
       // allowTools 会再次按当前注册表精确校验，已注销或伪造名称保持不可见。
       const start = messageReferences.findIndex((reference) => reference?.id !== undefined && reference.id === args.selectionMessageId);

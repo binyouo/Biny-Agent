@@ -9,7 +9,7 @@ import { createHash } from "node:crypto";
 import path from "node:path";
 import type { AgentConfig } from "../../config/schema.js";
 import { createProjectSkillKey } from "../../extensions/skillRef.js";
-import { createMcpResourceTools, McpToolHost, type McpServerStatus } from "../../extensions/mcp.js";
+import { createMcpResourceTools, McpToolCatalogCache, McpToolHost, type McpServerStatus } from "../../extensions/mcp.js";
 import { createMcpPromptTools } from "../../extensions/mcpPrompts.js";
 import { loadSkills, type SkillBundle, type SkillDefinition } from "../../extensions/skills.js";
 import type { Tool } from "../../tools/types.js";
@@ -44,7 +44,7 @@ const skillCacheTtlMs = 30_000;
 
 export class RuntimeHostResourceScope {
   private readonly listeners = new Set<(snapshot: RuntimeResourceSnapshot) => void>();
-  private readonly mcpHost = new McpToolHost();
+  private readonly mcpHost: McpToolHost;
   private skillBundle: SkillBundle = defaultSkillBundle;
   private skillsReady = false;
   private state: RuntimeResourceState = "loading";
@@ -60,7 +60,9 @@ export class RuntimeHostResourceScope {
   constructor(
     readonly workspaceRoot: string,
     private readonly config: AgentConfig,
+    catalogCache?: McpToolCatalogCache,
   ) {
+    this.mcpHost = new McpToolHost(catalogCache);
     this.mcpHost.subscribe(() => {
       this.refreshState();
       this.publish();
@@ -148,7 +150,7 @@ export class RuntimeHostResourceScope {
       const current = this.mcpHost.listServers().filter((server) => targets.has(server.name));
       return {
         servers: current,
-        pending: current.filter((server) => server.enabled && !server.connected && server.connecting).map((server) => server.name),
+        pending: current.filter((server) => server.enabled && !server.connected && !server.catalogCached && server.connecting).map((server) => server.name),
         timedOut,
       };
     };
@@ -287,12 +289,13 @@ export class RuntimeHostResourceScope {
 
 export class RuntimeHostResourceRegistry {
   private readonly scopes = new Map<string, RuntimeHostResourceScope>();
+  private readonly catalogCache = new McpToolCatalogCache();
 
   acquire(workspaceRoot: string, config: AgentConfig): RuntimeHostResourceScope {
     const key = resourceScopeKey(workspaceRoot, config);
     let scope = this.scopes.get(key);
     if (!scope) {
-      scope = new RuntimeHostResourceScope(path.resolve(workspaceRoot), config);
+      scope = new RuntimeHostResourceScope(path.resolve(workspaceRoot), config, this.catalogCache);
       this.scopes.set(key, scope);
     }
     scope.retain();
@@ -310,6 +313,7 @@ export class RuntimeHostResourceRegistry {
     const scopes = [...this.scopes.values()];
     this.scopes.clear();
     await Promise.all(scopes.map((scope) => scope.close()));
+    this.catalogCache.clear();
   }
 }
 
@@ -330,6 +334,11 @@ function referencedMcpServers(servers: McpServerStatus[], query?: string): Set<s
   const tokens = query?.trim().split(/[\s,;()，；]+/u) ?? [];
   for (const rawToken of tokens) {
     const token = rawToken.replace(/^[`'"[]+|[`'"\]]+$/gu, "");
+    const owners = servers.filter(server => server.toolNames.includes(token));
+    if (owners.length) {
+      for (const server of owners) referenced.add(server.name);
+      continue;
+    }
     const matches = servers.map((server) => {
       const normalized = server.name.replace(/[^A-Za-z0-9_-]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 42) || "tool";
       const exact = token === server.name || token === `mcp:${server.name}` || token === `mcp_${normalized}`;
