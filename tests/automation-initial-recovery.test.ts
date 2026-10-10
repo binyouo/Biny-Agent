@@ -58,9 +58,11 @@ function memoryStore() {
       const fire = fires.get(id);
       if (fire?.status !== "pending") return undefined;
       fire.status = "running";
+      fire.claimToken = `claim-${counts.claim}`;
       return structuredClone(fire);
     },
     get: () => structuredClone(record),
+    getFire: (id: string) => { const fire = fires.get(id); return fire && structuredClone(fire); },
     bindFireRun(id: string, runId: string) { const fire = running(id); fire.runId = runId; return structuredClone(fire); },
     completeFire(id: string, runId: string) {
       const fire = running(id);
@@ -77,7 +79,7 @@ function memoryStore() {
     },
     deferFire(id: string) { const fire = running(id); fire.status = "deferred"; return structuredClone(fire); },
     listPending: () => [...fires.values()].map((fire) => structuredClone(fire))
-  } satisfies Pick<AutomationStore, "recoverInFlight" | "forceFire" | "claimDue" | "claimFire" | "get" |
+  } satisfies Pick<AutomationStore, "recoverInFlight" | "forceFire" | "claimDue" | "claimFire" | "get" | "getFire" |
     "bindFireRun" | "completeFire" | "failFire" | "deferFire" | "listPending">;
   return { store, counts, record, failRecovery: (count: number) => { failures = count; } };
 }

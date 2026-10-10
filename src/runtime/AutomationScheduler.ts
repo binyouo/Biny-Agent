@@ -481,10 +481,16 @@ export class AutomationStore {
     return automation;
   }
 
-  private requireFire(fireId: string): AutomationPendingFire {
+  getFire(fireId: string): AutomationPendingFire | undefined {
+    this.assertOpen();
     const row = this.database.prepare("SELECT fire_id, automation_id, scheduled_at, claim_token, claimed_at, status, run_id, error, created_at FROM automation_pending_fires WHERE fire_id = ?").get(fireId) as unknown as PendingRow | undefined;
-    if (!row) throw new Error("Automation fire " + fireId + " does not exist.");
-    return toFire(row);
+    return row ? toFire(row) : undefined;
+  }
+
+  private requireFire(fireId: string): AutomationPendingFire {
+    const fire = this.getFire(fireId);
+    if (!fire) throw new Error("Automation fire " + fireId + " does not exist.");
+    return fire;
   }
 
   private transaction<T>(execute: () => T): T {
@@ -596,6 +602,7 @@ export class AutomationScheduler {
       store.deferFire(claimed.fireId, new Date(Date.now() + deferDelay(automation)), "Runtime Host is busy; fire deferred.");
       return;
     }
+    let didSubmit = false;
     try {
       let target = current;
       if (usesDedicatedRuntime && this.options.createFreshRuntime) {
@@ -603,13 +610,11 @@ export class AutomationScheduler {
         // 绝不能复用当前 UI session。heartbeat 沿用 primary，避免每次心跳都创建新会话。
         target = await this.options.createFreshRuntime(targetSessionId);
         this.options.onRuntimeReplaced?.(target);
-        // createFreshRuntime 可能已经替换并关闭了旧 authority；后续 fire 状态必须
-        // 写入当前 store，否则会在已关闭的 DatabaseSync 上失败，留下 running fire。
-        store = this.store();
       }
       if (target.getSnapshot().state.kind !== "idle") {
         if (targetSessionId !== undefined) throw new AutomationTargetBusyError(targetSessionId);
-        store.deferFire(claimed.fireId, new Date(Date.now() + deferDelay(automation)), "Runtime Host is busy; fire deferred.");
+        const ready = this.revalidateUnsubmittedFire(claimed);
+        ready?.store.deferFire(claimed.fireId, new Date(Date.now() + deferDelay(ready.automation)), "Runtime Host is busy; fire deferred.");
         return;
       }
       if (targetSessionId !== undefined && target.getSnapshot().info.sessionId !== targetSessionId) {
@@ -617,10 +622,13 @@ export class AutomationScheduler {
         // createFreshRuntime(sessionId) 中直接创建/取得目标条目，不会在这里改写 session。
         await target.resumeSession(targetSessionId);
       }
-      // Runtime creation/resume can await while Host begins draining. Recheck
-      // admission immediately before submission, with no asynchronous gap.
+      // Preparation may await a pause, deletion, or Store replacement. Recheck
+      // this unbound claim and Host admission with no await before submission.
+      const ready = this.revalidateUnsubmittedFire(claimed);
+      if (!ready) return;
+      store = ready.store;
       if (this.closed || (this.options.canStartRun && !this.options.canStartRun())) {
-        this.store().deferFire(claimed.fireId, new Date(Date.now() + deferDelay(automation)), "Runtime Host stopped accepting automation runs; fire deferred.");
+        store.deferFire(claimed.fireId, new Date(Date.now() + deferDelay(ready.automation)), "Runtime Host stopped accepting automation runs; fire deferred.");
         return;
       }
       const submitted = target.submitPrompt(
@@ -628,19 +636,39 @@ export class AutomationScheduler {
         [],
         { runId: randomUUID(), continuationSource: "automation:" + automation.automationId }
       );
+      didSubmit = true;
       store.bindFireRun(claimed.fireId, submitted.runId);
       const outcome = await submitted.completion;
       store = this.store();
       if (outcome.status === "completed") store.completeFire(claimed.fireId, submitted.runId);
       else store.failFire(claimed.fireId, outcome.error ?? "Automation run ended as " + outcome.status + ".");
     } catch (error) {
-      const currentStore = this.store();
+      // Submitted runs keep their existing outcome handling. Preparation errors
+      // cannot fail or defer a deleted, replaced, or no-longer-eligible claim.
+      const ready = didSubmit ? undefined : this.revalidateUnsubmittedFire(claimed);
+      if (!didSubmit && !ready) return;
+      const currentStore = ready?.store ?? this.store();
       if (error instanceof AutomationTargetBusyError) {
-        currentStore.deferFire(claimed.fireId, new Date(Date.now() + deferDelay(automation)), error.message);
+        currentStore.deferFire(claimed.fireId, new Date(Date.now() + deferDelay(ready?.automation ?? automation)), error.message);
         return;
       }
       currentStore.failFire(claimed.fireId, error instanceof Error ? error.message : String(error));
     }
+  }
+
+  private revalidateUnsubmittedFire(claimed: AutomationPendingFire): { store: AutomationStore; automation: AutomationRecord } | undefined {
+    const store = this.store();
+    const fire = store.getFire(claimed.fireId);
+    if (!fire || fire.automationId !== claimed.automationId || fire.status !== "running"
+      || claimed.claimToken === undefined || fire.claimToken !== claimed.claimToken || fire.runId !== undefined) return undefined;
+    const automation = store.get(claimed.automationId);
+    if (!automation) return undefined;
+    if (!canClaimFire(automation, fire)
+      || (automation.maxFires !== undefined && automation.fireCount >= automation.maxFires)) {
+      store.deferFire(fire.fireId, new Date(Date.now() + deferDelay(automation)), "Automation no longer accepts this fire; fire deferred.");
+      return undefined;
+    }
+    return { store, automation };
   }
 
   private enqueueFire(fire: AutomationPendingFire): Promise<void> {
