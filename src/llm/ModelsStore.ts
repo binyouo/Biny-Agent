@@ -34,14 +34,32 @@ export interface ModelsStore {
  * 把另一个连接的模型列表覆盖掉。哈希只用于文件键，不保存地址或凭据本身。
  */
 export function modelCatalogCacheKey(providerId: string, config: ProviderConfig): string {
-  const endpoint = (config.modelsEndpoint ?? config.baseUrl ?? "").trim().replace(/\/+$/u, "").toLowerCase();
+  const endpoint = normalizeCatalogEndpoint((config.modelsEndpoint ?? config.baseUrl ?? "").trim().replace(/\/+$/u, ""));
   if (!endpoint) return providerId;
   let hash = 2166136261;
   for (const character of `${config.type}\u0000${endpoint}`) {
     hash ^= character.codePointAt(0) ?? 0;
     hash = Math.imul(hash, 16777619);
   }
-  return `${providerId}::${(hash >>> 0).toString(16).padStart(8, "0")}`;
+  // v1 lowercased paths and queries: neither old scoped entries nor their explicit
+  // alias provenance can prove the source, even when the current endpoint is lowercase.
+  return `${providerId}::v2::${(hash >>> 0).toString(16).padStart(8, "0")}`;
+}
+
+/** Preserve resource-sensitive spelling; URL serialization would also rewrite paths and ports. */
+function normalizeCatalogEndpoint(endpoint: string): string {
+  const match = /^(https?):\/\/([^/\\?#]*)([\s\S]*)$/iu.exec(endpoint);
+  if (!match) return endpoint;
+  const [, scheme, authority = "", suffix = ""] = match;
+  const hostStart = authority.lastIndexOf("@") + 1;
+  const userInfo = authority.slice(0, hostStart);
+  const hostAndPort = authority.slice(hostStart);
+  // Keep nonstandard bracketed authorities unchanged rather than guessing a host boundary.
+  const bracketEnd = hostAndPort.startsWith("[") ? hostAndPort.indexOf("]") : -1;
+  if (hostAndPort.startsWith("[") && bracketEnd === -1) return endpoint;
+  const portStart = bracketEnd === -1 ? hostAndPort.indexOf(":") : bracketEnd + 1;
+  const hostEnd = portStart === -1 ? hostAndPort.length : portStart;
+  return `${scheme!.toLowerCase()}://${userInfo}${hostAndPort.slice(0, hostEnd).toLowerCase()}${hostAndPort.slice(hostEnd)}${suffix}`;
 }
 
 export async function readProviderCatalog(
