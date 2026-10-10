@@ -21,7 +21,7 @@ import { SessionGoalStore } from "../src/runtime/SessionGoalStore.js";
 import { TodoStore } from "../src/session/todoStore.js";
 import { DurableTaskRunStore } from "../src/runtime/TaskRunStore.js";
 
-test("浏览多个项目、工具目录和历史不创建 Runtime Host", async () => {
+test("被动读取不创建 Runtime Host；打开历史会话后预热项目 owner", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "biny-desktop-host-browse-"));
   const state = new DesktopStateStore(path.join(root, "state.json"));
   const storage = new DesktopUserDataStore(path.join(root, "data"));
@@ -51,14 +51,11 @@ test("浏览多个项目、工具目录和历史不创建 Runtime Host", async (
       assert.ok(tools.some((entry) => entry.name === "Read"), "执行前仍可选择内置工具");
       assert.ok(tools.some((entry) => entry.name === "Bash"));
       assert.deepEqual(tools.filter(entry => entry.name.startsWith("Computer")).map(entry => [entry.name, entry.source]).sort(), [
-        ["ComputerAction", "mcp"], ["ComputerList", "mcp"], ["ComputerMirror", "mcp"], ["ComputerObserve", "mcp"]
+        ["ComputerAction", "mcp"], ["ComputerLaunch", "mcp"], ["ComputerList", "mcp"], ["ComputerMirror", "mcp"], ["ComputerObserve", "mcp"]
       ], "cold chat selection must list the same Computer MCP tools without contacting Desktop or creating a Runtime");
       assert.deepEqual(tools.filter(entry => entry.name.startsWith("Computer")).map(entry => entry.namespace?.name),
-        ["computer-use", "computer-use", "computer-use", "computer-use"],
+        ["computer-use", "computer-use", "computer-use", "computer-use", "computer-use"],
         "cold MCP selection must retain structured ownership; description parsing cannot identify native tools");
-      const document = await manager.openSession(project.id, recorder.sessionId);
-      assert.equal(document.runtimeSnapshot, undefined);
-      assert.ok(document.events.some((event) => event.type === "user_message" && event.content === "已有历史"));
       const todos = new TodoStore(dataRoot, recorder.sessionId);
       await todos.replace([{ content: "保存的清单", status: "pending" }]);
       assert.deepEqual(await manager.planProjection(project.id, recorder.sessionId), {
@@ -95,6 +92,12 @@ test("浏览多个项目、工具目录和历史不创建 Runtime Host", async (
       assert.deepEqual(await readFile(authority.databasePath), before, "读取不得迁移或写入运行事实");
       await assert.rejects(access(runtimeHostPaths(dataRoot).registrationPath), { code: "ENOENT" });
       await assert.rejects(access(runtimeHostPaths(dataRoot).lockPath), { code: "ENOENT" });
+      const document = await manager.openSession(project.id, recorder.sessionId);
+      assert.equal(document.runtimeSnapshot, undefined);
+      assert.ok(document.events.some((event) => event.type === "user_message" && event.content === "已有历史"));
+      await manager.retryRuntime(project.id);
+      await access(runtimeHostPaths(dataRoot).registrationPath);
+
     }
   } finally {
     await manager.closeAll();
@@ -128,8 +131,9 @@ test("进入当前项目即连接 MCP；重复进入复用 Host，历史读取�
     await history.close();
     const historyBefore = await readFile(history.filePath, "utf8");
     assert.equal((await service.snapshot(project.id)).servers.find(server => server.name === "computer-use")?.state, "not-started");
-    const workspace = await manager.prepareWorkspace(project.id);
-    assert.ok(workspace.runtime, "active workspace must initialize its Host before the first message or explicit MCP reconnect");
+    await manager.prepareWorkspace(project.id);
+    const warmed = await manager.retryRuntime(project.id);
+    assert.ok(warmed.workspace.runtime, "active workspace must initialize its Host before the first message or explicit MCP reconnect");
     const registration = await readFile(runtimeHostPaths(dataRoot).registrationPath, "utf8");
     await Promise.all([manager.prepareWorkspace(project.id), manager.prepareWorkspace(project.id)]);
     assert.equal(await readFile(runtimeHostPaths(dataRoot).registrationPath, "utf8"), registration, "re-entry must reuse the same owner");
@@ -138,10 +142,10 @@ test("进入当前项目即连接 MCP；重复进入复用 Host，历史读取�
     assert.equal(await readFile(history.filePath, "utf8"), historyBefore);
     const connected = await service.reconnect(project.id, "computer-use");
     assert.equal(connected.state, "connected", "the existing connect action must initialize MCP without model or native input calls");
-    assert.deepEqual([...connected.toolNames].sort(), ["ComputerAction", "ComputerList", "ComputerMirror", "ComputerObserve"]);
+    assert.deepEqual([...connected.toolNames].sort(), ["ComputerAction", "ComputerLaunch", "ComputerList", "ComputerMirror", "ComputerObserve"]);
     const catalog = await manager.toolCatalog(project.id);
     assert.deepEqual(catalog.filter(tool => tool.name.startsWith("Computer")).map(tool => [tool.name, tool.source, tool.namespace?.name]).sort(), [
-      ["ComputerAction", "mcp", "computer-use"], ["ComputerList", "mcp", "computer-use"],
+      ["ComputerAction", "mcp", "computer-use"], ["ComputerLaunch", "mcp", "computer-use"], ["ComputerList", "mcp", "computer-use"],
       ["ComputerMirror", "mcp", "computer-use"], ["ComputerObserve", "mcp", "computer-use"]
     ], "warm Host IPC must retain the same selection ownership as the cold catalog");
     assert.equal((await service.snapshot(project.id)).servers.find(server => server.name === "computer-use")?.state, "connected");
@@ -180,10 +184,12 @@ test("工作区快照读取途中 Host 回收，不得由后续投影查询重�
   const gate = new Promise<void>((resolve) => { releaseRead = resolve; });
   let snapshot: ReturnType<typeof manager.workspaceSnapshot> | undefined;
   try {
-    assert.ok((await manager.prepareWorkspace(project.id)).runtime);
+    await manager.prepareWorkspace(project.id);
+    assert.ok((await manager.retryRuntime(project.id)).workspace.runtime);
     assert.equal(await server.retireIfIdle(0), false, "current project retains MCP while waiting for a message");
     const other = await projects.createEmptyProject(path.join(root, "other-workspace"));
-    assert.ok((await manager.prepareWorkspace(other.id)).runtime);
+    await manager.prepareWorkspace(other.id);
+    assert.ok((await manager.retryRuntime(other.id)).workspace.runtime);
     configStore.load = async (workspaceRoot) => {
       configStore.load = loadConfig;
       enterRead();

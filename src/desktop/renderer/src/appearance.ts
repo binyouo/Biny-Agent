@@ -61,7 +61,6 @@ export function applyAppearance(root: HTMLElement, snapshot: AppearanceSnapshot,
   root.dataset.theme = appearance.mode;
   root.dataset.themePreference = snapshot.themePreference;
   root.dataset.appearanceSkin = appearance.skin;
-  root.dataset.uiDensity = appearance.density;
   if (appearance.themeId) root.dataset.base46Theme = appearance.themeId;
   else delete root.dataset.base46Theme;
   root.classList.toggle("dark", appearance.mode === "dark");
@@ -73,7 +72,7 @@ export function applyAppearance(root: HTMLElement, snapshot: AppearanceSnapshot,
   } else root.style.setProperty("--font-sans", `"${snapshot.fontPreference.family.replaceAll('"', "")}", var(--font-sans-stack)`);
   try {
     const variants = Object.fromEntries((["light", "dark"] as const).map(mode => { const variant = resolveAppearance(snapshot.appearancePreference, mode, false); return [mode, { skin: variant.skin, themeId: variant.themeId, variables: appearanceVariables(variant) }]; }));
-    window.localStorage.setItem(APPEARANCE_CACHE_KEY, JSON.stringify({ version: APPEARANCE_CACHE_VERSION, snapshot, mode: appearance.mode, skin: appearance.skin, themeId: appearance.themeId, density: appearance.density, variables, variants }));
+    window.localStorage.setItem(APPEARANCE_CACHE_KEY, JSON.stringify({ version: APPEARANCE_CACHE_VERSION, snapshot, mode: appearance.mode, skin: appearance.skin, themeId: appearance.themeId, variables, variants }));
   } catch {
     root.dataset.appearanceCache = "unavailable";
   }

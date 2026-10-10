@@ -31,7 +31,7 @@ import { createSessionFile, resolveSessionFile, sessionIdFromFile } from "./stor
 import { refreshSessionIndex } from "./catalog.js";
 import { publicAssistantMessage } from "./publicMessage.js";
 import { codexLinesToBinyEvents } from "./import/codex.js";
-import { importChatGptConversation, type ChatGptSkippedContentIssue } from "./import/chatgpt.js";
+import { importChatGptConversation, type ChatGptSkippedContentIssue, type PreparedChatGptSource } from "./import/chatgpt.js";
 export { listChatGptConversations, type ChatGptConversationSummary } from "./import/chatgpt.js";
 import { claudeLinesToBinyEvents, type ClaudeContentBlock, type ClaudeLine } from "./import/claude.js";
 
@@ -227,9 +227,19 @@ export function parseSessionImport(raw: string, sourcePath: string, options: Ses
   const source = format === "chatgpt" ? importChatGptConversation(raw, sourcePath, options.conversationId)
     : { events: importEventsFromSource(raw, format, sourcePath), sourceConversationId: undefined, sourceTitle: undefined,
       skippedContentCount: 0, skippedContentIssues: [] };
-  if (!source.events.length) throw new Error("导入文件里没有可用的会话事件。");
-  const events = parseSessionEvents(`${source.events.map((event) => JSON.stringify(event)).join("\n")}\n`);
+  const events = validateImportedEvents(source.events);
   return { format, ...source, events, attachments: format === "biny" ? parseBinyBundleAttachments(raw) : [] };
+}
+
+/** Internal adapter for a selected conversation from the current scanned snapshot. */
+export function parsePreparedChatGptImport(source: PreparedChatGptSource, conversationId?: string): ParsedSessionImport {
+  const imported = source.importConversation(conversationId);
+  return { format: "chatgpt", ...imported, events: validateImportedEvents(imported.events), attachments: [] };
+}
+
+function validateImportedEvents(events: readonly SessionEvent[]): SessionEvent[] {
+  if (!events.length) throw new Error("导入文件里没有可用的会话事件。");
+  return parseSessionEvents(`${events.map((event) => JSON.stringify(event)).join("\n")}\n`);
 }
 
 export async function importSessionFile(
@@ -240,7 +250,8 @@ export async function importSessionFile(
   return await persistImportedSession(workspaceRoot, parseSessionImport(await fs.readFile(sourcePath, "utf8"), sourcePath, options));
 }
 
-async function persistImportedSession(
+/** Internal persistence seam; callers must first use a validated import parser. */
+export async function persistImportedSession(
   workspaceRoot: string,
   source: ParsedSessionImport
 ): Promise<ImportedSession> {

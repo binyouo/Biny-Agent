@@ -327,7 +327,7 @@ export class GoalGraphStore {
     if (!nodes.length) throw new Error("Plan add requires at least one node.");
     validateGraphNodes([...graph.nodes.map(nodeInputFromRecord), ...nodes], 20);
     const now = new Date().toISOString();
-    return this.withGraphEvent({
+    const updatedGraph = this.withGraphEvent({
       eventId: `graph:${graphId}:replan:${String(graph.replanCount + 1)}:add`,
       sessionId: graph.supervisorSessionId!,
       invocationId: graphId,
@@ -346,6 +346,9 @@ export class GoalGraphStore {
       this.database.prepare("UPDATE graphs SET replan_count = replan_count + 1, revision = revision + 1, updated_at = ? WHERE graph_id = ?").run(now, graphId);
       return this.requireGraph(graphId);
     });
+    // Add advances revision, so preserve an unresolved checkpoint even without ready work.
+    this.queueCurrentSupervisorCheckpoint(updatedGraph);
+    return updatedGraph;
   }
 
   replaceSupervisedNode(

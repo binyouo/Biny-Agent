@@ -8,8 +8,10 @@ function loadSuggestions(): Promise<string[]> {
   if (cached && Date.now() - cached.at < CACHE_MS) return Promise.resolve(cached.suggestions);
   if (!inFlight) {
     inFlight = window.biny.activitySuggestions().then(suggestions => {
-      cached = { at: Date.now(), suggestions };
-      return suggestions;
+      // 空结果不等于建议被撤回：保留上一次非空结果，避免刷新后已展示的短语整块消失。
+      const next = suggestions.length > 0 ? suggestions : (cached?.suggestions ?? []);
+      cached = { at: Date.now(), suggestions: next };
+      return next;
     }).finally(() => { inFlight = undefined; });
   }
   return inFlight;
@@ -40,9 +42,9 @@ export function ActivitySuggestions({ onSend, onError }: {
     catch (error) { onError(error); }
     finally { submitFlight.current = false; setSubmitting(false); }
   };
-  if (suggestions?.length === 0) return null;
-  return <div aria-label="根据近期活动建议的新对话" aria-busy={suggestions === undefined || submitting} className="biny-activity-suggestions">
-    {suggestions === undefined ? [0, 1, 2, 3].map(index => <div aria-hidden="true" key={index} className="biny-activity-suggestion-skeleton" style={{ animationDelay: `${220 + index * 70}ms` }}><div className="biny-activity-suggestion-placeholder" /></div>)
-      : suggestions.map((text, index) => <button className="suggestion-chip" disabled={submitting} key={`${index}:${text}`} onClick={() => void send(text)} style={{ animationDelay: `${220 + index * 70}ms` }} title={text} type="button">{text}</button>)}
+  // 只在拿到真实短语后渲染：加载中不放占位，无结果或失败时保持不可见，不会出现后又消失的情况。
+  if (!suggestions?.length) return null;
+  return <div aria-label="根据近期活动建议的新对话" className="biny-activity-suggestions">
+    {suggestions.map((text, index) => <button className="suggestion-chip" disabled={submitting} key={`${index}:${text}`} onClick={() => void send(text)} style={{ animationDelay: `${220 + index * 70}ms` }} title={text} type="button">{text}</button>)}
   </div>;
 }

@@ -6,6 +6,7 @@ import path from "node:path";
 import test from "node:test";
 import { DateReferenceDetailService, type DateReferenceDetail } from "../src/session/dateReferenceDetail.js";
 import type { DateReferenceRange } from "../src/session/dateReference.js";
+import { refreshSessionIndex } from "../src/session/catalog.js";
 import { readSessionEvents, type SessionEvent } from "../src/session/events.js";
 import { ensureAgentDirs } from "../src/session/store.js";
 import { BINY_BUNDLE_FORMAT, BINY_BUNDLE_VERSION, importSessionFile } from "../src/session/transfer.js";
@@ -21,11 +22,11 @@ async function queryImported(sessions: SessionEvent[][], selectedRange = range):
   detail: DateReferenceDetail; sessionIds: string[];
 }> {
   const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "biny-date-detail-time-order-")));
+  const workspace = path.join(root, "workspace");
   const previousRoot = process.env.BINY_AGENT_DIR;
   process.env.BINY_AGENT_DIR = root;
   const service = new DateReferenceDetailService(root);
   try {
-    const workspace = path.join(root, "workspace");
     await mkdir(workspace);
     await ensureAgentDirs(workspace);
     const importedFiles: Array<{ path: string; contents: string }> = [];
@@ -50,6 +51,7 @@ async function queryImported(sessions: SessionEvent[][], selectedRange = range):
     return { detail, sessionIds };
   } finally {
     service.close();
+    await refreshSessionIndex(workspace);
     if (previousRoot === undefined) delete process.env.BINY_AGENT_DIR;
     else process.env.BINY_AGENT_DIR = previousRoot;
     await rm(root, { recursive: true, force: true });

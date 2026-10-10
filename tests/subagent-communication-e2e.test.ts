@@ -16,6 +16,7 @@ import type { TaskMessage } from "../src/runtime/TaskCommunication.js";
 import { workerSessionId } from "../src/runtime/WorkerSession.js";
 import { readSessionEvents } from "../src/session/events.js";
 import { sessionFilePath } from "../src/session/store.js";
+import { refreshSessionIndex } from "../src/session/catalog.js";
 
 test("parent tools, Host and CLI coordinate an asynchronous Worker through durable messages and results", { timeout: 25_000 }, async (t) => {
   let release!: () => void;
@@ -34,6 +35,7 @@ test("parent tools, Host and CLI coordinate an asynchronous Worker through durab
     if (previousAgentDir === undefined) delete process.env.BINY_AGENT_DIR;
     else process.env.BINY_AGENT_DIR = previousAgentDir;
   });
+  cleanup(async () => { await refreshSessionIndex(root); });
   let phase = "launch";
   let acted = false;
   let taskRunId = "";

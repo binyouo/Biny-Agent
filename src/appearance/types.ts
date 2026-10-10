@@ -1,6 +1,5 @@
 export type AppearanceMode = "light" | "dark";
 export type AppearanceSkin = "default" | "win98" | "winxp" | "longhorn" | "longhorn-dark";
-export type AppearanceDensity = "compact" | "comfortable" | "spacious";
 
 export const BASE30_KEYS = [
   "white", "darker_black", "black", "black2", "one_bg", "one_bg2", "one_bg3", "grey", "grey_fg", "grey_fg2",
@@ -27,7 +26,6 @@ export interface CustomAppearanceTheme extends ThemePalette {
 export interface AppearancePreference {
   darkTheme: string | null;
   lightTheme: string | null;
-  density: AppearanceDensity;
   win98Trail: boolean;
   customThemes: CustomAppearanceTheme[];
 }
@@ -35,7 +33,6 @@ export interface ResolvedAppearance {
   mode: AppearanceMode;
   themeId: string | null;
   skin: AppearanceSkin;
-  density: AppearanceDensity;
   palette?: ThemePalette;
   variables: Record<string, string>;
   win98Trail: boolean;

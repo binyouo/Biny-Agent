@@ -379,16 +379,88 @@
   border-left: 1px solid color-mix(in srgb, var(--biny-border) 70%, transparent);
 }
 
-.chat-activity-phase-label {
-  display: flex;
-  align-items: baseline;
-  gap: 2px;
-  margin-bottom: 2px;
-  font-size: calc(13px * var(--font-scale, 1));
+/* 思考 chip：一行标签 + 耗时 + 摘要，已落定且可展开时带箭头。 */
+.chat-think {
+  min-width: 0;
 }
 
-.chat-activity-phase-label .chat-activity-verb {
+.chat-think-chip {
+  min-width: 0;
+  min-height: 28px;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  width: 100%;
+  max-width: calc(100% + 12px);
+  margin-inline: -6px;
+  padding: 2px 6px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: calc(13px * var(--font-scale, 1));
+  text-align: left;
+  cursor: default;
+}
+
+button.chat-think-chip {
+  cursor: pointer;
+}
+
+button.chat-think-chip:hover {
+  background: color-mix(in srgb, var(--biny-surface-hover) 72%, transparent);
+}
+
+button.chat-think-chip:focus-visible {
+  outline: 2px solid var(--biny-control-active);
+  outline-offset: -2px;
+}
+
+.chat-think-label {
+  flex: none;
   color: color-mix(in srgb, var(--biny-text) 85%, transparent);
+  white-space: nowrap;
+}
+
+.chat-think-time {
+  flex: none;
+  color: var(--biny-text-tertiary);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.chat-think-summary {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--biny-text-tertiary);
+}
+
+.chat-think-chevron {
+  flex: none;
+  align-self: center;
+  display: inline-flex;
+  color: var(--biny-text-tertiary);
+  opacity: 0;
+  transition: transform 0.15s ease, opacity 0.15s ease;
+}
+
+.chat-think-chip:hover .chat-think-chevron,
+.chat-think-chip:focus-visible .chat-think-chevron,
+.chat-think.is-open .chat-think-chevron {
+  opacity: 1;
+}
+
+.chat-think.is-open .chat-think-chevron {
+  transform: rotate(180deg);
+}
+
+.chat-think .chat-activity-thinking {
+  margin: 4px 0 2px;
+  padding-left: 10px;
 }
 
 /* Markdown 段落自己管理换行，容器不能保留节点之间的空白文本。 */
@@ -559,6 +631,7 @@
 
 .chat-tool-row-detail { min-width: 0; padding: 2px 0 6px; }
 .chat-tool-row:focus-visible,
+.chat-command-input pre:focus-visible,
 .chat-command-result pre:focus-visible {
   outline: 2px solid var(--biny-control-active);
   outline-offset: -2px;
@@ -691,8 +764,8 @@
 /* 压缩摘要正文：分隔条下方居中铺开的可滚动卡。 */
 .chat-compaction-body {
   width: 100%;
-  max-width: 42rem;
-  max-height: 20rem;
+  max-width: 672px;
+  max-height: 320px;
   margin-top: 8px;
   overflow-y: auto;
   padding: 12px 16px;
@@ -867,6 +940,7 @@
   border-top: 1px solid color-mix(in srgb, var(--biny-border) 50%, transparent);
   color: var(--biny-text-tertiary);
 }
+.chat-command-input pre,
 .chat-command-result pre {
   max-height: 288px;
   overflow: auto;

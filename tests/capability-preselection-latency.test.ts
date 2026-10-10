@@ -17,7 +17,7 @@ const backup: AgentModel = {
   })()
 };
 
-test("slow automatic selection yields to the main turn after two seconds and cancels both requests", async (t) => {
+test("automatic selection allows responses beyond two seconds but cancels both requests at ten seconds", async (t) => {
   t.mock.timers.enable({ apis: ["setTimeout"] });
   let started = 0;
   let aborted = 0;
@@ -38,11 +38,36 @@ test("slow automatic selection yields to the main turn after two seconds and can
   await ready;
   t.mock.timers.tick(2000);
   for (let i = 0; i < 30; i++) await Promise.resolve();
-  assert.equal(settled, true, "Selection must not consume the old fifteen-second budget");
+  assert.equal(settled, false, "A normally slow selector must not lose its result at the former two-second cutoff");
+  assert.equal(aborted, 0);
+  t.mock.timers.tick(8000);
+  for (let i = 0; i < 30; i++) await Promise.resolve();
+  assert.equal(settled, true, "Selection remains bounded when the model never responds");
   assert.equal(aborted, 2);
   const selected = await result;
   assert.ok(Array.isArray(selected.tools) && selected.tools.includes("WebSearch") && selected.tools.includes("ToolSearch"));
   assert.deepEqual(selected.skills, ["review"], "Explicit capabilities survive selection timeout");
+});
+
+test("a selector response after three seconds still activates capabilities not explicitly named", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  let started = 0;
+  let ready!: () => void;
+  const bothStarted = new Promise<void>(resolve => { ready = resolve; });
+  const slow: AgentModel = { provider: "test", modelId: "slow-success", stream: async () => {
+    const wait = new Promise<void>(resolve => setTimeout(resolve, 3_000));
+    if (++started === 2) ready();
+    await wait;
+    return (async function* (): AsyncGenerator<ModelStreamEvent> {
+      yield { type: "text-delta", text: '{"tools":["WebFetch"],"skillIds":["review"]}' };
+    })();
+  } };
+  const pending = preselectCapabilities({ ...base, input: "分析资料", models: [{ model: slow, failureDomain: "slow" }] });
+  await bothStarted;
+  t.mock.timers.tick(3_000);
+  const selected = await pending;
+  assert.ok(Array.isArray(selected.tools) && selected.tools.includes("WebFetch"));
+  assert.deepEqual(selected.skills, ["review"]);
 });
 
 test("permanent connection failures cool down only within the owning runtime and expire", async (t) => {

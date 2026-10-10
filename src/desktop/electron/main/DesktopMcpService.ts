@@ -356,6 +356,7 @@ function buildServerConfig(existing: McpServerConfig | undefined, draft: Desktop
       : undefined,
     headers: Object.keys(headers.values).length ? headers.values : undefined,
     oauth: transport === "remote" ? draft.oauth : undefined,
+    startupTimeoutMs: draft.startupTimeoutMs,
     timeoutMs: draft.timeoutMs,
     enabled: existing?.enabled ?? true
   };
@@ -425,6 +426,7 @@ function describeServer(name: string, config: McpServerConfig, live: McpServerSt
     args: [...(config.args ?? [])],
     cwd: config.cwd,
     stderr: config.stderr,
+    startupTimeoutMs: config.startupTimeoutMs,
     timeoutMs: config.timeoutMs,
     enabled: config.enabled,
     state: !config.enabled

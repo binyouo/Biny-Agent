@@ -7,9 +7,14 @@ import ApplicationServices
 import CoreGraphics
 import Carbon.HIToolbox
 
-var refTables: [pid_t: [String: AXUIElement]] = [:]
-// 截图坐标 → 屏幕坐标的映射（pid → 比例与偏移）。
-var coordMaps: [pid_t: (scale: Double, ox: Double, oy: Double, sw: Double, sh: Double)] = [:]
+let observations = ComputerObservations<AXUIElement>()
+enum NativeObservationContext {
+    @TaskLocal static var current: ComputerObservation<AXUIElement>?
+}
+func observedElements(_ pid: pid_t) -> [String: AXUIElement] {
+    guard let snapshot = NativeObservationContext.current, snapshot.pid == pid else { return [:] }
+    return snapshot.elements
+}
 let driverVersion = "native-1"
 /// 滚轮路由上「一页」约等于几行。网页内容不暴露内容高度，算不出真正的页，
 /// 这是有意的估算（且回执会说明），不是测量值。
@@ -24,7 +29,12 @@ func reply(_ fd: Int32, _ value: [String: Any]) {
         var offset = 0
         while offset < bytes.count {
             let count = Darwin.write(fd, bytes.baseAddress!.advanced(by: offset), bytes.count - offset)
-            if count <= 0 { break }; offset += count
+            if count <= 0 {
+                if let body = value["data"] as? [String: Any], let screenshot = body["screenshot"] as? String {
+                    try? FileManager.default.removeItem(atPath: screenshot)
+                }
+                break
+            }; offset += count
         }
     }
 }
@@ -402,8 +412,6 @@ func elementFingerprint(_ element: [String: Any]) -> String {
     return "\(role)|\(title)|\(value)|\(frame)"
 }
 
-/// 最近一次观察过的 pid：只给 ref、不给 pid 的调用靠它定目标。
-var lastObservedPid: pid_t?
 var lastActionPoint: CGPoint?
 
 /// 记一次动作落点。
@@ -940,9 +948,10 @@ final class AXCollectBox: @unchecked Sendable {
 /// 截图像素 → 屏幕点。coord_space=screen 时原样返回。
 func screenPoint(_ pid: pid_t, _ x: Double, _ y: Double, screenSpace: Bool) -> CGPoint {
     var sx = x, sy = y
-    if !screenSpace, let m = coordMaps[pid] {
-        sx = m.ox + x / m.scale
-        sy = m.oy + y / m.scale
+    if !screenSpace, let snapshot = NativeObservationContext.current, snapshot.pid == pid,
+       let scale = snapshot.geometry["scale"], scale > 0 {
+        sx = (snapshot.geometry["x"] ?? 0) + x / scale
+        sy = (snapshot.geometry["y"] ?? 0) + y / scale
     }
     return CGPoint(x: sx, y: sy)
 }
@@ -1079,20 +1088,9 @@ func pageFraction(_ area: AXUIElement) -> Double? {
     return min(1.0, viewport / content)
 }
 
-/// 只凭 ref 找回 pid。
-///
-/// 参照的 CLI 是 `cu scroll <ref> <up|down|…>` —— **不带 pid**，说明它的元素存储是全局的
-/// （helper 类名表里那个 `ElementStore`）。本实现的 refTables 是按 pid 分表的，
-/// 于是"只给 ref"这条调用在参照里成立、在这里不成立。
-/// 这里跨表找一次：**唯一命中才算**，多个 pid 都有同名 ref 时宁可报歧义，也不猜。
 func pidForRef(_ ref: String) -> pid_t? {
-    // 参照的元素存储是**全局**的，所以它的 ref 天然不冲突；本实现按 pid 分表，
-    // 而 daemon 活得很久（900s 空闲才退），于是同一个 ref 名会在多个应用的表里同时存在。
-    // 规则：**最近一次观察的那个 pid 优先**（ref 本来就是"最近一次观察"里的引用，
-    // 跨轮次即失效）；不中再退回"唯一命中"，仍不唯一就返回 nil，让调用方报清楚，不猜。
-    if let recent = lastObservedPid, refTables[recent]?[ref] != nil { return recent }
-    let hits = refTables.compactMap { (key, table) -> pid_t? in table[ref] != nil ? key : nil }
-    return hits.count == 1 ? hits[0] : nil
+    guard let snapshot = NativeObservationContext.current, snapshot.elements[ref] != nil else { return nil }
+    return snapshot.pid
 }
 
 /// 能点/能输入的角色 —— 参照 `interactive_only` 用的就是这一组。
@@ -1423,6 +1421,18 @@ DispatchQueue.global().async {
                     activityLock.lock(); lastRequestAt = Date(); activityLock.unlock()
                     Task {
                         let id = request["id"] ?? NSNull()
+                        do {
+                            let args = request["args"] as? [String: Any] ?? [:]
+                            let command = request["cmd"] as? String ?? ""
+                            let isInput = ["click", "type_text", "press_key", "scroll", "drag", "perform_secondary_action", "set_value", "select_text", "type", "press"].contains(command)
+                            var snapshot: ComputerObservation<AXUIElement>?
+                            if isInput, let owner = args["client_id"] as? String {
+                                guard let captureID = args["capture_id"] as? String, let pid = args["pid"] as? Int, let windowID = args["window_id"] as? Int else {
+                                    throw NSError(domain: "observation", code: 64, userInfo: [NSLocalizedDescriptionKey: "observation_required: 输入前须观察准确窗口"])
+                                }
+                                snapshot = try observations.take(id: captureID, owner: owner, pid: pid_t(pid), windowID: windowID)
+                            } else if isInput { snapshot = observations.direct(pid: (args["pid"] as? Int).map { pid_t($0) }) }
+                            await NativeObservationContext.$current.withValue(snapshot) {
                         var guardedPID: pid_t?
                         defer {
                             if let guardedPID {
@@ -1805,14 +1815,17 @@ DispatchQueue.global().async {
                                     try await screenshot(shotArgs)
                                 }
                                 let screenshotError = shot["screenshot_error"] as? String
-                                refTables[pid] = table
-                                lastObservedPid = pid
-                                // 记下截图坐标 → 屏幕坐标的映射，后续像素点击据此换算。
-                                if let f = shot["screenFrame"] as? [String: Double],
-                                   let sw = shot["width"] as? Int, let sh = shot["height"] as? Int, sw > 0, sh > 0 {
-                                    coordMaps[pid] = (Double(sw) / max(1, f["w"] ?? 1), f["x"] ?? 0, f["y"] ?? 0, Double(sw), Double(sh))
+                                let captureID = args["capture_id"] as? String ?? UUID().uuidString
+                                let observedWindow = (shot["windowId"] as? Int) ?? (args["window_id"] as? Int) ?? 0
+                                var geometry: [String: Double] = [:]
+                                if let f = shot["screenFrame"] as? [String: Double], let sw = shot["width"] as? Int, sw > 0 {
+                                    geometry = ["scale": Double(sw) / max(1, f["w"] ?? 1), "x": f["x"] ?? 0, "y": f["y"] ?? 0]
                                 }
-                                var data: [String: Any] = ["pid": Int(pid), "elements": elements]
+                                if args["client_id"] == nil || (screenshotError == nil && !geometry.isEmpty && observedWindow > 0) {
+                                    observations.save(id: captureID, owner: args["client_id"] as? String ?? "direct-cli", pid: pid,
+                                                      windowID: observedWindow, elements: table, geometry: geometry)
+                                }
+                                var data: [String: Any] = ["pid": Int(pid), "elements": elements, "capture_id": captureID]
                                 data["bundleId"] = NSRunningApplication(processIdentifier: pid)?.bundleIdentifier
                                 if let path = shot["path"] { data["screenshot"] = path }
                                 // 「为什么没有截图」要说出来，并且**始终**报权限状态 ——
@@ -1900,7 +1913,7 @@ DispatchQueue.global().async {
                                     // 并在一起时，"传了 ref 但它过期了"会掉到下面的像素分支，
                                     // 最终报成"需要 ref 或坐标"—— 而调用方明明给了 ref。
                                     // 这违反「一个 guard 只检查一件事」：没传和过期了必须分开报。
-                                    guard let element = refTables[pid_t(pid)]?[ref] else {
+                                    guard let element = observedElements(pid_t(pid))[ref] else {
                                         throw NSError(domain: "click", code: 64, userInfo: [NSLocalizedDescriptionKey:
                                             "element_ref_not_observed: ref \(ref) 不在 pid \(pid) 的最近一次观察里，先 snap 一次"])
                                     }
@@ -2012,7 +2025,7 @@ DispatchQueue.global().async {
                                 let pid = try resolvePid(args)
                                 if let ref = args["ref"] as? String {
                                     // 同上：ref 查找要和"有没有给 ref"分开，否则"过期"会报成"没给"。
-                                    guard let element = refTables[pid]?[ref] else {
+                                    guard let element = observedElements(pid)[ref] else {
                                         throw NSError(domain: "menu", code: 64, userInfo: [NSLocalizedDescriptionKey:
                                             "element_ref_not_observed: ref \(ref) 不在 pid \(Int(pid)) 的最近一次观察里，先 snap 一次"])
                                     }
@@ -2054,7 +2067,7 @@ DispatchQueue.global().async {
                                     // 分开报，才不至于让人对着同一句话猜。
                                     throw NSError(domain: "type", code: 64, userInfo: [NSLocalizedDescriptionKey: "type_missing_argument: 需要 ref、pid 和 text"])
                                 }
-                                guard let element = refTables[pid_t(pid)]?[ref] else {
+                                guard let element = observedElements(pid_t(pid))[ref] else {
                                     throw NSError(domain: "type", code: 64, userInfo: [NSLocalizedDescriptionKey: "element_ref_not_observed: ref \(ref) 不在 pid \(pid) 的最近一次观察里，先 snap 一次"])
                                 }
                                 let mode = args["mode"] as? String ?? ((args["append"] as? Bool ?? false) ? "append" : "replace")
@@ -2083,7 +2096,7 @@ DispatchQueue.global().async {
                                     // 分开报，才不至于让人对着同一句话猜。
                                     throw NSError(domain: "press", code: 64, userInfo: [NSLocalizedDescriptionKey: "press_missing_argument: 需要 ref、pid 和 key"])
                                 }
-                                guard let element = refTables[pid_t(pid)]?[ref] else {
+                                guard let element = observedElements(pid_t(pid))[ref] else {
                                     throw NSError(domain: "press", code: 64, userInfo: [NSLocalizedDescriptionKey: "element_ref_not_observed: ref \(ref) 不在 pid \(pid) 的最近一次观察里，先 snap 一次"])
                                 }
                                 let actions: [String: String] = [
@@ -2107,7 +2120,7 @@ DispatchQueue.global().async {
                                 guard let ref = args["ref"] as? String, let pid = args["pid"] as? Int, let value = args["value"] else {
                                     throw NSError(domain: "value", code: 64, userInfo: [NSLocalizedDescriptionKey: "set_value_missing_argument: 需要 ref、pid 和 value"])
                                 }
-                                guard let element = refTables[pid_t(pid)]?[ref] else {
+                                guard let element = observedElements(pid_t(pid))[ref] else {
                                     throw NSError(domain: "value", code: 64, userInfo: [NSLocalizedDescriptionKey: "element_ref_not_observed: ref \(ref) 不在 pid \(pid) 的最近一次观察里，先 snap 一次"])
                                 }
                                 let status = AXUIElementSetAttributeValue(element, kAXValueAttribute as CFString, value as CFTypeRef)
@@ -2120,7 +2133,7 @@ DispatchQueue.global().async {
                                 guard let ref = args["ref"] as? String, let pid = args["pid"] as? Int else {
                                     throw NSError(domain: "select", code: 64, userInfo: [NSLocalizedDescriptionKey: "select_text_missing_argument: 需要 ref 和 pid"])
                                 }
-                                guard let element = refTables[pid_t(pid)]?[ref] else {
+                                guard let element = observedElements(pid_t(pid))[ref] else {
                                     throw NSError(domain: "select", code: 64, userInfo: [NSLocalizedDescriptionKey: "element_ref_not_observed: ref \(ref) 不在 pid \(pid) 的最近一次观察里，先 snap 一次"])
                                 }
                                 if let text = args["text"] as? String {
@@ -2155,7 +2168,7 @@ DispatchQueue.global().async {
                                 if method == "auto" {
                                     var writable = DarwinBoolean(false)
                                     if let ref = args["ref"] as? String {
-                                        guard let element = refTables[pid]?[ref] else {
+                                        guard let element = observedElements(pid)[ref] else {
                                             throw NSError(domain: "type_text", code: 64, userInfo: [NSLocalizedDescriptionKey: "element_ref_not_observed: observe again before typing"])
                                         }
                                         _ = AXUIElementIsAttributeSettable(element, kAXSelectedTextAttribute as CFString, &writable)
@@ -2174,7 +2187,7 @@ DispatchQueue.global().async {
                                         throw NSError(domain: "type_text", code: 64, userInfo: [NSLocalizedDescriptionKey:
                                             "input_method_requires_ref: input_method=ax 需要 ref（AX 写入是按元素走的，不是按焦点）。要按焦点输入就用 auto 或 unicode。"])
                                     }
-                                    guard let element = refTables[pid]?[ref] else {
+                                    guard let element = observedElements(pid)[ref] else {
                                         throw NSError(domain: "type_text", code: 64, userInfo: [NSLocalizedDescriptionKey:
                                             "element_ref_not_observed: ref \(ref) 不在 pid \(Int(pid)) 的最近一次观察里，先 snap 一次"])
                                     }
@@ -2230,7 +2243,7 @@ DispatchQueue.global().async {
                                 let pid = try resolvePid(args, fallbackPid: scrollRefOnlyPid)
                                 let direction = args["direction"] as? String ?? "down"
                                 let amount = args["amount"] as? Int ?? 3
-                                let route = args["route"] as? String ?? "auto"
+                                let route = args["x"] != nil ? "wheel" : (args["route"] as? String ?? "auto")
                                 // 滚轮要的是自然滚动转换后的方向；AX 写滚动条位置，用语义方向。
                                 let wheelDirection = args["wheel_direction"] as? String ?? direction
                                 // 先试 AX —— 原生滚动区只有这一条路能走通；不行再退回滚轮，
@@ -2248,7 +2261,7 @@ DispatchQueue.global().async {
                                 let pagesArg = (args["pages"] as? Double) ?? (args["pages"] as? Int).map(Double.init)
                                 // 参照的 scroll 是 `scroll <ref> <up|down|…>` —— 目标由 **ref** 指定，
                                 // 而不是只给 pid、让守护进程自己猜哪个滚动区。给了 ref 就按 ref 走。
-                                let refArea: AXUIElement? = (args["ref"] as? String).flatMap { refTables[pid]?[$0] }
+                                let refArea: AXUIElement? = (args["ref"] as? String).flatMap { observedElements(pid)[$0] }
                                 var data = route == "wheel" ? nil : await withFocusGuard(pid, background: !foregroundInput) { axScroll(pid, direction: direction, notches: amount, pages: pagesArg, refArea: refArea) }
                                 if data == nil && route != "ax" {
                                     await withFocusGuard(pid, background: !foregroundInput) {
@@ -2264,6 +2277,14 @@ DispatchQueue.global().async {
                                             }
                                         }()
                                         if let event = CGEvent(scrollWheelEvent2Source: nil, units: CGScrollEventUnit(rawValue: wheelAxis.rawValue)!, wheelCount: 1, wheel1: (wheelDirection == "up" || wheelDirection == "down") ? wheelSign : 0, wheel2: (wheelDirection == "left" || wheelDirection == "right") ? wheelSign : 0, wheel3: 0) {
+                                            if let x = args["x"] as? Double, let y = args["y"] as? Double {
+                                                event.location = screenPoint(pid, x, y, screenSpace: args["coord_space"] as? String == "screen")
+                                            }
+                                            if let windowID = args["window_id"] as? Int {
+                                                event.setIntegerValueField(.mouseEventWindowUnderMousePointer, value: Int64(windowID))
+                                                event.setIntegerValueField(.mouseEventWindowUnderMousePointerThatCanHandleThisEvent, value: Int64(windowID))
+                                            }
+                                            event.setIntegerValueField(.eventTargetUnixProcessID, value: Int64(pid))
                                             event.postToPid(pid)
                                         }
                                     }
@@ -2284,6 +2305,10 @@ DispatchQueue.global().async {
                             }
                         } catch let error as NSError {
                             reply(fd, ["id": id, "ok": false, "error": ["code": error.userInfo[NSLocalizedDescriptionKey] as? String ?? "action_failed", "message": error.localizedDescription]])
+                        }
+                            }
+                        } catch {
+                            reply(fd, ["id": id, "ok": false, "error": ["code": error.localizedDescription]])
                         }
                     }
                 }

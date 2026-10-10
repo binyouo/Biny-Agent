@@ -25,9 +25,10 @@ import {
   type ActivityPhase,
   type ActivityPhaseItem,
   type ActivityPhaseKind,
+  type ActivityPhaseLabel,
 } from "../../chatModel.js";
 import type { IconName } from "../Icon.js";
-import { reasoningDetailText } from "../../reasoningPresentation.js";
+import { reasoningDetailText, reasoningExpandable, reasoningSummaryLine } from "../../reasoningPresentation.js";
 import type { TimelineReasoningStep, TimelineTool, TimelineToolStep } from "../../sessionTimeline.js";
 import { Icon } from "../Icon.js";
 import { MarkdownContent } from "../MarkdownContent.js";
@@ -225,17 +226,11 @@ export const ActivitySegment = memo(function ActivitySegment({
         <div className="chat-activity-rail">
           {timelineMode || !openPhaseOrNull
             ? phases.map((phase, index) => {
-              const thinkingSecondsForPhase = secondsForThinkingPhase(phase);
-              const label = labelFor(phase, thinkingSecondsForPhase);
+              const label = labelFor(phase, secondsForThinkingPhase(phase));
               return (
                 <div className="chat-activity-phase" key={`${segmentKey}-phase-${String(index)}`}>
-                  {phase.kind === "thinking" ? (
-                    <div className="chat-activity-phase-label">
-                      <span className="chat-activity-verb">{label.verb}</span>
-                      {label.rest ? <span className="chat-activity-rest"> {label.rest}</span> : null}
-                    </div>
-                  ) : null}
                   <PhaseBody
+                    compact={{ label, live: isLive(phase) }}
                     onOpenExternal={onOpenExternal}
                     onPreviewFile={onPreviewFile}
                     onResolvePermission={onResolvePermission}
@@ -269,9 +264,13 @@ export const ActivitySegment = memo(function ActivitySegment({
   );
 });
 
-/** 一个相位的展开体：思考相位平铺文本；工具相位渲染动宾行 + 行内详情。 */
+/**
+ * 一个相位的展开体。时间线视图里的思考相位收成一行 chip（可展开全文）；
+ * 单相位视图里的思考相位直接显示全文；工具相位渲染动宾行 + 行内详情。
+ */
 const PhaseBody = memo(function PhaseBody({
   phase,
+  compact,
   openTools,
   onToggleTool,
   segmentKey,
@@ -281,6 +280,7 @@ const PhaseBody = memo(function PhaseBody({
   onResolvePermission,
 }: {
   phase: ActivityPhase;
+  compact?: { label: ActivityPhaseLabel; live: boolean };
   openTools: ReadonlySet<string>;
   onToggleTool(id: string): void;
   segmentKey: string;
@@ -294,6 +294,18 @@ const PhaseBody = memo(function PhaseBody({
       .map(({ step }) => step.kind === "reasoning" ? reasoningDetailText(step) : "")
       .filter(Boolean)
       .join("\n\n");
+    if (compact) {
+      return (
+        <ThinkingChip
+          label={compact.label}
+          live={compact.live}
+          onOpenExternal={onOpenExternal}
+          onPreviewFile={onPreviewFile}
+          projectId={projectId}
+          text={text}
+        />
+      );
+    }
     if (!text) return null;
     return (
       <div className="chat-activity-thinking">
@@ -325,6 +337,54 @@ const PhaseBody = memo(function PhaseBody({
         );
       })}
     </>
+  );
+});
+
+/**
+ * 思考相位的一行 chip：标签、耗时和一行摘要。已落定且内容超过一行时可点击，在原位展开全文；
+ * 运行中只显示最新一行，不可展开。全文在展开后才渲染，长思考不占据活动段版面。
+ */
+const ThinkingChip = memo(function ThinkingChip({
+  label,
+  live,
+  text,
+  projectId,
+  onPreviewFile,
+  onOpenExternal,
+}: {
+  label: ActivityPhaseLabel;
+  live: boolean;
+  text: string;
+  projectId: string;
+  onPreviewFile(path: string): void;
+  onOpenExternal(url: string): void;
+}): React.JSX.Element {
+  const [open, setOpen] = useState(false);
+  const expandable = !live && reasoningExpandable(text);
+  const head = (
+    <>
+      <span className={`chat-think-label${live ? " chat-shimmer-text" : ""}`}>{label.verb}</span>
+      {label.rest ? <span className="chat-think-time">{label.rest}</span> : null}
+      <span className="chat-think-summary">{reasoningSummaryLine(text, live ? "live" : "settled")}</span>
+      {expandable ? <span aria-hidden="true" className="chat-think-chevron"><Icon name="chevron" size={12} /></span> : null}
+    </>
+  );
+  if (!expandable) return <div className={`chat-think-chip${live ? " is-live" : ""}`}>{head}</div>;
+  return (
+    <div className={`chat-think${open ? " is-open" : ""}`}>
+      <button className="chat-think-chip" aria-expanded={open} data-activity-toggle="" onClick={() => setOpen(current => !current)} type="button">{head}</button>
+      {open ? (
+        <div className="chat-activity-thinking">
+          <MarkdownContent
+            content={text}
+            onOpenExternal={onOpenExternal}
+            onPreviewFile={onPreviewFile}
+            projectId={projectId}
+            variant="is-thinking"
+          />
+        </div>
+      ) : null}
+    </div>
   );
 });
 

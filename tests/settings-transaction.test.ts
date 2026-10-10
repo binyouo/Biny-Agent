@@ -352,7 +352,7 @@ async function testAppearanceTransaction(): Promise<void> {
   await withFixture(async ({ root, state, agents }) => {
     const transaction = new DesktopSettingsTransaction(state, agents);
     const initial = await transaction.snapshot("project");
-    const appearancePreference = { ...DEFAULT_APPEARANCE, lightTheme: "win98", darkTheme: "longhorn-dark", density: "comfortable" as const };
+    const appearancePreference = { ...DEFAULT_APPEARANCE, lightTheme: "win98", darkTheme: "longhorn-dark" };
     const result = await transaction.save("project", { expectedPreferenceRevision: initial.preferenceRevision, expectedConfigRevision: initial.configRevision, appearancePreference, themePreference: "light" });
     assert.equal(result.status, "committed", JSON.stringify(result));
     assert.deepEqual(result.snapshot.appearancePreference, appearancePreference);

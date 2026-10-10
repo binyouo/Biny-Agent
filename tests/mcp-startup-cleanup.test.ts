@@ -47,15 +47,15 @@ input.on("close", () => {
 `);
 
 try {
-  for (const stage of ["initialize", "tools/list"]) {
-    const suffix = stage.replace("/", "-");
+  for (const [stage, stop] of [["initialize", "close"], ["tools/list", "close"], ["initialize", "timeout"], ["tools/list", "timeout"]] as const) {
+    const suffix = `${stage.replace("/", "-")}-${stop}`;
     const entered = path.join(root, `${suffix}-entered`);
     const closed = path.join(root, `${suffix}-closed`);
     const host = new McpToolHost();
     const config = configSchema.parse({
       ...defaultConfig,
       extensions: { ...defaultConfig.extensions, mcp: {
-        stalled: { enabled: true, command: process.execPath, args: [fixture, stage, entered, closed], stderr: "ignore", timeoutMs: 30_000 }
+        stalled: { enabled: true, command: process.execPath, args: [fixture, stage, entered, closed], stderr: "ignore", startupTimeoutMs: 1_000, timeoutMs: 30_000 }
       } }
     });
     const starting = host.connectConfiguredServers(root, config);
@@ -67,9 +67,11 @@ try {
       pid = Number(await readFile(entered, "utf8"));
       assert.equal(host.listServers()[0]?.connecting, true);
       assert.equal(host.listServers()[0]?.connected, false);
-      await withinDeadline(host.close());
-      assert.equal(existsSync(closed), true, `close must release the stdio child while ${stage} is pending`);
+      // 真实子进程验证启动超时也会回收资源，而不是仅把等待者放行；请求期限仍为 30 秒。
+      if (stop === "close") await withinDeadline(host.close());
       await withinDeadline(starting);
+      assert.equal(existsSync(closed), true, `${stop} must release the stdio child while ${stage} is pending`);
+      if (stop === "timeout") assert.match(host.listServers()[0]?.lastError ?? "", /startup.*timed out/iu);
       assert.equal(host.listServers()[0]?.connecting, false);
       assert.equal(host.listServers()[0]?.connected, false);
       assert.deepEqual(host.createTools(), []);
@@ -78,8 +80,8 @@ try {
       if (pid !== undefined && !existsSync(closed)) {
         try { process.kill(pid, "SIGTERM"); } catch { /* The fixture may have already exited. */ }
       }
-      await withinDeadline(starting);
       await host.close();
+      await withinDeadline(starting);
     }
   }
 

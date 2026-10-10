@@ -11,7 +11,7 @@ registerHooks({ load(url, context, next) {
   return url.endsWith(".css") ? { format: "module", source: "export {};", shortCircuit: true } : next(url, context);
 } });
 
-test("new-chat suggestions load once, submit, and hide on empty results or errors", async (t) => {
+test("new-chat suggestions appear only once loaded, submit, and survive empty or failed refreshes", async (t) => {
   const { JSDOM } = await import("jsdom");
   const dom = new JSDOM('<!doctype html><div id="root"></div>', { url: "https://desktop.local", pretendToBeVisual: true });
   Object.defineProperty(dom.window.HTMLCanvasElement.prototype, "getContext", { value: () => null });
@@ -42,7 +42,7 @@ test("new-chat suggestions load once, submit, and hide on empty results or error
   try {
     await React.act(async () => root.render(React.createElement(Workspace, props)));
     assert.equal(calls, 1, "the new-chat page must consume the activity suggestions API");
-    assert.equal(document.querySelectorAll(".biny-activity-suggestion-skeleton").length, 4);
+    assert.equal(document.querySelectorAll(".biny-activity-suggestions, .biny-activity-suggestion-skeleton").length, 0, "no placeholder is shown before suggestions arrive");
     await React.act(async () => resolve(["继续检查本地索引", "整理最近的工作记录"]));
     const button = document.querySelector<HTMLButtonElement>(".suggestion-chip");
     assert.equal(button?.textContent, "继续检查本地索引");
@@ -62,13 +62,13 @@ test("new-chat suggestions load once, submit, and hide on empty results or error
     assert.equal(calls, 2);
     assert.equal(document.querySelectorAll(".suggestion-chip").length, 2, "refresh retains the last successful suggestions until new data arrives");
     await React.act(async () => resolve([]));
-    assert.equal(document.querySelector(".biny-activity-suggestions"), null);
+    assert.equal(document.querySelectorAll(".suggestion-chip").length, 2, "an empty refresh keeps the suggestions already on screen");
     await React.act(async () => root.render(React.createElement(Workspace, { ...props, loading: true })));
     now += 5 * 60_000;
     fail = true;
     await React.act(async () => root.render(React.createElement(Workspace, props)));
     assert.equal(calls, 3);
-    assert.equal(document.querySelector(".biny-activity-suggestions"), null);
+    assert.equal(document.querySelectorAll(".suggestion-chip").length, 2, "a failed refresh keeps the suggestions already on screen");
     await React.act(async () => window.dispatchEvent(new dom.window.Event("focus")));
     assert.equal(calls, 3, "focus and read errors must not trigger automatic retries");
   } finally {

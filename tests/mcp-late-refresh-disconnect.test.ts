@@ -81,8 +81,9 @@ for (const outcome of ["success", "failure"] as const) {
       const disconnected = host.listServers()[0]!;
       assert.equal(disconnected.connected, false);
       assert.equal(disconnected.connecting, false);
+      assert.equal(disconnected.catalogCached, true);
       assert.match(disconnected.lastError ?? "", /transport closed during fixture tool dispatch/);
-      assert.deepEqual(host.createTools(), []);
+      assert.deepEqual(host.createTools().map(tool => tool.name), ["mcp_fixture_original"]);
       assert.equal(fake.connections[0]!.closes, 0, "logical disconnect has not physically closed the transport");
       const count = snapshots.length;
       fake.finishList(outcome === "success" ? { tools: [definition("obsolete")] } : { error: "Late catalog failure" });
@@ -91,7 +92,7 @@ for (const outcome of ["success", "failure"] as const) {
       assert.equal(snapshots.length, count, "late settlement must not publish a catalog or readiness change");
       assert.equal(registry.get("mcp_fixture_original"), original);
       assert.equal(registry.list().some(tool => tool.name === "mcp_fixture_obsolete"), false);
-      assert.deepEqual(host.createTools(), []);
+      assert.deepEqual(host.createTools().map(tool => tool.name), ["mcp_fixture_original"]);
       assert.equal(fake.connections.length, 1, "a stale refresh cannot reconnect");
       assert.equal(fake.connections[0]!.calls, 1, "an uncertain tool dispatch cannot be replayed");
 

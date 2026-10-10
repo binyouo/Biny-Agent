@@ -112,6 +112,10 @@ for (const change of ["removed tool", "changed schema", "disconnect", "failed re
         assert.match(echo.description, /Read a number/);
         assert.equal(echo.risk, "read");
         assert.equal(echo.exposure, "direct");
+      } else if (change === "disconnect") {
+        assert.deepEqual(remoteCatalog(), original, "a disconnect retains the last successful catalog for lazy reconnect");
+        assert.equal(runtime.mcp.listServers()[0]?.connected, false, "cached metadata cannot report a live connection");
+        assert.equal(runtime.mcp.listServers()[0]?.catalogCached, true);
       } else if (change === "rejected live refresh") assert.deepEqual(remoteCatalog(), original, "a live refresh failure retains its last complete catalog");
       else assert.deepEqual(remoteCatalog().map((tool) => tool.name), change === "removed tool" ? ["mcp_fixture_echo"] : [],
         "the user-facing catalog must not retain detached or removed remote tools");

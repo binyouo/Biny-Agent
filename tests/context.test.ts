@@ -167,10 +167,10 @@ async function main(): Promise<void> {
     await testRestoreWithoutPersistedBudgetUsesHistoryEstimate();
     await testSessionReplayAndAgentResume();
     await testCrystalHistoricalMaterial();
-    await testCrystalCurrentRunSkipsHistoricalAnchors();
+    await testCrystalCurrentRunAnchors();
     await testCrystalSemanticDotProduct();
     await testCrystalDormancyWithoutNewAnchors();
-    await testCrystalFailedAndCancelledTurns();
+    await testCrystalFailedAndCancelledTurnContribution();
     await testTemporalCluesFromDurableFailedAndCancelledMessages();
     await testCheckpointIsResumeTruthSource();
     await testCheckpointPersistenceFailureStopsSession();
@@ -2238,14 +2238,16 @@ function hasToolResult(message: AgentMessage | undefined, toolCallId: string): b
   return message?.role === "toolResult" && message.toolCallId === toolCallId;
 }
 
-async function testCrystalFailedAndCancelledTurns(): Promise<void> {
-  for (const status of ["failed", "cancelled"] as const) {
+async function testCrystalFailedAndCancelledTurnContribution(): Promise<void> {
+  for (const { status, contribute } of [
+    { status: "failed", contribute: false }, { status: "failed", contribute: true },
+    { status: "cancelled", contribute: false }, { status: "cancelled", contribute: true }
+  ] as const) {
     await withTempWorkspace(async (workspaceRoot) => {
       await ensureAgentDirs(workspaceRoot);
       const config = testConfig();
       config.context.memory.useMemories = false;
-      // 终止回合仍贡献其已落盘输入，前提是该回合明确开启贡献。
-      config.context.memory.generateMemories = true;
+      config.context.memory.generateMemories = contribute;
       const model: AgentModel = { provider: "test", modelId: "terminal-crystal", stream: async () => { throw new Error("Terminal fixture model failure"); } };
       const agent = new AgentSession({ workspaceRoot, config, model, toolRegistry: new ToolRegistry(), permissionManager: new PermissionManager({ ...config.permission, source: "test" }), recorder: new SessionRecorder(workspaceRoot) });
       await agent.initialize();
@@ -2260,7 +2262,8 @@ async function testCrystalFailedAndCancelledTurns(): Promise<void> {
       } finally {
         await agent.close();
       }
-      assert.deepEqual(seen, [input]);
+      assert.deepEqual(seen, contribute ? [input] : [],
+        "Durable failed and cancelled turns contribute Crystal anchors only when that turn enabled contribution.");
     });
   }
 }
@@ -2417,7 +2420,6 @@ async function testCrystalDormancyWithoutNewAnchors(): Promise<void> {
     await ensureAgentDirs(workspaceRoot);
     const config = testConfig();
     config.context.memory.useMemories = false;
-    // 开启贡献调度维护，即使当前 run 没有新的用户锚点。
     config.context.memory.generateMemories = true;
     const recorder = new SessionRecorder(workspaceRoot, "crystal-aging");
     recorder.record({ type: "user_message", messageId: "aging-processed", content: "Already processed topic" });
@@ -2451,7 +2453,7 @@ async function testCrystalDormancyWithoutNewAnchors(): Promise<void> {
   });
 }
 
-async function testCrystalCurrentRunSkipsHistoricalAnchors(): Promise<void> {
+async function testCrystalCurrentRunAnchors(): Promise<void> {
   await withTempWorkspace(async (workspaceRoot) => {
     await ensureAgentDirs(workspaceRoot);
     const saved = new SessionRecorder(workspaceRoot, "crystal-backfill");
@@ -2629,14 +2631,19 @@ async function testCrystalHistoricalMaterial(): Promise<void> {
       await agent.runTask("Keep ShutdownEvidence across shutdown.");
       let closed = false;
       const closing = agent.close().then(() => { closed = true; });
+      let entryTimeout: ReturnType<typeof setTimeout> | undefined;
       try {
         const first = await Promise.race([
           entered.promise.then(() => "extraction"),
-          closing.then(() => "closed")
+          closing.then(() => "closed"),
+          new Promise<never>((_resolve, reject) => {
+            entryTimeout = setTimeout(() => reject(new Error("Crystal extraction did not start for the contributing turn.")), 10_000);
+          })
         ]);
         assert.equal(first, "extraction", "Agent closed before the opted-in shutdown extraction started");
         assert.equal(closed, false);
       } finally {
+        clearTimeout(entryTimeout);
         released.resolve();
         await closing;
       }

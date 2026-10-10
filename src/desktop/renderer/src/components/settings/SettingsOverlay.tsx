@@ -447,8 +447,6 @@ function SettingsOverlayContent({
             onThemeChange={settingsDraft.setThemePreference}
             font={settingsDraft.draft?.fontPreference ?? fontPreference}
             onFontChange={settingsDraft.setFontPreference}
-            density={(settingsDraft.draft?.appearancePreference ?? appearancePreference ?? DEFAULT_APPEARANCE).density}
-            onDensityChange={density => settingsDraft.setAppearancePreference({ ...(settingsDraft.draft?.appearancePreference ?? appearancePreference ?? DEFAULT_APPEARANCE), density })}
           /> : null}
           {activeTab === "通用" ? <div className="settings-preferences"><SettingsToolModel onTest={onTestModelConfiguration} /><SettingsVisionModel /><SettingsQuickChat /></div> : null}
           {activeTab === "配色" ? <SettingsThemes

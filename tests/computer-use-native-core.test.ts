@@ -183,3 +183,42 @@ print("gesture contracts passed")`);
     assert.match(execFileSync(binary, { encoding: "utf8", timeout: 5000 }), /gesture contracts passed/);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
+
+test("原生观察按调用方和窗口隔离，拒绝过期、错配与重复输入且限制容量", { skip: process.platform !== "darwin" }, async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "biny-observation-core-"));
+  try {
+    const source = path.join(directory, "main.swift");
+    await writeFile(source, `import Foundation
+var now: TimeInterval = 0
+let store = ComputerObservations<String>(limit: 3, now: { now })
+func save(_ id: String, _ owner: String, _ window: Int, _ element: String) {
+  store.save(id: id, owner: owner, pid: 12, windowID: window, elements: ["e1": element], geometry: ["x": Double(window)])
+}
+func refuses(_ id: String, _ owner: String, _ window: Int) {
+  do { _ = try store.take(id: id, owner: owner, pid: 12, windowID: window); fatalError("错误观察被用于输入") }
+  catch { precondition(error.localizedDescription.hasPrefix("observation_invalid")) }
+}
+save("a", "client-a", 42, "窗口甲")
+save("b", "client-b", 43, "窗口乙")
+refuses("a", "client-b", 42)
+refuses("a", "client-a", 43)
+let first = try store.take(id: "a", owner: "client-a", pid: 12, windowID: 42)
+precondition(first.elements["e1"] == "窗口甲" && first.geometry["x"] == 42)
+refuses("a", "client-a", 42)
+let second = try store.take(id: "b", owner: "client-b", pid: 12, windowID: 43)
+precondition(second.elements["e1"] == "窗口乙")
+save("old", "client-a", 42, "旧")
+save("new", "client-a", 42, "新")
+refuses("old", "client-a", 42)
+now = 60
+refuses("new", "client-a", 42)
+for i in 0..<4 { now += 1; save("\\(i)", "client-\\(i)", i + 1, "元素") }
+refuses("0", "client-0", 1)
+precondition(first.elements["e1"] == "窗口甲", "新观察不能修改已取得的输入副本")
+print("observation contracts passed")
+`);
+    const executable = path.join(directory, "test");
+    execFileSync("xcrun", ["swiftc", "-swift-version", "5", "native/computer-use/Observations.swift", source, "-o", executable], { timeout: 30_000 });
+    assert.match(execFileSync(executable, { encoding: "utf8", timeout: 5_000 }), /observation contracts passed/);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});

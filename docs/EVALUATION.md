@@ -28,6 +28,18 @@ biny eval compare baseline.json candidate.json
 
 执行前固定模型、端点协议、思考配置、步数与费用预算、工作区、记忆策略及 verifier。隔离会话与记忆，避免前次运行内容影响新结果。随机性较大的任务需要重复运行，并保留每次原始输出与状态。
 
+## 工具预选消融
+
+在开发仓库中运行：
+
+```bash
+pnpm exec electron benchmarks/tool-preselection.mjs /absolute/new-output-dir 3
+```
+
+该入口使用当前聊天模型和指定辅助模型（省略时取自动选择的首个可用配置），比较每回合辅助预选与基础/历史工具加按需 ToolSearch。使用真实模型请求、48 个合成扩展工具和工作区 Read，覆盖基础读取、新能力发现、历史复用及有依赖的工具调用。每次独立会话，关闭记忆和技能，交替运行顺序；仅模拟外部业务数据，不访问真实 MCP 服务。凭据通过 Electron 的既有存储读取，不写入报告或修改用户配置。
+
+输出保留任务、源码摘要、原始模型输出、工具审计及逐回合 verifier。成功要求执行预期调用并给出正确答案，不能只依据模型的 completed。统计任务成功率、从回合开始到首个主模型请求的延迟、搜索次数和主/辅助模型合计 token；缺失用量保留未知。Provider 缓存和网络波动未被控制，小样本结果不能直接外推到其他模型、目录或 Code Mode。
+
 ## Terminal-Bench
 
 仓库提供 [Harbor 接入说明](../scripts/evals/harbor/README.md) 与相应 adapter。Harbor 管理任务环境，官方 verifier 检查实际产物；Agent 回答文本不参与最终通过判定。

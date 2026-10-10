@@ -5,12 +5,18 @@
  */
 import { z } from "zod";
 export const capabilitySelectionModeSchema = z.enum(["auto", "all", "none"]);
-const customCapabilityNamesSchema = z.array(z.string().trim().min(1).max(240)).max(512);
+const capabilityNamesSchema = z.array(z.string().trim().min(1).max(240));
+const customCapabilityNamesSchema = capabilityNamesSchema.max(512);
 export const capabilitySelectionValueSchema = z.union([capabilitySelectionModeSchema, customCapabilityNamesSchema]);
 export const agentCapabilitySelectionSchema = z.object({
   tools: capabilitySelectionValueSchema,
   skills: capabilitySelectionValueSchema
 }).strict();
+
+/** 会话累计结果可超过单次手选上限，名称与模式校验仍保持一致。 */
+export const resolvedCapabilitySelectionSchema = agentCapabilitySelectionSchema.extend({
+  tools: z.union([capabilitySelectionModeSchema, capabilityNamesSchema])
+});
 
 export type CapabilitySelectionMode = z.infer<typeof capabilitySelectionModeSchema>;
 export type CapabilitySelectionValue = z.infer<typeof capabilitySelectionValueSchema>;

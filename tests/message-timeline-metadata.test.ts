@@ -228,3 +228,10 @@ test("live dedupe truncates metadata with the historical prefix and keeps increm
   assert.deepEqual(persisted, buildSessionTimeline(events, []));
   assert.deepEqual(persisted[0]?.capabilitySelection, selection("After live cutoff"));
 });
+
+// 累计结果和手选输入使用不同上限；历史投影不能丢掉超过 512 个工具的合法结果。
+test("timeline preserves cumulative tools beyond the manual selection limit", () => {
+  const cumulative = { tools: Array.from({ length: 520 }, (_, index) => `tool_${index}`), skills: [] };
+  assert.equal(agentCapabilitySelectionSchema.safeParse(cumulative).success, false, "the manual input limit remains enforced");
+  assert.deepEqual(buildSessionTimeline([user("cumulative", { capabilitySelection: cumulative })], [])[0]?.capabilitySelection, cumulative);
+});

@@ -876,6 +876,7 @@ export interface DesktopMcpServerSummary {
   args: string[];
   cwd?: string;
   stderr?: "ignore" | "inherit" | "pipe";
+  startupTimeoutMs?: number;
   timeoutMs?: number;
   enabled: boolean;
   state: DesktopMcpServerState;
@@ -920,6 +921,7 @@ export interface DesktopMcpServerDraft {
   stderr?: "ignore" | "inherit" | "pipe";
   url?: string;
   remoteProtocol?: DesktopMcpRemoteProtocol;
+  startupTimeoutMs?: number;
   timeoutMs?: number;
   env: DesktopMcpFieldMutation[];
   headers: DesktopMcpFieldMutation[];

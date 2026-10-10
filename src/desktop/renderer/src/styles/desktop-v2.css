@@ -4531,7 +4531,7 @@ select option:disabled {
 .provider-model-list {
   display: flex;
   flex-direction: column;
-  max-height: max(16rem, calc(100dvh - 40rem));
+  max-height: max(256px, calc(100dvh - 640px));
   overflow-y: auto;
   border: 1px solid var(--border);
   border-radius: var(--st-radius);

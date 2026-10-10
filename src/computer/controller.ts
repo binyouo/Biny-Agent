@@ -7,7 +7,8 @@ import { computerActionSchema, computerImageSchema, computerMirrorSchema, window
 export interface DriverReply { data: Record<string, unknown>; images: ComputerImage[]; errorCode?: string }
 export interface ComputerDriver {
   start(): Promise<void>; stop(): Promise<void>;
-  list(session: string, pid: number | undefined, signal: AbortSignal): Promise<DriverReply>;
+  launchApp?(bundleId: string, signal?: AbortSignal): Promise<DriverReply>;
+  list(session: string, pid: number | undefined, signal: AbortSignal, days?: number): Promise<DriverReply>;
   observe(session: string, target: WindowObserve, signal: AbortSignal): Promise<DriverReply>;
   act(session: string, action: ComputerAction, signal: AbortSignal): Promise<DriverReply>;
   mirror?(operation: ComputerMirrorRequest["operation"], args: Record<string, unknown>): Promise<DriverReply>;
@@ -23,6 +24,7 @@ interface ControllerOptions {
   preview?: (frame: ComputerPreview | undefined) => void;
   refreshPreview?: (target: WindowTarget | undefined, signal: AbortSignal) => Promise<ComputerPreview | undefined>;
   authorize?: (session: string, target: WindowTarget, signal: AbortSignal) => Promise<string>;
+  authorizeLaunch?: (bundleId: string, signal: AbortSignal) => Promise<void>;
   setPreviewVisible?: (visible: boolean) => void;
   previewIdleMs?: number;
   externalMirrors?: boolean;
@@ -197,12 +199,12 @@ export class ComputerUseController {
     this.mirrors.clear();
   }
   private now(): number { return (this.options.now ?? Date.now)(); }
-  private enqueue<T>(session: string, signal: AbortSignal | undefined, operation: (signal: AbortSignal, generation: number) => Promise<T>): Promise<T> {
+  private enqueue<T>(session: string, signal: AbortSignal | undefined, operation: (signal: AbortSignal, generation: number) => Promise<T>, observation = false): Promise<T> {
     const generation = this.generation;
     const run = this.tail.then(async () => {
       signal?.throwIfAborted();
       if (generation !== this.generation) throw new Error("computer_queue_invalidated");
-      if (this.snapshot.state !== "ready") throw new Error(`computer_${this.snapshot.state}`);
+      if (this.snapshot.state !== "ready" && !(observation && this.snapshot.state === "unknown")) throw new Error(`computer_${this.snapshot.state}`);
       if (this.snapshot.owner && this.snapshot.owner !== session) throw new Error("computer_owner_conflict");
       this.snapshot.owner = session;
       const controller = new AbortController(); this.active = controller;
@@ -210,14 +212,26 @@ export class ComputerUseController {
       try {
         await this.ensureStarted(controller.signal, generation);
         controller.signal.throwIfAborted();
-        if (generation !== this.generation || this.snapshot.state !== "ready") throw new Error("computer_start_cancelled");
+        if (generation !== this.generation || (this.snapshot.state !== "ready" && !(observation && this.snapshot.state === "unknown"))) throw new Error("computer_start_cancelled");
         return await operation(controller.signal, generation);
       }
       finally { signal?.removeEventListener("abort", abort); if (this.active === controller) this.active = undefined; }
     });
     this.tail = run.then(() => undefined, () => undefined); return run;
   }
-  list(session: string, pid?: number, signal?: AbortSignal): Promise<DriverReply> { return this.enqueue(session, signal, s => this.driver.list(session, pid, s)); }
+  launch(session: string, bundleId: string, signal?: AbortSignal): Promise<DriverReply> {
+    bundleId = z.string().min(1).max(256).parse(bundleId);
+    return this.enqueue(session, signal, async (s, generation) => {
+      if (!this.driver.launchApp || !this.options.authorizeLaunch) throw new Error("computer_launch_unavailable");
+      await this.options.authorizeLaunch(bundleId, s);
+      s.throwIfAborted();
+      if (generation !== this.generation) throw new Error("computer_authorization_invalidated");
+      this.capture = undefined;
+      try { return await this.driver.launchApp(bundleId, s); }
+      catch { throw new ToolOutcomeUnknownError("interrupted", "应用启动结果未知，请先查询是否已运行，不要重复启动。"); }
+    });
+  }
+  list(session: string, pid?: number, signal?: AbortSignal, days?: number): Promise<DriverReply> { return this.enqueue(session, signal, s => this.driver.list(session, pid, s, days)); }
   mirror(session: string, input: ComputerMirrorRequest, signal?: AbortSignal): Promise<DriverReply> {
     const request = computerMirrorSchema.parse(input);
     const mirrorGeneration = this.mirrorGeneration;
@@ -264,7 +278,7 @@ export class ComputerUseController {
   }
   observe(session: string, target: WindowObserve, signal?: AbortSignal): Promise<DriverReply> {
     target = windowObserveSchema.parse(target);
-    return this.enqueue(session, signal, (s, generation) => this.captureWindow(session, target, s, generation));
+    return this.enqueue(session, signal, (s, generation) => this.captureWindow(session, target, s, generation), true);
   }
   private async captureWindow(session: string, observation: WindowObserve, signal: AbortSignal, generation: number): Promise<DriverReply> {
     const target = { pid: observation.pid, windowId: observation.windowId };
@@ -279,6 +293,7 @@ export class ComputerUseController {
     const images = reply.images.map(image => computerImageSchema.parse(image));
     if (images.length !== 1) throw new Error("computer_observation_requires_one_image");
     const at = this.now();
+    if (this.snapshot.state === "unknown") { this.snapshot.state = "ready"; this.snapshot.diagnostic = undefined; }
     this.capture = { id: data.capture_id, target, observation: { ...observation }, appId, at, width: data.screenshot_width, height: data.screenshot_height, tokens: new Set(data.elements?.flatMap(element => element.element_token ? [element.element_token] : []) ?? []) };
     if (this.snapshot.preview) this.options.preview?.({ image: images[0]!, target, capturedAt: at });
     return { ...reply, data: { ...reply.data, foregroundAllowed: this.snapshot.foregroundAllowed }, images };
@@ -322,14 +337,14 @@ export class ComputerUseController {
       try {
         const observation = await this.captureWindow(session, capture.observation, s, generation);
         if (observation.errorCode) return this.verificationUnavailable(result, status, observation.errorCode, generation);
-        return { data: { ...observation.data, status, action: result.data, observation: { available: true }, doNotRepeat: true }, images: observation.images };
+        return { data: { ...observation.data, status, action: result.data, verificationRequired: true, observationRequired: false, observation: { available: true }, doNotRepeat: true }, images: observation.images };
       } catch (error) {
         return this.verificationUnavailable(result, status, `computer_verification_interrupted: ${error instanceof Error ? error.message : String(error)}`, generation);
       }
     });
   }
   private verificationUnavailable(result: DriverReply, status: ComputerStatus["lastOutcome"], reason: string, generation: number): DriverReply {
-    if (generation === this.generation) { this.invalidate(); this.snapshot.state = "paused"; this.snapshot.lastOutcome = status; this.snapshot.diagnostic = `Input ${status}; observation unavailable: ${reason}. Do not repeat the input.`; }
-    return { data: { status, action: result.data, observation: { available: false, reason }, observationRequired: true, workflowInterrupted: true, doNotRepeat: true }, images: [], errorCode: status === "refused" ? result.errorCode : undefined };
+    if (generation === this.generation) { this.invalidate(); this.snapshot.state = "unknown"; this.snapshot.lastOutcome = status; this.snapshot.diagnostic = `Input ${status}; observation unavailable: ${reason}. Do not repeat the input.`; }
+    return { data: { status, action: result.data, verificationRequired: status !== "refused", observation: { available: false, reason }, observationRequired: true, workflowInterrupted: true, doNotRepeat: true }, images: [], errorCode: status === "refused" ? result.errorCode : undefined };
   }
 }

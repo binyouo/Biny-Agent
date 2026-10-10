@@ -35,25 +35,52 @@ interface Conversation {
 }
 interface NodeRecord { key: string; parent: string | null; message: unknown; record: number }
 
+/** One bounded source snapshot; raw records stay private and events are materialized only on selection. */
+export interface PreparedChatGptSource {
+  list(): ChatGptConversationSummary[];
+  records(digest: (serialized: string) => string): Iterable<{ summary: ChatGptConversationSummary; stableId: boolean; contentHash: () => string }>;
+  importConversation(conversationId?: string): ImportedChatGptConversation;
+}
+
+export function prepareChatGptSource(raw: string, sourcePath: string): PreparedChatGptSource {
+  const conversations = parseConversations(raw, sourcePath);
+  const byId = new Map(conversations.map((conversation) => [conversation.selectionId, conversation]));
+  return {
+    list: () => conversations.map(summarizeConversation),
+    *records(digest) {
+      for (const conversation of conversations) yield { summary: summarizeConversation(conversation),
+        stableId: conversation.sourceId !== undefined, contentHash: () => digest(JSON.stringify(conversation.value)) };
+    },
+    importConversation(conversationId) {
+      if (!conversationId && conversations.length !== 1) throw new Error("ChatGPT 导出包含多个会话，请选择要导入的会话。");
+      const conversation = conversationId ? byId.get(conversationId) : conversations[0];
+      if (!conversation) throw new Error("选择的 ChatGPT 会话不存在，请重新选择。");
+      return convertConversation(conversation);
+    }
+  };
+}
+
 export function listChatGptConversations(raw: string, sourcePath: string): ChatGptConversationSummary[] {
-  return parseConversations(raw, sourcePath).map((conversation) => {
-    let messageCount = 0;
-    let importError: string | undefined;
-    try {
-      messageCount = activeChain(conversation.value).filter((node) => isRecord(node.message) && publicMessage(node.message)
-        && readableContent(node.message).text.trim().length > 0).length;
-      if (!messageCount) importError = "ChatGPT 会话没有可导入的公开文本。";
-    } catch (error) { importError = error instanceof Error ? error.message : String(error); }
-    return { id: conversation.selectionId, title: conversation.title, createdAt: conversation.createdAt,
-      updatedAt: conversation.updatedAt, messageCount, importError };
-  });
+  return prepareChatGptSource(raw, sourcePath).list();
+}
+
+function summarizeConversation(conversation: Conversation): ChatGptConversationSummary {
+  let messageCount = 0;
+  let importError: string | undefined;
+  try {
+    messageCount = activeChain(conversation.value).filter((node) => isRecord(node.message) && publicMessage(node.message)
+      && readableContent(node.message).text.trim().length > 0).length;
+    if (!messageCount) importError = "ChatGPT 会话没有可导入的公开文本。";
+  } catch (error) { importError = error instanceof Error ? error.message : String(error); }
+  return { id: conversation.selectionId, title: conversation.title, createdAt: conversation.createdAt,
+    updatedAt: conversation.updatedAt, messageCount, importError };
 }
 
 export function importChatGptConversation(raw: string, sourcePath: string, conversationId?: string): ImportedChatGptConversation {
-  const conversations = parseConversations(raw, sourcePath);
-  if (!conversationId && conversations.length !== 1) throw new Error("ChatGPT 导出包含多个会话，请选择要导入的会话。");
-  const conversation = conversationId ? conversations.find((entry) => entry.selectionId === conversationId) : conversations[0];
-  if (!conversation) throw new Error("选择的 ChatGPT 会话不存在，请重新选择。");
+  return prepareChatGptSource(raw, sourcePath).importConversation(conversationId);
+}
+
+function convertConversation(conversation: Conversation): ImportedChatGptConversation {
   const events: SessionEvent[] = [];
   const skippedContentIssues: ChatGptSkippedContentIssue[] = [];
   const identity = createImportedMessageIdentity();

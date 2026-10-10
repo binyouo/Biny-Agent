@@ -37,11 +37,12 @@ function fakeServer(tools: Tool[]) {
 }
 
 for (const fixture of [
-  { label: "punctuation normalization", names: ["foo.bar", "foo_bar"], normalized: "foo_bar" },
-  { label: "42-character truncation", names: [`${"x".repeat(42)}first`, `${"x".repeat(42)}second`], normalized: "x".repeat(42) },
-  { label: "reversed punctuation order", names: ["foo_bar", "foo.bar"], normalized: "foo_bar" }
+  { label: "punctuation normalization", names: ["foo.bar", "foo_bar"] },
+  { label: "42-character truncation", names: [`${"x".repeat(42)}first`, `${"x".repeat(42)}second`] },
+  { label: "reversed punctuation order", names: ["foo_bar", "foo.bar"] },
+  { label: "duplicate remote name", names: ["duplicate", "duplicate"] }
 ]) {
-  await test(`runtime catalog preserves the first winner for ${fixture.label}`, { timeout: 10_000 }, async () => {
+  await test(`runtime catalog preserves distinct definitions and deduplicates identical names for ${fixture.label}`, { timeout: 10_000 }, async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "biny-mcp-collision-"));
     const previousAgentDir = process.env.BINY_AGENT_DIR;
     process.env.BINY_AGENT_DIR = path.join(root, "agent");
@@ -51,7 +52,6 @@ for (const fixture of [
     const requestCount = fakeServer([first, second, definition("unrelated")]);
     let runtime: CommandRuntime | undefined;
     try {
-      const normalized = `mcp_fixture_${fixture.normalized}`;
       const providerAlias = `collision-fixture-${randomUUID()}`;
       const config = configSchema.parse({ ...defaultConfig, defaultModel: providerAlias, toolModel: undefined,
         providers: { [providerAlias]: { type: "openai-compatible", baseUrl: "https://unused-model.invalid/v1", requiresApiKey: false } },
@@ -71,8 +71,8 @@ for (const fixture of [
       const counts = runtime.extensionStatus().toolCounts;
       const requests = requestCount();
       const catalog = runtime.listTools();
-      const winners = catalog.filter(tool => tool.name === normalized);
-      assert.equal(winners.length, 1, "one catalog entry must match the execution registry's first-winner name");
+      const winners = catalog.filter(tool => tool.description.startsWith(`[MCP fixture/${first.name}]`));
+      assert.equal(winners.length, 1, "each original remote name has exactly one catalog entry");
       const winner = winners[0]!;
       assert.equal(winner.source, "mcp");
       assert.match(winner.description, /Read a number/u);
@@ -81,6 +81,18 @@ for (const fixture of [
       assert.equal(winner.risk, "read");
       assert.equal(winner.exposure, "direct");
       assert.equal(winner.namespace?.name, "fixture");
+      const remote = catalog.filter(tool => tool.namespace?.name === "fixture");
+      assert.equal(remote.length, first.name === second.name ? 2 : 3);
+      if (first.name !== second.name) {
+        const other = remote.find(tool => tool.description.startsWith(`[MCP fixture/${second.name}]`));
+        assert.ok(other, "lossy names must retain the second remote definition");
+        assert.notEqual(other.name, winner.name);
+        assert.deepEqual(other.parameters, second.inputSchema);
+        assert.deepEqual(other.outputSchema, second.outputSchema);
+        assert.equal(other.risk, "execute");
+        assert.equal(other.exposure, "codemode");
+      }
+
       assert.equal(new Set(catalog.map(tool => tool.name)).size, catalog.length);
       assert.ok(catalog.some(tool => tool.name === "mcp_fixture_unrelated"));
       assert.ok(catalog.some(tool => tool.name === "Read" && tool.source === "builtin"));

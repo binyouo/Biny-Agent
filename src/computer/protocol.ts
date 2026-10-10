@@ -14,6 +14,7 @@ export const computerSettingsSchema = z.object({
 export const maxComputerImageBytes = 1024 * 1024;
 export const windowTargetSchema = z.object({ pid: z.number().int().positive().max(2147483647), windowId: z.string().regex(/^[1-9][0-9]{0,19}$/) }).strict();
 export type WindowTarget = z.infer<typeof windowTargetSchema>;
+export const computerListSchema = z.object({ pid: windowTargetSchema.shape.pid.optional(), days: z.number().int().min(0).max(90).optional() }).strict();
 
 export const computerMirrorSchema = z.object({
   operation: z.enum(["open", "close", "list"]),
@@ -30,10 +31,10 @@ export type ComputerMirrorRequest = z.infer<typeof computerMirrorSchema>;
 
 /** 观察选项不属于窗口身份；审批与动作目标只使用 pid/windowId。 */
 export const windowObserveSchema = windowTargetSchema.extend({
+  maxElements: z.number().int().positive().max(1000).optional(),
   depth: z.number().int().min(1).max(20).optional(),
   screenshotMaxWidth: z.number().int().positive().optional(),
   interactiveOnly: z.boolean().optional(),
-  autoLaunch: z.boolean().optional(),
 });
 export type WindowObserve = z.infer<typeof windowObserveSchema>;
 export const computerActionSchema = windowTargetSchema.extend({
@@ -72,7 +73,7 @@ export const computerActionSchema = windowTargetSchema.extend({
   if (value.action === "type_text" && value.text === undefined) context.addIssue({ code: "custom", message: "type_text requires text" });
   if (value.action === "type_text" && value.inputMethod === "ax" && !value.elementToken) context.addIssue({ code: "custom", message: "type_text with inputMethod=ax requires a fresh elementToken" });
   if (value.action === "press_key" && !value.key) context.addIssue({ code: "custom", message: "press_key requires key" });
-  if (value.action === "scroll" && (!value.elementToken || !value.direction)) context.addIssue({ code: "custom", message: "scroll requires elementToken and direction" });
+  if (value.action === "scroll" && (!value.direction || (!value.elementToken && (value.x === undefined || value.y === undefined)) || (value.x === undefined) !== (value.y === undefined))) context.addIssue({ code: "custom", message: "scroll requires direction and an elementToken or complete x/y coordinates" });
   if (value.action === "drag" && (value.x1 === undefined || value.y1 === undefined || value.x2 === undefined || value.y2 === undefined)) context.addIssue({ code: "custom", message: "drag requires x1, y1, x2 and y2" });
   if (value.action === "perform_secondary_action" && !value.elementToken && (value.x === undefined || value.y === undefined)) context.addIssue({ code: "custom", message: "perform_secondary_action requires elementToken or screenshot coordinates" });
   if (value.action === "set_value" && (!value.elementToken || value.value === undefined)) context.addIssue({ code: "custom", message: "set_value requires elementToken and value" });

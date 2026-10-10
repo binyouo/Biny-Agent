@@ -1,10 +1,8 @@
-/** Automatic schemas stay bounded; explicit choices and discovery remain authoritative. */
+/** Bound new automatic choices without evicting accumulated tools or widening MCP servers. */
 import assert from "node:assert/strict";
 import { preselectCapabilities } from "../src/agent/capabilityPreselection.js";
 import { defaultConfig } from "../src/config/schema.js";
 import type { AgentModel, ModelStreamEvent } from "../src/agent/core/types.js";
-import { recentAutomaticToolNames } from "../src/agent/automaticToolHistory.js";
-import type { SessionEvent } from "../src/session/recorder.js";
 
 const catalog = Array.from({ length: 200 }, (_, index) => ({
   name: `mcp_docs_${index}`, description: `Read document ${index}`, source: "mcp" as const,
@@ -20,16 +18,16 @@ const model: AgentModel = {
   })()
 };
 const input = {
-  input: "Read the latest document", history: [], previousTools: catalog.map((tool) => tool.name),
+  input: "Read the latest document", history: [], previousTools: catalog.slice(0, 10).map((tool) => tool.name),
   config: defaultConfig, tools: [...foundation, ...catalog], skills: [], models: [{ model, failureDomain: "test-selector" }],
-  automaticToolBudget: { maxTools: 2, maxSchemaCharacters: 1000, maxPreviousTools: 1 }
+  automaticToolBudget: { maxTools: 2, maxSchemaCharacters: 1000 }
 };
 const result = await preselectCapabilities(input);
 assert.ok(Array.isArray(result.tools));
-assert.equal(result.tools.filter((name) => name.startsWith("mcp_")).length, 2,
-  "auto mode must not expand one MCP selection into an entire server or retain unbounded history");
-assert.ok(result.tools.includes("mcp_docs_199"), "current selection precedes retained history");
-assert.ok(result.tools.includes("mcp_docs_0"), "previousTools are explicitly ordered most recent first");
+assert.equal(result.tools.filter((name) => name.startsWith("mcp_")).length, 11,
+  "retain every historical choice beyond eight tools while adding only the selected MCP tool");
+assert.ok(result.tools.includes("mcp_docs_199"), "newly selected tools join accumulated history");
+assert.ok(result.tools.includes("mcp_docs_0"), "the oldest selection remains available");
 for (const tool of foundation) assert.ok(result.tools.includes(tool.name), `${tool.name} stays available`);
 
 const huge = { ...catalog[0]!, name: "huge", description: "x".repeat(2000) };
@@ -52,29 +50,16 @@ assert.equal((await preselectCapabilities({ ...input, selection: { tools: "none"
 
 const noModel = await preselectCapabilities({ ...input, models: [] });
 assert.ok(Array.isArray(noModel.tools));
-assert.equal(noModel.tools.filter((name) => name.startsWith("mcp_")).length, 1, "selector failure fallback has its own retention cap");
+assert.equal(noModel.tools.filter((name) => name.startsWith("mcp_")).length, 10, "missing selector must preserve accumulated history");
 selection = [];
-const freshChat = await preselectCapabilities(input);
+const freshChat = await preselectCapabilities({ ...input, previousTools: [] });
 assert.ok(Array.isArray(freshChat.tools));
-assert.equal(freshChat.tools.filter((name) => name.startsWith("mcp_")).length, 1);
-const turns: SessionEvent[] = [{ type: "user_message", messageId: "original", content: "docs", metadata: {
-  automaticToolSelection: true, capabilitySelection: { tools: ["mcp_docs_0"], skills: [] }
-} }];
-const active = new Set(["original"]);
-for (let index = 0; index < 5; index++) {
-  let fresh: string[] | undefined;
-  const next = await preselectCapabilities({ ...input,
-    previousTools: recentAutomaticToolNames(turns, active),
-    onAutomaticToolsSelected: (names: readonly string[]) => { fresh = [...names]; }
-  });
-  const id = `turn${index}`;
-  active.add(id);
-  turns.push({ type: "user_message", messageId: id, content: "unrelated greeting", metadata: {
-    automaticToolSelection: true, capabilitySelection: next, automaticToolFreshSelection: fresh
-  } });
-  if (index >= 3) {
-    assert.ok(Array.isArray(next.tools));
-    assert.ok(!next.tools.includes("mcp_docs_0"), "retained history cannot renew its own three-turn lifetime");
-  }
-}
+assert.equal(freshChat.tools.filter((name) => name.startsWith("mcp_")).length, 0);
+const largeHistory = await preselectCapabilities({ ...input, models: [],
+  previousTools: [...catalog.map((tool) => tool.name), huge.name, "removed_tool"],
+  tools: [...input.tools, huge], automaticToolBudget: { maxTools: 0, maxSchemaCharacters: 0 }
+});
+assert.ok(Array.isArray(largeHistory.tools));
+assert.deepEqual(largeHistory.tools, [...foundation.map((tool) => tool.name), ...catalog.map((tool) => tool.name), huge.name],
+  "new-selection budgets cannot evict any previously admitted tool; missing registrations stay excluded");
 console.log("capability budget tests passed");

@@ -11,7 +11,7 @@ import type { DriverReply } from "./controller.js";
 import { computerImageSchema } from "./protocol.js";
 
 export const desktopComputerMcpName = "computer-use";
-const toolMethods: Record<string, string> = { ComputerList: "list", ComputerObserve: "observe", ComputerAction: "action", ComputerMirror: "mirror" };
+const toolMethods: Record<string, string> = { ComputerLaunch: "launch", ComputerList: "list", ComputerObserve: "observe", ComputerAction: "action", ComputerMirror: "mirror" };
 const replySchema = z.object({ data: z.record(z.unknown()), errorCode: z.string().optional(), images: z.array(computerImageSchema) });
 
 export function attachDesktopComputerMcp(host: McpToolHost, endpoint: BrowserAutomationEndpoint): Promise<void> {
@@ -49,7 +49,7 @@ export function attachDesktopComputerMcp(host: McpToolHost, endpoint: BrowserAut
       z.literal(identity).parse(request.params._meta?.["biny/endpoint-id"]);
       const args = tool.schema.parse(request.params.arguments ?? {}) as Record<string, unknown>;
       const method = toolMethods[tool.name]!;
-      const mutation = method === "action" || method === "mirror";
+      const mutation = method === "action" || method === "mirror" || method === "launch";
       closed.signal.throwIfAborted();
       sessions.add(session);
       try {

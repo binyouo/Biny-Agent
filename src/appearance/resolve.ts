@@ -1,5 +1,4 @@
 import { BUILTIN_PALETTES, BUILTIN_THEME_INFO } from "./catalog.js";
-import { DENSITY_TOKENS } from "./density.js";
 import { mapPaletteVariables, syntaxVariables } from "./palette.js";
 import { normalizeAppearancePreference } from "./preferences.js";
 import type { AppearancePreference, ResolvedAppearance } from "./types.js";
@@ -14,9 +13,8 @@ export function resolveAppearance(preference: AppearancePreference, modePreferen
     mode,
     themeId,
     skin,
-    density: normalized.density,
     palette,
-    variables: { ...DENSITY_TOKENS[normalized.density], ...(palette ? { ...mapPaletteVariables(palette), ...syntaxVariables(palette) } : {}) },
+    variables: palette ? { ...mapPaletteVariables(palette), ...syntaxVariables(palette) } : {},
     win98Trail: skin === "win98" && normalized.win98Trail
   };
 }

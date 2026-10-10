@@ -14,6 +14,7 @@ import type { TaskMessage } from "../src/runtime/TaskCommunication.js";
 import { workerSessionId } from "../src/runtime/WorkerSession.js";
 import { readSessionEvents } from "../src/session/events.js";
 import { sessionFilePath } from "../src/session/store.js";
+import { refreshSessionIndex } from "../src/session/catalog.js";
 
 test("foreground Task admits an Attempt and records scoped Worker reports and execution events", { timeout: 25_000 }, async (t) => {
   let cancelRelease!: () => void;
@@ -30,6 +31,7 @@ test("foreground Task admits an Attempt and records scoped Worker reports and ex
     if (previousAgentDir === undefined) delete process.env.BINY_AGENT_DIR;
     else process.env.BINY_AGENT_DIR = previousAgentDir;
   });
+  cleanup(async () => { await refreshSessionIndex(root); });
   const phase = "launch";
   let acted = false;
   const taskRunId = "";

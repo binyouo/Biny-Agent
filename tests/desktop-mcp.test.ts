@@ -1,8 +1,13 @@
 import assert from "node:assert/strict";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { createFileConfigStore } from "../src/config/store.js";
+import { createCredentialStore } from "../src/config/credentials.js";
 import { defaultConfig } from "../src/config/schema.js";
 import type { AgentConfigStore } from "../src/config/store.js";
 import { DesktopMcpService } from "../src/desktop/electron/main/DesktopMcpService.js";
-import { parseArguments, parseClipboardConfig, toFieldMutations } from "../src/desktop/renderer/src/mcpFormDraft.js";
+import { parseArguments, parseClipboardConfig, toFieldMutations, toProtocolDraft } from "../src/desktop/renderer/src/mcpFormDraft.js";
 
 const configStore = {
   loadVersioned: async () => ({ config: structuredClone(defaultConfig), revision: "sha256:test" })
@@ -105,6 +110,13 @@ assert.equal(sseByTransportProtocol?.remoteProtocol, "sse");
 const plainRemote = parseClipboardConfig({ mcpServers: { remote: { url: "https://example.com/mcp" } } });
 assert.equal(plainRemote?.remoteProtocol, "streamable-http");
 
+// 导入、编辑再保存必须分别保留启动预算和请求预算，旧表单只支持一个字段。
+const deadlines = parseClipboardConfig({ mcpServers: { remote: { url: "https://example.com/mcp", startupTimeoutMs: 12_000, timeoutMs: 90_000 } } });
+assert.ok(deadlines);
+assert.equal(toProtocolDraft(deadlines).startupTimeoutMs, 12_000);
+assert.equal(toProtocolDraft(deadlines).timeoutMs, 90_000);
+assert.throws(() => toProtocolDraft({ ...deadlines, startupTimeoutMs: "999" }), /启动超时/);
+
 const connectingConfig = {
   ...defaultConfig,
   extensions: {
@@ -133,5 +145,20 @@ assert.ok(builtin, "global settings must expose the built-in MCP even before a w
 assert.equal(builtin.transport, "in-process");
 assert.equal(builtin.builtin, true);
 assert.equal(builtin.state, "not-started");
+
+// 从实际设置服务到配置文件再到摘要，防止中间转换丢掉独立预算。
+const root = await mkdtemp(path.join(os.tmpdir(), "biny-mcp-deadlines-"));
+try {
+  const store = createFileConfigStore(root, { globalDir: root, credentialStore: createCredentialStore("linux") });
+  const persisted = new DesktopMcpService(store, projects as never, agents);
+  const before = await store.loadVersioned!();
+  const saved = await persisted.upsertServer(undefined, undefined, toProtocolDraft(deadlines), before.revision);
+  const summary = saved.servers.find(server => server.name === "remote");
+  assert.equal(summary?.startupTimeoutMs, 12_000);
+  assert.equal(summary?.timeoutMs, 90_000);
+  const file = JSON.parse(await readFile(path.join(root, "config.json"), "utf8"));
+  assert.equal(file.extensions.mcp.remote.startupTimeoutMs, 12_000);
+  assert.equal(file.extensions.mcp.remote.timeoutMs, 90_000);
+} finally { await rm(root, { recursive: true, force: true }); }
 
 console.log("desktop MCP service tests passed");

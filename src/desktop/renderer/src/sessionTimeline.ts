@@ -15,7 +15,7 @@ import { parseFileChange } from "../../../tools/file/fileChange.js";
 import type { AgentPermissionEventRequest, AgentRunModel, AgentHostEvent } from "../../../runtime/agentEvents.js";
 import type { PermissionAction } from "../../../permission/PermissionManager.js";
 import { activitySummaryText } from "../../../runtime/activitySummary.js";
-import { agentCapabilitySelectionSchema, type AgentCapabilitySelection } from "../../../agent/capabilitySelection.js";
+import { resolvedCapabilitySelectionSchema, type AgentCapabilitySelection } from "../../../agent/capabilitySelection.js";
 import { activeSessionMessageIds, activeSessionEventsForPath, sessionMessageMetadataForIds } from "../../../session/messageTree.js";
 import type { SessionEvent } from "../../../session/recorder.js";
 import type { ModelRequestMetrics } from "../../../agent/core/types.js";
@@ -1509,7 +1509,7 @@ function historicalUserMetadata(events: SessionEvent[], projectedEvents: Session
 /** 预选结果是消息元数据，不能用启动时全部可用技能冒充本轮选择。 */
 function selectedCapabilities(metadataById: ReadonlyMap<string, Record<string, unknown>>, messageId?: string): AgentCapabilitySelection | undefined {
   if (!messageId) return undefined;
-  const selected = agentCapabilitySelectionSchema.safeParse(metadataById.get(messageId)?.capabilitySelection);
+  const selected = resolvedCapabilitySelectionSchema.safeParse(metadataById.get(messageId)?.capabilitySelection);
   return selected.success ? selected.data : undefined;
 }
 

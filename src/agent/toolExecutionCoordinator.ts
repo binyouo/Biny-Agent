@@ -14,7 +14,7 @@ import { analyzePermissionRequest, permissionApprovalFingerprint } from "../perm
 import { createToolPermissionRequest } from "../tools/display/ToolDisplay.js";
 import { ToolAccesses } from "../tools/access.js";
 import { getToolExposure, isToolModelVisible, isToolScriptCallable } from "../tools/exposure.js";
-import { toolSearchToolName, type ToolSearchResult } from "../tools/toolSearch.js";
+import { toolSearchResultNames, toolSearchToolName, type ToolSearchResult } from "../tools/toolSearch.js";
 import { assertMatchingFileChange, FileChangeUncertainError, parseFileChange, type CommittedFileChange } from "../tools/file/fileChange.js";
 import {
   maxEditFileBytes,
@@ -135,6 +135,12 @@ export interface ToolExecutionBudget {
   initialToolCallCount?: number;
   /** 逐动作恢复，不能把某个动作的次数转嫁给恢复后的所有其他动作。 */
   initialRepeatedActions?: RepeatedActionBudget[];
+  initialToolDiscovery?: ToolDiscoveryProgress;
+}
+
+export interface ToolDiscoveryProgress {
+  tools: string[];
+  noProgressCount: number;
 }
 
 export interface RepeatedActionBudget {
@@ -147,6 +153,7 @@ export interface ToolExecutionBudgetSnapshot {
   accountedToolCalls: number;
   maxRepeatedActionCount: number;
   repeatedActions: RepeatedActionBudget[];
+  toolDiscovery?: ToolDiscoveryProgress;
 }
 
 export type ToolBudgetReason = "tool_call_limit" | "repeated_action_limit";
@@ -184,6 +191,8 @@ export class ToolExecutionCoordinator {
   private readonly accountedActionCounts = new Map<string, number>();
   private readonly actionResults = new Map<string, string>();
   private readonly pendingActionCounts = new Map<string, number>();
+  private readonly discoveredToolNames = new Set<string>();
+  private discoveryNoProgressCount = 0;
   /** 首个预算拒绝决定本轮终态，后续并行调用不得覆盖更早发生的事实。 */
   private budgetRejection: ToolBudgetRejection | undefined;
   private readonly uncertainExecutions = new Map<string, string>();
@@ -203,11 +212,15 @@ export class ToolExecutionCoordinator {
   ) {
     this.allowedToolNames = allowedToolNames ? new Set(allowedToolNames) : undefined;
     this.executionToolNames = executionToolNames ? new Set(executionToolNames) : undefined;
+    for (const name of allowedToolNames ?? []) this.discoveredToolNames.add(name);
     if (executionBudget) {
       assertPositiveSafeInteger(executionBudget.maxToolCalls, "maxToolCalls");
       assertPositiveSafeInteger(executionBudget.maxRepeatedActions, "maxRepeatedActions");
       assertNonNegativeSafeInteger(executionBudget.initialToolCallCount ?? 0, "initialToolCallCount");
       this.accountedToolCallCount = executionBudget.initialToolCallCount ?? 0;
+      assertNonNegativeSafeInteger(executionBudget.initialToolDiscovery?.noProgressCount ?? 0, "toolDiscovery.noProgressCount");
+      this.discoveryNoProgressCount = executionBudget.initialToolDiscovery?.noProgressCount ?? 0;
+      for (const name of executionBudget.initialToolDiscovery?.tools ?? []) this.discoveredToolNames.add(name);
       for (const action of executionBudget.initialRepeatedActions ?? []) {
         assertNonNegativeSafeInteger(action.count, "repeatedAction.count");
         this.accountedActionCounts.set(action.fingerprint, action.count);
@@ -298,11 +311,8 @@ export class ToolExecutionCoordinator {
             const image = this.toolImages.get(toolCallId);
             this.toolImages.delete(toolCallId);
             if (image) this.imageBytes -= Buffer.byteLength(image.data, "base64");
-            const unverifiedObservation = registered.capability === "computer.action"
-              && result !== null && typeof result === "object" && "status" in result && result.status === "unverified"
-              && "imageReturned" in result && result.imageReturned === true;
             return {
-              content: [{ type: "text", text: serializeToolResult(result, { context: source === "mcp" ? "mcp-result" : undefined }) }, ...((!isError || unverifiedObservation) && image ? [image] : [])],
+              content: [{ type: "text", text: serializeToolResult(result, { context: source === "mcp" ? "mcp-result" : undefined }) }, ...(!isError && image ? [image] : [])],
               details: result,
               isError
             };
@@ -449,12 +459,22 @@ export class ToolExecutionCoordinator {
       ),
       repeatedActions: [...this.accountedActionCounts].map(([fingerprint, count]) => ({
         fingerprint, count, resultFingerprint: this.actionResults.get(fingerprint)
-      }))
+      })),
+      toolDiscovery: { tools: [...this.discoveredToolNames], noProgressCount: this.discoveryNoProgressCount }
     };
   }
 
   getBudgetRejection(): ToolBudgetRejection | undefined {
-    return this.budgetRejection;
+    if (this.budgetRejection) return this.budgetRejection;
+    if (!this.executionBudget || this.discoveryNoProgressCount < this.executionBudget.maxRepeatedActions) return undefined;
+    // 同批已准入的业务调用仍可能取得进展；批次收敛前不锁死这一派生状态。
+    return {
+      status: "budget_rejected", reason: "repeated_action_limit", resumable: true,
+      limit: this.executionBudget.maxRepeatedActions,
+      attemptedToolCallCount: this.accountedToolCallCount,
+      attemptedActionCount: this.discoveryNoProgressCount,
+      error: `Tool discovery stopped after ${String(this.discoveryNoProgressCount)} searches without new tools or execution progress. Use the discovered tools or inspect the missing capability before continuing.`
+    };
   }
 
   assertCanContinue(): void {
@@ -630,6 +650,15 @@ export class ToolExecutionCoordinator {
           const fingerprint = actionFingerprint(call);
           const pending = Math.max(0, (this.pendingActionCounts.get(fingerprint) ?? 1) - 1);
           this.pendingActionCounts.set(fingerprint, pending);
+          const discoveryCall = call.name === toolSearchToolName && source === "builtin";
+          const retryableDiscoveryFailure = status === "failed" && typeof result === "object" && result !== null
+            && "retryable" in result && result.retryable === true;
+          if (executionStarted && discoveryCall && (status === "succeeded" || retryableDiscoveryFailure)) {
+            const names = toolSearchResultNames(result);
+            const hasNewTools = names.some((name) => !this.discoveredToolNames.has(name));
+            for (const name of names) this.discoveredToolNames.add(name);
+            this.discoveryNoProgressCount = hasNewTools ? 0 : this.discoveryNoProgressCount + 1;
+          }
           // 比较原始结果，排除后续附加的 operationId 等每次必变的审计元数据。
           // 仅成功结果变化才重置；报错文案变化、权限拒绝和取消不算进展。
           if (executionStarted && status === "succeeded") {
@@ -638,6 +667,9 @@ export class ToolExecutionCoordinator {
               : result;
             const resultFingerprint = createHash("sha256").update(stableJson(comparableResult)).digest("hex");
             const previous = this.actionResults.get(fingerprint);
+            if (!discoveryCall && previous !== resultFingerprint) {
+              this.discoveryNoProgressCount = 0;
+            }
             if (previous !== undefined && previous !== resultFingerprint) {
               this.accountedActionCounts.set(fingerprint, pending + 1);
             }
@@ -688,7 +720,7 @@ export class ToolExecutionCoordinator {
         return await finish({ status: "skipped", error: message }, message, "cancelled");
       }
       options.assertCurrentRegistration?.();
-      const budgetRejection = this.admitToolCall(call);
+      const budgetRejection = this.admitToolCall(call, source);
       if (budgetRejection) {
         this.budgetRejection ??= budgetRejection;
         this.emit({ type: "tool.started", toolCallId: call.id, tool: call.name, args: call.args, operationId });
@@ -1564,7 +1596,7 @@ export class ToolExecutionCoordinator {
    * 没有 await 的同步临界区：同一批并行 execute 即使同时恢复 microtask，也会逐个检查并占用
    * 额度，后来的调用无法越过前一个调用刚提交的计数。
    */
-  private admitToolCall(call: { name: string; args: unknown }): ToolBudgetRejection | undefined {
+  private admitToolCall(call: { name: string; args: unknown }, source: ToolSource): ToolBudgetRejection | undefined {
     const budget = this.executionBudget;
     if (!budget) return undefined;
     const attemptedToolCallCount = this.accountedToolCallCount + 1;
@@ -1586,6 +1618,10 @@ export class ToolExecutionCoordinator {
         attemptedActionCount,
         error: `Tool ${call.name} was not executed because the run reached its ${String(budget.maxToolCalls)}-call limit.`
       };
+    }
+    // 同一脚本内的后续搜索也必须在辅助模型调用前停止，不能等外层 exec 返回。
+    if (call.name === toolSearchToolName && source === "builtin" && this.discoveryNoProgressCount >= budget.maxRepeatedActions) {
+      return this.getBudgetRejection();
     }
     if (attemptedActionCount > budget.maxRepeatedActions) {
       return {

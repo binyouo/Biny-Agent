@@ -169,7 +169,9 @@ test("部分回复后失败：保留已收到的正文、真实思考和工具�
   assert.doesNotMatch(markup, /chat-meta-indicator|1 条记忆|1 个工具|1 个技能/u);
 });
 
-test("实时思考不截断长内容，并把思考中的围栏代码渲染为代码块", () => {
+test("实时思考只显示最新一行，代码块等全文在落定并展开后才渲染", () => {
+  // 运行中的全文会撑开活动段；投影保持完整，chip 只渲染最新一行，未展开时正文不进入 DOM。
+  // 围栏代码的渲染由落定后的展开交互覆盖（tests/thinking-chip-expand.test.ts）。
   const reasoning = `先检查入口。\n\n\`\`\`ts\nconst answer = 42;\n\`\`\`\n${"继续分析。".repeat(140)}`;
   const turns = buildSessionTimeline([], [
     ...start,
@@ -177,9 +179,9 @@ test("实时思考不截断长内容，并把思考中的围栏代码渲染为�
   ]);
   assert.equal(turns[0]?.reasoning, reasoning);
   const markup = renderTurns(turns);
-  assert.match(markup, /markdown-code-block/u);
-  assert.match(markup, /markdown-code-language[\s\S]*>ts<\/span>/u);
+  assert.match(markup, /chat-think-chip is-live/u);
   assert.match(markup, /继续分析。继续分析。/u);
+  assert.doesNotMatch(markup, /markdown-code-block|const answer = 42/u);
 });
 
 test("仅有工具结果的失败不会补出思考或空助手操作栏", () => {

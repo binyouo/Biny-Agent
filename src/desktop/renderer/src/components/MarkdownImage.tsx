@@ -58,7 +58,7 @@ export function MarkdownImage({ src, alt, title, local = false }: {
   const showMenu = (event: React.MouseEvent<HTMLImageElement>): void => {
     event.preventDefault();
     event.stopPropagation();
-    const unit = 13 * ((parseFloat(window.getComputedStyle(document.body).fontSize) || 14) / 14);
+    const unit = 13 * ((parseFloat(window.getComputedStyle(document.body).fontSize) || 13) / 13);
     const height = Math.max(120, unit * (status === "ready" ? 5 : 2.75) + 2);
     const top = event.clientY + height + 20 > window.innerHeight ? event.clientY - height - 8 : event.clientY + 8;
     setMenu({

@@ -1,14 +1,14 @@
 :root {
-  /* 字体设置：--app-font-size（无单位 px 数）由渲染层写在根元素上，全部字号按 14px 基准等比缩放；
-     选了自定义字体时渲染层把 --font-sans 覆写为「自选字体族, var(--font-sans-stack)」。 */
-  --app-font-size: 14;
-  --font-scale: calc(var(--app-font-size) / 14);
-  --font-sans-stack: -apple-system, BlinkMacSystemFont, system-ui, "Segoe UI", Roboto, "Helvetica Neue", Arial, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Microsoft YaHei UI", "Noto Sans CJK SC", "Noto Sans SC", "WenQuanYi Micro Hei", "Source Han Sans SC", "Geist Variable", sans-serif;
+  /* 字体设置：--app-font-size（无单位 px 数）由渲染层写在根元素上，全部字号按 13px 默认基准等比缩放，
+     默认字号下各尺寸即样式表原样；选了自定义字体时渲染层把 --font-sans 覆写为「自选字体族, var(--font-sans-stack)」。 */
+  --app-font-size: 13;
+  --font-scale: calc(var(--app-font-size) / 13);
+  /* 根字号跟随字号设置，rem 尺寸以默认 13px 为基准。 */
+  font-size: calc(var(--app-font-size) * 1px);
+  --font-sans-stack: ui-sans-serif, system-ui, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";
   --font-sans: var(--font-sans-stack);
-  /* 等宽首选 Berkeley Mono（本机安装即生效），回退到系统等宽栈。 */
-  --font-mono: "Berkeley Mono", ui-monospace, "SF Mono", SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  --font-mono: "IoskeleyMono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
   font-family: var(--font-sans);
-  font-synthesis: none;
   --dropdown-open-dur: 250ms;
   --dropdown-close-dur: 150ms;
   --dropdown-pre-scale: 0.97;
@@ -45,7 +45,8 @@
 
 * { box-sizing: border-box; }
 html, body, #root { width: 100%; height: 100%; margin: 0; overflow: hidden; }
-body { color: var(--text); background: var(--bg); font-family: var(--font-sans); font-size: calc(14px * var(--font-scale)); line-height: 1.45; -webkit-font-smoothing: antialiased; }
+/* 覆盖组件库 reset 的 antialiased，让文字使用平台默认平滑方式。 */
+body { color: var(--text); background: var(--bg); font-family: var(--font-sans); font-size: calc(13px * var(--font-scale)); line-height: 1.45; -webkit-font-smoothing: auto; }
 button, input, textarea { color: inherit; font: inherit; }
 button { border: 0; background: none; }
 button:not(:disabled) { cursor: default; }

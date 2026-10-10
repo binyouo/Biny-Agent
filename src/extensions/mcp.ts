@@ -31,6 +31,7 @@ import { isSensitiveFieldName } from "../utils/secrets.js";
 export type McpTransportKind = "stdio" | "http" | "in-process";
 
 const defaultRequestTimeoutMs = 60_000;
+const defaultStartupTimeoutMs = 30_000;
 const maxToolListPages = 16;
 const maxResourceListPages = 4;
 const maxResourceTextBytes = 64 * 1024;
@@ -48,6 +49,8 @@ export interface McpServerStatus {
   connected: boolean;
   /** 正在建立首连或重连；这不是连接失败。 */
   connecting?: boolean;
+  /** 连接未完成时可用于发现的目录；不代表工具可以直接执行。 */
+  catalogCached?: boolean;
   toolNames: string[];
   promptNames: string[];
   hasResources: boolean;
@@ -69,6 +72,38 @@ interface ListedMcpTool {
   annotations?: { readOnlyHint?: boolean; destructiveHint?: boolean };
 }
 
+/** 由 Runtime Host 持有，不写磁盘；只复用已完成握手的工具元数据。 */
+export class McpToolCatalogCache {
+  private readonly entries = new Map<string, { tools: ListedMcpTool[]; instructions?: string; expiresAt: number }>();
+
+  get(key: string): { tools: ListedMcpTool[]; instructions?: string } | undefined {
+    const entry = this.entries.get(key);
+    if (!entry) return undefined;
+    this.entries.delete(key);
+    if (entry.expiresAt <= Date.now()) return undefined;
+    this.entries.set(key, entry);
+    return structuredClone(entry);
+  }
+
+  set(key: string, tools: ListedMcpTool[], instructions?: string): void {
+    this.entries.delete(key);
+    if (Buffer.byteLength(JSON.stringify({ tools, instructions })) > 1024 * 1024) return;
+    this.entries.set(key, { tools: structuredClone(tools), instructions, expiresAt: Date.now() + 30 * 60_000 });
+    while (this.entries.size > 32) this.entries.delete(this.entries.keys().next().value!);
+  }
+
+  /** 失败只撤回本次尝试读到的条目，不能删除其他作用域后来发布的目录。 */
+  captureInvalidation(key: string): () => void {
+    const entry = this.entries.get(key);
+    return () => {
+      if (entry && this.entries.get(key) === entry) this.entries.delete(key);
+    };
+  }
+
+  delete(key: string): void { this.entries.delete(key); }
+  clear(): void { this.entries.clear(); }
+}
+
 interface ManagedMcpServer {
   name: string;
   /** 未展开的原始配置；每次连接时重新展开，避免遗留过期或字面量 ${ENV}。 */
@@ -86,6 +121,7 @@ interface ManagedMcpServer {
   toolProxies: Map<string, { signature: string; tool: Tool }>;
   local?: { identity: string; tools: Tool[]; open: () => Promise<{ transport: Transport; close: () => Promise<void> }> };
   closeTransport?: () => Promise<void>;
+  catalogKey?: string;
 }
 
 export class McpToolHost {
@@ -96,6 +132,8 @@ export class McpToolHost {
   private closing = false;
   private readonly listeners = new Set<() => void>();
   private readonly genericTools = new Map<string, { signature: string; tools: Tool[] }>();
+
+  constructor(private readonly catalogCache = new McpToolCatalogCache()) {}
 
   attachLocalServer(name: string, identity: string, tools: Tool[], open: () => Promise<{ transport: Transport; close: () => Promise<void> }>): Promise<void> {
     if (this.closing) throw new Error("MCP host is closing.");
@@ -175,7 +213,7 @@ export class McpToolHost {
   /** 为不同 session 创建指向同一 MCP 连接的工具代理。 */
   createTools(): Tool[] {
     return [...this.servers.values()]
-      .filter((server) => server.status.connected || server.local)
+      .filter((server) => !this.closing && (server.status.connected || server.status.catalogCached || server.local))
       .flatMap((server) => server.local ? server.local.tools : server.tools.map((tool) => this.serverToolProxy(server, tool, server.status.instructions)));
   }
 
@@ -268,13 +306,20 @@ export class McpToolHost {
     rawResult = false,
     onDispatched?: () => void,
     metadata?: Record<string, unknown>,
-    expectedLocalIdentity?: string
+    expectedLocalIdentity?: string,
+    expectedDefinition?: string
   ): Promise<unknown> {
     signal?.throwIfAborted();
     const managed = this.requireServer(serverName);
     if (expectedLocalIdentity !== undefined && managed.local?.identity !== expectedLocalIdentity) throw new Error("Local MCP endpoint was replaced; prepare a new tool call.");
     if (!managed.client || !managed.status.connected) await waitForMcpReconnect(this.reconnect(managed), signal);
     signal?.throwIfAborted();
+    if (expectedDefinition !== undefined) {
+      const definition = managed.tools.find(tool => tool.name === toolName);
+      if (!definition || mcpMetadataSignature({ definition, config: managed.config, instructions: managed.status.instructions }) !== expectedDefinition) {
+        throw new Error(`MCP tool ${serverName}/${toolName} definition changed; discover and prepare a new tool call.`);
+      }
+    }
     const client = managed.client;
     if (!client) throw new Error(`MCP server ${serverName} is not connected: ${managed.status.lastError ?? "unknown error"}`);
     try {
@@ -443,6 +488,7 @@ export class McpToolHost {
       server.client = undefined;
       server.status.connected = false;
       server.status.connecting = false;
+      server.status.catalogCached = false;
     }
     this.emitChange();
   }
@@ -521,6 +567,11 @@ export class McpToolHost {
   private async startServer(managed: ManagedMcpServer): Promise<void> {
     managed.status.connecting = true;
     this.emitChange();
+    const controller = new AbortController();
+    const timeoutMs = managed.rawConfig.startupTimeoutMs ?? defaultStartupTimeoutMs;
+    const timer = setTimeout(() => controller.abort(new DOMException(`MCP startup timed out after ${timeoutMs}ms`, "TimeoutError")), timeoutMs);
+    let openedClient: Client | undefined;
+    let invalidateCatalog = managed.catalogKey ? this.catalogCache.captureInvalidation(managed.catalogKey) : undefined;
     try {
       // 每次连接都从原始配置展开：启动时变量缺失后重连会重新验证，环境变更也能生效。
       managed.config = managed.local ? managed.rawConfig : expandServerConfig(managed.rawConfig);
@@ -530,8 +581,22 @@ export class McpToolHost {
       if (missingCredentials.length) {
         throw new Error(`MCP 服务 ${managed.name} 缺少已保存的凭据（${missingCredentials.join("、")}）；请在 MCP 设置中重新保存对应字段。`);
       }
+      // OAuth 的动态身份不具备稳定的缓存键。stdio 同时隔离有效的进程环境。
+      managed.catalogKey = managed.local || managed.config.oauth ? undefined : mcpMetadataSignature({
+        workspaceRoot: path.resolve(this.workspaceRoot), name: managed.name, config: managed.config,
+        environment: managed.transport === "stdio" ? process.env : undefined
+      });
+      const cached = managed.catalogKey ? this.catalogCache.get(managed.catalogKey) : undefined;
+      invalidateCatalog = managed.catalogKey ? this.catalogCache.captureInvalidation(managed.catalogKey) : undefined;
+      managed.status.catalogCached = Boolean(cached);
+      if (cached) {
+        managed.status.instructions = cached.instructions;
+        this.registerServerTools(managed, cached.tools, cached.instructions);
+      }
       managed.status.command = managed.local ? "Desktop control plane" : managed.transport === "http" ? managed.config.url ?? "" : managed.config.command ?? "";
-      const { client, tools } = await this.openClient(managed);
+      const { client, tools } = await this.openClient(managed, controller.signal);
+      openedClient = client;
+      controller.signal.throwIfAborted();
       // close() 可能在 connect() 等待期间开始；不要把刚建立的连接遗留到关闭后的 host。
       if (this.closing || this.servers.get(managed.name) !== managed) {
         await client.close().catch(() => undefined);
@@ -550,11 +615,12 @@ export class McpToolHost {
         void this.refreshServerTools(managed);
       });
       managed.client = client;
-      this.registerServerTools(managed, client, tools);
+      this.registerServerTools(managed, tools, client.getInstructions());
       const capabilities = client.getServerCapabilities();
       managed.status.hasResources = Boolean(capabilities?.resources);
       managed.status.instructions = client.getInstructions();
-      const promptNames = capabilities?.prompts ? await this.listPromptNames(managed, client) : [];
+      const promptNames = capabilities?.prompts ? await this.listPromptNames(managed, client, controller.signal) : [];
+      controller.signal.throwIfAborted();
       // 可选提示列表失败可忽略，但等待期间关闭的连接不能重新发布为已连接。
       if (this.closing || managed.client !== client || !client.transport) {
         throw new Error(`MCP server ${managed.name} connection closed during startup.`);
@@ -562,11 +628,28 @@ export class McpToolHost {
       managed.status.promptNames = promptNames;
       managed.status.connected = true;
       managed.status.authRequired = false;
+      managed.status.catalogCached = false;
+      if (managed.catalogKey) this.catalogCache.set(managed.catalogKey, managed.tools, managed.status.instructions);
     } catch (error) {
+      if (!this.closing) invalidateCatalog?.();
+      managed.status.catalogCached = false;
+      for (const name of managed.status.toolNames) this.registry?.unregister(name);
+      managed.status.toolNames = [];
+      managed.tools = [];
+      managed.status.instructions = undefined;
+      if (openedClient) {
+        if (managed.client === openedClient) {
+          managed.client = undefined;
+          managed.status.connected = false;
+        }
+        await openedClient.close().catch(() => undefined);
+        await managed.closeTransport?.();
+      }
       managed.status.lastError = errorText(error);
       managed.status.authRequired = error instanceof McpAuthRequiredError;
       throw error;
     } finally {
+      clearTimeout(timer);
       managed.status.connecting = false;
       this.emitChange();
     }
@@ -589,7 +672,8 @@ export class McpToolHost {
             const tools = await this.listAllTools(managed, client);
             if (this.closing || managed.client !== client || !client.transport
               || (!managed.status.connected && !managed.status.connecting)) return;
-            this.registerServerTools(managed, client, tools);
+            this.registerServerTools(managed, tools, client.getInstructions());
+            if (managed.catalogKey && managed.status.connected) this.catalogCache.set(managed.catalogKey, managed.tools, client.getInstructions());
           } catch (error) {
             if (this.closing || managed.client !== client || !client.transport
               || (!managed.status.connected && !managed.status.connecting)) return;
@@ -604,24 +688,28 @@ export class McpToolHost {
     await managed.refreshing;
   }
 
-  private registerServerTools(managed: ManagedMcpServer, client: Client, tools: ListedMcpTool[]): void {
+  private registerServerTools(managed: ManagedMcpServer, tools: ListedMcpTool[], instructions?: string): void {
     const registry = this.registry;
-    managed.tools = [...tools];
-    const currentNames = new Set(tools.map((tool) => tool.name));
-    for (const name of managed.toolProxies.keys()) if (!currentNames.has(name)) managed.toolProxies.delete(name);
+    const accepted: ListedMcpTool[] = [];
+    const usedNames = new Set([...this.servers.values()].filter(server => server !== managed).flatMap(server => server.status.toolNames));
     for (const toolName of managed.status.toolNames) registry?.unregister(toolName);
     const toolNames: string[] = [];
     const warnings: string[] = [];
-    for (const mcpTool of tools) {
+    for (const definition of tools) {
       try {
-        if (registry) registry.registerMcpTool(this.serverToolProxy(managed, mcpTool, client.getInstructions()));
-        toolNames.push(this.serverToolProxy(managed, mcpTool, client.getInstructions()).name);
+        const tool = this.serverToolProxy(managed, definition, instructions);
+        if (usedNames.has(tool.name)) throw new Error(`Duplicate MCP callable name: ${tool.name}`);
+        registry?.registerMcpTool(tool);
+        usedNames.add(tool.name);
+        toolNames.push(tool.name);
+        accepted.push(definition);
       } catch (error) {
-        // 归一化后重名（同名工具或跨服务器冲突）的工具跳过注册并记录警告，
-        // 避免留下半注册状态，也不因单个冲突拖垮整台服务器。
-        warnings.push(`skipped tool ${mcpTool.name}: ${errorText(error)}`);
+        warnings.push(`skipped tool ${definition.name}: ${errorText(error)}`);
       }
     }
+    managed.tools = accepted;
+    const currentNames = new Set(accepted.map(tool => tool.name));
+    for (const name of managed.toolProxies.keys()) if (!currentNames.has(name)) managed.toolProxies.delete(name);
     managed.status.toolNames = toolNames;
     managed.status.lastError = warnings.length ? warnings.join("; ") : undefined;
     this.emitChange();
@@ -645,21 +733,22 @@ export class McpToolHost {
     for (const listener of this.listeners) listener();
   }
 
-  private async listPromptNames(managed: ManagedMcpServer, client: Client): Promise<string[]> {
+  private async listPromptNames(managed: ManagedMcpServer, client: Client, signal?: AbortSignal): Promise<string[]> {
     try {
-      const listed = await client.listPrompts(undefined, this.requestOptions(managed));
+      const listed = await client.listPrompts(undefined, { signal, timeout: managed.config.startupTimeoutMs ?? defaultStartupTimeoutMs });
       return listed.prompts.slice(0, maxPromptNames).map((prompt) => prompt.name);
     } catch {
       return [];
     }
   }
 
-  private async listAllTools(managed: ManagedMcpServer, client: Client): Promise<ListedMcpTool[]> {
+  private async listAllTools(managed: ManagedMcpServer, client: Client, startupSignal?: AbortSignal): Promise<ListedMcpTool[]> {
     // tools/list 是分页协议，逐页取完，页数设防御上限。
+    const options = startupSignal ? { signal: startupSignal, timeout: managed.config.startupTimeoutMs ?? defaultStartupTimeoutMs } : this.requestOptions(managed);
     const tools: ListedMcpTool[] = [];
     let cursor: string | undefined;
     for (let page = 0; page < maxToolListPages; page += 1) {
-      const listed = await client.listTools(cursor === undefined ? undefined : { cursor }, this.requestOptions(managed));
+      const listed = await client.listTools(cursor === undefined ? undefined : { cursor }, options);
       tools.push(...(listed.tools as ListedMcpTool[]));
       cursor = listed.nextCursor;
       if (!cursor) break;
@@ -667,12 +756,12 @@ export class McpToolHost {
     return tools;
   }
 
-  private async openClient(managed: ManagedMcpServer): Promise<{ client: Client; tools: ListedMcpTool[] }> {
+  private async openClient(managed: ManagedMcpServer, signal: AbortSignal): Promise<{ client: Client; tools: ListedMcpTool[] }> {
     if (managed.local) {
       if (this.closing || this.servers.get(managed.name) !== managed) throw new Error(`Local MCP server was detached: ${managed.name}`);
       const connection = await managed.local.open();
       managed.closeTransport = connection.close;
-      try { return await this.tryConnect(managed, connection.transport); }
+      try { return await this.tryConnect(managed, connection.transport, signal); }
       catch (error) { await connection.close(); throw error; }
     }
     const serverConfig = managed.config;
@@ -683,18 +772,19 @@ export class McpToolHost {
       managed.authProvider = authProvider;
       const fetch = getSharedProxyAwareFetch();
       if (serverConfig.transportProtocol === "sse") {
-        return await this.tryConnect(managed, new SSEClientTransport(url, { requestInit, authProvider, fetch }));
+        return await this.tryConnect(managed, new SSEClientTransport(url, { requestInit, authProvider, fetch }), signal);
       }
       if (serverConfig.transportProtocol === "streamable-http") {
-        return await this.tryConnect(managed, new StreamableHTTPClientTransport(url, { requestInit, authProvider, fetch }));
+        return await this.tryConnect(managed, new StreamableHTTPClientTransport(url, { requestInit, authProvider, fetch }), signal);
       }
       try {
-        return await this.tryConnect(managed, new StreamableHTTPClientTransport(url, { requestInit, authProvider, fetch }));
+        return await this.tryConnect(managed, new StreamableHTTPClientTransport(url, { requestInit, authProvider, fetch }), signal);
       } catch (streamableError) {
+        signal.throwIfAborted();
         if (streamableError instanceof McpAuthRequiredError) throw streamableError;
         // 参考主流客户端：先尝试 streamable HTTP，旧服务器再回退 SSE。
         try {
-          return await this.tryConnect(managed, new SSEClientTransport(url, { requestInit, authProvider, fetch }));
+          return await this.tryConnect(managed, new SSEClientTransport(url, { requestInit, authProvider, fetch }), signal);
         } catch (sseError) {
           if (sseError instanceof McpAuthRequiredError) throw sseError;
           throw new Error(
@@ -710,18 +800,26 @@ export class McpToolHost {
         env: serverConfig.env,
         cwd: await resolveWorkingDirectory(this.workspaceRoot, serverConfig.cwd),
         stderr: serverConfig.stderr
-      } as StdioServerParameters));
+      } as StdioServerParameters), signal);
     } catch (error) {
       throw new Error(`Failed to connect MCP server ${managed.name}: ${errorText(error)}`);
     }
   }
 
-  private async tryConnect(managed: ManagedMcpServer, transport: Transport): Promise<{ client: Client; tools: ListedMcpTool[] }> {
+  private async tryConnect(managed: ManagedMcpServer, transport: Transport, signal: AbortSignal): Promise<{ client: Client; tools: ListedMcpTool[] }> {
     if (this.closing) throw new Error(`MCP host is closing; cannot connect ${managed.name}.`);
+    signal.throwIfAborted();
     const client = new Client({ name: "biny", version: "0.1.0" });
+    // SDK 握手失败会 fire-and-forget close；所有关闭者必须等待同一次传输回收。
+    const closeClient = client.close.bind(client);
+    let closingClient: Promise<void> | undefined;
+    client.close = () => closingClient ??= closeClient();
     // initialize 和首次 tools/list 完成前，连接尚未交给 managed.client，但仍归 host 负责关闭。
     this.openingClients.add(client);
+    let abort!: () => void;
     const closed = new Promise<never>((_resolve, reject) => {
+      abort = () => reject(signal.reason);
+      signal.addEventListener("abort", abort, { once: true });
       // SSE 在收到 endpoint 前关闭时，SDK 的 connect() 不会自行结束。
       client.onclose = () => {
         if (this.closing) reject(new Error(`MCP host is closing; cannot connect ${managed.name}.`));
@@ -730,8 +828,9 @@ export class McpToolHost {
     try {
       return await Promise.race([
         (async () => {
-          await client.connect(transport);
-          return { client, tools: await this.listAllTools(managed, client) };
+          await client.connect(transport, { signal, timeout: managed.config.startupTimeoutMs ?? defaultStartupTimeoutMs });
+          signal.throwIfAborted();
+          return { client, tools: await this.listAllTools(managed, client, signal) };
         })(),
         closed
       ]);
@@ -743,6 +842,7 @@ export class McpToolHost {
       }
       throw error;
     } finally {
+      signal.removeEventListener("abort", abort);
       client.onclose = undefined;
       this.openingClients.delete(client);
     }
@@ -862,6 +962,8 @@ function waitForMcpReconnect(connecting: Promise<void>, signal?: AbortSignal): P
 }
 
 function markDisconnected(managed: ManagedMcpServer, error: unknown): void {
+  // 保留最后成功目录供发现；实际调用仍须重连并核对最新定义。
+  managed.status.catalogCached = !managed.local && managed.tools.length > 0;
   managed.status.connected = false;
   managed.status.connecting = false;
   managed.status.lastError = errorText(error);
@@ -951,8 +1053,16 @@ function expandServerConfig(serverConfig: McpServerConfig): McpServerConfig {
 }
 
 function createMcpTool(host: McpToolHost, serverName: string, definition: ListedMcpTool, serverConfig: McpServerConfig, instructions?: string): Tool {
+  const expectedDefinition = mcpMetadataSignature({ definition, config: serverConfig, instructions });
   const contract = serverConfig.toolContracts?.[definition.name];
-  const name = `mcp_${normalizeName(serverName)}_${normalizeName(definition.name)}`;
+  const serverPart = normalizeName(serverName);
+  const toolPart = normalizeName(definition.name);
+  const baseName = `mcp_${serverPart}_${toolPart}`;
+  const reserved = ["mcp_list_resources", "mcp_read_resource", "mcp_list_prompts", "mcp_get_prompt"].includes(baseName);
+  // 有损转换和保留名冲突使用原始身份的稳定摘要；目录顺序和重连不能改变调用名。
+  const name = !reserved && serverPart === serverName && !serverName.includes("_") && toolPart === definition.name && baseName.length <= 64
+    ? baseName
+    : `${`mcp__${serverPart}_${toolPart}`.slice(0, 47)}_${createHash("sha256").update(JSON.stringify([serverName, definition.name])).digest("hex").slice(0, 16)}`;
   const isIndexedSearch = definition.name === "zvec_grep_search";
   const capabilitySummary = compactMcpText(definition.description ?? definition.name);
   const parameters = structuredClone(definition.inputSchema) as unknown as JsonObjectSchema;
@@ -1008,7 +1118,7 @@ function createMcpTool(host: McpToolHost, serverName: string, definition: Listed
         async execute(context): Promise<unknown> {
           if (!fileChange) {
             const envelope = context.mcpResultMode === "envelope";
-            const result = await host.callServerTool(serverName, definition.name, asArguments(args), context.signal, envelope, context.onDispatched);
+            const result = await host.callServerTool(serverName, definition.name, asArguments(args), context.signal, envelope, context.onDispatched, undefined, undefined, expectedDefinition);
             return envelope ? normalizeMcpEnvelope(result) : result;
           }
           try {
@@ -1018,7 +1128,10 @@ function createMcpTool(host: McpToolHost, serverName: string, definition: Listed
               { ...asArguments(args), operationId: context.operationId },
               context.signal,
               true,
-              context.onDispatched
+              context.onDispatched,
+              undefined,
+              undefined,
+              expectedDefinition
             );
             const change = readMcpFileChange(result, context.operationId, fileChange);
             await context.onFileChangeCommitted?.(change);

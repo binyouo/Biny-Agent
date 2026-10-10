@@ -16,7 +16,6 @@ export const customAppearanceThemeSchema = z.object({
 export const appearancePreferenceSchema = z.object({
   darkTheme: z.string().min(1).max(100).nullable(),
   lightTheme: z.string().min(1).max(100).nullable(),
-  density: z.enum(["compact", "comfortable", "spacious"]),
   win98Trail: z.boolean(),
   customThemes: z.array(customAppearanceThemeSchema).max(100)
 }).strict().superRefine((value, context) => {
@@ -36,7 +35,6 @@ export const appearancePreferenceSchema = z.object({
 export const DEFAULT_APPEARANCE: AppearancePreference = {
   darkTheme: null,
   lightTheme: null,
-  density: "compact",
   win98Trail: true,
   customThemes: []
 };
@@ -58,7 +56,6 @@ export function normalizeAppearancePreference(value: unknown): AppearancePrefere
   return {
     darkTheme: pickTheme(candidate.darkTheme, "dark"),
     lightTheme: pickTheme(candidate.lightTheme, "light"),
-    density: candidate.density === "comfortable" || candidate.density === "spacious" ? candidate.density : "compact",
     win98Trail: candidate.win98Trail !== false,
     customThemes
   };
