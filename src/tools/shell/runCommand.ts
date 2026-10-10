@@ -7,6 +7,7 @@
 import { homedir, tmpdir } from "node:os";
 import { spawn, type ChildProcess } from "node:child_process";
 import { StringDecoder } from "node:string_decoder";
+import { BoundedUtf8Tail } from "./boundedUtf8Tail.js";
 import { captureMetadata } from "./captureMetadata.js";
 import { z } from "zod";
 import { ToolAccesses } from "../access.js";
@@ -245,8 +246,8 @@ async function runShellCommandWithCompletionEvidence(
 
   return await new Promise<RunCommandResult>((resolve, reject) => {
     options.signal?.throwIfAborted();
-    let stdout = "";
-    let stderr = "";
+    const stdoutBuffer = new BoundedUtf8Tail(outputLimitBytes);
+    const stderrBuffer = new BoundedUtf8Tail(outputLimitBytes);
     let stdoutBytes = 0;
     let stderrBytes = 0;
     let stdoutDecodedBytes = 0;
@@ -272,24 +273,24 @@ async function runShellCommandWithCompletionEvidence(
     });
 
     const appendDiagnostic = (message: string) => {
-      const text = `${stderr ? "\n" : ""}${message}`;
+      const text = `${stderrBuffer.retainedBytes > 0 ? "\n" : ""}${message}`;
       stderrBytes += Buffer.byteLength(text, "utf8");
       stderrDecodedBytes += Buffer.byteLength(text, "utf8");
-      stderr = appendCappedToLimit(stderr, text, outputLimitBytes);
+      stderrBuffer.append(text);
       options.onUpdate?.({ kind: "stderr", text });
     };
     const onStdout = (chunk: Buffer) => {
       stdoutBytes += chunk.byteLength;
       const text = stdoutDecoder.write(chunk);
       stdoutDecodedBytes += Buffer.byteLength(text, "utf8");
-      stdout = appendCappedToLimit(stdout, text, outputLimitBytes);
+      stdoutBuffer.append(text);
       if (text) options.onUpdate?.({ kind: "stdout", text });
     };
     const onStderr = (chunk: Buffer) => {
       stderrBytes += chunk.byteLength;
       const text = stderrDecoder.write(chunk);
       stderrDecodedBytes += Buffer.byteLength(text, "utf8");
-      stderr = appendCappedToLimit(stderr, text, outputLimitBytes);
+      stderrBuffer.append(text);
       if (text) options.onUpdate?.({ kind: "stderr", text });
     };
     const finalizeOutput = (): void => {
@@ -299,8 +300,8 @@ async function runShellCommandWithCompletionEvidence(
       const stderrRemainder = stderrDecoder.end();
       stdoutDecodedBytes += Buffer.byteLength(stdoutRemainder, "utf8");
       stderrDecodedBytes += Buffer.byteLength(stderrRemainder, "utf8");
-      stdout = appendCappedToLimit(stdout, stdoutRemainder, outputLimitBytes);
-      stderr = appendCappedToLimit(stderr, stderrRemainder, outputLimitBytes);
+      stdoutBuffer.append(stdoutRemainder);
+      stderrBuffer.append(stderrRemainder);
       if (stdoutRemainder) options.onUpdate?.({ kind: "stdout", text: stdoutRemainder });
       if (stderrRemainder) options.onUpdate?.({ kind: "stderr", text: stderrRemainder });
     };
@@ -343,8 +344,10 @@ async function runShellCommandWithCompletionEvidence(
         text: status === "timed_out" ? `Timed out with exit code ${String(resolvedExitCode)}`
           : exitSignal ? `Terminated by signal ${exitSignal}` : `Exited with ${String(resolvedExitCode)}`
       });
-      const stdoutRetainedBytes = Buffer.byteLength(stdout, "utf8");
-      const stderrRetainedBytes = Buffer.byteLength(stderr, "utf8");
+      const stdout = stdoutBuffer.toString();
+      const stderr = stderrBuffer.toString();
+      const stdoutRetainedBytes = stdoutBuffer.retainedBytes;
+      const stderrRetainedBytes = stderrBuffer.retainedBytes;
       const { omittedBytes: stdoutCaptureOmittedBytes, truncated: stdoutTruncated } = captureMetadata(stdoutDecodedBytes, stdoutRetainedBytes);
       const { omittedBytes: stderrCaptureOmittedBytes, truncated: stderrTruncated } = captureMetadata(stderrDecodedBytes, stderrRetainedBytes);
       resolve({

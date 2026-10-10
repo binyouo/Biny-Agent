@@ -229,6 +229,11 @@ export class GoalGraphStore {
     return rows.map((row) => ({ ...toGraph(row), nodes: this.nodes(stringValue(row.graph_id)) }));
   }
 
+  listSupervisedGraphIds(sessionId: string): string[] {
+    const rows = this.database.prepare("SELECT graph_id FROM graphs WHERE workspace_id = ? AND mode = 'supervised' AND supervisor_session_id = ? ORDER BY created_at ASC").all(this.authority.workspaceId, sessionId) as Array<Record<string, unknown>>;
+    return rows.map((row) => stringValue(row.graph_id));
+  }
+
   startGraph(graphId: string): GraphRecord {
     return this.updateGraph(graphId, "running");
   }
