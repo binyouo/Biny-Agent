@@ -500,7 +500,7 @@ function projectBashOutput(entry: ToolResultEntry): Record<string, unknown> {
     process: Object.keys(asRecord(record.process)).length > 0 ? record.process : undefined,
     output: Object.keys(output).length > 0
       ? removeUndefined({
-          ...copyFields(output, ["processId", "logPath", "startOffset", "nextOffset", "totalBytes", "omittedBefore", "hasMore"]),
+          ...copyFields(output, ["processId", "logPath", "startOffset", "nextOffset", "totalBytes", "omittedBefore", "hasMore", "pendingUtf8Bytes"]),
           content: displayed,
           contentTruncated: truncated ? true : undefined,
           contentOriginalBytes: truncated ? Buffer.byteLength(content, "utf8") : undefined,

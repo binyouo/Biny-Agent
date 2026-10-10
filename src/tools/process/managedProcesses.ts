@@ -99,7 +99,7 @@ export function createBashOutputTool(service: ManagedProcessService): Tool<BashO
   }) satisfies z.ZodType<BashOutputArgs>;
   return {
     name: "BashOutput",
-    description: "List background Bash processes, or return one process status together with a bounded page of its durable merged output log. Continue with output.nextOffset while output.hasMore is true.",
+    description: "List background Bash processes, or return one process status together with a bounded page of its durable merged output log. Continue with output.nextOffset while output.hasMore is true. If output.pendingUtf8Bytes is present, wait for new output or process exit and retry the same output.nextOffset.",
     promptSnippet: "List background Bash processes or read paginated process output",
     promptGuidelines: ["Omit processId to recover recent process IDs; use fromEnd for a tail or nextOffset for incremental reads"],
     parameters: {
