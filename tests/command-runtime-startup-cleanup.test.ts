@@ -64,7 +64,7 @@ function fakeMcpServer(context: TestContext) {
 
 for (const ownership of ["private", "shared registry"] as const) {
   await test(`runtime startup directory failure releases its ${ownership} MCP ownership`, { timeout: 10_000 }, async (context) => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), "biny-runtime-startup-cleanup-"));
+    const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "biny-runtime-startup-cleanup-")));
     const workspaceRoot = path.join(root, "workspace");
     const previousAgentDir = process.env.BINY_AGENT_DIR;
     process.env.BINY_AGENT_DIR = path.join(root, "agent");

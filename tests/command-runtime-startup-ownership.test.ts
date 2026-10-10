@@ -23,7 +23,7 @@ import { SubagentTaskManager } from "../src/runtime/SubagentTaskManager.js";
 import { RuntimeHostResourceRegistry, RuntimeHostResourceScope } from "../src/runtime/host/resources.js";
 
 async function fixture(t: TestContext, subagents = false) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "biny-startup-ownership-"));
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "biny-startup-ownership-")));
   const workspace = path.join(root, "workspace");
   const previous = process.env.BINY_AGENT_DIR;
   process.env.BINY_AGENT_DIR = path.join(root, "agent");
