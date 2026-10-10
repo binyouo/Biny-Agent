@@ -2420,8 +2420,8 @@ export class DesktopAgentManager {
       const taskRuns = await DurableTaskRunStore.open(persistenceRoot, authority);
       const goals = await SessionGoalStore.open(persistenceRoot, authority);
       authority.databaseHandle().exec("BEGIN");
-      const plans = graphs.listGraphs().filter((graph) => graph.mode === "supervised" && graph.supervisorSessionId === sessionId)
-        .map((graph) => planStatus({ graphs, taskRuns }, graph.graphId, sessionId));
+      const plans = graphs.listSupervisedGraphIds(sessionId)
+        .map((graphId) => planStatus({ graphs, taskRuns }, graphId, sessionId));
       return { sessionId, plans, todos: todos.list(), goal: goals.get(sessionId) };
     } finally {
       authority.close();
