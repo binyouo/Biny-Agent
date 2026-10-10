@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { syncBuiltinESMExports } from "node:module";
 import os from "node:os";
 import path from "node:path";
@@ -10,7 +10,7 @@ import { DurableTaskRunStore } from "../src/runtime/TaskRunStore.js";
 import { approveTaskVerification, runTaskClosure } from "../src/runtime/TaskClosure.js";
 import { pendingTaskVerificationApproval, readTaskVerificationContract, taskCheckToolCallId, taskVerificationPermissionRequiredReason, type TaskCommandExecutor, type TaskCandidateArtifacts, type TaskVerificationEvidence } from "../src/runtime/taskVerification.js";
 
-function deferred() { let resolve!: () => void; const promise = new Promise<void>(done => { resolve = done; }); return { promise, resolve }; }
+function deferred() { let resolve!: () => void; let reject!: (error: Error) => void; const promise = new Promise<void>((done, fail) => { resolve = done; reject = fail; }); return { promise, resolve, reject }; }
 
 for (const mutation of ["cancel", "new-attempt"] as const) test(`approval rejects ${mutation} while fingerprinting`, async t => {
   await fixture(async ({ root, tasks, taskId, approve }) => {
@@ -218,7 +218,7 @@ function approvalId(tasks: DurableTaskRunStore, taskId: string): string {
   const pending = pendingTaskVerificationApproval(tasks.get(taskId)!.attempts.at(-1)!.verification); assert.ok(pending); return pending.approvalId;
 }
 async function fixture(run: (context: { root: string; tasks: DurableTaskRunStore; authority: RuntimeEventAuthority; taskId: string; approve: (id: string) => Promise<void>; verify: () => ReturnType<typeof runTaskClosure> }) => Promise<void>): Promise<void> {
-  const root = await mkdtemp(path.join(os.tmpdir(), "biny-approval-state-"));
+  const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "biny-approval-state-")));
   await writeFile(path.join(root, "artifact.txt"), "stable candidate\n"); await writeFile(path.join(root, "definition.txt"), "stable check definition\n");
   const authority = await RuntimeEventAuthority.open(root, { backfillLegacySessions: false });
   const tasks = await DurableTaskRunStore.open(root, authority);
@@ -237,6 +237,7 @@ async function fixture(run: (context: { root: string; tasks: DurableTaskRunStore
 }
 function holdFirstArtifactRead(t: TestContext, root: string) {
   const entered = deferred(); const released = deferred(); const original = fs.createReadStream; let armed = true;
+  const timer = setTimeout(() => entered.reject(new Error("Artifact fingerprint read did not reach the race gate.")), 5_000);
   const mock = t.mock.method(fs, "createReadStream", (filename: Parameters<typeof fs.createReadStream>[0], options: Parameters<typeof fs.createReadStream>[1]) => {
     const stream = original(filename, options);
     if (armed && String(filename) === path.join(root, "artifact.txt")) {
@@ -246,5 +247,5 @@ function holdFirstArtifactRead(t: TestContext, root: string) {
     return stream;
   });
   syncBuiltinESMExports();
-  return { entered: entered.promise, release: released.resolve, restore: () => { mock.mock.restore(); syncBuiltinESMExports(); } };
+  return { entered: entered.promise.finally(() => clearTimeout(timer)), release: released.resolve, restore: () => { mock.mock.restore(); syncBuiltinESMExports(); } };
 }
