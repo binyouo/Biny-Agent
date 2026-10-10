@@ -92,6 +92,7 @@ async function runCase(targetSessionId: string | undefined, primaryBusy = false)
   let boundRunId: string | undefined;
   let completed = false;
   const store = {
+    recoverInFlight: () => undefined,
     claimDue: () => [fire],
     claimFire: () => fire,
     get: () => record,
@@ -135,6 +136,7 @@ async function runDeferredTargetCase(): Promise<void> {
   };
   let deferredReason: string | undefined;
   const store = {
+    recoverInFlight: () => undefined,
     claimDue: () => [fire],
     claimFire: () => fire,
     get: () => record,

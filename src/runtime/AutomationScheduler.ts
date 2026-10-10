@@ -527,6 +527,7 @@ export class AutomationScheduler {
   private readonly activeSessions = new Set<string>();
   private activeFires = 0;
   private closed = false;
+  private recovered = false;
 
   constructor(private readonly options: AutomationSchedulerOptions) {
     this.tickMs = options.tickMs ?? 1_000;
@@ -535,7 +536,7 @@ export class AutomationScheduler {
 
   start(): void {
     if (this.timer || this.closed) return;
-    this.store().recoverInFlight();
+    this.ensureRecovered();
     const poll = (): void => {
       // Timer ticks discover work without retaining another completion waiter for
       // every queued fire. Each fire has one shared promise until it settles.
@@ -552,6 +553,7 @@ export class AutomationScheduler {
 
   async runNow(automationId: string): Promise<AutomationPendingFire> {
     if (this.closed) throw new Error("Automation scheduler is stopped.");
+    this.ensureRecovered();
     const fire = this.store().forceFire(automationId);
     await this.enqueueFire(fire);
     return this.store().listPending(automationId).find((candidate) => candidate.fireId === fire.fireId) ?? fire;
@@ -661,7 +663,16 @@ export class AutomationScheduler {
 
   private queueDueFires(): Promise<void>[] {
     if (this.closed) return [];
+    this.ensureRecovered();
     return this.store().claimDue(new Date()).map((fire) => this.enqueueFire(fire));
+  }
+
+  private ensureRecovered(): void {
+    if (this.recovered) return;
+    // Recover the previous owner before this instance can create or claim work.
+    // Store replacement within the same owner must not reclassify its live fires.
+    this.store().recoverInFlight();
+    this.recovered = true;
   }
 
   private dispatchQueuedFires(): void {
