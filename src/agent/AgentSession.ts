@@ -106,6 +106,7 @@ import {
   EmotionAnalysisScheduler,
   type EmotionAnalysisMessage
 } from "./context/emotionAnalysis.js";
+import { recentEmotionMessagesFromEvents } from "./context/emotionMessages.js";
 import { isActivityMemory } from "../activity/modelContext.js";
 import { activityContextForTurn, type ActivityChatContext } from "../activity/chatContext.js";
 import { ActivityStore } from "../activity/store.js";
@@ -960,18 +961,7 @@ export class AgentSession {
 
   private async recentEmotionMessages(filePath: string): Promise<EmotionAnalysisMessage[]> {
     const events = await readSessionEvents(filePath);
-    const activeIds = activeSessionMessageIds(events);
-    return sessionMessageTree(events)
-      .filter((node) => activeIds.has(node.id) && (node.message.role === "user" || node.message.role === "assistant"))
-      .map((node): EmotionAnalysisMessage | undefined => {
-        const text = redactSecrets(messageText(node.message));
-        if (!text.trim()) return undefined;
-        return node.message.role === "user"
-          ? { role: "user", text }
-          : { role: "assistant", text };
-      })
-      .filter((message): message is EmotionAnalysisMessage => message !== undefined)
-      .slice(-10);
+    return recentEmotionMessagesFromEvents(events);
   }
 
   /** 上次被打断、尚未收尾的回合；没有则为 undefined。 */
