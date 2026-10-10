@@ -188,7 +188,8 @@ export function parseTemporalClues(text: string, sentAt?: string, timeZone?: str
       && /^[ \t]*(?:至|到|—|–|-|~|～)[ \t]*$/u.test(text.slice(prior.offset + prior.expression.length, offset))) {
       const combined = text.slice(prior.offset, offset + expression.length);
       prior.expression = combined;
-      prior.endDate = resolved.date === prior.date ? null : resolved.date;
+      const endDate = resolved.endDate ?? resolved.date;
+      prior.endDate = endDate === prior.date ? null : endDate;
       prior.quote = text.slice(Math.max(0, prior.offset - 120), end);
       continue;
     }
