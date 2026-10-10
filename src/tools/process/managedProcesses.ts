@@ -5,6 +5,7 @@
  * 进程组清理由 ManagedProcessService 统一负责。
  */
 import { z } from "zod";
+import { maxRegexQueryBytes } from "../search/regexMatcher.js";
 import {
   ManagedProcessService,
   type HttpReadinessProbe,
@@ -66,7 +67,11 @@ const logProbeSchema = z.object({
   intervalMs: z.number().int().min(1).max(60_000).optional()
 }) satisfies z.ZodType<LogReadinessProbe>;
 
-export const managedProcessReadinessSchema = z.discriminatedUnion("type", [httpProbeSchema, tcpProbeSchema, logProbeSchema]) satisfies z.ZodType<ManagedProcessReadinessProbe>;
+export const managedProcessReadinessSchema = z.discriminatedUnion("type", [httpProbeSchema, tcpProbeSchema, logProbeSchema]).superRefine((probe, refinement) => {
+  if (probe.type === "log" && probe.regex && Buffer.byteLength(probe.pattern, "utf8") > maxRegexQueryBytes) {
+    refinement.addIssue({ code: z.ZodIssueCode.custom, path: ["pattern"], message: "Log readiness regex exceeds its 64 KiB UTF-8 pattern limit." });
+  }
+}) satisfies z.ZodType<ManagedProcessReadinessProbe>;
 
 export const managedProcessReadinessParameters = {
   type: "object" as const,
@@ -76,7 +81,7 @@ export const managedProcessReadinessParameters = {
     expectedStatus: { type: "integer" as const, minimum: 100, maximum: 599, description: "Exact HTTP status required; defaults to 200." },
     host: { type: "string" as const, description: "TCP readiness host." },
     port: { type: "integer" as const, minimum: 1, maximum: 65_535, description: "TCP readiness port." },
-    pattern: { type: "string" as const, description: "Literal or regular-expression log pattern." },
+    pattern: { type: "string" as const, description: "Literal or regular-expression log pattern. Regex patterns are limited to 65536 UTF-8 bytes; literal patterns have no regex byte limit." },
     regex: { type: "boolean" as const, description: "Interpret pattern as a regular expression." },
     ...commonProbeProperties
   },

@@ -13,6 +13,7 @@ import { constants } from "node:fs";
 import { appendFile, open, realpath, stat } from "node:fs/promises";
 import net from "node:net";
 import path from "node:path";
+import { CancellableRegexMatcher, maxRegexQueryBytes } from "../tools/search/regexMatcher.js";
 import { agentDir, ensureAgentDirs } from "../session/store.js";
 import { bindManagedProcessLog, readManagedProcessLog, type ManagedProcessLogBinding } from "./managedProcessLog.js";
 
@@ -463,6 +464,7 @@ export class ManagedProcessService {
     probe: ManagedProcessReadinessProbe,
     signal?: AbortSignal
   ): Promise<ManagedProcessReadinessResult> {
+    if (probe.type === "log" && probe.regex) return await this.waitForLogRegexReadiness(record, probe, signal);
     const started = Date.now();
     const timeoutMs = probe.timeoutMs ?? defaultReadinessTimeoutMs;
     const intervalMs = probe.intervalMs ?? defaultReadinessIntervalMs;
@@ -525,6 +527,105 @@ export class ManagedProcessService {
     }
   }
 
+  private async waitForLogRegexReadiness(
+    record: ManagedProcessRecord,
+    probe: LogReadinessProbe,
+    signal?: AbortSignal
+  ): Promise<ManagedProcessReadinessResult> {
+    const started = Date.now();
+    const timeoutMs = probe.timeoutMs ?? defaultReadinessTimeoutMs;
+    const intervalMs = probe.intervalMs ?? defaultReadinessIntervalMs;
+    const deadline = started + timeoutMs;
+    let attempts = 0;
+    let lastObservation: ProbeObservation = { ready: false };
+    const deadlineController = new AbortController();
+    const deadlineReason = new Error("Readiness deadline reached.");
+    const probeSignal = signal ? AbortSignal.any([signal, deadlineController.signal]) : deadlineController.signal;
+    let deadlineTimer: ReturnType<typeof setTimeout>;
+    // Internal callers may use durations beyond Node's signed 32-bit timer range.
+    const armDeadline = (): void => {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) deadlineController.abort(deadlineReason);
+      else deadlineTimer = setTimeout(armDeadline, Math.min(remaining, 2_147_483_647));
+    };
+    armDeadline();
+    const checkDeadline = (): void => {
+      signal?.throwIfAborted();
+      if (Date.now() >= deadline) deadlineController.abort(deadlineReason);
+      probeSignal.throwIfAborted();
+    };
+    let matcher: CancellableRegexMatcher | undefined;
+    const matchLog = async (pattern: string, contents: string): Promise<boolean> => {
+      checkDeadline();
+      try {
+        // One decoded raw-log tail may expand to three UTF-8 bytes per source byte.
+        matcher ??= await CancellableRegexMatcher.create(pattern, "u", probeSignal, 3 * maxReadinessLogBytes);
+        checkDeadline();
+        const indexes = await matcher.match([contents], {
+          skipMatches: 0, remainingMatches: 1, contextLines: 0, remainingContext: 0, hasMore: false
+        });
+        checkDeadline();
+        return indexes[0] !== undefined;
+      } catch (error) {
+        signal?.throwIfAborted();
+        if (error === deadlineReason) throw error;
+        throw new Error(`Log readiness regex failed: ${errorMessage(error)}`, { cause: error });
+      }
+    };
+    let status: "ready" | "timed_out" | "failed" = "timed_out";
+    let failure: { error: unknown } | undefined;
+    try {
+      while (true) {
+        signal?.throwIfAborted();
+        this.refreshRecord(record);
+        attempts += 1;
+        if (!isRunningState(record.snapshot.state) || record.stopRequested) break;
+        checkDeadline();
+        lastObservation = await probeLog(record.snapshot.logPath, probe, matchLog);
+        signal?.throwIfAborted();
+        this.refreshRecord(record);
+        if (!isRunningState(record.snapshot.state) || record.stopRequested) break;
+        checkDeadline();
+        if (lastObservation.ready) {
+          status = "ready";
+          break;
+        }
+        await abortableDelay(Math.min(intervalMs, Math.max(1, deadline - Date.now())), probeSignal);
+      }
+    } catch (error) {
+      if (error !== deadlineReason) failure = { error };
+    } finally {
+      // A timely observation stays timely while termination completes. Cancellation
+      // and process ownership must still be rechecked after this new await boundary.
+      clearTimeout(deadlineTimer!);
+      try { await matcher?.close(); }
+      catch (error) { failure ??= { error: new Error(`Log readiness regex cleanup failed: ${errorMessage(error)}`, { cause: error }) }; }
+    }
+    signal?.throwIfAborted();
+    this.refreshRecord(record);
+    if (!isRunningState(record.snapshot.state) || record.stopRequested) {
+      status = "failed";
+      lastObservation = {
+        ready: false,
+        message: record.stopRequested
+          ? "Process stop requested before readiness."
+          : `Process exited before readiness (${record.snapshot.state}).`
+      };
+    } else if (failure) {
+      throw failure.error;
+    }
+    return {
+      type: probe.type,
+      status,
+      passed: status === "ready",
+      attempts,
+      checkedAt: new Date().toISOString(),
+      durationMs: Date.now() - started,
+      message: lastObservation.message ?? `Readiness timed out after ${String(timeoutMs)}ms.`,
+      httpStatus: lastObservation.httpStatus
+    };
+  }
+
   private async recordLifecycle(event: string, snapshot: ManagedProcessSnapshot, message?: string): Promise<void> {
     await this.initialize();
     const entry = JSON.stringify({
@@ -583,7 +684,10 @@ function validateReadinessProbe(probe: ManagedProcessReadinessProbe | undefined)
     }
   } else {
     if (!probe.pattern) throw new Error("Log readiness pattern must not be empty.");
-    if (probe.regex) new RegExp(probe.pattern, "u");
+    if (probe.regex) {
+      if (Buffer.byteLength(probe.pattern, "utf8") > maxRegexQueryBytes) throw new RangeError("Log readiness regex exceeds its 64 KiB UTF-8 pattern limit.");
+      new RegExp(probe.pattern, "u");
+    }
   }
 }
 
@@ -642,7 +746,11 @@ async function probeTcp(probe: TcpReadinessProbe, timeoutMs: number, signal?: Ab
   });
 }
 
-async function probeLog(logPath: string, probe: LogReadinessProbe): Promise<ProbeObservation> {
+async function probeLog(
+  logPath: string,
+  probe: LogReadinessProbe,
+  matchLog?: (pattern: string, contents: string) => Promise<boolean>
+): Promise<ProbeObservation> {
   let contents: string;
   try {
     const metadata = await stat(logPath);
@@ -658,7 +766,7 @@ async function probeLog(logPath: string, probe: LogReadinessProbe): Promise<Prob
   } catch (error) {
     return { ready: false, message: `Log readiness failed: ${errorMessage(error)}` };
   }
-  const matched = probe.regex ? new RegExp(probe.pattern, "u").test(contents) : contents.includes(probe.pattern);
+  const matched = matchLog ? await matchLog(probe.pattern, contents) : contents.includes(probe.pattern);
   return {
     ready: matched,
     message: matched ? `Log readiness matched ${JSON.stringify(probe.pattern)}.` : `Log readiness is waiting for ${JSON.stringify(probe.pattern)}.`
