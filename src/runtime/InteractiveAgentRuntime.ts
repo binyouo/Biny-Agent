@@ -384,9 +384,29 @@ export class InteractiveAgentRuntime {
       this.startQueuedMessageRun(previousRun);
       return;
     }
-    const completion: Promise<void> = new Promise<void>((resolve) => setTimeout(resolve, 100)).then(() => {
-      if (this.queuedMessageStartCompletion === completion) this.queuedMessageStartCompletion = undefined;
-      this.startQueuedMessageRun(previousRun);
+    const completion: Promise<void> = new Promise<void>((resolve) => setTimeout(resolve, 100)).then(async () => {
+      try {
+        // 保留调度所有权，维护结束后继续等待当时最新的维护任务，而不是丢掉队列唤醒。
+        while (this.queuedMessageStartCompletion === completion && !this.closed && this.queuedMessages.length) {
+          const operation = this.activeOperationCompletion;
+          if (!operation) break;
+          await operation;
+        }
+        if (this.queuedMessageStartCompletion !== completion || this.closed || !this.queuedMessages.length) return;
+        let sessionId: string;
+        try {
+          sessionId = this.getInfo().sessionId;
+        } catch (error) {
+          // 元信息暂时不可读时保留队列；错误记录也不能让调度 Promise 新增未处理拒绝。
+          try { this.commandRuntime.agent.recordError(error); } catch { /* best effort */ }
+          return;
+        }
+        // 维护可能切换会话；旧队列不能进入新会话，也不能由此处直接丢弃。
+        if (sessionId !== previousRun.sessionId) return;
+        this.startQueuedMessageRun(previousRun);
+      } finally {
+        if (this.queuedMessageStartCompletion === completion) this.queuedMessageStartCompletion = undefined;
+      }
     });
     this.queuedMessageStartCompletion = completion;
   }
@@ -517,6 +537,8 @@ export class InteractiveAgentRuntime {
       this.releaseSessionLeaseIfIdle();
       throw error;
     }
+    // 新回合已受理，旧回合的延迟队列调度不再有权启动消息（包括新回合暂停后）。
+    this.queuedMessageStartCompletion = undefined;
     this.activeRun = run;
     this.activeRunController = controller;
     // admission 同步发布运行状态，确保后续消息入队、取消和同会话互斥都能看到这个 run。

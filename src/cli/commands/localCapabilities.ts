@@ -22,6 +22,8 @@ import { HeartbeatFileStore } from "../../agent/context/heartbeat.js";
 import { TodoStore } from "../../session/todoStore.js";
 import { resolveSessionFile, sessionIdFromFile } from "../../session/store.js";
 
+import { resolveDateKey } from "../dateKey.js";
+
 export interface LocalCapabilityOutputOptions {
   json?: boolean;
   noSpawn?: boolean;
@@ -393,16 +395,4 @@ export async function temporalIndexFactsCommand(workspaceRoot: string, sessionId
     const indexed = await index.indexSessionFile(sessionId, matches[0]!);
     printResult({ sessionId, indexedMessages: indexed.length }, options.json, (value) => JSON.stringify(value));
   } finally { index.close(); }
-}
-
-function resolveDateKey(value: string): string {
-  const now = new Date();
-  if (value === "today") return formatDate(now);
-  if (value === "yesterday") return formatDate(new Date(now.getTime() - 86_400_000));
-  if (!/^\d{4}-\d{2}-\d{2}$/u.test(value)) throw new Error(`日期必须是 today、yesterday 或 YYYY-MM-DD：${value}`);
-  return value;
-}
-
-function formatDate(date: Date): string {
-  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
 }
