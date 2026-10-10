@@ -8,6 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { spawn, type ChildProcess } from "node:child_process";
 import { StringDecoder } from "node:string_decoder";
 import { BoundedUtf8Tail } from "./boundedUtf8Tail.js";
+import { captureMetadata } from "./captureMetadata.js";
 import { z } from "zod";
 import { ToolAccesses } from "../access.js";
 import { describeSandbox, sandboxCommand, type SandboxOptions } from "./sandbox.js";
@@ -48,14 +49,18 @@ export interface RunCommandResult {
   sandbox?: string;
   stdout: string;
   stderr: string;
-  /** stdout 的原始 UTF-8 字节数；stdout 可能只保留了末尾。 */
+  /** stdout 的原始输入字节数；stdout 可能只保留了末尾。 */
   stdoutBytes: number;
   stdoutRetainedBytes: number;
+  /** Discarded decoded-text UTF-8 bytes, not raw input bytes; absent in older results. */
+  stdoutCaptureOmittedBytes?: number;
   stdoutTruncated: boolean;
   stdoutTruncationDirection?: "tail";
-  /** stderr 的原始 UTF-8 字节数；stderr 可能只保留了末尾。 */
+  /** stderr 的原始输入字节数，加上附加诊断的 UTF-8 字节数；stderr 可能只保留了末尾。 */
   stderrBytes: number;
   stderrRetainedBytes: number;
+  /** Discarded decoded-text UTF-8 bytes, including diagnostics; absent in older results. */
+  stderrCaptureOmittedBytes?: number;
   stderrTruncated: boolean;
   stderrTruncationDirection?: "tail";
   exitCode: number;
@@ -245,6 +250,8 @@ async function runShellCommandWithCompletionEvidence(
     const stderrBuffer = new BoundedUtf8Tail(outputLimitBytes);
     let stdoutBytes = 0;
     let stderrBytes = 0;
+    let stdoutDecodedBytes = 0;
+    let stderrDecodedBytes = 0;
     const stdoutDecoder = new StringDecoder("utf8");
     const stderrDecoder = new StringDecoder("utf8");
     let outputFinalized = false;
@@ -268,18 +275,21 @@ async function runShellCommandWithCompletionEvidence(
     const appendDiagnostic = (message: string) => {
       const text = `${stderrBuffer.retainedBytes > 0 ? "\n" : ""}${message}`;
       stderrBytes += Buffer.byteLength(text, "utf8");
+      stderrDecodedBytes += Buffer.byteLength(text, "utf8");
       stderrBuffer.append(text);
       options.onUpdate?.({ kind: "stderr", text });
     };
     const onStdout = (chunk: Buffer) => {
       stdoutBytes += chunk.byteLength;
       const text = stdoutDecoder.write(chunk);
+      stdoutDecodedBytes += Buffer.byteLength(text, "utf8");
       stdoutBuffer.append(text);
       if (text) options.onUpdate?.({ kind: "stdout", text });
     };
     const onStderr = (chunk: Buffer) => {
       stderrBytes += chunk.byteLength;
       const text = stderrDecoder.write(chunk);
+      stderrDecodedBytes += Buffer.byteLength(text, "utf8");
       stderrBuffer.append(text);
       if (text) options.onUpdate?.({ kind: "stderr", text });
     };
@@ -288,6 +298,8 @@ async function runShellCommandWithCompletionEvidence(
       outputFinalized = true;
       const stdoutRemainder = stdoutDecoder.end();
       const stderrRemainder = stderrDecoder.end();
+      stdoutDecodedBytes += Buffer.byteLength(stdoutRemainder, "utf8");
+      stderrDecodedBytes += Buffer.byteLength(stderrRemainder, "utf8");
       stdoutBuffer.append(stdoutRemainder);
       stderrBuffer.append(stderrRemainder);
       if (stdoutRemainder) options.onUpdate?.({ kind: "stdout", text: stdoutRemainder });
@@ -336,18 +348,20 @@ async function runShellCommandWithCompletionEvidence(
       const stderr = stderrBuffer.toString();
       const stdoutRetainedBytes = stdoutBuffer.retainedBytes;
       const stderrRetainedBytes = stderrBuffer.retainedBytes;
-      const stdoutTruncated = stdoutBytes > stdoutRetainedBytes;
-      const stderrTruncated = stderrBytes > stderrRetainedBytes;
+      const { omittedBytes: stdoutCaptureOmittedBytes, truncated: stdoutTruncated } = captureMetadata(stdoutDecodedBytes, stdoutRetainedBytes);
+      const { omittedBytes: stderrCaptureOmittedBytes, truncated: stderrTruncated } = captureMetadata(stderrDecodedBytes, stderrRetainedBytes);
       resolve({
         status,
         stdout,
         stderr,
         stdoutBytes,
         stdoutRetainedBytes,
+        stdoutCaptureOmittedBytes,
         stdoutTruncated,
         stdoutTruncationDirection: stdoutTruncated ? "tail" : undefined,
         stderrBytes,
         stderrRetainedBytes,
+        stderrCaptureOmittedBytes,
         stderrTruncated,
         stderrTruncationDirection: stderrTruncated ? "tail" : undefined,
         exitCode: resolvedExitCode,
