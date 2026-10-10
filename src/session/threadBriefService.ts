@@ -76,11 +76,17 @@ export class ThreadBriefService {
       this.controller = new AbortController();
       try { await this.generate(job.sessionId, job.manual, this.controller.signal); job.resolve(); }
       catch (error) {
-        if (!this.controller.signal.aborted) {
-          this.store.setError({ sessionId: job.sessionId, message: redactSecrets(error instanceof Error ? error.message : String(error)).slice(0, 500), at: this.now().toISOString() });
-          this.options.onChange?.();
+        let failure = error;
+        try {
+          if (!this.controller.signal.aborted) {
+            this.store.setError({ sessionId: job.sessionId, message: redactSecrets(error instanceof Error ? error.message : String(error)).slice(0, 500), at: this.now().toISOString() });
+            this.options.onChange?.();
+          }
+        } catch (reportingError) {
+          // 错误报告也可能失败；当前作业仍须结算，并保留两次失败供调用方诊断。
+          failure = new AggregateError([error, reportingError], "摘要生成失败，且未能报告错误。", { cause: error });
         }
-        job.reject(error);
+        job.reject(failure);
       }
       finally { this.controller = undefined; }
     }
