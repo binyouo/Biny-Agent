@@ -92,6 +92,14 @@ export class McpToolCatalogCache {
     while (this.entries.size > 32) this.entries.delete(this.entries.keys().next().value!);
   }
 
+  /** 失败只撤回本次尝试读到的条目，不能删除其他作用域后来发布的目录。 */
+  captureInvalidation(key: string): () => void {
+    const entry = this.entries.get(key);
+    return () => {
+      if (entry && this.entries.get(key) === entry) this.entries.delete(key);
+    };
+  }
+
   delete(key: string): void { this.entries.delete(key); }
   clear(): void { this.entries.clear(); }
 }
@@ -563,6 +571,7 @@ export class McpToolHost {
     const timeoutMs = managed.rawConfig.startupTimeoutMs ?? defaultStartupTimeoutMs;
     const timer = setTimeout(() => controller.abort(new DOMException(`MCP startup timed out after ${timeoutMs}ms`, "TimeoutError")), timeoutMs);
     let openedClient: Client | undefined;
+    let invalidateCatalog = managed.catalogKey ? this.catalogCache.captureInvalidation(managed.catalogKey) : undefined;
     try {
       // 每次连接都从原始配置展开：启动时变量缺失后重连会重新验证，环境变更也能生效。
       managed.config = managed.local ? managed.rawConfig : expandServerConfig(managed.rawConfig);
@@ -578,6 +587,7 @@ export class McpToolHost {
         environment: managed.transport === "stdio" ? process.env : undefined
       });
       const cached = managed.catalogKey ? this.catalogCache.get(managed.catalogKey) : undefined;
+      invalidateCatalog = managed.catalogKey ? this.catalogCache.captureInvalidation(managed.catalogKey) : undefined;
       managed.status.catalogCached = Boolean(cached);
       if (cached) {
         managed.status.instructions = cached.instructions;
@@ -621,7 +631,7 @@ export class McpToolHost {
       managed.status.catalogCached = false;
       if (managed.catalogKey) this.catalogCache.set(managed.catalogKey, managed.tools, managed.status.instructions);
     } catch (error) {
-      if (managed.catalogKey && !this.closing) this.catalogCache.delete(managed.catalogKey);
+      if (!this.closing) invalidateCatalog?.();
       managed.status.catalogCached = false;
       for (const name of managed.status.toolNames) this.registry?.unregister(name);
       managed.status.toolNames = [];
