@@ -78,8 +78,8 @@ export interface TemporalFactHit extends DatedWorkFact {
 }
 
 const dayPattern = /^\d{4}-\d{2}-\d{2}$/u;
-const expressionPattern = /(?:\d{4}-\d{2}-\d{2}|(?:\d{4}年)?\d{1,2}月\d{1,2}[日号]?|今天|明天|后天|昨天|[本这上下]周[一二三四五六日天]?|下个月|本月|这个月|明年|今年|(?:today|tomorrow|yesterday)\b)(?:\s*(?:上午|下午|晚上|中午|凌晨)?\s*(?:\d{1,2}:\d{2}|\d{1,2}点(?:半|\d{1,2}分?)?))?/giu;
-const dateCorePattern = /^(?:\d{4}-\d{2}-\d{2}|(?:\d{4}年)?\d{1,2}月\d{1,2}[日号]?|今天|明天|后天|昨天|[本这上下]周[一二三四五六日天]?|下个月|本月|这个月|明年|今年|(?:today|tomorrow|yesterday)\b)/iu;
+const expressionPattern = /(?:\d{4}-\d{2}-\d{2}|(?:(?:今年|明年)[^\S\r\n\v\f\u2028\u2029]*|\d{4}年)?\d{1,2}月\d{1,2}[日号]?|今天|明天|后天|昨天|[本这上下]周[一二三四五六日天]?|下个月|本月|这个月|明年|今年|(?:today|tomorrow|yesterday)\b)(?:\s*(?:上午|下午|晚上|中午|凌晨)?\s*(?:\d{1,2}:\d{2}|\d{1,2}点(?:半|\d{1,2}分?)?))?/giu;
+const dateCorePattern = /^(?:\d{4}-\d{2}-\d{2}|(?:(?:今年|明年)[^\S\r\n\v\f\u2028\u2029]*|\d{4}年)?\d{1,2}月\d{1,2}[日号]?|今天|明天|后天|昨天|[本这上下]周[一二三四五六日天]?|下个月|本月|这个月|明年|今年|(?:today|tomorrow|yesterday)\b)/iu;
 const dateReferenceCandidatePattern = /@\[[^\]\n]{1,80}\]\(biny:\/\/date\/[^\s)]+\)/gu;
 const unavailableSources = new Set(["cron", "heartbeat", "system", "loop", "goal", "background-resume", "auto"]);
 
@@ -114,11 +114,13 @@ function addDays(day: string, amount: number): string {
 function resolveExpression(expression: string, anchor: string | undefined): { date: string | null; endDate: string | null } {
   const iso = expression.match(/^\d{4}-\d{2}-\d{2}$/u)?.[0];
   if (iso) return { date: validDay(iso) ? iso : null, endDate: null };
-  const chinese = expression.match(/^(?:(\d{4})年)?(\d{1,2})月(\d{1,2})/u);
+  const chinese = expression.match(/^(?:(\d{4})年|(今年|明年)[^\S\r\n\v\f\u2028\u2029]*)?(\d{1,2})月(\d{1,2})/u);
   if (chinese) {
-    const year = chinese[1] ?? anchor?.slice(0, 4);
+    const year = chinese[1] ?? (chinese[2] === "明年" && anchor
+      ? String(Number(anchor.slice(0, 4)) + 1).padStart(4, "0")
+      : anchor?.slice(0, 4));
     if (!year) return { date: null, endDate: null };
-    const date = `${year}-${chinese[2]!.padStart(2, "0")}-${chinese[3]!.padStart(2, "0")}`;
+    const date = `${year}-${chinese[3]!.padStart(2, "0")}-${chinese[4]!.padStart(2, "0")}`;
     return { date: validDay(date) ? date : null, endDate: null };
   }
   if (!anchor) return { date: null, endDate: null };
