@@ -50,7 +50,28 @@ export function codexLinesToBinyEvents(lines: readonly unknown[]): SessionEvent[
     if (counts) counts.set(payload.call_id, (counts.get(payload.call_id) ?? 0) + 1);
   }
   const identity = createImportedMessageIdentity();
-  let pendingReasoning = "";
+  const pendingReasoning: Array<{ text: string; time?: string; importSource: SessionImportSource; eventIndex: number }> = [];
+  const consumeReasoning = (): string | undefined => {
+    const text = pendingReasoning.map((record) => record.text).join("\n");
+    pendingReasoning.length = 0;
+    return nonEmpty(text);
+  };
+  const flushReasoning = (): void => {
+    const first = pendingReasoning[0];
+    if (!first) return;
+    // Merge once so orphan summaries keep source order around intervening tool results.
+    const suffix = events.splice(first.eventIndex);
+    let cursor = 0;
+    for (const { text, time, importSource, eventIndex } of pendingReasoning) {
+      while (cursor < eventIndex - first.eventIndex) events.push(suffix[cursor++]!);
+      const linked = identity();
+      events.push({ type: "agent_message", ...linked, time, importSource,
+        message: { role: "assistant", content: [{ type: "reasoning", text }] } });
+      events.push({ type: "assistant_message", ...linked, content: "", reasoningContent: text, time, importSource });
+    }
+    while (cursor < suffix.length) events.push(suffix[cursor++]!);
+    pendingReasoning.length = 0;
+  };
   for (const [index, line] of lines.entries()) {
     if (!isRecord(line)) continue;
     const codex = line as CodexLine;
@@ -66,7 +87,7 @@ export function codexLinesToBinyEvents(lines: readonly unknown[]): SessionEvent[
 
     if (payload.type === "reasoning") {
       const text = codexReasoningText(payload);
-      if (text) pendingReasoning = pendingReasoning ? `${pendingReasoning}\n${text}` : text;
+      if (text) pendingReasoning.push({ text, time, importSource, eventIndex: events.length });
       continue;
     }
     if (payload.type === "function_call" || payload.type === "custom_tool_call") {
@@ -83,10 +104,9 @@ export function codexLinesToBinyEvents(lines: readonly unknown[]): SessionEvent[
           : codexToolArgs(rawArgs),
         toolCallId: callId,
         importSource,
-        reasoningContent: nonEmpty(pendingReasoning),
+        reasoningContent: consumeReasoning(),
         time
       });
-      pendingReasoning = "";
       continue;
     }
     if (payload.type === "function_call_output" || payload.type === "custom_tool_call_output") {
@@ -102,6 +122,8 @@ export function codexLinesToBinyEvents(lines: readonly unknown[]): SessionEvent[
       continue;
     }
     if (payload.type === "message") {
+      // Even an empty user record ends the preceding summary's association window.
+      if (payload.role === "user") flushReasoning();
       const text = (Array.isArray(payload.content) ? payload.content : [])
         .filter((part): part is CodexContentPart => isRecord(part) && typeof part.text === "string")
         .map((part) => part.text ?? "")
@@ -113,14 +135,15 @@ export function codexLinesToBinyEvents(lines: readonly unknown[]): SessionEvent[
       } else if (payload.role === "assistant") {
         const linked = identity();
         const content: AgentAssistantMessage["content"] = [];
-        if (pendingReasoning) content.push({ type: "reasoning", text: pendingReasoning });
+        const reasoningContent = consumeReasoning();
+        if (reasoningContent) content.push({ type: "reasoning", text: reasoningContent });
         content.push({ type: "text", text });
         events.push({ type: "agent_message", ...linked, time, importSource, message: { role: "assistant", content } });
-        events.push({ type: "assistant_message", ...linked, content: text, reasoningContent: nonEmpty(pendingReasoning), time, importSource });
-        pendingReasoning = "";
+        events.push({ type: "assistant_message", ...linked, content: text, reasoningContent, time, importSource });
       }
     }
   }
+  flushReasoning();
   return events;
 }
 

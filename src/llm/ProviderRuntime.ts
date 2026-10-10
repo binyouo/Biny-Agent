@@ -197,7 +197,7 @@ export class ConfiguredProviderRuntime implements ProviderRuntime {
     // 单模型覆盖端点时，连接原端点的缓存/基线不能跨过去覆盖新路径的限制。
     const usesProviderEndpoint = model.baseUrl === undefined
       || model.baseUrl.replace(/\/+$/u, "") === endpoint?.replace(/\/+$/u, "");
-    const catalog = usesProviderEndpoint ? this.mergedCatalog().find((entry) => entry.id === model.model) : undefined;
+    const catalog = usesProviderEndpoint ? this.mergedCatalogEntry(model.model) : undefined;
     const generated = lookupModelMetadata(this.config.type, model.model, model.baseUrl ?? this.config.baseUrl ?? this.definition.baseUrl);
     const generatedModel = generated ? metadataToModel(this.id, this.config.type, model.model, generated) : undefined;
     const catalogModel = catalog
@@ -439,6 +439,22 @@ export class ConfiguredProviderRuntime implements ProviderRuntime {
       headers: normalized.headers,
       compatibility: normalized.compatibility
     };
+  }
+
+  private mergedCatalogEntry(modelId: string): ModelCatalogEntry | undefined {
+    const seed = this.config.type === "openai-codex" && this.liveModels.length
+      ? this.liveModels
+      : this.baselineModels;
+    let selected: ModelCatalogEntry | undefined;
+    // Match Map seeding: the last duplicate ID wins before live entries are folded.
+    for (const model of seed) {
+      if (model.id === modelId) selected = model;
+    }
+    // Codex also folds every live entry after live seeding, including the selected seed.
+    for (const model of this.liveModels) {
+      if (model.id === modelId) selected = selected ? mergeCatalogMetadata(model, selected) : model;
+    }
+    return selected;
   }
 
   private mergedCatalog(): ModelCatalogEntry[] {

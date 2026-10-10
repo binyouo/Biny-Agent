@@ -92,9 +92,16 @@ async function runCase(targetSessionId: string | undefined, primaryBusy = false)
   let boundRunId: string | undefined;
   let completed = false;
   const store = {
+    recoverInFlight: () => undefined,
     claimDue: () => [fire],
-    claimFire: () => fire,
+    claimFire: (id: string) => {
+      if (id !== fire.fireId || fire.status !== "pending") return undefined;
+      fire.status = "running";
+      fire.claimToken = "test-claim";
+      return { ...fire };
+    },
     get: () => record,
+    getFire: (id: string) => id === fire.fireId ? { ...fire } : undefined,
     bindFireRun: (_fireId: string, runId: string) => { boundRunId = runId; },
     completeFire: () => { completed = true; },
     failFire: (_fireId: string, error: string) => { throw new Error(error); },
@@ -135,9 +142,16 @@ async function runDeferredTargetCase(): Promise<void> {
   };
   let deferredReason: string | undefined;
   const store = {
+    recoverInFlight: () => undefined,
     claimDue: () => [fire],
-    claimFire: () => fire,
+    claimFire: (id: string) => {
+      if (id !== fire.fireId || fire.status !== "pending") return undefined;
+      fire.status = "running";
+      fire.claimToken = "test-claim";
+      return { ...fire };
+    },
     get: () => record,
+    getFire: (id: string) => id === fire.fireId ? { ...fire } : undefined,
     deferFire: (_fireId: string, _at: Date, reason?: string) => { deferredReason = reason; },
     bindFireRun: () => undefined,
     completeFire: () => { throw new Error("busy target must not complete"); },

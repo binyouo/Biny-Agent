@@ -22,7 +22,8 @@ export async function bindManagedProcessLog(logPath: string, handle: FileHandle)
 export async function readManagedProcessLog(
   binding: ManagedProcessLogBinding,
   options: ReadManagedProcessOutputOptions = {},
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  context: { final: boolean } = { final: true }
 ): Promise<Omit<ManagedProcessOutput, "processId">> {
   const maxBytes = options.maxBytes ?? 64 * 1024;
   const requestedOffset = options.offset ?? 0;
@@ -47,11 +48,12 @@ export async function readManagedProcessLog(
     const { bytesRead } = await file.read(buffer, 0, buffer.length, startOffset);
     signal?.throwIfAborted();
     const page = buffer.subarray(0, bytesRead);
-    const consumedBytes = await completeUtf8PageBytes(binding, file, page, startOffset, totalBytes, signal);
+    const { consumedBytes, pendingUtf8Bytes } = await completeUtf8PageBytes(binding, file, page, startOffset, totalBytes, context.final, signal);
     await assertLogBinding(binding, file);
     const nextOffset = startOffset + consumedBytes;
     output = { logPath: binding.path, content: page.subarray(0, consumedBytes).toString("utf8"), startOffset, nextOffset,
-      totalBytes, omittedBefore: startOffset > 0, hasMore: nextOffset < totalBytes };
+      totalBytes, omittedBefore: startOffset > 0, hasMore: nextOffset + (pendingUtf8Bytes ?? 0) < totalBytes,
+      ...(pendingUtf8Bytes === undefined ? {} : { pendingUtf8Bytes }) };
   } finally {
     await file.close();
   }
@@ -63,7 +65,8 @@ export async function readManagedProcessLog(
 /**
  * maxBytes bounds consumed source bytes. Inspect at most three extra bytes,
  * without advancing the cursor, to prove a valid code point crosses this page.
- * Malformed bytes, explicit starting offsets, and actual EOF retain decoding.
+ * A live snapshot may end mid-character: leave its valid prefix at nextOffset.
+ * Malformed bytes, explicit starting offsets, and final EOF retain decoding.
  */
 async function completeUtf8PageBytes(
   binding: ManagedProcessLogBinding,
@@ -71,10 +74,12 @@ async function completeUtf8PageBytes(
   page: Buffer,
   startOffset: number,
   totalBytes: number,
+  final: boolean,
   signal?: AbortSignal
-): Promise<number> {
+): Promise<{ consumedBytes: number; pendingUtf8Bytes?: number }> {
   const pageEnd = startOffset + page.length;
-  if (page.length === 0 || pageEnd >= totalBytes) return page.length;
+  const unchanged = { consumedBytes: page.length };
+  if (page.length === 0) return unchanged;
   let characterStart = page.length - 1;
   while (characterStart > Math.max(0, page.length - 3) && (page[characterStart]! & 0xc0) === 0x80) characterStart--;
   const first = page[characterStart]!;
@@ -82,16 +87,18 @@ async function completeUtf8PageBytes(
     : first >= 0xe0 && first <= 0xef ? 3
     : first >= 0xf0 && first <= 0xf4 ? 4 : 0;
   const prefixBytes = page.length - characterStart;
-  if (width === 0 || prefixBytes >= width || pageEnd + width - prefixBytes > totalBytes) return page.length;
+  if (width === 0 || prefixBytes >= width) return unchanged;
+  const needed = Math.min(width - prefixBytes, totalBytes - pageEnd);
+  if (final && prefixBytes + needed < width) return unchanged;
 
-  const characterEnd = pageEnd + width - prefixBytes;
+  // Never inspect bytes appended after the initial size snapshot.
+  const peekEnd = pageEnd + needed;
   const before = await assertLogBinding(binding, file);
   signal?.throwIfAborted();
-  if (before.size < BigInt(characterEnd)) throw new Error("Managed process log changed during boundary inspection; retry the page.");
-  const character = Buffer.alloc(width);
+  if (before.size < BigInt(peekEnd)) throw new Error("Managed process log changed during boundary inspection; retry the page.");
+  const character = Buffer.alloc(prefixBytes + needed);
   page.copy(character, 0, characterStart);
   let inspected = 0;
-  const needed = width - prefixBytes;
   while (inspected < needed) {
     signal?.throwIfAborted();
     const { bytesRead } = await file.read(character, prefixBytes + inspected, needed - inspected, pageEnd + inspected);
@@ -101,10 +108,28 @@ async function completeUtf8PageBytes(
   }
   const after = await assertLogBinding(binding, file);
   signal?.throwIfAborted();
-  if (after.size < BigInt(characterEnd)) throw new Error("Managed process log changed during boundary inspection; retry the page.");
-  if (!isUtf8(character)) return page.length;
+  if (after.size < BigInt(peekEnd)) throw new Error("Managed process log changed during boundary inspection; retry the page.");
+  if (character.length < width) {
+    return !final && isExtendableUtf8Prefix(character)
+      ? { consumedBytes: characterStart, pendingUtf8Bytes: character.length }
+      : unchanged;
+  }
+  if (!isUtf8(character)) return unchanged;
   if (characterStart === 0) throw new RangeError(`maxBytes is too small for the next UTF-8 character; use at least ${String(width)}.`);
-  return characterStart;
+  return { consumedBytes: characterStart };
+}
+
+/** A proper prefix of one scalar value, excluding overlong/surrogate/out-of-range encodings. */
+function isExtendableUtf8Prefix(bytes: Buffer): boolean {
+  for (let index = 1; index < bytes.length; index++) {
+    if ((bytes[index]! & 0xc0) !== 0x80) return false;
+  }
+  const first = bytes[0]!;
+  const second = bytes[1];
+  return second === undefined || !((first === 0xe0 && second < 0xa0)
+    || (first === 0xed && second > 0x9f)
+    || (first === 0xf0 && second < 0x90)
+    || (first === 0xf4 && second > 0x8f));
 }
 
 async function assertLogPath(binding: ManagedProcessLogBinding): Promise<BigIntStats> {

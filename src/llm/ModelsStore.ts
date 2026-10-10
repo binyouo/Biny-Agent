@@ -34,7 +34,7 @@ export interface ModelsStore {
  * 把另一个连接的模型列表覆盖掉。哈希只用于文件键，不保存地址或凭据本身。
  */
 export function modelCatalogCacheKey(providerId: string, config: ProviderConfig): string {
-  const endpoint = normalizeCatalogEndpoint((config.modelsEndpoint ?? config.baseUrl ?? "").trim().replace(/\/+$/u, ""));
+  const endpoint = normalizeCatalogEndpoint(config.modelsEndpoint?.trim() ?? (config.baseUrl ?? "").trim().replace(/\/+$/u, ""));
   if (!endpoint) return providerId;
   let hash = 2166136261;
   for (const character of `${config.type}\u0000${endpoint}`) {

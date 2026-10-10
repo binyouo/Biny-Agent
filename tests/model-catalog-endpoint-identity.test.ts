@@ -54,11 +54,25 @@ check("priority, provider type, trim, terminal slash and empty alias stay stable
   assert.equal(modelCatalogCacheKey(alias, { ...upper, modelsEndpoint: lower.baseUrl }), modelCatalogCacheKey(alias, lower));
   assert.notEqual(modelCatalogCacheKey(alias, { ...upper, type: "deepseek" }), modelCatalogCacheKey(alias, upper));
   assert.equal(modelCatalogCacheKey(alias, config("  https://gateway.example/Plan-A/v1///  ")), modelCatalogCacheKey(alias, upper));
-  assert.equal(modelCatalogCacheKey(alias, { ...upper, modelsEndpoint: "  /// " }), alias);
+  assert.equal(modelCatalogCacheKey(alias, { ...upper, modelsEndpoint: "   " }), alias);
   assert.equal(modelCatalogCacheKey(alias, { type: "openai-compatible" }), alias);
 });
 for (const batch of [true, false]) {
   const mode = batch ? "batch" : "single";
+  check(`explicit endpoint terminal slashes cannot reuse another resource's models or validators (${mode})`, async () => {
+    // Existing case-only checks cannot detect stripping a resource path or query value suffix.
+    for (const endpoint of ["https://gateway.example/models", "https://gateway.example/models?tenant=A"]) {
+      const store = batch ? new InMemoryModelsStore() : single(new InMemoryModelsStore());
+      const source = { ...upper, modelsEndpoint: `${endpoint}/` };
+      const other = { ...upper, modelsEndpoint: endpoint };
+      const key = modelCatalogCacheKey(alias, source);
+      await store.write(key, entry(key));
+      await store.write(alias, entry(key));
+      assert.equal(await readProviderCatalog(alias, other, store), undefined);
+      assert.deepEqual(await restoreProviderCatalogs([alias], store, { [alias]: other }), []);
+      assert.deepEqual(await readProviderCatalog(alias, source, store), entry(key));
+    }
+  });
   check(`case-distinct scoped and alias catalogs are rejected (${mode})`, async () => {
     const storage = new InMemoryModelsStore();
     const store = batch ? storage : single(storage);
