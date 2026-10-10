@@ -163,7 +163,8 @@ function resolveTime(suffix: string): string | null {
 
 /** 规则解析只以原始发送日期/时区锚定相对日期；无法证明的日期保留为空。 */
 export function parseTemporalClues(text: string, sentAt?: string, timeZone?: string, root = globalAgentDir()): TemporalClue[] {
-  const anchor = dayFromInstant(sentAt, timeZone);
+  let anchor: string | undefined;
+  let anchorComputed = false;
   const clues: TemporalClue[] = [];
   const grammarClues: TemporalClue[] = [];
   const masked = text.replace(dateReferenceCandidatePattern, (expression, offset: number) => {
@@ -177,6 +178,10 @@ export function parseTemporalClues(text: string, sentAt?: string, timeZone?: str
   });
   for (const match of masked.matchAll(expressionPattern)) {
     if (clues.length + grammarClues.length >= 128) break;
+    if (!anchorComputed) {
+      anchor = dayFromInstant(sentAt, timeZone);
+      anchorComputed = true;
+    }
     const expression = match[0];
     const offset = match.index;
     const core = expression.match(dateCorePattern)?.[0] ?? expression;
