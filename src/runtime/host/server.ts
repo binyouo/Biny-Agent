@@ -958,8 +958,8 @@ export class RuntimeHostServer {
     switch (frame.operation) {
       case "plan.list": {
         const sessionId = runtime.getSnapshot().info.sessionId;
-        return commands.graphs.listGraphs().filter((graph) => graph.mode === "supervised" && graph.supervisorSessionId === sessionId)
-          .map((graph) => planStatus(commands, graph.graphId, sessionId));
+        return commands.graphs.listSupervisedGraphIds(sessionId)
+          .map((graphId) => planStatus(commands, graphId, sessionId));
       }
       case "session.goal.set":
         return await this.executeAdmission(async () => {
