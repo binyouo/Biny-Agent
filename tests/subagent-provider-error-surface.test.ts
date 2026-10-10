@@ -13,9 +13,9 @@ import type { ModelRequestMetrics } from "../src/agent/core/types.js";
 
 // HTTP permits an empty reason phrase; a failed Worker must still report the actual HTTP failure.
 for (const response of [
-  { name: "blank HTTP reason", statusText: "", contentType: "text/plain", body: "private-response-body-sentinel", reason: "Provider request failed (500)." },
+  { name: "blank HTTP reason", statusText: "", contentType: "text/plain", body: "private-response-body-sentinel", reason: "Provider request failed (500).", attempts: 2 },
   { name: "nonblank provider message", statusText: "Internal Server Error", contentType: "application/json",
-    body: JSON.stringify({ error: { message: "Provider temporarily unavailable.", type: "server_error" } }), reason: "Provider temporarily unavailable." }
+    body: JSON.stringify({ error: { message: "Provider temporarily unavailable.", type: "server_error" } }), reason: "Provider temporarily unavailable.", attempts: 1 }
 ]) {
   test(`TaskStatus preserves ${response.name} through a real Worker and read-only reopening`, { timeout: 15_000 }, async () => {
     const temporary = await mkdtemp(path.join(os.tmpdir(), "biny-worker-provider-error-"));
@@ -74,7 +74,7 @@ for (const response of [
       const config = structuredClone(defaultConfig);
       config.defaultModel = "synthetic";
       config.toolModel = "synthetic";
-      config.providers = { fixture: { type: "openai-compatible", baseUrl: `http://127.0.0.1:${String(address.port)}/private-url-sentinel/v1`, requiresApiKey: false, retry: { maxAttempts: 1, initialDelayMs: 1000, maxDelayMs: 30000 } } };
+      config.providers = { fixture: { type: "openai-compatible", baseUrl: `http://127.0.0.1:${String(address.port)}/private-url-sentinel/v1`, requiresApiKey: false, retry: { maxAttempts: response.attempts, initialDelayMs: 0, maxDelayMs: 0 } } };
       config.models = { synthetic: { ...defaultConfig.models["deepseek-v4-flash"]!, provider: "fixture", model: "synthetic" } };
       config.extensions.subagent.enabled = true;
       config.extensions.subagent.maxSteps = 2;
@@ -96,7 +96,7 @@ for (const response of [
       const task = tasks[0]!;
       taskRunId = task.taskRunId;
       assert.equal(task.status, "failed");
-      assert.equal(workerRequests, 1, "the failed request must not start an extra Worker request");
+      assert.equal(workerRequests, response.attempts, "provider requests must match the configured retry budget");
       phase = "status"; called = false;
       const read = await commands.agent.runTask(`Read TaskStatus for ${taskRunId}.`, {
         capabilitySelection: { tools: ["TaskStatus"], skills: "none" }, emotionAnalysis: false
@@ -111,6 +111,7 @@ for (const response of [
         .filter((metrics) => metrics.requestContext?.operation === "subagent");
       assert.equal(requestMetrics.length, 1);
       assert.equal(requestMetrics[0]?.status, 500);
+      assert.equal(requestMetrics[0]?.attempts.length, response.attempts, "request metrics retain the actual provider attempts");
       assert.equal(requestMetrics[0]?.errorCode, "http_error");
       assert.equal(requestMetrics[0]?.error, response.reason);
       const failure = task.attempts[0]?.failure;

@@ -16,6 +16,8 @@ const archiveVersion = 1;
 const previewCharacters = 8_192;
 const maxArchiveFileBytes = 64 * 1024 * 1024;
 const maxRetainedArchives = 512;
+// Do not wait for a FIFO writer before checking that the archive is regular.
+const nonBlockingReadFlag = process.platform === "win32" || typeof fsConstants.O_NONBLOCK !== "number" ? 0 : fsConstants.O_NONBLOCK;
 const archiveDirectory = path.posix.join(".biny", "tool-results");
 const archiveNamePattern = /^tool-result-[0-9a-f]{64}\.json$/;
 
@@ -84,11 +86,20 @@ export async function archiveToolResult(options: ArchiveToolResultOptions): Prom
   try {
     await fs.writeFile(targetPath, payload, { encoding: "utf8", mode: 0o600, flag: "wx" });
   } catch (error) {
-    // 归档名是 (session, toolCallId, sequence) 的确定性摘要，重放同一次调用会命中已有文件。
-    // 内容等价，视作归档成功而不是丢弃引用。
+    // Reuse an immutable archive only after verifying the existing bytes. A
+    // failed or concurrent write can leave this deterministic name incomplete.
     if (!isExistingPathError(error)) throw error;
+    const existing = await readToolResultArchive(options.workspaceRoot, archivePath);
+    if (existing.version !== archiveVersion
+      || existing.sessionId !== options.sessionId
+      || existing.toolCallId !== options.toolCallId
+      || existing.sequence !== options.sequence
+      || existing.tool !== options.tool
+      || existing.output !== output) {
+      throw new Error("Existing tool result archive does not match the requested call and output.");
+    }
   }
-  await pruneToolResultArchives(options.workspaceRoot);
+  await pruneToolResultArchives(options.workspaceRoot, maxRetainedArchives, archiveName);
   return { archivePath, resultBytes: Buffer.byteLength(output, "utf8") };
 }
 
@@ -130,16 +141,30 @@ export async function readToolResultArchive(
   signal?.throwIfAborted();
   const targetPath = resolveToolResultArchivePath(workspaceRoot, archivePath);
   // O_NOFOLLOW + 普通文件校验：即使有人在归档目录里放软链，也读不出目录之外的内容。
-  const handle = await fs.open(targetPath, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+  const handle = await fs.open(targetPath, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | nonBlockingReadFlag);
   let content: string;
   try {
     const stats = await handle.stat({ bigint: false });
     if (!stats.isFile()) throw new Error(`Archived tool result is not a regular file: ${archivePath}`);
-    if (stats.size > maxArchiveFileBytes) {
-      throw new Error(`Archived tool result is ${String(stats.size)} bytes, exceeding the ${String(maxArchiveFileBytes)}-byte read limit.`);
+    assertArchiveFileSize(stats.size);
+    const chunks: Buffer[] = [];
+    let totalBytes = 0;
+    const readLimit = maxArchiveFileBytes + 1;
+    while (totalBytes < readLimit) {
+      signal?.throwIfAborted();
+      const chunk = Buffer.allocUnsafe(Math.min(64 * 1024, readLimit - totalBytes));
+      const { bytesRead } = await handle.read(chunk, 0, chunk.length, totalBytes);
+      signal?.throwIfAborted();
+      if (bytesRead === 0) break;
+      totalBytes += bytesRead;
+      assertArchiveFileSize(totalBytes);
+      // Short reads must not retain a full unused chunk for every small result.
+      chunks.push(bytesRead === chunk.length ? chunk : Buffer.from(chunk.subarray(0, bytesRead)));
     }
+    // A file may grow again after EOF; do not decode a now-oversized archive.
+    assertArchiveFileSize((await handle.stat()).size);
     signal?.throwIfAborted();
-    content = await handle.readFile({ encoding: "utf8", signal });
+    content = Buffer.concat(chunks, totalBytes).toString("utf8");
   } finally {
     await handle.close();
   }
@@ -151,8 +176,14 @@ export async function readToolResultArchive(
   return parsed;
 }
 
+function assertArchiveFileSize(bytes: number): void {
+  if (bytes > maxArchiveFileBytes) {
+    throw new Error(`Archived tool result is ${String(bytes)} bytes, exceeding the ${String(maxArchiveFileBytes)}-byte read limit.`);
+  }
+}
+
 /** Keeps the archive directory bounded; the oldest references expire first. */
-export async function pruneToolResultArchives(workspaceRoot: string, retain = maxRetainedArchives): Promise<void> {
+export async function pruneToolResultArchives(workspaceRoot: string, retain = maxRetainedArchives, protectedArchiveName?: string): Promise<void> {
   const directory = path.join(agentDir(workspaceRoot), "tool-results");
   let entries: string[];
   try {
@@ -171,7 +202,11 @@ export async function pruneToolResultArchives(workspaceRoot: string, retain = ma
     }
   }))).filter((entry): entry is { name: string; modifiedMs: number } => entry !== undefined);
   aged.sort((left, right) => right.modifiedMs - left.modifiedMs);
-  await Promise.all(aged.slice(retain).map(async (entry) => {
+  // The current call must not prune the reference it is about to return. Keep
+  // its existing share of the budget without changing any archive timestamps.
+  const candidates = aged.filter((entry) => entry.name !== protectedArchiveName);
+  const retainCandidates = candidates.length === aged.length ? retain : Math.max(0, retain - 1);
+  await Promise.all(candidates.slice(retainCandidates).map(async (entry) => {
     await fs.rm(path.join(directory, entry.name), { force: true });
   }));
 }

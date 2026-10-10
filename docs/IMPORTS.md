@@ -47,7 +47,7 @@ biny imports sync --json
 biny imports disable-sync --json
 ```
 
-`run` 的 item ID 来自预览，可一次选择多项。`select-sync` 保存同步范围，参数见 `biny imports select-sync --help`。CLI 的 `sync` 执行单次检查，不启动常驻进程。
+`run` 的 item ID 来自预览，可一次选择多项。`select-sync` 保存同步范围，参数见 `biny imports select-sync --help`。CLI 的 `sync` 执行单次检查，不启动常驻进程。`run` 有失败或结果待确认的项目、或启用中的 `sync` 未能完成检查时，命令退出码为 1，仍输出完整结果和历史；全部导入成功或跳过时为 0。查看历史和已停用同步的空操作不会因旧失败记录返回非零退出码。
 
 单条 ChatGPT 会话也可以直接导入：
 

@@ -98,4 +98,6 @@ biny automation delete <automation-id> --json
 
 进程重启后会检查已有运行绑定和持久证据。已完成结果不重复提交；派发后结果未知的写操作不自动重放。`task resume` 与 `task retry` 含义不同，先读取当前阻塞原因；需要批准的验证使用返回的准确 approval ID。
 
+显式恢复子代理时，同一 Attempt 的通信和访问配置随检查点保留；后续再次中断仍需通过原有策略核对，并复用已保存的父子消息。
+
 权限范围见 [工具与权限](PERMISSIONS.md)，会话与中断处理见 [会话与恢复](SESSIONS.md)。

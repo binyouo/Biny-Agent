@@ -11,6 +11,7 @@ import { promisify } from "node:util";
 import { isIgnoredPath } from "../workspace/ignore.js";
 import { resolveWorkspaceDirectory, resolveWorkspacePath } from "../workspace/resolvePath.js";
 import { gitInspectionEnvironment } from "../tools/git/environment.js";
+import { openBoundRegularFile } from "../tools/file/safeFileIo.js";
 import { pathExists } from "../utils/fs.js";
 
 const execFileAsync = promisify(execFile);
@@ -98,15 +99,16 @@ async function readPackageJsonSummary(workspaceRoot: string, ignore: string[], s
   signal?.throwIfAborted();
   const filePath = resolveProjectFile(workspaceRoot, "package.json", ignore);
   if (!filePath || !(await pathExists(filePath))) return undefined;
-  let value: Record<string, unknown>;
+  let value: unknown;
   try {
-    value = JSON.parse(await fs.readFile(filePath, { encoding: "utf8", signal })) as Record<string, unknown>;
+    value = JSON.parse(await readProjectText(filePath, signal)) as unknown;
   } catch {
     // 摘要收集不能因单个文件损坏或不可读而失败;按缺失降级(同 readGitStatus 的容错风格)。
     signal?.throwIfAborted();
     return undefined;
   }
   signal?.throwIfAborted();
+  if (!isRecord(value)) return undefined;
   return {
     name: stringValue(value.name),
     version: stringValue(value.version),
@@ -122,16 +124,17 @@ async function readTsconfigSummary(workspaceRoot: string, ignore: string[], sign
   signal?.throwIfAborted();
   const filePath = resolveProjectFile(workspaceRoot, "tsconfig.json", ignore);
   if (!filePath || !(await pathExists(filePath))) return undefined;
-  let value: Record<string, unknown>;
+  let value: unknown;
   try {
     // tsconfig.json 官方是 JSONC(`tsc --init` 生成的文件满是注释),先做最小清洗再解析。
-    value = parseJsonc(await fs.readFile(filePath, { encoding: "utf8", signal })) as Record<string, unknown>;
+    value = parseJsonc(await readProjectText(filePath, signal));
   } catch {
     // 清洗后仍不是合法 JSON 时按缺失降级,不能让摘要收集拖垮整个 turn。
     signal?.throwIfAborted();
     return undefined;
   }
   signal?.throwIfAborted();
+  if (!isRecord(value)) return undefined;
   const compilerOptions = isRecord(value.compilerOptions) ? value.compilerOptions : {};
   return {
     compilerOptions,
@@ -147,7 +150,7 @@ async function readTextSummary(workspaceRoot: string, requestedPath: string, ign
   if (!filePath || !(await pathExists(filePath))) return undefined;
   let content: string;
   try {
-    content = await fs.readFile(filePath, { encoding: "utf8", signal });
+    content = await readProjectText(filePath, signal);
   } catch {
     // README 只是可选摘要。外置卷或 Downloads 被 macOS TCC 拒绝时按缺失降级，
     // 不能让普通聊天在首轮 workspace 准备阶段直接失败。
@@ -156,6 +159,17 @@ async function readTextSummary(workspaceRoot: string, requestedPath: string, ign
   }
   signal?.throwIfAborted();
   return content.slice(0, maxChars);
+}
+
+async function readProjectText(filePath: string, signal?: AbortSignal): Promise<string> {
+  signal?.throwIfAborted();
+  const handle = await openBoundRegularFile(filePath);
+  try {
+    signal?.throwIfAborted();
+    return await handle.readFile({ encoding: "utf8", signal });
+  } finally {
+    await handle.close();
+  }
 }
 
 async function readSrcTree(workspaceRoot: string, ignore: string[], limit: number, signal?: AbortSignal): Promise<string[]> {

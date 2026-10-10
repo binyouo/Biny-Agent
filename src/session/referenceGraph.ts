@@ -22,14 +22,19 @@ export class LocalReferenceGraph {
     try { if (lstatSync(file).isSymbolicLink()) throw new Error("Reference state symlink is not allowed."); }
     catch (cause) { if ((cause as NodeJS.ErrnoException).code !== "ENOENT") throw cause; }
     const db = new DatabaseSync(file);
-    db.exec("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000; PRAGMA foreign_keys=ON");
-    db.exec(`
-      CREATE TABLE IF NOT EXISTS ref_links(project_id TEXT NOT NULL, source_uri TEXT NOT NULL, target_uri TEXT NOT NULL, kind TEXT NOT NULL, PRIMARY KEY(project_id,source_uri,target_uri,kind));
-      CREATE INDEX IF NOT EXISTS ref_links_target ON ref_links(project_id,target_uri);
-      CREATE TABLE IF NOT EXISTS ref_snippets(id TEXT PRIMARY KEY, project_id TEXT NOT NULL, source_uri TEXT NOT NULL, start_offset INTEGER NOT NULL, end_offset INTEGER NOT NULL, quote TEXT NOT NULL);
-      CREATE TABLE IF NOT EXISTS ref_scratch(id TEXT PRIMARY KEY, project_id TEXT NOT NULL, content TEXT NOT NULL, expires_at TEXT NOT NULL, promoted INTEGER NOT NULL DEFAULT 0);
-      CREATE TABLE IF NOT EXISTS ref_pins(project_id TEXT NOT NULL, uri TEXT NOT NULL, PRIMARY KEY(project_id,uri));
-    `);
+    try {
+      db.exec("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000; PRAGMA foreign_keys=ON");
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS ref_links(project_id TEXT NOT NULL, source_uri TEXT NOT NULL, target_uri TEXT NOT NULL, kind TEXT NOT NULL, PRIMARY KEY(project_id,source_uri,target_uri,kind));
+        CREATE INDEX IF NOT EXISTS ref_links_target ON ref_links(project_id,target_uri);
+        CREATE TABLE IF NOT EXISTS ref_snippets(id TEXT PRIMARY KEY, project_id TEXT NOT NULL, source_uri TEXT NOT NULL, start_offset INTEGER NOT NULL, end_offset INTEGER NOT NULL, quote TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS ref_scratch(id TEXT PRIMARY KEY, project_id TEXT NOT NULL, content TEXT NOT NULL, expires_at TEXT NOT NULL, promoted INTEGER NOT NULL DEFAULT 0);
+        CREATE TABLE IF NOT EXISTS ref_pins(project_id TEXT NOT NULL, uri TEXT NOT NULL, PRIMARY KEY(project_id,uri));
+      `);
+    } catch (error) {
+      try { db.close(); } catch { /* Preserve the initialization failure. */ }
+      throw error;
+    }
     this.database = db;
     return db;
   }

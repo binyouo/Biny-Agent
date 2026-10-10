@@ -11,7 +11,7 @@ import { readReportedCacheRates, type UsageSummary } from "../session/metadata.j
 import { formatReportedCacheCount } from "../observability/usage.js";
 import { formatDuration, formatModelRequestSummary, type ModelRequestSummary } from "../observability/modelRequests.js";
 
-const numberFormatter = new Intl.NumberFormat("en-US");
+let numberFormatter: Intl.NumberFormat | undefined;
 
 export function formatStatusReport(
   info: AgentSessionInfo,
@@ -98,6 +98,7 @@ export function formatStatusReport(
 }
 
 export function formatCount(value: number): string {
+  numberFormatter ??= new Intl.NumberFormat("en-US");
   return numberFormatter.format(Math.max(0, Math.round(value)));
 }
 

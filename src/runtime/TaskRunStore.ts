@@ -10,6 +10,7 @@ import { DatabaseSync } from "node:sqlite";
 import type { SubagentTaskSnapshot } from "./SubagentTaskManager.js";
 import { RuntimeEventAuthority, type RuntimeEventPage } from "./RuntimeAuthority.js";
 import { workerSessionId } from "./WorkerSession.js";
+import { isTaskVerificationApproval, matchingTaskVerificationApproval, pendingTaskVerificationApproval, readTaskDefinition, taskVerificationFingerprint, type TaskCandidateArtifacts, type TaskVerificationApproval } from "./taskVerification.js";
 
 export type TaskRunStatus =
   | "queued"
@@ -59,6 +60,43 @@ export interface TaskAttemptRecord {
 
 export interface TaskRunWithAttempts extends TaskRunRecord {
   attempts: TaskAttemptRecord[];
+}
+
+export interface LegacyWorkerOwnerProof {
+  taskRunId: string;
+  attemptId: string;
+  expectedRevision: number;
+  sessionId: string;
+  parentRunId: string;
+  runId: string;
+  turnId: string;
+  prompt: string;
+  workspaceRoot: string;
+  parentEventIds: string[];
+  /** Present only when exact output and completed Worker terminal evidence agree. */
+  completionDigest?: string;
+}
+
+/** Only the original ownerless slash admission or its exact restart blocker. */
+export function isLegacyWorkerOwnerBoundary(task: TaskRunWithAttempts): boolean {
+  const attempt = task.attempts.at(-1);
+  if (task.sessionId !== undefined || typeof task.task !== "string" || task.attempts.length !== 1
+    || attempt?.taskRunId !== task.taskRunId || attempt.status !== task.status
+    || task.parentRunId !== task.taskRunId
+    || attempt.runId !== `task-run:${task.taskRunId}` || attempt.turnId !== `task-turn:${task.taskRunId}`) return false;
+  if (task.status === "running") return true;
+  const failure = attempt.failure as { failureClass?: unknown; message?: unknown } | undefined;
+  return task.status === "blocked" && (failure?.failureClass === "worker_interrupted"
+    || (failure?.failureClass === "unsafe_recovery"
+      && failure.message === "Host restarted without a safe Worker checkpoint; unknown side effects were not replayed."));
+}
+
+export interface TaskRunEvent {
+  eventId: string;
+  attemptId?: string;
+  eventType: string;
+  payload: unknown;
+  createdAt: string;
 }
 
 export interface TaskRunCreateInput {
@@ -229,21 +267,32 @@ export class DurableTaskRunStore {
     if (attempt && this.latestAttempt(taskRunId)?.attemptId !== attempt.attemptId) {
       throw new Error(`TaskAttempt ${attempt.attemptId} is stale for TaskRun ${taskRunId}.`);
     }
+    const assertCurrent = (conflictMessage: string): void => {
+      const current = this.require(taskRunId);
+      if (this.latestAttempt(taskRunId)?.attemptId !== attempt?.attemptId) {
+        if (attempt) throw new Error(`TaskAttempt ${attempt.attemptId} is stale for TaskRun ${taskRunId}.`);
+        throw new Error(conflictMessage);
+      }
+      if (current.revision !== task.revision || current.status !== task.status) throw new Error(conflictMessage);
+    };
     if (task.status === status) {
       if (!attempt || (input.verification === undefined && input.artifacts === undefined && input.failure === undefined && input.highWaterSequence === undefined)) {
         return this.requireWithAttempts(taskRunId);
       }
       if (isTaskRunTerminal(status)) assertCompatibleTerminalEvidence(attempt, input);
       const now = new Date().toISOString();
-      return this.authority.runEventTransaction({
-        eventId: `task:${taskRunId}:revision:${String(task.revision + 1)}`,
-        sessionId: task.sessionId ?? `task:${taskRunId}`,
-        invocationId: attempt.runId,
-        runId: attempt.runId,
-        turnId: attempt.turnId,
-        eventType: "task.attempt.updated",
-        payload: { taskRunId, attemptId: attempt.attemptId, status, ...input },
-        createdAt: now
+      return this.authority.runEventTransaction(() => {
+        assertCurrent(`TaskRun ${taskRunId} changed while persisting Attempt evidence.`);
+        return {
+          eventId: `task:${taskRunId}:revision:${String(task.revision + 1)}`,
+          sessionId: task.sessionId ?? `task:${taskRunId}`,
+          invocationId: attempt.runId,
+          runId: attempt.runId,
+          turnId: attempt.turnId,
+          eventType: "task.attempt.updated",
+          payload: { taskRunId, attemptId: attempt.attemptId, status, ...input },
+          createdAt: now
+        };
       }, () => {
         const update = this.database.prepare(`
           UPDATE task_runs SET updated_at = ?, revision = revision + 1
@@ -283,15 +332,18 @@ export class DurableTaskRunStore {
     const now = new Date().toISOString();
     const runId = attempt?.runId ?? `task:${taskRunId}`;
     const turnId = attempt?.turnId ?? `task:${taskRunId}`;
-    return this.authority.runEventTransaction({
-      eventId: `task:${taskRunId}:revision:${String(task.revision + 1)}`,
-      sessionId: task.sessionId ?? `task:${taskRunId}`,
-      invocationId: runId,
-      runId,
-      turnId,
-      eventType: "task.status",
-      payload: { taskRunId, attemptId: attempt?.attemptId, status, ...input },
-      createdAt: now
+    return this.authority.runEventTransaction(() => {
+      assertCurrent(`TaskRun ${taskRunId} changed while transitioning to ${status}.`);
+      return {
+        eventId: `task:${taskRunId}:revision:${String(task.revision + 1)}`,
+        sessionId: task.sessionId ?? `task:${taskRunId}`,
+        invocationId: runId,
+        runId,
+        turnId,
+        eventType: "task.status",
+        payload: { taskRunId, attemptId: attempt?.attemptId, status, ...input },
+        createdAt: now
+      };
     }, () => {
       const eventId = `task:${taskRunId}:revision:${String(task.revision + 1)}`;
       const update = this.database.prepare(`
@@ -384,6 +436,75 @@ export class DurableTaskRunStore {
     });
   }
 
+  /** Approval is bound to the current pending check; duplicates never rewrite its evidence. */
+  approveVerification(taskRunId: string, input: {
+    attemptId: string;
+    expectedRevision: number;
+    approval: TaskVerificationApproval;
+    artifacts: TaskCandidateArtifacts;
+  }): TaskRunWithAttempts {
+    this.assertOpen();
+    const now = new Date().toISOString();
+    let task!: TaskRunWithAttempts;
+    let attempt!: TaskAttemptRecord;
+    let duplicate = false;
+    let eventId = "";
+    let eventType = "";
+    let payload: Record<string, unknown>;
+    return this.authority.runEventTransaction(() => {
+      task = this.requireWithAttempts(taskRunId);
+      const latest = task.attempts.at(-1);
+      const pending = pendingTaskVerificationApproval(latest?.verification);
+      const contract = readTaskDefinition(task.task).verification;
+      const currentArtifacts = latest?.artifacts as Partial<TaskCandidateArtifacts> | undefined;
+      if (!latest || latest.attemptId !== input.attemptId || latest.taskRunId !== taskRunId
+        || (task.status !== "needs_approval" && task.status !== "verifying")
+        || (latest.status !== "needs_approval" && latest.status !== "verifying")
+        || !contract || !pending || pending.contractFingerprint !== taskVerificationFingerprint(contract)
+        || currentArtifacts?.definitionFingerprint !== pending.definitionFingerprint
+        || currentArtifacts?.artifactFingerprint !== pending.artifactFingerprint
+        || !isTaskVerificationApproval(input.approval) || pending.taskRunId !== taskRunId || pending.attemptId !== latest.attemptId
+        || pending.approvalId !== input.approval.approvalId || !matchingTaskVerificationApproval(input.approval, pending)) {
+        throw new Error("TaskRun verification approval is stale or belongs to another current check.");
+      }
+      attempt = latest;
+      const approvals = (attempt.artifacts as { verificationApprovals?: unknown } | undefined)?.verificationApprovals;
+      duplicate = task.status === "verifying" && Array.isArray(approvals)
+        && approvals.some(approval => isTaskVerificationApproval(approval) && approval.approvalId === pending.approvalId
+          && matchingTaskVerificationApproval(approval, pending));
+      if (duplicate) return undefined;
+      // Latest attempt membership is independent of revision: createAttempt need not advance it.
+      if (task.revision !== input.expectedRevision
+        || input.artifacts.definitionFingerprint !== pending.definitionFingerprint
+        || input.artifacts.artifactFingerprint !== pending.artifactFingerprint
+        || !input.artifacts.verificationApprovals?.some(approval => approval.approvalId === pending.approvalId
+          && matchingTaskVerificationApproval(approval, pending))) {
+        throw new Error("TaskRun verification state changed during approval admission.");
+      }
+      eventId = `task:${taskRunId}:revision:${String(task.revision + 1)}`;
+      eventType = task.status === "verifying" ? "task.attempt.updated" : "task.status";
+      payload = { status: "verifying", attemptId: attempt.attemptId, verification: attempt.verification, artifacts: input.artifacts };
+      return { eventId, sessionId: task.sessionId ?? `task:${taskRunId}`, invocationId: attempt.runId,
+        runId: attempt.runId, turnId: attempt.turnId, eventType, payload: { taskRunId, ...payload }, createdAt: now };
+    }, () => {
+      if (duplicate) return task;
+      const update = this.database.prepare(`
+        UPDATE task_runs SET status = 'verifying', updated_at = ?, revision = revision + 1
+        WHERE task_run_id = ? AND status = ? AND revision = ?
+      `).run(now, taskRunId, task.status, input.expectedRevision);
+      if (update.changes !== 1) throw new Error("TaskRun changed while persisting verification approval.");
+      this.database.prepare(`
+        UPDATE task_attempts SET status = 'verifying', artifacts_json = ?, failure_json = ?, updated_at = ?
+        WHERE attempt_id = ? AND task_run_id = ?
+      `).run(stringify(input.artifacts), task.status === "verifying" ? stringifyOptional(attempt.failure) : null, now, attempt.attemptId, taskRunId);
+      this.database.prepare(`
+        INSERT INTO task_events (event_id, task_run_id, attempt_id, event_type, payload_json, created_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `).run(eventId, taskRunId, attempt.attemptId, eventType, stringify(payload), now);
+      return this.requireWithAttempts(taskRunId);
+    });
+  }
+
   resumeWorkerAttempt(taskRunId: string, attemptId: string, expectedRevision: number): TaskRunWithAttempts {
     this.assertOpen();
     const task = this.requireWithAttempts(taskRunId);
@@ -413,6 +534,46 @@ export class DurableTaskRunStore {
     });
   }
 
+  /** Called only after the exact legacy Worker has prepared under its recorded policy. */
+  reconcileWorkerOwner(proof: LegacyWorkerOwnerProof): TaskRunWithAttempts {
+    this.assertOpen();
+    const now = new Date().toISOString();
+    const eventId = `task:${proof.taskRunId}:revision:${String(proof.expectedRevision + 1)}`;
+    const payload = { ...proof, status: "running", communication: false };
+    return this.authority.runEventTransaction({
+      eventId, sessionId: proof.sessionId, invocationId: proof.runId,
+      runId: proof.runId, turnId: proof.turnId, eventType: "task.worker.owner_reconciled", payload, createdAt: now
+    }, () => {
+      // createAttempt does not increment task revision; latest membership is an independent guard.
+      const task = this.requireWithAttempts(proof.taskRunId);
+      const attempt = task.attempts.at(-1);
+      const calls = this.authority.readToolEvents([proof.taskRunId]);
+      if (!isLegacyWorkerOwnerBoundary(task) || task.revision !== proof.expectedRevision
+        || attempt?.attemptId !== proof.attemptId || attempt.runId !== proof.runId || attempt.turnId !== proof.turnId
+        || task.parentRunId !== proof.parentRunId || attempt.parentRunId !== proof.parentRunId || task.task !== proof.prompt
+        || !proof.sessionId.trim() || calls.length !== 1 || calls.length !== proof.parentEventIds.length
+        || calls.some((event, index) => {
+          const payload = event.payload as { tool?: unknown; toolCallId?: unknown; auditOnly?: unknown; args?: { task?: unknown } } | undefined;
+          return event.eventType !== "session.tool_call" || event.eventId !== proof.parentEventIds[index] || event.sessionId !== proof.sessionId
+            || payload?.tool !== "Task" || payload.toolCallId !== proof.taskRunId || payload.auditOnly !== true || payload.args?.task !== proof.prompt;
+        })) {
+        throw new Error("Legacy Worker Attempt changed during owner reconciliation.");
+      }
+      const update = this.database.prepare(`
+        UPDATE task_runs SET session_id = ?, status = 'running', terminal_event_id = NULL, updated_at = ?, revision = revision + 1
+        WHERE task_run_id = ? AND session_id IS NULL AND revision = ?
+      `).run(proof.sessionId, now, proof.taskRunId, proof.expectedRevision);
+      if (update.changes !== 1) throw new Error("Legacy Worker owner changed during reconciliation.");
+      this.database.prepare("UPDATE task_attempts SET status = 'running', failure_json = NULL, updated_at = ? WHERE attempt_id = ? AND task_run_id = ?")
+        .run(now, proof.attemptId, proof.taskRunId);
+      this.database.prepare(`
+        INSERT INTO task_events (event_id, task_run_id, attempt_id, event_type, payload_json, created_at)
+        VALUES (?, ?, ?, 'task.worker.owner_reconciled', ?, ?)
+      `).run(eventId, proof.taskRunId, proof.attemptId, stringify(payload), now);
+      return this.requireWithAttempts(proof.taskRunId);
+    });
+  }
+
   /** 只有失败任务可以显式重试；新 attempt 会在执行入口创建。 */
   retry(taskRunId: string): TaskRunWithAttempts {
     const task = this.require(taskRunId);
@@ -436,12 +597,12 @@ export class DurableTaskRunStore {
 
   syncSubagentSnapshot(
     snapshot: SubagentTaskSnapshot,
-    binding: { taskRunId?: string; attemptId?: string; completedStatus?: "completed" | "verifying" } = {},
+    binding: { taskRunId?: string; attemptId?: string; completedStatus?: "completed" | "verifying"; sessionId?: string } = {},
     output?: string
   ): TaskRunWithAttempts {
     const taskRunId = binding.taskRunId ?? snapshot.taskId;
     const existing = this.read(taskRunId);
-    if (!existing) this.create({ taskRunId, parentRunId: snapshot.parentRunId, task: snapshot.task });
+    if (!existing) this.create({ taskRunId, sessionId: binding.sessionId, parentRunId: snapshot.parentRunId, task: snapshot.task });
     const task = this.require(taskRunId);
     const boundAttempt = binding.attemptId === undefined ? undefined : this.readAttempt(binding.attemptId);
     const attempt = boundAttempt ?? this.latestAttempt(taskRunId) ?? this.createAttempt(taskRunId, {
@@ -514,20 +675,25 @@ export class DurableTaskRunStore {
     };
   }
 
-  events(taskRunId: string, limit = 100): Array<{ eventId: string; attemptId?: string; eventType: string; payload: unknown; createdAt: string }> {
+  /** Recovery needs the newest append, independently of the public history page size. */
+  latestEvent(taskRunId: string): TaskRunEvent | undefined {
+    this.assertOpen();
+    this.require(taskRunId);
+    const row = this.database.prepare(`
+      SELECT event_id, task_run_id, attempt_id, event_type, payload_json, created_at
+      FROM task_events WHERE task_run_id = ? ORDER BY rowid DESC LIMIT 1
+    `).get(taskRunId) as unknown as TaskEventRow | undefined;
+    return row ? toTaskEvent(row) : undefined;
+  }
+
+  events(taskRunId: string, limit = 100): TaskRunEvent[] {
     this.assertOpen();
     this.require(taskRunId);
     const rows = this.database.prepare(`
       SELECT event_id, task_run_id, attempt_id, event_type, payload_json, created_at
       FROM task_events WHERE task_run_id = ? ORDER BY rowid ASC LIMIT ?
     `).all(taskRunId, limit) as unknown as TaskEventRow[];
-    return rows.map((row) => ({
-      eventId: toString(row.event_id),
-      attemptId: optionalString(row.attempt_id),
-      eventType: toString(row.event_type),
-      payload: parse(row.payload_json),
-      createdAt: toString(row.created_at)
-    }));
+    return rows.map(toTaskEvent);
   }
 
   hasMessageReceipt(taskRunId: string, messageId: string): boolean {
@@ -609,6 +775,16 @@ export class DurableTaskRunStore {
   private assertOpen(): void {
     if (this.closed) throw new Error("TaskRun store is closed.");
   }
+}
+
+function toTaskEvent(row: TaskEventRow): TaskRunEvent {
+  return {
+    eventId: toString(row.event_id),
+    attemptId: optionalString(row.attempt_id),
+    eventType: toString(row.event_type),
+    payload: parse(row.payload_json),
+    createdAt: toString(row.created_at)
+  };
 }
 
 function toTaskRun(row: TaskRunRow): TaskRunRecord {

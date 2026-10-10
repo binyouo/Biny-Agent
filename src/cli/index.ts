@@ -7,7 +7,7 @@
  * 不直接承载 agent、工具或 TUI 的业务流程。
  */
 import { createRequire } from "node:module";
-import { Command, InvalidArgumentError, Option } from "commander";
+import { Command, CommanderError, InvalidArgumentError, Option } from "commander";
 import { initCommand } from "./commands/init.js";
 import { widgetRenderCommand } from "./commands/widget.js";
 import { registerApplicationImportCommands } from "./commands/applicationImports.js";
@@ -102,7 +102,16 @@ import {
   todoShowCommand
 } from "./commands/localCapabilities.js";
 
-const program = new Command();
+// 输出流的异步错误不会被命令的 try/catch 捕获，不能把未交付的结果报告为成功。
+process.stdout.on("error", (error: Error) => {
+  if (Number(process.exitCode ?? 0) === 0) process.exitCode = 1;
+  console.error(`Failed to write standard output: ${error.message}`);
+});
+process.stderr.on("error", () => {
+  if (Number(process.exitCode ?? 0) === 0) process.exitCode = 1;
+});
+
+const program = new Command().exitOverride();
 // CLI 的工作区以用户执行 biny 时的当前目录为准。
 const workspaceRoot = process.cwd();
 // `pnpm dev -- <command>` 会把分隔符保留在 tsx 脚本的 argv 中；去掉它，保证开发入口和已安装的 biny 解析一致。
@@ -487,12 +496,18 @@ program
   .action((session: string | undefined) => wrap(() => resumeCommand(workspaceRoot, cliVersion, session, program.opts<{ theme?: string }>().theme))());
 
 
-// 仅根选项启动 TUI；存在命令名时保留解析器的拼写建议和未知命令错误。
-const rootArguments = program.parseOptions(cliArgv.slice(2));
-if (rootArguments.operands.length === 0 && rootArguments.unknown.length === 0) {
-  program.action(wrap(() => tuiCommand(workspaceRoot, cliVersion, undefined, "new", program.opts<{ theme?: string }>().theme)));
+try {
+  // 仅根选项启动 TUI；存在命令名时保留解析器的拼写建议和未知命令错误。
+  const rootArguments = program.parseOptions(cliArgv.slice(2));
+  if (rootArguments.operands.length === 0 && rootArguments.unknown.length === 0) {
+    program.action(wrap(() => tuiCommand(workspaceRoot, cliVersion, undefined, "new", program.opts<{ theme?: string }>().theme)));
+  }
+  await program.parseAsync(cliArgv);
+} catch (error) {
+  if (!(error instanceof CommanderError)) throw error;
+  // Commander 已输出帮助或参数错误；自然退出让输出流错误仍能更新最终状态。
+  if (Number(process.exitCode ?? 0) === 0) process.exitCode = error.exitCode;
 }
-await program.parseAsync(cliArgv);
 
 function wrap(fn: () => Promise<void>): () => Promise<void> {
   // 所有命令都经过 wrap，保证异步异常不会打印冗长堆栈到普通用户界面。

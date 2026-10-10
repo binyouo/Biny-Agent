@@ -4,6 +4,7 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { fixtureCleanup } from "./helpers/fixture-cleanup.js";
 import { configSchema, defaultConfig } from "../src/config/schema.js";
 import { saveConfig } from "../src/config/loader.js";
 import { createInteractiveAgentHost } from "../src/runtime/InteractiveAgentRuntime.js";
@@ -16,18 +17,21 @@ import { sessionFilePath } from "../src/session/store.js";
 import { refreshSessionIndex } from "../src/session/catalog.js";
 
 test("foreground Task admits an Attempt and records scoped Worker reports and execution events", { timeout: 25_000 }, async (t) => {
-  const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "biny-subagent-communication-e2e-")));
-  const previousAgentDir = process.env.BINY_AGENT_DIR;
-  process.env.BINY_AGENT_DIR = path.join(root, "agent");
-  t.after(async () => {
-    // catalog 会异步发布派生索引，恢复全局目录前须等完最后一轮刷新。
-    await refreshSessionIndex(root);
-    if (previousAgentDir === undefined) delete process.env.BINY_AGENT_DIR;
-    else process.env.BINY_AGENT_DIR = previousAgentDir;
-    await rm(root, { recursive: true, force: true });
-  });
   let cancelRelease!: () => void;
   const cancelGate = new Promise<void>((resolve) => { cancelRelease = resolve; });
+  t.after(() => { cancelRelease(); });
+  const cleanup = fixtureCleanup(t);
+  let root = await mkdtemp(path.join(os.tmpdir(), "biny-subagent-communication-e2e-"));
+  cleanup(async () => { await rm(root, { recursive: true, force: true }); });
+  root = await realpath(root);
+  const previousAgentDir = process.env.BINY_AGENT_DIR;
+  // 工作区参数不决定全局配置位置；直接运行也必须隔离配置、Host 和派生 CLI。
+  process.env.BINY_AGENT_DIR = path.join(root, "agent");
+  cleanup(() => {
+    if (previousAgentDir === undefined) delete process.env.BINY_AGENT_DIR;
+    else process.env.BINY_AGENT_DIR = previousAgentDir;
+  });
+  cleanup(async () => { await refreshSessionIndex(root); });
   const phase = "launch";
   let acted = false;
   const taskRunId = "";
@@ -83,6 +87,10 @@ test("foreground Task admits an Attempt and records scoped Worker reports and ex
       res.end(frames.map((frame) => `data: ${JSON.stringify(frame)}\n\n`).join("") + "data: [DONE]\n\n");
     } catch (error) { providerErrors.push(error); res.writeHead(500); res.end("fixture rejected request"); }
   });
+  cleanup(async () => {
+    provider.closeAllConnections();
+    await new Promise<void>((resolve) => provider.close(() => resolve()));
+  });
   await new Promise<void>((resolve) => provider.listen(0, "127.0.0.1", resolve));
   const address = provider.address();
   assert.ok(address && typeof address !== "string");
@@ -96,34 +104,31 @@ test("foreground Task admits an Attempt and records scoped Worker reports and ex
     context: { ...defaultConfig.context, memory: { ...defaultConfig.context.memory, useMemories: false, generateMemories: false } }
   }));
   const host = await startRuntimeHost(root, async (resourceRegistry) => await createInteractiveAgentHost(root, { resourceRegistry }));
+  cleanup(async () => { await host.close(); });
   const connected = await connectRuntimeHost(root, { surface: "cli", clientId: "parent-client" });
   assert.ok(connected);
   const client = connected;
-  try {
-    const sessionId = client.getSnapshot().info.sessionId;
-    const launch = await client.submitPrompt("launch independent inspection").completion;
-    assert.equal(launch.status, "completed", JSON.stringify(launch));
-    const listed = await client.taskList() as { tasks: TaskRunWithAttempts[] };
-    assert.equal(listed.tasks.length, 1);
-    const current = listed.tasks[0]!;
-    assert.equal(current.sessionId, sessionId);
-    assert.equal(current.status, "completed");
-    const inspected = await client.taskInspect(current.taskRunId, sessionId);
-    assert.deepEqual(inspected.activity.findLast(entry => entry.kind === "model")?.model, { provider: "openai-compatible", id: "synthetic" }, "the worker model comes from its persisted request, not the parent selection");
-    assert.equal(inspected.name, "检查数据 / α", "display names survive persistence without selecting a named agent role");
-    assert.equal(inspected.description, "查设置页加载慢问题", "the short task description survives Task admission and inspection independently of the worker name");
-    assert.equal(current.attempts.length, 1);
-    const messages = (current.attempts[0]?.artifacts as { communication?: { messages: TaskMessage[] } }).communication?.messages ?? [];
-    assert.ok(messages.some((item) => item.direction === "worker"), "foreground worker report is persisted");
-    const childEvents = await readSessionEvents(sessionFilePath(root, workerSessionId(current.attempts[0]!.attemptId)));
-    assert.ok(childEvents.some((event) => event.type === "tool_call" && event.tool === "TaskReport"));
-    assert.ok(childEvents.some((event) => event.type === "tool_result" && event.tool === "TaskReport"));
-    assert.equal(workerRequests, 2);
-    const parentEvents = await readSessionEvents(sessionFilePath(root, sessionId));
-    assert.equal(parentEvents.filter((event) => event.type === "user_message" && event.metadata?.source === "subagent").length, 1, "foreground explicit reports arrive once without a duplicate completion notification");
-    assert.deepEqual(providerErrors, []);
-  } finally {
-    cancelRelease(); await client.close(); await host.close();
-    provider.closeAllConnections(); await new Promise<void>((resolve) => provider.close(() => resolve()));
-  }
+  cleanup(async () => { await client.close(); });
+  const sessionId = client.getSnapshot().info.sessionId;
+  const launch = await client.submitPrompt("launch independent inspection").completion;
+  assert.equal(launch.status, "completed", JSON.stringify(launch));
+  const listed = await client.taskList() as { tasks: TaskRunWithAttempts[] };
+  assert.equal(listed.tasks.length, 1);
+  const current = listed.tasks[0]!;
+  assert.equal(current.sessionId, sessionId);
+  assert.equal(current.status, "completed");
+  const inspected = await client.taskInspect(current.taskRunId, sessionId);
+  assert.deepEqual(inspected.activity.findLast(entry => entry.kind === "model")?.model, { provider: "openai-compatible", id: "synthetic" }, "the worker model comes from its persisted request, not the parent selection");
+  assert.equal(inspected.name, "检查数据 / α", "display names survive persistence without selecting a named agent role");
+  assert.equal(inspected.description, "查设置页加载慢问题", "the short task description survives Task admission and inspection independently of the worker name");
+  assert.equal(current.attempts.length, 1);
+  const messages = (current.attempts[0]?.artifacts as { communication?: { messages: TaskMessage[] } }).communication?.messages ?? [];
+  assert.ok(messages.some((item) => item.direction === "worker"), "foreground worker report is persisted");
+  const childEvents = await readSessionEvents(sessionFilePath(root, workerSessionId(current.attempts[0]!.attemptId)));
+  assert.ok(childEvents.some((event) => event.type === "tool_call" && event.tool === "TaskReport"));
+  assert.ok(childEvents.some((event) => event.type === "tool_result" && event.tool === "TaskReport"));
+  assert.equal(workerRequests, 2);
+  const parentEvents = await readSessionEvents(sessionFilePath(root, sessionId));
+  assert.equal(parentEvents.filter((event) => event.type === "user_message" && event.metadata?.source === "subagent").length, 1, "foreground explicit reports arrive once without a duplicate completion notification");
+  assert.deepEqual(providerErrors, []);
 });

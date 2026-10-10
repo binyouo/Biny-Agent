@@ -11,6 +11,7 @@ import { splitAttachmentReferences, withAttachmentReferences } from "../src/atta
 import { attachmentRoot, readAttachment, readAttachmentContext } from "../src/attachments/store.js";
 import { refreshSessionIndex } from "../src/session/catalog.js";
 import { createSessionFile, ensureAgentDirs, listSessionFiles } from "../src/session/store.js";
+import { refreshSessionIndex } from "../src/session/catalog.js";
 import { BINY_BUNDLE_FORMAT, BINY_BUNDLE_VERSION, exportSessionBundle, importSessionFile, SessionImportCleanupError } from "../src/session/transfer.js";
 
 async function fixture(t: TestContext) {
@@ -22,6 +23,7 @@ async function fixture(t: TestContext) {
   t.after(async () => {
     t.mock.restoreAll();
     syncBuiltinESMExports();
+    // 导入的后台索引刷新仍会写目录；排空后才能还原环境并移除 fixture。
     await refreshSessionIndex(workspace);
     if (previous === undefined) delete process.env.BINY_AGENT_DIR;
     else process.env.BINY_AGENT_DIR = previous;

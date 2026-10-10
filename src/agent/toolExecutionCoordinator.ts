@@ -47,7 +47,7 @@ import { createToolOperationId } from "../tools/types.js";
 import { resolveWorkspacePath, toWorkspaceRelative } from "../workspace/resolvePath.js";
 import type { ReasoningBlock, SessionEvent } from "../session/recorder.js";
 import { archiveToolResult, serializeToolResult, toolResultPreview } from "../session/toolResultArchive.js";
-import type { SensitiveValueRedactionOptions } from "../utils/secrets.js";
+import { redactSecrets, type SensitiveValueRedactionOptions } from "../utils/secrets.js";
 import { projectSingleToolResultForModel } from "./toolResultProjection.js";
 import { codeModeCatalog, codeModeNestedToolNames, codeModePolicy, executeCodeModeCell, type CodeModeLimits } from "./codeMode.js";
 import type {
@@ -425,7 +425,7 @@ export class ToolExecutionCoordinator {
           }
         }
         await this.recordAndFlush({ type: "tool_execution", tool: "exec", toolCallId, sequence, operationId,
-          state: status === "succeeded" ? "succeeded" : status === "cancelled" ? "cancelled" : status === "unknown" ? "unknown" : "failed", retrySafety: "unsafe", evidence: error,
+          state: status === "succeeded" ? "succeeded" : status === "cancelled" ? "cancelled" : status === "unknown" ? "unknown" : "failed", retrySafety: "unsafe", evidence: error === undefined ? undefined : toolResultPreview(redactSecrets(error)),
           outcomeUnknownReason: status === "unknown" ? "unsettled_previous_invocation" : undefined });
         const modelResult = await this.finishSyntheticCall({ id: toolCallId, name: "exec", args }, sequence,
           { ...(result as object), operationId, executionStatus: status }, error,
@@ -586,7 +586,8 @@ export class ToolExecutionCoordinator {
     let taskStatusResultIsData = false;
     const updateState = (state: ToolExecutionState, evidence?: string): void => {
       latestState = state;
-      latestEvidence = evidence ?? latestEvidence;
+      // 执行证据单独落盘；先脱敏再截取，避免首尾片段暴露原本会被隐藏的凭据。
+      latestEvidence = evidence === undefined ? latestEvidence : toolResultPreview(redactSecrets(evidence));
       if (state === "unknown") this.uncertainExecutions.set(operationId, call.name);
       else this.uncertainExecutions.delete(operationId);
     };
@@ -643,7 +644,7 @@ export class ToolExecutionCoordinator {
         const neverStarted = latestState === "not_started";
         const terminalState = executionStateForResultStatus(status);
         if (latestState !== terminalState || status === "unknown" && outcomeUnknownReason !== undefined) {
-          await persistState(terminalState, latestEvidence, outcomeUnknownReason);
+          await persistState(terminalState, undefined, outcomeUnknownReason);
         }
         if (budgetAdmitted) {
           const fingerprint = actionFingerprint(call);
@@ -740,7 +741,7 @@ export class ToolExecutionCoordinator {
             return await finish(prepared.result, prepared.errorMessage, prepared.executionStatus ?? "failed");
           }
           retrySafety = prepared.execution.retrySafety ?? (source === "builtin" && toolDefinition.risk === "read" ? "safe" : "unknown");
-          updateState(latestState, latestEvidence);
+          updateState(latestState);
 
           this.emit({
             type: "tool.started",
@@ -956,11 +957,13 @@ export class ToolExecutionCoordinator {
       // TurnStore 是崩溃安全断点，不能把已经持久化的 tool_result 变成工具失败。
     }
     this.context.contextMemory?.observeToolResult(call.name, call.args, result);
-    if (errorMessage) {
-      this.context.recorder.record({ type: "error", message: errorMessage });
-      this.emit({ type: "error", message: errorMessage, recorded: true, fatal: false });
+    // 完整错误仍在 result 中；单独保存和广播的诊断只保留有界首尾摘要。
+    const diagnostic = errorMessage === undefined ? undefined : toolResultPreview(redactSecrets(errorMessage));
+    if (diagnostic) {
+      this.context.recorder.record({ type: "error", message: diagnostic });
+      this.emit({ type: "error", message: diagnostic, recorded: true, fatal: false });
     }
-    this.emitToolResult(call, result, errorMessage, metadata);
+    this.emitToolResult(call, result, diagnostic, metadata);
     return modelResult;
   }
 

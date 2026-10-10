@@ -9,6 +9,7 @@
  * 服务端会拒绝的消息序列。
  */
 import path from "node:path";
+import { resolveRetryScope, retryProjectionEvents, type RetryOrigin } from "./retryOrigin.js";
 import { parseFileChange, type CommittedFileChange } from "../tools/file/fileChange.js";
 import type { AgentMessage, AgentReasoningContent, ModelRequestMetrics } from "../agent/core/types.js";
 import { createToolOperationId, type ToolExecutionState, type ToolOutcomeUnknownReason, type ToolRetrySafety } from "../tools/types.js";
@@ -40,12 +41,15 @@ export interface SessionReplay {
   discardedToolCalls: SessionDiscardedToolCall[];
   messageTree: SessionMessageNode[];
   runtimeHighWater?: RuntimeHighWater;
+  /** Physical evidence retained only for a checkpoint-scoped retry projection. */
+  retrySourceEvents?: SessionEvent[];
 }
 
 export interface SessionReplayOptions {
   /** 只读证据回查需要压缩前原文，仍完整验证日志与当前消息分支。 */
   includeCompactedMessages?: boolean;
   sessionId?: string;
+  retryOrigin?: RetryOrigin;
   expectedRuntimeHighWater?: RuntimeHighWater;
   resolveToolOutcome?: (call: { tool: string; sessionId: string; turnId: string; toolCallId: string; operationId: string; request: unknown }) => Pick<Extract<SessionEvent, { type: "tool_result" }>, "result" | "executionStatus" | "outcomeUnknownReason" | "evidence"> | undefined;
 }
@@ -82,17 +86,35 @@ export function replaySessionEvents(recordedEvents: SessionEvent[], options: Ses
     );
     if (!found) throw new Error("Session runtime high-water is not present in the recorded event stream.");
   }
+  const retryScope = options.retryOrigin ? resolveRetryScope(recordedEvents, options.retryOrigin, {
+    sessionId: options.sessionId, runtimeHighWater: options.expectedRuntimeHighWater
+  }) : undefined;
+  const activeRetry = retryScope?.status === "active" ? retryScope : undefined;
   const recovery = interruptedToolResults(recordedEvents, options);
   const recoveredToolResults = recovery.results;
   const events = orderRecoveredToolResults(recordedEvents, recoveredToolResults);
-  const activeEvents = activeSessionEventsForPath(events);
+  const activeEvents = activeRetry && options.retryOrigin
+    ? retryProjectionEvents(events, activeRetry, options.retryOrigin)
+    : activeSessionEventsForPath(events);
   const projectionOptions = {
     discardedToolCallIds: new Set(recovery.discarded.map((call) => call.toolCallId).filter((id): id is string => id !== undefined)),
-    recoveredToolResults
+    recoveredToolResults,
+    ownedRetryTurnId: activeRetry ? options.retryOrigin?.ownerTurnId : undefined
   };
-  const projection = projectSessionConversation(activeEvents, projectionOptions);
+  const projection = projectSessionConversation(activeEvents, projectionOptions, events);
   const messageTree = sessionMessageTree(events);
-  const checkpointPath = contextCheckpointPath(events, messageTree, projection, projectionOptions);
+  const checkpointPath = contextCheckpointPath(events, messageTree, projection, projectionOptions,
+    activeRetry && options.retryOrigin ? prefix => {
+      // A compaction written during this retry must be judged against the same
+      // owned prefix that the model saw, not the still-selected replaced answer.
+      const witness = options.retryOrigin!.admissionHighWater;
+      if (!prefix.some(event => event.runtime?.eventId === witness.eventId)) {
+        return projectSessionConversation(activeSessionEventsForPath(prefix), projectionOptions, prefix);
+      }
+      const scope = resolveRetryScope(prefix, options.retryOrigin!, { sessionId: options.sessionId });
+      return projectSessionConversation(scope.status === "active" ? retryProjectionEvents(prefix, scope, options.retryOrigin!)
+        : activeSessionEventsForPath(prefix), projectionOptions, prefix);
+    } : undefined);
   const selectedCheckpoint = latestContextCheckpoint(events, checkpointPath);
   const contextCheckpoint = selectedCheckpoint?.checkpoint;
   const activeProjection = options.includeCompactedMessages ? projection : applyContextCheckpoint(
@@ -127,7 +149,8 @@ export function replaySessionEvents(recordedEvents: SessionEvent[], options: Ses
     recoveredToolResults,
     discardedToolCalls: recovery.discarded,
     messageTree,
-    runtimeHighWater
+    runtimeHighWater,
+    ...(options.retryOrigin ? { retrySourceEvents: recordedEvents } : {})
   };
 }
 
@@ -695,12 +718,13 @@ function contextCheckpointPath(
   events: SessionEvent[],
   nodes: SessionMessageNode[],
   projection: SessionConversationProjection,
-  projectionOptions: Parameters<typeof projectSessionConversation>[1]
+  projectionOptions: Parameters<typeof projectSessionConversation>[1],
+  projectSourcePrefix?: (events: SessionEvent[]) => SessionConversationProjection
 ): (checkpoint: SessionContextCheckpoint, source: SessionEvent) => { applicable: boolean; start?: number } {
   if (!events.some((event) => event.type === "context_checkpoint")) return () => ({ applicable: true });
   const activeIds = activeSessionMessageIds(events, nodes);
   if (nodes.every((node) => activeIds.has(node.id))) return () => ({ applicable: true });
-  const canonicalPath = canonicalCheckpointPath(events, nodes, projection, projectionOptions);
+  const canonicalPath = projectSourcePrefix ? undefined : canonicalCheckpointPath(events, nodes, projection, projectionOptions);
   const projectedIndexes = new Map(projection.references.map((reference, index) => [reference.id, index]));
   const indexes = new Map<string, number[]>();
   const eventIndexes = new Map(events.map((event, index) => [event, index]));
@@ -746,7 +770,9 @@ function contextCheckpointPath(
       cache.set(eventIndex, indexed);
       return indexed;
     }
-    const original = projectSessionConversation(activeSessionEventsForPath(events.slice(0, eventIndex)), projectionOptions);
+    const sourcePrefix = events.slice(0, eventIndex);
+    const original = projectSourcePrefix?.(sourcePrefix)
+      ?? projectSessionConversation(activeSessionEventsForPath(sourcePrefix), projectionOptions, sourcePrefix);
     const originalKeptIndex = checkpoint.firstKeptMessageId === undefined ? -1
       : original.references.findIndex((reference) => reference.id === checkpoint.firstKeptMessageId);
     const start = originalKeptIndex >= 0 ? originalKeptIndex : Math.min(checkpoint.firstKeptMessageIndex, original.messages.length);
@@ -885,13 +911,54 @@ interface SessionConversationProjection {
   references: SessionMessageReference[];
 }
 
+/**
+ * Canonical assistant 提交覆盖此前的工具批次，不覆盖后续尚未提交的步骤。边界必须取自
+ * 筛选消息分支前的原事件；否则被隐藏的 canonical 消息会让旧审计重新成为候选。
+ * toolResult 只覆盖自己的结果，不能推进整批边界。无工具的旧格式回答继续沿用原规则。
+ */
+function uncoveredCanonicalToolCalls(
+  events: readonly SessionEvent[],
+  sourceEvents: readonly SessionEvent[]
+): ReadonlySet<SessionEvent> {
+  const projected = new Set(events);
+  const uncovered = new Set<SessionEvent>();
+  let frontier: Extract<SessionEvent, { type: "agent_message" }> | undefined;
+  let tail: SessionEvent[] = [];
+  const finishSegment = (): void => {
+    if (frontier?.message.role !== "assistant" || !projected.has(frontier)
+      || !frontier.message.content.some((part) => part.type === "toolCall")) return;
+    for (const event of tail) if (projected.has(event)) uncovered.add(event);
+  };
+  for (const event of sourceEvents) {
+    if ((event.type === "user_message" && !event.auditOnly) || event.type === "turn_interrupted") {
+      finishSegment();
+      frontier = undefined;
+      tail = [];
+    } else if (event.type === "agent_message" && event.message.role === "assistant") {
+      frontier = event;
+      tail = [];
+    } else if (event.type === "tool_call" && event.toolCallId && !event.auditOnly && event.importSource === undefined) {
+      tail.push(event);
+    }
+  }
+  finishSegment();
+  return uncovered;
+}
+
 function projectSessionConversation(
   events: SessionEvent[],
   options: {
+    ownedRetryTurnId?: string;
     discardedToolCallIds?: ReadonlySet<string>;
     recoveredToolResults?: ReadonlyArray<Extract<SessionEvent, { type: "tool_result" }>>;
-  } = {}
+  } = {},
+  sourceEvents: readonly SessionEvent[] = events
 ): SessionConversationProjection {
+  const uncoveredCalls = new Set(uncoveredCanonicalToolCalls(events, sourceEvents));
+  if (options.ownedRetryTurnId) for (const event of events) {
+    if (event.type === "tool_call" && !event.auditOnly && event.importSource === undefined
+      && event.runtime?.turnId === options.ownedRetryTurnId) uncoveredCalls.add(event);
+  }
   events = completeCanonicalStepResults(events);
   const messages: AgentMessage[] = [];
   const references: SessionMessageReference[] = [];
@@ -910,6 +977,7 @@ function projectSessionConversation(
   let pendingReasoningBlocks: ReasoningBlock[] | undefined;
   let callsFlushed = false;
   let canonicalTurn = false;
+  const projectedTailCallIds = new Set<string>();
   const recoveredResults = new Set(options.recoveredToolResults ?? []);
   const consumedRecoveredResults = new Set<Extract<SessionEvent, { type: "tool_result" }>>();
   const appendMessage = (message: AgentMessage, id?: string, parentId?: string, slotId?: string): void => {
@@ -991,6 +1059,7 @@ function projectSessionConversation(
       resetPendingCalls();
       appendMessage({ role: "user", content: event.content }, event.messageId, event.parentMessageId, event.slotId);
       canonicalTurn = false;
+      projectedTailCallIds.clear();
       continue;
     }
 
@@ -1001,6 +1070,7 @@ function projectSessionConversation(
       resetPendingCalls();
       appendMessage({ role: "user", content: event.content });
       canonicalTurn = false;
+      projectedTailCallIds.clear();
       continue;
     }
 
@@ -1044,11 +1114,12 @@ function projectSessionConversation(
       if (event.toolCallId && options.discardedToolCallIds?.has(event.toolCallId)) continue;
       if (event.toolCallId && canonicalCallIds.has(event.toolCallId)) continue;
       // 上一批调用已经 flush 且全部收到结果，说明这是新一批调用，重新开始累积。
-      if (canonicalTurn && event.importSource === undefined) {
+      if (canonicalTurn && event.importSource === undefined && !uncoveredCalls.has(event)) {
         const id = event.toolCallId ?? `session-tool-${String(event.sequence ?? index + 1)}`;
         if (!openCalls.has(id)) openCalls.set(id, { id, name: event.tool, args: event.args });
         continue;
       }
+      if (uncoveredCalls.has(event) && event.toolCallId) projectedTailCallIds.add(event.toolCallId);
       if (callsFlushed && openCalls.size === 0) resetPendingCalls();
       const toolCall = {
         // 旧 session 没记 id，用序号造一个稳定 id，保证 call 与 result 能配上。
@@ -1070,8 +1141,9 @@ function projectSessionConversation(
       if (event.toolCallId && options.discardedToolCallIds?.has(event.toolCallId)) continue;
       if (event.toolCallId && canonicalResultIds.has(event.toolCallId)) continue;
       if (event.recovered && recoveredResults.has(event) && consumedRecoveredResults.has(event)) continue;
-      // 完整 canonical session 已经有 agent_message/toolResult；这里只接收 replay 新补的结果。
-      if (canonicalTurn && !event.recovered && event.importSource === undefined) continue;
+      // 已提交批次继续使用 canonical；未提交尾批次的持久结果随已投影的调用一起保留。
+      if (canonicalTurn && !event.recovered && event.importSource === undefined
+        && !(event.toolCallId && projectedTailCallIds.has(event.toolCallId))) continue;
       const toolCallId = event.toolCallId ?? (event.importSource !== undefined ? ""
         : findToolCallId(openCalls, event.tool) ?? `session-tool-${String(event.sequence ?? index + 1)}`);
       flushPendingCalls();

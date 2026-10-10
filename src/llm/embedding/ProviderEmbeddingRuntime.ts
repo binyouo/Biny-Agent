@@ -112,8 +112,8 @@ export class ProviderEmbeddingRuntime implements EmbeddingModelRuntime {
     const ordered: Array<Float32Array | undefined> = Array.from({ length: texts.length });
     for (const [fallbackIndex, item] of data.entries()) {
       const value = objectValue(item);
-      const index = integerValue(value?.index) ?? fallbackIndex;
-      if (index < 0 || index >= texts.length || ordered[index] !== undefined || !Array.isArray(value?.embedding)) {
+      const index = value?.index === undefined ? fallbackIndex : integerValue(value.index);
+      if (index === undefined || index < 0 || index >= texts.length || ordered[index] !== undefined || !Array.isArray(value?.embedding)) {
         throw new Error(`Embedding provider ${this.providerAlias} returned malformed vector metadata.`);
       }
       ordered[index] = normalizeEmbedding(value.embedding.map(numberValue));

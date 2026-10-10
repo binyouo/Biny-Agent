@@ -65,7 +65,15 @@ export class MemoryVectorIndex {
     const databasePath = path.join(resolvedRoot, AGENT_DATABASE_FILE);
     if (!existsSync(databasePath)) return undefined;
     const index = new MemoryVectorIndex(resolvedRoot, { readOnly: true });
-    if (!index.hasSchema()) {
+    let hasSchema: boolean;
+    try {
+      hasSchema = index.hasSchema();
+    } catch (error) {
+      // Ownership has not reached the caller; a failed probe must release it.
+      try { index.close(); } catch { /* Preserve the schema inspection error. */ }
+      throw error;
+    }
+    if (!hasSchema) {
       // 事实库可能已经创建，但向量投影尚未初始化。只读路径不能为了查看状态补写表。
       index.close();
       return undefined;
@@ -241,9 +249,11 @@ export class MemoryVectorIndex {
     this.assertOpen();
     const active = this.status().active;
     if (!active || active.modelFingerprint !== options.modelFingerprint || !this.vectorExtensionAvailable) return [];
+    const entryIds = options.entryIds ? JSON.stringify([...options.entryIds]) : null;
     const rows = this.database.prepare(
-      `SELECT memory_id, embedding FROM memory_embeddings WHERE memory_id IN (${currentVectorIds}) ORDER BY memory_id ASC`
-    ).all() as unknown as VectorRow[];
+      `SELECT memory_id, embedding FROM memory_embeddings WHERE memory_id IN (${currentVectorIds})
+       AND (? IS NULL OR memory_id IN (SELECT value FROM json_each(?))) ORDER BY memory_id ASC`
+    ).all(entryIds, entryIds) as unknown as VectorRow[];
     const embeddings: Array<{ entryId: string; embedding: Float32Array }> = [];
     for (const row of rows) {
       const entryId = stringValue(row.memory_id, "memory entry");

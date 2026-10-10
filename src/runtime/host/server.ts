@@ -1845,7 +1845,21 @@ export class RuntimeHostServer {
     }
     const routingCommands = (this.registry.get(routingSessionId) ?? this.registry.primary()).commands;
     const task = taskRunId === undefined ? undefined : routingCommands.taskRuns.get(taskRunId);
-    const taskSessionId = task?.sessionId;
+    const pendingResumes = operation === "task.cancel" && task !== undefined && task.sessionId === undefined
+      ? this.registry.list().flatMap(entry => {
+        const pending = entry.commands.pendingTaskResume?.(task.taskRunId);
+        return pending ? [{ entry, pending }] : [];
+      }) : [];
+    if (pendingResumes.length > 1) throw new Error("TaskRun has ambiguous pending resume admissions; cancellation was not routed.");
+    const pendingOwner = pendingResumes[0];
+    if (operation === "task.cancel" && task?.sessionId === undefined && task?.status === "blocked" && !pendingOwner) {
+      throw new Error("Ownerless blocked TaskRun has no validated pending resume admission; cancellation cannot be routed safely.");
+    }
+    if (pendingOwner && pendingOwner.pending.sessionId !== pendingOwner.entry.sessionId) {
+      throw new Error("Pending TaskRun resume session changed; cancellation was not routed.");
+    }
+    const taskSessionId = task?.sessionId ?? pendingOwner?.pending.sessionId ?? (operation === "task.resume" && task !== undefined
+      ? await routingCommands.legacyWorkerOwner?.(task.taskRunId) : undefined);
     const graphSessionId = graphId === undefined ? undefined : routingCommands.graphs.getGraph(graphId)?.supervisorSessionId;
     // 真实 CommandRuntime 始终提供 authority；保留无 authority 的轻量测试/fallback 也能
     // 继续把未带 sessionId 的取消交给当前 primary，而不是在路由层先抛 TypeError。

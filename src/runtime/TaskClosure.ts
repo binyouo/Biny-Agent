@@ -4,7 +4,7 @@
  * Worker 仍由调用方已有的 Subagent 或 Graph Runtime 提供；这里仅统一 Attempt 生命周期和
  * 验收完成权，避免不同入口各自实现一套重试状态机。
  */
-import { isTaskRunTerminal, type DurableTaskRunStore, type TaskAttemptRecord, type TaskRetrySafety, type TaskRunStatus } from "./TaskRunStore.js";
+import { isTaskRunTerminal, type DurableTaskRunStore, type TaskAttemptRecord, type TaskRetrySafety, type TaskRunStatus, type TaskRunWithAttempts } from "./TaskRunStore.js";
 import { planReviewResultSchema, type PlanReviewResult } from "./planWork.js";
 import { z } from "zod";
 import {
@@ -124,7 +124,7 @@ async function executeTaskClosure(input: Parameters<typeof runTaskClosure>[0]): 
   let workerAttempt = input.resumeWorker && initial.status === "running" ? initial.attempts.at(-1) : undefined;
   if (input.resumeWorker && !workerAttempt) throw new Error("Worker continuation requires the current running Attempt.");
   const latestAttempt = initial.attempts.at(-1);
-  const latestEvent = input.taskRuns.events(input.taskRunId).at(-1);
+  const latestEvent = input.taskRuns.latestEvent(input.taskRunId);
   const persistedRepairEvidence = initial.status === "queued"
     && latestAttempt?.status === "failed"
     && latestEvent?.eventType === "task.verification.repair"
@@ -239,7 +239,7 @@ async function executeTaskClosure(input: Parameters<typeof runTaskClosure>[0]): 
         : repairPrompt(basePrompt, contract!, repairEvidence, current.attempts.length));
       input.taskRuns.transition(input.taskRunId, "running", { attemptId: attempt.attemptId, artifacts: {
         ...input.taskRuns.get(input.taskRunId)?.attempts.at(-1)?.artifacts as Record<string, unknown>,
-        workerExecution: { prompt, beforeWorkspace, definitionFingerprint }
+        workerExecution: workerCheckpoint ?? { prompt, beforeWorkspace, definitionFingerprint }
       } });
       workerAttempt = undefined;
       input.signal?.throwIfAborted();
@@ -365,12 +365,45 @@ export async function approveTaskVerification(input: {
 }): Promise<void> {
   const task = input.taskRuns.get(input.taskRunId);
   if (!task) throw new Error(`TaskRun ${input.taskRunId} does not exist.`);
+  const initial = verificationApprovalState(task, input.approvalId);
+  const { contract, pending } = initial;
+  const [definitionFingerprint, artifactFingerprint] = await Promise.all([
+    fingerprintTaskVerificationDefinitions(input.workspaceRoot, contract, input.ignore),
+    fingerprintTaskArtifacts(input.workspaceRoot, contract.artifactPaths, input.ignore)
+  ]);
+  if (definitionFingerprint !== pending.definitionFingerprint || artifactFingerprint !== pending.artifactFingerprint) {
+    throw new Error("TaskRun verification inputs changed while waiting for approval.");
+  }
+  const current = input.taskRuns.get(input.taskRunId);
+  if (!current) throw new Error(`TaskRun ${input.taskRunId} disappeared during approval.`);
+  const { attempt, existingArtifacts, pending: currentPending } = verificationApprovalState(current, input.approvalId);
+  if (attempt.attemptId !== initial.attempt.attemptId
+    || currentPending.definitionFingerprint !== definitionFingerprint || currentPending.artifactFingerprint !== artifactFingerprint) {
+    throw new Error("TaskRun verification approval changed while fingerprinting its inputs.");
+  }
+  const existingApproval = existingArtifacts.verificationApprovals?.find(approval => approval.approvalId === currentPending.approvalId
+    && matchingTaskVerificationApproval(approval, currentPending));
+  const approval: TaskVerificationApproval = existingApproval ?? { ...currentPending, approvedAt: new Date().toISOString() };
+  input.taskRuns.approveVerification(input.taskRunId, {
+    attemptId: attempt.attemptId,
+    expectedRevision: current.revision,
+    approval,
+    artifacts: {
+      ...existingArtifacts,
+      verificationApprovals: existingApproval
+        ? existingArtifacts.verificationApprovals
+        : [...(existingArtifacts.verificationApprovals ?? []), approval]
+    }
+  });
+}
+
+function verificationApprovalState(task: TaskRunWithAttempts, approvalId: string) {
   const attempt = task.attempts.at(-1);
-  if (!attempt) throw new Error(`TaskRun ${input.taskRunId} has no Attempt to approve.`);
+  if (!attempt) throw new Error(`TaskRun ${task.taskRunId} has no Attempt to approve.`);
   const existingArtifacts = readCandidateArtifacts(attempt.artifacts);
   if ((task.status !== "needs_approval" && task.status !== "verifying")
     || (attempt.status !== "needs_approval" && attempt.status !== "verifying")) {
-    throw new Error(`TaskRun ${input.taskRunId} is not waiting for verification approval.`);
+    throw new Error(`TaskRun ${task.taskRunId} is not waiting for verification approval.`);
   }
   const contract = readTaskDefinition(task.task).verification;
   if (!contract || !existingArtifacts || !isTaskVerificationEvidence(attempt.verification)) {
@@ -380,7 +413,7 @@ export async function approveTaskVerification(input: {
   if (!pending || pending.taskRunId !== task.taskRunId || pending.attemptId !== attempt.attemptId) {
     throw new Error("TaskRun has no current verification permission request to approve.");
   }
-  if (pending.approvalId !== input.approvalId) {
+  if (pending.approvalId !== approvalId) {
     throw new Error("TaskRun verification approval is stale or belongs to another check.");
   }
   if (pending.contractFingerprint !== taskVerificationFingerprint(contract)
@@ -388,26 +421,7 @@ export async function approveTaskVerification(input: {
     || pending.artifactFingerprint !== existingArtifacts.artifactFingerprint) {
     throw new Error("TaskRun verification approval no longer matches its persisted contract or candidate.");
   }
-  const [definitionFingerprint, artifactFingerprint] = await Promise.all([
-    fingerprintTaskVerificationDefinitions(input.workspaceRoot, contract, input.ignore),
-    fingerprintTaskArtifacts(input.workspaceRoot, contract.artifactPaths, input.ignore)
-  ]);
-  if (definitionFingerprint !== pending.definitionFingerprint || artifactFingerprint !== pending.artifactFingerprint) {
-    throw new Error("TaskRun verification inputs changed while waiting for approval.");
-  }
-  const existingApproval = existingArtifacts.verificationApprovals?.find((approval) => matchingTaskVerificationApproval(approval, pending));
-  if (task.status === "verifying" && existingApproval) return;
-  const approval: TaskVerificationApproval = { ...pending, approvedAt: new Date().toISOString() };
-  input.taskRuns.transition(input.taskRunId, "verifying", {
-    attemptId: attempt.attemptId,
-    verification: attempt.verification,
-    artifacts: {
-      ...existingArtifacts,
-      verificationApprovals: existingApproval
-        ? existingArtifacts.verificationApprovals
-        : [...(existingArtifacts.verificationApprovals ?? []), approval]
-    }
-  });
+  return { attempt, existingArtifacts, contract, pending };
 }
 
 /** Cancellation may close live work, but must never overwrite an existing terminal outcome. */

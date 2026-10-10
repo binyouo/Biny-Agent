@@ -27,6 +27,7 @@ import { validateRuntimeEventRecord, type RuntimeEventIdentity } from "./runtime
 import { contextCheckpointSchema, contextStateSchema, contextUsageSchema } from "./contextSchema.js";
 
 const sessionListReadConcurrency = 8;
+const maxSummaryCacheBytes = 8 * 1024 * 1024;
 const sessionUsageSchema = z.record(z.unknown());
 const reasoningBlockSchema = z.object({
   text: z.string(),
@@ -347,14 +348,20 @@ function countNewlines(bytes: Buffer, offset: number): number {
 export async function readSessionEventsForBackfill(
   filePath: string,
   previousBytes: number
-): Promise<{ events: SessionEvent[]; contentHash: string; prefixHash?: string }> {
+): Promise<{ events: SessionEvent[]; byteLength: number; contentHash: string; prefixHash?: string; prefixEventCount?: number }> {
   const bytes = await readValidatedSessionBytes(filePath);
+  const events = parseSessionEvents(bytes.toString("utf8"));
+  const validPrefix = Number.isSafeInteger(previousBytes) && previousBytes >= 0 && previousBytes <= bytes.length;
+  const prefix = validPrefix ? bytes.subarray(0, previousBytes) : undefined;
   return {
-    events: parseSessionEvents(bytes.toString("utf8")),
+    events,
+    byteLength: bytes.length,
     contentHash: createHash("sha256").update(bytes).digest("hex"),
-    prefixHash: Number.isSafeInteger(previousBytes) && previousBytes >= 0 && previousBytes <= bytes.length
-      ? createHash("sha256").update(bytes.subarray(0, previousBytes)).digest("hex")
-      : undefined
+    prefixHash: prefix === undefined ? undefined : createHash("sha256").update(prefix).digest("hex"),
+    // Recovery copies need the physical event boundary as well as a byte proof.
+    // Preserve arbitrary-byte prefix hashing for existing backfill callers.
+    prefixEventCount: prefix === undefined || previousBytes > 0 && prefix.at(-1) !== 0x0a ? undefined
+      : previousBytes === bytes.length ? events.length : parseSessionEvents(prefix.toString("utf8")).length
   };
 }
 
@@ -402,8 +409,16 @@ export async function readSessionSummary(
 ): Promise<SessionSummary | undefined> {
   const result = await readSessionFileOrCached(workspaceRoot, session, (filePath, stat) => {
     const entry = summaryCache.get(filePath);
-    if (!entry || !sameSessionFingerprint(entry.fingerprint, sessionFileFingerprint(stat))) return undefined;
-    return { summary: entry.summary === undefined ? undefined : structuredClone(entry.summary) };
+    const fingerprint = sessionFileFingerprint(stat);
+    if (entry && sameSessionFingerprint(entry.fingerprint, fingerprint)) {
+      return { summary: entry.summary === undefined ? undefined : structuredClone(entry.summary) };
+    }
+    // 完整读取已验证过同一文件快照时，复用事件投影摘要，避免再次读盘和逐行解析。
+    // 指纹不匹配时不调用 lookup，保留完整解析缓存供后续追加前缀校验使用。
+    const previous = previousSessionParse(filePath);
+    if (!previous || !sameSessionFingerprint(previous.fingerprint, fingerprint)) return undefined;
+    const events = lookupSessionEvents(filePath, fingerprint);
+    return events === undefined ? undefined : { summary: structuredClone(summarizeSessionEvents(path.basename(filePath), events, stat)) };
   }, async (handle, filePath, stat) => {
     // 列表只保留摘要所需的消息，不累积图片和工具结果。
     let firstUser: SessionEvent | undefined;
@@ -430,9 +445,11 @@ export async function readSessionSummary(
   const previous = summaryCache.get(result.filePath);
   if (previous) summaryCacheBytes -= previous.weight;
   summaryCache.delete(result.filePath);
+  // 单条摘要超过总预算时不入缓存，避免先淘汰所有健康摘要、再淘汰自身。
+  if (weight > maxSummaryCacheBytes) return summary;
   summaryCache.set(result.filePath, { fingerprint: sessionFileFingerprint(result.stat), summary: structuredClone(summary), weight });
   summaryCacheBytes += weight;
-  while (summaryCache.size > 4096 || summaryCacheBytes > 8 * 1024 * 1024) {
+  while (summaryCache.size > 4096 || summaryCacheBytes > maxSummaryCacheBytes) {
     const oldest = summaryCache.keys().next();
     if (oldest.done) break;
     summaryCacheBytes -= summaryCache.get(oldest.value)!.weight;

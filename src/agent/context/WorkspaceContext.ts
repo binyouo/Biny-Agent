@@ -12,6 +12,7 @@ import type { LoadedInstruction, ProjectSnapshot, RecentWorkspaceActivity, RepoM
 const instructionFileNames = ["AGENTS.override.md", "AGENTS.md"];
 const codeExtensions = new Set([".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".json", ".md"]);
 const maxRepoFiles = 600;
+const repoMapConcurrency = 32;
 const maxSourceChars = 120_000;
 
 export interface WorkspaceContextStatus {
@@ -151,7 +152,7 @@ export class WorkspaceContext {
     if (!this.repoMapDirty) return;
     const files = (await scanWorkspaceFiles(this.workspaceRoot, this.ignore, maxRepoFiles, signal)).sort((left, right) => left.localeCompare(right));
     const nextCache = new Map<string, { fingerprint: string; entry: RepoMapEntry }>();
-    const entries = await Promise.all(files.map(async (filePath) => {
+    const entries = await mapWithConcurrency(files, repoMapConcurrency, async (filePath) => {
       // 仍扫描目录来发现新增和删除；只复用元数据未变的源码提取结果。
       let fingerprint: string;
       try {
@@ -168,7 +169,7 @@ export class WorkspaceContext {
         : await buildRepoMapEntry(this.workspaceRoot, this.ignore, filePath, signal);
       if (entry) nextCache.set(filePath, { fingerprint, entry });
       return entry ?? { path: filePath, role: classifyRepoRole(filePath), symbols: [], imports: [], exports: [] };
-    }));
+    });
     signal?.throwIfAborted();
     this.repoEntries = entries;
     this.repoEntryCache = nextCache;
@@ -312,6 +313,27 @@ export function extractPathReferences(value: string): string[] {
   return [...new Set(value.match(/[A-Za-z0-9_./-]+\.(?:ts|tsx|js|jsx|json|md|yml|yaml|css|html)(?![A-Za-z0-9_/\\-]|\.+[A-Za-z0-9_/\\-])/g) ?? [])].slice(0, 24);
 }
 
+async function mapWithConcurrency<T, R>(items: readonly T[], limit: number, mapper: (item: T) => Promise<R>): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let nextIndex = 0;
+  let failed = false;
+  const worker = async (): Promise<void> => {
+    while (!failed) {
+      const index = nextIndex++;
+      if (index >= items.length) return;
+      try {
+        results[index] = await mapper(items[index]!);
+      } catch (error) {
+        failed = true;
+        throw error;
+      }
+    }
+  };
+  // 保留 fail-fast 取消；已派发的文件读取仍在自己的 finally 中关闭句柄。
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, () => worker()));
+  return results;
+}
+
 async function buildRepoMapEntry(workspaceRoot: string, ignore: string[], filePath: string, signal?: AbortSignal): Promise<RepoMapEntry | undefined> {
   signal?.throwIfAborted();
   const role = classifyRepoRole(filePath);
@@ -366,7 +388,15 @@ function extractSymbols(content: string): string[] {
 }
 
 function extractImports(content: string): string[] {
-  const fromImports = [...content.matchAll(/\b(?:import|export)\s+(?:[\s\S]*?\s+from\s+)?["']([^"']+)["']/g)].map((match) => match[1]);
+  let terminalEnd = 0;
+  // Every successful import/export ends at one of these quoted clauses. Lookahead retains overlapping textual clauses.
+  if ((content.includes('"') || content.includes("'"))
+    && (content.includes("import") || content.includes("export"))) {
+    for (const match of content.matchAll(/(?=(\b(?:from|import|export)\s+["'][^"']+["']))/g)) {
+      terminalEnd = Math.max(terminalEnd, match.index + match[1]!.length);
+    }
+  }
+  const fromImports = [...content.slice(0, terminalEnd).matchAll(/\b(?:import|export)\s+(?:[\s\S]*?\s+from\s+)?["']([^"']+)["']/g)].map((match) => match[1]);
   const requires = [...content.matchAll(/\brequire\(["']([^"']+)["']\)/g)].map((match) => match[1]);
   return unique([...fromImports, ...requires].filter((value): value is string => Boolean(value))).slice(0, 16);
 }

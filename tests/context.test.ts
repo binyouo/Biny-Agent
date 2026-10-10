@@ -2489,11 +2489,27 @@ async function testCrystalCurrentRunAnchors(): Promise<void> {
     } finally {
       await agent.close();
     }
-    assert.deepEqual(seen.map((entry) => entry.text), ["Newest backlog topic", "One more backlog topic"],
-      "Contributing turns process only their own user anchors; restored history and discarded branches are not backfilled.");
-    assert.ok(seen.every((entry) => !["backfill-old", "backfill-selected", "backfill-discarded"].includes(entry.anchorId)));
+    const newInputs = ["Newest backlog topic", "One more backlog topic"];
+    assert.deepEqual(seen.map((entry) => entry.text), newInputs);
+    const newUserEvents = (await readSessionEvents(saved.filePath)).filter(
+      (event): event is Extract<SessionEvent, { type: "user_message" }> => event.type === "user_message" && newInputs.includes(event.content)
+    );
+    assert.equal(newUserEvents.length, 2);
+    assert.deepEqual(seen, newUserEvents.map((event) => {
+      assert.ok(event.messageId && event.time);
+      return { text: event.content, day: event.time.slice(0, 10), anchorId: event.messageId };
+    }));
     assert.equal(count, 2);
     assert.equal(new Set(seen.map((entry) => entry.anchorId)).size, 2);
+    const reopened = new CrystalStorage();
+    await reopened.initialize();
+    try {
+      for (const id of ["backfill-old", "backfill-assistant", "backfill-discarded", "backfill-selected"]) {
+        assert.equal(reopened.hasProcessedAnchor(id), false, "historical anchors must not be backfilled or marked processed by a later run");
+      }
+    } finally {
+      reopened.close();
+    }
   });
 }
 
@@ -2602,6 +2618,9 @@ async function testCrystalHistoricalMaterial(): Promise<void> {
       assert.match(materialPrompt, new RegExp(`biny://crystal/${seed.id}`, "u"));
       assert.ok(systemPrompts.every((prompt) => !prompt.includes("Checklist:")));
       assert.equal(materialPrompt.includes(`biny://crystal/${seed.id}`), true, "当前回合仍可通过动态 Crystal context 看到已确认卡片");
+      // 只有最后这个回合开启贡献；先前关闭期间的历史不能补提取。
+      await agent.updateChatPersonalization({ contributeMemories: true }, (await agent.getPersonalizationState()).catalogRevision);
+      assert.equal((await agent.getPersonalizationState()).resolved.contributeMemories, true);
       const entered = deferred<void>();
       const released = deferred<void>();
       crystals.extract = async () => {
@@ -2609,16 +2628,19 @@ async function testCrystalHistoricalMaterial(): Promise<void> {
         await released.promise;
         return ["ShutdownEvidence"];
       };
-      const personalization = await agent.getPersonalizationState();
-      await agent.updateChatPersonalization({ contributeMemories: true }, personalization.catalogRevision);
       await agent.runTask("Keep ShutdownEvidence across shutdown.");
       let closed = false;
       const closing = agent.close().then(() => { closed = true; });
       let entryTimeout: ReturnType<typeof setTimeout> | undefined;
       try {
-        await Promise.race([entered.promise, new Promise<never>((_resolve, reject) => {
-          entryTimeout = setTimeout(() => reject(new Error("Crystal extraction did not start for the contributing turn.")), 10_000);
-        })]);
+        const first = await Promise.race([
+          entered.promise.then(() => "extraction"),
+          closing.then(() => "closed"),
+          new Promise<never>((_resolve, reject) => {
+            entryTimeout = setTimeout(() => reject(new Error("Crystal extraction did not start for the contributing turn.")), 10_000);
+          })
+        ]);
+        assert.equal(first, "extraction", "Agent closed before the opted-in shutdown extraction started");
         assert.equal(closed, false);
       } finally {
         clearTimeout(entryTimeout);

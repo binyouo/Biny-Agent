@@ -15,10 +15,12 @@ import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import type { AgentMessage } from "../agent/core/types.js";
+import { isRetryCommit, isRetryWindow, type RetryCommit, type RetryWindow } from "./retryCommit.js";
+import { isRetryOrigin, type RetryOrigin } from "./retryOrigin.js";
 import type { RuntimeHighWater } from "./runtimeEvent.js";
 import { agentDir, ensureAgentDirs } from "./store.js";
 
-const turnStateVersion = 4;
+const turnStateVersion = 5;
 
 export interface InterruptedTurn {
   sessionId: string;
@@ -38,6 +40,10 @@ export interface InterruptedTurn {
   previousTerminals?: InterruptedTurnTerminal[];
   /** 最后一个已写入 session JSONL 的 runtime event 高水位。 */
   runtimeHighWater?: RuntimeHighWater;
+  /** Typed native retry intent; absent on old checkpoints. */
+  retryOrigin?: RetryOrigin;
+  retryWindow?: RetryWindow;
+  retryCommit?: RetryCommit;
   updatedAt: string;
 }
 
@@ -60,12 +66,22 @@ export class TurnStore {
     facts?: unknown,
     terminal?: InterruptedTurnTerminal,
     previousTerminals?: readonly InterruptedTurnTerminal[],
-    runtimeHighWater?: RuntimeHighWater
+    runtimeHighWater?: RuntimeHighWater,
+    /** The checkpoint owner can differ from the newest background event in the log. */
+    turnId = runtimeHighWater?.turnId,
+    retryOrigin?: RetryOrigin,
+    retryWindow?: RetryWindow,
+    retryCommit?: RetryCommit
   ): Promise<void> {
+    if (retryOrigin !== undefined && (!isRetryOrigin(retryOrigin) || retryOrigin.ownerTurnId !== turnId
+      || retryOrigin.sessionId !== this.sessionId)) throw new Error("Invalid retry checkpoint identity.");
+    if (retryWindow !== undefined && (!retryOrigin || !isRetryWindow(retryWindow))) throw new Error("Invalid retry window.");
+    if (retryCommit !== undefined && (!retryWindow || !isRetryCommit(retryCommit)
+      || retryCommit.replyMessageId !== retryWindow.replyMessageId)) throw new Error("Invalid retry commit phase.");
     await ensureAgentDirs(this.persistenceRoot);
     const payload: InterruptedTurn = {
       sessionId: this.sessionId,
-      turnId: runtimeHighWater?.turnId,
+      turnId,
       prompt,
       systemPrompt,
       messages: [...messages],
@@ -74,6 +90,9 @@ export class TurnStore {
       terminal,
       previousTerminals: previousTerminals ? [...previousTerminals] : undefined,
       runtimeHighWater,
+      retryOrigin: retryOrigin === undefined ? undefined : structuredClone(retryOrigin),
+      retryWindow: retryWindow === undefined ? undefined : structuredClone(retryWindow),
+      retryCommit: retryCommit === undefined ? undefined : structuredClone(retryCommit),
       updatedAt: new Date().toISOString()
     };
     const target = this.filePath();
@@ -104,14 +123,24 @@ export class TurnStore {
     try {
       const parsed: unknown = JSON.parse(await fs.readFile(this.filePath(), "utf8"));
       const version = (parsed as { version?: unknown }).version;
-      if (version !== turnStateVersion && version !== 3 && version !== 2) throw new Error("Unsupported checkpoint version.");
+      if (version !== turnStateVersion && version !== 4 && version !== 3 && version !== 2) throw new Error("Unsupported checkpoint version.");
       const turn = (parsed as { turn?: unknown }).turn;
       if (!isInterruptedTurn(turn) || turn.sessionId !== this.sessionId) throw new Error("Invalid checkpoint contents or session identity.");
+      if (turn.retryOrigin !== undefined && version !== turnStateVersion) throw new Error("Retry origin requires the current checkpoint version.");
       return turn;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
       // 损坏和读失败不能冒充“没有中断任务”，否则用户会误以为状态已丢失或任务已结束。
       throw new Error(`无法读取回合检查点 ${this.sessionId}：${error instanceof Error ? error.message : String(error)}`, { cause: error });
+    }
+  }
+
+  /** Opaque concurrency witness when an explicit new input abandons old intent. */
+  async readReplacementWitness(): Promise<Buffer | undefined> {
+    try { return await fs.readFile(this.filePath()); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+      throw error;
     }
   }
 
@@ -146,6 +175,11 @@ function isInterruptedTurn(value: unknown): value is InterruptedTurn {
       || Array.isArray(candidate.previousTerminals)
       && candidate.previousTerminals.every(isInterruptedTurnTerminal))
     && (candidate.runtimeHighWater === undefined || isRuntimeHighWater(candidate.runtimeHighWater))
+    && (candidate.retryOrigin === undefined || isRetryOrigin(candidate.retryOrigin)
+      && candidate.retryOrigin.ownerTurnId === candidate.turnId && candidate.retryOrigin.sessionId === candidate.sessionId)
+    && (candidate.retryWindow === undefined || candidate.retryOrigin !== undefined && isRetryWindow(candidate.retryWindow))
+    && (candidate.retryCommit === undefined || candidate.retryWindow !== undefined && isRetryCommit(candidate.retryCommit)
+      && candidate.retryCommit.replyMessageId === candidate.retryWindow.replyMessageId)
     && typeof candidate.updatedAt === "string";
 }
 

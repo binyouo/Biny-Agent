@@ -214,6 +214,8 @@ try {
   }), /unsupported field: mode/u);
 
   // 闰日 cron 触发后 366 天内找不到下一次：推进失败只能暂停自己，不能阻塞同一轮其他 automation。
+  const leapDay = new Date(2024, 1, 29, 0, 0, 0).toISOString();
+  const afterLeapDay = new Date(2024, 2, 1, 0, 0, 0);
   const leapCron = automations.create({
     automationId: "automation-leap-day",
     name: "leap-day",
@@ -223,7 +225,7 @@ try {
   });
   authority.databaseHandle()
     .prepare("UPDATE automations SET schedule_json = ?, next_fire_at = ? WHERE automation_id = ?")
-    .run(JSON.stringify({ cron: "0 0 29 2 *" }), "2024-02-29T00:00:00.000Z", leapCron.automationId);
+    .run(JSON.stringify({ cron: "0 0 29 2 *" }), leapDay, leapCron.automationId);
   const healthyAutomation = automations.create({
     automationId: "automation-healthy",
     name: "healthy",
@@ -233,8 +235,8 @@ try {
   });
   authority.databaseHandle()
     .prepare("UPDATE automations SET next_fire_at = ? WHERE automation_id = ?")
-    .run("2024-03-01T00:00:00.000Z", healthyAutomation.automationId);
-  const dueFires = automations.claimDue(new Date("2024-03-01T00:00:01.000Z"));
+    .run(afterLeapDay.toISOString(), healthyAutomation.automationId);
+  const dueFires = automations.claimDue(new Date(afterLeapDay.getTime() + 1_000));
   assert.equal(
     dueFires.some((fire) => fire.automationId === healthyAutomation.automationId),
     true,

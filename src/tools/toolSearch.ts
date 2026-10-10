@@ -121,18 +121,13 @@ export function createToolSearchTool(
                 ? context.toolDiscoveryNames.has(entry.tool.name) && getToolExposure(entry.tool) !== "hidden" && getToolExposure(entry.tool) !== "model-only"
                 : isToolModelVisible(entry.tool))
               && (!context.toolDiscoveryNamespace || entry.tool.namespace?.name === context.toolDiscoveryNamespace));
-          const candidates = registrations
-            .map(({ tool, source }) => ({
-              name: tool.name,
-              description: redactSecrets(tool.description).slice(0, 400),
-              source,
-              capability: tool.capability
-            }));
-          const explicitNames = explicitToolNames(args.query, candidates).slice(0, limit);
+          const explicitNames = explicitToolNames(args.query, registrations.map(({ tool }) => tool)).slice(0, limit);
           if (explicitNames.length) {
-            const byName = new Map(candidates.map((candidate) => [candidate.name, candidate]));
-            return { status: "completed", query: args.query, found: explicitNames.length, tools: explicitNames.map((name) => byName.get(name)!) };
+            // Exact discovery only discloses selected descriptions; avoid redacting the whole catalog.
+            const byName = new Map(registrations.map((entry) => [entry.tool.name, entry]));
+            return { status: "completed", query: args.query, found: explicitNames.length, tools: explicitNames.map((name) => searchMatch(byName.get(name)!)) };
           }
+          const candidates = registrations.map(searchMatch);
           if (discovery?.timedOut) {
             return failedResult(args.query, "mcp_discovery_timeout", "MCP discovery is still pending. Try again after the connection is ready.", true);
           }
@@ -176,6 +171,15 @@ export function createToolSearchTool(
         }
       };
     }
+  };
+}
+
+function searchMatch({ tool, source }: RegisteredTool): ToolSearchMatch {
+  return {
+    name: tool.name,
+    description: redactSecrets(tool.description).slice(0, 400),
+    source,
+    capability: tool.capability
   };
 }
 

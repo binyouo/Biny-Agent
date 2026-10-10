@@ -30,22 +30,23 @@ async function readPage(args: ReadToolResultArgs, signal?: AbortSignal) {
 /** Real files and file handles; only abort timing is controlled at I/O boundaries. */
 function abortDuring(t: TestContext, controller: AbortController, stage: "read-start" | "read-pending" | "read-end" | "close") {
   const originalOpen = fs.open;
-  const state = { opened: 0, closed: 0, readResolved: false };
+  const state = { opened: 0, closed: 0, readResolved: false, readCalls: 0 };
   t.mock.method(fs, "open", async (...args: Parameters<typeof fs.open>) => {
     const handle = await originalOpen(...args);
     if (args[0] !== target) return handle;
     state.opened++;
-    const originalRead = handle.readFile.bind(handle);
+    const originalRead = handle.read.bind(handle);
     const originalClose = handle.close.bind(handle);
-    t.mock.method(handle, "readFile", async (options?: Parameters<FileHandle["readFile"]>[0]) => {
+    t.mock.method(handle, "read", (async (...readArgs: Parameters<FileHandle["read"]>) => {
+      state.readCalls++;
       if (stage === "read-start") controller.abort(new Error("cancel at read start"));
-      const pending = originalRead(options);
+      const pending = originalRead(...readArgs);
       if (stage === "read-pending") controller.abort(new Error("cancel pending read"));
       const data = await pending;
       state.readResolved = true;
       if (stage === "read-end") controller.abort(new Error("cancel at read end"));
       return data;
-    });
+    }) as FileHandle["read"]);
     t.mock.method(handle, "close", async () => {
       await originalClose();
       state.closed++;
@@ -73,7 +74,10 @@ try {
         (error: unknown) => error === controller.signal.reason || (error instanceof Error && error.name === "AbortError" && error.cause === controller.signal.reason));
       assert.equal(state.opened, 1);
       assert.equal(state.closed, 1, "cancellation must close the real archive handle");
-      if (stage === "read-start" || stage === "read-pending") assert.equal(state.readResolved, false, "pass AbortSignal to the underlying file read");
+      if (stage === "read-start" || stage === "read-pending") {
+        assert.equal(state.readCalls, 1, "after cancellation no further chunk reads may start");
+        assert.equal(state.readResolved, true, "the already-started native read drains before cancellation settles");
+      }
     });
   }
 

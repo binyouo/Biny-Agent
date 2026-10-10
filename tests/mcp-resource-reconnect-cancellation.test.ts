@@ -7,10 +7,11 @@ import { mock, test } from "node:test";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
-import { InitializeRequestSchema, ListResourcesRequestSchema, ListToolsRequestSchema, type JSONRPCMessage } from "@modelcontextprotocol/sdk/types.js";
+import { CallToolRequestSchema, GetPromptRequestSchema, ListPromptsRequestSchema, ReadResourceRequestSchema, InitializeRequestSchema, ListResourcesRequestSchema, ListToolsRequestSchema, type JSONRPCMessage } from "@modelcontextprotocol/sdk/types.js";
 import { ToolExecutionCoordinator } from "../src/agent/toolExecutionCoordinator.js";
 import { configSchema, defaultConfig } from "../src/config/schema.js";
 import { createMcpResourceTools, McpToolHost } from "../src/extensions/mcp.js";
+import { createMcpPromptTools } from "../src/extensions/mcpPrompts.js";
 import { PermissionManager } from "../src/permission/PermissionManager.js";
 import { SessionRecorder } from "../src/session/recorder.js";
 import { ensureAgentDirs } from "../src/session/store.js";
@@ -37,24 +38,40 @@ function inMemoryServers() {
   const servers: Server[] = [];
   const messages: Array<{ generation: number; message: JSONRPCMessage }> = [];
   const state = { starts: 0, closes: 0, holdInitialize: false, initializeReleased: false, rejectInitialize: false,
-    rejectResources: false, resources: 0 };
+    rejectResources: false, resources: 0, calls: 0, reads: 0, gets: 0, promptLists: 0 };
   mock.method(StreamableHTTPClientTransport.prototype, "start", async function (this: StreamableHTTPClientTransport) {
     const generation = ++state.starts;
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-    const server = new Server({ name: `fixture-${generation}`, version: "1" }, { capabilities: { tools: {}, resources: {} } });
+    const server = new Server({ name: `fixture-${generation}`, version: "1" }, { capabilities: { tools: {}, resources: {}, prompts: {} } });
     server.setRequestHandler(InitializeRequestSchema, async (request) => {
       if (state.holdInitialize) {
         initializing.resolve();
         await releaseInitialize.promise;
         if (state.rejectInitialize) throw new Error("Fixture initialization unavailable");
       }
-      return { protocolVersion: request.params.protocolVersion, capabilities: { tools: {}, resources: {} }, serverInfo: { name: `fixture-${generation}`, version: "1" } };
+      return { protocolVersion: request.params.protocolVersion, capabilities: { tools: {}, resources: {}, prompts: {} }, serverInfo: { name: `fixture-${generation}`, version: "1" } };
     });
-    server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [] }));
+    server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [{ name: "echo", description: "Fixture read", inputSchema: { type: "object", properties: {} }, annotations: { readOnlyHint: true } }] }));
+    server.setRequestHandler(CallToolRequestSchema, async () => {
+      state.calls += 1;
+      return { content: [{ type: "text", text: "fixture call succeeded" }] };
+    });
     server.setRequestHandler(ListResourcesRequestSchema, async () => {
       state.resources += 1;
       if (state.rejectResources) throw new Error("Fixture resource listing unavailable");
       return { resources: [{ uri: `fixture://generation-${generation}`, name: "Fixture resource" }] };
+    });
+    server.setRequestHandler(ReadResourceRequestSchema, async () => {
+      state.reads += 1;
+      return { contents: [{ uri: "fixture://read", text: "fixture resource" }] };
+    });
+    server.setRequestHandler(GetPromptRequestSchema, async () => {
+      state.gets += 1;
+      return { messages: [{ role: "user", content: { type: "text", text: "fixture prompt" } }] };
+    });
+    server.setRequestHandler(ListPromptsRequestSchema, async () => {
+      state.promptLists += 1;
+      return { prompts: [{ name: "fixture-prompt" }] };
     });
     clientTransport.onmessage = (message) => this.onmessage?.(message);
     clientTransport.onerror = (error) => this.onerror?.(error);
@@ -120,8 +137,8 @@ await test("resource listing cancels its wait while shared reconnect initializat
     fixture.release();
     await reconnect;
     assert.deepEqual(await surviving, [{ server: "fixture", uri: "fixture://generation-2", name: "Fixture resource", description: undefined, mimeType: undefined }]);
-    // SDK 1.29 retains its own request listener after settlement. Only the
-    // caller-wait listener introduced here is in scope for cleanup.
+    // Only the reconnect-wait listener is owned here;
+    // SDK request listeners are outside this assertion.
     assert.equal(getEventListeners(survivor.signal, "abort").includes(survivorReconnectListener), false);
     await drainProtocol();
     assert.equal(fixture.state.resources, 1, "the cancelled listing must never dispatch after reconnect settles");
@@ -454,52 +471,95 @@ await test("abort when shared initialization finishes still prevents resource di
   }
 });
 
-await test("resource reconnect wait cancellation through the coordinator avoids its 500ms quarantine", async () => {
-  const fixture = inMemoryServers();
-  const root = await mkdtemp(path.join(os.tmpdir(), "biny-mcp-reconnect-coordinator-"));
-  const host = new McpToolHost();
-  await ensureAgentDirs(root);
-  const recorder = new SessionRecorder(root, "fixture-reconnect-cancellation");
-  const registry = new ToolRegistry();
-  const quarantines: string[] = [];
-  const coordinator = new ToolExecutionCoordinator({ workspaceRoot: root, config, recorder, toolRegistry: registry,
-    quarantineExternalTool: (toolName) => { quarantines.push(toolName); } }, new PermissionManager(config.permission), () => undefined);
-  let execution: Promise<unknown> | undefined;
-  try {
-    await host.connectConfiguredServers(root, config);
-    await fixture.disconnect();
-    fixture.state.holdInitialize = true;
-    for (const tool of createMcpResourceTools(host)) registry.registerMcpTool(tool);
-    const tool = coordinator.createAgentTools().find((entry) => entry.name === "mcp_list_resources");
-    assert.ok(tool);
-    const controller = new AbortController();
-    execution = tool.execute("coordinator-reconnect-list", { server: "fixture" }, controller.signal);
-    await fixture.initializing;
-    controller.abort(new Error("fixture coordinator cancelled during reconnect"));
-    const result = await within(execution, 1_500);
-    assert.notEqual(result, "deadline", "coordinator execution must settle under its actual drain contract");
-    console.log(JSON.stringify({ proof: "held-initialize-coordinator", quarantines, initializeReleased: fixture.state.initializeReleased,
-      starts: fixture.state.starts, closes: fixture.state.closes, resourceRequests: fixture.state.resources, result }));
-    assert.equal(fixture.state.initializeReleased, false);
-    assert.deepEqual(quarantines, [], "caller-wait cancellation must settle inside the coordinator's external-tool drain");
-    assert.ok(typeof result === "object" && result !== null && "details" in result);
-    assert.ok(typeof result.details === "object" && result.details !== null && !("quarantined" in result.details));
-    assert.equal(fixture.state.resources, 0);
-    assert.equal(fixture.state.closes, 0);
-    fixture.release();
-    await drainProtocol();
-    assert.deepEqual(await host.listServerResources("fixture"), [{ server: "fixture", uri: "fixture://generation-2", name: "Fixture resource", description: undefined, mimeType: undefined }]);
-    assert.equal(fixture.state.resources, 1);
-    assert.equal(fixture.state.starts, 2);
-    assert.equal(fixture.state.closes, 0);
-  } finally {
-    fixture.release();
-    await host.close();
-    await execution?.catch(() => undefined);
-    await coordinator.waitForIdle();
-    await recorder.close();
-    await fixture.close();
-    mock.restoreAll();
-    await rm(root, { recursive: true, force: true });
-  }
-});
+for (const kind of ["resource", "tool", "read", "prompt", "prompts"] as const) {
+  await test(`${kind} reconnect cancellation does not quarantine a request that was never dispatched`, async () => {
+    const fixture = inMemoryServers();
+    const root = await mkdtemp(path.join(os.tmpdir(), "biny-mcp-reconnect-coordinator-"));
+    const previousAgentDir = process.env.BINY_AGENT_DIR;
+    process.env.BINY_AGENT_DIR = path.join(root, "agent");
+    const host = new McpToolHost();
+    await ensureAgentDirs(root);
+    const recorder = new SessionRecorder(root, "fixture-reconnect-cancellation");
+    const registry = new ToolRegistry();
+    const quarantines: string[] = [];
+    const coordinator = new ToolExecutionCoordinator({ workspaceRoot: root, config, recorder, toolRegistry: registry,
+      quarantineExternalTool: (toolName) => { quarantines.push(toolName); } }, new PermissionManager(config.permission), () => undefined);
+    let execution: Promise<unknown> | undefined;
+    try {
+      await host.connectConfiguredServers(root, config);
+      for (const tool of kind === "tool" ? host.createTools() : kind === "prompt" || kind === "prompts" ? createMcpPromptTools(host) : createMcpResourceTools(host)) registry.registerMcpTool(tool);
+      await fixture.disconnect();
+      fixture.state.holdInitialize = true;
+      const toolName = kind === "tool" ? "mcp_fixture_echo" : kind === "read" ? "mcp_read_resource" : kind === "prompt" ? "mcp_get_prompt" : kind === "prompts" ? "mcp_list_prompts" : "mcp_list_resources";
+      const tool = coordinator.createAgentTools().find((entry) => entry.name === toolName);
+      assert.ok(tool);
+      const controller = new AbortController();
+      execution = tool.execute("coordinator-reconnect-list", kind === "tool" ? {} : kind === "read" ? { server: "fixture", uri: "fixture://read" } : kind === "prompt" ? { server: "fixture", name: "fixture-prompt" } : { server: "fixture" }, controller.signal);
+      await fixture.initializing;
+      controller.abort(new Error("fixture coordinator cancelled during reconnect"));
+      const result = await within(execution, 1_500);
+      assert.notEqual(result, "deadline", "coordinator execution must settle under its actual drain contract");
+      console.log(JSON.stringify({ proof: "held-initialize-coordinator", quarantines, initializeReleased: fixture.state.initializeReleased,
+        starts: fixture.state.starts, closes: fixture.state.closes, resourceRequests: fixture.state.resources, result }));
+      assert.equal(fixture.state.initializeReleased, false);
+      assert.deepEqual(quarantines, [], "caller-wait cancellation must settle inside the coordinator's external-tool drain");
+      assert.ok(typeof result === "object" && result !== null && "details" in result);
+      assert.ok(typeof result.details === "object" && result.details !== null && !("quarantined" in result.details));
+      assert.equal(fixture.state.resources, 0);
+      assert.equal(fixture.state.calls, 0);
+      assert.equal(fixture.state.reads, 0);
+      assert.equal(fixture.state.gets, 0);
+      assert.equal(fixture.state.promptLists, 1, "only initial prompt metadata discovery has run");
+      assert.equal(fixture.state.closes, 0);
+      fixture.release();
+      await drainProtocol();
+      assert.deepEqual(await host.listServerResources("fixture"), [{ server: "fixture", uri: "fixture://generation-2", name: "Fixture resource", description: undefined, mimeType: undefined }]);
+      assert.equal(fixture.state.resources, 1);
+      assert.equal(await host.callServerTool("fixture", "echo", {}), "fixture call succeeded");
+      assert.equal(fixture.state.calls, 1, "only the surviving caller may dispatch on the shared connection");
+      assert.equal(fixture.state.starts, 2);
+      assert.equal(fixture.state.closes, 0);
+      assert.equal(fixture.state.reads, 0);
+      assert.equal(fixture.state.gets, 0);
+      assert.equal(fixture.state.promptLists, 2, "cancelled prompt listing must not dispatch after reconnect metadata discovery");
+      assert.deepEqual(await host.readServerResource("fixture", "fixture://read"), { server: "fixture", uri: "fixture://read", contents: [{ uri: "fixture://read", mimeType: undefined, text: "fixture resource" }] });
+      assert.ok(await host.getServerPrompt("fixture", "fixture-prompt"));
+      assert.deepEqual(await host.listServerPrompts("fixture"), [{ server: "fixture", prompts: [{ name: "fixture-prompt" }] }]);
+    } finally {
+      fixture.release();
+      await host.close();
+      await execution?.catch(() => undefined);
+      await coordinator.waitForIdle();
+      await recorder.close();
+      await fixture.close();
+      mock.restoreAll();
+      if (previousAgentDir === undefined) delete process.env.BINY_AGENT_DIR;
+      else process.env.BINY_AGENT_DIR = previousAgentDir;
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+}
+
+for (const kind of ["read", "prompt", "prompts"] as const) {
+  await test(`${kind} already-cancelled generic call does not start a reconnect`, async () => {
+    const fixture = inMemoryServers();
+    const host = new McpToolHost();
+    try {
+      await host.connectConfiguredServers(process.cwd(), config);
+      await fixture.disconnect();
+      const tools = kind === "read" ? createMcpResourceTools(host) : createMcpPromptTools(host);
+      const tool = tools.find((entry) => entry.name === (kind === "read" ? "mcp_read_resource" : kind === "prompt" ? "mcp_get_prompt" : "mcp_list_prompts"));
+      assert.ok(tool);
+      const resolved = await tool.resolveExecution(kind === "read" ? { server: "fixture", uri: "fixture://read" } : kind === "prompt" ? { server: "fixture", name: "fixture-prompt" } : { server: "fixture" });
+      assert.ok(!("isError" in resolved));
+      const controller = new AbortController();
+      const reason = new Error("already cancelled before reconnect");
+      controller.abort(reason);
+      await assert.rejects(resolved.execute({ toolCallId: "pre-cancelled", operationId: "pre-cancelled", signal: controller.signal }), (error: unknown) => error === reason);
+      assert.equal(fixture.state.starts, 1);
+      assert.equal(fixture.state.reads, 0);
+      assert.equal(fixture.state.gets, 0);
+      assert.equal(fixture.state.promptLists, 1);
+    } finally { await host.close(); await fixture.close(); mock.restoreAll(); }
+  });
+}

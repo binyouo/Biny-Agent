@@ -116,6 +116,8 @@ interface NodeRow {
   revision: unknown;
 }
 
+class UndispatchedClaimChangedError extends Error {}
+
 export class GoalGraphStore {
   private closed = false;
   private readonly changeListeners = new Set<() => void>();
@@ -468,6 +470,61 @@ export class GoalGraphStore {
     });
   }
 
+  /** Async preparation must still own the current node claim before dispatch. */
+  canDispatchClaim(claim: GraphClaim): boolean {
+    this.assertOpen();
+    return this.database.prepare(`
+      SELECT 1 FROM graph_intent_claims AS claim
+      JOIN graph_nodes AS node ON node.graph_id = claim.graph_id AND node.node_id = claim.node_id
+      JOIN graphs AS graph ON graph.graph_id = node.graph_id
+      WHERE claim.claim_id = ? AND claim.claim_token = ? AND claim.graph_id = ? AND claim.node_id = ?
+        AND claim.status = 'claimed' AND node.status = 'running'
+        AND graph.workspace_id = ? AND graph.status = 'running'
+    `).get(claim.claimId, claim.claimToken, claim.graphId, claim.nodeId, this.authority.workspaceId) !== undefined;
+  }
+
+  /** Release only a current scheduler claim with no durable dispatch evidence; keep pause intact. */
+  releaseUndispatchedClaim(claim: GraphClaim, reason: string): boolean {
+    this.assertOpen();
+    const existing = this.database.prepare(`
+      SELECT 1 FROM graph_intent_claims
+      WHERE claim_id = ? AND claim_token = ? AND graph_id = ? AND node_id = ? AND status = 'claimed'
+    `).get(claim.claimId, claim.claimToken, claim.graphId, claim.nodeId);
+    if (!existing) return false;
+    const taskRunId = `graph:${claim.graphId}:${claim.nodeId}`;
+    const now = new Date().toISOString();
+    try {
+      return this.withGraphEvent({
+        eventId: `graph:${claim.graphId}:intent:${claim.claimId}:undispatched`,
+        sessionId: `graph:${claim.graphId}`, invocationId: claim.claimId,
+        runId: `graph:${claim.graphId}`, turnId: `graph:${claim.graphId}`,
+        eventType: "graph.node.recovered", payload: { graphId: claim.graphId, nodeId: claim.nodeId, claimId: claim.claimId, status: "ready", reason }, createdAt: now
+      }, () => {
+        // All absence and ownership checks run under the authority's BEGIN IMMEDIATE.
+        // A fallback AgentRun is dispatch evidence even without a TaskRun or terminal result.
+        const update = this.database.prepare(`
+          UPDATE graph_nodes SET status = 'ready', revision = revision + 1
+          WHERE graph_id = ? AND node_id = ? AND status = 'running' AND task_run_id = ?
+            AND EXISTS (SELECT 1 FROM graphs WHERE graph_id = graph_nodes.graph_id
+              AND workspace_id = ? AND status IN ('running', 'paused'))
+            AND EXISTS (SELECT 1 FROM graph_intent_claims WHERE graph_id = graph_nodes.graph_id
+              AND node_id = graph_nodes.node_id AND claim_id = ? AND claim_token = ? AND status = 'claimed')
+            AND NOT EXISTS (SELECT 1 FROM task_runs WHERE task_run_id = graph_nodes.task_run_id)
+            AND NOT EXISTS (SELECT 1 FROM agent_runs WHERE workspace_id = ? AND continuation_source = ?)
+        `).run(claim.graphId, claim.nodeId, taskRunId, this.authority.workspaceId,
+          claim.claimId, claim.claimToken, this.authority.workspaceId, `graph:${claim.graphId}:intent:${claim.claimId}`);
+        if (update.changes !== 1) throw new UndispatchedClaimChangedError();
+        this.database.prepare("UPDATE graph_intent_claims SET status = 'abandoned' WHERE claim_id = ? AND claim_token = ? AND status = 'claimed'")
+          .run(claim.claimId, claim.claimToken);
+        this.touchGraph(claim.graphId, now);
+        return true;
+      });
+    } catch (error) {
+      if (error instanceof UndispatchedClaimChangedError) return false;
+      throw error;
+    }
+  }
+
   completeNode(graphId: string, nodeId: string, status: Exclude<GraphNodeStatus, "pending" | "ready" | "running">, artifact?: unknown, taskRunId?: string): GraphRecord {
     const graph = this.requireGraph(graphId);
     const node = graph.nodes.find((candidate) => candidate.nodeId === nodeId);
@@ -517,6 +574,15 @@ export class GoalGraphStore {
 
   /** Host 启动时回收上一个进程留下的 running claim，避免 Graph 永久停滞。 */
   recoverRunningNodes(taskRuns?: DurableTaskRunStore): void {
+    // Paused graphs never dispatch at startup. Only their provably undispatched
+    // scheduler claims can be released so a later explicit resume is not stranded.
+    const pausedClaims = this.database.prepare(`
+      SELECT claim.claim_id, claim.graph_id, claim.node_id, claim.intent_fingerprint,
+             claim.claim_token, claim.status, claim.claimed_at
+      FROM graph_intent_claims AS claim JOIN graphs AS graph ON graph.graph_id = claim.graph_id
+      WHERE graph.workspace_id = ? AND graph.status = 'paused' AND claim.status = 'claimed'
+    `).all(this.authority.workspaceId) as Array<Record<string, unknown>>;
+    for (const row of pausedClaims) this.releaseUndispatchedClaim(toClaim(row), "Paused graph claim was abandoned before dispatch.");
     for (const graphId of this.listRunningGraphIds()) {
       const graph = this.requireGraph(graphId);
       for (const node of graph.nodes.filter((candidate) => candidate.status === "running")) {
@@ -1040,13 +1106,18 @@ export class GraphSupervisor {
   private async executeNode(graphId: string, node: GraphNodeRecord, claim: GraphClaim): Promise<void> {
     let taskRunId: string | undefined;
     let attempt: TaskAttemptRecord | undefined;
+    let preparing = true;
     const store = this.store();
     const taskRuns = this.taskRuns();
     const graph = store.inspectGraph(graphId);
-    const runtime = graph.mode === "supervised" && graph.supervisorSessionId !== undefined
-      ? await this.supervisorRuntime(graph.supervisorSessionId)
-      : this.runtime();
     try {
+      const runtime = graph.mode === "supervised" && graph.supervisorSessionId !== undefined
+        ? await this.supervisorRuntime(graph.supervisorSessionId)
+        : this.runtime();
+      if (this.stopped || !store.canDispatchClaim(claim)) {
+        store.releaseUndispatchedClaim(claim, "Graph preparation stopped before dispatch.");
+        return;
+      }
       // runtime 忙于交互会话或其他 run 不是节点执行失败：退回 ready，等后续 tick 重新 claim。
       if (runtime.getSnapshot().state.kind !== "idle") {
         store.recoverNode(graphId, node.nodeId, "ready", "Runtime is busy; node execution deferred.");
@@ -1055,7 +1126,11 @@ export class GraphSupervisor {
       const parentRunId = "graph:" + graphId;
       if (graph.mode === "supervised" && graph.supervisorSessionId !== undefined && this.options.resolveSupervisorCommands) {
         const commands = await this.options.resolveSupervisorCommands(graph.supervisorSessionId);
-        if (store.inspectGraph(graphId).status !== "running") return;
+        if (this.stopped || !store.canDispatchClaim(claim)) {
+          store.releaseUndispatchedClaim(claim, "Graph preparation stopped before dispatch.");
+          return;
+        }
+        preparing = false;
         const durableTaskRunId = `graph:${graphId}:${node.nodeId}`;
         const block = planBlock(node.intent);
         let review: import("./planWork.js").PlanReviewCandidate | undefined;
@@ -1090,6 +1165,7 @@ export class GraphSupervisor {
         store.projectTaskClosure(durableTaskRunId, result);
         return;
       }
+      preparing = false;
       const task = taskRuns?.create({ taskRunId: "graph:" + graphId + ":" + node.nodeId, task: node.intent, parentRunId });
       taskRunId = task?.taskRunId;
       if (!task || !taskRuns) {
@@ -1141,6 +1217,12 @@ export class GraphSupervisor {
         store.completeNode(graphId, node.nodeId, "failed", { error: result.reason, verification: result.evidence }, taskRunId);
       }
     } catch (error) {
+      // Rejected preparation obeys the same ownership boundary as fulfillment.
+      // After preparation, preserve TaskRun and no-TaskRun fallback result handling.
+      if (preparing && (this.stopped || !store.canDispatchClaim(claim))) {
+        store.releaseUndispatchedClaim(claim, "Graph preparation stopped before dispatch.");
+        return;
+      }
       // 空闲检查之后仍可能撞上 busy 竞态（本地 submit 同步抛错、Host 经 completion 异步拒绝）；
       // busy 一律退回 ready 重试，只有真实执行失败才允许把节点和 graph 判成 failed。
       if (isRuntimeBusyError(error)) {

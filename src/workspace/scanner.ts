@@ -35,6 +35,7 @@ export async function scanWorkspaceFiles(
       onSkippedDirectory?.(relativeDir || ".");
       return;
     }
+    signal?.throwIfAborted();
     entries.sort((left, right) => {
       // 目录按带斜杠的路径键排序，使深度优先遍历仍与最终文件路径的字典序一致。
       const leftKey = left.isDirectory() ? `${left.name}/` : left.name;

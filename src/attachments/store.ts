@@ -207,9 +207,20 @@ function hasCode(error: unknown, code: string): boolean {
   return typeof error === "object" && error !== null && "code" in error && error.code === code;
 }
 
+/** A caller-supplied byte budget was exceeded; unrelated read failures stay distinct. */
+export class AttachmentReadLimitError extends Error {
+  constructor(readonly actualBytes: number, readonly maxBytes: number) {
+    super(`Attachment is ${String(actualBytes)} bytes, exceeding the ${String(maxBytes)}-byte read limit.`);
+    this.name = "AttachmentReadLimitError";
+  }
+}
+
 /** Read through a bound no-follow handle; generated batch parents must remain real directories. */
-export async function readAttachmentBytes(persistenceRoot: string, virtualPath: string): Promise<Buffer | undefined> {
-  return await readStoredAttachmentFile(attachmentRoot(persistenceRoot), virtualPath);
+export async function readAttachmentBytes(persistenceRoot: string, virtualPath: string, maxBytes?: number): Promise<Buffer | undefined> {
+  if (maxBytes !== undefined && (!Number.isSafeInteger(maxBytes) || maxBytes < 0 || maxBytes === Number.MAX_SAFE_INTEGER)) {
+    throw new RangeError("Attachment read limit must be a nonnegative safe integer with room for one sentinel byte.");
+  }
+  return await readStoredAttachmentFile(attachmentRoot(persistenceRoot), virtualPath, maxBytes);
 }
 
 async function attachmentParent(root: string, virtualPath: string): Promise<{ file: string; parent: string; identity: Stats }> {
@@ -237,19 +248,45 @@ async function readStoredAttachmentFile(root: string, virtualPath: string, maxBy
     try {
       const info = await handle.stat();
       if (!info.isFile() || info.nlink !== 1 || info.dev !== before.dev || info.ino !== before.ino) throw new Error("attachment_path_invalid");
-      if (maxBytes !== undefined && info.size > maxBytes) throw new Error("attachment_context_invalid");
-      const bytes = await handle.readFile();
+      if (maxBytes !== undefined && info.size > maxBytes) throwAttachmentReadLimit(info.size, maxBytes, context);
+      const bytes = maxBytes !== undefined && !context
+        ? await readAttachmentWithinLimit(handle, maxBytes)
+        : await handle.readFile();
       const current = await attachmentParent(root, virtualPath);
       const after = await fs.lstat(binding.file);
       if (current.identity.dev !== binding.identity.dev || current.identity.ino !== binding.identity.ino
         || !after.isFile() || after.isSymbolicLink() || after.dev !== info.dev || after.ino !== info.ino) throw new Error("attachment_path_invalid");
-      if (maxBytes !== undefined && bytes.length > maxBytes) throw new Error("attachment_context_invalid");
+      if (maxBytes !== undefined) {
+        const actualBytes = context ? bytes.length : Math.max(bytes.length, after.size);
+        if (actualBytes > maxBytes) throwAttachmentReadLimit(actualBytes, maxBytes, context);
+      }
       return bytes;
     } finally { await handle.close(); }
   } catch (error) {
     if (isNotFound(error) || hasCode(error, "ENOTDIR")) return undefined;
     throw error;
   }
+}
+
+function throwAttachmentReadLimit(actualBytes: number, maxBytes: number, context: boolean): never {
+  // Preserve the existing hidden-context contract; export has a distinct outcome.
+  if (context) throw new Error("attachment_context_invalid");
+  throw new AttachmentReadLimitError(actualBytes, maxBytes);
+}
+
+/** Export-only byte budget; default attachment and context readers stay unchanged. */
+async function readAttachmentWithinLimit(handle: FileHandle, maxBytes: number): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  const readLimit = maxBytes + 1;
+  let totalBytes = 0;
+  while (totalBytes < readLimit) {
+    const chunk = Buffer.allocUnsafe(Math.min(64 * 1024, readLimit - totalBytes));
+    const { bytesRead } = await handle.read(chunk, 0, chunk.length, totalBytes);
+    if (bytesRead === 0) break;
+    totalBytes += bytesRead;
+    chunks.push(bytesRead === chunk.length ? chunk : Buffer.from(chunk.subarray(0, bytesRead)));
+  }
+  return Buffer.concat(chunks, totalBytes);
 }
 
 export async function readAttachment(persistenceRoot: string, reference: AttachmentReference): Promise<AgentAttachment | undefined> {

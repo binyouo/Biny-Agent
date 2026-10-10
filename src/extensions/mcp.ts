@@ -312,7 +312,7 @@ export class McpToolHost {
     signal?.throwIfAborted();
     const managed = this.requireServer(serverName);
     if (expectedLocalIdentity !== undefined && managed.local?.identity !== expectedLocalIdentity) throw new Error("Local MCP endpoint was replaced; prepare a new tool call.");
-    if (!managed.client || !managed.status.connected) await waitForMcpResourceReconnect(this.reconnect(managed), signal);
+    if (!managed.client || !managed.status.connected) await waitForMcpReconnect(this.reconnect(managed), signal);
     signal?.throwIfAborted();
     if (expectedDefinition !== undefined) {
       const definition = managed.tools.find(tool => tool.name === toolName);
@@ -349,7 +349,7 @@ export class McpToolHost {
     for (const managed of targets) {
       if (!managed.client || !managed.status.connected) {
         try {
-          await waitForMcpResourceReconnect(this.reconnect(managed), signal);
+          await waitForMcpReconnect(this.reconnect(managed), signal);
         } catch {
           signal?.throwIfAborted();
           continue;
@@ -386,7 +386,7 @@ export class McpToolHost {
   async readServerResource(serverName: string, uri: string, signal?: AbortSignal): Promise<unknown> {
     signal?.throwIfAborted();
     const managed = this.requireServer(serverName);
-    if (!managed.client || !managed.status.connected) await waitForMcpResourceReconnect(this.reconnect(managed), signal);
+    if (!managed.client || !managed.status.connected) await waitForMcpReconnect(this.reconnect(managed), signal);
     signal?.throwIfAborted();
     const client = managed.client;
     if (!client) throw new Error(`MCP server ${serverName} is not connected: ${managed.status.lastError ?? "unknown error"}`);
@@ -409,7 +409,7 @@ export class McpToolHost {
     const targets = serverName ? [this.requireServer(serverName)] : [...this.servers.values()].filter((server) => server.status.enabled);
     return await Promise.all(targets.map(async (managed) => {
       try {
-        if (!managed.client || !managed.status.connected) await waitForMcpResourceReconnect(this.reconnect(managed), signal);
+        if (!managed.client || !managed.status.connected) await waitForMcpReconnect(this.reconnect(managed), signal);
         signal?.throwIfAborted();
         const client = managed.client;
         if (!client?.getServerCapabilities()?.prompts) return { server: managed.name, prompts: [] };
@@ -434,7 +434,7 @@ export class McpToolHost {
   async getServerPrompt(serverName: string, name: string, args?: Record<string, string>, signal?: AbortSignal): Promise<unknown> {
     signal?.throwIfAborted();
     const managed = this.requireServer(serverName);
-    if (!managed.client || !managed.status.connected) await waitForMcpResourceReconnect(this.reconnect(managed), signal);
+    if (!managed.client || !managed.status.connected) await waitForMcpReconnect(this.reconnect(managed), signal);
     signal?.throwIfAborted();
     const client = managed.client;
     if (!client) throw new Error(`MCP server ${serverName} is not connected.`);
@@ -660,7 +660,6 @@ export class McpToolHost {
     if (this.closing) return;
     if (managed.refreshing) {
       managed.refreshDirty = true;
-      await managed.refreshing;
       return;
     }
     managed.refreshing = (async () => {
@@ -671,11 +670,13 @@ export class McpToolHost {
           if (!client || this.closing) return;
           try {
             const tools = await this.listAllTools(managed, client);
-            if (managed.client !== client) return;
+            if (this.closing || managed.client !== client || !client.transport
+              || (!managed.status.connected && !managed.status.connecting)) return;
             this.registerServerTools(managed, tools, client.getInstructions());
             if (managed.catalogKey && managed.status.connected) this.catalogCache.set(managed.catalogKey, managed.tools, client.getInstructions());
           } catch (error) {
-            if (this.closing || managed.client !== client || !client.transport) return;
+            if (this.closing || managed.client !== client || !client.transport
+              || (!managed.status.connected && !managed.status.connecting)) return;
             managed.status.lastError = `tool refresh failed: ${errorText(error)}`;
             this.emitChange();
           }
@@ -941,8 +942,8 @@ function transportKind(serverConfig: McpServerConfig): McpTransportKind {
   return serverConfig.type ?? (serverConfig.url ? "http" : "stdio");
 }
 
-/** 只取消资源列表调用者的等待；共享重连仍由 host 持有并继续服务其他调用者。 */
-function waitForMcpResourceReconnect(connecting: Promise<void>, signal?: AbortSignal): Promise<void> {
+/** 只取消当前调用者的等待；共享重连仍由 host 持有并继续服务其他调用者。 */
+function waitForMcpReconnect(connecting: Promise<void>, signal?: AbortSignal): Promise<void> {
   if (!signal) return connecting;
   return new Promise<void>((resolve, reject) => {
     let settled = false;
