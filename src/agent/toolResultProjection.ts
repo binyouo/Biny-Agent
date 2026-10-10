@@ -6,6 +6,7 @@
  * 消息；需要丢掉正文时通过注入的归档回调保存完整结果。
  */
 import { createHash } from "node:crypto";
+import { commandStreamFields } from "./commandStreamFields.js";
 import type {
   AgentAssistantMessage,
   AgentMessage,
@@ -14,7 +15,7 @@ import type {
 } from "./core/types.js";
 import { serializeToolResult } from "../session/toolResultArchive.js";
 import { redactSecrets } from "../utils/secrets.js";
-import { projectShellStreams, shellOutputExcerpt, type ShellOutputExcerpt } from "./shellOutputProjection.js";
+import { projectShellStreams, shellOutputExcerpt } from "./shellOutputProjection.js";
 
 const defaultProjectionThresholdBytes = 8 * 1024;
 const defaultKeepRecentResults = 2;
@@ -444,24 +445,6 @@ function projectRunCommand(entry: ToolResultEntry): Record<string, unknown> {
     ...commandStreamFields("stderr", record, streams.stderr),
     summary: projected || captureTruncated ? commandSummary(record, projected, captureTruncated) : undefined
   });
-}
-
-function commandStreamFields(stream: "stdout" | "stderr", record: Record<string, unknown>, excerpt: ShellOutputExcerpt): Record<string, unknown> {
-  const capturedBytes = numberField(record, `${stream}RetainedBytes`) ?? Buffer.byteLength(stringField(record, stream), "utf8");
-  const bytes = numberField(record, `${stream}Bytes`) ?? capturedBytes;
-  const captureTruncated = record[`${stream}Truncated`] === true;
-  const projectionTruncated = excerpt.omittedBytes > 0;
-  return {
-    [stream]: excerpt.text || undefined,
-    [`${stream}Bytes`]: bytes,
-    [`${stream}RetainedBytes`]: Buffer.byteLength(excerpt.text, "utf8"),
-    [`${stream}Truncated`]: captureTruncated || projectionTruncated,
-    [`${stream}TruncationDirection`]: projectionTruncated ? "head_and_tail" : captureTruncated ? "tail" : undefined,
-    [`${stream}CaptureTruncated`]: captureTruncated,
-    [`${stream}CaptureOmittedBytes`]: captureTruncated ? Math.max(0, bytes - capturedBytes) : 0,
-    [`${stream}ProjectionTruncated`]: projectionTruncated,
-    [`${stream}ProjectionOmittedBytes`]: excerpt.omittedBytes
-  };
 }
 
 function projectReadFile(entry: ToolResultEntry): Record<string, unknown> {

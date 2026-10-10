@@ -9,6 +9,7 @@ import path from "node:path";
 import { test, type TestContext } from "node:test";
 import { splitAttachmentReferences, withAttachmentReferences } from "../src/attachments/references.js";
 import { attachmentRoot, readAttachment, readAttachmentContext } from "../src/attachments/store.js";
+import { refreshSessionIndex } from "../src/session/catalog.js";
 import { createSessionFile, ensureAgentDirs, listSessionFiles } from "../src/session/store.js";
 import { BINY_BUNDLE_FORMAT, BINY_BUNDLE_VERSION, exportSessionBundle, importSessionFile, SessionImportCleanupError } from "../src/session/transfer.js";
 
@@ -21,6 +22,7 @@ async function fixture(t: TestContext) {
   t.after(async () => {
     t.mock.restoreAll();
     syncBuiltinESMExports();
+    await refreshSessionIndex(workspace);
     if (previous === undefined) delete process.env.BINY_AGENT_DIR;
     else process.env.BINY_AGENT_DIR = previous;
     await fs.rm(root, { recursive: true, force: true });
