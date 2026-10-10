@@ -6,6 +6,7 @@ export const maxRegexBatchLines = 128;
 export const regexBatchTargetBytes = 64 * 1024;
 // A batch may end with one streamed line, whose existing limit is 1 MiB.
 const maxRegexBatchBytes = regexBatchTargetBytes + 1024 * 1024;
+const maxConfiguredRegexBatchBytes = 3 * 1024 * 1024;
 const maxRegexWorkers = 8;
 const regexBatchTimeoutMs = 1_000;
 const regexStartupTimeoutMs = 5_000;
@@ -82,15 +83,18 @@ export class CancellableRegexMatcher {
     pending.resolve(value);
   };
 
-  private constructor(private readonly worker: Worker, private readonly signal: AbortSignal | undefined) {
+  private constructor(private readonly worker: Worker, private readonly signal: AbortSignal | undefined, private readonly batchBytes: number) {
     worker.on("message", this.onMessage);
     worker.on("error", this.onError);
     worker.on("exit", this.onExit);
     signal?.addEventListener("abort", this.onAbort, { once: true });
   }
 
-  static async create(query: string, flags: string, signal?: AbortSignal): Promise<CancellableRegexMatcher> {
+  static async create(query: string, flags: string, signal?: AbortSignal, maxBatchBytes = maxRegexBatchBytes): Promise<CancellableRegexMatcher> {
     signal?.throwIfAborted();
+    if (!Number.isInteger(maxBatchBytes) || maxBatchBytes < 1 || maxBatchBytes > maxConfiguredRegexBatchBytes) {
+      throw new RegexExecutionError("Regex batch byte limit must be a positive integer no greater than 3 MiB.");
+    }
     if (Buffer.byteLength(query, "utf8") > maxRegexQueryBytes) throw new RegexExecutionError("Grep regex exceeds its 64 KiB pattern limit.");
     if (activeWorkers >= maxRegexWorkers) throw new RegexExecutionError("Grep regex worker limit reached; retry after another search finishes.");
     activeWorkers += 1;
@@ -108,7 +112,7 @@ export class CancellableRegexMatcher {
       activeWorkers -= 1;
       throw new RegexExecutionError("Grep regex worker could not start.", { cause: error });
     }
-    const matcher = new CancellableRegexMatcher(worker, signal);
+    const matcher = new CancellableRegexMatcher(worker, signal, maxBatchBytes);
     try {
       const ready = matcher.request(regexStartupTimeoutMs);
       if (signal?.aborted) matcher.onAbort();
@@ -124,7 +128,7 @@ export class CancellableRegexMatcher {
     this.signal?.throwIfAborted();
     if (this.stopped) throw this.failure;
     if (this.pending) throw new RegexExecutionError("Grep regex matcher already has a pending request.");
-    if (!lines.length || lines.length > maxRegexBatchLines || lines.reduce((bytes, line) => bytes + Buffer.byteLength(line, "utf8"), 0) > maxRegexBatchBytes) {
+    if (!lines.length || lines.length > maxRegexBatchLines || lines.reduce((bytes, line) => bytes + Buffer.byteLength(line, "utf8"), 0) > this.batchBytes) {
       throw new RegexExecutionError("Grep regex batch exceeds its line or byte limit.");
     }
     const response = this.request(regexBatchTimeoutMs);

@@ -6,9 +6,9 @@ import { z } from "zod";
 import { globalConfigDir } from "../config/paths.js";
 import type { AgentConfigStore } from "../config/store.js";
 import { withLocalFileWriteLock } from "../utils/localFileLock.js";
-import { importSessionFile, parseSessionImport, SessionImportCleanupError } from "../session/transfer.js";
+import { importSessionFile, parseSessionImport, parsePreparedChatGptImport, persistImportedSession, SessionImportCleanupError, type ParsedSessionImport } from "../session/transfer.js";
 import { ensureAgentDirs } from "../session/store.js";
-import { listChatGptConversations } from "../session/import/chatgpt.js";
+import { prepareChatGptSource, type PreparedChatGptSource } from "../session/import/chatgpt.js";
 import { discoverConfigurationImports, type ConfigurationImportCandidate } from "./configuration.js";
 import { applicationImportSources, type ApplicationImportHistory, type ApplicationImportPreview, type ApplicationImportResult, type ApplicationImportSnapshot, type ApplicationImportSource } from "./types.js";
 
@@ -31,7 +31,7 @@ const stateSchema = z.object({ version: z.literal(1), previews: z.array(previewS
   sync: z.object({ enabled: z.boolean(), selections: z.array(selectionSchema).max(256), lastError: z.string().max(2_048).optional() }) });
 type StoredPreview = z.infer<typeof previewSchema>;
 type ImportState = z.infer<typeof stateSchema>;
-interface ScannedSource { preview: StoredPreview; configurations: Map<string, ConfigurationImportCandidate>; contents: Map<string, Buffer> }
+interface ScannedSource { preview: StoredPreview; configurations: Map<string, ConfigurationImportCandidate>; contents: Map<string, Buffer>; preparedChatGpt?: PreparedChatGptSource }
 
 /** Explicit selections own imports; receipts record admission before any destination writes. */
 export class ApplicationImportService {
@@ -145,10 +145,16 @@ export class ApplicationImportService {
       if (imported) { result.status = "skipped"; result.detail = imported.status === "imported" ? "相同内容已导入。" : "相同内容已处理，保留此前跳过结果。"; result.sessionId = imported.sessionId; continue; }
       if (state.receipts.length >= maxReceipts) { result.detail = "导入收据已达上限，请保留历史并检查存储。"; continue; }
       const bytes = current.sourcePath === undefined ? undefined : scanned?.contents.get(current.sourcePath);
+      let preparedImport: ParsedSessionImport | undefined;
       try {
         if (current.category === "sessions") {
           if (!bytes || !current.sourcePath) throw new Error("Missing source.");
-          parseSessionImport(bytes.toString("utf8"), current.sourcePath, { format: preview.source, conversationId: current.conversationId });
+          if (preview.source === "chatgpt") {
+            if (!scanned?.preparedChatGpt) throw new Error("Missing prepared source.");
+            preparedImport = parsePreparedChatGptImport(scanned.preparedChatGpt, current.conversationId);
+          } else {
+            parseSessionImport(bytes.toString("utf8"), current.sourcePath, { format: preview.source, conversationId: current.conversationId });
+          }
         }
       } catch { result.detail = "源会话格式无效或没有可导入内容。"; continue; }
       const receipt: ImportState["receipts"][number] = { key, scope, status: "attempting", historyId: history.id, itemId: id };
@@ -161,9 +167,13 @@ export class ApplicationImportService {
       try {
         if (current.category === "sessions") {
           await ensureAgentDirs(workspaceRoot);
-          stagedPath = path.join(this.stateRoot, `session-snapshot-${randomUUID()}.json`);
-          await fs.writeFile(stagedPath, bytes!, { flag: "wx", mode: 0o600 });
-          const importedSession = await importSessionFile(workspaceRoot, stagedPath, { format: preview.source, conversationId: current.conversationId });
+          if (!preparedImport) {
+            stagedPath = path.join(this.stateRoot, `session-snapshot-${randomUUID()}.json`);
+            await fs.writeFile(stagedPath, bytes!, { flag: "wx", mode: 0o600 });
+          }
+          const importedSession = preparedImport
+            ? await persistImportedSession(workspaceRoot, preparedImport)
+            : await importSessionFile(workspaceRoot, stagedPath!, { format: preview.source, conversationId: current.conversationId });
           result.sessionId = importedSession.sessionId;
           receipt.sessionId = importedSession.sessionId;
           result.detail = importedSession.skippedContentCount || importedSession.attachmentsSkipped
@@ -205,6 +215,7 @@ export class ApplicationImportService {
       filePath: filePath === undefined ? undefined : path.resolve(filePath), items: [], warnings: [] };
     const configurations = new Map<string, ConfigurationImportCandidate>();
     const contents = new Map<string, Buffer>();
+    let preparedChatGpt: PreparedChatGptSource | undefined;
     if (source !== "chatgpt") {
       try {
         for (const candidate of await discoverConfigurationImports(source, this.homeDir)) {
@@ -228,14 +239,10 @@ export class ApplicationImportService {
         contents.set(sourcePath, bytes);
         const sourceHash = digest(bytes);
         if (source === "chatgpt") {
-          const summaries = listChatGptConversations(bytes.toString("utf8"), sourcePath);
-          const value: unknown = JSON.parse(bytes.toString("utf8"));
-          const conversations = Array.isArray(value) ? value : [value];
-          for (const [index, conversation] of summaries.entries()) {
+          preparedChatGpt = prepareChatGptSource(bytes.toString("utf8"), sourcePath);
+          for (const { summary: conversation, stableId, contentHash: hashRecord } of preparedChatGpt.records(digest)) {
             if (preview.items.length >= maxItems) { preview.warnings.push("对话超过 256 项，只显示前 256 项。"); break; }
-            const record = conversations[index] as Record<string, unknown>;
-            const stableId = typeof record.id === "string" && record.id.trim() || typeof record.conversation_id === "string" && record.conversation_id.trim();
-            const contentHash = digest(JSON.stringify(record));
+            const contentHash = hashRecord();
             if (!stableId) preview.warnings.push("部分对话缺少稳定来源身份；内容变化后需重新选择，不自动同步其他记录。");
             if (conversation.importError) preview.warnings.push(`对话不可导入：${conversation.title.slice(0, 256)}`);
             preview.items.push({ id: `session:${digest(`${sourcePath}\0${conversation.id}\0${stableId ? "" : contentHash}`)}`, category: "sessions", label: conversation.title.slice(0, 512), detail: `${conversation.messageCount} 条消息 · ${path.basename(sourcePath).slice(0, 256)}`, sourcePath, conversationId: conversation.id, sourceHash, digest: contentHash });
@@ -246,7 +253,7 @@ export class ApplicationImportService {
       } catch { preview.warnings.push(`跳过不可读取、不安全或格式无效的来源：${path.basename(sourcePath).slice(0, 256)}`); }
     }
     preview.warnings = preview.warnings.slice(0, 256);
-    return { preview, configurations, contents };
+    return { preview, configurations, contents, preparedChatGpt };
   }
 
   private async localSessionFiles(source: "claude" | "codex", warnings: string[]): Promise<string[]> {

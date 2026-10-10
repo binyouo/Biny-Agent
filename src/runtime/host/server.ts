@@ -619,6 +619,7 @@ export class RuntimeHostServer {
   }
 
   private read(connection: HostConnection, chunk: string): void {
+    if (connection.socket.destroyed) return;
     try {
       for (const line of connection.decoder.push(chunk)) {
         let frame: unknown;
@@ -629,6 +630,7 @@ export class RuntimeHostServer {
           return;
         }
         void this.handleFrame(connection, frame);
+        if (connection.socket.destroyed) return;
       }
     } catch (error) {
       connection.socket.destroy(error instanceof Error ? error : new Error(String(error)));
