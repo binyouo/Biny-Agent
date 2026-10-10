@@ -112,6 +112,8 @@ export interface ManagedProcessOutput {
   totalBytes: number;
   omittedBefore: boolean;
   hasMore: boolean;
+  /** Unconsumed live UTF-8 prefix; wait for output or exit, then retry nextOffset. */
+  pendingUtf8Bytes?: number;
 }
 
 export interface ManagedProcessServiceOptions {
@@ -291,7 +293,11 @@ export class ManagedProcessService {
   }
 
   async readOutput(processId: string, options: ReadManagedProcessOutputOptions = {}, signal?: AbortSignal): Promise<ManagedProcessOutput> {
-    return { processId, ...await readManagedProcessLog(this.requireRecord(processId).logBinding, options, signal) };
+    const record = this.requireRecord(processId);
+    this.refreshRecord(record);
+    // Freeze before any log await: exit after the size snapshot cannot finalize that snapshot.
+    const final = !isRunningState(record.snapshot.state);
+    return { processId, ...await readManagedProcessLog(record.logBinding, options, signal, { final }) };
   }
 
   async stop(processId: string, reason = "KillShell requested"): Promise<ManagedProcessSnapshot> {
