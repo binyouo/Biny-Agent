@@ -146,9 +146,57 @@ export function pausedTurnAvailable(turn: InterruptedTurn, replay: Pick<SessionR
   if (turn.retryOrigin && resolveRetryScope("retrySourceEvents" in replay && Array.isArray(replay.retrySourceEvents) ? replay.retrySourceEvents : replay.events, turn.retryOrigin, turn).status !== "active") return false;
   const pausedIndex = lastPausedIndex(replay.events, turnId);
   if (pausedIndex < 0) return false;
+  if (executionAfterPause(replay.events, pausedIndex, turnId)) return false;
   return !replay.events.slice(pausedIndex + 1).some((event) => event.type === "user_message"
     || event.type === "turn_status" && (event.status === "completed" || event.status === "cancelled" && event.stopReason !== "paused")
       && (turnId === undefined || event.runtime?.turnId === undefined || event.runtime.turnId === turnId));
+}
+
+/**
+ * A newer native tool attempt ends a historical pause, even if saving the next
+ * checkpoint failed. Recovery copies/results and background metrics are not
+ * execution witnesses. Unproven legacy identities retain the old fallback.
+ */
+function executionAfterPause(events: readonly SessionEvent[], pausedIndex: number, turnId?: string): boolean {
+  const pause = events[pausedIndex];
+  if (!turnId || pause?.type !== "turn_status" || pause.status !== "cancelled"
+    || pause.importSource !== undefined || pause.runtime?.turnId !== turnId
+    || !pause.runtime.runId || !validateRuntimeEventRecord(pause.runtime)) return false;
+  const isExecution = (event: SessionEvent): boolean => {
+    const runtime = event.runtime;
+    return (event.type === "tool_call" && !event.auditOnly || event.type === "tool_execution")
+      && event.importSource === undefined && runtime !== undefined && validateRuntimeEventRecord(runtime)
+      && runtime.turnId === turnId && Boolean(runtime.runId) && runtime.runId !== pause.runtime!.runId
+      && runtime.eventSeq > pause.runtime!.eventSeq;
+  };
+  let hasExecution = false;
+  for (let index = pausedIndex + 1; index < events.length; index += 1) {
+    if (isExecution(events[index]!)) { hasExecution = true; break; }
+  }
+  if (!hasExecution) return false;
+  const ambiguousRuns = new Set<string>();
+  const eventIds = new Set<string>();
+  const sequences = new Set<number>();
+  const duplicateIds = new Set<string>();
+  const duplicateSequences = new Set<number>();
+  for (const [index, event] of events.entries()) {
+    const runtime = event.runtime;
+    if (!runtime) continue;
+    if (eventIds.has(runtime.eventId)) duplicateIds.add(runtime.eventId);
+    if (sequences.has(runtime.eventSeq)) duplicateSequences.add(runtime.eventSeq);
+    eventIds.add(runtime.eventId);
+    sequences.add(runtime.eventSeq);
+    if (runtime.runId && (event.importSource !== undefined || !validateRuntimeEventRecord(runtime)
+      || runtime.turnId !== turnId || index < pausedIndex && runtime.runId !== pause.runtime.runId)) {
+      ambiguousRuns.add(runtime.runId);
+    }
+  }
+  const unique = (runtime: NonNullable<SessionEvent["runtime"]>): boolean =>
+    !duplicateIds.has(runtime.eventId) && !duplicateSequences.has(runtime.eventSeq);
+  if (ambiguousRuns.has(pause.runtime.runId) || !unique(pause.runtime)) return false;
+  return events.slice(pausedIndex + 1).some(event => {
+    return isExecution(event) && !ambiguousRuns.has(event.runtime!.runId!) && unique(event.runtime!);
+  });
 }
 
 function lastPausedIndex(events: readonly SessionEvent[], turnId?: string): number {
@@ -247,3 +295,4 @@ export function witnessedPausedFollowupMarker(events: readonly SessionEvent[], t
     && event.type !== "model_request" && event.type !== "error")) throw new Error("Pause marker chronology contains later execution.");
   return marker.content;
 }
+
