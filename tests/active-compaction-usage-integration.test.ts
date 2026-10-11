@@ -5,6 +5,7 @@ import path from "node:path";
 import test from "node:test";
 import { AgentSession } from "../src/agent/AgentSession.js";
 import type { AgentModel, AgentUsage, ModelStreamEvent } from "../src/agent/core/types.js";
+import { estimateContextBreakdown, estimateMessageTokens } from "../src/agent/context/tokenUsage.js";
 import { configSchema, defaultConfig } from "../src/config/schema.js";
 import { summarizeUsage } from "../src/observability/usage.js";
 import { PermissionManager } from "../src/permission/PermissionManager.js";
@@ -25,13 +26,15 @@ test("automatic compaction repair usage survives disk replay and cold reopen", {
     config.context.memory.useMemories = false;
     config.context.memory.generateMemories = false;
     config.context.identity.enabled = false;
-    config.context.maxInputTokens = 8_000;
+    config.context.maxInputTokens = 32_768;
     config.context.compaction.enabled = true;
+    config.context.compaction.reserveTokens = 16_384;
     config.context.compaction.keepRecentTokens = 256;
     config.context.compaction.maxSummaryTokens = 1_024;
     config.heartbeat.enabled = false;
     config.crystal.passiveEnabled = false;
     configSchema.parse(config);
+    const threshold = config.context.maxInputTokens - config.context.compaction.reserveTokens;
     let summaries = 0;
     let answers = 0;
     const attempts: AgentUsage[] = [
@@ -39,11 +42,16 @@ test("automatic compaction repair usage survives disk replay and cold reopen", {
       { inputTokens: 23, outputTokens: 7, totalTokens: 30, cacheReadTokens: 5 }
     ];
     const model: AgentModel = {
-      provider: "fixture", modelId: "active-compaction-usage", vercelOptions: { maxRetries: 0 },
+      provider: "fixture", modelId: "active-compaction-usage", supportsTools: false, vercelOptions: { maxRetries: 0 },
       async stream(context) {
         const summary = context.systemPrompt?.includes("durable context checkpoint") === true;
         const attempt = summary ? ++summaries : ++answers;
         if (summary) assert.ok(attempt <= 2, "one bounded repair, no repeated compaction");
+        if (!summary && attempt === 2) {
+          assert.equal(context.tools.length, 0, "the text-only fixture must not add a Code Mode tool schema");
+          const tokens = Object.values(estimateContextBreakdown({ ...context, toolSources: new Map() })).reduce((total, value) => total + value, 0);
+          assert.ok(tokens < threshold, `the compacted final request must fit below the threshold: ${tokens} < ${threshold}`);
+        }
         return (async function* (): AsyncGenerator<ModelStreamEvent> {
           yield { type: "text-delta", text: summary ? checkpointText() : "Seed answer." };
           yield { type: "finish", reason: summary && attempt === 1 ? "length" : "stop",
@@ -58,9 +66,21 @@ test("automatic compaction repair usage survives disk replay and cold reopen", {
     agent = createAgent();
     await agent.initialize();
     const info = agent.getInfo();
-    assert.equal((await agent.runTask("Preserve the original request. ".repeat(5_000), { emotionAnalysis: false })).status, "completed");
+    assert.equal((await agent.runTask("Preserve the original request. ".repeat(2_000), { emotionAnalysis: false })).status, "completed");
     assert.equal(summaries, 0, "the seed has no older history to compact");
-    assert.equal((await agent.runTask("Continue preserving the request. ".repeat(1_000), { emotionAnalysis: false })).status, "completed");
+    // Cold restore reads the complete canonical user, not the seed request's
+    // 35%-budget truncation. The large removable user, not the new task or the
+    // retained final assistant, supplies the compaction pressure.
+    await agent.close();
+    agent = undefined;
+    await rm(info.sessionFile.replace(/\.jsonl$/u, ".snap.json"), { force: true });
+    agent = createAgent();
+    await agent.initialize();
+    const seed = await agent.resume(info.sessionId);
+    assert.ok(estimateMessageTokens(seed.messages) > threshold, "canonical seed history alone exceeds the threshold");
+    assert.equal(summaries, 0, "seed restore must not issue a summary");
+    assert.equal(answers, 1, "seed restore must not issue another answer");
+    assert.equal((await agent.runTask("Continue preserving the request.", { emotionAnalysis: false })).status, "completed");
     assert.equal(summaries, 2, "automatic preparation really issued an initial summary and repair");
     const live = agent.usageSummary();
     assert.equal(live.totalTokens, 49);
