@@ -1145,7 +1145,7 @@
   border-radius: 16px;
   background: var(--biny-sidebar-surface);
   /* 浮起感靠更深的软投影而不是描边；浅色主题保持原有轻投影。 */
-  box-shadow: 0 8px 28px -10px light-dark(var(--biny-shadow-color), rgb(0 0 0 / 55%));
+  box-shadow: 0 8px 28px -10px var(--biny-shadow-sidebar);
   margin-inline: 10px;
   /* 保持独立合成层，开合只改变透明度，避免末尾位移归零时重新合成造成闪边。 */
   transform: translateZ(0);
