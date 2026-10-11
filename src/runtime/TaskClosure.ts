@@ -209,7 +209,13 @@ async function executeTaskClosure(input: Parameters<typeof runTaskClosure>[0]): 
         signal: input.signal
       })) {
         input.signal?.throwIfAborted();
-        transitionCurrent(input.taskRuns, input.taskRunId, attempt.attemptId, "completed", {
+        const owner = input.taskRuns.get(input.taskRunId);
+        if (owner?.attempts.at(-1)?.attemptId !== attempt.attemptId
+          || (owner.status !== "running" && owner.status !== "verifying" && owner.status !== "completed")) {
+          return { status: "cancelled", reason: "A stale verification result was ignored." };
+        }
+        input.taskRuns.transition(input.taskRunId, "completed", {
+          attemptId: attempt.attemptId,
           artifacts: attempt.artifacts,
           verification: attempt.verification
         });
@@ -539,16 +545,6 @@ function isCurrentAttempt(taskRuns: DurableTaskRunStore, taskRunId: string, atte
 function isLatestNonCancelledAttempt(taskRuns: DurableTaskRunStore, taskRunId: string, attemptId: string): boolean {
   const task = taskRuns.get(taskRunId);
   return task !== undefined && task.status !== "cancelled" && task.attempts.at(-1)?.attemptId === attemptId;
-}
-
-function transitionCurrent(
-  taskRuns: DurableTaskRunStore,
-  taskRunId: string,
-  attemptId: string,
-  status: TaskRunStatus,
-  input: { verification?: unknown; artifacts?: unknown; failure?: unknown }
-): void {
-  if (isCurrentAttempt(taskRuns, taskRunId, attemptId)) taskRuns.transition(taskRunId, status, { attemptId, ...input });
 }
 
 function isTerminalForClosure(status: TaskRunStatus): boolean {
