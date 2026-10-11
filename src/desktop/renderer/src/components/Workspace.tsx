@@ -190,13 +190,6 @@ export function Workspace({
   const branchFromTimeline = useCallback((): void => {
     void onCreateBranch().catch(onRuntimeError);
   }, [onCreateBranch, onRuntimeError]);
-  // 首条提交的上浮 FLIP：pending 投影出现且上一帧还没有会话内容时置位一次，
-  // 气泡从输入框位置上浮到时间线槽位（起点在 MessageTimeline 内实时解析）。
-  const [prevHadConversation, setPrevHadConversation] = useState(false);
-  const pendingFloatFromComposer = visiblePendingPrompt !== undefined && !prevHadConversation;
-  useEffect(() => {
-    setPrevHadConversation(hasConversation);
-  }, [hasConversation]);
 
   return (
     <WidgetContext.Provider value={widgetContext}><div className="workspace biny-workspace biny-workspace-chat">
@@ -285,7 +278,6 @@ export function Workspace({
                 pendingUserMessage={visiblePendingPrompt
                   ? { id: visiblePendingPrompt.id, messageId: visiblePendingPrompt.messageId, content: visiblePendingPrompt.text }
                   : undefined}
-                pendingFloatFromComposer={pendingFloatFromComposer}
                 runtimeActiveRunId={runtimeActiveRunId}
                 skillDescriptions={skillDescriptions}
                 skillLabels={skillLabels}
@@ -303,7 +295,7 @@ export function Workspace({
             <div className="biny-chat-empty"><Icon name="message" size={20} /><span>开始一段新的对话</span></div>
           )}
         </div>
-        <div className={`biny-chat-composer${writerConflict || runtimeError ? " has-runtime-recovery" : ""}${visiblePendingPrompt && turns.length === 0 ? " is-entering" : ""}`}>
+        <div className={`biny-chat-composer${writerConflict || runtimeError ? " has-runtime-recovery" : ""}`} inert={loading} aria-busy={loading}>
             {sessionId && !writerConflict && !runtimeError ? <>
               <SessionGoalPanel key={`${sessionId}:${planProjection?.goal?.goalId ?? ""}`} sessionId={sessionId} projection={planProjection} onMutation={onRuntimeMutation} onError={onRuntimeError} />
               <TodoProgressPanel sessionId={sessionId} projection={planProjection} running={running} />

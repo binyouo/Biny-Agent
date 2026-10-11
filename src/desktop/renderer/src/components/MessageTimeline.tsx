@@ -39,8 +39,6 @@ interface MessageTimelineProps {
   skillDescriptions?: ReadonlyMap<string, string>;
   skillLabels?: ReadonlyMap<string, string>;
   pendingUserMessage?: PendingUserMessage;
-  /** 首条提交自空态切入：pending 气泡以上浮 FLIP 进入（submittedPreview 原文参数）。 */
-  pendingFloatFromComposer?: boolean;
   /** Runtime snapshot 里当前会话的活动 run；live 回合丢了 run.started（状态停在 idle）时以它兜底。 */
   runtimeActiveRunId?: string;
   onPreviewFile(path: string): void;
@@ -83,7 +81,7 @@ function turnIsRunning(turn: TimelineTurn, runtimeActiveRunId: string | undefine
     || turn.tools.some((tool) => tool.runId === runtimeActiveRunId && (tool.status === "running" || tool.status === "waiting")));
 }
 
-export const MessageTimeline = memo(function MessageTimeline({ sessionId, readOnly = false, projectId, turns, skillDescriptions, skillLabels, pendingUserMessage, pendingFloatFromComposer, runtimeActiveRunId, onPreviewFile, onOpenExternal, onReferenceMessage, onShowMessageReferences, onAddQuoteToConversation, onResolvePermission, thinking, compacting = false, onRetry, onSwitchVersion, onEditRequest, editInFlight, onCreateBranch, onRollbackFiles }: MessageTimelineProps): React.JSX.Element {
+export const MessageTimeline = memo(function MessageTimeline({ sessionId, readOnly = false, projectId, turns, skillDescriptions, skillLabels, pendingUserMessage, runtimeActiveRunId, onPreviewFile, onOpenExternal, onReferenceMessage, onShowMessageReferences, onAddQuoteToConversation, onResolvePermission, thinking, compacting = false, onRetry, onSwitchVersion, onEditRequest, editInFlight, onCreateBranch, onRollbackFiles }: MessageTimelineProps): React.JSX.Element {
   // 重试会先把目标之后的消息从视图中撤掉，再等待新回合流入；这里保留同样的乐观投影。
   // 编辑的重写投影来自 App（editInFlight），提交入口在底部输入框，不经过本组件状态。
   const [optimisticRewrite, setOptimisticRewrite] = useState<OptimisticRewrite>();
@@ -182,22 +180,6 @@ export const MessageTimeline = memo(function MessageTimeline({ sessionId, readOn
 
   const hasRealPendingMessage = pendingUserMessage !== undefined
     && hasSubmittedUserMessage(turns, pendingUserMessage.messageId);
-  // FLIP 落定标记：pending 以 FLIP 进入后，被真实回合接管的首条用户消息只播扫光
-  // （原文 animateUserEntry "sheen-only"），避免「上浮完又浮入」的二次入场。
-  const [flipArrived, setFlipArrived] = useState(false);
-  useEffect(() => {
-    if (pendingFloatFromComposer) setFlipArrived(true);
-  }, [pendingFloatFromComposer]);
-  // 切换项目时清除标记（跳过首挂载，否则会把同批置位的标记清掉），避免误伤新会话的首条消息。
-  const mountedForProjectRef = useRef(false);
-  useEffect(() => {
-    if (!mountedForProjectRef.current) {
-      mountedForProjectRef.current = true;
-      return;
-    }
-    setFlipArrived(false);
-  }, [projectId]);
-  const firstTurnSheenOnly = flipArrived && pendingUserMessage === undefined;
   const displayedTurns = useMemo(() => {
     const pending = rewrite;
     if (!pending) return turns;
@@ -246,20 +228,34 @@ export const MessageTimeline = memo(function MessageTimeline({ sessionId, readOn
     }, pending.user)];
   }, [rewrite, turns]);
 
-  const busy = compacting || thinking || Boolean(rewrite) || displayedTurns.some((turn) => turnIsRunning(turn, runtimeActiveRunId));
+  // 临时消息和确认事件共用消息 ID、回合结构与气泡节点，确认时只更新数据。
+  const visibleTurns: TimelineTurn[] = pendingUserMessage && !hasRealPendingMessage
+    ? [...displayedTurns, {
+      id: pendingUserMessage.id,
+      userMessageId: pendingUserMessage.messageId,
+      user: pendingUserMessage.content,
+      assistant: "",
+      reasoning: "",
+      skills: [],
+      status: "running",
+      tools: [],
+      steps: []
+    }]
+    : displayedTurns;
+  const busy = compacting || thinking || Boolean(rewrite) || visibleTurns.some((turn) => turnIsRunning(turn, runtimeActiveRunId));
   // 失败状态跟随对应消息，切会话、重启后仍可定位和重试。
   return (
     <div className="message-timeline" ref={timelineRef} onMouseUp={updateQuoteSelection}>
-      {displayedTurns.map((turn, index) => (
+      {visibleTurns.map((turn) => (
         turn.recoveryOnly ? <SavedMessageRecovery key={turn.id} messages={turn.savedMessages ?? []} detached /> :
         <Turn
           busy={busy}
           suppressRunStatus={compacting}
           readOnly={readOnly}
-          entrySheenOnly={firstTurnSheenOnly && index === 0}
+          pending={pendingUserMessage !== undefined && pendingUserMessage.messageId === turn.userMessageId && !hasRealPendingMessage}
           skillDescriptions={skillDescriptions}
           skillLabels={skillLabels}
-          key={turn.id}
+          key={turn.userMessageId ?? turn.id}
           onCreateBranch={onCreateBranch}
           onEditRequest={onEditRequest}
           onPreviewFile={onPreviewFile}
@@ -278,19 +274,9 @@ export const MessageTimeline = memo(function MessageTimeline({ sessionId, readOn
           turn={turn}
         />
       ))}
-      {pendingUserMessage && !hasRealPendingMessage ? (
-        <PendingUserMessage
-          content={pendingUserMessage.content}
-          floatFromComposer={pendingFloatFromComposer === true}
-          id={pendingUserMessage.id}
-          onOpenExternal={onOpenExternal}
-          onPreviewFile={onPreviewFile}
-          projectId={projectId}
-        />
-      ) : null}
       {compacting
         ? <CompactionStatus state={{ status: "pending", message: "正在压缩上下文" }} />
-        : thinking && !displayedTurns.some((turn) => turnIsRunning(turn, runtimeActiveRunId)) ? <RunStatus /> : null}
+        : thinking && !visibleTurns.some((turn) => turnIsRunning(turn, runtimeActiveRunId)) ? <RunStatus /> : null}
       {!readOnly && quoteSelection ? createPortal(<button aria-label="将选中文字添加到对话" aria-busy={addingQuote} className="message-selection-reference" disabled={addingQuote} style={{ top: quoteSelection.top, left: quoteSelection.left }}
         onMouseDown={(event) => event.preventDefault()} onClick={() => {
           if (addingQuote) return;
@@ -317,56 +303,6 @@ function SavedMessageRecovery({ messages, detached = false }: { messages: SavedQ
     </div>)}
   </section>;
 }
-
-const PendingUserMessage = memo(function PendingUserMessage({ content, floatFromComposer, id, onOpenExternal, onPreviewFile, projectId }: {
-  content: string;
-  /** 首条提交自空态切入：气泡自输入框位置上浮到时间线槽位（submittedPreview 原文参数）。 */
-  floatFromComposer: boolean;
-  id: string;
-  onOpenExternal(url: string): void;
-  onPreviewFile(path: string): void;
-  projectId: string;
-}): React.JSX.Element {
-  const message = splitAttachmentReferences(content);
-  const bubbleRef = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    if (!floatFromComposer) return;
-    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
-    const bubble = bubbleRef.current;
-    if (!bubble) return;
-    // 起点 = 底部输入框顶缘；终点 = 气泡自然槽位；
-    // 运动 = y(delta→0) + 淡入，0.5s cubic-bezier(.32,.72,0,1)（原文 motion 参数）。
-    const bubbleTop = bubble.getBoundingClientRect().top;
-    const startY = document.querySelector(".biny-chat-composer .biny-composer-frame")?.getBoundingClientRect().top
-      ?? window.innerHeight - 160;
-    const delta = startY - bubbleTop;
-    if (delta <= 8) return;
-    // FLIP 期间压掉 CSS 入场（浮入/扫光由落定后的 sheen-only 接管）。
-    bubble.classList.add("is-flip-enter");
-    const animation = bubble.animate(
-      [
-        { opacity: 0, transform: `translateY(${String(delta)}px)` },
-        { opacity: 1, transform: "translateY(0)" }
-      ],
-      { duration: 500, easing: "cubic-bezier(0.32, 0.72, 0, 1)" }
-    );
-    const settle = (): void => bubble.classList.remove("is-flip-enter");
-    animation.onfinish = settle;
-    animation.oncancel = settle;
-    return () => {
-      animation.cancel();
-      settle();
-    };
-  }, [floatFromComposer]);
-  return (
-    <article aria-label="发送中" aria-busy="true" className="chat-message user-message is-pending-entry" data-message-id={id} data-sender="user">
-      <div className="user-bubble" ref={bubbleRef}>
-        {message.text ? <MarkdownContent content={message.text} onOpenExternal={onOpenExternal} onPreviewFile={onPreviewFile} projectId={projectId} /> : null}
-        {message.attachments.length ? <MessageAttachments attachments={message.attachments} projectId={projectId} /> : null}
-      </div>
-    </article>
-  );
-});
 
 function optimisticRewriteTurn(turn: TimelineTurn, user: string): TimelineTurn {
   return {
@@ -405,7 +341,7 @@ const Turn = memo(function Turn({
   busy,
   suppressRunStatus,
   readOnly,
-  entrySheenOnly,
+  pending = false,
   skillDescriptions,
   skillLabels,
   projectId,
@@ -428,8 +364,7 @@ const Turn = memo(function Turn({
   busy: boolean;
   suppressRunStatus: boolean;
   readOnly: boolean;
-  /** FLIP 落定后的首条用户消息只播扫光（原文 animateUserEntry "sheen-only"）。 */
-  entrySheenOnly?: boolean;
+  pending?: boolean;
   skillDescriptions?: ReadonlyMap<string, string>;
   skillLabels?: ReadonlyMap<string, string>;
   projectId: string;
@@ -497,16 +432,16 @@ const Turn = memo(function Turn({
         <UserMessage
           content={turn.user}
           messageId={turn.userMessageId}
-          entrySheenOnly={entrySheenOnly === true}
+          pending={pending}
           hasChangedFiles={listChangedFiles(turn).length > 0}
-          onCreateBranch={readOnly ? undefined : onCreateBranch}
-          onEdit={readOnly ? undefined : () => onEditRequest(turn)}
+          onCreateBranch={readOnly || pending ? undefined : onCreateBranch}
+          onEdit={readOnly || pending ? undefined : () => onEditRequest(turn)}
           onOpenExternal={onOpenExternal}
-          onReference={!readOnly && turn.userMessageId ? () => onReferenceMessage(turn.userMessageId!) : undefined}
-          onShowReferences={!readOnly && turn.userMessageId ? () => onShowMessageReferences(turn.userMessageId!) : undefined}
+          onReference={!readOnly && !pending && turn.userMessageId ? () => onReferenceMessage(turn.userMessageId!) : undefined}
+          onShowReferences={!readOnly && !pending && turn.userMessageId ? () => onShowMessageReferences(turn.userMessageId!) : undefined}
           onPreviewFile={onPreviewFile}
           onRegenerate={canRetry ? retry : undefined}
-          onRollbackFiles={readOnly ? undefined : () => onRollbackFiles(turn)}
+          onRollbackFiles={readOnly || pending ? undefined : () => onRollbackFiles(turn)}
           projectId={projectId}
           time={turn.timestamp}
         />
@@ -725,7 +660,7 @@ function ActivitySummaryStep({ content, onOpenExternal, onPreviewFile, projectId
 function UserMessage({
   content,
   messageId,
-  entrySheenOnly,
+  pending = false,
   hasChangedFiles,
   onCreateBranch,
   onEdit,
@@ -740,8 +675,7 @@ function UserMessage({
 }: {
   content: string;
   messageId?: string;
-  /** 只播高光扫光、跳过浮入（FLIP 落定后的首条消息）。 */
-  entrySheenOnly?: boolean;
+  pending?: boolean;
   hasChangedFiles: boolean;
   onCreateBranch?(): void;
   onEdit?(): void;
@@ -755,13 +689,14 @@ function UserMessage({
   /** 消息时间（ISO 字符串）；存在时操作行前置 hover 揭示的日期感知时钟。 */
   time?: string;
 }): React.JSX.Element {
+  const [animateEntry] = useState(pending);
   // 更多菜单走 portal fixed 定位（与助手菜单共用 hook），内联渲染会把消息列表往下挤。
   const { open: menuOpen, position: menuPosition, anchorRef: moreAnchorRef, menuRef, toggle, close: closeMenu } = useAnchoredMenu({ width: 248, estimatedHeight: 196, align: "end" });
   // 发送时追加给模型的附件清单不该原样显示，拆出来渲染成附件卡片。
   const message = useMemo(() => splitAttachmentReferences(content), [content]);
   const clock = time ? <MessageClock time={Date.parse(time)} /> : null;
   return (
-    <article className={`chat-message user-message${entrySheenOnly ? " is-sheen-only" : ""}`} data-message-id={messageId} data-sender="user" tabIndex={-1}>
+    <article aria-label={pending ? "发送中" : undefined} aria-busy={pending || undefined} className={`chat-message user-message${animateEntry ? " is-entering" : ""}`} data-message-id={messageId} data-sender="user" tabIndex={-1}>
       <div className="user-bubble">
         {message.text ? <MarkdownContent content={message.text} onOpenExternal={onOpenExternal} onPreviewFile={onPreviewFile} projectId={projectId} /> : null}
         {message.attachments.length ? <MessageAttachments attachments={message.attachments} projectId={projectId} /> : null}

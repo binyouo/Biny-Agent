@@ -2521,17 +2521,6 @@
   opacity: 0.5;
 }
 
-@keyframes biny-chat-composer-enter {
-  from { opacity: 0; transform: translateY(16px) scale(.98); }
-  to { opacity: 1; transform: translateY(0) scale(1); }
-}
-
-/* 首页首条消息进入时间线时，Composer 以聊天态落到底部，不依赖 DOM 测量。 */
-.biny-chat-composer.is-entering {
-  animation: biny-chat-composer-enter var(--motion-enter, 250ms) var(--motion-ease-out, cubic-bezier(0.16, 1, 0.3, 1)) both;
-  will-change: transform, opacity;
-}
-
 /* 工具栏 1px 分隔（附件/工作区 与 权限/模型 之间）。 */
 .biny-composer-toolbar-divider {
   width: 1px;
@@ -4766,30 +4755,6 @@ button.capability-check[aria-checked="true"] {
   max-width: 42rem;
   margin: 0 auto auto;
   padding-bottom: 24px;
-}
-
-/* 输入框跨态形变：命名后由 View Transition 接管补间。 */
-.biny-chat-composer {
-  view-transition-name: biny-composer;
-}
-
-::view-transition-old(biny-composer),
-::view-transition-new(biny-composer),
-::view-transition-group(biny-composer) {
-  animation-duration: 0.42s;
-  animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
-}
-
-::view-transition-old(root),
-::view-transition-new(root) {
-  animation-duration: 0.32s;
-  animation-timing-function: ease-out;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .biny-chat-composer {
-    view-transition-name: none;
-  }
 }
 
 /* 首页/欢迎态：body 整体居中，内容超高时仍可滚。 */

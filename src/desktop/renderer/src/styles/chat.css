@@ -42,8 +42,7 @@
   to { opacity: 1; transform: translateY(0); }
 }
 
-/* 用户消息入场（userMessageFloatIn 原文，含阴影帧）：动画作用在气泡上，
- * 通栏消息行不参与，首帧阴影不会横向铺开。 */
+/* 入场仅作用于新发送的气泡；确认和运行状态变化不重播。 */
 @keyframes chat-user-message-enter {
   0% { opacity: 0; transform: translate3d(0, 18px, 0) scale(0.95); box-shadow: 0 24px 36px var(--shadow-heavy); }
   70% { opacity: 1; transform: translate3d(0, -4px, 0) scale(1.02); box-shadow: 0 16px 24px var(--shadow-soft); }
@@ -2052,18 +2051,12 @@ button.chat-think-chip:focus-visible {
   align-items: flex-end;
 }
 
-/* 首条消息先以临时投影进入时间线，真实事件接管后保持同一段轻量入场；
-   气泡上再划过一道高光扫光。 */
-.biny-chat-scroll .user-message.is-pending-entry .user-bubble,
-.biny-chat-scroll .timeline-turn.is-running > .user-message .user-bubble,
-.biny-chat-scroll .timeline-turn.is-waiting_permission > .user-message .user-bubble {
-  animation: chat-user-message-enter var(--user-message-entry-duration, 450ms) cubic-bezier(0.22, 1, 0.36, 1) both;
-  will-change: transform, opacity;
+/* 入场标记在消息挂载时确定，保留到该节点卸载。 */
+.biny-chat-scroll .user-message.is-entering .user-bubble {
+  animation: chat-user-message-enter 450ms cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 
-.biny-chat-scroll .user-message.is-pending-entry .user-bubble::after,
-.biny-chat-scroll .timeline-turn.is-running > .user-message .user-bubble::after,
-.biny-chat-scroll .timeline-turn.is-waiting_permission > .user-message .user-bubble::after {
+.biny-chat-scroll .user-message.is-entering .user-bubble::after {
   content: "";
   position: absolute;
   inset: 0;
@@ -2074,30 +2067,14 @@ button.chat-think-chip:focus-visible {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .biny-chat-scroll .user-message.is-pending-entry .user-bubble::after,
-  .biny-chat-scroll .timeline-turn.is-running > .user-message .user-bubble::after,
-  .biny-chat-scroll .timeline-turn.is-waiting_permission > .user-message .user-bubble::after {
+  .biny-chat-scroll .user-message.is-entering .user-bubble,
+  .biny-chat-scroll .user-message.is-entering .user-bubble::after {
     animation: none;
   }
 }
 
 .biny-chat-scroll .user-message.is-editing {
   align-items: stretch;
-}
-
-/* FLIP 上浮期间（submittedPreview 原文参数的 WAAPI 实现接管 transform/opacity）压掉 CSS 入场。 */
-.biny-chat-scroll .user-bubble.is-flip-enter {
-  animation: none !important;
-}
-
-.biny-chat-scroll .user-bubble.is-flip-enter::after {
-  animation: none !important;
-  opacity: 0;
-}
-
-/* FLIP 落定后的首条真实消息：跳过浮入，只保留高光扫光（原文 sheen-only）。 */
-.biny-chat-scroll .user-message.is-sheen-only .user-bubble {
-  animation: none;
 }
 
 /* 用户气泡：非对称圆角 24px/4px、85% 宽、

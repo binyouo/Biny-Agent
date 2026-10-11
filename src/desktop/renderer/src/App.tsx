@@ -11,7 +11,6 @@ import type { ChatResponseSettings } from "../../../config/schema.js";
 import { useThreadBrief } from "./threadBrief/context.js";
 import { hasSubmittedUserMessage } from "./chatModel.js";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { flushSync } from "react-dom";
 import type { AgentCapabilitySelection } from "../../../agent/capabilitySelection.js";
 import type { ContextBudgetStatus } from "../../../agent/context/types.js";
 import type { PermissionResult } from "../../../permission/PermissionManager.js";
@@ -252,18 +251,9 @@ function DesktopApp(): React.JSX.Element {
     projectRef.current = workspace?.project.id;
   }, [selectedSessionId, workspace?.project.id]);
 
-  // 会话一落地（发送成功后后端建了 session），欢迎 hero 就该退场。
-  // 这一步同时要把输入框从 hero 的窄列铺满、落回底部，用 View Transition 补间：
-  // 必须套 flushSync，否则浏览器抓「旧」快照时 React 还没把 DOM 提交上去。
+  // 不捕获整个窗口做转场；快照动画会让侧栏暂时无法接收后续点击。
   useEffect(() => {
-    if (selectedSessionId === undefined) return;
-    // 注意用 window.document：本作用域里 `document` 被会话文档变量遮蔽了。
-    const viewDocument = window.document as Document & { startViewTransition?: (callback: () => void) => unknown };
-    if (typeof viewDocument.startViewTransition === "function") {
-      viewDocument.startViewTransition(() => { flushSync(() => setHeroStart(false)); });
-    } else {
-      setHeroStart(false);
-    }
+    if (selectedSessionId !== undefined) setHeroStart(false);
   }, [selectedSessionId]);
 
 
