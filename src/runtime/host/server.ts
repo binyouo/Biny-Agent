@@ -1331,7 +1331,7 @@ export class RuntimeHostServer {
         }, runtime);
       case "automation.run":
         return await this.executeAdmission(async () => {
-          return await this.businessComposition.runAutomation(requiredString(payload.automationId, "automationId"));
+          return new OperationCompletion(this.businessComposition.runAutomation(requiredString(payload.automationId, "automationId")));
         }, runtime);
       case "automation.pending":
         return commands.automationStore.listPending(optionalString(payload.automationId));
