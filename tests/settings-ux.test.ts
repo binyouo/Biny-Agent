@@ -22,7 +22,7 @@ function snapshot(): DesktopSettingsSnapshot {
     projectId: "project", hasRunningTasks: false, preferenceRevision: 1, configRevision: "config:1",
     themePreference: "system", fontPreference: { family: "system", size: 14 },
     activity: { ...config.activity, outputDirectory: "/tmp/settings-test" }, identity: config.identity,
-    memory: config.context.memory, compaction: config.context.compaction, chatParams: config.chat,
+    memory: config.context.memory, compaction: config.context.compaction, chatParams: config.chat, toolExecutionMode: config.agent.toolExecutionMode,
     permission: config.permission, webSearch: config.web.search,
     models: { configured: [], connections: [], embeddingModels: [], defaultModel: "default", thinking: "off", modelProfiles: {} },
     skills: { projectId: "project", projectKey: "project", globalDefaults: {}, projectOverrides: {}, activations: [] }
@@ -218,6 +218,47 @@ test("独立页面切换保留未保存主题和关闭确认，Activity Record �
     assert.equal(h.confirmations.length, 1);
     assert.match(h.confirmations[0] ?? "", /未保存|关闭/u);
     assert.match(document.querySelector(".settings-page-footer")?.textContent ?? "", /未保存/u);
+  } finally { await h.close(); }
+});
+
+test("通用 Code Mode 开关保存实际模式并回读，失败保留草稿；原设置测试未覆盖编排配置", async () => {
+  let current = snapshot();
+  const writes: DesktopSettingsSaveInput[] = [];
+  const h = await harness({ settingsSnapshot: async () => current,
+    saveSettings: async (_project: string, input: DesktopSettingsSaveInput) => {
+      writes.push(settingsSaveInputSchema.parse(input));
+      if (writes.length === 1) throw new Error("配置写入失败");
+      current = { ...current, toolExecutionMode: input.toolExecutionMode!, configRevision: `config:${writes.length}` };
+      return { status: "committed", journalId: "code-mode", appliedFields: ["toolExecutionMode"], snapshot: current };
+    }
+  });
+  try {
+    await h.overlay({ targetTab: "通用" });
+    const selector = 'input[role="switch"][aria-label="Code Mode"]';
+    assert.equal(document.querySelector<HTMLInputElement>(selector)?.checked, true);
+    await h.click("#tool-execution .settings-switch-copy");
+    assert.equal(document.querySelector<HTMLInputElement>(selector)?.checked, true);
+    await h.click(selector);
+    assert.equal(writes.length, 0);
+    await h.click(".settings-save-button");
+    assert.match(document.querySelector('.settings-page-footer [role="alert"]')?.textContent ?? "", /配置写入失败/u);
+    assert.equal(document.querySelector<HTMLInputElement>(selector)?.checked, false);
+    await h.click(".settings-save-button");
+    assert.equal(writes[1]?.toolExecutionMode, "direct");
+    assert.equal(writes[1]?.chatParams, undefined);
+    await h.overlay({ open: false });
+    await h.overlay({ open: true });
+    assert.equal(document.querySelector<HTMLInputElement>(selector)?.checked, false);
+    await h.click(selector);
+    await h.click(".settings-save-button");
+    assert.equal(writes[2]?.toolExecutionMode, "code_mode");
+    assert.match(document.querySelector(".settings-page-footer")?.textContent ?? "", /所有更改已保存/u);
+    await h.input('[aria-label="搜索设置"]', "codemode");
+    assert.match(document.querySelector('[aria-label="设置搜索结果"]')?.textContent ?? "", /通用/u);
+    current = { ...current, hasRunningTasks: true };
+    await h.overlay({ open: false });
+    await h.overlay({ open: true });
+    assert.equal(document.querySelector<HTMLInputElement>(selector)?.disabled, true);
   } finally { await h.close(); }
 });
 

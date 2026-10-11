@@ -1377,6 +1377,7 @@ export interface DesktopSettingsSnapshot {
   memory: DesktopMemorySettings;
   compaction: DesktopCompactionSettings;
   chatParams: DesktopChatParamsSettings;
+  toolExecutionMode: "direct" | "code_mode";
   permission: DesktopPermissionSettings;
   webSearch: DesktopWebSearchSettings;
   models: DesktopSettingsModelsSnapshot;
@@ -1444,6 +1445,7 @@ export interface DesktopSettingsSaveInput {
   memory?: DesktopMemorySettings;
   compaction?: DesktopCompactionSettings;
   chatParams?: DesktopChatParamsSettings;
+  toolExecutionMode?: "direct" | "code_mode";
   permission?: DesktopPermissionSettings;
   webSearch?: DesktopWebSearchSettingsInput;
   models?: DesktopSettingsModelsInput;

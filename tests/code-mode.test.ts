@@ -85,7 +85,7 @@ const coordinator = new ToolExecutionCoordinator(
 try {
   const exec = coordinator.createCodeModeTool();
   assert.match(exec.promptSnippet ?? "", /Read/u);
-  assert.doesNotMatch(exec.promptSnippet ?? "", /Write/u);
+  assert.match(exec.promptSnippet ?? "", /Write/u);
   const result = await exec.execute("parent-1", { code: "const a = await tools.Read({path:'hello.txt'}); return a.content.toUpperCase();" });
   assert.equal(result.isError, false);
   assert.equal((result.details as { value?: string }).value, "HELLO CODE MODE\n");
@@ -93,8 +93,9 @@ try {
   assert.equal(writes, 0);
   assert.equal(coordinator.getExecutionBudgetSnapshot().accountedToolCalls, 1);
 
-  const denied = await exec.execute("parent-2", { code: "return await tools.Write({});" });
-  assert.equal(denied.isError, true);
+  const unselected = await exec.execute("parent-2", { code: "return await tools.Edit({});" });
+  assert.equal(unselected.isError, true);
+  assert.deepEqual((unselected.details as { childCalls: unknown[] }).childCalls, []);
   assert.equal(writes, 0);
 
   const noFs = await exec.execute("parent-3", { code: "return typeof process + ':' + typeof require + ':' + typeof fetch;" });
@@ -509,7 +510,8 @@ try {
         assert.match(execCatalog, /Read:/u);
         assert.match(execCatalog, /recall_memory:.*shared durable memory library/u);
         assert.match(execCatalog, /search_history:.*across projects/u);
-        assert.doesNotMatch(execCatalog, /Write:|mcp_read:/u);
+        assert.match(execCatalog, /Write:/u);
+        assert.doesNotMatch(execCatalog, /mcp_read:/u);
       }
       const response: ModelStreamEvent[] = searchSteps === 1
         ? [{ type: "tool-call", id: "search-read", name: "ToolSearch", arguments: { query: "read workspace files" } }, { type: "finish", reason: "tool-calls" }]

@@ -6,14 +6,13 @@
  */
 import { createHash } from "node:crypto";
 import { z } from "zod";
-import { codeModeNestedToolNames } from "../agent/codeMode.js";
 import { getToolExposure, isToolModelVisible } from "./exposure.js";
 import type { AgentMessage } from "../agent/core/types.js";
 import type { ToolModelCandidate } from "../llm/toolModel.js";
 import { generateToolModelText, toolModelFailureScope, ToolModelCandidatesExhaustedError, type ToolModelAttempt, type ToolModelSelectionState } from "../llm/toolModelRequest.js";
 import { redactSecrets } from "../utils/secrets.js";
 import { ToolAccesses } from "./access.js";
-import { isCodeModeReadTool, type RegisteredTool } from "./registry.js";
+import { isCodeModeTool, type RegisteredTool } from "./registry.js";
 import type { Tool, ToolSource } from "./types.js";
 
 export const toolSearchToolName = "ToolSearch";
@@ -116,7 +115,7 @@ export function createToolSearchTool(
           const registrations = getTools()
             .filter((entry) => entry.tool.name !== toolSearchToolName
               && (type === "all" || entry.source === type)
-              && (!codeMode || isCodeModeReadTool(entry) || entry.source === "mcp" && !codeModeNestedToolNames.has(entry.tool.name))
+              && (!codeMode || isCodeModeTool(entry))
               && (context.toolDiscoveryNames
                 ? context.toolDiscoveryNames.has(entry.tool.name) && getToolExposure(entry.tool) !== "hidden" && getToolExposure(entry.tool) !== "model-only"
                 : isToolModelVisible(entry.tool))
@@ -149,8 +148,7 @@ export function createToolSearchTool(
             if (cloned.status !== "completed") return cloned;
             const current = getTools();
             cloned.tools = cloned.tools.filter((match) => registrations.some((entry) => entry.tool.name === match.name
-              && current.includes(entry) && (!codeMode || isCodeModeReadTool(entry)
-                || entry.source === "mcp" && !codeModeNestedToolNames.has(entry.tool.name))));
+              && current.includes(entry) && (!codeMode || isCodeModeTool(entry))));
             cloned.found = cloned.tools.length;
             return cloned;
           };

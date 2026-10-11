@@ -619,7 +619,10 @@ async function initializeCommandRuntime(
         }
         return cancelled;
       }
-    })) toolRegistry.registerSubagentTool(tool);
+    })) {
+      if (tool.name === "PlanStatus") toolRegistry.registerHostReadQuery(tool, "PlanStatus");
+      else toolRegistry.registerSubagentTool(tool);
+    }
     subagentDefinitions = await loadAgentDefinitions();
   }
   // 读取/写入 durable memory 与“当前聊天是否自动召回/贡献”是两组独立开关。

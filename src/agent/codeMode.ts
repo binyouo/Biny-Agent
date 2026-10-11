@@ -4,7 +4,9 @@ import type { AgentTool, AgentToolResult } from "./core/types.js";
 
 /** Names are a VM surface bound; host registration provenance is checked separately. */
 export const codeModeNestedToolNames = new Set(["Read", "Glob", "Grep", "read_tool_result", "recall_memory", "search_history",
-  "TaskStatus", "skill_lookup", "BashOutput", "read_skill_resource"]);
+  "TaskStatus", "skill_lookup", "BashOutput", "read_skill_resource", "Write", "Edit", "apply_patch", "Bash", "KillShell",
+  "WebSearch", "WebFetch", "BrowserReadDom", "ChromeRelayStatus", "ChromeRelayListTabs", "ChromeRelayRead",
+  "WidgetReadme", "skill_search", "GoalGet", "read_checkpoint_evidence", "PlanStatus"]);
 
 export const codeModePolicy = Object.freeze({
   /** Cumulative synchronous VM execution, excluding host/approval waits. */
@@ -283,7 +285,7 @@ function toolSummary(entry: AgentTool) {
 }
 
 function toolDescription(entry: AgentTool) {
-  return { ...toolSummary(entry), parameters: entry.parameters, outputSchema: entry.outputSchema };
+  return { ...toolSummary(entry), parameters: entry.parameters, outputSchema: entry.outputSchema, promptGuidelines: entry.promptGuidelines };
 }
 
 async function drainHostOperations(operations: ReadonlyMap<Promise<unknown>, string>, timeoutMs: number): Promise<boolean> {

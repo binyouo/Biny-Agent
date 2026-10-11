@@ -43,6 +43,7 @@ export interface DesktopSettingsDraft {
   memory: DesktopMemorySettings;
   compaction: DesktopCompactionSettings;
   chatParams: DesktopChatParamsSettings;
+  toolExecutionMode: DesktopSettingsSnapshot["toolExecutionMode"];
   permission: DesktopPermissionSettings;
   webSearch: DesktopWebSearchSettingsInput;
   chat?: DesktopChatPersonalizationOverride;
@@ -78,6 +79,7 @@ export interface SettingsDraftContextValue {
   setMemory(value: DesktopMemorySettings): void;
   setCompaction(value: DesktopCompactionSettings): void;
   setChatParams(value: DesktopChatParamsSettings): void;
+  setToolExecutionMode(value: DesktopSettingsSnapshot["toolExecutionMode"]): void;
   setPermission(value: DesktopPermissionSettings): void;
   setWebSearch(value: DesktopWebSearchSettingsInput): void;
   setChat(value: DesktopChatPersonalizationOverride): void;

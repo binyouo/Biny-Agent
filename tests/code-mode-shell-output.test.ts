@@ -92,7 +92,7 @@ try {
 
     const exec = instance.createCodeModeTool();
     assert.match(exec.promptSnippet ?? "", /BashOutput:/u);
-    assert.doesNotMatch(exec.promptSnippet ?? "", /(?:^|\n)Bash:/u);
+    assert.match(exec.promptSnippet ?? "", /(?:^|\n)Bash:/u);
     const nested = await exec.execute("nested-shell-page", { code: logCode });
     assert.equal(nested.isError, false, JSON.stringify(nested.details));
     assert.equal(details(nested).value.output.content, logText, "nested host query must bypass model-only excerpts");
@@ -104,11 +104,6 @@ try {
     assert.equal(audit.auditOnly, true);
     const childArchive = await readToolResultArchive(root, audit.result.archivePath);
     assert.equal(childArchive.output, serializeToolResult(details(nested).value));
-
-    const unavailable = await exec.execute("bash-remains-unavailable", { code: "return await tools.Bash({command:'printf forbidden-nested-execution'});" });
-    assert.equal(unavailable.isError, true);
-    assert.deepEqual(details(unavailable).childCalls, [], "Bash must never enter nested execution");
-    assert.match(details(unavailable).error, /not available/u);
   });
 
   await test("read_tool_result nested pages preserve exact requested content and pagination metadata", async () => {

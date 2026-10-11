@@ -1,4 +1,5 @@
 import type { BrowserAutomationEndpoint } from "./browser.js";
+import { codeModeNestedToolNames } from "../agent/codeMode.js";
 /**
  * 工具注册表模块。
  *
@@ -28,9 +29,10 @@ import type { ToolModelCandidate } from "../llm/toolModel.js";
 import type { ManagedProcessService } from "../runtime/ManagedProcessService.js";
 
 /** Explicit host-owned read contracts, never inferred from extension metadata. */
-export type HostReadQuery = "TaskStatus" | "skill_lookup" | "BashOutput" | "read_skill_resource";
+export type HostReadQuery = "TaskStatus" | "PlanStatus" | "skill_lookup" | "BashOutput" | "read_skill_resource";
 const hostReadQueryContracts: Record<HostReadQuery, { source: ToolSource; capability: string }> = {
   TaskStatus: { source: "subagent", capability: "subagent.workspace" },
+  PlanStatus: { source: "subagent", capability: "subagent.workspace" },
   skill_lookup: { source: "skill", capability: "skills" },
   BashOutput: { source: "builtin", capability: "shell.output" },
   read_skill_resource: { source: "skill", capability: "skills" }
@@ -41,7 +43,9 @@ const hostReadQueryRegistrations = new WeakMap<RegisteredTool, {
   parameters: Tool["parameters"];
   schema: Tool["schema"];
 }>();
-const reviewedBuiltinReads = new Set(["Read", "Glob", "Grep", "read_tool_result", "recall_memory", "search_history"]);
+const reviewedBuiltinReads = new Set(["Read", "Glob", "Grep", "read_tool_result", "recall_memory", "search_history",
+  "WebSearch", "WebFetch", "BrowserReadDom", "ChromeRelayStatus", "ChromeRelayListTabs", "ChromeRelayRead",
+  "WidgetReadme", "skill_search", "GoalGet", "read_checkpoint_evidence"]);
 
 /** Shared by discovery and execution. Serialized/tool-supplied hints grant no authority. */
 export function isCodeModeReadTool(entry: RegisteredTool): boolean {
@@ -52,6 +56,13 @@ export function isCodeModeReadTool(entry: RegisteredTool): boolean {
   return entry.source === contract.source && entry.tool.risk === "read" && entry.tool.capability === contract.capability
     && entry.tool.resolveExecution === authority.resolveExecution && entry.tool.parameters === authority.parameters
     && entry.tool.schema === authority.schema;
+}
+
+export function isCodeModeTool(entry: RegisteredTool): boolean {
+  if (entry.tool.name === "exec") return false;
+  if (isCodeModeReadTool(entry)) return true;
+  if (entry.source === "builtin" && ["Write", "Edit", "apply_patch", "Bash", "KillShell"].includes(entry.tool.name)) return true;
+  return entry.source === "mcp" && !codeModeNestedToolNames.has(entry.tool.name);
 }
 
 export interface RegisteredTool {

@@ -96,6 +96,7 @@ export const settingsSaveInputSchema = z.object({
   memory: memorySettingsSchema.optional(),
   compaction: compactionSchema.optional(),
   chatParams: chatParamsSchema.optional(),
+  toolExecutionMode: z.enum(["direct", "code_mode"]).optional(),
   permission: permissionSettingsSchema.optional(),
   webSearch: webSearchSettingsSchema.optional(),
   models: z.object({

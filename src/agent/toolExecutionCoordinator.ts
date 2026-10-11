@@ -28,7 +28,7 @@ import { DiagnosticsRunner, formatDiagnostics } from "../tools/diagnostics.js";
 import { HookRunner, readHookCompletionEvidence } from "../tools/hooks.js";
 import { validateJsonSchema } from "../tools/schema.js";
 import { ToolScheduler } from "../tools/scheduler.js";
-import { isCodeModeReadTool } from "../tools/registry.js";
+import { isCodeModeReadTool, isCodeModeTool } from "../tools/registry.js";
 import type {
   ApprovedFileSnapshot,
   Tool,
@@ -173,6 +173,7 @@ export class ToolExecutionCoordinator {
   private readonly scheduler: ToolScheduler<ToolExecutionOutcome>;
   private readonly pendingExecutions = new Map<Promise<unknown>, string>();
   private readonly quarantinedCodeModeChildIds = new Set<string>();
+  private readonly codeModeToolChecks = new WeakMap<AgentTool, () => boolean>();
   private readonly observedToolCallCounts = new Map<string, number>();
   private readonly duplicateToolCallIds = new Set<string>();
   private readonly duplicateExecutionCounts = new Map<string, number>();
@@ -268,7 +269,7 @@ export class ToolExecutionCoordinator {
     let entries = this.context.toolRegistry.listEntries()
       .filter((entry) => options?.script
         ? (!this.executionToolNames || this.executionToolNames.has(entry.tool.name))
-          && (entry.source === "mcp" && !codeModeNestedToolNames.has(entry.tool.name) || isCodeModeReadTool(entry))
+          && isCodeModeTool(entry)
           && isToolScriptCallable(entry.tool, !this.allowedToolNames || this.allowedToolNames.has(entry.tool.name))
         : isToolModelVisible(entry.tool) && (!this.allowedToolNames || this.allowedToolNames.has(entry.tool.name)));
     const originalRegistrations = new Map(entries.map((entry) => [entry.tool.name, entry] as const));
@@ -278,14 +279,25 @@ export class ToolExecutionCoordinator {
     return entries
       .map((registration) => {
         const { tool: registered, source } = registration;
-        const originalRegistration = originalRegistrations.get(registered.name)!;
-        return ({
+        const scriptPatch = options?.script && source === "builtin" && registered.name === "apply_patch";
+        const origins = registered.name === "apply_patch" && !originalRegistrations.has(registered.name)
+          ? [originalRegistrations.get("Write")!, originalRegistrations.get("Edit")!]
+          : [originalRegistrations.get(registered.name)!];
+        const isCurrent = () => origins.every((entry) => this.context.toolRegistry.listEntries().includes(entry)
+          && isCodeModeTool(entry)
+          && (!this.executionToolNames || this.executionToolNames.has(entry.tool.name))
+          && isToolScriptCallable(entry.tool, !this.allowedToolNames || this.allowedToolNames.has(entry.tool.name)));
+        const tool: AgentTool = {
           name: registered.name,
           providerTool: registered.providerTool,
           promptSnippet: registered.promptSnippet,
           promptGuidelines: registered.promptGuidelines,
           description: registered.description,
-          parameters: registered.parameters,
+          parameters: scriptPatch ? {
+            ...registered.parameters,
+            properties: Object.fromEntries(Object.entries(registered.parameters.properties ?? {}).filter(([name]) => name !== "callId")),
+            required: ["operation"]
+          } : registered.parameters,
           outputSchema: registered.outputSchema,
           namespace: registered.namespace,
           // 写入工具的准备、权限确认和实际执行必须保持同一顺序，避免并发预览互相失效。
@@ -294,14 +306,12 @@ export class ToolExecutionCoordinator {
             let resultStatus: ToolExecutionResultStatus | undefined;
             const result = await this.trackExecution(this.execute(
               registered,
-              args,
+              scriptPatch ? { ...args, callId: toolCallId } : args,
               { toolCallId, abortSignal: signal, auditOnly: options?.auditOnly, script: options?.script,
                 onResultStatus: (status) => { resultStatus = status; },
                 toolDiscoveryNames: options?.toolDiscoveryNames, toolDiscoveryNamespace: options?.toolDiscoveryNamespace,
                 assertCurrentRegistration: options?.script ? () => {
-                  if (!this.context.toolRegistry.listEntries().includes(originalRegistration) || !(originalRegistration.source === "mcp" && !codeModeNestedToolNames.has(registered.name) || isCodeModeReadTool(originalRegistration))
-                    || this.executionToolNames && !this.executionToolNames.has(registered.name)
-                    || !isToolScriptCallable(registered, !this.allowedToolNames || this.allowedToolNames.has(registered.name))) {
+                  if (!isCurrent()) {
                     throw new Error(`Tool ${registered.name} is no longer available in this cell.`);
                   }
                 } : undefined },
@@ -317,7 +327,9 @@ export class ToolExecutionCoordinator {
               isError
             };
           }
-        });
+        };
+        if (options?.script) this.codeModeToolChecks.set(tool, isCurrent);
+        return tool;
       });
   }
 
@@ -325,13 +337,14 @@ export class ToolExecutionCoordinator {
    * holding its only slot would deadlock when maxConcurrentTools is one. */
   createCodeModeTool(editing?: { mode: EditingMode; attachmentRoot?: string }, executionPolicy?: CodeModeLimits): AgentTool {
     const visible = this.createAgentTools(editing, { script: true }).filter((entry) => {
-      const registered = this.context.toolRegistry.get(entry.name);
-      return codeModeNestedToolNames.has(entry.name) && getToolExposure(registered) === "direct";
+      const names = entry.name === "apply_patch" && editing?.mode === "patch" ? ["Write", "Edit"] : [entry.name];
+      return codeModeNestedToolNames.has(entry.name) && names.every((name) =>
+        this.context.toolRegistry.listEntries().some((registered) => registered.tool.name === name && getToolExposure(registered.tool) === "direct"));
     });
     return {
       name: "exec",
       description: "Run isolated JavaScript with admitted tools.* calls. Use searchTools(query, {limit, namespace}), describeTool(name), and describeNamespace(name) to discover tools and read schemas on demand. Nested calls use normal permissions and budgets. No direct filesystem, network, process or imports. Return a JSON-serializable value.",
-      promptSnippet: `Compose tool calls in isolated JavaScript. Discover MCP tools with searchTools, describeTool and describeNamespace. Selected host-owned read tools:\n${codeModeCatalog(visible) || "(none selected)"}`,
+      promptSnippet: `Compose tool calls in isolated JavaScript. Discover tools with searchTools, describeTool and describeNamespace. Selected host tools:\n${codeModeCatalog(visible) || "(none selected)"}`,
       promptGuidelines: ["Return only the result needed by the user. Use standard tool calls when scripting is unnecessary. Never retry an entire cell after a partial failure; inspect child outcomes first."],
       parameters: { type: "object", properties: { code: { type: "string", minLength: 1, maxLength: 65_536 } }, required: ["code"], additionalProperties: false },
       executionMode: "sequential",
@@ -372,7 +385,6 @@ export class ToolExecutionCoordinator {
           try {
             const current = new Map(this.context.toolRegistry.listEntries().map((entry) => [entry.tool.name, entry] as const));
             const children = this.createAgentTools(editing, { auditOnly: true, script: true });
-            const original = new WeakMap(children.map((entry) => [entry, current.get(entry.name)] as const));
             await this.recordAndFlush({ type: "tool_execution", tool: "exec", toolCallId, sequence, operationId, state: "running", retrySafety: "unsafe" });
             result = await executeCodeModeCell({
               code: args.code, parentToolCallId: toolCallId, tools: [], admittedTools: children, signal, executionPolicy,
@@ -382,21 +394,22 @@ export class ToolExecutionCoordinator {
                   if (discovery?.timedOut) throw new Error("MCP discovery is still pending. Try again after the connection is ready.");
                 }
                 discoverySignal?.throwIfAborted();
-                const refreshed = new Map(this.context.toolRegistry.listEntries().map((entry) => [entry.tool.name, entry] as const));
-                const admitted = this.createAgentTools(editing, { auditOnly: true, script: true });
-                for (const entry of admitted) original.set(entry, refreshed.get(entry.name));
-                return admitted;
+                return this.createAgentTools(editing, { auditOnly: true, script: true });
               },
               searchTools: async (query, options) => {
                 const search = this.context.toolRegistry.listEntries().find((entry) => entry.tool.name === toolSearchToolName);
                 if (!search || search.source !== "builtin") throw new Error("Tool discovery is not available.");
                 const names = new Set(options.tools.map((tool) => tool.name));
-                const found = await this.trackExecution(this.execute(search.tool, { query, maxResults: options.limit }, {
+                const routedPatch = names.has("apply_patch") && !this.context.toolRegistry.listEntries().some((entry) => entry.tool.name === "apply_patch");
+                if (routedPatch) { names.add("Write"); names.add("Edit"); }
+                const found = await this.trackExecution(this.execute(search.tool, {
+                  query: routedPatch ? query.replace(/\bapply_patch\b/gu, "Write Edit") : query, maxResults: options.limit
+                }, {
                   toolCallId: options.toolCallId, abortSignal: options.signal, auditOnly: true, script: true,
                   toolDiscoveryNames: names, toolDiscoveryNamespace: options.namespace
                 }, search.source), options.toolCallId) as ToolSearchResult;
                 if (found.status !== "completed") throw new Error(found.error ?? "Tool discovery failed.");
-                return found.tools;
+                return found.tools.map((tool) => ({ name: routedPatch && ["Write", "Edit"].includes(tool.name) ? "apply_patch" : tool.name }));
               },
               onUnsettled: (operations) => {
                 for (const { toolCallId: id, settlement } of operations) {
@@ -404,11 +417,7 @@ export class ToolExecutionCoordinator {
                   this.context.quarantineExternalTool?.("Code Mode child", id, settlement);
                 }
               },
-              isCurrent: (name, wrapper) => this.context.toolRegistry.listEntries().some((entry) =>
-                entry.tool.name === name && entry === original.get(wrapper)
-                && (entry.source === "mcp" && !codeModeNestedToolNames.has(name) || isCodeModeReadTool(entry))
-                && (!this.executionToolNames || this.executionToolNames.has(name))
-                && isToolScriptCallable(entry.tool, !this.allowedToolNames || this.allowedToolNames.has(name)))
+              isCurrent: (_name, wrapper) => this.codeModeToolChecks.get(wrapper)?.() === true
             });
             if (!(result as { ok: boolean }).ok) {
               error = (result as { error?: string }).error ?? "Code Mode execution failed.";

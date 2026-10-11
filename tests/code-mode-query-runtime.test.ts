@@ -327,6 +327,57 @@ await test("CommandRuntime admits only exact host-owned read queries without cha
   }
 });
 
+await test("CommandRuntime scripts read durable plan status without exposing plan control tools", { timeout: 30_000 }, async () => {
+  const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "biny-code-mode-plan-query-")));
+  const previousAgentDir = process.env.BINY_AGENT_DIR;
+  process.env.BINY_AGENT_DIR = path.join(root, "agent");
+  await mkdir(path.join(root, ".git"));
+  const originalGetModel = ModelManager.prototype.getModel;
+  const originalGetSettings = ModelManager.prototype.getModelSettings;
+  let graphId = "";
+  let steps = 0;
+  const model: AgentModel = { provider: "fixture", modelId: "query-runtime-fixture", supportsTools: true, async stream(context) {
+    const response: ModelStreamEvent[] = steps++ === 0 ? [
+      { type: "tool-call", id: "plan-query", name: "exec", arguments: { code: `return {plan:await tools.PlanStatus({graphId:${JSON.stringify(graphId)}}),control:await describeTool('PlanUpdate')};` } },
+      { type: "finish", reason: "tool-calls" }
+    ] : [{ type: "text-delta", text: "plan inspected" }, { type: "finish", reason: "stop" }];
+    if (steps === 2) {
+      const result = context.messages.find((message) => message.role === "toolResult" && message.toolCallId === "plan-query");
+      assert.ok(result && result.role === "toolResult");
+      assert.equal(result.isError, false, JSON.stringify(result.details));
+      const value = record(record(result.details).value);
+      assert.equal(record(value.plan).status, "draft");
+      assert.equal(value.control, null);
+    }
+    return (async function* () { yield* response; })();
+  } };
+  ModelManager.prototype.getModel = () => model;
+  ModelManager.prototype.getModelSettings = function () { return { ...originalGetSettings.call(this), model, vercelModel: undefined }; };
+  let commands: CommandRuntime | undefined;
+  try {
+    const config = isolatedConfig();
+    config.permission.mode = "full-access";
+    config.extensions.skills.enabled = false;
+    commands = await createCommandRuntime(root, { sessionId: "plan-query-session", resourceBoot: "blocking",
+      configStore: { load: async () => config, save: async () => { throw new Error("No configuration writes"); } } });
+    const graph = commands.graphs.createSupervisedGraph({ supervisorSessionId: "plan-query-session", nodes: [
+      { nodeKey: "inspect", prompt: "Read fixture" }, { nodeKey: "report", prompt: "Report fixture", dependencies: ["inspect"] }
+    ] });
+    graphId = graph.graphId;
+    const before = commands.graphs.inspectGraph(graphId);
+    const outcome = await commands.agent.runTask("Read the fixture plan", { capabilitySelection: { tools: ["PlanStatus", "PlanUpdate"], skills: "none" }, emotionAnalysis: false });
+    assert.equal(outcome.status, "completed", outcome.error);
+    assert.equal(steps, 2);
+    assert.deepEqual(commands.graphs.inspectGraph(graphId), before);
+  } finally {
+    await commands?.close();
+    ModelManager.prototype.getModel = originalGetModel;
+    ModelManager.prototype.getModelSettings = originalGetSettings;
+    if (previousAgentDir === undefined) delete process.env.BINY_AGENT_DIR; else process.env.BINY_AGENT_DIR = previousAgentDir;
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 function isolatedConfig(): AgentConfig {
   const config = structuredClone(defaultConfig);
   config.defaultModel = "query-runtime-fixture";

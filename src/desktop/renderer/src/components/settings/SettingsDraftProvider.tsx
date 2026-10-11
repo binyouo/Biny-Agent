@@ -238,6 +238,10 @@ export function SettingsDraftProvider({
     setDraft((current) => current ? { ...current, chatParams: value } : current);
   }, []);
 
+  const setToolExecutionMode = useCallback((value: DesktopSettingsSnapshot["toolExecutionMode"]): void => {
+    setDraft((current) => current ? { ...current, toolExecutionMode: value } : current);
+  }, []);
+
   const setPermission = useCallback((value: DesktopPermissionSettings): void => {
     setDraft((current) => current ? { ...current, permission: value } : current);
   }, []);
@@ -546,6 +550,7 @@ export function SettingsDraftProvider({
     setMemory,
     setCompaction,
     setChatParams,
+    setToolExecutionMode,
     setPermission,
     setWebSearch,
     setChat,
@@ -584,6 +589,7 @@ export function SettingsDraftProvider({
     preferencesOnly,
     setChat,
     setChatParams,
+    setToolExecutionMode,
     setCompaction,
     setModelProfile,
     setFontPreference,
@@ -613,6 +619,7 @@ function draftFromSnapshot(snapshot: DesktopSettingsSnapshot): DesktopSettingsDr
     memory: structuredClone(snapshot.memory),
     compaction: structuredClone(snapshot.compaction),
     chatParams: structuredClone(snapshot.chatParams),
+    toolExecutionMode: snapshot.toolExecutionMode,
     permission: structuredClone(snapshot.permission),
     webSearch: webSearchInput(snapshot.webSearch),
     chat: snapshot.chat ? structuredClone(snapshot.chat.personalization) : undefined,
@@ -661,6 +668,7 @@ function countNonPreferenceDirtyFields(snapshot: DesktopSettingsSnapshot, draft:
   if (!sameJson(draft.memory, snapshot.memory)) count += 1;
   if (!sameJson(draft.compaction, snapshot.compaction)) count += 1;
   if (!sameJson(draft.chatParams, snapshot.chatParams)) count += 1;
+  if (draft.toolExecutionMode !== snapshot.toolExecutionMode) count += 1;
   if (!sameJson(draft.permission, snapshot.permission)) count += 1;
   if (!sameWebSearch(draft.webSearch, snapshot.webSearch)) count += 1;
   if (draft.models.upserts.length || draft.models.removeAliases.length || draft.models.defaultModel || draft.models.oauthCredentialHandles.length
@@ -711,6 +719,7 @@ function saveInput(snapshot: DesktopSettingsSnapshot, draft: DesktopSettingsDraf
     memory: sameJson(draft.memory, snapshot.memory) ? undefined : draft.memory,
     compaction: sameJson(draft.compaction, snapshot.compaction) ? undefined : draft.compaction,
     chatParams: sameJson(draft.chatParams, snapshot.chatParams) ? undefined : draft.chatParams,
+    toolExecutionMode: draft.toolExecutionMode === snapshot.toolExecutionMode ? undefined : draft.toolExecutionMode,
     permission: sameJson(draft.permission, snapshot.permission) ? undefined : draft.permission,
     webSearch: sameWebSearch(draft.webSearch, snapshot.webSearch) ? undefined : draft.webSearch,
     skills: sameJson(draft.skills, skillInputFromSnapshot(snapshot.skills)) ? undefined : draft.skills,

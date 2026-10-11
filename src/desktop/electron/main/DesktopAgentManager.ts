@@ -209,6 +209,7 @@ export interface DesktopSettingsConfigSnapshot {
   memory: AgentConfig["context"]["memory"];
   compaction: AgentConfig["context"]["compaction"];
   chatParams: AgentConfig["chat"];
+  toolExecutionMode: AgentConfig["agent"]["toolExecutionMode"];
   permission: AgentConfig["permission"];
   webSearch: DesktopWebSearchSettings;
   models: DesktopSettingsModelsSnapshot;
@@ -1179,6 +1180,7 @@ export class DesktopAgentManager {
       || input.memory !== undefined
       || input.compaction !== undefined
       || input.chatParams !== undefined
+      || input.toolExecutionMode !== undefined
       || input.permission !== undefined
       || input.webSearch !== undefined
       || input.skills !== undefined) {
@@ -1215,6 +1217,9 @@ export class DesktopAgentManager {
           compaction: input.compaction
         }
       });
+    }
+    if (input.toolExecutionMode !== undefined) {
+      next = configSchema.parse({ ...next, agent: { ...next.agent, toolExecutionMode: input.toolExecutionMode } });
     }
     if (input.chatParams !== undefined) {
       next = configSchema.parse({
@@ -3461,6 +3466,7 @@ function describeSettingsConfigSnapshot(
     memory: structuredClone(config.context.memory),
     compaction: structuredClone(config.context.compaction),
     chatParams: structuredClone(config.chat),
+    toolExecutionMode: config.agent.toolExecutionMode,
     permission: structuredClone(config.permission),
     webSearch: describeWebSearchSettings(config.web.search),
     models: {

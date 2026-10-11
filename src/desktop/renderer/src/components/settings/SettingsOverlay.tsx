@@ -22,6 +22,7 @@ import { SettingsToolModel } from "./SettingsToolModel.js";
 import { stagedModelChoices } from "./providerModelProjection.js";
 import { SettingsAbout } from "./SettingsAbout.js";
 import { SettingsAppearance } from "./SettingsAppearance.js";
+import { SettingsSwitch } from "./SettingsSwitch.js";
 import { SettingsThemes } from "./SettingsThemes.js";
 import { DEFAULT_APPEARANCE } from "../../../../../appearance/preferences.js";
 import type { AppearancePreference } from "../../../../../appearance/types.js";
@@ -127,7 +128,7 @@ const settingsTabLabels: Partial<Record<SettingsTab, string>> = { 模型: "模�
 const settingsPages: Record<SettingsTab, { description: string; keywords: string }> = {
   导入: { description: "导入其他应用的模型设置、MCP 配置和会话。", keywords: "import 导入 同步 Claude Codex ChatGPT 会话 历史 模型 MCP" },
   配色: { description: "选择配色与界面皮肤，修改时即时预览。", keywords: "配色 主题 Windows 98 XP Longhorn 自定义" },
-  通用: { description: "后台模型与快速对话。", keywords: "工具模型 视觉模型 后台 标题 记忆整理 快速对话 悬浮 小窗 失焦 隐藏 点击穿透" },
+  通用: { description: "工具编排、后台模型与快速对话。", keywords: "Code Mode codemode exec 脚本 工具编排 工具模型 视觉模型 后台 标题 记忆整理 快速对话 悬浮 小窗 失焦 隐藏 点击穿透" },
   用户界面: { description: "主题、界面密度与字体。", keywords: "外观 界面 主题 浅色 深色 跟随系统 密度 紧凑 舒适 宽松 字体 字号 行高 阅读" },
   聊天: { description: "设置回复的显示方式，以及新对话的默认能力。", keywords: "流式 令牌 token Markdown 数学公式 思考 链接 默认工具 技能 温度 采样 压缩 Hashline" },
   模型: { description: "管理模型连接、登录凭据和可用模型。", keywords: "供应商 服务商 API Key 密钥 base URL 登录 默认模型" },
@@ -448,7 +449,16 @@ function SettingsOverlayContent({
             font={settingsDraft.draft?.fontPreference ?? fontPreference}
             onFontChange={settingsDraft.setFontPreference}
           /> : null}
-          {activeTab === "通用" ? <div className="settings-preferences"><SettingsToolModel onTest={onTestModelConfiguration} /><SettingsVisionModel /><SettingsQuickChat /></div> : null}
+          {activeTab === "通用" ? <div className="settings-preferences">
+            {settingsDraft.draft ? <div className="settings-row-group" id="tool-execution">
+              <SettingsSwitch label="Code Mode"
+                detail="允许模型按需用脚本编排工具，仍可直接调用。保存后从下一回合生效。"
+                checked={settingsDraft.draft.toolExecutionMode === "code_mode"}
+                disabled={runtimeBusy || settingsDraft.saveState === "saving" || settingsDraft.saveState === "rolling_back" || settingsDraft.saveState === "recovery_required"}
+                onChange={(enabled) => settingsDraft.setToolExecutionMode(enabled ? "code_mode" : "direct")} />
+            </div> : null}
+            <SettingsToolModel onTest={onTestModelConfiguration} /><SettingsVisionModel /><SettingsQuickChat />
+          </div> : null}
           {activeTab === "配色" ? <SettingsThemes
             preference={settingsDraft.draft?.appearancePreference ?? appearancePreference ?? DEFAULT_APPEARANCE}
             onChange={settingsDraft.setAppearancePreference}
