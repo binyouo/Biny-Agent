@@ -573,8 +573,32 @@ async function writeSessionIndexFile(workspaceRoot: string, items: readonly Sess
 
 const indexRefreshes = new Map<string, { dirty: boolean; completion: Promise<void> }>();
 
+const pendingIndexRefreshes = new Set<Promise<void>>();
+
+/** 登记完整刷新任务，包括 canonical path 解析；元数据写入仍可在后台刷新索引。 */
+export function refreshSessionIndex(workspaceRoot: string): Promise<void> {
+  const completion = refreshSessionIndexInBackground(workspaceRoot);
+  pendingIndexRefreshes.add(completion);
+  void completion.then(
+    () => { pendingIndexRefreshes.delete(completion); },
+    () => { pendingIndexRefreshes.delete(completion); }
+  );
+  return completion;
+}
+
+/**
+ * 等待当前进程已接纳的索引刷新，以及等待期间接纳的刷新。
+ * 调用方须先停止生产者；此屏障不会阻止返回后发起的新刷新。
+ * 覆盖所有工作区，避免 canonical path 解析之前的任务或路径别名遗漏。
+ */
+export async function drainSessionIndexRefreshes(): Promise<void> {
+  while (pendingIndexRefreshes.size) {
+    await Promise.all([...pendingIndexRefreshes]);
+  }
+}
+
 /** 同一工作区串行发布；刷新期间的新请求合并成下一轮，不能丢掉后到的写入。 */
-export async function refreshSessionIndex(workspaceRoot: string): Promise<void> {
+async function refreshSessionIndexInBackground(workspaceRoot: string): Promise<void> {
   try {
     const root = await fs.realpath(path.resolve(workspaceRoot));
     const active = indexRefreshes.get(root);
