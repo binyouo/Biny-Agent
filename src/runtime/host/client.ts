@@ -1520,10 +1520,22 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
       this.applySessionSummaries(frame.sessions, frame.sequence);
       // gap 明确结束旧区间，snapshot 不能补回已淘汰的通知。
       this.acknowledgeEvents(frame.sequence, frame.hostEpoch);
-      const update: AgentRuntimeUpdate = { snapshot: this.snapshots.get(frame.snapshot.info.sessionId) ?? frame.snapshot };
-      for (const listener of this.allListeners) listener(update);
-      if (this.focusedSessionId === frame.snapshot.info.sessionId) {
-        for (const listener of this.listeners) listener(update);
+      // A gap resynchronizes every listed session, not just the Host's primary.
+      // Notify with reconciled cache entries so newer per-session observations win.
+      const sessionIds = new Set([frame.snapshot.info.sessionId, ...(frame.sessions?.map((session) => session.sessionId) ?? [])]);
+      for (const sessionId of sessionIds) {
+        const snapshot = this.snapshots.get(sessionId);
+        if (!snapshot) continue;
+        const update: AgentRuntimeUpdate = { snapshot };
+        for (const listener of this.allListeners) listener(update);
+        if (this.focusedSessionId === sessionId) {
+          if (this.listeners.size) {
+            for (const listener of this.listeners) listener(update);
+          } else {
+            this.pendingUpdates.push(update);
+            if (this.pendingUpdates.length > eventHistoryLimit) this.pendingUpdates.splice(0, this.pendingUpdates.length - eventHistoryLimit);
+          }
+        }
       }
     }
   }
