@@ -615,6 +615,7 @@ export class AgentSession {
     };
     const contextCompactionOptions: ContextCompactionOptions = {
         ...options.config.context.compaction,
+        canRequestSummary: () => this.activeOperation !== "agent turn" || !this.sessionGoalBudgetStopped(),
         resolveSummaryModel,
         resolveSummaryBudget: (model) => summaryBudgets.get(model),
         configurationIdentity: () => createHash("sha256").update(JSON.stringify([
@@ -3071,6 +3072,7 @@ export class AgentSession {
             prunedMessages = await projectForModelRequest(activeRequestContext.messages);
             requestMessages = this.contextMemory.projectCompactionCheckpoint(prunedMessages);
           }
+          if (this.sessionGoalBudgetStopped()) throw this.sessionGoalUsageFailure ?? new Error("The session goal budget stopped further model work. Inspect GoalGet before resuming.");
           const absoluteStep = completedStepsBeforeRun + observedSteps;
           if (!softLimitWarningInjected && absoluteStep >= runBudget.softStepLimit) {
             softLimitWarningInjected = true;
