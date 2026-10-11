@@ -50,7 +50,7 @@ import { activityTrayItems } from "./activityTrayMenu.js";
 import { createDesktopActivityHttpDependencies } from "./activityHttpApi.js";
 import { QuickChatContextService } from "./QuickChatContextService.js";
 import { createQuickChatWindow, type QuickChatWindowController } from "./quickChatWindow.js";
-import { createDesktopWindow, type WindowCloseDecision } from "./window.js";
+import { createDesktopWindow, sendToDesktopWindow, type WindowCloseDecision } from "./window.js";
 import { parseDesktopReferenceLaunch } from "./desktopReferenceLaunch.js";
 import { createComputerUseService } from "./computerUseService.js";
 import { startRuntimeHostApp } from "./runtimeHostStartup.js";
@@ -154,7 +154,7 @@ async function startDesktopApplication(): Promise<void> {
   };
   /** 事件回流广播到所有活跃窗口：主窗口 + QuickChat（存在时）。主窗口行为不变，QuickChat 是新增订阅者。 */
   const broadcastToWindows = (channel: string, payload: unknown): void => {
-    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(channel, payload);
+    sendToDesktopWindow(mainWindow, channel, payload);
     // QuickChat 隐藏时渲染层不消费事件；窗口已创建则无论显隐都推，让它在下次唤醒前攒好状态。
     quickChatWindow?.send(channel, payload);
   };
@@ -260,7 +260,7 @@ async function startDesktopApplication(): Promise<void> {
     onAnalyzed: activityMemoryPipeline.onAnalyzed,
     getEmbeddingRuntime: async () => await activityEmbeddingModels.createRuntime("multilingual-e5-small").catch(() => undefined),
     emit: (snapshot) => {
-      if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(desktopIpc.activityEvent, snapshot);
+      sendToDesktopWindow(mainWindow, desktopIpc.activityEvent, snapshot);
       refreshActivityTray?.(snapshot.state);
     }
   });
@@ -286,7 +286,7 @@ async function startDesktopApplication(): Promise<void> {
   };
   const initialTarget = initialHandoff === undefined ? undefined : await prepareHandoff(initialHandoff);
   const terminals = new DesktopTerminalManager((event) => {
-    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(desktopIpc.terminalEvent, event);
+    sendToDesktopWindow(mainWindow, desktopIpc.terminalEvent, event);
   });
   const staticPreview = new StaticPreviewServer();
   await activity.initialize();

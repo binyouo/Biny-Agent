@@ -17,6 +17,11 @@ import type { AppearanceSnapshot } from "../../../appearance/types.js";
 
 export type WindowCloseDecision = "close" | "cancel";
 
+export function sendToDesktopWindow(window: BrowserWindow | undefined, channel: string, payload: unknown): void {
+  if (!window || window.isDestroyed() || window.webContents.isDestroyed()) return;
+  window.webContents.send(channel, payload);
+}
+
 /** 窗口底色要和渲染层主体色一致，否则加载过程中会闪一下异色底。 */
 function themeBackgroundColor(preference: DesktopThemePreference = "system"): string {
   const dark = preference === "dark" || (preference === "system" && nativeTheme.shouldUseDarkColors);

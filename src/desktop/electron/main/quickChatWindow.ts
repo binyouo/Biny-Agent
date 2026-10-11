@@ -10,6 +10,7 @@ import { fileURLToPath } from "node:url";
 import { BrowserWindow, screen } from "electron";
 import type { DesktopQuickChatSettings } from "../../protocol.js";
 import type { DesktopWindowBounds } from "./DesktopStateStore.js";
+import { sendToDesktopWindow } from "./window.js";
 
 const DEFAULT_WIDTH = 600;
 const DEFAULT_HEIGHT = 400;
@@ -205,10 +206,7 @@ export function createQuickChatWindow(
       clickThroughActive = enabled;
       applyClickThrough(enabled);
     },
-    send: (channel, payload) => {
-      if (destroyed || window.isDestroyed()) return;
-      window.webContents.send(channel, payload);
-    },
+    send: (channel, payload) => sendToDesktopWindow(window, channel, payload),
     applySettings: (next) => {
       settingsSnapshot = next;
       if (!next.clickThrough) {
