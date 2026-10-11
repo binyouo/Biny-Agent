@@ -653,6 +653,9 @@ function canonicalCheckpointPath(
       }
     }
     if (event.type !== "context_checkpoint") continue;
+    // Conflicting historical choices need the canonical recency-aware prefix projection.
+    // Leave only this checkpoint unindexed; compatible prefixes retain the fast path.
+    if (selectedStart[1]! >= selectedEnd[1]!) continue;
     let left = size + selectedStart[1]!;
     let right = size + selectedEnd[1]!;
     let leaf = -1;
