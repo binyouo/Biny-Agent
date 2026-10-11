@@ -454,7 +454,10 @@ export class RuntimeHostServer {
     for (const { runtime, commands } of this.registry.list()) {
       const processes = await commands.managedProcesses?.list({ includeExited: false });
       const heartbeat = commands.heartbeat?.status();
-      const activeWork = runtimeIsBusy(runtime.getSnapshot())
+      const snapshot = runtime.getSnapshot();
+      // 暂停队列尚未交付且只在内存中；自动退出必须等用户清空或继续。
+      const activeWork = runtimeIsBusy(snapshot)
+        || Boolean(snapshot.queuedMessages?.length)
         || commands.hasBackgroundWork?.()
         || Boolean(processes?.length)
         || heartbeat?.running
