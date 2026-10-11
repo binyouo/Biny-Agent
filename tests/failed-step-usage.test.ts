@@ -4,22 +4,28 @@ import { stripTypeScriptTypes } from "node:module";
 import test from "node:test";
 import { runInNewContext } from "node:vm";
 import ts from "typescript";
+import { createSessionUsage, sumSessionUsage, summarizeUsage } from "../src/observability/usage.js";
+import { usageSnapshot } from "../src/session/metadata.js";
+import { replaySessionEvents } from "../src/session/replay.js";
+import type { SessionEvent } from "../src/session/recorder.js";
+import { mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { AgentSession } from "../src/agent/AgentSession.js";
+import type { AgentModel } from "../src/agent/core/types.js";
+import { configSchema, defaultConfig } from "../src/config/schema.js";
+import { PermissionManager } from "../src/permission/PermissionManager.js";
+import { SessionRecorder } from "../src/session/recorder.js";
+import { replaySession } from "../src/session/replay.js";
+import { ToolRegistry } from "../src/tools/registry.js";
+import { createReadFileTool } from "../src/tools/file/readFile.js";
+import { ensureAgentDirs } from "../src/session/store.js";
 
-// Source-only accounting fixture. No product imports, model/SDK, AgentSession,
-// Recorder, filesystem writes, SQLite, Host, services or subprocesses execute.
-// The actual audit closure and catch accounting statements run against an inert
-// array sink. Its before/after-append switches model uncertainty, not Recorder IO.
+// The audit-failure fixture isolates only recorder failures. Shared usage and
+// branch/replay behavior comes from real modules so new internal helpers stay wired.
 const root = new URL("../", import.meta.url);
 function source(path: string): ts.SourceFile {
   return ts.createSourceFile(path, readFileSync(new URL(path, root), "utf8"), ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
-}
-function functions(file: ts.SourceFile, names: readonly string[]): string {
-  return names.map(name => {
-    const nodes = file.statements.filter((node): node is ts.FunctionDeclaration =>
-      ts.isFunctionDeclaration(node) && node.name?.text === name);
-    assert.equal(nodes.length, 1, `${file.fileName}: ${name}`);
-    return nodes[0]!.getText(file).replace(/^export\s+/u, "");
-  }).join("\n");
 }
 function descendants(node: ts.Node, predicate: (node: ts.Node) => boolean): ts.Node[] {
   const found: ts.Node[] = [];
@@ -63,17 +69,7 @@ assert.ok(ts.isIfStatement(retryGuard) && retryGuard.expression.getText(agent) =
   && ts.isThrowStatement(retryGuard.thenStatement), "retry commit retains first-priority throw");
 const errorCall = exactlyOne(catchNode.block.statements.filter(statement => ts.isExpressionStatement(statement)
   && ts.isCallExpression(statement.expression) && statement.expression.expression.getText(agent) === "this.recordError"), "actual catch accounting");
-const accounting = source("src/observability/usage.ts");
-const metadata = source("src/session/metadata.ts");
-const replay = source("src/session/replay.ts");
-const tree = source("src/session/messageTree.ts");
 const code = [
-  functions(metadata, ["usageSnapshot", "readReportedCacheUsage", "reportedCacheTokenValue"]),
-  functions(accounting, ["createSessionUsage", "calculateUsageCost", "calculateCacheHitRate", "summarizeUsage",
-    "sumSessionUsage", "sumDefined", "foldReportedCacheCounts", "projectedCacheRate", "weightedProjectedCacheRate",
-    "sumReportedCacheUsage", "summarizeReportedCacheUsage"]),
-  functions(replay, ["sessionUsage"]),
-  functions(tree, ["sessionMessageTree", "activeSessionMessageIds", "activeSessionEventsForPath"]),
   `class AccountingFixture {
     ${method("recordError").getText(agent)}
     ${method("takeRelatedUsage").getText(agent)}
@@ -100,8 +96,7 @@ const code = [
       }
     }
   }
-  ({ createSessionUsage, sumSessionUsage, summarizeUsage, sessionUsage,
-     activeSessionEventsForPath, fixture: AccountingFixture.prototype });`
+  ({ fixture: AccountingFixture.prototype });`
 ].join("\n");
 
 interface Counts {
@@ -126,7 +121,7 @@ interface Event {
   type: string; usage?: Usage; relatedUsage?: Usage[]; preparationUsage?: Usage[]; content?: string;
   messageId?: string; parentMessageId?: string; slotId?: string; auditOnly?: boolean;
   message?: { role: string; content: string | unknown[]; usage?: Counts };
-  runtime?: { runId: string }; metrics?: { usage: Counts };
+  runtime?: { runId: string; eventId: string; eventSeq: number }; metrics?: { usage: Counts };
 }
 interface ModelInfo {
   modelAlias: string; provider: string; model: string;
@@ -137,14 +132,21 @@ interface Extracted {
   sumSessionUsage(records: Usage[]): Usage;
   summarizeUsage(records: Usage[]): Summary;
   sessionUsage(events: Event[]): Usage[];
-  activeSessionEventsForPath(events: Event[]): Event[];
   fixture: { settle(mode: "success" | "provider-failure" | "terminal-failure", records: Usage[], retryCommitStarted?: boolean): Promise<void> };
 }
-// Strip types only: no transpilation, dynamic import or product module evaluation.
 // The timeout bounds VM setup only; later extracted function calls are not timed by it.
-const extracted = runInNewContext(stripTypeScriptTypes(code, { mode: "strip" }), { Error }, {
+const accountingFixture = runInNewContext(stripTypeScriptTypes(code, { mode: "strip" }), {
+  Error, sumSessionUsage, usageSnapshot
+}, {
   timeout: 1000, contextCodeGeneration: { strings: false, wasm: false }
-}) as Extracted;
+}) as Pick<Extracted, "fixture">;
+const extracted: Extracted = {
+  ...accountingFixture,
+  createSessionUsage: createSessionUsage as Extracted["createSessionUsage"],
+  sumSessionUsage: sumSessionUsage as Extracted["sumSessionUsage"],
+  summarizeUsage: summarizeUsage as Extracted["summarizeUsage"],
+  sessionUsage: events => replaySessionEvents(events as SessionEvent[]).usage,
+};
 const json = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
 function usage(counts: Counts, operation = "agent", priced = true): Usage {
   return extracted.createSessionUsage(counts, operation, {
@@ -168,6 +170,78 @@ function fixture(related: Usage[] = [], auditFailure?: "before-append" | "after-
 }
 const first = () => usage({ inputTokens: 100, outputTokens: 20, totalTokens: 120, cacheReadTokens: 80 });
 const second = () => usage({ inputTokens: 200, outputTokens: 30, totalTokens: 230, cacheReadTokens: 100 });
+
+test("completed tool-step usage survives a later provider failure, disk replay and cold Agent reopen", { timeout: 20_000 }, async () => {
+  const workspace = await realpath(await mkdtemp(path.join(os.tmpdir(), "biny-failed-step-usage-")));
+  const previousAgentDir = process.env.BINY_AGENT_DIR;
+  process.env.BINY_AGENT_DIR = path.join(workspace, "global");
+  await ensureAgentDirs(workspace);
+  const config = configSchema.parse({
+    ...defaultConfig, defaultModel: "fixture",
+    agent: { ...defaultConfig.agent, toolExecutionMode: "direct" },
+    providers: { fixture: { type: "openai", apiKey: "fixture-placeholder" } },
+    models: { fixture: { provider: "fixture", model: "fixture", contextWindow: 1_000_000,
+      pricing: { inputPerMillionTokens: 2, outputPerMillionTokens: 4, cacheReadPerMillionTokens: 0.5 } } },
+    context: { ...defaultConfig.context,
+      emotion: { ...defaultConfig.context.emotion, enabled: false },
+      identity: { ...defaultConfig.context.identity, enabled: false },
+      compaction: { ...defaultConfig.context.compaction, enabled: false },
+      memory: { ...defaultConfig.context.memory, useMemories: false, generateMemories: false } }
+  });
+  let requests = 0;
+  const model: AgentModel = {
+    provider: "fixture", modelId: "fixture", supportsTools: true, vercelOptions: { maxRetries: 0 },
+    async stream() {
+      requests++;
+      if (requests !== 1) throw new Error("fixture provider unavailable");
+      return (async function* () {
+        yield { type: "tool-call" as const, id: "read-fixture", name: "Read", arguments: { path: "fixture.txt" } };
+        yield { type: "finish" as const, reason: "tool-calls" as const,
+          usage: { inputTokens: 100, outputTokens: 20, totalTokens: 120, cacheReadTokens: 80 } };
+      })();
+    }
+  };
+  const createAgent = () => {
+    const registry = new ToolRegistry();
+    registry.registerBuiltinTool(createReadFileTool({ workspaceRoot: workspace, ignore: [] }));
+    return new AgentSession({ workspaceRoot: workspace, config, model, toolRegistry: registry,
+      permissionManager: new PermissionManager(config.permission), recorder: new SessionRecorder(workspace) });
+  };
+  let agent = createAgent();
+  try {
+    await writeFile(path.join(workspace, "fixture.txt"), "persisted tool evidence");
+    await agent.initialize();
+    const info = agent.getInfo();
+    const outcome = await agent.runTask("Read fixture.txt and summarize it.", { emotionAnalysis: false });
+    assert.equal(outcome.status, "failed");
+    assert.equal(requests, 2);
+    const checkUsage = (summary: ReturnType<AgentSession["usageSummary"]>) => {
+      assert.equal(summary.inputTokens, 100);
+      assert.equal(summary.outputTokens, 20);
+      assert.equal(summary.totalTokens, 120);
+      assert.equal(summary.cacheReadTokens, 80);
+      assert.equal(summary.costUsd, 0.00016);
+    };
+    checkUsage(agent.usageSummary());
+    await agent.close();
+    const replay = await replaySession(info.sessionFile);
+    assert.equal(replay.usage.filter(record => record.operation === "agent").length, 1);
+    checkUsage(summarizeUsage(replay.usage));
+    assert.ok(replay.events.some(event => event.type === "tool_result"), "the first step executed a real file tool");
+    assert.ok(replay.events.some(event => event.type === "error" && event.relatedUsage?.[0]?.totalTokens === 120));
+    await rm(info.sessionFile.replace(/\.jsonl$/u, ".snap.json"), { force: true });
+    agent = createAgent();
+    await agent.initialize();
+    await agent.resume(info.sessionId);
+    checkUsage(agent.usageSummary());
+    assert.equal(requests, 2, "restoring usage must not replay model requests");
+  } finally {
+    await agent.close();
+    if (previousAgentDir === undefined) delete process.env.BINY_AGENT_DIR;
+    else process.env.BINY_AGENT_DIR = previousAgentDir;
+    await rm(workspace, { recursive: true, force: true });
+  }
+});
 
 test("successful steps retain one aggregate and later terminal failure does not settle twice", async () => {
   for (const mode of ["success", "terminal-failure"] as const) {
@@ -248,19 +322,19 @@ test("an attempted audit or owned retry commit never gets a second catch settlem
 test("canonical/request evidence is not counted twice and active branch filtering stays unchanged", async () => {
   const f = fixture();
   await f.state.settle("provider-failure", [first()]);
-  const rootEvent: Event = { type: "user_message", messageId: "root", content: "request", runtime: { runId: "run-a" } };
-  const step: Event = { type: "agent_message", messageId: "step", parentMessageId: "root", runtime: { runId: "run-a" },
+  const rootEvent: Event = { type: "user_message", messageId: "root", content: "request", runtime: { runId: "run-a", eventId: "root-event", eventSeq: 1 } };
+  const step: Event = { type: "agent_message", messageId: "step", parentMessageId: "root", runtime: { runId: "run-a", eventId: "step-event", eventSeq: 2 },
     message: { role: "assistant", content: [], usage: { inputTokens: 100, outputTokens: 20, totalTokens: 120 } } };
-  const request: Event = { type: "model_request", runtime: { runId: "run-a" }, metrics: { usage: step.message!.usage! } };
-  const error: Event = { ...f.events[0]!, runtime: { runId: "run-a" } };
+  const request: Event = { type: "model_request", runtime: { runId: "run-a", eventId: "request-event", eventSeq: 3 }, metrics: { usage: step.message!.usage! } };
+  const error: Event = { ...f.events[0]!, runtime: { runId: "run-a", eventId: "error-event", eventSeq: 4 } };
   const original = [rootEvent, step, request, error];
-  assert.equal(extracted.summarizeUsage(extracted.sessionUsage(extracted.activeSessionEventsForPath(original))).totalTokens, 120);
+  assert.equal(extracted.summarizeUsage(extracted.sessionUsage(original)).totalTokens, 120);
   const replacement: Event = { type: "agent_message", messageId: "replacement", parentMessageId: "root", slotId: "step",
-    runtime: { runId: "run-b" }, message: { role: "assistant", content: [] } };
+    runtime: { runId: "run-b", eventId: "replacement-event", eventSeq: 5 }, message: { role: "assistant", content: [] } };
   // The old run still owns the active root, so its error remains under current rules.
   const selected = [...original, replacement, { type: "message_version_selected", messageId: "replacement", slotId: "step" }];
-  assert.equal(extracted.sessionUsage(extracted.activeSessionEventsForPath(selected)).length, 1);
-  const alternateRoot: Event = { type: "user_message", messageId: "other-root", content: "other", runtime: { runId: "run-c" } };
-  assert.equal(extracted.sessionUsage(extracted.activeSessionEventsForPath([...original, alternateRoot])).length, 0,
+  assert.equal(extracted.sessionUsage(selected).length, 1);
+  const alternateRoot: Event = { type: "user_message", messageId: "other-root", content: "other", runtime: { runId: "run-c", eventId: "alternate-event", eventSeq: 5 } };
+  assert.equal(extracted.sessionUsage([...original, alternateRoot]).length, 0,
     "this change does not create an all-physical-branches billing ledger");
 });
