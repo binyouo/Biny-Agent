@@ -1,9 +1,11 @@
 ---
 name: self-reflection
-description: "Conduct an evidence-bounded daily self-review from the existing diary, activity records, session events, task results, and relevant memory. Use when the user explicitly asks to reflect, write a diary, review the end of the day, identify lessons learned, examine recurring mistakes, or when an authorized heartbeat invokes the reflection pipeline; triggers include: reflect on today, what went wrong, lessons learned, daily retrospective, 复盘一下, 日终总结, and 哪些地方可以改进. Keep facts separate from interpretation, preserve the existing daily-notes source of truth, and let the authorized reflection pipeline update diary, supported memories, Evolved Traits and base emotion while preserving tool permissions."
+description: "Review the day using the existing diary, activity records, session events, task results, and memory. Use for explicit reflection, diary writing, lessons learned, recurring mistakes, or an authorized heartbeat reflection. Separate recorded facts from interpretation and persist changes through Biny's reflection pipeline."
+allowed-tools:
+  - Bash
 ---
 
-# Self-Reflection Skill
+# Daily Reflection
 
 Conduct a bounded daily self-review from Biny's existing diary, activity records, session events, task results, and relevant memory. Write a personal first-person diary: memorable moments, mood shifts, opinions, lessons and small observations. Subjective feelings are welcome; events and task outcomes must remain grounded in records.
 
@@ -55,21 +57,7 @@ Keep facts, interpretations, and recommendations in separate language. Do not fo
 
 Use `biny reflection run <date> --json` only when the user explicitly asks to run the pipeline or an authorized heartbeat invokes it. Check the returned result and then read the daily note again when verification matters.
 
-If writing a response rather than running the pipeline, use a natural first-person or neutral voice appropriate to the user and language. A useful structure is:
-
-```markdown
-## What happened
-Facts and important context supported by records.
-
-## What worked
-Specific outcomes or decisions with evidence.
-
-## What needs improvement
-Concrete, testable changes; omit the section when nothing is supported.
-
-## Possible memory
-Only stable, high-confidence candidates; the authorized pipeline persists them according to the memory contribution setting.
-```
+If the user asks only for analysis, answer from the records without persisting a diary. Use the user's language and a natural voice. Include the meaningful events, evidence-backed lessons, and any actionable change; omit empty categories and unsupported personality claims.
 
 ## Rules
 

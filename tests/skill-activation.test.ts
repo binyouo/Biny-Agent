@@ -47,13 +47,22 @@ async function main(): Promise<void> {
 
     const builtins = await loadSkills({ workspaceRoot, projectPaths: [], globalRoot });
     const builtinNames = builtins.skills.filter((skill) => skill.scope === "builtin").map((skill) => skill.name);
-    assert.deepEqual(builtinNames, ["browser", "computer-use", "daily-report", "memory-management", "plan-weave", "scheduler", "self-reflection", "tasks", "todo", "workspace-search"]);
+    assert.deepEqual(builtinNames, ["browser", "computer-use", "daily-report", "file-manager", "memory-management", "notebook", "plan-weave", "scheduler", "self-reflection", "skill-hub", "system-info", "tasks", "todo", "web-fetch", "web-search", "workspace-search"]);
     assert.equal(builtins.skills.filter((skill) => skill.scope === "builtin").every((skill) => skill.source === "builtin"), true);
     const report = builtins.skills.find((skill) => skill.name === "daily-report")!;
     assert.equal(report.scope, "builtin");
     const reportExecution = createSkillTool(builtins).resolveExecution({ skill: "daily-report" });
     assert.ok(!("isError" in reportExecution), "日报技能必须能经运行时 Skill 工具加载，不只是源码目录里存在");
     for (const skill of builtins.skills.filter((candidate) => candidate.scope === "builtin")) {
+      assert.doesNotMatch(skill.description, /\p{Script=Han}/u, `${skill.name}: built-in catalog descriptions must be English, including routing examples`);
+      // 所有新增内置技能必须可经真实 Skill 入口加载；目录枚举无法发现正文读取失败。
+      const execution = createSkillTool(builtins).resolveExecution({ skill: skill.name });
+      assert.ok(!("isError" in execution), `${skill.name} must resolve through Skill`);
+      if (!("isError" in execution)) {
+        const instructions = await execution.execute({ toolCallId: `builtin-${skill.name}` });
+        assert.equal(typeof instructions, "string");
+        assert.match(instructions as string, /\S/u, `${skill.name} must load instructions`);
+      }
       const document = await readFile(skill.filePath, "utf8");
       assert.match(document, new RegExp(`name:\\s*${skill.name}\\b`));
       assert.match(document, /description:\s*\S/u);

@@ -1,20 +1,20 @@
 ---
 name: daily-report
-description: "Generate a rich, evidence-based work journal for a specific day or date range, grouped by project, theme, and outcome rather than presented as a minute-by-minute timeline. Use this whenever the user asks about today, yesterday, a named date, last week, what they got done, a work recap, or a daily report; triggers include: what did I do today, recap my day, summarize yesterday, work journal, daily review, 今天做了什么, 昨天的工作, 打工日记, and 工作总结. Prefer `biny activity report` for day-level or multi-day questions and use `biny activity digest` only for a shallow recent overview; do not use this for the immediately preceding turn unless an activity record is requested, and never invent missing events, times, projects, or outcomes."
+description: "Build an evidence-based work journal for a day or date range, grouped by project, theme, and outcome. Use for questions about today, yesterday, last week, completed work, or daily reports. Prefer biny activity report for day-level coverage; use digest for a recent overview and disclose missing records."
+allowed-tools:
+  - Bash
 ---
 
-# Daily Report Skill
+# Daily Work Reports
 
 Generate a thematic work journal from Biny's local activity records. The report is grouped by project, theme, and outcome; it is not intended to be a minute-by-minute timeline.
 
-This skill exists because `biny activity digest` is useful for a shallow, recent timeline, while `biny activity report` builds a richer day-level journal from analyzed activity sessions. Use the report when the user asks what they got done, not merely what was open recently.
+Use `report` for outcomes across a day; use `digest` for a recent timeline.
 
 ## When to use
 
 Use this skill for a **day-level or multi-day** question about the user's own activity:
 
-- 今天做了什么 / 我今天都干了什么 / 今天的工作总结
-- 昨天做了什么 / 上周完成了什么 / 某个日期的工作
 - what did I do today / yesterday / last Friday
 - summarize my week / give me a recap / work journal / daily report
 - any request where the answer should be organized by outcomes or themes rather than timestamps
@@ -38,11 +38,13 @@ biny activity report today
 biny activity report yesterday
 
 # A specific date
-biny activity report 2026-09-10
+biny activity report <YYYY-MM-DD>
 
 # Recent timeline instead of a day-level journal
 biny activity digest --lookback 120
 ```
+
+`report` reuses a cached journal when available. Use `--force` only when the requested report needs regeneration. `--skeleton` produces a deterministic report from stored analyses without a new model-generated narrative; identify that mode when returning it. Resolve the date range in the user's local time before requesting individual days.
 
 When the user asks a follow-up about one project or event, drill down with `biny activity search` (use `biny activity search semantic <query>` when keyword search misses meaning-based recalls), `biny activity sessions`, or `biny activity show <session-id>` for one session's events, snapshots and analysis, instead of regenerating the whole report.
 

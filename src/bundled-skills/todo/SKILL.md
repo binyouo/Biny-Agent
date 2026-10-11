@@ -1,9 +1,12 @@
 ---
 name: todo
-description: "Manage a structured, lightweight todo list for the current session when the user needs to keep track of a small set of immediate, mostly linear steps. Use for requests such as make a checklist, show what remains, add this to my todo, mark this done, reorder the list, or clear the current list; triggers include: make a checklist, what remains, add this to my todo, todo list, 待办, 列个清单, and 还有什么没做. Keep at most one item in progress and use the full-list TodoStore update; use `tasks` for cross-session or independently executed work and `plan-weave` for dependencies or review gates, and do not mistake a checked item for execution evidence."
+description: "Manage a lightweight todo list for a small set of immediate, mostly linear steps in the current session. Use to create a checklist, show remaining work, add or complete items, reorder, or clear the list. Keep at most one item in progress; use tasks for independent execution and plan-weave for dependencies or review gates."
+allowed-tools:
+  - TodoWrite
+  - Bash
 ---
 
-# Todo Skill
+# Session Checklists
 
 Manage the structured todo list for the current session. Biny stores the list in its session-scoped TodoStore and injects it back into the model on later turns, so it survives context compaction without becoming an executor or a second source of task truth.
 
@@ -20,9 +23,15 @@ Manage the structured todo list for the current session. Biny stores the list in
 - Work with prerequisites, branches, review gates, or recoverable graph state → use `plan-weave`.
 - A scheduled action → use `scheduler`.
 
-## File and tool model
+## Update the list
 
 Prefer the `TodoWrite` capability when working inside an agent turn. It replaces the complete list, validates item content and status, and returns the remaining count. The list is session-scoped; a subagent must not silently mutate the parent session's list.
+
+For example, call `TodoWrite` with the complete desired list:
+
+```json
+{"todos":[{"content":"Reproduce the reported failure","status":"in_progress"},{"content":"Fix and verify the failure","status":"pending"}]}
+```
 
 For explicit CLI management:
 
@@ -38,7 +47,7 @@ biny todo replace \
   --todos '[{"content":"Inspect the current implementation","status":"in_progress"},{"content":"Run focused tests","status":"pending"}]' \
   --json
 
-# Clear the list after explicit confirmation
+# Clear the list when the user requests it
 biny todo clear --yes --json
 ```
 

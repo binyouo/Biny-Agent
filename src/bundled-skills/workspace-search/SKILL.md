@@ -1,9 +1,13 @@
 ---
 name: workspace-search
 description: "Search the current workspace when the user asks to inspect local code, documentation, configuration, data, history, or whether related material exists. Use native Grep for exact text, identifiers, filenames, paths, regular expressions, and exhaustive matches; use an available zvec_grep_search MCP tool for unknown wording, semantic discovery, relationships, or cross-file synthesis."
+allowed-tools:
+  - Grep
+  - Read
+  - Bash
 ---
 
-# Workspace Search Skill
+# Workspace Search
 
 Use the current workspace as evidence when the user asks about local files, local history, project behavior, or whether related material exists in the repository. Keep the search scope tied to the active workspace and report the paths and source locations returned by the tools.
 
@@ -16,6 +20,18 @@ Use the current workspace as evidence when the user asks about local files, loca
 | Wording or location is unknown | `zvec_grep_search` when it is available |
 | Semantic, fuzzy, relationship, chronology, causality, comparison, or cross-file discovery | `zvec_grep_search` when it is available |
 | Known exact anchor but broader context is needed | `zvec_grep_search`, then focused `Grep` |
+
+## Exact searches
+
+Use `rg` through `Bash` when a shell search is appropriate. Scope the directory and choose literal or regular-expression matching deliberately:
+
+```bash
+rg -n -F -- 'exact identifier' src tests
+rg --files src | rg 'settings|skill'
+rg -n --glob '*.ts' -- 'pattern' src
+```
+
+Read the relevant surrounding code and trace its callers before explaining behavior. Report file paths and line locations. A ranked excerpt does not establish every occurrence; an empty search of one directory does not establish repository-wide absence.
 
 ## zvec_grep_search
 

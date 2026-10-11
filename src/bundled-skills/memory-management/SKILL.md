@@ -1,17 +1,23 @@
 ---
 name: memory-management
-description: "Search and manage Biny's local facts and conversation history. Use for earlier decisions, preferences, remember this, forget that, 记住这个, 查一下记忆, 我的偏好, 删除记忆, or 清理记忆. Search before writing; never save secrets or guesses."
+description: "Search and manage Biny's local facts and conversation history. Use for earlier decisions, preferences, remembering information, correcting facts, or forgetting and cleaning up memory. Search before writing; never save secrets or guesses."
+allowed-tools:
+  - Bash
 ---
 
-# Memory management
+# Local Memory and History
 
 Memory is advisory. Current instructions, files, tool results and permissions take precedence.
 
-## Search
+## Recall earlier context
+
+Search facts for stable preferences and decisions. Search conversation history when the question concerns who said something, the original wording, a date, or how a decision evolved. For a question that needs both, use both sources and reconcile them against current evidence.
+
 
 ```bash
 biny memory search "<query>" --json
 biny memory search "<query>" --tag preference workflow --json
+biny memory search "<query>" --thread-id <threadId> --json
 biny memory list --json
 biny memory get <id> --json
 biny memory stats --json
@@ -20,18 +26,18 @@ biny memory grep "<literal text>" --json
 biny memory archive
 ```
 
-- Facts share one global library across workspaces. There is no selector, scope or project partition parameter. Tags match any given tag; they are not access boundaries.
+- Facts share one library across workspaces. Tags match any given tag. Use `--thread-id`, `--user-id`, or `--user-ids` only with known identities when a filtered search is needed; these filters are not filesystem or project isolation boundaries.
 - Automatic recall requires working embeddings; when unavailable it injects no facts. Explicit memory search can fall back to lexical matching and reports degradation.
 - History search refreshes old local sessions before querying. `grep` matches literal substrings, including punctuation. `archive` exports conversation Markdown to the agent's `threads/` directory; it does not remove facts or conversations.
-- A live Runtime Host mirrors transcripts at startup, every 30 minutes, and on graceful shutdown. Unchanged files are left intact; failed exports retry next time. Check `threads/.mirror-status.json` for failures. Removing a source conversation also removes its generated snapshot on the next pass, but never user-created files or unmarked legacy exports.
+- Interpret relative dates using the source conversation's timestamp and timezone. A remembered intention, scheduled reminder, or suggested action is not proof of completion. Cite the source session or entry when it matters, and label historical facts that conflict with current state.
 - If there are no matches, say so. Never invent a remembered fact or claim a transcript was searched without actual results.
 
 ## Write and manage
 
 ```bash
-biny memory add "用户喜欢简洁中文回答" --json
-biny memory add --entry '{"content":"用户喜欢简洁中文回答","tags":["preference"],"importance":0.5}' --json
-biny memory update <id> --entry '{"content":"更新后的事实"}' --json
+biny memory add "The user prefers concise answers in Chinese" --json
+biny memory add --entry '{"content":"The user prefers concise answers in Chinese","tags":["preference"],"importance":0.5}' --json
+biny memory update <id> --entry '{"content":"Updated fact"}' --json
 biny memory archive-entry <id> --yes --json
 biny memory archived --json
 biny memory restore <archive-id> --json
@@ -42,8 +48,8 @@ biny memory clear --yes --json
 - Save supported, self-contained facts. Search for equivalents first. Never save credentials, speculation, transient plans or assistant-generated claims as user facts.
 - Explicit writes follow user intent. Authorized background extraction and reflection can write when enabled without asking for every fact.
 - `archive-entry` removes a fact from recall but keeps it restorable. Restore uses the archive ID from `archived`.
-- `delete` permanently removes the selected entry; `clear` removes all active and archived facts in the shared library, not just this project. Confirm exact targets and consequences first.
-- Writes do not require a revision or CAS retry. SQLite transactions commit facts; embeddings are rebuildable derived data. Saving a fact does not prove semantic retrieval is ready.
+- `delete` permanently removes the selected entry. Unfiltered `clear` removes all active and archived facts in the shared library, not just this project. `clear --thread-id <threadId>` targets that thread's active facts. Resolve the intended target and consequence before deletion; do not use global clear for a narrow correction.
+- After a correction, read the updated entry and preserve provenance or scope fields from the existing record. Saving a fact does not prove semantic retrieval is ready.
 - Report actual results, including duplicate skips and errors.
 
 ## Sleep consolidation
@@ -57,5 +63,3 @@ biny memory sleep --cancel --json
 ```
 
 Preview before requested cleanup. Sleep can archive duplicates, expired temporary facts and similar clusters; LLM synthesis requires a usable model. Cancellation does not roll back committed work. Background scheduling requires a live Runtime Host; it does not wake a powered-off computer.
-
-For local integrations, `biny memory serve` exposes an authenticated loopback API and a read-only `/ws/memory` subscription on the same port. Both require a Bearer header and reject browser origins. The stream sends current state on connect and changed state afterward; progress is sampled once per second, not a replayable audit log. See the memory section in the repository's `README.md` for event names.

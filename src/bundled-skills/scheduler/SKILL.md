@@ -1,6 +1,8 @@
 ---
 name: scheduler
-description: "Create, inspect, pause, resume, run, or delete durable local automations and heartbeat patrols. Use whenever the user asks for a reminder, a one-time delayed action, a recurring job, a daily or periodic check, a cron-like schedule, or heartbeat configuration; triggers include: remind me later, every morning, run this every hour, schedule this, cron, heartbeat, 定时执行, 每天执行, and 到点提醒. Resolve the exact time, timezone, target session, prompt, and execution mode before changing durable state; use `biny automation` or `biny heartbeat`, and do not treat a scheduled trigger as proof that execution or notification succeeded."
+description: "Create and manage durable local automations and heartbeat patrols. Use for reminders, delayed actions, recurring jobs, periodic checks, cron schedules, or heartbeat configuration. Resolve time, timezone, target session, and prompt before changes; a scheduled trigger does not prove successful execution or delivery."
+allowed-tools:
+  - Bash
 ---
 
 # Scheduler Skill
@@ -18,7 +20,7 @@ biny automation list --json
 # Add a one-shot job at an ISO timestamp
 biny automation create "Meeting reminder" \
   --trigger once \
-  --at "2026-09-10T20:00:00+08:00" \
+  --at "<future-ISO-timestamp-with-offset>" \
   --prompt "Remind me about the meeting" \
   --json
 
@@ -36,6 +38,8 @@ biny automation create "Periodic check" \
   --prompt "Check the configured local sources" \
   --json
 ```
+
+Cron uses five fields (minute, hour, day of month, month, weekday) in the Runtime Host process's local timezone. Verify that zone with `date +'%Z %z'` on the host before translating a recurring time. There is no per-job timezone flag; do not change the system timezone to fit a job. For one-shot jobs, resolve the requested future time and encode its UTC offset explicitly.
 
 Supported creation options include `--cron`, `--interval-ms`, `--at`, `--jitter-ms`, `--session`, `--max-fires`, and `--expires-at`. Use only options that are supported by the requested trigger. After creating a job, run `biny automation list --json` again and verify the stored trigger, prompt, target session, and expiry. Use `biny automation pending [automationId] --json` to inspect pending, running, deferred, completed, failed, or approval-gated fires.
 
@@ -76,7 +80,7 @@ biny heartbeat show --json
 
 ## Important boundaries
 
-- Resolve time, timezone, prompt, target session, mode, expiry, and failure expectations before creating durable state. Never guess an ambiguous time.
+- Resolve time, timezone, prompt, target session, expiry, and failure expectations before creating durable state. Never guess an ambiguous time.
 - A trigger is not proof of execution. A run is not proof of completion. Use runtime records, TaskRun state, tool results, and delivery evidence.
 - `--expires-at` stops new fires at the deadline. Fires durably created before it may still start or finish afterward, subject to pause, deletion, and fire-count limits; it is not an Agent run timeout.
 - Biny's current automation interface targets a local session; do not add unsupported external delivery targets or claim a message was sent.

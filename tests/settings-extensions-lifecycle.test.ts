@@ -47,9 +47,9 @@ async function harness(api: Record<string, unknown> = {}) {
   const errors: string[] = [];
   const onError = (message: string) => errors.push(message);
   const context = {} as SettingsDraftContextValue;
-  const render = async (projectId: string | undefined, kind: "plugins" | "skills" = "plugins", strict = false) => {
+  const render = async (projectId: string | undefined, kind: "plugins" | "skills" = "plugins", strict = false, active = true) => {
     const node = React.createElement(SettingsDraftContext.Provider, { value: context },
-      React.createElement(SettingsExtensionsView, { kind, projectId, onError }));
+      React.createElement(SettingsExtensionsView, { active, kind, projectId, onError }));
     await React.act(async () => root.render(strict ? React.createElement(React.StrictMode, {}, node) : node));
   };
   const button = (label: string): HTMLButtonElement => {
@@ -67,6 +67,22 @@ async function harness(api: Record<string, unknown> = {}) {
     }
   };
 }
+
+test("an inactive settings page ignores a late catalog failure and reloads when reactivated; unmount tests miss retained pages", async () => {
+  const old = deferred<DesktopSkillCatalogSnapshot>();
+  let reads = 0;
+  const h = await harness({ skillCatalog: () => ++reads === 1 ? old.promise : Promise.resolve(catalog("current-plugin")) });
+  try {
+    await h.render("project");
+    await h.render("project", "plugins", false, false);
+    await h.React.act(async () => { old.reject(new Error("inactive catalog failed")); await old.promise.catch(() => {}); });
+    assert.deepEqual(h.errors, [], "hidden-page failures must not become notifications for the current page");
+    assert.equal(reads, 1);
+    await h.render("project");
+    assert.equal(reads, 2);
+    assert.match(h.text(), /current-plugin/u);
+  } finally { await h.close(); }
+});
 
 test("a late initial catalog and registry cannot replace a newer plugin refresh", async () => {
   const oldCatalog = deferred<DesktopSkillCatalogSnapshot>();
@@ -218,6 +234,51 @@ function skillCatalog(): DesktopSkillCatalogSnapshot {
     files: [{ name: "SKILL.md", path: "SKILL.md", kind: "file" as const, size: 1 }] };
   return { ...catalog(), skills: [skill], inventory: [skill] };
 }
+
+test("returning to or refreshing skills reloads expanded content; project-change tests miss a stale preview in the same project", async () => {
+  let content = "old instructions";
+  let reads = 0;
+  const h = await harness({ skillCatalog: async () => skillCatalog(), readSkillFile: async () => {
+    reads += 1;
+    return { path: "SKILL.md", content, bytes: content.length, binary: false, truncated: false };
+  } });
+  try {
+    await h.render("project", "skills"); await h.click("查看内容");
+    assert.match(h.text(), /old instructions/u);
+    await h.render("project", "skills", false, false);
+    content = "current English instructions";
+    await h.render("project", "skills");
+    assert.equal(reads, 2);
+    assert.ok(h.button("收起内容"), "refresh preserves expansion");
+    assert.match(h.text(), /current English instructions/u);
+    assert.doesNotMatch(h.text(), /old instructions/u);
+    content = "updated by manual refresh";
+    await h.click("刷新");
+    assert.equal(reads, 3);
+    assert.match(h.text(), /updated by manual refresh/u);
+  } finally { await h.close(); }
+});
+
+test("a retained hidden skill page ignores a late preview failure and reads current content on return", async () => {
+  const oldPreview = deferred<DesktopSkillFilePreview>();
+  const currentCatalog = deferred<DesktopSkillCatalogSnapshot>();
+  let scans = 0;
+  let reads = 0;
+  const h = await harness({ skillCatalog: () => ++scans === 1 ? Promise.resolve(skillCatalog()) : currentCatalog.promise, readSkillFile: () => ++reads === 1 ? oldPreview.promise
+    : Promise.resolve({ path: "SKILL.md", content: "current content", bytes: 15, binary: false, truncated: false }) });
+  try {
+    await h.render("project", "skills"); await h.click("查看内容");
+    await h.render("project", "skills", false, false);
+    await h.React.act(async () => { oldPreview.reject(new Error("hidden preview failed")); await oldPreview.promise.catch(() => {}); });
+    assert.deepEqual(h.errors, []);
+    await h.render("project", "skills");
+    assert.equal(reads, 1, "wait for the fresh catalog before reading a retained entry");
+    await h.React.act(async () => currentCatalog.resolve(skillCatalog()));
+    assert.equal(reads, 2, "read once after the current catalog resolves");
+    assert.match(h.text(), /current content/u);
+    assert.doesNotMatch(h.text(), /正在读取内容/u);
+  } finally { await h.close(); }
+});
 
 test("project changes clear expanded skill previews and ignore obsolete preview failures", async () => {
   const oldPreview = deferred<DesktopSkillFilePreview>();

@@ -496,8 +496,8 @@ function SettingsOverlayContent({
             sessionRunning={runtimeBusy}
           /> : null}
           {activeTab === "MCP 服务器" ? <McpServersView onError={_onNotify} onSuccess={(nextMessage) => notifyForTab("MCP 服务器", nextMessage)} projectId={workspace?.project.id} /> : null}
-          {extensionsVisited.skills ? <div hidden={activeTab !== "技能"}><SettingsExtensionsView kind="skills" onError={_onNotify} projectId={workspace?.project.id} /></div> : null}
-          {extensionsVisited.plugins ? <div hidden={activeTab !== "插件"}><SettingsExtensionsView kind="plugins" onError={_onNotify} projectId={workspace?.project.id} /></div> : null}
+          {extensionsVisited.skills ? <div className="settings-extension-page" hidden={activeTab !== "技能"}><SettingsExtensionsView active={open && activeTab === "技能"} kind="skills" onError={_onNotify} projectId={workspace?.project.id} /></div> : null}
+          {extensionsVisited.plugins ? <div className="settings-extension-page" hidden={activeTab !== "插件"}><SettingsExtensionsView active={open && activeTab === "插件"} kind="plugins" onError={_onNotify} projectId={workspace?.project.id} /></div> : null}
           {activeTab === "关于" ? <SettingsAbout version={version} /> : null}
           {activeTab === "浏览器" ? <SettingsBrowser active={open} /> : null}
           {activeTab === "Computer Use" ? <SettingsComputerUse active={open} /> : null}

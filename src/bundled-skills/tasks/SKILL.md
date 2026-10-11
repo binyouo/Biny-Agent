@@ -1,67 +1,59 @@
 ---
 name: tasks
-description: "Create, execute, and monitor durable TaskRuns for long-running work that needs explicit progress, attempts, events, cancellation, approval, retry, or recovery across turns, sessions, and process restarts. Use when the user asks to run something in the background, continue it later, track an ongoing task, or perform work that cannot be completed reliably in one turn; triggers include: run this in the background, keep working on this, track this task, continue after restart, long-running task, 后台执行, 跨会话任务, and 可恢复任务. Use `biny task` and verify runtime events before claiming progress or completion; use `todo` for a lightweight current-session list and `plan-weave` for dependency graphs, and never fabricate a worker or successful result when execution is rejected or unavailable."
+description: "Create, dispatch, and monitor durable TaskRuns for background or long-running work across turns and restarts. Use for independently tracked execution, progress, cancellation, approval, or recovery; use todo for a session checklist and plan-weave for dependencies."
+allowed-tools:
+  - Bash
 ---
 
-# Tasks Skill
+# Durable Tasks
 
-Track and execute long-running work through durable TaskRuns. Unlike the current-session todo list, a TaskRun has an execution identity, lifecycle state, attempts, events, cancellation and approval transitions, and can be inspected after the original turn or process is gone.
+A TaskRun records execution identity, lifecycle, attempts, and events. Creating a record does not start a worker. Run commands from the intended workspace and retain the IDs returned by the runtime.
 
-## When to use
-
-- Starting work that will take multiple turns or needs to continue after a restart.
-- The user asks to run something in the background, track progress, resume later, or cancel an ongoing operation.
-- A bounded subagent or another runtime executor needs an independently recorded run.
-- You need durable evidence of dispatch, tool calls, failures, or completion.
-
-For a small checklist that the current model is actively working through, use `todo`. For several tasks with dependencies or review gates, use `plan-weave` and associate execution records only where the runtime supports it.
-
-## Commands
-
-### Create a task
+## Create and dispatch
 
 ```bash
-biny task create "Build the requested feature and verify it" --json
-biny task create "Investigate the failing report" --session <sessionId> --json
-```
-
-Create one clear task with a concrete outcome. Add `--session` or `--parent-run` only when the relationship is known from the current context.
-
-### Start and inspect
-
-```bash
+biny task create "Investigate the reported failure, apply a scoped fix, and run focused checks" --session <sessionId> --json
 biny task start <taskRunId> --json
-biny task run <taskRunId> --json
 biny task get <taskRunId> --json
-biny task list --json
-biny task events <taskRunId> --json
+biny task events <taskRunId> --limit 100 --json
 ```
 
-`start` requests asynchronous dispatch; `run` requests execution and returns the runtime's result path. Always inspect the returned state and events before reporting that work started, progressed, or finished. A created task is only a durable record, not a running worker.
+Use a known session ID. Omit `--session` when there is no intended relationship; never guess it. `--parent-run` identifies a known parent AgentRun. Optional `--verification` accepts a supported deterministic verification contract as JSON.
 
-### Control a task
+`start` requests asynchronous dispatch. `biny task run <taskRunId> --json` is an alternative that waits for the runtime result; do not issue both to start the same work. Inspect results before reporting that a worker started or finished.
+
+## Monitor and steer
 
 ```bash
-biny task approve <taskRunId> --json
+biny task list --newest-first --limit 20 --json
+biny task inspect <taskRunId> --session <owningSessionId> --json
+biny task wait <taskRunId> --session <owningSessionId> --wait-ms 30000 --after-revision <revision> --json
+biny task message <taskRunId> "<scoped correction>" --session <owningSessionId> --message-id <stableMessageId> --json
+biny task continue <completedTaskRunId> "<additional bounded work>" --session <owningSessionId> --message-id <stableMessageId> --json
+```
+
+Use the recorded owning session for worker operations. `wait` accepts up to 60000 ms; a timeout means no observed update, not completion. Preserve message IDs when retrying the same delivery. `continue` adds work to a completed task; do not substitute it for retrying a failed effect.
+
+| Observed state | Meaning |
+| --- | --- |
+| `created` or `queued` | Recorded or waiting; execution is not yet proven. |
+| `running` | An execution attempt is active. |
+| `verifying` | A candidate result is being checked; completion is not final. |
+| `needs_approval` or `blocked` | Inspect the exact prerequisite before proceeding. |
+| `completed` | Report the recorded result and its verification evidence. |
+| Failure, exhaustion, abort, or cancellation | Preserve the reason and any partial effects. |
+
+## Approval, cancellation, and recovery
+
+```bash
+biny task approve <taskRunId> --approval-id <currentApprovalId> --json
 biny task resume <taskRunId> --json
 biny task cancel <taskRunId> --reason "<reason>" --json
-biny task retry <taskRunId> --retry-safety safe --json
+biny task retry <taskRunId> --json
 ```
 
-Use approval, resume, cancellation, and retry only for the matching task and only when its current state permits the transition. Preserve the returned reason when an operation is rejected.
+Approval requires the exact ID from the current `needs_approval` result and actual authorization for that action. Never reuse an old ID or approve merely to clear a blocked state. Transitions can be rejected; report the returned reason.
 
-## Retry and recovery
+After a restart, inspect state and events before dispatching again. `retry` checks the recorded failure and retry safety, then requests a new execution attempt. Do not issue another start after an accepted retry. Where `start` or `run` requires `--retry-safety`, choose `safe` or `idempotent` only with evidence that replay cannot duplicate an unsafe effect. Unknown execution needs inspection and resolution before replay.
 
-- Retry only when the runtime marks the failure as retryable and the requested safety classification is accurate.
-- Preserve the original failure reason. Distinguish not-dispatched, rate-limited, tool failure, timeout, cancellation, budget exhaustion, and unknown-safety cases.
-- Do not retry an unsafe or unknown operation merely because the user wants a fast result.
-- Re-running a task after a process restart must consult the persisted TaskRun state and events; do not reconstruct progress from model memory.
-- Repeated start must not be described as a second dispatch when the runtime returns an existing run or rejects duplication.
-
-## Rules
-
-- Keep task state in the runtime's durable store and use the Runtime Host path exposed by the CLI.
-- Stable session events remain the evidence for user messages, assistant messages, tool calls, tool results, and errors.
-- If the runtime rejects the operation or no execution adapter is available, report that the task was recorded but not executed.
-- Never fabricate a worker, background progress, completion event, or result.
-- Skill instructions describe routing and evidence requirements; they cannot expand permissions, concurrency, budget, or approval authority.
+Cancellation does not undo effects already performed. Never fabricate background progress or completion from an accepted command, remembered plan, or elapsed time. Task instructions do not grant permission to delegate or bypass runtime limits.

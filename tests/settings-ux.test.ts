@@ -5,7 +5,7 @@ import { registerHooks } from "node:module";
 import { PROVIDER_ICON_DATA } from "../src/desktop/renderer/src/assets/provider-icon-data.js";
 import { providerCatalog } from "../src/desktop/renderer/src/providerCatalog.js";
 import { loadProviderIconData } from "../src/desktop/renderer/src/components/ProviderIconData.js";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { defaultConfig } from "../src/config/schema.js";
@@ -828,6 +828,74 @@ function skillCatalog(): DesktopSkillCatalogSnapshot {
   const skills = [skill("project-workflow", "project"), skill("global-workflow", "global"), skill("report", "builtin"), skill("diary", "builtin")];
   return { skills, inventory: skills, unmanagedSkills: [], plugins: [], managedSources: [], warnings: [], diagnostics: [] };
 }
+
+test("保留扩展页状态的容器传递可收缩高度，技能页可滚动且隐藏页不占空间；分组测试未检查滚动样式装配", async () => {
+  const h = await harness({ skillCatalog: async () => skillCatalog(),
+    pluginRegistry: async () => ({ registryUrl: "", stale: false, plugins: [] }) });
+  try {
+    for (const file of ["desktop-v2.css", "biny.css", "settings.css"]) {
+      const style = document.createElement("style");
+      style.textContent = await readFile(new URL(`../src/desktop/renderer/src/styles/${file}`, import.meta.url), "utf8");
+      document.head.append(style);
+    }
+    await h.overlay();
+    await h.click('[data-settings-tab="技能"]');
+    const skills = document.querySelector<HTMLElement>('#settings-extensions-skills')!;
+    const page = skills.parentElement!;
+    const computed = (element: Element) => h.dom.window.getComputedStyle(element);
+    assert.equal(computed(page).display, "flex", "页面容器必须将可用高度传递给扩展内容");
+    assert.equal(computed(page).flexDirection, "column", "扩展内容应沿高度撑满，避免 height: 0 在横向布局中压扁页面");
+    assert.equal(computed(page).flexGrow, "1");
+    assert.equal(computed(page).minHeight, "0px");
+    assert.equal(computed(skills).flexGrow, "1");
+    assert.equal(computed(skills).overflow, "auto", "提取设置与技能列表共用滚动区域");
+    assert.equal(computed(skills.querySelector('.settings-extension-scroll')!).overflow, "visible");
+    await h.input('[aria-label="搜索技能名称、描述或路径"]', "report");
+    await h.click('[data-settings-tab="插件"]');
+    assert.equal(computed(page).display, "none", "保留状态的隐藏页面不能挤占当前页");
+    const plugins = document.querySelector<HTMLElement>('#settings-extensions-plugins')!;
+    assert.equal(computed(plugins.parentElement!).display, "flex");
+    assert.equal(computed(plugins).flexGrow, "1");
+    assert.equal(computed(plugins).overflow, "hidden");
+    await h.click('[data-settings-tab="技能"]');
+    assert.equal(document.querySelector('#settings-extensions-skills'), skills);
+    assert.equal(computed(page).display, "flex");
+    assert.equal(computed(plugins.parentElement!).display, "none");
+    assert.equal(document.querySelector<HTMLInputElement>('[aria-label="搜索技能名称、描述或路径"]')!.value, "report");
+  } finally { await h.close(); }
+});
+
+test("重新进入技能设置读取更新后的目录与英文描述，保留搜索；首次加载测试无法发现常驻页的旧快照", async () => {
+  let current = skillCatalog();
+  current.skills[0]!.description = "旧的中文描述";
+  let reads = 0;
+  const h = await harness({ skillCatalog: async () => { reads += 1; return structuredClone(current); },
+    pluginRegistry: async () => ({ registryUrl: "", stale: false, plugins: [] }) });
+  try {
+    await h.overlay();
+    await h.click('[data-settings-tab="技能"]');
+    const page = document.querySelector('#settings-extensions-skills');
+    assert.match(page?.textContent ?? "", /旧的中文描述/u);
+    await h.input('[aria-label="搜索技能名称、描述或路径"]', "workflow");
+    await h.click('[data-settings-tab="关于"]');
+    const beforeReturn = reads;
+    current = skillCatalog();
+    current.skills.push({ ...current.skills[0]!, id: "new-workflow", ref: "builtin:new-workflow", name: "new-workflow", scope: "builtin", source: "builtin" });
+    await h.click('[data-settings-tab="技能"]');
+    assert.equal(reads, beforeReturn + 1, "重新进入常驻页面必须重新读取目录");
+    assert.equal(document.querySelector('#settings-extensions-skills'), page, "刷新不能重挂载并丢失页面状态");
+    assert.doesNotMatch(page?.textContent ?? "", /旧的中文描述/u);
+    assert.match(page?.textContent ?? "", /new-workflow/u);
+    assert.equal(document.querySelector<HTMLInputElement>('[aria-label="搜索技能名称、描述或路径"]')!.value, "workflow");
+    const beforeClose = reads;
+    await h.overlay({ open: false });
+    assert.equal(reads, beforeClose, "设置关闭时不加载隐藏目录");
+    current.skills[0]!.description = "Updated again while settings were closed";
+    await h.overlay({ open: true });
+    assert.equal(reads, beforeClose + 1);
+    assert.match(page?.textContent ?? "", /Updated again while settings were closed/u);
+  } finally { await h.close(); }
+});
 
 test("技能设置按内置、全局、项目展示，搜索保留来源分组与匹配数量", async () => {
   const h = await harness({ skillCatalog: async () => skillCatalog() });

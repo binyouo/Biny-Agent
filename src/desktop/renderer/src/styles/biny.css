@@ -8611,7 +8611,14 @@ button.capability-check[aria-checked="true"] {
 
 /* 扩展页（MCP / 技能 / 插件）与其他设置页共用同一内容列宽，
    这里只补充扩展列表的独立滚动布局（flex 撑满 + 内部滚动）。 */
-.desktop-settings-dialog .settings-modal .settings-scroll.is-extension > .settings-extension-view {
+.settings-extension-page:not([hidden]) {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  flex: 1 1 0;
+}
+
+.desktop-settings-dialog .settings-modal .settings-extension-page > .settings-extension-view {
   display: flex;
   min-width: 0;
   min-height: 0;
@@ -8622,7 +8629,7 @@ button.capability-check[aria-checked="true"] {
   padding-bottom: 0;
 }
 
-.desktop-settings-dialog .settings-modal .settings-scroll.is-extension > .settings-extension-view.is-skills {
+.desktop-settings-dialog .settings-modal .settings-extension-page > .settings-extension-view.is-skills {
   display: block;
   overflow: auto;
   scrollbar-gutter: stable;

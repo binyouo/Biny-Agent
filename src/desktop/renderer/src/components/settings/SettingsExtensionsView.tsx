@@ -50,6 +50,7 @@ const SKILL_GROUPS = [
 ] as const;
 
 interface SettingsExtensionsViewProps {
+  active?: boolean;
   kind: SettingsExtensionKind;
   onError(message: string): void;
   projectId?: string;
@@ -60,7 +61,7 @@ export function SettingsExtensionsView(props: SettingsExtensionsViewProps): Reac
   return <SettingsExtensionsContent key={JSON.stringify([props.projectId, props.kind])} {...props} />;
 }
 
-function SettingsExtensionsContent({ kind, onError, projectId }: SettingsExtensionsViewProps): React.JSX.Element {
+function SettingsExtensionsContent({ active = true, kind, onError, projectId }: SettingsExtensionsViewProps): React.JSX.Element {
   const settingsDraft = useSettingsDraft();
   const [snapshot, setSnapshot] = useState<DesktopSkillCatalogSnapshot>(EMPTY_SNAPSHOT);
   const [registry, setRegistry] = useState<DesktopPluginRegistrySnapshot>(EMPTY_REGISTRY);
@@ -88,7 +89,23 @@ function SettingsExtensionsContent({ kind, onError, projectId }: SettingsExtensi
     if (mounted.current) onError(errorMessage(error));
   }, [onError]);
 
-  const load = useCallback(async (refreshRegistry = false): Promise<void> => {
+  const readSkillContent = useCallback(async (skill: DesktopSkillCatalogEntry): Promise<void> => {
+    const generation = ++contentGeneration.current;
+    const isCurrent = (): boolean => mounted.current && generation === contentGeneration.current;
+    const file = skill.files.find((candidate) => candidate.name.toLowerCase() === "skill.md") ?? skill.files[0];
+    if (!file) return;
+    setContentLoadingId(skill.id);
+    try {
+      const preview = await window.biny.readSkillFile(skill.id, file.path);
+      if (isCurrent()) setSkillContent((current) => ({ ...current, [skill.id]: preview }));
+    } catch (error) {
+      if (isCurrent()) reportError(error);
+    } finally {
+      if (isCurrent()) setContentLoadingId(undefined);
+    }
+  }, [reportError]);
+
+  const load = useCallback(async (refreshRegistry = false, refreshSkillContent = false): Promise<void> => {
     if (!mounted.current) return;
     const generation = ++loadGeneration.current;
     const isCurrent = (): boolean => mounted.current && generation === loadGeneration.current;
@@ -100,7 +117,16 @@ function SettingsExtensionsContent({ kind, onError, projectId }: SettingsExtensi
     try {
       if (kind === "skills") {
         const next = await window.biny.skillCatalog(projectId);
-        if (isCurrent()) setSnapshot({ ...next, unmanagedSkills: next.unmanagedSkills ?? [] });
+        if (isCurrent()) {
+          setSnapshot({ ...next, unmanagedSkills: next.unmanagedSkills ?? [] });
+          if (refreshSkillContent) {
+            contentGeneration.current += 1;
+            setContentLoadingId(undefined);
+            setSkillContent({});
+            const expanded = next.skills.find((skill) => skill.id === expandedSkillIdRef.current);
+            if (expanded) void readSkillContent(expanded);
+          }
+        }
       } else {
         const [next, nextRegistry] = await Promise.all([
           window.biny.skillCatalog(projectId),
@@ -115,11 +141,13 @@ function SettingsExtensionsContent({ kind, onError, projectId }: SettingsExtensi
     } finally {
       if (isCurrent()) setLoading(false);
     }
-  }, [kind, projectId, reportError]);
+  }, [kind, projectId, readSkillContent, reportError]);
 
   useEffect(() => {
-    void load();
-  }, [load]);
+    if (!active) return;
+    void load(false, true);
+    return () => { loadGeneration.current += 1; contentGeneration.current += 1; };
+  }, [active, load]);
 
   const normalizedQuery = query.trim().toLocaleLowerCase();
   const visibleSkills = useMemo(() => snapshot.skills.filter((skill) => {
@@ -170,29 +198,13 @@ function SettingsExtensionsContent({ kind, onError, projectId }: SettingsExtensi
     });
   }, [settingsDraft]);
 
-  const toggleSkillContent = useCallback(async (skill: DesktopSkillCatalogEntry): Promise<void> => {
-    const generation = ++contentGeneration.current;
-    const isCurrent = (): boolean => mounted.current && generation === contentGeneration.current;
+  const toggleSkillContent = useCallback((skill: DesktopSkillCatalogEntry): void => {
+    contentGeneration.current += 1;
     setContentLoadingId(undefined);
     expandedSkillIdRef.current = expandedSkillId === skill.id ? undefined : skill.id;
-    if (expandedSkillId === skill.id) {
-      setExpandedSkillId(undefined);
-      return;
-    }
-    setExpandedSkillId(skill.id);
-    if (skillContent[skill.id]) return;
-    const file = skill.files.find((candidate) => candidate.name.toLowerCase() === "skill.md") ?? skill.files[0];
-    if (!file) return;
-    setContentLoadingId(skill.id);
-    try {
-      const preview = await window.biny.readSkillFile(skill.id, file.path);
-      if (isCurrent()) setSkillContent((current) => ({ ...current, [skill.id]: preview }));
-    } catch (error) {
-      if (isCurrent()) reportError(error);
-    } finally {
-      if (isCurrent()) setContentLoadingId(undefined);
-    }
-  }, [expandedSkillId, reportError, skillContent]);
+    setExpandedSkillId(expandedSkillIdRef.current);
+    if (expandedSkillIdRef.current && !skillContent[skill.id]) void readSkillContent(skill);
+  }, [expandedSkillId, readSkillContent, skillContent]);
 
 
   const installPlugin = useCallback(async (plugin: DesktopPluginMarketEntry, scope: PluginScope): Promise<void> => {
@@ -280,7 +292,7 @@ function SettingsExtensionsContent({ kind, onError, projectId }: SettingsExtensi
         onSetGlobal={setGlobalSkill}
         onOpenDirectory={(skill) => { void window.biny.openSkillDirectory(skill.id).catch(reportError); }}
         onQuery={setQuery}
-        onRefresh={() => void load()}
+        onRefresh={() => void load(false, true)}
         onToggle={toggleSkill}
         onToggleContent={(skill) => void toggleSkillContent(skill)}
         query={query}
