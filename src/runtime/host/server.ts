@@ -1146,7 +1146,9 @@ export class RuntimeHostServer {
         const messageId = requiredString(payload.messageId, "messageId");
         if (action === "update") {
           if (!runtime.updateQueuedRunMessage) throw new Error("Queued message controls are unavailable.");
-          await runtime.updateQueuedRunMessage(messageId, requiredString(payload.input, "input"));
+          if (typeof payload.input !== "string") throw new Error("Runtime Host field input must be a string.");
+          // The runtime rejects an empty edit unless this queued item retains attachments.
+          await runtime.updateQueuedRunMessage(messageId, payload.input);
           return undefined;
         }
         if (action === "remove") {
