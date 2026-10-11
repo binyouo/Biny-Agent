@@ -193,7 +193,7 @@ export async function handleActivityHttpRequest(
         const sessionId = decodePathPart(pathname.slice("/api/activity-recorder/sessions/".length, -"/analyze".length));
         const resolvedSessionId = store.getHttpSessionDetail(sessionId)?.session.id;
         if (!resolvedSessionId) return notFound("没有找到 Activity session。");
-        await analyzeActivitySession({
+        const outcome = await analyzeActivitySession({
             store,
             model: await deps.getModel?.(),
             ...operation,
@@ -205,6 +205,9 @@ export async function handleActivityHttpRequest(
               });
             }
           }, resolvedSessionId, true);
+        if (outcome.status === "skipped" && outcome.reason === "session_changed") {
+          return { status: 409, body: { error: "会话数据或分析结果已改变，本次分析未保存，请重新发起分析。" } };
+        }
         // REST 返回保存后的 session 元数据，分析结果由状态字段表达。
         return { status: 200, body: store.getHttpSessionDetail(resolvedSessionId)?.session };
       }
