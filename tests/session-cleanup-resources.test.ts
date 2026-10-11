@@ -1,4 +1,4 @@
-/** 临时检索索引必须随一次清理结束释放，不能依赖 GC 或关闭其它调用方的连接。 */
+/** 清理线程退出后才算完成；调用线程不打开清理连接，也不关闭已有检索连接。 */
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
@@ -50,7 +50,7 @@ test("repeated public cleanup releases each owned connection and keeps an existi
     const id = `deleted-session-${i}`;
     await f.index.indexSessionFile(id, await f.create(id));
     await deleteSessionArtifacts(f.workspace, id);
-    assert.equal(f.databases.size, i + 2, "each cleanup opens its own temporary index");
+    assert.equal(f.databases.size, 1, "cleanup must not open a SQLite connection on the caller thread");
     for (const database of f.databases) {
       assert.equal(database.isOpen, database === owner, "only the pre-existing search owner may remain open");
     }
@@ -75,15 +75,16 @@ for (const missingTranscript of [false, true]) {
     if (missingTranscript) await rm(file);
     await assert.rejects(deleteSessionArtifacts(f.workspace, "failed-session"),
       missingTranscript ? /Session not found/ : /cleanup blocked/);
-    assert.equal(f.databases.size, 2, "cleanup reached a separate real search connection");
+    assert.equal(f.databases.size, 1, "the cleanup connection belongs to the worker");
     for (const database of f.databases) assert.equal(database.isOpen, false);
+    assert.deepEqual(f.index.status(), { indexedSessions: 1, indexedMessages: 1 }, "a failed cleanup rolls back transcript rows and offset together");
   });
 }
 
 test("earlier cleanup failure still releases a successfully cleaned search index", async (t) => {
   const f = await fixture(t);
   await assert.rejects(deleteSessionArtifacts(f.workspace, "already-missing"), /Session not found/);
-  assert.equal(f.databases.size, 1);
+  assert.equal(f.databases.size, 0);
   for (const database of f.databases) assert.equal(database.isOpen, false);
 });
 
@@ -93,12 +94,12 @@ test("an abort-shaped failure after search work is propagated only after its own
   const reason = new DOMException("cleanup interrupted", "AbortError");
   const forget = SessionSearchIndex.prototype.forgetSession;
   // cleanup 本身没有取消 API；注入取消类异常，覆盖异常退出时的资源所有权。
-  t.mock.method(SessionSearchIndex.prototype, "forgetSession", function (this: SessionSearchIndex, id: string) {
-    forget.call(this, id);
+  t.mock.method(SessionSearchIndex.prototype, "forgetSession", async function (this: SessionSearchIndex, id: string) {
+    await forget.call(this, id);
     throw reason;
   });
   await assert.rejects(deleteSessionArtifacts(f.workspace, "interrupted-session"), (error) => error === reason);
-  assert.equal(f.databases.size, 1);
+  assert.equal(f.databases.size, 0);
   for (const database of f.databases) assert.equal(database.isOpen, false);
 });
 
@@ -108,6 +109,28 @@ test("search initialization failure preserves its error without leaking or doubl
   await mkdir(path.join(f.agentRoot, "search"));
   await writeFile(path.join(f.agentRoot, "search", "sessions.sqlite"), "not a sqlite database");
   await assert.rejects(deleteSessionArtifacts(f.workspace, "broken-index-session"), /not a database/);
-  assert.equal(f.databases.size, 1);
+  assert.equal(f.databases.size, 0);
   for (const database of f.databases) assert.equal(database.isOpen, false);
+});
+
+// A competing WAL writer must not prevent the caller's event loop from releasing that lock.
+test("search deletion keeps the caller responsive while a real SQLite writer holds the index", { timeout: 15_000 }, async (t) => {
+  const f = await fixture(t);
+  await f.index.indexSessionFile("locked-session", await f.create("locked-session"));
+  await f.index.indexSessionFile("next-session", await f.create("next-session"));
+  const writer = new DatabaseSync(path.join(f.agentRoot, "search", "sessions.sqlite"));
+  writer.exec("BEGIN IMMEDIATE");
+  let released = false;
+  const release = setImmediate(() => { writer.exec("COMMIT"); released = true; });
+  try {
+    const first = f.index.forgetSession("locked-session");
+    const next = f.index.forgetSession("next-session");
+    await Promise.all([first, next]);
+    assert.equal(released, true, "the caller can process events before the delete finishes");
+    assert.deepEqual(f.index.status(), { indexedSessions: 0, indexedMessages: 0 });
+  } finally {
+    clearImmediate(release);
+    if (!released) writer.exec("ROLLBACK");
+    writer.close();
+  }
 });

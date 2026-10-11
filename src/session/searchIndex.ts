@@ -19,6 +19,7 @@ import { maxSessionEventLineBytes } from "./limits.js";
 import { parseSessionEvents, type SessionEvent } from "./events.js";
 import { listAllSessionFiles, sessionIdFromFile } from "./store.js";
 import { publicAssistantMessage } from "./publicMessage.js";
+import { deleteSessionSearchRows } from "./searchCleanup.js";
 
 export interface SessionTranscriptHit {
   sessionId: string;
@@ -322,10 +323,9 @@ export class SessionSearchIndex {
   }
 
   /** 删除一个会话的全部索引行；会话清理时调用。 */
-  forgetSession(sessionId: string): void {
-    const database = this.open();
-    database.prepare("DELETE FROM session_transcripts WHERE session_id = ?").run(sessionId);
-    database.prepare("DELETE FROM session_index_state WHERE session_id = ?").run(sessionId);
+  async forgetSession(sessionId: string): Promise<void> {
+    const root = typeof this.agentDir === "function" ? this.agentDir() : this.agentDir;
+    await deleteSessionSearchRows(path.join(root, "search", "sessions.sqlite"), sessionId);
   }
 
   private open(): DatabaseSync {

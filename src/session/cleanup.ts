@@ -21,14 +21,7 @@ export async function deleteSessionArtifacts(persistenceRoot: string, sessionId:
     () => deleteInterruptedTurn(persistenceRoot, sessionId),
     async () => await new SessionRunLedger(persistenceRoot).deleteSessionRuns(sessionId),
     async () => await new RecipeStateStore(persistenceRoot).clear(sessionId),
-    () => {
-      const index = new SessionSearchIndex();
-      try {
-        index.forgetSession(sessionId);
-      } finally {
-        index.close();
-      }
-    }
+    () => new SessionSearchIndex().forgetSession(sessionId)
   ]) {
     try {
       await step();

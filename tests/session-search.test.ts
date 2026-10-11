@@ -74,7 +74,7 @@ try {
   assert.equal(status.indexedMessages, 1, "stale rows from before the truncation are dropped");
 
   // forgetSession 清空该会话的全部索引行。
-  index.forgetSession("s-1");
+  await index.forgetSession("s-1");
   assert.equal(index.search("deploy").length, 0);
   assert.equal(index.status().indexedMessages, 0);
   // 未在当前进程打开过的旧会话也能发现；文字与 Markdown 导出均来自原文。
