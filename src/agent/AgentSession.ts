@@ -4323,7 +4323,8 @@ export class AgentSession {
     };
     const record = createSessionUsage(usage, operation, modelInfo, new Date().toISOString(), this.modelRequestRecords.at(-1)?.promptShape);
     this.usageRecords.push(record);
-    if (operation === "subagent" || operation === "memory") this.unpersistedRelatedUsage.push(record);
+    if (operation === "subagent" || operation === "memory"
+      || (operation === "compaction" && this.activeOperation === "agent turn")) this.unpersistedRelatedUsage.push(record);
     return record;
   }
 
