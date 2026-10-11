@@ -295,4 +295,3 @@ export function witnessedPausedFollowupMarker(events: readonly SessionEvent[], t
     && event.type !== "model_request" && event.type !== "error")) throw new Error("Pause marker chronology contains later execution.");
   return marker.content;
 }
-
