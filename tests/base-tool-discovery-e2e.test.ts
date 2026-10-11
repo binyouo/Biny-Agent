@@ -51,6 +51,7 @@ for (const withPreselection of [true, false]) {
           break;
         case 1: {
           const result = await resultFor("Bash") as { process: { processId: string; state: string } };
+          assert.ok(result.process, `background Bash must start: ${JSON.stringify(result)}`);
           assert.equal(result.process.state, "running");
           processId = result.process.processId;
           assert.ok(!visible.includes("KillShell"), "starting a process does not eagerly expose unrelated helper schemas");
@@ -95,7 +96,7 @@ for (const withPreselection of [true, false]) {
   };
   const config = configSchema.parse({ ...defaultConfig,
     agent: { ...defaultConfig.agent, toolExecutionMode: "direct" },
-    permission: { ...defaultConfig.permission, mode: "full-access", criticalAlwaysAsk: false },
+    permission: { ...defaultConfig.permission, mode: "full-access", criticalAlwaysAsk: false, denyPaths: [] },
     crystal: { ...defaultConfig.crystal, passiveEnabled: false, semanticScanEnabled: false },
     context: { ...defaultConfig.context, memory: { ...defaultConfig.context.memory, useMemories: false, generateMemories: false } }
   });
