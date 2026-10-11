@@ -11,7 +11,7 @@ import { DesktopAgentManager } from "../src/desktop/electron/main/DesktopAgentMa
 import { DesktopProjectService } from "../src/desktop/electron/main/DesktopProjectService.js";
 import { DesktopStateStore } from "../src/desktop/electron/main/DesktopStateStore.js";
 import { DesktopUserDataStore } from "../src/desktop/electron/main/DesktopUserDataStore.js";
-import { drainSessionIndexRefreshes, readSessionCatalogRecord, refreshSessionIndex, sessionCatalogDirectory } from "../src/session/catalog.js";
+import { readSessionCatalogRecord, refreshSessionIndex, sessionCatalogDirectory } from "../src/session/catalog.js";
 import { SessionRecorder } from "../src/session/recorder.js";
 
 function deferred() {
@@ -79,7 +79,6 @@ async function fixture(context: TestContext) {
   context.after(async () => {
     context.mock.restoreAll();
     await manager.closeAll();
-    await drainSessionIndexRefreshes();
     if (previousAgentDir === undefined) delete process.env.BINY_AGENT_DIR;
     else process.env.BINY_AGENT_DIR = previousAgentDir;
     await rm(root, { recursive: true, force: true });
