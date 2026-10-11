@@ -15,7 +15,7 @@ import { createInteractiveAgentHost } from "../src/runtime/InteractiveAgentRunti
 import type { SessionEvent } from "../src/session/recorder.js";
 import { buildSessionTimeline } from "../src/desktop/renderer/src/sessionTimeline.js";
 
-test("普通模式经 Host 提问、CLI 回答、模型继续并落盘；取消使旧卡失效", { timeout: 30_000 }, async () => {
+test("普通模式发现提问工具后经 Host 提问、CLI 回答并落盘；取消使旧卡失效", { timeout: 30_000 }, async () => {
   const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "biny-input-host-")));
   const saved = process.env.BINY_AGENT_DIR;
   process.env.BINY_AGENT_DIR = path.join(root, "state");
@@ -25,16 +25,20 @@ test("普通模式经 Host 提问、CLI 回答、模型继续并落盘；取消�
     try {
       const chunks: Buffer[] = [];
       for await (const chunk of req) chunks.push(Buffer.from(chunk));
-      const body = JSON.parse(Buffer.concat(chunks).toString()) as { messages: Array<{ role: string; content: unknown }>; tools?: Array<{ function?: { name: string } }> };
+      const body = JSON.parse(Buffer.concat(chunks).toString()) as { messages: Array<{ role: string; content: unknown; tool_call_id?: string }>; tools?: Array<{ function?: { name: string } }> };
       if (!body.tools?.length) {
         res.writeHead(200, { "content-type": "text/event-stream" });
         res.end(`data: ${JSON.stringify({ choices: [{ index: 0, delta: { content: JSON.stringify({ tools: [] }) }, finish_reason: null }] })}\n\ndata: ${JSON.stringify({ choices: [{ index: 0, delta: {}, finish_reason: "stop" }] })}\n\ndata: [DONE]\n\n`);
         return;
       }
       modelCalls++;
-      assert.ok(body.tools?.some((tool) => tool.function?.name === "AskUserQuestion"));
       let frames: unknown[];
-      if (body.messages.at(-1)?.role === "tool") {
+      if (!body.tools.some((tool) => tool.function?.name === "AskUserQuestion")) {
+        assert.ok(body.tools.some((tool) => tool.function?.name === "ToolSearch"), "未预选提问工具时仍可精确发现");
+        frames = [{ choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: "discover-question", type: "function", function: {
+          name: "ToolSearch", arguments: JSON.stringify({ query: "AskUserQuestion" })
+        } }] }, finish_reason: null }] }, { choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }] }];
+      } else if (body.messages.at(-1)?.role === "tool" && body.messages.at(-1)?.tool_call_id?.startsWith("question-")) {
         sawAnswer = JSON.stringify(body.messages.at(-1)).includes("下载目录");
         frames = [{ choices: [{ index: 0, delta: { content: "按选择继续。" }, finish_reason: null }] }, { choices: [{ index: 0, delta: {}, finish_reason: "stop" }] }];
       } else {
@@ -75,7 +79,7 @@ test("普通模式经 Host 提问、CLI 回答、模型继续并落盘；取消�
     const run = client.submitPrompt("做个小工具，但需要先确认存放位置");
     void run.completion.catch(() => undefined);
     await ready;
-    assert.equal(modelCalls, 1, "未回答前不得请求下一步模型");
+    assert.equal(modelCalls, 2, "仅发现和提问两步，未回答前不得请求下一步模型");
     const pending = await client.pendingUserInput(sessionId);
     assert.equal(pending.length, 1);
     const request = pending[0]!;
@@ -91,6 +95,7 @@ test("普通模式经 Host 提问、CLI 回答、模型继续并落盘；取消�
     assert.equal((await run.completion).status, "completed");
     assert.ok(sawAnswer, "真实模型协议必须接收到用户答案");
     const events = (await readFile(client.getSnapshot().info.sessionFile, "utf8")).trim().split("\n").map((line) => JSON.parse(line) as SessionEvent);
+    assert.equal(events.filter((event) => event.type === "tool_result" && event.tool === "ToolSearch").length, 1);
     assert.equal(events.filter((event) => event.type === "tool_call" && event.tool === "AskUserQuestion").length, 1);
     assert.equal(events.filter((event) => event.type === "tool_result" && event.tool === "AskUserQuestion").length, 1);
     assert.match(JSON.stringify(buildSessionTimeline(events, []).flatMap((turn) => turn.tools)), /下载目录/);

@@ -134,6 +134,23 @@ const failoverOptions = {
 const fallbackSelection = await preselectCapabilities(failoverOptions);
 assert.ok(Array.isArray(fallbackSelection.tools) && fallbackSelection.tools.includes("WebSearch"), "Automatic selection must try an eligible backup after an account balance failure.");
 assert.deepEqual(fallbackSelection.skills, ["review-id"], "Skill selection must use the same bounded fallback policy.");
+
+// 既有目录省略了常驻辅助工具，无法发现普通请求仍携带这些无关定义。
+const coreNames = ["Read", "Write", "Edit", "Bash", "ToolSearch", "read_tool_result"];
+const optionalNames = ["Glob", "Grep", "BashOutput", "KillShell", "TodoWrite", "AskUserQuestion", "read_checkpoint_evidence"];
+const completeCatalog = [...coreNames, ...optionalNames].map((name) => ({ name, description: name }));
+const minimalOptions = { ...options, tools: completeCatalog, skills: [], previousTools: [], input: "你好", models: [] };
+assert.deepEqual(new Set((await preselectCapabilities(minimalOptions)).tools), new Set(coreNames),
+  "a fresh automatic turn retains only coding, discovery and archived-result retrieval even without a selector");
+answer = JSON.stringify({ tools: optionalNames });
+const selectedHelpers = await preselectCapabilities({ ...minimalOptions, models: candidates(model) });
+assert.deepEqual(new Set(selectedHelpers.tools), new Set([...coreNames, ...optionalNames]),
+  "removed helpers must enter the optional catalog so automatic selection can still activate them");
+for (const name of optionalNames) {
+  const explicitHelper = await preselectCapabilities({ ...minimalOptions, input: `调用 ${name}`, automaticToolBudget: { maxTools: 0, maxSchemaCharacters: 0 } });
+  assert.deepEqual(new Set(explicitHelper.tools), new Set([...coreNames, name]),
+    `explicit ${name} remains available without a selector or automatic budget`);
+}
 console.log("capability preselection tests passed");
 
 function candidates(model: AgentModel) {

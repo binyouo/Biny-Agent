@@ -8,7 +8,7 @@ const catalog = Array.from({ length: 200 }, (_, index) => ({
   name: `mcp_docs_${index}`, description: `Read document ${index}`, source: "mcp" as const,
   capability: "mcp:docs", parameters: { type: "object" as const, properties: { query: { type: "string" as const } } }
 }));
-const foundation = ["Read", "ToolSearch", "TodoWrite", "AskUserQuestion", "read_tool_result"].map((name) => ({ name, description: name }));
+const foundation = ["Read", "ToolSearch", "read_tool_result"].map((name) => ({ name, description: name }));
 let selection = [catalog[199]!.name];
 const model: AgentModel = {
   provider: "test", modelId: "bounded-selector",

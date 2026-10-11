@@ -846,8 +846,6 @@ export class AgentSession {
       this.options.toolRegistry.list().map((tool) => tool.name)
     );
     const mode = capabilitySelection?.tools ?? this.activeConfig.chat.defaultToolSelection;
-    const evidenceTool = this.options.toolRegistry.list().some((tool) => tool.name === "read_checkpoint_evidence")
-      ? ["read_checkpoint_evidence"] : [];
     const goalTools = this.options.sessionGoals?.get(this.recorder.sessionId)?.status === "active"
       ? ["GoalGet", "GoalUpdate"] : [];
     if (resolved || mode !== "auto" || this.options.toolRegistry.list().length <= 40) {
@@ -855,7 +853,7 @@ export class AgentSession {
         ? new Set(this.options.toolRegistry.list().filter((tool) => getToolExposure(tool) === "direct" || getToolExposure(tool) === "model-only").map((tool) => tool.name)) : undefined);
     }
     // auto 筛选器缺失或异常时绝不能把大目录整体下发；保留基础编码能力和自助发现入口。
-    const fallback = new Set([...stableCodingToolNames, toolSearchToolName, "AskUserQuestion", "read_tool_result", ...evidenceTool, ...goalTools]);
+    const fallback = new Set([...stableCodingToolNames, toolSearchToolName, "read_tool_result", ...goalTools]);
     return new Set(this.options.toolRegistry.list().map((tool) => tool.name).filter((name) => fallback.has(name)));
   }
 

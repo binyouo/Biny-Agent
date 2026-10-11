@@ -11,13 +11,15 @@ import { createCommandRuntime } from "../src/runtime/CommandRuntime.js";
 import { UserInputRequests, userInputQuestionsSchema } from "../src/runtime/userInput.js";
 import { createAskUserQuestionTool } from "../src/tools/askUserQuestion.js";
 
-test("普通模式自动筛选保留澄清入口，用户显式关闭工具仍然有效", async () => {
+test("澄清工具按需启用，显式点名可用，用户关闭工具仍然有效", async () => {
   const options = {
     config: defaultConfig, input: "帮我做一个工具", history: [], previousTools: [], skills: [],
     tools: [{ name: "AskUserQuestion", description: "Ask for missing requirements", source: "builtin" as const }]
   };
   const selected = await preselectCapabilities(options);
-  assert.ok(selected.tools.includes("AskUserQuestion"), "普通模式也必须能按需询问用户");
+  assert.deepEqual(selected.tools, [], "没有选中澄清能力时不常驻其定义");
+  const explicit = await preselectCapabilities({ ...options, input: "使用 AskUserQuestion 澄清需求" });
+  assert.deepEqual(explicit.tools, ["AskUserQuestion"], "按需澄清不依赖辅助模型可用");
   assert.equal((await preselectCapabilities({ ...options, selection: { tools: "none", skills: "none" } })).tools, "none");
 });
 
