@@ -2,7 +2,8 @@
 :root {
   color-scheme: light dark;
   --bg: light-dark(#f5f5f5, #1a1a1a);
-  --sidebar: light-dark(#f5f5f5, #1a1a1a);
+  /* 深色下让左栏卡片比窗口底色略暗，与主区形成色差分层；实色混合保持不透明，不透出下层内容。 */
+  --sidebar: light-dark(#f5f5f5, color-mix(in srgb, var(--bg) 88%, black));
   --surface: light-dark(#fafafa, #1f1f1f);
   --surface-raised: light-dark(#ffffff, #242424);
   --surface-soft: light-dark(#f0f0f0, #2b2b2b);
@@ -96,6 +97,8 @@
   --font-family-code: var(--font-mono);
   --biny-backplate: var(--surface);
   --biny-sidebar-surface: var(--sidebar);
+  /* 左栏边界走弱化线：深色下按前景色低透明度提亮，不用实线色直接上墙。 */
+  --biny-sidebar-border: light-dark(color-mix(in srgb, var(--border) 45%, transparent), color-mix(in srgb, var(--text) 8%, transparent));
   --biny-surface: var(--surface);
   --biny-surface-elevated: var(--surface-raised);
   --biny-surface-soft: var(--surface-soft);
@@ -105,7 +108,6 @@
   --biny-border-real: var(--border);
   --biny-border-subtle: var(--border-subtle);
   --biny-border-strong: var(--border-strong);
-  --biny-sidebar-border: var(--border);
   --biny-text: var(--text);
   --biny-text-secondary: var(--text-secondary);
   --biny-text-tertiary: var(--text-tertiary);
