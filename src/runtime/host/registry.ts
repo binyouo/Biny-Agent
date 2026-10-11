@@ -214,13 +214,22 @@ export class SessionRuntimeRegistry {
   /** 只回收 idle、非主 runtime；返回实际回收的 sessionId。 */
   async evictIdle(requiredFreeSlots = 1): Promise<string[]> {
     const candidates = this.list()
-      .filter((entry) => !entry.primary && !runtimeIsBusy(entry.runtime.getSnapshot()) && (this.options.canEvict?.(entry) ?? true))
+      .filter((entry) => {
+        if (entry.primary) return false;
+        const snapshot = entry.runtime.getSnapshot();
+        // 暂停后待发消息仍只在内存中；自动回收不能丢掉用户保留的队列。
+        return !runtimeIsBusy(snapshot) && !snapshot.queuedMessages?.length
+          && (this.options.canEvict?.(entry) ?? true);
+      })
       .sort((left, right) => left.lastActiveAt - right.lastActiveAt);
     const evicted: string[] = [];
     for (const entry of candidates) {
       if (evicted.length >= Math.max(0, requiredFreeSlots)) break;
       // 关闭上一个实例期间可能有新请求进入；重新确认候选仍空闲且没有新的使用者。
-      if (this.entries.get(entry.sessionId) !== entry || runtimeIsBusy(entry.runtime.getSnapshot()) || !(this.options.canEvict?.(entry) ?? true)) continue;
+      if (this.entries.get(entry.sessionId) !== entry) continue;
+      const snapshot = entry.runtime.getSnapshot();
+      if (runtimeIsBusy(snapshot) || snapshot.queuedMessages?.length
+        || !(this.options.canEvict?.(entry) ?? true)) continue;
       await this.closeSession(entry.sessionId);
       evicted.push(entry.sessionId);
     }
