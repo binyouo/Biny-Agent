@@ -311,23 +311,46 @@ async function testAbortedStartCleansProcess(workspaceRoot: string, serverScript
     terminationGraceMs: 200,
     killSettleMs: 200
   });
+  const controller = new AbortController();
+  const reason = new Error("Cancel managed start after ownership is published.");
+  let pending: ReturnType<ManagedProcessService["start"]> | undefined;
+  let failed = false;
   try {
     const port = await unusedPort();
-    const controller = new AbortController();
-    const pending = service.start({
+    let settled = false;
+    pending = service.start({
       command: nodeCommand(serverScript, port),
       signal: controller.signal,
-      readiness: { type: "http", url: `http://127.0.0.1:${String(port)}/health`, timeoutMs: 5_000, intervalMs: 25 }
+      // The fixture returns 200: keep startup pending until this test cancels it.
+      readiness: { type: "http", url: `http://127.0.0.1:${String(port)}/health`, expectedStatus: 204, timeoutMs: 10_000, intervalMs: 25 }
     });
-    setImmediate(() => controller.abort());
-    await assert.rejects(pending);
-    // start 被取消后 Runtime 仍持有记录，但必须主动回收进程，不能留下孤儿服务。
-    const [record] = await service.list();
-    assert.ok(record);
+    void pending.then(() => { settled = true; }, () => { settled = true; });
+    const deadline = Date.now() + 5_000;
+    let [record] = await service.list();
+    while (!record && !settled && Date.now() < deadline) {
+      await delay(20);
+      [record] = await service.list();
+    }
+    assert.ok(record, "start must publish process ownership before cancellation");
+    assert.equal(settled, false, "startup must still be pending at cancellation");
+    controller.abort(reason);
+    await assert.rejects(pending, (error: unknown) => error === reason);
+    // A post-spawn cancellation must retain ownership and actively stop the process.
+    const [retained] = await service.list();
+    assert.ok(retained);
+    assert.equal(retained.processId, record.processId);
     assert.equal(await waitFor(() => !isManagedProcessAlive(record.pid), 1_000), true);
     assert.equal((await service.status(record.processId)).state, "stopped");
+  } catch (error) {
+    failed = true;
+    throw error;
   } finally {
-    await service.close();
+    controller.abort(reason);
+    try {
+      await service.close().catch((error: unknown) => { if (!failed) throw error; });
+    } finally {
+      await pending?.catch(() => undefined);
+    }
   }
 }
 

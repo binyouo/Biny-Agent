@@ -15,6 +15,7 @@ for (let run = 0; run < 300; run += 1) {
     ...nodes.map((node) => ({ type: "user_message", timestamp: "2026-09-11T00:00:00Z", content: "message", messageId: node.id, parentMessageId: node.parent })),
     ...selections.map((id, index) => ({ type: "message_version_selected", timestamp: "2026-09-11T00:00:00Z", slotId: String(index), messageId: id }))
   ] as SessionEvent[];
+  let cyclic = false;
   const paths = nodes.map((leaf) => {
     const ids = new Set<string>();
     let current: typeof leaf | undefined = leaf;
@@ -22,9 +23,21 @@ for (let run = 0; run < 300; run += 1) {
       ids.add(current.id);
       current = nodes.find((node) => node.id === current?.parent);
     }
+    if (current) cyclic = true;
     return ids;
   });
-  const expected = paths.filter((ids) => selections.every((id) => ids.has(id))).at(-1) ?? paths.at(-1)!;
+  // Invalid slot markers, unknown IDs and cycles retain the historical oracle.
+  // Only valid acyclic choices intentionally gain newest-first precedence.
+  const valid = !cyclic && selections.every((id, index) =>
+    id === String(index) && nodes.some((node) => node.id === id));
+  let candidates = paths;
+  if (valid) {
+    for (const id of [...selections].reverse()) {
+      const compatible = candidates.filter((ids) => ids.has(id));
+      if (compatible.length) candidates = compatible;
+    }
+  } else candidates = paths.filter((ids) => selections.every((id) => ids.has(id)));
+  const expected = candidates.at(-1) ?? paths.at(-1)!;
   assert.deepEqual(activeSessionMessageIds(events), expected);
 }
 const longHistory = Array.from({ length: 20_000 }, (_, index) => ({

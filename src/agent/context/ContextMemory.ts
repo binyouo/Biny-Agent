@@ -39,6 +39,8 @@ class CompactionSummaryError extends Error {
 }
 
 export interface ContextCompactionOptions {
+  /** 在每次摘要请求前复核宿主预算；拒绝保留原历史，不记录摘要失败。 */
+  canRequestSummary?: () => boolean;
   /** 注入时钟用于确定性验证失败冷却，不进入用户配置。 */
   now?: () => number;
   /** Provider endpoint、模型配置等发生变化后，旧 usage 和失败键不能复用。 */
@@ -788,6 +790,8 @@ export class ContextMemory {
       };
       let instructions = systemPrompt;
       for (let attempt = 0; ; attempt += 1) {
+        signal?.throwIfAborted();
+        if (this.compactionOptions.canRequestSummary?.() === false) return undefined;
         const result = await generateSummary(instructions);
         try {
           if (result.finishReason === "length") throw new CompactionSummaryError("output_truncated");

@@ -30,6 +30,7 @@ import { rebaseForkedSessionEvents } from "./fork.js";
 import { createSessionFile, resolveSessionFile, sessionIdFromFile } from "./store.js";
 import { refreshSessionIndex } from "./catalog.js";
 import { publicAssistantMessage } from "./publicMessage.js";
+import { activeSessionEventsForPath } from "./messageTree.js";
 import { codexLinesToBinyEvents } from "./import/codex.js";
 import { importChatGptConversation, type ChatGptSkippedContentIssue, type PreparedChatGptSource } from "./import/chatgpt.js";
 export { listChatGptConversations, type ChatGptConversationSummary } from "./import/chatgpt.js";
@@ -462,6 +463,9 @@ function rewriteAttachmentPaths(events: readonly SessionEvent[], pathBySource: R
 // ── 外部对话格式 ─────────────────────────────────────────────────────────────
 
 function binyEventsToClaudeLines(events: readonly SessionEvent[]): ClaudeLine[] {
+  // Compatible JSONL has one linear conversation; preserve the selected branch.
+  // Biny bundles retain the complete physical event stream for archival use.
+  events = activeSessionEventsForPath(events);
   const lines: ClaudeLine[] = [];
   // Legacy facts may omit call IDs. Reserve explicit IDs before generating any,
   // including references on results that must never point at a synthetic call.

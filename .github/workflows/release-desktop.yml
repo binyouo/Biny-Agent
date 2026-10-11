@@ -32,6 +32,11 @@ jobs:
         with:
           ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
 
+      - name: Load release validation fixture
+        run: |
+          git fetch --depth=1 origin "$GITHUB_SHA"
+          git show "$GITHUB_SHA:scripts/code-mode-runtime-artifact-fixture.mjs" > scripts/code-mode-runtime-artifact-fixture.mjs
+
       - uses: pnpm/action-setup@v6
         with:
           version: 10.6.5
@@ -81,6 +86,11 @@ jobs:
       - uses: actions/checkout@v7
         with:
           ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+
+      - name: Load release validation fixture
+        run: |
+          git fetch --depth=1 origin "$GITHUB_SHA"
+          git show "$GITHUB_SHA:scripts/code-mode-runtime-artifact-fixture.mjs" > scripts/code-mode-runtime-artifact-fixture.mjs
 
       - uses: pnpm/action-setup@v6
         with:

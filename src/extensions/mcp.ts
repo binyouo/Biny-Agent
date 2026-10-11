@@ -124,6 +124,12 @@ interface ManagedMcpServer {
   catalogKey?: string;
 }
 
+interface OpenedMcpClient {
+  client: Client;
+  tools: ListedMcpTool[];
+  activateToolNotifications: () => void;
+}
+
 export class McpToolHost {
   private readonly servers = new Map<string, ManagedMcpServer>();
   private readonly openingClients = new Set<Client>();
@@ -594,7 +600,7 @@ export class McpToolHost {
         this.registerServerTools(managed, cached.tools, cached.instructions);
       }
       managed.status.command = managed.local ? "Desktop control plane" : managed.transport === "http" ? managed.config.url ?? "" : managed.config.command ?? "";
-      const { client, tools } = await this.openClient(managed, controller.signal);
+      const { client, tools, activateToolNotifications } = await this.openClient(managed, controller.signal);
       openedClient = client;
       controller.signal.throwIfAborted();
       // close() 可能在 connect() 等待期间开始；不要把刚建立的连接遗留到关闭后的 host。
@@ -609,13 +615,9 @@ export class McpToolHost {
         markDisconnected(managed, new Error("connection closed"));
         this.emitChange();
       };
-      client.setNotificationHandler(ToolListChangedNotificationSchema, () => {
-        // SDK 异步派发通知；重连可能已在回调执行前摘除旧 client。
-        if (managed.client !== client) return;
-        void this.refreshServerTools(managed);
-      });
       managed.client = client;
       this.registerServerTools(managed, tools, client.getInstructions());
+      activateToolNotifications();
       const capabilities = client.getServerCapabilities();
       managed.status.hasResources = Boolean(capabilities?.resources);
       managed.status.instructions = client.getInstructions();
@@ -756,7 +758,7 @@ export class McpToolHost {
     return tools;
   }
 
-  private async openClient(managed: ManagedMcpServer, signal: AbortSignal): Promise<{ client: Client; tools: ListedMcpTool[] }> {
+  private async openClient(managed: ManagedMcpServer, signal: AbortSignal): Promise<OpenedMcpClient> {
     if (managed.local) {
       if (this.closing || this.servers.get(managed.name) !== managed) throw new Error(`Local MCP server was detached: ${managed.name}`);
       const connection = await managed.local.open();
@@ -806,10 +808,31 @@ export class McpToolHost {
     }
   }
 
-  private async tryConnect(managed: ManagedMcpServer, transport: Transport, signal: AbortSignal): Promise<{ client: Client; tools: ListedMcpTool[] }> {
+  private async tryConnect(managed: ManagedMcpServer, transport: Transport, signal: AbortSignal): Promise<OpenedMcpClient> {
     if (this.closing) throw new Error(`MCP host is closing; cannot connect ${managed.name}.`);
     signal.throwIfAborted();
     const client = new Client({ name: "biny", version: "0.1.0" });
+    // 首次目录请求期间也可能收到变更；先记下失效，初始目录交接后再补刷。
+    // 保留同一个回调：SDK 已排队的通知在执行时读取交接状态，不能落入换 handler 的空隙。
+    let notificationsActive = false;
+    let startupToolsDirty = false;
+    const refreshTools = (): void => {
+      if (this.closing || managed.client !== client) return;
+      void this.refreshServerTools(managed);
+    };
+    client.setNotificationHandler(ToolListChangedNotificationSchema, () => {
+      if (!notificationsActive) {
+        startupToolsDirty = true;
+        return;
+      }
+      refreshTools();
+    });
+    const activateToolNotifications = (): void => {
+      notificationsActive = true;
+      if (!startupToolsDirty) return;
+      startupToolsDirty = false;
+      refreshTools();
+    };
     // SDK 握手失败会 fire-and-forget close；所有关闭者必须等待同一次传输回收。
     const closeClient = client.close.bind(client);
     let closingClient: Promise<void> | undefined;
@@ -830,7 +853,7 @@ export class McpToolHost {
         (async () => {
           await client.connect(transport, { signal, timeout: managed.config.startupTimeoutMs ?? defaultStartupTimeoutMs });
           signal.throwIfAborted();
-          return { client, tools: await this.listAllTools(managed, client, signal) };
+          return { client, tools: await this.listAllTools(managed, client, signal), activateToolNotifications };
         })(),
         closed
       ]);

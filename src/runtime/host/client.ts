@@ -1353,22 +1353,53 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
   }
 
   private async recoverCompletions(): Promise<void> {
+    const socket = this.socket;
+    const hostEpoch = this.hostEpoch;
+    const currentConnection = (): boolean => socket !== undefined && !socket.destroyed
+      && this.socket === socket && this.hostEpoch === hostEpoch && !this.closed && !this.retired;
     for (const [runId, pending] of [...this.completions.entries()]) {
+      if (!currentConnection()) return;
+      if (this.completions.get(runId) !== pending) continue;
+      const assertCurrent = (dispatchedSocket: net.Socket): void => {
+        if (dispatchedSocket !== socket || !currentConnection() || this.completions.get(runId) !== pending) {
+          throw new Error("Runtime Host connection or completion changed during recovery.");
+        }
+      };
       try {
-        const inspected = await this.inspectRun(runId);
+        const inspected = await this.request<unknown>("run.inspect", { runId }, undefined, assertCurrent);
+        if (!currentConnection()) return;
+        if (this.completions.get(runId) !== pending) continue;
         if (inspected === undefined) {
           this.completions.delete(runId);
           pending.reject(new Error(`Runtime run ${runId} was not admitted before the Host connection was lost.`));
           continue;
         }
-        const record = asRecord(inspected);
-        const terminalStatus = record.terminalStatus;
+        let record = asRecord(inspected);
+        let terminalStatus = record.terminalStatus;
         if (typeof terminalStatus !== "string") {
-          if (this.activeRunId() !== runId) {
+          const sessionId = typeof record.sessionId === "string" && record.sessionId.length > 0 ? record.sessionId : undefined;
+          if (sessionId === undefined) {
             this.completions.delete(runId);
             pending.reject(new Error(`Runtime run ${runId} was admitted, but no active Host execution could be recovered.`));
+            continue;
           }
-          continue;
+          // subscribe may have sampled idle before the pending admission settled.
+          // Refresh the inspected owner, never the currently focused session.
+          await this.refreshRuntimeSnapshot(sessionId, assertCurrent);
+          if (!currentConnection()) return;
+          if (this.completions.get(runId) !== pending) continue;
+          if (this.activeRunId(sessionId) === runId) continue;
+          // Terminal persistence precedes the idle snapshot. A second read closes
+          // the window where the run finished after the first inspection.
+          record = asRecord(await this.request<unknown>("run.inspect", { runId }, undefined, assertCurrent));
+          if (!currentConnection()) return;
+          if (this.completions.get(runId) !== pending) continue;
+          terminalStatus = record.terminalStatus;
+          if (record.sessionId !== sessionId || typeof terminalStatus !== "string") {
+            this.completions.delete(runId);
+            pending.reject(new Error(`Runtime run ${runId} was admitted, but no active Host execution could be recovered.`));
+            continue;
+          }
         }
         const terminalPayload = asRecord(record.terminalPayload);
         const projection = asRecord(terminalPayload.projection);
@@ -1386,6 +1417,8 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
         this.completions.delete(runId);
         pending.resolve(outcome);
       } catch (error) {
+        if (!currentConnection()) return;
+        if (this.completions.get(runId) !== pending) continue;
         if (!isTransientHostError(error)) this.reportError(error);
       }
     }
@@ -1520,10 +1553,22 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
       this.applySessionSummaries(frame.sessions, frame.sequence);
       // gap 明确结束旧区间，snapshot 不能补回已淘汰的通知。
       this.acknowledgeEvents(frame.sequence, frame.hostEpoch);
-      const update: AgentRuntimeUpdate = { snapshot: this.snapshots.get(frame.snapshot.info.sessionId) ?? frame.snapshot };
-      for (const listener of this.allListeners) listener(update);
-      if (this.focusedSessionId === frame.snapshot.info.sessionId) {
-        for (const listener of this.listeners) listener(update);
+      // A gap resynchronizes every listed session, not just the Host's primary.
+      // Notify with reconciled cache entries so newer per-session observations win.
+      const sessionIds = new Set([frame.snapshot.info.sessionId, ...(frame.sessions?.map((session) => session.sessionId) ?? [])]);
+      for (const sessionId of sessionIds) {
+        const snapshot = this.snapshots.get(sessionId);
+        if (!snapshot) continue;
+        const update: AgentRuntimeUpdate = { snapshot };
+        for (const listener of this.allListeners) listener(update);
+        if (this.focusedSessionId === sessionId) {
+          if (this.listeners.size) {
+            for (const listener of this.listeners) listener(update);
+          } else {
+            this.pendingUpdates.push(update);
+            if (this.pendingUpdates.length > eventHistoryLimit) this.pendingUpdates.splice(0, this.pendingUpdates.length - eventHistoryLimit);
+          }
+        }
       }
     }
   }
@@ -1580,8 +1625,14 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
     throw new Error("Runtime Host revision retry was exhausted.");
   }
 
-  private async refreshRuntimeSnapshot(sessionId?: string): Promise<void> {
-    const current = await this.request<{ snapshot: InteractiveRuntimeSnapshot; sessions: RuntimeHostSessionSummary[]; sequence: number }>("snapshot", { sessionId });
+  private async refreshRuntimeSnapshot(sessionId?: string, assertCurrent?: (socket: net.Socket) => void): Promise<void> {
+    const current = await this.request<{ snapshot: InteractiveRuntimeSnapshot; sessions: RuntimeHostSessionSummary[]; sequence: number }>("snapshot", { sessionId }, undefined, assertCurrent);
+    // Recovery must validate its connection and pending handle before either
+    // cache write, not only after this helper has returned.
+    if (assertCurrent) {
+      if (!this.socket) throw new Error("Runtime Host is disconnected.");
+      assertCurrent(this.socket);
+    }
     this.applySessionSummaries(current.sessions, current.sequence);
     this.applySnapshot(current.snapshot, current.sequence, undefined, sessionId === undefined || sessionId === this.focusedSessionId);
   }

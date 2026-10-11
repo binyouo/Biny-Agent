@@ -288,6 +288,7 @@ export async function activityAnalyzeCommand(workspaceRoot: string, sessionId: s
     if (options.json) console.log(JSON.stringify(result));
     else if (result.status === "analyzed" || result.status === "trivial") console.log(result.analysis.summary);
     else if (result.status === "error") throw new Error(result.error);
+    else if (result.reason === "session_changed") console.log("会话数据或分析结果已改变，本次分析未保存，请重新发起分析。");
     else console.log(result.reason === "no_model" ? "暂无可用工具模型。" : "会话尚未结束，请稍后再试。");
   } finally {
     await store.close();

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { resolveContinuationPlan } from "../src/session/recoveryPlan.js";
+import { pausedTurnAvailable, resolveContinuationPlan } from "../src/session/recoveryPlan.js";
 import type { SessionEvent } from "../src/session/recorder.js";
 import type { SessionReplay } from "../src/session/replay.js";
 import type { InterruptedTurn } from "../src/session/turnStore.js";
@@ -129,4 +129,99 @@ for (const status of ["completed", "cancelled", "failed", "incomplete"] as const
   assert.equal(resolveContinuationPlan(interruptedTurn(), replay([pause, replacement]), 10).action, "finished", "新任务已接收时不能因旧断点残留而复活旧任务");
 }
 
-console.log("recovery plan tests passed");
+const pauseRuntime = (eventSeq: number, runId = "run-a", turnId = "turn-1") =>
+  ({ eventId: `pause-event-${eventSeq}`, eventSeq, runId, turnId });
+const pauseFact = (eventSeq: number, runId = "run-a"): SessionEvent =>
+  ({ type: "turn_status", status: "cancelled", stopReason: "paused", steps: 2, runtime: pauseRuntime(eventSeq, runId) });
+const freshCall = (eventSeq = 3, runId = "run-b", turnId = "turn-1"): SessionEvent =>
+  ({ type: "tool_call", tool: "Read", args: {}, toolCallId: "fresh-call", sequence: 1,
+    runtime: pauseRuntime(eventSeq, runId, turnId) });
+const freshExecution = (eventSeq = 4, runId = "run-b", turnId = "turn-1"): SessionEvent =>
+  ({ type: "tool_execution", tool: "Read", toolCallId: "fresh-call", sequence: 1, operationId: "fresh-operation",
+    state: "succeeded", retrySafety: "safe", runtime: pauseRuntime(eventSeq, runId, turnId) });
+const originalPause = [pauseFact(2)];
+const originalCheckpoint = interruptedTurn({ runtimeHighWater: pauseRuntime(1) });
+assert.equal(pausedTurnAvailable(originalCheckpoint, { events: originalPause }), true);
+
+{
+  const events = [...originalPause, freshCall(), freshExecution(), {
+    type: "tool_result", tool: "Read", toolCallId: "fresh-call", sequence: 1, operationId: "fresh-operation",
+    executionStatus: "succeeded", result: "saved result", runtime: pauseRuntime(5, "run-b")
+  } satisfies SessionEvent];
+  const turn = interruptedTurn({ completedSteps: 3, runtimeHighWater: pauseRuntime(5, "run-b") });
+  const before = JSON.stringify({ turn, events });
+  for (let repeat = 0; repeat < 3; repeat += 1) {
+    assert.equal(pausedTurnAvailable(turn, { events }), false);
+    assert.deepEqual(resolveContinuationPlan(turn, replay(events), 10), { action: "continue", remainingSteps: 7 });
+  }
+  assert.equal(JSON.stringify({ turn, events }), before, "repeated reads do not change checkpoint or facts");
+  assert.equal(pausedTurnAvailable(originalCheckpoint, { events }), false, "durable execution beats a lagging checkpoint");
+  assert.equal(pausedTurnAvailable(turn, { events: [...events, pauseFact(6, "run-b")] }), true, "a genuinely later pause wins");
+  const background = { type: "error", message: "background", runtime: pauseRuntime(6, "background-run", "background-turn") } satisfies SessionEvent;
+  assert.equal(pausedTurnAvailable({ ...turn, runtimeHighWater: background.runtime }, { events: [...events, background] }), false,
+    "a session-global background high-water does not conceal the fresh tool attempt");
+}
+for (const execution of [freshCall(), freshExecution()]) {
+  assert.equal(pausedTurnAvailable(originalCheckpoint, { events: [...originalPause, execution] }), false,
+    "either native tool producer is enough; no pair or checkpoint advancement required");
+}
+
+{
+  const recovered: SessionEvent[] = [
+    { type: "agent_message", messageId: "copied-call", message: { role: "assistant", content: [
+      { type: "text", text: "old thought" }, { type: "toolCall", id: "old-call", name: "Read", arguments: {} }
+    ] }, runtime: pauseRuntime(3, "run-b") },
+    { type: "agent_message", messageId: "copied-result", message: { role: "toolResult", toolCallId: "old-call",
+      toolName: "Read", content: [{ type: "text", text: "old result" }] }, runtime: pauseRuntime(4, "run-b") },
+    { type: "tool_result", tool: "Read", toolCallId: "old-call", recovered: true, executionStatus: "succeeded",
+      result: "old result", runtime: pauseRuntime(5, "run-b") },
+    { type: "error", message: "recovery blocked", runtime: pauseRuntime(6, "run-b") },
+    { type: "turn_status", status: "blocked", stopReason: "blocked", steps: 2, runtime: pauseRuntime(7, "run-b") }
+  ];
+  assert.equal(pausedTurnAvailable(originalCheckpoint, { events: [...originalPause, ...recovered] }), true,
+    "recovery materialization and a blocked-only attempt do not consume the pause");
+  assert.equal(pausedTurnAvailable({ ...originalCheckpoint, runtimeHighWater: pauseRuntime(7, "run-b") },
+    { events: [...originalPause, ...recovered] }), true, "high-water alone proves no execution");
+}
+for (const later of [
+  freshCall(3, "background-run", "background-turn"),
+  freshExecution(3, "run-a"),
+  { ...freshCall(), auditOnly: true } as SessionEvent,
+  { type: "model_request", metrics: { requestId: "late-request", provider: "fixture", modelId: "fixture",
+    startedAt: "2026-10-11T00:00:00.000Z", durationMs: 1, attempts: [], eventCount: 0 },
+    runtime: pauseRuntime(3, "run-a") } as SessionEvent,
+  { type: "model_request", metrics: { requestId: "background-request", provider: "fixture", modelId: "fixture",
+    startedAt: "2026-10-11T00:00:00.000Z", durationMs: 1, attempts: [], eventCount: 0 },
+    runtime: pauseRuntime(3, "background-run", "background-turn") } as SessionEvent,
+  { type: "error", message: "late metric or diagnostic", runtime: pauseRuntime(3, "run-a") } as SessionEvent
+]) assert.equal(pausedTurnAvailable(originalCheckpoint, { events: [...originalPause, later] }), true);
+
+{
+  const earlierOtherRun = { type: "error", message: "older continuation", runtime: pauseRuntime(1, "run-b") } satisfies SessionEvent;
+  assert.equal(pausedTurnAvailable(originalCheckpoint, { events: [earlierOtherRun, ...originalPause, freshExecution()] }), true,
+    "a late event from an older different run is not a new continuation");
+  const conflict = { type: "error", message: "conflicting owner", runtime: pauseRuntime(5, "run-b", "another-turn") } satisfies SessionEvent;
+  assert.equal(pausedTurnAvailable(originalCheckpoint, { events: [...originalPause, freshCall(), conflict] }), true);
+}
+
+const imported = { format: "codex", record: 1 } as const;
+for (const events of [
+  [{ ...pauseFact(2), importSource: imported }, freshCall()],
+  [...originalPause, { ...freshCall(), importSource: imported }],
+  [{ ...pauseFact(2), runtime: undefined }, freshCall()],
+  [...originalPause, { ...freshCall(), runtime: undefined }],
+  [...originalPause, { ...freshCall(), runtime: { ...pauseRuntime(3), runId: undefined } }],
+  [...originalPause, { ...freshCall(), runtime: { ...pauseRuntime(3, "run-b"), eventSeq: 0 } }],
+  [...originalPause, { ...freshCall(), runtime: { ...pauseRuntime(1, "run-b") } }],
+  [...originalPause, freshCall(), { type: "error", message: "duplicate witness", runtime: pauseRuntime(3, "other", "other") }],
+  [...originalPause, freshCall(), { type: "error", message: "duplicate pause", runtime: { ...pauseRuntime(5), eventId: "pause-event-2" } }]
+] as SessionEvent[][]) assert.equal(pausedTurnAvailable(originalCheckpoint, { events }), true, "ambiguous evidence preserves legacy pause behavior");
+
+for (const status of ["completed", "cancelled"] as const) {
+  const events: SessionEvent[] = [...originalPause, { type: "turn_status", status, stopReason: "cancelled", steps: 2,
+    runtime: pauseRuntime(3, "run-b") }];
+  assert.equal(pausedTurnAvailable(originalCheckpoint, { events }), false);
+  assert.equal(resolveContinuationPlan(originalCheckpoint, replay(events), 10).action, "finished");
+}
+
+console.log("recovery plan and stale pause tests passed");
