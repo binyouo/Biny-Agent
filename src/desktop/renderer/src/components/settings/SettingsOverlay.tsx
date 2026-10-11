@@ -106,7 +106,6 @@ export type SettingsTab = "导入" | "通用" | "用户界面" | "配色" | "聊
  */
 const settingsNav: Array<{ icon: IconName; tab: SettingsTab }> = [
   { icon: "sun", tab: "通用" },
-  { icon: "download", tab: "导入" },
   { icon: "network", tab: "模型" },
   { icon: "message", tab: "聊天" },
   { icon: "brain", tab: "记忆" },
@@ -121,6 +120,7 @@ const settingsNav: Array<{ icon: IconName; tab: SettingsTab }> = [
   { icon: "puzzle", tab: "插件" },
   { icon: "layout-grid", tab: "用户界面" },
   { icon: "sliders", tab: "配色" },
+  { icon: "download", tab: "导入" },
   { icon: "help", tab: "关于" }
 ];
 const settingsRouteEntries = settingsNav.map(page => ({ value: page.tab }));

@@ -1,0 +1,139 @@
+/* 纯图标按钮共用圆形命中区；状态只改变颜色，不改变轮廓。
+ * 几何使用 important，避免按需加载的皮肤和设置页通用按钮规则重新拉长或压扁按钮。
+ * 文字按钮、菜单项、开关和窗口标题栏控件保留各自的布局。
+ */
+:is(
+  .icon-button,
+  .navigation-controls button,
+  .copy-button:not(:has(.copy-button-text)),
+  .user-message-action,
+  .assistant-action,
+  .attachment-card-remove,
+  .attachment-image-dialog button,
+  .composer-edit-banner button,
+  .slash-result-modal header button,
+  .desktop-top-toast-close,
+  .desktop-inspector-close,
+  .biny-chrome-button,
+  .biny-toolbar-button,
+  .biny-composer-add,
+  .biny-memory-toggle,
+  .biny-capabilities-pill:not(:has(.biny-capabilities-count)),
+  .biny-mic-button,
+  .biny-send-button,
+  .biny-attachment-remove,
+  .biny-jump-bottom,
+  .biny-inspector-rail-btn,
+  .biny-inspector-tab.is-compact,
+  .biny-sidebar-section-action,
+  .biny-project-row-action,
+  .biny-sidebar-session-toggle,
+  .biny-sidebar.is-compact .biny-sidebar-section-trigger,
+  .biny-sidebar.is-compact .biny-sidebar-settings-item,
+  .biny-runtime-panel-icon,
+  .biny-generation-error button,
+  .biny-queued-message-delete,
+  .biny-session-goal-actions button,
+  .biny-session-limit-dismiss,
+  .biny-recipe-ready-dismiss,
+  .biny-skill-extraction-dismiss,
+  .biny-extension-search button,
+  .biny-extension-refresh,
+  .biny-extension-success button,
+  .biny-skill-discovery-back,
+  .biny-skill-dialog-heading > button,
+  .biny-skill-repository-row > button,
+  .biny-mcp-search button,
+  .biny-mcp-icon-button,
+  .biny-mcp-link-button,
+  .biny-mcp-row-actions button,
+  .capabilities-mcp-action,
+  .activity-icon-button,
+  .activity-application-picker-heading > button,
+  .settings-close-button,
+  .settings-search button,
+  .settings-extension-search > button,
+  .provider-delete-button,
+  .provider-test-button,
+  .provider-inline-notice button,
+  .import-preview-dialog > header > button,
+  .chat-activity-mode,
+  .chat-activity-chevron,
+  .chat-phase-avatar:not(.is-overflow),
+  .chat-compaction-status > button:not(.chat-compaction-retry),
+  .markdown-download:has(> svg),
+  .markdown-action-menu > summary,
+  .markdown-table-trigger,
+  .markdown-diagram-actions > button,
+  .markdown-infographic-actions > button,
+  .markdown-image-lightbox-controls button,
+  .pattern-player button,
+  .rendering-preview-actions button,
+  .rendering-preview-tab-close,
+  .file-browser-current-path > button,
+  .file-browser-path-actions button,
+  .file-preview-meta-actions > button:not(.file-preview-run),
+  .file-media-controls button,
+  .file-media-central-play,
+  .inspector-subtoolbar > button[aria-label]:not(.inspector-browser-preview-action),
+  .inspector-file-filter button,
+  .inspector-terminal-tab > button:last-child,
+  .inspector-browser-tab > button:last-child,
+  .inspector-browser-history > button,
+  .inspector-browser-actions button,
+  .inspector-browser-address button,
+  .inspector-profile-anchor > button,
+  .inspector-chat-composer button,
+  .quickchat-icon-button,
+  .quickchat-context-toggle,
+  .quickchat-send,
+  .biny-project-suggestion-banner > button[aria-label],
+  .biny-project-suggestion-dialog header > button
+) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--biny-icon-button-size, 28px) !important;
+  height: var(--biny-icon-button-size, 28px) !important;
+  min-width: 0 !important;
+  min-height: 0 !important;
+  flex: 0 0 auto !important;
+  padding: 0 !important;
+  border-radius: 50% !important;
+}
+
+:is(
+  .copy-button:not(:has(.copy-button-text)),
+  .biny-sidebar-section-action,
+  .biny-project-row-action,
+  .biny-session-goal-actions button,
+  .biny-skill-extraction-dismiss,
+  .settings-search button,
+  .settings-extension-search > button,
+  .provider-inline-notice button,
+  .chat-activity-mode,
+  .chat-activity-chevron,
+  .chat-phase-avatar:not(.is-overflow),
+  .chat-compaction-status > button:not(.chat-compaction-retry),
+  .markdown-action-menu > summary,
+  .markdown-table-trigger,
+  .markdown-diagram-actions > button,
+  .markdown-infographic-actions > button,
+  .rendering-preview-actions button
+) { --biny-icon-button-size: 24px; }
+
+.biny-attachment-remove { --biny-icon-button-size: 18px; }
+:is(.rendering-preview-tab-close, .biny-sidebar-session-toggle) { --biny-icon-button-size: 16px; }
+:is(.desktop-top-toast-close, .biny-extension-search button, .biny-mcp-search button) { --biny-icon-button-size: 20px; }
+:is(.composer-edit-banner button, .biny-generation-error button, .biny-recipe-ready-dismiss, .file-preview-meta-actions > button:not(.file-preview-run)) { --biny-icon-button-size: 22px; }
+:is(.attachment-card-remove, .capabilities-mcp-action) { --biny-icon-button-size: 26px; }
+:is(.biny-send-button, .biny-extension-refresh, .biny-mcp-icon-button, .biny-mcp-link-button, .biny-mcp-row-actions button, .inspector-chat-composer button) { --biny-icon-button-size: 30px; }
+:is(.biny-composer-add, .biny-memory-toggle, .biny-capabilities-pill:not(:has(.biny-capabilities-count)), .biny-jump-bottom, .biny-sidebar.is-compact .biny-sidebar-section-trigger, .biny-sidebar.is-compact .biny-sidebar-settings-item, .markdown-image-lightbox-controls button, .inspector-browser-history > button, .inspector-browser-actions button, .inspector-browser-address button, .inspector-browser-tab > button:last-child, .inspector-browser-new-tab, .inspector-browser-navigation .inspector-profile-anchor > button) { --biny-icon-button-size: 32px; }
+.biny-skill-discovery-back { --biny-icon-button-size: 34px; }
+.file-media-central-play { --biny-icon-button-size: 64px; }
+.markdown-code-copy { --biny-icon-button-size: calc(var(--markdown-code-unit, 13px) * 1.5); }
+.markdown-pattern-header .copy-button { --biny-icon-button-size: calc(var(--pattern-unit) * 1.5); }
+.desktop-settings-dialog :is(.icon-button, .activity-icon-button, .biny-mcp-icon-button, .biny-mcp-link-button, .biny-mcp-row-actions button, .provider-delete-button) { --biny-icon-button-size: var(--st-control-h-sm, 26px); }
+.desktop-settings-dialog .settings-close-button { --biny-icon-button-size: var(--st-control-h, 32px); }
+.provider-test-button { --biny-icon-button-size: var(--st-control-h, 32px); }
+.provider-icon-cell { border-radius: 50% !important; }
