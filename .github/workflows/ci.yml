@@ -68,7 +68,7 @@ jobs:
   test:
     name: Tests
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
 
@@ -103,11 +103,11 @@ jobs:
           node-version: 22
           cache: pnpm
 
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+      - name: Install dependencies and Electron
+        run: pnpm install --frozen-lockfile && pnpm exec install-electron --no
 
       - name: Test built runtime end to end
-        run: pnpm test:e2e
+        run: xvfb-run -a pnpm test:e2e
 
   build:
     name: Build
