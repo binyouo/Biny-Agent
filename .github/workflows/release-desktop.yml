@@ -10,12 +10,17 @@ on:
         description: Existing version tag to build and publish
         required: true
         type: string
+      unsigned:
+        description: Publish a Beta without Developer ID signing or notarization
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
 env:
   RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+  RELEASE_UNSIGNED: ${{ github.event_name == 'workflow_dispatch' && inputs.unsigned || false }}
 
 jobs:
   validate:
@@ -37,7 +42,7 @@ jobs:
           cache: pnpm
 
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        run: pnpm install --frozen-lockfile && pnpm exec install-electron --no
 
       - name: Audit production dependencies
         run: pnpm audit --prod --audit-level high
@@ -49,7 +54,7 @@ jobs:
         run: pnpm lint
 
       - name: Test
-        run: pnpm test
+        run: xvfb-run -a pnpm test && node --test scripts/release-desktop.test.mjs
 
       - name: Validate bundled Code Mode runtime
         run: pnpm build:desktop && pnpm test:code-mode-package
@@ -96,6 +101,11 @@ jobs:
 
       - name: Verify macOS signing configuration
         run: |
+          if [[ "$RELEASE_UNSIGNED" == "true" ]]; then
+            [[ "$RELEASE_TAG" == *-beta.* ]] || { echo "Unsigned releases must be Beta versions" >&2; exit 1; }
+            echo "Building a Beta without Developer ID signing or notarization"
+            exit 0
+          fi
           test -n "$CSC_LINK" || { echo "Missing MACOS_CERTIFICATE_BASE64" >&2; exit 1; }
           test -n "$CSC_KEY_PASSWORD" || { echo "Missing MACOS_CERTIFICATE_PASSWORD" >&2; exit 1; }
           test -n "$APPLE_ID" || { echo "Missing APPLE_ID" >&2; exit 1; }
@@ -106,7 +116,11 @@ jobs:
         run: |
           pnpm build:desktop
           pnpm test:code-mode-package
-          pnpm exec electron-builder --mac dmg zip --${{ matrix.arch }} --publish never
+          args=(--mac dmg zip --${{ matrix.arch }} --publish never)
+          if [[ "$RELEASE_UNSIGNED" == "true" ]]; then
+            args+=(--config.mac.identity=- --config.mac.hardenedRuntime=false --config.mac.gatekeeperAssess=false --config.mac.notarize=false)
+          fi
+          pnpm exec electron-builder "${args[@]}"
 
       - uses: actions/upload-artifact@v7
         with:
@@ -139,11 +153,25 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          notes=()
+          if [[ "$RELEASE_UNSIGNED" == "true" ]]; then
+            cat > release-notes.md <<'EOF'
+          Biny 是本地优先、记忆优先的开发协作 Agent，提供 macOS Desktop、TUI 与 CLI，支持通过 MCP、Skills 和插件扩展。
+
+          ### macOS Beta 安装
+          - Apple Silicon 下载 `arm64.dmg`；Intel 下载 `x64.dmg`。打开 DMG 后将 Biny 拖入 Applications；ZIP 提供相同 App 的压缩包。
+          - 此 Beta 未使用 Apple Developer ID 签名或公证。首次打开可能被 macOS 拦截；确认下载来源后，在“系统设置 → 隐私与安全性”中选择“仍要打开”。[Apple 操作说明](https://support.apple.com/en-us/102445)
+          - `SHA256SUMS.txt` 提供全部 DMG / ZIP 的校验值，可使用 `shasum -a 256 <下载文件>` 核对。
+          - 首次使用请配置模型服务商；桌面观察与操作需要相应的 macOS 权限。配置入口见 [用户文档](https://github.com/binyouo/Biny-Agent/blob/main/docs/README.md)。
+          - 此版本供测试使用；安装、首次启动及界面交互待人工验收。
+          EOF
+            notes+=(--notes-file release-notes.md)
+          fi
           if gh release view "$RELEASE_TAG" > /dev/null 2>&1; then
             gh release upload "$RELEASE_TAG" release-assets/* --clobber
           else
             if [[ "$RELEASE_TAG" == *-* ]]; then
-              gh release create "$RELEASE_TAG" release-assets/* --title "Biny ${RELEASE_TAG#v}" --generate-notes --prerelease
+              gh release create "$RELEASE_TAG" release-assets/* --title "Biny ${RELEASE_TAG#v}" --generate-notes --prerelease "${notes[@]}"
             else
               gh release create "$RELEASE_TAG" release-assets/* --title "Biny ${RELEASE_TAG#v}" --generate-notes
             fi

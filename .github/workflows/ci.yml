@@ -65,6 +65,9 @@ jobs:
       - name: Lint
         run: pnpm lint
 
+      - name: Test release policy
+        run: node --test scripts/release-desktop.test.mjs
+
   test:
     name: Tests
     runs-on: ubuntu-latest
