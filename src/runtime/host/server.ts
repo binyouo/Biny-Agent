@@ -999,6 +999,7 @@ export class RuntimeHostServer {
       await this.waitForPendingRunAdmissions(requiredString(payload.runId, "runId"));
     }
     const managed = await this.runtimeEntry(frame.operation, payload);
+    this.assertRequestAdmission(connection, admissionOperation);
     const runtime = managed.runtime;
     const commands = managed.commands;
     switch (frame.operation) {
@@ -1056,7 +1057,7 @@ export class RuntimeHostServer {
       case "submit": {
         this.assertRevision(payload, runtime);
         await this.ensureSessionWriter(connection, runtime);
-        this.admission.assertAdmission();
+        this.assertRequestAdmission(connection, admissionOperation);
         const ids = readRequestIds(payload);
         const submitted = runtime.submitPrompt(
           requiredString(payload.input, "input"),
@@ -1089,7 +1090,7 @@ export class RuntimeHostServer {
             };
           }
           await this.ensureSessionWriter(connection, runtime);
-          this.admission.assertAdmission();
+          this.assertRequestAdmission(connection, admissionOperation);
           const ids = readRequestIds(payload);
           const submitted = runtime.submitPrompt(
             requiredString(payload.input, "input"),
@@ -1109,7 +1110,7 @@ export class RuntimeHostServer {
       case "queue": {
         this.assertRevision(payload, runtime);
         await this.ensureSessionWriter(connection, runtime);
-        this.admission.assertAdmission();
+        this.assertRequestAdmission(connection, admissionOperation);
         const ids = readRequestIds(payload);
         const input = requiredString(payload.input, "input");
         const attachments = readAttachments(payload.attachments);
@@ -1123,7 +1124,7 @@ export class RuntimeHostServer {
         return await this.executeAdmission(async () => {
           this.assertRevision(payload, runtime);
           await this.ensureSessionWriter(connection, runtime);
-          this.admission.assertAdmission();
+          this.assertRequestAdmission(connection, admissionOperation);
           const ids = readRequestIds(payload);
           const input = requiredString(payload.input, "input");
           const attachments = readAttachments(payload.attachments);
@@ -1191,7 +1192,7 @@ export class RuntimeHostServer {
       case "start-interrupted": {
         this.assertRevision(payload, runtime);
         await this.ensureSessionWriter(connection, runtime);
-        this.admission.assertAdmission();
+        this.assertRequestAdmission(connection, admissionOperation);
         if (payload.mode !== undefined && payload.mode !== "exact" && payload.mode !== "newTurn") {
           throw new Error("Invalid interrupted turn mode.");
         }
@@ -1233,7 +1234,7 @@ export class RuntimeHostServer {
       case "run.continue":
         return await this.executeAdmission(async () => {
           await this.ensureSessionWriter(connection, runtime);
-          this.admission.assertAdmission();
+          this.assertRequestAdmission(connection, admissionOperation);
           return await this.continueRun(payload, runtime, commands);
         }, runtime);
       case "run.inspect": {
