@@ -2828,6 +2828,7 @@ export class AgentSession {
     let reasoningActive = false;
     let lastStepReasoningOutput = "";
     const stepUsageRecords: SessionUsage[] = [];
+    let usageAuditStarted = false;
     let streamFailure: string | undefined;
     let streamFailureReported = false;
     let hardStepLimitReached = false;
@@ -3233,6 +3234,8 @@ export class AgentSession {
         replyToMessageId: runOptions.replyToMessageId ?? lastUserMessageReference?.id,
         retryOfMessageId: runOptions.retryOfMessageId
       };
+        // A recorder can append the audit before throwing; never settle its usage twice.
+        usageAuditStarted = true;
         if (runOptions.retryOrigin && retryCommitStarted) return this.recorder.recordAndFlush(audit).then(() => undefined);
         this.recorder.record(audit);
       };
@@ -3402,7 +3405,7 @@ export class AgentSession {
           turnCancellationReason(abortSignal)
         )
         : failedTurn(message, completedStepsBeforeRun + observedSteps, isTimeoutFailure(error) ? "timeout" : "provider_error");
-      this.recordError(message);
+      this.recordError(message, !usageAuditStarted && stepUsageRecords.length ? sumSessionUsage(stepUsageRecords) : undefined);
       if (outcome.status === "cancelled") {
         await this.recordCancelledTurn(
           outcome,
@@ -4017,11 +4020,11 @@ export class AgentSession {
     }
   }
 
-  recordError(error: unknown): void {
+  recordError(error: unknown, usage?: SessionUsage): void {
     this.recorder.record({
       type: "error",
       message: error instanceof Error ? error.message : String(error),
-      relatedUsage: this.takeRelatedUsage()
+      relatedUsage: usage ? [usage, ...(this.takeRelatedUsage() ?? [])] : this.takeRelatedUsage()
     });
   }
 
