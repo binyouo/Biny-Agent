@@ -4,9 +4,8 @@ import type { App } from "electron";
 export async function startRuntimeHostApp(app: App, start: () => Promise<void>): Promise<void> {
   app.disableHardwareAcceleration();
   if (process.platform === "darwin") {
-    // ready 之后设置策略已经晚于 Dock 注册；必须在应用完成启动前禁止激活。
+    // Bundle 已声明后台身份；Host 进一步禁止激活，正常桌面入口才恢复 regular。
     app.setActivationPolicy("prohibited");
-    app.dock?.hide();
   }
   await app.whenReady();
   await start();

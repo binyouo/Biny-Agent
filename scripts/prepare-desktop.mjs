@@ -39,6 +39,7 @@ if (force || previous?.nativeKey !== nativeKey || !existsSync(path.join(nodePtyR
 }
 
 if (!actions.length) {
+  if (!dryRun) run(process.execPath, [path.join(root, "scripts/prepare-electron-background.mjs")]);
   console.log("Desktop 原生依赖已是最新状态。");
   process.exit(0);
 }
@@ -50,6 +51,7 @@ if (dryRun) {
 if (actions.includes("activity-sidecar")) run(process.execPath, [path.join(root, "scripts/build-activity-sidecar.mjs")]);
 if (actions.includes("calendar-sidecar")) run(process.execPath, [path.join(root, "scripts/build-calendar-sidecar.mjs")]);
 if (actions.includes("electron")) run(pnpmCommand(), ["exec", "install-electron", "--no"]);
+run(process.execPath, [path.join(root, "scripts/prepare-electron-background.mjs")]);
 if (actions.includes("node-pty")) run(pnpmCommand(), ["exec", "electron-rebuild", "-w", "node-pty"]);
 
 mkdirSync(cacheRoot, { recursive: true });

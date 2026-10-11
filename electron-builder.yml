@@ -33,6 +33,8 @@ extraResources:
   - from: build/icon-master.png
     to: native/tray-icon.png
 mac:
+  extendInfo:
+    LSUIElement: true
   category: public.app-category.developer-tools
   icon: build/icon.icns
   hardenedRuntime: true

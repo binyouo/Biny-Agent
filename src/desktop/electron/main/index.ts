@@ -91,6 +91,11 @@ if (runtimeHostLaunchIndex >= 0) {
 
 async function startDesktopApplication(): Promise<void> {
   await app.whenReady();
+  // Bundle 默认后台启动；只有桌面入口加入 Dock，Host 不进入此分支。
+  if (process.platform === "darwin") {
+    app.setActivationPolicy("regular");
+    await app.dock?.show();
+  }
   // 仅没有 Electron 凭据依赖的入口使用 Node Host；Desktop 独立 Host 复用应用入口。
   process.env.BINY_RUNTIME_HOST_ENTRY ??= path.join(
     app.getAppPath(),

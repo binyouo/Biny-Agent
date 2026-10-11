@@ -13,6 +13,7 @@ import { runtimeHostLaunchPlan } from "../src/runtime/host/lifecycle.js";
 test("macOS Host 保持存活并可使用 Electron 网络服务与凭据 API", {
   skip: process.platform !== "darwin", timeout: 20_000
 }, async () => {
+  await promisify(execFile)(process.execPath, ["scripts/prepare-electron-background.mjs"]);
   const root = await mkdtemp(path.join(os.tmpdir(), "biny-host-helper-"));
   const server = createServer((_request, response) => response.end("host-ready"));
   await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
@@ -24,6 +25,8 @@ test("macOS Host 保持存活并可使用 Electron 网络服务与凭据 API", {
     await writeFile(entry, `
       const { app, BrowserWindow, safeStorage, net } = require("electron");
       app.setName("Biny");
+      app.setPath("userData", ${JSON.stringify(path.join(root, "user-data"))});
+      const dockBeforeStartup = app.dock.isVisible();
       let dockAtReady;
       app.once("ready", () => { dockAtReady = app.dock.isVisible(); });
       require(${JSON.stringify(startup)}).startRuntimeHostApp(app, async () => {
@@ -37,6 +40,7 @@ test("macOS Host 保持存活并可使用 Electron 网络服务与凭据 API", {
           windowCount: BrowserWindow.getAllWindows().length,
           cipher: typeof safeStorage.encryptString,
           decipher: typeof safeStorage.decryptString,
+          dockBeforeStartup,
           dockAtReady,
           dockVisible: app.dock.isVisible()
         }));
@@ -48,7 +52,7 @@ test("macOS Host 保持存活并可使用 Electron 网络服务与凭据 API", {
       platform: "darwin", execPath: executable
     });
     const { stdout } = await promisify(execFile)(plan.executable, plan.args, { env: plan.env, timeout: 15_000 });
-    assert.deepEqual(JSON.parse(stdout), { execPath: plan.executable, body: "host-ready", windowCount: 0, cipher: "function", decipher: "function", dockAtReady: false, dockVisible: false });
+    assert.deepEqual(JSON.parse(stdout), { execPath: plan.executable, body: "host-ready", windowCount: 0, cipher: "function", decipher: "function", dockBeforeStartup: false, dockAtReady: false, dockVisible: false });
   } finally {
     await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
     await rm(root, { recursive: true, force: true });
