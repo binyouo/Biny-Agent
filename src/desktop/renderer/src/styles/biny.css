@@ -321,37 +321,40 @@
   transform: translateY(1px);
 }
 
-/* 右缘浮动 rail：常驻工具入口；dock 打开时随流宽度变量一起左移。
-   right 取 min 兜底：窗口偏窄且 dock 打开时 rail 会被推到侧栏边上，
-   这里限制它的左缘（right + 40px 轨宽）始终与侧栏卡片右缘保持 12px 以上间距。 */
-.biny-inspector-rail {
+/* 工具栏与右缘提示条共享定位，面板打开后一起让出交互区域。 */
+.biny-inspector-rail-zone {
   position: fixed;
   z-index: 103;
-  /* 顶栏高 48px，菜单与分隔线之间保留 12px。 */
-  top: 60px;
-  right: 10px;
+  top: 56px;
+  right: 0;
+  display: flex;
+  pointer-events: none;
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}
+
+/* 展开时右侧留白也接收悬停，鼠标从提示条移到按钮不会穿过空隙。 */
+.biny-inspector-rail-zone:has(.biny-inspector-rail.is-visible:not(.is-collapsed)) { pointer-events: auto; }
+
+.biny-inspector-rail {
+  position: relative;
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 2px;
-  padding: 5px 4px;
+  margin-right: 12px;
+  padding: 6px 4px;
+  max-height: calc(100dvh - 68px);
+  overflow-y: auto;
   border: 1px solid color-mix(in srgb, var(--biny-border) 60%, transparent);
   border-radius: 12px;
-  /* 工具入口处于辅助层，使用轻微抬起的实色底，避免深色悬浮条抢正文的注意力。 */
   background: var(--biny-surface-soft);
-  -webkit-app-region: no-drag;
-  app-region: no-drag;
-  /* 只过渡合成层属性；浏览器网页和图片同时显示时不增加模糊滤镜的逐帧绘制。 */
   opacity: 0;
-  transform: translateX(24px);
+  transform: translateX(calc(100% + 12px));
   filter: none;
   visibility: hidden;
   pointer-events: none;
-  transition:
-    transform 0.2s cubic-bezier(0.4, 0, 1, 1),
-    opacity 0.18s cubic-bezier(0.4, 0, 1, 1),
-    right var(--biny-sidebar-transition),
-    visibility 0s linear 0.2s;
+  transition: transform 300ms cubic-bezier(0.4, 0, 1, 1), opacity 220ms ease-out, visibility 0s linear 300ms;
 }
 
 .biny-inspector-rail.is-visible {
@@ -359,21 +362,65 @@
   visibility: visible;
   opacity: 1;
   transform: translateX(0);
-  filter: none;
-  transition:
-    transform 0.3s cubic-bezier(0.22, 1, 0.36, 1),
-    opacity 0.2s cubic-bezier(0.16, 1, 0.3, 1),
-    right var(--biny-sidebar-transition),
-    visibility 0s;
+  transition: transform 300ms cubic-bezier(0.22, 1, 0.36, 1), opacity 160ms ease-out, visibility 0s;
+}
+
+.biny-inspector-rail.is-autohide.is-collapsed {
+  pointer-events: none;
+  opacity: 0;
+  transform: translateX(calc(100% + 12px));
+  visibility: hidden;
+  transition: transform 300ms cubic-bezier(0.4, 0, 1, 1), opacity 220ms ease-out, visibility 0s linear 300ms;
+}
+
+.biny-inspector-rail-sensor {
+  position: absolute;
+  top: 0;
+  right: 0;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  width: 12px;
+  height: 48px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  pointer-events: auto;
+}
+
+.biny-inspector-rail-handle {
+  width: 3px;
+  height: 28px;
+  border-radius: 3px 0 0 3px;
+  color: var(--biny-text-secondary);
+  background: currentColor;
+  opacity: 0;
+  transition: opacity 200ms ease;
+}
+
+.biny-inspector-rail-zone[data-collapsed="true"] .biny-inspector-rail-handle { opacity: 1; }
+.biny-inspector-rail-sensor:focus-visible { outline: 2px solid var(--biny-focus); outline-offset: -2px; }
+.biny-inspector-rail-sensor:focus-visible .biny-inspector-rail-handle { opacity: 1; }
+
+.biny-inspector-rail-autohide { margin-top: 6px; }
+.biny-inspector-rail-autohide::before {
+  content: "";
+  position: absolute;
+  top: -5px;
+  width: 16px;
+  height: 1px;
+  background: var(--biny-border);
 }
 
 @media (prefers-reduced-motion: reduce) {
   .biny-inspector-rail,
-  .biny-inspector-rail.is-visible {
-    transition: opacity 0.15s ease, right var(--biny-sidebar-transition), visibility 0s;
+  .biny-inspector-rail.is-visible,
+  .biny-inspector-rail.is-autohide.is-collapsed {
+    transition: opacity 0.15s ease, visibility 0s;
     transform: none;
-    filter: none;
   }
+  .biny-inspector-rail-handle { transition: none; }
 }
 
 .biny-inspector-rail-btn {

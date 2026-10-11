@@ -65,7 +65,7 @@ test("首次挂载右栏从零宽淡入，关闭态能完全释放布局占位",
 
 
 test("正文的工具条留白与右栏宽度同节奏收放，避免先扩宽再收窄", () => {
-  const dom = new JSDOM(`<style>${styles.join("\n")}</style><div class="biny-root"><div class="biny-app-shell"><div class="biny-workspace-main"><div class="biny-inspector-rail is-visible"></div><div class="biny-chat-scroll"></div></div><div class="desktop-inspector-wrap"></div></div></div>`);
+  const dom = new JSDOM(`<style>${styles.join("\n")}</style><div class="biny-root"><div class="biny-app-shell"><div class="biny-workspace-main"><div class="biny-inspector-rail-zone"><div class="biny-inspector-rail is-visible"></div></div><div class="biny-chat-scroll"></div></div><div class="desktop-inspector-wrap"></div></div></div>`);
   try {
     const scroll = dom.window.document.querySelector(".biny-chat-scroll")!;
     const get = (): CSSStyleDeclaration => dom.window.getComputedStyle(scroll);

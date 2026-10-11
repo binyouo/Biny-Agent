@@ -123,6 +123,21 @@ export function useWorkspaceInspector({
   const availableWidth = Math.max(0, viewportWidth - sidebarFlowWidth);
   const [browserExpanded, setBrowserExpanded] = useState(false);
   const [inspectorView, setInspectorView] = useState<InspectorView>("files");
+  const [autoHide, setAutoHide] = useState(false);
+  const [railHover, setRailHover] = useState(false);
+  const [railFocused, setRailFocused] = useState(false);
+  const railPointerDown = useRef(false);
+  const railHideTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const peekRail = (): void => {
+    clearTimeout(railHideTimer.current);
+    setRailHover(true);
+  };
+  const unpeekRail = (): void => {
+    railPointerDown.current = false;
+    clearTimeout(railHideTimer.current);
+    railHideTimer.current = setTimeout(() => setRailHover(false), 350);
+  };
+  useEffect(() => () => clearTimeout(railHideTimer.current), []);
   const renderingView = inspectorView === "rendering";
   const focused = inspectorOpen && (renderingView ? renderingExpanded : browserExpanded && inspectorView === "browser");
   // 右栏只能使用聊天区之外的空间；保留用户拖拽宽度作为偏好，不把临时收窄写回设置。
@@ -133,6 +148,12 @@ export function useWorkspaceInspector({
   const [directoryStates, setDirectoryStates] = useState<Map<string, FileDirectoryState>>(new Map());
   const [expandedDirectories, setExpandedDirectories] = useState<Set<string>>(() => new Set());
   const effectiveOpen = inspectorOpen && Boolean(projectId);
+  useLayoutEffect(() => {
+    clearTimeout(railHideTimer.current);
+    railPointerDown.current = false;
+    setRailHover(false);
+    setRailFocused(false);
+  }, [effectiveOpen, projectId, source]);
   const activePreview = preview?.source === source ? preview : undefined;
   const activeRendering = rendering?.scope === source && rendering.projectId === projectId ? rendering : undefined;
   const inspectorViews = activeRendering ? [...defaultInspectorViews, "rendering" as const] : defaultInspectorViews;
@@ -443,28 +464,60 @@ export function useWorkspaceInspector({
 
   // rail 与 dock 使用同一次提交的开合值；保留 DOM 让 CSS 负责可中断的进退场。
   const railVisible = Boolean(projectId) && !effectiveOpen;
+  // 感应条与工具栏共享悬停边界；键盘焦点仍在内部时不能收起。
+  const railCollapsed = railVisible && autoHide && !railHover && !railFocused;
+  const railInteractive = railVisible && !railCollapsed;
 
   return {
     dock: inspector,
     rail: projectId ? (
-      <div
-        aria-hidden={!railVisible}
-        inert={!railVisible}
-        aria-label="工作区工具"
-        className={`biny-inspector-rail${railVisible ? " is-visible" : ""}`}
-        role="toolbar"
-      >
-        {inspectorViews.map((view) => (
-          <WorkspaceRailButton
-            label={inspectorViewMetadata[view].label}
-            key={view}
-            onClick={() => openRailAction(view)}
-            tabIndex={railVisible ? 0 : -1}
+      <div className="biny-inspector-rail-zone" data-collapsed={railCollapsed}
+        onMouseEnter={peekRail} onMouseLeave={unpeekRail}
+        onPointerDownCapture={() => { railPointerDown.current = true; setRailFocused(false); }}
+        onPointerUpCapture={() => { railPointerDown.current = false; }}
+        onPointerCancel={() => { railPointerDown.current = false; }}
+        onFocus={() => setRailFocused(!railPointerDown.current)}
+        onKeyDown={() => setRailFocused(true)}
+        onBlur={event => {
+          if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setRailFocused(false);
+        }}>
+        {railVisible && autoHide ? (
+          <button type="button" aria-label="显示工具栏" aria-expanded={!railCollapsed}
+            className="biny-inspector-rail-sensor"
+            onClick={peekRail}>
+            <span aria-hidden="true" className="biny-inspector-rail-handle" />
+          </button>
+        ) : null}
+        <div
+          aria-hidden={!railInteractive}
+          inert={!railInteractive}
+          aria-label="工作区工具"
+          className={`biny-inspector-rail${railVisible ? " is-visible" : ""}${autoHide ? " is-autohide" : ""}${railCollapsed ? " is-collapsed" : ""}`}
+          role="toolbar"
+        >
+          {inspectorViews.map((view) => (
+            <WorkspaceRailButton
+              label={inspectorViewMetadata[view].label}
+              key={view}
+              onClick={() => openRailAction(view)}
+              tabIndex={railInteractive ? 0 : -1}
+            >
+              <Icon name={inspectorViewMetadata[view].icon} size={16} />
+              {view === "changes" && changeCount > 0 ? <span className="biny-inspector-badge is-corner">{changeCount > 99 ? "99+" : changeCount}</span> : null}
+            </WorkspaceRailButton>
+          ))}
+          <button
+            aria-label={autoHide ? "保持工具栏展开" : "自动隐藏工具栏"}
+            aria-pressed={autoHide}
+            className="biny-inspector-rail-btn biny-inspector-rail-autohide"
+            onClick={() => setAutoHide((value) => !value)}
+            tabIndex={railInteractive ? 0 : -1}
+            title={autoHide ? "保持工具栏展开" : "自动隐藏工具栏"}
+            type="button"
           >
-            <Icon name={inspectorViewMetadata[view].icon} size={16} />
-            {view === "changes" && changeCount > 0 ? <span className="biny-inspector-badge is-corner">{changeCount > 99 ? "99+" : changeCount}</span> : null}
-          </WorkspaceRailButton>
-        ))}
+            <Icon name="pin" size={14} />
+          </button>
+        </div>
       </div>
     ) : undefined,
     layout: {

@@ -155,6 +155,7 @@
   .biny-inspector-view-content[data-active="true"],
   .biny-root .biny-inspector-rail,
   .biny-root .biny-inspector-rail.is-visible,
+  .biny-root .biny-inspector-rail.is-collapsed,
   .biny-root .biny-app-shell > .desktop-inspector-wrap {
     transition: none !important;
     transform: none !important;
@@ -163,7 +164,7 @@
 .biny-root .biny-workspace-chat .biny-workspace-main { --biny-chat-content-width: calc(100% - 32px); width: 100%; min-width: 0; flex: 1 1 auto; }
 /* 收起态工具条占用独立的右侧留白，不覆盖右对齐消息；输入框仍使用完整宽度。
    留白与右栏占位使用同一曲线，避免正文先瞬间扩宽再被面板压窄。 */
-.biny-root .biny-workspace-main:has(> .biny-inspector-rail.is-visible) .biny-chat-scroll { padding-right: 48px; }
+.biny-root .biny-workspace-main:has(> .biny-inspector-rail-zone > .biny-inspector-rail.is-visible) .biny-chat-scroll { padding-right: 48px; }
 .biny-root .biny-chat-scroll-content, .biny-root .message-timeline, .biny-root .assistant-message { min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
 
 .biny-output-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(256px, 100%), 1fr)); gap: 8px; margin-top: 16px; min-width: 0; }
