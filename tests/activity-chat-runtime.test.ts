@@ -56,7 +56,10 @@ try {
     assert.match(greeting, /最近焦点记录：Chat Client \[org\.example\.editor\]/u);
     assert.match(greeting, /约 20 分钟/u);
     assert.ok(greeting.includes(started), "真实模型请求包含活动发生时间");
-    assert.match(requests.at(-1)?.systemPrompt ?? "", /may refer.*only when.*evidence/iu);
+    assert.match(greeting, /近期已分析活动：.*登录排查完成/su,
+      "问候须区分已分析的具体活动与焦点、统计；原有注入测试只检查材料存在");
+    assert.match(requests.at(-1)?.systemPrompt ?? "", /must mention one concrete item from the analyzed activities/iu,
+      "真实模型请求必须要求主动引用已分析活动，不能仅允许普通问候");
     assert.doesNotMatch(greeting, /当前活动：|OCR_SECRET_831/u);
     assert.equal((await agent.runTask("上次登录排查结论是什么")).status, "completed");
     const first = requestText(requests.at(-1)?.messages ?? []);

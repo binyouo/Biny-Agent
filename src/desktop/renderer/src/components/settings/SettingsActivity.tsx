@@ -10,18 +10,20 @@ import { useActivityRuntime } from "./ActivityRuntimeContext.js";
 import { SettingsActivityApplications } from "./SettingsActivityApplications.js";
 import { SettingsSwitch } from "./SettingsSwitch.js";
 
-export function SettingsActivity(): React.JSX.Element {
+export function SettingsActivity({ onOpenToolModel }: { onOpenToolModel?: () => void }): React.JSX.Element {
   const { activity, loadError, updateActivityImmediately } = useSettingsDraft();
   const { runtime, permissions, permissionError, refresh, refreshPermissions, updateRuntime } = useActivityRuntime();
   if (!activity) return <div aria-busy={!loadError} className="settings-sections"><section><p role={loadError ? "alert" : "status"}>{loadError ? `Computer History 设置加载失败：${loadError}。请关闭设置后重试。` : "正在加载 Computer History 设置…"}</p></section></div>;
-  return <SettingsActivityForm activity={activity} onChange={updateActivityImmediately} onRefreshRuntime={refresh} onRefreshPermissions={refreshPermissions} onRuntimeChange={updateRuntime} permissions={permissions} permissionError={permissionError} runtime={runtime} />;
+  return <SettingsActivityForm activity={activity} onChange={updateActivityImmediately} onRefreshRuntime={refresh} onRefreshPermissions={refreshPermissions} onRuntimeChange={updateRuntime} onOpenToolModel={onOpenToolModel} permissions={permissions} permissionError={permissionError} runtime={runtime} />;
 }
 
-function SettingsActivityForm({ activity, onChange, onRefreshRuntime, onRefreshPermissions, onRuntimeChange, permissions, permissionError, runtime }: { activity: DesktopActivitySettingsInput; onChange(patch: Partial<DesktopActivitySettingsInput>): Promise<void>; onRefreshRuntime(): Promise<ActivityRuntimeSnapshot>; onRefreshPermissions(): Promise<ActivityPermissionStatus>; onRuntimeChange(next: ActivityRuntimeSnapshot): void; permissions: ActivityPermissionStatus | undefined; permissionError: string | undefined; runtime: ActivityRuntimeSnapshot | undefined }): React.JSX.Element {
+function SettingsActivityForm({ activity, onChange, onRefreshRuntime, onRefreshPermissions, onRuntimeChange, onOpenToolModel, permissions, permissionError, runtime }: { activity: DesktopActivitySettingsInput; onChange(patch: Partial<DesktopActivitySettingsInput>): Promise<void>; onRefreshRuntime(): Promise<ActivityRuntimeSnapshot>; onRefreshPermissions(): Promise<ActivityPermissionStatus>; onRuntimeChange(next: ActivityRuntimeSnapshot): void; onOpenToolModel?: () => void; permissions: ActivityPermissionStatus | undefined; permissionError: string | undefined; runtime: ActivityRuntimeSnapshot | undefined }): React.JSX.Element {
   const [languagesText, setLanguagesText] = useState(activity.ocrLanguages.join(", "));
   const [clearing, setClearing] = useState(false);
   const [clearOpen, setClearOpen] = useState(false);
   const [feedback, setFeedback] = useState<string>();
+  const [retryingAnalysis, setRetryingAnalysis] = useState(false);
+  const [analysisFeedback, setAnalysisFeedback] = useState<{ text: string; error: boolean }>();
   const [requestingPermission, setRequestingPermission] = useState<"screen-recording" | "accessibility">();
   const [activityUpdateCount, setActivityUpdateCount] = useState(0);
   const languagesInputRef = useRef<HTMLInputElement>(null);
@@ -67,6 +69,21 @@ function SettingsActivityForm({ activity, onChange, onRefreshRuntime, onRefreshP
 
   const refreshRuntime = (): void => {
     void onRefreshRuntime().catch((error: unknown) => setFeedback(activityErrorMessage(error)));
+  };
+  const retryFailedAnalysis = (): void => {
+    if (retryingAnalysis) return;
+    setRetryingAnalysis(true);
+    setAnalysisFeedback(undefined);
+    void window.biny.retryFailedActivityAnalysis().then(({ queued, snapshot }) => {
+      onRuntimeChange(snapshot);
+      setAnalysisFeedback({ text: queued > 0
+        ? `已将 ${queued} 条失败记录加入待分析队列。${activity.enabled ? "空闲时继续分析。" : "启用 Computer History 后继续分析。"}`
+        : "没有需要重试的失败记录。", error: false });
+    }).catch((error: unknown) => {
+      setAnalysisFeedback({ text: activityErrorMessage(error), error: true });
+    }).finally(() => {
+      setRetryingAnalysis(false);
+    });
   };
   const refreshPermissions = (): void => {
     void onRefreshPermissions().catch(() => undefined);
@@ -181,6 +198,20 @@ function SettingsActivityForm({ activity, onChange, onRefreshRuntime, onRefreshP
         {runtime?.error ? <p className="activity-section-description is-error" role="alert">{runtime.error}</p> : null}
         {feedback ? <p aria-live="polite" className="activity-feedback" role="status">{feedback}</p> : null}
       </section>
+
+      {runtime?.analysis ? <ActivitySection id="activity-analysis" icon="activity" title="后台分析">
+        <p className="activity-section-description">待分析 {runtime.analysis.pending} · 失败 {runtime.analysis.failed}</p>
+        {runtime.analysis.latestFailure ? <>
+          {runtime.analysis.latestFailure.model ? <p className="activity-section-description">上次失败模型：{runtime.analysis.latestFailure.model}</p> : null}
+          <p className="activity-section-description is-error" role="alert">{runtime.analysis.latestFailure.error && /insufficient balance/iu.test(runtime.analysis.latestFailure.error) ? "模型余额不足。" : "分析失败。"}{runtime.analysis.latestFailure.error}</p>
+          <p className="activity-section-description">切换工具模型或恢复额度后重试。</p>
+        </> : null}
+        <div className="settings-confirm-actions">
+          {onOpenToolModel ? <button className="ghost-button" onClick={onOpenToolModel} type="button">工具模型设置</button> : null}
+          {runtime.analysis.failed > 0 ? <button aria-busy={retryingAnalysis} aria-label="重试失败分析" className="ghost-button" disabled={retryingAnalysis || clearing} onClick={retryFailedAnalysis} type="button">{retryingAnalysis ? "加入队列中…" : "重试失败分析"}</button> : null}
+        </div>
+        {analysisFeedback ? <p aria-live="polite" className={`activity-feedback${analysisFeedback.error ? " is-error" : ""}`} role={analysisFeedback.error ? "alert" : "status"}>{analysisFeedback.text}</p> : null}
+      </ActivitySection> : null}
 
       {document.documentElement.dataset.platform === "darwin" ? <ActivitySection
         action={<button aria-label="刷新 macOS 权限状态" className="activity-icon-button" onClick={refreshPermissions} title="刷新权限状态" type="button"><Icon name="refresh" size={14} /></button>}

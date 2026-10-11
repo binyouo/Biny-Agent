@@ -195,6 +195,7 @@ const api: DesktopApi = {
   },
   dailyMemoryNote: async (date) => await ipcRenderer.invoke(desktopIpc.dailyMemoryNote, date),
   clearActivity: async () => await ipcRenderer.invoke(desktopIpc.activityClear),
+  retryFailedActivityAnalysis: async () => await ipcRenderer.invoke(desktopIpc.activityRetryFailedAnalysis),
   stageSettingsCredential: async (secret, scope) => await ipcRenderer.invoke(desktopIpc.stageSettingsCredential, secret, scope),
   completeModelLoginForSettings: async (projectId, provider, authRequestId, pastedAuthorization) => await ipcRenderer.invoke(
     desktopIpc.completeModelLoginForSettings,

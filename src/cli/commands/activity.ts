@@ -253,6 +253,20 @@ export async function activityDigestCommand(
   }
 }
 
+/** 批量恢复仅重新入队失败分析，模型请求继续由 Desktop 的空闲调度执行。 */
+export async function activityRetryFailedCommand(workspaceRoot: string, options: ActivityOutputOptions = {}): Promise<void> {
+  const config = await createFileConfigStore(workspaceRoot).load();
+  if (!resolveToolModel(config)) throw new Error("暂无可用工具模型，请先选择工具模型。");
+  const store = await openActivityStore(config.activity);
+  try {
+    const queued = store.retryFailedAnalysis();
+    if (options.json) console.log(JSON.stringify({ queued }));
+    else console.log(`已将 ${queued} 条失败记录加入待分析队列；Desktop 启用 Computer History 后在空闲时继续分析。`);
+  } finally {
+    await store.close();
+  }
+}
+
 /** 显式重分析可恢复 skipped/failed 会话，仍经过同一模型选择和外发权限判断。 */
 export async function activityAnalyzeCommand(workspaceRoot: string, sessionId: string, options: ActivityOutputOptions = {}): Promise<void> {
   const configStore = createFileConfigStore(workspaceRoot);

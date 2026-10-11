@@ -207,6 +207,7 @@ export const desktopIpc = {
   settingsCloseRequest: "desktop:settings:close-request",
   settingsCloseResponse: "desktop:settings:close-response",
   activitySnapshot: "desktop:activity:snapshot",
+  activityRetryFailedAnalysis: "desktop:activity:retry-failed-analysis",
   activityPermissions: "desktop:activity:permissions",
   activitySettings: "desktop:activity:settings",
   activityApplications: "desktop:activity:applications",
@@ -1760,6 +1761,7 @@ export interface DesktopApi {
   settingsSnapshot(projectId: string, sessionId?: string): Promise<DesktopSettingsSnapshot>;
   saveSettings(projectId: string, input: DesktopSettingsSaveInput): Promise<DesktopSettingsSaveResult>;
   activitySnapshot(): Promise<ActivityRuntimeSnapshot>;
+  retryFailedActivityAnalysis(): Promise<{ queued: number; snapshot: ActivityRuntimeSnapshot }>;
   activityPermissions(): Promise<ActivityPermissionStatus>;
   activitySettings(): Promise<DesktopActivitySettingsUpdate>;
   activityApplications(): Promise<DesktopActivityApplication[]>;

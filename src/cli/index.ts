@@ -39,6 +39,7 @@ import {
   activityDigestCommand,
   activityReportCommand,
   activityAnalyzeCommand,
+  activityRetryFailedCommand,
   activityRecordingCommand,
   activitySearchCommand,
   activitySessionsCommand,
@@ -378,6 +379,7 @@ session
     return wrap(() => sessionImportCommand(workspaceRoot, file, { format: options.format, conversationId: options.conversation, json: options.json }))();
   });
 const activity = program.command("activity").description("Inspect local Activity Recorder data");
+activity.command("retry-failed").description("Requeue failed analyses for the Desktop background analyzer").option("--json", "print JSON").action((options: { json?: boolean }) => wrap(() => activityRetryFailedCommand(workspaceRoot, options))());
 activity.command("analyze").argument("<session-id>", "activity session to analyze again").option("--json", "print JSON").action((sessionId: string, options: { json?: boolean }) => wrap(() => activityAnalyzeCommand(workspaceRoot, sessionId, options))());
 activity.command("status").option("--json", "print JSON").action((options: { json?: boolean }) => wrap(() => activityStatusCommand(workspaceRoot, options))());
 for (const [name, enabled] of [["start", true], ["stop", false]] as const) {

@@ -65,13 +65,14 @@ test("没有焦点事件的截图会话仅提供会话应用集合和时长估�
     assert.match(context, /本次会话涉及应用：Browser/u);
     assert.doesNotMatch(context, /最近焦点记录：|当前活动：/u);
     assert.match(context, /时长估算/u);
+    assert.doesNotMatch(context, /近期已分析活动：/u, "只有应用统计时不能标为已分析活动");
   });
 });
 
-test("问候可以不提活动，模型不得将焦点与统计表述为阅读证据", () => {
+test("只有焦点与统计时仍可普通问候，不得表述为阅读证据；主动引用仅针对已分析活动", () => {
   const bundle = buildPromptBundle({ cwd: os.tmpdir(), now,
     activityGreetingPrompt: "今天：9 分钟，共 4 个会话；应用名统计：Browser" });
-  assert.match(bundle.systemPrompt, /may refer.*only when.*evidence/iu);
+  assert.match(bundle.systemPrompt, /only focus observations or duration estimates.*brief natural greeting/iu);
   assert.match(bundle.systemPrompt, /focus.*reading/iu);
   assert.match(bundle.systemPrompt, /bundle ID/iu);
   assert.doesNotMatch(bundle.systemPrompt, /Refer naturally to one specific item/u);

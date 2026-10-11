@@ -393,6 +393,7 @@ async function testEventAndFallbackStorage(): Promise<void> {
       events: 1,
       fallbackCaptures: 2,
       storageBytes: 10,
+      analysis: { pending: 0, failed: 0, latestFailure: undefined },
       recentSessions: [{
         id: sessionId,
         startedAt: "2026-08-24T00:00:00.000Z",
@@ -405,7 +406,7 @@ async function testEventAndFallbackStorage(): Promise<void> {
       }]
     });
     await store.clear();
-    assert.deepEqual(store.snapshot(), { sessions: 0, events: 0, fallbackCaptures: 0, storageBytes: 0, recentSessions: [] });
+    assert.deepEqual(store.snapshot(), { sessions: 0, events: 0, fallbackCaptures: 0, storageBytes: 0, recentSessions: [], analysis: { pending: 0, failed: 0, latestFailure: undefined } });
     assert.equal((await stat(path.join(root, "snapshots"))).mode & 0o777, 0o700);
   } finally {
     await store.close();
@@ -594,6 +595,7 @@ async function testStorageLimitKeepsEventSemantics(): Promise<void> {
       events: 0,
       fallbackCaptures: 1,
       storageBytes: 1_100_000,
+      analysis: { pending: 0, failed: 0, latestFailure: undefined },
       recentSessions: [{
         id: sessionId,
         startedAt: "2026-08-25T00:00:00.000Z",
@@ -611,6 +613,7 @@ async function testStorageLimitKeepsEventSemantics(): Promise<void> {
       events: 0,
       fallbackCaptures: 0,
       storageBytes: 0,
+      analysis: { pending: 0, failed: 0, latestFailure: undefined },
       recentSessions: [{
         id: sessionId,
         startedAt: "2026-08-25T00:00:00.000Z",

@@ -464,7 +464,7 @@ function SettingsOverlayContent({
             onChange={settingsDraft.setAppearancePreference}
             disabled={settingsDraft.saveState === "saving" || settingsDraft.saveState === "rolling_back" || settingsDraft.saveState === "recovery_required"}
           /> : null}
-          {activeTab === "Computer History" ? <SettingsActivity /> : null}
+          {activeTab === "Computer History" ? <SettingsActivity onOpenToolModel={() => { void selectTab("通用"); }} /> : null}
           {activeTab === "聊天" ? <SettingsChatPage /> : null}
           {activeTab === "权限" ? <SettingsPermissions /> : null}
           {memoryVisited ? <SettingsMemory

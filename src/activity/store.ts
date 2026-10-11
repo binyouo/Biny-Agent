@@ -6,6 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type {
+  ActivityAnalysisSnapshot,
   ActivityEventType,
   ActivitySnapshotStorageTier,
   ActivitySource,
@@ -82,6 +83,7 @@ export interface ActivityStoreSnapshot {
   fallbackCaptures: number;
   storageBytes: number;
   recentSessions: ActivitySessionRecord[];
+  analysis?: ActivityAnalysisSnapshot;
 }
 
 export type ActivityRecordId = string;
@@ -548,11 +550,28 @@ export class ActivityStore {
       ORDER BY s.started_at DESC
       LIMIT ?
     `).all(limit) as Array<Record<string, unknown>>;
+    const analysisCounts = database.prepare(`
+      SELECT SUM(analysis_status = 'pending') AS pending, SUM(analysis_status = 'failed') AS failed
+      FROM activity_sessions WHERE ended_at IS NOT NULL
+    `).get() as { pending: number | null; failed: number | null };
+    const latestFailure = database.prepare(`
+      SELECT analysis_model, analysis_error FROM activity_sessions
+      WHERE ended_at IS NOT NULL AND analysis_status = 'failed'
+      ORDER BY analyzed_at DESC, started_at DESC, id DESC LIMIT 1
+    `).get() as { analysis_model: string | null; analysis_error: string | null } | undefined;
     return {
       sessions: Number(counts.sessions),
       events: Number(counts.events),
       fallbackCaptures: Number(counts.fallback_captures),
       storageBytes: Number(counts.storage_bytes),
+      analysis: {
+        pending: Number(analysisCounts.pending ?? 0),
+        failed: Number(analysisCounts.failed ?? 0),
+        latestFailure: latestFailure ? {
+          model: redactActivityText(latestFailure.analysis_model ?? undefined),
+          error: redactActivityText(latestFailure.analysis_error ?? undefined)?.slice(0, 500)
+        } : undefined
+      },
       recentSessions: rows.map((row) => ({
         id: String(row.id),
         startedAt: activityTimestampString(row.started_at),
@@ -1251,6 +1270,23 @@ export class ActivityStore {
         confidence = 0, source_event_count = 0, input_hash = NULL
       WHERE id = ?
     `).run(sessionId);
+  }
+
+  /** 仅重新排队已结束的失败记录，事务内清理旧分析缓存，保留全部采集事实。 */
+  retryFailedAnalysis(): number {
+    const database = this.requireDatabase();
+    database.exec("BEGIN IMMEDIATE");
+    try {
+      const rows = database.prepare(`
+        SELECT id FROM activity_sessions WHERE ended_at IS NOT NULL AND analysis_status = 'failed'
+      `).all() as Array<{ id: string }>;
+      for (const { id } of rows) this.recordAnalysisStatus(id, "pending");
+      database.exec("COMMIT");
+      return rows.length;
+    } catch (error) {
+      database.exec("ROLLBACK");
+      throw error;
+    }
   }
 
   /** 记录模型尚未产出结构化分析时的 session 状态；正文分析行保持为空，便于区分重试和已处理。 */

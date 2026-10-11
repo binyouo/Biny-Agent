@@ -1055,6 +1055,7 @@ export function registerDesktopIpc(context: IpcContext): void {
   });
 
   handle(desktopIpc.activitySnapshot, async () => context.activity.snapshot());
+  handleRecoveryGated(desktopIpc.activityRetryFailedAnalysis, async () => await context.activity.retryFailedAnalysis());
   handle(desktopIpc.activityPermissions, async () => context.getActivityPermissions());
 
   handle(desktopIpc.activitySettings, async () => context.activity.settingsSnapshot());

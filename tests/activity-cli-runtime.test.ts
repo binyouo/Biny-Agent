@@ -69,7 +69,9 @@ try {
   const memory = new MemoryStorage(root, { agentDir: path.join(root, "agent") });
   try {assert.equal((await memory.listEntries()).entries.length,0,"两个 CLI 入口无语义模型时均不写活动记忆");}
   finally {memory.close();}
+  let providerCalls = 0;
   const provider = createServer(async (request,response) => {
+    providerCalls += 1;
     for await (const _chunk of request) { /* Drain the real provider request body. */ }
     const payload = JSON.stringify({worth:true,title:"Release review",description:"Release checklist review",summary:"Release checklist review",
       memoryCandidates:[{type:"user",content:"Release checklist is required before deployment.",why:"Repeated decision"}]});
@@ -95,9 +97,23 @@ try {
       providers:{local:{type:"openai-compatible",baseUrl:`http://127.0.0.1:${address.port}/v1`,requiresApiKey:false,retry:{maxAttempts:1}}},
       models:{"local-test":{provider:"local",model:"local-test",contextWindow:128000,capabilities:{tools:true,reasoning:false,streaming:true}}}
     }));
+    // 恢复入口只重新排队失败记录；既有 analyze 用例无法发现误重放成功分析或入队时调用旧模型。
+    const failedStore = new ActivityStore();
+    await failedStore.open(path.join(root, "snapshots"), path.join(root, "agent"));
+    failedStore.recordAnalysisStatus(sessionId, "failed", { model: "old-model", error: "Insufficient Balance" });
+    await failedStore.close();
+    const retry = await runCli(["activity", "retry-failed", "--json"]);
+    assert.equal(retry.status, 0, retry.stderr);
+    assert.deepEqual(JSON.parse(retry.stdout), { queued: 1 });
+    assert.equal(providerCalls, 0, "入队不调用模型，后续分析使用最新工具模型配置");
     const successfulAnalyze = await runCli(["activity","analyze",sessionId,"--json"]);
     assert.equal(successfulAnalyze.status,0,successfulAnalyze.stderr);
-    assert.equal((JSON.parse(successfulAnalyze.stdout) as {status:string}).status,"analyzed");
+    const analyzed = JSON.parse(successfulAnalyze.stdout) as { status: string; analysis: { analyzerModel: string } };
+    assert.equal(analyzed.status, "analyzed");
+    assert.equal(analyzed.analysis.analyzerModel, "local-test", "恢复分析使用新选的工具模型，不继续使用失败模型");
+    const retryAfterSuccess = await runCli(["activity", "retry-failed", "--json"]);
+    assert.equal(retryAfterSuccess.status, 0, retryAfterSuccess.stderr);
+    assert.deepEqual(JSON.parse(retryAfterSuccess.stdout), { queued: 0 }, "成功分析不能重新排队");
     const reportStore = new ActivityStore();
     await reportStore.open(path.join(root,"snapshots"),path.join(root,"agent"));
     let reportSessionId:string;

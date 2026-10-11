@@ -37,6 +37,12 @@ export type ActivityServiceState =
   | "unavailable"
   | "error";
 
+export interface ActivityAnalysisSnapshot {
+  pending: number;
+  failed: number;
+  latestFailure?: { model?: string; error?: string };
+}
+
 /** Desktop 设置页展示的运行态；它不包含截图、OCR 原文或输入具体键值。 */
 export interface ActivityRuntimeSnapshot {
   state: ActivityServiceState;
@@ -51,6 +57,7 @@ export interface ActivityRuntimeSnapshot {
   fallbackCaptures: number;
   storageBytes: number;
   recentSessions: ActivitySessionSummary[];
+  analysis?: ActivityAnalysisSnapshot;
   currentSessionId?: string;
   currentApplication?: string;
   error?: string;

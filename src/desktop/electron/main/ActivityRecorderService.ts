@@ -328,6 +328,18 @@ export class ActivityRecorderService {
     return structuredClone(this.createSnapshot(true));
   }
 
+  async retryFailedAnalysis(): Promise<{ queued: number; snapshot: ActivityRuntimeSnapshot }> {
+    return await this.enqueue(async () => {
+      const config = await this.configStore.load();
+      if (!resolveToolModel(config)) throw new Error("暂无可用工具模型，请先在通用设置中选择工具模型。");
+      const queued = this.store.retryFailedAnalysis();
+      this.invalidateStoreSnapshot();
+      const snapshot = this.snapshot();
+      this.emit?.(snapshot);
+      return { queued, snapshot };
+    });
+  }
+
   /** REST 只报告实际存在的采集资源与已知前台身份，不能以配置 enabled 冒充运行状态。 */
   httpCaptureStatus(): { running: boolean; frontmost: { bundleId: string | null; appName: string | null } } {
     const bundleId = this.foregroundBundle ?? null;
@@ -1453,6 +1465,7 @@ export class ActivityRecorderService {
       fallbackCaptures: storeSnapshot.fallbackCaptures,
       storageBytes: storeSnapshot.storageBytes,
       recentSessions: storeSnapshot.recentSessions,
+      analysis: storeSnapshot.analysis,
       currentSessionId: this.sessionId,
       currentApplication: this.currentApplication,
       error: this.error,

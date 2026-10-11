@@ -484,7 +484,7 @@ async function testSweepUsesExternalModel(): Promise<void> {
   });
 }
 
-/** 分析失败先落 failed；显式回到 pending 后，下一轮 sweep 可以恢复。 */
+/** 分析失败先落 failed；显式批量入队后，下一轮 sweep 可以恢复。 */
 async function testSweepRetriesAfterModelError(): Promise<void> {
   await withStore(async (store) => {
     const sessionId = seedEndedSession(store, todayAt(9), todayAt(10), 3);
@@ -496,7 +496,7 @@ async function testSweepRetriesAfterModelError(): Promise<void> {
     assert.equal(store.getAnalysis(sessionId), undefined, "失败不生成伪分析行");
     assert.equal(store.listSessionsPendingAnalysis().some((session) => session.id === sessionId), false);
 
-    store.recordAnalysisStatus(sessionId, "pending");
+    assert.equal(store.retryFailedAnalysis(), 1);
     const recovering = scriptedModel([ANALYSIS_JSON]);
     const second = await analyzePendingActivitySessions(deps(store, recovering.model));
     assert.equal(second.errors, 0);

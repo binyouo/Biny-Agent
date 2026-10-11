@@ -48,6 +48,7 @@ export function recentActivityForGreeting(store: ActivityStore, input: string, n
       .join("、");
     lines.push(`今天：${Math.round(today.totalActiveMs / 60_000)} 分钟，共 ${today.sessionCount} 个会话${topApps ? `；主要应用：${topApps}（按系统应用名汇总的前台时长估算）` : ""}`);
   }
+  if (sessions.length) lines.push("近期已分析活动：");
   for (const session of sessions) {
     const analysis = session.analysis!;
     const durationMinutes = Math.max(0, Math.round(((session.endedAt ? Date.parse(session.endedAt) : now.getTime()) - Date.parse(session.startedAt)) / 60_000));
