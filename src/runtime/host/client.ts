@@ -1364,7 +1364,8 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
         const record = asRecord(inspected);
         const terminalStatus = record.terminalStatus;
         if (typeof terminalStatus !== "string") {
-          if (this.activeRunId() !== runId) {
+          const sessionId = typeof record.sessionId === "string" && record.sessionId.length > 0 ? record.sessionId : undefined;
+          if (sessionId === undefined || this.activeRunId(sessionId) !== runId) {
             this.completions.delete(runId);
             pending.reject(new Error(`Runtime run ${runId} was admitted, but no active Host execution could be recovered.`));
           }
