@@ -1,15 +1,15 @@
 {
   "name": "@biny012/biny",
-  "version": "0.0.1-beta.1",
-  "description": "A local-first AI agent for macOS and the terminal.",
+  "version": "0.0.1-beta.2",
+  "description": "A local-first, memory-first development agent for macOS and the terminal.",
   "author": "Biny contributors",
-  "homepage": "https://github.com/Thinkya1/Biny",
+  "homepage": "https://github.com/binyouo/Biny-Agent",
   "repository": {
     "type": "git",
-    "url": "https://github.com/Thinkya1/Biny.git"
+    "url": "https://github.com/binyouo/Biny-Agent.git"
   },
   "bugs": {
-    "url": "https://github.com/Thinkya1/Biny/issues"
+    "url": "https://github.com/binyouo/Biny-Agent/issues"
   },
   "type": "module",
   "main": "out/main/index.js",

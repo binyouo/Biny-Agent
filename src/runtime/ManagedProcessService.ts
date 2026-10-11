@@ -199,6 +199,7 @@ export class ManagedProcessService {
       const logBinding = await bindManagedProcessLog(logPath, logFile);
       // Shutdown may have completed while the filesystem preparation was pending.
       if (this.closing) throw new Error("Managed process service is closing.");
+      options.signal?.throwIfAborted();
       const child = spawn(options.command, {
         cwd,
         shell: true,

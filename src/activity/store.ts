@@ -310,6 +310,22 @@ export interface ActivityEventSummary {
   url?: string;
 }
 
+/** 单次分析的一致输入与提交前状态；不改变持久化 input_hash 格式。 */
+export interface ActivitySessionAnalysisSnapshot {
+  session: ActivityPendingAnalysisSession;
+  events: ActivityEventSummary[];
+  ocrTexts: string[];
+  revision: string;
+  state: string;
+  analysis?: ActivitySessionAnalysis;
+}
+
+export type ActivityAnalysisChange =
+  | { analysis: ActivitySessionAnalysis }
+  | { status: "skipped" | "failed"; details: {
+    model?: string; error?: string; analyzedAt?: string; description?: string;
+  } };
+
 /** digest / sessions 工具的近期 session 行：session 元数据 + 已落库的分析（可缺）。 */
 export interface ActivityRecentSessionRow {
   id: string;
@@ -1252,6 +1268,63 @@ export class ActivityStore {
       "SELECT * FROM activity_sessions WHERE id = ? AND input_hash IS NOT NULL"
     ).get(sessionId) as Record<string, unknown> | undefined;
     return row ? parseAnalysisRow(row) : undefined;
+  }
+
+  /** 多次查询共享读快照，避免模型收到不同提交版本的事件和 OCR。 */
+  readAnalysisSnapshot(sessionId: string): ActivitySessionAnalysisSnapshot | undefined {
+    const database = this.requireDatabase();
+    database.exec("BEGIN;");
+    try {
+      const snapshot = this.captureAnalysisSnapshot(sessionId);
+      database.exec("COMMIT;");
+      return snapshot;
+    } catch (error) {
+      database.exec("ROLLBACK;");
+      throw error;
+    }
+  }
+
+  /** 先取得写锁，再核对并提交；不持锁等待模型，也不重置已经变化的行。 */
+  commitAnalysisIfCurrent(snapshot: ActivitySessionAnalysisSnapshot, change: ActivityAnalysisChange): boolean {
+    const database = this.requireDatabase();
+    if ("analysis" in change && change.analysis.sessionId !== snapshot.session.id) {
+      throw new Error("Activity analysis session does not match its snapshot.");
+    }
+    database.exec("BEGIN IMMEDIATE;");
+    try {
+      const current = this.captureAnalysisSnapshot(snapshot.session.id);
+      if (!current || JSON.stringify(current) !== JSON.stringify(snapshot)) {
+        database.exec("ROLLBACK;");
+        return false;
+      }
+      if ("analysis" in change) this.recordAnalysis(change.analysis);
+      else this.recordAnalysisStatus(snapshot.session.id, change.status, change.details);
+      database.exec("COMMIT;");
+      return true;
+    } catch (error) {
+      database.exec("ROLLBACK;");
+      throw error;
+    }
+  }
+
+  /** 仅在调用方的同步读/写事务内使用；状态行不能被 input_hash 过滤。 */
+  private captureAnalysisSnapshot(sessionId: string): ActivitySessionAnalysisSnapshot | undefined {
+    const session = this.getEndedSession(sessionId);
+    if (!session) return undefined;
+    const row = this.requireDatabase().prepare(`
+      SELECT analysis_status, analysis_title, analysis_description, analysis_model,
+        analysis_error, analyzed_at, analysis_generated_at, input_hash
+      FROM activity_sessions WHERE id = ?
+    `).get(sessionId) as Record<string, unknown>;
+    return {
+      session,
+      events: this.listSessionEventSummaries(sessionId),
+      // 模型按入库顺序选最早 400 帧；只比较按截图时间排序的摘要不足以保护此输入。
+      ocrTexts: this.listSessionAnalysisOcrTexts(sessionId),
+      revision: this.clearRevision(),
+      state: JSON.stringify(row),
+      analysis: this.getAnalysis(sessionId)
+    };
   }
 
   /** 输入变化后重新排队分析，不保留已经失效的旧结论。 */

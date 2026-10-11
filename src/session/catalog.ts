@@ -436,13 +436,18 @@ function toCatalogItem(summary: SessionSummary, record: SessionCatalogRecord | u
 
 function compareCatalogItems(left: SessionCatalogItem, right: SessionCatalogItem): number {
   return sessionTime(right.summary.updatedAt) - sessionTime(left.summary.updatedAt)
-    || right.id.localeCompare(left.id);
+    || compareSessionIds(right.id, left.id);
+}
+
+/** Preserve locale order while keeping distinct opaque IDs distinct at page boundaries. */
+function compareSessionIds(left: string, right: string): number {
+  return left.localeCompare(right) || (left < right ? -1 : left > right ? 1 : 0);
 }
 
 function isAfterCursor(item: SessionCatalogItem, cursor: SessionCatalogCursor): boolean {
   const itemTime = sessionTime(item.summary.updatedAt);
   const cursorTime = sessionTime(cursor.updatedAt);
-  return itemTime < cursorTime || itemTime === cursorTime && item.id.localeCompare(cursor.sessionId) < 0;
+  return itemTime < cursorTime || itemTime === cursorTime && compareSessionIds(item.id, cursor.sessionId) < 0;
 }
 
 function catalogRevision(items: readonly SessionCatalogItem[]): string {

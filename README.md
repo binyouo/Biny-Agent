@@ -28,6 +28,12 @@ Desktop、TUI 与 CLI chat 共用本机 Runtime Host；`biny run` 提供一次�
 
 ## 快速开始
 
+macOS 用户可在 [Releases](https://github.com/binyouo/Biny-Agent/releases) 下载 App：Apple Silicon 选择 `arm64`，Intel 选择 `x64`；打开 DMG 后将 Biny 拖入 Applications。
+
+首版 Beta 未使用 Apple Developer ID 签名或公证。首次打开可能被 macOS 拦截；确认下载来源后，可在“系统设置 → 隐私与安全性”中选择“仍要打开”，详见 [Apple 的说明](https://support.apple.com/en-us/102445)。
+
+### 从源码运行
+
 需要 Node.js 与 pnpm `10.6.5`。克隆仓库并初始化：
 
 ```bash

@@ -379,7 +379,10 @@ async function fetchJson<T>(fetcher: typeof globalThis.fetch, url: string, maxBy
     headers: { accept: "application/vnd.github+json", "user-agent": "Biny SkillHub" },
     signal: AbortSignal.timeout(15_000)
   });
-  if (!response.ok) throw new Error(`远程服务返回 HTTP ${String(response.status)}。`);
+  if (!response.ok) {
+    cancelErrorResponseBody(response);
+    throw new Error(`远程服务返回 HTTP ${String(response.status)}。`);
+  }
   const text = await boundedResponseText(response, maxBytes);
   try {
     return JSON.parse(text) as T;
@@ -390,14 +393,29 @@ async function fetchJson<T>(fetcher: typeof globalThis.fetch, url: string, maxBy
 
 async function fetchText(fetcher: typeof globalThis.fetch, url: string, maxBytes: number): Promise<string> {
   const response = await fetcher(url, { signal: AbortSignal.timeout(15_000), headers: { "user-agent": "Biny SkillHub" } });
-  if (!response.ok) throw new Error(`远程文件返回 HTTP ${String(response.status)}。`);
+  if (!response.ok) {
+    cancelErrorResponseBody(response);
+    throw new Error(`远程文件返回 HTTP ${String(response.status)}。`);
+  }
   return await boundedResponseText(response, maxBytes);
 }
 
 async function fetchBytes(fetcher: typeof globalThis.fetch, url: string, maxBytes: number): Promise<Uint8Array> {
   const response = await fetcher(url, { signal: AbortSignal.timeout(15_000), headers: { "user-agent": "Biny SkillHub" } });
-  if (!response.ok) throw new Error(`远程文件返回 HTTP ${String(response.status)}。`);
+  if (!response.ok) {
+    cancelErrorResponseBody(response);
+    throw new Error(`远程文件返回 HTTP ${String(response.status)}。`);
+  }
   return await boundedResponseBytes(response, maxBytes);
+}
+
+function cancelErrorResponseBody(response: Response): void {
+  try {
+    // Best effort: a failed or pending cleanup must not replace or delay the HTTP error.
+    void response.body?.cancel().catch(() => undefined);
+  } catch {
+    // Custom response implementations may throw synchronously during cancellation.
+  }
 }
 
 async function boundedResponseText(response: Response, maxBytes: number): Promise<string> {

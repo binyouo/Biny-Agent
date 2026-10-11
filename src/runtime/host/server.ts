@@ -148,6 +148,8 @@ export class RuntimeHostServer {
   private sequence = 0;
   private eventSequenceError: RangeError | undefined;
   private readonly dispatcher = new OperationDispatcher();
+  /** 已解码但尚未完成准入的直接提交；run.inspect 不能把暂时缺失误判为未提交。 */
+  private readonly pendingRunAdmissions = new Map<string, Set<Promise<void>>>();
   /** 日报/反思继续串行写同一份记忆，但模型等待不能占据 Host 的请求准入队列。 */
   private readonly reflectionDispatcher = new OperationDispatcher();
   private readonly businessComposition: RuntimeHostBusinessComposition;
@@ -452,7 +454,10 @@ export class RuntimeHostServer {
     for (const { runtime, commands } of this.registry.list()) {
       const processes = await commands.managedProcesses?.list({ includeExited: false });
       const heartbeat = commands.heartbeat?.status();
-      const activeWork = runtimeIsBusy(runtime.getSnapshot())
+      const snapshot = runtime.getSnapshot();
+      // 暂停队列尚未交付且只在内存中；自动退出必须等用户清空或继续。
+      const activeWork = runtimeIsBusy(snapshot)
+        || Boolean(snapshot.queuedMessages?.length)
         || commands.hasBackgroundWork?.()
         || Boolean(processes?.length)
         || heartbeat?.running
@@ -693,9 +698,16 @@ export class RuntimeHostServer {
     this.pendingRequests += 1;
     this.activityRevision += 1;
     this.idleSince = undefined;
+    let finishPendingAdmission: (() => void) | undefined;
     try {
       if (this.closePromise) throw new Error("Runtime Host is shutting down.");
       const payload = asRecord(frame.payload);
+      const runId = optionalString(payload.runId);
+      if ((frame.operation === "submit" || frame.operation === "run.submit" || frame.operation === "start-interrupted")
+        && runId !== undefined && runId.trim()) {
+        // 在 dispatch 让出执行之前登记；重连的查询仍走独立 query lane。
+        finishPendingAdmission = this.registerPendingRunAdmission(runId);
+      }
       // 新会话先分配身份，避免所有未命名草稿挤进 primary 的准入队列。
       if (frame.operation === "session.ensure" && payload.sessionId === undefined) {
         payload.sessionId = randomUUID();
@@ -720,6 +732,8 @@ export class RuntimeHostServer {
             }
             return result;
           } finally {
+            // 只等 execute 返回准入结果，不等 OperationCompletion 或运行/模型结束。
+            finishPendingAdmission?.();
             // 在同会话队列放行下一请求之前释放短写入权，不能留到响应发送之后。
             if (!detached && sessionKey !== undefined) {
               const managed = this.registry.get(sessionKey);
@@ -742,12 +756,38 @@ export class RuntimeHostServer {
         errorData: publicErrorData(error)
       });
     } finally {
+      // dispatch 本身也可能拒绝；重复清理不会影响同 runId 的其它待准入请求。
+      finishPendingAdmission?.();
       this.pendingRequests -= 1;
       // CLI 的 Graph/审批操作也可能改变 readiness；查询本身不触发调度扫描。
       if ((frame.operation.startsWith("graph.") || frame.operation.startsWith("task.") || frame.operation.startsWith("plan."))
         && operationLane(frame.operation) !== "query") {
         this.businessComposition.scheduleGraphs();
       }
+    }
+  }
+
+  private registerPendingRunAdmission(runId: string): () => void {
+    const pending = this.pendingRunAdmissions.get(runId) ?? new Set<Promise<void>>();
+    let settle!: () => void;
+    const token = new Promise<void>((resolve) => { settle = resolve; });
+    pending.add(token);
+    this.pendingRunAdmissions.set(runId, pending);
+    return () => {
+      if (!pending.delete(token)) return;
+      if (pending.size === 0 && this.pendingRunAdmissions.get(runId) === pending) {
+        this.pendingRunAdmissions.delete(runId);
+      }
+      settle();
+    };
+  }
+
+  private async waitForPendingRunAdmissions(runId: string): Promise<void> {
+    let pending = this.pendingRunAdmissions.get(runId);
+    while (pending !== undefined) {
+      // 不拒绝的 token 只代表准入已结束；每轮重新读取，覆盖等待期间新增的同 ID 请求。
+      await Promise.all(pending);
+      pending = this.pendingRunAdmissions.get(runId);
     }
   }
 
@@ -954,7 +994,12 @@ export class RuntimeHostServer {
       return await executeRuntimeCommand(query.runtime ?? this.runtime, query.commands,
         requiredString(payload.input, "input"), source === "desktop" ? "desktop" : "tui");
     }
+    if (frame.operation === "run.inspect") {
+      // 先排空已收到的同 run 准入，再让持久 authority 确定真实 owner 和运行状态。
+      await this.waitForPendingRunAdmissions(requiredString(payload.runId, "runId"));
+    }
     const managed = await this.runtimeEntry(frame.operation, payload);
+    this.assertRequestAdmission(connection, admissionOperation);
     const runtime = managed.runtime;
     const commands = managed.commands;
     switch (frame.operation) {
@@ -1012,7 +1057,7 @@ export class RuntimeHostServer {
       case "submit": {
         this.assertRevision(payload, runtime);
         await this.ensureSessionWriter(connection, runtime);
-        this.admission.assertAdmission();
+        this.assertRequestAdmission(connection, admissionOperation);
         const ids = readRequestIds(payload);
         const submitted = runtime.submitPrompt(
           requiredString(payload.input, "input"),
@@ -1045,7 +1090,7 @@ export class RuntimeHostServer {
             };
           }
           await this.ensureSessionWriter(connection, runtime);
-          this.admission.assertAdmission();
+          this.assertRequestAdmission(connection, admissionOperation);
           const ids = readRequestIds(payload);
           const submitted = runtime.submitPrompt(
             requiredString(payload.input, "input"),
@@ -1065,7 +1110,7 @@ export class RuntimeHostServer {
       case "queue": {
         this.assertRevision(payload, runtime);
         await this.ensureSessionWriter(connection, runtime);
-        this.admission.assertAdmission();
+        this.assertRequestAdmission(connection, admissionOperation);
         const ids = readRequestIds(payload);
         const input = requiredString(payload.input, "input");
         const attachments = readAttachments(payload.attachments);
@@ -1079,7 +1124,7 @@ export class RuntimeHostServer {
         return await this.executeAdmission(async () => {
           this.assertRevision(payload, runtime);
           await this.ensureSessionWriter(connection, runtime);
-          this.admission.assertAdmission();
+          this.assertRequestAdmission(connection, admissionOperation);
           const ids = readRequestIds(payload);
           const input = requiredString(payload.input, "input");
           const attachments = readAttachments(payload.attachments);
@@ -1101,7 +1146,9 @@ export class RuntimeHostServer {
         const messageId = requiredString(payload.messageId, "messageId");
         if (action === "update") {
           if (!runtime.updateQueuedRunMessage) throw new Error("Queued message controls are unavailable.");
-          await runtime.updateQueuedRunMessage(messageId, requiredString(payload.input, "input"));
+          if (typeof payload.input !== "string") throw new Error("Runtime Host field input must be a string.");
+          // The runtime rejects an empty edit unless this queued item retains attachments.
+          await runtime.updateQueuedRunMessage(messageId, payload.input);
           return undefined;
         }
         if (action === "remove") {
@@ -1147,7 +1194,7 @@ export class RuntimeHostServer {
       case "start-interrupted": {
         this.assertRevision(payload, runtime);
         await this.ensureSessionWriter(connection, runtime);
-        this.admission.assertAdmission();
+        this.assertRequestAdmission(connection, admissionOperation);
         if (payload.mode !== undefined && payload.mode !== "exact" && payload.mode !== "newTurn") {
           throw new Error("Invalid interrupted turn mode.");
         }
@@ -1189,7 +1236,7 @@ export class RuntimeHostServer {
       case "run.continue":
         return await this.executeAdmission(async () => {
           await this.ensureSessionWriter(connection, runtime);
-          this.admission.assertAdmission();
+          this.assertRequestAdmission(connection, admissionOperation);
           return await this.continueRun(payload, runtime, commands);
         }, runtime);
       case "run.inspect": {
@@ -1331,7 +1378,7 @@ export class RuntimeHostServer {
         }, runtime);
       case "automation.run":
         return await this.executeAdmission(async () => {
-          return await this.businessComposition.runAutomation(requiredString(payload.automationId, "automationId"));
+          return new OperationCompletion(this.businessComposition.runAutomation(requiredString(payload.automationId, "automationId")));
         }, runtime);
       case "automation.pending":
         return commands.automationStore.listPending(optionalString(payload.automationId));

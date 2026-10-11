@@ -104,7 +104,10 @@ export function activeSessionMessageIds(
   if (!nodes.length) return new Set<string>();
   const selectedSlots = new Map<string, string>();
   for (const event of events) {
-    if (event.type === "message_version_selected") selectedSlots.set(event.slotId, event.messageId);
+    if (event.type === "message_version_selected") {
+      selectedSlots.delete(event.slotId);
+      selectedSlots.set(event.slotId, event.messageId);
+    }
   }
   const byId = new Map(nodes.map((node) => [node.id, node]));
   const pathFor = (leaf: SessionMessageNode): Set<string> => {
@@ -118,7 +121,9 @@ export function activeSessionMessageIds(
   };
   // 普通对话只需从末节点走一次；版本选择按祖先累计命中数，避免每个节点重建整条路径。
   if (!selectedSlots.size) return pathFor(nodes[nodes.length - 1]!);
-  const selected = new Set(selectedSlots.values());
+  const selected = [...selectedSlots].every(([slotId, id]) => (byId.get(id)?.slotId ?? id) === slotId)
+    ? compatibleSessionSelections(nodes, byId, [...selectedSlots.values()])
+    : new Set(selectedSlots.values());
   const counts = new Map<string, number>();
   for (const node of nodes) {
     if (counts.has(node.id)) continue;
@@ -147,6 +152,56 @@ export function activeSessionMessageIds(
   const leaf = [...nodes].reverse().find((node) => counts.get(node.id) === selected.size) ?? nodes.at(-1);
   if (!leaf) return new Set<string>();
   return pathFor(leaf);
+}
+
+/** Resolve valid-tree choices by recency; retain historical fallback for malformed graphs. */
+function compatibleSessionSelections(
+  nodes: readonly SessionMessageNode[],
+  byId: ReadonlyMap<string, SessionMessageNode>,
+  choices: readonly string[]
+): ReadonlySet<string> {
+  const all = new Set(choices);
+  if (byId.size !== nodes.length || choices.some((id) => !byId.has(id))) return all;
+  const children = new Map<string, string[]>();
+  const roots: string[] = [];
+  for (const node of nodes) {
+    if (node.parentId === undefined || !byId.has(node.parentId)) roots.push(node.id);
+    else {
+      const siblings = children.get(node.parentId) ?? [];
+      siblings.push(node.id);
+      children.set(node.parentId, siblings);
+    }
+  }
+  const starts = new Map<string, number>();
+  const ends = new Map<string, number>();
+  const stack = roots.map((id) => ({ id, leaving: false }));
+  let order = 0;
+  while (stack.length) {
+    const { id, leaving } = stack.pop()!;
+    if (leaving) ends.set(id, order);
+    else {
+      starts.set(id, order++);
+      stack.push({ id, leaving: true });
+      for (const child of children.get(id) ?? []) stack.push({ id: child, leaving: false });
+    }
+  }
+  // A parent graph component without a root contains a cycle. Keep the existing
+  // finite-path / conflicting-selection fallback for these damaged histories.
+  if (starts.size !== byId.size) return all;
+  const ancestorOf = (ancestor: string, descendant: string): boolean =>
+    starts.get(ancestor)! <= starts.get(descendant)! && starts.get(descendant)! < ends.get(ancestor)!;
+  const selected = new Set<string>();
+  let deepest: string | undefined;
+  // Map order is the time of each slot's latest choice. Newer explicit intent
+  // wins; older choices on another branch remain stored, but do not constrain it.
+  for (let index = choices.length - 1; index >= 0; index -= 1) {
+    const id = choices[index]!;
+    if (deepest === undefined || ancestorOf(deepest, id)) {
+      selected.add(id);
+      deepest = id;
+    } else if (ancestorOf(id, deepest)) selected.add(id);
+  }
+  return selected;
 }
 
 /** 保留活动消息对应的工具、终态和扁平投影，避免旧版本在回放时重新出现。 */

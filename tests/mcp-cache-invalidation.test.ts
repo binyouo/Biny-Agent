@@ -9,10 +9,11 @@ type Managed = {
   name: string; rawConfig: McpServerConfig; config: McpServerConfig; transport: "http";
   status: McpServerStatus; tools: typeof tools; toolProxies: Map<string, unknown>; catalogKey?: string;
 };
+type OpenedClient = { client: Client; tools: typeof tools; activateToolNotifications: () => void };
 type HostInternals = {
   servers: Map<string, Managed>;
   startServer(managed: Managed): Promise<void>;
-  openClient(): Promise<{ client: Client; tools: typeof tools }>;
+  openClient(): Promise<OpenedClient>;
 };
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -26,12 +27,12 @@ function fixture(cache: McpToolCatalogCache) {
   const config: McpServerConfig = { enabled: true, type: "http", url: "https://fixture.invalid/mcp", args: [], stderr: "ignore", exposure: "deferred" };
   const managed: Managed = { name: "fixture", rawConfig: config, config, transport: "http", tools: [], toolProxies: new Map(),
     status: { name: "fixture", command: config.url!, transport: "http", enabled: true, connected: false, toolNames: [], promptNames: [], hasResources: false } };
-  const opening = deferred<{ client: Client; tools: typeof tools }>();
+  const opening = deferred<OpenedClient>();
   // No SDK transport, process, filesystem or network: only the connection boundary is replaced.
   internals.openClient = () => opening.promise;
   internals.servers.set(managed.name, managed);
   const client = { transport: {}, setNotificationHandler() {}, getInstructions: () => "catalog", getServerCapabilities: () => ({}), close: async () => {} } as unknown as Client;
-  return { host, managed, opening, start: () => internals.startServer(managed), succeed: () => opening.resolve({ client, tools }) };
+  return { host, managed, opening, start: () => internals.startServer(managed), succeed: () => opening.resolve({ client, tools, activateToolNotifications: () => {} }) };
 }
 
 for (const seeded of [false, true]) {

@@ -593,7 +593,8 @@ export function registerDesktopIpc(context: IpcContext): void {
   handleRecoveryGated(desktopIpc.mutateQueuedMessage, async (_event, projectId: unknown, sessionId: unknown, action: unknown, mutation: unknown) => {
     const parsedMutation = z.object({
       messageId: idSchema.optional(),
-      input: promptSchema.optional(),
+      // Queue edits may retain native media after all text is removed.
+      input: z.string().max(1_000_000).optional(),
       targetMessageId: idSchema.optional(),
       placeAfter: z.boolean().optional()
     }).optional().parse(mutation);

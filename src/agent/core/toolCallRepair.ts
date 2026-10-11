@@ -79,9 +79,14 @@ export const toolCallRepair: ToolCallRepairFunction<ToolSet> = async ({ toolCall
 
 function repairToolName(name: string, available: readonly string[]): string | undefined {
   if (available.includes(name)) return name;
-  const byNormalized = new Map<string, string>();
-  for (const candidate of available) byNormalized.set(normalizeName(candidate), candidate);
-  return byNormalized.get(normalizeName(name));
+  const normalized = normalizeName(name);
+  let matched: string | undefined;
+  for (const candidate of available) {
+    if (normalizeName(candidate) !== normalized) continue;
+    if (matched !== undefined && matched !== candidate) return undefined;
+    matched = candidate;
+  }
+  return matched;
 }
 
 function repairToolArguments(schema: unknown, rawInput: unknown): RepairedArguments | null {
