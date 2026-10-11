@@ -219,9 +219,7 @@
 }
 
 :root:is([data-appearance-skin='win98'], [data-appearance-skin='winxp'], [data-appearance-skin='longhorn'], [data-appearance-skin='longhorn-dark'])
-    .biny-sidebar-card .biny-sidebar-session-entry.is-selected,
-:root:is([data-appearance-skin='win98'], [data-appearance-skin='winxp'], [data-appearance-skin='longhorn'], [data-appearance-skin='longhorn-dark'])
-    .biny-sidebar-card :is(.biny-sidebar-session-entry.is-selected, .biny-project-row.is-active) {
+    .biny-sidebar-card .biny-sidebar-session-entry.is-selected {
     outline: 1px dotted rgba(10, 10, 10, 0.55);
     outline-offset: -4px;
 }
@@ -241,10 +239,6 @@
     border-radius: 0 !important;
 }
 
-:root:is([data-appearance-skin='win98'], [data-appearance-skin='winxp'], [data-appearance-skin='longhorn'], [data-appearance-skin='longhorn-dark']) .biny-project-row.is-active {
-    background: var(--w98-surface) !important;
-    box-shadow: inset 0 -1px var(--w98-button-shadow) !important;
-}
 
 :root:is([data-appearance-skin='win98'], [data-appearance-skin='winxp'], [data-appearance-skin='longhorn'], [data-appearance-skin='longhorn-dark']) .biny-sidebar-session-tree-row {
     position: relative;
@@ -342,9 +336,9 @@
 }
 
 :root:is([data-appearance-skin='win98'], [data-appearance-skin='winxp'], [data-appearance-skin='longhorn'], [data-appearance-skin='longhorn-dark'])
-    .biny-sidebar-card :is(.biny-sidebar-session-entry.is-selected, .biny-project-row.is-active),
+    .biny-sidebar-card .biny-sidebar-session-entry.is-selected,
 :root:is([data-appearance-skin='win98'], [data-appearance-skin='winxp'], [data-appearance-skin='longhorn'], [data-appearance-skin='longhorn-dark'])
-    .biny-sidebar-card :is(.biny-sidebar-session-entry.is-selected, .biny-project-row.is-active):hover {
+    .biny-sidebar-card .biny-sidebar-session-entry.is-selected:hover {
     background-color: var(--w98-surface);
     background-image: repeating-conic-gradient(var(--w98-button-highlight) 0% 25%, var(--w98-surface) 0% 50%);
     background-size: 2px 2px;
@@ -1346,9 +1340,7 @@
 }
 
 :root[data-appearance-skin='winxp'] .biny-sidebar-card .biny-sidebar-session-entry.is-selected,
-:root[data-appearance-skin='winxp'] .biny-sidebar-card .biny-sidebar-session-entry.is-selected:hover,
-:root[data-appearance-skin='winxp'] .biny-sidebar-card :is(.biny-sidebar-session-entry.is-selected, .biny-project-row.is-active),
-:root[data-appearance-skin='winxp'] .biny-sidebar-card :is(.biny-sidebar-session-entry.is-selected, .biny-project-row.is-active):hover {
+:root[data-appearance-skin='winxp'] .biny-sidebar-card .biny-sidebar-session-entry.is-selected:hover {
     background: #316ac5;
     background-image: none;
 
@@ -1359,7 +1351,7 @@
     color: #ffffff;
     font-weight: 700;
 }
-:root[data-appearance-skin='winxp'] .biny-sidebar-card :is(.biny-sidebar-session-entry.is-selected, .biny-project-row.is-active) *,
+
 :root[data-appearance-skin='winxp'] .biny-sidebar-card .biny-sidebar-session-entry.is-selected * {
     color: #ffffff;
 }
@@ -1886,9 +1878,7 @@
 }
 
 :root[data-appearance-skin='longhorn'] .biny-sidebar-card .biny-sidebar-session-entry.is-selected,
-:root[data-appearance-skin='longhorn'] .biny-sidebar-card .biny-sidebar-session-entry.is-selected:hover,
-:root[data-appearance-skin='longhorn'] .biny-sidebar-card :is(.biny-sidebar-session-entry.is-selected, .biny-project-row.is-active),
-:root[data-appearance-skin='longhorn'] .biny-sidebar-card :is(.biny-sidebar-session-entry.is-selected, .biny-project-row.is-active):hover {
+:root[data-appearance-skin='longhorn'] .biny-sidebar-card .biny-sidebar-session-entry.is-selected:hover {
     background: #86b2e3;
     background-image: none;
     border: 1px solid #6b9cd6;
@@ -1898,7 +1888,7 @@
     color: #ffffff;
     font-weight: 700;
 }
-:root[data-appearance-skin='longhorn'] .biny-sidebar-card :is(.biny-sidebar-session-entry.is-selected, .biny-project-row.is-active) *,
+
 :root[data-appearance-skin='longhorn'] .biny-sidebar-card .biny-sidebar-session-entry.is-selected * {
     color: #ffffff;
 }
@@ -2260,9 +2250,7 @@
 }
 
 :root[data-appearance-skin='longhorn-dark'] .biny-sidebar-card .biny-sidebar-session-entry.is-selected,
-:root[data-appearance-skin='longhorn-dark'] .biny-sidebar-card .biny-sidebar-session-entry.is-selected:hover,
-:root[data-appearance-skin='longhorn-dark'] .biny-sidebar-card :is(.biny-sidebar-session-entry.is-selected, .biny-project-row.is-active),
-:root[data-appearance-skin='longhorn-dark'] .biny-sidebar-card :is(.biny-sidebar-session-entry.is-selected, .biny-project-row.is-active):hover {
+:root[data-appearance-skin='longhorn-dark'] .biny-sidebar-card .biny-sidebar-session-entry.is-selected:hover {
     background: #74b6fb;
     background-image: none;
     border: 1px solid #4a95db;
@@ -2272,7 +2260,7 @@
     color: #171717;
     font-weight: 700;
 }
-:root[data-appearance-skin='longhorn-dark'] .biny-sidebar-card :is(.biny-sidebar-session-entry.is-selected, .biny-project-row.is-active) *,
+
 :root[data-appearance-skin='longhorn-dark'] .biny-sidebar-card .biny-sidebar-session-entry.is-selected * {
     color: #171717;
 }

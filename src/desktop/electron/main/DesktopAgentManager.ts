@@ -146,6 +146,8 @@ import type {
   DesktopRuntimeRetryResult,
   DesktopRuntimeProjection,
   DesktopSessionDocument,
+  DesktopSessionTarget,
+  DesktopSessionDeleteResult,
   DesktopSessionWriterConflict,
   DesktopSessionSummary,
   DesktopSessionTreePage,
@@ -301,10 +303,13 @@ export class DesktopAgentManager {
   }
 
   async prepareWorkspace(projectId: string): Promise<DesktopWorkspaceSnapshot> {
-    const previous = this.activeProjectId === projectId ? undefined : this.residentRuntime(this.activeProjectId ?? "");
+    const previousProjectId = this.activeProjectId;
+    const previous = previousProjectId === projectId ? undefined : this.residentRuntime(previousProjectId ?? "");
     this.activeProjectId = projectId;
     try {
-      if (previous?.runtime instanceof RuntimeHostClient) await previous.runtime.setKeepAlive(false);
+      if (previous?.runtime instanceof RuntimeHostClient) {
+        void previous.runtime.setKeepAlive(false).catch((error) => this.recordRuntimeFailure(previousProjectId!, error));
+      }
       // 后台预热不阻塞首屏；发送等消费操作复用 getRuntime 的同一次初始化。
       this.prewarmRuntime(projectId, this.getRuntime(projectId, true));
     } catch (error) {
@@ -358,9 +363,9 @@ export class DesktopAgentManager {
     this.runtimeErrors.set(projectId, formatRuntimeInitializationError(error));
   }
 
-  async workspaceSnapshot(projectId: string, refreshGit = true): Promise<DesktopWorkspaceSnapshot> {
+  async workspaceSnapshot(projectId: string, refreshDetails = true): Promise<DesktopWorkspaceSnapshot> {
     // Keep lastOpenedAt stable on select/refresh so the sidebar order does not jump.
-    const project = await this.projects.refreshStoredProject(projectId, refreshGit);
+    const project = await this.projects.refreshStoredProject(projectId, refreshDetails);
     const managed = this.residentRuntime(projectId);
     const runtimeSnapshots = this.runtimeSnapshots(projectId);
     const [config, sessionData] = await Promise.all([
@@ -376,7 +381,7 @@ export class DesktopAgentManager {
       pickerModels[0] = { ...pickerModels[0]!, defaultThinking: info.thinking };
     }
     let runtimeProjection: DesktopRuntimeProjection | undefined;
-    if (managed && this.residentRuntime(projectId) === managed) {
+    if (refreshDetails && managed && this.residentRuntime(projectId) === managed) {
       try {
         runtimeProjection = await this.readRuntimeProjection(managed);
       } catch (error) {
@@ -621,50 +626,12 @@ export class DesktopAgentManager {
   async openSession(projectId: string, sessionId: string): Promise<DesktopSessionDocument> {
     const project = this.projects.requireProject(projectId);
     if (this.draftSessionIds.get(projectId) !== sessionId) this.draftSessionIds.delete(projectId);
-    // 会话正文属于磁盘历史，不应依赖模型配置、凭据或 Runtime Host 是否能启动。
-    // 先用空的 runtime/live 投影读取一次，确保 Runtime 失败时仍能打开历史会话。
-    const historicalDocument = await this.projects.openSession(project, sessionId, [], new Map());
-    let document = historicalDocument;
-    let managed: ManagedRuntime | undefined;
-    let runtimeError = this.runtimeErrors.get(projectId);
-    let writerConflict = this.writerConflicts.get(`${projectId}\0${sessionId}`);
-    let runtimeSnapshot: InteractiveRuntimeSnapshot | undefined;
-    try {
-      managed = await this.getRuntime(projectId, false);
-      runtimeError = this.runtimeErrors.get(projectId);
-      const remote = managed?.runtime instanceof RuntimeHostClient ? managed.runtime : undefined;
-      if (remote && remote.runtimeSnapshots().some((entry) => entry.sessionId === sessionId)) {
-        const previousSessionId = remote.getFocusedSessionId();
-        const previousSnapshot = previousSessionId === undefined ? undefined : remote.getSnapshot(previousSessionId);
-        runtimeSnapshot = await remote.focusSession(sessionId);
-        if (previousSessionId !== undefined && previousSessionId !== sessionId && previousSnapshot?.state.kind === "idle") {
-          await remote.releaseSessionClaim(previousSessionId);
-        }
-      } else if (managed && managed.runtime.getSnapshot().info.sessionId === sessionId) {
-        runtimeSnapshot = managed.runtime.getSnapshot();
-      }
-    } catch (error) {
-      if (isSessionWriterConflictError(error)) {
-        this.recordRuntimeFailure(projectId, error);
-        writerConflict = this.writerConflicts.get(`${projectId}\0${sessionId}`);
-      } else {
-        runtimeError = formatRuntimeInitializationError(error);
-        this.runtimeErrors.set(projectId, runtimeError);
-        runtimeSnapshot = undefined;
-      }
-    }
-    if (managed !== undefined && runtimeSnapshot !== undefined && runtimeError === undefined) {
-      // focus/resume 成功后再读一次，把当前 Runtime 的实时事件和状态接到历史正文后面。
-      document = await this.projects.openSession(project, sessionId, this.runtimeSnapshots(projectId), this.projectEvents(projectId));
-      const remote = managed.runtime instanceof RuntimeHostClient ? managed.runtime : undefined;
-      const targetSnapshot = remote?.getSnapshot() ?? managed.runtime.getSnapshot();
-      if (targetSnapshot.info.sessionId === sessionId) runtimeSnapshot = targetSnapshot;
-      if (runtimeSnapshot) {
-        const primary = remote?.runtimeSnapshots().find((entry) => entry.sessionId === sessionId)?.primary ?? true;
-        this.emit(projectId, { snapshot: runtimeSnapshot }, { sessionId, primary });
-      }
-      // 只读导航不申请长期 writer claim；发送、编辑和恢复操作会在各自的写入口按需申请。
-    }
+    // 浏览只消费磁盘历史和本地事件投影；聚焦 RPC 会让读取排在 Host 操作后面。
+    const snapshots = this.runtimeSnapshots(projectId);
+    const document = await this.projects.openSession(project, sessionId, snapshots, this.projectEvents(projectId));
+    const runtimeSnapshot = this.runtimeSnapshots(projectId).find((snapshot) => snapshot.info.sessionId === sessionId);
+    const runtimeError = this.runtimeErrors.get(projectId);
+    const writerConflict = this.writerConflicts.get(`${projectId}\0${sessionId}`);
     // 已读标记只影响侧栏状态，不应阻塞会话正文首屏。后续元数据写入会先等待这次
     // 后台更新，并把同一份 revision 传给 catalog CAS，避免用户紧接着置顶/改名时误冲突。
     this.scheduleSessionRead(project, sessionId, document.session.metadataRevision);
@@ -2700,7 +2667,24 @@ export class DesktopAgentManager {
     return await this.workspaceSnapshot(projectId);
   }
 
-  async deleteSession(projectId: string, sessionId: string): Promise<DesktopWorkspaceSnapshot> {
+  async deleteSessions(targets: DesktopSessionTarget[]): Promise<DesktopSessionDeleteResult> {
+    const result: DesktopSessionDeleteResult = { cancelled: false, deleted: [], failures: [] };
+    const seen = new Set<string>();
+    for (const target of targets) {
+      const key = `${target.projectId}\0${target.sessionId}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      try {
+        await this.deleteSessionData(target.projectId, target.sessionId);
+        result.deleted.push(target);
+      } catch (error) {
+        result.failures.push({ ...target, error: error instanceof Error ? error.message : String(error) });
+      }
+    }
+    return result;
+  }
+
+  private async deleteSessionData(projectId: string, sessionId: string): Promise<void> {
     const managed = await this.getRuntime(projectId, false);
     if (managed) {
       if (managed.runtime instanceof RuntimeHostClient) {
@@ -2725,7 +2709,6 @@ export class DesktopAgentManager {
     if (this.state.selectedSessionId(projectId) === sessionId) {
       await this.state.setSelectedSession(projectId, undefined);
     }
-    return await this.workspaceSnapshot(projectId);
   }
 
   async disposeProject(projectId: string): Promise<void> {

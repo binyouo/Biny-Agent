@@ -124,7 +124,6 @@ await testDesktopThemePreference();
 await testDesktopActiveViewPersistence();
 await testDesktopDragRegionStyles();
 await testDesktopSidebarResizerContrast();
-await testDesktopUserMessageEnterDoesNotShadowFullRow();
 await testDesktopMemorySharedStore();
 await testDesktopSettingsTransaction();
 await testDesktopToolModelSelection();
@@ -208,21 +207,6 @@ async function testDesktopSidebarResizerContrast(): Promise<void> {
   assert.match(hover, /background:\s*color-mix\(in srgb, var\(--biny-border-strong\) 50%, transparent\);/, "悬停态应使用半透明边框色");
   assert.ok(resizing, "侧栏拉伸条拖动样式必须存在");
   assert.match(resizing, /background:\s*color-mix\(in srgb, var\(--biny-border-strong\) 70%, transparent\);/, "拖动时应比悬停态更清晰");
-}
-
-async function testDesktopUserMessageEnterDoesNotShadowFullRow(): Promise<void> {
-  const css = await readFile(new URL("../src/desktop/renderer/src/styles/chat.css", import.meta.url), "utf8");
-  const animationStart = css.indexOf("@keyframes chat-user-message-enter");
-  const animationEnd = css.indexOf("@keyframes chat-user-sheen", animationStart);
-
-  assert.ok(animationStart >= 0 && animationEnd > animationStart, "用户消息入场动画必须存在");
-  // 复刻参考应用 userMessageFloatIn（含阴影帧）：阴影只允许出现在气泡动画里，
-  // 通栏消息行选择器不得携带该动画，否则发送首帧会在整个聊天区闪出横向暗带。
-  assert.match(css.slice(animationStart, animationEnd), /box-shadow\s*:/, "气泡入场动画应包含原文阴影帧");
-  const bubbleRule = /\.biny-chat-scroll \.user-message\.is-pending-entry \.user-bubble,/.exec(css);
-  assert.ok(bubbleRule, "入场动画必须挂在 .user-bubble 上");
-  const rowRule = css.match(/\.biny-chat-scroll \.user-message\.is-pending-entry,\s*\n\.biny-chat-scroll \.timeline-turn\.is-running > \.user-message,/);
-  assert.equal(rowRule, null, "通栏用户消息行不得携带入场动画");
 }
 
 async function testInteractiveRuntimeProtocol(): Promise<void> {

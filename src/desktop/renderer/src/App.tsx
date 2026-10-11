@@ -189,6 +189,7 @@ function DesktopApp(): React.JSX.Element {
   const navigationRef = useRef<DesktopNavigationState>(createNavigationState());
   const [_navigationState, setNavigationState] = useState<DesktopNavigationState>(() => createNavigationState());
   const loadRequestRef = useRef(0);
+  const [pendingNavigation, setPendingNavigation] = useState<DesktopNavigationTarget>();
   const branchRequestRef = useRef(0);
   const menuActionRef = useRef<(action: DesktopMenuAction) => void>(() => undefined);
 
@@ -233,6 +234,7 @@ function DesktopApp(): React.JSX.Element {
 
   const openExtensions = useCallback((): void => {
     loadRequestRef.current += 1;
+    setPendingNavigation(undefined);
     setPage("extensions");
     setRuntimePanelOpen(false);
     setLoading(false);
@@ -532,7 +534,10 @@ function DesktopApp(): React.JSX.Element {
     activeView: DesktopActiveView = "chat"
   ): Promise<boolean> => {
     const request = activeRequest ?? loadRequestRef.current + 1;
-    if (activeRequest === undefined) loadRequestRef.current = request;
+    if (activeRequest === undefined) {
+      loadRequestRef.current = request;
+      setPendingNavigation(undefined);
+    }
     if (loadRequestRef.current !== request) return false;
     memoryToggleRequestRef.current += 1;
     setMemoryToggleBusy(false);
@@ -587,7 +592,10 @@ function DesktopApp(): React.JSX.Element {
     activeRequest?: number
   ): Promise<boolean> => {
     const request = activeRequest ?? loadRequestRef.current + 1;
-    if (activeRequest === undefined) loadRequestRef.current = request;
+    if (activeRequest === undefined) {
+      loadRequestRef.current = request;
+      setPendingNavigation(undefined);
+    }
     if (loadRequestRef.current !== request) return false;
     if (preferredSessionId) return await openSession(snapshot.project.id, preferredSessionId, true, request, snapshot);
     if (projectRef.current !== snapshot.project.id) {
@@ -617,20 +625,7 @@ function DesktopApp(): React.JSX.Element {
     // 从项目选择到会话读取共用同一个请求号，较早的跨项目请求不能在较新的点击后重新取得提交权。
     const request = loadRequestRef.current + 1;
     loadRequestRef.current = request;
-    const previousView = {
-      contextBudget,
-      document: documentRef.current,
-      draftMemoryOverride,
-      draftProjectId,
-      page,
-      runtimePanelOpen,
-      selectedSessionId: selectedRef.current,
-      writerConflict
-    };
-    const targetSummary = target.sessionId === undefined || target.projectId !== projectRef.current
-      ? undefined
-      : workspace?.sessions.find((session) => session.id === target.sessionId)
-        ?? sidebarSessions.find((session) => session.projectId === target.projectId && session.id === target.sessionId);
+    setPendingNavigation(target);
     const startingCurrentDraft = target.sessionId === undefined && target.projectId === projectRef.current;
     if (startingCurrentDraft) {
       // 当前项目的新建任务应立即呈现空白输入框。startDraft 只负责重置旧运行时，
@@ -649,24 +644,10 @@ function DesktopApp(): React.JSX.Element {
         ? { ...current, selectedSessionId: undefined }
         : current);
       setLoading(false);
-    } else if (targetSummary !== undefined) {
-      // 先切换可见会话，再等待 Runtime Host 聚焦和正文回读；慢请求只能回填自己的目标。
-      // 空正文只是过渡态，真实历史和 live events 由下面的 openSession 完成后替换。
+    } else {
+      // 选择意图立即反馈到侧栏；正文和项目身份只在最新读取成功后一起提交。
       setPage("chat");
       setRuntimePanelOpen(false);
-      selectedRef.current = target.sessionId;
-      setSelectedSessionId(target.sessionId);
-      setDraftProjectId(undefined);
-      setDraftMemoryOverride(undefined);
-      setContextBudget(undefined);
-      setDocument({ session: targetSummary, events: [], liveEvents: [] });
-      setWriterConflict(undefined);
-      setWorkspace((current) => current?.project.id === target.projectId
-        ? { ...current, selectedSessionId: target.sessionId }
-        : current);
-      setLoading(true);
-    } else if (!projectRef.current) {
-      // 已有工作区时保留旧项目/会话，等目标数据就绪后再一次性替换；否则 loading 会把聊天正文闪成空白。
       setLoading(true);
     }
     try {
@@ -683,25 +664,14 @@ function DesktopApp(): React.JSX.Element {
       return await openSession(target.projectId, target.sessionId, false, request, window.biny.selectProject(target.projectId));
     } catch (error) {
       if (loadRequestRef.current !== request) return false;
-      if (targetSummary !== undefined) {
-        selectedRef.current = previousView.selectedSessionId;
-        setSelectedSessionId(previousView.selectedSessionId);
-        setPage(previousView.page);
-        setRuntimePanelOpen(previousView.runtimePanelOpen);
-        setDraftProjectId(previousView.draftProjectId);
-        setDraftMemoryOverride(previousView.draftMemoryOverride);
-        setContextBudget(previousView.contextBudget);
-        setDocument(previousView.document);
-        setWriterConflict(previousView.writerConflict);
-        setWorkspace((current) => current?.project.id === target.projectId
-          ? { ...current, selectedSessionId: previousView.selectedSessionId }
-          : current);
-      }
       throw error;
     } finally {
-      if (loadRequestRef.current === request) setLoading(false);
+      if (loadRequestRef.current === request) {
+        setLoading(false);
+        setPendingNavigation(undefined);
+      }
     }
-  }, [adoptWorkspace, contextBudget, draftMemoryOverride, draftProjectId, openSession, page, runtimePanelOpen, sidebarSessions, workspace, writerConflict]);
+  }, [adoptWorkspace, openSession]);
 
   useEffect(() => {
     let active = true;
@@ -831,6 +801,9 @@ function DesktopApp(): React.JSX.Element {
 
   const selectProject = useCallback(async (projectId: string): Promise<void> => {
     if (projectId === projectRef.current) {
+      loadRequestRef.current += 1;
+      setPendingNavigation(undefined);
+      setLoading(false);
       setDraftProjectId(undefined);
       return;
     }
@@ -838,6 +811,7 @@ function DesktopApp(): React.JSX.Element {
     setDraftProjectId(undefined);
     const request = loadRequestRef.current + 1;
     loadRequestRef.current = request;
+    setPendingNavigation({ projectId });
     // 切换目录是异步读取：已有工作区时保留当前聊天，避免 loading 短暂替换整块正文。
     // 首次从首页选择项目仍需要 loading，避免在项目快照返回前渲染半成品状态。
     if (!projectRef.current) setLoading(true);
@@ -847,7 +821,10 @@ function DesktopApp(): React.JSX.Element {
     } catch (error) {
       if (loadRequestRef.current === request) setWarning(errorMessage(error));
     } finally {
-      if (loadRequestRef.current === request) setLoading(false);
+      if (loadRequestRef.current === request) {
+        setLoading(false);
+        setPendingNavigation(undefined);
+      }
     }
   }, [adoptWorkspace]);
 
@@ -907,6 +884,7 @@ function DesktopApp(): React.JSX.Element {
       return;
     }
     loadRequestRef.current += 1;
+    setPendingNavigation(undefined);
     setPage("chat");
     setSearchOpen(false);
     setLoading(false);
@@ -921,7 +899,13 @@ function DesktopApp(): React.JSX.Element {
 
   const navigateToSession = useCallback(async (projectId: string, sessionId: string): Promise<void> => {
     // 当前会话已经在聊天页时，点击同一行不应重新读取正文并切换 loading；否则侧栏会被无意义地重绘一次。
-    if (projectId === projectRef.current && sessionId === selectedRef.current && page === "chat" && !runtimePanelOpen) return;
+    if (projectId === projectRef.current && sessionId === selectedRef.current && page === "chat" && !runtimePanelOpen) {
+      // 点回已显示会话仍是新的导航意图，必须使在途的跨项目读取失效。
+      loadRequestRef.current += 1;
+      setPendingNavigation(undefined);
+      setLoading(false);
+      return;
+    }
     const previousNavigation = navigationRef.current;
     const target: DesktopNavigationTarget = { projectId, sessionId };
     try {
@@ -948,6 +932,39 @@ function DesktopApp(): React.JSX.Element {
       setWarning(errorMessage(error));
     }
   }, [mergeProjectSnapshot]);
+
+  const deleteSidebarSessions = useCallback(async (sessions: DesktopSessionSummary[], confirm = true, onStarted?: () => void) => {
+    const targets = sessions.map(session => ({ projectId: session.projectId, sessionId: session.id }));
+    const clearDeletedSelection = (keys: Set<string>): void => {
+      if (!keys.has(`${projectRef.current}\0${selectedRef.current}`)) return;
+      selectedRef.current = undefined;
+      setSelectedSessionId(undefined);
+      setDocument(undefined);
+      setWriterConflict(undefined);
+      setContextBudget(undefined);
+      setWorkspace(current => current ? { ...current, selectedSessionId: undefined } : current);
+      if (projectRef.current) commitNavigation(replaceNavigation(navigationRef.current, { projectId: projectRef.current }));
+    };
+    const result = await window.biny.deleteSessions(targets, confirm, () => {
+      onStarted?.();
+      // 确认后立即离开目标聊天；旧删除回执不能清掉后来打开的会话。
+      clearDeletedSelection(new Set(targets.map(target => `${target.projectId}\0${target.sessionId}`)));
+    });
+    if (result.cancelled) return result;
+    const deleted = new Set(result.deleted.map(target => `${target.projectId}\0${target.sessionId}`));
+    for (const projectId of new Set(result.deleted.map(target => target.projectId))) {
+      sessionTreePages.replaceProject(projectId, []);
+      void window.biny.refreshProject(projectId).then(mergeProjectSnapshot).catch(error => setWarning(errorMessage(error)));
+    }
+    setSidebarSessions(current => current.filter(session => !deleted.has(`${session.projectId}\0${session.id}`)));
+    setWorkspace(current => current ? { ...current, sessions: current.sessions.filter(session => !deleted.has(`${session.projectId}\0${session.id}`)) } : current);
+    clearDeletedSelection(deleted);
+    if (result.failures.length) setWarning(result.failures.map(failure => {
+      const title = sessions.find(session => session.projectId === failure.projectId && session.id === failure.sessionId)?.title ?? failure.sessionId;
+      return `${title}：${failure.error}`;
+    }).join("\n"));
+    return result;
+  }, [commitNavigation, mergeProjectSnapshot, sessionTreePages]);
 
   const runSessionAction = useCallback(async (session: DesktopSessionSummary, action: DesktopSessionMenuAction): Promise<void> => {
     try {
@@ -982,24 +999,11 @@ function DesktopApp(): React.JSX.Element {
         }
         return;
       }
-      if (action !== "delete") return;
-      const deletingSelectedSession = projectRef.current === session.projectId && selectedRef.current === session.id;
-      const snapshot = await window.biny.deleteSession(session.projectId, session.id);
-      if (projectRef.current === session.projectId) {
-        await adoptWorkspace(snapshot, snapshot.selectedSessionId);
-        if (deletingSelectedSession) {
-          commitNavigation(replaceNavigation(navigationRef.current, {
-            projectId: session.projectId,
-            sessionId: snapshot.selectedSessionId
-          }));
-        }
-      } else {
-        mergeProjectSnapshot(snapshot);
-      }
+      if (action === "delete") await deleteSidebarSessions([session]);
     } catch (error) {
       setWarning(errorMessage(error));
     }
-  }, [adoptWorkspace, commitNavigation, mergeProjectSnapshot, toggleSessionPinned]);
+  }, [adoptWorkspace, commitNavigation, deleteSidebarSessions, mergeProjectSnapshot, toggleSessionPinned]);
 
   const importSessionIntoProject = useCallback(async (projectId: string): Promise<void> => {
     try {
@@ -1137,6 +1141,7 @@ function DesktopApp(): React.JSX.Element {
 
   // 发送直接进入聊天布局；临时用户消息覆盖 IPC/事件桥的空窗，真实事件到达后自动替换。
   const sendPromptWithTransition = useCallback(async (input: string, attachments: DesktopAttachment[], delivery?: "steer" | "queue", idempotencyKey?: string, capabilitySelection?: AgentCapabilitySelection): Promise<void> => {
+    if (loading) throw new Error("会话正在加载，请稍后发送。");
     setGenerationError(undefined);
     const pendingProjectId = selectedRef.current === undefined ? draftProjectId ?? projectRef.current : projectRef.current;
     const pendingId = idempotencyKey ?? globalThis.crypto.randomUUID();
@@ -1164,7 +1169,7 @@ function DesktopApp(): React.JSX.Element {
       }
       throw error;
     }
-  }, [draftProjectId, refreshRuntimeFailure, sendPrompt]);
+  }, [draftProjectId, loading, refreshRuntimeFailure, sendPrompt]);
 
   const runSlashCommand = useCallback(async (command: string): Promise<void> => {
     const projectId = selectedRef.current === undefined ? draftProjectId ?? projectRef.current : projectRef.current;
@@ -2064,7 +2069,7 @@ function DesktopApp(): React.JSX.Element {
       sidebarLayout={sidebarLayout}
       sideNav={(
         <Sidebar
-          activeProjectId={workspace?.project.id}
+          activeProjectId={pendingNavigation?.projectId ?? workspace?.project.id}
           onCreateEmptyProject={createSidebarProject}
           onNewTask={createSidebarTask}
           onNewTopLevelTask={createTopLevelTask}
@@ -2081,13 +2086,14 @@ function DesktopApp(): React.JSX.Element {
           onSelectSession={selectSidebarSession}
           onLoadSessionChildren={loadSessionChildren}
           onSessionAction={runSidebarSessionAction}
+          onDeleteSessions={deleteSidebarSessions}
           onSettings={openSettings}
           onTimeClues={openTimeClues}
           onInsertCrystal={insertCrystalReference}
           onToggleSidebar={toggleSidebar}
           layout={sidebarLayout}
           projects={projects}
-          selectedSessionId={selectedSessionId}
+          selectedSessionId={pendingNavigation ? pendingNavigation.sessionId : selectedSessionId}
           sessions={sidebarSessions}
           peekDrawerHandlers={sidebarPeekDrawerHandlers}
           peekDrawerRef={sidebarPeekDrawerRef}

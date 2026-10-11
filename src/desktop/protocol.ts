@@ -117,7 +117,8 @@ export const desktopIpc = {
   archiveSession: "desktop:session:archive",
   markSessionRead: "desktop:session:mark-read",
   duplicateSession: "desktop:session:duplicate",
-  deleteSession: "desktop:session:delete",
+  confirmSessionDeletion: "desktop:sessions:confirm-delete",
+  deleteSessions: "desktop:sessions:delete-confirmed",
   exportSession: "desktop:session:export",
   importSession: "desktop:session:import",
   applicationImports: "desktop:imports:snapshot",
@@ -1590,6 +1591,17 @@ export type DesktopRuntimeMutation =
 
 export type DesktopMenuAction = "new-task" | "open-project" | "search" | "settings" | "activity-settings" | "toggle-sidebar" | "focus-composer";
 /** 侧栏会话右键菜单的动作；菜单本身由渲染进程绘制。 */
+export interface DesktopSessionTarget {
+  projectId: string;
+  sessionId: string;
+}
+
+export interface DesktopSessionDeleteResult {
+  cancelled: boolean;
+  deleted: DesktopSessionTarget[];
+  failures: Array<DesktopSessionTarget & { error: string }>;
+}
+
 export type DesktopSessionMenuAction = "rename" | "pin" | "unpin" | "archive" | "unarchive" | "duplicate" | "export-bundle" | "export-claude" | "delete";
 
 /** 内嵌终端创建结果。`replay` 是复用已有终端时回放的最近输出。 */
@@ -1663,7 +1675,7 @@ export interface DesktopApi {
   archiveSession(projectId: string, sessionId: string, archived: boolean, expectedRevision?: string): Promise<DesktopWorkspaceSnapshot>;
   markSessionRead(projectId: string, sessionId: string, expectedRevision?: string): Promise<DesktopWorkspaceSnapshot>;
   duplicateSession(projectId: string, sessionId: string): Promise<DesktopWorkspaceSnapshot>;
-  deleteSession(projectId: string, sessionId: string): Promise<DesktopWorkspaceSnapshot>;
+  deleteSessions(targets: DesktopSessionTarget[], confirm?: boolean, onStarted?: () => void): Promise<DesktopSessionDeleteResult>;
   /** 导出为 Biny bundle（无损 JSON）或外部 JSONL；用户在保存对话框里选位置。 */
   exportSession(projectId: string, sessionId: string, format: "biny" | "claude"): Promise<DesktopWorkspaceSnapshot>;
   /** 从 Biny bundle 或外部 rollout 文件导入一条新会话并选中它。 */

@@ -68,7 +68,13 @@ const api: DesktopApi = {
   archiveSession: async (projectId, sessionId, archived, expectedRevision) => await ipcRenderer.invoke(desktopIpc.archiveSession, projectId, sessionId, archived, expectedRevision),
   markSessionRead: async (projectId, sessionId, expectedRevision) => await ipcRenderer.invoke(desktopIpc.markSessionRead, projectId, sessionId, expectedRevision),
   duplicateSession: async (projectId, sessionId) => await ipcRenderer.invoke(desktopIpc.duplicateSession, projectId, sessionId),
-  deleteSession: async (projectId, sessionId) => await ipcRenderer.invoke(desktopIpc.deleteSession, projectId, sessionId),
+  deleteSessions: async (targets, confirm, onStarted) => {
+    if (!await ipcRenderer.invoke(desktopIpc.confirmSessionDeletion, targets, confirm)) {
+      return { cancelled: true, deleted: [], failures: [] };
+    }
+    onStarted?.();
+    return await ipcRenderer.invoke(desktopIpc.deleteSessions, targets);
+  },
   exportSession: async (projectId, sessionId, format) => await ipcRenderer.invoke(desktopIpc.exportSession, projectId, sessionId, format),
   importSession: async (projectId) => await ipcRenderer.invoke(desktopIpc.importSession, projectId),
   sendPrompt: async (projectId, sessionId, input, attachments, delivery, personalization, idempotencyKey, promptContext, capabilitySelection) => await ipcRenderer.invoke(

@@ -117,7 +117,8 @@ test("older pin feedback follows archive, rejected stale writes, unpin, repin an
     "pinning an older session from search must add it without needing a preloaded sidebar entry");
   assert.equal(sidebar.find((session) => session.id === "older-pin")?.archived, false);
   assert.equal(await readFile(pinnedFile, "utf8"), original);
-  const deleted = await manager.deleteSession(project.id, "older-pin");
+  assert.equal((await manager.deleteSessions([{ projectId: project.id, sessionId: "older-pin" }])).failures.length, 0);
+  const deleted = await manager.workspaceSnapshot(project.id, false);
   sidebar = replaceProjectSessionRoots(sidebar, project.id, deleted.sessionPage!.sessions, deleted.sessions);
   assert.equal(sidebar.some((session) => session.id === "older-pin"), false);
   assert.equal((await manager.sidebarSessions()).some((session) => session.id === "older-pin"), false);

@@ -29,6 +29,9 @@
   --red: #fb2c36;
   --red-text: light-dark(#c10007, #ff6467);
   --red-bg: rgb(251 44 54 / 10%);
+  --session-delete-muted: light-dark(#64748b, #8b92a4);
+  --session-delete-danger: light-dark(#c45c5c, #b56b6f);
+  --session-delete-foreground: #ffffff;
   /* 小号标题保留独立 token，默认与状态正文使用同一可读文本色。 */
   --green-text-small: light-dark(#007a55, #00d492);
   --red-text-small: light-dark(#c10007, #ff6467);

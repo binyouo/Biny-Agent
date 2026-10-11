@@ -48,6 +48,9 @@ function bootstrap(snapshot = workspace()): DesktopBootstrap {
 interface SidebarProps {
   sessions: DesktopSessionSummary[];
   activeProjectId?: string;
+  selectedSessionId?: string;
+  onSelectSession(projectId: string, sessionId: string): void;
+  onDeleteSessions(sessions: DesktopSessionSummary[], confirm: boolean): Promise<import("../src/desktop/protocol.js").DesktopSessionDeleteResult>;
   onLoadSessionChildren(projectId: string, parentSessionId: string, cursor?: string): Promise<LoadedSessionTreePage>;
   onRefreshProject(projectId: string): void;
   onRemoveProject(projectId: string): void;
@@ -74,11 +77,14 @@ async function appModule() {
   const implementations: Record<string, string> = {
     ChatResponseContext: "createContext(undefined)", RenderingPreviewContext: "createContext(undefined)", SubagentNavigationContext: "createContext(undefined)",
     AppearanceProvider: "({children}) => children",
-    DesktopShell: "({sideNav}) => sideNav",
+    DesktopShell: "({sideNav, children, overlays}) => createElement(\"div\", null, sideNav, children, overlays)",
+    Workspace: "({children}) => children",
+    Composer: "(props) => { window.__composer = props; return null; }",
+    SearchOverlay: "(props) => { window.__search = props; return null; }",
     Sidebar: "(props) => { window.__sidebar = props; return window.__realSidebar ? createElement(RealSidebar, props) : createElement('pre', null, JSON.stringify(props.sessions)); }",
     Tooltip: "({children}) => children", Collapse: "({children, open, ...props}) => open ? createElement('div', props, children) : null",
     useFluidHover: "() => ({registerItem: noop, handlers: {}})",
-    useClosingPresence: "() => ({present: false})", useAppearance: "() => ({})",
+    useClosingPresence: "(open) => ({present: open, phase: 'open'})", useAppearance: "() => ({})",
     useDesktopAppearance: "() => appearance",
     useSidebarLayout: "() => sidebarLayout",
     useCompactionCommand: "() => compaction",
@@ -93,7 +99,7 @@ async function appModule() {
       if (args.path === "react" || args.path === "react-dom") return { path: args.path, external: true };
       if (args.path === "production-sidebar") return { path: sidebarEntry };
       const key = `${args.importer}:${args.path}`;
-      if ((args.importer === entry && actual.has(args.path)) || !imports.has(key)) return undefined;
+      if ((args.importer === entry && actual.has(args.path)) || (args.importer === sidebarEntry && args.path === "./SessionDeleteButton.js") || !imports.has(key)) return undefined;
       return { path: key, namespace: "fixture" };
     });
     builder.onLoad({ filter: /.*/, namespace: "fixture" }, (args) => ({ contents: `
@@ -115,27 +121,40 @@ async function fixture(context: TestContext, realSidebar = false, deferBootstrap
   context.mock.timers.enable({ apis: ["setTimeout"] });
   const dom = new JSDOM('<!doctype html><div id="root"></div>', { url: "http://localhost" });
   const saved = new Map<string, PropertyDescriptor | undefined>();
-  for (const [key, value] of Object.entries({ window: dom.window, document: dom.window.document, IS_REACT_ACT_ENVIRONMENT: true })) {
+  for (const [key, value] of Object.entries({ window: dom.window, document: dom.window.document, Element: dom.window.Element, Node: dom.window.Node, HTMLElement: dom.window.HTMLElement, IS_REACT_ACT_ENVIRONMENT: true })) {
     saved.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
     Object.defineProperty(globalThis, key, { configurable: true, value });
   }
   const initialBootstrap = deferred<DesktopBootstrap>();
+  const opens: Array<{ projectId: string; sessionId: string; result: ReturnType<typeof deferred<import("../src/desktop/protocol.js").DesktopSessionDocument>> }> = [];
+  const selections: string[] = [];
+  const sends: string[] = [];
   const pages: Array<DesktopSessionTreePageOptions & { projectId: string; parentSessionId: string; result: ReturnType<typeof deferred<DesktopSessionTreePage>> }> = [];
   const snapshots: Array<ReturnType<typeof deferred<DesktopWorkspaceSnapshot>>> = [];
   const mutations: Array<ReturnType<typeof deferred<DesktopWorkspaceSnapshot>>> = [];
   const bootstraps: Array<ReturnType<typeof deferred<DesktopBootstrap>>> = [];
   let subscriber: ((envelope: DesktopAgentEventEnvelope) => void) | undefined;
-  Object.assign(dom.window, { __realSidebar: realSidebar, biny: {
+  Object.assign(dom.window, { requestAnimationFrame: (callback: FrameRequestCallback) => setTimeout(() => callback(0), 16), cancelAnimationFrame: clearTimeout, __realSidebar: realSidebar, biny: {
     bootstrap: async () => deferBootstrap ? await initialBootstrap.promise : bootstrap(),
     refreshProject() { const value = deferred<DesktopWorkspaceSnapshot>(); snapshots.push(value); return value.promise; },
     listSessionTreePage(projectId: string, options: DesktopSessionTreePageOptions & { parentSessionId: string }) {
       const result = deferred<DesktopSessionTreePage>(); pages.push({ projectId, ...options, result }); return result.promise;
     },
-    deleteSession() { const value = deferred<DesktopWorkspaceSnapshot>(); mutations.push(value); return value.promise; },
+    deleteSessions(targets: import("../src/desktop/protocol.js").DesktopSessionTarget[], _confirm: boolean, onStarted?: () => void) {
+      onStarted?.();
+      const value = deferred<DesktopWorkspaceSnapshot>(); mutations.push(value);
+      return value.promise.then(() => ({ cancelled: false, deleted: targets, failures: [] }));
+    },
     pinSession() { const value = deferred<DesktopWorkspaceSnapshot>(); mutations.push(value); return value.promise; },
     selectProject: async (id: string) => workspace(id), startDraft: async (id: string) => workspace(id),
     removeProject() { const value = deferred<DesktopBootstrap>(); bootstraps.push(value); return value.promise; },
-    commitSelection: async () => {}, listProjectBranches: async () => [],
+    openSession(projectId: string, sessionId: string) {
+      const result = deferred<import("../src/desktop/protocol.js").DesktopSessionDocument>();
+      opens.push({ projectId, sessionId, result }); return result.promise;
+    },
+    commitSelection: async (projectId: string, sessionId?: string) => { selections.push(`${projectId}:${sessionId}`); }, listProjectBranches: async () => [],
+    sendPrompt: async (projectId: string, sessionId: string) => { sends.push(`${projectId}:${sessionId}`); throw new Error("unexpected send"); },
+    recipeSuggestions: async () => [],
     skillCatalog: async () => ({ skills: [], warnings: [] }), skillSettings: async () => ({ activations: [] }), toolCatalog: async () => [],
     onAgentEvent(listener: typeof subscriber) { subscriber = listener; return () => { subscriber = undefined; }; },
     onReferenceOpen: () => () => {}, onSessionHandoff: () => () => {}, onMenuAction: () => () => {}, onSettingsCloseRequest: () => () => {}, onBrowserOpenRequest: () => () => {}
@@ -166,7 +185,9 @@ async function fixture(context: TestContext, realSidebar = false, deferBootstrap
     props().onRefreshProject(snapshot.project.id);
     await act(async () => snapshots.at(-1)!.resolve(snapshot));
   };
-  return { props, pages, snapshots, mutations, bootstraps, initialBootstrap, load, resolvePage, refresh, unmount,
+  return { props, pages, snapshots, mutations, bootstraps, initialBootstrap, load, resolvePage, refresh, unmount, opens, selections, sends, document: dom.window.document,
+    composer: () => (dom.window as unknown as { __composer: { onSend(text: string, attachments: []): Promise<void> } }).__composer,
+    search: () => (dom.window as unknown as { __search: { onProject(projectId: string): void } }).__search,
     buttons: () => Array.from(dom.window.document.querySelectorAll("button")),
     click: async (button: HTMLButtonElement) => { await act(async () => button.click()); },
     send: async (envelope: DesktopAgentEventEnvelope) => { await act(async () => { subscriber!(envelope); context.mock.timers.tick(16); }); } };
@@ -798,4 +819,223 @@ test("persisted nested pin keeps reset ownership after its intermediate parent i
   const result = await repeated;
   assert.ok(result.page?.resetSessionIds?.includes("nested-pin"), "off-page ancestor removal must not detach a restored pin from reset ownership");
   assert.equal(view.props().sessions.some((row) => row.id === "nested-pin"), false);
+});
+
+// Existing tree tests do not cover clicking the still-visible session while another project loads.
+test("pending cross-project navigation can be superseded by selecting the original session", async (context) => {
+  const view = await fixture(context);
+  const select = async (projectId: string, sessionId: string) => {
+    await act(async () => view.props().onSelectSession(projectId, sessionId));
+  };
+  const finish = async (index: number) => {
+    const call = view.opens[index]!;
+    await act(async () => call.result.resolve({ session: session(call.sessionId, call.projectId), events: [], liveEvents: [] }));
+  };
+  await select("project", "parent"); await finish(0);
+  await select("other", "remote");
+  await select("project", "parent");
+  for (let index = 2; index < view.opens.length; index++) await finish(index);
+  await finish(1);
+  assert.equal(view.props().activeProjectId, "project", "late reads cannot undo the last selection");
+  assert.equal(view.props().selectedSessionId, "parent");
+  assert.equal(view.selections.at(-1), "project:parent");
+});
+
+// Checking only stale successful responses misses a failed newest navigation restoring an unfinished predecessor.
+test("rapid navigation highlights the newest project and a failed read preserves the last loaded session", async (context) => {
+  const view = await fixture(context);
+  await act(async () => view.props().onSelectSession("project", "parent"));
+  await act(async () => view.opens[0]!.result.resolve({ session: session("parent"), events: [], liveEvents: [] }));
+  await act(async () => view.props().onSelectSession("project", "child"));
+  await act(async () => view.props().onSelectSession("other", "remote"));
+  assert.equal(view.props().activeProjectId, "other", "pending project selection must update immediately");
+  assert.equal(view.props().selectedSessionId, "remote");
+  await act(async () => view.opens[2]!.result.reject(new Error("history unavailable")));
+  await act(async () => view.opens[1]!.result.resolve({ session: session("child"), events: [], liveEvents: [] }));
+  assert.equal(view.props().activeProjectId, "project");
+  assert.equal(view.props().selectedSessionId, "parent", "failure must not restore an unfinished intermediate session");
+  assert.equal(view.selections.at(-1), "project:parent");
+});
+
+
+test("a pending session cannot send its composer draft to the previously loaded session", async (context) => {
+  const view = await fixture(context);
+  await act(async () => view.props().onSelectSession("project", "parent"));
+  await act(async () => view.opens[0]!.result.resolve({ session: session("parent"), events: [], liveEvents: [] }));
+  await act(async () => view.props().onSelectSession("other", "remote"));
+  await act(async () => { void view.composer().onSend("draft", []).catch(() => {}); });
+  assert.deepEqual(view.sends, [], "loading navigation must not dispatch a prompt to the old identity");
+});
+
+
+test("selecting the current project through search supersedes an in-flight session navigation", async (context) => {
+  const view = await fixture(context);
+  await act(async () => view.props().onSelectSession("other", "remote"));
+  await act(async () => view.search().onProject("project"));
+  await act(async () => view.opens[0]!.result.resolve({ session: session("remote", "other"), events: [], liveEvents: [] }));
+  assert.equal(view.props().activeProjectId, "project");
+  assert.equal(view.props().selectedSessionId, undefined);
+  assert.deepEqual(view.selections, []);
+});
+
+// Navigation used to collapse the source folder, removing the next available target mid-switch.
+test("selecting another project keeps the source session rows available during and after loading", async (context) => {
+  const view = await fixture(context, true);
+  const sourceRow = () => view.buttons().find(button => button.className === "biny-sidebar-session-item" && button.title === "parent");
+  assert.ok(sourceRow());
+  await act(async () => view.props().onSelectSession("other", "remote"));
+  assert.ok(sourceRow(), "changing the highlighted project must not collapse the source folder");
+  await act(async () => view.opens[0]!.result.resolve({ session: session("remote", "other"), events: [], liveEvents: [] }));
+  assert.ok(sourceRow(), "completed navigation must preserve the source folder's expansion too");
+});
+
+// Previous navigation tests omit the browser snapshot API, so they cannot catch its window-wide hit-test overlay.
+test("session navigation never starts a window snapshot transition that intercepts subsequent clicks", async (context) => {
+  const view = await fixture(context);
+  const transitions: string[] = [];
+  Object.assign(view.document, { startViewTransition(update: () => void) {
+    transitions.push("window snapshot");
+    queueMicrotask(update);
+  } });
+  for (const [projectId, sessionId] of [["project", "parent"], ["project", "child"], ["other", "remote"]] as const) {
+    await act(async () => view.props().onSelectSession(projectId, sessionId));
+    await act(async () => view.opens.at(-1)!.result.resolve({ session: session(sessionId, projectId), events: [], liveEvents: [] }));
+    assert.equal(view.props().selectedSessionId, sessionId);
+  }
+  assert.deepEqual(transitions, [], "even unchanged hero state must not create a 420 ms window-wide snapshot layer");
+});
+
+// Deletion must not reopen an unrelated session or overwrite navigation completed while IPC was pending.
+test("deleting an old selection preserves the session opened while deletion was pending", async (context) => {
+  const view = await fixture(context);
+  await act(async () => view.props().onSelectSession("project", "parent"));
+  await act(async () => view.opens[0]!.result.resolve({ session: session("parent"), events: [], liveEvents: [] }));
+  let deletion!: Promise<unknown>;
+  await act(async () => { deletion = view.props().onDeleteSessions([session("parent")], false); });
+  assert.equal(view.props().selectedSessionId, undefined, "the deleted chat closes before the slow delete response");
+  await act(async () => view.props().onSelectSession("other", "remote"));
+  await act(async () => view.opens[1]!.result.resolve({ session: session("remote", "other"), events: [], liveEvents: [] }));
+  await act(async () => { view.mutations[0]!.resolve(workspace()); await deletion; });
+  assert.equal(view.props().activeProjectId, "other");
+  assert.equal(view.props().selectedSessionId, "remote");
+  assert.equal(view.opens.length, 2, "deletion must not reopen any session");
+  assert.equal(view.props().sessions.some(row => row.projectId === "project" && row.id === "parent"), false);
+});
+
+// A slow delete must not delay the visual exit; rejection restores the row and keeps navigation available.
+test("row delete exits before a slow response and restores failures without blocking navigation", async (context) => {
+  const view = await fixture(context, true);
+  await view.refresh(workspace("project", [session("parent"), session("second")]));
+  const remove = () => view.buttons().find(button => button.getAttribute("aria-label") === "删除 parent");
+  assert.ok(remove(), "session rows expose a delete action");
+  await view.click(remove()!);
+  assert.equal(view.mutations.length, 0, "first click must only arm confirmation");
+  await act(async () => context.mock.timers.tick(3000));
+  assert.ok(remove(), "confirmation expires");
+  await view.click(remove()!);
+  const confirm = view.buttons().find(button => button.getAttribute("aria-label") === "确认删除 parent");
+  assert.ok(confirm);
+  await view.click(confirm!);
+  assert.equal(view.mutations.length, 1);
+  assert.ok(view.document.querySelector(".is-removing"), "animation starts before the delete response");
+  assert.ok(view.document.querySelector(".biny-sidebar-session-tree-row")?.classList.contains("is-removing"), "exit retains the original row position");
+  await view.click(view.buttons().find(button => button.title === "second")!);
+  assert.equal(view.opens.at(-1)?.sessionId, "second", "other sessions remain selectable during deletion");
+  await act(async () => context.mock.timers.tick(750));
+  assert.equal(remove(), undefined, "the row leaves on schedule even while the request remains pending");
+  await act(async () => view.mutations[0]!.reject(new Error("file locked")));
+  assert.ok(remove(), "a failed delete remains available for retry");
+  assert.equal(view.document.querySelector(".is-removing"), null);
+  assert.equal(view.document.querySelector(".biny-sidebar-session-item")?.getAttribute("title"), "parent");
+  await view.click(remove()!);
+  await view.click(view.buttons().find(button => button.getAttribute("aria-label") === "确认删除 parent")!);
+  await act(async () => context.mock.timers.tick(750));
+  await act(async () => view.mutations[1]!.resolve(workspace("project", [])));
+  assert.equal(view.document.querySelector(".is-removing"), null);
+  assert.equal(remove(), undefined);
+});
+
+// A timer from an early failure used to be able to remove a retried row before its own animation ended.
+test("retrying a failed delete keeps its own animation deadline after an early success", async (context) => {
+  const view = await fixture(context, true);
+  const shiftDelete = async () => {
+    const button = view.buttons().find(button => button.getAttribute("aria-label") === "删除 parent")!;
+    await act(async () => button.dispatchEvent(new view.document.defaultView!.MouseEvent("click", { bubbles: true, shiftKey: true })));
+  };
+  await shiftDelete();
+  await act(async () => context.mock.timers.tick(200));
+  await act(async () => view.mutations[0]!.reject(new Error("file locked")));
+  await shiftDelete();
+  await act(async () => view.mutations[1]!.resolve(workspace("project", [])));
+  assert.ok(view.document.querySelector(".is-removing"), "fast storage completion does not cut off the animation");
+  await act(async () => context.mock.timers.tick(550));
+  assert.ok(view.document.querySelector(".is-removing"), "the failed attempt's deadline cannot remove the retry");
+  await act(async () => context.mock.timers.tick(199));
+  assert.ok(view.document.querySelector(".is-removing"));
+  await act(async () => context.mock.timers.tick(1));
+  assert.equal(view.document.querySelector(".is-removing"), null);
+});
+
+// Deleting the next row must not wait for an earlier IPC response or its exit animation.
+test("consecutive row deletes start independently while both storage replies are pending", async (context) => {
+  const view = await fixture(context, true);
+  await view.refresh(workspace("project", [session("parent"), session("second")]));
+  for (const title of ["parent", "second"]) {
+    const button = view.buttons().find(button => button.getAttribute("aria-label") === `删除 ${title}`)!;
+    await act(async () => button.dispatchEvent(new view.document.defaultView!.MouseEvent("click", { bubbles: true, shiftKey: true })));
+  }
+  assert.equal(view.mutations.length, 2, "both requests are sent without waiting for the previous result");
+  assert.equal(view.document.querySelectorAll(".is-removing").length, 2);
+  await act(async () => context.mock.timers.tick(750));
+  assert.equal(view.buttons().some(button => button.title === "parent" || button.title === "second"), false);
+  await act(async () => view.mutations[1]!.resolve(workspace("project", [])));
+  await act(async () => view.mutations[0]!.reject(new Error("file locked")));
+  assert.ok(view.buttons().some(button => button.title === "parent"), "only the failed row is restored");
+  assert.equal(view.buttons().some(button => button.title === "second"), false);
+});
+
+// Selection mode must toggle rows without navigating and keep failed targets selected after a partial batch.
+test("multi-select deletes once, preserves failed rows, and Escape leaves selection mode", async (context) => {
+  const view = await fixture(context, true);
+  await view.refresh(workspace("project", [session("parent"), session("second")]));
+  const parent = view.buttons().find(button => button.className === "biny-sidebar-session-item" && button.title === "parent")!;
+  await act(async () => parent.dispatchEvent(new view.document.defaultView!.MouseEvent("contextmenu", { bubbles: true, cancelable: true })));
+  await view.click(view.buttons().find(button => button.textContent === "多选")!);
+  const check = view.document.querySelector<HTMLInputElement>('input[aria-label="选择 second"]')!;
+  assert.ok(check);
+  await act(async () => check.click());
+  assert.equal(view.opens.length, 0, "selecting rows must not navigate");
+  const calls: unknown[] = [];
+  const reply = deferred<import("../src/desktop/protocol.js").DesktopSessionDeleteResult>();
+  let start!: () => void;
+  Object.assign((view.document.defaultView as unknown as { biny: object }).biny, { deleteSessions: (targets: unknown, confirm: boolean, onStarted: () => void) => {
+    calls.push({ targets, confirm });
+    start = onStarted;
+    return reply.promise;
+  } });
+  await view.click(view.buttons().find(button => button.closest('[aria-label="会话多选"]') && button.textContent === "删除")!);
+  assert.deepEqual(calls, [{ targets: [{ projectId: "project", sessionId: "parent" }, { projectId: "project", sessionId: "second" }], confirm: true }]);
+  assert.equal(view.document.querySelector(".is-removing"), null, "native confirmation must precede the batch animation");
+  await act(async () => start());
+  assert.equal(view.document.querySelectorAll(".is-removing").length, 2, "all confirmed rows animate before the slow batch response");
+  await act(async () => context.mock.timers.tick(750));
+  assert.equal(view.document.querySelector('input[aria-label="选择 second"]'), null);
+  await act(async () => reply.resolve({ cancelled: false, deleted: [{ projectId: "project", sessionId: "parent" }], failures: [{ projectId: "project", sessionId: "second", error: "busy" }] }));
+  assert.equal(view.document.querySelector('[aria-label="会话多选"] span')?.textContent, "已选 1 项");
+  assert.equal(view.document.querySelector<HTMLInputElement>('input[aria-label="选择 second"]')?.checked, true);
+  await act(async () => view.document.defaultView!.dispatchEvent(new view.document.defaultView!.KeyboardEvent("keydown", { key: "Escape" })));
+  assert.equal(view.document.querySelector('[aria-label="会话多选"]'), null);
+});
+
+// Reduced-motion users must not wait for the visual exit; the Shift shortcut still issues only one delete.
+test("Shift deletion skips inline confirmation and reduced motion removes successful rows immediately", async (context) => {
+  const view = await fixture(context, true);
+  Object.assign(view.document.defaultView!, { matchMedia: () => ({ matches: true }) });
+  const button = view.buttons().find(button => button.getAttribute("aria-label") === "删除 parent")!;
+  await act(async () => button.dispatchEvent(new view.document.defaultView!.MouseEvent("click", { bubbles: true, shiftKey: true })));
+  assert.equal(view.mutations.length, 1);
+  assert.equal(view.buttons().some(button => button.title === "parent"), false, "reduced motion hides the row before storage finishes");
+  await act(async () => view.mutations[0]!.resolve(workspace("project", [])));
+  assert.equal(view.document.querySelector(".is-removing"), null);
+  assert.equal(view.buttons().some(button => button.title === "parent"), false);
 });

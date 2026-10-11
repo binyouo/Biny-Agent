@@ -10,7 +10,7 @@ import { createPortal } from "react-dom";
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { SidebarLayoutSnapshot } from "../../../sidebarLayout.js";
 import { clampSidebarWidth, MAX_SIDEBAR_WIDTH, MIN_SIDEBAR_WIDTH } from "../../../sidebarSizing.js";
-import type { DesktopProject, DesktopSessionMenuAction, DesktopSessionSummary } from "../../../protocol.js";
+import type { DesktopSessionDeleteResult, DesktopProject, DesktopSessionMenuAction, DesktopSessionSummary } from "../../../protocol.js";
 import type { LoadedSessionTreePage } from "../app/sessionTreePageLifetime.js";
 import type { SidebarPeekHandlers, SidebarResizeHandlers } from "../app/useSidebarLayout.js";
 import { useClosingPresence } from "../useClosingPresence.js";
@@ -20,6 +20,7 @@ import { CrystalDock } from "./CrystalDock.js";
 import { FluidHoverHighlight } from "./FluidHoverHighlight.js";
 import { Icon, type IconName } from "./Icon.js";
 import { ThreadBriefSessionMenu, ThreadBriefSessionState } from "../threadBrief/ThreadBriefSessionState.js";
+import { SessionDeleteButton } from "./SessionDeleteButton.js";
 import { WorkingIndicator } from "./WorkingIndicator.js";
 import { useAppearance } from "../appearanceContext.js";
 import { RetroFolderIcon } from "./WindowChrome.js";
@@ -38,6 +39,21 @@ interface ProjectDragState {
   section: "pinned" | "projects";
 }
 
+function sessionKey(session: DesktopSessionSummary): string {
+  return `${session.projectId}\0${session.id}`;
+}
+interface SessionDeletion {
+  session: DesktopSessionSummary;
+  index: number;
+  phase: "waiting" | "exiting" | "hidden";
+}
+interface SessionRowActions {
+  selection?: Set<string>;
+  deletions: Map<string, SessionDeletion>;
+  toggle(session: DesktopSessionSummary): void;
+  delete(session: DesktopSessionSummary): void;
+}
+
 interface SidebarProps {
   layout: SidebarLayoutSnapshot;
   peekDrawerHandlers: SidebarPeekHandlers;
@@ -53,6 +69,7 @@ interface SidebarProps {
   onSelectSession(projectId: string, sessionId: string): void;
   onLoadSessionChildren(projectId: string, parentSessionId: string, cursor?: string): Promise<LoadedSessionTreePage>;
   onSessionAction(session: DesktopSessionSummary, action: DesktopSessionMenuAction): void;
+  onDeleteSessions(sessions: DesktopSessionSummary[], confirm: boolean, onStarted: () => void): Promise<DesktopSessionDeleteResult>;
   onProjectPinned(projectId: string, pinned: boolean): void;
   onReorderProjects(projectIds: string[]): void;
   onRefreshProject(projectId: string): void;
@@ -78,7 +95,7 @@ export const Sidebar = memo(function Sidebar({
   peekTriggerHandlers,
   resizeHandlers,
   projects,
-  sessions,
+  sessions: storedSessions,
   activeProjectId,
   selectedSessionId,
   onOpenProject,
@@ -86,6 +103,7 @@ export const Sidebar = memo(function Sidebar({
   onSelectSession,
   onLoadSessionChildren,
   onSessionAction,
+  onDeleteSessions,
   onProjectPinned,
   onReorderProjects,
   onRefreshProject,
@@ -102,13 +120,124 @@ export const Sidebar = memo(function Sidebar({
   onInsertCrystal,
   onToggleSidebar
 }: SidebarProps): React.JSX.Element {
+  const [selection, setSelection] = useState<Set<string>>();
+  const [deletions, setDeletions] = useState(new Map<string, SessionDeletion>());
+  const [deletionError, setDeletionError] = useState<string>();
+  const mounted = useRef(true);
+  const deletionFlights = useRef(new Set<string>());
+  const deletionTimers = useRef(new Set<ReturnType<typeof setTimeout>>());
+  useEffect(() => {
+    mounted.current = true;
+    const timers = deletionTimers.current;
+    return () => { mounted.current = false; for (const timer of timers) clearTimeout(timer); };
+  }, []);
+  useEffect(() => {
+    if (!selection) return;
+    const cancel = (event: KeyboardEvent): void => {
+      if (event.key === "Escape" && !event.defaultPrevented) setSelection(undefined);
+    };
+    window.addEventListener("keydown", cancel);
+    return () => window.removeEventListener("keydown", cancel);
+  }, [selection]);
+  const sessions = useMemo(() => {
+    const result = storedSessions.filter(session => deletions.get(sessionKey(session))?.phase !== "hidden");
+    const ids = new Set(result.map(sessionKey));
+    for (const [key, entry] of [...deletions].sort((a, b) => a[1].index - b[1].index)) {
+      if (entry.phase !== "hidden" && !ids.has(key)) result.splice(Math.min(entry.index, result.length), 0, entry.session);
+    }
+    return result;
+  }, [storedSessions, deletions]);
+  const selectedRows = storedSessions.filter(session => selection?.has(sessionKey(session)) && !deletions.has(sessionKey(session)));
+  const deleteRows = async (rows: DesktopSessionSummary[], confirm: boolean): Promise<void> => {
+    const targets = rows.filter(session => !deletionFlights.current.has(sessionKey(session)));
+    if (!targets.length) return;
+    for (const session of targets) deletionFlights.current.add(sessionKey(session));
+    setDeletionError(undefined);
+    setDeletions(current => {
+      const next = new Map(current);
+      for (const session of targets) next.set(sessionKey(session), { session, index: storedSessions.findIndex(row => sessionKey(row) === sessionKey(session)), phase: "waiting" });
+      return next;
+    });
+    let removed = new Set<string>();
+    const animated = new Set(targets.map(sessionKey));
+    let started = false;
+    const startExit = (): void => {
+      if (started || !mounted.current) return;
+      started = true;
+      const reducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+      setDeletions(current => {
+        const next = new Map(current);
+        for (const key of animated) {
+          const entry = next.get(key);
+          if (entry) next.set(key, { ...entry, phase: reducedMotion ? "hidden" : "exiting" });
+        }
+        return next;
+      });
+      if (reducedMotion) return;
+      const timer = setTimeout(() => {
+        deletionTimers.current.delete(timer);
+        setDeletions(current => {
+          const next = new Map(current);
+          for (const key of animated) {
+            const entry = next.get(key);
+            if (!entry) continue;
+            if (removed.has(key)) next.delete(key);
+            else next.set(key, { ...entry, phase: "hidden" });
+          }
+          return next;
+        });
+      }, 750);
+      deletionTimers.current.add(timer);
+    };
+    if (!confirm) startExit();
+    try {
+      const result = await onDeleteSessions(targets, confirm, startExit);
+      if (!mounted.current) return;
+      removed = new Set(result.deleted.map(target => `${target.projectId}\0${target.sessionId}`));
+      setSelection(current => {
+        if (!current) return current;
+        const next = new Set([...current].filter(key => !removed.has(key)));
+        return next.size ? next : undefined;
+      });
+    } catch (error) {
+      if (mounted.current) setDeletionError(error instanceof Error ? error.message : String(error));
+    } finally {
+      for (const session of targets) deletionFlights.current.delete(sessionKey(session));
+      if (mounted.current) {
+        // 失败项立即恢复；从旧计时器移除，避免重试中的新动画被旧请求结束。
+        for (const key of animated) if (!removed.has(key)) animated.delete(key);
+        setDeletions(current => {
+          const next = new Map(current);
+          for (const session of targets) {
+            const key = sessionKey(session);
+            const entry = next.get(key);
+            if (!removed.has(key) || entry?.phase !== "exiting") next.delete(key);
+          }
+          return next;
+        });
+      }
+    }
+  };
+  const rowActions: SessionRowActions = {
+    selection,
+    deletions,
+    toggle: session => setSelection(current => {
+      const next = new Set(current);
+      const key = sessionKey(session);
+      if (next.has(key)) next.delete(key); else next.add(key);
+      return next;
+    }),
+    delete: session => { void deleteRows([session], false); }
+  };
   const [expandedSections, setExpandedSections] = useState<Record<SidebarSectionName, boolean>>({
     pinned: true,
     projects: true,
     dialogue: true
   });
-  const [collapsedProjectIds, setCollapsedProjectIds] = useState<Set<string>>(() => new Set());
-  const [expandedProjectIds, setExpandedProjectIds] = useState<Set<string>>(() => new Set());
+  const [expandedProjectIds, setExpandedProjectIds] = useState<Set<string>>(() => new Set(activeProjectId ? [activeProjectId] : []));
+  useEffect(() => {
+    if (activeProjectId) setExpandedProjectIds(current => current.has(activeProjectId) ? current : new Set(current).add(activeProjectId));
+  }, [activeProjectId]);
   const [expandedSessionIds, setExpandedSessionIds] = useState<Set<string>>(() => new Set());
   const [loadedSessionParents, setLoadedSessionParents] = useState<Set<string>>(() => new Set());
   const [loadingSessionIds, setLoadingSessionIds] = useState<Set<string>>(() => new Set());
@@ -203,17 +332,8 @@ export const Sidebar = memo(function Sidebar({
   };
 
   const selectOrToggleProject = (projectId: string): void => {
-    // 文件夹只负责浏览会话树；只有点击具体 session 行，才允许聊天区切换内容。
-    if (projectId !== activeProjectId) {
-      setExpandedProjectIds((current) => {
-        const next = new Set(current);
-        if (next.has(projectId)) next.delete(projectId);
-        else next.add(projectId);
-        return next;
-      });
-      return;
-    }
-    setCollapsedProjectIds((current) => {
+    // 展开状态独立于当前会话，切换项目不能收起仍可继续点击的源列表。
+    setExpandedProjectIds((current) => {
       const next = new Set(current);
       if (next.has(projectId)) next.delete(projectId);
       else next.add(projectId);
@@ -331,9 +451,7 @@ export const Sidebar = memo(function Sidebar({
 
   const renderProject = (project: DesktopProject, section: "pinned" | "projects"): React.JSX.Element => {
     const projectSessions = sessionsFor(project.id);
-    const expanded = project.id === activeProjectId
-      ? !collapsedProjectIds.has(project.id)
-      : expandedProjectIds.has(project.id);
+    const expanded = expandedProjectIds.has(project.id);
     return (
       <div
         className={`biny-project-group${dragState?.sourceId === project.id ? " is-dragging" : ""}${projectDropClass(project.id, section)}`}
@@ -376,6 +494,7 @@ export const Sidebar = memo(function Sidebar({
         {/* 会话列表常驻挂载，展开/收起走高度动画；inert 保证收起后不可交互。 */}
         <Collapse open={expanded}>
           <ProjectSessions
+            actions={rowActions}
             limit={PROJECT_SESSION_COLLAPSE_LIMIT}
             onSelectSession={onSelectSession}
             onSessionContextMenu={openSessionContextMenu}
@@ -412,12 +531,19 @@ export const Sidebar = memo(function Sidebar({
           {/* 顶部行是侧栏内容的固定锚点（顶栏按钮 + 底部分割线）；收起时也保留它，避免导航内容上跳。 */}
           <div aria-hidden="true" className="biny-sidebar-topbar-spacer" />
 
+      {selection ? <div className="biny-session-selection-bar" role="toolbar" aria-label="会话多选">
+        <span>已选 {selectedRows.length} 项</span>
+        <button className="is-danger" disabled={!selectedRows.length} onClick={() => { void deleteRows(selectedRows, true); }} type="button"><Icon name="trash" size={13} />删除</button>
+        <button aria-label="退出多选" onClick={() => setSelection(undefined)} type="button"><Icon name="close" size={14} /></button>
+      </div> : null}
+      {deletionError ? <div className="biny-session-delete-error" role="alert">{deletionError}</div> : null}
       <div className="biny-sidebar-body">
         <div className="biny-sidebar-scroll">
           {showPinnedSection ? (
             <SidebarSection expanded={expandedSections.pinned} label="置顶" onToggle={() => toggleSection("pinned")}>
               {/* 置顶会话排在置顶文件夹之前，避免文件夹把会话顶到下面。 */}
               <SessionList
+                actions={rowActions}
                 onSelectSession={onSelectSession}
                 onSessionContextMenu={openSessionContextMenu}
                     selectedSessionId={selectedSessionId}
@@ -493,6 +619,7 @@ export const Sidebar = memo(function Sidebar({
 
           {dialogueSessions.length > 0 ? <SidebarSection expanded={expandedSections.dialogue} icon="message" label="对话" onToggle={() => toggleSection("dialogue")}>
             <CollapsibleSessionList
+              actions={rowActions}
               limit={DIALOGUE_SESSION_COLLAPSE_LIMIT}
               onSelectSession={onSelectSession}
               onSessionContextMenu={openSessionContextMenu}
@@ -524,11 +651,17 @@ export const Sidebar = memo(function Sidebar({
       {resizable ? <SidebarResizer width={layout.contentWidth} {...resizeHandlers} /> : null}
       </aside>
       <SessionContextMenu
+        onSelectMode={() => {
+          if (sessionMenu) setSelection(new Set([sessionKey(sessionMenu.session)]));
+          setSessionMenuVisible(false);
+        }}
         menu={sessionMenu}
         onClose={() => setSessionMenuVisible(false)}
         onAction={(action) => {
           setSessionMenuVisible(false);
-          if (sessionMenu) onSessionAction(sessionMenu.session, action);
+          if (!sessionMenu) return;
+          if (action === "delete") void deleteRows(selection?.has(sessionKey(sessionMenu.session)) ? selectedRows : [sessionMenu.session], true);
+          else onSessionAction(sessionMenu.session, action);
         }}
         open={sessionMenuVisible}
       />
@@ -652,10 +785,11 @@ function SidebarSection({ label, icon, expanded, actions, onToggle, children }: 
   );
 }
 
-function ProjectSessions({ projectId, sessions, selectedSessionId, onSelectSession, onSessionContextMenu, flat = false, limit = PROJECT_SESSION_COLLAPSE_LIMIT, expandedSessionIds, loadingSessionIds, sessionNextCursors, onToggleSession, onLoadMoreSessionChildren }: { projectId: string; sessions: DesktopSessionSummary[]; selectedSessionId?: string; onSelectSession(projectId: string, sessionId: string): void; onSessionContextMenu(session: DesktopSessionSummary, point: { x: number; y: number }): void; flat?: boolean; limit?: number; expandedSessionIds: Set<string>; loadingSessionIds: Set<string>; sessionNextCursors: Map<string, string>; onToggleSession(session: DesktopSessionSummary): void; onLoadMoreSessionChildren(session: DesktopSessionSummary): void }): React.JSX.Element | null {
+function ProjectSessions({ actions, projectId, sessions, selectedSessionId, onSelectSession, onSessionContextMenu, flat = false, limit = PROJECT_SESSION_COLLAPSE_LIMIT, expandedSessionIds, loadingSessionIds, sessionNextCursors, onToggleSession, onLoadMoreSessionChildren }: { actions: SessionRowActions; projectId: string; sessions: DesktopSessionSummary[]; selectedSessionId?: string; onSelectSession(projectId: string, sessionId: string): void; onSessionContextMenu(session: DesktopSessionSummary, point: { x: number; y: number }): void; flat?: boolean; limit?: number; expandedSessionIds: Set<string>; loadingSessionIds: Set<string>; sessionNextCursors: Map<string, string>; onToggleSession(session: DesktopSessionSummary): void; onLoadMoreSessionChildren(session: DesktopSessionSummary): void }): React.JSX.Element | null {
   if (!sessions.length) return <div className="biny-sidebar-empty-row biny-sidebar-project-empty">没有聊天</div>;
   return (
     <CollapsibleSessionList
+      actions={actions}
       limit={limit}
       flat={flat}
       onSelectSession={onSelectSession}
@@ -673,6 +807,7 @@ function ProjectSessions({ projectId, sessions, selectedSessionId, onSelectSessi
 }
 
 interface SessionListProps {
+  actions: SessionRowActions;
   flat?: boolean;
   projectId?: string;
   sessions: DesktopSessionSummary[];
@@ -705,7 +840,7 @@ function CollapsibleSessionList({ limit, ...props }: SessionListProps & { limit:
   );
 }
 
-function SessionList({ flat = false, projectId, sessions, selectedSessionId, onSelectSession, onSessionContextMenu, expandedSessionIds, loadingSessionIds, sessionNextCursors, onToggleSession, onLoadMoreSessionChildren }: SessionListProps): React.JSX.Element {
+function SessionList({ actions, flat = false, projectId, sessions, selectedSessionId, onSelectSession, onSessionContextMenu, expandedSessionIds, loadingSessionIds, sessionNextCursors, onToggleSession, onLoadMoreSessionChildren }: SessionListProps): React.JSX.Element {
   const byParent = new Map<string | undefined, DesktopSessionSummary[]>();
   const ids = new Set(sessions.map((session) => session.id));
   for (const session of sessions) {
@@ -736,6 +871,7 @@ function SessionList({ flat = false, projectId, sessions, selectedSessionId, onS
     const nextCursor = sessionNextCursors.get(session.id);
     return [
       <SessionTreeRow
+        actions={actions}
         expandable={expandable}
         expanded={expanded}
         index={rowIndex++}
@@ -773,6 +909,7 @@ function SessionList({ flat = false, projectId, sessions, selectedSessionId, onS
 // 内联 ref 回调会在每次渲染时先注销再注册，hook 的“高亮行被注销”分支会把
 // 点亮状态立刻清掉，高亮永远出不来，因此行拆成独立组件。
 function SessionTreeRow({
+  actions,
   expandable,
   expanded,
   index,
@@ -785,6 +922,7 @@ function SessionTreeRow({
   onSelect,
   onToggle
 }: {
+  actions: SessionRowActions;
   expandable: boolean;
   expanded: boolean;
   index: number;
@@ -799,6 +937,8 @@ function SessionTreeRow({
 }): React.JSX.Element {
   const ref = useRef<HTMLDivElement>(null);
   useRegisterFluidHoverItem(registerItem, index, ref);
+  const deleting = actions.deletions.get(sessionKey(session));
+  const multiSelected = actions.selection?.has(sessionKey(session));
   const running = isSessionRunning(session);
   const title = session.title || session.firstUserMessage || "新对话";
   // 运行中时右侧位置让给 spinner，不再显示相对时间。
@@ -809,7 +949,7 @@ function SessionTreeRow({
     ? [title, "Git 工作树", metaTitle].filter((value): value is string => Boolean(value)).join(" · ")
     : undefined;
   return (
-    <div ref={ref} className={`biny-sidebar-session-tree-row${selected ? " is-selected" : ""}`} data-worktree={worktree ? "true" : undefined}>
+    <div ref={ref} inert={Boolean(deleting)} aria-busy={deleting ? true : undefined} className={`biny-sidebar-session-tree-row${selected && !actions.selection ? " is-selected" : ""}${multiSelected ? " is-multi-selected" : ""}${deleting?.phase === "exiting" ? " is-removing" : ""}`} data-worktree={worktree ? "true" : undefined}>
       <button
         aria-expanded={expandable ? expanded : undefined}
         aria-label={expandable ? (expanded ? "收起子会话" : "展开子会话") : undefined}
@@ -820,12 +960,13 @@ function SessionTreeRow({
       >
         {loading ? "…" : expandable ? <Icon name="chevron" size={12} /> : null}
       </button>
+      {actions.selection ? <input type="checkbox" aria-label={`选择 ${title}`} checked={Boolean(multiSelected)} onChange={() => actions.toggle(session)} /> : null}
       <div className={`biny-sidebar-session-entry${selected ? " is-selected" : ""}${session.archived ? " is-archived" : ""}`}>
         <button
-          aria-current={selected ? "page" : undefined}
+          aria-current={selected && !actions.selection ? "page" : undefined}
           aria-label={accessibleLabel}
           className="biny-sidebar-session-item"
-          onClick={() => onSelect(projectId ?? session.projectId, session.id)}
+          onClick={() => actions.selection ? actions.toggle(session) : onSelect(projectId ?? session.projectId, session.id)}
           onContextMenu={(event) => {
             event.preventDefault();
             onContextMenu(session, { x: event.clientX, y: event.clientY });
@@ -841,6 +982,7 @@ function SessionTreeRow({
           </span>
         </button>
       </div>
+      {!actions.selection && !running ? <SessionDeleteButton title={title} onDelete={() => actions.delete(session)} /> : null}
     </div>
   );
 }
@@ -889,7 +1031,7 @@ const ProjectRow = memo(function ProjectRow({
   const suppressClickRef = useRef(false);
   return (
     <div
-      className={`biny-project-row-wrap${selected ? " is-active" : ""}${sessionsExpanded ? " is-expanded" : ""}${dragActive ? " is-drag-active" : ""}`}
+      className={`biny-project-row-wrap${selected ? " is-active" : ""}${dragActive ? " is-drag-active" : ""}`}
       draggable
       onDragEnd={(event) => {
         event.preventDefault();
@@ -951,7 +1093,7 @@ function ProjectMenu({ anchorRef, project, open, onPin, onRefresh, onReveal, onO
 }
 
 /** 会话右键菜单：替代原先由主进程弹出的原生菜单，样式与侧栏其余菜单保持一致。 */
-function SessionContextMenu({ menu, onAction, onClose, open }: { menu?: { session: DesktopSessionSummary; point: { x: number; y: number } }; onAction(action: DesktopSessionMenuAction): void; onClose(): void; open: boolean }): React.JSX.Element | null {
+function SessionContextMenu({ menu, onAction, onClose, onSelectMode, open }: { onSelectMode(): void; menu?: { session: DesktopSessionSummary; point: { x: number; y: number } }; onAction(action: DesktopSessionMenuAction): void; onClose(): void; open: boolean }): React.JSX.Element | null {
   if (!menu) return null;
   const { session } = menu;
   return (
@@ -965,6 +1107,7 @@ function SessionContextMenu({ menu, onAction, onClose, open }: { menu?: { sessio
       <button onClick={() => onAction("export-bundle")} role="menuitem" type="button"><Icon name="download" size={15} /><span>导出会话包…</span></button>
       <button onClick={() => onAction("export-claude")} role="menuitem" type="button"><Icon name="download" size={15} /><span>导出为 Claude Code…</span></button>
       <div className="biny-sidebar-menu-separator" />
+      <button onClick={onSelectMode} role="menuitem" type="button"><Icon name="check" size={15} /><span>多选</span></button>
       <button className="is-danger" onClick={() => onAction("delete")} role="menuitem" type="button"><Icon name="trash" size={15} /><span>删除</span></button>
     </FloatingSidebarMenu>
   );

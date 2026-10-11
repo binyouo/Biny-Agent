@@ -3,7 +3,7 @@ import { DurableTaskRunStore } from "../src/runtime/TaskRunStore.js";
 import { workerSessionId } from "../src/runtime/WorkerSession.js";
 import { projectSessionsDir } from "../src/config/paths.js";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, readdir } from "node:fs/promises";
+import { stat, mkdtemp, rm, readdir } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { test, type TestContext } from "node:test";
@@ -82,7 +82,8 @@ test("复制已加载的子会话后刷新其子树能力，删除仍清理旧�
   const document = await manager.openSession(project.id, childId);
   sidebar = mergeProjectSessionPage(sidebar, project.id, [document.session]);
   assert.equal(sidebar.find((session) => session.id === childId)?.hasChildren, true);
-  const deleted = await manager.deleteSession(project.id, second.selectedSessionId!);
+  assert.equal((await manager.deleteSessions([{ projectId: project.id, sessionId: second.selectedSessionId! }])).failures.length, 0);
+  const deleted = await manager.workspaceSnapshot(project.id, false);
   sidebar = replaceProjectSessionRoots(sidebar, project.id, deleted.sessionPage!.sessions, deleted.sessions);
   assert.equal(sidebar.some((session) => session.id === second.selectedSessionId), false);
   assert.equal(sidebar.find((session) => session.id === childId)?.hasChildren, false);
@@ -257,4 +258,56 @@ test("后台投影显示最新任务，历史超过一页也不会隐藏新子�
   const projection = await manager.runtimeProjection(project.id);
   assert.equal(projection.tasks.tasks[0]?.taskRunId, "task-104");
   assert.equal(projection.tasks.tasks.length, 100);
+});
+
+// Resident sessions already have event-backed snapshots; browsing must not wait for another RPC.
+test("驻留会话的历史读取不发送聚焦 RPC，并只读一次正文", { timeout: 15_000 }, async (context) => {
+  const { project, projects, dataRoot, manager } = await fixture(context);
+  const recorder = new SessionRecorder(dataRoot, "resident-history");
+  recorder.record({ type: "user_message", content: "无需聚焦即可读取" });
+  await recorder.close();
+  await manager.retryRuntime(project.id, recorder.sessionId);
+  const { RuntimeHostClient } = await import("../src/runtime/host/client.js");
+  context.mock.method(RuntimeHostClient.prototype, "focusSession", async () => { throw new Error("snapshot RPC stalled"); });
+  const original = projects.openSession.bind(projects);
+  let reads = 0;
+  context.mock.method(projects, "openSession", async (...args: Parameters<typeof original>) => { reads++; return await original(...args); });
+  const document = await manager.openSession(project.id, recorder.sessionId);
+  assert.equal(document.runtimeError, undefined, "history must not depend on a focus RPC");
+  assert.equal(document.runtimeSnapshot?.info.sessionId, recorder.sessionId);
+  assert.ok(document.events.some(event => event.type === "user_message" && event.content === "无需聚焦即可读取"));
+  assert.equal(reads, 1, "resident history must not be parsed twice");
+});
+
+// Navigation used to fetch all automation/task/worktree details, even when only opening chat history.
+test("项目导航快照不等待后台面板 RPC，显式刷新仍加载该投影", { timeout: 15_000 }, async (context) => {
+  const { project, manager } = await fixture(context);
+  await manager.retryRuntime(project.id);
+  const { RuntimeHostClient } = await import("../src/runtime/host/client.js");
+  const stalled = context.mock.method(RuntimeHostClient.prototype, "taskList", async () => { throw new Error("task RPC stalled"); });
+  const snapshot = await manager.workspaceSnapshot(project.id, false);
+  assert.equal(snapshot.project.id, project.id);
+  assert.equal(stalled.mock.callCount(), 0, "chat navigation must not request background panel data");
+  await assert.rejects(manager.workspaceSnapshot(project.id, true), /task RPC stalled/);
+});
+
+// Single-delete coverage cannot detect duplicate batch targets or a failed item dropping later deletions.
+test("batch deletion deduplicates targets and reports partial failures without removing project files", async (context) => {
+  const { project, dataRoot, manager } = await fixture(context);
+  for (const id of ["batch-a", "batch-b"]) {
+    const recorder = new SessionRecorder(dataRoot, id);
+    recorder.record({ type: "user_message", content: id });
+    await recorder.close();
+  }
+  const result = await manager.deleteSessions([
+    { projectId: project.id, sessionId: "batch-a" },
+    { projectId: "missing-project", sessionId: "missing" },
+    { projectId: project.id, sessionId: "batch-a" },
+    { projectId: project.id, sessionId: "batch-b" }
+  ]);
+  assert.deepEqual(result.deleted.map(item => item.sessionId), ["batch-a", "batch-b"]);
+  assert.equal(result.failures.length, 1);
+  assert.equal(result.failures[0]?.projectId, "missing-project");
+  for (const id of ["batch-a", "batch-b"]) await assert.rejects(stat(sessionFilePath(dataRoot, id)), { code: "ENOENT" });
+  assert.ok((await stat(project.path)).isDirectory());
 });

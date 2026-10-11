@@ -1728,22 +1728,18 @@
   display: flex;
   min-width: 0;
   align-items: center;
+  border: 1px solid transparent;
   border-radius: 8px;
   cursor: grab;
-  transition: background var(--biny-sidebar-row-duration) var(--biny-sidebar-hover-ease), color var(--biny-sidebar-hover-duration) var(--biny-sidebar-hover-ease);
+  transition: background var(--biny-sidebar-row-duration) var(--biny-sidebar-hover-ease), color var(--biny-sidebar-hover-duration) var(--biny-sidebar-hover-ease), border-color var(--biny-sidebar-row-duration) var(--biny-sidebar-hover-ease);
 }
 
 .biny-project-row-wrap:active {
   cursor: grabbing;
 }
 
-.biny-project-row-wrap:hover,
-.biny-project-row-wrap.is-active {
+.biny-project-row-wrap:hover {
   background: var(--biny-surface-hover);
-}
-
-.biny-project-row-wrap.is-active {
-  background: var(--biny-surface-selected);
 }
 
 .biny-project-row {
@@ -1753,7 +1749,7 @@
   flex: 1 1 auto;
   align-items: center;
   gap: 8px;
-  padding: 0 50px 0 16px;
+  padding: 0 49px 0 15px;
   overflow: hidden;
   border: 0;
   border-radius: 8px;
@@ -2050,7 +2046,6 @@
 }
 
 .biny-sidebar-session-tree-row.is-selected .biny-sidebar-session-title {
-  color: var(--biny-accent);
   font-weight: 600;
 }
 
@@ -10556,3 +10551,53 @@ button.capability-check[aria-checked="true"] {
 @media (prefers-reduced-motion: reduce) { .biny-composer-attachments > * { animation: none; } }
 .cu-confirm { max-width: 460px; border: 1px solid var(--border); border-radius: 12px; padding: 24px; background: var(--surface-raised); color: var(--text); }
 .cu-confirm::backdrop { background: var(--dialog-overlay-strong); }
+
+
+.biny-session-delete {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-width: 21px;
+  height: 21px;
+  padding: 0 4px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: color-mix(in srgb, var(--session-delete-muted) 40%, transparent);
+  opacity: 0;
+  cursor: pointer;
+  transition: opacity 200ms, color 200ms, background-color 200ms;
+}
+.biny-sidebar-session-tree-row:hover .biny-session-delete,
+.biny-sidebar-session-tree-row:focus-within .biny-session-delete,
+.biny-session-delete.is-confirming { opacity: 1; }
+.biny-sidebar-session-tree-row:has(.biny-session-delete) .biny-sidebar-session-entry { padding-right: 24px; }
+.biny-session-delete:hover { color: color-mix(in srgb, var(--session-delete-danger) 75%, transparent); }
+.biny-session-delete.is-confirming { padding: 0 6px; background: var(--session-delete-danger); color: var(--session-delete-foreground); font-size: 10.5px; font-weight: 500; line-height: 1; white-space: nowrap; box-shadow: 0 1px 2px var(--shadow); }
+.biny-session-delete:focus-visible { outline: 2px solid var(--biny-focus); outline-offset: 1px; }
+.biny-sidebar-session-tree-row:has(.biny-session-delete):hover .biny-sidebar-session-meta,
+.biny-sidebar-session-tree-row:has(.biny-session-delete):focus-within .biny-sidebar-session-meta { visibility: hidden; }
+.biny-sidebar-session-tree-row.is-multi-selected { background: var(--biny-selection-surface); }
+.biny-sidebar-session-tree-row > input[type="checkbox"] { width: 14px; height: 14px; margin: 0 4px; accent-color: var(--biny-focus); flex: 0 0 auto; }
+.biny-session-selection-bar { display: flex; align-items: center; gap: 8px; padding: 6px 10px; font-size: 12px; }
+.biny-session-selection-bar > span { flex: 1; color: var(--biny-text-secondary); }
+.biny-session-selection-bar button { display: inline-flex; align-items: center; gap: 4px; padding: 4px; border: 0; border-radius: 6px; background: transparent; color: var(--biny-text); cursor: pointer; }
+.biny-session-selection-bar button:hover { background: var(--biny-surface-hover); }
+.biny-session-selection-bar button.is-danger { color: var(--biny-danger); }
+.biny-session-selection-bar button:disabled { opacity: .4; cursor: default; }
+.biny-session-delete-error { padding: 6px 10px; color: var(--biny-danger); font-size: 12px; overflow-wrap: anywhere; }
+.biny-sidebar-session-tree-row.is-removing { pointer-events: none; animation: biny-session-remove 750ms cubic-bezier(.25, .1, .25, 1) forwards; }
+@keyframes biny-session-remove {
+  from { opacity: 1; transform: translateY(0) scale(1); filter: blur(0); }
+  to { opacity: 0; transform: translateY(-20px) scale(1.1); filter: blur(8px); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .biny-session-delete { transition: none; }
+  .biny-sidebar-session-tree-row.is-removing { animation: none; }
+}

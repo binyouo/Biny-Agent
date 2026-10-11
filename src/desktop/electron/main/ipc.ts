@@ -489,25 +489,26 @@ export function registerDesktopIpc(context: IpcContext): void {
     return await context.agents.duplicateSession(idSchema.parse(projectId), idSchema.parse(sessionId));
   });
 
-  handle(desktopIpc.deleteSession, async (_event, projectId: unknown, sessionId: unknown) => {
-    const parsedProjectId = idSchema.parse(projectId);
-    const parsedSessionId = idSchema.parse(sessionId);
-    const options: MessageBoxOptions = {
-      type: "warning",
-      title: "删除会话",
-      message: "确定要删除这个会话吗？",
-      detail: "会删除全局项目会话目录中对应的 JSONL 文件，但不会删除项目文件。此操作无法撤销。",
-      buttons: ["删除", "取消"],
-      defaultId: 1,
-      cancelId: 1,
-      noLink: true
-    };
-    const window = context.getWindow();
-    const confirmation = window
-      ? await dialog.showMessageBox(window, options)
-      : await dialog.showMessageBox(options);
-    if (confirmation.response !== 0) return await context.agents.workspaceSnapshot(parsedProjectId);
-    return await context.agents.deleteSession(parsedProjectId, parsedSessionId);
+  handle(desktopIpc.confirmSessionDeletion, async (_event, targets: unknown, confirm: unknown) => {
+    const parsed = z.array(z.object({ projectId: idSchema, sessionId: idSchema })).min(1).max(500).parse(targets);
+    const unique = [...new Map(parsed.map(target => [`${target.projectId}\0${target.sessionId}`, target])).values()];
+    if (z.boolean().default(true).parse(confirm)) {
+      const options: MessageBoxOptions = {
+        type: "warning", title: "删除会话",
+        message: unique.length === 1 ? "确定要删除这个会话吗？" : `确定要删除选中的 ${unique.length} 个会话吗？`,
+        detail: "会删除会话记录，不会删除项目文件。此操作无法撤销。",
+        buttons: ["删除", "取消"], defaultId: 1, cancelId: 1, noLink: true
+      };
+      const window = context.getWindow();
+      const confirmation = window ? await dialog.showMessageBox(window, options) : await dialog.showMessageBox(options);
+      return confirmation.response === 0;
+    }
+    return true;
+  });
+
+  handle(desktopIpc.deleteSessions, async (_event, targets: unknown) => {
+    const parsed = z.array(z.object({ projectId: idSchema, sessionId: idSchema })).min(1).max(500).parse(targets);
+    return await context.agents.deleteSessions(parsed);
   });
 
   handle(desktopIpc.exportSession, async (_event, projectId: unknown, sessionId: unknown, format: unknown) => {

@@ -37,7 +37,7 @@ async function fixture(context: TestContext) {
     await manager.closeAll();
     await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   });
-  return { project, dataRoot, manager, configStore, sessionId: recorder.sessionId };
+  return { root, projects, project, dataRoot, manager, configStore, sessionId: recorder.sessionId };
 }
 
 type LoadFn = ReturnType<typeof createFileConfigStore>["load"];
@@ -120,7 +120,12 @@ test("预热失败不阻塞快照；错误经 runtimeError 透出，正文仍可
   const prepared = await manager.prepareWorkspace(project.id);
   assert.ok(prepared.sessions.some(session => session.id === sessionId), "预热失败仍返回持久化历史列表");
   // 失败经 runtimeError 透出（可能在快照返回时已记录，或随后的只读快照可见）。
-  const after = await manager.workspaceSnapshot(project.id, false);
+  let after = await manager.workspaceSnapshot(project.id, false);
+  const deadline = performance.now() + 1_000;
+  while (after.runtimeError === undefined && performance.now() < deadline) {
+    await new Promise<void>(resolve => setImmediate(resolve));
+    after = await manager.workspaceSnapshot(project.id, false);
+  }
   assert.equal(after.runtimeError?.message, "credential backend unavailable");
   configStore.load = load;
 });
@@ -142,4 +147,29 @@ test("预热就绪后的保活请求失败仍返回历史，并通过 runtimeErr
   await new Promise<void>((resolve) => setImmediate(resolve));
   const snapshot = await manager.workspaceSnapshot(project.id, false);
   assert.equal(snapshot.runtimeError?.message, "keep-alive connection unavailable");
+});
+
+
+test("切换项目的准备不等待旧项目释放保活", { timeout: 10_000 }, async (context) => {
+  const { root, projects, project, manager } = await fixture(context);
+  await manager.prepareWorkspace(project.id);
+  await manager.retryRuntime(project.id);
+  const other = await projects.createEmptyProject(path.join(root, "other"));
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const original = RuntimeHostClient.prototype.setKeepAlive;
+  context.mock.method(RuntimeHostClient.prototype, "setKeepAlive", async function (this: RuntimeHostClient, keepAlive: boolean) {
+    if (!keepAlive) await gate;
+    await original.call(this, keepAlive);
+  });
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const pending = manager.prepareWorkspace(other.id);
+  try {
+    const result = await Promise.race([pending, new Promise<never>((_, reject) => {
+      timeout = setTimeout(() => reject(new Error("new workspace waited for old keep-alive RPC")), 1_000);
+    })]);
+    assert.equal(result.project.id, other.id);
+  } finally {
+    clearTimeout(timeout); release(); await pending;
+  }
 });
