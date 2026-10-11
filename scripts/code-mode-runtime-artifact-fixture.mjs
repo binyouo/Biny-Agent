@@ -100,13 +100,19 @@ try {
     }
 
     await fixture("small CPU slices accumulate across legitimate host waits", async () => {
-      const slice = "let sum = 0; for (let i = 0; i < 200000; i++) sum += i;";
-      assert.equal((await cell(`${slice} return sum;`)).ok, true);
+      // 测量只用于选择跨架构的输入预算；累计超时与桥接次数的预期仍由协议确定。
+      const slice = "let sum = 0; for (let i = 0; i < 500000; i++) sum += i;";
+      const started = performance.now();
+      const sample = await cell(`${slice} return sum;`, [], { executionPolicy: { ...policy, timeoutMs: 1_500 } });
+      assert.equal(sample.ok, true, sample.error);
+      assert.equal(sample.value, 124_999_750_000);
+      const timeoutMs = Math.min(1_500, Math.max(50, Math.ceil((performance.now() - started) * 4)));
+      const executionPolicy = { ...policy, timeoutMs, maxCellDurationMs: 6_000 };
       let calls = 0;
       const read = { name: "Read", parameters: { type: "object" }, async execute() { calls++; await delay(10); return value(true); } };
-      const result = await cell(`for (let j = 0; j < 100; j++) { ${slice} await tools.Read({}); } return 1;`, [read]);
+      const result = await cell(`for (let j = 0; j < 100; j++) { ${slice} await tools.Read({}); } return 1;`, [read], { executionPolicy });
       assert.equal(result.ok, false);
-      assert.match(result.error ?? "", /100ms|execution|interrupt|budget/iu);
+      assert.match(result.error ?? "", /execution|interrupt|budget/iu);
       assert.ok(calls >= 2 && calls < 32, `Cumulative CPU must expire before the bridge-count limit; observed ${calls} calls`);
     });
 
@@ -183,7 +189,8 @@ try {
     await fixture("unawaited bridge is rejected before dispatch", async () => {
       let calls = 0;
       const read = { name: "Read", parameters: { type: "object" }, execute: async () => { calls++; return value("unreachable"); } };
-      const result = await cell("tools.Read({}); return 'detached';", [read]);
+      const result = await cell("tools.Read({}); return 'detached';", [read],
+        { executionPolicy: { ...policy, timeoutMs: 1_000 } });
       assert.equal(result.ok, false);
       assert.match(result.error ?? "", /unawaited|detached/iu);
       assert.equal(calls, 0);
