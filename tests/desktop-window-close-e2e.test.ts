@@ -82,7 +82,8 @@ test("closing the preview owner skips its destroyed renderer and restores appear
     });
     const env = { ...process.env };
     delete env.ELECTRON_RUN_AS_NODE;
-    const result = await promisify(execFile)(createRequire(import.meta.url)("electron") as string, [entry], { env, timeout: 15_000, killSignal: "SIGKILL" });
+    const args = process.platform === "linux" && process.env.CI ? ["--no-sandbox", entry] : [entry];
+    const result = await promisify(execFile)(createRequire(import.meta.url)("electron") as string, args, { env, timeout: 15_000, killSignal: "SIGKILL" });
     assert.match(result.stdout, /window-close-restored/u);
   } finally {
     await rm(root, { recursive: true, force: true });
