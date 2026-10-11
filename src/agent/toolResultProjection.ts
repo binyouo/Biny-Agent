@@ -320,8 +320,8 @@ async function archiveEntry(
   entry: ToolResultEntry,
   options: ToolResultProjectionOptions
 ): Promise<{ archivePath?: string; error?: string }> {
-  // Shell output and file text can quote an unrelated archive path without owning it.
-  const requiresEnvelope = ["bash", "bashoutput", "read"].includes(normalizedToolName(entry.message.toolName));
+  // Shell output, file text, search context and diffs may quote unrelated archive paths.
+  const requiresEnvelope = ["bash", "bashoutput", "read", "grep", "write", "edit"].includes(normalizedToolName(entry.message.toolName));
   const direct = stringField(asRecord(entry.value), "archivePath");
   const existing = requiresEnvelope
     ? isArchivedValue(entry.value) && /^\.biny\/tool-results\/tool-result-[0-9a-f]{64}\.json$/u.test(direct) ? direct : undefined
