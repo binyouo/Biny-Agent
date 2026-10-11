@@ -887,38 +887,40 @@ async function initializeCommandRuntime(
         const workerTaskId = closureRequired ? attempt.attemptId : taskRunId;
         if (workerContinuation) workerContinuations.set(workerTaskId, workerContinuation);
         try {
-          submitted = startSubagentTask(prompt, {
-            taskId: workerTaskId,
-            taskRunId,
-            attemptId: attempt.attemptId,
-            completedStatus: closureRequired ? "verifying" : "completed",
-            parentRunId: latest.parentRunId,
-            signal: controller.signal,
-            accessMode: definition.review || definition.reportOnly ? "read-only" : definition.verification ? "workspace" : subagentAccessMode(permissionManager),
-            agent: definition.agent
-          });
-        } catch (error) {
-          const failure = error instanceof Error ? error : new Error(String(error));
-          finishTaskAttempt(taskRuns, taskRunId, attempt.attemptId, "failed", {
-            failure: { message: failure.message, failureClass: "dispatch_failed" }
-          });
-          throw failure;
-        }
-        try {
-          return await submitted.completion;
-        } catch (error) {
-          const failure = error instanceof Error ? error : new Error(String(error));
-          const status = failure.name === "SubagentTaskAbortedError" || failure.name === "AbortError" ? "aborted"
-            : failure instanceof SubagentTaskIncompleteError ? "incomplete" : "failed";
-          finishTaskAttempt(taskRuns, taskRunId, attempt.attemptId, status, {
-            artifacts: failure instanceof SubagentTaskIncompleteError ? { output: failure.output } : undefined,
-            failure: {
-              message: failure.message,
-              failureClass: failure instanceof SubagentTaskIncompleteError ? failure.stopReason
-                : status === "failed" ? "execution_failed" : "cancelled"
-            }
-          });
-          throw failure;
+          try {
+            submitted = startSubagentTask(prompt, {
+              taskId: workerTaskId,
+              taskRunId,
+              attemptId: attempt.attemptId,
+              completedStatus: closureRequired ? "verifying" : "completed",
+              parentRunId: latest.parentRunId,
+              signal: controller.signal,
+              accessMode: definition.review || definition.reportOnly ? "read-only" : definition.verification ? "workspace" : subagentAccessMode(permissionManager),
+              agent: definition.agent
+            });
+          } catch (error) {
+            const failure = error instanceof Error ? error : new Error(String(error));
+            finishTaskAttempt(taskRuns, taskRunId, attempt.attemptId, "failed", {
+              failure: { message: failure.message, failureClass: "dispatch_failed" }
+            });
+            throw failure;
+          }
+          try {
+            return await submitted.completion;
+          } catch (error) {
+            const failure = error instanceof Error ? error : new Error(String(error));
+            const status = failure.name === "SubagentTaskAbortedError" || failure.name === "AbortError" ? "aborted"
+              : failure instanceof SubagentTaskIncompleteError ? "incomplete" : "failed";
+            finishTaskAttempt(taskRuns, taskRunId, attempt.attemptId, status, {
+              artifacts: failure instanceof SubagentTaskIncompleteError ? { output: failure.output } : undefined,
+              failure: {
+                message: failure.message,
+                failureClass: failure instanceof SubagentTaskIncompleteError ? failure.stopReason
+                  : status === "failed" ? "execution_failed" : "cancelled"
+              }
+            });
+            throw failure;
+          }
         } finally {
           workerContinuations.delete(workerTaskId);
           await workerContinuation?.close();
