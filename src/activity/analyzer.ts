@@ -127,7 +127,7 @@ type AnalysisOutput = z.infer<typeof analysisOutputSchema>;
 export type ActivityAnalysisOutcome =
   | { status: "analyzed"; analysis: ActivitySessionAnalysis; cached: boolean }
   | { status: "trivial"; analysis: ActivitySessionAnalysis }
-  | { status: "skipped"; reason: "session_not_ended" | "no_model" }
+  | { status: "skipped"; reason: "session_not_ended" | "no_model" | "session_changed" }
   | { status: "error"; error: string };
 
 export interface ActivityMemoryCandidate {
@@ -291,8 +291,8 @@ When in doubt, emit []. One clean durable fact is worth more than ten plausible 
 
 /**
  * 分析单个已结束 session。幂等：输入 hash 未变时直接返回已落库结果，不重复调用模型。
- * 除 store 读取本身的故障外不向调用方抛错；模型/网络的瞬时失败返回 error 且不落库，
- * 让 session 保持待分析，等下一个周期重试。
+ * 存储故障交给调用方处理；模型失败记录 failed，供显式重试。
+ * 模型等待中输入或已有结果发生变化时不提交旧结果，保留最新状态。
  */
 export async function analyzeActivitySession(
   deps: ActivityAnalyzerDeps,
@@ -302,12 +302,12 @@ export async function analyzeActivitySession(
   await deps.checkpoint?.();
   deps.signal?.throwIfAborted();
   const { store } = deps;
-  const session = store.getEndedSession(sessionId);
-  if (!session) return { status: "skipped", reason: "session_not_ended" };
-  const events = store.listSessionEventSummaries(sessionId);
+  const snapshot = store.readAnalysisSnapshot(sessionId);
+  if (!snapshot) return { status: "skipped", reason: "session_not_ended" };
+  const { session, events } = snapshot;
   const semanticEventCount = events.filter((event) => event.eventType !== "screenshot_ocr").length;
   const inputHash = activityAnalysisInputHash(session.appNames, events);
-  const existing = store.getAnalysis(sessionId);
+  const existing = snapshot.analysis;
   if (!force && existing && existing.inputHash === inputHash) {
     if (existing.analysisStatus === "skipped" && existing.summary === ACTIVITY_TRIVIAL_SUMMARY) {
       return { status: "trivial", analysis: existing };
@@ -326,11 +326,15 @@ export async function analyzeActivitySession(
     && session.snapshotCount < ACTIVITY_ANALYSIS_MIN_SNAPSHOTS
   ) {
     const analysis = buildTrivialAnalysis(session, semanticEventCount, analyzedAt, inputHash);
-    store.recordAnalysis(analysis);
+    if (!store.commitAnalysisIfCurrent(snapshot, { analysis })) {
+      return { status: "skipped", reason: "session_changed" };
+    }
     return { status: "trivial", analysis };
   }
   if (!deps.model) {
-    store.recordAnalysisStatus(session.id, "skipped", { description: "No tool model configured." });
+    if (!store.commitAnalysisIfCurrent(snapshot, { status: "skipped", details: { description: "No tool model configured." } })) {
+      return { status: "skipped", reason: "session_changed" };
+    }
     return { status: "skipped", reason: "no_model" };
   }
   const model = deps.model;
@@ -339,36 +343,32 @@ export async function analyzeActivitySession(
     KNOWN_PROJECT_LIMIT
   );
 
-  let parsed: AnalysisOutput;
+  let parsed: AnalysisOutput | undefined;
+  let failure: string | undefined;
   try {
-    const value = await requestSessionAnalysis(
+    parsed = await requestSessionAnalysis(
       model,
       session,
       events,
-      store.listSessionAnalysisOcrTexts(sessionId),
+      snapshot.ocrTexts,
       deps.signal,
       deps.checkpoint
     );
     deps.signal?.throwIfAborted();
-    if (!value) {
-      store.recordAnalysisStatus(session.id, "failed", {
-        model: model.modelId,
-        error: "LLM did not return parseable JSON",
-        analyzedAt
-      });
-      return { status: "error", error: "LLM did not return parseable JSON" };
-    }
-    parsed = value;
+    if (!parsed) failure = "LLM did not return parseable JSON";
   } catch (error) {
     // 取消不是分析失败，保留 pending 以便恢复，不保存迟到的状态或结果。
     await deps.checkpoint?.();
     deps.signal?.throwIfAborted();
-    store.recordAnalysisStatus(session.id, "failed", {
-      model: model.modelId,
-      error: errorMessage(error),
-      analyzedAt
-    });
-    return { status: "error", error: errorMessage(error) };
+    failure = errorMessage(error);
+  }
+  // 提交不在模型 catch 内：数据库故障不能再尝试写 failed，覆盖更新的状态。
+  if (!parsed) {
+    const error = failure ?? "LLM did not return parseable JSON";
+    if (!store.commitAnalysisIfCurrent(snapshot, { status: "failed", details: { model: model.modelId, error, analyzedAt } })) {
+      return { status: "skipped", reason: "session_changed" };
+    }
+    return { status: "error", error };
   }
 
   const entityDetails = normalizeEntityDetails(parsed);
@@ -417,7 +417,9 @@ export async function analyzeActivitySession(
     sourceEventCount: semanticEventCount,
     inputHash
   };
-  store.recordAnalysis(analysis);
+  if (!store.commitAnalysisIfCurrent(snapshot, { analysis })) {
+    return { status: "skipped", reason: "session_changed" };
+  }
   if (parsed.worth) {
     const projection = projectActivityAnalysis(deps, analysis, session, memoryCandidates);
     if (deps.deferProjection) deps.deferProjection(projection);
