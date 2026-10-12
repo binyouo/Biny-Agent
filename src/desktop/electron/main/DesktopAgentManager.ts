@@ -57,7 +57,7 @@ import { selectMemoryEmbeddingModel } from "../../../llm/embedding/selectMemoryM
 import { MemoryVectorIndex } from "../../../agent/context/MemoryVectorIndex.js";
 import { MemoryEmbeddingService, type MemoryEmbeddingRuntimeStatus } from "../../../agent/context/MemoryEmbeddingService.js";
 import { FileModelsStore, restoreProviderCatalogs, type ModelsStore } from "../../../llm/ModelsStore.js";
-import { listConfiguredModelChoices, listPickerModelChoices, modelRuntimeInfo, saveModelSelection, type ModelRuntimeInfo, type ThinkingSelection } from "../../../llm/ModelManager.js";
+import { filterPickerModelChoices, listConfiguredModelChoices, listPickerModelChoices, modelRuntimeInfo, saveModelSelection, type ModelRuntimeInfo, type ThinkingSelection } from "../../../llm/ModelManager.js";
 import type { PermissionMode, PermissionResult } from "../../../permission/PermissionManager.js";
 import type { UserInputResponse } from "../../../runtime/userInput.js";
 import type { BrowserAutomationEndpoint } from "../../../tools/browser.js";
@@ -374,7 +374,7 @@ export class DesktopAgentManager {
     ]);
     const catalogs = config ? await restoreProviderCatalogs(Object.keys(config.providers), this.modelsStore, config.providers) : [];
     const models = config ? listConfiguredModelChoices(config, catalogs) : [];
-    const pickerModels = config ? listPickerModelChoices(config, catalogs) : [];
+    const pickerModels = filterPickerModelChoices(models);
     if (config && pickerModels.some((model) => model.alias === config.defaultModel)) {
       const info = modelRuntimeInfo(config, catalogs);
       pickerModels.sort((left, right) => Number(right.alias === info.modelAlias) - Number(left.alias === info.modelAlias));
