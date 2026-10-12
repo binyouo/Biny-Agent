@@ -100,7 +100,7 @@ test("todo replace accepts complete arrays and envelopes, persists their exact r
     assert.deepEqual(await fixture.reopen(), boundary);
     await fixture.store.refresh();
     assert.deepEqual(fixture.store.list(), boundary);
-    const cleared = fixture.run("clear");
+    const cleared = fixture.run("clear", "--yes");
     assert.equal(cleared.status, 0, cleared.stderr);
     await fixture.store.refresh();
     assert.deepEqual(fixture.store.list(), []);
