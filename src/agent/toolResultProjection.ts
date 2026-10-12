@@ -708,7 +708,7 @@ function snapshotKind(entry: ToolResultEntry): string | undefined {
   const command = stringField(args, "command").trim().replace(/^(?:sudo\s+)/u, "");
   const match = command.match(/^(?:git\s+)(status|diff|log|show)(?:\s|$)/iu);
   if (!match?.[1]) return undefined;
-  return `${match[1].toLowerCase()}\0${normalizePath(stringField(args, "cwd") || ".")}`;
+  return `${match[1].toLowerCase()}\0${stableJson(args)}`;
 }
 
 function isFailedToolResult(entry: ToolResultEntry): boolean {
