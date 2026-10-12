@@ -2863,7 +2863,9 @@ export class AgentSession {
       type: "start",
       provider: activeModelSettings.model.provider,
       modelId: activeModelSettings.model.modelId,
-      input: { systemPrompt: systemPromptForTelemetry(systemPrompt), messages: messagesForTelemetry(messages) }
+      input: this.options.config.telemetry.enabled && this.options.config.telemetry.recordInputs
+        ? { systemPrompt: systemPromptForTelemetry(systemPrompt), messages: messagesForTelemetry(messages) }
+        : undefined
     });
     try {
       const loop = vercelAgentLoopContinue(loopContext, {
