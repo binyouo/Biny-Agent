@@ -692,9 +692,9 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
         expectedRevision: this.currentRevision(sessionId)
       });
     } catch (error) {
+      // 调用方拿不到 completion 句柄；重连恢复或 close() 后的拒绝也必须被观察。
+      void completion.catch(() => undefined);
       if (!isTransientHostError(error)) {
-        // 失败随 throw 返回，调用方拿不到 completion 句柄；不挂观察会让进程出现 unhandled rejection。
-        void completion.catch(() => undefined);
         this.rejectCompletion(ids.runId, error);
       } else {
         this.scheduleReconnect();
