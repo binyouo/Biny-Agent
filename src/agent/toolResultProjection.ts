@@ -94,25 +94,26 @@ export async function projectSingleToolResultForModel(
   options: ToolResultProjectionOptions = {}
 ): Promise<unknown> {
   value = shellResultForProjection(toolName, value);
+  const serialized = serializeToolResult(value);
   const message: AgentToolResultMessage = {
     role: "toolResult",
     toolCallId: options.toolCallId ?? "projection",
     toolName,
-    content: [{ type: "text", text: serializeToolResult(value) }],
+    content: [{ type: "text", text: serialized }],
     details: value
   };
   const entry: ToolResultEntry = {
     index: 0,
     message,
     value,
-    serialized: serializeToolResult(value),
+    serialized,
     call: { tool: toolName, args, step: 0 },
     step: 0,
     currentTurn: true
   };
   const projected = projectValue(entry, true, options.thresholdBytes ?? defaultProjectionThresholdBytes);
   if (projected === undefined) return value;
-  const before = serializeToolResult(value);
+  const before = serialized;
   const after = serializeToolResult(projected.value);
   if (before === after && projected.archive === false) return value;
   if (!projected.archive) return projected.value;
