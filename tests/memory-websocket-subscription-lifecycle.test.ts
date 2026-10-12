@@ -83,7 +83,8 @@ async function fixture(t: TestContext, options: { watchThrows?: boolean; authori
     calls.upgrades++; assert.ok(next); callback(next);
   });
   const client: Client = {
-    async memory<T>(action: string): Promise<T> {
+    async memory<T>(action: string, payload: Record<string, unknown> = {}): Promise<T> {
+      if (action === 'overview') assert.deepEqual(payload, { summaryOnly: true });
       if (action === 'overview') { calls.overview++; return (overviewRead ? await overviewRead() : { overview: { revision } }) as T; }
       assert.equal(action, 'sleep-status'); calls.sleep++; return (sleepRead ? await sleepRead() : sleep) as T;
     },
