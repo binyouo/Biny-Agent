@@ -1447,7 +1447,7 @@ export class AgentSession {
 
   async indexMemoryEntry(entry: MemoryEntry): Promise<void> {
     // SQLite 事实已在调用前提交。配置瞬时读取失败也只能让该条目留待重建，不能把成功写入
-    // 对外伪装成失败并诱发重复提交；事实更新时旧向量已先移除，避免短暂召回旧内容。
+    // 对外伪装成失败并诱发重复提交；查询按当前事实 revision 过滤旧向量，避免召回旧内容。
     await this.refreshMemoryConfig().catch(() => undefined);
     await this.memoryEmbeddingService.indexEntry(entry);
   }
