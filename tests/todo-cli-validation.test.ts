@@ -87,6 +87,8 @@ test("todo replace accepts complete arrays and envelopes, persists their exact r
       assert.equal(result.status, 0, result.stderr);
       assert.deepEqual(JSON.parse(result.stdout), { todos: expected });
       assert.deepEqual(await fixture.reopen(), expected, "a fresh store must agree with replacement feedback");
+      await fixture.store.refresh();
+      assert.deepEqual(fixture.store.list(), expected, "the resident store must observe committed CLI replacements");
       const shown = fixture.run("show");
       assert.equal(shown.status, 0, shown.stderr);
       assert.deepEqual(JSON.parse(shown.stdout).todos, expected);
@@ -96,6 +98,13 @@ test("todo replace accepts complete arrays and envelopes, persists their exact r
     assert.equal(result.status, 0, result.stderr);
     assert.deepEqual(JSON.parse(result.stdout), { todos: boundary });
     assert.deepEqual(await fixture.reopen(), boundary);
+    await fixture.store.refresh();
+    assert.deepEqual(fixture.store.list(), boundary);
+    const cleared = fixture.run("clear");
+    assert.equal(cleared.status, 0, cleared.stderr);
+    await fixture.store.refresh();
+    assert.deepEqual(fixture.store.list(), []);
+    assert.equal(fixture.store.promptSection(), undefined);
   } finally {
     await fixture.close();
   }
