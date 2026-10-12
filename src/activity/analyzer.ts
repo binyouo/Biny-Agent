@@ -9,7 +9,7 @@
  * - 只有同时满足“时长小于 30 秒、事件少于 20 条、截图少于 3 张”的 session 才直接落一条低
  *   置信度占位记录；短 session 中有足够事件或截图时仍允许分析。
  */
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { z } from "zod";
 import type { AgentModel } from "../agent/core/types.js";
@@ -203,6 +203,9 @@ export interface ActivityReportResult {
   cached?: boolean;
   stats: ActivityReportStats;
 }
+
+// 仅进程内传递原骨架所有权，不改变 CLI JSON、REST 或 Desktop IPC 的结果字段。
+const reportCacheGenerations = new WeakMap<ActivityReportResult, string>();
 
 export interface ActivityReportStats {
   sessionCount: number;
@@ -558,26 +561,32 @@ export async function buildActivityReport(
   return result;
 }
 
-/** 日报和日结保存在同一 SQLite 行，叙事成功后可以用最终正文覆盖骨架。 */
-export function persistActivityReport(store: ActivityStore, result: ActivityReportResult, now = new Date()): void {
-  const previous = store.getSummary("daily", result.date);
-  const base = previous ?? buildActivitySummary(store, "daily", result.date, now);
-  store.upsertSummary({
-    ...base,
-    stats: {
-      ...base.stats,
-      report: result.markdown,
-      reportGeneratedAt: now.getTime(),
-      reportStats: result.stats,
-      reportState: {
-        sessionCount: result.sessionCount,
-        pendingModel: result.pendingModel,
-        blocked: result.blocked,
-        message: result.message,
-        narrativeModel: result.narrativeModel
-      }
+/** 日报和日结保存在同一 SQLite 行；迟到叙事不得撤销日结刷新或覆盖较新的日报。 */
+export function persistActivityReport(
+  store: ActivityStore,
+  result: ActivityReportResult,
+  now = new Date(),
+  source?: ActivityReportResult
+): boolean {
+  const expectedGeneration = source === undefined ? undefined : reportCacheGenerations.get(source);
+  // 有持久化目标的叙事只能提交当前进程实际生成的原骨架，不能猜测旧缓存的所有权。
+  if (source !== undefined && expectedGeneration === undefined) return false;
+  const generation = randomUUID();
+  const committed = store.writeDailyReportCache(result.date, {
+    report: result.markdown,
+    reportGeneratedAt: now.getTime(),
+    reportStats: result.stats,
+    reportState: {
+      generation,
+      sessionCount: result.sessionCount,
+      pendingModel: result.pendingModel,
+      blocked: result.blocked,
+      message: result.message,
+      narrativeModel: result.narrativeModel
     }
-  });
+  }, () => buildActivitySummary(store, "daily", result.date, now), expectedGeneration);
+  if (committed) reportCacheGenerations.set(result, generation);
+  return committed;
 }
 
 /**
