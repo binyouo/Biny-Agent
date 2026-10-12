@@ -180,12 +180,9 @@ export class ModelManager {
     });
     const changed = new Set(changedProviders);
     const catalogs = this.runtime.catalogsSnapshot().filter(([alias]) => nextConfig.providers[alias] && !changed.has(alias));
-    // 内置默认端点的持久键只有 alias，不能证明目录属于变更后的服务商/端点。
-    // 已知来源变更时保守使用新 Provider 基线；不迁移或清理原缓存。
-    const restorableProviders = changedProviders.filter((alias) => !this.config.providers[alias]
-      || modelCatalogCacheKey(alias, nextConfig.providers[alias]!) !== alias);
-    if (this.modelsStore && restorableProviders.length) {
-      catalogs.push(...await restoreProviderCatalogs(restorableProviders, this.modelsStore, nextConfig.providers));
+    // 默认端点也有隔离键；存储层只恢复已证明属于当前来源的目录，不迁移或清理旧缓存。
+    if (this.modelsStore && changedProviders.length) {
+      catalogs.push(...await restoreProviderCatalogs(changedProviders, this.modelsStore, nextConfig.providers));
     }
     const nextRuntime = new ModelRuntime(nextConfig, catalogs, this.ai, this.modelsStore, undefined, this.providerCredentials);
     const nextSettings = nextRuntime.createModelSettings();

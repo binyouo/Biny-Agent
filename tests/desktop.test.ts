@@ -74,7 +74,7 @@ import { highlightFencedCode, highlightWorkspaceFile } from "../src/desktop/rend
 import { splitAttachmentReferences, withAttachmentReferences } from "../src/desktop/attachmentReferences.js";
 import { workspaceFileMarker } from "../src/desktop/renderer/src/workspaceFileMarker.js";
 import { filterPickerModelChoices, listConfiguredModelChoices, listModelChoices, listPickerModelChoices, ModelManager } from "../src/llm/ModelManager.js";
-import { FileModelsStore } from "../src/llm/ModelsStore.js";
+import { FileModelsStore, modelCatalogCacheKey } from "../src/llm/ModelsStore.js";
 import type { SessionEvent } from "../src/session/recorder.js";
 import { SessionRecorder } from "../src/session/recorder.js";
 import { listSessionSummaries, readStoredSessionEvents } from "../src/session/events.js";
@@ -3066,6 +3066,7 @@ async function testDesktopConnectionMetadata(): Promise<void> {
     unreachable.providers.deepseek!.retry = { maxAttempts: 1, initialDelayMs: 0, maxDelayMs: 0 };
     await configStore.save(unreachable);
     await modelsStore.write("deepseek", {
+      sourceKey: modelCatalogCacheKey("deepseek", unreachable.providers.deepseek!),
       models: [{
         id: "cached-deepseek-model",
         displayName: "Cached DeepSeek Model",
