@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
+import { setTimeout } from "node:timers/promises";
 import path from "node:path";
 import { test, type TestContext } from "node:test";
 import { attachmentFilePath, attachmentRoot, readAttachment, saveAttachment, saveAttachmentContext } from "../src/attachments/store.js";
@@ -8,6 +9,7 @@ import { configSchema, defaultConfig } from "../src/config/schema.js";
 import { createFileConfigStore } from "../src/config/store.js";
 import { createInteractiveAgentHost } from "../src/runtime/InteractiveAgentRuntime.js";
 import { readSessionEvents } from "../src/session/events.js";
+import { tryReadSessionSnapshot } from "../src/session/sessionSnapshot.js";
 
 type RootMode = "default" | "explicit" | "custom";
 const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9Zl1sAAAAASUVORK5CYII=", "base64");
@@ -82,7 +84,7 @@ async function fixture(t: TestContext, mode: RootMode) {
 }
 
 for (const mode of ["default", "explicit", "custom"] as const) {
-  for (const operation of ["retry", "resume"] as const) {
+  for (const operation of ["retry", "resume", "snapshot"] as const) {
     test(`real Runtime ${operation} restores the original image and context from the ${mode} attachment directory`, { timeout: 20_000 }, async (t) => {
       const f = await fixture(t, mode);
       const start = f.requests.length;
@@ -92,7 +94,22 @@ for (const mode of ["default", "explicit", "custom"] as const) {
       } else {
         await f.runtime.close();
         const resumed = await f.open();
-        await resumed.resumeSession(f.info.sessionId);
+        const cold = await resumed.resumeSession(f.info.sessionId);
+        assert.ok(cold.events.length > 0, "the first open must use full replay");
+        if (operation === "snapshot") {
+          // A normal read-only first open writes the snapshot asynchronously.
+          // Do not manufacture one or append anything between the two opens.
+          const fingerprint = await stat(f.info.sessionFile);
+          const deadline = Date.now() + 2_000;
+          while (!await tryReadSessionSnapshot(f.info.sessionFile, fingerprint)) {
+            assert.ok(Date.now() < deadline, "the first open must persist its snapshot");
+            await setTimeout(10);
+          }
+          const warm = await resumed.resumeSession(f.info.sessionId);
+          assert.equal(warm.events.length, 0, "the second open must actually use the snapshot");
+          assert.equal((await stat(f.info.sessionFile)).size, fingerprint.size, "read-only opens must not append events");
+          assert.equal((await stat(f.info.sessionFile)).mtimeMs, fingerprint.mtimeMs);
+        }
         assert.equal((await resumed.submitPrompt("Continue").completion).status, "completed");
       }
       assert.deepEqual(f.images(start), expected, `${operation} must retain the stored image rather than resolving an already physical attachment root again`);
