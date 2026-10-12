@@ -309,6 +309,20 @@ export class ConfiguredProviderRuntime implements ProviderRuntime {
       prepareTextRequest: this.config.authMode === "oauth-bearer"
         ? async (signal) => await this.prepareTextModel(agentConfig, model, executable, signal)
         : undefined,
+      resolveTextReasoning(requested) {
+        // Use this model's resolved capabilities without changing its shared defaults or credentials.
+        if (compatibility?.supportsReasoning === false || !capabilities.reasoning || modelReasoningConfig(normalizedModel) === undefined) {
+          return { reasoning: undefined, providerOptions: undefined };
+        }
+        const selected = effectiveThinkingSelection(normalizedModel, {
+          enabled: requested !== "off", effort: requested === "off" ? "high" : requested
+        });
+        return {
+          reasoning: selected,
+          providerOptions: createProviderOptions(reasoningProtocol, { compatibility }, normalizedModel, api,
+            selected !== "off", selected === "off" ? undefined : selected)
+        };
+      },
       runtime: "provider",
       dataResidency: normalizedModel.dataResidency ?? this.config.dataResidency,
       supportsTools: capabilities.tools,
@@ -551,7 +565,7 @@ function mergeCompatibility(provider: ModelCompatibility | undefined, model: Mod
 
 function createProviderOptions(
   reasoningProtocol: ProviderDefinition["reasoningProtocol"],
-  provider: ProviderConfig,
+  provider: Pick<ProviderConfig, "compatibility">,
   model: ModelAliasConfig,
   api: ModelApiBackend,
   enabled: boolean,
