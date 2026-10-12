@@ -195,9 +195,10 @@ export class LocalReferenceService {
     return rows.sort((left, right) => left.file.localeCompare(right.file));
   }
 
-  private async sessions(project: LocalReferenceProject): Promise<Array<{ id: string; events: SessionEvent[] }>> {
+  private async sessions(project: LocalReferenceProject, threadId?: string): Promise<Array<{ id: string; events: SessionEvent[] }>> {
     const rows: Array<{ id: string; events: SessionEvent[] }> = [];
     for (const { id, file } of await this.sessionFiles(project)) {
+      if (threadId !== undefined && id !== threadId) continue;
       const events: SessionEvent[] = [];
       for (const line of (await readFile(file, "utf8")).split("\n")) {
         if (!line.trim()) continue;
@@ -248,7 +249,7 @@ export class LocalReferenceService {
       if (!(await this.sessionFiles(project)).some((item) => item.id === threadId)) throw new Error("Conversation is not available.");
       return { kind: "thread", uri, label: threadId, content: threadId, projectId, threadId };
     }
-    const session = (await this.sessions(project)).find((item) => item.id === threadId);
+    const session = (await this.sessions(project, threadId)).find((item) => item.id === threadId);
     if (!session) throw new Error("Conversation is not available.");
     if (ref.kind === "tool-call") {
       const call = visibleToolCalls(session.events, threadId, projectId).find((item) => item.uri === uri);
