@@ -1979,15 +1979,16 @@ function assembleContext(
     ? [...selectedHistory, withUserContext(userContent, includedTurnContext, includedMemory)]
     : [...selectedHistory];
   const assembledSystemPrompt = systemParts.join("\n\n") || undefined;
+  const usedTokens = estimateMessageTokens(messages) + estimateTokens(assembledSystemPrompt ?? "") + usedCheckpointTokens;
   return {
     systemPrompt: assembledSystemPrompt,
     messages,
     includedMemoryMatches,
     budget: {
       maxTokens,
-      usedTokens: estimateMessageTokens(messages) + estimateTokens(assembledSystemPrompt ?? "") + usedCheckpointTokens,
+      usedTokens,
       requestedTokens,
-      estimatedTokens: estimateMessageTokens(messages) + estimateTokens(assembledSystemPrompt ?? "") + usedCheckpointTokens,
+      estimatedTokens: usedTokens,
       providerInputTokens: undefined,
       reserveTokens,
       omitted,
