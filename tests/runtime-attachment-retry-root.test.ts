@@ -78,7 +78,7 @@ async function fixture(t: TestContext, mode: RootMode) {
   const persisted = await readFile(info.sessionFile, "utf8");
   assert.ok(!persisted.includes(context));
   assert.ok(!persisted.includes(png.toString("base64")));
-  return { runtime, open, requests, images, first, info, directory, reference };
+  return { runtime, open, requests, images, first, info, directory, reference, native };
 }
 
 for (const mode of ["default", "explicit", "custom"] as const) {
@@ -112,4 +112,71 @@ test("Runtime does not fall back to a different partition when the configured at
   assert.equal((await retried.completion).status, "completed");
   assert.deepEqual(f.images(start), []);
   assert.ok(!JSON.stringify(f.requests.slice(start)).includes(context));
+});
+
+// CI-only integration: this file imports the real Runtime and attachment store.
+// Local restricted validation must only parse this source, never import it.
+test("Runtime cold resume keeps a later picture on its user after an ordinary pause", { timeout: 20_000 }, async (t) => {
+  const f = await fixture(t, "custom");
+  const respond = globalThis.fetch;
+  let reachedProvider!: () => void;
+  const providerReached = new Promise<void>(resolve => { reachedProvider = resolve; });
+  t.mock.method(globalThis, "fetch", async (input: string | URL | Request, init?: RequestInit) => {
+    const request = new Request(input, init);
+    const body = await request.clone().json();
+    if (!JSON.stringify(body.messages).includes("Pause this text-only task")) return respond(request);
+    return await new Promise<Response>((_resolve, reject) => {
+      const abort = () => reject(request.signal.reason ?? new Error("Fixture request paused"));
+      request.signal.addEventListener("abort", abort, { once: true });
+      reachedProvider();
+      if (request.signal.aborted) abort();
+    });
+  });
+  const paused = f.runtime.submitPrompt("Pause this text-only task");
+  await providerReached;
+  assert.equal(f.runtime.cancelRun(paused.runId, "paused"), true);
+  const pausedOutcome = await paused.completion;
+  assert.equal(pausedOutcome.status, "cancelled");
+  t.mock.method(globalThis, "fetch", respond);
+
+  const picture = f.runtime.submitPrompt("Inspect the picture after the pause", [f.native]);
+  assert.equal((await picture.completion).status, "completed");
+  const facts = await readSessionEvents(f.info.sessionFile);
+  const marker = facts.find(event => event.type === "turn_interrupted" && event.reason === "paused");
+  assert.ok(marker?.type === "turn_interrupted", "the public cancellation must produce a durable pause marker");
+  const pictureFact = facts.find(event => event.type === "user_message" && event.messageId === picture.messageId);
+  assert.ok(pictureFact?.type === "user_message");
+  assert.deepEqual(pictureFact.attachments, [f.reference]);
+  assert.ok(facts.indexOf(pictureFact) > facts.indexOf(marker));
+
+  await f.runtime.close();
+  const resumed = await f.open();
+  const cold = await resumed.resumeSession(f.info.sessionId);
+  assert.ok(cold.events.length > 0, "this regression requires full replay, not a snapshot");
+  const markerIndex = cold.messages.findIndex((message, index) => message.role === "user"
+    && cold.messageReferences[index]?.id === undefined);
+  assert.ok(markerIndex >= 0);
+  assert.equal(cold.messages[markerIndex]!.content, marker.content, "the synthetic user must remain textual");
+  const pictureIndex = cold.messageReferences.findIndex(reference => reference.id === picture.messageId);
+  assert.ok(pictureIndex > markerIndex);
+  const restored = cold.messages[pictureIndex];
+  assert.ok(restored?.role === "user" && Array.isArray(restored.content));
+  assert.deepEqual(restored.content.filter(part => part.type === "image"), [
+    { type: "image", data: png.toString("base64"), mimeType: "image/png" }
+  ]);
+
+  const start = f.requests.length;
+  assert.equal((await resumed.submitPrompt("Continue after reopening").completion).status, "completed");
+  const restoredUsers = f.requests.slice(start).flatMap(request => request.messages)
+    .filter(message => message.role === "user" && Array.isArray(message.content)
+      && message.content.some((part: { type: string; text?: string }) => part.type === "text" && part.text === "Inspect the picture after the pause"));
+  assert.ok(restoredUsers.length > 0);
+  for (const user of restoredUsers) {
+    const parts = user.content as Array<{ type: string; text?: string }>;
+    assert.deepEqual(parts.filter(part => part.type === "image_url"), expected);
+    assert.ok(JSON.stringify(parts).includes(context), "hidden context must stay with the matching image");
+  }
+  const persisted = await readFile(f.info.sessionFile, "utf8");
+  assert.ok(!persisted.includes(context));
+  assert.ok(!persisted.includes(png.toString("base64")));
 });
