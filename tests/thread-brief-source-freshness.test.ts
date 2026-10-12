@@ -300,4 +300,3 @@ test("source reread failure rejects A but still drains and settles B", async () 
   await x.e.close();
   assert.equal(x.counts().closes, 1);
 });
-
