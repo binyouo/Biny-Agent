@@ -606,12 +606,20 @@ export class CrystalService {
         for (let index = 0; index < cached.vector.length && index < query.length; index += 1) {
           similarity += cached.vector[index]! * query[index]!;
         }
-        if (Number.isFinite(similarity) && similarity >= 0.62 && this.storage.addMaterial(crystal.id, "turn", anchorRef(anchor), "auto-semantic")) {
-          crystal.notified = false;
-          crystal.updatedAt = this.now().toISOString();
-          this.storage.putCrystal(crystal);
-          count += 1;
-          this.onEvent({ type: "material_added", crystalId: crystal.id });
+        if (Number.isFinite(similarity) && similarity >= 0.62) {
+          const added = this.storage.transaction(() => {
+            const latest = this.storage.getCrystal(crystal.id);
+            if (!latest || JSON.stringify(latest) !== JSON.stringify(crystal)) return false;
+            if (!this.storage.addMaterial(latest.id, "turn", anchorRef(anchor), "auto-semantic")) return false;
+            latest.notified = false;
+            latest.updatedAt = this.now().toISOString();
+            this.storage.putCrystal(latest);
+            return true;
+          });
+          if (added) {
+            count += 1;
+            this.onEvent({ type: "material_added", crystalId: crystal.id });
+          }
         }
       } catch {
         // 单个候选的向量或材料写入失败不阻断其他候选；取消仍须向上传播。
