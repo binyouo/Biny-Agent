@@ -22,6 +22,18 @@ export function sendToDesktopWindow(window: BrowserWindow | undefined, channel: 
   window.webContents.send(channel, payload);
 }
 
+export function syncDesktopWindowAppearance(mainWindow: BrowserWindow | undefined, snapshot: AppearanceSnapshot): void {
+  if (nativeTheme.themeSource !== snapshot.themePreference) nativeTheme.themeSource = snapshot.themePreference;
+  const resolved = resolveAppearance(snapshot.appearancePreference, snapshot.themePreference, nativeTheme.shouldUseDarkColors);
+  const background = resolved.variables["--background"] ?? (resolved.mode === "dark" ? "#1a1a1a" : "#f5f5f5");
+  for (const window of BrowserWindow.getAllWindows()) {
+    if (window.isDestroyed() || (window !== mainWindow && window.getTitle() !== "Biny Quick Chat")) continue;
+    // 外观预览和恢复也须保留透明底，不能重新填满自绘圆角外的区域。
+    window.setBackgroundColor(process.platform === "darwin" ? "#00000000" : background);
+    if (process.platform === "darwin" && window === mainWindow) window.setWindowButtonVisibility(resolved.skin === "default");
+  }
+}
+
 /** 窗口底色要和渲染层主体色一致，否则加载过程中会闪一下异色底。 */
 function themeBackgroundColor(preference: DesktopThemePreference = "system"): string {
   const dark = preference === "dark" || (preference === "system" && nativeTheme.shouldUseDarkColors);

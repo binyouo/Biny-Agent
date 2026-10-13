@@ -28,6 +28,7 @@ async function main(): Promise<void> {
   await testFetchExtractsArticleInsteadOfPageChrome();
   await testFetchKeepsShortNonArticleHtmlReadable();
   await testFetchesTextAndPages();
+  await testFetchPreservesUnicodePages();
   await testRedirectToInternalTargetIsRefused();
   await testByteLimitTruncatesInsteadOfHanging();
   await testBrowserFetchPropagatesByteLimitTruncation();
@@ -126,6 +127,55 @@ async function testFetchesTextAndPages(): Promise<void> {
     const second = await run(tool, { url: "https://example.com/doc", offset: 40, length: 40 });
     assert.notEqual(second.content, first.content);
     assert.equal(second.offset, 40);
+  });
+}
+
+
+/** The real tool must preserve Unicode after decoding, including its default page boundary. */
+async function testFetchPreservesUnicodePages(): Promise<void> {
+  for (const fixture of [
+    { text: "a".repeat(23_999) + "😀Z", length: undefined },
+    { text: "A😀Z𠮷B", length: 2 },
+    { text: "😀𠮷Z", length: 1 },
+    { text: "a".repeat(199_999) + "😀Z", length: 200_000 }
+  ]) {
+    await withFetch(async () => new Response(fixture.text, {
+      status: 200, headers: { "content-type": "text/plain; charset=utf-8" }
+    }), async () => {
+      const tool = createWebFetchTool(undefined, { enabled: false }, testWebFetchDependencies);
+      const pages: string[] = [];
+      let offset = 0;
+      while (true) {
+        const result = await run(tool, { url: "https://example.com/unicode", offset, length: fixture.length });
+        assert.equal(result.offset, offset);
+        assert.equal(result.totalCharacters, fixture.text.length);
+        assert.equal(result.truncatedAtByteLimit, false);
+        assert.equal(result.status, 200);
+        assert.equal(result.finalUrl, "https://example.com/unicode");
+        assert.equal(result.title, undefined);
+        assert.equal(result.content, Buffer.from(result.content, "utf8").toString("utf8"), "each page must be valid Unicode before transport");
+        assert.ok(result.content.length <= 200_000);
+        pages.push(result.content);
+        const next = result.offset + result.content.length;
+        assert.ok(!result.hasMore || next > offset, "paging must progress even at length one");
+        offset = next;
+        if (!result.hasMore) break;
+        assert.ok(pages.length <= fixture.text.length + 1);
+      }
+      assert.equal(pages.join(""), fixture.text);
+    });
+  }
+  await withFetch(async () => new Response("A😀Z", {
+    headers: { "content-type": "text/plain; charset=utf-8" }
+  }), async () => {
+    const tool = createWebFetchTool(undefined, { enabled: false }, testWebFetchDependencies);
+    const result = await run(tool, { url: "https://example.com/unicode", offset: 2, length: 1 });
+    assert.equal(result.offset, 1);
+    assert.equal(result.content, "😀");
+    assert.equal(result.hasMore, true);
+    const next = await run(tool, { url: "https://example.com/unicode", offset: result.offset + result.content.length, length: 1 });
+    assert.equal(next.content, "Z");
+    assert.equal(next.hasMore, false);
   });
 }
 

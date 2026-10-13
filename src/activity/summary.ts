@@ -45,6 +45,8 @@ export interface ActivitySummaryStats {
   reportGeneratedAt?: number;
   reportStats?: ActivityReportStats;
   reportState?: {
+    /** 内部日报缓存所有权；新写入使用唯一值，旧缓存无需迁移。 */
+    generation?: string;
     sessionCount: number;
     pendingModel: number;
     blocked: boolean;

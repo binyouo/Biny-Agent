@@ -256,6 +256,8 @@ async function runShellCommandWithCompletionEvidence(
     const stderrDecoder = new StringDecoder("utf8");
     let outputFinalized = false;
     let settled = false;
+    let childClosed = false;
+    let drainingOutput = false;
     let stopReason: "abort" | "timeout" | undefined;
     let terminationTimer: ReturnType<typeof setTimeout> | undefined;
     let killSettleTimer: ReturnType<typeof setTimeout> | undefined;
@@ -324,6 +326,27 @@ async function runShellCommandWithCompletionEvidence(
       }
       settle(undefined, 124, "timed_out");
     };
+    const settleStoppedAfterOutput = () => {
+      if (settled) return;
+      if (childClosed) {
+        settleStopped();
+        return;
+      }
+      if (drainingOutput) return;
+      // Process termination does not imply that its output pipes have drained.
+      // Stop signalling, but retain the existing hard deadline when there is one.
+      drainingOutput = true;
+      if (terminationTimer) clearTimeout(terminationTimer);
+      if (!killSettleTimer) {
+        killSettleTimer = setTimeout(() => {
+          if (settled) return;
+          child.stdout?.destroy();
+          child.stderr?.destroy();
+          child.unref();
+          settleStopped();
+        }, killSettleMs);
+      }
+    };
     const settle = (error: unknown, exitCode?: number, stopStatus?: Extract<RunCommandResult["status"], "timed_out">, exitSignal?: NodeJS.Signals) => {
       if (settled) return;
       settled = true;
@@ -369,14 +392,15 @@ async function runShellCommandWithCompletionEvidence(
       });
     };
     const forceKill = async () => {
-      if (settled) return;
+      if (settled || drainingOutput) return;
       options.onUpdate?.({ kind: "status", text: "Command did not stop after SIGTERM; sending SIGKILL." });
       if (child.pid !== undefined) {
         for (const pid of await descendantProcessIds([child.pid, ...trackedUnixPids])) trackedUnixPids.add(pid);
       }
-      if (settled) return;
+      if (settled || drainingOutput) return;
       signalTrackedProcesses(trackedUnixPids, "SIGKILL");
       signalProcessGroup(child, "SIGKILL");
+      if (settled || drainingOutput) return;
       killSettleTimer = setTimeout(() => {
         if (settled) return;
         // Never leave the agent waiting forever for a broken child-process close event.
@@ -398,7 +422,7 @@ async function runShellCommandWithCompletionEvidence(
       });
       windowsTreeKill.once("close", () => {
         windowsTreeKillPending = false;
-        settleStopped();
+        settleStoppedAfterOutput();
       });
       windowsTreeKill.once("error", () => {
         // Fall back to the direct child. The hard-settle timer remains active;
@@ -433,15 +457,16 @@ async function runShellCommandWithCompletionEvidence(
             trackedUnixPids.add(child.pid);
             for (const pid of await descendantProcessIds([child.pid])) trackedUnixPids.add(pid);
           }
-          if (settled) return;
+          if (settled || drainingOutput) return;
           unixStopInitialized = true;
           // Snapshot descendants before terminating the original process group;
           // otherwise a setsid/double-fork child can be re-parented and disappear
           // from the tree before we learn its pid.
           signalTrackedProcesses(trackedUnixPids, "SIGTERM");
           signalProcessGroup(child, "SIGTERM");
+          if (settled || drainingOutput) return;
           if (!processGroupExists(child) && !trackedProcessesExist(trackedUnixPids)) {
-            settleStopped();
+            settleStoppedAfterOutput();
             return;
           }
           terminationTimer = setTimeout(() => { void forceKill(); }, terminationGraceMs);
@@ -454,11 +479,12 @@ async function runShellCommandWithCompletionEvidence(
       requestStop("abort");
     }
     function onError(error: Error): void {
+      if (settled || drainingOutput) return;
       if (stopReason) {
         if (process.platform === "win32") {
-          if (!windowsTreeKillPending) settleStopped();
+          if (!windowsTreeKillPending) settleStoppedAfterOutput();
         } else if (unixStopInitialized && !processGroupExists(child) && !trackedProcessesExist(trackedUnixPids)) {
-          settleStopped();
+          settleStoppedAfterOutput();
         }
         return;
       }
@@ -466,6 +492,11 @@ async function runShellCommandWithCompletionEvidence(
     }
     function onClose(code: number | null, signal: NodeJS.Signals | null = null): void {
       if (settled) return;
+      childClosed = true;
+      if (drainingOutput) {
+        settleStopped();
+        return;
+      }
       if (stopReason) {
         if (process.platform === "win32") {
           if (!windowsTreeKillPending) settleStopped();

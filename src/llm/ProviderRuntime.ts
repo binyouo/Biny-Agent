@@ -136,6 +136,7 @@ export class ConfiguredProviderRuntime implements ProviderRuntime {
 
   async refreshModels(signal?: AbortSignal, force = false): Promise<ModelCatalogEntry[]> {
     signal?.throwIfAborted();
+    if (this.config.type === "acp") throw new Error("ACP 模型由 Agent 会话提供，请在连接设置中读取模型。");
     const cacheKey = modelCatalogCacheKey(this.id, this.config);
     const cached = this.modelsStore === undefined
       ? undefined
@@ -182,6 +183,7 @@ export class ConfiguredProviderRuntime implements ProviderRuntime {
 
   isConfigured(model?: ModelAliasConfig): boolean {
     if (this.config.enabled === false) return false;
+    if (this.config.type === "acp") return Boolean(this.config.acp?.command);
     const endpoint = model?.baseUrl ?? this.config.baseUrl ?? this.definition.baseUrl;
     if (!endpoint || !isHttpEndpoint(endpoint)) return false;
     if (this.config.authMode === "oauth-bearer") {
@@ -236,6 +238,10 @@ export class ConfiguredProviderRuntime implements ProviderRuntime {
 
   validate(model?: ModelAliasConfig): void {
     if (this.config.enabled === false) throw new Error(`服务商 ${this.id} 已停用，请在模型供应商设置中启用。`);
+    if (this.config.type === "acp") {
+      if (!this.config.acp?.command) throw new Error(`ACP provider ${this.id} requires a launch command.`);
+      return;
+    }
     const endpoint = model?.baseUrl ?? this.config.baseUrl ?? this.definition.baseUrl;
     if (!endpoint) throw new Error(`No model endpoint configured. Set providers.${this.id}.baseUrl.`);
     let parsed: URL;
@@ -265,6 +271,16 @@ export class ConfiguredProviderRuntime implements ProviderRuntime {
   }
 
   createModelSettings(agentConfig: AgentConfig, model: ModelAliasConfig): ModelSettings {
+    if (this.config.type === "acp") {
+      if (!this.isConfigured()) throw new Error(`ACP provider ${this.id} requires an enabled launch command.`);
+      return {
+        model: {
+          provider: "acp", providerAlias: this.id, modelId: model.model, supportsTools: true,
+          prepareTextRequest: async () => { throw new Error("ACP 是外部 Agent，不能用于辅助模型调用。请配置 API 工具模型。"); }
+        },
+        contextWindow: undefined
+      };
+    }
     const normalizedModel = this.resolveModel(model);
     this.validate(normalizedModel);
     const apiKey = this.resolveApiKey();

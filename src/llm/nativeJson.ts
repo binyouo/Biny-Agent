@@ -2,8 +2,8 @@ import { toVercelReasoning } from "../agent/core/vercelModelAdapter.js";
 import { streamText } from "ai";
 import { randomUUID } from "node:crypto";
 import type { LanguageModelV4, LanguageModelV4CallOptions, LanguageModelV4StreamPart } from "@ai-sdk/provider";
-import type { AgentMessage, AgentModel, AgentUsage, ModelRequestContext, ModelRequestObserver } from "../agent/core/types.js";
-import { fromVercelUsage, toModelMessages } from "../agent/core/vercelModelAdapter.js";
+import type { AgentMessage, AgentModel, AgentStopReason, AgentUsage, ModelRequestContext, ModelRequestObserver } from "../agent/core/types.js";
+import { fromVercelFinishReason, fromVercelUsage, toModelMessages } from "../agent/core/vercelModelAdapter.js";
 
 export interface NativeTextGenerationOptions {
   systemPrompt?: string;
@@ -168,7 +168,8 @@ async function consumeVercelText(
       else if (part.type === "error") failure ??= { error: part.error };
     }
     if (failure !== undefined) throw failure.error instanceof Error ? failure.error : new Error(String(failure.error));
-    await reportVercelMetrics(model, options, startedAtMs, usage, undefined);
+    await reportVercelMetrics(model, options, startedAtMs, usage, undefined,
+      finishReason === undefined ? undefined : fromVercelFinishReason(finishReason));
     return { text, usage, finishReason };
   } catch (error) {
     await reportVercelMetrics(model, options, startedAtMs, usage, { error });
@@ -296,7 +297,8 @@ async function reportVercelMetrics(
   options: NativeTextGenerationOptions,
   startedAtMs: number,
   usage: AgentUsage | undefined,
-  failure: { error: unknown } | undefined
+  failure: { error: unknown } | undefined,
+  finishReason?: AgentStopReason
 ): Promise<void> {
   if (!options.onRequestMetrics) return;
   const error = failure?.error;
@@ -313,7 +315,7 @@ async function reportVercelMetrics(
         error: error instanceof Error ? error.message : undefined,
         willRetry: false
       }],
-      finishReason: failure === undefined ? "stop" : "error",
+      finishReason: failure === undefined ? finishReason : "error",
       usage,
       error: error instanceof Error ? error.message : failure === undefined ? undefined : String(error),
       errorPhase: failure === undefined ? undefined : "request",
@@ -335,7 +337,7 @@ async function consumeInjectedText(
   options.signal?.throwIfAborted();
   let text = "";
   let usage: AgentUsage | undefined;
-  let finishReason: string | undefined;
+  let finishReason: AgentStopReason | undefined;
   if (!model.stream) throw new Error("Vercel model is unavailable for this text request.");
   const streamModel = model.stream.bind(model);
   const { systemPrompt, onRequestMetrics: _observer, awaitModelSettlementOnAbort: _awaitModelSettlementOnAbort, ...streamOptions } = options;
@@ -351,7 +353,7 @@ async function consumeInjectedText(
       else if (event.type === "error") throw event.error instanceof Error ? event.error : new Error(String(event.error));
     }
     options.signal?.throwIfAborted();
-    await reportVercelMetrics(model, options, startedAtMs, usage, undefined);
+    await reportVercelMetrics(model, options, startedAtMs, usage, undefined, finishReason);
     return { text, usage, finishReason };
   } catch (error) {
     await reportVercelMetrics(model, options, startedAtMs, usage, { error });
