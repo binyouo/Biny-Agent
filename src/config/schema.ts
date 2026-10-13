@@ -7,6 +7,7 @@ import { computerSettingsSchema } from "../computer/protocol.js";
  * capabilities. Only the canonical multi-model format is accepted.
  */
 import { z } from "zod";
+import { modelReasoningConfig } from "../ai/capabilities.js";
 import { acpConfigSchema } from "../acp/config.js";
 export { acpConfigSchema, type AcpConfig } from "../acp/config.js";
 import { DEFAULT_PROJECT_SKILL_PATHS } from "../extensions/skillRoots.js";
@@ -735,7 +736,19 @@ const canonicalConfigSchema = z.object({
       .filter(([level, native]) => level !== "off" && native !== null)
       .map(([level]) => level)
     : activeReasoning?.efforts ?? [];
-  if (config.thinking.enabled && activeSupportsReasoning && !activeEfforts.includes(config.thinking.effort)) {
+  // An explicit profile may add an effort absent from a saved alias. Keep old
+  // accepted preferences intact when profiles narrow, and leave explicit model
+  // selection validation to the resolved model in ModelManager.
+  const activeProvider = activeModel && config.providers[activeModel.provider];
+  const activeProfile = activeModel && activeProvider?.modelProfiles?.[activeModel.model];
+  const profileSupportsEffort = activeModel !== undefined && activeProfile?.thinkingLevelMap !== undefined
+    && modelReasoningConfig({
+      ...activeModel,
+      thinkingLevelMap: activeProfile.thinkingLevelMap,
+      capabilities: { ...activeModel.capabilities, reasoning: activeProfile.capabilities?.reasoning },
+      compatibility: { ...activeProvider?.compatibility, ...activeModel.compatibility }
+    })?.efforts.includes(config.thinking.effort) === true;
+  if (config.thinking.enabled && activeSupportsReasoning && !activeEfforts.includes(config.thinking.effort) && !profileSupportsEffort) {
     context.addIssue({
       code: z.ZodIssueCode.custom,
       path: ["thinking", "effort"],
