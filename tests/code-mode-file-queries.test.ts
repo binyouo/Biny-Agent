@@ -177,7 +177,7 @@ try {
   const quarantined: Promise<unknown>[] = [];
   const stalled = coordinator(stalledRegistry, { quarantined });
   let pending: Promise<AgentToolResult> | undefined;
-  let assertionsPassed = false;
+  let cleanupSettlements: PromiseSettledResult<unknown>[] = [];
   service.list = async () => { stalledCalls++; entered.resolve(); await release.promise; return []; };
   try {
     const exec = stalled.createCodeModeTool(undefined, { ...codeModePolicy, hostCallTimeoutMs: 100, maxCellDurationMs: 2_000 });
@@ -190,7 +190,6 @@ try {
     assert.equal((await pending).isError, true);
     assert.equal((await exec.execute("stalled-file-replay", { code: "return await tools.BashOutput({});" })).isError, true);
     assert.equal(stalledCalls, 1);
-    assertionsPassed = true;
   } finally {
     release.resolve();
     // Observe this cell before its coordinator; cleanup must preserve a primary failure.
@@ -198,11 +197,10 @@ try {
     await Promise.allSettled(quarantined);
     const idleSettlement = await Promise.allSettled([stalled.waitForIdle()]);
     service.list = oldList;
-    if (assertionsPassed) {
-      for (const settlement of [...cellSettlement, ...idleSettlement]) {
-        if (settlement.status === "rejected") throw settlement.reason;
-      }
-    }
+    cleanupSettlements = [...cellSettlement, ...idleSettlement];
+  }
+  for (const settlement of cleanupSettlements) {
+    if (settlement.status === "rejected") throw settlement.reason;
   }
   assert.equal(await readFile(resource, "utf8"), "temporary query resource");
 } finally {
