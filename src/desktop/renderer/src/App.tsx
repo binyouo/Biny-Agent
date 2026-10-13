@@ -77,7 +77,6 @@ import { WorkspaceContextBar } from "./components/project/WorkspaceContextBar.js
 import { resolveContextCapacity, type ContextUsage } from "./usagePresentation.js";
 import { DesktopShell } from "./components/DesktopShell.js";
 import { Sidebar } from "./components/Sidebar.js";
-import { SkillHubView } from "./components/SkillHubView.js";
 import { Workspace, type PendingPrompt } from "./components/Workspace.js";
 import { DesktopToast } from "./components/overlays/DesktopToast.js";
 import { RenameOverlay } from "./components/overlays/RenameOverlay.js";
@@ -101,14 +100,12 @@ interface RenameTarget {
   metadataRevision?: string;
 }
 
-type DesktopPage = Exclude<DesktopActiveView, "runtime">;
-
-export function App(): React.JSX.Element {
+export function App({ settingsEnabled = true }: { settingsEnabled?: boolean }): React.JSX.Element {
   if (window.location.hash === "#/quick-chat") return <QuickChatApp />;
-  return <DesktopApp />;
+  return <DesktopApp settingsEnabled={settingsEnabled} />;
 }
 
-function DesktopApp(): React.JSX.Element {
+function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JSX.Element {
   const [version, setVersion] = useState("0.1.0");
   const [projects, setProjects] = useState<DesktopProject[]>([]);
   const [sidebarSessions, setSidebarSessions] = useState<DesktopSessionSummary[]>([]);
@@ -170,7 +167,6 @@ function DesktopApp(): React.JSX.Element {
   const browserSelectionPending = useRef<string | undefined>(undefined);
   const [pendingBrowserProject, setPendingBrowserProject] = useState<string>();
   const [runtimePanelOpen, setRuntimePanelOpen] = useState(false);
-  const [page, setPage] = useState<DesktopPage>("chat");
   const [contextBudget, setContextBudget] = useState<ContextBudgetStatus>();
   const [draftMemoryOverride, setDraftMemoryOverride] = useState<boolean>();
   const [memoryToggleBusy, setMemoryToggleBusy] = useState(false);
@@ -204,9 +200,10 @@ function DesktopApp(): React.JSX.Element {
   } = useSidebarLayout();
 
   const openSettings = useCallback((targetTab?: SettingsTab): void => {
+    if (!settingsEnabled) return;
     setSettingsTargetTab(targetTab);
     setSettingsOpen(true);
-  }, []);
+  }, [settingsEnabled]);
 
   const closeSettings = useCallback((): void => {
     setSettingsOpen(false);
@@ -230,18 +227,6 @@ function DesktopApp(): React.JSX.Element {
 
   const closeSearch = useCallback((): void => {
     setSearchOpen(false);
-  }, []);
-
-  const openExtensions = useCallback((): void => {
-    loadRequestRef.current += 1;
-    setPendingNavigation(undefined);
-    setPage("extensions");
-    setRuntimePanelOpen(false);
-    setLoading(false);
-    setSearchOpen(false);
-    setSettingsOpen(false);
-    setSettingsTargetTab(undefined);
-    void window.biny.setActiveView("extensions").catch((error) => setWarning(errorMessage(error)));
   }, []);
 
   useEffect(() => {
@@ -268,7 +253,7 @@ function DesktopApp(): React.JSX.Element {
   useEffect(() => {
     const projectId = workspace?.project.id;
     const sessionId = selectedSessionId;
-    if (!projectId || !sessionId || page !== "chat") return;
+    if (!projectId || !sessionId) return;
     let cancelled = false;
     void window.biny.recipeSuggestions(projectId, sessionId).then((recipes) => {
       if (cancelled) return;
@@ -280,7 +265,7 @@ function DesktopApp(): React.JSX.Element {
       if (!cancelled) setWarning(errorMessage(error));
     });
     return () => { cancelled = true; };
-  }, [page, selectedSessionId, workspace?.project.id]);
+  }, [selectedSessionId, workspace?.project.id]);
 
   const selectedSession = workspace?.sessions.find((session) => session.id === selectedSessionId)
     ?? (document?.session.id === selectedSessionId ? document?.session : undefined);
@@ -295,7 +280,7 @@ function DesktopApp(): React.JSX.Element {
   useEffect(() => {
     let active = true;
     const projectId = workspace?.project.id;
-    if (!projectId || page !== "chat") {
+    if (!projectId) {
       setComposerSkillWarnings([]);
       setComposerSkills([]);
       setComposerTools([]);
@@ -323,7 +308,6 @@ function DesktopApp(): React.JSX.Element {
     return () => { active = false; };
   }, [
     composerCatalogNonce,
-    page,
     settingsOpen,
     workspace?.project.id,
     composerResourceRevision
@@ -552,7 +536,6 @@ function DesktopApp(): React.JSX.Element {
         projectRef.current = resolvedWorkspace.project.id;
         mergeWorkspaceProject(resolvedWorkspace);
       }
-      setPage(activeView === "extensions" ? "extensions" : "chat");
       setRuntimePanelOpen(activeView === "runtime");
       selectedRef.current = sessionId;
       setSelectedSessionId(sessionId);
@@ -603,7 +586,6 @@ function DesktopApp(): React.JSX.Element {
     }
     memoryToggleRequestRef.current += 1;
     setMemoryToggleBusy(false);
-    setPage("chat");
     setRuntimePanelOpen(false);
     projectRef.current = snapshot.project.id;
     selectedRef.current = undefined;
@@ -630,7 +612,6 @@ function DesktopApp(): React.JSX.Element {
     if (startingCurrentDraft) {
       // 当前项目的新建任务应立即呈现空白输入框。startDraft 只负责重置旧运行时，
       // 这里不能把它伪装成“恢复会话”，也不能继续显示上一段聊天正文。
-      setPage("chat");
       setRuntimePanelOpen(false);
       selectedRef.current = undefined;
       setSelectedSessionId(undefined);
@@ -646,7 +627,6 @@ function DesktopApp(): React.JSX.Element {
       setLoading(false);
     } else {
       // 选择意图立即反馈到侧栏；正文和项目身份只在最新读取成功后一起提交。
-      setPage("chat");
       setRuntimePanelOpen(false);
       setLoading(true);
     }
@@ -685,7 +665,6 @@ function DesktopApp(): React.JSX.Element {
       setFilePanelWidth(bootstrap.filePanelWidth ?? DEFAULT_FILE_PANEL_WIDTH);
       bootstrapAppearance(bootstrap);
       setChatResponse(bootstrap.chatResponse);
-      setPage(bootstrap.activeView === "extensions" ? "extensions" : "chat");
       setRuntimePanelOpen(bootstrap.activeView === "runtime" && Boolean(bootstrap.workspace));
       // 没有可恢复的会话时默认落在新会话欢迎页，而不是空白占位；恢复会话时 hero 由选中会话关闭。
       if (!bootstrap.selectedSessionId) setHeroStart(true);
@@ -772,9 +751,10 @@ function DesktopApp(): React.JSX.Element {
   useEffect(() => window.biny.onMenuAction((action) => menuActionRef.current(action)), []);
 
   useEffect(() => window.biny.onSettingsCloseRequest((request) => {
+    if (!settingsEnabled) return;
     setSettingsCloseRequest(request);
     setSettingsOpen(true);
-  }), []);
+  }), [settingsEnabled]);
 
   const openProject = useCallback(async (): Promise<void> => {
     try {
@@ -885,7 +865,6 @@ function DesktopApp(): React.JSX.Element {
     }
     loadRequestRef.current += 1;
     setPendingNavigation(undefined);
-    setPage("chat");
     setSearchOpen(false);
     setLoading(false);
     setRuntimePanelOpen(true);
@@ -899,7 +878,7 @@ function DesktopApp(): React.JSX.Element {
 
   const navigateToSession = useCallback(async (projectId: string, sessionId: string): Promise<void> => {
     // 当前会话已经在聊天页时，点击同一行不应重新读取正文并切换 loading；否则侧栏会被无意义地重绘一次。
-    if (projectId === projectRef.current && sessionId === selectedRef.current && page === "chat" && !runtimePanelOpen) {
+    if (projectId === projectRef.current && sessionId === selectedRef.current && !runtimePanelOpen) {
       // 点回已显示会话仍是新的导航意图，必须使在途的跨项目读取失效。
       loadRequestRef.current += 1;
       setPendingNavigation(undefined);
@@ -913,17 +892,17 @@ function DesktopApp(): React.JSX.Element {
     } catch (error) {
       setWarning(errorMessage(error));
     }
-  }, [commitNavigation, openNavigationTarget, page, runtimePanelOpen]);
+  }, [commitNavigation, openNavigationTarget, runtimePanelOpen]);
 
   useEffect(() => {
-    if (!temporalSourceTarget || document?.session.id !== temporalSourceTarget.sessionId || page !== "chat") return;
+    if (!temporalSourceTarget || document?.session.id !== temporalSourceTarget.sessionId) return;
     const source = [...globalThis.document.querySelectorAll<HTMLElement>("[data-message-id]")]
       .find((element) => element.dataset.messageId === temporalSourceTarget.messageId);
     if (!source) return;
     source.scrollIntoView({ block: "center" });
     source.focus({ preventScroll: true });
     setTemporalSourceTarget(undefined);
-  }, [document, page, temporalSourceTarget]);
+  }, [document, temporalSourceTarget]);
 
   const toggleSessionPinned = useCallback(async (session: DesktopSessionSummary, pinned = !session.pinned): Promise<void> => {
     try {
@@ -1384,7 +1363,6 @@ function DesktopApp(): React.JSX.Element {
       setDocument(undefined);
       setSelectedSessionId(undefined);
       setDraftProjectId(undefined);
-      setPage(bootstrap.activeView === "extensions" ? "extensions" : "chat");
       setRuntimePanelOpen(bootstrap.activeView === "runtime" && Boolean(bootstrap.workspace));
       commitNavigation(createNavigationState());
     } catch (error) {
@@ -1602,6 +1580,8 @@ function DesktopApp(): React.JSX.Element {
     ? workspace?.sessionRuntimes?.[selectedSessionId]
       ?? (workspace?.runtime?.info.sessionId === selectedSessionId ? workspace.runtime : undefined)
     : workspace?.runtime;
+  const externalAgent = workspace?.selectedModel?.provider === "acp" || selectedRuntimeSnapshot?.info.provider === "acp"
+    || Boolean(document?.events.some((event) => event.type === "message_metadata" && typeof event.metadata.acpProvider === "string"));
   // 展示最近请求的完整输入 / 模型完整窗口；压缩预算继续由后端独立控制。
   const contextUsage = useMemo<ContextUsage | undefined>(() => {
     const info = selectedRuntimeSnapshot?.info;
@@ -1662,7 +1642,7 @@ function DesktopApp(): React.JSX.Element {
     if (projectId && target.sessionId) void navigateToSession(projectId, target.sessionId).catch(failure => setWarning(errorMessage(failure)));
     else if (projectId) void openNavigationTarget({ projectId }).catch(failure => setWarning(errorMessage(failure)));
     else if (target.sessionId && workspace?.sessions.some(session => session.id === target.sessionId)) void navigateToSession(workspace.project.id, target.sessionId).catch(failure => setWarning(errorMessage(failure)));
-    else { setPage("chat"); if (target.sessionId) setWarning("关联聊天未在当前列表中，请从侧栏打开。"); }
+    else if (target.sessionId) setWarning("关联聊天未在当前列表中，请从侧栏打开。");
   }), [navigateToSession, openNavigationTarget, sidebarSessions, workspace]);
 
   const clearToast = useCallback(() => setToast(undefined), []);
@@ -1816,7 +1796,7 @@ function DesktopApp(): React.JSX.Element {
         else if (reference.kind === "project") await selectProject(projectId);
         else if (reference.kind === "memory") openSettings("记忆");
         else if (reference.kind === "date") setDateReferenceUri(url);
-        else if (reference.kind === "skill") openExtensions();
+        else if (reference.kind === "skill") openSettings("技能");
         else if (reference.kind === "mcp") openSettings("MCP 服务器");
         else if (reference.kind === "model" || reference.kind === "provider") openSettings("模型");
         else inspector.previewReference(reference);
@@ -1837,7 +1817,7 @@ function DesktopApp(): React.JSX.Element {
       ? workspace.project.id
       : sidebarSessions.find((session) => session.id === link.sessionId)?.projectId;
     if (projectId !== undefined) await openSession(projectId, link.sessionId);
-  }, [inspector, navigateToSession, openExtensions, openSession, openSettings, prefillComposer, selectProject, sidebarSessions, workspace]);
+  }, [inspector, navigateToSession, openSession, openSettings, prefillComposer, selectProject, sidebarSessions, workspace]);
   useEffect(() => {
     setDeepLinkHandler((url) => void openDeepLink(url));
     return () => setDeepLinkHandler(undefined);
@@ -1849,7 +1829,6 @@ function DesktopApp(): React.JSX.Element {
     if (composerRef.current) {
       composerRef.current.appendText(reference);
     } else {
-      setPage("chat");
       prefillComposer(`${reference} `);
     }
   }, [prefillComposer]);
@@ -1919,6 +1898,7 @@ function DesktopApp(): React.JSX.Element {
       onRefreshCatalog={refreshComposerCatalog}
       modelSetupRequired={Boolean(workspace?.requiresModelConfiguration)}
       models={workspace?.pickerModels ?? workspace?.models ?? []}
+      connections={workspace?.connections}
       onSaveAttachment={saveAttachment}
       onSend={sendPromptWithTransition}
       recovery={!loading && document?.session.id === selectedSessionId ? document?.recovery : undefined}
@@ -1942,6 +1922,7 @@ function DesktopApp(): React.JSX.Element {
       onWarning={setWarning}
       project={workspace?.project}
       running={selectedRunning}
+      externalAgent={externalAgent}
       compacting={compacting}
       runtimeBusy={runtimeBusy}
       queuedMessages={queuedMessages}
@@ -2087,7 +2068,7 @@ function DesktopApp(): React.JSX.Element {
           onLoadSessionChildren={loadSessionChildren}
           onSessionAction={runSidebarSessionAction}
           onDeleteSessions={deleteSidebarSessions}
-          onSettings={openSettings}
+          onSettings={settingsEnabled ? openSettings : undefined}
           onTimeClues={openTimeClues}
           onInsertCrystal={insertCrystalReference}
           onToggleSidebar={toggleSidebar}
@@ -2103,10 +2084,8 @@ function DesktopApp(): React.JSX.Element {
       )}
       theme={themePreference}
     >
-      {page === "extensions" ? <SkillHubView
-        onError={setWarning}
-        onOpenRuntime={openRuntimePanel}
-      /> : <Workspace
+      <Workspace
+        externalAgent={externalAgent}
         loading={loading}
         onSendActivitySuggestion={async text => { await composerRef.current?.submitSuggestion(text); }}
         heroStart={heroStart && selectedSessionId === undefined}
@@ -2161,10 +2140,9 @@ function DesktopApp(): React.JSX.Element {
         skillDescriptions={skillDescriptions}
         skillLabels={skillLabels}
         onOpenRuntime={openRuntimePanel}
-        onOpenExtensions={openExtensions}
       >
         {composer}
-      </Workspace>}
+      </Workspace>
       {appearanceError ? <div className="biny-appearance-error" role="alert">{appearanceError}<button type="button" onClick={() => setAppearanceError(undefined)}>关闭</button></div> : null}
     </DesktopShell></RenderingPreviewContext></ChatResponseContext></AppearanceProvider>
   );

@@ -2,9 +2,9 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "electron-vite";
-import { codeModeRuntimeProvenancePlugin } from "./scripts/build-code-mode-runtime.mjs";
+import { codeModeRuntimeProvenancePlugin } from "../scripts/build-code-mode-runtime.mjs";
 
-const root = fileURLToPath(new URL(".", import.meta.url));
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 export default defineConfig({
   main: {

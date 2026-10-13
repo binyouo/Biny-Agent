@@ -71,3 +71,113 @@ try {
   await fs.rm(workspaceRoot, { recursive: true, force: true });
   await fs.rm(outsideRoot, { recursive: true, force: true });
 }
+
+
+// Exercise ordinary cursor continuation through the public Glob entrypoint.
+// Filesystem fixtures run only in CI; the audit harness does not execute this file.
+await testCursorPruning();
+
+async function testCursorPruning(): Promise<void> {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "biny-glob-cursor-pruning-"));
+  const tool = createListFilesTool({ workspaceRoot: root, ignore: ["ignored"] });
+  const reads: string[] = [];
+  const originalRead = fs.readdir;
+  let blocked: string | undefined;
+  let abortOnRead: AbortController | undefined;
+  try {
+    const expected: string[] = [];
+    for (let directory = 0; directory < 100; directory += 1) {
+      const name = `d${String(directory).padStart(3, "0")}`;
+      await fs.mkdir(path.join(root, name));
+      for (let file = 0; file < 20; file += 1) {
+        const relative = `${name}/${String(file).padStart(2, "0")}.txt`;
+        expected.push(relative);
+        await fs.writeFile(path.join(root, relative), "fixture\n");
+      }
+    }
+    mock.method(fs, "readdir", async (...args: Parameters<typeof fs.readdir>) => {
+      const relative = path.relative(root, String(args[0])).split(path.sep).join("/") || ".";
+      reads.push(relative);
+      abortOnRead?.abort();
+      if (relative === blocked) throw Object.assign(new Error("Injected unreadable directory"), { code: "EACCES" });
+      return Reflect.apply(originalRead, fs, args);
+    });
+    async function run(args: ListFilesArgs, signal?: AbortSignal) {
+      const execution = await tool.resolveExecution(args);
+      assert.ok("execute" in execution);
+      return execution.execute({ toolCallId: "cursor-pruning", operationId: "cursor-pruning", signal });
+    }
+
+    const seen: string[] = [];
+    const pageReads: number[] = [];
+    let cursor: string | undefined;
+    do {
+      reads.length = 0;
+      const result = await run({ cursor });
+      assert.deepEqual(result.files, expected.slice(seen.length, seen.length + 200));
+      seen.push(...result.files);
+      assert.equal(result.hasMore, seen.length < expected.length);
+      assert.equal(result.nextCursor, result.hasMore ? result.files.at(-1) : undefined);
+      pageReads.push(reads.length);
+      cursor = result.nextCursor;
+    } while (cursor !== undefined);
+    assert.deepEqual(seen, expected);
+    assert.deepEqual(pageReads, [12, 13, 13, 13, 13, 13, 13, 13, 13, 12],
+      "Continuation must not re-read directory subtrees wholly before its cursor");
+
+    const scopePaths = [
+      "scope/A-upper/one.txt", "scope/a-/one.txt", "scope/a.dot/one.txt",
+      "scope/a/one.txt", "scope/a/nested/two.txt", "scope/a0/one.txt",
+      "scope/a-old/deep/one.txt", "scope/m/one.txt", "scope/z-next/one.txt",
+      "scope/nested/one.txt", "scope/中/one.txt", "scope/😀/one.txt"
+    ];
+    if (process.platform !== "win32") scopePaths.push("scope/ /one.txt", "scope/末 /one.txt", "scope/back\\slash/one.txt");
+    for (const relative of [...scopePaths, "scope/ignored/one.txt", "scope/.ssh/one.txt"]) {
+      await fs.mkdir(path.dirname(path.join(root, relative)), { recursive: true });
+      await fs.writeFile(path.join(root, relative), "fixture\n");
+    }
+    scopePaths.sort();
+    for (const scope of ["scope", "./scope/nested/.."]) {
+      for (const pattern of [undefined, "scope/**/*.txt", "scope/a/**/*.txt", "**/*.md"]) {
+        const complete = await run({ path: scope, pattern, limit: 1_000 });
+        const reference = scopePaths.filter((file) => pattern === undefined || path.matchesGlob(file, pattern));
+        assert.deepEqual(complete.files, reference);
+        for (const after of ["", "scope/a", "scope/a/", "scope/a/removed.txt", "scope/a0/one.txt", "zzzz", ...reference]) {
+          reads.length = 0;
+          const result = await run({ path: scope, pattern, cursor: after || undefined, limit: 2 });
+          const remaining = reference.filter((file) => !after || file > after);
+          assert.deepEqual(result.files, remaining.slice(0, 2));
+          assert.equal(result.hasMore, remaining.length > 2);
+          assert.equal(result.nextCursor, remaining.length > 2 ? result.files.at(-1) : undefined);
+          assert.ok(!reads.some((entry) => entry.startsWith("d") || entry.includes("ignored") || entry.includes(".ssh")));
+        }
+      }
+    }
+
+    blocked = "scope/a-old";
+    reads.length = 0;
+    const oldFailure = await run({ path: "scope", cursor: "scope/m/one.txt" });
+    assert.equal(oldFailure.unreadableDirectories, undefined);
+    assert.ok(!reads.includes(blocked), "Cursor-past failures are not re-probed or repeated on this page");
+    for (const directory of [".", "scope", "scope/m", "scope/z-next"]) {
+      blocked = directory;
+      const result = await run({ path: "scope", cursor: "scope/m/one.txt" });
+      assert.deepEqual(result.unreadableDirectories, [directory],
+        "Unreadable root, cursor ancestors, and later subtrees remain visible");
+    }
+    blocked = undefined;
+    assert.deepEqual((await run({ path: "scope" })).files, scopePaths,
+      "A fresh first page can recover content excluded by an earlier cursor");
+    const cancelled = new AbortController();
+    cancelled.abort();
+    reads.length = 0;
+    await assert.rejects(run({ cursor: "scope/m/one.txt" }, cancelled.signal), { name: "AbortError" });
+    assert.deepEqual(reads, []);
+    abortOnRead = new AbortController();
+    await assert.rejects(run({ cursor: "scope/m/one.txt" }, abortOnRead.signal), { name: "AbortError" });
+    assert.deepEqual(reads, ["."]);
+  } finally {
+    mock.restoreAll();
+    await fs.rm(root, { recursive: true, force: true });
+  }
+}

@@ -92,6 +92,65 @@ test("changed catalog endpoint and provider type cannot inherit a same-alias sna
   }
 });
 
+for (const batch of [true, false]) {
+  test(`protocol reload updates budget and picker across A → B → A (${batch ? "batch" : "single"})`, async () => {
+    const a = configuration({ baseUrl: "https://gateway.invalid/api", protocol: "openai-compatible" });
+    const b = configuration({ baseUrl: "https://gateway.invalid/api", protocol: "anthropic", apiBackend: "anthropic_messages" });
+    const configs = configurationStore(a);
+    const storage = new InMemoryModelsStore();
+    const models: ModelsStore = batch ? storage : {
+      read: key => storage.read(key), write: (key, entry) => storage.write(key, entry), delete: key => storage.delete(key)
+    };
+    for (const [config, window, extra] of [[a, 200_000, "only-a"], [b, 32_000, "only-b"]] as const) {
+      const key = modelCatalogCacheKey("gateway", config.providers.gateway!);
+      await models.write(key, { sourceKey: key, models: [...catalog(window), ...catalog(window, extra)] });
+    }
+    const manager = await ModelManager.create("/synthetic", structuredClone(a), configs, new AiRegistry(), models);
+    // B has no cached catalog: changing only protocol must drop A's live
+    // metadata, rather than relabeling its budget or dynamic picker entries.
+    const bKey = modelCatalogCacheKey("gateway", b.providers.gateway!);
+    const cachedB = await models.read(bKey);
+    assert.ok(cachedB);
+    await models.delete(bKey);
+    await configs.save(b);
+    await manager.refreshFromDisk();
+    const uncachedB = await ModelManager.create("/synthetic", structuredClone(b), configs, new AiRegistry(), models);
+    assert.deepEqual(manager.getInfo(), uncachedB.getInfo());
+    assert.deepEqual(manager.getContextBudget(), uncachedB.getContextBudget());
+    assert.deepEqual(manager.listModels(), uncachedB.listModels());
+    assert.ok(!manager.listModels().some(choice => choice.model === "only-a"));
+    assert.equal(manager.getInfo().contextWindowIsFallback, true);
+    await configs.save(a);
+    await manager.refreshFromDisk();
+    await models.write(bKey, cachedB);
+    for (const [next, expected, present, absent] of [[b, 32_000, "only-b", "only-a"], [a, 200_000, "only-a", "only-b"]] as const) {
+      await configs.save(next);
+      assert.equal((await manager.refreshFromDisk()).contextWindow, expected);
+      const fresh = await ModelManager.create("/synthetic", structuredClone(next), configs, new AiRegistry(), models);
+      assert.deepEqual(manager.getContextBudget(), fresh.getContextBudget());
+      assert.equal(manager.getModelSettings().contextWindow, expected);
+      assert.ok(manager.listModels().some(choice => choice.model === present));
+      assert.ok(!manager.listModels().some(choice => choice.model === absent));
+    }
+  });
+}
+
+test("cold legacy catalog invalidation preserves configured models and explicit profiles", async () => {
+  const config = configuration({ modelProfiles: { "custom-chat": { contextWindow: 48_000 } } });
+  const before = structuredClone(config);
+  const store = configurationStore(config);
+  const models = new InMemoryModelsStore();
+  await models.write("gateway", { models: [...catalog(200_000), ...catalog(200_000, "legacy-only")] });
+  const legacy = await models.read("gateway");
+  const manager = await ModelManager.create("/synthetic", config, store, new AiRegistry(), models);
+  assert.ok(manager.listModels().some(choice => choice.alias === "selected"));
+  assert.ok(!manager.listModels().some(choice => choice.model === "legacy-only"));
+  assert.equal(manager.getInfo().contextWindow, 48_000);
+  assert.deepEqual(config, before);
+  assert.deepEqual(await store.load(), before);
+  assert.deepEqual(await models.read("gateway"), legacy);
+});
+
 test("a changed source using a built-in endpoint cannot restore an ambiguous alias-only cache", async () => {
   for (const [initial, next] of [
     [configuration({ type: "openai", baseUrl: undefined }), configuration({ type: "anthropic", baseUrl: undefined })],
@@ -103,7 +162,7 @@ test("a changed source using a built-in endpoint cannot restore an ambiguous ali
     const originalCache = await models.read("gateway");
     const manager = new ModelManager("/synthetic", initial, store, new AiRegistry(), models, [["gateway", catalog(200_000)]]);
     assert.equal((await manager.refreshFromDisk()).contextWindow, 200_000, "the unchanged source retains its live catalog");
-    assert.equal(modelCatalogCacheKey("gateway", next.providers.gateway!), "gateway");
+    assert.match(modelCatalogCacheKey("gateway", next.providers.gateway!), /^gateway::v3::/u);
     await store.save(next);
     const freshWithoutAmbiguousCache = new ModelManager("/synthetic", structuredClone(next), store);
     assert.deepEqual(await manager.refreshFromDisk(), freshWithoutAmbiguousCache.getInfo());
@@ -273,4 +332,66 @@ test("a config save during catalog restore remains visible to the next prompt", 
   await manager.preparePrompt();
   assert.equal(manager.getInfo().contextWindow, 64_000);
   assert.equal(initial.providers.gateway!.baseUrl, newest.providers.gateway!.baseUrl);
+});
+
+test("invalidated context recovery propagates fetch failure and cancellation instead of silently admitting 32K", async () => {
+  const initial = configuration();
+  const store = configurationStore(initial);
+  const models = new InMemoryModelsStore();
+  await models.write("gateway", { sourceKey: "gateway::obsolete", models: catalog(500_000) });
+  const ai = new AiRegistry();
+  const definition = ai.providers.get("openai-compatible")!.definition;
+  let requests = 0;
+  const controller = new AbortController();
+  ai.registerProvider({ ...definition, fetchModels: async ({ signal }) => {
+    requests++;
+    if (requests === 1) throw new Error("catalog unavailable");
+    if (requests === 2) {
+      controller.abort(new Error("catalog cancelled"));
+      signal?.throwIfAborted();
+    }
+    return catalog(1_000_000);
+  } });
+  const manager = await ModelManager.create("/synthetic", initial, store, ai, models);
+  await assert.rejects(manager.preparePrompt(), /catalog unavailable/u);
+  await assert.rejects(manager.preparePrompt(controller.signal), /catalog cancelled/u);
+  assert.equal(manager.getInfo().contextWindowIsFallback, true);
+  assert.equal(await models.read(modelCatalogCacheKey("gateway", initial.providers.gateway!)), undefined);
+  await manager.preparePrompt();
+  assert.equal(manager.getContextBudget().maxInputTokens, 950_000);
+  assert.equal(manager.getModelSettings().contextWindow, 1_000_000);
+  await manager.preparePrompt();
+  assert.equal(requests, 3, "known capacity does not refresh again on every model step");
+});
+
+test("a resident manager with unknown capacity adopts a same-source catalog refreshed by another client", async () => {
+  const initial = configuration();
+  const store = configurationStore(initial);
+  const models = new InMemoryModelsStore();
+  const ai = new AiRegistry();
+  ai.registerProvider({ ...ai.providers.get("openai-compatible")!.definition,
+    fetchModels: async () => { throw new Error("a current disk catalog needs no network"); } });
+  const manager = await ModelManager.create("/synthetic", initial, store, ai, models);
+  assert.equal(manager.getInfo().contextWindowIsFallback, true);
+  await cache(models, initial, 1_000_000);
+  await manager.preparePrompt(undefined, false);
+  assert.equal(manager.getInfo().contextWindow, 1_000_000);
+  assert.equal(manager.getModelSettings().contextWindow, 1_000_000);
+  assert.equal(manager.getContextBudget().maxInputTokens, 950_000);
+});
+
+test("catalog recovery preserves explicit limits and never guesses an unknown model or an overridden endpoint", async () => {
+  for (const kind of ["unknown", "profile", "endpoint"] as const) {
+    const initial = configuration(kind === "profile" ? { modelProfiles: { "custom-chat": { contextWindow: 64_000 } } } : {});
+    if (kind === "endpoint") initial.models.selected!.baseUrl = "https://other.invalid/v1";
+    const models = new InMemoryModelsStore();
+    if (kind !== "unknown") await models.write("gateway", { sourceKey: "gateway::obsolete", models: catalog(500_000) });
+    const ai = new AiRegistry();
+    ai.registerProvider({ ...ai.providers.get("openai-compatible")!.definition,
+      fetchModels: async () => { throw new Error("unrelated or unnecessary catalog request"); } });
+    const manager = await ModelManager.create("/synthetic", initial, configurationStore(initial), ai, models);
+    await manager.preparePrompt();
+    assert.equal(manager.getInfo().contextWindow, kind === "profile" ? 64_000 : 32_768);
+    assert.equal(manager.getInfo().contextWindowIsFallback, kind !== "profile");
+  }
 });

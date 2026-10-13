@@ -15,7 +15,7 @@ function catalog(names = ["Alpha"]): DesktopSkillCatalogSnapshot {
     source: "biny" as const, engine: "biny" as const, linkedEngines: [], precedence: 1,
     absolutePath: `/inert/${name}`, mdPath: `/inert/${name}/SKILL.md`, frontmatter: {},
     files: [{ name: "SKILL.md", path: "SKILL.md", kind: "file" as const, size: 1 }] }));
-  return { skills, inventory: skills, plugins: [], unmanagedSkills: [], managedSources: [], warnings: [], diagnostics: [] };
+  return { skills, inventory: skills, plugins: [], unmanagedSkills: [], warnings: [], diagnostics: [] };
 }
 const preview = (content: string): DesktopSkillFilePreview => ({ path: "SKILL.md", content, bytes: content.length, binary: false, truncated: false });
 

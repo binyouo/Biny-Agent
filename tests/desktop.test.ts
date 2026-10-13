@@ -74,7 +74,7 @@ import { highlightFencedCode, highlightWorkspaceFile } from "../src/desktop/rend
 import { splitAttachmentReferences, withAttachmentReferences } from "../src/desktop/attachmentReferences.js";
 import { workspaceFileMarker } from "../src/desktop/renderer/src/workspaceFileMarker.js";
 import { filterPickerModelChoices, listConfiguredModelChoices, listModelChoices, listPickerModelChoices, ModelManager } from "../src/llm/ModelManager.js";
-import { FileModelsStore } from "../src/llm/ModelsStore.js";
+import { FileModelsStore, modelCatalogCacheKey } from "../src/llm/ModelsStore.js";
 import type { SessionEvent } from "../src/session/recorder.js";
 import { SessionRecorder } from "../src/session/recorder.js";
 import { listSessionSummaries, readStoredSessionEvents } from "../src/session/events.js";
@@ -1503,10 +1503,14 @@ async function testDesktopActiveViewPersistence(): Promise<void> {
     const state = new DesktopStateStore(statePath);
     await state.load();
     assert.equal(state.activeView(), "chat");
-    await state.setActiveView("extensions");
+    await state.setActiveView("runtime");
     const restored = new DesktopStateStore(statePath);
     await restored.load();
-    assert.equal(restored.activeView(), "extensions");
+    assert.equal(restored.activeView(), "runtime");
+    await writeFile(statePath, `${JSON.stringify({ version: 1, activeView: "extensions" })}\n`);
+    const removedExtensionsView = new DesktopStateStore(statePath);
+    await removedExtensionsView.load();
+    assert.equal(removedExtensionsView.activeView(), "chat", "legacy SkillHub view state returns to chat after the page is removed");
     await writeFile(statePath, `${JSON.stringify({ version: 1, activeView: "mcp" })}\n`);
     const mcp = new DesktopStateStore(statePath);
     await mcp.load();
@@ -3066,6 +3070,7 @@ async function testDesktopConnectionMetadata(): Promise<void> {
     unreachable.providers.deepseek!.retry = { maxAttempts: 1, initialDelayMs: 0, maxDelayMs: 0 };
     await configStore.save(unreachable);
     await modelsStore.write("deepseek", {
+      sourceKey: modelCatalogCacheKey("deepseek", unreachable.providers.deepseek!),
       models: [{
         id: "cached-deepseek-model",
         displayName: "Cached DeepSeek Model",

@@ -239,6 +239,8 @@ export function refreshSessionGoalPrompt(systemPrompt: string | undefined, goal:
 export interface PromptBundle {
   systemPrompt: string;
   turnContext: string;
+  /** 已成功装入本轮 system prompt 的 Skill 名称，不从预选名单推断。 */
+  loadedSkills?: string[];
 }
 
 export function buildPromptBundle(options: BuildSystemPromptOptions): PromptBundle {

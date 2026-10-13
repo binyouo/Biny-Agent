@@ -2926,16 +2926,17 @@ async function testLocalMemoryMutationKeepsIndexInSync(): Promise<void> {
 
     const updated = await memory.updateEntry(created.entry.id, { content: "Updated mutation index sync keeps the derived vector synchronized." });
     assert.equal(updated.written, true);
+    assert.deepEqual(removed, [], "更新通过事实 revision 使旧投影失效，不按 ID 删除可能已更新的向量");
     assert.deepEqual(indexed, [created.entry.id, created.entry.id]);
 
     const archived = await memory.archiveEntry(created.entry.id, true);
     assert.equal(archived.archived, true);
-    assert.deepEqual(removed, [created.entry.id, created.entry.id]);
+    assert.deepEqual(removed, [created.entry.id]);
 
     const archivedUpdate = await memory.updateEntry(archived.entry!.id, { content: "Edited archived mutation index sync must not rebuild active vectors." });
     assert.equal(archivedUpdate.written, true);
     assert.deepEqual(indexed, [created.entry.id, created.entry.id]);
-    assert.deepEqual(removed, [created.entry.id, created.entry.id], "编辑归档条目不能重新建立活动向量");
+    assert.deepEqual(removed, [created.entry.id], "编辑归档条目不能重新建立活动向量");
 
     const restored = await memory.archiveEntry(archivedUpdate.entry!.id, false);
     assert.equal(restored.archived, false);
@@ -2944,7 +2945,7 @@ async function testLocalMemoryMutationKeepsIndexInSync(): Promise<void> {
 
     const deleted = await memory.deleteEntryById(restored.entry.id);
     assert.equal(deleted.deleted, true);
-    assert.deepEqual(removed, [created.entry.id, created.entry.id, restored.entry.id]);
+    assert.deepEqual(removed, [created.entry.id, restored.entry.id]);
 
     const second = await memory.writeEntry(projectEntry(
       "Clearing the memory library must remove every entry from the derived vector index too."
@@ -2953,10 +2954,10 @@ async function testLocalMemoryMutationKeepsIndexInSync(): Promise<void> {
     assert.deepEqual(indexed, [created.entry.id, created.entry.id, restored.entry.id, second.entry.id]);
     const archivedSecond = await memory.archiveEntry(second.entry.id, true);
     assert.equal(archivedSecond.archived, true);
-    assert.deepEqual(removed, [created.entry.id, created.entry.id, restored.entry.id, second.entry.id]);
+    assert.deepEqual(removed, [created.entry.id, restored.entry.id, second.entry.id]);
     const cleared = await memory.clearAllEntries();
     assert.equal(cleared.deletedEntries, 1);
-    assert.deepEqual(removed, [created.entry.id, created.entry.id, restored.entry.id, second.entry.id, second.entry.id]);
+    assert.deepEqual(removed, [created.entry.id, restored.entry.id, second.entry.id, second.entry.id]);
   });
 }
 
