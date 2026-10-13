@@ -396,6 +396,7 @@ function buildHistoricalTurns(events: SessionEvent[]): TimelineTurn[] {
       current.userMessageIndex = userMessageIndex;
       current.userMessageId = event.messageId;
       current.capabilitySelection = selectedCapabilities(metadataById, event.messageId);
+      current.skills = loadedSkillNames(metadataById, event.messageId);
       userMessageIndex += 1;
       turns.push(current);
       continue;
@@ -447,7 +448,6 @@ function buildHistoricalTurns(events: SessionEvent[]): TimelineTurn[] {
       if (event.auditOnly) continue;
       const turn = ensureTurn(event.time);
       const toolName = event.tool;
-      appendInvokedSkill(turn, toolName, event.args);
       const projection = historicalToolProjection(toolName, event.args);
       appendHistoricalReasoning(turn, event.reasoningContent, reasoningStartedAt, event.time);
       appendAssistant(turn, event.assistantContent, true);
@@ -478,6 +478,7 @@ function buildHistoricalTurns(events: SessionEvent[]): TimelineTurn[] {
         tool.recovered = event.recovered;
         tool.operationId = event.operationId;
         tool.evidence = event.evidence;
+        if (tool.status === "success") appendLoadedSkill(turn, toolName, tool.args);
       }
       continue;
     }
@@ -597,6 +598,7 @@ function buildVersionedHistoricalTurns(events: SessionEvent[]): TimelineTurn[] {
       current.userMessageIndex = event.messageId === undefined ? activeUserIndex : userIndexes.get(event.messageId) ?? activeUserIndex;
       current.userMessageId = event.messageId;
       current.capabilitySelection = selectedCapabilities(metadataById, event.messageId);
+      current.skills = loadedSkillNames(metadataById, event.messageId);
       activeUserIndex += 1;
       turns.push(current);
       if (event.messageId) turnsByUserId.set(event.messageId, current);
@@ -649,7 +651,6 @@ function buildVersionedHistoricalTurns(events: SessionEvent[]): TimelineTurn[] {
       if (event.auditOnly) continue;
       const turn = turnForEvent(event, event.time);
       const toolName = event.tool;
-      appendInvokedSkill(turn, toolName, event.args);
       const projection = historicalToolProjection(toolName, event.args);
       appendHistoricalReasoning(turn, event.reasoningContent, reasoningStartedAt, event.time);
       appendAssistant(turn, event.assistantContent, true);
@@ -680,6 +681,7 @@ function buildVersionedHistoricalTurns(events: SessionEvent[]): TimelineTurn[] {
         tool.recovered = event.recovered;
         tool.operationId = event.operationId;
         tool.evidence = event.evidence;
+        if (tool.status === "success") appendLoadedSkill(turn, toolName, tool.args);
       }
       continue;
     }
@@ -911,6 +913,7 @@ function createLiveTimelineFold(initialUserMessageIndex: number): LiveTimelineFo
       turn.memoryInjectedSummaries = event.context.memoryInjectedSummaries.length ? [...event.context.memoryInjectedSummaries] : undefined;
       turn.memoryRecallDegraded = event.context.memoryRecallDegraded;
       if (event.context.capabilitySelection) turn.capabilitySelection = event.context.capabilitySelection;
+      if (event.context.loadedSkills !== undefined) turn.skills = loadedSkillNamesFromValue(event.context.loadedSkills);
     } else if (event.type === "context.retrying") {
       turn.steps.push({
         kind: "reasoning",
@@ -958,7 +961,6 @@ function createLiveTimelineFold(initialUserMessageIndex: number): LiveTimelineFo
       noteFirstToken(turn, event.timestamp);
     } else if (event.type === "tool.started") {
       finishReasoning(event.runId, event.timestamp);
-      appendInvokedSkill(turn, event.tool, event.args);
       const tool = toolFor(event, event.tool);
       tool.tool = event.tool;
       tool.args = event.args;
@@ -988,6 +990,7 @@ function createLiveTimelineFold(initialUserMessageIndex: number): LiveTimelineFo
       tool.operationId = event.operationId;
       tool.evidence = event.evidence;
       tool.durationMs = event.durationMs;
+      if (tool.status === "success") appendLoadedSkill(turn, event.tool, tool.args);
     } else if (event.type === "tool.failed") {
       const tool = toolFor(event, event.tool);
       if (event.result !== undefined) applyToolResult(tool, event.result);
@@ -1335,8 +1338,8 @@ function appendReasoning(existing: string, next: string | undefined): string {
   return `${existing}\n\n${next}`;
 }
 
-/** “已使用技能”只认真实 Skill 调用，不能把启动时全部可用路径投影成已使用。 */
-function appendInvokedSkill(turn: TimelineTurn, tool: string, args: unknown): void {
+/** Skill 工具结果已成功，或 prompt 加载元数据已确认后，才计入本轮已加载列表。 */
+function appendLoadedSkill(turn: TimelineTurn, tool: string, args: unknown): void {
   if ((tool !== "Skill" && tool !== "skill_call") || typeof args !== "object" || args === null || !("skill" in args)) return;
   const skill = (args as { skill?: unknown }).skill;
   if (typeof skill === "string" && skill.trim() && !turn.skills.includes(skill.trim())) turn.skills.push(skill.trim());
@@ -1511,6 +1514,15 @@ function selectedCapabilities(metadataById: ReadonlyMap<string, Record<string, u
   if (!messageId) return undefined;
   const selected = resolvedCapabilitySelectionSchema.safeParse(metadataById.get(messageId)?.capabilitySelection);
   return selected.success ? selected.data : undefined;
+}
+
+function loadedSkillNames(metadataById: ReadonlyMap<string, Record<string, unknown>>, messageId?: string): string[] {
+  return messageId ? loadedSkillNamesFromValue(metadataById.get(messageId)?.loadedSkills) : [];
+}
+
+function loadedSkillNamesFromValue(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value.filter((item): item is string => typeof item === "string").map((item) => item.trim()).filter(Boolean))];
 }
 
 /** Session 元数据可能来自旧版本或手工编辑文件，只接受非空字符串摘要。 */

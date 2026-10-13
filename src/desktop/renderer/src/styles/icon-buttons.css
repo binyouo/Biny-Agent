@@ -54,7 +54,7 @@
   .settings-search button,
   .settings-extension-search > button,
   .provider-delete-button,
-  .provider-test-button,
+  .provider-test-button:not(.provider-connection-test),
   .provider-inline-notice button,
   .import-preview-dialog > header > button,
   .chat-activity-mode,

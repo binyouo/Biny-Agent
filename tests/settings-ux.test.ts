@@ -826,7 +826,7 @@ function skillCatalog(): DesktopSkillCatalogSnapshot {
     files: [{ name: "SKILL.md", path: "SKILL.md", kind: "file", size: 100 }], frontmatter: { name }
   });
   const skills = [skill("project-workflow", "project"), skill("global-workflow", "global"), skill("report", "builtin"), skill("diary", "builtin")];
-  return { skills, inventory: skills, unmanagedSkills: [], plugins: [], managedSources: [], warnings: [], diagnostics: [] };
+  return { skills, inventory: skills, unmanagedSkills: [], plugins: [], warnings: [], diagnostics: [] };
 }
 
 test("保留扩展页状态的容器传递可收缩高度，技能页可滚动且隐藏页不占空间；分组测试未检查滚动样式装配", async () => {

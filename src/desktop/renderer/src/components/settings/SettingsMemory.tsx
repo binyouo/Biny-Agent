@@ -815,7 +815,7 @@ export function SettingsMemory({
           <div className="activity-memory-model-picker-row">
             <SettingsModelPicker
               ariaLabel="记忆工具模型"
-              groups={modelPickerGroups(models)}
+              groups={modelPickerGroups(models.filter((model) => model.providerType !== "acp"))}
               inheritLabel="使用默认工具模型"
               onChange={(memoryModel) => setMemory({ ...policy, memoryModel })}
               placeholder="使用默认工具模型"

@@ -29,7 +29,7 @@ import { CheckpointStore } from "../session/checkpointStore.js";
 import { PermissionManager } from "../permission/PermissionManager.js";
 import { createSkillLookupTool, createSkillResourceTool, createSkillTool, type SkillBundle, type SkillDefinition } from "../extensions/skills.js";
 import { createSkillInstallTool, createSkillSearchTool } from "../tools/skillDiscovery.js";
-import { skillPathsForSelection, skillPromptForSelection } from "../extensions/skills.js";
+import { skillNamesForSelection, skillPathsForSelection, skillPromptForSelection } from "../extensions/skills.js";
 import type { ToolRisk, ToolSource } from "../tools/types.js";
 import { perfNow, recordPerfPhase } from "../observability/perfTiming.js";
 import { loadPlugins, loadPluginsFromRoot } from "../extensions/plugins.js";
@@ -672,6 +672,7 @@ async function initializeCommandRuntime(
     permissionManager,
     recorder,
     skillPrompt: (selection, runId) => skillPromptForSelection(skillsForRun(runId), selection),
+    skillNames: (selection, runId) => skillNamesForSelection(skillsForRun(runId), selection),
     extractSkill: async ({ messageId, events, minToolCalls, onNotice }) => await runSkillExtraction({
       messageId,
       events,

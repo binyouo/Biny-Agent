@@ -46,6 +46,7 @@ import { globalAgentDir, globalConfigDir } from "../../../config/paths.js";
 import { createProjectSkillKey } from "../../../extensions/skillRef.js";
 import { synchronizeCredentialRevisions, type DeferredCredentialTransactionStatus } from "../../../config/credentials.js";
 import { configSchema, reasoningEffortSchema, type AgentConfig, type ProviderConfig } from "../../../config/schema.js";
+import { AcpClient, acpMcpServers } from "../../../acp/client.js";
 import type { AgentConfigStore } from "../../../config/store.js";
 import { configChangeRequiresRuntimeRestart, configDocumentRevision } from "../../../config/versioned.js";
 import { createModelSettings, validateModelConfiguration } from "../../../llm/modelFactory.js";
@@ -57,7 +58,7 @@ import { selectMemoryEmbeddingModel } from "../../../llm/embedding/selectMemoryM
 import { MemoryVectorIndex } from "../../../agent/context/MemoryVectorIndex.js";
 import { MemoryEmbeddingService, type MemoryEmbeddingRuntimeStatus } from "../../../agent/context/MemoryEmbeddingService.js";
 import { FileModelsStore, restoreProviderCatalogs, type ModelsStore } from "../../../llm/ModelsStore.js";
-import { listConfiguredModelChoices, listPickerModelChoices, modelRuntimeInfo, saveModelSelection, type ModelRuntimeInfo, type ThinkingSelection } from "../../../llm/ModelManager.js";
+import { filterPickerModelChoices, listConfiguredModelChoices, listPickerModelChoices, modelRuntimeInfo, saveModelSelection, type ModelRuntimeInfo, type ThinkingSelection } from "../../../llm/ModelManager.js";
 import type { PermissionMode, PermissionResult } from "../../../permission/PermissionManager.js";
 import type { UserInputResponse } from "../../../runtime/userInput.js";
 import type { BrowserAutomationEndpoint } from "../../../tools/browser.js";
@@ -374,7 +375,7 @@ export class DesktopAgentManager {
     ]);
     const catalogs = config ? await restoreProviderCatalogs(Object.keys(config.providers), this.modelsStore, config.providers) : [];
     const models = config ? listConfiguredModelChoices(config, catalogs) : [];
-    const pickerModels = config ? listPickerModelChoices(config, catalogs) : [];
+    const pickerModels = filterPickerModelChoices(models);
     if (config && pickerModels.some((model) => model.alias === config.defaultModel)) {
       const info = modelRuntimeInfo(config, catalogs);
       pickerModels.sort((left, right) => Number(right.alias === info.modelAlias) - Number(left.alias === info.modelAlias));
@@ -2087,6 +2088,18 @@ export class DesktopAgentManager {
     this.projects.requireProject(projectId);
     const current = await this.loadProjectConfig(projectId);
     const candidate = this.buildConfigWithModel(current, input);
+    if (input.providerType === "acp") {
+      const launch = candidate.providers[input.providerAlias]?.acp;
+      if (!launch) return { ok: false, message: "请填写 ACP 启动命令。" };
+      const started = Date.now();
+      let client: AcpClient | undefined;
+      try {
+        client = new AcpClient({ launch, cwd: this.projects.requireProject(projectId).path, mcpServers: acpMcpServers(candidate, launch), timeoutMs: candidate.providers[input.providerAlias]?.timeoutMs });
+        const acp = await client.connect();
+        return { ok: true, message: "ACP 会话连接成功", latencyMs: Date.now() - started, acp };
+      } catch (error) { return { ok: false, message: formatModelConnectionError(error) }; }
+      finally { await client?.close(); }
+    }
     return await this.testCandidate(candidate, input.alias);
   }
 
@@ -2247,6 +2260,7 @@ export class DesktopAgentManager {
       : Object.assign({}, sameProvider ? existingProvider?.modelProfiles : undefined, { [input.model]: input.modelProfile });
     const provider = {
       type: input.providerType,
+      acp: input.acp ?? (sameProvider ? existingProvider.acp : undefined),
       enabled: existingProvider?.enabled,
       icon: sameProvider ? existingProvider.icon : undefined,
       dataResidency: sameProvider ? existingProvider.dataResidency : undefined,
@@ -3209,12 +3223,19 @@ export class DesktopAgentManager {
     const storage = new MemoryStorage(project.path);
     // entries 与 allEntries 是同一份全量结果的两个用途（分页页脚 / 统计），
     // 原来读了两次，等于把全部记忆正文反序列化两遍。
-    const [overview, allEntries, maintenance] = await Promise.all([
+    const reads = [
       storage.getOverview(),
       storage.listEntries(),
       storage.readMaintenanceStatus()
-    ]);
-    return { overview, entries: allEntries, allEntries, maintenance };
+    ] as const;
+    try {
+      const [overview, allEntries, maintenance] = await Promise.all(reads);
+      return { overview, entries: allEntries, allEntries, maintenance };
+    } finally {
+      // Promise.all rejects early; finish every owned read before closing its storage.
+      await Promise.allSettled(reads);
+      storage.close();
+    }
   }
 
   /** 记忆条目分页读取；runtime 驻留走 runtime，未驻留直连。 */
@@ -3236,8 +3257,12 @@ export class DesktopAgentManager {
     }
     const project = this.projects.requireProject(projectId);
     const storage = new MemoryStorage(project.path);
-    const result = await storage.listEntries({ offset, limit, includeArchived });
-    return { entries: result.entries, total: result.total, storeRevision: result.storeRevision };
+    try {
+      const result = await storage.listEntries({ offset, limit, includeArchived });
+      return { entries: result.entries, total: result.total, storeRevision: result.storeRevision };
+    } finally {
+      storage.close();
+    }
   }
 
   /** 冷态复用只读索引统计，不加载模型权重或创建向量投影。 */
@@ -3535,6 +3560,7 @@ function describeModelConnections(config: AgentConfig): DesktopModelConnection[]
     return {
       providerAlias,
       providerType: provider.type,
+      acp: provider.acp,
       enabled: provider.enabled ?? true,
       displayName: provider.displayName,
       icon: provider.icon,

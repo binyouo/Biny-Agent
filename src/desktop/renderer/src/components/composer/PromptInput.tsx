@@ -147,7 +147,10 @@ export function PromptInput({ value, onChange, onReferenceChange, onInspectRefer
       {decorations.map((token, index) => <React.Fragment key={`${token.type}-${String(token.start)}`}>
         {value.slice(decorations[index - 1]?.end ?? 0, token.start)}
         {token.type === "skill"
-          ? <span className="biny-prompt-skill-token" data-skill-name={token.name}>{value.slice(token.start, token.end)}</span>
+          ? <span className="biny-prompt-skill-token" data-skill-name={token.name}>
+            <span className="biny-prompt-skill-source">{value.slice(token.start, token.end)}</span>
+            <span className="biny-prompt-skill-label"><Icon name="wand" size={11} /><span className="biny-prompt-skill-label-name">{token.name}</span></span>
+          </span>
           : <span className="biny-prompt-reference-token" data-reference-kind={token.kind}>
             <span className="biny-prompt-reference-icon"><span>@</span><Icon name={referenceIcons[token.kind]} size={11} /></span>
             {value.slice(token.start + 1, token.end)}

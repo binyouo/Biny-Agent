@@ -1,0 +1,258 @@
+/** Actual manager methods, inert storage only: no product imports, database, filesystem behavior or Runtime. */
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { test } from "node:test";
+import { createContext, Script } from "node:vm";
+import ts from "typescript";
+
+const source = ts.createSourceFile("DesktopAgentManager.ts", readFileSync(
+  new URL("../src/desktop/electron/main/DesktopAgentManager.ts", import.meta.url), "utf8"
+), ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+const manager = source.statements.filter(ts.isClassDeclaration).find(node => node.name?.text === "DesktopAgentManager");
+assert.ok(manager);
+const names = ["readMemoryStoreFromDisk", "readMemoryStorePaged", "readMemoryStoreFromRuntime", "memoryOverview", "memoryStats", "memoryEntries"];
+const methods = names.map(name => {
+  const matches = manager.members.filter(ts.isMethodDeclaration).filter(node => node.name.getText(source) === name);
+  assert.equal(matches.length, 1, name);
+  return matches[0]!.getText(source);
+});
+const emitted = ts.transpileModule(`class Receiver {\n${methods.join("\n")}\n}\nglobalThis.receiver = new Receiver();`, {
+  compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None }, reportDiagnostics: true
+});
+assert.equal(emitted.diagnostics?.length ?? 0, 0);
+assert.equal(/\brequire\s*\(|\bimport\s*\(|\bprocess\b/.test(emitted.outputText), false);
+const script = new Script(emitted.outputText);
+
+type ReadName = "overview" | "entries" | "maintenance";
+interface Entry { id: string; content: string }
+interface Entries { entries: Entry[]; total: number; storeRevision: number }
+interface Overview { storeRevision: number; entryCount: number }
+interface Maintenance { state: string; eligible: number; processed: number; written: number; failed: number }
+interface PageOptions { offset?: number; limit?: number; includeArchived?: boolean }
+interface Store { overview: Overview; entries: Entries; allEntries: Entries; maintenance: Maintenance }
+interface Stats { revision: number; totalEntries: number; configRevision: string; memoryStats: { total: number }; entries?: Entry[] }
+interface Page { revision: number; entries: Entry[]; total: number; offset: number; limit: number }
+interface Receiver {
+  projects: { requireProject(id: string): { path: string } };
+  residentRuntime(id: string): unknown;
+  requireVersionedConfig(): { loadVersioned(path: string): Promise<unknown> };
+  currentPersonalizationState(id: string): Promise<unknown>;
+  readMemoryStoreFromDisk(id: string): Promise<Store>;
+  readMemoryStorePaged(id: string, offset: number, limit: number, archived?: boolean): Promise<Entries>;
+  memoryOverview(id: string): Promise<Stats>;
+  memoryStats(id: string): Promise<Stats>;
+  memoryEntries(id: string, offset: number, limit: number, archived?: boolean): Promise<Page>;
+}
+interface Owned {
+  root: string; calls: ReadName[]; closeCalls: number; options: PageOptions[];
+}
+interface Options {
+  empty?: boolean;
+  read?(name: ReadName, owned: Owned): Promise<void>;
+  closeError?: Error;
+  resident?: "local" | "remote";
+}
+function fixture(options: Options = {}) {
+  const records: Entry[] = options.empty ? [] : [{ id: "fact", content: "A durable fact" }];
+  const revision = options.empty ? 0 : 41;
+  const entries: Entries = { entries: records, total: records.length, storeRevision: revision };
+  const overview: Overview = { storeRevision: revision, entryCount: records.length };
+  const maintenance: Maintenance = { state: "idle", eligible: 0, processed: 0, written: 0, failed: 0 };
+  const instances: Owned[] = [];
+  const events: string[] = [];
+  const projectCalls: string[] = [];
+  const localCalls: string[] = [];
+  const remoteCalls: Array<{ name: string; args: PageOptions }> = [];
+  let residentClosed = 0;
+  class InertStorage implements Owned {
+    root: string;
+    calls: ReadName[] = [];
+    closeCalls = 0;
+    options: PageOptions[] = [];
+    constructor(root: string) { this.root = root; instances.push(this); }
+    async read(name: ReadName): Promise<void> {
+      this.calls.push(name);
+      events.push(`start:${name}`);
+      await options.read?.(name, this);
+      assert.equal(this.closeCalls, 0, "owned storage must remain open during every read");
+      events.push(`end:${name}`);
+    }
+    async getOverview(): Promise<Overview> { await this.read("overview"); return overview; }
+    async listEntries(page: PageOptions = {}): Promise<Entries> { this.options.push(page); await this.read("entries"); return entries; }
+    async readMaintenanceStatus(): Promise<Maintenance> { await this.read("maintenance"); return maintenance; }
+    close(): void { this.closeCalls++; events.push("close"); if (options.closeError) throw options.closeError; }
+  }
+  const local = {
+    async getOverview() { localCalls.push("overview"); return overview; },
+    async listMemoryEntries(page?: PageOptions) { localCalls.push(page ? "page" : "entries"); return entries; },
+    async loadMaintenanceStatus() { localCalls.push("maintenance"); return maintenance; },
+    close() { residentClosed++; }
+  };
+  const remote = {
+    async memory(name: string, args: PageOptions): Promise<Entries | Store> {
+      remoteCalls.push({ name, args });
+      return name === "list" ? entries : { overview, entries, allEntries: entries, maintenance };
+    },
+    close() { residentClosed++; }
+  };
+  const managed = options.resident === "local" ? { commands: {}, runtime: {} }
+    : options.resident === "remote" ? { runtime: remote } : undefined;
+  const context = createContext({
+    MemoryStorage: InertStorage,
+    requireLocalMemory: () => local,
+    requireRemoteRuntime: (runtime: unknown) => { assert.equal(runtime, remote); return remote; },
+    requireConfigRevision: () => "config-revision",
+    memoryStats: (result: Entries) => ({ total: result.total })
+  }, { codeGeneration: { strings: false, wasm: false } });
+  script.runInContext(context, { timeout: 1000 });
+  const receiver = context.receiver as Receiver;
+  receiver.projects = { requireProject(id) { projectCalls.push(id); return { path: `/inert/${id}` }; } };
+  receiver.residentRuntime = () => managed;
+  receiver.requireVersionedConfig = () => ({ loadVersioned: async () => ({ revision: "config-revision", config: { context: { memory: {} } } }) });
+  receiver.currentPersonalizationState = async () => {
+    assert.ok(options.resident, "cold reads must not initialize a runtime");
+    return { memory: {} };
+  };
+  return { receiver, instances, events, projectCalls, localCalls, remoteCalls, entries, overview, maintenance,
+    get residentClosed() { return residentClosed; } };
+}
+function deferred() {
+  let resolve!: () => void;
+  const promise = new Promise<void>(done => { resolve = done; });
+  return { promise, resolve };
+}
+async function microtasks(): Promise<void> { for (let n = 0; n < 20; n++) await Promise.resolve(); }
+function closedOnce(f: ReturnType<typeof fixture>, count: number): void {
+  assert.equal(f.instances.length, count);
+  for (const instance of f.instances) assert.equal(instance.closeCalls, 1);
+}
+
+for (const method of ["memoryStats", "memoryOverview"] as const) test(`cold ${method} preserves values and closes exactly once`, async () => {
+  const f = fixture();
+  const result = await f.receiver[method]("project");
+  assert.equal(result.revision, 41);
+  assert.equal(result.totalEntries, 1);
+  assert.equal(result.configRevision, "config-revision");
+  assert.equal(result.memoryStats.total, 1);
+  if (method === "memoryOverview") assert.equal(result.entries, f.entries.entries);
+  closedOnce(f, 1);
+  assert.equal(f.instances[0]!.root, "/inert/project");
+  assert.deepEqual(f.instances[0]!.calls, ["overview", "entries", "maintenance"]);
+  assert.equal(f.events.at(-1), "close");
+});
+
+test("cold page preserves values/options and closes exactly once", async () => {
+  const f = fixture();
+  const result = await f.receiver.memoryEntries("project", 20, 10, true);
+  assert.equal(result.revision, 41);
+  assert.equal(result.entries, f.entries.entries);
+  assert.equal(result.total, 1);
+  assert.equal(result.offset, 20);
+  assert.equal(result.limit, 10);
+  assert.equal(JSON.stringify(f.instances[0]!.options), JSON.stringify([{ offset: 20, limit: 10, includeArchived: true }]));
+  closedOnce(f, 1);
+});
+
+for (const name of ["overview", "entries", "maintenance"] as const) test(`cold overview ${name} failure closes and preserves error identity`, async () => {
+  const error = new Error(`failed:${name}`);
+  const f = fixture({ read: async current => { if (current === name) throw error; } });
+  await assert.rejects(f.receiver.memoryStats("project"), caught => caught === error);
+  closedOnce(f, 1);
+});
+
+test("cold page failure closes and preserves error identity", async () => {
+  const error = new Error("page failure");
+  const f = fixture({ read: async () => { throw error; } });
+  await assert.rejects(f.receiver.memoryEntries("project", 0, 20), caught => caught === error);
+  closedOnce(f, 1);
+});
+
+test("parallel overview waits for pending siblings on failure before close", async () => {
+  const one = deferred(), two = deferred();
+  const error = new Error("maintenance failure");
+  const f = fixture({ read: async name => {
+    if (name === "overview") await one.promise;
+    else if (name === "entries") await two.promise;
+    else throw error;
+  } });
+  let settled = false;
+  const outcome = f.receiver.readMemoryStoreFromDisk("project").then(value => ({ value }), error => ({ error }))
+    .finally(() => { settled = true; });
+  await microtasks();
+  const before = { settled, closed: f.instances[0]!.closeCalls, started: [...f.instances[0]!.calls] };
+  one.resolve();
+  await microtasks();
+  const middle = { settled, closed: f.instances[0]!.closeCalls };
+  two.resolve();
+  const result = await outcome;
+  assert.deepEqual(before, { settled: false, closed: 0, started: ["overview", "entries", "maintenance"] });
+  assert.deepEqual(middle, { settled: false, closed: 0 });
+  assert.ok("error" in result);
+  assert.equal(result.error, error);
+  closedOnce(f, 1);
+  assert.equal(f.events.at(-1), "close");
+});
+
+test("parallel successful reads remain open until all three settle", async () => {
+  const gate = deferred();
+  const f = fixture({ read: async name => { if (name === "entries") await gate.promise; } });
+  const result = f.receiver.readMemoryStoreFromDisk("project");
+  await microtasks();
+  const before = f.instances[0]!.closeCalls;
+  gate.resolve();
+  const store = await result;
+  assert.equal(before, 0);
+  assert.equal(store.entries, store.allEntries);
+  assert.equal(store.overview, f.overview);
+  assert.equal(store.maintenance, f.maintenance);
+  closedOnce(f, 1);
+});
+
+test("absent database results remain empty and safely close owned instances", async () => {
+  const f = fixture({ empty: true });
+  const stats = await f.receiver.memoryStats("project");
+  const page = await f.receiver.memoryEntries("project", 0, 20);
+  assert.equal(stats.revision, 0); assert.equal(stats.totalEntries, 0);
+  assert.equal(page.revision, 0); assert.equal(page.entries.length, 0);
+  closedOnce(f, 2);
+});
+
+test("repeated and concurrent requests have independent owned instances", async () => {
+  const gate = deferred();
+  const f = fixture({ read: async () => { await gate.promise; } });
+  const first = f.receiver.memoryStats("one");
+  const second = f.receiver.memoryEntries("two", 0, 20);
+  await microtasks();
+  const before = f.instances.map(instance => instance.closeCalls);
+  gate.resolve();
+  await Promise.all([first, second]);
+  await f.receiver.memoryEntries("one", 20, 20);
+  await f.receiver.memoryStats("two");
+  assert.deepEqual(before, [0, 0]);
+  closedOnce(f, 4);
+  assert.equal(new Set(f.instances).size, 4);
+  assert.deepEqual(f.instances.map(instance => instance.root), ["/inert/one", "/inert/two", "/inert/one", "/inert/two"]);
+});
+
+for (const resident of ["local", "remote"] as const) test(`resident ${resident} routes are untouched and never close borrowed storage`, async () => {
+  const f = fixture({ resident });
+  const stats = await f.receiver.memoryStats("project");
+  const page = await f.receiver.memoryEntries("project", 20, 10, true);
+  assert.equal(stats.revision, 41); assert.equal(page.revision, 41);
+  assert.equal(f.instances.length, 0);
+  assert.equal(f.residentClosed, 0);
+  if (resident === "local") assert.deepEqual(f.localCalls, ["overview", "entries", "maintenance", "page"]);
+  else assert.equal(JSON.stringify(f.remoteCalls), JSON.stringify([
+    { name: "overview", args: {} }, { name: "list", args: { offset: 20, limit: 10, includeArchived: true } }
+  ]));
+});
+
+for (const kind of ["overview", "page"] as const) for (const readFails of [false, true]) {
+  test(`${kind} close failure propagates${readFails ? " and overrides simultaneous read failure" : " after successful read"}`, async () => {
+    const closeError = new Error("close failure"), readError = new Error("read failure");
+    const f = fixture({ closeError, read: async () => { if (readFails) throw readError; } });
+    const result = kind === "overview" ? f.receiver.memoryStats("project") : f.receiver.memoryEntries("project", 0, 20);
+    await assert.rejects(result, caught => caught === closeError);
+    closedOnce(f, 1);
+  });
+}

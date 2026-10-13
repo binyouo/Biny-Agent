@@ -447,8 +447,10 @@ export class McpToolHost {
     // 模板通过普通工具结果返回，不提升为 system 消息，也不自动执行其中的操作。
     const result = await this.requestWithCredentials(managed, () => client.getPrompt({ name, arguments: args }, this.requestOptions(managed, signal)));
     let remaining = maxResourceTextBytes;
+    let textClipped = false;
     const bounded = (text: string): string => {
       const value = truncateUtf8(text, Math.max(0, remaining));
+      if (value.length < text.length) textClipped = true;
       remaining = Math.max(0, remaining - Buffer.byteLength(value));
       return value;
     };
@@ -460,7 +462,7 @@ export class McpToolHost {
         if (content.type === "resource" && "text" in content.resource) return { role: message.role, content: { type: "text", text: bounded(content.resource.text) } };
         return { role: message.role, content: { type: content.type, note: "non-text content omitted" } };
       }),
-      truncated: result.messages.length > 32 || remaining === 0
+      truncated: result.messages.length > 32 || remaining === 0 || textClipped
     };
   }
 
@@ -1268,8 +1270,15 @@ function freezeMcpToolMetadata(tool: Tool): Tool {
 function truncateUtf8(value: string, maxBytes: number): string {
   if (Buffer.byteLength(value, "utf8") <= maxBytes) return value;
   let end = Math.min(value.length, maxBytes);
-  while (end > 0 && Buffer.byteLength(value.slice(0, end), "utf8") > maxBytes) end -= 1;
-  return value.slice(0, end);
+  // Keep the ASCII-prefix fast path; search UTF-16 indices to preserve existing output.
+  if (Buffer.byteLength(value.slice(0, end), "utf8") <= maxBytes) return value.slice(0, end);
+  let start = 0;
+  while (start + 1 < end) {
+    const middle = Math.floor((start + end) / 2);
+    if (Buffer.byteLength(value.slice(0, middle), "utf8") <= maxBytes) start = middle;
+    else end = middle;
+  }
+  return value.slice(0, start);
 }
 
 async function resolveWorkingDirectory(workspaceRoot: string, configuredPath: string | undefined): Promise<string> {

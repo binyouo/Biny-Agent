@@ -25,9 +25,10 @@ export interface RecipeNotice extends DesktopRecipeSuggestion {
   sessionId: string;
 }
 
-/** 技能提取卡状态；同一会话同时只有一个提取在跑，阶段事件直接覆盖。 */
+/** 技能提取卡状态；运行身份防止旧提取的跳过通知清掉较新的卡片。 */
 export interface SkillExtractionCardState {
   sessionId: string;
+  runId: string;
   stage: "extracting" | "saving" | "done";
   skillName?: string;
   skillDescription?: string;
@@ -162,8 +163,14 @@ export function useDesktopEventBridge({
           }
           for (const event of currentEvents) {
             if (event.type === "skill_extraction.updated") {
+              if (event.stage === "skipped") {
+                setSkillExtraction((current) => current?.sessionId === event.sessionId && current.runId === event.runId
+                  ? undefined : current);
+                continue;
+              }
               setSkillExtraction({
                 sessionId: currentSessionId,
+                runId: event.runId,
                 stage: event.stage,
                 skillName: event.skillName,
                 skillDescription: event.skillDescription,
