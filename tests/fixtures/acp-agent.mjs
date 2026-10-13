@@ -55,7 +55,10 @@ for await (const line of createInterface({ input: process.stdin })) {
       } });
     } else if (text.includes("wait-fixture")) { pending = message.id; update({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "waiting" } }); }
     else if (text.includes("crash-fixture")) process.exit(7);
-    else finish(message.id, `Reply ${count}`);
+    else if (text.startsWith("acp-partial-output-v1:")) {
+      for (const notification of JSON.parse(text.slice("acp-partial-output-v1:".length))) update(notification);
+      finish(message.id, "Partial output fixture complete");
+    } else finish(message.id, `Reply ${count}`);
   } else if (message.id === "permission-1") {
     const allowed = message.result?.outcome?.optionId === "yes";
     if (allowed) writeFileSync(path.join(cwd, "effect.txt"), "one external write");
