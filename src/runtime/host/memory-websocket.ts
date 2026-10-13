@@ -54,7 +54,7 @@ export async function attachMemoryWebSocket(
     try {
       const sources = ["memory", "sleep", "embedding"];
       const results = await Promise.allSettled([
-        client.memory<{ overview?: unknown }>("overview"),
+        client.memory<{ overview?: unknown }>("overview", { summaryOnly: true }),
         client.memory<MemoryMaintenanceStatus>("sleep-status"),
         client.memoryEmbeddingStatus()
       ]);
