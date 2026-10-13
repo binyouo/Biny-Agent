@@ -360,7 +360,7 @@ export class TemporalMemoryIndex {
       if (eventOrdinal % 100 === 0) { signal?.throwIfAborted(); await yieldToEventLoop(); }
       if (!isOriginalUserMessage(event)) continue;
       if (activeIds && event.messageId && !activeIds.has(event.messageId)) continue;
-      if (event.slotId && event.messageId && (selectedSlots.get(event.slotId) ?? latestSlots.get(event.slotId)) !== event.messageId) continue;
+      if (activeIds === undefined && event.slotId && event.messageId && (selectedSlots.get(event.slotId) ?? latestSlots.get(event.slotId)) !== event.messageId) continue;
       const messageId = event.messageId ?? `line-${String(eventOrdinal)}`;
       const source: TemporalSource = {
         sessionId, messageId, text: event.content, sentAt: event.time,
@@ -583,7 +583,7 @@ export class TemporalMemoryIndex {
       if (!matching) return false;
       const activeIds = activeTreeIds(events);
       if (activeIds && matching.messageId && !activeIds.has(matching.messageId)) return false;
-      if (matching.slotId && matching.messageId
+      if (activeIds === undefined && matching.slotId && matching.messageId
         && (selectedSlots.get(matching.slotId) ?? latestSlots.get(matching.slotId)) !== matching.messageId) return false;
       if (referenceKeyVersion !== undefined && dateReferenceKeyFingerprint(this.root) !== referenceKeyVersion) return false;
       return hash(JSON.stringify(referenceKeyVersion === undefined

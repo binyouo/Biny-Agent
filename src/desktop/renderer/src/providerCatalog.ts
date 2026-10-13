@@ -44,7 +44,9 @@ export interface ProviderCatalogItem {
   description: string;
   /** 行尾短徽章（账号 / 订阅 / 本地 / 自定义）；官方 API 条目留空。 */
   badge?: string;
-  connectionMode: "api" | "login";
+  connectionMode: "api" | "login" | "acp";
+  acpCommand?: string;
+  acpSetup?: { installCommand: string; loginCommand: string; docsUrl: string };
   loginProvider?: DesktopModelLoginProvider;
   baseUrl: string;
   requiresApiKey: boolean;
@@ -128,6 +130,18 @@ function providerApiKeyUrl(providerId: string): string | undefined {
 }
 
 export const providerCatalog: ProviderCatalogItem[] = [
+  ...[
+    { id: "claude-code-acp", label: "Claude Code（ACP）", acpCommand: "claude-agent-acp", acpSetup: {
+      installCommand: "npm install -g @agentclientprotocol/claude-agent-acp",
+      loginCommand: "claude-agent-acp --cli auth login", docsUrl: "https://github.com/agentclientprotocol/claude-agent-acp"
+    } },
+    { id: "codex-acp", label: "Codex（ACP）", acpCommand: "codex-acp", acpSetup: {
+      installCommand: "npm install -g @agentclientprotocol/codex-acp",
+      loginCommand: "codex-acp cli login", docsUrl: "https://github.com/agentclientprotocol/codex-acp"
+    } },
+    { id: "custom-acp", label: "自定义 ACP", acpCommand: "" }
+  ].map((entry): ProviderCatalogItem => ({ ...entry, value: "acp", description: "本地外部 Agent", badge: "ACP",
+    connectionMode: "acp", baseUrl: "", requiresApiKey: false, iconTone: "compatible", models: [] })),
   {
     id: "claude-code",
     value: "claude-subscription",
@@ -283,6 +297,7 @@ export function recommendedApiFormat(providerType: ModelProvider, protocol?: "an
 }
 
 export function providerAliasFor(option: ProviderOption, baseUrl: string): string {
+  if (option.value === "acp") return option.id ?? "custom-acp";
   if (option.value !== "openai-compatible") return option.value;
   // 同一站点的普通 API 与订阅共用域名，内置入口必须用独立别名，避免保存时互相覆盖。
   if (option.id !== "openai-compatible" && option.id !== "custom") return option.id;
@@ -336,8 +351,8 @@ export function customCatalogEntry(
     // 创建对话框命名的服务商优先显示用户名字，其次才是端点主机名。
     label: connection.displayName ?? endpointLabel(baseUrl) ?? connection.provider,
     description: baseUrl ?? connection.providerType,
-    badge: "自定义",
-    connectionMode: "api",
+    badge: connection.providerType === "acp" ? "ACP" : "自定义",
+    connectionMode: connection.providerType === "acp" ? "acp" : "api",
     baseUrl: baseUrl ?? "",
     requiresApiKey: true,
     iconTone: "compatible",

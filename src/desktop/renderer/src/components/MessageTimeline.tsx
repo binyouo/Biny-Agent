@@ -32,6 +32,7 @@ import { UserInputCard } from "./chat/UserInputCard.js";
 import type { SavedQueuedMessage } from "../../../../session/queuedMessages.js";
 
 interface MessageTimelineProps {
+  externalAgent?: boolean;
   sessionId?: string;
   readOnly?: boolean;
   projectId: string;
@@ -81,7 +82,7 @@ function turnIsRunning(turn: TimelineTurn, runtimeActiveRunId: string | undefine
     || turn.tools.some((tool) => tool.runId === runtimeActiveRunId && (tool.status === "running" || tool.status === "waiting")));
 }
 
-export const MessageTimeline = memo(function MessageTimeline({ sessionId, readOnly = false, projectId, turns, skillDescriptions, skillLabels, pendingUserMessage, runtimeActiveRunId, onPreviewFile, onOpenExternal, onReferenceMessage, onShowMessageReferences, onAddQuoteToConversation, onResolvePermission, thinking, compacting = false, onRetry, onSwitchVersion, onEditRequest, editInFlight, onCreateBranch, onRollbackFiles }: MessageTimelineProps): React.JSX.Element {
+export const MessageTimeline = memo(function MessageTimeline({ sessionId, readOnly = false, externalAgent = false, projectId, turns, skillDescriptions, skillLabels, pendingUserMessage, runtimeActiveRunId, onPreviewFile, onOpenExternal, onReferenceMessage, onShowMessageReferences, onAddQuoteToConversation, onResolvePermission, thinking, compacting = false, onRetry, onSwitchVersion, onEditRequest, editInFlight, onCreateBranch, onRollbackFiles }: MessageTimelineProps): React.JSX.Element {
   // 重试会先把目标之后的消息从视图中撤掉，再等待新回合流入；这里保留同样的乐观投影。
   // 编辑的重写投影来自 App（editInFlight），提交入口在底部输入框，不经过本组件状态。
   const [optimisticRewrite, setOptimisticRewrite] = useState<OptimisticRewrite>();
@@ -252,6 +253,7 @@ export const MessageTimeline = memo(function MessageTimeline({ sessionId, readOn
           busy={busy}
           suppressRunStatus={compacting}
           readOnly={readOnly}
+          externalAgent={externalAgent}
           pending={pendingUserMessage !== undefined && pendingUserMessage.messageId === turn.userMessageId && !hasRealPendingMessage}
           skillDescriptions={skillDescriptions}
           skillLabels={skillLabels}
@@ -341,6 +343,7 @@ const Turn = memo(function Turn({
   busy,
   suppressRunStatus,
   readOnly,
+  externalAgent,
   pending = false,
   skillDescriptions,
   skillLabels,
@@ -364,6 +367,7 @@ const Turn = memo(function Turn({
   busy: boolean;
   suppressRunStatus: boolean;
   readOnly: boolean;
+  externalAgent: boolean;
   pending?: boolean;
   skillDescriptions?: ReadonlyMap<string, string>;
   skillLabels?: ReadonlyMap<string, string>;
@@ -387,7 +391,7 @@ const Turn = memo(function Turn({
   const running = turnIsRunning(turn, runtimeActiveRunId);
   const retryPromiseRef = useRef<Promise<void> | undefined>(undefined);
   const retry = useCallback((): Promise<void> => {
-    if (readOnly || running || busy) return Promise.resolve();
+    if (externalAgent || readOnly || running || busy) return Promise.resolve();
     const targetMessageId = turn.assistantMessageId ?? turn.userMessageId;
     if (!turn.user || !targetMessageId) return Promise.resolve();
     const existing = retryPromiseRef.current;
@@ -406,12 +410,12 @@ const Turn = memo(function Turn({
       }
     );
     return pending;
-  }, [busy, onRetry, onRetrySettled, onRetryStart, readOnly, running, turn]);
+  }, [busy, onRetry, onRetrySettled, onRetryStart, readOnly, externalAgent, running, turn]);
   const switchVersion = useCallback((direction: "prev" | "next"): Promise<void> => {
     if (readOnly || !turn.assistantMessageId) return Promise.resolve();
     return onSwitchVersion(turn.assistantMessageId, direction);
   }, [onSwitchVersion, readOnly, turn.assistantMessageId]);
-  const canRetry = !readOnly && !running && !busy && Boolean(turn.user && (turn.assistantMessageId ?? turn.userMessageId));
+  const canRetry = !externalAgent && !readOnly && !running && !busy && Boolean(turn.user && (turn.assistantMessageId ?? turn.userMessageId));
   // 开始事件不证明收到过思考；等待由状态行展示，避免出现点开后为空的活动记录。
   const executionSteps = turn.steps.filter((step) => {
     if (step.kind === "reasoning") return step.notice || step.content.trim();
@@ -434,8 +438,8 @@ const Turn = memo(function Turn({
           messageId={turn.userMessageId}
           pending={pending}
           hasChangedFiles={listChangedFiles(turn).length > 0}
-          onCreateBranch={readOnly || pending ? undefined : onCreateBranch}
-          onEdit={readOnly || pending ? undefined : () => onEditRequest(turn)}
+          onCreateBranch={externalAgent || readOnly || pending ? undefined : onCreateBranch}
+          onEdit={externalAgent || readOnly || pending ? undefined : () => onEditRequest(turn)}
           onOpenExternal={onOpenExternal}
           onReference={!readOnly && !pending && turn.userMessageId ? () => onReferenceMessage(turn.userMessageId!) : undefined}
           onShowReferences={!readOnly && !pending && turn.userMessageId ? () => onShowMessageReferences(turn.userMessageId!) : undefined}
@@ -467,7 +471,6 @@ const Turn = memo(function Turn({
         {emptyIncompleteTurn ? <div className="execution-empty-response" role="status">{turn.error || "本轮未完成，尚未生成回复正文。"}</div> : null}
         {!executionSteps.some((step) => step.kind === "assistant") && turn.assistant ? <TypewriterMarkdown active={running} content={turn.assistant} onOpenExternal={onOpenExternal} onPreviewFile={onPreviewFile} projectId={projectId} /> : null}
         {running && !suppressRunStatus ? <RunStatus turn={turn} /> : null}
-
         {!running && completedChangedFiles.length > 0 ? (
           <ChangesSummary files={completedChangedFiles} onPreviewFile={onPreviewFile} />
         ) : null}
@@ -482,7 +485,7 @@ const Turn = memo(function Turn({
             content={turn.assistant}
             finishReason={turn.finishReason}
             metrics={turnMetrics(turn)}
-            onCreateBranch={readOnly ? undefined : onCreateBranch}
+            onCreateBranch={externalAgent || readOnly ? undefined : onCreateBranch}
             onReference={!readOnly && turn.assistantMessageId ? () => onReferenceMessage(turn.assistantMessageId!) : undefined}
             onShowReferences={!readOnly && turn.assistantMessageId ? () => onShowMessageReferences(turn.assistantMessageId!) : undefined}
             onRegenerate={canRetry ? retry : undefined}
@@ -918,7 +921,6 @@ function AssistantActions({ projectId, sessionId, turn, skillDescriptions, skill
           <MessageContextMenu
             tools={turn.tools.map((tool) => tool.tool)}
             skills={turn.skills}
-            skillSelection={turn.capabilitySelection?.skills}
             skillLabels={skillLabels}
             descriptions={skillDescriptions}
             memoryRecallDegraded={turn.memoryRecallDegraded}

@@ -30,7 +30,6 @@ const EMPTY_SNAPSHOT: DesktopSkillCatalogSnapshot = {
   inventory: [],
   unmanagedSkills: [],
   plugins: [],
-  managedSources: [],
   warnings: [],
   diagnostics: []
 };

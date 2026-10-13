@@ -16,7 +16,7 @@ export function ModelTestStatusIcon({ testing, lastResult }: {
   return testing ? <Icon className="icon-spin" name="loader" size={14} />
     : lastResult?.ok ? <Icon className="is-ok" name="circle-check" size={14} />
     : lastResult ? <Icon className="is-error" name="circle-close" size={14} />
-    : <Icon name="spark" size={14} />;
+    : <Icon name="flask" size={14} />;
 }
 
 /** 单模型测试按钮：烧瓶图标、高度跟随同行选择器，用于工具模型与记忆工具模型。 */

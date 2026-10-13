@@ -62,7 +62,10 @@ fi
       encoding: "utf8", timeout: 5000,
     });
     assert.equal(result.status, 0, "Unsigned packaging must remove credential variables, including empty ones");
-    assert.ok(result.stdout.split("\n").includes("--config.mac.identity=-"));
+    const args = result.stdout.split("\n");
+    assert.ok(args.includes("--config"));
+    assert.ok(args.includes("config/electron-builder.yml"));
+    assert.ok(args.includes("--config.mac.identity=-"));
   } finally {
     rmSync(cwd, { recursive: true, force: true });
   }
