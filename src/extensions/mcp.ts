@@ -447,8 +447,10 @@ export class McpToolHost {
     // 模板通过普通工具结果返回，不提升为 system 消息，也不自动执行其中的操作。
     const result = await this.requestWithCredentials(managed, () => client.getPrompt({ name, arguments: args }, this.requestOptions(managed, signal)));
     let remaining = maxResourceTextBytes;
+    let textClipped = false;
     const bounded = (text: string): string => {
       const value = truncateUtf8(text, Math.max(0, remaining));
+      if (value.length < text.length) textClipped = true;
       remaining = Math.max(0, remaining - Buffer.byteLength(value));
       return value;
     };
@@ -460,7 +462,7 @@ export class McpToolHost {
         if (content.type === "resource" && "text" in content.resource) return { role: message.role, content: { type: "text", text: bounded(content.resource.text) } };
         return { role: message.role, content: { type: content.type, note: "non-text content omitted" } };
       }),
-      truncated: result.messages.length > 32 || remaining === 0
+      truncated: result.messages.length > 32 || remaining === 0 || textClipped
     };
   }
 
