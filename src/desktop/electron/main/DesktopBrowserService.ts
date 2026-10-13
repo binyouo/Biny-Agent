@@ -418,7 +418,7 @@ export class DesktopBrowserService {
     window.on("closed", () => {
       this.window = undefined;
       // 关窗时兜底同步一次：期间的 changed 事件可能还压在防抖窗口里没落盘。
-      if (this.browserSessionManaged) void this.syncToJar();
+      if (this.browserSessionManaged) void this.syncToJar().catch(() => undefined);
     });
     window.once("ready-to-show", () => window.show());
     await window.loadURL(target);
@@ -537,7 +537,7 @@ export class DesktopBrowserService {
     await this.stopAutomationServer();
     if (this.syncTimer) clearTimeout(this.syncTimer);
     this.syncTimer = undefined;
-    if (this.browserSessionManaged) await this.syncToJar();
+    if (this.browserSessionManaged) await this.syncToJar().catch(() => undefined);
     if (this.window && !this.window.isDestroyed()) this.window.destroy();
     this.window = undefined;
     this.hideEmbeddedBrowser();
@@ -848,7 +848,7 @@ export class DesktopBrowserService {
     if (this.syncTimer) clearTimeout(this.syncTimer);
     this.syncTimer = setTimeout(() => {
       this.syncTimer = undefined;
-      void this.syncToJar();
+      void this.syncToJar().catch(() => undefined);
     }, syncDebounceMs);
   }
 
@@ -866,7 +866,7 @@ export class DesktopBrowserService {
       await writeCookieJar(await this.getJarPath(), await this.readSessionCookies());
     });
     this.syncTail = run.catch(() => undefined);
-    await run.catch(() => undefined);
+    await run;
   }
 }
 
