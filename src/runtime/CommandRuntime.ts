@@ -437,7 +437,9 @@ async function initializeCommandRuntime(
     goalBudgetStopped: (context) => {
       if (!context?.sessionId || !context.sessionGoalId) return false;
       const goal = sessionGoals.get(context.sessionId);
-      return goal?.goalId === context.sessionGoalId && (goal.status === "budget_limited" || Boolean(goal.tokenBudget !== undefined && !goal.usageKnown));
+      return goal?.goalId === context.sessionGoalId && (goal.status === "budget_limited"
+        || Boolean(goal.tokenBudget !== undefined && (!goal.usageKnown
+          || (goal.status === "paused" && goal.tokensUsed >= goal.tokenBudget))));
     },
     communication: taskCommunication,
     cancelTask: (taskRunId, reason) => cancelTaskRun(taskRunId, reason),
