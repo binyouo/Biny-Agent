@@ -10,6 +10,7 @@ const configOptions = [
 let cwd;
 let pending;
 let count = 0;
+let cancelDrain;
 const send = (value) => process.stdout.write(JSON.stringify({ jsonrpc: "2.0", ...value }) + "\n");
 const update = (value) => send({ method: "session/update", params: { sessionId: "fixture-session", update: value } });
 const finish = (id, text) => {
@@ -45,7 +46,12 @@ for await (const line of createInterface({ input: process.stdin })) {
   else if (message.method === "session/prompt") {
     count++;
     const text = message.params.prompt.filter((p) => p.type === "text").map((p) => p.text).join("\n");
-    if (text.includes("refusal-fixture")) send({ id: message.id, result: { stopReason: "refusal" } });
+    if (text.startsWith("cancel-drain-fixture:")) {
+      pending = message.id;
+      cancelDrain = text.slice("cancel-drain-fixture:".length);
+      // Report an inert read already in progress; wait for session/cancel, never a sleep.
+      update({ sessionUpdate: "tool_call", toolCallId: "read-1", title: "Read fixture", kind: "read", status: "in_progress", rawInput: { path: "fixture.txt" } });
+    } else if (text.includes("refusal-fixture")) send({ id: message.id, result: { stopReason: "refusal" } });
     else if (text.includes("permission-fixture")) {
       pending = message.id;
       update({ sessionUpdate: "tool_call", toolCallId: "write-1", title: "Write", kind: "edit", status: "pending", rawInput: { path: "effect.txt" } });
@@ -61,6 +67,23 @@ for await (const line of createInterface({ input: process.stdin })) {
     if (allowed) writeFileSync(path.join(cwd, "effect.txt"), "one external write");
     update({ sessionUpdate: "tool_call_update", toolCallId: "write-1", status: allowed ? "completed" : "failed", rawOutput: allowed ? "written" : "denied" });
     finish(pending, allowed ? "written" : "denied");
+  } else if (message.method === "session/cancel" && cancelDrain) {
+    send({ method: "session/update", params: { sessionId: "other-session", update: {
+      sessionUpdate: "tool_call_update", toolCallId: "read-1", status: "completed", rawOutput: "wrong-session result"
+    } } });
+    if (cancelDrain !== "missing") update({ sessionUpdate: "tool_call_update", toolCallId: "read-1",
+      status: cancelDrain === "failed" ? "failed" : "completed",
+      rawOutput: cancelDrain === "failed" ? { error: "fixture read failed" } : "fixture contents" });
+    update({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Stopped after reading the fixture." } });
+    // Await the permission response before settling, proving cancellation still revokes authority.
+    send({ id: "cancel-drain-permission", method: "session/request_permission", params: {
+      sessionId: "fixture-session", toolCall: { toolCallId: "never-run", title: "Read", kind: "read" },
+      options: [{ optionId: "yes", name: "Allow", kind: "allow_once" }]
+    } });
+  } else if (message.id === "cancel-drain-permission" && cancelDrain) {
+    if (message.result?.outcome?.outcome !== "cancelled") throw new Error("Permission survived cancellation");
+    send({ id: pending, result: { stopReason: "cancelled" } });
+    cancelDrain = undefined;
   } else if (message.method === "session/cancel" && !process.argv.includes("--ignore-cancel")) send({ id: pending, result: { stopReason: "cancelled" } });
   else if (message.id !== undefined) send({ id: message.id, result: {} });
 }
