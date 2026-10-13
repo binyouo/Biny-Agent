@@ -1,11 +1,12 @@
 /** 回合后技能提取管线：阈值跳过、两步辅助模型、校验落盘与进度通知。 */
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { AgentModel, ModelStreamEvent } from "../src/agent/core/types.js";
 import { runSkillExtraction, type SkillExtractionNotice } from "../src/agent/skillExtraction.js";
 import type { SessionEvent } from "../src/session/recorder.js";
+import { publishSkillVersion, readManagedSkillVersion, rollbackSkillVersion } from "../src/extensions/skillVersions.js";
 
 const skillMarkdown = [
   "---",
@@ -111,6 +112,59 @@ async function main(): Promise<void> {
     assert.equal(updatedOutcome.updated, true);
     assert.equal(updateNotices.at(-1)?.updated, true);
     assert.match(await readFile(updatedOutcome.installedPath!, "utf8"), /Deploy the workspace/u);
+
+    // 官方版本入口：自动提取不得穿透 alias 改写 V2；之后更新/回滚仍能使用。
+    const managedRoot = path.join(root, ".config", "biny", "skills");
+    const versionedName = "versioned-workflow";
+    const versionedPath = path.join(managedRoot, versionedName, "SKILL.md");
+    const versionedMarkdown = skillMarkdown.replace("name: deploy-staging", `name: ${versionedName}`);
+    const publishFixture = async (revision: string, body: string, expectedVersion?: string) => {
+      const preparedDirectory = await mkdtemp(path.join(root, "prepared-skill-"));
+      await writeFile(path.join(preparedDirectory, "SKILL.md"), body, "utf8");
+      await mkdir(managedRoot, { recursive: true });
+      return await publishSkillVersion({
+        root: managedRoot, name: versionedName, preparedDirectory, revision,
+        source: { owner: "test", repository: "fixture", branch: "main", directory: versionedName },
+        expectedVersion
+      });
+    };
+    const firstVersion = await publishFixture("a".repeat(40), versionedMarkdown);
+    const secondMarkdown = versionedMarkdown.replace("Run the checks.", "Run all the checks.");
+    assert.notEqual(secondMarkdown, versionedMarkdown, "V2 fixture must change the document");
+    const secondVersion = await publishFixture("b".repeat(40), secondMarkdown, firstVersion.id);
+    const versionRecordPath = path.join(managedRoot, ".biny-versions", versionedName, secondVersion.id, "version.json");
+    const versionRecord = await readFile(versionRecordPath, "utf8");
+    const versionNotices: SkillExtractionNotice[] = [];
+    let versionRefreshes = 0;
+    const extractedUpdate = versionedMarkdown.replace("Run the checks.", "Overwrite the installed instructions.");
+    assert.notEqual(extractedUpdate, secondMarkdown, "extraction must attempt a different document");
+    const protectedUpdate = replayModel([
+      JSON.stringify({ worthy: true, skillName: versionedName, skillDescription: "Updated workflow.", existingSkillToUpdate: versionedName }),
+      extractedUpdate
+    ]);
+    const skipped = await runSkillExtraction({
+      messageId: "m1", events: turnEvents(6),
+      installedSkills: [{ name: versionedName, description: "Versioned workflow" }],
+      model: protectedUpdate.model, minToolCalls: 5, homeDir: root,
+      onNotice: (notice) => versionNotices.push(notice),
+      refreshSkills: async () => { versionRefreshes += 1; }
+    });
+    assert.equal(skipped.stage, "skipped");
+    assert.equal(skipped.installedPath, undefined);
+    assert.deepEqual(versionNotices.map((notice) => notice.stage), ["extracting", "skipped"]);
+    assert.equal(versionRefreshes, 0);
+    assert.equal((await lstat(path.dirname(versionedPath))).isSymbolicLink(), true);
+    assert.equal(await readFile(versionedPath, "utf8"), secondMarkdown);
+    assert.equal(await readFile(versionRecordPath, "utf8"), versionRecord);
+    assert.equal((await readManagedSkillVersion(managedRoot, versionedName))?.id, secondVersion.id);
+    const restored = await rollbackSkillVersion(managedRoot, versionedName, secondVersion.id);
+    assert.equal(restored.id, firstVersion.id, "跳过提取后，官方回滚仍通过 digest 校验");
+    assert.equal(await readFile(versionedPath, "utf8"), versionedMarkdown);
+    const thirdMarkdown = versionedMarkdown.replace("Run the checks.", "Run the newest checks.");
+    assert.notEqual(thirdMarkdown, versionedMarkdown, "V3 fixture must change the document");
+    const thirdVersion = await publishFixture("c".repeat(40), thirdMarkdown, firstVersion.id);
+    assert.equal(thirdVersion.previous, firstVersion.id, "跳过提取后，官方发布仍可更新");
+    assert.equal(await readFile(versionedPath, "utf8"), thirdMarkdown);
 
     // author 生成的 name 非法：拒绝落盘。
     const invalid = replayModel([

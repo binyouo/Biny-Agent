@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdtemp, realpath, rm } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 import { ContextMemory } from "../src/agent/context/ContextMemory.js";
 import { WorkspaceContext } from "../src/agent/context/WorkspaceContext.js";
@@ -6,9 +9,9 @@ import { requestFingerprints } from "../src/agent/context/requestAnchor.js";
 import { vercelAgentLoopContinue } from "../src/agent/core/vercelAgentLoop.js";
 import type { AgentContext, AgentModel, AgentTool, ModelStreamContext, ModelStreamEvent } from "../src/agent/core/types.js";
 
-// Normal CI only: actual loop and ContextMemory, with an injected model stream.
-// The workspace object is never initialized; no model network or workspace I/O.
-test("schema changes use estimates until a new completed request replaces the usage anchor", async () => {
+test("schema changes use estimates until a new completed request replaces the usage anchor", async (context) => {
+  const workspace = await realpath(await mkdtemp(path.join(os.tmpdir(), "biny-anchor-")));
+  context.after(() => rm(workspace, { recursive: true, force: true }));
   const requests: ModelStreamContext[] = [];
   const observed: ModelStreamContext[] = [];
   const tools: AgentTool[] = [
@@ -31,7 +34,7 @@ test("schema changes use estimates until a new completed request replaces the us
       })();
     }
   };
-  const memory = new ContextMemory(() => model, new WorkspaceContext("/inert/anchor-fixture", [], 32_768),
+  const memory = new ContextMemory(() => model, new WorkspaceContext(workspace, [], 32_768),
     undefined, 2_000, 32_768, undefined, undefined, { reserveTokens: 500 });
   let current: AgentContext = { systemPrompt: "stable system", messages: [{ role: "user", content: "discover a reader" }], tools: [tools[0]!] };
   memory.recordToolSchema(current.tools);

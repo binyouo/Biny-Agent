@@ -200,3 +200,29 @@ for (const outcome of ["success", "failure"] as const) {
     } finally { await h.close(); }
   });
 }
+
+test("chat model icon follows its provider connection when changed or cleared without replacing models", { timeout: 10_000 }, async () => {
+  const h = await fixture();
+  try {
+    const { loadProviderIconData } = await import("../src/desktop/renderer/src/components/ProviderIconData.js");
+    const { PROVIDER_ICON_DATA } = await import("../src/desktop/renderer/src/assets/provider-icon-data.js");
+    await loadProviderIconData();
+    const models: typeof h.props.models = [{ alias: "custom/chat", displayName: "Chat", provider: "custom",
+      providerType: "openai-compatible", model: "chat", modelKey: "custom/chat", baseUrl: "https://custom.example/v1",
+      efforts: [], defaultThinking: "off", thinkingLevelMap: {}, available: true, source: "configured" }];
+    await h.render({ models });
+    const fallback = document.querySelector(".model-trigger-brand")!.innerHTML;
+    for (const icon of ["Zhipu", "Kimi", undefined]) {
+      await h.render({ models, connections: [
+        { providerAlias: "unrelated", providerType: "openai-compatible", icon: "OpenAI", requiresApiKey: false, hasCredential: false },
+        { providerAlias: "custom", providerType: "openai-compatible", icon, requiresApiKey: false, hasCredential: false }
+      ] });
+      const svg = document.querySelector(".model-trigger-brand svg.provider-logo");
+      if (icon) {
+        assert.equal(svg?.innerHTML, PROVIDER_ICON_DATA[icon]!.body, `saved ${icon} must reach the chat trigger`);
+      } else {
+        assert.equal(document.querySelector(".model-trigger-brand")!.innerHTML, fallback, "clearing the custom icon restores the fallback glyph");
+      }
+    }
+  } finally { await h.close(); }
+});

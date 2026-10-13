@@ -51,6 +51,7 @@ export class ProviderDefinitionRegistry {
  * 自定义端点，不再为长尾厂商维护内置定义。
  */
 const definitions: ProviderDefinition[] = [
+  definition("acp", undefined, undefined, { requiresApiKey: false, modelDefaults: { capabilities: { tools: true, streaming: true } } }),
   definition("anthropic", "https://api.anthropic.com", "ANTHROPIC_API_KEY", { protocol: "anthropic", api: "anthropic_messages", reasoningProtocol: "anthropic", modelDefaults: reasoningProviderDefaults() }),
   definition("claude-subscription", "https://api.anthropic.com", undefined, { protocol: "anthropic", api: "anthropic_messages", authModes: ["oauth-bearer"], reasoningProtocol: "anthropic", modelDefaults: reasoningProviderDefaults() }),
   definition("openai-codex", "https://chatgpt.com/backend-api/codex", undefined, { api: "responses", authModes: ["oauth-bearer"], reasoningProtocol: "openai", modelDefaults: responseReasoningProviderDefaults() }),

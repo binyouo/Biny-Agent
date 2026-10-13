@@ -148,6 +148,38 @@ export class ModelManager {
     }
 
     this.runtime.validate();
+    await this.recoverContextMetadata(signal);
+  }
+
+  private async recoverContextMetadata(signal?: AbortSignal): Promise<void> {
+    if (!this.modelsStore || !this.getContextBudget().contextWindowIsFallback) return;
+    const resolved = this.runtime.resolve(this.config.defaultModel);
+    const provider = this.config.providers[resolved.providerAlias]!;
+    // 单模型端点覆盖不能借用连接目录的容量。
+    if (resolved.model.baseUrl !== undefined
+      && resolved.model.baseUrl.replace(/\/+$/u, "") !== provider.baseUrl?.replace(/\/+$/u, "")) return;
+    const catalogs = await restoreProviderCatalogs([resolved.providerAlias], this.modelsStore, this.config.providers);
+    signal?.throwIfAborted();
+    if (catalogs.length) {
+      // 另一客户端可能已刷新目录；驻留 Runtime 在下一次请求前采用同来源的新事实。
+      const runtime = new ModelRuntime(this.config, [
+        ...this.runtime.catalogsSnapshot().filter(([alias]) => alias !== resolved.providerAlias),
+        ...catalogs
+      ], this.ai, this.modelsStore, undefined, this.providerCredentials);
+      const settings = runtime.createModelSettings();
+      this.runtime = runtime;
+      this.activeSettings = settings;
+      return;
+    }
+    const previous = await this.modelsStore.read(resolved.providerAlias);
+    signal?.throwIfAborted();
+    const sourceKey = modelCatalogCacheKey(resolved.providerAlias, provider);
+    if (!previous?.sourceKey || previous.sourceKey === sourceKey
+      || !previous.models.some((model) => model.id === resolved.model.model && model.contextWindow !== undefined)) return;
+    // 失效目录只触发重新获取，不能用其中的容量或 validators。获取失败交给回合错误处理，
+    // 避免已知容量丢失后静默按 32K 压缩；全新未知型号仍沿用原有保守预算。
+    await this.runtime.refreshModels(resolved.providerAlias, signal);
+    this.activeSettings = this.runtime.createModelSettings();
   }
 
   async refreshModelCatalog(providerAlias = resolveModelConfig(this.config).providerAlias): Promise<ModelCatalogEntry[]> {
@@ -180,12 +212,9 @@ export class ModelManager {
     });
     const changed = new Set(changedProviders);
     const catalogs = this.runtime.catalogsSnapshot().filter(([alias]) => nextConfig.providers[alias] && !changed.has(alias));
-    // 内置默认端点的持久键只有 alias，不能证明目录属于变更后的服务商/端点。
-    // 已知来源变更时保守使用新 Provider 基线；不迁移或清理原缓存。
-    const restorableProviders = changedProviders.filter((alias) => !this.config.providers[alias]
-      || modelCatalogCacheKey(alias, nextConfig.providers[alias]!) !== alias);
-    if (this.modelsStore && restorableProviders.length) {
-      catalogs.push(...await restoreProviderCatalogs(restorableProviders, this.modelsStore, nextConfig.providers));
+    // 默认端点也有隔离键；存储层只恢复已证明属于当前来源的目录，不迁移或清理旧缓存。
+    if (this.modelsStore && changedProviders.length) {
+      catalogs.push(...await restoreProviderCatalogs(changedProviders, this.modelsStore, nextConfig.providers));
     }
     const nextRuntime = new ModelRuntime(nextConfig, catalogs, this.ai, this.modelsStore, undefined, this.providerCredentials);
     const nextSettings = nextRuntime.createModelSettings();

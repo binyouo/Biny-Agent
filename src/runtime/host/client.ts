@@ -692,9 +692,9 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
         expectedRevision: this.currentRevision(sessionId)
       });
     } catch (error) {
+      // 调用方拿不到 completion 句柄；重连恢复或 close() 后的拒绝也必须被观察。
+      void completion.catch(() => undefined);
       if (!isTransientHostError(error)) {
-        // 失败随 throw 返回，调用方拿不到 completion 句柄；不挂观察会让进程出现 unhandled rejection。
-        void completion.catch(() => undefined);
         this.rejectCompletion(ids.runId, error);
       } else {
         this.scheduleReconnect();
@@ -1140,11 +1140,11 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
   }
 
   private async open(): Promise<void> {
-    await this.openSocket();
-    const socket = this.socket;
     // hello 之后仍可能有界失败（owner 半死：应答了握手却不再处理请求）；
     // 初始请求失败要关闭 client，避免留下半开的 socket 让调用方误以为连接可用。
     try {
+      await this.openSocket();
+      const socket = this.socket;
       const result = await this.request<{
         hostEpoch: string;
         persistenceRoot: string;
