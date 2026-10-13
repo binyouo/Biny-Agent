@@ -33,50 +33,24 @@
     "test:security": "tsx tests/security.test.ts",
     "test:prompts": "tsx tests/prompts.test.ts",
     "test:skills": "tsx tests/skill-discovery.test.ts && tsx tests/skill-diagnostics.test.ts && tsx tests/skill-tools.test.ts",
-    "build:desktop": "pnpm build:cli && pnpm build:activity-sidecar && node scripts/prepare-electron-background.mjs && electron-vite build && node scripts/copy-bundled-skills.mjs out/main/bundled-skills && node scripts/copy-browser-extension.mjs out/main/browser-extension",
-    "desktop:dev": "pnpm desktop:prepare && electron-vite dev --watch",
+    "build:desktop": "pnpm build:cli && pnpm build:activity-sidecar && node scripts/prepare-electron-background.mjs && electron-vite build --config config/electron.vite.config.ts && node scripts/copy-bundled-skills.mjs out/main/bundled-skills && node scripts/copy-browser-extension.mjs out/main/browser-extension",
+    "desktop:dev": "pnpm desktop:prepare && electron-vite dev --watch --config config/electron.vite.config.ts",
     "desktop:prepare": "node scripts/prepare-desktop.mjs",
-    "desktop:preview": "electron-vite preview",
-    "desktop:pack": "pnpm build:desktop && electron-builder --mac dir",
-    "desktop:dist": "pnpm build:desktop && electron-builder --mac dmg zip --publish never",
+    "desktop:preview": "electron-vite preview --config config/electron.vite.config.ts",
+    "desktop:pack": "pnpm build:desktop && electron-builder --config config/electron-builder.yml --mac dir",
+    "desktop:dist": "pnpm build:desktop && electron-builder --config config/electron-builder.yml --mac dmg zip --publish never",
     "dev": "node --import tsx src/cli/index.ts",
-    "lint": "eslint electron.vite.config.ts scripts src tests",
+    "lint": "eslint config/electron.vite.config.ts scripts src tests",
     "test:models": "node --test scripts/sync-model-metadata.test.mjs",
     "test:runtime-host": "node scripts/run-tests.mjs runtime-host",
     "test:standard": "pnpm test:models && pnpm test:code-mode-runtime && node scripts/run-tests.mjs --standard",
     "test:e2e": "pnpm build:cli && node scripts/run-tests.mjs --e2e",
     "test": "pnpm test:standard && pnpm test:e2e",
-    "typecheck": "tsc --noEmit && tsc -p tsconfig.desktop.json",
+    "typecheck": "tsc --noEmit && tsc -p config/tsconfig.desktop.json",
     "start": "node dist/cli/index.js",
     "prepack": "pnpm build:cli",
     "test:code-mode-runtime": "node scripts/dependency-patches/runtime-timing-fixtures.mjs",
     "test:code-mode-package": "node scripts/code-mode-packaged-runtime.test.mjs"
-  },
-  "pnpm": {
-    "packageExtensions": {
-      "@antv/infographic@0.2.6": {
-        "dependencies": {
-          "eventemitter3": "^5.0.1"
-        }
-      }
-    },
-    "onlyBuiltDependencies": [
-      "node-pty",
-      "onnxruntime-node",
-      "sharp"
-    ],
-    "overrides": {
-      "adm-zip": "0.6.1",
-      "sharp": "0.35.5",
-      "fast-uri": "3.1.7",
-      "ip-address": "10.3.1",
-      "hono": "4.12.34",
-      "@hono/node-server": "2.0.11"
-    },
-    "patchedDependencies": {
-      "run@2.1.6": "patches/run@2.1.6.patch",
-      "@ai-sdk/code-mode@1.0.50": "patches/@ai-sdk-code-mode@1.0.50.patch"
-    }
   },
   "dependencies": {
     "@ai-sdk/anthropic": "4.0.49",
