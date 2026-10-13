@@ -657,6 +657,17 @@ function isToolCall(part: AgentAssistantMessage["content"][number]): part is Age
   return part.type === "toolCall";
 }
 
+/** Actual returned Read bounds, including an empty page (end = start - 1). */
+export function readResultLineRange(value: unknown): { startLine: number; endLine: number } | undefined {
+  const record = asRecord(value);
+  const startLine = numberField(record, "startLine");
+  const endLine = numberField(record, "endLine");
+  if (startLine === undefined || endLine === undefined
+    || !Number.isSafeInteger(startLine) || !Number.isSafeInteger(endLine)
+    || startLine < 1 || endLine < startLine - 1) return undefined;
+  return { startLine, endLine };
+}
+
 function readRange(entry: ToolResultEntry): ReadRange | undefined {
   if (normalizedToolName(entry.message.toolName) !== "read") return undefined;
   const args = asRecord(entry.call?.args);
@@ -665,6 +676,12 @@ function readRange(entry: ToolResultEntry): ReadRange | undefined {
   const resultRange = asRecord(result.range);
   const path = stringField(args, "path") || stringField(result, "path");
   if (!path) return undefined;
+  // Archive envelopes are partial results; requested arguments do not prove
+  // which lines actually returned (for example, a short page or EOF).
+  if (result.archived === true) {
+    const range = readResultLineRange(result);
+    return range ? { path: normalizePath(path), kind: "line", start: range.startLine, end: range.endLine } : undefined;
+  }
   const startLine = numberField(result, "startLine")
     ?? numberField(result, "lineStart")
     ?? numberField(result, "start")
