@@ -1,8 +1,9 @@
+import { toVercelReasoning } from "../agent/core/vercelModelAdapter.js";
 import { streamText } from "ai";
 import { randomUUID } from "node:crypto";
 import type { LanguageModelV4, LanguageModelV4CallOptions, LanguageModelV4StreamPart } from "@ai-sdk/provider";
 import type { AgentMessage, AgentModel, AgentUsage, ModelRequestContext, ModelRequestObserver } from "../agent/core/types.js";
-import { fromVercelUsage, toModelMessages, toVercelReasoning } from "../agent/core/vercelModelAdapter.js";
+import { fromVercelUsage, toModelMessages } from "../agent/core/vercelModelAdapter.js";
 
 export interface NativeTextGenerationOptions {
   systemPrompt?: string;
