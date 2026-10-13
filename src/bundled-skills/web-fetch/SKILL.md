@@ -19,7 +19,8 @@ Call `WebFetch` with the actual URL. Its input is `url` plus optional `offset` a
 
 - Inspect `status`, `finalUrl`, `contentType`, and `content` before describing the source. A redirect, login wall, empty result, or error page is not the requested article.
 - HTML is converted into readable text with article extraction and a plain-text fallback. Other response bodies are returned as text; this is not a general PDF, image, audio, or video decoder.
-- `hasMore` means more extracted text can be read. Continue with `offset + content.length` until the relevant passage is covered; avoid repeatedly requesting the first slice.
+- `offset`, `length`, and `totalCharacters` count UTF-16 code units. Page boundaries preserve surrogate pairs; an offset inside a pair rounds back, and `length: 1` may return both units.
+- `hasMore` means more extracted text can be read. Continue with the returned `offset + content.length` until the relevant passage is covered; avoid repeatedly requesting the first slice.
 - `truncatedAtByteLimit` means the underlying fetch stopped at its byte limit. Paging cannot recover the omitted bytes. State that limitation when it affects the answer.
 - Link to the actual source and distinguish quotations, paraphrases, and inference. Use `web-search` when additional sources are needed.
 
