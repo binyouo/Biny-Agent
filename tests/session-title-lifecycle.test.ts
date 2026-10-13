@@ -1,16 +1,17 @@
 /** Same-runtime session changes use real Runtime/AgentSession methods and only synthetic model streams. */
 import assert from "node:assert/strict";
+import { promises as fs } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { test } from "node:test";
+import { mock, test } from "node:test";
 import { AgentSession } from "../src/agent/AgentSession.js";
 import type { AgentModel, ModelStreamEvent } from "../src/agent/core/types.js";
 import { configSchema, defaultConfig } from "../src/config/schema.js";
 import { PermissionManager } from "../src/permission/PermissionManager.js";
 import type { CommandRuntime } from "../src/runtime/CommandRuntime.js";
 import { InteractiveAgentRuntime } from "../src/runtime/InteractiveAgentRuntime.js";
-import { readSessionCatalogRecord, updateSessionCatalogMetadata } from "../src/session/catalog.js";
+import { readSessionCatalogRecord, sessionCatalogDirectory, updateSessionCatalogMetadata } from "../src/session/catalog.js";
 import { SessionRecorder } from "../src/session/recorder.js";
 import { ensureAgentDirs } from "../src/session/store.js";
 import { ToolRegistry } from "../src/tools/registry.js";
@@ -314,4 +315,67 @@ test("close aborts the active request and discards the pending intent", async ()
     assert.equal((await readSessionCatalogRecord(f.root, a))?.title, undefined);
     assert.equal((await readSessionCatalogRecord(f.root, b))?.title, undefined);
   } finally { await f.close(); }
+});
+
+test("close owns the title's nested index publication after releasing its catalog lock", { timeout: 10_000 }, async () => {
+  const f = await fixture();
+  const entered = deferred<void>();
+  const release = deferred<void>();
+  const cleaned = deferred<void>();
+  let temporaryPath: string | undefined;
+  const originalRename = fs.rename.bind(fs);
+  const originalRm = fs.rm.bind(fs);
+  const indexPath = path.join(sessionCatalogDirectory(f.root), "..", "index.json");
+  let publications = 0;
+  let titleSettled = false;
+  let closeSettled = false;
+  let closing: Promise<void> | undefined;
+  const spy = mock.method(fs, "rename", async (...args: Parameters<typeof fs.rename>) => {
+    if (path.resolve(String(args[1])) === path.resolve(indexPath)) {
+      temporaryPath = String(args[0]);
+      publications += 1;
+      entered.resolve();
+      await release.promise;
+    }
+    return await originalRename(...args);
+  });
+  const rmSpy = mock.method(fs, "rm", async (...args: Parameters<typeof fs.rm>) => {
+    await originalRm(...args);
+    if (String(args[0]) === temporaryPath) cleaned.resolve();
+  });
+  try {
+    const sessionId = await f.prompt("SESSION_INDEX_OWNER");
+    await f.started("SESSION_INDEX_OWNER");
+    // Observe the existing owned task; do not replace the production title path.
+    const titleTask = f.agent["titleTask"];
+    assert.ok(titleTask);
+    void titleTask.then(() => { titleSettled = true; }, () => { titleSettled = true; });
+    f.calls[0]!.result.resolve("Owned index title");
+    await entered.promise;
+    await updateSessionCatalogMetadata(f.root, sessionId, { title: "Owned index title" }, undefined, { indexRefresh: "wait" });
+    assert.equal(titleSettled, false, "title completion must include its nested index write");
+    closing = f.runtime.close();
+    void closing.then(() => { closeSettled = true; }, () => { closeSettled = true; });
+    // Real same-record I/O remains available while shutdown is joining the title.
+    await updateSessionCatalogMetadata(f.root, sessionId, { title: "Owned index title" }, undefined, { indexRefresh: "wait" });
+    assert.equal(closeSettled, false, "runtime close must not abandon the title-owned writer");
+    assert.equal(f.calls[0]!.signal?.aborted, true);
+    assert.equal(publications, 1, "no-op updates must not dirty or restart the index");
+    release.resolve();
+    await closing;
+    await titleTask;
+    assert.equal(titleSettled, true);
+    assert.equal(closeSettled, true);
+    const index = JSON.parse(await fs.readFile(indexPath, "utf8")) as { sessions: Array<{ sessionId: string; title: string }> };
+    assert.equal(index.sessions.find((session) => session.sessionId === sessionId)?.title, "Owned index title");
+    assert.equal(publications, 1);
+  } finally {
+    release.resolve();
+    await closing?.catch(() => undefined);
+    await f.settled();
+    if (temporaryPath !== undefined) await cleaned.promise;
+    spy.mock.restore();
+    rmSpy.mock.restore();
+    await f.close();
+  }
 });

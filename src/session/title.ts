@@ -42,7 +42,8 @@ export async function generateSessionTitle(
   if (current?.title !== undefined) return undefined;
   try {
     await updateSessionCatalogMetadata(workspaceRoot, sessionId, { title },
-      current ? sessionCatalogRecordRevision(current) : SESSION_CATALOG_MISSING_REVISION);
+      current ? sessionCatalogRecordRevision(current) : SESSION_CATALOG_MISSING_REVISION,
+      { indexRefresh: "wait" });
     return title;
   } catch (error) {
     if (error instanceof SessionCatalogConflictError) return undefined;
