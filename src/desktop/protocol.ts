@@ -286,20 +286,11 @@ export const desktopIpc = {
   recipeSuggestions: "desktop:recipe:suggestions",
   recipeState: "desktop:recipe:state",
   skillCatalog: "desktop:skill:catalog",
-  skillSourceImport: "desktop:skill:source-import",
-  skillSourceInstall: "desktop:skill:source-install",
   skillImportExisting: "desktop:skill:import-existing",
-  skillDiscoverySnapshot: "desktop:skill:discovery",
-  skillDiscoverySearch: "desktop:skill:discovery-search",
-  skillDiscoveryInstall: "desktop:skill:discovery-install",
-  skillRepositoryAdd: "desktop:skill:repository-add",
-  skillRepositoryRemove: "desktop:skill:repository-remove",
   skillFileRead: "desktop:skill:file-read",
-  skillCheck: "desktop:skill:check",
   skillVersion: "desktop:skill:version",
   skillVersionUpdate: "desktop:skill:version-update",
   skillVersionRollback: "desktop:skill:version-rollback",
-  skillFileWrite: "desktop:skill:file-write",
   skillOpenDirectory: "desktop:skill:open-directory",
   skillSettings: "desktop:skill:settings",
   pluginRegistry: "desktop:plugin:registry",
@@ -327,7 +318,7 @@ export type DesktopThemePreference = "system" | "light" | "dark";
 export type DesktopAppearancePreference = AppearancePreference;
 export type DesktopAppearanceSnapshot = AppearanceSnapshot;
 export type DesktopSystemSettingsPane = "screen-recording" | "accessibility";
-export type DesktopActiveView = "chat" | "runtime" | "extensions";
+export type DesktopActiveView = "chat" | "runtime";
 
 /** 界面字体偏好。`family` 为 CSS 字体族名，"system" 表示跟随操作系统；`size` 为基准字号（px）。 */
 export interface DesktopFontPreference {
@@ -685,13 +676,6 @@ export interface DesktopSkillDiagnostic {
   shadowedBy?: string;
 }
 
-export interface DesktopManagedSkillSource {
-  id: string;
-  name: string;
-  description: string;
-  installed: boolean;
-}
-
 export interface DesktopSkillImportCandidate {
   id: string;
   name: string;
@@ -705,49 +689,6 @@ export interface DesktopSkillImportResult {
   name: string;
   installedPath: string;
   alreadyInstalled: boolean;
-}
-
-export interface DesktopSkillRepository {
-  owner: string;
-  name: string;
-  branch: string;
-  enabled: boolean;
-}
-
-export interface DesktopDiscoverableSkill {
-  key: string;
-  name: string;
-  description: string;
-  directory: string;
-  readmeUrl?: string;
-  repoOwner: string;
-  repoName: string;
-  repoBranch: string;
-  installed: boolean;
-}
-
-export interface DesktopSkillsShDiscoverableSkill {
-  key: string;
-  name: string;
-  directory: string;
-  repoOwner: string;
-  repoName: string;
-  repoBranch: string;
-  installs: number;
-  readmeUrl?: string;
-  installed: boolean;
-}
-
-export interface DesktopSkillsShSearchResult {
-  skills: DesktopSkillsShDiscoverableSkill[];
-  totalCount: number;
-  query: string;
-}
-
-export interface DesktopSkillDiscoverySnapshot {
-  repositories: DesktopSkillRepository[];
-  skills: DesktopDiscoverableSkill[];
-  warnings: string[];
 }
 
 export interface DesktopSkillFile {
@@ -860,7 +801,6 @@ export interface DesktopSkillCatalogSnapshot {
   inventory: DesktopSkillCatalogEntry[];
   unmanagedSkills: DesktopSkillImportCandidate[];
   plugins: DesktopPluginSummary[];
-  managedSources: DesktopManagedSkillSource[];
   warnings: string[];
   diagnostics: DesktopSkillDiagnostic[];
 }
@@ -1862,20 +1802,11 @@ export interface DesktopApi {
   setRecipeState(projectId: string, sessionId: string, recipeId: DesktopRecipeId, state: DesktopRecipeState): Promise<void>;
   skillCatalog(projectId?: string): Promise<DesktopSkillCatalogSnapshot>;
   skillSettings(projectId: string): Promise<DesktopSkillSettings>;
-  importSkillSource(): Promise<DesktopManagedSkillSource | undefined>;
-  installSkillSource(sourceId: string): Promise<void>;
   importExistingSkills(skillIds: string[]): Promise<DesktopSkillImportResult[]>;
-  skillDiscovery(): Promise<DesktopSkillDiscoverySnapshot>;
-  searchSkills(query: string, limit?: number, offset?: number): Promise<DesktopSkillsShSearchResult>;
-  installDiscoveredSkill(skill: DesktopDiscoverableSkill): Promise<import("../extensions/skillDiscovery.js").SkillInstallResult>;
   skillVersion(skillId: string): Promise<import("../extensions/skillVersions.js").ManagedSkillVersion | undefined>;
   updateSkillVersion(skillId: string, expectedVersion: string): Promise<import("../extensions/skillDiscovery.js").SkillInstallResult>;
   rollbackSkillVersion(skillId: string, expectedVersion: string): Promise<import("../extensions/skillVersions.js").ManagedSkillVersion>;
-  addSkillRepository(repository: DesktopSkillRepository): Promise<DesktopSkillRepository[]>;
-  removeSkillRepository(owner: string, name: string): Promise<DesktopSkillRepository[]>;
   readSkillFile(skillId: string, relativePath: string): Promise<DesktopSkillFilePreview>;
-  checkSkill(skillId: string): Promise<import("../extensions/skillDiagnostics.js").SkillDiagnosticReport>;
-  writeSkillFile(skillId: string, relativePath: string, content: string): Promise<void>;
   openSkillDirectory(skillId: string): Promise<void>;
   pluginRegistry(projectId: string): Promise<DesktopPluginRegistrySnapshot>;
   refreshPluginRegistry(projectId: string): Promise<DesktopPluginRegistrySnapshot>;

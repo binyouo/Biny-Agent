@@ -1503,10 +1503,14 @@ async function testDesktopActiveViewPersistence(): Promise<void> {
     const state = new DesktopStateStore(statePath);
     await state.load();
     assert.equal(state.activeView(), "chat");
-    await state.setActiveView("extensions");
+    await state.setActiveView("runtime");
     const restored = new DesktopStateStore(statePath);
     await restored.load();
-    assert.equal(restored.activeView(), "extensions");
+    assert.equal(restored.activeView(), "runtime");
+    await writeFile(statePath, `${JSON.stringify({ version: 1, activeView: "extensions" })}\n`);
+    const removedExtensionsView = new DesktopStateStore(statePath);
+    await removedExtensionsView.load();
+    assert.equal(removedExtensionsView.activeView(), "chat", "legacy SkillHub view state returns to chat after the page is removed");
     await writeFile(statePath, `${JSON.stringify({ version: 1, activeView: "mcp" })}\n`);
     const mcp = new DesktopStateStore(statePath);
     await mcp.load();

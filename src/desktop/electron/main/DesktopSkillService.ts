@@ -15,25 +15,12 @@ import { resolveSkillActivation } from "../../../extensions/skillActivation.js";
 import {
   readSkillCatalogFile,
   scanSkillCatalog,
-  writeSkillCatalogFile,
   type SkillCatalogEntry
 } from "../../../extensions/skillCatalog.js";
+import { defaultManagedSkillRoot } from "../../../extensions/managedSkillSources.js";
 import {
-  importManagedSkillSource,
-  defaultManagedSkillRoot,
-  installManagedSkillSource,
-  listManagedSkillSources
-} from "../../../extensions/managedSkillSources.js";
-import {
-  addSkillRepository,
-  discoverSkillRepositories,
-  installDiscoveredSkill,
   updateDiscoveredSkill,
-  type SkillInstallResult,
-  listSkillRepositories,
-  removeSkillRepository,
-  searchSkillsSh,
-  type DiscoverableSkill
+  type SkillInstallResult
 } from "../../../extensions/skillDiscovery.js";
 import { importUnmanagedSkills, listUnmanagedSkillCandidates } from "../../../extensions/skillImports.js";
 import {
@@ -53,19 +40,14 @@ import {
 } from "../../../extensions/pluginRegistry.js";
 import { getSharedProxyAwareFetch } from "../../../network/proxyFetch.js";
 import type {
-  DesktopDiscoverableSkill,
-  DesktopManagedSkillSource,
   DesktopPluginSummary,
   DesktopSkillCatalogSnapshot,
   DesktopSkillFilePreview,
-  DesktopSkillRepository,
-  DesktopSkillsShSearchResult,
   DesktopSkillImportResult,
   DesktopSkillSettings,
   DesktopPluginRegistrySnapshot
 } from "../../protocol.js";
 import { DesktopStateStore } from "./DesktopStateStore.js";
-import { diagnoseSkill, type SkillDiagnosticReport } from "../../../extensions/skillDiagnostics.js";
 import { readManagedSkillVersion, rollbackSkillVersion, type ManagedSkillVersion } from "../../../extensions/skillVersions.js";
 
 const maxPluginEntries = 64;
@@ -88,18 +70,16 @@ export class DesktopSkillService {
 
   async snapshot(projectId?: string): Promise<DesktopSkillCatalogSnapshot> {
     const projectRoots = this.projectsFor(projectId).map((project) => project.path);
-    const [skills, plugins, managedSources] = await Promise.all([
+    const [skills, plugins] = await Promise.all([
       scanSkillCatalog({ projectRoots }),
-      this.listPlugins(projectId),
-      listManagedSkillSources()
+      this.listPlugins(projectId)
     ]);
     return {
       skills: skills.skills,
       inventory: skills.inventory,
       unmanagedSkills: listUnmanagedSkillCandidates(skills),
       plugins: plugins.plugins,
-      managedSources: managedSources.sources.map(toDesktopManagedSkillSource),
-      warnings: [...skills.warnings, ...managedSources.warnings, ...plugins.warnings],
+      warnings: [...skills.warnings, ...plugins.warnings],
       diagnostics: skills.diagnostics
     };
   }
@@ -134,49 +114,8 @@ export class DesktopSkillService {
   }
 
 
-  async importSource(sourceFile: string): Promise<DesktopManagedSkillSource> {
-    return toDesktopManagedSkillSource(await importManagedSkillSource({ sourceFile }));
-  }
-
-  async installSource(sourceId: string): Promise<void> {
-    await installManagedSkillSource({ sourceId });
-  }
-
   async importExistingSkills(skillIds: string[]): Promise<DesktopSkillImportResult[]> {
     return await importUnmanagedSkills({ ids: skillIds, projectRoots: this.projectRoots() });
-  }
-
-  async skillDiscovery(): Promise<{ repositories: DesktopSkillRepository[]; skills: DesktopDiscoverableSkill[]; warnings: string[] }> {
-    const repositories = await listSkillRepositories();
-    const catalog = await scanSkillCatalog({ projectRoots: this.projectRoots() });
-    const installedNames = new Set(catalog.skills.flatMap((skill) => [skill.name.toLocaleLowerCase(), path.basename(skill.absolutePath).toLocaleLowerCase()]));
-    const discovered = await discoverSkillRepositories({ repositories: repositories.repositories, fetcher: this.fetcher, installedNames });
-    return {
-      repositories: repositories.repositories,
-      skills: discovered.skills,
-      warnings: [...repositories.warnings, ...discovered.warnings]
-    };
-  }
-
-  async searchSkills(query: string, limit?: number, offset?: number): Promise<DesktopSkillsShSearchResult> {
-    const catalog = await scanSkillCatalog({ projectRoots: this.projectRoots() });
-    const installedNames = new Set(catalog.skills.flatMap((skill) => [skill.name.toLocaleLowerCase(), path.basename(skill.absolutePath).toLocaleLowerCase()]));
-    return await searchSkillsSh({ query, limit, offset, fetcher: this.fetcher, installedNames });
-  }
-
-  async installDiscoveredSkill(skill: DesktopDiscoverableSkill): Promise<SkillInstallResult> {
-    const input: DiscoverableSkill = {
-      key: skill.key,
-      name: skill.name,
-      description: skill.description,
-      directory: skill.directory,
-      readmeUrl: skill.readmeUrl,
-      repoOwner: skill.repoOwner,
-      repoName: skill.repoName,
-      repoBranch: skill.repoBranch,
-      installed: skill.installed
-    };
-    return await installDiscoveredSkill({ skill: input, fetcher: this.fetcher });
   }
 
   async version(skillId: string): Promise<ManagedSkillVersion | undefined> {
@@ -197,31 +136,10 @@ export class DesktopSkillService {
     return await rollbackSkillVersion(defaultManagedSkillRoot(), current.name, expectedVersion);
   }
 
-  async addSkillRepository(repository: DesktopSkillRepository): Promise<DesktopSkillRepository[]> {
-    return await addSkillRepository(repository);
-  }
-
-  async removeSkillRepository(owner: string, name: string): Promise<DesktopSkillRepository[]> {
-    return await removeSkillRepository(owner, name);
-  }
-
   async readFile(skillId: string, relativePath: string): Promise<DesktopSkillFilePreview> {
     const entry = await this.requireSkill(skillId);
     const preview = await readSkillCatalogFile(entry, relativePath);
     return { path: preview.path, content: preview.content, bytes: preview.size, binary: preview.binary, truncated: preview.truncated };
-  }
-
-  async check(skillId: string): Promise<SkillDiagnosticReport> {
-    const catalog = await scanSkillCatalog({ projectRoots: this.projectRoots() });
-    const skill = catalog.inventory.find((entry) => entry.id === skillId);
-    if (!skill) throw new Error("Skill 不存在，可能已经被移动或删除。");
-    const config = await this.configStore.load(skill.projectRoot);
-    return await diagnoseSkill(skill, { config });
-  }
-
-  async writeFile(skillId: string, relativePath: string, content: string): Promise<void> {
-    const entry = await this.requireSkill(skillId);
-    await writeSkillCatalogFile(entry, relativePath, content);
   }
 
   async directory(skillId: string): Promise<string> {
@@ -542,20 +460,6 @@ export class DesktopSkillService {
       error
     };
   }
-}
-
-function toDesktopManagedSkillSource(source: {
-  id: string;
-  name: string;
-  description: string;
-  installed: boolean;
-}): DesktopManagedSkillSource {
-  return {
-    id: source.id,
-    name: source.name,
-    description: source.description,
-    installed: source.installed
-  };
 }
 
 async function countPluginModules(target: string): Promise<number | undefined> {

@@ -339,7 +339,7 @@ async function startDesktopApplication(): Promise<void> {
     if (storedSessionId && restorableSessionId === undefined && activeProjectId) {
       await state.setSelectedSession(activeProjectId, undefined);
     }
-    const selectedSessionId = explicitSessionId ?? (activeView === "extensions" ? undefined : restorableSessionId);
+    const selectedSessionId = explicitSessionId ?? restorableSessionId;
     const visibleWorkspace = workspace ? { ...workspace, selectedSessionId } : undefined;
     const sidebarSessions = await agents.sidebarSessions(workspace);
     return {
