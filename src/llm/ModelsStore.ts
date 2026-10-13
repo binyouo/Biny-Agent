@@ -35,15 +35,15 @@ export interface ModelsStore {
  */
 export function modelCatalogCacheKey(providerId: string, config: ProviderConfig): string {
   const endpoint = normalizeCatalogEndpoint(config.modelsEndpoint?.trim() ?? (config.baseUrl ?? "").trim().replace(/\/+$/u, ""));
-  if (!endpoint) return providerId;
   let hash = 2166136261;
-  for (const character of `${config.type}\u0000${endpoint}`) {
+  // 未显式配置协议时保留独立身份：默认值由可扩展 Provider 定义决定，存储层不猜测。
+  for (const character of JSON.stringify([config.type, config.protocol ?? null, endpoint])) {
     hash ^= character.codePointAt(0) ?? 0;
     hash = Math.imul(hash, 16777619);
   }
-  // v1 lowercased paths and queries: neither old scoped entries nor their explicit
-  // alias provenance can prove the source, even when the current endpoint is lowercase.
-  return `${providerId}::v2::${(hash >>> 0).toString(16).padStart(8, "0")}`;
+  // v1 折叠了资源路径大小写，v2 未区分目录协议；旧键不能证明当前来源。
+  // 缺省端点也按 type/protocol 隔离，因为 Provider 默认地址仍受协议影响。
+  return `${providerId}::v3::${(hash >>> 0).toString(16).padStart(8, "0")}`;
 }
 
 /** Preserve resource-sensitive spelling; URL serialization would also rewrite paths and ports. */
@@ -73,7 +73,7 @@ export async function readProviderCatalog(
   );
   if (scoped) return scoped;
   if (cacheKey === providerId) return undefined;
-  // 仅兼容旧版无 endpoint scope 的缓存；成功刷新后会写入新的隔离键。
+  // 仅恢复带当前来源证明的 alias 镜像；不把旧的未知来源目录迁移成当前事实。
   return catalogForSource(await store.read(providerId).catch(() => undefined), cacheKey, false);
 }
 
@@ -84,9 +84,9 @@ function catalogForSource(
 ): ModelsStoreEntry | undefined {
   if (!entry) return undefined;
   if (entry.sourceKey !== undefined) return entry.sourceKey === cacheKey ? entry : undefined;
-  // 旧版精确隔离键已证明来源；仅 alias 的旧缓存保留离线可读性，但首次刷新必须拿到正文。
+  // 当前精确隔离键已证明来源；无来源 alias 不能证明协议，保留在文件但不准入。
   if (exactScopedKey) return { ...entry, sourceKey: cacheKey };
-  return { ...entry, etag: undefined, lastModified: undefined };
+  return undefined;
 }
 
 const modelSchema = z.object({
