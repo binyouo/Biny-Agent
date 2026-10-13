@@ -10,7 +10,8 @@ let fail = false;
 let operation: MemoryEmbeddingRuntimeStatus["operation"];
 let sleepStatus: unknown = { state: "idle" };
 const client: Parameters<typeof startMemoryHttpServer>[0] = {
-  memory: async <T>(action: string) => {
+  memory: async <T>(action: string, payload: Record<string, unknown> = {}) => {
+    if (action === "overview") assert.deepEqual(payload, { summaryOnly: true });
     if (fail) throw new Error("host temporarily unavailable");
     return (action === "overview" ? { storeRevision: revision, entryCount: revision } : sleepStatus) as T;
   },

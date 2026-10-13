@@ -6,9 +6,9 @@ const alias = "gateway";
 const config = (endpoint: string): ProviderConfig => ({ type: "openai-compatible", baseUrl: endpoint });
 const upper = config("https://gateway.example/Plan-A/v1");
 const lower = config("https://gateway.example/plan-a/v1");
-function hash(endpoint: string, type = "openai-compatible"): string {
+function hash(endpoint: string, type = "openai-compatible", legacy = false): string {
   let value = 2166136261;
-  for (const character of `${type}\u0000${endpoint}`) {
+  for (const character of legacy ? `${type}\u0000${endpoint}` : JSON.stringify([type, null, endpoint])) {
     value ^= character.codePointAt(0) ?? 0;
     value = Math.imul(value, 16777619);
   }
@@ -37,7 +37,7 @@ check("only HTTP scheme and host case normalize", () => {
     ["https://[BROKEN", "https://[BROKEN"]
   ];
   for (const [input, normalized] of inputs) {
-    assert.equal(modelCatalogCacheKey(alias, config(input!)), `${alias}::v2::${hash(normalized!)}`);
+    assert.equal(modelCatalogCacheKey(alias, config(input!)), `${alias}::v3::${hash(normalized!)}`);
   }
   for (const [a, b] of [
     ["https://User:Pass@host/v1", "https://user:pass@host/v1"],
@@ -54,8 +54,8 @@ check("priority, provider type, trim, terminal slash and empty alias stay stable
   assert.equal(modelCatalogCacheKey(alias, { ...upper, modelsEndpoint: lower.baseUrl }), modelCatalogCacheKey(alias, lower));
   assert.notEqual(modelCatalogCacheKey(alias, { ...upper, type: "deepseek" }), modelCatalogCacheKey(alias, upper));
   assert.equal(modelCatalogCacheKey(alias, config("  https://gateway.example/Plan-A/v1///  ")), modelCatalogCacheKey(alias, upper));
-  assert.equal(modelCatalogCacheKey(alias, { ...upper, modelsEndpoint: "   " }), alias);
-  assert.equal(modelCatalogCacheKey(alias, { type: "openai-compatible" }), alias);
+  assert.equal(modelCatalogCacheKey(alias, { ...upper, modelsEndpoint: "   " }), `${alias}::v3::${hash("")}`);
+  assert.equal(modelCatalogCacheKey(alias, { type: "openai-compatible" }), `${alias}::v3::${hash("")}`);
 });
 for (const batch of [true, false]) {
   const mode = batch ? "batch" : "single";
@@ -87,7 +87,7 @@ for (const batch of [true, false]) {
     check(`old lowercase scoped poison is ignored, explicit=${explicit} (${mode})`, async () => {
       const storage = new InMemoryModelsStore();
       const store = batch ? storage : single(storage);
-      const old = `${alias}::${hash(lower.baseUrl!)}`;
+      const old = `${alias}::${hash(lower.baseUrl!, "openai-compatible", true)}`;
       await store.write(old, entry(explicit ? old : undefined));
       const before = await store.read(old);
       assert.equal(await readProviderCatalog(alias, lower, store), undefined);
@@ -98,7 +98,7 @@ for (const batch of [true, false]) {
   check(`old explicit alias provenance is rejected (${mode})`, async () => {
     const storage = new InMemoryModelsStore();
     const store = batch ? storage : single(storage);
-    await store.write(alias, entry(`${alias}::${hash(lower.baseUrl!)}`));
+    await store.write(alias, entry(`${alias}::${hash(lower.baseUrl!, "openai-compatible", true)}`));
     const before = await store.read(alias);
     assert.equal(await readProviderCatalog(alias, lower, store), undefined);
     assert.deepEqual(await restoreProviderCatalogs([alias], store, { [alias]: lower }), []);
@@ -115,13 +115,13 @@ for (const batch of [true, false]) {
     assert.deepEqual(await store.read(alias), before);
     assert.equal(await store.read(key), undefined);
   });
-  check(`unknown legacy alias retains offline models without validators or writes (${mode})`, async () => {
+  check(`unknown legacy alias remains untouched but cannot prove the configured source (${mode})`, async () => {
     const storage = new InMemoryModelsStore();
     const store = batch ? storage : single(storage);
     await store.write(alias, entry());
     const before = await store.read(alias);
-    assert.deepEqual(await readProviderCatalog(alias, lower, store), { ...before, etag: undefined, lastModified: undefined });
-    assert.deepEqual(await restoreProviderCatalogs([alias], store, { [alias]: lower }), [[alias, before!.models]]);
+    assert.equal(await readProviderCatalog(alias, lower, store), undefined);
+    assert.deepEqual(await restoreProviderCatalogs([alias], store, { [alias]: lower }), []);
     assert.deepEqual(await restoreProviderCatalogs([alias], store), [[alias, before!.models]]);
     assert.deepEqual(await store.read(alias), before);
     assert.equal(await store.read(modelCatalogCacheKey(alias, lower)), undefined);

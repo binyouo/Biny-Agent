@@ -180,7 +180,7 @@ export class DesktopSkillService {
     // original request order, even if a newer explicit refresh already finished.
     reload.latestRequest = Math.max(reload.latestRequest, request);
     try {
-      const response = await this.fetcher(BINY_PLUGIN_REGISTRY_URL);
+      const response = await this.fetcher(BINY_PLUGIN_REGISTRY_URL, { signal: AbortSignal.timeout(15_000) });
       if (!response.ok) throw new Error(`HTTP ${String(response.status)}`);
       if (response.url && new URL(response.url).origin !== new URL(BINY_PLUGIN_REGISTRY_URL).origin) throw new Error("Registry 重定向到非官方来源。");
       const document = parsePluginRegistry(await response.json());
