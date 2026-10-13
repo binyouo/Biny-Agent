@@ -29,7 +29,7 @@ import { TemporalMemoryIndex, parseTemporalClues } from "../session/temporalMemo
 import { createTemporalModelExtractor } from "../session/temporalModelExtractor.js";
 import { activeSessionEventsForPath, activeSessionMessageIds, replaySessionEvents, sessionMessageTree, type SessionMessageReference, type SessionReplay } from "../session/replay.js";
 import { tryReadSessionSnapshot, writeSessionSnapshot, snapshotToReplay, type SessionSnapshotData } from "../session/sessionSnapshot.js";
-import { runtimeEventsForRun, type RuntimeEventSink, type RuntimeHighWater } from "../session/runtimeEvent.js";
+import { runtimeEventsForRun, sameRuntimeHighWater, type RuntimeEventSink, type RuntimeHighWater } from "../session/runtimeEvent.js";
 import { assertRetryWindow, type RetryCommit, type RetryWindow } from "../session/retryCommit.js";
 import { resolveRetryScope, type RetryOrigin } from "../session/retryOrigin.js";
 import { admissionRecoveryInputConflict, pausedTurnAvailable, pausedTurnMarker, resolveContinuationPlan } from "../session/recoveryPlan.js";
@@ -430,7 +430,10 @@ export class AgentSession {
   private readonly pendingMemoryTasks = new Set<Promise<unknown>>();
   private temporalIndexFlight: Promise<void> = Promise.resolve();
   /** Runtime 已接纳的普通发送；让 canonical user_message 先于前台 generating 状态落盘。 */
-  private readonly admittedUserMessages = new Map<string, { input: string; reference: SessionMessageReference; identity: UserAdmissionOptions }>();
+  private readonly admittedUserMessages = new Map<string, {
+    input: string; reference: SessionMessageReference; identity: UserAdmissionOptions;
+    receipt: { sessionId: string; runtime?: RuntimeHighWater };
+  }>();
   private readonly pendingUserAdmissions = new Map<string, { input: string; identity: UserAdmissionOptions; promise: Promise<void> }>();
   /** Only a hint to read fresh selected facts before leaving an owned retry view. */
   private retryScopedView = false;
@@ -1626,11 +1629,53 @@ export class AgentSession {
   async *retry(targetMessageId: string, options: AgentRunOptions = {}): AsyncGenerator<AgentSessionEvent> {
     if (!targetMessageId.trim()) throw new Error("Retry target message is required.");
     await this.recorder.flush();
-    const recordedEvents = await readSessionEvents(this.recorder.filePath);
+    let recordedEvents = await readSessionEvents(this.recorder.filePath);
     if (this.getInfo().provider === "acp" || recordedEvents.some((event) => event.type === "message_metadata" && typeof event.metadata.acpProvider === "string")) {
       throw new Error("ACP 不支持重放或改写旧回合，请发送新消息或新建聊天。");
     }
-    const replay = replaySessionEvents(recordedEvents, { sessionId: this.recorder.sessionId });
+    let replay = replaySessionEvents(recordedEvents, { sessionId: this.recorder.sessionId });
+    const admitted = options.runId === undefined ? undefined : this.admittedUserMessages.get(options.runId);
+    const admittedEdit = admitted?.identity.replaceUserMessageId === undefined ? undefined : admitted;
+    if (admittedEdit) {
+      const identity = admittedEdit.identity;
+      if (admittedEdit.receipt.sessionId !== this.recorder.sessionId
+        || identity.runId !== options.runId || identity.turnId !== options.turnId
+        || identity.replaceUserMessageId !== options.replaceUserMessageId
+        || identity.replacementUserMessageId !== options.replacementUserMessageId
+        || admittedEdit.reference.id !== (options.replacementUserMessageId ?? identity.messageId)
+        || admittedEdit.input !== options.replacementInput
+        || !isDeepStrictEqual(identity.attachments, options.attachments)
+        || identity.source !== options.source) {
+        throw new Error("Edit admission identity does not match the retry request.");
+      }
+      const matches = recordedEvents.flatMap((event, index) => event.type === "user_message" && !event.auditOnly
+        && event.messageId === admittedEdit.reference.id ? [index] : []);
+      const index = matches[0];
+      const event = index === undefined ? undefined : recordedEvents[index];
+      const attachments = sessionAttachments(identity.attachments);
+      if (matches.length !== 1 || index === undefined || event?.type !== "user_message"
+        || !sameRuntimeHighWater(event.runtime, admittedEdit.receipt.runtime)
+        || event.runtime?.runId !== identity.runId || event.runtime?.turnId !== identity.turnId
+        || event.parentMessageId !== admittedEdit.reference.parentId || event.slotId !== admittedEdit.reference.slotId
+        || event.content !== redactSecrets(admittedEdit.input)
+        || event.metadata?.source !== identity.source
+        || event.attachments?.length !== attachments?.length
+        || event.attachments?.some((attachment, index) => attachment.name !== attachments?.[index]?.name
+          || attachment.mimeType !== attachments?.[index]?.mimeType || attachment.path !== attachments?.[index]?.path
+          || attachment.size !== attachments?.[index]?.size)) {
+        throw new Error("Edit admission has no matching canonical witness.");
+      }
+      if (recordedEvents.slice(index + 1).some(event => event.type === "agent_message"
+        || event.type === "user_message" && !event.auditOnly
+        || event.type === "message_version_selected" || event.type === "context_checkpoint")
+        || recordedEvents.some(event => event.type === "turn_status" && event.runtime?.runId === identity.runId)) {
+        throw new Error("Edit admission was superseded before retry preparation.");
+      }
+      // Validate the old target against the exact view that preceded this admitted edit.
+      // Earlier version selections remain meaningful; never rewind the durable branch.
+      recordedEvents = recordedEvents.slice(0, index);
+      replay = replaySessionEvents(recordedEvents, { sessionId: this.recorder.sessionId });
+    }
     const activeIds = new Set(replay.messageReferences.map((reference) => reference.id).filter((id): id is string => id !== undefined));
     if (!activeIds.has(targetMessageId)) throw new Error("Retry target is not on the active conversation path.");
     const nodes = sessionMessageTree(replay.events);
@@ -1719,7 +1764,7 @@ export class AgentSession {
     const preparedHistoryCount = Math.max(0, prepared.messages.length - 1);
     const preparedHistoryReferences = preparedHistoryCount ? this.contextMessageReferences.slice(-preparedHistoryCount) : [];
     const continuationMessages = [...prepared.messages];
-    const continuationReferences = [...preparedHistoryReferences, replay.messageReferences[userReferenceIndex]];
+    const continuationReferences = [...preparedHistoryReferences, admittedEdit?.reference ?? replay.messageReferences[userReferenceIndex]];
     const preparedUser = continuationMessages.at(-1);
     const sourceUserIndex = targetIsAssistant
       ? preparedHistoryReferences.findIndex((reference) => reference?.id === userNode.id)
@@ -1727,6 +1772,7 @@ export class AgentSession {
     if (sourceUserIndex >= 0 && preparedUser?.role === "user") {
       // 更新原用户位置的瞬态上下文，保留其后已完成的工具步骤，不追加重复用户消息。
       continuationMessages[sourceUserIndex] = preparedUser;
+      if (admittedEdit) continuationReferences[sourceUserIndex] = admittedEdit.reference;
       continuationMessages.pop();
       continuationReferences.pop();
     }
@@ -1740,7 +1786,7 @@ export class AgentSession {
       ? target.slotId ?? userNode.id
       : activeAssistantChild?.slotId ?? userNode.slotId ?? userNode.id;
     const replacementUserMessageId = replacingUser
-      ? options.replacementUserMessageId ?? randomUUID()
+      ? admittedEdit?.reference.id ?? options.replacementUserMessageId ?? randomUUID()
       : undefined;
     const runId = options.runId ?? randomUUID();
     const turnId = options.turnId ?? randomUUID();
@@ -1757,7 +1803,7 @@ export class AgentSession {
         targetSlotId, replyToMessageId: userNode.id, finalMessageId,
         admissionHighWater: { ...replay.runtimeHighWater }
       } : undefined;
-    if (replacingUser) this.recorder.restoreMessageParent(userNode.parentId);
+    if (replacingUser && !admittedEdit) this.recorder.restoreMessageParent(userNode.parentId);
     yield* this.runTurn(sourceInput, {
       ...options,
       runId, turnId, messageId: finalMessageId, retryOrigin,
@@ -1875,8 +1921,11 @@ export class AgentSession {
       if (this.getInfo().provider === "acp" || events.some((event) => event.type === "message_metadata" && typeof event.metadata.acpProvider === "string")) {
         throw new Error("ACP 不支持重放或改写旧回合，请发送新消息或新建聊天。");
       }
-      const source = sessionMessageTree(events).find((node) => node.id === options.replaceUserMessageId);
-      if (!source || source.message.role !== "user") throw new Error("Edit target user message is not on the active conversation path.");
+      const sourceReplay = replaySessionEvents(events, { sessionId: this.recorder.sessionId });
+      const source = sessionMessageTree(sourceReplay.events).find((node) => node.id === options.replaceUserMessageId);
+      if (!source || source.message.role !== "user" || !sourceReplay.messageReferences.some(reference => reference.id === source.id)) {
+        throw new Error("Edit target user message is not on the active conversation path.");
+      }
       replacement = {
         messageId: options.replacementUserMessageId ?? options.messageId,
         parentMessageId: source.parentId,
@@ -1905,11 +1954,12 @@ export class AgentSession {
         if (replacement) this.recorder.restoreMessageParent(replacement.parentMessageId);
         reference = this.recordCanonicalMessage(event);
       }
+      const receipt = { sessionId: this.recorder.sessionId, runtime: this.recorder.runtimeHighWater() };
       await this.recorder.flush();
       // 接收确认也要留下任务意图；上下文准备尚未完成时崩溃，仍能恢复这次输入。
       await this.turnStore.save(input, undefined, [...this.contextMemory.getHistory(), { role: "user", content: input }], 0,
         undefined, undefined, undefined, this.recorder.runtimeHighWater(), options.turnId);
-      this.admittedUserMessages.set(options.runId, { input, reference, identity: options });
+      this.admittedUserMessages.set(options.runId, { input, reference, identity: options, receipt });
       this.scheduleTemporalIndex();
     } finally {
       this.recorder.setRuntimeContext(previousContext);
@@ -2371,7 +2421,7 @@ export class AgentSession {
         // 编辑版本的 context 最后一条已经是新用户输入；把它的 reference 从旧版本替换成
         // 刚写入的 canonical user message，后续 assistant 才能挂到新的父节点上。
         const replacementReference = recordUserMessage();
-        if (replacementReference) {
+        if (replacementReference && !(admitted && messageReferences.some(reference => reference?.id === replacementReference.id))) {
           messageReferences = [
             ...messageReferences.slice(0, Math.max(0, messageReferences.length - 1)),
             replacementReference
