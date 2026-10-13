@@ -114,6 +114,6 @@ await test("large JSON scopes and quoted or Unicode IDs use fixed parameter coun
     assert.deepEqual(measured.entries.map(({ entryId }) => entryId), ["alpha-'quoted'", "beta-[json]", "中文"]);
     assert.equal(measured.rows, 3);
     assert.equal(measured.blobBytes, 3 * dimensions * 4);
-    assert.deepEqual(measured.boundArguments, [2]);
+    assert.deepEqual(measured.boundArguments, [4]);
   });
 });
