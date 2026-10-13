@@ -1667,7 +1667,7 @@ export class ToolExecutionCoordinator {
     const previous = this.permissionTail;
     let release!: () => void;
     const current = new Promise<void>((resolve) => { release = resolve; });
-    this.permissionTail = current;
+    this.permissionTail = previous.then(() => current);
     try {
       await waitForAbort(previous, signal);
       signal?.throwIfAborted();
