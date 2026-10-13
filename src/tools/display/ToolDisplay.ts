@@ -7,6 +7,7 @@
 import { analyzePermissionRequest, commandSafetyWarnings } from "../../permission/policy.js";
 import type { PermissionPrompt, PermissionRequestContext } from "../../permission/PermissionManager.js";
 import { createUnifiedDiff } from "../../utils/diff.js";
+import { classifyDiffLines } from "../../utils/diffLines.js";
 import { redactSecrets, redactSensitiveValue } from "../../utils/secrets.js";
 import { resolveWorkspacePath } from "../../workspace/resolvePath.js";
 import { applyHashlineEdits } from "../file/hashline.js";
@@ -211,14 +212,14 @@ function formatUnifiedDiffPreview(filePath: string, diff: string, maxLines: numb
   let oldLine = 1;
   let newLine = 1;
 
-  for (const line of diff.split("\n")) {
-    const range = line.match(/^@@\s+-(\d+)(?:,\d+)?\s+\+(\d+)(?:,\d+)?\s+@@/);
-    if (range) {
-      oldLine = Number.parseInt(range[1] ?? "1", 10);
-      newLine = Number.parseInt(range[2] ?? "1", 10);
+  for (const part of classifyDiffLines(diff)) {
+    const { line } = part;
+    if (part.kind === "hunk") {
+      oldLine = part.oldStart;
+      newLine = part.newStart;
       continue;
     }
-    if (line.startsWith("---") || line.startsWith("+++")) continue;
+    if (part.kind === "old-header" || part.kind === "new-header" || part.kind === "meta") continue;
     if (line.startsWith("-")) {
       body.push(`${String(oldLine).padStart(4, " ")} - ${line.slice(1)}`);
       oldLine += 1;

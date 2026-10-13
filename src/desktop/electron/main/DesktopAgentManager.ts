@@ -58,7 +58,7 @@ import { selectMemoryEmbeddingModel } from "../../../llm/embedding/selectMemoryM
 import { MemoryVectorIndex } from "../../../agent/context/MemoryVectorIndex.js";
 import { MemoryEmbeddingService, type MemoryEmbeddingRuntimeStatus } from "../../../agent/context/MemoryEmbeddingService.js";
 import { FileModelsStore, restoreProviderCatalogs, type ModelsStore } from "../../../llm/ModelsStore.js";
-import { listConfiguredModelChoices, listPickerModelChoices, modelRuntimeInfo, saveModelSelection, type ModelRuntimeInfo, type ThinkingSelection } from "../../../llm/ModelManager.js";
+import { filterPickerModelChoices, listConfiguredModelChoices, listPickerModelChoices, modelRuntimeInfo, saveModelSelection, type ModelRuntimeInfo, type ThinkingSelection } from "../../../llm/ModelManager.js";
 import type { PermissionMode, PermissionResult } from "../../../permission/PermissionManager.js";
 import type { UserInputResponse } from "../../../runtime/userInput.js";
 import type { BrowserAutomationEndpoint } from "../../../tools/browser.js";
@@ -375,7 +375,7 @@ export class DesktopAgentManager {
     ]);
     const catalogs = config ? await restoreProviderCatalogs(Object.keys(config.providers), this.modelsStore, config.providers) : [];
     const models = config ? listConfiguredModelChoices(config, catalogs) : [];
-    const pickerModels = config ? listPickerModelChoices(config, catalogs) : [];
+    const pickerModels = filterPickerModelChoices(models);
     if (config && pickerModels.some((model) => model.alias === config.defaultModel)) {
       const info = modelRuntimeInfo(config, catalogs);
       pickerModels.sort((left, right) => Number(right.alias === info.modelAlias) - Number(left.alias === info.modelAlias));
@@ -3223,12 +3223,19 @@ export class DesktopAgentManager {
     const storage = new MemoryStorage(project.path);
     // entries 与 allEntries 是同一份全量结果的两个用途（分页页脚 / 统计），
     // 原来读了两次，等于把全部记忆正文反序列化两遍。
-    const [overview, allEntries, maintenance] = await Promise.all([
+    const reads = [
       storage.getOverview(),
       storage.listEntries(),
       storage.readMaintenanceStatus()
-    ]);
-    return { overview, entries: allEntries, allEntries, maintenance };
+    ] as const;
+    try {
+      const [overview, allEntries, maintenance] = await Promise.all(reads);
+      return { overview, entries: allEntries, allEntries, maintenance };
+    } finally {
+      // Promise.all rejects early; finish every owned read before closing its storage.
+      await Promise.allSettled(reads);
+      storage.close();
+    }
   }
 
   /** 记忆条目分页读取；runtime 驻留走 runtime，未驻留直连。 */
@@ -3250,8 +3257,12 @@ export class DesktopAgentManager {
     }
     const project = this.projects.requireProject(projectId);
     const storage = new MemoryStorage(project.path);
-    const result = await storage.listEntries({ offset, limit, includeArchived });
-    return { entries: result.entries, total: result.total, storeRevision: result.storeRevision };
+    try {
+      const result = await storage.listEntries({ offset, limit, includeArchived });
+      return { entries: result.entries, total: result.total, storeRevision: result.storeRevision };
+    } finally {
+      storage.close();
+    }
   }
 
   /** 冷态复用只读索引统计，不加载模型权重或创建向量投影。 */

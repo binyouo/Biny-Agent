@@ -1,5 +1,6 @@
 /** 桌面摘要装配：只读取已登记工作区的活动消息分支，项目确认由主进程显式执行。 */
 import { z } from "zod";
+import { createHash } from "node:crypto";
 import { stat } from "node:fs/promises";
 import type { AgentConfigStore } from "../../../config/store.js";
 import { resolveToolModel } from "../../../llm/toolModel.js";
@@ -8,6 +9,7 @@ import { listSessionCatalog, readSessionCatalogRecord } from "../../../session/c
 import { activeSessionMessageIds, sessionMessageTree } from "../../../session/messageTree.js";
 import { publicUserMessage } from "../../../session/publicMessage.js";
 import { resolveSessionFile, sessionIdFromFile } from "../../../session/store.js";
+import type { SessionEvent } from "../../../session/recorder.js";
 import { ThreadBriefService, type BriefThread } from "../../../session/threadBriefService.js";
 import { ThreadBriefStore, threadBriefSettingsSchema } from "../../../session/threadBriefStore.js";
 import type { BriefProjectSuggestion, BriefThreadReference } from "../../../session/threadBriefTypes.js";
@@ -32,6 +34,9 @@ const requestSchema = z.discriminatedUnion("action", [
 export class DesktopThreadBriefService {
   readonly engine: ThreadBriefService;
   private readonly accepting = new Set<string>();
+  // Only the original generation input owns this transient proof. Stored references
+  // used by suggestions/rewrite do not inherit it or change their visibility policy.
+  private readonly sources = new WeakMap<BriefThreadReference, { projectPath: string; file: string; fingerprint: string }>();
 
   constructor(private readonly options: {
     configStore: AgentConfigStore;
@@ -45,7 +50,7 @@ export class DesktopThreadBriefService {
       store: options.store ?? new ThreadBriefStore(),
       readThread: (sessionId, minimumCreatedAt) => this.readThread(sessionId, minimumCreatedAt),
       getModel: async () => resolveToolModel(await options.configStore.load()),
-      canPersist: async (threads) => await this.isVisibleSuggestion({ threads }),
+      canPersist: async (threads) => await this.canPersist(threads),
       onChange: options.onChange
     });
   }
@@ -182,6 +187,26 @@ export class DesktopThreadBriefService {
     return true;
   }
 
+  private async canPersist(threads: readonly BriefThreadReference[]): Promise<boolean> {
+    for (const thread of threads) {
+      const source = this.sources.get(thread);
+      if (!source) {
+        if (!await this.isVisibleThread(thread)) return false;
+        continue;
+      }
+      const stillRegistered = (): boolean => this.options.state.projects().some((project) =>
+        project.id === thread.projectId && !project.missing && project.path === source.projectPath);
+      if (!stillRegistered()) return false;
+      // Read the existing source directly: dataRoot/readThread would initialize
+      // runtime directories. This check must never recreate removed storage.
+      const file = await resolveSessionFile(source.projectPath, thread.sessionId).catch(() => undefined);
+      if (!file || file !== source.file || sessionIdFromFile(file) !== thread.sessionId) return false;
+      const events = await readSessionEvents(file);
+      if (!stillRegistered() || briefSource(events).fingerprint !== source.fingerprint) return false;
+    }
+    return true;
+  }
+
   private async readThread(sessionId: string, minimumCreatedAt?: string): Promise<BriefThread | undefined> {
     for (const project of this.options.state.projects()) {
       if (project.missing) continue;
@@ -194,17 +219,31 @@ export class DesktopThreadBriefService {
       if (minimumCreatedAt && createdAt < minimumCreatedAt) return undefined;
       const [events, summary] = await Promise.all([readSessionEvents(file), readSessionSummary(root, sessionId)]);
       if (!summary) return undefined;
-      const active = activeSessionMessageIds(events);
-      const messages = sessionMessageTree(events).filter((node) => active.has(node.id)).flatMap((node) => {
-        const role = node.message.role;
-        if (role !== "user" && role !== "assistant") return [];
-        const content = typeof node.message.content === "string" ? node.message.content : node.message.content.filter((part) => part.type === "text").map((part) => part.text).join("\n");
-        return [{ role, text: role === "user" ? publicUserMessage(content) : content }];
-      });
+      const source = briefSource(events);
       const title = catalog?.title ?? summary.firstUserMessage.slice(0, 120);
-      return { sessionId, projectId: project.id, title, createdAt: summary.createdAt, messages,
+      const thread: BriefThread = { sessionId, projectId: project.id, title, createdAt: summary.createdAt, messages: source.messages,
         excluded: /^(?:⏰ Cron:|💓 Heartbeat)/u.test(title) };
+      this.sources.set(thread, { projectPath: project.path, file, fingerprint: source.fingerprint });
+      return thread;
     }
     return undefined;
   }
+}
+
+// Shared projection keeps generation and its final freshness check on the same
+// canonical active view. Unlike the model's bounded contentHash, IDs and all
+// projected text participate. Non-active events and tool-only changes do not.
+function briefSource(events: readonly SessionEvent[]): { messages: BriefThread["messages"]; fingerprint: string } {
+  const nodes = sessionMessageTree(events);
+  const active = activeSessionMessageIds(events, nodes);
+  const selected = nodes.filter((node) => active.has(node.id)).flatMap((node) => {
+    const role = node.message.role;
+    if (role !== "user" && role !== "assistant") return [];
+    const content = typeof node.message.content === "string" ? node.message.content : node.message.content.filter((part) => part.type === "text").map((part) => part.text).join("\n");
+    return [{ id: node.id, role, text: role === "user" ? publicUserMessage(content) : content }];
+  });
+  return {
+    messages: selected.map(({ role, text }) => ({ role, text })),
+    fingerprint: createHash("sha256").update(JSON.stringify(selected)).digest("hex")
+  };
 }

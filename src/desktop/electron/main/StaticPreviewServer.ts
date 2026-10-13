@@ -3,6 +3,7 @@ import { randomBytes } from "node:crypto";
 import { constants, createReadStream, promises as fs, type ReadStream } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import path from "node:path";
+import { pipeline } from "node:stream/promises";
 
 const mimeTypes: Record<string, string> = {
   ".html": "text/html; charset=utf-8", ".htm": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8",
@@ -182,11 +183,12 @@ export class StaticPreviewServer {
         catch { response.writeHead(404).end(); return; }
         if (!inside(realRoot, resolved)) { response.writeHead(403).end(); return; }
         const stat = await fs.stat(resolved);
+        if (response.destroyed) return;
         if (!stat.isFile()) { response.writeHead(404).end(); return; }
         response.writeHead(200, { "Content-Type": mimeTypes[path.extname(resolved).toLowerCase()] ?? "application/octet-stream", "Cache-Control": "no-cache", "X-Content-Type-Options": "nosniff" });
         if (request.method === "HEAD") { response.end(); return; }
-        createReadStream(resolved).on("error", () => response.destroy()).pipe(response);
-      })().catch(() => { if (!response.headersSent) response.writeHead(500).end(); else response.destroy(); });
+        await pipeline(createReadStream(resolved), response);
+      })().catch(() => { if (response.destroyed) return; if (!response.headersSent) response.writeHead(500).end(); else response.destroy(); });
     });
     try {
       await new Promise<void>((resolve, reject) => {

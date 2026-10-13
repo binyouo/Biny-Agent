@@ -273,7 +273,8 @@ async function runAttachedCommand(
     );
     const turn = await withCliAbortSignal(async (signal) => {
       const onAbort = (): void => {
-        void runtime.cancelRunRequest(submitted.runId, "interrupted", sessionId);
+        // Observe transport failures; the submitted completion still owns settlement and cleanup.
+        void runtime.cancelRunRequest(submitted.runId, "interrupted", sessionId).catch(() => undefined);
       };
       signal.addEventListener("abort", onAbort, { once: true });
       try {

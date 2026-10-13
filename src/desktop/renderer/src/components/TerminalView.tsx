@@ -2,7 +2,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
-import type { DesktopTerminalTab } from "../../../protocol.js";
+import type { DesktopTerminalHandle, DesktopTerminalTab } from "../../../protocol.js";
 import { readThemeColors } from "../themeColors.js";
 import { Icon } from "./Icon.js";
 import "@xterm/xterm/css/xterm.css";
@@ -126,7 +126,15 @@ function TerminalScreen({ projectId, slotId, active, onHandle }: { projectId: st
       else setExitCode(event.exitCode);
     };
     const unsubscribe = window.biny.onTerminalEvent((event) => { if (!terminalId) pending.push(event); else applyEvent(event); });
-    void window.biny.createTerminal(projectId, 80, 24, slotId).then((handle) => {
+    const connect = async (): Promise<DesktopTerminalHandle> => {
+      if (slotId !== "preview" || restartToken === 0) {
+        return await window.biny.createTerminal(projectId, 80, 24, slotId);
+      }
+      const result = await window.biny.startProjectPreview(projectId);
+      if (result.kind !== "script") throw new Error("当前项目使用静态预览，请在浏览器面板查看。");
+      return result;
+    };
+    void connect().then((handle) => {
       if (disposed) return;
       terminalId = handle.terminalId;
       handleRef.current(terminalId);

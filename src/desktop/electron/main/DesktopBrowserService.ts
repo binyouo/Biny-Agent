@@ -418,7 +418,7 @@ export class DesktopBrowserService {
     window.on("closed", () => {
       this.window = undefined;
       // 关窗时兜底同步一次：期间的 changed 事件可能还压在防抖窗口里没落盘。
-      if (this.browserSessionManaged) void this.syncToJar();
+      if (this.browserSessionManaged) void this.syncToJar().catch(() => undefined);
     });
     window.once("ready-to-show", () => window.show());
     await window.loadURL(target);
@@ -537,7 +537,7 @@ export class DesktopBrowserService {
     await this.stopAutomationServer();
     if (this.syncTimer) clearTimeout(this.syncTimer);
     this.syncTimer = undefined;
-    if (this.browserSessionManaged) await this.syncToJar();
+    if (this.browserSessionManaged) await this.syncToJar().catch(() => undefined);
     if (this.window && !this.window.isDestroyed()) this.window.destroy();
     this.window = undefined;
     this.hideEmbeddedBrowser();
@@ -589,7 +589,7 @@ export class DesktopBrowserService {
       try {
         result = method.startsWith("computer_") && this.computerUse ? await this.computerUse(method, args, controller.signal) : await this.enqueueAutomation(() => {
           controller.signal.throwIfAborted();
-          return method === "web_read" ? this.readWebPage(args, controller.signal) : this.executeAutomation(method, args);
+          return method === "web_read" ? this.readWebPage(args, controller.signal) : this.executeAutomation(method, args, controller.signal);
         });
         if (["navigate", "click", "fill", "press"].includes(method) && this.previewActivity) {
           try {
@@ -712,7 +712,7 @@ export class DesktopBrowserService {
     });
   }
 
-  private async executeAutomation(method: string, args: Record<string, unknown>): Promise<unknown> {
+  private async executeAutomation(method: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {
     if (method === "navigate") {
       const url = readString(args.url, "url");
       if (!isHttpUrl(url)) throw new Error("Browser navigation only supports HTTP and HTTPS URLs.");
@@ -723,7 +723,7 @@ export class DesktopBrowserService {
     if (method === "read_dom") return await this.readDom(readNumber(args.maxCharacters, 24_000, 100_000));
     if (method === "click") return await this.click(readString(args.selector, "selector"));
     if (method === "fill") return await this.fill(readString(args.selector, "selector"), readString(args.value, "value"));
-    if (method === "press") return await this.press(args.selector === undefined ? undefined : readString(args.selector, "selector"), readString(args.key, "key"));
+    if (method === "press") return await this.press(args.selector === undefined ? undefined : readString(args.selector, "selector"), readString(args.key, "key"), signal);
     throw new Error(`Unsupported browser automation method: ${method}`);
   }
 
@@ -802,25 +802,27 @@ export class DesktopBrowserService {
     })()`);
   }
 
-  private async press(selector: string | undefined, key: string): Promise<unknown> {
-    if (selector) await this.evaluate(`(() => { const element = document.querySelector(${JSON.stringify(selector)}); if (!(element instanceof HTMLElement)) throw new Error('No visible HTML element matched the selector.'); element.focus(); })()`);
-    await this.sendDebuggerCommand("Input.dispatchKeyEvent", { type: "keyDown", key, text: key.length === 1 ? key : undefined });
+  private async press(selector: string | undefined, key: string, signal?: AbortSignal): Promise<unknown> {
+    if (selector) await this.evaluate(`(() => { const element = document.querySelector(${JSON.stringify(selector)}); if (!(element instanceof HTMLElement)) throw new Error('No visible HTML element matched the selector.'); element.focus(); })()`, signal);
+    await this.sendDebuggerCommand("Input.dispatchKeyEvent", { type: "keyDown", key, text: key.length === 1 ? key : undefined }, signal);
     await this.sendDebuggerCommand("Input.dispatchKeyEvent", { type: "keyUp", key });
     return await this.pageState();
   }
 
-  private async evaluate(expression: string): Promise<unknown> {
-    const result = asRecord(await this.sendDebuggerCommand("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true }));
+  private async evaluate(expression: string, signal?: AbortSignal): Promise<unknown> {
+    const result = asRecord(await this.sendDebuggerCommand("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true }, signal));
     const exception = asRecord(result.exceptionDetails);
     if (Object.keys(exception).length) throw new Error(typeof exception.text === "string" ? exception.text : "Browser page evaluation failed.");
     const remote = asRecord(result.result);
     return remote.value;
   }
 
-  private async sendDebuggerCommand(method: string, params: Record<string, unknown>): Promise<unknown> {
+  private async sendDebuggerCommand(method: string, params: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {
     const contents = await this.ensureContents();
+    signal?.throwIfAborted();
     const debuggerSession = contents.debugger;
     if (!debuggerSession.isAttached()) debuggerSession.attach("1.3");
+    signal?.throwIfAborted();
     return await debuggerSession.sendCommand(method, params);
   }
 
@@ -846,7 +848,7 @@ export class DesktopBrowserService {
     if (this.syncTimer) clearTimeout(this.syncTimer);
     this.syncTimer = setTimeout(() => {
       this.syncTimer = undefined;
-      void this.syncToJar();
+      void this.syncToJar().catch(() => undefined);
     }, syncDebounceMs);
   }
 
@@ -864,7 +866,7 @@ export class DesktopBrowserService {
       await writeCookieJar(await this.getJarPath(), await this.readSessionCookies());
     });
     this.syncTail = run.catch(() => undefined);
-    await run.catch(() => undefined);
+    await run;
   }
 }
 
