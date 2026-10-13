@@ -415,14 +415,14 @@ async function testSemanticCandidateFailureIsolation(): Promise<void> {
     const partial = await scanner.processAnchor({ threadId: "failure-thread", anchorId: "partial-anchor", text: "Unrelated partial update" });
     assert.deepEqual(updated, [first.id, second.id]);
     assert.equal(partial.materialsAdded, 1);
-    assert.equal(store.listMaterials(first.id).length, 1);
+    assert.equal(store.listMaterials(first.id).length, 0); // Material and metadata roll back together.
     assert.equal(store.listMaterials(second.id).length, 2);
     assert.deepEqual(store.getCrystal(first.id), beforeFirst);
     assert.equal(store.hasProcessedAnchor("partial-anchor"), true);
     store.putCrystal = putCrystal;
     const repeated = await scanner.processAnchor({ threadId: "failure-thread", anchorId: "partial-anchor", text: "Unrelated partial update" });
     assert.equal(repeated.claimed, false);
-    assert.equal(store.listMaterials(first.id).length, 1);
+    assert.equal(store.listMaterials(first.id).length, 0); // Material and metadata roll back together.
     assert.equal(store.listMaterials(second.id).length, 2);
 
     const controller = new AbortController();

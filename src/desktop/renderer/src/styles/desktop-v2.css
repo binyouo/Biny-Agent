@@ -4275,7 +4275,7 @@ select option:disabled {
 .connection-test-result.is-ok { color: var(--green-text); }
 .connection-test-result.is-error { color: var(--red-text); }
 
-/* 测试连接：紧凑图标按钮，状态（空闲/进行中/最近结果）都在图标上；多模型带下拉箭头。 */
+/* 测试连接通过图标显示状态；服务商入口带文字，多模型时显示下拉箭头。 */
 .provider-test-split { position: relative; flex: 0 0 auto; }
 
 .provider-test-button {

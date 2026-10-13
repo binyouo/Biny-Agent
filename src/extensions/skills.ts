@@ -125,7 +125,7 @@ export async function loadSkills(options: LoadSkillsOptions): Promise<SkillBundl
     await appendSkillDefinitions(candidates, warnings, errors, canonicalWorkspace, files, "project", skillRootPrecedence("project", configuredPath), sourceForProjectSkill(files[0]?.path, canonicalWorkspace));
   }
 
-  // 显式传 globalRoot 时只扫描该目录（测试和嵌入方可隔离）；默认与 SkillHub 使用相同根目录。
+  // 显式传 globalRoot 时只扫描该目录（测试和嵌入方可隔离）；默认与桌面技能目录共用同一根目录。
   const globalRoots = options.globalRoot
     ? [options.globalRoot]
     : defaultGlobalSkillRoots();
@@ -331,6 +331,10 @@ export async function skillPromptForSelection(bundle: SkillBundle, selection?: C
 
 export function skillPathsForSelection(bundle: SkillBundle, selection?: CapabilitySelectionValue): string[] {
   return selectSkills(bundle, selection).map((skill) => skill.path);
+}
+
+export function skillNamesForSelection(bundle: SkillBundle, selection?: CapabilitySelectionValue): string[] {
+  return selectSkills(bundle, selection).map((skill) => skill.name);
 }
 
 function selectSkills(bundle: SkillBundle, selection?: CapabilitySelectionValue): SkillDefinition[] {

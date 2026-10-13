@@ -109,13 +109,13 @@ export class ThreadBriefService {
     const revision = z.object({ name: z.string().trim().min(1).max(120), brief: z.string().trim().min(1).max(2000), focus: z.string().trim().max(500), drop: z.array(z.string()).max(50), reason: shortText }).parse(
       await this.ask(model, briefRevisionPrompt, { suggestion: original, feedback }, new AbortController().signal)
     );
-    // 模型返回期间可能已经确认/忽略，迟到改写不能重新打开建议或覆盖用户编辑。
-    const latest = this.store.suggestion(id);
-    if (!latest || JSON.stringify(latest) !== JSON.stringify(original)) throw new Error("项目建议已发生变化，请重新查看。");
     if (revision.drop.some((id) => !original.threads.some((thread) => thread.sessionId === id))) throw new Error("改写包含建议之外的对话。");
     const threads = original.threads.filter((thread) => !revision.drop.includes(thread.sessionId));
     if (!threads.length) throw new Error("项目建议至少需要保留一段对话。");
     if (!await this.mayPersist(threads)) throw new Error("项目建议的来源对话已不可用。");
+    // 模型返回期间可能已经确认/忽略，迟到改写不能重新打开建议或覆盖用户编辑。
+    const latest = this.store.suggestion(id);
+    if (!latest || JSON.stringify(latest) !== JSON.stringify(original)) throw new Error("项目建议已发生变化，请重新查看。");
     this.store.putSuggestion({ ...original, name: revision.name, brief: revision.brief, focus: revision.focus, reason: revision.reason, threads });
     this.options.onChange?.();
   }

@@ -100,6 +100,8 @@ export type PreparationStage = "memory" | "skills" | "tools" | "workspace" | "co
 export interface ContextStatus {
   /** 当前轮次已完成的能力预选结果。 */
   capabilitySelection?: import("../capabilitySelection.js").AgentCapabilitySelection;
+  /** 本轮成功装入模型上下文的 Skill；与单纯预选结果分开。 */
+  loadedSkills?: string[];
   loadedInstructions: string[];
   instructionBytes: number;
   instructionCapBytes: number;

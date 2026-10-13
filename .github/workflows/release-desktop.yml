@@ -126,7 +126,7 @@ jobs:
         run: |
           pnpm build:desktop
           pnpm test:code-mode-package
-          args=(--mac dmg zip --${{ matrix.arch }} --publish never)
+          args=(--config config/electron-builder.yml --mac dmg zip --${{ matrix.arch }} --publish never)
           if [[ "$RELEASE_UNSIGNED" == "true" ]]; then
             unset CSC_LINK CSC_KEY_PASSWORD APPLE_ID APPLE_APP_SPECIFIC_PASSWORD APPLE_TEAM_ID
             args+=(--config.mac.identity=- --config.mac.hardenedRuntime=false --config.mac.gatekeeperAssess=false --config.mac.notarize=false)

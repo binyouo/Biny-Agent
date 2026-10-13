@@ -6,6 +6,7 @@ import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { build, version as esbuildVersion } from "esbuild";
+import { parse as parseYaml } from "yaml";
 
 const projectRoot = fileURLToPath(new URL("..", import.meta.url));
 const sha256 = bytes => createHash("sha256").update(bytes).digest("hex");
@@ -70,6 +71,9 @@ export async function verifyCodeModeRuntimeInputs(root = projectRoot) {
   for (const file of sourceFiles) sourceSha256[file] = sha256(await readFile(path.join(artifactRoot, file)));
   const sourceProvenance = JSON.parse(await readFile(path.join(artifactRoot, "source-provenance.json"), "utf8"));
   assert.deepEqual(sourceProvenance.patchedDistSha256, identity.patchedDistSha256, "Source provenance differs from the reviewed package identity");
+  const packageManagerConfig = parseYaml(await readFile(path.join(root, "pnpm-workspace.yaml"), "utf8"));
+  assert.ok(packageManagerConfig.patchedDependencies && typeof packageManagerConfig.patchedDependencies === "object",
+    "pnpm-workspace.yaml must declare patchedDependencies");
   const legalSha256 = {};
   for (const [file, expected] of Object.entries(sourceProvenance.legalInputs)) {
     const digest = sha256(await readFile(path.join(root, file)));
@@ -80,11 +84,11 @@ export async function verifyCodeModeRuntimeInputs(root = projectRoot) {
     assert.equal(sha256(await readFile(path.join(root, expected.path))), expected.sha256, `Source/notice provenance drift: ${expected.path}`);
   }
   const patches = {};
-  for (const [name, file] of Object.entries(application.pnpm.patchedDependencies)) {
+  for (const [name, file] of Object.entries(packageManagerConfig.patchedDependencies)) {
     patches[name] = { path: file, sha256: sha256(await readFile(path.join(root, file))) };
   }
   const applicationInputSha256 = {};
-  for (const file of ["package.json", "pnpm-lock.yaml", "src/agent/codeMode.ts", "scripts/build-code-mode-runtime.mjs", "electron.vite.config.ts"]) {
+  for (const file of ["package.json", "pnpm-workspace.yaml", "pnpm-lock.yaml", "src/agent/codeMode.ts", "scripts/build-code-mode-runtime.mjs", "config/electron.vite.config.ts"]) {
     applicationInputSha256[file] = sha256(await readFile(path.join(root, file)));
   }
   return {

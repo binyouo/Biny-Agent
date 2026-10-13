@@ -48,7 +48,7 @@ export function SettingsToolModel({ onTest }: { onTest(configuration: DesktopMod
           <SettingsModelPicker
             ariaLabel="工具模型"
             disabled={saving || testing || saveState === "saving" || saveState === "rolling_back" || saveState === "recovery_required"}
-            groups={modelPickerGroups(snapshot.models.configured, snapshot.models.connections)}
+            groups={modelPickerGroups(snapshot.models.configured.filter((model) => model.providerType !== "acp"), snapshot.models.connections)}
             inheritLabel="自动选择"
             onChange={selectModel}
             placeholder="自动选择"
