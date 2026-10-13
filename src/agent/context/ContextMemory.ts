@@ -284,6 +284,9 @@ export class ContextMemory {
       return {
         systemPrompt: assembly.systemPrompt,
         messages: assembly.messages,
+        loadedSkills: typeof resolvedPrompt === "string" || !resolvedPrompt.loadedSkills?.length
+          ? undefined
+          : [...resolvedPrompt.loadedSkills],
         compaction: compaction.compacted ? compaction : undefined
       };
     } finally {
@@ -1772,6 +1775,7 @@ interface ContextAssembly {
 export interface PreparedAgentContext {
   systemPrompt?: string;
   messages: AgentMessage[];
+  loadedSkills?: string[];
   compaction?: CompactionResult;
 }
 

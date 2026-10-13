@@ -75,6 +75,8 @@ const decorated = renderToStaticMarkup(createElement(PromptInput, {
   onFiles: () => undefined, disabled: false, placeholder: "输入消息…", skills: [skill.auxiliaryData.skill],
   inputRef: createRef<HTMLTextAreaElement>()
 }));
-assert.match(decorated, /data-skill-name="diagram">\/skills:diagram<\/span>/u);
+assert.match(decorated, /data-skill-name="diagram"><span class="biny-prompt-skill-source">\/skills:diagram<\/span>/u);
+assert.match(decorated, /class="biny-prompt-skill-label"><svg aria-hidden="true"[^>]*width="11"/u, "a selected skill gets a wand icon in the composer token");
+assert.match(decorated, /class="biny-prompt-skill-label-name">diagram/u, "a selected skill shows its name in the composer token");
 assert.match(decorated, /<textarea[^>]*>\/skills:diagram 检查代码<\/textarea>/u);
 console.log("prompt completion tests passed");

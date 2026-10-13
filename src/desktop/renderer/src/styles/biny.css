@@ -3721,11 +3721,38 @@ button.capability-check[aria-checked="true"] {
   overflow-wrap: break-word;
 }
 .biny-prompt-skill-token {
-  border-radius: 4px;
-  background: color-mix(in srgb, var(--biny-focus) 13%, transparent);
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--biny-focus) 50%, transparent);
-  box-decoration-break: clone;
-  -webkit-box-decoration-break: clone;
+  position: relative;
+  display: inline-block;
+  max-width: 100%;
+  vertical-align: baseline;
+}
+.biny-prompt-skill-source {
+  visibility: hidden;
+}
+.biny-prompt-skill-label {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  overflow: hidden;
+  padding: 0 5px;
+  border: 1px solid color-mix(in srgb, var(--biny-focus) 45%, transparent);
+  border-radius: 5px;
+  color: var(--biny-focus);
+  background: color-mix(in srgb, var(--biny-focus) 14%, var(--biny-surface));
+  box-shadow: inset 0 1px 0 color-mix(in srgb, white 8%, transparent);
+  font-size: 11px;
+  line-height: 1;
+  white-space: nowrap;
+}
+.biny-prompt-skill-label > svg {
+  flex: none;
+}
+.biny-prompt-skill-label-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .biny-prompt-reference-token {
   border-radius: 4px;

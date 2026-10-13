@@ -211,6 +211,7 @@ export interface AgentSessionOptions {
   recorder: SessionRecorder;
   modelManager?: ModelManager;
   skillPrompt?: string | ((selection?: AgentCapabilitySelection["skills"], runId?: string) => string | undefined | Promise<string | undefined>);
+  skillNames?: (selection?: AgentCapabilitySelection["skills"], runId?: string) => string[];
   /** 具名子代理定义元数据段（Task 可用的 agent 列表）。 */
   subagentPrompt?: string;
   skillPaths?: string[] | ((selection?: AgentCapabilitySelection["skills"], runId?: string) => string[]);
@@ -674,7 +675,7 @@ export class AgentSession {
   }
 
   /** 技能元数据、具名子代理清单与 MCP instructions 共同构成 system prompt 的扩展段。 */
-  private async extensionPrompt(capabilitySelection?: AgentCapabilitySelection, runId?: string): Promise<string | undefined> {
+  private async extensionPrompt(capabilitySelection?: AgentCapabilitySelection, runId?: string): Promise<{ prompt?: string; loadedSkills: string[] }> {
     const selectedSkillPrompt = await this.skillPrompt(capabilitySelection?.skills, runId);
     const sections = [
       selectedSkillPrompt?.trim(),
@@ -682,7 +683,10 @@ export class AgentSession {
       this.options.mcpPrompt?.().trim(),
       (this.options.todoStore?.promptSection() ?? this.options.todoPrompt?.())?.trim()
     ].filter(Boolean);
-    return sections.length ? sections.join("\n\n") : undefined;
+    return {
+      prompt: sections.length ? sections.join("\n\n") : undefined,
+      loadedSkills: selectedSkillPrompt?.trim() ? [...(this.options.skillNames?.(capabilitySelection?.skills, runId) ?? [])] : []
+    };
   }
 
   private async skillPrompt(selection?: AgentCapabilitySelection["skills"], runId?: string): Promise<string | undefined> {
@@ -692,6 +696,11 @@ export class AgentSession {
   private skillPaths(selection?: AgentCapabilitySelection["skills"], runId?: string): string[] {
     const paths = typeof this.options.skillPaths === "function" ? this.options.skillPaths(selection, runId) : this.options.skillPaths;
     return [...(paths ?? [])];
+  }
+
+  private async recordLoadedSkills(messageId: string | undefined, skills: string[], clearWhenEmpty = false): Promise<void> {
+    if (!messageId || (!skills.length && !clearWhenEmpty)) return;
+    await this.recorder.recordAndFlush({ type: "message_metadata", messageId, metadata: { loadedSkills: [...skills] } });
   }
 
   private async dailyNotesPrompt(now = new Date()): Promise<string | undefined> {
@@ -806,9 +815,10 @@ export class AgentSession {
     } catch {
       // 辅助引用读取失败不扩大到其他会话或阻断当前对话。
     }
+    const extensions = await this.extensionPrompt(selection, runId);
     const bundle = buildPromptBundle({
       sessionId: this.recorder.sessionId,
-      extensionPrompt: await this.extensionPrompt(selection, runId),
+      extensionPrompt: extensions.prompt,
       tools: initialTools,
       soulPrompt,
       personalization,
@@ -825,6 +835,7 @@ export class AgentSession {
       now: promptNow,
       cwd: this.options.workspaceRoot
     });
+    bundle.loadedSkills = extensions.loadedSkills;
     const projectId = localReferenceProjectId(this.options.workspaceRoot);
     const service = new LocalReferenceService({ projects: [{ id: projectId, path: this.options.workspaceRoot, name: this.options.workspaceRoot }] });
     return appendLocalReferenceContext(bundle, await localReferenceContext(input, service, projectId));
@@ -1699,8 +1710,10 @@ export class AgentSession {
       sourceAttachments,
       personalization.useMemories
     );
+    await this.recordLoadedSkills(userNode.id, prepared.loadedSkills ?? [], true);
     options.capabilitySelection = await selection;
     yield { type: "preparation.updated", stage: "waiting" };
+    yield { type: "context.updated", context: { ...await this.contextStatus(), capabilitySelection: options.capabilitySelection, loadedSkills: prepared.loadedSkills ?? [] } };
     const preparedHistoryCount = Math.max(0, prepared.messages.length - 1);
     const preparedHistoryReferences = preparedHistoryCount ? this.contextMessageReferences.slice(-preparedHistoryCount) : [];
     const continuationMessages = [...prepared.messages];
@@ -2440,10 +2453,11 @@ export class AgentSession {
         );
       }
       runOptions.capabilitySelection = await selection;
+      await this.recordLoadedSkills(userMessageReference?.id, prepared.loadedSkills ?? []);
       recordPerfPhase("turn.prepareTurn", prepareTurnPerfStartedAt, { runId: runtimeRunId, compacted: prepared.compaction !== undefined });
       yield { type: "preparation.updated", stage: "waiting" };
       // 压缩边界持久化成功后才发布上下文状态，不向外暴露未确认的 checkpoint。
-      yield { type: "context.updated", context: { ...await this.contextStatus(), capabilitySelection: runOptions.capabilitySelection } };
+      yield { type: "context.updated", context: { ...await this.contextStatus(), capabilitySelection: runOptions.capabilitySelection, loadedSkills: prepared.loadedSkills ?? [] } };
       systemPrompt = prepared.systemPrompt;
       messages = prepared.messages;
       const selectedHistoryCount = runOptions.emptyTurn ? messages.length : Math.max(0, messages.length - 1);

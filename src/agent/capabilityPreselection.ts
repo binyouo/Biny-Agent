@@ -37,10 +37,15 @@ export async function preselectCapabilities(options: CapabilityPreselectionInput
   options.signal?.throwIfAborted();
   const toolsMode = options.selection?.tools ?? options.config.chat.defaultToolSelection;
   const skillsMode = options.selection?.skills ?? options.config.chat.defaultSkillSelection;
-  if (toolsMode !== "auto" && skillsMode !== "auto") return { tools: toolsMode, skills: skillsMode };
+  const skills = options.skills;
+  const explicitlyRequestedSkills = skills.filter((skill) => {
+    const explicitSlashSkill = new RegExp(`(?:^|\\s)/skills?:${escapeRegExp(skill.name)}(?=$|\\s)`, "iu");
+    return explicitSlashSkill.test(options.input) || options.input.includes(`$${skill.name}`);
+  });
+  const mergeExplicitSkills = Array.isArray(skillsMode) && explicitlyRequestedSkills.length > 0;
+  if (toolsMode !== "auto" && skillsMode !== "auto" && !mergeExplicitSkills) return { tools: toolsMode, skills: skillsMode };
   const tools = options.tools.filter(isToolModelVisible);
   const optionalTools = tools.filter((tool) => !stableCodingToolNames.has(tool.name) && tool.name !== "read_tool_result" && tool.name !== toolSearchToolName);
-  const skills = options.skills;
   const selectedTools = new Set(
     toolsMode === "auto"
       ? tools.filter((tool) => stableCodingToolNames.has(tool.name)).map((tool) => tool.name)
@@ -57,9 +62,7 @@ export async function preselectCapabilities(options: CapabilityPreselectionInput
   const currentTools = new Set<string>();
   const selectedSkills = new Set<string>();
   // 显式点名的技能不依赖模型猜测；选择器故障也不能丢掉用户明确指定的能力。
-  for (const skill of skills) {
-    if (skillsMode === "auto" && (options.input.includes(`/skill:${skill.name}`) || options.input.includes(`$${skill.name}`))) selectedSkills.add(skill.id);
-  }
+  if (skillsMode === "auto" || Array.isArray(skillsMode)) for (const skill of explicitlyRequestedSkills) selectedSkills.add(skill.id);
   if (options.models?.length && options.input.trim() && (optionalTools.length || skills.length)) {
     const history = options.history.filter((message) => message.role === "user" || message.role === "assistant").slice(-6).map((message) => ({
       role: message.role,
@@ -132,6 +135,11 @@ export async function preselectCapabilities(options: CapabilityPreselectionInput
     }) : toolsMode;
   return {
     tools: boundedTools,
-    skills: skillsMode === "auto" ? [...selectedSkills] : skillsMode
+    skills: skillsMode === "auto" ? [...selectedSkills]
+      : Array.isArray(skillsMode) ? [...new Set([...skillsMode, ...selectedSkills])] : skillsMode
   };
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
 }
