@@ -120,4 +120,3 @@ test("actual appearance helper updates Quick Chat without a main window", () => 
   assert.deepEqual(h.quick.buttons, []);
   assert.deepEqual(h.writes, []);
 });
-

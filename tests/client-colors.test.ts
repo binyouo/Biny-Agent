@@ -433,4 +433,3 @@ test("terminal UI palettes share the neutral surfaces and emphasis family", () =
     assert.equal(terminal.color("selectedBg"), selected);
   }
 });
-

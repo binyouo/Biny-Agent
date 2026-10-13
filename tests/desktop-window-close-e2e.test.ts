@@ -58,7 +58,7 @@ test("appearance preview and owner close preserve transparent window backgrounds
               for (const window of [owner, survivor]) {
                 if (!window.isDestroyed()) {
                   assert.equal(appliedBackgrounds.get(window), expected, "appearance synchronization preserves platform background");
-                  assert.equal(window.getBackgroundColor(), process.platform === "darwin" ? "#000000" : expected);
+                  assert.equal(window.getBackgroundColor().toLowerCase(), process.platform === "darwin" ? "#000000" : expected);
                 }
               }
             };
@@ -121,4 +121,3 @@ test("appearance preview and owner close preserve transparent window backgrounds
     await rm(root, { recursive: true, force: true });
   }
 });
-
