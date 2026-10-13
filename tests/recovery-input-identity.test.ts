@@ -69,10 +69,10 @@ async function fixture(t: TestContext) {
   return { root, recorder, store, calls, requests, cold };
 }
 
-// A recorded-prefix fixture: selected retry history followed by a native edit
+// A recorded-prefix fixture: retry history (explicitly selected by default), then a native edit
 // admission, before any preparation checkpoint or provider dispatch. The
 // root/non-root parents are the actual canonical shapes of those edit paths.
-async function selectedHistory(recorder: SessionRecorder, target: number) {
+async function selectedHistory(recorder: SessionRecorder, target: number, selectRetry = true) {
   for (let index = 0; index < 3; index += 1) {
     recorder.setRuntimeContext({ runId: `old-run-${index}`, turnId: `old-turn-${index}` });
     await recorder.recordAndFlush({ type: "user_message", messageId: `u${index}`, content: `REQUEST_${index}` });
@@ -82,7 +82,7 @@ async function selectedHistory(recorder: SessionRecorder, target: number) {
       recorder.setRuntimeContext({ runId: "prior-retry-run", turnId: "prior-retry-turn" });
       await recorder.recordAndFlush({ type: "agent_message", messageId: "selected-retry", parentMessageId: `u${index}`, slotId: `u${index}`,
         message: { role: "assistant", content: [{ type: "text", text: "Selected retry answer" }] } });
-      await recorder.recordAndFlush({ type: "message_version_selected", messageId: "selected-retry", slotId: `u${index}` });
+      if (selectRetry) await recorder.recordAndFlush({ type: "message_version_selected", messageId: "selected-retry", slotId: `u${index}` });
     }
   }
 }
@@ -153,18 +153,32 @@ test("ordinary native admission resumes when its ID matches despite redacted and
   assert.doesNotMatch(JSON.stringify(f.requests[0]), /fixture-secret-value|Transient workspace context/u);
 });
 
-test("root host admission with matching recovered identity is outside this guard's ancestry repair scope", async t => {
+test("root host admission resumes its matching recovered identity without replaced history", async t => {
   const f = await fixture(t);
-  await selectedHistory(f.recorder, 0);
+  // An explicit selection of the old reply would keep this sibling root edit
+  // deselected. Those mismatching-identity checkpoints are covered above.
+  await selectedHistory(f.recorder, 0, false);
   await f.recorder.close();
   const admitted = await f.cold();
   await admitted.agent.admitUserMessage("ROOT_EDIT", { runId: "host-admission", turnId: "host-owner", messageId: "root-edit",
     replaceUserMessageId: "u0", replacementUserMessageId: "root-edit" });
   await admitted.agent.close();
+  const recorded = await readSessionEvents(f.recorder.filePath);
+  const edit = recorded.find(event => event.type === "user_message" && event.messageId === "root-edit");
+  assert.ok(edit?.type === "user_message");
+  assert.equal(edit.parentMessageId, undefined);
+  assert.equal(edit.slotId, "u0");
+  assert.equal(recorded.some(event => event.type === "message_version_selected"), false);
+  const selected = replaySessionEvents(recorded);
+  assert.deepEqual(selected.messageReferences.map(reference => reference.id), ["root-edit"]);
+  assert.deepEqual(selected.messages, [{ role: "user", content: "ROOT_EDIT" }]);
+  assert.deepEqual(f.calls, { provider: 0, tools: 0, selection: 0, preparation: 0 });
   const { runtime } = await f.cold();
   assert.equal((await runtime.continueInterruptedTurn())?.status, "completed");
   assert.equal(f.calls.provider, 1);
   assert.equal(await f.store.load(), undefined);
+  assert.match(JSON.stringify(f.requests[0]), /ROOT_EDIT/u);
+  assert.doesNotMatch(JSON.stringify(f.requests[0]), /REQUEST_[012]|ANSWER_[012]|Selected retry answer/u);
 });
 
 async function collect(stream: AsyncGenerator<AgentSessionEvent>) {
@@ -257,3 +271,4 @@ test("only owned native execution or delivered input leaves the admission-only b
       { admittedUserMessageId: "admitted", recoveredUserMessageId: "different" }, event.type);
   }
 });
+
