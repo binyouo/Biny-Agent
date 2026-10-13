@@ -15,7 +15,12 @@ const results = [];
 
 async function fixture(name, operation) {
   const started = performance.now();
-  await operation();
+  try {
+    await operation();
+  } catch (error) {
+    console.error(`[runtime-timing-fixtures] Failed fixture: ${name}`);
+    throw error;
+  }
   results.push({ name, elapsedMs: Math.round(performance.now() - started) });
 }
 
