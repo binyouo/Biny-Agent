@@ -137,6 +137,7 @@ export function readAttachments(value: unknown): AgentAttachment[] {
       name: record.name,
       mimeType: record.mimeType,
       data: record.data,
+      hiddenContext: optionalString(record.hiddenContext),
       path: optionalString(record.path),
       size: Number.isSafeInteger(record.size) ? record.size as number : undefined
     };
