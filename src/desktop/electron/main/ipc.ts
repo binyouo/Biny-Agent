@@ -124,7 +124,7 @@ const sessionTreePageOptionsSchema = z.object({
   includePinnedSessions: z.boolean().optional()
 }).optional();
 const permissionModeSchema = z.enum(["ask", "read-only", "auto", "full-access"]);
-const activeViewSchema = z.enum(["chat", "runtime", "extensions"]);
+const activeViewSchema = z.enum(["chat", "runtime"]);
 const systemSettingsPaneSchema = z.enum(["screen-recording", "accessibility"]);
 /** QuickChat 三开关的入参边界：逐字段布尔，额外字段拒绝，与 DesktopStateStore 归一化逻辑对齐。 */
 const quickChatSettingsSchema = z.object({
@@ -211,34 +211,7 @@ const settingsCloseResponseSchema = z.enum(["saved", "discarded", "cancelled"]);
 const skillIdSchema = z.string().trim().min(1).max(128);
 const skillProjectIdSchema = idSchema;
 const skillFilePathSchema = z.string().trim().min(1).max(2_000);
-const skillFileContentSchema = z.string().max(512 * 1024);
 const skillImportIdsSchema = z.array(skillIdSchema).max(256);
-const skillRepositoryOwnerSchema = z.string().trim().regex(/^[A-Za-z0-9-]{1,39}$/u);
-const skillRepositoryNameSchema = z.string().trim().regex(/^(?!\.\.?$)[A-Za-z0-9._-]{1,100}$/u);
-const skillRepositoryBranchSchema = z.string().trim().min(1).max(255).refine(
-  (value) => !value.startsWith("/") && !value.endsWith("/") && !value.includes("..") && !value.includes("//") && !/[\\#%?*^ ~:]/u.test(value) && value.split("/").every((part) => part.length > 0 && !part.startsWith(".")),
-  "Skill 仓库分支无效。"
-);
-const skillRepositorySchema = z.object({
-  owner: skillRepositoryOwnerSchema,
-  name: skillRepositoryNameSchema,
-  branch: skillRepositoryBranchSchema,
-  enabled: z.boolean()
-}).strict();
-const skillDiscoverySearchQuerySchema = z.string().trim().min(2).max(120);
-const skillDiscoverySearchLimitSchema = z.number().int().min(1).max(50).optional();
-const skillDiscoverySearchOffsetSchema = z.number().int().min(0).max(10_000).optional();
-const discoverableSkillSchema = z.object({
-  key: z.string().trim().min(1).max(512),
-  name: z.string().trim().min(1).max(160),
-  description: z.string().max(4_000),
-  directory: z.string().trim().min(1).max(1_000),
-  readmeUrl: externalUrlSchema.optional(),
-  repoOwner: skillRepositoryOwnerSchema,
-  repoName: skillRepositoryNameSchema,
-  repoBranch: skillRepositoryBranchSchema,
-  installed: z.boolean()
-}).strict();
 const mcpProjectIdSchema = idSchema.optional();
 const mcpFieldMutationSchema = z.object({
   key: z.string().trim().min(1).max(200),
@@ -1329,70 +1302,20 @@ export function registerDesktopIpc(context: IpcContext): void {
     z.enum(["dismissed", "extracted"]).parse(state)
   ));
 
-  handle(desktopIpc.skillSourceImport, async () => {
-    const window = context.getWindow();
-    const options: OpenDialogOptions = {
-      title: "导入本地 Skill",
-      buttonLabel: "导入 Skill",
-      properties: ["openFile"],
-      filters: [{ name: "Skill", extensions: ["md"] }]
-    };
-    const result = window
-      ? await dialog.showOpenDialog(window, options)
-      : await dialog.showOpenDialog(options);
-    if (result.canceled || !result.filePaths[0]) return undefined;
-    return await context.skills.importSource(result.filePaths[0]);
-  });
-
-  handle(desktopIpc.skillSourceInstall, async (_event, sourceId: unknown) => {
-    await context.skills.installSource(skillIdSchema.parse(sourceId));
-  });
-
   handle(desktopIpc.skillImportExisting, async (_event, skillIds: unknown) => {
     return await context.skills.importExistingSkills(skillImportIdsSchema.parse(skillIds));
-  });
-
-  handle(desktopIpc.skillDiscoverySnapshot, async () => await context.skills.skillDiscovery());
-
-  handle(desktopIpc.skillDiscoverySearch, async (_event, query: unknown, limit: unknown, offset: unknown) => {
-    return await context.skills.searchSkills(
-      skillDiscoverySearchQuerySchema.parse(query),
-      skillDiscoverySearchLimitSchema.parse(limit),
-      skillDiscoverySearchOffsetSchema.parse(offset)
-    );
-  });
-
-  handle(desktopIpc.skillDiscoveryInstall, async (_event, skill: unknown) => {
-    return await context.skills.installDiscoveredSkill(discoverableSkillSchema.parse(skill));
-  });
-
-  handle(desktopIpc.skillRepositoryAdd, async (_event, repository: unknown) => {
-    return await context.skills.addSkillRepository(skillRepositorySchema.parse(repository));
-  });
-
-  handle(desktopIpc.skillRepositoryRemove, async (_event, owner: unknown, name: unknown) => {
-    return await context.skills.removeSkillRepository(skillRepositoryOwnerSchema.parse(owner), skillRepositoryNameSchema.parse(name));
   });
 
   handle(desktopIpc.skillFileRead, async (_event, skillId: unknown, relativePath: unknown) => {
     return await context.skills.readFile(skillIdSchema.parse(skillId), skillFilePathSchema.parse(relativePath));
   });
 
-  handle(desktopIpc.skillCheck, async (_event, skillId: unknown) => await context.skills.check(skillIdSchema.parse(skillId)));
   handle(desktopIpc.skillVersion, async (_event, skillId: unknown) => await context.skills.version(skillIdSchema.parse(skillId)));
   handleRecoveryGated(desktopIpc.skillVersionUpdate, async (_event, skillId: unknown, expectedVersion: unknown) => {
     return await context.skills.updateVersion(skillIdSchema.parse(skillId), z.string().uuid().parse(expectedVersion));
   });
   handleRecoveryGated(desktopIpc.skillVersionRollback, async (_event, skillId: unknown, expectedVersion: unknown) => {
     return await context.skills.rollbackVersion(skillIdSchema.parse(skillId), z.string().uuid().parse(expectedVersion));
-  });
-
-  handle(desktopIpc.skillFileWrite, async (_event, skillId: unknown, relativePath: unknown, content: unknown) => {
-    await context.skills.writeFile(
-      skillIdSchema.parse(skillId),
-      skillFilePathSchema.parse(relativePath),
-      skillFileContentSchema.parse(content)
-    );
   });
 
   handle(desktopIpc.skillOpenDirectory, async (_event, skillId: unknown) => {

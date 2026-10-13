@@ -88,9 +88,12 @@ export function createListFilesTool(context: ToolContext): Tool<ListFilesArgs, L
                 && (pattern === undefined || path.matchesGlob(normalized, pattern))
                 && (cursor === undefined || normalized > cursor);
             },
-            relativeRoot === "." ? undefined : (relativePath) => {
+            relativeRoot === "." && cursor === undefined ? undefined : (relativePath) => {
               const normalized = normalizePath(relativePath);
-              return isUnderRoot(normalized, relativeRoot) || isUnderRoot(relativeRoot, normalized);
+              const inRoot = isUnderRoot(normalized, relativeRoot) || isUnderRoot(relativeRoot, normalized);
+              const prefix = `${normalized}/`;
+              // Keep cursor ancestors; all other earlier subtrees are fully before this page.
+              return inRoot && (cursor === undefined || prefix >= cursor || cursor.startsWith(prefix));
             },
             (relativePath) => {
               const normalized = normalizePath(relativePath);

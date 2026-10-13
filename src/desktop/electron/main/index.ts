@@ -50,7 +50,7 @@ import { activityTrayItems } from "./activityTrayMenu.js";
 import { createDesktopActivityHttpDependencies } from "./activityHttpApi.js";
 import { QuickChatContextService } from "./QuickChatContextService.js";
 import { createQuickChatWindow, type QuickChatWindowController } from "./quickChatWindow.js";
-import { createDesktopWindow, sendToDesktopWindow, type WindowCloseDecision } from "./window.js";
+import { createDesktopWindow, sendToDesktopWindow, syncDesktopWindowAppearance, type WindowCloseDecision } from "./window.js";
 import { parseDesktopReferenceLaunch } from "./desktopReferenceLaunch.js";
 import { createComputerUseService } from "./computerUseService.js";
 import { startRuntimeHostApp } from "./runtimeHostStartup.js";
@@ -161,14 +161,7 @@ async function startDesktopApplication(): Promise<void> {
   const appearance = new AppearancePreviewCoordinator({
     read: () => ({ themePreference: state.themePreference(), appearancePreference: state.appearancePreference(), fontPreference: state.fontPreference() }),
     publish: (snapshot) => {
-      if (nativeTheme.themeSource !== snapshot.themePreference) nativeTheme.themeSource = snapshot.themePreference;
-      const resolved = resolveAppearance(snapshot.appearancePreference, snapshot.themePreference, nativeTheme.shouldUseDarkColors);
-      const background = resolved.variables["--background"] ?? (resolved.mode === "dark" ? "#1a1a1a" : "#f5f5f5");
-      for (const window of BrowserWindow.getAllWindows()) {
-        if (window.isDestroyed() || (window !== mainWindow && window.getTitle() !== "Biny Quick Chat")) continue;
-        window.setBackgroundColor(background);
-        if (process.platform === "darwin" && window === mainWindow) window.setWindowButtonVisibility(resolved.skin === "default");
-      }
+      syncDesktopWindowAppearance(mainWindow, snapshot);
       broadcastToWindows(desktopIpc.appearanceChanged, snapshot);
     }
   });
@@ -339,7 +332,7 @@ async function startDesktopApplication(): Promise<void> {
     if (storedSessionId && restorableSessionId === undefined && activeProjectId) {
       await state.setSelectedSession(activeProjectId, undefined);
     }
-    const selectedSessionId = explicitSessionId ?? (activeView === "extensions" ? undefined : restorableSessionId);
+    const selectedSessionId = explicitSessionId ?? restorableSessionId;
     const visibleWorkspace = workspace ? { ...workspace, selectedSessionId } : undefined;
     const sidebarSessions = await agents.sidebarSessions(workspace);
     return {

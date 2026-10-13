@@ -420,7 +420,7 @@ function validThemePreference(value: unknown): value is DesktopThemePreference {
 }
 
 function validActiveView(value: unknown): value is DesktopActiveView {
-  return value === "chat" || value === "runtime" || value === "extensions";
+  return value === "chat" || value === "runtime";
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

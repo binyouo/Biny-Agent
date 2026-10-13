@@ -41,6 +41,7 @@ export interface PendingPrompt {
 }
 
 interface WorkspaceProps {
+  externalAgent?: boolean;
   onWidgetDraftPrompt?(text: string): void;
   project?: DesktopProject;
   projectId?: string;
@@ -102,9 +103,8 @@ interface WorkspaceProps {
   pendingPrompt?: PendingPrompt;
   skillDescriptions?: ReadonlyMap<string, string>;
   skillLabels?: ReadonlyMap<string, string>;
-  /** 顶部工具条：自动化/技能入口（搜索与新建任务在侧栏 chrome）。 */
+  /** 顶部自动化入口（搜索与新建任务在侧栏 chrome）。 */
   onOpenRuntime(): void;
-  onOpenExtensions(): void;
   onSendActivitySuggestion?(text: string): Promise<void>;
   /** 顶层新建会话：展示欢迎 hero（而不是裸的空态提示行）。 */
   heroStart?: boolean;
@@ -112,6 +112,7 @@ interface WorkspaceProps {
 }
 
 export function Workspace({
+  externalAgent = false,
   project,
   projectId,
   sessionId,
@@ -163,7 +164,6 @@ export function Workspace({
   workspaceContext,
   inspectorRail,
   onOpenRuntime: _onOpenRuntime,
-  onOpenExtensions: _onOpenExtensions,
   onSendActivitySuggestion,
   heroStart = false,
   onWidgetDraftPrompt,
@@ -260,6 +260,7 @@ export function Workspace({
           {loading ? <LoadingState /> : hasConversation && projectId ? (
             <ChatScroll followBottom={compactionState?.status === "pending"} onScrolledChange={setChatScrolled} sessionId={sessionId} streaming={streaming || compacting}>
               <MessageTimeline
+                externalAgent={externalAgent}
                 compacting={compacting}
                 sessionId={sessionId}
                 readOnly={Boolean(writerConflict || runtimeError)}

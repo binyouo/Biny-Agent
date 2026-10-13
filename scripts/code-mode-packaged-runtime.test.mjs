@@ -260,7 +260,7 @@ async function buildFailClosed() {
   const packageBytes = await readFile(path.join(sourceRoot, "package.json"));
   await writeFile(path.join(fixtureRoot, "package.json"), packageBytes);
   await cp(path.join(sourceRoot, "patches"), path.join(fixtureRoot, "patches"), { recursive: true });
-  for (const file of ["THIRD_PARTY_NOTICES.txt", "pnpm-lock.yaml", "src/agent/codeMode.ts", "scripts/build-code-mode-runtime.mjs", "electron.vite.config.ts"]) {
+  for (const file of ["THIRD_PARTY_NOTICES.txt", "pnpm-workspace.yaml", "pnpm-lock.yaml", "src/agent/codeMode.ts", "scripts/build-code-mode-runtime.mjs", "config/electron.vite.config.ts"]) {
     await mkdir(path.dirname(path.join(fixtureRoot, file)), { recursive: true });
     await cp(path.join(sourceRoot, file), path.join(fixtureRoot, file));
   }
