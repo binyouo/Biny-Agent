@@ -245,23 +245,39 @@ test("audit-only, discarded, imports and flat assistant compatibility remain unc
   assertPairs(sessionEventsToConversation(imported), ["primer", "imported"]);
 });
 
-test("version-1 replay caches are invalidated, version-2 caches are reusable, and JSONL stays authoritative", async () => {
+test("old replay caches are rejected and version-3 rebuild retains flat failure without rewriting JSONL", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "biny-replay-version-"));
   try {
     const file = path.join(root, "session.jsonl");
-    const events: SessionEvent[] = [{ type: "user_message", content: "source", messageId: "u" }];
-    const bytes = `${JSON.stringify(events[0])}\n`;
+    const events: SessionEvent[] = [
+      { type: "user_message", content: "source", messageId: "u" },
+      call("failed"), { ...result("failed"), executionStatus: "failed", result: { error: "read failed" } }
+    ];
+    const bytes = events.map(event => JSON.stringify(event)).join("\n") + "\n";
     await writeFile(file, bytes);
     const fingerprint = sessionFileFingerprint(await stat(file));
     const replay = replaySessionEvents(events);
     await writeSessionSnapshot(file, fingerprint, replay);
     const snapshotFile = file.replace(/\.jsonl$/u, ".snap.json");
-    const old = JSON.parse(await readFile(snapshotFile, "utf8")) as Record<string, unknown>;
-    await writeFile(snapshotFile, JSON.stringify({ ...old, replayVersion: 1, messages: [] }));
-    assert.equal(await tryReadSessionSnapshot(file, fingerprint), undefined);
+    const current = JSON.parse(await readFile(snapshotFile, "utf8")) as Record<string, unknown>;
+    const legacyMessages = replay.messages.map(message => {
+      if (message.role !== "toolResult") return message;
+      const { isError: _isError, ...oldMessage } = message;
+      return oldMessage;
+    });
+    for (const replayVersion of [1, 2]) {
+      await writeFile(snapshotFile, JSON.stringify({ ...current, replayVersion, messages: legacyMessages }));
+      assert.equal(await tryReadSessionSnapshot(file, fingerprint), undefined);
+      const rebuilt = replaySessionEvents(await readSessionEvents(file));
+      const failed = rebuilt.messages.find(message => message.role === "toolResult");
+      assert.ok(failed?.role === "toolResult");
+      assert.equal(failed.isError, true);
+      assert.deepEqual(failed.details, { error: "read failed" });
+      assert.equal(await readFile(file, "utf8"), bytes);
+    }
     await writeSessionSnapshot(file, fingerprint, replay);
     const saved = await tryReadSessionSnapshot(file, fingerprint);
-    assert.equal(saved?.replayVersion, 2);
+    assert.equal(saved?.replayVersion, 3);
     assert.deepEqual(saved?.messages, replay.messages);
     assert.equal(await readFile(file, "utf8"), bytes);
   } finally { await rm(root, { recursive: true, force: true }); }

@@ -1025,7 +1025,8 @@ function projectSessionConversation(
       toolCallId,
       toolName: event.tool,
       content: [{ type: "text", text: stringifyResult(event.result) }],
-      details: event.result
+      details: event.result,
+      ...(event.executionStatus === undefined ? {} : { isError: event.executionStatus !== "succeeded" })
     });
     openCalls.delete(toolCallId);
   };
