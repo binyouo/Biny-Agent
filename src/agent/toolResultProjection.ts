@@ -94,25 +94,26 @@ export async function projectSingleToolResultForModel(
   options: ToolResultProjectionOptions = {}
 ): Promise<unknown> {
   value = shellResultForProjection(toolName, value);
+  const serialized = serializeToolResult(value);
   const message: AgentToolResultMessage = {
     role: "toolResult",
     toolCallId: options.toolCallId ?? "projection",
     toolName,
-    content: [{ type: "text", text: serializeToolResult(value) }],
+    content: [{ type: "text", text: serialized }],
     details: value
   };
   const entry: ToolResultEntry = {
     index: 0,
     message,
     value,
-    serialized: serializeToolResult(value),
+    serialized,
     call: { tool: toolName, args, step: 0 },
     step: 0,
     currentTurn: true
   };
   const projected = projectValue(entry, true, options.thresholdBytes ?? defaultProjectionThresholdBytes);
   if (projected === undefined) return value;
-  const before = serializeToolResult(value);
+  const before = serialized;
   const after = serializeToolResult(projected.value);
   if (before === after && projected.archive === false) return value;
   if (!projected.archive) return projected.value;
@@ -656,6 +657,17 @@ function isToolCall(part: AgentAssistantMessage["content"][number]): part is Age
   return part.type === "toolCall";
 }
 
+/** Actual returned Read bounds, including an empty page (end = start - 1). */
+export function readResultLineRange(value: unknown): { startLine: number; endLine: number } | undefined {
+  const record = asRecord(value);
+  const startLine = numberField(record, "startLine");
+  const endLine = numberField(record, "endLine");
+  if (startLine === undefined || endLine === undefined
+    || !Number.isSafeInteger(startLine) || !Number.isSafeInteger(endLine)
+    || startLine < 1 || endLine < startLine - 1) return undefined;
+  return { startLine, endLine };
+}
+
 function readRange(entry: ToolResultEntry): ReadRange | undefined {
   if (normalizedToolName(entry.message.toolName) !== "read") return undefined;
   const args = asRecord(entry.call?.args);
@@ -664,6 +676,12 @@ function readRange(entry: ToolResultEntry): ReadRange | undefined {
   const resultRange = asRecord(result.range);
   const path = stringField(args, "path") || stringField(result, "path");
   if (!path) return undefined;
+  // Archive envelopes are partial results; requested arguments do not prove
+  // which lines actually returned (for example, a short page or EOF).
+  if (result.archived === true) {
+    const range = readResultLineRange(result);
+    return range ? { path: normalizePath(path), kind: "line", start: range.startLine, end: range.endLine } : undefined;
+  }
   const startLine = numberField(result, "startLine")
     ?? numberField(result, "lineStart")
     ?? numberField(result, "start")
@@ -708,7 +726,7 @@ function snapshotKind(entry: ToolResultEntry): string | undefined {
   const command = stringField(args, "command").trim().replace(/^(?:sudo\s+)/u, "");
   const match = command.match(/^(?:git\s+)(status|diff|log|show)(?:\s|$)/iu);
   if (!match?.[1]) return undefined;
-  return `${match[1].toLowerCase()}\0${normalizePath(stringField(args, "cwd") || ".")}`;
+  return `${match[1].toLowerCase()}\0${stableJson(args)}`;
 }
 
 function isFailedToolResult(entry: ToolResultEntry): boolean {

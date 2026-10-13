@@ -55,15 +55,15 @@ export function createWebFetchTool(
   const cookieJarPath = cookies?.enabled === false ? undefined : cookies?.path ?? defaultCookieJarPath();
   return {
     name: "WebFetch",
-    description: `Fetch a public http(s) URL and return its readable text. HTML pages use article extraction with a plain-text fallback. Returns at most ${String(maxLength)} characters; page through longer documents with offset.`,
+    description: `Fetch a public http(s) URL and return its readable text. HTML pages use article extraction with a plain-text fallback. Returns at most ${String(maxLength)} UTF-16 code units. Page boundaries preserve surrogate pairs; continue with the returned offset + content.length.`,
     promptSnippet: "Fetch readable text from a public HTTP or HTTPS URL",
     promptGuidelines: ["Use WebFetch to inspect a known URL and page through truncated documents with offset"],
     parameters: {
       type: "object",
       properties: {
         url: { type: "string", minLength: 1, description: "Absolute http or https URL to fetch." },
-        offset: { type: "integer", minimum: 0, description: "Character offset into the extracted text. Defaults to 0." },
-        length: { type: "integer", minimum: 1, maximum: maxLength, description: `Characters to return. Defaults to ${String(defaultLength)}.` }
+        offset: { type: "integer", minimum: 0, description: "UTF-16 code-unit offset into the extracted text. Defaults to 0; an offset inside a surrogate pair rounds back to its start." },
+        length: { type: "integer", minimum: 1, maximum: maxLength, description: `UTF-16 code units to return. Defaults to ${String(defaultLength)}; a length of 1 may return a whole surrogate pair (2 units).` }
       },
       required: ["url"],
       additionalProperties: false
@@ -99,8 +99,15 @@ export function createWebFetchTool(
             ? await extractReadableHtml(fetched.body, fetched.finalUrl)
             : { title: undefined, text: fetched.body };
           const text = readable.text;
-          const offset = Math.min(args.offset ?? 0, text.length);
-          const content = text.slice(offset, offset + (args.length ?? defaultLength));
+          let offset = Math.min(args.offset ?? 0, text.length);
+          if (insideSurrogatePair(text, offset)) offset -= 1;
+          const length = args.length ?? defaultLength;
+          let end = Math.min(offset + length, text.length);
+          if (insideSurrogatePair(text, end)) {
+            // A one-unit page must advance through a whole pair rather than stall.
+            end += end === offset + 1 ? 1 : -1;
+          }
+          const content = text.slice(offset, end);
           const truncatedAtByteLimit = "truncatedAtByteLimit" in fetched
             ? fetched.truncatedAtByteLimit
             : fetched.truncated;
@@ -113,7 +120,7 @@ export function createWebFetchTool(
             totalCharacters: text.length,
             offset,
             content,
-            hasMore: offset + content.length < text.length,
+            hasMore: end < text.length,
             truncatedAtByteLimit
           };
         }
@@ -282,4 +289,11 @@ function isRedirectStatus(status: number): boolean {
 
 function isHtml(contentType: string | undefined): boolean {
   return Boolean(contentType && /\b(?:text\/html|application\/xhtml\+xml)\b/i.test(contentType));
+}
+
+function insideSurrogatePair(value: string, offset: number): boolean {
+  if (offset <= 0 || offset >= value.length) return false;
+  const previous = value.charCodeAt(offset - 1);
+  const current = value.charCodeAt(offset);
+  return previous >= 0xd800 && previous <= 0xdbff && current >= 0xdc00 && current <= 0xdfff;
 }
