@@ -3636,7 +3636,8 @@ export class AgentSession {
       this.unpersistedRelatedUsage = [];
       const messages = await this.rehydrateSessionAttachments(
         replay.messages,
-        replay.events,
+        // Snapshots omit events; attachment references remain in the validated JSONL.
+        replay === snapshotReplay ? activeSessionEventsForPath(resumeEvents) : replay.events,
         replay.contextStartUserMessageIndex,
         replay.retrySourceEvents ? replay.messageReferences : undefined
       );
