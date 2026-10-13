@@ -29,7 +29,7 @@ export function summarizeModelRequests(records: readonly ModelRequestMetrics[]):
   let firstOutputCount = 0;
 
   for (const record of records) {
-    if (record.error !== undefined) failed += 1;
+    if (record.error !== undefined || record.finishReason === "error") failed += 1;
     totalAttempts += record.attempts.length;
     retries += Math.max(0, record.attempts.length - 1);
     totalDurationMs += Math.max(0, record.durationMs);

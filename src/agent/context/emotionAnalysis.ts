@@ -84,7 +84,7 @@ export async function analyzeContextEmotion(options: AnalyzeContextEmotionOption
     && previous.trigger === nextState.trigger
   ) return undefined;
 
-  await options.storage.writeContext(options.sessionId, nextState);
+  await options.storage.writeContext(options.sessionId, nextState, options.signal);
   await options.onUpdated?.(nextState);
   return nextState;
 }

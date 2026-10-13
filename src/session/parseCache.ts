@@ -73,6 +73,8 @@ function store(filePath: string, fingerprint: SessionFileFingerprint, events: Se
     cachedSourceBytes -= existing.weight;
     cache.delete(filePath);
   }
+  // An oversized entry cannot be retained and must not evict healthy sessions.
+  if (weight > maxCachedSourceBytes) return;
   cache.set(filePath, { fingerprint, events, source, weight });
   cachedSourceBytes += weight;
   while (cache.size > maxCachedSessions || cachedSourceBytes > maxCachedSourceBytes) {
