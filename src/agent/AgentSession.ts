@@ -287,6 +287,8 @@ export interface AgentRunOptions {
     messageId?: string;
     parentMessageId?: string;
     slotId?: string;
+    /** Freshly prepared edit metadata; undefined leaves any existing list unchanged. */
+    loadedSkills?: string[];
   };
   /** 新版本在消息树中的父节点。 */
   retryParentMessageId?: string;
@@ -1710,7 +1712,7 @@ export class AgentSession {
       sourceAttachments,
       personalization.useMemories
     );
-    await this.recordLoadedSkills(userNode.id, prepared.loadedSkills ?? [], true);
+    if (!replacingUser) await this.recordLoadedSkills(userNode.id, prepared.loadedSkills ?? [], true);
     options.capabilitySelection = await selection;
     yield { type: "preparation.updated", stage: "waiting" };
     yield { type: "context.updated", context: { ...await this.contextStatus(), capabilitySelection: options.capabilitySelection, loadedSkills: prepared.loadedSkills ?? [] } };
@@ -1768,7 +1770,8 @@ export class AgentSession {
         ? {
           messageId: replacementUserMessageId,
           parentMessageId: userNode.parentId,
-          slotId: userNode.slotId ?? userNode.id
+          slotId: userNode.slotId ?? userNode.id,
+          loadedSkills: [...(prepared.loadedSkills ?? [])]
         }
         : undefined,
       retryOfMessageId: targetMessageId,
@@ -2210,6 +2213,11 @@ export class AgentSession {
       await this.admitTurnFromSelectedRetryView("paused-followup", () => ({ type: "user_message", content: "",
         messageId: runOptions.messageId, auditOnly: true, metadata: { turnTrigger: "resume_interrupted_task" } }));
       runOptions.emptyTurnAuditRecorded = true;
+    }
+    if (runOptions.replacementUserMessage?.loadedSkills !== undefined) {
+      // Bind prepared edit metadata to the canonical replacement, including Host-admitted users.
+      const reference = recordUserMessage();
+      await this.recordLoadedSkills(reference?.id, runOptions.replacementUserMessage.loadedSkills, true);
     }
     // 新输入用新断点替换旧任务；在准备模型/上下文之前保存，覆盖刚发送就关闭的窗口。
     if (!continuing && !admitted) {
