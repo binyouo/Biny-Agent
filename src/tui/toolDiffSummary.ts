@@ -5,6 +5,7 @@
  */
 import { formatDiffPreviewLines, renderDiffLineSetClustered, type DiffLine } from "./diffPreview.js";
 import { parseFileChange } from "../tools/file/fileChange.js";
+import { classifyDiffLines } from "../utils/diffLines.js";
 
 export type ToolDiffOperation = "Created" | "Edited" | "Deleted";
 
@@ -57,7 +58,8 @@ function parseDiffFiles(diff: string, fallbackPath: string | undefined): ToolDif
   const files: ToolDiffFileSummary[] = [];
   let current: MutableDiffFile | undefined;
 
-  for (const line of diff.split("\n")) {
+  for (const part of classifyDiffLines(diff)) {
+    const { line } = part;
     const gitPath = parseGitDiffPath(line);
     if (gitPath) {
       pushCurrent(files, current, fallbackPath);
@@ -65,20 +67,30 @@ function parseDiffFiles(diff: string, fallbackPath: string | undefined): ToolDif
       continue;
     }
 
-    if (line.startsWith("--- ")) {
+    if (part.kind === "old-header") {
+      if (current?.lines.length) {
+        pushCurrent(files, current, fallbackPath);
+        current = undefined;
+      }
       if (!current) current = createMutableFile(normalizeDiffPath(line.slice(4)) ?? fallbackPath ?? "changes");
       current.oldPath = normalizeDiffPath(line.slice(4));
       continue;
     }
 
-    if (line.startsWith("+++ ")) {
+    if (part.kind === "new-header") {
       if (!current) current = createMutableFile(normalizeDiffPath(line.slice(4)) ?? fallbackPath ?? "changes");
       current.newPath = normalizeDiffPath(line.slice(4));
       current.path = current.newPath ?? current.oldPath ?? current.path;
       continue;
     }
 
+    if (part.kind === "meta") continue;
     if (!current) current = createMutableFile(fallbackPath ?? "changes");
+    if (part.kind === "hunk") {
+      current.oldLine = part.oldStart;
+      current.newLine = part.newStart;
+      continue;
+    }
     const parsed = parseDiffLine(line, current);
     if (!parsed) continue;
     current.lines.push(parsed);
@@ -119,18 +131,12 @@ function parseGitDiffPath(line: string): string | undefined {
 }
 
 function parseDiffLine(line: string, file: MutableDiffFile): DiffLine | undefined {
-  if (line.startsWith("@@")) {
-    const range = parseHunkRange(line);
-    file.oldLine = range.oldStart;
-    file.newLine = range.newStart;
-    return undefined;
-  }
-  if (line.startsWith("+") && !line.startsWith("+++")) {
+  if (line.startsWith("+")) {
     const parsed = { kind: "add" as const, lineNum: file.newLine, content: line.slice(1) };
     file.newLine += 1;
     return parsed;
   }
-  if (line.startsWith("-") && !line.startsWith("---")) {
+  if (line.startsWith("-")) {
     const parsed = { kind: "delete" as const, lineNum: file.oldLine, content: line.slice(1) };
     file.oldLine += 1;
     return parsed;
@@ -142,14 +148,6 @@ function parseDiffLine(line: string, file: MutableDiffFile): DiffLine | undefine
     return parsed;
   }
   return undefined;
-}
-
-function parseHunkRange(line: string): { oldStart: number; newStart: number } {
-  const match = line.match(/^@@\s+-(\d+)(?:,\d+)?\s+\+(\d+)(?:,\d+)?\s+@@/);
-  return {
-    oldStart: match?.[1] ? Number.parseInt(match[1], 10) : 1,
-    newStart: match?.[2] ? Number.parseInt(match[2], 10) : 1
-  };
 }
 
 function diffOperation(file: MutableDiffFile): ToolDiffOperation {

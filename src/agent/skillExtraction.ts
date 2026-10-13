@@ -7,6 +7,7 @@
  * 不影响已完成的回合与界面主链路。
  */
 import { randomBytes } from "node:crypto";
+import { withGlobalConfigWriteLock } from "../config/versioned.js";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
@@ -18,7 +19,7 @@ import { defaultManagedSkillRoot } from "../extensions/managedSkillSources.js";
 import { redactSecrets } from "../utils/secrets.js";
 import type { SessionEvent } from "../session/recorder.js";
 
-export type SkillExtractionStage = "extracting" | "saving" | "done";
+export type SkillExtractionStage = "extracting" | "saving" | "done" | "skipped";
 
 export interface SkillExtractionNotice {
   stage: SkillExtractionStage;
@@ -79,14 +80,28 @@ export async function runSkillExtraction(input: SkillExtractionInput): Promise<S
   const managedRoot = defaultManagedSkillRoot(input.homeDir);
   const skillDirectory = path.join(managedRoot, name);
   const documentPath = path.join(skillDirectory, "SKILL.md");
-  const updated = await fileExists(documentPath);
-
-  input.onNotice?.({ stage: "saving", skillName: name, skillDescription: description, updated });
-  await fs.mkdir(skillDirectory, { recursive: true });
-  // 同目录临时文件 + 原子 rename，避免半写文件被下一回合扫描当成坏技能。
-  const temporary = path.join(skillDirectory, `.skill-write-${process.pid}-${randomBytes(6).toString("hex")}.md`);
-  await fs.writeFile(temporary, document.raw, "utf8");
-  await fs.rename(temporary, documentPath);
+  const saved = await withGlobalConfigWriteLock(managedRoot, async () => {
+    const status = await fs.lstat(skillDirectory).catch((error: unknown) => {
+      if (typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT") return undefined;
+      throw error;
+    });
+    // 官方安装入口通过软链指向不可变版本；自动提取不能原地改写其正文。
+    // 与 publishSkillVersion 共用根目录写锁，检查和落盘之间不能发布新入口。
+    if (status && !status.isDirectory()) return undefined;
+    if (!status) await fs.mkdir(skillDirectory);
+    const updated = await fileExists(documentPath);
+    input.onNotice?.({ stage: "saving", skillName: name, skillDescription: description, updated });
+    // 同目录临时文件 + 原子 rename，避免半写文件被下一回合扫描当成坏技能。
+    const temporary = path.join(skillDirectory, `.skill-write-${process.pid}-${randomBytes(6).toString("hex")}.md`);
+    await fs.writeFile(temporary, document.raw, "utf8");
+    await fs.rename(temporary, documentPath);
+    return { updated };
+  });
+  if (!saved) {
+    input.onNotice?.({ stage: "skipped", skillName: name, skillDescription: description });
+    return { stage: "skipped" };
+  }
+  const { updated } = saved;
   await input.refreshSkills?.();
 
   const outcome: SkillExtractionOutcome = { stage: "done", skillName: name, skillDescription: description, updated, installedPath: documentPath };
