@@ -123,7 +123,8 @@ export class AcpClient {
     }));
     const connection = client({ name: "biny" })
       .onNotification("session/update", ({ params }) => {
-        if (params.sessionId === this.info?.sessionId && !this.turnSignal?.aborted) {
+        // Cancellation revokes permission, but final updates can precede the cancelled response.
+        if (this.connection === connection && params.sessionId === this.info?.sessionId) {
           if (params.update.sessionUpdate === "config_option_update") this.info = { ...this.info, ...configInfo(params.update.configOptions) };
           this.onUpdate?.(params);
         }
