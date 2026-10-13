@@ -4612,6 +4612,10 @@ export class AgentSession {
   ): Promise<AgentMessage[]> {
     if (!this.options.attachmentRoot) return messages;
     const userEvents = events.filter((event): event is Extract<typeof event, { type: "user_message" }> => event.type === "user_message" && !event.auditOnly);
+    // 普通回放按模型 user 槽计数：中断标记占位但没有附件，压缩偏移也包含这些槽。
+    // retry 的 reference 身份属于其自有投影，不能先按公开活动分支筛掉来源。
+    const userSlots = references ? [] : activeSessionEventsForPath(events).filter((event) =>
+      event.type === "turn_interrupted" || (event.type === "user_message" && !event.auditOnly));
     let userIndex = firstUserEventIndex;
     const hydrated: AgentMessage[] = [];
     for (const [index, message] of messages.entries()) {
@@ -4620,8 +4624,9 @@ export class AgentSession {
         continue;
       }
       const reference = references?.[index];
+      const slot = userSlots[userIndex];
       const event = references ? reference?.id === undefined ? undefined : userEvents.find(item => item.messageId === reference.id)
-        : userEvents[userIndex];
+        : slot?.type === "user_message" ? slot : undefined;
       userIndex += 1;
       const attachments = await Promise.all((event?.attachments ?? []).map(async (attachment) => await readAttachmentFromRoot(this.options.attachmentRoot!, attachment)));
       const files = attachments.filter((attachment): attachment is AgentAttachment => attachment !== undefined);
