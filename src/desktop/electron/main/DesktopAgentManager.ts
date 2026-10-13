@@ -488,7 +488,7 @@ export class DesktopAgentManager {
   }
 
   async listSessionTreePage(projectId: string, options: DesktopSessionTreePageOptions = {}): Promise<DesktopSessionTreePage> {
-    const project = await this.projects.inspectProject(this.projects.requireProject(projectId));
+    const project = await this.projects.inspectProject(this.projects.requireProject(projectId), false);
     return await this.projects.listSessionTreePage(project, this.runtimeSnapshots(projectId), this.projectEvents(projectId), options);
   }
 

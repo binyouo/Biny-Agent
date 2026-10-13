@@ -151,6 +151,35 @@ test("轻量项目检查保留已有分支和脏状态", { timeout: 10_000 }, as
   assert.equal(inspected.missing, false);
 });
 
+test("会话分页只检查目录，不重复刷新 Git，目录消失仍返回空页", { timeout: 10_000 }, async (context) => {
+  const { project, projects, manager, dataRoot } = await fixture(context);
+  for (const id of ["paging-one", "paging-two"]) {
+    const recorder = new SessionRecorder(dataRoot, id);
+    recorder.record({ type: "user_message", content: id });
+    await recorder.close();
+  }
+  const inspect = projects.inspectProject.bind(projects);
+  const inspection = context.mock.method(projects, "inspectProject", async (current, refreshGit) => {
+    assert.equal(refreshGit, false, "session paging must not refresh unused Git facts");
+    return await inspect(current, refreshGit);
+  });
+  const first = await manager.listSessionTreePage(project.id, { limit: 1, includeArchived: true });
+  assert.equal(first.sessions.length, 1);
+  assert.ok(first.nextCursor);
+  const next = await manager.listSessionTreePage(project.id, { limit: 1, includeArchived: true, cursor: first.nextCursor });
+  assert.equal(next.sessions.length, 1);
+  assert.notEqual(next.sessions[0]?.id, first.sessions[0]?.id);
+  assert.equal(next.revision, first.revision);
+  assert.equal(next.revisionChanged, false);
+  assert.equal(inspection.mock.callCount(), 2);
+  await rm(project.path, { recursive: true });
+  const missing = await manager.listSessionTreePage(project.id, { parentSessionId: "paging-one" });
+  assert.deepEqual(missing, { projectId: project.id, parentSessionId: "paging-one", revision: "sha256:empty",
+    sessions: [], nextCursor: undefined, revisionChanged: false });
+  assert.equal(inspection.mock.callCount(), 3);
+  await assert.rejects(stat(project.path), { code: "ENOENT" });
+});
+
 test("已有 Host 时浏览冷历史不装配目标 Session Runtime，也不改写历史", { timeout: 10_000 }, async (context) => {
   const { project, projects, dataRoot, configDir, configStore, manager } = await fixture(context);
   const recorder = new SessionRecorder(dataRoot, "cold-history");
