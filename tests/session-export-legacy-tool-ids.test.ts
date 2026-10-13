@@ -83,6 +83,64 @@ test("public Claude export preserves a supported ID-less call/result through imp
   assert.equal(JSON.parse(output[0]!).format, "claude");
 });
 
+for (const status of ["succeeded", "failed", "cancelled"] as const) {
+  test(`Claude roundtrip preserves explicit ${status} protocol status`, async () => {
+    const fixture = await exportedFixture(`legacy-status-${status}`, [
+      { type: "tool_call", tool: "Read", args: { path: "status.txt" } },
+      { type: "tool_result", tool: "Read", result: 'status\n"quoted" 🌍', executionStatus: status }
+    ]);
+    const isError = status !== "succeeded";
+    assert.equal(fixture.results[0]?.is_error, isError);
+    const imported = await roundTrip(fixture);
+    const facts = imported.filter((event) => event.type === "tool_result");
+    assert.equal(facts.length, 1);
+    assert.equal(facts[0]?.executionStatus, isError ? "failed" : "succeeded", "Claude retains binary failure, not cancellation metadata");
+    const canonical = imported.find((event) => event.type === "agent_message" && event.message.role === "toolResult");
+    assert.ok(canonical?.type === "agent_message" && canonical.message.role === "toolResult");
+    assert.equal(Object.hasOwn(canonical.message, "isError"), true, "the explicit boolean survives persistence");
+    assert.equal(canonical.message.isError, isError);
+    const replay = replaySessionEvents(imported);
+    const results = replay.messages.filter((message) => message.role === "toolResult");
+    assert.equal(results.length, 1);
+    assert.equal(results[0]?.isError, isError);
+    assert.equal(replay.recoveredToolResults.length, 0);
+    assert.deepEqual(withoutCallIds(replay.messages), withoutCallIds(replaySessionEvents(fixture.events).messages));
+  });
+}
+
+for (const isError of [true, false, undefined] as const) {
+  test(`raw Claude ${String(isError)} error flag agrees across persisted projections`, async () => {
+    const file = path.join(root, `raw-status-${String(isError)}.claude.jsonl`);
+    const lines: ClaudeLine[] = [
+      { type: "user", message: { role: "user", content: "Read status.txt" } },
+      { type: "assistant", message: { role: "assistant", content: [
+        { type: "tool_use", id: "raw-call", name: "Read", input: { path: "status.txt" } }
+      ] } },
+      { type: "user", message: { role: "user", content: [
+        { type: "tool_result", tool_use_id: "raw-call", content: 'raw\n"quoted" 🌍',
+          ...(isError === undefined ? {} : { is_error: isError }) }
+      ] } }
+    ];
+    await writeFile(file, lines.map((line) => JSON.stringify(line)).join("\n") + "\n");
+    const imported = await importSessionFile(workspace, file);
+    const events = (await readStoredSessionEvents(workspace, imported.sessionId)).events;
+    const facts = events.filter((event) => event.type === "tool_result");
+    assert.equal(facts.length, 1);
+    assert.equal(facts[0]?.executionStatus, isError === true ? "failed" : "succeeded");
+    assert.equal(facts[0]?.toolCallId, "raw-call");
+    const canonical = events.find((event) => event.type === "agent_message" && event.message.role === "toolResult");
+    assert.ok(canonical?.type === "agent_message" && canonical.message.role === "toolResult");
+    assert.equal(Object.hasOwn(canonical.message, "isError"), true);
+    assert.equal(canonical.message.isError, isError === true);
+    const replay = replaySessionEvents(events);
+    assert.equal(replay.recoveredToolResults.length, 0);
+    assert.deepEqual(replay.messages.filter((message) => message.role === "toolResult"), [{
+      role: "toolResult", toolCallId: "raw-call", toolName: "Read",
+      content: [{ type: "text", text: 'raw\n"quoted" 🌍' }], details: 'raw\n"quoted" 🌍', isError: isError === true
+    }]);
+  });
+}
+
 test("generated IDs avoid later explicit call IDs and retain mixed explicit/result identities", async () => {
   const fixture = await exportedFixture("legacy-collision", [
     { type: "tool_call", tool: "Read", args: { path: "a.txt" } },
