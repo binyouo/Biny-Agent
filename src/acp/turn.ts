@@ -22,7 +22,7 @@ export async function* runAcpTurn(client: AcpClient, options: {
   const signal = options.signal ? AbortSignal.any([options.signal, lifetime.signal]) : lifetime.signal;
   const prefix = randomUUID();
   const queue = new EventQueue<AgentSessionEvent>();
-  const tools = new Map<string, { name: string; finished: boolean }>();
+  const tools = new Map<string, { name: string; finished: boolean; rawOutput?: unknown; content?: unknown }>();
   let output = "";
   let reasoning = false;
   let denied = false;
@@ -44,9 +44,12 @@ export async function* runAcpTurn(client: AcpClient, options: {
         tools.set(toolCallId, tool);
         queue.push({ type: "tool.started", toolCallId, tool: tool.name, args: update.rawInput ?? {} });
       }
+      // ACP tool updates replace supplied output fields; omission/null retain prior values.
+      if (update.rawOutput != null) tool.rawOutput = update.rawOutput;
+      if (update.content != null) tool.content = update.content;
       if (!tool.finished && (update.status === "completed" || update.status === "failed")) {
         tool.finished = true;
-        const result = update.rawOutput ?? update.content ?? update.status;
+        const result = tool.rawOutput ?? tool.content ?? update.status;
         queue.push(update.status === "completed"
           ? { type: "tool.completed", toolCallId, tool: tool.name, result }
           : { type: "tool.failed", toolCallId, tool: tool.name, result, error: "外部 Agent 工具未完成。" });
