@@ -1140,11 +1140,11 @@ export class RuntimeHostClient implements InteractiveRuntimeHandle {
   }
 
   private async open(): Promise<void> {
-    await this.openSocket();
-    const socket = this.socket;
     // hello 之后仍可能有界失败（owner 半死：应答了握手却不再处理请求）；
     // 初始请求失败要关闭 client，避免留下半开的 socket 让调用方误以为连接可用。
     try {
+      await this.openSocket();
+      const socket = this.socket;
       const result = await this.request<{
         hostEpoch: string;
         persistenceRoot: string;
