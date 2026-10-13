@@ -10,19 +10,23 @@ import ts from "typescript";
 // The executed closure only collects memory messages and chooses replacements.
 const productPath = new URL("../src/agent/toolResultProjection.ts", import.meta.url);
 const source = ts.createSourceFile(productPath.pathname, readFileSync(productPath, "utf8"), ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+const optionalFunctionNames = source.statements.some((node) => ts.isFunctionDeclaration(node) && node.name?.text === "readResultLineRange")
+  ? ["readResultLineRange"] as const : [] as const;
 const functionNames = [
   "collectToolResults", "findReplacements", "markReplacement", "shellResultForProjection",
   "toolResultValue", "isToolCall", "readRange", "rangeCovers", "snapshotKind",
   "isFailedToolResult", "isSuccessfulToolResult", "isArchivedValue", "resultSignature",
   "normalizedToolName", "isKnownSemanticTool", "normalizePath", "asRecord", "stringField",
-  "numberField", "stableJson"
+  "numberField", "stableJson",
+  ...optionalFunctionNames
 ] as const;
 const directCalls = new Set<string>([...functionNames, "serializeToolResult", "String", "Boolean"]);
 const methodCalls = new Set([
   "messages.entries", "message.content.filter", "calls.set", "calls.get", "entries.push",
   "entries.filter", "exact.get", "exact.set", "reads.push", "snapshots.get", "snapshots.set",
   "failures.get", "failures.set", "replacements.get", "replacements.set", "seen.has", "seen.add",
-  "Object.keys", "Array.isArray", "Number.isFinite", "JSON.parse", "JSON.stringify"
+  "Object.keys", "Array.isArray", "Number.isFinite", "JSON.parse", "JSON.stringify",
+  ...(optionalFunctionNames.length ? ["Number.isSafeInteger"] : [])
 ]);
 // These receivers are syntactically fixed expressions in this exact closure.
 const expressionCalls = new Set([
@@ -70,7 +74,7 @@ function validatePure(node: ts.Node): void {
 const pureDeclarations = functionNames.map((name) => {
   const node = declaration(name);
   validatePure(node);
-  return node.getText(source);
+  return name === "readResultLineRange" ? node.getText(source).replace(/^export\s+/u, "") : node.getText(source);
 });
 // Deterministic serialization of synthetic, non-sensitive plain JSON only.
 // This pure local substitute never invokes the product serializer or redaction.
