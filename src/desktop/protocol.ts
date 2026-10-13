@@ -14,6 +14,8 @@ import type { AppearancePreference, AppearanceSnapshot } from "../appearance/typ
 import type { DesktopCrystalRequest, DesktopCrystalSnapshot } from "./crystalProtocol.js";
 import type { planStatus } from "../extensions/plan.js";
 import type { TodoItem } from "../session/todoStore.js";
+import type { AcpConfig } from "../config/schema.js";
+import type { AcpSessionInfo } from "../acp/client.js";
 import type { SessionGoalRecord, SessionGoalStatus } from "../runtime/SessionGoalStore.js";
 import type { AgentCapabilitySelection, CapabilitySelectionMode } from "../agent/capabilitySelection.js";
 import type { ActivitySettings, ActivitySettingsInput, ActivitySettingsPatch } from "../activity/settings.js";
@@ -998,6 +1000,7 @@ export interface DesktopSkillFilePreview {
 }
 
 export interface DesktopModelConfigurationInput {
+  acp?: AcpConfig;
   alias: string;
   displayName: string;
   providerAlias: string;
@@ -1048,6 +1051,7 @@ export interface DesktopModelConfigurationInput {
  * This snapshot only carries credential presence; the settings page reads an API key separately on demand.
  */
 export interface DesktopModelConnection {
+  acp?: AcpConfig;
   providerAlias: string;
   providerType: ModelProvider;
   enabled?: boolean;
@@ -1087,6 +1091,7 @@ export interface DesktopModelLoginStartResult {
 }
 
 export interface DesktopModelConnectionTestResult {
+  acp?: AcpSessionInfo;
   ok: boolean;
   message: string;
   latencyMs?: number;

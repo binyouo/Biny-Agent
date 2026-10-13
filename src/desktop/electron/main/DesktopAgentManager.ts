@@ -46,6 +46,7 @@ import { globalAgentDir, globalConfigDir } from "../../../config/paths.js";
 import { createProjectSkillKey } from "../../../extensions/skillRef.js";
 import { synchronizeCredentialRevisions, type DeferredCredentialTransactionStatus } from "../../../config/credentials.js";
 import { configSchema, reasoningEffortSchema, type AgentConfig, type ProviderConfig } from "../../../config/schema.js";
+import { AcpClient, acpMcpServers } from "../../../acp/client.js";
 import type { AgentConfigStore } from "../../../config/store.js";
 import { configChangeRequiresRuntimeRestart, configDocumentRevision } from "../../../config/versioned.js";
 import { createModelSettings, validateModelConfiguration } from "../../../llm/modelFactory.js";
@@ -2087,6 +2088,18 @@ export class DesktopAgentManager {
     this.projects.requireProject(projectId);
     const current = await this.loadProjectConfig(projectId);
     const candidate = this.buildConfigWithModel(current, input);
+    if (input.providerType === "acp") {
+      const launch = candidate.providers[input.providerAlias]?.acp;
+      if (!launch) return { ok: false, message: "请填写 ACP 启动命令。" };
+      const started = Date.now();
+      let client: AcpClient | undefined;
+      try {
+        client = new AcpClient({ launch, cwd: this.projects.requireProject(projectId).path, mcpServers: acpMcpServers(candidate, launch), timeoutMs: candidate.providers[input.providerAlias]?.timeoutMs });
+        const acp = await client.connect();
+        return { ok: true, message: "ACP 会话连接成功", latencyMs: Date.now() - started, acp };
+      } catch (error) { return { ok: false, message: formatModelConnectionError(error) }; }
+      finally { await client?.close(); }
+    }
     return await this.testCandidate(candidate, input.alias);
   }
 
@@ -2247,6 +2260,7 @@ export class DesktopAgentManager {
       : Object.assign({}, sameProvider ? existingProvider?.modelProfiles : undefined, { [input.model]: input.modelProfile });
     const provider = {
       type: input.providerType,
+      acp: input.acp ?? (sameProvider ? existingProvider.acp : undefined),
       enabled: existingProvider?.enabled,
       icon: sameProvider ? existingProvider.icon : undefined,
       dataResidency: sameProvider ? existingProvider.dataResidency : undefined,
@@ -3535,6 +3549,7 @@ function describeModelConnections(config: AgentConfig): DesktopModelConnection[]
     return {
       providerAlias,
       providerType: provider.type,
+      acp: provider.acp,
       enabled: provider.enabled ?? true,
       displayName: provider.displayName,
       icon: provider.icon,

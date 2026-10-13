@@ -85,3 +85,13 @@
 .provider-row.is-active .provider-row-badge { color: var(--text-secondary); }
 
 .provider-settings { --st-button-height: calc(2 * var(--st-rem)); --st-button-font-size: calc(0.8125 * var(--st-rem)); }
+
+.acp-provider-fields { display: flex; flex-direction: column; gap: 16px; min-width: 0; margin: 0; padding: 0; border: 0; }
+.acp-provider-fields label { display: flex; flex-direction: column; gap: 7px; color: var(--text-secondary); font-size: calc(0.8125 * var(--st-rem)); }
+.acp-provider-fields input:not([type="checkbox"]), .acp-provider-fields textarea, .acp-provider-fields select { width: 100%; box-sizing: border-box; min-height: 36px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px; background: transparent; color: var(--text); font: inherit; }
+.acp-provider-fields textarea { resize: vertical; }
+.acp-provider-fields input:focus-visible, .acp-provider-fields textarea:focus-visible, .acp-provider-fields select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.acp-provider-fields p { margin: 0; color: var(--text-secondary); font-size: calc(0.8125 * var(--st-rem)); line-height: 1.5; }
+.acp-provider-fields .settings-row-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.acp-setup-step { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; }
+.acp-setup-step code { overflow-wrap: anywhere; user-select: text; font-size: calc(0.75 * var(--st-rem)); color: var(--text-secondary); }

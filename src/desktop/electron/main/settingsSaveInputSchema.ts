@@ -8,6 +8,7 @@ import { z } from "zod";
 import { appearancePreferenceSchema } from "../../../appearance/preferences.js";
 import { activitySettingsInputSchema } from "../../../activity/settings.js";
 import {
+  acpConfigSchema,
   chatParamsSchema,
   compactionSchema,
   modelApiBackendSchema,
@@ -25,6 +26,7 @@ export const idSchema = z.string().min(1).max(240);
 export const configRevisionSchema = z.string().min(1).max(200);
 export const thinkingSchema = z.union([z.literal("off"), reasoningEffortSchema]);
 export const modelConfigurationSchema = z.object({
+  acp: acpConfigSchema.optional(),
   alias: idSchema,
   displayName: z.string().trim().min(1).max(120),
   providerAlias: idSchema,

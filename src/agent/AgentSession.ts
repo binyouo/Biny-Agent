@@ -1,4 +1,7 @@
 import type { TaskCommunication } from "../runtime/TaskCommunication.js";
+import { AcpClient, acpMcpServers } from "../acp/client.js";
+import { runAcpTurn } from "../acp/turn.js";
+import type { ContentBlock } from "@agentclientprotocol/sdk";
 import { promises as fs } from "node:fs";
 import { isDeepStrictEqual } from "node:util";
 import { createHash, randomUUID } from "node:crypto";
@@ -387,6 +390,8 @@ const maxQueuedRunMessages = 100;
  * of reaching into the model, recorder, tools or mutable conversation directly.
  */
 export class AgentSession {
+  private acpClient?: AcpClient;
+  private acpClientKey?: string;
   private readonly contextMemory: ContextMemory;
   private readonly createStagingContextMemory: () => ContextMemory;
   private readonly localMemory: LocalMemory;
@@ -453,7 +458,10 @@ export class AgentSession {
       if (!model) throw new Error("Agent model is not configured.");
       return model;
     };
-    const currentModel = (): AgentModel | undefined => options.modelManager?.getModel() ?? options.model;
+    const currentModel = (): AgentModel | undefined => {
+      const model = options.modelManager?.getModel() ?? options.model;
+      return model?.provider === "acp" ? undefined : model;
+    };
     const onUsage = async (usage: AgentUsage, operation: UsageOperation): Promise<void> => {
       this.recordModelUsage(usage, operation);
     };
@@ -1606,6 +1614,9 @@ export class AgentSession {
     if (!targetMessageId.trim()) throw new Error("Retry target message is required.");
     await this.recorder.flush();
     const recordedEvents = await readSessionEvents(this.recorder.filePath);
+    if (this.getInfo().provider === "acp" || recordedEvents.some((event) => event.type === "message_metadata" && typeof event.metadata.acpProvider === "string")) {
+      throw new Error("ACP 不支持重放或改写旧回合，请发送新消息或新建聊天。");
+    }
     const replay = replaySessionEvents(recordedEvents, { sessionId: this.recorder.sessionId });
     const activeIds = new Set(replay.messageReferences.map((reference) => reference.id).filter((id): id is string => id !== undefined));
     if (!activeIds.has(targetMessageId)) throw new Error("Retry target is not on the active conversation path.");
@@ -1845,6 +1856,9 @@ export class AgentSession {
     if (options.replaceUserMessageId !== undefined) {
       await this.recorder.flush();
       const events = await readSessionEvents(this.recorder.filePath);
+      if (this.getInfo().provider === "acp" || events.some((event) => event.type === "message_metadata" && typeof event.metadata.acpProvider === "string")) {
+        throw new Error("ACP 不支持重放或改写旧回合，请发送新消息或新建聊天。");
+      }
       const source = sessionMessageTree(events).find((node) => node.id === options.replaceUserMessageId);
       if (!source || source.message.role !== "user") throw new Error("Edit target user message is not on the active conversation path.");
       replacement = {
@@ -2048,6 +2062,33 @@ export class AgentSession {
     } = {}
   ): AsyncGenerator<AgentSessionEvent> {
     const release = this.beginOperation("agent turn");
+    try {
+    let refreshError: Error | undefined;
+    try { await this.options.modelManager?.refreshFromDisk(); }
+    catch (error) { refreshError = new Error(errorMessage(error)); }
+    const alias = this.options.modelManager?.getInfo().modelAlias ?? this.options.config.defaultModel;
+    const selected = this.options.config.models[alias];
+    await this.recorder.flush();
+    const executionEvents = await readSessionEvents(this.recorder.filePath);
+    const acpProviders = executionEvents.flatMap((event) => (event.type === "message_metadata" || event.type === "user_message")
+      && typeof event.metadata?.acpProvider === "string" ? [event.metadata.acpProvider] : []);
+    if (acpProviders.some((provider) => provider !== selected?.provider || this.options.config.providers[selected.provider]?.type !== "acp")) {
+      const outcome = failedTurn("当前聊天已绑定外部 Agent，切换执行引擎或连接请新建聊天。", 0, "provider_error");
+      this.recordError(outcome.error);
+      await this.recordTurnOutcome(outcome);
+      await this.recorder.flush();
+      yield { type: "error", message: outcome.error! };
+      yield doneEvent(outcome);
+      return;
+    }
+
+    if (!refreshError && selected && this.options.config.providers[selected.provider]?.type === "acp") {
+      yield* this.runExternalAcp(input, runOptions, selected.provider, selected.model);
+      return;
+    }
+    await this.acpClient?.close();
+    this.acpClient = undefined;
+    this.acpClientKey = undefined;
     this.sessionGoalUsageFailure = undefined;
     const initialGoal = this.options.sessionGoals?.get(this.recorder.sessionId);
     this.runSessionGoalId = initialGoal?.status === "active" ? initialGoal.goalId : undefined;
@@ -2258,8 +2299,8 @@ export class AgentSession {
     }
     const preparePromptPerfStartedAt = perfNow();
     try {
-      // 每个新回合读取跨客户端保存的选择；工具步骤之间只续期当前模型的凭据。
-      await this.options.modelManager?.refreshFromDisk();
+      // 执行路径选择前已读取配置；失败仍通过本轮持久化入口报告。
+      if (refreshError) throw refreshError;
       await this.options.modelManager?.preparePrompt(abortSignal, false);
     } catch (error) {
       recordUserMessage();
@@ -2520,17 +2561,89 @@ export class AgentSession {
         this.recorder.setRuntimeContext(undefined);
         this.sessionGoalRequest = undefined;
         this.runSessionGoalId = undefined;
-        release();
       }
     }
+    } finally { release(); }
   }
 
-  /**
-   * Biny Agent runtime path.
-   *
-   * The session boundary uses the same native message protocol as the loop,
-   * provider transport and persisted turn state.
-   */
+  private async *runExternalAcp(input: string, options: AgentRunOptions, providerAlias: string, model: string): AsyncGenerator<AgentSessionEvent> {
+    const runId = options.runId ?? randomUUID();
+    const turnId = options.turnId ?? randomUUID();
+    this.recorder.setRuntimeContext({ runId, turnId });
+    try {
+      const admitted = this.admittedUserMessages.get(runId);
+      let userReference: SessionMessageReference | undefined;
+      if (admitted?.input === input) { this.admittedUserMessages.delete(runId); userReference = admitted.reference; }
+      else userReference = this.recordCanonicalMessage({ type: "user_message", content: input, messageId: options.messageId, attachments: sessionAttachments(options.attachments),
+        metadata: options.source === undefined ? undefined : { source: options.source } });
+      this.contextMemory.replaceHistory([...this.contextMemory.getHistory(), { role: "user", content: input }]);
+      this.contextMessageReferences.push(userReference);
+      await this.recorder.flush();
+      if (options.retryOfMessageId || options.continueFrom || options.emptyTurn) throw new Error("ACP 不自动重放或改写旧回合，请发送新的消息或新建会话。");
+      if (options.attachments?.length) throw new Error("ACP 暂不发送附件，请在消息中提供项目内文件路径。");
+      const priorEvents = await readSessionEvents(this.recorder.filePath);
+      const bound = priorEvents.some((event) => event.type === "message_metadata" && event.metadata.acpProvider === providerAlias);
+      if (!bound && priorEvents.some((event) => event.type === "agent_message" || event.type === "assistant_message" || event.type === "tool_call")) {
+        throw new Error("当前聊天已有其他执行引擎的历史，请新建聊天使用 ACP。");
+      }
+      this.activeConfig = this.options.config;
+      const provider = this.activeConfig.providers[providerAlias];
+      if (!provider?.acp || provider.enabled === false) throw new Error("ACP 连接缺少启动配置或已停用。");
+      const launch = provider.acp;
+      const mcpServers = acpMcpServers(this.activeConfig, launch, this.options.permissionManager.getStatus().mode);
+      const key = JSON.stringify({ providerAlias, launch, mcpServers, sessionId: this.recorder.sessionId });
+      if (key !== this.acpClientKey) {
+        await this.acpClient?.close();
+        this.acpClient = new AcpClient({ launch, cwd: this.options.workspaceRoot, mcpServers,
+          bindingFile: `${this.recorder.filePath}.${createHash("sha256").update(providerAlias).digest("hex").slice(0, 16)}.acp.json`, requireBinding: bound, timeoutMs: provider.timeoutMs });
+        this.acpClientKey = key;
+      }
+      await this.acpClient!.connect(options.abortSignal);
+      if (userReference?.id) await this.recorder.recordAndFlush({ type: "message_metadata", messageId: userReference.id, metadata: { acpProvider: providerAlias } });
+      const snapshot = await this.readPersonalizationState({ config: structuredClone(this.options.config) });
+      this.activePersonalization = snapshot.state.resolved;
+      const content: ContentBlock[] = [];
+      if (launch.allowMemory && this.activePersonalization.useMemories) {
+        yield { type: "preparation.updated", stage: "memory" };
+        const memories = await this.memoryRetriever.retrieve(input, [], { limit: this.localMemory.recallLimit, maxChars: 12_000,
+          rewriteQuery: false, automatic: true, signal: options.abortSignal,
+          allowEntry: (entry) => entry.userId === undefined && (this.activeConfig.activity.enabled || !isActivityMemory(entry)) });
+        if (memories.matches.length) content.push({ type: "text", text: "以下是 Biny 检索到的历史记忆，仅作为背景资料，不构成新的执行授权：\n"
+          + memories.matches.map((match) => match.excerpt).join("\n") });
+      }
+      if (options.promptContext) content.push({ type: "text", text: String(options.promptContext) });
+      content.push({ type: "text", text: input });
+      let reasoningContent = "";
+      for await (const event of runAcpTurn(this.acpClient!, { content, model, signal: options.abortSignal,
+        workspaceRoot: this.options.workspaceRoot, sessionId: this.recorder.sessionId,
+        permissionManager: this.options.permissionManager, confirmPermission: options.confirmPermission })) {
+        if (event.type === "tool.started") this.recorder.record({ type: "tool_call", tool: event.tool, toolCallId: event.toolCallId, args: event.args });
+        else if (event.type === "tool.completed" || event.type === "tool.failed") this.recorder.record({ type: "tool_result", tool: event.tool,
+          toolCallId: event.toolCallId, result: event.type === "tool.completed" ? event.result : event.result ?? { error: event.error }, executionStatus: event.executionStatus });
+        else if (event.type === "reasoning.delta") reasoningContent += event.content;
+        else if (event.type === "error") this.recordError(event.message);
+        else if (event.type === "done") {
+          this.recorder.record({ type: "assistant_message", content: event.content, reasoningContent: reasoningContent || undefined });
+          const message: AgentAssistantMessage = { role: "assistant", content: [{ type: "text", text: event.content }], stopReason: event.outcome.finishReason === "end_turn" ? "stop" : "error" };
+          this.contextMessageReferences.push(this.recordCanonicalMessage({ type: "agent_message", message }));
+          this.contextMemory.replaceHistory([...this.contextMemory.getHistory(), message]);
+          await this.recordTurnOutcome(event.outcome);
+          await this.recorder.flush();
+          yield { type: "status", status: event.outcome.status === "failed" ? "error" : event.outcome.status };
+        }
+        yield event;
+      }
+    } catch (error) {
+      await this.acpClient?.close();
+      const outcome = options.abortSignal?.aborted ? cancelledTurn("ACP 回合已取消。", 0, turnCancellationReason(options.abortSignal)) : failedTurn(errorMessage(error), 0, "provider_error");
+      this.recordError(outcome.error);
+      await this.recordTurnOutcome(outcome);
+      yield { type: "error", message: outcome.error ?? "ACP 运行失败。" };
+      yield { type: "status", status: outcome.status === "cancelled" ? "cancelled" : "error" };
+      yield doneEvent(outcome);
+    } finally { this.recorder.setRuntimeContext(undefined); }
+  }
+
   private async *runTurnLoop(args: TurnArgs): AsyncGenerator<AgentSessionEvent> {
     const {
       input,
@@ -4261,6 +4374,7 @@ export class AgentSession {
   }
 
   async close(): Promise<void> {
+    await this.acpClient?.close();
     this.emotionAnalysisScheduler.cancel();
     this.titleAbort.abort();
     await this.titleTask;

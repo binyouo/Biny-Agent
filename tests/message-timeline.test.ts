@@ -39,8 +39,9 @@ test("普通模式澄清卡直接显示选项和自由输入，历史答案可�
   assert.match(done, /已回答/);
 });
 
-function renderTurns(turns: TimelineTurn[], thinking = false, runtimeActiveRunId?: string, pendingUserMessage?: { id: string; messageId: string; content: string }): string {
+function renderTurns(turns: TimelineTurn[], thinking = false, runtimeActiveRunId?: string, pendingUserMessage?: { id: string; messageId: string; content: string }, externalAgent = false): string {
   return renderToStaticMarkup(createElement(MessageTimeline, {
+    externalAgent,
     sessionId: "session",
     projectId: "project",
     turns,
@@ -505,4 +506,17 @@ test("回合状态停在 idle 时由 runtime 活动 run 兜底，不渲染完成
   assert.match(live, /chat-run-status/u);
   // runtime 报告的 run 已结束（未传 runtimeActiveRunId）时恢复原判断。
   assert.match(renderTurns([{ ...turn, assistant: "检查完成", status: "completed" }]), /assistant-actions/u);
+});
+
+
+test("external Agent history keeps its content but exposes no unsupported rewrite actions", () => {
+  const turns = buildSessionTimeline([
+    { type: "user_message", messageId: "acp-user", content: "External task" },
+    { type: "assistant_message", content: "External result" }
+  ], []);
+  const normal = renderTurns(turns);
+  assert.match(normal, /aria-label="重新生成"/u);
+  const external = renderTurns(turns, false, undefined, undefined, true);
+  assert.match(external, /External result/u);
+  assert.doesNotMatch(external, /aria-label="重新生成"|aria-label="编辑消息"/u);
 });

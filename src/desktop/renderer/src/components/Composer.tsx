@@ -45,6 +45,7 @@ export interface ComposerHandle {
 }
 
 interface ComposerProps {
+  externalAgent?: boolean;
   ref?: React.Ref<ComposerHandle>;
   project?: DesktopProject;
   drafts: Map<string, ComposerDraftState>;
@@ -149,6 +150,7 @@ export const Composer = memo(function Composer({
   onRefreshCatalog,
   onInspectReference,
   onWarning,
+  externalAgent = false,
   onSubmitError
 }: ComposerProps): React.JSX.Element {
   const [draftState] = useState(() => {
@@ -313,6 +315,10 @@ export const Composer = memo(function Composer({
   };
 
   const submit = async (delivery?: "steer" | "queue", suggestion?: string): Promise<void> => {
+    if (externalAgent && (running || editing || attachments.length || delivery)) {
+      onWarning("ACP 当前支持文本新回合，请等待运行结束；附件、插话和历史改写暂不可用。");
+      return;
+    }
     const originalDraft = currentDraft();
     const draft = suggestion === undefined ? originalDraft : { value: suggestion, tokens: [] };
     const sentAttachments = suggestion === undefined ? attachments : [];
@@ -395,6 +401,7 @@ export const Composer = memo(function Composer({
   };
 
   const addFiles = async (files: File[]): Promise<void> => {
+    if (externalAgent) { onWarning("ACP 暂不发送附件，请提供项目内文件路径。"); return; }
     if (editing || !project || !files.length || busy || addingFiles.current || submitFlightRef.current || sessionWriterConflict) return;
     addingFiles.current = true;
     setBusy(true);
@@ -522,9 +529,10 @@ export const Composer = memo(function Composer({
   const hasDraft = Boolean(input.trim() || attachments.length);
   const resumeAction = Boolean(recovery) && !running && !editing && isResumeInput(input, attachmentCount);
   const modelConnectionRequired = modelSetupRequired && (editing || !desktopGoalCommandAllowsNoModel(input));
-  const sendDisabled = (resumeAction && !recovery?.canContinue) || memoryToggleBusy
+  const sendDisabled = (externalAgent && (running || editing || attachmentCount > 0 || resumeAction)) || (resumeAction && !recovery?.canContinue) || memoryToggleBusy
     || (!hasDraft && !resumeAction) || !project || sessionWriterConflict || modelConnectionRequired || busy || pendingAttachments.length > 0;
-  const sendDisabledReason = !project
+  const sendDisabledReason = externalAgent && (running || editing || attachmentCount > 0 || resumeAction)
+    ? "ACP 仅支持运行结束后的文本新回合。" : !project
     ? "请先打开一个项目。"
       : modelConnectionRequired
         ? "还没有可用的模型连接，请先配置模型。"
@@ -543,7 +551,7 @@ export const Composer = memo(function Composer({
           : !resumeAction && !input.trim() && !attachments.length
             ? "输入消息或添加附件后发送。"
             : undefined;
-  const placeholder = running ? "补充要求…" : "输入消息…";
+  const placeholder = externalAgent && running ? "等待 Agent 完成，可先撰写下一条消息…" : running ? "补充要求…" : "输入消息…";
   const modelSwitchPending = Boolean(optimisticModel);
   const modelSwitchDisabled = !project || sessionWriterConflict || busy;
   const modelSwitchDisabledReason = !project
@@ -554,8 +562,8 @@ export const Composer = memo(function Composer({
         ? "当前附件或命令正在处理，请稍候。"
         : undefined;
   // MCP 重连会令 Runtime 暂忙；菜单仍需保持可见，才能展示连接进度。选择用于后续新回合。
-  const capabilitySwitchDisabled = !project || busy || sessionWriterConflict;
-  const capabilitySwitchDisabledReason = !project
+  const capabilitySwitchDisabled = externalAgent || !project || busy || sessionWriterConflict;
+  const capabilitySwitchDisabledReason = externalAgent ? "此聊天使用外部 Agent 的工具；MCP 在 ACP 连接中配置。" : !project
     ? "请先打开一个项目。"
     : sessionWriterConflict
       ? "会话已在另一个应用中打开。"
@@ -657,7 +665,7 @@ export const Composer = memo(function Composer({
             <div className="composer-menu-anchor">
               <ComposerActionButton
                 className="biny-composer-add"
-                disabled={editing || !project || busy || sessionWriterConflict}
+                disabled={externalAgent || editing || !project || busy || sessionWriterConflict}
                 disabledReason={editing ? "编辑历史消息时保留原草稿附件" : !project ? "请先打开项目" : sessionWriterConflict ? "会话已在另一个应用中打开" : busy ? "正在处理附件，请稍候" : undefined}
                 label="添加附件"
                 onClick={() => { setMenu(null); fileInputRef.current?.click(); }}
@@ -819,7 +827,7 @@ export const Composer = memo(function Composer({
               disabledReason={sendDisabledReason}
               hasDraft={hasDraft}
               onSend={() => void submit()}
-              onSteer={editing ? undefined : () => void submit("steer")}
+              onSteer={externalAgent || editing ? undefined : () => void submit("steer")}
               onStop={() => void requestStop()}
               running={running}
               stopPending={stopPending}

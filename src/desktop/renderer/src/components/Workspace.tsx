@@ -41,6 +41,7 @@ export interface PendingPrompt {
 }
 
 interface WorkspaceProps {
+  externalAgent?: boolean;
   onWidgetDraftPrompt?(text: string): void;
   project?: DesktopProject;
   projectId?: string;
@@ -112,6 +113,7 @@ interface WorkspaceProps {
 }
 
 export function Workspace({
+  externalAgent = false,
   project,
   projectId,
   sessionId,
@@ -260,6 +262,7 @@ export function Workspace({
           {loading ? <LoadingState /> : hasConversation && projectId ? (
             <ChatScroll followBottom={compactionState?.status === "pending"} onScrolledChange={setChatScrolled} sessionId={sessionId} streaming={streaming || compacting}>
               <MessageTimeline
+                externalAgent={externalAgent}
                 compacting={compacting}
                 sessionId={sessionId}
                 readOnly={Boolean(writerConflict || runtimeError)}

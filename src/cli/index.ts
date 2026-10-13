@@ -8,6 +8,7 @@
  */
 import { createRequire } from "node:module";
 import { Command, CommanderError, InvalidArgumentError, Option } from "commander";
+import { acpCheckCommand } from "./commands/acp.js";
 import { initCommand } from "./commands/init.js";
 import { widgetRenderCommand } from "./commands/widget.js";
 import { registerApplicationImportCommands } from "./commands/applicationImports.js";
@@ -143,6 +144,10 @@ registerComputerCommands(program);
 registerCuCommands(program);
 registerBrowserCommands(program);
 registerThemeCommands(program);
+
+program.command("acp").description("Inspect external ACP Agents").command("check")
+  .argument("<provider>", "configured ACP provider alias").option("--json", "print JSON")
+  .action((provider: string, options: { json?: boolean }) => wrap(() => acpCheckCommand(workspaceRoot, provider, options))());
 
 const ref = program.command("ref").description("Search and resolve local @ references");
 ref.command("kinds").option("--json", "print JSON").action((options: { json?: boolean }) => wrap(() => referenceKindsCommand(workspaceRoot, options))());

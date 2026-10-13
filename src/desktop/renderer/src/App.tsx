@@ -1602,6 +1602,8 @@ function DesktopApp(): React.JSX.Element {
     ? workspace?.sessionRuntimes?.[selectedSessionId]
       ?? (workspace?.runtime?.info.sessionId === selectedSessionId ? workspace.runtime : undefined)
     : workspace?.runtime;
+  const externalAgent = workspace?.selectedModel?.provider === "acp" || selectedRuntimeSnapshot?.info.provider === "acp"
+    || Boolean(document?.events.some((event) => event.type === "message_metadata" && typeof event.metadata.acpProvider === "string"));
   // 展示最近请求的完整输入 / 模型完整窗口；压缩预算继续由后端独立控制。
   const contextUsage = useMemo<ContextUsage | undefined>(() => {
     const info = selectedRuntimeSnapshot?.info;
@@ -1942,6 +1944,7 @@ function DesktopApp(): React.JSX.Element {
       onWarning={setWarning}
       project={workspace?.project}
       running={selectedRunning}
+      externalAgent={externalAgent}
       compacting={compacting}
       runtimeBusy={runtimeBusy}
       queuedMessages={queuedMessages}
@@ -2107,6 +2110,7 @@ function DesktopApp(): React.JSX.Element {
         onError={setWarning}
         onOpenRuntime={openRuntimePanel}
       /> : <Workspace
+        externalAgent={externalAgent}
         loading={loading}
         onSendActivitySuggestion={async text => { await composerRef.current?.submitSuggestion(text); }}
         heroStart={heroStart && selectedSessionId === undefined}
