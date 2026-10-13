@@ -96,6 +96,7 @@ import { readSessionCatalogRecord, writeSessionCatalogRecord } from "../../sessi
 import { WorktreeDirtyError, WorktreeManager } from "./worktree.js";
 import { RuntimeHostFrameDecoder } from "./framing.js";
 import { BoundedHostSocketWriter } from "./socket-writer.js";
+import { projectBashEventFrameForTransport } from "./bash-event-projection.js";
 import { approveTaskVerification, type TaskClosureResult } from "../TaskClosure.js";
 import { readTaskDefinition } from "../taskVerification.js";
 import { ConversationMarkdownMirror } from "../../session/markdownArchive.js";
@@ -2172,7 +2173,7 @@ export class RuntimeHostServer {
   }
 
   private sendEvent(connection: HostConnection, sequence: number, update: AgentRuntimeUpdate): void {
-    this.send(connection, { kind: "event", hostEpoch: this.registration.hostEpoch, sequence, update });
+    this.send(connection, projectBashEventFrameForTransport({ kind: "event", hostEpoch: this.registration.hostEpoch, sequence, update }));
   }
 
   private trackCompletion(submitted: SubmittedAgentRun): void {

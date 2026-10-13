@@ -1,6 +1,6 @@
 /** 编辑输入切换的真实文件与 Responses 线协议回归；不进行界面自动验收。 */
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { createOpenAI } from "@ai-sdk/openai";
@@ -9,6 +9,8 @@ import { SessionRecorder } from "../src/session/recorder.js";
 import { readSessionEvents } from "../src/session/events.js";
 import { ensureAgentDirs } from "../src/session/store.js";
 import { ToolExecutionCoordinator } from "../src/agent/toolExecutionCoordinator.js";
+import { ContextMemory } from "../src/agent/context/ContextMemory.js";
+import { WorkspaceContext } from "../src/agent/context/WorkspaceContext.js";
 import { PermissionManager } from "../src/permission/PermissionManager.js";
 import { createToolRegistry } from "../src/tools/registry.js";
 import { resolveEditingMode, resolveNativePatchProtocol } from "../src/tools/file/editingMode.js";
@@ -39,7 +41,10 @@ await ensureAgentDirs(root);
 const config = configSchema.parse({ ...defaultConfig, permission: { ...defaultConfig.permission, mode: "full-access" } });
 const recorder = new SessionRecorder(root, "editing-modes");
 await recorder.recordAndFlush({ type: "user_message", content: "edit files" });
-const runtime = { workspaceRoot: root, config, recorder, toolRegistry: createToolRegistry({ workspaceRoot: root, ignore: [] }) };
+const workspace = new WorkspaceContext(root, [], 32_768, path.join(root, "missing-global.md"));
+const contextModel: AgentModel = { provider: "fixture", modelId: "context-only", async stream() { throw new Error("Workspace refresh must not request a model"); } };
+const contextMemory = new ContextMemory(() => contextModel, workspace, undefined, 65_536, 32_768);
+const runtime = { workspaceRoot: root, config, recorder, contextMemory, toolRegistry: createToolRegistry({ workspaceRoot: root, ignore: [] }) };
 const coordinator = new ToolExecutionCoordinator(runtime, new PermissionManager(config.permission), () => undefined);
 try {
   await writeFile(path.join(root, "text.txt"), "alpha\nbeta\n");
@@ -130,6 +135,49 @@ try {
   const events = await readSessionEvents(recorder.filePath);
   assert.equal(events.filter((event) => event.type === "tool_execution" && event.tool === "apply_patch" && event.change).length, 3);
   assert.ok(!JSON.stringify(toModelMessages(history, false)).includes('"toolName":"apply_patch"'));
+
+  // The normal routed tool must invalidate the same workspace used by the next turn.
+  // Earlier protocol tests intentionally finish before these additional patch calls.
+  await mkdir(path.join(root, "src"));
+  const contextPath = "src/patch-context.ts";
+  const contextQuery = "patch-context.ts";
+  const workspacePath = path.join("src", contextQuery);
+  const patch = patchTools.find((tool) => tool.name === "apply_patch")!;
+  const before = await workspace.prepareTurn(contextQuery);
+  assert.equal(before.repoMapCandidates.some((entry) => entry.path === workspacePath), false);
+  assert.equal(before.snapshot.context.srcTree.some((entry) => entry.includes(workspacePath)), false);
+  const created = await patch.execute("context-create", { callId: "context-create", operation: { type: "create_file", path: contextPath, diff: "+export const createdPatchContext = 1;\n" } });
+  assert.equal(created.isError, false);
+  const afterCreate = await workspace.prepareTurn(contextQuery);
+  assert.ok(afterCreate.snapshot.context.srcTree.some((entry) => entry.includes(workspacePath)));
+  assert.ok(afterCreate.repoMapCandidates.find((entry) => entry.path === workspacePath)?.symbols.includes("createdPatchContext"));
+  assert.equal(afterCreate.snapshot.revision, before.snapshot.revision + 1);
+
+  const updated = await patch.execute("context-update", { callId: "context-update", operation: { type: "update_file", path: contextPath, diff: "@@\n-export const createdPatchContext = 1;\n+export const updatedPatchContextLonger = 2;\n" } });
+  assert.equal(updated.isError, false);
+  const afterUpdate = await workspace.prepareTurn(contextQuery);
+  const updatedEntry = afterUpdate.repoMapCandidates.find((entry) => entry.path === workspacePath);
+  assert.ok(updatedEntry?.symbols.includes("updatedPatchContextLonger"));
+  assert.equal(updatedEntry?.symbols.includes("createdPatchContext"), false);
+  assert.equal(afterUpdate.snapshot.revision, afterCreate.snapshot.revision + 1);
+  const modelContext = await contextMemory.prepareTurn(contextQuery, "system", undefined, [], false);
+  assert.match(modelContext.systemPrompt ?? "", /updatedPatchContextLonger/u, "the next prompt receives refreshed RepoMap symbols");
+
+  const warm = await workspace.prepareTurn(contextQuery);
+  assert.equal(warm.snapshot, afterUpdate.snapshot, "an unchanged next turn retains the warm snapshot");
+  assert.equal(warm.repoMapCandidates.find((entry) => entry.path === workspacePath), updatedEntry);
+  const failed = await patch.execute("context-failed", { callId: "context-failed", operation: { type: "update_file", path: contextPath, diff: "@@\n-missingLine\n+neverCommitted\n" } });
+  assert.equal(failed.isError, true);
+  const afterFailure = await workspace.prepareTurn(contextQuery);
+  assert.equal(afterFailure.snapshot, warm.snapshot, "an uncommitted failed patch does not invalidate");
+  assert.equal(afterFailure.repoMapCandidates.find((entry) => entry.path === workspacePath), updatedEntry);
+
+  const deleted = await patch.execute("context-delete", { callId: "context-delete", operation: { type: "delete_file", path: contextPath } });
+  assert.equal(deleted.isError, false);
+  const afterDelete = await workspace.prepareTurn(contextQuery);
+  assert.equal(afterDelete.snapshot.context.srcTree.some((entry) => entry.includes(workspacePath)), false);
+  assert.equal(afterDelete.repoMapCandidates.some((entry) => entry.path === workspacePath), false);
+  assert.equal(afterDelete.snapshot.revision, afterUpdate.snapshot.revision + 1);
 
   const prepared = await createApplyPatchTool({ workspaceRoot: root, ignore: [] }).resolveExecution({ callId: "cas", operation: { type: "update_file", path: "text.txt", diff: "@@\n-delta\n+changed\n" } });
   assert.ok(!("isError" in prepared));
