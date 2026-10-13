@@ -1268,8 +1268,15 @@ function freezeMcpToolMetadata(tool: Tool): Tool {
 function truncateUtf8(value: string, maxBytes: number): string {
   if (Buffer.byteLength(value, "utf8") <= maxBytes) return value;
   let end = Math.min(value.length, maxBytes);
-  while (end > 0 && Buffer.byteLength(value.slice(0, end), "utf8") > maxBytes) end -= 1;
-  return value.slice(0, end);
+  // Keep the ASCII-prefix fast path; search UTF-16 indices to preserve existing output.
+  if (Buffer.byteLength(value.slice(0, end), "utf8") <= maxBytes) return value.slice(0, end);
+  let start = 0;
+  while (start + 1 < end) {
+    const middle = Math.floor((start + end) / 2);
+    if (Buffer.byteLength(value.slice(0, middle), "utf8") <= maxBytes) start = middle;
+    else end = middle;
+  }
+  return value.slice(0, start);
 }
 
 async function resolveWorkingDirectory(workspaceRoot: string, configuredPath: string | undefined): Promise<string> {
