@@ -34,8 +34,8 @@ export interface ReadableHtmlDocument {
 
 /** 在无脚本、无子资源加载的 DOM 中提取正文，解析失败时保留原来的纯文本回退。 */
 export async function extractReadableHtml(html: string, url: string): Promise<ReadableHtmlDocument> {
-  const fallback = { title: htmlTitle(html), text: htmlToText(html) };
-  if (!html.trim()) return fallback;
+  const fallbackTitle = htmlTitle(html);
+  if (!html.trim()) return { title: fallbackTitle, text: htmlToText(html) };
 
   // 只有实际读取 HTML 时才载入 DOM 与正文提取依赖，避免拖慢 CLI/Desktop 启动。
   const [{ Readability }, { JSDOM }] = await Promise.all([
@@ -48,15 +48,16 @@ export async function extractReadableHtml(html: string, url: string): Promise<Re
     closeDom = () => dom.window.close();
     const article = new Readability(dom.window.document, { serializer: readableNodeText }).parse();
     const text = normalizeReadableText(article?.content ?? "");
-    if (!text) return fallback;
-    const title = article?.title?.replace(/\s+/g, " ").trim() || fallback.title;
-    return { title, text };
+    if (text) {
+      const title = article?.title?.replace(/\s+/g, " ").trim() || fallbackTitle;
+      return { title, text };
+    }
   } catch {
     // 网页 HTML 不可信且可能畸形；Readability 失败时继续返回不含标签的旧式文本结果。
-    return fallback;
   } finally {
     closeDom?.();
   }
+  return { title: fallbackTitle, text: htmlToText(html) };
 }
 
 /** DOM textContent 会拼接相邻段落、列表和单元格；仅在块边界补分隔，保留行内文字的连接。 */
