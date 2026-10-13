@@ -107,7 +107,7 @@ async function searchWeb(config: WebSearchConfig, args: WebSearchArgs, browser: 
       // 与 resolveGoogleUrl 的导航域名启发式保持一致；只检查主机和路径，不检查查询词或 fragment。
       const challengeUrl = finalUrl.hostname === "consent.google.com"
         || (/(^|\.)google(\.[a-z]{2,3})+$/.test(finalUrl.hostname) && /^\/sorry(?:\/|$)/i.test(finalUrl.pathname));
-      challenge = page.googleChallenge || challengeUrl || (!results.length && challengeText.test(page.html));
+      challenge = page.googleChallenge || challengeUrl;
     } else {
       challenge = challengeText.test(page.finalUrl + page.html);
     }

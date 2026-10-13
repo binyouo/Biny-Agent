@@ -327,7 +327,8 @@ export class ContextMemory {
    */
   pruneToolResultsForStep(messages: AgentMessage[], keepRecentToolResults = 2): AgentMessage[] {
     const limit = Math.floor(this.inputBudget() * midTurnPruneThreshold);
-    if (estimateMessageTokens(messages) <= limit) return messages;
+    let total = estimateMessageTokens(messages);
+    if (total <= limit) return messages;
 
     const prunableIndexes = messages.reduce<number[]>((indexes, message, index) => {
       if (message.role === "toolResult" && !isPrunedToolResult(message)) indexes.push(index);
@@ -336,7 +337,6 @@ export class ContextMemory {
     if (!prunableIndexes.length) return messages;
 
     const pruned = [...messages];
-    let total = estimateMessageTokens(pruned);
     for (const index of prunableIndexes.slice(0, Math.max(0, prunableIndexes.length - keepRecentToolResults))) {
       const original = pruned[index];
       if (!original || original.role !== "toolResult") continue;
@@ -1983,15 +1983,16 @@ function assembleContext(
     ? [...selectedHistory, withUserContext(userContent, includedTurnContext, includedMemory)]
     : [...selectedHistory];
   const assembledSystemPrompt = systemParts.join("\n\n") || undefined;
+  const usedTokens = estimateMessageTokens(messages) + estimateTokens(assembledSystemPrompt ?? "") + usedCheckpointTokens;
   return {
     systemPrompt: assembledSystemPrompt,
     messages,
     includedMemoryMatches,
     budget: {
       maxTokens,
-      usedTokens: estimateMessageTokens(messages) + estimateTokens(assembledSystemPrompt ?? "") + usedCheckpointTokens,
+      usedTokens,
       requestedTokens,
-      estimatedTokens: estimateMessageTokens(messages) + estimateTokens(assembledSystemPrompt ?? "") + usedCheckpointTokens,
+      estimatedTokens: usedTokens,
       providerInputTokens: undefined,
       reserveTokens,
       omitted,

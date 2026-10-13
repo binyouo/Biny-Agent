@@ -66,11 +66,12 @@ export class EmotionStorage {
     return await this.readState(path.join(this.root, contextDirectoryName, `${safeFileName(sessionId)}.md`), DEFAULT_EMOTION_STATE.energy, false);
   }
 
-  async writeContext(sessionId: string, state: EmotionState): Promise<void> {
+  async writeContext(sessionId: string, state: EmotionState, signal?: AbortSignal): Promise<void> {
     await this.writeState(
       path.join(this.root, contextDirectoryName, `${safeFileName(sessionId)}.md`),
       state,
-      false
+      false,
+      signal
     );
   }
 
@@ -109,7 +110,7 @@ export class EmotionStorage {
     }
   }
 
-  private async writeState(filePath: string, state: EmotionState, includeEnergy = true): Promise<void> {
+  private async writeState(filePath: string, state: EmotionState, includeEnergy = true, signal?: AbortSignal): Promise<void> {
     const directory = path.dirname(filePath);
     await fs.mkdir(directory, { recursive: true, mode: 0o700 });
     await fs.chmod(directory, 0o700);
@@ -121,6 +122,8 @@ export class EmotionStorage {
       await handle.sync();
       await handle.close();
       handle = undefined;
+      // Rename admission is the commit boundary; cancellation cannot undo an admitted rename.
+      signal?.throwIfAborted();
       await fs.rename(temporary, filePath);
     } finally {
       await handle?.close().catch(() => undefined);

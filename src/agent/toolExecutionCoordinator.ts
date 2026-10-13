@@ -48,7 +48,7 @@ import { resolveWorkspacePath, toWorkspaceRelative } from "../workspace/resolveP
 import type { ReasoningBlock, SessionEvent } from "../session/recorder.js";
 import { archiveToolResult, serializeToolResult, toolResultPreview } from "../session/toolResultArchive.js";
 import { redactSecrets, type SensitiveValueRedactionOptions } from "../utils/secrets.js";
-import { projectSingleToolResultForModel } from "./toolResultProjection.js";
+import { projectSingleToolResultForModel, readResultLineRange } from "./toolResultProjection.js";
 import { codeModeCatalog, codeModeNestedToolNames, codeModePolicy, executeCodeModeCell, type CodeModeLimits } from "./codeMode.js";
 import type {
   AgentPermissionRequest,
@@ -1091,6 +1091,7 @@ export class ToolExecutionCoordinator {
     const shell = call.name === "Bash" || call.name === "BashOutput";
     const preview = toolResultPreview(shell ? serializeToolResult(modelResult) : output, Math.min(remaining, maxArchivedPreviewCharacters));
     const shared = {
+      ...(call.name === "Read" ? readResultLineRange(result) : undefined),
       archived: true,
       resultBytes,
       resultFingerprint: createHash("sha256").update(output).digest("hex"),
@@ -1147,6 +1148,7 @@ export class ToolExecutionCoordinator {
     const resultBytes = Buffer.byteLength(output, "utf8");
     if (resultBytes <= inlineResultPersistMaxBytes) return modelResult;
     const preview = toolResultPreview(output, maxArchivedPreviewCharacters);
+    const readRange = call.name === "Read" ? readResultLineRange(modelResult) : undefined;
     try {
       const archived = await archiveToolResult({
         workspaceRoot: this.context.workspaceRoot,
@@ -1158,6 +1160,7 @@ export class ToolExecutionCoordinator {
         output
       });
       return {
+        ...readRange,
         archived: true,
         archivePath: archived.archivePath,
         resultBytes,
@@ -1167,6 +1170,7 @@ export class ToolExecutionCoordinator {
     } catch (error) {
       // 归档失败不能把工具调用变成失败：留预览和错误说明，模型仍能继续。
       return {
+        ...readRange,
         archived: true,
         resultBytes,
         preview,
@@ -1667,7 +1671,7 @@ export class ToolExecutionCoordinator {
     const previous = this.permissionTail;
     let release!: () => void;
     const current = new Promise<void>((resolve) => { release = resolve; });
-    this.permissionTail = current;
+    this.permissionTail = previous.then(() => current);
     try {
       await waitForAbort(previous, signal);
       signal?.throwIfAborted();
