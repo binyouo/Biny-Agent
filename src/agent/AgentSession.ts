@@ -1896,9 +1896,15 @@ export class AgentSession {
         contextUsage: selected ? selected.contextState?.budget ?? selected.contextUsage : this.contextMemory.getBudget(),
         contextState: selected ? selected.contextState : this.contextMemory.persistedState()
       });
-      const reference = rebind
-        ? this.referenceForRecordedMessage((await this.admitTurnFromSelectedRetryView("ordinary", create))!)
-        : this.recordCanonicalMessage(create());
+      let reference: SessionMessageReference;
+      if (rebind) {
+        reference = this.referenceForRecordedMessage((await this.admitTurnFromSelectedRetryView("ordinary", create))!);
+      } else {
+        const event = create();
+        // An edited root has no parent; do not append it to the old branch's cursor.
+        if (replacement) this.recorder.restoreMessageParent(replacement.parentMessageId);
+        reference = this.recordCanonicalMessage(event);
+      }
       await this.recorder.flush();
       // 接收确认也要留下任务意图；上下文准备尚未完成时崩溃，仍能恢复这次输入。
       await this.turnStore.save(input, undefined, [...this.contextMemory.getHistory(), { role: "user", content: input }], 0,
