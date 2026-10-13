@@ -22,7 +22,7 @@ test("appearance preview and owner close preserve transparent window backgrounds
       stdin: {
         contents: `
           import assert from "node:assert/strict";
-          import { app, BrowserWindow, ipcMain } from "electron";
+          import { app, BrowserWindow, ipcMain, nativeTheme } from "electron";
           import { sendToDesktopWindow, syncDesktopWindowAppearance } from "./src/desktop/electron/main/window.js";
           import { AppearancePreviewCoordinator } from "./src/desktop/appearanceCoordinator.js";
           import { DEFAULT_APPEARANCE } from "./src/appearance/preferences.js";
@@ -52,20 +52,26 @@ test("appearance preview and owner close preserve transparent window backgrounds
               }
             });
             const checkBackgrounds = () => {
-              if (process.platform !== "darwin") return;
+              const preference = coordinator.snapshot().themePreference;
+              const dark = preference === "dark" || (preference === "system" && nativeTheme.shouldUseDarkColors);
+              const expected = process.platform === "darwin" ? "#00000000" : dark ? "#1a1a1a" : "#f5f5f5";
               for (const window of [owner, survivor]) {
                 if (!window.isDestroyed()) {
-                  assert.equal(appliedBackgrounds.get(window), "#00000000", "appearance synchronization must preserve native transparency");
-                  assert.equal(window.getBackgroundColor(), "#000000");
+                  assert.equal(appliedBackgrounds.get(window), expected, "appearance synchronization preserves platform background");
+                  assert.equal(window.getBackgroundColor(), process.platform === "darwin" ? "#000000" : expected);
                 }
               }
             };
+            appliedBackgrounds.clear();
             coordinator.refresh();
             checkBackgrounds();
+            appliedBackgrounds.clear();
             coordinator.preview(owner.webContents.id, { ...saved, themePreference: "dark" });
             checkBackgrounds();
+            appliedBackgrounds.clear();
             coordinator.committed();
             checkBackgrounds();
+            appliedBackgrounds.clear();
             coordinator.preview(owner.webContents.id, { ...saved, themePreference: "light" });
             checkBackgrounds();
             saved.fontPreference.size = 16;
@@ -79,6 +85,7 @@ test("appearance preview and owner close preserve transparent window backgrounds
               owner.webContents.once("destroyed", () => {
                 assert.equal(owner.isDestroyed(), false, "renderer destruction precedes window destruction");
                 assert.equal(owner.webContents.isDestroyed(), true);
+                appliedBackgrounds.clear();
                 coordinator.release(ownerId);
                 resolve();
               });
@@ -114,3 +121,4 @@ test("appearance preview and owner close preserve transparent window backgrounds
     await rm(root, { recursive: true, force: true });
   }
 });
+

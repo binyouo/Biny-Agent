@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
 import { test } from "node:test";
 import { transformSync } from "esbuild";
+import ts from "typescript";
 import { darkTheme, lightTheme } from "../src/tui/theme/palettes.js";
 import { Theme } from "../src/tui/theme/theme.js";
 
@@ -49,6 +50,88 @@ function declaration(source: string, selector: string, property: string): string
     value = declarations.get(property) ?? value;
   }
   return value;
+}
+
+function assertAppearancePublish(source: string): void {
+  const file = ts.createSourceFile("index.ts", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  const imported = (name: string, module: string): void => {
+    const matches = file.statements.filter((statement): statement is ts.ImportDeclaration =>
+      ts.isImportDeclaration(statement) && ts.isStringLiteral(statement.moduleSpecifier) && statement.moduleSpecifier.text === module);
+    assert.equal(matches.length, 1, module);
+    const clause = matches[0]!.importClause;
+    assert.ok(clause && !clause.isTypeOnly && clause.namedBindings && ts.isNamedImports(clause.namedBindings));
+    const bindings = clause.namedBindings.elements.filter(entry => entry.name.text === name);
+    assert.equal(bindings.length, 1, name);
+    assert.ok(!bindings[0]!.isTypeOnly && !bindings[0]!.propertyName, name);
+  };
+  imported("syncDesktopWindowAppearance", "./window.js");
+  imported("AppearancePreviewCoordinator", "../../appearanceCoordinator.js");
+  const starts = file.statements.filter((statement): statement is ts.FunctionDeclaration =>
+    ts.isFunctionDeclaration(statement) && statement.name?.text === "startDesktopApplication");
+  assert.equal(starts.length, 1);
+  assert.ok(starts[0]!.body);
+  const noShadow = (scope: ts.Node): void => {
+    const reserved = new Set(["syncDesktopWindowAppearance", "AppearancePreviewCoordinator"]);
+    const binding = (name: ts.BindingName): void => {
+      if (ts.isIdentifier(name)) assert.ok(!reserved.has(name.text), `appearance dependency shadowed: ${name.text}`);
+      else for (const element of name.elements) if (ts.isBindingElement(element)) binding(element.name);
+    };
+    const visit = (node: ts.Node): void => {
+      if (ts.isVariableDeclaration(node) || ts.isParameter(node)) binding(node.name);
+      if (node !== scope && ts.isFunctionLike(node)) {
+        if (ts.isFunctionDeclaration(node) && node.name) binding(node.name);
+        return; // An unrelated nested function's own bindings cannot shadow publish.
+      }
+      if (ts.isClassDeclaration(node) || ts.isEnumDeclaration(node) || ts.isModuleDeclaration(node)) {
+        if (node.name && ts.isIdentifier(node.name)) binding(node.name);
+        return;
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(scope);
+  };
+  // Reject runtime bindings on this lexical path, including destructuring and var.
+  // This is intentionally conservative about declarations in nested statement blocks.
+  noShadow(starts[0]!);
+  const declarations = starts[0]!.body.statements.filter(ts.isVariableStatement)
+    .flatMap(statement => Array.from(statement.declarationList.declarations));
+  const owners = declarations.filter(declaration => ts.isIdentifier(declaration.name) && declaration.name.text === "appearance");
+  assert.equal(owners.length, 1);
+  const initializer = owners[0]!.initializer;
+  assert.ok(initializer && ts.isNewExpression(initializer) && ts.isIdentifier(initializer.expression));
+  assert.equal(initializer.expression.text, "AppearancePreviewCoordinator");
+  assert.equal(initializer.arguments?.length, 1);
+  const options = initializer.arguments![0]!;
+  assert.ok(ts.isObjectLiteralExpression(options));
+  const publishers = options.properties.filter(property => property.name && ts.isIdentifier(property.name) && property.name.text === "publish");
+  assert.equal(publishers.length, 1);
+  const property = publishers[0]!;
+  assert.ok(ts.isPropertyAssignment(property) && ts.isArrowFunction(property.initializer));
+  const publish = property.initializer;
+  noShadow(publish);
+  assert.equal(publish.parameters.length, 1);
+  const parameter = publish.parameters[0]!;
+  assert.ok(ts.isIdentifier(parameter.name) && !parameter.initializer && !parameter.dotDotDotToken);
+  const snapshot = parameter.name.text;
+  assert.ok(ts.isBlock(publish.body));
+  // Both actions must be direct calls in the real publish callback, in this order.
+  // Mentions in comments, imports, strings or unrelated functions cannot satisfy it.
+  assert.equal(publish.body.statements.length, 2);
+  const expected = [
+    ["syncDesktopWindowAppearance", "mainWindow", snapshot],
+    ["broadcastToWindows", "desktopIpc.appearanceChanged", snapshot]
+  ] as const;
+  for (const [index, [callee, first, second]] of expected.entries()) {
+    const statement: ts.Statement = publish.body.statements[index]!;
+    assert.ok(ts.isExpressionStatement(statement) && ts.isCallExpression(statement.expression));
+    const call: ts.CallExpression = statement.expression;
+    assert.ok(ts.isIdentifier(call.expression));
+    assert.equal(call.expression.text, callee);
+    assert.equal(call.arguments.length, 2);
+    assert.equal(call.arguments[0]!.getText(file), first);
+    assert.ok(ts.isIdentifier(call.arguments[1]!));
+    assert.equal(call.arguments[1]!.getText(file), second);
+  }
 }
 
 function color(token: string, mode: "light" | "dark"): string {
@@ -132,8 +215,12 @@ test("default chrome uses neutral surfaces and ink with blue rather than violet 
   }
   for (const file of ["../electron/main/window.ts", "../electron/main/ipc.ts", "../electron/main/index.ts"]) {
     const source = readFileSync(new URL(file, new URL("../", renderer)), "utf8");
-    assert.ok(source.includes(color("--bg", "light")), file);
-    assert.ok(source.includes(color("--bg", "dark")), file);
+    if (file.endsWith("/index.ts")) {
+      assertAppearancePublish(source);
+    } else {
+      assert.ok(source.includes(color("--bg", "light")), file);
+      assert.ok(source.includes(color("--bg", "dark")), file);
+    }
     assert.doesNotMatch(source, /#f4f4f6|#1a1a1e/iu, file);
   }
 });
@@ -346,3 +433,4 @@ test("terminal UI palettes share the neutral surfaces and emphasis family", () =
     assert.equal(terminal.color("selectedBg"), selected);
   }
 });
+
