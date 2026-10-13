@@ -158,7 +158,9 @@ export async function performBrowserCommand(api, { method, args = {} }, state) {
   if (method === "scroll" && (!Number.isFinite(args.deltaY) || Math.abs(args.deltaY) > 10000 || (args.deltaX !== undefined && (!Number.isFinite(args.deltaX) || Math.abs(args.deltaX) > 10000)))) throw new Error("滚动距离无效。");
   if (method === "upload" && (!Array.isArray(args.files) || !args.files.length || args.files.length > 10 || args.files.some((file) => typeof file.name !== "string" || /[/\\\x00]/u.test(file.name) || typeof file.data !== "string") || args.files.reduce((size, file) => size + file.data.length, 0) > 12 * 1024 * 1024)) throw new Error("上传文件无效或过大。");
   if (args.selector) {
-    await evaluate("wait", { ...args, state: "attached" });
+    await evaluate("wait", method === "upload"
+      ? { selector: args.selector, state: "attached", timeoutMs: args.timeoutMs }
+      : { ...args, state: "attached" });
     if (method !== "upload") {
       await evaluate("reveal");
       await evaluate("wait", { ...args, state: "visible" });
