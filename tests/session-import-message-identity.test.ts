@@ -136,7 +136,7 @@ test("mixed assistant tool blocks and user result blocks have independent parent
     const replay = replaySessionEvents(events);
     assert.equal(replay.recoveredToolResults.length, 0);
     assert.deepEqual(replay.messages.filter((message) => message.role === "toolResult")
-      .map((message) => [message.toolCallId, message.toolName, message.isError]), [["call-2", "Read", undefined], ["call-1", "Read", true]]);
+      .map((message) => [message.toolCallId, message.toolName, message.isError]), [["call-2", "Read", false], ["call-1", "Read", true]]);
     assert.equal(replay.messages.filter((message) => message.role === "assistant")
       .flatMap((message) => message.content.filter((part) => part.type === "toolCall")).length, 2);
     const timeline = buildSessionTimeline(events, []);
