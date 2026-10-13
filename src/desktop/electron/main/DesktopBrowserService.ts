@@ -661,7 +661,7 @@ export class DesktopBrowserService {
       this.guardedPages.set(page.id, { allowPrivateNetwork, reject: (error) => controller.abort(error) });
       const work = async (): Promise<unknown> => {
         await page.loadURL(target.href);
-        let result: { html: string; body: string; finalUrl: string; title: string; contentType: string; ready: boolean; truncatedAtByteLimit: boolean };
+        let result: { html: string; body: string; finalUrl: string; title: string; contentType: string; ready: boolean; truncatedAtByteLimit: boolean; googleChallenge?: boolean };
         // 搜索站点在导航完成后异步渲染；以 DOM 条件完成，超时有硬上限。
         do {
           controller.signal.throwIfAborted();
@@ -669,13 +669,14 @@ export class DesktopBrowserService {
             const engine = ${JSON.stringify(args.engine ?? null)};
             const emptyOrChallenge = /没有找到|暂无搜索结果|did not match any documents|unusual traffic|登录后查看/i.test(document.body?.innerText || "");
             const ready = emptyOrChallenge || (engine === "google" ? !!document.querySelector('a h3, #captcha-form, form[action*="consent"]') : engine === "xiaohongshu" ? !!document.querySelector('section.note-item, .login-container, .login-modal') : true);
+            const googleChallenge = engine === "google" && ready ? !!document.querySelector('#captcha-form, form[action*="consent"]') : undefined;
             const encoder = new TextEncoder();
             const content = document.documentElement.cloneNode(true);
             content.querySelectorAll('script, style, noscript, template, svg, img, link, meta').forEach(node => node.remove());
             const htmlBytes = encoder.encode(content.outerHTML);
             const textBytes = encoder.encode(document.body?.innerText || '');
             const decoder = new TextDecoder();
-            return { html: decoder.decode(htmlBytes.subarray(0, ${maxBytes})), body: decoder.decode(textBytes.subarray(0, ${maxBytes})), finalUrl: location.href, title: document.title, contentType: document.contentType, ready, truncatedAtByteLimit: (document.contentType === 'text/html' ? htmlBytes : textBytes).length > ${maxBytes} };
+            return { html: decoder.decode(htmlBytes.subarray(0, ${maxBytes})), body: decoder.decode(textBytes.subarray(0, ${maxBytes})), finalUrl: location.href, title: document.title, contentType: document.contentType, ready, truncatedAtByteLimit: (document.contentType === 'text/html' ? htmlBytes : textBytes).length > ${maxBytes}, ...(googleChallenge === undefined ? {} : { googleChallenge }) };
           })()`) as typeof result;
           if (!result.ready) await delay(200, undefined, { signal: controller.signal });
         } while (!result.ready);

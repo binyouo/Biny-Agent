@@ -95,10 +95,24 @@ async function searchWeb(config: WebSearchConfig, args: WebSearchArgs, browser: 
     url.searchParams.set("keyword", query);
     url.searchParams.set("source", "web_search_result_notes");
   }
-  const page = await requestBrowser(browser, "web_read", { url: url.href, projectId: browser.projectId, visible: config.visibleBrowsing, timeoutMs: config.timeoutMs, maxBytes: 2 * 1024 * 1024, engine: config.provider }, signal) as { html: string; finalUrl: string };
+  const page = await requestBrowser(browser, "web_read", { url: url.href, projectId: browser.projectId, visible: config.visibleBrowsing, timeoutMs: config.timeoutMs, maxBytes: 2 * 1024 * 1024, engine: config.provider }, signal) as { html: string; finalUrl: string; googleChallenge?: unknown };
   if (typeof page?.html !== "string") throw new Error("浏览器返回了无效的搜索页面。");
-  if (/consent\.google\.com|\/sorry\/|captcha-form|unusual traffic from your computer/i.test(page.finalUrl + page.html)) throw new Error("Google 需要验证，请在网络搜索设置中打开 Google 设置，完成验证后重试。");
   const results = config.provider === "google" ? parseGoogleResults(page.html, maxResults) : parseXiaohongshuResults(page.html, maxResults);
+  if (config.provider === "google") {
+    // 旧 Desktop 没有结构化标记，保留其保守检测；查询词和结果正文不是新协议的验证证据。
+    const challengeText = /consent\.google\.com|\/sorry\/|captcha-form|unusual traffic from your computer/i;
+    let challenge: boolean;
+    if (typeof page.googleChallenge === "boolean") {
+      const finalUrl = new URL(page.finalUrl);
+      // 与 resolveGoogleUrl 的导航域名启发式保持一致；只检查主机和路径，不检查查询词或 fragment。
+      const challengeUrl = finalUrl.hostname === "consent.google.com"
+        || (/(^|\.)google(\.[a-z]{2,3})+$/.test(finalUrl.hostname) && /^\/sorry(?:\/|$)/i.test(finalUrl.pathname));
+      challenge = page.googleChallenge || challengeUrl || (!results.length && challengeText.test(page.html));
+    } else {
+      challenge = challengeText.test(page.finalUrl + page.html);
+    }
+    if (challenge) throw new Error("Google 需要验证，请在网络搜索设置中打开 Google 设置，完成验证后重试。");
+  }
   if (!results.length && config.provider === "xiaohongshu" && /登录|login|captcha/i.test(page.html)) throw new Error("小红书需要登录或验证，请打开小红书设置完成后重试。");
   return { query, provider: config.provider, results, fetchedAt: new Date().toISOString() };
 }
