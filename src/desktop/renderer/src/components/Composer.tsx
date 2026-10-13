@@ -11,7 +11,7 @@ import type { ModelRuntimeInfo } from "../../../../llm/ModelManager.js";
 import type { AgentCapabilitySelection } from "../../../../agent/capabilitySelection.js";
 import type { ModelChoice } from "../../../../llm/ModelManager.js";
 import { modelThinkingSelections, thinkingSelectionForModel, type ThinkingSelection } from "../../../../llm/modelThinking.js";
-import type { DesktopAttachment, DesktopCapabilityDefaults, DesktopProject, DesktopSessionDocument, DesktopSkillCatalogEntry, DesktopToolCatalogEntry } from "../../../protocol.js";
+import type { DesktopAttachment, DesktopModelConnection, DesktopCapabilityDefaults, DesktopProject, DesktopSessionDocument, DesktopSkillCatalogEntry, DesktopToolCatalogEntry } from "../../../protocol.js";
 import { DESKTOP_SLASH_COMMANDS } from "../../../protocol.js";
 import { catalogForConnection } from "../providerCatalog.js";
 import { formatContextUsage, type ContextUsage } from "../usagePresentation.js";
@@ -52,6 +52,7 @@ interface ComposerProps {
   draftKey: string;
   runtimeInfo?: ModelRuntimeInfo;
   models: ModelChoice[];
+  connections?: readonly DesktopModelConnection[];
   /** 已解析好的上下文用量；取不到真实数字时为空，此时不展示用量。 */
   contextUsage?: ContextUsage;
   memoryState: ComposerMemoryState;
@@ -116,6 +117,7 @@ export const Composer = memo(function Composer({
   draftKey,
   runtimeInfo,
   models,
+  connections,
   contextUsage,
   memoryState,
   memoryToggleBusy,
@@ -731,7 +733,7 @@ export const Composer = memo(function Composer({
                     <ProviderBrandIcon
                       className="provider-logo"
                       fallback={<ProviderBrandGlyph type={selectedModelCatalog?.iconTone ?? selectedModel.providerType} />}
-                      iconId={resolveProviderIconId(undefined, selectedModelCatalog?.id)}
+                      iconId={resolveProviderIconId(connections?.find((connection) => connection.providerAlias === selectedModel.provider)?.icon, selectedModelCatalog?.id)}
                     />
                   </span>
                 ) : null}

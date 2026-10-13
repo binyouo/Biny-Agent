@@ -3342,7 +3342,6 @@ button.capability-check[aria-checked="true"] {
 
 .model-trigger-thinking {
   color: var(--biny-text-secondary);
-  font-size: calc(12px * var(--font-scale));
 }
 
 .biny-mic-button {
@@ -4774,7 +4773,7 @@ button.capability-check[aria-checked="true"] {
 
 .biny-workspace-main.is-hero .biny-chat-composer {
   flex: 0 0 auto;
-  width: 100%;
+  width: calc(100% - 64px);
   max-width: 42rem;
   margin: 0 auto auto;
   padding-bottom: 24px;
@@ -5411,13 +5410,13 @@ button.capability-check[aria-checked="true"] {
   .biny-activity-suggestions .suggestion-chip { opacity: 1; animation: none; transition: none; transform: none; }
 }
 
-/* 新会话欢迎区（hero）。 */
+/* 新会话欢迎内容与输入框共用居中轴线。 */
 .biny-hero {
   display: flex;
   height: 100%;
   align-items: center;
   justify-content: center;
-  padding: 48px 32px;
+  padding: 24px 32px 28px;
 }
 
 .biny-hero-inner {
@@ -5429,40 +5428,40 @@ button.capability-check[aria-checked="true"] {
   transition: opacity 200ms ease-out;
 }
 
-/* 提交后先淡出，别和消息流抢同一帧。 */
 .biny-hero-inner.is-leaving {
   pointer-events: none;
   opacity: 0;
 }
 
-/* 直接用应用图标本体：它自带圆角外框和留白，不要再套圆底或背景。 */
 .biny-hero-avatar {
   display: block;
-  width: 88px;
-  height: 88px;
-  margin-bottom: 22px;
+  width: 72px;
+  height: 72px;
+  margin-bottom: 18px;
   object-fit: contain;
   user-select: none;
   -webkit-user-drag: none;
 }
 
 .biny-hero-title {
-  margin: 0 0 12px;
+  margin: 0;
   color: var(--biny-text);
-  font-family: "Slabo 27px", ui-serif, Georgia, serif;
-  font-size: 36px;
-  font-weight: 600;
-  letter-spacing: -0.01em;
-  line-height: 1.2;
+  font-family: inherit;
+  font-size: clamp(26px, 2.8vw, 34px);
+  font-weight: 500;
+  letter-spacing: -0.02em;
+  line-height: 1.4;
   text-align: center;
+  text-wrap: balance;
 }
 
 .biny-hero-subtitle {
-  margin: 0 0 22px;
+  margin: 12px 0 0;
   color: var(--biny-text-secondary);
   font-size: 14px;
-  line-height: 1.5;
+  line-height: 1.6;
   text-align: center;
+  text-wrap: balance;
 }
 
 /* 立即淡入，持续 0.25s。 */

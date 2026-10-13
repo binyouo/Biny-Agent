@@ -1629,12 +1629,13 @@ function TestConnectionButton({
       <Tooltip delay={150} content={disabledReason ?? (target ? "测试模型请求" : "先获取或添加模型，再测试模型请求")}>
         <button
           aria-label="测试连接"
-          className={`provider-test-button${testing ? " is-testing" : ""}`}
+          className={`provider-test-button provider-connection-test${testing ? " is-testing" : ""}`}
           disabled={Boolean(disabledReason) || testing || !target || !testConfiguration(target)}
           onClick={() => target && void onTest(target)}
           type="button"
         >
           <ModelTestStatusIcon lastResult={lastResult} testing={testing} />
+          <span>测试</span>
         </button>
       </Tooltip>
     );
@@ -1649,12 +1650,13 @@ function TestConnectionButton({
         <button
           aria-expanded={open}
           aria-label="测试连接"
-          className={`provider-test-button${testing ? " is-testing" : ""}`}
+          className={`provider-test-button provider-connection-test${testing ? " is-testing" : ""}`}
           disabled={testing || Boolean(disabledReason)}
           onClick={() => onOpen(!open)}
           type="button"
         >
           <ModelTestStatusIcon lastResult={lastResult} testing={testing} />
+          <span>测试</span>
           <Icon className="provider-test-caret" name="chevron" size={11} />
         </button>
       </Tooltip>

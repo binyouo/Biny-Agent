@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import { registerHooks } from "node:module";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 import React from "react";
+import { JSDOM } from "jsdom";
 import { renderToStaticMarkup } from "react-dom/server";
 import { SettingsDraftContext, type SettingsDraftContextValue } from "../src/desktop/renderer/src/components/settings/SettingsDraftContext.js";
 
@@ -13,12 +15,15 @@ const { ProviderSettings } = await import("../src/desktop/renderer/src/component
 const previousReact = Object.getOwnPropertyDescriptor(globalThis, "React");
 Object.assign(globalThis, { React });
 
-function renderConnection(enabled: boolean, providerType: "openai-compatible" | "deepseek" = "openai-compatible", hasCredential = true): string {
+function renderConnection(enabled: boolean, providerType: "openai-compatible" | "deepseek" = "openai-compatible", hasCredential = true, modelCount = 0): string {
   const context = { draft: { models: { upserts: [], removeAliases: [], oauthCredentialHandles: [], modelProfiles: {} } } } as unknown as SettingsDraftContextValue;
   const unavailable = async (): Promise<never> => { throw new Error("Rendering must not perform an operation"); };
   return renderToStaticMarkup(React.createElement(SettingsDraftContext.Provider, { value: context },
     React.createElement(ProviderSettings, {
-      active: true, loading: false, models: [], catalogs: {}, projectId: "project",
+      active: true, loading: false, models: Array.from({ length: modelCount }, (_, index) => ({
+        alias: `relay-${index}`, displayName: `Model ${index}`, provider: "relay", providerType: "openai-compatible", model: `model-${index}`, modelKey: `relay/model-${index}`,
+        efforts: [], defaultThinking: "off" as const, thinkingLevelMap: {}, available: true, source: "configured" as const
+      })), catalogs: {}, projectId: "project",
       connections: [{ providerAlias: providerType === "deepseek" ? "deepseek" : "relay", providerType, baseUrl: providerType === "deepseek" ? "https://api.deepseek.com" : "https://relay.invalid/v1", enabled, requiresApiKey: true, hasCredential, credentialSource: hasCredential ? "keychain" : undefined }],
       onTest: unavailable, onFetchCatalog: unavailable, onReadModelApiKey: unavailable,
       onStartLogin: unavailable, onCompleteLogin: unavailable, onCancelLogin: unavailable,
@@ -35,6 +40,31 @@ test("零模型连接展示下一步和可操作的供应商开关；已有覆�
   assert.match(html, /获取模型/u);
   assert.match(html, /手动添加/u);
   assert.match(html, /先获取或添加模型/u);
+});
+
+test("连接测试显示文字名称且保留禁用语义，不能再依赖星形图标表达操作", () => {
+  const html = renderConnection(true);
+  const button = html.match(/<button[^>]*aria-label="测试连接"[^>]*>[\s\S]*?<\/button>/u)?.[0];
+  assert.ok(button);
+  assert.match(button, /<span>测试<\/span>/u);
+  assert.match(button, /disabled/u, "没有模型时仍不可发起测试");
+});
+
+test("多模型测试入口保留下拉状态，且实际按钮不再匹配全局圆形几何规则", () => {
+  const css = readFileSync(new URL("../src/desktop/renderer/src/styles/icon-buttons.css", import.meta.url), "utf8");
+  const dom = new JSDOM(`<style>${css}</style>${renderConnection(true, "openai-compatible", true, 2)}`);
+  try {
+    const button = dom.window.document.querySelector('button[aria-label="测试连接"]')!;
+    assert.equal(button.textContent, "测试");
+    assert.equal(button.getAttribute("aria-expanded"), "false");
+    assert.equal(button.hasAttribute("disabled"), false);
+    assert.ok(button.querySelector(".provider-test-caret"));
+    for (const rule of dom.window.document.styleSheets[0]!.cssRules) {
+      if (rule instanceof dom.window.CSSStyleRule && rule.style.getPropertyValue("border-radius") === "50%") {
+        assert.equal(button.matches(rule.selectorText), false, "文字按钮不能被圆形控件样式挤压");
+      }
+    }
+  } finally { dom.window.close(); }
 });
 
 for (const enabled of [true, false]) {

@@ -100,12 +100,12 @@ interface RenameTarget {
   metadataRevision?: string;
 }
 
-export function App(): React.JSX.Element {
+export function App({ settingsEnabled = true }: { settingsEnabled?: boolean }): React.JSX.Element {
   if (window.location.hash === "#/quick-chat") return <QuickChatApp />;
-  return <DesktopApp />;
+  return <DesktopApp settingsEnabled={settingsEnabled} />;
 }
 
-function DesktopApp(): React.JSX.Element {
+function DesktopApp({ settingsEnabled }: { settingsEnabled: boolean }): React.JSX.Element {
   const [version, setVersion] = useState("0.1.0");
   const [projects, setProjects] = useState<DesktopProject[]>([]);
   const [sidebarSessions, setSidebarSessions] = useState<DesktopSessionSummary[]>([]);
@@ -200,9 +200,10 @@ function DesktopApp(): React.JSX.Element {
   } = useSidebarLayout();
 
   const openSettings = useCallback((targetTab?: SettingsTab): void => {
+    if (!settingsEnabled) return;
     setSettingsTargetTab(targetTab);
     setSettingsOpen(true);
-  }, []);
+  }, [settingsEnabled]);
 
   const closeSettings = useCallback((): void => {
     setSettingsOpen(false);
@@ -750,9 +751,10 @@ function DesktopApp(): React.JSX.Element {
   useEffect(() => window.biny.onMenuAction((action) => menuActionRef.current(action)), []);
 
   useEffect(() => window.biny.onSettingsCloseRequest((request) => {
+    if (!settingsEnabled) return;
     setSettingsCloseRequest(request);
     setSettingsOpen(true);
-  }), []);
+  }), [settingsEnabled]);
 
   const openProject = useCallback(async (): Promise<void> => {
     try {
@@ -1896,6 +1898,7 @@ function DesktopApp(): React.JSX.Element {
       onRefreshCatalog={refreshComposerCatalog}
       modelSetupRequired={Boolean(workspace?.requiresModelConfiguration)}
       models={workspace?.pickerModels ?? workspace?.models ?? []}
+      connections={workspace?.connections}
       onSaveAttachment={saveAttachment}
       onSend={sendPromptWithTransition}
       recovery={!loading && document?.session.id === selectedSessionId ? document?.recovery : undefined}
@@ -2065,7 +2068,7 @@ function DesktopApp(): React.JSX.Element {
           onLoadSessionChildren={loadSessionChildren}
           onSessionAction={runSidebarSessionAction}
           onDeleteSessions={deleteSidebarSessions}
-          onSettings={openSettings}
+          onSettings={settingsEnabled ? openSettings : undefined}
           onTimeClues={openTimeClues}
           onInsertCrystal={insertCrystalReference}
           onToggleSidebar={toggleSidebar}
