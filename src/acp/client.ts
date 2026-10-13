@@ -90,6 +90,7 @@ export class AcpClient {
     if (this.info && this.connection && !this.connection.signal.aborted && this.fingerprint === fingerprint) return this.info;
     await this.close();
     const stored = await this.readBinding();
+    signal?.throwIfAborted();
     if (!stored && this.options.requireBinding) throw new Error("ACP 会话关联文件缺失，请新建会话；旧任务未重放。");
     if (stored && stored.fingerprint !== fingerprint) throw new Error("ACP 连接配置已变化，请新建会话，避免将旧会话关联到其他 Agent。");
     this.outputBytes = 0;
