@@ -751,7 +751,7 @@ function buildTrivialAnalysis(
 }
 
 function parseActivityAnalysisOutput(text: string): AnalysisOutput | undefined {
-  const normalized = text.replace(/```(?:json)?/giu, "").replace(/```/gu, "").trim();
+  const normalized = text.trim();
   const start = normalized.indexOf("{");
   const end = normalized.lastIndexOf("}");
   if (start < 0 || end < start) return undefined;
