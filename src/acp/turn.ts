@@ -49,7 +49,7 @@ export async function* runAcpTurn(client: AcpClient, options: {
         const result = update.rawOutput ?? update.content ?? update.status;
         queue.push(update.status === "completed"
           ? { type: "tool.completed", toolCallId, tool: tool.name, result }
-          : { type: "tool.failed", toolCallId, tool: tool.name, result, error: "外部 Agent 工具未完成。" });
+          : { type: "tool.failed", toolCallId, tool: tool.name, result, executionStatus: "failed", error: "外部 Agent 工具未完成。" });
       }
     }
   };
