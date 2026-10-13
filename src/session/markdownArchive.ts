@@ -26,8 +26,13 @@ export async function archiveConversationMarkdown(agentDir = globalAgentDir()): 
   return await withLocalFileWriteLock(directory, ".mirror.lock", async () => {
     const result: MarkdownArchiveResult = { directory, exported: 0, removed: 0, failed: [] };
     const files = await listAllSessionFiles(agentDir);
-    const ids = new Set(files.map(sessionIdFromFile));
-    const duplicates = new Set(files.map(sessionIdFromFile).filter((id, i, all) => all.indexOf(id) !== i));
+    const ids = new Set<string>();
+    const duplicates = new Set<string>();
+    for (const file of files) {
+      const id = sessionIdFromFile(file);
+      if (ids.has(id)) duplicates.add(id);
+      ids.add(id);
+    }
     for (const file of files) {
       const id = sessionIdFromFile(file);
       try {
